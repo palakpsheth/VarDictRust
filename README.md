@@ -49,6 +49,16 @@ integration suite (92 cases):
   DIVERGENCES.md Category 14.
 - **Milestone tags**: `milestone/somatic-parity`, `milestone/full-parity` (cut at W4.6
   closure; annotated with dataset + exceptions provenance).
+- **Robustness & fuzzing** (2026-08-24): crash-family corpus pushed through the real
+  binary (no panics, clear errors); cargo-fuzz targets `fuzz_cigar` / `fuzz_regions`
+  (seeds include upstream crash inputs) run clean ≥300 s each. Release artifacts are
+  smoke-gated: a committed micro fixture with dual-engine-validated expected output
+  must byte-match before binaries are attached.
+- **Flag statuses** in [Supported Flags](#supported-flags) grade evidence honestly
+  (`corpus` / `unexercised` / `no-output` / `parity-exempt`) — nothing is claimed
+  validated beyond what the corpus and sweep actually exercised.
+- **External truth sets (SEQC2/GIAB)**: planned, not yet executed —
+  [docs/plans/giab-seqc2-validation.md](docs/plans/giab-seqc2-validation.md).
 
 ## Supported Flags
 
@@ -154,6 +164,10 @@ This project is a faithful rewrite of **VarDictJava** by the [AstraZeneca-NGS](h
 > Lai Z, Markovets A, Ahdesmaki M, et al. VarDict: a novel and versatile variant caller for next-generation sequencing in cancer research. *Nucleic Acids Research*, 2016;44(11):e108. doi:[10.1093/nar/gkw227](https://doi.org/10.1093/nar/gkw227)
 
 Validated against VarDictJava v1.8.3 (commit `0886261`) with the Perl/R submodule at commit `009e017`.
+
+**Please cite VarDict, not this rewrite**: if vardictrust is useful in your work, cite
+the paper above (and the VarDictJava project). This rewrite exists only because of
+their work — per [rewrites.bio](https://rewrites.bio), credit flows to the original.
 
 ## AI Disclosure
 
