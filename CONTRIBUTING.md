@@ -43,6 +43,23 @@ A change is done when the relevant `compare.sh` prints **MATCH** (or the named
 test passes), not before. Evidence before completion: never claim a pass you
 did not observe.
 
+## Fuzzing
+
+Parser fuzz targets live in the workspace-excluded `fuzz/` crate
+(cargo-fuzz conventions, pinned nightly in `fuzz/rust-toolchain.toml`).
+One-time setup: `cargo install cargo-fuzz --locked` (the pinned nightly is
+installed on first use).
+
+```bash
+bash harness/fuzz.sh fuzz_cigar 300     # parse_cigar: Some/None, never panic
+bash harness/fuzz.sh fuzz_regions 300   # BED text + chr:start-end specs: never panic
+```
+
+Policy: any crash or panic found is a real no-panic-rule bug (CLAUDE.md §9) —
+fix the root cause if it is contained to malformed-input robustness; never
+silence or assert it away. Seeds live in `fuzz/seeds/<target>/`; add a seed
+whenever you fix a parser bug so it stays covered.
+
 ## Integrity rules
 
 Never weaken a gate to make it pass. Do not edit or skip failing tests, relax

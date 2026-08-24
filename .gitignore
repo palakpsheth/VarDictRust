@@ -43,3 +43,9 @@
 # (see golden/PROVENANCE) — the global *.bam/*.bai exclusions do not apply here.
 !fixtures/
 !fixtures/**
+
+# Fuzzing artifacts (seeds in fuzz/seeds ARE committed)
+fuzz/target/
+fuzz/corpus/
+fuzz/artifacts/
+fuzz/coverage/

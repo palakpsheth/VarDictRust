@@ -1,0 +1,4 @@
+# Shadow the workspace-level stable pin: fuzzing needs libFuzzer's nightly
+# instrumentation. Keep this dated so builds are reproducible; bump deliberately.
+[toolchain]
+channel = "nightly-2026-08-23"
