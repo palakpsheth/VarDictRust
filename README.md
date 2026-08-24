@@ -54,69 +54,80 @@ integration suite (92 cases):
 
 Flag parity with VarDictJava v1.8.3 is defined against its option parser
 (`CmdParser.java`) and verified by the differential-testing harness. Every
-implemented flag, its long form, and default:
+implemented flag, its long form, default, and **validation status**:
 
-| Short | Long | Description | Default |
-|---|---|---|---|
-| `-G` | `--reference` | Reference FASTA (`.fai` required; hg19/hg38/mm10 shortcuts accepted) | required |
-| `-b` | `--bam` | Indexed BAM/CRAM; somatic: `"tumor.bam\|normal.bam"` | required |
-| `-f` | `--af-threshold` | Allele-frequency threshold | `0.01` |
-| `-N` | `--name` | Sample name (somatic: `"TUMOR\|NORMAL"`) | derived from BAM filename |
-| `-R` | `--region` | Region `chr:start-end[:gene]` instead of BED | — |
-| `-c` | — | BED chromosome column (1-based) | 3 |
-| `-S` | — | BED start column | 7 |
-| `-E` | — | BED end column | 8 |
-| `-s` | — | BED segment-start column | 10 (= `-S` if set) |
-| `-e` | — | BED segment-end column | 11 (= `-E` if set) |
-| `-g` | — | BED gene column | 13 |
-| — | `--threads` | Thread count (`-th`/`--th` aliases; bare `-th` = all cores) | all cores |
-| `-k` | — | Local realignment 0/1 | `1` |
-| `-a` | `--amplicon` | Amplicon mode `"int:float"` (distance:fraction) | auto `10:0.95` on 8-col BED |
-| `-r` | — | Minimum variant reads | `2` |
-| `-q` | — | Minimum base quality | `22.5` |
-| `-Q` | — | Minimum mapping quality | — |
-| `-P` | — | Mean read position filter | `5` |
-| `-m` | — | Maximum mismatches | `8` |
-| `-M` | — | Min match+insertion read length (shorter reads ignored) | `0` |
-| `-V` | — | Min normal AF (somatic) | `0.05` |
-| `-U` | `--nosv` | Disable SV calling | off |
-| `-L` | — | SV minimum length | `1000` |
-| — | `--emit-intermediate` | Emit legacy `.var` table instead of VCF | off |
-| — | `--fisher` | In-engine Fisher exact test (p-value / odds ratio) | off |
-| — | `--tile-size` | Region tile size in bp (bounded-memory WGS) | auto |
-| `-x` | — | BED region extension (bp) | `0` |
-| `-X` | — | Nucleotide extension | `2` |
-| `-3` | — | Move indels to 3′ (Java `moveIndelsTo3`) | off |
-| `-B` | — | Minimum reads for bias | `2` |
-| `-o` | — | qratio filter | `1.5` |
-| `-O` | — | Output MAPQ threshold | `0` |
-| `-I` | — | Indel size | `50` |
-| `-z` | — | BED coordinates are 0-based | off (1-based) |
-| `-F` | — | SAM flag filter | `0x504` |
-| `-w` | — | SV read length | `300` |
-| `-W` | — | SV flanking | `100` |
-| `-A` | — | SV minimum AF | `4` |
-| `-Y` | — | Max region length | `1200` |
-| `-h` | `--header` | Print `.var` column header before results | off |
-| `-v` | — | Accepted and ignored (never read by VarDictJava v1.8.3) | — |
-| — | `--chimeric` | Chimeric read handling | off |
-| — | `--deldupvar` | Delete/dup variant handling | off |
-| — | `--mfreq` | Mono frequency threshold | `0.25` |
-| — | `--nmfreq` | Normal mono frequency threshold | `0.1` |
-| `-J` | — | CRISPR cutting site | — |
-| `-j` | — | CRISPR flanking size | — |
-| `-i` | `--splice` | Splice mode | off |
-| `-p` | — | Pileup-only mode | off |
-| `-D` | `--debug` | Debug mode (append per-read debug columns to `.var`) | off |
-| — | `--DP` | Debug print destination (`OUT` or `ERR`) | — |
-| `-y` | `--verbose` | Verbose mode | off |
-| `-t` | `--dedup` | Remove duplicated reads (one pair per start position) | off |
-| — | `--adaptor` | Adaptor sequence(s), comma-separated, excluded from realignment | — |
-| `-d` | — | Delimiter for splitting region info | `\t` |
-| `-u` | — | Unique mode: count overlapping mates once (forward read) | off |
-| — | `--UN` | Unique mode: count once using first read only | off |
-| `-K` | — | Include Ns in depth calculation | off |
-| positional | — | BED file (used when `-R` absent) | — |
+Status vocabulary (derived only from corpus case definitions + `DIVERGENCES.md`;
+no flag is claimed validated beyond this evidence):
+
+- `corpus` — active by default in every run, or explicitly varied in ≥1 of the
+  92 integration-corpus cases / Tier-2 oracle sweep
+- `unexercised` — parsed and wired, but never active in any corpus case;
+  behavior follows the Java source but lacks direct differential evidence
+- `no-output` — performance/infrastructure flag; cannot affect output bytes
+- `parity-exempt` — accepted for CLI compatibility with no engine effect,
+  matching upstream semantics
+
+| Short | Long | Description | Default | Status |
+|---|---|---|---|---|
+| `-G` | `--reference` | Reference FASTA (`.fai` required; hg19/hg38/mm10 shortcuts accepted) | required | corpus |
+| `-b` | `--bam` | Indexed BAM/CRAM; somatic: `"tumor.bam\|normal.bam"` | required | corpus |
+| `-f` | `--af-threshold` | Allele-frequency threshold | `0.01` | corpus |
+| `-N` | `--name` | Sample name (somatic: `"TUMOR\|NORMAL"`) | derived from BAM filename | corpus |
+| `-R` | `--region` | Region `chr:start-end[:gene]` instead of BED | — | corpus |
+| `-c` | — | BED chromosome column (1-based) | 3 | corpus |
+| `-S` | — | BED start column | 7 | corpus |
+| `-E` | — | BED end column | 8 | corpus |
+| `-s` | — | BED segment-start column | 10 (= `-S` if set) | unexercised |
+| `-e` | — | BED segment-end column | 11 (= `-E` if set) | unexercised |
+| `-g` | — | BED gene column | 13 | corpus |
+| — | `--threads` | Thread count (`-th`/`--th` aliases; bare `-th` = all cores) | all cores | no-output |
+| `-k` | — | Local realignment 0/1 | `1` | corpus |
+| `-a` | `--amplicon` | Amplicon mode `"int:float"` (distance:fraction) | auto `10:0.95` on 8-col BED | corpus |
+| `-r` | — | Minimum variant reads | `2` | corpus |
+| `-q` | — | Minimum base quality | `22.5` | corpus |
+| `-Q` | — | Minimum mapping quality | — | corpus |
+| `-P` | — | Mean read position filter | `5` | corpus |
+| `-m` | — | Maximum mismatches | `8` | corpus |
+| `-M` | — | Min match+insertion read length (shorter reads ignored) | `0` | unexercised |
+| `-V` | — | Min normal AF (somatic) | `0.05` | corpus |
+| `-U` | `--nosv` | Disable SV calling | off | unexercised |
+| `-L` | — | SV minimum length | `1000` | corpus |
+| — | `--emit-intermediate` | Emit legacy `.var` table instead of VCF | off | corpus |
+| — | `--fisher` | In-engine Fisher exact test (p-value / odds ratio) | off | corpus |
+| — | `--tile-size` | Region tile size in bp (bounded-memory WGS) | auto | no-output |
+| `-x` | — | BED region extension (bp) | `0` | unexercised |
+| `-X` | — | Nucleotide extension | `2` | corpus |
+| `-3` | — | Move indels to 3′ (Java `moveIndelsTo3`) | off | unexercised |
+| `-B` | — | Minimum reads for bias | `2` | corpus |
+| `-o` | — | qratio filter | `1.5` | corpus |
+| `-O` | — | Output MAPQ threshold | `0` | unexercised |
+| `-I` | — | Indel size | `50` | corpus |
+| `-z` | — | BED coordinates are 0-based | off (1-based) | corpus |
+| `-F` | — | SAM flag filter | `0x504` | corpus |
+| `-w` | — | SV read length | `300` | corpus |
+| `-W` | — | SV flanking | `100` | corpus |
+| `-A` | — | SV minimum AF | `4` | corpus |
+| `-Y` | — | Max region length | `1200` | corpus |
+| `-h` | `--header` | Print `.var` column header before results | off | corpus |
+| `-v` | — | Accepted and ignored (never read by VarDictJava v1.8.3) | — | parity-exempt |
+| — | `--chimeric` | Chimeric read handling | off | corpus |
+| — | `--deldupvar` | Delete/dup variant handling | off | unexercised |
+| — | `--mfreq` | Mono frequency threshold | `0.25` | corpus |
+| — | `--nmfreq` | Normal mono frequency threshold | `0.1` | corpus |
+| `-J` | — | CRISPR cutting site | — | unexercised |
+| `-j` | — | CRISPR flanking size | — | unexercised |
+| `-i` | `--splice` | Splice mode | off | unexercised |
+| `-p` | — | Pileup-only mode | off | corpus |
+| `-D` | `--debug` | Debug mode (append per-read debug columns to `.var`) | off | corpus |
+| — | `--DP` | Debug print destination (`OUT` or `ERR`) | — | unexercised |
+| `-y` | `--verbose` | Verbose mode | off | no-output |
+| `-t` | `--dedup` | Remove duplicated reads (one pair per start position) | off | unexercised |
+| — | `--adaptor` | Adaptor sequence(s), comma-separated, excluded from realignment | — | unexercised |
+| `-d` | — | Delimiter for splitting region info | `\t` | corpus |
+| `-u` | — | Unique mode: count overlapping mates once (forward read) | off | unexercised |
+| — | `--UN` | Unique mode: count once using first read only | off | unexercised |
+| `-K` | — | Include Ns in depth calculation | off | corpus |
+| positional | — | BED file (used when `-R` absent) | — | corpus |
 
 BED-column defaults follow VarDictJava's `RegionBuilder.DEFAULT_BED_ROW_FORMAT`
 (0-based `2,6,7,9,10,12`), i.e. the multi-column VarDict pipeline BED format,
