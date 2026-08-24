@@ -1,0 +1,25 @@
+name: Differential Testing
+on:
+  pull_request:
+  # Nightly cron disabled until real fixtures exist; re-enable with:
+  #   schedule:
+  #     - cron: '0 4 * * *'
+jobs:
+  differential:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: conda-incubator/setup-miniconda@v3
+        with:
+          auto-activate-base: true
+      - name: Setup oracle
+        run: bash harness/setup_oracle.sh
+      - name: Build release
+        run: cargo build --release
+      - name: Run differential tests
+        run: |
+          echo "Differential testing placeholder — populated when fixtures are available"
+          # bash harness/compare.sh --all

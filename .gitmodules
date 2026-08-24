@@ -1,0 +1,3 @@
+[submodule "VarDictJava"]
+	path = VarDictJava
+	url = git@github.com:AstraZeneca-NGS/VarDictJava.git

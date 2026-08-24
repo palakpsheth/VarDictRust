@@ -1,0 +1,24 @@
+# cargo-deny — minimal gate: security advisories + license compliance.
+# Run: cargo deny check advisories licenses
+# (P4e-lite: no bans/sources sections yet — add when dependency policy hardens.)
+
+[advisories]
+version = 2
+# Unmaintained crates are advisory noise for an application workspace; surface
+# them without failing the gate until replacements are chosen.
+unmaintained = "workspace"
+yanked = "warn"
+
+[licenses]
+version = 2
+# Allow-list mirrors what Cargo.lock actually resolves to (noodles/bio/rayon/
+# clap/statrs family). Re-run `cargo deny check licenses` after adding deps.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "Unicode-3.0",
+    "Zlib",
+]
+confidence-threshold = 0.8

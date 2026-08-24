@@ -1,0 +1,3 @@
+VarDictJava 1.8.3 / commit 0886261 / submodule 009e017
+These files are the expected outputs from VarDictJava's integration tests,
+used as ground truth for differential testing.

@@ -1,0 +1,30 @@
+[workspace]
+members = ["crates/vardict-core", "crates/vardict-cli"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/palakpsheth/VarDictRust"
+authors = ["Palak Sheth"]
+
+[workspace.dependencies]
+anyhow = "1"
+thiserror = "2"
+clap = { version = "4", features = ["derive"] }
+rayon = "1"
+indexmap = "2"
+noodles = { version = "0.93", default-features = false, features = ["bam","cram","sam","fasta","vcf","bgzf","csi","tabix","core","bed"] }
+statrs = "0.18"
+fishers_exact = "1"
+log = "0.4"
+env_logger = "0.11"
+regex = "1"
+tempfile = "3"
+criterion = "0.5"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "abort"

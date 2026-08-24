@@ -1,0 +1,40 @@
+/target
+/benchmarks/data/
+*.bam
+*.bai
+*.cram
+*.crai
+.venv/
+# keep the small golden fixtures even though they are .vcf/.var
+!golden/
+!golden/**
+
+# Debug/oracle spew (untracked in W0; never re-add)
+/java*
+/rust*
+/oracle_*
+/expected.*
+/actual.*
+/debug.err
+/diff.txt
+/stderr*.txt
+/temp*
+/test.bed
+/out.vcf
+/scratch_npe.*
+/scratch/
+!rust-toolchain.toml
+
+# Universal & Editor
+*.tmp
+*.swp
+.vscode/
+.idea/
+
+# Rust/Python development
+*.rlib
+*.log
+.env*
+
+
+.qoder/settings.local.json
