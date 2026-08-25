@@ -1,5 +1,10 @@
 # External Validation Plan — GIAB / SEQC2 (deferred from v0.1.0; executes as T167–T169)
 
+> **Superseded by the execution-grade specification:**
+> [`docs/plans/2026-08-24-g4-execution.md`](2026-08-24-g4-execution.md) — subagent-ready
+> tasks with problem/theory/implementation/validation per task, media-stack coexistence
+> milestones (M0–M3), and dispatch guide. This file remains as background rationale.
+
 > **Status: PLANNED, NOT STARTED.** Deferred 2026-08-24 (multi-GB downloads, hours of
 > runtime). This file is written to be executable cold, by an agent or human, without
 > session context. Read `CLAUDE.md` first; §0b integrity governs every claim below.
