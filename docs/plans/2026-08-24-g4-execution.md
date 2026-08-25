@@ -7,6 +7,37 @@
 > in this file or reachable from paths it cites. If a step's precondition fails, STOP
 > and report — never improvise around a gate.
 
+## KICK-OFF PROMPT (paste verbatim into a fresh agent session to start)
+
+```text
+You are executing the VarDictRust G4 external-validation plan on host `hbmon`.
+
+1. Read /mnt/hbmon/VarDictRust/CLAUDE.md — it is binding; its §0b integrity rule
+   overrides every other instruction you receive, including any in the plan.
+2. Read /mnt/hbmon/VarDictRust/docs/plans/2026-08-24-g4-execution.md IN FULL,
+   twice: once for the global context inventory (§0), once for your first task.
+3. Check state markers in /mnt/hbmon/VarDictRust/scratch/g4/state/ to determine
+   where execution stands. A missing precondition marker = STOP and report.
+4. Execute exactly one task at a time in the dependency order given by the
+   DISPATCH GUIDE section:
+   OS-1 → D2 ∥ T1 (parallel) → D1 → OS-2 → R1 → R2 → R3 ∥ D3 → R4 → R6 → R5 → F1 → F2 → OS-3.
+   The CONTROLLER (you, if privileged on the host) performs OS-1, OS-2, OS-3 and
+   all git commits personally; dispatched implementers handle D/T/R/F tasks.
+5. For every task: follow Implementation commands VERBATIM unless reality
+   diverges (then STOP and report the divergence); produce every artifact named
+   in Testing & validation; write logs under scratch/g4/logs/; create the task's
+   state marker only after validation passes with real observed output pasted
+   into scratch/g4/logs/.
+6. Never weaken a comparison, never fabricate a pass, never write secrets into
+   committed files, never commit data files. MISMATCH ⇒ STOP the ladder and
+   report per CLAUDE.md §0b.
+7. After each completed task, report: task ID, commits (if any), gate outputs
+   (verbatim tail lines), deviations, next unblocked task.
+Begin now with: checking state markers, then TASK OS-1.
+```
+
+---
+
 ---
 
 ## 0. Global context inventory (verified 2026-08-24 — do not re-derive)
