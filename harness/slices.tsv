@@ -1,0 +1,11 @@
+#id	ref	bam	bed	sample	min_variants	extra
+s1a	VarDictJava/testdata/fastas/GRCh37.fa	VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests/NA24385_chr_20_20156208_20234556.bam	harness/slices/s1a.bed	SAMPLE	1048	-f 0.001
+s1b	VarDictJava/testdata/fastas/GRCh37.fa	VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests/NA24385_chr_20_38386265_38409801.bam	harness/slices/s1b.bed	SAMPLE	312	-f 0.001
+tiny	VarDictJava/testdata/fastas/GRCh37.fa	VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests/NA24385_chr_20_20156208_20234556.bam	harness/slices/tiny.bed	SAMPLE	4	-f 0.001
+s3	VarDictJava/testdata/fastas/hg19.fa	VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests/Colo829-18_S3-sort.bam|VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests/Colo829-19_S4-sort.bam	harness/slices/s3.bed	SAMPLE	16	
+s4	VarDictJava/testdata/fastas/hg19.fa	VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests/HCC2218_BL_realigins.bam|VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests/HCC2218_C_realigins.bam	harness/slices/s4.bed	SAMPLE	14	-f 0.001
+s5	VarDictJava/testdata/fastas/hg19.fa	VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests/Zero_in_DUPSV_TUMOUR.bam|VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests/Zero_in_DUPSV_NORMAL.bam	harness/slices/s5.bed	SAMPLE	61	-f 0.001 -X 3
+s6	VarDictJava/testdata/fastas/hg19.fa	VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests/Colo829-18_S3-sort.bam	harness/slices/s6.bed	SAMPLE	4	-a 10:0.95
+s7	VarDictJava/testdata/fastas/GRCh37.fa	VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests/MRE11a.bam	harness/slices/s7.bed	SAMPLE	96	-a 10:0.95 -p
+s8	VarDictJava/testdata/fastas/hg19.fa	VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests/Colo829.chr20.INVSV.bam	harness/slices/s8.bed	SAMPLE	20	-f 0.001
+s9	VarDictJava/testdata/fastas/hg19.fa	VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests/Colo829.chr20.DUPDiscSV.bam	harness/slices/s9.bed	SAMPLE	71	-f 0.001
