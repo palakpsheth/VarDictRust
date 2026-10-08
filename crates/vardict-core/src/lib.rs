@@ -29,6 +29,7 @@
 pub mod bam;
 pub mod cigar;
 pub mod config;
+pub mod javamap;
 pub mod output;
 pub mod postprocess;
 pub mod realign;
@@ -420,7 +421,7 @@ fn process_amplicon_region(
     region: &crate::regions::Region,
     config: &config::Config,
     chromosomes_lengths: &HashMap<String, usize>,
-) -> Result<std::collections::BTreeMap<i32, crate::variations::Vars>, VardictError> {
+) -> Result<crate::javamap::JavaHashMap<i32, crate::variations::Vars>, VardictError> {
     let halo = 500u32;
     let halo_start = crate::types::Pos0(region.start.0.saturating_sub(halo).saturating_sub(1));
     let halo_end = crate::types::Pos0(region.end.0 + halo);
@@ -506,7 +507,7 @@ fn run_amplicon(
             i32,
             Vec<(usize, crate::regions::Region)>,
         > = std::collections::BTreeMap::new();
-        let mut vars_per_amplicon: Vec<std::collections::BTreeMap<i32, crate::variations::Vars>> =
+        let mut vars_per_amplicon: Vec<crate::javamap::JavaHashMap<i32, crate::variations::Vars>> =
             Vec::new();
         let splice = std::collections::HashSet::new();
 
@@ -737,7 +738,7 @@ fn run_somatic(config: &config::Config) -> Result<(), VardictError> {
             let bam1 = bam1_path_for_combine.clone();
             let bam2 = bam2_path_for_combine.clone();
             let pipeline_fn = |combine_region: &crate::regions::Region| -> Result<
-                std::collections::BTreeMap<i32, crate::variations::Vars>,
+                crate::javamap::JavaHashMap<i32, crate::variations::Vars>,
                 VardictError,
             > {
                 // Query reads from both BAMs over the combine region; the

@@ -777,8 +777,11 @@ impl VariationMap {
 
     /// Retrieve or create the SV entry for a given start position.
     /// Ports `VariationMap.getSV`.
-    pub fn get_sv(hash: &mut BTreeMap<i32, VariationMap>, start: i32) -> &mut Sv {
-        let entry = hash.entry(start).or_insert_with(VariationMap::new);
+    pub fn get_sv(
+        hash: &mut crate::javamap::JavaHashMap<i32, VariationMap>,
+        start: i32,
+    ) -> &mut Sv {
+        let entry = hash.compute_if_absent(start, |_| VariationMap::new());
         // §9: get_or_insert_with replaces the just-inserted unwrap; the "SV"
         // variation is ensured separately (remove_sv clears both together, so
         // sv==None implies no "SV" entry — the contains_key check preserves
@@ -792,7 +795,7 @@ impl VariationMap {
 
     /// Remove the SV entry and delete information about SV.
     /// Ports `VariationMap.removeSV`.
-    pub fn remove_sv(hash: &mut BTreeMap<i32, VariationMap>, start: i32) {
+    pub fn remove_sv(hash: &mut crate::javamap::JavaHashMap<i32, VariationMap>, start: i32) {
         if let Some(entry) = hash.get_mut(&start) {
             entry.sv = None;
             entry.map.swap_remove("SV");
@@ -844,8 +847,8 @@ impl SVStructures {
 /// Ports `data/scopedata/VariationData.java`.
 #[derive(Debug, Clone, Default)]
 pub struct VariationData {
-    pub non_insertion_variants: BTreeMap<i32, VariationMap>,
-    pub insertion_variants: BTreeMap<i32, VariationMap>,
+    pub non_insertion_variants: crate::javamap::JavaHashMap<i32, VariationMap>,
+    pub insertion_variants: crate::javamap::JavaHashMap<i32, VariationMap>,
     pub position_to_insertion_count: BTreeMap<i32, std::collections::HashMap<String, i32>>,
     pub position_to_deletion_count: BTreeMap<i32, std::collections::HashMap<String, i32>>,
     pub sv_structures: SVStructures,
@@ -867,11 +870,11 @@ impl VariationData {
 }
 
 pub fn get_variation<'a>(
-    hash: &'a mut BTreeMap<i32, VariationMap>,
+    hash: &'a mut crate::javamap::JavaHashMap<i32, VariationMap>,
     start: i32,
     s: &str,
 ) -> &'a mut Variation {
-    let entry = hash.entry(start).or_insert_with(VariationMap::new);
+    let entry = hash.compute_if_absent(start, |_| VariationMap::new());
     entry
         .map
         .entry(s.to_string())
@@ -879,7 +882,7 @@ pub fn get_variation<'a>(
 }
 
 pub fn get_variation_maybe(
-    hash: &BTreeMap<i32, VariationMap>,
+    hash: &crate::javamap::JavaHashMap<i32, VariationMap>,
     start: i32,
     ref_base: Option<u8>,
 ) -> Option<&Variation> {
@@ -890,7 +893,7 @@ pub fn get_variation_maybe(
 }
 
 pub fn get_variation_maybe_mut(
-    hash: &mut BTreeMap<i32, VariationMap>,
+    hash: &mut crate::javamap::JavaHashMap<i32, VariationMap>,
     start: i32,
     ref_base: Option<u8>,
 ) -> Option<&mut Variation> {

@@ -54,7 +54,7 @@ pub struct AmpliconVariant {
 pub fn amplicon_post_process(
     config: &Config,
     region: &Region,
-    vars_per_amplicon: &[BTreeMap<i32, Vars>],
+    vars_per_amplicon: &[crate::javamap::JavaHashMap<i32, Vars>],
     amplicons_on_positions: &BTreeMap<i32, Vec<(usize, Region)>>,
     splice: &HashSet<String>,
 ) -> Vec<AmpliconVariant> {
@@ -488,7 +488,7 @@ mod tests {
         let splice = HashSet::new();
 
         // One amplicon with one good variant at position 150
-        let mut vars_amp0 = BTreeMap::new();
+        let mut vars_amp0 = crate::javamap::JavaHashMap::new();
         let mut vars_150 = Vars::new();
         vars_150
             .variants
@@ -523,14 +523,14 @@ mod tests {
         let splice = HashSet::new();
 
         // Two amplicons, both with the same variant at position 150
-        let mut vars_amp0 = BTreeMap::new();
+        let mut vars_amp0 = crate::javamap::JavaHashMap::new();
         let mut vars_150_a = Vars::new();
         vars_150_a
             .variants
             .push(make_good_variant(150, "A", "G", 0.10));
         vars_amp0.insert(150, vars_150_a);
 
-        let mut vars_amp1 = BTreeMap::new();
+        let mut vars_amp1 = crate::javamap::JavaHashMap::new();
         let mut vars_150_b = Vars::new();
         vars_150_b
             .variants
@@ -569,14 +569,14 @@ mod tests {
         let splice = HashSet::new();
 
         // Two amplicons with different variants at position 150
-        let mut vars_amp0 = BTreeMap::new();
+        let mut vars_amp0 = crate::javamap::JavaHashMap::new();
         let mut vars_150_a = Vars::new();
         vars_150_a
             .variants
             .push(make_good_variant(150, "A", "G", 0.10));
         vars_amp0.insert(150, vars_150_a);
 
-        let mut vars_amp1 = BTreeMap::new();
+        let mut vars_amp1 = crate::javamap::JavaHashMap::new();
         let mut vars_150_b = Vars::new();
         vars_150_b
             .variants
@@ -621,7 +621,7 @@ mod tests {
         let splice = HashSet::new();
 
         // Amplicon 0: high coverage variant
-        let mut vars_amp0 = BTreeMap::new();
+        let mut vars_amp0 = crate::javamap::JavaHashMap::new();
         let mut vars_150_a = Vars::new();
         let mut v = make_good_variant(150, "A", "G", 0.10);
         v.total_pos_cov = 1000;
@@ -629,7 +629,7 @@ mod tests {
         vars_amp0.insert(150, vars_150_a);
 
         // Amplicon 1: very low coverage (below maxcov/50 = 1000/50 = 20)
-        let mut vars_amp1 = BTreeMap::new();
+        let mut vars_amp1 = crate::javamap::JavaHashMap::new();
         let mut vars_150_b = Vars::new();
         let mut v2 = make_good_variant(150, "A", "G", 0.10);
         v2.total_pos_cov = 10; // < 20, so nocov
@@ -666,7 +666,7 @@ mod tests {
         let splice = HashSet::new();
 
         // One amplicon with a variant that fails isGoodVar (low frequency)
-        let mut vars_amp0 = BTreeMap::new();
+        let mut vars_amp0 = crate::javamap::JavaHashMap::new();
         let mut vars_150 = Vars::new();
         let mut v = make_good_variant(150, "A", "G", 0.001); // below freq threshold
         v.frequency = 0.001;
@@ -698,7 +698,7 @@ mod tests {
         let splice = HashSet::new();
 
         // One amplicon with a reference variant but no good variants
-        let mut vars_amp0 = BTreeMap::new();
+        let mut vars_amp0 = crate::javamap::JavaHashMap::new();
         let mut vars_150 = Vars::new();
         let mut ref_v = Variant::new();
         ref_v.ref_allele = "A".to_string();

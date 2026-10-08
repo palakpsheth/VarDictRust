@@ -9,11 +9,12 @@ use crate::config::Config;
 use crate::regions::Region;
 use crate::types::VardictError;
 use crate::variations::{Variant, Vars};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 
 /// Callback that runs the full pipeline (pileup→realign→SV→tovars) on both BAMs
 /// combined over a given region, returning aligned variants keyed by position.
-pub type PipelineFn<'a> = dyn Fn(&Region) -> Result<BTreeMap<i32, Vars>, VardictError> + 'a;
+pub type PipelineFn<'a> =
+    dyn Fn(&Region) -> Result<crate::javamap::JavaHashMap<i32, Vars>, VardictError> + 'a;
 
 // STATUS constants matching VarDictJava's SomaticPostProcessModule
 const STRONG_SOMATIC: &str = "StrongSomatic";
@@ -62,8 +63,8 @@ pub struct SomaticVariant {
 pub fn somatic_post_process(
     config: &Config,
     region: &Region,
-    aligned_variants_bam1: &BTreeMap<i32, Vars>,
-    aligned_variants_bam2: &BTreeMap<i32, Vars>,
+    aligned_variants_bam1: &crate::javamap::JavaHashMap<i32, Vars>,
+    aligned_variants_bam2: &crate::javamap::JavaHashMap<i32, Vars>,
     splice: &HashSet<String>,
     pipeline: Option<&PipelineFn<'_>>,
     max_read_length: i32,
@@ -826,13 +827,13 @@ mod tests {
         let region = test_region();
         let splice = HashSet::new();
 
-        let mut bam1 = BTreeMap::new();
+        let mut bam1 = crate::javamap::JavaHashMap::new();
         let mut vars = Vars::new();
         vars.variants.push(make_good_variant("G", "A", "G", 0.10));
         vars.sv = String::new();
         bam1.insert(150, vars);
 
-        let bam2 = BTreeMap::new();
+        let bam2 = crate::javamap::JavaHashMap::new();
 
         let results = somatic_post_process(&config, &region, &bam1, &bam2, &splice, None, 150);
         assert_eq!(results.len(), 1);
@@ -846,9 +847,9 @@ mod tests {
         let region = test_region();
         let splice = HashSet::new();
 
-        let bam1 = BTreeMap::new();
+        let bam1 = crate::javamap::JavaHashMap::new();
 
-        let mut bam2 = BTreeMap::new();
+        let mut bam2 = crate::javamap::JavaHashMap::new();
         let mut vars = Vars::new();
         vars.variants.push(make_good_variant("G", "A", "G", 0.10));
         vars.sv = String::new();
@@ -866,7 +867,7 @@ mod tests {
         let region = test_region();
         let splice = HashSet::new();
 
-        let mut bam1 = BTreeMap::new();
+        let mut bam1 = crate::javamap::JavaHashMap::new();
         let mut vars1 = Vars::new();
         vars1.variants.push(make_good_variant("G", "A", "G", 0.40));
         vars1
@@ -874,7 +875,7 @@ mod tests {
             .insert("G".to_string(), make_good_variant("G", "A", "G", 0.40));
         bam1.insert(150, vars1);
 
-        let mut bam2 = BTreeMap::new();
+        let mut bam2 = crate::javamap::JavaHashMap::new();
         let mut vars2 = Vars::new();
         let v2 = make_good_variant("G", "A", "G", 0.40);
         vars2.variants.push(v2.clone());
@@ -892,7 +893,7 @@ mod tests {
         let region = test_region();
         let splice = HashSet::new();
 
-        let mut bam1 = BTreeMap::new();
+        let mut bam1 = crate::javamap::JavaHashMap::new();
         let mut vars1 = Vars::new();
         vars1.variants.push(make_good_variant("G", "A", "G", 0.30));
         vars1
@@ -900,7 +901,7 @@ mod tests {
             .insert("G".to_string(), make_good_variant("G", "A", "G", 0.30));
         bam1.insert(150, vars1);
 
-        let mut bam2 = BTreeMap::new();
+        let mut bam2 = crate::javamap::JavaHashMap::new();
         let mut vars2 = Vars::new();
         // Low frequency in normal → LikelySomatic
         let mut v2 = make_good_variant("G", "A", "G", 0.02);
@@ -921,12 +922,12 @@ mod tests {
         let region = test_region();
         let splice = HashSet::new();
 
-        let mut bam1 = BTreeMap::new();
+        let mut bam1 = crate::javamap::JavaHashMap::new();
         let mut vars1 = Vars::new();
         vars1.variants.push(make_good_variant("G", "A", "G", 0.30));
         bam1.insert(150, vars1);
 
-        let mut bam2 = BTreeMap::new();
+        let mut bam2 = crate::javamap::JavaHashMap::new();
         let mut vars2 = Vars::new();
         // Different variant in normal — "G" not found in v2
         let v2 = make_good_variant("T", "A", "T", 0.30);
@@ -946,11 +947,11 @@ mod tests {
         let splice = HashSet::new();
 
         // BAM1 has no non-ref variants, BAM2 has a good variant
-        let mut bam1 = BTreeMap::new();
+        let mut bam1 = crate::javamap::JavaHashMap::new();
         let vars1 = Vars::new(); // empty variants
         bam1.insert(150, vars1);
 
-        let mut bam2 = BTreeMap::new();
+        let mut bam2 = crate::javamap::JavaHashMap::new();
         let mut vars2 = Vars::new();
         vars2.variants.push(make_good_variant("G", "A", "G", 0.40));
         bam2.insert(150, vars2);
@@ -969,10 +970,10 @@ mod tests {
         let region = test_region();
         let splice = HashSet::new();
 
-        let mut bam1 = BTreeMap::new();
+        let mut bam1 = crate::javamap::JavaHashMap::new();
         bam1.insert(150, Vars::new());
 
-        let mut bam2 = BTreeMap::new();
+        let mut bam2 = crate::javamap::JavaHashMap::new();
         let mut vars2 = Vars::new();
         let mut v2 = make_good_variant(
             "-13^GCGGGGAGGGGAGAGG",
@@ -1002,14 +1003,14 @@ mod tests {
         let splice = HashSet::new();
 
         // BAM1 has a good variant at high frequency, BAM2 has same variant
-        let mut bam1 = BTreeMap::new();
+        let mut bam1 = crate::javamap::JavaHashMap::new();
         let mut vars1 = Vars::new();
         let v1 = make_good_variant("G", "A", "G", 0.96);
         vars1.variants.push(v1.clone());
         vars1.var_desc_to_variant.insert("G".to_string(), v1);
         bam1.insert(150, vars1);
 
-        let mut bam2 = BTreeMap::new();
+        let mut bam2 = crate::javamap::JavaHashMap::new();
         let mut vars2 = Vars::new();
         let v2 = make_good_variant("G", "A", "G", 0.50);
         vars2.variants.push(v2.clone());
@@ -1027,7 +1028,7 @@ mod tests {
         let region = test_region();
         let splice = HashSet::new();
 
-        let mut bam1 = BTreeMap::new();
+        let mut bam1 = crate::javamap::JavaHashMap::new();
         let mut vars = Vars::new();
         let mut v = make_good_variant("G", "A", "G", 0.10);
         v.start_pos = 50;
@@ -1035,7 +1036,7 @@ mod tests {
         vars.variants.push(v);
         bam1.insert(50, vars); // position 50 < region.start (100)
 
-        let bam2 = BTreeMap::new();
+        let bam2 = crate::javamap::JavaHashMap::new();
 
         let results = somatic_post_process(&config, &region, &bam1, &bam2, &splice, None, 150);
         assert_eq!(results.len(), 0);
@@ -1047,7 +1048,7 @@ mod tests {
         let region = test_region();
         let splice = HashSet::new();
 
-        let mut bam1 = BTreeMap::new();
+        let mut bam1 = crate::javamap::JavaHashMap::new();
         let mut vars = Vars::new();
         let mut v = make_good_variant("A", "A", "A", 0.10);
         v.ref_allele = "A".to_string();
@@ -1055,7 +1056,7 @@ mod tests {
         vars.variants.push(v);
         bam1.insert(150, vars);
 
-        let bam2 = BTreeMap::new();
+        let bam2 = crate::javamap::JavaHashMap::new();
 
         let results = somatic_post_process(&config, &region, &bam1, &bam2, &splice, None, 150);
         assert_eq!(results.len(), 0);
@@ -1077,7 +1078,8 @@ mod tests {
         desc: Option<&str>,
         pc: i32,
         total: i32,
-    ) -> impl Fn(&Region) -> Result<BTreeMap<i32, Vars>, crate::types::VardictError> + '_ {
+    ) -> impl Fn(&Region) -> Result<crate::javamap::JavaHashMap<i32, Vars>, crate::types::VardictError>
+           + '_ {
         move |_region: &Region| {
             let mut vars = Vars::new();
             if let Some(d) = desc {
@@ -1088,7 +1090,7 @@ mod tests {
                 vars.var_desc_to_variant.insert(d.to_string(), v.clone());
                 vars.variants.push(v);
             }
-            let mut m = BTreeMap::new();
+            let mut m = crate::javamap::JavaHashMap::new();
             if pos != 0 {
                 m.insert(pos, vars);
             }
@@ -1196,12 +1198,12 @@ mod tests {
         let region = test_region();
         let splice = HashSet::new();
 
-        let mut bam1 = BTreeMap::new();
+        let mut bam1 = crate::javamap::JavaHashMap::new();
         let mut vars1 = Vars::new();
         vars1.variants.push(make_insertion_variant());
         bam1.insert(150, vars1);
 
-        let mut bam2 = BTreeMap::new();
+        let mut bam2 = crate::javamap::JavaHashMap::new();
         bam2.insert(150, Vars::new());
 
         let pipeline = combined_pipeline(150, None, 0, 0); // combined run finds nothing
@@ -1224,12 +1226,12 @@ mod tests {
         let region = test_region();
         let splice = HashSet::new();
 
-        let mut bam1 = BTreeMap::new();
+        let mut bam1 = crate::javamap::JavaHashMap::new();
         let mut vars1 = Vars::new();
         vars1.variants.push(make_insertion_variant());
         bam1.insert(150, vars1);
 
-        let mut bam2 = BTreeMap::new();
+        let mut bam2 = crate::javamap::JavaHashMap::new();
         bam2.insert(150, Vars::new());
 
         let pipeline = combined_pipeline(150, Some("+GAACCACTGAGACAGGA"), 3, 10); // delta 0
@@ -1254,12 +1256,12 @@ mod tests {
         let region = test_region();
         let splice = HashSet::new();
 
-        let mut bam1 = BTreeMap::new();
+        let mut bam1 = crate::javamap::JavaHashMap::new();
         let mut vars1 = Vars::new();
         vars1.variants.push(make_insertion_variant());
         bam1.insert(150, vars1);
 
-        let mut bam2 = BTreeMap::new();
+        let mut bam2 = crate::javamap::JavaHashMap::new();
         bam2.insert(150, Vars::new());
 
         let pipeline = combined_pipeline(150, Some("+GAACCACTGAGACAGGA"), 8, 40); // delta 5 >= minr
@@ -1288,10 +1290,10 @@ mod tests {
         let region = test_region();
         let splice = HashSet::new();
 
-        let mut bam1 = BTreeMap::new();
+        let mut bam1 = crate::javamap::JavaHashMap::new();
         bam1.insert(150, Vars::new());
 
-        let mut bam2 = BTreeMap::new();
+        let mut bam2 = crate::javamap::JavaHashMap::new();
         let mut vars2 = Vars::new();
         let mut v = make_insertion_variant();
         v.ref_allele = "C".to_string();
@@ -1319,7 +1321,7 @@ mod tests {
         let region = test_region();
         let splice = HashSet::new();
 
-        let mut bam1 = BTreeMap::new();
+        let mut bam1 = crate::javamap::JavaHashMap::new();
         let mut vars1 = Vars::new();
         let mut vref1 = Variant::new();
         vref1.description = "A".to_string();
@@ -1327,7 +1329,7 @@ mod tests {
         vars1.ref_variant = Some(vref1);
         bam1.insert(150, vars1);
 
-        let mut bam2 = BTreeMap::new();
+        let mut bam2 = crate::javamap::JavaHashMap::new();
         let mut vars2 = Vars::new();
         let mut v = make_insertion_variant();
         v.ref_allele = "C".to_string();

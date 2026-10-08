@@ -32,8 +32,8 @@ pub struct CigarParser<'a> {
     pub config: &'a Config,
     pub svflag: bool,
 
-    pub non_insertion_variants: BTreeMap<i32, VariationMap>,
-    pub insertion_variants: BTreeMap<i32, VariationMap>,
+    pub non_insertion_variants: crate::javamap::JavaHashMap<i32, VariationMap>,
+    pub insertion_variants: crate::javamap::JavaHashMap<i32, VariationMap>,
     // Iteration-order audit (W5.3, 2026-08-23): the String-keyed inner HashMaps
     // below never leak order into output or realignment decisions.
     // position_to_insertion_count/position_to_deletion_count/mnp are consumed
@@ -83,8 +83,8 @@ impl<'a> CigarParser<'a> {
             region,
             config,
             svflag,
-            non_insertion_variants: BTreeMap::new(),
-            insertion_variants: BTreeMap::new(),
+            non_insertion_variants: crate::javamap::JavaHashMap::new(),
+            insertion_variants: crate::javamap::JavaHashMap::new(),
             position_to_insertion_count: BTreeMap::new(),
             position_to_deletion_count: BTreeMap::new(),
             sv_structures: SVStructures::new(),

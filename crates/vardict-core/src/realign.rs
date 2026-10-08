@@ -770,7 +770,7 @@ pub fn realigndel(
     chr: &str,
     chr_len: u32,
     config: &crate::config::Config,
-    non_insertion_variants: &mut BTreeMap<i32, VariationMap>,
+    non_insertion_variants: &mut crate::javamap::JavaHashMap<i32, VariationMap>,
     ref_coverage: &mut BTreeMap<i32, i32>,
     soft_clips_5_end: &mut BTreeMap<i32, Sclip>,
     soft_clips_3_end: &mut BTreeMap<i32, Sclip>,
@@ -1311,8 +1311,8 @@ pub fn realignins(
     chr: &str,
     chr_len: u32,
     config: &crate::config::Config,
-    insertion_variants: &mut BTreeMap<i32, VariationMap>,
-    non_insertion_variants: &mut BTreeMap<i32, VariationMap>,
+    insertion_variants: &mut crate::javamap::JavaHashMap<i32, VariationMap>,
+    non_insertion_variants: &mut crate::javamap::JavaHashMap<i32, VariationMap>,
     ref_coverage: &mut BTreeMap<i32, i32>,
     soft_clips_5_end: &mut BTreeMap<i32, Sclip>,
     soft_clips_3_end: &mut BTreeMap<i32, Sclip>,
@@ -1827,8 +1827,8 @@ pub fn realignlgdel(
     chr_len: u32,
     region: &crate::regions::Region,
     config: &crate::config::Config,
-    non_insertion_variants: &mut BTreeMap<i32, VariationMap>,
-    insertion_variants: &mut BTreeMap<i32, VariationMap>,
+    non_insertion_variants: &mut crate::javamap::JavaHashMap<i32, VariationMap>,
+    insertion_variants: &mut crate::javamap::JavaHashMap<i32, VariationMap>,
     ref_coverage: &mut BTreeMap<i32, i32>,
     soft_clips_5_end: &mut BTreeMap<i32, Sclip>,
     soft_clips_3_end: &mut BTreeMap<i32, Sclip>,
@@ -2375,9 +2375,8 @@ pub fn realignlgdel(
                     }
                 }
                 if let Some(sv) = move_sv {
-                    let dest = non_insertion_variants
-                        .entry(bp)
-                        .or_insert_with(VariationMap::new);
+                    let dest =
+                        non_insertion_variants.compute_if_absent(bp, |_| VariationMap::new());
                     dest.sv = Some(sv);
                     dest.map
                         .insert("SV".to_string(), crate::variations::Variation::new());
@@ -2505,8 +2504,8 @@ pub fn realignlgins30(
     chr_len: u32,
     region: &crate::regions::Region,
     config: &crate::config::Config,
-    non_insertion_variants: &mut BTreeMap<i32, VariationMap>,
-    insertion_variants: &mut BTreeMap<i32, VariationMap>,
+    non_insertion_variants: &mut crate::javamap::JavaHashMap<i32, VariationMap>,
+    insertion_variants: &mut crate::javamap::JavaHashMap<i32, VariationMap>,
     ref_coverage: &mut BTreeMap<i32, i32>,
     soft_clips_5_end: &mut BTreeMap<i32, Sclip>,
     soft_clips_3_end: &mut BTreeMap<i32, Sclip>,
@@ -2909,8 +2908,8 @@ pub fn realignlgins(
     chr_len: u32,
     region: &crate::regions::Region,
     config: &crate::config::Config,
-    non_insertion_variants: &mut BTreeMap<i32, VariationMap>,
-    insertion_variants: &mut BTreeMap<i32, VariationMap>,
+    non_insertion_variants: &mut crate::javamap::JavaHashMap<i32, VariationMap>,
+    insertion_variants: &mut crate::javamap::JavaHashMap<i32, VariationMap>,
     ref_coverage: &mut BTreeMap<i32, i32>,
     soft_clips_5_end: &mut BTreeMap<i32, Sclip>,
     soft_clips_3_end: &mut BTreeMap<i32, Sclip>,
@@ -3945,8 +3944,8 @@ fn partial_pipeline(
     tte: i32,
     reference: &Reference,
     config: &crate::config::Config,
-    non_insertion_variants: &mut BTreeMap<i32, VariationMap>,
-    insertion_variants: &mut BTreeMap<i32, VariationMap>,
+    non_insertion_variants: &mut crate::javamap::JavaHashMap<i32, VariationMap>,
+    insertion_variants: &mut crate::javamap::JavaHashMap<i32, VariationMap>,
     ref_coverage: &mut BTreeMap<i32, i32>,
     soft_clips_5_end: &mut BTreeMap<i32, Sclip>,
     soft_clips_3_end: &mut BTreeMap<i32, Sclip>,
@@ -4009,9 +4008,7 @@ fn partial_pipeline(
         merge_sclip(soft_clips_3_end.entry(pos).or_insert_with(Sclip::new), sc);
     }
     for (pos, var_map) in var_data.non_insertion_variants {
-        let dest = non_insertion_variants
-            .entry(pos)
-            .or_insert_with(VariationMap::new);
+        let dest = non_insertion_variants.compute_if_absent(pos, |_| VariationMap::new());
         for (allele, var) in var_map.map {
             dest.map
                 .entry(allele)
@@ -4048,9 +4045,7 @@ fn partial_pipeline(
         }
     }
     for (pos, var_map) in var_data.insertion_variants {
-        let dest = insertion_variants
-            .entry(pos)
-            .or_insert_with(VariationMap::new);
+        let dest = insertion_variants.compute_if_absent(pos, |_| VariationMap::new());
         for (allele, var) in var_map.map {
             dest.map
                 .entry(allele)
@@ -4500,8 +4495,7 @@ mod tests {
         mnp_var.fwd = 5;
         var_data
             .non_insertion_variants
-            .entry(50)
-            .or_default()
+            .compute_if_absent(50, |_| crate::variations::VariationMap::new())
             .map
             .insert("T&A".to_string(), mnp_var);
 
@@ -4513,8 +4507,7 @@ mod tests {
         left_var.fwd = 2;
         var_data
             .non_insertion_variants
-            .entry(50)
-            .or_default()
+            .compute_if_absent(50, |_| crate::variations::VariationMap::new())
             .map
             .insert("T".to_string(), left_var);
 
@@ -4526,8 +4519,7 @@ mod tests {
         right_var.fwd = 2;
         var_data
             .non_insertion_variants
-            .entry(51)
-            .or_default()
+            .compute_if_absent(51, |_| crate::variations::VariationMap::new())
             .map
             .insert("A".to_string(), right_var);
 
@@ -4594,8 +4586,7 @@ mod tests {
         mnp_var.hicnt = 1;
         var_data
             .non_insertion_variants
-            .entry(50)
-            .or_default()
+            .compute_if_absent(50, |_| crate::variations::VariationMap::new())
             .map
             .insert("C&T".to_string(), mnp_var);
 
@@ -4715,8 +4706,7 @@ mod tests {
         snv.fwd = 2;
         var_data
             .non_insertion_variants
-            .entry(49)
-            .or_default()
+            .compute_if_absent(49, |_| crate::variations::VariationMap::new())
             .map
             .insert("C".to_string(), snv);
 
@@ -4853,7 +4843,7 @@ mod tests {
         del_map.insert("-3".to_string(), 5);
         position_to_deletion_count.insert(10, del_map);
 
-        let mut non_insertion_variants = BTreeMap::new();
+        let mut non_insertion_variants = crate::javamap::JavaHashMap::new();
 
         let mut map11 = VariationMap::new();
         map11.map.insert(
@@ -4933,7 +4923,7 @@ mod tests {
         ins_map.insert("+C".to_string(), 5);
         position_to_insertion_count.insert(10, ins_map);
 
-        let mut insertion_variants = BTreeMap::new();
+        let mut insertion_variants = crate::javamap::JavaHashMap::new();
         let mut map10_ins = VariationMap::new();
         map10_ins.map.insert(
             "+C".to_string(),
@@ -4946,7 +4936,7 @@ mod tests {
         );
         insertion_variants.insert(10, map10_ins);
 
-        let mut non_insertion_variants = BTreeMap::new();
+        let mut non_insertion_variants = crate::javamap::JavaHashMap::new();
         let mut map10_non = VariationMap::new();
         map10_non.map.insert(
             "C".to_string(),
@@ -5018,8 +5008,8 @@ mod tests {
         sc.sequence = Some(seq_rev);
         soft_clips_5_end.insert(50, sc);
 
-        let mut non_insertion_variants = BTreeMap::new();
-        let mut insertion_variants = BTreeMap::new();
+        let mut non_insertion_variants = crate::javamap::JavaHashMap::new();
+        let mut insertion_variants = crate::javamap::JavaHashMap::new();
         let mut ref_coverage = BTreeMap::new();
         ref_coverage.insert(50, 10);
         let mut soft_clips_3_end = BTreeMap::new();
@@ -5091,8 +5081,8 @@ mod tests {
         sc.sequence = Some(seq_rev);
         soft_clips_5_end.insert(50, sc);
 
-        let mut non_insertion_variants = BTreeMap::new();
-        let mut insertion_variants = BTreeMap::new();
+        let mut non_insertion_variants = crate::javamap::JavaHashMap::new();
+        let mut insertion_variants = crate::javamap::JavaHashMap::new();
         let mut ref_coverage = BTreeMap::new();
         ref_coverage.insert(50, 10);
         let mut soft_clips_3_end = BTreeMap::new();

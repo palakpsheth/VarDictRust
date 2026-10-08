@@ -91,19 +91,18 @@ impl<'a> ToVarsBuilder<'a> {
     pub fn build_aligned_variants(
         &self,
         var_data: &VariationData,
-    ) -> BTreeMap<i32, crate::variations::Vars> {
-        let mut aligned_variants = BTreeMap::new();
+    ) -> crate::javamap::JavaHashMap<i32, crate::variations::Vars> {
+        let mut aligned_variants = crate::javamap::JavaHashMap::new();
         let duprate = var_data.duprate;
 
         // Clone non_insertion_variants once before the loop to allow mutable references in create_insertion
         let mut non_insertion_variants_clone = var_data.non_insertion_variants.clone();
 
-        let mut sorted_positions: Vec<i32> =
-            var_data.non_insertion_variants.keys().copied().collect();
-        sorted_positions.sort();
+        let iter_positions: Vec<i32> = var_data.non_insertion_variants.keys().copied().collect();
+        // Do not sort positions, use the JavaHashMap iteration order!
 
         // Process non-insertion variants
-        for position in sorted_positions {
+        for position in iter_positions {
             let var_map = match non_insertion_variants_clone.get(&position) {
                 Some(m) => m.clone(),
                 None => continue,
@@ -195,6 +194,16 @@ impl<'a> ToVarsBuilder<'a> {
                 );
             }
         }
+
+        if var_data.non_insertion_variants.treeified()
+            || var_data.insertion_variants.treeified()
+            || aligned_variants.treeified()
+        {
+            log::warn!(
+                "JavaHashMap treeified bin encountered for chr {}:{}-{}; key iteration order may diverge from Java LinkedList order",
+                self.region.chr, self.region.start, self.region.end
+            );
+        }
         aligned_variants
     }
 
@@ -202,7 +211,7 @@ impl<'a> ToVarsBuilder<'a> {
         &self,
         position: i32,
         vars_at_cur_position: &crate::variations::VariationMap,
-        insertion_variants: &BTreeMap<i32, crate::variations::VariationMap>,
+        insertion_variants: &crate::javamap::JavaHashMap<i32, crate::variations::VariationMap>,
     ) -> bool {
         let mut vk: std::collections::HashSet<String> =
             vars_at_cur_position.map.keys().cloned().collect();
@@ -325,7 +334,7 @@ impl<'a> ToVarsBuilder<'a> {
     fn create_variant(
         &self,
         duprate: f64,
-        aligned_vars: &mut BTreeMap<i32, crate::variations::Vars>,
+        aligned_vars: &mut crate::javamap::JavaHashMap<i32, crate::variations::Vars>,
         position: i32,
         non_insertion_variations: &crate::variations::VariationMap,
         total_pos_coverage: i32,
@@ -338,8 +347,8 @@ impl<'a> ToVarsBuilder<'a> {
             if description_string == "SV" {
                 if let Some(ref sv) = non_insertion_variations.sv {
                     let entry = aligned_vars
-                        .entry(position)
-                        .or_insert_with(crate::variations::Vars::new);
+                        .compute_if_absent(position, |_| crate::variations::Vars::new());
+
                     entry.sv = format!("{}-{}-{}", sv.splits, sv.pairs, sv.clusters);
                 }
                 continue;
@@ -392,8 +401,11 @@ impl<'a> ToVarsBuilder<'a> {
 
     fn create_insertion(
         &self,
-        insertion_variants: &BTreeMap<i32, crate::variations::VariationMap>,
-        non_insertion_variants: &mut BTreeMap<i32, crate::variations::VariationMap>,
+        insertion_variants: &crate::javamap::JavaHashMap<i32, crate::variations::VariationMap>,
+        non_insertion_variants: &mut crate::javamap::JavaHashMap<
+            i32,
+            crate::variations::VariationMap,
+        >,
         ref_coverage: &BTreeMap<i32, i32>,
         duprate: f64,
         position: i32,
@@ -494,7 +506,7 @@ impl<'a> ToVarsBuilder<'a> {
 
     fn collect_vars_at_position(
         &self,
-        aligned_variants: &mut BTreeMap<i32, crate::variations::Vars>,
+        aligned_variants: &mut crate::javamap::JavaHashMap<i32, crate::variations::Vars>,
         position: i32,
         var: &[Variant],
     ) -> f64 {
@@ -508,13 +520,13 @@ impl<'a> ToVarsBuilder<'a> {
         for tvar in var {
             if tvar.description == ref_base_str {
                 let entry = aligned_variants
-                    .entry(position)
-                    .or_insert_with(crate::variations::Vars::new);
+                    .compute_if_absent(position, |_| crate::variations::Vars::new());
+
                 entry.ref_variant = Some(tvar.clone());
             } else {
                 let entry = aligned_variants
-                    .entry(position)
-                    .or_insert_with(crate::variations::Vars::new);
+                    .compute_if_absent(position, |_| crate::variations::Vars::new());
+
                 entry.variants.push(tvar.clone());
                 entry
                     .var_desc_to_variant
@@ -544,7 +556,7 @@ impl<'a> ToVarsBuilder<'a> {
         total_pos_coverage: i32,
         variations_at_pos: &mut crate::variations::Vars,
         ref_coverage: &BTreeMap<i32, i32>,
-        non_insertion_variants: &BTreeMap<i32, crate::variations::VariationMap>,
+        non_insertion_variants: &crate::javamap::JavaHashMap<i32, crate::variations::VariationMap>,
         duprate: f64,
         debug_lines: &[String],
     ) {

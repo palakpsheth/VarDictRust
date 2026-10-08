@@ -28,14 +28,13 @@ fn make_null_record(position: i32, sv: &str) -> Variant {
 pub fn simple_post_process(
     config: &Config,
     region: &Region,
-    aligned_variants: &BTreeMap<i32, Vars>,
+    aligned_variants: &crate::javamap::JavaHashMap<i32, Vars>,
     splice: &HashSet<String>,
 ) -> Vec<Variant> {
     let mut vrefs = Vec::new();
 
     // Iterate over positions sorted by key
-    let mut sorted_positions: Vec<i32> = aligned_variants.keys().copied().collect();
-    sorted_positions.sort();
+    let sorted_positions: Vec<i32> = aligned_variants.keys().copied().collect();
 
     for &position in &sorted_positions {
         if let Some(variants_on_position) = aligned_variants.get(&position) {
@@ -177,7 +176,7 @@ mod tests {
             amplicon: None,
         };
 
-        let mut aligned_variants = BTreeMap::new();
+        let mut aligned_variants = crate::javamap::JavaHashMap::new();
         let splice = HashSet::new();
 
         // 1. Position 120: Valid variant
@@ -264,7 +263,7 @@ mod tests {
         let mut g2 = Vars::new();
         g2.variants
             .push(mk_variant(20159222, 20159223, "AT", "A", 0.1));
-        let mut aligned_variants = BTreeMap::new();
+        let mut aligned_variants = crate::javamap::JavaHashMap::new();
         aligned_variants.insert(20159221, g1);
         aligned_variants.insert(20159222, g2);
 
@@ -305,7 +304,7 @@ mod tests {
             .push(mk_variant(20179028, 20179028, "T", "C", 0.9));
         vars.variants
             .push(mk_variant(20179027, 20179028, "CT", "C", 0.4));
-        let mut aligned_variants = BTreeMap::new();
+        let mut aligned_variants = crate::javamap::JavaHashMap::new();
         aligned_variants.insert(20179028, vars);
 
         let splice = HashSet::new();
@@ -322,7 +321,7 @@ mod tests {
         reversed
             .variants
             .push(mk_variant(20179028, 20179028, "T", "C", 0.9));
-        let mut aligned_rev = BTreeMap::new();
+        let mut aligned_rev = crate::javamap::JavaHashMap::new();
         aligned_rev.insert(20179028, reversed);
         let kept_rev = simple_post_process(&config, &region, &aligned_rev, &splice);
         assert_eq!(kept_rev[1].var_allele, "C");
@@ -358,7 +357,7 @@ mod tests {
         };
         let mut vars = Vars::new();
         vars.variants.push(mk_variant(6449, 6449, "G", "AGTT", 1.0));
-        let mut aligned_variants = BTreeMap::new();
+        let mut aligned_variants = crate::javamap::JavaHashMap::new();
         aligned_variants.insert(6447, vars);
         let splice = HashSet::new();
 
@@ -393,7 +392,7 @@ mod tests {
             gene: "testbed".to_string(),
             amplicon: None,
         };
-        let mut aligned_variants = BTreeMap::new();
+        let mut aligned_variants = crate::javamap::JavaHashMap::new();
         aligned_variants.insert(6447, Vars::new());
         let splice = HashSet::new();
 
@@ -418,7 +417,7 @@ mod tests {
         };
         let mut vars = Vars::new();
         vars.variants.push(mk_variant(6449, 6449, "G", "AGTT", 1.0));
-        let mut aligned_variants = BTreeMap::new();
+        let mut aligned_variants = crate::javamap::JavaHashMap::new();
         aligned_variants.insert(6447, vars);
         aligned_variants.insert(6500, Vars::new());
         let splice = HashSet::new();

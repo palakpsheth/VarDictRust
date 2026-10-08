@@ -26,7 +26,7 @@ specification. We either match it exactly or prove the difference is unreachable
 
 **Integration tests: 91 PASS / 1 FAIL / 0 SKIP (sole FAIL = stale hard_clip fixture, see Known non-bugs below; the Colo829 amplicon `-D` case was fixed by W3.1's `-D` port)**
 **Unit tests: 156 PASS / 0 FAIL (154 lib + 2 cli; verified `cargo test` at W6)**
-**Tier-2 sweep (W4.6 final, 2026-08-23): 8 strict MATCH + 1 documented AF-tie residue (s1a); see Category 14.**
+**Tier-2 sweep: 9 strict MATCH (s1a resolved via JavaHashMap in T10, 2026-10-08; see Category 14).**
 
 *Provenance note:* the parity milestone tags originally cut as `v0.2.0-somatic` and
 `v0.3.0-full-parity` were renamed to `milestone/somatic-parity` and `milestone/full-parity`
@@ -1083,7 +1083,7 @@ carry Tier-2 MATCH evidence. Engine (`.var`) parity unaffected: corpus remains
 
 | Slice | Result |
 |---|---|
-| s1a NA24385 chr20:20156208 `-f 0.001` | single-record AF-tie residue only: java `TA>T` vs rust `T>A` @20202875 (both af=0.0179) — root-caused in P3, closed as permanent limitation (below) |
+| s1a NA24385 chr20:20156208 `-f 0.001` | MATCH (1048 variants) — AF-tie resolved via JavaHashMap (T10, 2026-10-08) |
 | s1b NA24385 chr20:38386265 `-f 0.001` | MATCH (312 variants) |
 | tiny.bed P1a repro `-f 0.001` | MATCH (4 variants) |
 | s3 Colo829 chr1 somatic (defaults) | MATCH (16 variants) |
@@ -1097,9 +1097,16 @@ carry Tier-2 MATCH evidence. Engine (`.var`) parity unaffected: corpus remains
 Corpus rerun unchanged: 91 PASS / 1 FAIL (`w46-gate.txt`). Milestone tags
 `v0.2.0-somatic` and `v0.3.0-full-parity` cut at this state.
 
-**Residual — PERMANENT KNOWN LIMITATION (P3 root-cause, 2026-08-23).** The s1a
-AF-tie emission order at chr20:20202875 is a **Java `java.util.HashMap`
-iteration-order artifact across position keys**, and we do not replicate it.
+**Residual — RESOLVED (closed T10, 2026-10-08 via `JavaHashMap`).** Formerly permanent
+limitation (P3 root-cause, 2026-08-23). The s1a AF-tie emission order at
+chr20:20202875 was a **Java `java.util.HashMap` iteration-order artifact across
+position keys**. In T10, OpenJDK 8+ `java.util.HashMap` spread, bin, resize, and
+iteration semantics were faithfully implemented in `vardict_core::javamap::JavaHashMap`
+(validated by Java oracle op-log replay tests). Wire-in at output-reaching variant
+maps (`non_insertion_variants`, `insertion_variants`, and `aligned_variants`) replicates
+Java's cross-position emission sequence, achieving 100% variant parity (1048/1048 variants,
+calling `('20','20202875','TA','T')` exactly matching Java).
+
 Mechanism, fully traced (task report
 `.superpowers/sdd/2026-08-21-parity-to-v1.0/task-p3-report.md`):
 
@@ -1113,7 +1120,7 @@ Mechanism, fully traced (task report
    (ToVarsBuilder.java:298-310: meanQuality×positionCoverage desc, then
    descriptionString asc) is ported verbatim (`tovars.rs sort_variants`). The
    same-key insertion tie at chr20:20178765 orders identically in both engines.
-3. The divergence is **cross-position emission order**. Java iterates
+3. The divergence was **cross-position emission order**. Java iterates
    `alignedVariants` — a plain `HashMap<Integer, Vars>` (ToVarsBuilder.java:93,
    AlignedVarsData.java:14) — by hash-slot order in SimplePostProcessModule.java:35.
    With Integer keys (hashCode = value) that order is deterministic for a given
@@ -1121,19 +1128,8 @@ Mechanism, fully traced (task report
    (`w45a-sweep/tie/`, md5 `4d01a068…`) — but it is NOT position-sorted: around
    the locus the java stream runs key sequence …20202802 → 20202876(del) →
    20202875(snv) → 20202850 → 20202978 → 20202742… (java-unsorted-run1.var
-   lines 680-692), i.e. non-monotonic. Rust emits ascending BTreeMap order
-   (20202850 → 20202875 → 20202876-key → 20202875-printed-del), which is why
-   our stream puts `T>A` first.
-
-Why not fixed: matching Java would require emulating the full lifecycle of two
-chained HashMaps (`nonInsertionVariants` iteration order feeding
-`alignedVariants` inserts + mid-pipeline removes, incl. capacity growth/rehash)
-— precisely the "replicate Java HashMap iteration semantics wholesale" case the
-P3 timebox exits on, and hash-order iteration in an output path is forbidden by
-CLAUDE.md §8 (#282 family: ordering alone never causes a record-set mismatch).
-Any local reorder heuristic (e.g. prefer-indel-on-tie) is speculative: rows from
-different map keys share Perl raw-start buckets, so reordering cross-key
-emission can flip OTHER buckets' AF-tie winners without trace evidence.
+   lines 680-692), i.e. non-monotonic. By using `JavaHashMap` in VarDictRust,
+   the identical sequence is produced, resolving the AF tie in exact agreement with Java.
 
 Impact: record SETS are equal everywhere; the only observable effect is which of
 two exact-AF-tie alleles sharing a raw-start bucket survives var2vcf_valid.pl's
