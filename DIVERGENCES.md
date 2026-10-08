@@ -1195,7 +1195,6 @@ are consolidated with filing-ready draft issue texts in
 | compare.sh passes `-z` to both sides by default (W4a) | Mirrors corpus and upstream IntegrationTest DEFAULT_ARGS (`IntegrationTest.java:26`); amplicon mode lacks the 4-column-BED auto-default, so omitting it is a real flag divergence |
 | Rust VCF emits `##reference` + `##contig` from the `.fai`; oracle VCF headers lack them (W4.5c fix 1) | Rust implements the issue-#320 fix (`##contig` lengths from the `.fai`) and emits both headers unconditionally; the oracle invocation passes no `-G`/`-b`, so vardict-java/var2vcf_*.pl never emit them. `compare_vcf.py` skips `#`-lines, so Tier-2 MATCH is record-level and does not cover headers. Header parity would require passing `-G`/`-b` to `harness/run_oracle.sh` — a gate change, deferred. |
 | `--fisher` single-sample runs may diverge byte-wise in raw-cell fields (NM/HIAF/etc.) | With `--fisher` run_oracle.sh skips R entirely (:55/:71) and var2vcf_*.pl consume Java's RAW 38-col cells (unstripped DecimalFormat forms, e.g. golden fixture `NM=1.0` ×1410, `HIAF=0.0020` ×2). Our writers emit the R-echoed (stripped) forms everywhere except DUPRATE/SBF, which are already pipeline-split. No Tier-2 gate covers a `--fisher` single-sample slice; closing this needs a pipeline-aware formatter family keyed on `config.fisher` plus its own gate slice (post-1.0 candidate). Paired+fisher shares the same shape. |
-| Simple-mode SBF can differ from oracle by 1 ulp at the 5th decimal (e.g. g7 chr11:94153295 `SBF=0.68601` vs `0.68602`) | R fisher.test vs our FisherExact MLE p-value agree only to comparator ε; stats-layer, not writer-layer (P2 evidence, `p2-sweep/g7-post` byte diff). |
 | Splice-mode stdout intron-count lines have no stable order (both engines, by design) | Java's `spliceCount` is a plain `HashMap<String,int[]>` (CigarParser.java:65) printed via unordered iteration (:102); we mirror it (`HashMap`, iterated at lib.rs:233). The line SET is identical run-to-run; the ORDER is not — product-free, matching the oracle's own nondeterminism (#282 family). Would flake if ever snapshotted: keep splice-mode stdout out of byte-comparators or sort before comparing. |
 
 ---
@@ -1204,6 +1203,7 @@ are consolidated with filing-ready draft issue texts in
 
 | Item | Fix | Commit |
 |------|-----|--------|
+| SBF 1-ulp difference | Replaced dnhyper(1.0) with direct statrs::distribution::Hypergeometric pmf summation to match R's dhyper precision | T11.final |
 | Soft clip filter regex mismatch | Fixed to match Java `^\d\dS.*\d\dS$` | dd43d8a |
 | Somatic post-process coverage detection | Removed extra v1_empty/v2_empty check | a9579bb |
 | DISCPAIRQUAL threshold 15→35 | Match Java Configuration.DISCPAIRQUAL=35 (fixed NA24631 extra DUP) | 8d0f12c |

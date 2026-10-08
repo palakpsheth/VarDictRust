@@ -120,7 +120,7 @@ impl FisherExact {
         let dnhyper_result = self.dnhyper(ncp);
         let mut sum = 0.0;
         for (i, &supp) in self.support.iter().enumerate() {
-            sum += (supp as f64) * dnhyper_result[i];
+            sum += (supp as f64) * dnhyper_result.get(i).copied().unwrap_or(0.0);
         }
         sum
     }
@@ -129,7 +129,9 @@ impl FisherExact {
         let mut result = Vec::with_capacity(self.support.len());
         let ln_ncp = ncp.ln();
         for i in 0..self.support.len() {
-            result.push(self.logdc[i] + ln_ncp * (self.support[i] as f64));
+            let logdc_val = self.logdc.get(i).copied().unwrap_or(0.0);
+            let supp_val = self.support.get(i).copied().unwrap_or(0) as f64;
+            result.push(logdc_val + ln_ncp * supp_val);
         }
         let mut max_result = f64::NEG_INFINITY;
         for &val in &result {
@@ -182,17 +184,33 @@ impl FisherExact {
         self.p_value_less = self.pnhyper(self.x, false);
         self.p_value_greater = self.pnhyper(self.x, true);
 
-        let rel_err = 1.0 + 1e-7;
-        let d = self.dnhyper(1.0);
-        let target_idx = (self.x - self.lo) as usize;
-        let threshold = d[target_idx] * rel_err;
-        let mut sum = 0.0;
-        for el in d {
-            if el <= threshold {
-                sum += el;
+        let dhyper_dist =
+            Hypergeometric::new((self.m + self.n) as u64, self.m as u64, self.k as u64);
+        if let Ok(dist) = dhyper_dist {
+            let rel_err = 1.0 + 1e-7;
+            let target = dist.ln_pmf(self.x as u64).exp();
+            let threshold = target * rel_err;
+            let mut sum = 0.0;
+            for &supp in &self.support {
+                let el = dist.ln_pmf(supp as u64).exp();
+                if el <= threshold {
+                    sum += el;
+                }
             }
+            self.p_value_two_sided = sum;
+        } else {
+            let rel_err = 1.0 + 1e-7;
+            let d = self.dnhyper(1.0);
+            let target_idx = (self.x - self.lo) as usize;
+            let threshold = d.get(target_idx).copied().unwrap_or(0.0) * rel_err;
+            let mut sum = 0.0;
+            for el in d {
+                if el <= threshold {
+                    sum += el;
+                }
+            }
+            self.p_value_two_sided = sum;
         }
-        self.p_value_two_sided = sum;
     }
 
     fn pnhyper(&self, q: i32, upper_tail: bool) -> f64 {
@@ -253,6 +271,12 @@ mod tests {
         for (a, b) in logdc.iter().zip(expected.iter()) {
             assert!((a - b).abs() < 1e-6);
         }
+    }
+
+    #[test]
+    fn test_s7_sbf_p_value() {
+        let fisher = FisherExact::new(418, 421, 3, 2);
+        assert_eq!(fisher.get_p_value(), 0.68601);
     }
 
     #[test]
