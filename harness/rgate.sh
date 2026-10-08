@@ -14,7 +14,7 @@ then :; else echo "FAIL integration ($OUT/integration.txt)"; fail=1; fi
 echo "== Tier-2 micro"
 MIN_VARIANTS=1 bash harness/compare.sh fixtures/micro/micro.ref.fa fixtures/micro/micro.bam \
   fixtures/micro/micro.bed > "$OUT/micro.txt" 2>&1 || { echo "FAIL micro ($OUT/micro.txt)"; fail=1; }
-for id in ${RGATE_SLICES:-s1b s5 s7}; do
+for id in ${RGATE_SLICES:-s1b s5 s6}; do
   echo "== slice $id"
   bash harness/run_slice.sh "$id" > "$OUT/$id.txt" 2>&1 || { echo "FAIL $id ($OUT/$id.txt)"; fail=1; }
 done

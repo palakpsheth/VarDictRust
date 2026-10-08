@@ -35,6 +35,8 @@
 *.rlib
 *.log
 .env*
+__pycache__/
+*.pyc
 
 
 .qoder/settings.local.json
