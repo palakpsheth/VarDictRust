@@ -507,7 +507,10 @@ mod tests {
 
     #[test]
     fn test_bam_open_and_query() {
-        let bam_path = Path::new("/mnt/hbmon/VarDictRust/VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests/L861Q.bam");
+        let bam_path = Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests/L861Q.bam"
+        ));
         let config = Config::default();
 
         let cached = open_reader(bam_path, &config).unwrap();
@@ -525,7 +528,10 @@ mod tests {
 
     #[test]
     fn flag_filter() {
-        let bam_path = Path::new("/mnt/hbmon/VarDictRust/VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests/L861Q.bam");
+        let bam_path = Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests/L861Q.bam"
+        ));
 
         // 1. Without flag filter
         let config_no_filter = Config {
@@ -600,7 +606,10 @@ mod tests {
         let new_sam_path = temp_dir.join("new_slice.sam");
         let slice_bam = temp_dir.join("slice.bam");
         let cram_path = temp_dir.join("test.cram");
-        let bam_path = Path::new("/mnt/hbmon/VarDictRust/VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests/L861Q.bam");
+        let bam_path = Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests/L861Q.bam"
+        ));
 
         // 1. Slice BAM to SAM
         let mut slice_cmd = if use_conda {

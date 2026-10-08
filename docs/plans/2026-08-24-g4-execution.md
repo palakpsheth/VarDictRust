@@ -1,3 +1,5 @@
+> **SUPERSEDED (2026-10-08)** by `docs/superpowers/plans/2026-10-08-v1-rust-refactor-sdd.md`. The host model, paths and quiesce steps here are stale and MUST NOT be executed (decision A3). Re-homed: R2/R3 → T15/T19, R4 → T16, R5/R6 → T17/T20, F1 → T21, F2 → T22–T24.
+
 # G4 EXECUTION PLAN — External Validation (GIAB/SEQC2) + Media-Stack Coexistence
 ## Subagent-ready specification, rev 3 (2026-08-24)
 

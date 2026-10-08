@@ -13,7 +13,7 @@ v1.8.3 on valid inputs**. This follows the **rewrites.bio** manifesto: *a faster
 the same results* — **not** a new caller, **not** a line-by-line transliteration of the Java.
 
 ## Environment (already set up)
-- Repository root (this machine): `/Users/palak.sheth/PycharmProjects/VarDictRust`; remote `git@github.com:palakpsheth/VarDictRust.git`.
+- Repository root: `.`; remote `git@github.com:palakpsheth/VarDictRust.git`.
 - Dev/CI target: **Ubuntu 12c / 24 GB / amd64** → SIMD is **AVX2** (not Neon). Static target `x86_64-unknown-linux-musl`.
 - Reference implementation is cloned at **`./VarDictJava`** (v1.8.3, commit `0886261`); the Perl/R submodule is checked out at **`./VarDictJava/VarDict`** (commit `009e017`). This is your **source of truth for every port** — read the Java, cite `file:line` in doc-comments.
 - Test fixtures already on disk: **`./VarDictJava/testdata/integrationtestcases`** (94 cases; filenames encode `mode;ref;bam;region;flags`) and **`./VarDictJava/tests/integration`** (`expected/vardict.{simple,paired}.vcf` + `raw_input/raw.vardict.{simple,paired}.var` intermediate tables).
