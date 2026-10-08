@@ -23,7 +23,7 @@ Built under the [rewrites.bio](https://rewrites.bio) manifesto: *a faster, more 
 vardictrust -G ref.fa -b sample.bam -f 0.01 -N SAMPLE regions.bed > output.vcf
 
 # Somatic (paired tumor/normal)
-vardictrust -G ref.fa -b "tumor.bam|normal.bam" -f 0.01 -N "TUMOR|NORMAL" regions.bed > output.var
+vardictrust -G ref.fa -b "tumor.bam|normal.bam" -f 0.01 -N "TUMOR|NORMAL" regions.bed > output.vcf
 ```
 
 ## Validation status

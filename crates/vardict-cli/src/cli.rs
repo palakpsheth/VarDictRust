@@ -56,6 +56,16 @@ pub fn check_unsupported(args: &[String]) -> Result<(), vardict_core::types::Var
 #[command(
     name = "vardictrust",
     version,
+    long_version = concat!(
+        env!("CARGO_PKG_VERSION"), "\n",
+        "Idiomatic Rust rewrite of VarDictJava v1.8.3 (commit 0886261; Perl/R submodule 009e017).\n",
+        "Output validated against VarDictJava v1.8.3 - see README \"Validation status\".\n",
+        "Original: VarDict/VarDictJava, AstraZeneca-NGS - https://github.com/AstraZeneca-NGS/VarDictJava\n",
+        "Please cite: Lai Z, et al. VarDict: a novel and versatile variant caller for next-generation\n",
+        "  sequencing in cancer research. Nucleic Acids Res. 2016;44(11):e108. doi:10.1093/nar/gkw227\n",
+        "AI disclosure: written with AI coding assistants under human direction; see README \"AI Disclosure\".\n",
+        "License: MIT"
+    ),
     about,
     disable_version_flag = true,
     // `-h` belongs to Java's column header (CmdParser.java:223, 67), so clap
