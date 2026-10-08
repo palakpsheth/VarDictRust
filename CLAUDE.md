@@ -96,9 +96,10 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 ## 5. Emulate exactly (the rewrites.bio prime directive)
 Output must match **VarDictJava v1.8.3** on valid inputs:
 - **Exact:** the variant set (chrom/pos/ref/alt), every FILTER decision, the INFO/FORMAT keys present, genotypes, TYPE, somatic STATUS, and the **intermediate column counts & order** — Simple **36/38**, Amplicon **38/40**, Somatic **55/61** (no-`--fisher` / with-`--fisher`).
-- **Float tolerance:** Fisher p-values/SBF/SSF, odds ratios, AF/AdjAF/HIAF, QUAL means within **ε = 1e-5**, after replicating R's 5-decimal **HALF_EVEN** rounding (Fisher MLE tol `ulp(1)^0.25`).
+- **Float tolerance:** Fisher p-values/SBF/SSF, odds ratios, AF/AdjAF/HIAF, QUAL means within **ε = 1e-6**, after replicating R's 5-decimal **HALF_EVEN** rounding (Fisher MLE tol `ulp(1)^0.25`).
 - **Bug policy (v1.0):** if v1.8.3 has an **output** bug, **replicate it** and open a tracked issue — do **not** silently "fix" it. Where v1.8.3 **crashes** (e.g. `modifyCigar`), do **not** crash: produce the same output it would on valid inputs. That is allowed and is the whole point.
 - **Three commitments:** credit the original (README/`--version`/Lai et al. 2016/AstraZeneca-NGS); emulate exactly; be transparent about AI (document tools, role, and exactly what was/wasn't validated, against which version + dataset).
+- **Release policy (user decision 2026-10-07 & 2026-10-08).** v1.0.0 = pure parity with v1.8.3: no output-changing fixes and no fix flags. Corrections ship from v1.1.0 per `ROADMAP.md`, each behind `--fix <id>` (default off) with a diff-confinement gate. The default output stays byte-identical to v1.0; with the flag, diffs are confined to the targeted records.
 
 ---
 
@@ -130,6 +131,7 @@ data" is actionable; "port the whole pipeline" is not.
 - **Sequences are bytes.** Use `&[u8]`/`Vec<u8>`, never `String`. Replace Java's negative-index `charAt`/`substr` with bounds-checked slice helpers returning `Option`.
 - **Quality is Phred+33.** `Phred(byte.saturating_sub(33))`.
 - **`maxReadLength` propagation** matters: SomaticMode seeds BAM2's pipeline with BAM1's value.
+- **Java `HashMap` iteration that reaches output** is emulated with `vardict_core::javamap::JavaHashMap`. It ports `java.util.HashMap` spread, bin, resize and treeify-trigger semantics, and is validated against real Java by the op-log tests. This is the only sanctioned non-sorted order. Never use `std::collections::HashMap` there.
 
 ---
 
@@ -159,7 +161,7 @@ OOM (#197/#384 — fixed by the tiling in §10), CRAM (#249/#380 — noodles + `
 formatting, fail-fast on missing index (#187), lenient SAM validation, nondeterminism (#282/#181/#356), and
 correct `##contig` lengths from the `.fai` (#320). **Output-changing** corrections (#92 VD>DP, #62 over-filtering,
 #363 realignment drops, #292 SHIFT3, #342 `<dup-N>` ALT, …) and **new features** (UMI, long reads) are deferred
-to post-1.0 behind individual opt-in flags. See `PLAN.md` §8.
+to post-1.0 behind individual opt-in flags. See `PLAN.md` §8. Post-1.0 = v1.1.0+, governed by ROADMAP.md.
 
 ---
 
@@ -225,10 +227,7 @@ Somatic STATUS is computed in **Java** (`SomaticPostProcessModule.determinateTyp
 
 ## 18. Commits
 Atomic commits per task: `git add -A && git commit -m "Txxx: <short desc>"`. Branch off `main`; open PRs via `gh`.
-Never commit secrets, **data** (BAM/CRAM/FASTA/VCF beyond the tiny `golden/` fixtures), `target/`, or conda envs — see the `.gitignore` in `PLAN.md` Appendix B0 (a single WGS BAM can exceed 150 GB). **Do** commit `Cargo.lock` (this is an application workspace). MIT-licensed, open-source project.
-```
-Co-Authored-By: Claude <noreply@anthropic.com>
-```
+Never commit secrets, **data** (BAM/CRAM/FASTA/VCF beyond the tiny `golden/` fixtures), `target/`, or conda envs — see the `.gitignore` in `PLAN.md` Appendix B0 (a single WGS BAM can exceed 150 GB). **Do** commit `Cargo.lock` (this is an application workspace). MIT-licensed, open-source project. No `Co-Authored-By` commit trailers per user directive (A10); AI involvement is disclosed transparently in `README.md` and `CITATION.cff`.
 
 <!-- SPECKIT START -->
 For additional context about technologies to be used, project structure,

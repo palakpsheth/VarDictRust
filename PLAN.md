@@ -37,7 +37,7 @@
 1. **Scope: full parity, equal depth.** All four modes (Simple/Somatic/Amplicon/Splicing+SV) documented and built to comparable depth; construction follows the dependency DAG (shared engine first).
 2. **Dev/CI: Ubuntu 12c / 24 GB / amd64 + GitHub Actions.** Dev loop on sliced/downsampled fixtures; CI on standard GH runners. amd64 ⇒ SIMD = **AVX2/SSE**; Linux ⇒ `apt`/conda tooling and a clean **x86_64-unknown-linux-musl** static binary.
 3. **I/O foundation: noodles (pure Rust).** Single static binary, no C toolchain. Pin **exact** versions (API "experimental"); golden tests guard upgrades. Escape hatch: route one hot path through `rust-htslib` only if benchmarking proves a real gap.
-4. **Equivalence bar: structural-exact + float tolerance.** Exact: identical variant set, FILTER decisions, INFO/FORMAT keys, GT, TYPE, STATUS, and **column counts/order** (36/38 single, 38/40 amplicon, 55/61 somatic). Tolerant: float fields within **ε=1e-5** after replicating R's 5-dp **HALF_EVEN** rounding (Fisher MLE tol `ulp(1)^0.25`).
+4. **Equivalence bar: structural-exact + float tolerance.** Exact: identical variant set, FILTER decisions, INFO/FORMAT keys, GT, TYPE, STATUS, and **column counts/order** (36/38 single, 38/40 amplicon, 55/61 somatic). Tolerant: float fields within **ε=1e-6** after replicating R's 5-dp **HALF_EVEN** rounding (Fisher MLE tol `ulp(1)^0.25`).
 5. **Issue-remediation scope: v1.0 = robustness only.** The initial release fixes **only** crash/robustness/input/IO/memory/systems/determinism issues (all **FIX-BY-DESIGN**, changing no valid-input output → fully validatable). Output-changing corrections and new features are deferred to a post-1.0 roadmap behind opt-in flags (§8).
 6. **Scale-first by default** (see §2/§6) — bounded memory at any depth, linear core scaling.
 
@@ -126,6 +126,8 @@ Single-sample is **36/38** (not 34/36/38 — those are R input validators); pair
 
 ## 8. Issue-remediation strategy (289 issues triaged: 64 open / 225 closed)
 
+v1.0 = pure parity (A1); see ROADMAP.md.
+
 **v1.0 — FIX-BY-DESIGN only (on by default; changes no valid-input output; fully validatable):**
 - **CIGAR-crash family** → bounds-checked slicing in `cigar/`: #341 (open, still unfixed), #243, #253, #283, #7, #6, #14, #22, #34, #37, #38, #48, #135, #189, #192, #193. One correct impl retires the whole class.
 - **NPE / AIOOBE / divide-by-zero** → `Option`/ownership/guarded math: #100, #96, #1, #153, #166, #272, #281, #274, #89, #375.
@@ -170,8 +172,8 @@ Single-sample is **36/38** (not 34/36/38 — those are R input validators); pair
 ---
 
 ## 11. Two-tier differential testing
-- **Tier 1 — engine → `.var`** (`--emit-intermediate`): vs `raw_input/raw.vardict.{simple,paired}.var` + oracle tables; `compare_var.py` (exact ints/strings; ε=1e-5 floats; HALF_EVEN; the §4.3 formatter rules). Localizes mismatches to the engine, before R/Perl.
-- **Tier 2 — full → VCF**: vs `expected/vardict.{simple,paired}.vcf`; `compare_vcf.py` (exact chrom/pos/ref/alt/FILTER/GT/TYPE/STATUS/INFO-keys; ε=1e-5 floats).
+- **Tier 1 — engine → `.var`** (`--emit-intermediate`): vs `raw_input/raw.vardict.{simple,paired}.var` + oracle tables; `compare_var.py` (exact ints/strings; ε=1e-6 floats; HALF_EVEN; the §4.3 formatter rules). Localizes mismatches to the engine, before R/Perl.
+- **Tier 2 — full → VCF**: vs `expected/vardict.{simple,paired}.vcf`; `compare_vcf.py` (exact chrom/pos/ref/alt/FILTER/GT/TYPE/STATUS/INFO-keys; ε=1e-6 floats).
 - **Slicing (24 GB):** `samtools view -b … chr:start-end` around known variants + downsampling; full files occasional/manual.
 - **Datasets:** SEQC2 HCC1395 WES (primary somatic), GIAB HG008 (PDAC). **Secondary** truth-set tier: `som.py`/`rtg vcfeval` (small variants), `truvari bench` (SV) — confirms we didn't faithfully reproduce a *wrong* result; primary bar stays equivalence to v1.8.3.
 
@@ -198,7 +200,7 @@ Single-sample is **36/38** (not 34/36/38 — those are R input validators); pair
 |---|---|---|
 | `VariationRealigner` fidelity (order/mutation) | High | Match comparators+`.used`+constants; Tier-1 `.var` diff isolates; port one realign-fn at a time. |
 | Iteration-order drift | High | IndexMap/BTreeMap; assert order in tests. |
-| HALF_EVEN/formatter rules | Med-High | Central util; replicate `--fisher` trailing-zero strip; ε=1e-5. |
+| HALF_EVEN/formatter rules | Med-High | Central util; replicate `--fisher` trailing-zero strip; ε=1e-6. |
 | Tiling changes output near boundaries | Med | Halo + boundary-variant dedup; assert tiled==single-region on fixtures (§6). |
 | `modifyCigar` crash inputs | Med | Bounds-check all; crash-corpus tests; graceful no-panic. |
 | Coordinate 0/1 errors | High | Newtypes (compile error) + `/check-coordinates` + harness. |
@@ -214,10 +216,10 @@ Single-sample is **36/38** (not 34/36/38 — those are R input validators); pair
 2. **Tier-1** (`compare_var.py` vs `raw_input/*.var` + oracle) → engine parity.
 3. **Tier-2 (primary gate)** (`compare.sh --all` vs `expected/*.vcf` + SEQC2/GIAB slices) — all modes (M1–M3).
 4. **Robustness:** every crash-corpus case (#341 family, CRAM #249/#380, missing index #187) runs to completion with correct output (no panic).
-5. **Scale:** peak RSS bounded regardless of `-R` size; ~linear scaling to 12 cores; deep-WGS slice benchmarks within CodSpeed budget.
+5. **Scale:** peak RSS bounded regardless of `-R` size; ~linear scaling to 8 cores (A3); pre-registered performance budget: Rust wall <= Java wall, Rust max RSS <= Java max RSS (A9).
 6. **Truth-set (secondary):** som.py/rtg vcfeval/truvari precision-recall ≈ v1.8.3.
 7. **Hygiene:** `cargo fmt --check`, `clippy -D warnings`, `cargo audit`, `cargo deny check`.
-8. **Distribution:** `dist` builds static x86_64-musl; `--version` prints validated-against version + AI disclosure.
+8. **Distribution:** cargo-dist (`dist`) for static musl release + gated OIDC publish (A8); `--version` prints validated-against version + AI disclosure.
 
 ## 16. Provenance, licensing, attribution
 MIT. README cites **Lai et al., NAR 2016**, links AstraZeneca-NGS/VarDict[Java], states validated-against **v1.8.3 (0886261)** + submodule `009e017`, lists **fixed issues** (§8) and **AI disclosure** (tools/role/validation coverage). Upstream bug reports only after manual reproduction with the original tool (never AI-generated cases).
@@ -225,7 +227,7 @@ MIT. README cites **Lai et al., NAR 2016**, links AstraZeneca-NGS/VarDict[Java],
 ## 17. Resolved decisions
 - **Crate layout:** Cargo **workspace** — `crates/vardict-core` (engine lib) + `crates/vardict-cli` (bin `vardictrust`).
 - **Oracle:** **bioconda** `vardict-java=1.8.3` in conda env `vardict-oracle`.
-- **Distribution:** **open-source MIT**, GitHub release binaries via `dist`, publish to **crates.io via OIDC trusted publishing**.
+- **Distribution:** **open-source MIT**, cargo-dist (`dist`) for static musl release + gated OIDC publish (A8).
 - **CLID:** **drop-in + ergonomic extras** — all VarDictJava short flags/defaults **plus** long aliases & subcommands, **direct-to-VCF**; `--emit-intermediate` reproduces the `.var` for legacy R/Perl piping.
 - Locked defaults: name `vardictrust`; edition 2021; MSRV = current stable (`rust-toolchain.toml`); VCF 4.2; threads default = all cores (output deterministic regardless); tiling auto with `--tile-size` advanced; post-1.0 output fixes as individual opt-in flags.
 
@@ -402,7 +404,7 @@ code; every changed line traces to the task; turn each task into a verifiable su
 
 ## 5. Prime directive — Emulate exactly (v1.0)
 Output must match VarDictJava v1.8.3 on valid inputs: identical variants, FILTER, INFO/FORMAT keys, GT,
-TYPE, STATUS, and column counts/order (Simple 36/38, Amplicon 38/40, Somatic 55/61). Floats within 1e-5
+TYPE, STATUS, and column counts/order (Simple 36/38, Amplicon 38/40, Somatic 55/61). Floats within 1e-6
 after 5-dp HALF_EVEN rounding. If v1.8.3 has an output bug, replicate it in v1.0 and open a tracked issue
 (do not "fix" silently). Where v1.8.3 CRASHES, do not crash — produce the same output it would on valid
 inputs (this is allowed and is the point).
@@ -508,7 +510,7 @@ def load(p):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("java"); ap.add_argument("rust"); ap.add_argument("--eps", type=float, default=1e-5)
+    ap.add_argument("java"); ap.add_argument("rust"); ap.add_argument("--eps", type=float, default=1e-6)
     ap.add_argument("--cols", default=None, help="1-based inclusive range, e.g. 8-13")
     a = ap.parse_args()
     J, R = load(a.java), load(a.rust)
@@ -573,7 +575,7 @@ def keyof(r): return (r[0], r[1], r[3], r[4])  # CHROM, POS, REF, ALT
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("java"); ap.add_argument("rust"); ap.add_argument("--eps", type=float, default=1e-5)
+    ap.add_argument("java"); ap.add_argument("rust"); ap.add_argument("--eps", type=float, default=1e-6)
     a = ap.parse_args()
     J = {keyof(r): r for r in load(a.java)}
     R = {keyof(r): r for r in load(a.rust)}
@@ -907,7 +909,7 @@ Every §C task has this shape: study the cited Java → write Rust + a test enco
 - **T164–T166** `release-plz` PR automation; CHANGELOG/CONTRIBUTING; supported-flag matrix + **fixed-issues list (§8)** in README; AI-disclosure section. Expect: docs complete. **Commit.**
 
 ### Phase 12 — Validation tier + v1.0 (T167–T174)
-- **T167** Full SEQC2 HCC1395 WES (manual). Cmd: `compare.sh` full WES tumor|normal. Expect: MATCH (or documented float-only diffs ≤1e-5).
+- **T167** Full SEQC2 HCC1395 WES (manual). Cmd: `compare.sh` full WES tumor|normal. Expect: MATCH (or documented float-only diffs ≤1e-6).
 - **T168** GIAB HG008 (PDAC) somatic. Cmd: `compare.sh` on HG008 slices. Expect: MATCH.
 - **T169** Truth-set (secondary). Cmd: `som.py`/`rtg vcfeval`/`truvari bench` vs SEQC2/GIAB truth. Expect: precision/recall ≈ VarDictJava 1.8.3 (within documented delta).
 - **T170** Acceptance §15 sweep. Cmd: run the 8 §15 checks. Expect: all pass.
