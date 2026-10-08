@@ -3,7 +3,7 @@
 Exact: CHROM/POS/REF/ALT, FILTER, INFO key-set, FORMAT key-set, per-sample non-numeric values (incl GT).
 Tolerant: numeric values within --eps (raw float comparison). Records aligned by key -> order ignored.
 Exit 0=MATCH, 1=MISMATCH."""
-import sys, argparse, math
+import sys, argparse, math, re
 from collections import defaultdict
 
 def eq(a, b, eps):
@@ -21,6 +21,31 @@ def kv(field):
     for p in field.split(";"):
         k, sep, v = p.partition("="); d[k] = v if sep else True
     return d
+
+def load_header(path):
+    hdr = []
+    with open(path) as fh:
+        for ln in fh:
+            if ln.startswith("#"):
+                hdr.append(ln.rstrip("\r\n"))
+            elif ln.strip():
+                break
+    return hdr
+
+def compare_headers(j_hdr, r_hdr, errs):
+    vol_pat = re.compile(r"^##(fileDate|source)=")
+    fj = [l.rstrip("\r\n") for l in j_hdr if not vol_pat.match(l.strip())]
+    fr = [l.rstrip("\r\n") for l in r_hdr if not vol_pat.match(l.strip())]
+    if fj != fr:
+        for i in range(min(len(fj), len(fr))):
+            if fj[i] != fr[i]:
+                errs.append(f"HEADER line {i+1}: java={fj[i]!r} != rust={fr[i]!r}")
+                if len(errs) >= 20:
+                    return
+        if len(fj) != len(fr):
+            extra = "java" if len(fj) > len(fr) else "rust"
+            first_extra = fj[min(len(fj), len(fr))] if len(fj) > len(fr) else fr[min(len(fj), len(fr))]
+            errs.append(f"HEADER line count: java={len(fj)} != rust={len(fr)} (first extra {extra}: {first_extra!r})")
 
 def load(path):
     out = []
@@ -67,8 +92,11 @@ def main():
     ap.add_argument("java"); ap.add_argument("rust"); ap.add_argument("--eps", type=float, default=1e-6)
     ap.add_argument("--min-variants", type=int, default=0)
     a = ap.parse_args()
+    JH, RH = load_header(a.java), load_header(a.rust)
     LJ, LR = load(a.java), load(a.rust)
     J, R = group(LJ), group(LR)
+    errs = []
+    compare_headers(JH, RH, errs)
     if set(J) != set(R):
         oj = sorted(map(str, set(J) - set(R)))[:10]; orr = sorted(map(str, set(R) - set(J)))[:10]
         print(f"MISMATCH: variant sets differ. java-only(<=10)={oj} rust-only(<=10)={orr}"); sys.exit(1)
@@ -78,7 +106,6 @@ def main():
               f"{[(str(k), len(J[k]), len(R[k])) for k in bad[:10]]}"); sys.exit(1)
     if len(LJ) < a.min_variants:
         print(f"MISMATCH: only {len(LJ)} records compared (< --min-variants {a.min_variants})"); sys.exit(1)
-    errs = []
     for k in sorted(J):
         for j, r in zip(J[k], R[k]): compare_pair(k, j, r, a.eps, errs)
         if len(errs) >= 20: break

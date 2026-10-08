@@ -126,7 +126,7 @@ pub fn print_vcf_header<W: Write>(
     )?;
     writeln!(
         w,
-        "##INFO=<ID=PMEAN,Number=1,Type=Float,Description=\"Mean position in reads\">"
+        "##INFO=<ID=PMEAN,Number=1,Type=Float,Description=\"The mean distance to the nearest 5 or 3 prime read end (whichever is closer) in all reads that support the variant call\">"
     )?;
     writeln!(
         w,
@@ -1334,6 +1334,7 @@ mod tests {
         assert!(header.contains("##contig=<ID=chr1,length=1000000>"));
         assert!(header.contains("##contig=<ID=chr2,length=2000000>"));
         assert!(header.contains("##INFO=<ID=SAMPLE"));
+        assert!(header.contains("##INFO=<ID=PMEAN,Number=1,Type=Float,Description=\"The mean distance to the nearest 5 or 3 prime read end (whichever is closer) in all reads that support the variant call\">"));
         assert!(header.contains("##FILTER=<ID=q22.5"));
         assert!(header.contains("##FORMAT=<ID=GT"));
     }
