@@ -44,4 +44,8 @@ class T(unittest.TestCase):
         rc, out = run_custom(h1, h2, [rec(1)], [rec(1)])
         self.assertEqual(rc, 0)
         self.assertIn("MATCH (1 variants)", out)
+    def test_strict_bytes_reports(self):
+        rc, out = run([rec(1, info="NM=1.0")], [rec(1, info="NM=1")], "--strict-bytes")
+        self.assertEqual(rc, 0)
+        self.assertIn("STRICT-BYTES: 1", out)
 if __name__ == "__main__": unittest.main()

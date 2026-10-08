@@ -66,10 +66,11 @@ def group(rows):
     for k in g: g[k].sort(key="\t".join)
     return g
 
-def compare_pair(k, j, r, eps, errs):
+def compare_pair(k, j, r, eps, errs, strict=None):
     w = f"{k[0]}:{k[1]} {k[2]}>{k[3]}"
     if j[6] != r[6]: errs.append(f"{w} FILTER: {j[6]!r} != {r[6]!r}")
     if not eq(j[5], r[5], eps): errs.append(f"{w} QUAL: {j[5]!r} != {r[5]!r}")
+    elif strict is not None and j[5] != r[5]: strict.append(f"{w} QUAL: {j[5]!r} vs {r[5]!r}")
     ij, ir = kv(j[7]), kv(r[7])
     if set(ij) != set(ir):
         errs.append(f"{w} INFO keys: only-java={sorted(set(ij)-set(ir))} only-rust={sorted(set(ir)-set(ij))}")
@@ -79,6 +80,8 @@ def compare_pair(k, j, r, eps, errs):
                 if ij[key] != ir[key]: errs.append(f"{w} INFO {key}: {ij[key]!r} != {ir[key]!r}")
             elif not eq(str(ij[key]), str(ir[key]), eps):
                 errs.append(f"{w} INFO {key}: {ij[key]!r} != {ir[key]!r}")
+            elif strict is not None and str(ij[key]) != str(ir[key]):
+                strict.append(f"{w} INFO {key}: {ij[key]!r} vs {ir[key]!r}")
     if len(j) > 9 and len(r) > 9:
         if j[8] != r[8]: errs.append(f"{w} FORMAT keys: {j[8]!r} != {r[8]!r}")
         else:
@@ -86,16 +89,19 @@ def compare_pair(k, j, r, eps, errs):
             for si in range(9, min(len(j), len(r))):
                 for key, xj, xr in zip(fkeys, j[si].split(":"), r[si].split(":")):
                     if not eq(xj, xr, eps): errs.append(f"{w} sample{si-9} {key}: {xj!r} != {xr!r}")
+                    elif strict is not None and xj != xr: strict.append(f"{w} sample{si-9} {key}: {xj!r} vs {xr!r}")
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("java"); ap.add_argument("rust"); ap.add_argument("--eps", type=float, default=1e-6)
     ap.add_argument("--min-variants", type=int, default=0)
+    ap.add_argument("--strict-bytes", action="store_true")
     a = ap.parse_args()
     JH, RH = load_header(a.java), load_header(a.rust)
     LJ, LR = load(a.java), load(a.rust)
     J, R = group(LJ), group(LR)
     errs = []
+    strict = [] if a.strict_bytes else None
     compare_headers(JH, RH, errs)
     if set(J) != set(R):
         oj = sorted(map(str, set(J) - set(R)))[:10]; orr = sorted(map(str, set(R) - set(J)))[:10]
@@ -107,11 +113,14 @@ def main():
     if len(LJ) < a.min_variants:
         print(f"MISMATCH: only {len(LJ)} records compared (< --min-variants {a.min_variants})"); sys.exit(1)
     for k in sorted(J):
-        for j, r in zip(J[k], R[k]): compare_pair(k, j, r, a.eps, errs)
+        for j, r in zip(J[k], R[k]): compare_pair(k, j, r, a.eps, errs, strict)
         if len(errs) >= 20: break
     if errs:
         print("MISMATCH:"); [print("  " + e) for e in errs[:20]]; sys.exit(1)
     if not LJ: print("WARNING: vacuous comparison (0 records)", file=sys.stderr)
+    if strict is not None:
+        print(f"STRICT-BYTES: {len(strict)} textual difference(s) within eps")
+        for e in strict[:20]: print("  " + e)
     print(f"MATCH ({len(LJ)} variants)"); sys.exit(0)
 
 if __name__ == "__main__":

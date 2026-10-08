@@ -19,7 +19,9 @@ TO=${CMP_TIMEOUT:-12h}
   -b "$BAM" -c 1 -S 2 -E 3 -g 4 -z "$@" "$BED" > "$OUT/rust.vcf" \
   || { echo "ENGINE-FAIL: vardictrust"; exit 2; }
 rc=0
-python3 harness/compare_vcf.py --min-variants "${MIN_VARIANTS:-0}" "$OUT/java.vcf" "$OUT/rust.vcf" \
+STRICT_ARG=""
+if [ "${CMP_STRICT:-0}" -eq 1 ]; then STRICT_ARG="--strict-bytes"; fi
+python3 harness/compare_vcf.py $STRICT_ARG --min-variants "${MIN_VARIANTS:-0}" "$OUT/java.vcf" "$OUT/rust.vcf" \
   | tee "$OUT/compare.txt" || rc=$?
 if [ "$rc" -eq 0 ]; then echo "MATCH"
 else echo "MISMATCH"; diff "$OUT/java.vcf" "$OUT/rust.vcf" | head -50 || true; fi
