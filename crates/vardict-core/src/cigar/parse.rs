@@ -205,12 +205,39 @@ impl<'a> CigarParser<'a> {
                 self.max_read_length,
                 self.config,
             );
-            let modified = modifier.modify_cigar();
-            start_pos = modified.position;
-            query_seq = modified.query_seq;
-            query_qual = modified.query_qual;
-            if let Some(parsed) = crate::cigar::parse_cigar(&modified.cigar) {
-                cigar_elements = parsed;
+            // ports CigarModifier.java:619-791, CigarParser.java:80-95:
+            // When modify_cigar returns an error (JavaThrows on malformed CIGAR with non-positive
+            // operator lengths), emulate Java's catch block: log the exception and skip the read
+            // cleanly without mutating start_pos, query_seq, or pileup structures.
+            match modifier.modify_cigar() {
+                Ok(modified) => {
+                    start_pos = modified.position;
+                    query_seq = modified.query_seq;
+                    query_qual = modified.query_qual;
+                    if let Some(parsed) = crate::cigar::parse_cigar(&modified.cigar) {
+                        cigar_elements = parsed;
+                    }
+                }
+                Err(e) => {
+                    let name = String::from_utf8_lossy(&record.name);
+                    log::warn!(
+                        "There was Exception while processing record on {}. The processing will be continued from the next record. Exception: {}",
+                        name, e
+                    );
+                    // ports Utils.java:261-277 and CLAUDE.md §5:
+                    // Count exceptions atomically. While Java terminates with exit(1) after
+                    // MAX_EXCEPTION_COUNT (10) continued exceptions, VarDictRust never aborts;
+                    // it logs a warning and continues processing valid reads.
+                    let count = self
+                        .config
+                        .exception_counter
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                        + 1;
+                    if count > 10 {
+                        log::warn!("VarDictRust encountered >10 exceptions. Java would abort here, but we continue (CLAUDE.md §5).");
+                    }
+                    return Ok(());
+                }
             }
         }
 

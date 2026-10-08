@@ -359,6 +359,7 @@ impl Cli {
         };
 
         vardict_core::config::Config {
+            exception_counter: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             reference: self.reference.clone(),
             bam: self.bam.clone(),
             freq,

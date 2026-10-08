@@ -1,5 +1,7 @@
-//! Robustness corpus (T155-lite): VarDictJava crash-family fixtures pushed through the
-//! FULL vardictrust pipeline. Every case must terminate cleanly — exit 0 with output OR
+//! Robustness corpus (T158 / Appendix C T158, T159, T09).
+//!
+//! A variant caller in a clinical pipeline must never panic on adversarial input
+//! (BAM with truncated headers, malformed CIGARs, missing FAI, empty BAMs). It may emit
 //! graceful non-zero with a stderr message; death by signal (SIGSEGV/SIGABRT) fails.
 
 use std::{
@@ -189,5 +191,100 @@ fn locale_independence_c_vs_de_de() {
     assert_eq!(
         c.stdout, de.stdout,
         "output bytes differ between LC_ALL=C and de_DE (comma-decimal leakage?)"
+    );
+}
+
+/// T09 / PR #402: 11 copies of an adversarial read with a homopolymer 3-deletion
+/// cluster causing negative-length operator generation. VarDictJava aborts with
+/// `Critical exception occurs` after 10 exceptions; VarDictRust must skip each
+/// bad read without modifying pileup state, never abort, and emit identical output
+/// between 1 and 11 bad reads.
+#[test]
+fn test_pr402_11_bad_reads_does_not_abort() {
+    let workspace_root = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."));
+    let scratch_dir = workspace_root.join("scratch/pr402_test");
+    std::fs::create_dir_all(&scratch_dir).unwrap();
+
+    let pr402_bam = workspace_root.join("fixtures/pr402/pr402.bam");
+    let out_sam = scratch_dir.join("pr402_11.sam");
+    let out_bam = scratch_dir.join("pr402_11.bam");
+
+    let script = format!(
+        r#"
+        samtools view -h "{0}" > "{1}"
+        grep -w "bad_read" "{1}" > "{2}/pr402_bad.sam"
+        for i in $(seq 1 10); do
+            sed "s/bad_read/bad_read_$i/" "{2}/pr402_bad.sam" >> "{1}"
+        done
+        samtools view -b "{1}" | samtools sort -o "{3}"
+        samtools index "{3}"
+    "#,
+        pr402_bam.display(),
+        out_sam.display(),
+        scratch_dir.display(),
+        out_bam.display()
+    );
+
+    let status = Command::new("bash")
+        .arg("-c")
+        .arg(script)
+        .status()
+        .expect("failed to execute bash");
+    assert!(status.success());
+
+    let ref_fa = workspace_root.join("fixtures/pr402/ref.fa");
+    let pr402_bed = workspace_root.join("fixtures/pr402/pr402.bed");
+
+    let cmd1 = Command::new(env!("CARGO_BIN_EXE_vardictrust"))
+        .args([
+            "-G",
+            ref_fa.to_str().unwrap(),
+            "-b",
+            pr402_bam.to_str().unwrap(),
+            "-N",
+            "SAMPLE",
+            "-c",
+            "1",
+            "-S",
+            "2",
+            "-E",
+            "3",
+            "-g",
+            "4",
+            pr402_bed.to_str().unwrap(),
+        ])
+        .output()
+        .expect("failed to execute vardictrust");
+
+    let cmd11 = Command::new(env!("CARGO_BIN_EXE_vardictrust"))
+        .args([
+            "-G",
+            ref_fa.to_str().unwrap(),
+            "-b",
+            out_bam.to_str().unwrap(),
+            "-N",
+            "SAMPLE",
+            "-c",
+            "1",
+            "-S",
+            "2",
+            "-E",
+            "3",
+            "-g",
+            "4",
+            pr402_bed.to_str().unwrap(),
+        ])
+        .output()
+        .expect("failed to execute vardictrust");
+
+    assert!(cmd1.status.success());
+    assert!(cmd11.status.success());
+
+    let out1 = String::from_utf8_lossy(&cmd1.stdout);
+    let out11 = String::from_utf8_lossy(&cmd11.stdout);
+
+    assert_eq!(
+        out1, out11,
+        "Outputs differ between 1 bad read and 11 bad reads"
     );
 }

@@ -77,6 +77,10 @@ pub enum VardictError {
     #[error("unsupported: {0}")]
     Unsupported(String),
 
+    /// Equivalent to Java throwing an exception and skipping a read.
+    #[error("Java exception equivalent: {0}")]
+    JavaThrows(String),
+
     /// Parse error (BED, region string, etc.)
     #[error("parse: {0}")]
     Parse(String),

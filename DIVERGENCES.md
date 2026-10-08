@@ -1234,3 +1234,5 @@ are consolidated with filing-ready draft issue texts in
 | HashMap non-determinism in tovars | Changed to BTreeMap | e6c344b |
 | Missing realign_indels in somatic pipeline | Added for both BAMs | (prior session) |
 | SV distance guard missing | Added 1Mbp limit in find_match | (prior session) |
+
+* **PR #402 family** — Java per-read skip replicated; >10 such reads: Java exits, VarDictRust continues (robustness, CLAUDE §5)

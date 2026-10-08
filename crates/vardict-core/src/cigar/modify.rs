@@ -77,6 +77,8 @@ static SOFT_CLIPPED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(\d+)[MIS]"
 static RE_START_S: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\d+S").unwrap());
 static RE_END_2S: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\d\d+S$").unwrap());
 static RE_S_M: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(\d+)S(\d+)M").unwrap());
+static CIGAR_ELEMENT_PATTERN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(\-?\d+)[MIDNSHPX=]").unwrap());
 
 const LOWQUAL: u8 = 10;
 const SEED_2: usize = 12;
@@ -207,7 +209,7 @@ impl<'a> CigarModifier<'a> {
     }
 
     /// Perform all CIGAR modifications. No panic allowed!
-    pub fn modify_cigar(&mut self) -> ModifiedCigar {
+    pub fn modify_cigar(&mut self) -> Result<ModifiedCigar, crate::types::VardictError> {
         //flag is set to true if CIGAR string is modified and should be looked at again
         let flag = true;
         // Wrap implementation in safe checks matching Java try/catch.
@@ -217,7 +219,7 @@ impl<'a> CigarModifier<'a> {
         let orig_seq = self.query_seq.clone();
         let orig_qual = self.query_qual.clone();
 
-        let run_modification = move |this: &mut Self| -> Result<(), &'static str> {
+        let run_modification = move |this: &mut Self| -> Result<(), crate::types::VardictError> {
             // 1. Strip leading deletion
             if let Some(caps) = BEGIN_NUMBER_D.captures(&this.cigar_str) {
                 let dlen = to_int(caps.get(1).unwrap().as_str());
@@ -540,12 +542,26 @@ impl<'a> CigarModifier<'a> {
             log::warn!("CigarModifier exception (restored original state): {}", e);
         }
 
-        ModifiedCigar {
+        // ports CigarModifier.java:619-791, CigarParser.java:278
+        // Validate that all CIGAR element lengths are strictly positive (> 0).
+        // If homopolymer overrun produces non-positive operator lengths (e.g. -1M),
+        // Java's TextCigarCodec.decode() throws IllegalArgumentException: Malformed CIGAR string.
+        for cap in CIGAR_ELEMENT_PATTERN.captures_iter(&self.cigar_str) {
+            let len: i32 = cap[1].parse().unwrap_or(0);
+            if len <= 0 {
+                return Err(crate::types::VardictError::JavaThrows(format!(
+                    "invalid CIGAR length {} in {}",
+                    len, self.cigar_str
+                )));
+            }
+        }
+
+        Ok(ModifiedCigar {
             position: self.position,
             cigar: self.cigar_str.clone(),
             query_seq: self.query_seq.clone(),
             query_qual: self.query_qual.clone(),
-        }
+        })
     }
 
     fn combine_begin_dig_m(&mut self, mut mch: i32) {
@@ -1217,6 +1233,8 @@ impl<'a> CigarModifier<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Config;
+    use std::collections::HashMap;
 
     fn get_default_config() -> Config {
         Config::default()
@@ -1241,8 +1259,8 @@ mod tests {
             &config,
         );
         let res = cm.modify_cigar();
-        assert_eq!(res.position, 13);
-        assert_eq!(res.cigar, "10M");
+        assert_eq!(res.as_ref().unwrap().position, 13);
+        assert_eq!(res.as_ref().unwrap().cigar, "10M");
     }
 
     #[test]
@@ -1264,8 +1282,8 @@ mod tests {
             &config,
         );
         let res = cm.modify_cigar();
-        assert_eq!(res.position, 10);
-        assert_eq!(res.cigar, "3S10M2S");
+        assert_eq!(res.as_ref().unwrap().position, 10);
+        assert_eq!(res.as_ref().unwrap().cigar, "3S10M2S");
     }
 
     #[test]
@@ -1287,8 +1305,8 @@ mod tests {
             &config,
         );
         let res = cm.modify_cigar();
-        assert_eq!(res.position, 10);
-        assert_eq!(res.cigar, "5S10M");
+        assert_eq!(res.as_ref().unwrap().position, 10);
+        assert_eq!(res.as_ref().unwrap().cigar, "5S10M");
 
         let mut cm = CigarModifier::new(
             10,
@@ -1303,8 +1321,8 @@ mod tests {
             &config,
         );
         let res = cm.modify_cigar();
-        assert_eq!(res.position, 12);
-        assert_eq!(res.cigar, "3S10M");
+        assert_eq!(res.as_ref().unwrap().position, 12);
+        assert_eq!(res.as_ref().unwrap().cigar, "3S10M");
     }
 
     #[test]
@@ -1326,7 +1344,7 @@ mod tests {
             &config,
         );
         let res = cm.modify_cigar();
-        assert_eq!(res.cigar, "10M5D10M");
+        assert_eq!(res.as_ref().unwrap().cigar, "10M5D10M");
 
         // Combine adjacent insertions
         let mut cm = CigarModifier::new(
@@ -1342,7 +1360,7 @@ mod tests {
             &config,
         );
         let res = cm.modify_cigar();
-        assert_eq!(res.cigar, "10M5I10M");
+        assert_eq!(res.as_ref().unwrap().cigar, "10M5I10M");
     }
 
     #[test]
@@ -1367,6 +1385,93 @@ mod tests {
             );
             let _res = cm.modify_cigar();
             // Verify that it doesn't crash/panic!
+        }
+    }
+
+    #[test]
+    fn test_pr402_cigar_java_throws() {
+        let config = get_default_config();
+        let seed = HashMap::new();
+        let query_seq = b"AATCCTCTGTTTGGAAACCAGCCCGATTCAAGGAGGGTTCTGATGCACTGCGGTGAATTTTTGGCAATGAGCGGGCCAGCAGCTCAATAGAGGCGAGAATCTACAAAAAAAAAAAAAAAAAAAAGAAAAAAGAAAAAAAAAG";
+        let query_qual = b"BBFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF=74??44444444FFFFFFFFFFFFFFFFFFFFFFFFFFFFF";
+        let ref_seq = b"AATCCTCTGTTTGGAAACCAGCCCGATTCAAGGAGGGTTCTGATGCACTGCGGTGAATTTTTGGCAATGAGCGGGCCAGCAGCTCAATAGAGGCGAGAATCTACAAAAAAAAAAAGAAAAAAAAAAGAAAAAAAAAGAAAAAAGAAAAAAAAAGAAAGAAAGAAAAAGAAAAAACAGAAAGAAGAATGAAAATCTGGGTG";
+
+        let mut cm = CigarModifier::new(
+            1,
+            "104M1I2M2D1M1D5M1D2M9D27M",
+            query_seq,
+            query_qual,
+            ref_seq,
+            1,
+            &seed,
+            3,
+            150,
+            &config,
+        );
+
+        let res = cm.modify_cigar();
+        assert!(
+            res.is_err(),
+            "PR #402 read should trigger JavaThrows error: {:?}",
+            res
+        );
+        match res.unwrap_err() {
+            crate::types::VardictError::JavaThrows(msg) => {
+                assert!(msg.contains("invalid"), "Unexpected message: {msg}");
+            }
+            other => panic!("Expected JavaThrows, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_siblings_non_positive_operator_lengths_trigger_java_throws() {
+        let config = get_default_config();
+        let seed = HashMap::new();
+        let ref_seq = b"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+        let query_seq = b"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+        let query_qual = vec![b'I'; query_seq.len()];
+
+        // Adversarial inputs for three_deletions, two_deletions_insertion_to_complex, three_indels
+        // with short M components that cause non-positive operator lengths.
+        let adversarial_cases = ["10M1D1M1D1M1D1M", "10M1I1M1D1M1D1M", "10M1D1M1I1M1D1M"];
+
+        for cigar in adversarial_cases {
+            let mut cm = CigarModifier::new(
+                1,
+                cigar,
+                query_seq,
+                &query_qual,
+                ref_seq,
+                1,
+                &seed,
+                3,
+                150,
+                &config,
+            );
+            let res = cm.modify_cigar();
+            // If the modification produces an invalid CIGAR, it must return Err(JavaThrows).
+            // If it succeeds, every CIGAR operator length must be strictly positive.
+            match res {
+                Ok(modified) => {
+                    let parsed = crate::cigar::parse_cigar(&modified.cigar)
+                        .unwrap_or_else(|| panic!("Failed to parse CIGAR {}", modified.cigar));
+                    for (len, _op) in parsed {
+                        assert!(
+                            len > 0,
+                            "CIGAR {} produced non-positive length in {}",
+                            cigar,
+                            modified.cigar
+                        );
+                    }
+                }
+                Err(crate::types::VardictError::JavaThrows(msg)) => {
+                    assert!(
+                        msg.contains("invalid CIGAR length"),
+                        "Expected invalid CIGAR length error for {cigar}, got: {msg}"
+                    );
+                }
+                Err(other) => panic!("Unexpected error for {cigar}: {:?}", other),
+            }
         }
     }
 }

@@ -6,6 +6,7 @@
 /// the CLI args via `From<Cli>`.
 #[derive(Debug, Clone)]
 pub struct Config {
+    pub exception_counter: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     /// Reference FASTA path.
     pub reference: String,
     /// BAM/CRAM path(s). Somatic: "tumor.bam|normal.bam".
@@ -127,6 +128,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Config {
+            exception_counter: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             reference: String::new(),
             bam: String::new(),
             freq: 0.01,
