@@ -1,18 +1,17 @@
 #!/usr/bin/env python3
 """Tier-1: compare two VarDict intermediate .var tables (TSV, no header).
-Field-by-field, row order preserved: numeric within --eps after 5-dp HALF_EVEN, else exact.
+Field-by-field, row order preserved: numeric within --eps (raw float comparison), else exact.
 --cols A-B restricts to the 1-based inclusive column range A..B. Exit 0=MATCH, 1=MISMATCH."""
-import sys, argparse
-from decimal import Decimal, ROUND_HALF_EVEN
-
-def r5(s):
-    try: return float(Decimal(s).quantize(Decimal("0.00001"), rounding=ROUND_HALF_EVEN))
-    except Exception: return None
+import sys, argparse, math
 
 def eq(a, b, eps):
     if a == b: return True
-    ra, rb = r5(a), r5(b)
-    return ra is not None and rb is not None and abs(ra - rb) <= eps
+    try:
+        fa, fb = float(a), float(b)
+        if math.isnan(fa) or math.isnan(fb): return False
+        return abs(fa - fb) <= (eps + 1e-12)
+    except (ValueError, TypeError):
+        return False
 
 def load(p):
     with open(p) as f:
@@ -20,7 +19,7 @@ def load(p):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("java"); ap.add_argument("rust"); ap.add_argument("--eps", type=float, default=1e-5)
+    ap.add_argument("java"); ap.add_argument("rust"); ap.add_argument("--eps", type=float, default=1e-6)
     ap.add_argument("--cols", default=None, help="1-based inclusive range, e.g. 8-13")
     a = ap.parse_args()
     J, R = load(a.java), load(a.rust)
