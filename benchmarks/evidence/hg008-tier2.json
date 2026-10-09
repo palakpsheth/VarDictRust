@@ -1,0 +1,35 @@
+{
+  "cmd": [
+    "env",
+    "KEEP_DIR=scratch/g4/hg008/cmp",
+    "MIN_VARIANTS=1000",
+    "JAVA_OPTS=-Xmx8g",
+    "bash",
+    "harness/compare.sh",
+    "scratch/g4/ref/giabv3/GRCh38_GIABv3.fa",
+    "scratch/g4/hg008/HG008-T.slice.bam|scratch/g4/hg008/HG008-N.slice.bam",
+    "scratch/g4/hg008/engine.bed",
+    "HG008-T|HG008-N",
+    "-th",
+    "8"
+  ],
+  "compare_head": [
+    "MATCH (18426 variants)"
+  ],
+  "date": "2026-10-09T15:48:40-07:00",
+  "fingerprint": "fac2186e9f75f268",
+  "head": "6b00e17b3a578a0cb8df1f16f75f4b8e7fda7886",
+  "java_time": {
+    "exit": "0",
+    "max_rss_kb": "6012708",
+    "wall": "1:10.99"
+  },
+  "n_variants": 18426,
+  "name": "hg008-tier2",
+  "result": "MATCH",
+  "rust_time": {
+    "exit": "0",
+    "max_rss_kb": "1257032",
+    "wall": "0:49.48"
+  }
+}
