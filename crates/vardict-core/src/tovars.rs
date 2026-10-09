@@ -249,15 +249,14 @@ impl<'a> ToVarsBuilder<'a> {
         hicov
     }
 
+    /// ports VariationUtils.java:163-175
     fn join_ref(&self, start: i32, end: i32) -> String {
-        // Unlike util::ref_bases' skip semantics, missing positions render
-        // 'N' here (ToVarsBuilder.java's joinRef).
         String::from_utf8_lossy(&crate::util::ref_bases_with(
             self.reference,
             &self.region.chr,
             start,
             end,
-            Some(b'N'),
+            None,
         ))
         .into_owned()
     }

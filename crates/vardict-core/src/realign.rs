@@ -1841,6 +1841,7 @@ pub fn realignlgdel(
     let longmm = 3;
 
     // Work on 5' clipped reads
+
     let mut tmp5 = Vec::new();
     for (&p, sc) in soft_clips_5_end.iter() {
         if p < region.start.0 as i32 - extension || p > region.end.0 as i32 + extension {
@@ -1873,6 +1874,10 @@ pub fn realignlgdel(
         }
         let seq =
             crate::variations::util::find_conseq(&mut sc5v, 5, &adaptor_forward, &adaptor_reverse);
+        if let Some(entry) = soft_clips_5_end.get_mut(&p) {
+            entry.used = sc5v.used;
+            entry.sequence = sc5v.sequence.clone();
+        }
         if seq.is_empty() {
             continue;
         }
@@ -2238,6 +2243,10 @@ pub fn realignlgdel(
         }
         let seq =
             crate::variations::util::find_conseq(&mut sc3v, 3, &adaptor_forward, &adaptor_reverse);
+        if let Some(entry) = soft_clips_3_end.get_mut(&p) {
+            entry.used = sc3v.used;
+            entry.sequence = sc3v.sequence.clone();
+        }
         if seq.is_empty() {
             continue;
         }
@@ -3789,7 +3798,7 @@ fn rm_cnt(vref: &mut crate::variations::Variation, tv: &crate::variations::Varia
     vref.pmean -= tv.pmean;
     vref.qmean -= tv.qmean;
     vref.mqmean -= tv.mqmean;
-    vref.nm -= tv.nm;
+    // ports VariationRealigner.java:2732 (rmCnt does not subtract nm)
     vref.sub_dir(true, tv.get_dir(true));
     vref.sub_dir(false, tv.get_dir(false));
     crate::variations::util::correct_cnt(vref);
@@ -4103,7 +4112,7 @@ pub fn adjust_mnp(
         let position = tpl.position;
         let vn = tpl.description_string;
 
-        let vref = {
+        let mut vref = {
             let vars_on_pos = match var_data.non_insertion_variants.get(&position) {
                 Some(m) => m,
                 None => continue,
@@ -4120,11 +4129,7 @@ pub fn adjust_mnp(
 
         let mnt = vn.replacen('&', "", 1);
         let mnt_len = mnt.len();
-        if mnt_len <= 1 {
-            continue;
-        }
-
-        for i in 0..mnt_len - 1 {
+        for i in 0..mnt_len.saturating_sub(1) {
             let left_len = i + 1;
             let left_bytes = substr(mnt.as_bytes(), 0, left_len as isize);
             let mut left = String::from_utf8_lossy(left_bytes).into_owned();
@@ -4163,6 +4168,7 @@ pub fn adjust_mnp(
                 if let Some(vars_on_pos) = var_data.non_insertion_variants.get_mut(&position) {
                     if let Some(vref_mut) = vars_on_pos.map.get_mut(&vn) {
                         crate::variations::util::adj_cnt(vref_mut, &tref_clone, None);
+                        vref = vref_mut.clone();
                     }
                     vars_on_pos.map.shift_remove(&left);
                 }
@@ -4190,6 +4196,7 @@ pub fn adjust_mnp(
                 if let Some(vars_on_pos) = var_data.non_insertion_variants.get_mut(&position) {
                     if let Some(vref_mut) = vars_on_pos.map.get_mut(&vn) {
                         crate::variations::util::adj_cnt(vref_mut, &tref_clone, None);
+                        vref = vref_mut.clone();
                     }
                 }
                 inc_cnt(&mut var_data.ref_coverage, position, tref_clone.cnt);
@@ -4232,6 +4239,7 @@ pub fn adjust_mnp(
             if let Some(vars_on_pos) = var_data.non_insertion_variants.get_mut(&position) {
                 if let Some(vref_mut) = vars_on_pos.map.get_mut(&vn) {
                     crate::variations::util::adj_cnt(vref_mut, &sc3_vars, None);
+                    vref = vref_mut.clone();
                 }
             }
             inc_cnt(&mut var_data.ref_coverage, position, sc3_vars.cnt);
@@ -4278,6 +4286,7 @@ pub fn adjust_mnp(
             if let Some(vars_on_pos) = var_data.non_insertion_variants.get_mut(&position) {
                 if let Some(vref_mut) = vars_on_pos.map.get_mut(&vn) {
                     crate::variations::util::adj_cnt(vref_mut, &sc5_vars, None);
+                    vref = vref_mut.clone();
                 }
             }
             inc_cnt(&mut var_data.ref_coverage, position, sc5_vars.cnt);

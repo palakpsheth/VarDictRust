@@ -1,7 +1,6 @@
 //! Fisher's Exact Test implementation mirroring VarDictJava's R-matching implementation.
 
 use crate::types::round_half_even;
-use statrs::distribution::{Discrete, DiscreteCDF, Hypergeometric};
 
 /// Computes Fisher's Exact Test p-values and conditional MLE odds ratios
 /// exactly matching the Java reference codebase.
@@ -70,18 +69,17 @@ impl FisherExact {
                 logdc.push(0.0);
                 continue;
             }
-            let dhyper = match Hypergeometric::new((m + n) as u64, m as u64, k as u64) {
-                Ok(d) => d,
-                Err(_) => {
-                    logdc.push(0.0);
-                    continue;
-                }
-            };
-            let mut value = dhyper.ln_pmf(element as u64);
+            let mut value = crate::stats::rmath::dhyper::dhyper(
+                element as f64,
+                m as f64,
+                n as f64,
+                k as f64,
+                true,
+            );
             if value.is_nan() {
                 value = 0.0;
             }
-            logdc.push(round_seven(value));
+            logdc.push(value);
         }
         logdc
     }
@@ -100,10 +98,10 @@ impl FisherExact {
         let tol = eps.powf(0.25);
         if mu > x {
             let f = |t: f64| self.mnhyper(t) - x;
-            root = crate::stats::zeroin::zeroin_c(0.0, 1.0, f, tol);
+            root = crate::stats::zeroin::uniroot(0.0, 1.0, f, tol);
         } else if mu < x {
             let f = |t: f64| self.mnhyper(1.0 / t) - x;
-            root = 1.0 / crate::stats::zeroin::zeroin_c(eps, 1.0, f, tol);
+            root = 1.0 / crate::stats::zeroin::uniroot(eps, 1.0, f, tol);
         } else {
             root = 1.0;
         }
@@ -117,12 +115,15 @@ impl FisherExact {
         if ncp.is_infinite() {
             return self.hi as f64;
         }
-        let dnhyper_result = self.dnhyper(ncp);
-        let mut sum = 0.0;
-        for (i, &supp) in self.support.iter().enumerate() {
-            sum += (supp as f64) * dnhyper_result.get(i).copied().unwrap_or(0.0);
+        if ncp == 1.0 && self.m + self.n > 0 {
+            return (self.k as f64) * (self.m as f64) / ((self.m + self.n) as f64);
         }
-        sum
+        let dnhyper_result = self.dnhyper(ncp);
+        let mut supp_d = Vec::with_capacity(self.support.len());
+        for (i, &supp) in self.support.iter().enumerate() {
+            supp_d.push((supp as f64) * dnhyper_result.get(i).copied().unwrap_or(0.0));
+        }
+        crate::stats::f80::f80_sum(&supp_d)
     }
 
     fn dnhyper(&self, ncp: f64) -> Vec<f64> {
@@ -140,12 +141,11 @@ impl FisherExact {
             }
         }
         let mut exponent_result = Vec::with_capacity(result.len());
-        let mut sum = 0.0;
         for val in result {
             let exp_val = (val - max_result).exp();
             exponent_result.push(exp_val);
-            sum += exp_val;
         }
+        let sum = crate::stats::f80::f80_sum(&exponent_result);
         let mut final_result = Vec::with_capacity(exponent_result.len());
         for val in exponent_result {
             final_result.push(val / sum);
@@ -184,51 +184,37 @@ impl FisherExact {
         self.p_value_less = self.pnhyper(self.x, false);
         self.p_value_greater = self.pnhyper(self.x, true);
 
-        let dhyper_dist =
-            Hypergeometric::new((self.m + self.n) as u64, self.m as u64, self.k as u64);
-        if let Ok(dist) = dhyper_dist {
-            let rel_err = 1.0 + 1e-7;
-            let target = dist.ln_pmf(self.x as u64).exp();
-            let threshold = target * rel_err;
-            let mut sum = 0.0;
-            for &supp in &self.support {
-                let el = dist.ln_pmf(supp as u64).exp();
-                if el <= threshold {
-                    sum += el;
-                }
+        let rel_err = 1.0 + 1e-7;
+        let d = self.dnhyper(1.0);
+        let target_idx = (self.x - self.lo) as usize;
+        let target = d.get(target_idx).copied().unwrap_or(0.0);
+        let threshold = target * rel_err;
+        let mut sum_elements = Vec::new();
+        for el in d {
+            if el <= threshold {
+                sum_elements.push(el);
             }
-            self.p_value_two_sided = sum;
-        } else {
-            let rel_err = 1.0 + 1e-7;
-            let d = self.dnhyper(1.0);
-            let target_idx = (self.x - self.lo) as usize;
-            let threshold = d.get(target_idx).copied().unwrap_or(0.0) * rel_err;
-            let mut sum = 0.0;
-            for el in d {
-                if el <= threshold {
-                    sum += el;
-                }
-            }
-            self.p_value_two_sided = sum;
         }
+        self.p_value_two_sided = crate::stats::f80::f80_sum(&sum_elements);
     }
 
     fn pnhyper(&self, q: i32, upper_tail: bool) -> f64 {
         if self.m + self.n == 0 {
             return 1.0;
         }
-        let dhyper =
-            match Hypergeometric::new((self.m + self.n) as u64, self.m as u64, self.k as u64) {
-                Ok(d) => d,
-                Err(_) => return 0.0,
-            };
         if upper_tail {
             if q <= self.lo {
                 1.0
             } else if q > self.hi {
                 0.0
             } else {
-                1.0 - dhyper.cdf((q - 1) as u64)
+                let d = self.dnhyper(1.0);
+                let start_idx = (q - self.lo) as usize;
+                let mut sum_elements = Vec::new();
+                for &val in d.iter().skip(start_idx) {
+                    sum_elements.push(val);
+                }
+                crate::stats::f80::f80_sum(&sum_elements)
             }
         } else {
             if q < self.lo {
@@ -236,14 +222,16 @@ impl FisherExact {
             } else if q >= self.hi {
                 1.0
             } else {
-                dhyper.cdf(q as u64)
+                let d = self.dnhyper(1.0);
+                let end_idx = (q - self.lo) as usize;
+                let mut sum_elements = Vec::new();
+                for &val in d.iter().take(end_idx + 1) {
+                    sum_elements.push(val);
+                }
+                crate::stats::f80::f80_sum(&sum_elements)
             }
         }
     }
-}
-
-fn round_seven(value: f64) -> f64 {
-    round_half_even(value, 7)
 }
 
 fn round_as_r(value: f64) -> f64 {
@@ -422,5 +410,31 @@ mod tests {
             }
         }
         println!("Cross-checked {} cases with fishers_exact crate", count);
+    }
+
+    #[test]
+    fn test_chr10_odds_ratio() {
+        let f = FisherExact::new(27, 17, 3, 8);
+        assert_eq!(f.get_odds_ratio(), "4.12268");
+    }
+
+    #[test]
+    #[allow(clippy::excessive_precision)]
+    fn test_chrx_sbf() {
+        let f = FisherExact::new(86, 41, 0, 1);
+        let p = f.p_value_two_sided;
+
+        // The exact raw value generated by R (and now correctly reproduced by Rust via dhyper port)
+        let r_raw = 0.32812500000000006;
+
+        assert!(
+            (p - r_raw).abs() < 1e-15,
+            "Raw p-value {} deviated too far from exact R raw {}",
+            p,
+            r_raw
+        );
+
+        // The formatted value must be exactly 0.32813 (banker's rounding of 0.32812500000000006)
+        assert_eq!(f.get_p_value(), 0.32813);
     }
 }

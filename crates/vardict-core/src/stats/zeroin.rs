@@ -1,26 +1,45 @@
 //! Brent root finder algorithm.
 //!
-//! Ports `UnirootZeroIn.java`.
+//! Ports `UnirootZeroIn.java` and R's `zeroin.c`.
 
-/// Finds a root of the function `f` in the interval `[ax, bx]` using Brent's method.
-///
-/// Ports `UnirootZeroIn.zeroinC`.
-pub fn zeroin_c<F>(ax: f64, bx: f64, f: F, tol: f64) -> f64
+/// R's R_zeroin2
+pub fn zeroin_c<F>(
+    ax: f64,
+    bx: f64,
+    mut fa: f64,
+    mut fb: f64,
+    mut f: F,
+    tol_ptr: &mut f64,
+    maxit_ptr: &mut i32,
+) -> f64
 where
-    F: Fn(f64) -> f64,
+    F: FnMut(f64) -> f64,
 {
-    let epsilon = f64::EPSILON;
     let mut a = ax;
     let mut b = bx;
-    let mut fa = f(a);
-    let mut fb = f(b);
     let mut c = a;
     let mut fc = fa;
+    let mut maxit = *maxit_ptr + 1;
+    let tol = *tol_ptr;
 
-    loop {
+    if fa == 0.0 {
+        *tol_ptr = 0.0;
+        *maxit_ptr = 0;
+        return a;
+    }
+    if fb == 0.0 {
+        *tol_ptr = 0.0;
+        *maxit_ptr = 0;
+        return b;
+    }
+
+    while maxit > 0 {
+        maxit -= 1;
         let prev_step = b - a;
+        let mut p;
+        let mut q;
+        let mut new_step;
 
-        // Swap data for b to be the best approximation
         if fc.abs() < fb.abs() {
             a = b;
             b = c;
@@ -29,35 +48,28 @@ where
             fb = fc;
             fc = fa;
         }
+        let tol_act = 2.0 * f64::EPSILON * b.abs() + tol / 2.0;
+        new_step = (c - b) / 2.0;
 
-        let tol_act = 2.0 * epsilon * b.abs() + tol / 2.0;
-        let mut new_step = (c - b) / 2.0;
-
-        // Acceptable approx. is found
         if new_step.abs() <= tol_act || fb == 0.0 {
+            *maxit_ptr -= maxit;
+            *tol_ptr = (c - b).abs();
             return b;
         }
 
-        // Decide if the interpolation can be tried
         if prev_step.abs() >= tol_act && fa.abs() > fb.abs() {
-            let mut p;
-            let mut q;
             let cb = c - b;
-
-            if (a - c).abs() < f64::MIN_POSITIVE {
-                // Linear interpolation
+            if a == c {
                 let t1 = fb / fa;
                 p = cb * t1;
                 q = 1.0 - t1;
             } else {
-                // Quadratic inverse interpolation
                 q = fa / fc;
                 let t1 = fb / fc;
                 let t2 = fb / fa;
                 p = t2 * (cb * q * (q - t1) - (b - a) * (t1 - 1.0));
                 q = (q - 1.0) * (t1 - 1.0) * (t2 - 1.0);
             }
-
             if p > 0.0 {
                 q = -q;
             } else {
@@ -69,7 +81,6 @@ where
             }
         }
 
-        // Adjust the step to be not less than tolerance
         if new_step.abs() < tol_act {
             if new_step > 0.0 {
                 new_step = tol_act;
@@ -88,6 +99,21 @@ where
             fc = fa;
         }
     }
+
+    *tol_ptr = (c - b).abs();
+    *maxit_ptr = -1;
+    b
+}
+
+pub fn uniroot<F>(lower: f64, upper: f64, mut f: F, tol: f64) -> f64
+where
+    F: FnMut(f64) -> f64,
+{
+    let f_lower = f(lower);
+    let f_upper = f(upper);
+    let mut tol_val = tol;
+    let mut maxit = 1000;
+    zeroin_c(lower, upper, f_lower, f_upper, f, &mut tol_val, &mut maxit)
 }
 
 #[cfg(test)]
@@ -97,14 +123,14 @@ mod tests {
     #[test]
     fn test_zeroin_simple() {
         let f = |x: f64| x * x - 4.0;
-        let root = zeroin_c(0.0, 3.0, f, 1e-15);
+        let root = uniroot(0.0, 3.0, f, 1e-15);
         assert!((root - 2.0).abs() < 1e-12);
     }
 
     #[test]
     fn test_zeroin_trig() {
         let f = |x: f64| x.sin();
-        let root = zeroin_c(3.0, 4.0, f, 1e-15);
+        let root = uniroot(3.0, 4.0, f, 1e-15);
         assert!((root - std::f64::consts::PI).abs() < 1e-12);
     }
 }

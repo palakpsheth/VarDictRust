@@ -9,7 +9,6 @@ thiserror.workspace = true
 rayon.workspace = true
 indexmap.workspace = true
 noodles.workspace = true
-statrs.workspace = true
 fishers_exact.workspace = true
 log.workspace = true
 regex.workspace = true

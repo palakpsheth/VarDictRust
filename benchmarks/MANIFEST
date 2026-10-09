@@ -25,3 +25,6 @@ GRCh38.d1.vd1.fa.pac	derived:tar	1606ce3d63e846d24298ffd791d9dbe0	computed-local
 GRCh38.d1.vd1.fa.sa	derived:tar	b8b0fef8bc6cac65a104744c371b26df	computed-locally	1553788312	2026-10-08T18:47:01-07:00
 GRCh38.d1.vd1.sdf/mainIndex	derived:rtg-format	a7aceea87e646dc0ff4527b8f3feaf8a	computed-locally	24330	2026-10-08T18:47:01-07:00
 GRCh38_GIABv3.sdf/mainIndex	derived:rtg-format	21cae253a0dfb9e8454df4d1848fb24d	computed-locally	24335	2026-10-08T18:47:01-07:00
+
+HG008-T.slice.bam	derived:remote-slice	a5a613e8f4d612d40f9f64925aefb7fb	computed-locally	240203456	2026-10-08T19:26:44-07:00
+HG008-N.slice.bam	derived:remote-slice	c17fa00433a2bd5c70416c716a0b8e01	computed-locally	220822631	2026-10-08T19:26:44-07:00

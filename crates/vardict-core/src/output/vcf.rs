@@ -1206,7 +1206,8 @@ pub fn format_paired_vcf_record(
 
     let qual_col = paired_qual_col(vd1, qual1, vd2, qual2);
 
-    let sample_nowhitespace = config.sample.replace(char::is_whitespace, "_");
+    let sample_tumor = config.sample.split('|').next().unwrap_or(&config.sample);
+    let sample_nowhitespace = sample_tumor.replace(char::is_whitespace, "_");
 
     let lseq = if end_var.left_seq.is_empty() {
         "0"

@@ -70,8 +70,10 @@ pub struct LoadedRegion {
 #[derive(Debug, Clone)]
 pub struct Reference {
     pub loaded_regions: Vec<LoadedRegion>,
-    /// Maps chromosome name to contiguous bases (upper-case).
+    /// Maps chromosome name to contiguous bases (upper-case) for the primary loaded region.
     pub reference_sequences: HashMap<String, Vec<u8>>,
+    /// Sequences matching loaded_regions by index: region_sequences[i] corresponds to loaded_regions[i].
+    pub region_sequences: Vec<Vec<u8>>,
     /// Maps k-mer bytes to 1-based positions.
     pub seed: HashMap<Vec<u8>, Vec<u32>>,
 }
@@ -81,19 +83,63 @@ impl Reference {
         Reference {
             loaded_regions: Vec::new(),
             reference_sequences: HashMap::new(),
+            region_sequences: Vec::new(),
             seed: HashMap::new(),
         }
     }
 
     /// Safely gets the base at a 1-based chromosome position.
     pub fn get_base(&self, chr: &str, pos: u32) -> Option<u8> {
-        for lr in &self.loaded_regions {
+        for (idx, lr) in self.loaded_regions.iter().enumerate() {
             if lr.chr == chr && pos >= lr.sequence_start && pos <= lr.sequence_end {
-                let idx = (pos - lr.sequence_start) as usize;
-                return self.reference_sequences.get(chr)?.get(idx).copied();
+                let offset = (pos - lr.sequence_start) as usize;
+                if let Some(bases) = self.region_sequences.get(idx) {
+                    if let Some(&b) = bases.get(offset) {
+                        return Some(b);
+                    }
+                }
+                if let Some(bases) = self.reference_sequences.get(chr) {
+                    if let Some(&b) = bases.get(offset) {
+                        return Some(b);
+                    }
+                }
             }
         }
         None
+    }
+
+    /// Returns the reference slice and 1-based start position covering a given position.
+    pub fn get_slice(&self, chr: &str, pos: u32) -> (&[u8], i32) {
+        for (idx, lr) in self.loaded_regions.iter().enumerate() {
+            if lr.chr == chr && pos >= lr.sequence_start && pos <= lr.sequence_end {
+                if let Some(bases) = self.region_sequences.get(idx) {
+                    return (bases.as_slice(), lr.sequence_start as i32);
+                }
+                if let Some(bases) = self.reference_sequences.get(chr) {
+                    return (bases.as_slice(), lr.sequence_start as i32);
+                }
+            }
+        }
+        for (idx, lr) in self.loaded_regions.iter().enumerate() {
+            if lr.chr == chr {
+                if let Some(bases) = self.region_sequences.get(idx) {
+                    return (bases.as_slice(), lr.sequence_start as i32);
+                }
+                if let Some(bases) = self.reference_sequences.get(chr) {
+                    return (bases.as_slice(), lr.sequence_start as i32);
+                }
+            }
+        }
+        if let Some(bases) = self.reference_sequences.get(chr) {
+            let start = self
+                .loaded_regions
+                .iter()
+                .find(|lr| lr.chr == chr)
+                .map(|lr| lr.sequence_start as i32)
+                .unwrap_or(1);
+            return (bases.as_slice(), start);
+        }
+        (&[], 1)
     }
 
     /// Populates k-mer mapping positions into the seed map.
@@ -153,78 +199,71 @@ pub fn get_reference(
         return Ok(());
     }
 
-    let mut min_start = sequence_start;
-    let mut max_end = sequence_end;
-    let mut existing_lr_idx = None;
-    for (idx, lr) in reference.loaded_regions.iter().enumerate() {
-        if lr.chr == region.chr {
-            min_start = min_start.min(lr.sequence_start);
-            max_end = max_end.max(lr.sequence_end);
-            existing_lr_idx = Some(idx);
-        }
-    }
-
-    let (old_start, old_end) = if let Some(idx) = existing_lr_idx {
-        let lr = &reference.loaded_regions[idx];
-        (lr.sequence_start, lr.sequence_end)
-    } else {
-        (0, 0)
-    };
-
     let fasta_path = Path::new(&config.reference);
-    let mut bases = fetch_subsequence(fasta_path, &region.chr, Pos1(min_start), Pos1(max_end))?;
+    let mut bases = fetch_subsequence(
+        fasta_path,
+        &region.chr,
+        Pos1(sequence_start),
+        Pos1(sequence_end),
+    )?;
 
     // Convert bases to uppercase matching exon.toUpperCase()
     for b in &mut bases {
         b.make_ascii_uppercase();
     }
 
-    if let Some(idx) = existing_lr_idx {
-        let lr_mut = &mut reference.loaded_regions[idx];
-        lr_mut.sequence_start = min_start;
-        lr_mut.sequence_end = max_end;
-    } else {
-        let loaded_region = LoadedRegion {
-            chr: region.chr.clone(),
-            sequence_start,
-            sequence_end,
-        };
-        reference.loaded_regions.push(loaded_region);
-    }
+    let loaded_region = LoadedRegion {
+        chr: region.chr.clone(),
+        sequence_start,
+        sequence_end,
+    };
+    reference.loaded_regions.push(loaded_region);
 
+    // Keep reference_sequences populated for primary chromosome region
     reference
         .reference_sequences
-        .insert(region.chr.clone(), bases.clone());
+        .entry(region.chr.clone())
+        .or_insert_with(|| bases.clone());
 
-    // k-mer seed indexing logic
+    reference.region_sequences.push(bases.clone());
+
+    // k-mer seed indexing logic (ReferenceResource.java:106-125)
     let seed1_len = 17;
     let seed2_len = 12;
 
-    let site_end = if len == max_end {
+    let site_end = if len == sequence_end {
         bases.len()
     } else {
         bases.len().saturating_sub(seed1_len)
     };
 
+    let prev_lrs: Vec<LoadedRegion> =
+        reference.loaded_regions[..reference.loaded_regions.len().saturating_sub(1)].to_vec();
+
     for i in 0..site_end {
-        // Do not create adaptor sequences for the very end of chromosome
-        if len == max_end && i > bases.len().saturating_sub(seed1_len) {
+        let pos = i as u32 + sequence_start;
+
+        // Don't index positions already covered by a previously loaded region
+        if prev_lrs
+            .iter()
+            .any(|lr| lr.chr == region.chr && pos >= lr.sequence_start && pos <= lr.sequence_end)
+        {
             continue;
         }
 
-        let pos = i as u32 + min_start;
+        // Do not create adaptor sequences for the very end of chromosome
+        if len == sequence_end && i > bases.len().saturating_sub(seed1_len) {
+            continue;
+        }
 
-        // Only index if this position was not already covered by the old range
-        if pos < old_start || pos > old_end {
-            if i + seed1_len <= bases.len() {
-                let key = &bases[i..i + seed1_len];
-                reference.add_position_to_seed(key, pos);
-            }
+        if i + seed1_len <= bases.len() {
+            let key = &bases[i..i + seed1_len];
+            reference.add_position_to_seed(key, pos);
+        }
 
-            if i + seed2_len <= bases.len() {
-                let key = &bases[i..i + seed2_len];
-                reference.add_position_to_seed(key, pos);
-            }
+        if i + seed2_len <= bases.len() {
+            let key = &bases[i..i + seed2_len];
+            reference.add_position_to_seed(key, pos);
         }
     }
 
