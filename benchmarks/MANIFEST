@@ -28,3 +28,7 @@ GRCh38_GIABv3.sdf/mainIndex	derived:rtg-format	21cae253a0dfb9e8454df4d1848fb24d	
 
 HG008-T.slice.bam	derived:remote-slice	a5a613e8f4d612d40f9f64925aefb7fb	computed-locally	240203456	2026-10-08T19:26:44-07:00
 HG008-N.slice.bam	derived:remote-slice	c17fa00433a2bd5c70416c716a0b8e01	computed-locally	220822631	2026-10-08T19:26:44-07:00
+HG008-T.slice.cram	derived:samtools-cram	c37440e6c4cabdb7e6cc4218806aa339	computed-locally	86742675	2026-10-09T16:18:50-07:00
+HG008-T.slice.cram.crai	derived:samtools-index	b71f60e626934779858c6d35e04cc92a	computed-locally	8122	2026-10-09T16:18:50-07:00
+HG008-N.slice.cram	derived:samtools-cram	3deee8a569e7ce2e50741553c60d2860	computed-locally	77124691	2026-10-09T16:18:58-07:00
+HG008-N.slice.cram.crai	derived:samtools-index	c478ec7eb41801749d6833ff46fa0dab	computed-locally	8236	2026-10-09T16:18:58-07:00

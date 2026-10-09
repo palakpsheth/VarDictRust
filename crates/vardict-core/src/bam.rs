@@ -236,6 +236,10 @@ thread_local! {
     static SAM_READER_CACHE: RefCell<HashMap<PathBuf, CachedReader>> = RefCell::new(HashMap::new());
 }
 
+static REPOSITORY_CACHE: std::sync::Mutex<
+    Option<(std::path::PathBuf, noodles::fasta::Repository)>,
+> = std::sync::Mutex::new(None);
+
 pub fn open_reader(
     path: &Path,
     config: &crate::config::Config,
@@ -251,15 +255,27 @@ pub fn open_reader(
         ext.push_str(".fai");
         fai_path.set_extension(ext);
 
-        let fasta_reader = noodles::fasta::IndexedReader::new(
-            std::io::BufReader::new(
-                std::fs::File::open(fasta_path).map_err(crate::types::VardictError::Io)?,
-            ),
-            noodles::fasta::fai::read(&fai_path).map_err(crate::types::VardictError::Io)?,
-        );
-        use noodles::fasta::repository::adapters::IndexedReader as FastaAdapter;
-        use noodles::fasta::Repository;
-        let repository = Repository::new(FastaAdapter::new(fasta_reader));
+        let repository = {
+            let mut guard = REPOSITORY_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+            match guard.as_ref() {
+                Some((cached_path, repo)) if cached_path == fasta_path => repo.clone(),
+                _ => {
+                    let fasta_reader = noodles::fasta::IndexedReader::new(
+                        std::io::BufReader::new(
+                            std::fs::File::open(fasta_path)
+                                .map_err(crate::types::VardictError::Io)?,
+                        ),
+                        noodles::fasta::fai::read(&fai_path)
+                            .map_err(crate::types::VardictError::Io)?,
+                    );
+                    use noodles::fasta::repository::adapters::IndexedReader as FastaAdapter;
+                    use noodles::fasta::Repository;
+                    let repo = Repository::new(FastaAdapter::new(fasta_reader));
+                    *guard = Some((fasta_path.to_path_buf(), repo.clone()));
+                    repo
+                }
+            }
+        };
 
         let mut reader = noodles::cram::io::indexed_reader::Builder::default()
             .set_reference_sequence_repository(repository)
