@@ -1740,24 +1740,6 @@ pub fn find_del(
                     &format!("-{}", dellen),
                 );
                 crate::variations::util::adj_cnt(variation_mut, &scv.variation, None);
-
-                if let Some(ref_base) = reference.get_base(chr, bp as u32) {
-                    let ref_base_str = (ref_base as char).to_string();
-                    if let Some(entry) = var_data.non_insertion_variants.get_mut(&bp) {
-                        if let Some(ref_var) = entry.map.get_mut(&ref_base_str) {
-                            ref_var.cnt -= scv.variation.cnt;
-                            ref_var.hicnt -= scv.variation.hicnt;
-                            ref_var.locnt -= scv.variation.locnt;
-                            ref_var.pmean -= scv.variation.pmean;
-                            ref_var.qmean -= scv.variation.qmean;
-                            ref_var.mqmean -= scv.variation.mqmean;
-                            ref_var.nm -= scv.variation.nm;
-                            ref_var.sub_dir(true, scv.variation.get_dir(true));
-                            ref_var.sub_dir(false, scv.variation.get_dir(false));
-                            crate::variations::util::correct_cnt(ref_var);
-                        }
-                    }
-                }
             }
 
             let mcnt = vars_count;
