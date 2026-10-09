@@ -1,0 +1,42 @@
+{
+  "cmd": [
+    "harness/concordance_pair.sh",
+    "hg008-truth",
+    "scratch/g4/hg008/cmp/java.vcf",
+    "scratch/g4/hg008/cmp/rust.vcf",
+    "scratch/g4/hg008/truth/HG008-T_somatic_smvar_benchmark_v0.3_tumorvariants.vcf.gz",
+    "scratch/g4/hg008/eval.bed",
+    "scratch/g4/ref/giabv3/GRCh38_GIABv3.sdf",
+    "scratch/g4/hg008/truth",
+    "HG008-T"
+  ],
+  "compare_head": [],
+  "date": "2026-10-09T16:39:51-07:00",
+  "extra": {
+    "java": {
+      "f_measure": 0.3856,
+      "fn": 288,
+      "fp": 1565,
+      "precision": 0.2687,
+      "sensitivity": 0.6825,
+      "tp_baseline": 619,
+      "tp_call": 575
+    },
+    "rust": {
+      "f_measure": 0.3856,
+      "fn": 288,
+      "fp": 1565,
+      "precision": 0.2687,
+      "sensitivity": 0.6825,
+      "tp_baseline": 619,
+      "tp_call": 575
+    }
+  },
+  "fingerprint": "0f4677fb7fa3f465",
+  "head": "f650426ecefab96aa1863c96d0296717b62bfd70",
+  "java_time": null,
+  "n_variants": null,
+  "name": "hg008-truth",
+  "result": "EQUAL",
+  "rust_time": null
+}
