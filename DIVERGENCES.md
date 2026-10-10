@@ -18,12 +18,12 @@ specification. We either match it exactly or prove the difference is unreachable
 ```
 Verified Parity Baseline (release/v1.0.0, commit cb39a64):
 - Integration Tests:  91 PASS / 1 FAIL / 0 SKIP (100% of valid inputs pass; sole FAIL is stale fixture UB-4)
-- Core Library Tests: 186 PASS / 0 FAIL (cargo test -p vardict-core --lib)
-- Total Workspace:    202 PASS / 0 FAIL (cargo test --workspace across core, cli, robustness, thread-determinism)
+- Core Library Tests: 188 PASS / 0 FAIL (cargo test -p vardict-core --lib)
+- Total Workspace:    208 PASS / 0 FAIL (cargo test --workspace across core, cli, robustness, thread-determinism)
 - Tier-2 Sweeps:      15/15 strict MATCH (s1a-s9 all 10 slices, HG008, SEQC2 exome/slices, HG002, Amplicon)
 - Truth Concordance:  3/3 EQUAL (GIAB HG002 NIST v4.2.1, SEQC2 v1.2.1, GIAB HG008 NIST v3.3.2)
 - Scaling Budget:     PASS (4.85x speedup, 1.39x flat RSS scaling across 249 Mbp chromosome 1)
-- Final Acceptance:   8/8 PASS under release engine fingerprint 62fcf630be2d53e9
+- Final Acceptance:   8/8 PASS under release engine fingerprint 7e9b1be766f73b17
 ```
 
 ### The Four Canonical Parity Classes (rewrites.bio §5, §8, §11)
