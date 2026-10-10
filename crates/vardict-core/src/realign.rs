@@ -3843,13 +3843,16 @@ fn ensure_reference_loaded(
     for b in &mut bases {
         b.make_ascii_uppercase();
     }
-    if let Some(lr) = reference
+    if let Some(idx) = reference
         .loaded_regions
-        .iter_mut()
-        .find(|lr| lr.chr == *chr)
+        .iter()
+        .position(|lr| lr.chr == *chr)
     {
-        lr.sequence_start = min_start;
-        lr.sequence_end = max_end;
+        reference.loaded_regions[idx].sequence_start = min_start;
+        reference.loaded_regions[idx].sequence_end = max_end;
+        if idx < reference.region_sequences.len() {
+            reference.region_sequences[idx] = bases.clone();
+        }
     } else {
         reference
             .loaded_regions
@@ -3858,6 +3861,7 @@ fn ensure_reference_loaded(
                 sequence_start: min_start,
                 sequence_end: max_end,
             });
+        reference.region_sequences.push(bases.clone());
     }
     reference.reference_sequences.insert(chr.to_string(), bases);
     Ok(())
