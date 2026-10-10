@@ -444,6 +444,121 @@ pub fn amplicon_38(
     format!("{}\t{}", line, debug_col)
 }
 
+/// Write amplicon 40-column representation with Fisher exact test (when config.fisher is set).
+/// Ports AmpliconOutputVariant.java's create_amplicon_variant_40columns (lines 145-201).
+/// Columns 1-20 match amplicon_38, columns 21-22 are pvalue and oddratio,
+/// columns 23-36 match columns 21-34 of amplicon_38, and columns 37-40 are
+/// GDAMP, TLAMP, NCAMP, AMPFLAG.
+/// When `debug` is set, appends `"\t" + DEBUG` where
+/// DEBUG = variant.DEBUG + goodOutput + badOutput.
+pub fn amplicon_40(
+    av: &crate::postprocess::amplicon::AmpliconVariant,
+    region: &Region,
+    sample_name: &str,
+    debug: bool,
+) -> String {
+    let variant = &av.variant;
+    let region_str = &av.region;
+
+    let fisher = crate::stats::FisherExact::new(
+        variant.ref_fwd_cov as i32,
+        variant.ref_rev_cov as i32,
+        variant.fwd as i32,
+        variant.rev as i32,
+    );
+    let pvalue = fisher.get_p_value();
+    let oddratio = fisher.get_odds_ratio();
+
+    let hifreq_str = if variant.hi_freq == 0.0 {
+        "0".to_string()
+    } else {
+        format!("{:.4}", variant.hi_freq)
+    };
+
+    let nm_val = if variant.nm > 0.0 { variant.nm } else { 0.0 };
+    let nm_str = if nm_val == 0.0 {
+        "0".to_string()
+    } else {
+        format!("{:.1}", nm_val)
+    };
+
+    let left_seq = if variant.left_seq.is_empty() {
+        "0"
+    } else {
+        &variant.left_seq
+    };
+    let right_seq = if variant.right_seq.is_empty() {
+        "0"
+    } else {
+        &variant.right_seq
+    };
+    let genotype = variant.genotype.as_deref().unwrap_or("0");
+    let pstd = if variant.pstd { 1 } else { 0 };
+    let qstd = if variant.qstd { 1 } else { 0 };
+    let ampflag = if av.ampflag { 1 } else { 0 };
+
+    let line = format!(
+        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+        sample_name,
+        region.gene,
+        region.chr,
+        variant.start_pos,
+        variant.end_pos,
+        variant.ref_allele,
+        variant.var_allele,
+        variant.total_pos_cov,
+        variant.pos_coverage,
+        variant.ref_fwd_cov,
+        variant.ref_rev_cov,
+        variant.fwd,
+        variant.rev,
+        genotype,
+        get_rounded_value_to_print(variant.frequency, 4),
+        variant.bias,
+        get_rounded_value_to_print(variant.mean_position, 1),
+        pstd,
+        get_rounded_value_to_print(variant.mean_quality, 1),
+        qstd,
+        get_rounded_value_to_print(pvalue, 5),
+        oddratio,
+        get_rounded_value_to_print(variant.mean_mapping_quality, 1),
+        get_rounded_value_to_print(variant.hq_lq_ratio, 3),
+        hifreq_str,
+        get_rounded_value_to_print(variant.extra_freq, 4),
+        variant.shift3,
+        get_rounded_value_to_print(variant.msi, 3),
+        variant.msint,
+        nm_str,
+        variant.hicnt,
+        variant.hicov,
+        left_seq,
+        right_seq,
+        region_str,
+        variant.var_type,
+        av.gdamp,
+        av.tlamp,
+        av.ncamp,
+        ampflag
+    );
+
+    if !debug {
+        return line;
+    }
+    // ports AmpliconOutputVariant.java:113-125
+    let mut debug_col = variant.debug.clone();
+    for (i, (v, r)) in av.good_variants.iter().enumerate() {
+        debug_col.push_str(&format!(
+            "\tGood{i} {} {}",
+            debug_amp_variant(v.as_ref()),
+            r
+        ));
+    }
+    for (i, (v, r)) in av.bad_variants.iter().enumerate() {
+        debug_col.push_str(&format!("\tBad{i} {} {}", debug_amp_variant(v.as_ref()), r));
+    }
+    format!("{}\t{}", line, debug_col)
+}
+
 /// One space-joined entry of the -D amplicon debug column.
 /// Ports `AmpliconOutputVariant.debugAmpVariant` (AmpliconOutputVariant.java:258-278):
 /// 17 fields; zero-valued freq fields print as "0", position/quality/mapq/qratio are
@@ -921,6 +1036,59 @@ mod schema_tripwire_tests {
         assert!(line.starts_with(PREFIX_7), "prefix drifted: {line}");
         // Columns 35-38: GDAMP, TLAMP, NCAMP, AMPFLAG (no debug column).
         assert!(line.ends_with("\t1\t1\t0\t0"), "suffix drifted: {line}");
+    }
+
+    #[test]
+    fn test_amplicon_40_columns() {
+        let mut v = variant();
+        v.ref_fwd_cov = 10;
+        v.ref_rev_cov = 10;
+        v.fwd = 5;
+        v.rev = 5;
+        v.frequency = 0.3333;
+        v.mean_position = 25.0;
+        v.mean_quality = 30.0;
+        v.mean_mapping_quality = 60.0;
+        v.hq_lq_ratio = 1.0;
+        v.hi_freq = 0.3333;
+        v.extra_freq = 0.0;
+        v.shift3 = 0;
+        v.msi = 0.0;
+        v.msint = 1;
+        v.nm = 1.0;
+        v.hicnt = 10;
+        v.hicov = 30;
+
+        let av = AmpliconVariant {
+            variant: v,
+            gdamp: 2,
+            tlamp: 3,
+            ncamp: 1,
+            ampflag: true,
+            region: "chr1:933867-934466".to_string(),
+            good_variants: vec![],
+            bad_variants: vec![],
+        };
+        let line = amplicon_40(&av, &region(), "SAMPLE", false);
+        let cols: Vec<&str> = line.split('\t').collect();
+        assert_eq!(cols.len(), 40);
+        assert!(line.starts_with(PREFIX_7), "prefix drifted: {line}");
+        // Column 21 (index 20) is pvalue, Column 22 (index 21) is oddratio
+        assert_eq!(cols[20], "1");
+        assert_eq!(cols[21], "1");
+        // Columns 37-40 (indices 36-39): GDAMP, TLAMP, NCAMP, AMPFLAG
+        assert_eq!(cols[36], "2");
+        assert_eq!(cols[37], "3");
+        assert_eq!(cols[38], "1");
+        assert_eq!(cols[39], "1");
+
+        // Verify debug column
+        let mut av_dbg = av.clone();
+        av_dbg.variant.debug = "C:4:F-2:R-2:1.0000".to_string();
+        let dbg_line = amplicon_40(&av_dbg, &region(), "SAMPLE", true);
+        assert!(dbg_line.starts_with(&line));
+        assert!(dbg_line.contains("\tC:4:F-2:R-2:1.0000"));
+        assert_eq!(dbg_line.split('\t').count(), 41);
     }
 
     #[test]

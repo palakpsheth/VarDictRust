@@ -554,12 +554,21 @@ fn run_amplicon(
 
         for av in results {
             if config.emit_intermediate {
-                let line = crate::output::table::amplicon_38(
-                    &av,
-                    current_region,
-                    &config.sample,
-                    config.debug,
-                );
+                let line = if config.fisher {
+                    crate::output::table::amplicon_40(
+                        &av,
+                        current_region,
+                        &config.sample,
+                        config.debug,
+                    )
+                } else {
+                    crate::output::table::amplicon_38(
+                        &av,
+                        current_region,
+                        &config.sample,
+                        config.debug,
+                    )
+                };
                 println!("{}", line);
             } else {
                 // VCF mode: same writer as simple mode (var2vcf_valid.pl), with the
