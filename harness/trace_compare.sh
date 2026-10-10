@@ -32,7 +32,7 @@ conda run -n vardict-oracle bash -c \
   _ "$REF" "$AF" "$SAMPLE" "$BAM" "$BED" "$TMP/java.var" "$TMP/java_trace.txt" "${EXTRA_ARGS[@]}"
 
 echo "=== Running VarDictRust with verbose ==="
-cargo run -q --release -p vardict-cli -- -z -G "$REF" -f "$AF" -N "$SAMPLE" \
+cargo run -q --release -p vardictrust -- -z -G "$REF" -f "$AF" -N "$SAMPLE" \
   -b "$BAM" -c 1 -S 2 -E 3 -g 4 --emit-intermediate -y "${EXTRA_ARGS[@]}" "$BED" \
   > "$TMP/rust.var" 2> "$TMP/rust_trace.txt"
 

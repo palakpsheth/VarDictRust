@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -uo pipefail
-cargo build -q --release -p vardict-cli
+cargo build -q --release -p vardictrust
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT; fail=0
 M="fixtures/micro/micro.ref.fa fixtures/micro/micro.bam fixtures/micro/micro.bed"
 mkdir -p "$T/bin"; cat > "$T/bin/cargo" <<EOF

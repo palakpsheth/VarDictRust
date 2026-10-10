@@ -3,6 +3,8 @@ name = "vardict-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+description = "Variant calling engine core for VarDictRust"
+repository.workspace = true
 
 [dependencies]
 thiserror.workspace = true

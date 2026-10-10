@@ -15,7 +15,7 @@ TO=${CMP_TIMEOUT:-12h}
   bash harness/run_oracle.sh "$REF" "$BAM" "$BED" "$OUT/java.vcf" "$SAMPLE" -z "$@" \
   || { echo "ENGINE-FAIL: oracle"; exit 2; }
 /usr/bin/time -v -o "$OUT/rust.time" timeout "$TO" \
-  cargo run -q --release -p vardict-cli -- -G "$REF" -f "${AF_THR:-0.01}" -N "$SAMPLE" \
+  cargo run -q --release -p vardictrust -- -G "$REF" -f "${AF_THR:-0.01}" -N "$SAMPLE" \
   -b "$BAM" -c 1 -S 2 -E 3 -g 4 -z "$@" "$BED" > "$OUT/rust.vcf" \
   || { echo "ENGINE-FAIL: vardictrust"; exit 2; }
 rc=0

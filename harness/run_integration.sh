@@ -12,7 +12,7 @@ set -euo pipefail
 TESTDATA_DIR="VarDictJava/testdata/integrationtestcases"
 FASTA_DIR="VarDictJava/testdata/fastas"
 BAM_DIR="VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests"
-BINARY="cargo run -q --release -p vardict-cli --"
+BINARY="cargo run -q --release -p vardictrust --"
 
 PASS=0
 FAIL=0

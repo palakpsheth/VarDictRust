@@ -1,0 +1,3 @@
+# Gitleaks ignore file
+# Format for Gitleaks v8+: <commit-sha>:<path>:<rule-id>:<line-number>
+151deece77cc16995454d0cf6a03060a5c7fcf7d:.agents/skills/oma-backend/stack/tech-stack.md:generic-api-key:9

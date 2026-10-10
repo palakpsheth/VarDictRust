@@ -1,0 +1,48 @@
+cff-version: 1.2.0
+message: "If you use VarDictRust in published research, please cite both the original VarDict publication (Lai et al. 2016) and this software implementation."
+title: "VarDictRust: Memory-Safe, High-Performance Variant Calling for NGS"
+abstract: "VarDictRust is an idiomatic Rust rewrite of VarDictJava v1.8.3, consolidating its fragmented Java->R->Perl pipeline into a single, memory-safe, statically-compiled binary that scales to deep whole-genome sequencing with bounded memory."
+version: 1.0.0
+date-released: "2026-10-10"
+license: MIT
+repository-code: "https://github.com/rewrites-bio/VarDictRust"
+keywords:
+  - "bioinformatics"
+  - "genomics"
+  - "variant-calling"
+  - "somatic"
+  - "ngs"
+  - "cancer-genomics"
+authors:
+  - family-names: "Sheth"
+    given-names: "Palak"
+references:
+  - type: article
+    authors:
+      - family-names: "Lai"
+        given-names: "Zhongwu"
+      - family-names: "Markovets"
+        given-names: "Alena"
+      - family-names: "Ahdesmaki"
+        given-names: "Miika"
+      - family-names: "Chapman"
+        given-names: "Brad"
+      - family-names: "Hofmann"
+        given-names: "Oliver"
+      - family-names: "McEwen"
+        given-names: "Robert"
+      - family-names: "Johnson"
+        given-names: "Justin"
+      - family-names: "Dougherty"
+        given-names: "Brian"
+      - family-names: "Barrett"
+        given-names: "J. Carl"
+      - family-names: "Dry"
+        given-names: "Jonathan R."
+    title: "VarDict: a novel and versatile variant caller for next-generation sequencing in cancer research"
+    journal: "Nucleic Acids Research"
+    volume: 44
+    issue: 11
+    pages: "e108"
+    year: 2016
+    doi: "10.1093/nar/gkw227"

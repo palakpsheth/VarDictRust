@@ -19,7 +19,7 @@ if [ ! -f "$REF" ] || [ ! -f "$MICRO_BAM" ] || [ ! -f "$MICRO_BED" ]; then
   exit 1
 fi
 
-cargo build -q --release -p vardict-cli
+cargo build -q --release -p vardictrust
 
 fail=0
 

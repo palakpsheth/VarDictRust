@@ -4,11 +4,14 @@ exclude = ["fuzz"]
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/palakpsheth/VarDictRust"
-authors = ["Palak Sheth"]
+repository = "https://github.com/rewrites-bio/VarDictRust"
+authors = ["Palak Sheth", "rewrites.bio"]
+description = "Fast, memory-safe, idiomatic Rust rewrite of VarDictJava v1.8.3"
+keywords = ["bioinformatics", "genomics", "variant-caller", "ngs", "somatic"]
+categories = ["science::bioinformatics", "command-line-utilities"]
 
 [workspace.dependencies]
 anyhow = "1"
@@ -28,3 +31,8 @@ criterion = "0.5"
 lto = "thin"
 codegen-units = 1
 panic = "abort"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"

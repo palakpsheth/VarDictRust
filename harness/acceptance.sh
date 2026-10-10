@@ -30,7 +30,7 @@ for id in $(awk -F'\t' '!/^#/{print $1}' harness/slices.tsv); do run bash harnes
 for e in hg008-tier2 seqc2-slices-tier2 seqc2-exome-tier2; do run ev "$e" || t=0; done
 mark 3 $t "Tier-2"
 # 4 Robustness: crash corpus (#341 family, PR #402, #187) + CRAM twin
-t=1; run cargo test -p vardict-cli --test robustness || t=0; run ev hg008-cram-twin || t=0; mark 4 $t "robustness/CRAM"
+t=1; run cargo test -p vardictrust --test robustness || t=0; run ev hg008-cram-twin || t=0; mark 4 $t "robustness/CRAM"
 # 5 Scale (thresholds pre-registered in T21)
 t=1; run ev scale || t=0; mark 5 $t "scale"
 # 6 Truth set: rtg exact java==rust equality on both datasets (som.py/truvari via waiver)
