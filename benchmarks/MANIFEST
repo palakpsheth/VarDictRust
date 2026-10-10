@@ -32,3 +32,8 @@ HG008-T.slice.cram	derived:samtools-cram	c37440e6c4cabdb7e6cc4218806aa339	comput
 HG008-T.slice.cram.crai	derived:samtools-index	b71f60e626934779858c6d35e04cc92a	computed-locally	8122	2026-10-09T16:18:50-07:00
 HG008-N.slice.cram	derived:samtools-cram	3deee8a569e7ce2e50741553c60d2860	computed-locally	77124691	2026-10-09T16:18:58-07:00
 HG008-N.slice.cram.crai	derived:samtools-index	c478ec7eb41801749d6833ff46fa0dab	computed-locally	8236	2026-10-09T16:18:58-07:00
+
+HCC1395.bam	derived:bwa-mem-seqc2	5e2e9d814b0a4107908324ef79e45a2e	computed-locally	4475997619	2026-10-09T17:28:55-07:00
+HCC1395.bam.bai	derived:bwa-mem-seqc2	acda15be3c350570439df4cf13a75fae	computed-locally	3510256	2026-10-09T17:29:14-07:00
+HCC1395BL.bam	derived:bwa-mem-seqc2	540fc282854bf511c530ce8f414b1a3e	computed-locally	4233596905	2026-10-09T18:07:08-07:00
+HCC1395BL.bam.bai	derived:bwa-mem-seqc2	2823d6171038853b56937f678232973b	computed-locally	3400648	2026-10-09T18:07:26-07:00
