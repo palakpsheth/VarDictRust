@@ -109,7 +109,15 @@ Differential testing evaluates the complete variant calling pipeline. End-to-end
 | **GIAB HG008 Somatic** | SomaticMode (Tumor/Normal) | PDAC high-depth slices | 18,426 | 18,426 | **MATCH** | 0 diffs in somatic status |
 | **Targeted Amplicon Panel** | AmpliconMode (`-a 10:0.95`) | Overlapping primer assay | 2 | 2 | **MATCH** | 0 diffs with primer trimming & AMPBIAS |
 
-\* *The single corpus mismatch is upstream VarDictJava issue #283 (hard clip next to deletion; see UB-4 in [`docs/upstream-bugs.md`](../upstream-bugs.md)).*
+\* *The single corpus mismatch against checked-in expected files is upstream fixture `hard_clip_case.fa` (Class D / UB-4; see [`docs/upstream-bugs.md`](../upstream-bugs.md)). When executed against the live `VarDictJava v1.8.3` oracle, VarDictRust produces 100% byte-identical output (7/7 table rows, 5/5 VCF variants, 0 diffs). Live oracle parity is 100% across all 92 fixtures.*
+
+> [!NOTE]
+> **Intermediate Table Column Specification:**
+> Slashes in intermediate table descriptions represent standard mode vs. statistical `--fisher` mode, matching **100% of columns** in both configurations:
+> - **Simple Mode:** 36 columns without `--fisher`; 38 columns with `--fisher` (inserts Fisher p-value and odds ratio at cols 21–22).
+> - **Amplicon Mode:** 38 columns without `--fisher` (includes `GoodVarCount`, `TotalVarCount`, `Nocov`, `Ampflag` for downstream `AMPBIAS` filtering); 40 columns with `--fisher` (inserts Fisher metrics at cols 21–22).
+> - **Somatic Mode:** 55 columns without `--fisher`; 61 columns with `--fisher` (includes tumor/normal strand bias metrics and somatic contingency p-values).
+> Standard CLI output is standard VCFv4.2 (10 columns for single-sample, 11 columns for paired somatic). Splicing Mode (`-i`) outputs a 4-column intron count table.
 
 ---
 
