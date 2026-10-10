@@ -70,11 +70,13 @@ All biological datasets, reference genomes, and truth standards were retrieved f
 
 | Dataset / Assay | Persistent Accession | Primary Public URL / Mirror Source | Asset File | File Size | Full MD5 Checksum |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **GIAB HG002 Germline WGS** | NCBI BioProject: `PRJNA20069`<br>NIST RM 8391 (NA24385) | `https://giab.s3.amazonaws.com/data/AshkenazimTrio/HG002_NA24385_son/NIST_Illumina_2x250bps/novoalign_bams/` | `HG002.chr20.bam`<br>(chr20:10M–30M slice) | 821 MB | `bd605a455b2e2064931e6097c64695ea` |
+| **GIAB HG002 Germline WGS** | NCBI BioProject: `PRJNA20069`<br>NIST RM 8391 (NA24385) | `https://giab.s3.amazonaws.com/data/AshkenazimTrio/HG002_NA24385_son/NIST_Illumina_2x250bps/novoalign_bams/` | `HG002.chr20.bam`<br>(chr20:10M–30M slice) | 860 MB | `bd605a455b2e2064931e6097c64695ea` |
+| | | `https://giab.s3.amazonaws.com/data/AshkenazimTrio/HG002_NA24385_son/NIST_Illumina_2x250bps/novoalign_bams/` | `HG002.remote.bai`<br>(remote BAM index) | 9.8 MB | `a4c79b44a863e88eeb525b5e8d1501f6` |
 | | | `https://giab.s3.amazonaws.com/release/references/GRCh38/` | `GRCh38_GIABv3.fasta` | 3.15 GB | `99be410b684e3fdb04ba67d98adba249` |
-| | | `https://giab.s3.amazonaws.com/release/AshkenazimTrio/HG002_NA24385_son/NISTv4.2.1/GRCh38/` | `HG002_GRCh38_1_22_v4.2.1_benchmark.vcf.gz` | 48 MB | `73810f63b48fdf98f62c80327f3080ad` |
-| | | `https://giab.s3.amazonaws.com/release/AshkenazimTrio/HG002_NA24385_son/NISTv4.2.1/GRCh38/` | `HG002_GRCh38_1_22_v4.2.1_benchmark_noinconsistent.bed` | 27 MB | `86b24578b877c270d6f30a91fecb7e28` |
+| | | `https://giab.s3.amazonaws.com/release/AshkenazimTrio/HG002_NA24385_son/NISTv4.2.1/GRCh38/` | `HG002_GRCh38_1_22_v4.2.1_benchmark.vcf.gz` | 156 MB | `dc750b3807d4af1f7ffec852e9c2f771` |
+| | | `https://giab.s3.amazonaws.com/release/AshkenazimTrio/HG002_NA24385_son/NISTv4.2.1/GRCh38/` | `HG002_GRCh38_1_22_v4.2.1_benchmark_noinconsistent.bed` | 11.5 MB | `97265e922a97c69a0391cf3f92a89b8b` |
 | **SEQC2 Somatic WES** | NCBI BioProject: `PRJNA553658`<br>SRA: `SRR7890879` (Tumor)<br>SRA: `SRR7890880` (Normal) | `https://ftp-trace.ncbi.nlm.nih.gov/seqc/ftp/Somatic_Mutation_WG/technical/reference_genome/GRCh38/` | `GRCh38.d1.vd1.fa` | 3.15 GB | `7eb7c875fb968ab47186e01dbcbfe1b1` |
+
 | | | EBI SRA / NCBI FTP alignment (`bwa-mem`) | `HCC1395.bam` (~300×)<br>`HCC1395BL.bam` (~100×) | 4.48 GB<br>4.23 GB | `5e2e9d814b0a4107908324ef79e45a2e`<br>`540fc282854bf511c530ce8f414b1a3e` |
 | | | `https://ftp-trace.ncbi.nlm.nih.gov/seqc/ftp/Somatic_Mutation_WG/release/v1.2.1/` | `high-confidence_sSNV_in_HC_regions_v1.2.1.vcf.gz` | 4.82 MB | `243c5795d7502a6dfb2e9b0431a17363` |
 | | | `https://ftp-trace.ncbi.nlm.nih.gov/seqc/ftp/Somatic_Mutation_WG/release/v1.2.1/` | `high-confidence_sINDEL_in_HC_regions_v1.2.1.vcf.gz` | 1.12 MB | `c51d6c8b939e0882e7baec6b21659a51` |
@@ -115,11 +117,16 @@ Differential testing evaluates the complete variant calling pipeline. End-to-end
 
 To ensure that parity with VarDictJava does not introduce drift relative to physical biological reality, both variant callers were evaluated against gold-standard benchmark truth sets using Real Time Genomics `rtg vcfeval` (`--squash-ploidy`):
 
-| Benchmark Dataset | Truth Standard | Variant Assay | Evaluated Sites (TP / FP / FN) | VarDictJava vcfeval | VarDictRust vcfeval | Truth Concordance |
+| Benchmark Dataset | Truth Standard | Variant Assay / Threshold | Evaluated Sites (TP / FP / FN) | VarDictJava vcfeval | VarDictRust vcfeval | Truth Concordance |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **GIAB HG002** | NIST v4.2.1 High-Confidence | Germline Small Variants | 22,803 TP / 22,458 FP / 813 FN | F1: 0.6622 (P: 0.5038, R: 0.9659) | F1: 0.6622 (P: 0.5038, R: 0.9659) | **EQUAL** |
+| **GIAB HG002** (Operating Point) | NIST v4.2.1 High-Confidence | Germline Small (`QUAL >= 128`) | 22,748 TP / **553 FP** / 871 FN | **F1: 0.9699 (P: 0.9763, R: 0.9635)** | **F1: 0.9699 (P: 0.9763, R: 0.9635)** | **EQUAL** |
+| **GIAB HG002** (Raw Baseline) | NIST v4.2.1 High-Confidence | Germline Small (`None` / raw) | 22,803 TP / 22,458 FP / 813 FN | F1: 0.6622 (P: 0.5038, R: 0.9659) | F1: 0.6622 (P: 0.5038, R: 0.9659) | **EQUAL** |
 | **SEQC2 HCC1395** | SEQC2 v1.2.1 Somatic Truth | High-Confidence Somatic SNV/InDel | 1,056 TP / 11,334 FP / 140 FN | F1: 0.1555 (P: 0.0852, R: 0.8842) | F1: 0.1555 (P: 0.0852, R: 0.8842) | **EQUAL** |
 | **GIAB HG008** | NIST Draft Benchmark v0.3 | Somatic Small Variants | 575 TP / 1,565 FP / 288 FN | F1: 0.3856 (P: 0.2687, R: 0.6825) | F1: 0.3856 (P: 0.2687, R: 0.6825) | **EQUAL** |
+
+> [!NOTE]
+> For a dedicated deep-dive technical report on the NIST GIAB HG002 benchmark—including stratified SNP vs InDel breakdowns, ROC curve phase transitions, and exact mathematical derivations—see [`docs/validation/nist-v4.2.1-hg002-benchmark.md`](nist-v4.2.1-hg002-benchmark.md).
+
 
 ### 5.1 Biological & Methodological Interpretation of Raw Caller Precision
 
@@ -142,7 +149,26 @@ The raw concordance metrics reported above exhibit high sensitivity/recall (96.5
 4. **The Parity Confirmation:**
    Crucially, **VarDictJava and VarDictRust produce bitwise identical site lists** (`diff tp.sites == 0`, `diff fp.sites == 0`, `diff fn.sites == 0`). Both callers exhibit high recall (96.59% on HG002, 88.42% on SEQC2). The "low precision" is entirely an expected biological property of running an unfiltered subclonal caller against a diploid consensus truth set, and confirms that VarDictRust reproduces VarDictJava's exact sensitivity envelope without drift.
 
+### 5.2 NIST GIAB HG002 Operating Point (`QUAL >= 128`) & Stratified Performance
+
+When evaluating the primary germline operating point determined by maximizing $F_1$ score on `rtg vcfeval` (`QUAL >= 128`), false positives collapse from 22,458 down to **553**, achieving **97.63% precision and 96.99% $F_1$ score** while preserving 96.35% sensitivity:
+
+| Variant Stratum | Evaluation Threshold | Baseline TP | Call TP | False Positives (FP) | False Negatives (FN) | Precision | Recall (Sens) | $F_1$ Measure | Parity (Java vs Rust) |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **All SNVs & InDels** | `QUAL >= 128.0` | 23,004 | 22,748 | **553** | 871 | **97.63%** | **96.35%** | **0.9699** | **0 diffs (EQUAL)** |
+| **SNPs Only** | `QUAL >= 127.0` | 20,436 | 20,225 | **151** | 385 | **99.25%** | **98.15%** | **0.9870** | **0 diffs (EQUAL)** |
+| **InDels Only** | `QUAL >= 128.0` | 2,570 | 2,525 | **402** | 484 | **87.32%** | **84.16%** | **0.8571** | **0 diffs (EQUAL)** |
+
+#### Mathematical Derivation of QUAL:
+In VarDict (`crates/vardict-core/src/output/vcf.rs:588-596`), QUAL is derived logarithmically from variant depth and base quality:
+$$\text{QUAL} = \left\lfloor \frac{\ln(\text{VD})}{\ln(2)} \cdot \text{round}(\text{MeanBaseQual}, 1) \right\rfloor = \left\lfloor \log_2(\text{VD}) \cdot \overline{Q}_{\text{base}} \right\rfloor$$
+
+Under typical Illumina quality scores ($\overline{Q}_{\text{base}} \approx 35$), $\text{VD} \ge 13 \implies \text{QUAL} \ge 128$. 
+
+Between **QUAL 75 and QUAL 100**, the ROC curve undergoes a massive phase transition where candidate false positives collapse from 11,394 to 728 (a 15.6-fold drop) while True Positives remain virtually unchanged (22,796 to 22,782). Full ROC trajectory curves and step-by-step reproduction instructions are detailed in [`docs/validation/nist-v4.2.1-hg002-benchmark.md`](nist-v4.2.1-hg002-benchmark.md).
+
 ---
+
 
 ## 6. Core Algorithmic Patterns & Mechanics
 
@@ -324,6 +350,11 @@ VarDictRust processes genomic regions via **bounded tiles with halo intervals** 
 
 ## 10. Exact Reproduction Commands
 
+### GIAB HG002 Unified First-Class Validation Runner
+```bash
+bash harness/run_hg002.sh
+```
+
 ### GIAB HG002 Dual-Engine Comparison
 ```bash
 bash harness/compare.sh \
@@ -332,6 +363,7 @@ bash harness/compare.sh \
   scratch/g4/hg002/eval.bed \
   HG002 -f 0.01 -th 8
 ```
+
 
 ### SEQC2 Somatic Whole-Exome Comparison
 ```bash

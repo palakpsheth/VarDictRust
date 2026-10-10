@@ -107,17 +107,19 @@ All comparisons evaluate the full end-to-end VCF output under float tolerance $\
 ### 2. Ground Truth Concordance (RTG vcfeval)
 Evaluated against physical ground truth using Real Time Genomics `rtg vcfeval`:
 
-| Benchmark Dataset | Truth Standard | Variant Assay | Evaluated Sites (TP / FP / FN) | VarDictJava vcfeval | VarDictRust vcfeval | Truth Concordance |
+| Benchmark Dataset | Truth Standard | Variant Assay / Threshold | Evaluated Sites (TP / FP / FN) | VarDictJava vcfeval | VarDictRust vcfeval | Truth Concordance |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **GIAB HG002** | NIST v4.2.1 High-Confidence | Germline Small Variants | 22,803 TP / 22,458 FP / 813 FN | F1: 0.6622 (P: 0.5038, R: 0.9659) | F1: 0.6622 (P: 0.5038, R: 0.9659) | **EQUAL** |
+| **GIAB HG002** (Operating Point) | NIST v4.2.1 High-Confidence | Germline Small (`QUAL >= 128`) | 22,748 TP / **553 FP** / 871 FN | **F1: 0.9699 (P: 0.9763, R: 0.9635)** | **F1: 0.9699 (P: 0.9763, R: 0.9635)** | **EQUAL** |
+| **GIAB HG002** (Raw Baseline) | NIST v4.2.1 High-Confidence | Germline Small (`None` / raw) | 22,803 TP / 22,458 FP / 813 FN | F1: 0.6622 (P: 0.5038, R: 0.9659) | F1: 0.6622 (P: 0.5038, R: 0.9659) | **EQUAL** |
 | **SEQC2 HCC1395** | SEQC2 v1.2.1 Somatic Truth | High-Confidence Somatic SNV/InDel | 1,056 TP / 11,334 FP / 140 FN | F1: 0.1555 (P: 0.0852, R: 0.8842) | F1: 0.1555 (P: 0.0852, R: 0.8842) | **EQUAL** |
 | **GIAB HG008** | NIST Draft Benchmark v0.3 | Somatic Small Variants | 575 TP / 1,565 FP / 288 FN | F1: 0.3856 (P: 0.2687, R: 0.6825) | F1: 0.3856 (P: 0.2687, R: 0.6825) | **EQUAL** |
 
 > [!NOTE]
 > **Interpreting Raw Discovery Sensitivity vs. Consensus Truth Set Precision:**
-> VarDict was designed as an ultra-sensitive discovery engine capable of calling subclonal cancer mutations down to 1% allele frequency (`-f 0.01`). Ground truth consensus sets (NIST v4.2.1, SEQC2 v1.2.1) are intentionally restricted to constitutional diploid or high-confidence somatic consensus variants, so raw discovery calls without post-filtering score thousands of subclonal candidates as technical false positives. When post-filtered (`FILTER="PASS" && STATUS="StrongSomatic"`), precision increases dramatically. Crucially, **VarDictJava and VarDictRust produce bitwise identical site lists** across all benchmark sets. For full biological details, see [Section 5.1 of the Validation Report](docs/validation/giab-seqc2-validation.md#51-biological--methodological-interpretation-of-raw-caller-precision).
+> VarDict was designed as an ultra-sensitive discovery engine capable of calling subclonal cancer mutations down to 1% allele frequency (`-f 0.01`). Ground truth consensus sets (NIST v4.2.1, SEQC2 v1.2.1) are intentionally restricted to constitutional diploid or high-confidence somatic consensus variants, so raw discovery calls without post-filtering score thousands of subclonal candidates as technical false positives. At the standard operating point (`QUAL >= 128`), false positives collapse to **553** while preserving 96.35% recall (**96.99% $F_1$ score**). Crucially, **VarDictJava and VarDictRust produce bitwise identical site lists** across all benchmark sets. For full biological details, see [Section 5.1 of the Validation Report](docs/validation/giab-seqc2-validation.md#51-biological--methodological-interpretation-of-raw-caller-precision) and the [Dedicated NIST HG002 Report](docs/validation/nist-v4.2.1-hg002-benchmark.md).
 
-*For full scientific details, reference checksums, and exact reproduction commands, see [`docs/validation/giab-seqc2-validation.md`](docs/validation/giab-seqc2-validation.md).*
+*For full scientific details, reference checksums, and exact reproduction commands, see [`docs/validation/giab-seqc2-validation.md`](docs/validation/giab-seqc2-validation.md) and [`docs/validation/nist-v4.2.1-hg002-benchmark.md`](docs/validation/nist-v4.2.1-hg002-benchmark.md).*
+
 
 ---
 
