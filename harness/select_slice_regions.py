@@ -28,7 +28,7 @@ def vcf_sites(path):
         for ln in fh:
             if ln.startswith("#"): continue
             f = ln.split("\t", 7)
-            if len(f) >= 7 and f[6] not in ("PASS", "."): continue
+            if len(f) >= 7 and not (f[6] == "." or "PASS" in f[6].split(";")): continue
             yield f[0], int(f[1]) - 1, len(f[3])
 
 def clusters(sites, chain, max_span):
