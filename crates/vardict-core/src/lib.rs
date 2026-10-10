@@ -81,6 +81,7 @@ fn run_pipeline_on_records(
     tail: PipelineTail,
     config: &config::Config,
     chromosomes_lengths: &HashMap<String, usize>,
+    seed_max_read_length: i32,
 ) -> Result<crate::variations::VariationData, VardictError> {
     let mut raw_records = Vec::new();
     for path in bam_paths {
@@ -119,6 +120,7 @@ fn run_pipeline_on_records(
         false,
         preprocessor.total_reads as i32,
         preprocessor.duplicate_reads as i32,
+        seed_max_read_length,
     )?;
 
     let chr_len = *chromosomes_lengths.get(chr).unwrap_or(&0) as u32;
@@ -319,6 +321,7 @@ pub fn run(config: &config::Config) -> Result<(), VardictError> {
                 },
                 &config_clone,
                 &chromosomes_lengths_clone,
+                0,
             )?;
 
             Ok((tile, var_data, reference))
@@ -449,6 +452,7 @@ fn process_amplicon_region(
         PipelineTail::Full,
         config,
         chromosomes_lengths,
+        0,
     )?;
 
     // Variant calling over the insert region (amplicon insert bounds)
@@ -684,6 +688,7 @@ fn run_somatic(config: &config::Config) -> Result<(), VardictError> {
                 PipelineTail::Somatic,
                 &config_clone,
                 &chromosomes_lengths_clone,
+                0,
             )?;
 
             let max_read_length_bam1 = var_data1.max_read_length;
@@ -701,6 +706,7 @@ fn run_somatic(config: &config::Config) -> Result<(), VardictError> {
                 PipelineTail::Somatic,
                 &config_clone,
                 &chromosomes_lengths_clone,
+                max_read_length_bam1,
             )?;
 
             // Use max of both BAMs' maxReadLength
@@ -758,6 +764,7 @@ fn run_somatic(config: &config::Config) -> Result<(), VardictError> {
                     PipelineTail::RealignOnly,
                     config,
                     &chromosomes_lengths,
+                    0,
                 )?;
 
                 // ToVarsBuilder

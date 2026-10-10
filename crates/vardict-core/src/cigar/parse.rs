@@ -77,6 +77,7 @@ impl<'a> CigarParser<'a> {
         svflag: bool,
         total_reads: i32,
         duplicate_reads: i32,
+        seed_max_read_length: i32,
     ) -> Self {
         Self {
             reference,
@@ -91,7 +92,7 @@ impl<'a> CigarParser<'a> {
             ref_coverage: BTreeMap::new(),
             soft_clips_5_end: BTreeMap::new(),
             soft_clips_3_end: BTreeMap::new(),
-            max_read_length: 0,
+            max_read_length: seed_max_read_length,
             splice: HashSet::new(),
             mnp: BTreeMap::new(),
             splice_count: HashMap::new(),
@@ -3093,6 +3094,7 @@ pub fn pileup(
     svflag: bool,
     total_reads: i32,
     duplicate_reads: i32,
+    seed_max_read_length: i32,
 ) -> Result<VariationData, VardictError> {
     let mut parser = CigarParser::new(
         reference,
@@ -3101,6 +3103,7 @@ pub fn pileup(
         svflag,
         total_reads,
         duplicate_reads,
+        seed_max_read_length,
     );
     for record in records {
         parser.parse_cigar(record)?;
@@ -3181,7 +3184,7 @@ mod tests {
         let mut config = Config::default();
         config.max_mismatches = 2;
 
-        let mut parser = CigarParser::new(&reference, &region, &config, false, 0, 0);
+        let mut parser = CigarParser::new(&reference, &region, &config, false, 0, 0, 0);
 
         let record_pass = SamRecord {
             name: b"read1".to_vec(),
@@ -3264,7 +3267,7 @@ mod tests {
         };
         let config = Config::default();
 
-        let mut parser = CigarParser::new(&reference, &region, &config, false, 0, 0);
+        let mut parser = CigarParser::new(&reference, &region, &config, false, 0, 0, 0);
 
         let record = SamRecord {
             name: b"read1".to_vec(),
@@ -3318,7 +3321,7 @@ mod tests {
 
         let mut config = Config::default();
         config.realign = 0;
-        let mut parser = CigarParser::new(&reference, &region, &config, false, 0, 0);
+        let mut parser = CigarParser::new(&reference, &region, &config, false, 0, 0, 0);
 
         // A read record with matches and mismatches
         let record = SamRecord {
@@ -3396,7 +3399,7 @@ mod tests {
 
         let mut config = Config::default();
         config.realign = 0;
-        let mut parser = CigarParser::new(&reference, &region, &config, false, 0, 0);
+        let mut parser = CigarParser::new(&reference, &region, &config, false, 0, 0, 0);
 
         let record = SamRecord {
             name: b"read1".to_vec(),
@@ -3458,7 +3461,7 @@ mod tests {
 
         let mut config = Config::default();
         config.realign = 0;
-        let mut parser = CigarParser::new(&reference, &region, &config, false, 0, 0);
+        let mut parser = CigarParser::new(&reference, &region, &config, false, 0, 0, 0);
 
         let record = SamRecord {
             name: b"read1".to_vec(),
@@ -3520,7 +3523,7 @@ mod tests {
 
         let mut config = Config::default();
         config.realign = 0;
-        let mut parser = CigarParser::new(&reference, &region, &config, false, 0, 0);
+        let mut parser = CigarParser::new(&reference, &region, &config, false, 0, 0, 0);
 
         let record = SamRecord {
             name: b"read1".to_vec(),
@@ -3575,7 +3578,7 @@ mod tests {
 
         let mut config = Config::default();
         config.realign = 0;
-        let mut parser = CigarParser::new(&reference, &region, &config, false, 0, 0);
+        let mut parser = CigarParser::new(&reference, &region, &config, false, 0, 0, 0);
 
         let record = SamRecord {
             name: b"read1".to_vec(),
@@ -3657,7 +3660,7 @@ mod tests {
             amplicon: None,
         };
         let config = Config::default();
-        let mut parser = CigarParser::new(&reference, &region, &config, false, 0, 0);
+        let mut parser = CigarParser::new(&reference, &region, &config, false, 0, 0, 0);
 
         parser.parse_cigar(&record).unwrap();
 
@@ -3696,7 +3699,7 @@ mod tests {
             amplicon: None,
         };
         let config = Config::default();
-        let mut parser = CigarParser::new(&reference, &region, &config, false, 0, 0);
+        let mut parser = CigarParser::new(&reference, &region, &config, false, 0, 0, 0);
 
         parser.parse_cigar(&record).unwrap();
 
@@ -3730,7 +3733,7 @@ mod tests {
             amplicon: None,
         };
         let config = Config::default();
-        let mut parser = CigarParser::new(&reference, &region, &config, false, 0, 0);
+        let mut parser = CigarParser::new(&reference, &region, &config, false, 0, 0, 0);
         parser.max_read_length = 150;
 
         let record = SamRecord {
@@ -3801,7 +3804,7 @@ mod tests {
         };
 
         // Own MAPQ 13 but no MQ tag: Java collects the pair.
-        let mut parser = CigarParser::new(&reference, &region, &config, false, 0, 0);
+        let mut parser = CigarParser::new(&reference, &region, &config, false, 0, 0, 0);
         parser.max_read_length = 150;
         parser.parse_cigar(&mk_record(None, None)).unwrap();
         let fus = parser
@@ -3812,13 +3815,13 @@ mod tests {
         assert_eq!(fus.last().unwrap().variation.cnt, 1);
 
         // Mate MQ tag < 15: Java skips collection.
-        let mut parser = CigarParser::new(&reference, &region, &config, false, 0, 0);
+        let mut parser = CigarParser::new(&reference, &region, &config, false, 0, 0, 0);
         parser.max_read_length = 150;
         parser.parse_cigar(&mk_record(None, Some(10u8))).unwrap();
         assert!(!parser.sv_structures.svffus.contains_key("chr2"));
 
         // MC tag with clips on both ends: Java skips collection.
-        let mut parser = CigarParser::new(&reference, &region, &config, false, 0, 0);
+        let mut parser = CigarParser::new(&reference, &region, &config, false, 0, 0, 0);
         parser.max_read_length = 150;
         parser
             .parse_cigar(&mk_record(Some("20S50M23S".to_string()), None))
@@ -3843,7 +3846,7 @@ mod tests {
             amplicon: None,
         };
         let config = Config::default();
-        let mut parser = CigarParser::new(&reference, &region, &config, false, 0, 0);
+        let mut parser = CigarParser::new(&reference, &region, &config, false, 0, 0, 0);
         parser.max_read_length = 100;
 
         // Dup cluster ending far to the RIGHT of the upcoming read:
@@ -3918,7 +3921,7 @@ mod tests {
             amplicon: None,
         };
         let config = Config::default();
-        let mut parser = CigarParser::new(&reference, &region, &config, false, 0, 0);
+        let mut parser = CigarParser::new(&reference, &region, &config, false, 0, 0, 0);
         parser.max_read_length = 100;
 
         let mut dup_sc = Sclip::new();

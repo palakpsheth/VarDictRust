@@ -4005,6 +4005,7 @@ fn partial_pipeline(
         true,
         preprocessor.total_reads as i32,
         preprocessor.duplicate_reads as i32,
+        0,
     )?;
 
     for (pos, cov) in var_data.ref_coverage {
