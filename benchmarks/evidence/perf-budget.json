@@ -1,0 +1,43 @@
+{
+  "cmd": [
+    "python3",
+    "harness/perf_budget.py",
+    "hg008-tier2",
+    "seqc2-exome-tier2"
+  ],
+  "compare_head": [],
+  "date": "2026-10-10T03:17:17-07:00",
+  "extra": {
+    "budget": "rust<=java wall and peak RSS (A9)",
+    "pass": true,
+    "runs": {
+      "hg008-tier2": {
+        "evidence_fingerprint": "fac2186e9f75f268",
+        "java_rss_kb": 6012708,
+        "java_wall_s": 70.99,
+        "pass": true,
+        "rss_ratio": 0.2091,
+        "rust_rss_kb": 1257032,
+        "rust_wall_s": 49.48,
+        "wall_ratio": 0.697
+      },
+      "seqc2-exome-tier2": {
+        "evidence_fingerprint": "ab20f08dd357a931",
+        "java_rss_kb": 4248888,
+        "java_wall_s": 3263.0,
+        "pass": true,
+        "rss_ratio": 0.3566,
+        "rust_rss_kb": 1515224,
+        "rust_wall_s": 1185.73,
+        "wall_ratio": 0.3634
+      }
+    }
+  },
+  "fingerprint": "08cc7a901d1f0c7d",
+  "head": "923e18a7e66394700b497585626c15698eea6b23",
+  "java_time": null,
+  "n_variants": null,
+  "name": "perf-budget",
+  "result": "PASS",
+  "rust_time": null
+}

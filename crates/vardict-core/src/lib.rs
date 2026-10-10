@@ -277,14 +277,7 @@ pub fn run(config: &config::Config) -> Result<(), VardictError> {
     crate::runner::run_parallel(
         tiles,
         config.threads,
-        move |tile| -> Result<
-            (
-                crate::regions::Tile,
-                crate::variations::VariationData,
-                crate::reference::Reference,
-            ),
-            VardictError,
-        > {
+        move |tile| -> Result<Vec<String>, VardictError> {
             let bed_region = crate::regions::Region {
                 chr: tile.chr.clone(),
                 start: tile.halo_start,
@@ -320,15 +313,17 @@ pub fn run(config: &config::Config) -> Result<(), VardictError> {
                 0,
             )?;
 
-            Ok((tile, var_data, reference))
-        },
-        move |(tile, var_data, reference)| {
-            if config.splice {
+            let mut lines = Vec::new();
+
+            if config_clone.splice {
                 for (intron, count_arr) in &var_data.splice_count {
                     let count = count_arr[0];
-                    println!("{}\t{}\t{}\t{}", config.sample, tile.chr, intron, count);
+                    lines.push(format!(
+                        "{}\t{}\t{}\t{}",
+                        config_clone.sample, tile.chr, intron, count
+                    ));
                 }
-                return Ok(());
+                return Ok(lines);
             }
 
             let builder_region = crate::regions::Region {
@@ -342,33 +337,43 @@ pub fn run(config: &config::Config) -> Result<(), VardictError> {
             let builder = crate::tovars::ToVarsBuilder::new(
                 &reference,
                 &builder_region,
-                &chromosomes_lengths,
-                config,
+                &chromosomes_lengths_clone,
+                &config_clone,
             );
             let aligned_variants = builder.build_aligned_variants(&var_data);
             let variants = crate::postprocess::simple::simple_post_process(
-                config,
+                &config_clone,
                 &builder_region,
                 &aligned_variants,
                 &var_data.splice,
             );
 
             for v in variants {
-                if config.emit_intermediate {
-                    let mut line = if config.fisher {
-                        crate::output::table::simple_38(&v, &builder_region, &config.sample, &v.sv)
+                if config_clone.emit_intermediate {
+                    let mut line = if config_clone.fisher {
+                        crate::output::table::simple_38(
+                            &v,
+                            &builder_region,
+                            &config_clone.sample,
+                            &v.sv,
+                        )
                     } else {
-                        crate::output::table::simple_36(&v, &builder_region, &config.sample, &v.sv)
+                        crate::output::table::simple_36(
+                            &v,
+                            &builder_region,
+                            &config_clone.sample,
+                            &v.sv,
+                        )
                     };
-                    if config.crispr_cutting_site.unwrap_or(0) != 0 {
+                    if config_clone.crispr_cutting_site.unwrap_or(0) != 0 {
                         line.push_str(&format!("\t{}", v.crispr));
                     }
                     // ports SimpleOutputVariant.java:116-117 (DEBUG appended after crispr)
-                    if config.debug {
+                    if config_clone.debug {
                         line.push('\t');
                         line.push_str(&v.debug);
                     }
-                    println!("{}", line);
+                    lines.push(line);
                 } else {
                     // ports var2vcf_valid.pl:141 — empty-REF .var rows (the -p
                     // null records) are dropped before VCF conversion. Java's
@@ -391,19 +396,34 @@ pub fn run(config: &config::Config) -> Result<(), VardictError> {
                     );
                     let sbf = fisher.get_p_value();
                     let oddratio_str = fisher.get_odds_ratio();
-                    let filters =
-                        crate::output::vcf::filter_variant(&v, config, 0, None, sbf, &oddratio_str);
+                    let filters = crate::output::vcf::filter_variant(
+                        &v,
+                        &config_clone,
+                        0,
+                        None,
+                        sbf,
+                        &oddratio_str,
+                    );
                     let record = crate::output::vcf::format_vcf_record(
                         &v,
                         &builder_region,
-                        config,
+                        &config_clone,
                         &filters,
                         sbf,
                         &oddratio_str,
                         None,
                     );
-                    println!("{}", record);
+                    lines.push(record);
                 }
+            }
+            Ok(lines)
+        },
+        move |lines| {
+            let stdout = std::io::stdout();
+            let mut handle = stdout.lock();
+            use std::io::Write;
+            for line in lines {
+                writeln!(handle, "{}", line).map_err(VardictError::Io)?;
             }
             Ok(())
         },
@@ -647,15 +667,7 @@ fn run_somatic(config: &config::Config) -> Result<(), VardictError> {
     crate::runner::run_parallel(
         tiles,
         config.threads,
-        move |tile| -> Result<
-            (
-                crate::regions::Tile,
-                crate::variations::VariationData,
-                crate::variations::VariationData,
-                crate::reference::Reference,
-            ),
-            VardictError,
-        > {
+        move |tile| -> Result<Vec<String>, VardictError> {
             // Process BAM1 (tumor)
             let bed_region = crate::regions::Region {
                 chr: tile.chr.clone(),
@@ -708,9 +720,6 @@ fn run_somatic(config: &config::Config) -> Result<(), VardictError> {
             // Use max of both BAMs' maxReadLength
             let _combined_max_rl = max_read_length_bam1.max(var_data2.max_read_length);
 
-            Ok((tile, var_data1, var_data2, reference))
-        },
-        move |(tile, var_data1, var_data2, reference)| {
             let builder_region = crate::regions::Region {
                 chr: tile.chr.clone(),
                 start: tile.original_start,
@@ -723,22 +732,24 @@ fn run_somatic(config: &config::Config) -> Result<(), VardictError> {
             let builder1 = crate::tovars::ToVarsBuilder::new(
                 &reference,
                 &builder_region,
-                &chromosomes_lengths,
-                config,
+                &chromosomes_lengths_clone,
+                &config_clone,
             );
             let aligned1 = builder1.build_aligned_variants(&var_data1);
 
             let builder2 = crate::tovars::ToVarsBuilder::new(
                 &reference,
                 &builder_region,
-                &chromosomes_lengths,
-                config,
+                &chromosomes_lengths_clone,
+                &config_clone,
             );
             let aligned2 = builder2.build_aligned_variants(&var_data2);
 
             // Run somatic postprocess with combineAnalysis pipeline callback
             let bam1 = bam1_path_for_combine.clone();
             let bam2 = bam2_path_for_combine.clone();
+            let config_for_combine = config_clone.clone();
+            let chr_lens_for_combine = chromosomes_lengths_clone.clone();
             let pipeline_fn = |combine_region: &crate::regions::Region| -> Result<
                 crate::javamap::JavaHashMap<i32, crate::variations::Vars>,
                 VardictError,
@@ -758,8 +769,8 @@ fn run_somatic(config: &config::Config) -> Result<(), VardictError> {
                     &mut pipeline_ref,
                     combine_region,
                     PipelineTail::Somatic,
-                    config,
-                    &chromosomes_lengths,
+                    &config_for_combine,
+                    &chr_lens_for_combine,
                     0,
                 )?;
 
@@ -767,14 +778,14 @@ fn run_somatic(config: &config::Config) -> Result<(), VardictError> {
                 let builder = crate::tovars::ToVarsBuilder::new(
                     &pipeline_ref,
                     combine_region,
-                    &chromosomes_lengths,
-                    config,
+                    &chr_lens_for_combine,
+                    &config_for_combine,
                 );
                 Ok(builder.build_aligned_variants(&var_data))
             };
 
             let somatic_variants = crate::postprocess::somatic::somatic_post_process(
-                config,
+                &config_clone,
                 &builder_region,
                 &aligned1,
                 &aligned2,
@@ -783,16 +794,18 @@ fn run_somatic(config: &config::Config) -> Result<(), VardictError> {
                 var_data1.max_read_length,
             );
 
+            let mut lines = Vec::new();
+
             // Output 55-column format (or 61-column with --fisher), or the
             // paired VCF (var2vcf_paired.pl) when not in intermediate mode.
-            if config.emit_intermediate {
+            if config_clone.emit_intermediate {
                 for sv in somatic_variants {
-                    let line = if config.fisher {
+                    let line = if config_clone.fisher {
                         crate::output::table::somatic_61(
                             &sv.variant1,
                             sv.variant2.as_ref(),
                             &builder_region,
-                            &config.sample,
+                            &config_clone.sample,
                             &sv.status,
                             &sv.sv1,
                             &sv.sv2,
@@ -803,7 +816,7 @@ fn run_somatic(config: &config::Config) -> Result<(), VardictError> {
                             &sv.variant1,
                             sv.variant2.as_ref(),
                             &builder_region,
-                            &config.sample,
+                            &config_clone.sample,
                             &sv.status,
                             &sv.sv1,
                             &sv.sv2,
@@ -811,10 +824,10 @@ fn run_somatic(config: &config::Config) -> Result<(), VardictError> {
                         )
                     };
                     // ports SomaticOutputVariant.java:193-194 (DEBUG = tumor variant's)
-                    if config.debug {
-                        println!("{}\t{}", line, sv.variant1.debug);
+                    if config_clone.debug {
+                        lines.push(format!("{}\t{}", line, sv.variant1.debug));
                     } else {
-                        println!("{}", line);
+                        lines.push(line);
                     }
                 }
             } else {
@@ -829,17 +842,24 @@ fn run_somatic(config: &config::Config) -> Result<(), VardictError> {
                             crate::output::vcf::format_paired_vcf_record(
                                 &sv,
                                 &builder_region.chr,
-                                config,
+                                &config_clone,
                             )
                         })
                         .collect();
                 // Delayed print + Cluster state machine (:229-236,248-250);
                 // opt_c default 0 (no -c plumbed to the paired writer) makes the
                 // rule inert.
-                let lines = crate::output::vcf::finish_paired_records(records, 0);
-                for line in lines {
-                    println!("{}", line);
-                }
+                let finished = crate::output::vcf::finish_paired_records(records, 0);
+                lines.extend(finished);
+            }
+            Ok(lines)
+        },
+        move |lines| {
+            let stdout = std::io::stdout();
+            let mut handle = stdout.lock();
+            use std::io::Write;
+            for line in lines {
+                writeln!(handle, "{}", line).map_err(VardictError::Io)?;
             }
             Ok(())
         },

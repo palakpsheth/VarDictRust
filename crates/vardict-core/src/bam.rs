@@ -77,17 +77,17 @@ impl SamRecord {
             )
         };
 
-        let mut cigar = Vec::new();
+        let mut cigar = Vec::with_capacity(record.cigar().len());
         for op in record.cigar().iter().flatten() {
             cigar.push((op.len() as u32, op.kind()));
         }
 
-        let mut sequence = Vec::new();
+        let mut sequence = Vec::with_capacity(record.sequence().len());
         for b in record.sequence().iter() {
             sequence.push(b);
         }
 
-        let mut quality_scores = Vec::new();
+        let mut quality_scores = Vec::with_capacity(record.quality_scores().len());
         for score in record.quality_scores().iter().flatten() {
             quality_scores.push(score + 33);
         }

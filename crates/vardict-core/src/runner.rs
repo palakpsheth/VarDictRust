@@ -30,7 +30,7 @@ where
             )))
         })?;
 
-    let window_size = if num_threads > 0 { num_threads * 2 } else { 2 };
+    let window_size = if num_threads > 0 { num_threads * 4 } else { 4 };
     let (tx, rx) = mpsc::channel::<(usize, Result<R, VardictError>)>();
 
     // Mutex state: (next_expected_idx, is_shutdown)
@@ -95,10 +95,13 @@ where
             let val = res?;
             pending.insert(idx, val);
 
+            let mut advanced = false;
             while let Some(val) = pending.remove(&next_expected_idx) {
                 consumer_fn(val)?;
                 next_expected_idx += 1;
-
+                advanced = true;
+            }
+            if advanced {
                 let mut state = lock.lock().unwrap_or_else(|e| e.into_inner());
                 state.0 = next_expected_idx;
                 cvar.notify_all();
