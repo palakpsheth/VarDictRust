@@ -3,7 +3,7 @@
 **Authors:** The VarDictRust Development Team  
 **Standard:** [rewrites.bio](https://rewrites.bio) Manifesto (§5 Prime Directive & Empirical Reproducibility)  
 **Reference Comparator:** VarDictJava v1.8.3 (commit `0886261`, Perl/R submodule `009e017`)  
-**Release Fingerprint:** `34d8b253f282884e`  
+**Release Fingerprint:** `62fcf630be2d53e9`  
 **Date:** October 2026  
 
 ---
