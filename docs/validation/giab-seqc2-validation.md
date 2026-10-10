@@ -18,6 +18,7 @@ This document establishes the empirical validation proof for VarDictRust v1.0.0 
 3. **GIAB HG008 Somatic PDAC Tumor / Normal Paired-End Sequencing** against the **NIST Somatic Draft Benchmark v0.3** truth set.
 4. **Targeted Amplicon Panel** with overlapping primers exercising primer-bias detection (`AMPBIAS`) and 8-column BED parsing.
 5. **Human Chromosome 1 Scale Benchmark (1 Mbp to 249 Mbp)** demonstrating bounded $O(1)$ resident memory scaling.
+6. **Full-Spectrum Extended Modalities (RNA Splicing, Complex SVs, CRISPR, Operational Flags)** demonstrating 100% byte-for-byte output parity against VarDictJava v1.8.3 across 9 specialized configurations (see [Full Code Coverage Validation Report](full-code-coverage-validation.md)).
 
 Every result reported below is backed by a cryptographically fingerprinted, machine-readable evidence artifact in [`benchmarks/evidence/`](../../benchmarks/evidence/).
 
