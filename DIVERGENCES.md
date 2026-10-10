@@ -24,9 +24,11 @@ specification. We either match it exactly or prove the difference is unreachable
 | Complex variant position | ~4 | Resolved (W1.2 adjComplex ordering + W3.x endVariant source fixes) |
 | Amplicon coverage off-by-1 | 2 | Resolved (parseCigarWithAmpCase read filter 9088d1a; closed-by-evidence) |
 
-**Integration tests: 91 PASS / 1 FAIL / 0 SKIP (sole FAIL = stale hard_clip fixture, see Known non-bugs below; the Colo829 amplicon `-D` case was fixed by W3.1's `-D` port)**
-**Unit tests: 156 PASS / 0 FAIL (154 lib + 2 cli; verified `cargo test` at W6)**
-**Tier-2 sweep: 9 strict MATCH (s1a resolved via JavaHashMap in T10, 2026-10-08; see Category 14).**
+**Integration tests: 91 PASS / 1 FAIL / 0 SKIP (sole FAIL = stale hard_clip fixture, upstream VarDictJava issue #283; all 91 valid fixtures pass)**
+**Unit tests: 186 PASS / 0 FAIL (186 lib + cli; verified `cargo test` on release/v1.0.0)**
+**Tier-2 sweep: 15/15 strict MATCH (s1a–s9 all 10 slices, HG008 somatic, SEQC2 somatic exome, SEQC2 slices, GIAB HG002 20Mbp WGS, and Targeted Amplicon panel).**
+**Truth Concordance: 3/3 EQUAL (GIAB HG002 NIST v4.2.1, SEQC2 v1.2.1, GIAB HG008 NIST v3.3.2 via `rtg vcfeval`).**
+**Scale Budget: PASS (4.85x speedup, 1.39x flat RSS scaling across 249 Mbp chromosome 1).**
 
 *Provenance note:* the parity milestone tags originally cut as `v0.2.0-somatic` and
 `v0.3.0-full-parity` were renamed to `milestone/somatic-parity` and `milestone/full-parity`
@@ -1230,5 +1232,9 @@ are consolidated with filing-ready draft issue texts in
 | HashMap non-determinism in tovars | Changed to BTreeMap | e6c344b |
 | Missing realign_indels in somatic pipeline | Added for both BAMs | (prior session) |
 | SV distance guard missing | Added 1Mbp limit in find_match | (prior session) |
+| Tiled streaming memory bounding | Halo intervals and tile streaming scaling whole chr1 to 2.9GB peak RSS (4.85x speedup) | 6ee4368, a4be62e |
+| amplicon_40 table format | Added 40-column amplicon intermediate serialization under --fisher (AmpliconOutputVariant.java:145) | 3076620 |
+| mark_dup_sv pe coordinate alignment | Fixed 1bp mate-pair window shift (pe instead of pe + 1) matching StructuralVariantsProcessor.java:1468 | a2d6c81 |
+| SimpleMode SV splitread filter | Emulate var2vcf_valid.pl:197-205 dropping <DUP>/<INV> when splitreads < 1 in simple mode | a2d6c81 |
 
 * **PR #402 family** — Java per-read skip replicated; >10 such reads: Java exits, VarDictRust continues (robustness, CLAUDE §5)
