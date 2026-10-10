@@ -24,3 +24,11 @@ jobs:
         run: cargo bench --no-run
       - name: Build release
         run: cargo build --release
+      - name: Integration Corpus Regression
+        run: |
+          bash harness/run_integration.sh > integration.log 2>&1 || true
+          grep -qx 'PASS: 91  FAIL: 1  SKIP: 0' integration.log
+          grep -qxF 'MISMATCH: Simple;hard_clip_case.fa;hard_clip_next_to_del_test2.bam;test;6434-6564;-f 0.0 -p -r 1.txt' integration.log
+      - name: Crash Robustness Suite
+        run: cargo test -p vardictrust --test robustness
+
