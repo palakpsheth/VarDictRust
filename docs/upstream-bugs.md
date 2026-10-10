@@ -100,7 +100,7 @@ power-of-two table indexing, load factor 0.75, resize threshold doubling, and bu
 iteration order across variant maps (`non_insertion_variants`, `insertion_variants`,
 and `aligned_variants`). This completely eliminated the single residual AF-tie at
 `chr20:20202875` on Tier-2 slice `s1a`, emitting `TA>T` before `T>A` and achieving
-100% byte-for-byte parity (1048/1048 variants, 0 diffs). Per CLAUDE.md §8, `JavaHashMap`
+100% byte-for-byte parity (1048/1048 variants, 0 diffs). Per AGENTS.md §8, `JavaHashMap`
 is the only sanctioned non-sorted map in output-reaching paths.
 
 **Draft issue text:**

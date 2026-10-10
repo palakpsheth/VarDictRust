@@ -2,8 +2,8 @@
 
 > **Point-in-time snapshot: 2026-08-24.** Compiled from web/GitHub sweeps (sources
 > listed at the end; claims reflect pages as fetched that day). This document is
-> provenance for two decisions: the *trust batch* (`docs/plans/2026-08-24-trust-batch.md`)
-> and the *deferred external-validation plan* (`docs/plans/giab-seqc2-validation.md`).
+> provenance for decisions consolidated into `PLAN.md` and external validation reports in
+> `docs/validation/giab-seqc2-validation.md`.
 > Weaknesses are given equal standing to strengths — see §5.
 
 ## 1. The wave
@@ -59,7 +59,7 @@ gates before core aligner work").
 
 | Field practice | VarDictRust |
 |---|---|
-| Emulate exactly, bugs included | CLAUDE.md §5 bug-replication policy + `DIVERGENCES.md` ledger (rarer than byte-parity itself) |
+| Emulate exactly, bugs included | AGENTS.md §5 bug-replication policy + `DIVERGENCES.md` ledger (rarer than byte-parity itself) |
 | Pinned oracle + differential testing | VarDictJava v1.8.3 @`0886261` conda env; 92-case corpus; live-oracle VCF sweep |
 | Work small, per-function evidence | §7 port loop with source citations — McLeod's knowledge-extraction ideal |
 | Fail loudly on unsupported | §12 `Unsupported()` errors (`cli.rs` `UNSUPPORTED_FLAGS`) |
@@ -73,7 +73,7 @@ gates before core aligner work").
 1. ~~No fuzzing~~ → **G1**: cargo-fuzz targets for CIGAR/BED-region parsing (crash-family seeds).
 2. ~~Flag statuses asserted, not graded~~ → **B'**: README flag table gains honest per-flag validation-status vocabulary.
 3. ~~Release artifacts ungated~~ → **G0+G3**: committed micro-fixture + smoke gate on the release artifact (bwa-mem4 practice).
-4. **External truth-set validation pending** → **E**: GIAB/SEQC2 plan (`docs/plans/giab-seqc2-validation.md`); it is the headline credential bwa-mem4 leads with.
+4. **External truth-set validation** → **E**: GIAB/SEQC2 validation suite (`docs/validation/giab-seqc2-validation.md`); it is the headline credential bwa-mem4 leads with.
 5. Upstream-drift watcher: moot — VarDictJava v1.8.3 is frozen/archived; our pin IS the drift policy.
 
 ## 6. Sources (as fetched 2026-08-24)
