@@ -58,9 +58,6 @@ enum PipelineTail {
     /// Somatic BAM pass (SomaticMode.java): adjust_mnp + realign_indels both
     /// gated on `-r 1`, then find_all_sv + adj_snv unconditionally.
     Somatic,
-    /// Somatic combineAnalysis callback: realign_indels only, on a cloned
-    /// reference (the realignment result is discarded upstream in Java).
-    RealignOnly,
 }
 
 /// Per-region pipeline shared by simple, amplicon and somatic modes: query the
@@ -147,11 +144,17 @@ fn run_pipeline_on_records(
                     &mut var_data,
                 );
             }
+            let current_bam = bam_paths
+                .first()
+                .map(|p| std::path::Path::new(p.as_str()))
+                .unwrap_or(std::path::Path::new(""));
             crate::sv::find_all_sv(
                 &mut var_data,
+                current_bam,
                 reference,
                 chr,
                 chr_len,
+                pileup_region,
                 config,
                 chromosomes_lengths,
             )?;
@@ -177,28 +180,21 @@ fn run_pipeline_on_records(
                     &mut var_data,
                 );
             }
+            let current_bam = bam_paths
+                .first()
+                .map(|p| std::path::Path::new(p.as_str()))
+                .unwrap_or(std::path::Path::new(""));
             crate::sv::find_all_sv(
                 &mut var_data,
+                current_bam,
                 reference,
                 chr,
                 chr_len,
+                pileup_region,
                 config,
                 chromosomes_lengths,
             )?;
             crate::realign::adj_snv(reference, chr, config, &mut var_data);
-        }
-        PipelineTail::RealignOnly => {
-            if config.realign == 1 {
-                crate::realign::realign_indels(
-                    Some(bam_paths),
-                    &mut reference.clone(),
-                    chr,
-                    chr_len,
-                    pileup_region,
-                    config,
-                    &mut var_data,
-                );
-            }
         }
     }
 
@@ -761,7 +757,7 @@ fn run_somatic(config: &config::Config) -> Result<(), VardictError> {
                     None,
                     &mut pipeline_ref,
                     combine_region,
-                    PipelineTail::RealignOnly,
+                    PipelineTail::Somatic,
                     config,
                     &chromosomes_lengths,
                     0,

@@ -780,6 +780,7 @@ pub fn find_inv_sub(
     dir: i32,
     side: Side,
     var_data: &mut crate::variations::VariationData,
+    bam_path: &std::path::Path,
     reference: &mut Reference,
     chr: &str,
     config: &Config,
@@ -868,6 +869,7 @@ pub fn find_inv_sub(
             };
             get_reference(&mod_region, 500, chromosomes_lengths, config, reference)?;
             partial_pipeline(
+                bam_path,
                 var_data,
                 reference,
                 chr,
@@ -1226,6 +1228,7 @@ pub fn find_inv_sub(
 /// Ports `StructuralVariantsProcessor.findINV`.
 pub fn find_inv(
     var_data: &mut crate::variations::VariationData,
+    bam_path: &std::path::Path,
     reference: &mut Reference,
     chr: &str,
     config: &Config,
@@ -1236,6 +1239,7 @@ pub fn find_inv(
         1,
         Side::Five,
         var_data,
+        bam_path,
         reference,
         chr,
         config,
@@ -1246,6 +1250,7 @@ pub fn find_inv(
         -1,
         Side::Five,
         var_data,
+        bam_path,
         reference,
         chr,
         config,
@@ -1256,6 +1261,7 @@ pub fn find_inv(
         1,
         Side::Three,
         var_data,
+        bam_path,
         reference,
         chr,
         config,
@@ -1266,6 +1272,7 @@ pub fn find_inv(
         -1,
         Side::Three,
         var_data,
+        bam_path,
         reference,
         chr,
         config,
@@ -1278,6 +1285,7 @@ pub fn find_inv(
 /// Ports `StructuralVariantsProcessor.findDEL`.
 pub fn find_del(
     var_data: &mut crate::variations::VariationData,
+    bam_path: &std::path::Path,
     reference: &mut Reference,
     chr: &str,
     config: &Config,
@@ -1352,6 +1360,7 @@ pub fn find_del(
                 };
                 get_reference(&mod_region, 500, chromosomes_lengths, config, reference)?;
                 partial_pipeline(
+                    bam_path,
                     var_data,
                     reference,
                     chr,
@@ -1666,6 +1675,7 @@ pub fn find_del(
                 };
                 get_reference(&mod_region, 500, chromosomes_lengths, config, reference)?;
                 partial_pipeline(
+                    bam_path,
                     var_data,
                     reference,
                     chr,
@@ -1900,11 +1910,13 @@ pub fn find_del(
 }
 
 /// Find structural variants (DEL, INV) using remaining softclip evidence.
-/// Ports `StructuralVariantsProcessor.findsv`.
+/// Ports `StructuralVariantsProcessor.findsv` and `fillAndSortTmpSV`.
 pub fn find_sv(
     var_data: &mut crate::variations::VariationData,
     reference: &mut Reference,
     chr: &str,
+    curseg_start: i32,
+    curseg_end: i32,
     config: &Config,
     chromosomes_lengths: &HashMap<String, usize>,
 ) -> Result<(), VardictError> {
@@ -1912,11 +1924,13 @@ pub fn find_sv(
     let verbose = config.verbose;
     let (adaptor_forward, adaptor_reverse) = crate::realign::fill_adaptor_maps(&config.adaptor);
 
+    // Ports StructuralVariantsProcessor.java:973 fillAndSortTmpSV:
+    // if (position < CURSEG.start || position > CURSEG.end) continue;
     let mut tmp5: Vec<SortPositionSclip> = var_data
         .soft_clips_5_end
         .iter()
         .filter_map(|(&pos, scv)| {
-            if scv.used {
+            if scv.used || pos < curseg_start || pos > curseg_end {
                 None
             } else {
                 Some(SortPositionSclip {
@@ -1933,7 +1947,7 @@ pub fn find_sv(
         .soft_clips_3_end
         .iter()
         .filter_map(|(&pos, scv)| {
-            if scv.used {
+            if scv.used || pos < curseg_start || pos > curseg_end {
                 None
             } else {
                 Some(SortPositionSclip {
@@ -2894,6 +2908,7 @@ pub fn find_inv_disc(
 /// Ports `StructuralVariantsProcessor.findDUPdisc`.
 pub fn find_dup_disc(
     var_data: &mut crate::variations::VariationData,
+    bam_path: &std::path::Path,
     reference: &mut Reference,
     chr: &str,
     config: &Config,
@@ -2944,9 +2959,10 @@ pub fn find_dup_disc(
                     gene: String::new(),
                     amplicon: None,
                 };
-                get_reference(&mod_region, 500, chromosomes_lengths, config, reference)?;
+                get_reference(&mod_region, 300, chromosomes_lengths, config, reference)?;
             }
             partial_pipeline(
+                bam_path,
                 var_data,
                 reference,
                 chr,
@@ -3139,9 +3155,10 @@ pub fn find_dup_disc(
                     gene: String::new(),
                     amplicon: None,
                 };
-                get_reference(&mod_region, 500, chromosomes_lengths, config, reference)?;
+                get_reference(&mod_region, 300, chromosomes_lengths, config, reference)?;
             }
             partial_pipeline(
+                bam_path,
                 var_data,
                 reference,
                 chr,
@@ -3318,9 +3335,11 @@ pub fn find_dup_disc(
 /// Ports `StructuralVariantsProcessor.process`.
 pub fn find_all_sv(
     var_data: &mut crate::variations::VariationData,
+    bam_path: &std::path::Path,
     reference: &mut Reference,
     chr: &str,
     chr_len: u32,
+    pileup_region: &crate::regions::Region,
     config: &Config,
     chromosomes_lengths: &HashMap<String, usize>,
 ) -> Result<(), VardictError> {
@@ -3332,17 +3351,39 @@ pub fn find_all_sv(
     if verbose_log(config) {
         eprintln!("Start Structural Variants: DEL\n");
     }
-    find_del(var_data, reference, chr, config, chromosomes_lengths)?;
+    find_del(
+        var_data,
+        bam_path,
+        reference,
+        chr,
+        config,
+        chromosomes_lengths,
+    )?;
 
     if verbose_log(config) {
         eprintln!("Start Structural Variants: INV\n");
     }
-    find_inv(var_data, reference, chr, config, chromosomes_lengths)?;
+    find_inv(
+        var_data,
+        bam_path,
+        reference,
+        chr,
+        config,
+        chromosomes_lengths,
+    )?;
 
     if verbose_log(config) {
         eprintln!("Start Structural Variants\n");
     }
-    find_sv(var_data, reference, chr, config, chromosomes_lengths)?;
+    find_sv(
+        var_data,
+        reference,
+        chr,
+        pileup_region.start.0 as i32,
+        pileup_region.end.0 as i32,
+        config,
+        chromosomes_lengths,
+    )?;
 
     if verbose_log(config) {
         eprintln!("Start Structural Variants: DEL discordant pairs only\n");
@@ -3357,7 +3398,14 @@ pub fn find_all_sv(
     if verbose_log(config) {
         eprintln!("Start Structural Variants: DUP discordant pairs only\n");
     }
-    find_dup_disc(var_data, reference, chr, config, chromosomes_lengths)?;
+    find_dup_disc(
+        var_data,
+        bam_path,
+        reference,
+        chr,
+        config,
+        chromosomes_lengths,
+    )?;
 
     Ok(())
 }
@@ -3369,6 +3417,7 @@ fn verbose_log(config: &Config) -> bool {
 /// Dynamically query BAM and run pileup/CIGAR parse on a region that is not currently loaded.
 /// Ports getMode().partialPipeline(...) in Java.
 pub fn partial_pipeline(
+    bam_path: &std::path::Path,
     var_data: &mut crate::variations::VariationData,
     reference: &mut Reference,
     chr: &str,
@@ -3377,13 +3426,6 @@ pub fn partial_pipeline(
     config: &Config,
     chromosomes_lengths: &HashMap<String, usize>,
 ) -> Result<(), VardictError> {
-    let first_bam = config
-        .bam
-        .split('|')
-        .next()
-        .ok_or_else(|| VardictError::Parse("No BAM files specified".to_string()))?;
-    let bam_path = std::path::Path::new(first_bam);
-
     // Query BAM records in the modified region
     let query_start = crate::types::Pos0((start.max(1) - 1) as u32);
     let query_end = crate::types::Pos0(end.max(1) as u32);
@@ -3407,6 +3449,10 @@ pub fn partial_pipeline(
         amplicon: None,
     };
 
+    // Java creates a fresh SVStructures in CigarParser(true) for partialPipeline
+    // (CigarParser.java:66) and discards it when partialPipeline completes, so the
+    // primary region's sv_structures is never mutated by mate-region pileup.
+    let orig_sv_structures = std::mem::take(&mut var_data.sv_structures);
     crate::cigar::parse::pileup_into(
         var_data,
         &records,
@@ -3417,6 +3463,7 @@ pub fn partial_pipeline(
         preprocessor.total_reads as i32,
         preprocessor.duplicate_reads as i32,
     )?;
+    var_data.sv_structures = orig_sv_structures;
 
     Ok(())
 }
@@ -3504,6 +3551,7 @@ mod tests {
             1,
             Side::Five,
             &mut var_data,
+            std::path::Path::new(""),
             &mut reference,
             chr,
             &config,
@@ -3623,6 +3671,7 @@ mod tests {
             1,
             Side::Three,
             &mut var_data,
+            std::path::Path::new(""),
             &mut reference,
             chr,
             &config,
@@ -3718,6 +3767,7 @@ mod tests {
             1,
             Side::Five,
             &mut var_data,
+            std::path::Path::new(""),
             &mut reference,
             chr,
             &config,
@@ -3805,6 +3855,7 @@ mod tests {
                 1,
                 Side::Five,
                 &mut var_data,
+                std::path::Path::new(""),
                 &mut reference,
                 "chrT",
                 &config,
