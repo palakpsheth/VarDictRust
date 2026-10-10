@@ -1,0 +1,56 @@
+# JavaMap JVM Oracle Operation Logs & Provenance
+
+This directory contains the JVM test oracle generator and operation trace logs used to validate [`crates/vardict-core/src/javamap.rs`](../../src/javamap.rs).
+
+---
+
+## 1. Background: Eliminating Cross-Position Iteration Divergence (UB-3)
+
+In VarDictJava, internal variant collections across position keys (`nonInsertionVariants`, `insertionVariants`, `alignedVariants`) are stored in standard `java.util.HashMap` instances.
+
+When multiple candidate variants have identical allele frequencies at a raw position (e.g. at `chr20:20202875` on dataset `s1a`), the downstream Perl/R script `var2vcf_valid.pl` breaks AF ties by selecting the first record encountered in the stream. Consequently, **which allele survives depends strictly on `java.util.HashMap`'s internal iteration order**.
+
+Standard Rust hash maps (`std::collections::HashMap`, `hashbrown`) use SipHash or SwissTable algorithms with randomized seeds, producing iteration orders different from Java. Using `BTreeMap` or sorted order resolves determinism, but produces output diverging from VarDictJava v1.8.3.
+
+To achieve 100% parity under the [rewrites.bio](https://rewrites.bio) manifesto, VarDictRust implements `vardict_core::javamap::JavaHashMap`, faithfully replicating OpenJDK `java.util.HashMap` mechanics:
+- Hash spreading: `(h = key.hashCode()) ^ (h >>> 16)`.
+- Power-of-two bucket table indexing: `(capacity - 1) & hash`.
+- Standard load factor (0.75) and capacity doubling.
+- Node collision chaining and treeification threshold ($\ge 8$ items per bin).
+
+---
+
+## 2. Trace Files & Provenance
+
+The operation logs in this directory were generated using the standalone Java harness [`JavaMapOracle.java`](JavaMapOracle.java):
+
+```bash
+# Compilation and execution with host OpenJDK
+javac JavaMapOracle.java
+java JavaMapOracle <seed> <numOps> <base> <span> <stride>
+```
+
+| File | Size / Operations | Description |
+| :--- | :--- | :--- |
+| [`JDK_VERSION`](JDK_VERSION) | `openjdk version "25.0.2-internal" 2026-01-20` | Reference JVM environment record. Note that OpenJDK's `java.util.HashMap` core hashing, bucket indexing, and treeification algorithms have remained invariant from Java 8 through Java 25. |
+| [`JavaMapOracle.java`](JavaMapOracle.java) | 17 lines | Pure-Java harness that applies pseudo-random `put`, `computeIfAbsent`, and `remove` operations to a `HashMap<Integer, Integer>`, dumping the final `keySet()` iteration order. |
+| [`ops_1.txt`](ops_1.txt) | 3,001 lines | Replay trace testing sequential inserts, lookups, and deletions. |
+| [`ops_2.txt`](ops_2.txt) | 20,001 lines | High-volume replay trace exercising multiple table resizes and capacity growth phases. |
+| [`ops_treeify.txt`](ops_treeify.txt) | 401 lines | Targeted collision sequence asserting correct bin treeification when bin count exceeds 8. |
+
+---
+
+## 3. Test Verification in Rust
+
+These logs are compiled into the test binary via `include_str!` and replayed by the unit test suite in [`crates/vardict-core/src/javamap.rs`](../../src/javamap.rs):
+
+```rust
+// crates/vardict-core/src/javamap.rs:300
+#[test]
+fn test_javamap_oracle() {
+    // Replays ops_1.txt, ops_2.txt, ops_treeify.txt
+    // Asserts exact keySet() sequence matching Java's output.
+}
+```
+
+This verification ensures that `JavaHashMap` produces iteration orders 100% bitwise-identical to the JVM reference implementation.

@@ -14,6 +14,11 @@ FASTA_DIR="VarDictJava/testdata/fastas"
 BAM_DIR="VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests"
 BINARY="cargo run -q --release -p vardictrust --"
 
+# Auto-materialize test FASTAs from upstream CSVs if not already present
+if [[ ! -f "$FASTA_DIR/GRCh37.fa" || ! -f "$FASTA_DIR/GRCh37.fa.fai" ]]; then
+    python3 harness/convert_fastas.py
+fi
+
 PASS=0
 FAIL=0
 SKIP=0
