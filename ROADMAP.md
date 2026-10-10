@@ -14,6 +14,10 @@ default output is unchanged and flagged output differs only on the targeted reco
 | 369 | #369 | calls emitted outside `-R` | restrict to region |
 | 378 | #378 | paired + amplicon column shift | correct columns (or loud Unsupported) |
 | ub1 | DIVERGENCES UB-1 | position-0 row in `.var` | drop row |
+| ub2 | DIVERGENCES UB-2 | `-p` null-record row empty GENO and "0;0" bias | emit standard null placeholders or skip row |
+| ub5 | DIVERGENCES UB-5 | `var2vcf_valid.pl` drops `<DUP>`/`<INV>` when `splitreads < 1` | preserve discordant-pair SVs lacking split reads |
+| ub6 | DIVERGENCES UB-6 | `markDUPSV` pre-decrements `pe`, truncating boundary by 1bp | pass pre-decrement `pe + 1` window boundary |
+| ub7 | DIVERGENCES UB-7 | single-winner multi-allelic collapsing drops secondary alleles | retain secondary qualifying alleles in VCF |
 
 ## Needs a specification first (debatable heuristics; no flag until specified)
 #92/#386/#323/#316/#400 (VD > DP depth) · #62 (over-filtering) · #363 family (realignment drops) ·

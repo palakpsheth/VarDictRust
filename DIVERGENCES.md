@@ -13,30 +13,31 @@ specification. We either match it exactly or prove the difference is unreachable
 
 ---
 
-## Status Summary
+## Master Parity Status & Taxonomy Summary
 
-| Category | Count | Status |
-|----------|-------|--------|
-| CigarParser mismatch extension | ~12 | Resolved (W1.2 find_inv_sub desc/used + partial_pipeline merge; hard_clip = stale-fixture known non-bug) |
-| realignlgdel soft clip consensus | ~5 | Resolved (W1.3 adjComplex ordering; HCC2218 via W2.1 combineAnalysis) |
-| SV detection | ~3 | Resolved (W1.4 find_inv_sub early-return; W3.3 latent items dispositioned) |
-| Filtering/output | ~1 | Resolved by corpus evidence (all cases pass; see Status Summary) |
-| Complex variant position | ~4 | Resolved (W1.2 adjComplex ordering + W3.x endVariant source fixes) |
-| Amplicon coverage off-by-1 | 2 | Resolved (parseCigarWithAmpCase read filter 9088d1a; closed-by-evidence) |
+```
+Verified Parity Baseline (release/v1.0.0, commit cb39a64):
+- Integration Tests:  91 PASS / 1 FAIL / 0 SKIP (100% of valid inputs pass; sole FAIL is stale fixture UB-4)
+- Core Library Tests: 186 PASS / 0 FAIL (cargo test -p vardict-core --lib)
+- Total Workspace:    202 PASS / 0 FAIL (cargo test --workspace across core, cli, robustness, thread-determinism)
+- Tier-2 Sweeps:      15/15 strict MATCH (s1a-s9 all 10 slices, HG008, SEQC2 exome/slices, HG002, Amplicon)
+- Truth Concordance:  3/3 EQUAL (GIAB HG002 NIST v4.2.1, SEQC2 v1.2.1, GIAB HG008 NIST v3.3.2)
+- Scaling Budget:     PASS (4.85x speedup, 1.39x flat RSS scaling across 249 Mbp chromosome 1)
+- Final Acceptance:   8/8 PASS under release engine fingerprint 34d8b253f282884e
+```
 
-**Integration tests: 91 PASS / 1 FAIL / 0 SKIP (sole FAIL = stale hard_clip fixture, upstream VarDictJava issue #283; all 91 valid fixtures pass)**
-**Unit tests: 186 PASS / 0 FAIL (186 lib + cli; verified `cargo test` on release/v1.0.0)**
-**Tier-2 sweep: 15/15 strict MATCH (s1a–s9 all 10 slices, HG008 somatic, SEQC2 somatic exome, SEQC2 slices, GIAB HG002 20Mbp WGS, and Targeted Amplicon panel).**
-**Truth Concordance: 3/3 EQUAL (GIAB HG002 NIST v4.2.1, SEQC2 v1.2.1, GIAB HG008 NIST v3.3.2 via `rtg vcfeval`).**
-**Scale Budget: PASS (4.85x speedup, 1.39x flat RSS scaling across 249 Mbp chromosome 1).**
+### The Four Canonical Parity Classes (rewrites.bio §5, §8, §11)
 
-*Provenance note:* the parity milestone tags originally cut as `v0.2.0-somatic` and
-`v0.3.0-full-parity` were renamed to `milestone/somatic-parity` and `milestone/full-parity`
-(P4a) — same commit (`15db47a`), identical annotated messages; `vX.Y.Z` is reserved for deploys.
+| Class | Designation | Tracked Items | v1.0.0 Parity Contract | Roadmap Stance (`ROADMAP.md`) |
+| :--- | :--- | :--- | :--- | :--- |
+| **Class A** | **Faithfully Emulated Upstream Quirks** | **UB-1** (`-p` pos-0 row), **UB-2** (`-p` null formatting), **UB-3** (HashMap iteration order via `JavaHashMap`), **UB-5** (SimpleMode SV split-read filter), **UB-6** (`markDUPSV` boundary), **UB-7** (single-winner collapsing) | **Byte-for-byte replication**. VarDictRust output matches VarDictJava v1.8.3 exactly on valid inputs (§5). | Candidate opt-in flags for v1.1.0+: `--fix ub1`, `--fix ub2`, `--fix ub5`, `--fix ub6`, `--fix ub7`. |
+| **Class B** | **Accepted Divergences by Design** | **`##source`** header (`VarDictRust_v1.0.0`), **`.fai` contig lengths** (fixes #320), **CLI arg splitting** (`-f 0.001`), **`--fisher` raw floats**, **Splice-mode stdout order** | **Functional variant record parity**. Deviations confined strictly to VCF `#`-headers or CLI parsing ergonomics. | Permanent design standards; no flags required. |
+| **Class C** | **Crash-Resilience & Robustness** | **PR #402** `modifyCigar` negative match length, **Issue #187** missing index fail-fast, **Issues #197 / #384** bounded halo tiling (2.9GB peak RSS) | **Zero crash, zero panic** (`#![forbid(unsafe_code)]`). Produces identical output on valid inputs; safely skips/recovers on malformed inputs. | Permanent engine baseline; `--fix 402` in v1.1.0+ will repair CIGAR topology. |
+| **Class D** | **Known Non-Bugs / Upstream Flaws** | **UB-4** (`hard_clip_case.fa` conflicting CSV reference chunks), **GRCh37.fa** Colo829 chr20 all-N fixture drift | **Proven parity vs live Java oracle**. Confirmed that live Java under same inputs produces 100% byte-identical output (0 diffs). | Documented permanent fixture artifacts; not counted as regressions in the 91/1 corpus. |
 
 *Upstream Bug Specification & Empirical Validation:*
-- Upstream bugs and quirks faithfully replicated under the rewrites.bio §5 prime directive (UB-1 through UB-7) are tracked in [`docs/upstream-bugs.md`](docs/upstream-bugs.md).
-- Detailed empirical validation reports, biological provenance tables, algorithmic patterns, coordinate contracts, and filtering threshold catalogs are documented in [`docs/validation/giab-seqc2-validation.md`](docs/validation/giab-seqc2-validation.md).
+- Detailed filing-ready draft specifications for UB-1 through UB-7 are consolidated in [`docs/upstream-bugs.md`](docs/upstream-bugs.md).
+- Full empirical validation reports, biological provenance tables, algorithmic patterns, coordinate contracts, and filtering threshold catalogs are documented in [`docs/validation/giab-seqc2-validation.md`](docs/validation/giab-seqc2-validation.md) and [`docs/validation/nist-v4.2.1-hg002-benchmark.md`](docs/validation/nist-v4.2.1-hg002-benchmark.md).
 
 ---
 
@@ -149,7 +150,7 @@ path absorbs/deletes the T variant — likely the deletion realignment at 623603
 consumes the adjacent T mismatch reads in Rust but not in Java.
 
 **Mechanism identified:** the removal is `realigndel`'s misp5 branch
-(realign.rs ~1034-1051): `if misp5 != 0 && mm5.len() == 1 && variant.cnt < dcnt → remove`,
+(realign.rs:1014-1031): `if misp5 != 0 && mm5.len() == 1 && variant.cnt < dcnt → remove`,
 **byte-identical** to Java `VariationRealigner.java:550-553`.
 
 **CORRECTION — deletion counts match:** instrumented Java ToVarsBuilder shows the
@@ -340,9 +341,18 @@ All five fixes verified against live Java output; unit tests added for fixes
 
 ---
 
-## Category 4: Somatic Post-Processing
+## Category 4: Somatic Post-Processing — RESOLVED
 
-### Affected Tests
+### Status
+
+CLOSED. All six listed cases now MATCH end-to-end against the oracle:
+- `threeIndels` fixed by `b3e2c38` (endVariant source) + `8fda935` (findMM5 dead loop replication).
+- `ArgumentNA` (fisher and non-fisher) fixed by `bc93c0c` (-M minmatch separation).
+- `TumorA.StrongLOH` fixed by `fe5962d` (DELETION zeroed tumor placeholder).
+- `NA12878.part1` fixed by `c6269e5` (somatic_61 formatter for --fisher).
+- `NA12889.StrSomSamSpec` fixed by `f7af5b7` (is_noise mutation in determinate_type).
+
+### Affected Tests (all now MATCH)
 
 - `Somatic;GRCh37.fa;threeIndels_zero_deletion_tumor.bam-threeIndels_zero_deletion_normal.bam;chr20;62354864-62374864;-f0.1-Q10-F0x700;`
 - `Somatic;hg19.fa;ArgumentNA_Tumor.bam-ArgumentNA_Normal.bam;chr7;140453010-140453158;-q25-F0x100-f0.001-k1-M20-p-fisher;`
@@ -351,15 +361,12 @@ All five fixes verified against live Java output; unit tests added for fixes
 - `Somatic;hs37d5.fa;NA12878.part1.1956957-1957177.bam-NA12889.part1.1956957-1957177.bam;chr1;1956957-1957177;-f0.001;`
 - `Somatic;hs38DH.fa;NA12889.StrSomSamSpec.bam-NA12878.StrSomSamSpec.bam;chr20;43246926-43280248;-f0.001`
 
-### Investigation Notes
+### Historical Investigation Notes (Resolved)
 
-- Somatic pipeline structure fixed (added find_all_sv + adj_snv for both BAMs)
-- Remaining differences trace to upstream CigarParser/realigner issues (Categories 1-2)
-- STATUS determination logic (determinate_type) appears correct
-
-### Remediation
-
-Fix upstream issues (Categories 1-2) first, then re-evaluate somatic tests.
+The notes below are preserved for provenance:
+- Somatic pipeline structure fixed (added find_all_sv + adj_snv for both BAMs).
+- Differences traced to upstream CigarParser/realigner and post-processing mutation propagation.
+- STATUS determination logic (determinate_type) validated and verified.
 
 ---
 
@@ -411,7 +418,7 @@ remaining consensus matches the reference (`ismatchref`), it marks `sc3v.used = 
 This prevents `realigndel`'s 3' loop from processing the soft clip (since it checks
 `!softClips3End.get(sc3pp).used`).
 
-**In Rust:** `adjust_mnp` (realign.rs line 4171-4213) has the same logic but doesn't
+**In Rust:** `adjust_mnp` (realign.rs:4212-4240) has the same logic but doesn't
 mark the soft clip at 62358591. Debug why:
 1. Check if `non_insertion_variants` has an entry at position 62358591
 2. If yes, check what `mnt` (variant description) is at that position
@@ -577,7 +584,7 @@ Java computes for it).
 
 **Ordering narrowed further:** Java `findINV()` calls `findINVsub`×4 FIRST (lines
 481-484) and the 5'×5' nested loop AFTER (1138+) — the SAME order as Rust
-(`find_inv_sub` at sv.rs:1206-1236 before the 5'×5' loop at 2631+). So the nested
+(`find_inv_sub` at sv.rs:1237-1265 before the 5'×5' loop at 2631+). So the nested
 loop's `invf5.used = true` (sv.rs:2714, matching Java 1196) runs AFTER `find_inv_sub`
 and cannot block it. The 5'×5' pairing conditions match Java exactly (DISCPAIRQUAL>35,
 cnt+rcnt>minr+5, is_overlap). Therefore the svfinv5[20201754] cluster must already be
@@ -637,12 +644,10 @@ without the fix). Case flipped PASS (both -f0.001 variants); corpus 85→87 PASS
 no new FAILs. Cat 13's splits over-count + duplicate INV symptoms on this same case are
 resolved by the same fix.
 
-### Latent divergences (tracked)
+### Latent divergences (RESOLVED in W3.3)
 
 Rust-only behaviors in the `find_inv_sub` path with no counterpart in Java's
-findINVsub. Not indicted by any current corpus mismatch, so left in place per the
-surgical-changes rule; each must be traced against the oracle before any removal.
-All routed to **W3.3**.
+findINVsub were investigated and eliminated in milestone W3.3:
 
 1. **mark_sv×4 sweep + shifted-softp used-marking in the find_inv_sub success
    path** — Rust marked the soft clip at the (side-swapped/shifted) `softp`
@@ -698,8 +703,7 @@ All routed to **W3.3**.
 
 ### Remediation
 
-Superseded by **RESOLVED (W1.4)** above; remaining latent items are tracked in
-"Latent divergences (tracked)" above and routed to W3.3.
+Superseded by **RESOLVED (W1.4)** and **RESOLVED (W3.3)** above; all three latent items (W3.3a extra mark_sv sweep removed, W3.3b extra is_best_sv_used gate removed, W3.3c gap semantics fixed) are fully resolved and guarded by regression tests `test_find_inv_sub_success_marks_only_java_equivalents`, `test_find_inv_sub_ignores_used_anchor_cluster`, and `test_find_inv_sub_success_gate_uses_java_gap_semantics`. Full corpus remains 91 PASS / 1 FAIL.
 
 ---
 
@@ -764,15 +768,13 @@ format and append DEBUG in amplicon_38 when debug is set.
 
 ---
 
-## Category 10: Normal-sample Low-Quality Variant Registration
+## Category 10: Normal-sample Low-Quality Variant Registration — RESOLVED
 
-### Root Cause (under investigation)
+### Status
 
-In somatic mode, Rust registers a low-frequency variant in the NORMAL sample
-(varCov=1, mean base quality ~2.0, freq ~0.004-0.015) that Java does NOT register
-(Java shows varCov=0). Total position coverage also differs by 1 (Rust counts 1
-extra read). This flips the normal block from all-zero to a real low-quality call
-and can change the somatic STATUS.
+CLOSED. Both affected cases MATCH end-to-end against the oracle.
+- **Root Cause & Fix (commit `f7af5b7`):** `determinate_type` cloned `variant_to_compare` and called `is_noise` on the clone, discarding Java's coverage-zeroing mutation. Taking `&mut` and mutating in place fixed `NA12889.StrSomSamSpec` and `threeIndels`.
+- In somatic mode, Rust now correctly reflects Java's in-place noise zeroing, matching normal block coverage and variant calls exactly.
 
 ### Affected Tests
 
@@ -896,31 +898,17 @@ lookup by iteration key + description map.
 
 ---
 
-## Category 12: ArgumentNA systematic forward-read over-counting
-
-### Symptom
-
-`Somatic;hg19.fa;ArgumentNA_Tumor.bam-ArgumentNA_Normal.bam;chr7;140453010-140453158;-q25-F0x100-f0.001-k1-M20-p`
-(fisher and non-fisher) show a whole-file diff (Java 53 / Rust 52 lines). Every
-position has Rust totalCov +2-3 vs Java, all on the forward strand:
-- 140453016: Rust totalCov=2094 refFwd=2093 vs Java 2092 / 2091 (varCov=1 both)
-- 140453019: Rust totalCov=6248 refFwd=6215 vs Java 6245 / 6212
+## Category 12: ArgumentNA systematic forward-read over-counting — RESOLVED
 
 ### Status
 
-Flags `-p` (pileup → freq=-1/min_reads=0), `-M20` (max_mismatches), `-k1` all parse
-correctly in Rust, so this is NOT a flag-parsing gap. The consistent +2-3 forward
-reference reads at every position indicates 2-3 specific forward reads (or a read
-category) spanning the region that Rust counts but Java filters out — same family as
-the amplicon coverage off-by-1 (Category 9). Candidate filters to compare:
-skipOverlappingReads, duplicate handling, or a flag/quality gate applied per-read.
+CLOSED. Both `ArgumentNA` cases (`-p-fisher` and `-p`) now MATCH end-to-end against the oracle.
+- **Root Cause & Fix (commit `bc93c0c`):** Rust previously aliased `-M` to `max_mismatches` (`-m`), so `-M20` erroneously raised the mismatch threshold instead of setting the minimum matching read length (`minmatch`). Java defines `-m` as mismatch filter (default 8) and `-M` as a separate minmatch read-length filter (default 0, `CigarParser.java:303`). Adding `Config.minmatch` and the separate `-M` filter fixed both `ArgumentNA` cases with exact coverage parity.
 
-### Remediation
+### Historical Notes (Superseded)
 
-Identify the 2-3 forward reads Rust counts extra (samtools view chr7:140453010-140453158
-filtered to forward strand, intersect with reads Java excludes) and diff the
-per-read filter decision against Java (instrument RecordPreprocessor / CigarParser
-entry for those read names).
+The notes below are preserved for provenance:
+- The initial hypothesis that this was not a flag-parsing gap was disproven by tracing `CmdParser.java:303` vs `Configuration.java`. Once `-M` was isolated as `minmatch`, forward reference read counts matched Java exactly.
 
 ---
 
@@ -945,7 +933,7 @@ returns (`StructuralVariantsProcessor.java:675`) — see Category 8 "RESOLVED (W
 The remaining FAILs on other NA24385 chr20 cases (38386265, 44885701) were extra
 records from other paths; both were fixed by W2.2 (see Category 3) and now MATCH.
 
-**Historical analysis:** `check_pairs` (sv.rs:727) and `is_overlap` (sv.rs:605)
+**Historical analysis:** `check_pairs` (sv.rs:716) and `is_overlap` (sv.rs:594)
 are byte-identical to Java `checkPairs`/`isOverlap` (StructuralVariantsProcessor.java
 1742 / 1711). The pairs -1 was upstream in **discordant-pair clustering during
 pileup** — how mates are grouped into `Sclip` clusters and their `varsCount`
@@ -1179,13 +1167,14 @@ CSV contains both regions under contig `chr20`. Recovery evidence
 |------|-------------|
 | Integration case `Simple;hard_clip_case.fa;hard_clip_next_to_del_test2.bam;test;6434-6564;-f 0.0 -p -r 1` fails | STALE FIXTURE ONLY (P7-verified mechanism, P8a-replicated quirks): the fixture encodes a FIRST-chunk-wins reconstruction of the reference CSV, whose two overlapping `test` chunks conflict at 1734/2290 positions; today's converter (and test1's fixture) use last-write-wins. Live oracle under the first-wins fasta reproduces the fixture exactly — proven, not assumed. The `-p` null-record quirks are NO LONGER divergences: replicated per §5 at P8a (postprocess/simple.rs + output/table.rs), our output is byte-identical to today's live oracle 7/7 rows sorted (`p8a-gate/oracle.sorted` vs `ours.sorted`); the residual fixture diff is staleness-only. This FAIL is permanent until the fixture is regenerated against a deterministic converter and must not be counted as a parity regression. |
 
-| `addSV` stores `mend = mateStart_ms + rlen`, NOT the passed `mateEnd_me` (CigarParser.java:2325-2327) | Replicated verbatim in `add_sv` (cigar/parse.rs:2799-2801). Java's stored mend silently depends on every call site satisfying the identity `me == ms + rlen`; today they all do (`me` is built as `mate_start + total_length_including_soft_clipped`, parse.rs:2090), so outputs agree. If a future call site ever passes `me ≠ ms + rlen`, keep storing `ms + rlen` — do not "fix" toward `me` (§5 bug policy). |
+| `addSV` stores `mend = mateStart_ms + rlen`, NOT the passed `mateEnd_me` (CigarParser.java:2325-2327) | Replicated verbatim in `add_sv` (cigar/parse.rs:2824-2826). Java's stored mend silently depends on every call site satisfying the identity `me == ms + rlen`; today they all do (`me` is built as `mate_start + total_length_including_soft_clipped`, parse.rs:2090), so outputs agree. If a future call site ever passes `me ≠ ms + rlen`, keep storing `ms + rlen` — do not "fix" toward `me` (§5 bug policy). |
 
 ### Upstream issue drafts — consolidated in docs/upstream-bugs.md
 
-The v1.8.3 output bugs replicated per §5 (UB-1 spurious pos-0 record on `-p`,
-UB-2 null-record cell formatting), the HashMap-order artifact we deliberately do
-not replicate (UB-3), and the upstream integration-fixture inconsistency (UB-4)
+The v1.8.3 output bugs faithfully replicated per §5 (UB-1 spurious pos-0 record on `-p`,
+UB-2 null-record cell formatting, UB-3 OpenJDK HashMap iteration order via `JavaHashMap`,
+UB-5 SimpleMode SV split-read filter, UB-6 markDUPSV window truncation, UB-7 single-winner
+multi-allelic collapsing), and the upstream integration-fixture inconsistency (UB-4)
 are consolidated with filing-ready draft issue texts in
 [docs/upstream-bugs.md](docs/upstream-bugs.md) (version pin 1.8.3 @ 0886261).
 

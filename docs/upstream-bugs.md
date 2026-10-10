@@ -12,11 +12,11 @@ All line references below are to that pin.
 |---|------|------------|
 | [UB-1](#ub-1--p-spurious-all-zero-record-at-position-00) | `-p` spurious all-zero record at position 0/0 | **Replicated** (P8a) |
 | [UB-2](#ub-2--p-null-record-row-cell-formatting-empty-geno-00-bias-empty-flank-seqs) | `-p` null-record row cell formatting | **Replicated** (P8a) |
-| [UB-3](#ub-3--var-row-order-across-positions-follows-hashmap-iteration-order-282-family) | Cross-position `.var` emission order follows HashMap layout | **Not replicated** (ordered maps; ≤1-record AF-tie residue) |
+| [UB-3](#ub-3--var-row-order-across-positions-follows-hashmap-iteration-order-282-family) | Cross-position `.var` emission order follows HashMap layout | **Replicated** (via `JavaHashMap` in Task 10) |
 | [UB-4](#ub-4--integration-fixture-inconsistency-overlapping-csv-reference-chunks) | Integration fixtures encode mutually inconsistent references | N/A (test-data defect; validated vs live oracle) |
-| [UB-5](#ub-5--simplemode-structural-variant-split-read-requirement-var2vcf_validpl197-205) | SimpleMode SV split-read requirement (`splitreads < 1` dropped) | **Replicated** (`lib.rs:404`) |
-| [UB-6](#ub-6--mate-pair-boundary-parameter-in-mark_dup_sv-structuralvariantsprocessorjava1468) | Mate-pair boundary parameter in `mark_dup_sv` (`pe` decrement) | **Replicated** (`sv.rs:3108`) |
-| [UB-7](#ub-7--multi-allelic-site-single-winner-collapsing-var2vcf_validpl135-205) | Multi-allelic site single-winner collapsing without `-A` | **Replicated** (`lib.rs:477-488`) |
+| [UB-5](#ub-5--simplemode-structural-variant-split-read-requirement-var2vcf_validpl197-205) | SimpleMode SV split-read requirement (`splitreads < 1` dropped) | **Replicated** (`lib.rs:403-414, 470, 499`) |
+| [UB-6](#ub-6--mate-pair-boundary-parameter-in-mark_dup_sv-structuralvariantsprocessorjava1468) | Mate-pair boundary parameter in `mark_dup_sv` (`pe` decrement) | **Replicated** (`sv.rs:3039, 3105-3111`) |
+| [UB-7](#ub-7--multi-allelic-site-single-winner-collapsing-var2vcf_validpl135-205) | Multi-allelic site single-winner collapsing without `-A` | **Replicated** (`lib.rs:467-505`) |
 
 ---
 
@@ -93,14 +93,15 @@ changes when upstream insertion history changes; downstream, `var2vcf_valid.pl`
 keeps only the highest-AF row per raw-start bucket and breaks exact AF ties
 first-in-stream — so WHICH allele survives a tie depends on hash layout.
 
-**Our replication stance:** **NOT replicated** — Rust emits ascending position
-order (BTreeMap), per CLAUDE.md §8 (hash-order iteration in output paths is
-forbidden, #282 family). Record SETS are equal everywhere; the only observable
-effect is which of two exact-AF-tie alleles sharing a raw-start bucket survives,
-at most one VCF record per such locus. Known instance: NA24385 chr20:20202875
-(`TA>T` java-first vs `T>A` rust-first, both af=0.0179; Tier-2 slice s1a).
-Closed as permanent known limitation (P3 timebox; matching would require
-emulating Java HashMap lifecycle wholesale).
+**Our replication stance:** **Replicated** in Task 10 (commit `d41a6f1`) via
+[`vardict_core::javamap::JavaHashMap`](file:///mnt/media_backups/VarDictRust/crates/vardict-core/src/javamap.rs).
+It faithfully emulates OpenJDK 8+ `java.util.HashMap` hash-spreading (`h ^ (h >> 16)`),
+power-of-two table indexing, load factor 0.75, resize threshold doubling, and bucket
+iteration order across variant maps (`non_insertion_variants`, `insertion_variants`,
+and `aligned_variants`). This completely eliminated the single residual AF-tie at
+`chr20:20202875` on Tier-2 slice `s1a`, emitting `TA>T` before `T>A` and achieving
+100% byte-for-byte parity (1048/1048 variants, 0 diffs). Per CLAUDE.md §8, `JavaHashMap`
+is the only sanctioned non-sorted map in output-reaching paths.
 
 **Draft issue text:**
 
@@ -173,7 +174,7 @@ unless( $isamp ) {
 ```
 Any structural variant allele containing `<` (e.g., `<DUP>`, `<INV>`) that has only discordant mate-pair cluster evidence but zero split-read evidence (`splitreads < $opt_T`, where default `$opt_T = 1`) is unconditionally discarded during VCF formatting. Notably, these variants **are emitted** in the intermediate `.var` table, creating a discrepancy between the table and VCF output.
 
-**Our replication stance:** **Replicated** in `crates/vardict-core/src/lib.rs:404` (`is_sv && splitreads < 1` suppresses VCF line generation for SimpleMode), ensuring exact bitwise parity with the full VarDictJava pipeline output.
+**Our replication stance:** **Replicated** in `crates/vardict-core/src/lib.rs:403-414, 470, 499` (`is_sv && splitreads < 1` suppresses VCF line generation for SimpleMode), ensuring exact bitwise parity with the full VarDictJava pipeline output.
 
 **Draft issue text:**
 
@@ -196,7 +197,7 @@ markDUPSV(bp, pe, Collections.singletonList(svStructures.svrdup), maxReadLength)
 ```
 Inside `markDUPSV`, the overlap predicate `isOverlap(start1, end1, start2, end2, rlen)` checks `if (start1 >= end2 || start2 >= end1) return false;`. Because Java passes the post-decrement `pe` as `end1`, any reverse-strand mate cluster whose reads begin exactly at the original un-decremented `pe` fails the overlap condition.
 
-**Our replication stance:** **Replicated** in `crates/vardict-core/src/sv.rs:3108`, passing `pe` (post-decrement) rather than `pe + 1` to match Java's exact discordant pair clustering and breakpoint boundaries.
+**Our replication stance:** **Replicated** in `crates/vardict-core/src/sv.rs:3039, 3105-3111`, passing `pe` (post-decrement) rather than `pe + 1` to match Java's exact discordant pair clustering and breakpoint boundaries.
 
 **Draft issue text:**
 
@@ -219,7 +220,7 @@ foreach my $p (@pos) {
 ```
 Only the single candidate allele with the highest allele frequency (`$tmp[0]`) is considered at each genomic locus. If that winner candidate is skipped (for example, if `$ref` is empty from a `-p` null-record, or if an SV candidate has `splitreads < 1` per UB-5), the loop executes `next` and terminates immediately. As a result, legitimate alternative variants at the same locus with lower allele frequencies are completely excluded from the VCF.
 
-**Our replication stance:** **Replicated** in `crates/vardict-core/src/lib.rs:477-488`, maintaining a `pending: BTreeMap<i32, SimpleVcfCandidate>` that retains only the top-AF candidate per locus in single-sample VCF mode.
+**Our replication stance:** **Replicated** in `crates/vardict-core/src/lib.rs:467-505`, maintaining a `pending: BTreeMap<i32, SimpleVcfCandidate>` that retains only the top-AF candidate per locus in single-sample VCF mode.
 
 **Draft issue text:**
 
