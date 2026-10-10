@@ -13,7 +13,7 @@ name = "vardictrust"
 path = "src/main.rs"
 
 [dependencies]
-vardict-core = { path = "../vardict-core" }
+vardict-core = { version = "1.0.0", path = "../vardict-core" }
 clap.workspace = true
 anyhow.workspace = true
 env_logger.workspace = true
