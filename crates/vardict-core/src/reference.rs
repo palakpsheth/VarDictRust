@@ -108,40 +108,6 @@ impl Reference {
         None
     }
 
-    /// Returns the reference slice and 1-based start position covering a given position.
-    pub fn get_slice(&self, chr: &str, pos: u32) -> (&[u8], i32) {
-        for (idx, lr) in self.loaded_regions.iter().enumerate() {
-            if lr.chr == chr && pos >= lr.sequence_start && pos <= lr.sequence_end {
-                if let Some(bases) = self.region_sequences.get(idx) {
-                    return (bases.as_slice(), lr.sequence_start as i32);
-                }
-                if let Some(bases) = self.reference_sequences.get(chr) {
-                    return (bases.as_slice(), lr.sequence_start as i32);
-                }
-            }
-        }
-        for (idx, lr) in self.loaded_regions.iter().enumerate() {
-            if lr.chr == chr {
-                if let Some(bases) = self.region_sequences.get(idx) {
-                    return (bases.as_slice(), lr.sequence_start as i32);
-                }
-                if let Some(bases) = self.reference_sequences.get(chr) {
-                    return (bases.as_slice(), lr.sequence_start as i32);
-                }
-            }
-        }
-        if let Some(bases) = self.reference_sequences.get(chr) {
-            let start = self
-                .loaded_regions
-                .iter()
-                .find(|lr| lr.chr == chr)
-                .map(|lr| lr.sequence_start as i32)
-                .unwrap_or(1);
-            return (bases.as_slice(), start);
-        }
-        (&[], 1)
-    }
-
     /// Populates k-mer mapping positions into the seed map.
     fn add_position_to_seed(&mut self, key_sequence: &[u8], pos: u32) {
         self.seed

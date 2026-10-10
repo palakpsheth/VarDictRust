@@ -9,7 +9,7 @@ fn main() -> Result<()> {
     let args = cli::normalize_args(&raw_args);
     cli::check_unsupported(&args)?;
     let args = cli::Cli::parse_from(args);
-    let cfg = args.to_config();
+    let cfg = args.to_config()?;
     vardict_core::run(&cfg)?;
     Ok(())
 }

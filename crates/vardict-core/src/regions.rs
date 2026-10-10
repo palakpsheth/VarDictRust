@@ -51,16 +51,6 @@ pub struct BedRowFormat {
     pub gene_column: usize,
 }
 
-/// Defaults from GFF/RefGene format.
-pub const DEFAULT_BED_ROW_FORMAT: BedRowFormat = BedRowFormat {
-    chr_column: 2,
-    start_column: 6,
-    end_column: 7,
-    thick_start_column: 9,
-    thick_end_column: 10,
-    gene_column: 12,
-};
-
 /// Custom format used when 4-column BED file is auto-detected.
 /// Note: VarDictJava has a known bug/design where it sets thick_start to column 3 (gene),
 /// thick_end to column 1 (start), and gene_column to column 2 (end). We emulate this exactly!
@@ -96,6 +86,7 @@ pub fn correct_chromosome(chromosomes_lengths: &HashMap<String, usize>, chr: &st
 
 /// Tils a Region into overlapping windows (with a surrounding halo context).
 pub fn tile(region: &Region, tile_size: u32, halo: u32) -> Vec<Tile> {
+    let tile_size = tile_size.max(1);
     let mut tiles = Vec::new();
     let reg_start = region.start.0;
     let reg_end = region.end.0;
@@ -132,6 +123,10 @@ pub fn tile(region: &Region, tile_size: u32, halo: u32) -> Vec<Tile> {
             original_start: region.start,
             original_end: region.end,
         });
+
+        if curr_end >= reg_end {
+            break;
+        }
 
         curr_start += tile_size;
     }

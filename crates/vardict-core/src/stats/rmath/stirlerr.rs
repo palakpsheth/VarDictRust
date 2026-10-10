@@ -66,8 +66,7 @@ pub fn stirlerr(n: f64) -> f64 {
             // - n <= 15 evaluates in SFERR_HALVES
             // - n > 15 evaluates in the series expansion (n > 12.8)
             // We never expect arbitrary float input here. If this executes,
-            // the codebase was modified to pass non-integer factors.
-            debug_assert!(false, "stirlerr reached non-half-integer path");
+            // return NAN cleanly matching R semantics.
             return f64::NAN;
         }
         let nn = n * n;

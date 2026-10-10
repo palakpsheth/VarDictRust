@@ -344,13 +344,31 @@ fn all_cores() -> usize {
 
 impl Cli {
     /// Convert CLI args to a core Config.
-    pub fn to_config(&self) -> vardict_core::config::Config {
+    pub fn to_config(
+        &self,
+    ) -> Result<vardict_core::config::Config, vardict_core::types::VardictError> {
         let flag_filter =
             if self.flag_filter.starts_with("0x") || self.flag_filter.starts_with("0X") {
-                u32::from_str_radix(&self.flag_filter[2..], 16).unwrap_or(0x504)
+                u32::from_str_radix(&self.flag_filter[2..], 16).map_err(|e| {
+                    vardict_core::types::VardictError::Parse(format!(
+                        "Invalid -F value '{}': {}",
+                        self.flag_filter, e
+                    ))
+                })?
             } else {
-                self.flag_filter.parse().unwrap_or(0x504)
+                self.flag_filter.parse().map_err(|e| {
+                    vardict_core::types::VardictError::Parse(format!(
+                        "Invalid -F value '{}': {}",
+                        self.flag_filter, e
+                    ))
+                })?
             };
+
+        if let Some(0) = self.tile_size {
+            return Err(vardict_core::types::VardictError::Parse(
+                "Invalid --tile-size: 0. Tile size must be >= 1".into(),
+            ));
+        }
 
         let (freq, min_reads) = if self.pileup {
             (-1.0, 0)
@@ -358,7 +376,7 @@ impl Cli {
             (self.freq, self.min_reads)
         };
 
-        vardict_core::config::Config {
+        Ok(vardict_core::config::Config {
             exception_counter: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             reference: self.reference.clone(),
             bam: self.bam.clone(),
@@ -463,7 +481,7 @@ impl Cli {
             unique_mode_second_in_pair_enabled: self.unique_mode_second_in_pair_enabled,
             omit_end_tag: self.col_end.is_some(),
             include_n: self.include_n,
-        }
+        })
     }
 }
 
@@ -562,7 +580,7 @@ mod tests {
         ])))
         .unwrap();
         assert_eq!(cli.threads, Some(usize::MAX));
-        assert_eq!(cli.to_config().threads, all_cores());
+        assert_eq!(cli.to_config().unwrap().threads, all_cores());
     }
 
     #[test]
@@ -575,7 +593,7 @@ mod tests {
         ])))
         .unwrap();
         assert_eq!(cli.threads, Some(0));
-        assert_eq!(cli.to_config().threads, 1);
+        assert_eq!(cli.to_config().unwrap().threads, 1);
     }
 
     #[test]
@@ -584,7 +602,7 @@ mod tests {
         // no -th at all → all cores, perf-only, no output effect.
         let cli = Cli::try_parse_from(args(&["-b", "a.bam", "-G", "r.fa"])).unwrap();
         assert!(cli.threads.is_none());
-        assert_eq!(cli.to_config().threads, all_cores());
+        assert_eq!(cli.to_config().unwrap().threads, all_cores());
     }
 
     #[test]
@@ -601,11 +619,28 @@ mod tests {
             a.extend(&argv);
             let cli = Cli::try_parse_from(super::normalize_args(&args(&a))).unwrap();
             assert_eq!(
-                cli.to_config().debug_print.as_deref(),
+                cli.to_config().unwrap().debug_print.as_deref(),
                 Some(expect),
                 "argv={argv:?}"
             );
         }
+    }
+
+    #[test]
+    fn invalid_flag_filter_returns_parse_error() {
+        let cli = Cli::try_parse_from(args(&["-b", "a.bam", "-G", "r.fa", "-F", "bogus"])).unwrap();
+        let err = cli.to_config().unwrap_err();
+        assert!(matches!(err, vardict_core::types::VardictError::Parse(_)));
+        assert!(err.to_string().contains("Invalid -F value 'bogus'"));
+    }
+
+    #[test]
+    fn tile_size_zero_returns_parse_error() {
+        let cli =
+            Cli::try_parse_from(args(&["-b", "a.bam", "-G", "r.fa", "--tile-size", "0"])).unwrap();
+        let err = cli.to_config().unwrap_err();
+        assert!(matches!(err, vardict_core::types::VardictError::Parse(_)));
+        assert!(err.to_string().contains("Invalid --tile-size: 0"));
     }
 
     #[test]

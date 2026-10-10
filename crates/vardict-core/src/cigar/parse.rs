@@ -548,9 +548,14 @@ impl<'a> CigarParser<'a> {
                             read_pos_inc,
                         ) {
                             while i + 1 < cigar_element_len {
-                                s.push(query_seq[read_pos_inc + 1] as char);
-                                q += query_qual[read_pos_inc + 1] as f64 - 33.0;
-                                qbases += 1;
+                                if let (Some(&qb), Some(&qq)) = (
+                                    query_seq.get(read_pos_inc + 1),
+                                    query_qual.get(read_pos_inc + 1),
+                                ) {
+                                    s.push(qb as char);
+                                    q += qq as f64 - 33.0;
+                                    qbases += 1;
+                                }
                                 i += 1;
                                 read_pos_inc += 1;
                                 read_pos_exc += 1;
@@ -571,8 +576,10 @@ impl<'a> CigarParser<'a> {
                                     s.push_str(&String::from_utf8_lossy(sub));
                                 }
                                 for qi in 1..=next_next_len {
-                                    q += query_qual[read_pos_inc + 1 + qi] as f64 - 33.0;
-                                    qibases += 1;
+                                    if let Some(&qq) = query_qual.get(read_pos_inc + 1 + qi) {
+                                        q += qq as f64 - 33.0;
+                                        qibases += 1;
+                                    }
                                 }
                                 read_pos_inc += next_next_len;
                                 read_pos_exc += next_next_len;
@@ -618,9 +625,14 @@ impl<'a> CigarParser<'a> {
                             read_pos_inc,
                         ) {
                             while i + 1 < cigar_element_len {
-                                s.push(query_seq[read_pos_inc + 1] as char);
-                                q += query_qual[read_pos_inc + 1] as f64 - 33.0;
-                                qbases += 1;
+                                if let (Some(&qb), Some(&qq)) = (
+                                    query_seq.get(read_pos_inc + 1),
+                                    query_qual.get(read_pos_inc + 1),
+                                ) {
+                                    s.push(qb as char);
+                                    q += qq as f64 - 33.0;
+                                    qbases += 1;
+                                }
                                 i += 1;
                                 read_pos_inc += 1;
                                 read_pos_exc += 1;
@@ -634,12 +646,16 @@ impl<'a> CigarParser<'a> {
                             {
                                 temp_s.push_str(&String::from_utf8_lossy(sub));
                             }
-                            let (first_part, second_part) = temp_s.split_at(next_len);
-                            s = format!("+{}&{}", first_part, second_part);
+                            if temp_s.len() >= next_len {
+                                let (first_part, second_part) = temp_s.split_at(next_len);
+                                s = format!("+{}&{}", first_part, second_part);
+                            }
 
                             for qi in 1..=next_len {
-                                q += query_qual[read_pos_inc + 1 + qi] as f64 - 33.0;
-                                qibases += 1;
+                                if let Some(&qq) = query_qual.get(read_pos_inc + 1 + qi) {
+                                    q += qq as f64 - 33.0;
+                                    qibases += 1;
+                                }
                             }
                             read_pos_inc += next_len;
                             read_pos_exc += next_len;
@@ -1046,7 +1062,7 @@ impl<'a> CigarParser<'a> {
         let mut desc_string = format!("-{}", cigar_element_len);
         let mut sequence_to_append = String::new();
         let quality_of_last_segment_before_del = if *read_pos_inc > 0 {
-            query_qual[*read_pos_inc - 1]
+            query_qual.get(*read_pos_inc - 1).copied().unwrap_or(33)
         } else {
             33
         };
@@ -1511,9 +1527,12 @@ impl<'a> CigarParser<'a> {
                         .get_base(&self.region.chr, insertion_position as u32)
                     {
                         if sub_base == ref_ch {
-                            let base_qual_val =
-                                query_qual[index_of_insertion_in_query_sequence as usize]
-                                    .saturating_sub(33) as f64;
+                            let base_qual_val = query_qual
+                                .get(index_of_insertion_in_query_sequence as usize)
+                                .copied()
+                                .unwrap_or(33)
+                                .saturating_sub(33)
+                                as f64;
                             if let Some(tv) = get_variation_maybe(
                                 &mut self.non_insertion_variants,
                                 insertion_position,
@@ -1815,8 +1834,15 @@ impl<'a> CigarParser<'a> {
                 else {
                     break;
                 };
-                let q_base = query_seq[element_len as usize - 1];
-                let base_qual = query_qual[element_len as usize - 1].saturating_sub(33);
+                let q_base = match query_seq.get(element_len as usize - 1) {
+                    Some(&b) => b,
+                    None => break,
+                };
+                let base_qual = query_qual
+                    .get(element_len as usize - 1)
+                    .copied()
+                    .unwrap_or(33)
+                    .saturating_sub(33);
                 if q_base == ref_base && base_qual > 10 {
                     let ref_base_str = (ref_base as char).to_string();
                     let variation =
@@ -1841,13 +1867,19 @@ impl<'a> CigarParser<'a> {
                 let mut sum_of_read_qualities = 0;
                 let mut number_of_high_quality_bases = 0;
                 let mut number_of_low_quality_bases = 0;
-                let mut si = element_len as i32 - 1;
+                let mut si = (element_len as i32 - 1).min(query_seq.len() as i32 - 1);
                 while si >= 0 {
-                    let q_char = query_seq[si as usize];
+                    let Some(&q_char) = query_seq.get(si as usize) else {
+                        break;
+                    };
                     if q_char == b'N' || q_char == b'n' {
                         break;
                     }
-                    let base_qual = query_qual[si as usize].saturating_sub(33);
+                    let base_qual = query_qual
+                        .get(si as usize)
+                        .copied()
+                        .unwrap_or(33)
+                        .saturating_sub(33);
                     if base_qual <= 12 {
                         number_of_low_quality_bases += 1;
                     }

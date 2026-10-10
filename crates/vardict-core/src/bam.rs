@@ -458,6 +458,24 @@ impl RecordPreprocessor {
             return false;
         }
 
+        // CIGAR query consumption consistency check (SAMv1 §1.4.6)
+        // Corrupted or hostile reads where CIGAR query consumption exceeds SEQ length
+        // or quality scores length cause out-of-bounds indexing in downstream pileup/parsers.
+        let query_consumption =
+            crate::cigar::parse::get_soft_clipped_length(&record.cigar) as usize;
+        if query_consumption > record.sequence.len()
+            || (!record.quality_scores.is_empty()
+                && query_consumption > record.quality_scores.len())
+        {
+            log::warn!(
+                "Dropping corrupt BAM record {}: CIGAR query consumption ({}) exceeds SEQ length ({})",
+                String::from_utf8_lossy(&record.name),
+                query_consumption,
+                record.sequence.len()
+            );
+            return false;
+        }
+
         self.total_reads += 1;
 
         // 5. Duplicated reads filter (removeDuplicatedReads)
@@ -836,5 +854,59 @@ mod tests {
         let _ = std::fs::remove_file(slice_bam.with_extension("bam.bai"));
         let _ = std::fs::remove_file(&cram_path);
         let _ = std::fs::remove_file(cram_path.with_extension("cram.crai"));
+    }
+
+    #[test]
+    fn test_corrupt_cigar_query_consumption_exceeds_seq_len_is_dropped() {
+        let mut preprocessor = RecordPreprocessor::new();
+        let config = Config::default();
+        let bad_record = SamRecord {
+            name: b"corrupt1".to_vec(),
+            flags: 0,
+            reference_name: Some("chr1".to_string()),
+            alignment_start: Some(Pos1(50)),
+            alignment_end: Some(Pos1(150)),
+            mapping_quality: Some(60),
+            cigar: vec![
+                (104, CigarKind::Match),
+                (1, CigarKind::Insertion),
+                (2, CigarKind::Match),
+            ],
+            sequence: vec![b'A'; 60], // len = 60 < 107
+            quality_scores: vec![40; 60],
+            mate_reference_name: None,
+            mate_alignment_start: None,
+            template_length: 0,
+            nm: None,
+            sa: None,
+            mc: None,
+            mq: None,
+        };
+        assert!(!preprocessor.preprocess_record(&bad_record, &config));
+    }
+
+    #[test]
+    fn test_corrupt_softclip_exceeds_seq_len_is_dropped() {
+        let mut preprocessor = RecordPreprocessor::new();
+        let config = Config::default();
+        let bad_record = SamRecord {
+            name: b"corrupt2".to_vec(),
+            flags: 0,
+            reference_name: Some("chr1".to_string()),
+            alignment_start: Some(Pos1(50)),
+            alignment_end: Some(Pos1(54)),
+            mapping_quality: Some(60),
+            cigar: vec![(100, CigarKind::SoftClip), (4, CigarKind::Match)],
+            sequence: b"ACGT".to_vec(), // len = 4 < 104
+            quality_scores: vec![40; 4],
+            mate_reference_name: None,
+            mate_alignment_start: None,
+            template_length: 0,
+            nm: None,
+            sa: None,
+            mc: None,
+            mq: None,
+        };
+        assert!(!preprocessor.preprocess_record(&bad_record, &config));
     }
 }

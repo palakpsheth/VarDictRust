@@ -197,13 +197,26 @@ fn locale_independence_c_vs_de_de() {
 /// T09 / PR #402: 11 copies of an adversarial read with a homopolymer 3-deletion
 /// cluster causing negative-length operator generation. VarDictJava aborts with
 /// `Critical exception occurs` after 10 exceptions; VarDictRust must skip each
+/// T09 / PR #402: 11 copies of an adversarial read with a homopolymer 3-deletion
+/// cluster causing negative-length operator generation. VarDictJava aborts with
+/// `Critical exception occurs` after 10 exceptions; VarDictRust must skip each
 /// bad read without modifying pileup state, never abort, and emit identical output
 /// between 1 and 11 bad reads.
 #[test]
 fn test_pr402_11_bad_reads_does_not_abort() {
+    let samtools_available = Command::new("samtools")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !samtools_available {
+        println!("SKIP: samtools not available on host");
+        return;
+    }
+
     let workspace_root = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."));
-    let scratch_dir = workspace_root.join("scratch/pr402_test");
-    std::fs::create_dir_all(&scratch_dir).unwrap();
+    let temp_dir = TempDir::new().unwrap();
+    let scratch_dir = temp_dir.path();
 
     let pr402_bam = workspace_root.join("fixtures/pr402/pr402.bam");
     let out_sam = scratch_dir.join("pr402_11.sam");
@@ -286,5 +299,63 @@ fn test_pr402_11_bad_reads_does_not_abort() {
     assert_eq!(
         out1, out11,
         "Outputs differ between 1 bad read and 11 bad reads"
+    );
+}
+
+/// QA row 12 / B3: invalid -F flag syntax must fail with loud, actionable error,
+/// not silently fall back to 0x504.
+#[test]
+fn test_invalid_flag_syntax_fails_with_actionable_error() {
+    let dir = TempDir::new().unwrap();
+    let fa = write_ref(&dir, "chr1", 1000, true);
+    let bam = dir.path().join("empty.bam");
+    indexed_bam(&bam, "chr1", 1000, &[]).unwrap();
+
+    let bed = dir.path().join("case.bed");
+    std::fs::write(&bed, "chr1\t100\t200\tG1\n").unwrap();
+
+    let out = Command::new(env!("CARGO_BIN_EXE_vardictrust"))
+        .args(["-G", fa.to_str().unwrap()])
+        .args(["-b", bam.to_str().unwrap()])
+        .args(["-F", "bogus"])
+        .arg(&bed)
+        .output()
+        .expect("spawn vardictrust");
+
+    assert!(!out.status.success());
+    assert_ne!(out.status.code(), Some(101), "died with panic");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("Invalid -F value"),
+        "stderr should mention invalid -F value: {stderr}"
+    );
+}
+
+/// QA row 13 / B4: --tile-size 0 must fail immediately with actionable error,
+/// not hang in an infinite loop.
+#[test]
+fn test_zero_tile_size_fails_fast_without_hanging() {
+    let dir = TempDir::new().unwrap();
+    let fa = write_ref(&dir, "chr1", 1000, true);
+    let bam = dir.path().join("empty.bam");
+    indexed_bam(&bam, "chr1", 1000, &[]).unwrap();
+
+    let bed = dir.path().join("case.bed");
+    std::fs::write(&bed, "chr1\t100\t200\tG1\n").unwrap();
+
+    let out = Command::new(env!("CARGO_BIN_EXE_vardictrust"))
+        .args(["-G", fa.to_str().unwrap()])
+        .args(["-b", bam.to_str().unwrap()])
+        .args(["--tile-size", "0"])
+        .arg(&bed)
+        .output()
+        .expect("spawn vardictrust");
+
+    assert!(!out.status.success());
+    assert_ne!(out.status.code(), Some(101), "died with panic");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("Invalid --tile-size"),
+        "stderr should mention invalid --tile-size: {stderr}"
     );
 }

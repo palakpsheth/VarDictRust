@@ -427,6 +427,9 @@ impl<'a> ToVarsBuilder<'a> {
                     }
                 }
                 if let Some(cnt) = insertion_variations.map.get(description_string) {
+                    if cnt.cnt == 0 {
+                        continue;
+                    }
                     let fwd = cnt.fwd;
                     let rev = cnt.rev;
                     let bias = strand_bias(fwd, rev, self.config.min_reads_bias as i32);
