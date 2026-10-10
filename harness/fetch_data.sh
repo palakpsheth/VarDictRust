@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# Usage: fetch_data.sh <group>...  (refs seqc2 hg008). Resumable; md5-verified; appends benchmarks/MANIFEST.
+# Usage: fetch_data.sh <group>...  (refs seqc2 hg008 hg002). Resumable; md5-verified; appends benchmarks/MANIFEST.
 set -euo pipefail
 
 if [ "$#" -eq 0 ]; then
-  echo "Usage: $0 <group>...  (refs seqc2 hg008)" >&2
+  echo "Usage: $0 <group>...  (refs seqc2 hg008 hg002)" >&2
   exit 1
 fi
+
 
 DATA=${DATA_DIR:-scratch/g4}
 MAN=${MANIFEST:-benchmarks/MANIFEST}
@@ -36,6 +37,6 @@ while IFS=$'\t' read -r group name url md5 dest; do
     fi
     src=upstream
   fi
-  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$name" "$url" "$got" "$src" "$(stat -c %s "$out")" "$(date -Is)" >> "$MAN"
+  grep -qF "$name" "$MAN" || printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$name" "$url" "$got" "$src" "$(stat -c %s "$out")" "$(date -Is)" >> "$MAN"
   touch "$out.done"
 done < "$ASSETS"

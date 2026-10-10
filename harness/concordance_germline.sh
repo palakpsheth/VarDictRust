@@ -35,14 +35,29 @@ run_eval() {
   python3 - "$eng_out/vcfeval/summary.txt" > "$eng_out/summary.json" <<'PY'
 import json, sys
 rows = [l.split() for l in open(sys.argv[1]) if l.strip() and not l.startswith(("Threshold", "-"))]
-none = [r for r in rows if r[0] == "None"]
-if len(none) != 1: sys.exit("concordance_germline: no unique 'None' row in summary.txt")
-r = none[0]
-d = dict(tp_baseline=int(r[1]), tp_call=int(r[2]), fp=int(r[3]), fn=int(r[4]),
-         precision=float(r[5]), sensitivity=float(r[6]), f_measure=float(r[7]))
-if d["tp_baseline"] + d["fn"] == 0: sys.exit("concordance_germline: empty baseline in eval regions (vacuous)")
+none_rows = [r for r in rows if r[0] == "None"]
+if len(none_rows) != 1: sys.exit("concordance_germline: no unique 'None' row in summary.txt")
+r_none = none_rows[0]
+
+opt_rows = [r for r in rows if r[0] != "None"]
+d_opt = None
+if opt_rows:
+    r_opt = opt_rows[0]
+    d_opt = dict(threshold=float(r_opt[0]), tp_baseline=int(r_opt[1]), tp_call=int(r_opt[2]),
+                 fp=int(r_opt[3]), fn=int(r_opt[4]), precision=float(r_opt[5]),
+                 sensitivity=float(r_opt[6]), f_measure=float(r_opt[7]))
+
+d = {
+    "none": dict(tp_baseline=int(r_none[1]), tp_call=int(r_none[2]), fp=int(r_none[3]), fn=int(r_none[4]),
+                 precision=float(r_none[5]), sensitivity=float(r_none[6]), f_measure=float(r_none[7])),
+    "optimal": d_opt,
+    "tp_baseline": int(r_none[1]), "tp_call": int(r_none[2]), "fp": int(r_none[3]), "fn": int(r_none[4]),
+    "precision": float(r_none[5]), "sensitivity": float(r_none[6]), "f_measure": float(r_none[7])
+}
+if d["none"]["tp_baseline"] + d["none"]["fn"] == 0: sys.exit("concordance_germline: empty baseline in eval regions (vacuous)")
 print(json.dumps(d, indent=2))
 PY
+
 
   for f in tp tp-baseline fp fn; do
     [ -f "$eng_out/vcfeval/$f.vcf.gz" ] && bcftools query -f '%CHROM\t%POS\t%REF\t%ALT\n' "$eng_out/vcfeval/$f.vcf.gz" > "$eng_out/$f.sites" || touch "$eng_out/$f.sites"

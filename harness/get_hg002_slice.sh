@@ -24,7 +24,7 @@ REGION="chr20:10000000-30000000"
 LOCAL_BAI="$OUTDIR/HG002.remote.bai"
 if [ ! -f "$LOCAL_BAI" ] || [ ! -s "$LOCAL_BAI" ]; then
   echo "Downloading remote BAI index (9.4MB) from ${BAM_URL}.bai..."
-  curl -sSL "${BAM_URL}.bai" -o "$LOCAL_BAI"
+  curl -sSLf "${BAM_URL}.bai" -o "$LOCAL_BAI"
 fi
 
 # 2. Stream BAM slice with 5-retry exponential backoff
@@ -62,12 +62,14 @@ else
   fi
 fi
 
-# 2. Intersect and pre-tile NIST v4.2.1 BED into <=50kb chunks via awk
+# 3. Intersect and pre-tile NIST v4.2.1 BED into <=50kb chunks via awk
+LOCAL_BED="$OUTDIR/truth/HG002_GRCh38_1_22_v4.2.1_benchmark_noinconsistent.bed"
+TMP_BED="$OUTDIR/.tmp.eval.bed"
 if [ -f "$EVAL_BED" ] && [ -s "$EVAL_BED" ]; then
   echo "Eval BED already exists: $EVAL_BED"
 else
-  echo "Fetching NIST v4.2.1 BED and pre-tiling to $EVAL_BED..."
-  curl -sSL "$TRUTH_BED_URL" | awk '
+  echo "Generating pre-tiled eval BED to $EVAL_BED..."
+  awk_cmd='
     $1 == "chr20" {
       s = ($2 < 10000000 ? 10000000 : $2);
       e = ($3 > 30000000 ? 30000000 : $3);
@@ -80,18 +82,33 @@ else
         }
       }
     }
-  ' > "$EVAL_BED"
-  echo "Created $EVAL_BED with $(wc -l < "$EVAL_BED") intervals"
+  '
+  if [ -f "$LOCAL_BED" ] && [ -s "$LOCAL_BED" ]; then
+    awk "$awk_cmd" "$LOCAL_BED" > "$TMP_BED"
+  else
+    curl -sSLf "$TRUTH_BED_URL" | awk "$awk_cmd" > "$TMP_BED"
+  fi
+  num_intervals=$(wc -l < "$TMP_BED")
+  [ "$num_intervals" -ge 1000 ] || { echo "FAIL: eval.bed interval count < 1000 (got $num_intervals)" >&2; exit 1; }
+  mv "$TMP_BED" "$EVAL_BED"
+  echo "Created $EVAL_BED with $num_intervals intervals"
 fi
 
-# 3. Fetch truth VCF for the region
+# 4. Fetch truth VCF for the region
+LOCAL_VCF="$OUTDIR/truth/HG002_GRCh38_1_22_v4.2.1_benchmark.vcf.gz"
 if [ -f "$TRUTH_VCF" ] && [ -f "$TRUTH_VCF.tbi" ]; then
   echo "Truth VCF already exists: $TRUTH_VCF"
 else
   echo "Extracting truth VCF for $REGION..."
-  bcftools view -r "$REGION" "$TRUTH_VCF_URL" -Oz -o "$TRUTH_VCF"
+  VCF_SOURCE="$TRUTH_VCF_URL"
+  if [ -f "$LOCAL_VCF" ] && [ -f "$LOCAL_VCF.tbi" ]; then
+    VCF_SOURCE="$LOCAL_VCF"
+  fi
+  bcftools view -r "$REGION" "$VCF_SOURCE" -Oz -o "$TRUTH_VCF"
   tabix -f -p vcf "$TRUTH_VCF"
+  [ "$(bcftools view -H "$TRUTH_VCF" | head -n 1 | wc -l)" -gt 0 ] || { echo "FAIL: truth.vcf.gz is empty" >&2; exit 1; }
   echo "Created $TRUTH_VCF"
 fi
 
 echo "HG002 slice preparation complete."
+

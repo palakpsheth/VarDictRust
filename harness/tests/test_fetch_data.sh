@@ -28,6 +28,8 @@ groups=$(awk '!/^#/ && NF {print $1}' "$ASSETS" | sort -u | tr '\n' ' ')
 [[ "$groups" =~ "refs" ]] || { echo "FAIL: missing refs group" >&2; exit 1; }
 [[ "$groups" =~ "seqc2" ]] || { echo "FAIL: missing seqc2 group" >&2; exit 1; }
 [[ "$groups" =~ "hg008" ]] || { echo "FAIL: missing hg008 group" >&2; exit 1; }
+[[ "$groups" =~ "hg002" ]] || { echo "FAIL: missing hg002 group" >&2; exit 1; }
+
 
 # 2. Test harness/fetch_data.sh usage error on no arguments
 set +e

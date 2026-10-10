@@ -37,3 +37,16 @@ HCC1395.bam	derived:bwa-mem-seqc2	5e2e9d814b0a4107908324ef79e45a2e	computed-loca
 HCC1395.bam.bai	derived:bwa-mem-seqc2	acda15be3c350570439df4cf13a75fae	computed-locally	3510256	2026-10-09T17:29:14-07:00
 HCC1395BL.bam	derived:bwa-mem-seqc2	540fc282854bf511c530ce8f414b1a3e	computed-locally	4233596905	2026-10-09T18:07:08-07:00
 HCC1395BL.bam.bai	derived:bwa-mem-seqc2	2823d6171038853b56937f678232973b	computed-locally	3400648	2026-10-09T18:07:26-07:00
+
+HG002_GRCh38_1_22_v4.2.1_benchmark.vcf.gz	https://giab.s3.amazonaws.com/release/AshkenazimTrio/HG002_NA24385_son/NISTv4.2.1/GRCh38/HG002_GRCh38_1_22_v4.2.1_benchmark.vcf.gz	dc750b3807d4af1f7ffec852e9c2f771	computed-locally	156252944	2026-10-10T09:40:12-07:00
+HG002_GRCh38_1_22_v4.2.1_benchmark.vcf.gz.tbi	https://giab.s3.amazonaws.com/release/AshkenazimTrio/HG002_NA24385_son/NISTv4.2.1/GRCh38/HG002_GRCh38_1_22_v4.2.1_benchmark.vcf.gz.tbi	121e2975fb3ff0317ae6a684d0ce6f2f	computed-locally	1657747	2026-10-10T09:40:13-07:00
+HG002_GRCh38_1_22_v4.2.1_benchmark_noinconsistent.bed	https://giab.s3.amazonaws.com/release/AshkenazimTrio/HG002_NA24385_son/NISTv4.2.1/GRCh38/HG002_GRCh38_1_22_v4.2.1_benchmark_noinconsistent.bed	97265e922a97c69a0391cf3f92a89b8b	computed-locally	11494021	2026-10-10T09:40:15-07:00
+HG002.remote.bai	https://giab.s3.amazonaws.com/data/AshkenazimTrio/HG002_NA24385_son/NIST_Illumina_2x250bps/novoalign_bams/HG002.GRCh38.2x250.bam.bai	a4c79b44a863e88eeb525b5e8d1501f6	computed-locally	9816176	2026-10-10T09:40:16-07:00
+HG002.chr20.bam	derived:remote-slice	bd605a455b2e2064931e6097c64695ea	computed-locally	860559731	2026-10-10T09:40:00-07:00
+HG002.chr20.bam.bai	derived:samtools-index	112c58a6798c46dfdee7ae8867174da3	computed-locally	89456	2026-10-10T09:40:02-07:00
+eval.bed	derived:awk-tile	a693fdd787e26da2a9e99468b5385888	computed-locally	82053	2026-10-10T09:40:16-07:00
+truth.vcf.gz	derived:bcftools-slice	192a657b74eda99eab4fc8f50a2316cb	computed-locally	911611	2026-10-10T09:40:17-07:00
+truth.vcf.gz.tbi	derived:tabix	dec112e13c2b39c51f1c1ecd35ca2f87	computed-locally	8587	2026-10-10T09:40:17-07:00
+truth.nofilter.vcf.gz	derived:bcftools-nofilter	b9ed21fc2779b05259bb48bb9d3d3bb6	computed-locally	908686	2026-10-10T10:21:00-07:00
+truth.nofilter.vcf.gz.tbi	derived:tabix	d4bbbe4ef792883072784e78dcc747bb	computed-locally	8568	2026-10-10T10:21:00-07:00
+
