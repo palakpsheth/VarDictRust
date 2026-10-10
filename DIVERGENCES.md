@@ -34,6 +34,10 @@ specification. We either match it exactly or prove the difference is unreachable
 `v0.3.0-full-parity` were renamed to `milestone/somatic-parity` and `milestone/full-parity`
 (P4a) — same commit (`15db47a`), identical annotated messages; `vX.Y.Z` is reserved for deploys.
 
+*Upstream Bug Specification & Empirical Validation:*
+- Upstream bugs and quirks faithfully replicated under the rewrites.bio §5 prime directive (UB-1 through UB-7) are tracked in [`docs/upstream-bugs.md`](docs/upstream-bugs.md).
+- Detailed empirical validation reports, biological provenance tables, algorithmic patterns, coordinate contracts, and filtering threshold catalogs are documented in [`docs/validation/giab-seqc2-validation.md`](docs/validation/giab-seqc2-validation.md).
+
 ---
 
 ## Category 1: CigarParser Mismatch Extension (process_deletion)

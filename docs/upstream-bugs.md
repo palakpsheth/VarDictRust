@@ -14,6 +14,9 @@ All line references below are to that pin.
 | [UB-2](#ub-2--p-null-record-row-cell-formatting-empty-geno-00-bias-empty-flank-seqs) | `-p` null-record row cell formatting | **Replicated** (P8a) |
 | [UB-3](#ub-3--var-row-order-across-positions-follows-hashmap-iteration-order-282-family) | Cross-position `.var` emission order follows HashMap layout | **Not replicated** (ordered maps; ≤1-record AF-tie residue) |
 | [UB-4](#ub-4--integration-fixture-inconsistency-overlapping-csv-reference-chunks) | Integration fixtures encode mutually inconsistent references | N/A (test-data defect; validated vs live oracle) |
+| [UB-5](#ub-5--simplemode-structural-variant-split-read-requirement-var2vcf_validpl197-205) | SimpleMode SV split-read requirement (`splitreads < 1` dropped) | **Replicated** (`lib.rs:404`) |
+| [UB-6](#ub-6--mate-pair-boundary-parameter-in-mark_dup_sv-structuralvariantsprocessorjava1468) | Mate-pair boundary parameter in `mark_dup_sv` (`pe` decrement) | **Replicated** (`sv.rs:3108`) |
+| [UB-7](#ub-7--multi-allelic-site-single-winner-collapsing-var2vcf_validpl135-205) | Multi-allelic site single-winner collapsing without `-A` | **Replicated** (`lib.rs:477-488`) |
 
 ---
 
@@ -152,3 +155,75 @@ CSV chunks resolved overlaps last-write-wins.
 > shipped, `vardict-java` cannot reproduce one of its own expected files. Fix
 > direction: reject or deterministically resolve overlapping chunks in the
 > converter, then regenerate the affected fastas and expected files together.
+
+---
+
+## UB-5 — SimpleMode structural variant split-read requirement (`var2vcf_valid.pl:197-205`)
+
+**Java / Perl behavior:** In `var2vcf_valid.pl:197-205`, when `-U` (`--nosv`) is not passed, SV calling is active. The Perl converter parses the SV field `$tamp` to extract split reads:
+```perl
+unless( $isamp ) {
+    ($splitreads, $spanpairs, $cluster) = (split(/-/, $tamp)) if ( defined($tamp) && $tamp =~ /-/ ); 
+    if ( $alt =~ /</ ) {
+        # Ignore SV's without split read support for now until a better criteria
+        unless ( $splitreads >= $opt_T ) {
+            $pinfo1 = "";
+            next;
+        }
+```
+Any structural variant allele containing `<` (e.g., `<DUP>`, `<INV>`) that has only discordant mate-pair cluster evidence but zero split-read evidence (`splitreads < $opt_T`, where default `$opt_T = 1`) is unconditionally discarded during VCF formatting. Notably, these variants **are emitted** in the intermediate `.var` table, creating a discrepancy between the table and VCF output.
+
+**Our replication stance:** **Replicated** in `crates/vardict-core/src/lib.rs:404` (`is_sv && splitreads < 1` suppresses VCF line generation for SimpleMode), ensuring exact bitwise parity with the full VarDictJava pipeline output.
+
+**Draft issue text:**
+
+> **Title:** SimpleMode VCF conversion silently drops discordant-pair SVs lacking split-read support
+>
+> In `var2vcf_valid.pl:197-205`, SV alleles containing `<` (such as `<DUP>` or `<INV>`) are dropped when `splitreads < $opt_T` (default 1). These candidate structural variants are detected by `StructuralVariantsProcessor` and printed to the `.var` table with `SV` tags (e.g., `0-12-1`), but never reach the final VCF output. If discordant pairs provide sufficient statistical evidence, dropping them without split reads should be controlled by a dedicated CLI flag rather than an unconditional filter.
+
+---
+
+## UB-6 — Mate-pair boundary parameter in `mark_dup_sv` (`StructuralVariantsProcessor.java:1468`)
+
+**Java behavior:** In `StructuralVariantsProcessor.java:1413-1468`, the cluster end coordinate `pe` is decremented prior to marking duplication SVs:
+```java
+mlen = pe - tbp;
+bp = tbp;
+pe--;
+end = pe;
+...
+markDUPSV(bp, pe, Collections.singletonList(svStructures.svrdup), maxReadLength);
+```
+Inside `markDUPSV`, the overlap predicate `isOverlap(start1, end1, start2, end2, rlen)` checks `if (start1 >= end2 || start2 >= end1) return false;`. Because Java passes the post-decrement `pe` as `end1`, any reverse-strand mate cluster whose reads begin exactly at the original un-decremented `pe` fails the overlap condition.
+
+**Our replication stance:** **Replicated** in `crates/vardict-core/src/sv.rs:3108`, passing `pe` (post-decrement) rather than `pe + 1` to match Java's exact discordant pair clustering and breakpoint boundaries.
+
+**Draft issue text:**
+
+> **Title:** Off-by-one window truncation in `markDUPSV` due to pre-decremented `pe` parameter
+>
+> In `StructuralVariantsProcessor.java:1416`, `pe` is decremented (`pe--`) before being passed to `markDUPSV` at line 1468. This shifts the search window right-boundary by 1 base to the left, causing discordant mate pairs that start at the exact cluster boundary to be excluded from duplication clustering. Passing `pe + 1` or the pre-decrement boundary would correctly include boundary-aligned discordant mates.
+
+---
+
+## UB-7 — Multi-allelic site single-winner collapsing (`var2vcf_valid.pl:135-205`)
+
+**Java / Perl behavior:** In `var2vcf_valid.pl:135-139`, unless `-A` is explicitly passed, the multi-allelic candidate count is clamped to `$ALL = 1`:
+```perl
+foreach my $p (@pos) {
+    my @tmp = sort { $b->[14] <=> $a->[14] } @{ $hash{ $chr }->{ $p } };
+    my $ALL = $opt_A ? @tmp + 0 : 1;
+    for(my $i = 0; $i < $ALL; $i++) {
+        my ($sample, ..., $ref, $alt, ..., $af) = @{ $tmp[$i] };
+        next unless ( $ref );
+```
+Only the single candidate allele with the highest allele frequency (`$tmp[0]`) is considered at each genomic locus. If that winner candidate is skipped (for example, if `$ref` is empty from a `-p` null-record, or if an SV candidate has `splitreads < 1` per UB-5), the loop executes `next` and terminates immediately. As a result, legitimate alternative variants at the same locus with lower allele frequencies are completely excluded from the VCF.
+
+**Our replication stance:** **Replicated** in `crates/vardict-core/src/lib.rs:477-488`, maintaining a `pending: BTreeMap<i32, SimpleVcfCandidate>` that retains only the top-AF candidate per locus in single-sample VCF mode.
+
+**Draft issue text:**
+
+> **Title:** Single-winner multi-allelic collapsing drops secondary variants when primary candidate is filtered
+>
+> In `var2vcf_valid.pl:135-205`, when `-A` is omitted, only the highest-AF candidate is inspected. If that candidate triggers any `next` condition (e.g. empty REF or zero split reads), the entire position is abandoned, dropping any secondary variants that would have passed filters. The loop should evaluate candidate records until an eligible variant is found or emit all qualifying alleles in standard multi-allelic VCF notation.
+

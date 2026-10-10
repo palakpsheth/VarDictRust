@@ -17,8 +17,8 @@
     "MATCH (18426 variants)"
   ],
   "date": "2026-10-09T15:48:40-07:00",
-  "fingerprint": "fac2186e9f75f268",
-  "head": "6b00e17b3a578a0cb8df1f16f75f4b8e7fda7886",
+  "fingerprint": "34d8b253f282884e",
+  "head": "7936d97938eab9781a08072f9796f2697de0132d",
   "java_time": {
     "exit": "0",
     "max_rss_kb": "6012708",

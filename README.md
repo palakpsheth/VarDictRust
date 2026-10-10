@@ -10,7 +10,7 @@ An idiomatic, memory-safe **Rust** rewrite of [VarDictJava](https://github.com/A
 
 VarDictRust consolidates the original 3-language pipeline (`Java` → `R` → `Perl`) into a **single, statically-compiled binary** that produces output **identical to VarDictJava v1.8.3 on valid inputs ($\varepsilon = 10^{-6}$, 0 variant diffs)**, eliminates the JVM/Perl/R dependency stack, and **scales to deep whole-genome sequencing (WGS) with bounded $O(1)$ memory**.
 
-Built under the [rewrites.bio](https://rewrites.bio) manifesto: *a faster, more robust tool that produces the same results*.
+Built under the [rewrites.bio](https://rewrites.bio) manifesto: *a faster, more robust tool that produces the same results*. See the comprehensive [Empirical Validation Report: GIAB & SEQC2](docs/validation/giab-seqc2-validation.md) for full biological provenance, algorithmic proofs, and benchmark datasets.
 
 ---
 
@@ -38,6 +38,12 @@ Recorded on identical hardware (AMD Ryzen / Ubuntu 24.04 LTS, NVMe SSD) pinned t
 | **Germline Calling** | `SimpleMode` (`-b sample.bam`) | WGS, WES, Panels | 36 (default) / 38 (`--fisher`) | Constitutional variant discovery, family trios, population genomics. |
 | **Somatic Paired Calling** | `SomaticMode` (`-b "tumor\|normal"`) | Tumor / Normal WGS / WES | 55 (default) / 61 (`--fisher`) | Cancer somatic mutations, subclonal alleles down to 1% AF, LOH detection. |
 | **Targeted Amplicon Panel** | `AmpliconMode` (`-a 10:0.95`) | AmpliSeq, HaloPlex, PCR | 38 (default) / 40 (`--fisher`) | Overlapping amplicon panels; trims primer bias (`AMPBIAS`) using 8-column BED. |
+
+> [!NOTE]
+> **Assumptions & Coordinate Conventions:**
+> - **Coordinate Contracts:** BAM/CRAM alignment coordinates are parsed as 0-based half-open intervals (`[start, end)`), while VCF output records are strictly 1-based closed intervals (`[start, end]`). Passing `-z 1` (or `--zero-based`) shifts 0-based BED intervals by `+1`.
+> - **Statistical Rounding:** All variant frequencies (`AF`), quality scores (`QUAL`), and p-values adhere to IEEE 754 round-to-nearest, ties-to-even (**Banker's rounding**), replicating Java's `RoundingMode.HALF_EVEN` and R's `round()`.
+> - **Multi-Allelic Collapsing:** Standard single-sample mode defaults to single-winner top-AF candidate selection per locus matching `var2vcf_valid.pl`.
 
 ---
 
@@ -105,7 +111,11 @@ Evaluated against physical ground truth using Real Time Genomics `rtg vcfeval`:
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | **GIAB HG002** | NIST v4.2.1 High-Confidence | Germline Small Variants | 22,803 TP / 22,458 FP / 813 FN | F1: 0.6622 (P: 0.5038, R: 0.9659) | F1: 0.6622 (P: 0.5038, R: 0.9659) | **EQUAL** |
 | **SEQC2 HCC1395** | SEQC2 v1.2.1 Somatic Truth | High-Confidence Somatic SNV/InDel | 1,056 TP / 11,334 FP / 140 FN | F1: 0.1555 (P: 0.0852, R: 0.8842) | F1: 0.1555 (P: 0.0852, R: 0.8842) | **EQUAL** |
-| **GIAB HG008** | NIST v3.3.2 High-Confidence | Somatic Small Variants | 575 TP / 1,565 FP / 288 FN | F1: 0.3856 (P: 0.2687, R: 0.6825) | F1: 0.3856 (P: 0.2687, R: 0.6825) | **EQUAL** |
+| **GIAB HG008** | NIST Draft Benchmark v0.3 | Somatic Small Variants | 575 TP / 1,565 FP / 288 FN | F1: 0.3856 (P: 0.2687, R: 0.6825) | F1: 0.3856 (P: 0.2687, R: 0.6825) | **EQUAL** |
+
+> [!NOTE]
+> **Interpreting Raw Discovery Sensitivity vs. Consensus Truth Set Precision:**
+> VarDict was designed as an ultra-sensitive discovery engine capable of calling subclonal cancer mutations down to 1% allele frequency (`-f 0.01`). Ground truth consensus sets (NIST v4.2.1, SEQC2 v1.2.1) are intentionally restricted to constitutional diploid or high-confidence somatic consensus variants, so raw discovery calls without post-filtering score thousands of subclonal candidates as technical false positives. When post-filtered (`FILTER="PASS" && STATUS="StrongSomatic"`), precision increases dramatically. Crucially, **VarDictJava and VarDictRust produce bitwise identical site lists** across all benchmark sets. For full biological details, see [Section 5.1 of the Validation Report](docs/validation/giab-seqc2-validation.md#51-biological--methodological-interpretation-of-raw-caller-precision).
 
 *For full scientific details, reference checksums, and exact reproduction commands, see [`docs/validation/giab-seqc2-validation.md`](docs/validation/giab-seqc2-validation.md).*
 
@@ -221,6 +231,28 @@ VarDictRust is a rewrite of **VarDict** and **VarDictJava** developed by Zhongwu
   pages     = {e108},
   year      = {2016},
   doi       = {10.1093/nar/gkw227}
+}
+
+@article{seqc2_2021_reference,
+  author    = {Fang, Li Tai and Zhu, Baolin and Zhao, Yongmei and Chen, Wanqiu and Yang, Zhaowei and Xu, Leming and others},
+  title     = {{Establishing community reference samples, data and call sets for cancer genomics}},
+  journal   = {Nature Biotechnology},
+  volume    = {39},
+  number    = {9},
+  pages     = {1151--1160},
+  year      = {2021},
+  doi       = {10.1038/s41587-021-00993-6}
+}
+
+@article{giab_2020_benchmark,
+  author    = {Zook, Justin M. and Hansen, Nancy F. and Olson, Nathan D. and Chapman, Lindsay and Mullikin, James C. and Xiao, Chunlin and others},
+  title     = {{A robust benchmark for detection of germline large deletions and insertions}},
+  journal   = {Nature Biotechnology},
+  volume    = {38},
+  number    = {11},
+  pages     = {1347--1355},
+  year      = {2020},
+  doi       = {10.1038/s41587-020-0538-8}
 }
 ```
 

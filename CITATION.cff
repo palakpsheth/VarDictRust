@@ -46,3 +46,46 @@ references:
     pages: "e108"
     year: 2016
     doi: "10.1093/nar/gkw227"
+  - type: article
+    authors:
+      - family-names: "Fang"
+        given-names: "Li Tai"
+      - family-names: "Zhu"
+        given-names: "Baolin"
+      - family-names: "Zhao"
+        given-names: "Yongmei"
+      - family-names: "Chen"
+        given-names: "Wanqiu"
+      - family-names: "Yang"
+        given-names: "Zhaowei"
+      - family-names: "Xu"
+        given-names: "Leming"
+    title: "Establishing community reference samples, data and call sets for cancer genomics"
+    journal: "Nature Biotechnology"
+    volume: 39
+    issue: 9
+    pages: "1151-1160"
+    year: 2021
+    doi: "10.1038/s41587-021-00993-6"
+  - type: article
+    authors:
+      - family-names: "Zook"
+        given-names: "Justin M."
+      - family-names: "Hansen"
+        given-names: "Nancy F."
+      - family-names: "Olson"
+        given-names: "Nathan D."
+      - family-names: "Chapman"
+        given-names: "Lindsay"
+      - family-names: "Mullikin"
+        given-names: "James C."
+      - family-names: "Xiao"
+        given-names: "Chunlin"
+    title: "A robust benchmark for detection of germline large deletions and insertions"
+    journal: "Nature Biotechnology"
+    volume: 38
+    issue: 11
+    pages: "1347-1355"
+    year: 2020
+    doi: "10.1038/s41587-020-0538-8"
+
