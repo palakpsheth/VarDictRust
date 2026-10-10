@@ -3104,7 +3104,7 @@ pub fn find_dup_disc(
         let mut svrdup_mut_refs: Vec<&mut Vec<Sclip>> = vec![&mut var_data.sv_structures.svrdup];
         let (clusters, _) = mark_dup_sv(
             bp,
-            pe + 1,
+            pe,
             &mut svrdup_mut_refs,
             var_data.max_read_length,
             verbose,

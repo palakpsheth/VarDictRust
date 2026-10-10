@@ -273,11 +273,32 @@ pub fn run(config: &config::Config) -> Result<(), VardictError> {
             .map_err(VardictError::Io)?;
     }
 
+    struct SimpleVcfCandidate {
+        start_pos: i32,
+        frequency: f64,
+        is_sv: bool,
+        splitreads: i32,
+        ref_empty: bool,
+        vcf_line: String,
+    }
+
+    enum SimpleTileOutput {
+        Lines(Vec<String>),
+        Vcf {
+            chr: String,
+            records: Vec<SimpleVcfCandidate>,
+        },
+    }
+
+    let mut current_chr = String::new();
+    let mut pending: std::collections::BTreeMap<i32, SimpleVcfCandidate> =
+        std::collections::BTreeMap::new();
+
     // Process tiles in parallel, print variants in deterministic index order
     crate::runner::run_parallel(
         tiles,
         config.threads,
-        move |tile| -> Result<Vec<String>, VardictError> {
+        move |tile| -> Result<SimpleTileOutput, VardictError> {
             let bed_region = crate::regions::Region {
                 chr: tile.chr.clone(),
                 start: tile.halo_start,
@@ -323,7 +344,7 @@ pub fn run(config: &config::Config) -> Result<(), VardictError> {
                         config_clone.sample, tile.chr, intron, count
                     ));
                 }
-                return Ok(lines);
+                return Ok(SimpleTileOutput::Lines(lines));
             }
 
             let builder_region = crate::regions::Region {
@@ -348,8 +369,8 @@ pub fn run(config: &config::Config) -> Result<(), VardictError> {
                 &var_data.splice,
             );
 
-            for v in variants {
-                if config_clone.emit_intermediate {
+            if config_clone.emit_intermediate {
+                for v in variants {
                     let mut line = if config_clone.fisher {
                         crate::output::table::simple_38(
                             &v,
@@ -374,60 +395,111 @@ pub fn run(config: &config::Config) -> Result<(), VardictError> {
                         line.push_str(&v.debug);
                     }
                     lines.push(line);
-                } else {
-                    // ports var2vcf_valid.pl:141 — empty-REF .var rows (the -p
-                    // null records) are dropped before VCF conversion. Java's
-                    // vars list can hold several rows per position, but rows
-                    // arriving here are already AF-selected winners: the
-                    // postprocess/simple.rs port of valid.pl:129-137 (bucket
-                    // by raw start, keep top row) ran upstream of emission,
-                    // so a pre-emit skip equals a post-selection skip.
-                    if crate::output::vcf::perl_row_skipped(&v.ref_allele) {
-                        continue;
-                    }
-                    // VCF mode: always compute Fisher for SBF field
-                    // (var2vcf_valid.pl never DROPS on AF without -S; it only
-                    // annotates the f$Freq filter, :159)
-                    let fisher = crate::stats::FisherExact::new(
-                        v.ref_fwd_cov as i32,
-                        v.ref_rev_cov as i32,
-                        v.fwd as i32,
-                        v.rev as i32,
-                    );
-                    let sbf = fisher.get_p_value();
-                    let oddratio_str = fisher.get_odds_ratio();
-                    let filters = crate::output::vcf::filter_variant(
-                        &v,
-                        &config_clone,
-                        0,
-                        None,
-                        sbf,
-                        &oddratio_str,
-                    );
-                    let record = crate::output::vcf::format_vcf_record(
-                        &v,
-                        &builder_region,
-                        &config_clone,
-                        &filters,
-                        sbf,
-                        &oddratio_str,
-                        None,
-                    );
-                    lines.push(record);
                 }
+                Ok(SimpleTileOutput::Lines(lines))
+            } else {
+                let mut records = Vec::new();
+                for v in variants {
+                    let ref_empty = crate::output::vcf::perl_row_skipped(&v.ref_allele);
+                    let is_sv = v.var_allele.contains('<');
+                    let mut splitreads = 0;
+                    if !v.sv.is_empty() && v.sv.contains('-') {
+                        let parts: Vec<&str> = v.sv.split('-').collect();
+                        if !parts.is_empty() {
+                            splitreads = parts[0].parse::<i32>().unwrap_or(0);
+                        }
+                    }
+                    let vcf_line = if ref_empty || (is_sv && splitreads < 1) {
+                        String::new()
+                    } else {
+                        let fisher = crate::stats::FisherExact::new(
+                            v.ref_fwd_cov as i32,
+                            v.ref_rev_cov as i32,
+                            v.fwd as i32,
+                            v.rev as i32,
+                        );
+                        let sbf = fisher.get_p_value();
+                        let oddratio_str = fisher.get_odds_ratio();
+                        let filters = crate::output::vcf::filter_variant(
+                            &v,
+                            &config_clone,
+                            0,
+                            None,
+                            sbf,
+                            &oddratio_str,
+                        );
+                        crate::output::vcf::format_vcf_record(
+                            &v,
+                            &builder_region,
+                            &config_clone,
+                            &filters,
+                            sbf,
+                            &oddratio_str,
+                            None,
+                        )
+                    };
+                    records.push(SimpleVcfCandidate {
+                        start_pos: v.start_pos,
+                        frequency: v.frequency,
+                        is_sv,
+                        splitreads,
+                        ref_empty,
+                        vcf_line,
+                    });
+                }
+                Ok(SimpleTileOutput::Vcf {
+                    chr: tile.chr.clone(),
+                    records,
+                })
             }
-            Ok(lines)
         },
-        move |lines| {
+        |output| {
             let stdout = std::io::stdout();
             let mut handle = stdout.lock();
             use std::io::Write;
-            for line in lines {
-                writeln!(handle, "{}", line).map_err(VardictError::Io)?;
+
+            match output {
+                SimpleTileOutput::Lines(lines) => {
+                    for line in lines {
+                        writeln!(handle, "{}", line).map_err(VardictError::Io)?;
+                    }
+                }
+                SimpleTileOutput::Vcf { chr, records } => {
+                    if chr != current_chr {
+                        for (_, cand) in std::mem::take(&mut pending) {
+                            if !cand.ref_empty && (!cand.is_sv || cand.splitreads >= 1) {
+                                writeln!(handle, "{}", cand.vcf_line).map_err(VardictError::Io)?;
+                            }
+                        }
+                        current_chr = chr;
+                    }
+
+                    for r in records {
+                        match pending.entry(r.start_pos) {
+                            std::collections::btree_map::Entry::Vacant(e) => {
+                                e.insert(r);
+                            }
+                            std::collections::btree_map::Entry::Occupied(mut e) => {
+                                if r.frequency > e.get().frequency {
+                                    e.insert(r);
+                                }
+                            }
+                        }
+                    }
+                }
             }
             Ok(())
         },
     )?;
+
+    let stdout = std::io::stdout();
+    let mut handle = stdout.lock();
+    use std::io::Write;
+    for (_, cand) in pending {
+        if !cand.ref_empty && (!cand.is_sv || cand.splitreads >= 1) {
+            writeln!(handle, "{}", cand.vcf_line).map_err(VardictError::Io)?;
+        }
+    }
 
     Ok(())
 }
