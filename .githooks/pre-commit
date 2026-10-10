@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# VarDictRust Native Git Pre-Commit Hook
+# Fast hygiene and secret scan gate (<3 seconds).
+set -euo pipefail
+
+# 1. Inspect staged files to enable fast path for doc-only commits
+STAGED_RS=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.rs$|Cargo\.(toml|lock)$' || true)
+
+if [ -n "$STAGED_RS" ]; then
+    echo "=== [pre-commit] Checking code formatting (cargo fmt) ==="
+    if ! cargo fmt --all -- --check; then
+        echo "ERROR: Code formatting check failed. Run 'cargo fmt --all' to fix." >&2
+        exit 1
+    fi
+
+    echo "=== [pre-commit] Checking lints (cargo clippy) ==="
+    if ! cargo clippy --all-targets --all-features -- -D warnings; then
+        echo "ERROR: Clippy linter found warnings. Fix warnings before committing." >&2
+        exit 1
+    fi
+else
+    echo "=== [pre-commit] No Rust or Cargo files staged; skipping cargo fmt/clippy ==="
+fi
+
+# 2. Portable secret scan on staged index
+echo "=== [pre-commit] Scanning staged changes for secrets (gitleaks) ==="
+GITLEAKS_BIN=""
+if command -v gitleaks >/dev/null 2>&1; then
+    GITLEAKS_BIN="gitleaks"
+elif [ -n "${CONDA_PREFIX:-}" ] && [ -x "${CONDA_PREFIX}/bin/gitleaks" ]; then
+    GITLEAKS_BIN="${CONDA_PREFIX}/bin/gitleaks"
+elif [ -x "${HOME}/miniconda3/envs/g4-tools/bin/gitleaks" ]; then
+    GITLEAKS_BIN="${HOME}/miniconda3/envs/g4-tools/bin/gitleaks"
+elif [ -x "${HOME}/miniforge3/envs/g4-tools/bin/gitleaks" ]; then
+    GITLEAKS_BIN="${HOME}/miniforge3/envs/g4-tools/bin/gitleaks"
+elif [ -x /home/palak/miniconda3/envs/g4-tools/bin/gitleaks ]; then
+    GITLEAKS_BIN="/home/palak/miniconda3/envs/g4-tools/bin/gitleaks"
+fi
+
+if [ -n "$GITLEAKS_BIN" ]; then
+    "$GITLEAKS_BIN" protect --staged -v
+else
+    echo "WARNING: gitleaks not found on PATH or in conda environments; skipping staged secret scan." >&2
+fi
+
+echo "=== [pre-commit] All pre-commit checks passed ==="
