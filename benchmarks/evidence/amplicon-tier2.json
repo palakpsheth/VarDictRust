@@ -1,0 +1,33 @@
+{
+  "cmd": [
+    "bash",
+    "harness/compare.sh",
+    "scratch/g4/amplicon/ref.fa",
+    "scratch/g4/amplicon/amplicon.bam",
+    "scratch/g4/amplicon/correct_8columns_amplicon.bed",
+    "SAMPLE",
+    "-a",
+    "10:0.95",
+    "-th",
+    "8"
+  ],
+  "compare_head": [
+    "MATCH (2 variants)"
+  ],
+  "date": "2026-10-10T10:21:44-07:00",
+  "fingerprint": "663343fea151fed2",
+  "head": "a2d6c815f2eba036878c75df580df2acd516785c",
+  "java_time": {
+    "exit": "0",
+    "max_rss_kb": "123676",
+    "wall": "0:02.10"
+  },
+  "n_variants": 2,
+  "name": "amplicon-tier2",
+  "result": "MATCH",
+  "rust_time": {
+    "exit": "0",
+    "max_rss_kb": "52052",
+    "wall": "0:00.07"
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "cmd": [
+    "bash",
+    "harness/compare.sh",
+    "scratch/g4/ref/giabv3/GRCh38_GIABv3.fasta",
+    "scratch/g4/hg002/HG002.chr20.bam",
+    "scratch/g4/hg002/eval.bed",
+    "HG002",
+    "-f",
+    "0.01",
+    "-th",
+    "8"
+  ],
+  "compare_head": [
+    "MATCH (227562 variants)"
+  ],
+  "date": "2026-10-10T10:21:02-07:00",
+  "fingerprint": "663343fea151fed2",
+  "head": "a2d6c815f2eba036878c75df580df2acd516785c",
+  "java_time": {
+    "exit": "0",
+    "max_rss_kb": "3808940",
+    "wall": "4:16.98"
+  },
+  "n_variants": 227562,
+  "name": "hg002-tier2",
+  "result": "MATCH",
+  "rust_time": {
+    "exit": "0",
+    "max_rss_kb": "1141592",
+    "wall": "1:22.47"
+  }
+}
