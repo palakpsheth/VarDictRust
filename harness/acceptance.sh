@@ -27,14 +27,14 @@ mark 2 $t "integration/smoke"
 # 3 Tier-2: micro + every committed slice + external datasets
 t=1; MIN_VARIANTS=1 run bash harness/compare.sh fixtures/micro/micro.ref.fa fixtures/micro/micro.bam fixtures/micro/micro.bed || t=0
 for id in $(awk -F'\t' '!/^#/{print $1}' harness/slices.tsv); do run bash harness/run_slice.sh "$id" || { t=0; echo "slice $id failed" >> "$OUT/log.txt"; }; done
-for e in hg008-tier2 seqc2-slices-tier2 seqc2-exome-tier2; do run ev "$e" || t=0; done
+for e in hg008-tier2 seqc2-slices-tier2 seqc2-exome-tier2 hg002-tier2 amplicon-tier2; do run ev "$e" || t=0; done
 mark 3 $t "Tier-2"
 # 4 Robustness: crash corpus (#341 family, PR #402, #187) + CRAM twin
 t=1; run cargo test -p vardictrust --test robustness || t=0; run ev hg008-cram-twin || t=0; mark 4 $t "robustness/CRAM"
 # 5 Scale (thresholds pre-registered in T21)
 t=1; run ev scale || t=0; mark 5 $t "scale"
 # 6 Truth set: rtg exact java==rust equality on both datasets (som.py/truvari via waiver)
-t=1; for e in hg008-truth seqc2-truth; do run ev "$e" || t=0; done; mark 6 $t "truth"
+t=1; for e in hg008-truth seqc2-truth hg002-truth; do run ev "$e" || t=0; done; mark 6 $t "truth"
 # 7 Hygiene
 t=1; run cargo fmt --all -- --check || t=0; run cargo clippy --all-targets --all-features -- -D warnings || t=0
 run cargo audit || t=0; run cargo deny check || t=0; mark 7 $t "hygiene"
