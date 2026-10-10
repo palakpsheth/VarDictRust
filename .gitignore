@@ -30,6 +30,7 @@
 *.swp
 .vscode/
 .idea/
+.omo/
 
 # Rust/Python development
 *.rlib
