@@ -757,7 +757,6 @@ static AMP_ATGC: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"&([ATGC]+)").un
 static HASH_ATGC: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"#([ATGC]+)").unwrap());
 static ATGS_AMP_ATGS_END: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(\+[ATGC]+)&[ATGC]+$").unwrap());
-static RE_LEADING_PLUS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\+").unwrap());
 static RE_CARET_DIGITS_END: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\^\d+$").unwrap());
 
 /// Realign deletions.
@@ -1371,7 +1370,7 @@ pub fn realignins(
                 .map_or(0, |m| m.as_str().parse::<i32>().unwrap_or(0));
         }
 
-        let tn = RE_LEADING_PLUS.replace(vn, "").to_string();
+        let tn = vn.strip_prefix('+').unwrap_or(vn).to_string();
         let tn = tn.replace(['&', '#'], "");
         let tn = RE_CARET_DIGITS_END.replace(&tn, "").to_string();
         let tn = tn.replace('^', "");
