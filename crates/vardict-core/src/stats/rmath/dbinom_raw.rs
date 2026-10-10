@@ -1,6 +1,32 @@
 #![allow(clippy::excessive_precision)]
 //! ports R nmath dbinom.c
 
+/// Compute (1+x)^y accurately also for |x| << 1.
+/// Ports `pow1p` from R `nmath/dbinom.c`.
+#[inline]
+pub fn pow1p(x: f64, y: f64) -> f64 {
+    if y.is_nan() {
+        return if x == 0.0 { 1.0 } else { y };
+    }
+    if y >= 0.0 && y == y.trunc() && y <= 4.0 {
+        match y as i32 {
+            0 => return 1.0,
+            1 => return x + 1.0,
+            2 => return x * (x + 2.0) + 1.0,
+            3 => return x * (x * (x + 3.0) + 3.0) + 1.0,
+            4 => return x * (x * (x * (x + 4.0) + 6.0) + 4.0) + 1.0,
+            _ => {}
+        }
+    }
+    let xp1 = x + 1.0;
+    let x_ = xp1 - 1.0;
+    if x_ == x || x.abs() > 0.5 || x.is_nan() {
+        xp1.powf(y)
+    } else {
+        (y * x.ln_1p()).exp()
+    }
+}
+
 #[inline]
 pub fn dbinom_raw(x: f64, n: f64, p: f64, q: f64, give_log: bool) -> f64 {
     if p == 0.0 {
@@ -43,7 +69,7 @@ pub fn dbinom_raw(x: f64, n: f64, p: f64, q: f64, give_log: bool) -> f64 {
             return if give_log {
                 n * (-p).ln_1p()
             } else {
-                (1.0 - p).powf(n)
+                pow1p(-p, n)
             };
         }
     }
@@ -52,7 +78,7 @@ pub fn dbinom_raw(x: f64, n: f64, p: f64, q: f64, give_log: bool) -> f64 {
             return if give_log {
                 n * (-q).ln_1p()
             } else {
-                (1.0 - q).powf(n)
+                pow1p(-q, n)
             };
         } else {
             return if give_log { n * p.ln() } else { p.powf(n) };

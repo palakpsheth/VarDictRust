@@ -108,15 +108,12 @@ impl FisherExact {
         root
     }
 
-    fn mnhyper(&self, ncp: f64) -> f64 {
+    pub(crate) fn mnhyper(&self, ncp: f64) -> f64 {
         if ncp == 0.0 {
             return self.lo as f64;
         }
         if ncp.is_infinite() {
             return self.hi as f64;
-        }
-        if ncp == 1.0 && self.m + self.n > 0 {
-            return (self.k as f64) * (self.m as f64) / ((self.m + self.n) as f64);
         }
         let dnhyper_result = self.dnhyper(ncp);
         let mut supp_d = Vec::with_capacity(self.support.len());
@@ -203,33 +200,21 @@ impl FisherExact {
             return 1.0;
         }
         if upper_tail {
-            if q <= self.lo {
-                1.0
-            } else if q > self.hi {
-                0.0
-            } else {
-                let d = self.dnhyper(1.0);
-                let start_idx = (q - self.lo) as usize;
-                let mut sum_elements = Vec::new();
-                for &val in d.iter().skip(start_idx) {
-                    sum_elements.push(val);
-                }
-                crate::stats::f80::f80_sum(&sum_elements)
-            }
+            crate::stats::rmath::phyper::phyper(
+                (q - 1) as f64,
+                self.m as f64,
+                self.n as f64,
+                self.k as f64,
+                false,
+            )
         } else {
-            if q < self.lo {
-                0.0
-            } else if q >= self.hi {
-                1.0
-            } else {
-                let d = self.dnhyper(1.0);
-                let end_idx = (q - self.lo) as usize;
-                let mut sum_elements = Vec::new();
-                for &val in d.iter().take(end_idx + 1) {
-                    sum_elements.push(val);
-                }
-                crate::stats::f80::f80_sum(&sum_elements)
-            }
+            crate::stats::rmath::phyper::phyper(
+                q as f64,
+                self.m as f64,
+                self.n as f64,
+                self.k as f64,
+                true,
+            )
         }
     }
 }
@@ -436,5 +421,29 @@ mod tests {
 
         // The formatted value must be exactly 0.32813 (banker's rounding of 0.32812500000000006)
         assert_eq!(f.get_p_value(), 0.32813);
+    }
+
+    #[test]
+    fn test_fisher_chr1_66987255() {
+        let f = FisherExact::new(0, 42, 2, 85);
+        assert_eq!(f.get_p_value_less(), 0.45313);
+    }
+
+    #[test]
+    fn test_fisher_chr8_132972774() {
+        let f = FisherExact::new(7, 8, 1, 4);
+        assert_eq!(f.get_odds_ratio(), "3.30211");
+    }
+
+    #[test]
+    fn test_fisher_chr16_16364166_sor() {
+        let f = FisherExact::new(5, 21, 1, 12);
+        assert_eq!(f.get_odds_ratio(), "2.79182");
+    }
+
+    #[test]
+    fn test_fisher_chr17_76093187_sor() {
+        let f = FisherExact::new(1, 65, 2, 31);
+        assert_eq!(f.get_odds_ratio(), "0.24227");
     }
 }

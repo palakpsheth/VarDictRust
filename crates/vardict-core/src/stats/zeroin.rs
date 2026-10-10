@@ -133,4 +133,15 @@ mod tests {
         let root = uniroot(3.0, 4.0, f, 1e-15);
         assert!((root - std::f64::consts::PI).abs() < 1e-12);
     }
+
+    #[test]
+    #[allow(clippy::excessive_precision)]
+    fn test_zeroin_chr16() {
+        let fisher = crate::stats::FisherExact::new(5, 21, 1, 12);
+        let eval = |t: f64| fisher.mnhyper(1.0 / t) - 5.0;
+        let eps = f64::EPSILON;
+        let tol = eps.powf(0.25);
+        let root = uniroot(eps, 1.0, eval, tol);
+        assert!((root - 0.35818903155718163).abs() < 1e-12);
+    }
 }

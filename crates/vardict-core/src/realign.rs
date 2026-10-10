@@ -2804,8 +2804,6 @@ pub fn realignlgins30(
             if is_ins {
                 let ref_base = reference.get_base(chr, bi as u32);
                 let mvref_mut = get_variation_maybe_mut(non_insertion_variants, bi, ref_base);
-                let mvref_cloned = mvref_mut.as_deref().cloned();
-
                 // Mutate mvref in adj_cnt for sc3v:
                 let vref = get_variation(insertion_variants, bi, &ins_str);
                 crate::variations::util::adj_cnt(vref, &sc3v_var, mvref_mut);
@@ -2815,7 +2813,8 @@ pub fn realignlgins30(
                 crate::variations::util::adj_cnt(vref, &sc5v_var, None);
 
                 let has_bams = bams.is_some_and(|b| !b.is_empty());
-                let mvref_cnt = mvref_cloned.as_ref().map_or(0, |m| m.cnt);
+                let mvref_cnt =
+                    get_variation_maybe(non_insertion_variants, bi, ref_base).map_or(0, |m| m.cnt);
                 let bams_slice = match bams {
                     Some(b) => b,
                     None => &[],
@@ -3248,6 +3247,9 @@ pub fn realignlgins(
         let mut bi = tpl.base_insert;
         let mut ins = tpl.insertion_sequence.into_bytes();
 
+        let orig_p = p;
+        let mut p = p;
+
         if bi == 0 {
             if crate::variations::util::is_low_complex_seq(&seq) {
                 continue;
@@ -3286,18 +3288,16 @@ pub fn realignlgins(
                 }
             }
 
-            let mut p_mut = p;
-            let mut bi_mut = bi;
             let mut shift5 = 0;
             loop {
-                let ref_p_minus_1 = reference.get_base(chr, (p_mut - 1) as u32);
-                let ref_bi_minus_1 = reference.get_base(chr, (bi_mut - 1) as u32);
+                let ref_p_minus_1 = reference.get_base(chr, (p - 1) as u32);
+                let ref_bi_minus_1 = reference.get_base(chr, (bi - 1) as u32);
                 if ref_p_minus_1.is_some()
                     && ref_bi_minus_1.is_some()
                     && ref_p_minus_1 == ref_bi_minus_1
                 {
-                    p_mut -= 1;
-                    bi_mut -= 1;
+                    p -= 1;
+                    bi -= 1;
                     shift5 += 1;
                 } else {
                     break;
@@ -3305,34 +3305,29 @@ pub fn realignlgins(
             }
 
             const SVFLANK: i32 = 50;
-            if p_mut - bi_mut > config.sv_min_len as i32 + 2 * SVFLANK {
+            if p - bi > config.sv_min_len as i32 + 2 * SVFLANK {
                 ins = join_ref_for_3_lgins(
                     reference,
                     chr,
-                    bi_mut,
-                    bi_mut + SVFLANK - 1,
+                    bi,
+                    bi + SVFLANK - 1,
                     shift5,
                     &seq,
                     &extra,
                 );
-                let dup_str = format!("<dup{}>", p_mut - bi_mut - 2 * SVFLANK);
+                let dup_str = format!("<dup{}>", p - bi - 2 * SVFLANK);
                 ins.extend_from_slice(dup_str.as_bytes());
-                let jref = join_ref_int(reference, chr, p_mut - SVFLANK, p_mut - 1);
+                let jref = join_ref_int(reference, chr, p - SVFLANK, p - 1);
                 ins.extend_from_slice(&jref);
             } else {
-                ins = join_ref_for_3_lgins(reference, chr, bi_mut, p_mut - 1, shift5, &seq, &extra);
+                ins = join_ref_for_3_lgins(reference, chr, bi, p - 1, shift5, &seq, &extra);
             }
             ins.extend_from_slice(&extra);
 
             let mut sv_lists = [&mut *svfdup, &mut *svrdup];
-            let (clusters, pairs) = crate::sv::mark_dup_sv(
-                bi_mut,
-                p_mut - 1,
-                &mut sv_lists,
-                max_read_length,
-                config.verbose,
-            );
-            bi = bi_mut - 1;
+            let (clusters, pairs) =
+                crate::sv::mark_dup_sv(bi, p - 1, &mut sv_lists, max_read_length, config.verbose);
+            bi = bi - 1;
 
             let sv = crate::variations::VariationMap::get_sv(non_insertion_variants, bi);
             sv.r#type = "DUP".to_string();
@@ -3340,8 +3335,10 @@ pub fn realignlgins(
             sv.splits += cnt;
             sv.clusters += clusters;
 
-            let sc3v_vars_count = soft_clips_3_end.get(&p).map_or(0, |sc| sc.variation.cnt);
-            let cov_p = ref_coverage.get(&p_mut).copied();
+            let sc3v_vars_count = soft_clips_3_end
+                .get(&orig_p)
+                .map_or(0, |sc| sc.variation.cnt);
+            let cov_p = ref_coverage.get(&p).copied();
             let cov_bi = ref_coverage.get(&bi).copied();
             if cov_bi.is_none() || cov_bi.is_some_and(|cb| cov_p.is_some_and(|cp| cb < cp)) {
                 if let Some(c_p) = cov_p {
@@ -3373,14 +3370,14 @@ pub fn realignlgins(
         let ref_base = reference.get_base(chr, bi as u32);
         let mut lref_mut = get_variation_maybe_mut(non_insertion_variants, bi, ref_base);
         let sc3v_mean_pos = soft_clips_3_end
-            .get(&p)
+            .get(&orig_p)
             .map_or(0.0, |sc| sc.variation.pmean);
         if p as f64 - bi as f64 > sc3v_mean_pos / (cnt as f64) {
             lref_mut = None;
         }
 
         let sc3v_var = soft_clips_3_end
-            .get(&p)
+            .get(&orig_p)
             .map_or(Variation::new(), |sc| sc.variation.clone());
         let iref = get_variation(insertion_variants, bi, &format!("+{}", ins_str));
         if let Some(ref_mut) = lref_mut {
@@ -3403,12 +3400,12 @@ pub fn realignlgins(
             len -= 1;
         }
         let len_seq = soft_clips_3_end
-            .get(&p)
+            .get(&orig_p)
             .map_or(0, |sc| sc.seq.keys().max().copied().unwrap_or(0))
             + 1;
 
         let entries_to_process: Vec<(i32, u8, Variation)> = {
-            let sc3v = soft_clips_3_end.get(&p);
+            let sc3v = soft_clips_3_end.get(&orig_p);
             sc3v.map_or_else(Vec::new, |sc3v| {
                 let mut res = Vec::new();
                 for ii in len..len_seq {
@@ -3430,7 +3427,7 @@ pub fn realignlgins(
             inc_cnt(ref_coverage, pii, tv.cnt);
         }
 
-        if let Some(sc3v) = soft_clips_3_end.get_mut(&p) {
+        if let Some(sc3v) = soft_clips_3_end.get_mut(&orig_p) {
             sc3v.used = true;
         }
 
