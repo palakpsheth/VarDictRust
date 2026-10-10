@@ -84,6 +84,7 @@ fn bench_parse_cigar(c: &mut Criterion) {
                 false,
                 records.len() as i32,
                 0,
+                0,
             ))
             .expect("pileup")
         })

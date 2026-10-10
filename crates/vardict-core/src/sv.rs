@@ -299,10 +299,6 @@ pub fn find_match(
                     first_seed + seq_vec.len() as i32 - i as i32 - 1
                 };
 
-                if (bp - position).abs() > 1000000 {
-                    continue;
-                }
-
                 if crate::realign::is_match_ref(&seq_vec, reference, chr, bp, dir, mm_limit) {
                     let mut mm = if dir == -1 { -1 } else { 0 };
                     loop {
@@ -479,10 +475,6 @@ pub fn find_match_rev(
                 } else {
                     first_seed - i as i32
                 };
-
-                if (bp - position).abs() > 1000000 {
-                    continue;
-                }
 
                 if crate::realign::is_match_ref(&seq_vec, reference, chr, bp, -1 * dir, mm_limit) {
                     if verbose {
