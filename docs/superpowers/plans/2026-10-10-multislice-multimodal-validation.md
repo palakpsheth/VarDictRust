@@ -177,7 +177,7 @@ Expected: Valid JSON with `fingerprint: "7e9b1be766f73b17"` and `slices_passed: 
 ### Task 5: Document Integration, Gate Verification, and Commit
 
 **Files:**
-- Modify: `docs/validation/giab-seqc2-validation.md`
+- Modify: `docs/validation/omnibus-empirical-validation.md`
 - Modify: `README.md`
 - Modify: `docs/release/v1.0.0-pr.md`
 - Modify: `release_plan.md`
@@ -201,6 +201,6 @@ Expected: 8/8 PASS and 6/6 PR stages PASS.
 - [ ] **Step 4: Commit changes cleanly**
 
 ```bash
-git add harness/slices/multimodal/ harness/get_multimodal_slices.sh harness/run_multimodal_slices.sh benchmarks/evidence/multimodal-slices-tier2.json docs/validation/multimodal-multislice-validation.md docs/validation/giab-seqc2-validation.md README.md docs/release/v1.0.0-pr.md release_plan.md docs/superpowers/plans/
+git add harness/slices/multimodal/ harness/get_multimodal_slices.sh harness/run_multimodal_slices.sh benchmarks/evidence/multimodal-slices-tier2.json docs/validation/multimodal-multislice-validation.md docs/validation/omnibus-empirical-validation.md README.md docs/release/v1.0.0-pr.md release_plan.md docs/superpowers/plans/
 git commit -m "T024h: verify and document multi-slice multi-modal public dataset expansion for v1.0.0"
 ```

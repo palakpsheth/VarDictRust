@@ -207,7 +207,7 @@ Between **QUAL 75 and QUAL 100**, the ROC curve undergoes a massive phase transi
 
 To ensure that no edge cases or operational configurations were left unexercised, VarDictRust was evaluated across **nine extended modalities** exercising previously unverified CLI flags, complex structural variants, and RNA splicing.
 
-Across all 9 configurations, VarDictRust achieves **100% byte-for-byte and strict-bytes parity (0 diffs)** against `VarDictJava v1.8.3` on real sequencing data (permanently archived in [`benchmarks/evidence/extended-coverage-tier2.json`](../../benchmarks/evidence/extended-coverage-tier2.json); see satellite report [`docs/validation/full-code-coverage-validation.md`](full-code-coverage-validation.md)):
+Across all 9 configurations, VarDictRust achieves **100% byte-for-byte and strict-bytes parity (0 diffs)** against `VarDictJava v1.8.3` on real sequencing data (permanently archived in [`benchmarks/evidence/extended-coverage-tier2.json`](../../benchmarks/evidence/extended-coverage-tier2.json); see satellite report [`docs/validation/extended-coverage-validation.md`](extended-coverage-validation.md)):
 
 | # | Evaluated Modality | Exact CLI Invocation | Output Format | Verified Parity Result | Discrepancy Count |
 | :-: | :--- | :--- | :--- | :---: | :---: |

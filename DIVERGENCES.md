@@ -37,7 +37,7 @@ Verified Parity Baseline (release/v1.0.0, commit cb39a64):
 
 *Upstream Bug Specification & Empirical Validation:*
 - Detailed filing-ready draft specifications for UB-1 through UB-7 are consolidated in [`docs/upstream-bugs.md`](docs/upstream-bugs.md).
-- Full empirical validation reports, biological provenance tables, algorithmic patterns, coordinate contracts, and filtering threshold catalogs are documented in [`docs/validation/giab-seqc2-validation.md`](docs/validation/giab-seqc2-validation.md) and [`docs/validation/nist-v4.2.1-hg002-benchmark.md`](docs/validation/nist-v4.2.1-hg002-benchmark.md).
+- Full empirical validation reports, biological provenance tables, algorithmic patterns, coordinate contracts, and filtering threshold catalogs are documented in [`docs/validation/omnibus-empirical-validation.md`](docs/validation/omnibus-empirical-validation.md) and [`docs/validation/nist-v4.2.1-hg002-benchmark.md`](docs/validation/nist-v4.2.1-hg002-benchmark.md).
 
 ---
 

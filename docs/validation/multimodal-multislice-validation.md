@@ -2,7 +2,8 @@
 
 > **Standard:** [rewrites.bio](https://rewrites.bio) Manifesto (§0 Evidence Before Completion, §0b Integrity, §5 Pure Parity on Valid Inputs).  
 > **Release Engine Fingerprint:** `7e9b1be766f73b17` (Certified Invariant).  
-> **Execution Milestone:** Task 24h: Multi-Slice Multi-Consortium Public Dataset Expansion & Complete Documentation.
+> **Execution Milestone:** Task 24h: Multi-Slice Multi-Consortium Public Dataset Expansion & Complete Documentation.  
+> **Parent Omnibus Report:** [`docs/validation/omnibus-empirical-validation.md`](omnibus-empirical-validation.md) (Pillar 9).
 
 ---
 

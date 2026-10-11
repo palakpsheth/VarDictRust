@@ -7,7 +7,8 @@
 **Assay Architecture:** Illumina HiSeq 2500 2×250 bp paired-end PCR-free WGS (~125× empirical depth)  
 **Software Under Evaluation:** VarDictRust v1.0.0 vs VarDictJava v1.8.3 (commit `0886261`, Perl submodule `009e017`)  
 **Evaluator Engine:** Real Time Genomics `rtg vcfeval` v3.13  
-**Status:** **TIER-2 MATCH** (0 diffs vs Java) & **TRUTH EQUAL** (0 diffs across all site lists)
+**Status:** **TIER-2 MATCH** (0 diffs vs Java) & **TRUTH EQUAL** (0 diffs across all site lists)  
+**Parent Omnibus Report:** [`docs/validation/omnibus-empirical-validation.md`](omnibus-empirical-validation.md) (Pillar 1)
 
 ---
 

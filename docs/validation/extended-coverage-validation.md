@@ -4,6 +4,7 @@
 **Governing Standard:** [rewrites.bio](https://rewrites.bio) Manifesto (§0 Evidence Before Completion, §0b Integrity, §5 Pure Parity on Valid Inputs)  
 **Certified Release Engine Fingerprint:** `7e9b1be766f73b17`  
 **Differential Target Oracle:** AstraZeneca VarDictJava v1.8.3 (OpenJDK 8+, R 4.4, Perl 5)  
+**Parent Omnibus Report:** [`docs/validation/omnibus-empirical-validation.md`](omnibus-empirical-validation.md) (Pillar 8)  
 
 ---
 
