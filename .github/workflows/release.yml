@@ -302,10 +302,18 @@ jobs:
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
       - name: Publish vardict-core to Crates.io
         run: cargo publish -p vardict-core
-      - name: Wait for crates.io index propagation
-        run: sleep 30
       - name: Publish vardictrust to Crates.io
-        run: cargo publish -p vardictrust
+        run: |
+          for i in {1..30}; do
+            if cargo publish -p vardictrust; then
+              echo "vardictrust published successfully"
+              exit 0
+            fi
+            echo "Waiting for vardict-core to propagate on crates.io (attempt $i/30)..."
+            sleep 10
+          done
+          echo "Failed to publish vardictrust after retries" >&2
+          exit 1
 
   announce:
     needs:
