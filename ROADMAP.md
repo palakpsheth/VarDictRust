@@ -37,6 +37,7 @@ From v1.1.0, each correction is opt-in via `--fix <id>` (default off) and lands 
 | **Indel Boundaries** | [#264](https://github.com/AstraZeneca-NGS/VarDictJava/issues/264) | Boundary alignment and coordinate shifting for adjacent insertions/deletions | Standardize 3' left/right alignment conventions |
 | **Insertion Coverage** | `ToVarsBuilder.java:523-538` | `HICOV` calculation excludes insertions from local depth denominator | Clarify whether insertion reads contribute to local coverage metrics |
 | **OpenJDK Tree-Bin Ordering** | `javamap.rs:211-217`, `tovars.rs:198-205` | When collision count reaches 8 in capacity >= 64, Java converts bucket to `TreeNode` (Red-Black tree) with `moveRootToFront`. Currently sets observability warning flag. 0 treeifications observed across all 92 fixtures and 10 biological cohorts. | Port exact OpenJDK `TreeNode` rotation, untreeification, and `moveRootToFront` pointer updates behind `--fix javamap-tree-bins` if synthetic multi-collision inputs require exact order preservation. |
+| **Cleanroom Rmath Replacement** | `crates/vardict-core/src/stats/rmath/` | R `nmath` hypergeometric distribution routines are currently used for float-exact Fisher test calculations. While documented in `LICENSE-3RD-PARTY`, cleanroom reimplementation (e.g. via Apache-2.0 Commons Math 3 algorithms) will restore pure MIT licensing across the entire workspace. | Implement cleanroom hypergeometric distribution under Apache-2.0/MIT and verify floating-point equivalence across all 15 benchmark cohorts. |
 
 ---
 

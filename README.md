@@ -293,4 +293,4 @@ Full citation metadata is available in [`CITATION.cff`](CITATION.cff).
 
 ## License
 
-VarDictRust is open-source software licensed under the [MIT License](LICENSE).
+VarDictRust is open-source software licensed under the [MIT License](LICENSE). Third-party attribution, component licenses (including R Project `nmath` distribution notices), and copyright disclosures are cataloged in [`LICENSE-3RD-PARTY`](LICENSE-3RD-PARTY).

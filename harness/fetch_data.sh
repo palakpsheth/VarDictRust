@@ -28,15 +28,16 @@ while IFS=$'\t' read -r group name url md5 dest; do
   echo "fetch: $name"
   curl -fL --retry 5 --retry-delay 30 -C - -o "$out" "$url"
   got=$(md5sum "$out" | cut -d' ' -f1)
-  src=computed-locally
-  if [ "$md5" != "-" ]; then
-    if [ "$got" != "$md5" ]; then
-      echo "fetch: MD5 MISMATCH $name got=$got want=$md5" >&2
-      rm -f "$out"
-      exit 1
-    fi
-    src=upstream
+  if [ -z "$md5" ] || [ "$md5" = "-" ]; then
+    echo "fetch: ERROR missing required MD5 checksum for asset $name" >&2
+    exit 1
   fi
+  if [ "$got" != "$md5" ]; then
+    echo "fetch: MD5 MISMATCH $name got=$got want=$md5" >&2
+    rm -f "$out"
+    exit 1
+  fi
+  src=upstream
   grep -qF "$name" "$MAN" || printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$name" "$url" "$got" "$src" "$(stat -c %s "$out")" "$(date -Is)" >> "$MAN"
   touch "$out.done"
 done < "$ASSETS"
