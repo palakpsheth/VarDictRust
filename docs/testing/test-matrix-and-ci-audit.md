@@ -18,7 +18,7 @@ This architecture operates on two complementary pillars:
 - **Pillar A (Biological Parity & Empirical Truth):** Documented in the [Omnibus Master Empirical Validation Report](../validation/omnibus-empirical-validation.md), verifying variant-level concordance against gold-standard consortium benchmarks (NIST GIAB, FDA SEQC2, Hartwig) across GRCh38 and GRCh37.
 - **Pillar B (Engineering Mechanics & Verification Pipeline):** Documented in this report, establishing the software testing hierarchy, developer feedback loops, crash resilience corpus, statistical invariants, continuous performance budgets, and SLSA-attested CI/CD workflows.
 
-Across all testing layers, VarDictRust executes **208 automated Cargo workspace tests** (Level 1: Unit & Component Tests), **92 integration regression testcases** (Level 2: Upstream Integration Regression Corpus), **17 differential parity benchmarks** (Level 3: Dual-Engine Differential Parity Testing, backed by 16 committed evidence JSONs), **5 ground truth concordance evaluations** via `rtg vcfeval` (Level 4: Ground Truth Concordance Benchmarking, all certified EQUAL), **4 continuous performance budgets** (Level 5: Performance & Memory Budgets), **14 diagnostic self-tests** (Level 6: Diagnostic Self-Tests), and **automated pre-PR and release acceptance compound gates** (Level 7: Pre-PR & Release Acceptance Compound Gates) alongside **3 automated cloud CI/CD pipelines**.
+Across all testing layers, VarDictRust executes **208 automated Cargo workspace tests** (Level 1: Unit & Component Tests), **92 integration regression testcases** (Level 2: Upstream Integration Regression Corpus), **17 differential parity benchmarks** (Level 3: Dual-Engine Differential Parity Testing, backed by 16 committed evidence JSONs), **5 ground truth concordance evaluations** via `rtg vcfeval` (Level 4: Ground Truth Concordance Benchmarking, all certified EQUAL), **4 continuous performance budgets** (Level 5: Performance & Memory Budgets), **14 diagnostic self-tests** (Level 6: Diagnostic Self-Tests), and **automated pre-PR and release acceptance compound gates** (Level 7: Pre-PR & Release Acceptance Compound Gates) alongside **5 automated cloud CI/CD pipelines**.
 
 ```mermaid
 flowchart TD
@@ -79,6 +79,8 @@ flowchart TD
         CI_Main[".github/workflows/ci.yml (Build, Test, Corpus, Robustness)"]
         CI_Sec[".github/workflows/security.yml (Gitleaks, Deny, Audit)"]
         CI_Rel[".github/workflows/release.yml (cargo-dist, musl, SLSA 3)"]
+        CI_Diff[".github/workflows/differential.yml (Oracle, Micro, Slices)"]
+        CI_Wiki[".github/workflows/wiki.yml (Wiki Sync)"]
     end
 
     PreCommit --> Level1
@@ -126,6 +128,8 @@ The table below summarizes the complete testing inventory executed across the de
 | **CI** | **Cloud CI: Test Matrix** | `.github/workflows/ci.yml` | 7 jobs/steps | Git push to `main` & PRs | Build, Test, Corpus, Robustness PASS | $\sim 3\text{ m}$ |
 | **CI** | **Cloud CI: Security Audits** | `.github/workflows/security.yml` | 3 audits | Weekly cron, push `main`, PRs | Gitleaks, Deny, Audit PASS | $\sim 1\text{ m}$ |
 | **CI** | **Cloud CI: Packaging & Provenance** | `.github/workflows/release.yml` | Dist/SLSA | Git tag push (`v1.0.0`) | Musl PIE binary, SLSA 3 attestations | $\sim 6\text{ m}$ |
+| **CI** | **Cloud CI: Differential Parity** | `.github/workflows/differential.yml` | Oracle + slices | Git push to `main` & PRs | Micro MATCH, slices + 9 modes MATCH | $\sim 15\text{ m}$ |
+| **CI** | **Cloud CI: Wiki Sync** | `.github/workflows/wiki.yml` | 1 sync job | Git push to `main` (`wiki/**`) & dispatch | `.wiki.git` matches `wiki/` or clean no-op | $<1\text{ m}$ |
 
 ---
 
@@ -319,7 +323,7 @@ The runner dynamically discovers and executes:
 
 ## 7. Cloud CI/CD Automation & Supply Chain Security
 
-VarDictRust utilizes 3 automated GitHub Actions workflows with strict security hardening:
+VarDictRust utilizes 5 automated GitHub Actions workflows with strict security hardening:
 
 ### 7.1 Continuous Integration (`.github/workflows/ci.yml`)
 - **StepSecurity Runner Hardening:** pinned to `step-security/harden-runner@v2.11.0` with `egress-policy: audit`.
@@ -336,6 +340,16 @@ VarDictRust utilizes 3 automated GitHub Actions workflows with strict security h
 - Automated by `cargo-dist 0.33.0`.
 - Builds standalone, statically-linked `x86_64-unknown-linux-musl` executables.
 - Emits cryptographic checksums and GitHub OIDC SLSA Level 3 build provenance attestations.
+
+### 7.4 Differential Parity vs Live Oracle (`.github/workflows/differential.yml`)
+- **Triggers:** push to `main` and every PR (`timeout-minutes: 15`).
+- **Oracle setup:** installs the VarDictJava v1.8.3 bioconda oracle (`harness/setup_oracle.sh`) and materializes reference FASTAs (`harness/convert_fastas.py`), then builds the release binary.
+- **Parity gates:** Tier-2 micro differential (`harness/compare.sh` on `fixtures/micro/`), the committed slice suite (`harness/slices.tsv` via `harness/run_slice.sh`), and the 9-modality extended coverage suite (`harness/run_extended_coverage.sh`) — all must MATCH with 0 diffs.
+
+### 7.5 Wiki Sync (`.github/workflows/wiki.yml`)
+- **Triggers:** push to `main` touching `wiki/**` (plus `workflow_dispatch`); never runs on PRs, so fork tokens stay read-only.
+- **Action:** pushes `wiki/` into the separate `<owner>/<repo>.wiki.git` repo (`HEAD:master`), committing only on diff; concurrent runs are serialised via a `concurrency` group.
+- **Prerequisite:** the wiki repo is created only by saving the first page in the Wiki tab UI — the job fails loudly with that instruction while it is still missing. Auth travels in an `http.extraheader`, never in the remote URL.
 
 ---
 
