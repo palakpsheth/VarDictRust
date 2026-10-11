@@ -7,9 +7,10 @@ echo "== cargo fmt/clippy/test"
     && cargo test --workspace; } > "$OUT/cargo.txt" 2>&1 || { echo "FAIL cargo ($OUT/cargo.txt)"; fail=1; }
 echo "== integration corpus"
 bash harness/run_integration.sh > "$OUT/integration.txt" 2>&1
-if grep -qx 'PASS: 91  FAIL: 1  SKIP: 0' "$OUT/integration.txt" \
-   && [ "$(grep -c '^MISMATCH: ' "$OUT/integration.txt")" -eq 1 ] \
-   && grep -qxF 'MISMATCH: Simple;hard_clip_case.fa;hard_clip_next_to_del_test2.bam;test;6434-6564;-f 0.0 -p -r 1.txt' "$OUT/integration.txt"
+if [ $? -eq 0 ] \
+   && grep -qx 'PASS: 91  XFAIL: 1  FAIL: 0  SKIP: 0  XPASS: 0' "$OUT/integration.txt" \
+   && [ "$(grep -c '^XFAIL: ' "$OUT/integration.txt")" -eq 1 ] \
+   && grep -qxF 'XFAIL: Simple;hard_clip_case.fa;hard_clip_next_to_del_test2.bam;test;6434-6564;-f 0.0 -p -r 1.txt (UB-4 upstream fixture defect)' "$OUT/integration.txt"
 then :; else echo "FAIL integration ($OUT/integration.txt)"; fail=1; fi
 echo "== Tier-2 micro"
 MIN_VARIANTS=1 bash harness/compare.sh fixtures/micro/micro.ref.fa fixtures/micro/micro.bam \

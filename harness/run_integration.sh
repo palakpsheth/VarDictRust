@@ -19,8 +19,29 @@ if [[ ! -f "$FASTA_DIR/GRCh37.fa" || ! -f "$FASTA_DIR/GRCh37.fa.fai" ]]; then
     python3 harness/convert_fastas.py
 fi
 
+# Load XFAIL defect registry
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+XFAIL_REGISTRY="$SCRIPT_DIR/integration_xfail.tsv"
+declare -A XFAIL_CASES=()
+declare -A XFAIL_ISSUES=()
+
+if [[ -f "$XFAIL_REGISTRY" ]]; then
+    while IFS=$'\t' read -r fixture classification issue_id target_fix rationale || [[ -n "$fixture" ]]; do
+        fixture="${fixture//$'\r'/}"
+        fixture="${fixture#"${fixture%%[![:space:]]*}"}"
+        fixture="${fixture%"${fixture##*[![:space:]]}"}"
+        classification="${classification//$'\r'/}"
+        issue_id="${issue_id//$'\r'/}"
+        [[ -z "$fixture" || "$fixture" =~ ^# ]] && continue
+        XFAIL_CASES["$fixture"]="$classification"
+        XFAIL_ISSUES["$fixture"]="$issue_id"
+    done < "$XFAIL_REGISTRY"
+fi
+
 PASS=0
+XFAIL=0
 FAIL=0
+XPASS=0
 SKIP=0
 ERRORS=()
 
@@ -126,27 +147,59 @@ run_test() {
     # Build command
     local cmd="$BINARY -z -c 1 -S 2 -E 3 -g 4 -G $fasta_path -b '$bam_arg' --emit-intermediate $extra_flags $tmpbed"
 
-    # Run
+    # Run with exit code and error capture
+    local tmperr
+    tmperr=$(mktemp)
+    local exit_code=0
     local actual
-    actual=$(eval $cmd 2>/dev/null) || true
+    actual=$(eval $cmd 2>"$tmperr") || exit_code=$?
 
     rm -f "$tmpbed"
+
+    # Engine crash / non-zero exit code must NEVER be masked as XFAIL
+    if [[ $exit_code -ne 0 ]]; then
+        echo "CRASH/ERROR (exit $exit_code): $basename_file"
+        cat "$tmperr" >&2
+        rm -f "$tmperr"
+        FAIL=$((FAIL+1))
+        ERRORS+=("CRASH: $basename_file")
+        return
+    fi
+    rm -f "$tmperr"
+
+    local is_xfail=0
+    local issue=""
+    if [[ -v XFAIL_CASES["$basename_file"] ]]; then
+        is_xfail=1
+        issue="${XFAIL_ISSUES[$basename_file]:-defect}"
+    fi
 
     # Compare
     local sorted_actual sorted_expected
     sorted_actual=$(echo "$actual" | sort)
     sorted_expected=$(echo "$expected" | sort)
     if [[ "$sorted_actual" == "$sorted_expected" ]]; then
-        echo "MATCH: $basename_file"
-        PASS=$((PASS+1))
+        if [[ $is_xfail -eq 1 ]]; then
+            echo "XPASS: $basename_file (unexpected pass for registered $issue)"
+            XPASS=$((XPASS+1))
+            ERRORS+=("XPASS: $basename_file")
+        else
+            echo "MATCH: $basename_file"
+            PASS=$((PASS+1))
+        fi
     else
-        echo "MISMATCH: $basename_file"
-        FAIL=$((FAIL+1))
-        ERRORS+=("$basename_file")
-        
-        # Show diff (first 20 lines)
-        diff <(echo "$sorted_expected") <(echo "$sorted_actual") | head -40 || true
-        echo "---"
+        if [[ $is_xfail -eq 1 ]]; then
+            echo "XFAIL: $basename_file ($issue upstream fixture defect)"
+            XFAIL=$((XFAIL+1))
+        else
+            echo "MISMATCH: $basename_file"
+            FAIL=$((FAIL+1))
+            ERRORS+=("MISMATCH: $basename_file")
+            
+            # Show diff (first 20 lines)
+            diff <(echo "$sorted_expected") <(echo "$sorted_actual") | head -40 || true
+            echo "---"
+        fi
     fi
 }
 
@@ -163,11 +216,26 @@ fi
 
 echo ""
 echo "===== Results ====="
-echo "PASS: $PASS  FAIL: $FAIL  SKIP: $SKIP"
-if [[ ${#ERRORS[@]} -gt 0 ]]; then
+echo "PASS: $PASS  XFAIL: $XFAIL  FAIL: $FAIL  SKIP: $SKIP  XPASS: $XPASS"
+
+exit_code=0
+if [[ $# -eq 0 ]]; then
+    if [[ $SKIP -gt 0 ]]; then
+        echo "ERROR: Full integration suite had $SKIP skipped tests!" >&2
+        exit_code=1
+    fi
+    if [[ $PASS -ne 91 || $XFAIL -ne 1 || $FAIL -ne 0 || $XPASS -ne 0 ]]; then
+        echo "ERROR: Corpus count invariant violated! Expected 91 PASS / 1 XFAIL / 0 FAIL / 0 SKIP / 0 XPASS, got $PASS PASS / $XFAIL XFAIL / $FAIL FAIL / $SKIP SKIP / $XPASS XPASS." >&2
+        exit_code=1
+    fi
+fi
+
+if [[ ${#ERRORS[@]} -gt 0 || $FAIL -gt 0 || $XPASS -gt 0 ]]; then
     echo "Failed tests:"
     for e in "${ERRORS[@]}"; do
         echo "  - $e"
     done
-    exit 1
+    exit_code=1
 fi
+
+exit "$exit_code"

@@ -17,7 +17,7 @@ specification. We either match it exactly or prove the difference is unreachable
 
 ```
 Verified Parity Baseline (release/v1.0.0, commit cb39a64):
-- Integration Tests:  91 PASS / 1 FAIL / 0 SKIP (100% of valid inputs pass; sole FAIL is stale fixture UB-4)
+- Integration Tests:  91 PASS / 1 XFAIL / 0 FAIL / 0 SKIP (100% of valid inputs pass; sole XFAIL is stale fixture UB-4)
 - Core Library Tests: 188 PASS / 0 FAIL (cargo test -p vardictrust-core --lib)
 - Total Workspace:    208 PASS / 0 FAIL (cargo test --workspace across core, cli, robustness, thread-determinism)
 - Tier-2 Sweeps:      15/15 strict MATCH (s1a-s9 all 10 slices, HG008, SEQC2 exome/slices, HG002, Amplicon)

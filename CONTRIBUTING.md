@@ -176,7 +176,7 @@ bash harness/pr_check.sh
 This suite automatically verifies:
 1. Workspace unit tests (all 208 workspace tests pass: 188 core + 13 cli + 5 robustness + 1 thread_determinism + 1 version).
 2. Crash robustness corpus (PR #402, missing index #187, and issue #341 family).
-3. Tier-1 upstream integration corpus (92 fixtures, asserting `91 PASS / 1 FAIL` where the sole static diff is Class D / UB-4 fixture flaw).
+3. Tier-1 upstream integration corpus (92 fixtures, asserting `91 PASS / 1 XFAIL` where the sole static diff is Class D / UB-4 fixture flaw).
 4. Tier-2 micro differential parity against live Java.
 5. 4-Target performance budget (`harness/perf_budget.py`).
 6. Staged and repository secret scanning with `gitleaks`.

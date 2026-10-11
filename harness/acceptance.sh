@@ -19,9 +19,10 @@ run() { "$@" >> "$OUT/log.txt" 2>&1; }
 t=1; run cargo test --workspace || t=0; mark 1 $t "cargo test"
 # 2 Tier-1: corpus .var parity vs VarDictJava expected + micro .var golden
 bash harness/run_integration.sh > "$OUT/integration.txt" 2>&1
-t=0; grep -qx 'PASS: 91  FAIL: 1  SKIP: 0' "$OUT/integration.txt" \
-  && [ "$(grep -c '^MISMATCH: ' "$OUT/integration.txt")" -eq 1 ] \
-  && grep -qxF 'MISMATCH: Simple;hard_clip_case.fa;hard_clip_next_to_del_test2.bam;test;6434-6564;-f 0.0 -p -r 1.txt' "$OUT/integration.txt" \
+t=0; [ $? -eq 0 ] \
+  && grep -qx 'PASS: 91  XFAIL: 1  FAIL: 0  SKIP: 0  XPASS: 0' "$OUT/integration.txt" \
+  && [ "$(grep -c '^XFAIL: ' "$OUT/integration.txt")" -eq 1 ] \
+  && grep -qxF 'XFAIL: Simple;hard_clip_case.fa;hard_clip_next_to_del_test2.bam;test;6434-6564;-f 0.0 -p -r 1.txt (UB-4 upstream fixture defect)' "$OUT/integration.txt" \
   && run cargo build -q --release && run bash harness/smoke.sh && t=1
 mark 2 $t "integration/smoke"
 # 3 Tier-2: micro + every committed slice + live extended coverage + external datasets
