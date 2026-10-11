@@ -12,6 +12,7 @@ Additionally performs link normalization:
 - Rewrites links pointing to .github/*.md into their staged community/*.md equivalents.
 - Converts raw HTML anchor tags (<a id="..."></a>) into attribute-list elements so MkDocs
   strict anchor validation can verify them.
+- Uses linear character-based link scanning with zero regex backtracking to guarantee safe parsing.
 """
 
 import os
@@ -39,76 +40,112 @@ IGNORED_PREFIXES = (
     "wiki/",
 )
 
-# Regex matching Markdown links [text](url) and badge links [![alt](img)](url)
-LINK_RE = re.compile(
-    r'(\[(?:!\[.*?\]\(.*?\)|[^\]])*\]\()([^\)\s]+)((?:\s+["\x27][^"\x27]*["\x27])?\))'
-)
-
-# Regex matching raw HTML anchors <a id="..." ...></a> or <a name="..." ...></a>
+# Linear regex matching simple raw HTML anchors <a id="..." ...></a> or <a name="..." ...></a>
 HTML_ANCHOR_RE = re.compile(
     r'<a\s+(?:[^>]*?\s+)?(?:id|name)=["\x27]([a-zA-Z0-9_\-]+)["\x27][^>]*>(?:</a>)?'
 )
 
 
-def rewrite_content(content: str, staged_file: pathlib.Path) -> str:
-    """Rewrite links and anchors in a staged markdown file to prevent 404s."""
+def find_markdown_links(text: str):
+    """Find all (start, end, target, is_image, bracket_text, paren_text) links linearly."""
+    links = []
+    i = 0
+    n = len(text)
+    while i < n:
+        if text[i] == "[":
+            is_img = i > 0 and text[i - 1] == "!"
+            depth = 1
+            j = i + 1
+            while j < n and depth > 0:
+                if text[j] == "\\":
+                    j += 2
+                    continue
+                if text[j] == "[":
+                    depth += 1
+                elif text[j] == "]":
+                    depth -= 1
+                j += 1
+            if depth == 0 and j < n and text[j] == "(":
+                k = j + 1
+                while k < n and text[k] != ")":
+                    if text[k] == "\\":
+                        k += 2
+                        continue
+                    k += 1
+                if k < n and text[k] == ")":
+                    url_full = text[j + 1 : k].strip()
+                    parts = url_full.split(None, 1)
+                    target = parts[0] if parts else ""
+                    links.append((i, k + 1, target, is_img, text[i:j], text[j + 1 : k]))
+                    i = k + 1
+                    continue
+        i += 1
+    return links
+
+
+def rewrite_markdown_links(content: str, staged_file: pathlib.Path) -> str:
+    """Rewrite links in a staged markdown file linearly without backtracking."""
     rel_staged = staged_file.relative_to(STAGING_DIR)
 
-    # Determine original source location in REPO_ROOT
     if rel_staged.parts[0] == "community":
         source_dir = REPO_ROOT / ".github"
     else:
         source_dir = (REPO_ROOT / rel_staged).parent
 
-    def repl(match):
-        prefix = match.group(1)
-        target = match.group(2)
-        suffix = match.group(3)
-
+    def get_new_target(target: str) -> str:
         # Do not rewrite web URLs, mailto, or in-page anchors
         if target.startswith(("http://", "https://", "mailto:", "ftp://", "#")):
-            return match.group(0)
+            return target
 
         url_path, sep, anchor = target.partition("#")
         if not url_path:
-            return match.group(0)
+            return target
 
-        # Resolve target relative to original source file directory
         target_resolved = (source_dir / url_path).resolve()
-
         try:
             rel_to_repo = target_resolved.relative_to(REPO_ROOT).as_posix()
         except ValueError:
-            # Outside repo root
-            return match.group(0)
+            return target
 
         # 1. Target is a .github/ markdown file
         if rel_to_repo.startswith(".github/") and rel_to_repo.endswith(".md"):
             dest_staged = STAGING_DIR / "community" / target_resolved.name
             new_rel = os.path.relpath(dest_staged, staged_file.parent)
-            new_target = f"{new_rel}#{anchor}" if anchor else new_rel
-            return f"{prefix}{new_target}{suffix}"
+            return f"{new_rel}#{anchor}" if anchor else new_rel
 
-        # 2. Target is a non-markdown file or a directory
+        # 2. Target is a non-markdown file or directory
         if not rel_to_repo.endswith(".md") or target_resolved.is_dir():
-            new_target = f"{GITHUB_BLOB_BASE}/{rel_to_repo}" + (f"#{anchor}" if anchor else "")
-            return f"{prefix}{new_target}{suffix}"
+            return f"{GITHUB_BLOB_BASE}/{rel_to_repo}" + (f"#{anchor}" if anchor else "")
 
         # 3. Target is a markdown file within the repository
         dest_staged = STAGING_DIR / rel_to_repo
         if dest_staged.exists() or (REPO_ROOT / rel_to_repo).exists():
             new_rel = os.path.relpath(dest_staged, staged_file.parent)
-            new_target = f"{new_rel}#{anchor}" if anchor else new_rel
-            return f"{prefix}{new_target}{suffix}"
+            return f"{new_rel}#{anchor}" if anchor else new_rel
 
-        return match.group(0)
+        return target
 
-    # Step A: Rewrite markdown links
-    content = LINK_RE.sub(repl, content)
+    links = find_markdown_links(content)
+    if not links:
+        return content
 
-    # Step B: Convert raw HTML anchors into Markdown attr_list elements for MkDocs validation
+    for start, end, target, is_img, bracket_text, paren_text in reversed(links):
+        if is_img:
+            continue
+        new_target = get_new_target(target)
+        if new_target != target:
+            parts = paren_text.strip().split(None, 1)
+            title = f" {parts[1]}" if len(parts) > 1 else ""
+            replacement = f"{bracket_text}({new_target}{title})"
+            content = content[:start] + replacement + content[end:]
+
+    return content
+
+
+def rewrite_content(content: str, staged_file: pathlib.Path) -> str:
+    """Rewrite links and HTML anchors in staged markdown."""
+    content = rewrite_markdown_links(content, staged_file)
     content = HTML_ANCHOR_RE.sub(r"[](){: #\1 }", content)
-
     return content
 
 
