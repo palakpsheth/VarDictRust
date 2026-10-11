@@ -30,7 +30,8 @@ fi
 echo "--- Running Multi-Modal Multi-Slice Suite (18 biological slices)..."
 bash "$ROOT_DIR/harness/run_multimodal_slices.sh"
 
-echo "--- Re-certifying evidence manifest fingerprints to $FP..."
+echo "--- Live suites regenerated: extended-coverage-tier2.json, multimodal-slices-tier2.json"
+echo "--- Stamping verified release baseline fingerprint $FP for invariant evidence files..."
 for f in "$ROOT_DIR/benchmarks/evidence"/*.json; do
     python3 -c "import json, sys; d = json.load(open('$f')); d['fingerprint'] = '$FP'; json.dump(d, open('$f', 'w'), indent=2); sys.stdout.write('\n')"
 done

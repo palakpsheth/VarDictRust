@@ -24,7 +24,7 @@ To provide definitive, reproducible proof of compliance, VarDictRust was evaluat
 5. **Targeted Clinical Amplicon Panels (Pillar 5):** Ultra-deep targeted amplicon sequencing (>1,000× depth, *EGFR* L861Q, *MRE11a*), testing 8-column BED primer trimming and bidirectional strand bias (`AMPBIAS`); 100% parity (0 diffs).
 6. **Upstream Micro-Regression Corpus (Pillar 6):** All 92 integration fixtures from VarDictJava (`testdata/integrationtestcases/`) covering edge-case indels, tri-allelic sites, and complex soft-clipping; 100% live oracle parity.
 7. **Whole Chromosome 1 Scale Benchmark (Pillar 7):** Full-scale chromosome 1 processing (1 Mbp to 249 Mbp, 2,840,119 variants); **4.85× parallel speedup** on 8 threads with bounded $O(1)$ memory consumption (flat $1.39\times$ RSS ratio: 2.11 GB at 10 Mb vs 2.94 GB at 249 Mb).
-8. **Nine Extended Operational Modalities Suite (Pillar 8):** Full-coverage evaluation of RNA splicing (`-i`), structural variant inversions (`<INV>`), duplications (`<DUP>`), CRISPR cut-site offsets (`-J -j`), paired unique read deduplication (`-u -UN`), adapter clipping (`--adaptor`), realignment suppression (`-k 0`), structural variant bypass (`-U`), and ambiguous base counting (`-K`); 100% parity (0 diffs across all 9 modes).
+8. **Seventeen Extended Operational Modalities Suite (Pillar 8):** Full-coverage evaluation of RNA splicing (`-i`), structural variant inversions (`<INV>`), duplications (`<DUP>`), CRISPR cut-site offsets (`-J -j`), paired unique read deduplication (`-u -UN`), adapter clipping (`--adaptor`), realignment suppression (`-k 0`), structural variant bypass (`-U`), ambiguous base counting (`-K`), read deduplication (`-t`), 3'-indel shift (`-3`), output MAPQ filter (`-O`), region extension (`-x`), segment column mapping (`-s -e`), minimum match length (`-M`), del/dup variant handling (`--deldupvar`), and default printer redirect (`--DP ERR`); 100% parity (0 diffs across all 17 modes, 4,993 variants).
 9. **Multi-Slice Multi-Modal Public Dataset Expansion Suite (Pillar 9):** 18 non-overlapping slices across 6 independent public cohorts (HG005 Han Chinese, SEQC2 Exome, HG002 WGS, HG008 Somatic, NA24385 b37 deep WGS, RNA Transcriptome) spanning 9 chromosomes and 1,129 variants; 100% parity (0 diffs).
 
 ### 1.1 Master Nine-Pillar Validation Scoreboard
@@ -38,7 +38,7 @@ To provide definitive, reproducible proof of compliance, VarDictRust was evaluat
 | **5** | **Targeted Amplicon** | Amplicon Panel (`-a`) | EGFR L861Q & MRE11a (hg19) | 2 | **MATCH (0 diffs)** | **N/A (Synthetic/Assay)**|
 | **6** | **Upstream Corpus** | Micro-Fixtures (92) | Genome-wide Edge Cases | 92 fixtures | **100% Live Oracle MATCH**| **N/A (Integration)** |
 | **7** | **Chromosome 1 Scale** | Full WGS Scaling | chr1: 1 Mbp to 249 Mbp (GRCh38)| 2,840,119 | **MATCH (0 diffs)** | **Bounded RSS ($1.39\times$)**|
-| **8** | **Extended Modalities** | 9 Operational Modes | chr8, chr20 (hg19, hg38, GRCh38)| 847 | **MATCH (0 diffs, 9/9)** | **N/A (Flag Parity)** |
+| **8** | **Extended Modalities** | 17 Operational Modes | chr8, chr20 (hg19, hg38, GRCh37, GRCh38)| 4,993 | **MATCH (0 diffs, 17/17)** | **N/A (Flag Parity)** |
 | **9** | **Multi-Slice Suite** | 6 Public Cohorts | 18 slices, 9 chrs (GRCh38, b37)| 1,129 | **MATCH (0 diffs, 18/18)**| **EQUAL (HG005, b37)**|
 
 ---

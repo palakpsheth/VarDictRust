@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # harness/run_extended_coverage.sh
-# Verifies 100% byte-for-byte output parity against VarDictJava v1.8.3 across all 9 extended modalities.
+# Verifies 100% byte-for-byte output parity against VarDictJava v1.8.3 across all 17 extended modalities.
 # Governed by rewrites.bio Manifesto §0, §0b, §5 and Host Policy A3.
 set -euo pipefail
 
@@ -66,7 +66,7 @@ TOTAL=17
 # -----------------------------------------------------------------------------
 # Mode 1: RNA Splicing (-i, CIGAR N)
 # -----------------------------------------------------------------------------
-echo -n "[1/9] Testing RNA Splicing (-i) on real RNA-seq BAM... "
+echo -n "[1/17] Testing RNA Splicing (-i) on real RNA-seq BAM... "
 conda run -n vardict-oracle vardict-java -G "$HG38_FA" -b "$BAM_SPLICING" -R chr8:90534611-90620070 -f 0.1 -i -th "$THREADS" > "$TMPDIR/m1_java.tsv" 2>/dev/null
 "$TARGET_BIN" -G "$HG38_FA" -b "$BAM_SPLICING" -R chr8:90534611-90620070 -f 0.1 -i --emit-intermediate -th "$THREADS" > "$TMPDIR/m1_rust.tsv" 2>/dev/null
 
@@ -84,7 +84,7 @@ fi
 # -----------------------------------------------------------------------------
 # Mode 2: Inversion SV (<INV>)
 # -----------------------------------------------------------------------------
-echo -n "[2/9] Testing Inversion SV (<INV>) on melanoma cancer WGS... "
+echo -n "[2/17] Testing Inversion SV (<INV>) on melanoma cancer WGS... "
 bash "$ROOT_DIR/harness/run_oracle.sh" "$HG19_FA" "$BAM_INVSV" "$BED_S8" "$TMPDIR/m2_java.vcf" Colo829 -f 0.001 -L 1000 -c 1 -S 2 -E 3 -g 4 > /dev/null 2>&1
 "$TARGET_BIN" -G "$HG19_FA" -b "$BAM_INVSV" -N Colo829 -f 0.001 -L 1000 -c 1 -S 2 -E 3 -g 4 -z "$BED_S8" -th "$THREADS" > "$TMPDIR/m2_rust.vcf" 2>/dev/null
 
@@ -96,7 +96,7 @@ PASSED=$((PASSED + 1))
 # -----------------------------------------------------------------------------
 # Mode 3: Duplication SV (<DUP>)
 # -----------------------------------------------------------------------------
-echo -n "[3/9] Testing Duplication SV (<DUP>) on melanoma cancer WGS... "
+echo -n "[3/17] Testing Duplication SV (<DUP>) on melanoma cancer WGS... "
 bash "$ROOT_DIR/harness/run_oracle.sh" "$HG19_FA" "$BAM_DUPSV" "$BED_S9" "$TMPDIR/m3_java.vcf" Colo829 -f 0.001 -L 1000 -c 1 -S 2 -E 3 -g 4 > /dev/null 2>&1
 "$TARGET_BIN" -G "$HG19_FA" -b "$BAM_DUPSV" -N Colo829 -f 0.001 -L 1000 -c 1 -S 2 -E 3 -g 4 -z "$BED_S9" -th "$THREADS" > "$TMPDIR/m3_rust.vcf" 2>/dev/null
 
@@ -108,7 +108,7 @@ PASSED=$((PASSED + 1))
 # -----------------------------------------------------------------------------
 # Mode 4: CRISPR Target Sites (-J, -j)
 # -----------------------------------------------------------------------------
-echo -n "[4/9] Testing CRISPR Target Sites (-J, -j) intermediate table... "
+echo -n "[4/17] Testing CRISPR Target Sites (-J, -j) intermediate table... "
 conda run -n vardict-oracle vardict-java -G "$HG19_FA" -b "$BAM_CRISPR" -R chr20:50454281-50455444 -f 0.001 -J 50454941 -j 25 -c 1 -S 2 -E 3 -g 4 -th "$THREADS" > "$TMPDIR/m4_java.var" 2>/dev/null
 "$TARGET_BIN" -G "$HG19_FA" -b "$BAM_CRISPR" -R chr20:50454281-50455444 -f 0.001 -J 50454941 -j 25 -c 1 -S 2 -E 3 -g 4 --emit-intermediate -th "$THREADS" > "$TMPDIR/m4_rust.var" 2>/dev/null
 
@@ -126,7 +126,7 @@ fi
 # -----------------------------------------------------------------------------
 # Mode 5: Paired Unique Mode (-u -UN)
 # -----------------------------------------------------------------------------
-echo -n "[5/9] Testing Paired Unique Mode (-u -UN) on NA24385... "
+echo -n "[5/17] Testing Paired Unique Mode (-u -UN) on NA24385... "
 bash "$ROOT_DIR/harness/run_oracle.sh" "$B37_FA" "$BAM_NA24385" "$BED_S1A" "$TMPDIR/m5_java.vcf" SAMPLE -u -UN -c 1 -S 2 -E 3 -g 4 > /dev/null 2>&1
 "$TARGET_BIN" -G "$B37_FA" -b "$BAM_NA24385" -N SAMPLE -u -UN -c 1 -S 2 -E 3 -g 4 -z "$BED_S1A" -th "$THREADS" > "$TMPDIR/m5_rust.vcf" 2>/dev/null
 
@@ -138,7 +138,7 @@ PASSED=$((PASSED + 1))
 # -----------------------------------------------------------------------------
 # Mode 6: Adapter Trimming (--adaptor)
 # -----------------------------------------------------------------------------
-echo -n "[6/9] Testing Adapter Trimming (--adaptor) on NA24385... "
+echo -n "[6/17] Testing Adapter Trimming (--adaptor) on NA24385... "
 bash "$ROOT_DIR/harness/run_oracle.sh" "$B37_FA" "$BAM_NA24385" "$BED_S1A" "$TMPDIR/m6_java.vcf" SAMPLE --adaptor AGATCGGAAGAGCACACGTCTGAACTCCAGTCA,AGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGT -c 1 -S 2 -E 3 -g 4 > /dev/null 2>&1
 "$TARGET_BIN" -G "$B37_FA" -b "$BAM_NA24385" -N SAMPLE --adaptor AGATCGGAAGAGCACACGTCTGAACTCCAGTCA,AGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGT -c 1 -S 2 -E 3 -g 4 -z "$BED_S1A" -th "$THREADS" > "$TMPDIR/m6_rust.vcf" 2>/dev/null
 
@@ -150,7 +150,7 @@ PASSED=$((PASSED + 1))
 # -----------------------------------------------------------------------------
 # Mode 7: Realignment Bypass (-k 0)
 # -----------------------------------------------------------------------------
-echo -n "[7/9] Testing Realignment Bypass (-k 0) on NA24385... "
+echo -n "[7/17] Testing Realignment Bypass (-k 0) on NA24385... "
 bash "$ROOT_DIR/harness/run_oracle.sh" "$B37_FA" "$BAM_NA24385" "$BED_S1A" "$TMPDIR/m7_java.vcf" SAMPLE -k 0 -c 1 -S 2 -E 3 -g 4 > /dev/null 2>&1
 "$TARGET_BIN" -G "$B37_FA" -b "$BAM_NA24385" -N SAMPLE -k 0 -c 1 -S 2 -E 3 -g 4 -z "$BED_S1A" -th "$THREADS" > "$TMPDIR/m7_rust.vcf" 2>/dev/null
 
@@ -162,7 +162,7 @@ PASSED=$((PASSED + 1))
 # -----------------------------------------------------------------------------
 # Mode 8: SV Engine Bypass (-U / --nosv)
 # -----------------------------------------------------------------------------
-echo -n "[8/9] Testing SV Engine Bypass (-U) on NA24385... "
+echo -n "[8/17] Testing SV Engine Bypass (-U) on NA24385... "
 bash "$ROOT_DIR/harness/run_oracle.sh" "$B37_FA" "$BAM_NA24385" "$BED_S1A" "$TMPDIR/m8_java.vcf" SAMPLE -U -c 1 -S 2 -E 3 -g 4 > /dev/null 2>&1
 "$TARGET_BIN" -G "$B37_FA" -b "$BAM_NA24385" -N SAMPLE -U -c 1 -S 2 -E 3 -g 4 -z "$BED_S1A" -th "$THREADS" > "$TMPDIR/m8_rust.vcf" 2>/dev/null
 
@@ -174,7 +174,7 @@ PASSED=$((PASSED + 1))
 # -----------------------------------------------------------------------------
 # Mode 9: N-Base Depth Counting (-K)
 # -----------------------------------------------------------------------------
-echo -n "[9/9] Testing N-Base Depth Counting (-K) on NA24385... "
+echo -n "[9/17] Testing N-Base Depth Counting (-K) on NA24385... "
 bash "$ROOT_DIR/harness/run_oracle.sh" "$B37_FA" "$BAM_NA24385" "$BED_S1A" "$TMPDIR/m9_java.vcf" SAMPLE -K -c 1 -S 2 -E 3 -g 4 > /dev/null 2>&1
 "$TARGET_BIN" -G "$B37_FA" -b "$BAM_NA24385" -N SAMPLE -K -c 1 -S 2 -E 3 -g 4 -z "$BED_S1A" -th "$THREADS" > "$TMPDIR/m9_rust.vcf" 2>/dev/null
 
@@ -272,7 +272,7 @@ PASSED=$((PASSED + 1))
 # Mode 17: Default Printer Redirect (--DP ERR)
 # -----------------------------------------------------------------------------
 echo -n "[17/17] Testing Default Printer Redirect (--DP ERR)... "
-conda run -n vardict-oracle vardict-java -G "$B37_FA" -b "$BAM_NA24385" -R 20:20178900-20179200 -f 0.01 --DP ERR -th "$THREADS" > "$TMPDIR/m17_java.out" 2> "$TMPDIR/m17_java.err" || true
+conda run -n vardict-oracle vardict-java -G "$B37_FA" -b "$BAM_NA24385" -R 20:20178900-20179200 -f 0.01 --DP ERR -th "$THREADS" > "$TMPDIR/m17_java.out" 2> "$TMPDIR/m17_java.err"
 "$TARGET_BIN" -G "$B37_FA" -b "$BAM_NA24385" -R 20:20178900-20179200 -f 0.01 --DP ERR --emit-intermediate -th "$THREADS" > "$TMPDIR/m17_rust.out" 2> "$TMPDIR/m17_rust.err"
 
 M17_DIFFS=$(diff -u "$TMPDIR/m17_java.err" "$TMPDIR/m17_rust.err" | wc -l)

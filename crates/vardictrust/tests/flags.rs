@@ -232,6 +232,14 @@ fn test_out_mapq_flag_cap_o() {
     // VarDictJava's isGoodVar checks `meanMappingQuality < conf.mapq` on candidates with AF <= 0.30.
     // Test on NA24385 integration fixture over 800bp window: -O 65 filters out low-MAPQ candidates.
     let ref_fa = "VarDictJava/testdata/fastas/GRCh37.fa";
+    if !workspace_root().join(ref_fa).exists() {
+        let status = Command::new("python3")
+            .arg("harness/convert_fastas.py")
+            .current_dir(workspace_root())
+            .status()
+            .expect("convert fastas");
+        assert!(status.success(), "convert_fastas.py failed");
+    }
     let bam = "VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests/NA24385_chr_20_20156208_20234556.bam";
     let region = "20:20156208-20157000";
 
@@ -501,6 +509,10 @@ fn test_functional_operational_flags_suite() {
             "500",
             "--adaptor",
             "AGATCGGAAGAGC",
+            "-k",
+            "0",
+            "-o",
+            "1.5",
             "-th",
             "2",
         ])
@@ -574,7 +586,7 @@ fn test_splice_mode_i() {
 
 #[test]
 fn test_threads_normalization_forms() {
-    for th_arg in &["-th", "--th", "-th=2", "--threads=2", "--threads", "2"] {
+    for th_arg in &["-th", "--th", "-th=2", "--threads=2", "--threads 2"] {
         let mut args = vec![
             "-G",
             "fixtures/micro/micro.ref.fa",
@@ -600,4 +612,93 @@ fn test_threads_normalization_forms() {
             String::from_utf8_lossy(&out.stderr)
         );
     }
+}
+
+#[test]
+fn test_amplicon_flag_a() {
+    use std::io::Write;
+    let mut amp_bed = tempfile::NamedTempFile::new().expect("temp amplicon bed");
+    writeln!(amp_bed, "chr1\t81\t140\tmicro_amp\t0\t+\t81\t140").expect("write bed");
+    let bed_path = amp_bed.path().to_str().expect("bed path");
+
+    let out = base_cmd()
+        .args([
+            "-G",
+            "fixtures/micro/micro.ref.fa",
+            "-b",
+            "fixtures/micro/micro.bam",
+            "-z",
+            bed_path,
+            "-c",
+            "1",
+            "-S",
+            "2",
+            "-E",
+            "3",
+            "-g",
+            "4",
+            "-a",
+            "30:0.5",
+            "-f",
+            "0.01",
+            "-r",
+            "1",
+        ])
+        .output()
+        .expect("run amplicon mode");
+
+    assert!(
+        out.status.success(),
+        "amplicon run must succeed, stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("GDAMP=1") || stdout.contains("TLAMP=1"),
+        "amplicon output must contain amplicon annotations, got:\n{stdout}"
+    );
+}
+
+#[test]
+fn test_qratio_flag_o() {
+    let out_pass = base_cmd()
+        .args([
+            "-G",
+            "fixtures/micro/micro.ref.fa",
+            "-b",
+            "fixtures/micro/micro.bam",
+            "-R",
+            "chr1:40-260",
+            "-f",
+            "0.01",
+            "-o",
+            "0.0",
+        ])
+        .output()
+        .expect("run with -o 0.0");
+    assert!(out_pass.status.success());
+    let variants_pass = extract_variants(&out_pass.stdout);
+    assert!(!variants_pass.is_empty(), "-o 0.0 must allow variant calls");
+
+    let out_filter = base_cmd()
+        .args([
+            "-G",
+            "fixtures/micro/micro.ref.fa",
+            "-b",
+            "fixtures/micro/micro.bam",
+            "-R",
+            "chr1:40-260",
+            "-f",
+            "0.01",
+            "-o",
+            "100.0",
+        ])
+        .output()
+        .expect("run with -o 100.0");
+    assert!(out_filter.status.success());
+    let variants_filter = extract_variants(&out_filter.stdout);
+    assert!(
+        variants_filter.is_empty(),
+        "-o 100.0 must filter out variants with hq_lq_ratio < 100.0"
+    );
 }

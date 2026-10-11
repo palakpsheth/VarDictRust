@@ -112,7 +112,7 @@ The table below summarizes the complete testing inventory executed across the de
 | **3** | **Level 3: Micro Differential** | `fixtures/micro/` | 1 fixture | PR gate & Acceptance Item 3 | Live Oracle MATCH (0 diffs) | $\sim 2\text{ s}$ |
 | **3** | **Level 3: Standard Slices** | `harness/slices.tsv` (`s1a`–`s9`) | 10 slices | Inner loop (`rgate`) & Acceptance Item 3 | Live Oracle MATCH (0 diffs) | $\sim 45\text{ s}$ |
 | **3** | **Level 3: Primary Public WGS/WES** | `hg008`, `seqc2`, `hg002`, `amplicon` | 4 cohorts | Evidence recertification & Acceptance | MATCH ($\varepsilon \le 10^{-6}$, 0 diffs) | $\sim 25\text{ m}$ |
-| **3** | **Level 3: Extended Modalities** | `harness/run_extended_coverage.sh` | 9 modes | Release Acceptance Item 3 | MATCH (RNA, SVs, flags, 0 diffs) | $\sim 30\text{ s}$ |
+| **3** | **Level 3: Extended Modalities** | `harness/run_extended_coverage.sh` | 17 modes | Release Acceptance Item 3 | MATCH (RNA, SVs, flags, 0 diffs) | $\sim 30\text{ s}$ |
 | **3** | **Level 3: Multi-Slice Expansion** | `harness/run_multimodal_slices.sh` | 18 slices | Release Acceptance Item 3 | MATCH (6 cohorts, 9 chrs, 0 diffs) | $\sim 35\text{ s}$ |
 | **4** | **Level 4: Truth Concordance (HG002)** | `harness/concordance_germline.sh` | 1 evaluation | Release Acceptance Item 6 | $F_1 = 0.9699$, Bitwise Site EQUAL | $\sim 2\text{ m}$ |
 | **4** | **Level 4: Truth Concordance (SEQC2)** | `harness/concordance.sh seqc2` | 1 evaluation | Release Acceptance Item 6 | $F_1 = 0.1555$, Bitwise Site EQUAL | $\sim 4\text{ m}$ |
@@ -251,7 +251,7 @@ VarDictRust maintains **16 committed, cryptographically fingerprinted evidence f
 | **SEQC2 Somatic Slices**| `seqc2-slices-tier2.json` | Multi-Chr Slices (chr1-21) | 4,151 | **MATCH** | `dace5891208a52d2` |
 | **GIAB HG002 Germline** | `hg002-tier2.json` | Germline WGS (chr20 20 Mbp) | 227,562 | **MATCH** | `dace5891208a52d2` |
 | **Targeted Amplicon** | `amplicon-tier2.json` | Overlapping Primer Panel | 2 | **MATCH** | `dace5891208a52d2` |
-| **Extended Modalities** | `extended-coverage-tier2.json` | 17 Modes (RNA, SVs, All Supported Flags) | 4,967+ | **MATCH** | `dace5891208a52d2` |
+| **Extended Modalities** | `extended-coverage-tier2.json` | 17 Modes (RNA, SVs, All Supported Flags) | 4,993 | **MATCH** | `dace5891208a52d2` |
 | **Multi-Modal Slices** | `multimodal-slices-tier2.json` | 18 Slices across 6 Cohorts | 1,129 | **MATCH** | `dace5891208a52d2` |
 | **GIAB HG002 Truth** | `hg002-truth.json` | NIST v4.2.1 High-Confidence | $F_1 = 0.9699$ | **EQUAL** | `dace5891208a52d2` |
 | **SEQC2 Somatic Truth** | `seqc2-truth.json` | SEQC2 v1.2.1 Somatic Truth | $F_1 = 0.1555$ | **EQUAL** | `dace5891208a52d2` |

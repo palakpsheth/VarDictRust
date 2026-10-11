@@ -10,6 +10,7 @@ This script reconstructs bitwise-identical FASTA files and companion `.fai` indi
 directly in pure Python (zero external dependencies, runtime <10s).
 """
 
+import fcntl
 import os
 import sys
 import time
@@ -29,8 +30,11 @@ def convert_csv_to_fasta(csv_path: str, fa_path: str, fai_path: str):
                 chrs[chrom] = []
             chrs[chrom].append((start, seq))
     
+    tmp_fa = f"{fa_path}.tmp.{os.getpid()}"
+    tmp_fai = f"{fai_path}.tmp.{os.getpid()}"
+    
     fai_lines = []
-    with open(fa_path, "wb") as out_fa:
+    with open(tmp_fa, "wb") as out_fa:
         for chrom, chunks in chrs.items():
             max_len = max(start + len(seq) - 1 for start, seq in chunks)
             seq_arr = bytearray(b"N" * max_len)
@@ -48,9 +52,17 @@ def convert_csv_to_fasta(csv_path: str, fa_path: str, fai_path: str):
                 out_fa.write(seq_arr[i:i+60] + b"\n")
             
             fai_lines.append(f"{chrom}\t{max_len}\t{offset}\t{line_len}\t{line_len+1}\n")
+        out_fa.flush()
+        os.fsync(out_fa.fileno())
             
-    with open(fai_path, "w", encoding="utf-8") as out_fai:
+    with open(tmp_fai, "w", encoding="utf-8") as out_fai:
         out_fai.writelines(fai_lines)
+        out_fai.flush()
+        os.fsync(out_fai.fileno())
+
+    # Atomic rename into final locations
+    os.replace(tmp_fa, fa_path)
+    os.replace(tmp_fai, fai_path)
 
 def main():
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -59,26 +71,35 @@ def main():
         print(f"convert_fastas: directory not found: {fasta_dir}", file=sys.stderr)
         sys.exit(1)
 
-    t0 = time.time()
-    converted = 0
-    for fn in sorted(os.listdir(fasta_dir)):
-        if not fn.endswith(".fa.csv"):
-            continue
-        csv_path = os.path.join(fasta_dir, fn)
-        fa_name = fn[:-4]  # strip .csv -> .fa
-        fa_path = os.path.join(fasta_dir, fa_name)
-        fai_path = fa_path + ".fai"
-        
-        # Convert if missing or if csv is newer
-        if not os.path.exists(fa_path) or not os.path.exists(fai_path) or os.path.getmtime(csv_path) > os.path.getmtime(fa_path):
-            convert_csv_to_fasta(csv_path, fa_path, fai_path)
-            converted += 1
+    import tempfile
+    lock_file = os.path.join(tempfile.gettempdir(), "vardictrust_convert_fastas.lock")
+    with open(lock_file, "w") as lock_fd:
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        except OSError:
+            pass  # If flock is not supported on target filesystem, continue
 
-    elapsed = round(time.time() - t0, 2)
-    if converted > 0:
-        print(f"convert_fastas: successfully materialized {converted} FASTAs in {elapsed}s")
-    else:
-        print(f"convert_fastas: all reference FASTAs up-to-date ({elapsed}s)")
+        t0 = time.time()
+        converted = 0
+        for fn in sorted(os.listdir(fasta_dir)):
+            if not fn.endswith(".fa.csv"):
+                continue
+            csv_path = os.path.join(fasta_dir, fn)
+            fa_name = fn[:-4]  # strip .csv -> .fa
+            fa_path = os.path.join(fasta_dir, fa_name)
+            fai_path = fa_path + ".fai"
+            
+            # Convert if missing or if csv is newer
+            if not os.path.exists(fa_path) or not os.path.exists(fai_path) or os.path.getmtime(csv_path) > os.path.getmtime(fa_path):
+                convert_csv_to_fasta(csv_path, fa_path, fai_path)
+                converted += 1
+
+        elapsed = round(time.time() - t0, 2)
+        if converted > 0:
+            print(f"convert_fastas: successfully materialized {converted} FASTAs in {elapsed}s")
+        else:
+            print(f"convert_fastas: all reference FASTAs up-to-date ({elapsed}s)")
 
 if __name__ == "__main__":
     main()
+

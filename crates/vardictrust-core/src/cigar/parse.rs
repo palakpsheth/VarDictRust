@@ -1637,7 +1637,7 @@ impl<'a> CigarParser<'a> {
         if self.config.verbose && is_chimeric_flag {
             let record_name = String::from_utf8_lossy(&record.name);
             let ref_name = record.reference_name.as_deref().unwrap_or("*");
-            log::debug!(
+            eprintln!(
                 "{} {} {} {:?} is ignored as chimeric with SA: {},{},{}",
                 record_name,
                 ref_name,
@@ -1812,12 +1812,13 @@ impl<'a> CigarParser<'a> {
                                 *offset = 0;
                                 *start = position;
                                 if self.config.verbose {
-                                    log::debug!(
+                                    eprintln!(
                                         "{} at 5' is a chimeric at {} by SEED 17",
                                         String::from_utf8_lossy(&sequence),
                                         start
                                     );
                                 }
+
                                 return;
                             }
                         }
@@ -1939,12 +1940,13 @@ impl<'a> CigarParser<'a> {
                                 *offset = 0;
                                 *start = position;
                                 if self.config.verbose {
-                                    log::debug!(
+                                    eprintln!(
                                         "{} at 3' is a chimeric at {} by SEED 17",
                                         String::from_utf8_lossy(&sequence),
                                         start
                                     );
                                 }
+
                                 return;
                             }
                         }
