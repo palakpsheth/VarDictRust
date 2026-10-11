@@ -59,6 +59,19 @@ git submodule update --init --recursive
      conda activate g4-tools
      ```
 
+### 2.3 The Three-Tier Environment Model (Zero-Virtualenv Architecture)
+VarDictRust enforces a clear separation of toolchains across three distinct environments:
+
+| Tier | Environment Scope | Managed By | Specification & Lockfile |
+| :--- | :--- | :--- | :--- |
+| **Tier 1** | **Rust Engine Core** (Compilation, benchmarks, unit tests) | `rustup`, `cargo` | [`Cargo.lock`](Cargo.lock) (cryptographically locked) |
+| **Tier 2** | **Test & Metrology Harness** (VCF comparators, self-tests) | System `python3` (3.8+) | **100% Python Standard Library** (Zero PyPI / Zero Venv) |
+| **Tier 3** | **Genomics Oracle & Benchmarks** (`vardict-java`, `rtg-tools`, `samtools`) | Bioconda / Conda-Forge | [`benchmarks/env/vardict-oracle.yml`](benchmarks/env/vardict-oracle.yml), [`harness/env/g4-tools.yml`](harness/env/g4-tools.yml) |
+| *(Ephemeral)* | **Ad-Hoc Developer Tools** (`cffconvert`, `pre-commit`) | Astral `uvx` (Zero-install) | Ephemeral user cache (no permanent virtualenv) |
+
+> [!NOTE]
+> **No Python Virtual Environment Required:** All scripts in `harness/` and `harness/tests/` depend exclusively on the Python standard library (`argparse`, `json`, `gzip`, `math`, `subprocess`, `unittest`). Contributors do not need to create a `venv` or run `pip install` to execute the regression harness. This zero-PyPI contract is enforced continuously by [`harness/tests/test_stdlib_purity.py`](harness/tests/test_stdlib_purity.py).
+
 ---
 
 ## 3. Automated Pre-Commit Hook Framework

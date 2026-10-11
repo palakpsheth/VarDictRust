@@ -291,7 +291,7 @@ Because VarDictRust produces 0 variant discrepancies and 0 filter differences co
 
 ## 6. Tier 6: Automated Harness Diagnostic Suite (`harness/run_self_tests.sh`)
 
-Automated via [`harness/run_self_tests.sh`](file:///mnt/media_backups/VarDictRust/harness/run_self_tests.sh), these 13 specialized scripts validate the correctness of the testing infrastructure itself in $<10\text{ seconds}$:
+Automated via [`harness/run_self_tests.sh`](file:///mnt/media_backups/VarDictRust/harness/run_self_tests.sh), these 14 specialized scripts validate the correctness of the testing infrastructure and zero-PyPI environment contracts in $<10\text{ seconds}$:
 
 ```bash
 # Execute the full automated diagnostic test suite
@@ -311,7 +311,8 @@ The runner dynamically discovers and executes:
 10. `test_run_oracle.sh`: tests argument forwarding and flag preservation in `harness/run_oracle.sh`.
 11. `test_select_slice_regions.py`: validates interval slicing, multi-interval BED grouping, and variant density sampling algorithms.
 12. `test_seqc2_align.sh`: verifies that required alignment pipeline commands (`bwa mem`, `samtools fixmate/sort/markdup/index`) are correctly invoked in SEQC2 alignment scripts.
-13. `test_vcf_header.py`: validates standards-compliant VCFv4.2 header generation and contig length extraction from FASTA `.fai` index files (resolving issue #320).
+13. `test_stdlib_purity.py`: performs automated AST inspection of all Python files in `harness/`, asserting 100% Python standard library compliance (zero external PyPI dependencies).
+14. `test_vcf_header.py`: validates standards-compliant VCFv4.2 header generation and contig length extraction from FASTA `.fai` index files (resolving issue #320).
 
 ---
 
@@ -365,7 +366,15 @@ Future contributors and clinical bioinformaticians can independently reproduce *
 | **RNA Splicing Suite**| AstraZeneca NGS Archive | STAR Splice Junctions (chr8)| Illumina HiSeq (RNA-seq) | hg38 | `chr8:90534611-90620070` | `VarDictJava/.../Tcov_zero_...bam` |
 | **COLO829 Melanoma** | ENA PRJEB27698 (Hartwig / NYGC) | Malignant Melanoma / BL | HiSeqX (100×/40× Somatic WGS)| GRCh37/b37 | `1:10000000-10200000` | `scratch/g4/multimodal/colo829_s1a_...bam` |
 
-### 9.2 Push-Button Tier Reproduction Runbook
+### 9.2 Zero-Virtualenv Architecture & Toolchain Segregation
+
+VarDictRust deliberately avoids requiring a Python virtual environment (`venv`) or root `pyproject.toml`:
+1. **Engine Core (Rust):** Managed strictly by `cargo` and [`Cargo.lock`](../../Cargo.lock) (deterministic reproducible compilation).
+2. **Test & Metrology Harness (Python):** All Python scripts in `harness/` and `harness/tests/` depend exclusively on the **Python 3.8+ Standard Library** (`argparse`, `json`, `gzip`, `math`, `subprocess`, `unittest`). Contributors execute tests immediately with system `python3` without creating virtualenvs or running `pip install`. This zero-PyPI contract is verified by `harness/tests/test_stdlib_purity.py`.
+3. **Genomics Reference Oracle & Benchmarks (Bioconda):** Native non-Python binaries (`vardict-java=1.8.3`, `rtg-tools`, `samtools`, `bcftools`, `bwa`) are managed via isolated Conda environments ([`benchmarks/env/vardict-oracle.yml`](../../benchmarks/env/vardict-oracle.yml) and [`harness/env/g4-tools.yml`](../../harness/env/g4-tools.yml)).
+4. **Ephemeral Developer Tools:** Single-command developer tools (`cffconvert`, `pre-commit`) run ephemerally via Astral's `uvx` without polluting the workspace.
+
+### 9.3 Push-Button Tier Reproduction Runbook
 
 ```bash
 # 1. Tier 0: Install Local Pre-Commit Hooks (<1s)

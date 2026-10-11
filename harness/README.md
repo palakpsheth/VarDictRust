@@ -33,7 +33,7 @@ The harness operates in two distinct tiers:
 | :--- | :--- | :--- |
 | [`acceptance.sh`](acceptance.sh) | **Master Acceptance Gate:** Executes the 8 mandatory release criteria defined in `PLAN.md` §15. Verifies workspace unit tests, 91/1 corpus parity, Tier-2 micro/macro parity, crash robustness, 4-target performance budget, truth concordance, hygiene, and distribution equivalence. | $<1\text{m}$ |
 | [`pr_check.sh`](pr_check.sh) | **Standard PR Regression Suite:** Enforces a 6-stage verification gate on all PRs: Hygiene (`cargo fmt`, `clippy -D warnings`, `cargo audit`, `cargo deny`), Crash Robustness, 91/1 Corpus, Tier-2 Micro Parity, 4-Target Performance Budget, and Gitleaks secret scanning. | $<35\text{s}$ |
-| [`run_self_tests.sh`](run_self_tests.sh) | **Automated Tier 6 Diagnostic Suite:** Discovers and executes all 13 diagnostic test scripts (10 shell tests and 3 python test suites in `harness/tests/`), reporting unified status and elapsed milliseconds. | $<10\text{s}$ |
+| [`run_self_tests.sh`](run_self_tests.sh) | **Automated Tier 6 Diagnostic Suite:** Discovers and executes all 14 diagnostic test scripts (10 shell tests and 4 python test suites in `harness/tests/`), reporting unified status and elapsed milliseconds. | $<10\text{s}$ |
 | [`setup_hooks.sh`](setup_hooks.sh) | **Git Hooks Configuration:** Configures repository Git hook path to `.githooks/` (`git config core.hooksPath .githooks`), activating fast local pre-commit hygiene and secret checks. | $<1\text{s}$ |
 | [`engine_fingerprint.sh`](engine_fingerprint.sh) | **Release Engine Fingerprinter:** Computes a 16-character SHA-256 hash across engine source code (`crates/*/src`), comparator drivers, and locked dependencies (`Cargo.lock`). Guarantees evidence records are tied to an exact, unmutated engine commit. | $<1\text{s}$ |
 | [`bin_equiv.sh`](bin_equiv.sh) | **Binary Equivalence Gate:** Validates that statically-compiled `x86_64-unknown-linux-musl` release binaries produce identical variant calls to glibc binaries. | $<30\text{s}$ |
@@ -80,7 +80,7 @@ The [`slices.tsv`](slices.tsv) index and [`slices/`](slices/) directory define t
 
 ## 6. Meta-Test Suite (`harness/tests/`)
 
-The harness contains an internal self-test suite (13 test scripts) verifying that the harness tools and comparators themselves function correctly:
+The harness contains an internal self-test suite (14 test scripts) verifying that the harness tools, comparators, and zero-dependency environment contracts function correctly:
 
 ```bash
 # Run all harness meta-tests using the automated Tier 6 runner
@@ -89,6 +89,6 @@ bash harness/run_self_tests.sh
 
 The runner dynamically discovers and executes:
 - 10 Shell Tests: `test_compare_sh.sh`, `test_concordance.sh`, `test_courtesy.sh`, `test_edge_cases.sh`, `test_env_pinned.sh`, `test_evidence.sh`, `test_fetch_data.sh`, `test_perf_budget.sh`, `test_run_oracle.sh`, `test_seqc2_align.sh`.
-- 3 Python Test Suites: `test_compare_vcf.py` (10 tests), `test_select_slice_regions.py` (4 tests), `test_vcf_header.py` (1 test).
+- 4 Python Test Suites: `test_compare_vcf.py` (10 tests), `test_select_slice_regions.py` (4 tests), `test_stdlib_purity.py` (AST zero-PyPI import guard), `test_vcf_header.py` (1 test).
 
-All 13 diagnostic test scripts pass 100% green.
+All 14 diagnostic test scripts pass 100% green.
