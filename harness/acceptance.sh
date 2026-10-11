@@ -34,11 +34,19 @@ t=1; run cargo test -p vardictrust --test robustness || t=0; run ev hg008-cram-t
 # 5 Scale + Perf Budget (thresholds pre-registered in T21)
 t=1; run ev scale || t=0; run ev perf-budget || t=0; mark 5 $t "scale/perf-budget"
 
-# 6 Truth set: rtg exact java==rust equality on both datasets (som.py/truvari via waiver)
-t=1; for e in hg008-truth seqc2-truth hg002-truth; do run ev "$e" || t=0; done; mark 6 $t "truth"
+# 6 Truth set: rtg exact java==rust equality on all 5 certified cohorts (som.py/truvari via waiver)
+t=1; for e in hg008-truth seqc2-truth hg002-truth hg005-truth na24385-b37-truth; do run ev "$e" || t=0; done; mark 6 $t "truth"
 # 7 Hygiene
 t=1; run cargo fmt --all -- --check || t=0; run cargo clippy --all-targets --all-features -- -D warnings || t=0
-run cargo audit || t=0; run cargo deny check || t=0; mark 7 $t "hygiene"
+run cargo audit || t=0; run cargo deny check || t=0
+if command -v gitleaks >/dev/null 2>&1; then
+  run gitleaks detect --source . -v || t=0
+elif [ -x /home/palak/miniconda3/envs/g4-tools/bin/gitleaks ]; then
+  run /home/palak/miniconda3/envs/g4-tools/bin/gitleaks detect --source . -v || t=0
+else
+  echo "acceptance: gitleaks scanner not found" >> "$OUT/log.txt"; t=0
+fi
+mark 7 $t "hygiene"
 # 8 Distribution: musl CI evidence + --version content
 t=1; v=$(target/release/vardictrust --version 2>&1)
 for s in "VarDictJava v1.8.3" 0886261 009e017 Lai gkw227 AstraZeneca-NGS "AI disclosure"; do grep -qF "$s" <<<"$v" || t=0; done
