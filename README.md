@@ -16,6 +16,11 @@ Built under the [rewrites.bio](https://rewrites.bio) manifesto: *a faster, more 
 
 ## Performance & Scaling Scoreboard
 
+- **Exact Parity:** 0 variant discrepancies and identical `FILTER`/`STATUS` decisions against VarDictJava v1.8.3 across all 15 Tier-2 benchmark runs and 92 integration fixtures ($\varepsilon = 10^{-6}$).
+- **High-Throughput Speedup:** Up to **30.0× faster** on targeted amplicon assays and **4.85× parallel speedup** on 8 cores across whole human chromosomes.
+- **Bounded $O(1)$ Memory:** Flat resident memory scaling ($1.39\times$ peak RSS ratio across a 25-fold chromosome span increase), eliminating JVM heap exhaustion on deep WGS.
+- **Self-Contained Deployment:** Single statically-linked binary (`x86_64-unknown-linux-musl`) with zero runtime dependencies (no JVM, R, Perl, or conda environment needed).
+
 Recorded on identical hardware (AMD Ryzen / Ubuntu 24.04 LTS, NVMe SSD) pinned to 8 CPU threads per Host Policy A3:
 
 | Workload / Benchmark | Threads | VarDictJava Wall Time | VarDictRust Wall Time | Speedup Ratio | VarDictJava Peak RSS | VarDictRust Peak RSS | Memory Scaling Ratio |
@@ -59,6 +64,9 @@ cargo install vardictrust
 # Option 2: Pre-built static musl binary (no glibc dependency)
 curl -LsSf https://github.com/rewrites-bio/VarDictRust/releases/latest/download/vardictrust-x86_64-unknown-linux-musl.tar.gz | tar xz
 sudo mv vardictrust /usr/local/bin/
+
+# 10-second verification (confirms installation & prints build metadata)
+vardictrust --version
 ```
 
 ### 1. Germline Single-Sample Calling
@@ -171,7 +179,7 @@ Flag parity with VarDictJava v1.8.3 is defined against `CmdParser.java` and veri
 | `-m` | — | Maximum mismatches | `8` | `corpus` |
 | `-M` | — | Min match+insertion read length (shorter reads ignored) | `0` | `unexercised` |
 | `-V` | — | Min normal AF (somatic) | `0.05` | `corpus` |
-| `-U` | `--nosv` | Disable SV calling | off | `unexercised` |
+| `-U` | `--nosv` | Disable SV calling | off | `corpus` |
 | `-L` | — | SV minimum length | `1000` | `corpus` |
 | — | `--emit-intermediate` | Emit legacy `.var` table instead of VCF | off | `corpus` |
 | — | `--fisher` | In-engine Fisher exact test (p-value / odds ratio) | off | `corpus` |
@@ -195,18 +203,18 @@ Flag parity with VarDictJava v1.8.3 is defined against `CmdParser.java` and veri
 | — | `--deldupvar` | Delete/dup variant handling | off | `unexercised` |
 | — | `--mfreq` | Mono frequency threshold | `0.25` | `corpus` |
 | — | `--nmfreq` | Normal mono frequency threshold | `0.1` | `corpus` |
-| `-J` | — | CRISPR cutting site | — | `unexercised` |
-| `-j` | — | CRISPR flanking size | — | `unexercised` |
-| `-i` | `--splice` | Splice mode | off | `unexercised` |
+| `-J` | — | CRISPR cutting site | — | `corpus` |
+| `-j` | — | CRISPR flanking size | — | `corpus` |
+| `-i` | `--splice` | Splice mode | off | `corpus` |
 | `-p` | — | Pileup-only mode | off | `corpus` |
 | `-D` | `--debug` | Debug mode (append per-read debug columns to `.var`) | off | `corpus` |
 | — | `--DP` | Debug print destination (`OUT` or `ERR`) | — | `unexercised` |
 | `-y` | `--verbose` | Verbose mode | off | `no-output` |
 | `-t` | `--dedup` | Remove duplicated reads (one pair per start position) | off | `unexercised` |
-| — | `--adaptor` | Adaptor sequence(s), comma-separated, excluded from realignment | — | `unexercised` |
+| — | `--adaptor` | Adaptor sequence(s), comma-separated, excluded from realignment | — | `corpus` |
 | `-d` | — | Delimiter for splitting region info | `\t` | `corpus` |
-| `-u` | — | Unique mode: count overlapping mates once (forward read) | off | `unexercised` |
-| — | `--UN` | Unique mode: count once using first read only | off | `unexercised` |
+| `-u` | — | Unique mode: count overlapping mates once (forward read) | off | `corpus` |
+| — | `--UN` | Unique mode: count once using first read only | off | `corpus` |
 | `-K` | — | Include Ns in depth calculation | off | `corpus` |
 | positional | — | BED file (used when `-R` absent) | — | `corpus` |
 
