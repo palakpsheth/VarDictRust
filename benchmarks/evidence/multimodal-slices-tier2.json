@@ -1,7 +1,7 @@
 {
   "suite": "multimodal_multislice_parity_suite",
-  "timestamp": "\"2026-10-11T18:29:02Z\"",
-  "fingerprint": "d3d3a23a02a4ec4e",
+  "timestamp": "\"2026-10-11T19:23:20Z\"",
+  "fingerprint": "bc962a9db4365ca4",
   "mode": "tier-2-live-oracle-strict-bytes",
   "total_slices": 18,
   "slices_passed": 18,
@@ -15,7 +15,7 @@
       "region": "chr3 40000000 40010000",
       "variants": 31,
       "status": "MATCH",
-      "time_ms": 4533
+      "time_ms": 4069
     },
     {
       "slice_id": "HG005_1B",
@@ -23,7 +23,7 @@
       "region": "chr6 30000000 30010000",
       "variants": 10,
       "status": "MATCH",
-      "time_ms": 4199
+      "time_ms": 3899
     },
     {
       "slice_id": "HG005_1C",
@@ -31,7 +31,7 @@
       "region": "chr21 20000000 20010000",
       "variants": 8,
       "status": "MATCH",
-      "time_ms": 4368
+      "time_ms": 3971
     },
     {
       "slice_id": "SEQC2_2A",
@@ -39,7 +39,7 @@
       "region": "chr7 140400000 140420000",
       "variants": 31,
       "status": "MATCH",
-      "time_ms": 3581
+      "time_ms": 3061
     },
     {
       "slice_id": "SEQC2_2B",
@@ -47,7 +47,7 @@
       "region": "chr11 530000 550000",
       "variants": 16,
       "status": "MATCH",
-      "time_ms": 4074
+      "time_ms": 4293
     },
     {
       "slice_id": "SEQC2_2C",
@@ -55,7 +55,7 @@
       "region": "chr12 25200000 25250000",
       "variants": 55,
       "status": "MATCH",
-      "time_ms": 5605
+      "time_ms": 16021
     },
     {
       "slice_id": "HG002_3A",
@@ -63,7 +63,7 @@
       "region": "chr20 10000000 10020000",
       "variants": 337,
       "status": "MATCH",
-      "time_ms": 3935
+      "time_ms": 3906
     },
     {
       "slice_id": "HG002_3B",
@@ -71,7 +71,7 @@
       "region": "chr20 20000000 20020000",
       "variants": 273,
       "status": "MATCH",
-      "time_ms": 4013
+      "time_ms": 3439
     },
     {
       "slice_id": "HG002_3C",
@@ -79,7 +79,7 @@
       "region": "chr20 30000000 30020000",
       "variants": 4,
       "status": "MATCH",
-      "time_ms": 2726
+      "time_ms": 2259
     },
     {
       "slice_id": "HG008_4A",
@@ -87,7 +87,7 @@
       "region": "chr1 1743056 1744086 slice_1_6",
       "variants": 23,
       "status": "MATCH",
-      "time_ms": 3782
+      "time_ms": 3511
     },
     {
       "slice_id": "HG008_4B",
@@ -95,7 +95,7 @@
       "region": "chr1 6170843 6182754 slice_2_3",
       "variants": 50,
       "status": "MATCH",
-      "time_ms": 6049
+      "time_ms": 4760
     },
     {
       "slice_id": "HG008_4C",
@@ -103,7 +103,7 @@
       "region": "chr1 56757190 56764123 slice_3_4",
       "variants": 42,
       "status": "MATCH",
-      "time_ms": 4501
+      "time_ms": 3392
     },
     {
       "slice_id": "NA24385_5A",
@@ -111,7 +111,7 @@
       "region": "1 246981051 246981611",
       "variants": 25,
       "status": "MATCH",
-      "time_ms": 8752
+      "time_ms": 7100
     },
     {
       "slice_id": "NA24385_5B",
@@ -119,7 +119,7 @@
       "region": "19 58559581 58567861",
       "variants": 20,
       "status": "MATCH",
-      "time_ms": 2699
+      "time_ms": 2389
     },
     {
       "slice_id": "NA24385_5C",
@@ -127,7 +127,7 @@
       "region": "20 36018823 36039513",
       "variants": 181,
       "status": "MATCH",
-      "time_ms": 3948
+      "time_ms": 3548
     },
     {
       "slice_id": "RNA_6A",
@@ -135,7 +135,7 @@
       "region": "chr8:90534611-90550000",
       "variants": 3,
       "status": "MATCH",
-      "time_ms": 3551
+      "time_ms": 2178
     },
     {
       "slice_id": "RNA_6B",
@@ -143,7 +143,7 @@
       "region": "chr8:90550000-90580000",
       "variants": 8,
       "status": "MATCH",
-      "time_ms": 3837
+      "time_ms": 2745
     },
     {
       "slice_id": "RNA_6C",
@@ -151,7 +151,7 @@
       "region": "chr8:90580000-90620070",
       "variants": 12,
       "status": "MATCH",
-      "time_ms": 3908
+      "time_ms": 2562
     }
   ]
 }
