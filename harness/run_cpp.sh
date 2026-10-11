@@ -55,6 +55,14 @@ if ! conda run -n vardict-oracle vardictcpp --version >/dev/null 2>&1; then
 fi
 
 [ -r "$BED" ] || { echo "run_cpp.sh: cannot read BED $BED" >&2; exit 1; }
+# cpp requires >=4 BED columns (-c/-S/-E/-g need a gene column); pad short
+# data lines with "." (the gene label is invisible in VCF output, and the
+# Java oracle tolerates 3-col BEDs, so padding only restores parity of inputs).
+if awk -F'\t' '!/^#/ && NF && NF<4 { missing=1; exit } END { exit !missing }' "$BED"; then
+  padtmp=$(mktemp); trap 'rm -f "$padtmp"' EXIT
+  awk -F'\t' 'BEGIN{OFS="\t"} /^#/ || !NF { print; next } { while (NF<4) $(NF+1)="."; print }' "$BED" > "$padtmp"
+  BED="$padtmp"
+fi
 # Region-free BED (empty/comments only): emit a header-only VCF and exit 0,
 # mirroring the oracle's empty result (compare_vcf.py + --min-variants floors
 # the verdict to MISMATCH, never a vacuous MATCH).
