@@ -32,10 +32,10 @@ flowchart TD
 
     subgraph Level1 ["Level 1: Unit & Component Tests (208 Total)"]
         C_Core["crates/vardict-core (188 lib tests)"]
-        C_CLI["crates/vardict-cli (13 cli tests)"]
-        C_Rob["crates/vardict-cli/tests/robustness.rs (5 tests)"]
-        C_Det["crates/vardict-cli/tests/thread_determinism.rs (1 test)"]
-        C_Ver["crates/vardict-cli/tests/version.rs (1 test)"]
+        C_CLI["crates/vardictrust (13 cli tests)"]
+        C_Rob["crates/vardictrust/tests/robustness.rs (5 tests)"]
+        C_Det["crates/vardictrust/tests/thread_determinism.rs (1 test)"]
+        C_Ver["crates/vardictrust/tests/version.rs (1 test)"]
     end
 
     subgraph Level2 ["Level 2: Upstream Integration Regression Corpus (92 Fixtures)"]
@@ -102,10 +102,10 @@ The table below summarizes the complete testing inventory executed across the de
 | **Pre** | **Pre-Commit Hook (Track A)** | `.githooks/pre-commit` | 3 checks | `git commit` (local) | fmt, clippy, gitleaks clean | $<3\text{ s}$ |
 | **Pre** | **Pre-Commit Hook (Track B)** | `.pre-commit-config.yaml` | 6 hooks | `git commit` (local) | yaml, toml, whitespace, gitleaks | $<4\text{ s}$ |
 | **1** | **Level 1: Core Library Tests** | `crates/vardict-core/src/` | 188 tests | `cargo test -p vardict-core` | 0 failures, 0 panics | $\sim 2\text{ s}$ |
-| **1** | **Level 1: CLI Front-End Tests** | `crates/vardict-cli/src/` | 13 tests | `cargo test -p vardictrust --bin vardictrust` | 0 failures, 0 panics | $<0.1\text{ s}$ |
-| **1** | **Level 1: Crash Robustness Corpus** | `crates/vardict-cli/tests/robustness.rs` | 5 tests | `cargo test --test robustness` | PR #402, missing BAI, 0-tile pass | $\sim 0.2\text{ s}$ |
-| **1** | **Level 1: Thread Determinism** | `crates/vardict-cli/tests/thread_determinism.rs` | 1 test | `cargo test --test thread_determinism` | Bitwise identical VCF (1, 2, 4, 8 thr) | $\sim 0.2\text{ s}$ |
-| **1** | **Level 1: Release Metadata & AI** | `crates/vardict-cli/tests/version.rs` | 1 test | `cargo test --test version` | Lai (2016) cited, AI disclosed | $<0.01\text{ s}$ |
+| **1** | **Level 1: CLI Front-End Tests** | `crates/vardictrust/src/` | 13 tests | `cargo test -p vardictrust --bin vardictrust` | 0 failures, 0 panics | $<0.1\text{ s}$ |
+| **1** | **Level 1: Crash Robustness Corpus** | `crates/vardictrust/tests/robustness.rs` | 5 tests | `cargo test --test robustness` | PR #402, missing BAI, 0-tile pass | $\sim 0.2\text{ s}$ |
+| **1** | **Level 1: Thread Determinism** | `crates/vardictrust/tests/thread_determinism.rs` | 1 test | `cargo test --test thread_determinism` | Bitwise identical VCF (1, 2, 4, 8 thr) | $\sim 0.2\text{ s}$ |
+| **1** | **Level 1: Release Metadata & AI** | `crates/vardictrust/tests/version.rs` | 1 test | `cargo test --test version` | Lai (2016) cited, AI disclosed | $<0.01\text{ s}$ |
 | **2** | **Level 2: Integration Regression Corpus**| `harness/run_integration.sh` | 92 fixtures | PR gate & Acceptance Item 2 | `91 PASS / 1 FAIL` (UB-4 signature) | $\sim 8\text{ s}$ |
 | **3** | **Level 3: Micro Differential** | `fixtures/micro/` | 1 fixture | PR gate & Acceptance Item 3 | Live Oracle MATCH (0 diffs) | $\sim 2\text{ s}$ |
 | **3** | **Level 3: Standard Slices** | `harness/slices.tsv` (`s1a`–`s9`) | 10 slices | Inner loop (`rgate`) & Acceptance Item 3 | Live Oracle MATCH (0 diffs) | $\sim 45\text{ s}$ |
@@ -131,7 +131,7 @@ The table below summarizes the complete testing inventory executed across the de
 
 ## 3. Granular Breakdown of Cargo Workspace Tests (208 Total)
 
-Executing `cargo test --workspace` validates **208 tests** across `crates/vardict-core`, `crates/vardict-cli`, and integration test suites:
+Executing `cargo test --workspace` validates **208 tests** across `crates/vardict-core`, `crates/vardictrust`, and integration test suites:
 
 ### 3.1 `crates/vardict-core` (188 Library Tests)
 
@@ -169,18 +169,18 @@ The core variant calling engine enforces `#![forbid(unsafe_code)]` and zero unha
    - `config` (1 test): verifies configuration validation.
    - Root integration test: `tests::test_empty_ref_winner_suppresses_position`.
 
-### 3.2 `crates/vardict-cli` (13 Unit Tests)
+### 3.2 `crates/vardictrust` (13 Unit Tests)
 
-Located in `crates/vardict-cli/src/cli.rs`:
+Located in `crates/vardictrust/src/cli.rs`:
 - Verifies CLI argument parsing via `clap`.
 - Thread count resolution: verifies explicit `-th 4`, bare `-th` (all cores), default absent `-th` (all cores), and `-th 0` normalization to 1 core.
 - Verifies header flag `-h` prints table headers (and does not trigger help).
 - Verifies accepted and ignored upstream compatibility flags (`-v`).
 - Verifies error propagation on invalid flag arguments (`-F bogus`) and zero tile size (`--tile-size 0`).
 
-### 3.3 Integration Test Binaries (`crates/vardict-cli/tests/` — 7 Tests)
+### 3.3 Integration Test Binaries (`crates/vardictrust/tests/` — 7 Tests)
 
-Located in `crates/vardict-cli/tests/`:
+Located in `crates/vardictrust/tests/`:
 1. **`tests/robustness.rs` (5 tests):**
    - `locale_independence_c_vs_de_de`: verifies that floating-point numbers are emitted with standard decimal points (`.`) rather than European decimal commas (`,`) even when `LC_ALL=de_DE.UTF-8` is forced.
    - `test_zero_tile_size_fails_fast_without_hanging`: verifies that `--tile-size 0` returns an actionable `Parse` error instead of entering an infinite loop.

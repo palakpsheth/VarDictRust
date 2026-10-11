@@ -109,7 +109,7 @@ pre-commit install
 
 ## 4. Architectural Invariants & Safety
 
-All contributions to `crates/vardict-core/` and `crates/vardict-cli/` must adhere strictly to the following architectural rules:
+All contributions to `crates/vardict-core/` and `crates/vardictrust/` must adhere strictly to the following architectural rules:
 
 ### 4.1 Memory Safety & The No-Panic Rule
 - **`#![forbid(unsafe_code)]`:** The core engine crate strictly forbids `unsafe` code.

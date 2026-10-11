@@ -66,15 +66,15 @@ gates before core aligner work").
 | Emulate exactly, bugs included | [`AGENTS.md`](../AGENTS.md) §5 bug-replication policy + [`DIVERGENCES.md`](../DIVERGENCES.md) ledger (rarer than byte-parity itself) |
 | Pinned oracle + differential testing | VarDictJava v1.8.3 @`0886261` conda env; 92-case corpus; live-oracle VCF sweep |
 | Work small, per-function evidence | §7 port loop with source citations — McLeod's knowledge-extraction ideal |
-| Fail loudly on unsupported | §12 `Unsupported()` errors ([`cli.rs`](../crates/vardict-cli/src/cli.rs) `UNSUPPORTED_FLAGS`) |
+| Fail loudly on unsupported | §12 `Unsupported()` errors ([`cli.rs`](../crates/vardictrust/src/cli.rs) `UNSUPPORTED_FLAGS`) |
 | Real-data, like-for-like benchmarks | [`benchmarks/README.md`](../benchmarks/README.md); explicitly avoided the RastQC parallelism trap |
-| Thread/partition invariance | Tested ([`thread_determinism.rs`](../crates/vardict-cli/tests/thread_determinism.rs), tile-span determinism) |
+| Thread/partition invariance | Tested ([`thread_determinism.rs`](../crates/vardictrust/tests/thread_determinism.rs), tile-span determinism) |
 | Upstream bugs, manually verified | [`docs/upstream-bugs.md`](upstream-bugs.md) UB-1..4 drafted from live-oracle runs |
 | Credit + AI transparency | [`README.md`](../README.md) Attribution/AI Disclosure; git release tags and evidence JSONs carry cryptographic provenance |
 
 ## 5. Gaps this survey exposed (and dispositions)
 
-1. ~~No fuzzing~~ → Implemented `crates/vardict-cli/tests/robustness.rs` covering PR #402 hostile CIGAR sequences, missing indices, and zero-tile boundaries.
+1. ~~No fuzzing~~ → Implemented `crates/vardictrust/tests/robustness.rs` covering PR #402 hostile CIGAR sequences, missing indices, and zero-tile boundaries.
 2. ~~Flag statuses asserted, not graded~~ → Added explicit validation table in `README.md` grading every CLI flag against VarDictJava v1.8.3.
 3. ~~Release artifacts ungated~~ → Added Level 3 micro-fixture verification (`fixtures/micro/`) and static binary smoke test (`harness/smoke.sh`) gating the release artifact.
 4. **External truth-set validation** → Completed Level 4 biological ground truth concordance suite ([`docs/validation/omnibus-empirical-validation.md`](validation/omnibus-empirical-validation.md)) evaluating GIAB HG002, SEQC2 HCC1395, GIAB HG008, GIAB HG005, and NA24385 b37 via `rtg vcfeval`.

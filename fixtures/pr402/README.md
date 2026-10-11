@@ -29,10 +29,10 @@ The fixture represents a 600 bp region on `chr7` designed to test caller resilie
 
 ## 3. Active Usage & Verification
 
-This fixture is actively exercised by the integration test suite in [`crates/vardict-cli/tests/robustness.rs`](../../crates/vardict-cli/tests/robustness.rs):
+This fixture is actively exercised by the integration test suite in [`crates/vardictrust/tests/robustness.rs`](../../crates/vardictrust/tests/robustness.rs):
 
 ```rust
-// crates/vardict-cli/tests/robustness.rs:203
+// crates/vardictrust/tests/robustness.rs:203
 #[test]
 fn test_pr402_11_bad_reads_does_not_abort() { ... }
 ```

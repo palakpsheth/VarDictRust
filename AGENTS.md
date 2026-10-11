@@ -211,7 +211,7 @@ bash harness/slice.sh <in.bam> <chr:start-end> <out.bam>
 ## 16. Repo layout
 ```
 crates/vardict-core/   engine library (all logic; #![forbid(unsafe_code)])
-crates/vardict-cli/    bin "vardictrust" (clap front-end → core)
+crates/vardictrust/    bin "vardictrust" (clap front-end → core)
 harness/               compare.sh, compare_var.py, compare_vcf.py, slice.sh, run_oracle.sh, setup_oracle.sh
 golden/                versioned oracle outputs (.vcf, .var) + PROVENANCE
 benchmarks/            hardware, datasets, exact commands
