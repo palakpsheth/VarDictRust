@@ -227,7 +227,7 @@ The 18 non-overlapping evaluation slices span 9 human chromosomes across both ma
 
 ---
 
-## 8. Pillar 8: Nine Extended Operational Modalities Suite
+## 8. Pillar 8: Seventeen Extended Operational Modalities Suite
 
 Evaluated via [`harness/run_extended_coverage.sh`](../../harness/run_extended_coverage.sh) and archived in [`benchmarks/evidence/extended-coverage-tier2.json`](../../benchmarks/evidence/extended-coverage-tier2.json):
 
@@ -237,11 +237,19 @@ Evaluated via [`harness/run_extended_coverage.sh`](../../harness/run_extended_co
 | **2** | **Inversion SVs (`<INV>`)** | `-G hg19.fa -b ... harness/slices/s8.bed -f 0.001 -L 1000 -c 1 -S 2 -E 3 -g 4` | VCFv4.2 | **MATCH (20 variants)** | **0 diffs** |
 | **3** | **Duplication SVs (`<DUP>`)** | `-G hg19.fa -b ... harness/slices/s9.bed -f 0.001 -L 1000 -c 1 -S 2 -E 3 -g 4` | VCFv4.2 | **MATCH (71 variants)** | **0 diffs** |
 | **4** | **CRISPR Target Sites** | `-G hg19.fa -b ... -R chr20:50454281-50455444 -f 0.001 -J 50454941 -j 25 --emit-intermediate` | TSV Table (37 cols)| **MATCH (3 variants)** | **0 diffs** |
-| **5** | **Paired Unique Mode** | `-G GRCh38... -b ... harness/slices/hg002_tiny.bed -u -UN -c 1 -S 2 -E 3 -g 4` | VCFv4.2 | **MATCH (110 variants)** | **0 diffs** |
-| **6** | **Adapter Trimming** | `-G GRCh38... -b ... --adaptor AGATCGGA...,AGATCGGA... -c 1 -S 2 -E 3 -g 4` | VCFv4.2 | **MATCH (158 variants)** | **0 diffs** |
-| **7** | **Realignment Bypass** | `-G GRCh38... -b ... harness/slices/hg002_tiny.bed -k 0 -c 1 -S 2 -E 3 -g 4` | VCFv4.2 | **MATCH (156 variants)** | **0 diffs** |
-| **8** | **SV Engine Bypass** | `-G GRCh38... -b ... harness/slices/hg002_tiny.bed -U -c 1 -S 2 -E 3 -g 4` | VCFv4.2 | **MATCH (155 variants)** | **0 diffs** |
-| **9** | **N-Base Depth Counting** | `-G GRCh38... -b ... harness/slices/hg002_tiny.bed -K -c 1 -S 2 -E 3 -g 4` | VCFv4.2 | **MATCH (158 variants)** | **0 diffs** |
+| **5** | **Paired Unique Mode** | `-G GRCh38... -b ... harness/slices/hg002_tiny.bed -u -UN -c 1 -S 2 -E 3 -g 4` | VCFv4.2 | **MATCH (815 variants)** | **0 diffs** |
+| **6** | **Adapter Trimming** | `-G GRCh38... -b ... --adaptor AGATCGGA...,AGATCGGA... -c 1 -S 2 -E 3 -g 4` | VCFv4.2 | **MATCH (1047 variants)** | **0 diffs** |
+| **7** | **Realignment Bypass** | `-G GRCh38... -b ... harness/slices/hg002_tiny.bed -k 0 -c 1 -S 2 -E 3 -g 4` | VCFv4.2 | **MATCH (929 variants)** | **0 diffs** |
+| **8** | **SV Engine Bypass** | `-G GRCh38... -b ... harness/slices/hg002_tiny.bed -U -c 1 -S 2 -E 3 -g 4` | VCFv4.2 | **MATCH (1012 variants)** | **0 diffs** |
+| **9** | **N-Base Depth Counting** | `-G GRCh38... -b ... harness/slices/hg002_tiny.bed -K -c 1 -S 2 -E 3 -g 4` | VCFv4.2 | **MATCH (1047 variants)** | **0 diffs** |
+| **10** | **Read Deduplication (`-t`)** | `-G GRCh37.fa -b ... harness/slices/tiny.bed -t -c 1 -S 2 -E 3 -g 4` | VCFv4.2 | **MATCH (4 variants)** | **0 diffs** |
+| **11** | **3'-Indel Shift (`-3`)** | `-G GRCh37.fa -b ... harness/slices/tiny.bed -3 -c 1 -S 2 -E 3 -g 4` | VCFv4.2 | **MATCH (3 variants)** | **0 diffs** |
+| **12** | **Output MAPQ Filter (`-O`)** | `-G GRCh37.fa -b ... harness/slices/tiny.bed -O 55 -c 1 -S 2 -E 3 -g 4` | VCFv4.2 | **MATCH (4 variants)** | **0 diffs** |
+| **13** | **Region Extension (`-x`)** | `-G GRCh37.fa -b ... harness/slices/tiny.bed -x 50 -c 1 -S 2 -E 3 -g 4` | VCFv4.2 | **MATCH (6 variants)** | **0 diffs** |
+| **14** | **Segment Columns (`-s -e`)** | `-G GRCh37.fa -b ... -s 10 -e 11 -c 1 -S 2 -E 3 -g 4` | VCFv4.2 | **MATCH (4 variants)** | **0 diffs** |
+| **15** | **Min Match Length (`-M`)** | `-G GRCh37.fa -b ... harness/slices/tiny.bed -M 50 -c 1 -S 2 -E 3 -g 4` | VCFv4.2 | **MATCH (4 variants)** | **0 diffs** |
+| **16** | **Del/Dup Handling (`--deldupvar`)** | `-G GRCh37.fa -b ... harness/slices/tiny.bed --deldupvar -c 1 -S 2 -E 3 -g 4` | VCFv4.2 | **MATCH (4 variants)** | **0 diffs** |
+| **17** | **Default Printer (`--DP ERR`)** | `-G GRCh37.fa -b ... -R 20:20178900-20179200 --DP ERR --emit-intermediate` | TSV Table (stderr) | **MATCH (4 variants)** | **0 diffs** |
 
 ---
 

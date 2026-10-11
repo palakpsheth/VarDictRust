@@ -251,7 +251,7 @@ VarDictRust maintains **16 committed, cryptographically fingerprinted evidence f
 | **SEQC2 Somatic Slices**| `seqc2-slices-tier2.json` | Multi-Chr Slices (chr1-21) | 4,151 | **MATCH** | `dace5891208a52d2` |
 | **GIAB HG002 Germline** | `hg002-tier2.json` | Germline WGS (chr20 20 Mbp) | 227,562 | **MATCH** | `dace5891208a52d2` |
 | **Targeted Amplicon** | `amplicon-tier2.json` | Overlapping Primer Panel | 2 | **MATCH** | `dace5891208a52d2` |
-| **Extended Modalities** | `extended-coverage-tier2.json` | 9 Modes (RNA, SVs, Flags) | 847 | **MATCH** | `dace5891208a52d2` |
+| **Extended Modalities** | `extended-coverage-tier2.json` | 17 Modes (RNA, SVs, All Supported Flags) | 4,967+ | **MATCH** | `dace5891208a52d2` |
 | **Multi-Modal Slices** | `multimodal-slices-tier2.json` | 18 Slices across 6 Cohorts | 1,129 | **MATCH** | `dace5891208a52d2` |
 | **GIAB HG002 Truth** | `hg002-truth.json` | NIST v4.2.1 High-Confidence | $F_1 = 0.9699$ | **EQUAL** | `dace5891208a52d2` |
 | **SEQC2 Somatic Truth** | `seqc2-truth.json` | SEQC2 v1.2.1 Somatic Truth | $F_1 = 0.1555$ | **EQUAL** | `dace5891208a52d2` |
