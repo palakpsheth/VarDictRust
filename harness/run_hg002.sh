@@ -52,6 +52,18 @@ echo "HG002 Tier-2 Parity: MATCH"
 
 # 4. Truth Concordance Check (Dual-Threshold)
 echo "=== Step 2: Running truth concordance against NIST v4.2.1 ==="
+# Third arm (T3A-06): reuse the cpp.vcf Step 1's compare.sh already produced —
+# identical ref/BAM/BED/sample/flags (-f 0.01 -th 8), so no second engine run.
+# A SKIP verdict (or missing file) there means the engine never completed:
+# pass nothing and let concordance record the SKIP. Gate stays java==rust.
+CPP_VCF=""
+if [ "${CPP_SKIP:-0}" = "1" ] || [ "${CPP_SKIP:-0}" = "true" ]; then
+  echo "CPP: SKIP: disabled via CPP_SKIP=1"
+elif [ -s "$OUTDIR/cmp/cpp.vcf" ] && ! grep -q "^CPP: SKIP" "$OUTDIR/cmp/compare_cpp.txt" 2>/dev/null; then
+  CPP_VCF="$OUTDIR/cmp/cpp.vcf"
+else
+  echo "CPP: SKIP: no completed cpp.vcf from Step 1 (see $OUTDIR/cmp/compare_cpp.txt)"
+fi
 EST_MIN=10 bash harness/courtesy.sh bash harness/concordance_germline.sh \
   hg002-truth \
   "$OUTDIR/cmp/java.vcf" \
@@ -60,7 +72,7 @@ EST_MIN=10 bash harness/courtesy.sh bash harness/concordance_germline.sh \
   "$OUTDIR/eval.bed" \
   "$REF_SDF" \
   "$OUTDIR/truth" \
-  HG002
+  HG002 "$CPP_VCF"
 
 echo "HG002 Truth Concordance: EQUAL"
 echo "HG002 first-class validation run completed successfully."

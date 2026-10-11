@@ -84,6 +84,18 @@ echo "  Calling variants (Oracle & Rust)..."
 bash "$ROOT_DIR/harness/run_oracle.sh" "$FA_GIAB" "$BAM_HG005" "$CACHE_DIR/hg005_eval.bed" "$TMPDIR/hg005_java.vcf" "HG005" -z -th "$THREADS" -f 0.05 2>/dev/null
 "$ROOT_DIR/target/release/vardictrust" -G "$FA_GIAB" -N "HG005" -b "$BAM_HG005" -c 1 -S 2 -E 3 -g 4 -z -th "$THREADS" -f 0.05 "$CACHE_DIR/hg005_eval.bed" > "$TMPDIR/hg005_rust.vcf" 2>/dev/null
 
+# Third arm: vardictcpp (advisory only — same flags as the gate arms; a missing
+# pin or engine failure degrades to a loud SKIP and the gate below never sees it).
+CPP_HG005="$TMPDIR/hg005_cpp.vcf"
+if [ "${CPP_SKIP:-0}" = "1" ] || [ "${CPP_SKIP:-0}" = "true" ]; then
+  echo "  CPP: SKIP: disabled via CPP_SKIP=1"; CPP_HG005=""
+elif ! bash "$ROOT_DIR/harness/run_cpp.sh" "$FA_GIAB" "$BAM_HG005" "$CACHE_DIR/hg005_eval.bed" "$CPP_HG005" "HG005" -z -th "$THREADS" -f 0.05 2>"$TMPDIR/hg005_cpp.err"; then
+  cpp_rc=$?
+  if [ "$cpp_rc" -eq 3 ]; then echo "  CPP: SKIP: $(head -1 "$TMPDIR/hg005_cpp.err")";
+  else echo "  CPP: SKIP: cpp engine failure (exit $cpp_rc)"; fi
+  CPP_HG005=""
+fi
+
 echo "  Verifying live oracle parity..."
 python3 "$ROOT_DIR/harness/compare_vcf.py" --strict-bytes "$TMPDIR/hg005_java.vcf" "$TMPDIR/hg005_rust.vcf" --eps 1e-6 >/dev/null
 
@@ -91,7 +103,7 @@ echo "  Running rtg vcfeval concordance..."
 bash "$ROOT_DIR/harness/concordance_germline.sh" "hg005-truth" \
   "$TMPDIR/hg005_java.vcf" "$TMPDIR/hg005_rust.vcf" \
   "$CACHE_DIR/hg005_truth.vcf.gz" "$CACHE_DIR/hg005_eval.bed" \
-  "$SDF_GIAB" "$OUT_BASE/hg005" "HG005"
+  "$SDF_GIAB" "$OUT_BASE/hg005" "HG005" "$CPP_HG005"
 
 # -----------------------------------------------------------------------------
 # 2. NIST GIAB NA24385 b37 (Ashkenazi Son Deep WGS, GRCh37/b37)
@@ -107,6 +119,17 @@ echo "  Calling variants (Oracle & Rust, -N HG002)..."
 bash "$ROOT_DIR/harness/run_oracle.sh" "$FA_B37" "$BAM_NA24385" "$CACHE_DIR/na24385_eval.bed" "$TMPDIR/na24385_java.vcf" "HG002" -z -th "$THREADS" -f 0.001 2>/dev/null
 "$ROOT_DIR/target/release/vardictrust" -G "$FA_B37" -N "HG002" -b "$BAM_NA24385" -c 1 -S 2 -E 3 -g 4 -z -th "$THREADS" -f 0.001 "$CACHE_DIR/na24385_eval.bed" > "$TMPDIR/na24385_rust.vcf" 2>/dev/null
 
+# Third arm: vardictcpp (advisory only — same flags as the gate arms).
+CPP_NA24385="$TMPDIR/na24385_cpp.vcf"
+if [ "${CPP_SKIP:-0}" = "1" ] || [ "${CPP_SKIP:-0}" = "true" ]; then
+  echo "  CPP: SKIP: disabled via CPP_SKIP=1"; CPP_NA24385=""
+elif ! bash "$ROOT_DIR/harness/run_cpp.sh" "$FA_B37" "$BAM_NA24385" "$CACHE_DIR/na24385_eval.bed" "$CPP_NA24385" "HG002" -z -th "$THREADS" -f 0.001 2>"$TMPDIR/na24385_cpp.err"; then
+  cpp_rc=$?
+  if [ "$cpp_rc" -eq 3 ]; then echo "  CPP: SKIP: $(head -1 "$TMPDIR/na24385_cpp.err")";
+  else echo "  CPP: SKIP: cpp engine failure (exit $cpp_rc)"; fi
+  CPP_NA24385=""
+fi
+
 echo "  Verifying live oracle parity..."
 python3 "$ROOT_DIR/harness/compare_vcf.py" --strict-bytes "$TMPDIR/na24385_java.vcf" "$TMPDIR/na24385_rust.vcf" --eps 1e-6 >/dev/null
 
@@ -114,7 +137,7 @@ echo "  Running rtg vcfeval concordance..."
 bash "$ROOT_DIR/harness/concordance_germline.sh" "na24385-b37-truth" \
   "$TMPDIR/na24385_java.vcf" "$TMPDIR/na24385_rust.vcf" \
   "$CACHE_DIR/na24385_b37_truth.vcf.gz" "$CACHE_DIR/na24385_eval.bed" \
-  "$SDF_B37" "$OUT_BASE/na24385" "HG002"
+  "$SDF_B37" "$OUT_BASE/na24385" "HG002" "$CPP_NA24385"
 
 echo "================================================================================"
 echo " All Expanded Multi-Modal Truth Benchmarks Verified: EQUAL (0 site diffs)"
