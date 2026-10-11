@@ -28,6 +28,7 @@ updates:
           - "regex*"
           - "tempfile*"
           - "criterion*"
+          - "indexmap*"
 
   # Maintain GitHub Actions workflows
   - package-ecosystem: "github-actions"
