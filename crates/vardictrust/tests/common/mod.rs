@@ -29,17 +29,19 @@ pub fn indexed_bam(path: &Path, chr: &str, len: usize, recs: &[RecordBuf]) -> io
         .build()
         .unwrap();
     let hd = Header::builder().add_reference_sequence(chr, rs).build();
-    let bgzf = noodles::bgzf::Writer::new(std::fs::File::create(path)?);
+    let bgzf = noodles::bgzf::io::Writer::new(std::fs::File::create(path)?);
     let mut w = noodles::bam::io::Writer::from(bgzf);
     w.write_alignment_header(&hd)?;
-    let mut indexer = Indexer::<LinearIndex>::new(14, 5);
+    let mut indexer = Indexer::<LinearIndex>::new(14, 5).expect("valid index parameters");
     for rec in recs {
         let start = w.get_ref().virtual_position();
         w.write_alignment_record(&hd, rec)?;
         let end = w.get_ref().virtual_position();
         let s = rec.alignment_start().expect("aligned record");
         let e = Position::new(s.get() + rec.cigar().alignment_span()).unwrap_or(Position::MIN);
-        indexer.add_record(Some((0, s, e, true)), Chunk::new(start, end))?;
+        indexer
+            .add_record(Some((0, s, e, true)), Chunk::new(start, end))
+            .map_err(io::Error::other)?;
     }
     w.try_finish()?;
     let mut bai_path = PathBuf::from(path);
