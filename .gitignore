@@ -39,16 +39,7 @@
 __pycache__/
 *.pyc
 
-
-.qoder/settings.local.json
-
 # Committed micro fixtures are tiny (<10 KB total), self-contained test data
 # (see golden/PROVENANCE) — the global *.bam/*.bai exclusions do not apply here.
 !fixtures/
 !fixtures/**
-
-# Fuzzing artifacts (seeds in fuzz/seeds ARE committed)
-fuzz/target/
-fuzz/corpus/
-fuzz/artifacts/
-fuzz/coverage/

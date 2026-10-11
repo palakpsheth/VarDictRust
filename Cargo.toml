@@ -1,6 +1,5 @@
 [workspace]
 members = ["crates/vardict-core", "crates/vardict-cli"]
-exclude = ["fuzz"]
 resolver = "2"
 
 [workspace.package]
@@ -29,11 +28,13 @@ tempfile = "3"
 criterion = "0.5"
 
 [profile.release]
-lto = "thin"
+opt-level = 3
+lto = "fat"
 codegen-units = 1
 panic = "abort"
+strip = true
 
 # The profile that 'dist' will build with
 [profile.dist]
 inherits = "release"
-lto = "thin"
+lto = "fat"

@@ -231,9 +231,3 @@ Somatic STATUS is computed in **Java** (`SomaticPostProcessModule.determinateTyp
 ## 18. Commits
 Atomic commits per task: `git add -A && git commit -m "Txxx: <short desc>"`. Branch off `main`; open PRs via `gh`.
 Never commit secrets, **data** (BAM/CRAM/FASTA/VCF beyond the tiny `golden/` fixtures), `target/`, or conda envs — see the `.gitignore` in `PLAN.md` Appendix B0 (a single WGS BAM can exceed 150 GB). **Do** commit `Cargo.lock` (this is an application workspace). MIT-licensed, open-source project. No `Co-Authored-By` commit trailers per user directive (A10); AI involvement is disclosed transparently in `README.md` and `CITATION.cff`.
-
-<!-- SPECKIT START -->
-For additional context about technologies to be used, project structure,
-shell commands, and other important information, read the current plan
-at specs/001-vardict-rust-port/plan.md
-<!-- SPECKIT END -->

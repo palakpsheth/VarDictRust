@@ -14,7 +14,7 @@
 
 **The outcome we want.** One Rust binary that does everything the 3 stages do in a single in-memory pass, **scales to modern high-depth WGS**, never falls over, and produces **output equivalent to VarDictJava v1.8.3 on valid inputs** (the prime directive; §3). v1.0 is "VarDictJava that doesn't crash, reads CRAM, and scales" — a pure, fully-validatable win.
 
-**What prompted it.** A strategic blueprint ([Strategic Blueprint for the Rust Modernization of VarDictJava.docx](Strategic%20Blueprint%20for%20the%20Rust%20Modernization%20of%20VarDictJava.docx)) proposed this citing *rewrites.bio*. This plan operationalizes it **after independently verifying every claim against primary sources, the local v1.8.3 source, and all 289 GitHub issues** — correcting the places where the blueprint *and* our own first-pass reading were wrong (§7).
+**What prompted it.** A strategic blueprint (*Strategic Blueprint for the Rust Modernization of VarDictJava*) proposed this citing *rewrites.bio*. This plan operationalizes it **after independently verifying every claim against primary sources, the local v1.8.3 source, and all 289 GitHub issues** — correcting the places where the blueprint *and* our own first-pass reading were wrong (§7).
 
 **Local assets (verified).** `./VarDictJava/` (v1.8.3, `0886261`, 60 files/16,399 LOC); `./VarDictJava/VarDict/` (Perl/R submodule, **checked out**, pinned `009e017`); `./VarDictJava/testdata/integrationtestcases/` (**94** cases incl. the `TwoDelsInsStringBoundError` crash case); `./VarDictJava/tests/integration/` (`expected/vardict.{simple,paired}.vcf` + `raw_input/raw.vardict.{simple,paired}.var`). Remote: `git@github.com:palakpsheth/VarDictRust.git` (empty).
 

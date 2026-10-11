@@ -53,7 +53,7 @@ Peak RSS via `/usr/bin/time -v`, release binary, one NA24385 chr20 slice:
 | 4 | 435,532 KB (~425 MB) | 3.33 s |
 | 20 (all cores) | 435,908 KB (~425 MB) | 3.39 s |
 
-Plan target (`specs/001-vardict-rust-port/plan.md`): peak memory **< 4 GB per
+Plan target (`PLAN.md`): peak memory **< 4 GB per
 thread** — observed ~425 MB total regardless of thread count, i.e. per-thread
 footprint stays far under target. RSS is flat from 1→20 threads, consistent
 with §10 bounded-memory tiling (per-tile state only) at this depth; VCF output
