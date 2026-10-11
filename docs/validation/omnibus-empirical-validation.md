@@ -38,7 +38,7 @@ This document serves as the **Omnibus Master Empirical Validation Report** for t
 | **8** | **Extended Modalities** | 9 Operational Modes | chr8, chr20 (hg19, hg38, GRCh38)| 847 | **MATCH (0 diffs, 9/9)** | **N/A (Flag Parity)** |
 | **9** | **Multi-Slice Suite** | 6 Public Cohorts | 18 slices, 9 chrs (GRCh38, b37)| 1,129 | **MATCH (0 diffs, 18/18)**| **N/A (Multi-Cohort)**|
 
-Every result reported in this omnibus report is backed by a cryptographically fingerprinted, machine-readable evidence artifact in [`benchmarks/evidence/`](../../benchmarks/evidence/) validated under release engine fingerprint `7e9b1be766f73b17`.
+Every result reported in this omnibus report is backed by a cryptographically fingerprinted, machine-readable evidence artifact in [`benchmarks/evidence/`](../../benchmarks/evidence/) validated under release engine fingerprint `7e9b1be766f73b17`. For the complete software testing hierarchy, Cargo unit test breakdown, developer pre-commit hooks, and CI/CD audit, see the companion technical reference [`docs/testing/test-matrix-and-ci-audit.md`](../testing/test-matrix-and-ci-audit.md).
 
 ---
 
