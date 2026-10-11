@@ -46,6 +46,9 @@ if command -v gitleaks >/dev/null 2>&1; then
   gitleaks detect --source . -v
 elif [ -x /home/palak/miniconda3/envs/g4-tools/bin/gitleaks ]; then
   /home/palak/miniconda3/envs/g4-tools/bin/gitleaks detect --source . -v
+else
+  echo "ERROR: gitleaks scanner not found. Install gitleaks to satisfy PR security gate." >&2
+  exit 1
 fi
 
 echo "=== ALL PR REGRESSION & PERFORMANCE GATES PASSED ==="

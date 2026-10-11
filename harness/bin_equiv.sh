@@ -7,15 +7,11 @@ set -euo pipefail
 GNU_BIN="target/release/vardictrust"
 MUSL_BIN="target/x86_64-unknown-linux-musl/release/vardictrust"
 
-if [ ! -f "$GNU_BIN" ]; then
-  echo "Building GNU binary..."
-  cargo build --release -p vardictrust
-fi
+echo "Building GNU binary..."
+cargo build --release -p vardictrust
 
-if [ ! -f "$MUSL_BIN" ]; then
-  echo "Building MUSL binary..."
-  cargo build --release --target x86_64-unknown-linux-musl -p vardictrust
-fi
+echo "Building MUSL binary..."
+cargo build --release --target x86_64-unknown-linux-musl -p vardictrust
 
 echo "=== 1. Verifying MUSL Static Linkage ==="
 file_info=$(file "$MUSL_BIN")

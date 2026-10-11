@@ -42,7 +42,7 @@ fi
 
 # 3. Dual-Engine Parity Check (Tier-2)
 echo "=== Step 1: Running dual-engine parity on HG002 chr20:10M-30M ==="
-EST_MIN=15 bash harness/courtesy.sh bash harness/compare.sh \
+KEEP_DIR="$OUTDIR/cmp" EST_MIN=15 bash harness/courtesy.sh bash harness/compare.sh \
   "$REF_FASTA" \
   "$OUTDIR/HG002.chr20.bam" \
   "$OUTDIR/eval.bed" \
