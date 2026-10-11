@@ -4,7 +4,7 @@
 //! germline variant caller for next-generation sequencing data.
 //!
 //! This crate contains all variant-calling logic. The binary crate
-//! (`vardict-cli`) provides the command-line interface.
+//! (`vardictrust`) provides the command-line interface.
 //!
 //! # Safety
 //! This crate forbids unsafe code: `#![forbid(unsafe_code)]`.

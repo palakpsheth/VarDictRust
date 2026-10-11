@@ -1,4 +1,4 @@
-//! Shared fixture builders for the vardict-cli integration tests (generated
+//! Shared fixture builders for the vardictrust integration tests (generated
 //! in-test: no committed data); consumed by robustness.rs and
 //! thread_determinism.rs.
 
