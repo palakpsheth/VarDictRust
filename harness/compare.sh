@@ -42,12 +42,13 @@ elif LC_ALL=C /usr/bin/time -v -o "$OUT/cpp.time" timeout "$TO" \
   if [ ! -s "$OUT/cpp.vcf" ]; then
     grep '^#' "$OUT/java.vcf" > "$OUT/cpp.vcf" || printf '##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n' > "$OUT/cpp.vcf"
   fi
-  cpp_rc=0
-  { python3 harness/compare_vcf.py $STRICT_ARG --min-variants "${MIN_VARIANTS:-0}" "$OUT/java.vcf" "$OUT/cpp.vcf";
-    echo "--- cpp vs rust ---";
-    python3 harness/compare_vcf.py $STRICT_ARG --min-variants "${MIN_VARIANTS:-0}" "$OUT/cpp.vcf" "$OUT/rust.vcf"; } \
-    > "$OUT/compare_cpp.txt" 2>&1 || cpp_rc=$?
-  if [ "$cpp_rc" -eq 0 ]; then cpp_line="CPP: MATCH"; else cpp_line="CPP: MISMATCH"; fi
+  rc1=0; rc2=0
+  python3 harness/compare_vcf.py $STRICT_ARG --min-variants "${MIN_VARIANTS:-0}" "$OUT/java.vcf" "$OUT/cpp.vcf" \
+    > "$OUT/compare_cpp.txt" 2>&1 || rc1=$?
+  echo "--- cpp vs rust ---" >> "$OUT/compare_cpp.txt"
+  python3 harness/compare_vcf.py $STRICT_ARG --min-variants "${MIN_VARIANTS:-0}" "$OUT/cpp.vcf" "$OUT/rust.vcf" \
+    >> "$OUT/compare_cpp.txt" 2>&1 || rc2=$?
+  if [ "$rc1" -eq 0 ] && [ "$rc2" -eq 0 ]; then cpp_line="CPP: MATCH"; else cpp_line="CPP: MISMATCH"; fi
   echo "$cpp_line" >> "$OUT/compare_cpp.txt"
 else
   cpp_exit=$?
