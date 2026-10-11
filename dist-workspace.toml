@@ -17,3 +17,5 @@ install-path = "CARGO_HOME"
 install-updater = false
 # Enable Sigstore SLSA build provenance attestations
 github-attestations = true
+# Allow customized CI workflow files
+allow-dirty = ["ci"]
