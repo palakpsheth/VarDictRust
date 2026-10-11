@@ -210,7 +210,7 @@ bash harness/slice.sh <in.bam> <chr:start-end> <out.bam>
 4. For any dependency (`Cargo.lock`) or engine code changes merged to `main`, run `bash harness/recertify.sh` to re-certify live parity and regenerate evidence.
 5. The commit/PR states: **"validated vs VarDictJava 1.8.3, dataset `<name>`, cmd `<…>`"**.
 6. `gitleaks protect --staged` (commit) / `gitleaks detect --source .` (push) clean.
-7. The PR body completes `.github/pull_request_template.md`; every engine-gate box is either run or marked **N/A with a one-line justification**. N/A is allowed only when the diff touches none of `*.rs`, `Cargo.toml`/`Cargo.lock`, `crates/`, `harness/` (the pre-push hook's code-change filter).
+7. The PR body completes `.github/pull_request_template.md`, which is authoritative on what may be skipped: engine-gate boxes are either run or marked **N/A with a one-line justification** under the template's docs/infra-only note (the same code-change filter the pre-push hook enforces).
 
 ## 16. Repo layout
 ```
