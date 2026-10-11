@@ -39,7 +39,8 @@ jobs:
         run: |
           bash harness/run_integration.sh 2>&1 | tee integration.log
           grep -qx 'PASS: 91  XFAIL: 1  FAIL: 0  SKIP: 0  XPASS: 0' integration.log
-          grep -qxF 'XFAIL: Simple;hard_clip_case.fa;hard_clip_next_to_del_test2.bam;test;6434-6564;-f 0.0 -p -r 1.txt (UB-4 upstream fixture defect)' integration.log
+          [ "$(grep -c '^XFAIL: ' integration.log)" -eq 1 ]
+          grep -qxF 'XFAIL: Simple;hard_clip_case.fa;hard_clip_next_to_del_test2.bam;test;6434-6564;-f 0.0 -p -r 1.txt (UB-4 upstream fixture defect, verified against live-oracle signature)' integration.log
       - name: Crash Robustness Suite
         run: cargo test -p vardictrust --test robustness
 

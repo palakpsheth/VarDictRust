@@ -1,6 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+export LC_ALL=C
+export LANG=C
+
+sha256_hash() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum | awk '{print $1}'
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 | awk '{print $1}'
+    else
+        python3 -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())'
+    fi
+}
+
 # Run VarDictRust against VarDictJava integration test cases.
 # Usage: run_integration.sh [test_case_file ...]
 # If no files given, runs all Simple mode tests.
@@ -24,15 +37,26 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 XFAIL_REGISTRY="$SCRIPT_DIR/integration_xfail.tsv"
 declare -A XFAIL_CASES=()
 declare -A XFAIL_ISSUES=()
+declare -A XFAIL_SHAS=()
 
 if [[ -f "$XFAIL_REGISTRY" ]]; then
-    while IFS=$'\t' read -r fixture classification issue_id target_fix rationale || [[ -n "$fixture" ]]; do
+    while IFS=$'\t' read -r fixture classification issue_id target_fix expected_sha256 rationale || [[ -n "$fixture" ]]; do
         fixture="${fixture//$'\r'/}"
         fixture="${fixture#"${fixture%%[![:space:]]*}"}"
         fixture="${fixture%"${fixture##*[![:space:]]}"}"
         classification="${classification//$'\r'/}"
         issue_id="${issue_id//$'\r'/}"
+        expected_sha256="${expected_sha256//$'\r'/}"
+        expected_sha256="${expected_sha256#"${expected_sha256%%[![:space:]]*}"}"
+        expected_sha256="${expected_sha256%"${expected_sha256##*[![:space:]]}"}"
         [[ -z "$fixture" || "$fixture" =~ ^# ]] && continue
+        if [[ "$classification" == "XFAIL" ]]; then
+            if [[ ! "$expected_sha256" =~ ^[0-9a-f]{64}$ ]]; then
+                echo "FATAL: $XFAIL_REGISTRY: entry '$fixture' missing valid 64-char hex expected_sha256 (got '$expected_sha256')" >&2
+                exit 1
+            fi
+            XFAIL_SHAS["$fixture"]="$expected_sha256"
+        fi
         XFAIL_CASES["$fixture"]="$classification"
         XFAIL_ISSUES["$fixture"]="$issue_id"
     done < "$XFAIL_REGISTRY"
@@ -169,15 +193,17 @@ run_test() {
 
     local is_xfail=0
     local issue=""
+    local expected_sha=""
     if [[ -v XFAIL_CASES["$basename_file"] ]]; then
         is_xfail=1
         issue="${XFAIL_ISSUES[$basename_file]:-defect}"
+        expected_sha="${XFAIL_SHAS[$basename_file]:-}"
     fi
 
     # Compare
     local sorted_actual sorted_expected
-    sorted_actual=$(echo "$actual" | sort)
-    sorted_expected=$(echo "$expected" | sort)
+    sorted_actual=$(printf '%s\n' "$actual" | LC_ALL=C sort)
+    sorted_expected=$(printf '%s\n' "$expected" | LC_ALL=C sort)
     if [[ "$sorted_actual" == "$sorted_expected" ]]; then
         if [[ $is_xfail -eq 1 ]]; then
             echo "XPASS: $basename_file (unexpected pass for registered $issue)"
@@ -189,8 +215,20 @@ run_test() {
         fi
     else
         if [[ $is_xfail -eq 1 ]]; then
-            echo "XFAIL: $basename_file ($issue upstream fixture defect)"
-            XFAIL=$((XFAIL+1))
+            local actual_sha256
+            actual_sha256=$(printf '%s\n' "$sorted_actual" | sha256_hash)
+            if [[ -n "$expected_sha" && "$actual_sha256" == "$expected_sha" ]]; then
+                echo "XFAIL: $basename_file ($issue upstream fixture defect, verified against live-oracle signature)"
+                XFAIL=$((XFAIL+1))
+            else
+                echo "FAIL/REGRESSION: $basename_file ($issue actual sha256 $actual_sha256 != expected $expected_sha)"
+                FAIL=$((FAIL+1))
+                ERRORS+=("REGRESSION: $basename_file (actual sha256 $actual_sha256 != expected $expected_sha)")
+                
+                # Show diff (first 20 lines)
+                diff <(echo "$sorted_expected") <(echo "$sorted_actual") | head -40 || true
+                echo "---"
+            fi
         else
             echo "MISMATCH: $basename_file"
             FAIL=$((FAIL+1))

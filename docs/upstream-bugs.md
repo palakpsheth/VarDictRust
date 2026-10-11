@@ -137,7 +137,12 @@ single fasta satisfies both.
 **Our stance:** nothing to replicate in an engine — this is an upstream test-data /
 generator defect. We keep the corpus case as a documented permanent known non-bug
 (DIVERGENCES.md "Known non-bugs") and validate the underlying behavior against the
-live oracle instead (live oracle differential validation and replication evidence). Provenance note: the
+live oracle instead. In `harness/integration_xfail.tsv`, this case is tracked as `XFAIL`
+pinned to live-oracle SHA-256 `96abe5c4bb6e3ff4572e361fddae1cd61354f102551f494488456a96d17829b2`.
+Both live VarDictJava 1.8.3 and VarDictRust emit identical 7 rows under the canonical FASTA
+(4 complex indels, 1 reference pileup call, and 2 upstream quirk rows UB-1 and UB-2).
+`harness/run_integration.sh` verifies this exact SHA-256 signature, treating any deviation
+as `FAIL/REGRESSION` and unexpected fixture pass as `XPASS`. Provenance note: the
 "repository's converter script" above was our unbundled copy
 `harness/convert_fastas.py` (removed during codebase audit), whose reconstruction of the
 CSV chunks resolved overlaps last-write-wins.

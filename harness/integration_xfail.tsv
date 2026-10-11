@@ -1,2 +1,2 @@
-# fixture_file	classification	issue_id	target_fix	rationale
-Simple;hard_clip_case.fa;hard_clip_next_to_del_test2.bam;test;6434-6564;-f 0.0 -p -r 1.txt	XFAIL	UB-4	None (Class D Upstream Defect)	Upstream fixture defect: checked-in .txt expects 33 rows (from first-wins chunk); live VarDictJava 1.8.3 outputs 7 rows (under canonical last-wins FASTA). VarDictRust matches live VarDictJava 1.8.3 100% (7/7 rows, 0 diffs).
+# fixture_file	classification	issue_id	target_fix	expected_sha256	rationale
+Simple;hard_clip_case.fa;hard_clip_next_to_del_test2.bam;test;6434-6564;-f 0.0 -p -r 1.txt	XFAIL	UB-4	None (Class D Upstream Defect)	96abe5c4bb6e3ff4572e361fddae1cd61354f102551f494488456a96d17829b2	Upstream fixture defect: checked-in .txt expects 33 rows (from first-wins chunk); live VarDictJava 1.8.3 outputs 7 rows (under canonical last-wins FASTA). VarDictRust matches live VarDictJava 1.8.3 100% (7/7 rows, 0 diffs).

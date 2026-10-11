@@ -18,12 +18,14 @@ cargo test -p vardictrust --test robustness
 # Stage 3: Tier-1 Upstream Integration Corpus (92 fixtures: 91 PASS / 1 XFAIL)
 echo "[3/6] Running Tier-1 integration regression corpus..."
 mkdir -p scratch
-bash harness/run_integration.sh > scratch/pr_integration.log 2>&1
-grep -qx 'PASS: 91  XFAIL: 1  FAIL: 0  SKIP: 0  XPASS: 0' scratch/pr_integration.log \
+status=0
+bash harness/run_integration.sh > scratch/pr_integration.log 2>&1 || status=$?
+[ "$status" -eq 0 ] \
+  && grep -qx 'PASS: 91  XFAIL: 1  FAIL: 0  SKIP: 0  XPASS: 0' scratch/pr_integration.log \
   && [ "$(grep -c '^XFAIL: ' scratch/pr_integration.log)" -eq 1 ] \
-  && grep -qxF 'XFAIL: Simple;hard_clip_case.fa;hard_clip_next_to_del_test2.bam;test;6434-6564;-f 0.0 -p -r 1.txt (UB-4 upstream fixture defect)' scratch/pr_integration.log \
+  && grep -qxF 'XFAIL: Simple;hard_clip_case.fa;hard_clip_next_to_del_test2.bam;test;6434-6564;-f 0.0 -p -r 1.txt (UB-4 upstream fixture defect, verified against live-oracle signature)' scratch/pr_integration.log \
   || {
-    echo "PR Regression Failure: Tier-1 corpus did not match expected 91 PASS / 1 XFAIL signature!"
+    echo "PR Regression Failure: Tier-1 corpus did not match expected 91 PASS / 1 XFAIL signature (exit status: $status)!"
     cat scratch/pr_integration.log
     exit 1
   }
