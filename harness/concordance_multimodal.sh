@@ -89,7 +89,9 @@ bash "$ROOT_DIR/harness/run_oracle.sh" "$FA_GIAB" "$BAM_HG005" "$CACHE_DIR/hg005
 CPP_HG005="$TMPDIR/hg005_cpp.vcf"
 if [ "${CPP_SKIP:-0}" = "1" ] || [ "${CPP_SKIP:-0}" = "true" ]; then
   echo "  CPP: SKIP: disabled via CPP_SKIP=1"; CPP_HG005=""
-elif ! bash "$ROOT_DIR/harness/run_cpp.sh" "$FA_GIAB" "$BAM_HG005" "$CACHE_DIR/hg005_eval.bed" "$CPP_HG005" "HG005" -z -th "$THREADS" -f 0.05 2>"$TMPDIR/hg005_cpp.err"; then
+elif bash "$ROOT_DIR/harness/run_cpp.sh" "$FA_GIAB" "$BAM_HG005" "$CACHE_DIR/hg005_eval.bed" "$CPP_HG005" "HG005" -z -th "$THREADS" -f 0.05 2>"$TMPDIR/hg005_cpp.err"; then
+  :
+else
   cpp_rc=$?
   if [ "$cpp_rc" -eq 3 ]; then echo "  CPP: SKIP: $(head -1 "$TMPDIR/hg005_cpp.err")";
   else echo "  CPP: SKIP: cpp engine failure (exit $cpp_rc)"; fi
@@ -123,7 +125,9 @@ bash "$ROOT_DIR/harness/run_oracle.sh" "$FA_B37" "$BAM_NA24385" "$CACHE_DIR/na24
 CPP_NA24385="$TMPDIR/na24385_cpp.vcf"
 if [ "${CPP_SKIP:-0}" = "1" ] || [ "${CPP_SKIP:-0}" = "true" ]; then
   echo "  CPP: SKIP: disabled via CPP_SKIP=1"; CPP_NA24385=""
-elif ! bash "$ROOT_DIR/harness/run_cpp.sh" "$FA_B37" "$BAM_NA24385" "$CACHE_DIR/na24385_eval.bed" "$CPP_NA24385" "HG002" -z -th "$THREADS" -f 0.001 2>"$TMPDIR/na24385_cpp.err"; then
+elif bash "$ROOT_DIR/harness/run_cpp.sh" "$FA_B37" "$BAM_NA24385" "$CACHE_DIR/na24385_eval.bed" "$CPP_NA24385" "HG002" -z -th "$THREADS" -f 0.001 2>"$TMPDIR/na24385_cpp.err"; then
+  :
+else
   cpp_rc=$?
   if [ "$cpp_rc" -eq 3 ]; then echo "  CPP: SKIP: $(head -1 "$TMPDIR/na24385_cpp.err")";
   else echo "  CPP: SKIP: cpp engine failure (exit $cpp_rc)"; fi
