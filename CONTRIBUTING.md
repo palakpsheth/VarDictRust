@@ -168,7 +168,9 @@ This suite automatically verifies:
 5. 4-Target performance budget (`harness/perf_budget.py`).
 6. Staged and repository secret scanning with `gitleaks`.
 
-*For the complete catalog of all 8 testing tiers, exact module breakdowns, and CI/CD workflow mechanics, see [`docs/testing/test-matrix-and-ci-audit.md`](docs/testing/test-matrix-and-ci-audit.md).*
+7. Automated harness self-test suite (`bash harness/run_self_tests.sh`) running all 13 diagnostic test scripts in $<10\text{s}$.
+
+*For the complete catalog of all 8 testing tiers, push-button tier reproduction commands, and the dataset provenance catalog, see the Master Reproducibility Runbook in [`docs/testing/test-matrix-and-ci-audit.md`](docs/testing/test-matrix-and-ci-audit.md).*
 
 ---
 

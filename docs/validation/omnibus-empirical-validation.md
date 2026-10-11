@@ -67,7 +67,7 @@ flowchart TD
         RTG2 --> MET_R["Candidate Metrics\n(TP, FP, FN, F1, P, R)"]
         MET_J --> DIFF{"diff tp.sites fp.sites fn.sites"}
         MET_R --> DIFF
-        DIFF -->|Identical site lists| EQUAL["PASS: Truth Concordance Equality\n(3/3 EQUAL, 0 site diffs)"]
+        DIFF -->|Identical site lists| EQUAL["PASS: Truth Concordance Equality\n(5/5 EQUAL, 0 site diffs)"]
     end
 ```
 
@@ -77,7 +77,7 @@ flowchart TD
 | **Target Comparator** | VarDictJava v1.8.3 (`0886261` / `009e017`) live oracle & intermediate tables | NIST GIAB v4.2.1 / FDA SEQC2 v1.2.1 / NIST Draft v0.3 |
 | **Evaluation Tool** | `harness/compare.sh` (`compare_var.py`, `compare_vcf.py --strict-bytes`) | Real Time Genomics `rtg vcfeval` (`--squash-ploidy`) |
 | **Pass Metric** | Exact variant set count, float tolerance $\varepsilon = 10^{-6}$, 0 diffs | VarDictJava vs VarDictRust metric equality ($F_1, P, R$ $\Delta = 0$) & bitwise identical site lists |
-| **Release Outcome** | **100% MATCH across all 9 Pillars** (exome, slices, WGS, amplicons, modalities) | **3/3 EQUAL** (0 diffs in `tp.sites`, `fp.sites`, `fn.sites`) |
+| **Release Outcome** | **100% MATCH across all 9 Pillars** (exome, slices, WGS, amplicons, modalities) | **5/5 EQUAL** (0 diffs in `tp.sites`, `fp.sites`, `fn.sites` across HG002, SEQC2, HG008, HG005, NA24385 b37) |
 
 ---
 

@@ -1,0 +1,80 @@
+{
+  "cmd": [
+    "/mnt/media_backups/VarDictRust/harness/concordance_germline.sh",
+    "na24385-b37-truth",
+    "/tmp/vardict_multimodal_concordance_jvgEKp/na24385_java.vcf",
+    "/tmp/vardict_multimodal_concordance_jvgEKp/na24385_rust.vcf",
+    "/mnt/media_backups/VarDictRust/scratch/g4/truth_cache/na24385_b37_truth.vcf.gz",
+    "/mnt/media_backups/VarDictRust/scratch/g4/truth_cache/na24385_eval.bed",
+    "/mnt/media_backups/VarDictRust/scratch/g4/ref/grch37.sdf",
+    "/mnt/media_backups/VarDictRust/scratch/g4/concordance_multimodal/na24385",
+    "HG002"
+  ],
+  "compare_head": [],
+  "date": "2026-10-10T18:09:04-07:00",
+  "extra": {
+    "java": {
+      "f_measure": 0.1099,
+      "fn": 0,
+      "fp": 81,
+      "none": {
+        "f_measure": 0.1099,
+        "fn": 0,
+        "fp": 81,
+        "precision": 0.0581,
+        "sensitivity": 1.0,
+        "tp_baseline": 5,
+        "tp_call": 5
+      },
+      "optimal": {
+        "f_measure": 1.0,
+        "fn": 0,
+        "fp": 0,
+        "precision": 1.0,
+        "sensitivity": 1.0,
+        "threshold": 160.0,
+        "tp_baseline": 5,
+        "tp_call": 5
+      },
+      "precision": 0.0581,
+      "sensitivity": 1.0,
+      "tp_baseline": 5,
+      "tp_call": 5
+    },
+    "rust": {
+      "f_measure": 0.1099,
+      "fn": 0,
+      "fp": 81,
+      "none": {
+        "f_measure": 0.1099,
+        "fn": 0,
+        "fp": 81,
+        "precision": 0.0581,
+        "sensitivity": 1.0,
+        "tp_baseline": 5,
+        "tp_call": 5
+      },
+      "optimal": {
+        "f_measure": 1.0,
+        "fn": 0,
+        "fp": 0,
+        "precision": 1.0,
+        "sensitivity": 1.0,
+        "threshold": 160.0,
+        "tp_baseline": 5,
+        "tp_call": 5
+      },
+      "precision": 0.0581,
+      "sensitivity": 1.0,
+      "tp_baseline": 5,
+      "tp_call": 5
+    }
+  },
+  "fingerprint": "7e9b1be766f73b17",
+  "head": "a484c62d1f2641a2c316a6d9eba574a1e63f9b7c",
+  "java_time": null,
+  "n_variants": null,
+  "name": "na24385-b37-truth",
+  "result": "EQUAL",
+  "rust_time": null
+}

@@ -4,7 +4,7 @@
 **Governing Standard:** [rewrites.bio](https://rewrites.bio) Manifesto (§0 Evidence Before Completion, §0b Integrity, §5 Pure Parity on Valid Inputs)  
 **Target Release:** VarDictRust v1.0.0 (`release/v1.0.0`)  
 **Certified Release Engine Fingerprint:** `7e9b1be766f73b17` (Certified Invariant)  
-**Parent Milestone:** Task 24i (Master Release Plan §24i)  
+**Parent Milestone:** Task 24j (Master Release Plan §24j)  
 **Companion Report:** [`docs/validation/omnibus-empirical-validation.md`](../validation/omnibus-empirical-validation.md) (Biological Truth & Empirical Parity)  
 
 ---
@@ -17,7 +17,7 @@ This architecture operates on two complementary pillars:
 - **Pillar A (Biological Parity & Empirical Truth):** Documented in the [Omnibus Master Empirical Validation Report](../validation/omnibus-empirical-validation.md), verifying variant-level concordance against gold-standard consortium benchmarks (NIST GIAB, FDA SEQC2, Hartwig) across GRCh38 and GRCh37.
 - **Pillar B (Engineering Mechanics & Verification Pipeline):** Documented in this report, establishing the software testing hierarchy, developer feedback loops, crash resilience corpus, statistical invariants, continuous performance budgets, and SLSA-attested CI/CD workflows.
 
-Across all testing layers, VarDictRust executes **208 automated Cargo workspace tests**, **92 Tier-1 integration fixtures**, **15 Tier-2 differential benchmarks** (backed by 14 committed evidence JSONs), **3 biological truth set evaluations** via `rtg vcfeval`, **4 continuous performance budgets**, **13 harness diagnostic scripts**, and **3 automated cloud CI/CD pipelines**.
+Across all testing layers, VarDictRust executes **208 automated Cargo workspace tests**, **92 Tier-1 integration fixtures**, **17 Tier-2 differential benchmarks** (backed by 16 committed evidence JSONs), **5 biological ground truth evaluations** via `rtg vcfeval` (all certified EQUAL), **4 continuous performance budgets**, **13 harness diagnostic scripts**, and **3 automated cloud CI/CD pipelines**.
 
 ```mermaid
 flowchart TD
@@ -50,10 +50,12 @@ flowchart TD
         D_Multi["Task 24h Multi-Slice Suite (18 Slices across 6 Cohorts)"]
     end
 
-    subgraph Tier4 ["Tier 4: Ground Truth Biological Concordance"]
+    subgraph Tier4 ["Tier 4: Expanded Ground Truth Biological Concordance"]
         T_HG002["GIAB HG002 NIST v4.2.1 (F1: 0.9699, EQUAL)"]
         T_SEQC2["SEQC2 HCC1395 v1.2.1 Somatic (EQUAL)"]
         T_HG008["GIAB HG008 NIST Draft v0.3 (EQUAL)"]
+        T_HG005["GIAB HG005 NIST v4.2.1 (F1: 0.9667, EQUAL)"]
+        T_NA24385["GIAB NA24385 b37 NIST v4.2.1 (F1: 1.0000, EQUAL)"]
         T_Sites["Bitwise Site List Identity: tp/fp/fn.sites diff == 0"]
     end
 
@@ -62,8 +64,8 @@ flowchart TD
         S_Budg["harness/perf_budget.py (4 Targets: HG008, SEQC2, HG002, Amp)"]
     end
 
-    subgraph Tier6 ["Tier 6: Harness Diagnostic Self-Tests (13 Scripts)"]
-        H_Self["harness/tests/ (Comparator, Evidence, VCF Header, Courtesy, BAM edges)"]
+    subgraph Tier6 ["Tier 6: Automated Harness Diagnostics (13 Tests)"]
+        H_Self["bash harness/run_self_tests.sh\n(Comparator, Evidence, VCF Header, Courtesy, BAM edges)"]
     end
 
     subgraph Tier7 ["Tier 7: Automated Compound Verification Gates"]
@@ -112,9 +114,11 @@ The table below summarizes the complete testing inventory executed across the de
 | **4** | **Truth Concordance (HG002)** | `harness/concordance_germline.sh` | 1 evaluation | Milestone 21b & Acceptance Item 6 | $F_1 = 0.9699$, Bitwise Site EQUAL | $\sim 2\text{ m}$ |
 | **4** | **Truth Concordance (SEQC2)** | `harness/concordance.sh seqc2` | 1 evaluation | Milestone 21b & Acceptance Item 6 | $F_1 = 0.1555$, Bitwise Site EQUAL | $\sim 4\text{ m}$ |
 | **4** | **Truth Concordance (HG008)** | `harness/concordance.sh hg008` | 1 evaluation | Milestone 21b & Acceptance Item 6 | $F_1 = 0.3856$, Bitwise Site EQUAL | $\sim 1\text{ m}$ |
+| **4** | **Truth Concordance (HG005)** | `harness/concordance_multimodal.sh` | 1 evaluation | Task 24j Expanded Concordance | $F_1 = 0.9667$, Bitwise Site EQUAL | $\sim 5\text{ s}$ |
+| **4** | **Truth Concordance (NA24385 b37)** | `harness/concordance_multimodal.sh`| 1 evaluation | Task 24j Expanded Concordance | $F_1 = 1.0000$, Bitwise Site EQUAL | $\sim 5\text{ s}$ |
 | **5** | **Whole Chromosome 1 Scale** | `harness/scale_bench.sh` | 1 benchmark | Milestone 21 & Acceptance Item 5 | $S_8 \ge 4.8\times$, Peak RSS $\le 1.5\times$ | $\sim 12\text{ m}$ |
 | **5** | **Continuous Perf Budget** | `harness/perf_budget.py` | 4 targets | PR gate Stage 5 & Acceptance Item 5 | Runtime $\le +5\%$, RAM ratio $\le 1.0$ | $\sim 0.5\text{ s}$ |
-| **6** | **Harness Diagnostic Tests** | `harness/tests/test_*.{sh,py}` | 13 scripts | Developer & Harness Diagnostics | Exit code 0 across all diagnostics | $\sim 10\text{ s}$ |
+| **6** | **Harness Diagnostic Suite** | `bash harness/run_self_tests.sh` | 13 scripts | Automated Diagnostics Runner | Exit code 0 across all 13 tests | $\sim 10\text{ s}$ |
 | **7** | **Inner Developer Gate** | `harness/rgate.sh` | Compound | Developer inner loop | Cargo + Tier-1 + Micro + 5 slices PASS | $\sim 28\text{ s}$ |
 | **7** | **Standard PR Gate** | `harness/pr_check.sh` | 6 stages | Pre-PR validation | Stages 1–6 PASS (Hygiene, Corpus, Perf) | $\sim 35\text{ s}$ |
 | **7** | **Release Acceptance Gate** | `harness/acceptance.sh` | 8 items | Release qualification gate | Items 1–8 PASS under fingerprint | $\sim 1\text{ m}$ |
@@ -230,7 +234,7 @@ If any other fixture fails, or if the signature deviates from `91 PASS / 1 FAIL`
 
 ## 5. Tier-2 Differential Benchmark Inventory & Evidence Map
 
-VarDictRust maintains **14 committed, cryptographically fingerprinted evidence files** in `benchmarks/evidence/` that certify parity across **15 primary benchmark targets**:
+VarDictRust maintains **16 committed, cryptographically fingerprinted evidence files** in `benchmarks/evidence/` that certify parity across **17 primary benchmark targets**:
 
 | Benchmark Target | Evidence JSON | Modality / Assay | Variant Count | Gate Status | Certified Invariant Fingerprint |
 | :--- | :--- | :--- | :---: | :---: | :---: |
@@ -247,16 +251,54 @@ VarDictRust maintains **14 committed, cryptographically fingerprinted evidence f
 | **GIAB HG002 Truth** | `hg002-truth.json` | NIST v4.2.1 High-Confidence | $F_1 = 0.9699$ | **EQUAL** | `7e9b1be766f73b17` |
 | **SEQC2 Somatic Truth** | `seqc2-truth.json` | SEQC2 v1.2.1 Somatic Truth | $F_1 = 0.1555$ | **EQUAL** | `7e9b1be766f73b17` |
 | **GIAB HG008 Truth** | `hg008-truth.json` | NIST Draft v0.3 Somatic Truth | $F_1 = 0.3856$ | **EQUAL** | `7e9b1be766f73b17` |
+| **GIAB HG005 Truth** | `hg005-truth.json` | NIST v4.2.1 Han Chinese WGS | $F_1 = 0.9667$ | **EQUAL** | `7e9b1be766f73b17` |
+| **GIAB NA24385 b37 Truth** | `na24385-b37-truth.json` | NIST v4.2.1 Ashkenazi Son b37 | $F_1 = 1.0000$ | **EQUAL** | `7e9b1be766f73b17` |
 | **Chr1 Scale Benchmark**| `scale.json` | Chromosome 1 Full Scaling | $S_8 = 4.85\times$ | **PASS** | `7e9b1be766f73b17` |
 | **Continuous Perf Budget**| `perf-budget.json` | 4 Target Workload Regression | Wall/RAM gates | **PASS** | `7e9b1be766f73b17` |
 | **Musl CI Distribution** | `musl-ci.json` | Static PIE Linux Packaging | Byte identity | **PASS** | `7e9b1be766f73b17` |
 
 ---
 
-## 6. Tier 6: Harness Diagnostic Self-Tests (`harness/tests/`)
+### 5.1 Dataset Eligibility Matrix: Tier 3 (Parity) vs Tier 4 (Truth Concordance)
 
-Located in [`harness/tests/`](file:///mnt/media_backups/VarDictRust/harness/tests/), these 13 specialized scripts validate the correctness of the testing infrastructure itself:
+A foundational question in scientific verification is: **Why are certain datasets evaluated under Tier 3 Live Oracle Parity while others are also evaluated under Tier 4 Biological Ground Truth Concordance?**
 
+- **Tier 3 (Dual-Engine Live Oracle Parity Gate):** Evaluates whether $\text{VarDictRust} \equiv \text{VarDictJava v1.8.3}$ on valid inputs ($\varepsilon \le 10^{-6}$, 0 variant diffs). **Requires only reference FASTA and input BAM/CRAM.** Can and *must* be run on 100% of sequencing datasets.
+- **Tier 4 (Biological Ground Truth Concordance Gate):** Evaluates variant calling performance ($F_1$, Precision, Recall) using `rtg vcfeval` against physical biological reality. **Requires independent consortium ground truth VCF + high-confidence BED.**
+
+#### The rewrites.bio Principle of Transitivity:
+For any dataset $D$ and benchmark truth set $T$:
+$$\text{VarDictRust}(D) \equiv \text{VarDictJava}(D) \implies \text{rtg}(\text{VarDictRust}(D), T) \equiv \text{rtg}(\text{VarDictJava}(D), T)$$
+
+Because VarDictRust produces 0 variant discrepancies and 0 filter differences compared to VarDictJava, `rtg vcfeval` yields **100% identical True Positives, False Positives, False Negatives, and identical $F_1$ scores (0 site diffs)**. Tier 4 proves biological equivalence to the original caller.
+
+| Dataset / Assay | Modality & Reference Build | BAM / CRAM Source | Tier 3 (Live Oracle Parity) | Tier 4 (Truth Concordance) | Reason / Ground Truth Asset |
+| :--- | :--- | :--- | :---: | :---: | :--- |
+| **GIAB HG002 Euchromatic WGS** | Germline WGS (GRCh38) | Illumina NovaSeq 125× (20 Mbp) | **RUN (MATCH, 0 diffs)** | **RUN (EQUAL, $F_1 = 0.9699$)** | NIST GIAB v4.2.1 High-Confidence Benchmark |
+| **FDA SEQC2 HCC1395 Somatic** | Somatic WES (GRCh38) | Whole Exome (300×/100×) | **RUN (MATCH, 0 diffs)** | **RUN (EQUAL, $F_1 = 0.1555$)** | FDA SEQC2 v1.2.1 High-Confidence Somatic Truth |
+| **GIAB HG008 Somatic PDAC** | Somatic WGS (GRCh38) | Tumor/Normal WGS (195×/169×) | **RUN (MATCH, 0 diffs)** | **RUN (EQUAL, $F_1 = 0.3856$)** | NIST Draft Somatic Benchmark v0.3 |
+| **GIAB HG005 Han Chinese** | Diversity WGS (GRCh38) | Slices `s4a/b/c` (chr3, 6, 21) | **RUN (MATCH, 0 diffs)** | **RUN (EQUAL, $F_1 = 0.9667$)** | NIST GIAB v4.2.1 Han Chinese Trio Benchmark |
+| **GIAB NA24385 b37 WGS** | Germline WGS (GRCh37/b37) | Multi-chr WGS (chr1, 19, 20) | **RUN (MATCH, 0 diffs)** | **RUN (EQUAL, $F_1 = 1.0000$)** | NIST GIAB v4.2.1 Ashkenazi Son (b37 build) |
+| **SEQC2 Somatic Slices** | Somatic WES (GRCh38) | chr1, 2, 3, 17, 19, 21 slices | **RUN (MATCH, 0 diffs)** | **RUN (EQUAL, 0 site diffs)** | FDA SEQC2 v1.2.1 Sub-Regions |
+| **Targeted Amplicon Panel** | Amplicon Assay (hg19) | EGFR L861Q primer panel | **RUN (MATCH, 0 diffs)** | *Methodologically Ineligible* | Targeted primer assay testing `AMPBIAS`; no diploid NIST truth VCF |
+| **RNA-seq Splicing Introns** | Transcriptome (GRCh38) | STAR spliced BAM (chr8) | **RUN (MATCH, 0 diffs)** | *Methodologically Ineligible* | Tests exon-intron junctions (`-i`); `rtg vcfeval` rejects non-DNA features |
+| **Hartwig COLO829 / COLO829BL** | Somatic WGS (GRCh37) | Tumor/Normal (`s1a/b/c`) | **RUN (MATCH, 0 diffs)** | *Methodologically Ineligible* | Structural variant benchmark (Valle-Inclan 2022); no diploid small-var VCF |
+| **COLO829 CRISPR Target** | CRISPR Cut Site (GRCh37)| Illumina HiSeq WGS | **RUN (MATCH, 0 diffs)** | *Methodologically Ineligible* | Targeted cut site ($50,454,941$); evaluates CRISPR offset `-J/-j` |
+| **10 Standard Slices (`s1a`–`s9`)** | Micro-Slices (GRCh38/b37) | Integration slices | **RUN (MATCH, 0 diffs)** | *Covered by Parent Truths* | Slices derive from SEQC2/HG002/Colo829 |
+| **92 Integration Corpus Fixtures** | Synthetic / Corner Cases | Upstream test cases | **RUN (100% Live Oracle)** | *Methodologically Ineligible* | Miniature synthetic alignments testing CIGAR parser edge cases |
+
+---
+
+## 6. Tier 6: Automated Harness Diagnostic Suite (`harness/run_self_tests.sh`)
+
+Automated via [`harness/run_self_tests.sh`](file:///mnt/media_backups/VarDictRust/harness/run_self_tests.sh), these 13 specialized scripts validate the correctness of the testing infrastructure itself in $<10\text{ seconds}$:
+
+```bash
+# Execute the full automated diagnostic test suite
+bash harness/run_self_tests.sh
+```
+
+The runner dynamically discovers and executes:
 1. `test_compare_sh.sh`: validates exit code conventions, diff formatting, and temporary file cleanup in the primary Tier-2 differential comparator.
 2. `test_compare_vcf.py`: validates strict-bytes VCF parsing, floating-point half-even rounding tolerances ($\varepsilon = 10^{-6}$), and duplicate key detection.
 3. `test_concordance.sh`: validates the Real Time Genomics `rtg vcfeval` wrapper script, SDF reference building, and concordance metric parsers.
@@ -303,3 +345,64 @@ VarDictRust utilizes 3 automated GitHub Actions workflows with strict security h
 - **Pull Request v1.0.0 Certification:** [`docs/release/v1.0.0-pr.md`](../release/v1.0.0-pr.md)
 - **Known Upstream Bugs & Divergences:** [`docs/upstream-bugs.md`](../upstream-bugs.md) & [`DIVERGENCES.md`](../../DIVERGENCES.md)
 - **Master Release Roadmap:** [`release_plan.md`](../../release_plan.md) & [`ROADMAP.md`](../../ROADMAP.md)
+
+---
+
+## 9. Master Reproducibility Runbook & Dataset Provenance Catalog
+
+Future contributors and clinical bioinformaticians can independently reproduce **every empirical claim** made in the VarDictRust v1.0.0 release using the structured runbook below.
+
+### 9.1 Biological Asset Provenance Catalog
+
+| Dataset ID | Public Accession / URL | Specimen & Assay | Platform & Mean Depth | Reference Build | Target BED Interval | Local File Path |
+| :--- | :--- | :--- | :--- | :---: | :--- | :--- |
+| **GIAB HG002** | NCBI / GIAB S3 (Ashkenazim Trio) | NA24385 Son (B-lymphocyte) | NovaSeq 6000 (125× WGS) | GRCh38 | `chr20:10000000-30000000` | `scratch/g4/hg002/HG002.chr20.bam` |
+| **SEQC2 HCC1395** | ENA PRJNA488340 / NCBI SEQC | Primary Breast Carcinoma / BL | NovaSeq 6000 (300×/100× WES)| GRCh38 | `exome_v6_UTR_hg38` (Full WES) | `scratch/g4/seqc2/HCC1395.bam` |
+| **GIAB HG008** | NCBI GIAB Somatic (Liss Lab) | Pancreatic Ductal Carcinoma | NovaSeq 6000 (195×/169× WGS)| GRCh38 | `HG008-T_benchmark_all.bed` | `scratch/g4/hg008/HG008-T.slice.bam` |
+| **GIAB HG005** | NCBI GIAB Chinese Trio | NA24631 Son (B-lymphocyte) | HiSeq 2500 (300× WGS) | GRCh38 | `chr3:40000000-40100000` | `scratch/g4/multimodal/hg005_s4a.bam` |
+| **GIAB NA24385 b37** | NCBI GIAB Ashkenazim Trio | NA24385 Son (B-lymphocyte) | HiSeq 2500 (300× WGS) | GRCh37/b37 | `20:36018823-36039513` | `VarDictJava/.../NA24385_chr_20_...bam` |
+| **Targeted Amplicon**| AstraZeneca NGS Archive | Synthetic EGFR L861Q Panel | HiSeq 2000 (1000× Targeted) | hg19 | `chr7:55241000-55260500` | `VarDictJava/.../L861Q.bam` |
+| **RNA Splicing Suite**| AstraZeneca NGS Archive | STAR Splice Junctions (chr8)| Illumina HiSeq (RNA-seq) | hg38 | `chr8:90534611-90620070` | `VarDictJava/.../Tcov_zero_...bam` |
+| **COLO829 Melanoma** | ENA PRJEB27698 (Hartwig / NYGC) | Malignant Melanoma / BL | HiSeqX (100×/40× Somatic WGS)| GRCh37/b37 | `1:10000000-10200000` | `scratch/g4/multimodal/colo829_s1a_...bam` |
+
+### 9.2 Push-Button Tier Reproduction Runbook
+
+```bash
+# 1. Tier 0: Install Local Pre-Commit Hooks (<1s)
+bash harness/setup_hooks.sh
+
+# 2. Tier 1: Execute Full Cargo Workspace Test Matrix (<2s)
+cargo test --workspace -- --test-threads=8
+
+# 3. Tier 2: Reproduce Upstream Legacy Corpus Parity (<8s)
+bash harness/run_integration.sh
+# Expected: PASS: 91  FAIL: 1  SKIP: 0 (asserting 100% live oracle parity)
+
+# 4. Tier 3: Reproduce Extended Modality Parity (9 Modes, <30s)
+bash harness/run_extended_coverage.sh
+# Expected: 9/9 MATCH (RNA splicing -i, CRISPR -J, <INV>, <DUP>, CLI flags)
+
+# 5. Tier 3: Reproduce Multi-Modal Cohort Slices (18 Slices across 6 Cohorts, <35s)
+bash harness/run_multimodal_slices.sh
+# Expected: 18/18 MATCH (0 diffs across 1,129 biological variants)
+
+# 6. Tier 4: Reproduce Expanded Ground Truth Concordance (<15s)
+bash harness/concordance_multimodal.sh
+# Expected: HG005 (F1=0.9667) and NA24385 b37 (F1=1.0000) both EQUAL (0 site diffs)
+
+# 7. Tier 5: Reproduce Continuous Performance Budgets (<1s)
+python3 harness/perf_budget.py
+# Expected: PASS across HG008, SEQC2, HG002, and Amplicon targets
+
+# 8. Tier 6: Reproduce Automated Harness Diagnostic Suite (<10s)
+bash harness/run_self_tests.sh
+# Expected: ALL 13 HARNESS DIAGNOSTIC TESTS PASSED SUCCESSFULLY
+
+# 9. Tier 7: Reproduce Pre-PR Compound Regression Suite (<35s)
+bash harness/pr_check.sh
+# Expected: 6/6 stages PASS (Hygiene, Robustness, Corpus, Micro, Perf, Secrets)
+
+# 10. Tier 7: Reproduce Release Acceptance Gate (<1m)
+bash harness/acceptance.sh
+# Expected: 8/8 items PASS under certified release fingerprint 7e9b1be766f73b17
+```

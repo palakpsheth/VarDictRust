@@ -1,0 +1,80 @@
+{
+  "cmd": [
+    "/mnt/media_backups/VarDictRust/harness/concordance_germline.sh",
+    "hg005-truth",
+    "/tmp/vardict_multimodal_concordance_jvgEKp/hg005_java.vcf",
+    "/tmp/vardict_multimodal_concordance_jvgEKp/hg005_rust.vcf",
+    "/mnt/media_backups/VarDictRust/scratch/g4/truth_cache/hg005_truth.vcf.gz",
+    "/mnt/media_backups/VarDictRust/scratch/g4/truth_cache/hg005_eval.bed",
+    "/mnt/media_backups/VarDictRust/scratch/g4/ref/giabv3/GRCh38_GIABv3.sdf",
+    "/mnt/media_backups/VarDictRust/scratch/g4/concordance_multimodal/hg005",
+    "HG005"
+  ],
+  "compare_head": [],
+  "date": "2026-10-10T18:08:58-07:00",
+  "extra": {
+    "java": {
+      "f_measure": 0.9508,
+      "fn": 1,
+      "fp": 2,
+      "none": {
+        "f_measure": 0.9508,
+        "fn": 1,
+        "fp": 2,
+        "precision": 0.9355,
+        "sensitivity": 0.9667,
+        "tp_baseline": 29,
+        "tp_call": 29
+      },
+      "optimal": {
+        "f_measure": 0.9667,
+        "fn": 1,
+        "fp": 1,
+        "precision": 0.9667,
+        "sensitivity": 0.9667,
+        "threshold": 226.0,
+        "tp_baseline": 29,
+        "tp_call": 29
+      },
+      "precision": 0.9355,
+      "sensitivity": 0.9667,
+      "tp_baseline": 29,
+      "tp_call": 29
+    },
+    "rust": {
+      "f_measure": 0.9508,
+      "fn": 1,
+      "fp": 2,
+      "none": {
+        "f_measure": 0.9508,
+        "fn": 1,
+        "fp": 2,
+        "precision": 0.9355,
+        "sensitivity": 0.9667,
+        "tp_baseline": 29,
+        "tp_call": 29
+      },
+      "optimal": {
+        "f_measure": 0.9667,
+        "fn": 1,
+        "fp": 1,
+        "precision": 0.9667,
+        "sensitivity": 0.9667,
+        "threshold": 226.0,
+        "tp_baseline": 29,
+        "tp_call": 29
+      },
+      "precision": 0.9355,
+      "sensitivity": 0.9667,
+      "tp_baseline": 29,
+      "tp_call": 29
+    }
+  },
+  "fingerprint": "7e9b1be766f73b17",
+  "head": "a484c62d1f2641a2c316a6d9eba574a1e63f9b7c",
+  "java_time": null,
+  "n_variants": null,
+  "name": "hg005-truth",
+  "result": "EQUAL",
+  "rust_time": null
+}

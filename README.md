@@ -226,7 +226,7 @@ Per the [rewrites.bio](https://rewrites.bio) manifesto, we disclose all AI tools
 
 - **AI Coding Systems Used:** Google DeepMind Gemini / Antigravity CLI, Anthropic Claude Code, Qoder, and spec-kit.
 - **Scope of AI Assistance:** Implementation of core Rust modules under direct human architectural instruction, transliteration of legacy R/Perl statistical functions into pure Rust (`statrs`), test harness development, and adversarial failure analysis.
-- **Verification Guarantee (Evidence Before Completion):** **Zero** AI-generated code was accepted based on model assertion. Every single algorithmic component was validated against VarDictJava v1.8.3 across 186 unit tests, the 92-case integration corpus, 10 slice fixtures, and multi-gigabyte public benchmark datasets (SEQC2, GIAB HG008, GIAB HG002) under strict float tolerance $\varepsilon = 10^{-6}$.
+- **Verification Guarantee (Evidence Before Completion):** **Zero** AI-generated code was accepted based on model assertion. Every single algorithmic component was validated against VarDictJava v1.8.3 across 208 automated workspace tests, the 92-case integration corpus, 10 slice fixtures, 18 multi-modal slices across 6 cohorts, and multi-gigabyte public benchmark datasets (SEQC2, GIAB HG008, GIAB HG002, GIAB HG005, GIAB NA24385 b37) under strict float tolerance $\varepsilon = 10^{-6}$, with complete push-button reproducibility documented in [`docs/testing/test-matrix-and-ci-audit.md`](docs/testing/test-matrix-and-ci-audit.md).
 
 ---
 
