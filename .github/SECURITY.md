@@ -22,7 +22,7 @@ If you discover a security vulnerability or potential exploit in VarDictRust, **
 ### Preferred Method: GitHub Private Vulnerability Reporting
 Please report vulnerabilities privately using GitHub's native Security Advisory interface:
 1. Navigate to the **Security** tab of the VarDictRust repository on GitHub.
-2. Under "Reporting", click **Report a vulnerability** (or use the direct link: `https://github.com/rewrites-bio/VarDictRust/security/advisories/new`).
+2. Under "Reporting", click **Report a vulnerability** (or use the direct link: `https://github.com/palakpsheth/VarDictRust/security/advisories/new`).
 3. Fill out the report with:
    - A clear description of the vulnerability and its potential impact (e.g. denial of service, memory exhaustion, arbitrary execution, data tampering).
    - Minimal reproduction steps (including minimal FASTA/BED/BAM inputs or synthetic fixtures).

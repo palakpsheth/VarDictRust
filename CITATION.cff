@@ -5,7 +5,7 @@ abstract: "VarDictRust is an idiomatic Rust rewrite of VarDictJava v1.8.3, conso
 version: 1.0.0
 date-released: "2026-10-10"
 license: MIT
-repository-code: "https://github.com/rewrites-bio/VarDictRust"
+repository-code: "https://github.com/palakpsheth/VarDictRust"
 keywords:
   - "bioinformatics"
   - "genomics"

@@ -1,6 +1,6 @@
 # VarDictRust (`vardictrust`)
 
-[![CI](https://github.com/rewrites-bio/VarDictRust/actions/workflows/ci.yml/badge.svg)](https://github.com/rewrites-bio/VarDictRust/actions)
+[![CI](https://github.com/palakpsheth/VarDictRust/actions/workflows/ci.yml/badge.svg)](https://github.com/palakpsheth/VarDictRust/actions)
 [![Security Policy](https://img.shields.io/badge/security-policy-blue.svg)](.github/SECURITY.md)
 [![SLSA 3](https://img.shields.io/badge/SLSA-Level%203-green.svg)](https://slsa.dev)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -62,7 +62,7 @@ VarDictRust is distributed as a single standalone, statically-linked executable 
 cargo install vardictrust
 
 # Option 2: Pre-built static musl binary (no glibc dependency)
-curl -LsSf https://github.com/rewrites-bio/VarDictRust/releases/latest/download/vardictrust-x86_64-unknown-linux-musl.tar.gz | tar xz
+curl -LsSf https://github.com/palakpsheth/VarDictRust/releases/latest/download/vardictrust-x86_64-unknown-linux-musl.tar.gz | tar xz
 sudo mv vardictrust /usr/local/bin/
 
 # 10-second verification (confirms installation & prints build metadata)
