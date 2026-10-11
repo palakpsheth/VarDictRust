@@ -323,12 +323,12 @@ VarDictRust utilizes 3 automated GitHub Actions workflows with strict security h
 
 ### 7.1 Continuous Integration (`.github/workflows/ci.yml`)
 - **StepSecurity Runner Hardening:** pinned to `step-security/harden-runner@v2.11.0` with `egress-policy: audit`.
-- **Submodule Recursion:** checks out complete repository including `VarDictJava` submodule (`actions/checkout@v4.2.2`).
+- **Submodule Recursion:** checks out complete repository including `VarDictJava` submodule (`actions/checkout@v7.0.1`).
 - **Standard Checks:** runs `cargo fmt --all -- --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test --all` (all 208 workspace tests), `cargo bench --no-run`, and `cargo build --release`.
 - **Regression Gates in CI:** executes `harness/run_integration.sh` (asserting `91 PASS / 1 FAIL`) and `tests/robustness.rs`.
 
 ### 7.2 Security & Supply Chain Scans (`.github/workflows/security.yml`)
-- **Gitleaks Secret Scanning:** executes `gitleaks-action@v2.3.8` with `fetch-depth: 0` across full git commit history.
+- **Gitleaks Secret Scanning:** executes `gitleaks-action@v2.3.9` with `fetch-depth: 0` across full git commit history.
 - **Supply Chain Advisories & Licenses:** runs `cargo deny check advisories licenses` via `taiki-e/install-action@v2`.
 - **RustSec Advisory Audit:** runs `cargo audit` against current Cargo dependencies.
 
