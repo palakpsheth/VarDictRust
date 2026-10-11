@@ -1,10 +1,12 @@
 # VarDictRust Roadmap
 
-VarDictRust v1.0.0 replicates VarDictJava v1.8.3 output byte-for-byte on valid inputs, including the upstream behaviors documented below.
+VarDictRust v1.0.0 replicates VarDictJava v1.8.3 output byte-for-byte on valid inputs, including the upstream behaviors documented in `DIVERGENCES.md` and [`docs/upstream-bugs.md`](docs/upstream-bugs.md).
+
 From v1.1.0, each correction is opt-in via `--fix <id>` (default off) and lands only with:
 1. A reproducible testcase demonstrating VarDictJava v1.8.3 behavior.
-2. A dedicated unit test in `vardictrust-core`.
-3. A differential test run proving default output remains byte-identical to v1.0.0 while `--fix <id>` alters only the targeted records.
+2. A dedicated unit test in `crates/vardictrust-core`.
+3. A [Tier-1](docs/testing/test-matrix-and-ci-audit.md#tier-1) intermediate table and [Tier-2](docs/testing/test-matrix-and-ci-audit.md#tier-2) differential test run proving default output remains byte-identical to v1.0.0 across all regression suites.
+4. A diff-confinement proof verifying that `--fix <id>` alters only targeted records, produces zero off-target diffs, and maintains [Tier-3](docs/testing/test-matrix-and-ci-audit.md#tier-3) truth concordance (see [Master Test Matrix](docs/testing/test-matrix-and-ci-audit.md)).
 
 ---
 
@@ -27,21 +29,23 @@ From v1.1.0, each correction is opt-in via `--fix <id>` (default off) and lands 
 
 ## Needs a Specification First (Debatable Heuristics; No Flag Until Specified)
 
+Graduation from this table to a candidate `--fix` flag requires a community RFC and empirical concordance benchmarking against NIST GIAB and SEQC2 truth sets.
+
 | Area | Upstream Reference | Current Behavior & Scope | Specification Requirement |
 |:-----|:-------------------|:-------------------------|:--------------------------|
 | **Depth Discrepancy (`VD > DP`)** | [#92](https://github.com/AstraZeneca-NGS/VarDictJava/issues/92), [#316](https://github.com/AstraZeneca-NGS/VarDictJava/issues/316), [#323](https://github.com/AstraZeneca-NGS/VarDictJava/issues/323), [#386](https://github.com/AstraZeneca-NGS/VarDictJava/issues/386), [#400](https://github.com/AstraZeneca-NGS/VarDictJava/issues/400) | Variant depth (`VD`) reported greater than total depth (`DP`) due to divergent filter accounting between pileup and variant extraction | Reconcile `DP` and `VD` accounting rules across filter boundaries and multi-allelic sites |
 | **Filter Sensitivity** | [#62](https://github.com/AstraZeneca-NGS/VarDictJava/issues/62) | Heuristic over-filtering of candidate variants in low-frequency somatic calling | Calibrate filtering thresholds to balance sensitivity and specificity across depths |
 | **Realignment Drops** | [#363](https://github.com/AstraZeneca-NGS/VarDictJava/issues/363) | Candidate variants dropped during local realignment around complex indels | Specify unified realignment scoring and fallback behavior for complex haplotypes |
 | **Low-AF Noise Filtering** | [#381](https://github.com/AstraZeneca-NGS/VarDictJava/issues/381) | Ambiguous thresholds for low allele-frequency variant calls (< 1%) | Establish clear empirical noise model for deep targeted sequencing panels |
-| **Soft-Clip Realignment** | [#282](https://github.com/AstraZeneca-NGS/VarDictJava/issues/282) | Output ordering sensitivity and soft-clip realignment differences | Formalize deterministic soft-clip extension and trimming rules |
+| **Soft-Clip Realignment** | [#282](https://github.com/AstraZeneca-NGS/VarDictJava/issues/282), [UB-3](docs/upstream-bugs.md#ub-3-var-row-order-across-positions-follows-hashmap-iteration-order-282-family) | Output ordering sensitivity and soft-clip realignment differences | Formalize deterministic soft-clip extension and trimming rules |
 | **Indel Boundaries** | [#264](https://github.com/AstraZeneca-NGS/VarDictJava/issues/264) | Boundary alignment and coordinate shifting for adjacent insertions/deletions | Standardize 3' left/right alignment conventions |
-| **Insertion Coverage** | `ToVarsBuilder.java:523-538` | `HICOV` calculation excludes insertions from local depth denominator | Clarify whether insertion reads contribute to local coverage metrics |
-| **OpenJDK Tree-Bin Ordering** | `javamap.rs:211-217`, `tovars.rs:198-205` | When collision count reaches 8 in capacity >= 64, Java converts bucket to `TreeNode` (Red-Black tree) with `moveRootToFront`. Currently sets observability warning flag. 0 treeifications observed across all 92 fixtures and 10 biological cohorts. | Port exact OpenJDK `TreeNode` rotation, untreeification, and `moveRootToFront` pointer updates behind `--fix javamap-tree-bins` if synthetic multi-collision inputs require exact order preservation. |
-| **Cleanroom Rmath Replacement** | `crates/vardictrust-core/src/stats/rmath/` | R `nmath` hypergeometric distribution routines are currently used for float-exact Fisher test calculations. While documented in `LICENSE-3RD-PARTY`, cleanroom reimplementation (e.g. via Apache-2.0 Commons Math 3 algorithms) will restore pure MIT licensing across the entire workspace. | Implement cleanroom hypergeometric distribution under Apache-2.0/MIT and verify floating-point equivalence across all 15 benchmark cohorts. |
+| **Insertion Coverage** | [`ToVarsBuilder.java:523-538`](https://github.com/AstraZeneca-NGS/VarDictJava/blob/master/src/main/java/com/astrazeneca/vardict/modules/ToVarsBuilder.java#L523-L538) | `HICOV` calculation excludes insertions from local depth denominator | Clarify whether insertion reads contribute to local coverage metrics |
+| **OpenJDK Tree-Bin Ordering** | `javamap.rs:211-217`, `tovars.rs:198-205` | When collision count reaches 8 in capacity >= 64, Java converts bucket to `TreeNode` (Red-Black tree) with `moveRootToFront`. Currently sets observability warning flag. 0 treeifications observed across all 92 fixtures and 10 biological cohorts ([Validation Report](docs/validation/omnibus-empirical-validation.md)). | Port exact OpenJDK `TreeNode` rotation, untreeification, and `moveRootToFront` pointer updates behind `--fix javamap-tree-bins` if synthetic multi-collision inputs require exact order preservation. |
+| **Cleanroom Rmath Replacement** | `crates/vardictrust-core/src/stats/rmath/` | R `nmath` hypergeometric distribution routines are currently used for float-exact Fisher test calculations. While documented in `LICENSE-3RD-PARTY`, cleanroom reimplementation (e.g. via Apache-2.0 Commons Math 3 algorithms) will restore pure MIT licensing across the entire workspace. | Implement cleanroom hypergeometric distribution under Apache-2.0/MIT and verify floating-point equivalence ($\varepsilon \le 10^{-6}$) across all 15 benchmark cohorts ([Test Matrix](docs/testing/test-matrix-and-ci-audit.md)). |
 
 ---
 
-## Open Upstream PRs Reviewed (2026-10-08)
+## Open Upstream PRs Reviewed (v1.0.0 Baseline)
 
 | Upstream PR | Title / Focus Area | Disposition in VarDictRust |
 |:------------|:-------------------|:---------------------------|
@@ -54,5 +58,7 @@ From v1.1.0, each correction is opt-in via `--fix <id>` (default off) and lands 
 
 ## Post-1.0 Features
 
-- **Unique Molecular Identifiers (UMI):** Integrated duplex and single-index consensus calling.
+All post-1.0 features will be introduced as opt-in modes, ensuring that default invocations remain byte-identical to the v1.0.0 baseline and maintain bounded peak memory ($\le 3\text{ GB}$):
+
+- **Unique Molecular Identifiers (UMI):** Integrated duplex and single-index consensus calling within coordinate-sorted streaming windows.
 - **Long-Read NGS Support:** Calibrated error profiles and alignment handling for PacBio HiFi and Oxford Nanopore.

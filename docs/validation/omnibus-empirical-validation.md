@@ -8,58 +8,68 @@
 **Binary Distribution:** Standalone `x86_64-unknown-linux-musl` static PIE binary (zero external shared libraries)  
 **Repository:** [https://github.com/palakpsheth/VarDictRust](https://github.com/palakpsheth/VarDictRust)  
 **Author / Maintainer:** Palak Sheth <palakpsheth@gmail.com>  
+**Companion Engineering Audit:** [`docs/testing/test-matrix-and-ci-audit.md`](../testing/test-matrix-and-ci-audit.md) (Master Test Matrix & CI/CD Pipeline Audit)  
+**Benchmark Specification & Hardware Ledger:** [`benchmarks/README.md`](../../benchmarks/README.md)  
+**Verification Framework:** [Three-Tier Parity & Truth Standard](../testing/test-matrix-and-ci-audit.md#tier-1) (Tier-1 Intermediate Table, Tier-2 Full VCF Oracle Differential, Tier-3 Biological Ground Truth)
 
 ---
 
 ## 1. Executive Summary & Master Nine-Pillar Parity Scoreboard
 
-Under the **rewrites.bio** manifesto and project contract `AGENTS.md` §5, VarDictRust is an idiomatic Rust rewrite of **VarDictJava v1.8.3** engineered to produce output **byte-for-byte and floating-point identical to VarDictJava on valid genomic inputs**. It introduces zero heuristic shortcuts, relaxes no filtering thresholds, and alters no variant representations.
+Under the **rewrites.bio** manifesto and project contract [`AGENTS.md`](../../AGENTS.md) §5, VarDictRust is an idiomatic Rust rewrite of **VarDictJava v1.8.3** engineered to produce output **byte-for-byte and floating-point identical to VarDictJava on valid genomic inputs**. It introduces zero heuristic shortcuts, relaxes no filtering thresholds, and alters no variant representations.
 
 To provide definitive, reproducible proof of compliance, VarDictRust was evaluated across **ten biological sample cohorts and assay families** comprising deep whole-genome sequencing (WGS), whole exomes (WES), targeted amplicons, cancer cell lines, and multi-ancestry trios spanning 9 human chromosomes across both **GRCh38** and **GRCh37/b37** assemblies:
 
-1. **NIST GIAB HG002 Germline WGS (Pillar 1):** 20 Mbp benchmark interval (`chr20:10M–30M`, 30× Illumina NovaSeq), 227,562 variants called; 100% dual-engine parity (0 diffs) and bitwise identical site lists against the NIST v4.2.1 ground truth standard ($F_1 = 0.9699$).
-2. **FDA SEQC2 HCC1395 Somatic Whole Exome (Pillar 2):** Complete human exome (~150,000 target exons, 300×/100× tumor/normal), 623,444 variants called; 100% dual-engine parity (0 diffs) and zero site discrepancies against the SEQC2 v1.2.1 somatic reference callset.
-3. **FDA SEQC2 Multi-Chromosome Driver Slices (Pillar 3):** High-depth somatic validation across oncogenic driver loci (*BRAF* chr7, *HRAS* chr11, *KRAS* chr12, chr1, chr2, chr3, chr17, chr19, chr21), 4,151 variants; 100% parity (0 diffs).
-4. **NIST GIAB HG008 Somatic PDAC Tumor/Normal (Pillar 4):** High-depth paired WGS (195× tumor / 169× normal), 18,426 variants; 100% parity (0 diffs) and CRAM twin decode byte parity against BAM.
-5. **Targeted Clinical Amplicon Panels (Pillar 5):** Ultra-deep targeted amplicon sequencing (>1,000× depth, *EGFR* L861Q, *MRE11a*), testing 8-column BED primer trimming and bidirectional strand bias (`AMPBIAS`); 100% parity (0 diffs).
-6. **Upstream Micro-Regression Corpus (Pillar 6):** All 92 integration fixtures from VarDictJava (`testdata/integrationtestcases/`) covering edge-case indels, tri-allelic sites, and complex soft-clipping; 100% live oracle parity.
-7. **Whole Chromosome 1 Scale Benchmark (Pillar 7):** Full-scale chromosome 1 processing (1 Mbp to 249 Mbp, 2,840,119 variants); **4.85× parallel speedup** on 8 threads with bounded $O(1)$ memory consumption (flat $1.39\times$ RSS ratio: 2.11 GB at 10 Mb vs 2.94 GB at 249 Mb).
-8. **Nine Extended Operational Modalities Suite (Pillar 8):** Full-coverage evaluation of RNA splicing (`-i`), structural variant inversions (`<INV>`), duplications (`<DUP>`), CRISPR cut-site offsets (`-J -j`), paired unique read deduplication (`-u -UN`), adapter clipping (`--adaptor`), realignment suppression (`-k 0`), structural variant bypass (`-U`), and ambiguous base counting (`-K`); 100% parity (0 diffs across all 9 modes).
-9. **Multi-Slice Multi-Modal Public Dataset Expansion Suite (Pillar 9):** 18 non-overlapping slices across 6 independent public cohorts (HG005 Han Chinese, SEQC2 Exome, HG002 WGS, HG008 Somatic, NA24385 b37 deep WGS, RNA Transcriptome) spanning 9 chromosomes and 1,129 variants; 100% parity (0 diffs).
+1. **NIST GIAB HG002 Germline WGS (Pillar 1)** [Tier-2 Parity & Tier-3 Truth]: 20 Mbp benchmark interval (`chr20:10M–30M`, 30× Illumina NovaSeq), 227,562 variants called; 100% dual-engine parity (0 diffs) and bitwise identical site lists against the NIST v4.2.1 ground truth standard ($F_1 = 0.9699$).
+2. **FDA SEQC2 HCC1395 Somatic Whole Exome (Pillar 2)** [Tier-2 Parity & Tier-3 Truth]: Complete human exome (~150,000 target exons, 300×/100× tumor/normal), 623,444 variants called; 100% dual-engine parity (0 diffs) and zero site discrepancies against the SEQC2 v1.2.1 somatic reference callset.
+3. **FDA SEQC2 Multi-Chromosome Driver Slices (Pillar 3)** [Tier-2 Parity & Tier-3 Truth]: High-depth somatic validation across oncogenic driver loci (*BRAF* chr7, *HRAS* chr11, *KRAS* chr12, chr1, chr2, chr3, chr17, chr19, chr21), 4,151 variants; 100% parity (0 diffs).
+4. **NIST GIAB HG008 Somatic PDAC Tumor/Normal (Pillar 4)** [Tier-2 Parity, Format-Invariance & Tier-3 Truth]: High-depth paired WGS (195× tumor / 169× normal), 18,426 variants; 100% parity (0 diffs) and CRAM twin decode byte parity against BAM.
+5. **Targeted Clinical Amplicon Panels (Pillar 5)** [Tier-2 Parity]: Ultra-deep targeted amplicon sequencing (>1,000× depth, *EGFR* L861Q, *MRE11a*), testing 8-column BED primer trimming and bidirectional strand bias (`AMPBIAS`); 100% parity (0 diffs).
+6. **Upstream Micro-Regression Corpus (Pillar 6)** [Tier-1 Intermediate Parity]: All 92 integration fixtures from VarDictJava (`testdata/integrationtestcases/`) covering edge-case indels, tri-allelic sites, and complex soft-clipping; 100% live oracle parity under Tier-1 intermediate table assertions (91 PASS / 1 XFAIL expected fixture defect UB-4).
+7. **Whole Chromosome 1 Scale Benchmark (Pillar 7)** [Level 5 Scale & Bounded Memory]: Full-scale chromosome 1 processing (1 Mbp to 249 Mbp, 2,840,119 variants); **4.85× parallel speedup** on 8 threads with bounded $O(1)$ memory consumption (flat $1.39\times$ RSS ratio: 2.11 GB at 10 Mb vs 2.94 GB at 249 Mb).
+8. **Nine Extended Operational Modalities Suite (Pillar 8)** [Tier-2 Parity across 9 Modalities]: Full-coverage evaluation of RNA splicing (`-i`), structural variant inversions (`<INV>`), duplications (`<DUP>`), CRISPR cut-site offsets (`-J -j`), paired unique read deduplication (`-u -UN`), adapter clipping (`--adaptor`), realignment suppression (`-k 0`), structural variant bypass (`-U`), and ambiguous base counting (`-K`); 100% parity (0 diffs across all 9 modes).
+9. **Multi-Slice Multi-Modal Public Dataset Expansion Suite (Pillar 9)** [Tier-2 Multi-Cohort Parity & Tier-3 Multi-Ancestry Truth]: 18 non-overlapping slices across 6 independent public cohorts (HG005 Han Chinese, SEQC2 Exome, HG002 WGS, HG008 Somatic, NA24385 b37 deep WGS, RNA Transcriptome) spanning 9 chromosomes and 1,129 variants; 100% parity (0 diffs).
 
 ### 1.1 Master Nine-Pillar Validation Scoreboard
 
-| Pillar | Benchmark / Dataset | Sequencing Assay | Genomic Region / Build | Variants Evaluated | Dual-Engine Differential Parity | Physical Truth Concordance |
-| :---: | :--- | :--- | :--- | :---: | :---: | :---: |
-| **1** | **GIAB HG002 Germline** | Illumina WGS (30×) | chr20:10M–30M (GRCh38) | 227,562 | **MATCH (0 diffs)** | **EQUAL ($F_1 = 0.9699$)** |
-| **2** | **FDA SEQC2 HCC1395/BL** | Somatic WES (300×/100×)| Whole Human Exome (GRCh38) | 623,444 | **MATCH (0 diffs)** | **EQUAL (0 site diffs)** |
-| **3** | **SEQC2 Somatic Slices** | Somatic WES (150×/80×) | chr1, 2, 3, 17, 19, 21 (GRCh38)| 4,151 | **MATCH (0 diffs)** | **EQUAL (0 site diffs)** |
-| **4** | **GIAB HG008 Somatic** | Somatic WGS (195×/169×)| PDAC High-Depth Slices (GRCh38)| 18,426 | **MATCH (0 diffs)** | **EQUAL (0 site diffs)** |
-| **5** | **Targeted Amplicon** | Amplicon Panel (`-a`) | EGFR L861Q & MRE11a (hg19) | 2 | **MATCH (0 diffs)** | **N/A (Synthetic/Assay)**|
-| **6** | **Upstream Corpus** | Micro-Fixtures (92) | Genome-wide Edge Cases | 92 fixtures | **100% Live Oracle MATCH**| **N/A (Integration)** |
-| **7** | **Chromosome 1 Scale** | Full WGS Scaling | chr1: 1 Mbp to 249 Mbp (GRCh38)| 2,840,119 | **MATCH (0 diffs)** | **Bounded RSS ($1.39\times$)**|
-| **8** | **Extended Modalities** | 9 Operational Modes | chr8, chr20 (hg19, hg38, GRCh38)| 847 | **MATCH (0 diffs, 9/9)** | **N/A (Flag Parity)** |
-| **9** | **Multi-Slice Suite** | 6 Public Cohorts | 18 slices, 9 chrs (GRCh38, b37)| 1,129 | **MATCH (0 diffs, 18/18)**| **EQUAL (HG005, b37)**|
+| Pillar | Benchmark / Dataset | Sequencing Assay | Genomic Region / Build | Variants Evaluated | Verification Tier | Dual-Engine Differential Parity | Physical Truth Concordance |
+| :---: | :--- | :--- | :--- | :---: | :---: | :---: | :---: |
+| **1** | **GIAB HG002 Germline** | Illumina WGS (30×) | chr20:10M–30M (GRCh38) | 227,562 | **Tier-2 & Tier-3** | **MATCH (0 diffs)** | **EQUAL ($F_1 = 0.9699$)** |
+| **2** | **FDA SEQC2 HCC1395/BL** | Somatic WES (300×/100×)| Whole Human Exome (GRCh38) | 623,444 | **Tier-2 & Tier-3** | **MATCH (0 diffs)** | **EQUAL (0 site diffs)** |
+| **3** | **SEQC2 Somatic Slices** | Somatic WES (150×/80×) | chr1, 2, 3, 17, 19, 21 (GRCh38)| 4,151 | **Tier-2 & Tier-3** | **MATCH (0 diffs)** | **EQUAL (0 site diffs)** |
+| **4** | **GIAB HG008 Somatic** | Somatic WGS (195×/169×)| PDAC High-Depth Slices (GRCh38)| 18,426 | **Tier-2 & Tier-3** | **MATCH (0 diffs)** | **EQUAL (0 site diffs)** |
+| **5** | **Targeted Amplicon** | Amplicon Panel (`-a`) | EGFR L861Q & MRE11a (hg19) | 2 | **Tier-2** | **MATCH (0 diffs)** | **N/A (Synthetic/Assay)**|
+| **6** | **Upstream Corpus** | Micro-Fixtures (92) | Genome-wide Edge Cases | 92 fixtures | **Tier-1** | **100% Live Oracle MATCH**| **N/A (Integration)** |
+| **7** | **Chromosome 1 Scale** | Full WGS Scaling | chr1: 1 Mbp to 249 Mbp (GRCh38)| 2,840,119 | **Level 5 Scale** | **MATCH (0 diffs)** | **Bounded RSS ($1.39\times$)**|
+| **8** | **Extended Modalities** | 9 Operational Modes | chr8, chr20 (hg19, hg38, GRCh38)| 847 | **Tier-2** | **MATCH (0 diffs, 9/9)** | **N/A (Flag Parity)** |
+| **9** | **Multi-Slice Suite** | 6 Public Cohorts | 18 slices, 9 chrs (GRCh38, b37)| 1,129 | **Tier-2 & Tier-3** | **MATCH (0 diffs, 18/18)**| **EQUAL (HG005, b37)**|
 
 ---
 
-## 2. Dual-Track Validation Framework
+## 2. Three-Tier Validation Hierarchy & Dual-Track Framework
 
-To guarantee both computational fidelity to the upstream reference implementation and alignment with physical biological reality, VarDictRust employs two distinct validation tracks:
+To guarantee computational fidelity to the upstream reference implementation, algorithmic robustness, and concordance with physical biological reality, VarDictRust organizes validation into a **Three-Tier Verification Hierarchy** operating across two rigorous tracks (detailed in [`docs/testing/test-matrix-and-ci-audit.md`](../testing/test-matrix-and-ci-audit.md)):
+
+- **[Tier-1 (Intermediate Table & Engine Parity)](../testing/test-matrix-and-ci-audit.md#tier-1):** Evaluates raw intermediate TSV tables (`.var`, 36/38/55/61 columns) and upstream fixtures via [`harness/compare_var.py`](../../harness/compare_var.py) and [`harness/run_integration.sh`](../../harness/run_integration.sh) to ensure internal pileup, allele counts, strand statistics, and p-values match the Java engine before formatting.
+- **[Tier-2 (End-to-End VCF Differential Parity vs Live Oracle)](../testing/test-matrix-and-ci-audit.md#tier-2):** Evaluates final VCFv4.2 outputs generated from BAM/CRAM and target BEDs via [`harness/compare.sh`](../../harness/compare.sh) (driven by [`harness/compare_vcf.py`](../../harness/compare_vcf.py)), enforcing exact variant sets, identical FILTER tags, matching genotypes/alleles, and float tolerances $\varepsilon = 10^{-6}$.
+- **[Tier-3 (Physical Biological Ground Truth Concordance)](../testing/test-matrix-and-ci-audit.md#tier-3):** Evaluates clinical and physical truth concordance using Real Time Genomics `rtg vcfeval` (`--squash-ploidy`) against consortium truth standards (NIST GIAB v4.2.1, FDA SEQC2 v1.2.1, NIST Somatic Draft v0.3), proving that VarDictRust and VarDictJava achieve identical true-positive, false-positive, and false-negative variant site lists ($\Delta = 0$).
 
 ```mermaid
 flowchart TD
-    subgraph Track1 ["Track 1: Dual-Engine Parity Verification"]
+    subgraph Track1 ["Track 1: Differential Oracle Verification (Tier-1 & Tier-2)"]
         D1["Raw BAM/CRAM + Target BED"] --> VDJ["VarDictJava v1.8.3\n(Java + R + Perl)"]
         D1 --> VDR["VarDictRust v1.0.0\n(Static Binary)"]
-        VDJ --> VCF_J["Oracle VCF / Table\n(Java Pipeline)"]
-        VDR --> VCF_R["VarDictRust VCF / Table\n(Rust Engine)"]
+        VDJ --> VAR_J["Tier-1 Intermediate Table\n(.var 36/38/55/61 cols)"]
+        VDR --> VAR_R["Tier-1 Intermediate Table\n(.var 36/38/55/61 cols)"]
+        VAR_J & VAR_R --> CMP_VAR{"harness/compare_var.py\n(Engine Parity)"}
+        VDJ --> VCF_J["Tier-2 Oracle VCF\n(Java Pipeline)"]
+        VDR --> VCF_R["Tier-2 Candidate VCF\n(Rust Engine)"]
         VCF_J --> CMP{"harness/compare.sh\n(Tolerances: ε = 1e-6)"}
         VCF_R --> CMP
         CMP -->|0 diffs| MATCH["PASS: Bitwise / Float Parity\n(100% Dual-Engine Parity)"]
     end
 
-    subgraph Track2 ["Track 2: Ground Truth Concordance"]
+    subgraph Track2 ["Track 2: Ground Truth Concordance (Tier-3)"]
         VCF_J --> RTG1["rtg vcfeval\n(VarDictJava vs Truth)"]
         VCF_R --> RTG2["rtg vcfeval\n(VarDictRust vs Truth)"]
         TRUTH["Gold-Standard Truth VCF\n(NIST v4.2.1 / SEQC2 v1.2.1)"] --> RTG1
@@ -75,8 +85,9 @@ flowchart TD
 | Dimension | Track 1: Dual-Engine Parity Verification | Track 2: Physical Ground Truth Concordance |
 | :--- | :--- | :--- |
 | **Scientific Question** | *"Did the Rust rewrite alter any algorithmic decisions relative to VarDictJava v1.8.3?"* | *"Does the VarDict algorithm family accurately reflect genomic truth, and did the rewrite drift from the oracle against truth?"* |
+| **Verification Tier** | **[Tier-1](../testing/test-matrix-and-ci-audit.md#tier-1)** (.var) & **[Tier-2](../testing/test-matrix-and-ci-audit.md#tier-2)** (VCF) | **[Tier-3](../testing/test-matrix-and-ci-audit.md#tier-3)** (`rtg vcfeval` Concordance) |
 | **Target Comparator** | VarDictJava v1.8.3 (`0886261` / `009e017`) live oracle & intermediate tables | NIST GIAB v4.2.1 / FDA SEQC2 v1.2.1 / NIST Draft v0.3 |
-| **Evaluation Tool** | `harness/compare.sh` (`compare_var.py`, `compare_vcf.py --strict-bytes`) | Real Time Genomics `rtg vcfeval` (`--squash-ploidy`) |
+| **Evaluation Tool** | [`harness/compare.sh`](../../harness/compare.sh) ([`compare_var.py`](../../harness/compare_var.py), [`compare_vcf.py`](../../harness/compare_vcf.py) `--strict-bytes`) | Real Time Genomics `rtg vcfeval` (`--squash-ploidy`) |
 | **Pass Metric** | Exact variant set count, float tolerance $\varepsilon = 10^{-6}$, 0 diffs | VarDictJava vs VarDictRust metric equality ($F_1, P, R$ $\Delta = 0$) & bitwise identical site lists |
 | **Release Outcome** | **100% MATCH across all 9 Pillars** (exome, slices, WGS, amplicons, modalities) | **5/5 EQUAL** (0 diffs in `tp.sites`, `fp.sites`, `fn.sites` across HG002, SEQC2, HG008, HG005, NA24385 b37) |
 
@@ -90,16 +101,16 @@ All biological datasets, reference genomes, and truth standards were retrieved f
 
 | # | Cohort / Specimen Family | Biological Origin & Phenotype | Sequencing Technology & Assay | Coverage / Depth | Target Region & Build | Validation Evidence & Truth Standard |
 |:--|:-------------------------|:------------------------------|:------------------------------|:-----------------|:----------------------|:-------------------------------------|
-| **1** | **NIST GIAB HG002 / NA24385** | Ashkenazi Jewish Son (diploid standard) | Illumina NovaSeq 6000 2×250bp WGS | **30×** & **125×** | chr20:10M–30M (GRCh38) & chr1, 19, 20 (GRCh37/b37) | NIST v4.2.1 Truth Benchmark ($F_1 = 0.9699$, 100% Rust-Java parity, `hg002-truth.json`, `na24385-b37-truth.json`) |
-| **2** | **NIST GIAB HG005 / NA24631** | Han Chinese Trio Son (East Asian ancestry) | Illumina HiSeq 2500 (NovoAlign) | **300×** ultra-deep | chr3, chr6 (MHC/HLA), chr21 (GRCh38) | NIST v4.2.1 Truth Benchmark ($F_1 = 0.9667$ optimal, 100% Rust-Java parity, `hg005-truth.json`) |
-| **3** | **NIST GIAB HG008 / HG008-T & HG008-N** | Pancreatic Ductal Adenocarcinoma (PDAC) Tumor / Normal | Illumina NovaSeq paired WGS | **195×** Tumor / **169×** Normal | High-depth multi-chromosome slices (GRCh38) | NIST Draft v0.3 Somatic Truth Benchmark (0 site diffs, `hg008-truth.json`, `hg008-cram-twin.json`) |
-| **4** | **FDA SEQC2 HCC1395 & HCC1395BL** | Primary Triple-Negative Breast Cancer Tumor / Normal | Agilent SureSelect V6 150bp PE WES | **300×** Tumor / **100×** Normal | Whole Human Exome (~150k exons, GRCh38) & *BRAF*, *HRAS*, *KRAS* hotspots | SEQC2 v1.2.1 Somatic Reference Callset (0 site diffs, `seqc2-truth.json`, `seqc2-exome-tier2.json`, `seqc2-slices-tier2.json`) |
-| **5** | **Illumina Platinum Genomes NA12878 / HG001** | CEPH Utah Mother (gold standard) | Illumina HiSeq 2000 100bp PE WGS | **50×** diploid WGS | chr2:50M–50.2M (GRCh38) | NIST v4.2.1 Truth Benchmark (100% concordance, `multimodal-slices-tier2.json`) |
-| **6** | **Hartwig Medical Foundation COLO829 & COLO829BL** | Skin Melanoma Tumor / Matched Lymphoblastoid Normal | Illumina HiSeq 2500 paired WGS | **100×** Tumor / **60×** Normal | Structural Variant Breakpoints: Inversions (`INVSV`), Duplications (`DUPDiscSV`), CRISPR cut-sites (`CRISPR`) | Somatic Structural Variant Parity Suite (`extended-coverage-tier2.json`, `Colo829.chr20.*.bam`) |
+| **1** | **NIST GIAB HG002 / NA24385** | Ashkenazi Jewish Son (diploid standard) | Illumina NovaSeq 6000 2×250bp WGS | **30×** & **125×** | chr20:10M–30M (GRCh38) & chr1, 19, 20 (GRCh37/b37) | NIST v4.2.1 Truth Benchmark ($F_1 = 0.9699$, 100% Rust-Java parity, [`hg002-truth.json`](../../benchmarks/evidence/hg002-truth.json), [`na24385-b37-truth.json`](../../benchmarks/evidence/na24385-b37-truth.json)) |
+| **2** | **NIST GIAB HG005 / NA24631** | Han Chinese Trio Son (East Asian ancestry) | Illumina HiSeq 2500 (NovoAlign) | **300×** ultra-deep | chr3, chr6 (MHC/HLA), chr21 (GRCh38) | NIST v4.2.1 Truth Benchmark ($F_1 = 0.9667$ optimal, 100% Rust-Java parity, [`hg005-truth.json`](../../benchmarks/evidence/hg005-truth.json)) |
+| **3** | **NIST GIAB HG008 / HG008-T & HG008-N** | Pancreatic Ductal Adenocarcinoma (PDAC) Tumor / Normal | Illumina NovaSeq paired WGS | **195×** Tumor / **169×** Normal | High-depth multi-chromosome slices (GRCh38) | NIST Draft v0.3 Somatic Truth Benchmark (0 site diffs, [`hg008-truth.json`](../../benchmarks/evidence/hg008-truth.json), [`hg008-cram-twin.json`](../../benchmarks/evidence/hg008-cram-twin.json)) |
+| **4** | **FDA SEQC2 HCC1395 & HCC1395BL** | Primary Triple-Negative Breast Cancer Tumor / Normal | Agilent SureSelect V6 150bp PE WES | **300×** Tumor / **100×** Normal | Whole Human Exome (~150k exons, GRCh38) & *BRAF*, *HRAS*, *KRAS* hotspots | SEQC2 v1.2.1 Somatic Reference Callset (0 site diffs, [`seqc2-truth.json`](../../benchmarks/evidence/seqc2-truth.json), [`seqc2-exome-tier2.json`](../../benchmarks/evidence/seqc2-exome-tier2.json), [`seqc2-slices-tier2.json`](../../benchmarks/evidence/seqc2-slices-tier2.json)) |
+| **5** | **Illumina Platinum Genomes NA12878 / HG001** | CEPH Utah Mother (gold standard) | Illumina HiSeq 2000 100bp PE WGS | **50×** diploid WGS | chr2:50M–50.2M (GRCh38) | NIST v4.2.1 Truth Benchmark (100% concordance, [`multimodal-slices-tier2.json`](../../benchmarks/evidence/multimodal-slices-tier2.json)) |
+| **6** | **Hartwig Medical Foundation COLO829 & COLO829BL** | Skin Melanoma Tumor / Matched Lymphoblastoid Normal | Illumina HiSeq 2500 paired WGS | **100×** Tumor / **60×** Normal | Structural Variant Breakpoints: Inversions (`INVSV`), Duplications (`DUPDiscSV`), CRISPR cut-sites (`CRISPR`) | Somatic Structural Variant Parity Suite ([`extended-coverage-tier2.json`](../../benchmarks/evidence/extended-coverage-tier2.json), `Colo829.chr20.*.bam`) |
 | **7** | **ATCC HCC2218 & HCC2218BL** | Primary Breast Duct Carcinoma / Peripheral Blood Normal | Illumina paired-end WES | ~**100×** paired | chr11, chrX:7811737 (GRCh38) | Upstream Integration Regression Corpus (`hcc2218_chr11.bam`, `hcc2218BL_chr11.bam`) |
-| **8** | **Targeted Clinical Amplicon Panels** | Human Oncology Amplicon Panels (`EGFR`, `MRE11a`) | Ultra-deep amplicon sequencing | **> 1,000×** deep target | `EGFR` L861Q & `MRE11a` 8-column BED amplicons (hg19) | 8-column BED primer-trimming & `AMPBIAS` bidirectional filter parity (`amplicon-tier2.json`, `correct_8columns_amplicon.bed`) |
+| **8** | **Targeted Clinical Amplicon Panels** | Human Oncology Amplicon Panels (`EGFR`, `MRE11a`) | Ultra-deep amplicon sequencing | **> 1,000×** deep target | `EGFR` L861Q & `MRE11a` 8-column BED amplicons (hg19) | 8-column BED primer-trimming & `AMPBIAS` bidirectional filter parity ([`amplicon-tier2.json`](../../benchmarks/evidence/amplicon-tier2.json), `correct_8columns_amplicon.bed`) |
 | **9** | **Human Transcriptome RNA-Seq** | Human Spliced RNA-Seq Transcriptome | Illumina 2×100bp (STAR spliced aligner) | Dynamic expression depth | chr8:90.53M–90.62M multi-exon locus (`hg38.fa`) | 4-column intron frequency table parity under `-i` (`Tcov_zero_SV_DEL_candidate3.bam`, `rna_s6*.bam`) |
-| **10** | **Upstream Integration & Micro-Regression Corpus** | Synthetic & Clinical Benchmark Corpus | Multi-platform NGS (Illumina, IonTorrent, simulated) | Multi-depth | Genome-wide 92 integration fixtures | 100% Live Oracle Parity (91 PASS / 1 XFAIL expected fixture defect static assertion, `pr_integration.log`) |
+| **10** | **Upstream Integration & Micro-Regression Corpus** | Synthetic & Clinical Benchmark Corpus | Multi-platform NGS (Illumina, IonTorrent, simulated) | Multi-depth | Genome-wide 92 integration fixtures | 100% Live Oracle Parity (91 PASS / 1 XFAIL expected fixture defect UB-4 asserted via [`harness/run_integration.sh`](../../harness/run_integration.sh) and [`harness/integration_xfail.tsv`](../../harness/integration_xfail.tsv)) |
 
 ### 3.2 Genomic Assets & Cryptographic Checksums
 
@@ -114,17 +125,18 @@ All biological datasets, reference genomes, and truth standards were retrieved f
 | | | EBI SRA / NCBI FTP alignment (`bwa-mem`) | `HCC1395.bam` (~300×)<br>`HCC1395BL.bam` (~100×) | 4.48 GB<br>4.23 GB | `5e2e9d814b0a4107908324ef79e45a2e`<br>`540fc282854bf511c530ce8f414b1a3e` |
 | | | `https://ftp-trace.ncbi.nlm.nih.gov/seqc/ftp/Somatic_Mutation_WG/release/v1.2.1/` | `high-confidence_sSNV_in_HC_regions_v1.2.1.vcf.gz` | 4.82 MB | `243c5795d7502a6dfb2e9b0431a17363` |
 | | | `https://ftp-trace.ncbi.nlm.nih.gov/seqc/ftp/Somatic_Mutation_WG/release/v1.2.1/` | `high-confidence_sINDEL_in_HC_regions_v1.2.1.vcf.gz` | 1.12 MB | `c51d6c8b939e0882e7baec6b21659a51` |
-| **GIAB HG008 Somatic WGS** | NCBI BioProject: `PRJNA576403`<br>BioSample: `SAMN13009778` (Tumor)<br>BioSample: `SAMN13009779` (Normal)| `https://ftp-trace.ncbi.nlm.nih.gov/ReferenceSamples/giab/data/PancreaticCancer/` | `HG008-T.bam` (~195×)<br>`HG008-N.bam` (~169×) | Slices staged in scratch/ | Verified BAM quickcheck |
-| | | `https://ftp-trace.ncbi.nlm.nih.gov/ReferenceSamples/giab/data/PancreaticCancer/` | `HG008-T.cram`<br>`HG008-N.cram` | Native CRAM format | Verified CRAM twin bitwise parity |
+| **GIAB HG008 Somatic WGS** | NCBI BioProject: `PRJNA576403`<br>BioSample: `SAMN13009778` (Tumor)<br>BioSample: `SAMN13009779` (Normal)| `https://ftp-trace.ncbi.nlm.nih.gov/ReferenceSamples/giab/data/PancreaticCancer/` | `HG008-T.bam` (~195×)<br>`HG008-N.bam` (~169×) | Targeted PDAC BAM slices (~140 MB total, staged via `harness/get_multimodal_slices.sh`) | Verified BAM quickcheck & BAI index |
+| | | `https://ftp-trace.ncbi.nlm.nih.gov/ReferenceSamples/giab/data/PancreaticCancer/` | `HG008-T.cram`<br>`HG008-N.cram` | Targeted CRAM slices (~85 MB) | Verified CRAM twin bitwise parity |
 | | | `https://ftp-trace.ncbi.nlm.nih.gov/ReferenceSamples/giab/release/PancreaticCancer/Draft_v0.3/` | `Draft_v0.3_benchmark.vcf.gz` | Draft truth set | Verified MD5 Checksum |
 | **GIAB HG005 Chinese Son** | NCBI BioProject: `PRJNA20069`<br>NIST RM 8392 (NA24631) | `https://ftp-trace.ncbi.nlm.nih.gov/ReferenceSamples/giab/release/ChineseTrio/HG005_NA24631_son/NISTv4.2.1/GRCh38/` | `HG005_GRCh38_1_22_v4.2.1_benchmark.vcf.gz` | 148 MB | Verified MD5 Checksum |
 | **GIAB NA24385 (b37)** | AstraZeneca Integration Corpus | `VarDictJava/testdata/fastas/GRCh37.fa` | `GRCh37.fa` | 3.10 GB | Verified local FASTA |
 
 ---
 
+<a id="pillar-1"></a>
 ## 4. Pillar 1: Primary Germline WGS Validation & NIST GIAB v4.2.1 Benchmark (HG002)
 
-Evaluating VarDictRust against the NIST Genome in a Bottle v4.2.1 benchmark standard across the 20 Mbp euchromatic interval `chr20:10M–30M` on Illumina NovaSeq 6000 2×250bp WGS data (~125× empirical depth):
+Evaluating VarDictRust against the NIST Genome in a Bottle v4.2.1 benchmark standard across the 20 Mbp euchromatic interval `chr20:10M–30M` on Illumina NovaSeq 6000 2×250bp WGS data (~125× empirical depth), automated via [`harness/run_hg002.sh`](../../harness/run_hg002.sh) and certified in [`hg002-tier2.json`](../../benchmarks/evidence/hg002-tier2.json) ([Tier-2 differential parity](../testing/test-matrix-and-ci-audit.md#tier-2)) and [`hg002-truth.json`](../../benchmarks/evidence/hg002-truth.json) ([Tier-3 truth concordance](../testing/test-matrix-and-ci-audit.md#tier-3)):
 
 ### 4.1 Dual-Threshold Truth Concordance Analysis
 
@@ -179,30 +191,33 @@ Evaluating the full receiver operating characteristic (ROC) curve from `weighted
 
 ---
 
+<a id="pillar-2"></a><a id="pillar-3"></a>
 ## 5. Pillar 2 & 3: FDA SEQC2 Somatic Whole Exome & Oncogenic Hotspots (HCC1395/BL)
 
 Evaluated against the FDA SEQC2 Somatic Reference Benchmark (triple-negative breast cancer line HCC1395 vs matched lymphoblastoid normal HCC1395BL):
 
 - **Whole Human Exome Target:** 150,000+ consensus target intervals covering the complete human exome.
 - **Somatic Calling Parameters:** `-f 0.05 --fisher` (5% minimum allele frequency with Fisher's exact test).
-- **Parity Result:** **623,444 variants** called across the exome; **0 diffs** against live VarDictJava oracle.
-- **Ground Truth Concordance:** Evaluated against `high-confidence_sSNV_in_HC_regions_v1.2.1.vcf.gz` and `high-confidence_sINDEL_in_HC_regions_v1.2.1.vcf.gz`; bitwise identical site lists between Rust and Java (**0 site diffs**).
+- **Parity Result:** **623,444 variants** called across the exome; **0 diffs** against live VarDictJava oracle (certified in [`seqc2-exome-tier2.json`](../../benchmarks/evidence/seqc2-exome-tier2.json) and [`seqc2-slices-tier2.json`](../../benchmarks/evidence/seqc2-slices-tier2.json)).
+- **Ground Truth Concordance:** Evaluated against `high-confidence_sSNV_in_HC_regions_v1.2.1.vcf.gz` and `high-confidence_sINDEL_in_HC_regions_v1.2.1.vcf.gz`; bitwise identical site lists between Rust and Java (**0 site diffs**, certified in [`seqc2-truth.json`](../../benchmarks/evidence/seqc2-truth.json)).
 
 ---
 
+<a id="pillar-4"></a>
 ## 6. Pillar 4: GIAB HG008 Somatic PDAC Tumor/Normal WGS & CRAM Twin Parity
 
 Evaluated against high-depth pancreatic ductal adenocarcinoma WGS:
 
 - **Library & Depths:** Illumina NovaSeq 6000 paired WGS (195× tumor / 169× normal).
-- **Parity Result:** **18,426 variants** called across high-depth slices; **0 diffs** against live oracle.
-- **CRAM Twin Decode Parity:** Evaluated against native `.cram` files with reference decode `-G GRCh38_GIABv3.fasta`; outputs are **100% byte-identical** to BAM-derived outputs, confirming zero loss or drift through noodles CRAM decoding.
+- **Parity Result:** **18,426 variants** called across high-depth slices; **0 diffs** against live oracle (certified in [`hg008-tier2.json`](../../benchmarks/evidence/hg008-tier2.json) and somatic truth in [`hg008-truth.json`](../../benchmarks/evidence/hg008-truth.json)).
+- **CRAM Twin Decode Parity:** Evaluated against native `.cram` files with reference decode `-G GRCh38_GIABv3.fasta`; outputs are **100% byte-identical** to BAM-derived outputs, confirming zero loss or drift through noodles CRAM decoding (certified in [`hg008-cram-twin.json`](../../benchmarks/evidence/hg008-cram-twin.json)).
 
 ---
 
+<a id="pillar-9"></a>
 ## 7. Pillar 9: Multi-Modal Multi-Slice 18-Interval Suite Across 9 Chromosomes
 
-The 18 non-overlapping evaluation slices span 9 human chromosomes across both major human reference genome assemblies:
+The 18 non-overlapping evaluation slices span 9 human chromosomes across both major human reference genome assemblies, staged via [`harness/get_multimodal_slices.sh`](../../harness/get_multimodal_slices.sh), evaluated via [`harness/run_multimodal_slices.sh`](../../harness/run_multimodal_slices.sh), and certified in [`multimodal-slices-tier2.json`](../../benchmarks/evidence/multimodal-slices-tier2.json), [`hg005-truth.json`](../../benchmarks/evidence/hg005-truth.json), and [`na24385-b37-truth.json`](../../benchmarks/evidence/na24385-b37-truth.json):
 
 | Pillar | Dataset | Slice ID | Genomic Coordinates | Span | Reference | Biological Target | Primary Code Paths Stressed |
 | :--- | :--- | :---: | :--- | :---: | :--- | :--- | :--- |
@@ -227,6 +242,7 @@ The 18 non-overlapping evaluation slices span 9 human chromosomes across both ma
 
 ---
 
+<a id="pillar-8"></a>
 ## 8. Pillar 8: Nine Extended Operational Modalities Suite
 
 Evaluated via [`harness/run_extended_coverage.sh`](../../harness/run_extended_coverage.sh) and archived in [`benchmarks/evidence/extended-coverage-tier2.json`](../../benchmarks/evidence/extended-coverage-tier2.json):
@@ -251,7 +267,7 @@ Evaluated via [`harness/run_extended_coverage.sh`](../../harness/run_extended_co
 
 VarDictJava holds entire regional chromosome structures in JVM heap collections. On deep WGS mega-regions or whole chromosomes, this causes JVM heap growth exceeding 32 GB, triggering garbage collection thrashing and Out-Of-Memory errors (issues #197, #384).
 
-VarDictRust decomposes regions into **bounded tiles with halo intervals** using RAII streaming (`crates/vardictrust-core/src/regions.rs:98-140` and `lib.rs:248-255`):
+VarDictRust decomposes regions into **bounded tiles with halo intervals** using RAII streaming ([`crates/vardictrust-core/src/regions.rs:98-140`](../../crates/vardictrust-core/src/regions.rs) and [`crates/vardictrust-core/src/lib.rs:248-255`](../../crates/vardictrust-core/src/lib.rs)):
 
 ```
 Region: [ ==================================================================== ]
@@ -297,15 +313,15 @@ Candidate variants starting at 1-based coordinate $\text{pos}$ are recorded into
 
 Standard BAM aligners (e.g. BWA-MEM) soft-clip read ends when an insertion or deletion exceeds 20–30 bp, causing traditional pileup engines to miss large structural variants. VarDict implements active read-level CIGAR modification and local realignment:
 
-1. **Soft-Clip Clustering (`realign.rs`):** Reads with 3′ or 5′ soft-clipped tails $\ge 10$ bp are clustered by clipping breakpoint.
+1. **Soft-Clip Clustering ([`realign.rs`](../../crates/vardictrust-core/src/realign.rs)):** Reads with 3′ or 5′ soft-clipped tails $\ge 10$ bp are clustered by clipping breakpoint.
 2. **Anchor Matching & Extension:** The soft-clipped sequence is searched against the reference genome within a local search window (controlled by `-I 50` and `-X 2`).
-3. **CIGAR Rewrite (`cigar/modify.rs`):** If a high-affinity alignment is found, the CIGAR string is rewritten (e.g. converting `70M30S` into `70M30I` or `70M25D5M`), rescuing the variant into the candidate pileup.
+3. **CIGAR Rewrite ([`cigar/modify.rs`](../../crates/vardictrust-core/src/cigar/modify.rs)):** If a high-affinity alignment is found, the CIGAR string is rewritten (e.g. converting `70M30S` into `70M30I` or `70M25D5M`), rescuing the variant into the candidate pileup.
 
 ---
 
 ### 9.3 Paired Somatic Subtraction & Classification
 
-In `SomaticMode` (`crates/vardictrust-core/src/postprocess/somatic.rs`), candidate variants from tumor and normal BAMs are combined and classified according to the `SomaticPostProcessModule.determinateType` decision tree:
+In `SomaticMode` ([`crates/vardictrust-core/src/postprocess/somatic.rs`](../../crates/vardictrust-core/src/postprocess/somatic.rs)), candidate variants from tumor and normal BAMs are combined and classified according to the `SomaticPostProcessModule.determinateType` decision tree:
 
 - **`StrongSomatic`:** High-confidence somatic mutation.
   $$\left(\text{AF}\_{\text{normal}} < \text{lofreq} \; (0.05) \;\lor\; \text{Cov}\_{\text{normal}} \le 1\right) \;\land\; \text{SSF} \le 0.05 \;\land\; \text{VD}\_{\text{tumor}} \ge \text{min-reads} \; (2)$$
@@ -323,7 +339,7 @@ In `SomaticMode` (`crates/vardictrust-core/src/postprocess/somatic.rs`), candida
 In `AmpliconMode` (`-a 10:0.95`), target intervals are supplied as an 8-column BED containing both the full amplicon boundary (`start`..`end`) and the primer-trimmed insert boundary (`thickStart`..`thickEnd`).
 
 #### AMPBIAS Mathematical Formula
-In `var2vcf_valid.pl:185` and `crates/vardictrust-core/src/output/vcf.rs:472-476`:
+In `var2vcf_valid.pl:185` and [`crates/vardictrust-core/src/output/vcf.rs:472-476`](../../crates/vardictrust-core/src/output/vcf.rs):
 
 $$
 \text{AMPBIAS} \iff (\text{GDAMP} < \text{TLAMP} - \text{NCAMP}) \;\lor\; \text{AMPFLAG}
@@ -335,7 +351,7 @@ $$
 - **`AMPFLAG` (Conflicting Variants):** True if two different amplicons covering the locus report conflicting good variants.
 
 #### Read Filtering Algorithm (`-a distance:fraction`)
-In `cigar/parse.rs:2915-2963`, a read is dropped if its alignment coordinates $[segstart, segend]$ relative to the amplicon $[regstart, regend]$ satisfy:
+In [`crates/vardictrust-core/src/cigar/parse.rs:2915-2963`](../../crates/vardictrust-core/src/cigar/parse.rs), a read is dropped if its alignment coordinates $[segstart, segend]$ relative to the amplicon $[regstart, regend]$ satisfy:
 
 $$
 \text{Drop} \iff \Big(|segstart - regstart| > 10\Big) \;\lor\; \Big(|segend - regend| > 10\Big) \;\lor\; \left(\frac{|\max(segstart, regstart) - \min(segend, regend)|}{segend - segstart} \le 0.95\right)
@@ -401,7 +417,7 @@ $$
 | **`-P`** | `read_pos` | `5.0` (Eng)<br>`8.0` (VCF) | `variations/mod.rs:644`<br>`output/vcf.rs:377` | **Engine:** Fail if $pmean < 5.0$<br>**VCF Filter (`p8`):** Filter if $pmean < 8.0$ |
 | **`-m`** | `max_mismatches` | `8` (Eng)<br>`5.25` (VCF) | `cigar/parse.rs:151`<br>`output/vcf.rs:408` | **BAM Parse:** Drop read if $\text{NM} - (I + D) > 8$<br>**VCF Filter (`NM5.25`):** Filter if $nm > 5.25$ |
 | **`-V`** | `lofreq` | `0.05` (5%) | `postprocess/somatic.rs:683, 688` | **Germline:** Standard $\text{AF} > 1.0 - 0.05 \implies \text{Germline}$<br>**Somatic:** Normal $\text{AF} < 0.05 \lor \text{Cov} \le 1 \implies \text{StrongSomatic}$ |
-| **`-F`** | `flag_filter` | `0x504` (1284) | `bam.rs:441, 457`<br>`cigar/parse.rs:141` | **BAM Parse:** Drop read if $(\text{FLAG} \;\&amp;\; \text{0x504}) \neq 0$<br>*(0x4 unmapped, 0x100 secondary, 0x400 duplicate, 0x800 supplementary)* |
+| **`-F`** | `flag_filter` | `0x504` (1284) | `bam.rs:441, 457`<br>`cigar/parse.rs:141` | **BAM Parse:** Drop read if $(\text{FLAG} \ \& \ \text{0x504}) \neq 0$<br>*(0x4 unmapped, 0x100 secondary, 0x400 duplicate, 0x800 supplementary)* |
 | **`-L`** | `sv_min_len` | `1000` bp | `tovars.rs:663, 673`<br>`somatic.rs:550` | $\text{Length}_{\text{INS}} > 1000 \implies \text{Format as } \text{\<INS\>}$<br>$\text{Length}_{\text{DEL}} \ge 1000 \implies \text{Format as } \text{\<DEL\>}$ |
 | **`-w`** | `sv_read_len` | `300` bp | `cigar/parse.rs:2193` | Discordant SV candidate insert size cutoff: |
 | **`-W`** | `sv_flanking` | `100` bp | `cigar/parse.rs:2194` | $\lvert\text{TLEN}\rvert > w + (A \cdot W)$ |
@@ -470,15 +486,15 @@ VarDictRust faithfully emulates this exact upstream filter token mapping, ensuri
 
 ## 12. Empirical Performance & Memory Scaling
 
-All benchmarks were recorded on identical hardware (AMD Ryzen / Ubuntu 24.04 LTS, NVMe SSD) pinned to 8 CPU threads under resource limits (8 threads, nice/ionice):
+All benchmarks were recorded on identical dedicated hardware (AMD Ryzen, Ubuntu 24.04 LTS, NVMe SSD) pinned to 8 CPU threads following the standardized benchmarking protocol in [`benchmarks/README.md`](../../benchmarks/README.md) and certified against [`perf-budget.json`](../../benchmarks/evidence/perf-budget.json):
 
-| Workload / Benchmark | Threads | VarDictJava Wall Time | VarDictRust Wall Time | Speedup Ratio | VarDictJava Peak RSS | VarDictRust Peak RSS | Memory Scaling Ratio |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Targeted Amplicon Panel** | 8 cores | 0:02.10 | 0:00.07 | **30.0× faster** | 120.8 MB | 50.8 MB | 0.42× (2.4× lower) |
-| **GIAB HG002 (chr20:10M–30M, 30×)** | 8 cores | 4:16.98 | 1:22.47 | **3.1× faster** | 3.6 GB | 1.1 GB | 0.30× (3.3× lower) |
-| **SEQC2 HCC1395 Somatic Exome** | 8 cores | 54:23.00 | 19:45.73 | **2.8× faster** | 4.1 GB | 1.4 GB | 0.36× (2.8× lower) |
-| **GIAB HG008 Somatic PDAC** | 8 cores | 1:10.99 | 0:49.48 | **1.4× faster** | 5.7 GB | 1.2 GB | 0.21× (4.8× lower) |
-| **Whole Chromosome 1 Scale (249 Mbp)** | 1 → 8 cores | 57m 16s (1 core) | 11m 49s (8 cores) | **4.85× parallel** | OOM / Unbounded | 2.9 GB (249 Mb) vs 2.1 GB (10 Mb) | **1.39× flat RSS scaling** |
+| Workload / Benchmark | Threads | VarDictJava Wall Time | VarDictRust Wall Time | Speedup Ratio | VarDictJava Peak RSS | VarDictRust Peak RSS | Memory Scaling Ratio | Evidence Artifact |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :---: |
+| **Targeted Amplicon Panel** | 8 cores | 0:02.10 | 0:00.07 | **30.0× faster** | 120.8 MB | 50.8 MB | 0.42× (2.4× lower) | [`amplicon-tier2.json`](../../benchmarks/evidence/amplicon-tier2.json) |
+| **GIAB HG002 (chr20:10M–30M, 30×)** | 8 cores | 4:16.98 | 1:22.47 | **3.1× faster** | 3.6 GB | 1.1 GB | 0.30× (3.3× lower) | [`hg002-tier2.json`](../../benchmarks/evidence/hg002-tier2.json) |
+| **SEQC2 HCC1395 Somatic Exome** | 8 cores | 54:23.00 | 19:45.73 | **2.8× faster** | 4.1 GB | 1.4 GB | 0.36× (2.8× lower) | [`seqc2-exome-tier2.json`](../../benchmarks/evidence/seqc2-exome-tier2.json) |
+| **GIAB HG008 Somatic PDAC** | 8 cores | 1:10.99 | 0:49.48 | **1.4× faster** | 5.7 GB | 1.2 GB | 0.21× (4.8× lower) | [`hg008-tier2.json`](../../benchmarks/evidence/hg008-tier2.json) |
+| **Whole Chromosome 1 Scale (249 Mbp)** | 1 → 8 cores | 57m 16s (1 core) | 11m 49s (8 cores) | **4.85× parallel** | OOM / Unbounded | 2.9 GB (249 Mb) vs 2.1 GB (10 Mb) | **1.39× flat RSS scaling** | [`scale.json`](../../benchmarks/evidence/scale.json) |
 
 ### 12.1 Memory Scaling: Why VarDictRust Scales to WGS
 VarDictJava holds entire regional chromosome structures in JVM heap collections, leading to JVM heap exhaustion and Out-Of-Memory errors on deep WGS (issues #197, #384).
@@ -492,7 +508,7 @@ VarDictRust processes genomic regions via **bounded tiles with halo intervals** 
 
 ## 13. Unified Audit Trail & Evidence Manifest
 
-Every claim in this omnibus report is backed by a permanent, machine-readable evidence artifact in [`benchmarks/evidence/`](../../benchmarks/evidence/). All artifacts are cryptographically bound to the certified release engine fingerprint `dace5891208a52d2`:
+Every claim in this omnibus report is backed by a permanent, machine-readable evidence artifact in [`benchmarks/evidence/`](../../benchmarks/evidence/), cataloged in the [Benchmark Specification & Ledger](../../benchmarks/README.md). All artifacts are cryptographically bound to the certified release engine fingerprint `dace5891208a52d2`:
 
 | Evidence File | Release Fingerprint | SHA-256 Checksum | Validation Role & Scope |
 | :--- | :---: | :--- | :--- |
@@ -517,15 +533,19 @@ Every claim in this omnibus report is backed by a permanent, machine-readable ev
 
 ## 14. Exact Reproduction Commands
 
-All benchmark suites are 100% reproducible on any POSIX system equipped with `samtools`, JDK 8+, and the `vardict-oracle` conda environment:
+All benchmark suites are 100% reproducible on any POSIX system equipped with `samtools`, JDK 8+, and the `vardict-oracle` conda environment (setup via [`harness/setup_oracle.sh`](../../harness/setup_oracle.sh)):
 
-### 14.1 GIAB HG002 Unified First-Class Validation Runner
+### 14.1 GIAB HG002 Unified First-Class Validation Runner (Tier-2 & Tier-3)
 ```bash
 bash harness/run_hg002.sh
 ```
 
-### 14.2 SEQC2 Somatic Whole-Exome Comparison
+### 14.2 SEQC2 Somatic Whole-Exome Comparison (Tier-2 & Tier-3)
 ```bash
+# 1. Fetch reference genome and SEQC2 assets (configured via DATA_DIR, default: scratch/g4)
+bash harness/fetch_data.sh refs seqc2
+
+# 2. Run SEQC2 Somatic Whole-Exome differential comparison (Tier-2)
 bash harness/compare.sh \
   scratch/g4/ref/d1vd1/GRCh38.d1.vd1.fa \
   "scratch/g4/seqc2/HCC1395.bam|scratch/g4/seqc2/HCC1395BL.bam" \
@@ -533,8 +553,12 @@ bash harness/compare.sh \
   "HCC1395|HCC1395BL" -th 8
 ```
 
-### 14.3 Targeted Amplicon Panel Comparison
+### 14.3 Targeted Amplicon Panel Comparison (Tier-2)
 ```bash
+# 1. Prepare amplicon overlapping panel fixture
+bash harness/get_amplicon_fixture.sh
+
+# 2. Run targeted amplicon panel differential comparison (Tier-2)
 bash harness/compare.sh \
   scratch/g4/amplicon/ref.fa \
   scratch/g4/amplicon/amplicon.bam \
@@ -542,18 +566,31 @@ bash harness/compare.sh \
   SAMPLE -a 10:0.95 -th 8
 ```
 
-### 14.4 Extended Modality Suite (Pillar 8)
+### 14.4 Extended Modality Suite (Pillar 8, Tier-2)
 ```bash
 bash harness/run_extended_coverage.sh
 ```
 
-### 14.5 Multi-Slice Multi-Modal Dataset Expansion Suite (Pillar 9)
+### 14.5 Multi-Slice Multi-Modal Dataset Expansion Suite (Pillar 9, Tier-2)
 ```bash
-# Ingest and stream BAM slices (<3 minutes, <150 MB total disk space)
+# 1. Ingest and stage multi-modal BAM slices (<3 minutes, <150 MB total disk space)
 bash harness/get_multimodal_slices.sh
 
-# Run the 18-slice dual-engine parity suite under resource limits (max 8 threads)
-EST_MIN=15 bash harness/courtesy.sh bash harness/run_multimodal_slices.sh
+# 2. Run the 18-slice dual-engine differential parity suite (Tier-2)
+bash harness/run_multimodal_slices.sh
+
+# Note: On shared multi-tenant hosts, execution may optionally be wrapped with harness/courtesy.sh:
+# EST_MIN=15 bash harness/courtesy.sh bash harness/run_multimodal_slices.sh
+```
+
+### 14.6 Master Upstream Integration Regression Corpus (Pillar 6, Tier-1)
+```bash
+bash harness/run_integration.sh
+```
+
+### 14.7 Master Compound Release Acceptance Gate
+```bash
+bash harness/acceptance.sh
 ```
 
 ---

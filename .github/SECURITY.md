@@ -34,6 +34,7 @@ Reports submitted through Private Vulnerability Reporting are confidential, encr
 If GitHub Private Vulnerability Reporting is unavailable or you require direct communication with the project maintainer, report via encrypted or direct email:
 - **Security Contact:** Palak Sheth (`palakpsheth@gmail.com`)
 - **Subject Prefix:** `[SECURITY] VarDictRust Vulnerability Report`
+- **PGP Encryption:** For confidential vulnerability disclosures or sensitive proof-of-concept artifacts (e.g. malformed BAMs/CRAMs), please request our public PGP key via an initial email before transmitting unencrypted payload attachments.
 
 ---
 
@@ -61,4 +62,4 @@ We commit to the following Service Level Agreement (SLA) for confirmed reports:
 
 ### Out of Scope (Scientific Parity Heuristics)
 - Differences in variant calling sensitivity, specificity, or allele frequency thresholds that reflect intentional adherence to the **VarDictJava v1.8.3 reference implementation** (the project's prime directive).
-- Known upstream VarDictJava algorithmic quirks or heuristics (which are documented in [`DIVERGENCES.md`](../DIVERGENCES.md) and governed post-1.0 by the `--fix <id>` opt-in flags per [`ROADMAP.md`](../ROADMAP.md)).
+- Known upstream VarDictJava algorithmic quirks, edge-case arithmetic, or heuristics (which are documented in [`DIVERGENCES.md`](../DIVERGENCES.md), cataloged in [`docs/upstream-bugs.md`](../docs/upstream-bugs.md), and governed post-1.0 by the `--fix <id>` opt-in flags per [`ROADMAP.md`](../ROADMAP.md)).

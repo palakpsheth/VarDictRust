@@ -18,7 +18,7 @@ This architecture operates on two complementary pillars:
 - **Pillar A (Biological Parity & Empirical Truth):** Documented in the [Omnibus Master Empirical Validation Report](../validation/omnibus-empirical-validation.md), verifying variant-level concordance against gold-standard consortium benchmarks (NIST GIAB, FDA SEQC2, Hartwig) across GRCh38 and GRCh37.
 - **Pillar B (Engineering Mechanics & Verification Pipeline):** Documented in this report, establishing the software testing hierarchy, developer feedback loops, crash resilience corpus, statistical invariants, continuous performance budgets, and SLSA-attested CI/CD workflows.
 
-Across all testing layers, VarDictRust executes **208 automated Cargo workspace tests** (Level 1: Unit & Component Tests), **92 integration regression testcases** (Level 2: Upstream Integration Regression Corpus), **17 differential parity benchmarks** (Level 3: Dual-Engine Differential Parity Testing, backed by 16 committed evidence JSONs), **5 ground truth concordance evaluations** via `rtg vcfeval` (Level 4: Ground Truth Concordance Benchmarking, all certified EQUAL), **4 continuous performance budgets** (Level 5: Performance & Memory Budgets), **14 diagnostic self-tests** (Level 6: Diagnostic Self-Tests), and **automated pre-PR and release acceptance compound gates** (Level 7: Pre-PR & Release Acceptance Compound Gates) alongside **3 automated cloud CI/CD pipelines**.
+Across all testing layers, VarDictRust executes **208 automated Cargo workspace tests** ([Level 1](#level-1): Unit & Component Tests), **92 integration regression testcases** ([Level 2](#level-2): Upstream Integration Regression Corpus), **17 differential parity benchmarks** ([Level 3](#level-3): Dual-Engine Differential Parity Testing), **16 committed evidence JSONs** (spanning differential parity, robustness twins, truth concordance, performance budgets, and musl packaging), **5 ground truth concordance evaluations** via `rtg vcfeval` ([Level 4](#level-4): Ground Truth Concordance Benchmarking, all certified EQUAL), **4 continuous performance budgets** ([Level 5](#level-5): Performance & Memory Budgets), **16 diagnostic self-tests** ([Level 6](#level-6): Diagnostic Self-Tests), and **automated pre-PR and release acceptance compound gates** ([Level 7](#level-7): Pre-PR & Release Acceptance Compound Gates) alongside **3 automated cloud CI/CD pipelines**.
 
 ```mermaid
 flowchart TD
@@ -43,7 +43,7 @@ flowchart TD
         I2["Live Oracle Parity\n(100% byte-identical across all 92 fixtures)"]
     end
 
-    subgraph Level3 ["Level 3: Dual-Engine Differential Parity Testing"]
+    subgraph Level3 ["Level 3: Dual-Engine Differential Parity Testing (Tier-2)"]
         D_Micro["fixtures/micro/ (Synthetic Micro BAM)"]
         D_Slices["harness/slices.tsv (10 Standard Slices: s1a-s9)"]
         D_Pub["Public Cohorts: HG008, SEQC2 Exome, HG002, Amplicon"]
@@ -51,7 +51,7 @@ flowchart TD
         D_Multi["Multi-Cohort Slice Suite (18 Slices across 6 Cohorts)"]
     end
 
-    subgraph Level4 ["Level 4: Ground Truth Concordance Benchmarking (GIAB / SEQC2)"]
+    subgraph Level4 ["Level 4: Ground Truth Concordance Benchmarking (Tier-3)"]
         T_HG002["GIAB HG002 NIST v4.2.1 (F1: 0.9699, EQUAL)"]
         T_SEQC2["SEQC2 HCC1395 v1.2.1 Somatic (EQUAL)"]
         T_HG008["GIAB HG008 NIST Draft v0.3 (EQUAL)"]
@@ -65,8 +65,8 @@ flowchart TD
         S_Budg["harness/perf_budget.py (4 Targets: HG008, SEQC2, HG002, Amp)"]
     end
 
-    subgraph Level6 ["Level 6: Diagnostic Self-Tests (14 Tests)"]
-        H_Self["bash harness/run_self_tests.sh\n(Comparator, Evidence, VCF Header, Courtesy, BAM edges)"]
+    subgraph Level6 ["Level 6: Diagnostic Self-Tests (16 Tests)"]
+        H_Self["bash harness/run_self_tests.sh\n(Comparator, Evidence, VCF Header, Resource Throttling, BAM edges)"]
     end
 
     subgraph Level7 ["Level 7: Pre-PR & Release Acceptance Compound Gates"]
@@ -93,6 +93,33 @@ flowchart TD
 
 ---
 
+<a id="tier-1"></a>
+<a id="tier-1-corpus-var"></a>
+<a id="tier-2"></a>
+<a id="tier-2-live-dual-engine-differential"></a>
+<a id="tier-3"></a>
+<a id="tier-3-biological-truth-concordance"></a>
+### 1.1 Verification Tiers (Tier-1, Tier-2, Tier-3) vs Seven-Level Test Architecture
+
+VarDictRust organizes scientific variant calling validation into three rigorous **Verification Tiers**, mapped directly to its **Seven-Level Engineering Architecture**:
+
+#### Tier-1: Corpus Intermediate Table Parity (`.var` Tables)
+- **Definition:** Evaluates the engine's intermediate tabular output generated prior to VCF serialization using `python3 harness/compare_var.py golden/<case>.var <ours.var>`.
+- **Validation Scope:** Enforces exact column count schemas across calling modes (Simple **36/38**, Amplicon **38/40**, Somatic **55/61**), raw float formatting vs banker's rounding, strand bias contingency counts, and candidate classification strings.
+- **Architectural Mapping:** Operationalized in **Level 1** (table serialization unit tests) and **Level 2** (the 92-fixture upstream integration regression corpus; Release Acceptance Gate Item 2).
+
+#### Tier-2: Live Dual-Engine Differential Parity (VCF Differential vs Oracle)
+- **Definition:** Executes VarDictRust and VarDictJava v1.8.3 concurrently on identical BAM/CRAM alignment inputs, feeding both outputs into `harness/compare_vcf.py` under strict IEEE 754 half-even float tolerance $\varepsilon \le 10^{-6}$.
+- **Validation Scope:** Aligns records strictly by `CHROM:POS:REF:ALT`, asserting 100% exact parity across FILTER decisions, INFO tags, FORMAT genotype fields, and variant types. Requires exactly **0 variant discrepancies**.
+- **Architectural Mapping:** Operationalized as **Level 3: Dual-Engine Differential Parity Testing** (micro fixture, 10 standard slices `s1a`–`s9`, 9-modality extended coverage suite, 18 multimodal slices across 6 cohorts, and whole-cohort WGS/WES sweeps; Release Acceptance Gate Item 3).
+
+#### Tier-3: Biological Ground Truth Concordance (NIST GIAB / SEQC2 via `rtg vcfeval`)
+- **Definition:** Evaluates variant calling performance independently against orthogonally certified physical truth datasets using Real Time Genomics `rtg vcfeval`.
+- **Validation Scope:** Measures biological precision, recall, and $F_1$ score against high-confidence gold standards (NIST GIAB v4.2.1, FDA SEQC2 Somatic v1.2.1). Proves the **rewrites.bio Transitivity Principle**: because $\text{VarDictRust} \equiv \text{VarDictJava}$, their concordance against biological reality is bitwise site-identical (`diff tp/fp/fn.sites == 0`).
+- **Architectural Mapping:** Operationalized as **Level 4: Ground Truth Concordance Benchmarking** (Release Acceptance Gate Item 6).
+
+---
+
 ## 2. Master Verification Matrix
 
 The table below summarizes the complete testing inventory executed across the development and release lifecycle:
@@ -101,35 +128,37 @@ The table below summarizes the complete testing inventory executed across the de
 | :---: | :--- | :--- | :---: | :--- | :--- | :---: |
 | **Pre** | **Pre-Commit Hook (Track A)** | `.githooks/pre-commit` | 3 checks | `git commit` (local) | fmt, clippy, gitleaks clean | $<3\text{ s}$ |
 | **Pre** | **Pre-Commit Hook (Track B)** | `.pre-commit-config.yaml` | 6 hooks | `git commit` (local) | yaml, toml, whitespace, gitleaks | $<4\text{ s}$ |
-| **1** | **Level 1: Core Library Tests** | `crates/vardictrust-core/src/` | 188 tests | `cargo test -p vardictrust-core` | 0 failures, 0 panics | $\sim 2\text{ s}$ |
-| **1** | **Level 1: CLI Front-End Tests** | `crates/vardictrust/src/` | 13 tests | `cargo test -p vardictrust --bin vardictrust` | 0 failures, 0 panics | $<0.1\text{ s}$ |
-| **1** | **Level 1: Crash Robustness Corpus** | `crates/vardictrust/tests/robustness.rs` | 5 tests | `cargo test --test robustness` | PR #402, missing BAI, 0-tile pass | $\sim 0.2\text{ s}$ |
-| **1** | **Level 1: Thread Determinism** | `crates/vardictrust/tests/thread_determinism.rs` | 1 test | `cargo test --test thread_determinism` | Bitwise identical VCF (1, 2, 4, 8 thr) | $\sim 0.2\text{ s}$ |
-| **1** | **Level 1: Release Metadata & AI** | `crates/vardictrust/tests/version.rs` | 1 test | `cargo test --test version` | Lai (2016) cited, AI disclosed | $<0.01\text{ s}$ |
-| **2** | **Level 2: Integration Regression Corpus**| `harness/run_integration.sh` | 92 fixtures | PR gate & Acceptance Item 2 | `91 PASS / 1 XFAIL` (UB-4 signature) | $\sim 8\text{ s}$ |
-| **3** | **Level 3: Micro Differential** | `fixtures/micro/` | 1 fixture | PR gate & Acceptance Item 3 | Live Oracle MATCH (0 diffs) | $\sim 2\text{ s}$ |
-| **3** | **Level 3: Standard Slices** | `harness/slices.tsv` (`s1a`–`s9`) | 10 slices | Inner loop (`rgate`) & Acceptance Item 3 | Live Oracle MATCH (0 diffs) | $\sim 45\text{ s}$ |
-| **3** | **Level 3: Primary Public WGS/WES** | `hg008`, `seqc2`, `hg002`, `amplicon` | 4 cohorts | Evidence recertification & Acceptance | MATCH ($\varepsilon \le 10^{-6}$, 0 diffs) | $\sim 25\text{ m}$ |
-| **3** | **Level 3: Extended Modalities** | `harness/run_extended_coverage.sh` | 9 modes | Release Acceptance Item 3 | MATCH (RNA, SVs, flags, 0 diffs) | $\sim 30\text{ s}$ |
-| **3** | **Level 3: Multi-Slice Expansion** | `harness/run_multimodal_slices.sh` | 18 slices | Release Acceptance Item 3 | MATCH (6 cohorts, 9 chrs, 0 diffs) | $\sim 35\text{ s}$ |
-| **4** | **Level 4: Truth Concordance (HG002)** | `harness/concordance_germline.sh` | 1 evaluation | Release Acceptance Item 6 | $F_1 = 0.9699$, Bitwise Site EQUAL | $\sim 2\text{ m}$ |
-| **4** | **Level 4: Truth Concordance (SEQC2)** | `harness/concordance.sh seqc2` | 1 evaluation | Release Acceptance Item 6 | $F_1 = 0.1555$, Bitwise Site EQUAL | $\sim 4\text{ m}$ |
-| **4** | **Level 4: Truth Concordance (HG008)** | `harness/concordance.sh hg008` | 1 evaluation | Release Acceptance Item 6 | $F_1 = 0.3856$, Bitwise Site EQUAL | $\sim 1\text{ m}$ |
-| **4** | **Level 4: Truth Concordance (HG005)** | `harness/concordance_multimodal.sh` | 1 evaluation | Ground Truth Verification Gate | $F_1 = 0.9667$, Bitwise Site EQUAL | $\sim 5\text{ s}$ |
-| **4** | **Level 4: Truth Concordance (NA24385 b37)** | `harness/concordance_multimodal.sh`| 1 evaluation | Ground Truth Verification Gate | $F_1 = 1.0000$, Bitwise Site EQUAL | $\sim 5\text{ s}$ |
-| **5** | **Level 5: Whole Chromosome 1 Scale** | `harness/scale_bench.sh` | 1 benchmark | Release Acceptance Item 5 | $S_8 \ge 4.8\times$, Peak RSS $\le 1.5\times$ | $\sim 12\text{ m}$ |
-| **5** | **Level 5: Continuous Perf Budget** | `harness/perf_budget.py` | 4 targets | PR gate Stage 5 & Acceptance Item 5 | Runtime $\le +5\%$, RAM ratio $\le 1.0$ | $\sim 0.5\text{ s}$ |
-| **6** | **Level 6: Diagnostic Self-Tests** | `bash harness/run_self_tests.sh` | 14 scripts | Automated Diagnostics Runner | Exit code 0 across all 14 tests | $\sim 10\text{ s}$ |
-| **7** | **Level 7: Inner Developer Gate** | `harness/rgate.sh` | Compound | Developer inner loop | Cargo + Corpus + Micro + 5 slices PASS | $\sim 28\text{ s}$ |
-| **7** | **Level 7: Standard PR Gate** | `harness/pr_check.sh` | 6 stages | Pre-PR validation | Stages 1–6 PASS (Hygiene, Corpus, Perf) | $\sim 35\text{ s}$ |
-| **7** | **Level 7: Release Acceptance Gate** | `harness/acceptance.sh` | 8 items | Release qualification gate | Items 1–8 PASS under fingerprint | $\sim 1\text{ m}$ |
+| **1** | [**Level 1: Core Library Tests**](#level-1) | `crates/vardictrust-core/src/` | 188 tests | `cargo test -p vardictrust-core` | 0 failures, 0 panics | $\sim 2\text{ s}$ |
+| **1** | [**Level 1: CLI Front-End Tests**](#level-1) | `crates/vardictrust/src/` | 13 tests | `cargo test -p vardictrust --bin vardictrust` | 0 failures, 0 panics | $<0.1\text{ s}$ |
+| **1** | [**Level 1: Crash Robustness Corpus**](#level-1) | `crates/vardictrust/tests/robustness.rs` | 5 tests | `cargo test --test robustness` | PR #402, missing BAI, 0-tile pass | $\sim 0.2\text{ s}$ |
+| **1** | [**Level 1: Thread Determinism**](#level-1) | `crates/vardictrust/tests/thread_determinism.rs` | 1 test | `cargo test --test thread_determinism` | Bitwise identical VCF (1, 2, 4, 8 thr) | $\sim 0.2\text{ s}$ |
+| **1** | [**Level 1: Release Metadata & AI**](#level-1) | `crates/vardictrust/tests/version.rs` | 1 test | `cargo test --test version` | Lai (2016) cited, AI disclosed | $<0.01\text{ s}$ |
+| **2** | [**Level 2: Integration Regression Corpus**](#level-2)| `harness/run_integration.sh` | 92 fixtures | PR gate & Acceptance Item 2 | `91 PASS / 1 XFAIL` (UB-4 signature) | $\sim 8\text{ s}$ |
+| **3** | [**Level 3: Micro Differential**](#level-3) | `fixtures/micro/` | 1 fixture | PR gate & Acceptance Item 3 | Live Oracle MATCH (0 diffs) | $\sim 2\text{ s}$ |
+| **3** | [**Level 3: Standard Slices**](#level-3) | `harness/slices.tsv` (`s1a`–`s9`) | 10 slices | Inner loop (`rgate`) & Acceptance Item 3 | Live Oracle MATCH (0 diffs) | $\sim 45\text{ s}$ |
+| **3** | [**Level 3: Primary Public WGS/WES**](#level-3) | `hg008`, `seqc2`, `hg002`, `amplicon` | 4 cohorts | Evidence recertification & Acceptance | MATCH ($\varepsilon \le 10^{-6}$, 0 diffs) | $\sim 25\text{ m}$ |
+| **3** | [**Level 3: Extended Modalities**](#level-3) | `harness/run_extended_coverage.sh` | 9 modes | Release Acceptance Item 3 | MATCH (RNA, SVs, flags, 0 diffs) | $\sim 30\text{ s}$ |
+| **3** | [**Level 3: Multi-Slice Expansion**](#level-3) | `harness/run_multimodal_slices.sh` | 18 slices | Release Acceptance Item 3 | MATCH (6 cohorts, 9 chrs, 0 diffs) | $\sim 35\text{ s}$ |
+| **4** | [**Level 4: Truth Concordance (HG002)**](#level-4) | `harness/concordance_germline.sh` | 1 evaluation | Release Acceptance Item 6 | $F_1 = 0.9699$, Bitwise Site EQUAL | $\sim 2\text{ m}$ |
+| **4** | [**Level 4: Truth Concordance (SEQC2)**](#level-4) | `harness/concordance.sh seqc2` | 1 evaluation | Release Acceptance Item 6 | $F_1 = 0.1555$, Bitwise Site EQUAL | $\sim 4\text{ m}$ |
+| **4** | [**Level 4: Truth Concordance (HG008)**](#level-4) | `harness/concordance.sh hg008` | 1 evaluation | Release Acceptance Item 6 | $F_1 = 0.3856$, Bitwise Site EQUAL | $\sim 1\text{ m}$ |
+| **4** | [**Level 4: Truth Concordance (HG005)**](#level-4) | `harness/concordance_multimodal.sh` | 1 evaluation | Ground Truth Verification Gate | $F_1 = 0.9667$, Bitwise Site EQUAL | $\sim 5\text{ s}$ |
+| **4** | [**Level 4: Truth Concordance (NA24385 b37)**](#level-4)| `harness/concordance_multimodal.sh`| 1 evaluation | Ground Truth Verification Gate | $F_1 = 1.0000$, Bitwise Site EQUAL | $\sim 5\text{ s}$ |
+| **5** | [**Level 5: Whole Chromosome 1 Scale**](#level-5) | `harness/scale_bench.sh` | 1 benchmark | Release Acceptance Item 5 | $S_8 \ge 4.8\times$, Peak RSS $\le 1.5\times$ | $\sim 12\text{ m}$ |
+| **5** | [**Level 5: Continuous Perf Budget**](#level-5) | `harness/perf_budget.py` | 4 targets | PR gate Stage 5 & Acceptance Item 5 | Runtime $\le +5\%$, RAM ratio $\le 1.0$ | $\sim 0.5\text{ s}$ |
+| **6** | [**Level 6: Diagnostic Self-Tests**](#level-6) | `bash harness/run_self_tests.sh` | 16 scripts | Automated Diagnostics Runner | Exit code 0 across all 16 tests | $\sim 10\text{ s}$ |
+| **7** | [**Level 7: Inner Developer Gate**](#level-7) | `harness/rgate.sh` | Compound | Developer inner loop | Cargo + Corpus + Micro + 5 slices PASS | $\sim 28\text{ s}$ |
+| **7** | [**Level 7: Standard PR Gate**](#level-7) | `harness/pr_check.sh` | 6 stages | Pre-PR validation | Stages 1–6 PASS (Hygiene, Corpus, Perf) | $\sim 35\text{ s}$ |
+| **7** | [**Level 7: Release Acceptance Gate**](#level-7) | `harness/acceptance.sh` | 8 items | Release qualification gate | Items 1–8 PASS under fingerprint | $\sim 1\text{ m}$ |
 | **CI** | **Cloud CI: Test Matrix** | `.github/workflows/ci.yml` | 7 jobs/steps | Git push to `main` & PRs | Build, Test, Corpus, Robustness PASS | $\sim 3\text{ m}$ |
 | **CI** | **Cloud CI: Security Audits** | `.github/workflows/security.yml` | 3 audits | Weekly cron, push `main`, PRs | Gitleaks, Deny, Audit PASS | $\sim 1\text{ m}$ |
 | **CI** | **Cloud CI: Packaging & Provenance** | `.github/workflows/release.yml` | Dist/SLSA | Git tag push (`v1.0.0`) | Musl PIE binary, SLSA 3 attestations | $\sim 6\text{ m}$ |
 
 ---
 
-## 3. Granular Breakdown of Cargo Workspace Tests (208 Total)
+<a id="level-1"></a>
+<a id="level-1-unit--component-tests-208-total"></a>
+## 3. Level 1: Unit & Component Tests (208 Cargo Workspace Tests)
 
 Executing `cargo test --workspace` validates **208 tests** across `crates/vardictrust-core`, `crates/vardictrust`, and integration test suites:
 
@@ -144,7 +173,7 @@ The core variant calling engine enforces `#![forbid(unsafe_code)]` and zero unha
    - `cigar::modify` & `cigar::parse` (23 tests): verifies query-consumption calculations, insertion/deletion extension with `vext`, soft-clip adjustments, and bounds-checked base retrieval.
    - `realign` (13 tests): verifies Smith-Waterman local realignment, complex MNP adjustments, 3' soft-clip marking, large deletion realignment, and sequence match checks.
 3. **Postprocessing & Variant Classification (`postprocess/` — 40 tests):**
-   - `postprocess::simple` (6 tests): verifies single-winner multi-allelic collapsing (UB-7), raw start grouping, and pileup null-record fallback branches.
+   - `postprocess::simple` (6 tests): verifies single-winner multi-allelic collapsing ([UB-7](../upstream-bugs.md#ub-7)), raw start grouping, and pileup null-record fallback branches.
    - `postprocess::somatic` (23 tests): verifies tumor/normal subtraction, somatic status classification (`StrongSomatic`, `LikelySomatic`, `StrongLOH`, `LikelyLOH`, `Germline`), normal AF thresholds (`-V`), and delta filters.
    - `postprocess::amplicon` (11 tests): verifies overlapping primer bias detection (`is_amp_bias_flag`), primer trimming, `GoodVarCount`/`TotalVarCount` ratios, and `AMPBIAS` assignment.
 4. **Statistical Analysis & Distributions (`stats/` — 21 tests):**
@@ -194,12 +223,14 @@ Located in `crates/vardictrust/tests/`:
 
 ---
 
-## 4. Audit Defense: Upstream Corpus Defect (UB-4) and 100% Live Oracle Parity
+<a id="level-2"></a>
+<a id="level-2-upstream-integration-regression-corpus-92-fixtures"></a>
+## 4. Level 2: Upstream Integration Regression Corpus & UB-4 Audit Defense
 
 When executing Level 2 integration regression testing via `harness/run_integration.sh`, the test runner outputs:
 ```
 PASS: 91  XFAIL: 1  FAIL: 0  SKIP: 0  XPASS: 0
-XFAIL: Simple;hard_clip_case.fa;hard_clip_next_to_del_test2.bam;test;6434-6564;-f 0.0 -p -r 1.txt (UB-4 upstream fixture defect)
+XFAIL: Simple;hard_clip_case.fa;hard_clip_next_to_del_test2.bam;test;6434-6564;-f 0.0 -p -r 1.txt (UB-4 upstream fixture defect, verified against live-oracle signature)
 ```
 
 An uninformed external reviewer might interpret `FAIL: 1` as an unaddressed regression in VarDictRust. This section documents the mathematical and biological proof that this mismatch is an **upstream fixture defect (Class D / UB-4)** and that VarDictRust achieves **100% live oracle parity**.
@@ -220,20 +251,23 @@ An uninformed external reviewer might interpret `FAIL: 1` as an unaddressed regr
 When VarDictRust and VarDictJava v1.8.3 are both executed live on `hard_clip_case.fa`:
 - Both engines produce **7 table rows** (`diff -u` exits 0).
 - Both engines produce **5 VCF variant records** (`diff -u` exits 0).
-- Both engines reproduce the exact `-p` pileup null-record formatting quirks (UB-1 and UB-2).
+- Both engines reproduce the exact `-p` pileup null-record formatting quirks ([UB-1](../upstream-bugs.md#ub-1) and [UB-2](../upstream-bugs.md#ub-2)).
 - Zero discrepancies exist between VarDictRust and VarDictJava on this fixture.
 
 ### 4.3 Gate Pinning Invariant
 In `harness/pr_check.sh`, `harness/acceptance.sh`, and GitHub Actions CI, the test runner enforces:
 ```bash
 grep -qx 'PASS: 91  XFAIL: 1  FAIL: 0  SKIP: 0  XPASS: 0' <log>
-grep -qxF 'XFAIL: Simple;hard_clip_case.fa;hard_clip_next_to_del_test2.bam;test;6434-6564;-f 0.0 -p -r 1.txt (UB-4 upstream fixture defect)' <log>
+grep -qxF 'XFAIL: Simple;hard_clip_case.fa;hard_clip_next_to_del_test2.bam;test;6434-6564;-f 0.0 -p -r 1.txt (UB-4 upstream fixture defect, verified against live-oracle signature)' <log>
 ```
 If any other fixture fails, or if the signature deviates from `91 PASS / 1 XFAIL`, the gate fails immediately. Thus, 100% of valid upstream test cases pass.
 
 ---
 
-## 5. Level 3 Dual-Engine Differential Benchmark Inventory & Evidence Map
+<a id="level-3"></a>
+<a id="level-3-dual-engine-differential-parity-testing"></a>
+<a id="5-level-3-dual-engine-differential-benchmark-inventory--evidence-map"></a>
+## 5. Level 3: Dual-Engine Differential Parity Testing (Tier-2)
 
 VarDictRust maintains **16 committed, cryptographically fingerprinted evidence files** in `benchmarks/evidence/` that certify parity across **17 primary benchmark targets**:
 
@@ -241,33 +275,35 @@ VarDictRust maintains **16 committed, cryptographically fingerprinted evidence f
 | :--- | :--- | :--- | :---: | :---: | :---: |
 | **Synthetic Micro** | *In-line execution* | Simple Germline (Synthetic) | 2 | **MATCH** | `dace5891208a52d2` |
 | **10 Standard Slices** | *In-line execution* (`s1a`–`s9`) | Germline / Somatic Slices | 100+ | **MATCH** | `dace5891208a52d2` |
-| **GIAB HG008 Somatic** | `hg008-tier2.json` | Somatic Paired WGS (PDAC) | 18,426 | **MATCH** | `dace5891208a52d2` |
-| **GIAB HG008 CRAM Twin**| `hg008-cram-twin.json` | CRAM vs BAM Twin Parity | 18,426 | **MATCH** | `dace5891208a52d2` |
-| **SEQC2 Somatic Exome** | `seqc2-exome-tier2.json` | Somatic Paired WES (HCC1395) | 623,444 | **MATCH** | `dace5891208a52d2` |
-| **SEQC2 Somatic Slices**| `seqc2-slices-tier2.json` | Multi-Chr Slices (chr1-21) | 4,151 | **MATCH** | `dace5891208a52d2` |
-| **GIAB HG002 Germline** | `hg002-tier2.json` | Germline WGS (chr20 20 Mbp) | 227,562 | **MATCH** | `dace5891208a52d2` |
-| **Targeted Amplicon** | `amplicon-tier2.json` | Overlapping Primer Panel | 2 | **MATCH** | `dace5891208a52d2` |
-| **Extended Modalities** | `extended-coverage-tier2.json` | 9 Modes (RNA, SVs, Flags) | 847 | **MATCH** | `dace5891208a52d2` |
-| **Multi-Modal Slices** | `multimodal-slices-tier2.json` | 18 Slices across 6 Cohorts | 1,129 | **MATCH** | `dace5891208a52d2` |
-| **GIAB HG002 Truth** | `hg002-truth.json` | NIST v4.2.1 High-Confidence | $F_1 = 0.9699$ | **EQUAL** | `dace5891208a52d2` |
-| **SEQC2 Somatic Truth** | `seqc2-truth.json` | SEQC2 v1.2.1 Somatic Truth | $F_1 = 0.1555$ | **EQUAL** | `dace5891208a52d2` |
-| **GIAB HG008 Truth** | `hg008-truth.json` | NIST Draft v0.3 Somatic Truth | $F_1 = 0.3856$ | **EQUAL** | `dace5891208a52d2` |
-| **GIAB HG005 Truth** | `hg005-truth.json` | NIST v4.2.1 Han Chinese WGS | $F_1 = 0.9667$ | **EQUAL** | `dace5891208a52d2` |
-| **GIAB NA24385 b37 Truth** | `na24385-b37-truth.json` | NIST v4.2.1 Ashkenazi Son b37 | $F_1 = 1.0000$ | **EQUAL** | `dace5891208a52d2` |
-| **Chr1 Scale Benchmark**| `scale.json` | Chromosome 1 Full Scaling | $S_8 = 4.85\times$ | **PASS** | `dace5891208a52d2` |
-| **Continuous Perf Budget**| `perf-budget.json` | 4 Target Workload Regression | Wall/RAM gates | **PASS** | `dace5891208a52d2` |
-| **Musl CI Distribution** | `musl-ci.json` | Static PIE Linux Packaging | Byte identity | **PASS** | `dace5891208a52d2` |
+| **GIAB HG008 Somatic** | [`hg008-tier2.json`](../../benchmarks/evidence/hg008-tier2.json) | Somatic Paired WGS (PDAC) | 18,426 | **MATCH** | `dace5891208a52d2` |
+| **GIAB HG008 CRAM Twin**| [`hg008-cram-twin.json`](../../benchmarks/evidence/hg008-cram-twin.json) | CRAM vs BAM Twin Parity | 18,426 | **MATCH** | `dace5891208a52d2` |
+| **SEQC2 Somatic Exome** | [`seqc2-exome-tier2.json`](../../benchmarks/evidence/seqc2-exome-tier2.json) | Somatic Paired WES (HCC1395) | 623,444 | **MATCH** | `dace5891208a52d2` |
+| **SEQC2 Somatic Slices**| [`seqc2-slices-tier2.json`](../../benchmarks/evidence/seqc2-slices-tier2.json) | Multi-Chr Slices (chr1-21) | 4,151 | **MATCH** | `dace5891208a52d2` |
+| **GIAB HG002 Germline** | [`hg002-tier2.json`](../../benchmarks/evidence/hg002-tier2.json) | Germline WGS (chr20 20 Mbp) | 227,562 | **MATCH** | `dace5891208a52d2` |
+| **Targeted Amplicon** | [`amplicon-tier2.json`](../../benchmarks/evidence/amplicon-tier2.json) | Overlapping Primer Panel | 2 | **MATCH** | `dace5891208a52d2` |
+| **Extended Modalities** | [`extended-coverage-tier2.json`](../../benchmarks/evidence/extended-coverage-tier2.json) | 9 Modes (RNA, SVs, Flags) | 847 | **MATCH** | `dace5891208a52d2` |
+| **Multi-Modal Slices** | [`multimodal-slices-tier2.json`](../../benchmarks/evidence/multimodal-slices-tier2.json) | 18 Slices across 6 Cohorts | 1,129 | **MATCH** | `dace5891208a52d2` |
+| **GIAB HG002 Truth** | [`hg002-truth.json`](../../benchmarks/evidence/hg002-truth.json) | NIST v4.2.1 High-Confidence | $F_1 = 0.9699$ | **EQUAL** | `dace5891208a52d2` |
+| **SEQC2 Somatic Truth** | [`seqc2-truth.json`](../../benchmarks/evidence/seqc2-truth.json) | SEQC2 v1.2.1 Somatic Truth | $F_1 = 0.1555$ | **EQUAL** | `dace5891208a52d2` |
+| **GIAB HG008 Truth** | [`hg008-truth.json`](../../benchmarks/evidence/hg008-truth.json) | NIST Draft v0.3 Somatic Truth | $F_1 = 0.3856$ | **EQUAL** | `dace5891208a52d2` |
+| **GIAB HG005 Truth** | [`hg005-truth.json`](../../benchmarks/evidence/hg005-truth.json) | NIST v4.2.1 Han Chinese WGS | $F_1 = 0.9667$ | **EQUAL** | `dace5891208a52d2` |
+| **GIAB NA24385 b37 Truth** | [`na24385-b37-truth.json`](../../benchmarks/evidence/na24385-b37-truth.json) | NIST v4.2.1 Ashkenazi Son b37 | $F_1 = 1.0000$ | **EQUAL** | `dace5891208a52d2` |
+| **Chr1 Scale Benchmark**| [`scale.json`](../../benchmarks/evidence/scale.json) | Chromosome 1 Full Scaling | $S_8 = 4.85\times$ | **PASS** | `dace5891208a52d2` |
+| **Continuous Perf Budget**| [`perf-budget.json`](../../benchmarks/evidence/perf-budget.json) | 4 Target Workload Regression | Wall/RAM gates | **PASS** | `dace5891208a52d2` |
+| **Musl CI Distribution** | [`musl-ci.json`](../../benchmarks/evidence/musl-ci.json) | Static PIE Linux Packaging | Byte identity | **PASS** | `dace5891208a52d2` |
 
 ---
 
-### 5.1 Dataset Eligibility Matrix: Level 3 (Differential Parity) vs Level 4 (Ground Truth Concordance)
+<a id="level-4"></a>
+<a id="level-4-ground-truth-concordance-benchmarking-giab--seqc2"></a>
+## 6. Level 4: Ground Truth Concordance Benchmarking (Tier-3 / GIAB / SEQC2)
 
 A foundational question in scientific verification is: **Why are certain datasets evaluated under Level 3 Live Oracle Parity while others are also evaluated under Level 4 Biological Ground Truth Concordance?**
 
-- **Level 3 (Dual-Engine Differential Parity Gate):** Evaluates whether $\text{VarDictRust} \equiv \text{VarDictJava v1.8.3}$ on valid inputs ($\varepsilon \le 10^{-6}$, 0 variant diffs). **Requires only reference FASTA and input BAM/CRAM.** Can and *must* be run on 100% of sequencing datasets.
-- **Level 4 (Ground Truth Concordance Gate):** Evaluates variant calling performance ($F_1$, Precision, Recall) using `rtg vcfeval` against physical biological reality. **Requires independent consortium ground truth VCF + high-confidence BED.**
+- **Level 3 (Dual-Engine Differential Parity Gate, Tier-2):** Evaluates whether $\text{VarDictRust} \equiv \text{VarDictJava v1.8.3}$ on valid inputs ($\varepsilon \le 10^{-6}$, 0 variant diffs). **Requires only reference FASTA and input BAM/CRAM.** Can and *must* be run on 100% of sequencing datasets.
+- **Level 4 (Ground Truth Concordance Gate, Tier-3):** Evaluates variant calling performance ($F_1$, Precision, Recall) using `rtg vcfeval` against physical biological reality. **Requires independent consortium ground truth VCF + high-confidence BED.**
 
-#### The rewrites.bio Principle of Transitivity:
+### The rewrites.bio Principle of Transitivity:
 For any dataset $D$ and benchmark truth set $T$:
 $$\text{VarDictRust}(D) \equiv \text{VarDictJava}(D) \implies \text{rtg}(\text{VarDictRust}(D), T) \equiv \text{rtg}(\text{VarDictJava}(D), T)$$
 
@@ -290,9 +326,27 @@ Because VarDictRust produces 0 variant discrepancies and 0 filter differences co
 
 ---
 
-## 6. Level 6: Diagnostic Self-Tests (`harness/run_self_tests.sh`)
+<a id="level-5"></a>
+<a id="level-5-performance--memory-budgets"></a>
+## 7. Level 5: Continuous Performance & Memory Budgets
 
-Automated via [`harness/run_self_tests.sh`](../../harness/run_self_tests.sh), these 14 specialized scripts validate the correctness of the testing infrastructure and zero-PyPI environment contracts in $<10\text{ seconds}$:
+Level 5 guarantees that VarDictRust delivers decisive scaling improvements over VarDictJava while preventing memory regressions:
+
+1. **Whole-Chromosome Scaling (`harness/scale_bench.sh`):**
+   - Evaluated across all 249 Mbp of human chromosome 1 on HCC1395.
+   - Enforces an 8-thread parallel speedup factor $S_8 \ge 4.8\times$ (achieved **$4.85\times$**, 709.22s vs 3436.81s).
+   - Enforces flat resident set size scaling: peak RSS ratio across a 25-fold increase in genomic span (10 Mbp to 249 Mbp) must remain $\le 1.5\times$ (achieved **$1.39\times$**, 2.87 GB vs 2.06 GB).
+2. **Four-Target Workload Budget (`harness/perf_budget.py`):**
+   - Continuous gate comparing wall clock time and peak resident memory against VarDictJava v1.8.3 across 4 core modalities: HG008 somatic WGS, SEQC2 somatic WES, HG002 germline WGS, and targeted amplicons.
+   - Requires $\text{Runtime}_{\text{Rust}} \le \text{Runtime}_{\text{Java}}$ and $\text{RSS}_{\text{Rust}} \le \text{RSS}_{\text{Java}}$.
+
+---
+
+<a id="level-6"></a>
+<a id="level-6-diagnostic-self-tests"></a>
+## 8. Level 6: Diagnostic Self-Tests (`harness/run_self_tests.sh`)
+
+Automated via [`harness/run_self_tests.sh`](../../harness/run_self_tests.sh), these **16 specialized scripts** (11 shell tests and 5 python unit test suites) validate the correctness of the testing infrastructure, documentation rendering, and zero-PyPI environment contracts in $<10\text{ seconds}$:
 
 ```bash
 # Execute the full automated diagnostic test suite
@@ -303,45 +357,60 @@ The runner dynamically discovers and executes:
 1. `test_compare_sh.sh`: validates exit code conventions, diff formatting, and temporary file cleanup in the primary Level 3 differential comparator.
 2. `test_compare_vcf.py`: validates strict-bytes VCF parsing, floating-point half-even rounding tolerances ($\varepsilon = 10^{-6}$), and duplicate key detection.
 3. `test_concordance.sh`: validates the Real Time Genomics `rtg vcfeval` wrapper script, SDF reference building, and concordance metric parsers.
-4. `test_courtesy.sh`: tests maintenance window enforcement (refuses heavy jobs between 03:40 and 05:15 local time; exit code 4) and disk space headroom checks (`MIN_FREE_GB`; exit code 3).
+4. `test_courtesy.sh`: tests host resource throttling and scheduling guard enforcement (`harness/courtesy.sh`), validating that resource-intensive benchmarking tasks respect configurable blackout windows (`COURTESY_NOW`, `EST_MIN`), minimum available disk headroom (`MIN_FREE_GB`), and memory thresholds (`MIN_AVAIL_GB`) without disrupting shared infrastructure.
 5. `test_edge_cases.sh`: tests variant caller handling of 4 BAM boundary conditions: zero-read empty BAMs (`empty.bam`), zero-coverage target regions, single-read BAMs, and contig boundary alignments.
 6. `test_env_pinned.sh`: validates toolchain version pinning across `benchmarks/env/` (`vardict-oracle.yml`, `g4-tools.yml`, `toolchain.txt`).
 7. `test_evidence.sh`: validates JSON schema conformity, fingerprint validation, and rejection of stale benchmark evidence in `harness/acceptance.sh:ev()`.
 8. `test_fetch_data.sh`: validates formatting, URL schemes, and destination paths inside the asset registry (`harness/assets.tsv`).
 9. `test_perf_budget.sh`: validates performance budget mathematical formulas on simulated JSON benchmarks.
 10. `test_run_oracle.sh`: tests argument forwarding and flag preservation in `harness/run_oracle.sh`.
-11. `test_select_slice_regions.py`: validates interval slicing, multi-interval BED grouping, and variant density sampling algorithms.
-12. `test_seqc2_align.sh`: verifies that required alignment pipeline commands (`bwa mem`, `samtools fixmate/sort/markdup/index`) are correctly invoked in SEQC2 alignment scripts.
-13. `test_stdlib_purity.py`: performs automated AST inspection of all Python files in `harness/`, asserting 100% Python standard library compliance (zero external PyPI dependencies).
-14. `test_vcf_header.py`: validates standards-compliant VCFv4.2 header generation and contig length extraction from FASTA `.fai` index files (resolving issue #320).
+11. `test_run_cpp.sh`: validates command-line argument translation and compilation flags for C++ reference validation harness execution.
+12. `test_select_slice_regions.py`: validates interval slicing, multi-interval BED grouping, and variant density sampling algorithms.
+13. `test_seqc2_align.sh`: verifies that required alignment pipeline commands (`bwa mem`, `samtools fixmate/sort/markdup/index`) are correctly invoked in SEQC2 alignment scripts.
+14. `test_stdlib_purity.py`: performs automated AST inspection of all Python files in `harness/`, asserting 100% Python standard library compliance (zero external PyPI dependencies).
+15. `test_vcf_header.py`: validates standards-compliant VCFv4.2 header generation and contig length extraction from FASTA `.fai` index files (resolving issue #320).
+16. `test_docs_ui.py`: validates table column consistency, non-HTML angle bracket escaping, KaTeX math hygiene, and Playwright headless Chromium GFM browser rendering across repository documentation.
 
 ---
 
-## 7. Cloud CI/CD Automation & Supply Chain Security
+<a id="level-7"></a>
+<a id="level-7-pre-pr--release-acceptance-compound-gates"></a>
+## 9. Level 7: Pre-PR & Release Acceptance Compound Gates
+
+Level 7 aggregates all lower levels into deterministic, push-button verification gates:
+
+1. **Inner Developer Loop ([`harness/rgate.sh`](../../harness/rgate.sh)):** Fast-feedback developer loop (<30s) running formatting, Clippy, core unit tests, and live micro differential validation.
+2. **Pre-PR Regression Gate ([`harness/pr_check.sh`](../../harness/pr_check.sh)):** Mandatory 6-stage gate running Hygiene, Crash Robustness, Level 2 Corpus (91/1 signature), Level 3 Micro Parity, Level 5 Performance Budget, and Gitleaks secret scanning (<35s).
+3. **Master Release Acceptance Gate ([`harness/acceptance.sh`](../../harness/acceptance.sh)):** Comprehensive 8-item release gate certifying the engine fingerprint against committed benchmark evidence, governed by [`docs/release/waivers.md`](../release/waivers.md).
+
+---
+
+## 10. Cloud CI/CD Automation & Supply Chain Security
 
 VarDictRust utilizes 3 automated GitHub Actions workflows with strict security hardening:
 
-### 7.1 Continuous Integration (`.github/workflows/ci.yml`)
-- **StepSecurity Runner Hardening:** pinned to `step-security/harden-runner@v2.11.0` with `egress-policy: audit`.
+### 10.1 Continuous Integration (`.github/workflows/ci.yml`)
+- **StepSecurity Runner Hardening:** pinned to `step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25` (`# v2.10.4`) with `egress-policy: audit`.
 - **Submodule Recursion:** checks out complete repository including `VarDictJava` submodule (`actions/checkout@v7.0.1`).
 - **Standard Checks:** runs `cargo fmt --all -- --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test --all` (all 208 workspace tests), `cargo bench --no-run`, and `cargo build --release`.
 - **Regression Gates in CI:** executes `harness/run_integration.sh` (asserting `91 PASS / 1 XFAIL`) and `tests/robustness.rs`.
 
-### 7.2 Security & Supply Chain Scans (`.github/workflows/security.yml`)
-- **Gitleaks Secret Scanning:** executes `gitleaks-action@v2.3.9` with `fetch-depth: 0` across full git commit history.
+### 10.2 Security & Supply Chain Scans (`.github/workflows/security.yml`)
+- **Gitleaks Secret Scanning:** executes `gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e` (`# v3.0.0`) with `fetch-depth: 0` across full git commit history.
 - **Supply Chain Advisories & Licenses:** runs `cargo deny check advisories licenses` via `taiki-e/install-action@v2`.
 - **RustSec Advisory Audit:** runs `cargo audit` against current Cargo dependencies.
 
-### 7.3 Release Packaging & SLSA Level 3 (`.github/workflows/release.yml`)
+### 10.3 Release Packaging & SLSA Level 3 (`.github/workflows/release.yml`)
 - Automated by `cargo-dist 0.33.0`.
 - Builds standalone, statically-linked `x86_64-unknown-linux-musl` executables.
 - Emits cryptographic checksums and GitHub OIDC SLSA Level 3 build provenance attestations.
 
 ---
 
-## 8. Cross-Reference Index
+## 11. Cross-Reference Index
 
 - **Biological Truth & Empirical Proofs:** [`docs/validation/omnibus-empirical-validation.md`](../validation/omnibus-empirical-validation.md)
+- **Acceptance Gate Waivers & Exception Registry:** [`docs/release/waivers.md`](../release/waivers.md)
 - **Developer Contributor Guide:** [`CONTRIBUTING.md`](../../CONTRIBUTING.md)
 - **Main Project Readme & Scoreboard:** [`README.md`](../../README.md)
 - **Pull Request v1.0.0 Certification:** [`docs/release/v1.0.0-pr.md`](../release/v1.0.0-pr.md)
@@ -350,24 +419,24 @@ VarDictRust utilizes 3 automated GitHub Actions workflows with strict security h
 
 ---
 
-## 9. Master Reproducibility Runbook & Dataset Provenance Catalog
+## 12. Master Reproducibility Runbook & Dataset Provenance Catalog
 
 Future contributors and clinical bioinformaticians can independently reproduce **every empirical claim** made in the VarDictRust v1.0.0 release using the structured runbook below.
 
-### 9.1 Biological Asset Provenance Catalog
+### 12.1 Biological Asset Provenance Catalog
 
-| Dataset ID | Public Accession / URL | Specimen & Assay | Platform & Mean Depth | Reference Build | Target BED Interval | Local File Path |
+| Dataset ID | Public Accession / URL | Specimen & Assay | Platform & Mean Depth | Reference Build | Target BED Interval | Standard Dataset / Cache Path (`DATA_DIR`) |
 | :--- | :--- | :--- | :--- | :---: | :--- | :--- |
-| **GIAB HG002** | NCBI / GIAB S3 (Ashkenazim Trio) | NA24385 Son (B-lymphocyte) | NovaSeq 6000 (125× WGS) | GRCh38 | `chr20:10000000-30000000` | `scratch/g4/hg002/HG002.chr20.bam` |
-| **SEQC2 HCC1395** | ENA PRJNA488340 / NCBI SEQC | Primary Breast Carcinoma / BL | NovaSeq 6000 (300×/100× WES)| GRCh38 | `exome_v6_UTR_hg38` (Full WES) | `scratch/g4/seqc2/HCC1395.bam` |
-| **GIAB HG008** | NCBI GIAB Somatic (Liss Lab) | Pancreatic Ductal Carcinoma | NovaSeq 6000 (195×/169× WGS)| GRCh38 | `HG008-T_benchmark_all.bed` | `scratch/g4/hg008/HG008-T.slice.bam` |
-| **GIAB HG005** | NCBI GIAB Chinese Trio | NA24631 Son (B-lymphocyte) | HiSeq 2500 (300× WGS) | GRCh38 | `chr3:40000000-40100000` | `scratch/g4/multimodal/hg005_s4a.bam` |
-| **GIAB NA24385 b37** | NCBI GIAB Ashkenazim Trio | NA24385 Son (B-lymphocyte) | HiSeq 2500 (300× WGS) | GRCh37/b37 | `20:36018823-36039513` | `VarDictJava/.../NA24385_chr_20_...bam` |
-| **Targeted Amplicon**| AstraZeneca NGS Archive | Synthetic EGFR L861Q Panel | HiSeq 2000 (1000× Targeted) | hg19 | `chr7:55241000-55260500` | `VarDictJava/.../L861Q.bam` |
-| **RNA Splicing Suite**| AstraZeneca NGS Archive | STAR Splice Junctions (chr8)| Illumina HiSeq (RNA-seq) | hg38 | `chr8:90534611-90620070` | `VarDictJava/.../Tcov_zero_...bam` |
-| **COLO829 Melanoma** | ENA PRJEB27698 (Hartwig / NYGC) | Malignant Melanoma / BL | HiSeqX (100×/40× Somatic WGS)| GRCh37/b37 | `1:10000000-10200000` | `scratch/g4/multimodal/colo829_s1a_...bam` |
+| **GIAB HG002** | NCBI / GIAB S3 (Ashkenazim Trio) | NA24385 Son (B-lymphocyte) | NovaSeq 6000 (125× WGS) | GRCh38 | `chr20:10000000-30000000` | `${DATA_DIR:-scratch/g4}/hg002/HG002.chr20.bam` |
+| **SEQC2 HCC1395** | ENA PRJNA488340 / NCBI SEQC | Primary Breast Carcinoma / BL | NovaSeq 6000 (300×/100× WES)| GRCh38 | `exome_v6_UTR_hg38` (Full WES) | `${DATA_DIR:-scratch/g4}/seqc2/HCC1395.bam` |
+| **GIAB HG008** | NCBI GIAB Somatic (Liss Lab) | Pancreatic Ductal Carcinoma | NovaSeq 6000 (195×/169× WGS)| GRCh38 | `HG008-T_benchmark_all.bed` | `${DATA_DIR:-scratch/g4}/hg008/HG008-T.slice.bam` |
+| **GIAB HG005** | NCBI GIAB Chinese Trio | NA24631 Son (B-lymphocyte) | HiSeq 2500 (300× WGS) | GRCh38 | `chr3:40000000-40100000` | `${DATA_DIR:-scratch/g4}/multimodal/hg005_s4a.bam` |
+| **GIAB NA24385 b37** | NCBI GIAB Ashkenazim Trio | NA24385 Son (B-lymphocyte) | HiSeq 2500 (300× WGS) | GRCh37/b37 | `20:36018823-36039513` | `VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests/NA24385_chr_20_36018823_36039513.bam` |
+| **Targeted Amplicon**| AstraZeneca NGS Archive | Synthetic EGFR L861Q Panel | HiSeq 2000 (1000× Targeted) | hg19 | `chr7:55241000-55260500` | `VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests/L861Q.bam` |
+| **RNA Splicing Suite**| AstraZeneca NGS Archive | STAR Splice Junctions (chr8)| Illumina HiSeq (RNA-seq) | hg38 | `chr8:90534611-90620070` | `VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests/Tcov_zero_SV_DEL_candidate3.bam` |
+| **COLO829 Melanoma** | ENA PRJEB27698 (Hartwig / NYGC) | Malignant Melanoma / BL | HiSeqX (100×/40× Somatic WGS)| GRCh37/b37 | `1:10000000-10200000` | `${DATA_DIR:-scratch/g4}/multimodal/colo829_s1a_tumor.bam` |
 
-### 9.2 Zero-Virtualenv Architecture & Toolchain Segregation
+### 12.2 Zero-Virtualenv Architecture & Toolchain Segregation
 
 VarDictRust deliberately avoids requiring a Python virtual environment (`venv`) or root `pyproject.toml`:
 1. **Engine Core (Rust):** Managed strictly by `cargo` and [`Cargo.lock`](../../Cargo.lock) (deterministic reproducible compilation).
@@ -375,7 +444,7 @@ VarDictRust deliberately avoids requiring a Python virtual environment (`venv`) 
 3. **Genomics Reference Oracle & Benchmarks (Bioconda):** Native non-Python binaries (`vardict-java=1.8.3`, `rtg-tools`, `samtools`, `bcftools`, `bwa`) are managed via isolated Conda environments ([`benchmarks/env/vardict-oracle.yml`](../../benchmarks/env/vardict-oracle.yml) and [`harness/env/g4-tools.yml`](../../harness/env/g4-tools.yml)).
 4. **Ephemeral Developer Tools:** Single-command developer tools (`cffconvert`, `pre-commit`) run ephemerally via Astral's `uvx` without polluting the workspace.
 
-### 9.3 Push-Button Level Reproduction Runbook
+### 12.3 Push-Button Level Reproduction Runbook
 
 ```bash
 # 1. Pre-Commit: Install Local Pre-Commit Hooks (<1s)
@@ -406,7 +475,7 @@ python3 harness/perf_budget.py
 
 # 8. Level 6: Reproduce Diagnostic Self-Tests (<10s)
 bash harness/run_self_tests.sh
-# Expected: ALL 14 HARNESS DIAGNOSTIC TESTS PASSED SUCCESSFULLY
+# Expected: ALL 16 HARNESS DIAGNOSTIC TESTS PASSED SUCCESSFULLY
 
 # 9. Level 7: Reproduce Pre-PR Compound Regression Suite (<35s)
 bash harness/pr_check.sh

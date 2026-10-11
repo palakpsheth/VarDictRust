@@ -4,19 +4,28 @@ This directory contains the JVM test oracle generator and operation trace logs u
 
 ---
 
-## 1. Background: Eliminating Cross-Position Iteration Divergence (UB-3)
+## 1. Background: Eliminating Cross-Position Iteration Divergence ([UB-3](../../../../docs/upstream-bugs.md#ub-3))
 
 In VarDictJava, internal variant collections across position keys (`nonInsertionVariants`, `insertionVariants`, `alignedVariants`) are stored in standard `java.util.HashMap` instances.
 
-When multiple candidate variants have identical allele frequencies at a raw position (e.g. at `chr20:20202875` on dataset `s1a`), the downstream Perl/R script `var2vcf_valid.pl` breaks AF ties by selecting the first record encountered in the stream. Consequently, **which allele survives depends strictly on `java.util.HashMap`'s internal iteration order**.
+### Biological and Algorithmic Motivation
 
-Standard Rust hash maps (`std::collections::HashMap`, `hashbrown`) use SipHash or SwissTable algorithms with randomized seeds, producing iteration orders different from Java. Using `BTreeMap` or sorted order resolves determinism, but produces output diverging from VarDictJava v1.8.3.
+In deep NGS sequencing datasets or multiallelic somatic sites, multiple sub-clonal variants or indel candidates can occur at identical genomic coordinates with indistinguishable empirical allele frequencies (e.g. at `chr20:20202875` on dataset `s1a`, where candidate alleles exhibit identical $AF = 0.5000$). When the downstream pipeline script `var2vcf_valid.pl` filters and reformats the intermediate `.var` table into standard VCF 4.2 format, it encounters candidate lines sequentially. If two variants tie on allele frequency, `var2vcf_valid.pl` selects the first record encountered in the stream, silently discarding the latter.
+
+Consequently, **which somatic allele survives in the final VCF depends strictly on `java.util.HashMap`'s internal iteration order**.
+
+Standard Rust hash maps (`std::collections::HashMap`, `hashbrown`) use SipHash or SwissTable algorithms with randomized seeds, producing iteration orders different from Java. Using `BTreeMap` or sorted order resolves determinism, but produces output diverging from VarDictJava v1.8.3 on valid clinical inputs.
 
 To achieve 100% parity under the [rewrites.bio](https://rewrites.bio) manifesto, VarDictRust implements `vardictrust_core::javamap::JavaHashMap`, faithfully replicating OpenJDK `java.util.HashMap` mechanics:
 - Hash spreading: `(h = key.hashCode()) ^ (h >>> 16)`.
 - Power-of-two bucket table indexing: `(capacity - 1) & hash`.
 - Standard load factor (0.75) and capacity doubling.
 - Node collision chaining and treeification threshold ($\ge 8$ items per bin).
+
+For architectural context and upstream bug taxonomy, see:
+- [`DIVERGENCES.md § UB-3`](../../../../DIVERGENCES.md#ub-3-javahashmap-iteration-and-allele-frequency-tie-breaking)
+- [`docs/upstream-bugs.md § UB-3`](../../../../docs/upstream-bugs.md#ub-3)
+- [`ROADMAP.md`](../../../../ROADMAP.md) (post-1.0 opt-in deterministic tie-breaking flag `--fix javamap-deterministic`)
 
 ---
 
@@ -53,4 +62,4 @@ fn test_javamap_oracle() {
 }
 ```
 
-This verification ensures that `JavaHashMap` produces iteration orders 100% bitwise-identical to the JVM reference implementation across all normal operational regimes, with active telemetry guards for treeified regimes (tracked post-1.0 in `ROADMAP.md`).
+This verification ensures that `JavaHashMap` produces iteration orders 100% bitwise-identical to the JVM reference implementation across all normal operational regimes, with active telemetry guards for treeified regimes (tracked post-1.0 in [`ROADMAP.md`](../../../../ROADMAP.md)).

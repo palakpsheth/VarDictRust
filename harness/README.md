@@ -9,11 +9,12 @@ The primary mission of the harness is **uncompromising fidelity verification**: 
 ## 1. Architecture Overview
 
 The harness operates in two distinct tiers:
-- **Intermediate Table Parity (Tier 1):** Evaluates intermediate `.var` tables generated via `--emit-intermediate` using `compare_var.py`. Validates column count integrity (Simple 36/38, Amplicon 38/40, Somatic 55/61), strand bias counters, Fisher p-values, odds ratios, and variant classifications prior to VCF serialization.
-- **VCF Differential Parity (Tier 2):** Evaluates final VCFv4.2 output against VarDictJava v1.8.3 running in an isolated reference oracle environment (`vardict-oracle`) using `compare_vcf.py`. Aligns records by `CHROM/POS/REF/ALT`, checks genotypes, filters, and info tags, enforcing banker's half-even rounding tolerances ($\varepsilon = 10^{-6}$).
+- **Intermediate Table Parity ([Tier 1](../docs/testing/test-matrix-and-ci-audit.md#tier-1)):** Evaluates intermediate `.var` tables generated via `--emit-intermediate` using `compare_var.py`. Validates column count integrity (Simple 36/38, Amplicon 38/40, Somatic 55/61), strand bias counters, Fisher p-values, odds ratios, and variant classifications prior to VCF serialization.
+- **VCF Differential Parity ([Tier 2](../docs/testing/test-matrix-and-ci-audit.md#tier-2)):** Evaluates final VCFv4.2 output against VarDictJava v1.8.3 running in an isolated reference oracle environment (`vardict-oracle`) using `compare_vcf.py`. Aligns records by `CHROM/POS/REF/ALT`, checks genotypes, filters, and info tags, enforcing banker's half-even rounding tolerances ($\varepsilon = 10^{-6}$).
 
 ---
 
+<a id="key-scripts--runners"></a>
 ## 2. Core Drivers & Comparators
 
 | Script / Tool | Description & Usage |
@@ -33,9 +34,9 @@ The harness operates in two distinct tiers:
 
 | Script | Purpose & Gate Coverage | Runtime |
 | :--- | :--- | :--- |
-| [`acceptance.sh`](acceptance.sh) | **Master Acceptance Gate:** Executes the 8 mandatory release criteria defined in `AGENTS.md` §15. Verifies workspace unit tests, 91/1 corpus parity, Tier-2 micro/macro parity, crash robustness, 4-target performance budget, truth concordance, hygiene, and distribution equivalence. | $<1\text{m}$ |
+| [`acceptance.sh`](acceptance.sh) | **Master Acceptance Gate:** Executes the 8 mandatory release criteria defined in [`AGENTS.md` §15](../AGENTS.md#15-definition-of-done-every-change). Verifies workspace unit tests, 91/1 corpus parity, Tier-2 micro/macro parity, crash robustness, 4-target performance budget, truth concordance, hygiene, and distribution equivalence. | $<1\text{m}$ |
 | [`pr_check.sh`](pr_check.sh) | **Standard PR Regression Suite:** Enforces a 6-stage verification gate on all PRs: Hygiene (`cargo fmt`, `clippy -D warnings`, `cargo audit`, `cargo deny`), Crash Robustness, 91/1 Corpus, Tier-2 Micro Parity, 4-Target Performance Budget, and Gitleaks secret scanning. | $<35\text{s}$ |
-| [`run_self_tests.sh`](run_self_tests.sh) | **Diagnostic Self-Test Harness:** Discovers and executes all 14 diagnostic test scripts (10 shell tests and 4 python test suites in `harness/tests/`), reporting unified status and elapsed milliseconds. | $<10\text{s}$ |
+| [`run_self_tests.sh`](run_self_tests.sh) | **Diagnostic Self-Test Harness:** Discovers and executes all 15 diagnostic test scripts (10 shell tests and 5 python test suites in `harness/tests/`), reporting unified status and elapsed milliseconds. | $<10\text{s}$ |
 | [`setup_hooks.sh`](setup_hooks.sh) | **Git Hooks Configuration:** Configures repository Git hook path to `.githooks/` (`git config core.hooksPath .githooks`), activating fast local pre-commit hygiene and secret checks. | $<1\text{s}$ |
 | [`engine_fingerprint.sh`](engine_fingerprint.sh) | **Release Engine Fingerprinter:** Computes a 16-character SHA-256 hash across engine source code (`crates/*/src`), comparator drivers, and locked dependencies (`Cargo.lock`). Guarantees evidence records are tied to an exact, unmutated engine commit. | $<1\text{s}$ |
 | [`bin_equiv.sh`](bin_equiv.sh) | **Binary Equivalence Gate:** Validates that statically-compiled `x86_64-unknown-linux-musl` release binaries produce identical variant calls to glibc binaries. | $<30\text{s}$ |
@@ -47,10 +48,10 @@ The harness operates in two distinct tiers:
 | Script / Asset | Description |
 | :--- | :--- |
 | [`assets.tsv`](assets.tsv) | **Asset Registry:** Declarative 5-column manifest (`group`, `name`, `url`, `md5`, `dest`) tracking all external public genomic references and truth sets (SEQC2, GIAB HG008, GIAB HG002). |
-| [`fetch_data.sh`](fetch_data.sh) | **Safe Asset Downloader:** Reads `assets.tsv`, downloads external biological assets via `curl`, verifies MD5 checksums, and records provenance in `benchmarks/MANIFEST`. |
+| [`fetch_data.sh`](fetch_data.sh) | **Safe Asset Downloader:** Reads `assets.tsv`, downloads external biological assets via `curl`, verifies MD5 checksums, and records provenance in `benchmarks/MANIFEST`. Supports `-` for dynamic calculation. |
 | [`convert_fastas.py`](convert_fastas.py) | **CI Reference Materializer:** Reconstructs dense reference `.fa` and `.fa.fai` files from upstream `VarDictJava/testdata/fastas/*.fa.csv` in $<10$ seconds using pure Python (zero external dependencies). |
 | [`run_integration.sh`](run_integration.sh) | **Corpus Runner:** Executes all 92 upstream VarDictJava integration test cases (`VarDictJava/testdata/integrationtestcases/`). Auto-materializes FASTAs via `convert_fastas.py` if missing. Verifies actual output against pinned live-oracle SHA-256 for XFAIL fixtures. Asserts 91 PASS / 1 verified XFAIL (0 FAIL / 0 SKIP / 0 XPASS). |
-| [`integration_xfail.tsv`](integration_xfail.tsv) | **Defect Registry:** Declarative 6-column TSV tracking authorized upstream fixture defects (UB-4), rationale, and live-oracle SHA-256 signatures (`expected_sha256`) to prevent silent regressions. |
+| [`integration_xfail.tsv`](integration_xfail.tsv) | **Defect Registry:** Declarative 6-column TSV tracking authorized upstream fixture defects ([UB-4](../docs/upstream-bugs.md#ub-4-hard_clip_casefa-fixture-drift-between-csv-chunks-and-reconstructed-fasta)), rationale, and live-oracle SHA-256 signatures (`expected_sha256`) to prevent silent regressions. |
 | [`get_hg002_slice.sh`](get_hg002_slice.sh) | **HTTP BAM Slicer:** Downloads the remote 20 Mbp euchromatic GIAB HG002 slice from public AWS S3 without fetching the 100+ GB whole-genome BAM. |
 | [`run_hg002.sh`](run_hg002.sh) | **HG002 Benchmark Driver:** First-class automated runner executing HG002 Tier-2 dual-engine comparison and RTG vcfeval truth concordance. |
 | [`scale_bench.sh`](scale_bench.sh) | **Scaling Benchmark Driver:** Runs whole-chromosome 1 scaling benchmarks across thread allocations (1, 2, 4, 8 threads), measuring speedup and memory linearity. |
@@ -62,7 +63,7 @@ The harness operates in two distinct tiers:
 | [`concordance.sh`](concordance.sh) | **Somatic Truth Evaluator:** Executes Real Time Genomics `rtg vcfeval` with `--squash-ploidy` for somatic variant truth comparisons. |
 | [`concordance_germline.sh`](concordance_germline.sh) | **Germline Truth Evaluator:** Assesses germline variants against NIST truth, reporting dual thresholds (unfiltered discovery baseline and optimal `QUAL >= 128` operating point). |
 | [`concordance_pair.sh`](concordance_pair.sh) | **Dual-Engine Truth Concordance:** Compares RTG truth concordance metrics between VarDictJava and VarDictRust, asserting 100% identical site lists. |
-| [`courtesy.sh`](courtesy.sh) | **Host Etiquette Wrapper:** Enforces system resource courtesy: limits concurrency to $\le 8$ threads, runs at `nice -n19 ionice -c3`, and guards against execution during maintenance windows. |
+| [`courtesy.sh`](courtesy.sh) | **Host Etiquette Wrapper:** Cooperative multi-tenant cluster resource etiquette: limits concurrency to $\le 8$ threads, runs at `nice -n19 ionice -c3`, ensures disk/memory headroom (`MIN_FREE_GB=150`, `MIN_AVAIL_GB=12`), and guards against execution during scheduled host maintenance windows. |
 | [`memwatch.sh`](memwatch.sh) | **Memory Watchdog:** Background daemon monitoring process tree RSS to prevent system OOM conditions. |
 
 ---
@@ -83,7 +84,7 @@ The [`slices.tsv`](slices.tsv) index and [`slices/`](slices/) directory define t
 
 ## 6. Meta-Test Suite (`harness/tests/`)
 
-The harness contains an internal self-test suite (14 test scripts) verifying that the harness tools, comparators, and zero-dependency environment contracts function correctly:
+The harness contains an internal self-test suite (15 test scripts) verifying that the harness tools, comparators, and zero-dependency environment contracts function correctly:
 
 ```bash
 # Run all harness meta-tests using the diagnostic self-test harness
@@ -92,6 +93,6 @@ bash harness/run_self_tests.sh
 
 The runner dynamically discovers and executes:
 - 10 Shell Tests: `test_compare_sh.sh`, `test_concordance.sh`, `test_courtesy.sh`, `test_edge_cases.sh`, `test_env_pinned.sh`, `test_evidence.sh`, `test_fetch_data.sh`, `test_perf_budget.sh`, `test_run_oracle.sh`, `test_seqc2_align.sh`.
-- 4 Python Test Suites: `test_compare_vcf.py` (10 tests), `test_select_slice_regions.py` (4 tests), `test_stdlib_purity.py` (AST zero-PyPI import guard), `test_vcf_header.py` (1 test).
+- 5 Python Test Suites: `test_compare_vcf.py` (10 tests), `test_docs_ui.py` (6 tests), `test_select_slice_regions.py` (4 tests), `test_stdlib_purity.py` (AST zero-PyPI import guard), `test_vcf_header.py` (1 test).
 
-All 14 diagnostic test scripts pass 100% green.
+All 15 diagnostic test scripts pass 100% green.
