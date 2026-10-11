@@ -32,7 +32,7 @@ The table below catalogs the certification status across all 8 verification item
 | **Item 5** | [**Level 5: Scale Benchmarks & Performance Budgets**](../testing/test-matrix-and-ci-audit.md#level-5) (Chr1 & 4 cohorts) | **PASS** | None (Unwaived) | $S_8 = 4.85\times$, RSS scaling ratio $1.39\times \le 1.5\times$, all budgets met. |
 | **Item 6** | [**Level 4: Ground Truth Concordance**](../testing/test-matrix-and-ci-audit.md#level-4) (GIAB HG008, SEQC2, HG002, HG005, NA24385) | **PASS** | None (Unwaived) | RTG vcfeval bitwise site identity (EQUAL, 0 diffs) across all 5 cohorts (HG008, SEQC2, HG002, HG005, NA24385). |
 | **Item 7** | [**Level 7: Code Hygiene & Supply Chain Security**](../testing/test-matrix-and-ci-audit.md#level-7) (fmt, clippy, audit, deny, gitleaks) | **PASS** | None (Unwaived) | 0 warnings, zero cargo-deny advisories, 0 leaks verified. |
-| **Item 8** | [**Release Distribution & Packaging**](../testing/test-matrix-and-ci-audit.md#103-release-packaging--slsa-level-3-githubworkflowsreleaseyml) (musl static PIE, AI metadata) | **PASS** | None (Unwaived) | musl PIE binary byte-identical to GNU; Lai (2016) cited; full AI disclosure. |
+| **Item 8** | [**Release Distribution & Packaging**](../testing/test-matrix-and-ci-audit.md#103-release-packaging-slsa-level-3-githubworkflowsreleaseyml) (musl static PIE, AI metadata) | **PASS** | None (Unwaived) | musl PIE binary byte-identical to GNU; Lai (2016) cited; full AI disclosure. |
 
 ---
 
