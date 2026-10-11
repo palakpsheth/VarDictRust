@@ -88,6 +88,9 @@ try:
     if not isinstance(d, dict): d = {}
 except Exception: d = {}
 d[k] = v
+# The two keys are mutually exclusive per run; drop the stale one so a
+# reused KEEP_DIR never reports both a version and a skip reason.
+d.pop("cpp_version" if k == "cpp_skip_reason" else "cpp_skip_reason", None)
 with open(p, "w") as f: json.dump(d, f, indent=2, sort_keys=True)
 PYEOF
   fi

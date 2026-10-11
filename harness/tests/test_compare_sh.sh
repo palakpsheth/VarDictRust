@@ -78,4 +78,7 @@ grep -q 'synthetic cpp==rust' "$T/k9/compare_cpp.txt" || { echo "FAIL9 no rc2 ev
 # CPP10: third-arm evidence keys persisted for ev_cpp (record_evidence.py reads extra.json).
 python3 -c "import json;d=json.load(open('$T/k7/extra.json'));assert 'cpp_version' in d, sorted(d)" || { echo "FAIL10 no cpp_version"; fail=1; }
 python3 -c "import json;d=json.load(open('$T/k8/extra.json'));assert 'cpp_skip_reason' in d, sorted(d)" || { echo "FAIL10 no cpp_skip_reason"; fail=1; }
+# CPP10b: version/skip keys mutually exclusive on KEEP_DIR reuse (no stale pair).
+CPP_SKIP=1 KEEP_DIR="$T/k7" bash harness/compare.sh $M >/dev/null 2>&1
+python3 -c "import json;d=json.load(open('$T/k7/extra.json'));assert 'cpp_skip_reason' in d and 'cpp_version' not in d, sorted(d)" || { echo "FAIL10 stale cpp_version"; fail=1; }
 [ $fail -eq 0 ] && echo "PASS test_compare_sh"; exit $fail
