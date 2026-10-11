@@ -142,6 +142,10 @@ function run_rna_slice() {
         diff -u <(sort "$out_j") <(sort "$out_r") | head -40
         exit 1
     fi
+
+    # Advisory cpp third arm: vardictcpp ignores -i (no splice-table surface;
+    # probed live T3A-04), so SKIP with reason, no engine run.
+    echo "CPP: SKIP: $slice_id splicing (-i splice-table surface unsupported by vardictcpp)"
 }
 
 # -----------------------------------------------------------------------------

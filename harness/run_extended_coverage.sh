@@ -81,6 +81,11 @@ else
     exit 1
 fi
 
+# Advisory cpp third arm: vardictcpp ignores -i (no splice-table surface; it
+# emits .var rows instead — probed live T3A-04), so SKIP with reason, no engine run.
+# ceiling: run a live cpp -i cell if vardictcpp ever acts on -i (absent from its acted-on banner).
+echo "CPP: SKIP: m1 splicing (-i splice-table surface unsupported by vardictcpp)"
+
 # -----------------------------------------------------------------------------
 # Mode 2: Inversion SV (<INV>)
 # -----------------------------------------------------------------------------
@@ -121,6 +126,28 @@ else
     echo "MISMATCH: $M4_DIFFS diff lines"
     diff -u "$TMPDIR/m4_java.var" "$TMPDIR/m4_rust.var"
     exit 1
+fi
+
+# Advisory cpp third arm (flags identical to the java line above: -f/-R/-J/-j;
+# -N pinned to java's live sample label since cpp requires -N; .var surface via
+# Tier-1 compare_var.py; never gates the Mode 4 verdict).
+# Known: cpp parses but ignores -J/-j (banner: "not all affect output yet"), so
+# it emits all regional rows (9) vs java's target-windowed rows (3) -> recorded
+# CPP-MISMATCH (upstream divergence), never a gate failure.
+M4_CPP_SAMPLE=$(awk -F'\t' 'NR==1{print $1}' "$TMPDIR/m4_java.var")
+if [[ -z "$M4_CPP_SAMPLE" ]]; then M4_CPP_SAMPLE=$(basename "$BAM_CRISPR" .bam); fi
+M4_CPP_EXIT=0
+conda run -n vardict-oracle vardictcpp -G "$HG19_FA" -b "$BAM_CRISPR" -R chr20:50454281-50455444 -f 0.001 -J 50454941 -j 25 -c 1 -S 2 -E 3 -g 4 -th "$THREADS" -N "$M4_CPP_SAMPLE" > "$TMPDIR/m4_cpp.var" 2>/dev/null || M4_CPP_EXIT=$?
+if [[ "$M4_CPP_EXIT" -eq 0 ]]; then
+    if python3 "$ROOT_DIR/harness/compare_var.py" --eps 1e-6 "$TMPDIR/m4_java.var" "$TMPDIR/m4_cpp.var" > "$TMPDIR/m4_cpp_cmp.txt" 2>&1; then
+        echo "CPP: MATCH (m4 crispr, $(cat "$TMPDIR/m4_cpp_cmp.txt"))"
+    else
+        echo "CPP-MISMATCH: m4 crispr ($(head -n 1 "$TMPDIR/m4_cpp_cmp.txt"))"
+    fi
+elif conda run -n vardict-oracle vardictcpp --version >/dev/null 2>&1; then
+    echo "CPP: SKIP: m4 crispr (cpp engine exit $M4_CPP_EXIT)"
+else
+    echo "CPP: SKIP: m4 crispr (vardictcpp not available in conda env vardict-oracle)"
 fi
 
 # -----------------------------------------------------------------------------
