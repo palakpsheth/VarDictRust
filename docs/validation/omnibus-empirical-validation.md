@@ -99,7 +99,7 @@ All biological datasets, reference genomes, and truth standards were retrieved f
 | **7** | **ATCC HCC2218 & HCC2218BL** | Primary Breast Duct Carcinoma / Peripheral Blood Normal | Illumina paired-end WES | ~**100×** paired | chr11, chrX:7811737 (GRCh38) | Upstream Integration Regression Corpus (`hcc2218_chr11.bam`, `hcc2218BL_chr11.bam`) |
 | **8** | **Targeted Clinical Amplicon Panels** | Human Oncology Amplicon Panels (`EGFR`, `MRE11a`) | Ultra-deep amplicon sequencing | **> 1,000×** deep target | `EGFR` L861Q & `MRE11a` 8-column BED amplicons (hg19) | 8-column BED primer-trimming & `AMPBIAS` bidirectional filter parity (`amplicon-tier2.json`, `correct_8columns_amplicon.bed`) |
 | **9** | **Human Transcriptome RNA-Seq** | Human Spliced RNA-Seq Transcriptome | Illumina 2×100bp (STAR spliced aligner) | Dynamic expression depth | chr8:90.53M–90.62M multi-exon locus (`hg38.fa`) | 4-column intron frequency table parity under `-i` (`Tcov_zero_SV_DEL_candidate3.bam`, `rna_s6*.bam`) |
-| **10** | **Upstream Integration & Micro-Regression Corpus** | Synthetic & Clinical Benchmark Corpus | Multi-platform NGS (Illumina, IonTorrent, simulated) | Multi-depth | Genome-wide 92 integration fixtures | 100% Live Oracle Parity (91 PASS / 1 expected fixture defect static assertion, `pr_integration.log`) |
+| **10** | **Upstream Integration & Micro-Regression Corpus** | Synthetic & Clinical Benchmark Corpus | Multi-platform NGS (Illumina, IonTorrent, simulated) | Multi-depth | Genome-wide 92 integration fixtures | 100% Live Oracle Parity (91 PASS / 1 XFAIL expected fixture defect static assertion, `pr_integration.log`) |
 
 ### 3.2 Genomic Assets & Cryptographic Checksums
 

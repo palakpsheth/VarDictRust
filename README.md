@@ -108,7 +108,7 @@ All comparisons evaluate the full end-to-end VCF output under float tolerance $\
 
 | Dataset / Benchmark | Modality | Target Region / Assay | VarDictJava Variants | VarDictRust Variants | Tier-2 Parity | Parity Conformance Details |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Upstream Integration Corpus** | Simple, Somatic, Amplicon | 92 micro-fixtures | 91 PASS / 1 FAIL* | 91 PASS / 1 FAIL* | **100% MATCH*** | Identical intermediate `.var` tables |
+| **Upstream Integration Corpus** | Simple, Somatic, Amplicon | 92 micro-fixtures | 91 PASS / 1 XFAIL* | 91 PASS / 1 XFAIL* | **100% MATCH*** | Identical intermediate `.var` tables |
 | **GIAB HG002 Germline WGS** | SimpleMode (Germline) | chr20:10M–30M (30×) | 227,562 | 227,562 | **MATCH** | 0 diffs across 20 Mbp ($\varepsilon = 10^{-6}$) |
 | **SEQC2 HCC1395/BL** | SomaticMode (Tumor/Normal) | Whole Exome (WES) | 623,444 | 623,444 | **MATCH** | 0 diffs across all exons ($\varepsilon = 10^{-6}$) |
 | **SEQC2 Somatic Slices** | SomaticMode (Tumor/Normal) | chr1, 2, 3, 17, 19, 21 slices | 4,151 | 4,151 | **MATCH** | 0 diffs in SNV, InDel, and SV |
@@ -118,7 +118,7 @@ All comparisons evaluate the full end-to-end VCF output under float tolerance $\
 | **Extended Modalities Suite** | RNA Splicing, `<INV>`, `<DUP>`, CRISPR, Flags | 9 real biological assays | 9 PASS | 9 PASS | **100% MATCH** | 0 diffs in table & VCF strict-bytes |
 | **Multi-Modal Multi-Slice Suite** | Germline, Somatic, RNA | 18 slices across 6 datasets & 9 chromosomes | 1,129 | 1,129 | **100% MATCH** | 0 diffs across GRCh38 & GRCh37 |
 
-\* *The 91 PASS / 1 FAIL metric reflects comparison against stale pre-computed static files in the upstream repository (`VarDictJava/testdata/integrationtestcases/`). For the single static mismatch (`hard_clip_case.fa`), the upstream fixture encodes conflicting reference chunks (Class D / UB-4 in [`docs/upstream-bugs.md`](docs/upstream-bugs.md)). When evaluated against the live `VarDictJava v1.8.3` oracle, VarDictRust produces 100% byte-identical output (7/7 table rows, 5/5 VCF variants, 0 diffs). Thus, live oracle parity is 100% across all 92 fixtures.*
+\* *The 91 PASS / 1 XFAIL metric reflects comparison against stale pre-computed static files in the upstream repository (`VarDictJava/testdata/integrationtestcases/`). For the single static mismatch (`hard_clip_case.fa`), the upstream fixture encodes conflicting reference chunks (Class D / UB-4 in [`docs/upstream-bugs.md`](docs/upstream-bugs.md)). When evaluated against the live `VarDictJava v1.8.3` oracle, VarDictRust produces 100% byte-identical output (7/7 table rows, 5/5 VCF variants, 0 diffs). Thus, live oracle parity is 100% across all 92 fixtures.*
 
 - **Intermediate Table Parity (100% Column Parity):** Emitted intermediate `.var` tables match 100% of upstream columns and ordering. Slashes denote standard mode vs. statistical `--fisher` mode (Simple: 36/38 columns; Amplicon: 38/40 columns; Somatic: 55/61 columns). Standard CLI output is standard VCFv4.2 (10 or 11 columns); Splicing Mode (`-i`) outputs a 4-column intron count table.
 

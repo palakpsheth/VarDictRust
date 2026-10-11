@@ -106,7 +106,7 @@ The table below summarizes the complete testing inventory executed across the de
 | **1** | **Level 1: Crash Robustness Corpus** | `crates/vardictrust/tests/robustness.rs` | 5 tests | `cargo test --test robustness` | PR #402, missing BAI, 0-tile pass | $\sim 0.2\text{ s}$ |
 | **1** | **Level 1: Thread Determinism** | `crates/vardictrust/tests/thread_determinism.rs` | 1 test | `cargo test --test thread_determinism` | Bitwise identical VCF (1, 2, 4, 8 thr) | $\sim 0.2\text{ s}$ |
 | **1** | **Level 1: Release Metadata & AI** | `crates/vardictrust/tests/version.rs` | 1 test | `cargo test --test version` | Lai (2016) cited, AI disclosed | $<0.01\text{ s}$ |
-| **2** | **Level 2: Integration Regression Corpus**| `harness/run_integration.sh` | 92 fixtures | PR gate & Acceptance Item 2 | `91 PASS / 1 FAIL` (UB-4 signature) | $\sim 8\text{ s}$ |
+| **2** | **Level 2: Integration Regression Corpus**| `harness/run_integration.sh` | 92 fixtures | PR gate & Acceptance Item 2 | `91 PASS / 1 XFAIL` (UB-4 signature) | $\sim 8\text{ s}$ |
 | **3** | **Level 3: Micro Differential** | `fixtures/micro/` | 1 fixture | PR gate & Acceptance Item 3 | Live Oracle MATCH (0 diffs) | $\sim 2\text{ s}$ |
 | **3** | **Level 3: Standard Slices** | `harness/slices.tsv` (`s1a`–`s9`) | 10 slices | Inner loop (`rgate`) & Acceptance Item 3 | Live Oracle MATCH (0 diffs) | $\sim 45\text{ s}$ |
 | **3** | **Level 3: Primary Public WGS/WES** | `hg008`, `seqc2`, `hg002`, `amplicon` | 4 cohorts | Evidence recertification & Acceptance | MATCH ($\varepsilon \le 10^{-6}$, 0 diffs) | $\sim 25\text{ m}$ |
@@ -198,8 +198,8 @@ Located in `crates/vardictrust/tests/`:
 
 When executing Level 2 integration regression testing via `harness/run_integration.sh`, the test runner outputs:
 ```
-PASS: 91  FAIL: 1  SKIP: 0
-MISMATCH: Simple;hard_clip_case.fa;hard_clip_next_to_del_test2.bam;test;6434-6564;-f 0.0 -p -r 1.txt
+PASS: 91  XFAIL: 1  FAIL: 0  SKIP: 0  XPASS: 0
+XFAIL: Simple;hard_clip_case.fa;hard_clip_next_to_del_test2.bam;test;6434-6564;-f 0.0 -p -r 1.txt (UB-4 upstream fixture defect)
 ```
 
 An uninformed external reviewer might interpret `FAIL: 1` as an unaddressed regression in VarDictRust. This section documents the mathematical and biological proof that this mismatch is an **upstream fixture defect (Class D / UB-4)** and that VarDictRust achieves **100% live oracle parity**.
@@ -224,12 +224,12 @@ When VarDictRust and VarDictJava v1.8.3 are both executed live on `hard_clip_cas
 - Zero discrepancies exist between VarDictRust and VarDictJava on this fixture.
 
 ### 4.3 Gate Pinning Invariant
-In `harness/pr_check.sh` and `harness/acceptance.sh`, the test runner enforces:
+In `harness/pr_check.sh`, `harness/acceptance.sh`, and GitHub Actions CI, the test runner enforces:
 ```bash
-grep -qx 'PASS: 91  FAIL: 1  SKIP: 0' <log>
-grep -qxF 'MISMATCH: Simple;hard_clip_case.fa;hard_clip_next_to_del_test2.bam;test;6434-6564;-f 0.0 -p -r 1.txt' <log>
+grep -qx 'PASS: 91  XFAIL: 1  FAIL: 0  SKIP: 0  XPASS: 0' <log>
+grep -qxF 'XFAIL: Simple;hard_clip_case.fa;hard_clip_next_to_del_test2.bam;test;6434-6564;-f 0.0 -p -r 1.txt (UB-4 upstream fixture defect)' <log>
 ```
-If any other fixture fails, or if the signature deviates from `91 PASS / 1 FAIL`, the gate fails immediately. Thus, 100% of valid upstream test cases pass.
+If any other fixture fails, or if the signature deviates from `91 PASS / 1 XFAIL`, the gate fails immediately. Thus, 100% of valid upstream test cases pass.
 
 ---
 
@@ -325,7 +325,7 @@ VarDictRust utilizes 3 automated GitHub Actions workflows with strict security h
 - **StepSecurity Runner Hardening:** pinned to `step-security/harden-runner@v2.11.0` with `egress-policy: audit`.
 - **Submodule Recursion:** checks out complete repository including `VarDictJava` submodule (`actions/checkout@v7.0.1`).
 - **Standard Checks:** runs `cargo fmt --all -- --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test --all` (all 208 workspace tests), `cargo bench --no-run`, and `cargo build --release`.
-- **Regression Gates in CI:** executes `harness/run_integration.sh` (asserting `91 PASS / 1 FAIL`) and `tests/robustness.rs`.
+- **Regression Gates in CI:** executes `harness/run_integration.sh` (asserting `91 PASS / 1 XFAIL`) and `tests/robustness.rs`.
 
 ### 7.2 Security & Supply Chain Scans (`.github/workflows/security.yml`)
 - **Gitleaks Secret Scanning:** executes `gitleaks-action@v2.3.9` with `fetch-depth: 0` across full git commit history.
@@ -386,7 +386,7 @@ cargo test --workspace -- --test-threads=8
 
 # 3. Level 2: Reproduce Upstream Integration Regression Corpus (<8s)
 bash harness/run_integration.sh
-# Expected: PASS: 91  FAIL: 1  SKIP: 0 (asserting 100% live oracle parity)
+# Expected: PASS: 91  XFAIL: 1  FAIL: 0  SKIP: 0  XPASS: 0 (asserting 100% live oracle parity)
 
 # 4. Level 3: Reproduce Extended Modality Parity (9 Modes, <30s)
 bash harness/run_extended_coverage.sh

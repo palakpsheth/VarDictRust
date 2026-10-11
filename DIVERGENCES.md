@@ -17,7 +17,7 @@ specification. We either match it exactly or prove the difference is unreachable
 
 ```
 Verified Parity Baseline (release/v1.0.0, commit cb39a64):
-- Integration Tests:  91 PASS / 1 FAIL / 0 SKIP (100% of valid inputs pass; sole FAIL is stale fixture UB-4)
+- Integration Tests:  91 PASS / 1 XFAIL / 0 FAIL / 0 SKIP (100% of valid inputs pass; sole XFAIL is stale fixture UB-4)
 - Core Library Tests: 188 PASS / 0 FAIL (cargo test -p vardictrust-core --lib)
 - Total Workspace:    208 PASS / 0 FAIL (cargo test --workspace across core, cli, robustness, thread-determinism)
 - Tier-2 Sweeps:      15/15 strict MATCH (s1a-s9 all 10 slices, HG008, SEQC2 exome/slices, HG002, Amplicon)
@@ -33,7 +33,7 @@ Verified Parity Baseline (release/v1.0.0, commit cb39a64):
 | **Class A** | **Faithfully Emulated Upstream Quirks** | **UB-1** (`-p` pos-0 row), **UB-2** (`-p` null formatting), **UB-3** (HashMap iteration order via `JavaHashMap`), **UB-5** (SimpleMode SV split-read filter), **UB-6** (`markDUPSV` boundary), **UB-7** (single-winner collapsing) | **Byte-for-byte replication**. VarDictRust output matches VarDictJava v1.8.3 exactly on valid inputs (§5). | Candidate opt-in flags for v1.1.0+: `--fix ub1`, `--fix ub2`, `--fix ub5`, `--fix ub6`, `--fix ub7`. |
 | **Class B** | **Accepted Divergences by Design** | **`##source`** header (`VarDictRust_v1.0.0`), **`.fai` contig lengths** (fixes #320), **CLI arg splitting** (`-f 0.001`), **`--fisher` raw floats**, **Splice-mode stdout order** | **Functional variant record parity**. Deviations confined strictly to VCF `#`-headers or CLI parsing ergonomics. | Permanent design standards; no flags required. |
 | **Class C** | **Crash-Resilience & Robustness** | **PR #402** `modifyCigar` negative match length, **Issue #187** missing index fail-fast, **Issues #197 / #384** bounded halo tiling (2.9GB peak RSS) | **Zero crash, zero panic** (`#![forbid(unsafe_code)]`). Produces identical output on valid inputs; safely skips/recovers on malformed inputs. | Permanent engine baseline; `--fix 402` in v1.1.0+ will repair CIGAR topology. |
-| **Class D** | **Known Non-Bugs / Upstream Flaws** | **UB-4** (`hard_clip_case.fa` conflicting CSV reference chunks), **GRCh37.fa** Colo829 chr20 all-N fixture drift | **Proven parity vs live Java oracle**. Confirmed that live Java under same inputs produces 100% byte-identical output (0 diffs). | Documented permanent fixture artifacts; not counted as regressions in the 91/1 corpus. |
+| **Class D** | **Known Non-Bugs / Upstream Flaws** | **UB-4** (`hard_clip_case.fa` conflicting CSV reference chunks; pinned SHA-256 `96abe5...`), **GRCh37.fa** Colo829 chr20 all-N fixture drift | **Proven parity vs live Java oracle**. Confirmed that live Java under same inputs produces 100% byte-identical output (0 diffs). Cryptographically pinned in `harness/integration_xfail.tsv`. | Documented permanent fixture artifacts; tracked as verified `XFAIL` in the 91/1 corpus. |
 
 *Upstream Bug Specification & Empirical Validation:*
 - Detailed filing-ready draft specifications for UB-1 through UB-7 are consolidated in [`docs/upstream-bugs.md`](docs/upstream-bugs.md).
@@ -70,7 +70,8 @@ pattern between read and reference differs, causing different extension lengths.
   **Fixture Inconsistency:** The upstream static fixture file was generated from an older test CSV containing
   two conflicting, overlapping chunks (`test,5234..7764` vs `test,5475..8024` with 1734/2290 mismatching bases)
   under first-chunk-wins precedence. `convert_fastas.py` uses last-write-wins. Against live VarDictJava with the
-  same reference, output is 100% identical.
+  same reference, output is 100% identical (7 rows, SHA-256 `96abe5c4bb6e3ff4572e361fddae1cd61354f102551f494488456a96d17829b2`),
+  cryptographically verified as an `XFAIL` defect in `harness/integration_xfail.tsv`.
 - `Simple;hg19.fa;Colo829.chr10.LGDEL3.bam;chr10;127187158-127201055;-f 0.001;`
   **RESOLVED (W1.2)** — root causes were NOT the process_deletion extension scan itself but
   two find_inv_sub divergences (see Resolved table): wrong INV desc tail (`revcomp(consensus)`

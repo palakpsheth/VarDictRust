@@ -1,6 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+export LC_ALL=C
+export LANG=C
+
+sha256_hash() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum | awk '{print $1}'
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 | awk '{print $1}'
+    else
+        python3 -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())'
+    fi
+}
+
 # Run VarDictRust against VarDictJava integration test cases.
 # Usage: run_integration.sh [test_case_file ...]
 # If no files given, runs all Simple mode tests.
@@ -19,8 +32,40 @@ if [[ ! -f "$FASTA_DIR/GRCh37.fa" || ! -f "$FASTA_DIR/GRCh37.fa.fai" ]]; then
     python3 harness/convert_fastas.py
 fi
 
+# Load XFAIL defect registry
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+XFAIL_REGISTRY="$SCRIPT_DIR/integration_xfail.tsv"
+declare -A XFAIL_CASES=()
+declare -A XFAIL_ISSUES=()
+declare -A XFAIL_SHAS=()
+
+if [[ -f "$XFAIL_REGISTRY" ]]; then
+    while IFS=$'\t' read -r fixture classification issue_id target_fix expected_sha256 rationale || [[ -n "$fixture" ]]; do
+        fixture="${fixture//$'\r'/}"
+        fixture="${fixture#"${fixture%%[![:space:]]*}"}"
+        fixture="${fixture%"${fixture##*[![:space:]]}"}"
+        classification="${classification//$'\r'/}"
+        issue_id="${issue_id//$'\r'/}"
+        expected_sha256="${expected_sha256//$'\r'/}"
+        expected_sha256="${expected_sha256#"${expected_sha256%%[![:space:]]*}"}"
+        expected_sha256="${expected_sha256%"${expected_sha256##*[![:space:]]}"}"
+        [[ -z "$fixture" || "$fixture" =~ ^# ]] && continue
+        if [[ "$classification" == "XFAIL" ]]; then
+            if [[ ! "$expected_sha256" =~ ^[0-9a-f]{64}$ ]]; then
+                echo "FATAL: $XFAIL_REGISTRY: entry '$fixture' missing valid 64-char hex expected_sha256 (got '$expected_sha256')" >&2
+                exit 1
+            fi
+            XFAIL_SHAS["$fixture"]="$expected_sha256"
+        fi
+        XFAIL_CASES["$fixture"]="$classification"
+        XFAIL_ISSUES["$fixture"]="$issue_id"
+    done < "$XFAIL_REGISTRY"
+fi
+
 PASS=0
+XFAIL=0
 FAIL=0
+XPASS=0
 SKIP=0
 ERRORS=()
 
@@ -126,27 +171,73 @@ run_test() {
     # Build command
     local cmd="$BINARY -z -c 1 -S 2 -E 3 -g 4 -G $fasta_path -b '$bam_arg' --emit-intermediate $extra_flags $tmpbed"
 
-    # Run
+    # Run with exit code and error capture
+    local tmperr
+    tmperr=$(mktemp)
+    local exit_code=0
     local actual
-    actual=$(eval $cmd 2>/dev/null) || true
+    actual=$(eval $cmd 2>"$tmperr") || exit_code=$?
 
     rm -f "$tmpbed"
 
+    # Engine crash / non-zero exit code must NEVER be masked as XFAIL
+    if [[ $exit_code -ne 0 ]]; then
+        echo "CRASH/ERROR (exit $exit_code): $basename_file"
+        cat "$tmperr" >&2
+        rm -f "$tmperr"
+        FAIL=$((FAIL+1))
+        ERRORS+=("CRASH: $basename_file")
+        return
+    fi
+    rm -f "$tmperr"
+
+    local is_xfail=0
+    local issue=""
+    local expected_sha=""
+    if [[ -v XFAIL_CASES["$basename_file"] ]]; then
+        is_xfail=1
+        issue="${XFAIL_ISSUES[$basename_file]:-defect}"
+        expected_sha="${XFAIL_SHAS[$basename_file]:-}"
+    fi
+
     # Compare
     local sorted_actual sorted_expected
-    sorted_actual=$(echo "$actual" | sort)
-    sorted_expected=$(echo "$expected" | sort)
+    sorted_actual=$(printf '%s\n' "$actual" | LC_ALL=C sort)
+    sorted_expected=$(printf '%s\n' "$expected" | LC_ALL=C sort)
     if [[ "$sorted_actual" == "$sorted_expected" ]]; then
-        echo "MATCH: $basename_file"
-        PASS=$((PASS+1))
+        if [[ $is_xfail -eq 1 ]]; then
+            echo "XPASS: $basename_file (unexpected pass for registered $issue)"
+            XPASS=$((XPASS+1))
+            ERRORS+=("XPASS: $basename_file")
+        else
+            echo "MATCH: $basename_file"
+            PASS=$((PASS+1))
+        fi
     else
-        echo "MISMATCH: $basename_file"
-        FAIL=$((FAIL+1))
-        ERRORS+=("$basename_file")
-        
-        # Show diff (first 20 lines)
-        diff <(echo "$sorted_expected") <(echo "$sorted_actual") | head -40 || true
-        echo "---"
+        if [[ $is_xfail -eq 1 ]]; then
+            local actual_sha256
+            actual_sha256=$(printf '%s\n' "$sorted_actual" | sha256_hash)
+            if [[ -n "$expected_sha" && "$actual_sha256" == "$expected_sha" ]]; then
+                echo "XFAIL: $basename_file ($issue upstream fixture defect, verified against live-oracle signature)"
+                XFAIL=$((XFAIL+1))
+            else
+                echo "FAIL/REGRESSION: $basename_file ($issue actual sha256 $actual_sha256 != expected $expected_sha)"
+                FAIL=$((FAIL+1))
+                ERRORS+=("REGRESSION: $basename_file (actual sha256 $actual_sha256 != expected $expected_sha)")
+                
+                # Show diff (first 20 lines)
+                diff <(echo "$sorted_expected") <(echo "$sorted_actual") | head -40 || true
+                echo "---"
+            fi
+        else
+            echo "MISMATCH: $basename_file"
+            FAIL=$((FAIL+1))
+            ERRORS+=("MISMATCH: $basename_file")
+            
+            # Show diff (first 20 lines)
+            diff <(echo "$sorted_expected") <(echo "$sorted_actual") | head -40 || true
+            echo "---"
+        fi
     fi
 }
 
@@ -163,11 +254,26 @@ fi
 
 echo ""
 echo "===== Results ====="
-echo "PASS: $PASS  FAIL: $FAIL  SKIP: $SKIP"
-if [[ ${#ERRORS[@]} -gt 0 ]]; then
+echo "PASS: $PASS  XFAIL: $XFAIL  FAIL: $FAIL  SKIP: $SKIP  XPASS: $XPASS"
+
+exit_code=0
+if [[ $# -eq 0 ]]; then
+    if [[ $SKIP -gt 0 ]]; then
+        echo "ERROR: Full integration suite had $SKIP skipped tests!" >&2
+        exit_code=1
+    fi
+    if [[ $PASS -ne 91 || $XFAIL -ne 1 || $FAIL -ne 0 || $XPASS -ne 0 ]]; then
+        echo "ERROR: Corpus count invariant violated! Expected 91 PASS / 1 XFAIL / 0 FAIL / 0 SKIP / 0 XPASS, got $PASS PASS / $XFAIL XFAIL / $FAIL FAIL / $SKIP SKIP / $XPASS XPASS." >&2
+        exit_code=1
+    fi
+fi
+
+if [[ ${#ERRORS[@]} -gt 0 || $FAIL -gt 0 || $XPASS -gt 0 ]]; then
     echo "Failed tests:"
     for e in "${ERRORS[@]}"; do
         echo "  - $e"
     done
-    exit 1
+    exit_code=1
 fi
+
+exit "$exit_code"

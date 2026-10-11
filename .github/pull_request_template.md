@@ -13,7 +13,7 @@
 ## Mandatory PR Regression Suite Checklist
 All checks must pass before PR approval. Run locally via `bash harness/pr_check.sh`:
 - [ ] **Unit & Workspace Tests:** `cargo test --workspace` passes (all 208 workspace tests).
-- [ ] **Tier-1 Integration Corpus:** `harness/run_integration.sh` reports `PASS: 91  FAIL: 1  SKIP: 0` (sole expected failure is UB-4 fixture reference defect; 100% live oracle parity).
+- [ ] **Tier-1 Integration Corpus:** `harness/run_integration.sh` reports `PASS: 91  XFAIL: 1  FAIL: 0  SKIP: 0  XPASS: 0` (UB-4 upstream fixture defect; 100% live oracle parity).
 - [ ] **Robustness Crash Suite:** `cargo test -p vardictrust --test robustness` passes (Issue #341 family, PR #402, missing BAI #187).
 - [ ] **Tier-2 Differential Parity:** `harness/compare.sh` executed on affected modalities with 0 diffs ($\varepsilon = 10^{-6}$).
 
