@@ -300,8 +300,8 @@ jobs:
         with:
           submodules: recursive
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
-      - name: Publish vardict-core to Crates.io
-        run: cargo publish -p vardict-core
+      - name: Publish vardictrust-core to Crates.io
+        run: cargo publish -p vardictrust-core
       - name: Publish vardictrust to Crates.io
         run: |
           for i in {1..30}; do
@@ -309,7 +309,7 @@ jobs:
               echo "vardictrust published successfully"
               exit 0
             fi
-            echo "Waiting for vardict-core to propagate on crates.io (attempt $i/30)..."
+            echo "Waiting for vardictrust-core to propagate on crates.io (attempt $i/30)..."
             sleep 10
           done
           echo "Failed to publish vardictrust after retries" >&2

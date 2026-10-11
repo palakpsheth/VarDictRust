@@ -10,6 +10,6 @@ fn main() -> Result<()> {
     cli::check_unsupported(&args)?;
     let args = cli::Cli::parse_from(args);
     let cfg = args.to_config()?;
-    vardict_core::run(&cfg)?;
+    vardictrust_core::run(&cfg)?;
     Ok(())
 }

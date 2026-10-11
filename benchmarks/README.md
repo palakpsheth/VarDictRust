@@ -73,7 +73,7 @@ cargo test -p vardictrust --test thread_determinism
 
 ## 5. Micro-Benchmarks (Criterion)
 
-In-memory pileup and realignment micro-benchmarks (`crates/vardict-core/benches/engine.rs`).
+In-memory pileup and realignment micro-benchmarks (`crates/vardictrust-core/benches/engine.rs`).
 
 ```bash
 cargo bench            # Full run, report under target/criterion/
@@ -82,8 +82,8 @@ cargo bench --no-run   # Compile-only gate
 
 | Benchmark | Target Function | Fixture Profile | Baseline Latency |
 | :--- | :--- | :--- | :--- |
-| `parse_cigar/100_reads_mixed_cigars` | `vardict_core::cigar::parse::pileup` | 100 sorted 150 bp reads over 20 kb synthetic ACGT ref; mixed M/S/D/I | $\approx 21.6\,\mu\text{s}$ / read |
-| `find_bp/60bp_consensus_indel40` | `vardict_core::realign::find_bp` | 60 bp synthetic consensus (~10% mismatches), indel size 40 | $\approx 5.48\,\mu\text{s}$ |
+| `parse_cigar/100_reads_mixed_cigars` | `vardictrust_core::cigar::parse::pileup` | 100 sorted 150 bp reads over 20 kb synthetic ACGT ref; mixed M/S/D/I | $\approx 21.6\,\mu\text{s}$ / read |
+| `find_bp/60bp_consensus_indel40` | `vardictrust_core::realign::find_bp` | 60 bp synthetic consensus (~10% mismatches), indel size 40 | $\approx 5.48\,\mu\text{s}$ |
 
 ---
 

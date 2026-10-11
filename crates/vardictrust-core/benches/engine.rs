@@ -3,13 +3,13 @@
 //! synthetic consensus data. Fixtures are built in-code — no committed data.
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use vardict_core::bam::SamRecord;
-use vardict_core::cigar::parse::pileup;
-use vardict_core::config::Config;
-use vardict_core::realign::find_bp;
-use vardict_core::reference::{LoadedRegion, Reference};
-use vardict_core::regions::Region;
-use vardict_core::types::Pos1;
+use vardictrust_core::bam::SamRecord;
+use vardictrust_core::cigar::parse::pileup;
+use vardictrust_core::config::Config;
+use vardictrust_core::realign::find_bp;
+use vardictrust_core::reference::{LoadedRegion, Reference};
+use vardictrust_core::regions::Region;
+use vardictrust_core::types::Pos1;
 
 const CHR: &str = "chr1";
 const REF_LEN: usize = 20_000;

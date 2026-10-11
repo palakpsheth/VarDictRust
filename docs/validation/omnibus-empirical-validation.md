@@ -4,7 +4,7 @@
 **Governing Standard:** [rewrites.bio](https://rewrites.bio) Manifesto (§0 Evidence Before Completion, §0b Integrity — Never Fake a Pass, §5 Pure Parity on Valid Inputs)  
 **Certified Release Engine Fingerprint:** `7e9b1be766f73b17`  
 **Differential Target Oracle:** AstraZeneca VarDictJava v1.8.3 (`0886261`, Perl submodule `009e017`)  
-**Target Architecture:** Rust 2021 Edition (`crates/vardict-core`, `crates/vardictrust`)  
+**Target Architecture:** Rust 2021 Edition (`crates/vardictrust-core`, `crates/vardictrust`)  
 **Binary Distribution:** Standalone `x86_64-unknown-linux-musl` static PIE binary (zero external shared libraries)  
 **Repository:** [https://github.com/palakpsheth/VarDictRust](https://github.com/palakpsheth/VarDictRust)  
 **Author / Maintainer:** Palak Sheth <palakpsheth@gmail.com>  
@@ -145,7 +145,7 @@ Evaluating SNPs and InDels independently demonstrates high performance across bo
 
 ### 4.2 Mathematical Derivation of QUAL in VarDict
 
-In VarDict (`crates/vardict-core/src/output/vcf.rs:588-596`):
+In VarDict (`crates/vardictrust-core/src/output/vcf.rs:588-596`):
 
 $$
 \text{QUAL} = \left\lfloor \frac{\ln(\text{VD})}{\ln(2)} \cdot \text{round}(\text{MeanBaseQual}, 1) \right\rfloor = \left\lfloor \log_2(\text{VD}) \cdot \overline{Q}_{\text{base}} \right\rfloor
@@ -251,7 +251,7 @@ Evaluated via [`harness/run_extended_coverage.sh`](../../harness/run_extended_co
 
 VarDictJava holds entire regional chromosome structures in JVM heap collections. On deep WGS mega-regions or whole chromosomes, this causes JVM heap growth exceeding 32 GB, triggering garbage collection thrashing and Out-Of-Memory errors (issues #197, #384).
 
-VarDictRust decomposes regions into **bounded tiles with halo intervals** using RAII streaming (`crates/vardict-core/src/regions.rs:98-140` and `lib.rs:248-255`):
+VarDictRust decomposes regions into **bounded tiles with halo intervals** using RAII streaming (`crates/vardictrust-core/src/regions.rs:98-140` and `lib.rs:248-255`):
 
 ```
 Region: [ ==================================================================== ]
@@ -305,7 +305,7 @@ Standard BAM aligners (e.g. BWA-MEM) soft-clip read ends when an insertion or de
 
 ### 9.3 Paired Somatic Subtraction & Classification
 
-In `SomaticMode` (`crates/vardict-core/src/postprocess/somatic.rs`), candidate variants from tumor and normal BAMs are combined and classified according to the `SomaticPostProcessModule.determinateType` decision tree:
+In `SomaticMode` (`crates/vardictrust-core/src/postprocess/somatic.rs`), candidate variants from tumor and normal BAMs are combined and classified according to the `SomaticPostProcessModule.determinateType` decision tree:
 
 - **`StrongSomatic`:** High-confidence somatic mutation.
   $$\left(\text{AF}\_{\text{normal}} < \text{lofreq} \; (0.05) \;\lor\; \text{Cov}\_{\text{normal}} \le 1\right) \;\land\; \text{SSF} \le 0.05 \;\land\; \text{VD}\_{\text{tumor}} \ge \text{min-reads} \; (2)$$
@@ -323,7 +323,7 @@ In `SomaticMode` (`crates/vardict-core/src/postprocess/somatic.rs`), candidate v
 In `AmpliconMode` (`-a 10:0.95`), target intervals are supplied as an 8-column BED containing both the full amplicon boundary (`start`..`end`) and the primer-trimmed insert boundary (`thickStart`..`thickEnd`).
 
 #### AMPBIAS Mathematical Formula
-In `var2vcf_valid.pl:185` and `crates/vardict-core/src/output/vcf.rs:472-476`:
+In `var2vcf_valid.pl:185` and `crates/vardictrust-core/src/output/vcf.rs:472-476`:
 
 $$
 \text{AMPBIAS} \iff (\text{GDAMP} < \text{TLAMP} - \text{NCAMP}) \;\lor\; \text{AMPFLAG}

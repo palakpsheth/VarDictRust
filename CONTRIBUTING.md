@@ -109,11 +109,11 @@ pre-commit install
 
 ## 4. Architectural Invariants & Safety
 
-All contributions to `crates/vardict-core/` and `crates/vardictrust/` must adhere strictly to the following architectural rules:
+All contributions to `crates/vardictrust-core/` and `crates/vardictrust/` must adhere strictly to the following architectural rules:
 
 ### 4.1 Memory Safety & The No-Panic Rule
 - **`#![forbid(unsafe_code)]`:** The core engine crate strictly forbids `unsafe` code.
-- **Zero Panics in Library Code:** In `crates/vardict-core/src/**` (outside `#[cfg(test)]`), you must **never** use `unwrap()`, `expect()`, `panic!()`, `unreachable!()`, bare slice indexing `x[i]` without prior bounds checks, or arithmetic that can overflow on user input.
+- **Zero Panics in Library Code:** In `crates/vardictrust-core/src/**` (outside `#[cfg(test)]`), you must **never** use `unwrap()`, `expect()`, `panic!()`, `unreachable!()`, bare slice indexing `x[i]` without prior bounds checks, or arithmetic that can overflow on user input.
 - **Actionable Error Propagation:** Return `Result<T, VardictError>` with the `?` operator.
 
 ### 4.2 Coordinate Indexing (§6)
@@ -123,7 +123,7 @@ All contributions to `crates/vardict-core/` and `crates/vardictrust/` must adher
 
 ### 4.3 Determinism & Fidelity Hazards (§8)
 - **Banker's Rounding:** Every floating-point metric written to table or VCF output must use IEEE 754 half-even rounding via `round_half_even`. Never use Rust's default formatter rounding.
-- **Java HashMap Iteration Parity:** Java's `HashMap` iteration order is emulated using `vardict_core::javamap::JavaHashMap`, which reproduces OpenJDK 8+ hash bucket spread, binning, and iteration semantics. Never replace it with `std::collections::HashMap` in output or realignment paths.
+- **Java HashMap Iteration Parity:** Java's `HashMap` iteration order is emulated using `vardictrust_core::javamap::JavaHashMap`, which reproduces OpenJDK 8+ hash bucket spread, binning, and iteration semantics. Never replace it with `std::collections::HashMap` in output or realignment paths.
 - **Sequences as Bytes:** Biological sequences are byte slices (`&[u8]` or `Vec<u8>`), never `String`.
 - **Phred Quality Scores:** Encoded as Phred+33: `Phred(byte.saturating_sub(33))`.
 

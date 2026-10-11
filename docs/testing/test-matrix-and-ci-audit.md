@@ -31,7 +31,7 @@ flowchart TD
     end
 
     subgraph Level1 ["Level 1: Unit & Component Tests (208 Total)"]
-        C_Core["crates/vardict-core (188 lib tests)"]
+        C_Core["crates/vardictrust-core (188 lib tests)"]
         C_CLI["crates/vardictrust (13 cli tests)"]
         C_Rob["crates/vardictrust/tests/robustness.rs (5 tests)"]
         C_Det["crates/vardictrust/tests/thread_determinism.rs (1 test)"]
@@ -101,7 +101,7 @@ The table below summarizes the complete testing inventory executed across the de
 | :---: | :--- | :--- | :---: | :--- | :--- | :---: |
 | **Pre** | **Pre-Commit Hook (Track A)** | `.githooks/pre-commit` | 3 checks | `git commit` (local) | fmt, clippy, gitleaks clean | $<3\text{ s}$ |
 | **Pre** | **Pre-Commit Hook (Track B)** | `.pre-commit-config.yaml` | 6 hooks | `git commit` (local) | yaml, toml, whitespace, gitleaks | $<4\text{ s}$ |
-| **1** | **Level 1: Core Library Tests** | `crates/vardict-core/src/` | 188 tests | `cargo test -p vardict-core` | 0 failures, 0 panics | $\sim 2\text{ s}$ |
+| **1** | **Level 1: Core Library Tests** | `crates/vardictrust-core/src/` | 188 tests | `cargo test -p vardictrust-core` | 0 failures, 0 panics | $\sim 2\text{ s}$ |
 | **1** | **Level 1: CLI Front-End Tests** | `crates/vardictrust/src/` | 13 tests | `cargo test -p vardictrust --bin vardictrust` | 0 failures, 0 panics | $<0.1\text{ s}$ |
 | **1** | **Level 1: Crash Robustness Corpus** | `crates/vardictrust/tests/robustness.rs` | 5 tests | `cargo test --test robustness` | PR #402, missing BAI, 0-tile pass | $\sim 0.2\text{ s}$ |
 | **1** | **Level 1: Thread Determinism** | `crates/vardictrust/tests/thread_determinism.rs` | 1 test | `cargo test --test thread_determinism` | Bitwise identical VCF (1, 2, 4, 8 thr) | $\sim 0.2\text{ s}$ |
@@ -131,9 +131,9 @@ The table below summarizes the complete testing inventory executed across the de
 
 ## 3. Granular Breakdown of Cargo Workspace Tests (208 Total)
 
-Executing `cargo test --workspace` validates **208 tests** across `crates/vardict-core`, `crates/vardictrust`, and integration test suites:
+Executing `cargo test --workspace` validates **208 tests** across `crates/vardictrust-core`, `crates/vardictrust`, and integration test suites:
 
-### 3.1 `crates/vardict-core` (188 Library Tests)
+### 3.1 `crates/vardictrust-core` (188 Library Tests)
 
 The core variant calling engine enforces `#![forbid(unsafe_code)]` and zero unhandled panics. Its 188 unit tests are partitioned across the following modules:
 

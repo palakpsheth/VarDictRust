@@ -94,7 +94,7 @@ keeps only the highest-AF row per raw-start bucket and breaks exact AF ties
 first-in-stream — so WHICH allele survives a tie depends on hash layout.
 
 **Our replication stance:** **Replicated** via JavaHashMap Determinism Engine (commit `d41a6f1`) via
-[`vardict_core::javamap::JavaHashMap`](../crates/vardict-core/src/javamap.rs).
+[`vardictrust_core::javamap::JavaHashMap`](../crates/vardictrust-core/src/javamap.rs).
 It faithfully emulates OpenJDK 8+ `java.util.HashMap` hash-spreading (`h ^ (h >> 16)`),
 power-of-two table indexing, load factor 0.75, resize threshold doubling, and bucket
 iteration order across variant maps (`non_insertion_variants`, `insertion_variants`,
@@ -174,7 +174,7 @@ unless( $isamp ) {
 ```
 Any structural variant allele containing `<` (e.g., `<DUP>`, `<INV>`) that has only discordant mate-pair cluster evidence but zero split-read evidence (`splitreads < $opt_T`, where default `$opt_T = 1`) is unconditionally discarded during VCF formatting. Notably, these variants **are emitted** in the intermediate `.var` table, creating a discrepancy between the table and VCF output.
 
-**Our replication stance:** **Replicated** in `crates/vardict-core/src/lib.rs:403-414, 470, 499` (`is_sv && splitreads < 1` suppresses VCF line generation for SimpleMode), ensuring exact bitwise parity with the full VarDictJava pipeline output.
+**Our replication stance:** **Replicated** in `crates/vardictrust-core/src/lib.rs:403-414, 470, 499` (`is_sv && splitreads < 1` suppresses VCF line generation for SimpleMode), ensuring exact bitwise parity with the full VarDictJava pipeline output.
 
 **Draft issue text:**
 
@@ -197,7 +197,7 @@ markDUPSV(bp, pe, Collections.singletonList(svStructures.svrdup), maxReadLength)
 ```
 Inside `markDUPSV`, the overlap predicate `isOverlap(start1, end1, start2, end2, rlen)` checks `if (start1 >= end2 || start2 >= end1) return false;`. Because Java passes the post-decrement `pe` as `end1`, any reverse-strand mate cluster whose reads begin exactly at the original un-decremented `pe` fails the overlap condition.
 
-**Our replication stance:** **Replicated** in `crates/vardict-core/src/sv.rs:3039, 3105-3111`, passing `pe` (post-decrement) rather than `pe + 1` to match Java's exact discordant pair clustering and breakpoint boundaries.
+**Our replication stance:** **Replicated** in `crates/vardictrust-core/src/sv.rs:3039, 3105-3111`, passing `pe` (post-decrement) rather than `pe + 1` to match Java's exact discordant pair clustering and breakpoint boundaries.
 
 **Draft issue text:**
 
@@ -220,7 +220,7 @@ foreach my $p (@pos) {
 ```
 Only the single candidate allele with the highest allele frequency (`$tmp[0]`) is considered at each genomic locus. If that winner candidate is skipped (for example, if `$ref` is empty from a `-p` null-record, or if an SV candidate has `splitreads < 1` per UB-5), the loop executes `next` and terminates immediately. As a result, legitimate alternative variants at the same locus with lower allele frequencies are completely excluded from the VCF.
 
-**Our replication stance:** **Replicated** in `crates/vardict-core/src/lib.rs:467-505`, maintaining a `pending: BTreeMap<i32, SimpleVcfCandidate>` that retains only the top-AF candidate per locus in single-sample VCF mode.
+**Our replication stance:** **Replicated** in `crates/vardictrust-core/src/lib.rs:467-505`, maintaining a `pending: BTreeMap<i32, SimpleVcfCandidate>` that retains only the top-AF candidate per locus in single-sample VCF mode.
 
 **Draft issue text:**
 

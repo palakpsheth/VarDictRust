@@ -134,13 +134,13 @@ data" is actionable; "port the whole pipeline" is not.
 - **Sequences are bytes.** Use `&[u8]`/`Vec<u8>`, never `String`. Replace Java's negative-index `charAt`/`substr` with bounds-checked slice helpers returning `Option`.
 - **Quality is Phred+33.** `Phred(byte.saturating_sub(33))`.
 - **`maxReadLength` propagation** matters: SomaticMode seeds BAM2's pipeline with BAM1's value.
-- **Java `HashMap` iteration that reaches output** is emulated with `vardict_core::javamap::JavaHashMap`. It ports `java.util.HashMap` spread, bin, resize and treeify-trigger semantics, and is validated against real Java by the op-log tests. This is the only sanctioned non-sorted order. Never use `std::collections::HashMap` there.
+- **Java `HashMap` iteration that reaches output** is emulated with `vardictrust_core::javamap::JavaHashMap`. It ports `java.util.HashMap` spread, bin, resize and treeify-trigger semantics, and is validated against real Java by the op-log tests. This is the only sanctioned non-sorted order. Never use `std::collections::HashMap` there.
 
 ---
 
 ## 9. Idiomatic Rust + the no-panic rule
-- **No panics in library code.** In `crates/vardict-core/src/**` (outside `#[cfg(test)]`) you may **not** use `unwrap`, `expect`, `panic!`, `unreachable!`, bare slice indexing `x[i]` without a prior bounds check, or arithmetic that can overflow on input. Use `Result<_, VardictError>` + `?`, `.get(i)?`, checked/saturating math. **This is what fixes the VarDictJava crash-issue family by design.**
-- **`#![forbid(unsafe_code)]`** in `vardict-core`. `unsafe` only via vetted SIMD crates (e.g. `block-aligner`) behind safe APIs.
+- **No panics in library code.** In `crates/vardictrust-core/src/**` (outside `#[cfg(test)]`) you may **not** use `unwrap`, `expect`, `panic!`, `unreachable!`, bare slice indexing `x[i]` without a prior bounds check, or arithmetic that can overflow on input. Use `Result<_, VardictError>` + `?`, `.get(i)?`, checked/saturating math. **This is what fixes the VarDictJava crash-issue family by design.**
+- **`#![forbid(unsafe_code)]`** in `vardictrust-core`. `unsafe` only via vetted SIMD crates (e.g. `block-aligner`) behind safe APIs.
 - Model the data contract as **types**, not strings: `enum VariantDesc/CigarOp/VarType/SomaticStatus` each with a `Display` that reproduces the exact VarDict tokens (`+seq`, `-len`, `&`, `^`, `#`, `<DUP>`, `StrongSomatic`, …).
 - `thiserror` for the library error enum, `anyhow` in the CLI. Errors must be actionable (no cryptic stacktraces).
 - Pass `Arc<Config>` explicitly — no mutable global singleton.
@@ -210,7 +210,7 @@ bash harness/slice.sh <in.bam> <chr:start-end> <out.bam>
 
 ## 16. Repo layout
 ```
-crates/vardict-core/   engine library (all logic; #![forbid(unsafe_code)])
+crates/vardictrust-core/   engine library (all logic; #![forbid(unsafe_code)])
 crates/vardictrust/    bin "vardictrust" (clap front-end → core)
 harness/               compare.sh, compare_var.py, compare_vcf.py, slice.sh, run_oracle.sh, setup_oracle.sh
 golden/                versioned oracle outputs (.vcf, .var) + PROVENANCE

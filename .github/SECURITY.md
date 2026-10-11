@@ -1,6 +1,6 @@
 # Security Policy: VarDictRust
 
-The VarDictRust project takes the security, memory safety, and integrity of scientific genomics workflows seriously. As an idiomatic Rust rewrite engineered to process large, untrusted Next-Generation Sequencing (NGS) files (BAM, CRAM, FASTA, BED), VarDictRust enforces `#![forbid(unsafe_code)]` in its core variant calling engine (`crates/vardict-core`) to eliminate entire classes of memory corruption vulnerabilities by construction.
+The VarDictRust project takes the security, memory safety, and integrity of scientific genomics workflows seriously. As an idiomatic Rust rewrite engineered to process large, untrusted Next-Generation Sequencing (NGS) files (BAM, CRAM, FASTA, BED), VarDictRust enforces `#![forbid(unsafe_code)]` in its core variant calling engine (`crates/vardictrust-core`) to eliminate entire classes of memory corruption vulnerabilities by construction.
 
 ---
 

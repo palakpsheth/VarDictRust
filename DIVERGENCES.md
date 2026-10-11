@@ -18,7 +18,7 @@ specification. We either match it exactly or prove the difference is unreachable
 ```
 Verified Parity Baseline (release/v1.0.0, commit cb39a64):
 - Integration Tests:  91 PASS / 1 FAIL / 0 SKIP (100% of valid inputs pass; sole FAIL is stale fixture UB-4)
-- Core Library Tests: 188 PASS / 0 FAIL (cargo test -p vardict-core --lib)
+- Core Library Tests: 188 PASS / 0 FAIL (cargo test -p vardictrust-core --lib)
 - Total Workspace:    208 PASS / 0 FAIL (cargo test --workspace across core, cli, robustness, thread-determinism)
 - Tier-2 Sweeps:      15/15 strict MATCH (s1a-s9 all 10 slices, HG008, SEQC2 exome/slices, HG002, Amplicon)
 - Truth Concordance:  3/3 EQUAL (GIAB HG002 NIST v4.2.1, SEQC2 v1.2.1, GIAB HG008 NIST v3.3.2)
@@ -63,7 +63,7 @@ pattern between read and reference differs, causing different extension lengths.
      sequences (cols 31-32; upstream bug UB-2).
   2. **Spurious all-zero row at 0/0:** Line 78 creates fallback default `new Variant()` with start=end=0, printed
      at lines 100-101 (upstream bug UB-1).
-  Replicated in `crates/vardict-core/src/postprocess/simple.rs` (`make_null_record`) and `crates/vardict-core/src/output/table.rs`.
+  Replicated in `crates/vardictrust-core/src/postprocess/simple.rs` (`make_null_record`) and `crates/vardictrust-core/src/output/table.rs`.
   **VCF Path Filtering:** In Java's pipeline, `var2vcf_valid.pl:141` (`next unless ($ref)`) drops records with
   empty/falsy REF, discarding both null rows so only 5 variants reach final VCF. VarDictRust ports this filter
   via `output::vcf::perl_row_skipped`, achieving byte-identical 5/5 VCF variant MATCH.
@@ -1055,7 +1055,7 @@ Corpus rerun unchanged: 91 PASS / 1 FAIL. Milestone tags
 limitation (P3 root-cause, 2026-08-23). The s1a AF-tie emission order at
 chr20:20202875 was a **Java `java.util.HashMap` iteration-order artifact across
 position keys**. In T10, OpenJDK 8+ `java.util.HashMap` spread, bin, resize, and
-iteration semantics were faithfully implemented in `vardict_core::javamap::JavaHashMap`
+iteration semantics were faithfully implemented in `vardictrust_core::javamap::JavaHashMap`
 (validated by Java oracle op-log replay tests). Wire-in at output-reaching variant
 maps (`non_insertion_variants`, `insertion_variants`, and `aligned_variants`) replicates
 Java's cross-position emission sequence, achieving 100% variant parity (1048/1048 variants,

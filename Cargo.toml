@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/vardict-core", "crates/vardictrust"]
+members = ["crates/vardictrust-core", "crates/vardictrust"]
 resolver = "2"
 
 [workspace.package]

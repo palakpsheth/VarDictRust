@@ -66,7 +66,7 @@ pub fn round_half_even(value: f64, digits: i32) -> f64 {
 // Error type
 // ---------------------------------------------------------------------------
 
-/// Unified error type for vardict-core.
+/// Unified error type for vardictrust-core.
 #[derive(thiserror::Error, Debug)]
 pub enum VardictError {
     /// I/O error (file access, etc.)

@@ -39,11 +39,11 @@ pub fn normalize_args(args: &[String]) -> Vec<String> {
 /// Fail loudly if any known-unimplemented VarDictJava flag was supplied.
 /// Runs before Clap parsing, which would otherwise emit a generic
 /// "unexpected argument" error instead of the actionable §12 message.
-pub fn check_unsupported(args: &[String]) -> Result<(), vardict_core::types::VardictError> {
+pub fn check_unsupported(args: &[String]) -> Result<(), vardictrust_core::types::VardictError> {
     for arg in args {
         let flag = arg.split_once('=').map_or(arg.as_str(), |(f, _)| f);
         if UNSUPPORTED_FLAGS.contains(&flag) {
-            return Err(vardict_core::types::VardictError::Unsupported(format!(
+            return Err(vardictrust_core::types::VardictError::Unsupported(format!(
                 "{flag} not implemented in v1.0; use VarDictJava"
             )));
         }
@@ -346,18 +346,18 @@ impl Cli {
     /// Convert CLI args to a core Config.
     pub fn to_config(
         &self,
-    ) -> Result<vardict_core::config::Config, vardict_core::types::VardictError> {
+    ) -> Result<vardictrust_core::config::Config, vardictrust_core::types::VardictError> {
         let flag_filter =
             if self.flag_filter.starts_with("0x") || self.flag_filter.starts_with("0X") {
                 u32::from_str_radix(&self.flag_filter[2..], 16).map_err(|e| {
-                    vardict_core::types::VardictError::Parse(format!(
+                    vardictrust_core::types::VardictError::Parse(format!(
                         "Invalid -F value '{}': {}",
                         self.flag_filter, e
                     ))
                 })?
             } else {
                 self.flag_filter.parse().map_err(|e| {
-                    vardict_core::types::VardictError::Parse(format!(
+                    vardictrust_core::types::VardictError::Parse(format!(
                         "Invalid -F value '{}': {}",
                         self.flag_filter, e
                     ))
@@ -365,7 +365,7 @@ impl Cli {
             };
 
         if let Some(0) = self.tile_size {
-            return Err(vardict_core::types::VardictError::Parse(
+            return Err(vardictrust_core::types::VardictError::Parse(
                 "Invalid --tile-size: 0. Tile size must be >= 1".into(),
             ));
         }
@@ -376,7 +376,7 @@ impl Cli {
             (self.freq, self.min_reads)
         };
 
-        Ok(vardict_core::config::Config {
+        Ok(vardictrust_core::config::Config {
             exception_counter: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             reference: self.reference.clone(),
             bam: self.bam.clone(),
@@ -630,7 +630,10 @@ mod tests {
     fn invalid_flag_filter_returns_parse_error() {
         let cli = Cli::try_parse_from(args(&["-b", "a.bam", "-G", "r.fa", "-F", "bogus"])).unwrap();
         let err = cli.to_config().unwrap_err();
-        assert!(matches!(err, vardict_core::types::VardictError::Parse(_)));
+        assert!(matches!(
+            err,
+            vardictrust_core::types::VardictError::Parse(_)
+        ));
         assert!(err.to_string().contains("Invalid -F value 'bogus'"));
     }
 
@@ -639,7 +642,10 @@ mod tests {
         let cli =
             Cli::try_parse_from(args(&["-b", "a.bam", "-G", "r.fa", "--tile-size", "0"])).unwrap();
         let err = cli.to_config().unwrap_err();
-        assert!(matches!(err, vardict_core::types::VardictError::Parse(_)));
+        assert!(matches!(
+            err,
+            vardictrust_core::types::VardictError::Parse(_)
+        ));
         assert!(err.to_string().contains("Invalid --tile-size: 0"));
     }
 

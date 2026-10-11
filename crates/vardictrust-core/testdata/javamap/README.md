@@ -1,6 +1,6 @@
 # JavaMap JVM Oracle Operation Logs & Provenance
 
-This directory contains the JVM test oracle generator and operation trace logs used to validate [`crates/vardict-core/src/javamap.rs`](../../src/javamap.rs).
+This directory contains the JVM test oracle generator and operation trace logs used to validate [`crates/vardictrust-core/src/javamap.rs`](../../src/javamap.rs).
 
 ---
 
@@ -12,7 +12,7 @@ When multiple candidate variants have identical allele frequencies at a raw posi
 
 Standard Rust hash maps (`std::collections::HashMap`, `hashbrown`) use SipHash or SwissTable algorithms with randomized seeds, producing iteration orders different from Java. Using `BTreeMap` or sorted order resolves determinism, but produces output diverging from VarDictJava v1.8.3.
 
-To achieve 100% parity under the [rewrites.bio](https://rewrites.bio) manifesto, VarDictRust implements `vardict_core::javamap::JavaHashMap`, faithfully replicating OpenJDK `java.util.HashMap` mechanics:
+To achieve 100% parity under the [rewrites.bio](https://rewrites.bio) manifesto, VarDictRust implements `vardictrust_core::javamap::JavaHashMap`, faithfully replicating OpenJDK `java.util.HashMap` mechanics:
 - Hash spreading: `(h = key.hashCode()) ^ (h >>> 16)`.
 - Power-of-two bucket table indexing: `(capacity - 1) & hash`.
 - Standard load factor (0.75) and capacity doubling.
@@ -42,10 +42,10 @@ java JavaMapOracle <seed> <numOps> <base> <span> <stride>
 
 ## 3. Test Verification in Rust
 
-These logs are compiled into the test binary via `include_str!` and replayed by the unit test suite in [`crates/vardict-core/src/javamap.rs`](../../src/javamap.rs):
+These logs are compiled into the test binary via `include_str!` and replayed by the unit test suite in [`crates/vardictrust-core/src/javamap.rs`](../../src/javamap.rs):
 
 ```rust
-// crates/vardict-core/src/javamap.rs:300
+// crates/vardictrust-core/src/javamap.rs:300
 #[test]
 fn test_javamap_oracle() {
     // Replays ops_1.txt, ops_2.txt: asserts exact keySet() sequence matching Java's output.

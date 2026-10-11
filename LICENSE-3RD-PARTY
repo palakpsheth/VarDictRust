@@ -5,11 +5,11 @@ This project incorporates routines from the standalone `nmath` library of
 The R Project for Statistical Computing (https://www.r-project.org/):
 
 Files:
-  - crates/vardict-core/src/stats/rmath/bd0.rs
-  - crates/vardict-core/src/stats/rmath/dbinom_raw.rs
-  - crates/vardict-core/src/stats/rmath/dhyper.rs
-  - crates/vardict-core/src/stats/rmath/phyper.rs
-  - crates/vardict-core/src/stats/rmath/stirlerr.rs
+  - crates/vardictrust-core/src/stats/rmath/bd0.rs
+  - crates/vardictrust-core/src/stats/rmath/dbinom_raw.rs
+  - crates/vardictrust-core/src/stats/rmath/dhyper.rs
+  - crates/vardictrust-core/src/stats/rmath/phyper.rs
+  - crates/vardictrust-core/src/stats/rmath/stirlerr.rs
 
 Copyright (C) 1998–2020 The R Core Team
 Copyright (C) 1995, 1996 Robert Gentleman and Ross Ihaka
