@@ -27,7 +27,7 @@ mark 2 $t "integration/smoke"
 # 3 Tier-2: micro + every committed slice + external datasets
 t=1; MIN_VARIANTS=1 run bash harness/compare.sh fixtures/micro/micro.ref.fa fixtures/micro/micro.bam fixtures/micro/micro.bed || t=0
 for id in $(awk -F'\t' '!/^#/{print $1}' harness/slices.tsv); do run bash harness/run_slice.sh "$id" || { t=0; echo "slice $id failed" >> "$OUT/log.txt"; }; done
-for e in hg008-tier2 seqc2-slices-tier2 seqc2-exome-tier2 hg002-tier2 amplicon-tier2; do run ev "$e" || t=0; done
+for e in hg008-tier2 seqc2-slices-tier2 seqc2-exome-tier2 hg002-tier2 amplicon-tier2 extended-coverage-tier2 multimodal-slices-tier2; do run ev "$e" || t=0; done
 mark 3 $t "Tier-2"
 # 4 Robustness: crash corpus (#341 family, PR #402, #187) + CRAM twin
 t=1; run cargo test -p vardictrust --test robustness || t=0; run ev hg008-cram-twin || t=0; mark 4 $t "robustness/CRAM"

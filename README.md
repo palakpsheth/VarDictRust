@@ -102,6 +102,7 @@ All comparisons evaluate the full end-to-end VCF output under float tolerance $\
 | **GIAB HG008 Somatic** | SomaticMode (Tumor/Normal) | PDAC high-depth slices | 18,426 | 18,426 | **MATCH** | 0 diffs in somatic status |
 | **Targeted Amplicon Panel** | AmpliconMode (`-a 10:0.95`) | Overlapping primer assay | 2 | 2 | **MATCH** | 0 diffs with primer trimming & AMPBIAS |
 | **Extended Modalities Suite** | RNA Splicing, `<INV>`, `<DUP>`, CRISPR, Flags | 9 real biological assays | 9 PASS | 9 PASS | **100% MATCH** | 0 diffs in table & VCF strict-bytes |
+| **Multi-Modal Multi-Slice Suite** | Germline, Somatic, RNA | 18 slices across 6 datasets & 9 chromosomes | 1,129 | 1,129 | **100% MATCH** | 0 diffs across GRCh38 & GRCh37 |
 
 \* *The 91 PASS / 1 FAIL metric reflects comparison against stale pre-computed static files in the upstream repository (`VarDictJava/testdata/integrationtestcases/`). For the single static mismatch (`hard_clip_case.fa`), the upstream fixture encodes conflicting reference chunks (Class D / UB-4 in [`docs/upstream-bugs.md`](docs/upstream-bugs.md)). When evaluated against the live `VarDictJava v1.8.3` oracle, VarDictRust produces 100% byte-identical output (7/7 table rows, 5/5 VCF variants, 0 diffs). Thus, live oracle parity is 100% across all 92 fixtures.*
 
@@ -121,7 +122,7 @@ Evaluated against physical ground truth using Real Time Genomics `rtg vcfeval`:
 > **Interpreting Raw Discovery Sensitivity vs. Consensus Truth Set Precision:**
 > VarDict was designed as an ultra-sensitive discovery engine capable of calling subclonal cancer mutations down to 1% allele frequency (`-f 0.01`). Ground truth consensus sets (NIST v4.2.1, SEQC2 v1.2.1) are intentionally restricted to constitutional diploid or high-confidence somatic consensus variants, so raw discovery calls without post-filtering score thousands of subclonal candidates as technical false positives. At the standard operating point (`QUAL >= 128`), false positives collapse to **553** while preserving 96.35% recall (**96.99% $F_1$ score**). Crucially, **VarDictJava and VarDictRust produce bitwise identical site lists** across all benchmark sets. For full biological details, see [Section 5.1 of the Validation Report](docs/validation/giab-seqc2-validation.md#51-biological--methodological-interpretation-of-raw-caller-precision) and the [Dedicated NIST HG002 Report](docs/validation/nist-v4.2.1-hg002-benchmark.md).
 
-*For full scientific details, reference checksums, and exact reproduction commands, see [`docs/validation/giab-seqc2-validation.md`](docs/validation/giab-seqc2-validation.md), [`docs/validation/nist-v4.2.1-hg002-benchmark.md`](docs/validation/nist-v4.2.1-hg002-benchmark.md), and [`docs/validation/full-code-coverage-validation.md`](docs/validation/full-code-coverage-validation.md).*
+*For full scientific details, reference checksums, and exact reproduction commands, see [`docs/validation/giab-seqc2-validation.md`](docs/validation/giab-seqc2-validation.md), [`docs/validation/nist-v4.2.1-hg002-benchmark.md`](docs/validation/nist-v4.2.1-hg002-benchmark.md), [`docs/validation/full-code-coverage-validation.md`](docs/validation/full-code-coverage-validation.md), and [`docs/validation/multimodal-multislice-validation.md`](docs/validation/multimodal-multislice-validation.md).*
 
 
 ---

@@ -19,6 +19,7 @@ This document establishes the empirical validation proof for VarDictRust v1.0.0 
 4. **Targeted Amplicon Panel** with overlapping primers exercising primer-bias detection (`AMPBIAS`) and 8-column BED parsing.
 5. **Human Chromosome 1 Scale Benchmark (1 Mbp to 249 Mbp)** demonstrating bounded $O(1)$ resident memory scaling.
 6. **Full-Spectrum Extended Modalities (RNA Splicing, Complex SVs, CRISPR, Operational Flags)** demonstrating 100% byte-for-byte output parity against VarDictJava v1.8.3 across 9 specialized configurations (see [Full Code Coverage Validation Report](full-code-coverage-validation.md)).
+7. **Multi-Slice, Multi-Modal Public Sequencing Dataset Expansion (18 non-overlapping slices across 6 datasets and 9 chromosomes)** demonstrating 100% byte-for-byte and strict float parity across both GRCh38 and GRCh37/b37 builds (see [Multi-Modal Multi-Slice Validation Report](multimodal-multislice-validation.md)).
 
 Every result reported below is backed by a cryptographically fingerprinted, machine-readable evidence artifact in [`benchmarks/evidence/`](../../benchmarks/evidence/).
 

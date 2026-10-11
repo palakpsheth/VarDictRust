@@ -1,0 +1,157 @@
+{
+  "suite": "multimodal_multislice_parity_suite",
+  "timestamp": "\"2026-10-11T00:04:07Z\"",
+  "fingerprint": "7e9b1be766f73b17",
+  "mode": "tier-2-live-oracle-strict-bytes",
+  "total_slices": 18,
+  "slices_passed": 18,
+  "total_variants_evaluated": 1129,
+  "float_tolerance_eps": 1e-06,
+  "result": "MATCH",
+  "slices": [
+    {
+      "slice_id": "HG005_1A",
+      "dataset": "GIAB HG005 Diversity WGS",
+      "region": "chr3 40000000 40010000",
+      "variants": 31,
+      "status": "MATCH",
+      "time_ms": 4109
+    },
+    {
+      "slice_id": "HG005_1B",
+      "dataset": "GIAB HG005 Diversity WGS",
+      "region": "chr6 30000000 30010000",
+      "variants": 10,
+      "status": "MATCH",
+      "time_ms": 3816
+    },
+    {
+      "slice_id": "HG005_1C",
+      "dataset": "GIAB HG005 Diversity WGS",
+      "region": "chr21 20000000 20010000",
+      "variants": 8,
+      "status": "MATCH",
+      "time_ms": 4020
+    },
+    {
+      "slice_id": "SEQC2_2A",
+      "dataset": "SEQC2 Somatic WES (BRAF)",
+      "region": "chr7 140400000 140420000",
+      "variants": 31,
+      "status": "MATCH",
+      "time_ms": 3140
+    },
+    {
+      "slice_id": "SEQC2_2B",
+      "dataset": "SEQC2 Somatic WES (HRAS)",
+      "region": "chr11 530000 550000",
+      "variants": 16,
+      "status": "MATCH",
+      "time_ms": 3502
+    },
+    {
+      "slice_id": "SEQC2_2C",
+      "dataset": "SEQC2 Somatic WES (KRAS)",
+      "region": "chr12 25200000 25250000",
+      "variants": 55,
+      "status": "MATCH",
+      "time_ms": 5194
+    },
+    {
+      "slice_id": "HG002_3A",
+      "dataset": "GIAB HG002 Germline WGS",
+      "region": "chr20 10000000 10020000",
+      "variants": 337,
+      "status": "MATCH",
+      "time_ms": 3660
+    },
+    {
+      "slice_id": "HG002_3B",
+      "dataset": "GIAB HG002 Germline WGS",
+      "region": "chr20 20000000 20020000",
+      "variants": 273,
+      "status": "MATCH",
+      "time_ms": 3709
+    },
+    {
+      "slice_id": "HG002_3C",
+      "dataset": "GIAB HG002 Germline WGS",
+      "region": "chr20 30000000 30020000",
+      "variants": 4,
+      "status": "MATCH",
+      "time_ms": 2520
+    },
+    {
+      "slice_id": "HG008_4A",
+      "dataset": "GIAB HG008 Somatic WGS",
+      "region": "chr1 1743056 1744086 slice_1_6",
+      "variants": 23,
+      "status": "MATCH",
+      "time_ms": 3115
+    },
+    {
+      "slice_id": "HG008_4B",
+      "dataset": "GIAB HG008 Somatic WGS",
+      "region": "chr1 6170843 6182754 slice_2_3",
+      "variants": 50,
+      "status": "MATCH",
+      "time_ms": 5297
+    },
+    {
+      "slice_id": "HG008_4C",
+      "dataset": "GIAB HG008 Somatic WGS",
+      "region": "chr1 56757190 56764123 slice_3_4",
+      "variants": 42,
+      "status": "MATCH",
+      "time_ms": 3824
+    },
+    {
+      "slice_id": "NA24385_5A",
+      "dataset": "NA24385 b37 WGS (chr1)",
+      "region": "1 246981051 246981611",
+      "variants": 25,
+      "status": "MATCH",
+      "time_ms": 7786
+    },
+    {
+      "slice_id": "NA24385_5B",
+      "dataset": "NA24385 b37 WGS (chr19)",
+      "region": "19 58559581 58567861",
+      "variants": 20,
+      "status": "MATCH",
+      "time_ms": 2630
+    },
+    {
+      "slice_id": "NA24385_5C",
+      "dataset": "NA24385 b37 WGS (chr20)",
+      "region": "20 36018823 36039513",
+      "variants": 181,
+      "status": "MATCH",
+      "time_ms": 3757
+    },
+    {
+      "slice_id": "RNA_6A",
+      "dataset": "RNA-Seq Splicing",
+      "region": "chr8:90534611-90550000",
+      "variants": 3,
+      "status": "MATCH",
+      "time_ms": 2459
+    },
+    {
+      "slice_id": "RNA_6B",
+      "dataset": "RNA-Seq Splicing",
+      "region": "chr8:90550000-90580000",
+      "variants": 8,
+      "status": "MATCH",
+      "time_ms": 2408
+    },
+    {
+      "slice_id": "RNA_6C",
+      "dataset": "RNA-Seq Splicing",
+      "region": "chr8:90580000-90620070",
+      "variants": 12,
+      "status": "MATCH",
+      "time_ms": 2442
+    }
+  ]
+}
