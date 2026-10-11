@@ -46,7 +46,7 @@ def find_all_markdown_files():
         # Exclude git internals, cargo target, conda environments, scratch, and transient dev directories
         rel = str(path.relative_to(REPO_ROOT))
         if any(rel.startswith(ignore) for ignore in [
-            ".git/", ".superpowers/", ".agents/", "target/", "scratch/", "VarDictJava/", "node_modules/"
+            ".git/", ".superpowers/", ".agents/", "target/", "scratch/", "VarDictJava/", "node_modules/", ".worktrees/"
         ]):
             continue
         md_files.append(path)
@@ -185,6 +185,131 @@ class TestMarkdownStaticHygiene(unittest.TestCase):
         self.assertEqual(
             math_errors, [],
             "KaTeX math formatting errors found:\n" + "\n".join(f"  - {e}" for e in math_errors)
+        )
+
+    @staticmethod
+    def _heading_to_slug(heading_line):
+        """Convert a markdown heading line to its GitHub anchor slug."""
+        slug = heading_line.lstrip("#").strip()
+        slug = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", slug)
+        slug = slug.replace("`", "")
+        slug = slug.lower()
+        slug = re.sub(r"[^\w\s-]", "", slug)
+        slug = re.sub(r"\s+", "-", slug)
+        return slug
+
+    def test_wiki_links_and_anchors(self):
+        """Verify wiki links and anchors are valid and compatible with GitHub Wiki."""
+        wiki_dir = REPO_ROOT / "wiki"
+        if not wiki_dir.exists():
+            return
+
+        link_pattern = re.compile(r"(?<!\!)\[([^\]]+)\]\(([^)\s]+)(?:\s+[\"'][^\"']*[\"'])?\)")
+        errors = []
+
+        for wiki_file in sorted(wiki_dir.glob("*.md")):
+            rel_path = wiki_file.relative_to(REPO_ROOT)
+            with open(wiki_file, "r", encoding="utf-8") as f:
+                content = f.read()
+
+            no_code_blocks = re.sub(r"```[\s\S]*?```", "", content)
+            no_inline_code = re.sub(r"`[^`]*`", "", no_code_blocks)
+
+            for match in link_pattern.finditer(no_inline_code):
+                label = match.group(1)
+                url = match.group(2)
+
+                # Rule 1: relative link starting with ../ will 404 on GitHub Wiki
+                if url.startswith("../"):
+                    errors.append(
+                        f"{rel_path}: relative link '{url}' for '{label}' will 404 on GitHub Wiki; "
+                        "must use absolute GitHub URL or wiki page slug"
+                    )
+                    continue
+
+                # Rule 2: internal wiki link ending with .md triggers raw download
+                if not (url.startswith("http://") or url.startswith("https://") or url.startswith("#")):
+                    if url.endswith(".md"):
+                        errors.append(
+                            f"{rel_path}: internal wiki link '{url}' for '{label}' ends with '.md' "
+                            "which triggers raw file download; use slug without .md"
+                        )
+                    continue
+
+                # Rule 3: absolute links pointing to repo blob or tree
+                if url.startswith("https://github.com/palakpsheth/VarDictRust/blob/main/") or \
+                   url.startswith("https://github.com/palakpsheth/VarDictRust/tree/main/"):
+                    prefix = "https://github.com/palakpsheth/VarDictRust/blob/main/" if \
+                        url.startswith("https://github.com/palakpsheth/VarDictRust/blob/main/") else \
+                        "https://github.com/palakpsheth/VarDictRust/tree/main/"
+                    target_ref = url[len(prefix):]
+                    if "#" in target_ref:
+                        subpath, anchor = target_ref.split("#", 1)
+                    else:
+                        subpath, anchor = target_ref, None
+
+                    target_file = REPO_ROOT / subpath
+                    if not target_file.exists():
+                        errors.append(
+                            f"{rel_path}: target file does not exist: '{subpath}' (link '{url}')"
+                        )
+                    elif anchor:
+                        check_file = target_file if target_file.is_file() else (target_file / "README.md")
+                        if not check_file.exists():
+                            errors.append(
+                                f"{rel_path}: target file for anchor does not exist: '{check_file}' (link '{url}')"
+                            )
+                        else:
+                            with open(check_file, "r", encoding="utf-8") as tf:
+                                target_content = tf.read()
+                            has_html_anchor = (
+                                f'id="{anchor}"' in target_content or
+                                f"id='{anchor}'" in target_content or
+                                f'name="{anchor}"' in target_content or
+                                f"name='{anchor}'" in target_content
+                            )
+                            heading_slugs = {
+                                self._heading_to_slug(line.strip())
+                                for line in target_content.splitlines()
+                                if line.strip().startswith("#")
+                            }
+                            if not (has_html_anchor or anchor in heading_slugs):
+                                errors.append(
+                                    f"{rel_path}: anchor '#{anchor}' not found in '{check_file.relative_to(REPO_ROOT)}' (link '{url}')"
+                                )
+                    continue
+
+                # Rule 4: root repo link with anchor
+                if url.startswith("https://github.com/palakpsheth/VarDictRust") and "#" in url:
+                    anchor = url.split("#", 1)[1]
+                    readme_path = REPO_ROOT / "README.md"
+                    if not readme_path.exists():
+                        errors.append(
+                            f"{rel_path}: README.md does not exist for anchor check (link '{url}')"
+                        )
+                    else:
+                        with open(readme_path, "r", encoding="utf-8") as rf:
+                            readme_content = rf.read()
+                        has_html_anchor = (
+                            f'id="{anchor}"' in readme_content or
+                            f"id='{anchor}'" in readme_content or
+                            f'name="{anchor}"' in readme_content or
+                            f"name='{anchor}'" in readme_content
+                        )
+                        heading_slugs = {
+                            self._heading_to_slug(line.strip())
+                            for line in readme_content.splitlines()
+                            if line.strip().startswith("#")
+                        }
+                        if not (has_html_anchor or anchor in heading_slugs):
+                            errors.append(
+                                f"{rel_path}: anchor '#{anchor}' not found in README.md (link '{url}')"
+                            )
+                    continue
+
+        self.assertEqual(
+            errors, [],
+            "Wiki link / anchor hygiene errors found:\n" + "\n".join(f"  - {e}" for e in errors)
         )
 
 
