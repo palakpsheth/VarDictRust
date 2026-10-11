@@ -2,7 +2,9 @@
 //! 100-read set with mixed CIGAR ops, and find_bp realignment scanning over
 //! synthetic consensus data. Fixtures are built in-code — no committed data.
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use std::hint::black_box;
+
+use criterion::{criterion_group, criterion_main, Criterion};
 use vardictrust_core::bam::SamRecord;
 use vardictrust_core::cigar::parse::pileup;
 use vardictrust_core::config::Config;
