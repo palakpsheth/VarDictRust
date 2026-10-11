@@ -36,7 +36,7 @@ java JavaMapOracle <seed> <numOps> <base> <span> <stride>
 | [`JavaMapOracle.java`](JavaMapOracle.java) | 17 lines | Pure-Java harness that applies pseudo-random `put`, `computeIfAbsent`, and `remove` operations to a `HashMap<Integer, Integer>`, dumping the final `keySet()` iteration order. |
 | [`ops_1.txt`](ops_1.txt) | 3,001 lines | Replay trace testing sequential inserts, lookups, and deletions. |
 | [`ops_2.txt`](ops_2.txt) | 20,001 lines | High-volume replay trace exercising multiple table resizes and capacity growth phases. |
-| [`ops_treeify.txt`](ops_treeify.txt) | 401 lines | Targeted collision sequence asserting correct bin treeification when bin count exceeds 8. |
+| [`ops_treeify.txt`](ops_treeify.txt) | 401 lines | Targeted collision sequence asserting correct bin collision threshold detection and treeify flag activation when bin count exceeds 8. |
 
 ---
 
@@ -48,9 +48,9 @@ These logs are compiled into the test binary via `include_str!` and replayed by 
 // crates/vardict-core/src/javamap.rs:300
 #[test]
 fn test_javamap_oracle() {
-    // Replays ops_1.txt, ops_2.txt, ops_treeify.txt
-    // Asserts exact keySet() sequence matching Java's output.
+    // Replays ops_1.txt, ops_2.txt: asserts exact keySet() sequence matching Java's output.
+    // Replays ops_treeify.txt: asserts detection of collision threshold and telemetry flag activation.
 }
 ```
 
-This verification ensures that `JavaHashMap` produces iteration orders 100% bitwise-identical to the JVM reference implementation.
+This verification ensures that `JavaHashMap` produces iteration orders 100% bitwise-identical to the JVM reference implementation across all normal operational regimes, with active telemetry guards for treeified regimes (tracked post-1.0 in `ROADMAP.md`).

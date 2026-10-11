@@ -26,11 +26,11 @@ The table below catalogs the certification status across all 8 verification item
 | Gate Item | Architectural Level / Verification Scope | Certified Status | Waiver Required? | Disposition / Proof Reference |
 | :---: | :--- | :---: | :---: | :--- |
 | **Item 1** | **Level 1: Unit & Component Tests** (208 Cargo workspace tests) | **PASS** | None (Unwaived) | 0 failures, 0 panics across `vardict-core`, `vardict-cli`, and test binaries. |
-| **Item 2** | **Level 2: Upstream Integration Corpus** (92 testcases & smoke test) | **PASS** | None (Unwaived) | 91 static matches + UB-4 upstream defect; 100% live oracle parity (`docs/upstream-bugs.md`). |
+| **Item 2** | **Level 2: Upstream Integration Corpus** (92 testcases & smoke test) | **PASS** | None (Unwaived) | 91/92 static expected matches + 1 documented upstream defect (UB-4); live oracle parity verified on micro smoke test (and Tier-2 suite in Item 3). |
 | **Item 3** | **Level 3: Differential Parity Testing** (micro + 10 slices + 4 cohorts) | **PASS** | None (Unwaived) | 15/15 benchmarks MATCH ($\varepsilon \le 10^{-6}$, 0 diffs). |
 | **Item 4** | **Crash Robustness & CRAM Twin** (PR #402, missing BAI, CRAM parity) | **PASS** | None (Unwaived) | Hostile CIGAR inputs safely rejected; 100% CRAM/BAM twin parity. |
 | **Item 5** | **Level 5: Scale Benchmarks & Performance Budgets** (Chr1 & 4 cohorts) | **PASS** | None (Unwaived) | $S_8 = 4.85\times$, RSS scaling ratio $1.39\times \le 1.5\times$, all budgets met. |
-| **Item 6** | **Level 4: Ground Truth Concordance** (GIAB HG008, SEQC2, HG002, HG005, NA24385) | **PASS** | None (Unwaived) | RTG vcfeval bitwise site identity (EQUAL, 0 diffs) across all cohorts. |
+| **Item 6** | **Level 4: Ground Truth Concordance** (GIAB HG008, SEQC2, HG002, HG005, NA24385) | **PASS** | None (Unwaived) | RTG vcfeval bitwise site identity (EQUAL, 0 diffs) across all 5 cohorts (HG008, SEQC2, HG002, HG005, NA24385). |
 | **Item 7** | **Code Hygiene & Supply Chain Security** (fmt, clippy, audit, deny, gitleaks) | **PASS** | None (Unwaived) | 0 warnings, zero cargo-deny advisories, 241 commits scanned with 0 leaks. |
 | **Item 8** | **Release Distribution & Packaging** (musl static PIE, AI metadata) | **PASS** | None (Unwaived) | musl PIE binary byte-identical to GNU; Lai (2016) cited; full AI disclosure. |
 
