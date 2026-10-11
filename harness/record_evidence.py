@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Usage: record_evidence.py <name> <result> <dir|-> -- <cmd...>
 Writes benchmarks/evidence/<name>.json; reads optional <dir>/compare.txt, java.time, rust.time, extra.json,
-plus the first 5 lines of <dir>/compare_cpp.txt into extra.cpp_head (advisory vardictcpp third arm)."""
+plus the first 5 lines of <dir>/compare_cpp.txt into extra.cpp_head (advisory vardictcpp third arm),
+plus <dir>/cpp.time into cpp_time (same tv() shape as java/rust for perf_budget.py)."""
 import datetime, json, pathlib, re, subprocess, sys
 name, result, d = sys.argv[1], sys.argv[2], sys.argv[3]
 cmd = sys.argv[sys.argv.index("--") + 1:]
@@ -19,6 +20,7 @@ rec = {"name": name, "result": result, "n_variants": int(m.group(1)) if m else N
        "head": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
        "date": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
        "cmd": cmd, "java_time": tv("java.time"), "rust_time": tv("rust.time"),
+       "cpp_time": tv("cpp.time"),
        "compare_head": cmp_txt.splitlines()[:25]}
 if keep and (keep / "extra.json").exists(): rec["extra"] = json.loads((keep / "extra.json").read_text())
 if keep is not None and (keep / "compare_cpp.txt").exists():
