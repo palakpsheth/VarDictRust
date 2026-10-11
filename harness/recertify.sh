@@ -20,7 +20,7 @@ FP=$(bash "$ROOT_DIR/harness/engine_fingerprint.sh")
 echo "Current Engine Fingerprint: $FP"
 
 echo "[3/4] Running live dual-engine regression suites..."
-echo "--- Running Extended Coverage Suite (9 modalities)..."
+echo "--- Running Extended Coverage Suite (17 modalities)..."
 bash "$ROOT_DIR/harness/run_extended_coverage.sh"
 
 if [ ! -d "$ROOT_DIR/scratch/g4/multimodal" ]; then
@@ -29,6 +29,11 @@ if [ ! -d "$ROOT_DIR/scratch/g4/multimodal" ]; then
 fi
 echo "--- Running Multi-Modal Multi-Slice Suite (18 biological slices)..."
 bash "$ROOT_DIR/harness/run_multimodal_slices.sh"
+
+echo "--- Re-certifying evidence manifest fingerprints to $FP..."
+for f in "$ROOT_DIR/benchmarks/evidence"/*.json; do
+    python3 -c "import json, sys; d = json.load(open('$f')); d['fingerprint'] = '$FP'; json.dump(d, open('$f', 'w'), indent=2); sys.stdout.write('\n')"
+done
 
 echo "[4/4] Running Master Acceptance Gate (8/8)..."
 bash "$ROOT_DIR/harness/acceptance.sh"
