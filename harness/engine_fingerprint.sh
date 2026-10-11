@@ -10,6 +10,8 @@ GATE_FILES=(
   crates/vardictrust/src
   harness/compare.sh
   harness/run_oracle.sh
+  benchmarks/env/vardict-oracle.yml
+  harness/setup_oracle.sh
   harness/compare_vcf.py
   harness/run_extended_coverage.sh
   harness/run_multimodal_slices.sh

@@ -94,6 +94,7 @@ dependencies:
   - tzdata=2025c
   - vardict=2019.06.04
   - vardict-java=1.8.3
+  - vardictcpp=3=hc52dbad_0
   - xorg-libice=1.1.2
   - xorg-libsm=1.2.6
   - xorg-libx11=1.8.13
