@@ -28,7 +28,10 @@ mark 2 $t "integration/smoke"
 t=1; MIN_VARIANTS=1 run bash harness/compare.sh fixtures/micro/micro.ref.fa fixtures/micro/micro.bam fixtures/micro/micro.bed || t=0
 for id in $(awk -F'\t' '!/^#/{print $1}' harness/slices.tsv); do run bash harness/run_slice.sh "$id" || { t=0; echo "slice $id failed" >> "$OUT/log.txt"; }; done
 run bash harness/run_extended_coverage.sh || { t=0; echo "run_extended_coverage failed" >> "$OUT/log.txt"; }
-if [ -d scratch/g4/multimodal ]; then
+if [ ! -d scratch/g4/multimodal ]; then
+  echo "acceptance: scratch/g4/multimodal is missing; live multimodal suite required" >> "$OUT/log.txt"
+  t=0
+else
   run bash harness/run_multimodal_slices.sh || { t=0; echo "run_multimodal_slices failed" >> "$OUT/log.txt"; }
 fi
 for e in hg008-tier2 seqc2-slices-tier2 seqc2-exome-tier2 hg002-tier2 amplicon-tier2 extended-coverage-tier2 multimodal-slices-tier2; do run ev "$e" || t=0; done

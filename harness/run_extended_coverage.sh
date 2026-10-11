@@ -50,9 +50,10 @@ BAM_NA24385="$ROOT_DIR/VarDictJava/src/test/resources/com/astrazeneca/vardict/in
 
 BED_S8="$ROOT_DIR/harness/slices/s8.bed"
 BED_S9="$ROOT_DIR/harness/slices/s9.bed"
+BED_S1A="$ROOT_DIR/harness/slices/s1a.bed"
 BED_TINY="$ROOT_DIR/harness/slices/tiny.bed"
 
-for f in "$HG38_FA" "$HG19_FA" "$B37_FA" "$BAM_SPLICING" "$BAM_INVSV" "$BAM_DUPSV" "$BAM_CRISPR" "$BAM_NA24385" "$BED_S8" "$BED_S9" "$BED_TINY"; do
+for f in "$HG38_FA" "$HG19_FA" "$B37_FA" "$BAM_SPLICING" "$BAM_INVSV" "$BAM_DUPSV" "$BAM_CRISPR" "$BAM_NA24385" "$BED_S8" "$BED_S9" "$BED_S1A" "$BED_TINY"; do
     if [[ ! -f "$f" ]]; then
         echo "ERROR: Missing required evaluation asset: $f" >&2
         exit 1
@@ -126,8 +127,8 @@ fi
 # Mode 5: Paired Unique Mode (-u -UN)
 # -----------------------------------------------------------------------------
 echo -n "[5/9] Testing Paired Unique Mode (-u -UN) on NA24385... "
-bash "$ROOT_DIR/harness/run_oracle.sh" "$B37_FA" "$BAM_NA24385" "$BED_TINY" "$TMPDIR/m5_java.vcf" SAMPLE -u -UN -c 1 -S 2 -E 3 -g 4 > /dev/null 2>&1
-"$TARGET_BIN" -G "$B37_FA" -b "$BAM_NA24385" -N SAMPLE -u -UN -c 1 -S 2 -E 3 -g 4 -z "$BED_TINY" -th "$THREADS" > "$TMPDIR/m5_rust.vcf" 2>/dev/null
+bash "$ROOT_DIR/harness/run_oracle.sh" "$B37_FA" "$BAM_NA24385" "$BED_S1A" "$TMPDIR/m5_java.vcf" SAMPLE -u -UN -c 1 -S 2 -E 3 -g 4 > /dev/null 2>&1
+"$TARGET_BIN" -G "$B37_FA" -b "$BAM_NA24385" -N SAMPLE -u -UN -c 1 -S 2 -E 3 -g 4 -z "$BED_S1A" -th "$THREADS" > "$TMPDIR/m5_rust.vcf" 2>/dev/null
 
 python3 "$ROOT_DIR/harness/compare_vcf.py" --strict-bytes "$TMPDIR/m5_java.vcf" "$TMPDIR/m5_rust.vcf" > "$TMPDIR/m5_cmp.txt"
 M5_VARS=$(grep -v "^#" "$TMPDIR/m5_rust.vcf" | wc -l)
@@ -138,8 +139,8 @@ PASSED=$((PASSED + 1))
 # Mode 6: Adapter Trimming (--adaptor)
 # -----------------------------------------------------------------------------
 echo -n "[6/9] Testing Adapter Trimming (--adaptor) on NA24385... "
-bash "$ROOT_DIR/harness/run_oracle.sh" "$B37_FA" "$BAM_NA24385" "$BED_TINY" "$TMPDIR/m6_java.vcf" SAMPLE --adaptor AGATCGGAAGAGCACACGTCTGAACTCCAGTCA,AGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGT -c 1 -S 2 -E 3 -g 4 > /dev/null 2>&1
-"$TARGET_BIN" -G "$B37_FA" -b "$BAM_NA24385" -N SAMPLE --adaptor AGATCGGAAGAGCACACGTCTGAACTCCAGTCA,AGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGT -c 1 -S 2 -E 3 -g 4 -z "$BED_TINY" -th "$THREADS" > "$TMPDIR/m6_rust.vcf" 2>/dev/null
+bash "$ROOT_DIR/harness/run_oracle.sh" "$B37_FA" "$BAM_NA24385" "$BED_S1A" "$TMPDIR/m6_java.vcf" SAMPLE --adaptor AGATCGGAAGAGCACACGTCTGAACTCCAGTCA,AGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGT -c 1 -S 2 -E 3 -g 4 > /dev/null 2>&1
+"$TARGET_BIN" -G "$B37_FA" -b "$BAM_NA24385" -N SAMPLE --adaptor AGATCGGAAGAGCACACGTCTGAACTCCAGTCA,AGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGT -c 1 -S 2 -E 3 -g 4 -z "$BED_S1A" -th "$THREADS" > "$TMPDIR/m6_rust.vcf" 2>/dev/null
 
 python3 "$ROOT_DIR/harness/compare_vcf.py" --strict-bytes "$TMPDIR/m6_java.vcf" "$TMPDIR/m6_rust.vcf" > "$TMPDIR/m6_cmp.txt"
 M6_VARS=$(grep -v "^#" "$TMPDIR/m6_rust.vcf" | wc -l)
@@ -150,8 +151,8 @@ PASSED=$((PASSED + 1))
 # Mode 7: Realignment Bypass (-k 0)
 # -----------------------------------------------------------------------------
 echo -n "[7/9] Testing Realignment Bypass (-k 0) on NA24385... "
-bash "$ROOT_DIR/harness/run_oracle.sh" "$B37_FA" "$BAM_NA24385" "$BED_TINY" "$TMPDIR/m7_java.vcf" SAMPLE -k 0 -c 1 -S 2 -E 3 -g 4 > /dev/null 2>&1
-"$TARGET_BIN" -G "$B37_FA" -b "$BAM_NA24385" -N SAMPLE -k 0 -c 1 -S 2 -E 3 -g 4 -z "$BED_TINY" -th "$THREADS" > "$TMPDIR/m7_rust.vcf" 2>/dev/null
+bash "$ROOT_DIR/harness/run_oracle.sh" "$B37_FA" "$BAM_NA24385" "$BED_S1A" "$TMPDIR/m7_java.vcf" SAMPLE -k 0 -c 1 -S 2 -E 3 -g 4 > /dev/null 2>&1
+"$TARGET_BIN" -G "$B37_FA" -b "$BAM_NA24385" -N SAMPLE -k 0 -c 1 -S 2 -E 3 -g 4 -z "$BED_S1A" -th "$THREADS" > "$TMPDIR/m7_rust.vcf" 2>/dev/null
 
 python3 "$ROOT_DIR/harness/compare_vcf.py" --strict-bytes "$TMPDIR/m7_java.vcf" "$TMPDIR/m7_rust.vcf" > "$TMPDIR/m7_cmp.txt"
 M7_VARS=$(grep -v "^#" "$TMPDIR/m7_rust.vcf" | wc -l)
@@ -162,8 +163,8 @@ PASSED=$((PASSED + 1))
 # Mode 8: SV Engine Bypass (-U / --nosv)
 # -----------------------------------------------------------------------------
 echo -n "[8/9] Testing SV Engine Bypass (-U) on NA24385... "
-bash "$ROOT_DIR/harness/run_oracle.sh" "$B37_FA" "$BAM_NA24385" "$BED_TINY" "$TMPDIR/m8_java.vcf" SAMPLE -U -c 1 -S 2 -E 3 -g 4 > /dev/null 2>&1
-"$TARGET_BIN" -G "$B37_FA" -b "$BAM_NA24385" -N SAMPLE -U -c 1 -S 2 -E 3 -g 4 -z "$BED_TINY" -th "$THREADS" > "$TMPDIR/m8_rust.vcf" 2>/dev/null
+bash "$ROOT_DIR/harness/run_oracle.sh" "$B37_FA" "$BAM_NA24385" "$BED_S1A" "$TMPDIR/m8_java.vcf" SAMPLE -U -c 1 -S 2 -E 3 -g 4 > /dev/null 2>&1
+"$TARGET_BIN" -G "$B37_FA" -b "$BAM_NA24385" -N SAMPLE -U -c 1 -S 2 -E 3 -g 4 -z "$BED_S1A" -th "$THREADS" > "$TMPDIR/m8_rust.vcf" 2>/dev/null
 
 python3 "$ROOT_DIR/harness/compare_vcf.py" --strict-bytes "$TMPDIR/m8_java.vcf" "$TMPDIR/m8_rust.vcf" > "$TMPDIR/m8_cmp.txt"
 M8_VARS=$(grep -v "^#" "$TMPDIR/m8_rust.vcf" | wc -l)
@@ -174,8 +175,8 @@ PASSED=$((PASSED + 1))
 # Mode 9: N-Base Depth Counting (-K)
 # -----------------------------------------------------------------------------
 echo -n "[9/9] Testing N-Base Depth Counting (-K) on NA24385... "
-bash "$ROOT_DIR/harness/run_oracle.sh" "$B37_FA" "$BAM_NA24385" "$BED_TINY" "$TMPDIR/m9_java.vcf" SAMPLE -K -c 1 -S 2 -E 3 -g 4 > /dev/null 2>&1
-"$TARGET_BIN" -G "$B37_FA" -b "$BAM_NA24385" -N SAMPLE -K -c 1 -S 2 -E 3 -g 4 -z "$BED_TINY" -th "$THREADS" > "$TMPDIR/m9_rust.vcf" 2>/dev/null
+bash "$ROOT_DIR/harness/run_oracle.sh" "$B37_FA" "$BAM_NA24385" "$BED_S1A" "$TMPDIR/m9_java.vcf" SAMPLE -K -c 1 -S 2 -E 3 -g 4 > /dev/null 2>&1
+"$TARGET_BIN" -G "$B37_FA" -b "$BAM_NA24385" -N SAMPLE -K -c 1 -S 2 -E 3 -g 4 -z "$BED_S1A" -th "$THREADS" > "$TMPDIR/m9_rust.vcf" 2>/dev/null
 
 python3 "$ROOT_DIR/harness/compare_vcf.py" --strict-bytes "$TMPDIR/m9_java.vcf" "$TMPDIR/m9_rust.vcf" > "$TMPDIR/m9_cmp.txt"
 M9_VARS=$(grep -v "^#" "$TMPDIR/m9_rust.vcf" | wc -l)

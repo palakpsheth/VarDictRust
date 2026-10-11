@@ -31,3 +31,6 @@ jobs:
             echo "=== Running slice: $id ==="
             bash harness/run_slice.sh "$id"
           done
+      - name: Run extended coverage parity suite (9 modalities)
+        run: bash harness/run_extended_coverage.sh
+

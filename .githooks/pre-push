@@ -6,10 +6,21 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-# 1. Parse push ref arguments from stdin
+# 1. Parse all push ref updates from stdin
 # Format: <local_ref> <local_oid> <remote_ref> <remote_oid>
-HAS_BRANCH_DELETION=false
+REFS=()
 while read -r local_ref local_oid remote_ref remote_oid; do
+    REFS+=("$local_ref" "$local_oid" "$remote_ref" "$remote_oid")
+done
+
+# If hook invoked without stdin refs, exit clean
+if [ ${#REFS[@]} -eq 0 ]; then
+    exit 0
+fi
+
+# 2. Check for forbidden direct pushes to main
+for ((i=0; i<${#REFS[@]}; i+=4)); do
+    remote_ref="${REFS[i+2]}"
     if [[ "$remote_ref" =~ refs/heads/main$ ]]; then
         echo "================================================================================" >&2
         echo " ERROR: Direct push to 'main' is forbidden by repository governance!" >&2
@@ -17,21 +28,44 @@ while read -r local_ref local_oid remote_ref remote_oid; do
         echo "================================================================================" >&2
         exit 1
     fi
-    if [[ "$local_oid" =~ ^0+$ ]]; then
-        HAS_BRANCH_DELETION=true
-    fi
 done
 
-if [ "$HAS_BRANCH_DELETION" = true ]; then
+# 3. Accumulate changed files across all non-deletion ref updates using actual OIDs
+ALL_CHANGED_FILES=""
+HAS_NON_DELETION=false
+ZERO_OID="0000000000000000000000000000000000000000"
+
+for ((i=0; i<${#REFS[@]}; i+=4)); do
+    local_oid="${REFS[i+1]}"
+    remote_oid="${REFS[i+3]}"
+
+    # Skip branch deletions
+    if [[ "$local_oid" == "$ZERO_OID" ]]; then
+        continue
+    fi
+
+    HAS_NON_DELETION=true
+
+    if [[ "$remote_oid" == "$ZERO_OID" ]]; then
+        # New branch push: inspect diff against origin/main or root commit
+        CHANGED=$(git diff --name-only origin/main..."$local_oid" 2>/dev/null || git diff-tree --no-commit-id --name-only -r "$local_oid" 2>/dev/null || true)
+    else
+        # Existing branch update: inspect exact pushed commit range
+        CHANGED=$(git diff --name-only "$remote_oid".."$local_oid" 2>/dev/null || true)
+    fi
+    ALL_CHANGED_FILES="$ALL_CHANGED_FILES"$'\n'"$CHANGED"
+done
+
+# If only deletions were pushed, allow immediately
+if [ "$HAS_NON_DELETION" = false ]; then
     exit 0
 fi
 
-# 2. Inspect changed files between HEAD and origin/main
-CHANGED_FILES=$(git diff --name-only origin/main...HEAD 2>/dev/null || git diff --name-only HEAD~1...HEAD 2>/dev/null || true)
-CODE_CHANGES=$(echo "$CHANGED_FILES" | grep -E '\.rs$|Cargo\.(toml|lock)$|crates/|harness/' || true)
+# 4. Check whether any non-deletion update touches code or engine assets
+CODE_CHANGES=$(echo "$ALL_CHANGED_FILES" | grep -E '\.rs$|Cargo\.(toml|lock)$|crates/|harness/' || true)
 
 if [ -z "$CODE_CHANGES" ]; then
-    echo "=== [pre-push] Only docs/metadata changed; skipping engine smoke gate ==="
+    echo "=== [pre-push] Only docs/metadata changed across pushed refs; skipping engine smoke gate ==="
     exit 0
 fi
 
