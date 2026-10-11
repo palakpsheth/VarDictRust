@@ -89,8 +89,14 @@ def main():
             fa_path = os.path.join(fasta_dir, fa_name)
             fai_path = fa_path + ".fai"
             
-            # Convert if missing or if csv is newer
-            if not os.path.exists(fa_path) or not os.path.exists(fai_path) or os.path.getmtime(csv_path) > os.path.getmtime(fa_path):
+            # Convert if missing or if csv is newer than either FASTA or FAI, or if FAI is older than FASTA
+            if (
+                not os.path.exists(fa_path)
+                or not os.path.exists(fai_path)
+                or os.path.getmtime(csv_path) > os.path.getmtime(fa_path)
+                or os.path.getmtime(csv_path) > os.path.getmtime(fai_path)
+                or os.path.getmtime(fai_path) < os.path.getmtime(fa_path)
+            ):
                 convert_csv_to_fasta(csv_path, fa_path, fai_path)
                 converted += 1
 

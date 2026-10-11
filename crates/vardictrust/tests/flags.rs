@@ -341,6 +341,7 @@ fn test_deldupvar_flag() {
 
 #[test]
 fn test_dedup_flag_t() {
+    // 1. On micro.bam, test alias equivalence between -t and --dedup
     let out_short = base_cmd()
         .args([
             "-G",
@@ -369,6 +370,81 @@ fn test_dedup_flag_t() {
         .expect("run with --dedup");
     assert!(out_long.status.success());
     assert_eq!(out_short.stdout, out_long.stdout);
+
+    // 2. Behavioral verification on fixtures/pr402 (which contains 31 duplicate reads at chr7:1):
+    // Without -t: all 30 duplicate reads contribute to coverage; variant chr7:30 A>C is called with DP=30, VD=30.
+    let out_nodedup = base_cmd()
+        .args([
+            "-G",
+            "fixtures/pr402/ref.fa",
+            "-b",
+            "fixtures/pr402/pr402.bam",
+            "-R",
+            "chr7:1-140",
+            "-f",
+            "0.01",
+            "-N",
+            "test",
+        ])
+        .output()
+        .expect("run without -t on pr402");
+    assert!(out_nodedup.status.success());
+    let variants_nodedup = extract_variants(&out_nodedup.stdout);
+    assert_eq!(
+        variants_nodedup.len(),
+        1,
+        "without deduplication, variant at chr7:30 should be called with full depth"
+    );
+    assert!(
+        variants_nodedup[0].contains("DP=30;END=30;VD=30"),
+        "expected DP=30;VD=30 without -t, got: {}",
+        variants_nodedup[0]
+    );
+
+    // With -t: all 30 duplicates are filtered by removeDuplicatedReads, leaving 1 read; variant drops below -r 2.
+    let out_dedup = base_cmd()
+        .args([
+            "-G",
+            "fixtures/pr402/ref.fa",
+            "-b",
+            "fixtures/pr402/pr402.bam",
+            "-R",
+            "chr7:1-140",
+            "-f",
+            "0.01",
+            "-N",
+            "test",
+            "-t",
+        ])
+        .output()
+        .expect("run with -t on pr402");
+    assert!(out_dedup.status.success());
+    let variants_dedup = extract_variants(&out_dedup.stdout);
+    assert_eq!(
+        variants_dedup.len(),
+        0,
+        "with -t, all duplicate reads must be removed and 0 variants called"
+    );
+
+    // With --dedup: must also filter duplicate reads identically
+    let out_dedup_long = base_cmd()
+        .args([
+            "-G",
+            "fixtures/pr402/ref.fa",
+            "-b",
+            "fixtures/pr402/pr402.bam",
+            "-R",
+            "chr7:1-140",
+            "-f",
+            "0.01",
+            "-N",
+            "test",
+            "--dedup",
+        ])
+        .output()
+        .expect("run with --dedup on pr402");
+    assert!(out_dedup_long.status.success());
+    assert_eq!(extract_variants(&out_dedup_long.stdout).len(), 0);
 }
 
 #[test]
@@ -404,12 +480,21 @@ fn test_verbose_flag_y() {
 
 #[test]
 fn test_seg_start_and_end_flags_s_e() {
-    let tmp_bed = workspace_root().join("scratch").join("test_flags_se.bed");
-    fs::create_dir_all(tmp_bed.parent().unwrap()).unwrap();
-    let bed_content = "chr1\t40\t260\tmicro_chr1\t0\t+\t40\t260\t0\t40\t260\tmicro_chr1\n";
-    fs::write(&tmp_bed, bed_content).unwrap();
+    let tmp_bed_a = workspace_root().join("scratch").join("test_flags_se_a.bed");
+    let tmp_bed_b = workspace_root().join("scratch").join("test_flags_se_b.bed");
+    fs::create_dir_all(tmp_bed_a.parent().unwrap()).unwrap();
 
-    let out = base_cmd()
+    // Bed A: region bounds (cols 2 & 3) = 40..120; segment bounds (cols 10 & 11) = 40..80.
+    // chr1:101 is OUTSIDE segment [40, 80], so zero variants must be called.
+    let bed_content_a = "chr1\t40\t120\tmicro_chr1\t0\t+\t40\t120\t0\t40\t80\tmicro_chr1\n";
+    fs::write(&tmp_bed_a, bed_content_a).unwrap();
+
+    // Bed B: region bounds (cols 2 & 3) = 40..120; segment bounds (cols 10 & 11) = 90..120.
+    // chr1:101 is INSIDE segment [90, 120], so variant chr1:101 T>A must be called.
+    let bed_content_b = "chr1\t40\t120\tmicro_chr1\t0\t+\t40\t120\t0\t90\t120\tmicro_chr1\n";
+    fs::write(&tmp_bed_b, bed_content_b).unwrap();
+
+    let out_a = base_cmd()
         .args([
             "-G",
             "fixtures/micro/micro.ref.fa",
@@ -427,18 +512,63 @@ fn test_seg_start_and_end_flags_s_e() {
             "11",
             "-g",
             "4",
+            "-x",
+            "0",
             "-z",
-            tmp_bed.to_str().unwrap(),
+            tmp_bed_a.to_str().unwrap(),
         ])
         .output()
-        .expect("run with -s 10 -e 11");
+        .expect("run with segment 40-80");
 
-    let _ = fs::remove_file(&tmp_bed);
-    assert!(out.status.success());
-    let variants = extract_variants(&out.stdout);
+    let out_b = base_cmd()
+        .args([
+            "-G",
+            "fixtures/micro/micro.ref.fa",
+            "-b",
+            "fixtures/micro/micro.bam",
+            "-c",
+            "1",
+            "-S",
+            "2",
+            "-E",
+            "3",
+            "-s",
+            "10",
+            "-e",
+            "11",
+            "-g",
+            "4",
+            "-x",
+            "0",
+            "-z",
+            tmp_bed_b.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run with segment 90-120");
+
+    let _ = fs::remove_file(&tmp_bed_a);
+    let _ = fs::remove_file(&tmp_bed_b);
+
+    assert!(out_a.status.success());
+    assert!(out_b.status.success());
+
+    let vars_a = extract_variants(&out_a.stdout);
+    let vars_b = extract_variants(&out_b.stdout);
+
+    assert_eq!(
+        vars_a.len(),
+        0,
+        "segment 40..80 should exclude variant at chr1:101"
+    );
+    assert_eq!(
+        vars_b.len(),
+        1,
+        "segment 90..120 should include variant at chr1:101"
+    );
     assert!(
-        !variants.is_empty(),
-        "-s and -e flags should parse segment bounds and emit variants"
+        vars_b[0].contains("chr1\t101\t"),
+        "expected variant at chr1:101, got: {}",
+        vars_b[0]
     );
 }
 

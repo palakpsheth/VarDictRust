@@ -275,14 +275,14 @@ echo -n "[17/17] Testing Default Printer Redirect (--DP ERR)... "
 conda run -n vardict-oracle vardict-java -G "$B37_FA" -b "$BAM_NA24385" -R 20:20178900-20179200 -f 0.01 --DP ERR -th "$THREADS" > "$TMPDIR/m17_java.out" 2> "$TMPDIR/m17_java.err"
 "$TARGET_BIN" -G "$B37_FA" -b "$BAM_NA24385" -R 20:20178900-20179200 -f 0.01 --DP ERR --emit-intermediate -th "$THREADS" > "$TMPDIR/m17_rust.out" 2> "$TMPDIR/m17_rust.err"
 
-M17_DIFFS=$(diff -u "$TMPDIR/m17_java.err" "$TMPDIR/m17_rust.err" | wc -l)
-if [[ "$M17_DIFFS" -eq 0 && ! -s "$TMPDIR/m17_rust.out" ]]; then
+diff -u "$TMPDIR/m17_java.err" "$TMPDIR/m17_rust.err" > "$TMPDIR/m17_diff.txt" || true
+if [[ ! -s "$TMPDIR/m17_diff.txt" && ! -s "$TMPDIR/m17_rust.out" ]]; then
     M17_VARS=$(wc -l < "$TMPDIR/m17_rust.err")
     echo "MATCH ($M17_VARS variants on stderr, 0 diffs)"
     PASSED=$((PASSED + 1))
 else
-    echo "MISMATCH: $M17_DIFFS diff lines"
-    diff -u "$TMPDIR/m17_java.err" "$TMPDIR/m17_rust.err"
+    echo "MISMATCH:"
+    cat "$TMPDIR/m17_diff.txt"
     exit 1
 fi
 
