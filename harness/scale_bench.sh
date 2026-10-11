@@ -17,7 +17,7 @@ CPP_OK="false"
 if $VARDICTCPP_BIN --version >/dev/null 2>&1; then CPP_OK="true"; fi
 for th in 1 2 4 8; do
   LC_ALL=C /usr/bin/time -v -o "$OUT/th$th.time" $TASKSET "$BIN" -G "$REF" -f 0.01 -N "$SM" -b "$BAM" -c 1 -S 2 -E 3 -g 4 -z -th "$th" "$BED" > "$OUT/th$th.vcf"
-  # BED-capable path reuses run_cpp.sh (expands BED to -R regions; already pins
+  # BED-capable path reuses run_cpp.sh (BED positional, java-mirror; pins
   # -c 1 -S 2 -E 3 -g 4 identical to the rust line, adds -vcf for stdout VCF).
   if [ "$CPP_OK" = "true" ]; then
     LC_ALL=C /usr/bin/time -v -o "$OUT/cpp_th$th.time" $TASKSET bash harness/run_cpp.sh "$REF" "$BAM" "$BED" "$OUT/cpp_th$th.vcf" "$SM" -th "$th" -z
