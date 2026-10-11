@@ -405,9 +405,9 @@ The table below catalogs all default filtering thresholds across VarDictJava and
 | **`-m`** | `max_mismatches` | `8` (Eng)<br>`5.25` (VCF) | `cigar/parse.rs:151`<br>`output/vcf.rs:408` | **BAM Parse:** Drop read if $\text{NM} - (I + D) > 8$<br>**VCF Filter (`NM5.25`):** Filter if $nm > 5.25$ |
 | **`-V`** | `lofreq` | `0.05` (5%) | `postprocess/somatic.rs:683, 688` | **Germline:** Standard $\text{AF} > 1.0 - 0.05 \implies \text{Germline}$<br>**Somatic:** Normal $\text{AF} < 0.05 \lor \text{Cov} \le 1 \implies \text{StrongSomatic}$ |
 | **`-F`** | `flag_filter` | `0x504` (1284) | `bam.rs:441, 457`<br>`cigar/parse.rs:141` | **BAM Parse:** Drop read if $(\text{FLAG} \;\&amp;\; \text{0x504}) \neq 0$<br>*(0x4 unmapped, 0x100 secondary, 0x400 duplicate, 0x800 supplementary)* |
-| **`-L`** | `sv_min_len` | `1000` bp | `tovars.rs:663, 673`<br>`somatic.rs:550` | $\text{Length}_{\text{INS}} > 1000 \implies \text{Format as } \text{<INS>}$<br>$\text{Length}_{\text{DEL}} \ge 1000 \implies \text{Format as } \text{<DEL>}$ |
+| **`-L`** | `sv_min_len` | `1000` bp | `tovars.rs:663, 673`<br>`somatic.rs:550` | $\text{Length}_{\text{INS}} > 1000 \implies \text{Format as } \text{\<INS\>}$<br>$\text{Length}_{\text{DEL}} \ge 1000 \implies \text{Format as } \text{\<DEL\>}$ |
 | **`-w`** | `sv_read_len` | `300` bp | `cigar/parse.rs:2193` | Discordant SV candidate insert size cutoff: |
-| **`-W`** | `sv_flanking` | `100` bp | `cigar/parse.rs:2194` | $|\text{TLEN}| > w + (A \cdot W)$ |
+| **`-W`** | `sv_flanking` | `100` bp | `cigar/parse.rs:2194` | $\lvert\text{TLEN}\rvert > w + (A \cdot W)$ |
 | **`-A`** | `sv_min_af` | `4` | `cigar/parse.rs:2194` | $= 300 + (4 \cdot 100) = 700\text{ bp}$ |
 | **`-B`** | `min_reads_bias` | `2` | `variations/util.rs:28` | Strand Bias Test: If total variant reads $\le 12$, biased if $fwd \cdot rev == 0$. If $>12$, PASS if $fwd \ge 2 \;\land\; rev \ge 2 \;\land\; \min(\frac{fwd}{tot}, \frac{rev}{tot}) \ge 0.05$ |
 | **`-o`** | `qratio` | `1.5` | `variations/mod.rs:666`<br>`output/vcf.rs:402` | **Engine:** Fail if $hq\_lq\_ratio < 1.5$<br>**VCF Filter (`SN1.5`):** Filter if $\frac{hicnt}{locnt + 0.5} < 1.5$ |
@@ -459,7 +459,7 @@ if ($mapq < $MQMEAN) {
 All benchmarks were recorded on identical hardware (AMD Ryzen / Ubuntu 24.04 LTS, NVMe SSD) pinned to 8 CPU threads under resource limits (8 threads, nice/ionice):
 
 | Workload / Benchmark | Threads | VarDictJava Wall Time | VarDictRust Wall Time | Speedup Ratio | VarDictJava Peak RSS | VarDictRust Peak RSS | Memory Scaling Ratio |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | **Targeted Amplicon Panel** | 8 cores | 0:02.10 | 0:00.07 | **30.0× faster** | 120.8 MB | 50.8 MB | 0.42× (2.4× lower) |
 | **GIAB HG002 (chr20:10M–30M, 30×)** | 8 cores | 4:16.98 | 1:22.47 | **3.1× faster** | 3.6 GB | 1.1 GB | 0.30× (3.3× lower) |
 | **SEQC2 HCC1395 Somatic Exome** | 8 cores | 54:23.00 | 19:45.73 | **2.8× faster** | 4.1 GB | 1.4 GB | 0.36× (2.8× lower) |

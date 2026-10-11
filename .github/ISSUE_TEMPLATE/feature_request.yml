@@ -1,0 +1,31 @@
+name: Feature Request / Candidate Fix Proposal
+description: Propose an opt-in fix flag (--fix <id>) or post-1.0 feature per ROADMAP.md.
+title: "[Proposal]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please consult [`ROADMAP.md`](https://github.com/palakpsheth/VarDictRust/blob/main/ROADMAP.md) before submitting. Post-1.0 corrections to upstream VarDictJava bugs ship behind individual opt-in flags (`--fix <id>`) with strict diff confinement gates.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem Statement / Upstream Bug
+      description: What upstream behavior or limitation is being addressed? Cite upstream issue number if applicable.
+      placeholder: e.g. Upstream issue #92 (VD > DP depth calculation)...
+    validations:
+      required: true
+  - type: textarea
+    id: proposed_solution
+    attributes:
+      label: Proposed Solution / Flag Behavior
+      description: Describe the proposed `--fix <id>` behavior and expected output differences.
+    validations:
+      required: true
+  - type: textarea
+    id: validation_plan
+    attributes:
+      label: Empirical Validation Strategy
+      description: How will this change be verified without affecting unaffected variants?
+    validations:
+      required: true

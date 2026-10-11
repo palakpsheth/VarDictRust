@@ -1187,6 +1187,6 @@ are consolidated with filing-ready draft issue texts in
 | Tiled streaming memory bounding | Halo intervals and tile streaming scaling whole chr1 to 2.9GB peak RSS (4.85x speedup) | 6ee4368, a4be62e |
 | amplicon_40 table format | Added 40-column amplicon intermediate serialization under --fisher (AmpliconOutputVariant.java:145) | 3076620 |
 | mark_dup_sv pe coordinate alignment | Fixed 1bp mate-pair window shift (pe instead of pe + 1) matching StructuralVariantsProcessor.java:1468 | a2d6c81 |
-| SimpleMode SV splitread filter | Emulate var2vcf_valid.pl:197-205 dropping <DUP>/<INV> when splitreads < 1 in simple mode | a2d6c81 |
+| SimpleMode SV splitread filter | Emulate var2vcf_valid.pl:197-205 dropping `<DUP>`/`<INV>` when splitreads < 1 in simple mode | a2d6c81 |
 
 * **PR #402 family** — Java per-read skip replicated; >10 such reads: Java exits, VarDictRust continues (robustness, AGENTS.md §5)

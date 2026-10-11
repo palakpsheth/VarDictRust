@@ -1,0 +1,47 @@
+name: Bug Report
+description: Report an issue, crash, or unexpected behavior in VarDictRust.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting an issue! Please note that VarDictRust is engineered to match **VarDictJava v1.8.3** output on valid inputs under the [rewrites.bio](https://rewrites.bio) manifesto. If you suspect an output divergence, please include comparison data against VarDictJava.
+  - type: textarea
+    id: description
+    attributes:
+      label: Description of the Bug
+      description: A clear and concise description of what happened.
+      placeholder: Describe the error, unexpected crash, or output divergence...
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Exact Command Line & Flags
+      description: The exact command line string invoked.
+      render: shell
+      placeholder: vardictrust -G reference.fa -f 0.01 -b sample.bam sample.bed > out.vcf
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: VarDictRust Version
+      description: Output of `vardictrust --version`.
+      placeholder: vardictrust 1.0.0
+    validations:
+      required: true
+  - type: textarea
+    id: vardict_comparison
+    attributes:
+      label: VarDictJava v1.8.3 Comparison (if applicable)
+      description: If this is an output difference, what does VarDictJava v1.8.3 produce on the same input?
+      render: shell
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal Reproduction Steps
+      description: Coordinates, slice interval, or minimal BAM/FASTA/BED snippet.
+    validations:
+      required: false

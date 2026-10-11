@@ -10,6 +10,7 @@ on:
 
 permissions:
   contents: read
+  security-events: write
 
 jobs:
   security-scan:
@@ -31,10 +32,10 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Install Pre-Built Security Tools (cargo-deny & cargo-audit)
+      - name: Install Pre-Built Security Tools
         uses: taiki-e/install-action@v2
         with:
-          tool: cargo-deny,cargo-audit
+          tool: cargo-deny,cargo-audit,clippy-sarif,sarif-fmt
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -43,3 +44,15 @@ jobs:
 
       - name: RustSec Vulnerability Database Audit (cargo-audit)
         run: cargo audit
+
+      - name: Rust Code Scanning (Clippy SARIF)
+        run: |
+          cargo clippy --all-targets --all-features --message-format=json | clippy-sarif | tee clippy-results.sarif | sarif-fmt
+        continue-on-error: true
+
+      - name: Upload SARIF to GitHub Code Scanning
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: clippy-results.sarif
+          category: clippy
+        if: always()

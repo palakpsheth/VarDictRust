@@ -119,7 +119,7 @@ Output must match **VarDictJava v1.8.3** on valid inputs:
 Pick ONE VarDictJava function
   → read its source (cite it: /// ports CigarModifier.java:61-71)
   → write the Rust port + its unit test
-  → run harness/compare.sh <case>  (or cargo test <name>)
+  → run harness/compare.sh `<case>`  (or `cargo test <name>`)
         MATCH   → commit, pick the next function
         MISMATCH→ debug THIS function; change nothing else
 ```
@@ -206,7 +206,7 @@ bash harness/slice.sh <in.bam> <chr:start-end> <out.bam>
 1. `cargo fmt --all`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test` all pass.
 2. The relevant `harness/compare.sh` prints **MATCH** (or the named test passes).
 3. `golden/` updated if output legitimately changed (with provenance).
-4. The commit/PR states: **"validated vs VarDictJava 1.8.3, dataset <name>, cmd <…>"**.
+4. The commit/PR states: **"validated vs VarDictJava 1.8.3, dataset `<name>`, cmd `<…>`"**.
 
 ## 16. Repo layout
 ```
