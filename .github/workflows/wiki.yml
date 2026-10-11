@@ -1,7 +1,9 @@
 name: Wiki Sync
 
-# Keeps the GitHub Wiki tab (a separate `<owner>/<repo>.wiki.git` repo that is
-# created lazily on first push) in sync with the top-level `wiki/` directory.
+# Keeps the GitHub Wiki tab (a separate `<owner>/<repo>.wiki.git` repo) in
+# sync with the top-level `wiki/` directory. One-time prerequisite: the wiki
+# repo is created only by saving the first page in the Wiki tab UI; after
+# that this workflow owns all updates.
 # Runs only on pushes to main, so PRs from forks never attempt a
 # privileged push with a read-only token.
 
@@ -52,9 +54,12 @@ jobs:
           if git ls-remote "${WIKI_URL}" HEAD >/dev/null 2>&1; then
             git clone "${WIKI_URL}" "${TMP}"
           else
-            # First run: the wiki repo does not exist yet; the push below creates it.
-            git init "${TMP}"
-            git -C "${TMP}" remote add origin "${WIKI_URL}"
+            # The wiki repo does not exist yet, and GitHub refuses to create
+            # it on push (verified: push returns "Repository not found" even
+            # with a valid ADMIN token). Save the first page once via the
+            # Wiki tab UI ("Create the first page"), then re-run this workflow.
+            echo "Wiki repo missing: create the first page in the Wiki tab UI, then re-run." >&2
+            exit 1
           fi
           git -C "${TMP}" config user.name "github-actions[bot]"
           git -C "${TMP}" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
