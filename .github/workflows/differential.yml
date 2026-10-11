@@ -12,9 +12,9 @@ jobs:
         with:
           submodules: true
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
-      - uses: conda-incubator/setup-miniconda@be893c923ea9cf1cf7cd510fbdde27c7e18cbdcb # v3.1.1
+      - uses: conda-incubator/setup-miniconda@be893c923ea9cf1cf7cd510fbdde27c7e18cbdcb # v4.1.0
         with:
-          auto-activate-base: true
+          auto-activate: true
       - name: Setup oracle
         run: bash harness/setup_oracle.sh
       - name: Build release
