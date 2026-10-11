@@ -1,6 +1,6 @@
 {
   "benchmark": "extended-coverage-tier2",
-  "fingerprint": "dace5891208a52d2",
+  "fingerprint": "c6ed06c2f99edd34",
   "result": "MATCH",
   "modalities_tested": 9,
   "modalities_passed": 9,
@@ -39,36 +39,36 @@
       "dataset": "NA24385_chr_20_20156208_20234556.bam",
       "result": "MATCH",
       "diffs": 0,
-      "variants": 3
+      "variants": 815
     },
     "adapter_trimming": {
       "format": "vcf",
       "dataset": "NA24385_chr_20_20156208_20234556.bam",
       "result": "MATCH",
       "diffs": 0,
-      "variants": 4
+      "variants": 1047
     },
     "realignment_bypass": {
       "format": "vcf",
       "dataset": "NA24385_chr_20_20156208_20234556.bam",
       "result": "MATCH",
       "diffs": 0,
-      "variants": 4
+      "variants": 929
     },
     "sv_bypass": {
       "format": "vcf",
       "dataset": "NA24385_chr_20_20156208_20234556.bam",
       "result": "MATCH",
       "diffs": 0,
-      "variants": 4
+      "variants": 1012
     },
     "n_base_counting": {
       "format": "vcf",
       "dataset": "NA24385_chr_20_20156208_20234556.bam",
       "result": "MATCH",
       "diffs": 0,
-      "variants": 4
+      "variants": 1047
     }
   },
-  "timestamp": "2026-10-11T15:46:34Z"
+  "timestamp": "2026-10-11T16:12:11Z"
 }
