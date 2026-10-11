@@ -209,6 +209,8 @@ bash harness/slice.sh <in.bam> <chr:start-end> <out.bam>
 3. `golden/` updated if output legitimately changed (with provenance).
 4. For any dependency (`Cargo.lock`) or engine code changes merged to `main`, run `bash harness/recertify.sh` to re-certify live parity and regenerate evidence.
 5. The commit/PR states: **"validated vs VarDictJava 1.8.3, dataset `<name>`, cmd `<…>`"**.
+6. `gitleaks protect --staged` (commit) / `gitleaks detect --source .` (push) clean.
+7. The PR body completes `.github/pull_request_template.md`; every engine-gate box is either run or marked **N/A with a one-line justification**. N/A is allowed only when the diff touches none of `*.rs`, `Cargo.toml`/`Cargo.lock`, `crates/`, `harness/` (the pre-push hook's code-change filter).
 
 ## 16. Repo layout
 ```
@@ -231,5 +233,5 @@ somatic STATUS → `src/postprocess/`); `printers/*` (→ `src/output/`); `varia
 Somatic STATUS is computed in **Java** (`SomaticPostProcessModule.determinateType`), not Perl.
 
 ## 18. Commits
-Atomic commits per task: `git add -A && git commit -m "Txxx: <short desc>"`. Branch off `main`; open PRs via `gh`.
+Atomic commits per task: `git add -A && git commit -m "Txxx: <short desc>"`. Branch off `origin/main` (`git fetch origin && git checkout -b <type>/<slug> origin/main`); never push `main` directly (the pre-push hook blocks it) — merge via a PR opened with `gh`, with the PR template filled. Run `bash harness/setup_hooks.sh` once per clone so the repo-managed hooks are active. Full gate semantics live in `CONTRIBUTING.md` §§5–6 and `harness/pr_check.sh` (6 stages).
 Never commit secrets, **data** (BAM/CRAM/FASTA/VCF beyond the tiny `golden/` fixtures), `target/`, or conda envs — see `.gitignore` (a single WGS BAM can exceed 150 GB). **Do** commit `Cargo.lock` (this is an application workspace). MIT-licensed, open-source project. No `Co-Authored-By` commit trailers per user directive (A10); AI involvement is disclosed transparently in `README.md` and `CITATION.cff`.
