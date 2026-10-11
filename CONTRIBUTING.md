@@ -32,7 +32,7 @@ All variant calling output on valid genomic inputs must match VarDictJava v1.8.3
 VarDictRust relies on the upstream `VarDictJava` test suite as a git submodule:
 ```bash
 # Clone with all submodules initialized:
-git clone --recurse-submodules https://github.com/AstraZeneca-NGS/VarDictRust.git
+git clone --recurse-submodules https://github.com/palakpsheth/VarDictRust.git
 cd VarDictRust
 
 # Or if cloned without --recurse-submodules:
@@ -181,16 +181,16 @@ This suite automatically verifies:
 5. 4-Target performance budget (`harness/perf_budget.py`).
 6. Staged and repository secret scanning with `gitleaks`.
 
-7. Automated harness self-test suite (`bash harness/run_self_tests.sh`) running all 13 diagnostic test scripts in $<10\text{s}$.
+7. Automated harness self-test suite (`bash harness/run_self_tests.sh`) running all 14 diagnostic test scripts in $<10\text{s}$.
 
-*For the complete catalog of all 8 testing tiers, push-button tier reproduction commands, and the dataset provenance catalog, see the Master Reproducibility Runbook in [`docs/testing/test-matrix-and-ci-audit.md`](docs/testing/test-matrix-and-ci-audit.md).*
+*For the complete seven-level testing architecture, push-button reproduction commands, and dataset provenance catalog, see the Master Reproducibility Runbook in [`docs/testing/test-matrix-and-ci-audit.md`](docs/testing/test-matrix-and-ci-audit.md).*
 
 ---
 
 ## 6. Pull Request Lifecycle & Requirements
 
 ### 6.1 Atomic Commits
-- Use descriptive, task-oriented conventional commits: `Txxx: <short description>` or `fix(cigar): <short description>`.
+- Use descriptive conventional commits: `fix(cigar): <short description>` or `feat(somatic): <short description>`.
 - Do not combine unrelated refactorings or formatting changes with algorithmic edits.
 
 ### 6.2 The Pull Request Checklist
@@ -204,15 +204,15 @@ When opening a pull request, complete all items in [`.github/pull_request_templa
 
 ---
 
-## 7. Governance & Host Policies
+## 7. Governance & Repository Policies
 
 Contributors must adhere to the following governance policies:
 
-### 7.1 Host Policy A10: Commit Trailer Hygiene
+### 7.1 Commit Trailer Hygiene Policy
 - **Strictly Zero `Co-Authored-By` Trailers:** Do **not** include `Co-Authored-By` trailers in commit messages.
 - **Transparent AI Disclosures:** Machine assistance and AI tool participation are documented transparently in `README.md` and `CITATION.cff`, not in commit metadata.
 
-### 7.2 Host Policy A3: System Resource Courtesy
+### 7.2 System Resource Courtesy Policy
 - **Thread Constraints:** Multi-threaded local testing must not exceed 8 worker threads (`--test-threads=8` or `-th 8`).
 - **Resource Courtesy Wrapping:** Long-running jobs should be executed using the courtesy wrapper:
   ```bash

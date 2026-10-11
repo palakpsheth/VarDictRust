@@ -2,7 +2,7 @@
 
 > **Standard:** [rewrites.bio](https://rewrites.bio) Manifesto (§0 Evidence Before Completion, §0b Integrity, §5 Pure Parity on Valid Inputs).  
 > **Release Engine Fingerprint:** `7e9b1be766f73b17` (Certified Invariant).  
-> **Execution Milestone:** Task 24h: Multi-Slice Multi-Consortium Public Dataset Expansion & Complete Documentation.  
+> **Validation Suite:** Multi-Modal Public Dataset Expansion Suite.  
 > **Parent Omnibus Report:** [`docs/validation/omnibus-empirical-validation.md`](omnibus-empirical-validation.md) (Pillar 9).
 
 ---
@@ -11,7 +11,7 @@
 
 To provide rigorous, reproducible proof of **byte-for-byte output parity** against `VarDictJava v1.8.3` on real biological sequencing data, VarDictRust was evaluated against an expanded suite of **18 non-overlapping genomic slices across 6 independent public sequencing datasets** spanning **9 distinct human chromosomes** and both major human reference assemblies (**GRCh38** and **GRCh37/b37**).
 
-This multi-slice suite systematically eliminates single-locus bias, evaluates extreme GC content distributions ($<35\%$ to $>65\%$), stresses multi-interval BED scheduling in [`regions.rs`](file:///mnt/media_backups/VarDictRust/crates/vardict-core/src/regions.rs) and [`runner.rs`](file:///mnt/media_backups/VarDictRust/crates/vardict-core/src/runner.rs), and exercises all mutational classes (germline SNVs/indels, paired somatic driver hotspots, subclonal low-VAF mutations, strand-biased candidate filtering, complex insertion/deletion realignment, and RNA-seq exon-intron junctions).
+This multi-slice suite systematically eliminates single-locus bias, evaluates extreme GC content distributions ($<35\%$ to $>65\%$), stresses multi-interval BED scheduling in [`regions.rs`](../../crates/vardict-core/src/regions.rs) and [`runner.rs`](../../crates/vardict-core/src/runner.rs), and exercises all mutational classes (germline SNVs/indels, paired somatic driver hotspots, subclonal low-VAF mutations, strand-biased candidate filtering, complex insertion/deletion realignment, and RNA-seq exon-intron junctions).
 
 Across all 18 biological evaluations:
 - **Variant Call Discrepancies:** **0** (100% variant concordance across 1,100+ evaluated variants).
@@ -128,7 +128,7 @@ The multi-slice validation suite explicitly exercises every core subsystem in Va
 
 ## 4. Reproducibility & Audit Commands
 
-All 18 slices are fully reproducible via automated, bounded commands adhering to Host Policy A3:
+All 18 slices are fully reproducible via automated, bounded commands under standard resource limits (max 8 threads):
 
 ```bash
 # 1. Ingest and stream BAM slices (<3 minutes, <150 MB total disk space)

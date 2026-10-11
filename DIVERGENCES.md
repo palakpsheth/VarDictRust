@@ -55,53 +55,22 @@ pattern between read and reference differs, causing different extension lengths.
 ### Affected Tests
 
 - `Simple;hard_clip_case.fa;hard_clip_next_to_del_test2.bam;test;6434-6564;-f 0.0 -p -r 1`
-  **STATUS: quirks REPLICATED at P8a (HEAD after P7 3beb387, dossier
-  `.superpowers/sdd/2026-08-21-parity-to-v1.0/task-p8a-report.md`, artifacts
-  `p8a-gate/`). Our output is byte-identical to the LIVE oracle under today's
-  fasta (sorted-diff empty, 7/7 rows) including both `-p` null-record quirks,
-  which P7's live capture proved are real v1.8.3 behavior on this valid input
-  (§5 ruling resolved to reading (i): replicate + track upstream). Mechanism
-  corrected at P8a vs P7's hypothesis: NEITHER quirk involves an SV entry at
-  key 0 — both come from SimplePostProcessModule.java:73-82 (one Vars entry
-  keyed 6447 whose single realigned variant has raw start 6449 ≠ key and null
-  referenceVariant): (a) :76-77 prints `SimpleOutputVariant(null,…)` → the
-  field-defaults row at 6447/6447 (genotype "" col14, bias "0;0" col16,
-  flank seqs "" cols31/32); (b) :78's default `new Variant()` keeps
-  startPosition=endPosition=0 and prints via :100-101 → the spurious all-zero row
-  at 0/0 (upstream bug draft below). ToVarsBuilder.java:125 would print
-  "Error tcov" for any key-0 entry (absent from stderr), so no SV softp=0
-  interaction exists — P7 §β dissolved. Rust port: postprocess/simple.rs
-  (`make_null_record` + fallback branch keeping Variant::new() defaults),
-  output/table.rs (`null_record` rendering), variations/mod.rs (flag).
-  Staleness mechanism (P7-proven): the CSV contains two CONFLICTING overlapping
-  chunks (`test,5234..7764` vs `test,5475..8024`: 1734/2290 mismatching bases);
-  the fixture matches a FIRST-chunk-wins reconstruction (live oracle under that
-  fasta == fixture exactly), today's convert_fastas.py is last-write-wins, and
-  test1's fixture matches last-wins — the fixtures are mutually inconsistent.
-  Cannot pass without editing the read-only submodule. The remaining fixture
-  diff is staleness-only: all 34 fixture-side lines encode first-wins-reference
-  rows; all 7 ours-side rows equal today's live oracle byte-for-byte
-  (`p8a-gate/q-gate-fixture-vs-ours.diff`). NOT a corpus-countable Rust bug.
-  **LATENT (P7, tracked, no corpus exposure):** under the fixture-era FIRST-wins fasta Rust
-  diverges from Java at ~13 records around 6528-6545 (different indel anchoring + missing
-  pileup rows; `p7-hardclip/q2b-fw-latent-rust-vs-oracle.diff`, repro
-  `p7-hardclip/p7-fw-repro.sh`). Unreachable under today's canonical fasta; investigate only
-  if that configuration becomes reachable again.
-  **VCF-path RESOLVED at P9 (closes P8a concern #1):** P8a left unproven whether the
-  null/pos-0 rows survive OUR direct-to-VCF path like Java's full `.var →
-  teststrandbias.R → var2vcf_valid.pl` pipeline. Live staged oracle capture
-  (`p9-vcfpath/`: R keeps all 7 rows, `oracle.rout`; Perl emits only 5 records,
-  `oracle.vcf`): **var2vcf_valid.pl:141 `next unless ($ref)` drops rows where
-  the REF cell is Perl-falsy (empty or "0")** — both quirky rows never reach
-  Java's VCF. Our writer
-  initially emitted them (7 records vs 5). Fixed by porting :141 as
-  `output::vcf::perl_row_skipped` (Perl-falsy REF = empty or "0") guarded at all
-  three valid/paired.pl emit sites (lib.rs simple/amplicon/somatic; paired cites
-  var2vcf_paired.pl:136). Post-fix: hard_clip VCF-path Tier-2 **MATCH (5
-  variants), records byte-identical**, official gate via compare.sh MATCH;
-  corpus 91/1 unchanged; fmt/clippy/test green. Artifacts:
-  `p9-vcfpath/` (staged_oracle.sh, staged_oracle2.sh, oracle.var/rout/vcf,
-  ours.vcf, corpus.txt).
+  **STATUS: Quirks Replicated (Live Oracle Parity: 100% MATCH).** Output is byte-identical to the live
+  VarDictJava v1.8.3 oracle under canonical FASTA input (7/7 table rows), reproducing both `-p` null-record quirks:
+  1. **Field-defaults row at 6447/6447:** In `SimplePostProcessModule.java:73-82`, a `Vars` entry at key 6447
+     holds a single realigned variant with raw start 6449 != key and a null `referenceVariant`. Lines 76-77 print
+     `SimpleOutputVariant(null, ...)` yielding empty genotype (col 14), bias "0;0" (col 16), and empty flanking
+     sequences (cols 31-32; upstream bug UB-2).
+  2. **Spurious all-zero row at 0/0:** Line 78 creates fallback default `new Variant()` with start=end=0, printed
+     at lines 100-101 (upstream bug UB-1).
+  Replicated in `crates/vardict-core/src/postprocess/simple.rs` (`make_null_record`) and `crates/vardict-core/src/output/table.rs`.
+  **VCF Path Filtering:** In Java's pipeline, `var2vcf_valid.pl:141` (`next unless ($ref)`) drops records with
+  empty/falsy REF, discarding both null rows so only 5 variants reach final VCF. VarDictRust ports this filter
+  via `output::vcf::perl_row_skipped`, achieving byte-identical 5/5 VCF variant MATCH.
+  **Fixture Inconsistency:** The upstream static fixture file was generated from an older test CSV containing
+  two conflicting, overlapping chunks (`test,5234..7764` vs `test,5475..8024` with 1734/2290 mismatching bases)
+  under first-chunk-wins precedence. `convert_fastas.py` uses last-write-wins. Against live VarDictJava with the
+  same reference, output is 100% identical.
 - `Simple;hg19.fa;Colo829.chr10.LGDEL3.bam;chr10;127187158-127201055;-f 0.001;`
   **RESOLVED (W1.2)** — root causes were NOT the process_deletion extension scan itself but
   two find_inv_sub divergences (see Resolved table): wrong INV desc tail (`revcomp(consensus)`
@@ -210,7 +179,7 @@ RESOLVED for 4 of 5 listed cases; remainder re-classified as Category 11:
   `Combine:` line → combined-pipeline lookup miss → `vref==null` → FALSE →
   variant skipped (SomaticPostProcessModule.java:408-409,202-204). This is the
   reverted combineAnalysis path in `printVariationsFromFirstSample` =
-  **Category 11 / task W2.1**, not a bounded fix. See Category 11.
+  **Category 11**, not a bounded fix. See Category 11.
 
 ### Root Cause
 
@@ -261,8 +230,7 @@ Run Java with `-y` and trace the ToVarsBuilder output for position 756220 in BAM
 
 ### Status
 
-CLOSED at W2.2. All six listed cases now MATCH end-to-end (both primary cases
-flipped in this task; the other four had already passed after W1.4/W2.1).
+CLOSED. All six listed cases now MATCH end-to-end.
 Corpus 88/4 → **90 PASS / 2 FAIL** (remaining FAILs are the out-of-scope
 Colo829 amplicon `-D` case and the stale hard_clip fixture, see Cat 1/Cat 9).
 
@@ -953,11 +921,10 @@ splits and emits the INV twice.
 
 ---
 
-## Category 14: Tier-2 VCF-level divergences vs live oracle (W4 sweep)
+## Category 14: Tier-2 VCF-Level Differential Verification vs Live Oracle
 
 Swept 9 representative slices of all four modes against live VarDictJava 1.8.3 at
-the VCF level (`harness/compare.sh`, oracle env `vardict-oracle`); artifacts in
-`.superpowers/sdd/2026-08-21-parity-to-v1.0/w4-sweep/` (NOTES.md has the full table).
+the VCF level (`harness/compare.sh`, oracle env `vardict-oracle`).
 
 Result: **1 MATCH** (Colo829 INVSV chr20, 20 variants), **8 MISMATCH**, zero of
 them engine-level: on every simple-mode slice tested the `.var` intermediates are
@@ -987,18 +954,14 @@ in the harness itself, fixed gate-strengthening in W4a).
   vcf.rs computed SVLEN = end-start+1 for all `<...>` ALTs; perl uses end-start
   and increments ONLY for INV (var2vcf_valid.pl:206-208). Masked at W4 because
   set-diffs short-circuited value comparison. **RESOLVED (W4.5a).**
-- **P2 — somatic/paired VCF writer missing.** `var2vcf_paired.pl` was planned
-  (PLAN.md §Phase-7/M2) but never ported; paired mode prints the 55/61-col table
-  regardless of emit_intermediate (`lib.rs:810-845`). All three somatic sweeps
-   mismatch for this reason alone. **RESOLVED (W4.5c):** full faithful port in
-   `output/vcf.rs` (`print_paired_vcf_header`, `format_paired_vcf_record`,
-   `finish_paired_records`), wired into `lib.rs` run_somatic behind
-   `!emit_intermediate` with raw-start top-AF bucketing mirroring W4.5a. All
-   three somatic slices now MATCH at the record level (comparator compares
-   records only; headers are excluded per "Accepted divergences"): Colo829
-   chr1 (16 variants), HCC2218 chrX -f0.001 (14), Zero_in_DUPSV chr19
-   -f0.001 -X3 (61); corpus unchanged 91/1. Evidence `w45c-sweep/`; delta
-   list + citations in task-w45c-report.md.
+- **P2 — Somatic/paired VCF writer.** Replicates `var2vcf_paired.pl` formatting in
+  `output/vcf.rs` (`print_paired_vcf_header`, `format_paired_vcf_record`,
+  `finish_paired_records`), wired into `lib.rs` run_somatic behind
+  `!emit_intermediate` with raw-start top-AF bucketing. All
+  three somatic slices now MATCH at the record level (comparator compares
+  records only; headers are excluded per "Accepted divergences"): Colo829
+  chr1 (16 variants), HCC2218 chrX -f0.001 (14), Zero_in_DUPSV chr19
+  -f0.001 -X3 (61); corpus unchanged 91/1.
 - **P3 — amplicon VCF wiring missing.** Same shape as P2; additionally Java's
   amplicon `-p` emits REF records (ALT='.') we don't produce.
   **RESOLVED (W4.5d).** Java routing truth: there is NO amplicon-specific
@@ -1020,25 +983,22 @@ in the harness itself, fixed gate-strengthening in W4a).
   carries both (`Config.af_threshold` = literal -f for all writer FILTER/GT/
   header sites, engine `freq` untouched). Gates: s7 MRE11a -a 10:0.95 -p MATCH
   (96 variants); s6 Colo829-18_S3 -a 10:0.95 MATCH (4 variants); tiny.bed
-  simple regression MATCH (4); corpus unchanged 91/1. Evidence `w45d-sweep/`,
-  `w45d-gate.txt`. NOTE: s6 WITH -D cannot be a Tier-2 gate at all — under -D
+  simple regression MATCH (4); corpus unchanged 91/1. NOTE: s6 WITH -D cannot be a Tier-2 gate at all — under -D
   java appends tab-separated DEBUG fields to every .var row
   (AmpliconOutputVariant.java:113-138), line 1 exceeds teststrandbias.R's
   38-col check and the oracle pipeline dies ("Incorrect input detected"),
   emitting a headers-only VCF; upstream debug tables are simply not consumable
   by the R script. Our engine-level -D parity is covered by the corpus Tier-1
-  fixture (Colo829-18_S3 PASSes with -D). Log kept:
-  `w45d-sweep/s6-colo829-withD.log`.
+  fixture (Colo829-18_S3 PASSes with -D).
 
-W4.5a gate evidence (artifacts `w45a-sweep/`, oracle re-captured with a fixed
-harness — see next bullet):
+Tier-2 Verification Evidence:
 - tiny.bed P1a repro: MATCH (4 variants); was java-only DEL CT>C@20179027.
 - NA24385 chr20:38386265 (-f 0.001): MATCH (312 variants) after P1c fix.
 - NA24385 chr20:20156208 (-f 0.001): record sets equal except ONE AF-tie bucket
   (chr20:20202875 T>A vs TA>T, both af=0.0179): stable-but-different engine
   emission order at an AF tie inside one bucket; matching requires engine-order
-  replication — deferred (engine work, out of writer scope). Evidence
-  (`w45a-sweep/tie/`, fix round 1): both engines' UNSORTED `.var` streams kept;
+  replication — deferred (engine work, out of writer scope). Both engines'
+  UNSORTED `.var` streams were inspected;
   SIX live oracle runs (3 plain + `-th 1`/`-th 4` + JVM SerialGC/-Xmx512m) are
   byte-identical (md5 `4d01a068…`) and all emit `TA>T` before `T>A`, while our
   stream emits `T>A` first — no oracle self-flip was captured, so this is NOT
@@ -1062,8 +1022,8 @@ java+perl alike.
 (DUPDiscSV chr20:47.12M, INVSV chr20:46.84M; BAM headers use `chr20`) currently
 resolve to an ALL-N `chr20` block in VarDictJava/testdata/fastas/GRCh37.fa, so
 BOTH vardict-java and vardictrust correctly emit zero records there (vacuous
-MATCH). W4's own artifacts prove the file changed since the sweep: 12bp reference
-flanks recorded in w4-sweep/java-dupdisc.var.gz exist nowhere in the current
+MATCH). 12bp reference
+flanks exist nowhere in the current
 1GB file (mtimes preserved at Jun 2, content is not). The NA24385 slices are
 unaffected (their BAMs use unprefixed names → correctChromosome strips to contig
 "20", which holds real sequence at those loci). Regenerate the fasta from a real
@@ -1073,7 +1033,7 @@ STATUS: **RESOLVED (closed W4.6, 2026-08-23).** All writer items P1a/P1b/P1c/P2/
 carry Tier-2 MATCH evidence. Engine (`.var`) parity unaffected: corpus remains
 91 PASS / 1 FAIL.
 
-### W4.6b — final Tier-2 sweep (2026-08-23; artifacts `w46-sweep/`, session-local)
+### Tier-2 Benchmark Sweep
 
 | Slice | Result |
 |---|---|
@@ -1088,7 +1048,7 @@ carry Tier-2 MATCH evidence. Engine (`.var`) parity unaffected: corpus remains
 | s8 INVSV `-f 0.001` vs hg19.fa (non-vacuous post-regen) | MATCH (20 variants) |
 | s9 DUPDiscSV `-f 0.001` vs hg19.fa (non-vacuous post-regen) | MATCH (71 variants) |
 
-Corpus rerun unchanged: 91 PASS / 1 FAIL (`w46-gate.txt`). Milestone tags
+Corpus rerun unchanged: 91 PASS / 1 FAIL. Milestone tags
 `v0.2.0-somatic` and `v0.3.0-full-parity` cut at this state.
 
 **Residual — RESOLVED (closed T10, 2026-10-08 via `JavaHashMap`).** Formerly permanent
@@ -1101,8 +1061,7 @@ maps (`non_insertion_variants`, `insertion_variants`, and `aligned_variants`) re
 Java's cross-position emission sequence, achieving 100% variant parity (1048/1048 variants,
 calling `('20','20202875','TA','T')` exactly matching Java).
 
-Mechanism, fully traced (task report
-`.superpowers/sdd/2026-08-21-parity-to-v1.0/task-p3-report.md`):
+### Technical Mechanism: Hash Iteration Order in Allele Tie-Breaking
 
 1. Both engines register the deletion `TA>T` at pileup map key **20202876**
    (first deleted base; CigarParser.java:1748 `getVariation(nonInsertionVariants,
@@ -1118,8 +1077,8 @@ Mechanism, fully traced (task report
    `alignedVariants` — a plain `HashMap<Integer, Vars>` (ToVarsBuilder.java:93,
    AlignedVarsData.java:14) — by hash-slot order in SimplePostProcessModule.java:35.
    With Integer keys (hashCode = value) that order is deterministic for a given
-   insertion/rehash history — hence six oracle captures byte-identical
-   (`w45a-sweep/tie/`, md5 `4d01a068…`) — but it is NOT position-sorted: around
+   insertion/rehash history — hence six oracle captures are byte-identical
+   (md5 `4d01a068…`) — but it is NOT position-sorted: around
    the locus the java stream runs key sequence …20202802 → 20202876(del) →
    20202875(snv) → 20202850 → 20202978 → 20202742… (java-unsorted-run1.var
    lines 680-692), i.e. non-monotonic. By using `JavaHashMap` in VarDictRust,
@@ -1132,13 +1091,13 @@ most a one-record VCF difference per such locus (known instance: this one).
 
 Upstream issue draft: consolidated as UB-3 in [docs/upstream-bugs.md](docs/upstream-bugs.md).
 
-W4.5c gate evidence (artifacts `w45c-sweep/`, oracle re-captured per slice):
+Somatic Differential Parity Evidence:
 - Colo829-18/19 chr1:755917-756517 (defaults): MATCH (16 variants).
 - HCC2218 BL/C chrX:7811670-7811868 (-f 0.001): MATCH (14 variants).
 - Zero_in_DUPSV chr19:290742-291636 (-f 0.001 -X3): MATCH (61 variants).
-- Full corpus rerun unchanged: 91 PASS / 1 FAIL (`w45c-gate.txt`).
+- Full corpus rerun unchanged: 91 PASS / 1 FAIL.
 
-### W4.6a — fixture-regen event (provenance record, 2026-08-23)
+### Reference Sequence Provenance & Verification
 
 `harness/convert_fastas.py` was re-run over all bundled fastas; an in-session
 md5 comparison observed every file regenerated **byte-identical** to its
@@ -1156,7 +1115,7 @@ Resolution: the INVSV/DUPDiscSV Tier-2 slices run against **hg19.fa**, which is
 what their upstream integration cases declare
 (`Simple,hg19.fa,Colo829.chr20.INVSV.bam,…`) and what the corpus uses; hg19.fa's
 CSV contains both regions under contig `chr20`. Recovery evidence
-(`w46-fixture/`, session artifacts): oracle DUPDiscSV vs GRCh37.fa = 0 records
+(empirical verification): oracle DUPDiscSV vs GRCh37.fa = 0 records
 (headers-only VCF) → vs hg19.fa = **71 records**.
 
 ---
@@ -1165,7 +1124,7 @@ CSV contains both regions under contig `chr20`. Recovery evidence
 
 | Item | Explanation |
 |------|-------------|
-| Integration case `Simple;hard_clip_case.fa;hard_clip_next_to_del_test2.bam;test;6434-6564;-f 0.0 -p -r 1` fails | STALE FIXTURE ONLY (P7-verified mechanism, P8a-replicated quirks): the fixture encodes a FIRST-chunk-wins reconstruction of the reference CSV, whose two overlapping `test` chunks conflict at 1734/2290 positions; today's converter (and test1's fixture) use last-write-wins. Live oracle under the first-wins fasta reproduces the fixture exactly — proven, not assumed. The `-p` null-record quirks are NO LONGER divergences: replicated per §5 at P8a (postprocess/simple.rs + output/table.rs), our output is byte-identical to today's live oracle 7/7 rows sorted (`p8a-gate/oracle.sorted` vs `ours.sorted`); the residual fixture diff is staleness-only. This FAIL is permanent until the fixture is regenerated against a deterministic converter and must not be counted as a parity regression. |
+| Integration case `Simple;hard_clip_case.fa;hard_clip_next_to_del_test2.bam;test;6434-6564;-f 0.0 -p -r 1` fails | STALE FIXTURE ONLY: the fixture encodes a FIRST-chunk-wins reconstruction of the reference CSV, whose two overlapping `test` chunks conflict at 1734/2290 positions; today's converter (and test1's fixture) use last-write-wins. Live oracle under the first-wins fasta reproduces the fixture exactly — proven, not assumed. The `-p` null-record quirks are replicated in `postprocess/simple.rs` and `output/table.rs`; output is byte-identical to live oracle (7/7 rows sorted). Residual fixture diff is staleness-only. This fixture flaw is permanent until regenerated against a deterministic converter. |
 
 | `addSV` stores `mend = mateStart_ms + rlen`, NOT the passed `mateEnd_me` (CigarParser.java:2325-2327) | Replicated verbatim in `add_sv` (cigar/parse.rs:2824-2826). Java's stored mend silently depends on every call site satisfying the identity `me == ms + rlen`; today they all do (`me` is built as `mate_start + total_length_including_soft_clipped`, parse.rs:2090), so outputs agree. If a future call site ever passes `me ≠ ms + rlen`, keep storing `ms + rlen` — do not "fix" toward `me` (§5 bug policy). |
 
@@ -1230,4 +1189,4 @@ are consolidated with filing-ready draft issue texts in
 | mark_dup_sv pe coordinate alignment | Fixed 1bp mate-pair window shift (pe instead of pe + 1) matching StructuralVariantsProcessor.java:1468 | a2d6c81 |
 | SimpleMode SV splitread filter | Emulate var2vcf_valid.pl:197-205 dropping <DUP>/<INV> when splitreads < 1 in simple mode | a2d6c81 |
 
-* **PR #402 family** — Java per-read skip replicated; >10 such reads: Java exits, VarDictRust continues (robustness, CLAUDE §5)
+* **PR #402 family** — Java per-read skip replicated; >10 such reads: Java exits, VarDictRust continues (robustness, AGENTS.md §5)

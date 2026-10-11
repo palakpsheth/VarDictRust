@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# PLAN.md §15 acceptance, items 1-8 verbatim. Exit 0 only if every item is PASS or user-WAIVED.
+# AGENTS.md §15 acceptance, items 1-8 verbatim. Exit 0 only if every item is PASS or user-WAIVED.
 set -uo pipefail
 OUT=${ACCEPT_DIR:-scratch/acceptance}; mkdir -p "$OUT"; : > "$OUT/log.txt"; declare -A R
 FP=$(bash harness/engine_fingerprint.sh) || { echo "acceptance: commit first"; exit 2; }

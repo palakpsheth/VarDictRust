@@ -12,16 +12,21 @@ VarDictRust consolidates the original 3-language pipeline (`Java` → `R` → `P
 
 Built under the [rewrites.bio](https://rewrites.bio) manifesto: *a faster, more robust tool that produces the same results*. See the comprehensive [Omnibus Master Empirical Validation Report](docs/validation/omnibus-empirical-validation.md) for full biological provenance, algorithmic proofs, and benchmark datasets.
 
+```bash
+# Quick Example: Somatic paired calling (tumor vs normal)
+vardictrust -G GRCh38.fa -f 0.01 -N "TUMOR|NORMAL" -b "tumor.bam|normal.bam" target.bed > somatic.vcf
+```
+
 ---
 
 ## Performance & Scaling Scoreboard
 
-- **Exact Parity:** 0 variant discrepancies and identical `FILTER`/`STATUS` decisions against VarDictJava v1.8.3 across all 15 Tier-2 benchmark runs and 92 integration fixtures ($\varepsilon = 10^{-6}$).
+- **Exact Parity:** 0 variant discrepancies and identical `FILTER`/`STATUS` decisions against VarDictJava v1.8.3 across all 15 dual-engine differential benchmark runs and 92 integration fixtures ($\varepsilon = 10^{-6}$).
 - **High-Throughput Speedup:** Up to **30.0× faster** on targeted amplicon assays and **4.85× parallel speedup** on 8 cores across whole human chromosomes.
 - **Bounded $O(1)$ Memory:** Flat resident memory scaling ($1.39\times$ peak RSS ratio across a 25-fold chromosome span increase), eliminating JVM heap exhaustion on deep WGS.
 - **Self-Contained Deployment:** Single statically-linked binary (`x86_64-unknown-linux-musl`) with zero runtime dependencies (no JVM, R, Perl, or conda environment needed).
 
-Recorded on identical hardware (AMD Ryzen / Ubuntu 24.04 LTS, NVMe SSD) pinned to 8 CPU threads per Host Policy A3:
+Recorded on identical hardware (AMD Ryzen / Ubuntu 24.04 LTS, NVMe SSD) pinned to 8 CPU threads:
 
 | Workload / Benchmark | Threads | VarDictJava Wall Time | VarDictRust Wall Time | Speedup Ratio | VarDictJava Peak RSS | VarDictRust Peak RSS | Memory Scaling Ratio |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -232,7 +237,7 @@ Per the [rewrites.bio](https://rewrites.bio) manifesto, we disclose all AI tools
 
 ## Attribution & Citation
 
-VarDictRust is a rewrite of **VarDict** and **VarDictJava** developed by Zhongwu Lai and the AstraZeneca-NGS team:
+VarDictRust is authored and maintained by **Palak Sheth** (<palakpsheth@gmail.com>), developed as an idiomatic Rust rewrite of **VarDict** and **VarDictJava** originally created by Zhongwu Lai and the AstraZeneca-NGS team:
 
 > Lai Z, Markovets A, Ahdesmaki M, et al. VarDict: a novel and versatile variant caller for next-generation sequencing in cancer research. *Nucleic Acids Research*, 2016;44(11):e108. doi:[10.1093/nar/gkw227](https://doi.org/10.1093/nar/gkw227)
 
@@ -271,7 +276,18 @@ VarDictRust is a rewrite of **VarDict** and **VarDictJava** developed by Zhongwu
 }
 ```
 
-If you use VarDictRust in published research, please cite the original Lai et al. (2016) paper above and reference the VarDictRust software metadata via [`CITATION.cff`](CITATION.cff).
+If you use VarDictRust in published research, please cite both the original Lai et al. (2016) paper and this software:
+
+```bibtex
+@software{sheth2026vardictrust,
+  author    = {Sheth, Palak},
+  title     = {{VarDictRust: Memory-Safe, High-Performance Variant Calling for NGS}},
+  year      = {2026},
+  version   = {1.0.0},
+  url       = {https://github.com/palakpsheth/VarDictRust}
+}
+```
+Full citation metadata is available in [`CITATION.cff`](CITATION.cff).
 
 ---
 

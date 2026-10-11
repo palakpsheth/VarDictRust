@@ -9,7 +9,7 @@ binary that **scales to deep WGS**. It is built under the **rewrites.bio** manif
 
 - **Reference implementation:** `./VarDictJava` (v1.8.3, commit `0886261`; Perl/R submodule `./VarDictJava/VarDict`, commit `009e017`).
 - **Prime directive:** a faster, more robust tool that produces output **identical to VarDictJava v1.8.3 on valid inputs**. We are *not* writing a new caller and *not* transliterating Java line-by-line.
-- **Full plan:** see `./PLAN.md` (strategic reference + a 174-task execution manual). This file is the always-loaded agent contract; `PLAN.md` is the detailed roadmap.
+- **Full plan:** see `./ROADMAP.md` for candidate fixes, opt-in flags, and post-1.0 governance. This file is the always-loaded agent contract.
 
 ---
 
@@ -164,7 +164,7 @@ OOM (#197/#384 — fixed by the tiling in §10), CRAM (#249/#380 — noodles + `
 formatting, fail-fast on missing index (#187), lenient SAM validation, nondeterminism (#282/#181/#356), and
 correct `##contig` lengths from the `.fai` (#320). **Output-changing** corrections (#92 VD>DP, #62 over-filtering,
 #363 realignment drops, #292 SHIFT3, #342 `<dup-N>` ALT, …) and **new features** (UMI, long reads) are deferred
-to post-1.0 behind individual opt-in flags. See `PLAN.md` §8. Post-1.0 = v1.1.0+, governed by ROADMAP.md.
+to post-1.0 behind individual opt-in flags. See ROADMAP.md and docs/upstream-bugs.md. Post-1.0 = v1.1.0+, governed by ROADMAP.md.
 
 ---
 
@@ -182,7 +182,7 @@ Use: **noodles** (BAM/CRAM/FASTA/VCF/BGZF), **bio** + (later) **block-aligner** 
 ---
 
 ## 14. Commands
-**Setup (run once):** see `PLAN.md` Appendix **B0 (Prerequisites)** — rustup, miniconda, samtools, JDK, and reference-genome setup. Confirm every version prints before starting task T001.
+**Setup (run once):** see `CONTRIBUTING.md` (Prerequisites) — rustup, miniconda, samtools, JDK, and reference-genome setup. Confirm every version prints before starting development.
 ```bash
 # Build / test / lint / format — ALL must pass before any commit (zero warnings):
 cargo fmt --all
@@ -216,7 +216,7 @@ harness/               compare.sh, compare_var.py, compare_vcf.py, slice.sh, run
 golden/                versioned oracle outputs (.vcf, .var) + PROVENANCE
 benchmarks/            hardware, datasets, exact commands
 VarDictJava/           the v1.8.3 reference (read-only; the source of truth for ports)
-PLAN.md                full strategic plan + 174-task execution manual
+ROADMAP.md             post-1.0 candidate flags and architecture roadmap
 ```
 
 ## 17. Quick map: where things live in VarDictJava (for porting)
@@ -230,4 +230,4 @@ Somatic STATUS is computed in **Java** (`SomaticPostProcessModule.determinateTyp
 
 ## 18. Commits
 Atomic commits per task: `git add -A && git commit -m "Txxx: <short desc>"`. Branch off `main`; open PRs via `gh`.
-Never commit secrets, **data** (BAM/CRAM/FASTA/VCF beyond the tiny `golden/` fixtures), `target/`, or conda envs — see the `.gitignore` in `PLAN.md` Appendix B0 (a single WGS BAM can exceed 150 GB). **Do** commit `Cargo.lock` (this is an application workspace). MIT-licensed, open-source project. No `Co-Authored-By` commit trailers per user directive (A10); AI involvement is disclosed transparently in `README.md` and `CITATION.cff`.
+Never commit secrets, **data** (BAM/CRAM/FASTA/VCF beyond the tiny `golden/` fixtures), `target/`, or conda envs — see `.gitignore` (a single WGS BAM can exceed 150 GB). **Do** commit `Cargo.lock` (this is an application workspace). MIT-licensed, open-source project. No `Co-Authored-By` commit trailers per user directive (A10); AI involvement is disclosed transparently in `README.md` and `CITATION.cff`.

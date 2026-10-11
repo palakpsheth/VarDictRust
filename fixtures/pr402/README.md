@@ -16,7 +16,7 @@ Historically, when such an exception occurred during multi-threaded processing, 
 
 The fixture represents a 600 bp region on `chr7` designed to test caller resilience against malformed CIGAR inputs:
 
-- [`ref.fa`](ref.fa), [`ref.fa.fai`](ref.fa.fai): 600 bp synthetic FASTA reference on `chr7` (MD5: `18f77d3b5b6ceef08d9630c727bb03ea`).
+- [`ref.fa`](ref.fa), [`ref.fa.fai`](ref.fa.fai): 600 bp synthetic FASTA reference on `chr7` (file MD5: `0ec0bcf8abce297393e3c0cce5acabcb`).
 - [`pr402.bed`](pr402.bed): Single-target interval (`chr7:1-600` targeting `GeneA`).
 - [`pr402.sam`](pr402.sam), [`pr402.bam`](pr402.bam), [`pr402.bam.bai`](pr402.bam.bai):
   - 30 standard reads aligned to `chr7:1` with simple `142M` CIGARs.

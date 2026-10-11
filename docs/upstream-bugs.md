@@ -10,13 +10,13 @@ All line references below are to that pin.
 
 | # | Item | Our stance |
 |---|------|------------|
-| [UB-1](#ub-1--p-spurious-all-zero-record-at-position-00) | `-p` spurious all-zero record at position 0/0 | **Replicated** (P8a) |
-| [UB-2](#ub-2--p-null-record-row-cell-formatting-empty-geno-00-bias-empty-flank-seqs) | `-p` null-record row cell formatting | **Replicated** (P8a) |
-| [UB-3](#ub-3--var-row-order-across-positions-follows-hashmap-iteration-order-282-family) | Cross-position `.var` emission order follows HashMap layout | **Replicated** (via `JavaHashMap` in Task 10) |
-| [UB-4](#ub-4--integration-fixture-inconsistency-overlapping-csv-reference-chunks) | Integration fixtures encode mutually inconsistent references | N/A (test-data defect; validated vs live oracle) |
-| [UB-5](#ub-5--simplemode-structural-variant-split-read-requirement-var2vcf_validpl197-205) | SimpleMode SV split-read requirement (`splitreads < 1` dropped) | **Replicated** (`lib.rs:403-414, 470, 499`) |
-| [UB-6](#ub-6--mate-pair-boundary-parameter-in-mark_dup_sv-structuralvariantsprocessorjava1468) | Mate-pair boundary parameter in `mark_dup_sv` (`pe` decrement) | **Replicated** (`sv.rs:3039, 3105-3111`) |
-| [UB-7](#ub-7--multi-allelic-site-single-winner-collapsing-var2vcf_validpl135-205) | Multi-allelic site single-winner collapsing without `-A` | **Replicated** (`lib.rs:467-505`) |
+| [UB-1](#ub-1--p-spurious-all-zero-record-at-position-00) | `-p` spurious all-zero record at position 0/0 | **Replicated** (commit `4d113b2`) |
+| [UB-2](#ub-2--p-null-record-row-cell-formatting-empty-geno-00-bias-empty-flank-seqs) | `-p` null-record row cell formatting | **Replicated** (`variations/mod.rs`) |
+| [UB-3](#ub-3-var-row-order-across-positions-follows-hashmap-iteration-order-282-family) | Cross-position `.var` emission order follows HashMap layout | **Replicated** (via JavaHashMap Determinism Engine) |
+| [UB-4](#ub-4-integration-fixture-inconsistency-overlapping-csv-reference-chunks) | Integration fixtures encode mutually inconsistent references | N/A (test-data defect; validated vs live oracle) |
+| [UB-5](#ub-5-simplemode-structural-variant-split-read-requirement-var2vcf_validpl197-205) | SimpleMode SV split-read requirement (`splitreads < 1` dropped) | **Replicated** (`lib.rs:403-414, 470, 499`) |
+| [UB-6](#ub-6-mate-pair-boundary-parameter-in-mark_dup_sv-structuralvariantsprocessorjava1468) | Mate-pair boundary parameter in `mark_dup_sv` (`pe` decrement) | **Replicated** (`sv.rs:3039, 3105-3111`) |
+| [UB-7](#ub-7-multi-allelic-site-single-winner-collapsing-var2vcf_validpl135-205) | Multi-allelic site single-winner collapsing without `-A` | **Replicated** (`lib.rs:467-505`) |
 
 ---
 
@@ -37,7 +37,7 @@ downstream Perl VCF conversion receives a REF/ALT-less row at pos 0).
 → stdout contains `hard_clip_next_to_del_test2	testbed	test	0	0	…` between the
 6507-6533 and 6449-6468 rows.
 
-**Our replication stance:** replicated byte-for-byte (P8a, commit `4d113b2`;
+**Our replication stance:** replicated byte-for-byte (commit `4d113b2`;
 `postprocess/simple.rs` fallback branch keeping `Variant::new()` defaults +
 `output/table.rs`). Verified sorted-diff-empty vs live oracle on the hard_clip case.
 
@@ -64,7 +64,7 @@ defaults rather than Variant fields: genotype cell `""`
 cells `""` (`OutputVariant.java:22-23`). The resulting `.var` row carries an empty
 genotype token; downstream R/Perl consumers must special-case it.
 
-**Our replication stance:** replicated byte-for-byte (P8a; `variations/mod.rs`
+**Our replication stance:** replicated byte-for-byte (`variations/mod.rs`
 `null_record` flag + `output/table.rs` renderer). Cell-exact unit tests pin cols
 14/16/31/32 to the oracle shape (`simple_36_null_record_renders_printer_defaults`).
 
@@ -93,13 +93,13 @@ changes when upstream insertion history changes; downstream, `var2vcf_valid.pl`
 keeps only the highest-AF row per raw-start bucket and breaks exact AF ties
 first-in-stream — so WHICH allele survives a tie depends on hash layout.
 
-**Our replication stance:** **Replicated** in Task 10 (commit `d41a6f1`) via
-[`vardict_core::javamap::JavaHashMap`](file:///mnt/media_backups/VarDictRust/crates/vardict-core/src/javamap.rs).
+**Our replication stance:** **Replicated** via JavaHashMap Determinism Engine (commit `d41a6f1`) via
+[`vardict_core::javamap::JavaHashMap`](../crates/vardict-core/src/javamap.rs).
 It faithfully emulates OpenJDK 8+ `java.util.HashMap` hash-spreading (`h ^ (h >> 16)`),
 power-of-two table indexing, load factor 0.75, resize threshold doubling, and bucket
 iteration order across variant maps (`non_insertion_variants`, `insertion_variants`,
 and `aligned_variants`). This completely eliminated the single residual AF-tie at
-`chr20:20202875` on Tier-2 slice `s1a`, emitting `TA>T` before `T>A` and achieving
+`chr20:20202875` on dual-engine test slice `s1a`, emitting `TA>T` before `T>A` and achieving
 100% byte-for-byte parity (1048/1048 variants, 0 diffs). Per AGENTS.md §8, `JavaHashMap`
 is the only sanctioned non-sorted map in output-reaching paths.
 
@@ -137,9 +137,9 @@ single fasta satisfies both.
 **Our stance:** nothing to replicate in an engine — this is an upstream test-data /
 generator defect. We keep the corpus case as a documented permanent known non-bug
 (DIVERGENCES.md "Known non-bugs") and validate the underlying behavior against the
-live oracle instead (P7 dossier + P8a replication evidence). Provenance note: the
+live oracle instead (live oracle differential validation and replication evidence). Provenance note: the
 "repository's converter script" above was our unbundled copy
-`harness/convert_fastas.py` (removed in audit task A3), whose reconstruction of the
+`harness/convert_fastas.py` (removed during codebase audit), whose reconstruction of the
 CSV chunks resolved overlaps last-write-wins.
 
 **Draft issue text:**

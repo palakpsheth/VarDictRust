@@ -21,12 +21,12 @@ This document serves as the **Omnibus Master Empirical Validation Report** for t
 5. **Targeted Amplicon Panel (L861Q):** Overlapping primer assay exercising primer-bias detection (`AMPBIAS`), primer trimming, and 8-column BED parsing; 100% parity (38/40 intermediate columns).
 6. **Upstream 92-Fixture Regression Corpus:** 91 static matches + 1 known upstream CSV test fixture flaw (Class D / UB-4; 100% live oracle match across all 92 fixtures).
 7. **Human Chromosome 1 Scale Benchmark (1 Mbp to 249 Mbp):** Full-chromosome WGS demonstrating bounded $O(1)$ resident memory scaling (flat 1.39× peak RSS across a 25-fold genomic span increase) and $4.85\times$ parallel speedup.
-8. **Full-Spectrum Extended Modality Suite (Task 24g):** 9 specialized operational configurations (RNA Splicing `-i`, `<INV>`, `<DUP>`, CRISPR `-J/-j`, paired-unique `-u -UN`, `--adaptor`, `-k 0`, `-U`, `-K`); 100% byte-for-byte and strict-bytes parity (0 diffs).
-9. **Multi-Slice Multi-Modal Public Dataset Expansion Suite (Task 24h):** 18 non-overlapping slices across 6 independent public cohorts (HG005 Han Chinese, SEQC2 Exome, HG002 WGS, HG008 Somatic, NA24385 b37 deep WGS, RNA Transcriptome) spanning 9 chromosomes and 1,129 variants; 100% parity (0 diffs).
+8. **Full-Spectrum Extended Modality Suite:** 9 specialized operational configurations (RNA Splicing `-i`, `<INV>`, `<DUP>`, CRISPR `-J/-j`, paired-unique `-u -UN`, `--adaptor`, `-k 0`, `-U`, `-K`); 100% byte-for-byte and strict-bytes parity (0 diffs).
+9. **Multi-Slice Multi-Modal Public Dataset Expansion Suite:** 18 non-overlapping slices across 6 independent public cohorts (HG005 Han Chinese, SEQC2 Exome, HG002 WGS, HG008 Somatic, NA24385 b37 deep WGS, RNA Transcriptome) spanning 9 chromosomes and 1,129 variants; 100% parity (0 diffs).
 
 ### 1.1 Master Nine-Pillar Validation Scoreboard
 
-| Pillar | Benchmark / Dataset | Sequencing Assay | Genomic Region / Build | Variants Evaluated | Tier-2 Dual-Engine Parity | Physical Truth Concordance |
+| Pillar | Benchmark / Dataset | Sequencing Assay | Genomic Region / Build | Variants Evaluated | Dual-Engine Differential Parity | Physical Truth Concordance |
 | :---: | :--- | :--- | :--- | :---: | :---: | :---: |
 | **1** | **GIAB HG002 Germline** | Illumina WGS (30×) | chr20:10M–30M (GRCh38) | 227,562 | **MATCH (0 diffs)** | **EQUAL ($F_1 = 0.9699$)** |
 | **2** | **FDA SEQC2 HCC1395/BL** | Somatic WES (300×/100×)| Whole Human Exome (GRCh38) | 623,444 | **MATCH (0 diffs)** | **EQUAL (0 site diffs)** |
@@ -124,7 +124,7 @@ All biological datasets, reference genomes, and truth standards were retrieved f
 
 Differential testing evaluates the complete variant calling pipeline. End-to-end VCF and intermediate table outputs emitted by the VarDictJava v1.8.3 pipeline (`vardict-java | testsomatic.R / teststrandbias.R | var2vcf_paired.pl / var2vcf_valid.pl`) are compared against the single static binary `vardictrust` across all supported modalities:
 
-| Pillar / Benchmark | Modality | Target Region / Assay | VarDictJava Variants | VarDictRust Variants | Tier-2 Parity | Parity Conformance Details |
+| Pillar / Benchmark | Modality | Target Region / Assay | VarDictJava Variants | VarDictRust Variants | Dual-Engine Differential Parity | Parity Conformance Details |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | **Upstream Integration Corpus** | Simple, Somatic, Amplicon | 92 micro-fixtures | 91 PASS / 1 FAIL* | 91 PASS / 1 FAIL* | **100% MATCH*** | Identical intermediate `.var` tables |
 | **GIAB HG002 Germline WGS** | SimpleMode (Germline) | chr20:10M–30M (30×) | 227,562 | 227,562 | **MATCH** | 0 diffs across 20 Mbp ($\varepsilon = 10^{-6}$) |
@@ -203,7 +203,7 @@ Between **QUAL 75 and QUAL 100**, the ROC curve undergoes a massive phase transi
 
 ---
 
-## 6. Pillar 8: Full-Spectrum Extended Modality Suite (Task 24g)
+## 6. Pillar 8: Full-Spectrum Extended Modality Suite
 
 To ensure that no edge cases or operational configurations were left unexercised, VarDictRust was evaluated across **nine extended modalities** exercising previously unverified CLI flags, complex structural variants, and RNA splicing.
 
@@ -230,11 +230,11 @@ Across all 9 configurations, VarDictRust achieves **100% byte-for-byte and stric
 
 ---
 
-## 7. Pillar 9: Multi-Slice Multi-Modal Public Dataset Expansion Suite (Task 24h)
+## 7. Pillar 9: Multi-Slice Multi-Modal Public Dataset Expansion Suite
 
 To eliminate single-locus bias and validate multi-interval BED scheduling across both primary human reference assemblies (**GRCh38** and **GRCh37/b37**), VarDictRust was evaluated across **18 non-overlapping genomic slices** across **6 independent public sequencing cohorts** spanning **9 human chromosomes**.
 
-Across all 18 biological evaluations, VarDictRust achieved **18/18 Tier-2 MATCH (0 diffs, 1,129 variants evaluated)** against `VarDictJava v1.8.3` (permanently archived in [`benchmarks/evidence/multimodal-slices-tier2.json`](../../benchmarks/evidence/multimodal-slices-tier2.json); see satellite report [`docs/validation/multimodal-multislice-validation.md`](multimodal-multislice-validation.md)):
+Across all 18 biological evaluations, VarDictRust achieved **18/18 Dual-Engine Differential Parity MATCH (0 diffs, 1,129 variants evaluated)** against `VarDictJava v1.8.3` (permanently archived in [`benchmarks/evidence/multimodal-slices-tier2.json`](../../benchmarks/evidence/multimodal-slices-tier2.json); see companion report [`docs/validation/multimodal-multislice-validation.md`](multimodal-multislice-validation.md)):
 
 | Pillar | Dataset | Slice ID | Genomic Coordinates | Span | Reference | Biological Target | Primary Code Paths Stressed |
 | :--- | :--- | :---: | :--- | :---: | :--- | :--- | :--- |
@@ -450,13 +450,13 @@ if ($mapq < $MQMEAN) {
   However, mapping quality scores in SAM/BAM format are unsigned 8-bit integers ($0 \le \text{MAPQ} \le 255$). Thus, $mapq < 0$ is mathematically impossible.
   Furthermore, when $mapq < 10.0$ and `-Q` is default, upstream Perl emits `Q0` instead of `Q10` because of an upstream variable assignment quirk.
 - **Why Preserved in VarDictRust:**
-  VarDictRust faithfully emulates this exact upstream filter token mapping, ensuring that if an upstream downstream pipeline checks for `FILTER == "Q0"`, VarDictRust emits the identical token without breaking parity.
+  VarDictRust faithfully emulates this exact upstream filter token mapping, ensuring that if a downstream pipeline checks for `FILTER == "Q0"`, VarDictRust emits the identical token without breaking parity.
 
 ---
 
 ## 11. Empirical Performance & Memory Scaling
 
-All benchmarks were recorded on identical hardware (AMD Ryzen / Ubuntu 24.04 LTS, NVMe SSD) pinned to 8 CPU threads per Host Policy A3:
+All benchmarks were recorded on identical hardware (AMD Ryzen / Ubuntu 24.04 LTS, NVMe SSD) pinned to 8 CPU threads under resource limits (8 threads, nice/ionice):
 
 | Workload / Benchmark | Threads | VarDictJava Wall Time | VarDictRust Wall Time | Speedup Ratio | VarDictJava Peak RSS | VarDictRust Peak RSS | Memory Scaling Ratio |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -482,19 +482,19 @@ Every claim in this omnibus report is backed by a permanent, machine-readable ev
 
 | Evidence File | Release Fingerprint | SHA-256 Checksum | Validation Role & Scope |
 | :--- | :---: | :--- | :--- |
-| [`amplicon-tier2.json`](../../benchmarks/evidence/amplicon-tier2.json) | `7e9b1be766f73b17` | `026fbb9584b05dbf0cd3589d926620773a1897534e2f56e1ac78d3478cf02dca` | Pillar 5: Targeted amplicon panel Tier-2 differential parity (0 diffs). |
+| [`amplicon-tier2.json`](../../benchmarks/evidence/amplicon-tier2.json) | `7e9b1be766f73b17` | `026fbb9584b05dbf0cd3589d926620773a1897534e2f56e1ac78d3478cf02dca` | Pillar 5: Targeted amplicon panel dual-engine differential parity (0 diffs). |
 | [`extended-coverage-tier2.json`](../../benchmarks/evidence/extended-coverage-tier2.json) | `7e9b1be766f73b17` | `5f7da7fb4d1badfac1e959f88c92fdfb9feeab6e0201985be8c7fa897b5bc9ed` | Pillar 8: 9 extended operational modalities (RNA `-i`, SVs, flags; 0 diffs). |
-| [`hg002-tier2.json`](../../benchmarks/evidence/hg002-tier2.json) | `7e9b1be766f73b17` | `51ccc0a86a1d3ebf00b438db4dcad10ba46e90865b22f237720447d2523a3a72` | Pillar 1: GIAB HG002 20 Mbp WGS Tier-2 differential parity (0 diffs). |
+| [`hg002-tier2.json`](../../benchmarks/evidence/hg002-tier2.json) | `7e9b1be766f73b17` | `51ccc0a86a1d3ebf00b438db4dcad10ba46e90865b22f237720447d2523a3a72` | Pillar 1: GIAB HG002 20 Mbp WGS dual-engine differential parity (0 diffs). |
 | [`hg002-truth.json`](../../benchmarks/evidence/hg002-truth.json) | `7e9b1be766f73b17` | `27ab8c6f7f4f60c393aba3855d87e2a62c278fcff460cd5c1b5d251c38ca70fb` | Pillar 1: NIST v4.2.1 truth concordance (Rust vs Java EQUAL, $F_1 = 0.9699$). |
 | [`hg008-cram-twin.json`](../../benchmarks/evidence/hg008-cram-twin.json) | `7e9b1be766f73b17` | `35f59c2489a3eee425b8cb1a762387e382c11f715d568493fdced33a6b3499c4` | Pillar 4: CRAM twin decode byte parity against BAM reference. |
-| [`hg008-tier2.json`](../../benchmarks/evidence/hg008-tier2.json) | `7e9b1be766f73b17` | `4cfcec5def07d01407d9083a544758335a9ec74aeb4733cb909e041b59f40711` | Pillar 4: GIAB HG008 somatic PDAC Tier-2 differential parity (0 diffs). |
+| [`hg008-tier2.json`](../../benchmarks/evidence/hg008-tier2.json) | `7e9b1be766f73b17` | `4cfcec5def07d01407d9083a544758335a9ec74aeb4733cb909e041b59f40711` | Pillar 4: GIAB HG008 somatic PDAC dual-engine differential parity (0 diffs). |
 | [`hg008-truth.json`](../../benchmarks/evidence/hg008-truth.json) | `7e9b1be766f73b17` | `902dfa98ea45468398f3978662f0c7950ba35fc76febfa3216edc7641bcdecee` | Pillar 4: NIST Draft v0.3 somatic truth concordance (Rust vs Java EQUAL). |
 | [`multimodal-slices-tier2.json`](../../benchmarks/evidence/multimodal-slices-tier2.json) | `7e9b1be766f73b17` | `cdd2fa83d8f90f3f98aa9f86c7207d3df954735af3717f02f83f8a07670a3c22` | Pillar 9: 18 multi-slice multi-cohort evaluations across 9 chrs (0 diffs). |
 | [`musl-ci.json`](../../benchmarks/evidence/musl-ci.json) | `7e9b1be766f73b17` | `c80469faca505801c6cae0b87ca8b9d5eb9cfc555a63f2f8f24eb6d1f5749de3` | Fully static `x86_64-unknown-linux-musl` target compilation and binary certification. |
 | [`perf-budget.json`](../../benchmarks/evidence/perf-budget.json) | `7e9b1be766f73b17` | `99d024daab2da2f230b15badfdb41e12875d4e682f75892da7d734393c29d918` | 4-target performance budget verification (amplicon, HG002, SEQC2, HG008). |
 | [`scale.json`](../../benchmarks/evidence/scale.json) | `7e9b1be766f73b17` | `a8b4ec9290fea29d8efb945347fa5f78573c0e7adcfa19d2d518c29379e88aa2` | Pillar 7: Chromosome 1 (249 Mbp) bounded memory scaling & parallel speedup. |
-| [`seqc2-exome-tier2.json`](../../benchmarks/evidence/seqc2-exome-tier2.json) | `7e9b1be766f73b17` | `f4b37fcdc6d24f956462942885a98e3263d1efac6e67750a80c92b15996cff4e` | Pillar 2: SEQC2 somatic whole exome Tier-2 differential parity (0 diffs). |
-| [`seqc2-slices-tier2.json`](../../benchmarks/evidence/seqc2-slices-tier2.json) | `7e9b1be766f73b17` | `348615d4f728777924a2af2d4a64c90fe363ffb050ac281d53377b1bed7f8bb3` | Pillar 3: SEQC2 somatic multi-chromosome slices Tier-2 parity (0 diffs). |
+| [`seqc2-exome-tier2.json`](../../benchmarks/evidence/seqc2-exome-tier2.json) | `7e9b1be766f73b17` | `f4b37fcdc6d24f956462942885a98e3263d1efac6e67750a80c92b15996cff4e` | Pillar 2: SEQC2 somatic whole exome dual-engine differential parity (0 diffs). |
+| [`seqc2-slices-tier2.json`](../../benchmarks/evidence/seqc2-slices-tier2.json) | `7e9b1be766f73b17` | `348615d4f728777924a2af2d4a64c90fe363ffb050ac281d53377b1bed7f8bb3` | Pillar 3: SEQC2 somatic multi-chromosome slices dual-engine differential parity (0 diffs). |
 | [`seqc2-truth.json`](../../benchmarks/evidence/seqc2-truth.json) | `7e9b1be766f73b17` | `0bf556e8665ccad0e914ec7192470834ae2cac0f48dcb47b43b123e4d8ecdd82` | Pillar 2: SEQC2 v1.2.1 somatic truth concordance (Rust vs Java EQUAL). |
 
 ---
@@ -526,12 +526,12 @@ bash harness/compare.sh \
   SAMPLE -a 10:0.95 -th 8
 ```
 
-### 13.4 Extended Modality Suite (Pillar 8 / Task 24g)
+### 13.4 Extended Modality Suite (Pillar 8)
 ```bash
 bash harness/run_extended_coverage.sh
 ```
 
-### 13.5 Multi-Slice Multi-Modal Dataset Expansion Suite (Pillar 9 / Task 24h)
+### 13.5 Multi-Slice Multi-Modal Dataset Expansion Suite (Pillar 9)
 ```bash
 # Ingest and stream BAM slices (<3 minutes, <150 MB total disk space)
 bash harness/get_multimodal_slices.sh

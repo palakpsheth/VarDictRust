@@ -30,6 +30,11 @@ Please report vulnerabilities privately using GitHub's native Security Advisory 
 
 Reports submitted through Private Vulnerability Reporting are confidential, encrypted, and accessible only to project maintainers and the reporter until mutual coordination and disclosure.
 
+### Alternative Method: Direct Security Contact
+If GitHub Private Vulnerability Reporting is unavailable or you require direct communication with the project maintainer, report via encrypted or direct email:
+- **Security Contact:** Palak Sheth (`palakpsheth@gmail.com`)
+- **Subject Prefix:** `[SECURITY] VarDictRust Vulnerability Report`
+
 ---
 
 ## Response & Remediation SLA

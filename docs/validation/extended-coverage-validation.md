@@ -61,7 +61,7 @@ All nine configurations were evaluated against real biological sequencing data:
 
 ## 3. Empirical Output Parity Scoreboard
 
-Differential testing was executed via [`harness/run_extended_coverage.sh`](file:///mnt/media_backups/VarDictRust/harness/run_extended_coverage.sh) under host load controls (Host Policy A3: 8 threads, nice/ionice). Results are permanently archived in [`benchmarks/evidence/extended-coverage-tier2.json`](file:///mnt/media_backups/VarDictRust/benchmarks/evidence/extended-coverage-tier2.json).
+Differential testing was executed via [`harness/run_extended_coverage.sh`](../../harness/run_extended_coverage.sh) under host load controls (8 CPU threads, nice/ionice priority controls). Results are permanently archived in [`benchmarks/evidence/extended-coverage-tier2.json`](../../benchmarks/evidence/extended-coverage-tier2.json).
 
 | # | Evaluated Modality | Exact CLI Invocation | Output Format | Verified Parity Result | Discrepancy Count |
 | :-: | :--- | :--- | :---: | :---: | :---: |
@@ -165,7 +165,7 @@ if ($mapq < $MQMEAN) {
   However, mapping quality scores in SAM/BAM format are unsigned 8-bit integers ($0 \le \text{MAPQ} \le 255$). Thus, $mapq < 0$ is mathematically impossible.
   Furthermore, when $mapq < 10.0$ and `-Q` is default, upstream Perl emits `Q0` instead of `Q10` because of an upstream variable assignment quirk.
 - **Why Preserved in VarDictRust:**
-  VarDictRust faithfully emulates this exact upstream filter token mapping, ensuring that if an upstream downstream pipeline checks for `FILTER == "Q0"`, VarDictRust emits the identical token without breaking parity.
+  VarDictRust faithfully emulates this exact upstream filter token mapping, ensuring that if a downstream pipeline checks for `FILTER == "Q0"`, VarDictRust emits the identical token without breaking parity.
 
 ---
 
@@ -177,7 +177,7 @@ To independently reproduce this entire 9-modality validation suite:
 # Ensure oracle conda environment is active or installed
 bash harness/setup_oracle.sh
 
-# Run the automated extended coverage test suite (Host Policy A3: <= 8 threads)
+# Run the automated extended coverage test suite (max 8 threads)
 bash harness/run_extended_coverage.sh
 
 # Inspect the resulting evidence artifact
