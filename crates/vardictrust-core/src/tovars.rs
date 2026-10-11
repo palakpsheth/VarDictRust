@@ -1325,3 +1325,76 @@ fn matches_any_sv(s: &str) -> bool {
     }
     false
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::regions::Region;
+    use crate::types::Pos1;
+    use crate::variations::{Sv, Variation, VariationData, VariationMap};
+
+    #[test]
+    fn test_deldupvar_boundary_filtering() {
+        let mut ref_genome = Reference::new();
+        ref_genome
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 1,
+                sequence_end: 300,
+            });
+        ref_genome
+            .reference_sequences
+            .insert("chr1".to_string(), vec![b'A'; 300]);
+        ref_genome.region_sequences.push(vec![b'A'; 300]);
+
+        let chr_lengths = HashMap::from([("chr1".to_string(), 300)]);
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(100),
+            end: Pos1(200),
+            gene: "TEST".to_string(),
+            amplicon: None,
+        };
+
+        let mut var_data = VariationData::new();
+        let pos_outside = 250;
+        var_data.ref_coverage.insert(pos_outside, 20);
+
+        let mut vm = VariationMap::new();
+        vm.sv = Some(Sv {
+            r#type: "INV".to_string(),
+            pairs: 2,
+            splits: 3,
+            clusters: 1,
+        });
+        let mut v = Variation::new();
+        v.cnt = 10;
+        v.fwd = 5;
+        v.rev = 5;
+        vm.map.insert("G".to_string(), v);
+        var_data.non_insertion_variants.insert(pos_outside, vm);
+
+        // When deldupvar = false (default), SV outside region boundaries is kept
+        let mut cfg_no_del = Config::default();
+        cfg_no_del.deldupvar = false;
+        cfg_no_del.pileup = true;
+        let builder_no_del = ToVarsBuilder::new(&ref_genome, &region, &chr_lengths, &cfg_no_del);
+        let aligned_no_del = builder_no_del.build_aligned_variants(&var_data);
+        assert!(
+            aligned_no_del.contains_key(&pos_outside),
+            "Expected SV outside region to be retained when deldupvar=false"
+        );
+
+        // When deldupvar = true, SV outside region boundaries is discarded
+        let mut cfg_del = Config::default();
+        cfg_del.deldupvar = true;
+        cfg_del.pileup = true;
+        let builder_del = ToVarsBuilder::new(&ref_genome, &region, &chr_lengths, &cfg_del);
+        let aligned_del = builder_del.build_aligned_variants(&var_data);
+        assert!(
+            !aligned_del.contains_key(&pos_outside),
+            "Expected SV outside region to be filtered out when deldupvar=true"
+        );
+    }
+}

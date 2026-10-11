@@ -269,7 +269,7 @@ impl<'a> CigarModifier<'a> {
                                             this.query_qual =
                                                 this.query_qual[cigar_element..].to_vec();
                                         }
-                                        if this.config.debug_print.is_some() {
+                                        if this.config.verbose {
                                             eprintln!(
                                                 "{} at 5' is a chimeric at {} by SEED {}",
                                                 String::from_utf8_lossy(&sequence),
@@ -305,7 +305,7 @@ impl<'a> CigarModifier<'a> {
                                             this.query_seq = this.query_seq[0..start_idx].to_vec();
                                             this.query_qual =
                                                 this.query_qual[0..start_idx].to_vec();
-                                            if this.config.debug_print.is_some() {
+                                            if this.config.verbose {
                                                 eprintln!(
                                                     "{} at 3' is a chimeric at {} by SEED {}",
                                                     String::from_utf8_lossy(&sequence),

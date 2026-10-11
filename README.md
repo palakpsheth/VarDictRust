@@ -1,6 +1,7 @@
 # VarDictRust (`vardictrust`)
 
 [![CI](https://github.com/palakpsheth/VarDictRust/actions/workflows/ci.yml/badge.svg)](https://github.com/palakpsheth/VarDictRust/actions)
+[![Documentation Status](https://readthedocs.org/projects/vardictrust/badge/?version=latest)](https://vardictrust.readthedocs.io/en/latest/?badge=latest)
 [![Release](https://img.shields.io/github/v/release/palakpsheth/VarDictRust?color=blue)](https://github.com/palakpsheth/VarDictRust/releases)
 [![rewrites.bio](https://img.shields.io/badge/rewrites.bio-manifesto-blueviolet.svg)](https://rewrites.bio)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -213,7 +214,7 @@ All comparisons evaluate the full end-to-end VCF output under float tolerance $\
 | **GIAB HG008 Somatic** | SomaticMode (Tumor/Normal) | PDAC high-depth slices | 18,426 | 18,426 | **[Tier-2](docs/testing/test-matrix-and-ci-audit.md#tier-2)** | 0 diffs in somatic status |
 | **Targeted Amplicon Panel** | AmpliconMode (`-a 10:0.95`) | Overlapping primer assay | 2 | 2 | **[Tier-2](docs/testing/test-matrix-and-ci-audit.md#tier-2)** | 0 diffs with primer trimming & AMPBIAS |
 | **Chr1 Scale Benchmark** | SimpleMode (Germline) | chr1: 1 Mbp to 249 Mbp | 2,840,119 | 2,840,119 | **Level 5 Scale** | 0 diffs across whole chromosome |
-| **Extended Modalities Suite** | RNA Splicing, `<INV>`, `<DUP>`, CRISPR, Flags | 9 real biological assays | 9 PASS | 9 PASS | **[Tier-2](docs/testing/test-matrix-and-ci-audit.md#tier-2)** | 0 diffs in table & VCF strict-bytes |
+| **Extended Modalities Suite** | RNA Splicing, `<INV>`, `<DUP>`, CRISPR, Flags | 17 real biological assays | 17 PASS | 17 PASS | **[Tier-2](docs/testing/test-matrix-and-ci-audit.md#tier-2)** | 0 diffs in table & VCF strict-bytes |
 | **Multi-Modal Multi-Slice Suite** | Germline, Somatic, RNA | 18 slices across 6 datasets & 9 chromosomes | 1,129 | 1,129 | **[Tier-2](docs/testing/test-matrix-and-ci-audit.md#tier-2)** | 0 diffs across GRCh38 & GRCh37 |
 
 \* *The 91 PASS / 1 XFAIL metric reflects comparison against stale pre-computed static files in the upstream repository (`VarDictJava/testdata/integrationtestcases/`). For the single static mismatch (`hard_clip_case.fa`), the upstream fixture encodes conflicting reference chunks ([Class D / UB-4](docs/upstream-bugs.md#ub-4)). When evaluated against the live `VarDictJava v1.8.3` oracle, VarDictRust produces 100% byte-identical output (7/7 table rows, 5/5 VCF variants, 0 diffs). Thus, live oracle parity is 100% across all 92 fixtures.*
@@ -231,7 +232,7 @@ Evaluated against physical ground truth using Real Time Genomics [`rtg vcfeval`]
 | **SEQC2 HCC1395** | SEQC2 v1.2.1 Somatic Truth | High-Confidence Somatic SNV/InDel | 1,056 TP / 11,334 FP / 140 FN | F1: 0.1555 (P: 0.0852, R: 0.8842) | F1: 0.1555 (P: 0.0852, R: 0.8842) | **EQUAL** |
 | **GIAB HG008** | NIST Draft Benchmark v0.3 | Somatic Small Variants | 575 TP / 1,565 FP / 288 FN | F1: 0.3856 (P: 0.2687, R: 0.6825) | F1: 0.3856 (P: 0.2687, R: 0.6825) | **EQUAL** |
 
-*For full scientific details, reference checksums, and exact reproduction commands across all 10 public cohorts and 9 operational modalities, see the [`Omnibus Empirical Validation Report`](docs/validation/omnibus-empirical-validation.md). For the complete Seven-Level Testing Matrix and CI/CD audit, see [`docs/testing/test-matrix-and-ci-audit.md`](docs/testing/test-matrix-and-ci-audit.md).*
+*For full scientific details, reference checksums, and exact reproduction commands across all 10 public cohorts and 17 operational modalities, see the [`Omnibus Empirical Validation Report`](docs/validation/omnibus-empirical-validation.md). For the complete Seven-Level Testing Matrix and CI/CD audit, see [`docs/testing/test-matrix-and-ci-audit.md`](docs/testing/test-matrix-and-ci-audit.md).*
 
 ---
 
@@ -274,7 +275,7 @@ Flag parity with VarDictJava v1.8.3 is defined against [`CmdParser.java`](VarDic
 | `-v` | — | Accepted and ignored (never read by VarDictJava v1.8.3) | — | `parity-exempt` |
 | `-y` | `--verbose` | Verbose mode | off | `no-output` |
 | `-D` | `--debug` | Debug mode (append per-read debug columns to `.var`) | off | `corpus` |
-| — | `--DP` | Debug print destination (`OUT` or `ERR`) | — | `unexercised` |
+| — | `--DP` | Debug print destination (`OUT` or `ERR`; alias: `--defaultPrinter`) | — | `corpus` |
 
 ### 2. Coordinate & BED Column Mapping
 
@@ -283,11 +284,11 @@ Flag parity with VarDictJava v1.8.3 is defined against [`CmdParser.java`](VarDic
 | `-c` | — | BED chromosome column (1-based; default 3 for 8-col amplicon BED) | `3` | `corpus` |
 | `-S` | — | BED start column (default 7 for 8-col amplicon BED) | `7` | `corpus` |
 | `-E` | — | BED end column (default 8 for 8-col amplicon BED) | `8` | `corpus` |
-| `-s` | — | BED segment-start column | `10` (= `-S` if set) | `unexercised` |
-| `-e` | — | BED segment-end column | `11` (= `-E` if set) | `unexercised` |
+| `-s` | — | BED segment-start column | `10` (= `-S` if set) | `corpus` |
+| `-e` | — | BED segment-end column | `11` (= `-E` if set) | `corpus` |
 | `-g` | — | BED gene column | `13` | `corpus` |
 | `-z` | — | BED coordinates are 0-based half-open | off (1-based) | `corpus` |
-| `-x` | — | BED region extension (bp) | `0` | `unexercised` |
+| `-x` | — | BED region extension (bp) | `0` | `corpus` |
 | `-X` | — | Nucleotide extension | `2` | `corpus` |
 | `-Y` | — | Max region length | `1200` | `corpus` |
 
@@ -301,16 +302,16 @@ Flag parity with VarDictJava v1.8.3 is defined against [`CmdParser.java`](VarDic
 | `-Q` | — | Minimum mapping quality | — | `corpus` |
 | `-P` | — | Mean read position filter | `5` | `corpus` |
 | `-m` | — | Maximum mismatches | `8` | `corpus` |
-| `-M` | — | Min match+insertion read length (shorter reads ignored) | `0` | `unexercised` |
+| `-M` | — | Min match+insertion read length (shorter reads ignored) | `0` | `corpus` |
 | `-B` | — | Minimum reads for bias | `2` | `corpus` |
 | `-o` | — | qratio filter | `1.5` | `corpus` |
-| `-O` | — | Output MAPQ threshold | `0` | `unexercised` |
+| `-O` | — | Output MAPQ threshold | `0` | `corpus` |
 | `-F` | — | SAM flag filter | `0x504` | `corpus` |
 | `-k` | — | Local realignment 0/1 | `1` | `corpus` |
-| `-3` | — | Move indels to 3′ ([`moveIndelsTo3`](DIVERGENCES.md)) | off | `unexercised` |
+| `-3` | — | Move indels to 3′ ([`moveIndelsTo3`](DIVERGENCES.md)) | off | `corpus` |
 | `-K` | — | Include Ns in depth calculation | off | `corpus` |
 | `-p` | — | Pileup-only mode | off | `corpus` |
-| `-t` | `--dedup` | Remove duplicated reads (one pair per start position) | off | `unexercised` |
+| `-t` | `--dedup` | Remove duplicated reads (one pair per start position) | off | `corpus` |
 | `-u` | — | Unique mode: count overlapping mates once (forward read) | off | `corpus` |
 | — | `--UN` | Unique mode: count once using first read only | off | `corpus` |
 | — | `--adaptor` | Adaptor sequence(s), comma-separated, excluded from realignment | — | `corpus` |
@@ -339,7 +340,7 @@ Flag parity with VarDictJava v1.8.3 is defined against [`CmdParser.java`](VarDic
 | `-A` | — | SV minimum AF | `4` | `corpus` |
 | `-I` | — | Indel size | `50` | `corpus` |
 | — | `--chimeric` | Chimeric read handling | off | `corpus` |
-| — | `--deldupvar` | Delete/dup variant handling | off | `unexercised` |
+| — | `--deldupvar` | Delete/dup variant handling | off | `corpus` |
 
 ### 6. Performance & Concurrency
 

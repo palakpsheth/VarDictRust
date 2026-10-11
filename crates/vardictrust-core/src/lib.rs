@@ -44,6 +44,7 @@ pub mod util;
 pub mod variations;
 
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::Path;
 use types::VardictError;
 
@@ -201,6 +202,64 @@ fn run_pipeline_on_records(
     Ok(var_data)
 }
 
+/// Output destination wrapper around buffered stdout or stderr.
+/// Uses unlocked BufWriter to eliminate mutex contention with worker diagnostics
+/// while reducing syscall overhead by ~1000x for deep WGS output.
+pub enum OutputDestination {
+    Stdout(std::io::BufWriter<std::io::Stdout>),
+    Stderr(std::io::BufWriter<std::io::Stderr>),
+}
+
+impl std::io::Write for OutputDestination {
+    #[inline]
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match self {
+            Self::Stdout(w) => w.write(buf),
+            Self::Stderr(w) => w.write(buf),
+        }
+    }
+
+    #[inline]
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self {
+            Self::Stdout(w) => w.flush(),
+            Self::Stderr(w) => w.flush(),
+        }
+    }
+}
+
+const BUFFER_CAPACITY: usize = 64 * 1024; // 64 KB
+
+/// Creates the persistent buffered output writer according to `--DP` / `--defaultPrinter`.
+/// Defaults to stdout; routes to stderr when `--DP ERR` is passed (ports CmdParser.java:171-177).
+pub fn create_output_writer(config: &config::Config) -> OutputDestination {
+    if config.debug_print.as_deref() == Some("ERR") {
+        OutputDestination::Stderr(std::io::BufWriter::with_capacity(
+            BUFFER_CAPACITY,
+            std::io::stderr(),
+        ))
+    } else {
+        OutputDestination::Stdout(std::io::BufWriter::with_capacity(
+            BUFFER_CAPACITY,
+            std::io::stdout(),
+        ))
+    }
+}
+
+/// Backwards-compatible alias for existing call sites.
+pub fn get_output_writer(config: &config::Config) -> OutputDestination {
+    create_output_writer(config)
+}
+
+/// Writes a single line to the output handle, propagating I/O errors (including BrokenPipe)
+/// so parallel execution terminates promptly without spinning.
+pub fn write_output_line<W: std::io::Write>(
+    handle: &mut W,
+    line: &str,
+) -> Result<(), VardictError> {
+    writeln!(handle, "{}", line).map_err(VardictError::Io)
+}
+
 /// Main entry point for the engine. Called by the CLI binary.
 ///
 /// Takes a fully-resolved configuration and runs the variant-calling pipeline.
@@ -257,19 +316,17 @@ pub fn run(config: &config::Config) -> Result<(), VardictError> {
     let config_clone = config.clone();
     let chromosomes_lengths_clone = chromosomes_lengths.clone();
 
+    let mut writer = create_output_writer(config);
+
     // -h/--header column line (CmdParser.java:67; SimpleMode.java:33 calls
     // printHeader() before any variant output).
     if config.column_header {
-        let stdout = std::io::stdout();
-        let mut handle = stdout.lock();
-        crate::output::table::print_header(&mut handle, config).map_err(VardictError::Io)?;
+        crate::output::table::print_header(&mut writer, config).map_err(VardictError::Io)?;
     }
 
     // Print VCF header when not in intermediate mode
     if !config.emit_intermediate {
-        let stdout = std::io::stdout();
-        let mut handle = stdout.lock();
-        crate::output::vcf::print_vcf_header(&mut handle, config, &chromosomes_lengths)
+        crate::output::vcf::print_vcf_header(&mut writer, config, &chromosomes_lengths)
             .map_err(VardictError::Io)?;
     }
 
@@ -454,21 +511,17 @@ pub fn run(config: &config::Config) -> Result<(), VardictError> {
             }
         },
         |output| {
-            let stdout = std::io::stdout();
-            let mut handle = stdout.lock();
-            use std::io::Write;
-
             match output {
                 SimpleTileOutput::Lines(lines) => {
                     for line in lines {
-                        writeln!(handle, "{}", line).map_err(VardictError::Io)?;
+                        write_output_line(&mut writer, &line)?;
                     }
                 }
                 SimpleTileOutput::Vcf { chr, records } => {
                     if chr != current_chr {
                         for (_, cand) in std::mem::take(&mut pending) {
                             if !cand.ref_empty && (!cand.is_sv || cand.splitreads >= 1) {
-                                writeln!(handle, "{}", cand.vcf_line).map_err(VardictError::Io)?;
+                                write_output_line(&mut writer, &cand.vcf_line)?;
                             }
                         }
                         current_chr = chr;
@@ -492,14 +545,12 @@ pub fn run(config: &config::Config) -> Result<(), VardictError> {
         },
     )?;
 
-    let stdout = std::io::stdout();
-    let mut handle = stdout.lock();
-    use std::io::Write;
     for (_, cand) in pending {
         if !cand.ref_empty && (!cand.is_sv || cand.splitreads >= 1) {
-            writeln!(handle, "{}", cand.vcf_line).map_err(VardictError::Io)?;
+            write_output_line(&mut writer, &cand.vcf_line)?;
         }
     }
+    writer.flush().map_err(VardictError::Io)?;
 
     Ok(())
 }
@@ -574,19 +625,17 @@ fn run_amplicon(
         .next()
         .ok_or_else(|| VardictError::Parse("No BAM files specified".to_string()))?;
 
+    let mut writer = create_output_writer(config);
+
     // -h/--header column line (AmpliconMode.java:39, 135-146).
     if config.column_header {
-        let stdout = std::io::stdout();
-        let mut handle = stdout.lock();
-        crate::output::table::print_header(&mut handle, config).map_err(VardictError::Io)?;
+        crate::output::table::print_header(&mut writer, config).map_err(VardictError::Io)?;
     }
 
     // Print VCF header once when not in intermediate mode (same var2vcf_valid.pl
     // header as simple mode — amplicon rides the same writer, perl :140-145).
     if !config.emit_intermediate {
-        let stdout = std::io::stdout();
-        let mut handle = stdout.lock();
-        crate::output::vcf::print_vcf_header(&mut handle, config, chromosomes_lengths)
+        crate::output::vcf::print_vcf_header(&mut writer, config, chromosomes_lengths)
             .map_err(VardictError::Io)?;
     }
 
@@ -641,7 +690,7 @@ fn run_amplicon(
                         config.debug,
                     )
                 };
-                println!("{}", line);
+                write_output_line(&mut writer, &line)?;
             } else {
                 // VCF mode: same writer as simple mode (var2vcf_valid.pl), with the
                 // amplicon columns (37-40) selecting $isamp behavior (:145).
@@ -674,10 +723,12 @@ fn run_amplicon(
                     &oddratio_str,
                     amp,
                 );
-                println!("{}", record);
+                write_output_line(&mut writer, &record)?;
             }
         }
     }
+
+    writer.flush().map_err(VardictError::Io)?;
 
     Ok(())
 }
@@ -729,18 +780,16 @@ fn run_somatic(config: &config::Config) -> Result<(), VardictError> {
     let bam1_path_for_combine = bam1_path.clone();
     let bam2_path_for_combine = bam2_path.clone();
 
+    let mut writer = create_output_writer(config);
+
     // -h/--header column line (SomaticMode.java:35, 134-150).
     if config.column_header {
-        let stdout = std::io::stdout();
-        let mut handle = stdout.lock();
-        crate::output::table::print_header(&mut handle, config).map_err(VardictError::Io)?;
+        crate::output::table::print_header(&mut writer, config).map_err(VardictError::Io)?;
     }
 
     // Paired VCF header when not in intermediate mode
     if !config.emit_intermediate {
-        let stdout = std::io::stdout();
-        let mut handle = stdout.lock();
-        crate::output::vcf::print_paired_vcf_header(&mut handle, config, &chromosomes_lengths)
+        crate::output::vcf::print_paired_vcf_header(&mut writer, config, &chromosomes_lengths)
             .map_err(VardictError::Io)?;
     }
 
@@ -935,16 +984,15 @@ fn run_somatic(config: &config::Config) -> Result<(), VardictError> {
             }
             Ok(lines)
         },
-        move |lines| {
-            let stdout = std::io::stdout();
-            let mut handle = stdout.lock();
-            use std::io::Write;
+        |lines| {
             for line in lines {
-                writeln!(handle, "{}", line).map_err(VardictError::Io)?;
+                write_output_line(&mut writer, &line)?;
             }
             Ok(())
         },
     )?;
+
+    writer.flush().map_err(VardictError::Io)?;
 
     Ok(())
 }

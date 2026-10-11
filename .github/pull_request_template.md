@@ -21,6 +21,7 @@
 
 ## Mandatory PR Regression Suite Checklist
 All checks must pass before PR approval. Run locally via `bash harness/pr_check.sh`:
+Docs/infra-only PRs whose diff touches none of `*.rs`, `Cargo.toml`/`Cargo.lock`, `crates/`, `harness/` may mark engine boxes below N/A with a one-line justification instead.
 - [ ] **Unit & Workspace Tests ([Level 1](../docs/testing/test-matrix-and-ci-audit.md#level-1)):** `cargo test --workspace` passes with zero failures.
 - [ ] **Integration Corpus ([Level 2 / Tier-1](../docs/testing/test-matrix-and-ci-audit.md#level-2)):** `harness/run_integration.sh` reports `PASS: 91  XFAIL: 1  FAIL: 0  SKIP: 0  XPASS: 0` (UB-4 upstream fixture defect; 100% live oracle parity).
 - [ ] **Crash Robustness Suite ([Level 2](../docs/testing/test-matrix-and-ci-audit.md#level-2)):** `cargo test -p vardictrust --test robustness` passes (Hostile CIGAR [PR #402](https://github.com/AstraZeneca-NGS/VarDictJava/pull/402), missing BAI [#187](https://github.com/AstraZeneca-NGS/VarDictJava/issues/187)).
