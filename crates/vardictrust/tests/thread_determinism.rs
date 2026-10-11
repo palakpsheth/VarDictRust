@@ -65,6 +65,7 @@ fn vcf_output_byte_identical_across_thread_counts() {
         recs.extend(snv_pair(pos));
     }
     recs.extend(insertion_pair(600));
+    recs.sort_by_key(|r| r.alignment_start());
     let bam = dir.path().join("det.bam");
     indexed_bam(&bam, "chr1", 2000, &recs).unwrap();
 

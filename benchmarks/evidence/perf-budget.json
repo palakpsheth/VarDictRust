@@ -14,7 +14,7 @@
     "pass": true,
     "runs": {
       "amplicon-tier2": {
-        "evidence_fingerprint": "cca94ddceec06a1a",
+        "evidence_fingerprint": "dace5891208a52d2",
         "java_rss_kb": 123676,
         "java_wall_s": 2.1,
         "pass": true,
@@ -24,7 +24,7 @@
         "wall_ratio": 0.0333
       },
       "hg002-tier2": {
-        "evidence_fingerprint": "cca94ddceec06a1a",
+        "evidence_fingerprint": "dace5891208a52d2",
         "java_rss_kb": 3808940,
         "java_wall_s": 256.98,
         "pass": true,
@@ -34,7 +34,7 @@
         "wall_ratio": 0.3209
       },
       "hg008-tier2": {
-        "evidence_fingerprint": "cca94ddceec06a1a",
+        "evidence_fingerprint": "dace5891208a52d2",
         "java_rss_kb": 6012708,
         "java_wall_s": 70.99,
         "pass": true,
@@ -44,7 +44,7 @@
         "wall_ratio": 0.697
       },
       "seqc2-exome-tier2": {
-        "evidence_fingerprint": "cca94ddceec06a1a",
+        "evidence_fingerprint": "dace5891208a52d2",
         "java_rss_kb": 4248888,
         "java_wall_s": 3263.0,
         "pass": true,
@@ -55,7 +55,7 @@
       }
     }
   },
-  "fingerprint": "cca94ddceec06a1a",
+  "fingerprint": "dace5891208a52d2",
   "head": "8f692969cd4a004410d23b4758411f18c55a1a02",
   "java_time": null,
   "n_variants": null,

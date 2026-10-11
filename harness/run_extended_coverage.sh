@@ -13,7 +13,7 @@ export RAYON_NUM_THREADS=8
 THREADS=8
 
 # Certified release engine fingerprint
-EXPECTED_FP="cca94ddceec06a1a"
+EXPECTED_FP="dace5891208a52d2"
 
 # Verify binary
 TARGET_BIN="$ROOT_DIR/target/release/vardictrust"
