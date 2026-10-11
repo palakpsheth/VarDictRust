@@ -9,9 +9,9 @@
 
 ### Validation
 - **[Omnibus Validation](https://github.com/palakpsheth/VarDictRust/blob/main/docs/validation/omnibus-empirical-validation.md)**
-- **[GIAB HG002 Benchmark](https://github.com/palakpsheth/VarDictRust/blob/main/docs/validation/nist-v4.2.1-hg002-benchmark.md)**
-- **[Extended Modalities](https://github.com/palakpsheth/VarDictRust/blob/main/docs/validation/extended-coverage-validation.md)**
-- **[Multi-Modal Slices](https://github.com/palakpsheth/VarDictRust/blob/main/docs/validation/multimodal-multislice-validation.md)**
+- **[HG002 Benchmark](https://github.com/palakpsheth/VarDictRust/blob/main/docs/validation/omnibus-empirical-validation.md#2-pillar-1-full-nist-v421-hg002-benchmark-evaluation)**
+- **[Extended Modalities](https://github.com/palakpsheth/VarDictRust/blob/main/docs/validation/omnibus-empirical-validation.md#8-pillar-8-extended-caller-modality-parity-suite-9-modes)**
+- **[Multi-Modal Slices](https://github.com/palakpsheth/VarDictRust/blob/main/docs/validation/omnibus-empirical-validation.md#9-pillar-9-multi-modal-multi-slice-parity-expansion-18-slices-across-6-cohorts)**
 
 ---
 

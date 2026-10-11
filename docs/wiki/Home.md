@@ -14,10 +14,10 @@ VarDictRust is an idiomatic Rust rewrite of **VarDictJava v1.8.3** (a somatic an
 - **[Contributing Guidelines](https://github.com/palakpsheth/VarDictRust/blob/main/CONTRIBUTING.md)** — Development prerequisites, code style, and test harnesses.
 
 ### 2. Empirical Validation & Parity
-- **[Omnibus Empirical Validation](https://github.com/palakpsheth/VarDictRust/blob/main/docs/validation/omnibus-empirical-validation.md)** — Comprehensive validation suite across GIAB HG002, SEQC2 HCC1395, and 92 integration fixtures.
-- **[NIST v4.2.1 HG002 Benchmark](https://github.com/palakpsheth/VarDictRust/blob/main/docs/validation/nist-v4.2.1-hg002-benchmark.md)** — Precision, recall, and F1 concordance benchmarks evaluated with RTG `vcfeval`.
-- **[Extended Modality Validation](https://github.com/palakpsheth/VarDictRust/blob/main/docs/validation/extended-coverage-validation.md)** — RNA-seq, ultra-deep amplicon, WGS, and edge-case parity evidence.
-- **[Multi-Modal Multi-Slice Validation](https://github.com/palakpsheth/VarDictRust/blob/main/docs/validation/multimodal-multislice-validation.md)** — Cross-dataset concordance on HG005, NA24385 (b37), and NA12878.
+- **[Omnibus Empirical Validation](https://github.com/palakpsheth/VarDictRust/blob/main/docs/validation/omnibus-empirical-validation.md)** — Comprehensive 9-pillar validation manuscript covering the Master 10-Cohort Roster, NIST v4.2.1 HG002 benchmark, 9 extended modalities, and 18 multi-modal slices.
+- **[Ground Truth Concordance](https://github.com/palakpsheth/VarDictRust/blob/main/docs/validation/omnibus-empirical-validation.md#2-pillar-1-full-nist-v421-hg002-benchmark-evaluation)** — Precision, recall, and F1 concordance benchmarks evaluated with RTG `vcfeval` (HG002, HG005, NA24385 b37, HG008, SEQC2).
+- **[Extended Modalities & SVs](https://github.com/palakpsheth/VarDictRust/blob/main/docs/validation/omnibus-empirical-validation.md#8-pillar-8-extended-caller-modality-parity-suite-9-modes)** — RNA-seq splicing, CRISPR, `<INV>`, `<DUP>`, and operational flags.
+- **[Multi-Modal Public Cohorts](https://github.com/palakpsheth/VarDictRust/blob/main/docs/validation/omnibus-empirical-validation.md#9-pillar-9-multi-modal-multi-slice-parity-expansion-18-slices-across-6-cohorts)** — 18 slices across 6 public sequencing cohorts (HG005, NA24385 b37, NA12878, COLO829, HCC2218, SEQC2).
 
 ### 3. Architecture & Methodology
 - **[Divergences & Bug Tracking](https://github.com/palakpsheth/VarDictRust/blob/main/DIVERGENCES.md)** — Categorized audit of VarDictJava quirks, edge cases, and deterministic HashMap emulation.

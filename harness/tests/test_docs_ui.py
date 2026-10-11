@@ -154,6 +154,39 @@ class TestMarkdownStaticHygiene(unittest.TestCase):
             + "\n".join(f"  - {e}" for e in escaping_errors)
         )
 
+    def test_katex_math_hygiene(self):
+        """Verify that markdown files do not contain unescaped underscores in \\text{} or malformed math."""
+        md_files = find_all_markdown_files()
+        math_errors = []
+
+        # Pattern: \text{..._...} where _ is not escaped with backslash
+        text_underscore_pattern = re.compile(r"\\text\{[^}]*(?<!\\)_[^}]*\}")
+
+        for md_path in md_files:
+            rel_path = md_path.relative_to(REPO_ROOT)
+            with open(md_path, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+
+            in_code_block = False
+            for idx, line in enumerate(lines, 1):
+                stripped = line.strip()
+                if stripped.startswith("```"):
+                    in_code_block = not in_code_block
+                    continue
+                if in_code_block:
+                    continue
+
+                for m in text_underscore_pattern.finditer(line):
+                    math_errors.append(
+                        f"{rel_path}:{idx}: unescaped underscore in '{m.group(0)}' "
+                        "(causes KaTeX ParseError: '_' allowed only in math mode; use hyphens or \\_)"
+                    )
+
+        self.assertEqual(
+            math_errors, [],
+            "KaTeX math formatting errors found:\n" + "\n".join(f"  - {e}" for e in math_errors)
+        )
+
 
 class TestPlaywrightBrowserRendering(unittest.TestCase):
     """Render documents with Playwright headless Chromium to verify real browser DOM layout."""
@@ -299,6 +332,73 @@ code {{ font-family: monospace; background-color: rgba(175, 184, 193, 0.2); padd
 
             tables = page.query_selector_all("table")
             self.assertGreaterEqual(len(tables), 1, "README.md should render empirical benchmark table.")
+
+            browser.close()
+
+    def test_omnibus_validation_rendering_and_katex(self):
+        """Verify omnibus-empirical-validation.md renders cleanly with zero KaTeX errors."""
+        omnibus_path = REPO_ROOT / "docs" / "validation" / "omnibus-empirical-validation.md"
+        with open(omnibus_path, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        # Render first 25KB covering executive summary, master roster, NIST ROC math, and derivations
+        sample_content = content[:25000]
+        rendered_html = self._render_gfm_html(sample_content)
+
+        page_content = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>VarDictRust Omnibus Validation</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.css">
+<style>
+body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; padding: 24px; }}
+table {{ border-collapse: collapse; width: 100%; margin: 16px 0; }}
+th, td {{ border: 1px solid #d0d7de; padding: 6px 13px; text-align: left; }}
+th {{ background-color: #f6f8fa; }}
+.katex-error {{ color: #cf222e; background-color: #ffebe9; padding: 2px 4px; border: 1px solid #cf222e; }}
+</style>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/contrib/auto-render.min.js"
+        onload="renderMathInElement(document.body, {{delimiters: [{{left: '$$', right: '$$', display: true}}, {{left: '$', right: '$', display: false}}], throwOnError: false}});"></script>
+</head>
+<body>
+{rendered_html}
+</body>
+</html>
+"""
+
+        with self.sync_playwright_fn() as p:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page()
+            page.set_content(page_content)
+
+            # Wait for KaTeX auto-render to process math
+            try:
+                page.wait_for_selector(".katex", timeout=5000)
+            except Exception:
+                pass
+
+            # 1. Assert zero KaTeX parse error boxes
+            katex_errors = page.query_selector_all(".katex-error")
+            error_texts = [e.inner_text().strip() for e in katex_errors]
+            self.assertEqual(
+                error_texts, [],
+                f"KaTeX parse error boxes detected in rendered DOM: {error_texts}"
+            )
+
+            # 2. Assert no KaTeX underscore error in page text
+            content_html = page.content()
+            self.assertNotIn("allowed only in math mode", content_html)
+
+            # 3. Assert math elements were rendered
+            katex_nodes = page.query_selector_all(".katex")
+            self.assertGreater(len(katex_nodes), 5, "Should render mathematical expressions via KaTeX.")
+
+            # 4. Save verification screenshot
+            screenshot_path = "/tmp/omnibus_consolidated_browser_rendered.png"
+            page.screenshot(path=screenshot_path, full_page=True)
+            self.assertTrue(os.path.exists(screenshot_path))
 
             browser.close()
 
