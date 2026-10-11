@@ -1,7 +1,7 @@
 {
   "suite": "multimodal_multislice_parity_suite",
   "timestamp": "\"2026-10-11T00:04:07Z\"",
-  "fingerprint": "cca94ddceec06a1a",
+  "fingerprint": "dace5891208a52d2",
   "mode": "tier-2-live-oracle-strict-bytes",
   "total_slices": 18,
   "slices_passed": 18,

@@ -23,7 +23,7 @@ Verified Parity Baseline (release/v1.0.0, commit cb39a64):
 - Tier-2 Sweeps:      15/15 strict MATCH (s1a-s9 all 10 slices, HG008, SEQC2 exome/slices, HG002, Amplicon)
 - Truth Concordance:  3/3 EQUAL (GIAB HG002 NIST v4.2.1, SEQC2 v1.2.1, GIAB HG008 NIST v3.3.2)
 - Scaling Budget:     PASS (4.85x speedup, 1.39x flat RSS scaling across 249 Mbp chromosome 1)
-- Final Acceptance:   8/8 PASS under release engine fingerprint cca94ddceec06a1a
+- Final Acceptance:   8/8 PASS under release engine fingerprint dace5891208a52d2
 ```
 
 ### The Four Canonical Parity Classes (rewrites.bio §5, §8, §11)

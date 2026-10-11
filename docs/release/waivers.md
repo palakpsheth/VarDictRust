@@ -3,7 +3,7 @@
 **Authoritative Waiver & Exception Registry**  
 **Governing Standard:** [rewrites.bio](https://rewrites.bio) Manifesto (§0 Evidence Before Completion, §0b Integrity — Never Fake a Pass)  
 **Target Release:** VarDictRust v1.0.0 (`release/v1.0.0`)  
-**Certified Release Engine Fingerprint:** `cca94ddceec06a1a`  
+**Certified Release Engine Fingerprint:** `dace5891208a52d2`  
 **Repository:** [https://github.com/palakpsheth/VarDictRust](https://github.com/palakpsheth/VarDictRust)  
 **Author / Maintainer:** Palak Sheth <palakpsheth@gmail.com>  
 
@@ -21,7 +21,7 @@ VarDictRust enforces an uncompromised verification contract under the **rewrites
 
 ## 2. Release Acceptance Gate Audit Log
 
-The table below catalogs the certification status across all 8 verification items under engine fingerprint `cca94ddceec06a1a`:
+The table below catalogs the certification status across all 8 verification items under engine fingerprint `dace5891208a52d2`:
 
 | Gate Item | Architectural Level / Verification Scope | Certified Status | Waiver Required? | Disposition / Proof Reference |
 | :---: | :--- | :---: | :---: | :--- |
