@@ -2,13 +2,15 @@
 
 This directory houses the performance evidence, execution logs, benchmark drivers, and environment specifications for **VarDictRust v1.0.0**.
 
+Every benchmark claim is backed by a verifiable, machine-readable evidence artifact in [`benchmarks/evidence/`](evidence/), bound to the certified release engine fingerprint `c6ed06c2f99edd34`. For complete statistical analyses, biological cohort descriptions, and methodology, see the [Omnibus Empirical Validation Report](../docs/validation/omnibus-empirical-validation.md) and the [Master Test Matrix](../docs/testing/test-matrix-and-ci-audit.md).
+
 ---
 
 ## 1. Pinned Hardware & Host Environment
 
-All release benchmarks were executed under strict host constraints:
+All release benchmarks were executed under standardized host constraints:
 - **CPU:** AMD Ryzen (Linux x86_64, Ubuntu 24.04 LTS).
-- **Concurrency:** Pinned to **8 CPU threads** (`-th 8`).
+- **Concurrency:** Normalized to **8 CPU threads** (`-th 8`) as a standard multi-tenant cluster baseline (not an engine scaling ceiling).
 - **Storage:** Local NVMe SSD.
 - **Toolchain:** Rust 1.96.0 (`x86_64-unknown-linux-musl` and `x86_64-unknown-linux-gnu`), OpenJDK 25.0.2 / OpenJDK 8 for oracle (`vardict-oracle`).
 
@@ -32,7 +34,30 @@ python3 harness/perf_budget.py hg008-tier2 seqc2-exome-tier2 hg002-tier2 amplico
 
 ---
 
-## 3. Whole Chromosome 1 Scaling & Flat Memory Footprint
+## 3. Master Evidence Ledger (16 Release Artifacts)
+
+| Workload / Target | Evidence Artifact | Verification Tier | Scope / Modality | Output Metric | Result |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **GIAB HG002 Germline** | [`hg002-tier2.json`](evidence/hg002-tier2.json) | [Tier-2](../docs/testing/test-matrix-and-ci-audit.md#tier-2) Differential | chr20 (10–30 Mbp, 30×) | 227,562 variants | **MATCH** (0 diffs) |
+| **GIAB HG002 Truth** | [`hg002-truth.json`](evidence/hg002-truth.json) | [Tier-3](../docs/testing/test-matrix-and-ci-audit.md#tier-3) Concordance | NIST v4.2.1 High-Confidence | $F_1 = 0.9699$ | **EQUAL** |
+| **SEQC2 Somatic Exome** | [`seqc2-exome-tier2.json`](evidence/seqc2-exome-tier2.json) | [Tier-2](../docs/testing/test-matrix-and-ci-audit.md#tier-2) Differential | HCC1395 / HCC1395BL Somatic | 623,444 variants | **MATCH** (0 diffs) |
+| **SEQC2 Somatic Truth** | [`seqc2-truth.json`](evidence/seqc2-truth.json) | [Tier-3](../docs/testing/test-matrix-and-ci-audit.md#tier-3) Concordance | SEQC2 v1.2.1 Somatic Truth | $F_1 = 0.1555$ | **EQUAL** (0 site diffs) |
+| **SEQC2 Somatic Slices** | [`seqc2-slices-tier2.json`](evidence/seqc2-slices-tier2.json) | [Tier-2](../docs/testing/test-matrix-and-ci-audit.md#tier-2) Differential | Multi-Chr Slices (chr1–21) | 4,151 variants | **MATCH** (0 diffs) |
+| **GIAB HG008 Somatic PDAC** | [`hg008-tier2.json`](evidence/hg008-tier2.json) | [Tier-2](../docs/testing/test-matrix-and-ci-audit.md#tier-2) Differential | Tumor/Normal WGS 60×/40× | 18,426 variants | **MATCH** (0 diffs) |
+| **GIAB HG008 CRAM Twin** | [`hg008-cram-twin.json`](evidence/hg008-cram-twin.json) | [Tier-2](../docs/testing/test-matrix-and-ci-audit.md#tier-2) Differential | CRAM vs BAM Reference Decode | Bitwise identity | **MATCH** (0 diffs) |
+| **GIAB HG008 Truth** | [`hg008-truth.json`](evidence/hg008-truth.json) | [Tier-3](../docs/testing/test-matrix-and-ci-audit.md#tier-3) Concordance | NIST Draft v0.3 Somatic Truth | $F_1 = 0.3856$ | **EQUAL** |
+| **Targeted Amplicon Panel** | [`amplicon-tier2.json`](evidence/amplicon-tier2.json) | [Tier-2](../docs/testing/test-matrix-and-ci-audit.md#tier-2) Differential | Primer-trimmed panel (`-a`) | 2 variants | **MATCH** (0 diffs) |
+| **GIAB HG005 Truth** | [`hg005-truth.json`](evidence/hg005-truth.json) | [Tier-3](../docs/testing/test-matrix-and-ci-audit.md#tier-3) Concordance | NIST v4.2.1 Han Chinese WGS | $F_1 = 0.9667$ | **EQUAL** |
+| **GIAB NA24385 b37 Truth** | [`na24385-b37-truth.json`](evidence/na24385-b37-truth.json) | [Tier-3](../docs/testing/test-matrix-and-ci-audit.md#tier-3) Concordance | NIST v4.2.1 Ashkenazi Son b37 | $F_1 = 1.0000$ | **EQUAL** |
+| **Extended Modalities** | [`extended-coverage-tier2.json`](evidence/extended-coverage-tier2.json) | [Tier-2](../docs/testing/test-matrix-and-ci-audit.md#tier-2) Differential | 17 Modes (RNA `-i`, SVs, flags) | 4,993 variants | **MATCH** (0 diffs) |
+| **Multi-Modal Slices** | [`multimodal-slices-tier2.json`](evidence/multimodal-slices-tier2.json) | [Tier-2](../docs/testing/test-matrix-and-ci-audit.md#tier-2) Differential | 18 Slices across 6 Cohorts | 1,129 variants | **MATCH** (0 diffs) |
+| **Chromosome 1 Scaling** | [`scale.json`](evidence/scale.json) | [Tier-2](../docs/testing/test-matrix-and-ci-audit.md#tier-2) Scaling | Full chr1 Span (249 Mbp) | $S_8 = 4.85\times$, RSS 1.39× | **PASS** |
+| **Performance Budget** | [`perf-budget.json`](evidence/perf-budget.json) | Regression Gate | 4 Target Workload Regression | Wall/RAM gates | **PASS** |
+| **Musl CI Packaging** | [`musl-ci.json`](evidence/musl-ci.json) | Release Gate | Static PIE Linux Packaging | Bitwise identity | **PASS** |
+
+---
+
+## 4. Whole Chromosome 1 Scaling & Flat Memory Footprint
 
 Evaluated via `harness/scale_bench.sh` on HCC1395 across all 248,956,422 bp of chromosome 1.
 
@@ -56,12 +81,18 @@ Evaluated via `harness/scale_bench.sh` on HCC1395 across all 248,956,422 bp of c
 
 ### Reproduction Command:
 ```bash
-bash harness/scale_bench.sh scratch/g4/ref/d1vd1/GRCh38.d1.vd1.fa scratch/g4/seqc2/HCC1395.bam scratch/g4/seqc2/exome.engine.bed HCC1395 scratch/g4/scale
+DATA_DIR="${DATA_DIR:-scratch/g4}"
+bash harness/scale_bench.sh \
+  "${DATA_DIR}/ref/d1vd1/GRCh38.d1.vd1.fa" \
+  "${DATA_DIR}/seqc2/HCC1395.bam" \
+  "${DATA_DIR}/seqc2/exome.engine.bed" \
+  HCC1395 \
+  "${DATA_DIR}/scale"
 ```
 
 ---
 
-## 4. Multi-Thread Determinism
+## 5. Multi-Thread Determinism
 
 Guarantees bitwise-identical VCF records across varying worker thread allocations (1, 2, 4, 8 threads).
 
@@ -71,7 +102,7 @@ cargo test -p vardictrust --test thread_determinism
 
 ---
 
-## 5. Micro-Benchmarks (Criterion)
+## 6. Micro-Benchmarks (Criterion)
 
 In-memory pileup and realignment micro-benchmarks (`crates/vardictrust-core/benches/engine.rs`).
 
@@ -87,7 +118,7 @@ cargo bench --no-run   # Compile-only gate
 
 ---
 
-## 6. Dataset Provenance & Asset Acquisition
+## 7. Dataset Provenance & Asset Acquisition
 
 All external genomic benchmark assets are tracked in `harness/assets.tsv` and recorded upon download in `benchmarks/MANIFEST`:
 

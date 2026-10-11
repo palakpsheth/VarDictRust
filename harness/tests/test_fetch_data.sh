@@ -49,7 +49,7 @@ test_md5=$(md5sum "$TMPDIR/src/testfile.txt" | cut -d' ' -f1)
 cat << EOF > "$TMPDIR/test_assets.tsv"
 # group	name	url	md5	dest
 testgrp	test1	file://$TMPDIR/src/testfile.txt	$test_md5	test/file1.txt
-testgrp	test2	file://$TMPDIR/src/testfile.txt	-	test/file2.txt
+dashgrp	dash1	file://$TMPDIR/src/testfile.txt	-	test/dash.txt
 badgrp	bad1	file://$TMPDIR/src/testfile.txt	00000000000000000000000000000000	test/bad.txt
 EOF
 
@@ -59,19 +59,26 @@ DATA_DIR="$TMPDIR/data" MANIFEST="$TMPDIR/benchmarks/MANIFEST" ASSETS_TSV="$TMPD
 
 [ -f "$TMPDIR/data/test/file1.txt" ] || { echo "FAIL: file1.txt not fetched" >&2; exit 1; }
 [ -f "$TMPDIR/data/test/file1.txt.done" ] || { echo "FAIL: file1.txt.done missing" >&2; exit 1; }
-[ -f "$TMPDIR/data/test/file2.txt" ] || { echo "FAIL: file2.txt not fetched" >&2; exit 1; }
-[ -f "$TMPDIR/data/test/file2.txt.done" ] || { echo "FAIL: file2.txt.done missing" >&2; exit 1; }
 
 # Check MANIFEST
 manifest_lines=$(grep -v '^#' "$TMPDIR/benchmarks/MANIFEST" | wc -l)
-[ "$manifest_lines" -eq 2 ] || { echo "FAIL: expected 2 lines in manifest, got $manifest_lines" >&2; exit 1; }
+[ "$manifest_lines" -eq 1 ] || { echo "FAIL: expected 1 line in manifest, got $manifest_lines" >&2; exit 1; }
 
 # Idempotency test: run again, should print 'have:' and not add new manifest lines
 out_second=$(DATA_DIR="$TMPDIR/data" MANIFEST="$TMPDIR/benchmarks/MANIFEST" ASSETS_TSV="$TMPDIR/test_assets.tsv" \
   bash harness/fetch_data.sh testgrp)
 echo "$out_second" | grep -q "have: test1" || { echo "FAIL: second run did not report have: test1" >&2; exit 1; }
 manifest_lines_after=$(grep -v '^#' "$TMPDIR/benchmarks/MANIFEST" | wc -l)
-[ "$manifest_lines_after" -eq 2 ] || { echo "FAIL: second run modified manifest" >&2; exit 1; }
+[ "$manifest_lines_after" -eq 1 ] || { echo "FAIL: second run modified manifest" >&2; exit 1; }
+
+# Dash md5 test: should fail
+set +e
+DATA_DIR="$TMPDIR/data" MANIFEST="$TMPDIR/benchmarks/MANIFEST" ASSETS_TSV="$TMPDIR/test_assets.tsv" \
+  bash harness/fetch_data.sh dashgrp >/dev/null 2>&1
+rc_dash=$?
+set -e
+[ "$rc_dash" -ne 0 ] || { echo "FAIL: dash md5 should have failed" >&2; exit 1; }
+[ ! -f "$TMPDIR/data/test/dash.txt.done" ] || { echo "FAIL: dash md5 should not create .done file" >&2; exit 1; }
 
 # Bad md5 test: should fail
 set +e

@@ -1,33 +1,38 @@
-### [VarDictRust](https://github.com/palakpsheth/VarDictRust)
+### [VarDictRust](Home.md)
 
-- **[Home](Home)**
-- **[README](https://github.com/palakpsheth/VarDictRust#readme)**
-- **[Installation](https://github.com/palakpsheth/VarDictRust#installation)**
-- **[Contributing](https://github.com/palakpsheth/VarDictRust/blob/main/CONTRIBUTING.md)**
-
----
-
-### Validation
-- **[Omnibus Validation](https://github.com/palakpsheth/VarDictRust/blob/main/docs/validation/omnibus-empirical-validation.md)**
-- **[HG002 Benchmark](https://github.com/palakpsheth/VarDictRust/blob/main/docs/validation/omnibus-empirical-validation.md#2-pillar-1-full-nist-v421-hg002-benchmark-evaluation)**
-- **[Extended Modalities](https://github.com/palakpsheth/VarDictRust/blob/main/docs/validation/omnibus-empirical-validation.md#8-pillar-8-extended-caller-modality-parity-suite-9-modes)**
-- **[Multi-Modal Slices](https://github.com/palakpsheth/VarDictRust/blob/main/docs/validation/omnibus-empirical-validation.md#9-pillar-9-multi-modal-multi-slice-parity-expansion-18-slices-across-6-cohorts)**
+- **[Home](Home.md)**
+- **[README](../README.md)**
+- **[Installation](../README.md#installation)**
+- **[Usage Recipes](../README.md#usage-recipes)**
+- **[CLI Reference](../README.md#cli-parameter-reference)**
+- **[Contributing](../CONTRIBUTING.md)**
 
 ---
 
-### Architecture
-- **[Divergences](https://github.com/palakpsheth/VarDictRust/blob/main/DIVERGENCES.md)**
-- **[Upstream Bugs](https://github.com/palakpsheth/VarDictRust/blob/main/docs/upstream-bugs.md)**
-- **[Ecosystem Survey](https://github.com/palakpsheth/VarDictRust/blob/main/docs/ecosystem-survey.md)**
+### Validation & Benchmarks
+- **[Omnibus Validation](../docs/validation/omnibus-empirical-validation.md)**
+- **[Truth Concordance](../docs/validation/omnibus-empirical-validation.md#pillar-1)**
+- **[Extended Modalities](../docs/validation/omnibus-empirical-validation.md#pillar-8)**
+- **[Multi-Modal Slices](../docs/validation/omnibus-empirical-validation.md#pillar-9)**
+- **[Benchmark Ledger](../benchmarks/README.md)**
 
 ---
 
-### Testing & QA
-- **[Test Matrix & CI](https://github.com/palakpsheth/VarDictRust/blob/main/docs/testing/test-matrix-and-ci-audit.md)**
-- **[Release Waivers](https://github.com/palakpsheth/VarDictRust/blob/main/docs/release/waivers.md)**
-- **[v1.0.0 Release PR](https://github.com/palakpsheth/VarDictRust/blob/main/docs/release/v1.0.0-pr.md)**
+### Architecture & Design
+- **[Divergences Ledger](../DIVERGENCES.md)**
+- **[Upstream Bugs](../docs/upstream-bugs.md)**
+- **[Ecosystem Survey](../docs/ecosystem-survey.md)**
+- **[Agent Contract](../AGENTS.md)**
 
 ---
 
-### Future
-- **[ROADMAP](https://github.com/palakpsheth/VarDictRust/blob/main/ROADMAP.md)**
+### Testing & Release
+- **[Test Matrix & CI](../docs/testing/test-matrix-and-ci-audit.md)**
+- **[Harness & Comparators](../harness/README.md)**
+- **[Release Waivers](../docs/release/waivers.md)**
+- **[v1.0.0 Release PR](../docs/release/v1.0.0-pr.md)**
+
+---
+
+### Future & Governance
+- **[ROADMAP](../ROADMAP.md)**

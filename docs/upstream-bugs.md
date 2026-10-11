@@ -1,26 +1,30 @@
 # Upstream bugs — VarDictJava v1.8.3
 
 Consolidated, actionable list of VarDictJava v1.8.3 behaviors that are part of the
-specification under rewrites.bio §5 (replicate output bugs byte-for-byte, track
+specification under [rewrites.bio](https://rewrites.bio) §5 (replicate output bugs byte-for-byte, track
 upstream, never silently fix), plus one upstream-repo defect that affects validation
-infrastructure. Supersedes the drafts formerly embedded in `DIVERGENCES.md`.
+infrastructure. Supersedes the drafts formerly embedded in [`DIVERGENCES.md`](../DIVERGENCES.md).
 
-**Version pin:** VarDictJava **v1.8.3 @ `0886261`**, Perl/R submodule @ `009e017`.
+**Version pin:** VarDictJava **v1.8.3 @ [`0886261`](https://github.com/AstraZeneca-NGS/VarDictJava/commit/0886261)**, Perl/R submodule @ [`009e017`](https://github.com/AstraZeneca-NGS/VarDict/commit/009e017).
 All line references below are to that pin.
 
-| # | Item | Our stance |
-|---|------|------------|
-| [UB-1](#ub-1--p-spurious-all-zero-record-at-position-00) | `-p` spurious all-zero record at position 0/0 | **Replicated** (commit `4d113b2`) |
-| [UB-2](#ub-2--p-null-record-row-cell-formatting-empty-geno-00-bias-empty-flank-seqs) | `-p` null-record row cell formatting | **Replicated** (`variations/mod.rs`) |
-| [UB-3](#ub-3-var-row-order-across-positions-follows-hashmap-iteration-order-282-family) | Cross-position `.var` emission order follows HashMap layout | **Replicated** (via JavaHashMap Determinism Engine) |
-| [UB-4](#ub-4-integration-fixture-inconsistency-overlapping-csv-reference-chunks) | Integration fixtures encode mutually inconsistent references | N/A (test-data defect; validated vs live oracle) |
-| [UB-5](#ub-5-simplemode-structural-variant-split-read-requirement-var2vcf_validpl197-205) | SimpleMode SV split-read requirement (`splitreads < 1` dropped) | **Replicated** (`lib.rs:403-414, 470, 499`) |
-| [UB-6](#ub-6-mate-pair-boundary-parameter-in-mark_dup_sv-structuralvariantsprocessorjava1468) | Mate-pair boundary parameter in `mark_dup_sv` (`pe` decrement) | **Replicated** (`sv.rs:3039, 3105-3111`) |
-| [UB-7](#ub-7-multi-allelic-site-single-winner-collapsing-var2vcf_validpl135-205) | Multi-allelic site single-winner collapsing without `-A` | **Replicated** (`lib.rs:467-505`) |
+| # | Class | Item | Our stance |
+|---|-------|------|------------|
+| [UB-1](#ub-1) | [Class A](../DIVERGENCES.md#the-four-canonical-parity-classes-rewritesbio-5-8-11) | `-p` spurious all-zero record at position 0/0 | **Replicated** ([`postprocess/simple.rs`](../crates/vardictrust-core/src/postprocess/simple.rs)) |
+| [UB-2](#ub-2) | [Class A](../DIVERGENCES.md#the-four-canonical-parity-classes-rewritesbio-5-8-11) | `-p` null-record row cell formatting | **Replicated** ([`variations/mod.rs`](../crates/vardictrust-core/src/variations/mod.rs)) |
+| [UB-3](#ub-3) | [Class A](../DIVERGENCES.md#the-four-canonical-parity-classes-rewritesbio-5-8-11) | Cross-position `.var` emission order follows HashMap layout ([#282](https://github.com/AstraZeneca-NGS/VarDictJava/issues/282) family) | **Replicated** (via [JavaHashMap Engine](../crates/vardictrust-core/src/javamap.rs)) |
+| [UB-4](#ub-4) | [Class D](../DIVERGENCES.md#the-four-canonical-parity-classes-rewritesbio-5-8-11) | Integration fixtures encode mutually inconsistent references | N/A (test-data defect; validated vs live oracle) |
+| [UB-5](#ub-5) | [Class A](../DIVERGENCES.md#the-four-canonical-parity-classes-rewritesbio-5-8-11) | SimpleMode SV split-read requirement (`splitreads < 1` dropped) | **Replicated** ([`lib.rs:403-414`](../crates/vardictrust-core/src/lib.rs)) |
+| [UB-6](#ub-6) | [Class A](../DIVERGENCES.md#the-four-canonical-parity-classes-rewritesbio-5-8-11) | Mate-pair boundary parameter in `mark_dup_sv` (`pe` decrement) | **Replicated** ([`sv.rs:3039`](../crates/vardictrust-core/src/sv.rs)) |
+| [UB-7](#ub-7) | [Class A](../DIVERGENCES.md#the-four-canonical-parity-classes-rewritesbio-5-8-11) | Multi-allelic site single-winner collapsing without `-A` | **Replicated** ([`lib.rs:467-505`](../crates/vardictrust-core/src/lib.rs)) |
 
 ---
 
+<a id="ub-1"></a>
+<a id="ub-1--p-spurious-all-zero-record-at-position-00"></a>
 ## UB-1 — `-p`: spurious all-zero record at position 0/0
+
+**Parity Class:** [Class A (Faithfully Emulated Upstream Quirks)](../DIVERGENCES.md#the-four-canonical-parity-classes-rewritesbio-5-8-11)
 
 **Java behavior:** `SimplePostProcessModule.java:73-82` — for an `alignedVariants`
 entry whose single variant has `startPosition != position`, with pileup on and
@@ -37,9 +41,7 @@ downstream Perl VCF conversion receives a REF/ALT-less row at pos 0).
 → stdout contains `hard_clip_next_to_del_test2	testbed	test	0	0	…` between the
 6507-6533 and 6449-6468 rows.
 
-**Our replication stance:** replicated byte-for-byte (commit `4d113b2`;
-`postprocess/simple.rs` fallback branch keeping `Variant::new()` defaults +
-`output/table.rs`). Verified sorted-diff-empty vs live oracle on the hard_clip case.
+**Our replication stance:** replicated byte-for-byte in [`crates/vardictrust-core/src/postprocess/simple.rs`](../crates/vardictrust-core/src/postprocess/simple.rs) fallback branch keeping `Variant::new()` defaults and [`crates/vardictrust-core/src/output/table.rs`](../crates/vardictrust-core/src/output/table.rs). Verified sorted-diff-empty vs live oracle on the hard_clip case under [Tier-1](testing/test-matrix-and-ci-audit.md#tier-1) table differential testing via [`harness/compare_var.py`](../harness/compare_var.py).
 
 **Draft issue text:**
 
@@ -54,9 +56,13 @@ downstream Perl VCF conversion receives a REF/ALT-less row at pos 0).
 
 ---
 
+<a id="ub-2"></a>
+<a id="ub-2--p-null-record-row-cell-formatting-empty-geno-00-bias-empty-flank-seqs"></a>
 ## UB-2 — `-p` null-record row cell formatting (empty GENO, "0;0" bias, empty flank seqs)
 
-**Java behavior:** same trigger branch as UB-1's first half —
+**Parity Class:** [Class A (Faithfully Emulated Upstream Quirks)](../DIVERGENCES.md#the-four-canonical-parity-classes-rewritesbio-5-8-11)
+
+**Java behavior:** same trigger branch as [UB-1](#ub-1)'s first half —
 `SimplePostProcessModule.java:75-77` wraps a null reference in
 `new SimpleOutputVariant(null, …)` and prints it. The null path renders printer
 defaults rather than Variant fields: genotype cell `""`
@@ -64,9 +70,7 @@ defaults rather than Variant fields: genotype cell `""`
 cells `""` (`OutputVariant.java:22-23`). The resulting `.var` row carries an empty
 genotype token; downstream R/Perl consumers must special-case it.
 
-**Our replication stance:** replicated byte-for-byte (`variations/mod.rs`
-`null_record` flag + `output/table.rs` renderer). Cell-exact unit tests pin cols
-14/16/31/32 to the oracle shape (`simple_36_null_record_renders_printer_defaults`).
+**Our replication stance:** replicated byte-for-byte in [`crates/vardictrust-core/src/variations/mod.rs`](../crates/vardictrust-core/src/variations/mod.rs) (`null_record` flag) and [`crates/vardictrust-core/src/output/table.rs`](../crates/vardictrust-core/src/output/table.rs) renderer. Cell-exact unit tests pin cols 14/16/31/32 to the oracle shape (`simple_36_null_record_renders_printer_defaults`).
 
 **Draft issue text:**
 
@@ -82,7 +86,11 @@ genotype token; downstream R/Perl consumers must special-case it.
 
 ---
 
-## UB-3 — `.var` row order across positions follows HashMap iteration order (#282 family)
+<a id="ub-3"></a>
+<a id="ub-3-var-row-order-across-positions-follows-hashmap-iteration-order-282-family"></a>
+## UB-3 — `.var` row order across positions follows HashMap iteration order ([#282](https://github.com/AstraZeneca-NGS/VarDictJava/issues/282) family)
+
+**Parity Class:** [Class A (Faithfully Emulated Upstream Quirks)](../DIVERGENCES.md#the-four-canonical-parity-classes-rewritesbio-5-8-11)
 
 **Java behavior:** `SimplePostProcessModule.accept` iterates
 `AlignedVarsData.alignedVariants`, a plain `HashMap<Integer, Vars>`
@@ -93,19 +101,19 @@ changes when upstream insertion history changes; downstream, `var2vcf_valid.pl`
 keeps only the highest-AF row per raw-start bucket and breaks exact AF ties
 first-in-stream — so WHICH allele survives a tie depends on hash layout.
 
-**Our replication stance:** **Replicated** via JavaHashMap Determinism Engine (commit `d41a6f1`) via
+**Our replication stance:** **Replicated** via JavaHashMap Determinism Engine in
 [`vardictrust_core::javamap::JavaHashMap`](../crates/vardictrust-core/src/javamap.rs).
 It faithfully emulates OpenJDK 8+ `java.util.HashMap` hash-spreading (`h ^ (h >> 16)`),
 power-of-two table indexing, load factor 0.75, resize threshold doubling, and bucket
 iteration order across variant maps (`non_insertion_variants`, `insertion_variants`,
 and `aligned_variants`). This completely eliminated the single residual AF-tie at
-`chr20:20202875` on dual-engine test slice `s1a`, emitting `TA>T` before `T>A` and achieving
-100% byte-for-byte parity (1048/1048 variants, 0 diffs). Per AGENTS.md §8, `JavaHashMap`
+`chr20:20202875` on [Tier-2](testing/test-matrix-and-ci-audit.md#tier-2) dual-engine test slice `s1a`, emitting `TA>T` before `T>A` and achieving
+100% byte-for-byte parity (1048/1048 variants, 0 diffs). Per the VarDictRust parity architecture (see [`CONTRIBUTING.md`](../CONTRIBUTING.md)), `JavaHashMap`
 is the only sanctioned non-sorted map in output-reaching paths.
 
 **Draft issue text:**
 
-> **Title:** .var row order across positions follows HashMap iteration order (#282 family)
+> **Title:** .var row order across positions follows HashMap iteration order ([#282](https://github.com/AstraZeneca-NGS/VarDictJava/issues/282) family)
 >
 > In v1.8.3, `SimplePostProcessModule.accept` iterates `AlignedVarsData.alignedVariants`,
 > a `HashMap<Integer, Vars>` (ToVarsBuilder.java:93), so `.var` row order across
@@ -121,7 +129,13 @@ is the only sanctioned non-sorted map in output-reaching paths.
 
 ---
 
+<a id="ub-4"></a>
+<a id="ub-4-hard_clip_casefa-fixture-drift-between-csv-chunks-and-reconstructed-fasta"></a>
+<a id="ub-4-hard_clip_next_to_del_test2-chunk-overlap-disagreement"></a>
+<a id="ub-4-integration-fixture-inconsistency-overlapping-csv-reference-chunks"></a>
 ## UB-4 — Integration-fixture inconsistency: overlapping CSV reference chunks
+
+**Parity Class:** [Class D (Known Upstream Defects & Fixture Flaws)](../DIVERGENCES.md#the-four-canonical-parity-classes-rewritesbio-5-8-11)
 
 **Behavior (upstream test data):** the fasta-source CSV behind
 `testdata/fastas/hard_clip_case.fa` declares two overlapping chunks for contig
@@ -136,16 +150,13 @@ single fasta satisfies both.
 
 **Our stance:** nothing to replicate in an engine — this is an upstream test-data /
 generator defect. We keep the corpus case as a documented permanent known non-bug
-(DIVERGENCES.md "Known non-bugs") and validate the underlying behavior against the
-live oracle instead. In `harness/integration_xfail.tsv`, this case is tracked as `XFAIL`
+([`DIVERGENCES.md` ("Class D Known Non-Bugs")](../DIVERGENCES.md#the-four-canonical-parity-classes-rewritesbio-5-8-11)) and validate the underlying behavior against the
+live oracle instead. In [`harness/integration_xfail.tsv`](../harness/integration_xfail.tsv) across the [Tier-1](testing/test-matrix-and-ci-audit.md#tier-1) integration test suite, this case is tracked as `XFAIL`
 pinned to live-oracle SHA-256 `96abe5c4bb6e3ff4572e361fddae1cd61354f102551f494488456a96d17829b2`.
 Both live VarDictJava 1.8.3 and VarDictRust emit identical 7 rows under the canonical FASTA
-(4 complex indels, 1 reference pileup call, and 2 upstream quirk rows UB-1 and UB-2).
-`harness/run_integration.sh` verifies this exact SHA-256 signature, treating any deviation
-as `FAIL/REGRESSION` and unexpected fixture pass as `XPASS`. Provenance note: the
-"repository's converter script" above was our unbundled copy
-`harness/convert_fastas.py` (removed during codebase audit), whose reconstruction of the
-CSV chunks resolved overlaps last-write-wins.
+(4 complex indels, 1 reference pileup call, and 2 upstream quirk rows [UB-1](#ub-1) and [UB-2](#ub-2)).
+[`harness/run_integration.sh`](../harness/run_integration.sh) verifies this exact SHA-256 signature, treating any deviation
+as `FAIL/REGRESSION` and unexpected fixture pass as `XPASS`. Provenance note: the test fixture reference materializer [`harness/convert_fastas.py`](../harness/convert_fastas.py) reconstructs FASTA files from upstream CSV chunks resolving overlaps last-write-wins.
 
 **Draft issue text:**
 
@@ -164,7 +175,11 @@ CSV chunks resolved overlaps last-write-wins.
 
 ---
 
+<a id="ub-5"></a>
+<a id="ub-5-simplemode-structural-variant-split-read-requirement-var2vcf_validpl197-205"></a>
 ## UB-5 — SimpleMode structural variant split-read requirement (`var2vcf_valid.pl:197-205`)
+
+**Parity Class:** [Class A (Faithfully Emulated Upstream Quirks)](../DIVERGENCES.md#the-four-canonical-parity-classes-rewritesbio-5-8-11)
 
 **Java / Perl behavior:** In `var2vcf_valid.pl:197-205`, when `-U` (`--nosv`) is not passed, SV calling is active. The Perl converter parses the SV field `$tamp` to extract split reads:
 ```perl
@@ -179,7 +194,7 @@ unless( $isamp ) {
 ```
 Any structural variant allele containing `<` (e.g., `<DUP>`, `<INV>`) that has only discordant mate-pair cluster evidence but zero split-read evidence (`splitreads < $opt_T`, where default `$opt_T = 1`) is unconditionally discarded during VCF formatting. Notably, these variants **are emitted** in the intermediate `.var` table, creating a discrepancy between the table and VCF output.
 
-**Our replication stance:** **Replicated** in `crates/vardictrust-core/src/lib.rs:403-414, 470, 499` (`is_sv && splitreads < 1` suppresses VCF line generation for SimpleMode), ensuring exact bitwise parity with the full VarDictJava pipeline output.
+**Our replication stance:** **Replicated** in [`crates/vardictrust-core/src/lib.rs:403-414, 470, 499`](../crates/vardictrust-core/src/lib.rs) (`is_sv && splitreads < 1` suppresses VCF line generation for SimpleMode), ensuring exact bitwise parity with the full VarDictJava pipeline output.
 
 **Draft issue text:**
 
@@ -189,7 +204,11 @@ Any structural variant allele containing `<` (e.g., `<DUP>`, `<INV>`) that has o
 
 ---
 
+<a id="ub-6"></a>
+<a id="ub-6-mate-pair-boundary-parameter-in-mark_dup_sv-structuralvariantsprocessorjava1468"></a>
 ## UB-6 — Mate-pair boundary parameter in `mark_dup_sv` (`StructuralVariantsProcessor.java:1468`)
+
+**Parity Class:** [Class A (Faithfully Emulated Upstream Quirks)](../DIVERGENCES.md#the-four-canonical-parity-classes-rewritesbio-5-8-11)
 
 **Java behavior:** In `StructuralVariantsProcessor.java:1413-1468`, the cluster end coordinate `pe` is decremented prior to marking duplication SVs:
 ```java
@@ -202,7 +221,7 @@ markDUPSV(bp, pe, Collections.singletonList(svStructures.svrdup), maxReadLength)
 ```
 Inside `markDUPSV`, the overlap predicate `isOverlap(start1, end1, start2, end2, rlen)` checks `if (start1 >= end2 || start2 >= end1) return false;`. Because Java passes the post-decrement `pe` as `end1`, any reverse-strand mate cluster whose reads begin exactly at the original un-decremented `pe` fails the overlap condition.
 
-**Our replication stance:** **Replicated** in `crates/vardictrust-core/src/sv.rs:3039, 3105-3111`, passing `pe` (post-decrement) rather than `pe + 1` to match Java's exact discordant pair clustering and breakpoint boundaries.
+**Our replication stance:** **Replicated** in [`crates/vardictrust-core/src/sv.rs:3039, 3105-3111`](../crates/vardictrust-core/src/sv.rs), passing `pe` (post-decrement) rather than `pe + 1` to match Java's exact discordant pair clustering and breakpoint boundaries.
 
 **Draft issue text:**
 
@@ -212,7 +231,11 @@ Inside `markDUPSV`, the overlap predicate `isOverlap(start1, end1, start2, end2,
 
 ---
 
+<a id="ub-7"></a>
+<a id="ub-7-multi-allelic-site-single-winner-collapsing-var2vcf_validpl135-205"></a>
 ## UB-7 — Multi-allelic site single-winner collapsing (`var2vcf_valid.pl:135-205`)
+
+**Parity Class:** [Class A (Faithfully Emulated Upstream Quirks)](../DIVERGENCES.md#the-four-canonical-parity-classes-rewritesbio-5-8-11)
 
 **Java / Perl behavior:** In `var2vcf_valid.pl:135-139`, unless `-A` is explicitly passed, the multi-allelic candidate count is clamped to `$ALL = 1`:
 ```perl
@@ -223,13 +246,12 @@ foreach my $p (@pos) {
         my ($sample, ..., $ref, $alt, ..., $af) = @{ $tmp[$i] };
         next unless ( $ref );
 ```
-Only the single candidate allele with the highest allele frequency (`$tmp[0]`) is considered at each genomic locus. If that winner candidate is skipped (for example, if `$ref` is empty from a `-p` null-record, or if an SV candidate has `splitreads < 1` per UB-5), the loop executes `next` and terminates immediately. As a result, legitimate alternative variants at the same locus with lower allele frequencies are completely excluded from the VCF.
+Only the single candidate allele with the highest allele frequency (`$tmp[0]`) is considered at each genomic locus. If that winner candidate is skipped (for example, if `$ref` is empty from a `-p` null-record, or if an SV candidate has `splitreads < 1` per [UB-5](#ub-5)), the loop executes `next` and terminates immediately. As a result, legitimate alternative variants at the same locus with lower allele frequencies are completely excluded from the VCF.
 
-**Our replication stance:** **Replicated** in `crates/vardictrust-core/src/lib.rs:467-505`, maintaining a `pending: BTreeMap<i32, SimpleVcfCandidate>` that retains only the top-AF candidate per locus in single-sample VCF mode.
+**Our replication stance:** **Replicated** in [`crates/vardictrust-core/src/lib.rs:467-505`](../crates/vardictrust-core/src/lib.rs), maintaining a `pending: BTreeMap<i32, SimpleVcfCandidate>` that retains only the top-AF candidate per locus in single-sample VCF mode.
 
 **Draft issue text:**
 
 > **Title:** Single-winner multi-allelic collapsing drops secondary variants when primary candidate is filtered
 >
 > In `var2vcf_valid.pl:135-205`, when `-A` is omitted, only the highest-AF candidate is inspected. If that candidate triggers any `next` condition (e.g. empty REF or zero split reads), the entire position is abandoned, dropping any secondary variants that would have passed filters. The loop should evaluate candidate records until an eligible variant is found or emit all qualifying alleles in standard multi-allelic VCF notation.
-

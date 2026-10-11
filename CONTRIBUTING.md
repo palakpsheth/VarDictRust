@@ -10,18 +10,18 @@ This document serves as the authoritative, standalone manual for developing, tes
 
 VarDictRust is built with one central commitment: **to produce output identical to VarDictJava v1.8.3 on valid inputs while scaling gracefully to deep whole-genome sequencing (WGS).**
 
-### 1.1 The Prime Directive (§5)
+### 1.1 The Prime Directive ([AGENTS.md §5](AGENTS.md#5-emulate-exactly-the-rewritesbio-prime-directive))
 All variant calling output on valid genomic inputs must match VarDictJava v1.8.3:
 - **Exact Variant Parity:** The variant set (`CHROM`, `POS`, `REF`, `ALT`), every `FILTER` decision, `INFO` and `FORMAT` tags, genotypes (`GT`), variant `TYPE`, and somatic `STATUS` must match upstream VarDictJava.
-- **Float Tolerance:** P-values, odds ratios, and allele frequencies must match within **$\varepsilon = 10^{-6}$**, adhering strictly to IEEE 754 half-even banker's rounding (`round_half_even`).
+- **Float Tolerance:** P-values, odds ratios, and allele frequencies must match within **$\varepsilon = 10^{-6}$**, adhering strictly to IEEE 754 half-even banker's rounding ([`round_half_even`](DIVERGENCES.md#statistical-rounding--floating-point-half-even)).
 - **Intermediate Column Counts:** Intermediate `.var` tables must strictly adhere to upstream column schemas:
   - **Simple Mode:** 36 columns (default) / 38 columns (`--fisher`).
   - **Amplicon Mode:** 38 columns (default) / 40 columns (`--fisher`).
   - **Somatic Mode:** 55 columns (default) / 61 columns (`--fisher`).
 - **Bug Emulation Policy (v1.0):** If VarDictJava v1.8.3 has an output quirk (such as single-winner multi-allelic site collapsing or SV split-read requirements), **replicate it faithfully**. Corrections are deferred to post-1.0 releases behind individual opt-in flags (e.g. `--fix <id>`) per [`ROADMAP.md`](ROADMAP.md). Where VarDictJava crashes (e.g. `modifyCigar` #341 or NPEs), VarDictRust must produce valid output or fail fast without panicking.
 
-### 1.2 Integrity: Evidence Before Assertions (§0 & §0b)
-- **Never claim a task is done without verifiable evidence.** Evidence consists of passing `harness/compare.sh` (**MATCH**), passing `cargo test`, or passing `harness/acceptance.sh`.
+### 1.2 Integrity: Evidence Before Assertions ([AGENTS.md §0 & §0b](AGENTS.md#0-meta-rule--evidence-before-completion))
+- **Never claim a task is done without verifiable evidence.** Evidence consists of passing [`harness/compare.sh`](harness/README.md#key-scripts--runners) (**MATCH**), passing `cargo test`, or passing [`harness/acceptance.sh`](harness/README.md#key-scripts--runners).
 - **Never fake a pass.** You must never relax `--eps`, narrow column ranges, hand-edit golden/expected files, or skip failing fixtures to force a match. If a check fails, the Rust port is wrong: fix the port, not the test.
 
 ---
@@ -58,6 +58,13 @@ git submodule update --init --recursive
      conda env create -f harness/env/g4-tools.yml
      conda activate g4-tools
      ```
+4. **Conda Package Manager:**
+   - If `conda` is not installed on your system, install [Miniforge](https://github.com/conda-forge/miniforge) or [Miniconda](https://docs.anaconda.com/miniconda/).
+5. **Reference Genomes & Test Data Ingestion:**
+   - Ingest the minimal reference assets required for differential testing:
+     ```bash
+     bash harness/fetch_data.sh refs
+     ```
 
 ### 2.3 The Three-Tier Environment Model (Zero-Virtualenv Architecture)
 VarDictRust enforces a clear separation of toolchains across three distinct environments:
@@ -70,7 +77,25 @@ VarDictRust enforces a clear separation of toolchains across three distinct envi
 | *(Ephemeral)* | **Ad-Hoc Developer Tools** (`cffconvert`, `pre-commit`) | Astral `uvx` (Zero-install) | Ephemeral user cache (no permanent virtualenv) |
 
 > [!NOTE]
+> **Toolchain Tiers vs Test Verification Tiers:** The *Tiers* in the table above classify environment isolation and package management. They are distinct from the *Seven-Level Test Architecture* and *Differential Testing Tiers* (Tier-1 `.var` table parity vs Tier-2 VCF parity vs Tier-3 truth concordance) described in [`docs/testing/test-matrix-and-ci-audit.md`](docs/testing/test-matrix-and-ci-audit.md) and [`harness/README.md`](harness/README.md).
+>
 > **No Python Virtual Environment Required:** All scripts in `harness/` and `harness/tests/` depend exclusively on the Python standard library (`argparse`, `json`, `gzip`, `math`, `subprocess`, `unittest`). Contributors do not need to create a `venv` or run `pip install` to execute the regression harness. This zero-PyPI contract is enforced continuously by [`harness/tests/test_stdlib_purity.py`](harness/tests/test_stdlib_purity.py).
+
+### 2.4 Building VarDictRust
+
+VarDictRust is built using standard Cargo workflows:
+
+```bash
+# Build debug binary (faster compile, includes debug symbols):
+cargo build
+
+# Build optimized release binary (recommended for benchmarking and production):
+cargo build --release
+
+# Inspect the compiled binary and CLI options:
+./target/release/vardictrust --help
+./target/release/vardictrust --version
+```
 
 ---
 
@@ -116,18 +141,18 @@ All contributions to `crates/vardictrust-core/` and `crates/vardictrust/` must a
 - **Zero Panics in Library Code:** In `crates/vardictrust-core/src/**` (outside `#[cfg(test)]`), you must **never** use `unwrap()`, `expect()`, `panic!()`, `unreachable!()`, bare slice indexing `x[i]` without prior bounds checks, or arithmetic that can overflow on user input.
 - **Actionable Error Propagation:** Return `Result<T, VardictError>` with the `?` operator.
 
-### 4.2 Coordinate Indexing (§6)
+### 4.2 Coordinate Indexing ([AGENTS.md §6](AGENTS.md#6-coordinate-indexing--the-1-silent-footgun))
 - **0-based Coordinates (`Pos0`):** Coordinates from BAM/SAM alignments (via noodles) are **0-based, half-open** `[start, end)`.
 - **1-based Coordinates (`Pos1`):** VCF output and internal VarDict logic are **1-based inclusive** `[start, end]`.
 - **Strict Conversions:** Always convert via `.to_one_based()` and `.to_zero_based()`. Never add a raw integer to a coordinate.
 
-### 4.3 Determinism & Fidelity Hazards (§8)
-- **Banker's Rounding:** Every floating-point metric written to table or VCF output must use IEEE 754 half-even rounding via `round_half_even`. Never use Rust's default formatter rounding.
-- **Java HashMap Iteration Parity:** Java's `HashMap` iteration order is emulated using `vardictrust_core::javamap::JavaHashMap`, which reproduces OpenJDK 8+ hash bucket spread, binning, and iteration semantics. Never replace it with `std::collections::HashMap` in output or realignment paths.
+### 4.3 Determinism & Fidelity Hazards ([AGENTS.md §8](AGENTS.md#8-fidelity-hazards-these-break-output-equivalence-silently))
+- **Banker's Rounding:** Every floating-point metric written to table or VCF output must use IEEE 754 half-even rounding via [`round_half_even`](DIVERGENCES.md#statistical-rounding--floating-point-half-even). Never use Rust's default formatter rounding.
+- **Java HashMap Iteration Parity:** Java's `HashMap` iteration order is emulated using deterministic [`JavaHashMap`](DIVERGENCES.md#ub-3-var-row-order-across-positions-follows-hashmap-iteration-order-282-family), which reproduces OpenJDK 8+ hash bucket spread, binning, and iteration semantics. Never replace it with `std::collections::HashMap` in output or realignment paths.
 - **Sequences as Bytes:** Biological sequences are byte slices (`&[u8]` or `Vec<u8>`), never `String`.
 - **Phred Quality Scores:** Encoded as Phred+33: `Phred(byte.saturating_sub(33))`.
 
-### 4.4 Bounded Memory & Scale (§10)
+### 4.4 Bounded Memory & Scale ([AGENTS.md §10](AGENTS.md#10-scale-rules-optimize-for-large-wgs-by-default))
 - **Tile-and-Halo Traversal:** Regions are processed in discrete tiles (default 50 kb) with an overlapping halo (2 kb). State is streamed through the per-tile pipeline and dropped promptly via RAII.
 - **Zero Whole-Chromosome Buffering:** Never load or buffer entire chromosomes in memory.
 
@@ -144,19 +169,26 @@ flowchart LR
     PRGate --> AccGate["4. Acceptance Gate\nharness/acceptance.sh\n(8 Items)"]
 ```
 
-### 5.1 The Port Loop (§7)
+### 5.1 The Port Loop ([AGENTS.md §7](AGENTS.md#7-the-port-loop-rewritesbio-work-small))
 When porting or modifying variant calling logic, follow the rewrites.bio port loop:
 1. Read the upstream VarDictJava implementation and cite it (e.g. `/// ports CigarModifier.java:61-71`).
 2. Write the Rust code and its corresponding unit test.
 3. Verify against the live oracle using `harness/compare.sh`.
 4. Commit when differential comparison yields **MATCH**.
 
-### 5.2 Inner Developer Loop (`rgate.sh`)
-For fast feedback while coding:
+### 5.2 Inner Developer Loop (`rgate.sh` & Cargo)
+For fast local iteration while coding:
 ```bash
+# Automated compound inner loop (<30s):
 bash harness/rgate.sh
+
+# Or execute specific Cargo steps directly:
+cargo test --workspace                                     # Run all workspace unit tests
+cargo test -p vardictrust-core cigar                       # Run tests in a specific module
+cargo clippy --all-targets --all-features -- -D warnings    # Zero-warning linter
+cargo fmt --all -- --check                                 # Check code formatting
 ```
-Runs `cargo fmt --check`, `cargo clippy`, unit tests, and a quick differential smoke test in $<30$ seconds.
+Runs code formatting checks, Clippy lints, workspace unit tests, and a quick differential smoke test against the live oracle.
 
 ### 5.3 Differential Testing (`compare.sh`)
 Compare VarDictRust output against the live VarDictJava oracle:
@@ -169,19 +201,29 @@ bash harness/compare.sh <ref.fa> "tumor.bam|normal.bam" <regions.bed> [sample_na
 ```
 
 ### 5.4 Comprehensive PR Verification (`pr_check.sh`)
-Before submitting a pull request, run the comprehensive 6-stage PR validation suite:
+Before submitting a pull request, run the comprehensive 6-stage PR validation suite defined in [`harness/pr_check.sh`](harness/README.md#key-scripts--runners):
 ```bash
 bash harness/pr_check.sh
 ```
 This suite automatically verifies:
-1. Workspace unit tests (all 208 workspace tests pass: 188 core + 13 cli + 5 robustness + 1 thread_determinism + 1 version).
-2. Crash robustness corpus (PR #402, missing index #187, and issue #341 family).
-3. Tier-1 upstream integration corpus (92 fixtures, asserting `91 PASS / 1 XFAIL` where the sole static diff is Class D / UB-4 fixture flaw).
-4. Tier-2 micro differential parity against live Java.
-5. 4-Target performance budget (`harness/perf_budget.py`).
-6. Staged and repository secret scanning with `gitleaks`.
+1. **Stage 1 (Hygiene & Unit Tests):** Formatting, Clippy lints, and all 188 core and workspace unit tests ([Level 1](docs/testing/test-matrix-and-ci-audit.md#level-1-unit--component-tests-208-total)).
+2. **Stage 2 (Crash Robustness):** PR #402, missing index #187, and Issue #341 family fixtures.
+3. **Stage 3 (Upstream Integration Corpus):** 92 fixtures ([Level 2](docs/testing/test-matrix-and-ci-audit.md#level-2-upstream-integration-regression-corpus-92-fixtures)), asserting `91 PASS / 1 XFAIL` ([UB-4](docs/upstream-bugs.md#ub-4) upstream fixture defect).
+4. **Stage 4 (Dual-Engine Differential Parity):** Micro differential fixture and 9-modality extended coverage against the live VarDictJava oracle ([Level 3](docs/testing/test-matrix-and-ci-audit.md#level-3-dual-engine-differential-parity-testing)).
+5. **Stage 5 (Performance & Memory Budgets):** 4-target regression budget via [`harness/perf_budget.py`](harness/perf_budget.py) ([Level 5](docs/testing/test-matrix-and-ci-audit.md#level-5-performance--memory-budgets)).
+6. **Stage 6 (Security Hygiene):** Staged and repository secret scanning with `gitleaks`.
 
-7. Automated harness self-test suite (`bash harness/run_self_tests.sh`) running all 14 diagnostic test scripts in $<10\text{s}$.
+### 5.5 Master Release Acceptance Gate (`acceptance.sh`)
+For full release qualification or certifying engine changes against committed benchmark evidence, run the 8-item acceptance gate:
+```bash
+bash harness/acceptance.sh
+```
+This gate enforces the 8 acceptance criteria defined in [AGENTS.md §15](AGENTS.md#15-definition-of-done-every-change) and [docs/testing/test-matrix-and-ci-audit.md §2](docs/testing/test-matrix-and-ci-audit.md#2-master-verification-matrix), validating engine fingerprints across all 16 committed evidence JSONs.
+
+Additionally, contributors can execute the diagnostic self-test suite ([Level 6](docs/testing/test-matrix-and-ci-audit.md#level-6-diagnostic-self-tests)) at any time:
+```bash
+bash harness/run_self_tests.sh   # Executes all 16 diagnostic test scripts in <10s
+```
 
 *For the complete seven-level testing architecture, push-button reproduction commands, and dataset provenance catalog, see the Master Reproducibility Runbook in [`docs/testing/test-matrix-and-ci-audit.md`](docs/testing/test-matrix-and-ci-audit.md).*
 
@@ -210,15 +252,16 @@ Contributors must adhere to the following governance policies:
 
 ### 7.1 Commit Trailer Hygiene Policy
 - **Strictly Zero `Co-Authored-By` Trailers:** Do **not** include `Co-Authored-By` trailers in commit messages.
-- **Transparent AI Disclosures:** Machine assistance and AI tool participation are documented transparently in `README.md` and `CITATION.cff`, not in commit metadata.
+- **Transparent AI Disclosures:** Machine assistance and AI tool participation are documented transparently in [`README.md`](README.md) and [`CITATION.cff`](CITATION.cff), not in commit metadata.
 
-### 7.2 System Resource Courtesy Policy
-- **Thread Constraints:** Multi-threaded local testing must not exceed 8 worker threads (`--test-threads=8` or `-th 8`).
-- **Resource Courtesy Wrapping:** Long-running jobs should be executed using the courtesy wrapper:
+### 7.2 Concurrency & Resource Management
+- **Parallel Testing on Constrained Systems:** Running heavy multi-threaded test suites (e.g. `cargo test --workspace`) spawns threads proportional to available logical CPU cores. On systems with constrained memory, restrict test parallelism using standard Cargo flags or environment variables:
   ```bash
-  EST_MIN=15 bash harness/courtesy.sh -th 8 <command>
+  RUST_TEST_THREADS=4 cargo test --workspace
+  # or:
+  cargo test --workspace -- --test-threads=4
   ```
-- **Maintenance Windows:** Avoid running heavy automated benchmarks during the nightly maintenance window (03:40–05:15 local time).
+- **Differential Runner Threads:** Scripts accepting thread flags (such as `compare.sh -th <N>`) default to multi-threaded execution. Adjust `<N>` to match your hardware capacity.
 
 ---
 

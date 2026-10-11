@@ -5,16 +5,18 @@
 
 VarDictRust is an **idiomatic-Rust rewrite of VarDictJava v1.8.3** (a somatic/germline variant caller for
 NGS), consolidating its fragmented Java→R→Perl pipeline into a single, statically-compiled, memory-safe
-binary that **scales to deep WGS**. It is built under the **rewrites.bio** manifesto.
+binary that **scales to deep WGS**. It is built under the [rewrites.bio](https://rewrites.bio) manifesto.
 
 - **Reference implementation:** `./VarDictJava` (v1.8.3, commit `0886261`; Perl/R submodule `./VarDictJava/VarDict`, commit `009e017`).
 - **Prime directive:** a faster, more robust tool that produces output **identical to VarDictJava v1.8.3 on valid inputs**. We are *not* writing a new caller and *not* transliterating Java line-by-line.
-- **Full plan:** see `./ROADMAP.md` for candidate fixes, opt-in flags, and post-1.0 governance. This file is the always-loaded agent contract.
+- **Architecture & Governance:** see [ROADMAP.md](ROADMAP.md) for candidate fixes, opt-in flags, and post-1.0 governance.
+- **Testing & Verification Matrix:** see [docs/testing/test-matrix-and-ci-audit.md](docs/testing/test-matrix-and-ci-audit.md) and [harness/README.md](harness/README.md). This file is the always-loaded agent contract.
 
 ---
 
+<a id="0-meta-rule--evidence-before-completion"></a>
 ## 0. Meta-rule — evidence before completion
-**Never claim a task is done without evidence.** Evidence = a passing `harness/compare.sh` **MATCH**, a passing
+**Never claim a task is done without evidence.** Evidence = a passing [`harness/compare.sh`](harness/README.md#key-scripts--runners) **MATCH**, a passing
 `cargo test`, or a diff that shows a match. "It should work" / "this looks right" is **not** evidence. If you
 cannot produce evidence, say so explicitly and keep working.
 
@@ -23,8 +25,8 @@ cannot produce evidence, say so explicitly and keep working.
 ## 0b. Integrity — never fake a pass
 The success criterion exists to catch you being wrong. **Do not defeat it.** You must NEVER:
 - relax `--eps`, narrow a `--cols` range, compare fewer records, or edit/skip/`#[ignore]`/comment-out/delete a failing test or anything in `harness/` to turn a MISMATCH into a MATCH;
-- hand-edit `golden/`, `expected/`, or oracle output to match your code (golden files change ONLY via `/snapshot-update`, after a real, justified, documented output change);
-- manually edit engine fingerprints, variant counts, or metrics in `benchmarks/evidence/*.json` or fake runner receipts to satisfy acceptance gates. Modifying evidence JSON files by hand without executing the underlying live validation runners (`harness/run_extended_coverage.sh`, `harness/run_multimodal_slices.sh`, or `harness/recertify.sh`) is a **Class-0 integrity violation**. Success criteria must come from verifiable runner execution. If a fingerprint changes due to a dependency or code update, re-certify honestly via `bash harness/recertify.sh`;
+- hand-edit `golden/`, `expected/`, or oracle output to match your code (golden files change ONLY after a verified upstream correction, with explicit provenance documented in `golden/PROVENANCE`);
+- manually edit engine fingerprints, variant counts, or metrics in `benchmarks/evidence/*.json` or fake runner receipts to satisfy acceptance gates. Modifying evidence JSON files by hand without executing the underlying live validation runners ([`harness/run_extended_coverage.sh`](harness/run_extended_coverage.sh), [`harness/run_multimodal_slices.sh`](harness/run_multimodal_slices.sh), or [`harness/recertify.sh`](harness/recertify.sh)) is a **Class-0 integrity violation**. Success criteria must come from verifiable runner execution per [docs/testing/test-matrix-and-ci-audit.md](docs/testing/test-matrix-and-ci-audit.md). If a fingerprint changes due to a dependency or code update, re-certify honestly via `bash harness/recertify.sh`;
 - report a MATCH or a passing test you did not actually run, or paste expected output you did not observe.
 
 If a check fails, **your code (or your understanding) is wrong — fix the port, not the test.** If you can't make it pass honestly, **stop and report the MISMATCH with the diff.** A real mismatch reported honestly is worth far more than a fake match.
@@ -33,7 +35,7 @@ If a check fails, **your code (or your understanding) is wrong — fix the port,
 
 ---
 
-*The four behavioral principles below are Andrej Karpathy's (multica-ai/andrej-karpathy-skills), reproduced and merged with VarDictRust-specific notes (marked **VR:**) as that file invites.*
+*The four behavioral principles below are Andrej Karpathy's ([multica-ai/andrej-karpathy-skills](https://github.com/multica-ai/andrej-karpathy-skills)), reproduced and merged with VarDictRust-specific notes (marked **VR:**) as that file invites.*
 
 **Tradeoff:** these guidelines bias toward caution over speed. For trivial tasks, use judgment. They override habit, not the project rules in §5–§18.
 
@@ -79,8 +81,8 @@ The test: every changed line should trace directly to the task.
 
 Transform tasks into verifiable goals:
 - "Port `isGoodVar`" → "write the unit test encoding VarDictJava's accept/reject table, then make it pass"
-- "Fix the mismatch" → "make `harness/compare.sh <case>` print MATCH"
-- "Refactor the pileup" → "`compare.sh --all` is green before and after"
+- "Fix the mismatch" → "make `bash harness/compare.sh <ref> <bam> <bed>` print MATCH"
+- "Refactor the pileup" → "`bash harness/run_integration.sh` and `bash harness/rgate.sh` are green before and after"
 
 For multi-step tasks, state a brief plan:
 ```
@@ -89,7 +91,7 @@ For multi-step tasks, state a brief plan:
 3. [Step] → verify: [check]
 ```
 
-Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification. Here the criterion is almost always **`harness/compare.sh <case>` exits 0 (MATCH)** or the named `cargo test` passes.
+Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification. Here the criterion is almost always **`harness/compare.sh` exits 0 (MATCH)** or the named `cargo test` passes.
 
 ---
 
@@ -102,11 +104,12 @@ Output must match **VarDictJava v1.8.3** on valid inputs:
 - **Exact:** the variant set (chrom/pos/ref/alt), every FILTER decision, the INFO/FORMAT keys present, genotypes, TYPE, somatic STATUS, and the **intermediate column counts & order** — Simple **36/38**, Amplicon **38/40**, Somatic **55/61** (no-`--fisher` / with-`--fisher`).
 - **Float tolerance:** Fisher p-values/SBF/SSF, odds ratios, AF/AdjAF/HIAF, QUAL means within **ε = 1e-6**, after replicating R's 5-decimal **HALF_EVEN** rounding (Fisher MLE tol `ulp(1)^0.25`).
 - **Bug policy (v1.0):** if v1.8.3 has an **output** bug, **replicate it** and open a tracked issue — do **not** silently "fix" it. Where v1.8.3 **crashes** (e.g. `modifyCigar`), do **not** crash: produce the same output it would on valid inputs. That is allowed and is the whole point.
-- **Three commitments:** credit the original (README/`--version`/Lai et al. 2016/AstraZeneca-NGS); emulate exactly; be transparent about AI (document tools, role, and exactly what was/wasn't validated, against which version + dataset).
-- **Release policy (user decision 2026-10-07 & 2026-10-08).** v1.0.0 = pure parity with v1.8.3: no output-changing fixes and no fix flags. Corrections ship from v1.1.0 per `ROADMAP.md`, each behind `--fix <id>` (default off) with a diff-confinement gate. The default output stays byte-identical to v1.0; with the flag, diffs are confined to the targeted records.
+- **Three commitments:** credit the original ([README.md](README.md)/`--version`/[Lai et al. 2016](https://doi.org/10.1093/nar/gkw227)/AstraZeneca-NGS); emulate exactly; be transparent about AI (document tools, role, and exactly what was/wasn't validated, against which version + dataset).
+- **Release policy (v1.0 Parity vs v1.1+ Corrections):** v1.0.0 = pure parity with v1.8.3: no output-changing fixes and no fix flags. Corrections ship from v1.1.0 per [ROADMAP.md](ROADMAP.md), each behind `--fix <id>` (default off) with a diff-confinement gate. The default output stays byte-identical to v1.0; with the flag, diffs are confined to the targeted records.
 
 ---
 
+<a id="6-coordinate-indexing--the-1-silent-footgun"></a>
 ## 6. Coordinate indexing — the #1 silent footgun
 - BAM/SAM positions from noodles are **0-based, half-open** → type `Pos0`.
 - VCF output and VarDict-internal logic are **1-based** → type `Pos1`.
@@ -131,14 +134,15 @@ data" is actionable; "port the whole pipeline" is not.
 
 ## 8. Fidelity hazards (these break output equivalence silently)
 - **Iteration order is correctness.** Use `indexmap::IndexMap` where Java uses `LinkedHashMap`, `BTreeMap` where Java uses `TreeMap`. **Never** iterate a `HashMap` in an output/realignment path.
-- **Rounding.** Every float written to a `.var`/VCF field goes through `round_half_even` (banker's rounding), never Rust's default. Replicate the formatter split: no-`--fisher` keeps trailing zeros (`x==0?0:fmt`); `--fisher` strips trailing zeros.
+- **Rounding.** Every float written to a `.var`/VCF field goes through [`round_half_even`](DIVERGENCES.md#statistical-rounding--floating-point-half-even) (banker's rounding), never Rust's default. Replicate the formatter split: no-`--fisher` keeps trailing zeros (`x==0?0:fmt`); `--fisher` strips trailing zeros.
 - **Sequences are bytes.** Use `&[u8]`/`Vec<u8>`, never `String`. Replace Java's negative-index `charAt`/`substr` with bounds-checked slice helpers returning `Option`.
 - **Quality is Phred+33.** `Phred(byte.saturating_sub(33))`.
 - **`maxReadLength` propagation** matters: SomaticMode seeds BAM2's pipeline with BAM1's value.
-- **Java `HashMap` iteration that reaches output** is emulated with `vardictrust_core::javamap::JavaHashMap`. It ports `java.util.HashMap` spread, bin, resize and treeify-trigger semantics, and is validated against real Java by the op-log tests. This is the only sanctioned non-sorted order. Never use `std::collections::HashMap` there.
+- **Java `HashMap` iteration that reaches output** is emulated with [`JavaHashMap`](DIVERGENCES.md#ub-3-var-row-order-across-positions-follows-hashmap-iteration-order-282-family). It ports `java.util.HashMap` spread, bin, resize and treeify-trigger semantics, and is validated against real Java by the op-log tests. This is the only sanctioned non-sorted order. Never use `std::collections::HashMap` there.
 
 ---
 
+<a id="9-idiomatic-rust--the-no-panic-rule"></a>
 ## 9. Idiomatic Rust + the no-panic rule
 - **No panics in library code.** In `crates/vardictrust-core/src/**` (outside `#[cfg(test)]`) you may **not** use `unwrap`, `expect`, `panic!`, `unreachable!`, bare slice indexing `x[i]` without a prior bounds check, or arithmetic that can overflow on input. Use `Result<_, VardictError>` + `?`, `.get(i)?`, checked/saturating math. **This is what fixes the VarDictJava crash-issue family by design.**
 - **`#![forbid(unsafe_code)]`** in `vardictrust-core`. `unsafe` only via vetted SIMD crates (e.g. `block-aligner`) behind safe APIs.
@@ -154,7 +158,10 @@ data" is actionable; "port the whole pipeline" is not.
 - **Bounded memory at any depth.** The unit of work is a region **tile** with a **halo**; never hold whole-chromosome state. Stream reads through the per-tile pipeline and drop them promptly (RAII).
 - Tiled output **must equal** a single-region run (overlap + boundary-variant dedup). Scale optimizations must never change output.
 - `rayon` work-stealing across tiles; **deterministic** ordered output (stable sort + ordered collect; bounded backpressure).
-- Sort only within a tile (no global sort). Multi-thread BGZF. AVX2 (`block-aligner`) for the realignment hot path — but only after correctness is established, and re-validate `compare.sh --all` after.
+- Sort only within a tile (no global sort). Multi-thread BGZF. AVX2 (`block-aligner`) for the realignment hot path — but only after correctness is established, and re-validate via `bash harness/acceptance.sh` after.
+- **Cluster Resource Etiquette & Concurrency Guidelines:**
+  - Multi-threaded testing and variant calling should be matched to available cores without exhausting host memory (`-th <N>`, default all cores; for tests, `RUST_TEST_THREADS=4` or `--test-threads=8`).
+  - On shared multi-tenant clusters or memory-constrained machines, wrap long-running benchmarks or differential tests with [`harness/courtesy.sh`](harness/README.md) (`nice -n 19 ionice -c 3`, with disk headroom `MIN_FREE_GB=150` and memory headroom `MIN_AVAIL_GB=12`).
 
 ---
 
@@ -165,7 +172,7 @@ OOM (#197/#384 — fixed by the tiling in §10), CRAM (#249/#380 — noodles + `
 formatting, fail-fast on missing index (#187), lenient SAM validation, nondeterminism (#282/#181/#356), and
 correct `##contig` lengths from the `.fai` (#320). **Output-changing** corrections (#92 VD>DP, #62 over-filtering,
 #363 realignment drops, #292 SHIFT3, #342 `<dup-N>` ALT, …) and **new features** (UMI, long reads) are deferred
-to post-1.0 behind individual opt-in flags. See ROADMAP.md and docs/upstream-bugs.md. Post-1.0 = v1.1.0+, governed by ROADMAP.md.
+to post-1.0 behind individual opt-in flags. See [ROADMAP.md](ROADMAP.md) and [docs/upstream-bugs.md](docs/upstream-bugs.md). Post-1.0 = v1.1.0+, governed by [ROADMAP.md](ROADMAP.md).
 
 ---
 
@@ -183,7 +190,8 @@ Use: **noodles** (BAM/CRAM/FASTA/VCF/BGZF), **bio** + (later) **block-aligner** 
 ---
 
 ## 14. Commands
-**Setup (run once):** see `CONTRIBUTING.md` (Prerequisites) — rustup, miniconda, samtools, JDK, and reference-genome setup. Confirm every version prints before starting development.
+**Setup (run once):** see [CONTRIBUTING.md](CONTRIBUTING.md) (Prerequisites) — rustup, miniconda, samtools, JDK, and reference-genome setup. Confirm every version prints before starting development.  
+**Testing Hierarchy Details:** see [docs/testing/test-matrix-and-ci-audit.md](docs/testing/test-matrix-and-ci-audit.md) and [harness/README.md](harness/README.md).
 ```bash
 # Build / test / lint / format — ALL must pass before any commit (zero warnings):
 cargo fmt --all
@@ -195,9 +203,15 @@ cargo build --release
 bash harness/setup_oracle.sh
 bash harness/run_oracle.sh <ref.fa> <bam|tumor.bam|normal.bam> <bed> <out.vcf> [sample]
 
-# Differential testing (the acceptance gate):
-bash harness/compare.sh <ref> <bam> <bed> [sample]   # Tier-2: full VCF vs oracle  → prints MATCH/MISMATCH
-python3 harness/compare_var.py golden/<case>.var <ours.var>   # Tier-1: intermediate table
+# Differential testing (Acceptance gates — see harness/README.md):
+# Tier 1 (Intermediate Table Parity): validates .var schema (36/38, 38/40, 55/61 cols), ratios, p-values
+python3 harness/compare_var.py golden/<case>.var <ours.var>
+
+# Tier 2 (Full VCF Parity): validates VCF coordinates, alleles, INFO/FORMAT tags, half-even float rounding
+bash harness/compare.sh <ref> <bam|tumor.bam|normal.bam> <bed> [sample]
+
+# Fast developer inner-loop gate (<30s):
+bash harness/rgate.sh
 
 # Slice big BAMs for the dev loop:
 bash harness/slice.sh <in.bam> <chr:start-end> <out.bam>
@@ -205,9 +219,9 @@ bash harness/slice.sh <in.bam> <chr:start-end> <out.bam>
 
 ## 15. Definition of done (every change)
 1. `cargo fmt --all`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test` all pass.
-2. The relevant `harness/compare.sh` prints **MATCH** (or the named test passes).
+2. The relevant `harness/compare.sh` prints **MATCH** (or the named test passes). Pre-PR compound gate passes: `bash harness/pr_check.sh`.
 3. `golden/` updated if output legitimately changed (with provenance).
-4. For any dependency (`Cargo.lock`) or engine code changes merged to `main`, run `bash harness/recertify.sh` to re-certify live parity and regenerate evidence.
+4. For any dependency (`Cargo.lock`) or engine code changes merged to `main`, run `bash harness/recertify.sh` (re-running extended coverage and multimodal slice suites) to re-certify live parity and update evidence in `benchmarks/evidence/` under [docs/testing/test-matrix-and-ci-audit.md](docs/testing/test-matrix-and-ci-audit.md).
 5. The commit/PR states: **"validated vs VarDictJava 1.8.3, dataset `<name>`, cmd `<…>`"**.
 6. `gitleaks protect --staged` (commit) / `gitleaks detect --source .` (push) clean.
 7. The PR body completes `.github/pull_request_template.md`, which is authoritative on what may be skipped: engine-gate boxes are either run or marked **N/A with a one-line justification** under the template's docs/infra-only note (the same code-change filter the pre-push hook enforces).
@@ -233,5 +247,5 @@ somatic STATUS → `src/postprocess/`); `printers/*` (→ `src/output/`); `varia
 Somatic STATUS is computed in **Java** (`SomaticPostProcessModule.determinateType`), not Perl.
 
 ## 18. Commits
-Atomic commits per task: `git add -A && git commit -m "Txxx: <short desc>"`. Branch off `origin/main` (`git fetch origin && git checkout -b <type>/<slug> origin/main`); never push `main` directly (the pre-push hook blocks it) — merge via a PR opened with `gh`, with the PR template filled. Run `bash harness/setup_hooks.sh` once per clone so the repo-managed hooks are active. Full gate semantics live in `CONTRIBUTING.md` §§5–6 and `harness/pr_check.sh` (6 stages).
-Never commit secrets, **data** (BAM/CRAM/FASTA/VCF beyond the tiny `golden/` fixtures), `target/`, conda envs, or ephemeral agent scratch/planning trees (e.g. `docs/superpowers/` — agent plans belong in the external `<appDataDir>/brain/<conversation-id>` artifact store; see `.gitignore`). **Do** commit `Cargo.lock` (this is an application workspace). MIT-licensed, open-source project. No `Co-Authored-By` commit trailers per user directive (A10); AI involvement is disclosed transparently in `README.md` and `CITATION.cff`.
+Atomic commits per task: `git add -A && git commit -m "<type>: <short desc>"`. Branch off `origin/main` (`git fetch origin && git checkout -b <type>/<slug> origin/main`); never push `main` directly (the pre-push hook blocks it) — merge via a PR opened with `gh`, with the PR template filled. Run `bash harness/setup_hooks.sh` once per clone so the repo-managed hooks are active. Full gate semantics live in [CONTRIBUTING.md](CONTRIBUTING.md) §§5–6 and `harness/pr_check.sh` (6 stages).
+Never commit secrets, **data** (BAM/CRAM/FASTA/VCF beyond the tiny `golden/` fixtures), `target/`, conda envs, or ephemeral agent scratch/planning trees (e.g. `docs/superpowers/` — agent plans belong in the external `<appDataDir>/brain/<conversation-id>` artifact store; see `.gitignore`). **Do** commit `Cargo.lock` (this is an application workspace). MIT-licensed, open-source project. Do not include `Co-Authored-By` commit trailers; machine assistance and AI tool participation are disclosed transparently in [README.md](README.md) and [CITATION.cff](CITATION.cff).
