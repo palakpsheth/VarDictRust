@@ -1,0 +1,35 @@
+{
+  "cmd": [
+    "env",
+    "KEEP_DIR=scratch/g4/seqc2/cmp-exome",
+    "MIN_VARIANTS=2000",
+    "JAVA_OPTS=-Xmx8g",
+    "bash",
+    "harness/compare.sh",
+    "scratch/g4/ref/d1vd1/GRCh38.d1.vd1.fa",
+    "scratch/g4/seqc2/HCC1395.bam|scratch/g4/seqc2/HCC1395BL.bam",
+    "scratch/g4/seqc2/exome.engine.bed",
+    "HCC1395|HCC1395BL",
+    "-th",
+    "8"
+  ],
+  "compare_head": [
+    "MATCH (623444 variants)"
+  ],
+  "date": "2026-10-10T02:40:19-07:00",
+  "fingerprint": "cca94ddceec06a1a",
+  "head": "7936d97938eab9781a08072f9796f2697de0132d",
+  "java_time": {
+    "exit": "0",
+    "max_rss_kb": "4248888",
+    "wall": "54:23.00"
+  },
+  "n_variants": 623444,
+  "name": "seqc2-exome-tier2",
+  "result": "MATCH",
+  "rust_time": {
+    "exit": "0",
+    "max_rss_kb": "1515224",
+    "wall": "19:45.73"
+  }
+}

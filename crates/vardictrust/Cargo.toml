@@ -1,0 +1,27 @@
+[package]
+name = "vardictrust"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description.workspace = true
+repository.workspace = true
+authors.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[[bin]]
+name = "vardictrust"
+path = "src/main.rs"
+
+[dependencies]
+vardictrust-core = { version = "1.0.0", path = "../vardictrust-core" }
+clap.workspace = true
+anyhow.workspace = true
+env_logger.workspace = true
+log.workspace = true
+regex = { workspace = true }
+
+[dev-dependencies]
+tempfile.workspace = true
+noodles.workspace = true

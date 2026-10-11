@@ -1,0 +1,52 @@
+# name	url	md5	md5_source	bytes	fetched
+HG008-T_somatic_smvar_benchmark_v0.3_tumorvariants.vcf.gz	https://ftp.ncbi.nlm.nih.gov/giab/ftp/data_somatic/HG008/Liss_lab/analysis/NIST_HG008-T_somatic-smvar_DraftBenchmark_V0.3-20260425/HG008-T_somatic_smvar_benchmark_v0.3_tumorvariants.vcf.gz	0f85c077151e9a43cb9a39cd27b8e388	computed-locally	283528	2026-10-08T10:09:16-07:00
+HG008-T_somatic_smvar_benchmark_v0.3_tumorvariants.vcf.gz.tbi	https://ftp.ncbi.nlm.nih.gov/giab/ftp/data_somatic/HG008/Liss_lab/analysis/NIST_HG008-T_somatic-smvar_DraftBenchmark_V0.3-20260425/HG008-T_somatic_smvar_benchmark_v0.3_tumorvariants.vcf.gz.tbi	5f66bce87d9ec461a9cb47eed0d6ba15	computed-locally	168646	2026-10-08T10:09:17-07:00
+HG008-T_somatic_smvar_benchmark_v0.3_all.bed	https://ftp.ncbi.nlm.nih.gov/giab/ftp/data_somatic/HG008/Liss_lab/analysis/NIST_HG008-T_somatic-smvar_DraftBenchmark_V0.3-20260425/HG008-T_somatic_smvar_benchmark_v0.3_all.bed	df24735abb5437101971bf86f75f2908	computed-locally	1012698	2026-10-08T10:09:18-07:00
+HG008-T_somatic_smvar_benchmark_v0.3_nogermlineinterference.bed	https://ftp.ncbi.nlm.nih.gov/giab/ftp/data_somatic/HG008/Liss_lab/analysis/NIST_HG008-T_somatic-smvar_DraftBenchmark_V0.3-20260425/HG008-T_somatic_smvar_benchmark_v0.3_nogermlineinterference.bed	ff216cb8c7c18681034c9516cc69e364	computed-locally	1103115	2026-10-08T10:09:19-07:00
+HG008-T_somatic_smvar_benchmark_v0.3_nogermlinewithin50bp.bed	https://ftp.ncbi.nlm.nih.gov/giab/ftp/data_somatic/HG008/Liss_lab/analysis/NIST_HG008-T_somatic-smvar_DraftBenchmark_V0.3-20260425/HG008-T_somatic_smvar_benchmark_v0.3_nogermlinewithin50bp.bed	4dbab6575c62c09733d214dda5045afc	computed-locally	80798011	2026-10-08T10:09:31-07:00
+GRCh38.d1.vd1.fa	https://ftp-trace.ncbi.nlm.nih.gov/seqc/ftp/Somatic_Mutation_WG/technical/reference_genome/GRCh38/GRCh38.d1.vd1.fa	7eb7c875fb968ab47186e01dbcbfe1b1	computed-locally	3152288848	2026-10-08T10:15:20-07:00
+GRCh38.d1.vd1_BWA.tar.gz	https://ftp-trace.ncbi.nlm.nih.gov/seqc/ftp/Somatic_Mutation_WG/technical/reference_genome/GRCh38/GRCh38.d1.vd1_BWA.tar.gz	015f5223bddd93b6e8f7a038c171f7be	upstream	3453914638	2026-10-08T10:23:27-07:00
+GRCh38_GIABv3.fasta.gz	https://ftp.ncbi.nlm.nih.gov/giab/ftp/release/references/GRCh38/GRCh38_GIABv3_no_alt_analysis_set_maskedGRC_decoys_MAP2K3_KMT2C_KCNJ18.fasta.gz	939ce19062d1462c09b88c55faca4d76	computed-locally	791254470	2026-10-08T10:25:54-07:00
+SRR7890879_1	https://ftp.sra.ebi.ac.uk/vol1/fastq/SRR789/009/SRR7890879/SRR7890879_1.fastq.gz	52a511c2581212126c2e6f5a1743ec24	upstream	2629910779	2026-10-08T12:54:34-07:00
+SRR7890879_2	https://ftp.sra.ebi.ac.uk/vol1/fastq/SRR789/009/SRR7890879/SRR7890879_2.fastq.gz	49469650695770b476851a61ed555113	upstream	2818948679	2026-10-08T15:46:31-07:00
+SRR7890880_1	https://ftp.sra.ebi.ac.uk/vol1/fastq/SRR789/000/SRR7890880/SRR7890880_1.fastq.gz	355185fb242a4e672dffad2f34892094	upstream	2462108977	2026-10-08T16:49:20-07:00
+SRR7890880_2	https://ftp.sra.ebi.ac.uk/vol1/fastq/SRR789/000/SRR7890880/SRR7890880_2.fastq.gz	6e03fe945d378a6ab1c42fcfa0e93999	upstream	2663818543	2026-10-08T18:41:33-07:00
+sSNV_v1.2.1	https://ftp-trace.ncbi.nlm.nih.gov/seqc/ftp/Somatic_Mutation_WG/release/v1.2.1/high-confidence_sSNV_in_HC_regions_v1.2.1.vcf.gz	243c5795d7502a6dfb2e9b0431a17363	computed-locally	4818105	2026-10-08T18:41:34-07:00
+sINDEL_v1.2.1	https://ftp-trace.ncbi.nlm.nih.gov/seqc/ftp/Somatic_Mutation_WG/release/v1.2.1/high-confidence_sINDEL_in_HC_regions_v1.2.1.vcf.gz	74a02946f4d5f9f93629e2f56bb19726	computed-locally	269761	2026-10-08T18:41:35-07:00
+HC_regions_v1.2	https://ftp-trace.ncbi.nlm.nih.gov/seqc/ftp/Somatic_Mutation_WG/release/v1.2.1/High-Confidence_Regions_v1.2.bed	0ddc924c5031f0276b7703141526b04d	computed-locally	16879606	2026-10-08T18:41:40-07:00
+exome_v6_UTR_hg38	https://ftp-trace.ncbi.nlm.nih.gov/seqc/ftp/Somatic_Mutation_WG/technical/reference_genome/Exome_Target_bed/S07604624_Covered_human_all_v6_plus_UTR.liftover.to.hg38.bed6.gz	847ecd2d625fa3342c657d1861dc87cd	computed-locally	4613143	2026-10-08T18:41:41-07:00
+GRCh38_GIABv3.fasta	derived:gunzip	99be410b684e3fdb04ba67d98adba249	computed-locally	3145187795	2026-10-08T18:47:01-07:00
+GRCh38.d1.vd1.fa.fai	derived:samtools-faidx	fc58fcadf12ce55ba230e8fc2d656e71	computed-locally	129640	2026-10-08T18:47:01-07:00
+GRCh38_GIABv3.fasta.fai	derived:samtools-faidx	a5bf6abc1f5efecc0a510f3120d08a3b	computed-locally	9001	2026-10-08T18:47:01-07:00
+GRCh38.d1.vd1.fa.amb	derived:tar	80e14d906539ea9283f996facd07c08e	computed-locally	17539	2026-10-08T18:47:01-07:00
+GRCh38.d1.vd1.fa.ann	derived:tar	63bbc90b6b01dbdabb23ab989226d925	computed-locally	406945	2026-10-08T18:47:01-07:00
+GRCh38.d1.vd1.fa.bwt	derived:tar	756545c4068eade8846d4e9f521bdf7d	computed-locally	3107576624	2026-10-08T18:47:01-07:00
+GRCh38.d1.vd1.fa.pac	derived:tar	1606ce3d63e846d24298ffd791d9dbe0	computed-locally	776894132	2026-10-08T18:47:01-07:00
+GRCh38.d1.vd1.fa.sa	derived:tar	b8b0fef8bc6cac65a104744c371b26df	computed-locally	1553788312	2026-10-08T18:47:01-07:00
+GRCh38.d1.vd1.sdf/mainIndex	derived:rtg-format	a7aceea87e646dc0ff4527b8f3feaf8a	computed-locally	24330	2026-10-08T18:47:01-07:00
+GRCh38_GIABv3.sdf/mainIndex	derived:rtg-format	21cae253a0dfb9e8454df4d1848fb24d	computed-locally	24335	2026-10-08T18:47:01-07:00
+
+HG008-T.slice.bam	derived:remote-slice	a5a613e8f4d612d40f9f64925aefb7fb	computed-locally	240203456	2026-10-08T19:26:44-07:00
+HG008-N.slice.bam	derived:remote-slice	c17fa00433a2bd5c70416c716a0b8e01	computed-locally	220822631	2026-10-08T19:26:44-07:00
+HG008-T.slice.cram	derived:samtools-cram	c37440e6c4cabdb7e6cc4218806aa339	computed-locally	86742675	2026-10-09T16:18:50-07:00
+HG008-T.slice.cram.crai	derived:samtools-index	b71f60e626934779858c6d35e04cc92a	computed-locally	8122	2026-10-09T16:18:50-07:00
+HG008-N.slice.cram	derived:samtools-cram	3deee8a569e7ce2e50741553c60d2860	computed-locally	77124691	2026-10-09T16:18:58-07:00
+HG008-N.slice.cram.crai	derived:samtools-index	c478ec7eb41801749d6833ff46fa0dab	computed-locally	8236	2026-10-09T16:18:58-07:00
+
+HCC1395.bam	derived:bwa-mem-seqc2	5e2e9d814b0a4107908324ef79e45a2e	computed-locally	4475997619	2026-10-09T17:28:55-07:00
+HCC1395.bam.bai	derived:bwa-mem-seqc2	acda15be3c350570439df4cf13a75fae	computed-locally	3510256	2026-10-09T17:29:14-07:00
+HCC1395BL.bam	derived:bwa-mem-seqc2	540fc282854bf511c530ce8f414b1a3e	computed-locally	4233596905	2026-10-09T18:07:08-07:00
+HCC1395BL.bam.bai	derived:bwa-mem-seqc2	2823d6171038853b56937f678232973b	computed-locally	3400648	2026-10-09T18:07:26-07:00
+
+HG002_GRCh38_1_22_v4.2.1_benchmark.vcf.gz	https://giab.s3.amazonaws.com/release/AshkenazimTrio/HG002_NA24385_son/NISTv4.2.1/GRCh38/HG002_GRCh38_1_22_v4.2.1_benchmark.vcf.gz	dc750b3807d4af1f7ffec852e9c2f771	computed-locally	156252944	2026-10-10T09:40:12-07:00
+HG002_GRCh38_1_22_v4.2.1_benchmark.vcf.gz.tbi	https://giab.s3.amazonaws.com/release/AshkenazimTrio/HG002_NA24385_son/NISTv4.2.1/GRCh38/HG002_GRCh38_1_22_v4.2.1_benchmark.vcf.gz.tbi	121e2975fb3ff0317ae6a684d0ce6f2f	computed-locally	1657747	2026-10-10T09:40:13-07:00
+HG002_GRCh38_1_22_v4.2.1_benchmark_noinconsistent.bed	https://giab.s3.amazonaws.com/release/AshkenazimTrio/HG002_NA24385_son/NISTv4.2.1/GRCh38/HG002_GRCh38_1_22_v4.2.1_benchmark_noinconsistent.bed	97265e922a97c69a0391cf3f92a89b8b	computed-locally	11494021	2026-10-10T09:40:15-07:00
+HG002.remote.bai	https://giab.s3.amazonaws.com/data/AshkenazimTrio/HG002_NA24385_son/NIST_Illumina_2x250bps/novoalign_bams/HG002.GRCh38.2x250.bam.bai	a4c79b44a863e88eeb525b5e8d1501f6	computed-locally	9816176	2026-10-10T09:40:16-07:00
+HG002.chr20.bam	derived:remote-slice	bd605a455b2e2064931e6097c64695ea	computed-locally	860559731	2026-10-10T09:40:00-07:00
+HG002.chr20.bam.bai	derived:samtools-index	112c58a6798c46dfdee7ae8867174da3	computed-locally	89456	2026-10-10T09:40:02-07:00
+eval.bed	derived:awk-tile	a693fdd787e26da2a9e99468b5385888	computed-locally	82053	2026-10-10T09:40:16-07:00
+truth.vcf.gz	derived:bcftools-slice	192a657b74eda99eab4fc8f50a2316cb	computed-locally	911611	2026-10-10T09:40:17-07:00
+truth.vcf.gz.tbi	derived:tabix	dec112e13c2b39c51f1c1ecd35ca2f87	computed-locally	8587	2026-10-10T09:40:17-07:00
+truth.nofilter.vcf.gz	derived:bcftools-nofilter	b9ed21fc2779b05259bb48bb9d3d3bb6	computed-locally	908686	2026-10-10T10:21:00-07:00
+truth.nofilter.vcf.gz.tbi	derived:tabix	d4bbbe4ef792883072784e78dcc747bb	computed-locally	8568	2026-10-10T10:21:00-07:00
+

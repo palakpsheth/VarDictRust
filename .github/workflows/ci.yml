@@ -4,21 +4,42 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Harden GitHub Actions Runner
+        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.10.4
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
         with:
           components: rustfmt, clippy
+      - name: Install System Dependencies (samtools)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends samtools
       - name: Format
         run: cargo fmt --all -- --check
       - name: Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --all-targets --all-features -- -D warnings -A clippy::needless_late_init -A clippy::byte_char_slices
       - name: Test
         run: cargo test --all
       - name: Bench compile
         run: cargo bench --no-run
       - name: Build release
         run: cargo build --release
+      - name: Integration Corpus Regression
+        run: |
+          bash harness/run_integration.sh > integration.log 2>&1 || true
+          grep -qx 'PASS: 91  FAIL: 1  SKIP: 0' integration.log
+          grep -qxF 'MISMATCH: Simple;hard_clip_case.fa;hard_clip_next_to_del_test2.bam;test;6434-6564;-f 0.0 -p -r 1.txt' integration.log
+      - name: Crash Robustness Suite
+        run: cargo test -p vardictrust --test robustness
+

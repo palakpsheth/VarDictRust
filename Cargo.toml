@@ -1,14 +1,17 @@
 [workspace]
-members = ["crates/vardict-core", "crates/vardict-cli"]
-exclude = ["fuzz"]
+members = ["crates/vardictrust-core", "crates/vardictrust"]
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/palakpsheth/VarDictRust"
-authors = ["Palak Sheth"]
+authors = ["Palak Sheth <palakpsheth@gmail.com>"]
+readme = "README.md"
+description = "Fast, memory-safe, idiomatic Rust rewrite of VarDictJava v1.8.3"
+keywords = ["bioinformatics", "genomics", "variant-caller", "ngs", "somatic"]
+categories = ["science::bioinformatics", "command-line-utilities"]
 
 [workspace.dependencies]
 anyhow = "1"
@@ -17,7 +20,6 @@ clap = { version = "4", features = ["derive"] }
 rayon = "1"
 indexmap = "2"
 noodles = { version = "0.93", default-features = false, features = ["bam","cram","sam","fasta","vcf","bgzf","csi","tabix","core","bed"] }
-statrs = "0.18"
 fishers_exact = "1"
 log = "0.4"
 env_logger = "0.11"
@@ -26,6 +28,13 @@ tempfile = "3"
 criterion = "0.5"
 
 [profile.release]
-lto = "thin"
+opt-level = 3
+lto = "fat"
 codegen-units = 1
 panic = "abort"
+strip = true
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "fat"

@@ -1,0 +1,38 @@
+{
+  "cmd": [
+    "bash",
+    "harness/scale_bench.sh",
+    "scratch/g4/ref/d1vd1/GRCh38.d1.vd1.fa",
+    "scratch/g4/seqc2/HCC1395.bam",
+    "scratch/g4/seqc2/exome.engine.bed",
+    "HCC1395",
+    "scratch/g4/scale"
+  ],
+  "compare_head": [],
+  "date": "2026-10-10T09:23:51-07:00",
+  "extra": {
+    "maxrss_kb": {
+      "1000000": 833156,
+      "10000000": 2114212,
+      "100000000": 2355920,
+      "248956422": 2940504
+    },
+    "note": ">8 threads not measured (host policy A3)",
+    "pass": true,
+    "rss_ratio_chr1_vs_10mb": 1.3908274099286164,
+    "speedup_8": 4.845901130819773,
+    "wall_s": {
+      "1": 3436.81,
+      "2": 1859.64,
+      "4": 895.79,
+      "8": 709.22
+    }
+  },
+  "fingerprint": "cca94ddceec06a1a",
+  "head": "7936d97938eab9781a08072f9796f2697de0132d",
+  "java_time": null,
+  "n_variants": null,
+  "name": "scale",
+  "result": "PASS",
+  "rust_time": null
+}

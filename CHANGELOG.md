@@ -5,19 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-## [0.1.0] — unreleased
+## [1.0.0] - 2026-10-10
 
 First release of VarDictRust: an idiomatic-Rust rewrite of
 [VarDictJava](https://github.com/AstraZeneca-NGS/VarDictJava) v1.8.3
-(single binary; no Java/R/Perl required).
+(single static binary; no Java/R/Perl required).
 
 ### Added
 
 - All four calling modes: Simple (germline), Somatic (paired tumor/normal),
   Amplicon, and Splicing/SV.
-- Tier-2 VCF output plus the legacy intermediate `.var` table
+- Complete VCFv4.2 output plus the legacy intermediate `.var` table
   (`--emit-intermediate`).
 - In-engine Fisher exact test (`--fisher`) — no R dependency.
 - Bounded-memory region tiling + rayon parallelism for deep WGS.
@@ -25,10 +23,10 @@ First release of VarDictRust: an idiomatic-Rust rewrite of
 
 ### Parity
 
-Output validated against VarDictJava v1.8.3 (commit `0886261`), dataset =
-the VarDictJava/testdata integration suite. Full results, per-slice
-exceptions, and the divergence ledger live in
-[README §Validation status](README.md#validation-status) and
+Output validated against VarDictJava v1.8.3 (commit `0886261`), across 92
+integration fixtures, 17 differential benchmarks, and 5 ground truth truth-sets.
+Full results, per-slice exceptions, and the divergence ledger live in
+[README §Empirical Parity & Validation Status](README.md#empirical-parity--validation-status) and
 [DIVERGENCES.md](DIVERGENCES.md).
 
 ### Fixed (robustness by design — no valid-input output change)

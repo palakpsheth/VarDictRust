@@ -1,0 +1,80 @@
+{
+  "cmd": [
+    "harness/concordance_germline.sh",
+    "hg002-truth",
+    "scratch/g4/hg002/cmp/java.vcf",
+    "scratch/g4/hg002/cmp/rust.vcf",
+    "scratch/g4/hg002/truth/truth.vcf.gz",
+    "scratch/g4/hg002/eval.bed",
+    "scratch/g4/ref/giabv3/GRCh38_GIABv3.sdf",
+    "scratch/g4/hg002/truth",
+    "HG002"
+  ],
+  "compare_head": [],
+  "date": "2026-10-10T11:19:11-07:00",
+  "extra": {
+    "java": {
+      "f_measure": 0.6622,
+      "fn": 813,
+      "fp": 22458,
+      "none": {
+        "f_measure": 0.6622,
+        "fn": 813,
+        "fp": 22458,
+        "precision": 0.5038,
+        "sensitivity": 0.9659,
+        "tp_baseline": 23062,
+        "tp_call": 22803
+      },
+      "optimal": {
+        "f_measure": 0.9699,
+        "fn": 871,
+        "fp": 553,
+        "precision": 0.9763,
+        "sensitivity": 0.9635,
+        "threshold": 128.0,
+        "tp_baseline": 23004,
+        "tp_call": 22748
+      },
+      "precision": 0.5038,
+      "sensitivity": 0.9659,
+      "tp_baseline": 23062,
+      "tp_call": 22803
+    },
+    "rust": {
+      "f_measure": 0.6622,
+      "fn": 813,
+      "fp": 22458,
+      "none": {
+        "f_measure": 0.6622,
+        "fn": 813,
+        "fp": 22458,
+        "precision": 0.5038,
+        "sensitivity": 0.9659,
+        "tp_baseline": 23062,
+        "tp_call": 22803
+      },
+      "optimal": {
+        "f_measure": 0.9699,
+        "fn": 871,
+        "fp": 553,
+        "precision": 0.9763,
+        "sensitivity": 0.9635,
+        "threshold": 128.0,
+        "tp_baseline": 23004,
+        "tp_call": 22748
+      },
+      "precision": 0.5038,
+      "sensitivity": 0.9659,
+      "tp_baseline": 23062,
+      "tp_call": 22803
+    }
+  },
+  "fingerprint": "cca94ddceec06a1a",
+  "head": "8f692969cd4a004410d23b4758411f18c55a1a02",
+  "java_time": null,
+  "n_variants": null,
+  "name": "hg002-truth",
+  "result": "EQUAL",
+  "rust_time": null
+}

@@ -1,0 +1,25 @@
+Third-Party Software Notices and Information
+============================================
+
+This project incorporates routines from the standalone `nmath` library of
+The R Project for Statistical Computing (https://www.r-project.org/):
+
+Files:
+  - crates/vardictrust-core/src/stats/rmath/bd0.rs
+  - crates/vardictrust-core/src/stats/rmath/dbinom_raw.rs
+  - crates/vardictrust-core/src/stats/rmath/dhyper.rs
+  - crates/vardictrust-core/src/stats/rmath/phyper.rs
+  - crates/vardictrust-core/src/stats/rmath/stirlerr.rs
+
+Copyright (C) 1998–2020 The R Core Team
+Copyright (C) 1995, 1996 Robert Gentleman and Ross Ihaka
+
+These routines are distributed under the terms of the GNU General Public
+License as published by the Free Software Foundation; either version 2
+of the License, or (at your option) any later version.
+
+Cleanroom Replacement Tracking:
+  A cleanroom reimplementation of the hypergeometric distribution functions
+  (mirroring Apache-2.0 Commons Math 3 algorithms) is cataloged in ROADMAP.md
+  for post-1.0 development to restore uniform MIT licensing across all engine
+  crates while preserving exact float tolerance (eps <= 1e-6).

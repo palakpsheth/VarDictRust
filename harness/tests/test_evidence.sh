@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+# Red-green test for evidence recording and fingerprint staleness check (T06)
+set -euo pipefail
+
+fail=0
+EVID_DIR="benchmarks/evidence"
+mkdir -p "$EVID_DIR"
+
+cleanup() {
+  rm -f "$EVID_DIR/t-test-stale.json" "$EVID_DIR/t-test-badres.json" "$EVID_DIR/t-test.json"
+}
+trap cleanup EXIT
+
+# 1. Obtain current real fingerprint
+FP=$(bash harness/engine_fingerprint.sh)
+if [[ ! "$FP" =~ ^[0-9a-f]{16}$ ]]; then
+  echo "FAIL: invalid fingerprint format '$FP'" >&2
+  exit 1
+fi
+
+# Define the exact ev function from acceptance.sh
+ev() {
+  python3 - "$EVID_DIR/$1.json" "$FP" <<'PY'
+import json, sys
+p, fp = sys.argv[1], sys.argv[2]
+try: d = json.load(open(p))
+except Exception as e: sys.exit(f"{p}: {e}")
+if d.get("fingerprint") != fp: sys.exit(f"{p}: stale fingerprint {d.get('fingerprint')} != {fp}")
+if d.get("result") not in ("MATCH", "EQUAL", "PASS"): sys.exit(f"{p}: result={d.get('result')}")
+PY
+}
+
+# 2. Verify stale/mismatched fingerprint 'deadbeef' is rejected
+cat > "$EVID_DIR/t-test-stale.json" <<EOF
+{
+  "name": "t-test-stale",
+  "result": "MATCH",
+  "fingerprint": "deadbeef"
+}
+EOF
+
+if err=$(ev t-test-stale 2>&1); then
+  echo "FAIL: ev accepted stale fingerprint deadbeef" >&2
+  fail=1
+else
+  if [[ "$err" != *"stale fingerprint deadbeef !="* ]]; then
+    echo "FAIL: expected stale fingerprint error message, got: $err" >&2
+    fail=1
+  fi
+fi
+
+# Also verify invalid result is rejected
+cat > "$EVID_DIR/t-test-badres.json" <<EOF
+{
+  "name": "t-test-badres",
+  "result": "MISMATCH",
+  "fingerprint": "$FP"
+}
+EOF
+
+if err=$(ev t-test-badres 2>&1); then
+  echo "FAIL: ev accepted MISMATCH result" >&2
+  fail=1
+else
+  if [[ "$err" != *"result=MISMATCH"* ]]; then
+    echo "FAIL: expected result=MISMATCH error message, got: $err" >&2
+    fail=1
+  fi
+fi
+
+# 3. Verify record_evidence.py writes an evidence JSON containing the real fingerprint
+python3 harness/record_evidence.py t-test MATCH - -- true >/dev/null
+
+if [ ! -f "$EVID_DIR/t-test.json" ]; then
+  echo "FAIL: $EVID_DIR/t-test.json was not created" >&2
+  fail=1
+else
+  recorded_fp=$(python3 -c 'import json; print(json.load(open("benchmarks/evidence/t-test.json"))["fingerprint"])')
+  if [ "$recorded_fp" != "$FP" ]; then
+    echo "FAIL: recorded fingerprint $recorded_fp != expected $FP" >&2
+    fail=1
+  fi
+  # Verify ev accepts the newly recorded evidence
+  if ! ev t-test; then
+    echo "FAIL: ev rejected newly recorded evidence t-test" >&2
+    fail=1
+  fi
+fi
+
+if [ $fail -eq 0 ]; then
+  echo "PASS test_evidence"
+  exit 0
+else
+  echo "FAIL test_evidence"
+  exit 1
+fi

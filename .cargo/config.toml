@@ -1,5 +1,5 @@
-[target.x86_64-unknown-linux-musl]
-rustflags = ["-C", "target-feature=+avx2"]
+# Configuration for cargo builds.
+# By default, binaries compile for portable baseline architectures (x86_64, aarch64, Apple Silicon).
+# For host-specific AVX2 microarchitectural optimizations:
+#   RUSTFLAGS="-C target-cpu=native" cargo build --release
 
-[build]
-rustflags = ["-C", "target-feature=+avx2"]

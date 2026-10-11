@@ -1,9 +1,13 @@
 # Ecosystem Survey — AI-assisted Rust rewrites of bioinformatics tools
 
+**Author / Maintainer:** Palak Sheth <palakpsheth@gmail.com>  
+**Repository:** [https://github.com/palakpsheth/VarDictRust](https://github.com/palakpsheth/VarDictRust)  
+**Governing Manifesto:** [rewrites.bio](https://rewrites.bio)  
+
 > **Point-in-time snapshot: 2026-08-24.** Compiled from web/GitHub sweeps (sources
 > listed at the end; claims reflect pages as fetched that day). This document is
-> provenance for two decisions: the *trust batch* (`docs/plans/2026-08-24-trust-batch.md`)
-> and the *deferred external-validation plan* (`docs/plans/giab-seqc2-validation.md`).
+> provenance for decisions consolidated into project specifications and external validation reports in
+> [`docs/validation/omnibus-empirical-validation.md`](validation/omnibus-empirical-validation.md).
 > Weaknesses are given equal standing to strengths — see §5.
 
 ## 1. The wave
@@ -23,7 +27,7 @@ manifesto. Its principles:
 
 Origin story: RustQC began as dupRadar rewrite over lunch, became a 15-tool QC suite at >60× speedup; weeks of parity iteration followed the weekend beta ("Stringency in validation will be key to community adoption and trust").
 
-## 2. Tier-1 rewrites and their evidence models
+## 2. Exemplar rewrites and their evidence models
 
 | Project | Replaces | Evidence model |
 |---|---|---|
@@ -59,22 +63,22 @@ gates before core aligner work").
 
 | Field practice | VarDictRust |
 |---|---|
-| Emulate exactly, bugs included | CLAUDE.md §5 bug-replication policy + `DIVERGENCES.md` ledger (rarer than byte-parity itself) |
+| Emulate exactly, bugs included | [`AGENTS.md`](../AGENTS.md) §5 bug-replication policy + [`DIVERGENCES.md`](../DIVERGENCES.md) ledger (rarer than byte-parity itself) |
 | Pinned oracle + differential testing | VarDictJava v1.8.3 @`0886261` conda env; 92-case corpus; live-oracle VCF sweep |
 | Work small, per-function evidence | §7 port loop with source citations — McLeod's knowledge-extraction ideal |
-| Fail loudly on unsupported | §12 `Unsupported()` errors (`cli.rs` `UNSUPPORTED_FLAGS`) |
-| Real-data, like-for-like benchmarks | `benchmarks/README.md`; explicitly avoided the RastQC parallelism trap |
-| Thread/partition invariance | Tested (`thread_determinism.rs`, tile-span determinism) |
-| Upstream bugs, manually verified | `docs/upstream-bugs.md` UB-1..4 drafted from live-oracle runs |
-| Credit + AI transparency | README Attribution/AI Disclosure; milestone tags carry provenance |
+| Fail loudly on unsupported | §12 `Unsupported()` errors ([`cli.rs`](../crates/vardictrust/src/cli.rs) `UNSUPPORTED_FLAGS`) |
+| Real-data, like-for-like benchmarks | [`benchmarks/README.md`](../benchmarks/README.md); explicitly avoided the RastQC parallelism trap |
+| Thread/partition invariance | Tested ([`thread_determinism.rs`](../crates/vardictrust/tests/thread_determinism.rs), tile-span determinism) |
+| Upstream bugs, manually verified | [`docs/upstream-bugs.md`](upstream-bugs.md) UB-1..4 drafted from live-oracle runs |
+| Credit + AI transparency | [`README.md`](../README.md) Attribution/AI Disclosure; git release tags and evidence JSONs carry cryptographic provenance |
 
 ## 5. Gaps this survey exposed (and dispositions)
 
-1. ~~No fuzzing~~ → **G1**: cargo-fuzz targets for CIGAR/BED-region parsing (crash-family seeds).
-2. ~~Flag statuses asserted, not graded~~ → **B'**: README flag table gains honest per-flag validation-status vocabulary.
-3. ~~Release artifacts ungated~~ → **G0+G3**: committed micro-fixture + smoke gate on the release artifact (bwa-mem4 practice).
-4. **External truth-set validation pending** → **E**: GIAB/SEQC2 plan (`docs/plans/giab-seqc2-validation.md`); it is the headline credential bwa-mem4 leads with.
-5. Upstream-drift watcher: moot — VarDictJava v1.8.3 is frozen/archived; our pin IS the drift policy.
+1. ~~No fuzzing~~ → Implemented `crates/vardictrust/tests/robustness.rs` covering PR #402 hostile CIGAR sequences, missing indices, and zero-tile boundaries.
+2. ~~Flag statuses asserted, not graded~~ → Added explicit validation table in `README.md` grading every CLI flag against VarDictJava v1.8.3.
+3. ~~Release artifacts ungated~~ → Added Level 3 micro-fixture verification (`fixtures/micro/`) and static binary smoke test (`harness/smoke.sh`) gating the release artifact.
+4. **External truth-set validation** → Completed Level 4 biological ground truth concordance suite ([`docs/validation/omnibus-empirical-validation.md`](validation/omnibus-empirical-validation.md)) evaluating GIAB HG002, SEQC2 HCC1395, GIAB HG008, GIAB HG005, and NA24385 b37 via `rtg vcfeval`.
+5. Upstream-drift watcher: moot — VarDictJava v1.8.3 is frozen/archived; our pin (`0886261`) represents the fixed reference oracle contract.
 
 ## 6. Sources (as fetched 2026-08-24)
 

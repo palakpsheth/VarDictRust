@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: GitHub Discussions
+    url: https://github.com/palakpsheth/VarDictRust/discussions
+    about: Ask questions, share pipeline recipes, and discuss bioinformatics workflows.
+  - name: Security Vulnerability Reporting
+    url: https://github.com/palakpsheth/VarDictRust/security/advisories/new
+    about: Privately report security vulnerabilities.

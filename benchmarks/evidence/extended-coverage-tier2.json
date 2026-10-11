@@ -1,0 +1,74 @@
+{
+  "benchmark": "extended-coverage-tier2",
+  "fingerprint": "cca94ddceec06a1a",
+  "result": "MATCH",
+  "modalities_tested": 9,
+  "modalities_passed": 9,
+  "diff_count": 0,
+  "modalities": {
+    "rna_splicing_intermediate": {
+      "format": "table",
+      "dataset": "Tcov_zero_SV_DEL_candidate3.bam",
+      "result": "MATCH",
+      "diffs": 0,
+      "rows": 16
+    },
+    "inversion_sv": {
+      "format": "vcf",
+      "dataset": "Colo829.chr20.INVSV.bam",
+      "result": "MATCH",
+      "diffs": 0,
+      "variants": 20
+    },
+    "duplication_sv": {
+      "format": "vcf",
+      "dataset": "Colo829.chr20.DUPDiscSV.bam",
+      "result": "MATCH",
+      "diffs": 0,
+      "variants": 71
+    },
+    "crispr_targets": {
+      "format": "table",
+      "dataset": "Colo829.chr20.CRISPR.bam",
+      "result": "MATCH",
+      "diffs": 0,
+      "variants": 3
+    },
+    "paired_unique": {
+      "format": "vcf",
+      "dataset": "HG002.chr20.bam",
+      "result": "MATCH",
+      "diffs": 0,
+      "variants": 110
+    },
+    "adapter_trimming": {
+      "format": "vcf",
+      "dataset": "HG002.chr20.bam",
+      "result": "MATCH",
+      "diffs": 0,
+      "variants": 158
+    },
+    "realignment_bypass": {
+      "format": "vcf",
+      "dataset": "HG002.chr20.bam",
+      "result": "MATCH",
+      "diffs": 0,
+      "variants": 156
+    },
+    "sv_bypass": {
+      "format": "vcf",
+      "dataset": "HG002.chr20.bam",
+      "result": "MATCH",
+      "diffs": 0,
+      "variants": 155
+    },
+    "n_base_counting": {
+      "format": "vcf",
+      "dataset": "HG002.chr20.bam",
+      "result": "MATCH",
+      "diffs": 0,
+      "variants": 158
+    }
+  },
+  "timestamp": "2026-10-10T23:33:42Z"
+}

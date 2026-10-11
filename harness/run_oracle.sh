@@ -10,6 +10,11 @@ for arg in "$@"; do
   case "$arg" in
     --*) EXTRA_ARGS+=("$arg") ;;
     -[a-zA-Z]*)
+      case "${arg:1}" in
+        adaptor|chimeric|deldupvar|fisher|DP|mfreq|nmfreq|th|UN|VS)
+          # Java multi-char single-dash options (CmdParser.java buildOptions) — never split.
+          EXTRA_ARGS+=("$arg"); continue ;;
+      esac
       opt="${arg:0:2}"
       val="${arg:2}"
       if [ -n "$val" ]; then
@@ -49,24 +54,41 @@ for arg in "${EXTRA_ARGS[@]}"; do
   fi
 done
 
+tmp_contigs=""
+if [ -f "${REF}.fai" ]; then
+  tmp_contigs=$(mktemp)
+  awk '{print $1"\t0\t"$2}' "${REF}.fai" > "$tmp_contigs"
+fi
+trap 'rm -f "$tmp_contigs"' EXIT
+
 if [[ "$BAM" == *"|"* ]]; then  # paired/somatic
   conda run -n vardict-oracle bash -c \
     '
+    set -euo pipefail
+    V2V_ARGS=()
+    if [ -n "$8" ] && [ -f "$8" ]; then
+      V2V_ARGS=(-G "$1" -b "$8")
+    fi
     if [ "$7" = true ]; then
-      vardict-java -G "$1" -f "$2" -N "$3" -b "$4" -c 1 -S 2 -E 3 -g 4 "${@:8}" "$5" | var2vcf_paired.pl -N "$3" -f "$2" > "$6"
+      vardict-java -G "$1" -f "$2" -N "$3" -b "$4" -c 1 -S 2 -E 3 -g 4 "${@:9}" "$5" | var2vcf_paired.pl -N "$3" -f "$2" "${V2V_ARGS[@]}" > "$6"
     else
-      vardict-java -G "$1" -f "$2" -N "$3" -b "$4" -c 1 -S 2 -E 3 -g 4 "${@:8}" "$5" | testsomatic.R | var2vcf_paired.pl -N "$3" -f "$2" > "$6"
+      vardict-java -G "$1" -f "$2" -N "$3" -b "$4" -c 1 -S 2 -E 3 -g 4 "${@:9}" "$5" | testsomatic.R | var2vcf_paired.pl -N "$3" -f "$2" "${V2V_ARGS[@]}" > "$6"
     fi
     ' \
-    _ "$REF" "$AF" "$SAMPLE" "$BAM" "$BED" "$OUT" "$has_fisher" "${EXTRA_ARGS[@]}"
+    _ "$REF" "$AF" "$SAMPLE" "$BAM" "$BED" "$OUT" "$has_fisher" "$tmp_contigs" "${EXTRA_ARGS[@]}"
 else
   conda run -n vardict-oracle bash -c \
     '
+    set -euo pipefail
+    V2V_ARGS=()
+    if [ -n "$8" ] && [ -f "$8" ]; then
+      V2V_ARGS=(-G "$1" -b "$8")
+    fi
     if [ "$7" = true ]; then
-      vardict-java -G "$1" -f "$2" -N "$3" -b "$4" -c 1 -S 2 -E 3 -g 4 "${@:8}" "$5" | var2vcf_valid.pl -N "$3" -E -f "$2" > "$6"
+      vardict-java -G "$1" -f "$2" -N "$3" -b "$4" -c 1 -S 2 -E 3 -g 4 "${@:9}" "$5" | var2vcf_valid.pl -N "$3" -E -f "$2" "${V2V_ARGS[@]}" > "$6"
     else
-      vardict-java -G "$1" -f "$2" -N "$3" -b "$4" -c 1 -S 2 -E 3 -g 4 "${@:8}" "$5" | teststrandbias.R | var2vcf_valid.pl -N "$3" -E -f "$2" > "$6"
+      vardict-java -G "$1" -f "$2" -N "$3" -b "$4" -c 1 -S 2 -E 3 -g 4 "${@:9}" "$5" | teststrandbias.R | var2vcf_valid.pl -N "$3" -E -f "$2" "${V2V_ARGS[@]}" > "$6"
     fi
     ' \
-    _ "$REF" "$AF" "$SAMPLE" "$BAM" "$BED" "$OUT" "$has_fisher" "${EXTRA_ARGS[@]}"
+    _ "$REF" "$AF" "$SAMPLE" "$BAM" "$BED" "$OUT" "$has_fisher" "$tmp_contigs" "${EXTRA_ARGS[@]}"
 fi
