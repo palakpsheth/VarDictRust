@@ -47,6 +47,7 @@ To provide definitive, reproducible proof of compliance, VarDictRust was evaluat
 ¹ **Cpp third arm (advisory, never gating).** Every gate arm above runs beside pinned **vardictcpp 3 `hc52dbad_0` bioconda** (`benchmarks/env/vardict-oracle.yml`, same env as the Java oracle). The release gate stays **java==rust**; a cpp MISMATCH/SKIP never changes a verdict (`CPP_SKIP=1` escapes the arm). Cpp numbers live only in the linked evidence `extra` (`cpp_version`, `cpp_head`, `cpp_wall_s`, `cpp_maxrss_kb`, `cpp_f1`, `cpp_skip_reason`) and are never duplicated here. Known cpp divergences (header provenance + `END` INFO key, `-J`/`-j` parsed-but-ignored, amplicon-needs-BED, concatenated flags rejected) are normalized and documented in [`docs/upstream-bugs.md`](../upstream-bugs.md).
 
 
+
 ---
 
 ## 2. Three-Tier Validation Hierarchy & Dual-Track Framework
@@ -514,7 +515,7 @@ All benchmarks were recorded on identical dedicated hardware (AMD Ryzen, Ubuntu 
 | **GIAB HG008 Somatic PDAC** | 8 cores | 1:10.99 | 0:49.48 | **1.4× faster** | 5.7 GB | 1.2 GB | 0.21× (4.8× lower) | advisory (see evidence) |
 | **Whole Chromosome 1 Scale (249 Mbp)** | 1 → 8 cores | 57m 16s (1 core) | 11m 49s (8 cores) | **4.85× parallel** | OOM / Unbounded | 2.9 GB (249 Mb) vs 2.1 GB (10 Mb) | **1.39× flat RSS scaling** | advisory (see evidence) |
 
-¹ Cpp runs beside each arm above under the same pins (`-th 8`, `LC_ALL=C /usr/bin/time -v`, taskset-recorded); `--chunk` deliberately unpinned (cpp default rewrites the `Seg` column). Cpp wall/RSS numbers live only in the linked evidence `extra` (`cpp_wall_s`, `cpp_maxrss_kb`/`cpp_rss_kb`) and are never duplicated here.
+¹ Cpp runs beside each arm above under the same pins (`-th 8`, `LC_ALL=C /usr/bin/time -v`, taskset-recorded); `--chunk` deliberately unpinned (cpp default rewrites the `Seg` column). Cpp wall/RSS numbers live only in the linked evidence `extra` (`cpp_wall_s`, `cpp_maxrss_kb`) and are never duplicated here.
 
 ### 12.1 Memory Scaling: Why VarDictRust Scales to WGS
 VarDictJava holds entire regional chromosome structures in JVM heap collections, leading to JVM heap exhaustion and Out-Of-Memory errors on deep WGS (issues #197, #384).

@@ -25,7 +25,7 @@ for n in sys.argv[1:]:
     c = d.get("cpp_time")
     if c and c.get("wall") is not None and c.get("max_rss_kb") is not None:
         cw, cm = secs(c["wall"]), int(c["max_rss_kb"])
-        row.update({"cpp_wall_s": cw, "cpp_rss_kb": cm,
+        row.update({"cpp_wall_s": cw, "cpp_maxrss_kb": cm,
                     "cpp_wall_ratio": round(cw / jw, 4), "cpp_rss_ratio": round(cm / jm, 4)})
     else:
         row["cpp"] = "SKIP: no cpp_time in evidence"
