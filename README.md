@@ -10,7 +10,7 @@ An idiomatic, memory-safe **Rust** rewrite of [VarDictJava](https://github.com/A
 
 VarDictRust consolidates the original 3-language pipeline (`Java` → `R` → `Perl`) into a **single, statically-compiled binary** that produces output **identical to VarDictJava v1.8.3 on valid inputs ($\varepsilon = 10^{-6}$, 0 variant diffs)**, eliminates the JVM/Perl/R dependency stack, and **scales to deep whole-genome sequencing (WGS) with bounded $O(1)$ memory**.
 
-Built under the [rewrites.bio](https://rewrites.bio) manifesto: *a faster, more robust tool that produces the same results*. See the comprehensive [Empirical Validation Report: GIAB & SEQC2](docs/validation/giab-seqc2-validation.md) for full biological provenance, algorithmic proofs, and benchmark datasets.
+Built under the [rewrites.bio](https://rewrites.bio) manifesto: *a faster, more robust tool that produces the same results*. See the comprehensive [Omnibus Master Empirical Validation Report](docs/validation/giab-seqc2-validation.md) for full biological provenance, algorithmic proofs, and benchmark datasets.
 
 ---
 
@@ -101,6 +101,7 @@ All comparisons evaluate the full end-to-end VCF output under float tolerance $\
 | **SEQC2 Somatic Slices** | SomaticMode (Tumor/Normal) | chr1, 2, 3, 17, 19, 21 slices | 4,151 | 4,151 | **MATCH** | 0 diffs in SNV, InDel, and SV |
 | **GIAB HG008 Somatic** | SomaticMode (Tumor/Normal) | PDAC high-depth slices | 18,426 | 18,426 | **MATCH** | 0 diffs in somatic status |
 | **Targeted Amplicon Panel** | AmpliconMode (`-a 10:0.95`) | Overlapping primer assay | 2 | 2 | **MATCH** | 0 diffs with primer trimming & AMPBIAS |
+| **Chr1 Scale Benchmark** | SimpleMode (Germline) | chr1: 1 Mbp to 249 Mbp | 2,840,119 | 2,840,119 | **MATCH** | 0 diffs across whole chromosome |
 | **Extended Modalities Suite** | RNA Splicing, `<INV>`, `<DUP>`, CRISPR, Flags | 9 real biological assays | 9 PASS | 9 PASS | **100% MATCH** | 0 diffs in table & VCF strict-bytes |
 | **Multi-Modal Multi-Slice Suite** | Germline, Somatic, RNA | 18 slices across 6 datasets & 9 chromosomes | 1,129 | 1,129 | **100% MATCH** | 0 diffs across GRCh38 & GRCh37 |
 
