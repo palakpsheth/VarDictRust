@@ -112,7 +112,7 @@ The table below summarizes the complete testing inventory executed across the de
 | **3** | **Level 3: Micro Differential** | `fixtures/micro/` | 1 fixture | PR gate & Acceptance Item 3 | Live Oracle MATCH (0 diffs) | $\sim 2\text{ s}$ |
 | **3** | **Level 3: Standard Slices** | `harness/slices.tsv` (`s1a`–`s9`) | 10 slices | Inner loop (`rgate`) & Acceptance Item 3 | Live Oracle MATCH (0 diffs) | $\sim 45\text{ s}$ |
 | **3** | **Level 3: Primary Public WGS/WES** | `hg008`, `seqc2`, `hg002`, `amplicon` | 4 cohorts | Evidence recertification & Acceptance | MATCH ($\varepsilon \le 10^{-6}$, 0 diffs) | $\sim 25\text{ m}$ |
-| **3** | **Level 3: Extended Modalities** | `harness/run_extended_coverage.sh` | 9 modes | Release Acceptance Item 3 | MATCH (RNA, SVs, flags, 0 diffs) | $\sim 30\text{ s}$ |
+| **3** | **Level 3: Extended Modalities** | `harness/run_extended_coverage.sh` | 17 modes | Release Acceptance Item 3 | MATCH (RNA, SVs, flags, 0 diffs) | $\sim 30\text{ s}$ |
 | **3** | **Level 3: Multi-Slice Expansion** | `harness/run_multimodal_slices.sh` | 18 slices | Release Acceptance Item 3 | MATCH (6 cohorts, 9 chrs, 0 diffs) | $\sim 35\text{ s}$ |
 | **4** | **Level 4: Truth Concordance (HG002)** | `harness/concordance_germline.sh` | 1 evaluation | Release Acceptance Item 6 | $F_1 = 0.9699$, Bitwise Site EQUAL | $\sim 2\text{ m}$ |
 | **4** | **Level 4: Truth Concordance (SEQC2)** | `harness/concordance.sh seqc2` | 1 evaluation | Release Acceptance Item 6 | $F_1 = 0.1555$, Bitwise Site EQUAL | $\sim 4\text{ m}$ |
@@ -243,24 +243,24 @@ VarDictRust maintains **16 committed, cryptographically fingerprinted evidence f
 
 | Benchmark Target | Evidence JSON | Modality / Assay | Variant Count | Gate Status | Certified Invariant Fingerprint |
 | :--- | :--- | :--- | :---: | :---: | :---: |
-| **Synthetic Micro** | *In-line execution* | Simple Germline (Synthetic) | 2 | **MATCH** | `dace5891208a52d2` |
-| **10 Standard Slices** | *In-line execution* (`s1a`–`s9`) | Germline / Somatic Slices | 100+ | **MATCH** | `dace5891208a52d2` |
-| **GIAB HG008 Somatic** | `hg008-tier2.json` | Somatic Paired WGS (PDAC) | 18,426 | **MATCH** | `dace5891208a52d2` |
-| **GIAB HG008 CRAM Twin**| `hg008-cram-twin.json` | CRAM vs BAM Twin Parity | 18,426 | **MATCH** | `dace5891208a52d2` |
-| **SEQC2 Somatic Exome** | `seqc2-exome-tier2.json` | Somatic Paired WES (HCC1395) | 623,444 | **MATCH** | `dace5891208a52d2` |
-| **SEQC2 Somatic Slices**| `seqc2-slices-tier2.json` | Multi-Chr Slices (chr1-21) | 4,151 | **MATCH** | `dace5891208a52d2` |
-| **GIAB HG002 Germline** | `hg002-tier2.json` | Germline WGS (chr20 20 Mbp) | 227,562 | **MATCH** | `dace5891208a52d2` |
-| **Targeted Amplicon** | `amplicon-tier2.json` | Overlapping Primer Panel | 2 | **MATCH** | `dace5891208a52d2` |
-| **Extended Modalities** | `extended-coverage-tier2.json` | 9 Modes (RNA, SVs, Flags) | 847 | **MATCH** | `dace5891208a52d2` |
-| **Multi-Modal Slices** | `multimodal-slices-tier2.json` | 18 Slices across 6 Cohorts | 1,129 | **MATCH** | `dace5891208a52d2` |
-| **GIAB HG002 Truth** | `hg002-truth.json` | NIST v4.2.1 High-Confidence | $F_1 = 0.9699$ | **EQUAL** | `dace5891208a52d2` |
-| **SEQC2 Somatic Truth** | `seqc2-truth.json` | SEQC2 v1.2.1 Somatic Truth | $F_1 = 0.1555$ | **EQUAL** | `dace5891208a52d2` |
-| **GIAB HG008 Truth** | `hg008-truth.json` | NIST Draft v0.3 Somatic Truth | $F_1 = 0.3856$ | **EQUAL** | `dace5891208a52d2` |
-| **GIAB HG005 Truth** | `hg005-truth.json` | NIST v4.2.1 Han Chinese WGS | $F_1 = 0.9667$ | **EQUAL** | `dace5891208a52d2` |
-| **GIAB NA24385 b37 Truth** | `na24385-b37-truth.json` | NIST v4.2.1 Ashkenazi Son b37 | $F_1 = 1.0000$ | **EQUAL** | `dace5891208a52d2` |
-| **Chr1 Scale Benchmark**| `scale.json` | Chromosome 1 Full Scaling | $S_8 = 4.85\times$ | **PASS** | `dace5891208a52d2` |
-| **Continuous Perf Budget**| `perf-budget.json` | 4 Target Workload Regression | Wall/RAM gates | **PASS** | `dace5891208a52d2` |
-| **Musl CI Distribution** | `musl-ci.json` | Static PIE Linux Packaging | Byte identity | **PASS** | `dace5891208a52d2` |
+| **Synthetic Micro** | *In-line execution* | Simple Germline (Synthetic) | 2 | **MATCH** | `c1307fbc7f4f38cb` |
+| **10 Standard Slices** | *In-line execution* (`s1a`–`s9`) | Germline / Somatic Slices | 100+ | **MATCH** | `c1307fbc7f4f38cb` |
+| **GIAB HG008 Somatic** | `hg008-tier2.json` | Somatic Paired WGS (PDAC) | 18,426 | **MATCH** | `bc962a9db4365ca4` |
+| **GIAB HG008 CRAM Twin**| `hg008-cram-twin.json` | CRAM vs BAM Twin Parity | 18,426 | **MATCH** | `bc962a9db4365ca4` |
+| **SEQC2 Somatic Exome** | `seqc2-exome-tier2.json` | Somatic Paired WES (HCC1395) | 623,444 | **MATCH** | `bc962a9db4365ca4` |
+| **SEQC2 Somatic Slices**| `seqc2-slices-tier2.json` | Multi-Chr Slices (chr1-21) | 4,151 | **MATCH** | `bc962a9db4365ca4` |
+| **GIAB HG002 Germline** | `hg002-tier2.json` | Germline WGS (chr20 20 Mbp) | 227,562 | **MATCH** | `bc962a9db4365ca4` |
+| **Targeted Amplicon** | `amplicon-tier2.json` | Overlapping Primer Panel | 2 | **MATCH** | `bc962a9db4365ca4` |
+| **Extended Modalities** | `extended-coverage-tier2.json` | 17 Modes (RNA, SVs, All Supported Flags) | 4,993 | **MATCH** | `c1307fbc7f4f38cb` |
+| **Multi-Modal Slices** | `multimodal-slices-tier2.json` | 18 Slices across 6 Cohorts | 1,129 | **MATCH** | `c1307fbc7f4f38cb` |
+| **GIAB HG002 Truth** | `hg002-truth.json` | NIST v4.2.1 High-Confidence | $F_1 = 0.9699$ | **EQUAL** | `bc962a9db4365ca4` |
+| **SEQC2 Somatic Truth** | `seqc2-truth.json` | SEQC2 v1.2.1 Somatic Truth | $F_1 = 0.1555$ | **EQUAL** | `bc962a9db4365ca4` |
+| **GIAB HG008 Truth** | `hg008-truth.json` | NIST Draft v0.3 Somatic Truth | $F_1 = 0.3856$ | **EQUAL** | `bc962a9db4365ca4` |
+| **GIAB HG005 Truth** | `hg005-truth.json` | NIST v4.2.1 Han Chinese WGS | $F_1 = 0.9667$ | **EQUAL** | `bc962a9db4365ca4` |
+| **GIAB NA24385 b37 Truth** | `na24385-b37-truth.json` | NIST v4.2.1 Ashkenazi Son b37 | $F_1 = 1.0000$ | **EQUAL** | `bc962a9db4365ca4` |
+| **Chr1 Scale Benchmark**| `scale.json` | Chromosome 1 Full Scaling | $S_8 = 4.85\times$ | **PASS** | `bc962a9db4365ca4` |
+| **Continuous Perf Budget**| `perf-budget.json` | 4 Target Workload Regression | Wall/RAM gates | **PASS** | `bc962a9db4365ca4` |
+| **Musl CI Distribution** | `musl-ci.json` | Static PIE Linux Packaging | Byte identity | **PASS** | `bc962a9db4365ca4` |
 
 ---
 

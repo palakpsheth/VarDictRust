@@ -1,9 +1,9 @@
 {
   "benchmark": "extended-coverage-tier2",
-  "fingerprint": "c6ed06c2f99edd34",
+  "fingerprint": "c1307fbc7f4f38cb",
   "result": "MATCH",
-  "modalities_tested": 9,
-  "modalities_passed": 9,
+  "modalities_tested": 17,
+  "modalities_passed": 17,
   "diff_count": 0,
   "modalities": {
     "rna_splicing_intermediate": {
@@ -68,7 +68,63 @@
       "result": "MATCH",
       "diffs": 0,
       "variants": 1047
+    },
+    "read_dedup": {
+      "format": "vcf",
+      "dataset": "NA24385_chr_20_20156208_20234556.bam",
+      "result": "MATCH",
+      "diffs": 0,
+      "variants": 4
+    },
+    "three_prime_shift": {
+      "format": "vcf",
+      "dataset": "NA24385_chr_20_20156208_20234556.bam",
+      "result": "MATCH",
+      "diffs": 0,
+      "variants": 3
+    },
+    "out_mapq_filter": {
+      "format": "vcf",
+      "dataset": "NA24385_chr_20_20156208_20234556.bam",
+      "result": "MATCH",
+      "diffs": 0,
+      "variants": 4
+    },
+    "region_extension": {
+      "format": "vcf",
+      "dataset": "NA24385_chr_20_20156208_20234556.bam",
+      "result": "MATCH",
+      "diffs": 0,
+      "variants": 6
+    },
+    "segment_columns": {
+      "format": "vcf",
+      "dataset": "NA24385_chr_20_20156208_20234556.bam",
+      "result": "MATCH",
+      "diffs": 0,
+      "variants": 4
+    },
+    "min_match_len": {
+      "format": "vcf",
+      "dataset": "NA24385_chr_20_20156208_20234556.bam",
+      "result": "MATCH",
+      "diffs": 0,
+      "variants": 4
+    },
+    "deldupvar_handling": {
+      "format": "vcf",
+      "dataset": "NA24385_chr_20_20156208_20234556.bam",
+      "result": "MATCH",
+      "diffs": 0,
+      "variants": 4
+    },
+    "default_printer_err": {
+      "format": "table",
+      "dataset": "NA24385_chr_20_20156208_20234556.bam",
+      "result": "MATCH",
+      "diffs": 0,
+      "variants": 4
     }
   },
-  "timestamp": "2026-10-11T16:12:11Z"
+  "timestamp": "2026-10-11T20:17:22Z"
 }

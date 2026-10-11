@@ -171,8 +171,8 @@ Flag parity with VarDictJava v1.8.3 is defined against `CmdParser.java` and veri
 | `-c` | — | BED chromosome column (1-based) | `3` | `corpus` |
 | `-S` | — | BED start column | `7` | `corpus` |
 | `-E` | — | BED end column | `8` | `corpus` |
-| `-s` | — | BED segment-start column | `10` (= `-S` if set) | `unexercised` |
-| `-e` | — | BED segment-end column | `11` (= `-E` if set) | `unexercised` |
+| `-s` | — | BED segment-start column | `10` (= `-S` if set) | `corpus` |
+| `-e` | — | BED segment-end column | `11` (= `-E` if set) | `corpus` |
 | `-g` | — | BED gene column | `13` | `corpus` |
 | — | `--threads` | Thread count (`-th`/`--th` aliases; bare `-th` = all cores) | all cores | `no-output` |
 | `-k` | — | Local realignment 0/1 | `1` | `corpus` |
@@ -182,19 +182,19 @@ Flag parity with VarDictJava v1.8.3 is defined against `CmdParser.java` and veri
 | `-Q` | — | Minimum mapping quality | — | `corpus` |
 | `-P` | — | Mean read position filter | `5` | `corpus` |
 | `-m` | — | Maximum mismatches | `8` | `corpus` |
-| `-M` | — | Min match+insertion read length (shorter reads ignored) | `0` | `unexercised` |
+| `-M` | — | Min match+insertion read length (shorter reads ignored) | `0` | `corpus` |
 | `-V` | — | Min normal AF (somatic) | `0.05` | `corpus` |
 | `-U` | `--nosv` | Disable SV calling | off | `corpus` |
 | `-L` | — | SV minimum length | `1000` | `corpus` |
 | — | `--emit-intermediate` | Emit legacy `.var` table instead of VCF | off | `corpus` |
 | — | `--fisher` | In-engine Fisher exact test (p-value / odds ratio) | off | `corpus` |
 | — | `--tile-size` | Region tile size in bp (bounded-memory WGS) | auto | `no-output` |
-| `-x` | — | BED region extension (bp) | `0` | `unexercised` |
+| `-x` | — | BED region extension (bp) | `0` | `corpus` |
 | `-X` | — | Nucleotide extension | `2` | `corpus` |
-| `-3` | — | Move indels to 3′ (Java `moveIndelsTo3`) | off | `unexercised` |
+| `-3` | — | Move indels to 3′ (Java `moveIndelsTo3`) | off | `corpus` |
 | `-B` | — | Minimum reads for bias | `2` | `corpus` |
 | `-o` | — | qratio filter | `1.5` | `corpus` |
-| `-O` | — | Output MAPQ threshold | `0` | `unexercised` |
+| `-O` | — | Output MAPQ threshold | `0` | `corpus` |
 | `-I` | — | Indel size | `50` | `corpus` |
 | `-z` | — | BED coordinates are 0-based | off (1-based) | `corpus` |
 | `-F` | — | SAM flag filter | `0x504` | `corpus` |
@@ -205,7 +205,7 @@ Flag parity with VarDictJava v1.8.3 is defined against `CmdParser.java` and veri
 | `-h` | `--header` | Print `.var` column header before results | off | `corpus` |
 | `-v` | — | Accepted and ignored (never read by VarDictJava v1.8.3) | — | `parity-exempt` |
 | — | `--chimeric` | Chimeric read handling | off | `corpus` |
-| — | `--deldupvar` | Delete/dup variant handling | off | `unexercised` |
+| — | `--deldupvar` | Delete/dup variant handling | off | `corpus` |
 | — | `--mfreq` | Mono frequency threshold | `0.25` | `corpus` |
 | — | `--nmfreq` | Normal mono frequency threshold | `0.1` | `corpus` |
 | `-J` | — | CRISPR cutting site | — | `corpus` |
@@ -213,9 +213,9 @@ Flag parity with VarDictJava v1.8.3 is defined against `CmdParser.java` and veri
 | `-i` | `--splice` | Splice mode | off | `corpus` |
 | `-p` | — | Pileup-only mode | off | `corpus` |
 | `-D` | `--debug` | Debug mode (append per-read debug columns to `.var`) | off | `corpus` |
-| — | `--DP` | Debug print destination (`OUT` or `ERR`) | — | `unexercised` |
+| — | `--DP` | Debug print destination (`OUT` or `ERR`; alias: `--defaultPrinter`) | — | `corpus` |
 | `-y` | `--verbose` | Verbose mode | off | `no-output` |
-| `-t` | `--dedup` | Remove duplicated reads (one pair per start position) | off | `unexercised` |
+| `-t` | `--dedup` | Remove duplicated reads (one pair per start position) | off | `corpus` |
 | — | `--adaptor` | Adaptor sequence(s), comma-separated, excluded from realignment | — | `corpus` |
 | `-d` | — | Delimiter for splitting region info | `\t` | `corpus` |
 | `-u` | — | Unique mode: count overlapping mates once (forward read) | off | `corpus` |
