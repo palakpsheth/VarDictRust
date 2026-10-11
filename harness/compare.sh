@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 # Usage: compare.sh <ref> <bam|tumor|normal> <bed> [sample] [extra args...]
-# Env: AF_THR (default 0.01) | KEEP_DIR (persist java.vcf rust.vcf compare.txt *.time)
+# Env: AF_THR (default 0.01) | KEEP_DIR (persist java.vcf rust.vcf compare.txt *.time +
+#      cpp.vcf cpp.time compare_cpp.txt extra.json)
 #      MIN_VARIANTS (default 0) | CMP_TIMEOUT per engine (default 12h) | CMP_STRICT=1 (report-only, T11)
 #      CPP_SKIP=1 (skip advisory vardictcpp third arm; still prints `CPP: SKIP:`)
 # Exit 0 = MATCH; non-zero = MISMATCH or engine failure. Decide on the EXIT CODE, never on text.
@@ -65,5 +66,30 @@ fi
 if [ -n "$cpp_line" ]; then
   [ -f "$OUT/compare_cpp.txt" ] || echo "$cpp_line" > "$OUT/compare_cpp.txt"
   echo "$cpp_line"
+fi
+# Persist third-arm evidence keys for record_evidence.py (ev_cpp presence gate):
+# success verdicts -> extra.cpp_version; any SKIP -> extra.cpp_skip_reason.
+# Merge-only (never clobbers other extra.* keys) and never touches the gate exit.
+if [ -n "${KEEP_DIR:-}" ]; then
+  case "$cpp_line" in
+    "CPP: SKIP: "*)
+      cpp_key="cpp_skip_reason"; cpp_val="${cpp_line#CPP: SKIP: }" ;;
+    *)
+      cpp_key="cpp_version"
+      cpp_val=$(conda list -n vardict-oracle vardictcpp 2>/dev/null | awk '/^vardictcpp[[:space:]]/{print "vardictcpp " $2 " " $3 " bioconda"}')
+      [ -n "$cpp_val" ] || cpp_val=$(conda run -n vardict-oracle vardictcpp --version 2>/dev/null | head -n 1) ;;
+  esac
+  if [ -n "${cpp_val:-}" ]; then
+    python3 - "$OUT/extra.json" "$cpp_key" "$cpp_val" <<'PYEOF' || true
+import json, sys
+p, k, v = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    with open(p) as f: d = json.load(f)
+    if not isinstance(d, dict): d = {}
+except Exception: d = {}
+d[k] = v
+with open(p, "w") as f: json.dump(d, f, indent=2, sort_keys=True)
+PYEOF
+  fi
 fi
 exit "$rc"

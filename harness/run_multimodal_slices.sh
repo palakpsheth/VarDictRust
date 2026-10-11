@@ -30,6 +30,15 @@ fi
 
 CURRENT_FP=$(bash "$ROOT_DIR/harness/engine_fingerprint.sh")
 
+# Advisory vardictcpp third arm (never gating): staple the conda pin presence
+# into the evidence JSON for the ev_cpp presence gate (per-cell CPP lines in
+# the log carry match/skip detail; this key only asserts the arm was wired).
+if CPP_PIN_STR=$(conda list -n vardict-oracle vardictcpp 2>/dev/null | awk '/^vardictcpp[[:space:]]/{print "vardictcpp " $2 " " $3 " bioconda"}') && [ -n "$CPP_PIN_STR" ]; then
+    CPP_JSON_LINE="'extra': {'cpp_version': '$CPP_PIN_STR'},"
+else
+    CPP_JSON_LINE="'extra': {'cpp_skip_reason': 'vardictcpp not available in conda env vardict-oracle'},"
+fi
+
 TMPDIR=$(mktemp -d /tmp/vardict_multimodal_XXXXXX)
 trap 'rm -rf "$TMPDIR"' EXIT
 
@@ -227,6 +236,7 @@ data = {
     'slices_passed': $PASSED_COUNT,
     'total_variants_evaluated': $TOTAL_VARIANTS,
     'float_tolerance_eps': 1e-6,
+    $CPP_JSON_LINE
     'result': 'MATCH' if $PASSED_COUNT == $TOTAL_SLICES else 'MISMATCH',
     'slices': [$(IFS=,; echo "${SLICE_RESULTS[*]}")]
 }

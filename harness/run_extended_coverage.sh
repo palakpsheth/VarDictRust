@@ -15,6 +15,15 @@ THREADS=8
 # Certified release engine fingerprint (derived dynamically)
 FP=$(bash "$ROOT_DIR/harness/engine_fingerprint.sh")
 
+# Advisory vardictcpp third arm (never gating): staple the conda pin presence
+# into the evidence JSON for the ev_cpp presence gate (per-cell CPP lines in
+# the log carry match/skip detail; this key only asserts the arm was wired).
+if CPP_PIN_STR=$(conda list -n vardict-oracle vardictcpp 2>/dev/null | awk '/^vardictcpp[[:space:]]/{print "vardictcpp " $2 " " $3 " bioconda"}') && [ -n "$CPP_PIN_STR" ]; then
+    CPP_EXTRA_JSON="\"cpp_version\": \"$CPP_PIN_STR\""
+else
+    CPP_EXTRA_JSON="\"cpp_skip_reason\": \"vardictcpp not available in conda env vardict-oracle\""
+fi
+
 # Verify binary
 TARGET_BIN="$ROOT_DIR/target/release/vardictrust"
 if [[ ! -x "$TARGET_BIN" ]]; then
@@ -450,7 +459,8 @@ if [[ "$PASSED" -eq "$TOTAL" ]]; then
       "variants": $M17_VARS
     }
   },
-  "timestamp": "$TIMESTAMP"
+  "timestamp": "$TIMESTAMP",
+  "extra": { $CPP_EXTRA_JSON }
 }
 EOF
     echo "Evidence recorded: $EVIDENCE_FILE"

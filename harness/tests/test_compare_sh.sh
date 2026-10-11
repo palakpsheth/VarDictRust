@@ -75,4 +75,7 @@ grep -qx MATCH <<<"$out9" || { echo "FAIL9 no gate MATCH"; fail=1; }
 grep -q '^CPP: MISMATCH' <<<"$out9" || { echo "FAIL9 no CPP MISMATCH (rc1=1 rc2=0)"; fail=1; }
 grep -q 'synthetic java!=cpp' "$T/k9/compare_cpp.txt" || { echo "FAIL9 no rc1 evidence"; fail=1; }
 grep -q 'synthetic cpp==rust' "$T/k9/compare_cpp.txt" || { echo "FAIL9 no rc2 evidence"; fail=1; }
+# CPP10: third-arm evidence keys persisted for ev_cpp (record_evidence.py reads extra.json).
+python3 -c "import json;d=json.load(open('$T/k7/extra.json'));assert 'cpp_version' in d, sorted(d)" || { echo "FAIL10 no cpp_version"; fail=1; }
+python3 -c "import json;d=json.load(open('$T/k8/extra.json'));assert 'cpp_skip_reason' in d, sorted(d)" || { echo "FAIL10 no cpp_skip_reason"; fail=1; }
 [ $fail -eq 0 ] && echo "PASS test_compare_sh"; exit $fail
