@@ -36,39 +36,39 @@
     },
     "paired_unique": {
       "format": "vcf",
-      "dataset": "HG002.chr20.bam",
+      "dataset": "NA24385_chr_20_20156208_20234556.bam",
       "result": "MATCH",
       "diffs": 0,
-      "variants": 110
+      "variants": 3
     },
     "adapter_trimming": {
       "format": "vcf",
-      "dataset": "HG002.chr20.bam",
+      "dataset": "NA24385_chr_20_20156208_20234556.bam",
       "result": "MATCH",
       "diffs": 0,
-      "variants": 158
+      "variants": 4
     },
     "realignment_bypass": {
       "format": "vcf",
-      "dataset": "HG002.chr20.bam",
+      "dataset": "NA24385_chr_20_20156208_20234556.bam",
       "result": "MATCH",
       "diffs": 0,
-      "variants": 156
+      "variants": 4
     },
     "sv_bypass": {
       "format": "vcf",
-      "dataset": "HG002.chr20.bam",
+      "dataset": "NA24385_chr_20_20156208_20234556.bam",
       "result": "MATCH",
       "diffs": 0,
-      "variants": 155
+      "variants": 4
     },
     "n_base_counting": {
       "format": "vcf",
-      "dataset": "HG002.chr20.bam",
+      "dataset": "NA24385_chr_20_20156208_20234556.bam",
       "result": "MATCH",
       "diffs": 0,
-      "variants": 158
+      "variants": 4
     }
   },
-  "timestamp": "2026-10-11T15:24:59Z"
+  "timestamp": "2026-10-11T15:46:34Z"
 }

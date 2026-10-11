@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Content hash of everything that can change engine output or the Tier-2 gate.
 set -euo pipefail
-git diff --quiet HEAD -- crates harness Cargo.lock \
-  || { echo "engine_fingerprint: uncommitted changes under crates/ harness/ Cargo.lock" >&2; exit 1; }
+git diff --quiet HEAD -- crates/vardictrust-core/src crates/vardictrust/src harness/compare.sh harness/run_oracle.sh harness/compare_vcf.py Cargo.lock \
+  || { echo "engine_fingerprint: uncommitted changes under engine sources, comparator, or Cargo.lock" >&2; exit 1; }
 { git rev-parse HEAD:crates/vardictrust-core/src HEAD:crates/vardictrust/src \
     HEAD:harness/compare.sh HEAD:harness/run_oracle.sh HEAD:harness/compare_vcf.py
   cargo metadata --locked --format-version 1 | python3 -c 'import json,sys

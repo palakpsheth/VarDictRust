@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# VarDictRust Native Git Pre-Push Hook
+# Blocks direct pushes to main and enforces fast smoke & robustness gate (<30s).
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# 1. Parse push ref arguments from stdin
+# Format: <local_ref> <local_oid> <remote_ref> <remote_oid>
+HAS_BRANCH_DELETION=false
+while read -r local_ref local_oid remote_ref remote_oid; do
+    if [[ "$remote_ref" =~ refs/heads/main$ ]]; then
+        echo "================================================================================" >&2
+        echo " ERROR: Direct push to 'main' is forbidden by repository governance!" >&2
+        echo " All changes must be pushed to a feature branch and merged via Pull Request." >&2
+        echo "================================================================================" >&2
+        exit 1
+    fi
+    if [[ "$local_oid" =~ ^0+$ ]]; then
+        HAS_BRANCH_DELETION=true
+    fi
+done
+
+if [ "$HAS_BRANCH_DELETION" = true ]; then
+    exit 0
+fi
+
+# 2. Inspect changed files between HEAD and origin/main
+CHANGED_FILES=$(git diff --name-only origin/main...HEAD 2>/dev/null || git diff --name-only HEAD~1...HEAD 2>/dev/null || true)
+CODE_CHANGES=$(echo "$CHANGED_FILES" | grep -E '\.rs$|Cargo\.(toml|lock)$|crates/|harness/' || true)
+
+if [ -z "$CODE_CHANGES" ]; then
+    echo "=== [pre-push] Only docs/metadata changed; skipping engine smoke gate ==="
+    exit 0
+fi
+
+echo "=== [pre-push] Code changes detected; running fast pre-push smoke gate (<30s) ==="
+
+echo "[1/4] Checking formatting and lints..."
+cargo fmt --all -- --check
+cargo clippy --all-targets --all-features -- -D warnings
+
+echo "[2/4] Running crash robustness suite..."
+cargo test -p vardictrust --test robustness
+
+echo "[3/4] Running Tier-2 micro differential check against VarDictJava oracle..."
+cargo build -q --release -p vardictrust
+MIN_VARIANTS=1 bash "$ROOT_DIR/harness/compare.sh" "$ROOT_DIR/fixtures/micro/micro.ref.fa" "$ROOT_DIR/fixtures/micro/micro.bam" "$ROOT_DIR/fixtures/micro/micro.bed"
+
+echo "[4/4] Scanning commits for secrets..."
+GITLEAKS_BIN=""
+if command -v gitleaks >/dev/null 2>&1; then
+    GITLEAKS_BIN="gitleaks"
+elif [ -n "${CONDA_PREFIX:-}" ] && [ -x "${CONDA_PREFIX}/bin/gitleaks" ]; then
+    GITLEAKS_BIN="${CONDA_PREFIX}/bin/gitleaks"
+elif [ -x /home/palak/miniconda3/envs/g4-tools/bin/gitleaks ]; then
+    GITLEAKS_BIN="/home/palak/miniconda3/envs/g4-tools/bin/gitleaks"
+fi
+
+if [ -n "$GITLEAKS_BIN" ]; then
+    "$GITLEAKS_BIN" detect --source . -v
+fi
+
+echo "=== [pre-push] All pre-push gates PASSED ==="

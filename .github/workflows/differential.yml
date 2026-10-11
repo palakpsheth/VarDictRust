@@ -1,25 +1,33 @@
 name: Differential Testing
 on:
+  push:
+    branches: [main]
   pull_request:
-  # Nightly cron disabled until real fixtures exist; re-enable with:
-  #   schedule:
-  #     - cron: '0 4 * * *'
+
 jobs:
   differential:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          submodules: true
+          submodules: recursive
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
       - uses: conda-incubator/setup-miniconda@be893c923ea9cf1cf7cd510fbdde27c7e18cbdcb # v4.1.0
         with:
           auto-activate: true
+          miniconda-version: "latest"
       - name: Setup oracle
         run: bash harness/setup_oracle.sh
-      - name: Build release
-        run: cargo build --release
-      - name: Run differential tests
+      - name: Materialize reference FASTAs
+        run: python3 harness/convert_fastas.py
+      - name: Build release binary
+        run: cargo build --release -p vardictrust
+      - name: Run Tier-2 micro differential test
+        run: bash harness/compare.sh fixtures/micro/micro.ref.fa fixtures/micro/micro.bam fixtures/micro/micro.bed
+      - name: Run committed slices differential suite
         run: |
-          echo "Differential testing placeholder — populated when fixtures are available"
-          # bash harness/compare.sh --all
+          for id in $(awk -F'\t' '!/^#/{print $1}' harness/slices.tsv); do
+            echo "=== Running slice: $id ==="
+            bash harness/run_slice.sh "$id"
+          done
