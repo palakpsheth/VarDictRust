@@ -56,4 +56,23 @@ out8=$(CPP_SKIP=1 KEEP_DIR="$T/k8" bash harness/compare.sh $M 2>&1); rc8=$?
 [ $rc8 -eq 0 ] || { echo "FAIL8 gate rc=$rc8"; fail=1; }
 grep -q '^CPP: SKIP:' <<<"$out8" || { echo "FAIL8 no CPP SKIP"; fail=1; }
 [ ! -e "$T/k8/cpp.vcf" ] || { echo "FAIL8 cpp ran despite SKIP"; fail=1; }
+# CPP9: first-comparator MISMATCH + second MATCH must still report CPP: MISMATCH
+# (both-rc regression for a7854d5; single-rc code saw only rc2 and misreported MATCH).
+# Stub python3 synthesizes java!=cpp (rc1=1) and cpp==rust (rc2=0); the gate call
+# (java+rust, no cpp) delegates to the real python3 so the gate stays honest.
+REAL_PY3=$(command -v python3)
+mkdir -p "$T/pybin"; cat > "$T/pybin/python3" <<EOF
+#!/usr/bin/env bash
+for a in "\$@"; do case "\$a" in *java.vcf) hj=1;; *cpp.vcf) hc=1;; *rust.vcf) hr=1;; esac; done
+if [ "\${hj:-0}" -eq 1 ] && [ "\${hc:-0}" -eq 1 ]; then echo "MISMATCH: synthetic java!=cpp (CPP9)"; exit 1; fi
+if [ "\${hc:-0}" -eq 1 ] && [ "\${hr:-0}" -eq 1 ]; then echo "MATCH (synthetic cpp==rust CPP9)"; exit 0; fi
+exec "$REAL_PY3" "\$@"
+EOF
+chmod +x "$T/pybin/python3"
+out9=$(PATH="$T/pybin:$PATH" MIN_VARIANTS=1 KEEP_DIR="$T/k9" bash harness/compare.sh $M 2>&1); rc9=$?
+[ $rc9 -eq 0 ] || { echo "FAIL9 gate rc=$rc9"; fail=1; }
+grep -qx MATCH <<<"$out9" || { echo "FAIL9 no gate MATCH"; fail=1; }
+grep -q '^CPP: MISMATCH' <<<"$out9" || { echo "FAIL9 no CPP MISMATCH (rc1=1 rc2=0)"; fail=1; }
+grep -q 'synthetic java!=cpp' "$T/k9/compare_cpp.txt" || { echo "FAIL9 no rc1 evidence"; fail=1; }
+grep -q 'synthetic cpp==rust' "$T/k9/compare_cpp.txt" || { echo "FAIL9 no rc2 evidence"; fail=1; }
 [ $fail -eq 0 ] && echo "PASS test_compare_sh"; exit $fail
