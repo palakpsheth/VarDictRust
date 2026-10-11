@@ -195,7 +195,7 @@ impl SamRecord {
 }
 
 pub enum IndexedSamReader {
-    Bam(noodles::bam::io::IndexedReader<noodles::bgzf::Reader<std::fs::File>>),
+    Bam(noodles::bam::io::IndexedReader<noodles::bgzf::io::Reader<std::fs::File>>),
     Cram(noodles::cram::io::IndexedReader<std::fs::File>),
 }
 
@@ -209,7 +209,7 @@ impl IndexedSamReader {
         match self {
             IndexedSamReader::Bam(reader) => {
                 let query = reader.query(header, region)?;
-                let iter = query.map(|record| {
+                let iter = query.records().map(|record| {
                     let rec = record?;
                     SamRecord::from_alignment_record(&rec, header)
                 });
@@ -217,7 +217,7 @@ impl IndexedSamReader {
             }
             IndexedSamReader::Cram(reader) => {
                 let query = reader.query(header, region)?;
-                let iter = query.map(|record| {
+                let iter = query.records().map(|record| {
                     let rec = record?;
                     SamRecord::from_alignment_record(&rec, header)
                 });
@@ -260,12 +260,12 @@ pub fn open_reader(
             match guard.as_ref() {
                 Some((cached_path, repo)) if cached_path == fasta_path => repo.clone(),
                 _ => {
-                    let fasta_reader = noodles::fasta::IndexedReader::new(
+                    let fasta_reader = noodles::fasta::io::IndexedReader::new(
                         std::io::BufReader::new(
                             std::fs::File::open(fasta_path)
                                 .map_err(crate::types::VardictError::Io)?,
                         ),
-                        noodles::fasta::fai::read(&fai_path)
+                        noodles::fasta::fai::fs::read(&fai_path)
                             .map_err(crate::types::VardictError::Io)?,
                     );
                     use noodles::fasta::repository::adapters::IndexedReader as FastaAdapter;

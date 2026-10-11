@@ -7,7 +7,7 @@ use crate::regions::Region as BedRegion;
 use crate::types::{Pos1, VardictError};
 use noodles::core::Region as NoodlesRegion;
 use noodles::fasta::fai;
-use noodles::fasta::IndexedReader;
+use noodles::fasta::io::IndexedReader;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs::File;
@@ -40,7 +40,7 @@ pub fn fetch_subsequence(
                 ext.push_str(".fai");
                 fai_path.set_extension(ext);
 
-                let index = fai::read(&fai_path).map_err(VardictError::Io)?;
+                let index = fai::fs::read(&fai_path).map_err(VardictError::Io)?;
                 let file = File::open(fasta_path).map_err(VardictError::Io)?;
                 entry.insert(IndexedReader::new(BufReader::new(file), index))
             }
