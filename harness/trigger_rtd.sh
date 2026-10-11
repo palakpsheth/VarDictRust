@@ -29,7 +29,7 @@ case "$CMD" in
     status)
         echo "=== Querying ReadTheDocs Project Status: ${PROJECT_SLUG} ==="
         RESPONSE="$(curl -s -w "\nHTTP_STATUS:%{http_code}" \
-            -H "Authorization: Token ${RTD_TOKEN}" \
+            -H @- <<< "Authorization: Token ${RTD_TOKEN}" \
             "${BASE_URL}/")"
         STATUS_CODE="$(echo "$RESPONSE" | grep 'HTTP_STATUS:' | cut -d':' -f2)"
         BODY="$(echo "$RESPONSE" | grep -v 'HTTP_STATUS:')"
@@ -38,13 +38,14 @@ case "$CMD" in
         else
             echo "HTTP Status: ${STATUS_CODE}" >&2
             echo "$BODY" | python3 -m json.tool || echo "$BODY"
+            exit 1
         fi
         ;;
     build)
         VERSION="${3:-latest}"
         echo "=== Triggering ReadTheDocs Build: ${PROJECT_SLUG} (version: ${VERSION}) ==="
         RESPONSE="$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST \
-            -H "Authorization: Token ${RTD_TOKEN}" \
+            -H @- <<< "Authorization: Token ${RTD_TOKEN}" \
             -H "Content-Type: application/json" \
             "${BASE_URL}/versions/${VERSION}/builds/")"
         STATUS_CODE="$(echo "$RESPONSE" | grep 'HTTP_STATUS:' | cut -d':' -f2)"
@@ -55,12 +56,13 @@ case "$CMD" in
         else
             echo "Build trigger returned HTTP Status: ${STATUS_CODE}" >&2
             echo "$BODY" | python3 -m json.tool || echo "$BODY"
+            exit 1
         fi
         ;;
     builds)
         echo "=== Querying Recent Builds: ${PROJECT_SLUG} ==="
         RESPONSE="$(curl -s -w "\nHTTP_STATUS:%{http_code}" \
-            -H "Authorization: Token ${RTD_TOKEN}" \
+            -H @- <<< "Authorization: Token ${RTD_TOKEN}" \
             "${BASE_URL}/builds/")"
         STATUS_CODE="$(echo "$RESPONSE" | grep 'HTTP_STATUS:' | cut -d':' -f2)"
         BODY="$(echo "$RESPONSE" | grep -v 'HTTP_STATUS:')"
@@ -69,10 +71,11 @@ case "$CMD" in
         else
             echo "HTTP Status: ${STATUS_CODE}" >&2
             echo "$BODY" | python3 -m json.tool || echo "$BODY"
+            exit 1
         fi
         ;;
     *)
-        echo "Usage: $0 [status|build|builds] [project_slug] [branch]" >&2
+        echo "Usage: $0 [status|build|builds] [project_slug] [version]" >&2
         exit 1
         ;;
 esac

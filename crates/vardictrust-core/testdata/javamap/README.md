@@ -25,7 +25,7 @@ To achieve 100% parity under the [rewrites.bio](https://rewrites.bio) manifesto,
 For architectural context and upstream bug taxonomy, see:
 - [`DIVERGENCES.md § UB-3`](../../../../DIVERGENCES.md#ub-3-javahashmap-iteration-and-allele-frequency-tie-breaking)
 - [`docs/upstream-bugs.md § UB-3`](../../../../docs/upstream-bugs.md#ub-3)
-- [`ROADMAP.md`](../../../../ROADMAP.md) (post-1.0 opt-in deterministic tie-breaking flag `--fix javamap-deterministic`)
+- [`ROADMAP.md`](../../../../ROADMAP.md) (post-1.0 opt-in candidate flag `--fix javamap-tree-bins`)
 
 ---
 

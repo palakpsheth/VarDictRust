@@ -1,0 +1,75 @@
+name: Wiki Sync
+
+# Keeps the GitHub Wiki tab (a separate `<owner>/<repo>.wiki.git` repo) in
+# sync with the top-level `wiki/` directory. One-time prerequisite: the wiki
+# repo is created only by saving the first page in the Wiki tab UI; after
+# that this workflow owns all updates.
+# Runs only on pushes to main, so PRs from forks never attempt a
+# privileged push with a read-only token.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "wiki/**"
+      - ".github/workflows/wiki.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# Serialise runs: two rapid pushes would otherwise clone the same wiki state
+# and the slower push would be rejected as non-fast-forward.
+concurrency:
+  group: wiki-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden GitHub Actions Runner
+        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.10.4
+        with:
+          egress-policy: audit
+
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: main
+          persist-credentials: false
+
+      - name: Sync wiki/ to Wiki repo
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          TMP="$(mktemp -d)"
+          WIKI_URL="https://github.com/${REPO}.wiki.git"
+          # Token travels in an auth header, never in the remote URL, so a
+          # failed git command cannot echo it into the workflow log.
+          AUTH="$(printf 'x-access-token:%s' "${GITHUB_TOKEN}" | base64 | tr -d '\n')"
+          if git ls-remote "${WIKI_URL}" HEAD >/dev/null 2>&1; then
+            git clone "${WIKI_URL}" "${TMP}"
+          else
+            # The wiki repo does not exist yet, and GitHub refuses to create
+            # it on push (verified: push returns "Repository not found" even
+            # with a valid ADMIN token). Save the first page once via the
+            # Wiki tab UI ("Create the first page"), then re-run this workflow.
+            echo "Wiki repo missing: create the first page in the Wiki tab UI, then re-run." >&2
+            exit 1
+          fi
+          git -C "${TMP}" config user.name "github-actions[bot]"
+          git -C "${TMP}" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          find "${TMP}" -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} +
+          cp -r "main/wiki/." "${TMP}/"
+          if [ -z "$(git -C "${TMP}" status --porcelain)" ]; then
+            echo "Wiki already in sync; nothing to do."
+            exit 0
+          fi
+          git -C "${TMP}" add -A
+          git -C "${TMP}" commit -m "docs(wiki): sync from ${SOURCE_SHA}"
+          # Wiki repos use master regardless of the main repo's default branch.
+          git -C "${TMP}" -c "http.extraheader=AUTHORIZATION: basic ${AUTH}" push -u origin HEAD:master

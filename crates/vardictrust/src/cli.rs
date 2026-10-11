@@ -294,10 +294,11 @@ pub struct Cli {
     #[arg(short = 'D', long = "debug")]
     pub debug: bool,
 
-    /// Debug print destination: OUT or ERR. Bare `-DP` or an unknown value
-    /// normalize to OUT (ports CmdParser.java:171-176).
+    /// Default printer destination: OUT or ERR (ports CmdParser.java:171-176, 505 defaultPrinter).
+    /// Bare `-DP` or an unknown value normalize to OUT.
     #[arg(
         long = "DP",
+        alias = "defaultPrinter",
         num_args(0..=1),
         default_missing_value = "OUT"
     )]

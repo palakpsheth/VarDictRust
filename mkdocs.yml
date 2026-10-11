@@ -52,11 +52,11 @@ extra_javascript:
   - https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js
 
 validation:
-  omitted_files: ignore
-  unrecognized_links: ignore
+  omitted_files: info
+  unrecognized_links: warn
   links:
-    not_found: ignore
-    anchors: ignore
+    not_found: warn
+    anchors: warn
 
 nav:
   - Overview: README.md
@@ -75,6 +75,7 @@ nav:
       - Test Harness Guide: harness/README.md
   - Governance & Community:
       - Contributing Guide: CONTRIBUTING.md
+      - Pull Request Template: community/pull_request_template.md
       - Universal Agent Contract: AGENTS.md
       - Roadmap: ROADMAP.md
       - Changelog: CHANGELOG.md
