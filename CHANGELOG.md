@@ -14,6 +14,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   supporting `linux-64`, `linux-aarch64`, `osx-arm64`, and `osx-64`
   via `conda install -c bioconda -c conda-forge vardictrust`. Galaxy wrapper distribution
   remains an explicit follow-up.
+- Advisory vardictcpp third arm everywhere VarDictRust compares against
+  VarDictJava: pinned **vardictcpp 3 `hc52dbad_0` bioconda** (same
+  `vardict-oracle` conda env as the Java oracle; pin mirrors the
+  `vardict=2019.06.04` pattern in `benchmarks/env/vardict-oracle.yml`).
+  Every gate arm records a `CPP: MATCH/MISMATCH/SKIP` line plus
+  `compare_cpp.txt`; evidence `extra` gains `cpp_version`, `cpp_head`,
+  `cpp_wall_s`, `cpp_maxrss_kb`, `cpp_f1`, `cpp_skip_reason`;
+  `CPP_SKIP=1` escapes the arm. The release gate stays **java==rust** —
+  cpp never masks a verdict, and `harness/acceptance.sh` fails loudly
+  (not silently) when Tier-2 evidence lacks `cpp_version`/`cpp_skip_reason`.
+  Known cpp divergences are normalized in `docs/upstream-bugs.md`.
 
 ### Planned (v1.1.0)
 

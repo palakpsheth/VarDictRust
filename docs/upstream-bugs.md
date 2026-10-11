@@ -18,6 +18,11 @@ All line references below are to that pin.
 | [UB-6](#ub-6) | [Class A](../DIVERGENCES.md#the-four-canonical-parity-classes-rewritesbio-5-8-11) | Mate-pair boundary parameter in `mark_dup_sv` (`pe` decrement) | **Replicated** ([`sv.rs:3039`](../crates/vardictrust-core/src/sv.rs)) |
 | [UB-7](#ub-7) | [Class A](../DIVERGENCES.md#the-four-canonical-parity-classes-rewritesbio-5-8-11) | Multi-allelic site single-winner collapsing without `-A` | **Replicated** ([`lib.rs:467-505`](../crates/vardictrust-core/src/lib.rs)) |
 
+**Third arm:** pinned **vardictcpp 3 `hc52dbad_0` bioconda** runs beside every gate
+arm (advisory only; gate stays java==rust; `CPP_SKIP=1` escapes). Its known
+divergences below are **normalized, not engine bugs** — see
+[Known vardictcpp third-arm divergences](#known-vardictcpp-third-arm-divergences-advisory-non-gating).
+
 ---
 
 <a id="ub-1"></a>
@@ -255,3 +260,64 @@ Only the single candidate allele with the highest allele frequency (`$tmp[0]`) i
 > **Title:** Single-winner multi-allelic collapsing drops secondary variants when primary candidate is filtered
 >
 > In `var2vcf_valid.pl:135-205`, when `-A` is omitted, only the highest-AF candidate is inspected. If that candidate triggers any `next` condition (e.g. empty REF or zero split reads), the entire position is abandoned, dropping any secondary variants that would have passed filters. The loop should evaluate candidate records until an eligible variant is found or emit all qualifying alleles in standard multi-allelic VCF notation.
+
+---
+
+## Known vardictcpp third-arm divergences (advisory, non-gating)
+
+Applies to pinned **vardictcpp 3 `hc52dbad_0` bioconda** (`benchmarks/env/vardict-oracle.yml`).
+Each item was observed live on real fixtures; none touches the java==rust gate.
+Cpp numbers live in evidence `extra` (`cpp_version`, `cpp_head`, `cpp_f1`,
+`cpp_wall_s`, `cpp_maxrss_kb`, `cpp_skip_reason`) and are never duplicated here.
+
+| # | Divergence | Surface |
+|---|-----------|---------|
+| [CPP-1](#cpp-1--vcf-header-provenance--end-info-key) | VCF header provenance + `END` INFO key deltas | `harness/compare.sh` third arm (`compare_cpp.txt`) |
+| [CPP-2](#cpp-2---j-j-parsed-but-ignored) | `-J`/`-j` parsed but ignored | Extended-coverage M4 cell |
+| [CPP-3](#cpp-3---a-requires-bed--r-rejects-bed-paths) | `-a` requires BED while `-R` rejects BED paths | Tier-1 amplicon fixtures |
+| [CPP-4](#cpp-4--concatenated-single-dash-flags-rejected) | Concatenated single-dash flags rejected | Tier-1 concatenated-flags fixtures |
+| [CPP-5](#cpp-5---r-and-bed-stderr-noise-under--z---chunk-unpinned) | `-R`-and-BED stderr noise under `-z`; `--chunk` unpinned by design | `harness/scale_bench.sh` th cells |
+| [CPP-6](#cpp-6--zero-contig-vcf-emitter) | Zero-`##contig` VCF emitter (tabix needs completion) | Truth-concordance scaffolding |
+
+### CPP-1 — VCF header provenance + `END` INFO key
+
+cpp emits its own header lineage (no `##reference`, its own `##INFO` set incl.
+`END`) where VarDictJava emits `##reference`/`##contig`. Variant *calls* agree
+(micro: 2/2); the comparator still reports `CPP: MISMATCH` on header/`END`-key
+deltas. Known-normalized: never an engine bug, never gating.
+
+### CPP-2 — `-J`/`-j` parsed but ignored
+
+cpp accepts CRISPR cut-site flags (`-J 50454941 -j 25`) but its own banner warns
+"not all affect output yet": on the M4 cell it emits all regional rows where
+Java target-windows to 3, so an advisory `CPP-MISMATCH` on row count is expected.
+
+### CPP-3 — `-a` requires BED while `-R` rejects BED paths
+
+Amplicon mode without a BED errors (exit 1 → loud `CPP: SKIP`), and `-R` takes
+only `chr:start-end` (a BED path is rejected) — so the amplicon cpp cell is
+structurally unreachable with the gate-identical flags and stays SKIP.
+
+### CPP-4 — Concatenated single-dash flags rejected
+
+cpp rejects concatenated forms such as `-f0.0025-F0x700-Q10` (`unknown option`,
+exit 120) that VarDictJava accepts. Affected fixtures record loud
+`CPP: SKIP (cpp engine exit 120)`; no flag-splitting is added (would break the
+identical-flags contract).
+
+### CPP-5 — `-R`-and-BED stderr noise under `-z`; `--chunk` unpinned
+
+Any cpp invocation carrying `-z 1` via `run_cpp.sh` prints `warning: both a
+region (-R) and a BED were given; using -R and ignoring the BED` on stderr. No
+BED is ever passed (`-R` is honored; outputs verified), so this is noise, not
+signal. `--chunk` is deliberately unpinned (cpp default rewrites the `Seg`
+column); the peak jobs-per-node selector stays out of the gate by design.
+
+### CPP-6 — Zero-`##contig` VCF emitter
+
+cpp's native `-vcf` emitter carries zero `##contig` lines, so `tabix -p vcf`
+refuses to index its calls file. Truth concordance completes the missing lines
+from the truth header (truth first, awk-ID dedup; `##fileformat` stays line 1)
+as evaluation scaffolding only — no record, FILTER, QUAL, or INFO byte is
+touched, so the reported cpp F1 is unaffected. Handled forward-compatibly if a
+future pin emits contigs.

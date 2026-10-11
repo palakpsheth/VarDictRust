@@ -44,6 +44,10 @@ for name in "${REGEN_EVIDENCE[@]}"; do
     fi
     python3 -c "import json, sys; d = json.load(open('$f')); d['fingerprint'] = '$FP'; json.dump(d, open('$f', 'w'), indent=2); sys.stdout.write('\n')"
 done
+echo "--- Micro vardictcpp third-arm cell (advisory; gate stays java==rust) ---"
+KEEP_DIR="$ROOT_DIR/scratch/recertify-micro" MIN_VARIANTS=1 \
+  bash "$ROOT_DIR/harness/compare.sh" "$ROOT_DIR/fixtures/micro/micro.ref.fa" \
+  "$ROOT_DIR/fixtures/micro/micro.bam" "$ROOT_DIR/fixtures/micro/micro.bed" micro
 
 echo "[4/4] Running Master Acceptance Gate (8/8)..."
 bash "$ROOT_DIR/harness/acceptance.sh"

@@ -109,3 +109,15 @@ gates before core aligner work").
 - https://felixkrueger.github.io/Bismark/rust/overview/ · https://github.com/henriksson-lab/fastqc-compliant-rs
 - https://github.com/ewels/FastQC-Rust · https://github.com/sguizard/tama-rs · https://github.com/necoli1822/fastars · https://github.com/jwanglab/rammap
 - Phil Ewels, Nextflow Summit 2026 talk + launch threads (Kai Blin rebuttals on Bluesky/mu.social)
+
+## 7. Addendum 2026-10-11: vardictcpp third arm (this section only is newer than the snapshot)
+
+Every Java-vs-Rust comparison in this repo now runs beside **vardictcpp 3
+`hc52dbad_0` bioconda** (same `vardict-oracle` conda env as the VarDictJava
+oracle) as an **advisory third arm**: `CPP: MATCH/MISMATCH/SKIP` lines and
+`compare_cpp.txt` artifacts, evidence `extra` keys (`cpp_version`, `cpp_head`,
+`cpp_wall_s`, `cpp_maxrss_kb`, `cpp_f1`, `cpp_skip_reason`), `CPP_SKIP=1`
+escape. The release gate stays java==rust; cpp divergences are normalized in
+[`docs/upstream-bugs.md`](upstream-bugs.md#known-vardictcpp-third-arm-divergences-advisory-non-gating),
+not silently dropped. Bioconda/Galaxy distribution of VarDictRust itself stays a
+follow-up (see [`CHANGELOG.md`](../CHANGELOG.md)).

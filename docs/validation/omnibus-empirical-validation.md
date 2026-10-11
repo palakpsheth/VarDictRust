@@ -32,17 +32,20 @@ To provide definitive, reproducible proof of compliance, VarDictRust was evaluat
 
 ### 1.1 Master Nine-Pillar Validation Scoreboard
 
-| Pillar | Benchmark / Dataset | Sequencing Assay | Genomic Region / Build | Variants Evaluated | Verification Tier | Dual-Engine Differential Parity | Physical Truth Concordance |
-| :---: | :--- | :--- | :--- | :---: | :---: | :---: | :---: |
-| **1** | **GIAB HG002 Germline** | Illumina WGS (30×) | chr20:10M–30M (GRCh38) | 227,562 | **Tier-2 & Tier-3** | **MATCH (0 diffs)** | **EQUAL ($F_1 = 0.9699$)** |
-| **2** | **FDA SEQC2 HCC1395/BL** | Somatic WES (300×/100×)| Whole Human Exome (GRCh38) | 623,444 | **Tier-2 & Tier-3** | **MATCH (0 diffs)** | **EQUAL (0 site diffs)** |
-| **3** | **SEQC2 Somatic Slices** | Somatic WES (150×/80×) | chr1, 2, 3, 17, 19, 21 (GRCh38)| 4,151 | **Tier-2 & Tier-3** | **MATCH (0 diffs)** | **EQUAL (0 site diffs)** |
-| **4** | **GIAB HG008 Somatic** | Somatic WGS (195×/169×)| PDAC High-Depth Slices (GRCh38)| 18,426 | **Tier-2 & Tier-3** | **MATCH (0 diffs)** | **EQUAL (0 site diffs)** |
-| **5** | **Targeted Amplicon** | Amplicon Panel (`-a`) | EGFR L861Q & MRE11a (hg19) | 2 | **Tier-2** | **MATCH (0 diffs)** | **N/A (Synthetic/Assay)**|
-| **6** | **Upstream Corpus** | Micro-Fixtures (92) | Genome-wide Edge Cases | 92 fixtures | **Tier-1** | **100% Live Oracle MATCH**| **N/A (Integration)** |
-| **7** | **Chromosome 1 Scale** | Full WGS Scaling | chr1: 1 Mbp to 249 Mbp (GRCh38)| 2,840,119 | **Level 5 Scale** | **MATCH (0 diffs)** | **Bounded RSS ($1.39\times$)**|
-| **8** | **Extended Modalities** | 17 Operational Modes | chr8, chr20 (hg19, hg38, GRCh37, GRCh38)| 4,993 | **Tier-2** | **MATCH (0 diffs, 17/17)** | **N/A (Flag Parity)** |
-| **9** | **Multi-Slice Suite** | 6 Public Cohorts | 18 slices, 9 chrs (GRCh38, b37)| 1,129 | **Tier-2 & Tier-3** | **MATCH (0 diffs, 18/18)**| **EQUAL (HG005, b37)**|
+| Pillar | Benchmark / Dataset | Sequencing Assay | Genomic Region / Build | Variants Evaluated | Verification Tier | Dual-Engine Differential Parity | Physical Truth Concordance | Cpp Third Arm (vardictcpp 3 hc52dbad_0, advisory¹) |
+| :---: | :--- | :--- | :--- | :---: | :---: | :---: | :---: | :--- |
+| **1** | **GIAB HG002 Germline** | Illumina WGS (30×) | chr20:10M–30M (GRCh38) | 227,562 | **Tier-2 & Tier-3** | **MATCH (0 diffs)** | **EQUAL ($F_1 = 0.9699$)** | advisory (see evidence) |
+| **2** | **FDA SEQC2 HCC1395/BL** | Somatic WES (300×/100×)| Whole Human Exome (GRCh38) | 623,444 | **Tier-2 & Tier-3** | **MATCH (0 diffs)** | **EQUAL (0 site diffs)** | advisory (see evidence) |
+| **3** | **SEQC2 Somatic Slices** | Somatic WES (150×/80×) | chr1, 2, 3, 17, 19, 21 (GRCh38)| 4,151 | **Tier-2 & Tier-3** | **MATCH (0 diffs)** | **EQUAL (0 site diffs)** | advisory (see evidence) |
+| **4** | **GIAB HG008 Somatic** | Somatic WGS (195×/169×)| PDAC High-Depth Slices (GRCh38)| 18,426 | **Tier-2 & Tier-3** | **MATCH (0 diffs)** | **EQUAL (0 site diffs)** | advisory (see evidence) |
+| **5** | **Targeted Amplicon** | Amplicon Panel (`-a`) | EGFR L861Q & MRE11a (hg19) | 2 | **Tier-2** | **MATCH (0 diffs)** | **N/A (Synthetic/Assay)** | advisory (SKIP: cpp needs BED for `-a`; see evidence) |
+| **6** | **Upstream Corpus** | Micro-Fixtures (92) | Genome-wide Edge Cases | 92 fixtures | **Tier-1** | **100% Live Oracle MATCH**| **N/A (Integration)** | advisory (per-fixture MATCH/SKIP lines; see evidence) |
+| **7** | **Chromosome 1 Scale** | Full WGS Scaling | chr1: 1 Mbp to 249 Mbp (GRCh38)| 2,840,119 | **Level 5 Scale** | **MATCH (0 diffs)** | **Bounded RSS ($1.39\times$)** | advisory (see evidence) |
+| **8** | **Extended Modalities** | 17 Operational Modes | chr8, chr20 (hg19, hg38, GRCh37, GRCh38)| 4,993 | **Tier-2** | **MATCH (0 diffs, 17/17)** | **N/A (Flag Parity)** | advisory (M1 `-i` SKIP; M4 `-J`/`-j` known divergence; see evidence) |
+| **9** | **Multi-Slice Suite** | 6 Public Cohorts | 18 slices, 9 chrs (GRCh38, b37)| 1,129 | **Tier-2 & Tier-3** | **MATCH (0 diffs, 18/18)**| **EQUAL (HG005, b37)** | advisory (see evidence) |
+
+¹ **Cpp third arm (advisory, never gating).** Every gate arm above runs beside pinned **vardictcpp 3 `hc52dbad_0` bioconda** (`benchmarks/env/vardict-oracle.yml`, same env as the Java oracle). The release gate stays **java==rust**; a cpp MISMATCH/SKIP never changes a verdict (`CPP_SKIP=1` escapes the arm). Cpp numbers live only in the linked evidence `extra` (`cpp_version`, `cpp_head`, `cpp_wall_s`, `cpp_maxrss_kb`, `cpp_f1`, `cpp_skip_reason`) and are never duplicated here. Known cpp divergences (header provenance + `END` INFO key, `-J`/`-j` parsed-but-ignored, amplicon-needs-BED, concatenated flags rejected) are normalized and documented in [`docs/upstream-bugs.md`](../upstream-bugs.md).
+
 
 ---
 
@@ -503,6 +506,15 @@ All benchmarks were recorded on identical dedicated hardware (AMD Ryzen, Ubuntu 
 | **SEQC2 HCC1395 Somatic Exome** | 8 cores | 54:23.00 | 19:45.73 | **2.8× faster** | 4.1 GB | 1.4 GB | 0.36× (2.8× lower) | [`seqc2-exome-tier2.json`](../../benchmarks/evidence/seqc2-exome-tier2.json) |
 | **GIAB HG008 Somatic PDAC** | 8 cores | 1:10.99 | 0:49.48 | **1.4× faster** | 5.7 GB | 1.2 GB | 0.21× (4.8× lower) | [`hg008-tier2.json`](../../benchmarks/evidence/hg008-tier2.json) |
 | **Whole Chromosome 1 Scale (249 Mbp)** | 1 → 8 cores | 57m 16s (1 core) | 11m 49s (8 cores) | **4.85× parallel** | OOM / Unbounded | 2.9 GB (249 Mb) vs 2.1 GB (10 Mb) | **1.39× flat RSS scaling** | [`scale.json`](../../benchmarks/evidence/scale.json) |
+| Workload / Benchmark | Threads | VarDictJava Wall Time | VarDictRust Wall Time | Speedup Ratio | VarDictJava Peak RSS | VarDictRust Peak RSS | Memory Scaling Ratio | Cpp Wall / RSS (vardictcpp 3 hc52dbad_0, advisory¹) |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **Targeted Amplicon Panel** | 8 cores | 0:02.10 | 0:00.07 | **30.0× faster** | 120.8 MB | 50.8 MB | 0.42× (2.4× lower) | advisory (see evidence) |
+| **GIAB HG002 (chr20:10M–30M, 30×)** | 8 cores | 4:16.98 | 1:22.47 | **3.1× faster** | 3.6 GB | 1.1 GB | 0.30× (3.3× lower) | advisory (see evidence) |
+| **SEQC2 HCC1395 Somatic Exome** | 8 cores | 54:23.00 | 19:45.73 | **2.8× faster** | 4.1 GB | 1.4 GB | 0.36× (2.8× lower) | advisory (see evidence) |
+| **GIAB HG008 Somatic PDAC** | 8 cores | 1:10.99 | 0:49.48 | **1.4× faster** | 5.7 GB | 1.2 GB | 0.21× (4.8× lower) | advisory (see evidence) |
+| **Whole Chromosome 1 Scale (249 Mbp)** | 1 → 8 cores | 57m 16s (1 core) | 11m 49s (8 cores) | **4.85× parallel** | OOM / Unbounded | 2.9 GB (249 Mb) vs 2.1 GB (10 Mb) | **1.39× flat RSS scaling** | advisory (see evidence) |
+
+¹ Cpp runs beside each arm above under the same pins (`-th 8`, `LC_ALL=C /usr/bin/time -v`, taskset-recorded); `--chunk` deliberately unpinned (cpp default rewrites the `Seg` column). Cpp wall/RSS numbers live only in the linked evidence `extra` (`cpp_wall_s`, `cpp_maxrss_kb`/`cpp_rss_kb`) and are never duplicated here.
 
 ### 12.1 Memory Scaling: Why VarDictRust Scales to WGS
 VarDictJava holds entire regional chromosome structures in JVM heap collections, leading to JVM heap exhaustion and Out-Of-Memory errors on deep WGS (issues #197, #384).

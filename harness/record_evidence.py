@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Usage: record_evidence.py <name> <result> <dir|-> -- <cmd...>
-Writes benchmarks/evidence/<name>.json; reads optional <dir>/compare.txt, java.time, rust.time, extra.json."""
+Writes benchmarks/evidence/<name>.json; reads optional <dir>/compare.txt, java.time, rust.time, extra.json,
+plus the first 5 lines of <dir>/compare_cpp.txt into extra.cpp_head (advisory vardictcpp third arm)."""
 import datetime, json, pathlib, re, subprocess, sys
 name, result, d = sys.argv[1], sys.argv[2], sys.argv[3]
 cmd = sys.argv[sys.argv.index("--") + 1:]
@@ -20,6 +21,12 @@ rec = {"name": name, "result": result, "n_variants": int(m.group(1)) if m else N
        "cmd": cmd, "java_time": tv("java.time"), "rust_time": tv("rust.time"),
        "compare_head": cmp_txt.splitlines()[:25]}
 if keep and (keep / "extra.json").exists(): rec["extra"] = json.loads((keep / "extra.json").read_text())
+if keep is not None and (keep / "compare_cpp.txt").exists():
+    cpp_head = (keep / "compare_cpp.txt").read_text().splitlines()[:5]
+    extra = rec.get("extra")
+    if not isinstance(extra, dict):
+        extra = rec["extra"] = {}
+    extra["cpp_head"] = cpp_head
 out = pathlib.Path("benchmarks/evidence") / f"{name}.json"
 out.parent.mkdir(parents=True, exist_ok=True)
 out.write_text(json.dumps(rec, indent=2, sort_keys=True) + "\n"); print(out)
