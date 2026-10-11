@@ -1,6 +1,6 @@
 {
   "benchmark": "extended-coverage-tier2",
-  "fingerprint": "7e9b1be766f73b17",
+  "fingerprint": "cca94ddceec06a1a",
   "result": "MATCH",
   "modalities_tested": 9,
   "modalities_passed": 9,

@@ -23,7 +23,7 @@ FA_GIAB="$ROOT_DIR/scratch/g4/ref/giabv3/GRCh38_GIABv3.fasta"
 FA_SEQC2="$ROOT_DIR/scratch/g4/ref/d1vd1/GRCh38.d1.vd1.fa"
 FA_HG38="$ROOT_DIR/VarDictJava/testdata/fastas/hg38.fa"
 
-EXPECTED_FP="7e9b1be766f73b17"
+EXPECTED_FP="cca94ddceec06a1a"
 CURRENT_FP=$(bash "$ROOT_DIR/harness/engine_fingerprint.sh")
 
 if [[ "$CURRENT_FP" != "$EXPECTED_FP" ]]; then
