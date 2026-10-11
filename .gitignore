@@ -35,6 +35,10 @@
 /docs/superpowers/
 
 
+# Agent scratch (opencode/sdd workspaces, plans, ledgers — never commit)
+.opencode/
+.superpowers/
+
 # Rust/Python development
 *.rlib
 *.log
