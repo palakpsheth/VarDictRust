@@ -403,6 +403,7 @@ VarDictRust utilizes 5 automated GitHub Actions workflows with strict security h
 - **Supply Chain Advisories & Licenses:** runs `cargo deny check advisories licenses` via `taiki-e/install-action@v2`.
 - **RustSec Advisory Audit:** runs `cargo audit` against current Cargo dependencies.
 
+<a id="103-release-packaging--slsa-level-3-githubworkflowsreleaseyml"></a>
 ### 10.3 Release Packaging & SLSA Level 3 (`.github/workflows/release.yml`)
 - Automated by `cargo-dist 0.33.0`.
 - Builds standalone, statically-linked `x86_64-unknown-linux-musl` executables.

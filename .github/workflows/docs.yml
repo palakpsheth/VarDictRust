@@ -1,0 +1,39 @@
+name: Documentation Site Gate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-docs:
+    name: MkDocs Strict Build Gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden GitHub Actions Runner
+        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.10.4
+        with:
+          egress-policy: audit
+
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+
+      - name: Set up Python
+        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install MkDocs Dependencies
+        run: pip install -r docs/requirements.txt
+
+      - name: Stage Documentation Site
+        run: python3 harness/prepare_docs_site.py
+
+      - name: Build Documentation (--strict)
+        run: mkdocs build --strict

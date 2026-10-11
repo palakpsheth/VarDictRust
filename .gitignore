@@ -46,3 +46,7 @@ __pycache__/
 # (see golden/PROVENANCE) — the global *.bam/*.bai exclusions do not apply here.
 !fixtures/
 !fixtures/**
+
+# Documentation site staging and build output
+/.docs_staged/
+/site/
