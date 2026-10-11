@@ -52,12 +52,16 @@ VarDictRust is distributed as a standalone static executable with zero shared-li
 Download the standalone `musl` binary from [GitHub Releases](https://github.com/palakpsheth/VarDictRust/releases/latest):
 
 ```bash
-# Download and install standalone binary
-curl -LsSf https://github.com/palakpsheth/VarDictRust/releases/latest/download/vardictrust-x86_64-unknown-linux-musl.tar.gz | tar xz
-sudo mv vardictrust /usr/local/bin/
+# Download release archive and SHA-256 checksum
+curl -LO https://github.com/palakpsheth/VarDictRust/releases/latest/download/vardictrust-x86_64-unknown-linux-musl.tar.xz
+curl -LO https://github.com/palakpsheth/VarDictRust/releases/latest/download/vardictrust-x86_64-unknown-linux-musl.tar.xz.sha256
 
-# Optional: verify SHA256 checksum
-curl -LsSf https://github.com/palakpsheth/VarDictRust/releases/latest/download/vardictrust-x86_64-unknown-linux-musl.tar.gz.sha256 | sha256sum --check
+# Verify SHA256 integrity
+sha256sum --check vardictrust-x86_64-unknown-linux-musl.tar.xz.sha256
+
+# Extract and install
+tar -xf vardictrust-x86_64-unknown-linux-musl.tar.xz
+sudo mv vardictrust /usr/local/bin/
 ```
 
 ### 2. Install via Cargo
@@ -95,7 +99,7 @@ Verify that BAM decoding, CIGAR realignment, and VCF emission function correctly
 # 1. Verify build and version metadata
 vardictrust --version
 
-# 2. Functional smoke test (emits single synthetic SNV in <0.1s)
+# 2. Functional smoke test (from within a repository checkout; emits single synthetic SNV in <0.1s)
 vardictrust -G fixtures/micro/micro.ref.fa -b fixtures/micro/micro.bam -R chr1:40-260
 ```
 
@@ -107,7 +111,7 @@ vardictrust -G fixtures/micro/micro.ref.fa -b fixtures/micro/micro.bam -R chr1:4
 
 > [!WARNING]
 > **The Silent BED Coordinate Trap (`-c 1 -S 2 -E 3`):**
-> - **Standard 3/4-Column BED Files (`chr start end [name]`):** VarDict's historical default column indices are `-c 3 -S 7 -E 8` (1-based), tailored for legacy 8-column amplicon BED files. When supplying standard 3-column BED files, you **must explicitly pass `-c 1 -S 2 -E 3`** (and `-z 1` if coordinates are 0-based half-open) to avoid parser aborts.
+> - **Standard 3/4-Column BED Files (`chr start end [name]`):** VarDict's historical default column indices are `-c 3 -S 7 -E 8` (1-based), tailored for legacy 8-column amplicon BED files. When supplying standard 3-column BED files, you **must explicitly pass `-c 1 -S 2 -E 3`** (and `-z` if coordinates are 0-based half-open) to avoid parser aborts.
 > - **Direct Region Specification:** Alternatively, bypass BED parsing entirely with `-R chr:start-end[:gene]`.
 
 ### 1. Germline Single-Sample Calling
@@ -115,7 +119,7 @@ vardictrust -G fixtures/micro/micro.ref.fa -b fixtures/micro/micro.bam -R chr1:4
 Constitutional variant discovery from single-sample WGS, WES, or targeted panels:
 
 ```bash
-vardictrust -G GRCh38.fa -f 0.01 -N SAMPLE -b sample.bam -c 1 -S 2 -E 3 -z 1 targets.bed > germline.vcf
+vardictrust -G GRCh38.fa -f 0.01 -N SAMPLE -b sample.bam -c 1 -S 2 -E 3 -z targets.bed > germline.vcf
 ```
 
 ### 2. Somatic Paired Calling (Tumor vs Normal)
@@ -123,7 +127,7 @@ vardictrust -G GRCh38.fa -f 0.01 -N SAMPLE -b sample.bam -c 1 -S 2 -E 3 -z 1 tar
 Pair-matched somatic mutation discovery with loss-of-heterozygosity (LOH) detection and somatic classification (`StrongSomatic`, `LikelySomatic`, `Germline`, `SampleSpecific`):
 
 ```bash
-vardictrust -G GRCh38.fa -f 0.01 -N "TUMOR|NORMAL" -b "tumor.bam|normal.bam" -c 1 -S 2 -E 3 -z 1 target.bed > somatic.vcf
+vardictrust -G GRCh38.fa -f 0.01 -N "TUMOR|NORMAL" -b "tumor.bam|normal.bam" -c 1 -S 2 -E 3 -z target.bed > somatic.vcf
 ```
 
 ### 3. Targeted Amplicon Panels (8-Column BED & Primer Trimming)
@@ -139,16 +143,15 @@ vardictrust -G GRCh38.fa -f 0.01 -N SAMPLE -a 10:0.95 -b amplicon.bam amplicon_8
 Quantifies splice junction coverage and outputs a 4-column intron count matrix (`-i` / `--splice`):
 
 ```bash
-vardictrust -G GRCh38.fa -i -b rna.bam -c 1 -S 2 -E 3 -z 1 junctions.bed > splice_counts.txt
+vardictrust -G GRCh38.fa -i -b rna.bam -c 1 -S 2 -E 3 -z junctions.bed > splice_counts.txt
 ```
 
 ### 5. High-Throughput Streaming UNIX Pipeline
 
-Stream directly from coordinate-sorted BAM/CRAM files into compressed and indexed VCF archives:
+Stream directly from indexed BAM/CRAM files into compressed and indexed VCF archives:
 
 ```bash
-samtools view -u -F 0x400 -q 20 sample.bam chr1:1000000-2000000 \
-  | vardictrust -G GRCh38.fa -f 0.01 -N SAMPLE -b - -R chr1:1000000-2000000 -th 8 \
+vardictrust -G GRCh38.fa -f 0.01 -N SAMPLE -b sample.bam -R chr1:1000000-2000000 -th 8 \
   | bcftools filter -i 'FILTER="PASS"' -Oz -o filtered.vcf.gz \
   && tabix -p vcf filtered.vcf.gz
 ```
@@ -165,7 +168,7 @@ samtools view -u -F 0x400 -q 20 sample.bam chr1:1000000-2000000 \
 
 > [!NOTE]
 > **Assumptions & Coordinate Conventions:**
-> - **Coordinate Contracts:** BAM/CRAM alignment coordinates are parsed as 0-based half-open intervals (`[start, end)`), while VCF output records are strictly 1-based closed intervals (`[start, end]`). Passing `-z 1` (or `--zero-based`) shifts 0-based BED intervals by `+1`.
+> - **Coordinate Contracts:** BAM/CRAM alignment coordinates are parsed as 0-based half-open intervals (`[start, end)`), while VCF output records are strictly 1-based closed intervals (`[start, end]`). Passing `-z` (or `--zero-based`) shifts 0-based BED intervals by `+1`.
 > - **Statistical Rounding:** All variant frequencies (`AF`), quality scores (`QUAL`), and p-values adhere to IEEE 754 round-to-nearest, ties-to-even (**Banker's rounding**), replicating Java's `RoundingMode.HALF_EVEN` and R's `round()` ([`round_half_even`](DIVERGENCES.md#statistical-rounding--floating-point-half-even)).
 > - **Multi-Allelic Collapsing:** Standard single-sample mode defaults to single-winner top-AF candidate selection per locus matching [`var2vcf_valid.pl`](DIVERGENCES.md#consolidation-of-the-three-language-pipeline).
 
@@ -359,7 +362,7 @@ Per the [rewrites.bio](https://rewrites.bio) manifesto, we disclose all AI tools
 
 - **AI Systems Used:** Google DeepMind Gemini / Antigravity CLI, Anthropic Claude Code, and Qoder.
 - **Scope of AI Assistance:** Implementation of core Rust modules under direct human architectural instruction, transliteration of legacy R/Perl statistical functions into pure Rust, test harness development, and adversarial differential verification.
-- **Verification Guarantee (Evidence Before Completion):** **Zero** AI-generated code was accepted based on model assertion. Every single algorithmic component was validated against VarDictJava v1.8.3 across 188 automated workspace tests, the 92-case integration corpus, 10 slice fixtures, 18 multi-modal slices across 6 cohorts, and multi-gigabyte public benchmark datasets (SEQC2, GIAB HG008, GIAB HG002, GIAB HG005, GIAB NA24385 b37) under strict float tolerance $\varepsilon = 10^{-6}$, with complete push-button reproducibility documented in [`docs/testing/test-matrix-and-ci-audit.md`](docs/testing/test-matrix-and-ci-audit.md).
+- **Verification Guarantee (Evidence Before Completion):** **Zero** AI-generated code was accepted based on model assertion. Every single algorithmic component was validated against VarDictJava v1.8.3 across 208 automated Cargo workspace tests (188 core library tests, 13 CLI tests, and 7 integration binaries), the 92-case integration corpus, 10 slice fixtures, 18 multi-modal slices across 6 cohorts, and multi-gigabyte public benchmark datasets (SEQC2, GIAB HG008, GIAB HG002, GIAB HG005, GIAB NA24385 b37) under strict float tolerance $\varepsilon = 10^{-6}$, with complete push-button reproducibility documented in [`docs/testing/test-matrix-and-ci-audit.md`](docs/testing/test-matrix-and-ci-audit.md).
 
 ---
 

@@ -57,5 +57,5 @@ Robustness improvements by design (no valid-input output changes relative to Var
 - Correct `##contig` lengths from the `.fai` ([VarDictJava#320](https://github.com/AstraZeneca-NGS/VarDictJava/issues/320));
   fail-fast on missing BAM index ([VarDictJava#187](https://github.com/AstraZeneca-NGS/VarDictJava/issues/187)).
 
-[Unreleased]: https://github.com/rewrites-bio/VarDictRust/compare/v1.0.0...HEAD
-[1.0.0]: https://github.com/rewrites-bio/VarDictRust/releases/tag/v1.0.0
+[Unreleased]: https://github.com/palakpsheth/VarDictRust/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/palakpsheth/VarDictRust/releases/tag/v1.0.0
