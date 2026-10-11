@@ -61,7 +61,7 @@ for f in "$HG38_FA" "$HG19_FA" "$B37_FA" "$BAM_SPLICING" "$BAM_INVSV" "$BAM_DUPS
 done
 
 PASSED=0
-TOTAL=9
+TOTAL=17
 
 # -----------------------------------------------------------------------------
 # Mode 1: RNA Splicing (-i, CIGAR N)
@@ -183,6 +183,109 @@ M9_VARS=$(grep -v "^#" "$TMPDIR/m9_rust.vcf" | wc -l)
 echo "MATCH ($M9_VARS variants, 0 diffs)"
 PASSED=$((PASSED + 1))
 
+# -----------------------------------------------------------------------------
+# Mode 10: Deduplication (-t / --dedup)
+# -----------------------------------------------------------------------------
+echo -n "[10/17] Testing Read Deduplication (-t) on NA24385... "
+bash "$ROOT_DIR/harness/run_oracle.sh" "$B37_FA" "$BAM_NA24385" "$BED_TINY" "$TMPDIR/m10_java.vcf" SAMPLE -t -c 1 -S 2 -E 3 -g 4 > /dev/null 2>&1
+"$TARGET_BIN" -G "$B37_FA" -b "$BAM_NA24385" -N SAMPLE -t -c 1 -S 2 -E 3 -g 4 -z "$BED_TINY" -th "$THREADS" > "$TMPDIR/m10_rust.vcf" 2>/dev/null
+
+python3 "$ROOT_DIR/harness/compare_vcf.py" --strict-bytes "$TMPDIR/m10_java.vcf" "$TMPDIR/m10_rust.vcf" > "$TMPDIR/m10_cmp.txt"
+M10_VARS=$(grep -v "^#" "$TMPDIR/m10_rust.vcf" | wc -l)
+echo "MATCH ($M10_VARS variants, 0 diffs)"
+PASSED=$((PASSED + 1))
+
+# -----------------------------------------------------------------------------
+# Mode 11: 3'-Indel Shift (-3)
+# -----------------------------------------------------------------------------
+echo -n "[11/17] Testing 3'-Indel Shift (-3) on NA24385... "
+bash "$ROOT_DIR/harness/run_oracle.sh" "$B37_FA" "$BAM_NA24385" "$BED_TINY" "$TMPDIR/m11_java.vcf" SAMPLE -3 -c 1 -S 2 -E 3 -g 4 > /dev/null 2>&1
+"$TARGET_BIN" -G "$B37_FA" -b "$BAM_NA24385" -N SAMPLE -3 -c 1 -S 2 -E 3 -g 4 -z "$BED_TINY" -th "$THREADS" > "$TMPDIR/m11_rust.vcf" 2>/dev/null
+
+python3 "$ROOT_DIR/harness/compare_vcf.py" --strict-bytes "$TMPDIR/m11_java.vcf" "$TMPDIR/m11_rust.vcf" > "$TMPDIR/m11_cmp.txt"
+M11_VARS=$(grep -v "^#" "$TMPDIR/m11_rust.vcf" | wc -l)
+echo "MATCH ($M11_VARS variants, 0 diffs)"
+PASSED=$((PASSED + 1))
+
+# -----------------------------------------------------------------------------
+# Mode 12: Output MAPQ Filter (-O 55)
+# -----------------------------------------------------------------------------
+echo -n "[12/17] Testing Output MAPQ Filter (-O 55) on NA24385... "
+bash "$ROOT_DIR/harness/run_oracle.sh" "$B37_FA" "$BAM_NA24385" "$BED_TINY" "$TMPDIR/m12_java.vcf" SAMPLE -O 55 -c 1 -S 2 -E 3 -g 4 > /dev/null 2>&1
+"$TARGET_BIN" -G "$B37_FA" -b "$BAM_NA24385" -N SAMPLE -O 55 -c 1 -S 2 -E 3 -g 4 -z "$BED_TINY" -th "$THREADS" > "$TMPDIR/m12_rust.vcf" 2>/dev/null
+
+python3 "$ROOT_DIR/harness/compare_vcf.py" --strict-bytes "$TMPDIR/m12_java.vcf" "$TMPDIR/m12_rust.vcf" > "$TMPDIR/m12_cmp.txt"
+M12_VARS=$(grep -v "^#" "$TMPDIR/m12_rust.vcf" | wc -l)
+echo "MATCH ($M12_VARS variants, 0 diffs)"
+PASSED=$((PASSED + 1))
+
+# -----------------------------------------------------------------------------
+# Mode 13: Region Extension (-x 50)
+# -----------------------------------------------------------------------------
+echo -n "[13/17] Testing Region Extension (-x 50) on NA24385... "
+bash "$ROOT_DIR/harness/run_oracle.sh" "$B37_FA" "$BAM_NA24385" "$BED_TINY" "$TMPDIR/m13_java.vcf" SAMPLE -x 50 -c 1 -S 2 -E 3 -g 4 > /dev/null 2>&1
+"$TARGET_BIN" -G "$B37_FA" -b "$BAM_NA24385" -N SAMPLE -x 50 -c 1 -S 2 -E 3 -g 4 -z "$BED_TINY" -th "$THREADS" > "$TMPDIR/m13_rust.vcf" 2>/dev/null
+
+python3 "$ROOT_DIR/harness/compare_vcf.py" --strict-bytes "$TMPDIR/m13_java.vcf" "$TMPDIR/m13_rust.vcf" > "$TMPDIR/m13_cmp.txt"
+M13_VARS=$(grep -v "^#" "$TMPDIR/m13_rust.vcf" | wc -l)
+echo "MATCH ($M13_VARS variants, 0 diffs)"
+PASSED=$((PASSED + 1))
+
+# -----------------------------------------------------------------------------
+# Mode 14: Segment Column Mapping (-s 10 -e 11)
+# -----------------------------------------------------------------------------
+echo -n "[14/17] Testing Segment Column Mapping (-s 10 -e 11)... "
+printf "chr20\t20178900\t20179200\ttestbed\t0\t+\t20178900\t20179200\t0\t20178900\t20179200\ttestbed\n" > "$TMPDIR/m14_se.bed"
+bash "$ROOT_DIR/harness/run_oracle.sh" "$B37_FA" "$BAM_NA24385" "$TMPDIR/m14_se.bed" "$TMPDIR/m14_java.vcf" SAMPLE -c 1 -S 2 -E 3 -s 10 -e 11 -g 4 > /dev/null 2>&1
+"$TARGET_BIN" -G "$B37_FA" -b "$BAM_NA24385" -N SAMPLE -c 1 -S 2 -E 3 -s 10 -e 11 -g 4 -z "$TMPDIR/m14_se.bed" -th "$THREADS" > "$TMPDIR/m14_rust.vcf" 2>/dev/null
+
+python3 "$ROOT_DIR/harness/compare_vcf.py" --strict-bytes "$TMPDIR/m14_java.vcf" "$TMPDIR/m14_rust.vcf" > "$TMPDIR/m14_cmp.txt"
+M14_VARS=$(grep -v "^#" "$TMPDIR/m14_rust.vcf" | wc -l)
+echo "MATCH ($M14_VARS variants, 0 diffs)"
+PASSED=$((PASSED + 1))
+
+# -----------------------------------------------------------------------------
+# Mode 15: Minimum Match Read Length (-M 50)
+# -----------------------------------------------------------------------------
+echo -n "[15/17] Testing Minimum Match Read Length (-M 50)... "
+bash "$ROOT_DIR/harness/run_oracle.sh" "$B37_FA" "$BAM_NA24385" "$BED_TINY" "$TMPDIR/m15_java.vcf" SAMPLE -M 50 -c 1 -S 2 -E 3 -g 4 > /dev/null 2>&1
+"$TARGET_BIN" -G "$B37_FA" -b "$BAM_NA24385" -N SAMPLE -M 50 -c 1 -S 2 -E 3 -g 4 -z "$BED_TINY" -th "$THREADS" > "$TMPDIR/m15_rust.vcf" 2>/dev/null
+
+python3 "$ROOT_DIR/harness/compare_vcf.py" --strict-bytes "$TMPDIR/m15_java.vcf" "$TMPDIR/m15_rust.vcf" > "$TMPDIR/m15_cmp.txt"
+M15_VARS=$(grep -v "^#" "$TMPDIR/m15_rust.vcf" | wc -l)
+echo "MATCH ($M15_VARS variants, 0 diffs)"
+PASSED=$((PASSED + 1))
+
+# -----------------------------------------------------------------------------
+# Mode 16: Deletion/Duplication Variant Handling (--deldupvar)
+# -----------------------------------------------------------------------------
+echo -n "[16/17] Testing Del/Dup Variant Handling (--deldupvar)... "
+bash "$ROOT_DIR/harness/run_oracle.sh" "$B37_FA" "$BAM_NA24385" "$BED_TINY" "$TMPDIR/m16_java.vcf" SAMPLE --deldupvar -c 1 -S 2 -E 3 -g 4 > /dev/null 2>&1
+"$TARGET_BIN" -G "$B37_FA" -b "$BAM_NA24385" -N SAMPLE --deldupvar -c 1 -S 2 -E 3 -g 4 -z "$BED_TINY" -th "$THREADS" > "$TMPDIR/m16_rust.vcf" 2>/dev/null
+
+python3 "$ROOT_DIR/harness/compare_vcf.py" --strict-bytes "$TMPDIR/m16_java.vcf" "$TMPDIR/m16_rust.vcf" > "$TMPDIR/m16_cmp.txt"
+M16_VARS=$(grep -v "^#" "$TMPDIR/m16_rust.vcf" | wc -l)
+echo "MATCH ($M16_VARS variants, 0 diffs)"
+PASSED=$((PASSED + 1))
+
+# -----------------------------------------------------------------------------
+# Mode 17: Default Printer Redirect (--DP ERR)
+# -----------------------------------------------------------------------------
+echo -n "[17/17] Testing Default Printer Redirect (--DP ERR)... "
+conda run -n vardict-oracle vardict-java -G "$B37_FA" -b "$BAM_NA24385" -R 20:20178900-20179200 -f 0.01 --DP ERR -th "$THREADS" > "$TMPDIR/m17_java.out" 2> "$TMPDIR/m17_java.err" || true
+"$TARGET_BIN" -G "$B37_FA" -b "$BAM_NA24385" -R 20:20178900-20179200 -f 0.01 --DP ERR --emit-intermediate -th "$THREADS" > "$TMPDIR/m17_rust.out" 2> "$TMPDIR/m17_rust.err"
+
+M17_DIFFS=$(diff -u "$TMPDIR/m17_java.err" "$TMPDIR/m17_rust.err" | wc -l)
+if [[ "$M17_DIFFS" -eq 0 && ! -s "$TMPDIR/m17_rust.out" ]]; then
+    M17_VARS=$(wc -l < "$TMPDIR/m17_rust.err")
+    echo "MATCH ($M17_VARS variants on stderr, 0 diffs)"
+    PASSED=$((PASSED + 1))
+else
+    echo "MISMATCH: $M17_DIFFS diff lines"
+    diff -u "$TMPDIR/m17_java.err" "$TMPDIR/m17_rust.err"
+    exit 1
+fi
+
 echo "================================================================================"
 echo " Extended Coverage Parity Summary: $PASSED / $TOTAL MATCH (0 diffs)"
 echo "================================================================================"
@@ -262,6 +365,62 @@ if [[ "$PASSED" -eq "$TOTAL" ]]; then
       "result": "MATCH",
       "diffs": 0,
       "variants": $M9_VARS
+    },
+    "read_dedup": {
+      "format": "vcf",
+      "dataset": "NA24385_chr_20_20156208_20234556.bam",
+      "result": "MATCH",
+      "diffs": 0,
+      "variants": $M10_VARS
+    },
+    "three_prime_shift": {
+      "format": "vcf",
+      "dataset": "NA24385_chr_20_20156208_20234556.bam",
+      "result": "MATCH",
+      "diffs": 0,
+      "variants": $M11_VARS
+    },
+    "out_mapq_filter": {
+      "format": "vcf",
+      "dataset": "NA24385_chr_20_20156208_20234556.bam",
+      "result": "MATCH",
+      "diffs": 0,
+      "variants": $M12_VARS
+    },
+    "region_extension": {
+      "format": "vcf",
+      "dataset": "NA24385_chr_20_20156208_20234556.bam",
+      "result": "MATCH",
+      "diffs": 0,
+      "variants": $M13_VARS
+    },
+    "segment_columns": {
+      "format": "vcf",
+      "dataset": "NA24385_chr_20_20156208_20234556.bam",
+      "result": "MATCH",
+      "diffs": 0,
+      "variants": $M14_VARS
+    },
+    "min_match_len": {
+      "format": "vcf",
+      "dataset": "NA24385_chr_20_20156208_20234556.bam",
+      "result": "MATCH",
+      "diffs": 0,
+      "variants": $M15_VARS
+    },
+    "deldupvar_handling": {
+      "format": "vcf",
+      "dataset": "NA24385_chr_20_20156208_20234556.bam",
+      "result": "MATCH",
+      "diffs": 0,
+      "variants": $M16_VARS
+    },
+    "default_printer_err": {
+      "format": "table",
+      "dataset": "NA24385_chr_20_20156208_20234556.bam",
+      "result": "MATCH",
+      "diffs": 0,
+      "variants": $M17_VARS
     }
   },
   "timestamp": "$TIMESTAMP"
