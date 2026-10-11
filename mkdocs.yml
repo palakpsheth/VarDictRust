@@ -1,0 +1,83 @@
+site_name: VarDictRust
+site_description: High-performance, memory-safe idiomatic Rust rewrite of VarDictJava v1.8.3
+site_author: Palak Sheth
+site_url: https://vardictrust.readthedocs.io/
+repo_url: https://github.com/palakpsheth/VarDictRust
+repo_name: palakpsheth/VarDictRust
+
+docs_dir: .docs_staged
+site_dir: site
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: teal
+      accent: deep orange
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: teal
+      accent: deep orange
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.arithmatex:
+      generic: true
+  - tables
+  - attr_list
+
+extra_javascript:
+  - https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js
+
+validation:
+  omitted_files: ignore
+  unrecognized_links: ignore
+  links:
+    not_found: ignore
+    anchors: ignore
+
+nav:
+  - Overview: README.md
+  - Empirical Validation:
+      - Benchmark Ledger: benchmarks/README.md
+      - Omnibus Empirical Validation: docs/validation/omnibus-empirical-validation.md
+      - Parity Waivers: docs/release/waivers.md
+  - Architecture:
+      - Ecosystem Survey: docs/ecosystem-survey.md
+      - Divergences & Quirks: DIVERGENCES.md
+      - Upstream Bug Catalog: docs/upstream-bugs.md
+      - JVM JavaHashMap Emulation: crates/vardictrust-core/testdata/javamap/README.md
+      - Hostile CIGAR Robustness: fixtures/pr402/README.md
+  - Testing & Verification:
+      - Test Matrix & CI Audit: docs/testing/test-matrix-and-ci-audit.md
+      - Test Harness Guide: harness/README.md
+  - Governance & Community:
+      - Contributing Guide: CONTRIBUTING.md
+      - Universal Agent Contract: AGENTS.md
+      - Roadmap: ROADMAP.md
+      - Changelog: CHANGELOG.md
+      - Security Policy: community/SECURITY.md
+      - Code of Conduct: community/CODE_OF_CONDUCT.md
+      - Release Verification: docs/release/v1.0.0-pr.md
