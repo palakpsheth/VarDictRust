@@ -24,9 +24,16 @@ t=0; grep -qx 'PASS: 91  FAIL: 1  SKIP: 0' "$OUT/integration.txt" \
   && grep -qxF 'MISMATCH: Simple;hard_clip_case.fa;hard_clip_next_to_del_test2.bam;test;6434-6564;-f 0.0 -p -r 1.txt' "$OUT/integration.txt" \
   && run cargo build -q --release && run bash harness/smoke.sh && t=1
 mark 2 $t "integration/smoke"
-# 3 Tier-2: micro + every committed slice + external datasets
+# 3 Tier-2: micro + every committed slice + live extended coverage + external datasets
 t=1; MIN_VARIANTS=1 run bash harness/compare.sh fixtures/micro/micro.ref.fa fixtures/micro/micro.bam fixtures/micro/micro.bed || t=0
 for id in $(awk -F'\t' '!/^#/{print $1}' harness/slices.tsv); do run bash harness/run_slice.sh "$id" || { t=0; echo "slice $id failed" >> "$OUT/log.txt"; }; done
+run bash harness/run_extended_coverage.sh || { t=0; echo "run_extended_coverage failed" >> "$OUT/log.txt"; }
+if [ ! -d scratch/g4/multimodal ]; then
+  echo "acceptance: scratch/g4/multimodal is missing; live multimodal suite required" >> "$OUT/log.txt"
+  t=0
+else
+  run bash harness/run_multimodal_slices.sh || { t=0; echo "run_multimodal_slices failed" >> "$OUT/log.txt"; }
+fi
 for e in hg008-tier2 seqc2-slices-tier2 seqc2-exome-tier2 hg002-tier2 amplicon-tier2 extended-coverage-tier2 multimodal-slices-tier2; do run ev "$e" || t=0; done
 mark 3 $t "Tier-2"
 # 4 Robustness: crash corpus (#341 family, PR #402, #187) + CRAM twin

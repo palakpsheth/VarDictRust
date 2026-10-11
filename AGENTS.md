@@ -24,6 +24,7 @@ cannot produce evidence, say so explicitly and keep working.
 The success criterion exists to catch you being wrong. **Do not defeat it.** You must NEVER:
 - relax `--eps`, narrow a `--cols` range, compare fewer records, or edit/skip/`#[ignore]`/comment-out/delete a failing test or anything in `harness/` to turn a MISMATCH into a MATCH;
 - hand-edit `golden/`, `expected/`, or oracle output to match your code (golden files change ONLY via `/snapshot-update`, after a real, justified, documented output change);
+- manually edit engine fingerprints, variant counts, or metrics in `benchmarks/evidence/*.json` or fake runner receipts to satisfy acceptance gates. Modifying evidence JSON files by hand without executing the underlying live validation runners (`harness/run_extended_coverage.sh`, `harness/run_multimodal_slices.sh`, or `harness/recertify.sh`) is a **Class-0 integrity violation**. Success criteria must come from verifiable runner execution. If a fingerprint changes due to a dependency or code update, re-certify honestly via `bash harness/recertify.sh`;
 - report a MATCH or a passing test you did not actually run, or paste expected output you did not observe.
 
 If a check fails, **your code (or your understanding) is wrong — fix the port, not the test.** If you can't make it pass honestly, **stop and report the MISMATCH with the diff.** A real mismatch reported honestly is worth far more than a fake match.
@@ -206,7 +207,8 @@ bash harness/slice.sh <in.bam> <chr:start-end> <out.bam>
 1. `cargo fmt --all`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test` all pass.
 2. The relevant `harness/compare.sh` prints **MATCH** (or the named test passes).
 3. `golden/` updated if output legitimately changed (with provenance).
-4. The commit/PR states: **"validated vs VarDictJava 1.8.3, dataset `<name>`, cmd `<…>`"**.
+4. For any dependency (`Cargo.lock`) or engine code changes merged to `main`, run `bash harness/recertify.sh` to re-certify live parity and regenerate evidence.
+5. The commit/PR states: **"validated vs VarDictJava 1.8.3, dataset `<name>`, cmd `<…>`"**.
 
 ## 16. Repo layout
 ```

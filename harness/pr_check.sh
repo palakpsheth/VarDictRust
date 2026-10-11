@@ -29,10 +29,12 @@ grep -qx 'PASS: 91  FAIL: 1  SKIP: 0' scratch/pr_integration.log \
   }
 echo "Tier-1 integration corpus passed (91 PASS / 1 FAIL expected fixture defect)."
 
-# Stage 4: Tier-2 Micro Differential Parity (Live Oracle vs Rust)
-echo "[4/6] Running Tier-2 micro differential test against live oracle..."
+# Stage 4: Tier-2 Dual-Engine Differential Parity (Live Oracle vs Rust)
+echo "[4/6] Running Tier-2 differential parity suites against live oracle..."
 cargo build -q --release
 MIN_VARIANTS=1 bash harness/compare.sh fixtures/micro/micro.ref.fa fixtures/micro/micro.bam fixtures/micro/micro.bed
+echo "Running live 9-modality extended coverage suite..."
+bash harness/run_extended_coverage.sh
 
 # Stage 5: Performance & Memory Benchmark Regression Check
 echo "[5/6] Checking performance budgets on benchmark targets..."
