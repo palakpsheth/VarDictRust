@@ -32,6 +32,8 @@
 .idea/
 .omo/
 .opencode/
+/docs/superpowers/
+
 
 # Rust/Python development
 *.rlib

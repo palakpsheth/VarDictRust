@@ -43,4 +43,13 @@ else
     echo "WARNING: gitleaks not found on PATH or in conda environments; skipping staged secret scan." >&2
 fi
 
+# 3. Block agent planning scratch directories
+if git diff --cached --name-only --diff-filter=ACM | grep -E '^docs/superpowers/' >/dev/null; then
+    echo "ERROR: docs/superpowers/ files must not be committed to the repository." >&2
+    echo "Agent plans belong in <appDataDir>/brain/<conversation-id>/ artifacts." >&2
+    exit 1
+fi
+
+
 echo "=== [pre-commit] All pre-commit checks passed ==="
+
