@@ -41,11 +41,12 @@ case "$CMD" in
         fi
         ;;
     build)
-        echo "=== Triggering ReadTheDocs Build: ${PROJECT_SLUG} (branch: ${BRANCH}) ==="
+        VERSION="${3:-latest}"
+        echo "=== Triggering ReadTheDocs Build: ${PROJECT_SLUG} (version: ${VERSION}) ==="
         RESPONSE="$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST \
             -H "Authorization: Token ${RTD_TOKEN}" \
             -H "Content-Type: application/json" \
-            "${BASE_URL}/builds/")"
+            "${BASE_URL}/versions/${VERSION}/builds/")"
         STATUS_CODE="$(echo "$RESPONSE" | grep 'HTTP_STATUS:' | cut -d':' -f2)"
         BODY="$(echo "$RESPONSE" | grep -v 'HTTP_STATUS:')"
         if [ "$STATUS_CODE" -eq 202 ]; then
