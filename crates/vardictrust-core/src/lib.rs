@@ -201,6 +201,25 @@ fn run_pipeline_on_records(
     Ok(var_data)
 }
 
+/// Returns the output stream handle according to `--DP` / `--defaultPrinter` configuration.
+/// Defaults to stdout; routes to stderr when `--DP ERR` is passed (ports CmdParser.java:171-177).
+pub fn get_output_writer(config: &config::Config) -> Box<dyn std::io::Write> {
+    if config.debug_print.as_deref() == Some("ERR") {
+        Box::new(std::io::stderr())
+    } else {
+        Box::new(std::io::stdout())
+    }
+}
+
+/// Writes a single line to the output handle, gracefully handling broken pipes without panicking.
+pub fn write_output_line(handle: &mut dyn std::io::Write, line: &str) -> Result<(), VardictError> {
+    match writeln!(handle, "{}", line) {
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+        Err(e) => Err(VardictError::Io(e)),
+    }
+}
+
 /// Main entry point for the engine. Called by the CLI binary.
 ///
 /// Takes a fully-resolved configuration and runs the variant-calling pipeline.
@@ -260,15 +279,13 @@ pub fn run(config: &config::Config) -> Result<(), VardictError> {
     // -h/--header column line (CmdParser.java:67; SimpleMode.java:33 calls
     // printHeader() before any variant output).
     if config.column_header {
-        let stdout = std::io::stdout();
-        let mut handle = stdout.lock();
+        let mut handle = get_output_writer(config);
         crate::output::table::print_header(&mut handle, config).map_err(VardictError::Io)?;
     }
 
     // Print VCF header when not in intermediate mode
     if !config.emit_intermediate {
-        let stdout = std::io::stdout();
-        let mut handle = stdout.lock();
+        let mut handle = get_output_writer(config);
         crate::output::vcf::print_vcf_header(&mut handle, config, &chromosomes_lengths)
             .map_err(VardictError::Io)?;
     }
@@ -454,21 +471,19 @@ pub fn run(config: &config::Config) -> Result<(), VardictError> {
             }
         },
         |output| {
-            let stdout = std::io::stdout();
-            let mut handle = stdout.lock();
-            use std::io::Write;
+            let mut handle = get_output_writer(config);
 
             match output {
                 SimpleTileOutput::Lines(lines) => {
                     for line in lines {
-                        writeln!(handle, "{}", line).map_err(VardictError::Io)?;
+                        write_output_line(&mut *handle, &line)?;
                     }
                 }
                 SimpleTileOutput::Vcf { chr, records } => {
                     if chr != current_chr {
                         for (_, cand) in std::mem::take(&mut pending) {
                             if !cand.ref_empty && (!cand.is_sv || cand.splitreads >= 1) {
-                                writeln!(handle, "{}", cand.vcf_line).map_err(VardictError::Io)?;
+                                write_output_line(&mut *handle, &cand.vcf_line)?;
                             }
                         }
                         current_chr = chr;
@@ -492,12 +507,10 @@ pub fn run(config: &config::Config) -> Result<(), VardictError> {
         },
     )?;
 
-    let stdout = std::io::stdout();
-    let mut handle = stdout.lock();
-    use std::io::Write;
+    let mut handle = get_output_writer(config);
     for (_, cand) in pending {
         if !cand.ref_empty && (!cand.is_sv || cand.splitreads >= 1) {
-            writeln!(handle, "{}", cand.vcf_line).map_err(VardictError::Io)?;
+            write_output_line(&mut *handle, &cand.vcf_line)?;
         }
     }
 
@@ -576,19 +589,19 @@ fn run_amplicon(
 
     // -h/--header column line (AmpliconMode.java:39, 135-146).
     if config.column_header {
-        let stdout = std::io::stdout();
-        let mut handle = stdout.lock();
+        let mut handle = get_output_writer(config);
         crate::output::table::print_header(&mut handle, config).map_err(VardictError::Io)?;
     }
 
     // Print VCF header once when not in intermediate mode (same var2vcf_valid.pl
     // header as simple mode — amplicon rides the same writer, perl :140-145).
     if !config.emit_intermediate {
-        let stdout = std::io::stdout();
-        let mut handle = stdout.lock();
+        let mut handle = get_output_writer(config);
         crate::output::vcf::print_vcf_header(&mut handle, config, chromosomes_lengths)
             .map_err(VardictError::Io)?;
     }
+
+    let mut handle = get_output_writer(config);
 
     for segment in segments {
         // §9: let-else merges the empty guard with the last() unwrap.
@@ -641,7 +654,7 @@ fn run_amplicon(
                         config.debug,
                     )
                 };
-                println!("{}", line);
+                write_output_line(&mut handle, &line)?;
             } else {
                 // VCF mode: same writer as simple mode (var2vcf_valid.pl), with the
                 // amplicon columns (37-40) selecting $isamp behavior (:145).
@@ -674,7 +687,7 @@ fn run_amplicon(
                     &oddratio_str,
                     amp,
                 );
-                println!("{}", record);
+                write_output_line(&mut handle, &record)?;
             }
         }
     }
@@ -731,18 +744,18 @@ fn run_somatic(config: &config::Config) -> Result<(), VardictError> {
 
     // -h/--header column line (SomaticMode.java:35, 134-150).
     if config.column_header {
-        let stdout = std::io::stdout();
-        let mut handle = stdout.lock();
+        let mut handle = get_output_writer(config);
         crate::output::table::print_header(&mut handle, config).map_err(VardictError::Io)?;
     }
 
     // Paired VCF header when not in intermediate mode
     if !config.emit_intermediate {
-        let stdout = std::io::stdout();
-        let mut handle = stdout.lock();
+        let mut handle = get_output_writer(config);
         crate::output::vcf::print_paired_vcf_header(&mut handle, config, &chromosomes_lengths)
             .map_err(VardictError::Io)?;
     }
+
+    let config_writer = config.clone();
 
     // Process tiles: run both BAMs through pipeline, then somatic postprocess
     crate::runner::run_parallel(
@@ -936,11 +949,9 @@ fn run_somatic(config: &config::Config) -> Result<(), VardictError> {
             Ok(lines)
         },
         move |lines| {
-            let stdout = std::io::stdout();
-            let mut handle = stdout.lock();
-            use std::io::Write;
+            let mut handle = get_output_writer(&config_writer);
             for line in lines {
-                writeln!(handle, "{}", line).map_err(VardictError::Io)?;
+                write_output_line(&mut handle, &line)?;
             }
             Ok(())
         },

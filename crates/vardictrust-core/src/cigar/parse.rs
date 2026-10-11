@@ -1634,7 +1634,7 @@ impl<'a> CigarParser<'a> {
             && ((sa_position - position).abs() < 2 * self.max_read_length)
             && is_chimeric;
 
-        if self.config.debug_print.is_some() && is_chimeric_flag {
+        if self.config.verbose && is_chimeric_flag {
             let record_name = String::from_utf8_lossy(&record.name);
             let ref_name = record.reference_name.as_deref().unwrap_or("*");
             log::debug!(
@@ -1811,7 +1811,7 @@ impl<'a> CigarParser<'a> {
                                 *read_pos_inc += cigar_element_len as usize;
                                 *offset = 0;
                                 *start = position;
-                                if self.config.debug_print.is_some() {
+                                if self.config.verbose {
                                     log::debug!(
                                         "{} at 5' is a chimeric at {} by SEED 17",
                                         String::from_utf8_lossy(&sequence),
@@ -1938,7 +1938,7 @@ impl<'a> CigarParser<'a> {
                                 *read_pos_inc += cigar_element_len as usize;
                                 *offset = 0;
                                 *start = position;
-                                if self.config.debug_print.is_some() {
+                                if self.config.verbose {
                                     log::debug!(
                                         "{} at 3' is a chimeric at {} by SEED 17",
                                         String::from_utf8_lossy(&sequence),
