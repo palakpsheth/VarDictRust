@@ -67,32 +67,9 @@ if [ -n "$cpp_line" ]; then
   [ -f "$OUT/compare_cpp.txt" ] || echo "$cpp_line" > "$OUT/compare_cpp.txt"
   echo "$cpp_line"
 fi
-# Persist third-arm evidence keys for record_evidence.py (ev_cpp presence gate):
-# success verdicts -> extra.cpp_version; any SKIP -> extra.cpp_skip_reason.
-# Merge-only (never clobbers other extra.* keys) and never touches the gate exit.
+# Persist third-arm evidence keys for record_evidence.py (ev_cpp presence gate)
+# via the shared helper (merge-only, never touches the gate exit).
 if [ -n "${KEEP_DIR:-}" ]; then
-  case "$cpp_line" in
-    "CPP: SKIP: "*)
-      cpp_key="cpp_skip_reason"; cpp_val="${cpp_line#CPP: SKIP: }" ;;
-    *)
-      cpp_key="cpp_version"
-      cpp_val=$(conda list -n vardict-oracle vardictcpp 2>/dev/null | awk '/^vardictcpp[[:space:]]/{print "vardictcpp " $2 " " $3 " bioconda"}')
-      [ -n "$cpp_val" ] || cpp_val=$(conda run -n vardict-oracle vardictcpp --version 2>/dev/null | head -n 1) ;;
-  esac
-  if [ -n "${cpp_val:-}" ]; then
-    python3 - "$OUT/extra.json" "$cpp_key" "$cpp_val" <<'PYEOF' || true
-import json, sys
-p, k, v = sys.argv[1], sys.argv[2], sys.argv[3]
-try:
-    with open(p) as f: d = json.load(f)
-    if not isinstance(d, dict): d = {}
-except Exception: d = {}
-d[k] = v
-# The two keys are mutually exclusive per run; drop the stale one so a
-# reused KEEP_DIR never reports both a version and a skip reason.
-d.pop("cpp_version" if k == "cpp_skip_reason" else "cpp_skip_reason", None)
-with open(p, "w") as f: json.dump(d, f, indent=2, sort_keys=True)
-PYEOF
-  fi
+  bash harness/staple_cpp_extra.sh "$OUT" "$cpp_line"
 fi
 exit "$rc"
