@@ -25,6 +25,7 @@ import re
 import subprocess
 import sys
 import unittest
+import urllib.parse
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
 
@@ -46,7 +47,7 @@ def find_all_markdown_files():
         # Exclude git internals, cargo target, conda environments, scratch, and transient dev directories
         rel = str(path.relative_to(REPO_ROOT))
         if any(rel.startswith(ignore) for ignore in [
-            ".git/", ".superpowers/", ".agents/", "target/", "scratch/", "VarDictJava/", "node_modules/"
+            ".git/", ".superpowers/", ".agents/", "target/", "scratch/", "VarDictJava/", "node_modules/", ".worktrees/"
         ]):
             continue
         md_files.append(path)
@@ -185,6 +186,238 @@ class TestMarkdownStaticHygiene(unittest.TestCase):
         self.assertEqual(
             math_errors, [],
             "KaTeX math formatting errors found:\n" + "\n".join(f"  - {e}" for e in math_errors)
+        )
+
+    @staticmethod
+    def _heading_to_slug(heading_line):
+        """Convert a markdown heading line to its GitHub anchor slug.
+
+        Follows GitHub Flavored Markdown (GFM) anchor generation rules:
+        - Strip leading ATX hashes and subsequent whitespace.
+        - Strip trailing ATX hashes and trailing whitespace.
+        - Strip HTML tags (e.g. <code>...</code>, <a>...</a>).
+        - Replace markdown link formatting with link text ([text](url) -> text).
+        - Remove backticks and control characters.
+        - Downcase according to ASCII.
+        - Remove GFM punctuation characters (anything other than alphanumeric, whitespace, hyphen).
+        - Replace spaces and tabs with hyphens without collapsing consecutive spaces
+          (preserving double hyphens caused by removed punctuation such as ' & ').
+        """
+        text = re.sub(r"^#{1,6}[\t ]+", "", heading_line.strip())
+        text = re.sub(r"[\t ]+#+[\t ]*$", "", text)
+        text = re.sub(r"<[^>]+>", "", text)
+        text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
+        text = text.replace("`", "")
+        text = re.sub(r"[\x00-\x1f]", "", text)
+        text = text.lower()
+        text = re.sub(r"[^\w\s-]", "", text)
+        text = text.replace("\t", " ")
+        slug = text.replace(" ", "-")
+        return slug
+
+    @staticmethod
+    def _extract_all_anchors(content):
+        """Extract all valid anchors (explicit HTML IDs/names and GFM heading slugs) from markdown content."""
+        anchors = set()
+        # Explicit HTML id/name anchors: <a id="...">, <span id="...">, <div id="...">, etc.
+        for m in re.finditer(r'(?:id|name)=["\']([^"\']+)["\']', content, re.IGNORECASE):
+            anchors.add(m.group(1))
+
+        # GFM heading slugs: lines starting with 1 to 6 # followed by whitespace
+        for line in content.splitlines():
+            line_str = line.strip()
+            if re.match(r"^#{1,6}\s+", line_str):
+                slug = TestMarkdownStaticHygiene._heading_to_slug(line_str)
+                if slug:
+                    anchors.add(slug)
+        return anchors
+
+    def test_heading_to_slug_gfm_parity(self):
+        """Verify _heading_to_slug produces exact GFM slugs for complex headings."""
+        cases = [
+            (
+                "### 10.3 Release Packaging & SLSA Level 3 (`.github/workflows/release.yml`)",
+                "103-release-packaging--slsa-level-3-githubworkflowsreleaseyml",
+            ),
+            (
+                "## Level 1: Unit & Component Tests",
+                "level-1-unit--component-tests",
+            ),
+            (
+                "## Pillar 9: Multi-Modal Public Cohorts",
+                "pillar-9-multi-modal-public-cohorts",
+            ),
+            (
+                "### Heading with Trailing Hashes ###",
+                "heading-with-trailing-hashes",
+            ),
+            (
+                "### Section with <code>inline_code</code> and [link](https://example.com)",
+                "section-with-inline_code-and-link",
+            ),
+            (
+                "### Clean Title\r\n",
+                "clean-title",
+            ),
+        ]
+        for heading, expected_slug in cases:
+            self.assertEqual(
+                self._heading_to_slug(heading),
+                expected_slug,
+                f"Slug mismatch for '{heading}'",
+            )
+
+    def test_extract_all_anchors(self):
+        """Verify _extract_all_anchors captures explicit HTML IDs and ATX heading slugs."""
+        sample_doc = (
+            "# Main Heading\n\n"
+            '<a id="custom-anchor"></a>\n'
+            "### Sub-Section & Details\n\n"
+            '<div name="named-div">content</div>\n'
+        )
+        anchors = self._extract_all_anchors(sample_doc)
+        self.assertIn("main-heading", anchors)
+        self.assertIn("custom-anchor", anchors)
+        self.assertIn("sub-section--details", anchors)
+        self.assertIn("named-div", anchors)
+
+    def test_wiki_links_and_anchors(self):
+        """Verify wiki links and anchors are valid and compatible with GitHub Wiki."""
+        wiki_dir = REPO_ROOT / "wiki"
+        if not wiki_dir.exists():
+            return
+
+        wiki_page_files = list(wiki_dir.glob("*.md"))
+        wiki_page_stems = {p.stem: p for p in wiki_page_files}
+
+        link_pattern = re.compile(r"(?<!\!)\[([^\]]+)\]\(([^)\s]+)(?:\s+[\"'][^\"']*[\"'])?\)")
+        errors = []
+
+        for wiki_file in sorted(wiki_page_files):
+            rel_path = wiki_file.relative_to(REPO_ROOT)
+            with open(wiki_file, "r", encoding="utf-8") as f:
+                content = f.read()
+
+            no_code_blocks = re.sub(r"```[\s\S]*?```", "", content)
+            no_inline_code = re.sub(r"`[^`]*`", "", no_code_blocks)
+
+            for match in link_pattern.finditer(no_inline_code):
+                label = match.group(1)
+                raw_url = match.group(2)
+                url = urllib.parse.unquote(raw_url)
+
+                # Rule 1: relative link starting with ../ will 404 on GitHub Wiki
+                if raw_url.startswith("../") or url.startswith("../"):
+                    errors.append(
+                        f"{rel_path}: relative link '{raw_url}' for '{label}' will 404 on GitHub Wiki; "
+                        "must use absolute GitHub URL or wiki page slug"
+                    )
+                    continue
+
+                # Rule 2: in-page anchor (#anchor)
+                if raw_url.startswith("#"):
+                    anchor = raw_url[1:]
+                    file_anchors = self._extract_all_anchors(content)
+                    if anchor not in file_anchors and urllib.parse.unquote(anchor) not in file_anchors:
+                        errors.append(
+                            f"{rel_path}: in-page anchor '{raw_url}' for '{label}' not found in {rel_path}"
+                        )
+                    continue
+
+                # Rule 3: internal wiki page link (extensionless or slug#anchor)
+                if not (raw_url.startswith("http://") or raw_url.startswith("https://") or raw_url.startswith("mailto:")):
+                    target_page, _, page_anchor = raw_url.partition("#")
+                    target_page_clean = urllib.parse.unquote(target_page)
+
+                    if target_page_clean.endswith(".md"):
+                        errors.append(
+                            f"{rel_path}: internal wiki link '{raw_url}' for '{label}' ends with '.md' "
+                            "which triggers raw file download; use slug without .md"
+                        )
+                        continue
+
+                    # Validate target wiki page existence
+                    matched_file = None
+                    if target_page_clean in wiki_page_stems:
+                        matched_file = wiki_page_stems[target_page_clean]
+                    else:
+                        norm_target = re.sub(r"[\s_-]+", "-", target_page_clean.lower())
+                        for stem, path in wiki_page_stems.items():
+                            if re.sub(r"[\s_-]+", "-", stem.lower()) == norm_target:
+                                matched_file = path
+                                break
+
+                    if not matched_file:
+                        errors.append(
+                            f"{rel_path}: internal wiki link target page '{target_page}' for '{label}' "
+                            "does not exist in wiki/"
+                        )
+                    elif page_anchor:
+                        with open(matched_file, "r", encoding="utf-8") as tf:
+                            target_wiki_content = tf.read()
+                        target_anchors = self._extract_all_anchors(target_wiki_content)
+                        if page_anchor not in target_anchors and urllib.parse.unquote(page_anchor) not in target_anchors:
+                            errors.append(
+                                f"{rel_path}: anchor '#{page_anchor}' not found in wiki page "
+                                f"'{matched_file.name}' (link '{raw_url}')"
+                            )
+                    continue
+
+                # Rule 4: absolute links pointing to repo blob or tree
+                if raw_url.startswith("https://github.com/palakpsheth/VarDictRust/blob/main/") or \
+                   raw_url.startswith("https://github.com/palakpsheth/VarDictRust/tree/main/"):
+                    prefix = "https://github.com/palakpsheth/VarDictRust/blob/main/" if \
+                        raw_url.startswith("https://github.com/palakpsheth/VarDictRust/blob/main/") else \
+                        "https://github.com/palakpsheth/VarDictRust/tree/main/"
+                    target_ref = raw_url[len(prefix):]
+                    if "#" in target_ref:
+                        subpath, anchor = target_ref.split("#", 1)
+                    else:
+                        subpath, anchor = target_ref, None
+
+                    subpath_unquoted = urllib.parse.unquote(subpath)
+                    target_file = REPO_ROOT / subpath_unquoted
+                    if not target_file.exists():
+                        errors.append(
+                            f"{rel_path}: target file does not exist: '{subpath}' (link '{raw_url}')"
+                        )
+                    elif anchor:
+                        check_file = target_file if target_file.is_file() else (target_file / "README.md")
+                        if not check_file.exists():
+                            errors.append(
+                                f"{rel_path}: target file for anchor does not exist: '{check_file}' (link '{raw_url}')"
+                            )
+                        else:
+                            with open(check_file, "r", encoding="utf-8") as tf:
+                                target_content = tf.read()
+                            valid_anchors = self._extract_all_anchors(target_content)
+                            if anchor not in valid_anchors and urllib.parse.unquote(anchor) not in valid_anchors:
+                                errors.append(
+                                    f"{rel_path}: anchor '#{anchor}' not found in '{check_file.relative_to(REPO_ROOT)}' (link '{raw_url}')"
+                                )
+                    continue
+
+                # Rule 5: root repo link with anchor
+                if raw_url.startswith("https://github.com/palakpsheth/VarDictRust") and "#" in raw_url:
+                    anchor = raw_url.split("#", 1)[1]
+                    readme_path = REPO_ROOT / "README.md"
+                    if not readme_path.exists():
+                        errors.append(
+                            f"{rel_path}: README.md does not exist for anchor check (link '{raw_url}')"
+                        )
+                    else:
+                        with open(readme_path, "r", encoding="utf-8") as rf:
+                            readme_content = rf.read()
+                        valid_anchors = self._extract_all_anchors(readme_content)
+                        if anchor not in valid_anchors and urllib.parse.unquote(anchor) not in valid_anchors:
+                            errors.append(
+                                f"{rel_path}: anchor '#{anchor}' not found in README.md (link '{raw_url}')"
+                            )
+                    continue
+
+        self.assertEqual(
+            errors, [],
+            "Wiki link / anchor hygiene errors found:\n" + "\n".join(f"  - {e}" for e in errors)
         )
 
 

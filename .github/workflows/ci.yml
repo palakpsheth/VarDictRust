@@ -33,6 +33,8 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings -A clippy::needless_late_init -A clippy::byte_char_slices
       - name: Test
         run: cargo test --all
+      - name: Documentation & UI Test Suite
+        run: python3 -m unittest harness/tests/test_docs_ui.py
       - name: Bench compile
         run: cargo bench --no-run
       - name: Build release

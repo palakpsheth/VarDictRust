@@ -1,3 +1,4 @@
+<a id="readme"></a>
 # VarDictRust (`vardictrust`)
 
 [![CI](https://github.com/palakpsheth/VarDictRust/actions/workflows/ci.yml/badge.svg)](https://github.com/palakpsheth/VarDictRust/actions)
