@@ -38,6 +38,43 @@ class TestBiocondaRecipe(unittest.TestCase):
         self.assertIn("--path crates/vardictrust", content, "build.sh must target crates/vardictrust")
         self.assertIn("CARGO_HOME=", content, "build.sh must explicitly set CARGO_HOME for sandboxing")
         self.assertIn("rm -rf \"$CARGO_HOME\"", content, "build.sh must clean up CARGO_HOME cache")
+        self.assertIn("trap 'rm -rf \"$CARGO_HOME\"' EXIT", content, "build.sh must set EXIT cleanup trap")
+
+    def test_run_test_negative_exit_contract(self):
+        content = RUN_TEST_PATH.read_text(encoding="utf-8")
+        self.assertIn(
+            '[ "$status" -ne 2 ]',
+            content,
+            "run_test.sh must assert Clap usage error exit code 2 on invalid flags",
+        )
+
+    def test_cargo_manifest_license(self):
+        cargo_path = ROOT_DIR / "Cargo.toml"
+        content = cargo_path.read_text(encoding="utf-8")
+        self.assertIn(
+            'license = "MIT AND GPL-2.0-or-later"',
+            content,
+            "Root Cargo.toml must match the recipe SPDX license expression",
+        )
+
+    def test_container_runner_security(self):
+        runner_path = ROOT_DIR / "harness" / "test_bioconda_recipe.sh"
+        content = runner_path.read_text(encoding="utf-8")
+        self.assertIn(
+            "BIOCONDA_BUILD_IMAGE=",
+            content,
+            "Runner must allow overriding the build image",
+        )
+        self.assertIn(
+            "@sha256:",
+            content,
+            "Runner must pin build image by immutable digest",
+        )
+        self.assertIn(
+            'WORKSPACE_MOUNT_MODE="${WORKSPACE_MOUNT_MODE:-ro}"',
+            content,
+            "Runner must default workspace mount to read-only",
+        )
 
     def test_meta_yaml_required_sections(self):
         meta = META_PATH.read_text(encoding="utf-8")

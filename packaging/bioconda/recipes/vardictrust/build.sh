@@ -8,6 +8,9 @@ export CARGO_HOME="${SRC_DIR:-$(pwd)}/.cargo"
 export CARGO_NET_GIT_FETCH_WITH_CLI=true
 export RUST_BACKTRACE=1
 
+# Ensure sandboxed cache cleanup on exit or failure
+trap 'rm -rf "$CARGO_HOME"' EXIT
+
 # Bundle third-party licenses required by Bioconda and Conda-Forge policies
 cargo-bundle-licenses --format yaml --output THIRDPARTY.yml
 

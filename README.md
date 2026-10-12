@@ -86,7 +86,10 @@ docker run --rm -v $(pwd):/data ghcr.io/palakpsheth/vardictrust:1.0.0 \
 apptainer exec docker://ghcr.io/palakpsheth/vardictrust:1.0.0 vardictrust --help
 ```
 
-### 4. Conda / Bioconda
+### 4. Conda / Bioconda (Pending Upstream Merge)
+
+> [!NOTE]
+> The canonical Bioconda recipe is tracked in `packaging/bioconda/recipes/vardictrust/` pending upstream merge in `bioconda/bioconda-recipes`. Once published:
 
 ```bash
 conda install -c bioconda -c conda-forge vardictrust

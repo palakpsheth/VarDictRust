@@ -26,8 +26,12 @@ echo "[PASS] In-tree recipe structure, metadata, and license checks passed."
 if [ "${1:-}" = "--docker" ] || [ "${DOCKER_BUILD:-0}" = "1" ]; then
   if command -v docker &>/dev/null && docker info &>/dev/null; then
     echo "[INFO] Running containerized bioconda build test:"
-    docker run --rm -v "$ROOT_DIR:/workspace" -w /workspace quay.io/bioconda/bioconda-utils-build-env:latest \
-      bioconda-utils build --docker --packages vardictrust
+    BIOCONDA_BUILD_IMAGE="${BIOCONDA_BUILD_IMAGE:-quay.io/bioconda/bioconda-utils-build-env@sha256:d8c3639dfc972fb449626966fe1aa9b922718a38a7c2fe6ad47ce231a473489e}"
+    WORKSPACE_MOUNT_MODE="${WORKSPACE_MOUNT_MODE:-ro}"
+    docker run --rm \
+      -v "$RECIPE_DIR:/recipe:${WORKSPACE_MOUNT_MODE}" \
+      "$BIOCONDA_BUILD_IMAGE" \
+      conda-build /recipe --no-anaconda-upload
     echo "[PASS] Containerized bioconda build succeeded."
   else
     echo "ERROR: --docker requested but docker daemon is not available." >&2

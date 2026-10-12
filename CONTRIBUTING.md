@@ -283,5 +283,5 @@ bash harness/test_bioconda_recipe.sh
 
 To prepare a new release for submission to `bioconda/bioconda-recipes`:
 ```bash
-bash packaging/bioconda/prepare_bioconda_pr.sh `<version>`
+bash packaging/bioconda/prepare_bioconda_pr.sh 1.0.0
 ```
