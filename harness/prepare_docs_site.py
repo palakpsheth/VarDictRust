@@ -29,6 +29,7 @@ IGNORED_PREFIXES = (
     ".git/",
     ".github/",
     ".superpowers/",
+    "docs/superpowers/",
     ".agents/",
     "target/",
     "scratch/",

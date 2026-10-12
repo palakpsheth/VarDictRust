@@ -7,7 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added canonical Bioconda recipe for `vardictrust` (`packaging/bioconda/recipes/vardictrust/`)
+  with automated linting, test suite, and PR submission tooling. Galaxy wrapper distribution
+  remains an explicit follow-up.
+
 ### Planned (v1.1.0)
+
 - Opt-in corrections behind `--fix <id>` per [`ROADMAP.md`](ROADMAP.md).
 - Detailed upstream bug specifications documented in [`docs/upstream-bugs.md`](docs/upstream-bugs.md).
 
