@@ -68,6 +68,20 @@ class TestBiocondaRecipe(unittest.TestCase):
         self.assertIn("osx-arm64", meta, "Must target osx-arm64")
         self.assertIn("linux-aarch64", meta, "Must target linux-aarch64")
 
+    def test_readme_bioconda_package_name(self):
+        readme_path = ROOT_DIR / "README.md"
+        content = readme_path.read_text(encoding="utf-8")
+        self.assertIn(
+            "conda install -c bioconda -c conda-forge vardictrust",
+            content,
+            "README.md must document installation using official package name 'vardictrust'",
+        )
+        self.assertNotIn(
+            "vardict-rust",
+            content,
+            "README.md must NOT reference erroneous package name 'vardict-rust'",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
