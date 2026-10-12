@@ -269,3 +269,19 @@ Contributors must adhere to the following governance policies:
 
 - **Reporting Issues:** Search existing issues before creating a new report. Include the exact BAM slice, reference region, and command line to reproduce.
 - **Reporting Security Vulnerabilities:** Please review our [Security Policy](.github/SECURITY.md) to report vulnerabilities privately. Do not disclose security issues publicly in GitHub Issues.
+
+---
+
+## 9. Packaging & Bioconda Maintenance
+
+The official Bioconda recipe lives in `packaging/bioconda/recipes/vardictrust/`.
+
+To validate the recipe locally:
+```bash
+bash harness/test_bioconda_recipe.sh
+```
+
+To prepare a new release for submission to `bioconda/bioconda-recipes`:
+```bash
+bash packaging/bioconda/prepare_bioconda_pr.sh `<version>`
+```

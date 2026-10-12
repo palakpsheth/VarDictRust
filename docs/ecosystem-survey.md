@@ -96,6 +96,7 @@ gates before core aligner work").
 | **Release Artifact Packaging** | Ungated release binaries | PIE static binary validation gate comparing musl to glibc outputs | [`harness/bin_equiv.sh`](../harness/bin_equiv.sh), [`musl-ci.json`](../benchmarks/evidence/musl-ci.json) |
 | **Biological Truth Concordance** | Lack of physical truth-set evaluation | Full multi-cohort RTG `vcfeval` truth concordance suite | 5 cohorts in [`docs/validation/omnibus-empirical-validation.md`](validation/omnibus-empirical-validation.md) |
 | **Upstream Drift Defense** | Unpinned upstream dependency risk | Pinned reference oracle to VarDictJava v1.8.3 (`commit 0886261`) | Sealed environment specification in [`harness/setup_oracle.sh`](../harness/setup_oracle.sh) |
+| **Bioconda Packaging** | No automated Conda distribution | Canonical in-tree Bioconda recipe under `packaging/bioconda/recipes/vardictrust/` | [`harness/tests/test_bioconda_recipe.py`](../harness/tests/test_bioconda_recipe.py) |
 
 ## 6. Sources (as fetched 2026-08-24)
 

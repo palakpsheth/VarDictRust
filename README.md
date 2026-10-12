@@ -46,7 +46,7 @@ Built under the [rewrites.bio](https://rewrites.bio) manifesto: *a faster, more 
 
 ## Installation
 
-VarDictRust is distributed as a standalone static executable with zero shared-library dependencies, as a Cargo crate, and as a multi-arch container image.
+VarDictRust is distributed as a standalone static executable with zero shared-library dependencies, as a Cargo crate, as a multi-arch container image, and via Bioconda.
 
 ### 1. Pre-Compiled Static Binary (Recommended for Linux x86_64)
 
@@ -89,7 +89,7 @@ apptainer exec docker://ghcr.io/palakpsheth/vardictrust:1.0.0 vardictrust --help
 ### 4. Conda / Bioconda
 
 ```bash
-conda install -c bioconda -c conda-forge vardict-rust
+conda install -c bioconda -c conda-forge vardictrust
 ```
 
 ### 10-Second Installation Verification
