@@ -57,6 +57,15 @@ class TestBiocondaRecipe(unittest.TestCase):
             "Root Cargo.toml must match the recipe SPDX license expression",
         )
 
+    def test_cargo_deny_license_allow_list(self):
+        deny_path = ROOT_DIR / "deny.toml"
+        content = deny_path.read_text(encoding="utf-8")
+        self.assertIn(
+            '"GPL-2.0-or-later"',
+            content,
+            "deny.toml must allow GPL-2.0-or-later",
+        )
+
     def test_container_runner_security(self):
         runner_path = ROOT_DIR / "harness" / "test_bioconda_recipe.sh"
         content = runner_path.read_text(encoding="utf-8")
