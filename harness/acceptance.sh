@@ -56,7 +56,7 @@ else
 fi
 mark 3 $t "Tier-2"
 # 4 Robustness: crash corpus (#341 family, PR #402, #187) + CRAM twin
-t=1; run cargo test -p vardictrust --test robustness || t=0; run ev hg008-cram-twin || t=0; mark 4 $t "robustness/CRAM"
+t=1; run cargo test -p vardictrust --test robustness || t=0; run ev hg008-cram-twin || t=0; run ev_cpp hg008-cram-twin || t=0; mark 4 $t "robustness/CRAM"
 # 5 Scale + Perf Budget (thresholds pre-registered in T21)
 t=1; run ev scale || t=0; run ev perf-budget || t=0; mark 5 $t "scale/perf-budget"
 
