@@ -8,7 +8,9 @@ Every benchmark claim is backed by a verifiable, machine-readable evidence artif
 
 ## 1. Pinned Hardware & Host Environment
 
-All release benchmarks were executed under standardized host constraints:
+All release benchmarks were executed under standardized host constraints (below).
+Every performance number in this directory is measured on the stated host
+against VarDictJava as the baseline — paper figures are never quoted as ours.
 - **CPU:** AMD Ryzen (Linux x86_64, Ubuntu 24.04 LTS).
 - **Concurrency:** Normalized to **8 CPU threads** (`-th 8`) as a standard multi-tenant cluster baseline (not an engine scaling ceiling).
 - **Storage:** Local NVMe SSD.
@@ -27,7 +29,7 @@ Evaluated via `harness/perf_budget.py`, comparing `vardictrust` against the `Var
 | **SEQC2 HCC1395 Somatic Exome** | SomaticMode (`tumor\|normal`) | 54:23.00 | 19:45.73 | **2.8×** | 4.1 GB | 1.4 GB | **0.36× (2.8× lower)** | advisory (see evidence) | [`seqc2-exome-tier2.json`](evidence/seqc2-exome-tier2.json) |
 | **GIAB HG008 Somatic PDAC** | SomaticMode (`tumor\|normal`) | 1:10.99 | 0:49.48 | **1.4×** | 5.7 GB | 1.2 GB | **0.21× (4.8× lower)** | advisory (see evidence) | [`hg008-tier2.json`](evidence/hg008-tier2.json) |
 
-¹ Cpp (pinned **vardictcpp 3 `hc52dbad_0` bioconda**, same `vardict-oracle` env) runs beside each gate arm via `harness/perf_budget.py`; the budget verdict stays Rust-vs-Java only. Cpp numbers live in the linked evidence `extra` (`cpp_wall_s`, `cpp_maxrss_kb`, ratios) and are never duplicated here; a missing `cpp_time` records a loud `SKIP`, never a silent pass.
+¹ Cpp (pinned **vardictcpp 3 `hc52dbad_0` bioconda**, same `vardict-oracle` env) runs beside each gate arm via `harness/perf_budget.py`; the budget verdict stays Rust-vs-Java only. Cpp numbers live in the linked evidence `extra` (`cpp_wall_s`, `cpp_maxrss_kb`, ratios) and are never duplicated here; known cpp divergences are normalized in [`docs/upstream-bugs.md`](../docs/upstream-bugs.md#known-vardictcpp-third-arm-divergences-advisory-non-gating); a missing `cpp_time` records a loud `SKIP`, never a silent pass.
 
 ### Reproduction Command:
 ```bash
