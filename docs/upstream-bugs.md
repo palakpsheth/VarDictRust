@@ -329,6 +329,7 @@ Cpp numbers live in evidence `extra` (`cpp_version`, `cpp_head`, `cpp_f1`,
 | [CPP-6](#cpp-6--zero-contig-vcf-emitter) | Zero-`##contig` VCF emitter (tabix needs completion) | Truth-concordance scaffolding |
 | [CPP-7](#cpp-7--chr-prefix-from-reference-not-bam-on-ambiguous-fastas) | CHROM resolved from reference, not BAM, on duplicate-name FASTAs | b37 extended-coverage cells |
 | [CPP-8](#cpp-8--n-ref-null-rows-in-native--vcf) | N-REF null rows emitted in native `-vcf` | b37 extended-coverage cells |
+| [CPP-9](#cpp-9--caller-deltas-mnp-joining-large-sv-alleles) | Caller deltas: MNP joining + large SV alleles | hg002/exome/hg008 Tier-2 arms |
 
 ### CPP-1 — VCF header provenance + `END` INFO key
 
@@ -394,3 +395,27 @@ cpp's native emitter writes a row per covered position with `REF=N` where
 Java's `var2vcf` drops null rows (the UB-2 family): on the b37 slices this
 adds hundreds of `N`-REF rows no Java VCF contains. Same class as CPP-7 —
 structurally uninformative comparison, unaffected calls, advisory only.
+
+### CPP-9 — Caller deltas: MNP joining + large SV alleles (measured, advisory)
+
+Beyond serialization (CPP-1), record-level `CHROM/POS/REF/ALT` comparison
+shows three genuine caller-behavior deltas, all in cpp-vs-java while
+rust==java MATCH holds on the same inputs:
+
+- **MNP joining (hg002 germline, 347/227,562 sites = 0.15%):** where Java
+  reports one joint allele (e.g. `CT→AA` at chr20:10268361, `TGA→CGC` at
+  chr20:10016944), cpp reports split SNVs (`C→A` plus the agreeing `T→A`
+  at 10268362). Depths/AF identical; only the allele assembly differs.
+  vardictrust replicates the joint form (gate MATCH).
+- **Large SV/indel alleles dropped by cpp:** seqc2-exome `chr2:178443383
+  T→<DEL>` and a ~500 bp insertion at chr22:36511000 present in java,
+  absent in cpp (1–2 alleles per 18k–623k somatic calls); hg008
+  `chr1:6173467` java 200 bp insertion vs cpp `A→C` SNV.
+- **Counts:** hg002 227,562 vs 227,560; exome 623,444 vs 623,442;
+  hg008 18,426 vs 18,425; slices 4,151 vs 4,151 (zero).
+
+Directionally this favors vardictrust's Java fidelity on these datasets,
+but the absolute rates are small, mode-dependent (germline MNP vs somatic
+SV), and paper-protocol data (hg19 WES, operating-point filtered) may
+differ — no accuracy-rank claim is made from inter-caller comparison alone
+(the Fig-3 no-truth caveat applies). Recorded advisory, never gating.
