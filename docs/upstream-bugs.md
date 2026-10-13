@@ -274,10 +274,12 @@ Cpp numbers live in evidence `extra` (`cpp_version`, `cpp_head`, `cpp_f1`,
 |---|-----------|---------|
 | [CPP-1](#cpp-1--vcf-header-provenance--end-info-key) | VCF header provenance + `END` INFO key deltas | `harness/compare.sh` third arm (`compare_cpp.txt`) |
 | [CPP-2](#cpp-2---j-j-parsed-but-ignored) | `-J`/`-j` parsed but ignored | Extended-coverage M4 cell |
-| [CPP-3](#cpp-3---a-requires-bed--r-rejects-bed-paths) | `-a` requires BED while `-R` rejects BED paths | Tier-1 amplicon fixtures |
+| [CPP-3](#cpp-3---a-amplicon-mode-is-tsv-only--vcf-ignored) | `-a` amplicon mode is TSV-only (`-vcf` ignored) | Tier-2 amplicon arm (honest SKIP) |
 | [CPP-4](#cpp-4--concatenated-single-dash-flags-rejected) | Concatenated single-dash flags rejected | Tier-1 concatenated-flags fixtures |
-| [CPP-5](#cpp-5---r-and-bed-stderr-noise-under--z---chunk-unpinned) | `-R`-and-BED stderr noise under `-z`; `--chunk` unpinned by design | `harness/scale_bench.sh` th cells |
+| [CPP-5](#cpp-5--boolean--z-positional-bed-unpinned---chunk-retired--r-noise) | Boolean `-z`, positional BED, unpinned `--chunk` | `harness/run_cpp.sh` contract |
 | [CPP-6](#cpp-6--zero-contig-vcf-emitter) | Zero-`##contig` VCF emitter (tabix needs completion) | Truth-concordance scaffolding |
+| [CPP-7](#cpp-7--chr-prefix-from-reference-not-bam-on-ambiguous-fastas) | CHROM resolved from reference, not BAM, on duplicate-name FASTAs | b37 extended-coverage cells |
+| [CPP-8](#cpp-8--n-ref-null-rows-in-native--vcf) | N-REF null rows emitted in native `-vcf` | b37 extended-coverage cells |
 
 ### CPP-1 — VCF header provenance + `END` INFO key
 
@@ -292,11 +294,15 @@ cpp accepts CRISPR cut-site flags (`-J 50454941 -j 25`) but its own banner warns
 "not all affect output yet": on the M4 cell it emits all regional rows where
 Java target-windows to 3, so an advisory `CPP-MISMATCH` on row count is expected.
 
-### CPP-3 — `-a` requires BED while `-R` rejects BED paths
+### CPP-3 — `-a` amplicon mode is TSV-only (`-vcf` ignored)
 
-Amplicon mode without a BED errors (exit 1 → loud `CPP: SKIP`), and `-R` takes
-only `chr:start-end` (a BED path is rejected) — so the amplicon cpp cell is
-structurally unreachable with the gate-identical flags and stays SKIP.
+Amplicon mode without a BED errors (exit 1 → loud `CPP: SKIP`), and with a
+BED cpp emits its 38/40-col TSV table even when `-vcf` is passed (verified:
+`-vcf` before and after the BED both yield TSV). A VCF-vs-TSV comparison
+would MISMATCH meaninglessly, so `compare.sh` records an honest
+`CPP: SKIP: cpp emitted non-VCF surface` naming the cause (locked by CPP11).
+TSV-level amplicon parity belongs to a Tier-1 `compare_var.py` cell, not the
+VCF gate.
 
 ### CPP-4 — Concatenated single-dash flags rejected
 
@@ -305,13 +311,14 @@ exit 120) that VarDictJava accepts. Affected fixtures record loud
 `CPP: SKIP (cpp engine exit 120)`; no flag-splitting is added (would break the
 identical-flags contract).
 
-### CPP-5 — `-R`-and-BED stderr noise under `-z`; `--chunk` unpinned
+### CPP-5 — Boolean `-z`, positional BED, unpinned `--chunk` (retired `-R` noise)
 
-Any cpp invocation carrying `-z 1` via `run_cpp.sh` prints `warning: both a
-region (-R) and a BED were given; using -R and ignoring the BED` on stderr. No
-BED is ever passed (`-R` is honored; outputs verified), so this is noise, not
-signal. `--chunk` is deliberately unpinned (cpp default rewrites the `Seg`
-column); the peak jobs-per-node selector stays out of the gate by design.
+`run_cpp.sh` mirrors the oracle exactly: BED travels positionally and bare
+`-z` stays bare — cpp's `-z` takes no value, and a mirrored `-z 1` leaks a
+stray positional that cpp opens as a BED file (`cannot open BED file '1'`;
+`-R` runs only survived because the stray was ignored with a warning).
+`--chunk` is deliberately unpinned (cpp default rewrites the `Seg` column);
+the peak jobs-per-node selector stays out of the gate by design.
 
 ### CPP-6 — Zero-`##contig` VCF emitter
 
@@ -321,3 +328,20 @@ from the truth header (truth first, awk-ID dedup; `##fileformat` stays line 1)
 as evaluation scaffolding only — no record, FILTER, QUAL, or INFO byte is
 touched, so the reported cpp F1 is unaffected. Handled forward-compatibly if a
 future pin emits contigs.
+
+### CPP-7 — CHROM resolved from reference, not BAM, on ambiguous FASTAs
+
+On `GRCh37.fa` — whose headers contain *both* `>20` and `>chr20` — cpp emits
+`chr20` where VarDictJava/`var2vcf` emit the BAM header's `20` (verified:
+BAM `@SQ SN:20`, fasta carries both spellings). cpp resolves CHROM through
+the reference index; Java uses the read's reference name. Every record
+mismatches on CHROM alone, so b37 cpp-vs-java VCF comparison is structurally
+uninformative; calls themselves are unaffected (GRCh38 data, with unique
+names, agrees). Recorded advisory, never gating.
+
+### CPP-8 — N-REF null rows emitted in native `-vcf`
+
+cpp's native emitter writes a row per covered position with `REF=N` where
+Java's `var2vcf` drops null rows (the UB-2 family): on the b37 slices this
+adds hundreds of `N`-REF rows no Java VCF contains. Same class as CPP-7 —
+structurally uninformative comparison, unaffected calls, advisory only.

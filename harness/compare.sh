@@ -44,6 +44,13 @@ elif LC_ALL=C /usr/bin/time -v -o "$OUT/cpp.time" timeout "$TO" \
     grep '^#' "$OUT/java.vcf" > "$OUT/cpp.vcf" || printf '##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n' > "$OUT/cpp.vcf"
   fi
   rc1=0; rc2=0
+  # Surface gate: some cpp modes (notably -a amplicon) ignore -vcf and emit
+  # TSV. Comparing a TSV against a VCF always MISMATCHes meaninglessly, so a
+  # non-VCF surface records an honest SKIP naming the cause instead.
+  if ! head -n 1 "$OUT/cpp.vcf" | grep -q '^##fileformat=VCF'; then
+    cpp_line="CPP: SKIP: cpp emitted non-VCF surface (TSV-only mode; VCF comparison inapplicable)"
+    echo "$cpp_line" > "$OUT/compare_cpp.txt"
+  else
   python3 harness/compare_vcf.py $STRICT_ARG --min-variants "${MIN_VARIANTS:-0}" "$OUT/java.vcf" "$OUT/cpp.vcf" \
     > "$OUT/compare_cpp.txt" 2>&1 || rc1=$?
   echo "--- cpp vs rust ---" >> "$OUT/compare_cpp.txt"
@@ -51,6 +58,7 @@ elif LC_ALL=C /usr/bin/time -v -o "$OUT/cpp.time" timeout "$TO" \
     >> "$OUT/compare_cpp.txt" 2>&1 || rc2=$?
   if [ "$rc1" -eq 0 ] && [ "$rc2" -eq 0 ]; then cpp_line="CPP: MATCH"; else cpp_line="CPP: MISMATCH"; fi
   echo "$cpp_line" >> "$OUT/compare_cpp.txt"
+  fi
 else
   cpp_exit=$?
   if [ "$cpp_exit" -eq 3 ]; then

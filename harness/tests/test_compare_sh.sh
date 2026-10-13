@@ -75,6 +75,15 @@ grep -qx MATCH <<<"$out9" || { echo "FAIL9 no gate MATCH"; fail=1; }
 grep -q '^CPP: MISMATCH' <<<"$out9" || { echo "FAIL9 no CPP MISMATCH (rc1=1 rc2=0)"; fail=1; }
 grep -q 'synthetic java!=cpp' "$T/k9/compare_cpp.txt" || { echo "FAIL9 no rc1 evidence"; fail=1; }
 grep -q 'synthetic cpp==rust' "$T/k9/compare_cpp.txt" || { echo "FAIL9 no rc2 evidence"; fail=1; }
+# CPP11: cpp TSV-only surface (amplicon -a ignores -vcf) records SKIP, never a
+# meaningless VCF-vs-TSV MISMATCH; gate verdict passes through untouched.
+# Uses in-repo L861Q amplicon fixture (real calls -> real TSV surface).
+printf 'chr7\t55259400\t55259600\tamp1\t100\t+\t55259420\t55259580\nchr7\t55259500\t55259650\tamp2\t100\t+\t55259510\t55259640\n' > "$T/amp8.bed"
+AREF=VarDictJava/testdata/fastas/hg19.fa; ABAM=VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests/L861Q.bam
+out11=$(KEEP_DIR="$T/k11" bash harness/compare.sh "$AREF" "$ABAM" "$T/amp8.bed" SAMPLE -a 10:0.95 -th 8 2>&1); rc11=$?
+grep -q '^CPP: SKIP: cpp emitted non-VCF surface' <<<"$out11" || { echo "FAIL11 no non-VCF SKIP (rc=$rc11)"; fail=1; }
+grep -q '^CPP: SKIP: cpp emitted non-VCF surface' "$T/k11/compare_cpp.txt" || { echo "FAIL11 no compare_cpp SKIP"; fail=1; }
+[ -s "$T/k11/cpp.vcf" ] || { echo "FAIL11 cpp.vcf missing (TSV kept)"; fail=1; }
 # CPP10: third-arm evidence keys persisted for ev_cpp (record_evidence.py reads extra.json).
 python3 -c "import json;d=json.load(open('$T/k7/extra.json'));assert 'cpp_version' in d, sorted(d)" || { echo "FAIL10 no cpp_version"; fail=1; }
 python3 -c "import json;d=json.load(open('$T/k8/extra.json'));assert 'cpp_skip_reason' in d, sorted(d)" || { echo "FAIL10 no cpp_skip_reason"; fail=1; }
