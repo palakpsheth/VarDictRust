@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Official Bioconda package distribution for `vardictrust` 1.0.0
   ([anaconda.org/bioconda/vardictrust](https://anaconda.org/bioconda/vardictrust))
-  supporting `linux-64`, `linux-aarch64`, `macOS-arm64`, and `macOS-64`
+  supporting `linux-64`, `linux-aarch64`, `osx-arm64`, and `osx-64`
   via `conda install -c bioconda -c conda-forge vardictrust`. Galaxy wrapper distribution
   remains an explicit follow-up.
 

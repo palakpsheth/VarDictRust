@@ -89,7 +89,7 @@ apptainer exec docker://ghcr.io/palakpsheth/vardictrust:1.0.0 vardictrust --help
 
 ### 4. Conda / Bioconda
 
-Install via Bioconda (`linux-64`, `linux-aarch64`, `macOS-arm64`, `macOS-64`):
+Install via Bioconda (`linux-64`, `linux-aarch64`, `osx-arm64`, `osx-64`):
 
 ```bash
 conda install -c bioconda -c conda-forge vardictrust
