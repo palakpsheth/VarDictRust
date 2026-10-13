@@ -59,36 +59,76 @@ if [ -f "${REF}.fai" ]; then
   tmp_contigs=$(mktemp)
   awk '{print $1"\t0\t"$2}' "${REF}.fai" > "$tmp_contigs"
 fi
-trap 'rm -f "$tmp_contigs"' EXIT
+stage_err=$(mktemp)
+trap 'rm -f "$tmp_contigs" "$stage_err"' EXIT
+
+# T3D-04 diagnostics: on engine-stage failure persist stage stderr + exit code
+# + free snapshot to $OUT dir (KEEP_DIR only, one small file, no retries).
+oracle_fail() {
+  [ -n "${KEEP_DIR:-}" ] || return 0
+  mkdir -p "$(dirname "$OUT")"
+  {
+    echo "oracle-stage: $1"
+    echo "oracle-exit-code: $2"
+    echo "--- free -h ---"
+    free -h || true
+    echo "--- stderr (tail 100) ---"
+    tail -n 100 "$3" || true
+  } > "$(dirname "$OUT")/oracle-fail-$1.log" 2>/dev/null || true
+}
 
 if [[ "$BAM" == *"|"* ]]; then  # paired/somatic
+  set +e
   conda run -n vardict-oracle bash -c \
     '
-    set -euo pipefail
+    set -uo pipefail
     V2V_ARGS=()
     if [ -n "$8" ] && [ -f "$8" ]; then
       V2V_ARGS=(-G "$1" -b "$8")
     fi
     if [ "$7" = true ]; then
       vardict-java -G "$1" -f "$2" -N "$3" -b "$4" -c 1 -S 2 -E 3 -g 4 "${@:9}" "$5" | var2vcf_paired.pl -N "$3" -f "$2" "${V2V_ARGS[@]}" > "$6"
+      st=("${PIPESTATUS[@]}")
+      [ "${st[0]}" -eq 0 ] || { echo "oracle-stage-fail: vardict-java exit ${st[0]}" >&2; exit "${st[0]}"; }
+      [ "${st[1]}" -eq 0 ] || { echo "oracle-stage-fail: var2vcf_paired.pl exit ${st[1]}" >&2; exit "${st[1]}"; }
     else
       vardict-java -G "$1" -f "$2" -N "$3" -b "$4" -c 1 -S 2 -E 3 -g 4 "${@:9}" "$5" | testsomatic.R | var2vcf_paired.pl -N "$3" -f "$2" "${V2V_ARGS[@]}" > "$6"
+      st=("${PIPESTATUS[@]}")
+      [ "${st[0]}" -eq 0 ] || { echo "oracle-stage-fail: vardict-java exit ${st[0]}" >&2; exit "${st[0]}"; }
+      [ "${st[1]}" -eq 0 ] || { echo "oracle-stage-fail: testsomatic.R exit ${st[1]}" >&2; exit "${st[1]}"; }
+      [ "${st[2]}" -eq 0 ] || { echo "oracle-stage-fail: var2vcf_paired.pl exit ${st[2]}" >&2; exit "${st[2]}"; }
     fi
     ' \
-    _ "$REF" "$AF" "$SAMPLE" "$BAM" "$BED" "$OUT" "$has_fisher" "$tmp_contigs" "${EXTRA_ARGS[@]}"
+    _ "$REF" "$AF" "$SAMPLE" "$BAM" "$BED" "$OUT" "$has_fisher" "$tmp_contigs" "${EXTRA_ARGS[@]}" 2>"$stage_err"
+  code=$?
+  set -e
+  if [ "$code" -ne 0 ]; then oracle_fail paired "$code" "$stage_err"; cat "$stage_err" >&2 || true; exit "$code"; fi
+  cat "$stage_err" >&2 || true
 else
+  set +e
   conda run -n vardict-oracle bash -c \
     '
-    set -euo pipefail
+    set -uo pipefail
     V2V_ARGS=()
     if [ -n "$8" ] && [ -f "$8" ]; then
       V2V_ARGS=(-G "$1" -b "$8")
     fi
     if [ "$7" = true ]; then
       vardict-java -G "$1" -f "$2" -N "$3" -b "$4" -c 1 -S 2 -E 3 -g 4 "${@:9}" "$5" | var2vcf_valid.pl -N "$3" -E -f "$2" "${V2V_ARGS[@]}" > "$6"
+      st=("${PIPESTATUS[@]}")
+      [ "${st[0]}" -eq 0 ] || { echo "oracle-stage-fail: vardict-java exit ${st[0]}" >&2; exit "${st[0]}"; }
+      [ "${st[1]}" -eq 0 ] || { echo "oracle-stage-fail: var2vcf_valid.pl exit ${st[1]}" >&2; exit "${st[1]}"; }
     else
       vardict-java -G "$1" -f "$2" -N "$3" -b "$4" -c 1 -S 2 -E 3 -g 4 "${@:9}" "$5" | teststrandbias.R | var2vcf_valid.pl -N "$3" -E -f "$2" "${V2V_ARGS[@]}" > "$6"
+      st=("${PIPESTATUS[@]}")
+      [ "${st[0]}" -eq 0 ] || { echo "oracle-stage-fail: vardict-java exit ${st[0]}" >&2; exit "${st[0]}"; }
+      [ "${st[1]}" -eq 0 ] || { echo "oracle-stage-fail: teststrandbias.R exit ${st[1]}" >&2; exit "${st[1]}"; }
+      [ "${st[2]}" -eq 0 ] || { echo "oracle-stage-fail: var2vcf_valid.pl exit ${st[2]}" >&2; exit "${st[2]}"; }
     fi
     ' \
-    _ "$REF" "$AF" "$SAMPLE" "$BAM" "$BED" "$OUT" "$has_fisher" "$tmp_contigs" "${EXTRA_ARGS[@]}"
+    _ "$REF" "$AF" "$SAMPLE" "$BAM" "$BED" "$OUT" "$has_fisher" "$tmp_contigs" "${EXTRA_ARGS[@]}" 2>"$stage_err"
+  code=$?
+  set -e
+  if [ "$code" -ne 0 ]; then oracle_fail single "$code" "$stage_err"; cat "$stage_err" >&2 || true; exit "$code"; fi
+  cat "$stage_err" >&2 || true
 fi

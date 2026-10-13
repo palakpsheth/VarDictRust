@@ -17,6 +17,7 @@ All line references below are to that pin.
 | [UB-5](#ub-5) | [Class A](../DIVERGENCES.md#the-four-canonical-parity-classes-rewritesbio-5-8-11) | SimpleMode SV split-read requirement (`splitreads < 1` dropped) | **Replicated** ([`lib.rs:403-414`](../crates/vardictrust-core/src/lib.rs)) |
 | [UB-6](#ub-6) | [Class A](../DIVERGENCES.md#the-four-canonical-parity-classes-rewritesbio-5-8-11) | Mate-pair boundary parameter in `mark_dup_sv` (`pe` decrement) | **Replicated** ([`sv.rs:3039`](../crates/vardictrust-core/src/sv.rs)) |
 | [UB-7](#ub-7) | [Class A](../DIVERGENCES.md#the-four-canonical-parity-classes-rewritesbio-5-8-11) | Multi-allelic site single-winner collapsing without `-A` | **Replicated** ([`lib.rs:467-505`](../crates/vardictrust-core/src/lib.rs)) |
+| [UB-8](#ub-8) | [Class D](../DIVERGENCES.md#the-four-canonical-parity-classes-rewritesbio-5-8-11) | Oracle JVM SIGKILL flake under shared-host memory pressure (exit 137, no output change) | **Tracked** (environmental; diagnostics in [`harness/run_oracle.sh`](../harness/run_oracle.sh)) |
 
 **Third arm:** pinned **vardictcpp 3 `hc52dbad_0` bioconda** runs beside every gate
 arm (advisory only; gate stays java==rust; `CPP_SKIP=1` escapes). Its known
@@ -260,6 +261,51 @@ Only the single candidate allele with the highest allele frequency (`$tmp[0]`) i
 > **Title:** Single-winner multi-allelic collapsing drops secondary variants when primary candidate is filtered
 >
 > In `var2vcf_valid.pl:135-205`, when `-A` is omitted, only the highest-AF candidate is inspected. If that candidate triggers any `next` condition (e.g. empty REF or zero split reads), the entire position is abandoned, dropping any secondary variants that would have passed filters. The loop should evaluate candidate records until an eligible variant is found or emit all qualifying alleles in standard multi-allelic VCF notation.
+
+---
+
+<a id="ub-8"></a>
+<a id="ub-8-oracle-jvm-sigkill-flake-under-shared-host-memory-pressure"></a>
+## UB-8 — Oracle JVM SIGKILL flake under shared-host memory pressure (exit 137)
+
+**Parity Class:** [Class D (Known Upstream Defects & Fixture Flaws)](../DIVERGENCES.md#the-four-canonical-parity-classes-rewritesbio-5-8-11)
+
+**Behavior (environmental, not a VarDictJava logic bug):** on the full-chr20 hg002
+oracle arm (`-f 0.01 -th 8`, ~90 s JVM runtime, MaxRSS ≈ 4.1 GB under `-Xmx8g`),
+the `vardict-java` process is intermittently SIGKILLed ~85–90 s in — near
+completion — while the downstream R/Perl stages exit cleanly. `compare.sh`
+reports `ENGINE-FAIL: oracle`. An identical-input retry passes byte-identically
+(same 227562-variant MATCH), so this is a flake, not input-dependent behavior.
+
+**Evidence (2026-10-13, 5 consecutive `compare.sh` hg002 runs):** 1 MATCH, then 4
+consecutive oracle `ENGINE-FAIL`s, every failure with the same signature —
+`java.time` `Exit status: 137`, wrapper stderr:
+
+```
+_: line 18: 1178932 Killed                  vardict-java -G "$1" -f "$2" ...
+     1178933 Done                    | teststrandbias.R
+     1178934 Done                    | var2vcf_valid.pl -N "$3" -E -f "$2" "${V2V_ARGS[@]}" > "$6"
+oracle-stage-fail: vardict-java exit 137
+```
+
+Ruled out: our wrapper (pipe/trap/timeout/env verified; exit code faithfully
+propagated), JVM heap exhaustion (4.1 GB < 8 GB cap, no Java exception), the
+kernel OOM killer (ring buffer intact through the kill window, no entries), and
+systemd-oomd (no entries that day despite reliably logging Oct 9/11 pressure
+kills on this host). The `free -h` snapshot at kill time shows ~23 GB available,
+so this is not system-wide exhaustion either — the SIGKILL comes from shared-host
+userspace pressure (parallel agent sessions; this box has a documented history of
+host-pressure kills and manual `kill -9` cleanups). Exact sender unattributable
+from available logs.
+
+**Our stance:** nothing to replicate (no output effect — killed runs produce no
+VCF) and nothing to fix in our wrapper; retry loops are forbidden as a fix.
+[`harness/run_oracle.sh`](../harness/run_oracle.sh) now persists
+`$KEEP_DIR/oracle-fail-<stage>.log` (stage stderr + exit code + `free -h`) on any
+engine-stage failure so future flakes arrive with their signature attached.
+Guidance: re-run `compare.sh`; keep ambient load down
+([`harness/courtesy.sh`](../harness/README.md), `-th 8`); do not chase this by
+retuning oracle heap/threads.
 
 ---
 
