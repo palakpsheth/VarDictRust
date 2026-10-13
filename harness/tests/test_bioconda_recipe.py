@@ -22,11 +22,10 @@ class TestBiocondaRecipe(unittest.TestCase):
         self.assertTrue(RECIPE_DIR.is_dir(), f"Missing recipe directory: {RECIPE_DIR}")
         self.assertTrue(META_PATH.is_file(), f"Missing meta.yaml: {META_PATH}")
         self.assertTrue(BUILD_PATH.is_file(), f"Missing build.sh: {BUILD_PATH}")
-        self.assertTrue(RUN_TEST_PATH.is_file(), f"Missing run_test.sh: {RUN_TEST_PATH}")
+        self.assertFalse(RUN_TEST_PATH.is_file(), f"run_test.sh should not exist in recipe: {RUN_TEST_PATH}")
 
     def test_recipe_files_executable(self):
         self.assertTrue(os.access(BUILD_PATH, os.X_OK), "build.sh must be executable")
-        self.assertTrue(os.access(RUN_TEST_PATH, os.X_OK), "run_test.sh must be executable")
 
     def test_build_script_content(self):
         content = BUILD_PATH.read_text(encoding="utf-8")
@@ -40,13 +39,6 @@ class TestBiocondaRecipe(unittest.TestCase):
         self.assertIn("rm -rf \"$CARGO_HOME\"", content, "build.sh must clean up CARGO_HOME cache")
         self.assertIn("trap 'rm -rf \"$CARGO_HOME\"' EXIT", content, "build.sh must set EXIT cleanup trap")
 
-    def test_run_test_negative_exit_contract(self):
-        content = RUN_TEST_PATH.read_text(encoding="utf-8")
-        self.assertIn(
-            '[ "$status" -ne 2 ]',
-            content,
-            "run_test.sh must assert Clap usage error exit code 2 on invalid flags",
-        )
 
     def test_cargo_manifest_license(self):
         cargo_path = ROOT_DIR / "Cargo.toml"
@@ -129,6 +121,17 @@ class TestBiocondaRecipe(unittest.TestCase):
             content,
             "README.md must NOT reference erroneous package name 'vardict-rust'",
         )
+
+    def test_conda_platform_identifiers(self):
+        readme = (ROOT_DIR / "README.md").read_text(encoding="utf-8")
+        changelog = (ROOT_DIR / "CHANGELOG.md").read_text(encoding="utf-8")
+        for doc, name in [(readme, "README.md"), (changelog, "CHANGELOG.md")]:
+            self.assertIn("osx-arm64", doc, f"{name} must use valid Conda platform identifier 'osx-arm64'")
+            self.assertIn("osx-64", doc, f"{name} must use valid Conda platform identifier 'osx-64'")
+            self.assertIn("linux-64", doc, f"{name} must use valid Conda platform identifier 'linux-64'")
+            self.assertIn("linux-aarch64", doc, f"{name} must use valid Conda platform identifier 'linux-aarch64'")
+            self.assertNotIn("macOS-arm64", doc, f"{name} must not use invalid Conda subdir 'macOS-arm64'")
+            self.assertNotIn("macOS-64", doc, f"{name} must not use invalid Conda subdir 'macOS-64'")
 
 
 if __name__ == "__main__":
