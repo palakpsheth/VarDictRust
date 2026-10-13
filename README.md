@@ -189,13 +189,15 @@ vardictrust -G GRCh38.fa -f 0.01 -N SAMPLE -b sample.bam -R chr1:1000000-2000000
 
 Evaluated on Linux x86_64 (AMD Ryzen, Ubuntu 24.04 LTS, NVMe SSD) across 8 worker threads (`-th 8`):
 
-| Workload / Benchmark | Threads | VarDictJava Wall Time | VarDictRust Wall Time | Speedup Ratio | VarDictJava Peak RSS | VarDictRust Peak RSS | Memory Scaling Ratio | Evidence Artifact |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :---: |
-| **Targeted Amplicon Panel** | 8 cores | 0:02.10 | 0:00.07 | **30.0× faster** | 120.8 MB | 50.8 MB | 0.42× (2.4× lower) | [`amplicon-tier2.json`](benchmarks/evidence/amplicon-tier2.json) |
-| **GIAB HG002 (chr20:10M–30M, 30×)** | 8 cores | 4:16.98 | 1:22.47 | **3.1× faster** | 3.6 GB | 1.1 GB | 0.30× (3.3× lower) | [`hg002-tier2.json`](benchmarks/evidence/hg002-tier2.json) |
-| **SEQC2 HCC1395 Somatic Exome** | 8 cores | 54:23.00 | 19:45.73 | **2.8× faster** | 4.1 GB | 1.4 GB | 0.36× (2.8× lower) | [`seqc2-exome-tier2.json`](benchmarks/evidence/seqc2-exome-tier2.json) |
-| **GIAB HG008 Somatic PDAC** | 8 cores | 1:10.99 | 0:49.48 | **1.4× faster** | 5.7 GB | 1.2 GB | 0.21× (4.8× lower) | [`hg008-tier2.json`](benchmarks/evidence/hg008-tier2.json) |
-| **Whole Chromosome 1 Scale (249 Mbp)** | 1 → 8 cores | 57m 16s (1 core) | 11m 49s (8 cores) | **4.85× parallel** | OOM / Unbounded | 2.9 GB (249 Mb) vs 2.1 GB (10 Mb) | **1.39× flat RSS scaling** | [`scale.json`](benchmarks/evidence/scale.json) |
+| Workload / Benchmark | Threads | VarDictJava Wall Time | VarDictRust Wall Time | Speedup Ratio | VarDictJava Peak RSS | VarDictRust Peak RSS | Memory Scaling Ratio | Evidence Artifact | vardictcpp Wall / RSS (advisory¹) |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :---: | :--- |
+| **Targeted Amplicon Panel** | 8 cores | 0:02.10 | 0:00.07 | **30.0× faster** | 120.8 MB | 50.8 MB | 0.42× (2.4× lower) | [`amplicon-tier2.json`](benchmarks/evidence/amplicon-tier2.json) | advisory (see evidence) |
+| **GIAB HG002 (chr20:10M–30M, 30×)** | 8 cores | 4:16.98 | 1:22.47 | **3.1× faster** | 3.6 GB | 1.1 GB | 0.30× (3.3× lower) | [`hg002-tier2.json`](benchmarks/evidence/hg002-tier2.json) | advisory (see evidence) |
+| **SEQC2 HCC1395 Somatic Exome** | 8 cores | 54:23.00 | 19:45.73 | **2.8× faster** | 4.1 GB | 1.4 GB | 0.36× (2.8× lower) | [`seqc2-exome-tier2.json`](benchmarks/evidence/seqc2-exome-tier2.json) | advisory (see evidence) |
+| **GIAB HG008 Somatic PDAC** | 8 cores | 1:10.99 | 0:49.48 | **1.4× faster** | 5.7 GB | 1.2 GB | 0.21× (4.8× lower) | [`hg008-tier2.json`](benchmarks/evidence/hg008-tier2.json) | advisory (see evidence) |
+| **Whole Chromosome 1 Scale (249 Mbp)** | 1 → 8 cores | 57m 16s (1 core) | 11m 49s (8 cores) | **4.85× parallel** | OOM / Unbounded | 2.9 GB (249 Mb) vs 2.1 GB (10 Mb) | **1.39× flat RSS scaling** | [`scale.json`](benchmarks/evidence/scale.json) | advisory (see evidence) |
+¹ **vardictcpp third arm (advisory, never gating).** Pinned **vardictcpp 3 `hc52dbad_0`** (bioconda, same `vardict-oracle` env) runs beside each gate arm (`-th 8`, `LC_ALL=C /usr/bin/time -v`); the verdict stays Rust-vs-Java. Cpp wall/RSS numbers live only in the linked evidence `extra` (`cpp_wall_s`, `cpp_maxrss_kb`) and are never duplicated here.
+
 
 > [!NOTE]
 > **Bounded $O(1)$ Memory at Any Depth:** VarDictJava holds entire regional chromosome structures in JVM heap collections, leading to JVM heap exhaustion and Out-Of-Memory errors on deep WGS ([Issues #197 and #384](https://github.com/AstraZeneca-NGS/VarDictJava/issues/197)). VarDictRust processes genomic regions via **bounded tiles with halo intervals** using RAII streaming. Across a 25-fold increase in genomic span (10 Mbp to all 249 Mbp of chromosome 1), VarDictRust peak RSS scales by only **$1.39\times$** (2.11 GB → 2.94 GB).

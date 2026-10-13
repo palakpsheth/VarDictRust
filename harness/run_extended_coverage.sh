@@ -170,6 +170,20 @@ python3 "$ROOT_DIR/harness/compare_vcf.py" --strict-bytes "$TMPDIR/m5_java.vcf" 
 M5_VARS=$(grep -v "^#" "$TMPDIR/m5_rust.vcf" | wc -l)
 echo "MATCH ($M5_VARS variants, 0 diffs)"
 PASSED=$((PASSED + 1))
+# Advisory cpp third arm (same flags as gate arms above; never gates).
+M5_CPP_EXIT=0
+bash "$ROOT_DIR/harness/run_cpp.sh" "$B37_FA" "$BAM_NA24385" "$BED_S1A" "$TMPDIR/m5_cpp.vcf" SAMPLE -u -UN -c 1 -S 2 -E 3 -g 4 -z -th "$THREADS" 2>"$TMPDIR/m5_cpp.err" || M5_CPP_EXIT=$?
+if [[ "$M5_CPP_EXIT" -eq 0 ]]; then
+    if python3 "$ROOT_DIR/harness/compare_vcf.py" --min-variants 1 "$TMPDIR/m5_java.vcf" "$TMPDIR/m5_cpp.vcf" > "$TMPDIR/m5_cpp_cmp.txt" 2>&1; then
+        echo "CPP: MATCH (m5 paired-unique)"
+    else
+        echo "CPP-MISMATCH: m5 paired-unique ($(head -n 1 "$TMPDIR/m5_cpp_cmp.txt"))"
+    fi
+elif conda run -n vardict-oracle vardictcpp --version >/dev/null 2>&1; then
+    echo "CPP: SKIP: m5 paired-unique (cpp engine exit $M5_CPP_EXIT)"
+else
+    echo "CPP: SKIP: m5 paired-unique (vardictcpp not available in conda env vardict-oracle)"
+fi
 
 # -----------------------------------------------------------------------------
 # Mode 6: Adapter Trimming (--adaptor)
@@ -182,6 +196,20 @@ python3 "$ROOT_DIR/harness/compare_vcf.py" --strict-bytes "$TMPDIR/m6_java.vcf" 
 M6_VARS=$(grep -v "^#" "$TMPDIR/m6_rust.vcf" | wc -l)
 echo "MATCH ($M6_VARS variants, 0 diffs)"
 PASSED=$((PASSED + 1))
+# Advisory cpp third arm (same flags as gate arms above; never gates).
+M6_CPP_EXIT=0
+bash "$ROOT_DIR/harness/run_cpp.sh" "$B37_FA" "$BAM_NA24385" "$BED_S1A" "$TMPDIR/m6_cpp.vcf" SAMPLE --adaptor AGATCGGAAGAGCACACGTCTGAACTCCAGTCA,AGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGT -c 1 -S 2 -E 3 -g 4 -z -th "$THREADS" 2>"$TMPDIR/m6_cpp.err" || M6_CPP_EXIT=$?
+if [[ "$M6_CPP_EXIT" -eq 0 ]]; then
+    if python3 "$ROOT_DIR/harness/compare_vcf.py" --min-variants 1 "$TMPDIR/m6_java.vcf" "$TMPDIR/m6_cpp.vcf" > "$TMPDIR/m6_cpp_cmp.txt" 2>&1; then
+        echo "CPP: MATCH (m6 adaptor)"
+    else
+        echo "CPP-MISMATCH: m6 adaptor ($(head -n 1 "$TMPDIR/m6_cpp_cmp.txt"))"
+    fi
+elif conda run -n vardict-oracle vardictcpp --version >/dev/null 2>&1; then
+    echo "CPP: SKIP: m6 adaptor (cpp engine exit $M6_CPP_EXIT)"
+else
+    echo "CPP: SKIP: m6 adaptor (vardictcpp not available in conda env vardict-oracle)"
+fi
 
 # -----------------------------------------------------------------------------
 # Mode 7: Realignment Bypass (-k 0)
@@ -194,6 +222,20 @@ python3 "$ROOT_DIR/harness/compare_vcf.py" --strict-bytes "$TMPDIR/m7_java.vcf" 
 M7_VARS=$(grep -v "^#" "$TMPDIR/m7_rust.vcf" | wc -l)
 echo "MATCH ($M7_VARS variants, 0 diffs)"
 PASSED=$((PASSED + 1))
+# Advisory cpp third arm (same flags as gate arms above; never gates).
+M7_CPP_EXIT=0
+bash "$ROOT_DIR/harness/run_cpp.sh" "$B37_FA" "$BAM_NA24385" "$BED_S1A" "$TMPDIR/m7_cpp.vcf" SAMPLE -k 0 -c 1 -S 2 -E 3 -g 4 -z -th "$THREADS" 2>"$TMPDIR/m7_cpp.err" || M7_CPP_EXIT=$?
+if [[ "$M7_CPP_EXIT" -eq 0 ]]; then
+    if python3 "$ROOT_DIR/harness/compare_vcf.py" --min-variants 1 "$TMPDIR/m7_java.vcf" "$TMPDIR/m7_cpp.vcf" > "$TMPDIR/m7_cpp_cmp.txt" 2>&1; then
+        echo "CPP: MATCH (m7 realignment-bypass)"
+    else
+        echo "CPP-MISMATCH: m7 realignment-bypass ($(head -n 1 "$TMPDIR/m7_cpp_cmp.txt"))"
+    fi
+elif conda run -n vardict-oracle vardictcpp --version >/dev/null 2>&1; then
+    echo "CPP: SKIP: m7 realignment-bypass (cpp engine exit $M7_CPP_EXIT)"
+else
+    echo "CPP: SKIP: m7 realignment-bypass (vardictcpp not available in conda env vardict-oracle)"
+fi
 
 # -----------------------------------------------------------------------------
 # Mode 8: SV Engine Bypass (-U / --nosv)
@@ -206,6 +248,20 @@ python3 "$ROOT_DIR/harness/compare_vcf.py" --strict-bytes "$TMPDIR/m8_java.vcf" 
 M8_VARS=$(grep -v "^#" "$TMPDIR/m8_rust.vcf" | wc -l)
 echo "MATCH ($M8_VARS variants, 0 diffs)"
 PASSED=$((PASSED + 1))
+# Advisory cpp third arm (same flags as gate arms above; never gates).
+M8_CPP_EXIT=0
+bash "$ROOT_DIR/harness/run_cpp.sh" "$B37_FA" "$BAM_NA24385" "$BED_S1A" "$TMPDIR/m8_cpp.vcf" SAMPLE -U -c 1 -S 2 -E 3 -g 4 -z -th "$THREADS" 2>"$TMPDIR/m8_cpp.err" || M8_CPP_EXIT=$?
+if [[ "$M8_CPP_EXIT" -eq 0 ]]; then
+    if python3 "$ROOT_DIR/harness/compare_vcf.py" --min-variants 1 "$TMPDIR/m8_java.vcf" "$TMPDIR/m8_cpp.vcf" > "$TMPDIR/m8_cpp_cmp.txt" 2>&1; then
+        echo "CPP: MATCH (m8 sv-bypass)"
+    else
+        echo "CPP-MISMATCH: m8 sv-bypass ($(head -n 1 "$TMPDIR/m8_cpp_cmp.txt"))"
+    fi
+elif conda run -n vardict-oracle vardictcpp --version >/dev/null 2>&1; then
+    echo "CPP: SKIP: m8 sv-bypass (cpp engine exit $M8_CPP_EXIT)"
+else
+    echo "CPP: SKIP: m8 sv-bypass (vardictcpp not available in conda env vardict-oracle)"
+fi
 
 # -----------------------------------------------------------------------------
 # Mode 9: N-Base Depth Counting (-K)
@@ -218,6 +274,20 @@ python3 "$ROOT_DIR/harness/compare_vcf.py" --strict-bytes "$TMPDIR/m9_java.vcf" 
 M9_VARS=$(grep -v "^#" "$TMPDIR/m9_rust.vcf" | wc -l)
 echo "MATCH ($M9_VARS variants, 0 diffs)"
 PASSED=$((PASSED + 1))
+# Advisory cpp third arm (same flags as gate arms above; never gates).
+M9_CPP_EXIT=0
+bash "$ROOT_DIR/harness/run_cpp.sh" "$B37_FA" "$BAM_NA24385" "$BED_S1A" "$TMPDIR/m9_cpp.vcf" SAMPLE -K -c 1 -S 2 -E 3 -g 4 -z -th "$THREADS" 2>"$TMPDIR/m9_cpp.err" || M9_CPP_EXIT=$?
+if [[ "$M9_CPP_EXIT" -eq 0 ]]; then
+    if python3 "$ROOT_DIR/harness/compare_vcf.py" --min-variants 1 "$TMPDIR/m9_java.vcf" "$TMPDIR/m9_cpp.vcf" > "$TMPDIR/m9_cpp_cmp.txt" 2>&1; then
+        echo "CPP: MATCH (m9 n-base)"
+    else
+        echo "CPP-MISMATCH: m9 n-base ($(head -n 1 "$TMPDIR/m9_cpp_cmp.txt"))"
+    fi
+elif conda run -n vardict-oracle vardictcpp --version >/dev/null 2>&1; then
+    echo "CPP: SKIP: m9 n-base (cpp engine exit $M9_CPP_EXIT)"
+else
+    echo "CPP: SKIP: m9 n-base (vardictcpp not available in conda env vardict-oracle)"
+fi
 
 # -----------------------------------------------------------------------------
 # Mode 10: Deduplication (-t / --dedup)
@@ -230,6 +300,20 @@ python3 "$ROOT_DIR/harness/compare_vcf.py" --strict-bytes "$TMPDIR/m10_java.vcf"
 M10_VARS=$(grep -v "^#" "$TMPDIR/m10_rust.vcf" | wc -l)
 echo "MATCH ($M10_VARS variants, 0 diffs)"
 PASSED=$((PASSED + 1))
+# Advisory cpp third arm (same flags as gate arms above; never gates).
+M10_CPP_EXIT=0
+bash "$ROOT_DIR/harness/run_cpp.sh" "$B37_FA" "$BAM_NA24385" "$BED_TINY" "$TMPDIR/m10_cpp.vcf" SAMPLE -t -c 1 -S 2 -E 3 -g 4 -z -th "$THREADS" 2>"$TMPDIR/m10_cpp.err" || M10_CPP_EXIT=$?
+if [[ "$M10_CPP_EXIT" -eq 0 ]]; then
+    if python3 "$ROOT_DIR/harness/compare_vcf.py" --min-variants 1 "$TMPDIR/m10_java.vcf" "$TMPDIR/m10_cpp.vcf" > "$TMPDIR/m10_cpp_cmp.txt" 2>&1; then
+        echo "CPP: MATCH (m10 dedup)"
+    else
+        echo "CPP-MISMATCH: m10 dedup ($(head -n 1 "$TMPDIR/m10_cpp_cmp.txt"))"
+    fi
+elif conda run -n vardict-oracle vardictcpp --version >/dev/null 2>&1; then
+    echo "CPP: SKIP: m10 dedup (cpp engine exit $M10_CPP_EXIT)"
+else
+    echo "CPP: SKIP: m10 dedup (vardictcpp not available in conda env vardict-oracle)"
+fi
 
 # -----------------------------------------------------------------------------
 # Mode 11: 3'-Indel Shift (-3)
@@ -242,6 +326,20 @@ python3 "$ROOT_DIR/harness/compare_vcf.py" --strict-bytes "$TMPDIR/m11_java.vcf"
 M11_VARS=$(grep -v "^#" "$TMPDIR/m11_rust.vcf" | wc -l)
 echo "MATCH ($M11_VARS variants, 0 diffs)"
 PASSED=$((PASSED + 1))
+# Advisory cpp third arm (same flags as gate arms above; never gates).
+M11_CPP_EXIT=0
+bash "$ROOT_DIR/harness/run_cpp.sh" "$B37_FA" "$BAM_NA24385" "$BED_TINY" "$TMPDIR/m11_cpp.vcf" SAMPLE -3 -c 1 -S 2 -E 3 -g 4 -z -th "$THREADS" 2>"$TMPDIR/m11_cpp.err" || M11_CPP_EXIT=$?
+if [[ "$M11_CPP_EXIT" -eq 0 ]]; then
+    if python3 "$ROOT_DIR/harness/compare_vcf.py" --min-variants 1 "$TMPDIR/m11_java.vcf" "$TMPDIR/m11_cpp.vcf" > "$TMPDIR/m11_cpp_cmp.txt" 2>&1; then
+        echo "CPP: MATCH (m11 shift3)"
+    else
+        echo "CPP-MISMATCH: m11 shift3 ($(head -n 1 "$TMPDIR/m11_cpp_cmp.txt"))"
+    fi
+elif conda run -n vardict-oracle vardictcpp --version >/dev/null 2>&1; then
+    echo "CPP: SKIP: m11 shift3 (cpp engine exit $M11_CPP_EXIT)"
+else
+    echo "CPP: SKIP: m11 shift3 (vardictcpp not available in conda env vardict-oracle)"
+fi
 
 # -----------------------------------------------------------------------------
 # Mode 12: Output MAPQ Filter (-O 55)
@@ -254,6 +352,20 @@ python3 "$ROOT_DIR/harness/compare_vcf.py" --strict-bytes "$TMPDIR/m12_java.vcf"
 M12_VARS=$(grep -v "^#" "$TMPDIR/m12_rust.vcf" | wc -l)
 echo "MATCH ($M12_VARS variants, 0 diffs)"
 PASSED=$((PASSED + 1))
+# Advisory cpp third arm (same flags as gate arms above; never gates).
+M12_CPP_EXIT=0
+bash "$ROOT_DIR/harness/run_cpp.sh" "$B37_FA" "$BAM_NA24385" "$BED_TINY" "$TMPDIR/m12_cpp.vcf" SAMPLE -O 55 -c 1 -S 2 -E 3 -g 4 -z -th "$THREADS" 2>"$TMPDIR/m12_cpp.err" || M12_CPP_EXIT=$?
+if [[ "$M12_CPP_EXIT" -eq 0 ]]; then
+    if python3 "$ROOT_DIR/harness/compare_vcf.py" --min-variants 1 "$TMPDIR/m12_java.vcf" "$TMPDIR/m12_cpp.vcf" > "$TMPDIR/m12_cpp_cmp.txt" 2>&1; then
+        echo "CPP: MATCH (m12 mapq)"
+    else
+        echo "CPP-MISMATCH: m12 mapq ($(head -n 1 "$TMPDIR/m12_cpp_cmp.txt"))"
+    fi
+elif conda run -n vardict-oracle vardictcpp --version >/dev/null 2>&1; then
+    echo "CPP: SKIP: m12 mapq (cpp engine exit $M12_CPP_EXIT)"
+else
+    echo "CPP: SKIP: m12 mapq (vardictcpp not available in conda env vardict-oracle)"
+fi
 
 # -----------------------------------------------------------------------------
 # Mode 13: Region Extension (-x 50)
@@ -266,6 +378,20 @@ python3 "$ROOT_DIR/harness/compare_vcf.py" --strict-bytes "$TMPDIR/m13_java.vcf"
 M13_VARS=$(grep -v "^#" "$TMPDIR/m13_rust.vcf" | wc -l)
 echo "MATCH ($M13_VARS variants, 0 diffs)"
 PASSED=$((PASSED + 1))
+# Advisory cpp third arm (same flags as gate arms above; never gates).
+M13_CPP_EXIT=0
+bash "$ROOT_DIR/harness/run_cpp.sh" "$B37_FA" "$BAM_NA24385" "$BED_TINY" "$TMPDIR/m13_cpp.vcf" SAMPLE -x 50 -c 1 -S 2 -E 3 -g 4 -z -th "$THREADS" 2>"$TMPDIR/m13_cpp.err" || M13_CPP_EXIT=$?
+if [[ "$M13_CPP_EXIT" -eq 0 ]]; then
+    if python3 "$ROOT_DIR/harness/compare_vcf.py" --min-variants 1 "$TMPDIR/m13_java.vcf" "$TMPDIR/m13_cpp.vcf" > "$TMPDIR/m13_cpp_cmp.txt" 2>&1; then
+        echo "CPP: MATCH (m13 extend)"
+    else
+        echo "CPP-MISMATCH: m13 extend ($(head -n 1 "$TMPDIR/m13_cpp_cmp.txt"))"
+    fi
+elif conda run -n vardict-oracle vardictcpp --version >/dev/null 2>&1; then
+    echo "CPP: SKIP: m13 extend (cpp engine exit $M13_CPP_EXIT)"
+else
+    echo "CPP: SKIP: m13 extend (vardictcpp not available in conda env vardict-oracle)"
+fi
 
 # -----------------------------------------------------------------------------
 # Mode 14: Segment Column Mapping (-s 10 -e 11)
@@ -279,6 +405,20 @@ python3 "$ROOT_DIR/harness/compare_vcf.py" --strict-bytes "$TMPDIR/m14_java.vcf"
 M14_VARS=$(grep -v "^#" "$TMPDIR/m14_rust.vcf" | wc -l)
 echo "MATCH ($M14_VARS variants, 0 diffs)"
 PASSED=$((PASSED + 1))
+# Advisory cpp third arm (same flags as gate arms above; never gates).
+M14_CPP_EXIT=0
+bash "$ROOT_DIR/harness/run_cpp.sh" "$B37_FA" "$BAM_NA24385" "$TMPDIR/m14_se.bed" "$TMPDIR/m14_cpp.vcf" SAMPLE -c 1 -S 2 -E 3 -s 10 -e 11 -g 4 -z -th "$THREADS" 2>"$TMPDIR/m14_cpp.err" || M14_CPP_EXIT=$?
+if [[ "$M14_CPP_EXIT" -eq 0 ]]; then
+    if python3 "$ROOT_DIR/harness/compare_vcf.py" --min-variants 1 "$TMPDIR/m14_java.vcf" "$TMPDIR/m14_cpp.vcf" > "$TMPDIR/m14_cpp_cmp.txt" 2>&1; then
+        echo "CPP: MATCH (m14 segmap)"
+    else
+        echo "CPP-MISMATCH: m14 segmap ($(head -n 1 "$TMPDIR/m14_cpp_cmp.txt"))"
+    fi
+elif conda run -n vardict-oracle vardictcpp --version >/dev/null 2>&1; then
+    echo "CPP: SKIP: m14 segmap (cpp engine exit $M14_CPP_EXIT)"
+else
+    echo "CPP: SKIP: m14 segmap (vardictcpp not available in conda env vardict-oracle)"
+fi
 
 # -----------------------------------------------------------------------------
 # Mode 15: Minimum Match Read Length (-M 50)
@@ -291,6 +431,20 @@ python3 "$ROOT_DIR/harness/compare_vcf.py" --strict-bytes "$TMPDIR/m15_java.vcf"
 M15_VARS=$(grep -v "^#" "$TMPDIR/m15_rust.vcf" | wc -l)
 echo "MATCH ($M15_VARS variants, 0 diffs)"
 PASSED=$((PASSED + 1))
+# Advisory cpp third arm (same flags as gate arms above; never gates).
+M15_CPP_EXIT=0
+bash "$ROOT_DIR/harness/run_cpp.sh" "$B37_FA" "$BAM_NA24385" "$BED_TINY" "$TMPDIR/m15_cpp.vcf" SAMPLE -M 50 -c 1 -S 2 -E 3 -g 4 -z -th "$THREADS" 2>"$TMPDIR/m15_cpp.err" || M15_CPP_EXIT=$?
+if [[ "$M15_CPP_EXIT" -eq 0 ]]; then
+    if python3 "$ROOT_DIR/harness/compare_vcf.py" --min-variants 1 "$TMPDIR/m15_java.vcf" "$TMPDIR/m15_cpp.vcf" > "$TMPDIR/m15_cpp_cmp.txt" 2>&1; then
+        echo "CPP: MATCH (m15 minmatch)"
+    else
+        echo "CPP-MISMATCH: m15 minmatch ($(head -n 1 "$TMPDIR/m15_cpp_cmp.txt"))"
+    fi
+elif conda run -n vardict-oracle vardictcpp --version >/dev/null 2>&1; then
+    echo "CPP: SKIP: m15 minmatch (cpp engine exit $M15_CPP_EXIT)"
+else
+    echo "CPP: SKIP: m15 minmatch (vardictcpp not available in conda env vardict-oracle)"
+fi
 
 # -----------------------------------------------------------------------------
 # Mode 16: Deletion/Duplication Variant Handling (--deldupvar)
@@ -303,6 +457,20 @@ python3 "$ROOT_DIR/harness/compare_vcf.py" --strict-bytes "$TMPDIR/m16_java.vcf"
 M16_VARS=$(grep -v "^#" "$TMPDIR/m16_rust.vcf" | wc -l)
 echo "MATCH ($M16_VARS variants, 0 diffs)"
 PASSED=$((PASSED + 1))
+# Advisory cpp third arm (same flags as gate arms above; never gates).
+M16_CPP_EXIT=0
+bash "$ROOT_DIR/harness/run_cpp.sh" "$B37_FA" "$BAM_NA24385" "$BED_TINY" "$TMPDIR/m16_cpp.vcf" SAMPLE --deldupvar -c 1 -S 2 -E 3 -g 4 -z -th "$THREADS" 2>"$TMPDIR/m16_cpp.err" || M16_CPP_EXIT=$?
+if [[ "$M16_CPP_EXIT" -eq 0 ]]; then
+    if python3 "$ROOT_DIR/harness/compare_vcf.py" --min-variants 1 "$TMPDIR/m16_java.vcf" "$TMPDIR/m16_cpp.vcf" > "$TMPDIR/m16_cpp_cmp.txt" 2>&1; then
+        echo "CPP: MATCH (m16 deldupvar)"
+    else
+        echo "CPP-MISMATCH: m16 deldupvar ($(head -n 1 "$TMPDIR/m16_cpp_cmp.txt"))"
+    fi
+elif conda run -n vardict-oracle vardictcpp --version >/dev/null 2>&1; then
+    echo "CPP: SKIP: m16 deldupvar (cpp engine exit $M16_CPP_EXIT)"
+else
+    echo "CPP: SKIP: m16 deldupvar (vardictcpp not available in conda env vardict-oracle)"
+fi
 
 # -----------------------------------------------------------------------------
 # Mode 17: Default Printer Redirect (--DP ERR)
@@ -315,6 +483,20 @@ diff -u "$TMPDIR/m17_java.err" "$TMPDIR/m17_rust.err" > "$TMPDIR/m17_diff.txt" |
 if [[ ! -s "$TMPDIR/m17_diff.txt" && ! -s "$TMPDIR/m17_rust.out" ]]; then
     M17_VARS=$(wc -l < "$TMPDIR/m17_rust.err")
     echo "MATCH ($M17_VARS variants on stderr, 0 diffs)"
+# Advisory cpp third arm (gate-flag mirror; stderr compared like the gate).
+M17_CPP_EXIT=0
+conda run -n vardict-oracle vardictcpp -G "$B37_FA" -b "$BAM_NA24385" -R 20:20178900-20179200 -f 0.01 --DP ERR -th "$THREADS" > "$TMPDIR/m17_cpp.out" 2> "$TMPDIR/m17_cpp.err" || M17_CPP_EXIT=$?
+if [[ "$M17_CPP_EXIT" -eq 0 ]]; then
+    if diff -q "$TMPDIR/m17_java.err" "$TMPDIR/m17_cpp.err" > /dev/null 2>&1; then
+        echo "CPP: MATCH (m17 printer-redirect)"
+    else
+        echo "CPP-MISMATCH: m17 printer-redirect (stderr differs)"
+    fi
+elif conda run -n vardict-oracle vardictcpp --version >/dev/null 2>&1; then
+    echo "CPP: SKIP: m17 printer-redirect (cpp engine exit $M17_CPP_EXIT)"
+else
+    echo "CPP: SKIP: m17 printer-redirect (vardictcpp not available in conda env vardict-oracle)"
+fi
     PASSED=$((PASSED + 1))
 else
     echo "MISMATCH:"
