@@ -35,7 +35,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`wall(th1)/wall(th8) >= 4.8`) measures **3.31×** on i7-13700H/
   `taskset 0-7` (single-thread got faster: 1984s vs 3436s on Ryzen) while
   the RSS leg passes (1.45× ≤ 1.5×); `scale.json` is recorded FAIL honestly
-  pending threshold recalibration per host class. Java `-th 8` is
+  pending threshold recalibration per host class (post-rebase re-measure:
+  **3.57×**, th1 2772s/th8 776s; RSS leg still passes). Java `-th 8` is
   OOM-killed on high-depth paired slices on 31G hosts (bisected 1✓/4✓/8✗);
   hg008/seqc2-exome evidences run at `-th 4` with cmds recorded verbatim.
 

@@ -1,46 +1,32 @@
 {
   "cmd": [
     "env",
-    "EST_MIN=60",
+    "KEEP_DIR=scratch/g4/hg008/cram",
+    "CMP_TIMEOUT=12h",
     "bash",
-    "harness/sysscope.sh",
-    "bash",
-    "harness/courtesy.sh",
-    "target/release/vardictrust",
-    "-G",
-    "scratch/g4/ref/giabv3/GRCh38_GIABv3.fa",
-    "-f",
-    "0.01",
-    "-N",
-    "HG008-T|HG008-N",
-    "-b",
-    "scratch/g4/hg008/HG008-T.slice.cram|scratch/g4/hg008/HG008-N.slice.cram",
-    "-c",
-    "1",
-    "-S",
-    "2",
-    "-E",
-    "3",
-    "-g",
-    "4",
-    "-z",
-    "-th",
-    "8",
-    "scratch/g4/hg008/engine.bed"
+    "harness/cram_twin.sh"
   ],
   "compare_head": [
     "MATCH (18426 variants)"
   ],
-  "date": "2026-10-09T16:38:01-07:00",
-  "fingerprint": "bc962a9db4365ca4",
-  "head": "7936d97938eab9781a08072f9796f2697de0132d",
+  "cpp_time": null,
+  "date": "2026-10-12T22:34:12-07:00",
+  "extra": {
+    "cpp_head": [
+      "MATCH (18425 variants)",
+      "CPP: MATCH"
+    ],
+    "cpp_version": "vardictcpp 3 hc52dbad_0 bioconda"
+  },
+  "fingerprint": "e93c3872a7ecd644",
+  "head": "319acb6da1fa0d4ff50a8f99d7028aaf72a4c471",
   "java_time": null,
   "n_variants": 18426,
   "name": "hg008-cram-twin",
   "result": "MATCH",
   "rust_time": {
     "exit": "0",
-    "max_rss_kb": "4089016",
-    "wall": "12:00.08"
+    "max_rss_kb": "774776",
+    "wall": "1:23.13"
   }
 }

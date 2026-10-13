@@ -8,11 +8,15 @@
     "scratch/g4/hg002/eval.bed",
     "scratch/g4/ref/giabv3/GRCh38_GIABv3.sdf",
     "scratch/g4/hg002/truth",
-    "HG002"
+    "HG002",
+    "scratch/g4/hg002/cmp/cpp.vcf"
   ],
   "compare_head": [],
-  "date": "2026-10-10T11:19:11-07:00",
+  "cpp_time": null,
+  "date": "2026-10-12T22:34:43-07:00",
   "extra": {
+    "cpp_f1": 0.6624,
+    "cpp_version": "vardictcpp 3 hc52dbad_0 bioconda",
     "java": {
       "f_measure": 0.6622,
       "fn": 813,
@@ -70,8 +74,8 @@
       "tp_call": 22803
     }
   },
-  "fingerprint": "bc962a9db4365ca4",
-  "head": "8f692969cd4a004410d23b4758411f18c55a1a02",
+  "fingerprint": "e93c3872a7ecd644",
+  "head": "319acb6da1fa0d4ff50a8f99d7028aaf72a4c471",
   "java_time": null,
   "n_variants": null,
   "name": "hg002-truth",

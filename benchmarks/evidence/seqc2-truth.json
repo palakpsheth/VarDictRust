@@ -8,11 +8,15 @@
     "scratch/g4/seqc2/eval.bed",
     "scratch/g4/ref/d1vd1/GRCh38.d1.vd1.sdf",
     "scratch/g4/seqc2/truth",
-    "HCC1395"
+    "HCC1395",
+    "scratch/g4/seqc2/cmp-exome/cpp.vcf"
   ],
   "compare_head": [],
-  "date": "2026-10-10T02:44:41-07:00",
+  "cpp_time": null,
+  "date": "2026-10-12T22:35:13-07:00",
   "extra": {
+    "cpp_f1": 0.1555,
+    "cpp_version": "vardictcpp 3 hc52dbad_0 bioconda",
     "java": {
       "f_measure": 0.1555,
       "fn": 140,
@@ -32,8 +36,8 @@
       "tp_call": 1056
     }
   },
-  "fingerprint": "bc962a9db4365ca4",
-  "head": "7936d97938eab9781a08072f9796f2697de0132d",
+  "fingerprint": "e93c3872a7ecd644",
+  "head": "319acb6da1fa0d4ff50a8f99d7028aaf72a4c471",
   "java_time": null,
   "n_variants": null,
   "name": "seqc2-truth",
