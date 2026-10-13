@@ -288,15 +288,18 @@ _: line 18: 1178932 Killed                  vardict-java -G "$1" -f "$2" ...
 oracle-stage-fail: vardict-java exit 137
 ```
 
+Prime suspect: `systemd-oomd` — controller ground truth confirms it is active on
+this host, with journal policy kills on `user.slice` pressure >50% for >20s
+(Oct 11 18:19, 22:32, whole scopes). oomd kills are journal-only by design, so a
+silent kernel ring through this run's kill window matches that signature exactly
+rather than ruling oomd out. The in-run sender stays unattributed (no journal
+entries that day) — prime suspect, not a confirmed attribution.
+
 Ruled out: our wrapper (pipe/trap/timeout/env verified; exit code faithfully
-propagated), JVM heap exhaustion (4.1 GB < 8 GB cap, no Java exception), the
-kernel OOM killer (ring buffer intact through the kill window, no entries), and
-systemd-oomd (no entries that day despite reliably logging Oct 9/11 pressure
-kills on this host). The `free -h` snapshot at kill time shows ~23 GB available,
-so this is not system-wide exhaustion either — the SIGKILL comes from shared-host
-userspace pressure (parallel agent sessions; this box has a documented history of
-host-pressure kills and manual `kill -9` cleanups). Exact sender unattributable
-from available logs.
+propagated), JVM heap exhaustion (4.1 GB < 8 GB cap, no Java exception), and
+system-wide exhaustion (`free -h` ~23 GB available at kill time). Context is
+shared-host userspace pressure (parallel agent sessions; this box has a
+documented history of host-pressure kills and manual `kill -9` cleanups).
 
 **Our stance:** nothing to replicate (no output effect — killed runs produce no
 VCF) and nothing to fix in our wrapper; retry loops are forbidden as a fix.
