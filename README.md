@@ -4,6 +4,7 @@
 [![CI](https://github.com/palakpsheth/VarDictRust/actions/workflows/ci.yml/badge.svg)](https://github.com/palakpsheth/VarDictRust/actions)
 [![Documentation Status](https://readthedocs.org/projects/vardictrust/badge/?version=latest)](https://vardictrust.readthedocs.io/en/latest/?badge=latest)
 [![Release](https://img.shields.io/github/v/release/palakpsheth/VarDictRust?color=blue)](https://github.com/palakpsheth/VarDictRust/releases)
+[![Bioconda](https://img.shields.io/conda/vn/bioconda/vardictrust.svg?color=green)](https://anaconda.org/bioconda/vardictrust)
 [![rewrites.bio](https://img.shields.io/badge/rewrites.bio-manifesto-blueviolet.svg)](https://rewrites.bio)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Security Policy](https://img.shields.io/badge/security-policy-blue.svg)](.github/SECURITY.md)
@@ -86,10 +87,9 @@ docker run --rm -v $(pwd):/data ghcr.io/palakpsheth/vardictrust:1.0.0 \
 apptainer exec docker://ghcr.io/palakpsheth/vardictrust:1.0.0 vardictrust --help
 ```
 
-### 4. Conda / Bioconda (Pending Upstream Merge)
+### 4. Conda / Bioconda
 
-> [!NOTE]
-> The canonical Bioconda recipe is tracked in `packaging/bioconda/recipes/vardictrust/` pending upstream merge in `bioconda/bioconda-recipes`. Once published:
+Install via Bioconda (`linux-64`, `linux-aarch64`, `macOS-arm64`, `macOS-64`):
 
 ```bash
 conda install -c bioconda -c conda-forge vardictrust
