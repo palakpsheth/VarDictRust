@@ -16,11 +16,17 @@ if [ -n "${KEEP_DIR:-}" ]; then mkdir -p "$KEEP_DIR"; OUT=$KEEP_DIR
 else OUT=$(mktemp -d); trap 'rm -rf "$OUT"' EXIT; fi
 BIN=${VARDICT_BIN:-target/release/vardictrust}
 cargo build -q --release -p vardictrust
-# shortcut: rust-CRAM arm runs with RUST_MIN_STACK=64M (default 8M stack
-# overflows on these high-depth slices; BAM is unaffected, and 64M yields the
-# full 18,426-call set identical to BAM). Ceiling: masks a main/worker-thread
-# frame-hog in the CRAM decode path — upgrade = find it (debug backtrace on a
-# mid-size region) and Box the frames, then drop this override.
+# shortcut: rust-CRAM arm runs with RUST_MIN_STACK=64M (2 MiB rayon-worker
+# default overflows inside noodles-cram 0.100.0 decode on these high-depth
+# slices — ~97-frame nesting: container/slice iterators, Block::decode,
+# name_tokenizer 10k-name blocks, striped rans_nx16 chunk decodes; 2 MiB
+# fails / 64 MiB passes release on tile-0 (8 MiB already passes tile-0, so
+# margin below 64M is untested for the full engine). BAM is unaffected, and
+# 64M yields the full 18,426-call set identical to BAM). Ceiling: masks
+# upstream decoder frames (rANS order tables up to 512 KiB + nested collect()
+# chains) — upgrade = upstream Box/flatten in noodles-cram, then re-evaluate
+# via crates/vardictrust-core/tests/cram_stack.rs and drop this override.
+# Our frames are thin; nothing to Box on our side (T3D-03).
 LC_ALL=C /usr/bin/time -v -o "$OUT/rust.time" timeout "${CMP_TIMEOUT:-12h}" \
   "$BIN" -G "$REF" -f 0.01 -N "$SM" -b "$BAM_T|$BAM_N" -c 1 -S 2 -E 3 -g 4 -z -th "$TH" "$BED" > "$OUT/rust-bam.vcf" \
   || { echo "ENGINE-FAIL: rust-bam"; exit 2; }

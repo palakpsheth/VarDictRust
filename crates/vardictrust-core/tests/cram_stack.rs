@@ -128,6 +128,18 @@ fn cram_worker_stack_thresholds() {
          workaround in harness/cram_twin.sh — it may now be removable.",
         String::from_utf8_lossy(&died.stdout)
     );
+    // Death must be by signal (stack overflow), not a wrong-reason exit
+    // (missing .crai, config error, ...): on Unix a signal death has no
+    // exit code and the runtime prints "overflowed its stack" to stderr.
+    #[cfg(unix)]
+    assert!(
+        died.status.code().is_none()
+            || String::from_utf8_lossy(&died.stderr).contains("overflowed its stack"),
+        "{small}B child failed for the wrong reason ({}): stdout={} stderr={}. Expected death-by-signal (stack overflow).",
+        died.status,
+        String::from_utf8_lossy(&died.stdout),
+        String::from_utf8_lossy(&died.stderr)
+    );
     println!("PINNED: {small}B worker stack fails ({})", died.status);
 
     // Workaround stack: the decode MUST succeed with the measured count.
