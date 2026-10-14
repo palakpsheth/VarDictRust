@@ -20,8 +20,10 @@ p = sys.argv[1]
 try: d = json.load(open(p))
 except Exception as e: sys.exit(f"{p}: {e}")
 x = d.get("extra") or {}
-if "cpp_version" not in x and "cpp_skip_reason" not in x:
-    sys.exit(f"{p}: missing extra.cpp_version/cpp_skip_reason (cpp third-arm presence)")
+has_v = isinstance(x.get("cpp_version"), str) and bool(x["cpp_version"].strip())
+has_s = isinstance(x.get("cpp_skip_reason"), str) and bool(x["cpp_skip_reason"].strip())
+if has_v == has_s:
+    sys.exit(f"{p}: extra must have exactly one non-empty cpp_version or cpp_skip_reason (cpp third-arm presence)")
 PY
 }
 run() { "$@" >> "$OUT/log.txt" 2>&1; }
@@ -56,7 +58,9 @@ else
 fi
 mark 3 $t "Tier-2"
 # 4 Robustness: crash corpus (#341 family, PR #402, #187) + CRAM twin
-t=1; run cargo test -p vardictrust --test robustness || t=0; run ev hg008-cram-twin || t=0; run ev_cpp hg008-cram-twin || t=0; mark 4 $t "robustness/CRAM"
+t=1; run cargo test -p vardictrust --test robustness || t=0; run ev hg008-cram-twin || t=0
+if [ "${CPP_SKIP:-0}" != "1" ] && [ "${CPP_SKIP:-0}" != "true" ]; then run ev_cpp hg008-cram-twin || t=0; fi
+mark 4 $t "robustness/CRAM"
 # 5 Scale + Perf Budget (thresholds pre-registered in T21)
 t=1; run ev scale || t=0; run ev perf-budget || t=0; mark 5 $t "scale/perf-budget"
 

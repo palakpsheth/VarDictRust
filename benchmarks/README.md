@@ -2,7 +2,7 @@
 
 This directory houses the performance evidence, execution logs, benchmark drivers, and environment specifications for **VarDictRust v1.0.0**.
 
-Every benchmark claim is backed by a verifiable, machine-readable evidence artifact in [`benchmarks/evidence/`](evidence/), bound to the certified release engine fingerprint `c6ed06c2f99edd34`. For complete statistical analyses, biological cohort descriptions, and methodology, see the [Omnibus Empirical Validation Report](../docs/validation/omnibus-empirical-validation.md) and the [Master Test Matrix](../docs/testing/test-matrix-and-ci-audit.md).
+Every benchmark claim is backed by a verifiable, machine-readable evidence artifact in [`benchmarks/evidence/`](evidence/), bound to the certified release engine fingerprint `388f4a545470d12a`. For complete statistical analyses, biological cohort descriptions, and methodology, see the [Omnibus Empirical Validation Report](../docs/validation/omnibus-empirical-validation.md) and the [Master Test Matrix](../docs/testing/test-matrix-and-ci-audit.md).
 
 ---
 
@@ -26,10 +26,11 @@ Evaluated via `harness/perf_budget.py`, comparing `vardictrust` against the `Var
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | **Targeted Amplicon Panel** | AmpliconMode (`-a 10:0.95`) | 0:02.11 | 0:00.07 | **30.1×** | 123.8 MB | 52.7 MB | **0.43× (2.3× lower)** | advisory (see evidence) | [`amplicon-tier2.json`](evidence/amplicon-tier2.json) |
 | **GIAB HG002 (chr20:10M–30M, 30×)** | SimpleMode (`-f 0.01`) | 1:41.01 | 0:50.58 | **2.0×** | 3.9 GB | 1.1 GB | **0.27× (3.7× lower)** | advisory (see evidence) | [`hg002-tier2.json`](evidence/hg002-tier2.json) |
-| **SEQC2 HCC1395 Somatic Exome** | SomaticMode (`tumor\|normal`) | 55:55.34 | 19:06.88 | **2.9×** | 3.5 GB | 1.0 GB | **0.29× (3.4× lower)** | advisory (see evidence) | [`seqc2-exome-tier2.json`](evidence/seqc2-exome-tier2.json) |
-| **GIAB HG008 Somatic PDAC** | SomaticMode (`tumor\|normal`) | 1:23.88 | 0:52.42 | **1.6×** | 3.2 GB | 0.7 GB | **0.23× (4.3× lower)** | advisory (see evidence) | [`hg008-tier2.json`](evidence/hg008-tier2.json) |
+| **SEQC2 HCC1395 Somatic Exome** | SomaticMode (`tumor\|normal`, `-th 4`²) | 55:55.34 | 19:06.88 | **2.9×** | 3.5 GB | 1.0 GB | **0.29× (3.4× lower)** | advisory (see evidence) | [`seqc2-exome-tier2.json`](evidence/seqc2-exome-tier2.json) |
+| **GIAB HG008 Somatic PDAC** | SomaticMode (`tumor\|normal`, `-th 4`²) | 1:23.88 | 0:52.42 | **1.6×** | 3.2 GB | 0.7 GB | **0.23× (4.3× lower)** | advisory (see evidence) | [`hg008-tier2.json`](evidence/hg008-tier2.json) |
 
 ¹ Cpp (pinned **vardictcpp 3 `hc52dbad_0` bioconda**, same `vardict-oracle` env) runs beside each gate arm via `harness/perf_budget.py`; the budget verdict stays Rust-vs-Java only. Cpp numbers live in the linked evidence `extra` (`cpp_wall_s`, `cpp_maxrss_kb`, ratios) and are never duplicated here; known cpp divergences are normalized in [`docs/upstream-bugs.md`](../docs/upstream-bugs.md#cpp-divergences); a missing `cpp_time` records a loud `SKIP`, never a silent pass.
+² hg008/seqc2-exome at `-th 4`: Java `-th 8` is OOM-killed on 31G hosts (bisected 1✓/4✓/8✗); exact cmds in evidence.
 
 ### Reproduction Command:
 ```bash

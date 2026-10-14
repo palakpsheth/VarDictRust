@@ -7,9 +7,56 @@ EVID_DIR="benchmarks/evidence"
 mkdir -p "$EVID_DIR"
 
 cleanup() {
-  rm -f "$EVID_DIR/t-test-stale.json" "$EVID_DIR/t-test-badres.json" "$EVID_DIR/t-test.json"
+  rm -f "$EVID_DIR/t-test-stale.json" "$EVID_DIR/t-test-badres.json" "$EVID_DIR/t-test.json" \
+        "$EVID_DIR/t-test-cpp-both.json" "$EVID_DIR/t-test-cpp-empty.json" "$EVID_DIR/t-test-cpp-ok.json"
 }
 trap cleanup EXIT
+
+# 0. Test ev_cpp() from acceptance.sh (mutual exclusivity + non-empty string)
+eval "$(sed -n '/^ev_cpp()/,/^}/p' harness/acceptance.sh)"
+
+cat > "$EVID_DIR/t-test-cpp-both.json" <<'EOF'
+{
+  "name": "t-test-cpp-both",
+  "result": "MATCH",
+  "extra": {
+    "cpp_version": "vardictcpp 3 hc52dbad_0 bioconda",
+    "cpp_skip_reason": "disabled via CPP_SKIP=1"
+  }
+}
+EOF
+if ev_cpp t-test-cpp-both >/dev/null 2>&1; then
+  echo "FAIL: ev_cpp accepted record with BOTH cpp_version and cpp_skip_reason" >&2
+  fail=1
+fi
+
+cat > "$EVID_DIR/t-test-cpp-empty.json" <<'EOF'
+{
+  "name": "t-test-cpp-empty",
+  "result": "MATCH",
+  "extra": {
+    "cpp_version": "   "
+  }
+}
+EOF
+if ev_cpp t-test-cpp-empty >/dev/null 2>&1; then
+  echo "FAIL: ev_cpp accepted record with empty/whitespace cpp_version" >&2
+  fail=1
+fi
+
+cat > "$EVID_DIR/t-test-cpp-ok.json" <<'EOF'
+{
+  "name": "t-test-cpp-ok",
+  "result": "MATCH",
+  "extra": {
+    "cpp_version": "vardictcpp 3 hc52dbad_0 bioconda"
+  }
+}
+EOF
+if ! ev_cpp t-test-cpp-ok >/dev/null 2>&1; then
+  echo "FAIL: ev_cpp rejected valid cpp_version record" >&2
+  fail=1
+fi
 
 # 1. Obtain current real fingerprint
 FP=$(bash harness/engine_fingerprint.sh)

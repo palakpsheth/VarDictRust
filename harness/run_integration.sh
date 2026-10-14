@@ -74,7 +74,9 @@ ERRORS=()
 CPP_MISMATCH=0
 CPP_AVAILABLE=0
 CPP_SKIP_REASON=""
-if ! command -v conda >/dev/null 2>&1; then
+if [[ "${CPP_SKIP:-0}" == "1" || "${CPP_SKIP:-0}" == "true" ]]; then
+    CPP_SKIP_REASON="disabled via CPP_SKIP=1"
+elif ! command -v conda >/dev/null 2>&1; then
     CPP_SKIP_REASON="conda not on PATH"
 elif ! conda run -n vardict-oracle vardictcpp --version >/dev/null 2>&1; then
     CPP_SKIP_REASON="vardictcpp not available in conda env vardict-oracle"
@@ -191,13 +193,11 @@ run_test() {
     local actual
     actual=$(eval $cmd 2>"$tmperr") || exit_code=$?
 
-    rm -f "$tmpbed"
-
     # Engine crash / non-zero exit code must NEVER be masked as XFAIL
     if [[ $exit_code -ne 0 ]]; then
         echo "CRASH/ERROR (exit $exit_code): $basename_file"
         cat "$tmperr" >&2
-        rm -f "$tmperr"
+        rm -f "$tmperr" "$tmpbed"
         FAIL=$((FAIL+1))
         ERRORS+=("CRASH: $basename_file")
         return
@@ -254,7 +254,7 @@ run_test() {
     fi
 
     # Advisory cpp third arm: vardictcpp TSV with flags identical to the gate
-    # (-R = 1-based start_val+1-end_val; -N pinned to the oracle sample label
+    # (-z boolean, positional $tmpbed; -N pinned to the oracle sample label
     # since cpp requires -N and never derives it from the BAM name). This cell
     # intentionally does NOT reuse run_cpp.sh: Tier-1 needs the TSV surface
     # (run_cpp.sh is VCF-only) plus per-fixture -N pinning and --cols 3-61
@@ -268,7 +268,7 @@ run_test() {
             local cpp_sample=${expected%%$'\n'*}
             cpp_sample=${cpp_sample%%$'\t'*}
             if [[ -z "$cpp_sample" ]]; then cpp_sample=$(basename "${bam_arg%%|*}" .bam); fi
-            local cpp_cmd="conda run -n vardict-oracle vardictcpp -z 1 -c 1 -S 2 -E 3 -g 4 -G $fasta_path -b '$bam_arg' -N '$cpp_sample' -R $chr:$((start_val+1))-$end_val $extra_flags"
+            local cpp_cmd="conda run -n vardict-oracle vardictcpp -z -c 1 -S 2 -E 3 -g 4 -G $fasta_path -b '$bam_arg' -N '$cpp_sample' $extra_flags '$tmpbed'"
             local cpp_exit=0 cpp_out=""
             cpp_out=$(eval $cpp_cmd 2>/dev/null) || cpp_exit=$?
             if [[ $cpp_exit -ne 0 ]]; then
@@ -292,6 +292,7 @@ run_test() {
             echo "CPP: SKIP: $basename_file (non-numeric region $chr:$start_val-$end_val)"
         fi
     fi
+    rm -f "$tmpbed"
 }
 
 # If specific files passed, test them; otherwise test all Simple cases

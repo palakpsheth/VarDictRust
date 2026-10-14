@@ -3,9 +3,9 @@
 # harness/run_self_tests.sh
 # Automated Tier 6 Harness Diagnostic Runner for VarDictRust v1.0.0.
 #
-# Discovers and executes all 13 harness diagnostic scripts (10 shell tests
-# and 3 python test suites in harness/tests/), reporting unified status.
-# Exits 0 only if all 13 tests pass; exits 1 on any failure.
+# Discovers and executes all 17 harness diagnostic scripts (12 shell tests
+# and 5 python test suites in harness/tests/), reporting unified status.
+# Exits 0 only if all 17 tests pass; exits 1 on any failure.
 #
 # Adheres to Host Policy A3:
 # - Minimal CPU overhead (< 10 seconds total runtime)

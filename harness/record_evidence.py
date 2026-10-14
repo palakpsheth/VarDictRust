@@ -15,14 +15,19 @@ def tv(p):
             "max_rss_kb": g("Maximum resident set size (kbytes)"), "exit": g("Exit status")}
 cmp_txt = (keep / "compare.txt").read_text() if keep and (keep / "compare.txt").exists() else ""
 m = re.search(r"^MATCH \((\d+) variants\)", cmp_txt, re.M)
+extra_in = json.loads((keep / "extra.json").read_text()) if keep and (keep / "extra.json").exists() else None
+cpp_tv = tv("cpp.time")
+skip_r = str((extra_in or {}).get("cpp_skip_reason") or "") if isinstance(extra_in, dict) else ""
+if cpp_tv and (cpp_tv.get("exit") != "0" or skip_r.startswith(("disabled via CPP_SKIP", "conda not on PATH", "vardictcpp not available", "vardictcpp unavailable", "engine failure"))):
+    cpp_tv = None
 rec = {"name": name, "result": result, "n_variants": int(m.group(1)) if m else None,
        "fingerprint": subprocess.check_output(["bash", "harness/engine_fingerprint.sh"], text=True).strip(),
        "head": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
        "date": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
        "cmd": cmd, "java_time": tv("java.time"), "rust_time": tv("rust.time"),
-       "cpp_time": tv("cpp.time"),
+       "cpp_time": cpp_tv,
        "compare_head": cmp_txt.splitlines()[:25]}
-if keep and (keep / "extra.json").exists(): rec["extra"] = json.loads((keep / "extra.json").read_text())
+if extra_in is not None: rec["extra"] = extra_in
 if keep is not None and (keep / "compare_cpp.txt").exists():
     cpp_head = (keep / "compare_cpp.txt").read_text().splitlines()[:5]
     extra = rec.get("extra")

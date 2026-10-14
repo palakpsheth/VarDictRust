@@ -1,11 +1,9 @@
 # Scale-bar host-class recalibration proposal (T3D-01)
 
-**Status:** PROPOSAL ONLY — no threshold moves in this task.
-The pre-registered bar in `harness/scale_bench.sh:1-10`
+**Status:** SIGNED OFF (2026-10-13, see [§Maintainer sign-off](#maintainer-sign-off)) & IMPLEMENTED in T3D-02 (`harness/scale_bench.sh` + `benchmarks/evidence/scale.json` `PASS`).
+*(Historical T3D-01 context: When drafted, the pre-registered bar in `harness/scale_bench.sh:1-10`
 (`wall(th1)/wall(th8) >= 4.8 AND maxRSS(chr1 full) <= 1.5 x maxRSS(10 Mb)`)
-is **frozen and unmoved** by this document. The current FAIL recorded in
-`benchmarks/evidence/scale.json` **stands** until the protocol in §4 passes
-under a maintainer-signed-off new bar (Task 2's binding spec).
+was held frozen pending sign-off, and the initial FAIL stood until protocol §4 passed under the signed-off bar in Task 2 / T3D-02.)*
 
 ## 1. Derivation first (no observed numbers used)
 

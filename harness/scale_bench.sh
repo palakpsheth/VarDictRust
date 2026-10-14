@@ -16,17 +16,23 @@ if command -v taskset >/dev/null 2>&1; then TASKSET="taskset -c 0-7"; PINNED="tr
 # T3D-02 signed recalibration: P = distinct physical (core,socket) under the 0-7 pin (proposal §2 counting method).
 P_PHYS=$(lscpu -p=CPU,CORE,SOCKET | grep -v '^#' | awk -F, '$1>=0 && $1<=7 {print $2"/"$3}' | sort -u | wc -l)
 # NOTE(issue-6): P counts distinct (core,socket) under the 0-7 pin — meaningful only when TASKSET is non-empty (taskset present wherever evidence is recorded; unpinned P/bar advisory-only).
-# cpp availability probe: a missing pin degrades to loud SKIP, never masks the gate.
-CPP_OK="false"
-if $VARDICTCPP_BIN --version >/dev/null 2>&1; then CPP_OK="true"; fi
+# cpp availability probe: a missing pin or CPP_SKIP=1 degrades to loud SKIP, never masks the gate.
+CPP_OK="false"; CPP_SKIP_MSG="vardictcpp unavailable ($VARDICTCPP_BIN --version failed)"
+if [ "${CPP_SKIP:-0}" = "1" ] || [ "${CPP_SKIP:-0}" = "true" ]; then
+  CPP_SKIP_MSG="disabled via CPP_SKIP=1"
+elif $VARDICTCPP_BIN --version >/dev/null 2>&1; then
+  CPP_OK="true"
+fi
 for th in 1 2 4 8; do
   LC_ALL=C /usr/bin/time -v -o "$OUT/th$th.time" $TASKSET "$BIN" -G "$REF" -f 0.01 -N "$SM" -b "$BAM" -c 1 -S 2 -E 3 -g 4 -z -th "$th" "$BED" > "$OUT/th$th.vcf"
   # BED-capable path reuses run_cpp.sh (BED positional, java-mirror; pins
   # -c 1 -S 2 -E 3 -g 4 identical to the rust line, adds -vcf for stdout VCF).
   if [ "$CPP_OK" = "true" ]; then
-    LC_ALL=C /usr/bin/time -v -o "$OUT/cpp_th$th.time" $TASKSET bash harness/run_cpp.sh "$REF" "$BAM" "$BED" "$OUT/cpp_th$th.vcf" "$SM" -th "$th" -z
+    LC_ALL=C /usr/bin/time -v -o "$OUT/cpp_th$th.time" $TASKSET bash harness/run_cpp.sh "$REF" "$BAM" "$BED" "$OUT/cpp_th$th.vcf" "$SM" -th "$th" -z \
+      || { rm -f "$OUT/cpp_th$th.time" "$OUT/cpp_th$th.vcf"; echo "CPP: SKIP: vardictcpp th$th failed" >&2; }
   else
-    echo "CPP: SKIP: vardictcpp unavailable ($VARDICTCPP_BIN --version failed)" >&2
+    rm -f "$OUT/cpp_th$th.time" "$OUT/cpp_th$th.vcf"
+    echo "CPP: SKIP: $CPP_SKIP_MSG" >&2
   fi
 done
 for th in 2 4 8; do cmp <(grep -v '^##' "$OUT/th1.vcf") <(grep -v '^##' "$OUT/th$th.vcf"); done
@@ -34,9 +40,11 @@ for sz in 1000000 10000000 100000000 248956422; do
   LC_ALL=C /usr/bin/time -v -o "$OUT/R$sz.time" $TASKSET "$BIN" -G "$REF" -f 0.01 -N "$SM" -b "$BAM" -th 8 -R "chr1:1-$sz" > "$OUT/R$sz.vcf"
   # -R form mirrors the rust flags verbatim plus -vcf (stdout VCF, never -o file).
   if [ "$CPP_OK" = "true" ]; then
-    LC_ALL=C /usr/bin/time -v -o "$OUT/cpp_R$sz.time" $TASKSET $VARDICTCPP_BIN -G "$REF" -f 0.01 -N "$SM" -b "$BAM" -th 8 -R "chr1:1-$sz" -vcf > "$OUT/cpp_R$sz.vcf"
+    LC_ALL=C /usr/bin/time -v -o "$OUT/cpp_R$sz.time" $TASKSET $VARDICTCPP_BIN -G "$REF" -f 0.01 -N "$SM" -b "$BAM" -th 8 -R "chr1:1-$sz" -vcf > "$OUT/cpp_R$sz.vcf" \
+      || { rm -f "$OUT/cpp_R$sz.time" "$OUT/cpp_R$sz.vcf"; echo "CPP: SKIP: vardictcpp R$sz failed" >&2; }
   else
-    echo "CPP: SKIP: vardictcpp unavailable ($VARDICTCPP_BIN --version failed)" >&2
+    rm -f "$OUT/cpp_R$sz.time" "$OUT/cpp_R$sz.vcf"
+    echo "CPP: SKIP: $CPP_SKIP_MSG" >&2
   fi
 done
 python3 - "$OUT" "$PINNED" "$P_PHYS" > "$OUT/extra.json" <<'PY'
@@ -46,7 +54,9 @@ def get(f, k): return re.search(rf"{re.escape(k)}: (.+)", (o / f).read_text()).g
 def opt(f, k):
     p = o / f
     if not p.exists(): return None
-    m = re.search(rf"{re.escape(k)}: (.+)", p.read_text())
+    txt = p.read_text()
+    if not re.search(r"Exit status:\s+0\b", txt): return None
+    m = re.search(rf"{re.escape(k)}: (.+)", txt)
     return m.group(1) if m else None
 def secs(w):
     p = [float(x) for x in w.split(":")]

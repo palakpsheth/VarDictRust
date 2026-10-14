@@ -18,7 +18,6 @@ FP=$(bash "$ROOT_DIR/harness/engine_fingerprint.sh")
 # Advisory vardictcpp third arm (never gating): staple the conda pin presence
 # into the evidence JSON for the ev_cpp presence gate (per-cell CPP lines in
 # the log carry match/skip detail; this key only asserts the arm was wired).
-# Canonical conda-pin probe (CPP_PIN_STR): keep pin format in sync with harness/run_multimodal_slices.sh and harness/staple_cpp_extra.sh (cpp_val); hardcoded twin: harness/concordance_germline.sh + concordance_pair.sh.
 if CPP_PIN_STR=$(conda list -n vardict-oracle vardictcpp 2>/dev/null | awk '/^vardictcpp[[:space:]]/{print "vardictcpp " $2 " " $3 " bioconda"}') && [ -n "$CPP_PIN_STR" ]; then
     CPP_EXTRA_JSON="\"cpp_version\": \"$CPP_PIN_STR\""
 else

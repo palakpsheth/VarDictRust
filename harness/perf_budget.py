@@ -24,7 +24,11 @@ for n in sys.argv[1:]:
            "wall_ratio": round(rw / jw, 4), "rss_ratio": round(rm / jm, 4), "pass": p,
            "evidence_fingerprint": d["fingerprint"]}
     c = d.get("cpp_time")
-    if c and c.get("wall") is not None and c.get("max_rss_kb") is not None:
+    skip_r = str((d.get("extra") or {}).get("cpp_skip_reason") or "")
+    non_exec = skip_r.startswith(("disabled via CPP_SKIP", "conda not on PATH",
+                                  "vardictcpp not available", "vardictcpp unavailable",
+                                  "engine failure"))
+    if c and c.get("exit") == "0" and c.get("wall") is not None and c.get("max_rss_kb") is not None and not non_exec:
         cw, cm = secs(c["wall"]), int(c["max_rss_kb"])
         row.update({"cpp_wall_s": cw, "cpp_maxrss_kb": cm,
                     "cpp_wall_ratio": round(cw / jw, 4), "cpp_rss_ratio": round(cm / jm, 4)})

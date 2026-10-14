@@ -94,7 +94,7 @@ elif bash "$ROOT_DIR/harness/run_cpp.sh" "$FA_GIAB" "$BAM_HG005" "$CACHE_DIR/hg0
   :
 else
   cpp_rc=$?
-  if [ "$cpp_rc" -eq 3 ]; then echo "  CPP: SKIP: $(head -1 "$TMPDIR/hg005_cpp.err")";
+  if [ "$cpp_rc" -eq 3 ]; then reason=$(head -1 "$TMPDIR/hg005_cpp.err"); echo "  CPP: SKIP: ${reason#SKIP: }";
   else echo "  CPP: SKIP: cpp engine failure (exit $cpp_rc)"; fi
   CPP_HG005=""
 fi
@@ -130,7 +130,7 @@ elif bash "$ROOT_DIR/harness/run_cpp.sh" "$FA_B37" "$BAM_NA24385" "$CACHE_DIR/na
   :
 else
   cpp_rc=$?
-  if [ "$cpp_rc" -eq 3 ]; then echo "  CPP: SKIP: $(head -1 "$TMPDIR/na24385_cpp.err")";
+  if [ "$cpp_rc" -eq 3 ]; then reason=$(head -1 "$TMPDIR/na24385_cpp.err"); echo "  CPP: SKIP: ${reason#SKIP: }";
   else echo "  CPP: SKIP: cpp engine failure (exit $cpp_rc)"; fi
   CPP_NA24385=""
 fi

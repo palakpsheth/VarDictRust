@@ -31,8 +31,8 @@ echo "--- Running Multi-Modal Multi-Slice Suite (18 biological slices)..."
 bash "$ROOT_DIR/harness/run_multimodal_slices.sh"
 
 # Fingerprints asserted (not forced) by acceptance.sh ev(); runners stamp at
-generation (per maintainer ruling: overwriting a runner-stamped fingerprint
-is Class-0).
+# generation (per maintainer ruling: overwriting a runner-stamped fingerprint
+# is Class-0).
 echo "--- Micro vardictcpp third-arm cell (advisory; gate stays java==rust) ---"
 KEEP_DIR="$ROOT_DIR/scratch/recertify-micro" MIN_VARIANTS=1 \
   bash "$ROOT_DIR/harness/compare.sh" "$ROOT_DIR/fixtures/micro/micro.ref.fa" \
