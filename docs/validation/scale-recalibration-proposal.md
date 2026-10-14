@@ -86,6 +86,20 @@ Post-hoc check only: 3.31x/3.57x ≥ 2.4 (the §1 rule's output for P=4) and
 
 Cited tokens for verification: `3.57`, `3.31`, `1.365`, `taskset`.
 
+## 5. Addendum: RSS-leg variance watch (no bar change)
+
+The RSS leg (`<= 1.5x`) is host-independent by construction (memory scaling,
+not topology), so no host-class rule is proposed for it — the 1.5 bar stands
+as written. What the signed campaign exposed instead is measurement noise:
+the median RSS ratio passed at 1.448 while an individual run reached 1.489,
+leaving ~1% headroom in which a noisy future run could flake the gate with
+no engine change. Rule going forward (binding on the next scale campaign,
+no re-measurement of past runs): retain all three runs' per-cell `wall_s`
+and `maxrss_kb` tables (not just medians) alongside `extra.json`, and flag
+in the campaign report any single run whose RSS ratio exceeds the bar even
+when the median passes. A repeated flag across two campaigns — not a single
+noisy run — is the trigger for reopening the 1.5 value itself.
+
 ## Maintainer sign-off
 
 SIGN-OFF GRANTED by maintainer (recorded by controller), 2026-10-13: implement `bar(P) = 0.6 × min(8, P)` (P=4 → 2.4 on the `taskset -c 0-7` pin) with the RSS leg unchanged (≤ 1.5x) per §§1–2; protocol §4 binding on Task 2 (T3D-02).
