@@ -15,6 +15,7 @@ TASKSET=""; PINNED="false"
 if command -v taskset >/dev/null 2>&1; then TASKSET="taskset -c 0-7"; PINNED="true"; fi
 # T3D-02 signed recalibration: P = distinct physical (core,socket) under the 0-7 pin (proposal §2 counting method).
 P_PHYS=$(lscpu -p=CPU,CORE,SOCKET | grep -v '^#' | awk -F, '$1>=0 && $1<=7 {print $2"/"$3}' | sort -u | wc -l)
+# NOTE(issue-6): P counts distinct (core,socket) under the 0-7 pin — meaningful only when TASKSET is non-empty (taskset present wherever evidence is recorded; unpinned P/bar advisory-only).
 # cpp availability probe: a missing pin degrades to loud SKIP, never masks the gate.
 CPP_OK="false"
 if $VARDICTCPP_BIN --version >/dev/null 2>&1; then CPP_OK="true"; fi

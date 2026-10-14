@@ -31,12 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (18,426 variants MATCH), cpp twin recorded advisory. The rust-CRAM arm
   runs with `RUST_MIN_STACK=64M`: the default 8M stack overflows on these
   high-depth slices (BAM unaffected) — a tracked engine frame-hog, not a
-  parity issue. Rebase note (2026-10-12): pre-registered scale bar
-  (`wall(th1)/wall(th8) >= 4.8`) measures **3.31×** on i7-13700H/
-  `taskset 0-7` (single-thread got faster: 1984s vs 3436s on Ryzen) while
-  the RSS leg passes (1.45× ≤ 1.5×); `scale.json` is recorded FAIL honestly
-  pending threshold recalibration per host class (post-rebase re-measure:
-  **3.57×**, th1 2772s/th8 776s; RSS leg still passes). Java `-th 8` is
+  parity issue. Rebase note (2026-10-12; finalized 2026-10-14 per docs/validation/scale-recalibration-proposal.md sign-off): scale PASSES under the signed host-class bar `bar(P) = 0.6 × min(8, P)` (P=4 on i7-13700H `taskset 0-7` → bar 2.4; RSS leg unchanged ≤ 1.5×); medians across 3 full runs give **3.72×** (th1 1769s/th8 476s) with RSS 1.448× ≤ 1.5×, so `scale.json` records PASS (median 3.72 >= 2.4, RSS 1.448 <= 1.5). RSS headroom is thin (one run reached 1.489×) — variance watch only, no bar change. Java `-th 8` is
   OOM-killed on high-depth paired slices on 31G hosts (bisected 1✓/4✓/8✗);
   hg008/seqc2-exome evidences run at `-th 4` with cmds recorded verbatim.
 

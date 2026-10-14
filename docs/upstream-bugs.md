@@ -22,7 +22,7 @@ All line references below are to that pin.
 **Third arm:** pinned **vardictcpp 3 `hc52dbad_0` bioconda** runs beside every gate
 arm (advisory only; gate stays java==rust; `CPP_SKIP=1` escapes). Its known
 divergences below are **normalized, not engine bugs** — see
-[Known vardictcpp third-arm divergences](#known-vardictcpp-third-arm-divergences-advisory-non-gating).
+[Known vardictcpp third-arm divergences](#cpp-divergences).
 
 ---
 

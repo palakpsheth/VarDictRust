@@ -84,6 +84,7 @@ echo "  Calling variants (Oracle & Rust)..."
 bash "$ROOT_DIR/harness/run_oracle.sh" "$FA_GIAB" "$BAM_HG005" "$CACHE_DIR/hg005_eval.bed" "$TMPDIR/hg005_java.vcf" "HG005" -z -th "$THREADS" -f 0.05 2>/dev/null
 "$ROOT_DIR/target/release/vardictrust" -G "$FA_GIAB" -N "HG005" -b "$BAM_HG005" -c 1 -S 2 -E 3 -g 4 -z -th "$THREADS" -f 0.05 "$CACHE_DIR/hg005_eval.bed" > "$TMPDIR/hg005_rust.vcf" 2>/dev/null
 
+# NOTE: no conda-pin probe here by design (presence via run_cpp.sh exit-3 gate; version keys via staple_cpp_extra.sh/concordance_germline.sh); keep pin format in sync with run_extended_coverage.sh + run_multimodal_slices.sh (CPP_PIN_STR).
 # Third arm: vardictcpp (advisory only — same flags as the gate arms; a missing
 # pin or engine failure degrades to a loud SKIP and the gate below never sees it).
 CPP_HG005="$TMPDIR/hg005_cpp.vcf"

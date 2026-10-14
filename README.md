@@ -12,8 +12,8 @@
 **VarDictRust** is an ultra-fast, memory-safe variant caller for next-generation sequencing (NGS) that delivers byte-identical results to [VarDictJava](https://github.com/AstraZeneca-NGS/VarDictJava) v1.8.3 while running up to **30× faster** in bounded memory. It consolidates the legacy Java → R → Perl pipeline into a **single, statically compiled binary**, eliminating JVM crashes, out-of-memory errors on deep whole-genome sequencing (WGS), and runtime dependency friction.
 
 - **Exact Parity:** Bitwise identical variant calls, `FILTER` classifications, and somatic `STATUS` decisions to VarDictJava v1.8.3 across all benchmark cohorts ($\varepsilon = 10^{-6}$, 0 diffs).
-- **High-Throughput Speed:** Up to **30.0× faster** on targeted amplicon panels and **4.85× parallel scaling** on 8 cores across full human chromosomes.
-- **Bounded $O(1)$ Memory:** Flat resident memory scaling ($1.39\times$ peak RSS ratio across a 25-fold increase in genomic span), eliminating JVM heap exhaustion on deep WGS.
+- **High-Throughput Speed:** Up to **30.0× faster** on targeted amplicon panels and **3.72× parallel scaling** on 8 cores across full human chromosomes.
+- **Bounded $O(1)$ Memory:** Flat resident memory scaling ($1.45\times$ peak RSS ratio across a 25-fold increase in genomic span), eliminating JVM heap exhaustion on deep WGS.
 - **Zero Runtime Dependencies:** Single statically linked binary (`x86_64-unknown-linux-musl`). No JVM, R runtime, Perl scripts, or Conda environments needed.
 - **Robust by Construction:** Built under `#![forbid(unsafe_code)]`. Malformed CIGAR strings, unindexed BAMs, and corrupted records produce actionable errors instead of JVM crashes.
 
@@ -183,24 +183,26 @@ vardictrust -G GRCh38.fa -f 0.01 -N SAMPLE -b sample.bam -R chr1:1000000-2000000
 ## Performance & Scaling Scoreboard
 
 - **Exact Parity:** 0 variant discrepancies and identical `FILTER`/`STATUS` decisions against VarDictJava v1.8.3 across all 15 dual-engine differential benchmark runs and 92 integration fixtures ($\varepsilon = 10^{-6}$).
-- **High-Throughput Speedup:** Up to **30.0× faster** on targeted amplicon assays and **4.85× parallel speedup** on 8 cores across whole human chromosomes.
-- **Bounded $O(1)$ Memory:** Flat resident memory scaling ($1.39\times$ peak RSS ratio across a 25-fold chromosome span increase), eliminating JVM heap exhaustion on deep WGS.
+- **High-Throughput Speedup:** Up to **30.0× faster** on targeted amplicon assays and **3.72× parallel speedup** on 8 cores across whole human chromosomes.
+- **Bounded $O(1)$ Memory:** Flat resident memory scaling ($1.45\times$ peak RSS ratio across a 25-fold chromosome span increase), eliminating JVM heap exhaustion on deep WGS.
 - **Self-Contained Deployment:** Single statically-linked binary (`x86_64-unknown-linux-musl`) with zero runtime dependencies.
 
-Evaluated on Linux x86_64 (AMD Ryzen, Ubuntu 24.04 LTS, NVMe SSD) across 8 worker threads (`-th 8`):
+Evaluated on Linux x86_64 across 8 worker threads (`-th 8`); per-dataset rows report current evidence medians measured on i7-13700H (hg008/seqc2-exome at -th 4²; exact cmds in evidence); the Whole Chromosome 1 Scale row below reports current `scale.json` medians across 3 runs (supersedes the historical AMD Ryzen run):
 
 | Workload / Benchmark | Threads | VarDictJava Wall Time | VarDictRust Wall Time | Speedup Ratio | VarDictJava Peak RSS | VarDictRust Peak RSS | Memory Scaling Ratio | Evidence Artifact | vardictcpp Wall / RSS (advisory¹) |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :---: | :--- |
-| **Targeted Amplicon Panel** | 8 cores | 0:02.10 | 0:00.07 | **30.0× faster** | 120.8 MB | 50.8 MB | 0.42× (2.4× lower) | [`amplicon-tier2.json`](benchmarks/evidence/amplicon-tier2.json) | advisory (see evidence) |
-| **GIAB HG002 (chr20:10M–30M, 30×)** | 8 cores | 4:16.98 | 1:22.47 | **3.1× faster** | 3.6 GB | 1.1 GB | 0.30× (3.3× lower) | [`hg002-tier2.json`](benchmarks/evidence/hg002-tier2.json) | advisory (see evidence) |
-| **SEQC2 HCC1395 Somatic Exome** | 8 cores | 54:23.00 | 19:45.73 | **2.8× faster** | 4.1 GB | 1.4 GB | 0.36× (2.8× lower) | [`seqc2-exome-tier2.json`](benchmarks/evidence/seqc2-exome-tier2.json) | advisory (see evidence) |
-| **GIAB HG008 Somatic PDAC** | 8 cores | 1:10.99 | 0:49.48 | **1.4× faster** | 5.7 GB | 1.2 GB | 0.21× (4.8× lower) | [`hg008-tier2.json`](benchmarks/evidence/hg008-tier2.json) | advisory (see evidence) |
-| **Whole Chromosome 1 Scale (249 Mbp)** | 1 → 8 cores | 57m 16s (1 core) | 11m 49s (8 cores) | **4.85× parallel** | OOM / Unbounded | 2.9 GB (249 Mb) vs 2.1 GB (10 Mb) | **1.39× flat RSS scaling** | [`scale.json`](benchmarks/evidence/scale.json) | advisory (see evidence) |
+| **Targeted Amplicon Panel** | 8 cores | 0:02.11 | 0:00.07 | **30.1× faster** | 123.8 MB | 52.7 MB | 0.43× (2.3× lower) | [`amplicon-tier2.json`](benchmarks/evidence/amplicon-tier2.json) | advisory (see evidence) |
+| **GIAB HG002 (chr20:10M–30M, 30×)** | 8 cores | 1:41.01 | 0:50.58 | **2.0× faster** | 3.9 GB | 1.1 GB | 0.27× (3.7× lower) | [`hg002-tier2.json`](benchmarks/evidence/hg002-tier2.json) | advisory (see evidence) |
+| **SEQC2 HCC1395 Somatic Exome** | 4 cores² | 55:55.34 | 19:06.88 | **2.9× faster** | 3.5 GB | 1.0 GB | 0.29× (3.4× lower) | [`seqc2-exome-tier2.json`](benchmarks/evidence/seqc2-exome-tier2.json) | advisory (see evidence) |
+| **GIAB HG008 Somatic PDAC** | 4 cores² | 1:23.88 | 0:52.42 | **1.6× faster** | 3.2 GB | 0.7 GB | 0.23× (4.3× lower) | [`hg008-tier2.json`](benchmarks/evidence/hg008-tier2.json) | advisory (see evidence) |
+
+² hg008/seqc2-exome at `-th 4`: Java `-th 8` is OOM-killed on 31G hosts (bisected 1✓/4✓/8✗); exact cmds in evidence.
+| **Whole Chromosome 1 Scale (249 Mbp)** | 1 → 8 cores | 29m 29s (1 core) | 7m 56s (8 cores) | **3.72× parallel** | OOM / Unbounded | 2.7 GB (249 Mb) vs 1.9 GB (10 Mb) | **1.45× flat RSS scaling** | [`scale.json`](benchmarks/evidence/scale.json) | advisory (see evidence) |
 ¹ **vardictcpp third arm (advisory, never gating).** Pinned **vardictcpp 3 `hc52dbad_0`** (bioconda, same `vardict-oracle` env) runs beside each gate arm (`-th 8`, `LC_ALL=C /usr/bin/time -v`); the verdict stays Rust-vs-Java. Cpp wall/RSS numbers live only in the linked evidence `extra` (`cpp_wall_s`, `cpp_maxrss_kb`) and are never duplicated here.
 
 
 > [!NOTE]
-> **Bounded $O(1)$ Memory at Any Depth:** VarDictJava holds entire regional chromosome structures in JVM heap collections, leading to JVM heap exhaustion and Out-Of-Memory errors on deep WGS ([Issues #197 and #384](https://github.com/AstraZeneca-NGS/VarDictJava/issues/197)). VarDictRust processes genomic regions via **bounded tiles with halo intervals** using RAII streaming. Across a 25-fold increase in genomic span (10 Mbp to all 249 Mbp of chromosome 1), VarDictRust peak RSS scales by only **$1.39\times$** (2.11 GB → 2.94 GB).
+> **Bounded $O(1)$ Memory at Any Depth:** VarDictJava holds entire regional chromosome structures in JVM heap collections, leading to JVM heap exhaustion and Out-Of-Memory errors on deep WGS ([Issues #197 and #384](https://github.com/AstraZeneca-NGS/VarDictJava/issues/197)). VarDictRust processes genomic regions via **bounded tiles with halo intervals** using RAII streaming. Across a 25-fold increase in genomic span (10 Mbp to all 249 Mbp of chromosome 1), VarDictRust peak RSS scales by only **$1.45\times$** (1.89 GB → 2.74 GB).
 
 ---
 

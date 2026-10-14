@@ -118,6 +118,6 @@ oracle) as an **advisory third arm**: `CPP: MATCH/MISMATCH/SKIP` lines and
 `compare_cpp.txt` artifacts, evidence `extra` keys (`cpp_version`, `cpp_head`,
 `cpp_wall_s`, `cpp_maxrss_kb`, `cpp_f1`, `cpp_skip_reason`), `CPP_SKIP=1`
 escape. The release gate stays java==rust; cpp divergences are normalized in
-[`docs/upstream-bugs.md`](upstream-bugs.md#known-vardictcpp-third-arm-divergences-advisory-non-gating),
+[`docs/upstream-bugs.md`](upstream-bugs.md#cpp-divergences),
 not silently dropped. Bioconda/Galaxy distribution of VarDictRust itself stays a
 follow-up (see [`CHANGELOG.md`](../CHANGELOG.md)).

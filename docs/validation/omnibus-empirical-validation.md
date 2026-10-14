@@ -26,7 +26,7 @@ To provide definitive, reproducible proof of compliance, VarDictRust was evaluat
 4. **NIST GIAB HG008 Somatic PDAC Tumor/Normal (Pillar 4)** [Tier-2 Parity, Format-Invariance & Tier-3 Truth]: High-depth paired WGS (195× tumor / 169× normal), 18,426 variants; 100% parity (0 diffs) and CRAM twin decode byte parity against BAM.
 5. **Targeted Clinical Amplicon Panels (Pillar 5)** [Tier-2 Parity]: Ultra-deep targeted amplicon sequencing (>1,000× depth, *EGFR* L861Q, *MRE11a*), testing 8-column BED primer trimming and bidirectional strand bias (`AMPBIAS`); 100% parity (0 diffs).
 6. **Upstream Micro-Regression Corpus (Pillar 6)** [Tier-1 Intermediate Parity]: All 92 integration fixtures from VarDictJava (`testdata/integrationtestcases/`) covering edge-case indels, tri-allelic sites, and complex soft-clipping; 100% live oracle parity under Tier-1 intermediate table assertions (91 PASS / 1 XFAIL expected fixture defect UB-4).
-7. **Whole Chromosome 1 Scale Benchmark (Pillar 7)** [Level 5 Scale & Bounded Memory]: Full-scale chromosome 1 processing (1 Mbp to 249 Mbp, 2,840,119 variants); **4.85× parallel speedup** on 8 threads with bounded $O(1)$ memory consumption (flat $1.39\times$ RSS ratio: 2.11 GB at 10 Mb vs 2.94 GB at 249 Mb).
+7. **Whole Chromosome 1 Scale Benchmark (Pillar 7)** [Level 5 Scale & Bounded Memory]: Full-scale chromosome 1 processing (1 Mbp to 249 Mbp, 2,840,119 variants); **3.72× parallel speedup** on 8 threads with bounded $O(1)$ memory consumption (flat $1.45\times$ RSS ratio: 1.89 GB at 10 Mb vs 2.74 GB at 249 Mb).
 8. **Seventeen Extended Operational Modalities Suite (Pillar 8)** [Tier-2 Parity across 17 Modalities]: Full-coverage evaluation of RNA splicing (`-i`), structural variant inversions (`<INV>`), duplications (`<DUP>`), CRISPR cut-site offsets (`-J -j`), paired unique read deduplication (`-u -UN`), adapter clipping (`--adaptor`), realignment suppression (`-k 0`), structural variant bypass (`-U`), ambiguous base counting (`-K`), read deduplication (`-t`), 3'-indel shift (`-3`), output MAPQ filter (`-O`), region extension (`-x`), segment column mapping (`-s -e`), minimum match length (`-M`), del/dup variant handling (`--deldupvar`), and default printer redirect (`--DP ERR`); 100% parity (0 diffs across all 17 modes, 4,993 variants).
 9. **Multi-Slice Multi-Modal Public Dataset Expansion Suite (Pillar 9)** [Tier-2 Multi-Cohort Parity & Tier-3 Multi-Ancestry Truth]: 18 non-overlapping slices across 6 independent public cohorts (HG005 Han Chinese, SEQC2 Exome, HG002 WGS, HG008 Somatic, NA24385 b37 deep WGS, RNA Transcriptome) spanning 9 chromosomes and 1,129 variants; 100% parity (0 diffs).
 
@@ -40,7 +40,7 @@ To provide definitive, reproducible proof of compliance, VarDictRust was evaluat
 | **4** | **GIAB HG008 Somatic** | Somatic WGS (195×/169×)| PDAC High-Depth Slices (GRCh38)| 18,426 | **Tier-2 & Tier-3** | **MATCH (0 diffs)** | **EQUAL (0 site diffs)** | advisory (see evidence) |
 | **5** | **Targeted Amplicon** | Amplicon Panel (`-a`) | EGFR L861Q & MRE11a (hg19) | 2 | **Tier-2** | **MATCH (0 diffs)** | **N/A (Synthetic/Assay)** | advisory (SKIP: `-a` is TSV-only; see evidence) |
 | **6** | **Upstream Corpus** | Micro-Fixtures (92) | Genome-wide Edge Cases | 92 fixtures | **Tier-1** | **100% Live Oracle MATCH**| **N/A (Integration)** | advisory (per-fixture MATCH/SKIP lines; see evidence) |
-| **7** | **Chromosome 1 Scale** | Full WGS Scaling | chr1: 1 Mbp to 249 Mbp (GRCh38)| 2,840,119 | **Level 5 Scale** | **MATCH (0 diffs)** | **Bounded RSS ($1.39\times$)** | advisory (see evidence) |
+| **7** | **Chromosome 1 Scale** | Full WGS Scaling | chr1: 1 Mbp to 249 Mbp (GRCh38)| 2,840,119 | **Level 5 Scale** | **MATCH (0 diffs)** | **Bounded RSS ($1.45\times$)** | advisory (see evidence) |
 | **8** | **Extended Modalities** | 17 Operational Modes | chr8, chr20 (hg19, hg38, GRCh37, GRCh38)| 4,993 | **Tier-2** | **MATCH (0 diffs, 17/17)** | **N/A (Flag Parity)** | advisory (M1 SKIP; M4–M17 MATCH/MISMATCH/SKIP recorded; see evidence) |
 | **9** | **Multi-Slice Suite** | 6 Public Cohorts | 18 slices, 9 chrs (GRCh38, b37)| 1,129 | **Tier-2 & Tier-3** | **MATCH (0 diffs, 18/18)**| **EQUAL (HG005, b37)** | advisory (see evidence) |
 
@@ -498,32 +498,32 @@ VarDictRust faithfully emulates this exact upstream filter token mapping, ensuri
 
 ## 12. Empirical Performance & Memory Scaling
 
-All benchmarks were recorded on identical dedicated hardware (AMD Ryzen, Ubuntu 24.04 LTS, NVMe SSD) pinned to 8 CPU threads following the standardized benchmarking protocol in [`benchmarks/README.md`](../../benchmarks/README.md) and certified against [`perf-budget.json`](../../benchmarks/evidence/perf-budget.json):
+All benchmarks were recorded on identical dedicated hardware (AMD Ryzen, Ubuntu 24.04 LTS, NVMe SSD) pinned to 8 CPU threads following the standardized benchmarking protocol in [`benchmarks/README.md`](../../benchmarks/README.md) and certified against [`perf-budget.json`](../../benchmarks/evidence/perf-budget.json); the Whole Chromosome 1 Scale row below reports current `scale.json` medians across 3 runs (supersedes the historical AMD Ryzen run):
 
 | Workload / Benchmark | Threads | VarDictJava Wall Time | VarDictRust Wall Time | Speedup Ratio | VarDictJava Peak RSS | VarDictRust Peak RSS | Memory Scaling Ratio | Evidence Artifact |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :---: |
-| **Targeted Amplicon Panel** | 8 cores | 0:02.10 | 0:00.07 | **30.0× faster** | 120.8 MB | 50.8 MB | 0.42× (2.4× lower) | [`amplicon-tier2.json`](../../benchmarks/evidence/amplicon-tier2.json) |
-| **GIAB HG002 (chr20:10M–30M, 30×)** | 8 cores | 4:16.98 | 1:22.47 | **3.1× faster** | 3.6 GB | 1.1 GB | 0.30× (3.3× lower) | [`hg002-tier2.json`](../../benchmarks/evidence/hg002-tier2.json) |
-| **SEQC2 HCC1395 Somatic Exome** | 8 cores | 54:23.00 | 19:45.73 | **2.8× faster** | 4.1 GB | 1.4 GB | 0.36× (2.8× lower) | [`seqc2-exome-tier2.json`](../../benchmarks/evidence/seqc2-exome-tier2.json) |
-| **GIAB HG008 Somatic PDAC** | 8 cores | 1:10.99 | 0:49.48 | **1.4× faster** | 5.7 GB | 1.2 GB | 0.21× (4.8× lower) | [`hg008-tier2.json`](../../benchmarks/evidence/hg008-tier2.json) |
-| **Whole Chromosome 1 Scale (249 Mbp)** | 1 → 8 cores | 57m 16s (1 core) | 11m 49s (8 cores) | **4.85× parallel** | OOM / Unbounded | 2.9 GB (249 Mb) vs 2.1 GB (10 Mb) | **1.39× flat RSS scaling** | [`scale.json`](../../benchmarks/evidence/scale.json) |
+| **Targeted Amplicon Panel** | 8 cores | 0:02.11 | 0:00.07 | **30.1× faster** | 123.8 MB | 52.7 MB | 0.43× (2.3× lower) | [`amplicon-tier2.json`](../../benchmarks/evidence/amplicon-tier2.json) |
+| **GIAB HG002 (chr20:10M–30M, 30×)** | 8 cores | 1:41.01 | 0:50.58 | **2.0× faster** | 3.9 GB | 1.1 GB | 0.27× (3.7× lower) | [`hg002-tier2.json`](../../benchmarks/evidence/hg002-tier2.json) |
+| **SEQC2 HCC1395 Somatic Exome** | 4 cores² | 55:55.34 | 19:06.88 | **2.9× faster** | 3.5 GB | 1.0 GB | 0.29× (3.4× lower) | [`seqc2-exome-tier2.json`](../../benchmarks/evidence/seqc2-exome-tier2.json) |
+| **GIAB HG008 Somatic PDAC** | 4 cores² | 1:23.88 | 0:52.42 | **1.6× faster** | 3.2 GB | 0.7 GB | 0.23× (4.3× lower) | [`hg008-tier2.json`](../../benchmarks/evidence/hg008-tier2.json) |
+| **Whole Chromosome 1 Scale (249 Mbp)** | 1 → 8 cores | 29m 29s (1 core) | 7m 56s (8 cores) | **3.72× parallel** | OOM / Unbounded | 2.7 GB (249 Mb) vs 1.9 GB (10 Mb) | **1.45× flat RSS scaling** | [`scale.json`](../../benchmarks/evidence/scale.json) |
 | Workload / Benchmark | Threads | VarDictJava Wall Time | VarDictRust Wall Time | Speedup Ratio | VarDictJava Peak RSS | VarDictRust Peak RSS | Memory Scaling Ratio | Cpp Wall / RSS (vardictcpp 3 hc52dbad_0, advisory¹) |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Targeted Amplicon Panel** | 8 cores | 0:02.10 | 0:00.07 | **30.0× faster** | 120.8 MB | 50.8 MB | 0.42× (2.4× lower) | advisory (see evidence) |
-| **GIAB HG002 (chr20:10M–30M, 30×)** | 8 cores | 4:16.98 | 1:22.47 | **3.1× faster** | 3.6 GB | 1.1 GB | 0.30× (3.3× lower) | advisory (see evidence) |
-| **SEQC2 HCC1395 Somatic Exome** | 8 cores | 54:23.00 | 19:45.73 | **2.8× faster** | 4.1 GB | 1.4 GB | 0.36× (2.8× lower) | advisory (see evidence) |
-| **GIAB HG008 Somatic PDAC** | 8 cores | 1:10.99 | 0:49.48 | **1.4× faster** | 5.7 GB | 1.2 GB | 0.21× (4.8× lower) | advisory (see evidence) |
-| **Whole Chromosome 1 Scale (249 Mbp)** | 1 → 8 cores | 57m 16s (1 core) | 11m 49s (8 cores) | **4.85× parallel** | OOM / Unbounded | 2.9 GB (249 Mb) vs 2.1 GB (10 Mb) | **1.39× flat RSS scaling** | advisory (see evidence) |
+| **Targeted Amplicon Panel** | 8 cores | 0:02.11 | 0:00.07 | **30.1× faster** | 123.8 MB | 52.7 MB | 0.43× (2.3× lower) | advisory (see evidence) |
+| **GIAB HG002 (chr20:10M–30M, 30×)** | 8 cores | 1:41.01 | 0:50.58 | **2.0× faster** | 3.9 GB | 1.1 GB | 0.27× (3.7× lower) | advisory (see evidence) |
+| **SEQC2 HCC1395 Somatic Exome** | 4 cores² | 55:55.34 | 19:06.88 | **2.9× faster** | 3.5 GB | 1.0 GB | 0.29× (3.4× lower) | advisory (see evidence) |
+| **GIAB HG008 Somatic PDAC** | 4 cores² | 1:23.88 | 0:52.42 | **1.6× faster** | 3.2 GB | 0.7 GB | 0.23× (4.3× lower) | advisory (see evidence) |
+| **Whole Chromosome 1 Scale (249 Mbp)** | 1 → 8 cores | 29m 29s (1 core) | 7m 56s (8 cores) | **3.72× parallel** | OOM / Unbounded | 2.7 GB (249 Mb) vs 1.9 GB (10 Mb) | **1.45× flat RSS scaling** | advisory (see evidence) |
 
-¹ Cpp runs beside each arm above under the same pins (`-th 8`, `LC_ALL=C /usr/bin/time -v`, taskset-recorded); `--chunk` deliberately unpinned (cpp default rewrites the `Seg` column). Cpp wall/RSS numbers live only in the linked evidence `extra` (`cpp_wall_s`, `cpp_maxrss_kb`) and are never duplicated here.
+¹ Cpp runs beside each arm above under the same pins (`-th 8`, `LC_ALL=C /usr/bin/time -v`, taskset-recorded); `--chunk` deliberately unpinned (cpp default rewrites the `Seg` column). Cpp wall/RSS numbers live only in the linked evidence `extra` (`cpp_wall_s`, `cpp_maxrss_kb`) and are never duplicated here. hg008/seqc2-exome rows ran at `-th 4` (Java `-th 8` OOM-killed on 31G hosts; cmds in evidence).
 
 ### 12.1 Memory Scaling: Why VarDictRust Scales to WGS
 VarDictJava holds entire regional chromosome structures in JVM heap collections, leading to JVM heap exhaustion and Out-Of-Memory errors on deep WGS (issues #197, #384).
 
 VarDictRust processes genomic regions via **bounded tiles with halo intervals** using RAII streaming. As demonstrated in [`scale.json`](../../benchmarks/evidence/scale.json):
-- Slicing 10 Mbp of chromosome 1 uses **2.11 GB** peak RSS.
-- Slicing all 249 Mbp of human chromosome 1 uses **2.94 GB** peak RSS.
-- The memory scaling ratio across a 25-fold increase in genomic span is only **$1.39\times$**, proving bounded $O(1)$ memory consumption.
+- Slicing 10 Mbp of chromosome 1 uses **1.89 GB** peak RSS.
+- Slicing all 249 Mbp of human chromosome 1 uses **2.74 GB** peak RSS.
+- The memory scaling ratio across a 25-fold increase in genomic span is only **$1.45\times$**, proving bounded $O(1)$ memory consumption.
 
 ---
 
