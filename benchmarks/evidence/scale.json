@@ -10,43 +10,50 @@
   ],
   "compare_head": [],
   "cpp_time": null,
-  "date": "2026-10-13T11:07:58-07:00",
+  "date": "2026-10-14T10:20:59-07:00",
   "extra": {
+    "P": 4,
+    "bar": 2.4,
     "cpp_maxrss_kb": {
-      "1000000": 219320,
-      "10000000": 2912100,
-      "100000000": 19994668,
-      "248956422": 20422940
+      "1000000": 219328,
+      "10000000": 2912168,
+      "100000000": 22182788,
+      "248956422": 25805684
     },
     "cpp_wall_s": {
-      "1": 697.07,
-      "2": 426.46,
-      "4": 322.08,
-      "8": 195.1
+      "1": 629.09,
+      "2": 353.82,
+      "4": 213.36,
+      "8": 172.37
     },
     "maxrss_kb": {
-      "1000000": 835288,
-      "10000000": 2083664,
-      "100000000": 2256300,
-      "248956422": 2972360
+      "1000000": 835568,
+      "10000000": 1984012,
+      "100000000": 2319036,
+      "248956422": 2873788
     },
-    "note": ">8 threads not measured (host policy A3)",
-    "pass": false,
+    "median_of": [
+      "scratch/g4/scale (run1)",
+      "scratch/g4/scale-run2",
+      "scratch/g4/scale-run3"
+    ],
+    "note": "medians across 3 full runs per proposal \u00a74; >8 threads not measured (host policy A3)",
+    "pass": true,
     "pinned": true,
-    "rss_ratio_chr1_vs_10mb": 1.4265063849065875,
-    "speedup_8": 3.65250633653826,
+    "rss_ratio_chr1_vs_10mb": 1.4484730939127384,
+    "speedup_8": 3.7195837275307477,
     "wall_s": {
-      "1": 1743.67,
-      "2": 941.23,
-      "4": 577.96,
-      "8": 477.39
+      "1": 1769.22,
+      "2": 939.56,
+      "4": 577.61,
+      "8": 475.65
     }
   },
   "fingerprint": "388f4a545470d12a",
-  "head": "de43b219a8f2278964e6b9cd9c74450a3b5c0916",
+  "head": "ac98b956572d9a3da59ff0c22c705a14dc3323c5",
   "java_time": null,
   "n_variants": null,
   "name": "scale",
-  "result": "FAIL",
+  "result": "PASS",
   "rust_time": null
 }

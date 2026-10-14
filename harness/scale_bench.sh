@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Usage: scale_bench.sh <ref> <bam> <bed> <sample> <outdir>
-# Pre-registered (plan rev2): PASS iff wall(th1)/wall(th8) >= 4.8 AND maxRSS(chr1 full) <= 1.5 x maxRSS(10 Mb)
-# AND outputs identical across thread counts. Thresholds must not change after seeing data.
+# Pre-registered (plan rev2, recalibrated T3D-02 signed): PASS iff wall(th1)/wall(th8) >= bar(P) = 0.6*min(8,P) = 2.4
+# (P=4 distinct physical cores under the taskset -c 0-7 pin, §2 lscpu count, recorded as P in extra.json;
+# RSS leg host-independent, unchanged <= 1.5x) AND outputs identical across thread counts. Bar frozen after sign-off.
 # Third arm (T3A-05): pinned vardictcpp 3 hc52dbad_0 runs beside each rust loop
 # (advisory only; gate above unchanged). Probe facts (Task 1): THREAD -th N,
 # CHUNK --chunk (cpp default; no explicit pin), VCF via stdout redirect
@@ -12,6 +13,8 @@ VARDICTCPP_BIN=${VARDICTCPP_BIN:-conda run -n vardict-oracle vardictcpp}
 # taskset guard: pin all cells to 0-7 when available; recorded in extra.pinned.
 TASKSET=""; PINNED="false"
 if command -v taskset >/dev/null 2>&1; then TASKSET="taskset -c 0-7"; PINNED="true"; fi
+# T3D-02 signed recalibration: P = distinct physical (core,socket) under the 0-7 pin (proposal §2 counting method).
+P_PHYS=$(lscpu -p=CPU,CORE,SOCKET | grep -v '^#' | awk -F, '$1>=0 && $1<=7 {print $2"/"$3}' | sort -u | wc -l)
 # cpp availability probe: a missing pin degrades to loud SKIP, never masks the gate.
 CPP_OK="false"
 if $VARDICTCPP_BIN --version >/dev/null 2>&1; then CPP_OK="true"; fi
@@ -35,9 +38,9 @@ for sz in 1000000 10000000 100000000 248956422; do
     echo "CPP: SKIP: vardictcpp unavailable ($VARDICTCPP_BIN --version failed)" >&2
   fi
 done
-python3 - "$OUT" "$PINNED" > "$OUT/extra.json" <<'PY'
+python3 - "$OUT" "$PINNED" "$P_PHYS" > "$OUT/extra.json" <<'PY'
 import json, re, sys, pathlib
-o = pathlib.Path(sys.argv[1]); pinned = sys.argv[2] == "true"
+o = pathlib.Path(sys.argv[1]); pinned = sys.argv[2] == "true"; P = int(sys.argv[3])
 def get(f, k): return re.search(rf"{re.escape(k)}: (.+)", (o / f).read_text()).group(1)
 def opt(f, k):
     p = o / f
@@ -59,7 +62,8 @@ CW = {t: opt_secs(f"cpp_th{t}.time") for t in (1, 2, 4, 8)}
 CM = {s: opt_rss(f"cpp_R{s}.time") for s in (1000000, 10000000, 100000000, 248956422)}
 sp = W[1] / W[8]; rr = M[248956422] / M[10000000]
 print(json.dumps({"wall_s": W, "maxrss_kb": M, "speedup_8": sp, "rss_ratio_chr1_vs_10mb": rr,
-                  "pass": sp >= 4.8 and rr <= 1.5,
+                  "P": P, "bar": 0.6 * min(8, P),
+                  "pass": sp >= 0.6 * min(8, P) and rr <= 1.5,
                   "cpp_wall_s": CW, "cpp_maxrss_kb": CM, "pinned": pinned,
                   "note": ">8 threads not measured (host policy A3)"}, indent=2))
 PY

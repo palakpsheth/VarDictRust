@@ -85,3 +85,7 @@ Post-hoc check only: 3.31x/3.57x ≥ 2.4 (the §1 rule's output for P=4) and
    via a live runner (never by hand, per integrity §0b).
 
 Cited tokens for verification: `3.57`, `3.31`, `1.365`, `taskset`.
+
+## Maintainer sign-off
+
+SIGN-OFF GRANTED by maintainer (recorded by controller), 2026-10-13: implement `bar(P) = 0.6 × min(8, P)` (P=4 → 2.4 on the `taskset -c 0-7` pin) with the RSS leg unchanged (≤ 1.5x) per §§1–2; protocol §4 binding on Task 2 (T3D-02).
