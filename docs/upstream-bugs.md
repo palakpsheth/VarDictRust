@@ -312,6 +312,7 @@ retuning oracle heap/threads.
 
 ---
 
+<a id="cpp-divergences"></a>
 ## Known vardictcpp third-arm divergences (advisory, non-gating)
 
 Applies to pinned **vardictcpp 3 `hc52dbad_0` bioconda** (`benchmarks/env/vardict-oracle.yml`).
@@ -321,16 +322,17 @@ Cpp numbers live in evidence `extra` (`cpp_version`, `cpp_head`, `cpp_f1`,
 
 | # | Divergence | Surface |
 |---|-----------|---------|
-| [CPP-1](#cpp-1--vcf-header-provenance--end-info-key) | VCF header provenance + `END` INFO key deltas | `harness/compare.sh` third arm (`compare_cpp.txt`) |
-| [CPP-2](#cpp-2---j-j-parsed-but-ignored) | `-J`/`-j` parsed but ignored | Extended-coverage M4 cell |
-| [CPP-3](#cpp-3---a-amplicon-mode-is-tsv-only--vcf-ignored) | `-a` amplicon mode is TSV-only (`-vcf` ignored) | Tier-2 amplicon arm (honest SKIP) |
-| [CPP-4](#cpp-4--concatenated-single-dash-flags-rejected) | Concatenated single-dash flags rejected | Tier-1 concatenated-flags fixtures |
-| [CPP-5](#cpp-5--boolean--z-positional-bed-unpinned---chunk-retired--r-noise) | Boolean `-z`, positional BED, unpinned `--chunk` | `harness/run_cpp.sh` contract |
-| [CPP-6](#cpp-6--zero-contig-vcf-emitter) | Zero-`##contig` VCF emitter (tabix needs completion) | Truth-concordance scaffolding |
-| [CPP-7](#cpp-7--chr-prefix-from-reference-not-bam-on-ambiguous-fastas) | CHROM resolved from reference, not BAM, on duplicate-name FASTAs | b37 extended-coverage cells |
-| [CPP-8](#cpp-8--n-ref-null-rows-in-native--vcf) | N-REF null rows emitted in native `-vcf` | b37 extended-coverage cells |
-| [CPP-9](#cpp-9--caller-deltas-mnp-joining-large-sv-alleles) | Caller deltas: MNP joining + large SV alleles | hg002/exome/hg008 Tier-2 arms |
+| [CPP-1](#cpp-1) | VCF header provenance + `END` INFO key deltas | `harness/compare.sh` third arm (`compare_cpp.txt`) |
+| [CPP-2](#cpp-2) | `-J`/`-j` parsed but ignored | Extended-coverage M4 cell |
+| [CPP-3](#cpp-3) | `-a` amplicon mode is TSV-only (`-vcf` ignored) | Tier-2 amplicon arm (honest SKIP) |
+| [CPP-4](#cpp-4) | Concatenated single-dash flags rejected | Tier-1 concatenated-flags fixtures |
+| [CPP-5](#cpp-5) | Boolean `-z`, positional BED, unpinned `--chunk` | `harness/run_cpp.sh` contract |
+| [CPP-6](#cpp-6) | Zero-`##contig` VCF emitter (tabix needs completion) | Truth-concordance scaffolding |
+| [CPP-7](#cpp-7) | CHROM resolved from reference, not BAM, on duplicate-name FASTAs | b37 extended-coverage cells |
+| [CPP-8](#cpp-8) | N-REF null rows emitted in native `-vcf` | b37 extended-coverage cells |
+| [CPP-9](#cpp-9) | Caller deltas: MNP joining + large SV alleles | hg002/exome/hg008 Tier-2 arms |
 
+<a id="cpp-1"></a>
 ### CPP-1 — VCF header provenance + `END` INFO key
 
 cpp emits its own header lineage (no `##reference`, its own `##INFO` set incl.
@@ -338,12 +340,14 @@ cpp emits its own header lineage (no `##reference`, its own `##INFO` set incl.
 (micro: 2/2); the comparator still reports `CPP: MISMATCH` on header/`END`-key
 deltas. Known-normalized: never an engine bug, never gating.
 
+<a id="cpp-2"></a>
 ### CPP-2 — `-J`/`-j` parsed but ignored
 
 cpp accepts CRISPR cut-site flags (`-J 50454941 -j 25`) but its own banner warns
 "not all affect output yet": on the M4 cell it emits all regional rows where
 Java target-windows to 3, so an advisory `CPP-MISMATCH` on row count is expected.
 
+<a id="cpp-3"></a>
 ### CPP-3 — `-a` amplicon mode is TSV-only (`-vcf` ignored)
 
 Amplicon mode without a BED errors (exit 1 → loud `CPP: SKIP`), and with a
@@ -354,6 +358,7 @@ would MISMATCH meaninglessly, so `compare.sh` records an honest
 TSV-level amplicon parity belongs to a Tier-1 `compare_var.py` cell, not the
 VCF gate.
 
+<a id="cpp-4"></a>
 ### CPP-4 — Concatenated single-dash flags rejected
 
 cpp rejects concatenated forms such as `-f0.0025-F0x700-Q10` (`unknown option`,
@@ -361,6 +366,7 @@ exit 120) that VarDictJava accepts. Affected fixtures record loud
 `CPP: SKIP (cpp engine exit 120)`; no flag-splitting is added (would break the
 identical-flags contract).
 
+<a id="cpp-5"></a>
 ### CPP-5 — Boolean `-z`, positional BED, unpinned `--chunk` (retired `-R` noise)
 
 `run_cpp.sh` mirrors the oracle exactly: BED travels positionally and bare
@@ -370,6 +376,7 @@ stray positional that cpp opens as a BED file (`cannot open BED file '1'`;
 `--chunk` is deliberately unpinned (cpp default rewrites the `Seg` column);
 the peak jobs-per-node selector stays out of the gate by design.
 
+<a id="cpp-6"></a>
 ### CPP-6 — Zero-`##contig` VCF emitter
 
 cpp's native `-vcf` emitter carries zero `##contig` lines, so `tabix -p vcf`
@@ -379,6 +386,7 @@ as evaluation scaffolding only — no record, FILTER, QUAL, or INFO byte is
 touched, so the reported cpp F1 is unaffected. Handled forward-compatibly if a
 future pin emits contigs.
 
+<a id="cpp-7"></a>
 ### CPP-7 — CHROM resolved from reference, not BAM, on ambiguous FASTAs
 
 On `GRCh37.fa` — whose headers contain *both* `>20` and `>chr20` — cpp emits
@@ -389,6 +397,7 @@ mismatches on CHROM alone, so b37 cpp-vs-java VCF comparison is structurally
 uninformative; calls themselves are unaffected (GRCh38 data, with unique
 names, agrees). Recorded advisory, never gating.
 
+<a id="cpp-8"></a>
 ### CPP-8 — N-REF null rows emitted in native `-vcf`
 
 cpp's native emitter writes a row per covered position with `REF=N` where
@@ -396,6 +405,7 @@ Java's `var2vcf` drops null rows (the UB-2 family): on the b37 slices this
 adds hundreds of `N`-REF rows no Java VCF contains. Same class as CPP-7 —
 structurally uninformative comparison, unaffected calls, advisory only.
 
+<a id="cpp-9"></a>
 ### CPP-9 — Caller deltas: MNP joining + large SV alleles (measured, advisory)
 
 Beyond serialization (CPP-1), record-level `CHROM/POS/REF/ALT` comparison
