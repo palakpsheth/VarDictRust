@@ -254,11 +254,12 @@ run_test() {
     fi
 
     # Advisory cpp third arm: vardictcpp TSV with flags identical to the gate
-    # (-R = 1-based start_val+1-end_val; -z 1; extra_flags verbatim; -N pinned
-    # to the oracle sample label since cpp requires -N and never derives it
-    # from the BAM name). Tier-1 compare_var.py --cols 3-61: col 1 is our own
-    # -N echoed back, col 2 is the known-normalized BED-name echo (harness
-    # "testbed" vs cpp -R chrom — cpp rejects BED paths for -R, probed T3A-01).
+    # (-R = 1-based start_val+1-end_val; -N pinned to the oracle sample label
+    # since cpp requires -N and never derives it from the BAM name). This cell
+    # intentionally does NOT reuse run_cpp.sh: Tier-1 needs the TSV surface
+    # (run_cpp.sh is VCF-only) plus per-fixture -N pinning and --cols 3-61
+    # normalization below. Tier-1 compare_var.py --cols 3-61: col 1 is our own
+    # -N echoed back, col 2 is the known-normalized BED-name echo.
     # -i fixtures: cpp ignores -i (no splice-table surface, probed live) -> SKIP.
     if [[ $CPP_AVAILABLE -eq 1 && " $extra_flags " == *" -i "* ]]; then
         echo "CPP: SKIP: $basename_file (-i splice-table surface unsupported by vardictcpp)"

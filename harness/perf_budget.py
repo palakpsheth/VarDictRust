@@ -5,7 +5,8 @@ Inputs are the /usr/bin/time -v records compare.sh captured (both engines -th 8,
 Java side = vardict-java | R | var2vcf pipeline (the thing VarDictRust consolidates); RSS = largest
 single child (getrusage RUSAGE_CHILDREN), i.e. the JVM vs vardictrust. Exit 0 = PASS.
 Third arm (T3A-05): pinned vardictcpp 3 hc52dbad_0 is advisory only — per-evidence cpp wall/RSS
-columns when that evidence carries cpp_time (same host/pins, -th 8, LC_ALL=C time -v); a missing
+columns when that evidence carries cpp_time (same host/pins as the recorded evidence cmd,
+LC_ALL=C time -v); a missing
 cpp_time is reported as a loud SKIP and never affects the PASS verdict (gate stays java==rust)."""
 import json, sys
 def secs(w):
