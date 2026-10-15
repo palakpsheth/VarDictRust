@@ -2,7 +2,7 @@
 # VarDictRust (`vardictrust`)
 
 [![CI](https://github.com/palakpsheth/VarDictRust/actions/workflows/ci.yml/badge.svg)](https://github.com/palakpsheth/VarDictRust/actions)
-[![Documentation Status](https://readthedocs.org/projects/vardictrust/badge/?version=latest)](https://vardictrust.readthedocs.io/en/latest/?badge=latest)
+[![Documentation Status](https://img.shields.io/readthedocs/vardictrust/latest?label=docs)](https://vardictrust.readthedocs.io/en/latest/)
 [![Release](https://img.shields.io/github/v/release/palakpsheth/VarDictRust?color=blue)](https://github.com/palakpsheth/VarDictRust/releases)
 [![Bioconda](https://img.shields.io/conda/vn/bioconda/vardictrust.svg?color=green)](https://anaconda.org/bioconda/vardictrust)
 [![rewrites.bio](https://img.shields.io/badge/rewrites.bio-manifesto-blueviolet.svg)](https://rewrites.bio)
