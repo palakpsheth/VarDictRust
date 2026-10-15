@@ -2,7 +2,7 @@
 
 **Authoritative Technical Reference — Seven-Level Test Architecture & Verification Matrix**  
 **Governing Standard:** [rewrites.bio](https://rewrites.bio) Manifesto (§0 Evidence Before Completion, §0b Integrity, §5 Pure Parity on Valid Inputs)  
-**Target Release:** VarDictRust v1.0.0 (`release/v1.0.0`)  
+**Target Release:** VarDictRust v1.0.1 (`release/v1.0.1`)  
 **Certified Release Engine Fingerprint:** `388f4a545470d12a` (Certified Invariant)  
 **Repository:** [https://github.com/palakpsheth/VarDictRust](https://github.com/palakpsheth/VarDictRust)  
 **Author / Maintainer:** Palak Sheth <palakpsheth@gmail.com>  
@@ -18,7 +18,7 @@ This architecture operates on two complementary pillars:
 - **Pillar A (Biological Parity & Empirical Truth):** Documented in the [Omnibus Master Empirical Validation Report](../validation/omnibus-empirical-validation.md), verifying variant-level concordance against gold-standard consortium benchmarks (NIST GIAB, FDA SEQC2, Hartwig) across GRCh38 and GRCh37.
 - **Pillar B (Engineering Mechanics & Verification Pipeline):** Documented in this report, establishing the software testing hierarchy, developer feedback loops, crash resilience corpus, statistical invariants, continuous performance budgets, and SLSA-attested CI/CD workflows.
 
-Across all testing layers, VarDictRust executes **208 automated Cargo workspace tests** ([Level 1](#level-1): Unit & Component Tests), **92 integration regression testcases** ([Level 2](#level-2): Upstream Integration Regression Corpus), **17 differential parity benchmarks** ([Level 3](#level-3): Dual-Engine Differential Parity Testing), **16 committed evidence JSONs** (spanning differential parity, robustness twins, truth concordance, performance budgets, and musl packaging), **5 ground truth concordance evaluations** via `rtg vcfeval` ([Level 4](#level-4): Ground Truth Concordance Benchmarking, all certified EQUAL), **4 continuous performance budgets** ([Level 5](#level-5): Performance & Memory Budgets), **17 diagnostic self-tests** ([Level 6](#level-6): Diagnostic Self-Tests), and **automated pre-PR and release acceptance compound gates** ([Level 7](#level-7): Pre-PR & Release Acceptance Compound Gates) alongside **5 automated cloud CI/CD pipelines**.
+Across all testing layers, VarDictRust executes **230 automated Cargo workspace tests** ([Level 1](#level-1): Unit & Component Tests), **92 integration regression testcases** ([Level 2](#level-2): Upstream Integration Regression Corpus), **17 differential parity benchmarks** ([Level 3](#level-3): Dual-Engine Differential Parity Testing), **16 committed evidence JSONs** (spanning differential parity, robustness twins, truth concordance, performance budgets, and musl packaging), **5 ground truth concordance evaluations** via `rtg vcfeval` ([Level 4](#level-4): Ground Truth Concordance Benchmarking, all certified EQUAL), **4 continuous performance budgets** ([Level 5](#level-5): Performance & Memory Budgets), **17 diagnostic self-tests** ([Level 6](#level-6): Diagnostic Self-Tests), and **automated pre-PR and release acceptance compound gates** ([Level 7](#level-7): Pre-PR & Release Acceptance Compound Gates) alongside **6 automated cloud CI/CD pipelines**.
 
 ```mermaid
 flowchart TD
@@ -30,9 +30,10 @@ flowchart TD
         P1 & P2 -->|Checks| P_Leak["gitleaks protect --staged"]
     end
 
-    subgraph Level1 ["Level 1: Unit & Component Tests (208 Total)"]
-        C_Core["crates/vardictrust-core (188 lib tests)"]
+    subgraph Level1 ["Level 1: Unit & Component Tests (230 Total)"]
+        C_Core["crates/vardictrust-core (189 lib + 2 cram_stack tests)"]
         C_CLI["crates/vardictrust (13 cli tests)"]
+        C_Flg["crates/vardictrust/tests/flags.rs (19 tests)"]
         C_Rob["crates/vardictrust/tests/robustness.rs (5 tests)"]
         C_Det["crates/vardictrust/tests/thread_determinism.rs (1 test)"]
         C_Ver["crates/vardictrust/tests/version.rs (1 test)"]
@@ -80,6 +81,7 @@ flowchart TD
         CI_Sec[".github/workflows/security.yml (Gitleaks, Deny, Audit)"]
         CI_Rel[".github/workflows/release.yml (cargo-dist, musl, SLSA 3)"]
         CI_Diff[".github/workflows/differential.yml (Oracle, Micro, Slices)"]
+        CI_Docs[".github/workflows/docs.yml (MkDocs Strict Site Build)"]
         CI_Wiki[".github/workflows/wiki.yml (Wiki Sync)"]
     end
 
@@ -130,11 +132,13 @@ The table below summarizes the complete testing inventory executed across the de
 | :---: | :--- | :--- | :---: | :--- | :--- | :---: |
 | **Pre** | **Pre-Commit Hook (Track A)** | `.githooks/pre-commit` | 3 checks | `git commit` (local) | fmt, clippy, gitleaks clean | $<3\text{ s}$ |
 | **Pre** | **Pre-Commit Hook (Track B)** | `.pre-commit-config.yaml` | 6 hooks | `git commit` (local) | yaml, toml, whitespace, gitleaks | $<4\text{ s}$ |
-| **1** | [**Level 1: Core Library Tests**](#level-1) | `crates/vardictrust-core/src/` | 188 tests | `cargo test -p vardictrust-core` | 0 failures, 0 panics | $\sim 2\text{ s}$ |
+| **1** | [**Level 1: Core Library Tests**](#level-1) | `crates/vardictrust-core/src/` | 189 tests | `cargo test -p vardictrust-core --lib` | 0 failures, 0 panics | $\sim 2\text{ s}$ |
+| **1** | [**Level 1: CRAM Decoder Stack**](#level-1) | `crates/vardictrust-core/tests/cram_stack.rs` | 2 tests | `cargo test -p vardictrust-core --test cram_stack` | 64 MiB Rayon stack, CRAM==BAM | $\sim 0.3\text{ s}$ |
 | **1** | [**Level 1: CLI Front-End Tests**](#level-1) | `crates/vardictrust/src/` | 13 tests | `cargo test -p vardictrust --bin vardictrust` | 0 failures, 0 panics | $<0.1\text{ s}$ |
+| **1** | [**Level 1: CLI Flag Parity**](#level-1) | `crates/vardictrust/tests/flags.rs` | 19 tests | `cargo test --test flags` | Flag semantics & error guards PASS | $\sim 0.3\text{ s}$ |
 | **1** | [**Level 1: Crash Robustness Corpus**](#level-1) | `crates/vardictrust/tests/robustness.rs` | 5 tests | `cargo test --test robustness` | PR #402, missing BAI, 0-tile pass | $\sim 0.2\text{ s}$ |
 | **1** | [**Level 1: Thread Determinism**](#level-1) | `crates/vardictrust/tests/thread_determinism.rs` | 1 test | `cargo test --test thread_determinism` | Bitwise identical VCF (1, 2, 4, 8 thr) | $\sim 0.2\text{ s}$ |
-| **1** | [**Level 1: Release Metadata & AI**](#level-1) | `crates/vardictrust/tests/version.rs` | 1 test | `cargo test --test version` | Lai (2016) cited, AI disclosed | $<0.01\text{ s}$ |
+| **1** | [**Level 1: Release Metadata & AI**](#level-1) | `crates/vardictrust/tests/version.rs` | 1 test | `cargo test --test version` | Version, Lai (2016), AI disclosed | $<0.01\text{ s}$ |
 | **2** | [**Level 2: Integration Regression Corpus**](#level-2)| `harness/run_integration.sh` | 92 fixtures | PR gate & Acceptance Item 2 | `91 PASS / 1 XFAIL` (UB-4 signature) | $\sim 8\text{ s}$ |
 | **3** | [**Level 3: Micro Differential**](#level-3) | `fixtures/micro/` | 1 fixture | PR gate & Acceptance Item 3 | Live Oracle MATCH (0 diffs) | $\sim 2\text{ s}$ |
 | **3** | [**Level 3: Standard Slices**](#level-3) | `harness/slices.tsv` (`s1a`–`s9`) | 10 slices | Inner loop (`rgate`) & Acceptance Item 3 | Live Oracle MATCH (0 diffs) | $\sim 45\text{ s}$ |
@@ -154,21 +158,22 @@ The table below summarizes the complete testing inventory executed across the de
 | **7** | [**Level 7: Release Acceptance Gate**](#level-7) | `harness/acceptance.sh` | 8 items | Release qualification gate | Items 1–8 PASS under fingerprint | $\sim 1\text{ m}$ |
 | **CI** | **Cloud CI: Test Matrix** | `.github/workflows/ci.yml` | 7 jobs/steps | Git push to `main` & PRs | Build, Test, Corpus, Robustness PASS | $\sim 3\text{ m}$ |
 | **CI** | **Cloud CI: Security Audits** | `.github/workflows/security.yml` | 3 audits | Weekly cron, push `main`, PRs | Gitleaks, Deny, Audit PASS | $\sim 1\text{ m}$ |
-| **CI** | **Cloud CI: Packaging & Provenance** | `.github/workflows/release.yml` | Dist/SLSA | Git tag push (`v1.0.0`) | Musl PIE binary, SLSA 3 attestations | $\sim 6\text{ m}$ |
+| **CI** | **Cloud CI: Packaging & Provenance** | `.github/workflows/release.yml` | Dist/SLSA | Git tag push (`v1.0.1`) | Musl PIE binary, SLSA 3 attestations | $\sim 6\text{ m}$ |
 | **CI** | **Cloud CI: Differential Parity** | `.github/workflows/differential.yml` | Oracle + slices | Git push to `main` & PRs | Micro MATCH, slices + 17 modes MATCH | $\sim 15\text{ m}$ |
+| **CI** | **Cloud CI: Documentation Site** | `.github/workflows/docs.yml` | MkDocs `--strict` | Git push to `main` & PRs | All links/anchors valid, 0 warnings | $<1\text{ m}$ |
 | **CI** | **Cloud CI: Wiki Sync** | `.github/workflows/wiki.yml` | 1 sync job | Git push to `main` (`wiki/**`) & dispatch | `.wiki.git` matches `wiki/` or clean no-op | $<1\text{ m}$ |
 
 ---
 
 <a id="level-1"></a>
 <a id="level-1-unit--component-tests-208-total"></a>
-## 3. Level 1: Unit & Component Tests (208 Cargo Workspace Tests)
+## 3. Level 1: Unit & Component Tests (230 Cargo Workspace Tests)
 
-Executing `cargo test --workspace` validates **208 tests** across `crates/vardictrust-core`, `crates/vardictrust`, and integration test suites:
+Executing `cargo test --workspace` validates **230 tests** across `crates/vardictrust-core`, `crates/vardictrust`, and integration test suites:
 
-### 3.1 `crates/vardictrust-core` (188 Library Tests)
+### 3.1 `crates/vardictrust-core` (189 Library Tests + 2 Integration Tests)
 
-The core variant calling engine enforces `#![forbid(unsafe_code)]` and zero unhandled panics. Its 188 unit tests are partitioned across the following modules:
+The core variant calling engine enforces `#![forbid(unsafe_code)]` and zero unhandled panics. Its 189 library unit tests and 2 CRAM stack integration tests are partitioned across the following modules:
 
 1. **Output Formatting & Tables (`output/` — 37 tests):**
    - `output::table` (15 tests): verifies column schema counts (Simple 36/38, Amplicon 38/40, Somatic 55/61), raw float formatting vs banker's rounding, null-record row rendering for `-p` mode, and header generation.
@@ -197,10 +202,12 @@ The core variant calling engine enforces `#![forbid(unsafe_code)]` and zero unha
 8. **Streaming Execution & Concurrency (`runner`, `bam` — 8 tests):**
    - `runner` (3 tests): verifies worker thread panic catching without process hang, Rayon bounded queue collection, and deterministic sorted output.
    - `bam` (5 tests): verifies SAM/BAM decoding, CIGAR query-consumption validation against SEQ length, and corrupt record rejection.
-9. **Singletons & Integration Seeds (3 tests):**
+9. **Singletons, Finalization & CRAM Stack Integration (`javamap`, `config`, `tovars`, `tests/cram_stack.rs` — 6 tests):**
    - `javamap` (1 test): verifies `JavaHashMap` OpenJDK 8+ hash bucket spread, binning, and treeify triggers against real Java oracle traces.
    - `config` (1 test): verifies configuration validation.
-   - Root integration test: `tests::test_empty_ref_winner_suppresses_position`.
+   - `tovars` (1 test): verifies candidate variant finalization.
+   - Root integration test (1 test): `tests::test_empty_ref_winner_suppresses_position`.
+   - `tests/cram_stack.rs` (2 tests): verifies 64 MiB Rayon worker stack sizing for `noodles-cram` rANS decoding and CRAM-vs-BAM somatic parity.
 
 ### 3.2 `crates/vardictrust` (13 Unit Tests)
 
@@ -211,19 +218,21 @@ Located in `crates/vardictrust/src/cli.rs`:
 - Verifies accepted and ignored upstream compatibility flags (`-v`).
 - Verifies error propagation on invalid flag arguments (`-F bogus`) and zero tile size (`--tile-size 0`).
 
-### 3.3 Integration Test Binaries (`crates/vardictrust/tests/` — 7 Tests)
+### 3.3 Integration Test Binaries (`crates/vardictrust/tests/` — 26 Tests)
 
 Located in `crates/vardictrust/tests/`:
-1. **`tests/robustness.rs` (5 tests):**
+1. **`tests/flags.rs` (19 tests):**
+   - Verifies end-to-end CLI flag behavior across `--crispr`, `-u`/`--UN`, `-A`, `--chimeric`, `-k 0`, `--fisher`, `-3`, `-O`, `-X`, `-c/-S/-E/-g`, `-M`, `--deldupvar`, `--DP ERR`, multi-sample BAM header extraction (`-b "b1|b2"`), and unsupported flag rejection (`AGENTS.md §12`).
+2. **`tests/robustness.rs` (5 tests):**
    - `locale_independence_c_vs_de_de`: verifies that floating-point numbers are emitted with standard decimal points (`.`) rather than European decimal commas (`,`) even when `LC_ALL=de_DE.UTF-8` is forced.
    - `test_zero_tile_size_fails_fast_without_hanging`: verifies that `--tile-size 0` returns an actionable `Parse` error instead of entering an infinite loop.
    - `test_invalid_flag_syntax_fails_with_actionable_error`: verifies that malformed SAM filter flags (e.g. `-F bogus`) fail with clear error messages.
    - `robustness_corpus_never_crashes`: runs VarDictRust over synthetic corrupt and truncated BAM files without aborting.
    - `test_pr402_11_bad_reads_does_not_abort`: feeds the 11 hostile CIGAR alignments from upstream PR #402 (negative match lengths like `…D-1M…`); confirms VarDictRust safely skips them without throwing unhandled exceptions.
-2. **`tests/thread_determinism.rs` (1 test):**
+3. **`tests/thread_determinism.rs` (1 test):**
    - `vcf_output_byte_identical_across_thread_counts`: executes variant calling over identical genomic BAM inputs across 1, 2, 4, and 8 worker threads; verifies that the resulting VCF files are **100% bitwise identical (`diff -u` exits 0)**.
-3. **`tests/version.rs` (1 test):**
-   - `version_credits_original_and_discloses_ai`: verifies that `vardictrust --version` displays the original author credit (Zhongwu Lai et al. 2016, AstraZeneca-NGS), upstream commit pins (`0886261` / `009e017`), and full AI tooling disclosures.
+4. **`tests/version.rs` (1 test):**
+   - `version_credits_original_and_discloses_ai`: verifies that `vardictrust --version` displays the exact package version (`env!("CARGO_PKG_VERSION")`), original author credit (Zhongwu Lai et al. 2016, AstraZeneca-NGS), upstream commit pins (`0886261` / `009e017`), and full AI tooling disclosures.
 
 ---
 
@@ -350,7 +359,7 @@ Level 5 guarantees that VarDictRust delivers decisive scaling improvements over 
 <a id="level-6-diagnostic-self-tests"></a>
 ## 8. Level 6: Diagnostic Self-Tests (`harness/run_self_tests.sh`)
 
-Automated via [`harness/run_self_tests.sh`](../../harness/run_self_tests.sh), these **17 specialized scripts** (12 shell tests and 5 python unit test suites) validate the correctness of the testing infrastructure, documentation rendering, and zero-PyPI environment contracts in $<10\text{ seconds}$:
+Automated via [`harness/run_self_tests.sh`](../../harness/run_self_tests.sh), these **17 specialized scripts** (11 shell tests and 6 python unit test suites) validate the correctness of the testing infrastructure, documentation rendering, and zero-PyPI environment contracts in $<10\text{ seconds}$:
 
 ```bash
 # Execute the full automated diagnostic test suite
@@ -364,7 +373,7 @@ The runner dynamically discovers and executes:
 4. `test_courtesy.sh`: tests host resource throttling and scheduling guard enforcement (`harness/courtesy.sh`), validating that resource-intensive benchmarking tasks respect configurable blackout windows (`COURTESY_NOW`, `EST_MIN`), minimum available disk headroom (`MIN_FREE_GB`), and memory thresholds (`MIN_AVAIL_GB`) without disrupting shared infrastructure.
 5. `test_edge_cases.sh`: tests variant caller handling of 4 BAM boundary conditions: zero-read empty BAMs (`empty.bam`), zero-coverage target regions, single-read BAMs, and contig boundary alignments.
 6. `test_env_pinned.sh`: validates toolchain version pinning across `benchmarks/env/` (`vardict-oracle.yml`, `g4-tools.yml`, `toolchain.txt`).
-7. `test_evidence.sh`: validates JSON schema conformity, fingerprint validation, and rejection of stale benchmark evidence in `harness/acceptance.sh:ev()` and `ev_cpp()`.
+7. `test_evidence.sh`: validates JSON schema conformity, fingerprint validation, workspace SemVer invariance (`normalize_gate_blob()`), and rejection of stale benchmark evidence in `harness/acceptance.sh:ev()` and `ev_cpp()`.
 8. `test_fetch_data.sh`: validates formatting, URL schemes, and destination paths inside the asset registry (`harness/assets.tsv`).
 9. `test_perf_budget.sh`: validates performance budget mathematical formulas on simulated JSON benchmarks.
 10. `test_run_cpp.sh`: validates `harness/run_cpp.sh` `vardictcpp` version pinning, missing-env `exit 3` skip behavior, micro fixture VCF output, and `<4`-column BED padding.
@@ -392,12 +401,12 @@ Level 7 aggregates all lower levels into deterministic, push-button verification
 
 ## 10. Cloud CI/CD Automation & Supply Chain Security
 
-VarDictRust utilizes 5 automated GitHub Actions workflows with strict security hardening:
+VarDictRust utilizes 6 automated GitHub Actions workflows with strict security hardening:
 
 ### 10.1 Continuous Integration (`.github/workflows/ci.yml`)
 - **StepSecurity Runner Hardening:** pinned to `step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25` (`# v2.10.4`) with `egress-policy: audit`.
 - **Submodule Recursion:** checks out complete repository including `VarDictJava` submodule (`actions/checkout@v7.0.1`).
-- **Standard Checks:** runs `cargo fmt --all -- --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test --all` (all 208 workspace tests), `cargo bench --no-run`, and `cargo build --release`.
+- **Standard Checks:** runs `cargo fmt --all -- --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test --all` (all 230 workspace tests), `cargo bench --no-run`, and `cargo build --release`.
 - **Regression Gates in CI:** executes `harness/run_integration.sh` (asserting `91 PASS / 1 XFAIL`) and `tests/robustness.rs`.
 
 ### 10.2 Security & Supply Chain Scans (`.github/workflows/security.yml`)
@@ -409,7 +418,7 @@ VarDictRust utilizes 5 automated GitHub Actions workflows with strict security h
 ### 10.3 Release Packaging & SLSA Level 3 (`.github/workflows/release.yml`)
 - Automated by `cargo-dist 0.33.0`.
 - Builds standalone, statically-linked `x86_64-unknown-linux-musl` executables.
-- Emits cryptographic checksums and GitHub OIDC SLSA Level 3 build provenance attestations.
+- Emits cryptographic checksums, GitHub OIDC SLSA Level 3 build provenance attestations, and publishes `vardictrust-core` and `vardictrust` to `crates.io`.
 
 ### 10.4 Differential Parity vs Live Oracle (`.github/workflows/differential.yml`)
 - **Triggers:** push to `main` and every PR (`timeout-minutes: 15`).
@@ -421,15 +430,19 @@ VarDictRust utilizes 5 automated GitHub Actions workflows with strict security h
 - **Action:** pushes `wiki/` into the separate `<owner>/<repo>.wiki.git` repo (`HEAD:master`), committing only on diff; concurrent runs are serialised via a `concurrency` group.
 - **Prerequisite:** the wiki repo is created only by saving the first page in the Wiki tab UI — the job fails loudly with that instruction while it is still missing. Auth travels in an `http.extraheader`, never in the remote URL.
 
+### 10.6 Documentation Site Gate (`.github/workflows/docs.yml`)
+- **Triggers:** push to `main` and every PR.
+- **Action:** stages all repository markdown files via `python3 harness/prepare_docs_site.py` and builds the MkDocs Material site under `mkdocs build --strict`, failing on any broken link or missing anchor.
+
 ---
 
 ## 11. Cross-Reference Index
 
 - **Biological Truth & Empirical Proofs:** [`docs/validation/omnibus-empirical-validation.md`](../validation/omnibus-empirical-validation.md)
 - **Acceptance Gate Waivers & Exception Registry:** [`docs/release/waivers.md`](../release/waivers.md)
-- **Developer Contributor Guide:** [`CONTRIBUTING.md`](../../CONTRIBUTING.md)
+- **Developer Contributor Guide & Release Runbook:** [`CONTRIBUTING.md`](../../CONTRIBUTING.md)
 - **Main Project Readme & Scoreboard:** [`README.md`](../../README.md)
-- **Pull Request v1.0.0 Certification:** [`docs/release/v1.0.0-pr.md`](../release/v1.0.0-pr.md)
+- **Pull Request v1.0.1 & v1.0.0 Certifications:** [`docs/release/v1.0.1-pr.md`](../release/v1.0.1-pr.md) & [`docs/release/v1.0.0-pr.md`](../release/v1.0.0-pr.md)
 - **Known Upstream Bugs & Divergences:** [`docs/upstream-bugs.md`](../upstream-bugs.md) & [`DIVERGENCES.md`](../../DIVERGENCES.md)
 - **Master Release Roadmap:** [`ROADMAP.md`](../../ROADMAP.md)
 
@@ -437,7 +450,7 @@ VarDictRust utilizes 5 automated GitHub Actions workflows with strict security h
 
 ## 12. Master Reproducibility Runbook & Dataset Provenance Catalog
 
-Future contributors and clinical bioinformaticians can independently reproduce **every empirical claim** made in the VarDictRust v1.0.0 release using the structured runbook below.
+Future contributors and clinical bioinformaticians can independently reproduce **every empirical claim** made in the VarDictRust v1.0.1 release using the structured runbook below.
 
 ### 12.1 Biological Asset Provenance Catalog
 

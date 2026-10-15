@@ -153,6 +153,44 @@ assert d["extra"]["cpp_head"] == ["CPP: SKIP: disabled via CPP_SKIP=1"], d["extr
   fail=1
 fi
 
+# 5. Verify normalize_gate_blob() is invariant to workspace SemVer bumps and sensitive to dependency/profile mutations
+eval "$(sed -n '/^normalize_gate_blob()/,/^}/p' harness/engine_fingerprint.sh)"
+if ! declare -F normalize_gate_blob >/dev/null 2>&1; then
+  echo "FAIL: normalize_gate_blob() not defined in harness/engine_fingerprint.sh" >&2
+  fail=1
+else
+  for mf in Cargo.toml crates/vardictrust/Cargo.toml Cargo.lock; do
+    base_oid=$(git show "HEAD:$mf" | normalize_gate_blob "$mf" | git hash-object -t blob --stdin)
+    v100_raw_oid=$(git show "HEAD:$mf" | python3 -c 'import re,sys; s=sys.stdin.read(); s=re.sub(r"(\[workspace\.package\]\r?\nversion\s*=\s*\")[^\"]+(\")", r"\g<1>1.0.0\2", s, count=1); s=re.sub(r"(vardictrust-core\s*=\s*\{[^\n}]*?\bversion\s*=\s*\")[^\"]+(\")", r"\g<1>1.0.0\2", s, count=1); s=re.sub(r"(\[\[package\]\]\r?\nname = \"vardictrust(?:-core)?\"\r?\nversion = \")[^\"]+(\")", r"\g<1>1.0.0\2", s, count=2); sys.stdout.write(s)' | git hash-object -t blob --stdin)
+    if [ "$base_oid" != "$v100_raw_oid" ]; then
+      echo "FAIL: normalize_gate_blob($mf) did not match canonical 1.0.0 OID ($base_oid != $v100_raw_oid)" >&2
+      fail=1
+    fi
+    bumped_oid=$(git show "HEAD:$mf" | python3 -c 'import re,sys; s=sys.stdin.read(); s=re.sub(r"(\[workspace\.package\]\r?\nversion\s*=\s*\")[^\"]+(\")", r"\g<1>9.9.9-rc.1\2", s, count=1); s=re.sub(r"(vardictrust-core\s*=\s*\{[^\n}]*?\bversion\s*=\s*\")[^\"]+(\")", r"\g<1>9.9.9-rc.1\2", s, count=1); s=re.sub(r"(\[\[package\]\]\r?\nname = \"vardictrust(?:-core)?\"\r?\nversion = \")[^\"]+(\")", r"\g<1>9.9.9-rc.1\2", s, count=2); sys.stdout.write(s)' | normalize_gate_blob "$mf" | git hash-object -t blob --stdin)
+    if [ "$base_oid" != "$bumped_oid" ]; then
+      echo "FAIL: normalize_gate_blob($mf) changed OID on workspace SemVer bump ($base_oid != $bumped_oid)" >&2
+      fail=1
+    fi
+  done
+  dep_oid=$(git show "HEAD:Cargo.toml" | sed 's/noodles = { version = "0.117"/noodles = { version = "0.118"/' | normalize_gate_blob Cargo.toml | git hash-object -t blob --stdin)
+  base_cargo_oid=$(git show "HEAD:Cargo.toml" | normalize_gate_blob Cargo.toml | git hash-object -t blob --stdin)
+  if [ "$dep_oid" = "$base_cargo_oid" ]; then
+    echo "FAIL: normalize_gate_blob(Cargo.toml) did not change OID when dependency version changed" >&2
+    fail=1
+  fi
+  prof_oid=$(git show "HEAD:Cargo.toml" | sed 's/opt-level = 3/opt-level = 2/' | normalize_gate_blob Cargo.toml | git hash-object -t blob --stdin)
+  if [ "$prof_oid" = "$base_cargo_oid" ]; then
+    echo "FAIL: normalize_gate_blob(Cargo.toml) did not change OID when release profile changed" >&2
+    fail=1
+  fi
+  lock_dep_oid=$(git show "HEAD:Cargo.lock" | sed -E 's/"1\.0\.[2-9][0-9]*"/"1.0.999"/' | normalize_gate_blob Cargo.lock | git hash-object -t blob --stdin)
+  base_lock_oid=$(git show "HEAD:Cargo.lock" | normalize_gate_blob Cargo.lock | git hash-object -t blob --stdin)
+  if [ "$lock_dep_oid" = "$base_lock_oid" ]; then
+    echo "FAIL: normalize_gate_blob(Cargo.lock) did not change OID when external 1.0.x crate version changed" >&2
+    fail=1
+  fi
+fi
+
 if [ $fail -eq 0 ]; then
   echo "PASS test_evidence"
   exit 0
@@ -160,3 +198,4 @@ else
   echo "FAIL test_evidence"
   exit 1
 fi
+

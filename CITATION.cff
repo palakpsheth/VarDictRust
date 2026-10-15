@@ -2,9 +2,9 @@ cff-version: 1.2.0
 message: "If you use VarDictRust in published research, please cite both the original VarDict publication (Lai et al. 2016) and this software implementation."
 title: "VarDictRust: Memory-Safe, High-Performance Variant Calling for NGS"
 abstract: "VarDictRust is an idiomatic Rust rewrite of VarDictJava v1.8.3, consolidating its fragmented Java->R->Perl pipeline into a single, memory-safe, statically-compiled binary that scales to deep whole-genome sequencing with bounded memory."
-version: 1.0.0
-date-released: "2026-10-10"
-license: MIT
+version: 1.0.1
+date-released: "2026-10-15"
+license: MIT AND GPL-2.0-or-later
 repository-code: "https://github.com/palakpsheth/VarDictRust"
 keywords:
   - "bioinformatics"
