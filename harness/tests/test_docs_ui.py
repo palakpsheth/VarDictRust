@@ -420,6 +420,23 @@ class TestMarkdownStaticHygiene(unittest.TestCase):
             "Wiki link / anchor hygiene errors found:\n" + "\n".join(f"  - {e}" for e in errors)
         )
 
+    def test_readme_badges_camo_safe(self):
+        """Verify README.md badges use Camo-safe endpoints and avoid raw readthedocs.org badge redirects."""
+        readme_path = REPO_ROOT / "README.md"
+        with open(readme_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        self.assertNotIn(
+            "readthedocs.org/projects/vardictrust/badge/",
+            content,
+            "README.md must not use raw readthedocs.org/projects/.../badge/ image URLs "
+            "(Cloudflare 307/429 causes GitHub Camo HTTP 502); use img.shields.io/readthedocs/vardictrust.",
+        )
+        self.assertIn(
+            "https://img.shields.io/readthedocs/vardictrust",
+            content,
+            "README.md should use img.shields.io/readthedocs/vardictrust for the Documentation Status badge.",
+        )
+
 
 class TestPlaywrightBrowserRendering(unittest.TestCase):
     """Render documents with Playwright headless Chromium to verify real browser DOM layout."""
