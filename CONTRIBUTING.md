@@ -329,7 +329,7 @@ cargo package --list -p vardictrust
 bash harness/pr_check.sh
 git checkout -- benchmarks/evidence/extended-coverage-tier2.json
 
-# 7. Run 8-item Master Release Acceptance Gate (must exit 0 with 8/8 PASS; restore timestamp/timing noise if fingerprint is unchanged)
+# 7. Run 8-item Master Release Acceptance Gate (must exit 0 with 8/8 PASS, including Item 8 musl-ci.json from harness/bin_equiv.sh; restore timestamp/timing noise if fingerprint is unchanged)
 bash harness/acceptance.sh
 git checkout -- benchmarks/evidence/extended-coverage-tier2.json benchmarks/evidence/multimodal-slices-tier2.json
 ```
@@ -349,7 +349,7 @@ Push `release/vX.Y.Z` and open a pull request to `main` via `gh pr create`, comp
 2. **Automated Release Pipeline ([`.github/workflows/release.yml`](.github/workflows/release.yml)):**
    Pushing `vX.Y.Z` triggers `cargo-dist 0.33.0`, which executes:
    - `plan`: parses `CHANGELOG.md` for `## [X.Y.Z]` and computes the 5 build targets (`x86_64-unknown-linux-gnu`, `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-gnu`, `aarch64-apple-darwin`, `x86_64-apple-darwin`).
-   - `build-local-artifacts` & `build-global-artifacts`: compiles release archives, runs [`harness/bin_equiv.sh`](harness/bin_equiv.sh) to verify `musl` vs `gnu` VCF byte parity on Linux x86_64, and generates the shell installer and SHA-256 checksums.
+   - `build-local-artifacts` & `build-global-artifacts`: compiles release archives across all 5 target triples and generates the shell installer and SHA-256 checksums (`musl` vs `gnu` VCF byte equivalence on Linux x86_64 is certified pre-tag via [`harness/bin_equiv.sh`](harness/bin_equiv.sh) inside [`harness/recertify.sh`](harness/recertify.sh) and verified by [`harness/acceptance.sh`](harness/acceptance.sh) Item 8).
    - `host`: creates the GitHub Release and generates **SLSA v1.0 Level 3 build provenance attestations** via `actions/attest-build-provenance`.
    - `publish-crates`: publishes `vardictrust-core` to `crates.io` first, then polls up to `30 × 10s` for index propagation before publishing `vardictrust`.
    - `announce`: finalizes and publishes the GitHub Release.
@@ -377,7 +377,7 @@ Push `release/vX.Y.Z` and open a pull request to `main` via `gh pr create`, comp
 ### 9.7 Rollback, Partial-Release Recovery & Hotfix Runbook
 - **Transient CI Job Failure in `release.yml`:** If a runner experiences a transient network or registry timeout during Phase 2, re-run failed jobs via `gh run rerun <run-id> --failed`. If `vardictrust-core` already published to `crates.io` before `publish-crates` failed on `vardictrust`, publish `vardictrust` manually with `cargo publish -p vardictrust` or cut `vX.Y.(Z+1)`.
 - **Never Force-Move or Delete Published Release Tags:** Once `crates.io` crates or SLSA Level 3 attestations are emitted for `vX.Y.Z`, never delete or force-push the tag. If a critical regression is discovered post-release:
-  1. Yank affected crates on `crates.io`: `cargo yank --version X.Y.Z -p vardictrust && cargo yank --version X.Y.Z -p vardictrust-core`.
+  1. Yank affected crates on `crates.io`: `cargo yank --version X.Y.Z vardictrust && cargo yank --version X.Y.Z vardictrust-core`.
   2. Mark the GitHub Release `vX.Y.Z` as pre-release/yanked with a notice linking to the replacement version.
   3. Cut and certify `vX.Y.(Z+1)` off `main` following §§9.2–9.6.
 
