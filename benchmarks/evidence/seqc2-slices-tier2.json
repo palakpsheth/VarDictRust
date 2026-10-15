@@ -18,10 +18,10 @@
   ],
   "cpp_time": {
     "exit": "0",
-    "max_rss_kb": "256532",
-    "wall": "0:06.03"
+    "max_rss_kb": "259340",
+    "wall": "0:05.74"
   },
-  "date": "2026-10-13T08:32:24-07:00",
+  "date": "2026-10-15T09:13:27-07:00",
   "extra": {
     "cpp_head": [
       "MISMATCH:",
@@ -32,19 +32,19 @@
     ],
     "cpp_version": "vardictcpp 3 hc52dbad_0 bioconda"
   },
-  "fingerprint": "388f4a545470d12a",
-  "head": "de43b219a8f2278964e6b9cd9c74450a3b5c0916",
+  "fingerprint": "44b362a08b86ca69",
+  "head": "d219aad9c3780738ac3d317ecc82e468a1c940f8",
   "java_time": {
     "exit": "0",
-    "max_rss_kb": "2628972",
-    "wall": "0:29.68"
+    "max_rss_kb": "2818284",
+    "wall": "0:27.27"
   },
   "n_variants": 4151,
   "name": "seqc2-slices-tier2",
   "result": "MATCH",
   "rust_time": {
     "exit": "0",
-    "max_rss_kb": "457520",
-    "wall": "0:05.46"
+    "max_rss_kb": "459844",
+    "wall": "0:05.19"
   }
 }
