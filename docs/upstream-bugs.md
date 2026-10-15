@@ -17,6 +17,12 @@ All line references below are to that pin.
 | [UB-5](#ub-5) | [Class A](../DIVERGENCES.md#the-four-canonical-parity-classes-rewritesbio-5-8-11) | SimpleMode SV split-read requirement (`splitreads < 1` dropped) | **Replicated** ([`lib.rs:403-414`](../crates/vardictrust-core/src/lib.rs)) |
 | [UB-6](#ub-6) | [Class A](../DIVERGENCES.md#the-four-canonical-parity-classes-rewritesbio-5-8-11) | Mate-pair boundary parameter in `mark_dup_sv` (`pe` decrement) | **Replicated** ([`sv.rs:3039`](../crates/vardictrust-core/src/sv.rs)) |
 | [UB-7](#ub-7) | [Class A](../DIVERGENCES.md#the-four-canonical-parity-classes-rewritesbio-5-8-11) | Multi-allelic site single-winner collapsing without `-A` | **Replicated** ([`lib.rs:467-505`](../crates/vardictrust-core/src/lib.rs)) |
+| [UB-8](#ub-8) | [Class D](../DIVERGENCES.md#the-four-canonical-parity-classes-rewritesbio-5-8-11) | Oracle JVM SIGKILL flake under shared-host memory pressure (exit 137, no output change) | **Tracked** (environmental; diagnostics in [`harness/run_oracle.sh`](../harness/run_oracle.sh)) |
+
+**Third arm:** pinned **vardictcpp 3 `hc52dbad_0` bioconda** runs beside every gate
+arm (advisory only; gate stays java==rust; `CPP_SKIP=1` escapes). Its known
+divergences below are **normalized, not engine bugs** — see
+[Known vardictcpp third-arm divergences](#cpp-divergences).
 
 ---
 
@@ -255,3 +261,171 @@ Only the single candidate allele with the highest allele frequency (`$tmp[0]`) i
 > **Title:** Single-winner multi-allelic collapsing drops secondary variants when primary candidate is filtered
 >
 > In `var2vcf_valid.pl:135-205`, when `-A` is omitted, only the highest-AF candidate is inspected. If that candidate triggers any `next` condition (e.g. empty REF or zero split reads), the entire position is abandoned, dropping any secondary variants that would have passed filters. The loop should evaluate candidate records until an eligible variant is found or emit all qualifying alleles in standard multi-allelic VCF notation.
+
+---
+
+<a id="ub-8"></a>
+<a id="ub-8-oracle-jvm-sigkill-flake-under-shared-host-memory-pressure"></a>
+## UB-8 — Oracle JVM SIGKILL flake under shared-host memory pressure (exit 137)
+
+**Parity Class:** [Class D (Known Upstream Defects & Fixture Flaws)](../DIVERGENCES.md#the-four-canonical-parity-classes-rewritesbio-5-8-11)
+
+**Behavior (environmental, not a VarDictJava logic bug):** on the full-chr20 hg002
+oracle arm (`-f 0.01 -th 8`, ~90 s JVM runtime, MaxRSS ≈ 4.1 GB under `-Xmx8g`),
+the `vardict-java` process is intermittently SIGKILLed ~85–90 s in — near
+completion — while the downstream R/Perl stages exit cleanly. `compare.sh`
+reports `ENGINE-FAIL: oracle`. An identical-input retry passes byte-identically
+(same 227562-variant MATCH), so this is a flake, not input-dependent behavior.
+
+**Evidence (2026-10-13, 5 consecutive `compare.sh` hg002 runs):** 1 MATCH, then 4
+consecutive oracle `ENGINE-FAIL`s, every failure with the same signature —
+`java.time` `Exit status: 137`, wrapper stderr:
+
+```
+_: line 18: 1178932 Killed                  vardict-java -G "$1" -f "$2" ...
+     1178933 Done                    | teststrandbias.R
+     1178934 Done                    | var2vcf_valid.pl -N "$3" -E -f "$2" "${V2V_ARGS[@]}" > "$6"
+oracle-stage-fail: vardict-java exit 137
+```
+
+Prime suspect: `systemd-oomd` — controller ground truth confirms it is active on
+this host, with journal policy kills on `user.slice` pressure >50% for >20s
+(Oct 11 18:19, 22:32, whole scopes). oomd kills are journal-only by design, so a
+silent kernel ring through this run's kill window matches that signature exactly
+rather than ruling oomd out. The in-run sender stays unattributed (no journal
+entries that day) — prime suspect, not a confirmed attribution.
+
+Ruled out: our wrapper (pipe/trap/timeout/env verified; exit code faithfully
+propagated), JVM heap exhaustion (4.1 GB < 8 GB cap, no Java exception), and
+system-wide exhaustion (`free -h` ~23 GB available at kill time). Context is
+shared-host userspace pressure (parallel agent sessions; this box has a
+documented history of host-pressure kills and manual `kill -9` cleanups).
+
+**Our stance:** nothing to replicate (no output effect — killed runs produce no
+VCF) and nothing to fix in our wrapper; retry loops are forbidden as a fix.
+[`harness/run_oracle.sh`](../harness/run_oracle.sh) now persists
+`$KEEP_DIR/oracle-fail-<stage>.log` (stage stderr + exit code + `free -h`) on any
+engine-stage failure so future flakes arrive with their signature attached.
+Guidance: re-run `compare.sh`; keep ambient load down
+([`harness/courtesy.sh`](../harness/README.md), `-th 8`); do not chase this by
+retuning oracle heap/threads.
+
+---
+
+<a id="cpp-divergences"></a>
+## Known vardictcpp third-arm divergences (advisory, non-gating)
+
+Applies to pinned **vardictcpp 3 `hc52dbad_0` bioconda** (`benchmarks/env/vardict-oracle.yml`).
+Each item was observed live on real fixtures; none touches the java==rust gate.
+Cpp numbers live in evidence `extra` (`cpp_version`, `cpp_head`, `cpp_f1`,
+`cpp_wall_s`, `cpp_maxrss_kb`, `cpp_skip_reason`) and are never duplicated here.
+
+| # | Divergence | Surface |
+|---|-----------|---------|
+| [CPP-1](#cpp-1) | VCF header provenance + `END` INFO key deltas | `harness/compare.sh` third arm (`compare_cpp.txt`) |
+| [CPP-2](#cpp-2) | `-J`/`-j` parsed but ignored | Extended-coverage M4 cell |
+| [CPP-3](#cpp-3) | `-a` amplicon mode is TSV-only (`-vcf` ignored) | Tier-2 amplicon arm (honest SKIP) |
+| [CPP-4](#cpp-4) | Concatenated single-dash flags rejected | Tier-1 concatenated-flags fixtures |
+| [CPP-5](#cpp-5) | Boolean `-z`, positional BED, unpinned `--chunk` | `harness/run_cpp.sh` contract |
+| [CPP-6](#cpp-6) | Zero-`##contig` VCF emitter (tabix needs completion) | Truth-concordance scaffolding |
+| [CPP-7](#cpp-7) | CHROM resolved from reference, not BAM, on duplicate-name FASTAs | b37 extended-coverage cells |
+| [CPP-8](#cpp-8) | N-REF null rows emitted in native `-vcf` | b37 extended-coverage cells |
+| [CPP-9](#cpp-9) | Caller deltas: MNP joining + large SV alleles | hg002/exome/hg008 Tier-2 arms |
+
+<a id="cpp-1"></a>
+### CPP-1 — VCF header provenance + `END` INFO key
+
+cpp emits its own header lineage (no `##reference`, its own `##INFO` set incl.
+`END`) where VarDictJava emits `##reference`/`##contig`. Variant *calls* agree
+(micro: 2/2); the comparator still reports `CPP: MISMATCH` on header/`END`-key
+deltas. Known-normalized: never an engine bug, never gating.
+
+<a id="cpp-2"></a>
+### CPP-2 — `-J`/`-j` parsed but ignored
+
+cpp accepts CRISPR cut-site flags (`-J 50454941 -j 25`) but its own banner warns
+"not all affect output yet": on the M4 cell it emits all regional rows where
+Java target-windows to 3, so an advisory `CPP-MISMATCH` on row count is expected.
+
+<a id="cpp-3"></a>
+### CPP-3 — `-a` amplicon mode is TSV-only (`-vcf` ignored)
+
+Amplicon mode without a BED errors (exit 1 → loud `CPP: SKIP`), and with a
+BED cpp emits its 38/40-col TSV table even when `-vcf` is passed (verified:
+`-vcf` before and after the BED both yield TSV). A VCF-vs-TSV comparison
+would MISMATCH meaninglessly, so `compare.sh` records an honest
+`CPP: SKIP: cpp emitted non-VCF surface` naming the cause (locked by CPP11).
+TSV-level amplicon parity belongs to a Tier-1 `compare_var.py` cell, not the
+VCF gate.
+
+<a id="cpp-4"></a>
+### CPP-4 — Concatenated single-dash flags rejected
+
+cpp rejects concatenated forms such as `-f0.0025-F0x700-Q10` (`unknown option`,
+exit 120) that VarDictJava accepts. Affected fixtures record loud
+`CPP: SKIP (cpp engine exit 120)`; no flag-splitting is added (would break the
+identical-flags contract).
+
+<a id="cpp-5"></a>
+### CPP-5 — Boolean `-z`, positional BED, unpinned `--chunk` (retired `-R` noise)
+
+`run_cpp.sh` mirrors the oracle exactly: BED travels positionally and bare
+`-z` stays bare — cpp's `-z` takes no value, and a mirrored `-z 1` leaks a
+stray positional that cpp opens as a BED file (`cannot open BED file '1'`;
+`-R` runs only survived because the stray was ignored with a warning).
+`--chunk` is deliberately unpinned (cpp default rewrites the `Seg` column);
+the peak jobs-per-node selector stays out of the gate by design.
+
+<a id="cpp-6"></a>
+### CPP-6 — Zero-`##contig` VCF emitter
+
+cpp's native `-vcf` emitter carries zero `##contig` lines, so `tabix -p vcf`
+refuses to index its calls file. Truth concordance completes the missing lines
+from the truth header (truth first, awk-ID dedup; `##fileformat` stays line 1)
+as evaluation scaffolding only — no record, FILTER, QUAL, or INFO byte is
+touched, so the reported cpp F1 is unaffected. Handled forward-compatibly if a
+future pin emits contigs.
+
+<a id="cpp-7"></a>
+### CPP-7 — CHROM resolved from reference, not BAM, on ambiguous FASTAs
+
+On `GRCh37.fa` — whose headers contain *both* `>20` and `>chr20` — cpp emits
+`chr20` where VarDictJava/`var2vcf` emit the BAM header's `20` (verified:
+BAM `@SQ SN:20`, fasta carries both spellings). cpp resolves CHROM through
+the reference index; Java uses the read's reference name. Every record
+mismatches on CHROM alone, so b37 cpp-vs-java VCF comparison is structurally
+uninformative; calls themselves are unaffected (GRCh38 data, with unique
+names, agrees). Recorded advisory, never gating.
+
+<a id="cpp-8"></a>
+### CPP-8 — N-REF null rows emitted in native `-vcf`
+
+cpp's native emitter writes a row per covered position with `REF=N` where
+Java's `var2vcf` drops null rows (the UB-2 family): on the b37 slices this
+adds hundreds of `N`-REF rows no Java VCF contains. Same class as CPP-7 —
+structurally uninformative comparison, unaffected calls, advisory only.
+
+<a id="cpp-9"></a>
+### CPP-9 — Caller deltas: MNP joining + large SV alleles (measured, advisory)
+
+Beyond serialization (CPP-1), record-level `CHROM/POS/REF/ALT` comparison
+shows three genuine caller-behavior deltas, all in cpp-vs-java while
+rust==java MATCH holds on the same inputs:
+
+- **MNP joining (hg002 germline, 347/227,562 sites = 0.15%):** where Java
+  reports one joint allele (e.g. `CT→AA` at chr20:10268361, `TGA→CGC` at
+  chr20:10016944), cpp reports split SNVs (`C→A` plus the agreeing `T→A`
+  at 10268362). Depths/AF identical; only the allele assembly differs.
+  vardictrust replicates the joint form (gate MATCH).
+- **Large SV/indel alleles dropped by cpp:** seqc2-exome `chr2:178443383
+  T→<DEL>` and a ~500 bp insertion at chr22:36511000 present in java,
+  absent in cpp (1–2 alleles per 18k–623k somatic calls); hg008
+  `chr1:6173467` java 200 bp insertion vs cpp `A→C` SNV.
+- **Counts:** hg002 227,562 vs 227,560; exome 623,444 vs 623,442;
+  hg008 18,426 vs 18,425; slices 4,151 vs 4,151 (zero).
+
+Directionally this favors vardictrust's Java fidelity on these datasets,
+but the absolute rates are small, mode-dependent (germline MNP vs somatic
+SV), and paper-protocol data (hg19 WES, operating-point filtered) may
+differ — no accuracy-rank claim is made from inter-caller comparison alone
+(the Fig-3 no-truth caveat applies). Recorded advisory, never gating.

@@ -4,9 +4,10 @@
     "harness/bin_equiv.sh"
   ],
   "compare_head": [],
-  "date": "2026-10-10T10:31:47-07:00",
-  "fingerprint": "bc962a9db4365ca4",
-  "head": "7936d97938eab9781a08072f9796f2697de0132d",
+  "cpp_time": null,
+  "date": "2026-10-13T11:08:12-07:00",
+  "fingerprint": "388f4a545470d12a",
+  "head": "de43b219a8f2278964e6b9cd9c74450a3b5c0916",
   "java_time": null,
   "n_variants": null,
   "name": "musl-ci",

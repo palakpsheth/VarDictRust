@@ -35,7 +35,7 @@ echo "Tier-1 integration corpus passed (91 PASS / 1 XFAIL expected fixture defec
 echo "[4/6] Running Tier-2 differential parity suites against live oracle..."
 cargo build -q --release
 MIN_VARIANTS=1 bash harness/compare.sh fixtures/micro/micro.ref.fa fixtures/micro/micro.bam fixtures/micro/micro.bed
-echo "Running live 9-modality extended coverage suite..."
+echo "Running live 17-modality extended coverage suite..."
 bash harness/run_extended_coverage.sh
 
 # Stage 5: Performance & Memory Benchmark Regression Check

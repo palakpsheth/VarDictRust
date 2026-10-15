@@ -16,20 +16,35 @@
   "compare_head": [
     "MATCH (4151 variants)"
   ],
-  "date": "2026-10-09T23:54:52-07:00",
-  "fingerprint": "bc962a9db4365ca4",
-  "head": "7936d97938eab9781a08072f9796f2697de0132d",
+  "cpp_time": {
+    "exit": "0",
+    "max_rss_kb": "256532",
+    "wall": "0:06.03"
+  },
+  "date": "2026-10-13T08:32:24-07:00",
+  "extra": {
+    "cpp_head": [
+      "MISMATCH:",
+      "  HEADER line 2: java='##reference=scratch/g4/ref/d1vd1/GRCh38.d1.vd1.fa' != rust='##INFO=<ID=SAMPLE,Number=1,Type=String,Description=\"Sample name (with whitespace translated to underscores)\">'",
+      "  HEADER line 3: java='##contig=<ID=chr1,length=248956422>' != rust='##INFO=<ID=TYPE,Number=1,Type=String,Description=\"Variant Type: SNV Insertion Deletion Complex\">'",
+      "  HEADER line 4: java='##contig=<ID=chr2,length=242193529>' != rust='##INFO=<ID=DP,Number=1,Type=Integer,Description=\"Total Depth\">'",
+      "  HEADER line 5: java='##contig=<ID=chr3,length=198295559>' != rust='##INFO=<ID=END,Number=1,Type=Integer,Description=\"Chr End Position\">'"
+    ],
+    "cpp_version": "vardictcpp 3 hc52dbad_0 bioconda"
+  },
+  "fingerprint": "388f4a545470d12a",
+  "head": "de43b219a8f2278964e6b9cd9c74450a3b5c0916",
   "java_time": {
     "exit": "0",
-    "max_rss_kb": "2781700",
-    "wall": "0:30.22"
+    "max_rss_kb": "2628972",
+    "wall": "0:29.68"
   },
   "n_variants": 4151,
   "name": "seqc2-slices-tier2",
   "result": "MATCH",
   "rust_time": {
     "exit": "0",
-    "max_rss_kb": "617068",
-    "wall": "0:28.94"
+    "max_rss_kb": "457520",
+    "wall": "0:05.46"
   }
 }

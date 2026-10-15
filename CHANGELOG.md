@@ -14,11 +14,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   supporting `linux-64`, `linux-aarch64`, `osx-arm64`, and `osx-64`
   via `conda install -c bioconda -c conda-forge vardictrust`. Galaxy wrapper distribution
   remains an explicit follow-up.
+- Advisory vardictcpp third arm everywhere VarDictRust compares against
+  VarDictJava: pinned **vardictcpp 3 `hc52dbad_0` bioconda** (same
+  `vardict-oracle` conda env as the Java oracle; pin mirrors the
+  `vardict=2019.06.04` pattern in `benchmarks/env/vardict-oracle.yml`).
+  Every gate arm records a `CPP: MATCH/MISMATCH/SKIP` line plus
+  `compare_cpp.txt`; evidence `extra` gains `cpp_version`, `cpp_head`,
+  `cpp_wall_s`, `cpp_maxrss_kb`, `cpp_f1`, `cpp_skip_reason`;
+  `CPP_SKIP=1` escapes the arm. The release gate stays **java==rust** —
+  cpp never masks a verdict, and `harness/acceptance.sh` fails loudly
+  (not silently) when Tier-2 evidence lacks `cpp_version`/`cpp_skip_reason`.
+  Known cpp divergences are normalized in `docs/upstream-bugs.md`.
 
-### Planned (v1.1.0)
+- Three-way CRAM twin (`harness/cram_twin.sh`): rust and cpp each call the
+  hg008 slice pair from BAM and CRAM; gate is rust-BAM == rust-CRAM
+  (18,426 variants MATCH), cpp twin recorded advisory. The rust-CRAM arm
+  runs with `RUST_MIN_STACK=64M`: the default 2 MiB rayon worker stack overflows
+  inside `noodles-cram 0.100.0` rANS/name-tokenizer decoding (~97 frames; BAM
+  unaffected; pinned by `crates/vardictrust-core/tests/cram_stack.rs`), not a
+  parity issue. Rebase note (2026-10-12; finalized 2026-10-14 per docs/validation/scale-recalibration-proposal.md sign-off): scale PASSES under the signed host-class bar `bar(P) = 0.6 × min(8, P)` (P=4 on i7-13700H `taskset 0-7` → bar 2.4; RSS leg unchanged ≤ 1.5×); medians across 3 full runs give **3.72×** (th1 1769s/th8 476s) with RSS 1.448× ≤ 1.5×, so `scale.json` records PASS (median 3.72 >= 2.4, RSS 1.448 <= 1.5). RSS headroom is thin (one run reached 1.489×) — variance watch only, no bar change. Java `-th 8` is
+  OOM-killed on high-depth paired slices on 31G hosts (bisected 1✓/4✓/8✗);
+  hg008/seqc2-exome evidences run at `-th 4` with cmds recorded verbatim.
 
-- Opt-in corrections behind `--fix <id>` per [`ROADMAP.md`](ROADMAP.md).
-- Detailed upstream bug specifications documented in [`docs/upstream-bugs.md`](docs/upstream-bugs.md).
 
 ## [1.0.0] - 2026-10-10
 

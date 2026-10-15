@@ -69,6 +69,21 @@ XPASS=0
 SKIP=0
 ERRORS=()
 
+# Advisory cpp third arm (Tasks T3A-04): availability probed once; per-fixture
+# CPP lines never touch the PASS/XFAIL/FAIL gate or exit code (Task 3 ruling).
+CPP_MISMATCH=0
+CPP_AVAILABLE=0
+CPP_SKIP_REASON=""
+if [[ "${CPP_SKIP:-0}" == "1" || "${CPP_SKIP:-0}" == "true" ]]; then
+    CPP_SKIP_REASON="disabled via CPP_SKIP=1"
+elif ! command -v conda >/dev/null 2>&1; then
+    CPP_SKIP_REASON="conda not on PATH"
+elif ! conda run -n vardict-oracle vardictcpp --version >/dev/null 2>&1; then
+    CPP_SKIP_REASON="vardictcpp not available in conda env vardict-oracle"
+else
+    CPP_AVAILABLE=1
+fi
+
 run_test() {
     local testfile="$1"
     local basename_file
@@ -178,13 +193,11 @@ run_test() {
     local actual
     actual=$(eval $cmd 2>"$tmperr") || exit_code=$?
 
-    rm -f "$tmpbed"
-
     # Engine crash / non-zero exit code must NEVER be masked as XFAIL
     if [[ $exit_code -ne 0 ]]; then
         echo "CRASH/ERROR (exit $exit_code): $basename_file"
         cat "$tmperr" >&2
-        rm -f "$tmperr"
+        rm -f "$tmperr" "$tmpbed"
         FAIL=$((FAIL+1))
         ERRORS+=("CRASH: $basename_file")
         return
@@ -239,6 +252,56 @@ run_test() {
             echo "---"
         fi
     fi
+
+    # Advisory cpp third arm: vardictcpp TSV with flags identical to the gate
+    # (-z boolean, positional $tmpbed; -N pinned to the oracle sample label
+    # since cpp requires -N and never derives it from the BAM name). This cell
+    # intentionally does NOT reuse run_cpp.sh: Tier-1 needs the TSV surface
+    # (run_cpp.sh is VCF-only) plus per-fixture -N pinning and --cols 3-61
+    # normalization below. Tier-1 compare_var.py --cols 3-61: col 1 is our own
+    # -N echoed back, col 2 is the known-normalized BED-name echo.
+    # -i fixtures: cpp ignores -i (no splice-table surface, probed live) -> SKIP.
+    if [[ $CPP_AVAILABLE -eq 1 && " $extra_flags " == *" -i "* ]]; then
+        echo "CPP: SKIP: $basename_file (-i splice-table surface unsupported by vardictcpp)"
+    elif [[ $CPP_AVAILABLE -eq 1 ]]; then
+        if [[ "$start_val" =~ ^[0-9]+$ && "$end_val" =~ ^[0-9]+$ ]]; then
+            local cpp_sample=${expected%%$'\n'*}
+            cpp_sample=${cpp_sample%%$'\t'*}
+            if [[ -z "$cpp_sample" ]]; then cpp_sample=$(basename "${bam_arg%%|*}" .bam); fi
+            local -a extra_argv=()
+            if [[ -n "$extra_flags" ]]; then
+                read -r -a extra_argv <<< "$extra_flags"
+            fi
+            local -a cpp_cmd=(
+                conda run -n vardict-oracle vardictcpp
+                -z -c 1 -S 2 -E 3 -g 4
+                -G "$fasta_path" -b "$bam_arg" -N "$cpp_sample"
+                "${extra_argv[@]}" "$tmpbed"
+            )
+            local cpp_exit=0 cpp_out=""
+            cpp_out=$("${cpp_cmd[@]}" 2>/dev/null) || cpp_exit=$?
+            if [[ $cpp_exit -ne 0 ]]; then
+                echo "CPP: SKIP: $basename_file (cpp engine exit $cpp_exit)"
+            else
+                local tmpexp tmpgot
+                tmpexp=$(mktemp); tmpgot=$(mktemp)
+                printf '%s\n' "$expected" | LC_ALL=C sort > "$tmpexp"
+                printf '%s\n' "$cpp_out" | LC_ALL=C sort > "$tmpgot"
+                local cpp_msg cpp_rc=0
+                cpp_msg=$(python3 "$SCRIPT_DIR/compare_var.py" --eps 1e-6 --cols 3-61 "$tmpexp" "$tmpgot" 2>&1) || cpp_rc=$?
+                rm -f "$tmpexp" "$tmpgot"
+                if [[ $cpp_rc -eq 0 ]]; then
+                    echo "CPP: MATCH ($basename_file)"
+                else
+                    echo "CPP-MISMATCH: $basename_file ($(head -n 1 <<< "$cpp_msg"))"
+                    CPP_MISMATCH=$((CPP_MISMATCH+1))
+                fi
+            fi
+        else
+            echo "CPP: SKIP: $basename_file (non-numeric region $chr:$start_val-$end_val)"
+        fi
+    fi
+    rm -f "$tmpbed"
 }
 
 # If specific files passed, test them; otherwise test all Simple cases
@@ -255,6 +318,11 @@ fi
 echo ""
 echo "===== Results ====="
 echo "PASS: $PASS  XFAIL: $XFAIL  FAIL: $FAIL  SKIP: $SKIP  XPASS: $XPASS"
+if [[ $CPP_AVAILABLE -eq 1 ]]; then
+    echo "CPP-MISMATCH: $CPP_MISMATCH"
+else
+    echo "CPP: SKIP: $CPP_SKIP_REASON"
+fi
 
 exit_code=0
 if [[ $# -eq 0 ]]; then

@@ -26,14 +26,15 @@
 !rust-toolchain.toml
 
 # Universal & Editor
+# Agent scratch (opencode/sdd workspaces, plans, ledgers — never commit)
 *.tmp
 *.swp
 .vscode/
 .idea/
 .omo/
 .opencode/
+.superpowers/
 /docs/superpowers/
-
 
 # Rust/Python development
 *.rlib

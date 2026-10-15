@@ -2,17 +2,21 @@
   "cmd": [
     "/mnt/media_backups/VarDictRust/harness/concordance_germline.sh",
     "hg005-truth",
-    "/tmp/vardict_multimodal_concordance_jvgEKp/hg005_java.vcf",
-    "/tmp/vardict_multimodal_concordance_jvgEKp/hg005_rust.vcf",
+    "/tmp/vardict_multimodal_concordance_whi815/hg005_java.vcf",
+    "/tmp/vardict_multimodal_concordance_whi815/hg005_rust.vcf",
     "/mnt/media_backups/VarDictRust/scratch/g4/truth_cache/hg005_truth.vcf.gz",
     "/mnt/media_backups/VarDictRust/scratch/g4/truth_cache/hg005_eval.bed",
     "/mnt/media_backups/VarDictRust/scratch/g4/ref/giabv3/GRCh38_GIABv3.sdf",
     "/mnt/media_backups/VarDictRust/scratch/g4/concordance_multimodal/hg005",
-    "HG005"
+    "HG005",
+    "/tmp/vardict_multimodal_concordance_whi815/hg005_cpp.vcf"
   ],
   "compare_head": [],
-  "date": "2026-10-10T18:08:58-07:00",
+  "cpp_time": null,
+  "date": "2026-10-13T10:02:56-07:00",
   "extra": {
+    "cpp_f1": 0.9508,
+    "cpp_version": "vardictcpp 3 hc52dbad_0 bioconda",
     "java": {
       "f_measure": 0.9508,
       "fn": 1,
@@ -70,8 +74,8 @@
       "tp_call": 29
     }
   },
-  "fingerprint": "bc962a9db4365ca4",
-  "head": "a484c62d1f2641a2c316a6d9eba574a1e63f9b7c",
+  "fingerprint": "388f4a545470d12a",
+  "head": "de43b219a8f2278964e6b9cd9c74450a3b5c0916",
   "java_time": null,
   "n_variants": null,
   "name": "hg005-truth",

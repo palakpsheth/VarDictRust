@@ -14,6 +14,18 @@ if d.get("fingerprint") != fp: sys.exit(f"{p}: stale fingerprint {d.get('fingerp
 if d.get("result") not in ("MATCH", "EQUAL", "PASS"): sys.exit(f"{p}: result={d.get('result')}")
 PY
 }
+ev_cpp() { python3 - "benchmarks/evidence/$1.json" <<'PY'
+import json, sys
+p = sys.argv[1]
+try: d = json.load(open(p))
+except Exception as e: sys.exit(f"{p}: {e}")
+x = d.get("extra") or {}
+has_v = isinstance(x.get("cpp_version"), str) and bool(x["cpp_version"].strip())
+has_s = isinstance(x.get("cpp_skip_reason"), str) and bool(x["cpp_skip_reason"].strip())
+if has_v == has_s:
+    sys.exit(f"{p}: extra must have exactly one non-empty cpp_version or cpp_skip_reason (cpp third-arm presence)")
+PY
+}
 run() { "$@" >> "$OUT/log.txt" 2>&1; }
 # 1 Unit
 t=1; run cargo test --workspace || t=0; mark 1 $t "cargo test"
@@ -36,9 +48,19 @@ else
   run bash harness/run_multimodal_slices.sh || { t=0; echo "run_multimodal_slices failed" >> "$OUT/log.txt"; }
 fi
 for e in hg008-tier2 seqc2-slices-tier2 seqc2-exome-tier2 hg002-tier2 amplicon-tier2 extended-coverage-tier2 multimodal-slices-tier2; do run ev "$e" || t=0; done
+# cpp third-arm presence (advisory arm, loud gate): every Tier-2 evidence extra
+# carries cpp_version or cpp_skip_reason; the java==rust verdict above is untouched.
+# CPP_SKIP=1 escapes this check (hosts without the vardictcpp pin).
+if [ "${CPP_SKIP:-0}" = "1" ] || [ "${CPP_SKIP:-0}" = "true" ]; then
+  echo "acceptance: item 3 cpp-presence check skipped via CPP_SKIP=1" >> "$OUT/log.txt"
+else
+  for e in hg008-tier2 seqc2-slices-tier2 seqc2-exome-tier2 hg002-tier2 amplicon-tier2 extended-coverage-tier2 multimodal-slices-tier2; do run ev_cpp "$e" || { t=0; echo "cpp presence $e failed" >> "$OUT/log.txt"; }; done
+fi
 mark 3 $t "Tier-2"
 # 4 Robustness: crash corpus (#341 family, PR #402, #187) + CRAM twin
-t=1; run cargo test -p vardictrust --test robustness || t=0; run ev hg008-cram-twin || t=0; mark 4 $t "robustness/CRAM"
+t=1; run cargo test -p vardictrust --test robustness || t=0; run ev hg008-cram-twin || t=0
+if [ "${CPP_SKIP:-0}" != "1" ] && [ "${CPP_SKIP:-0}" != "true" ]; then run ev_cpp hg008-cram-twin || t=0; fi
+mark 4 $t "robustness/CRAM"
 # 5 Scale + Perf Budget (thresholds pre-registered in T21)
 t=1; run ev scale || t=0; run ev perf-budget || t=0; mark 5 $t "scale/perf-budget"
 

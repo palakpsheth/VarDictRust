@@ -7,7 +7,7 @@ if ! conda env list | grep -q vardict-oracle; then
     solver_arg="--solver=libmamba"
   fi
   conda create -y -n vardict-oracle $solver_arg -c bioconda -c conda-forge \
-    vardict-java=1.8.3 vardict=2019.06.04 samtools bcftools
+    vardict-java=1.8.3 vardict=2019.06.04 vardictcpp=3=hc52dbad_0 samtools bcftools
 fi
 echo "oracle ready: conda run -n vardict-oracle vardict-java --version"
 
