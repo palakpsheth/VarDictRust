@@ -242,23 +242,6 @@ impl<'a> CigarParser<'a> {
             }
         }
 
-        // CRISPR mode: skip reads not overlapping the cutting site region
-        if let Some(cut_site) = self.config.crispr_cutting_site {
-            if cut_site != 0 {
-                if let Some(filter_bp) = self.config.crispr_flanking_size {
-                    if filter_bp != 0 {
-                        let rlen3 = get_reference_length(&cigar_elements) as i32;
-                        let start_1based = start_pos + 1;
-                        if !(cut_site - start_1based > filter_bp
-                            && start_1based + rlen3 - cut_site > filter_bp)
-                        {
-                            return Ok(());
-                        }
-                    }
-                }
-            }
-        }
-
         // T046: cleanupCigar
         let mut sv_cigar_elements = cigar_elements.clone();
         cleanup_cigar(&mut sv_cigar_elements);
@@ -290,6 +273,23 @@ impl<'a> CigarParser<'a> {
         let total_length_including_soft_clipped = get_soft_clipped_length(&cigar_elements);
         if total_length_including_soft_clipped > self.max_read_length as u32 {
             self.max_read_length = total_length_including_soft_clipped as i32;
+        }
+
+        // CRISPR mode: skip reads not overlapping the cutting site region
+        // Ports CigarParser.java:318, 634-646 (`skipSitesOutRegionOfInterest`).
+        if let Some(cut_site) = self.config.crispr_cutting_site {
+            if cut_site != 0 {
+                if let Some(filter_bp) = self.config.crispr_flanking_size {
+                    if filter_bp != 0 {
+                        let rlen3 = get_aligned_length_amp(&cigar_elements) as i32;
+                        if !(cut_site - start_pos > filter_bp
+                            && start_pos + rlen3 - cut_site > filter_bp)
+                        {
+                            return Ok(());
+                        }
+                    }
+                }
+            }
         }
 
         let paired = (record.flags & 0x1) != 0;
@@ -3995,5 +3995,102 @@ mod tests {
         );
         let rdel = parser.sv_structures.svrdel.first().unwrap();
         assert_eq!(rdel.disc, 0, "signed diff +150 > MIN_D(75) must not bump");
+    }
+
+    #[test]
+    fn crispr_filter_uses_1based_start_without_extra_offset() {
+        // ports CigarParser.java:288, 292-318, 634-646:
+        // 1. `start` is already the 1-based alignment start (`position`), so
+        //    `skipSitesOutRegionOfInterest` evaluates
+        //    `cutSite - start > filterBp && start + rlen3 - cutSite > filterBp`
+        //    without adding an extra +1 to `start`.
+        // 2. `rlen3` uses `ALIGNED_LENGTH_MD` (`[MD]` only, excluding `N`/Skip).
+        // 3. The filter runs after `maxReadLength` is updated (:309-318).
+        let mut reference = Reference::new();
+        reference
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 1,
+                sequence_end: 100,
+            });
+        reference
+            .reference_sequences
+            .insert("chr1".to_string(), vec![b'A'; 100]);
+
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(1),
+            end: Pos1(100),
+            gene: "T".to_string(),
+            amplicon: None,
+        };
+        let mut config = Config::default();
+        config.realign = 0;
+        config.crispr_cutting_site = Some(50);
+        config.crispr_flanking_size = Some(10);
+
+        // Case 1: start = 39, rlen3 = 30.
+        // Java: cutSite - start = 50 - 39 = 11 > 10 (true)
+        //       start + rlen3 - cutSite = 39 + 30 - 50 = 19 > 10 (true) -> ACCEPTED.
+        // Buggy +1 offset gives 50 - 40 = 10 > 10 (false) -> REJECTED.
+        let mut parser_accept = CigarParser::new(&reference, &region, &config, false, 0, 0, 0);
+        let read_accept = SamRecord {
+            name: b"read_accept".to_vec(),
+            flags: 0,
+            reference_name: Some("chr1".to_string()),
+            alignment_start: Some(Pos1(39)),
+            alignment_end: Some(Pos1(68)),
+            mapping_quality: Some(60),
+            cigar: vec![(30, CigarKind::Match)],
+            sequence: vec![b'A'; 30],
+            quality_scores: vec![60; 30],
+            mate_reference_name: None,
+            mate_alignment_start: None,
+            template_length: 0,
+            nm: Some(0),
+            sa: None,
+            mc: None,
+            mq: None,
+        };
+        parser_accept.parse_cigar(&read_accept).unwrap();
+        assert_eq!(
+            parser_accept.ref_coverage.get(&39),
+            Some(&1),
+            "read at 1-based start=39 satisfies 50 - 39 > 10 and must be kept"
+        );
+
+        // Case 2: start = 30, rlen3 = 30.
+        // Java: start + rlen3 - cutSite = 30 + 30 - 50 = 10 > 10 (false) -> SKIPPED,
+        //       but maxReadLength is updated before skipSitesOutRegionOfInterest (:309-318).
+        // Buggy +1 offset gives 31 + 30 - 50 = 11 > 10 (true) -> ACCEPTED.
+        let mut parser_reject = CigarParser::new(&reference, &region, &config, false, 0, 0, 0);
+        let read_reject = SamRecord {
+            name: b"read_reject".to_vec(),
+            flags: 0,
+            reference_name: Some("chr1".to_string()),
+            alignment_start: Some(Pos1(30)),
+            alignment_end: Some(Pos1(59)),
+            mapping_quality: Some(60),
+            cigar: vec![(30, CigarKind::Match)],
+            sequence: vec![b'A'; 30],
+            quality_scores: vec![60; 30],
+            mate_reference_name: None,
+            mate_alignment_start: None,
+            template_length: 0,
+            nm: Some(0),
+            sa: None,
+            mc: None,
+            mq: None,
+        };
+        parser_reject.parse_cigar(&read_reject).unwrap();
+        assert!(
+            parser_reject.ref_coverage.is_empty(),
+            "read at 1-based start=30 has 30 + 30 - 50 == 10 (not > 10) and must be skipped"
+        );
+        assert_eq!(
+            parser_reject.max_read_length, 30,
+            "CigarParser.java:309-318 updates maxReadLength before skipSitesOutRegionOfInterest"
+        );
     }
 }
