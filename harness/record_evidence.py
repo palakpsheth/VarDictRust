@@ -17,8 +17,9 @@ cmp_txt = (keep / "compare.txt").read_text() if keep and (keep / "compare.txt").
 m = re.search(r"^MATCH \((\d+) variants\)", cmp_txt, re.M)
 extra_in = json.loads((keep / "extra.json").read_text()) if keep and (keep / "extra.json").exists() else None
 cpp_tv = tv("cpp.time")
+PRE_EXEC_SKIP = ("disabled via CPP_SKIP", "conda not on PATH", "vardictcpp not available", "vardictcpp unavailable")
 skip_r = str((extra_in or {}).get("cpp_skip_reason") or "") if isinstance(extra_in, dict) else ""
-if cpp_tv and (cpp_tv.get("exit") != "0" or skip_r.startswith(("disabled via CPP_SKIP", "conda not on PATH", "vardictcpp not available", "vardictcpp unavailable", "engine failure"))):
+if cpp_tv and (cpp_tv.get("exit") != "0" or skip_r.startswith((*PRE_EXEC_SKIP, "engine failure"))):
     cpp_tv = None
 rec = {"name": name, "result": result, "n_variants": int(m.group(1)) if m else None,
        "fingerprint": subprocess.check_output(["bash", "harness/engine_fingerprint.sh"], text=True).strip(),
@@ -28,7 +29,12 @@ rec = {"name": name, "result": result, "n_variants": int(m.group(1)) if m else N
        "cpp_time": cpp_tv,
        "compare_head": cmp_txt.splitlines()[:25]}
 if extra_in is not None: rec["extra"] = extra_in
-if keep is not None and (keep / "compare_cpp.txt").exists():
+if skip_r.startswith(PRE_EXEC_SKIP):
+    extra = rec.get("extra")
+    if not isinstance(extra, dict):
+        extra = rec["extra"] = {}
+    extra["cpp_head"] = [f"CPP: SKIP: {skip_r}"]
+elif keep is not None and (keep / "compare_cpp.txt").exists():
     cpp_head = (keep / "compare_cpp.txt").read_text().splitlines()[:5]
     extra = rec.get("extra")
     if not isinstance(extra, dict):

@@ -139,8 +139,8 @@ fn cram_worker_stack_thresholds() {
     // exit code and the runtime prints "overflowed its stack" to stderr.
     #[cfg(unix)]
     assert!(
-        (died.status.code().is_none()
-            || String::from_utf8_lossy(&died.stderr).contains("overflowed its stack"))
+        died.status.code().is_none()
+            && String::from_utf8_lossy(&died.stderr).contains("overflowed its stack")
             && !String::from_utf8_lossy(&died.stderr).contains("tile-0 CRAM query"),
         "{small}B child failed for the wrong reason ({}): stdout={} stderr={}. Expected death-by-signal (stack overflow).",
         died.status,

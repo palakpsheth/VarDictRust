@@ -8,7 +8,9 @@ mkdir -p "$EVID_DIR"
 
 cleanup() {
   rm -f "$EVID_DIR/t-test-stale.json" "$EVID_DIR/t-test-badres.json" "$EVID_DIR/t-test.json" \
-        "$EVID_DIR/t-test-cpp-both.json" "$EVID_DIR/t-test-cpp-empty.json" "$EVID_DIR/t-test-cpp-ok.json"
+        "$EVID_DIR/t-test-cpp-both.json" "$EVID_DIR/t-test-cpp-empty.json" "$EVID_DIR/t-test-cpp-ok.json" \
+        "$EVID_DIR/t-test-reuse.json"
+  [ -n "${T_KEEP:-}" ] && rm -rf "$T_KEEP" || true
 }
 trap cleanup EXIT
 
@@ -132,6 +134,23 @@ else
     echo "FAIL: ev rejected newly recorded evidence t-test" >&2
     fail=1
   fi
+fi
+
+# 4. Verify record_evidence.py ignores stale compare_cpp.txt and cpp.time when extra.json has a pre-execution skip
+T_KEEP=$(mktemp -d)
+echo "MATCH (5 variants)" > "$T_KEEP/compare.txt"
+echo "CPP: MATCH (java==cpp, cpp==rust)" > "$T_KEEP/compare_cpp.txt"
+printf '\tElapsed (wall clock) time (h:mm:ss or m:ss): 0:01.00\n\tMaximum resident set size (kbytes): 1000\n\tExit status: 0\n' > "$T_KEEP/cpp.time"
+echo '{"cpp_skip_reason": "disabled via CPP_SKIP=1"}' > "$T_KEEP/extra.json"
+python3 harness/record_evidence.py t-test-reuse MATCH "$T_KEEP" -- true >/dev/null
+if ! python3 -c '
+import json
+d = json.load(open("benchmarks/evidence/t-test-reuse.json"))
+assert d["cpp_time"] is None, d["cpp_time"]
+assert d["extra"]["cpp_head"] == ["CPP: SKIP: disabled via CPP_SKIP=1"], d["extra"]
+'; then
+  echo "FAIL: record_evidence.py leaked stale compare_cpp.txt or cpp.time on KEEP_DIR reuse" >&2
+  fail=1
 fi
 
 if [ $fail -eq 0 ]; then

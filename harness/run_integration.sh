@@ -268,9 +268,18 @@ run_test() {
             local cpp_sample=${expected%%$'\n'*}
             cpp_sample=${cpp_sample%%$'\t'*}
             if [[ -z "$cpp_sample" ]]; then cpp_sample=$(basename "${bam_arg%%|*}" .bam); fi
-            local cpp_cmd="conda run -n vardict-oracle vardictcpp -z -c 1 -S 2 -E 3 -g 4 -G $fasta_path -b '$bam_arg' -N '$cpp_sample' $extra_flags '$tmpbed'"
+            local -a extra_argv=()
+            if [[ -n "$extra_flags" ]]; then
+                read -r -a extra_argv <<< "$extra_flags"
+            fi
+            local -a cpp_cmd=(
+                conda run -n vardict-oracle vardictcpp
+                -z -c 1 -S 2 -E 3 -g 4
+                -G "$fasta_path" -b "$bam_arg" -N "$cpp_sample"
+                "${extra_argv[@]}" "$tmpbed"
+            )
             local cpp_exit=0 cpp_out=""
-            cpp_out=$(eval $cpp_cmd 2>/dev/null) || cpp_exit=$?
+            cpp_out=$("${cpp_cmd[@]}" 2>/dev/null) || cpp_exit=$?
             if [[ $cpp_exit -ne 0 ]]; then
                 echo "CPP: SKIP: $basename_file (cpp engine exit $cpp_exit)"
             else
