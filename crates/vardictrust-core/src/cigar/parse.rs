@@ -126,17 +126,6 @@ impl<'a> CigarParser<'a> {
             return Ok(());
         }
 
-        if self.config.verbose {
-            eprintln!(
-                "DEBUG_READ: name={} start={} end={} flags={:#x} cigar={}",
-                String::from_utf8_lossy(&record.name),
-                read_start,
-                read_end - 1,
-                record.flags,
-                get_cigar_string(&record.cigar)
-            );
-        }
-
         // If supplementary alignment is present and flag filter is enabled, ignore it
         if self.config.flag_filter != 0 && (record.flags & 0x800) != 0 {
             return Ok(());
@@ -241,10 +230,6 @@ impl<'a> CigarParser<'a> {
                 }
             }
         }
-
-        // T046: cleanupCigar
-        let mut sv_cigar_elements = cigar_elements.clone();
-        cleanup_cigar(&mut sv_cigar_elements);
 
         // Determine discordant reads
         if get_mate_reference_name(record) != "=" {
@@ -672,15 +657,6 @@ impl<'a> CigarParser<'a> {
                             && !s.contains('N')
                             && !s.contains('n')
                         {
-                            if self.config.verbose && pos == 11291401 {
-                                eprintln!(
-                                    "DEBUG_VAR_ADD: pos={} s={} dir={} name={}",
-                                    pos,
-                                    s,
-                                    direction,
-                                    String::from_utf8_lossy(&record.name)
-                                );
-                            }
                             self.add_variation_for_matching_part(
                                 record.mapping_quality.unwrap_or(0) as i32,
                                 get_adjusted_nm(record),
@@ -3014,52 +2990,6 @@ pub fn get_match_insertion_length(cigar: &[(u32, CigarKind)]) -> u32 {
         .sum()
 }
 
-/// Ports `CigarParser.java:1530-1573`.
-pub fn cleanup_cigar(elements: &mut Vec<(u32, CigarKind)>) {
-    // 1. Process leading elements
-    let mut i = 0;
-    while i < elements.len() {
-        let (len, kind) = elements[i];
-        if consumes_both(kind) {
-            break;
-        }
-        if kind == CigarKind::Insertion {
-            elements[i] = (len, CigarKind::SoftClip);
-            i += 1;
-        } else if kind == CigarKind::HardClip {
-            elements.remove(i);
-        } else {
-            i += 1;
-        }
-    }
-
-    // 2. Process trailing elements
-    let mut i = elements.len();
-    while i > 0 {
-        let idx = i - 1;
-        let (len, kind) = elements[idx];
-        if consumes_both(kind) {
-            break;
-        }
-        if kind == CigarKind::Insertion {
-            elements[idx] = (len, CigarKind::SoftClip);
-            i = idx;
-        } else if kind == CigarKind::HardClip {
-            elements.remove(idx);
-            i = idx;
-        } else {
-            i = idx;
-        }
-    }
-}
-
-fn consumes_both(kind: CigarKind) -> bool {
-    matches!(
-        kind,
-        CigarKind::Match | CigarKind::SequenceMatch | CigarKind::SequenceMismatch
-    )
-}
-
 fn is_not_equals_n(ref_base: Option<u8>) -> bool {
     if let Some(b) = ref_base {
         b != b'N' && b != b'n'
@@ -3261,32 +3191,6 @@ mod tests {
         assert!(parser.parse_cigar(&record_pass).is_ok());
         assert_eq!(get_insertion_deletion_length(&record_pass.cigar), 0);
         assert_eq!(get_insertion_deletion_length(&record_indel_pass.cigar), 2);
-    }
-
-    #[test]
-    fn cleanup_cigar_test() {
-        let mut cigar1 = vec![
-            (5, CigarKind::HardClip),
-            (3, CigarKind::Insertion),
-            (10, CigarKind::Match),
-            (4, CigarKind::HardClip),
-        ];
-        cleanup_cigar(&mut cigar1);
-        assert_eq!(
-            cigar1,
-            vec![(3, CigarKind::SoftClip), (10, CigarKind::Match)]
-        );
-
-        let mut cigar2 = vec![
-            (10, CigarKind::Match),
-            (2, CigarKind::Insertion),
-            (5, CigarKind::HardClip),
-        ];
-        cleanup_cigar(&mut cigar2);
-        assert_eq!(
-            cigar2,
-            vec![(10, CigarKind::Match), (2, CigarKind::SoftClip)]
-        );
     }
 
     #[test]

@@ -212,66 +212,90 @@ impl<'a> CigarModifier<'a> {
     pub fn modify_cigar(&mut self) -> Result<ModifiedCigar, crate::types::VardictError> {
         //flag is set to true if CIGAR string is modified and should be looked at again
         let flag = true;
-        // Wrap implementation in safe checks matching Java try/catch.
-        // If anything fails, we fall back gracefully to the original state.
-        let orig_pos = self.position;
-        let orig_cigar = self.cigar_str.clone();
-        let orig_seq = self.query_seq.clone();
-        let orig_qual = self.query_qual.clone();
+        let this = &mut *self;
+        // 1. Strip leading deletion
+        if let Some(caps) = BEGIN_NUMBER_D.captures(&this.cigar_str) {
+            let dlen = to_int(caps.get(1).unwrap().as_str());
+            this.position += dlen;
+            this.cigar_str = BEGIN_NUMBER_D.replace(&this.cigar_str, "").into_owned();
+        }
+        // Strip trailing deletion
+        if END_NUMBER_D.is_match(&this.cigar_str) {
+            this.cigar_str = END_NUMBER_D.replace(&this.cigar_str, "").into_owned();
+        }
 
-        let run_modification = move |this: &mut Self| -> Result<(), crate::types::VardictError> {
-            // 1. Strip leading deletion
-            if let Some(caps) = BEGIN_NUMBER_D.captures(&this.cigar_str) {
-                let dlen = to_int(caps.get(1).unwrap().as_str());
-                this.position += dlen;
-                this.cigar_str = BEGIN_NUMBER_D.replace(&this.cigar_str, "").into_owned();
-            }
-            // Strip trailing deletion
-            if END_NUMBER_D.is_match(&this.cigar_str) {
-                this.cigar_str = END_NUMBER_D.replace(&this.cigar_str, "").into_owned();
-            }
+        // 2. Replace leading insertion with soft clip
+        if let Some(caps) = BEGIN_NUMBER_I.captures(&this.cigar_str) {
+            let ilen = to_int(caps.get(1).unwrap().as_str());
+            this.cigar_str = BEGIN_NUMBER_I
+                .replace(&this.cigar_str, &format!("{}S", ilen))
+                .into_owned();
+        }
+        // Replace trailing insertion with soft clip
+        if let Some(caps) = END_NUMBER_I.captures(&this.cigar_str) {
+            let ilen = to_int(caps.get(1).unwrap().as_str());
+            this.cigar_str = END_NUMBER_I
+                .replace(&this.cigar_str, &format!("{}S", ilen))
+                .into_owned();
+        }
 
-            // 2. Replace leading insertion with soft clip
-            if let Some(caps) = BEGIN_NUMBER_I.captures(&this.cigar_str) {
-                let ilen = to_int(caps.get(1).unwrap().as_str());
-                this.cigar_str = BEGIN_NUMBER_I
-                    .replace(&this.cigar_str, &format!("{}S", ilen))
-                    .into_owned();
-            }
-            // Replace trailing insertion with soft clip
-            if let Some(caps) = END_NUMBER_I.captures(&this.cigar_str) {
-                let ilen = to_int(caps.get(1).unwrap().as_str());
-                this.cigar_str = END_NUMBER_I
-                    .replace(&this.cigar_str, &format!("{}S", ilen))
-                    .into_owned();
-            }
+        // 3. Chimeric soft-clip detection
+        let sc5_opt = SA_CIGAR_D_S_5CLIP_GROUP.captures(&this.cigar_str);
+        let sc3_opt = SA_CIGAR_D_S_3CLIP_GROUP.captures(&this.cigar_str);
 
-            // 3. Chimeric soft-clip detection
-            let sc5_opt = SA_CIGAR_D_S_5CLIP_GROUP.captures(&this.cigar_str);
-            let sc3_opt = SA_CIGAR_D_S_3CLIP_GROUP.captures(&this.cigar_str);
-
-            if let Some(caps) = sc5_opt {
-                let cigar_element = to_int(caps.get(1).unwrap().as_str()) as usize;
-                if !this.config.chimeric && cigar_element >= SEED_2 {
-                    if let Some(sseq) = subseq(&this.query_seq, 0, cigar_element) {
+        if let Some(caps) = sc5_opt {
+            let cigar_element = to_int(caps.get(1).unwrap().as_str()) as usize;
+            if !this.config.chimeric && cigar_element >= SEED_2 {
+                if let Some(sseq) = subseq(&this.query_seq, 0, cigar_element) {
+                    let sequence = rc_seq(sseq);
+                    if sequence.len() >= SEED_2 {
+                        let rc_seed = &sequence[0..SEED_2];
+                        if let Some(positions) = this.seed.get(rc_seed) {
+                            if positions.len() == 1 {
+                                let ref_pos = positions[0] as i32;
+                                if (this.position - ref_pos).abs() < 2 * this.max_read_length {
+                                    this.cigar_str =
+                                        RE_START_S.replace(&this.cigar_str, "").into_owned();
+                                    if this.query_seq.len() >= cigar_element {
+                                        this.query_seq = this.query_seq[cigar_element..].to_vec();
+                                        this.query_qual = this.query_qual[cigar_element..].to_vec();
+                                    }
+                                    if this.config.verbose {
+                                        eprintln!(
+                                            "{} at 5' is a chimeric at {} by SEED {}",
+                                            String::from_utf8_lossy(&sequence),
+                                            this.position,
+                                            SEED_2
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } else if let Some(caps) = sc3_opt {
+            let cigar_element = to_int(caps.get(1).unwrap().as_str()) as usize;
+            if !this.config.chimeric && cigar_element >= SEED_2 {
+                let seq_len = this.query_seq.len();
+                if seq_len >= cigar_element {
+                    let start_idx = seq_len - cigar_element;
+                    if let Some(sseq) = subseq(&this.query_seq, start_idx, cigar_element) {
                         let sequence = rc_seq(sseq);
                         if sequence.len() >= SEED_2 {
-                            let rc_seed = &sequence[0..SEED_2];
+                            let start_seed = sequence.len() - SEED_2;
+                            let rc_seed = &sequence[start_seed..];
                             if let Some(positions) = this.seed.get(rc_seed) {
                                 if positions.len() == 1 {
                                     let ref_pos = positions[0] as i32;
                                     if (this.position - ref_pos).abs() < 2 * this.max_read_length {
                                         this.cigar_str =
-                                            RE_START_S.replace(&this.cigar_str, "").into_owned();
-                                        if this.query_seq.len() >= cigar_element {
-                                            this.query_seq =
-                                                this.query_seq[cigar_element..].to_vec();
-                                            this.query_qual =
-                                                this.query_qual[cigar_element..].to_vec();
-                                        }
+                                            RE_END_2S.replace(&this.cigar_str, "").into_owned();
+                                        this.query_seq = this.query_seq[0..start_idx].to_vec();
+                                        this.query_qual = this.query_qual[0..start_idx].to_vec();
                                         if this.config.verbose {
                                             eprintln!(
-                                                "{} at 5' is a chimeric at {} by SEED {}",
+                                                "{} at 3' is a chimeric at {} by SEED {}",
                                                 String::from_utf8_lossy(&sequence),
                                                 this.position,
                                                 SEED_2
@@ -283,263 +307,209 @@ impl<'a> CigarModifier<'a> {
                         }
                     }
                 }
-            } else if let Some(caps) = sc3_opt {
-                let cigar_element = to_int(caps.get(1).unwrap().as_str()) as usize;
-                if !this.config.chimeric && cigar_element >= SEED_2 {
-                    let seq_len = this.query_seq.len();
-                    if seq_len >= cigar_element {
-                        let start_idx = seq_len - cigar_element;
-                        if let Some(sseq) = subseq(&this.query_seq, start_idx, cigar_element) {
-                            let sequence = rc_seq(sseq);
-                            if sequence.len() >= SEED_2 {
-                                let start_seed = sequence.len() - SEED_2;
-                                let rc_seed = &sequence[start_seed..];
-                                if let Some(positions) = this.seed.get(rc_seed) {
-                                    if positions.len() == 1 {
-                                        let ref_pos = positions[0] as i32;
-                                        if (this.position - ref_pos).abs()
-                                            < 2 * this.max_read_length
-                                        {
-                                            this.cigar_str =
-                                                RE_END_2S.replace(&this.cigar_str, "").into_owned();
-                                            this.query_seq = this.query_seq[0..start_idx].to_vec();
-                                            this.query_qual =
-                                                this.query_qual[0..start_idx].to_vec();
-                                            if this.config.verbose {
-                                                eprintln!(
-                                                    "{} at 3' is a chimeric at {} by SEED {}",
-                                                    String::from_utf8_lossy(&sequence),
-                                                    this.position,
-                                                    SEED_2
-                                                );
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
+            }
+        }
+
+        // 4. Main indel simplification loop
+        let mut flag_loop = flag;
+        let mut iter_count = 0;
+        while flag_loop && this.indel > 0 {
+            iter_count += 1;
+            if iter_count > 100 {
+                log::warn!(
+                    "Infinite loop check triggered in modify_cigar! CIGAR: {}",
+                    this.cigar_str
+                );
+                break;
+            }
+            flag_loop = false;
+
+            // S followed by I/D
+            if let Some(caps) = BEGIN_NUMBER_S_NUMBER_IOR_D.captures(&this.cigar_str) {
+                let g1 = to_int(caps.get(1).unwrap().as_str());
+                let g2 = to_int(caps.get(2).unwrap().as_str());
+                let op = caps.get(3).unwrap().as_str();
+                let tslen = format!("{}S", g1 + if op == "I" { g2 } else { 0 });
+                this.position += if op == "D" { g2 } else { 0 };
+                this.cigar_str = BEGIN_NUMBER_S_NUMBER_IOR_D
+                    .replace(&this.cigar_str, &tslen)
+                    .into_owned();
+                flag_loop = true;
+            }
+
+            // I/D followed by S
+            if let Some(caps) = NUMBER_IOR_D_NUMBER_S_END.captures(&this.cigar_str) {
+                let g1 = to_int(caps.get(1).unwrap().as_str());
+                let op = caps.get(2).unwrap().as_str();
+                let g3 = to_int(caps.get(3).unwrap().as_str());
+                let tslen = format!("{}S", g3 + if op == "I" { g1 } else { 0 });
+                this.cigar_str = NUMBER_IOR_D_NUMBER_S_END
+                    .replace(&this.cigar_str, &tslen)
+                    .into_owned();
+                flag_loop = true;
+            }
+
+            // S-M(<=10)-I/D
+            if let Some(caps) = BEGIN_NUMBER_S_NUMBER_M_NUMBER_IOR_D.captures(&this.cigar_str) {
+                let tmid = to_int(caps.get(2).unwrap().as_str());
+                if tmid <= 10 {
+                    let g1 = to_int(caps.get(1).unwrap().as_str());
+                    let g3 = to_int(caps.get(3).unwrap().as_str());
+                    let op = caps.get(4).unwrap().as_str();
+                    let tslen = format!("{}S", g1 + tmid + if op == "I" { g3 } else { 0 });
+                    this.position += tmid + if op == "D" { g3 } else { 0 };
+                    this.cigar_str = BEGIN_NUMBER_S_NUMBER_M_NUMBER_IOR_D
+                        .replace(&this.cigar_str, &tslen)
+                        .into_owned();
+                    flag_loop = true;
                 }
             }
 
-            // 4. Main indel simplification loop
-            let mut flag_loop = flag;
-            let mut iter_count = 0;
-            while flag_loop && this.indel > 0 {
-                iter_count += 1;
-                if iter_count > 100 {
-                    log::warn!(
-                        "Infinite loop check triggered in modify_cigar! CIGAR: {}",
-                        this.cigar_str
-                    );
-                    break;
-                }
-                flag_loop = false;
-
-                // S followed by I/D
-                if let Some(caps) = BEGIN_NUMBER_S_NUMBER_IOR_D.captures(&this.cigar_str) {
-                    let g1 = to_int(caps.get(1).unwrap().as_str());
-                    let g2 = to_int(caps.get(2).unwrap().as_str());
-                    let op = caps.get(3).unwrap().as_str();
-                    let tslen = format!("{}S", g1 + if op == "I" { g2 } else { 0 });
-                    this.position += if op == "D" { g2 } else { 0 };
-                    this.cigar_str = BEGIN_NUMBER_S_NUMBER_IOR_D
-                        .replace(&this.cigar_str, &tslen)
-                        .into_owned();
-                    flag_loop = true;
-                }
-
-                // I/D followed by S
-                if let Some(caps) = NUMBER_IOR_D_NUMBER_S_END.captures(&this.cigar_str) {
+            // I/D-M(<=10)-S
+            if let Some(caps) = NUMBER_IOR_D_NUMBER_M_NUMBER_S_END.captures(&this.cigar_str) {
+                let tmid = to_int(caps.get(3).unwrap().as_str());
+                if tmid <= 10 {
                     let g1 = to_int(caps.get(1).unwrap().as_str());
                     let op = caps.get(2).unwrap().as_str();
-                    let g3 = to_int(caps.get(3).unwrap().as_str());
-                    let tslen = format!("{}S", g3 + if op == "I" { g1 } else { 0 });
-                    this.cigar_str = NUMBER_IOR_D_NUMBER_S_END
+                    let g4 = to_int(caps.get(4).unwrap().as_str());
+                    let tslen = format!("{}S", g4 + tmid + if op == "I" { g1 } else { 0 });
+                    this.cigar_str = NUMBER_IOR_D_NUMBER_M_NUMBER_S_END
                         .replace(&this.cigar_str, &tslen)
                         .into_owned();
                     flag_loop = true;
                 }
+            }
 
-                // S-M(<=10)-I/D
-                if let Some(caps) = BEGIN_NUMBER_S_NUMBER_M_NUMBER_IOR_D.captures(&this.cigar_str) {
-                    let tmid = to_int(caps.get(2).unwrap().as_str());
-                    if tmid <= 10 {
-                        let g1 = to_int(caps.get(1).unwrap().as_str());
-                        let g3 = to_int(caps.get(3).unwrap().as_str());
-                        let op = caps.get(4).unwrap().as_str();
-                        let tslen = format!("{}S", g1 + tmid + if op == "I" { g3 } else { 0 });
-                        this.position += tmid + if op == "D" { g3 } else { 0 };
-                        this.cigar_str = BEGIN_NUMBER_S_NUMBER_M_NUMBER_IOR_D
-                            .replace(&this.cigar_str, &tslen)
-                            .into_owned();
-                        flag_loop = true;
-                    }
-                }
+            // Single-digit M at start with I/D
+            if let Some(caps) = BEGIN_DIGIT_M_NUMBER_IOR_D_NUMBER_M.captures(&this.cigar_str) {
+                let tmid = to_int(caps.get(1).unwrap().as_str());
+                let mlen = to_int(caps.get(4).unwrap().as_str());
+                let op = caps.get(3).unwrap().as_str().to_string();
+                let g2 = to_int(caps.get(2).unwrap().as_str());
+                flag_loop = this.begin_digit_m_number_ior_d_number_m(tmid, mlen, &op, g2);
+            }
 
-                // I/D-M(<=10)-S
-                if let Some(caps) = NUMBER_IOR_D_NUMBER_M_NUMBER_S_END.captures(&this.cigar_str) {
-                    let tmid = to_int(caps.get(3).unwrap().as_str());
-                    if tmid <= 10 {
-                        let g1 = to_int(caps.get(1).unwrap().as_str());
-                        let op = caps.get(2).unwrap().as_str();
-                        let g4 = to_int(caps.get(4).unwrap().as_str());
-                        let tslen = format!("{}S", g4 + tmid + if op == "I" { g1 } else { 0 });
-                        this.cigar_str = NUMBER_IOR_D_NUMBER_M_NUMBER_S_END
-                            .replace(&this.cigar_str, &tslen)
-                            .into_owned();
-                        flag_loop = true;
-                    }
-                }
+            // Single-digit M at end with I/D
+            if let Some(caps) = NUMBER_IOR_D_DIGIT_M_END.captures(&this.cigar_str) {
+                let tmid = to_int(caps.get(3).unwrap().as_str());
+                let op = caps.get(2).unwrap().as_str();
+                let g1 = to_int(caps.get(1).unwrap().as_str());
+                let tslen = format!("{}S", tmid + if op == "I" { g1 } else { 0 });
+                this.cigar_str = NUMBER_IOR_D_NUMBER_M_END
+                    .replace(&this.cigar_str, &tslen)
+                    .into_owned();
+                flag_loop = true;
+            }
 
-                // Single-digit M at start with I/D
-                if let Some(caps) = BEGIN_DIGIT_M_NUMBER_IOR_D_NUMBER_M.captures(&this.cigar_str) {
-                    let tmid = to_int(caps.get(1).unwrap().as_str());
-                    let mlen = to_int(caps.get(4).unwrap().as_str());
-                    let op = caps.get(3).unwrap().as_str().to_string();
-                    let g2 = to_int(caps.get(2).unwrap().as_str());
-                    flag_loop = this.begin_digit_m_number_ior_d_number_m(tmid, mlen, &op, g2);
-                }
+            // Combine close deletions/insertions into complex
+            if let Some(caps) = D_M_D_DD_M_D_I_D_M_D_DD.captures(&this.cigar_str) {
+                let ov5 = caps.get(1).map_or("", |m| m.as_str()).to_string();
+                let g2 = to_int(caps.get(2).unwrap().as_str());
+                let g3 = to_int(caps.get(3).unwrap().as_str());
+                let g4 = to_int(caps.get(4).unwrap().as_str());
+                let g5 = to_int(caps.get(5).unwrap().as_str());
+                let g6 = to_int(caps.get(6).unwrap().as_str());
+                let g7 = to_int(caps.get(7).unwrap().as_str());
+                let g8 = to_int(caps.get(8).unwrap().as_str());
+                flag_loop = this.two_deletions_insertion_to_complex(
+                    &ov5, g2, g3, g4, g5, g6, g7, g8, flag_loop,
+                );
+            } else if let Some(caps) = THREE_DELETIONS_PATTERN.captures(&this.cigar_str) {
+                let ov5 = caps.get(1).map_or("", |m| m.as_str()).to_string();
+                let g2 = to_int(caps.get(2).unwrap().as_str());
+                let g3 = to_int(caps.get(3).unwrap().as_str());
+                let g4 = to_int(caps.get(4).unwrap().as_str());
+                let g5 = to_int(caps.get(5).unwrap().as_str());
+                let g6 = to_int(caps.get(6).unwrap().as_str());
+                let g7 = to_int(caps.get(7).unwrap().as_str());
+                let g8 = to_int(caps.get(8).unwrap().as_str());
+                flag_loop = this.three_deletions(&ov5, g2, g3, g4, g5, g6, g7, g8, flag_loop);
+            } else if let Some(caps) = THREE_INDELS_PATTERN.captures(&this.cigar_str) {
+                let ov5 = caps.get(1).map_or("", |m| m.as_str()).to_string();
+                let g2 = to_int(caps.get(2).unwrap().as_str());
+                let g3 = to_int(caps.get(3).unwrap().as_str());
+                let op1 = caps.get(4).unwrap().as_str().to_string();
+                let g5 = to_int(caps.get(5).unwrap().as_str());
+                let g6 = to_int(caps.get(6).unwrap().as_str());
+                let op2 = caps.get(7).unwrap().as_str().to_string();
+                let g8 = to_int(caps.get(8).unwrap().as_str());
+                let g9 = to_int(caps.get(9).unwrap().as_str());
+                let op3 = caps.get(10).unwrap().as_str().to_string();
+                let g11 = to_int(caps.get(11).unwrap().as_str());
+                flag_loop = this.three_indels(
+                    &ov5, g2, g3, &op1, g5, g6, &op2, g8, g9, &op3, g11, flag_loop,
+                );
+            }
 
-                // Single-digit M at end with I/D
-                if let Some(caps) = NUMBER_IOR_D_DIGIT_M_END.captures(&this.cigar_str) {
-                    let tmid = to_int(caps.get(3).unwrap().as_str());
-                    let op = caps.get(2).unwrap().as_str();
-                    let g1 = to_int(caps.get(1).unwrap().as_str());
-                    let tslen = format!("{}S", tmid + if op == "I" { g1 } else { 0 });
-                    this.cigar_str = NUMBER_IOR_D_NUMBER_M_END
-                        .replace(&this.cigar_str, &tslen)
-                        .into_owned();
-                    flag_loop = true;
-                }
+            if let Some(caps) = DIG_D_DIG_M_DIG_DI_DIGI.captures(&this.cigar_str) {
+                let g1 = to_int(caps.get(1).unwrap().as_str());
+                let g2 = to_int(caps.get(2).unwrap().as_str());
+                let g3 = to_int(caps.get(3).unwrap().as_str());
+                let op = caps.get(4).unwrap().as_str().to_string();
+                let istr = caps.get(5).map(|m| m.as_str().to_string());
+                flag_loop =
+                    this.combine_to_close_to_correct(g1, g2, g3, &op, istr.as_deref(), flag_loop);
+            }
 
-                // Combine close deletions/insertions into complex
-                if let Some(caps) = D_M_D_DD_M_D_I_D_M_D_DD.captures(&this.cigar_str) {
-                    let ov5 = caps.get(1).map_or("", |m| m.as_str()).to_string();
+            if let Some(caps) = NOTDIG_DIG_I_DIG_M_DIG_DI_DIGI.captures(&this.cigar_str) {
+                let op_prefix = caps.get(1).unwrap().as_str().to_string();
+                if op_prefix != "D" && op_prefix != "H" {
                     let g2 = to_int(caps.get(2).unwrap().as_str());
                     let g3 = to_int(caps.get(3).unwrap().as_str());
                     let g4 = to_int(caps.get(4).unwrap().as_str());
-                    let g5 = to_int(caps.get(5).unwrap().as_str());
-                    let g6 = to_int(caps.get(6).unwrap().as_str());
-                    let g7 = to_int(caps.get(7).unwrap().as_str());
-                    let g8 = to_int(caps.get(8).unwrap().as_str());
-                    flag_loop = this.two_deletions_insertion_to_complex(
-                        &ov5, g2, g3, g4, g5, g6, g7, g8, flag_loop,
-                    );
-                } else if let Some(caps) = THREE_DELETIONS_PATTERN.captures(&this.cigar_str) {
-                    let ov5 = caps.get(1).map_or("", |m| m.as_str()).to_string();
-                    let g2 = to_int(caps.get(2).unwrap().as_str());
-                    let g3 = to_int(caps.get(3).unwrap().as_str());
-                    let g4 = to_int(caps.get(4).unwrap().as_str());
-                    let g5 = to_int(caps.get(5).unwrap().as_str());
-                    let g6 = to_int(caps.get(6).unwrap().as_str());
-                    let g7 = to_int(caps.get(7).unwrap().as_str());
-                    let g8 = to_int(caps.get(8).unwrap().as_str());
-                    flag_loop = this.three_deletions(&ov5, g2, g3, g4, g5, g6, g7, g8, flag_loop);
-                } else if let Some(caps) = THREE_INDELS_PATTERN.captures(&this.cigar_str) {
-                    let ov5 = caps.get(1).map_or("", |m| m.as_str()).to_string();
-                    let g2 = to_int(caps.get(2).unwrap().as_str());
-                    let g3 = to_int(caps.get(3).unwrap().as_str());
-                    let op1 = caps.get(4).unwrap().as_str().to_string();
-                    let g5 = to_int(caps.get(5).unwrap().as_str());
-                    let g6 = to_int(caps.get(6).unwrap().as_str());
-                    let op2 = caps.get(7).unwrap().as_str().to_string();
-                    let g8 = to_int(caps.get(8).unwrap().as_str());
-                    let g9 = to_int(caps.get(9).unwrap().as_str());
-                    let op3 = caps.get(10).unwrap().as_str().to_string();
-                    let g11 = to_int(caps.get(11).unwrap().as_str());
-                    flag_loop = this.three_indels(
-                        &ov5, g2, g3, &op1, g5, g6, &op2, g8, g9, &op3, g11, flag_loop,
-                    );
-                }
-
-                if let Some(caps) = DIG_D_DIG_M_DIG_DI_DIGI.captures(&this.cigar_str) {
-                    let g1 = to_int(caps.get(1).unwrap().as_str());
-                    let g2 = to_int(caps.get(2).unwrap().as_str());
-                    let g3 = to_int(caps.get(3).unwrap().as_str());
-                    let op = caps.get(4).unwrap().as_str().to_string();
-                    let istr = caps.get(5).map(|m| m.as_str().to_string());
-                    flag_loop = this.combine_to_close_to_correct(
-                        g1,
+                    let op = caps.get(5).unwrap().as_str().to_string();
+                    let istr = caps.get(6).map(|m| m.as_str().to_string());
+                    flag_loop = this.combine_to_close_to_one(
+                        &op_prefix,
                         g2,
                         g3,
+                        g4,
                         &op,
                         istr.as_deref(),
                         flag_loop,
                     );
                 }
-
-                if let Some(caps) = NOTDIG_DIG_I_DIG_M_DIG_DI_DIGI.captures(&this.cigar_str) {
-                    let op_prefix = caps.get(1).unwrap().as_str().to_string();
-                    if op_prefix != "D" && op_prefix != "H" {
-                        let g2 = to_int(caps.get(2).unwrap().as_str());
-                        let g3 = to_int(caps.get(3).unwrap().as_str());
-                        let g4 = to_int(caps.get(4).unwrap().as_str());
-                        let op = caps.get(5).unwrap().as_str().to_string();
-                        let istr = caps.get(6).map(|m| m.as_str().to_string());
-                        flag_loop = this.combine_to_close_to_one(
-                            &op_prefix,
-                            g2,
-                            g3,
-                            g4,
-                            &op,
-                            istr.as_deref(),
-                            flag_loop,
-                        );
-                    }
-                }
-
-                if let Some(caps) = DIG_D_DIG_D.captures(&this.cigar_str) {
-                    let dlen = to_int(caps.get(1).unwrap().as_str())
-                        + to_int(caps.get(2).unwrap().as_str());
-                    this.cigar_str = DIG_D_DIG_D
-                        .replace(&this.cigar_str, &format!("{}D", dlen))
-                        .into_owned();
-                    flag_loop = true;
-                }
-
-                if let Some(caps) = DIG_I_DIG_I.captures(&this.cigar_str) {
-                    let ilen = to_int(caps.get(1).unwrap().as_str())
-                        + to_int(caps.get(2).unwrap().as_str());
-                    this.cigar_str = DIG_I_DIG_I
-                        .replace(&this.cigar_str, &format!("{}I", ilen))
-                        .into_owned();
-                    flag_loop = true;
-                }
             }
 
-            // End-of-read mismatch -> soft-clip
-            if let Some(caps) = ANY_NUMBER_M_NUMBER_S_END.captures(&this.cigar_str) {
-                let ov5 = caps.get(1).map_or("", |m| m.as_str()).to_string();
-                let mch = to_int(caps.get(2).unwrap().as_str());
-                let soft = to_int(caps.get(3).unwrap().as_str());
-                this.capture_mis_softly_ms(&ov5, mch, soft);
-            } else if let Some(caps) = BEGIN_ANY_DIG_M_END.captures(&this.cigar_str) {
-                let ov5 = caps.get(1).map_or("", |m| m.as_str()).to_string();
-                let mch = to_int(caps.get(2).unwrap().as_str());
-                this.capture_mis_softly_3mismatches(&ov5, mch);
+            if let Some(caps) = DIG_D_DIG_D.captures(&this.cigar_str) {
+                let dlen =
+                    to_int(caps.get(1).unwrap().as_str()) + to_int(caps.get(2).unwrap().as_str());
+                this.cigar_str = DIG_D_DIG_D
+                    .replace(&this.cigar_str, &format!("{}D", dlen))
+                    .into_owned();
+                flag_loop = true;
             }
 
-            // Start-of-read soft-clip recovery
-            if let Some(caps) = DIG_S_DIG_M.captures(&this.cigar_str) {
-                let soft = to_int(caps.get(1).unwrap().as_str());
-                let mch = to_int(caps.get(2).unwrap().as_str());
-                this.combine_dig_s_dig_m(soft, mch);
-            } else if let Some(caps) = BEGIN_DIG_M.captures(&this.cigar_str) {
-                let mch = to_int(caps.get(1).unwrap().as_str());
-                this.combine_begin_dig_m(mch);
+            if let Some(caps) = DIG_I_DIG_I.captures(&this.cigar_str) {
+                let ilen =
+                    to_int(caps.get(1).unwrap().as_str()) + to_int(caps.get(2).unwrap().as_str());
+                this.cigar_str = DIG_I_DIG_I
+                    .replace(&this.cigar_str, &format!("{}I", ilen))
+                    .into_owned();
+                flag_loop = true;
             }
+        }
 
-            Ok(())
-        };
+        // End-of-read mismatch -> soft-clip
+        if let Some(caps) = ANY_NUMBER_M_NUMBER_S_END.captures(&this.cigar_str) {
+            let ov5 = caps.get(1).map_or("", |m| m.as_str()).to_string();
+            let mch = to_int(caps.get(2).unwrap().as_str());
+            let soft = to_int(caps.get(3).unwrap().as_str());
+            this.capture_mis_softly_ms(&ov5, mch, soft);
+        } else if let Some(caps) = BEGIN_ANY_DIG_M_END.captures(&this.cigar_str) {
+            let ov5 = caps.get(1).map_or("", |m| m.as_str()).to_string();
+            let mch = to_int(caps.get(2).unwrap().as_str());
+            this.capture_mis_softly_3mismatches(&ov5, mch);
+        }
 
-        if let Err(e) = run_modification(self) {
-            // Restore original state
-            self.position = orig_pos;
-            self.cigar_str = orig_cigar;
-            self.query_seq = orig_seq;
-            self.query_qual = orig_qual;
-            log::warn!("CigarModifier exception (restored original state): {}", e);
+        // Start-of-read soft-clip recovery
+        if let Some(caps) = DIG_S_DIG_M.captures(&this.cigar_str) {
+            let soft = to_int(caps.get(1).unwrap().as_str());
+            let mch = to_int(caps.get(2).unwrap().as_str());
+            this.combine_dig_s_dig_m(soft, mch);
+        } else if let Some(caps) = BEGIN_DIG_M.captures(&this.cigar_str) {
+            let mch = to_int(caps.get(1).unwrap().as_str());
+            this.combine_begin_dig_m(mch);
         }
 
         // ports CigarModifier.java:619-791, CigarParser.java:278
