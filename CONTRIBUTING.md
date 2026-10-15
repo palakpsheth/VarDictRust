@@ -206,10 +206,10 @@ Before submitting a pull request, run the comprehensive 6-stage PR validation su
 bash harness/pr_check.sh
 ```
 This suite automatically verifies:
-1. **Stage 1 (Hygiene & Unit Tests):** Formatting, Clippy lints, and all 188 core and workspace unit tests ([Level 1](docs/testing/test-matrix-and-ci-audit.md#level-1-unit--component-tests-208-total)).
+1. **Stage 1 (Hygiene & Unit Tests):** Formatting, Clippy lints, and all 230 workspace unit and integration tests ([Level 1](docs/testing/test-matrix-and-ci-audit.md#level-1)).
 2. **Stage 2 (Crash Robustness):** PR #402, missing index #187, and Issue #341 family fixtures.
 3. **Stage 3 (Upstream Integration Corpus):** 92 fixtures ([Level 2](docs/testing/test-matrix-and-ci-audit.md#level-2-upstream-integration-regression-corpus-92-fixtures)), asserting `91 PASS / 1 XFAIL` ([UB-4](docs/upstream-bugs.md#ub-4) upstream fixture defect).
-4. **Stage 4 (Dual-Engine Differential Parity):** Micro differential fixture and 9-modality extended coverage against the live VarDictJava oracle ([Level 3](docs/testing/test-matrix-and-ci-audit.md#level-3-dual-engine-differential-parity-testing)).
+4. **Stage 4 (Dual-Engine Differential Parity):** Micro differential fixture and 17-modality extended coverage against the live VarDictJava oracle ([Level 3](docs/testing/test-matrix-and-ci-audit.md#level-3-dual-engine-differential-parity-testing)).
 5. **Stage 5 (Performance & Memory Budgets):** 4-target regression budget via [`harness/perf_budget.py`](harness/perf_budget.py) ([Level 5](docs/testing/test-matrix-and-ci-audit.md#level-5-performance--memory-budgets)).
 6. **Stage 6 (Security Hygiene):** Staged and repository secret scanning with `gitleaks`.
 
@@ -222,7 +222,7 @@ This gate enforces the 8 acceptance criteria defined in [AGENTS.md §15](AGENTS.
 
 Additionally, contributors can execute the diagnostic self-test suite ([Level 6](docs/testing/test-matrix-and-ci-audit.md#level-6-diagnostic-self-tests)) at any time:
 ```bash
-bash harness/run_self_tests.sh   # Executes all 16 diagnostic test scripts in <10s
+bash harness/run_self_tests.sh   # Executes all 17 diagnostic test scripts in <10s
 ```
 
 *For the complete seven-level testing architecture, push-button reproduction commands, and dataset provenance catalog, see the Master Reproducibility Runbook in [`docs/testing/test-matrix-and-ci-audit.md`](docs/testing/test-matrix-and-ci-audit.md).*
@@ -272,16 +272,112 @@ Contributors must adhere to the following governance policies:
 
 ---
 
-## 9. Packaging & Bioconda Maintenance
+<a id="release-process"></a>
+## 9. Release Process & Packaging Runbook
 
-The official Bioconda recipe lives in `packaging/bioconda/recipes/vardictrust/`.
+Releases are executed through a disciplined **three-phase workflow** (Pre-Release PR → Annotated Tag & CI Release → Post-Tag Downstream Sync) governed by [`AGENTS.md §§0, 0b, 5, 15, 18`](AGENTS.md). Direct pushes to `main` are blocked by `.githooks/pre-push`.
 
-To validate the recipe locally:
+### 9.1 Release Policy & SemVer Governance
+- **`v1.0.x` Patch / Maintenance Releases:** Preserve pure byte-for-byte and floating-point parity ($\varepsilon = 10^{-6}$) with **VarDictJava v1.8.3** on valid inputs ([`AGENTS.md §5`](AGENTS.md#5-emulate-exactly-the-rewritesbio-prime-directive)). Allowed changes include crash/robustness fixes, harness/reproducibility additions, packaging, and documentation updates.
+- **`v1.1.0+` Feature & Opt-In Fix Releases:** Output-changing corrections to upstream VarDictJava bugs ship only behind explicit opt-in `--fix <id>` flags (default off) with a diff-confinement gate per [`ROADMAP.md`](ROADMAP.md).
+
+### 9.2 Phase 1 — Pre-Release Branch, Version Bump & Fingerprint Rule
+1. **Branch off fresh `origin/main`:**
+   ```bash
+   git fetch origin
+   git checkout -b release/vX.Y.Z origin/main
+   ```
+2. **Update version-bearing files (keep `packaging/bioconda/recipes/vardictrust/meta.yaml` for Phase 3):**
+   - [`Cargo.toml`](Cargo.toml) (`[workspace.package] version = "X.Y.Z"`) and [`crates/vardictrust/Cargo.toml`](crates/vardictrust/Cargo.toml) (`vardictrust-core = { version = "X.Y.Z", path = "../vardictrust-core" }`), followed by `cargo update -w` so [`Cargo.lock`](Cargo.lock) updates only the workspace packages.
+   - [`CHANGELOG.md`](CHANGELOG.md): add `## [X.Y.Z] - YYYY-MM-DD` (required by `cargo-dist` to populate GitHub Release notes) and preserve exact Bioconda subdir names (`linux-64`, `linux-aarch64`, `osx-arm64`, `osx-64`).
+   - [`CITATION.cff`](CITATION.cff) (`version` and `date-released`), [`README.md`](README.md) (install tags and BibTeX version), [`.github/ISSUE_TEMPLATE/bug_report.yml`](.github/ISSUE_TEMPLATE/bug_report.yml), and [`packaging/bioconda/prepare_bioconda_pr.sh`](packaging/bioconda/prepare_bioconda_pr.sh) (`VERSION="${1:-X.Y.Z}"`).
+   - Release certification dossier `docs/release/vX.Y.Z-pr.md` and release metadata references in [`docs/release/waivers.md`](docs/release/waivers.md), [`docs/testing/test-matrix-and-ci-audit.md`](docs/testing/test-matrix-and-ci-audit.md), [`docs/validation/omnibus-empirical-validation.md`](docs/validation/omnibus-empirical-validation.md), [`DIVERGENCES.md`](DIVERGENCES.md), [`benchmarks/README.md`](benchmarks/README.md), [`harness/README.md`](harness/README.md), [`mkdocs.yml`](mkdocs.yml), and [`wiki/`](wiki/).
+3. **Engine Fingerprint & Live Recertification Rule (`AGENTS.md §0b`):**
+   - [`harness/engine_fingerprint.sh`](harness/engine_fingerprint.sh) (`normalize_gate_blob()`) canonicalizes workspace-only SemVer fields in `Cargo.toml`, `crates/vardictrust/Cargo.toml`, and `Cargo.lock` before hashing, so a pure workspace version bump preserves the certified engine fingerprint across all 16 evidence JSONs in [`benchmarks/evidence/`](benchmarks/evidence/).
+   - If **any** engine source (`crates/*/src`), external dependency (`Cargo.lock`), comparator, runner, or fixture in `GATE_FILES` changed since the last certification, you **must** run `bash harness/recertify.sh` to re-run the live dual-engine parity suites and stamp updated evidence JSONs honestly (never hand-edit `benchmarks/evidence/*.json`).
+
+### 9.3 Phase 1 — Commit-First Verification Sequence & Crates.io Dry-Run
+Because [`harness/engine_fingerprint.sh`](harness/engine_fingerprint.sh) enforces `git diff --quiet HEAD -- "${GATE_FILES[@]}"` and hashes `HEAD:<path>`, commit the release edits on `release/vX.Y.Z` (with zero `Co-Authored-By` trailers per §7.1) **before** running the harness gates:
+
 ```bash
-bash harness/test_bioconda_recipe.sh
+# 1. Verify formatting, zero-warning Clippy, workspace tests, and --version output
+cargo fmt --all -- --check
+cargo clippy --all-targets --all-features -- -D warnings
+RUST_TEST_THREADS=4 cargo test --workspace
+cargo build --release -p vardictrust
+./target/release/vardictrust --version
+
+# 2. Commit tracked release changes on release/vX.Y.Z (clean HEAD required by engine_fingerprint.sh)
+git commit -m "chore(release): prepare vX.Y.Z release"
+
+# 3. Verify engine fingerprint and run all 17 diagnostic self-tests
+bash harness/engine_fingerprint.sh
+bash harness/run_self_tests.sh
+
+# 4. Stage and verify MkDocs documentation site in strict mode (then clean staging dir)
+python3 harness/prepare_docs_site.py
+mkdocs build --strict
+rm -rf .docs_staged site
+
+# 5. Pre-tag crates.io packaging verification
+#    Note: `cargo publish -p vardictrust --dry-run` queries crates.io for `vardictrust-core = "^X.Y.Z"`,
+#    which is published first by release.yml during Phase 2. Validate binary packaging via `cargo package --list`.
+cargo publish -p vardictrust-core --dry-run
+cargo package --list -p vardictrust
+
+# 6. Run 6-stage PR gate (restore timestamp-only diff in extended-coverage-tier2.json if fingerprint is unchanged)
+bash harness/pr_check.sh
+git checkout -- benchmarks/evidence/extended-coverage-tier2.json
+
+# 7. Run 8-item Master Release Acceptance Gate (must exit 0 with 8/8 PASS, including Item 8 musl-ci.json from harness/bin_equiv.sh; restore timestamp/timing noise if fingerprint is unchanged)
+bash harness/acceptance.sh
+git checkout -- benchmarks/evidence/extended-coverage-tier2.json benchmarks/evidence/multimodal-slices-tier2.json
 ```
 
-To prepare a new release for submission to `bioconda/bioconda-recipes`:
-```bash
-bash packaging/bioconda/prepare_bioconda_pr.sh 1.0.0
-```
+### 9.4 Phase 1 — Opening & Merging the Release PR
+Push `release/vX.Y.Z` and open a pull request to `main` via `gh pr create`, completing every section of [`.github/pull_request_template.md`](.github/pull_request_template.md) and including the mandatory validation receipt (`validated vs VarDictJava 1.8.3, dataset <name>, cmd <…>` per [`AGENTS.md §15`](AGENTS.md#15-definition-of-done-every-change)). Merge to `main` once all required GitHub Actions workflows (`ci.yml`, `differential.yml`, `docs.yml`, `security.yml`) are green.
+
+### 9.5 Phase 2 — Tagging `main`, `cargo-dist` SLSA Level 3 & Crates.io Publish
+1. **Sync `main` and push an annotated SemVer tag:**
+   ```bash
+   git checkout main
+   git pull --ff-only origin main
+   grep -q '^version = "X.Y.Z"' Cargo.toml
+   git tag -a vX.Y.Z -m "VarDictRust vX.Y.Z"
+   git push origin vX.Y.Z
+   ```
+2. **Automated Release Pipeline ([`.github/workflows/release.yml`](.github/workflows/release.yml)):**
+   Pushing `vX.Y.Z` triggers `cargo-dist 0.33.0`, which executes:
+   - `plan`: parses `CHANGELOG.md` for `## [X.Y.Z]` and computes the 5 build targets (`x86_64-unknown-linux-gnu`, `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-gnu`, `aarch64-apple-darwin`, `x86_64-apple-darwin`).
+   - `build-local-artifacts` & `build-global-artifacts`: compiles release archives across all 5 target triples and generates the shell installer and SHA-256 checksums (`musl` vs `gnu` VCF byte equivalence on Linux x86_64 is certified pre-tag via [`harness/bin_equiv.sh`](harness/bin_equiv.sh) inside [`harness/recertify.sh`](harness/recertify.sh) and verified by [`harness/acceptance.sh`](harness/acceptance.sh) Item 8).
+   - `host`: creates the GitHub Release and generates **SLSA v1.0 Level 3 build provenance attestations** via `actions/attest-build-provenance`.
+   - `publish-crates`: publishes `vardictrust-core` to `crates.io` first, then polls up to `30 × 10s` for index propagation before publishing `vardictrust`.
+   - `announce`: finalizes and publishes the GitHub Release.
+3. **Verify Release Artifacts & SLSA Attestations:**
+   ```bash
+   gh run watch
+   gh release view vX.Y.Z
+   gh attestation verify --owner palakpsheth vardictrust-x86_64-unknown-linux-musl.tar.xz
+   ```
+
+### 9.6 Phase 3 — Post-Tag Bioconda Recipe Sync & ReadTheDocs Trigger
+1. **Update and test the Bioconda recipe ([`packaging/bioconda/recipes/vardictrust/meta.yaml`](packaging/bioconda/recipes/vardictrust/meta.yaml)):**
+   [`packaging/bioconda/prepare_bioconda_pr.sh`](packaging/bioconda/prepare_bioconda_pr.sh) enforces Rule 0b by downloading `https://github.com/palakpsheth/VarDictRust/archive/refs/tags/vX.Y.Z.tar.gz` directly from GitHub (refusing local `git archive` fallbacks):
+   ```bash
+   bash packaging/bioconda/prepare_bioconda_pr.sh X.Y.Z
+   bash harness/test_bioconda_recipe.sh
+   ```
+   Open and merge a follow-up PR updating `packaging/bioconda/recipes/vardictrust/meta.yaml` on `main`, and submit the recipe update to `bioconda/bioconda-recipes`.
+2. **Trigger ReadTheDocs Documentation Build:**
+   ```bash
+   bash harness/trigger_rtd.sh build vardictrust latest
+   bash harness/trigger_rtd.sh builds vardictrust
+   ```
+
+### 9.7 Rollback, Partial-Release Recovery & Hotfix Runbook
+- **Transient CI Job Failure in `release.yml`:** If a runner experiences a transient network or registry timeout during Phase 2, re-run failed jobs via `gh run rerun <run-id> --failed`. If `vardictrust-core` already published to `crates.io` before `publish-crates` failed on `vardictrust`, publish `vardictrust` manually with `cargo publish -p vardictrust` or cut `vX.Y.(Z+1)`.
+- **Never Force-Move or Delete Published Release Tags:** Once `crates.io` crates or SLSA Level 3 attestations are emitted for `vX.Y.Z`, never delete or force-push the tag. If a critical regression is discovered post-release:
+  1. Yank affected crates on `crates.io`: `cargo yank --version X.Y.Z vardictrust && cargo yank --version X.Y.Z vardictrust-core`.
+  2. Mark the GitHub Release `vX.Y.Z` as pre-release/yanked with a notice linking to the replacement version.
+  3. Cut and certify `vX.Y.(Z+1)` off `main` following §§9.2–9.6.
+

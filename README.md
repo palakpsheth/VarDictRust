@@ -73,18 +73,18 @@ sudo mv vardictrust /usr/local/bin/
 cargo install vardictrust
 
 # Or build the latest release directly from source
-cargo install --git https://github.com/palakpsheth/VarDictRust.git --tag v1.0.0
+cargo install --git https://github.com/palakpsheth/VarDictRust.git --tag v1.0.1
 ```
 
 ### 3. Containerized Execution (Docker, Podman, Apptainer)
 
 ```bash
 # Docker / Podman
-docker run --rm -v $(pwd):/data ghcr.io/palakpsheth/vardictrust:1.0.0 \
+docker run --rm -v $(pwd):/data ghcr.io/palakpsheth/vardictrust:1.0.1 \
   vardictrust -G /data/ref.fa -b /data/sample.bam -R chr1:1000-2000 > output.vcf
 
 # Apptainer / Singularity (HPC Clusters)
-apptainer exec docker://ghcr.io/palakpsheth/vardictrust:1.0.0 vardictrust --help
+apptainer exec docker://ghcr.io/palakpsheth/vardictrust:1.0.1 vardictrust --help
 ```
 
 ### 4. Conda / Bioconda
@@ -182,7 +182,7 @@ vardictrust -G GRCh38.fa -f 0.01 -N SAMPLE -b sample.bam -R chr1:1000000-2000000
 <a id="performance-scaling-scoreboard"></a>
 ## Performance & Scaling Scoreboard
 
-- **Exact Parity:** 0 variant discrepancies and identical `FILTER`/`STATUS` decisions against VarDictJava v1.8.3 across all 15 dual-engine differential benchmark runs and 92 integration fixtures ($\varepsilon = 10^{-6}$).
+- **Exact Parity:** 0 variant discrepancies and identical `FILTER`/`STATUS` decisions against VarDictJava v1.8.3 across all 17 dual-engine differential benchmark runs and 92 integration fixtures ($\varepsilon = 10^{-6}$).
 - **High-Throughput Speedup:** Up to **30.1× faster** on targeted amplicon assays and **3.72× parallel speedup** on 8 cores across whole human chromosomes.
 - **Bounded $O(1)$ Memory:** Flat resident memory scaling ($1.45\times$ peak RSS ratio across a 25-fold chromosome span increase), eliminating JVM heap exhaustion on deep WGS.
 - **Self-Contained Deployment:** Single statically-linked binary (`x86_64-unknown-linux-musl`) with zero runtime dependencies.
@@ -372,7 +372,7 @@ Per the [rewrites.bio](https://rewrites.bio) manifesto, we disclose all AI tools
 
 - **AI Systems Used:** Google DeepMind Gemini / Antigravity CLI, Anthropic Claude Code, and Qoder.
 - **Scope of AI Assistance:** Implementation of core Rust modules under direct human architectural instruction, transliteration of legacy R/Perl statistical functions into pure Rust, test harness development, and adversarial differential verification.
-- **Verification Guarantee (Evidence Before Completion):** **Zero** AI-generated code was accepted based on model assertion. Every single algorithmic component was validated against VarDictJava v1.8.3 across 208 automated Cargo workspace tests (188 core library tests, 13 CLI tests, and 7 integration binaries), the 92-case integration corpus, 10 slice fixtures, 18 multi-modal slices across 6 cohorts, and multi-gigabyte public benchmark datasets (SEQC2, GIAB HG008, GIAB HG002, GIAB HG005, GIAB NA24385 b37) under strict float tolerance $\varepsilon = 10^{-6}$, with complete push-button reproducibility documented in [`docs/testing/test-matrix-and-ci-audit.md`](docs/testing/test-matrix-and-ci-audit.md).
+- **Verification Guarantee (Evidence Before Completion):** **Zero** AI-generated code was accepted based on model assertion. Every single algorithmic component was validated against VarDictJava v1.8.3 across 230 automated Cargo workspace tests (189 core library tests, 2 CRAM stack tests, 13 CLI tests, and 26 integration binary tests), the 92-case integration corpus, 10 slice fixtures, 18 multi-modal slices across 6 cohorts, and multi-gigabyte public benchmark datasets (SEQC2, GIAB HG008, GIAB HG002, GIAB HG005, GIAB NA24385 b37) under strict float tolerance $\varepsilon = 10^{-6}$, with complete push-button reproducibility documented in [`docs/testing/test-matrix-and-ci-audit.md`](docs/testing/test-matrix-and-ci-audit.md).
 
 ---
 
@@ -426,7 +426,7 @@ If you use VarDictRust in published research, please cite both the original Lai 
   author    = {Sheth, Palak},
   title     = {{VarDictRust: Memory-Safe, High-Performance Variant Calling for NGS}},
   year      = {2026},
-  version   = {1.0.0},
+  version   = {1.0.1},
   url       = {https://github.com/palakpsheth/VarDictRust}
 }
 ```

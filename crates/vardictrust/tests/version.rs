@@ -7,6 +7,7 @@ fn version_credits_original_and_discloses_ai() {
     assert!(out.status.success());
     let s = String::from_utf8_lossy(&out.stdout);
     for needle in [
+        concat!("vardictrust ", env!("CARGO_PKG_VERSION")),
         "VarDictJava v1.8.3",
         "0886261",
         "009e017",

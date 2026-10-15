@@ -15,7 +15,7 @@ name = "vardictrust"
 path = "src/main.rs"
 
 [dependencies]
-vardictrust-core = { version = "1.0.0", path = "../vardictrust-core" }
+vardictrust-core = { version = "1.0.1", path = "../vardictrust-core" }
 clap.workspace = true
 anyhow.workspace = true
 env_logger.workspace = true

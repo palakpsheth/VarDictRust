@@ -29,7 +29,7 @@ body:
     attributes:
       label: VarDictRust Version
       description: Output of `vardictrust --version`.
-      placeholder: vardictrust 1.0.0
+      placeholder: vardictrust 1.0.1
     validations:
       required: true
   - type: textarea

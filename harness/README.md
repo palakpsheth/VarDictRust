@@ -36,7 +36,7 @@ The harness operates in two distinct tiers:
 | :--- | :--- | :--- |
 | [`acceptance.sh`](acceptance.sh) | **Master Acceptance Gate:** Executes the 8 mandatory release criteria defined in [`AGENTS.md` §15](../AGENTS.md#15-definition-of-done-every-change). Verifies workspace unit tests, 91/1 corpus parity, Tier-2 micro/macro parity, crash robustness, 4-target performance budget, truth concordance, hygiene, and distribution equivalence. | $<1\text{m}$ |
 | [`pr_check.sh`](pr_check.sh) | **Standard PR Regression Suite:** Enforces a 6-stage verification gate on all PRs: Hygiene (`cargo fmt`, `clippy -D warnings`, `cargo audit`, `cargo deny`), Crash Robustness, 91/1 Corpus, Tier-2 Micro Parity, 4-Target Performance Budget, and Gitleaks secret scanning. | $<35\text{s}$ |
-| [`run_self_tests.sh`](run_self_tests.sh) | **Diagnostic Self-Test Harness:** Discovers and executes all 15 diagnostic test scripts (10 shell tests and 5 python test suites in `harness/tests/`), reporting unified status and elapsed milliseconds. | $<10\text{s}$ |
+| [`run_self_tests.sh`](run_self_tests.sh) | **Diagnostic Self-Test Harness:** Discovers and executes all 17 diagnostic test scripts (11 shell tests and 6 python test suites in `harness/tests/`), reporting unified status and elapsed milliseconds. | $<10\text{s}$ |
 | [`setup_hooks.sh`](setup_hooks.sh) | **Git Hooks Configuration:** Configures repository Git hook path to `.githooks/` (`git config core.hooksPath .githooks`), activating fast local pre-commit hygiene and secret checks. | $<1\text{s}$ |
 | [`engine_fingerprint.sh`](engine_fingerprint.sh) | **Release Engine Fingerprinter:** Computes a 16-character SHA-256 hash across engine source code (`crates/*/src`), comparator drivers, and locked dependencies (`Cargo.lock`). Guarantees evidence records are tied to an exact, unmutated engine commit. | $<1\text{s}$ |
 | [`bin_equiv.sh`](bin_equiv.sh) | **Binary Equivalence Gate:** Validates that statically-compiled `x86_64-unknown-linux-musl` release binaries produce identical variant calls to glibc binaries. | $<30\text{s}$ |
@@ -58,7 +58,7 @@ The harness operates in two distinct tiers:
 | [`perf_budget.py`](perf_budget.py) | **Performance Budget Verifier:** Evaluates execution time and peak memory against VarDictJava baselines across 4 targets (HG008, SEQC2, HG002, Amplicon), asserting Rust $\le$ Java wall time and RSS. |
 | [`run_multimodal_slices.sh`](run_multimodal_slices.sh) | **Multi-Modal Multi-Slice Parity Suite:** Executes dual-engine live oracle verification across 18 non-overlapping biological slices from 6 diverse public datasets spanning 9 distinct chromosomes. Asserts 18/18 MATCH and writes `benchmarks/evidence/multimodal-slices-tier2.json`. |
 | [`get_multimodal_slices.sh`](get_multimodal_slices.sh) | **Multi-Modal Slice Streamer:** Ingests and streams 18 non-overlapping slices across 6 public datasets (COLO829, Platinum NA12878, SEQC2, GIAB HG005, Amplicon, RNA-seq) consuming $<150\text{ MB}$ disk space. |
-| [`run_extended_coverage.sh`](run_extended_coverage.sh) | **Extended Modality Parity Suite:** Verifies dual-engine parity across 9 caller modalities including RNA splicing (`-i`), CRISPR cut sites (`-J/-j`), `<INV>`, `<DUP>`, and CLI flag permutations (`-u -UN`, `--adaptor`, `-k 0`, `-U`, `-K`). Asserts 9/9 MATCH. |
+| [`run_extended_coverage.sh`](run_extended_coverage.sh) | **Extended Modality Parity Suite:** Verifies dual-engine parity across 17 caller modalities including RNA splicing (`-i`), CRISPR cut sites (`-J/-j`), `<INV>`, `<DUP>`, and CLI flag permutations (`-u -UN`, `--adaptor`, `-k 0`, `-U`, `-K`, `-t`, `-3`, `-O`, `-x`, `-s -e`, `-M`, `--deldupvar`, `--DP ERR`). Asserts 17/17 MATCH. |
 | [`concordance_multimodal.sh`](concordance_multimodal.sh) | **Multi-Modal Truth Concordance Suite:** Automated runner executing dual-engine calling and `rtg vcfeval` concordance for GIAB HG005 (GRCh38) and GIAB NA24385 (GRCh37/b37) against NIST v4.2.1 truth sets with offline caching in `scratch/g4/truth_cache/`. Asserts EQUAL (0 site diffs). |
 | [`concordance.sh`](concordance.sh) | **Somatic Truth Evaluator:** Executes Real Time Genomics `rtg vcfeval` with `--squash-ploidy` for somatic variant truth comparisons. |
 | [`concordance_germline.sh`](concordance_germline.sh) | **Germline Truth Evaluator:** Assesses germline variants against NIST truth, reporting dual thresholds (unfiltered discovery baseline and optimal `QUAL >= 128` operating point). |
@@ -84,7 +84,7 @@ The [`slices.tsv`](slices.tsv) index and [`slices/`](slices/) directory define t
 
 ## 6. Meta-Test Suite (`harness/tests/`)
 
-The harness contains an internal self-test suite (15 test scripts) verifying that the harness tools, comparators, and zero-dependency environment contracts function correctly:
+The harness contains an internal self-test suite (17 test scripts) verifying that the harness tools, comparators, and zero-dependency environment contracts function correctly:
 
 ```bash
 # Run all harness meta-tests using the diagnostic self-test harness
@@ -92,7 +92,7 @@ bash harness/run_self_tests.sh
 ```
 
 The runner dynamically discovers and executes:
-- 10 Shell Tests: `test_compare_sh.sh`, `test_concordance.sh`, `test_courtesy.sh`, `test_edge_cases.sh`, `test_env_pinned.sh`, `test_evidence.sh`, `test_fetch_data.sh`, `test_perf_budget.sh`, `test_run_oracle.sh`, `test_seqc2_align.sh`.
-- 5 Python Test Suites: `test_compare_vcf.py` (10 tests), `test_docs_ui.py` (6 tests), `test_select_slice_regions.py` (4 tests), `test_stdlib_purity.py` (AST zero-PyPI import guard), `test_vcf_header.py` (1 test).
+- 11 Shell Tests: `test_compare_sh.sh`, `test_concordance.sh`, `test_courtesy.sh`, `test_edge_cases.sh`, `test_env_pinned.sh`, `test_evidence.sh`, `test_fetch_data.sh`, `test_perf_budget.sh`, `test_run_cpp.sh`, `test_run_oracle.sh`, `test_seqc2_align.sh`.
+- 6 Python Test Suites: `test_bioconda_recipe.py`, `test_compare_vcf.py` (10 tests), `test_docs_ui.py` (6 tests), `test_select_slice_regions.py` (4 tests), `test_stdlib_purity.py` (AST zero-PyPI import guard), `test_vcf_header.py` (1 test).
 
-All 15 diagnostic test scripts pass 100% green.
+All 17 diagnostic test scripts pass 100% green.
