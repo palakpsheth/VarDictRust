@@ -1,13 +1,18 @@
 {
   "cmd": [
-    "bash",
-    "harness/bin_equiv.sh"
+    "cargo",
+    "build",
+    "--release",
+    "--target",
+    "x86_64-unknown-linux-musl",
+    "-p",
+    "vardictrust"
   ],
   "compare_head": [],
   "cpp_time": null,
-  "date": "2026-10-15T09:31:55-07:00",
-  "fingerprint": "44b362a08b86ca69",
-  "head": "d219aad9c3780738ac3d317ecc82e468a1c940f8",
+  "date": "2026-10-16T00:43:26-07:00",
+  "fingerprint": "c57e9661d77ef254",
+  "head": "33741680598e5f885a1d73d289051ff8867de036",
   "java_time": null,
   "n_variants": null,
   "name": "musl-ci",
