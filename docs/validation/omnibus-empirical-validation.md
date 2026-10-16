@@ -44,7 +44,7 @@ To provide definitive, reproducible proof of compliance, VarDictRust was evaluat
 | **8** | **Extended Modalities** | 17 Operational Modes | chr8, chr20 (hg19, hg38, GRCh37, GRCh38)| 4,993 | **Tier-2** | **MATCH (0 diffs, 17/17)** | **N/A (Flag Parity)** | advisory M1 SKIP; M4 [MISMATCH (CPP-2)](../upstream-bugs.md#cpp-2); concat-flags [SKIP (CPP-4)](../upstream-bugs.md#cpp-4); see evidence |
 | **9** | **Multi-Slice Suite** | 6 Public Cohorts | 18 slices, 9 chrs (GRCh38, b37)| 1,129 | **Tier-2 & Tier-3** | **MATCH (0 diffs, 18/18)**| **EQUAL (HG005, b37)** | advisory [MISMATCH (CPP-1)](../upstream-bugs.md#cpp-1); b37 [CPP-7](../upstream-bugs.md#cpp-7)/[CPP-8](../upstream-bugs.md#cpp-8); cpp F1 HG005 0.9508, b37 0.1099 ([CPP-6](../upstream-bugs.md#cpp-6)) |
 
-¹ **Cpp third arm (advisory, never gating).** Every gate arm above runs beside pinned **vardictcpp 3 `hc52dbad_0` bioconda** (`benchmarks/env/vardict-oracle.yml`, same env as the Java oracle). The release gate stays **java==rust**; a cpp MISMATCH/SKIP never changes a verdict (`CPP_SKIP=1` escapes the arm). Per-cell cpp verdicts/F1s above are transcribed from the linked evidence `extra` (`cpp_version`, `cpp_head`, `cpp_wall_s`, `cpp_maxrss_kb`, `cpp_f1`, `cpp_skip_reason`); full counts live in evidence. Known cpp divergences (header provenance + `END` INFO key, `-J`/`-j` parsed-but-ignored, amplicon TSV-only, b37 CHROM/N-row surfaces, concatenated flags rejected) are normalized and documented in [`docs/upstream-bugs.md`](../upstream-bugs.md).
+¹ **Cpp third arm (advisory, never gating).** Every gate arm above runs beside pinned **vardictcpp 3 `hc52dbad_0` bioconda** (`benchmarks/env/vardict-oracle.yml`, same env as the Java oracle). The release gate stays **java==rust**. A cpp MISMATCH/SKIP never changes a verdict (`CPP_SKIP=1` escapes the arm). Per-cell cpp verdicts/F1s above are transcribed from the linked evidence `extra` (`cpp_version`, `cpp_head`, `cpp_wall_s`, `cpp_maxrss_kb`, `cpp_f1`, `cpp_skip_reason`). Full counts live in evidence. Known cpp divergences (header provenance + `END` INFO key, `-J`/`-j` parsed-but-ignored, amplicon TSV-only, b37 CHROM/N-row surfaces, concatenated flags rejected) are normalized and documented in [`docs/upstream-bugs.md`](../upstream-bugs.md).
 
 
 
@@ -498,7 +498,7 @@ VarDictRust faithfully emulates this exact upstream filter token mapping, ensuri
 
 ## 12. Empirical Performance & Memory Scaling
 
-All benchmarks were recorded on Intel i7-13700H, Linux x86_64, 8 worker threads (NVMe SSD) following the standardized benchmarking protocol in [`benchmarks/README.md`](../../benchmarks/README.md) and certified against [`perf-budget.json`](../../benchmarks/evidence/perf-budget.json); the Whole Chromosome 1 Scale row below reports current `scale.json` medians across 3 runs:
+All benchmarks were recorded on Intel i7-13700H, Linux x86_64, 8 worker threads (NVMe SSD) following the standardized benchmarking protocol in [`benchmarks/README.md`](../../benchmarks/README.md) and certified against [`perf-budget.json`](../../benchmarks/evidence/perf-budget.json). The Whole Chromosome 1 Scale row below reports current `scale.json` medians across 3 runs:
 
 | Workload / Benchmark | Threads | VarDictJava Wall Time | VarDictRust Wall Time | Speedup Ratio | VarDictJava Peak RSS | VarDictRust Peak RSS | Memory Scaling Ratio | Evidence Artifact | Cpp Wall / RSS (vardictcpp 3 hc52dbad_0, advisory¹) |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :---: | :--- |
@@ -508,7 +508,7 @@ All benchmarks were recorded on Intel i7-13700H, Linux x86_64, 8 worker threads 
 | **GIAB HG008 Somatic PDAC** | 4 cores² | 1:23.88 | 0:52.42 | **1.6× faster** | 3.2 GB | 0.7 GB | 0.23× (4.3× lower) | [`hg008-tier2.json`](../../benchmarks/evidence/hg008-tier2.json) | 0:21.89 / 302 MB, advisory [MISMATCH (CPP-9)](../upstream-bugs.md#cpp-9) |
 | **Whole Chromosome 1 Scale (249 Mbp)** | 1 → 8 cores | 29m 29s (1 core) | 7m 56s (8 cores) | **3.72× parallel** | OOM / Unbounded | 2.7 GB (249 Mb) vs 1.9 GB (10 Mb) | **1.45× flat RSS scaling** | [`scale.json`](../../benchmarks/evidence/scale.json) | th8 172.4 s / 24.6 GB, advisory ([CPP-5](../upstream-bugs.md#cpp-5)) |
 
-¹ Cpp runs beside each arm above under the same pins (`-th 8`, `LC_ALL=C /usr/bin/time -v`, taskset-recorded); `--chunk` deliberately unpinned (cpp default rewrites the `Seg` column). Per-cell cpp wall/RSS above are transcribed from the linked evidence `extra` (`cpp_wall_s`, `cpp_maxrss_kb`); full ratios live in evidence.
+¹ Cpp runs beside each arm above under the same pins (`-th 8`, `LC_ALL=C /usr/bin/time -v`, taskset-recorded). `--chunk` deliberately unpinned (cpp default rewrites the `Seg` column). Per-cell cpp wall/RSS above are transcribed from the linked evidence `extra` (`cpp_wall_s`, `cpp_maxrss_kb`). Full ratios live in evidence.
 ² hg008/seqc2-exome at `-th 4`: Java `-th 8` is OOM-killed on 31G hosts (bisected 1✓/4✓/8✗); exact cmds in evidence.
 
 ### 12.1 Memory Scaling: Why VarDictRust Scales to WGS

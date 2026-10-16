@@ -29,7 +29,7 @@ Evaluated via `harness/perf_budget.py`, comparing `vardictrust` against the `Var
 | **SEQC2 HCC1395 Somatic Exome** | SomaticMode (`tumor\|normal`, `-th 4`²) | 55:55.34 | 19:06.88 | **2.9×** | 3.5 GB | 1.0 GB | **0.29× (3.4× lower)** | 7:35.26 / 2.1 GB, advisory [MISMATCH (CPP-9)](../docs/upstream-bugs.md#cpp-9) | [`seqc2-exome-tier2.json`](evidence/seqc2-exome-tier2.json) |
 | **GIAB HG008 Somatic PDAC** | SomaticMode (`tumor\|normal`, `-th 4`²) | 1:23.88 | 0:52.42 | **1.6×** | 3.2 GB | 0.7 GB | **0.23× (4.3× lower)** | 0:21.89 / 302 MB, advisory [MISMATCH (CPP-9)](../docs/upstream-bugs.md#cpp-9) | [`hg008-tier2.json`](evidence/hg008-tier2.json) |
 
-¹ Cpp (pinned **vardictcpp 3 `hc52dbad_0` bioconda**, same `vardict-oracle` env) runs beside each gate arm via `harness/perf_budget.py`; the budget verdict stays Rust-vs-Java only. Per-cell cpp wall/RSS above are transcribed from the linked evidence `extra` (`cpp_wall_s`, `cpp_maxrss_kb`, ratios); known cpp divergences are normalized in [`docs/upstream-bugs.md`](../docs/upstream-bugs.md#cpp-divergences); a missing `cpp_time` records a loud `SKIP`, never a silent pass.
+¹ Cpp (pinned **vardictcpp 3 `hc52dbad_0` bioconda**, same `vardict-oracle` env) runs beside each gate arm via `harness/perf_budget.py`. The budget verdict stays Rust-vs-Java only. Per-cell cpp wall/RSS above are transcribed from the linked evidence `extra` (`cpp_wall_s`, `cpp_maxrss_kb`, ratios). Known cpp divergences are normalized in [`docs/upstream-bugs.md`](../docs/upstream-bugs.md#cpp-divergences). A missing `cpp_time` records a loud `SKIP`, never a silent pass.
 ² hg008/seqc2-exome at `-th 4`: Java `-th 8` is OOM-killed on 31G hosts (bisected 1✓/4✓/8✗); exact cmds in evidence.
 
 ### Reproduction Command:
@@ -84,7 +84,7 @@ Evaluated via `harness/scale_bench.sh` on HCC1395 across all 248,956,422 bp of c
 
 **Observed RSS Ratio (249 Mbp vs 10 Mbp): 1.45×** (Passing pre-registered threshold $\le 1.5\times$). Memory remains bounded across deep genomic spans via tiled execution with boundary halo deduplication.
 
-Pinned **vardictcpp 3 `hc52dbad_0`** runs beside each loop above (`harness/scale_bench.sh`, advisory only): per-thread/per-span cpp wall/RSS land in `scale.json` `extra` (`cpp_wall_s`, `cpp_maxrss_kb`) — at `-th 8`: 172.4 s wall / 24.6 GB peak RSS ([CPP-5](../docs/upstream-bugs.md#cpp-5)); `--chunk` is deliberately unpinned (cpp default rewrites the `Seg` column, so pinning a value would fork output shape).
+Pinned **vardictcpp 3 `hc52dbad_0`** runs beside each loop above (`harness/scale_bench.sh`, advisory only): per-thread/per-span cpp wall/RSS land in `scale.json` `extra` (`cpp_wall_s`, `cpp_maxrss_kb`) — at `-th 8`: 172.4 s wall / 24.6 GB peak RSS ([CPP-5](../docs/upstream-bugs.md#cpp-5)). `--chunk` is deliberately unpinned (cpp default rewrites the `Seg` column, so pinning a value would fork output shape).
 
 ### Reproduction Command:
 ```bash

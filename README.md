@@ -187,7 +187,7 @@ vardictrust -G GRCh38.fa -f 0.01 -N SAMPLE -b sample.bam -R chr1:1000000-2000000
 - **Bounded $O(1)$ Memory:** Flat resident memory scaling ($1.45\times$ peak RSS ratio across a 25-fold chromosome span increase), eliminating JVM heap exhaustion on deep WGS.
 - **Self-Contained Deployment:** Single statically-linked binary (`x86_64-unknown-linux-musl`) with zero runtime dependencies.
 
-Evaluated on Intel i7-13700H, Linux x86_64, 8 worker threads (`-th 8`); per-dataset rows report current evidence medians (hg008/seqc2-exome at -th 4²; exact cmds in evidence); the Whole Chromosome 1 Scale row below reports current `scale.json` medians across 3 runs:
+Evaluated on Intel i7-13700H, Linux x86_64, 8 worker threads (`-th 8`). Per-dataset rows report current evidence medians (hg008/seqc2-exome at -th 4²; exact cmds in evidence). The Whole Chromosome 1 Scale row below reports current `scale.json` medians across 3 runs:
 
 | Workload / Benchmark | Threads | VarDictJava Wall Time | VarDictRust Wall Time | Speedup Ratio | VarDictJava Peak RSS | VarDictRust Peak RSS | Memory Scaling Ratio | Evidence Artifact | vardictcpp Wall / RSS (advisory¹) |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :---: | :--- |
@@ -197,7 +197,7 @@ Evaluated on Intel i7-13700H, Linux x86_64, 8 worker threads (`-th 8`); per-data
 | **GIAB HG008 Somatic PDAC** | 4 cores² | 1:23.88 | 0:52.42 | **1.6× faster** | 3.2 GB | 0.7 GB | 0.23× (4.3× lower) | [`hg008-tier2.json`](benchmarks/evidence/hg008-tier2.json) | 0:21.89 / 302 MB, advisory [MISMATCH (CPP-9)](docs/upstream-bugs.md#cpp-9) |
 | **Whole Chromosome 1 Scale (249 Mbp)** | 1 → 8 cores | 29m 29s (1 core) | 7m 56s (8 cores) | **3.72× parallel** | OOM / Unbounded | 2.7 GB (249 Mb) vs 1.9 GB (10 Mb) | **1.45× flat RSS scaling** | [`scale.json`](benchmarks/evidence/scale.json) | th8 172.4 s / 24.6 GB, advisory ([CPP-5](docs/upstream-bugs.md#cpp-5)) |
 
-¹ **vardictcpp third arm (advisory, never gating).** Pinned **vardictcpp 3 `hc52dbad_0`** (bioconda, same `vardict-oracle` env) runs beside each gate arm (`-th 8`, `LC_ALL=C /usr/bin/time -v`); the verdict stays Rust-vs-Java. Per-cell cpp wall/RSS above are transcribed from the linked evidence `extra` (`cpp_wall_s`, `cpp_maxrss_kb`); full ratios live in evidence.
+¹ **vardictcpp third arm (advisory, never gating).** Pinned **vardictcpp 3 `hc52dbad_0`** (bioconda, same `vardict-oracle` env) runs beside each gate arm (`-th 8`, `LC_ALL=C /usr/bin/time -v`). The verdict stays Rust-vs-Java. Per-cell cpp wall/RSS above are transcribed from the linked evidence `extra` (`cpp_wall_s`, `cpp_maxrss_kb`). Full ratios live in evidence.
 ² hg008/seqc2-exome at `-th 4`: Java `-th 8` is OOM-killed on 31G hosts (bisected 1✓/4✓/8✗); exact cmds in evidence.
 
 
@@ -236,7 +236,7 @@ All comparisons evaluate the full end-to-end VCF output under float tolerance $\
 
 Evaluated against physical ground truth using Real Time Genomics [`rtg vcfeval`](docs/validation/omnibus-empirical-validation.md#pillar-1):
 
-¹ **vardictcpp third arm (advisory, never gating).** Pinned **vardictcpp 3 `hc52dbad_0`** (bioconda, same `vardict-oracle` env) runs beside each parity arm; the Tier-2 verdict stays java==rust. Per-cell cpp F1s below are transcribed from the linked evidence `extra` (`cpp_f1`); full counts live in evidence. Known cpp divergences (VCF header provenance + `END` INFO key, `-J`/`-j` parsed-but-ignored) are normalized per [`docs/upstream-bugs.md`](docs/upstream-bugs.md).
+¹ **vardictcpp third arm (advisory, never gating).** Pinned **vardictcpp 3 `hc52dbad_0`** (bioconda, same `vardict-oracle` env) runs beside each parity arm. The Tier-2 verdict stays java==rust. Per-cell cpp F1s below are transcribed from the linked evidence `extra` (`cpp_f1`). Full counts live in evidence. Known cpp divergences (VCF header provenance + `END` INFO key, `-J`/`-j` parsed-but-ignored) are normalized per [`docs/upstream-bugs.md`](docs/upstream-bugs.md).
 
 | Benchmark Dataset | Truth Standard | Variant Assay / Threshold | Evaluated Sites (TP / FP / FN) | VarDictJava vcfeval | VarDictRust vcfeval | vardictcpp vcfeval (advisory¹) | Truth Concordance |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
