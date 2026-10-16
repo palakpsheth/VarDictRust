@@ -50,6 +50,11 @@ Reusable inputs and evidence (all timings `/usr/bin/time -v`, flags
 * **AF-threshold sweep (tumor-only chr1, 109 truth):** any-presence F1=0.340 →
   af0.01 F1=0.357 (P 0.229 / R 0.807); F1 flat ~0.356 across cutoffs while recall
   climbs 0.63→0.86 — precision is capped by non-germline FPs (needs PoN, not AF tuning).
+* **Full-slice sweep (all 21 chroms, 881 truth, 1.07M gnomAD keys):** F1 flat
+  ~0.31 across cutoffs (any 0.311 / af0.001 0.314 / af0.01 0.310 / af0.05 0.304);
+  recall 0.54→0.73 as the cutoff loosens, precision stuck ~0.20 — confirms the
+  chr1 verdict at 8x the truth: AF tuning cannot fix precision; artifact/PoN
+  filtering is the lever. Full-slice tumor-only ran 13.6 s (12,400 vars).
 * **V0.6 SV/CNV (BLOCKED, filed as finding):** truth pulled (368 KB, tracked in
   `assets.tsv`). truvari 5.5.0 bench of PASS somatic SV calls: 0 TP / 210 FN —
   engine SV records (`<DEL>`/`<DUP>`/`<INV>`) carry no SVLEN/END, so truvari
