@@ -240,7 +240,7 @@ Evaluated against physical ground truth using Real Time Genomics [`rtg vcfeval`]
 
 | Benchmark Dataset | Truth Standard | Variant Assay / Threshold | Evaluated Sites (TP / FP / FN) | VarDictJava vcfeval | VarDictRust vcfeval | vardictcpp vcfeval (advisory¹) | Truth Concordance |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **GIAB HG002** (Operating Point) | NIST v4.2.1 High-Confidence | Germline Small (`QUAL >= 128`) | 22,748 TP / **553 FP** / 871 FN | **F1: 0.9699 (P: 0.9763, R: 0.9635)** | **F1: 0.9699 (P: 0.9763, R: 0.9635)** | advisory N/A (no cpp operating-point F1; raw 0.6624 below) | **EQUAL** |
+| **GIAB HG002** (Operating Point) | NIST v4.2.1 High-Confidence | Germline Small (`QUAL >= 128`) | 22,748 TP / 553 FP / 871 FN | **F1: 0.9699 (P: 0.9763, R: 0.9635)** | **F1: 0.9699 (P: 0.9763, R: 0.9635)** | advisory N/A (no cpp operating-point F1; raw 0.6624 below) | **EQUAL** |
 | **GIAB HG002** (Raw Baseline) | NIST v4.2.1 High-Confidence | Germline Small (`None` / raw) | 22,803 TP / 22,458 FP / 813 FN | F1 raw: 0.6622 (P: 0.5038, R: 0.9659) | F1 raw: 0.6622 (P: 0.5038, R: 0.9659) | F1 raw: 0.6624, advisory ([CPP-6](docs/upstream-bugs.md#cpp-6)) | **EQUAL** |
 | **SEQC2 HCC1395** | SEQC2 v1.2.1 Somatic Truth | High-Confidence Somatic SNV/InDel | 1,056 TP / 11,334 FP / 140 FN | F1: 0.1555 (P: 0.0852, R: 0.8842) | F1: 0.1555 (P: 0.0852, R: 0.8842) | F1: 0.1555, advisory ([CPP-6](docs/upstream-bugs.md#cpp-6)) | **EQUAL** |
 | **GIAB HG008** | NIST Draft Benchmark v0.3 | Somatic Small Variants | 575 TP / 1,565 FP / 288 FN | F1: 0.3856 (P: 0.2687, R: 0.6825) | F1: 0.3856 (P: 0.2687, R: 0.6825) | F1: 0.3858, advisory ([CPP-6](docs/upstream-bugs.md#cpp-6)) | **EQUAL** |
