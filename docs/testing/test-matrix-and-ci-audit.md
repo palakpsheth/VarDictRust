@@ -40,7 +40,7 @@ flowchart TD
     end
 
     subgraph Level2 ["Level 2: Upstream Integration Regression Corpus (92 Fixtures)"]
-        I1["harness/run_integration.sh\n(91 static PASS / 1 static FAIL Class D defect)"]
+        I1["harness/run_integration.sh\n(91 static PASS / 1 static XFAIL (UB-4) Class D defect)"]
         I2["Live Oracle Parity\n(100% byte-identical across all 92 fixtures)"]
     end
 
@@ -145,11 +145,11 @@ The table below summarizes the complete testing inventory executed across the de
 | **3** | [**Level 3: Primary Public WGS/WES**](#level-3) | `hg008`, `seqc2`, `hg002`, `amplicon` | 4 cohorts | Evidence recertification & Acceptance | MATCH ($\varepsilon \le 10^{-6}$, 0 diffs) | $\sim 25\text{ m}$ |
 | **3** | [**Level 3: Extended Modalities**](#level-3) | `harness/run_extended_coverage.sh` | 17 modes | Release Acceptance Item 3 | MATCH (RNA, SVs, flags, 0 diffs) | $\sim 30\text{ s}$ |
 | **3** | [**Level 3: Multi-Slice Expansion**](#level-3) | `harness/run_multimodal_slices.sh` | 18 slices | Release Acceptance Item 3 | MATCH (6 cohorts, 9 chrs, 0 diffs) | $\sim 35\text{ s}$ |
-| **4** | [**Level 4: Truth Concordance (HG002)**](#level-4) | `harness/concordance_germline.sh` | 1 evaluation | Release Acceptance Item 6 | $F_1 = 0.9699$, Bitwise Site EQUAL | $\sim 2\text{ m}$ |
+| **4** | [**Level 4: Truth Concordance (HG002)**](#level-4) | `harness/concordance_germline.sh` | 1 evaluation | Release Acceptance Item 6 | **$F_1 = 0.9699$, Bitwise Site EQUAL** | $\sim 2\text{ m}$ |
 | **4** | [**Level 4: Truth Concordance (SEQC2)**](#level-4) | `harness/concordance.sh seqc2` | 1 evaluation | Release Acceptance Item 6 | $F_1 = 0.1555$, Bitwise Site EQUAL | $\sim 4\text{ m}$ |
 | **4** | [**Level 4: Truth Concordance (HG008)**](#level-4) | `harness/concordance.sh hg008` | 1 evaluation | Release Acceptance Item 6 | $F_1 = 0.3856$, Bitwise Site EQUAL | $\sim 1\text{ m}$ |
-| **4** | [**Level 4: Truth Concordance (HG005)**](#level-4) | `harness/concordance_multimodal.sh` | 1 evaluation | Ground Truth Verification Gate | $F_1 = 0.9667$, Bitwise Site EQUAL | $\sim 5\text{ s}$ |
-| **4** | [**Level 4: Truth Concordance (NA24385 b37)**](#level-4)| `harness/concordance_multimodal.sh`| 1 evaluation | Ground Truth Verification Gate | $F_1 = 1.0000$, Bitwise Site EQUAL | $\sim 5\text{ s}$ |
+| **4** | [**Level 4: Truth Concordance (HG005)**](#level-4) | `harness/concordance_multimodal.sh` | 1 evaluation | Ground Truth Verification Gate | **$F_1 = 0.9667$, Bitwise Site EQUAL** | $\sim 5\text{ s}$ |
+| **4** | [**Level 4: Truth Concordance (NA24385 b37)**](#level-4)| `harness/concordance_multimodal.sh`| 1 evaluation | Ground Truth Verification Gate | **$F_1 = 1.0000$, Bitwise Site EQUAL** | $\sim 5\text{ s}$ |
 | **5** | [**Level 5: Whole Chromosome 1 Scale**](#level-5) | `harness/scale_bench.sh` | 1 benchmark | Release Acceptance Item 5 | $S_8 \ge 2.4\times$ ($\text{bar}(P)=0.6\cdot\min(8,P)$), Peak RSS $\le 1.5\times$ | $\sim 12\text{ m}$ |
 | **5** | [**Level 5: Continuous Perf Budget**](#level-5) | `harness/perf_budget.py` | 4 targets | PR gate Stage 5 & Acceptance Item 5 | Runtime $\le +5\%$, RAM ratio $\le 1.0$ | $\sim 0.5\text{ s}$ |
 | **6** | [**Level 6: Diagnostic Self-Tests**](#level-6) | `bash harness/run_self_tests.sh` | 17 scripts | Automated Diagnostics Runner | Exit code 0 across all 17 tests | $\sim 10\text{ s}$ |

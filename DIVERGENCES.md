@@ -21,7 +21,7 @@ Verified Parity Baseline (release/v1.0.1, commit a2ee82b):
 - Core Library Tests: 189 PASS / 0 FAIL (`cargo test -p vardictrust-core --lib`)
 - Total Workspace:    230 PASS / 0 FAIL (`cargo test --workspace` across core, cram_stack, cli, flags, robustness, thread-determinism, version)
 - [Tier-2](docs/testing/test-matrix-and-ci-audit.md#tier-2) Sweeps:      17/17 strict MATCH (micro, s1a-s9 all 10 slices, HG008, SEQC2 exome/slices, HG002, Amplicon, 17-mode extended, 18-slice multimodal)
-- [Tier-3](docs/testing/test-matrix-and-ci-audit.md#tier-3) Truth Concordance:  5/5 EQUAL (GIAB HG002 NIST v4.2.1, SEQC2 v1.2.1, GIAB HG008 NIST v3.3.2, GIAB HG005 NIST v4.2.1, GIAB NA24385 b37 NIST v4.2.1)
+- [Tier-3](docs/testing/test-matrix-and-ci-audit.md#tier-3) Truth Concordance:  5/5 EQUAL (GIAB HG002 NIST v4.2.1, SEQC2 v1.2.1, GIAB HG008 NIST Draft v0.3, GIAB HG005 NIST v4.2.1, GIAB NA24385 b37 NIST v4.2.1)
 - Scaling Budget:     PASS (3.72x speedup, 1.45x flat RSS scaling across 249 Mbp chromosome 1)
 - Final Acceptance:   8/8 PASS under release engine fingerprint `388f4a545470d12a`
 ```
@@ -37,11 +37,11 @@ Verified Parity Baseline (release/v1.0.1, commit a2ee82b):
 | :--- | :--- | :--- | :--- | :--- |
 | **Class A** | **Faithfully Emulated Upstream Quirks** | [**UB-1**](docs/upstream-bugs.md#ub-1--p-spurious-all-zero-record-at-position-00) (`-p` pos-0 row), [**UB-2**](docs/upstream-bugs.md#ub-2--p-null-record-row-cell-formatting-empty-geno-00-bias-empty-flank-seqs) (`-p` null formatting), [**UB-3**](docs/upstream-bugs.md#ub-3-var-row-order-across-positions-follows-hashmap-iteration-order-282-family) (HashMap iteration order via `JavaHashMap`), [**UB-5**](docs/upstream-bugs.md#ub-5-simplemode-structural-variant-split-read-requirement-var2vcf_validpl197-205) (SimpleMode SV split-read filter), [**UB-6**](docs/upstream-bugs.md#ub-6-mate-pair-boundary-parameter-in-mark_dup_sv-structuralvariantsprocessorjava1468) (`markDUPSV` boundary), [**UB-7**](docs/upstream-bugs.md#ub-7-multi-allelic-site-single-winner-collapsing-var2vcf_validpl135-205) (single-winner collapsing) | **Byte-for-byte replication**. VarDictRust output matches VarDictJava v1.8.3 exactly on valid inputs ([AGENTS.md §5](AGENTS.md)). | Candidate opt-in flags for v1.1.0+: `--fix ub1`, `--fix ub2`, `--fix ub5`, `--fix ub6`, `--fix ub7`. |
 | **Class B** | **Accepted Divergences by Design** | **`##source`** header (`VarDictRust_v1.0.1`), **`.fai` contig lengths** (fixes [#320](https://github.com/AstraZeneca-NGS/VarDictJava/issues/320)), **CLI arg splitting** (`-f 0.001`), **`--fisher` raw floats**, **Splice-mode stdout order** | **Functional variant record parity**. Deviations confined strictly to VCF `#`-headers or CLI parsing ergonomics. | Permanent design standards; no flags required. |
-| **Class C** | **Crash-Resilience & Robustness** | [**PR #402**](https://github.com/AstraZeneca-NGS/VarDictJava/pull/402) `modifyCigar` negative match length, [**Issue #187**](https://github.com/AstraZeneca-NGS/VarDictJava/issues/187) missing index fail-fast, [**Issues #197 / #384**](https://github.com/AstraZeneca-NGS/VarDictJava/issues/197) bounded halo tiling (2.9GB peak RSS) | **Zero crash, zero panic** (`#![forbid(unsafe_code)]`). Produces identical output on valid inputs; safely skips/recovers on malformed inputs. | Permanent engine baseline; `--fix 402` in v1.1.0+ will repair CIGAR topology. |
-| **Class D** | **Known Non-Bugs / Upstream Flaws** | [**UB-4**](docs/upstream-bugs.md#ub-4-hard_clip_casefa-fixture-drift-between-csv-chunks-and-reconstructed-fasta) (`hard_clip_case.fa` conflicting CSV reference chunks; pinned SHA-256 `96abe5...`), **GRCh37.fa** Colo829 chr20 all-N fixture drift | **Proven parity vs live Java oracle**. Confirmed that live Java under same inputs produces 100% byte-identical output (0 diffs). Cryptographically pinned in [`harness/integration_xfail.tsv`](harness/integration_xfail.tsv). | Documented permanent fixture artifacts; tracked as verified `XFAIL` in the 91/1 corpus. |
+| **Class C** | **Crash-Resilience & Robustness** | [**PR #402**](https://github.com/AstraZeneca-NGS/VarDictJava/pull/402) `modifyCigar` negative match length, [**Issue #187**](https://github.com/AstraZeneca-NGS/VarDictJava/issues/187) missing index fail-fast, [**Issues #197 / #384**](https://github.com/AstraZeneca-NGS/VarDictJava/issues/197) bounded halo tiling (2.9 GB decimal, ≈2.74 GiB peak RSS) | **Zero crash, zero panic** (`#![forbid(unsafe_code)]`). Produces identical output on valid inputs; safely skips/recovers on malformed inputs. | Permanent engine baseline; `--fix 402` in v1.1.0+ will repair CIGAR topology. |
+| **Class D** | **Known Non-Bugs / Upstream Flaws (incl. environmental UB-8)** | [**UB-4**](docs/upstream-bugs.md#ub-4-hard_clip_casefa-fixture-drift-between-csv-chunks-and-reconstructed-fasta) (`hard_clip_case.fa` conflicting CSV reference chunks; pinned SHA-256 `96abe5...`), **GRCh37.fa** Colo829 chr20 all-N fixture drift | **Proven parity vs live Java oracle**. Confirmed that live Java under same inputs produces 100% byte-identical output (0 diffs). Cryptographically pinned in [`harness/integration_xfail.tsv`](harness/integration_xfail.tsv). | Documented permanent fixture artifacts; tracked as verified `XFAIL` in the 91/1 corpus. |
 
 *Upstream Bug Specification & Empirical Validation:*
-- Detailed filing-ready draft specifications for UB-1 through UB-7 are consolidated in [`docs/upstream-bugs.md`](docs/upstream-bugs.md).
+- Detailed filing-ready draft specifications for UB-1 through UB-7 (plus environmental UB-8) are consolidated in [`docs/upstream-bugs.md`](docs/upstream-bugs.md).
 - Full empirical validation reports, biological provenance tables, algorithmic patterns, coordinate contracts, and filtering threshold catalogs are documented in [`docs/validation/omnibus-empirical-validation.md`](docs/validation/omnibus-empirical-validation.md).
 
 ---
@@ -668,7 +668,7 @@ findINVsub were investigated and eliminated:
    old gate). Oracle spot-checks: Colo829.chr20.INVSV MATCH vs live
    vardict-oracle VCF (20 variants, -f 0.001); NA24385 chr20 20156208 slice
    Rust VCF byte-identical pre/post fix (diff vs e79c54e build). Full corpus
-   unchanged at 91 PASS / 1 FAIL.
+   unchanged at 91 PASS / 1 XFAIL (UB-4, pre-XFAIL-registry wording).
 
 ### Affected Tests
 
@@ -676,7 +676,7 @@ findINVsub were investigated and eliminated:
 
 ### Remediation
 
-Superseded by resolutions above; all three latent items (extra mark_sv sweep removed, extra is_best_sv_used gate removed, gap semantics fixed) are fully resolved and guarded by regression tests `test_find_inv_sub_success_marks_only_java_equivalents`, `test_find_inv_sub_ignores_used_anchor_cluster`, and `test_find_inv_sub_success_gate_uses_java_gap_semantics`. Full corpus remains 91 PASS / 1 FAIL.
+Superseded by resolutions above; all three latent items (extra mark_sv sweep removed, extra is_best_sv_used gate removed, gap semantics fixed) are fully resolved and guarded by regression tests `test_find_inv_sub_success_marks_only_java_equivalents`, `test_find_inv_sub_ignores_used_anchor_cluster`, and `test_find_inv_sub_success_gate_uses_java_gap_semantics`. Full corpus remains 91 PASS / 1 XFAIL (UB-4, pre-XFAIL-registry wording).
 
 ---
 
@@ -1015,7 +1015,7 @@ parity was proven first (the harness `-z` option was refined to pass `-z 1` expl
 - Record-set delta on chr20:20156208 pre→post fix: restored exactly
   {20158483 AG>A, 20179027 CT>C, 20178200 A>+333}; removed 21
   lower-AF alleles sharing raw starts with higher-AF winners (Perl suppression).
-- Full corpus unchanged: 91 PASS / 1 FAIL (the documented hard_clip stale
+- Full corpus unchanged: 91 PASS / 1 XFAIL (UB-4, pre-XFAIL-registry wording) (the documented hard_clip stale
   fixture).
 
 **Harness `-f` Precedence.** run_oracle.sh put its
@@ -1039,7 +1039,7 @@ GRCh37 before using the Colo829 slices as [Tier-2](docs/testing/test-matrix-and-
 
 STATUS: **RESOLVED.** All VCF writer items
 carry [Tier-2](docs/testing/test-matrix-and-ci-audit.md#tier-2) MATCH evidence. Engine (`.var`) parity unaffected: corpus remains
-91 PASS / 1 FAIL.
+91 PASS / 1 XFAIL (UB-4, pre-XFAIL-registry wording).
 
 ### [Tier-2](docs/testing/test-matrix-and-ci-audit.md#tier-2) Benchmark Sweep
 
@@ -1056,7 +1056,7 @@ carry [Tier-2](docs/testing/test-matrix-and-ci-audit.md#tier-2) MATCH evidence. 
 | s8 INVSV `-f 0.001` vs hg19.fa (non-vacuous post-regen) | MATCH (20 variants) |
 | s9 DUPDiscSV `-f 0.001` vs hg19.fa (non-vacuous post-regen) | MATCH (71 variants) |
 
-Corpus rerun unchanged: 91 PASS / 1 FAIL.
+Corpus rerun unchanged: 91 PASS / 1 XFAIL (UB-4, pre-XFAIL-registry wording).
 
 **Residual — RESOLVED via `JavaHashMap`.** Formerly permanent
 limitation. The s1a AF-tie emission order at
@@ -1104,7 +1104,7 @@ Somatic Differential Parity Evidence:
 - Colo829-18/19 chr1:755917-756517 (defaults): MATCH (16 variants).
 - HCC2218 BL/C chrX:7811670-7811868 (-f 0.001): MATCH (14 variants).
 - Zero_in_DUPSV chr19:290742-291636 (-f 0.001 -X3): MATCH (61 variants).
-- Full corpus rerun unchanged: 91 PASS / 1 FAIL.
+- Full corpus rerun unchanged: 91 PASS / 1 XFAIL (UB-4, pre-XFAIL-registry wording).
 
 ### Reference Sequence Provenance & Verification
 
@@ -1112,7 +1112,7 @@ Somatic Differential Parity Evidence:
 md5 comparison observed every file regenerated **byte-identical** to its
 pre-regen state — however the md5 artifacts were not retained (pre-state
 unrecoverable, so no post-hoc re-verification is possible). The determinism
-conclusion remains behaviorally corroborated: post-regen corpus 91 PASS / 1 FAIL
+conclusion remains behaviorally corroborated: post-regen corpus 91 PASS / 1 XFAIL (UB-4, pre-XFAIL-registry wording)
 on the hg19/hg1k cases, GRCh37 slices still MATCH, `regen.log` rc=0.
 The investigation also established the GRCh37.fa drift's true scope: its CSV
 chunk source contains **no chr20 sequence near the Colo829 SV slices at all**
@@ -1195,7 +1195,7 @@ are consolidated with filing-ready draft issue texts in
 | HashMap non-determinism in tovars | Changed to BTreeMap | `e6c344b` |
 | Missing realign_indels in somatic pipeline | Added for both BAMs | core engine |
 | SV distance guard missing | Added 1Mbp limit in find_match | core engine |
-| Tiled streaming memory bounding | Halo intervals and tile streaming scaling whole chr1 to 2.9GB peak RSS (4.85x speedup) | `6ee4368`, `a4be62e` |
+| Tiled streaming memory bounding | Halo intervals and tile streaming scaling whole chr1 to 2.9GB peak RSS (4.85x speedup, Ryzen 8C/8T host pre-recalibration; current 3.72x medians in docs/validation/scale-recalibration-proposal.md) | `6ee4368`, `a4be62e` |
 | amplicon_40 table format | Added 40-column amplicon intermediate serialization under --fisher (AmpliconOutputVariant.java:145) | `3076620` |
 | mark_dup_sv pe coordinate alignment | Fixed 1bp mate-pair window shift (pe instead of pe + 1) matching StructuralVariantsProcessor.java:1468 | `a2d6c81` |
 | SimpleMode SV splitread filter | Emulate var2vcf_valid.pl:197-205 dropping `<DUP>`/`<INV>` when splitreads < 1 in simple mode | `a2d6c81` |
