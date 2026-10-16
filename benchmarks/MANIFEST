@@ -50,3 +50,7 @@ truth.vcf.gz.tbi	derived:tabix	dec112e13c2b39c51f1c1ecd35ca2f87	computed-locally
 truth.nofilter.vcf.gz	derived:bcftools-nofilter	b9ed21fc2779b05259bb48bb9d3d3bb6	computed-locally	908686	2026-10-10T10:21:00-07:00
 truth.nofilter.vcf.gz.tbi	derived:tabix	d4bbbe4ef792883072784e78dcc747bb	computed-locally	8568	2026-10-10T10:21:00-07:00
 
+README.md	https://zenodo.org/api/records/22955424/files/README.md/content	8bb795e30739754a81ec48f45e542b53	upstream	4370	2026-10-16T16:01:50-07:00
+Figure_data.zip	https://zenodo.org/api/records/22955424/files/Figure_data.zip/content	8b79769889e4424e2d0db9026343a896	upstream	13637860	2026-10-16T16:01:50-07:00
+biorxiv.pdf	https://doi.org/10.64898/2026.09.23.753771	098e10657992d20108dec7913694cc58	computed-locally	396827	2026-10-16T16:01:50-07:00
+Archive.zip	https://zenodo.org/api/records/22955424/files/Archive.zip/content	7bbcd523e3c3c38b8ce56f926ddf30c8	upstream	4075298167	2026-10-16T16:01:50-07:00
