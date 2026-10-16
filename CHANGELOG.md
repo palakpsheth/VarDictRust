@@ -57,7 +57,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   version bumps preserve the certified engine fingerprint (`388f4a545470d12a`)
   while external dependencies, profiles, features, and sources remain hashed.
 - Re-certified all 16 evidence artifacts in `benchmarks/evidence/` under
-  fingerprint `388f4a545470d12a` on the 14-core i7-13700H workstation.
+  fingerprint `388f4a545470d12a` on the 14-core i7-13700H workstation (chip; benchmarks at -th 8, scale pin P=4 physical).
 
 ### Fixed
 

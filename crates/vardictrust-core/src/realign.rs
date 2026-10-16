@@ -1038,7 +1038,7 @@ pub fn realigndel(
                         &adaptor_forward,
                         &adaptor_reverse,
                     );
-                    if dcnt <= 2 && (tv.variation.cnt as f64) / (dcnt as f64) > 5.0 {
+                    if dcnt <= 2 && tv.variation.cnt.checked_div(dcnt).is_none_or(|r| r > 5) {
                         continue;
                     }
                     if config.verbose {
@@ -1101,7 +1101,7 @@ pub fn realigndel(
                         &adaptor_forward,
                         &adaptor_reverse,
                     );
-                    if dcnt <= 2 && (tv.variation.cnt as f64) / (dcnt as f64) > 5.0 {
+                    if dcnt <= 2 && tv.variation.cnt.checked_div(dcnt).is_none_or(|r| r > 5) {
                         continue;
                     }
 
@@ -1987,7 +1987,12 @@ pub fn realignlgdel(
         } else {
             dellen -= extra_str.len() as i32;
             if dellen == 0 {
-                gt = format!("-^{}", String::from_utf8_lossy(&extra_str)).into_bytes();
+                gt = format!(
+                    "-{}^{}",
+                    extra_str.len(),
+                    String::from_utf8_lossy(&extra_str)
+                )
+                .into_bytes();
             } else {
                 gt = format!("-{}&{}", dellen, String::from_utf8_lossy(&extra_str)).into_bytes();
             }
@@ -5131,6 +5136,247 @@ mod tests {
         assert!(
             !insertion_variants.is_empty(),
             "Insertion variants must be created"
+        );
+    }
+
+    #[test]
+    fn test_realigndel_softclip_ratio_uses_java_integer_division() {
+        // ports VariationRealigner.java:561, 587:
+        // `if (dcnt <= 2 && tv.varsCount / dcnt > 5) continue;`
+        // 1. For dcnt = 2 and varsCount = 11, 11 / 2 == 5 (not > 5) -> rescued.
+        // 2. For dcnt = 2 and varsCount = 12, 12 / 2 == 6 > 5 -> skipped.
+        // 3. For dcnt = 0, checked_div returns None -> skipped without panic (AGENTS.md §9).
+        let mut reference = Reference::new();
+        reference
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 1,
+                sequence_end: 30,
+            });
+        // 1..=9: 'A', 10..=12: 'T' (deleted -3 at p=10), 13..=30: 'C'
+        let mut ref_seq = vec![b'A'; 9];
+        ref_seq.extend_from_slice(b"TTT");
+        ref_seq.extend_from_slice(&[b'C'; 18]);
+        reference
+            .reference_sequences
+            .insert("chr1".to_string(), ref_seq);
+        let config = crate::config::Config::default();
+
+        // Sub-case 1: cnt = 11, dcnt = 2 -> 11 / 2 == 5 (not > 5) -> rescued
+        {
+            let mut position_to_deletion_count = BTreeMap::new();
+            let mut del_map = std::collections::HashMap::new();
+            del_map.insert("-3".to_string(), 2);
+            position_to_deletion_count.insert(10, del_map);
+
+            let mut non_insertion_variants = crate::javamap::JavaHashMap::new();
+            let mut map10 = VariationMap::new();
+            map10.map.insert(
+                "-3".to_string(),
+                crate::variations::Variation {
+                    cnt: 2,
+                    qmean: 60.0,
+                    pmean: 20.0,
+                    ..Default::default()
+                },
+            );
+            non_insertion_variants.insert(10, map10);
+
+            let mut ref_coverage = BTreeMap::new();
+            ref_coverage.insert(10, 20);
+
+            let mut soft_clips_5_end = BTreeMap::new();
+            let mut sc5 = Sclip::new();
+            sc5.variation.cnt = 11;
+            sc5.sequence = Some(b"AAAAAA".to_vec());
+            soft_clips_5_end.insert(13, sc5);
+
+            let mut soft_clips_3_end = BTreeMap::new();
+            let mut sc3 = Sclip::new();
+            sc3.variation.cnt = 11;
+            sc3.sequence = Some(b"CCCCCC".to_vec());
+            soft_clips_3_end.insert(10, sc3);
+
+            realigndel(
+                None,
+                &position_to_deletion_count,
+                &reference,
+                "chr1",
+                30,
+                &config,
+                &mut non_insertion_variants,
+                &mut ref_coverage,
+                &mut soft_clips_5_end,
+                &mut soft_clips_3_end,
+                100,
+            );
+
+            assert!(
+                soft_clips_5_end.get(&13).unwrap().used,
+                "5' softclip with cnt=11, dcnt=2 has 11/2 == 5 (not > 5) and must be rescued"
+            );
+            assert!(
+                soft_clips_3_end.get(&10).unwrap().used,
+                "3' softclip with cnt=11, dcnt=2 has 11/2 == 5 (not > 5) and must be rescued"
+            );
+            let var10 = non_insertion_variants
+                .get(&10)
+                .unwrap()
+                .map
+                .get("-3")
+                .unwrap();
+            assert_eq!(var10.cnt, 2 + 11 + 11);
+        }
+
+        // Sub-case 2: cnt = 12, dcnt = 2 -> 12 / 2 == 6 > 5 -> skipped
+        // Sub-case 3: cnt = 4, dcnt = 0 -> checked_div is None -> skipped without panic
+        for (dcnt, clip_cnt) in [(2, 12), (0, 4)] {
+            let mut position_to_deletion_count = BTreeMap::new();
+            let mut del_map = std::collections::HashMap::new();
+            del_map.insert("-3".to_string(), dcnt);
+            position_to_deletion_count.insert(10, del_map);
+
+            let mut non_insertion_variants = crate::javamap::JavaHashMap::new();
+            let mut map10 = VariationMap::new();
+            map10.map.insert(
+                "-3".to_string(),
+                crate::variations::Variation {
+                    cnt: 2,
+                    qmean: 60.0,
+                    pmean: 20.0,
+                    ..Default::default()
+                },
+            );
+            non_insertion_variants.insert(10, map10);
+
+            let mut ref_coverage = BTreeMap::new();
+            ref_coverage.insert(10, 20);
+
+            let mut soft_clips_5_end = BTreeMap::new();
+            let mut sc5 = Sclip::new();
+            sc5.variation.cnt = clip_cnt;
+            sc5.sequence = Some(b"AAAAAA".to_vec());
+            soft_clips_5_end.insert(13, sc5);
+
+            let mut soft_clips_3_end = BTreeMap::new();
+            let mut sc3 = Sclip::new();
+            sc3.variation.cnt = clip_cnt;
+            sc3.sequence = Some(b"CCCCCC".to_vec());
+            soft_clips_3_end.insert(10, sc3);
+
+            realigndel(
+                None,
+                &position_to_deletion_count,
+                &reference,
+                "chr1",
+                30,
+                &config,
+                &mut non_insertion_variants,
+                &mut ref_coverage,
+                &mut soft_clips_5_end,
+                &mut soft_clips_3_end,
+                100,
+            );
+
+            assert!(!soft_clips_5_end.get(&13).unwrap().used);
+            assert!(!soft_clips_3_end.get(&10).unwrap().used);
+            let var10 = non_insertion_variants
+                .get(&10)
+                .unwrap()
+                .map
+                .get("-3")
+                .unwrap();
+            assert_eq!(var10.cnt, 2);
+        }
+    }
+
+    #[test]
+    fn test_lgdel_dellen_zero_includes_extra_len_in_variant_key() {
+        // ports VariationRealigner.java:1078-1079:
+        // `dellen -= EXTRA.length();`
+        // `gt = dellen == 0 ? "-" + EXTRA.length() + "^" + EXTRA : "-" + dellen + "&" + EXTRA;`
+        // Reachable when `p - bp_initial == 16` (passes `p - bp > 15` at :1028),
+        // `bp++` makes `dellen = p - bp = 15`, and `findMatch` returns a 15-bp
+        // `EXTRA` (`ii = 15`), yielding `dellen == 0`.
+        let mut reference = Reference::new();
+        reference
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 1,
+                sequence_end: 100,
+            });
+        let mut ref_seq = vec![b'A'; 100];
+        let seed_seq = b"ACGTACGTACGTACGTA"; // 17 bp placed at 1-based 28..=44
+        ref_seq[27..44].copy_from_slice(seed_seq);
+        reference
+            .reference_sequences
+            .insert("chr1".to_string(), ref_seq);
+        reference.seed.insert(seed_seq.to_vec(), vec![28]);
+
+        // 5' softclip at p = 60 with cnt = 5.
+        // Forward orientation (seq_vec after reverse in find_match with dir=-1):
+        // 17-bp seed_seq (matching 28..=44) + 15-bp EXTRA of 'C's (mismatching 'A's at 45..=59).
+        // Initial bp in find_match = 28 + 32 - 0 - 1 = 59.
+        // At ii = 15: bp_mut = 59 - 15 = 44, sseq = seed_seq (matches 28..=44),
+        // EXTRA = "CCCCCCCCCCCCCCC" (len 15).
+        // In realignlgdel: p - bp = 60 - 44 = 16 > 15; bp++ -> 45;
+        // dellen = 60 - 45 = 15; dellen -= 15 -> 0.
+        let extra_15 = b"CCCCCCCCCCCCCCC";
+        let mut forward_clip = seed_seq.to_vec();
+        forward_clip.extend_from_slice(extra_15);
+        let mut sc_seq = forward_clip;
+        sc_seq.reverse(); // stored reversed in 5' Sclip
+
+        let mut soft_clips_5_end = BTreeMap::new();
+        let mut sc = Sclip::new();
+        sc.variation.cnt = 5;
+        sc.sequence = Some(sc_seq);
+        soft_clips_5_end.insert(60, sc);
+
+        let mut non_insertion_variants = crate::javamap::JavaHashMap::new();
+        let mut insertion_variants = crate::javamap::JavaHashMap::new();
+        let mut ref_coverage = BTreeMap::new();
+        ref_coverage.insert(60, 10);
+        let mut soft_clips_3_end = BTreeMap::new();
+        let mut svfdel = Vec::new();
+        let mut svrdel = Vec::new();
+
+        let mut config = crate::config::Config::default();
+        config.indel_size = 5; // ensure find_bp returns 0 so find_match runs
+        let region = crate::regions::Region {
+            chr: "chr1".to_string(),
+            start: Pos1(1),
+            end: Pos1(100),
+            gene: String::new(),
+            amplicon: None,
+        };
+
+        realignlgdel(
+            None,
+            &mut reference,
+            "chr1",
+            100,
+            &region,
+            &config,
+            &mut non_insertion_variants,
+            &mut insertion_variants,
+            &mut ref_coverage,
+            &mut soft_clips_5_end,
+            &mut soft_clips_3_end,
+            100,
+            &mut svfdel,
+            &mut svrdel,
+        );
+
+        let entry45 = non_insertion_variants
+            .get(&45)
+            .expect("variant at bp=45 must be created");
+        assert!(
+            entry45.map.contains_key("-15^CCCCCCCCCCCCCCC"),
+            "expected Java key '-15^CCCCCCCCCCCCCCC', got keys: {:?}",
+            entry45.map.keys().collect::<Vec<_>>()
         );
     }
 }

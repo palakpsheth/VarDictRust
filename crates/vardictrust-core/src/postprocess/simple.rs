@@ -33,10 +33,11 @@ pub fn simple_post_process(
 ) -> Vec<Variant> {
     let mut vrefs = Vec::new();
 
-    // Iterate over positions sorted by key
-    let sorted_positions: Vec<i32> = aligned_variants.keys().copied().collect();
+    // Collect positions in JavaHashMap table-bucket iteration order
+    // (ports SimplePostProcessModule.java:35; see DIVERGENCES.md UB-3).
+    let positions: Vec<i32> = aligned_variants.keys().copied().collect();
 
-    for &position in &sorted_positions {
+    for &position in &positions {
         if let Some(variants_on_position) = aligned_variants.get(&position) {
             let sv = &variants_on_position.sv;
 

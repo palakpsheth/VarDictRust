@@ -1346,7 +1346,7 @@ pub fn find_del(
                 &adaptor_forward,
                 &adaptor_reverse,
             );
-            if seq.is_empty() || seq.len() < 17 {
+            if seq.is_empty() || seq.len() < 12 {
                 continue;
             }
 
@@ -1358,7 +1358,7 @@ pub fn find_del(
                     gene: String::new(),
                     amplicon: None,
                 };
-                get_reference(&mod_region, 500, chromosomes_lengths, config, reference)?;
+                get_reference(&mod_region, 300, chromosomes_lengths, config, reference)?;
                 partial_pipeline(
                     bam_path,
                     var_data,
@@ -1495,7 +1495,7 @@ pub fn find_del(
                     gene: String::new(),
                     amplicon: None,
                 };
-                get_reference(&mod_region, 500, chromosomes_lengths, config, reference)?;
+                get_reference(&mod_region, 300, chromosomes_lengths, config, reference)?;
             }
             let mut matched_j = None;
             let max_read_length = var_data.max_read_length;
@@ -1512,13 +1512,13 @@ pub fn find_del(
                     &adaptor_forward,
                     &adaptor_reverse,
                 );
-                if seq.is_empty() || seq.len() < 17 {
+                if seq.is_empty() || seq.len() < 12 {
                     continue;
                 }
                 let match_res = find_match(&seq, reference, i, 1, 17, 3, chr, verbose);
                 let mut bp = match_res.base_position;
                 if bp == 0 {
-                    let match_res_lenient = find_match(&seq, reference, i, 1, 17, 0, chr, verbose);
+                    let match_res_lenient = find_match(&seq, reference, i, 1, 12, 0, chr, verbose);
                     bp = match_res_lenient.base_position;
                 }
                 if bp == 0 {
@@ -1660,7 +1660,7 @@ pub fn find_del(
                 &adaptor_forward,
                 &adaptor_reverse,
             );
-            if seq.is_empty() || seq.len() < 17 {
+            if seq.is_empty() || seq.len() < 12 {
                 continue;
             }
 
@@ -1673,7 +1673,7 @@ pub fn find_del(
                     gene: String::new(),
                     amplicon: None,
                 };
-                get_reference(&mod_region, 500, chromosomes_lengths, config, reference)?;
+                get_reference(&mod_region, 300, chromosomes_lengths, config, reference)?;
                 partial_pipeline(
                     bam_path,
                     var_data,
@@ -1690,7 +1690,7 @@ pub fn find_del(
             let mut bp = match_res.base_position;
             if bp == 0 {
                 let match_res_lenient =
-                    find_match(&seq, reference, softp_cand, -1, 17, 0, chr, verbose);
+                    find_match(&seq, reference, softp_cand, -1, 12, 0, chr, verbose);
                 bp = match_res_lenient.base_position;
             }
             if bp == 0 {
@@ -1787,7 +1787,7 @@ pub fn find_del(
                     gene: String::new(),
                     amplicon: None,
                 };
-                get_reference(&mod_region, 500, chromosomes_lengths, config, reference)?;
+                get_reference(&mod_region, 300, chromosomes_lengths, config, reference)?;
             }
             let mut matched_j = None;
             let max_read_length = var_data.max_read_length;
@@ -1804,13 +1804,13 @@ pub fn find_del(
                     &adaptor_forward,
                     &adaptor_reverse,
                 );
-                if seq.is_empty() || seq.len() < 17 {
+                if seq.is_empty() || seq.len() < 12 {
                     continue;
                 }
                 let match_res = find_match(&seq, reference, i, -1, 17, 3, chr, verbose);
                 let mut bp = match_res.base_position;
                 if bp == 0 {
-                    let match_res_lenient = find_match(&seq, reference, i, -1, 17, 0, chr, verbose);
+                    let match_res_lenient = find_match(&seq, reference, i, -1, 12, 0, chr, verbose);
                     bp = match_res_lenient.base_position;
                 }
                 if bp == 0 {
@@ -1982,7 +1982,7 @@ pub fn find_sv(
 
         let seq =
             crate::variations::util::find_conseq(&mut sc5v, 0, &adaptor_forward, &adaptor_reverse);
-        if seq.is_empty() || seq.len() < 17 {
+        if seq.is_empty() || seq.len() < 12 {
             continue;
         }
 
@@ -2157,7 +2157,7 @@ pub fn find_sv(
         let seq =
             crate::variations::util::find_conseq(&mut sc3v, 0, &adaptor_forward, &adaptor_reverse);
 
-        if seq.is_empty() || seq.len() < 17 {
+        if seq.is_empty() || seq.len() < 12 {
             continue;
         }
 
@@ -3979,5 +3979,184 @@ mod tests {
         assert_eq!(cluster.mate.qmean, 62.0);
         assert_eq!(cluster.mate.mqmean, 82.0);
         assert_eq!(cluster.mate.nm, 1.0);
+    }
+
+    #[test]
+    fn test_find_del_retries_with_seed2_on_short_softclips() {
+        // ports StructuralVariantsProcessor.java:251-262, 337-354, 412-423:
+        // findDEL gates on `seq.length() < Configuration.SEED_2` (12) and
+        // retries `findMatch(seq, reference, softp, dir, Configuration.SEED_2, 0)`
+        // across all three retry branches when the 17-mer (SEED_1) lookup returns bp == 0.
+        let chr = "chrT";
+        let seed12 = b"ACGTACGTACGT"; // 12-mer (SEED_2), < 17 bp (SEED_1)
+        let clip14 = b"ACGTACGTACGTCC"; // 14 bp: >= SEED_2 (12) but < SEED_1 (17)
+
+        // 1. svfdel scan branch (softp == 0, scans soft_clips_3_end, dir = 1, :251-262)
+        {
+            let mut reference = Reference::default();
+            reference
+                .loaded_regions
+                .push(crate::reference::LoadedRegion {
+                    chr: chr.to_string(),
+                    sequence_start: 1,
+                    sequence_end: 1000,
+                });
+            let mut ref_seq = vec![b'A'; 1000];
+            ref_seq[399..413].copy_from_slice(clip14); // 1-based 400..=413
+            reference.seed.insert(seed12.to_vec(), vec![400]);
+            reference
+                .reference_sequences
+                .insert(chr.to_string(), ref_seq);
+
+            let mut var_data = crate::variations::VariationData::default();
+            var_data.max_read_length = 100;
+            let mut del = Sclip::default();
+            del.variation.cnt = 4;
+            del.start = 100;
+            del.end = 150;
+            del.mstart = 380;
+            del.mend = 450;
+            var_data.sv_structures.svfdel.push(del);
+
+            let mut sc3 = Sclip::default();
+            sc3.variation.cnt = 3;
+            sc3.sequence = Some(clip14.to_vec());
+            var_data.soft_clips_3_end.insert(155, sc3); // i >= end - 3 && i - end < 300
+
+            let mut chromosomes_lengths = HashMap::new();
+            chromosomes_lengths.insert(chr.to_string(), 1000usize);
+            let config = crate::config::Config::default();
+
+            find_del(
+                &mut var_data,
+                std::path::Path::new(""),
+                &mut reference,
+                chr,
+                &config,
+                &chromosomes_lengths,
+            )
+            .unwrap();
+
+            // bp = 400 -> bp -= 1 (399), dellen = 399 - 155 + 1 = 245 at softp = 155
+            let entry = var_data
+                .non_insertion_variants
+                .get(&155)
+                .expect("svfdel scan branch must call DEL via SEED_2=12 retry");
+            assert!(entry.map.contains_key("-245"));
+        }
+
+        // 2. svrdel anchored branch (softp != 0, soft_clips_5_end, dir = -1, :337-354)
+        {
+            let mut reference = Reference::default();
+            reference
+                .loaded_regions
+                .push(crate::reference::LoadedRegion {
+                    chr: chr.to_string(),
+                    sequence_start: 1,
+                    sequence_end: 1000,
+                });
+            let mut ref_seq = vec![b'A'; 1000];
+            ref_seq[186..200].copy_from_slice(clip14); // 1-based 187..=200
+            reference.seed.insert(seed12.to_vec(), vec![187]);
+            reference
+                .reference_sequences
+                .insert(chr.to_string(), ref_seq);
+
+            let mut var_data = crate::variations::VariationData::default();
+            var_data.max_read_length = 100;
+            let mut del = Sclip::default();
+            del.variation.cnt = 4;
+            del.start = 400;
+            del.end = 450;
+            del.mstart = 150;
+            del.mend = 210;
+            del.soft.insert(400, 3); // softp_cand = 400
+            var_data.sv_structures.svrdel.push(del);
+
+            let mut rev_clip = clip14.to_vec();
+            rev_clip.reverse(); // 5' softclip stores reversed sequence
+            let mut sc5 = Sclip::default();
+            sc5.variation.cnt = 3;
+            sc5.sequence = Some(rev_clip);
+            var_data.soft_clips_5_end.insert(400, sc5);
+
+            let mut chromosomes_lengths = HashMap::new();
+            chromosomes_lengths.insert(chr.to_string(), 1000usize);
+            let config = crate::config::Config::default();
+
+            find_del(
+                &mut var_data,
+                std::path::Path::new(""),
+                &mut reference,
+                chr,
+                &config,
+                &chromosomes_lengths,
+            )
+            .unwrap();
+
+            // find_match(dir=-1): first_seed=187, i=0, len=14 -> bp = 187 + 14 - 0 - 1 = 200
+            // bp += 1 -> 201, softp = 399, dellen = 399 - 201 + 1 = 199 at bp = 201
+            let entry = var_data
+                .non_insertion_variants
+                .get(&201)
+                .expect("svrdel anchored branch must call DEL via SEED_2=12 retry");
+            assert!(entry.map.contains_key("-199"));
+        }
+
+        // 3. svrdel scan branch (softp == 0, scans soft_clips_5_end, dir = -1, :412-423)
+        {
+            let mut reference = Reference::default();
+            reference
+                .loaded_regions
+                .push(crate::reference::LoadedRegion {
+                    chr: chr.to_string(),
+                    sequence_start: 1,
+                    sequence_end: 1000,
+                });
+            let mut ref_seq = vec![b'A'; 1000];
+            ref_seq[186..200].copy_from_slice(clip14); // 1-based 187..=200
+            reference.seed.insert(seed12.to_vec(), vec![187]);
+            reference
+                .reference_sequences
+                .insert(chr.to_string(), ref_seq);
+
+            let mut var_data = crate::variations::VariationData::default();
+            var_data.max_read_length = 100;
+            let mut del = Sclip::default();
+            del.variation.cnt = 4;
+            del.start = 400;
+            del.end = 450;
+            del.mstart = 150;
+            del.mend = 210;
+            // del.soft left empty so softp_cand == 0 -> enters svrdel scan branch
+            var_data.sv_structures.svrdel.push(del);
+
+            let mut rev_clip = clip14.to_vec();
+            rev_clip.reverse(); // 5' softclip stores reversed sequence
+            let mut sc5 = Sclip::default();
+            sc5.variation.cnt = 3;
+            sc5.sequence = Some(rev_clip);
+            var_data.soft_clips_5_end.insert(400, sc5); // i <= start + 3 && start - i < 300
+
+            let mut chromosomes_lengths = HashMap::new();
+            chromosomes_lengths.insert(chr.to_string(), 1000usize);
+            let config = crate::config::Config::default();
+
+            find_del(
+                &mut var_data,
+                std::path::Path::new(""),
+                &mut reference,
+                chr,
+                &config,
+                &chromosomes_lengths,
+            )
+            .unwrap();
+
+            let entry = var_data
+                .non_insertion_variants
+                .get(&201)
+                .expect("svrdel scan branch must call DEL via SEED_2=12 retry");
+            assert!(entry.map.contains_key("-199"));
+        }
     }
 }
