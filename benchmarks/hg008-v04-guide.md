@@ -43,6 +43,16 @@ Reusable inputs and evidence (all timings `/usr/bin/time -v`, flags
   R 0.927→0.633); presence-filtering costs 32 TP.
 * **Passage drift (p2 vs 0823p23, same window/flags):** 909 shared /
   426 batch-only / 455 p2-only; 40 shared sites |ΔAF|≥0.2 (top: 1.0→0.03).
+* **AF-threshold sweep (tumor-only chr1, 109 truth):** any-presence F1=0.340 →
+  af0.01 F1=0.357 (P 0.229 / R 0.807); F1 flat ~0.356 across cutoffs while recall
+  climbs 0.63→0.86 — precision is capped by non-germline FPs (needs PoN, not AF tuning).
+* **V0.6 SV/CNV (BLOCKED, filed as finding):** truth pulled (368 KB, tracked in
+  `assets.tsv`). truvari 5.5.0 bench of PASS somatic SV calls: 0 TP / 210 FN —
+  engine SV records (`<DEL>`/`<DUP>`/`<INV>`) carry no SVLEN/END, so truvari
+  discards all 5 query SVs (`comp cnt: 0`). Only 5/28 SV-class calls are even
+  PASS+somatic. V0.6 eval is blocked on SV output representation, not biology;
+  no engine tuning attempted here. CNV benchmarking has no established method
+  per the V0.6 README — not attempted.
 * **Edge finding:** BED vs `-R` modes agree on keys/order; 5/97 records differ
   in DP by ≤3 reads in MSI≥13 poly-A — always use BED mode for truth work.
 
