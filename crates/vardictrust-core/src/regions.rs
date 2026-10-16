@@ -93,7 +93,7 @@ pub fn tile(region: &Region, tile_size: u32, halo: u32) -> Vec<Tile> {
 
     let mut curr_start = reg_start;
     while curr_start <= reg_end {
-        let mut curr_end = curr_start + tile_size - 1;
+        let mut curr_end = curr_start.saturating_add(tile_size).saturating_sub(1);
         if curr_end > reg_end {
             curr_end = reg_end;
         }
@@ -107,7 +107,7 @@ pub fn tile(region: &Region, tile_size: u32, halo: u32) -> Vec<Tile> {
             halo_start_val = reg_start;
         }
 
-        let mut halo_end_val = curr_end + halo;
+        let mut halo_end_val = curr_end.saturating_add(halo);
         if halo_end_val > reg_end {
             halo_end_val = reg_end;
         }
@@ -128,7 +128,7 @@ pub fn tile(region: &Region, tile_size: u32, halo: u32) -> Vec<Tile> {
             break;
         }
 
-        curr_start += tile_size;
+        curr_start = curr_start.saturating_add(tile_size);
     }
 
     tiles

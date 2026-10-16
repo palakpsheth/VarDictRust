@@ -222,14 +222,24 @@ pub fn is_best_sv_used(var_data: &crate::variations::VariationData, softp: i32) 
         check_sv(sv);
     }
 
-    for sv_list in var_data.sv_structures.svffus.values() {
-        for sv in sv_list {
-            check_sv(sv);
+    let mut fus_keys: Vec<&String> = var_data
+        .sv_structures
+        .svffus
+        .keys()
+        .chain(var_data.sv_structures.svrfus.keys())
+        .collect();
+    fus_keys.sort();
+    fus_keys.dedup();
+    for key in fus_keys {
+        if let Some(sv_list) = var_data.sv_structures.svffus.get(key) {
+            for sv in sv_list {
+                check_sv(sv);
+            }
         }
-    }
-    for sv_list in var_data.sv_structures.svrfus.values() {
-        for sv in sv_list {
-            check_sv(sv);
+        if let Some(sv_list) = var_data.sv_structures.svrfus.get(key) {
+            for sv in sv_list {
+                check_sv(sv);
+            }
         }
     }
 

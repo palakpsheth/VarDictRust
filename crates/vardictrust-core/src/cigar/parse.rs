@@ -67,6 +67,15 @@ fn get_adjusted_nm(record: &SamRecord) -> i32 {
         .unwrap_or(0)
 }
 
+/// Phred quality at `idx`, defaulting missing/truncated QUAL (`*`) to 0.
+/// Ports Java leniency: `getBaseQualityString` may yield `*`/short string where
+/// `charAt(i)-33` would throw; Rust must not crash (AGENTS §11) — fail the
+/// `base_qual` filter instead. `shortcut: O(1) bounds check, no upgrade needed`.
+#[inline]
+fn qual_phred<Q: AsRef<[u8]>>(query_qual: &Q, idx: usize) -> f64 {
+    query_qual.as_ref().get(idx).copied().unwrap_or(33) as f64 - 33.0
+}
+
 impl<'a> CigarParser<'a> {
     /// Create a new CigarParser with given reference, region, and config.
     /// Ports `CigarParser.java:61-68`.
@@ -414,7 +423,7 @@ impl<'a> CigarParser<'a> {
                             continue;
                         }
 
-                        let mut q = query_qual[read_pos_inc] as f64 - 33.0;
+                        let mut q = qual_phred(&query_qual, read_pos_inc);
                         let mut qbases = 1;
                         let mut qibases = 0;
                         let mut ss = String::new();
@@ -439,7 +448,7 @@ impl<'a> CigarParser<'a> {
                             if next_read_idx >= query_seq.len() {
                                 break;
                             }
-                            if (query_qual[next_read_idx] as f64 - 33.0)
+                            if (qual_phred(&query_qual, next_read_idx))
                                 < self.config.base_qual + 5.0
                             {
                                 break;
@@ -457,7 +466,7 @@ impl<'a> CigarParser<'a> {
                                 }
                                 if nuc != next_ref_base {
                                     ss.push(nuc as char);
-                                    q += query_qual[next_read_idx] as f64 - 33.0;
+                                    q += qual_phred(&query_qual, next_read_idx);
                                     qbases += 1;
                                     read_pos_inc += 1;
                                     read_pos_exc += 1;
@@ -493,7 +502,7 @@ impl<'a> CigarParser<'a> {
                                     }
                                     let ssn_read_idx = read_pos_inc + ssn;
                                     if ssn_read_idx >= query_seq.len()
-                                        || (query_qual[ssn_read_idx] as f64 - 33.0)
+                                        || (qual_phred(&query_qual, ssn_read_idx))
                                             < self.config.base_qual + 5.0
                                     {
                                         break;
@@ -501,7 +510,7 @@ impl<'a> CigarParser<'a> {
                                     for ssi in 1..=ssn {
                                         let idx = read_pos_inc + ssi;
                                         ss.push(query_seq[idx] as char);
-                                        q += query_qual[idx] as f64 - 33.0;
+                                        q += qual_phred(&query_qual, idx);
                                         qbases += 1;
                                     }
                                     read_pos_inc += ssn;
@@ -841,7 +850,11 @@ impl<'a> CigarParser<'a> {
         if read_pos_inc >= query_seq.len() {
             return false;
         }
-        let q = query_qual[read_pos_inc].saturating_sub(33) as f64;
+        let q = query_qual
+            .get(read_pos_inc)
+            .copied()
+            .unwrap_or(33)
+            .saturating_sub(33) as f64;
         if q < self.config.base_qual {
             return false;
         }
@@ -1094,7 +1107,13 @@ impl<'a> CigarParser<'a> {
                     if q_char == b'N' || q_char == b'n' {
                         break;
                     }
-                    if (query_qual[tn_idx].saturating_sub(33) as f64) < self.config.base_qual {
+                    if (query_qual
+                        .get(tn_idx)
+                        .copied()
+                        .unwrap_or(33)
+                        .saturating_sub(33) as f64)
+                        < self.config.base_qual
+                    {
                         break;
                     }
                     let ts_pos = ts + vi as i32;
@@ -1153,7 +1172,13 @@ impl<'a> CigarParser<'a> {
                     if q_char == b'N' || q_char == b'n' {
                         break;
                     }
-                    if (query_qual[tn_idx].saturating_sub(33) as f64) < self.config.base_qual {
+                    if (query_qual
+                        .get(tn_idx)
+                        .copied()
+                        .unwrap_or(33)
+                        .saturating_sub(33) as f64)
+                        < self.config.base_qual
+                    {
                         break;
                     }
                     let ts_pos = ts + vi as i32;
@@ -1200,7 +1225,13 @@ impl<'a> CigarParser<'a> {
                     if q_char == b'N' || q_char == b'n' {
                         break;
                     }
-                    if (query_qual[idx].saturating_sub(33) as f64) < self.config.base_qual {
+                    if (query_qual
+                        .get(idx)
+                        .copied()
+                        .unwrap_or(33)
+                        .saturating_sub(33) as f64)
+                        < self.config.base_qual
+                    {
                         break;
                     }
                     let ts_pos = *start + cigar_element_len as i32 + vi as i32;
@@ -1240,7 +1271,7 @@ impl<'a> CigarParser<'a> {
         if next_q_idx >= query_qual.len() {
             quality_of_segment.push(quality_of_last_segment_before_del as char);
         } else {
-            let quality_of_segment_with_offset = query_qual[next_q_idx];
+            let quality_of_segment_with_offset = query_qual.get(next_q_idx).copied().unwrap_or(33);
             let best_qual = if quality_of_last_segment_before_del > quality_of_segment_with_offset {
                 quality_of_last_segment_before_del
             } else {
@@ -1379,7 +1410,13 @@ impl<'a> CigarParser<'a> {
                     if q_char == b'N' || q_char == b'n' {
                         break;
                     }
-                    if (query_qual[idx].saturating_sub(33) as f64) < self.config.base_qual {
+                    if (query_qual
+                        .get(idx)
+                        .copied()
+                        .unwrap_or(33)
+                        .saturating_sub(33) as f64)
+                        < self.config.base_qual
+                    {
                         break;
                     }
                     let ts_pos = *start + vi as i32;
@@ -1938,7 +1975,11 @@ impl<'a> CigarParser<'a> {
                     break;
                 };
                 let q_base = query_seq[*read_pos_inc];
-                let base_qual = query_qual[*read_pos_inc].saturating_sub(33);
+                let base_qual = query_qual
+                    .get(*read_pos_inc)
+                    .copied()
+                    .unwrap_or(33)
+                    .saturating_sub(33);
                 if q_base == ref_base && base_qual > 10 {
                     let ref_base_str = (ref_base as char).to_string();
                     let variation =
@@ -1974,7 +2015,11 @@ impl<'a> CigarParser<'a> {
                     if q_char == b'N' || q_char == b'n' {
                         break;
                     }
-                    let base_qual = query_qual[idx].saturating_sub(33);
+                    let base_qual = query_qual
+                        .get(idx)
+                        .copied()
+                        .unwrap_or(33)
+                        .saturating_sub(33);
                     if base_qual <= 12 {
                         number_of_low_quality_bases += 1;
                     }
@@ -2143,7 +2188,7 @@ impl<'a> CigarParser<'a> {
             if matches!(op, CigarKind::SoftClip | CigarKind::HardClip) {
                 let len = len as usize;
                 if len > 0 && len <= query_qual.len() {
-                    let qual_val = query_qual[len - 1] as f64 - 33.0;
+                    let qual_val = qual_phred(&query_qual, len.saturating_sub(1));
                     if qual_val > self.config.base_qual {
                         soft5 = start;
                     }
@@ -2156,7 +2201,7 @@ impl<'a> CigarParser<'a> {
             if matches!(op, CigarKind::SoftClip | CigarKind::HardClip) {
                 let len = len as usize;
                 if len > 0 && query_qual.len() >= len {
-                    let qual_val = query_qual[query_qual.len() - len] as f64 - 33.0;
+                    let qual_val = qual_phred(&query_qual, query_qual.len().saturating_sub(len));
                     if qual_val > self.config.base_qual {
                         soft3 = end;
                     }
@@ -2223,7 +2268,7 @@ impl<'a> CigarParser<'a> {
                                 mlen,
                                 soft3,
                                 self.max_read_length as f64 / 2.0,
-                                query_qual[15] as f64 - 33.0,
+                                qual_phred(&query_qual, 15),
                                 mq as f64,
                                 number_of_mismatches as f64,
                                 self.config.base_qual,
@@ -2250,7 +2295,7 @@ impl<'a> CigarParser<'a> {
                                 mlen,
                                 soft5,
                                 self.max_read_length as f64 / 2.0,
-                                query_qual[15] as f64 - 33.0,
+                                qual_phred(&query_qual, 15),
                                 mq as f64,
                                 number_of_mismatches as f64,
                                 self.config.base_qual,
@@ -2341,7 +2386,7 @@ impl<'a> CigarParser<'a> {
                             mlen,
                             soft3,
                             self.max_read_length as f64 / 2.0,
-                            query_qual[15] as f64 - 33.0,
+                            qual_phred(&query_qual, 15),
                             mq as f64,
                             number_of_mismatches as f64,
                             self.config.base_qual,
@@ -2368,7 +2413,7 @@ impl<'a> CigarParser<'a> {
                             mlen,
                             soft5,
                             self.max_read_length as f64 / 2.0,
-                            query_qual[15] as f64 - 33.0,
+                            qual_phred(&query_qual, 15),
                             mq as f64,
                             number_of_mismatches as f64,
                             self.config.base_qual,
@@ -2455,7 +2500,7 @@ impl<'a> CigarParser<'a> {
                                 mlen,
                                 soft3,
                                 self.max_read_length as f64 / 2.0,
-                                query_qual[15] as f64 - 33.0,
+                                qual_phred(&query_qual, 15),
                                 mq as f64,
                                 number_of_mismatches as f64,
                                 self.config.base_qual,
@@ -2483,7 +2528,7 @@ impl<'a> CigarParser<'a> {
                                 mlen,
                                 soft3,
                                 self.max_read_length as f64 / 2.0,
-                                query_qual[15] as f64 - 33.0,
+                                qual_phred(&query_qual, 15),
                                 mq as f64,
                                 number_of_mismatches as f64,
                                 self.config.base_qual,
@@ -2513,7 +2558,7 @@ impl<'a> CigarParser<'a> {
                                 mlen,
                                 soft5,
                                 self.max_read_length as f64 / 2.0,
-                                query_qual[15] as f64 - 33.0,
+                                qual_phred(&query_qual, 15),
                                 mq as f64,
                                 number_of_mismatches as f64,
                                 self.config.base_qual,
@@ -2541,7 +2586,7 @@ impl<'a> CigarParser<'a> {
                                 mlen,
                                 soft5,
                                 self.max_read_length as f64 / 2.0,
-                                query_qual[15] as f64 - 33.0,
+                                qual_phred(&query_qual, 15),
                                 mq as f64,
                                 number_of_mismatches as f64,
                                 self.config.base_qual,
@@ -2631,7 +2676,7 @@ impl<'a> CigarParser<'a> {
                                 0,
                                 soft3,
                                 self.max_read_length as f64 / 2.0,
-                                query_qual[15] as f64 - 33.0,
+                                qual_phred(&query_qual, 15),
                                 mq as f64,
                                 number_of_mismatches as f64,
                                 self.config.base_qual,
@@ -2671,7 +2716,7 @@ impl<'a> CigarParser<'a> {
                                 0,
                                 soft5,
                                 self.max_read_length as f64 / 2.0,
-                                query_qual[15] as f64 - 33.0,
+                                qual_phred(&query_qual, 15),
                                 mq as f64,
                                 number_of_mismatches as f64,
                                 self.config.base_qual,

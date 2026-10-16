@@ -370,6 +370,14 @@ impl Cli {
                 "Invalid --tile-size: 0. Tile size must be >= 1".into(),
             ));
         }
+        if let Some(n) = self.tile_size {
+            if n > 10_000_000 {
+                return Err(vardictrust_core::types::VardictError::Parse(format!(
+                    "Invalid --tile-size: {}. Must be <= 10000000 to avoid u32 wrap",
+                    n
+                )));
+            }
+        }
 
         let (freq, min_reads) = if self.pileup {
             (-1.0, 0)

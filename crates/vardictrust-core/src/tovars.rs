@@ -302,7 +302,7 @@ impl<'a> ToVarsBuilder<'a> {
     }
 
     fn proceed_vref_is_insertion(&self, position: i32, vn: &str) -> MsiResult {
-        let tseq1 = &vn[1..];
+        let tseq1 = vn.strip_prefix('+').unwrap_or(vn);
         let leftseq = self.join_ref(std::cmp::max(position - 50, 1), position);
         let chr_len = self
             .chromosomes_lengths
@@ -765,8 +765,8 @@ impl<'a> ToVarsBuilder<'a> {
                     }
 
                     if description_string.starts_with('+') {
-                        refallele = refallele[1..].to_string();
-                        varallele = varallele[1..].to_string();
+                        refallele = refallele.get(1..).unwrap_or("").to_string();
+                        varallele = varallele.get(1..).unwrap_or("").to_string();
                         start_position += 1;
                     }
 
@@ -879,7 +879,7 @@ impl<'a> ToVarsBuilder<'a> {
                             refallele = self.join_ref(start_position, end_position);
                             let mut tva = String::new();
                             if refallele.len() < varallele.len() {
-                                tva = varallele[1..].to_string();
+                                tva = varallele.get(1..).unwrap_or("").to_string();
                                 if tva.len() > 1 {
                                     let ttn = (n as usize) % tva.len();
                                     if ttn != 0 {

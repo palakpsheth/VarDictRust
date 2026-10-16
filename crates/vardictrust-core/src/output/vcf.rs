@@ -982,7 +982,10 @@ fn paired_sample_field(
     oddratio: &(String, f64),
 ) -> String {
     let nm = if v.nm > 0.0 { v.nm } else { 0.0 };
-    let mq = format!("{:.0}", v.mean_mapping_quality);
+    let mq = format!(
+        "{:.0}",
+        crate::types::round_half_even(v.mean_mapping_quality, 0)
+    );
     format!(
         "{}:{}:{}:{},{}:{},{}:{},{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
         gt,
@@ -1233,7 +1236,7 @@ pub fn format_paired_vcf_record(
         if end_var.msi == 0.0 {
             "0".to_string()
         } else {
-            format!("{:.3}", end_var.msi)
+            format!("{:.3}", crate::types::round_half_even(end_var.msi, 3))
         },
         end_var.msint,
         get_rounded_value_to_print(ptot, 5),

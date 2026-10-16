@@ -22,7 +22,7 @@ impl Pos0 {
     /// Convert a 0-based position to 1-based.
     #[inline]
     pub fn to_one_based(self) -> Pos1 {
-        Pos1(self.0 + 1)
+        Pos1(self.0.saturating_add(1))
     }
 }
 
