@@ -40,7 +40,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Supply-Chain Advisory & License Compliance (cargo-deny)
-        run: cargo deny check advisories licenses
+        run: cargo deny check advisories licenses bans
 
       - name: RustSec Vulnerability Database Audit (cargo-audit)
         run: cargo audit

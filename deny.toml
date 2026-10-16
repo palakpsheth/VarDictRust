@@ -1,6 +1,16 @@
 # cargo-deny — minimal gate: security advisories + license compliance.
-# Run: cargo deny check advisories licenses
-# (P4e-lite: no bans/sources sections yet — add when dependency policy hardens.)
+# Run: cargo deny check advisories licenses bans
+# (P4e-lite: no sources section yet — add when dependency policy hardens.)
+
+[bans]
+# AGENTS §13: banned/hallucinated crates must fail the gate.
+deny = [
+    "genomicframe-core",
+    "rustalign-simd",
+    "ksw2rs",
+    "seqair",
+    "cyanea-align",
+]
 
 [advisories]
 version = 2

@@ -394,8 +394,10 @@ pub fn run(config: &config::Config) -> Result<(), VardictError> {
             let mut lines = Vec::new();
 
             if config_clone.splice {
-                for (intron, count_arr) in &var_data.splice_count {
-                    let count = count_arr[0];
+                let mut introns: Vec<&String> = var_data.splice_count.keys().collect();
+                introns.sort();
+                for intron in introns {
+                    let count = var_data.splice_count.get(intron).map(|a| a[0]).unwrap_or(0);
                     lines.push(format!(
                         "{}\t{}\t{}\t{}",
                         config_clone.sample, tile.chr, intron, count

@@ -31,9 +31,9 @@ impl FisherExact {
     ///          k (Fwd)   (Rev)
     /// ```
     pub fn new(ref_fwd: i32, ref_rev: i32, alt_fwd: i32, alt_rev: i32) -> Self {
-        let m = ref_fwd + ref_rev;
-        let n = alt_fwd + alt_rev;
-        let k = ref_fwd + alt_fwd;
+        let m = ref_fwd.saturating_add(ref_rev);
+        let n = alt_fwd.saturating_add(alt_rev);
+        let k = ref_fwd.saturating_add(alt_fwd);
         let x = ref_fwd;
         let lo = std::cmp::max(0, k - n);
         let hi = std::cmp::min(k, m);

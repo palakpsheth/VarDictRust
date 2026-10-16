@@ -3992,8 +3992,8 @@ fn partial_pipeline(
 
     let pileup_region = crate::regions::Region {
         chr: chr.to_string(),
-        start: Pos1(tts as u32),
-        end: Pos1(tte as u32),
+        start: Pos1(tts.max(1) as u32),
+        end: Pos1(tte.max(1) as u32),
         gene: String::new(),
         amplicon: None,
     };

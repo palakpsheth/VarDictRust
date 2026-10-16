@@ -630,26 +630,26 @@ fn fmt_1dp(v: f64) -> String {
     if v == 0.0 {
         "0".to_string()
     } else {
-        format!("{:.1}", v)
+        format!("{:.1}", crate::types::round_half_even(v, 1))
     }
 }
 fn fmt_3dp(v: f64) -> String {
     if v == 0.0 {
         "0".to_string()
     } else {
-        format!("{:.3}", v)
+        format!("{:.3}", crate::types::round_half_even(v, 3))
     }
 }
 fn fmt_4dp(v: f64) -> String {
     if v == 0.0 {
         "0".to_string()
     } else {
-        format!("{:.4}", v)
+        format!("{:.4}", crate::types::round_half_even(v, 4))
     }
 }
 fn fmt_nm(v: f64) -> String {
     if v > 0.0 {
-        format!("{:.1}", v)
+        format!("{:.1}", crate::types::round_half_even(v, 1))
     } else {
         "0".to_string()
     }

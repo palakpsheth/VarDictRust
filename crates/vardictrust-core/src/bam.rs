@@ -89,7 +89,7 @@ impl SamRecord {
 
         let mut quality_scores = Vec::with_capacity(record.quality_scores().len());
         for score in record.quality_scores().iter().flatten() {
-            quality_scores.push(score + 33);
+            quality_scores.push(score.saturating_add(33));
         }
 
         let mate_reference_name = record
@@ -454,7 +454,7 @@ impl RecordPreprocessor {
         }
 
         // 4. SAM flag filter
-        if config.flag_filter != 0 && (record.flags & (config.flag_filter as u16)) != 0 {
+        if config.flag_filter != 0 && (u32::from(record.flags) & config.flag_filter) != 0 {
             return false;
         }
 

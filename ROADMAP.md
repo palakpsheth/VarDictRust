@@ -62,3 +62,17 @@ All post-1.0 features will be introduced as opt-in modes, ensuring that default 
 
 - **Unique Molecular Identifiers (UMI):** Integrated duplex and single-index consensus calling within coordinate-sorted streaming windows.
 - **Long-Read NGS Support:** Calibrated error profiles and alignment handling for PacBio HiFi and Oxford Nanopore.
+
+---
+
+## Audit Follow-ups — 2026-10-16 Full Rust Audit (parity-sensitive, needs oracle proof)
+
+Deferred items from the full production-Rust audit. Each needs `harness/compare.sh` MATCH + diff-confinement before landing; default output stays v1.0 byte-identical.
+
+| ID | Location | Behavior (v1.0 kept) | Proposed `--fix`/opt-in |
+|:---|:---------|:---------------------|:-----------------------|
+| `audit-somatic-dedup` | `lib.rs:797-993` | Somatic tiles emit directly with no cross-tile `pending` dedup (simple path has `BTreeMap` at `:351`). Tiling is Rust-only; `§10` requires tiled == single-region. | Reuse simple-path position-bucket dedup for somatic intermediate + paired VCF. Gate by tiled-vs-single `compare.sh`. |
+| `audit-fisher-stream` | `stats/fisher.rs:40-43` | `support`/`logdc` Vecs materialize hypergeometric support (OOM at 1M-depth). Kept saturating counts only. | Streaming sum without vecs behind flag; prove `eps<=1e-6` on deep cohorts. |
+| `audit-stream-pileup` | `lib.rs:84-93`, `bam.rs:347` | Per-tile `Vec<SamRecord>` unbounded (violates `§10` bounded-mem at WGS depth). | Iterator/streaming pileup or depth cap; prove tiled == single. |
+| `audit-ref-multiregion` | `reference.rs:101-105` | `get_base` fallback reuses current-region offset for `reference_sequences` (wrong base after multi-region loads; latent single-region). Tests rely on fallback. | Track per-buffer start offsets; prove via multi-region oracle. |
+| `audit-amplicon-expand` | `lib.rs:657` | `for p in insert_start..=insert_end` per-base `BTreeMap` expansion OOMs on huge BED interval. | Interval-overlap test per position instead of expansion. |
