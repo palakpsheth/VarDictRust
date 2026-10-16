@@ -77,9 +77,50 @@ export PATH=/home/palak/miniconda3/envs/g4-tools/bin:$PATH
   -c 1 -S 2 -E 3 -g 4 -z -th 8 scratch/g4/hg008/engine.bed > full_th8.vcf
 bedtools intersect -a scratch/g4/hg008/engine.bed \
   -b scratch/g4/hg008/truth/HG008-T_somatic_smvar_benchmark_v0.4_GRCh38_all.bed > eval.bed
-bash harness/concordance.sh full_th8.vcf <truth.vcf.gz> eval.bed \
-  scratch/g4/ref/giabv3/GRCh38_GIABv3.sdf outdir "HG008-T"
+bash harness/concordance.sh full_th8.vcf \
+  scratch/g4/hg008/truth/HG008-T_somatic_smvar_benchmark_v0.4_GRCh38_tumorvariants.vcf.gz \
+  eval.bed scratch/g4/ref/giabv3/GRCh38_GIABv3.sdf outdir "HG008-T"
+# Tumor-only + gnomAD (single-sample VCFs lack STATUS: PASS-only pre-filter,
+# manual vcfeval — concordance.sh does not apply):
+G=https://gnomad-public-us-east-1.s3.amazonaws.com/release/4.1/vcf/genomes/gnomad.genomes.v4.1.sites.chr1.vcf.bgz
+tabix -h $G <first chr1.bed row> > gnomad_chr1slice.vcf   # + remaining rows; 745 MB
+python3 -c "drop calls whose (chrom,pos,ref,alt) is in gnomAD (any-presence or AF>=cutoff)" \
+  > tumoronly_nognomad.vcf
+# Passage slices (remote CRAM, range requests — no bulk download):
+samtools view -b --reference scratch/g4/ref/giabv3/GRCh38_GIABv3.fa -L chr1.bed \
+  https://ftp-trace.ncbi.nlm.nih.gov/.../BCM_ILMN-HG008Tp2_20250521/BCM_HTB3066_MGH3066_p2_MGH3066_p2_1.cram \
+  -o p2T.chr1.bam   # same for p13; ~20 MB each
+# SV eval (needs truvari>=5 in an isolated env, NOT g4-tools):
+truvari bench -b <V0.6_PASS.vcf.gz> -c query_sv.vcf.gz --reference <GRCh38_GIABv3.fa> \
+  --includebed <V0.6_clonal_and_subclonal.bed> --sizemax -1 --passonly --pick multi -o out
 ```
+
+## 5. Evidence receipts
+
+All runs `/usr/bin/time -v`, flags `-f 0.01 -c 1 -S 2 -E 3 -g 4 -z`, `-th 8`
+unless noted. Timing receipts (`*.time`) and these summaries live in
+`scratch/g4/hg008/ladder/`; committed `benchmarks/evidence/hg008-truth.json`
+covers V0.3 only — the V0.4/V0.6 numbers below are supplementary in-guide results.
+
+Estimator fit (`extra.json`):
+`sec_per_mbp_th8=9.57, speedup_8=3.79, rss_full_kb=1496928,
+rss_ratio_full_vs_chr1=1.07, full_th4 51.90s vs tier2 48.68s (+6.6%)`
+
+V0.4 rtg (`None` rows): `all`: TP-base 613 / TP-call 570 / FP 903 / FN 268,
+P=0.387 R=0.696 F1=0.497. `nogermline`: TP-base 551 / TP-call 520 / FP 826 /
+FN 60, P=0.386 R=0.902 F1=0.541.
+
+Tumor-only chr1 (`None` rows, 109 truth): unfiltered TP-base 101 FP 1117
+P=0.081 R=0.927 F1=0.148; nognomad TP-base 69 FP 218 P=0.232 R=0.633 F1=0.340;
+af0.001 F1=0.356; af0.01 TP-base 88 FP 286 P=0.229 R=0.807 F1=0.357;
+af0.05 F1=0.356.
+
+Tumor-only full-slice (`None` rows, 881 truth): any TP-base 478 FP 1509
+P=0.218 R=0.543 F1=0.311; af0.001 F1=0.314; af0.01 TP-base 598 FP 2158
+P=0.200 R=0.679 F1=0.310; af0.05 F1=0.304.
+
+V0.6 truvari (`summary.json`): TP-base 0 / TP-comp 0 / FP 0 / FN 210
+(`comp cnt: 0` — sizeless query SVs discarded).
 
 Caveats: V0.4 is draft; single-sample VCFs carry no `STATUS` (use PASS-only
 pre-filter, not `concordance.sh` as-is); chr1 tumor-only numbers are
