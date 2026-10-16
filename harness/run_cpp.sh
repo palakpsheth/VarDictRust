@@ -18,8 +18,7 @@ AF=${AF_THR:-0.01}
 # --chunk (default 50000, the extract README mode-parity-table reference
 # value, frozen in benchmarks/gcp-prereg.md). A caller-supplied --chunk wins,
 # mirroring the -f/AF_THR rule below.
-export CPP_CHUNK_DEFAULT=50000
-CPP_CHUNK=${CPP_CHUNK:-$CPP_CHUNK_DEFAULT}
+CPP_CHUNK=${CPP_CHUNK:-50000}
 
 # Bare -z spells boolean zero-based for cpp (it takes no value: a mirrored
 # "-z 1" would leak a stray positional that cpp opens as a BED file).
@@ -71,9 +70,7 @@ for ((i=0; i<${#EXTRA_ARGS[@]}; i++)); do
       break ;;
   esac
 done
-if ! "$has_chunk"; then
-  EXTRA_ARGS+=(--chunk "$chunk")
-fi
+$has_chunk || EXTRA_ARGS+=(--chunk "$chunk")
 
 # Availability gate: downstream 3-arm callers must see SKIP, not a silent 2-arm.
 if ! conda run -n vardict-oracle vardictcpp --version >/dev/null 2>&1; then
