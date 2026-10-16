@@ -1,0 +1,171 @@
+# VarDictRust Journal Paper — GCP Study Protocol (freeze copy — branch `paper/gcp-study`; scratch original: `docs/superpowers/specs/paper-plan/plan.md`)
+
+**Status:** protocol freeze on branch `paper/gcp-study` (rounds 1–2 adversarial pre-mortems applied) — journal-ready target (bioRxiv → journal)
+**Decisions locked:** venue=specialist journal (Bioinformatics/Genome Biology, skip Nature portfolio) · FULL GCP on trial (split-host REVERTED 2026-10-16): project `vardict-paper-trial` (palakpsheth@gmail.com) + trial billing $300/90d LINKED + SA `vardict-agent@vardict-paper-trial.iam.gserviceaccount.com` + key (600, outside repo, never `git add`, SA-auth verified) + minimal roles + 4 us-central1 buckets (refs/bams/results/evidence, versioned) + budget alerts $100/$200/$300 (HARD STOPS: halt + re-evaluate at each) · UPGRADED 2026-10-16 (credits preserved; vCPU lift pending — still 12 at check; 16/32 gated on lift) · dead `vardict-paper-2026` removed incl. stale key · trial hard-stops at $300 · GCP IDs: project #694062694219, billing `011E32-BEB9F6-FE69ED`, budget `36c510ac-b312-4306-af98-a1bbde77244d` · comparators=full field · SRR=SRR15006375/76/86/540 + SRR8657348 native hg19 MiSeq (PRJNA742684/PRJNA523380; staging APPROVED) · genome=full 3-way (Java highmem + cpp contained)
+**Angle:** VarDictJava archived read-only → prove VarDictRust is the maintained drop-in (byte-parity where it matters) with bounded RAM where VarDictCpp explodes. Maintenance/security strong second. No AI-methods content.
+**Provenance:** this file is the committable freeze copy (branch `paper/gcp-study` off `origin/main`; PR via `gh` with template; pre-push blocks `main`). All work + evidence via `pr_check.sh` + `gitleaks`.
+**Evidence-integrity guard (Class-0):** all GCP evidence JSONs written ONLY by live runners (`run_extended_coverage.sh` / `run_multimodal_slices.sh` / `recertify.sh` + `engine_fingerprint.sh`), fingerprint-bound, never hand-edited. No eps relaxation, no `--cols` narrowing, no `#[ignore]`/skips to turn MISMATCH into MATCH.
+**Paper-summarizer note:** bioRxiv full-PDF fetch rate-limited from author network. Snippet-derived vardictcpp numbers below are UNVERIFIED — do not cite until GCS-vendored PDF (sha256 in MANIFEST) + like-for-like GCP re-measure. PDF sha goes in MANIFEST before any citation.
+
+---
+
+## 1. vardictcpp claims + holes (minimum to match)
+
+### 1.1 Paper Summary: vardictcpp (bioRxiv 10.64898/2026.09.23.753771v1, preprint)
+
+C++17 reimplementation of VarDictJava. UNVERIFIED snippet claims: ~4× single-core, 9–11× on 8 cores, up to 17× less memory [snippet — do not cite]; identical calls on evaluated hg19 MiSeq AML panels (SRR15006375/76/86/540, SRR8657348) [snippet]; JAK2 V617F motivation; Fig-2 germline (octopus/FreeBayes) + Fig-3 somatic SRR15006376(tumor)/15006386(normal) vs Mutect2 (PASS) / octopus (somatic) / LoFreq (somatic); admits whole-chromosome `-R` memory explodes [snippet]. Table 2 per-sample (all [snippet — do not cite] until PDF vendored): SRR15006386: 11,732 regions / 4,014 rows, 100% byte-identical; SRR15006375: 12,292 / 4,056, 100%; SRR15006376: 105,949 / 12,739, 100%; SRR15006540: 135,145 / 16,031, 100%; single-core Java 181–226 s vs cpp 44–61 s (3.7–4.8×), 8–17× less memory. Locally verified: small-window cpp wall wins exist (hg002 cpp 16.9s vs Rust 45.6s, `perf-budget.json`), but at 249 Mbp cpp RSS 22.5–23.6 GB vs Rust 2.8 GB (`scale.json extra.cpp_maxrss_kb`); CPP-9 caller deltas (hg002 MNP-split 347/227,562 = 0.15%; 1–2 SV alleles dropped per 18k–623k somatic calls) + CPP-1 header/`END` mean "identical" is false in general. Reliability=medium (preprint, single-protocol) · relevance=high · action=superset.
+
+### 1.2 Minimum paper + journal extensions
+
+Minimum = 3-way parity (java==rust MATCH, cpp advisory MISMATCH/SKIP binned CPP-1..9) + truth EQUAL + 4-target budget (Rust≤Java) + chr1 flat-RSS curve + archive note. Journal adds §§4–7.
+
+### 1.3 Venue + article-type (nature-portfolio-playbook derived for specialist venue, 2026-10-16)
+
+**Locked:** specialist journal first — **Bioinformatics (Original Article)** or **Genome Biology (Research)**; skip Nature portfolio. Nature-portfolio rules re-derived for specialist readers (per skill: venue differs → derive again, say so): keep IMRAD + claim–evidence chain, but front matter for bioinformatics practitioners (not broad-Nature peers); format (word/display-item limits, abstract structure, Methods placement, data/code statements) UNCHECKED until current guide version/access date recorded in `gcp-prereg.md`. Article-type: full benchmark = Original Article/Research (NOT Application Note) — resolve Bioinformatics vs Genome Biology before abstract. AI/data-availability statements still required (2-sentence AI use + repository/accession disclosure) per journal policy.
+
+---
+
+## 2. Hypotheses + success criteria (pre-register in `benchmarks/gcp-prereg.md` Wk1, freeze before spend)
+
+- **H1 (parity, scoped):** Tier-2 `compare.sh` (eps 1e-6, records-aligned CHROM/POS/REF/ALT) java==rust 0 diffs on ALL enrolled cohorts; Tier-3 `rtg vcfeval --squash-ploidy` 0 site-diffs ONLY on truth-eligible cohorts (HG002/SEQC2/HG008/HG005/b37). Amplicon/RNA/SV-only/COLO829-structural = Tier-2-only, labeled ineligible — except HG008-V0.6-SV/CNV via truvari (evaluator pre-registered §5; gated on V0.6 unblock, §9). Gate stays java==rust; cpp never gates (`CPP_SKIP=1` escapes).
+- **H1a (tile==single gate, new):** tiled output == single-region output (`--tile-size` sweep vs untiled, boundary-dedup proof) MATCH before any H2 scale claim. Simple-mode first; somatic tiling gated on `audit-somatic-dedup` landing with its own `compare.sh` MATCH (somatic tiles currently emit with no cross-tile dedup, so H1a would predestined-fail on somatic until fixed).
+- **H2 (memory):** Rust peak RSS ≤ Java per workload AND flat span scaling (RSS_249Mbp/RSS_10Mbp ≤ 1.5×). Java/cpp OOMs (incl. full-genome 3-way) scored `OOM-vs-completed` (Rust wins iff Rust completes with MATCH), never a ratio. Full-genome 3-way attempted with containment; H1 MATCH applies where oracle completes.
+- **H3 (field):** Pre-registered operating points + full QUAL sweep (§5). Rust EQUALs Java F1; field callers reported without rank-picking; MNP/SV strata separate.
+- **H4 (maintenance):** archive proof (`gh api` archived flag + timestamp + pin, not screenshots) + static-musl/SBOM/SLSA/CVE/determinism/tabix matrix = migration case.
+- **Stop rules:** any java≠rust diff → BLOCK, single-function port loop, no relaxation; UB-8 flake = ONE attested rerun on quiesced host preserving original `oracle-fail-*.log` (no retry loops); systematic OOM → highmem cell + report-both, never heap-retune silently.
+- **Stats honesty:** timed n=3 = technical runs (same image/inputs/region; NOT biological replicates) → mean±range/min-max, no 95% CI; truth n=1 → point + site-diff=0; CIs only n≥5/bootstrap. Independent unit = cohort/sample/interval (variant counts are observations, never n). QUAL sweep reports ALL thresholds (multiplicity by full disclosure); somatic filter rule PASS-only + AF/Fisher frozen in prereg (§5).
+
+---
+
+## 3. GCP setup (reuse-first)
+
+Reuse: `compare.sh`, `compare_var.py`, `compare_vcf.py` (eps 1e-6), `run_oracle.sh` (no retries), `run_cpp.sh` (BED positional, bare `-z`, `--chunk` PINNED per timed cell via `$CPP_CHUNK` pass-through, default value frozen in prereg and recorded in `extra` — CPP-5 default rewrites `Seg`, unpinned runs are irreproducible), `perf_budget.py`, `scale_bench.sh`, `concordance.sh` / `concordance_germline.sh` / `concordance_pair.sh` / `concordance_multimodal.sh`, `cram_twin.sh`, `memwatch.sh`/`sysscope.sh`, `assets.tsv`, `benchmarks/MANIFEST`, `env/{vardict-oracle.yml,g4-tools.yml,toolchain.txt}`. Thin wrapper only: shell + Batch JSON (`shortcut: shell+Batch over harness, upgrade to Terraform/Nextflow only if >2 regions or >50 VMs`). Wrapper changes via `pr_check.sh` + `gitleaks`; engine boxes N/A per PR-template docs/infra-only note.
+**Project (trial, locked 2026-10-16):** `vardict-paper-trial` (No org, palakpsheth@gmail.com) + trial billing LINKED + SA `vardict-agent@vardict-paper-trial.iam.gserviceaccount.com` + key (600, outside repo, never `git add`) + minimal roles bound (compute.instanceAdmin.v1, storage.admin, batch.jobsEditor, logging.viewer) + 4 us-central1 buckets (refs/bams/results/evidence, versioned, uniform access) + budget alerts $100/$200/$300 (HARD STOPS) + GPU quota already 0. UPGRADED to full account 2026-10-16; vCPU cap lift pending (still 12).
+**ALL cells on GCP (split-host reverted):** local i7 numbers are background only; every timed claim re-baselined same-cell on GCP. TRIAL CAP: 12 concurrent vCPUs account-wide (one 8-vCPU VM at a time) → 8-thread program runs fully on trial; 16/32-thread matrix gated on vCPU cap lift (Upgrade done, lift pending) or defers with scope cut noted. Cost basis: us-central1 rate card as checked 2026-10-16, re-verified at spend; ledger owner records per-cell wall/RSS/$ + Batch job ID in GCP cost ledger (deliverable §10). Buckets: keep ≤2 versions, Nearline after 30d. Spend order: P → E-span → G-span → HG008-full last (a cap halt still leaves publishable tiers). Kill-vs-drain: Batch `timeout` per cell; killed cells = `SKIP (budget-stop)`, spend logged, never partial VCFs; UB-8 rerun attestation syncs `KEEP_DIR` to GCS on every failure path and counts inside (not beside) the retry budget.
+
+**Guesstimate ranges (spot-first realistic / mixed timed-OD / worst all-OD + 1 preempt cycle + HG008 Java long-tail):**
+
+| Block | Spot-first | Mixed | Worst |
+|---|---|---|---|
+| Tier P SRR 3-way matrix (60 runs) + SRR field | $3–5 | $4–7 | $8–14 |
+| Tier E exome 3-way matrix + staged @16 | $5–10 | $8–16 | $15–30 |
+| Tier G HG002 full 3-way (8/16/32 only) | $8–13 | $13–22 | $25–45 |
+| Tier G HG008 T/N full 3-way (8-thread only bound) | $25–60 | $60–160 | $120–300 |
+| Tier-G span curve + `-R` repros | $2–4 | $3–6 | $6–12 |
+| RNA STAR build + align + 3-way `-i` | $4–10 | $7–16 | $14–30 |
+| Tier-3 vcfeval suite (~30 runs) | $2–4 | $3–6 | $6–12 |
+| Field full-tier (Mutect2+Strelka2 full-WGS bound; rest exome/panel/slices) | $8–20 | $15–35 | $30–70 |
+| 16/32 matrix (GCP-only: span + HG002 3-way; GCP-only per ALL-cells rule) | $3–7 | included above | included above |
+| Storage 2–3 mo (GCP: full-genome BAMs ~500GB Standard + Nearline FASTQs; ops <$2; egress ~$0; local disk $0) | $25–40 | $25–40 | $25–40 |
+| **Total (alerts $100/$200/$300 HARD STOPS)** | **$90–230** | **$180–450** | **$350–750 (16/32 only after cap lift)** |
+
+$100/$200/$300 alerts are HARD STOPS (halt new cells + re-evaluate + explicit resume). Bounds: HG008 full at 8-thread ONLY (no 16/32 — span curve already proves scaling); field full-WGS limited to Mutect2+Strelka2 (fast pair; octopus/LoFreq/FreeBayes on Tier-P/E full + genome slices — Figs 2–3 replicate on SRR panels regardless); PDF vendored from GCP with backoff (biorxiv 429 ×5 from here).
+
+---
+
+## 4. Three full-sample tiers (locked simplification 2026-10-16 — no slice-led mains)
+
+Main paper runs on FULL real samples only, one tier per assay class. Slices/micro/18-slice suites stay as cheap Tier-1/2 regression gates + supplement, never main figures.
+
+- **Tier P — Whole targeted panels:** full amplicon panel(s) (EGFR/MRE11a, full 8-col BED, primer trimming + AMPBIAS) + **vardictcpp head-to-head replication set** (exact accessions, NOT a range): SRR15006375, SRR15006376, SRR15006386, SRR15006540 (adult AML bone-marrow, FLT3-ITD, BioProject PRJNA742684, Illumina MiSeq, 100–135k target regions; somatic pair = SRR15006376 tumor + SRR15006386 normal) + SRR8657348 (MV4-11 AML cell line, CCLE, PRJNA523380, germline Fig-2 arm) — all NATIVELY on hg19 (no liftover; CPP-7 contained) + panel SV calls reported (Tier-2 MATCH required; CPP-9 drop rates apply) + panel CRAM twin as separate bitwise-identity cell (proven only on HG008 slices so far — panel twin is its own cell). No panel slices. (Corrects earlier "SRR15006376–86 exome" shorthand: these are targeted MiSeq panels per vardictcpp §2/Table 2/Figs 2–3 + §5 Data Availability. [All accession/BED-size/pair attributes snippet-unverified — exact values gated on GCS-vendored PDF sha in MANIFEST before prereg freeze.])
+- **Tier E — Whole exome:** SEQC2 HCC1395/BL full exome (tumor/normal) + exome-wide SVs + CRAM twins. (SRR hg19 replication lives in Tier P — see above.) GRCh38 truth and hg19 replication reported separately.
+- **Tier G — Whole genomes:** HG002 full-genome germline + HG008 tumor/normal full-genome + chr1 1/10/100/249 Mbp scale curve (within G) + FULL 3-WAY GENOME (Java highmem + cpp contained, KEEP_DIR preserved, OOM-vs-completed; tile==single + ceiling cells preconditions, §9) + CRAM twins per genome.
+- **Cross-tier full-sample arms (real samples, never micro):** full-transcriptome RNAseq = **GIAB HG002 GM24385 replicate-1 mRNA** (NIST-GIAB/Merker-UNC pilot, Sep 2022; TruSeq Stranded mRNA, NovaSeq 6000 S4 2×150 bp, ~325M clusters; SAME GM24385 LCL as Tier-G DNA = matched DNA+RNA) — `ftp-trace.ncbi.nlm.nih.gov/ReferenceSamples/giab/data_RNAseq/AshkenazimTrio/HG002_NA24385_son/UNC_Illumina/reads/HG002_GM24385_replicate1_mRNAseq_ILLUMINA_UNC_20220524_AGGTTATA-CAGTTCCG_R{1,2}_001.fastq.gz` (+ `md5.in`; no embargo, NIST public-service license; replicates 2–3 + totalRNA + GM26105/GM27730 iPSC + Google_Illumina/Baylor_PacBio/Mason_ONT arms available for robustness only). Align once on GCP with STAR 2-pass (version pinned in prereg) to GRCh38 GIABv3 + GENCODE GTF, reuse BAM. Comparator note: splice-mode `-i` stdout order is nondeterministic in BOTH engines by design (plain HashMap iteration, `DIVERGENCES.md`) — RNA arm asserts sorted line-SET identity, never byte order. Full SV arm = real COLO829-class WGS (`<INV>`/`<DUP>`/CRISPR `-J`/`-j`); every other 17-mode flag mapped to a FULL real sample — full-sample cells, supplement if not main.
+- Diversity/b37 (HG005 + NA24385-b37 full-sample) reported inside the tier of origin (E/G) as ancestry/build strata, not standalone slice mains.
+
+**Sample×aspect utility audit (2026-10-16 — every sample earns ≥2 aspects, no orphan runs):**
+
+| Sample | Tier | Tier-1/2 parity | Tier-3 truth | Compute | vardictcpp H2H | Field |
+|---|---|---|---|---|---|---|
+| Amplicon EGFR/MRE11a full | P | MATCH + AMPBIAS | ineligible (assay) | budget + ceiling | CPP-3 SKIP (TSV-only) | — |
+| SRR15006375/76/86/540 + SRR8657348 (PRJNA742684/523380, hg19 MiSeq) | P | MATCH (100–135k-region BED [snippet-unverified]; `--chunk` pinned, `interval_mechanism_{java,rust,cpp}` in `extra`, BED-vs-`-R` asserted) | Fig-2 truth TBD from PDF (MV4-11); else parity-only | small-window wall/RSS | exact replication (Table 2 class, §1.1 snippet-quarantined) + somatic pair 76/86 | Fig-2 octopus/FreeBayes, Fig-3 Mutect2/octopus/LoFreq |
+| SEQC2 HCC1395/BL full exome | E | MATCH (623k) | SEQC2 v1.2.1 EQUAL | budget + jobs/node + 16/32 staged | MISMATCH CPP-9 (1–2 SV) | somatic field panel |
+| HG002 full WGS (GM24385) | G | MATCH | GIAB v4.2.1 EQUAL (F1 0.9699) | budget + span + 16/32 | MISMATCH CPP-9 (MNP 0.15%) | germline field panel |
+| HG008 T/N full WGS | G | MATCH | v0.3 EQUAL (+ v0.4 smvar parallel, rtg) + V0.6 SV+CNV Tier-3 gated on unblock | budget + ceiling | MISMATCH CPP-9 (SV drop) | somatic field panel |
+| HG005 / NA24385-b37 full | E/G strata | MATCH | v4.2.1 EQUAL | — | CPP-7/8 surfaces | — |
+| HG002 GM24385 rep-1 mRNA (UNC, matched LCL) | RNA | MATCH (sorted-set) | ineligible (parity-only) | STAR build+align wall/RSS | — | — |
+| COLO829(-BL) full WGS | SV | MATCH (`<INV>`/`<DUP>`/CRISPR) | ineligible (Valle-Inclán suite = parity) | — | CPP-2 (`-J`/`-j`) | — |
+Pre-register tier×flag expected `MATCH/MISMATCH/SKIP` table covering CPP-2 (`-J`/`-j`), CPP-3 (amplicon TSV-only), CPP-4 (concat flags exit 120), CPP-7/8 (b37), CPP-1/6/9 — Tier-P row pins `--chunk` + BED-vs-`-R` per engine in `extra` (CPP-5; cpp `-R`+BED never co-passed). Tabulate BED-vs-`-R` per cell. Huge-BED+amplicon: intervals >1 Mbp rejected/skipped loud (`amplicon-expand` guard + unit test — code task gating Tier-P). SV strata ownership: Fig5 MNP strata = HG002 germline; SV strata = HG008-V0.6 Tier-3 where unblocked, else COLO829 Tier-2 parity (no double-count).
+
+---
+
+## 5. Accuracy protocol
+
+**Tier-1:** `.var` 36/38, 38/40, 55/61 + order + half-even rounding INCL. formatter split (no-`--fisher` keeps trailing zeros, `--fisher` strips).
+**Tier-2:** 3-way, eps 1e-6, 0 diffs java==rust; cpp binned CPP-1..9; records-only diff + header policy (note `scale_bench` strips `##`; `thread_determinism` synthetic — specify per cell).
+**Tier-3:** `rtg vcfeval --squash-ploidy`; raw + operating points (germline QUAL≥128/226/160; somatic PASS+AF/Fisher rule frozen) + full ROC sweep table (QUAL 0/30/50/75/100/128/150/200 + VD equivalents; title "ROC/QUAL sweep", transition reported as result not premise). Small-var truth: GIAB v4.2.1 (HG002/HG005/b37), SEQC2 v1.2.1, HG008 v0.3 for continuity + v0.4 smvar evaluated in parallel via rtg (successor per assets.tsv:18-21; neither is SV+CNV — that is V0.6). **SV Tier-3 (gated): enroll HG008 V0.6 stvar/CNV** (PASS/ALL VCFs + clonal and clonal+subclonal beds + CNV bedpe/bed, assets.tsv:26-33) via truvari (NOT rtg) for the SV arm — GATED on V0.6 representation fix (sizeless `<DEL>/<DUP>/<INV>` discarded, CNV method none; eval currently BLOCKED per guide) — COLO829 stays Tier-2 caller-parity (Valle-Inclán 2022 structural suite, no small-var truth), HG008 v0.4 gives SVs a truth leg. Fig-2 germline field F1s (octopus/FreeBayes/vardict) require the paper's truth source — identify from GCS-vendored PDF before enrolling MV4-11 for Tier-3; Tier-2 parity holds regardless. Stratify SNP/InDel/MNP/SV via named tool (e.g. `bcftools` strata + masks + counting rule — `rtg` alone insufficient) + AF bins (≤1%/2-read sensitivity) + depth bins. Truth-header completion for cpp zero-`##contig` (CPP-6): pre-register truth-first, `##fileformat` line 1, zero record-byte changes, asserted in wrapper. Field callers: germline Fig-2 = octopus + FreeBayes (+Strelka2 as our extension, labeled); somatic Fig-3 = Mutect2 (PASS) + octopus (somatic) + LoFreq (somatic) (+Strelka2 extension, labeled); pinned digests + exact commands + PASS-vs-all filter + shared BED/SDF + `squash-ploidy` justification per cell.
+**Determinism:** 1/2/4/8 threads on ≥1 real somatic + ≥1 SV/MNP cohort — records-exact + named header policy per cell (NOT full-byte: harness strips `##`; RNA `-i` is sorted-set only by design).
+
+---
+
+## 6. Compute protocol
+
+Same BAM+ref+BED+flags+threads per cell; cpp `-R` whole-chromosome blowup repro under cgroup/`ulimit`/timeout containment with `KEEP_DIR` preserving `cpp_R*.time` + exit code (do not `rm -f` failures). Cells: 3-tier budget (P/E/G full-samples; `perf_budget.py` runs amplicon + seqc2-exome + hg002 + hg008 map onto P/E/G) × 1/2/4/8 + Tier-G span curve + `-R` repro + concurrent-jobs-per-node per tier + **16/32-thread matrix (staged after 8-thread green; spot-first, RAM-gated, no scope cut): Tier-G span scaling + Tier-G genome Tier-2, all 3 engines (Rust n2-standard-16/32; Java/cpp n2-highmem-16/32 with containment); Tier-E @16/32 only after Tier-G clean; Tier-P excluded (too small to scale). TRIAL-BLOCKED: 16/32-thread VMs exceed the 12-vCPU trial cap — matrix runs after one-click Upgrade (credits preserved) or defers.** Pre-flight: ≥2× 8-thread RSS free or SKIP loud. Metrics add S_16/S_32 vs same-cell 1-core baseline (re-baselined on GCP family), efficiency S/P, per-thread RSS, $/sample. Rust gates S_16>S_8 + RSS still flat; Java/cpp report-only. Metrics (all cells): wall, peak RSS, ratio, S_8, $/sample, jobs/node, explicit `tabix -p vcf`/`bcftools index` pass per cohort (Rust + cpp), loud SKIP per field caller (java==rust untouched). Publish unfavorable cells too (cpp small-window wall wins e.g. 16.9s vs 45.6s). Deep-coverage RSS ceiling cell (1000× amplicon + HG008 WGS slice at -th 8) before full-genome (covers stream-pileup/fisher-vec vectors). **Pre-registration gates (all in `gcp-prereg.md` before spend):** (1) ceiling gate FIRST — Rust peak RSS ≤8 GB on both ceiling cells else BLOCK full-genome (span 1.398× was exome-depth, does not transfer to 195x/169x unbounded vecs); (2) Java sizing pinned — `n2-highmem-*` + `-Xmx` 0.7× VM RAM in prereg + `run_oracle.sh`; exit-137-under-cgroup-cap = OOM path (score, no UB-8 rerun), 137-with-headroom = UB-8 path (one rerun, log preserved); (3) cpp containment pinned — `MemoryMax=32G` on n2-highmem-16, `KEEP_DIR` synced to GCS on every exit path, expected `CPP: SKIP (cgroup OOM)` counts as containment PASS; (4) RNA VM pinned — `n2-highmem-8` for STAR build+align, FASTQ pull + index staged BEFORE any $100-commit spend with ≤$10 sub-cap, index RSS in `extra`; (5) SRR BAM provenance per accession — vendored digest from Zenodo Archive.zip (check contents first) or `bwa mem` cmd + pinned image + align-cost line; (6) jobs/node method — 2×4-thread jobs on one n2-standard-8 via Batch `taskCount` (no second VM under cap), else defer with scope cut; (7) ref-multiregion gate — 2+-region oracle MATCH proving per-buffer offsets, else full-genome restricted to single-region streaming (logged); (8) worst-case priced as 3× restarts + on-demand completion; HG008 attempts capped (1 spot try → on-demand).
+
+---
+
+## 7. Maintenance/security matrix (measured)
+
+Archive proof, crash/OOM repro family (modifyCigar #341-fam, #197/#384, #187, #282, #320), SBOM diff (static musl vs JVM+R+Perl), `cargo audit/deny` + Trivy/Grype CVE table, SLSA3 + `bin_equiv.sh` musl-vs-glibc, bioconda install test, 60-flag CLI matrix, support SLA + `--fix` governance (ROADMAP). Cite omnibus `docs/validation/omnibus-empirical-validation.md` + enrollment-flow counts per cohort.
+
+---
+
+## 8. Figures/tables
+
+Fig1 three-tier design (P/E/G + cross-tier RNA/SV/CRAM arms); Fig2 Tier-1/2/3 flowchart; Fig3 ROC/QUAL sweep per tier; Fig4 Tier-G span–RSS + per-tier jobs/node; Fig5 field F1 + MNP/SV strata per tier; Fig6 maintenance/security matrix. Tables: tier scoreboard (extends 9-pillar omnibus), 3-tier budget wall/RSS/$, CPP-1..9, CLI parity, SBOM/CVE, GCP cost ledger, MANIFEST provenance.
+
+---
+
+## 9. Known audit-deferred vectors (must clear before full-genome/WGS-scale claims)
+
+`somatic-dedup` (no cross-tile pending), `stream-pileup`/`fisher-stream` (unbounded vecs), `ref-multiregion` (wrong base after multi-region), `amplicon-expand` (per-base BTreeMap OOM) — see `ROADMAP.md:68-78`. Gate WGS/full-genome on tiled-vs-single MATCH + ceiling cells or scope down.
+
+---
+
+## 10. Timeline + deliverables
+
+Wk1: billing LINKED + APIs + buckets + alerts + SA/key done; vendor Zenodo data/README/Figure_data + PDF (backoff; read README FIRST for Fig-2 truth + Archive layout); check Archive.zip for analysis-ready BAMs/BEDs before rebuilding (owner: Wk1 implementer); freeze `gcp-prereg.md` (GCP IDs above + venue guide version/access date + operating points + somatic PASS+AF/Fisher rule + tier×flag matrix incl. Tier-P chunk/BED + PDF sha + region lock + Xmx/caps/VM pins + BAM provenance). Wk2: H1/H1a + truth EQUAL. Wk3: full genomes ONLY after H1a MATCH + ceiling cells (§9), else scope down; + re-baseline + jobs/node + $ (+16/32 iff cap lifted). Wk4: field + maintenance + preprint draft → specialist journal. Deliverables: preprint (BLOCKED on `acceptance.sh` 8/8 + fingerprint-bound evidence via live runners, Class-0) + MANIFEST + cost ledger + digested containers. No AI section.
+
+---
+
+## Appendix A. Adversarial + ponytail log
+
+- Auditor/Challenger/Reviewer pre-mortem 2026-10-16 → all BLOCK (H1 scope, full-genome oracle, tile==single, somatic operating points, false resume, SRR pinning, CI stats, stratifier, field pins, cross-host carryover, digest confusion, BED-vs-R, CRAM/tabix cells, UB-8 retry, formatter split, Fig3 title, SKIP handling, archive proof, header policy; challenger tiling/OOM/vec/cost/containment/taskset/SKIP-matrix/header-completion/invocation/interval-guard/OOM-scoring/courtesy/replicates/snippet-sha; reviewer committable-path, Class-0 guard, floating tags, $ cap file, snippet quarantine, wrapper gates, script names, omnibus cite, branch/PR path). All applied above as minimal text fixes; no new framework/deps.
+- Ponytail: reused harness/evidence/omnibus/test-matrix; no new deps; wrapper minimal. Resolved 2026-10-16: 16/32-thread matrix (spot-first, RAM-gated §6) + CUD decision (no purchase, ledger reports on-demand-equivalent). Still skipped: UMI/long-read, `--fix` corrections, Galaxy, line-level field-CLI audit (no pins yet), live GCP reruns (plan-only).
+- **Paper + data vendoring (resolved 2026-10-16):** biorxiv PDF 429 ×5 from here → vendor from GCP VM with exponential backoff + sha256 into MANIFEST (do not cite snippet numbers until then). STABLE mirrors found: Zenodo concept DOI 10.5281/zenodo.21836658 — latest version DOI 10.5281/zenodo.22955424 (2026-09-25, CC-0): `Archive.zip` 4.07 GB md5:7bbcd523e3c3c38b8ce56f926ddf30c8 (paper data + code), `Figure_data.zip` 13.6 MB md5:8b79769889e4424e2d0db9026343a896 (figure numbers direct), `README.md` (read FIRST at Wk1 — likely documents Fig-2 truth source + data layout; check whether Archive.zip already contains analysis-ready BAMs/BEDs before rebuilding). Author: Wolff, Joachim (Hannover Medical School Hematology per code repo; Zenodo author affiliation null); code: github.com/MHH-Bioinformatics-Hematology/vardictcpp.
+- Round-2 adversarial audit (branch `paper/gcp-study`, 3 subagents → all BLOCK): V0.4-smvar vs V0.6-stvar/CNV correction (assets.tsv:13-33 + guide), Tier-P snippet quarantine + Table-2-per-accession grounding, H1 SV-truvari exemption + somatic-H1a scoping, RNA second aspect, SV-strata ownership, chunk/137-paths/containment/VM-pin/kill-drain/amplicon-guard/SRR-provenance prereg gates, GCP IDs + key rule + $300 reconciliation, venue-string + ledger-owner + Wk3-predecessor fixes. Applied above as minimal text fixes; engine/code tasks (`run_cpp.sh $CPP_CHUNK`, amplicon guard + unit test, `run_oracle.sh` Xmx, truvari path) parked as Wk1 code prerequisites.
+- Science-paper-review skill: NOT INSTALLED — substituted with paper-summarizer claim–evidence audit (§1) + adversarial pre-mortem. Residual risk: journal stats checklist (power/flow) manual — independent biostat review recommended pre-submission.
+
+---
+
+## Appendix B. Verification evidence (plan-only)
+
+- `detect_repo_scope.sh`: REPO_PROFILE=vardictrust, IS_GIT_REPO=true, branch main, HAZARD none.
+- Subagents: Auditor ses_eb98cba43ffe0MBCPhzs46CnGr, Challenger ses_eb98cba42ffeC0gpp0f5e2qwtl, Reviewer ses_eb98cba41ffeKeG8p6TVBwlzui — all completed.
+- Engine gates NOT run (plan-only, no code change): `cargo test / rgate / compare.sh / pr_check` N/A with docs-plan justification.
+
+---
+
+## Appendix C. Scientific-paper skill pass (paper-workflow dispatcher, 2026-10-16)
+
+**Skill installed:** `Boom5426/Nature-Paper-Skills` @ `6f8eaa07b4ea19fecdc73618cad9a65beb49d542` (MIT/Apache-2.0), profile `--set recommended` (19 skills) to `~/.config/opencode/skills`, doctor 19/19 OK. Figure stack excluded (needs plotting backend/OpenRouter key). Entry: `paper-workflow` (dispatcher) → `manuscript-optimizer` + `nature-portfolio-playbook` + `submission-audit` + `stats-reporting-audit` + `paper-reviewer` (referee prediction). Scope: diagnose study plan (findings, no manuscript rewrite); 3 in-place fixes applied (§1.3 venue, §2 stats units, this appendix). Source: `ATI` commit 6f8eaa0.
+
+**Verdict:** narrative stable enough for prereg freeze (local-rewrite depth, NOT micro-edit: venue + stats-units + AI/data-availability needed tightening). No structural rewrite, no scientific blocker beyond already-gated WGS vectors (§9).
+
+**Confirmed / assumed / unresolved:** Confirmed — H1–H4 preregistered with stop rules, CPP-1..9 bins, Class-0 guard, snippet quarantine; Assumed — $300 trial cap + $100/$200/$300 HARD STOPS, n2-standard-8 family (12-vCPU cap), SRR staging feasible; Resolved since — rtg 3.13 / bcftools 1.24 (env pins), somatic PASS+STATUS rule (concordance.sh), region us-central1, venue specialist-journal. Unresolved — field-caller/STAR/BWA digests + exact commands, full-genome invocation, Bioinformatics/Genome Biology guide version/access date, PDF sha, HG008-V0.6 unblock (all freeze in `gcp-prereg.md` Wk1).
+
+**Claim architecture:** North Star — clinical/genomics users stranded on archived VarDictJava need a maintained exact replacement that fits fixed-hardware throughput. Central Q — does VarDictRust reproduce Java exactly with bounded RAM where Cpp explodes? Main claim — java==rust MATCH/EQUAL + flat RSS + maintained supply chain. Claims: (1) parity (H1/H1a → Tier-1/2/3 MATCH/EQUAL), (2) bounded scale (H2 → span curve + jobs/node + ceiling cells), (3) field standing (H3 → operating-point + sweep + strata vs Mutect2/Strelka2/Octopus/LoFreq), (4) migration case (H4 → archive + SBOM/CVE/SLSA/determinism/tabix/CLI). Boundaries — amplicon/RNA/SV-only truth-ineligible; full-genome Rust-only; cpp advisory.
+
+**Major findings (severity order):**
+1. Venue/article-type unresolved → §1.3 added (Methods/Analysis-or-Resource, format unchecked until guide version recorded).
+2. Stats units loose → §2 fixed (technical-run n, cohort/sample independent unit, variant counts = observations, full-sweep multiplicity).
+3. AI/data-availability preflight missing → fix here: Methods needs 2-sentence AI statement (AI assisted dev per README, study runs deterministic harness, authors responsible; no AI images) + data/code statements (GCS/MANIFEST accessions, container digests, repo) ready before portal, not after.
+4. Figure logic: each main figure now one claim (§8 ok); Fig4 composite (span-RSS + jobs/node) must share axes/datasets or split; every Fig5 field panel must map to a prereg cell (no orphan panels).
+5. Terminology: canonicalize VarDictRust/vardictrust/Rust + wall/wall_s + RSS/maxrss_kb to evidence keys across text/legends/tables.
+6. Referee attacks predicted: operating-point picking (frozen sweep counters), omitted cpp small-window wins (publish both), hg19-vs-GRCh38 mismatch (justify/liftover or separate), n=1 full-genome (Rust-only + tile==single), Java-OOM scoring (OOM-vs-completed), b37 artifact (CPP-7/8 labeled), single-region cost (report region/family, no generalization), single-maintainer bus factor (governance/SLA + `--fix` policy counters).
+7. Front matter for broad peer: manuscript (not plan) must state problem by sentence 2 + findings as recovered biology (low-AF rescue, SV/MNP fidelity, jobs/node), not metric gains alone.
+
+**Edit depth:** local rewrite (venue + stats + availability applied; prose/figures await manuscript stage).
+**Next action:** freeze `benchmarks/gcp-prereg.md` (digests, versions, thresholds, expected matrix, PDF sha, $ cap, guide version) then spend. Keep `manuscript-optimizer` claim ladder during drafting (observation → pattern → interpretation; narrow-or-add-evidence-or-label-hypothesis for overreach). Run `submission-audit` + `stats-reporting-audit` + `paper-reviewer` again on full draft; `anti-defensive-writing` only after claims stable; `scientific-prose-style` last.
+
+**AUTHOR_INPUT_NEEDED:** rtg-tools version; bcftools stratifier version + masks; Mutect2/Strelka2/Octopus/LoFreq digests + exact commands + PASS-vs-all rule; GCS region (locked us-central1 — confirm at spend); full-genome invocation; Bioinformatics/Genome Biology guide version/access date; HG008-V0.6 unblock; STAR/GTF pins.
