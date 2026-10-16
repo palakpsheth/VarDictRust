@@ -24,7 +24,7 @@ VarDictRust is an idiomatic Rust rewrite of **VarDictJava v1.8.3** (a somatic an
 
 ### 3. Architecture & Methodology
 - **[Divergences & Bug Tracking](https://github.com/palakpsheth/VarDictRust/blob/main/DIVERGENCES.md)** — Categorized audit of VarDictJava quirks, edge cases, and deterministic HashMap emulation.
-- **[Upstream Bug Catalog](https://github.com/palakpsheth/VarDictRust/blob/main/docs/upstream-bugs.md)** — Consolidated catalog of upstream VarDictJava v1.8.3 defects preserved for parity (UB-1 through UB-7).
+- **[Upstream Bug Catalog](https://github.com/palakpsheth/VarDictRust/blob/main/docs/upstream-bugs.md)** — Consolidated catalog of upstream VarDictJava v1.8.3 defects preserved for parity (UB-1 through UB-7 output-affecting, plus environmental UB-8).
 - **[Ecosystem Survey](https://github.com/palakpsheth/VarDictRust/blob/main/docs/ecosystem-survey.md)** — Comparative survey of modern NGS variant callers (Mutect2, Strelka2, Octopus, VarDictJava) and rewrites.bio principles.
 
 ### 4. Testing, Harness & Quality Assurance
