@@ -2,7 +2,7 @@
 
 **Authoritative Technical Report — VarDictRust v1.0.1 Release Parity Suite**  
 **Governing Standard:** [rewrites.bio](https://rewrites.bio) Manifesto (§0 Evidence Before Completion, §0b Integrity — Never Fake a Pass, §5 Pure Parity on Valid Inputs)  
-**Certified Release Engine Fingerprint:** `44b362a08b86ca69`  
+**Certified Release Engine Fingerprint:** `c57e9661d77ef254`  
 **Differential Target Oracle:** AstraZeneca VarDictJava v1.8.3 (`0886261`, Perl submodule `009e017`)  
 **Target Architecture:** Rust 2021 Edition (`crates/vardictrust-core`, `crates/vardictrust`)  
 **Binary Distribution:** Standalone `x86_64-unknown-linux-musl` static PIE binary (zero external shared libraries)  
@@ -26,7 +26,7 @@ To provide definitive, reproducible proof of compliance, VarDictRust was evaluat
 4. **NIST GIAB HG008 Somatic PDAC Tumor/Normal (Pillar 4)** [Tier-2 Parity, Format-Invariance & Tier-3 Truth]: High-depth paired WGS (195× tumor / 169× normal), 18,426 variants; 100% parity (0 diffs) and CRAM twin decode byte parity against BAM.
 5. **Targeted Clinical Amplicon Panels (Pillar 5)** [Tier-2 Parity]: Ultra-deep targeted amplicon sequencing (>1,000× depth, *EGFR* L861Q, *MRE11a*), testing 8-column BED primer trimming and bidirectional strand bias (`AMPBIAS`); 100% parity (0 diffs).
 6. **Upstream Micro-Regression Corpus (Pillar 6)** [Tier-1 Intermediate Parity]: All 92 integration fixtures from VarDictJava (`testdata/integrationtestcases/`) covering edge-case indels, tri-allelic sites, and complex soft-clipping; 100% live oracle parity under Tier-1 intermediate table assertions (91 PASS / 1 XFAIL expected fixture defect UB-4).
-7. **Whole Chromosome 1 Scale Benchmark (Pillar 7)** [Level 5 Scale & Bounded Memory]: Full-scale chromosome 1 processing (1 Mbp to 249 Mbp, 2,840,119 variants); **3.72× parallel speedup** on 8 threads with bounded $O(1)$ memory consumption (flat $1.45\times$ RSS ratio: 1.89 GB at 10 Mb vs 2.74 GB at 249 Mb).
+7. **Whole Chromosome 1 Scale Benchmark (Pillar 7)** [Level 5 Scale & Bounded Memory]: Full-scale chromosome 1 processing (1 Mbp to 249 Mbp, 2,840,119 variants); **3.63× parallel speedup** on 8 threads with bounded $O(1)$ memory consumption (flat $1.40\times$ RSS ratio: 1.93 GB at 10 Mb vs 2.70 GB at 249 Mb).
 8. **Seventeen Extended Operational Modalities Suite (Pillar 8)** [Tier-2 Parity across 17 Modalities]: Full-coverage evaluation of RNA splicing (`-i`), structural variant inversions (`<INV>`), duplications (`<DUP>`), CRISPR cut-site offsets (`-J -j`), paired unique read deduplication (`-u -UN`), adapter clipping (`--adaptor`), realignment suppression (`-k 0`), structural variant bypass (`-U`), ambiguous base counting (`-K`), read deduplication (`-t`), 3'-indel shift (`-3`), output MAPQ filter (`-O`), region extension (`-x`), segment column mapping (`-s -e`), minimum match length (`-M`), del/dup variant handling (`--deldupvar`), and default printer redirect (`--DP ERR`); 100% parity (0 diffs across all 17 modes, 4,993 variants).
 9. **Multi-Slice Multi-Modal Public Dataset Expansion Suite (Pillar 9)** [Tier-2 Multi-Cohort Parity & Tier-3 Multi-Ancestry Truth]: 18 non-overlapping slices across 6 independent public cohorts (HG005 Han Chinese, SEQC2 Exome, HG002 WGS, HG008 Somatic, NA24385 b37 deep WGS, RNA Transcriptome) spanning 9 chromosomes and 1,129 variants; 100% parity (0 diffs).
 
@@ -40,7 +40,7 @@ To provide definitive, reproducible proof of compliance, VarDictRust was evaluat
 | **4** | **GIAB HG008 Somatic** | Somatic WGS (195×/169×)| PDAC High-Depth Slices (GRCh38)| 18,426 | **Tier-2 & Tier-3** | **MATCH (0 diffs)** | **EQUAL (0 site diffs)** | advisory (see evidence) |
 | **5** | **Targeted Amplicon** | Amplicon Panel (`-a`) | EGFR L861Q & MRE11a (hg19) | 2 | **Tier-2** | **MATCH (0 diffs)** | **N/A (Synthetic/Assay)** | advisory (SKIP: `-a` is TSV-only; see evidence) |
 | **6** | **Upstream Corpus** | Micro-Fixtures (92) | Genome-wide Edge Cases | 92 fixtures | **Tier-1** | **100% Live Oracle MATCH**| **N/A (Integration)** | advisory (per-fixture MATCH/SKIP lines; see evidence) |
-| **7** | **Chromosome 1 Scale** | Full WGS Scaling | chr1: 1 Mbp to 249 Mbp (GRCh38)| 2,840,119 | **Level 5 Scale** | **MATCH (0 diffs)** | **Bounded RSS ($1.45\times$)** | advisory (see evidence) |
+| **7** | **Chromosome 1 Scale** | Full WGS Scaling | chr1: 1 Mbp to 249 Mbp (GRCh38)| 2,840,119 | **Level 5 Scale** | **MATCH (0 diffs)** | **Bounded RSS ($1.40\times$)** | advisory (see evidence) |
 | **8** | **Extended Modalities** | 17 Operational Modes | chr8, chr20 (hg19, hg38, GRCh37, GRCh38)| 4,993 | **Tier-2** | **MATCH (0 diffs, 17/17)** | **N/A (Flag Parity)** | advisory (M1 SKIP; M4–M17 MATCH/MISMATCH/SKIP recorded; see evidence) |
 | **9** | **Multi-Slice Suite** | 6 Public Cohorts | 18 slices, 9 chrs (GRCh38, b37)| 1,129 | **Tier-2 & Tier-3** | **MATCH (0 diffs, 18/18)**| **EQUAL (HG005, b37)** | advisory (see evidence) |
 
@@ -498,15 +498,15 @@ VarDictRust faithfully emulates this exact upstream filter token mapping, ensuri
 
 ## 12. Empirical Performance & Memory Scaling
 
-All benchmarks were recorded on identical dedicated hardware (AMD Ryzen, Ubuntu 24.04 LTS, NVMe SSD) pinned to 8 CPU threads following the standardized benchmarking protocol in [`benchmarks/README.md`](../../benchmarks/README.md) and certified against [`perf-budget.json`](../../benchmarks/evidence/perf-budget.json); the Whole Chromosome 1 Scale row below reports current `scale.json` medians across 3 runs (supersedes the historical AMD Ryzen run):
+All benchmarks were recorded on identical dedicated hardware (AMD Ryzen, Ubuntu 24.04 LTS, NVMe SSD) pinned to 8 CPU threads following the standardized benchmarking protocol in [`benchmarks/README.md`](../../benchmarks/README.md) and certified against [`perf-budget.json`](../../benchmarks/evidence/perf-budget.json); the Whole Chromosome 1 Scale row below reports the current single-run certified `scale.json` evidence (supersedes the historical AMD Ryzen run):
 
 | Workload / Benchmark | Threads | VarDictJava Wall Time | VarDictRust Wall Time | Speedup Ratio | VarDictJava Peak RSS | VarDictRust Peak RSS | Memory Scaling Ratio | Evidence Artifact | Cpp Wall / RSS (vardictcpp 3 hc52dbad_0, advisory¹) |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :---: | :--- |
-| **Targeted Amplicon Panel** | 8 cores | 0:02.11 | 0:00.07 | **30.1× faster** | 123.8 MB | 52.7 MB | 0.43× (2.3× lower) | [`amplicon-tier2.json`](../../benchmarks/evidence/amplicon-tier2.json) | advisory (see evidence) |
-| **GIAB HG002 (chr20:10M–30M, 30×)** | 8 cores | 1:41.01 | 0:50.58 | **2.0× faster** | 3.9 GB | 1.1 GB | 0.27× (3.7× lower) | [`hg002-tier2.json`](../../benchmarks/evidence/hg002-tier2.json) | advisory (see evidence) |
-| **SEQC2 HCC1395 Somatic Exome** | 4 cores² | 55:55.34 | 19:06.88 | **2.9× faster** | 3.5 GB | 1.0 GB | 0.29× (3.4× lower) | [`seqc2-exome-tier2.json`](../../benchmarks/evidence/seqc2-exome-tier2.json) | advisory (see evidence) |
-| **GIAB HG008 Somatic PDAC** | 4 cores² | 1:23.88 | 0:52.42 | **1.6× faster** | 3.2 GB | 0.7 GB | 0.23× (4.3× lower) | [`hg008-tier2.json`](../../benchmarks/evidence/hg008-tier2.json) | advisory (see evidence) |
-| **Whole Chromosome 1 Scale (249 Mbp)** | 1 → 8 cores | 29m 29s (1 core) | 7m 56s (8 cores) | **3.72× parallel** | OOM / Unbounded | 2.7 GB (249 Mb) vs 1.9 GB (10 Mb) | **1.45× flat RSS scaling** | [`scale.json`](../../benchmarks/evidence/scale.json) | advisory (see evidence) |
+| **Targeted Amplicon Panel** | 8 cores | 0:02.03 | 0:00.07 | **29.0× faster** | 123.1 MB | 52.7 MB | 0.43× (2.3× lower) | [`amplicon-tier2.json`](../../benchmarks/evidence/amplicon-tier2.json) | advisory (see evidence) |
+| **GIAB HG002 (chr20:10M–30M, 30×)** | 8 cores | 1:34.18 | 0:45.63 | **2.1× faster** | 4.1 GB | 1.1 GB | 0.26× (3.8× lower) | [`hg002-tier2.json`](../../benchmarks/evidence/hg002-tier2.json) | advisory (see evidence) |
+| **SEQC2 HCC1395 Somatic Exome** | 4 cores² | 52:09.24 | 17:13.73 | **3.0× faster** | 3.5 GB | 1.0 GB | 0.28× (3.6× lower) | [`seqc2-exome-tier2.json`](../../benchmarks/evidence/seqc2-exome-tier2.json) | advisory (see evidence) |
+| **GIAB HG008 Somatic PDAC** | 4 cores² | 1:15.71 | 0:48.72 | **1.6× faster** | 3.3 GB | 0.8 GB | 0.22× (4.5× lower) | [`hg008-tier2.json`](../../benchmarks/evidence/hg008-tier2.json) | advisory (see evidence) |
+| **Whole Chromosome 1 Scale (249 Mbp)** | 1 → 8 cores | 26m 57s (1 core) | 7m 26s (8 cores) | **3.63× parallel** | OOM / Unbounded | 2.7 GB (249 Mb) vs 1.9 GB (10 Mb) | **1.40× flat RSS scaling** | [`scale.json`](../../benchmarks/evidence/scale.json) | advisory (see evidence) |
 
 ¹ Cpp runs beside each arm above under the same pins (`-th 8`, `LC_ALL=C /usr/bin/time -v`, taskset-recorded); `--chunk` deliberately unpinned (cpp default rewrites the `Seg` column). Cpp wall/RSS numbers live only in the linked evidence `extra` (`cpp_wall_s`, `cpp_maxrss_kb`) and are never duplicated here.
 ² hg008/seqc2-exome at `-th 4`: Java `-th 8` is OOM-killed on 31G hosts (bisected 1✓/4✓/8✗); exact cmds in evidence.
@@ -515,9 +515,9 @@ All benchmarks were recorded on identical dedicated hardware (AMD Ryzen, Ubuntu 
 VarDictJava holds entire regional chromosome structures in JVM heap collections, leading to JVM heap exhaustion and Out-Of-Memory errors on deep WGS (issues #197, #384).
 
 VarDictRust processes genomic regions via **bounded tiles with halo intervals** using RAII streaming. As demonstrated in [`scale.json`](../../benchmarks/evidence/scale.json):
-- Slicing 10 Mbp of chromosome 1 uses **1.89 GB** peak RSS.
-- Slicing all 249 Mbp of human chromosome 1 uses **2.74 GB** peak RSS.
-- The memory scaling ratio across a 25-fold increase in genomic span is only **$1.45\times$**, proving bounded $O(1)$ memory consumption.
+- Slicing 10 Mbp of chromosome 1 uses **1.93 GB** peak RSS.
+- Slicing all 249 Mbp of human chromosome 1 uses **2.70 GB** peak RSS.
+- The memory scaling ratio across a 25-fold increase in genomic span is only **$1.40\times$**, proving bounded $O(1)$ memory consumption.
 
 ---
 
@@ -527,22 +527,22 @@ Every claim in this omnibus report is backed by a permanent, machine-readable ev
 
 | Evidence File | Release Fingerprint | SHA-256 Checksum | Validation Role & Scope |
 | :--- | :---: | :--- | :--- |
-| [`amplicon-tier2.json`](../../benchmarks/evidence/amplicon-tier2.json) | `44b362a08b86ca69` | `0d40b21fa6ef69dd720696ff97cae6e22dbcbcf711dc073eae6f62f4534be0ab` | Pillar 5: Targeted amplicon panel dual-engine differential parity (0 diffs). |
-| [`extended-coverage-tier2.json`](../../benchmarks/evidence/extended-coverage-tier2.json) | `44b362a08b86ca69` | `63e7a624bb8f5b127a00c645dc44a9cd0964a930be2a272e8671f7d2dffa1b5b` | Pillar 8: 17 extended operational modalities (RNA `-i`, SVs, all supported flags; 0 diffs). |
-| [`hg002-tier2.json`](../../benchmarks/evidence/hg002-tier2.json) | `44b362a08b86ca69` | `f1ac483ef7bf08bbb7ec8f9da20d47e7dad38bdf2a5e20c7cdfd1517aac5b3fb` | Pillar 1: GIAB HG002 20 Mbp WGS dual-engine differential parity (0 diffs). |
-| [`hg002-truth.json`](../../benchmarks/evidence/hg002-truth.json) | `44b362a08b86ca69` | `d1a6888145651caa4c06488d114ce5bc22895389639bde21464fdae00c7d5789` | Pillar 1: NIST v4.2.1 truth concordance (Rust vs Java EQUAL, $F_1 = 0.9699$). |
-| [`hg005-truth.json`](../../benchmarks/evidence/hg005-truth.json) | `44b362a08b86ca69` | `31fcbd98c1c32408a9a8fead76f719122c5e2a5eae23baf858469c98e4737bdd` | Pillar 9: NIST v4.2.1 HG005 truth concordance (Rust vs Java EQUAL, $F_1 = 0.9667$). |
-| [`hg008-cram-twin.json`](../../benchmarks/evidence/hg008-cram-twin.json) | `44b362a08b86ca69` | `3794e5be26060725cf67a56d6eaca632eea29e471039935dcab701f1b4f653b6` | Pillar 4: CRAM twin decode byte parity against BAM reference. |
-| [`hg008-tier2.json`](../../benchmarks/evidence/hg008-tier2.json) | `44b362a08b86ca69` | `9a4b2f5a8a994c0376ec897e692377db1da19818ce50c3bce9b42bc0fdf3a942` | Pillar 4: GIAB HG008 somatic PDAC dual-engine differential parity (0 diffs). |
-| [`hg008-truth.json`](../../benchmarks/evidence/hg008-truth.json) | `44b362a08b86ca69` | `35f6a5182e0656eb5b3dc9d062ab38eaaed16076630045f50c0a357c9c226a9f` | Pillar 4: NIST Draft v0.3 somatic truth concordance (Rust vs Java EQUAL). |
-| [`multimodal-slices-tier2.json`](../../benchmarks/evidence/multimodal-slices-tier2.json) | `44b362a08b86ca69` | `05a9f15e93981393dbebe1b86a92145c6b2d3e8d000f38cd7c0d49cee8b7dd29` | Pillar 9: 18 multi-slice multi-cohort evaluations across 9 chrs (0 diffs). |
-| [`musl-ci.json`](../../benchmarks/evidence/musl-ci.json) | `44b362a08b86ca69` | `58f8c74f5c9728dd59708fe44de9cc2395f0a6910bdc5f0382d89cc9e1e20da5` | Fully static `x86_64-unknown-linux-musl` target compilation and binary certification. |
-| [`na24385-b37-truth.json`](../../benchmarks/evidence/na24385-b37-truth.json) | `44b362a08b86ca69` | `a41ee27be22d619f56c467fd292e6f417a0159d45a44f46de4b01b6adc3e5ab7` | Pillar 9: NIST v4.2.1 NA24385 b37 truth concordance (Rust vs Java EQUAL, $F_1 = 1.0$). |
-| [`perf-budget.json`](../../benchmarks/evidence/perf-budget.json) | `44b362a08b86ca69` | `03a42c96081bbe46db8ec1062e22661aa5422820c156820bc72274aeb754cee6` | 4-target performance budget verification (amplicon, HG002, SEQC2, HG008). |
-| [`scale.json`](../../benchmarks/evidence/scale.json) | `44b362a08b86ca69` | `fa28cec48ba4649687ce78b8bdcb3bca6278ccd4b3a9dc8cf2627b09f1b4684f` | Pillar 7: Chromosome 1 (249 Mbp) bounded memory scaling & parallel speedup. |
-| [`seqc2-exome-tier2.json`](../../benchmarks/evidence/seqc2-exome-tier2.json) | `44b362a08b86ca69` | `39e1e5a63182333e1e0aeea5035689ed1ccefbd685082d1d22e6dc0a25526bf4` | Pillar 2: SEQC2 somatic whole exome dual-engine differential parity (0 diffs). |
-| [`seqc2-slices-tier2.json`](../../benchmarks/evidence/seqc2-slices-tier2.json) | `44b362a08b86ca69` | `98b41cee60765c8713a8e4d91798d050c7ffb635aae08d9ec4e5bcd573e668d0` | Pillar 3: SEQC2 somatic multi-chromosome slices dual-engine differential parity (0 diffs). |
-| [`seqc2-truth.json`](../../benchmarks/evidence/seqc2-truth.json) | `44b362a08b86ca69` | `0f35f336fa8c5e4d7512d5d2233a1a272ebd0cfc0477f73e7868ade12e91bb83` | Pillar 2: SEQC2 v1.2.1 somatic truth concordance (Rust vs Java EQUAL). |
+| [`amplicon-tier2.json`](../../benchmarks/evidence/amplicon-tier2.json) | `c57e9661d77ef254` | `4e7aad3559353c468bf3c9a7aa83bf93ae8b2783e6a47c441ccff5d0ea99e9d6` | Pillar 5: Targeted amplicon panel dual-engine differential parity (0 diffs). |
+| [`extended-coverage-tier2.json`](../../benchmarks/evidence/extended-coverage-tier2.json) | `c57e9661d77ef254` | `20b2017480ee5d492779aea2495ecec8656d943c094fff125f62706f8d50298a` | Pillar 8: 17 extended operational modalities (RNA `-i`, SVs, all supported flags; 0 diffs). |
+| [`hg002-tier2.json`](../../benchmarks/evidence/hg002-tier2.json) | `c57e9661d77ef254` | `e1eeff4c98d3dc6067a43236777dba9ccf44f353e02d8ff38d7cc6725158a8cd` | Pillar 1: GIAB HG002 20 Mbp WGS dual-engine differential parity (0 diffs). |
+| [`hg002-truth.json`](../../benchmarks/evidence/hg002-truth.json) | `c57e9661d77ef254` | `a1a5773d95c5154b0601b584cdbbf3f57d8971b66179d911eb0d81bb73764bf8` | Pillar 1: NIST v4.2.1 truth concordance (Rust vs Java EQUAL, $F_1 = 0.9699$). |
+| [`hg005-truth.json`](../../benchmarks/evidence/hg005-truth.json) | `c57e9661d77ef254` | `c8802fa8e6a69369fb8960b79360871a8f595adab2646bef88259269f2bcc219` | Pillar 9: NIST v4.2.1 HG005 truth concordance (Rust vs Java EQUAL, $F_1 = 0.9667$). |
+| [`hg008-cram-twin.json`](../../benchmarks/evidence/hg008-cram-twin.json) | `c57e9661d77ef254` | `621b737bf36d93647a95eddeb718c4b131dc409214613860b707026d5eaa7152` | Pillar 4: CRAM twin decode byte parity against BAM reference. |
+| [`hg008-tier2.json`](../../benchmarks/evidence/hg008-tier2.json) | `c57e9661d77ef254` | `d5fb2a175a3cd63936d1186f14bc84cd19220c22505839524ef9eea1f43acf6f` | Pillar 4: GIAB HG008 somatic PDAC dual-engine differential parity (0 diffs). |
+| [`hg008-truth.json`](../../benchmarks/evidence/hg008-truth.json) | `c57e9661d77ef254` | `03ef1d66b9279d96414d27d872e7852c0620a6073b718f6ae24b886ca1157d6a` | Pillar 4: NIST Draft v0.3 somatic truth concordance (Rust vs Java EQUAL). |
+| [`multimodal-slices-tier2.json`](../../benchmarks/evidence/multimodal-slices-tier2.json) | `c57e9661d77ef254` | `dcdb02968b8bff647701244768436f0b9e444e1c22d0f3a32fc37f0134f825e5` | Pillar 9: 18 multi-slice multi-cohort evaluations across 9 chrs (0 diffs). |
+| [`musl-ci.json`](../../benchmarks/evidence/musl-ci.json) | `c57e9661d77ef254` | `48ad2968b7a28e484b64fd170f20b1204c58048fa2a44f84bf7165355beff932` | Fully static `x86_64-unknown-linux-musl` target compilation and binary certification. |
+| [`na24385-b37-truth.json`](../../benchmarks/evidence/na24385-b37-truth.json) | `c57e9661d77ef254` | `be1bfb4aee0fddcbb76e129a608db7906a822eef7e3b412d712ec486912530fa` | Pillar 9: NIST v4.2.1 NA24385 b37 truth concordance (Rust vs Java EQUAL, $F_1 = 1.0$). |
+| [`perf-budget.json`](../../benchmarks/evidence/perf-budget.json) | `c57e9661d77ef254` | `ff6fc95d5d9903ee01b4b1c14910e18de7a2e2bd2762e98d71100f9401dd6f2f` | 4-target performance budget verification (amplicon, HG002, SEQC2, HG008). |
+| [`scale.json`](../../benchmarks/evidence/scale.json) | `c57e9661d77ef254` | `8a4e33e3fe0194cbbd791e3c06a8f1b9e9c027c6c3d740f67394d34d11a72602` | Pillar 7: Chromosome 1 (249 Mbp) bounded memory scaling & parallel speedup. |
+| [`seqc2-exome-tier2.json`](../../benchmarks/evidence/seqc2-exome-tier2.json) | `c57e9661d77ef254` | `f2701ab02fb2b1096b8febe4bb49b9118173f74b5694561d1462beca156e850a` | Pillar 2: SEQC2 somatic whole exome dual-engine differential parity (0 diffs). |
+| [`seqc2-slices-tier2.json`](../../benchmarks/evidence/seqc2-slices-tier2.json) | `c57e9661d77ef254` | `d14c2a7f78f10f8569451e221fbd8854b44e122bd8da2709e61d0457a0a9a6f5` | Pillar 3: SEQC2 somatic multi-chromosome slices dual-engine differential parity (0 diffs). |
+| [`seqc2-truth.json`](../../benchmarks/evidence/seqc2-truth.json) | `c57e9661d77ef254` | `fe8223814180eff5fc45dd805686786b5f8d3eef645beb47fdde2599437395be` | Pillar 2: SEQC2 v1.2.1 somatic truth concordance (Rust vs Java EQUAL). |
 
 ---
 
