@@ -16,29 +16,29 @@
   ],
   "cpp_time": {
     "exit": "0",
-    "max_rss_kb": "90880",
-    "wall": "0:03.59"
+    "max_rss_kb": "91360",
+    "wall": "0:03.55"
   },
-  "date": "2026-10-13T08:28:35-07:00",
+  "date": "2026-10-16T00:49:09-07:00",
   "extra": {
     "cpp_head": [
       "CPP: SKIP: cpp emitted non-VCF surface (TSV-only mode; VCF comparison inapplicable)"
     ],
     "cpp_skip_reason": "cpp emitted non-VCF surface (TSV-only mode; VCF comparison inapplicable)"
   },
-  "fingerprint": "388f4a545470d12a",
-  "head": "de43b219a8f2278964e6b9cd9c74450a3b5c0916",
+  "fingerprint": "c57e9661d77ef254",
+  "head": "33741680598e5f885a1d73d289051ff8867de036",
   "java_time": {
     "exit": "0",
-    "max_rss_kb": "126720",
-    "wall": "0:02.11"
+    "max_rss_kb": "126080",
+    "wall": "0:02.03"
   },
   "n_variants": 2,
   "name": "amplicon-tier2",
   "result": "MATCH",
   "rust_time": {
     "exit": "0",
-    "max_rss_kb": "54004",
+    "max_rss_kb": "53956",
     "wall": "0:00.07"
   }
 }

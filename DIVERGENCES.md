@@ -16,14 +16,14 @@ specification. We either match it exactly or prove the difference is unreachable
 ## Master Parity Status & Taxonomy Summary
 
 ```
-Verified Parity Baseline (release/v1.0.1, commit a2ee82b):
+Verified Parity Baseline (release/v1.0.1, commit 3374168):
 - Integration Tests:  91 PASS / 1 XFAIL / 0 FAIL / 0 SKIP (100% of valid inputs pass; sole XFAIL is stale fixture [UB-4](docs/upstream-bugs.md#ub-4-hard_clip_casefa-fixture-drift-between-csv-chunks-and-reconstructed-fasta))
-- Core Library Tests: 189 PASS / 0 FAIL (`cargo test -p vardictrust-core --lib`)
-- Total Workspace:    230 PASS / 0 FAIL (`cargo test --workspace` across core, cram_stack, cli, flags, robustness, thread-determinism, version)
+- Core Library Tests: 192 PASS / 0 FAIL (`cargo test -p vardictrust-core --lib`)
+- Total Workspace:    233 PASS / 0 FAIL (`cargo test --workspace` across core, cram_stack, cli, flags, robustness, thread-determinism, version)
 - [Tier-2](docs/testing/test-matrix-and-ci-audit.md#tier-2) Sweeps:      17/17 strict MATCH (micro, s1a-s9 all 10 slices, HG008, SEQC2 exome/slices, HG002, Amplicon, 17-mode extended, 18-slice multimodal)
 - [Tier-3](docs/testing/test-matrix-and-ci-audit.md#tier-3) Truth Concordance:  5/5 EQUAL (GIAB HG002 NIST v4.2.1, SEQC2 v1.2.1, GIAB HG008 NIST Draft v0.3, GIAB HG005 NIST v4.2.1, GIAB NA24385 b37 NIST v4.2.1)
-- Scaling Budget:     PASS (3.72x speedup, 1.45x flat RSS scaling across 249 Mbp chromosome 1)
-- Final Acceptance:   8/8 PASS under release engine fingerprint `388f4a545470d12a`
+- Scaling Budget:     PASS (3.63x speedup, 1.40x flat RSS scaling across 249 Mbp chromosome 1)
+- Final Acceptance:   8/8 PASS under release engine fingerprint `c57e9661d77ef254`
 ```
 
 <a id="the-four-canonical-parity-classes-rewritesbio-5-8-11"></a>
@@ -1195,7 +1195,7 @@ are consolidated with filing-ready draft issue texts in
 | HashMap non-determinism in tovars | Changed to BTreeMap | `e6c344b` |
 | Missing realign_indels in somatic pipeline | Added for both BAMs | core engine |
 | SV distance guard missing | Added 1Mbp limit in find_match | core engine |
-| Tiled streaming memory bounding | Halo intervals and tile streaming scaling whole chr1 to 2.9GB peak RSS (4.85x speedup, Ryzen 8C/8T host pre-recalibration; current 3.72x medians in docs/validation/scale-recalibration-proposal.md) | `6ee4368`, `a4be62e` |
+| Tiled streaming memory bounding | Halo intervals and tile streaming scaling whole chr1 to 2.9GB peak RSS (4.85x speedup, Ryzen 8C/8T host pre-recalibration; current 3.63x single-run certified in benchmarks/evidence/scale.json) | `6ee4368`, `a4be62e` |
 | amplicon_40 table format | Added 40-column amplicon intermediate serialization under --fisher (AmpliconOutputVariant.java:145) | `3076620` |
 | mark_dup_sv pe coordinate alignment | Fixed 1bp mate-pair window shift (pe instead of pe + 1) matching StructuralVariantsProcessor.java:1468 | `a2d6c81` |
 | SimpleMode SV splitread filter | Emulate var2vcf_valid.pl:197-205 dropping `<DUP>`/`<INV>` when splitreads < 1 in simple mode | `a2d6c81` |
