@@ -93,7 +93,10 @@ pub fn tile(region: &Region, tile_size: u32, halo: u32) -> Vec<Tile> {
 
     let mut curr_start = reg_start;
     while curr_start <= reg_end {
-        let mut curr_end = curr_start.saturating_add(tile_size).saturating_sub(1);
+        // Subtract first: tile_size >= 1 so this never underflows, and the
+        // terminal tile reaches reg_end (saturating add-then-sub would stall
+        // one base short at u32::MAX and spin forever).
+        let mut curr_end = curr_start.saturating_add(tile_size.saturating_sub(1));
         if curr_end > reg_end {
             curr_end = reg_end;
         }
@@ -699,5 +702,22 @@ Y\t59042860\t59047860\tY_59042860_5\t0\t.\t59042860\t59047860
         // Tile 0 and 1: tile 1 halo_start is 350, tile 0 halo_end is 449. Overlap is 350..449 (len = 100)
         let overlap_len = tiles[0].halo_end.0 - tiles[1].halo_start.0 + 1;
         assert_eq!(overlap_len, 100);
+    }
+
+    #[test]
+    fn test_tile_at_u32_max_terminates() {
+        // One-base region at the u32 ceiling must yield exactly one tile and
+        // terminate (saturating add-then-sub stalls one base short and spins).
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(u32::MAX),
+            end: Pos1(u32::MAX),
+            gene: "GENE".to_string(),
+            amplicon: None,
+        };
+        let tiles = tile(&region, 1, 50);
+        assert_eq!(tiles.len(), 1);
+        assert_eq!(tiles[0].start, Pos1(u32::MAX));
+        assert_eq!(tiles[0].end, Pos1(u32::MAX));
     }
 }

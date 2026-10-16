@@ -222,20 +222,22 @@ pub fn is_best_sv_used(var_data: &crate::variations::VariationData, softp: i32) 
         check_sv(sv);
     }
 
-    let mut fus_keys: Vec<&String> = var_data
-        .sv_structures
-        .svffus
-        .keys()
-        .chain(var_data.sv_structures.svrfus.keys())
-        .collect();
-    fus_keys.sort();
-    fus_keys.dedup();
-    for key in fus_keys {
+    // Deterministic forward-before-reverse traversal: each map's keys are
+    // sorted, and svffus is fully scanned before svrfus, preserving Java's
+    // precedence class (Sclip lists are per-key, so ties keep the first
+    // highest-count candidate in forward-then-reverse order).
+    let mut ffus_keys: Vec<&String> = var_data.sv_structures.svffus.keys().collect();
+    ffus_keys.sort();
+    for key in ffus_keys {
         if let Some(sv_list) = var_data.sv_structures.svffus.get(key) {
             for sv in sv_list {
                 check_sv(sv);
             }
         }
+    }
+    let mut rfus_keys: Vec<&String> = var_data.sv_structures.svrfus.keys().collect();
+    rfus_keys.sort();
+    for key in rfus_keys {
         if let Some(sv_list) = var_data.sv_structures.svrfus.get(key) {
             for sv in sv_list {
                 check_sv(sv);
@@ -4168,5 +4170,31 @@ mod tests {
                 .expect("svrdel scan branch must call DEL via SEED_2=12 retry");
             assert!(entry.map.contains_key("-199"));
         }
+    }
+
+    #[test]
+    fn test_is_best_sv_used_keeps_forward_before_reverse_tie() {
+        // Equal-count tie at the same softp: the forward candidate is scanned
+        // first, so an unused forward entry beats a used reverse entry even
+        // when the reverse key sorts earlier.
+        use crate::variations::VariationData;
+        let mut var_data = VariationData::default();
+        let mut fwd = crate::variations::Sclip::new();
+        fwd.softp = 100;
+        fwd.variation.cnt = 5;
+        fwd.used = false;
+        let mut rev = crate::variations::Sclip::new();
+        rev.softp = 100;
+        rev.variation.cnt = 5;
+        rev.used = true;
+        var_data
+            .sv_structures
+            .svffus
+            .insert("chr2".to_string(), vec![fwd]);
+        var_data
+            .sv_structures
+            .svrfus
+            .insert("chr1".to_string(), vec![rev]);
+        assert!(!is_best_sv_used(&var_data, 100));
     }
 }
