@@ -84,7 +84,7 @@ Evaluated via `harness/scale_bench.sh` on HCC1395 across all 248,956,422 bp of c
 
 **Observed RSS Ratio (249 Mbp vs 10 Mbp): 1.45×** (Passing pre-registered threshold $\le 1.5\times$). Memory remains bounded across deep genomic spans via tiled execution with boundary halo deduplication.
 
-Pinned **vardictcpp 3 `hc52dbad_0`** runs beside each loop above (`harness/scale_bench.sh`, advisory only): per-thread/per-span cpp wall/RSS land in `scale.json` `extra` (`cpp_wall_s`, `cpp_maxrss_kb`) — at `-th 8`: 172.4 s wall / 24.6 GB peak RSS ([CPP-5](../docs/upstream-bugs.md#cpp-5)). `--chunk` is deliberately unpinned (cpp default rewrites the `Seg` column, so pinning a value would fork output shape).
+Pinned **vardictcpp 3 `hc52dbad_0`** runs beside each loop above (`harness/scale_bench.sh`, advisory only): per-thread cpp wall (`cpp_wall_s`, exome BED workload) and per-span cpp RSS (`cpp_maxrss_kb`, `-R` full-span workload) land separately in `scale.json` `extra` — at `-th 8` BED wall 172.4 s, full-span (249 Mbp) RSS 24.6 GB ([CPP-5](../docs/upstream-bugs.md#cpp-5)); `--chunk` is deliberately unpinned (cpp default rewrites the `Seg` column, so pinning a value would fork output shape).
 
 ### Reproduction Command:
 ```bash
