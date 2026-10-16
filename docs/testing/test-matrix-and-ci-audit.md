@@ -40,7 +40,7 @@ flowchart TD
     end
 
     subgraph Level2 ["Level 2: Upstream Integration Regression Corpus (92 Fixtures)"]
-        I1["harness/run_integration.sh\n(91 static PASS / 1 static FAIL Class D defect)"]
+        I1["harness/run_integration.sh\n(91 static PASS / 1 static XFAIL (UB-4) Class D defect)"]
         I2["Live Oracle Parity\n(100% byte-identical across all 92 fixtures)"]
     end
 
@@ -145,11 +145,11 @@ The table below summarizes the complete testing inventory executed across the de
 | **3** | [**Level 3: Primary Public WGS/WES**](#level-3) | `hg008`, `seqc2`, `hg002`, `amplicon` | 4 cohorts | Evidence recertification & Acceptance | MATCH ($\varepsilon \le 10^{-6}$, 0 diffs) | $\sim 25\text{ m}$ |
 | **3** | [**Level 3: Extended Modalities**](#level-3) | `harness/run_extended_coverage.sh` | 17 modes | Release Acceptance Item 3 | MATCH (RNA, SVs, flags, 0 diffs) | $\sim 30\text{ s}$ |
 | **3** | [**Level 3: Multi-Slice Expansion**](#level-3) | `harness/run_multimodal_slices.sh` | 18 slices | Release Acceptance Item 3 | MATCH (6 cohorts, 9 chrs, 0 diffs) | $\sim 35\text{ s}$ |
-| **4** | [**Level 4: Truth Concordance (HG002)**](#level-4) | `harness/concordance_germline.sh` | 1 evaluation | Release Acceptance Item 6 | $F_1 = 0.9699$, Bitwise Site EQUAL | $\sim 2\text{ m}$ |
+| **4** | [**Level 4: Truth Concordance (HG002)**](#level-4) | `harness/concordance_germline.sh` | 1 evaluation | Release Acceptance Item 6 | **$F_1 = 0.9699$, Bitwise Site EQUAL** | $\sim 2\text{ m}$ |
 | **4** | [**Level 4: Truth Concordance (SEQC2)**](#level-4) | `harness/concordance.sh seqc2` | 1 evaluation | Release Acceptance Item 6 | $F_1 = 0.1555$, Bitwise Site EQUAL | $\sim 4\text{ m}$ |
 | **4** | [**Level 4: Truth Concordance (HG008)**](#level-4) | `harness/concordance.sh hg008` | 1 evaluation | Release Acceptance Item 6 | $F_1 = 0.3856$, Bitwise Site EQUAL | $\sim 1\text{ m}$ |
-| **4** | [**Level 4: Truth Concordance (HG005)**](#level-4) | `harness/concordance_multimodal.sh` | 1 evaluation | Ground Truth Verification Gate | $F_1 = 0.9667$, Bitwise Site EQUAL | $\sim 5\text{ s}$ |
-| **4** | [**Level 4: Truth Concordance (NA24385 b37)**](#level-4)| `harness/concordance_multimodal.sh`| 1 evaluation | Ground Truth Verification Gate | $F_1 = 1.0000$, Bitwise Site EQUAL | $\sim 5\text{ s}$ |
+| **4** | [**Level 4: Truth Concordance (HG005)**](#level-4) | `harness/concordance_multimodal.sh` | 1 evaluation | Ground Truth Verification Gate | **$F_1 = 0.9667$, Bitwise Site EQUAL** | $\sim 5\text{ s}$ |
+| **4** | [**Level 4: Truth Concordance (NA24385 b37)**](#level-4)| `harness/concordance_multimodal.sh`| 1 evaluation | Ground Truth Verification Gate | **$F_1 = 1.0000$, Bitwise Site EQUAL** | $\sim 5\text{ s}$ |
 | **5** | [**Level 5: Whole Chromosome 1 Scale**](#level-5) | `harness/scale_bench.sh` | 1 benchmark | Release Acceptance Item 5 | $S_8 \ge 2.4\times$ ($\text{bar}(P)=0.6\cdot\min(8,P)$), Peak RSS $\le 1.5\times$ | $\sim 12\text{ m}$ |
 | **5** | [**Level 5: Continuous Perf Budget**](#level-5) | `harness/perf_budget.py` | 4 targets | PR gate Stage 5 & Acceptance Item 5 | Runtime $\le +5\%$, RAM ratio $\le 1.0$ | $\sim 0.5\text{ s}$ |
 | **6** | [**Level 6: Diagnostic Self-Tests**](#level-6) | `bash harness/run_self_tests.sh` | 17 scripts | Automated Diagnostics Runner | Exit code 0 across all 17 tests | $\sim 10\text{ s}$ |
@@ -324,18 +324,18 @@ Because VarDictRust produces 0 variant discrepancies and 0 filter differences co
 
 | Dataset / Assay | Modality & Reference Build | BAM / CRAM Source | Level 3 (Differential Parity) | vardictcpp (advisory) | Level 4 (Truth Concordance) | Reason / Ground Truth Asset |
 | :--- | :--- | :--- | :---: | :---: | :--- | :--- |
-| **GIAB HG002 Euchromatic WGS** | Germline WGS (GRCh38) | Illumina NovaSeq 125× (20 Mbp) | **RUN (MATCH, 0 diffs)** | advisory (see evidence) | **RUN (EQUAL, $F_1 = 0.9699$)** | NIST GIAB v4.2.1 High-Confidence Benchmark |
-| **FDA SEQC2 HCC1395 Somatic** | Somatic WES (GRCh38) | Whole Exome (300×/100×) | **RUN (MATCH, 0 diffs)** | advisory (see evidence) | **RUN (EQUAL, $F_1 = 0.1555$)** | FDA SEQC2 v1.2.1 High-Confidence Somatic Truth |
-| **GIAB HG008 Somatic PDAC** | Somatic WGS (GRCh38) | Tumor/Normal WGS (195×/169×) | **RUN (MATCH, 0 diffs)** | advisory (see evidence) | **RUN (EQUAL, $F_1 = 0.3856$)** | NIST Draft Somatic Benchmark v0.3 |
-| **GIAB HG005 Han Chinese** | Diversity WGS (GRCh38) | Slices `s4a/b/c` (chr3, 6, 21) | **RUN (MATCH, 0 diffs)** | advisory (see evidence) | **RUN (EQUAL, $F_1 = 0.9667$)** | NIST GIAB v4.2.1 Han Chinese Trio Benchmark |
-| **GIAB NA24385 b37 WGS** | Germline WGS (GRCh37/b37) | Multi-chr WGS (chr1, 19, 20) | **RUN (MATCH, 0 diffs)** | advisory (see evidence) | **RUN (EQUAL, $F_1 = 1.0000$)** | NIST GIAB v4.2.1 Ashkenazi Son (b37 build) |
-| **SEQC2 Somatic Slices** | Somatic WES (GRCh38) | chr1, 2, 3, 17, 19, 21 slices | **RUN (MATCH, 0 diffs)** | advisory (see evidence) | **RUN (EQUAL, 0 site diffs)** | FDA SEQC2 v1.2.1 Sub-Regions |
-| **Targeted Amplicon Panel** | Amplicon Assay (hg19) | EGFR L861Q primer panel | **RUN (MATCH, 0 diffs)** | advisory (see evidence) | *Methodologically Ineligible* | Targeted primer assay testing `AMPBIAS`; no diploid NIST truth VCF |
+| **GIAB HG002 Euchromatic WGS** | Germline WGS (GRCh38) | Illumina NovaSeq 125× (20 Mbp) | **RUN (MATCH, 0 diffs)** | advisory [MISMATCH (CPP-9)](../upstream-bugs.md#cpp-9) + [CPP-1](../upstream-bugs.md#cpp-1); F1 raw 0.6624 ([CPP-6](../upstream-bugs.md#cpp-6)) | **RUN (EQUAL, $F_1 = 0.9699$ at `QUAL >= 128`; raw 0.6622)** | NIST GIAB v4.2.1 High-Confidence Benchmark |
+| **FDA SEQC2 HCC1395 Somatic** | Somatic WES (GRCh38) | Whole Exome (300×/100×) | **RUN (MATCH, 0 diffs)** | advisory [MISMATCH (CPP-9)](../upstream-bugs.md#cpp-9); F1 0.1555 ([CPP-6](../upstream-bugs.md#cpp-6)) | **RUN (EQUAL, $F_1 = 0.1555$)** | FDA SEQC2 v1.2.1 High-Confidence Somatic Truth |
+| **GIAB HG008 Somatic PDAC** | Somatic WGS (GRCh38) | Tumor/Normal WGS (195×/169×) | **RUN (MATCH, 0 diffs)** | advisory [MISMATCH (CPP-9)](../upstream-bugs.md#cpp-9); F1 0.3858 ([CPP-6](../upstream-bugs.md#cpp-6)) | **RUN (EQUAL, $F_1 = 0.3856$)** | NIST Draft Somatic Benchmark v0.3 |
+| **GIAB HG005 Han Chinese** | Diversity WGS (GRCh38) | Slices `s4a/b/c` (chr3, 6, 21) | **RUN (MATCH, 0 diffs)** | advisory F1 raw 0.9508 ([CPP-6](../upstream-bugs.md#cpp-6)) | **RUN (EQUAL, $F_1 = 0.9667$ at `QUAL >= 226`; raw 0.9508)** | NIST GIAB v4.2.1 Han Chinese Trio Benchmark |
+| **GIAB NA24385 b37 WGS** | Germline WGS (GRCh37/b37) | Multi-chr WGS (chr1, 19, 20) | **RUN (MATCH, 0 diffs)** | advisory F1 raw 0.1099 ([CPP-6](../upstream-bugs.md#cpp-6)); b37 [CPP-7](../upstream-bugs.md#cpp-7)/[CPP-8](../upstream-bugs.md#cpp-8) | **RUN (EQUAL, $F_1 = 1.0000$ at `QUAL >= 160`; raw 0.1099)** | NIST GIAB v4.2.1 Ashkenazi Son (b37 build) |
+| **SEQC2 Somatic Slices** | Somatic WES (GRCh38) | chr1, 2, 3, 17, 19, 21 slices | **RUN (MATCH, 0 diffs)** | advisory [MISMATCH (CPP-1)](../upstream-bugs.md#cpp-1) | **RUN (EQUAL, 0 site diffs)** | FDA SEQC2 v1.2.1 Sub-Regions |
+| **Targeted Amplicon Panel** | Amplicon Assay (hg19) | EGFR L861Q primer panel | **RUN (MATCH, 0 diffs)** | advisory [SKIP (CPP-3)](../upstream-bugs.md#cpp-3) | *Methodologically Ineligible* | Targeted primer assay testing `AMPBIAS`; no diploid NIST truth VCF |
 | **RNA-seq Splicing Introns** | Transcriptome (GRCh38) | STAR spliced BAM (chr8) | **RUN (MATCH, 0 diffs)** | advisory (see evidence) | *Methodologically Ineligible* | Tests exon-intron junctions (`-i`); `rtg vcfeval` rejects non-DNA features |
 | **Hartwig COLO829 / COLO829BL** | Somatic WGS (GRCh37) | Tumor/Normal (`s1a/b/c`) | **RUN (MATCH, 0 diffs)** | advisory (see evidence) | *Methodologically Ineligible* | Structural variant benchmark (Valle-Inclan 2022); no diploid small-var VCF |
-| **COLO829 CRISPR Target** | CRISPR Cut Site (GRCh37)| Illumina HiSeq WGS | **RUN (MATCH, 0 diffs)** | advisory (see evidence) | *Methodologically Ineligible* | Targeted cut site ($50,454,941$); evaluates CRISPR offset `-J/-j` |
-| **10 Standard Slices (`s1a`–`s9`)** | Micro-Slices (GRCh38/b37) | Integration slices | **RUN (MATCH, 0 diffs)** | advisory (see evidence) | *Covered by Parent Truths* | Slices derive from SEQC2/HG002/Colo829 |
-| **92 Integration Corpus Fixtures** | Synthetic / Corner Cases | Upstream test cases | **RUN (100% Live Oracle)** | advisory (see evidence) | *Methodologically Ineligible* | Miniature synthetic alignments testing CIGAR parser edge cases |
+| **COLO829 CRISPR Target** | CRISPR Cut Site (GRCh37)| Illumina HiSeq WGS | **RUN (MATCH, 0 diffs)** | advisory M4 [MISMATCH (CPP-2)](../upstream-bugs.md#cpp-2) | *Methodologically Ineligible* | Targeted cut site ($50,454,941$); evaluates CRISPR offset `-J/-j` |
+| **10 Standard Slices (`s1a`–`s9`)** | Micro-Slices (GRCh38/b37) | Integration slices | **RUN (MATCH, 0 diffs)** | advisory [MISMATCH (CPP-1)](../upstream-bugs.md#cpp-1); b37 [CPP-7](../upstream-bugs.md#cpp-7)/[CPP-8](../upstream-bugs.md#cpp-8) | *Covered by Parent Truths* | Slices derive from SEQC2/HG002/Colo829 |
+| **92 Integration Corpus Fixtures** | Synthetic / Corner Cases | Upstream test cases | **RUN (100% Live Oracle)** | advisory per-fixture lines; concat-flags [SKIP (CPP-4)](../upstream-bugs.md#cpp-4) | *Methodologically Ineligible* | Miniature synthetic alignments testing CIGAR parser edge cases |
 
 ---
 
