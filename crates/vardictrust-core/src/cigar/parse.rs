@@ -3996,5 +3996,25 @@ mod tests {
             parser_reject.max_read_length, 30,
             "CigarParser.java:309-318 updates maxReadLength before skipSitesOutRegionOfInterest"
         );
+
+        // Case 3: Spliced CIGAR (15M20N15M at start=30, end=79).
+        // Java ALIGNED_LENGTH_MD ([MD] only) gives rlen3 = 30 -> 30 + 30 - 50 = 10 -> SKIPPED.
+        // Including N (get_reference_length = 50) gives 30 + 50 - 50 = 30 > 10 -> ACCEPTED.
+        let mut parser_spliced = CigarParser::new(&reference, &region, &config, false, 0, 0, 0);
+        let read_spliced = SamRecord {
+            alignment_end: Some(Pos1(79)),
+            cigar: vec![
+                (15, CigarKind::Match),
+                (20, CigarKind::Skip),
+                (15, CigarKind::Match),
+            ],
+            ..read_reject
+        };
+        parser_spliced.parse_cigar(&read_spliced).unwrap();
+        assert!(
+            parser_spliced.ref_coverage.is_empty(),
+            "spliced read 15M20N15M has ALIGNED_LENGTH_MD = 30 (not 50) and must be skipped"
+        );
+        assert_eq!(parser_spliced.max_read_length, 30);
     }
 }
