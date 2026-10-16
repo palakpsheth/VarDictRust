@@ -11,7 +11,7 @@ Every benchmark claim is backed by a verifiable, machine-readable evidence artif
 All release benchmarks were executed under standardized host constraints (below).
 Every performance number in this directory is measured on the stated host
 against VarDictJava as the baseline — paper figures are never quoted as ours.
-- **CPU:** AMD Ryzen (Linux x86_64, Ubuntu 24.04 LTS).
+- **CPU/host:** Intel i7-13700H, Linux x86_64, 8 worker threads (Ubuntu 24.04 LTS).
 - **Concurrency:** Normalized to **8 CPU threads** (`-th 8`) as a standard multi-tenant cluster baseline (not an engine scaling ceiling).
 - **Storage:** Local NVMe SSD.
 - **Toolchain:** Rust 1.96.0 (`x86_64-unknown-linux-musl` and `x86_64-unknown-linux-gnu`), OpenJDK 25.0.2 / OpenJDK 8 for oracle (`vardict-oracle`).
@@ -24,12 +24,12 @@ Evaluated via `harness/perf_budget.py`, comparing `vardictrust` against the `Var
 
 | Workload / Target | Modality | Java Wall | Rust Wall | Speedup | Java Peak RSS | Rust Peak RSS | RSS Scaling | Cpp Wall / RSS (vardictcpp 3 hc52dbad_0, advisory¹) | Evidence File |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Targeted Amplicon Panel** | AmpliconMode (`-a 10:0.95`) | 0:02.11 | 0:00.07 | **30.1×** | 123.8 MB | 52.7 MB | **0.43× (2.3× lower)** | advisory (see evidence) | [`amplicon-tier2.json`](evidence/amplicon-tier2.json) |
-| **GIAB HG002 (chr20:10M–30M, 30×)** | SimpleMode (`-f 0.01`) | 1:41.01 | 0:50.58 | **2.0×** | 3.9 GB | 1.1 GB | **0.27× (3.7× lower)** | advisory (see evidence) | [`hg002-tier2.json`](evidence/hg002-tier2.json) |
-| **SEQC2 HCC1395 Somatic Exome** | SomaticMode (`tumor\|normal`, `-th 4`²) | 55:55.34 | 19:06.88 | **2.9×** | 3.5 GB | 1.0 GB | **0.29× (3.4× lower)** | advisory (see evidence) | [`seqc2-exome-tier2.json`](evidence/seqc2-exome-tier2.json) |
-| **GIAB HG008 Somatic PDAC** | SomaticMode (`tumor\|normal`, `-th 4`²) | 1:23.88 | 0:52.42 | **1.6×** | 3.2 GB | 0.7 GB | **0.23× (4.3× lower)** | advisory (see evidence) | [`hg008-tier2.json`](evidence/hg008-tier2.json) |
+| **Targeted Amplicon Panel** | AmpliconMode (`-a 10:0.95`) | 0:02.11 | 0:00.07 | **30.1×** | 123.8 MB | 52.7 MB | **0.43× (2.3× lower)** | 0:03.59 / 88.8 MB, advisory [SKIP (CPP-3)](../docs/upstream-bugs.md#cpp-3) | [`amplicon-tier2.json`](evidence/amplicon-tier2.json) |
+| **GIAB HG002 (chr20:10M–30M, 30×)** | SimpleMode (`-f 0.01`) | 1:41.01 | 0:50.58 | **2.0×** | 3.9 GB | 1.1 GB | **0.27× (3.7× lower)** | 0:18.87 / 863 MB, advisory [MISMATCH (CPP-9)](../docs/upstream-bugs.md#cpp-9) + [CPP-1](../docs/upstream-bugs.md#cpp-1) | [`hg002-tier2.json`](evidence/hg002-tier2.json) |
+| **SEQC2 HCC1395 Somatic Exome** | SomaticMode (`tumor\|normal`, `-th 4`²) | 55:55.34 | 19:06.88 | **2.9×** | 3.5 GB | 1.0 GB | **0.29× (3.4× lower)** | 7:35.26 / 2.1 GB, advisory [MISMATCH (CPP-9)](../docs/upstream-bugs.md#cpp-9) | [`seqc2-exome-tier2.json`](evidence/seqc2-exome-tier2.json) |
+| **GIAB HG008 Somatic PDAC** | SomaticMode (`tumor\|normal`, `-th 4`²) | 1:23.88 | 0:52.42 | **1.6×** | 3.2 GB | 0.7 GB | **0.23× (4.3× lower)** | 0:21.89 / 302 MB, advisory [MISMATCH (CPP-9)](../docs/upstream-bugs.md#cpp-9) | [`hg008-tier2.json`](evidence/hg008-tier2.json) |
 
-¹ Cpp (pinned **vardictcpp 3 `hc52dbad_0` bioconda**, same `vardict-oracle` env) runs beside each gate arm via `harness/perf_budget.py`; the budget verdict stays Rust-vs-Java only. Cpp numbers live in the linked evidence `extra` (`cpp_wall_s`, `cpp_maxrss_kb`, ratios) and are never duplicated here; known cpp divergences are normalized in [`docs/upstream-bugs.md`](../docs/upstream-bugs.md#cpp-divergences); a missing `cpp_time` records a loud `SKIP`, never a silent pass.
+¹ Cpp (pinned **vardictcpp 3 `hc52dbad_0` bioconda**, same `vardict-oracle` env) runs beside each gate arm via `harness/perf_budget.py`; the budget verdict stays Rust-vs-Java only. Per-cell cpp wall/RSS above are transcribed from the linked evidence `extra` (`cpp_wall_s`, `cpp_maxrss_kb`, ratios); known cpp divergences are normalized in [`docs/upstream-bugs.md`](../docs/upstream-bugs.md#cpp-divergences); a missing `cpp_time` records a loud `SKIP`, never a silent pass.
 ² hg008/seqc2-exome at `-th 4`: Java `-th 8` is OOM-killed on 31G hosts (bisected 1✓/4✓/8✗); exact cmds in evidence.
 
 ### Reproduction Command:
@@ -64,7 +64,7 @@ python3 harness/perf_budget.py hg008-tier2 seqc2-exome-tier2 hg002-tier2 amplico
 
 ## 4. Whole Chromosome 1 Scaling & Flat Memory Footprint
 
-Evaluated via `harness/scale_bench.sh` on HCC1395 across all 248,956,422 bp of chromosome 1. Values below are medians across 3 runs from `scale.json` (current evidence; supersedes the historical AMD Ryzen run).
+Evaluated via `harness/scale_bench.sh` on HCC1395 across all 248,956,422 bp of chromosome 1. Values below are medians across 3 runs from `scale.json`.
 
 ### Multi-Thread Parallel Speedup (chr1 full span):
 | Threads (`-th`) | Wall Clock Time | Speedup Ratio |
@@ -84,7 +84,7 @@ Evaluated via `harness/scale_bench.sh` on HCC1395 across all 248,956,422 bp of c
 
 **Observed RSS Ratio (249 Mbp vs 10 Mbp): 1.45×** (Passing pre-registered threshold $\le 1.5\times$). Memory remains bounded across deep genomic spans via tiled execution with boundary halo deduplication.
 
-Pinned **vardictcpp 3 `hc52dbad_0`** runs beside each loop above (`harness/scale_bench.sh`, advisory only): per-thread/per-span cpp wall/RSS land in `scale.json` `extra` (`cpp_wall_s`, `cpp_maxrss_kb`); `--chunk` is deliberately unpinned (cpp default rewrites the `Seg` column, so pinning a value would fork output shape).
+Pinned **vardictcpp 3 `hc52dbad_0`** runs beside each loop above (`harness/scale_bench.sh`, advisory only): per-thread/per-span cpp wall/RSS land in `scale.json` `extra` (`cpp_wall_s`, `cpp_maxrss_kb`) — at `-th 8`: 172.4 s wall / 24.6 GB peak RSS ([CPP-5](../docs/upstream-bugs.md#cpp-5)); `--chunk` is deliberately unpinned (cpp default rewrites the `Seg` column, so pinning a value would fork output shape).
 
 ### Reproduction Command:
 ```bash
