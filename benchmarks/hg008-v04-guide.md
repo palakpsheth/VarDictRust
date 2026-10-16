@@ -43,6 +43,10 @@ Reusable inputs and evidence (all timings `/usr/bin/time -v`, flags
   R 0.927→0.633); presence-filtering costs 32 TP.
 * **Passage drift (p2 vs 0823p23, same window/flags):** 909 shared /
   426 batch-only / 455 p2-only; 40 shared sites |ΔAF|≥0.2 (top: 1.0→0.03).
+* **p13 trajectory (p2→p13→p23, same 525 kb chr1 window):** p13 slice 96x
+  (~85X claim ✓), 1268 calls in 1.1 s. 893 shared all3; 500/893 (56%) monotonic;
+  30 monotonic sites |ΔAF|≥0.2 with clean fixation curves (e.g. 0.03→1.0→1.0,
+  0.015→0.51→0.60) vs 10 non-monotonic — evolution signal over noise.
 * **AF-threshold sweep (tumor-only chr1, 109 truth):** any-presence F1=0.340 →
   af0.01 F1=0.357 (P 0.229 / R 0.807); F1 flat ~0.356 across cutoffs while recall
   climbs 0.63→0.86 — precision is capped by non-germline FPs (needs PoN, not AF tuning).
