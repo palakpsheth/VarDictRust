@@ -3,7 +3,6 @@
 # (P4e-lite: no sources section yet — add when dependency policy hardens.)
 
 [bans]
-version = 2
 # AGENTS §13: banned/hallucinated crates must fail the gate.
 deny = [
     "genomicframe-core",
