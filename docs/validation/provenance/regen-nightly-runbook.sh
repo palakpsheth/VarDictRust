@@ -75,7 +75,7 @@ for f in scratch/g4/ref/d1vd1/GRCh38.d1.vd1.fa \
     scratch/g4/hg002/eval.bed scratch/g4/amplicon/correct_8columns_amplicon.bed \
     scratch/g4/seqc2/truth/truth.vcf.gz \
     scratch/g4/hg008/truth/HG008-T_somatic_smvar_benchmark_v0.3_tumorvariants.vcf.gz; do
-  [ -f "$f" ] || { log "FATAL: missing input asset $f"; exit 8; }
+  [ -e "$f" ] || { log "FATAL: missing input asset $f"; exit 8; }  # -e: SDFs are directories
 done
 for d in scratch/g4/seqc2/truth scratch/g4/hg008/truth; do
   [ -d "$d" ] || { log "FATAL: missing input dir $d"; exit 8; }
