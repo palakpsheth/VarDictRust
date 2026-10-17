@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-10-17
+
+### Fixed
+
+- Bounded-memory amplicon calling: per-base insert expansion replaced with an
+  interval-overlap test plus a streaming `-p` path (active-interval sweep),
+  eliminating OOMs on huge BED intervals with byte-identical output.
+
+### Added
+
+- Harness gates: pinned cpp `--chunk` (default 50000) recorded to evidence,
+  `ORACLE_XMX_GB` heap sizing for the Java oracle, and a gated truvari SV
+  wrapper with loud SKIP when truvari is absent.
+- All 16 evidence artifacts recertified under the new engine fingerprint
+  (acceptance 8/8 PASS).
+
 ## [1.0.1] - 2026-10-15
 
 ### Added
