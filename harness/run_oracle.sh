@@ -4,6 +4,16 @@ set -euo pipefail
 REF=$1; BAM=$2; BED=$3; OUT=$4; SAMPLE=${5:-SAMPLE}; shift 5 || shift $#
 AF=${AF_THR:-0.01}
 
+# Prereg Java sizing (protocol §6 gate 2): ORACLE_XMX_GB pins the oracle heap
+# for the vardict-java stage only (e.g. 0.7x VM RAM, value frozen in
+# benchmarks/gcp-prereg.md — the script itself hardcodes no VM assumption).
+# Unset = upstream default, byte-identical. Only a JVM reads _JAVA_OPTIONS, so
+# the R/Perl stages are unaffected (the JVM echoes "Picked up _JAVA_OPTIONS"
+# to stderr — audit trail, not a diff).
+if [ -n "${ORACLE_XMX_GB:-}" ]; then
+  export _JAVA_OPTIONS="-Xmx${ORACLE_XMX_GB}g"
+fi
+
 # VarDictJava CLI doesn't support concatenated options like -f0.001; split them
 EXTRA_ARGS=()
 for arg in "$@"; do

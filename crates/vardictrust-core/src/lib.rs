@@ -614,6 +614,33 @@ fn process_amplicon_region(
     Ok(builder.build_aligned_variants(&var_data))
 }
 
+/// Covering amplicons at one position: `(amplicon_number, region)` for every
+/// segment entry whose insert interval contains `position`, in segment order.
+///
+/// Interval-overlap form of the per-base expansion in AmpliconMode.java:57-60
+/// (`for p in insertStart..insertEnd`): identical `(position → list)` entries
+/// without materializing one map entry per base (audit-amplicon-expand).
+///
+/// Single-query O(A) scan kept for isolated lookups and as the test oracle;
+/// the hot paths (`amplicon_position_stream`, non-`-p` `run_amplicon`) sweep
+/// via `AmpliconCoverSweep` instead.
+#[allow(dead_code)]
+pub(crate) fn amplicons_covering_position(
+    segment: &[crate::regions::Region],
+    position: i32,
+) -> Vec<(usize, crate::regions::Region)> {
+    segment
+        .iter()
+        .enumerate()
+        .filter(|(_, region)| {
+            region.amplicon.as_ref().is_some_and(|amp| {
+                position >= amp.insert_start.0 as i32 && position <= amp.insert_end.0 as i32
+            })
+        })
+        .map(|(amplicon_number, region)| (amplicon_number, region.clone()))
+        .collect()
+}
+
 /// Amplicon mode: process each amplicon region separately, then combine via
 /// amplicon post-processing. Ports AmpliconMode.java.
 fn run_amplicon(
@@ -646,34 +673,111 @@ fn run_amplicon(
         let Some(current_region) = segment.last() else {
             continue;
         };
-        let mut amplicons_on_positions: std::collections::BTreeMap<
-            i32,
-            Vec<(usize, crate::regions::Region)>,
-        > = std::collections::BTreeMap::new();
         let mut vars_per_amplicon: Vec<crate::javamap::JavaHashMap<i32, crate::variations::Vars>> =
-            Vec::new();
+            Vec::with_capacity(segment.len());
         let splice = std::collections::HashSet::new();
 
-        for (amplicon_number, region) in segment.iter().enumerate() {
-            if let Some(ref amp) = region.amplicon {
-                for p in amp.insert_start.0 as i32..=amp.insert_end.0 as i32 {
-                    amplicons_on_positions
-                        .entry(p)
-                        .or_default()
-                        .push((amplicon_number, region.clone()));
-                }
-            }
+        for region in segment.iter() {
             let aligned = process_amplicon_region(first_bam, region, config, chromosomes_lengths)?;
             vars_per_amplicon.push(aligned);
         }
 
-        let results = crate::postprocess::amplicon::amplicon_post_process(
-            config,
-            current_region,
-            &vars_per_amplicon,
-            &amplicons_on_positions,
-            &splice,
-        );
+        // Position → covering-amplicon pairs (AmpliconMode.java:57-60).
+        //
+        // -p emits a (null/ref) row at EVERY insert position, even with zero
+        // coverage in all amplicons, so visiting every insert position is
+        // load-bearing here — but the per-base map is streamed, never
+        // materialized (audit-amplicon-expand): the lazy union iterator yields
+        // exactly the positions (and segment-ordered covering lists) the old
+        // per-base BTreeMap held, in the same ascending order.
+        if config.pileup && config.emit_intermediate {
+            // Fully streaming -p table path: each row goes straight to the
+            // writer, so working memory stays O(segment + one position) no
+            // matter how large the insert interval is.
+            crate::postprocess::amplicon::amplicon_post_process_streaming(
+                config,
+                current_region,
+                &vars_per_amplicon,
+                crate::postprocess::amplicon::amplicon_position_stream(&segment),
+                &splice,
+                &mut |av| {
+                    let line = if config.fisher {
+                        crate::output::table::amplicon_40(
+                            &av,
+                            current_region,
+                            &config.sample,
+                            config.debug,
+                        )
+                    } else {
+                        crate::output::table::amplicon_38(
+                            &av,
+                            current_region,
+                            &config.sample,
+                            config.debug,
+                        )
+                    };
+                    write_output_line(&mut writer, &line)
+                },
+            )?;
+            continue;
+        }
+
+        let results = if config.pileup {
+            // -p VCF path: same rows as the old per-base expansion, fed by the
+            // lazy union iterator (no per-base map). Row collection stays: the
+            // var2vcf_valid.pl-equivalent top-1-per-start selection below is
+            // global, so these rows cannot go straight to the writer.
+            let mut rows = Vec::new();
+            {
+                let mut collect =
+                    |av: crate::postprocess::amplicon::AmpliconVariant| -> Result<(), VardictError> {
+                        rows.push(av);
+                        Ok(())
+                    };
+                crate::postprocess::amplicon::amplicon_post_process_streaming(
+                    config,
+                    current_region,
+                    &vars_per_amplicon,
+                    crate::postprocess::amplicon::amplicon_position_stream(&segment),
+                    &splice,
+                    &mut collect,
+                )?;
+            }
+            crate::postprocess::amplicon::amplicon_select_vcf_rows(rows)
+        } else {
+            // Bounded-memory (audit-amplicon-expand): visit only positions with
+            // variant data and resolve covering amplicons with one ascending
+            // sweep (audit-amplicon-sweep). Positions absent from every vars
+            // map `continue` without output (AmpliconPostProcessModule.java:129-131),
+            // so skipping them is output-identical while bounding the map by
+            // data, not interval size.
+            let mut amplicons_on_positions: std::collections::BTreeMap<
+                i32,
+                Vec<(usize, crate::regions::Region)>,
+            > = std::collections::BTreeMap::new();
+            let mut positions: std::collections::BTreeSet<i32> = std::collections::BTreeSet::new();
+            for vars in &vars_per_amplicon {
+                positions.extend(vars.keys().copied());
+            }
+            // BTreeSet iterates ascending: satisfies the sweep precondition,
+            // and each covering list comes out in segment order — the same
+            // pairs the old per-position scan built, at O((P + A) log A).
+            let mut sweep = crate::postprocess::amplicon::AmpliconCoverSweep::new(&segment);
+            for p in positions {
+                let covering = sweep.covering_at(p);
+                if !covering.is_empty() {
+                    amplicons_on_positions.insert(p, covering);
+                }
+            }
+
+            crate::postprocess::amplicon::amplicon_post_process(
+                config,
+                current_region,
+                &vars_per_amplicon,
+                &amplicons_on_positions,
+                &splice,
+            )?
+        };
 
         for av in results {
             if config.emit_intermediate {
@@ -1064,5 +1168,72 @@ mod tests {
         // Perl-falsy "0" REF is dropped too.
         let rows = vec![sv(200, 0.9, "0")];
         assert!(select_paired_rows(rows).is_empty());
+    }
+
+    #[test]
+    fn amplicon_covering_position_matches_expansion_and_scales() {
+        use crate::regions::{AmpliconInfo, Region};
+        use crate::types::Pos1;
+
+        fn amp_region(chr: &str, start: u32, end: u32, is: u32, ie: u32) -> Region {
+            Region {
+                chr: chr.to_string(),
+                start: Pos1(start),
+                end: Pos1(end),
+                gene: String::new(),
+                amplicon: Some(AmpliconInfo {
+                    insert_start: Pos1(is),
+                    insert_end: Pos1(ie),
+                }),
+            }
+        }
+
+        // Synthetic overlapping intervals plus one region without amplicon info.
+        let segment = vec![
+            amp_region("chr1", 90, 210, 100, 200),
+            amp_region("chr1", 140, 260, 150, 250),
+            Region {
+                chr: "chr1".to_string(),
+                start: Pos1(300),
+                end: Pos1(400),
+                gene: String::new(),
+                amplicon: None,
+            },
+        ];
+
+        // Old logic: per-base expansion (AmpliconMode.java:57-60).
+        let mut expanded: std::collections::BTreeMap<i32, Vec<usize>> =
+            std::collections::BTreeMap::new();
+        for (n, region) in segment.iter().enumerate() {
+            if let Some(ref amp) = region.amplicon {
+                for p in amp.insert_start.0 as i32..=amp.insert_end.0 as i32 {
+                    expanded.entry(p).or_default().push(n);
+                }
+            }
+        }
+        // New logic agrees at every expanded position, in the same order.
+        for (p, want) in &expanded {
+            let got: Vec<usize> = amplicons_covering_position(&segment, *p)
+                .iter()
+                .map(|(n, _)| *n)
+                .collect();
+            assert_eq!(&got, want, "covering set differs at {p}");
+        }
+        // ...and reports empty outside all intervals.
+        assert!(amplicons_covering_position(&segment, 99).is_empty());
+        assert!(amplicons_covering_position(&segment, 251).is_empty());
+
+        // 250 Mbp insert interval: overlap tests answer in milliseconds with no
+        // per-base allocation (the old expansion would materialize 250M entries).
+        let huge = vec![amp_region("chr1", 1, 250_000_000, 1, 250_000_000)];
+        let t0 = std::time::Instant::now();
+        assert_eq!(amplicons_covering_position(&huge, 1).len(), 1);
+        assert_eq!(amplicons_covering_position(&huge, 125_000_000).len(), 1);
+        assert_eq!(amplicons_covering_position(&huge, 250_000_000).len(), 1);
+        assert!(amplicons_covering_position(&huge, 250_000_001).is_empty());
+        assert!(
+            t0.elapsed() < std::time::Duration::from_secs(5),
+            "250 Mbp overlap test took too long"
+        );
     }
 }
