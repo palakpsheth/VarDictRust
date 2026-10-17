@@ -57,11 +57,96 @@ pub fn amplicon_post_process(
     vars_per_amplicon: &[crate::javamap::JavaHashMap<i32, Vars>],
     amplicons_on_positions: &BTreeMap<i32, Vec<(usize, Region)>>,
     splice: &HashSet<String>,
-) -> Vec<AmpliconVariant> {
+) -> Result<Vec<AmpliconVariant>, crate::types::VardictError> {
+    // Batch wrapper over the streaming core below: the BTreeMap iterator visits
+    // positions ascending with segment-ordered covering lists — the same
+    // sequence the lazy -p union stream yields — so rows are identical.
     let mut results = Vec::new();
+    {
+        let mut collect = |av: AmpliconVariant| -> Result<(), crate::types::VardictError> {
+            results.push(av);
+            Ok(())
+        };
+        amplicon_post_process_streaming(
+            config,
+            region,
+            vars_per_amplicon,
+            amplicons_on_positions
+                .iter()
+                .map(|(&position, regions)| (position, regions.clone())),
+            splice,
+            &mut collect,
+        )?;
+    }
 
+    if !config.emit_intermediate {
+        results = amplicon_select_vcf_rows(results);
+    }
+
+    Ok(results)
+}
+
+/// Lazy ascending union of the segment's insert intervals as
+/// `(position, covering-amplicons)` pairs.
+///
+/// Streaming form of the per-base expansion in AmpliconMode.java:57-60
+/// (`for p in insertStart..insertEnd`): yields exactly the positions — and the
+/// same segment-ordered covering lists — the materialized `BTreeMap` held,
+/// without one map entry per base (audit-amplicon-expand). Disjoint ranges are
+/// merged first, so gaps between amplicons are never visited. Working memory
+/// is O(segment); positions emerge in ascending order.
+pub fn amplicon_position_stream(
+    segment: &[Region],
+) -> impl Iterator<Item = (i32, Vec<(usize, Region)>)> + '_ {
+    let mut ranges: Vec<(i32, i32)> = segment
+        .iter()
+        .filter_map(|region| {
+            region
+                .amplicon
+                .as_ref()
+                .map(|amp| (amp.insert_start.0 as i32, amp.insert_end.0 as i32))
+        })
+        .collect();
+    ranges.sort();
+    let mut merged: Vec<(i32, i32)> = Vec::with_capacity(ranges.len());
+    for (start, end) in ranges {
+        if let Some(last) = merged.last_mut() {
+            // Merge overlapping or adjacent ranges: every integer between them
+            // is covered by construction, so no position is lost or repeated.
+            if start <= last.1.saturating_add(1) {
+                last.1 = last.1.max(end);
+                continue;
+            }
+        }
+        merged.push((start, end));
+    }
+    merged.into_iter().flat_map(move |(start, end)| {
+        (start..=end).map(move |position| {
+            (
+                position,
+                crate::amplicons_covering_position(segment, position),
+            )
+        })
+    })
+}
+
+/// Streaming core of `AmpliconPostProcessModule.process()`: one iteration per
+/// position, each output row handed to `emit` immediately (the Java module
+/// likewise prints per position via `variantPrinter`, without buffering rows).
+///
+/// `positions` MUST arrive in ascending order with segment-ordered covering
+/// lists — both the batch `BTreeMap` and `amplicon_position_stream` satisfy
+/// this — so row order matches the batch path exactly.
+pub fn amplicon_post_process_streaming(
+    config: &Config,
+    region: &Region,
+    vars_per_amplicon: &[crate::javamap::JavaHashMap<i32, Vars>],
+    positions: impl IntoIterator<Item = (i32, Vec<(usize, Region)>)>,
+    splice: &HashSet<String>,
+    emit: &mut dyn FnMut(AmpliconVariant) -> Result<(), crate::types::VardictError>,
+) -> Result<(), crate::types::VardictError> {
     // Iterate over positions sorted (BTreeMap already sorted)
-    for (&position, amplicon_regions) in amplicons_on_positions {
+    for (position, amplicon_regions) in positions {
         // good variants: (variant, region_string)
         let mut gvs: Vec<(Variant, String)> = Vec::new();
         // reference variants
@@ -76,7 +161,7 @@ pub fn amplicon_post_process(
         let mut maxcov: i32 = 0;
         let mut maxaf: f64 = 0.0;
 
-        for &(amplicon_number, ref amp_region) in amplicon_regions {
+        for &(amplicon_number, ref amp_region) in &amplicon_regions {
             let vtmp = vars_per_amplicon
                 .get(amplicon_number)
                 .and_then(|m| m.get(&position));
@@ -164,7 +249,7 @@ pub fn amplicon_post_process(
                     vref.start_pos = position;
                     vref.end_pos = position;
                     vref.var_type = String::new();
-                    results.push(AmpliconVariant {
+                    emit(AmpliconVariant {
                         variant: vref,
                         gdamp: 0,
                         tlamp: amplicon_regions.len() as i32,
@@ -173,7 +258,7 @@ pub fn amplicon_post_process(
                         region: format!("{}:{}-{}", region.chr, position, position),
                         good_variants: Vec::new(),
                         bad_variants: Vec::new(),
-                    });
+                    })?;
                     continue;
                 }
             } else {
@@ -196,7 +281,7 @@ pub fn amplicon_post_process(
                 if let Some(top_gv) = gvs.first() {
                     let gdnt = &top_gv.0.description;
                     let mut gcnt: Vec<(Variant, String)> = Vec::new();
-                    for &(amp_num, ref amp_reg) in amplicon_regions {
+                    for &(amp_num, ref amp_reg) in &amplicon_regions {
                         let vtmp = vars_per_amplicon
                             .get(amp_num)
                             .and_then(|m| m.get(&position));
@@ -243,7 +328,7 @@ pub fn amplicon_post_process(
             let mut bad_count = 0;
             let mut bad_vars: Vec<(Option<Variant>, String)> = Vec::new();
             if initial_gvscnt != total_amplicons || current_flag {
-                for &(amp_num, ref amp_reg) in amplicon_regions {
+                for &(amp_num, ref amp_reg) in &amplicon_regions {
                     let key = format!("{}-{}-{}", amp_num, vref.ref_allele, vref.var_allele);
                     if goodmap.contains(&key) {
                         continue;
@@ -315,7 +400,7 @@ pub fn amplicon_post_process(
                 (Vec::new(), Vec::new())
             };
 
-            results.push(AmpliconVariant {
+            emit(AmpliconVariant {
                 variant: out_variant,
                 gdamp,
                 tlamp,
@@ -324,32 +409,38 @@ pub fn amplicon_post_process(
                 region: region_str,
                 good_variants: debug_good,
                 bad_variants: debug_bad,
-            });
+            })?;
         }
     }
 
+    Ok(())
+}
+
+/// Global top-1-per-raw-start selection for VCF mode.
+///
+/// Split out of `amplicon_post_process` so the -p VCF path can reuse it after
+/// iterator-fed collection. Bucketing is inherently global (tovars shifts such
+/// as the deletion `-1` anchor can move a row's start across positions), so
+/// only the intermediate (-p table) path streams rows straight to the writer.
+pub fn amplicon_select_vcf_rows(results: Vec<AmpliconVariant>) -> Vec<AmpliconVariant> {
     // VCF mode: same var2vcf_valid.pl selection as simple mode (:41,129-137) —
     // bucket rows by the RAW .var start column, stable af-desc sort per bucket,
     // emit only the top row ($ALL = 1 without -A). See postprocess/simple.rs.
-    if !config.emit_intermediate {
-        let mut buckets: BTreeMap<i32, Vec<AmpliconVariant>> = BTreeMap::new();
-        for av in results {
-            buckets.entry(av.variant.start_pos).or_default().push(av);
-        }
-        let mut selected = Vec::with_capacity(buckets.len());
-        for (_, mut rows) in buckets {
-            rows.sort_by(|a, b| {
-                b.variant
-                    .frequency
-                    .partial_cmp(&a.variant.frequency)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
-            selected.extend(rows.into_iter().take(1));
-        }
-        results = selected;
+    let mut buckets: BTreeMap<i32, Vec<AmpliconVariant>> = BTreeMap::new();
+    for av in results {
+        buckets.entry(av.variant.start_pos).or_default().push(av);
     }
-
-    results
+    let mut selected = Vec::with_capacity(buckets.len());
+    for (_, mut rows) in buckets {
+        rows.sort_by(|a, b| {
+            b.variant
+                .frequency
+                .partial_cmp(&a.variant.frequency)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        selected.extend(rows.into_iter().take(1));
+    }
+    selected
 }
 
 /// Fill vref_list from good variants, deduplicating by ref_allele + var_allele.
@@ -506,7 +597,8 @@ mod tests {
             &vars_per_amplicon,
             &amplicons_on_positions,
             &splice,
-        );
+        )
+        .expect("batch wrapper collects infallibly");
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].variant.start_pos, 150);
@@ -554,7 +646,8 @@ mod tests {
             &vars_per_amplicon,
             &amplicons_on_positions,
             &splice,
-        );
+        )
+        .expect("batch wrapper collects infallibly");
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].gdamp, 2);
@@ -600,7 +693,8 @@ mod tests {
             &vars_per_amplicon,
             &amplicons_on_positions,
             &splice,
-        );
+        )
+        .expect("batch wrapper collects infallibly");
 
         // Both variants should be output, with ampflag = true
         assert_eq!(results.len(), 2);
@@ -653,7 +747,8 @@ mod tests {
             &vars_per_amplicon,
             &amplicons_on_positions,
             &splice,
-        );
+        )
+        .expect("batch wrapper collects infallibly");
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].ncamp, 1); // one amplicon has low coverage
@@ -684,7 +779,8 @@ mod tests {
             &vars_per_amplicon,
             &amplicons_on_positions,
             &splice,
-        );
+        )
+        .expect("batch wrapper collects infallibly");
 
         // No good variants and pileup=false → no output
         assert!(results.is_empty());
@@ -720,7 +816,8 @@ mod tests {
             &vars_per_amplicon,
             &amplicons_on_positions,
             &splice,
-        );
+        )
+        .expect("batch wrapper collects infallibly");
 
         // Pileup mode: reference variant is output
         assert_eq!(results.len(), 1);
@@ -800,6 +897,207 @@ mod tests {
         assert_eq!(
             count_variant_on_amplicons(&vref_t, &good_variants_on_amp),
             1
+        );
+    }
+
+    #[test]
+    fn pileup_position_stream_matches_expansion() {
+        use crate::regions::AmpliconInfo;
+        use crate::types::Pos1;
+
+        fn amp_region(chr: &str, start: u32, end: u32, is: u32, ie: u32) -> Region {
+            Region {
+                chr: chr.to_string(),
+                start: Pos1(start),
+                end: Pos1(end),
+                gene: String::new(),
+                amplicon: Some(AmpliconInfo {
+                    insert_start: Pos1(is),
+                    insert_end: Pos1(ie),
+                }),
+            }
+        }
+
+        // Overlapping inserts plus a disjoint interval (its gap is never
+        // visited) plus one entry without amplicon info (covers nothing).
+        let segment = vec![
+            amp_region("chr1", 90, 210, 100, 200),
+            amp_region("chr1", 140, 260, 150, 250),
+            amp_region("chr1", 500, 510, 500, 510),
+            Region {
+                chr: "chr1".to_string(),
+                start: Pos1(300),
+                end: Pos1(400),
+                gene: String::new(),
+                amplicon: None,
+            },
+        ];
+
+        // Old logic: per-base expansion (AmpliconMode.java:57-60).
+        let mut expanded: BTreeMap<i32, Vec<(usize, Region)>> = BTreeMap::new();
+        for (n, region) in segment.iter().enumerate() {
+            if let Some(ref amp) = region.amplicon {
+                for p in amp.insert_start.0 as i32..=amp.insert_end.0 as i32 {
+                    expanded.entry(p).or_default().push((n, region.clone()));
+                }
+            }
+        }
+        // The stream yields the same pairs, in the same ascending order.
+        let streamed: Vec<(i32, Vec<(usize, Region)>)> =
+            amplicon_position_stream(&segment).collect();
+        assert_eq!(streamed.len(), expanded.len());
+        for ((got_p, got_cov), (want_p, want_cov)) in streamed.iter().zip(expanded.iter()) {
+            assert_eq!(got_p, want_p);
+            assert_eq!(got_cov, want_cov);
+        }
+    }
+
+    #[test]
+    fn pileup_stream_matches_batch() {
+        // Two overlapping amplicons; positions 150-152 cover the good-variant,
+        // reference-only, and empty (null row under -p) paths.
+        let mut config = make_test_config();
+        config.pileup = true;
+        let region = make_amp_region("chr1", 100, 300);
+        let splice = HashSet::new();
+
+        let mut vars_amp0 = crate::javamap::JavaHashMap::new();
+        let mut v150 = Vars::new();
+        v150.variants.push(make_good_variant(150, "A", "G", 0.10));
+        vars_amp0.insert(150, v150);
+        let mut v151 = Vars::new();
+        let mut ref_v = Variant::new();
+        ref_v.ref_allele = "C".to_string();
+        ref_v.var_allele = "C".to_string();
+        ref_v.start_pos = 151;
+        ref_v.end_pos = 151;
+        ref_v.total_pos_cov = 40;
+        v151.ref_variant = Some(ref_v);
+        vars_amp0.insert(151, v151);
+
+        let mut vars_amp1 = crate::javamap::JavaHashMap::new();
+        let mut v150b = Vars::new();
+        v150b.variants.push(make_good_variant(150, "A", "G", 0.12));
+        vars_amp1.insert(150, v150b);
+
+        let vars_per_amplicon = vec![vars_amp0, vars_amp1];
+        let segment = vec![
+            make_amp_region("chr1", 100, 200),
+            make_amp_region("chr1", 150, 300),
+        ];
+
+        // Old-style per-base map, restricted to the exercised positions.
+        let mut amplicons_on_positions = BTreeMap::new();
+        for p in 150..=152 {
+            amplicons_on_positions
+                .insert(p, vec![(0, segment[0].clone()), (1, segment[1].clone())]);
+        }
+        let batch = amplicon_post_process(
+            &config,
+            &region,
+            &vars_per_amplicon,
+            &amplicons_on_positions,
+            &splice,
+        )
+        .expect("batch wrapper collects infallibly");
+
+        let mut streamed = Vec::new();
+        {
+            let mut collect = |av: AmpliconVariant| -> Result<(), crate::types::VardictError> {
+                streamed.push(av);
+                Ok(())
+            };
+            amplicon_post_process_streaming(
+                &config,
+                &region,
+                &vars_per_amplicon,
+                amplicon_position_stream(&segment).filter(|(p, _)| (150..=152).contains(p)),
+                &splice,
+                &mut collect,
+            )
+            .expect("streaming is infallible here");
+        }
+
+        // Variant row + reference row + null row, row-for-row identical.
+        assert_eq!(batch.len(), 3);
+        assert_eq!(streamed.len(), batch.len());
+        assert_eq!(format!("{streamed:?}"), format!("{batch:?}"));
+    }
+
+    #[test]
+    fn vcf_select_keeps_top_af_per_start() {
+        fn row(pos: i32, af: f64, tag: &str) -> AmpliconVariant {
+            let mut v = make_good_variant(pos, "A", "G", af);
+            v.start_pos = pos;
+            v.end_pos = pos;
+            AmpliconVariant {
+                variant: v,
+                gdamp: 1,
+                tlamp: 1,
+                ncamp: 0,
+                ampflag: false,
+                region: tag.to_string(),
+                good_variants: Vec::new(),
+                bad_variants: Vec::new(),
+            }
+        }
+
+        // Same start collapses to the highest AF; ties keep the first row
+        // (stable sort, matching the batch path); starts emerge ascending.
+        let selected = amplicon_select_vcf_rows(vec![
+            row(150, 0.05, "low"),
+            row(151, 0.30, "other"),
+            row(150, 0.20, "high"),
+            row(150, 0.10, "mid"),
+            row(152, 0.10, "first"),
+            row(152, 0.10, "second"),
+        ]);
+        assert_eq!(selected.len(), 3);
+        assert_eq!(selected[0].variant.start_pos, 150);
+        assert_eq!(selected[0].variant.frequency, 0.20);
+        assert_eq!(selected[0].region, "high");
+        assert_eq!(selected[1].variant.start_pos, 151);
+        assert_eq!(selected[2].variant.start_pos, 152);
+        assert_eq!(selected[2].region, "first");
+    }
+
+    #[test]
+    fn pileup_stream_huge_interval_bounded() {
+        // -p over a 2 Mbp insert with zero coverage everywhere: every base
+        // yields a null row. Asserts full row-per-base coverage plus a wall
+        // bound; the allocator-observed cap lives in
+        // tests/amplicon_stream_mem.rs, which runs the same stream in an
+        // isolated child process (process-wide VmHWM is polluted by other
+        // test threads in-suite — measured 315 MB of unrelated-test noise in
+        // one full-suite run vs <64 MB isolated for this exact stream).
+        let mut config = make_test_config();
+        config.pileup = true;
+        let region = make_amp_region("chr1", 1, 2_000_000);
+        let segment = vec![region.clone()];
+        let vars_per_amplicon = vec![crate::javamap::JavaHashMap::new()];
+
+        let t0 = std::time::Instant::now();
+        let mut rows = 0u64;
+        {
+            let mut count = |_av: AmpliconVariant| -> Result<(), crate::types::VardictError> {
+                rows += 1;
+                Ok(())
+            };
+            amplicon_post_process_streaming(
+                &config,
+                &region,
+                &vars_per_amplicon,
+                amplicon_position_stream(&segment),
+                &HashSet::new(),
+                &mut count,
+            )
+            .expect("streaming is infallible here");
+        }
+        let elapsed = t0.elapsed();
+        assert_eq!(rows, 2_000_000, "every insert base must yield its -p row");
+        assert!(
+            elapsed < std::time::Duration::from_secs(60),
+            "2 Mbp -p stream took too long: {elapsed:?}",
         );
     }
 }

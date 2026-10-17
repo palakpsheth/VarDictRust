@@ -13,6 +13,13 @@ set -euo pipefail
 # binary picks var2vcfSingle/var2vcfPaired itself from the -b form (no perl/R).
 REF=$1; BAM=$2; BED=$3; OUT=$4; SAMPLE=${5:-SAMPLE}; shift 5 || shift $#
 AF=${AF_THR:-0.01}
+# CPP-5 chunk pin (protocol §6/Tier-P): cpp's implicit default rewrites the
+# `Seg` column, so unpinned runs are irreproducible — always pass an explicit
+# --chunk (default 50000, the extract README mode-parity-table reference
+# value, frozen in benchmarks/gcp-prereg.md). A caller-supplied --chunk wins,
+# mirroring the -f/AF_THR rule below.
+export CPP_CHUNK_DEFAULT=50000
+CPP_CHUNK=${CPP_CHUNK:-$CPP_CHUNK_DEFAULT}
 
 # Bare -z spells boolean zero-based for cpp (it takes no value: a mirrored
 # "-z 1" would leak a stray positional that cpp opens as a BED file).
@@ -48,6 +55,26 @@ for ((i=0; i<${#EXTRA_ARGS[@]}-1; i++)); do
   fi
 done
 
+# Caller --chunk wins over $CPP_CHUNK (same FIRST-wins spirit as -f above);
+# otherwise append the pin so cpp never runs on its implicit default.
+chunk="$CPP_CHUNK"
+has_chunk=false
+for ((i=0; i<${#EXTRA_ARGS[@]}; i++)); do
+  case "${EXTRA_ARGS[$i]}" in
+    --chunk)
+      has_chunk=true
+      [ $((i+1)) -lt ${#EXTRA_ARGS[@]} ] && chunk="${EXTRA_ARGS[$((i+1))]}"
+      break ;;
+    --chunk=*)
+      has_chunk=true
+      chunk="${EXTRA_ARGS[$i]#--chunk=}"
+      break ;;
+  esac
+done
+if ! "$has_chunk"; then
+  EXTRA_ARGS+=(--chunk "$chunk")
+fi
+
 # Availability gate: downstream 3-arm callers must see SKIP, not a silent 2-arm.
 if ! conda run -n vardict-oracle vardictcpp --version >/dev/null 2>&1; then
   echo "SKIP: vardictcpp not available in conda env vardict-oracle" >&2
@@ -72,6 +99,9 @@ if ! awk '!/^#/ && NF { if ($2 ~ /^[0-9]+$/ && $3 ~ /^[0-9]+$/) found=1 } END { 
 fi
 
 : > "$OUT"
+# Effective chunk to the run log (compare.sh redirects this stderr to
+# $OUT/cpp.err; staple_cpp_extra.sh scrapes it into extra.cpp_chunk).
+echo "cpp_chunk=$chunk" >&2
 # Single invocation, BED positional (java-mirror): VCF via -vcf on stdout.
 conda run -n vardict-oracle vardictcpp -G "$REF" -f "$AF" -N "$SAMPLE" \
   -b "$BAM" -c 1 -S 2 -E 3 -g 4 "${EXTRA_ARGS[@]}" "$BED" -vcf > "$OUT"

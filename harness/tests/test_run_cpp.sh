@@ -12,20 +12,64 @@ skip_out=$(PATH="$S:$PATH" bash harness/run_cpp.sh r.fa b.bam x.bed "$T/o.vcf" 2
 [ "$rc" -eq 3 ] || { echo "FAIL: missing env exit=$rc, want 3"; fail=1; }
 [[ "$skip_out" == SKIP:*vardictcpp* ]] || { echo "FAIL: missing env msg: $skip_out"; fail=1; }
 
-# 2. Availability gate: without the live conda env, skip remaining live tests cleanly (exit 0 if stub test passed).
+# 2. --chunk pin (CPP-5, stub conda: no live env needed). Capturing stub
+# passes the --version probe and emits a header-only VCF on real calls.
+S2="$T/stub2"; mkdir -p "$S2"
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@" >> "$STUB_ARGS"\nif [[ "$*" == *"--version"* ]]; then echo "vardictcpp 3"; exit 0; fi\nprintf "##fileformat=VCFv4.2\\n#CHROM\\tPOS\\tID\\tREF\\tALT\\tQUAL\\tFILTER\\tINFO\\n"\nexit 0\n' > "$S2/conda"
+chmod +x "$S2/conda"
+export STUB_ARGS="$T/cpp_args"
+run_cpp_stub() { : > "$STUB_ARGS"; PATH="$S2:$PATH" bash harness/run_cpp.sh "$@"; }
+
+# 2a. Default chunk 50000 forwarded + logged.
+run_cpp_stub fixtures/micro/micro.ref.fa fixtures/micro/micro.bam \
+  fixtures/micro/micro.bed "$T/cpp_chunk.vcf" 2>"$T/cpp_chunk.err" \
+  || { echo "FAIL: run_cpp.sh stub exit $?"; fail=1; }
+[ "$(grep -A1 -x -- '--chunk' "$STUB_ARGS" | tail -1)" = 50000 ] || { echo "FAIL: default --chunk 50000 not forwarded"; fail=1; }
+grep -qx 'cpp_chunk=50000' "$T/cpp_chunk.err" || { echo "FAIL: cpp_chunk=50000 not logged"; fail=1; }
+
+# 2b. $CPP_CHUNK override forwarded + logged.
+CPP_CHUNK=7777 run_cpp_stub fixtures/micro/micro.ref.fa fixtures/micro/micro.bam \
+  fixtures/micro/micro.bed "$T/cpp_chunk2.vcf" 2>"$T/cpp_chunk2.err" \
+  || { echo "FAIL: run_cpp.sh CPP_CHUNK exit $?"; fail=1; }
+[ "$(grep -A1 -x -- '--chunk' "$STUB_ARGS" | tail -1)" = 7777 ] || { echo "FAIL: CPP_CHUNK=7777 not forwarded"; fail=1; }
+grep -qx 'cpp_chunk=7777' "$T/cpp_chunk2.err" || { echo "FAIL: cpp_chunk=7777 not logged"; fail=1; }
+
+# 2c. Explicit caller --chunk wins over $CPP_CHUNK, passed exactly once
+# (note: $5 is sample, so extra flags follow it).
+CPP_CHUNK=7777 run_cpp_stub fixtures/micro/micro.ref.fa fixtures/micro/micro.bam \
+  fixtures/micro/micro.bed "$T/cpp_chunk3.vcf" S --chunk 999 2>"$T/cpp_chunk3.err" \
+  || { echo "FAIL: run_cpp.sh explicit --chunk exit $?"; fail=1; }
+[ "$(grep -c -x -- '--chunk' "$STUB_ARGS")" = 1 ] || { echo "FAIL: --chunk duplicated"; fail=1; }
+[ "$(grep -A1 -x -- '--chunk' "$STUB_ARGS" | tail -1)" = 999 ] || { echo "FAIL: explicit --chunk 999 did not win"; fail=1; }
+grep -qx 'cpp_chunk=999' "$T/cpp_chunk3.err" || { echo "FAIL: cpp_chunk=999 not logged"; fail=1; }
+
+# 2d. staple records cpp_chunk in extra (run-log marker wins; env fallback).
+mkdir -p "$T/keep1"
+printf 'cpp_chunk=7777\n' > "$T/keep1/cpp.err"
+PATH="$S2:$PATH" bash harness/staple_cpp_extra.sh "$T/keep1" "CPP: MATCH" \
+  || { echo "FAIL: staple_cpp_extra.sh exit $?"; fail=1; }
+python3 -c "import json,sys; d=json.load(open('$T/keep1/extra.json')); sys.exit(0 if d.get('cpp_chunk')=='7777' else 1)" \
+  || { echo "FAIL: cpp_chunk not stapled from run log"; fail=1; }
+mkdir -p "$T/keep2"
+CPP_CHUNK=123 PATH="$S2:$PATH" bash harness/staple_cpp_extra.sh "$T/keep2" "CPP: MATCH" \
+  || { echo "FAIL: staple_cpp_extra.sh env exit $?"; fail=1; }
+python3 -c "import json,sys; d=json.load(open('$T/keep2/extra.json')); sys.exit(0 if d.get('cpp_chunk')=='123' else 1)" \
+  || { echo "FAIL: cpp_chunk env fallback not stapled"; fail=1; }
+
+# 3. Availability gate: without the live conda env, skip remaining live tests cleanly (exit 0 if stub test passed).
 if ! conda run -n vardict-oracle vardictcpp --version >/dev/null 2>&1; then
   echo "SKIP: vardictcpp not available in conda env vardict-oracle"
   [ $fail -eq 0 ] && echo "PASS test_run_cpp"
   exit $fail
 fi
 
-# 3. Version pin (Task 1: vardictcpp=3=hc52dbad_0).
+# 4. Version pin (Task 1: vardictcpp=3=hc52dbad_0).
 ver=$(conda run -n vardict-oracle vardictcpp --version 2>&1)
 [[ "$ver" == *"vardictcpp 3"* ]] || { echo "FAIL: --version pin mismatch: $ver"; fail=1; }
 conda list -n vardict-oracle 2>/dev/null | grep -q 'vardictcpp.*hc52dbad_0' \
   || { echo "FAIL: conda pin vardictcpp=3=hc52dbad_0 missing"; fail=1; }
 
-# 4. Micro fixture -> non-empty VCF (bcftools record view, never head -1).
+# 5. Micro fixture -> non-empty VCF (bcftools record view, never head -1).
 bash harness/run_cpp.sh fixtures/micro/micro.ref.fa fixtures/micro/micro.bam \
   fixtures/micro/micro.bed "$T/cpp.vcf" >/dev/null 2>"$T/cpp.err" \
   || { echo "FAIL: run_cpp.sh exit $?"; fail=1; }
@@ -33,7 +77,7 @@ conda run -n vardict-oracle bcftools view -H "$T/cpp.vcf" > "$T/h.txt" 2>/dev/nu
   || { echo "FAIL: bcftools cannot parse cpp.vcf"; fail=1; }
 grep -qm1 . "$T/h.txt" || { echo "FAIL: cpp.vcf has no records"; fail=1; }
 
-# 5. <4-col BED padding (run_cpp.sh pads 3-col BED with synthetically added 4th column ".").
+# 6. <4-col BED padding (run_cpp.sh pads 3-col BED with synthetically added 4th column ".").
 awk 'BEGIN{OFS="\t"} {print $1,$2,$3}' fixtures/micro/micro.bed > "$T/micro_3col.bed"
 bash harness/run_cpp.sh fixtures/micro/micro.ref.fa fixtures/micro/micro.bam \
   "$T/micro_3col.bed" "$T/cpp_3col.vcf" >/dev/null 2>"$T/cpp_3col.err" \

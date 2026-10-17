@@ -15,15 +15,32 @@ case "$cpp_line" in
     [ -n "$cpp_val" ] || cpp_val=$(conda run -n vardict-oracle vardictcpp --version 2>/dev/null | head -n 1) ;;
 esac
 if [ -n "${cpp_val:-}" ]; then
-  python3 - "$OUT/extra.json" "$cpp_key" "$cpp_val" <<'PYEOF' || true
+  # CPP-5 chunk pin: record the effective --chunk beside the version key
+  # (protocol: default frozen in prereg, recorded in extra). run_cpp.sh logs
+  # `cpp_chunk=<val>` to its stderr ($OUT/cpp.err under KEEP_DIR); fall back
+  # to the runner-exported default (single source in run_cpp.sh, no literal
+  # here). SKIP never records a chunk (no real run; skip_reason alone).
+  cpp_chunk=""
+  if [ "$cpp_key" = "cpp_version" ]; then
+    if [ -f "$OUT/cpp.err" ]; then
+      cpp_chunk=$(grep -m1 -oE '^cpp_chunk=\S+' "$OUT/cpp.err" | cut -d= -f2 || true)
+    fi
+    [ -n "$cpp_chunk" ] || cpp_chunk="${CPP_CHUNK:-${CPP_CHUNK_DEFAULT:-}}"
+  fi
+  python3 - "$OUT/extra.json" "$cpp_key" "$cpp_val" "$cpp_chunk" <<'PYEOF' || true
 import json, sys
-p, k, v = sys.argv[1], sys.argv[2], sys.argv[3]
+p, k, v, chunk = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 try:
     with open(p) as f: d = json.load(f)
     if not isinstance(d, dict): d = {}
 except Exception: d = {}
-d[k] = v
-d.pop("cpp_version" if k == "cpp_skip_reason" else "cpp_skip_reason", None)
+if k and v:
+    d[k] = v
+    d.pop("cpp_version" if k == "cpp_skip_reason" else "cpp_skip_reason", None)
+if chunk:
+    d["cpp_chunk"] = chunk
+else:
+    d.pop("cpp_chunk", None)
 with open(p, "w") as f: json.dump(d, f, indent=2, sort_keys=True)
 PYEOF
 fi
