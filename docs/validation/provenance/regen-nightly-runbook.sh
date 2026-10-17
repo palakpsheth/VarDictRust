@@ -15,7 +15,7 @@
 set -euo pipefail
 WT=/mnt/media_backups/VarDictRust/.worktrees/eng-v102
 LOG=/mnt/media_backups/VarDictRust/scratch/regen-nightly.log
-LOCK=/tmp/vardict-regen-nightly.lock
+LOCK=/mnt/media_backups/VarDictRust/scratch/.regen-nightly.lock  # palak-owned dir: never root-stranded like /tmp was on 2026-10-16
 VENV_PY=/home/palak/Documents/venv/bin/python
 LIFECYCLE=/home/palak/Documents/media_stack_lifecycle.py
 OOMD_WAS_ACTIVE="unknown"
@@ -32,6 +32,7 @@ bring_up() {
   fi
   log "TRAP DONE (script exit was $rc)"
 }
+[ "$(id -un)" = "palak" ] || { echo "FATAL: must run as palak"; exit 8; }
 exec 9>"$LOCK"; flock -n 9 || { echo "another regen run holds $LOCK"; exit 7; }
 trap bring_up EXIT
 export PATH="/home/palak/miniconda3/envs/g4-tools/bin:/home/palak/miniconda3/bin:/home/palak/.cargo/bin:/usr/bin:/bin"
