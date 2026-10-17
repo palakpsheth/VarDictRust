@@ -18,12 +18,15 @@ if [ -n "${cpp_val:-}" ]; then
   # CPP-5 chunk pin: record the effective --chunk beside the version key
   # (protocol: default frozen in prereg, recorded in extra). run_cpp.sh logs
   # `cpp_chunk=<val>` to its stderr ($OUT/cpp.err under KEEP_DIR); fall back
-  # to the same ${CPP_CHUNK:-50000} default the runner used.
+  # to the runner-exported default (single source in run_cpp.sh, no literal
+  # here). SKIP never records a chunk (no real run; skip_reason alone).
   cpp_chunk=""
-  if [ -f "$OUT/cpp.err" ]; then
-    cpp_chunk=$(grep -m1 -o '^cpp_chunk=[0-9]*' "$OUT/cpp.err" | cut -d= -f2 || true)
+  if [ "$cpp_key" = "cpp_version" ]; then
+    if [ -f "$OUT/cpp.err" ]; then
+      cpp_chunk=$(grep -m1 -oE '^cpp_chunk=\S+' "$OUT/cpp.err" | cut -d= -f2 || true)
+    fi
+    [ -n "$cpp_chunk" ] || cpp_chunk="${CPP_CHUNK:-${CPP_CHUNK_DEFAULT:-}}"
   fi
-  [ -n "$cpp_chunk" ] || cpp_chunk="${CPP_CHUNK:-50000}"
   python3 - "$OUT/extra.json" "$cpp_key" "$cpp_val" "$cpp_chunk" <<'PYEOF' || true
 import json, sys
 p, k, v, chunk = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
@@ -36,6 +39,8 @@ if k and v:
     d.pop("cpp_version" if k == "cpp_skip_reason" else "cpp_skip_reason", None)
 if chunk:
     d["cpp_chunk"] = chunk
+else:
+    d.pop("cpp_chunk", None)
 with open(p, "w") as f: json.dump(d, f, indent=2, sort_keys=True)
 PYEOF
 fi
