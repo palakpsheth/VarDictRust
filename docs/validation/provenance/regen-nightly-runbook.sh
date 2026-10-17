@@ -36,6 +36,9 @@ exec 9>"$LOCK"; flock -n 9 || { echo "another regen run holds $LOCK"; exit 7; }
 trap bring_up EXIT
 export PATH="/home/palak/miniconda3/envs/g4-tools/bin:/home/palak/miniconda3/bin:/home/palak/.cargo/bin:/usr/bin:/bin"
 export HOME=/home/palak
+# Stack down during regen -> blackout window meaningless per owner ruling 2026-10-16.
+# Floors still enforced per step via courtesy.sh disk/RAM checks.
+export SKIP_BLACKOUT=1
 log "=== heavy regen start ==="
 [ "$(date +%F)" = "2026-10-16" ] || { log "FATAL: wrong date, aborting"; exit 8; }
 [ "$(df -BG --output=avail "$WT" | tail -1 | tr -dc 0-9)" -ge 150 ] || { log "FATAL: disk floor"; exit 8; }
