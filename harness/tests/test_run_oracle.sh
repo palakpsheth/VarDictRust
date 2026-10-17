@@ -16,6 +16,6 @@ if FAKE_VJ_FAIL=1 bash harness/run_oracle.sh r.fa b.bam x.bed "$T/o.vcf" S >/dev
 # only (stub conda records its inherited _JAVA_OPTIONS); unset = absent.
 ORACLE_XMX_GB=8 bash harness/run_oracle.sh r.fa b.bam x.bed "$T/o2.vcf" S -th 8 >/dev/null
 [ "$(cat "$T/xmx")" = "-Xmx8g" ] || { echo "FAIL: ORACLE_XMX_GB=8 not forwarded (saw $(cat "$T/xmx"))"; fail=1; }
-bash harness/run_oracle.sh r.fa b.bam x.bed "$T/o3.vcf" S -th 8 >/dev/null
+env -u ORACLE_XMX_GB bash harness/run_oracle.sh r.fa b.bam x.bed "$T/o3.vcf" S -th 8 >/dev/null
 [ "$(cat "$T/xmx")" = "UNSET" ] || { echo "FAIL: _JAVA_OPTIONS leaks when ORACLE_XMX_GB unset"; fail=1; }
 [ $fail -eq 0 ] && echo "PASS test_run_oracle"; exit $fail
