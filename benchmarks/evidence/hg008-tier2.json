@@ -18,11 +18,12 @@
   ],
   "cpp_time": {
     "exit": "0",
-    "max_rss_kb": "318904",
-    "wall": "0:20.54"
+    "max_rss_kb": "324356",
+    "wall": "0:20.66"
   },
-  "date": "2026-10-16T00:55:35-07:00",
+  "date": "2026-10-17T12:25:31-07:00",
   "extra": {
+    "cpp_chunk": "50000",
     "cpp_head": [
       "MISMATCH: variant sets differ. java-only(<=10)=[\"('chr1', '6173467', 'ACCAGGAGGTCAGGAGGAGGGAGCAACAGGGGCAGCAGAGGCTTCAAGCTACCCCTCCTGGAGGTGATACCAGCAAGTCCCCTCCCCACTGAGCCTCTCTCTTCATCTGTGAAATGGGCCTAATGTGGCAGCCTTTCCCCCAGGGCTATGGGGAGAAGTAAAAACTGTGAATGCAAAGGACCCACACGATGCCTGCAGGGGCTCAGCAATGGCAGGCAGAGCCCAGCGAGAC', 'A')\", \"('chr3', '127563710', 'TACCAGCACCACCACCACCATCCTACCAGCACCACCACCACCAGCACCACCACCAGCACCACCATCACCACCACCAGCACCACCATCACCACCACCAGCACCACCATCACCACCACCAGCACCACCATCAACACCACCAGCACCACCACCAGCACCTCCATCAACACCACCATCATCATCAATATCACCACCACCATCATCACTACCACTACCACCAATACCACCAACAACAACATTACTACCAATACCACCACCACCACCACCATCACCACCACCATCACTACCACTACCACCACCACCAAAACCACCAGC', 'T')\"] rust-only(<=10)=[\"('chr1', '6173467', 'A', 'C')\"]",
       "--- cpp vs rust ---",
@@ -31,19 +32,19 @@
     ],
     "cpp_version": "vardictcpp 3 hc52dbad_0 bioconda"
   },
-  "fingerprint": "c57e9661d77ef254",
-  "head": "33741680598e5f885a1d73d289051ff8867de036",
+  "fingerprint": "74e93280e3ac0d85",
+  "head": "6b94b3e2bbe959598e013139382d68cb40818c63",
   "java_time": {
     "exit": "0",
-    "max_rss_kb": "3505812",
-    "wall": "1:15.71"
+    "max_rss_kb": "3351924",
+    "wall": "1:20.78"
   },
   "n_variants": 18426,
   "name": "hg008-tier2",
   "result": "MATCH",
   "rust_time": {
     "exit": "0",
-    "max_rss_kb": "787328",
-    "wall": "0:48.72"
+    "max_rss_kb": "785500",
+    "wall": "0:48.39"
   }
 }

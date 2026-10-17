@@ -13,7 +13,7 @@
   ],
   "compare_head": [],
   "cpp_time": null,
-  "date": "2026-10-16T01:01:54-07:00",
+  "date": "2026-10-17T12:23:00-07:00",
   "extra": {
     "cpp_f1": 0.6624,
     "cpp_version": "vardictcpp 3 hc52dbad_0 bioconda",
@@ -74,8 +74,8 @@
       "tp_call": 22803
     }
   },
-  "fingerprint": "c57e9661d77ef254",
-  "head": "33741680598e5f885a1d73d289051ff8867de036",
+  "fingerprint": "74e93280e3ac0d85",
+  "head": "6b94b3e2bbe959598e013139382d68cb40818c63",
   "java_time": null,
   "n_variants": null,
   "name": "hg002-truth",
