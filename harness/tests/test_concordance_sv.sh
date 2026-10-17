@@ -9,18 +9,31 @@ bash harness/concordance_sv.sh only-one-arg >/dev/null 2>&1; rc=$?
 set -e
 [ "$rc" -eq 2 ] || { echo "FAIL: usage exit=$rc, want 2"; fail=1; }
 
-# 2. Missing-truvari path (stub PATH hides any live truvari): SKIP + exit 0,
-# outdir untouched (loud skip, never silent).
+# 2. Plain-VCF contract: bgzipped+indexed required — loud rejection, no
+# summary.json (validation precedes the truvari check, so this holds with
+# or without truvari installed).
+echo '##fileformat=VCFv4.2' > "$T/plain.vcf"
+set +e
+plain_out=$(bash harness/concordance_sv.sh "$T/plain.vcf" "$T/t.vcf.gz" "$T/r.bed" "$T/out_plain" 2>&1); rc=$?
+set -e
+[ "$rc" -eq 2 ] || { echo "FAIL: plain-vcf exit=$rc, want 2"; fail=1; }
+[[ "$plain_out" == *"calls must be bgzipped + indexed VCF (samtools bgzip + tabix), got: "* ]] || { echo "FAIL: plain-vcf msg: $plain_out"; fail=1; }
+[ ! -e "$T/out_plain/summary.json" ] || { echo "FAIL: summary.json written on plain-vcf rejection"; fail=1; }
+
+# 3. Missing-truvari path (stub PATH hides any live truvari): SKIP + exit 0,
+# outdir untouched (loud skip, never silent). Uses the valid .vcf.gz contract
+# (dummy + index) so it reaches the SKIP branch.
 S="$T/nostub"; mkdir -p "$S"
 BASHBIN=$(command -v bash)
+: > "$T/c.vcf.gz"; : > "$T/c.vcf.gz.tbi"
 set +e
-skip_out=$(PATH="$S" "$BASHBIN" harness/concordance_sv.sh "$T/c.vcf" "$T/t.vcf.gz" "$T/r.bed" "$T/out_skip" 2>&1); rc=$?
+skip_out=$(PATH="$S" "$BASHBIN" harness/concordance_sv.sh "$T/c.vcf.gz" "$T/t.vcf.gz" "$T/r.bed" "$T/out_skip" 2>&1); rc=$?
 set -e
 [ "$rc" -eq 0 ] || { echo "FAIL: missing-truvari exit=$rc, want 0"; fail=1; }
 [[ "$skip_out" == SKIP:*"truvari not installed"* ]] || { echo "FAIL: missing-truvari msg: $skip_out"; fail=1; }
 [ ! -e "$T/out_skip" ] || { echo "FAIL: outdir touched on SKIP path"; fail=1; }
 
-# 3. Ran path: only where truvari is actually installed; else SKIP cleanly.
+# 4. Ran path: only where truvari is actually installed; else SKIP cleanly.
 # v5.x bench requires bgzip'd + indexed inputs, so compress first (read-only
 # reuse of bgzip/tabix); SKIP if either half of the toolchain is missing.
 if ! command -v truvari >/dev/null 2>&1; then
