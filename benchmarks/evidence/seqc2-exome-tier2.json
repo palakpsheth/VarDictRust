@@ -18,11 +18,12 @@
   ],
   "cpp_time": {
     "exit": "0",
-    "max_rss_kb": "2245912",
-    "wall": "7:05.12"
+    "max_rss_kb": "2256972",
+    "wall": "7:13.67"
   },
-  "date": "2026-10-16T02:18:59-07:00",
+  "date": "2026-10-17T07:49:28-07:00",
   "extra": {
+    "cpp_chunk": "50000",
     "cpp_head": [
       "MISMATCH: variant sets differ. java-only(<=10)=[\"('chr2', '178443383', 'T', '<DEL>')\", \"('chr22', '36511000', 'TCTGAAAGACACAAAAAATGTAAGAGAAATGAGCCAGGTTGTGTGATATGATGTTCACTTTCCTTTCTGAACCTCTGCTGGACTGTGCGTGAGTTTTCAACACTTCCATTCCGAAGTTAAGCCTTTCAGATGCTCACAGGGCTGGGCAGGTATTTCCTTCAGTCACCAGCTGGTGGAGCAGGAGAGACAACTTTCAGGCTATTTAACCCGGAGCGGAGCTTTTCCCTCTAGACCACCGGCTTCAATCTGGGACTTCCCTCATCTTCCTCTACCTCTGCCACAGTCCAGCCGCTTCTCTAAAACACCGCTATCCTCCCCAACCACTTGATGTGATCTAAAGGCTCTAGAAGAAGCTCTTGGAGCCAAAGTGAATGCTTCTTCATACTTAAGTCTCAGGGAATTCTCGAAGTTTTATCAAGGTTAAAGATCACAATGGCTACAGAGCTTGCTCCCGTGCTAGCCCACAGATCACTCTAGACCTCAGAAAGTGGGCTGCTACACAC', 'T')\"] rust-only(<=10)=[]",
       "--- cpp vs rust ---",
@@ -31,19 +32,19 @@
     ],
     "cpp_version": "vardictcpp 3 hc52dbad_0 bioconda"
   },
-  "fingerprint": "c57e9661d77ef254",
-  "head": "33741680598e5f885a1d73d289051ff8867de036",
+  "fingerprint": "74e93280e3ac0d85",
+  "head": "6b94b3e2bbe959598e013139382d68cb40818c63",
   "java_time": {
     "exit": "0",
-    "max_rss_kb": "3688432",
-    "wall": "52:09.24"
+    "max_rss_kb": "3687876",
+    "wall": "52:38.26"
   },
   "n_variants": 623444,
   "name": "seqc2-exome-tier2",
   "result": "MATCH",
   "rust_time": {
     "exit": "0",
-    "max_rss_kb": "1036052",
-    "wall": "17:13.73"
+    "max_rss_kb": "1068668",
+    "wall": "17:28.36"
   }
 }

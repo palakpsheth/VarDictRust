@@ -1,6 +1,6 @@
 {
   "benchmark": "extended-coverage-tier2",
-  "fingerprint": "c57e9661d77ef254",
+  "fingerprint": "74e93280e3ac0d85",
   "result": "MATCH",
   "modalities_tested": 17,
   "modalities_passed": 17,
@@ -126,6 +126,6 @@
       "variants": 4
     }
   },
-  "timestamp": "2026-10-16T14:19:49Z",
+  "timestamp": "2026-10-17T19:39:56Z",
   "extra": { "cpp_version": "vardictcpp 3 hc52dbad_0 bioconda" }
 }

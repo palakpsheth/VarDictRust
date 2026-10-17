@@ -18,11 +18,12 @@
   ],
   "cpp_time": {
     "exit": "0",
-    "max_rss_kb": "251016",
-    "wall": "0:05.75"
+    "max_rss_kb": "252992",
+    "wall": "0:05.59"
   },
-  "date": "2026-10-16T00:49:47-07:00",
+  "date": "2026-10-17T12:31:04-07:00",
   "extra": {
+    "cpp_chunk": "50000",
     "cpp_head": [
       "MISMATCH:",
       "  HEADER line 2: java='##reference=scratch/g4/ref/d1vd1/GRCh38.d1.vd1.fa' != rust='##INFO=<ID=SAMPLE,Number=1,Type=String,Description=\"Sample name (with whitespace translated to underscores)\">'",
@@ -32,19 +33,19 @@
     ],
     "cpp_version": "vardictcpp 3 hc52dbad_0 bioconda"
   },
-  "fingerprint": "c57e9661d77ef254",
-  "head": "33741680598e5f885a1d73d289051ff8867de036",
+  "fingerprint": "74e93280e3ac0d85",
+  "head": "6b94b3e2bbe959598e013139382d68cb40818c63",
   "java_time": {
     "exit": "0",
-    "max_rss_kb": "2844324",
-    "wall": "0:26.20"
+    "max_rss_kb": "2669968",
+    "wall": "0:26.19"
   },
   "n_variants": 4151,
   "name": "seqc2-slices-tier2",
   "result": "MATCH",
   "rust_time": {
     "exit": "0",
-    "max_rss_kb": "442552",
-    "wall": "0:05.25"
+    "max_rss_kb": "455396",
+    "wall": "0:05.07"
   }
 }
