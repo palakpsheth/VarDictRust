@@ -53,7 +53,7 @@ command -v conda >/dev/null && conda run -n vardict-oracle true 2>&1 | tee -a "$
 # is alive (vardict-java launches the JVM; Rscript covers the testsomatic.R /
 # teststrandbias.R stage; perl covers the var2vcf_*.pl stage). Full chain proof
 # comes from the Tier-2 runs themselves below.
-conda run -n vardict-oracle vardict-java -version 2>&1 | tee -a "$LOG" || { log "FATAL: oracle java probe"; exit 8; }
+conda run -n vardict-oracle vardict-java -h 2>&1 | tee -a "$LOG" || { log "FATAL: oracle java probe"; exit 8; }
 conda run -n vardict-oracle Rscript --version 2>&1 | tee -a "$LOG" || { log "FATAL: oracle R probe"; exit 8; }
 conda run -n vardict-oracle perl --version 2>&1 | tail -n 2 | tee -a "$LOG" || { log "FATAL: oracle perl probe"; exit 8; }
 rustup target list --installed 2>/dev/null | grep -q musl || { log "FATAL: musl target"; exit 8; }
