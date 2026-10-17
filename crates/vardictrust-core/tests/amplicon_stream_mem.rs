@@ -1,3 +1,4 @@
+#![cfg(target_os = "linux")]
 //! -p streaming memory pin (audit-amplicon-expand follow-up).
 //!
 //! The -p amplicon path emits a (null/ref) row at EVERY insert base, so the
