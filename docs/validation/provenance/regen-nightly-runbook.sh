@@ -40,6 +40,7 @@ export HOME=/home/palak
 # Floors still enforced per step via courtesy.sh disk/RAM checks.
 export SKIP_BLACKOUT=1
 log "=== heavy regen start ==="
+[ "$(id -un)" = "palak" ] || { log "FATAL: must run as palak (git ownership), got $(id -un)"; exit 8; }
 [ "$(date +%F)" = "2026-10-16" ] || { log "FATAL: wrong date, aborting"; exit 8; }
 [ "$(df -BG --output=avail "$WT" | tail -1 | tr -dc 0-9)" -ge 150 ] || { log "FATAL: disk floor"; exit 8; }
 [ "$(free -g | awk '/^Mem:/{print $7}')" -ge 12 ] || { log "FATAL: RAM floor"; exit 8; }
