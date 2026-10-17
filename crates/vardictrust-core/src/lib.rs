@@ -620,6 +620,11 @@ fn process_amplicon_region(
 /// Interval-overlap form of the per-base expansion in AmpliconMode.java:57-60
 /// (`for p in insertStart..insertEnd`): identical `(position → list)` entries
 /// without materializing one map entry per base (audit-amplicon-expand).
+///
+/// Single-query O(A) scan kept for isolated lookups and as the test oracle;
+/// the hot paths (`amplicon_position_stream`, non-`-p` `run_amplicon`) sweep
+/// via `AmpliconCoverSweep` instead.
+#[allow(dead_code)]
 pub(crate) fn amplicons_covering_position(
     segment: &[crate::regions::Region],
     position: i32,
@@ -741,11 +746,11 @@ fn run_amplicon(
             crate::postprocess::amplicon::amplicon_select_vcf_rows(rows)
         } else {
             // Bounded-memory (audit-amplicon-expand): visit only positions with
-            // variant data and resolve covering amplicons by interval-overlap
-            // test. Positions absent from every vars map `continue` without
-            // output (AmpliconPostProcessModule.java:129-131), so skipping them
-            // is output-identical while bounding the map by data, not interval
-            // size.
+            // variant data and resolve covering amplicons with one ascending
+            // sweep (audit-amplicon-sweep). Positions absent from every vars
+            // map `continue` without output (AmpliconPostProcessModule.java:129-131),
+            // so skipping them is output-identical while bounding the map by
+            // data, not interval size.
             let mut amplicons_on_positions: std::collections::BTreeMap<
                 i32,
                 Vec<(usize, crate::regions::Region)>,
@@ -754,8 +759,12 @@ fn run_amplicon(
             for vars in &vars_per_amplicon {
                 positions.extend(vars.keys().copied());
             }
+            // BTreeSet iterates ascending: satisfies the sweep precondition,
+            // and each covering list comes out in segment order — the same
+            // pairs the old per-position scan built, at O((P + A) log A).
+            let mut sweep = crate::postprocess::amplicon::AmpliconCoverSweep::new(&segment);
             for p in positions {
-                let covering = amplicons_covering_position(&segment, p);
+                let covering = sweep.covering_at(p);
                 if !covering.is_empty() {
                     amplicons_on_positions.insert(p, covering);
                 }

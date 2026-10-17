@@ -14,7 +14,8 @@
 use crate::config::Config;
 use crate::regions::Region;
 use crate::variations::{Variant, Vars};
-use std::collections::{BTreeMap, HashSet};
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashSet};
 
 /// Output of amplicon post-processing: a variant with amplicon-specific metrics.
 #[derive(Debug, Clone)]
@@ -86,6 +87,155 @@ pub fn amplicon_post_process(
     Ok(results)
 }
 
+/// Active-interval sweep over a segment's insert intervals.
+///
+/// Stable-sorts amplicon indices by insert start once, then answers
+/// `covering_at(p)` for positions arriving in ascending order: a
+/// start-pointer admits newly-covering amplicons while a min-heap of
+/// `(end, seg_idx)` evicts expired ones. The live set is a `BTreeSet` keyed
+/// by segment index, so each covering list emerges in segment order —
+/// exactly the order the old per-position scan produced — at a total cost of
+/// O((P + A) log A) heap/set operations plus output-proportional cloning,
+/// never O(P x A) predicates.
+///
+/// Precondition: `covering_at` positions MUST arrive in ascending
+/// (non-decreasing) order (debug-asserted). Both callers satisfy this:
+/// `amplicon_position_stream` walks merged ranges ascending, and the
+/// non-`-p` path in `run_amplicon` iterates a `BTreeSet`.
+pub(crate) struct AmpliconCoverSweep<'a> {
+    segment: &'a [Region],
+    by_start: Vec<usize>,
+    starts: Vec<i32>,
+    ends: Vec<i32>,
+    next_start: usize,
+    active: BTreeSet<usize>,
+    expiry: BinaryHeap<Reverse<(i32, usize)>>,
+    #[cfg(debug_assertions)]
+    last_pos: Option<i32>,
+}
+
+impl<'a> AmpliconCoverSweep<'a> {
+    pub(crate) fn new(segment: &'a [Region]) -> Self {
+        let mut starts = Vec::with_capacity(segment.len());
+        let mut ends = Vec::with_capacity(segment.len());
+        let mut by_start = Vec::new();
+        for (idx, region) in segment.iter().enumerate() {
+            match region.amplicon.as_ref() {
+                Some(amp) => {
+                    // Same i32 conversion as the old scan (amplicons_covering_position).
+                    starts.push(amp.insert_start.0 as i32);
+                    ends.push(amp.insert_end.0 as i32);
+                    by_start.push(idx);
+                }
+                None => {
+                    // Covers no position: sentinels the sweep never admits.
+                    starts.push(i32::MAX);
+                    ends.push(i32::MIN);
+                }
+            }
+        }
+        // Stable sort: tie starts keep segment order, matching the old scan.
+        by_start.sort_by_key(|idx| match starts.get(*idx) {
+            Some(start) => *start,
+            None => i32::MAX,
+        });
+        Self {
+            segment,
+            by_start,
+            starts,
+            ends,
+            next_start: 0,
+            active: BTreeSet::new(),
+            expiry: BinaryHeap::new(),
+            #[cfg(debug_assertions)]
+            last_pos: None,
+        }
+    }
+
+    /// Covering amplicons at `position`, in segment order. Positions MUST
+    /// arrive in ascending (non-decreasing) order.
+    pub(crate) fn covering_at(&mut self, position: i32) -> Vec<(usize, Region)> {
+        #[cfg(debug_assertions)]
+        {
+            if let Some(last) = self.last_pos {
+                debug_assert!(
+                    position >= last,
+                    "AmpliconCoverSweep requires ascending positions"
+                );
+            }
+            self.last_pos = Some(position);
+        }
+        while let Some(idx) = self.by_start.get(self.next_start) {
+            let idx = *idx;
+            let start = match self.starts.get(idx) {
+                Some(start) => *start,
+                None => break,
+            };
+            if start > position {
+                break;
+            }
+            self.active.insert(idx);
+            if let Some(end) = self.ends.get(idx).copied() {
+                self.expiry.push(Reverse((end, idx)));
+            }
+            self.next_start = self.next_start.saturating_add(1);
+        }
+        while let Some(Reverse((end, _))) = self.expiry.peek().copied() {
+            if end >= position {
+                break;
+            }
+            if let Some(Reverse((_, idx))) = self.expiry.pop() {
+                self.active.remove(&idx);
+            }
+        }
+        let mut covering = Vec::with_capacity(self.active.len());
+        for idx in &self.active {
+            if let Some(region) = self.segment.get(*idx) {
+                covering.push((*idx, region.clone()));
+            }
+        }
+        covering
+    }
+}
+
+/// Lazy iterator behind `amplicon_position_stream`: walks the merged insert
+/// ranges ascending, resolving each position's covering list through one
+/// shared `AmpliconCoverSweep` (ascending by construction).
+struct AmpliconPositionIter<'a> {
+    sweep: AmpliconCoverSweep<'a>,
+    merged: Vec<(i32, i32)>,
+    range_idx: usize,
+    current: i32,
+}
+
+impl<'a> Iterator for AmpliconPositionIter<'a> {
+    type Item = (i32, Vec<(usize, Region)>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            let (start, end) = *self.merged.get(self.range_idx)?;
+            if self.current < start {
+                self.current = start;
+            }
+            if self.current > end {
+                // Past this range (or a degenerate start > end, which the
+                // old `start..=end` expansion also yielded nothing for).
+                self.range_idx = self.range_idx.saturating_add(1);
+                continue;
+            }
+            let position = self.current;
+            let covering = self.sweep.covering_at(position);
+            if position >= end {
+                self.range_idx = self.range_idx.saturating_add(1);
+            } else {
+                // position < end <= i32::MAX here: cannot overflow.
+                self.current = position + 1;
+            }
+            return Some((position, covering));
+        }
+    }
+}
+
 /// Lazy ascending union of the segment's insert intervals as
 /// `(position, covering-amplicons)` pairs.
 ///
@@ -93,8 +243,10 @@ pub fn amplicon_post_process(
 /// (`for p in insertStart..insertEnd`): yields exactly the positions — and the
 /// same segment-ordered covering lists — the materialized `BTreeMap` held,
 /// without one map entry per base (audit-amplicon-expand). Disjoint ranges are
-/// merged first, so gaps between amplicons are never visited. Working memory
-/// is O(segment); positions emerge in ascending order.
+/// merged first, so gaps between amplicons are never visited. Covering lists
+/// resolve through one `AmpliconCoverSweep`: O((P + A) log A) total, never
+/// O(P x A) predicates. Working memory is O(segment); positions emerge in
+/// ascending order.
 pub fn amplicon_position_stream(
     segment: &[Region],
 ) -> impl Iterator<Item = (i32, Vec<(usize, Region)>)> + '_ {
@@ -120,14 +272,12 @@ pub fn amplicon_position_stream(
         }
         merged.push((start, end));
     }
-    merged.into_iter().flat_map(move |(start, end)| {
-        (start..=end).map(move |position| {
-            (
-                position,
-                crate::amplicons_covering_position(segment, position),
-            )
-        })
-    })
+    AmpliconPositionIter {
+        sweep: AmpliconCoverSweep::new(segment),
+        merged,
+        range_idx: 0,
+        current: 0,
+    }
 }
 
 /// Streaming core of `AmpliconPostProcessModule.process()`: one iteration per
@@ -950,6 +1100,140 @@ mod tests {
             assert_eq!(got_p, want_p);
             assert_eq!(got_cov, want_cov);
         }
+    }
+
+    #[test]
+    fn sweep_matches_old_scan_incl_tie_starts() {
+        use crate::regions::AmpliconInfo;
+        use crate::types::Pos1;
+
+        fn amp_region(chr: &str, start: u32, end: u32, is: u32, ie: u32) -> Region {
+            Region {
+                chr: chr.to_string(),
+                start: Pos1(start),
+                end: Pos1(end),
+                gene: String::new(),
+                amplicon: Some(AmpliconInfo {
+                    insert_start: Pos1(is),
+                    insert_end: Pos1(ie),
+                }),
+            }
+        }
+
+        // Tie insert starts (amps 0 and 3 share start 150) in non-sorted
+        // segment order — amp 1 starts earlier despite its later index — plus
+        // a nested interval, a disjoint one, and a non-amplicon entry.
+        let segment = vec![
+            amp_region("chr1", 140, 260, 150, 250),
+            amp_region("chr1", 90, 210, 100, 200),
+            amp_region("chr1", 500, 510, 500, 510),
+            amp_region("chr1", 150, 160, 150, 155),
+            Region {
+                chr: "chr1".to_string(),
+                start: Pos1(300),
+                end: Pos1(400),
+                gene: String::new(),
+                amplicon: None,
+            },
+            amp_region("chr1", 180, 190, 180, 185),
+        ];
+
+        // Old logic: per-base expansion (AmpliconMode.java:57-60).
+        let mut expanded: BTreeMap<i32, Vec<(usize, Region)>> = BTreeMap::new();
+        for (n, region) in segment.iter().enumerate() {
+            if let Some(ref amp) = region.amplicon {
+                for p in amp.insert_start.0 as i32..=amp.insert_end.0 as i32 {
+                    expanded.entry(p).or_default().push((n, region.clone()));
+                }
+            }
+        }
+        // The sweep stream yields the same pairs, pair-for-pair: same
+        // positions ascending, same segment-ordered covering lists — tie
+        // starts keep segment order via the stable by-start sort.
+        let streamed: Vec<(i32, Vec<(usize, Region)>)> =
+            amplicon_position_stream(&segment).collect();
+        assert_eq!(streamed.len(), expanded.len());
+        for ((got_p, got_cov), (want_p, want_cov)) in streamed.iter().zip(expanded.iter()) {
+            assert_eq!(got_p, want_p);
+            assert_eq!(got_cov, want_cov);
+        }
+    }
+
+    #[test]
+    fn sweep_covering_at_matches_old_scan_sparse() {
+        use crate::regions::AmpliconInfo;
+        use crate::types::Pos1;
+
+        fn amp_region(chr: &str, start: u32, end: u32, is: u32, ie: u32) -> Region {
+            Region {
+                chr: chr.to_string(),
+                start: Pos1(start),
+                end: Pos1(end),
+                gene: String::new(),
+                amplicon: Some(AmpliconInfo {
+                    insert_start: Pos1(is),
+                    insert_end: Pos1(ie),
+                }),
+            }
+        }
+
+        let segment = vec![
+            amp_region("chr1", 140, 260, 150, 250),
+            amp_region("chr1", 90, 210, 100, 200),
+            amp_region("chr1", 150, 160, 150, 155),
+        ];
+
+        // Sparse ascending positions (the non-`-p` run_amplicon path feeds a
+        // BTreeSet in this order): boundaries, tie starts, gaps, outside.
+        let mut sweep = AmpliconCoverSweep::new(&segment);
+        for p in [99, 100, 149, 150, 151, 155, 156, 180, 200, 201, 250, 251] {
+            let got = sweep.covering_at(p);
+            let want = crate::amplicons_covering_position(&segment, p);
+            assert_eq!(got, want, "covering list differs at {p}");
+        }
+    }
+
+    #[test]
+    fn sweep_dense_chain_bounded() {
+        use crate::regions::AmpliconInfo;
+        use crate::types::Pos1;
+
+        // Dense synthetic chain: 3000 inserts x 200 bp @100 spacing. The old
+        // per-position scan costs P x A ~ 270M predicates here (~13 s in debug);
+        // the sweep is output-proportional + O((P + A) log A) (~0.1 s).
+        // The 3 s wall bound passes with wide headroom on the sweep and fails
+        // on the old approach.
+        let amps = 3000usize;
+        let segment: Vec<Region> = (0..amps)
+            .map(|i| {
+                let s = (i as u32) * 100;
+                Region {
+                    chr: "chr1".to_string(),
+                    start: Pos1(s),
+                    end: Pos1(s + 199),
+                    gene: String::new(),
+                    amplicon: Some(AmpliconInfo {
+                        insert_start: Pos1(s),
+                        insert_end: Pos1(s + 199),
+                    }),
+                }
+            })
+            .collect();
+
+        let t0 = std::time::Instant::now();
+        let mut npos = 0u64;
+        let mut nmem = 0u64;
+        for (_, cov) in amplicon_position_stream(&segment) {
+            npos += 1;
+            nmem += cov.len() as u64;
+        }
+        let elapsed = t0.elapsed();
+        assert_eq!(npos, (amps as u64 - 1) * 100 + 200);
+        assert_eq!(nmem, amps as u64 * 200);
+        assert!(
+            elapsed < std::time::Duration::from_secs(3),
+            "dense-chain sweep took too long: {elapsed:?}",
+        );
     }
 
     #[test]
