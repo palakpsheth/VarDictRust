@@ -59,7 +59,7 @@ Reuse: `compare.sh`, `compare_var.py`, `compare_vcf.py` (eps 1e-6), `run_oracle.
 | Storage 2–3 mo (GCP: full-genome BAMs ~500GB Standard + Nearline FASTQs; ops <$2; egress ~$0; local disk $0) | $25–40 | $25–40 | $25–40 |
 | **Total (alerts $100/$200/$300 HARD STOPS)** | **$90–230** | **$180–450** | **$350–750 (16/32 only after cap lift)** |
 
-$100/$200/$300 alerts are HARD STOPS (halt new cells + re-evaluate + explicit resume). Bounds: HG008 full at 8-thread ONLY (no 16/32 — span curve already proves scaling); field full-WGS limited to Mutect2+Strelka2 (fast pair; octopus/LoFreq/FreeBayes on Tier-P/E full + genome slices — Figs 2–3 replicate on SRR panels regardless); PDF fetched 2026-10-16 (396,827 B, 9 pp, sha256:d9505294…, MANIFEST entry Wk1); snippet quarantine lifts at MANIFEST landing.
+$100/$200/$300 alerts are HARD STOPS (halt new cells + re-evaluate + explicit resume). Blackout window (03:40–05:15) IGNORED while the media stack is down for maintenance (owner ruling 2026-10-16) — disk/RAM floors stay enforced (`SKIP_BLACKOUT=1` skips only the blackout check).. Bounds: HG008 full at 8-thread ONLY (no 16/32 — span curve already proves scaling); field full-WGS limited to Mutect2+Strelka2 (fast pair; octopus/LoFreq/FreeBayes on Tier-P/E full + genome slices — Figs 2–3 replicate on SRR panels regardless); PDF fetched 2026-10-16 (396,827 B, 9 pp, sha256:d9505294…, MANIFEST entry Wk1); snippet quarantine lifts at MANIFEST landing.
 
 ---
 
