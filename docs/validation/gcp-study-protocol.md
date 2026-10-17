@@ -118,7 +118,7 @@ Fig1 three-tier design (P/E/G + cross-tier RNA/SV/CRAM arms); Fig2 Tier-1/2/3 fl
 
 ## 9. Known audit-deferred vectors (must clear before full-genome/WGS-scale claims)
 
-`somatic-dedup` (no cross-tile pending), `stream-pileup`/`fisher-stream` (unbounded vecs), `ref-multiregion` (wrong base after multi-region), `amplicon-expand` (per-base BTreeMap OOM) — see `ROADMAP.md:68-78`. Gate WGS/full-genome on tiled-vs-single MATCH + ceiling cells or scope down.
+`somatic-dedup` (no cross-tile pending), `stream-pileup`/`fisher-stream` (unbounded vecs), `ref-multiregion` (wrong base after multi-region), `amplicon-expand` (non-`-p` bounded Task 4b; `-p` path still expands — Tier-P `-p` cells out of scope until follow-up streams it) — see `ROADMAP.md:68-78`. Gate WGS/full-genome on tiled-vs-single MATCH + ceiling cells or scope down.
 
 ---
 
