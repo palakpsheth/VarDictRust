@@ -123,6 +123,9 @@ pub struct Config {
     pub omit_end_tag: bool,
     /// Include Ns in depth calculation (-K)
     pub include_n: bool,
+    /// Post-1.0 correction `--fix splice-tile-ownership`: halo-wide splice
+    /// pileup with single-owner emission (default: false = v1.0.2 behavior).
+    pub fix_splice_tile_ownership: bool,
 }
 
 impl Default for Config {
@@ -190,6 +193,7 @@ impl Default for Config {
             unique_mode_second_in_pair_enabled: false,
             omit_end_tag: true,
             include_n: false,
+            fix_splice_tile_ownership: false,
         }
     }
 }

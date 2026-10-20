@@ -373,6 +373,16 @@ pub fn run(config: &config::Config) -> Result<(), VardictError> {
             };
 
             let mut reference = crate::reference::Reference::new();
+            // --fix splice-tile-ownership: pile up halo-wide (bed_region) so
+            // the owning tile counts junctions anchored at its last active
+            // base, then emit owned-only (single-ownership, no cross-tile
+            // state). Flag-off keeps the active-region pileup (v1.0.2).
+            let fix_splice = config_clone.splice && config_clone.fix_splice_tile_ownership;
+            let pileup_region = if fix_splice {
+                &bed_region
+            } else {
+                &region_for_pileup
+            };
             let var_data = run_pipeline_on_records(
                 std::slice::from_ref(&first_bam_owned),
                 &tile.chr,
@@ -380,7 +390,7 @@ pub fn run(config: &config::Config) -> Result<(), VardictError> {
                 crate::types::Pos0(tile.halo_end.0),
                 Some(&bed_region),
                 &mut reference,
-                &region_for_pileup,
+                pileup_region,
                 if config_clone.splice {
                     PipelineTail::Stop
                 } else {
@@ -397,6 +407,16 @@ pub fn run(config: &config::Config) -> Result<(), VardictError> {
                 let mut introns: Vec<&String> = var_data.splice_count.keys().collect();
                 introns.sort();
                 for intron in introns {
+                    if fix_splice
+                        && !tile_owns_splice_key(
+                            &tile,
+                            tile.original_start,
+                            tile.original_end,
+                            intron,
+                        )
+                    {
+                        continue;
+                    }
                     let count = var_data.splice_count.get(intron).map(|a| a[0]).unwrap_or(0);
                     lines.push(format!(
                         "{}\t{}\t{}\t{}",
@@ -1130,6 +1150,36 @@ fn select_paired_rows(
         .into_values()
         .filter(|sv| !crate::output::vcf::perl_row_skipped(&sv.variant1.ref_allele))
         .collect()
+}
+
+/// ports CigarParser.java:1289-1301
+///
+/// Single-owner rule for a splice junction key (`A-B`, where `A` is the last
+/// pre-`N` reference base): the tile whose active interval contains `A` owns
+/// the junction; edge-clamped anchors outside the region go to the first
+/// (resp. last) tile. Ownership is over the anchor `A` — aligners never emit
+/// a leading `N`, so a junction always has one.
+fn tile_owns_splice_key(
+    tile: &crate::regions::Tile,
+    reg_start: crate::types::Pos1,
+    reg_end: crate::types::Pos1,
+    key: &str,
+) -> bool {
+    // Fail-open: keys are internally generated so an unparseable key is
+    // unreachable; emit rather than silently drop.
+    let Some(anchor) = key.split_once('-').and_then(|(a, _)| a.parse::<u32>().ok()) else {
+        return true;
+    };
+    if tile.start.0 <= anchor && anchor <= tile.end.0 {
+        return true;
+    }
+    if anchor < reg_start.0 && tile.start == reg_start {
+        return true;
+    }
+    if anchor > reg_end.0 && tile.end == reg_end {
+        return true;
+    }
+    false
 }
 
 #[cfg(test)]
