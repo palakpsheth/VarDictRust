@@ -1294,4 +1294,310 @@ mod tests {
         // fail-open: unparseable key is emitted (never silently dropped)
         assert!(tile_owns_splice_key(&t(100, 399), p(100), p(699), "junk"));
     }
+
+    // --- Task 2 (red): pileup-level splice tile-emission tests ---
+    //
+    // Per-tile spec mirror of the `run_simple` splice branch plus the Task-1
+    // ownership gate: pile up each tile's halo-queried records (via
+    // `run_pipeline_on_records`, exactly as production does) and emit one
+    // `sample\tchr\tjunction\tcount` line per junction OWNED by the tile.
+    // Task 3 implements `tile_owns_splice_key` and applies this same gate in
+    // production; these tests must green with no test edits.
+
+    use noodles::sam::alignment::record_buf::RecordBuf;
+
+    fn splice_test_config() -> crate::config::Config {
+        let mut config = crate::config::Config::default();
+        config.realign = 0;
+        config.splice = true;
+        config
+    }
+
+    fn splice_test_reference() -> crate::reference::Reference {
+        let mut reference = crate::reference::Reference::new();
+        reference
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 1,
+                sequence_end: 1000,
+            });
+        reference
+            .reference_sequences
+            .insert("chr1".to_string(), vec![b'A'; 1000]);
+        reference
+    }
+
+    fn splice_test_chr_lens() -> std::collections::HashMap<String, usize> {
+        [("chr1".to_string(), 1000usize)].into_iter().collect()
+    }
+
+    fn test_record_buf(
+        name: &str,
+        start: usize,
+        cigar_ops: &[(usize, noodles::sam::alignment::record::cigar::op::Kind)],
+        seq: Vec<u8>,
+    ) -> RecordBuf {
+        use noodles::core::Position;
+        use noodles::sam::alignment::record::cigar::Op;
+        use noodles::sam::alignment::record_buf::Cigar;
+        let cigar: Cigar = cigar_ops
+            .iter()
+            .map(|&(len, kind)| Op::new(kind, len))
+            .collect();
+        let quals = vec![40u8; seq.len()];
+        RecordBuf::builder()
+            .set_name(name)
+            .set_flags(noodles::sam::alignment::record::Flags::empty())
+            .set_reference_sequence_id(0)
+            .set_alignment_start(Position::try_from(start).unwrap())
+            .set_cigar(cigar)
+            .set_sequence(seq.into())
+            .set_quality_scores(quals.into())
+            .build()
+    }
+
+    /// Mirror of `vardictrust/tests/common::indexed_bam` (no shared synthetic-BAM
+    /// builder exists for core): writes `path` plus its `.bam.bai` index.
+    fn write_test_bam(path: &std::path::Path, chr: &str, len: usize, recs: &[RecordBuf]) {
+        use noodles::bam::bai;
+        use noodles::core::Position;
+        use noodles::csi::binning_index::index::reference_sequence::{
+            bin::Chunk, index::LinearIndex,
+        };
+        use noodles::csi::binning_index::Indexer;
+        use noodles::sam::alignment::io::Write as _;
+        use noodles::sam::header::record::value::{
+            map::ReferenceSequence as RefSeqMap, Map as HeaderMap,
+        };
+        use noodles::sam::Header;
+        let rs = HeaderMap::<RefSeqMap>::builder()
+            .set_length(len.try_into().unwrap())
+            .build()
+            .unwrap();
+        let hd = Header::builder().add_reference_sequence(chr, rs).build();
+        let bgzf = noodles::bgzf::io::Writer::new(std::fs::File::create(path).unwrap());
+        let mut w = noodles::bam::io::Writer::from(bgzf);
+        w.write_alignment_header(&hd).unwrap();
+        let mut indexer = Indexer::<LinearIndex>::new(14, 5).expect("valid index parameters");
+        for rec in recs {
+            let start = w.get_ref().virtual_position();
+            w.write_alignment_record(&hd, rec).unwrap();
+            let end = w.get_ref().virtual_position();
+            let s = rec.alignment_start().expect("aligned record");
+            let e = Position::new(s.get() + rec.cigar().alignment_span()).unwrap_or(Position::MIN);
+            indexer
+                .add_record(Some((0, s, e, true)), Chunk::new(start, end))
+                .map_err(std::io::Error::other)
+                .unwrap();
+        }
+        w.try_finish().unwrap();
+        let mut bai_path = std::path::PathBuf::from(path);
+        bai_path.set_extension("bam.bai");
+        bai::io::Writer::new(std::fs::File::create(&bai_path).unwrap())
+            .write_index(&indexer.build(1))
+            .unwrap();
+    }
+
+    /// Desired per-tile splice emission: one line per OWNED junction, in sorted
+    /// key order, mirroring the `run_simple` splice-branch line format.
+    fn gated_splice_lines(
+        tile: &crate::regions::Tile,
+        region_start: crate::types::Pos1,
+        region_end: crate::types::Pos1,
+        sample: &str,
+        splice_count: &std::collections::HashMap<String, [i32; 1]>,
+    ) -> Vec<String> {
+        let mut introns: Vec<&String> = splice_count.keys().collect();
+        introns.sort();
+        let mut lines = Vec::new();
+        for intron in introns {
+            if !tile_owns_splice_key(tile, region_start, region_end, intron) {
+                continue;
+            }
+            let count = splice_count.get(intron).map(|a| a[0]).unwrap_or(0);
+            lines.push(format!("{}\t{}\t{}\t{}", sample, tile.chr, intron, count));
+        }
+        lines
+    }
+
+    fn pileup_tile(
+        bam: &str,
+        tile: &crate::regions::Tile,
+        reference: &mut crate::reference::Reference,
+        config: &crate::config::Config,
+        chr_lens: &std::collections::HashMap<String, usize>,
+    ) -> crate::variations::VariationData {
+        // Pile up over the HALO bounds, not the active bounds: a junction
+        // anchored in the tile's active region is recorded when the CIGAR loop
+        // reaches its N op, which sits one base past the anchor (`start` after
+        // the pre-N match block). Active-region pileup `break`s at
+        // `start > region.end` before reaching an N whose anchor is the tile's
+        // last base, so the owning tile would never count its own junction.
+        // Halo-wide pileup counts every candidate; the ownership gate in
+        // `gated_splice_lines` restores single emission.
+        let pileup_region = crate::regions::Region {
+            chr: tile.chr.clone(),
+            start: tile.halo_start,
+            end: tile.halo_end,
+            gene: tile.gene.clone(),
+            amplicon: None,
+        };
+        let owned = bam.to_string();
+        run_pipeline_on_records(
+            std::slice::from_ref(&owned),
+            &tile.chr,
+            tile.halo_start.to_zero_based(),
+            crate::types::Pos0(tile.halo_end.0),
+            None,
+            reference,
+            &pileup_region,
+            PipelineTail::Stop,
+            config,
+            chr_lens,
+            0,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn splice_tile_emission_halo_junction_emitted_once_with_full_count() {
+        use noodles::sam::alignment::record::cigar::op::Kind;
+        // Region chr1:[100,699], tiles of 300 + halo 50:
+        //   tile 1 active [100,399] halo [100,449];
+        //   tile 2 active [400,699] halo [350,699].
+        // One spliced read at 390 (10M 50N 10M): junction "399-449" anchors in
+        // tile 1 (399) while the body spans 390..459, so tile 2 counts a
+        // junction anchored outside its active region, visible to it only
+        // through its halo-queried read. Desired: exactly one line (from the
+        // owning tile 1) with the whole-region count.
+        let region = crate::regions::Region {
+            chr: "chr1".to_string(),
+            start: crate::types::Pos1(100),
+            end: crate::types::Pos1(699),
+            gene: "TEST".to_string(),
+            amplicon: None,
+        };
+        let tiles = crate::regions::tile(&region, 300, 50);
+        assert_eq!(tiles.len(), 2);
+        assert_eq!(tiles[0].halo_start, crate::types::Pos1(100));
+        assert_eq!(tiles[0].halo_end, crate::types::Pos1(449));
+        assert_eq!(tiles[1].halo_start, crate::types::Pos1(350));
+        assert_eq!(tiles[1].halo_end, crate::types::Pos1(699));
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let bam_path = dir.path().join("splice.bam");
+        write_test_bam(
+            &bam_path,
+            "chr1",
+            1000,
+            &[test_record_buf(
+                "spliced1",
+                390,
+                &[(10, Kind::Match), (50, Kind::Skip), (10, Kind::Match)],
+                vec![b'A'; 20],
+            )],
+        );
+        let bam = bam_path.to_string_lossy().into_owned();
+        let paths = [bam.clone()];
+
+        let config = splice_test_config();
+        let mut reference = splice_test_reference();
+        let chr_lens = splice_test_chr_lens();
+
+        // Whole-region pileup pins the expected count (oracle cross-check).
+        let whole = run_pipeline_on_records(
+            &paths,
+            "chr1",
+            crate::types::Pos1(100).to_zero_based(),
+            crate::types::Pos0(699),
+            None,
+            &mut reference,
+            &region,
+            PipelineTail::Stop,
+            &config,
+            &chr_lens,
+            0,
+        )
+        .unwrap();
+        let whole_count = whole.splice_count.get("399-449").map(|a| a[0]).unwrap_or(0);
+        assert_eq!(whole_count, 1, "oracle: whole-region junction count");
+
+        let mut all_lines = Vec::new();
+        let mut per_tile_counts = Vec::new();
+        for tile in &tiles {
+            let var_data = pileup_tile(&bam, tile, &mut reference, &config, &chr_lens);
+            // Premise: the halo overlap makes the read visible to BOTH tiles'
+            // pileups, so without the ownership gate the junction would be
+            // emitted twice (unowned duplicate).
+            per_tile_counts.push(var_data.splice_count.get("399-449").map(|a| a[0]));
+            all_lines.extend(gated_splice_lines(
+                tile,
+                crate::types::Pos1(100),
+                crate::types::Pos1(699),
+                &config.sample,
+                &var_data.splice_count,
+            ));
+        }
+
+        // Java-blessed expected splice line (sample\tchr\tjunction\tcount).
+        assert_eq!(
+            per_tile_counts,
+            vec![Some(1), Some(1)],
+            "halo overlap: both tiles count the junction (duplicates without the gate)"
+        );
+        assert_eq!(all_lines, vec!["SAMPLE\tchr1\t399-449\t1".to_string()]);
+    }
+
+    #[test]
+    fn splice_tile_emission_empty_tile_zero_lines() {
+        use noodles::sam::alignment::record::cigar::op::Kind;
+        // Tile chr1:[400,699] halo [400,699] over a BAM with reads but NO
+        // spliced (N-op) reads: pileup yields an empty splice_count, so
+        // emission must produce zero lines without panicking on the empty map.
+        let region = crate::regions::Region {
+            chr: "chr1".to_string(),
+            start: crate::types::Pos1(400),
+            end: crate::types::Pos1(699),
+            gene: "TEST".to_string(),
+            amplicon: None,
+        };
+        let tiles = crate::regions::tile(&region, 300, 50);
+        assert_eq!(tiles.len(), 1);
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let bam_path = dir.path().join("nosplice.bam");
+        write_test_bam(
+            &bam_path,
+            "chr1",
+            1000,
+            &[
+                test_record_buf("plain1", 500, &[(50, Kind::Match)], vec![b'A'; 50]),
+                test_record_buf("plain2", 560, &[(50, Kind::Match)], vec![b'A'; 50]),
+            ],
+        );
+        let bam = bam_path.to_string_lossy().into_owned();
+
+        let config = splice_test_config();
+        let mut reference = splice_test_reference();
+        let chr_lens = splice_test_chr_lens();
+
+        let var_data = pileup_tile(&bam, &tiles[0], &mut reference, &config, &chr_lens);
+        assert!(
+            var_data.splice_count.is_empty(),
+            "no N-op reads so splice_count must be empty"
+        );
+        let lines = gated_splice_lines(
+            &tiles[0],
+            crate::types::Pos1(400),
+            crate::types::Pos1(699),
+            &config.sample,
+            &var_data.splice_count,
+        );
+        assert!(
+            lines.is_empty(),
+            "empty splice_count must emit zero lines, got: {:?}",
+            lines
+        );
+    }
 }
