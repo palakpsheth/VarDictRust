@@ -1236,4 +1236,62 @@ mod tests {
             "250 Mbp overlap test took too long"
         );
     }
+
+    fn t(start: u32, end: u32) -> crate::regions::Tile {
+        crate::regions::Tile {
+            chr: "chr1".to_string(),
+            start: crate::types::Pos1(start),
+            end: crate::types::Pos1(end),
+            gene: String::new(),
+            halo_start: crate::types::Pos1(start),
+            halo_end: crate::types::Pos1(end),
+            amplicon: None,
+            original_start: crate::types::Pos1(start),
+            original_end: crate::types::Pos1(end),
+        }
+    }
+
+    fn p(v: u32) -> crate::types::Pos1 {
+        crate::types::Pos1(v)
+    }
+
+    #[test]
+    fn splice_key_owned_by_exactly_one_tile() {
+        // tiles [100,399] and [400,699] of region [100,699]; junction "399-450"
+        assert!(tile_owns_splice_key(
+            &t(100, 399),
+            p(100),
+            p(699),
+            "399-450"
+        ));
+        assert!(!tile_owns_splice_key(
+            &t(400, 699),
+            p(100),
+            p(699),
+            "399-450"
+        ));
+        // boundary: anchor 400 belongs to tile 2 only
+        assert!(!tile_owns_splice_key(
+            &t(100, 399),
+            p(100),
+            p(699),
+            "400-450"
+        ));
+        assert!(tile_owns_splice_key(
+            &t(400, 699),
+            p(100),
+            p(699),
+            "400-450"
+        ));
+        // edge clamp: Java counts A = reg_start - 1; first tile owns it
+        assert!(tile_owns_splice_key(&t(100, 399), p(100), p(699), "99-150"));
+        assert!(!tile_owns_splice_key(
+            &t(400, 699),
+            p(100),
+            p(699),
+            "99-150"
+        ));
+        // fail-open: unparseable key is emitted (never silently dropped)
+        assert!(tile_owns_splice_key(&t(100, 399), p(100), p(699), "junk"));
+    }
 }
