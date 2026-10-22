@@ -1669,4 +1669,162 @@ mod tests {
             lines
         );
     }
+
+    #[test]
+    fn g3_mate_window_merge_emits_out_of_tile_key_from_both_tiles() {
+        use noodles::sam::alignment::record::cigar::op::Kind;
+        // Task 6 (G3, sibling audit rows 16/46-47): mate-window
+        // `partial_pipeline` merges (realign.rs:4012-4063,
+        // sv.rs:3464-3478) plant out-of-active-range keys that pass the
+        // whole-region builder gate, so the merging tile emits rows owned
+        // by another tile -> duplicates in intermediate tables (#1,#3)
+        // and somatic VCF (#4).
+        //
+        // Region chr1:[100,699], tiles of 300 + halo 50:
+        //   tile 1 active [100,399]; tile 2 active [400,699].
+        // SNV reads at q=200 are owned by tile 1. Tile 2's mate-window
+        // merge over [150,250] (the realign.rs:1959-1971 /
+        // sv.rs:1374-1383 call shape for a mate breakpoint near 200)
+        // plants key 200 in tile 2's maps; the whole-region builder gate
+        // (lib.rs:440-446, tovars.rs:116-121) then emits 200 from BOTH
+        // tiles while the whole-region run emits it once.
+        // RED while G3 is unaddressed: tile 2 emits the tile-1-owned key.
+        let region = crate::regions::Region {
+            chr: "chr1".to_string(),
+            start: crate::types::Pos1(100),
+            end: crate::types::Pos1(699),
+            gene: "TEST".to_string(),
+            amplicon: None,
+        };
+        let tiles = crate::regions::tile(&region, 300, 50);
+        assert_eq!(tiles.len(), 2);
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let bam_path = dir.path().join("g3.bam");
+        // 3 reads, 20M at 191 (1-based), alt C at position 200 (ref A).
+        let mut seq = vec![b'A'; 20];
+        seq[9] = b'C';
+        write_test_bam(
+            &bam_path,
+            "chr1",
+            1000,
+            &[
+                test_record_buf("snv1", 191, &[(20, Kind::Match)], seq.clone()),
+                test_record_buf("snv2", 191, &[(20, Kind::Match)], seq.clone()),
+                test_record_buf("snv3", 191, &[(20, Kind::Match)], seq.clone()),
+            ],
+        );
+        let bam = bam_path.to_string_lossy().into_owned();
+        let paths = [bam.clone()];
+
+        let config = crate::config::Config::default();
+        let chr_lens = splice_test_chr_lens();
+
+        // Per-tile pileup over the halo window with the ACTIVE region (the
+        // production flag-off shape, lib.rs:378-413).
+        let pileup_active = |tile: &crate::regions::Tile,
+                             reference: &mut crate::reference::Reference|
+         -> crate::variations::VariationData {
+            let pileup_region = crate::regions::Region {
+                chr: tile.chr.clone(),
+                start: tile.start,
+                end: tile.end,
+                gene: tile.gene.clone(),
+                amplicon: None,
+            };
+            run_pipeline_on_records(
+                &paths,
+                &tile.chr,
+                tile.halo_start.to_zero_based(),
+                crate::types::Pos0(tile.halo_end.0),
+                None,
+                reference,
+                &pileup_region,
+                PipelineTail::Stop,
+                &config,
+                &chr_lens,
+                0,
+            )
+            .unwrap()
+        };
+
+        // Emission through the production whole-region builder gate
+        // (lib.rs:440-460): builder_region spans the whole BED region.
+        let emit = |var_data: &crate::variations::VariationData,
+                    reference: &crate::reference::Reference|
+         -> Vec<i32> {
+            let builder = crate::tovars::ToVarsBuilder::new(reference, &region, &chr_lens, &config);
+            let aligned = builder.build_aligned_variants(var_data);
+            crate::postprocess::simple::simple_post_process(
+                &config,
+                &region,
+                &aligned,
+                &var_data.splice,
+            )
+            .iter()
+            .map(|v| v.start_pos)
+            .collect()
+        };
+
+        // Tile 1 (owner of q=200).
+        let mut ref1 = splice_test_reference();
+        let var1 = pileup_active(&tiles[0], &mut ref1);
+        assert!(
+            var1.non_insertion_variants.contains_key(&200),
+            "owner tile 1 must pile up key 200"
+        );
+
+        // Tile 2 (merger): its own window holds no reads; the SV/mate path
+        // merges the mate window covering q=200 into its maps.
+        let mut ref2 = splice_test_reference();
+        let mut var2 = pileup_active(&tiles[1], &mut ref2);
+        assert!(
+            !var2.non_insertion_variants.contains_key(&200),
+            "merging tile 2 must not pile up key 200 on its own"
+        );
+        crate::sv::partial_pipeline(
+            &bam_path, &mut var2, &mut ref2, "chr1", 150, 250, &config, &chr_lens,
+        )
+        .unwrap();
+        assert!(
+            var2.non_insertion_variants.contains_key(&200),
+            "G3 mechanism: mate-window merge planted out-of-active key 200 in tile 2's maps"
+        );
+
+        // Whole-region oracle: single pileup + single emission.
+        let mut refw = splice_test_reference();
+        let varw = run_pipeline_on_records(
+            &paths,
+            "chr1",
+            crate::types::Pos1(100).to_zero_based(),
+            crate::types::Pos0(699),
+            None,
+            &mut refw,
+            &region,
+            PipelineTail::Stop,
+            &config,
+            &chr_lens,
+            0,
+        )
+        .unwrap();
+
+        let mut pos1 = emit(&var1, &ref1);
+        let mut pos2 = emit(&var2, &ref2);
+        let mut posw = emit(&varw, &refw);
+        pos1.sort();
+        pos2.sort();
+        posw.sort();
+
+        assert_eq!(
+            posw.iter().filter(|p| **p == 200).count(),
+            1,
+            "oracle: whole-region run emits 200 exactly once, got {:?}",
+            posw
+        );
+        assert!(
+            !pos2.contains(&200),
+            "G3 REPRO: merging tile 2 emits tile-1-owned position 200 \
+             (tiled: {pos1:?} + {pos2:?}, whole: {posw:?})",
+        );
+    }
 }
