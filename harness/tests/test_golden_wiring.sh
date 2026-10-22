@@ -37,4 +37,8 @@ if [ "$pf" != dirty ]; then
   { [[ "$pf" =~ ^[0-9a-f]{16}$ ]] && [ "$pf" != "$(bash harness/engine_fingerprint.sh 2>/dev/null)" ]; } \
     || { echo "FAIL: --perf fingerprint malformed or equal to the full fingerprint"; fail=1; }
 fi
+[ -z "$(git ls-files docs/release/waivers.md)" ] || { echo "FAIL: docs/release/waivers.md still exists"; fail=1; }
+! grep -q 'waived' harness/acceptance.sh || { echo "FAIL: acceptance.sh still has a waiver path"; fail=1; }
+stale=$(git grep -nIl 'release/waivers' -- . ':!VarDictJava' ':!harness/tests/test_golden_wiring.sh' || true)
+[ -z "$stale" ] || { echo "FAIL: references to the deleted waiver registry remain: $stale"; fail=1; }
 [ $fail -eq 0 ] && echo "PASS test_golden_wiring"; exit $fail

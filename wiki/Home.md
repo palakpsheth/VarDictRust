@@ -30,7 +30,6 @@ VarDictRust is an idiomatic Rust rewrite of **VarDictJava v1.8.3** (a somatic an
 ### 4. Testing, Harness & Quality Assurance
 - **[Comprehensive Test Matrix & CI Audit](https://github.com/palakpsheth/VarDictRust/blob/main/docs/testing/test-matrix-and-ci-audit.md)** — 7-tier test architecture, 233 cargo unit/integration tests, and CI workflows.
 - **[Test Harness Documentation](https://github.com/palakpsheth/VarDictRust/blob/main/harness/README.md)** — Architecture of Tier-1/Tier-2 comparators, 17 self-tests, and cluster etiquette guidelines.
-- **[Release Waivers & Parity Audit](https://github.com/palakpsheth/VarDictRust/blob/main/docs/release/waivers.md)** — Formal justification of intentional behavioral divergences (0 active waivers).
 - **[v1.0.1 Release PR Specification](https://github.com/palakpsheth/VarDictRust/blob/main/docs/release/v1.0.1-pr.md)** — Release manifest, cryptographic fingerprints, and certification (`v1.0.0` in [`docs/release/v1.0.0-pr.md`](https://github.com/palakpsheth/VarDictRust/blob/main/docs/release/v1.0.0-pr.md)).
 
 ### 5. Project Roadmap & Governance

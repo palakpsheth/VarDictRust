@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# AGENTS.md §15 acceptance, items 1-8 verbatim. Exit 0 only if every item is PASS or user-WAIVED.
+# AGENTS.md §15 acceptance, items 1-8 verbatim. Exit 0 only if every item is PASS. There is no waiver mechanism.
 set -uo pipefail
 OUT=${ACCEPT_DIR:-scratch/acceptance}; mkdir -p "$OUT"; : > "$OUT/log.txt"; declare -A R
 FP=$(bash harness/engine_fingerprint.sh) || { echo "acceptance: commit first"; exit 2; }
-waived() { grep -qE "^- item $1:" docs/release/waivers.md 2>/dev/null; }
-mark() { if [ "$2" = 1 ]; then R[$1]=PASS; elif waived "$1"; then R[$1]=WAIVED; else R[$1]="FAIL: $3"; fi; }
+PERF_FP=$(bash harness/engine_fingerprint.sh --perf) || exit 2
+mark() { if [ "$2" = 1 ]; then R[$1]=PASS; else R[$1]="FAIL: $3"; fi; }
 ev() { python3 - "benchmarks/evidence/$1.json" "$FP" <<'PY'
 import json, sys
 p, fp = sys.argv[1], sys.argv[2]
@@ -24,6 +24,24 @@ has_v = isinstance(x.get("cpp_version"), str) and bool(x["cpp_version"].strip())
 has_s = isinstance(x.get("cpp_skip_reason"), str) and bool(x["cpp_skip_reason"].strip())
 if has_v == has_s:
     sys.exit(f"{p}: extra must have exactly one non-empty cpp_version or cpp_skip_reason (cpp third-arm presence)")
+PY
+}
+# ev_scale: the hours-long scale bench is carried across commits ONLY while the perf-relevant code (engine
+# sources, manifests, lockfile) is byte-identical to the run that produced it (extra.perf_fingerprint); a
+# perf-relevant change makes the evidence stale with no exception. P>=4 / bar>=2.4 is the pre-registered bar.
+ev_scale() { local n=${1:-scale}; python3 - "benchmarks/evidence/$n.json" "$FP" "$PERF_FP" <<'PY'
+import json, sys
+p, fp, perf = sys.argv[1], sys.argv[2], sys.argv[3]
+try: d = json.load(open(p))
+except Exception as e: sys.exit(f"{p}: {e}")
+x = d.get("extra") or {}
+if d.get("fingerprint") != fp and x.get("perf_fingerprint") != perf:
+    sys.exit(f"{p}: stale - neither engine fingerprint {fp} nor perf fingerprint {perf} matches (re-run scale_bench.sh under courtesy.sh)")
+if d.get("result") not in ("MATCH", "EQUAL", "PASS") or x.get("pass") is not True:
+    sys.exit(f"{p}: result={d.get('result')} extra.pass={x.get('pass')}")
+if not x.get("certifying"): sys.exit(f"{p}: non-certifying scale run (extra.certifying is not true)")
+if x.get("P", 0) < 4 or x.get("bar", 0) < 2.4:
+    sys.exit(f"{p}: below the pre-registered bar (needs P>=4 and bar>=2.4): P={x.get('P')} bar={x.get('bar')}")
 PY
 }
 run() { "$@" >> "$OUT/log.txt" 2>&1; }
@@ -64,9 +82,9 @@ t=1; run cargo test -p vardictrust --test robustness || t=0; run ev hg008-cram-t
 if [ "${CPP_SKIP:-0}" != "1" ] && [ "${CPP_SKIP:-0}" != "true" ]; then run ev_cpp hg008-cram-twin || t=0; fi
 mark 4 $t "robustness/CRAM"
 # 5 Scale + Perf Budget (thresholds pre-registered in T21)
-t=1; run ev scale || t=0; run ev perf-budget || t=0; mark 5 $t "scale/perf-budget"
+t=1; run ev_scale || t=0; run ev perf-budget || t=0; mark 5 $t "scale/perf-budget"
 
-# 6 Truth set: rtg exact java==rust equality on all 5 certified cohorts (som.py/truvari via waiver)
+# 6 Truth set: rtg exact java==rust equality on all 5 certified cohorts
 t=1; for e in hg008-truth seqc2-truth hg002-truth hg005-truth na24385-b37-truth; do run ev "$e" || t=0; done; mark 6 $t "truth"
 # 7 Hygiene
 t=1; run cargo fmt --all -- --check || t=0; run cargo clippy --all-targets --all-features -- -D warnings || t=0

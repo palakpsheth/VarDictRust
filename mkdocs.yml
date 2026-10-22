@@ -64,7 +64,6 @@ nav:
       - Benchmark Ledger: benchmarks/README.md
       - HG008 V0.4 Data Guide: benchmarks/hg008-v04-guide.md
       - Omnibus Empirical Validation: docs/validation/omnibus-empirical-validation.md
-      - Parity Waivers: docs/release/waivers.md
   - Architecture:
       - Ecosystem Survey: docs/ecosystem-survey.md
       - Divergences & Quirks: DIVERGENCES.md

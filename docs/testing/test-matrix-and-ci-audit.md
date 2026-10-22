@@ -395,7 +395,7 @@ Level 7 aggregates all lower levels into deterministic, push-button verification
 
 1. **Inner Developer Loop ([`harness/rgate.sh`](../../harness/rgate.sh)):** Fast-feedback developer loop (<30s) running formatting, Clippy, core unit tests, and live micro differential validation.
 2. **Pre-PR Regression Gate ([`harness/pr_check.sh`](../../harness/pr_check.sh)):** Mandatory 6-stage gate running Hygiene, Crash Robustness, Level 2 Corpus (91/1 signature), Level 3 Micro Parity, Level 5 Performance Budget, and Gitleaks secret scanning (<35s).
-3. **Master Release Acceptance Gate ([`harness/acceptance.sh`](../../harness/acceptance.sh)):** Comprehensive 8-item release gate certifying the engine fingerprint against committed benchmark evidence, governed by [`docs/release/waivers.md`](../release/waivers.md).
+3. **Master Release Acceptance Gate ([`harness/acceptance.sh`](../../harness/acceptance.sh)):** Comprehensive 8-item release gate certifying the engine fingerprint against committed benchmark evidence. Every item is strictly PASS or FAIL — there is no waiver mechanism.
 
 ---
 
@@ -439,7 +439,6 @@ VarDictRust utilizes 6 automated GitHub Actions workflows with strict security h
 ## 11. Cross-Reference Index
 
 - **Biological Truth & Empirical Proofs:** [`docs/validation/omnibus-empirical-validation.md`](../validation/omnibus-empirical-validation.md)
-- **Acceptance Gate Waivers & Exception Registry:** [`docs/release/waivers.md`](../release/waivers.md)
 - **Developer Contributor Guide & Release Runbook:** [`CONTRIBUTING.md`](../../CONTRIBUTING.md)
 - **Main Project Readme & Scoreboard:** [`README.md`](../../README.md)
 - **Pull Request v1.0.1 & v1.0.0 Certifications:** [`docs/release/v1.0.1-pr.md`](../release/v1.0.1-pr.md) & [`docs/release/v1.0.0-pr.md`](../release/v1.0.0-pr.md)
