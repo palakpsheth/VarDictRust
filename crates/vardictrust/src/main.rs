@@ -7,9 +7,10 @@ use clap::Parser;
 // retains freed per-read churn spans (measured: 267 KB live vs 46 MB HWM on
 // the chrM slice, 173x); jemalloc's background purging + decay returns them.
 // Baked-in config: background purging on, fast dirty decay, no muzzy
-// retention, arenas = host CPUs (box-tuned: revisit before merge).
-// Toggle off with --no-default-features. No application code changes;
-// allocator swaps cannot change output (verified by gates).
+// retention; arena count left to jemalloc's default (scales with host CPUs —
+// universal, no box-tuning). Toggle off with --no-default-features.
+// No application code changes; allocator swaps cannot change output
+// (verified by gates).
 #[cfg(feature = "jemalloc")]
 #[global_allocator]
 static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
@@ -17,8 +18,7 @@ static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 #[cfg(feature = "jemalloc")]
 #[allow(non_upper_case_globals)]
 #[export_name = "_rjem_malloc_conf"]
-pub static malloc_conf: &[u8] =
-    b"background_thread:true,dirty_decay_ms:5000,muzzy_decay_ms:0,narenas:20\0";
+pub static malloc_conf: &[u8] = b"background_thread:true,dirty_decay_ms:5000,muzzy_decay_ms:0\0";
 
 fn is_broken_pipe(err: &vardictrust_core::types::VardictError) -> bool {
     match err {
