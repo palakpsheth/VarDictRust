@@ -8,7 +8,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 # integration-corpus cpp loop, trace/scale benches (their oracle runs are never gated against pinned goldens).
 ALLOW=(run_oracle.sh run_cpp.sh engine_fingerprint.sh run_integration.sh scale_bench.sh trace_compare.sh golden_store.sh)
 # Suites whose wiring task has not landed yet — each wiring task deletes its own entry; empty when the branch is done.
-PENDING=(run_extended_coverage.sh run_multimodal_slices.sh concordance_multimodal.sh)
+PENDING=(run_multimodal_slices.sh concordance_multimodal.sh)
 in_list() { local x=$1; shift; local y; for y in "$@"; do [ "$x" = "$y" ] && return 0; done; return 1; }
 scan() {
   grep -nE '(^|[^A-Za-z_./-])bash[[:space:]]+"?[^ ]*run_(oracle|cpp)\.sh|^[[:space:]]*"?[^ ]*harness/run_(oracle|cpp)\.sh|conda run[^|;&]*vardict(-java|cpp)([[:space:]]|$)|\$VARDICTCPP_BIN' "$1" \
@@ -25,4 +25,5 @@ done
 grep -q 'GOLDEN_LABEL="slice-' harness/run_slice.sh || { echo "FAIL: run_slice.sh lost its GOLDEN_LABEL"; fail=1; }
 grep -q 'golden_store.sh cpp cram-twin-bam' harness/cram_twin.sh || { echo "FAIL: cram_twin.sh cpp arm not wired"; fail=1; }
 grep -q 'GOLDEN_STORE_DIR' harness/run_self_tests.sh || { echo "FAIL: run_self_tests.sh does not isolate the store"; fail=1; }
+grep -q '"golden": \$GOLDEN_JSON' harness/run_extended_coverage.sh || { echo "FAIL: extended evidence lost its golden block"; fail=1; }
 [ $fail -eq 0 ] && echo "PASS test_golden_wiring"; exit $fail
