@@ -358,5 +358,124 @@ class TestIntegrity(StoreCase):
         self.assertEqual(d["events"][0]["key"], self.manifests()[0].parent.name)
 
 
+class TestWrappers(StoreCase):
+    def setUp(self):
+        super().setUp()
+        self.bam1 = self.write("t.bam", b"tumor")
+        self.bam2 = self.write("n.bam", b"normal")
+        self.bed = self.write("r.bed", b"chr1\t1\t10\n")
+        stub = self.write("stub.sh", (
+            b'#!/usr/bin/env bash\n'
+            b'echo run >> "$COUNT"\n'
+            b'echo cpp_chunk=50000 >&2\n'
+            b'if [ -n "${STUB_EXIT:-}" ]; then echo "SKIP: no cpp" >&2; exit "$STUB_EXIT"; fi\n'
+            b'{ [ -n "${STUB_NOHDR:-}" ] || printf "#CHROM\\tPOS\\n"; printf "vcf-for:%s\\n" "${@:5}"; } > "$4"\n'))
+        stub.chmod(0o755)
+        self.stub = f"bash {stub}"
+        self.out = self.tmp / "o.vcf"
+
+    def verb(self, verb, flags=(), bam=None, env=None, label="L", ref=None, stub=None):
+        bam = bam or self.bam1
+        e = {"GOLDEN_ORACLE_CMD": stub or self.stub, "GOLDEN_CPP_CMD": stub or self.stub, **(env or {})}
+        return self.cli(verb, label, ref or self.ref, bam, self.bed, self.out, "SAMPLE", *flags, env=e)
+
+    def test_oracle_miss_then_hit_and_output_restored(self):
+        self.assertEqual(self.verb("oracle", ["-z", "-f", "0.1"]).returncode, 0)
+        want = self.out.read_text()
+        self.assertEqual(want, "#CHROM\tPOS\nvcf-for:SAMPLE\nvcf-for:-z\nvcf-for:-f\nvcf-for:0.1\n")
+        self.out.unlink()
+        r = self.verb("oracle", ["-z", "-f", "0.1"])
+        self.assertEqual((r.returncode, self.runs(), self.out.read_text()), (0, 1, want))
+        self.assertEqual(r.stderr, "cpp_chunk=50000\n")
+
+    def test_every_flag_including_thread_count_is_part_of_the_cell(self):
+        self.verb("oracle", ["-z", "-th", "4"])
+        self.verb("oracle", ["-z", "-th", "4"])
+        self.assertEqual(self.runs(), 1)
+        self.verb("oracle", ["-z", "-th", "8"])
+        self.assertEqual(self.runs(), 2)
+        self.verb("oracle", ["-z", "-th", "8", "-f", "0.1"])
+        self.assertEqual(self.runs(), 3)
+
+    def test_the_reference_path_spelling_is_part_of_the_cell(self):
+        other = self.write("same-content.fa", self.ref.read_bytes())
+        self.verb("oracle")
+        self.verb("oracle", ref=other)
+        self.assertEqual(self.runs(), 2, "VarDict writes the -G path into ##reference=; a new spelling is a new cell")
+
+    def test_every_bam_of_a_somatic_spec_and_the_bed_and_the_fai_are_inputs(self):
+        spec = f"{self.bam1}|{self.bam2}"
+        self.verb("oracle", bam=spec)
+        self.verb("oracle", bam=spec)
+        self.assertEqual(self.runs(), 1)
+        self.write("n.bam", b"normal-v2")
+        self.verb("oracle", bam=spec)
+        self.assertEqual(self.runs(), 2)
+        self.write("r.bed", b"chr1\t1\t11\n")
+        self.verb("oracle", bam=spec)
+        self.assertEqual(self.runs(), 3)
+        self.write("ref.fa.fai", b"c\t4\t3\t4\t5\n")
+        self.verb("oracle", bam=spec)
+        self.assertEqual(self.runs(), 4)
+
+    def test_oracle_and_cpp_cells_are_distinct_and_env_keyed(self):
+        self.verb("oracle")
+        self.verb("cpp")
+        self.assertEqual(self.runs(), 2)
+        self.verb("cpp", env={"CPP_CHUNK": "1000"})
+        self.assertEqual(self.runs(), 3)
+        self.verb("oracle", env={"CPP_CHUNK": "1000"})
+        self.assertEqual(self.runs(), 3, "CPP_CHUNK must not key java cells")
+        self.verb("oracle", env={"AF_THR": "0.5"})
+        self.assertEqual(self.runs(), 4)
+        self.verb("oracle", env={"LC_ALL": "de_DE.UTF-8"})
+        self.assertEqual(self.runs(), 5)
+
+    def test_a_test_seam_override_is_its_own_cell_namespace(self):
+        self.verb("oracle")
+        other = self.write("stub2.sh", (self.tmp / "stub.sh").read_bytes())
+        self.verb("oracle", stub=f"bash {other}")
+        self.assertEqual(self.runs(), 2, "an exported stub must never be served as the real oracle (or vice versa)")
+
+    def test_the_real_wrapper_script_hash_is_in_the_key(self):
+        seen = {}
+        orig = gs.run_cached
+        gs.run_cached = lambda *a, **k: seen.update(args=a, kwargs=k) or 0
+        self.addCleanup(setattr, gs, "run_cached", orig)
+        gs.cmd_oracle(["L", str(self.ref), str(self.bam1), str(self.bed), str(self.out), "SAMPLE", "-z"])
+        self.assertEqual(seen["kwargs"]["wrapper"], gs.sha256_file(HARNESS / "run_oracle.sh"))
+        self.assertEqual(seen["kwargs"]["literal"], [str(self.ref)])
+        self.assertEqual(seen["args"][3], [str(self.ref), "SAMPLE", "-z"])
+        gs.cmd_cpp(["L", str(self.ref), str(self.bam1), str(self.bed), str(self.out), "SAMPLE"])
+        self.assertEqual(seen["kwargs"]["wrapper"], gs.sha256_file(HARNESS / "run_cpp.sh"))
+
+    def test_implausible_java_vcf_is_refused_not_pinned(self):
+        r = self.verb("oracle", env={"STUB_NOHDR": "1"})
+        self.assertEqual(r.returncode, 0)
+        self.assertEqual(self.events(), ["REFUSED"])
+        self.assertEqual(self.manifests(), [])
+
+    def test_cpp_skip_exit_code_and_reason_pass_through_unpinned(self):
+        r = self.verb("cpp", env={"STUB_EXIT": "3"})
+        self.assertEqual(r.returncode, 3)
+        self.assertEqual(r.stderr.splitlines()[-1], "SKIP: no cpp")
+        self.assertEqual(self.manifests(), [])
+
+    @unittest.skipUnless(HAS_TIME, "needs /usr/bin/time")
+    def test_time_out_env_is_pinned_and_replayed_on_hit(self):
+        t = self.tmp / "java.time"
+        self.verb("oracle", env={"GOLDEN_TIME_OUT": str(t)})
+        want = t.read_text()
+        t.unlink()
+        self.verb("oracle", env={"GOLDEN_TIME_OUT": str(t)})
+        self.assertEqual(self.runs(), 1)
+        self.assertEqual(t.read_text(), want)
+
+    def test_usage_error_without_enough_arguments(self):
+        r = self.cli("oracle", "L", self.ref)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("LABEL REF BAM BED OUT", r.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

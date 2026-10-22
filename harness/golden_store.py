@@ -569,8 +569,29 @@ def cmd_tombstone(args):
     return 0
 
 
-VERBS = {"raw": cmd_raw, "verify": cmd_verify, "stats": cmd_stats, "list": cmd_list,
-         "tombstone": cmd_tombstone}
+def _cmd_wrapper(kind, env_name, script, args):
+    if len(args) < 5:
+        sys.exit(f"golden_store: {kind} needs LABEL REF BAM BED OUT [SAMPLE [FLAGS...]]")
+    label, ref, bam, bed, out, *rest = args
+    fai = ref + ".fai"
+    inputs = [ref] + ([fai] if os.path.isfile(fai) else []) + bam.split("|") + [bed]
+    override = os.environ.get(env_name)
+    base = shlex.split(override) if override else ["bash", str(ROOT / "harness" / script)]
+    wrapper = "override:" + override if override else sha256_file(ROOT / "harness" / script)
+    return run_cached(kind, label, inputs, [ref] + rest, base + [ref, bam, bed, out] + rest, out,
+                      wrapper=wrapper, literal=[ref])
+
+
+def cmd_oracle(args):
+    return _cmd_wrapper("java", "GOLDEN_ORACLE_CMD", "run_oracle.sh", args)
+
+
+def cmd_cpp(args):
+    return _cmd_wrapper("cpp", "GOLDEN_CPP_CMD", "run_cpp.sh", args)
+
+
+VERBS = {"raw": cmd_raw, "oracle": cmd_oracle, "cpp": cmd_cpp, "verify": cmd_verify,
+         "stats": cmd_stats, "list": cmd_list, "tombstone": cmd_tombstone}
 
 
 def main(argv):
