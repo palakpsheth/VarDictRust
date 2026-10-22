@@ -960,6 +960,32 @@ fn run_somatic(config: &config::Config) -> Result<(), VardictError> {
 
             let max_read_length_bam1 = var_data1.max_read_length;
 
+            // Inter-pass trim ordering guard: ToVarsBuilder reads reference
+            // bases around each tumor variant (70bp MSI windows,
+            // deletion/dup spans, right_seq). BAM2's SV tail extends this
+            // shared reference with mate-region loads that the pre-trim code
+            // (both maps built after BAM2) observed; the early build below
+            // must see identical bases. Preload the tumor footprint now (same
+            // FASTA, so identical bytes); with default -Y this is a
+            // loaded-range no-op.
+            if let Some((lo, hi)) = crate::tovars::builder_reference_span(&var_data1, &config_clone)
+            {
+                let preload_region = crate::regions::Region {
+                    chr: tile.chr.clone(),
+                    start: crate::types::Pos1(lo.max(1) as u32),
+                    end: crate::types::Pos1(hi.max(1) as u32),
+                    gene: tile.gene.clone(),
+                    amplicon: tile.amplicon.clone(),
+                };
+                crate::reference::get_reference(
+                    &preload_region,
+                    0,
+                    &chromosomes_lengths_clone,
+                    &config_clone,
+                    &mut reference,
+                )?;
+            }
+
             // Inter-pass trim (fix round 1): build aligned1 now and drop
             // pass-1's pileup maps before pass 2 runs. Postprocess needs only
             // the aligned map + splice set + max read length, so the full
@@ -1817,6 +1843,128 @@ mod tests {
             !pos2.contains(&200),
             "G3 REPRO: merging tile 2 emits tile-1-owned position 200 \
              (tiled: {pos1:?} + {pos2:?}, whole: {posw:?})",
+        );
+    }
+
+    #[test]
+    fn g3_merge_planted_requires_absence_from_both_maps() {
+        use noodles::sam::alignment::record::cigar::op::Kind;
+        // Thread 3: `merge_planted` attribution is per position but novelty
+        // was checked per map, so a native non-insertion entry at `k` plus a
+        // mate-window merge adding the FIRST insertion at `k` marked the
+        // whole position planted — and the ToVarsBuilder ownership gate then
+        // dropped the native entry too at out-of-owning-range positions
+        // (native SV outside the active interval is by design: realignlgdel
+        // scans soft-clips up to 5000bp beyond the pileup region while the
+        // SV gate keeps out-of-region SV rows). A position is planted only
+        // when absent from BOTH maps pre-merge.
+        let region = crate::regions::Region {
+            chr: "chr1".to_string(),
+            start: crate::types::Pos1(100),
+            end: crate::types::Pos1(699),
+            gene: "TEST".to_string(),
+            amplicon: None,
+        };
+        let tiles = crate::regions::tile(&region, 300, 50);
+        assert_eq!(tiles.len(), 2);
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let bam_path = dir.path().join("g3_planted.bam");
+        // Insertion reads at 191 (1-based): 10M + 3I + 10M. The mate window
+        // [150,250] covers them; tile 2's halo does not.
+        let mut seq = vec![b'A'; 10];
+        seq.extend_from_slice(b"TTT");
+        seq.extend_from_slice(&[b'A'; 10]);
+        write_test_bam(
+            &bam_path,
+            "chr1",
+            1000,
+            &[
+                test_record_buf(
+                    "ins1",
+                    191,
+                    &[(10, Kind::Match), (3, Kind::Insertion), (10, Kind::Match)],
+                    seq.clone(),
+                ),
+                test_record_buf(
+                    "ins2",
+                    191,
+                    &[(10, Kind::Match), (3, Kind::Insertion), (10, Kind::Match)],
+                    seq.clone(),
+                ),
+                test_record_buf(
+                    "ins3",
+                    191,
+                    &[(10, Kind::Match), (3, Kind::Insertion), (10, Kind::Match)],
+                    seq.clone(),
+                ),
+            ],
+        );
+
+        let config = crate::config::Config::default();
+        let chr_lens = splice_test_chr_lens();
+        let merge = |var_data: &mut crate::variations::VariationData,
+                     reference: &mut crate::reference::Reference| {
+            crate::sv::partial_pipeline(
+                &bam_path, var_data, reference, "chr1", 150, 250, &config, &chr_lens,
+            )
+            .unwrap();
+        };
+
+        // Phase 1 (discovery): empty maps -> every merged key is planted.
+        let mut ref1 = splice_test_reference();
+        let mut var1 = crate::variations::VariationData::new();
+        merge(&mut var1, &mut ref1);
+        let ins_keys: Vec<i32> = var1.insertion_variants.keys().copied().collect();
+        assert!(
+            !ins_keys.is_empty(),
+            "mate-window merge must plant insertion keys, got non_ins={:?} ins={:?}",
+            var1.non_insertion_variants.keys().collect::<Vec<_>>(),
+            ins_keys,
+        );
+        for k in var1
+            .non_insertion_variants
+            .keys()
+            .chain(var1.insertion_variants.keys())
+        {
+            assert!(
+                var1.merge_planted.contains(k),
+                "truly-new key {k} must be planted"
+            );
+        }
+        let target = ins_keys[0];
+
+        // Phase 2 (bug scenario): native non-insertion entry at the insertion
+        // key (stands in for an SV-path native entry outside the active
+        // interval) + mate merge adding the first insertion there.
+        let mut ref2 = splice_test_reference();
+        let mut var2 = crate::variations::VariationData::new();
+        let mut vm = crate::variations::VariationMap::new();
+        let mut v = crate::variations::Variation::new();
+        v.cnt = 3;
+        v.fwd = 2;
+        v.rev = 1;
+        vm.map.insert("C".to_string(), v);
+        var2.non_insertion_variants.insert(target, vm);
+        var2.ref_coverage.insert(target, 10);
+        merge(&mut var2, &mut ref2);
+        assert!(
+            var2.insertion_variants.contains_key(&target),
+            "mate merge must add the first insertion at {target}"
+        );
+        assert!(
+            !var2.merge_planted.contains(&target),
+            "native position {target} must not be planted by a first-insertion merge"
+        );
+
+        // Phase 3 (gate): with the owning range excluding the native
+        // position, the builder still emits it (pre-fix it was dropped).
+        var2.owning_range = Some((tiles[1].start, tiles[1].end));
+        let builder = crate::tovars::ToVarsBuilder::new(&ref2, &region, &chr_lens, &config);
+        let aligned = builder.build_aligned_variants(&var2);
+        assert!(
+            aligned.contains_key(&target),
+            "native position {target} outside the owning range must survive the builder gate"
         );
     }
 }

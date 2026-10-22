@@ -3527,15 +3527,17 @@ pub fn partial_pipeline(
     }
     var_data.sv_structures = orig_sv_structures;
     // Attribute mate-window-planted keys: positions present now but
-    // absent before the merge. Pre-existing keys are native (the merge
-    // only accumulates into them), never planted.
+    // absent from BOTH maps before the merge. Pre-existing keys are native
+    // (the merge only accumulates into them), never planted — even when the
+    // merge adds the FIRST entry of the other map at that position, since
+    // the ToVarsBuilder ownership gate drops the whole position.
     for &k in var_data.non_insertion_variants.keys() {
-        if !before_non.contains(&k) {
+        if !before_non.contains(&k) && !before_ins.contains(&k) {
             var_data.merge_planted.insert(k);
         }
     }
     for &k in var_data.insertion_variants.keys() {
-        if !before_ins.contains(&k) {
+        if !before_non.contains(&k) && !before_ins.contains(&k) {
             var_data.merge_planted.insert(k);
         }
     }
