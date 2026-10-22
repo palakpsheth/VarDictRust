@@ -703,7 +703,11 @@ pub fn no_passing_reads(
         let end_pos0 = Pos0(end as u32);
         // Streaming counterpart of the old query_region-Vec shape: the whole
         // BAM is still skipped on any query/read error, exactly as the old
-        // collecting query did.
+        // collecting query did. The old path failed atomically (no records
+        // from a failed BAM were ever counted), so snapshot both counters
+        // and restore them when the feed fails mid-query.
+        let saved_cnt = cnt;
+        let saved_midcnt = midcnt;
         let mut feed =
             match crate::bam::query_region_iter(bam_path, chr, start_pos0, end_pos0, config) {
                 Ok(feed) => feed,
@@ -720,6 +724,8 @@ pub fn no_passing_reads(
                 Ok(true) => {}
                 Err(e) => {
                     log::warn!("no_passing_reads: failed to query bam '{}': {}", bam, e);
+                    cnt = saved_cnt;
+                    midcnt = saved_midcnt;
                     continue 'bam;
                 }
             }
@@ -5411,6 +5417,146 @@ mod tests {
             entry45.map.contains_key("-15^CCCCCCCCCCCCCCC"),
             "expected Java key '-15^CCCCCCCCCCCCCCC', got keys: {:?}",
             entry45.map.keys().collect::<Vec<_>>()
+        );
+    }
+
+    /// Mid-query failure must skip the whole BAM, exactly like the old
+    /// `query_region`-Vec path (which failed atomically before any record
+    /// from that BAM was counted). Without the counter snapshot, the
+    /// spanning reads counted before the failure flip the result from true
+    /// to false and change downstream deletion realignment.
+    #[test]
+    fn no_passing_reads_midquery_failure_skips_whole_bam() {
+        use noodles::core::Position;
+        use noodles::sam::alignment::record::cigar::op::Kind;
+        use noodles::sam::alignment::record::cigar::Op;
+        use noodles::sam::alignment::record_buf::Cigar;
+        use noodles::sam::alignment::record_buf::RecordBuf;
+
+        fn record_buf(
+            name: &str,
+            start: usize,
+            cigar_ops: &[(usize, Kind)],
+            seq: Vec<u8>,
+        ) -> RecordBuf {
+            let cigar: Cigar = cigar_ops
+                .iter()
+                .map(|&(len, kind)| Op::new(kind, len))
+                .collect();
+            let quals = vec![40u8; seq.len()];
+            RecordBuf::builder()
+                .set_name(name)
+                .set_flags(noodles::sam::alignment::record::Flags::empty())
+                .set_reference_sequence_id(0)
+                .set_alignment_start(Position::try_from(start).unwrap())
+                .set_cigar(cigar)
+                .set_sequence(seq.into())
+                .set_quality_scores(quals.into())
+                .build()
+        }
+
+        fn write_indexed_bam(path: &std::path::Path, recs: &[RecordBuf]) {
+            use noodles::bam::bai;
+            use noodles::csi::binning_index::index::reference_sequence::{
+                bin::Chunk, index::LinearIndex,
+            };
+            use noodles::csi::binning_index::Indexer;
+            use noodles::sam::alignment::io::Write as _;
+            use noodles::sam::header::record::value::{
+                map::ReferenceSequence as RefSeqMap, Map as HeaderMap,
+            };
+            use noodles::sam::Header;
+            let rs = HeaderMap::<RefSeqMap>::builder()
+                .set_length(10000usize.try_into().unwrap())
+                .build()
+                .unwrap();
+            let hd = Header::builder().add_reference_sequence("chr1", rs).build();
+            let bgzf = noodles::bgzf::io::Writer::new(std::fs::File::create(path).unwrap());
+            let mut w = noodles::bam::io::Writer::from(bgzf);
+            w.write_alignment_header(&hd).unwrap();
+            let mut indexer = Indexer::<LinearIndex>::new(14, 5).expect("valid index parameters");
+            for rec in recs {
+                let start = w.get_ref().virtual_position();
+                w.write_alignment_record(&hd, rec).unwrap();
+                let end = w.get_ref().virtual_position();
+                let s = rec.alignment_start().expect("aligned record");
+                let e =
+                    Position::new(s.get() + rec.cigar().alignment_span()).unwrap_or(Position::MIN);
+                indexer
+                    .add_record(Some((0, s, e, true)), Chunk::new(start, end))
+                    .map_err(std::io::Error::other)
+                    .unwrap();
+            }
+            w.try_finish().unwrap();
+            let mut bai_path = std::path::PathBuf::from(path);
+            bai_path.set_extension("bam.bai");
+            bai::io::Writer::new(std::fs::File::create(&bai_path).unwrap())
+                .write_index(&indexer.build(1))
+                .unwrap();
+        }
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let bam_path = dir.path().join("span.bam");
+        // 3000 spanning reads (start 50, 100M) over [100,110]: ~450 KB
+        // uncompressed across several BGZF blocks, so truncating at 1/2
+        // keeps the header block intact while a later record read fails.
+        let recs: Vec<RecordBuf> = (0..3000)
+            .map(|i| {
+                record_buf(
+                    &format!("s{i:05}"),
+                    50,
+                    &[(100, Kind::Match)],
+                    vec![b'A'; 100],
+                )
+            })
+            .collect();
+        write_indexed_bam(&bam_path, &recs);
+        let bam = bam_path.to_string_lossy().into_owned();
+        let config = crate::config::Config::default();
+
+        // Intact: spanning reads exist -> passing reads found.
+        assert!(
+            !super::no_passing_reads("chr1", 100, 110, std::slice::from_ref(&bam), &config),
+            "intact BAM has spanning reads"
+        );
+
+        // Truncate mid-stream (index copied over, chunks point past EOF).
+        let trunc_path = dir.path().join("trunc.bam");
+        std::fs::copy(&bam_path, &trunc_path).unwrap();
+        std::fs::copy(
+            bam_path.with_extension("bam.bai"),
+            trunc_path.with_extension("bam.bai"),
+        )
+        .unwrap();
+        {
+            let len = std::fs::metadata(&trunc_path).unwrap().len();
+            let f = std::fs::OpenOptions::new()
+                .write(true)
+                .open(&trunc_path)
+                .unwrap();
+            f.set_len(len / 2).unwrap();
+        }
+        let trunc = trunc_path.to_string_lossy().into_owned();
+
+        // Old Vec-path premise: the truncated query fails atomically.
+        assert!(
+            crate::bam::query_region(
+                std::path::Path::new(&trunc),
+                "chr1",
+                crate::types::Pos0(99),
+                crate::types::Pos0(110),
+                &config,
+            )
+            .is_err(),
+            "truncated BAM must fail the Vec path"
+        );
+
+        // Fixed streaming path: the failed BAM is skipped whole, matching
+        // the old atomic behavior (pre-fix this returned false from the
+        // retained spanning-read prefix).
+        assert!(
+            super::no_passing_reads("chr1", 100, 110, &[trunc], &config),
+            "mid-query failure must skip the whole BAM"
         );
     }
 }
