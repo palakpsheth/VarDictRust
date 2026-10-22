@@ -4031,7 +4031,11 @@ fn partial_pipeline(
     // maps are gated: ref_coverage/soft-clips are trigger state, not
     // emission (the builder iterates variant maps), and gating them would
     // perturb downstream sv-trigger firing vs Java. Flag-off keeps the
-    // ungated Java merge (byte-identical).
+    // ungated Java merge (byte-identical). Accepted corner (see
+    // task-7-report fix round 1/5 appendix F2): a realign-planted SV key
+    // outside the whole BED with no sv-path re-plant is dropped flag-on
+    // where the sv path would clamp-keep it — empirically absent (whole-region
+    // off==on everywhere proven).
     let gate_mate = config.fix_mate_window_ownership;
     let mate_owned =
         |pos: i32| !gate_mate || (pos >= region.start.0 as i32 && pos <= region.end.0 as i32);
