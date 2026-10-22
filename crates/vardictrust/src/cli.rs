@@ -334,7 +334,8 @@ pub struct Cli {
     pub include_n: bool,
 
     /// Post-1.0 output correction, opt-in by id (ROADMAP.md). Repeatable;
-    /// comma-separated values accepted. Known id: `splice-tile-ownership`.
+    /// comma-separated values accepted. Known ids: `splice-tile-ownership`,
+    /// `mate-window-ownership`.
     #[arg(long = "fix")]
     pub fix: Vec<String>,
 
@@ -391,8 +392,11 @@ impl Cli {
         };
 
         // --fix corrections are opt-in by id (ROADMAP.md); unknown ids fail
-        // loudly per §12 instead of silently changing output.
+        // loudly per §12 instead of silently changing output. CLI default is
+        // v1.0 behavior (both false); the library `Config::default` enables
+        // `mate-window-ownership` for §10 tiled==single-region in tests.
         let mut fix_splice_tile_ownership = false;
+        let mut fix_mate_window_ownership = false;
         for id in self
             .fix
             .iter()
@@ -402,6 +406,7 @@ impl Cli {
         {
             match id {
                 "splice-tile-ownership" => fix_splice_tile_ownership = true,
+                "mate-window-ownership" => fix_mate_window_ownership = true,
                 other => {
                     return Err(vardictrust_core::types::VardictError::Unsupported(format!(
                         "--fix {other} not implemented in v1.0; use VarDictJava"
@@ -516,6 +521,7 @@ impl Cli {
             omit_end_tag: self.col_end.is_some(),
             include_n: self.include_n,
             fix_splice_tile_ownership,
+            fix_mate_window_ownership,
         })
     }
 }

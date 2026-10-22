@@ -22,7 +22,7 @@ use crate::config::Config;
 use crate::reference::{get_reference, is_loaded, Reference};
 use crate::types::{Pos1, VardictError};
 use crate::variations::{Cluster, Mate, Sclip, Variation};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 /// Check cluster for start and end of SV mates.
 /// Ports `VariationRealigner.checkCluster`.
@@ -3463,6 +3463,22 @@ pub fn partial_pipeline(
     // Java creates a fresh SVStructures in CigarParser(true) for partialPipeline
     // (CigarParser.java:66) and discards it when partialPipeline completes, so the
     // primary region's sv_structures is never mutated by mate-region pileup.
+    //
+    // G3 (mate-window ownership): snapshot variant-map keys so keys planted
+    // by this mate-window re-pileup are attributed in `merge_planted` for the
+    // ToVarsBuilder ownership gate. Only under the flag; flag-off leaves
+    // `merge_planted` empty, hence byte-identical.
+    let record_planted = config.fix_mate_window_ownership;
+    let before_non: BTreeSet<i32> = if record_planted {
+        var_data.non_insertion_variants.keys().copied().collect()
+    } else {
+        BTreeSet::new()
+    };
+    let before_ins: BTreeSet<i32> = if record_planted {
+        var_data.insertion_variants.keys().copied().collect()
+    } else {
+        BTreeSet::new()
+    };
     let orig_sv_structures = std::mem::take(&mut var_data.sv_structures);
     {
         let mut parser = crate::cigar::parse::CigarParser {
@@ -3519,6 +3535,21 @@ pub fn partial_pipeline(
         var_data.splice_count = parser.splice_count;
     }
     var_data.sv_structures = orig_sv_structures;
+    if record_planted {
+        // Attribute mate-window-planted keys: positions present now but
+        // absent before the merge. Pre-existing keys are native (the merge
+        // only accumulates into them), never planted.
+        for &k in var_data.non_insertion_variants.keys() {
+            if !before_non.contains(&k) {
+                var_data.merge_planted.insert(k);
+            }
+        }
+        for &k in var_data.insertion_variants.keys() {
+            if !before_ins.contains(&k) {
+                var_data.merge_planted.insert(k);
+            }
+        }
+    }
 
     Ok(())
 }

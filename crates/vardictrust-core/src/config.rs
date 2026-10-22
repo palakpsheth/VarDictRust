@@ -126,6 +126,15 @@ pub struct Config {
     /// Post-1.0 correction `--fix splice-tile-ownership`: halo-wide splice
     /// pileup with single-owner emission (default: false = v1.0.2 behavior).
     pub fix_splice_tile_ownership: bool,
+    /// Post-1.0 correction `--fix mate-window-ownership` (G3): mate-window
+    /// `partial_pipeline` merges plant keys outside the merging tile's active
+    /// range; flag-on records planted keys and emits each from exactly one
+    /// tile (owning-range gate with Task-3-style edge clamping). Library
+    /// default is true (§10 tiled==single-region; the gate is a no-op for
+    /// single-region runs by construction). The CLI keeps the v1.0 default
+    /// off — see `Cli::try_into_config` — so tool output stays byte-identical
+    /// unless `--fix mate-window-ownership` is passed.
+    pub fix_mate_window_ownership: bool,
 }
 
 impl Default for Config {
@@ -194,6 +203,7 @@ impl Default for Config {
             omit_end_tag: true,
             include_n: false,
             fix_splice_tile_ownership: false,
+            fix_mate_window_ownership: true,
         }
     }
 }

@@ -12,7 +12,7 @@ use crate::variations::{
 };
 use noodles::sam::alignment::record::cigar::op::Kind as CigarKind;
 use regex::Regex;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::sync::LazyLock;
 
@@ -2292,6 +2292,12 @@ impl<'a> CigarParser<'a> {
             splice_count: self.splice_count,
             duprate,
             sv_structures_filtered: false,
+            // G3 (mate-window ownership): the pileup region is the owning
+            // tile's active range (whole region in whole-region runs). Merge
+            // temps built over mate windows are discarded, never emitted
+            // through, so stamping unconditionally is safe.
+            owning_range: Some((self.region.start, self.region.end)),
+            merge_planted: BTreeSet::new(),
         }
     }
 
