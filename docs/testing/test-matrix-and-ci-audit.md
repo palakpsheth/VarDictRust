@@ -18,7 +18,7 @@ This architecture operates on two complementary pillars:
 - **Pillar A (Biological Parity & Empirical Truth):** Documented in the [Omnibus Master Empirical Validation Report](../validation/omnibus-empirical-validation.md), verifying variant-level concordance against gold-standard consortium benchmarks (NIST GIAB, FDA SEQC2, Hartwig) across GRCh38 and GRCh37.
 - **Pillar B (Engineering Mechanics & Verification Pipeline):** Documented in this report, establishing the software testing hierarchy, developer feedback loops, crash resilience corpus, statistical invariants, continuous performance budgets, and SLSA-attested CI/CD workflows.
 
-Across all testing layers, VarDictRust executes **233 automated Cargo workspace tests** ([Level 1](#level-1): Unit & Component Tests), **92 integration regression testcases** ([Level 2](#level-2): Upstream Integration Regression Corpus), **17 differential parity benchmarks** ([Level 3](#level-3): Dual-Engine Differential Parity Testing), **16 committed evidence JSONs** (spanning differential parity, robustness twins, truth concordance, performance budgets, and musl packaging), **5 ground truth concordance evaluations** via `rtg vcfeval` ([Level 4](#level-4): Ground Truth Concordance Benchmarking, all certified EQUAL), **4 continuous performance budgets** ([Level 5](#level-5): Performance & Memory Budgets), **17 diagnostic self-tests** ([Level 6](#level-6): Diagnostic Self-Tests), and **automated pre-PR and release acceptance compound gates** ([Level 7](#level-7): Pre-PR & Release Acceptance Compound Gates) alongside **6 automated cloud CI/CD pipelines**.
+Across all testing layers, VarDictRust executes **233 automated Cargo workspace tests** ([Level 1](#level-1): Unit & Component Tests), **92 integration regression testcases** ([Level 2](#level-2): Upstream Integration Regression Corpus), **17 differential parity benchmarks** ([Level 3](#level-3): Dual-Engine Differential Parity Testing), **16 committed evidence JSONs** (spanning differential parity, robustness twins, truth concordance, performance budgets, and musl packaging), **5 ground truth concordance evaluations** via `rtg vcfeval` ([Level 4](#level-4): Ground Truth Concordance Benchmarking, all certified EQUAL), **4 continuous performance budgets** ([Level 5](#level-5): Performance & Memory Budgets), **21 diagnostic self-tests** ([Level 6](#level-6): Diagnostic Self-Tests), and **automated pre-PR and release acceptance compound gates** ([Level 7](#level-7): Pre-PR & Release Acceptance Compound Gates) alongside **6 automated cloud CI/CD pipelines**.
 
 ```mermaid
 flowchart TD
@@ -66,7 +66,7 @@ flowchart TD
         S_Budg["harness/perf_budget.py (4 Targets: HG008, SEQC2, HG002, Amp)"]
     end
 
-    subgraph Level6 ["Level 6: Diagnostic Self-Tests (17 Tests)"]
+    subgraph Level6 ["Level 6: Diagnostic Self-Tests (21 Tests)"]
         H_Self["bash harness/run_self_tests.sh\n(Comparator, Evidence, VCF Header, Resource Throttling, BAM edges)"]
     end
 
@@ -152,7 +152,7 @@ The table below summarizes the complete testing inventory executed across the de
 | **4** | [**Level 4: Truth Concordance (NA24385 b37)**](#level-4)| `harness/concordance_multimodal.sh`| 1 evaluation | Ground Truth Verification Gate | **$F_1 = 1.0000$, Bitwise Site EQUAL** | $\sim 5\text{ s}$ |
 | **5** | [**Level 5: Whole Chromosome 1 Scale**](#level-5) | `harness/scale_bench.sh` | 1 benchmark | Release Acceptance Item 5 | $S_8 \ge 2.4\times$ ($\text{bar}(P)=0.6\cdot\min(8,P)$), Peak RSS $\le 1.5\times$ | $\sim 12\text{ m}$ |
 | **5** | [**Level 5: Continuous Perf Budget**](#level-5) | `harness/perf_budget.py` | 4 targets | PR gate Stage 5 & Acceptance Item 5 | Runtime $\le +5\%$, RAM ratio $\le 1.0$ | $\sim 0.5\text{ s}$ |
-| **6** | [**Level 6: Diagnostic Self-Tests**](#level-6) | `bash harness/run_self_tests.sh` | 17 scripts | Automated Diagnostics Runner | Exit code 0 across all 17 tests | $\sim 10\text{ s}$ |
+| **6** | [**Level 6: Diagnostic Self-Tests**](#level-6) | `bash harness/run_self_tests.sh` | 21 scripts | Automated Diagnostics Runner | Exit code 0 across all 21 tests | $\sim 10\text{ s}$ |
 | **7** | [**Level 7: Inner Developer Gate**](#level-7) | `harness/rgate.sh` | Compound | Developer inner loop | Cargo + Corpus + Micro + 5 slices PASS | $\sim 28\text{ s}$ |
 | **7** | [**Level 7: Standard PR Gate**](#level-7) | `harness/pr_check.sh` | 6 stages | Pre-PR validation | Stages 1–6 PASS (Hygiene, Corpus, Perf) | $\sim 35\text{ s}$ |
 | **7** | [**Level 7: Release Acceptance Gate**](#level-7) | `harness/acceptance.sh` | 8 items | Release qualification gate | Items 1–8 PASS under fingerprint | $\sim 1\text{ m}$ |
@@ -305,6 +305,10 @@ VarDictRust maintains **16 committed, cryptographically fingerprinted evidence f
 | **Continuous Perf Budget**| [`perf-budget.json`](../../benchmarks/evidence/perf-budget.json) | 4 Target Workload Regression | Wall/RAM gates | **PASS** | `c57e9661d77ef254` |
 | **Musl CI Distribution** | [`musl-ci.json`](../../benchmarks/evidence/musl-ci.json) | Static PIE Linux Packaging | Byte identity | **PASS** | `c57e9661d77ef254` |
 
+### Store-Served Oracle Baselines & Golden Provenance
+
+To guarantee fast, deterministic regression testing without repeatedly executing static oracle pipelines across test cycles, Level 3 oracle arms are routed through the Golden Baseline Store ([`harness/golden_store.sh`](../../harness/README.md#7-golden-baseline-store)). Pinned outputs for immutable reference implementations (VarDictJava v1.8.3 and vardictcpp `hc52dbad_0`) are keyed cryptographically by wrapper SHA, conda environment pin, input file hashes, and normalized execution arguments. Differential comparators ([`compare.sh`](../../harness/compare.sh), [`compare_vcf.py`](../../harness/compare_vcf.py), [`compare_var.py`](../../harness/compare_var.py)) and evidence stamping mechanisms remain identical whether an oracle output is generated live or replayed from a verified store cell. All benchmark evidence JSON records capture complete store transaction telemetry under the `extra.golden` provenance block (`run`, `hit`, `live`, and event ledgers), certifying whether oracle comparisons were served from the baseline cache or executed live.
+
 ---
 
 <a id="level-4"></a>
@@ -359,7 +363,7 @@ Level 5 guarantees that VarDictRust delivers decisive scaling improvements over 
 <a id="level-6-diagnostic-self-tests"></a>
 ## 8. Level 6: Diagnostic Self-Tests (`harness/run_self_tests.sh`)
 
-Automated via [`harness/run_self_tests.sh`](../../harness/run_self_tests.sh), these **17 specialized scripts** (11 shell tests and 6 python unit test suites) validate the correctness of the testing infrastructure, documentation rendering, and zero-PyPI environment contracts in $<10\text{ seconds}$:
+Automated via [`harness/run_self_tests.sh`](../../harness/run_self_tests.sh), these **21 specialized scripts** (14 shell tests and 7 python unit test suites) validate the correctness of the testing infrastructure, documentation rendering, and zero-PyPI environment contracts in $<10\text{ seconds}$:
 
 ```bash
 # Execute the full automated diagnostic test suite
@@ -367,23 +371,27 @@ bash harness/run_self_tests.sh
 ```
 
 The runner dynamically discovers and executes:
-1. `test_compare_sh.sh`: validates exit code conventions, diff formatting, and temporary file cleanup in the primary Level 3 differential comparator.
-2. `test_compare_vcf.py`: validates strict-bytes VCF parsing, floating-point half-even rounding tolerances ($\varepsilon = 10^{-6}$), and duplicate key detection.
-3. `test_concordance.sh`: validates the Real Time Genomics `rtg vcfeval` wrapper script, SDF reference building, and concordance metric parsers.
-4. `test_courtesy.sh`: tests host resource throttling and scheduling guard enforcement (`harness/courtesy.sh`), validating that resource-intensive benchmarking tasks respect configurable blackout windows (`COURTESY_NOW`, `EST_MIN`), minimum available disk headroom (`MIN_FREE_GB`), and memory thresholds (`MIN_AVAIL_GB`) without disrupting shared infrastructure.
-5. `test_edge_cases.sh`: tests variant caller handling of 4 BAM boundary conditions: zero-read empty BAMs (`empty.bam`), zero-coverage target regions, single-read BAMs, and contig boundary alignments.
-6. `test_env_pinned.sh`: validates toolchain version pinning across `benchmarks/env/` (`vardict-oracle.yml`, `g4-tools.yml`, `toolchain.txt`).
-7. `test_evidence.sh`: validates JSON schema conformity, fingerprint validation, workspace SemVer invariance (`normalize_gate_blob()`), and rejection of stale benchmark evidence in `harness/acceptance.sh:ev()` and `ev_cpp()`.
-8. `test_fetch_data.sh`: validates formatting, URL schemes, and destination paths inside the asset registry (`harness/assets.tsv`).
-9. `test_perf_budget.sh`: validates performance budget mathematical formulas on simulated JSON benchmarks.
-10. `test_run_cpp.sh`: validates `harness/run_cpp.sh` `vardictcpp` version pinning, missing-env `exit 3` skip behavior, micro fixture VCF output, and `<4`-column BED padding.
-11. `test_run_oracle.sh`: tests argument forwarding and flag preservation in `harness/run_oracle.sh`.
-12. `test_select_slice_regions.py`: validates interval slicing, multi-interval BED grouping, and variant density sampling algorithms.
-13. `test_seqc2_align.sh`: verifies that required alignment pipeline commands (`bwa mem`, `samtools fixmate/sort/markdup/index`) are correctly invoked in SEQC2 alignment scripts.
-14. `test_stdlib_purity.py`: performs automated AST inspection of all Python files in `harness/`, asserting 100% Python standard library compliance (zero external PyPI dependencies).
-15. `test_vcf_header.py`: validates standards-compliant VCFv4.2 header generation and contig length extraction from FASTA `.fai` index files (resolving issue #320).
-16. `test_bioconda_recipe.py`: validates the Bioconda `meta.yaml` recipe structure, licenses, and test commands.
-17. `test_docs_ui.py`: validates table column consistency, non-HTML angle bracket escaping, KaTeX math hygiene, and Playwright headless Chromium GFM browser rendering across repository documentation.
+1. `test_bioconda_recipe.py`: validates the Bioconda `meta.yaml` recipe structure, licenses, and test commands.
+2. `test_compare_sh.sh`: validates exit code conventions, diff formatting, and temporary file cleanup in the primary Level 3 differential comparator.
+3. `test_compare_vcf.py`: validates strict-bytes VCF parsing, floating-point half-even rounding tolerances ($\varepsilon = 10^{-6}$), and duplicate key detection.
+4. `test_concordance.sh`: validates the Real Time Genomics `rtg vcfeval` wrapper script, SDF reference building, and concordance metric parsers.
+5. `test_concordance_sv.sh`: tests structural variant concordance evaluating bgzip and tabix index requirements, Truvari execution gating, and summary report parsing.
+6. `test_courtesy.sh`: tests host resource throttling and scheduling guard enforcement (`harness/courtesy.sh`), validating that resource-intensive benchmarking tasks respect configurable blackout windows (`COURTESY_NOW`, `EST_MIN`), minimum available disk headroom (`MIN_FREE_GB`), and memory thresholds (`MIN_AVAIL_GB`) without disrupting shared infrastructure.
+7. `test_docs_ui.py`: validates table column consistency, non-HTML angle bracket escaping, KaTeX math hygiene, and Playwright headless Chromium GFM browser rendering across repository documentation.
+8. `test_edge_cases.sh`: tests variant caller handling of 4 BAM boundary conditions: zero-read empty BAMs (`empty.bam`), zero-coverage target regions, single-read BAMs, and contig boundary alignments.
+9. `test_env_pinned.sh`: validates toolchain version pinning across `benchmarks/env/` (`vardict-oracle.yml`, `g4-tools.yml`, `toolchain.txt`).
+10. `test_evidence.sh`: validates JSON schema conformity, fingerprint validation, workspace SemVer invariance (`normalize_gate_blob()`), and rejection of stale benchmark evidence in `harness/acceptance.sh:ev()` and `ev_cpp()`.
+11. `test_fetch_data.sh`: validates formatting, URL schemes, and destination paths inside the asset registry (`harness/assets.tsv`).
+12. `test_golden_store.py`: validates golden baseline store operations including key derivation, locked atomic writes, corrupt artifact detection, tombstoning, and cache hit/miss statistics.
+13. `test_golden_wiring.sh`: performs repository-wide linting to ensure no test harness runner invokes upstream oracles without routing through `harness/golden_store.sh`.
+14. `test_perf_budget.sh`: validates performance budget mathematical formulas on simulated JSON benchmarks.
+15. `test_run_cpp.sh`: validates `harness/run_cpp.sh` `vardictcpp` version pinning, missing-env `exit 3` skip behavior, micro fixture VCF output, and `<4`-column BED padding.
+16. `test_run_oracle.sh`: tests argument forwarding and flag preservation in `harness/run_oracle.sh`.
+17. `test_scale_bench.sh`: tests Whole Chromosome 1 scaling benchmark measurement protocols, including courtesy wrapper gating, core pinning, and `--no-cpp` flag propagation.
+18. `test_select_slice_regions.py`: validates interval slicing, multi-interval BED grouping, and variant density sampling algorithms.
+19. `test_seqc2_align.sh`: verifies that required alignment pipeline commands (`bwa mem`, `samtools fixmate/sort/markdup/index`) are correctly invoked in SEQC2 alignment scripts.
+20. `test_stdlib_purity.py`: performs automated AST inspection of all Python files in `harness/`, asserting 100% Python standard library compliance (zero external PyPI dependencies).
+21. `test_vcf_header.py`: validates standards-compliant VCFv4.2 header generation and contig length extraction from FASTA `.fai` index files (resolving issue #320).
 
 ---
 
@@ -503,7 +511,7 @@ python3 harness/perf_budget.py hg008-tier2 seqc2-exome-tier2 hg002-tier2 amplico
 
 # 8. Level 6: Reproduce Diagnostic Self-Tests (<10s)
 bash harness/run_self_tests.sh
-# Expected: ALL 17 HARNESS DIAGNOSTIC TESTS PASSED SUCCESSFULLY
+# Expected: ALL 21 HARNESS DIAGNOSTIC TESTS PASSED SUCCESSFULLY
 
 # 9. Level 7: Reproduce Pre-PR Compound Regression Suite (<35s)
 bash harness/pr_check.sh
