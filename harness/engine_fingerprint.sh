@@ -13,6 +13,8 @@ GATE_FILES=(
   harness/run_cpp.sh
   harness/cram_twin.sh
   harness/staple_cpp_extra.sh
+  harness/golden_store.sh
+  harness/golden_store.py
   benchmarks/env/vardict-oracle.yml
   harness/setup_oracle.sh
   harness/compare_vcf.py
@@ -22,6 +24,11 @@ GATE_FILES=(
   fixtures/micro
   VarDictJava
 )
+
+# --perf: only what can change speed or RSS (engine sources, manifests, lockfile) — the scale-bench carry key.
+if [ "${1:-}" = "--perf" ]; then
+  GATE_FILES=(Cargo.toml Cargo.lock crates/vardictrust-core/Cargo.toml crates/vardictrust/Cargo.toml crates/vardictrust-core/src crates/vardictrust/src)
+fi
 
 git diff --quiet HEAD -- "${GATE_FILES[@]}" \
   || { echo "engine_fingerprint: uncommitted changes under engine sources, manifests, comparators, runners, fixtures, or oracle" >&2; exit 1; }

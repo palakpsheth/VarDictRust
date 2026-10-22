@@ -27,4 +27,14 @@ grep -q 'golden_store.sh cpp cram-twin-bam' harness/cram_twin.sh || { echo "FAIL
 grep -q 'GOLDEN_STORE_DIR' harness/run_self_tests.sh || { echo "FAIL: run_self_tests.sh does not isolate the store"; fail=1; }
 grep -q '"golden": \$GOLDEN_JSON' harness/run_extended_coverage.sh || { echo "FAIL: extended evidence lost its golden block"; fail=1; }
 grep -q "'golden': json.loads" harness/run_multimodal_slices.sh || { echo "FAIL: multimodal evidence lost its golden block"; fail=1; }
+for g in harness/golden_store.sh harness/golden_store.py; do
+  grep -qE "^  ${g}\$" harness/engine_fingerprint.sh || { echo "FAIL: $g is not in engine_fingerprint.sh GATE_FILES"; fail=1; }
+done
+grep -q 'golden_store.sh verify' harness/acceptance.sh || { echo "FAIL: acceptance.sh item 3 lost the store verify"; fail=1; }
+grep -q 'GOLDEN_RUN_ID' harness/recertify.sh || { echo "FAIL: recertify.sh lost its hit-rate print"; fail=1; }
+pf=$(bash harness/engine_fingerprint.sh --perf 2>/dev/null) || pf=dirty
+if [ "$pf" != dirty ]; then
+  { [[ "$pf" =~ ^[0-9a-f]{16}$ ]] && [ "$pf" != "$(bash harness/engine_fingerprint.sh 2>/dev/null)" ]; } \
+    || { echo "FAIL: --perf fingerprint malformed or equal to the full fingerprint"; fail=1; }
+fi
 [ $fail -eq 0 ] && echo "PASS test_golden_wiring"; exit $fail

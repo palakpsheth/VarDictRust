@@ -56,6 +56,8 @@ if [ "${CPP_SKIP:-0}" = "1" ] || [ "${CPP_SKIP:-0}" = "true" ]; then
 else
   for e in hg008-tier2 seqc2-slices-tier2 seqc2-exome-tier2 hg002-tier2 amplicon-tier2 extended-coverage-tier2 multimodal-slices-tier2; do run ev_cpp "$e" || { t=0; echo "cpp presence $e failed" >> "$OUT/log.txt"; }; done
 fi
+# pinned golden store integrity (issue #31): every live artifact re-hashes to its manifest sha256
+run bash harness/golden_store.sh verify --quiet || { t=0; echo "golden store verify failed" >> "$OUT/log.txt"; }
 mark 3 $t "Tier-2"
 # 4 Robustness: crash corpus (#341 family, PR #402, #187) + CRAM twin
 t=1; run cargo test -p vardictrust --test robustness || t=0; run ev hg008-cram-twin || t=0

@@ -18,6 +18,7 @@ python3 "$ROOT_DIR/harness/convert_fastas.py"
 
 FP=$(bash "$ROOT_DIR/harness/engine_fingerprint.sh")
 echo "Current Engine Fingerprint: $FP"
+export GOLDEN_RUN_ID="recertify-$(date +%s)"
 
 echo "[3/4] Running live dual-engine regression suites..."
 echo "--- Running Extended Coverage Suite (17 modalities)..."
@@ -37,6 +38,9 @@ echo "--- Micro vardictcpp third-arm cell (advisory; gate stays java==rust) ---"
 KEEP_DIR="$ROOT_DIR/scratch/recertify-micro" MIN_VARIANTS=1 \
   bash "$ROOT_DIR/harness/compare.sh" "$ROOT_DIR/fixtures/micro/micro.ref.fa" \
   "$ROOT_DIR/fixtures/micro/micro.bam" "$ROOT_DIR/fixtures/micro/micro.bed" micro
+
+echo "--- Golden store: pinned-baseline reuse in this run ---"
+bash "$ROOT_DIR/harness/golden_store.sh" stats --run "$GOLDEN_RUN_ID" ${GOLDEN_MIN_HIT:+--min-hit "$GOLDEN_MIN_HIT"}
 
 echo "[4/4] Running Master Acceptance Gate (8/8)..."
 bash "$ROOT_DIR/harness/acceptance.sh"
