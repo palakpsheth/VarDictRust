@@ -29,6 +29,7 @@ if [[ ! -f "$FA_B37" || ! -f "$FA_HG38" ]]; then
 fi
 
 CURRENT_FP=$(bash "$ROOT_DIR/harness/engine_fingerprint.sh")
+export GOLDEN_RUN_ID="${GOLDEN_RUN_ID:-mm-$(date +%s)}"
 
 # Advisory vardictcpp third arm (never gating): staple the conda pin presence
 # into the evidence JSON for the ev_cpp presence gate (per-cell CPP lines in
@@ -78,7 +79,7 @@ function run_vcf_compare() {
     local start_t=$(date +%s%N)
 
     # 1. Oracle
-    bash "$ROOT_DIR/harness/run_oracle.sh" "$ref" "$bam_spec" "$bed_file" "$out_j" "$sample" -z -th "$THREADS" "${extra_args[@]}" 2>/dev/null || {
+    bash "$ROOT_DIR/harness/golden_store.sh" oracle "mm-$slice_id" "$ref" "$bam_spec" "$bed_file" "$out_j" "$sample" -z -th "$THREADS" "${extra_args[@]}" 2>/dev/null || {
         echo "FAIL (Oracle error)"
         exit 1
     }
@@ -125,7 +126,7 @@ function run_rna_slice() {
     local start_t=$(date +%s%N)
 
     # 1. Oracle Execution (4-column intron frequency table)
-    conda run -n vardict-oracle vardict-java -G "$ref" -b "$bam" -R "$region" -f 0.1 -i -th "$THREADS" > "$out_j" 2>/dev/null || {
+    bash "$ROOT_DIR/harness/golden_store.sh" raw --kind java --label "mm-$slice_id" --out "$out_j" --input "$ref" --input "$ref.fai" --input "$bam" -- conda run -n vardict-oracle vardict-java -G "$ref" -b "$bam" -R "$region" -f 0.1 -i -th "$THREADS" 2>/dev/null || {
         echo "FAIL (Oracle RNA error)"
         exit 1
     }
@@ -224,6 +225,7 @@ run_rna_slice 18 "RNA_6C" "RNA-Seq Splicing" "$FA_HG38" "$DATA_DIR/rna_s6c.bam" 
 # -----------------------------------------------------------------------------
 # Generate Machine-Readable Evidence JSON
 # -----------------------------------------------------------------------------
+export GOLDEN_JSON=$(bash "$ROOT_DIR/harness/golden_store.sh" stats --run "$GOLDEN_RUN_ID" --json)
 python3 -c "
 import json
 
@@ -237,6 +239,7 @@ data = {
     'total_variants_evaluated': $TOTAL_VARIANTS,
     'float_tolerance_eps': 1e-6,
     $CPP_JSON_LINE
+    'golden': json.loads(__import__('os').environ['GOLDEN_JSON']),
     'result': 'MATCH' if $PASSED_COUNT == $TOTAL_SLICES else 'MISMATCH',
     'slices': [$(IFS=,; echo "${SLICE_RESULTS[*]}")]
 }
