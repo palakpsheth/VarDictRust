@@ -9,7 +9,7 @@
 //! - `Vars`: per-position variant container
 
 use indexmap::IndexMap;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub mod util;
 
@@ -861,6 +861,17 @@ pub struct VariationData {
     pub splice_count: std::collections::HashMap<String, [i32; 1]>,
     pub duprate: f64,
     pub sv_structures_filtered: bool,
+    /// Owning tile's active range (pileup region), stamped at pileup time.
+    /// Mate-window `partial_pipeline` merges (G3) plant keys outside this
+    /// range; the ToVarsBuilder ownership gate drops those planted keys so
+    /// each position emits from exactly one tile. `None` (manually built or
+    /// pre-stamp data) fails open — the gate never fires. Metadata only:
+    /// never serialized or emitted.
+    pub owning_range: Option<(crate::types::Pos1, crate::types::Pos1)>,
+    /// Positions added by mate-window `partial_pipeline` merges (G3), filled
+    /// only under `--fix mate-window-ownership`. Keys already present before
+    /// the merge are native, never planted. Metadata only.
+    pub merge_planted: BTreeSet<i32>,
 }
 
 impl VariationData {

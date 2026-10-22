@@ -23,6 +23,34 @@ pub struct ToVarsBuilder<'a> {
     pub config: &'a Config,
 }
 
+/// G3 (mate-window ownership) single-owner rule for a merge-planted key.
+///
+/// The tile whose active interval contains the position owns it; planted
+/// keys outside the called region clamp to the first (resp. last) tile —
+/// the same edge-clamp principle as `tile_owns_splice_key` (Task 3).
+/// `None` (manually built data) fails open. Single-region runs stamp the
+/// whole called region, so every planted key is owned and the gate never
+/// fires (Java parity by construction).
+fn merge_key_owned(
+    owning_range: Option<(crate::types::Pos1, crate::types::Pos1)>,
+    builder_region: &Region,
+    position: i32,
+) -> bool {
+    let Some((start, end)) = owning_range else {
+        return true;
+    };
+    if start.0 as i32 <= position && position <= end.0 as i32 {
+        return true;
+    }
+    if position < builder_region.start.0 as i32 && start == builder_region.start {
+        return true;
+    }
+    if position > builder_region.end.0 as i32 && end == builder_region.end {
+        return true;
+    }
+    false
+}
+
 /// Fill the fields shared by every create_variant/create_insertion record
 /// (ToVarsBuilder.java's common tvref initialization).
 #[allow(clippy::too_many_arguments)]
@@ -110,6 +138,15 @@ impl<'a> ToVarsBuilder<'a> {
 
             // Skip position if there are no variants on position
             if var_map.map.is_empty() && !var_data.insertion_variants.contains_key(&position) {
+                continue;
+            }
+
+            // G3 (mate-window ownership, --fix mate-window-ownership): a key
+            // planted by a mate-window merge emits only from its owning tile.
+            if self.config.fix_mate_window_ownership
+                && var_data.merge_planted.contains(&position)
+                && !merge_key_owned(var_data.owning_range, self.region, position)
+            {
                 continue;
             }
 

@@ -1963,6 +1963,7 @@ pub fn realignlgdel(
                     tte,
                     reference,
                     config,
+                    region,
                     non_insertion_variants,
                     insertion_variants,
                     ref_coverage,
@@ -2336,6 +2337,7 @@ pub fn realignlgdel(
                     tte,
                     reference,
                     config,
+                    region,
                     non_insertion_variants,
                     insertion_variants,
                     ref_coverage,
@@ -3022,6 +3024,7 @@ pub fn realignlgins(
                     tte,
                     reference,
                     config,
+                    region,
                     non_insertion_variants,
                     insertion_variants,
                     ref_coverage,
@@ -3295,6 +3298,7 @@ pub fn realignlgins(
                     tte,
                     reference,
                     config,
+                    region,
                     non_insertion_variants,
                     insertion_variants,
                     ref_coverage,
@@ -3971,6 +3975,7 @@ fn partial_pipeline(
     tte: i32,
     reference: &Reference,
     config: &crate::config::Config,
+    region: &crate::regions::Region,
     non_insertion_variants: &mut crate::javamap::JavaHashMap<i32, VariationMap>,
     insertion_variants: &mut crate::javamap::JavaHashMap<i32, VariationMap>,
     ref_coverage: &mut BTreeMap<i32, i32>,
@@ -4019,7 +4024,19 @@ fn partial_pipeline(
 
     let var_data = parser.into_variation_data();
 
+    // G3 (mate-window ownership): under the flag, merged mate-window keys
+    // stay within the owning tile's active range — `region` is the tile's
+    // active range in tiled runs, the whole BED region otherwise — so a
+    // merging tile plants no rows owned by another tile. Flag-off keeps the
+    // ungated Java merge (byte-identical).
+    let gate_mate = config.fix_mate_window_ownership;
+    let mate_owned =
+        |pos: i32| !gate_mate || (pos >= region.start.0 as i32 && pos <= region.end.0 as i32);
+
     for (pos, cov) in var_data.ref_coverage {
+        if !mate_owned(pos) {
+            continue;
+        }
         *ref_coverage.entry(pos).or_insert(0) += cov;
     }
     // ports VariationRealigner.java:1663-1671 / CigarParser.java:1922-1927: Java's
@@ -4027,12 +4044,21 @@ fn partial_pipeline(
     // ACCUMULATE into existing entries. Merge by summing all counts; never
     // discard fresh counts when the position already exists.
     for (pos, sc) in var_data.soft_clips_5_end {
+        if !mate_owned(pos) {
+            continue;
+        }
         merge_sclip(soft_clips_5_end.entry(pos).or_insert_with(Sclip::new), sc);
     }
     for (pos, sc) in var_data.soft_clips_3_end {
+        if !mate_owned(pos) {
+            continue;
+        }
         merge_sclip(soft_clips_3_end.entry(pos).or_insert_with(Sclip::new), sc);
     }
     for (pos, var_map) in var_data.non_insertion_variants {
+        if !mate_owned(pos) {
+            continue;
+        }
         let dest = non_insertion_variants.compute_if_absent(pos, |_| VariationMap::new());
         for (allele, var) in var_map.map {
             dest.map
@@ -4070,6 +4096,9 @@ fn partial_pipeline(
         }
     }
     for (pos, var_map) in var_data.insertion_variants {
+        if !mate_owned(pos) {
+            continue;
+        }
         let dest = insertion_variants.compute_if_absent(pos, |_| VariationMap::new());
         for (allele, var) in var_map.map {
             dest.map
