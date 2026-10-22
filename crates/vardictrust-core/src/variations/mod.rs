@@ -765,6 +765,13 @@ pub struct Sv {
 pub struct VariationMap {
     pub map: IndexMap<String, Variation>,
     pub sv: Option<Sv>,
+    /// Set when a mate-window `partial_pipeline` merge plants this map's
+    /// position outside the merging tile's active range (G3). The builder
+    /// ownership gate (`merge_key_owned`, with edge clamping) then decides
+    /// emission: single-region runs own everything so the gate never fires;
+    /// tiled runs emit exactly once from the owning tile. Defaults false
+    /// (native keys are never planted).
+    pub merge_planted: bool,
 }
 
 impl VariationMap {
@@ -772,6 +779,7 @@ impl VariationMap {
         Self {
             map: IndexMap::new(),
             sv: None,
+            merge_planted: false,
         }
     }
 
