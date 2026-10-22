@@ -393,8 +393,7 @@ impl Cli {
 
         // --fix corrections are opt-in by id (ROADMAP.md); unknown ids fail
         // loudly per §12 instead of silently changing output. CLI default is
-        // v1.0 behavior (both false); the library `Config::default` enables
-        // `mate-window-ownership` for §10 tiled==single-region in tests.
+        // v1.0 behavior (both false).
         let mut fix_splice_tile_ownership = false;
         let mut fix_mate_window_ownership = false;
         for id in self
