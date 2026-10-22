@@ -15,8 +15,16 @@ use noodles::sam::alignment::record::cigar::op::Kind;
 /// 1:1 with noodles' own (crate-private) text parser:
 /// `M I D N S H P = X`.
 pub fn parse_cigar(s: &str) -> Option<Vec<(u32, Kind)>> {
-    let bytes = s.as_bytes();
     let mut elements = Vec::new();
+    parse_cigar_into(s, &mut elements)?;
+    Some(elements)
+}
+
+/// Parse a CIGAR string into a reused buffer (scratch reuse; identical
+/// elements to [`parse_cigar`], `None` on the same malformed inputs).
+pub fn parse_cigar_into(s: &str, elements: &mut Vec<(u32, Kind)>) -> Option<()> {
+    elements.clear();
+    let bytes = s.as_bytes();
     let mut num_start = 0;
 
     for (i, &b) in bytes.iter().enumerate() {
@@ -51,7 +59,7 @@ pub fn parse_cigar(s: &str) -> Option<Vec<(u32, Kind)>> {
         return None;
     }
 
-    Some(elements)
+    Some(())
 }
 
 /// A modified cigar record, mirroring VarDictJava's `ModifiedCigar` class.

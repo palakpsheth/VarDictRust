@@ -21,6 +21,15 @@ anyhow.workspace = true
 env_logger.workspace = true
 log.workspace = true
 regex = { workspace = true }
+tikv-jemallocator = { workspace = true, optional = true }
+
+[features]
+default = ["jemalloc"]
+# Task 4 allocator experiment: jemalloc global allocator (tuned via
+# _rjem_malloc_conf in main.rs) to defeat glibc ptmalloc span retention on
+# deep-pileup churn. Toggle off with --no-default-features (falls back to
+# the system allocator). No application code changes; output-identical.
+jemalloc = ["dep:tikv-jemallocator"]
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -81,23 +81,23 @@ fn run_pipeline_on_records(
     chromosomes_lengths: &HashMap<String, usize>,
     seed_max_read_length: i32,
 ) -> Result<crate::variations::VariationData, VardictError> {
-    let mut raw_records = Vec::new();
+    // Task 4 (streaming feed): one lazy pass per BAM, BAM1-then-BAM2, through
+    // a single sequential preprocessor into a single CigarParser. Records are
+    // dropped promptly after parsing, so peak memory stays flat in depth —
+    // the old `raw_records` Vec held the whole tile. Counts are unknown until
+    // the feed is exhausted (parse_cigar never reads them mid-stream), so
+    // they are set on the parser just before finalization, exactly as
+    // `pileup()` received them. `?` propagates I/O errors with the same Err
+    // semantics as the Vec path; nothing is skipped or unwrapped.
+    let mut feeds = Vec::with_capacity(bam_paths.len());
     for path in bam_paths {
-        raw_records.extend(crate::bam::query_region(
+        feeds.push(crate::bam::query_region_iter(
             Path::new(path),
             chr,
             query_start,
             query_end,
             config,
         )?);
-    }
-
-    let mut preprocessor = crate::bam::RecordPreprocessor::new();
-    let mut records = Vec::new();
-    for r in raw_records {
-        if preprocessor.preprocess_record(&r, config) {
-            records.push(r);
-        }
     }
 
     if let Some(ref_region) = ref_region {
@@ -110,17 +110,29 @@ fn run_pipeline_on_records(
         )?;
     }
 
-    let mut var_data = crate::cigar::parse::pileup(
-        &records,
+    let mut preprocessor = crate::bam::RecordPreprocessor::new();
+    let mut parser = crate::cigar::parse::CigarParser::new(
         reference,
         pileup_region,
         config,
         false,
-        preprocessor.total_reads as i32,
-        preprocessor.duplicate_reads as i32,
+        0,
+        0,
         seed_max_read_length,
-    )?;
-
+    );
+    for mut feed in feeds {
+        // Reused record buffer: zero per-read allocation after warmup (the
+        // retained-churn slope that OOMs deep tiles).
+        let mut r = crate::bam::SamRecord::new();
+        while feed.next_into(&mut r)? {
+            if preprocessor.preprocess_record(&r, config) {
+                parser.parse_cigar(&r)?;
+            }
+        }
+    }
+    parser.total_reads = preprocessor.total_reads as i32;
+    parser.duplicate_reads = preprocessor.duplicate_reads as i32;
+    let mut var_data = parser.into_variation_data();
     let chr_len = *chromosomes_lengths.get(chr).unwrap_or(&0) as u32;
 
     match tail {
@@ -198,7 +210,6 @@ fn run_pipeline_on_records(
             crate::realign::adj_snv(reference, chr, config, &mut var_data);
         }
     }
-
     Ok(var_data)
 }
 
@@ -956,7 +967,6 @@ fn run_somatic(config: &config::Config) -> Result<(), VardictError> {
             )?;
 
             let max_read_length_bam1 = var_data1.max_read_length;
-
             // Process BAM2 (normal), seeded with BAM1's maxReadLength; the
             // reference loaded above is reused (no second get_reference).
             let var_data2 = run_pipeline_on_records(
@@ -975,7 +985,6 @@ fn run_somatic(config: &config::Config) -> Result<(), VardictError> {
 
             // Use max of both BAMs' maxReadLength
             let _combined_max_rl = max_read_length_bam1.max(var_data2.max_read_length);
-
             let builder_region = crate::regions::Region {
                 chr: tile.chr.clone(),
                 start: tile.original_start,

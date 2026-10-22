@@ -3442,16 +3442,15 @@ pub fn partial_pipeline(
     let query_start = crate::types::Pos0((start.max(1) - 1) as u32);
     let query_end = crate::types::Pos0(end.max(1) as u32);
 
-    let raw_records = crate::bam::query_region(bam_path, chr, query_start, query_end, config)?;
+    // Streaming counterpart of the old query_region-Vec + pileup_into shape:
+    // one lazy pass through a single preprocessor into a parser seeded with
+    // the taken maps, written back exactly as pileup_into does (fresh
+    // SVStructures discarded, discordant seeded 0 — duprate never propagates
+    // out of this path either way). Peak memory stays flat in depth.
+    let mut feed = crate::bam::query_region_iter(bam_path, chr, query_start, query_end, config)?;
 
     // Preprocess records
     let mut preprocessor = crate::bam::RecordPreprocessor::new();
-    let mut records = Vec::new();
-    for r in raw_records {
-        if preprocessor.preprocess_record(&r, config) {
-            records.push(r);
-        }
-    }
 
     let region = crate::regions::Region {
         chr: chr.to_string(),
@@ -3465,16 +3464,60 @@ pub fn partial_pipeline(
     // (CigarParser.java:66) and discards it when partialPipeline completes, so the
     // primary region's sv_structures is never mutated by mate-region pileup.
     let orig_sv_structures = std::mem::take(&mut var_data.sv_structures);
-    crate::cigar::parse::pileup_into(
-        var_data,
-        &records,
-        reference,
-        &region,
-        config,
-        true, // svflag is true for partial pipeline
-        preprocessor.total_reads as i32,
-        preprocessor.duplicate_reads as i32,
-    )?;
+    {
+        let mut parser = crate::cigar::parse::CigarParser {
+            reference,
+            region: &region,
+            config,
+            svflag: true, // svflag is true for partial pipeline
+            non_insertion_variants: std::mem::take(&mut var_data.non_insertion_variants),
+            insertion_variants: std::mem::take(&mut var_data.insertion_variants),
+            position_to_insertion_count: std::mem::take(&mut var_data.position_to_insertion_count),
+            position_to_deletion_count: std::mem::take(&mut var_data.position_to_deletion_count),
+            sv_structures: std::mem::take(&mut var_data.sv_structures),
+            ref_coverage: std::mem::take(&mut var_data.ref_coverage),
+            soft_clips_5_end: std::mem::take(&mut var_data.soft_clips_5_end),
+            soft_clips_3_end: std::mem::take(&mut var_data.soft_clips_3_end),
+            max_read_length: var_data.max_read_length,
+            splice: std::mem::take(&mut var_data.splice),
+            mnp: std::mem::take(&mut var_data.mnp),
+            splice_count: std::mem::take(&mut var_data.splice_count),
+            discordant_count: 0,
+            total_reads: 0,
+            duplicate_reads: 0,
+            scratch_seq: Vec::new(),
+            scratch_qual: Vec::new(),
+            scratch_cigar_str: String::new(),
+            scratch_elements: Vec::new(),
+            scratch_s: String::new(),
+            scratch_ss: String::new(),
+            scratch_splice_key: String::new(),
+            scratch_f4_desc: String::new(),
+            scratch_f4_qual: String::new(),
+            scratch_f4_seg1: String::new(),
+            scratch_f4_seg2: String::new(),
+        };
+        let mut r = crate::bam::SamRecord::new();
+        while feed.next_into(&mut r)? {
+            if preprocessor.preprocess_record(&r, config) {
+                parser.parse_cigar(&r)?;
+            }
+        }
+        parser.total_reads = preprocessor.total_reads as i32;
+        parser.duplicate_reads = preprocessor.duplicate_reads as i32;
+        var_data.non_insertion_variants = parser.non_insertion_variants;
+        var_data.insertion_variants = parser.insertion_variants;
+        var_data.position_to_insertion_count = parser.position_to_insertion_count;
+        var_data.position_to_deletion_count = parser.position_to_deletion_count;
+        var_data.sv_structures = parser.sv_structures;
+        var_data.ref_coverage = parser.ref_coverage;
+        var_data.soft_clips_5_end = parser.soft_clips_5_end;
+        var_data.soft_clips_3_end = parser.soft_clips_3_end;
+        var_data.max_read_length = var_data.max_read_length.max(parser.max_read_length);
+        var_data.splice = parser.splice;
+        var_data.mnp = parser.mnp;
+        var_data.splice_count = parser.splice_count;
+    }
     var_data.sv_structures = orig_sv_structures;
 
     Ok(())
