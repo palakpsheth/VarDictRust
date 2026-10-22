@@ -141,10 +141,9 @@ impl<'a> ToVarsBuilder<'a> {
                 continue;
             }
 
-            // G3 (mate-window ownership, --fix mate-window-ownership): a key
-            // planted by a mate-window merge emits only from its owning tile.
-            if self.config.fix_mate_window_ownership
-                && var_data.merge_planted.contains(&position)
+            // G3 (mate-window ownership): a key planted by a mate-window
+            // merge emits only from its owning tile.
+            if var_data.merge_planted.contains(&position)
                 && !merge_key_owned(var_data.owning_range, self.region, position)
             {
                 continue;

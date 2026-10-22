@@ -384,12 +384,10 @@ pub fn run(config: &config::Config) -> Result<(), VardictError> {
             };
 
             let mut reference = crate::reference::Reference::new();
-            // --fix splice-tile-ownership: pile up halo-wide (bed_region) so
-            // the owning tile counts junctions anchored at its last active
-            // base, then emit owned-only (single-ownership, no cross-tile
-            // state). Flag-off keeps the active-region pileup (v1.0.2).
-            let fix_splice = config_clone.splice && config_clone.fix_splice_tile_ownership;
-            let pileup_region = if fix_splice {
+            // Splice pileup runs halo-wide (bed_region) so the owning tile
+            // counts junctions anchored at its last active base, then emits
+            // owned-only (single-ownership, no cross-tile state).
+            let pileup_region = if config_clone.splice {
                 &bed_region
             } else {
                 &region_for_pileup
@@ -418,13 +416,7 @@ pub fn run(config: &config::Config) -> Result<(), VardictError> {
                 let mut introns: Vec<&String> = var_data.splice_count.keys().collect();
                 introns.sort();
                 for intron in introns {
-                    if fix_splice
-                        && !tile_owns_splice_key(
-                            &tile,
-                            tile.original_start,
-                            tile.original_end,
-                            intron,
-                        )
+                    if !tile_owns_splice_key(&tile, tile.original_start, tile.original_end, intron)
                     {
                         continue;
                     }
@@ -1717,14 +1709,11 @@ mod tests {
         let bam = bam_path.to_string_lossy().into_owned();
         let paths = [bam.clone()];
 
-        let mut config = crate::config::Config::default();
-        // Task 7 ruled exception to no-test-edits (spec precedence: brief +
-        // §5 default-off beat test immutability): opt this test into the flag.
-        config.fix_mate_window_ownership = true;
+        let config = crate::config::Config::default();
         let chr_lens = splice_test_chr_lens();
 
         // Per-tile pileup over the halo window with the ACTIVE region (the
-        // production flag-off shape, lib.rs:378-413).
+        // production shape).
         let pileup_active = |tile: &crate::regions::Tile,
                              reference: &mut crate::reference::Reference|
          -> crate::variations::VariationData {

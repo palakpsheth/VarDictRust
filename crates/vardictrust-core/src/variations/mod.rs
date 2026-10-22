@@ -868,9 +868,9 @@ pub struct VariationData {
     /// pre-stamp data) fails open — the gate never fires. Metadata only:
     /// never serialized or emitted.
     pub owning_range: Option<(crate::types::Pos1, crate::types::Pos1)>,
-    /// Positions added by mate-window `partial_pipeline` merges (G3), filled
-    /// only under `--fix mate-window-ownership`. Keys already present before
-    /// the merge are native, never planted. Metadata only.
+    /// Positions added by mate-window `partial_pipeline` merges (G3).
+    /// Keys already present before the merge are native, never planted.
+    /// Metadata only.
     pub merge_planted: BTreeSet<i32>,
 }
 

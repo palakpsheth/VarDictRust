@@ -333,12 +333,6 @@ pub struct Cli {
     #[arg(short = 'K')]
     pub include_n: bool,
 
-    /// Post-1.0 output correction, opt-in by id (ROADMAP.md). Repeatable;
-    /// comma-separated values accepted. Known ids: `splice-tile-ownership`,
-    /// `mate-window-ownership`.
-    #[arg(long = "fix")]
-    pub fix: Vec<String>,
-
     /// Positional BED file (when -R absent).
     pub bed: Option<String>,
 }
@@ -390,29 +384,6 @@ impl Cli {
         } else {
             (self.freq, self.min_reads)
         };
-
-        // --fix corrections are opt-in by id (ROADMAP.md); unknown ids fail
-        // loudly per §12 instead of silently changing output. CLI default is
-        // v1.0 behavior (both false).
-        let mut fix_splice_tile_ownership = false;
-        let mut fix_mate_window_ownership = false;
-        for id in self
-            .fix
-            .iter()
-            .flat_map(|s| s.split(','))
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-        {
-            match id {
-                "splice-tile-ownership" => fix_splice_tile_ownership = true,
-                "mate-window-ownership" => fix_mate_window_ownership = true,
-                other => {
-                    return Err(vardictrust_core::types::VardictError::Unsupported(format!(
-                        "--fix {other} not implemented in v1.0; use VarDictJava"
-                    )));
-                }
-            }
-        }
 
         Ok(vardictrust_core::config::Config {
             exception_counter: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
@@ -519,8 +490,6 @@ impl Cli {
             unique_mode_second_in_pair_enabled: self.unique_mode_second_in_pair_enabled,
             omit_end_tag: self.col_end.is_some(),
             include_n: self.include_n,
-            fix_splice_tile_ownership,
-            fix_mate_window_ownership,
         })
     }
 }
