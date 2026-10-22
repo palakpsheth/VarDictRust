@@ -184,9 +184,9 @@ impl<'a> CigarModifier<'a> {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         position: i32,
-        cigar_str: &str,
-        query_seq: &[u8],
-        query_qual: &[u8],
+        cigar_str: impl Into<String>,
+        query_seq: impl Into<Vec<u8>>,
+        query_qual: impl Into<Vec<u8>>,
         reference: &'a [u8],
         ref_start: i32,
         seed: &'a HashMap<Vec<u8>, Vec<u32>>,
@@ -196,9 +196,9 @@ impl<'a> CigarModifier<'a> {
     ) -> Self {
         CigarModifier {
             position,
-            cigar_str: cigar_str.to_string(),
-            query_seq: query_seq.to_vec(),
-            query_qual: query_qual.to_vec(),
+            cigar_str: cigar_str.into(),
+            query_seq: query_seq.into(),
+            query_qual: query_qual.into(),
             reference,
             ref_start,
             seed,
@@ -209,10 +209,12 @@ impl<'a> CigarModifier<'a> {
     }
 
     /// Perform all CIGAR modifications. No panic allowed!
-    pub fn modify_cigar(&mut self) -> Result<ModifiedCigar, crate::types::VardictError> {
+    /// Takes `self` by value: the modifier is single-use per read, and the
+    /// caller reclaims the buffers from the returned [`ModifiedCigar`].
+    pub fn modify_cigar(mut self) -> Result<ModifiedCigar, crate::types::VardictError> {
         //flag is set to true if CIGAR string is modified and should be looked at again
         let flag = true;
-        let this = &mut *self;
+        let this = &mut self;
         // 1. Strip leading deletion
         if let Some(caps) = BEGIN_NUMBER_D.captures(&this.cigar_str) {
             let dlen = to_int(caps.get(1).unwrap().as_str());
@@ -528,9 +530,9 @@ impl<'a> CigarModifier<'a> {
 
         Ok(ModifiedCigar {
             position: self.position,
-            cigar: self.cigar_str.clone(),
-            query_seq: self.query_seq.clone(),
-            query_qual: self.query_qual.clone(),
+            cigar: self.cigar_str,
+            query_seq: self.query_seq,
+            query_qual: self.query_qual,
         })
     }
 
@@ -1216,7 +1218,7 @@ mod tests {
         let seed = HashMap::new();
         let reference = b"";
         // 1. Starts with D: should adjust position and strip leading D.
-        let mut cm = CigarModifier::new(
+        let cm = CigarModifier::new(
             10,
             "3D10M5D",
             b"ACGTACGTAC",
@@ -1239,7 +1241,7 @@ mod tests {
         let seed = HashMap::new();
         let reference = b"";
         // 2. Starts or ends with I: should replace with S.
-        let mut cm = CigarModifier::new(
+        let cm = CigarModifier::new(
             10,
             "3I10M2I",
             b"ACGTACGTACGTACG",
@@ -1262,7 +1264,7 @@ mod tests {
         let seed = HashMap::new();
         let reference = b"";
         // Starts with softclip followed by insertion or deletion: should combine them.
-        let mut cm = CigarModifier::new(
+        let cm = CigarModifier::new(
             10,
             "3S2I10M",
             b"ACGTACGTACGTACG",
@@ -1278,7 +1280,7 @@ mod tests {
         assert_eq!(res.as_ref().unwrap().position, 10);
         assert_eq!(res.as_ref().unwrap().cigar, "5S10M");
 
-        let mut cm = CigarModifier::new(
+        let cm = CigarModifier::new(
             10,
             "3S2D10M",
             b"ACGTACGTACGTACG",
@@ -1301,7 +1303,7 @@ mod tests {
         let seed = HashMap::new();
         let reference = b"";
         // Combine adjacent deletions
-        let mut cm = CigarModifier::new(
+        let cm = CigarModifier::new(
             10,
             "10M2D3D10M",
             b"ACGTACGTACGTACG",
@@ -1317,7 +1319,7 @@ mod tests {
         assert_eq!(res.as_ref().unwrap().cigar, "10M5D10M");
 
         // Combine adjacent insertions
-        let mut cm = CigarModifier::new(
+        let cm = CigarModifier::new(
             10,
             "10M2I3I10M",
             b"ACGTACGTACGTACG",
@@ -1341,7 +1343,7 @@ mod tests {
         // Feed various weird CIGAR strings that used to crash VarDictJava due to bounds check errors
         let inputs = vec!["0M", "100D", "100I", "5M100D5M", "5M100I5M", "1M1I1D1M"];
         for cig in inputs {
-            let mut cm = CigarModifier::new(
+            let cm = CigarModifier::new(
                 10,
                 cig,
                 b"ACGTACGTACGTACG",
@@ -1366,7 +1368,7 @@ mod tests {
         let query_qual = b"BBFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF=74??44444444FFFFFFFFFFFFFFFFFFFFFFFFFFFFF";
         let ref_seq = b"AATCCTCTGTTTGGAAACCAGCCCGATTCAAGGAGGGTTCTGATGCACTGCGGTGAATTTTTGGCAATGAGCGGGCCAGCAGCTCAATAGAGGCGAGAATCTACAAAAAAAAAAAGAAAAAAAAAAGAAAAAAAAAGAAAAAAGAAAAAAAAAGAAAGAAAGAAAAAGAAAAAACAGAAAGAAGAATGAAAATCTGGGTG";
 
-        let mut cm = CigarModifier::new(
+        let cm = CigarModifier::new(
             1,
             "104M1I2M2D1M1D5M1D2M9D27M",
             query_seq,
@@ -1406,11 +1408,11 @@ mod tests {
         let adversarial_cases = ["10M1D1M1D1M1D1M", "10M1I1M1D1M1D1M", "10M1D1M1I1M1D1M"];
 
         for cigar in adversarial_cases {
-            let mut cm = CigarModifier::new(
+            let cm = CigarModifier::new(
                 1,
                 cigar,
                 query_seq,
-                &query_qual,
+                query_qual.clone(),
                 ref_seq,
                 1,
                 &seed,

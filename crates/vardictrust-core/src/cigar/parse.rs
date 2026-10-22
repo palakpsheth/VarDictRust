@@ -1,6 +1,6 @@
 //! CIGAR parse (pileup engine) — ports CigarParser.java.
 
-use crate::bam::{get_cigar_string, get_mate_reference_name, SamRecord};
+use crate::bam::{get_mate_reference_name, SamRecord};
 use crate::config::Config;
 use crate::reference::Reference;
 use crate::regions::Region;
@@ -13,6 +13,7 @@ use crate::variations::{
 use noodles::sam::alignment::record::cigar::op::Kind as CigarKind;
 use regex::Regex;
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::fmt::Write as _;
 use std::sync::LazyLock;
 
 static MC_CLIP_CLIP: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\d+S.*?\d+S").unwrap());
@@ -57,6 +58,26 @@ pub struct CigarParser<'a> {
     pub discordant_count: i32,
     pub total_reads: i32,
     pub duplicate_reads: i32,
+    /// Per-read scratch buffers reused across [`CigarParser::parse_cigar`]
+    /// calls (zero per-read allocation after warmup). Never read across
+    /// calls: refilled from each record before use.
+    pub scratch_seq: Vec<u8>,
+    pub scratch_qual: Vec<u8>,
+    pub scratch_cigar_str: String,
+    pub scratch_elements: Vec<(u32, CigarKind)>,
+    /// Per-CIGAR-Match-block string scratch, reused across reads via
+    /// per-read take/put-back (same pattern as the sequence buffers).
+    pub scratch_s: String,
+    pub scratch_ss: String,
+    /// Splice-junction key buffer (F3 churn fix).
+    pub scratch_splice_key: String,
+    /// F4 scratch: per-indel-occurrence desc/quality buffers, take/put-back
+    /// per process_insertion/process_deletion call (methods never nest, so
+    /// one set suffices).
+    pub scratch_f4_desc: String,
+    pub scratch_f4_qual: String,
+    pub scratch_f4_seg1: String,
+    pub scratch_f4_seg2: String,
 }
 
 fn get_adjusted_nm(record: &SamRecord) -> i32 {
@@ -65,6 +86,31 @@ fn get_adjusted_nm(record: &SamRecord) -> i32 {
         .nm
         .map(|n| n.saturating_sub(insertion_deletion_length as i32))
         .unwrap_or(0)
+}
+
+/// Zero-alloc single-base allele key for per-base variation lookups.
+/// Returns a `&'static str` for ACGTN (either case — the overwhelmingly common
+/// reference bytes); exotic bytes fall back to the caller-provided buffer.
+/// Identical keys to `(base as char).to_string()`, without the per-base heap
+/// allocation that dominates soft-clip walk-backs on deep data.
+#[inline]
+fn allele_key(base: u8, buf: &mut String) -> &str {
+    match base {
+        b'A' => "A",
+        b'C' => "C",
+        b'G' => "G",
+        b'T' => "T",
+        b'N' | b'n' => "N",
+        b'a' => "a",
+        b'c' => "c",
+        b'g' => "g",
+        b't' => "t",
+        _ => {
+            buf.clear();
+            buf.push(base as char);
+            buf.as_str()
+        }
+    }
 }
 
 /// Phred quality at `idx`, defaulting missing/truncated QUAL (`*`) to 0.
@@ -108,6 +154,17 @@ impl<'a> CigarParser<'a> {
             discordant_count: 0,
             total_reads,
             duplicate_reads,
+            scratch_seq: Vec::new(),
+            scratch_qual: Vec::new(),
+            scratch_cigar_str: String::new(),
+            scratch_elements: Vec::new(),
+            scratch_s: String::new(),
+            scratch_ss: String::new(),
+            scratch_splice_key: String::new(),
+            scratch_f4_desc: String::new(),
+            scratch_f4_qual: String::new(),
+            scratch_f4_seg1: String::new(),
+            scratch_f4_seg2: String::new(),
         }
     }
 
@@ -152,18 +209,16 @@ impl<'a> CigarParser<'a> {
         }
 
         let mut start_pos = record.alignment_start.map(|p| p.0 as i32).unwrap_or(0);
-        let mut query_seq = record.sequence.clone();
-        let mut query_qual = record.quality_scores.clone();
-        let mut cigar_elements = record.cigar.clone();
-
         // Amplicon read filter (Java parseCigarWithAmpCase, CigarParser.java:255-258):
-        // skip reads that don't map to the amplicon.
+        // skip reads that don't map to the amplicon. Runs before scratch
+        // fill so dropped reads allocate nothing (cigar_elements still
+        // equals record.cigar here — nothing has mutated it yet).
         if let Some(ref amp_param) = self.config.amplicon {
             let (distance_to_amplicon, overlap_fraction) = parse_amp_param(amp_param);
             let is_mate_ref_name_equal =
                 record.reference_name.as_deref() == record.mate_reference_name.as_deref();
             if parse_cigar_with_amp_case(
-                &cigar_elements,
+                &record.cigar,
                 record,
                 is_mate_ref_name_equal,
                 self.region,
@@ -173,6 +228,22 @@ impl<'a> CigarParser<'a> {
                 return Ok(());
             }
         }
+
+        // Per-read scratch reuse (Task 4 churn fix): refill parser-owned
+        // buffers instead of cloning per read. Values flowing through are
+        // identical; only the allocation site changes.
+        self.scratch_seq.clear();
+        self.scratch_seq.extend_from_slice(&record.sequence);
+        self.scratch_qual.clear();
+        self.scratch_qual.extend_from_slice(&record.quality_scores);
+        self.scratch_elements.clear();
+        self.scratch_elements.extend_from_slice(&record.cigar);
+        let mut query_seq = std::mem::take(&mut self.scratch_seq);
+        let mut query_qual = std::mem::take(&mut self.scratch_qual);
+        let mut cigar_elements = std::mem::take(&mut self.scratch_elements);
+        let mut buf_s = std::mem::take(&mut self.scratch_s);
+        let mut buf_ss = std::mem::take(&mut self.scratch_ss);
+        let mut scratch_splice_key = std::mem::take(&mut self.scratch_splice_key);
 
         // T046: run CigarModifier if realignment is enabled
         if self.config.realign == 1 {
@@ -191,12 +262,14 @@ impl<'a> CigarParser<'a> {
                 (&[] as &[u8], 1)
             };
 
-            let cigar_str = get_cigar_string(&cigar_elements);
-            let mut modifier = crate::cigar::modify::CigarModifier::new(
+            let mut cigar_str = std::mem::take(&mut self.scratch_cigar_str);
+            cigar_str.clear();
+            crate::bam::push_cigar_string(&mut cigar_str, &cigar_elements);
+            let modifier = crate::cigar::modify::CigarModifier::new(
                 start_pos,
-                &cigar_str,
-                &query_seq,
-                &query_qual,
+                cigar_str,
+                query_seq,
+                query_qual,
                 ref_slice,
                 ref_start,
                 &self.reference.seed,
@@ -208,14 +281,23 @@ impl<'a> CigarParser<'a> {
             // When modify_cigar returns an error (JavaThrows on malformed CIGAR with non-positive
             // operator lengths), emulate Java's catch block: log the exception and skip the read
             // cleanly without mutating start_pos, query_seq, or pileup structures.
+            // (Scratch buffers are dropped on this rare path; the next read
+            // re-allocates once and reuse resumes.)
             match modifier.modify_cigar() {
                 Ok(modified) => {
                     start_pos = modified.position;
+                    if crate::cigar::parse_cigar_into(&modified.cigar, &mut cigar_elements)
+                        .is_none()
+                    {
+                        // Unreachable in practice (modify emits normalized
+                        // CIGARs), but replicate the old keep-previous shape
+                        // exactly: refill from the record.
+                        cigar_elements.clear();
+                        cigar_elements.extend_from_slice(&record.cigar);
+                    }
                     query_seq = modified.query_seq;
                     query_qual = modified.query_qual;
-                    if let Some(parsed) = crate::cigar::parse_cigar(&modified.cigar) {
-                        cigar_elements = parsed;
-                    }
+                    self.scratch_cigar_str = modified.cigar;
                 }
                 Err(e) => {
                     let name = String::from_utf8_lossy(&record.name);
@@ -241,7 +323,7 @@ impl<'a> CigarParser<'a> {
         }
 
         // Determine discordant reads
-        if get_mate_reference_name(record) != "=" {
+        if !crate::bam::mate_reference_is_equal(record) {
             self.discordant_count += 1;
         }
 
@@ -255,6 +337,13 @@ impl<'a> CigarParser<'a> {
             ) = (cigar_elements.first(), cigar_elements.last())
             {
                 if (10..=99).contains(&len_first) && len_last >= 10 {
+                    // F8 churn fix: put back scratch before dropping the read.
+                    self.scratch_seq = query_seq;
+                    self.scratch_qual = query_qual;
+                    self.scratch_elements = cigar_elements;
+                    self.scratch_s = buf_s;
+                    self.scratch_ss = buf_ss;
+                    self.scratch_splice_key = scratch_splice_key;
                     return Ok(()); // Drop read
                 }
             }
@@ -334,10 +423,23 @@ impl<'a> CigarParser<'a> {
 
             match operator {
                 CigarKind::Skip => {
-                    let key = format!("{}-{}", start - 1, start + cigar_element_len as i32 - 1);
-                    self.splice.insert(key.clone());
-                    let cnt = self.splice_count.entry(key).or_insert([0]);
-                    cnt[0] += 1;
+                    // Reused key buffer + borrowed lookup: zero alloc for
+                    // repeat junctions (the common case); two inserts only for
+                    // a new junction. Set/count contents identical to the old
+                    // clone+entry shape.
+                    scratch_splice_key.clear();
+                    let _ = write!(
+                        scratch_splice_key,
+                        "{}-{}",
+                        start - 1,
+                        start + cigar_element_len as i32 - 1
+                    );
+                    if let Some(cnt) = self.splice_count.get_mut(scratch_splice_key.as_str()) {
+                        cnt[0] += 1;
+                    } else {
+                        self.splice.insert(scratch_splice_key.clone());
+                        self.splice_count.insert(scratch_splice_key.clone(), [1]);
+                    }
                     start += cigar_element_len as i32;
                     ci += 1;
                     offset = 0;
@@ -426,7 +528,7 @@ impl<'a> CigarParser<'a> {
                         let mut q = qual_phred(&query_qual, read_pos_inc);
                         let mut qbases = 1;
                         let mut qibases = 0;
-                        let mut ss = String::new();
+                        buf_ss.clear();
                         let mut start_with_deletion = false;
 
                         // T048: MNV Growth Look-Ahead
@@ -465,7 +567,7 @@ impl<'a> CigarParser<'a> {
                                     break;
                                 }
                                 if nuc != next_ref_base {
-                                    ss.push(nuc as char);
+                                    buf_ss.push(nuc as char);
                                     q += qual_phred(&query_qual, next_read_idx);
                                     qbases += 1;
                                     read_pos_inc += 1;
@@ -509,7 +611,7 @@ impl<'a> CigarParser<'a> {
                                     }
                                     for ssi in 1..=ssn {
                                         let idx = read_pos_inc + ssi;
-                                        ss.push(query_seq[idx] as char);
+                                        buf_ss.push(query_seq[idx] as char);
                                         q += qual_phred(&query_qual, idx);
                                         qbases += 1;
                                     }
@@ -523,10 +625,11 @@ impl<'a> CigarParser<'a> {
                             }
                         }
 
-                        let mut s = (ch1 as char).to_string();
-                        if !ss.is_empty() {
-                            s.push('&');
-                            s.push_str(&ss);
+                        buf_s.clear();
+                        buf_s.push(ch1 as char);
+                        if !buf_ss.is_empty() {
+                            buf_s.push('&');
+                            buf_s.push_str(&buf_ss);
                         }
 
                         let mut ddlen = 0;
@@ -536,7 +639,7 @@ impl<'a> CigarParser<'a> {
                             &cigar_elements,
                             ci,
                             i,
-                            ss.len(),
+                            buf_ss.len(),
                             CigarKind::Deletion,
                             start,
                             read_pos_inc,
@@ -546,7 +649,7 @@ impl<'a> CigarParser<'a> {
                                     query_seq.get(read_pos_inc + 1),
                                     query_qual.get(read_pos_inc + 1),
                                 ) {
-                                    s.push(qb as char);
+                                    buf_s.push(qb as char);
                                     q += qq as f64 - 33.0;
                                     qbases += 1;
                                 }
@@ -555,8 +658,9 @@ impl<'a> CigarParser<'a> {
                                 read_pos_exc += 1;
                                 start += 1;
                             }
-                            let s_clean = s.replacen('&', "", 1);
-                            s = format!("-{}&{}", cigar_elements[ci + 1].0, s_clean);
+                            let s_clean = buf_s.replacen('&', "", 1);
+                            buf_s.clear();
+                            let _ = write!(buf_s, "-{}&{}", cigar_elements[ci + 1].0, s_clean);
                             start_with_deletion = true;
                             ddlen = cigar_elements[ci + 1].0 as i32;
                             ci += 1;
@@ -566,8 +670,8 @@ impl<'a> CigarParser<'a> {
                                 if let Some(sub) = query_seq
                                     .get(read_pos_inc + 1..read_pos_inc + 1 + next_next_len)
                                 {
-                                    s.push('^');
-                                    s.push_str(&String::from_utf8_lossy(sub));
+                                    buf_s.push('^');
+                                    buf_s.push_str(&String::from_utf8_lossy(sub));
                                 }
                                 for qi in 1..=next_next_len {
                                     if let Some(&qq) = query_qual.get(read_pos_inc + 1 + qi) {
@@ -593,8 +697,8 @@ impl<'a> CigarParser<'a> {
                                 if toffset != 0 {
                                     moffset = toffset;
                                     nmoff += tpl.offset_number_of_mismatches;
-                                    s.push('&');
-                                    s.push_str(&tpl.sequence);
+                                    buf_s.push('&');
+                                    buf_s.push_str(&tpl.sequence);
                                     for b in tpl.quality_sequence.bytes() {
                                         q += b as f64 - 33.0;
                                         qibases += 1;
@@ -613,7 +717,7 @@ impl<'a> CigarParser<'a> {
                             &cigar_elements,
                             ci,
                             i,
-                            ss.len(),
+                            buf_ss.len(),
                             CigarKind::Insertion,
                             start,
                             read_pos_inc,
@@ -623,7 +727,7 @@ impl<'a> CigarParser<'a> {
                                     query_seq.get(read_pos_inc + 1),
                                     query_qual.get(read_pos_inc + 1),
                                 ) {
-                                    s.push(qb as char);
+                                    buf_s.push(qb as char);
                                     q += qq as f64 - 33.0;
                                     qbases += 1;
                                 }
@@ -632,7 +736,7 @@ impl<'a> CigarParser<'a> {
                                 read_pos_exc += 1;
                                 start += 1;
                             }
-                            let s_clean = s.replacen('&', "", 1);
+                            let s_clean = buf_s.replacen('&', "", 1);
                             let next_len = cigar_elements[ci + 1].0 as usize;
                             let mut temp_s = s_clean;
                             if let Some(sub) =
@@ -642,7 +746,8 @@ impl<'a> CigarParser<'a> {
                             }
                             if temp_s.len() >= next_len {
                                 let (first_part, second_part) = temp_s.split_at(next_len);
-                                s = format!("+{}&{}", first_part, second_part);
+                                buf_s.clear();
+                                let _ = write!(buf_s, "+{}&{}", first_part, second_part);
                             }
 
                             for qi in 1..=next_len {
@@ -663,8 +768,8 @@ impl<'a> CigarParser<'a> {
 
                         if pos as u32 >= self.region.start.0
                             && pos as u32 <= self.region.end.0
-                            && !s.contains('N')
-                            && !s.contains('n')
+                            && !buf_s.contains('N')
+                            && !buf_s.contains('n')
                         {
                             self.add_variation_for_matching_part(
                                 record.mapping_quality.unwrap_or(0) as i32,
@@ -672,7 +777,7 @@ impl<'a> CigarParser<'a> {
                                 direction,
                                 read_len_match_ins as i32,
                                 nmoff,
-                                &s,
+                                &buf_s,
                                 start_with_deletion,
                                 q,
                                 qbases,
@@ -730,6 +835,15 @@ impl<'a> CigarParser<'a> {
                 break;
             }
         }
+
+        // Reclaim per-read buffers into parser scratch for the next read.
+        // Output-identical: buffers are refilled from each record before use.
+        self.scratch_seq = query_seq;
+        self.scratch_qual = query_qual;
+        self.scratch_elements = cigar_elements;
+        self.scratch_s = buf_s;
+        self.scratch_ss = buf_ss;
+        self.scratch_splice_key = scratch_splice_key;
 
         Ok(())
     }
@@ -1048,14 +1162,22 @@ impl<'a> CigarParser<'a> {
             return ci;
         }
 
-        let mut desc_string = format!("-{}", cigar_element_len);
-        let mut sequence_to_append = String::new();
+        // F4 scratch: reuse take/put-back buffers instead of allocating per
+        // deletion occurrence. Values identical; only allocation sites change.
+        let mut desc_string = std::mem::take(&mut self.scratch_f4_desc);
+        desc_string.clear();
+        let _ = write!(desc_string, "-{cigar_element_len}");
+        let mut sequence_to_append = std::mem::take(&mut self.scratch_f4_seg1);
+        sequence_to_append.clear();
+        let mut quality_of_segment_sb = std::mem::take(&mut self.scratch_f4_seg2);
+        quality_of_segment_sb.clear();
         let quality_of_last_segment_before_del = if *read_pos_inc > 0 {
             query_qual.get(*read_pos_inc - 1).copied().unwrap_or(33)
         } else {
             33
         };
-        let mut quality_of_segment = String::new();
+        let mut quality_of_segment = std::mem::take(&mut self.scratch_f4_qual);
+        quality_of_segment.clear();
 
         let mut multoffs = 0;
         let mut multoffp = 0;
@@ -1068,7 +1190,7 @@ impl<'a> CigarParser<'a> {
             let indel_len = cigar_elements[ci + 2].0 as usize;
             let begin = *read_pos_inc;
 
-            let mut quality_of_segment_sb = String::new();
+            quality_of_segment_sb.clear();
             self.append_segments(
                 query_seq,
                 query_qual,
@@ -1299,6 +1421,12 @@ impl<'a> CigarParser<'a> {
         *read_pos_inc += *offset as usize + multoffp;
         *read_pos_exc += *offset as usize + multoffp;
 
+        // F4 put-back: buffers refilled on next call.
+        self.scratch_f4_desc = desc_string;
+        self.scratch_f4_seg1 = sequence_to_append;
+        self.scratch_f4_qual = quality_of_segment;
+        self.scratch_f4_seg2 = quality_of_segment_sb;
+
         next_ci
     }
 
@@ -1323,23 +1451,26 @@ impl<'a> CigarParser<'a> {
             return ci;
         }
 
-        let mut desc_string = if let Some(sub) =
-            query_seq.get(*read_pos_inc..*read_pos_inc + cigar_element_len as usize)
+        // F4 scratch: reuse take/put-back buffers instead of allocating per
+        // insertion occurrence. Values identical; only allocation sites change.
+        let mut desc_string = std::mem::take(&mut self.scratch_f4_desc);
+        desc_string.clear();
+        if let Some(sub) = query_seq.get(*read_pos_inc..*read_pos_inc + cigar_element_len as usize)
         {
-            String::from_utf8_lossy(sub).into_owned()
-        } else {
-            String::new()
-        };
+            desc_string.push_str(&String::from_utf8_lossy(sub));
+        }
 
-        let mut quality_string = if let Some(sub) =
-            query_qual.get(*read_pos_inc..*read_pos_inc + cigar_element_len as usize)
+        let mut quality_string = std::mem::take(&mut self.scratch_f4_qual);
+        quality_string.clear();
+        if let Some(sub) = query_qual.get(*read_pos_inc..*read_pos_inc + cigar_element_len as usize)
         {
-            String::from_utf8_lossy(sub).into_owned()
-        } else {
-            String::new()
-        };
+            quality_string.push_str(&String::from_utf8_lossy(sub));
+        }
 
-        let mut ss = String::new();
+        let mut ss = std::mem::take(&mut self.scratch_f4_seg1);
+        ss.clear();
+        let mut quality_segment_sb = std::mem::take(&mut self.scratch_f4_seg2);
+        quality_segment_sb.clear();
         let mut multoffs = 0;
         let mut multoffp = 0;
         let mut nmoff = 0;
@@ -1351,7 +1482,7 @@ impl<'a> CigarParser<'a> {
             let indel_len = cigar_elements[ci + 2].0 as usize;
             let begin = *read_pos_inc + cigar_element_len as usize;
 
-            let mut quality_segment_sb = String::new();
+            quality_segment_sb.clear();
             self.append_segments(
                 query_seq,
                 query_qual,
@@ -1574,11 +1705,12 @@ impl<'a> CigarParser<'a> {
                     .reference
                     .get_base(&self.region.chr, insertion_position as u32)
                 {
-                    let ref_base_str = (ref_base_char as char).to_string();
+                    let mut exotic_allele = String::new();
+                    let ref_base_str = allele_key(ref_base_char, &mut exotic_allele);
                     let ttref = get_variation(
                         &mut self.non_insertion_variants,
                         insertion_position,
-                        &ref_base_str,
+                        ref_base_str,
                     );
                     ttref.inc_dir(direction);
                     ttref.cnt += 1;
@@ -1598,6 +1730,12 @@ impl<'a> CigarParser<'a> {
         *read_pos_inc += cigar_element_len as usize + *offset as usize + multoffp;
         *read_pos_exc += cigar_element_len as usize + *offset as usize + multoffp;
         *start += *offset as i32 + multoffs as i32;
+
+        // F4 put-back: buffers refilled on next call.
+        self.scratch_f4_desc = desc_string;
+        self.scratch_f4_qual = quality_string;
+        self.scratch_f4_seg1 = ss;
+        self.scratch_f4_seg2 = quality_segment_sb;
 
         next_ci
     }
@@ -1858,9 +1996,10 @@ impl<'a> CigarParser<'a> {
                     .unwrap_or(33)
                     .saturating_sub(33);
                 if q_base == ref_base && base_qual > 10 {
-                    let ref_base_str = (ref_base as char).to_string();
+                    let mut exotic_allele = String::new();
+                    let ref_base_str = allele_key(ref_base, &mut exotic_allele);
                     let variation =
-                        get_variation(&mut self.non_insertion_variants, *start - 1, &ref_base_str);
+                        get_variation(&mut self.non_insertion_variants, *start - 1, ref_base_str);
                     variation.add_cnt(
                         direction,
                         element_len as i32,
@@ -1981,9 +2120,10 @@ impl<'a> CigarParser<'a> {
                     .unwrap_or(33)
                     .saturating_sub(33);
                 if q_base == ref_base && base_qual > 10 {
-                    let ref_base_str = (ref_base as char).to_string();
+                    let mut exotic_allele = String::new();
+                    let ref_base_str = allele_key(ref_base, &mut exotic_allele);
                     let variation =
-                        get_variation(&mut self.non_insertion_variants, *start, &ref_base_str);
+                        get_variation(&mut self.non_insertion_variants, *start, ref_base_str);
                     variation.add_cnt(
                         direction,
                         total_length_including_soft_clipped - *read_pos_exc as i32,
@@ -2213,8 +2353,7 @@ impl<'a> CigarParser<'a> {
         let mate_dir_num = if mate_direction { 1 } else { -1 };
         let min_d = 75;
 
-        let mate_ref_name = get_mate_reference_name(record);
-        if mate_ref_name == "=" {
+        if crate::bam::mate_reference_is_equal(record) {
             let mut mlen = record.template_length;
 
             if let Some(ref mc) = record.mc {
@@ -2630,8 +2769,9 @@ impl<'a> CigarParser<'a> {
                 }
             }
         } else if query_qual.len() > 15 {
-            // Inter-chr translocation
-            let mchr = mate_ref_name;
+            // Inter-chr translocation (rare: mate mapped elsewhere — the only
+            // path that needs the owned name, built here instead of per read).
+            let mchr = get_mate_reference_name(record);
             // ports CigarParser.java:2208-2215: the MC-tag and mate-MQ(MQ tag) filters,
             // not the read's own mapping quality.
             let sv_allowed = !(record
@@ -2895,7 +3035,7 @@ fn add_sv(
 }
 
 fn is_paired_and_same_chromosome(record: &SamRecord) -> bool {
-    (record.flags & 0x1) != 0 && get_mate_reference_name(record) == "="
+    (record.flags & 0x1) != 0 && crate::bam::mate_reference_is_equal(record)
 }
 
 fn get_reference_length(cigar: &[(u32, CigarKind)]) -> u32 {
@@ -3151,6 +3291,17 @@ pub fn pileup_into(
         discordant_count: 0,
         total_reads,
         duplicate_reads,
+        scratch_seq: Vec::new(),
+        scratch_qual: Vec::new(),
+        scratch_cigar_str: String::new(),
+        scratch_elements: Vec::new(),
+        scratch_s: String::new(),
+        scratch_ss: String::new(),
+        scratch_splice_key: String::new(),
+        scratch_f4_desc: String::new(),
+        scratch_f4_qual: String::new(),
+        scratch_f4_seg1: String::new(),
+        scratch_f4_seg2: String::new(),
     };
 
     for record in records {

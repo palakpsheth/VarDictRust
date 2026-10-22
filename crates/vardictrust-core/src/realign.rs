@@ -697,19 +697,32 @@ pub fn no_passing_reads(
     let dlen = end - start;
     let dlenqr = format!("{}D", dlen);
 
-    for bam in bams {
+    'bam: for bam in bams {
         let bam_path = std::path::Path::new(bam);
         let start_pos0 = Pos0((start - 1).max(0) as u32);
         let end_pos0 = Pos0(end as u32);
-        let records = match crate::bam::query_region(bam_path, chr, start_pos0, end_pos0, config) {
-            Ok(recs) => recs,
-            Err(e) => {
-                log::warn!("no_passing_reads: failed to query bam '{}': {}", bam, e);
-                continue;
-            }
-        };
+        // Streaming counterpart of the old query_region-Vec shape: the whole
+        // BAM is still skipped on any query/read error, exactly as the old
+        // collecting query did.
+        let mut feed =
+            match crate::bam::query_region_iter(bam_path, chr, start_pos0, end_pos0, config) {
+                Ok(feed) => feed,
+                Err(e) => {
+                    log::warn!("no_passing_reads: failed to query bam '{}': {}", bam, e);
+                    continue;
+                }
+            };
 
-        for record in records {
+        let mut record = crate::bam::SamRecord::new();
+        loop {
+            match feed.next_into(&mut record) {
+                Ok(false) => break,
+                Ok(true) => {}
+                Err(e) => {
+                    log::warn!("no_passing_reads: failed to query bam '{}': {}", bam, e);
+                    continue 'bam;
+                }
+            }
             let cigar_str = crate::bam::get_cigar_string(&record.cigar);
             if cigar_str.contains(&dlenqr) {
                 continue;
@@ -3972,24 +3985,7 @@ fn partial_pipeline(
         return Ok(());
     }
 
-    let mut records = Vec::new();
     let mut preprocessor = crate::bam::RecordPreprocessor::new();
-    for bam in bams {
-        let bam_path = std::path::Path::new(bam);
-        let raw_records = crate::bam::query_region(
-            bam_path,
-            chr,
-            Pos0(tts.max(0) as u32),
-            Pos0(tte as u32),
-            config,
-        )?;
-        for r in raw_records {
-            if preprocessor.preprocess_record(&r, config) {
-                records.push(r);
-            }
-        }
-    }
-
     let pileup_region = crate::regions::Region {
         chr: chr.to_string(),
         start: Pos1(tts.max(1) as u32),
@@ -3997,17 +3993,31 @@ fn partial_pipeline(
         gene: String::new(),
         amplicon: None,
     };
+    // Streaming counterpart of the old query_region-Vec + pileup shape: one
+    // lazy pass per BAM, BAM1-then-BAM2, through a single preprocessor into a
+    // single parser. Peak memory stays flat in candidate-window depth.
+    let mut parser =
+        crate::cigar::parse::CigarParser::new(reference, &pileup_region, config, true, 0, 0, 0);
+    for bam in bams {
+        let bam_path = std::path::Path::new(bam);
+        let mut feed = crate::bam::query_region_iter(
+            bam_path,
+            chr,
+            Pos0(tts.max(0) as u32),
+            Pos0(tte as u32),
+            config,
+        )?;
+        let mut r = crate::bam::SamRecord::new();
+        while feed.next_into(&mut r)? {
+            if preprocessor.preprocess_record(&r, config) {
+                parser.parse_cigar(&r)?;
+            }
+        }
+    }
+    parser.total_reads = preprocessor.total_reads as i32;
+    parser.duplicate_reads = preprocessor.duplicate_reads as i32;
 
-    let var_data = crate::cigar::parse::pileup(
-        &records,
-        reference,
-        &pileup_region,
-        config,
-        true,
-        preprocessor.total_reads as i32,
-        preprocessor.duplicate_reads as i32,
-        0,
-    )?;
+    let var_data = parser.into_variation_data();
 
     for (pos, cov) in var_data.ref_coverage {
         *ref_coverage.entry(pos).or_insert(0) += cov;
