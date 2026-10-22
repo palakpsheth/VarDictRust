@@ -216,6 +216,7 @@ bash harness/rgate.sh
 # Slice big BAMs for the dev loop:
 bash harness/slice.sh <in.bam> <chr:start-end> <out.bam>
 ```
+**Pinned baseline reuse (never re-prove the same oracle twice):** VarDictJava is EOL/archived — its pin is immutable, so recorded java outputs are permanent goldens. vardictcpp stays on its pinned version; bump it only by deliberate decision (then regenerate cpp goldens). Reuse a baseline IFF inputs + flags + pin are identical, verified by sha manifest; otherwise rerun the oracle and store the new outputs + manifest entry (new tests run only their own cells, then append). Deterministic outputs gate; host-dependent measurements (wall/RSS) are recorded with host context, never gated across hosts.
 
 ## 15. Definition of done (every change)
 1. `cargo fmt --all`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test` all pass.
