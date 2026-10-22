@@ -4024,19 +4024,19 @@ fn partial_pipeline(
 
     let var_data = parser.into_variation_data();
 
-    // G3 (mate-window ownership): under the flag, merged mate-window keys
-    // stay within the owning tile's active range — `region` is the tile's
-    // active range in tiled runs, the whole BED region otherwise — so a
-    // merging tile plants no rows owned by another tile. Flag-off keeps the
+    // G3 (mate-window ownership): under the flag, merged mate-window
+    // VARIANT keys stay within the owning tile's active range — `region` is
+    // the tile's active range in tiled runs, the whole BED region otherwise
+    // — so a merging tile plants no rows owned by another tile. Only variant
+    // maps are gated: ref_coverage/soft-clips are trigger state, not
+    // emission (the builder iterates variant maps), and gating them would
+    // perturb downstream sv-trigger firing vs Java. Flag-off keeps the
     // ungated Java merge (byte-identical).
     let gate_mate = config.fix_mate_window_ownership;
     let mate_owned =
         |pos: i32| !gate_mate || (pos >= region.start.0 as i32 && pos <= region.end.0 as i32);
 
     for (pos, cov) in var_data.ref_coverage {
-        if !mate_owned(pos) {
-            continue;
-        }
         *ref_coverage.entry(pos).or_insert(0) += cov;
     }
     // ports VariationRealigner.java:1663-1671 / CigarParser.java:1922-1927: Java's
@@ -4044,15 +4044,9 @@ fn partial_pipeline(
     // ACCUMULATE into existing entries. Merge by summing all counts; never
     // discard fresh counts when the position already exists.
     for (pos, sc) in var_data.soft_clips_5_end {
-        if !mate_owned(pos) {
-            continue;
-        }
         merge_sclip(soft_clips_5_end.entry(pos).or_insert_with(Sclip::new), sc);
     }
     for (pos, sc) in var_data.soft_clips_3_end {
-        if !mate_owned(pos) {
-            continue;
-        }
         merge_sclip(soft_clips_3_end.entry(pos).or_insert_with(Sclip::new), sc);
     }
     for (pos, var_map) in var_data.non_insertion_variants {

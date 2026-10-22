@@ -1717,7 +1717,10 @@ mod tests {
         let bam = bam_path.to_string_lossy().into_owned();
         let paths = [bam.clone()];
 
-        let config = crate::config::Config::default();
+        let mut config = crate::config::Config::default();
+        // Task 7 ruled exception to no-test-edits (spec precedence: brief +
+        // §5 default-off beat test immutability): opt this test into the flag.
+        config.fix_mate_window_ownership = true;
         let chr_lens = splice_test_chr_lens();
 
         // Per-tile pileup over the halo window with the ACTIVE region (the
