@@ -17,6 +17,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 TESTS_DIR="$SCRIPT_DIR/tests"
 
+# Isolate every self-test from the real pinned store: tests rebuild temp fixtures (edge-case BAMs, VCF-header
+# cases) whose cells must never be pinned into scratch/golden-store.
+export GOLDEN_STORE_DIR="$(mktemp -d)"
+trap 'rm -rf "$GOLDEN_STORE_DIR"' EXIT
+unset GOLDEN_MODE
+
 if ! command -v bcftools &>/dev/null; then
   export PATH="/home/palak/miniconda3/envs/g4-tools/bin:$PATH"
 fi
