@@ -24,6 +24,7 @@ From v1.1.0, each correction is opt-in via `--fix <id>` (default off) and lands 
 | `ub5` | [UB-5](docs/upstream-bugs.md#ub-5-simplemode-structural-variant-split-read-requirement-var2vcf_validpl197-205) | `var2vcf_valid.pl` drops `<DUP>`/`<INV>` when `splitreads < 1` | Preserve discordant-pair SVs lacking split reads |
 | `ub6` | [UB-6](docs/upstream-bugs.md#ub-6-mate-pair-boundary-parameter-in-mark_dup_sv-structuralvariantsprocessorjava1468) | `markDUPSV` pre-decrements `pe`, truncating window boundary by 1 bp | Pass pre-decrement `pe + 1` window boundary |
 | `ub7` | [UB-7](docs/upstream-bugs.md#ub-7-multi-allelic-site-single-winner-collapsing-var2vcf_validpl135-205) | Single-winner multi-allelic collapsing drops secondary alleles without `-A` | Retain secondary qualifying alleles in multi-allelic VCF records |
+| `splice-tile-ownership` | Rust-only tiling artifact (no upstream issue — Java counts each junction once over the whole region, unconditionally: `CigarParser.java:86-110`, key `CigarParser.java:1289-1301`) | `-i` splice junctions double-counted under default 100 kb tiling: every tile whose halo-reaching reads touch a junction emits it | Emit each splice junction from exactly one tile (anchor-ownership by key `A`, region-edge clamped). Graduation: RFC + GIAB/SEQC2 truth concordance pending (Tier-3 rule above) |
 
 ---
 
