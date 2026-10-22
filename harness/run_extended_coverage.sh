@@ -486,12 +486,12 @@ if [[ ! -s "$TMPDIR/m17_diff.txt" && ! -s "$TMPDIR/m17_rust.out" ]]; then
     echo "MATCH ($M17_VARS variants on stderr, 0 diffs)"
 # Advisory cpp third arm (gate-flag mirror; stderr compared like the gate).
 M17_CPP_EXIT=0
-bash "$ROOT_DIR/harness/golden_store.sh" raw --kind cpp --label ext-m17 --out "$TMPDIR/m17_cpp.out" --err-out "$TMPDIR/m17_cpp.err" --input "$B37_FA" --input "$B37_FA.fai" --input "$BAM_NA24385" -- conda run -n vardict-oracle vardictcpp -G "$B37_FA" -b "$BAM_NA24385" -R 20:20178900-20179200 -f 0.01 --DP ERR -th "$THREADS" || M17_CPP_EXIT=$?
+bash "$ROOT_DIR/harness/golden_store.sh" raw --kind cpp --label ext-m17 --out "$TMPDIR/m17_cpp.out" --err-out "$TMPDIR/m17_cpp.err" --input "$B37_FA" --input "$B37_FA.fai" --input "$BAM_NA24385" -- conda run -n vardict-oracle vardictcpp -G "$B37_FA" -b "$BAM_NA24385" -R 20:20178900-20179200 -f 0.01 --DP ERR -th "$THREADS" -N m17 || M17_CPP_EXIT=$?
 if [[ "$M17_CPP_EXIT" -eq 0 ]]; then
     if diff -q "$TMPDIR/m17_java.err" "$TMPDIR/m17_cpp.err" > /dev/null 2>&1; then
         echo "CPP: MATCH (m17 printer-redirect)"
     else
-        echo "CPP-MISMATCH: m17 printer-redirect (stderr differs)"
+        echo "CPP-MISMATCH: m17 printer-redirect (stderr differs; vardictcpp ignores -DP, CPP-10)"
     fi
 elif conda run -n vardict-oracle vardictcpp --version >/dev/null 2>&1; then
     echo "CPP: SKIP: m17 printer-redirect (cpp engine exit $M17_CPP_EXIT)"

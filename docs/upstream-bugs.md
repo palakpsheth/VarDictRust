@@ -331,6 +331,7 @@ Cpp numbers live in evidence `extra` (`cpp_version`, `cpp_head`, `cpp_f1`,
 | [CPP-7](#cpp-7) | CHROM resolved from reference, not BAM, on duplicate-name FASTAs | b37 extended-coverage cells |
 | [CPP-8](#cpp-8) | N-REF null rows emitted in native `-vcf` | b37 extended-coverage cells |
 | [CPP-9](#cpp-9) | Caller deltas: MNP joining + large SV alleles | hg002/exome/hg008 Tier-2 arms |
+| [CPP-10](#cpp-10) | `-DP`/`--DP` parsed but ignored (printer stays stdout) | Extended-coverage M17 cell |
 
 <a id="cpp-1"></a>
 ### CPP-1 — VCF header provenance + `END` INFO key
@@ -429,3 +430,14 @@ but the absolute rates are small, mode-dependent (germline MNP vs somatic
 SV), and paper-protocol data (hg19 WES, operating-point filtered) may
 differ — no accuracy-rank claim is made from inter-caller comparison alone
 (the Fig-3 no-truth caveat applies). Recorded advisory, never gating.
+
+<a id="cpp-10"></a>
+### CPP-10 — -DP parsed but ignored
+
+Pinned vardictcpp accepts `-DP`/`--DP ERR` (listed under "Accepted (parsed,
+VarDict-compatible; not all affect output yet)" in `vardictcpp --help`) but still
+prints variants to stdout, so the M17 stderr comparison reports an advisory
+`CPP-MISMATCH`; Java and Rust both honour it (M17 gate arm MATCH); advisory only,
+no engine impact; reproduced with `-N` (without `-N` cpp exits 1 — that was a
+harness omission fixed here).
+
