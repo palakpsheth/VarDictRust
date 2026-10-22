@@ -4030,17 +4030,18 @@ fn partial_pipeline(
 
     let var_data = parser.into_variation_data();
 
-    // G3 (mate-window ownership): merged mate-window VARIANT keys stay
-    // within the owning tile's active range — `region` is the tile's active
-    // range in tiled runs, the whole BED region otherwise — so a merging
-    // tile plants no rows owned by another tile. Only variant maps are
-    // gated: ref_coverage/soft-clips are trigger state, not emission (the
-    // builder iterates variant maps), and gating them would perturb
-    // downstream sv-trigger firing vs Java. Accepted corner (see
-    // task-7-report fix round 1/5 appendix F2): a realign-planted SV key
-    // outside the whole BED with no sv-path re-plant is dropped where the
-    // sv path would clamp-keep it — empirically absent (whole-region
-    // off==on everywhere proven).
+    // G3 (mate-window ownership): attribute — don't drop — merged
+    // mate-window VARIANT keys outside the owning tile's active range
+    // (`region` is the tile's active range in tiled runs, the whole BED
+    // region otherwise). The builder ownership gate (post-find_all_sv, with
+    // SV data + both ranges + edge clamping) adjudicates emission, exactly
+    // like the sv-path `merge_planted` set. Dropping here zeroes mate
+    // ref-support for out-of-BED SV rows (corpus CandDel5SV, MarkingDUPSV,
+    // DelOutOfBound): at merge time temp maps never carry SV data (the
+    // parser only uses svflag for duprate), so no merge-time predicate can
+    // spare them. Only variant maps are attributed: ref_coverage/soft-clips
+    // are trigger state, not emission (the builder iterates variant maps),
+    // and gating them would perturb downstream sv-trigger firing vs Java.
     let mate_owned = |pos: i32| pos >= region.start.0 as i32 && pos <= region.end.0 as i32;
 
     for (pos, cov) in var_data.ref_coverage {
@@ -4057,10 +4058,10 @@ fn partial_pipeline(
         merge_sclip(soft_clips_3_end.entry(pos).or_insert_with(Sclip::new), sc);
     }
     for (pos, var_map) in var_data.non_insertion_variants {
-        if !mate_owned(pos) {
-            continue;
-        }
         let dest = non_insertion_variants.compute_if_absent(pos, |_| VariationMap::new());
+        if !mate_owned(pos) {
+            dest.merge_planted = true;
+        }
         for (allele, var) in var_map.map {
             dest.map
                 .entry(allele)
@@ -4097,10 +4098,10 @@ fn partial_pipeline(
         }
     }
     for (pos, var_map) in var_data.insertion_variants {
-        if !mate_owned(pos) {
-            continue;
-        }
         let dest = insertion_variants.compute_if_absent(pos, |_| VariationMap::new());
+        if !mate_owned(pos) {
+            dest.merge_planted = true;
+        }
         for (allele, var) in var_map.map {
             dest.map
                 .entry(allele)

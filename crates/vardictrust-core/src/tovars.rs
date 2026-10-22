@@ -211,8 +211,12 @@ impl<'a> ToVarsBuilder<'a> {
             }
 
             // G3 (mate-window ownership): a key planted by a mate-window
-            // merge emits only from its owning tile.
-            if var_data.merge_planted.contains(&position)
+            // merge emits only from its owning tile. Provenance comes from
+            // the sv-path `merge_planted` set or the realign-path per-map
+            // flag (set when the merge plants outside the merging tile's
+            // range); the clamp rule owns every key in single-region runs,
+            // so out-of-BED SV rows keep full mate ref-support there.
+            if (var_data.merge_planted.contains(&position) || var_map.merge_planted)
                 && !merge_key_owned(var_data.owning_range, self.region, position)
             {
                 continue;
