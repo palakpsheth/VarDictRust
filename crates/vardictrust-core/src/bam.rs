@@ -105,13 +105,13 @@ impl SamRecord {
         }
 
         self.alignment_start = if let Some(pos) = record.alignment_start() {
-            pos.ok().map(|p| Pos1(p.get() as u32))
+            pos.ok().map(crate::types::Pos1::from)
         } else {
             None
         };
 
         self.alignment_end = if let Some(pos) = record.alignment_end() {
-            pos.ok().map(|p| Pos1(p.get() as u32))
+            pos.ok().map(crate::types::Pos1::from)
         } else {
             None
         };
@@ -164,7 +164,7 @@ impl SamRecord {
         }
 
         self.mate_alignment_start = if let Some(pos) = record.mate_alignment_start() {
-            pos.ok().map(|p| Pos1(p.get() as u32))
+            pos.ok().map(crate::types::Pos1::from)
         } else {
             None
         };
@@ -271,13 +271,13 @@ impl SamRecord {
             });
 
         let alignment_start = if let Some(pos) = record.alignment_start() {
-            pos.ok().map(|p| Pos1(p.get() as u32))
+            pos.ok().map(crate::types::Pos1::from)
         } else {
             None
         };
 
         let alignment_end = if let Some(pos) = record.alignment_end() {
-            pos.ok().map(|p| Pos1(p.get() as u32))
+            pos.ok().map(crate::types::Pos1::from)
         } else {
             None
         };
@@ -320,7 +320,7 @@ impl SamRecord {
             });
 
         let mate_alignment_start = if let Some(pos) = record.mate_alignment_start() {
-            pos.ok().map(|p| Pos1(p.get() as u32))
+            pos.ok().map(crate::types::Pos1::from)
         } else {
             None
         };
@@ -543,7 +543,7 @@ pub fn query_region(
                 }
             };
 
-            let start_pos = start.0 + 1;
+            let start_pos = start.to_one_based().0;
             let end_pos = end.0;
             if start_pos > end_pos {
                 return Ok(Vec::new());
@@ -774,7 +774,7 @@ pub fn query_region_iter(
 
     // Preserve the query_region empty-window short-circuit: no filesystem
     // reads and no region parse, just an empty feed.
-    let start_pos = start.0 + 1;
+    let start_pos = start.to_one_based().0;
     let end_pos = end.0;
     if start_pos > end_pos {
         return Ok(match reader {
