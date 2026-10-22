@@ -4024,21 +4024,18 @@ fn partial_pipeline(
 
     let var_data = parser.into_variation_data();
 
-    // G3 (mate-window ownership): under the flag, merged mate-window
-    // VARIANT keys stay within the owning tile's active range — `region` is
-    // the tile's active range in tiled runs, the whole BED region otherwise
-    // — so a merging tile plants no rows owned by another tile. Only variant
-    // maps are gated: ref_coverage/soft-clips are trigger state, not
-    // emission (the builder iterates variant maps), and gating them would
-    // perturb downstream sv-trigger firing vs Java. Flag-off keeps the
-    // ungated Java merge (byte-identical). Accepted corner (see
+    // G3 (mate-window ownership): merged mate-window VARIANT keys stay
+    // within the owning tile's active range — `region` is the tile's active
+    // range in tiled runs, the whole BED region otherwise — so a merging
+    // tile plants no rows owned by another tile. Only variant maps are
+    // gated: ref_coverage/soft-clips are trigger state, not emission (the
+    // builder iterates variant maps), and gating them would perturb
+    // downstream sv-trigger firing vs Java. Accepted corner (see
     // task-7-report fix round 1/5 appendix F2): a realign-planted SV key
-    // outside the whole BED with no sv-path re-plant is dropped flag-on
-    // where the sv path would clamp-keep it — empirically absent (whole-region
+    // outside the whole BED with no sv-path re-plant is dropped where the
+    // sv path would clamp-keep it — empirically absent (whole-region
     // off==on everywhere proven).
-    let gate_mate = config.fix_mate_window_ownership;
-    let mate_owned =
-        |pos: i32| !gate_mate || (pos >= region.start.0 as i32 && pos <= region.end.0 as i32);
+    let mate_owned = |pos: i32| pos >= region.start.0 as i32 && pos <= region.end.0 as i32;
 
     for (pos, cov) in var_data.ref_coverage {
         *ref_coverage.entry(pos).or_insert(0) += cov;

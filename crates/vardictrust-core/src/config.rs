@@ -123,17 +123,6 @@ pub struct Config {
     pub omit_end_tag: bool,
     /// Include Ns in depth calculation (-K)
     pub include_n: bool,
-    /// Post-1.0 correction `--fix splice-tile-ownership`: halo-wide splice
-    /// pileup with single-owner emission (default: false = v1.0.2 behavior).
-    pub fix_splice_tile_ownership: bool,
-    /// Post-1.0 correction `--fix mate-window-ownership` (G3): mate-window
-    /// `partial_pipeline` merges plant keys outside the merging tile's active
-    /// range; flag-on records planted keys and emits each from exactly one
-    /// tile (owning-range gate with Task-3-style edge clamping). Default off
-    /// (v1.0 behavior); tests opt in explicitly. The CLI maps `--fix
-    /// mate-window-ownership` to this field — see `Cli::try_into_config` —
-    /// so tool output stays byte-identical unless the flag is passed.
-    pub fix_mate_window_ownership: bool,
 }
 
 impl Default for Config {
@@ -201,8 +190,6 @@ impl Default for Config {
             unique_mode_second_in_pair_enabled: false,
             omit_end_tag: true,
             include_n: false,
-            fix_splice_tile_ownership: false,
-            fix_mate_window_ownership: false,
         }
     }
 }
