@@ -270,5 +270,93 @@ class TestHardening(StoreCase):
         self.assertFalse((cell / ".lock").exists())
 
 
+class TestIntegrity(StoreCase):
+    def pinned(self, env=None):
+        self.assertEqual(self.raw(env=env).returncode, 0)
+        (self.tmp / "out.txt").unlink()
+        return self.manifests()[0].parent
+
+    def test_verify_passes_on_a_clean_store_and_on_an_empty_one(self):
+        self.assertEqual(self.cli("verify").returncode, 0)
+        self.pinned()
+        r = self.cli("verify")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("1 cell", r.stdout)
+
+    def test_corrupt_artifact_fails_verify_then_reruns_live_and_repins(self):
+        cell = self.pinned()
+        art = cell / "0" / "out"
+        art.write_bytes(art.read_bytes() + b"X")
+        v = self.cli("verify")
+        self.assertEqual(v.returncode, 1)
+        self.assertIn("out", v.stderr)
+        self.assertEqual(self.raw().returncode, 0)
+        self.assertEqual(self.runs(), 2, "corrupt hit must fall through to a live run")
+        self.assertEqual((self.tmp / "out.txt").read_text(), "payload\n")
+        self.assertEqual(self.events()[-1], "CORRUPT")
+        self.assertEqual(self.cli("verify").returncode, 0)
+        self.assertEqual(len(json.loads((cell / "manifest.json").read_text())["entries"]), 2)
+
+    def test_verify_reports_a_corrupt_manifest_instead_of_crashing(self):
+        cell = self.pinned()
+        (cell / "manifest.json").write_text("{ not json")
+        v = self.cli("verify")
+        self.assertEqual(v.returncode, 1)
+        self.assertIn("is corrupt", v.stderr)
+
+    @unittest.skipUnless(HAS_TIME, "needs /usr/bin/time")
+    def test_the_time_sidecar_is_hash_protected_and_replayed_verbatim(self):
+        t1, t2 = self.tmp / "t1", self.tmp / "t2"
+        cell = self.pinned(env={"GOLDEN_TIME_OUT": str(t1)})
+        self.assertIn("Elapsed (wall clock)", t1.read_text())
+        self.raw(env={"GOLDEN_TIME_OUT": str(t2)})
+        self.assertEqual(self.runs(), 1)
+        self.assertEqual(t2.read_text(), t1.read_text())
+        (cell / "0" / "time").write_text("Elapsed (wall clock) time (h:mm:ss or m:ss): 0:00.01\n")
+        v = self.cli("verify")
+        self.assertEqual(v.returncode, 1, "an edited time file must fail verify")
+        self.assertIn("'time'", v.stderr)
+        self.raw(env={"GOLDEN_TIME_OUT": str(t2)})
+        self.assertEqual(self.runs(), 2, "an edited time file must never be replayed into a perf gate")
+        self.assertEqual(self.events()[-1], "CORRUPT")
+
+    def test_tombstone_forces_a_live_rerun_and_is_append_only(self):
+        cell = self.pinned()
+        t = self.cli("tombstone", cell.name, "bad baseline")
+        self.assertEqual(t.returncode, 0, t.stderr)
+        self.assertEqual(self.raw().returncode, 0)
+        self.assertEqual(self.runs(), 2)
+        entries = json.loads((cell / "manifest.json").read_text())["entries"]
+        self.assertEqual([bool(e.get("tombstone")) for e in entries], [False, True, False])
+        self.assertEqual(self.cli("tombstone", "deadbeefdeadbeef", "x").returncode, 1)
+
+    def test_list_shows_label_and_status(self):
+        cell = self.pinned()
+        self.assertRegex(self.cli("list").stdout, rf"{cell.name}\tjava\tt\tlive\t1")
+        self.cli("tombstone", cell.name, "r")
+        self.assertRegex(self.cli("list").stdout, rf"{cell.name}\tjava\tt\ttombstoned\t2")
+
+    def test_stats_ratio_min_hit_gate_and_failures_count_as_live(self):
+        self.assertEqual(self.cli("stats", "--min-hit", "0.5").returncode, 1, "no events must not pass a floor")
+        self.raw(env={"GOLDEN_RUN_ID": "r1"})
+        for _ in range(3):
+            self.raw(env={"GOLDEN_RUN_ID": "r2"})
+        r = self.cli("stats", "--run", "r2", "--min-hit", "0.9")
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertIn("3 hit / 0 live", r.stdout)
+        self.raw(script="exit 3", env={"GOLDEN_RUN_ID": "r2"})
+        r = self.cli("stats", "--run", "r2", "--min-hit", "0.9")
+        self.assertEqual(r.returncode, 1, "a failed cell must lower the hit-rate, not vanish from it")
+        self.assertIn("3 hit / 1 live", r.stdout)
+
+    def test_stats_json_lists_the_events_of_a_run(self):
+        self.raw(env={"GOLDEN_RUN_ID": "j"})
+        self.raw(env={"GOLDEN_RUN_ID": "j"})
+        d = json.loads(self.cli("stats", "--run", "j", "--json").stdout)
+        self.assertEqual((d["run"], d["hit"], d["live"]), ("j", 1, 1))
+        self.assertEqual([e["event"] for e in d["events"]], ["MISS", "HIT"])
+        self.assertEqual(d["events"][0]["key"], self.manifests()[0].parent.name)
+
+
 if __name__ == "__main__":
     unittest.main()

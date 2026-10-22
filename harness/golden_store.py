@@ -482,7 +482,95 @@ def cmd_raw(args):
     return run_cached(kind, label, inputs, cmd, cmd, out, err_out, capture_stdout=True)
 
 
-VERBS = {"raw": cmd_raw}
+def cmd_verify(args):
+    quiet = "--quiet" in args
+    bad, n = [], 0
+    for mf in sorted((store_dir() / "cells").glob("*/manifest.json")):
+        key = mf.parent.name
+        try:
+            got = live_entry(key)
+        except SystemExit as e:
+            bad.append(str(e))
+            continue
+        if got is None:
+            continue
+        idx, e = got
+        n += 1
+        for role, rec in e["artifacts"].items():
+            if not _restore_file(mf.parent / str(idx), rec):
+                bad.append(f"{key} ({e.get('label')}): artifact '{role}' fails its sha256")
+    for line in bad:
+        print(f"golden_store: CORRUPT {line}", file=sys.stderr)
+    if not quiet or bad:
+        print(f"golden-store verify: {n} cell(s) checked, {len(bad)} corrupt")
+    return 1 if bad else 0
+
+
+def cmd_stats(args):
+    run = min_hit = None
+    as_json = False
+    it = iter(args)
+    for o in it:
+        if o == "--json":
+            as_json = True
+            continue
+        v = next(it, None)
+        if o == "--run" and v:
+            run = v
+        elif o == "--min-hit" and v:
+            min_hit = float(v)
+        else:
+            sys.exit("golden_store: stats [--run ID] [--min-hit RATIO] [--json]")
+    hit = live = 0
+    events = []
+    log = store_dir() / "stats.log"
+    for line in (log.read_text().splitlines() if log.exists() else []):
+        f = line.split("\t")
+        if len(f) != 6 or (run and f[1] != run):
+            continue
+        if f[2] == "HIT":
+            hit += 1
+        elif f[2] in EVENTS_LIVE:
+            live += 1
+        else:
+            continue
+        events.append({"event": f[2], "kind": f[3], "key": f[4], "label": f[5]})
+    total = hit + live
+    ratio = hit / total if total else 0.0
+    if as_json:
+        print(json.dumps({"run": run, "hit": hit, "live": live, "events": events}, sort_keys=True))
+    else:
+        print(f"golden-store: {hit} hit / {live} live ({ratio:.1%} served from store)")
+    return 1 if min_hit is not None and (total == 0 or ratio < min_hit) else 0
+
+
+def cmd_list(args):
+    for mf in sorted((store_dir() / "cells").glob("*/manifest.json")):
+        m = load_manifest(mf.parent.name)
+        last = m["entries"][-1] if m["entries"] else {}
+        label = next((e.get("label") for e in reversed(m["entries"]) if e.get("label")), "-")
+        kind = next((e.get("kind") for e in reversed(m["entries"]) if e.get("kind")), "-")
+        status = "tombstoned" if last.get("tombstone") else "live"
+        print(f"{m['key']}\t{kind}\t{label}\t{status}\t{len(m['entries'])}")
+    return 0
+
+
+def cmd_tombstone(args):
+    if len(args) < 2:
+        sys.exit("golden_store: tombstone KEY REASON")
+    key, reason = args[0], " ".join(args[1:])
+    if not (cell_dir(key) / "manifest.json").exists():
+        print(f"golden_store: unknown cell key {key}", file=sys.stderr)
+        return 1
+    with _cell_lock(key):
+        m = load_manifest(key)
+        m["entries"].append({"tombstone": True, "reason": reason, "date_utc": now_utc()})
+        atomic_write(cell_dir(key) / "manifest.json", json.dumps(m, indent=1, sort_keys=True).encode())
+    return 0
+
+
+VERBS = {"raw": cmd_raw, "verify": cmd_verify, "stats": cmd_stats, "list": cmd_list,
+         "tombstone": cmd_tombstone}
 
 
 def main(argv):
