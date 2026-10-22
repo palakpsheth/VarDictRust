@@ -952,7 +952,7 @@ fn run_somatic(config: &config::Config) -> Result<(), VardictError> {
             };
 
             let mut reference = crate::reference::Reference::new();
-            let var_data1 = run_pipeline_on_records(
+            let mut var_data1 = run_pipeline_on_records(
                 std::slice::from_ref(&bam1_path),
                 &tile.chr,
                 tile.halo_start.to_zero_based(),
@@ -967,6 +967,28 @@ fn run_somatic(config: &config::Config) -> Result<(), VardictError> {
             )?;
 
             let max_read_length_bam1 = var_data1.max_read_length;
+
+            // Inter-pass trim (fix round 1): build aligned1 now and drop
+            // pass-1's pileup maps before pass 2 runs. Postprocess needs only
+            // the aligned map + splice set + max read length, so the full
+            // VariationData (the depth-scaled live state) is freed here
+            // instead of lingering through pass 2's churn.
+            let builder_region = crate::regions::Region {
+                chr: tile.chr.clone(),
+                start: tile.original_start,
+                end: tile.original_end,
+                gene: tile.gene.clone(),
+                amplicon: tile.amplicon.clone(),
+            };
+            let builder1 = crate::tovars::ToVarsBuilder::new(
+                &reference,
+                &builder_region,
+                &chromosomes_lengths_clone,
+                &config_clone,
+            );
+            let aligned1 = builder1.build_aligned_variants(&var_data1);
+            let splice1 = std::mem::take(&mut var_data1.splice);
+            drop(var_data1);
             // Process BAM2 (normal), seeded with BAM1's maxReadLength; the
             // reference loaded above is reused (no second get_reference).
             let var_data2 = run_pipeline_on_records(
@@ -985,23 +1007,8 @@ fn run_somatic(config: &config::Config) -> Result<(), VardictError> {
 
             // Use max of both BAMs' maxReadLength
             let _combined_max_rl = max_read_length_bam1.max(var_data2.max_read_length);
-            let builder_region = crate::regions::Region {
-                chr: tile.chr.clone(),
-                start: tile.original_start,
-                end: tile.original_end,
-                gene: tile.gene.clone(),
-                amplicon: tile.amplicon.clone(),
-            };
 
-            // Build aligned variants for both BAMs
-            let builder1 = crate::tovars::ToVarsBuilder::new(
-                &reference,
-                &builder_region,
-                &chromosomes_lengths_clone,
-                &config_clone,
-            );
-            let aligned1 = builder1.build_aligned_variants(&var_data1);
-
+            // Build aligned variants for BAM2 (aligned1 already built above).
             let builder2 = crate::tovars::ToVarsBuilder::new(
                 &reference,
                 &builder_region,
@@ -1009,6 +1016,9 @@ fn run_somatic(config: &config::Config) -> Result<(), VardictError> {
                 &config_clone,
             );
             let aligned2 = builder2.build_aligned_variants(&var_data2);
+            // Inter-pass trim (cont.): var_data2 is fully consumed here;
+            // drop its maps before postprocess.
+            drop(var_data2);
 
             // Run somatic postprocess with combineAnalysis pipeline callback
             let bam1 = bam1_path_for_combine.clone();
@@ -1054,9 +1064,9 @@ fn run_somatic(config: &config::Config) -> Result<(), VardictError> {
                 &builder_region,
                 &aligned1,
                 &aligned2,
-                &var_data1.splice,
+                &splice1,
                 Some(&pipeline_fn),
-                var_data1.max_read_length,
+                max_read_length_bam1,
             );
 
             let mut lines = Vec::new();

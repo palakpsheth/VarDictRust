@@ -34,6 +34,15 @@ impl Pos1 {
     }
 }
 
+/// Noodles `Position` is 1-based by construction — document the invariant
+/// once here instead of wrapping raw `u32`s at every call site (§6).
+impl From<noodles::core::Position> for Pos1 {
+    #[inline]
+    fn from(p: noodles::core::Position) -> Self {
+        Pos1(p.get() as u32)
+    }
+}
+
 impl fmt::Display for Pos0 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
