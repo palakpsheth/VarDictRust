@@ -100,7 +100,8 @@ fn allele_key(base: u8, buf: &mut String) -> &str {
         b'C' => "C",
         b'G' => "G",
         b'T' => "T",
-        b'N' | b'n' => "N",
+        b'N' => "N",
+        b'n' => "n",
         b'a' => "a",
         b'c' => "c",
         b'g' => "g",
@@ -3336,6 +3337,28 @@ pub fn pileup_into(
 mod tests {
     use super::*;
     use crate::types::Pos1;
+
+    #[test]
+    fn allele_key_preserves_case() {
+        // `allele_key` must return identical keys to `(base as char).to_string()`
+        // (Java char cast): lowercase `n` stays `"n"`, never folds to `"N"`.
+        let mut buf = String::new();
+        for (base, want) in [
+            (b'A', "A"),
+            (b'C', "C"),
+            (b'G', "G"),
+            (b'T', "T"),
+            (b'N', "N"),
+            (b'n', "n"),
+            (b'a', "a"),
+            (b'c', "c"),
+            (b'g', "g"),
+            (b't', "t"),
+        ] {
+            assert_eq!(allele_key(base, &mut buf), want);
+        }
+        assert_eq!(allele_key(b'X', &mut buf), "X");
+    }
 
     #[test]
     fn mismatch_gate() {
