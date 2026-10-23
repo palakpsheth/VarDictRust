@@ -33,6 +33,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Variant` clones and `HashSet<String>` allocations in
   `is_the_same_variation_on_ref`, and guarded `realignlgdel` soft-clip loops on
   live `cnt`/`used`/consensus length before cloning `Sclip`.
+- Reference k-mer seed indexing (`O-4 + O-5`): replaced `HashMap<Vec<u8>, Vec<u32>>`
+  with `SeedMap` (`SeedKey` 17-byte inline key + `SeedPositions::One/Many` +
+  `FxBuildHasher`) and eliminated redundant `bases.clone()` and `LoadedRegion`
+  `String` clones in `get_reference`.
 
 ## [1.0.2] - 2026-10-17
 

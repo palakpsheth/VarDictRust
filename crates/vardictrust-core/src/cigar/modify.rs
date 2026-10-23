@@ -5,9 +5,10 @@
 
 use crate::cigar::ModifiedCigar;
 use crate::config::Config;
+use crate::reference::SeedMap;
 use crate::util::{char_at, reverse_complement, subseq};
 use regex::Regex;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::LazyLock;
 
 // Define all the regexes from Patterns.java
@@ -321,7 +322,7 @@ pub struct CigarModifier<'a> {
     query_qual: Vec<u8>,
     reference: &'a [u8],
     ref_start: i32,
-    seed: &'a HashMap<Vec<u8>, Vec<u32>>,
+    seed: &'a SeedMap,
     indel: i32,
     max_read_length: i32,
     config: &'a Config,
@@ -336,7 +337,7 @@ impl<'a> CigarModifier<'a> {
         query_qual: impl Into<Vec<u8>>,
         reference: &'a [u8],
         ref_start: i32,
-        seed: &'a HashMap<Vec<u8>, Vec<u32>>,
+        seed: &'a SeedMap,
         indel: i32,
         max_read_length: i32,
         config: &'a Config,
@@ -411,33 +412,31 @@ impl<'a> CigarModifier<'a> {
                     if let Some(sseq) = subseq(&this.query_seq, 0, cigar_element) {
                         let sequence = rc_seq(sseq);
                         if let Some(rc_seed) = sequence.get(0..SEED_2) {
-                            if let Some(positions) = this.seed.get(rc_seed) {
-                                if let [ref_pos_u32] = positions.as_slice() {
-                                    let ref_pos = *ref_pos_u32 as i32;
-                                    if (this.position - ref_pos).abs() < 2 * this.max_read_length {
-                                        this.cigar_str =
-                                            RE_START_S.replace(&this.cigar_str, "").into_owned();
-                                        (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
-                                        if this.query_seq.len() >= cigar_element {
-                                            this.query_seq = this
-                                                .query_seq
-                                                .get(cigar_element..)
-                                                .unwrap_or_default()
-                                                .to_vec();
-                                            this.query_qual = this
-                                                .query_qual
-                                                .get(cigar_element..)
-                                                .unwrap_or_default()
-                                                .to_vec();
-                                        }
-                                        if this.config.verbose {
-                                            eprintln!(
-                                                "{} at 5' is a chimeric at {} by SEED {}",
-                                                String::from_utf8_lossy(&sequence),
-                                                this.position,
-                                                SEED_2
-                                            );
-                                        }
+                            if let Some([ref_pos_u32]) = this.seed.get(rc_seed) {
+                                let ref_pos = *ref_pos_u32 as i32;
+                                if (this.position - ref_pos).abs() < 2 * this.max_read_length {
+                                    this.cigar_str =
+                                        RE_START_S.replace(&this.cigar_str, "").into_owned();
+                                    (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
+                                    if this.query_seq.len() >= cigar_element {
+                                        this.query_seq = this
+                                            .query_seq
+                                            .get(cigar_element..)
+                                            .unwrap_or_default()
+                                            .to_vec();
+                                        this.query_qual = this
+                                            .query_qual
+                                            .get(cigar_element..)
+                                            .unwrap_or_default()
+                                            .to_vec();
+                                    }
+                                    if this.config.verbose {
+                                        eprintln!(
+                                            "{} at 5' is a chimeric at {} by SEED {}",
+                                            String::from_utf8_lossy(&sequence),
+                                            this.position,
+                                            SEED_2
+                                        );
                                     }
                                 }
                             }
@@ -455,35 +454,31 @@ impl<'a> CigarModifier<'a> {
                             if sequence.len() >= SEED_2 {
                                 let start_seed = sequence.len() - SEED_2;
                                 if let Some(rc_seed) = sequence.get(start_seed..) {
-                                    if let Some(positions) = this.seed.get(rc_seed) {
-                                        if let [ref_pos_u32] = positions.as_slice() {
-                                            let ref_pos = *ref_pos_u32 as i32;
-                                            if (this.position - ref_pos).abs()
-                                                < 2 * this.max_read_length
-                                            {
-                                                this.cigar_str = RE_END_2S
-                                                    .replace(&this.cigar_str, "")
-                                                    .into_owned();
-                                                (has_d, has_i, has_s) =
-                                                    cigar_flags(&this.cigar_str);
-                                                this.query_seq = this
-                                                    .query_seq
-                                                    .get(0..start_idx)
-                                                    .unwrap_or_default()
-                                                    .to_vec();
-                                                this.query_qual = this
-                                                    .query_qual
-                                                    .get(0..start_idx)
-                                                    .unwrap_or_default()
-                                                    .to_vec();
-                                                if this.config.verbose {
-                                                    eprintln!(
-                                                        "{} at 3' is a chimeric at {} by SEED {}",
-                                                        String::from_utf8_lossy(&sequence),
-                                                        this.position,
-                                                        SEED_2
-                                                    );
-                                                }
+                                    if let Some([ref_pos_u32]) = this.seed.get(rc_seed) {
+                                        let ref_pos = *ref_pos_u32 as i32;
+                                        if (this.position - ref_pos).abs()
+                                            < 2 * this.max_read_length
+                                        {
+                                            this.cigar_str =
+                                                RE_END_2S.replace(&this.cigar_str, "").into_owned();
+                                            (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
+                                            this.query_seq = this
+                                                .query_seq
+                                                .get(0..start_idx)
+                                                .unwrap_or_default()
+                                                .to_vec();
+                                            this.query_qual = this
+                                                .query_qual
+                                                .get(0..start_idx)
+                                                .unwrap_or_default()
+                                                .to_vec();
+                                            if this.config.verbose {
+                                                eprintln!(
+                                                    "{} at 3' is a chimeric at {} by SEED {}",
+                                                    String::from_utf8_lossy(&sequence),
+                                                    this.position,
+                                                    SEED_2
+                                                );
                                             }
                                         }
                                     }
@@ -1754,7 +1749,6 @@ impl<'a> CigarModifier<'a> {
 mod tests {
     use super::*;
     use crate::config::Config;
-    use std::collections::HashMap;
 
     fn get_default_config() -> Config {
         Config::default()
@@ -1763,7 +1757,7 @@ mod tests {
     #[test]
     fn strip_del() {
         let config = get_default_config();
-        let seed = HashMap::new();
+        let seed = SeedMap::new();
         let reference = b"";
         // 1. Starts with D: should adjust position and strip leading D.
         let cm = CigarModifier::new(
@@ -1786,7 +1780,7 @@ mod tests {
     #[test]
     fn ins_to_sclip() {
         let config = get_default_config();
-        let seed = HashMap::new();
+        let seed = SeedMap::new();
         let reference = b"";
         // 2. Starts or ends with I: should replace with S.
         let cm = CigarModifier::new(
@@ -1809,7 +1803,7 @@ mod tests {
     #[test]
     fn lead_trail_softclip_indel() {
         let config = get_default_config();
-        let seed = HashMap::new();
+        let seed = SeedMap::new();
         let reference = b"";
         // Starts with softclip followed by insertion or deletion: should combine them.
         let cm = CigarModifier::new(
@@ -1848,7 +1842,7 @@ mod tests {
     #[test]
     fn double_dels_ins() {
         let config = get_default_config();
-        let seed = HashMap::new();
+        let seed = SeedMap::new();
         let reference = b"";
         // Combine adjacent deletions
         let cm = CigarModifier::new(
@@ -1886,7 +1880,7 @@ mod tests {
     #[test]
     fn crash_corpus_fixes() {
         let config = get_default_config();
-        let seed = HashMap::new();
+        let seed = SeedMap::new();
         let reference = b"";
         // Feed various weird CIGAR strings that used to crash VarDictJava due to bounds check errors
         let inputs = vec!["0M", "100D", "100I", "5M100D5M", "5M100I5M", "1M1I1D1M"];
@@ -1911,7 +1905,7 @@ mod tests {
     #[test]
     fn test_pr402_cigar_java_throws() {
         let config = get_default_config();
-        let seed = HashMap::new();
+        let seed = SeedMap::new();
         let query_seq = b"AATCCTCTGTTTGGAAACCAGCCCGATTCAAGGAGGGTTCTGATGCACTGCGGTGAATTTTTGGCAATGAGCGGGCCAGCAGCTCAATAGAGGCGAGAATCTACAAAAAAAAAAAAAAAAAAAAGAAAAAAGAAAAAAAAAG";
         let query_qual = b"BBFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF=74??44444444FFFFFFFFFFFFFFFFFFFFFFFFFFFFF";
         let ref_seq = b"AATCCTCTGTTTGGAAACCAGCCCGATTCAAGGAGGGTTCTGATGCACTGCGGTGAATTTTTGGCAATGAGCGGGCCAGCAGCTCAATAGAGGCGAGAATCTACAAAAAAAAAAAGAAAAAAAAAAGAAAAAAAAAGAAAAAAGAAAAAAAAAGAAAGAAAGAAAAAGAAAAAACAGAAAGAAGAATGAAAATCTGGGTG";
@@ -1946,7 +1940,7 @@ mod tests {
     #[test]
     fn test_siblings_non_positive_operator_lengths_trigger_java_throws() {
         let config = get_default_config();
-        let seed = HashMap::new();
+        let seed = SeedMap::new();
         let ref_seq = b"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
         let query_seq = b"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
         let query_qual = vec![b'I'; query_seq.len()];
@@ -2070,7 +2064,7 @@ mod tests {
         query_qual: &[u8],
         reference: &[u8],
         ref_start: i32,
-        seed: &HashMap<Vec<u8>, Vec<u32>>,
+        seed: &SeedMap,
         indel: i32,
         max_read_length: i32,
         config: &Config,
@@ -2169,7 +2163,7 @@ mod tests {
         let config = get_default_config();
         let ref_hetero = b"ACGTACGTACGTAAACCCGGGTTTACGTACGTACGTAAACCCGGGTTTACGTACGTACGTAAACCCGGGTTTACGTACGTACGTAAACCCGGGTTTACGTACGTACGTAAACCCGGGTTTACGTACGTACGTAAACCCGGGTTTACGTACGTACGT";
         let ref_homo = b"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
-        let mut seed: HashMap<Vec<u8>, Vec<u32>> = HashMap::new();
+        let mut seed = SeedMap::new();
         // Populate seed with 12-mer at start of rc(query_seq) so chimeric 5'/3' soft-clip triggers
         let sclip_15 = b"ACGTACGTACGTACG";
         let rc_15 = rc_seq(sclip_15);

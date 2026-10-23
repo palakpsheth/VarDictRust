@@ -1953,13 +1953,9 @@ impl<'a> CigarParser<'a> {
                 } else if cigar_element_len as usize >= 17 {
                     let sequence =
                         get_reverse_complemented_sequence(record, 0, cigar_element_len as usize);
-                    if sequence.len() >= 17 {
-                        let reverse_complemented_seed = &sequence[..17];
-                        if let Some(positions) = self.reference.seed.get(reverse_complemented_seed)
-                        {
-                            if positions.len() == 1
-                                && (*start - positions[0] as i32).abs() < 2 * self.max_read_length
-                            {
+                    if let Some(reverse_complemented_seed) = sequence.get(..17) {
+                        if let Some([pos0]) = self.reference.seed.get(reverse_complemented_seed) {
+                            if (*start - *pos0 as i32).abs() < 2 * self.max_read_length {
                                 *read_pos_inc += cigar_element_len as usize;
                                 *offset = 0;
                                 *start = position;
@@ -2082,25 +2078,24 @@ impl<'a> CigarParser<'a> {
                         -(cigar_element_len as isize),
                         cigar_element_len as usize,
                     );
-                    if sequence.len() >= 17 {
-                        let reverse_complemented_seed = &sequence[sequence.len() - 17..];
-                        if let Some(positions) = self.reference.seed.get(reverse_complemented_seed)
-                        {
-                            if positions.len() == 1
-                                && (*start - positions[0] as i32).abs() < 2 * self.max_read_length
+                    if let Some(start_idx) = sequence.len().checked_sub(17) {
+                        if let Some(reverse_complemented_seed) = sequence.get(start_idx..) {
+                            if let Some([pos0]) = self.reference.seed.get(reverse_complemented_seed)
                             {
-                                *read_pos_inc += cigar_element_len as usize;
-                                *offset = 0;
-                                *start = position;
-                                if self.config.verbose {
-                                    eprintln!(
-                                        "{} at 3' is a chimeric at {} by SEED 17",
-                                        String::from_utf8_lossy(&sequence),
-                                        start
-                                    );
-                                }
+                                if (*start - *pos0 as i32).abs() < 2 * self.max_read_length {
+                                    *read_pos_inc += cigar_element_len as usize;
+                                    *offset = 0;
+                                    *start = position;
+                                    if self.config.verbose {
+                                        eprintln!(
+                                            "{} at 3' is a chimeric at {} by SEED 17",
+                                            String::from_utf8_lossy(&sequence),
+                                            start
+                                        );
+                                    }
 
-                                return;
+                                    return;
+                                }
                             }
                         }
                     }
