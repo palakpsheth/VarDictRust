@@ -508,9 +508,9 @@ code {{ font-family: monospace; background-color: rgba(175, 184, 193, 0.2); padd
             h1_text = page.inner_text("h1")
             self.assertIn("VarDictRust Roadmap", h1_text)
 
-            # 2. Verify all 3 tables exist
+            # 2. Verify all 4 tables exist
             tables = page.query_selector_all("table")
-            self.assertGreaterEqual(len(tables), 3, "ROADMAP.md should contain at least 3 tables.")
+            self.assertGreaterEqual(len(tables), 4, "ROADMAP.md should contain at least 4 tables.")
 
             # Table 1: v1.1.0 candidates (4 columns, >= 10 rows)
             table1 = tables[0]
@@ -519,19 +519,26 @@ code {{ font-family: monospace; background-color: rgba(175, 184, 193, 0.2); padd
             rows1 = table1.query_selector_all("tbody tr")
             self.assertGreaterEqual(len(rows1), 10)
 
-            # Table 2: Needs a specification first (4 columns, >= 7 rows)
+            # Table 2: Landed as Default (4 columns, >= 2 rows)
             table2 = tables[1]
             headers2 = [th.inner_text().strip() for th in table2.query_selector_all("th")]
             self.assertEqual(len(headers2), 4)
             rows2 = table2.query_selector_all("tbody tr")
-            self.assertGreaterEqual(len(rows2), 7)
+            self.assertGreaterEqual(len(rows2), 2)
 
-            # Table 3: Open upstream PRs reviewed (3 columns, >= 4 rows)
+            # Table 3: Needs a specification first (4 columns, >= 7 rows)
             table3 = tables[2]
             headers3 = [th.inner_text().strip() for th in table3.query_selector_all("th")]
-            self.assertEqual(len(headers3), 3)
+            self.assertEqual(len(headers3), 4)
             rows3 = table3.query_selector_all("tbody tr")
-            self.assertGreaterEqual(len(rows3), 4)
+            self.assertGreaterEqual(len(rows3), 7)
+
+            # Table 4: Open upstream PRs reviewed (3 columns, >= 4 rows)
+            table4 = tables[3]
+            headers4 = [th.inner_text().strip() for th in table4.query_selector_all("th")]
+            self.assertEqual(len(headers4), 3)
+            rows4 = table4.query_selector_all("tbody tr")
+            self.assertGreaterEqual(len(rows4), 4)
 
             # 3. Verify links point to AstraZeneca-NGS issues/PRs or docs
             links = page.query_selector_all("a")

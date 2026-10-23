@@ -99,6 +99,7 @@ echo "CPP: SKIP: m1 splicing (-i splice-table surface unsupported by vardictcpp)
 # -----------------------------------------------------------------------------
 # Mode 2: Inversion SV (<INV>)
 # -----------------------------------------------------------------------------
+# Note: Java oracle call intentionally keeps its original argv (RegionBuilder defaults 4-col BED to zeroBased=true; preserving argv keeps pinned golden cells).
 echo -n "[2/17] Testing Inversion SV (<INV>) on melanoma cancer WGS... "
 bash "$ROOT_DIR/harness/golden_store.sh" oracle ext-m2 "$HG19_FA" "$BAM_INVSV" "$BED_S8" "$TMPDIR/m2_java.vcf" Colo829 -f 0.001 -L 1000 -c 1 -S 2 -E 3 -g 4 > /dev/null 2>&1
 "$TARGET_BIN" -G "$HG19_FA" -b "$BAM_INVSV" -N Colo829 -f 0.001 -L 1000 -c 1 -S 2 -E 3 -g 4 -z "$BED_S8" -th "$THREADS" > "$TMPDIR/m2_rust.vcf" 2>/dev/null
@@ -107,6 +108,21 @@ python3 "$ROOT_DIR/harness/compare_vcf.py" --strict-bytes "$TMPDIR/m2_java.vcf" 
 M2_VARS=$(grep -v "^#" "$TMPDIR/m2_rust.vcf" | wc -l)
 echo "MATCH ($M2_VARS variants, 0 diffs)"
 PASSED=$((PASSED + 1))
+# Advisory cpp third arm (same flags as gate arms above; never gates).
+M2_CPP_EXIT=0
+bash "$ROOT_DIR/harness/golden_store.sh" cpp ext-m2 "$HG19_FA" "$BAM_INVSV" "$BED_S8" "$TMPDIR/m2_cpp.vcf" Colo829 -f 0.001 -L 1000 -c 1 -S 2 -E 3 -g 4 -z -th "$THREADS" 2>"$TMPDIR/m2_cpp.err" || M2_CPP_EXIT=$?
+if [[ "$M2_CPP_EXIT" -eq 0 ]]; then
+    if python3 "$ROOT_DIR/harness/compare_vcf.py" --min-variants 1 "$TMPDIR/m2_java.vcf" "$TMPDIR/m2_cpp.vcf" > "$TMPDIR/m2_cpp_cmp.txt" 2>&1; then
+        echo "CPP: MATCH (m2 inv-sv)"
+    else
+        echo "CPP-MISMATCH: m2 inv-sv ($(head -n 1 "$TMPDIR/m2_cpp_cmp.txt"))"
+    fi
+elif conda run -n vardict-oracle vardictcpp --version >/dev/null 2>&1; then
+    first_err=$(grep -vE '^(ERROR conda\.cli|cpp_chunk=|[[:space:]]*$)' "$TMPDIR/m2_cpp.err" 2>/dev/null | head -n 1 | tr -d '\r' | cut -c 1-140 || true)
+    echo "CPP: SKIP: m2 inv-sv (cpp engine exit $M2_CPP_EXIT${first_err:+: $first_err})"
+else
+    echo "CPP: SKIP: m2 inv-sv (vardictcpp not available in conda env vardict-oracle)"
+fi
 
 # -----------------------------------------------------------------------------
 # Mode 3: Duplication SV (<DUP>)
@@ -119,6 +135,21 @@ python3 "$ROOT_DIR/harness/compare_vcf.py" --strict-bytes "$TMPDIR/m3_java.vcf" 
 M3_VARS=$(grep -v "^#" "$TMPDIR/m3_rust.vcf" | wc -l)
 echo "MATCH ($M3_VARS variants, 0 diffs)"
 PASSED=$((PASSED + 1))
+# Advisory cpp third arm (same flags as gate arms above; never gates).
+M3_CPP_EXIT=0
+bash "$ROOT_DIR/harness/golden_store.sh" cpp ext-m3 "$HG19_FA" "$BAM_DUPSV" "$BED_S9" "$TMPDIR/m3_cpp.vcf" Colo829 -f 0.001 -L 1000 -c 1 -S 2 -E 3 -g 4 -z -th "$THREADS" 2>"$TMPDIR/m3_cpp.err" || M3_CPP_EXIT=$?
+if [[ "$M3_CPP_EXIT" -eq 0 ]]; then
+    if python3 "$ROOT_DIR/harness/compare_vcf.py" --min-variants 1 "$TMPDIR/m3_java.vcf" "$TMPDIR/m3_cpp.vcf" > "$TMPDIR/m3_cpp_cmp.txt" 2>&1; then
+        echo "CPP: MATCH (m3 dup-sv)"
+    else
+        echo "CPP-MISMATCH: m3 dup-sv ($(head -n 1 "$TMPDIR/m3_cpp_cmp.txt"))"
+    fi
+elif conda run -n vardict-oracle vardictcpp --version >/dev/null 2>&1; then
+    first_err=$(grep -vE '^(ERROR conda\.cli|cpp_chunk=|[[:space:]]*$)' "$TMPDIR/m3_cpp.err" 2>/dev/null | head -n 1 | tr -d '\r' | cut -c 1-140 || true)
+    echo "CPP: SKIP: m3 dup-sv (cpp engine exit $M3_CPP_EXIT${first_err:+: $first_err})"
+else
+    echo "CPP: SKIP: m3 dup-sv (vardictcpp not available in conda env vardict-oracle)"
+fi
 
 # -----------------------------------------------------------------------------
 # Mode 4: CRISPR Target Sites (-J, -j)
@@ -147,7 +178,7 @@ fi
 M4_CPP_SAMPLE=$(awk -F'\t' 'NR==1{print $1}' "$TMPDIR/m4_java.var")
 if [[ -z "$M4_CPP_SAMPLE" ]]; then M4_CPP_SAMPLE=$(basename "$BAM_CRISPR" .bam); fi
 M4_CPP_EXIT=0
-bash "$ROOT_DIR/harness/golden_store.sh" raw --kind cpp --label ext-m4 --out "$TMPDIR/m4_cpp.var" --input "$HG19_FA" --input "$HG19_FA.fai" --input "$BAM_CRISPR" -- conda run -n vardict-oracle vardictcpp -G "$HG19_FA" -b "$BAM_CRISPR" -R chr20:50454281-50455444 -f 0.001 -J 50454941 -j 25 -c 1 -S 2 -E 3 -g 4 -th "$THREADS" -N "$M4_CPP_SAMPLE" 2>/dev/null || M4_CPP_EXIT=$?
+bash "$ROOT_DIR/harness/golden_store.sh" raw --kind cpp --label ext-m4 --out "$TMPDIR/m4_cpp.var" --err-out "$TMPDIR/m4_cpp.err" --input "$HG19_FA" --input "$HG19_FA.fai" --input "$BAM_CRISPR" -- conda run -n vardict-oracle vardictcpp -G "$HG19_FA" -b "$BAM_CRISPR" -R chr20:50454281-50455444 -f 0.001 -J 50454941 -j 25 -c 1 -S 2 -E 3 -g 4 -th "$THREADS" -N "$M4_CPP_SAMPLE" || M4_CPP_EXIT=$?
 if [[ "$M4_CPP_EXIT" -eq 0 ]]; then
     if python3 "$ROOT_DIR/harness/compare_var.py" --eps 1e-6 "$TMPDIR/m4_java.var" "$TMPDIR/m4_cpp.var" > "$TMPDIR/m4_cpp_cmp.txt" 2>&1; then
         echo "CPP: MATCH (m4 crispr, $(cat "$TMPDIR/m4_cpp_cmp.txt"))"
@@ -155,7 +186,8 @@ if [[ "$M4_CPP_EXIT" -eq 0 ]]; then
         echo "CPP-MISMATCH: m4 crispr ($(head -n 1 "$TMPDIR/m4_cpp_cmp.txt"))"
     fi
 elif conda run -n vardict-oracle vardictcpp --version >/dev/null 2>&1; then
-    echo "CPP: SKIP: m4 crispr (cpp engine exit $M4_CPP_EXIT)"
+    first_err=$(grep -vE '^(ERROR conda\.cli|cpp_chunk=|[[:space:]]*$)' "$TMPDIR/m4_cpp.err" 2>/dev/null | head -n 1 | tr -d '\r' | cut -c 1-140 || true)
+    echo "CPP: SKIP: m4 crispr (cpp engine exit $M4_CPP_EXIT${first_err:+: $first_err})"
 else
     echo "CPP: SKIP: m4 crispr (vardictcpp not available in conda env vardict-oracle)"
 fi
@@ -181,7 +213,8 @@ if [[ "$M5_CPP_EXIT" -eq 0 ]]; then
         echo "CPP-MISMATCH: m5 paired-unique ($(head -n 1 "$TMPDIR/m5_cpp_cmp.txt"))"
     fi
 elif conda run -n vardict-oracle vardictcpp --version >/dev/null 2>&1; then
-    echo "CPP: SKIP: m5 paired-unique (cpp engine exit $M5_CPP_EXIT)"
+    first_err=$(grep -vE '^(ERROR conda\.cli|cpp_chunk=|[[:space:]]*$)' "$TMPDIR/m5_cpp.err" 2>/dev/null | head -n 1 | tr -d '\r' | cut -c 1-140 || true)
+    echo "CPP: SKIP: m5 paired-unique (cpp engine exit $M5_CPP_EXIT${first_err:+: $first_err})"
 else
     echo "CPP: SKIP: m5 paired-unique (vardictcpp not available in conda env vardict-oracle)"
 fi
@@ -207,7 +240,8 @@ if [[ "$M6_CPP_EXIT" -eq 0 ]]; then
         echo "CPP-MISMATCH: m6 adaptor ($(head -n 1 "$TMPDIR/m6_cpp_cmp.txt"))"
     fi
 elif conda run -n vardict-oracle vardictcpp --version >/dev/null 2>&1; then
-    echo "CPP: SKIP: m6 adaptor (cpp engine exit $M6_CPP_EXIT)"
+    first_err=$(grep -vE '^(ERROR conda\.cli|cpp_chunk=|[[:space:]]*$)' "$TMPDIR/m6_cpp.err" 2>/dev/null | head -n 1 | tr -d '\r' | cut -c 1-140 || true)
+    echo "CPP: SKIP: m6 adaptor (cpp engine exit $M6_CPP_EXIT${first_err:+: $first_err})"
 else
     echo "CPP: SKIP: m6 adaptor (vardictcpp not available in conda env vardict-oracle)"
 fi
@@ -233,7 +267,8 @@ if [[ "$M7_CPP_EXIT" -eq 0 ]]; then
         echo "CPP-MISMATCH: m7 realignment-bypass ($(head -n 1 "$TMPDIR/m7_cpp_cmp.txt"))"
     fi
 elif conda run -n vardict-oracle vardictcpp --version >/dev/null 2>&1; then
-    echo "CPP: SKIP: m7 realignment-bypass (cpp engine exit $M7_CPP_EXIT)"
+    first_err=$(grep -vE '^(ERROR conda\.cli|cpp_chunk=|[[:space:]]*$)' "$TMPDIR/m7_cpp.err" 2>/dev/null | head -n 1 | tr -d '\r' | cut -c 1-140 || true)
+    echo "CPP: SKIP: m7 realignment-bypass (cpp engine exit $M7_CPP_EXIT${first_err:+: $first_err})"
 else
     echo "CPP: SKIP: m7 realignment-bypass (vardictcpp not available in conda env vardict-oracle)"
 fi
@@ -259,7 +294,8 @@ if [[ "$M8_CPP_EXIT" -eq 0 ]]; then
         echo "CPP-MISMATCH: m8 sv-bypass ($(head -n 1 "$TMPDIR/m8_cpp_cmp.txt"))"
     fi
 elif conda run -n vardict-oracle vardictcpp --version >/dev/null 2>&1; then
-    echo "CPP: SKIP: m8 sv-bypass (cpp engine exit $M8_CPP_EXIT)"
+    first_err=$(grep -vE '^(ERROR conda\.cli|cpp_chunk=|[[:space:]]*$)' "$TMPDIR/m8_cpp.err" 2>/dev/null | head -n 1 | tr -d '\r' | cut -c 1-140 || true)
+    echo "CPP: SKIP: m8 sv-bypass (cpp engine exit $M8_CPP_EXIT${first_err:+: $first_err})"
 else
     echo "CPP: SKIP: m8 sv-bypass (vardictcpp not available in conda env vardict-oracle)"
 fi
@@ -285,7 +321,8 @@ if [[ "$M9_CPP_EXIT" -eq 0 ]]; then
         echo "CPP-MISMATCH: m9 n-base ($(head -n 1 "$TMPDIR/m9_cpp_cmp.txt"))"
     fi
 elif conda run -n vardict-oracle vardictcpp --version >/dev/null 2>&1; then
-    echo "CPP: SKIP: m9 n-base (cpp engine exit $M9_CPP_EXIT)"
+    first_err=$(grep -vE '^(ERROR conda\.cli|cpp_chunk=|[[:space:]]*$)' "$TMPDIR/m9_cpp.err" 2>/dev/null | head -n 1 | tr -d '\r' | cut -c 1-140 || true)
+    echo "CPP: SKIP: m9 n-base (cpp engine exit $M9_CPP_EXIT${first_err:+: $first_err})"
 else
     echo "CPP: SKIP: m9 n-base (vardictcpp not available in conda env vardict-oracle)"
 fi
@@ -311,7 +348,8 @@ if [[ "$M10_CPP_EXIT" -eq 0 ]]; then
         echo "CPP-MISMATCH: m10 dedup ($(head -n 1 "$TMPDIR/m10_cpp_cmp.txt"))"
     fi
 elif conda run -n vardict-oracle vardictcpp --version >/dev/null 2>&1; then
-    echo "CPP: SKIP: m10 dedup (cpp engine exit $M10_CPP_EXIT)"
+    first_err=$(grep -vE '^(ERROR conda\.cli|cpp_chunk=|[[:space:]]*$)' "$TMPDIR/m10_cpp.err" 2>/dev/null | head -n 1 | tr -d '\r' | cut -c 1-140 || true)
+    echo "CPP: SKIP: m10 dedup (cpp engine exit $M10_CPP_EXIT${first_err:+: $first_err})"
 else
     echo "CPP: SKIP: m10 dedup (vardictcpp not available in conda env vardict-oracle)"
 fi
@@ -337,7 +375,8 @@ if [[ "$M11_CPP_EXIT" -eq 0 ]]; then
         echo "CPP-MISMATCH: m11 shift3 ($(head -n 1 "$TMPDIR/m11_cpp_cmp.txt"))"
     fi
 elif conda run -n vardict-oracle vardictcpp --version >/dev/null 2>&1; then
-    echo "CPP: SKIP: m11 shift3 (cpp engine exit $M11_CPP_EXIT)"
+    first_err=$(grep -vE '^(ERROR conda\.cli|cpp_chunk=|[[:space:]]*$)' "$TMPDIR/m11_cpp.err" 2>/dev/null | head -n 1 | tr -d '\r' | cut -c 1-140 || true)
+    echo "CPP: SKIP: m11 shift3 (cpp engine exit $M11_CPP_EXIT${first_err:+: $first_err})"
 else
     echo "CPP: SKIP: m11 shift3 (vardictcpp not available in conda env vardict-oracle)"
 fi
@@ -363,7 +402,8 @@ if [[ "$M12_CPP_EXIT" -eq 0 ]]; then
         echo "CPP-MISMATCH: m12 mapq ($(head -n 1 "$TMPDIR/m12_cpp_cmp.txt"))"
     fi
 elif conda run -n vardict-oracle vardictcpp --version >/dev/null 2>&1; then
-    echo "CPP: SKIP: m12 mapq (cpp engine exit $M12_CPP_EXIT)"
+    first_err=$(grep -vE '^(ERROR conda\.cli|cpp_chunk=|[[:space:]]*$)' "$TMPDIR/m12_cpp.err" 2>/dev/null | head -n 1 | tr -d '\r' | cut -c 1-140 || true)
+    echo "CPP: SKIP: m12 mapq (cpp engine exit $M12_CPP_EXIT${first_err:+: $first_err})"
 else
     echo "CPP: SKIP: m12 mapq (vardictcpp not available in conda env vardict-oracle)"
 fi
@@ -389,7 +429,8 @@ if [[ "$M13_CPP_EXIT" -eq 0 ]]; then
         echo "CPP-MISMATCH: m13 extend ($(head -n 1 "$TMPDIR/m13_cpp_cmp.txt"))"
     fi
 elif conda run -n vardict-oracle vardictcpp --version >/dev/null 2>&1; then
-    echo "CPP: SKIP: m13 extend (cpp engine exit $M13_CPP_EXIT)"
+    first_err=$(grep -vE '^(ERROR conda\.cli|cpp_chunk=|[[:space:]]*$)' "$TMPDIR/m13_cpp.err" 2>/dev/null | head -n 1 | tr -d '\r' | cut -c 1-140 || true)
+    echo "CPP: SKIP: m13 extend (cpp engine exit $M13_CPP_EXIT${first_err:+: $first_err})"
 else
     echo "CPP: SKIP: m13 extend (vardictcpp not available in conda env vardict-oracle)"
 fi
@@ -416,7 +457,8 @@ if [[ "$M14_CPP_EXIT" -eq 0 ]]; then
         echo "CPP-MISMATCH: m14 segmap ($(head -n 1 "$TMPDIR/m14_cpp_cmp.txt"))"
     fi
 elif conda run -n vardict-oracle vardictcpp --version >/dev/null 2>&1; then
-    echo "CPP: SKIP: m14 segmap (cpp engine exit $M14_CPP_EXIT)"
+    first_err=$(grep -vE '^(ERROR conda\.cli|cpp_chunk=|[[:space:]]*$)' "$TMPDIR/m14_cpp.err" 2>/dev/null | head -n 1 | tr -d '\r' | cut -c 1-140 || true)
+    echo "CPP: SKIP: m14 segmap (cpp engine exit $M14_CPP_EXIT${first_err:+: $first_err})"
 else
     echo "CPP: SKIP: m14 segmap (vardictcpp not available in conda env vardict-oracle)"
 fi
@@ -442,7 +484,8 @@ if [[ "$M15_CPP_EXIT" -eq 0 ]]; then
         echo "CPP-MISMATCH: m15 minmatch ($(head -n 1 "$TMPDIR/m15_cpp_cmp.txt"))"
     fi
 elif conda run -n vardict-oracle vardictcpp --version >/dev/null 2>&1; then
-    echo "CPP: SKIP: m15 minmatch (cpp engine exit $M15_CPP_EXIT)"
+    first_err=$(grep -vE '^(ERROR conda\.cli|cpp_chunk=|[[:space:]]*$)' "$TMPDIR/m15_cpp.err" 2>/dev/null | head -n 1 | tr -d '\r' | cut -c 1-140 || true)
+    echo "CPP: SKIP: m15 minmatch (cpp engine exit $M15_CPP_EXIT${first_err:+: $first_err})"
 else
     echo "CPP: SKIP: m15 minmatch (vardictcpp not available in conda env vardict-oracle)"
 fi
@@ -468,7 +511,8 @@ if [[ "$M16_CPP_EXIT" -eq 0 ]]; then
         echo "CPP-MISMATCH: m16 deldupvar ($(head -n 1 "$TMPDIR/m16_cpp_cmp.txt"))"
     fi
 elif conda run -n vardict-oracle vardictcpp --version >/dev/null 2>&1; then
-    echo "CPP: SKIP: m16 deldupvar (cpp engine exit $M16_CPP_EXIT)"
+    first_err=$(grep -vE '^(ERROR conda\.cli|cpp_chunk=|[[:space:]]*$)' "$TMPDIR/m16_cpp.err" 2>/dev/null | head -n 1 | tr -d '\r' | cut -c 1-140 || true)
+    echo "CPP: SKIP: m16 deldupvar (cpp engine exit $M16_CPP_EXIT${first_err:+: $first_err})"
 else
     echo "CPP: SKIP: m16 deldupvar (vardictcpp not available in conda env vardict-oracle)"
 fi
@@ -494,7 +538,8 @@ if [[ "$M17_CPP_EXIT" -eq 0 ]]; then
         echo "CPP-MISMATCH: m17 printer-redirect (stderr differs; vardictcpp ignores -DP, CPP-10)"
     fi
 elif conda run -n vardict-oracle vardictcpp --version >/dev/null 2>&1; then
-    echo "CPP: SKIP: m17 printer-redirect (cpp engine exit $M17_CPP_EXIT)"
+    first_err=$(grep -vE '^(ERROR conda\.cli|cpp_chunk=|[[:space:]]*$)' "$TMPDIR/m17_cpp.err" 2>/dev/null | head -n 1 | tr -d '\r' | cut -c 1-140 || true)
+    echo "CPP: SKIP: m17 printer-redirect (cpp engine exit $M17_CPP_EXIT${first_err:+: $first_err})"
 else
     echo "CPP: SKIP: m17 printer-redirect (vardictcpp not available in conda env vardict-oracle)"
 fi

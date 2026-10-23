@@ -108,6 +108,29 @@ function run_vcf_compare() {
         diff -u "$out_j" "$out_r" | head -40 || true
         exit 1
     fi
+
+    # 4. Advisory vardictcpp third arm (never gates the slice verdict)
+    local out_c="$TMPDIR/${slice_id}_cpp.vcf"
+    local err_c="$TMPDIR/${slice_id}_cpp.err"
+    local cpp_rc=0
+    if [ "${CPP_SKIP:-0}" = "1" ] || [ "${CPP_SKIP:-0}" = "true" ]; then
+        echo "  CPP: SKIP: $slice_id (disabled via CPP_SKIP=1)"
+    elif bash "$ROOT_DIR/harness/golden_store.sh" cpp "mm-$slice_id" "$ref" "$bam_spec" "$bed_file" "$out_c" "$sample" -z -th "$THREADS" "${extra_args[@]}" 2>"$err_c"; then
+        if [ ! -s "$out_c" ]; then
+            grep '^#' "$out_j" > "$out_c" || printf '##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n' > "$out_c"
+        fi
+        local cpp_cmp
+        if cpp_cmp=$(python3 "$ROOT_DIR/harness/compare_vcf.py" "$out_j" "$out_c" --eps 1e-6 2>&1); then
+            echo "  CPP: MATCH ($slice_id)"
+        else
+            echo "  CPP-MISMATCH: $slice_id ($(head -n 1 <<<"$cpp_cmp"))"
+        fi
+    else
+        cpp_rc=$?
+        local first_err
+        first_err=$(grep -vE '^(ERROR conda\.cli|cpp_chunk=|[[:space:]]*$)' "$err_c" 2>/dev/null | head -n 1 | tr -d '\r' | cut -c 1-140 || true)
+        echo "  CPP: SKIP: $slice_id (cpp engine exit $cpp_rc${first_err:+: $first_err})"
+    fi
 }
 
 function run_rna_slice() {

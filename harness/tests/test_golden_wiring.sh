@@ -41,4 +41,13 @@ fi
 ! grep -q 'waived' harness/acceptance.sh || { echo "FAIL: acceptance.sh still has a waiver path"; fail=1; }
 stale=$(git grep -nIl 'release/waivers' -- . ':!VarDictJava' ':!harness/tests/test_golden_wiring.sh' || true)
 [ -z "$stale" ] || { echo "FAIL: references to the deleted waiver registry remain: $stale"; fail=1; }
+# Task 10b: no bare 'cpp engine exit $VAR' or 'engine failure (exit $VAR)' without stderr reason interpolation
+bare_err=$(grep -nE 'cpp engine exit \$[A-Za-z0-9_]+\)|engine failure \(exit \$[A-Za-z0-9_]+\)' harness/*.sh || true)
+[ -z "$bare_err" ] || { echo "FAIL: bare cpp exit reason without stderr detail: $bare_err"; fail=1; }
+grep -q 'golden_store.sh" cpp ext-m2' harness/run_extended_coverage.sh || { echo "FAIL: ext-m2 cpp arm missing"; fail=1; }
+grep -q 'golden_store.sh" cpp ext-m3' harness/run_extended_coverage.sh || { echo "FAIL: ext-m3 cpp arm missing"; fail=1; }
+grep -q 'golden_store.sh" cpp "mm-\$slice_id"' harness/run_multimodal_slices.sh || { echo "FAIL: multimodal vcf cpp arm missing"; fail=1; }
+grep -q 'cpp_f1_normalized' harness/concordance_germline.sh || { echo "FAIL: concordance_germline missing cpp_f1_normalized"; fail=1; }
+grep -q 'cpp_f1_normalized' harness/concordance_pair.sh || { echo "FAIL: concordance_pair missing cpp_f1_normalized"; fail=1; }
+
 [ $fail -eq 0 ] && echo "PASS test_golden_wiring"; exit $fail

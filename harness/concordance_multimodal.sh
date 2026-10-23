@@ -95,7 +95,10 @@ elif bash "$ROOT_DIR/harness/golden_store.sh" cpp conc-hg005 "$FA_GIAB" "$BAM_HG
 else
   cpp_rc=$?
   if [ "$cpp_rc" -eq 3 ]; then reason=$(head -1 "$TMPDIR/hg005_cpp.err"); echo "  CPP: SKIP: ${reason#SKIP: }";
-  else echo "  CPP: SKIP: cpp engine failure (exit $cpp_rc)"; fi
+  else
+    first_err=$(grep -vE '^(ERROR conda\.cli|cpp_chunk=|[[:space:]]*$)' "$TMPDIR/hg005_cpp.err" 2>/dev/null | head -n 1 | tr -d '\r' | cut -c 1-140 || true)
+    echo "  CPP: SKIP: cpp engine failure (exit $cpp_rc${first_err:+: $first_err})"
+  fi
   CPP_HG005=""
 fi
 
@@ -131,7 +134,10 @@ elif bash "$ROOT_DIR/harness/golden_store.sh" cpp conc-na24385 "$FA_B37" "$BAM_N
 else
   cpp_rc=$?
   if [ "$cpp_rc" -eq 3 ]; then reason=$(head -1 "$TMPDIR/na24385_cpp.err"); echo "  CPP: SKIP: ${reason#SKIP: }";
-  else echo "  CPP: SKIP: cpp engine failure (exit $cpp_rc)"; fi
+  else
+    first_err=$(grep -vE '^(ERROR conda\.cli|cpp_chunk=|[[:space:]]*$)' "$TMPDIR/na24385_cpp.err" 2>/dev/null | head -n 1 | tr -d '\r' | cut -c 1-140 || true)
+    echo "  CPP: SKIP: cpp engine failure (exit $cpp_rc${first_err:+: $first_err})"
+  fi
   CPP_NA24385=""
 fi
 

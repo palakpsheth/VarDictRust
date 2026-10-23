@@ -17,7 +17,7 @@ bash harness/concordance.sh "$J" "$TRUTH" "$BED" "$SDF" "$OUT/java" "$TS" >/dev/
 bash harness/concordance.sh "$R" "$TRUTH" "$BED" "$SDF" "$OUT/rust" "$TS" >/dev/null
 # Third arm: vardictcpp (advisory only; any failure degrades to a loud SKIP —
 # allowed only for the cpp arm; java/rust behavior above is unchanged).
-CPP_F1=""; CPP_NOTE="SKIP: no cpp VCF supplied"
+CPP_F1=""; CPP_F1_NORM=""; CPP_NOTE="SKIP: no cpp VCF supplied"
 if [ "${CPP_SKIP:-0}" = "1" ] || [ "${CPP_SKIP:-0}" = "true" ]; then
   CPP_NOTE="SKIP: disabled via CPP_SKIP=1"
 elif [ -n "$CPP_VCF" ]; then
@@ -40,9 +40,44 @@ elif [ -n "$CPP_VCF" ]; then
              grep -v '^##fileformat=' "$CPP_VCF"; } > "$OUT/cpp.src.vcf" \
         && bash harness/concordance.sh "$OUT/cpp.src.vcf" "$TRUTH" "$BED" "$SDF" "$OUT/cpp" "$TS" >"$OUT/cpp.stdout" \
         && CPP_F1=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["f_measure"])' "$OUT/cpp/summary.json"); } 2>"$OUT/cpp.vcfeval.err"; then
-      :
+      first_chrom=$(grep -v '^#' "$J" | head -n 1 | cut -f 1 || true)
+      target_chr=0
+      [[ "$first_chrom" =~ ^chr ]] && target_chr=1
+      python3 - "$OUT/cpp.src.vcf" "$OUT/cpp.norm.src.vcf" "$target_chr" <<'PY'
+import sys, re
+src, dst, target_chr = sys.argv[1], sys.argv[2], sys.argv[3] == "1"
+n_pattern = re.compile(r'^[Nn]+$')
+with open(src, "r") as fin, open(dst, "w") as fout:
+    for line in fin:
+        if line.startswith("#"):
+            fout.write(line)
+            continue
+        parts = line.split("\t")
+        if len(parts) >= 5:
+            if n_pattern.match(parts[3]):
+                continue
+            chrom = parts[0]
+            if target_chr and not chrom.startswith("chr"):
+                parts[0] = "chr" + chrom
+            elif not target_chr and chrom.startswith("chr"):
+                parts[0] = chrom[3:]
+            fout.write("\t".join(parts))
+        else:
+            fout.write(line)
+PY
+      if cmp -s "$OUT/cpp.src.vcf" "$OUT/cpp.norm.src.vcf"; then
+        CPP_F1_NORM="$CPP_F1"
+      else
+        mkdir -p "$OUT/cpp_norm"
+        if bash harness/concordance.sh "$OUT/cpp.norm.src.vcf" "$TRUTH" "$BED" "$SDF" "$OUT/cpp_norm" "$TS" >"$OUT/cpp_norm.stdout" 2>"$OUT/cpp_norm.vcfeval.err"; then
+          CPP_F1_NORM=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["f_measure"])' "$OUT/cpp_norm/summary.json" 2>/dev/null || echo "$CPP_F1")
+        else
+          CPP_F1_NORM="$CPP_F1"
+        fi
+      fi
     else
-      CPP_NOTE="SKIP: cpp vcfeval failed (see $OUT/cpp.vcfeval.err)"
+      first_err=$(grep -vE '^(ERROR conda\.cli|cpp_chunk=|[[:space:]]*$)' "$OUT/cpp.vcfeval.err" 2>/dev/null | head -n 1 | tr -d '\r' | cut -c 1-140 || true)
+      CPP_NOTE="SKIP: cpp vcfeval failed (${first_err:-see $OUT/cpp.vcfeval.err})"
       rm -rf "$OUT/cpp" "$OUT/cpp.stdout" "$OUT/cpp.src.vcf" "$OUT/cpp.contigs.hdr"
     fi
   fi
@@ -53,13 +88,16 @@ for f in tp tp-baseline fp fn; do cmp -s "$OUT/java/$f.sites" "$OUT/rust/$f.site
 # else loud cpp_skip_reason. The advisory CPP rank line is stdout only.
 CPP_VER=$(conda list -n vardict-oracle vardictcpp 2>/dev/null | awk '/^vardictcpp[[:space:]]/{print "vardictcpp " $2 " " $3 " bioconda"}' || true)
 [ -n "$CPP_VER" ] || CPP_VER="vardictcpp 3 hc52dbad_0 bioconda"
-python3 - "$OUT" "$CPP_F1" "$CPP_NOTE" "$CPP_VER" <<'PY'
+python3 - "$OUT" "$CPP_F1" "$CPP_NOTE" "$CPP_VER" "$CPP_F1_NORM" <<'PY'
 import json, sys
 o, f1, note, ver = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+f1_norm = sys.argv[5] if len(sys.argv) > 5 else ""
 extra = {"java": json.load(open(o + "/java/summary.json")),
          "rust": json.load(open(o + "/rust/summary.json"))}
 if f1:
     extra["cpp_f1"] = float(f1)
+    if f1_norm:
+        extra["cpp_f1_normalized"] = float(f1_norm)
     extra["cpp_version"] = ver
     j, r, c = extra["java"]["f_measure"], extra["rust"]["f_measure"], extra["cpp_f1"]
     print(f"CPP: f1={c} (java={j} rust={r}) rank {1 + (c < j) + (c < r)}/3 -- advisory, gate stays java==rust EQUAL")

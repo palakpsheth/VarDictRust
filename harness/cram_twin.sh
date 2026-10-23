@@ -55,7 +55,8 @@ else
   if [ "$cpp_exit" -eq 3 ]; then
     cpp_line="CPP: SKIP: $(head -1 "$OUT/cpp.err" 2>/dev/null || echo 'vardictcpp unavailable')"
   else
-    cpp_line="CPP: SKIP: engine failure (exit $cpp_exit)"
+    first_err=$(grep -vE '^(ERROR conda\.cli|cpp_chunk=|[[:space:]]*$)' "$OUT/cpp.err" 2>/dev/null | head -n 1 | tr -d '\r' | cut -c 1-140 || true)
+    cpp_line="CPP: SKIP: engine failure (exit $cpp_exit${first_err:+: $first_err})"
   fi
   echo "$cpp_line" > "$OUT/compare_cpp.txt"
 fi
