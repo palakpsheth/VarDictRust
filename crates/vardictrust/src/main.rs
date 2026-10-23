@@ -25,6 +25,7 @@ pub static MALLOC_CONF: &[u8; 60] =
 pub static MALLOC_CONF: &[u8; 105] = b"prof:true,prof_active:true,lg_prof_sample:19,background_thread:true,dirty_decay_ms:5000,muzzy_decay_ms:0\0";
 
 #[cfg(feature = "jemalloc")]
+// Lint false positive: size_of_val(&MALLOC_CONF) intentionally asserts the size of the static reference itself (thin 8-byte pointer vs 16-byte slice).
 #[allow(clippy::size_of_ref)]
 const _: () = assert!(core::mem::size_of_val(&MALLOC_CONF) == core::mem::size_of::<*const u8>());
 
