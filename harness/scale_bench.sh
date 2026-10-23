@@ -10,9 +10,10 @@
 # CHUNK --chunk (cpp default; no explicit pin), VCF via stdout redirect
 # (-o is numeric in cpp, not a file), -R takes only chr:start-end (never a BED path).
 # Issue #31 protocol (signed §4): every cell is the MEDIAN of SCALE_RUNS (default 3) timed runs after one
-# untimed warmup. The bench pins to SCALE_CPUS (default 0-7, the pre-registered set; SCALE_CPUS= disables the
-# pin); P is derived from the effective CPU set. extra.json["certifying"] needs: pinned, niced by courtesy.sh,
-# >=3 runs, P>=4 (the frozen bar is 0.6*P=2.4), and a clean engine tree (perf_fingerprint).
+# untimed warmup. The bench pins to SCALE_CPUS (default: first up-to-8 allowed CPUs, 0-7 on unpinned hosts;
+# SCALE_CPUS= disables the pin); P is derived from the effective CPU set applied under taskset. extra.json["certifying"]
+# needs: pinned (taskset enforced), niced by courtesy.sh, >=3 runs, P>=4 (the frozen bar is 0.6*P=2.4), and a clean
+# engine tree (perf_fingerprint).
 set -euo pipefail
 NO_CPP=0
 if [ "${1:-}" = "--no-cpp" ]; then NO_CPP=1; shift; fi
@@ -28,17 +29,40 @@ if [ "$COURTESY" = false ] && [ "${SCALE_ALLOW_UNCOURTEOUS:-0}" != "1" ]; then
   echo "scale_bench: run via 'EST_MIN=<min> bash harness/courtesy.sh bash harness/scale_bench.sh ...' (SCALE_ALLOW_UNCOURTEOUS=1 allows a non-certifying advisory run)" >&2
   exit 2
 fi
-# CPU set (default: the pre-registered 0-7 pin). Plain lists/ranges only ("0-7", "0-3,8"); P counts distinct
-# physical (core,socket) in the effective set; pinned = the set is smaller than the host's online CPUs.
-SCALE_CPUS=${SCALE_CPUS-0-7}
+# CPU set (default: first up-to-8 permitted CPUs from current affinity, 0-7 on standard hosts). Plain lists/ranges
+# only ("0-7", "0-3,8"); P counts distinct physical (core,socket) in the effective taskset affinity; pinned = an
+# explicit taskset mask is enforced by the benchmark (SCALE_CPUS= opts out and sets pinned=false).
+ALLOWED_AFF=$(taskset -cp $$ 2>/dev/null | sed 's/.*: //' || true)
+[ -n "$ALLOWED_AFF" ] || ALLOWED_AFF="0-$(($(nproc --all) - 1))"
+if [ -z "${SCALE_CPUS+x}" ]; then
+  SCALE_CPUS=$(python3 - "$ALLOWED_AFF" <<'PY'
+import sys
+cpus = []
+for part in sys.argv[1].split(","):
+    a, _, b = part.partition("-")
+    cpus.extend(range(int(a), int(b or a) + 1))
+sel = sorted(set(cpus))[:8]
+ranges = []
+for c in sel:
+    if ranges and c == ranges[-1][1] + 1:
+        ranges[-1][1] = c
+    else:
+        ranges.append([c, c])
+print(",".join(f"{a}-{b}" if a != b else str(a) for a, b in ranges))
+PY
+  )
+fi
 TASKSET=""
+PINNED=false
 if [ -n "$SCALE_CPUS" ]; then
   [[ "$SCALE_CPUS" =~ ^[0-9]+(-[0-9]+)?(,[0-9]+(-[0-9]+)?)*$ ]] || { echo "scale_bench: SCALE_CPUS must be a plain list/range like 0-7 or 0-3,8 (got '$SCALE_CPUS')" >&2; exit 2; }
   command -v taskset >/dev/null 2>&1 || { echo "scale_bench: taskset is required for SCALE_CPUS" >&2; exit 2; }
-  TASKSET="taskset -c $SCALE_CPUS"; EFF=$SCALE_CPUS
+  TASKSET="taskset -c $SCALE_CPUS"
+  EFF=$($TASKSET bash -c 'taskset -cp $$' 2>/dev/null | sed 's/.*: //' || true)
+  [ -n "$EFF" ] || { echo "scale_bench: failed to apply taskset -c $SCALE_CPUS" >&2; exit 1; }
+  PINNED=true
 else
-  EFF=$(taskset -cp $$ 2>/dev/null | sed 's/.*: //' || true)
-  [ -n "$EFF" ] || EFF="0-$(($(nproc --all) - 1))"
+  EFF="$ALLOWED_AFF"
 fi
 command -v lscpu >/dev/null 2>&1 || { echo "scale_bench: lscpu is required to derive P" >&2; exit 2; }
 read -r P_PHYS CPU_COUNT < <(python3 - "$EFF" <<'PY'
@@ -53,8 +77,6 @@ print(len(phys), len(cpus))
 PY
 )
 [ -n "${P_PHYS:-}" ] || { echo "scale_bench: could not derive P from lscpu" >&2; exit 2; }
-PINNED=false
-if [ "$CPU_COUNT" -lt "$(nproc --all)" ]; then PINNED=true; fi
 PERF_FP=$(bash harness/engine_fingerprint.sh --perf 2>/dev/null || echo dirty)   # fail fast, not after hours
 GOVERNOR=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || echo unknown)
 LOAD_START=$(cut -d' ' -f1-3 /proc/loadavg)

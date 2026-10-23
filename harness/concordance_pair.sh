@@ -70,9 +70,13 @@ PY
       else
         mkdir -p "$OUT/cpp_norm"
         if bash harness/concordance.sh "$OUT/cpp.norm.src.vcf" "$TRUTH" "$BED" "$SDF" "$OUT/cpp_norm" "$TS" >"$OUT/cpp_norm.stdout" 2>"$OUT/cpp_norm.vcfeval.err"; then
-          CPP_F1_NORM=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["f_measure"])' "$OUT/cpp_norm/summary.json" 2>/dev/null || echo "$CPP_F1")
+          if ! CPP_F1_NORM=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["f_measure"])' "$OUT/cpp_norm/summary.json" 2>/dev/null); then
+            CPP_F1_NORM=""
+            echo "WARNING: failed to parse cpp_norm/summary.json; omitting cpp_f1_normalized" >&2
+          fi
         else
-          CPP_F1_NORM="$CPP_F1"
+          CPP_F1_NORM=""
+          echo "WARNING: cpp_norm concordance failed; omitting cpp_f1_normalized (see $OUT/cpp_norm.vcfeval.err)" >&2
         fi
       fi
     else

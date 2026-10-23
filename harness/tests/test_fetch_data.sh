@@ -115,4 +115,9 @@ DATA_DIR="$TMPDIR/g4" bash harness/get_hg008_slice.sh --beds-only >/dev/null
 # Span is 9500..35501 (26001 bp > 20000 bp), so engine.bed must split into 2 tiles
 [ "$(wc -l < "$TMPDIR/g4/hg008/engine.bed")" -eq 2 ] || { echo "FAIL: expected 2 tiles in engine.bed" >&2; exit 1; }
 
+# Verify stage_g4.sh indexes GRCh38_GIABv3.fasta before linking .fa.fai and passes registered SRR7890879/SRR7890880 FASTQ paths
+grep -q 'samtools faidx "\$gv/GRCh38_GIABv3.fasta"' harness/stage_g4.sh || { echo "FAIL: stage_g4.sh missing samtools faidx on GRCh38_GIABv3.fasta" >&2; exit 1; }
+grep -q 'seqc2_align.sh HCC1395 "\$sq/fastq/SRR7890879_1.fastq.gz" "\$sq/fastq/SRR7890879_2.fastq.gz"' harness/stage_g4.sh || { echo "FAIL: stage_g4.sh missing SRR7890879 FASTQ paths" >&2; exit 1; }
+grep -q 'seqc2_align.sh HCC1395BL "\$sq/fastq/SRR7890880_1.fastq.gz" "\$sq/fastq/SRR7890880_2.fastq.gz"' harness/stage_g4.sh || { echo "FAIL: stage_g4.sh missing SRR7890880 FASTQ paths" >&2; exit 1; }
+
 echo "PASS test_fetch_data"

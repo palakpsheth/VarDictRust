@@ -72,6 +72,9 @@ stage_refs() {
     gzip -dc "$gv/GRCh38_GIABv3.fasta.gz" > "$gv/GRCh38_GIABv3.fasta.tmp"
     mv "$gv/GRCh38_GIABv3.fasta.tmp" "$gv/GRCh38_GIABv3.fasta"
   fi
+  if [ -f "$gv/GRCh38_GIABv3.fasta" ] && [ ! -f "$gv/GRCh38_GIABv3.fasta.fai" ]; then
+    samtools faidx "$gv/GRCh38_GIABv3.fasta"
+  fi
   ln -sfn GRCh38_GIABv3.fasta "$gv/GRCh38_GIABv3.fa"
   ln -sfn GRCh38_GIABv3.fasta.fai "$gv/GRCh38_GIABv3.fa.fai"
   if [ -f "$gv/GRCh38_GIABv3.fasta" ] && [ ! -d "$gv/GRCh38_GIABv3.sdf" ]; then
@@ -142,13 +145,21 @@ stage_seqc2() {
   stage_seqc2_beds
   local sq="$D/seqc2"
   local idx="$D/ref/d1vd1/GRCh38.d1.vd1.fa"
+  if [ -f "$sq/fastq/SRR7890879_1.fastq.gz" ]; then
+    ln -sfn SRR7890879_1.fastq.gz "$sq/fastq/T_1.fq.gz"
+    ln -sfn SRR7890879_2.fastq.gz "$sq/fastq/T_2.fq.gz"
+  fi
+  if [ -f "$sq/fastq/SRR7890880_1.fastq.gz" ]; then
+    ln -sfn SRR7890880_1.fastq.gz "$sq/fastq/N_1.fq.gz"
+    ln -sfn SRR7890880_2.fastq.gz "$sq/fastq/N_2.fq.gz"
+  fi
   if [ ! -f "$sq/HCC1395.bam" ] || ! samtools quickcheck "$sq/HCC1395.bam" 2>/dev/null; then
     echo "Aligning SEQC2 tumor BAM ($sq/HCC1395.bam)..."
-    bash harness/seqc2_align.sh HCC1395 "$sq/fastq/T_1.fq.gz" "$sq/fastq/T_2.fq.gz" "$idx" "$sq/HCC1395.bam"
+    bash harness/seqc2_align.sh HCC1395 "$sq/fastq/SRR7890879_1.fastq.gz" "$sq/fastq/SRR7890879_2.fastq.gz" "$idx" "$sq/HCC1395.bam"
   fi
   if [ ! -f "$sq/HCC1395BL.bam" ] || ! samtools quickcheck "$sq/HCC1395BL.bam" 2>/dev/null; then
     echo "Aligning SEQC2 normal BAM ($sq/HCC1395BL.bam)..."
-    bash harness/seqc2_align.sh HCC1395BL "$sq/fastq/N_1.fq.gz" "$sq/fastq/N_2.fq.gz" "$idx" "$sq/HCC1395BL.bam"
+    bash harness/seqc2_align.sh HCC1395BL "$sq/fastq/SRR7890880_1.fastq.gz" "$sq/fastq/SRR7890880_2.fastq.gz" "$idx" "$sq/HCC1395BL.bam"
   fi
 }
 
