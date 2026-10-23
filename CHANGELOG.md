@@ -13,6 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `raw_entry_mut_v1` with `FxBuildHasher`, stack UTF-8 key buffer) and
   `FxHashMap` `ref_coverage` + borrowed-key `increment` in `CigarParser`.
 - Replaced per-bucket `Vec` allocations in `JavaHashMap` with an OpenJDK-isomorphic flat intrusive node arena (`buckets: Vec<u32>`, `nodes: Vec<Node<K, V>>`, free-list reuse), preserving exact bucket/chain iteration and `treeify_bin` semantics while eliminating inner-bucket heap allocations and bare slice indexing.
+- BAM I/O and record decoding optimization (O-1 + O-3): share parsed `.bai`/`.csi`
+  index and SAM header metadata across worker threads via `META_CACHE`, pool up
+  to 4 BGZF readers per thread/path via `BAM_READER_POOL` (cleared via RAII
+  guard around `run()`), and decode concrete `noodles::bam::Record` fields and
+  auxiliary tags (`nM`/`NM`/`SA`/`MC`/`MQ`) in a single pass without per-read
+  trait-object allocations.
 
 ## [1.0.2] - 2026-10-17
 

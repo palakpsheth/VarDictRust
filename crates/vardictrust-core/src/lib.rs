@@ -275,6 +275,15 @@ pub fn write_output_line<W: std::io::Write>(
 ///
 /// Takes a fully-resolved configuration and runs the variant-calling pipeline.
 pub fn run(config: &config::Config) -> Result<(), VardictError> {
+    struct BamCacheGuard;
+    impl Drop for BamCacheGuard {
+        fn drop(&mut self) {
+            crate::bam::clear_bam_caches();
+        }
+    }
+    crate::bam::clear_bam_caches();
+    let _bam_cache_guard = BamCacheGuard;
+
     log::info!("VarDictRust engine starting");
 
     // Detect somatic (paired) mode: BAM path contains '|'
