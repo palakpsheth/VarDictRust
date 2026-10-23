@@ -125,11 +125,27 @@ cargo bench --no-run   # Compile-only gate
 
 ---
 
-## 7. Dataset Provenance & Asset Acquisition
+## 7. Dataset Provenance & End-to-End Cold-Start Bootstrap
 
-All external genomic benchmark assets are tracked in `harness/assets.tsv` and recorded upon download in `benchmarks/MANIFEST`:
+All external genomic benchmark assets are tracked with cryptographic MD5 checksums in [`harness/assets.tsv`](../harness/assets.tsv) and recorded upon download in [`benchmarks/MANIFEST`](MANIFEST). A bare repository clone can reproduce every reference genome, BAM/CRAM slice, truth VCF/BED, and all 16 release evidence artifacts end-to-end with the commands below:
 
 ```bash
-# Ingest public references and truth sets
-bash harness/fetch_data.sh refs hg002 hg008 seqc2
+# 1. Provision pinned oracle + C++ conda environments (vardict-oracle, vardict-cpp, g4-tools)
+bash harness/setup_oracle.sh
+conda env create -f harness/env/g4-tools.yml
+
+# 2. Fetch, MD5-verify, unpack, index, and stage all references & biological cohorts into scratch/g4/
+#    (or run individual targets: refs | amplicon | hg002 | hg008 | seqc2 | multimodal)
+bash harness/stage_g4.sh all
+
+# 3. Run full live certification (populates scratch/golden-store/ on first run and stamps benchmarks/evidence/*.json)
+bash harness/recertify.sh
 ```
+
+Individual cohort staging scripts invoked by [`harness/stage_g4.sh`](../harness/stage_g4.sh):
+- **Public assets + MD5 check:** `bash harness/fetch_data.sh refs hg002 hg008 seqc2`
+- **Targeted amplicon panel (`scratch/g4/amplicon/`):** `bash harness/get_amplicon_fixture.sh`
+- **GIAB HG002 chr20 slice (`scratch/g4/hg002/`):** `bash harness/get_hg002_slice.sh`
+- **GIAB HG008 paired PDAC slices + CRAM twins (`scratch/g4/hg008/`):** `bash harness/get_hg008_slice.sh`
+- **SEQC2 WES alignment + BED derivation (`scratch/g4/seqc2/`):** `bash harness/stage_g4.sh seqc2` (calls [`harness/seqc2_align.sh`](../harness/seqc2_align.sh) and [`harness/select_slice_regions.py`](../harness/select_slice_regions.py))
+- **18 Multi-modal slices (`scratch/g4/multimodal/`):** `bash harness/get_multimodal_slices.sh`
