@@ -27,6 +27,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hoisted `sc5_used` and integer distance bounds ahead of `BTreeMap` lookups in
   `realignlgins30`, cached empty consensus `Some(Vec::new())` in `find_conseq`,
   and pre-reversed `seq3` once for forward slice comparison in `find_35_match`.
+- `ToVarsBuilder` and `realignlgdel` optimization (O-9): replaced upfront
+  `non_insertion_variants.clone()` and per-position `VariationMap::clone()` with
+  a sparse copy-on-write `FxHashMap` overlay, eliminated per-position `Vec` and
+  `Variant` clones and `HashSet<String>` allocations in
+  `is_the_same_variation_on_ref`, and guarded `realignlgdel` soft-clip loops on
+  live `cnt`/`used`/consensus length before cloning `Sclip`.
 
 ## [1.0.2] - 2026-10-17
 

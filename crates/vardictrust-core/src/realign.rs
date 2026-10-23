@@ -1879,29 +1879,24 @@ pub fn realignlgdel(
     let mut svcov = 0;
 
     for (p, _) in tmp5 {
-        let mut sc5v = match soft_clips_5_end.get(&p).cloned() {
-            Some(sc) => sc,
-            None => continue,
+        let (cnt, seq, sc5_variation) = {
+            let Some(sc) = soft_clips_5_end.get_mut(&p) else {
+                continue;
+            };
+            let cnt = sc.variation.cnt;
+            if cnt < config.min_reads as i32 {
+                break;
+            }
+            if sc.used {
+                continue;
+            }
+            let seq =
+                crate::variations::util::find_conseq(sc, 5, &adaptor_forward, &adaptor_reverse);
+            if seq.len() < 7 {
+                continue;
+            }
+            (cnt, seq, sc.variation.clone())
         };
-        let cnt = sc5v.variation.cnt;
-        if cnt < config.min_reads as i32 {
-            break;
-        }
-        if sc5v.used {
-            continue;
-        }
-        let seq =
-            crate::variations::util::find_conseq(&mut sc5v, 5, &adaptor_forward, &adaptor_reverse);
-        if let Some(entry) = soft_clips_5_end.get_mut(&p) {
-            entry.used = sc5v.used;
-            entry.sequence = sc5v.sequence.clone();
-        }
-        if seq.is_empty() {
-            continue;
-        }
-        if seq.len() < 7 {
-            continue;
-        }
 
         if config.verbose {
             eprintln!(
@@ -2098,13 +2093,11 @@ pub fn realignlgdel(
             let tv = crate::variations::get_variation(non_insertion_variants, bp, &gt_str);
             tv.qstd = true;
             tv.pstd = true;
-            crate::variations::util::adj_cnt(tv, &sc5v.variation, None);
+            crate::variations::util::adj_cnt(tv, &sc5_variation, None);
         }
-        sc5v.used = bp != 0;
 
         if let Some(sc) = soft_clips_5_end.get_mut(&p) {
             sc.used = bp != 0;
-            sc.sequence = sc5v.sequence;
         }
 
         if !ref_coverage.contains_key(&bp) {
@@ -2115,11 +2108,11 @@ pub fn realignlgdel(
 
         if dellen < config.indel_size as i32 {
             for tp in bp..bp + dellen {
-                inc_cnt(ref_coverage, tp, sc5v.variation.cnt);
+                inc_cnt(ref_coverage, tp, sc5_variation.cnt);
             }
         }
 
-        if let Some(mut sclip) = soft_clips_3_end.get(&sc3p).cloned() {
+        if let Some(sclip) = soft_clips_3_end.get_mut(&sc3p) {
             if !sclip.used {
                 {
                     let tv = crate::variations::get_variation(non_insertion_variants, bp, &gt_str);
@@ -2180,9 +2173,6 @@ pub fn realignlgdel(
                 }
 
                 sclip.used = bp != 0;
-                if let Some(sc) = soft_clips_3_end.get_mut(&sc3p) {
-                    sc.used = bp != 0;
-                }
             }
         }
 
@@ -2254,29 +2244,27 @@ pub fn realignlgdel(
     });
 
     for (p, _) in tmp3 {
-        let mut sc3v = match soft_clips_3_end.get(&p).cloned() {
-            Some(sc) => sc,
-            None => continue,
+        let (cnt, seq) = {
+            let Some(sc) = soft_clips_3_end.get_mut(&p) else {
+                continue;
+            };
+            let cnt = sc.variation.cnt;
+            if cnt < config.min_reads as i32 {
+                break;
+            }
+            if sc.used {
+                continue;
+            }
+            let seq =
+                crate::variations::util::find_conseq(sc, 3, &adaptor_forward, &adaptor_reverse);
+            if seq.len() < 7 {
+                continue;
+            }
+            (cnt, seq)
         };
-        let cnt = sc3v.variation.cnt;
-        if cnt < config.min_reads as i32 {
-            break;
-        }
-        if sc3v.used {
+        let Some(mut sc3v) = soft_clips_3_end.get(&p).cloned() else {
             continue;
-        }
-        let seq =
-            crate::variations::util::find_conseq(&mut sc3v, 3, &adaptor_forward, &adaptor_reverse);
-        if let Some(entry) = soft_clips_3_end.get_mut(&p) {
-            entry.used = sc3v.used;
-            entry.sequence = sc3v.sequence.clone();
-        }
-        if seq.is_empty() {
-            continue;
-        }
-        if seq.len() < 7 {
-            continue;
-        }
+        };
 
         if config.verbose {
             eprintln!(
