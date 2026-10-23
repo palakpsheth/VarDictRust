@@ -11,5 +11,5 @@ paths = [
   '''^benchmarks/evidence/.*\.json$''',
 ]
 regexes = [
-  '''"key":\s*"[0-9a-f]{16}"''',
+  '''^"?key":\s*"[0-9a-f]{16}"$''',
 ]
