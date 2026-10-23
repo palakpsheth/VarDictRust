@@ -2580,34 +2580,39 @@ pub fn realignlgins30(
         }
     });
 
+    let max_dist_53 = (max_read_length as f64 * 2.5) as i32;
+    let max_dist_35 = max_read_length - 10;
     for (p5, cnt5) in tmp5 {
         if soft_clips_5_end.get(&p5).is_none_or(|sc| sc.used) {
             continue;
         }
+        let mut sc5_used = false;
         for (p3, cnt3) in tmp3.iter().copied() {
-            if soft_clips_5_end.get(&p5).is_none_or(|sc| sc.used) {
+            if sc5_used {
                 break;
+            }
+            if p5 - p3 > max_dist_53 || p3 - p5 > max_dist_35 {
+                continue;
             }
             if soft_clips_3_end.get(&p3).is_none_or(|sc| sc.used) {
                 continue;
             }
-            if p5 - p3 > (max_read_length as f64 * 2.5) as i32 {
-                continue;
-            }
-            if p3 - p5 > max_read_length - 10 {
-                continue;
-            }
             let seq5 = {
-                let sc5v = match soft_clips_5_end.get_mut(&p5) {
-                    Some(sc) => sc,
-                    None => continue,
+                let Some(sc5v) = soft_clips_5_end.get_mut(&p5) else {
+                    break;
                 };
-                crate::variations::util::find_conseq(sc5v, 5, &adaptor_forward, &adaptor_reverse)
+                let s = crate::variations::util::find_conseq(
+                    sc5v,
+                    5,
+                    &adaptor_forward,
+                    &adaptor_reverse,
+                );
+                sc5_used = sc5v.used;
+                s
             };
             let seq3 = {
-                let sc3v = match soft_clips_3_end.get_mut(&p3) {
-                    Some(sc) => sc,
-                    None => continue,
+                let Some(sc3v) = soft_clips_3_end.get_mut(&p3) else {
+                    continue;
                 };
                 crate::variations::util::find_conseq(sc3v, 3, &adaptor_forward, &adaptor_reverse)
             };
@@ -3739,6 +3744,7 @@ fn join_ref_for_3_lgins(
     sb
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Match35 {
     pub matched_5_end: i32,
     pub matched_3_end: i32,
@@ -3762,24 +3768,32 @@ pub fn find_35_match(seq5: &[u8], seq3: &[u8], verbose: bool) -> Match35 {
         };
     }
 
+    let rev3: Vec<u8> = seq3.iter().rev().copied().collect();
+
     for i in 0..(len5 - 8) {
         for j in 1..(len3 - 8) {
-            let mut number_of_mismatch = 0;
-            let mut total_length = 0;
-            while total_length + j <= len3 && i + total_length <= len5 {
-                let match_char = if i + total_length < len5 {
-                    let idx3 = len3 - j - total_length;
-                    seq3[idx3] == seq5[i + total_length]
-                } else {
-                    false
-                };
-                if !match_char {
+            let rem3 = len3 - j + 1;
+            let rem5 = len5 - i;
+            let valid_len = rem3.min(rem5);
+            let s3 = rev3.get((j - 1)..(j - 1 + valid_len)).unwrap_or(&[]);
+            let s5 = seq5.get(i..(i + valid_len)).unwrap_or(&[]);
+            let mut number_of_mismatch = 0i32;
+            let mut total_length = 0usize;
+            for (&b3_ch, &b5_ch) in s3.iter().zip(s5.iter()) {
+                if b3_ch != b5_ch {
                     number_of_mismatch += 1;
-                }
-                if number_of_mismatch > long_mismatch {
-                    break;
+                    if number_of_mismatch > long_mismatch {
+                        break;
+                    }
                 }
                 total_length += 1;
+            }
+            if number_of_mismatch <= long_mismatch && rem5 < rem3 {
+                // Legacy while-loop sentinel iteration at i + total_length == len5
+                number_of_mismatch += 1;
+                if number_of_mismatch <= long_mismatch {
+                    total_length += 1;
+                }
             }
             let score = total_length as i32 - number_of_mismatch;
             if score > max_matched_length
@@ -3808,6 +3822,14 @@ pub fn find_35_match(seq5: &[u8], seq3: &[u8], verbose: bool) -> Match35 {
         matched_5_end: b5,
         matched_3_end: b3,
         max_matched_length,
+    }
+}
+
+#[cfg(test)]
+mod task7_tests {
+    #[test]
+    fn find_35_match_matches_legacy_on_random_and_adversarial_corpus() {
+        crate::variations::util::tests::run_find_35_match_diff_suite();
     }
 }
 
