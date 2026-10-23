@@ -960,37 +960,13 @@ fn run_somatic(config: &config::Config) -> Result<(), VardictError> {
 
             let max_read_length_bam1 = var_data1.max_read_length;
 
-            // Inter-pass trim ordering guard: ToVarsBuilder reads reference
-            // bases around each tumor variant (70bp MSI windows,
-            // deletion/dup spans, right_seq). BAM2's SV tail extends this
-            // shared reference with mate-region loads that the pre-trim code
-            // (both maps built after BAM2) observed; the early build below
-            // must see identical bases. Preload the tumor footprint now (same
-            // FASTA, so identical bytes); with default -Y this is a
-            // loaded-range no-op.
-            if let Some((lo, hi)) = crate::tovars::builder_reference_span(&var_data1, &config_clone)
-            {
-                let preload_region = crate::regions::Region {
-                    chr: tile.chr.clone(),
-                    start: crate::types::Pos1(lo.max(1) as u32),
-                    end: crate::types::Pos1(hi.max(1) as u32),
-                    gene: tile.gene.clone(),
-                    amplicon: tile.amplicon.clone(),
-                };
-                crate::reference::get_reference(
-                    &preload_region,
-                    0,
-                    &chromosomes_lengths_clone,
-                    &config_clone,
-                    &mut reference,
-                )?;
-            }
-
-            // Inter-pass trim (fix round 1): build aligned1 now and drop
-            // pass-1's pileup maps before pass 2 runs. Postprocess needs only
-            // the aligned map + splice set + max read length, so the full
-            // VariationData (the depth-scaled live state) is freed here
-            // instead of lingering through pass 2's churn.
+            // Inter-pass trim (ports SomaticMode.java:111-113, AbstractMode.java:44-56):
+            // in VarDictJava, ToVarsBuilder for BAM1 runs inside pipeline(initialScope1)
+            // and .join()s before BAM2 starts, observing only the initial region reference
+            // load plus BAM1's own SV mate loads (never preloading unqueried deletion spans,
+            // which would alter rightSeq/RSEQ when a realignlgdel deletion end exceeds
+            // region.end + reference_extension). Build aligned1 now and drop pass-1's
+            // pileup maps before pass 2 runs so the full VariationData is freed early.
             let builder_region = crate::regions::Region {
                 chr: tile.chr.clone(),
                 start: tile.original_start,

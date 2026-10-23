@@ -51,75 +51,6 @@ fn merge_key_owned(
     false
 }
 
-/// Structural (multi-base) reference span of one pileup allele description.
-///
-/// Covers every value-parsed span the builder turns into reference reads:
-/// `-N` deletion length, `<dupN>` end growth (`2*50+N`), and complex
-/// `#SEQ^...N` tails (inserted length + trailing deletion digits). Inserted
-/// sequence lengths are bounded separately by `3 * max_read_length` in
-/// [`builder_reference_span`], so only value-parsed spans are returned here.
-fn structural_span(description: &str) -> i32 {
-    let mut span = 0;
-    if let Some(dellen) = get_begin_minus_number(description) {
-        span = span.max(dellen);
-    }
-    if let Some(dup) = get_dup_num(description) {
-        span = span.max(100 + dup);
-    }
-    if let Some((matched, tail)) = get_hash_group_caret_group(description) {
-        let mut extra = matched.len() as i32;
-        if let Some(deletion) = get_begin_digits(tail) {
-            extra += deletion;
-        }
-        span = span.max(extra);
-    }
-    span
-}
-
-/// Reference span the builder reads for this pileup, as `(lo, hi)` 1-based
-/// positions, or `None` when there is nothing to build.
-///
-/// The somatic inter-pass trim builds the tumor map before BAM2 runs, while
-/// BAM2's SV tail extends the shared reference with mate-region loads that
-/// the pre-trim code (both maps built after BAM2) observed. `run_somatic`
-/// preloads this span via `get_reference` (same FASTA, so identical bases)
-/// to keep the early build output-identical. Bounds from the surveyed read
-/// sites: 70bp upstream (deletion-MSI window), and downstream the structural
-/// span plus `3 * max_read_length` (stacked inserted-sequence windows: end
-/// growth, `&`-extra, `v`-extra) plus 90bp (MSI/tseq2 `+70`, right_seq
-/// `+20`). A set CRISPR site can shift ends by up to one span, hence the
-/// doubling. Over-approximation is safe (extra loads are output-invisible).
-pub(crate) fn builder_reference_span(
-    var_data: &VariationData,
-    config: &Config,
-) -> Option<(i32, i32)> {
-    let mut lo = i32::MAX;
-    let mut hi = i32::MIN;
-    let mut max_struct: i32 = 0;
-    for maps in [
-        &var_data.non_insertion_variants,
-        &var_data.insertion_variants,
-    ] {
-        for (position, var_map) in maps.iter() {
-            lo = lo.min(*position);
-            hi = hi.max(*position);
-            for description in var_map.map.keys() {
-                max_struct = max_struct.max(structural_span(description));
-            }
-        }
-    }
-    if lo > hi {
-        return None;
-    }
-    let struct_span = if config.crispr_cutting_site.is_some_and(|c| c != 0) {
-        max_struct.saturating_mul(2)
-    } else {
-        max_struct
-    };
-    let flank = 90 + 3 * var_data.max_read_length + struct_span;
-    Some((lo - 90, hi.saturating_add(flank)))
-}
-
 /// Fill the fields shared by every create_variant/create_insertion record
 /// (ToVarsBuilder.java's common tvref initialization).
 #[allow(clippy::too_many_arguments)]
@@ -1507,61 +1438,13 @@ mod tests {
         );
     }
 
-    fn span_var_data(entries: &[(i32, &str)], max_read_length: i32) -> VariationData {
-        let mut var_data = VariationData::new();
-        var_data.max_read_length = max_read_length;
-        for (position, description) in entries {
-            let mut vm = VariationMap::new();
-            let mut v = Variation::new();
-            v.cnt = 3;
-            vm.map.insert(description.to_string(), v);
-            var_data.non_insertion_variants.insert(*position, vm);
-        }
-        var_data
-    }
-
-    /// Inter-pass trim ordering guard: the tumor preload span must cover
-    /// every reference base `build_aligned_variants` reads, so the early
-    /// build observes the same bases as a post-BAM2 build.
+    /// Ports SomaticMode.java:111-113 / ToVarsBuilder.java: when a deletion
+    /// extends past the loaded reference window (e.g. a realignlgdel call
+    /// whose end exceeds region.end + reference_extension), ToVarsBuilder
+    /// observes unloaded bases after `end_position` and leaves `right_seq`
+    /// empty (`""`, serialized as `0` / `RSEQ=0`).
     #[test]
-    fn builder_reference_span_bounds_allele_footprint() {
-        let config = Config::default();
-        // Empty pileup: nothing to preload.
-        assert_eq!(builder_reference_span(&VariationData::new(), &config), None);
-
-        // SNV-only at 500 with 100bp reads: fixed windows only.
-        let var_data = span_var_data(&[(500, "C")], 100);
-        assert_eq!(builder_reference_span(&var_data, &config), Some((410, 890)));
-
-        // Deletion "-5.." extends the downstream reach by its span.
-        let var_data = span_var_data(&[(500, "C"), (600, "-5TG")], 100);
-        assert_eq!(builder_reference_span(&var_data, &config), Some((410, 995)));
-
-        // Dup end growth ("<dup" + N -> 100 + N).
-        let var_data = span_var_data(&[(700, "<dup12>")], 100);
-        assert_eq!(
-            builder_reference_span(&var_data, &config),
-            Some((610, 1202))
-        );
-
-        // Complex "#SEQ^..N" tail: inserted length + trailing deletion value.
-        let var_data = span_var_data(&[(700, "#AAA^TG5")], 100);
-        assert_eq!(
-            builder_reference_span(&var_data, &config),
-            Some((610, 1093))
-        );
-
-        // A set CRISPR site can shift variant ends by up to one span.
-        let mut crispr = Config::default();
-        crispr.crispr_cutting_site = Some(550);
-        let var_data = span_var_data(&[(600, "-5TG")], 100);
-        assert_eq!(
-            builder_reference_span(&var_data, &crispr),
-            Some((510, 1000))
-        );
-
-        // Mechanism pin: a deletion footprint can exceed the loaded reference
-        // (the gap BAM2's mate loads used to fill for the late tumor build).
+    fn unloaded_deletion_end_leaves_right_seq_empty() {
         let mut ref_genome = Reference::new();
         ref_genome
             .loaded_regions
@@ -1574,16 +1457,36 @@ mod tests {
             .reference_sequences
             .insert("chr1".to_string(), vec![b'A'; 1000]);
         ref_genome.region_sequences.push(vec![b'A'; 1000]);
-        let var_data = span_var_data(&[(990, "-100")], 100);
-        let span = builder_reference_span(&var_data, &config).unwrap();
-        assert!(span.1 > 1000, "span must exceed the loaded region");
-        assert!(
-            ref_genome.get_base("chr1", 1050).is_none(),
-            "base inside the span is unloaded without the preload"
-        );
-        assert!(
-            1050 >= span.0 && 1050 <= span.1,
-            "span must cover the unloaded base"
-        );
+
+        let chr_lengths = HashMap::from([("chr1".to_string(), 2000)]);
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(1),
+            end: Pos1(1000),
+            gene: "TEST".to_string(),
+            amplicon: None,
+        };
+
+        let mut var_data = VariationData::new();
+        var_data.ref_coverage.insert(990, 20);
+        let mut vm = VariationMap::new();
+        let mut v = Variation::new();
+        v.cnt = 10;
+        v.fwd = 5;
+        v.rev = 5;
+        v.qmean = 300.0;
+        v.mqmean = 600.0;
+        v.pmean = 250.0;
+        v.hicnt = 10;
+        vm.map.insert("-100".to_string(), v);
+        var_data.non_insertion_variants.insert(990, vm);
+
+        let cfg = Config::default();
+        let builder = ToVarsBuilder::new(&ref_genome, &region, &chr_lengths, &cfg);
+        let aligned = builder.build_aligned_variants(&var_data);
+        let vars = aligned.get(&990).expect("variant at 990 should be built");
+        assert_eq!(vars.variants.len(), 1);
+        assert_eq!(vars.variants[0].end_pos, 1089);
+        assert_eq!(vars.variants[0].right_seq, "");
     }
 }
