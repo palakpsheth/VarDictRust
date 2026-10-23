@@ -1,4 +1,5 @@
 /target
+/target-*/
 /benchmarks/data/
 *.bam
 *.bai

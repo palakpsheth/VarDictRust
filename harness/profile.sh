@@ -23,8 +23,9 @@
 # Refuses to write under benchmarks/evidence/.
 #
 # Binaries: PROFILE_BIN_CPU / PROFILE_BIN_HEAP / PROFILE_BIN_DHAT (a single PROFILE_BIN overrides all three; used by
-# the stub tests). Default: <base>-<cpu|heap|dhat>/profiling/vardictrust with base = PROFILE_TARGET_BASE, else
-# $CARGO_TARGET_DIR, else <repo>/target; `cargo build --profile profiling -p vardictrust --features profile-<x>`
+# the stub tests). Default: <base>/profile-<cpu|heap|dhat>/profiling/vardictrust with base = PROFILE_TARGET_BASE, else
+# $CARGO_TARGET_DIR, else <repo>/target (so the default build trees sit under the git-ignored /target and a
+# `git add -A` can never stage them; .gitignore also carries /target-*/); `cargo build --profile profiling -p vardictrust --features profile-<x>`
 # is run for each default binary (incremental: a no-op when current, so a stale binary is never profiled).
 # --dry-run prints the plan only (no build, no courtesy gate, nothing written).
 set -euo pipefail
@@ -100,7 +101,7 @@ bin_for() {   # <cpu|heap|dhat>
   local var="PROFILE_BIN_${1^^}" base=${PROFILE_TARGET_BASE:-${CARGO_TARGET_DIR:-$ROOT_DIR/target}}
   if [ -n "${!var:-}" ]; then echo "${!var}"
   elif [ -n "${PROFILE_BIN:-}" ]; then echo "$PROFILE_BIN"
-  else echo "$base-$1/profiling/vardictrust"; fi
+  else echo "$base/profile-$1/profiling/vardictrust"; fi
 }
 overridden() { local var="PROFILE_BIN_${1^^}"; [ -n "${!var:-}" ] || [ -n "${PROFILE_BIN:-}" ]; }
 qcmd() { printf '%q ' "$@"; echo; }

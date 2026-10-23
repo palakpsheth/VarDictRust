@@ -10,6 +10,7 @@ import gzip
 import json
 import os
 import pathlib
+import shutil
 import stat
 import subprocess
 import sys
@@ -83,7 +84,9 @@ def pprof_bytes(samples, locations, functions, strings, sample_types=((1, 2),)):
 
 class CatalogTest(unittest.TestCase):
     def tmp(self):
-        return pathlib.Path(tempfile.mkdtemp())
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)   # no persistent artifacts
+        return pathlib.Path(d)
 
     # ---- dhat -------------------------------------------------------------------------------
     def test_dhat_attributes_to_vardict_caller_not_alloc_leaf(self):
@@ -126,14 +129,27 @@ class CatalogTest(unittest.TestCase):
                       "alloc::raw_vec::RawVec<T,A>::grow_one 90", blocks_lines)
         self.assertEqual(len(bytes_lines), 2)
 
+    def test_dhat_keeps_at_most_top_three_stacks_per_row(self):
+        d = self.tmp()
+        doc = {"pps": [{"tb": 100 + i, "tbk": 1, "mb": 1, "fs": [1 + i, 7]} for i in range(6)],
+               "ftbl": ["[root]"] + ["leaf%d" % i for i in range(6)] + ["vardictrust_core::row"]}
+        (d / "dhat-heap.json").write_text(json.dumps(doc))
+        text = run_cat(d, ("--min-pct", "0"))
+        top = text.split("Top stacks", 1)[1]
+        self.assertEqual(top.count(" B: "), 3)
+        for i in (5, 4, 3):    # the three biggest survive
+            self.assertIn("leaf%d" % i, top)
+        self.assertNotIn("leaf0", top)
+
     # ---- cpu --------------------------------------------------------------------------------
     def test_cpu_collapsed_self_time_and_drop_fraction(self):
         d = self.tmp()
-        (d / "cpu-collapsed.txt").write_text("main;run;get_variation 70\nmain;run;fmt_1dp 20\nmain;run;idle 10\n")
-        (d / "cpu-meta.json").write_text(json.dumps({"ticks_total": 200, "samples_kept": 100}))
+        (d / "cpu-collapsed.txt").write_text("main;run;get_variation 105\nmain;run;fmt_1dp 30\nmain;run;idle 15\n")
+        (d / "cpu-meta.json").write_text(json.dumps({"ticks_total": 200, "samples_kept": 150}))
         text = run_cat(d)
-        self.assertIn("70.0%", text)
-        self.assertIn("50.0%", text)  # drop fraction is reported
+        self.assertIn("70.0%", text)   # 105 of 150 kept samples
+        # asymmetric on purpose: kept (75.0%) and dropped (25.0%) cannot be confused
+        self.assertIn("(75.0% kept, 25.0% dropped;", text)
         self.assertIn("try_write", text)
         self.assertLess(text.index("get_variation"), text.index("fmt_1dp"))
 
@@ -197,6 +213,59 @@ class CatalogTest(unittest.TestCase):
         (d / "heap.pb.gz").write_bytes(gzip.compress(raw))
         text = run_cat(d)
         self.assertIn("no function names", text)
+
+    # ---- corrupt / truncated input: warn, keep the other files' catalog ---------------------------------
+    def run_raw(self, d, *extra):
+        out = pathlib.Path(d) / "catalog.md"
+        r = subprocess.run([sys.executable, str(CAT), str(d), "-o", str(out), *extra],
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+        return r, out.read_text() if out.exists() else ""
+
+    def test_truncated_gzip_heap_is_reported_other_files_kept(self):
+        d = self.tmp()
+        (d / "cpu-collapsed.txt").write_text("t;vardictrust_core::ok 5\n")
+        (d / "heap.pb.gz").write_bytes(HEAP_FIXTURE.read_bytes()[:40])   # gzip stream cut short
+        r, text = self.run_raw(d)
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("vardictrust_core::ok", text)
+        self.assertIn("heap.pb.gz` unreadable", text)
+        self.assertIn("WARNING", r.stderr)
+        self.assertIn("heap.pb.gz unreadable", r.stderr)
+
+    def test_bad_collapsed_line_is_reported_other_files_kept(self):
+        d = self.tmp()
+        (d / "cpu-collapsed.txt").write_text("t;a 5\nthis line has no count\n")
+        (d / "dhat-heap.json").write_text(json.dumps(dhat_doc()))
+        r, text = self.run_raw(d)
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("cpu-collapsed.txt` unreadable", text)
+        self.assertIn("get_variation", text)   # dhat still catalogued
+
+    def test_mid_message_truncated_pb_is_reported(self):
+        d = self.tmp()
+        raw = gzip.decompress(HEAP_FIXTURE.read_bytes())
+        (d / "heap.pb.gz").write_bytes(gzip.compress(raw[:len(raw) // 2]))
+        (d / "cpu-collapsed.txt").write_text("t;vardictrust_core::ok 5\n")
+        r, text = self.run_raw(d)
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("heap.pb.gz` unreadable", text)
+        self.assertIn("truncated protobuf", text)
+        self.assertIn("vardictrust_core::ok", text)
+
+    def test_corrupt_dhat_json_reported_and_no_svg_attempt(self):
+        d = self.tmp()
+        (d / "dhat-heap.json").write_text("{not json")
+        r, text = self.run_raw(d)
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("dhat-heap.json` unreadable", text)
+        self.assertFalse((d / "dhat-bytes-collapsed.txt").exists())
+
+    def test_strict_flag_exits_nonzero_on_unreadable(self):
+        d = self.tmp()
+        (d / "cpu-collapsed.txt").write_text("garbage\n")
+        r, text = self.run_raw(d, "--strict")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("unreadable", text)   # catalog still written
 
     # ---- partial dirs / svg links ------------------------------------------------------------
     def test_partial_dir_empty_and_multiple_dirs(self):

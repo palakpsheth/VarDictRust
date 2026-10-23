@@ -16,6 +16,7 @@ lists are innermost-first (ftbl[0] = "[root]" never appears in them); CPU/heap c
 """
 import argparse
 import gzip
+import heapq
 import json
 import os
 import re
@@ -118,7 +119,7 @@ def dhat_section(d, min_pct):
     with open(path) as fh:
         doc = json.load(fh)
     ftbl = doc.get("ftbl", [])
-    per = OrderedDict()   # attributed frame -> [tb, tbk, mb, [(tb, frames)]]
+    per = OrderedDict()   # attributed frame -> [tb, tbk, mb, min-heap of the TOP_STACKS biggest (tb, seq, frames)]
     by_bytes, by_blocks = {}, {}
     for pp in doc.get("pps", []):
         frames = [clean(ftbl[i]) for i in pp.get("fs", []) if 0 <= i < len(ftbl)]   # innermost-first
@@ -130,7 +131,11 @@ def dhat_section(d, min_pct):
         row[0] += tb
         row[1] += tbk
         row[2] += mb
-        row[3].append((tb, frames))
+        item = (tb, len(by_bytes), frames[:STACK_DEPTH])   # bounded: only the top stacks of a row are retained
+        if len(row[3]) < TOP_STACKS:
+            heapq.heappush(row[3], item)
+        else:
+            heapq.heappushpop(row[3], item)
     write_collapsed(os.path.join(d, "dhat-bytes-collapsed.txt"), by_bytes)
     write_collapsed(os.path.join(d, "dhat-blocks-collapsed.txt"), by_blocks)
     tot_b = sum(r[0] for r in per.values())
@@ -145,8 +150,8 @@ def dhat_section(d, min_pct):
         if tot_b and 100.0 * v[0] / tot_b < min_pct:
             continue
         out.append("- `%s`" % name)
-        for tb, frames in sorted(v[3], key=lambda x: -x[0])[:TOP_STACKS]:
-            out.append("  - %d B: `%s`" % (tb, " ← ".join(frames[:STACK_DEPTH])))
+        for tb, _, frames in sorted(v[3], key=lambda x: (-x[0], x[1])):
+            out.append("  - %d B: `%s`" % (tb, " ← ".join(frames)))
     return out
 
 
@@ -154,6 +159,8 @@ def dhat_section(d, min_pct):
 def _varint(b, i):
     r = s = 0
     while True:
+        if i >= len(b):
+            raise ValueError("truncated protobuf varint")
         c = b[i]
         i += 1
         r |= (c & 0x7F) << s
@@ -172,10 +179,16 @@ def _fields(b):
             v, i = _varint(b, i)
         elif w == 2:
             n, i = _varint(b, i)
+            if i + n > len(b):
+                raise ValueError("truncated protobuf message (length-delimited field overruns the buffer)")
             v, i = b[i:i + n], i + n
         elif w == 1:
+            if i + 8 > len(b):
+                raise ValueError("truncated protobuf message (fixed64)")
             v, i = b[i:i + 8], i + 8
         elif w == 5:
+            if i + 4 > len(b):
+                raise ValueError("truncated protobuf message (fixed32)")
             v, i = b[i:i + 4], i + 4
         else:
             raise ValueError("unsupported protobuf wire type %d" % w)
@@ -309,28 +322,44 @@ def main():
     ap.add_argument("dirs", nargs="+")
     ap.add_argument("-o", "--out", required=True)
     ap.add_argument("--min-pct", type=float, default=2.0, help="fold rows below this %% into 'other' (default 2)")
+    ap.add_argument("--strict", action="store_true",
+                    help="exit 1 if any profile file was unreadable (default: warn, keep the partial catalog, exit 0)")
     a = ap.parse_args()
     out_dir = os.path.dirname(os.path.abspath(a.out))
+    unreadable = 0
     doc = ["# Profile catalog", "",
            "Attribution: innermost `vardictrust_core::` frame (fallback `vardictrust::`); rows under %g%% are "
            "folded into `other`." % a.min_pct, ""]
     for d in a.dirs:
         rel = os.path.relpath(os.path.abspath(d), out_dir)
-        doc += ["## " + (rel if rel != "." else os.path.basename(os.path.abspath(d))), ""]
-        sections = [cpu_section(d, a.min_pct), dhat_section(d, a.min_pct), heap_section(d, a.min_pct)]
-        if os.path.exists(os.path.join(d, "dhat-heap.json")):
-            render_dhat_svgs(d)
-        sections = [s for s in sections if s]
+        label = rel if rel != "." else os.path.basename(os.path.abspath(d))
+        doc += ["## " + label, ""]
+        sections = []
+        for name, fn, src in (("CPU", cpu_section, "cpu-collapsed.txt"), ("dhat", dhat_section, "dhat-heap.json"),
+                              ("Heap", heap_section, "heap.pb.gz")):
+            try:
+                sec = fn(d, a.min_pct)
+            except Exception as e:   # one corrupt/truncated file must not kill the other files' catalog
+                unreadable += 1
+                reason = "%s: %s" % (type(e).__name__, e)
+                sys.stderr.write("profile_catalog: WARNING: %s: %s unreadable (%s)\n" % (label, src, reason))
+                sec = ["### %s unreadable" % name, "", "`%s` unreadable: %s" % (src, reason)]
+            if sec:
+                sections.append(sec)
+                if name == "dhat" and not sec[0].endswith("unreadable"):
+                    render_dhat_svgs(d)
         if not sections:
             doc += ["_no profile data in this dir_", ""]
-        for s in sections:
-            doc += s + [""]
+        for sec in sections:
+            doc += sec + [""]
         svgs = sorted(f for f in os.listdir(d) if f.endswith(".svg"))
         if svgs:
             doc += ["### Flamegraphs", ""]
             doc += ["- [%s](%s)" % (f, os.path.normpath(os.path.join(rel, f))) for f in svgs] + [""]
     with open(a.out, "w") as fh:
         fh.write("\n".join(doc))
+    if unreadable and a.strict:
+        sys.exit(1)
 
 
 if __name__ == "__main__":

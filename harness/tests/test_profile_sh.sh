@@ -39,6 +39,16 @@ ck "rna-i plan is the extended m1 command" "grep -q -- '-R chr8:90534611-9062007
 out=$(PROFILE_OUT="$T/prof" PROFILE_BIN="$T/engine" bash $PS optimized --only s3 --dry-run 2>&1)
 ck "s3 plan passes tumor|normal as one -b" "grep -q 'Colo829-18_S3-sort.bam.|.*Colo829-19_S4-sort.bam' <<<\"\$out\""
 
+# default build trees must be git-ignored (a `git add -A` after the first real run must never stage them)
+out=$(env -u PROFILE_BIN -u PROFILE_BIN_CPU -u PROFILE_BIN_HEAP -u PROFILE_BIN_DHAT -u CARGO_TARGET_DIR -u PROFILE_TARGET_BASE \
+  PROFILE_OUT="$T/prof" bash $PS baseline --only tiny --dry-run 2>&1)
+n=0
+while read -r b; do
+  n=$((n + 1)); ck "default profile binary dir is git-ignored: $b" "git check-ignore -q '$b'"
+done < <(grep -o '[^ ]*/profiling/vardictrust' <<<"$out" | sort -u)
+ck "three default profile binaries resolved" "[ $n -eq 3 ]"
+ck "legacy /target-*/ dirs are git-ignored too" "git check-ignore -q target-cpu/profiling/vardictrust"
+
 # ---- argument / safety errors --------------------------------------------------------------------------
 out=$(bash $PS baseline --only nope 2>&1); rc=$?
 ck "unknown cell errors clearly" "[ $rc -ne 0 ] && grep -q \"unknown cell 'nope'\" <<<\"\$out\""
