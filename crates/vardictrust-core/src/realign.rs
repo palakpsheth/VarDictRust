@@ -682,6 +682,22 @@ pub fn fill_adaptor_maps(
     (adaptor_forward, adaptor_reverse)
 }
 
+#[inline]
+fn cigar_contains_dlen_d(
+    cigar: &[(u32, noodles::sam::alignment::record::cigar::op::Kind)],
+    dlen: i32,
+) -> bool {
+    use noodles::sam::alignment::record::cigar::op::Kind as CigarKind;
+    if dlen < 0 {
+        return false;
+    }
+    let d = dlen as u64;
+    let m = 10u64.pow(d.checked_ilog10().unwrap_or(0) + 1);
+    cigar
+        .iter()
+        .any(|&(len, k)| k == CigarKind::Deletion && (len as u64) >= d && (len as u64) % m == d)
+}
+
 /// Check if there are no passing reads spanning the start-end coordinates.
 ///
 /// Ports `VariationRealigner.noPassingReads`.
@@ -695,7 +711,6 @@ pub fn no_passing_reads(
     let mut cnt = 0;
     let mut midcnt = 0;
     let dlen = end - start;
-    let dlenqr = format!("{}D", dlen);
 
     'bam: for bam in bams {
         let bam_path = std::path::Path::new(bam);
@@ -729,8 +744,7 @@ pub fn no_passing_reads(
                     continue 'bam;
                 }
             }
-            let cigar_str = crate::bam::get_cigar_string(&record.cigar);
-            if cigar_str.contains(&dlenqr) {
+            if cigar_contains_dlen_d(&record.cigar, dlen) {
                 continue;
             }
             let read_start = match record.alignment_start {
@@ -757,6 +771,142 @@ pub fn no_passing_reads(
     }
 
     cnt <= 0 && midcnt + 1 > 0
+}
+
+#[cfg(test)]
+mod task13_tests {
+    use super::*;
+    use noodles::sam::alignment::record::cigar::op::Kind as CigarKind;
+
+    fn cigar_contains_dlen_d_legacy(cigar: &[(u32, CigarKind)], dlen: i32) -> bool {
+        let dlenqr = format!("{dlen}D");
+        let cigar_str = crate::bam::get_cigar_string(cigar);
+        cigar_str.contains(&dlenqr)
+    }
+
+    #[test]
+    fn cigar_contains_dlen_d_matches_string_contains() {
+        let kinds = [
+            CigarKind::Match,
+            CigarKind::Insertion,
+            CigarKind::Deletion,
+            CigarKind::Skip,
+            CigarKind::SoftClip,
+            CigarKind::HardClip,
+            CigarKind::Pad,
+            CigarKind::SequenceMatch,
+            CigarKind::SequenceMismatch,
+        ];
+
+        // 1. Exhaustive single-op: len, dlen in 0..2000 across Deletion and non-Deletion ops
+        for len in 0..2000u32 {
+            let del_cigar = [(len, CigarKind::Deletion)];
+            let match_cigar = [(len, CigarKind::Match)];
+            for dlen in 0..2000i32 {
+                assert_eq!(
+                    cigar_contains_dlen_d(&del_cigar, dlen),
+                    cigar_contains_dlen_d_legacy(&del_cigar, dlen),
+                    "single-op del mismatch for len={len}, dlen={dlen}"
+                );
+                assert!(!cigar_contains_dlen_d(&match_cigar, dlen));
+            }
+        }
+
+        // 2. Explicit substring parity checks (`15D` vs `5D`, `11D` vs `1D`, `21D` vs `1D`, start/mid/multi-D)
+        assert!(cigar_contains_dlen_d(&[(15, CigarKind::Deletion)], 5));
+        assert!(cigar_contains_dlen_d(&[(11, CigarKind::Deletion)], 1));
+        assert!(cigar_contains_dlen_d(&[(21, CigarKind::Deletion)], 1));
+        assert!(!cigar_contains_dlen_d(&[(5, CigarKind::Deletion)], 15));
+        assert!(cigar_contains_dlen_d(
+            &[(10, CigarKind::Deletion), (50, CigarKind::Match)],
+            10
+        ));
+        assert!(cigar_contains_dlen_d(
+            &[
+                (50, CigarKind::Match),
+                (10, CigarKind::Deletion),
+                (50, CigarKind::Match)
+            ],
+            10
+        ));
+        assert!(cigar_contains_dlen_d(
+            &[
+                (10, CigarKind::Deletion),
+                (20, CigarKind::Match),
+                (100, CigarKind::Deletion)
+            ],
+            100
+        ));
+
+        // 3. Extremes: len in {0, 1, 99999, 100000, u32::MAX}, dlen in {0, -1, -3, i32::MIN, i32::MAX}
+        let extreme_lens = [0u32, 1, 5, 15, 99_999, 100_000, i32::MAX as u32, u32::MAX];
+        let extreme_dlens = [
+            i32::MIN,
+            -100,
+            -3,
+            -1,
+            0,
+            1,
+            5,
+            15,
+            95,
+            99_999,
+            100_000,
+            i32::MAX,
+        ];
+        assert!(!cigar_contains_dlen_d(&[], 5));
+        assert!(!cigar_contains_dlen_d(&[], 0));
+        for &len in &extreme_lens {
+            for &k in &kinds {
+                let c = [(len, k)];
+                for &dlen in &extreme_dlens {
+                    assert_eq!(
+                        cigar_contains_dlen_d(&c, dlen),
+                        cigar_contains_dlen_d_legacy(&c, dlen),
+                        "extreme mismatch for len={len}, kind={k:?}, dlen={dlen}"
+                    );
+                }
+            }
+        }
+
+        // 4. 50,000 seeded multi-op CIGARs
+        let mut rng: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut cigar = Vec::with_capacity(6);
+        for case_idx in 0..50_000usize {
+            cigar.clear();
+            rng = rng
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            let n_ops = ((rng >> 32) as usize % 6) + 1;
+            for _ in 0..n_ops {
+                rng = rng
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                let kind = kinds[(rng >> 16) as usize % kinds.len()];
+                let len = match (rng >> 24) & 3 {
+                    0 => (rng as u32) % 25,
+                    1 => (rng as u32) % 500,
+                    2 => (rng as u32) % 100_000,
+                    _ => rng as u32,
+                };
+                cigar.push((len, kind));
+            }
+            rng = rng
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            let dlen = match (rng >> 40) & 3 {
+                0 => -(((rng as i32).abs() % 50) + 1),
+                1 => (rng as u32 % 25) as i32,
+                2 => (rng as u32 % 500) as i32,
+                _ => (rng as u32 % 100_000) as i32,
+            };
+            assert_eq!(
+                cigar_contains_dlen_d(&cigar, dlen),
+                cigar_contains_dlen_d_legacy(&cigar, dlen),
+                "random multi-op mismatch at #{case_idx}: cigar={cigar:?}, dlen={dlen}"
+            );
+        }
+    }
 }
 
 static BEGIN_MINUS_NUMBER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^-(\d+)").unwrap());

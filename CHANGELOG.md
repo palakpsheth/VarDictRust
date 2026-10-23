@@ -37,6 +37,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with `SeedMap` (`SeedKey` 17-byte inline key + `SeedPositions::One/Many` +
   `FxBuildHasher`) and eliminated redundant `bases.clone()` and `LoadedRegion`
   `String` clones in `get_reference`.
+- Stack-buffered `round_half_even` (`StackBuf<64>` in `types::round_half_even`
+  with heap fallback for oversized values, O-12a) and allocation-free integer
+  CIGAR deletion suffix check `cigar_contains_dlen_d` in
+  `VariationRealigner::no_passing_reads` (O-7).
 
 ## [1.0.2] - 2026-10-17
 
