@@ -6,7 +6,7 @@ use crate::reference::Reference;
 use crate::regions::Region;
 use crate::types::round_half_even;
 use crate::variations::{Variant, VariationData};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub struct MsiResult {
@@ -445,7 +445,7 @@ impl<'a> ToVarsBuilder<'a> {
             i32,
             crate::variations::VariationMap,
         >,
-        ref_coverage: &BTreeMap<i32, i32>,
+        ref_coverage: &rustc_hash::FxHashMap<i32, i32>,
         duprate: f64,
         position: i32,
         mut total_pos_coverage: i32,
@@ -597,7 +597,7 @@ impl<'a> ToVarsBuilder<'a> {
         position: i32,
         total_pos_coverage: i32,
         variations_at_pos: &mut crate::variations::Vars,
-        ref_coverage: &BTreeMap<i32, i32>,
+        ref_coverage: &rustc_hash::FxHashMap<i32, i32>,
         non_insertion_variants: &crate::javamap::JavaHashMap<i32, crate::variations::VariationMap>,
         duprate: f64,
         debug_lines: &[String],

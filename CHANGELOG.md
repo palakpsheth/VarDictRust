@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Zero-allocation `get_variation` / `get_variation_maybe` (`IndexMap`
+  `raw_entry_mut_v1` with `FxBuildHasher`, stack UTF-8 key buffer) and
+  `FxHashMap` `ref_coverage` + borrowed-key `increment` in `CigarParser`.
+
 ## [1.0.2] - 2026-10-17
 
 ### Fixed

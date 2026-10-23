@@ -2065,6 +2065,7 @@ dependencies = [
  "noodles",
  "rayon",
  "regex",
+ "rustc-hash",
  "tempfile",
  "thiserror",
 ]

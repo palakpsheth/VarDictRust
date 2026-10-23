@@ -789,7 +789,7 @@ pub fn realigndel(
     chr_len: u32,
     config: &crate::config::Config,
     non_insertion_variants: &mut crate::javamap::JavaHashMap<i32, VariationMap>,
-    ref_coverage: &mut BTreeMap<i32, i32>,
+    ref_coverage: &mut rustc_hash::FxHashMap<i32, i32>,
     soft_clips_5_end: &mut BTreeMap<i32, Sclip>,
     soft_clips_3_end: &mut BTreeMap<i32, Sclip>,
     max_read_length: i32,
@@ -1331,7 +1331,7 @@ pub fn realignins(
     config: &crate::config::Config,
     insertion_variants: &mut crate::javamap::JavaHashMap<i32, VariationMap>,
     non_insertion_variants: &mut crate::javamap::JavaHashMap<i32, VariationMap>,
-    ref_coverage: &mut BTreeMap<i32, i32>,
+    ref_coverage: &mut rustc_hash::FxHashMap<i32, i32>,
     soft_clips_5_end: &mut BTreeMap<i32, Sclip>,
     soft_clips_3_end: &mut BTreeMap<i32, Sclip>,
     max_read_length: i32,
@@ -1847,7 +1847,7 @@ pub fn realignlgdel(
     config: &crate::config::Config,
     non_insertion_variants: &mut crate::javamap::JavaHashMap<i32, VariationMap>,
     insertion_variants: &mut crate::javamap::JavaHashMap<i32, VariationMap>,
-    ref_coverage: &mut BTreeMap<i32, i32>,
+    ref_coverage: &mut rustc_hash::FxHashMap<i32, i32>,
     soft_clips_5_end: &mut BTreeMap<i32, Sclip>,
     soft_clips_3_end: &mut BTreeMap<i32, Sclip>,
     max_read_length: i32,
@@ -2540,7 +2540,7 @@ pub fn realignlgins30(
     config: &crate::config::Config,
     non_insertion_variants: &mut crate::javamap::JavaHashMap<i32, VariationMap>,
     insertion_variants: &mut crate::javamap::JavaHashMap<i32, VariationMap>,
-    ref_coverage: &mut BTreeMap<i32, i32>,
+    ref_coverage: &mut rustc_hash::FxHashMap<i32, i32>,
     soft_clips_5_end: &mut BTreeMap<i32, Sclip>,
     soft_clips_3_end: &mut BTreeMap<i32, Sclip>,
     max_read_length: i32,
@@ -2943,7 +2943,7 @@ pub fn realignlgins(
     config: &crate::config::Config,
     non_insertion_variants: &mut crate::javamap::JavaHashMap<i32, VariationMap>,
     insertion_variants: &mut crate::javamap::JavaHashMap<i32, VariationMap>,
-    ref_coverage: &mut BTreeMap<i32, i32>,
+    ref_coverage: &mut rustc_hash::FxHashMap<i32, i32>,
     soft_clips_5_end: &mut BTreeMap<i32, Sclip>,
     soft_clips_3_end: &mut BTreeMap<i32, Sclip>,
     max_read_length: i32,
@@ -3811,7 +3811,7 @@ pub fn find_35_match(seq5: &[u8], seq3: &[u8], verbose: bool) -> Match35 {
     }
 }
 
-fn inc_cnt(hash: &mut BTreeMap<i32, i32>, start: i32, count: i32) {
+fn inc_cnt(hash: &mut rustc_hash::FxHashMap<i32, i32>, start: i32, count: i32) {
     *hash.entry(start).or_insert(0) += count;
 }
 
@@ -3984,7 +3984,7 @@ fn partial_pipeline(
     region: &crate::regions::Region,
     non_insertion_variants: &mut crate::javamap::JavaHashMap<i32, VariationMap>,
     insertion_variants: &mut crate::javamap::JavaHashMap<i32, VariationMap>,
-    ref_coverage: &mut BTreeMap<i32, i32>,
+    ref_coverage: &mut rustc_hash::FxHashMap<i32, i32>,
     soft_clips_5_end: &mut BTreeMap<i32, Sclip>,
     soft_clips_3_end: &mut BTreeMap<i32, Sclip>,
 ) -> Result<(), crate::types::VardictError> {
@@ -4925,7 +4925,7 @@ mod tests {
         );
         non_insertion_variants.insert(10, map10);
 
-        let mut ref_coverage = BTreeMap::new();
+        let mut ref_coverage = rustc_hash::FxHashMap::default();
         ref_coverage.insert(10, 10);
         ref_coverage.insert(11, 10);
 
@@ -5005,7 +5005,7 @@ mod tests {
         );
         non_insertion_variants.insert(10, map10_non);
 
-        let mut ref_coverage = BTreeMap::new();
+        let mut ref_coverage = rustc_hash::FxHashMap::default();
         ref_coverage.insert(10, 10);
 
         let mut soft_clips_5_end = BTreeMap::new();
@@ -5066,7 +5066,7 @@ mod tests {
 
         let mut non_insertion_variants = crate::javamap::JavaHashMap::new();
         let mut insertion_variants = crate::javamap::JavaHashMap::new();
-        let mut ref_coverage = BTreeMap::new();
+        let mut ref_coverage = rustc_hash::FxHashMap::default();
         ref_coverage.insert(50, 10);
         let mut soft_clips_3_end = BTreeMap::new();
 
@@ -5139,7 +5139,7 @@ mod tests {
 
         let mut non_insertion_variants = crate::javamap::JavaHashMap::new();
         let mut insertion_variants = crate::javamap::JavaHashMap::new();
-        let mut ref_coverage = BTreeMap::new();
+        let mut ref_coverage = rustc_hash::FxHashMap::default();
         ref_coverage.insert(50, 10);
         let mut soft_clips_3_end = BTreeMap::new();
 
@@ -5224,7 +5224,7 @@ mod tests {
             );
             non_insertion_variants.insert(10, map10);
 
-            let mut ref_coverage = BTreeMap::new();
+            let mut ref_coverage = rustc_hash::FxHashMap::default();
             ref_coverage.insert(10, 20);
 
             let mut soft_clips_5_end = BTreeMap::new();
@@ -5291,7 +5291,7 @@ mod tests {
             );
             non_insertion_variants.insert(10, map10);
 
-            let mut ref_coverage = BTreeMap::new();
+            let mut ref_coverage = rustc_hash::FxHashMap::default();
             ref_coverage.insert(10, 20);
 
             let mut soft_clips_5_end = BTreeMap::new();
@@ -5378,7 +5378,7 @@ mod tests {
 
         let mut non_insertion_variants = crate::javamap::JavaHashMap::new();
         let mut insertion_variants = crate::javamap::JavaHashMap::new();
-        let mut ref_coverage = BTreeMap::new();
+        let mut ref_coverage = rustc_hash::FxHashMap::default();
         ref_coverage.insert(60, 10);
         let mut soft_clips_3_end = BTreeMap::new();
         let mut svfdel = Vec::new();

@@ -20,6 +20,7 @@ thiserror = "2"
 clap = { version = "4", features = ["derive"] }
 rayon = "1"
 indexmap = "2"
+rustc-hash = "1.1"
 tikv-jemallocator = "0.7"
 noodles = { version = "0.117", default-features = false, features = ["bam","cram","sam","fasta","vcf","bgzf","csi","tabix","core","bed"] }
 fishers_exact = "1"
