@@ -2889,4 +2889,35 @@ mod tests {
             assert_eq!(reused, expected);
         }
     }
+
+    #[test]
+    fn bgzf_libdeflate_reader_roundtrips_micro_bam_and_rejects_corrupt_block() {
+        use std::io::Read;
+
+        let path = Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/micro/micro.bam"
+        ));
+        let file = std::fs::File::open(path).unwrap();
+        let mut reader = noodles_bgzf::io::Reader::new(file);
+        let mut decompressed = Vec::new();
+        reader.read_to_end(&mut decompressed).unwrap();
+        assert!(
+            decompressed.starts_with(b"BAM\x01"),
+            "decompressed micro.bam must start with BAM\\x01 magic"
+        );
+
+        let raw = std::fs::read(path).unwrap();
+        let mut corrupt = raw.clone();
+        // Corrupt the compressed payload mid-block and ensure libdeflate returns Err
+        let mid = corrupt.len() / 2;
+        corrupt[mid] ^= 0xFF;
+        corrupt[mid + 1] ^= 0xFF;
+        let mut bad_reader = noodles_bgzf::io::Reader::new(std::io::Cursor::new(corrupt));
+        let mut out = Vec::new();
+        assert!(
+            bad_reader.read_to_end(&mut out).is_err(),
+            "corrupted BGZF block must fail decompression"
+        );
+    }
 }

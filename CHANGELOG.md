@@ -41,6 +41,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with heap fallback for oversized values, O-12a) and allocation-free integer
   CIGAR deletion suffix check `cigar_contains_dlen_d` in
   `VariationRealigner::no_passing_reads` (O-7).
+- Enabled `noodles-bgzf/libdeflate` for whole-block BGZF deflate decompression
+  in BAM/BAI/CSI/VCF.gz readers (O-2, +3.74% median wall-time improvement on
+  `hg002` chr20).
 
 ## [1.0.2] - 2026-10-17
 

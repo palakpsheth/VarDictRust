@@ -23,6 +23,7 @@ indexmap = "2"
 rustc-hash = "1.1"
 tikv-jemallocator = "0.7"
 noodles = { version = "0.117", default-features = false, features = ["bam","cram","sam","fasta","vcf","bgzf","csi","tabix","core","bed"] }
+noodles-bgzf = { version = "0.52.0", features = ["libdeflate"] }
 fishers_exact = "1"
 log = "0.4"
 env_logger = "0.11"
