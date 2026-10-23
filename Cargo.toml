@@ -40,3 +40,11 @@ strip = true
 [profile.dist]
 inherits = "release"
 lto = "fat"
+
+# Profiling profile: optimizes like release, keeps debug symbols for symbolization,
+# and unwinds on panic so Session::drop runs on panic.
+[profile.profiling]
+inherits = "release"
+strip = false
+debug = 1
+panic = "unwind"
