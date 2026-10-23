@@ -222,7 +222,7 @@ This gate enforces the 8 acceptance criteria defined in [AGENTS.md §15](AGENTS.
 
 Additionally, contributors can execute the diagnostic self-test suite ([Level 6](docs/testing/test-matrix-and-ci-audit.md#level-6-diagnostic-self-tests)) at any time:
 ```bash
-bash harness/run_self_tests.sh   # Executes all 21 diagnostic test scripts in <10s
+bash harness/run_self_tests.sh   # Executes all 24 diagnostic test scripts in <10s
 ```
 
 *For the complete seven-level testing architecture, push-button reproduction commands, and dataset provenance catalog, see the Master Reproducibility Runbook in [`docs/testing/test-matrix-and-ci-audit.md`](docs/testing/test-matrix-and-ci-audit.md).*
@@ -310,7 +310,7 @@ cargo build --release -p vardictrust
 # 2. Commit tracked release changes on release/vX.Y.Z (clean HEAD required by engine_fingerprint.sh)
 git commit -m "chore(release): prepare vX.Y.Z release"
 
-# 3. Verify engine fingerprint and run all 21 diagnostic self-tests
+# 3. Verify engine fingerprint and run all 24 diagnostic self-tests
 bash harness/engine_fingerprint.sh
 bash harness/run_self_tests.sh
 
