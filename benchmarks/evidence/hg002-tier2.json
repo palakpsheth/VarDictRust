@@ -1,5 +1,8 @@
 {
   "cmd": [
+    "env",
+    "KEEP_DIR=scratch/g4/hg002/cmp",
+    "MIN_VARIANTS=227562",
     "bash",
     "harness/compare.sh",
     "scratch/g4/ref/giabv3/GRCh38_GIABv3.fasta",
@@ -16,10 +19,10 @@
   ],
   "cpp_time": {
     "exit": "0",
-    "max_rss_kb": "883500",
-    "wall": "0:17.72"
+    "max_rss_kb": "873584",
+    "wall": "0:18.87"
   },
-  "date": "2026-10-17T12:23:00-07:00",
+  "date": "2026-10-22T19:32:15-07:00",
   "extra": {
     "cpp_chunk": "50000",
     "cpp_head": [
@@ -28,21 +31,40 @@
       "MISMATCH: variant sets differ. java-only(<=10)=[\"('chr20', '10016944', 'T', 'C')\", \"('chr20', '10093752', 'C', 'A')\", \"('chr20', '10147060', 'G', 'A')\", \"('chr20', '10155180', 'C', 'A')\", \"('chr20', '10158631', 'G', 'A')\", \"('chr20', '10233247', 'G', 'A')\", \"('chr20', '10268361', 'C', 'A')\", \"('chr20', '10364337', 'G', 'A')\", \"('chr20', '10407760', 'T', 'C')\", \"('chr20', '10566059', 'C', 'G')\"] rust-only(<=10)=[\"('chr20', '10016944', 'TGA', 'CGC')\", \"('chr20', '10093752', 'C', 'T')\", \"('chr20', '10147060', 'G', 'T')\", \"('chr20', '10155180', 'C', 'T')\", \"('chr20', '10158631', 'G', 'T')\", \"('chr20', '10233247', 'G', 'T')\", \"('chr20', '10268361', 'CT', 'AA')\", \"('chr20', '10364337', 'G', 'C')\", \"('chr20', '10407760', 'T', 'G')\", \"('chr20', '10566059', 'C', 'T')\"]",
       "CPP: MISMATCH"
     ],
-    "cpp_version": "vardictcpp 3 hc52dbad_0 bioconda"
+    "cpp_version": "vardictcpp 3 hc52dbad_0 bioconda",
+    "golden": {
+      "events": [
+        {
+          "event": "HIT",
+          "key": "c4273dea4ca47a9e",
+          "kind": "java",
+          "label": "compare"
+        },
+        {
+          "event": "HIT",
+          "key": "c3396f8565410f88",
+          "kind": "cpp",
+          "label": "compare"
+        }
+      ],
+      "hit": 2,
+      "live": 0,
+      "run": "compare-3941958-1792722683"
+    }
   },
-  "fingerprint": "74e93280e3ac0d85",
-  "head": "6b94b3e2bbe959598e013139382d68cb40818c63",
+  "fingerprint": "a262f19b0a2eb8a8",
+  "head": "87709f33cc804cd3ff787d5e80f30f94f3813acd",
   "java_time": {
     "exit": "0",
-    "max_rss_kb": "4395384",
-    "wall": "1:29.43"
+    "max_rss_kb": "4406336",
+    "wall": "1:31.86"
   },
   "n_variants": 227562,
   "name": "hg002-tier2",
   "result": "MATCH",
   "rust_time": {
     "exit": "0",
-    "max_rss_kb": "1135588",
-    "wall": "0:45.53"
+    "max_rss_kb": "1006824",
+    "wall": "0:44.11"
   }
 }
