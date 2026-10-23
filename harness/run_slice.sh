@@ -11,5 +11,5 @@ row=$(awk -F'\t' -v id="$ID" '$1==id' harness/slices.tsv)
 [ -n "$row" ] || { echo "run_slice: unknown id $ID" >&2; exit 2; }
 IFS=$'\t' read -r _ REF BAM BED SAMPLE MINV EXTRA <<< "$row"
 read -ra EX <<< "${EXTRA:-}"
-KEEP_DIR="${SLICE_KEEP:-scratch/slices}/$ID" MIN_VARIANTS="$MINV" \
+KEEP_DIR="${SLICE_KEEP:-scratch/slices}/$ID" MIN_VARIANTS="$MINV" GOLDEN_LABEL="slice-$ID" \
   bash harness/compare.sh "$REF" "$BAM" "$BED" "$SAMPLE" "${EX[@]}"

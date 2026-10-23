@@ -3,9 +3,9 @@
 # harness/run_self_tests.sh
 # Automated Tier 6 Harness Diagnostic Runner for VarDictRust v1.0.1.
 #
-# Discovers and executes all 17 harness diagnostic scripts (11 shell tests
-# and 6 python test suites in harness/tests/), reporting unified status.
-# Exits 0 only if all 17 tests pass; exits 1 on any failure.
+# Discovers and executes all 21 harness diagnostic scripts (14 shell tests
+# and 7 python test suites in harness/tests/), reporting unified status.
+# Exits 0 only if all 21 tests pass; exits 1 on any failure.
 #
 # Adheres to Host Policy A3:
 # - Minimal CPU overhead (< 10 seconds total runtime)
@@ -16,6 +16,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 TESTS_DIR="$SCRIPT_DIR/tests"
+
+# Isolate every self-test from the real pinned store: tests rebuild temp fixtures (edge-case BAMs, VCF-header
+# cases) whose cells must never be pinned into scratch/golden-store.
+export GOLDEN_STORE_DIR="$(mktemp -d)"
+trap 'rm -rf "$GOLDEN_STORE_DIR"' EXIT
+unset GOLDEN_MODE
 
 if ! command -v bcftools &>/dev/null; then
   export PATH="/home/palak/miniconda3/envs/g4-tools/bin:$PATH"

@@ -5,16 +5,18 @@ set -euo pipefail
 #      cpp.vcf cpp.time compare_cpp.txt extra.json)
 #      MIN_VARIANTS (default 0) | CMP_TIMEOUT per engine (default 12h) | CMP_STRICT=1 (report-only, T11)
 #      CPP_SKIP=1 (skip advisory vardictcpp third arm; still prints `CPP: SKIP:`)
+#      GOLDEN_MODE=auto|regen|off, GOLDEN_STORE_DIR (pinned oracle store; harness/README.md §7)
 # Exit 0 = MATCH; non-zero = MISMATCH or engine failure. Decide on the EXIT CODE, never on text.
 REF=$1; BAM=$2; BED=$3; SAMPLE=${4:-SAMPLE}; shift 4 || shift $#
+export GOLDEN_RUN_ID="${GOLDEN_RUN_ID:-compare-$$-$(date +%s)}"
 if [ -n "${KEEP_DIR:-}" ]; then mkdir -p "$KEEP_DIR"; OUT=$KEEP_DIR
 else OUT=$(mktemp -d); trap 'rm -rf "$OUT"' EXIT; fi
 TO=${CMP_TIMEOUT:-12h}
 # Mirror upstream IntegrationTest DEFAULT_ARGS ("-z -c 1 -S 2 -E 3 -g 4"): the
 # corpus and VarDictJava's own suite always run zero-based. run_oracle.sh
 # translates the flag-less -z into Java's explicit "-z 1" form.
-/usr/bin/time -v -o "$OUT/java.time" timeout "$TO" \
-  bash harness/run_oracle.sh "$REF" "$BAM" "$BED" "$OUT/java.vcf" "$SAMPLE" -z "$@" \
+GOLDEN_TIME_OUT="$OUT/java.time" timeout "$TO" \
+  bash harness/golden_store.sh oracle "${GOLDEN_LABEL:-compare}" "$REF" "$BAM" "$BED" "$OUT/java.vcf" "$SAMPLE" -z "$@" \
   || { echo "ENGINE-FAIL: oracle"; exit 2; }
 /usr/bin/time -v -o "$OUT/rust.time" timeout "$TO" \
   cargo run -q --release -p vardictrust -- -G "$REF" -f "${AF_THR:-0.01}" -N "$SAMPLE" \
@@ -36,8 +38,8 @@ if [ "${CPP_SKIP:-0}" = "1" ] || [ "${CPP_SKIP:-0}" = "true" ]; then
   cpp_line="CPP: SKIP: disabled via CPP_SKIP=1"
 elif ! command -v conda >/dev/null 2>&1; then
   cpp_line="CPP: SKIP: conda not on PATH"
-elif LC_ALL=C /usr/bin/time -v -o "$OUT/cpp.time" timeout "$TO" \
-    bash harness/run_cpp.sh "$REF" "$BAM" "$BED" "$OUT/cpp.vcf" "$SAMPLE" -z "$@" 2>"$OUT/cpp.err"; then
+elif LC_ALL=C GOLDEN_TIME_OUT="$OUT/cpp.time" timeout "$TO" \
+    bash harness/golden_store.sh cpp "${GOLDEN_LABEL:-compare}" "$REF" "$BAM" "$BED" "$OUT/cpp.vcf" "$SAMPLE" -z "$@" 2>"$OUT/cpp.err"; then
   # Empty-BED/variant-free runs leave a 0-byte file (run_cpp.sh), not a VCF:
   # fall back to a header-only VCF so compare_vcf.py sees a valid empty VCF.
   if [ ! -s "$OUT/cpp.vcf" ]; then
@@ -67,7 +69,8 @@ else
     cpp_line="CPP: SKIP: ${reason:-vardictcpp unavailable (run_cpp.sh exit 3)}"
   else
     echo "ENGINE-FAIL: cpp"
-    cpp_line="CPP: SKIP: engine failure (exit $cpp_exit)"
+    first_err=$(grep -vE '^(ERROR conda\.cli|cpp_chunk=|[[:space:]]*$)' "$OUT/cpp.err" 2>/dev/null | head -n 1 | tr -d '\r' | cut -c 1-140 || true)
+    cpp_line="CPP: SKIP: engine failure (exit $cpp_exit${first_err:+: $first_err})"
   fi
   echo "$cpp_line" > "$OUT/compare_cpp.txt"
 fi
@@ -78,6 +81,15 @@ fi
 # Persist third-arm evidence keys for record_evidence.py (ev_cpp presence gate)
 # via the shared helper (merge-only, never touches the gate exit).
 if [ -n "${KEEP_DIR:-}" ]; then
+  # Provenance for the evidence JSON: which oracle cells were replayed from the pinned store vs run live.
+  GOLDEN_JSON=$(bash harness/golden_store.sh stats --run "$GOLDEN_RUN_ID" --json) python3 - "$OUT/extra.json" <<'PY'
+import json, os, sys
+p = sys.argv[1]
+try: d = json.load(open(p))
+except Exception: d = {}
+d["golden"] = json.loads(os.environ["GOLDEN_JSON"])
+json.dump(d, open(p, "w"), indent=2, sort_keys=True)
+PY
   bash harness/staple_cpp_extra.sh "$OUT" "$cpp_line"
 fi
 exit "$rc"

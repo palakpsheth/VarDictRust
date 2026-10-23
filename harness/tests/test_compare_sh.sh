@@ -3,6 +3,7 @@ set -uo pipefail
 unset CPP_SKIP
 cargo build -q --release -p vardictrust
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT; fail=0
+export GOLDEN_STORE_DIR="$T/store"   # never pin test cells into the real scratch/golden-store
 M="fixtures/micro/micro.ref.fa fixtures/micro/micro.bam fixtures/micro/micro.bed"
 mkdir -p "$T/bin"; cat > "$T/bin/cargo" <<EOF
 #!/usr/bin/env bash
@@ -29,7 +30,7 @@ for a in "\$@"; do [ "\$a" = vardictcpp ] && { echo "stub conda: no vardictcpp" 
 exec "$REAL_CONDA" "\$@"
 EOF
 chmod +x "$T/nocppbin/conda"
-out5=$(PATH="$T/nocppbin:$PATH" KEEP_DIR="$T/k5" bash harness/compare.sh $M 2>&1); rc5=$?
+out5=$(GOLDEN_MODE=off PATH="$T/nocppbin:$PATH" KEEP_DIR="$T/k5" bash harness/compare.sh $M 2>&1); rc5=$?
 [ $rc5 -eq 0 ] || { echo "FAIL5 gate rc=$rc5"; fail=1; }
 grep -qx MATCH <<<"$out5" || { echo "FAIL5 no gate MATCH"; fail=1; }
 grep -q '^CPP: SKIP:' <<<"$out5" || { echo "FAIL5 no CPP SKIP"; fail=1; }
@@ -93,4 +94,31 @@ EOF
   CPP_SKIP=1 KEEP_DIR="$T/k7" bash harness/compare.sh $M >/dev/null 2>&1
   python3 -c "import json;d=json.load(open('$T/k7/extra.json'));assert 'cpp_skip_reason' in d and 'cpp_version' not in d, sorted(d)" || { echo "FAIL10 stale cpp_version"; fail=1; }
 fi
+# GS1: the store serves a repeat of the same cell, replays java.time verbatim, records provenance, and
+# GOLDEN_MODE=off bypasses it.
+rm -rf "$T/store"
+KEEP_DIR="$T/g1" MIN_VARIANTS=1 CPP_SKIP=1 bash harness/compare.sh $M >/dev/null 2>&1 || { echo "FAIL GS1 first run"; fail=1; }
+KEEP_DIR="$T/g2" MIN_VARIANTS=1 CPP_SKIP=1 bash harness/compare.sh $M >/dev/null 2>&1 || { echo "FAIL GS1 second run"; fail=1; }
+[ "$(cut -f3 "$T/store/stats.log" | grep -c '^HIT$')" -ge 1 ] || { echo "FAIL GS1 no HIT recorded"; fail=1; }
+cmp -s "$T/g1/java.vcf" "$T/g2/java.vcf" || { echo "FAIL GS1 replayed java.vcf differs"; fail=1; }
+cmp -s "$T/g1/java.time" "$T/g2/java.time" || { echo "FAIL GS1 java.time not replayed verbatim"; fail=1; }
+python3 -c "import json;d=json.load(open('$T/g1/extra.json'))['golden'];assert d['live']>=1 and d['hit']==0, d" || { echo "FAIL GS1 first-run provenance"; fail=1; }
+python3 -c "import json;d=json.load(open('$T/g2/extra.json'))['golden'];assert d['hit']>=1 and d['live']==0, d" || { echo "FAIL GS1 replay provenance"; fail=1; }
+GOLDEN_MODE=off KEEP_DIR="$T/g3" MIN_VARIANTS=1 CPP_SKIP=1 bash harness/compare.sh $M >/dev/null 2>&1 || { echo "FAIL GS1 mode off"; fail=1; }
+[ "$(cut -f3 "$T/store/stats.log" | grep -c '^OFF$')" -ge 1 ] || { echo "FAIL GS1 OFF not logged"; fail=1; }
+# GS2: the cpp arm is served from the store too — cpp.err keeps the `cpp_chunk=` line (extra.json scrapes it) and
+# the golden provenance shows both arms replayed.
+mkdir -p "$T/gs2bin"; cat > "$T/gs2bin/conda" <<EOF
+#!/usr/bin/env bash
+if [ "\${1:-}" = run ] && [ "\${4:-}" = vardictcpp ]; then
+  if [ "\${5:-}" = "--version" ]; then echo "vardictcpp stub"; exit 0; fi
+  printf '##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n'; exit 0
+fi
+exec "$REAL_CONDA" "\$@"
+EOF
+chmod +x "$T/gs2bin/conda"
+for n in 1 2; do PATH="$T/gs2bin:$PATH" KEEP_DIR="$T/gs2-$n" MIN_VARIANTS=1 bash harness/compare.sh $M >/dev/null 2>&1 || { echo "FAIL GS2 run $n"; fail=1; }; done
+grep -q '^cpp_chunk=' "$T/gs2-2/cpp.err" || { echo "FAIL GS2 cpp.err lost cpp_chunk on a hit"; fail=1; }
+python3 -c "import json;d=json.load(open('$T/gs2-2/extra.json'));assert d['cpp_chunk']=='50000', d;assert d['golden']['hit']>=2, d['golden']" || { echo "FAIL GS2 extra.json"; fail=1; }
+[ -s "$T/gs2-2/cpp.time" ] || { echo "FAIL GS2 cpp.time not replayed"; fail=1; }
 [ $fail -eq 0 ] && echo "PASS test_compare_sh"; exit $fail

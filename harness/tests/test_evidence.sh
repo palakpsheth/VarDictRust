@@ -9,7 +9,7 @@ mkdir -p "$EVID_DIR"
 cleanup() {
   rm -f "$EVID_DIR/t-test-stale.json" "$EVID_DIR/t-test-badres.json" "$EVID_DIR/t-test.json" \
         "$EVID_DIR/t-test-cpp-both.json" "$EVID_DIR/t-test-cpp-empty.json" "$EVID_DIR/t-test-cpp-ok.json" \
-        "$EVID_DIR/t-test-reuse.json"
+        "$EVID_DIR/t-test-reuse.json" "$EVID_DIR/t-test-scale.json"
   [ -n "${T_KEEP:-}" ] && rm -rf "$T_KEEP" || true
 }
 trap cleanup EXIT
@@ -190,6 +190,27 @@ else
     fail=1
   fi
 fi
+
+# 6. ev_scale (acceptance.sh item 5): the scale bench is carried only while the perf-relevant code is unchanged
+#    (extra.perf_fingerprint); there is no waiver. P>=4 / bar>=2.4 is the pre-registered bar.
+eval "$(sed -n '/^ev_scale()/,/^}/p' harness/acceptance.sh)"
+PERF_FP=5e099d1a7661a81e
+scale_case() {  # <ok|fail> <result> <fingerprint> <extra-json> <message>
+  local want=$1 res=$2 fpv=$3 extra=$4 msg=$5 rc=0
+  printf '{"name":"t-test-scale","result":"%s","fingerprint":"%s","extra":%s}\n' "$res" "$fpv" "$extra" > "$EVID_DIR/t-test-scale.json"
+  ev_scale t-test-scale >/dev/null 2>&1 || rc=$?
+  if [ "$want" = ok ] && [ "$rc" -ne 0 ]; then echo "FAIL: ev_scale rejected: $msg" >&2; fail=1; fi
+  if [ "$want" = fail ] && [ "$rc" -eq 0 ]; then echo "FAIL: ev_scale accepted: $msg" >&2; fail=1; fi
+}
+GOOD='"pass":true,"certifying":true,"P":4,"bar":2.4'
+scale_case ok   PASS     "$FP"  "{$GOOD,\"perf_fingerprint\":\"other\"}"        "matching engine fingerprint"
+scale_case ok   PASS     stale  "{$GOOD,\"perf_fingerprint\":\"$PERF_FP\"}"     "stale engine fingerprint but unchanged perf paths (the carry rule)"
+scale_case fail PASS     stale  "{$GOOD,\"perf_fingerprint\":\"changed\"}"      "perf-relevant code changed since the run"
+scale_case fail PASS     stale  "{$GOOD}"                                       "evidence without a perf_fingerprint"
+scale_case fail PASS     "$FP"  '{"pass":true,"certifying":true,"P":1,"bar":0.6}'   "a one-cpu bar of 0.6 is not the pre-registered bar"
+scale_case fail PASS     "$FP"  '{"pass":false,"certifying":true,"P":4,"bar":2.4}'  "extra.pass is false"
+scale_case fail PASS     "$FP"  '{"pass":true,"certifying":false,"P":4,"bar":2.4}'  "non-certifying run"
+scale_case fail MISMATCH "$FP"  "{$GOOD}"                                       "non-PASS result"
 
 if [ $fail -eq 0 ]; then
   echo "PASS test_evidence"

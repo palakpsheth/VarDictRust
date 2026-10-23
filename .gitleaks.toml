@@ -1,0 +1,15 @@
+title = "VarDictRust Gitleaks Configuration"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Allow 16-char hex SHA-256 cell keys in golden store telemetry blocks"
+condition = "AND"
+regexTarget = "match"
+paths = [
+  '''^benchmarks/evidence/.*\.json$''',
+]
+regexes = [
+  '''"key":\s*"[0-9a-f]{16}"''',
+]

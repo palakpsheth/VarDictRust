@@ -29,6 +29,7 @@ if [[ ! -f "$FA_B37" || ! -f "$FA_HG38" ]]; then
 fi
 
 CURRENT_FP=$(bash "$ROOT_DIR/harness/engine_fingerprint.sh")
+export GOLDEN_RUN_ID="${GOLDEN_RUN_ID:-mm-$(date +%s)}"
 
 # Advisory vardictcpp third arm (never gating): staple the conda pin presence
 # into the evidence JSON for the ev_cpp presence gate (per-cell CPP lines in
@@ -78,7 +79,7 @@ function run_vcf_compare() {
     local start_t=$(date +%s%N)
 
     # 1. Oracle
-    bash "$ROOT_DIR/harness/run_oracle.sh" "$ref" "$bam_spec" "$bed_file" "$out_j" "$sample" -z -th "$THREADS" "${extra_args[@]}" 2>/dev/null || {
+    bash "$ROOT_DIR/harness/golden_store.sh" oracle "mm-$slice_id" "$ref" "$bam_spec" "$bed_file" "$out_j" "$sample" -z -th "$THREADS" "${extra_args[@]}" 2>/dev/null || {
         echo "FAIL (Oracle error)"
         exit 1
     }
@@ -107,6 +108,29 @@ function run_vcf_compare() {
         diff -u "$out_j" "$out_r" | head -40 || true
         exit 1
     fi
+
+    # 4. Advisory vardictcpp third arm (never gates the slice verdict)
+    local out_c="$TMPDIR/${slice_id}_cpp.vcf"
+    local err_c="$TMPDIR/${slice_id}_cpp.err"
+    local cpp_rc=0
+    if [ "${CPP_SKIP:-0}" = "1" ] || [ "${CPP_SKIP:-0}" = "true" ]; then
+        echo "  CPP: SKIP: $slice_id (disabled via CPP_SKIP=1)"
+    elif bash "$ROOT_DIR/harness/golden_store.sh" cpp "mm-$slice_id" "$ref" "$bam_spec" "$bed_file" "$out_c" "$sample" -z -th "$THREADS" "${extra_args[@]}" 2>"$err_c"; then
+        if [ ! -s "$out_c" ]; then
+            grep '^#' "$out_j" > "$out_c" || printf '##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n' > "$out_c"
+        fi
+        local cpp_cmp
+        if cpp_cmp=$(python3 "$ROOT_DIR/harness/compare_vcf.py" "$out_j" "$out_c" --eps 1e-6 2>&1); then
+            echo "  CPP: MATCH ($slice_id)"
+        else
+            echo "  CPP-MISMATCH: $slice_id ($(head -n 1 <<<"$cpp_cmp"))"
+        fi
+    else
+        cpp_rc=$?
+        local first_err
+        first_err=$(grep -vE '^(ERROR conda\.cli|cpp_chunk=|[[:space:]]*$)' "$err_c" 2>/dev/null | head -n 1 | tr -d '\r' | cut -c 1-140 || true)
+        echo "  CPP: SKIP: $slice_id (cpp engine exit $cpp_rc${first_err:+: $first_err})"
+    fi
 }
 
 function run_rna_slice() {
@@ -125,7 +149,7 @@ function run_rna_slice() {
     local start_t=$(date +%s%N)
 
     # 1. Oracle Execution (4-column intron frequency table)
-    conda run -n vardict-oracle vardict-java -G "$ref" -b "$bam" -R "$region" -f 0.1 -i -th "$THREADS" > "$out_j" 2>/dev/null || {
+    bash "$ROOT_DIR/harness/golden_store.sh" raw --kind java --label "mm-$slice_id" --out "$out_j" --input "$ref" --input "$ref.fai" --input "$bam" -- conda run -n vardict-oracle vardict-java -G "$ref" -b "$bam" -R "$region" -f 0.1 -i -th "$THREADS" 2>/dev/null || {
         echo "FAIL (Oracle RNA error)"
         exit 1
     }
@@ -224,6 +248,7 @@ run_rna_slice 18 "RNA_6C" "RNA-Seq Splicing" "$FA_HG38" "$DATA_DIR/rna_s6c.bam" 
 # -----------------------------------------------------------------------------
 # Generate Machine-Readable Evidence JSON
 # -----------------------------------------------------------------------------
+export GOLDEN_JSON=$(bash "$ROOT_DIR/harness/golden_store.sh" stats --run "$GOLDEN_RUN_ID" --json)
 python3 -c "
 import json
 
@@ -237,6 +262,7 @@ data = {
     'total_variants_evaluated': $TOTAL_VARIANTS,
     'float_tolerance_eps': 1e-6,
     $CPP_JSON_LINE
+    'golden': json.loads(__import__('os').environ['GOLDEN_JSON']),
     'result': 'MATCH' if $PASSED_COUNT == $TOTAL_SLICES else 'MISMATCH',
     'slices': [$(IFS=,; echo "${SLICE_RESULTS[*]}")]
 }

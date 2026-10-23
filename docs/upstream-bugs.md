@@ -331,6 +331,7 @@ Cpp numbers live in evidence `extra` (`cpp_version`, `cpp_head`, `cpp_f1`,
 | [CPP-7](#cpp-7) | CHROM resolved from reference, not BAM, on duplicate-name FASTAs | b37 extended-coverage cells |
 | [CPP-8](#cpp-8) | N-REF null rows emitted in native `-vcf` | b37 extended-coverage cells |
 | [CPP-9](#cpp-9) | Caller deltas: MNP joining + large SV alleles | hg002/exome/hg008 Tier-2 arms |
+| [CPP-10](#cpp-10) | `-DP`/`--DP` parsed but ignored (printer stays stdout) | Extended-coverage M17 cell |
 
 <a id="cpp-1"></a>
 ### CPP-1 — VCF header provenance + `END` INFO key
@@ -352,8 +353,11 @@ Java target-windows to 3, so an advisory `CPP-MISMATCH` on row count is expected
 
 Amplicon mode without a BED errors (exit 1 → loud `CPP: SKIP`), and with a
 BED cpp emits its 38/40-col TSV table even when `-vcf` is passed (verified:
-`-vcf` before and after the BED both yield TSV). A VCF-vs-TSV comparison
-would MISMATCH meaninglessly, so `compare.sh` records an honest
+`-vcf` before and after the BED both yield TSV). When `-a` and `-vcf` are passed,
+`vardictcpp` runs Fisher exact strand bias and outputs a 40-column TSV table
+matching Java's `teststrandbias.R` output (`compare_var.py` MATCH on `amplicon`
+and `s6`). A VCF-vs-TSV comparison would MISMATCH meaninglessly, so `compare.sh`
+(the Tier-2 VCF comparator) honestly records
 `CPP: SKIP: cpp emitted non-VCF surface` naming the cause (locked by CPP11).
 TSV-level amplicon parity belongs to a Tier-1 `compare_var.py` cell, not the
 VCF gate.
@@ -389,21 +393,27 @@ future pin emits contigs.
 <a id="cpp-7"></a>
 ### CPP-7 — CHROM resolved from reference, not BAM, on ambiguous FASTAs
 
-On `GRCh37.fa` — whose headers contain *both* `>20` and `>chr20` — cpp emits
-`chr20` where VarDictJava/`var2vcf` emit the BAM header's `20` (verified:
-BAM `@SQ SN:20`, fasta carries both spellings). cpp resolves CHROM through
-the reference index; Java uses the read's reference name. Every record
-mismatches on CHROM alone, so b37 cpp-vs-java VCF comparison is structurally
-uninformative; calls themselves are unaffected (GRCh38 data, with unique
-names, agrees). Recorded advisory, never gating.
+Root cause verified in audit: `VarDictJava/testdata/fastas/GRCh37.fa` (materialized
+from sparse `GRCh37.fa.csv`) contains *both* `>20` (length 62,376,064; real biological sequence)
+and `>chr20` (length 60,470,068; sparse stub that is all `N`s across `20156208-20234556`).
+When a BED specifies `chr20` against a BAM with `@SQ SN:20`, Java and Rust resolve
+the contig through the BAM dictionary to `20`, whereas `vardictcpp` queries `>chr20`
+directly in the FASTA and emits `REF=N` calls across the window (CPP-8) or exits 1
+when the `chr`-prefixed contig is absent (`chr11` in `GRCh37.fa`). When the BED uses
+the BAM's `20` contig, `vardictcpp` emits 0 `REF=N` rows and matches 4/4 (100%) on
+`tiny` and 1,042/1,048 (99.4%) on `s1a`. In truth concordance, evidence records both
+`cpp_f1` (unnormalized) and `cpp_f1_normalized`. Recorded advisory, never gating.
 
 <a id="cpp-8"></a>
 ### CPP-8 — N-REF null rows emitted in native `-vcf`
 
-cpp's native emitter writes a row per covered position with `REF=N` where
-Java's `var2vcf` drops null rows (the UB-2 family): on the b37 slices this
-adds hundreds of `N`-REF rows no Java VCF contains. Same class as CPP-7 —
-structurally uninformative comparison, unaffected calls, advisory only.
+Direct consequence of CPP-7: when `vardictcpp` queries the decoy `>chr20` N-stub in
+`GRCh37.fa`, it reads all `N`s and emits a variant call with `REF=N` at every covered
+position across the window (up to 78,304 false-positive rows on b37 slices), whereas
+Java's `var2vcf` drops null rows. When contig names match the BAM (`20`), `vardictcpp`
+emits zero `REF=N` rows. Truth concordance evidence records both `cpp_f1` and
+`cpp_f1_normalized` (filtering out `REF=^N+$` calls and aligning contig naming).
+Advisory only, never gating.
 
 <a id="cpp-9"></a>
 ### CPP-9 — Caller deltas: MNP joining + large SV alleles (measured, advisory)
@@ -429,3 +439,14 @@ but the absolute rates are small, mode-dependent (germline MNP vs somatic
 SV), and paper-protocol data (hg19 WES, operating-point filtered) may
 differ — no accuracy-rank claim is made from inter-caller comparison alone
 (the Fig-3 no-truth caveat applies). Recorded advisory, never gating.
+
+<a id="cpp-10"></a>
+### CPP-10 — -DP parsed but ignored
+
+Pinned vardictcpp accepts `-DP`/`--DP ERR` (listed under "Accepted (parsed,
+VarDict-compatible; not all affect output yet)" in `vardictcpp --help`) but still
+prints variants to stdout, so the M17 stderr comparison reports an advisory
+`CPP-MISMATCH`; Java and Rust both honour it (M17 gate arm MATCH); advisory only,
+no engine impact; reproduced with `-N` (without `-N` cpp exits 1 — that was a
+harness omission fixed here).
+

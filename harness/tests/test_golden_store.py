@@ -1,0 +1,481 @@
+#!/usr/bin/env python3
+"""harness/tests/test_golden_store.py — golden baseline store (issue #31). stdlib only."""
+import importlib.util
+import json
+import os
+import pathlib
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import unittest
+
+HARNESS = pathlib.Path(__file__).resolve().parents[1]
+_spec = importlib.util.spec_from_file_location("golden_store", HARNESS / "golden_store.py")
+gs = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(gs)
+CLI = [sys.executable, str(HARNESS / "golden_store.py")]
+CLEAN_ENV = ("GOLDEN_MODE", "GOLDEN_TIME_OUT", "GOLDEN_RUN_ID", "AF_THR", "CPP_CHUNK", "GOLDEN_REHASH",
+             "GOLDEN_ORACLE_CMD", "GOLDEN_CPP_CMD", "LC_ALL", "LANG", "STUB_EXIT")
+HAS_TIME = os.path.exists(gs.TIME_BIN)
+
+
+class StoreCase(unittest.TestCase):
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="gs-test-"))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.store = self.tmp / "store"
+        self.env = {k: v for k, v in os.environ.items() if k not in CLEAN_ENV}
+        self.env.update(GOLDEN_STORE_DIR=str(self.store), COUNT=str(self.tmp / "count"))
+        self.ref = self.write("ref.fa", b">c\nACGT\n")
+        self._saved = {k: os.environ.get(k) for k in ("GOLDEN_STORE_DIR", "COUNT") + CLEAN_ENV}
+        for k in CLEAN_ENV:
+            os.environ.pop(k, None)
+        os.environ["GOLDEN_STORE_DIR"] = str(self.store)
+        os.environ["COUNT"] = str(self.tmp / "count")
+        self.addCleanup(self._restore_env)
+
+    def _restore_env(self):
+        for k, v in self._saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    def write(self, name, data):
+        p = self.tmp / name
+        p.write_bytes(data)
+        return p
+
+    def runs(self):
+        c = self.tmp / "count"
+        return len(c.read_text().splitlines()) if c.exists() else 0
+
+    def cli(self, *args, env=None):
+        return subprocess.run(CLI + [str(a) for a in args], env={**self.env, **(env or {})},
+                              capture_output=True, text=True)
+
+    def raw(self, payload="payload", extra=(), env=None, kind="java", out=None, script=None):
+        out = out or self.tmp / "out.txt"
+        script = script or f'echo run >> "$COUNT"; echo {payload}; echo err-line >&2'
+        return self.cli("raw", "--kind", kind, "--label", "t", "--out", out, "--err-out", self.tmp / "err.txt",
+                        "--input", self.ref, *extra, "--", "sh", "-c", script, env=env)
+
+    def events(self):
+        log = self.store / "stats.log"
+        return [l.split("\t")[2] for l in log.read_text().splitlines()] if log.exists() else []
+
+    def manifests(self):
+        return sorted((self.store / "cells").glob("*/manifest.json"))
+
+
+class TestKey(StoreCase):
+    def test_key_ignores_input_path_but_not_thread_count(self):
+        other = self.write("elsewhere.fa", self.ref.read_bytes())
+        k1, _ = gs.cell_key("java", [self.ref], ["-G", str(self.ref), "-th", "4", "-f", "0.1"])
+        k2, _ = gs.cell_key("java", [other], ["-G", str(other), "-th", "4", "-f", "0.1"])
+        k3, _ = gs.cell_key("java", [other], ["-G", str(other), "-th", "8", "-f", "0.1"])
+        self.assertEqual(k1, k2)
+        self.assertNotEqual(k1, k3, "-th stays in the key: a time file measured at -th 4 is not valid at -th 8")
+
+    def test_literal_inputs_keep_their_path_spelling(self):
+        other = self.write("elsewhere.fa", self.ref.read_bytes())
+        k1, _ = gs.cell_key("java", [self.ref], [str(self.ref)], literal=[self.ref])
+        k2, _ = gs.cell_key("java", [other], [str(other)], literal=[other])
+        self.assertNotEqual(k1, k2, "##reference= embeds the -G path, so the spelling is part of the cell")
+
+    def test_key_changes_with_content_flags_kind_wrapper_and_env(self):
+        base, _ = gs.cell_key("java", [self.ref], ["-f", "0.1"])
+        self.assertNotEqual(base, gs.cell_key("java", [self.ref], ["-f", "0.2"])[0])
+        self.assertNotEqual(base, gs.cell_key("cpp", [self.ref], ["-f", "0.1"])[0])
+        self.assertNotEqual(base, gs.cell_key("java", [self.ref], ["-f", "0.1"], wrapper="deadbeef")[0])
+        for var, val in (("AF_THR", "0.5"), ("LC_ALL", "de_DE.UTF-8"), ("LANG", "de_DE.UTF-8")):
+            os.environ[var] = val
+            self.assertNotEqual(base, gs.cell_key("java", [self.ref], ["-f", "0.1"])[0], var)
+            del os.environ[var]
+        self.write("ref.fa", b">c\nACGTACGT\n")
+        self.assertNotEqual(base, gs.cell_key("java", [self.ref], ["-f", "0.1"])[0])
+
+    def test_sha_cache_invalidates_on_content_change_even_with_forged_mtime(self):
+        before = gs.sha256_file(self.ref)
+        st = self.ref.stat()
+        time.sleep(0.05)  # ctime is kernel-coarse (jiffy); a real later edit always lands in a new tick
+        self.ref.write_bytes(b">c\nTTTT\n")  # same size, different content
+        os.utime(self.ref, ns=(st.st_atime_ns, st.st_mtime_ns))  # mtime forged back; ctime cannot be
+        self.assertNotEqual(gs.sha256_file(self.ref), before, "ctime in the cache key must defeat a forged mtime")
+
+    def test_golden_rehash_ignores_the_cache(self):
+        real = gs.sha256_file(self.ref)
+        cache = self.store / ".shacache.json"
+        cache.write_text(json.dumps({k: "0" * 64 for k in json.loads(cache.read_text())}))
+        self.assertEqual(gs.sha256_file(self.ref), "0" * 64)
+        os.environ["GOLDEN_REHASH"] = "1"
+        self.assertEqual(gs.sha256_file(self.ref), real)
+
+    def test_missing_input_is_a_clear_error(self):
+        r = self.cli("raw", "--kind", "java", "--label", "t", "--out", self.tmp / "o", "--input",
+                     self.tmp / "nope.bam", "--", "true")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("input not found", r.stderr)
+
+
+class TestRoundTrip(StoreCase):
+    def test_miss_then_hit_skips_the_command_and_replays_stderr(self):
+        r1 = self.raw()
+        self.assertEqual(r1.returncode, 0, r1.stderr)
+        self.assertEqual(self.runs(), 1)
+        first = (self.tmp / "out.txt").read_text()
+        (self.tmp / "out.txt").unlink()
+        (self.tmp / "err.txt").unlink()
+        r2 = self.raw()
+        self.assertEqual(r2.returncode, 0, r2.stderr)
+        self.assertEqual(self.runs(), 1, "hit must not execute the command")
+        self.assertEqual((self.tmp / "out.txt").read_text(), first)
+        self.assertEqual((self.tmp / "err.txt").read_text(), "err-line\n")
+        self.assertEqual(self.events(), ["MISS", "HIT"])
+
+    def test_stderr_is_forwarded_when_no_err_out(self):
+        script = 'echo run >> "$COUNT"; echo p; echo cpp_chunk=50000 >&2'
+        for _ in range(2):
+            r = self.cli("raw", "--kind", "cpp", "--label", "t", "--out", self.tmp / "o", "--input", self.ref,
+                         "--", "sh", "-c", script)
+            self.assertEqual(r.stderr, "cpp_chunk=50000\n")
+        self.assertEqual(self.runs(), 1)
+
+    def test_large_artifacts_are_gzipped_small_are_not(self):
+        big = 'echo run >> "$COUNT"; head -c 1200000 /dev/zero | tr "\\0" a'
+        self.assertEqual(self.raw(script=big).returncode, 0)
+        files = sorted(p.name for p in self.store.glob("cells/*/0/*"))
+        self.assertIn("out.gz", files)
+        self.assertIn("err", files)
+        (self.tmp / "out.txt").unlink()
+        self.assertEqual(self.raw(script=big).returncode, 0)
+        self.assertEqual(self.runs(), 1)
+        self.assertEqual((self.tmp / "out.txt").stat().st_size, 1200000)
+
+    def test_mode_off_never_reads_or_writes_the_store(self):
+        for _ in range(2):
+            self.assertEqual(self.raw(env={"GOLDEN_MODE": "off"}).returncode, 0)
+        self.assertEqual(self.runs(), 2)
+        self.assertEqual(self.manifests(), [])
+        self.assertEqual(self.events(), ["OFF", "OFF"])
+
+    def test_mode_regen_reruns_and_appends_an_entry(self):
+        self.raw()
+        self.raw(env={"GOLDEN_MODE": "regen"})
+        self.assertEqual(self.runs(), 2)
+        m = json.loads(self.manifests()[0].read_text())
+        self.assertEqual(len(m["entries"]), 2)
+        self.assertEqual(self.events(), ["MISS", "REGEN"])
+
+    def test_failed_command_is_never_pinned_and_exit_code_propagates(self):
+        r = self.raw(script='echo run >> "$COUNT"; exit 7')
+        self.assertEqual(r.returncode, 7)
+        self.assertEqual(self.manifests(), [])
+        self.assertEqual(self.events(), ["FAIL"])
+
+    def test_bad_golden_mode_is_rejected(self):
+        r = self.raw(env={"GOLDEN_MODE": "sometimes"})
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("GOLDEN_MODE", r.stderr)
+
+
+class TestHardening(StoreCase):
+    def test_pin_failure_does_not_fail_the_run(self):
+        out = self.tmp / "o.txt"
+        orig = gs.put
+
+        def boom(*a, **k):
+            raise OSError(28, "No space left on device")
+
+        gs.put = boom
+        self.addCleanup(setattr, gs, "put", orig)
+        rc = gs.run_cached("java", "t", [self.ref], ["x"], ["sh", "-c", 'echo run >> "$COUNT"; echo hi'], str(out),
+                           capture_stdout=True)
+        self.assertEqual(rc, 0, "an hours-long oracle run must not be reported as failed because the pin failed")
+        self.assertEqual(out.read_text(), "hi\n")
+        self.assertEqual(self.events(), ["PINFAIL"])
+        self.assertEqual(self.manifests(), [])
+
+    def test_input_changed_during_the_run_is_not_pinned(self):
+        r = self.raw(script='echo run >> "$COUNT"; printf changed-and-longer > "$IN"; echo payload', env={"IN": str(self.ref)})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.events(), ["UNSTABLE"])
+        self.assertEqual(self.manifests(), [])
+        self.assertIn("changed during the run", r.stderr)
+
+    def test_empty_or_implausible_output_is_refused(self):
+        vcf = self.tmp / "x.vcf"
+        for script, want in (("echo garbage", "REFUSED"), ("true", "REFUSED"), ("printf '#CHROM\\tPOS\\n'", "MISS")):
+            r = self.cli("raw", "--kind", "java", "--label", "t", "--out", vcf, "--input", self.ref, "--", "sh", "-c", script)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(self.events()[-1], want, script)
+        self.assertEqual(len(self.manifests()), 1, "only the plausible VCF is pinned")
+
+    def test_corrupt_manifest_fails_loud_and_is_not_overwritten(self):
+        self.raw()
+        mf = self.manifests()[0]
+        mf.write_text("{ not json")
+        r = self.raw()
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("is corrupt", r.stderr)
+        self.assertEqual(mf.read_text(), "{ not json")
+        self.assertEqual(self.runs(), 1)
+
+    @unittest.skipUnless(HAS_TIME, "needs /usr/bin/time")
+    def test_time_file_is_not_replayed_across_hosts(self):
+        t1, t2 = self.tmp / "t1", self.tmp / "t2"
+        self.raw(env={"GOLDEN_TIME_OUT": str(t1)})
+        mf = self.manifests()[0]
+        m = json.loads(mf.read_text())
+        m["entries"][0]["host"]["nproc"] = 99999  # pinned on a different machine
+        mf.write_text(json.dumps(m))
+        self.raw(env={"GOLDEN_TIME_OUT": str(t2)})
+        self.assertEqual(self.runs(), 2, "a timing consumer must re-measure on its own host")
+        self.assertEqual(self.events(), ["MISS", "MISS"])
+        self.raw()  # no timing consumer: the output alone replays fine
+        self.assertEqual(self.runs(), 2)
+        self.assertEqual(self.events()[-1], "HIT")
+
+    @unittest.skipUnless(HAS_TIME and shutil.which("pgrep"), "needs /usr/bin/time and pgrep")
+    def test_sigterm_kills_the_command_group_and_cleans_temp_files(self):
+        tdir = self.tmp / "tmpd"
+        tdir.mkdir()
+        p = subprocess.Popen(CLI + ["raw", "--kind", "java", "--label", "t", "--out", str(self.tmp / "o"),
+                                    "--input", str(self.ref), "--", "sh", "-c",
+                                    'echo started >> "$COUNT"; exec sleep 31.7'],
+                             env={**self.env, "TMPDIR": str(tdir)}, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        for _ in range(100):
+            if self.runs() == 1:
+                break
+            time.sleep(0.05)
+        p.terminate()
+        self.assertEqual(p.wait(timeout=30), 143)
+        self.assertEqual(list(tdir.iterdir()), [], "gs-err-*/gs-time-* temp files must not leak")
+        self.assertNotEqual(subprocess.run(["pgrep", "-f", "sleep 31.7"], capture_output=True).returncode, 0,
+                            "the oracle process group must not survive its parent")
+
+    def test_concurrent_runs_of_one_cell_serialise_their_pins(self):
+        procs = [subprocess.Popen(CLI + ["raw", "--kind", "java", "--label", "t", "--out", str(self.tmp / f"o{i}"),
+                                         "--input", str(self.ref), "--", "sh", "-c",
+                                         'echo run >> "$COUNT"; sleep 0.5; echo payload'],
+                                  env=self.env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) for i in range(4)]
+        self.assertEqual([p.wait(timeout=60) for p in procs], [0, 0, 0, 0])
+        self.assertEqual(self.events().count("MISS"), 4)
+        m = json.loads(self.manifests()[0].read_text())
+        self.assertEqual(len(m["entries"]), 4, "no lost manifest update")
+        cell = self.manifests()[0].parent
+        self.assertEqual(sorted(p.name for p in cell.iterdir() if p.name.isdigit()), ["0", "1", "2", "3"])
+        self.assertFalse((cell / ".lock").exists())
+
+
+class TestIntegrity(StoreCase):
+    def pinned(self, env=None):
+        self.assertEqual(self.raw(env=env).returncode, 0)
+        (self.tmp / "out.txt").unlink()
+        return self.manifests()[0].parent
+
+    def test_verify_passes_on_a_clean_store_and_on_an_empty_one(self):
+        self.assertEqual(self.cli("verify").returncode, 0)
+        self.pinned()
+        r = self.cli("verify")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("1 cell", r.stdout)
+
+    def test_corrupt_artifact_fails_verify_then_reruns_live_and_repins(self):
+        cell = self.pinned()
+        art = cell / "0" / "out"
+        art.write_bytes(art.read_bytes() + b"X")
+        v = self.cli("verify")
+        self.assertEqual(v.returncode, 1)
+        self.assertIn("out", v.stderr)
+        self.assertEqual(self.raw().returncode, 0)
+        self.assertEqual(self.runs(), 2, "corrupt hit must fall through to a live run")
+        self.assertEqual((self.tmp / "out.txt").read_text(), "payload\n")
+        self.assertEqual(self.events()[-1], "CORRUPT")
+        self.assertEqual(self.cli("verify").returncode, 0)
+        self.assertEqual(len(json.loads((cell / "manifest.json").read_text())["entries"]), 2)
+
+    def test_verify_reports_a_corrupt_manifest_instead_of_crashing(self):
+        cell = self.pinned()
+        (cell / "manifest.json").write_text("{ not json")
+        v = self.cli("verify")
+        self.assertEqual(v.returncode, 1)
+        self.assertIn("is corrupt", v.stderr)
+
+    @unittest.skipUnless(HAS_TIME, "needs /usr/bin/time")
+    def test_the_time_sidecar_is_hash_protected_and_replayed_verbatim(self):
+        t1, t2 = self.tmp / "t1", self.tmp / "t2"
+        cell = self.pinned(env={"GOLDEN_TIME_OUT": str(t1)})
+        self.assertIn("Elapsed (wall clock)", t1.read_text())
+        self.raw(env={"GOLDEN_TIME_OUT": str(t2)})
+        self.assertEqual(self.runs(), 1)
+        self.assertEqual(t2.read_text(), t1.read_text())
+        (cell / "0" / "time").write_text("Elapsed (wall clock) time (h:mm:ss or m:ss): 0:00.01\n")
+        v = self.cli("verify")
+        self.assertEqual(v.returncode, 1, "an edited time file must fail verify")
+        self.assertIn("'time'", v.stderr)
+        self.raw(env={"GOLDEN_TIME_OUT": str(t2)})
+        self.assertEqual(self.runs(), 2, "an edited time file must never be replayed into a perf gate")
+        self.assertEqual(self.events()[-1], "CORRUPT")
+
+    def test_tombstone_forces_a_live_rerun_and_is_append_only(self):
+        cell = self.pinned()
+        t = self.cli("tombstone", cell.name, "bad baseline")
+        self.assertEqual(t.returncode, 0, t.stderr)
+        self.assertEqual(self.raw().returncode, 0)
+        self.assertEqual(self.runs(), 2)
+        entries = json.loads((cell / "manifest.json").read_text())["entries"]
+        self.assertEqual([bool(e.get("tombstone")) for e in entries], [False, True, False])
+        self.assertEqual(self.cli("tombstone", "deadbeefdeadbeef", "x").returncode, 1)
+
+    def test_list_shows_label_and_status(self):
+        cell = self.pinned()
+        self.assertRegex(self.cli("list").stdout, rf"{cell.name}\tjava\tt\tlive\t1")
+        self.cli("tombstone", cell.name, "r")
+        self.assertRegex(self.cli("list").stdout, rf"{cell.name}\tjava\tt\ttombstoned\t2")
+
+    def test_stats_ratio_min_hit_gate_and_failures_count_as_live(self):
+        self.assertEqual(self.cli("stats", "--min-hit", "0.5").returncode, 1, "no events must not pass a floor")
+        self.raw(env={"GOLDEN_RUN_ID": "r1"})
+        for _ in range(3):
+            self.raw(env={"GOLDEN_RUN_ID": "r2"})
+        r = self.cli("stats", "--run", "r2", "--min-hit", "0.9")
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertIn("3 hit / 0 live", r.stdout)
+        self.raw(script="exit 3", env={"GOLDEN_RUN_ID": "r2"})
+        r = self.cli("stats", "--run", "r2", "--min-hit", "0.9")
+        self.assertEqual(r.returncode, 1, "a failed cell must lower the hit-rate, not vanish from it")
+        self.assertIn("3 hit / 1 live", r.stdout)
+
+    def test_stats_json_lists_the_events_of_a_run(self):
+        self.raw(env={"GOLDEN_RUN_ID": "j"})
+        self.raw(env={"GOLDEN_RUN_ID": "j"})
+        d = json.loads(self.cli("stats", "--run", "j", "--json").stdout)
+        self.assertEqual((d["run"], d["hit"], d["live"]), ("j", 1, 1))
+        self.assertEqual([e["event"] for e in d["events"]], ["MISS", "HIT"])
+        self.assertEqual(d["events"][0]["key"], self.manifests()[0].parent.name)
+
+
+class TestWrappers(StoreCase):
+    def setUp(self):
+        super().setUp()
+        self.bam1 = self.write("t.bam", b"tumor")
+        self.bam2 = self.write("n.bam", b"normal")
+        self.bed = self.write("r.bed", b"chr1\t1\t10\n")
+        stub = self.write("stub.sh", (
+            b'#!/usr/bin/env bash\n'
+            b'echo run >> "$COUNT"\n'
+            b'echo cpp_chunk=50000 >&2\n'
+            b'if [ -n "${STUB_EXIT:-}" ]; then echo "SKIP: no cpp" >&2; exit "$STUB_EXIT"; fi\n'
+            b'{ [ -n "${STUB_NOHDR:-}" ] || printf "#CHROM\\tPOS\\n"; printf "vcf-for:%s\\n" "${@:5}"; } > "$4"\n'))
+        stub.chmod(0o755)
+        self.stub = f"bash {stub}"
+        self.out = self.tmp / "o.vcf"
+
+    def verb(self, verb, flags=(), bam=None, env=None, label="L", ref=None, stub=None):
+        bam = bam or self.bam1
+        e = {"GOLDEN_ORACLE_CMD": stub or self.stub, "GOLDEN_CPP_CMD": stub or self.stub, **(env or {})}
+        return self.cli(verb, label, ref or self.ref, bam, self.bed, self.out, "SAMPLE", *flags, env=e)
+
+    def test_oracle_miss_then_hit_and_output_restored(self):
+        self.assertEqual(self.verb("oracle", ["-z", "-f", "0.1"]).returncode, 0)
+        want = self.out.read_text()
+        self.assertEqual(want, "#CHROM\tPOS\nvcf-for:SAMPLE\nvcf-for:-z\nvcf-for:-f\nvcf-for:0.1\n")
+        self.out.unlink()
+        r = self.verb("oracle", ["-z", "-f", "0.1"])
+        self.assertEqual((r.returncode, self.runs(), self.out.read_text()), (0, 1, want))
+        self.assertEqual(r.stderr, "cpp_chunk=50000\n")
+
+    def test_every_flag_including_thread_count_is_part_of_the_cell(self):
+        self.verb("oracle", ["-z", "-th", "4"])
+        self.verb("oracle", ["-z", "-th", "4"])
+        self.assertEqual(self.runs(), 1)
+        self.verb("oracle", ["-z", "-th", "8"])
+        self.assertEqual(self.runs(), 2)
+        self.verb("oracle", ["-z", "-th", "8", "-f", "0.1"])
+        self.assertEqual(self.runs(), 3)
+
+    def test_the_reference_path_spelling_is_part_of_the_cell(self):
+        other = self.write("same-content.fa", self.ref.read_bytes())
+        self.verb("oracle")
+        self.verb("oracle", ref=other)
+        self.assertEqual(self.runs(), 2, "VarDict writes the -G path into ##reference=; a new spelling is a new cell")
+
+    def test_every_bam_of_a_somatic_spec_and_the_bed_and_the_fai_are_inputs(self):
+        spec = f"{self.bam1}|{self.bam2}"
+        self.verb("oracle", bam=spec)
+        self.verb("oracle", bam=spec)
+        self.assertEqual(self.runs(), 1)
+        self.write("n.bam", b"normal-v2")
+        self.verb("oracle", bam=spec)
+        self.assertEqual(self.runs(), 2)
+        self.write("r.bed", b"chr1\t1\t11\n")
+        self.verb("oracle", bam=spec)
+        self.assertEqual(self.runs(), 3)
+        self.write("ref.fa.fai", b"c\t4\t3\t4\t5\n")
+        self.verb("oracle", bam=spec)
+        self.assertEqual(self.runs(), 4)
+
+    def test_oracle_and_cpp_cells_are_distinct_and_env_keyed(self):
+        self.verb("oracle")
+        self.verb("cpp")
+        self.assertEqual(self.runs(), 2)
+        self.verb("cpp", env={"CPP_CHUNK": "1000"})
+        self.assertEqual(self.runs(), 3)
+        self.verb("oracle", env={"CPP_CHUNK": "1000"})
+        self.assertEqual(self.runs(), 3, "CPP_CHUNK must not key java cells")
+        self.verb("oracle", env={"AF_THR": "0.5"})
+        self.assertEqual(self.runs(), 4)
+        self.verb("oracle", env={"LC_ALL": "de_DE.UTF-8"})
+        self.assertEqual(self.runs(), 5)
+
+    def test_a_test_seam_override_is_its_own_cell_namespace(self):
+        self.verb("oracle")
+        other = self.write("stub2.sh", (self.tmp / "stub.sh").read_bytes())
+        self.verb("oracle", stub=f"bash {other}")
+        self.assertEqual(self.runs(), 2, "an exported stub must never be served as the real oracle (or vice versa)")
+
+    def test_the_real_wrapper_script_hash_is_in_the_key(self):
+        seen = {}
+        orig = gs.run_cached
+        gs.run_cached = lambda *a, **k: seen.update(args=a, kwargs=k) or 0
+        self.addCleanup(setattr, gs, "run_cached", orig)
+        gs.cmd_oracle(["L", str(self.ref), str(self.bam1), str(self.bed), str(self.out), "SAMPLE", "-z"])
+        self.assertEqual(seen["kwargs"]["wrapper"], gs.sha256_file(HARNESS / "run_oracle.sh"))
+        self.assertEqual(seen["kwargs"]["literal"], [str(self.ref)])
+        self.assertEqual(seen["args"][3], [str(self.ref), "SAMPLE", "-z"])
+        gs.cmd_cpp(["L", str(self.ref), str(self.bam1), str(self.bed), str(self.out), "SAMPLE"])
+        self.assertEqual(seen["kwargs"]["wrapper"], gs.sha256_file(HARNESS / "run_cpp.sh"))
+
+    def test_implausible_java_vcf_is_refused_not_pinned(self):
+        r = self.verb("oracle", env={"STUB_NOHDR": "1"})
+        self.assertEqual(r.returncode, 0)
+        self.assertEqual(self.events(), ["REFUSED"])
+        self.assertEqual(self.manifests(), [])
+
+    def test_cpp_skip_exit_code_and_reason_pass_through_unpinned(self):
+        r = self.verb("cpp", env={"STUB_EXIT": "3"})
+        self.assertEqual(r.returncode, 3)
+        self.assertEqual(r.stderr.splitlines()[-1], "SKIP: no cpp")
+        self.assertEqual(self.manifests(), [])
+
+    @unittest.skipUnless(HAS_TIME, "needs /usr/bin/time")
+    def test_time_out_env_is_pinned_and_replayed_on_hit(self):
+        t = self.tmp / "java.time"
+        self.verb("oracle", env={"GOLDEN_TIME_OUT": str(t)})
+        want = t.read_text()
+        t.unlink()
+        self.verb("oracle", env={"GOLDEN_TIME_OUT": str(t)})
+        self.assertEqual(self.runs(), 1)
+        self.assertEqual(t.read_text(), want)
+
+    def test_usage_error_without_enough_arguments(self):
+        r = self.cli("oracle", "L", self.ref)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("LABEL REF BAM BED OUT", r.stderr)
+
+
+if __name__ == "__main__":
+    unittest.main()

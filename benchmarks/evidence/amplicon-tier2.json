@@ -1,5 +1,8 @@
 {
   "cmd": [
+    "env",
+    "KEEP_DIR=scratch/g4/amplicon/cmp",
+    "MIN_VARIANTS=2",
     "bash",
     "harness/compare.sh",
     "scratch/g4/amplicon/ref.fa",
@@ -16,29 +19,48 @@
   ],
   "cpp_time": {
     "exit": "0",
-    "max_rss_kb": "90560",
-    "wall": "0:03.46"
+    "max_rss_kb": "91040",
+    "wall": "0:03.75"
   },
-  "date": "2026-10-17T12:25:37-07:00",
+  "date": "2026-10-22T19:28:36-07:00",
   "extra": {
     "cpp_head": [
       "CPP: SKIP: cpp emitted non-VCF surface (TSV-only mode; VCF comparison inapplicable)"
     ],
-    "cpp_skip_reason": "cpp emitted non-VCF surface (TSV-only mode; VCF comparison inapplicable)"
+    "cpp_skip_reason": "cpp emitted non-VCF surface (TSV-only mode; VCF comparison inapplicable)",
+    "golden": {
+      "events": [
+        {
+          "event": "HIT",
+          "key": "812a562f853bf2da",
+          "kind": "java",
+          "label": "compare"
+        },
+        {
+          "event": "HIT",
+          "key": "60b073b76fa647d6",
+          "kind": "cpp",
+          "label": "compare"
+        }
+      ],
+      "hit": 2,
+      "live": 0,
+      "run": "compare-3940972-1792722515"
+    }
   },
-  "fingerprint": "74e93280e3ac0d85",
-  "head": "6b94b3e2bbe959598e013139382d68cb40818c63",
+  "fingerprint": "a262f19b0a2eb8a8",
+  "head": "87709f33cc804cd3ff787d5e80f30f94f3813acd",
   "java_time": {
     "exit": "0",
-    "max_rss_kb": "127660",
-    "wall": "0:01.98"
+    "max_rss_kb": "125120",
+    "wall": "0:02.55"
   },
   "n_variants": 2,
   "name": "amplicon-tier2",
   "result": "MATCH",
   "rust_time": {
     "exit": "0",
-    "max_rss_kb": "53984",
-    "wall": "0:00.06"
+    "max_rss_kb": "54648",
+    "wall": "0:00.07"
   }
 }

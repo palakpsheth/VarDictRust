@@ -2,7 +2,7 @@
 
 This directory houses the performance evidence, execution logs, benchmark drivers, and environment specifications for **VarDictRust v1.0.1**.
 
-Every benchmark claim is backed by a verifiable, machine-readable evidence artifact in [`benchmarks/evidence/`](evidence/), bound to the certified release engine fingerprint `c57e9661d77ef254`. For complete statistical analyses, biological cohort descriptions, and methodology, see the [Omnibus Empirical Validation Report](../docs/validation/omnibus-empirical-validation.md) and the [Master Test Matrix](../docs/testing/test-matrix-and-ci-audit.md).
+Every benchmark claim is backed by a verifiable, machine-readable evidence artifact in [`benchmarks/evidence/`](evidence/), bound to the certified release engine fingerprint `a262f19b0a2eb8a8`. For complete statistical analyses, biological cohort descriptions, and methodology, see the [Omnibus Empirical Validation Report](../docs/validation/omnibus-empirical-validation.md) and the [Master Test Matrix](../docs/testing/test-matrix-and-ci-audit.md).
 
 ---
 
@@ -24,10 +24,10 @@ Evaluated via `harness/perf_budget.py`, comparing `vardictrust` against the `Var
 
 | Workload / Target | Modality | Java Wall | Rust Wall | Speedup | Java Peak RSS | Rust Peak RSS | RSS Scaling | Cpp Wall / RSS (vardictcpp 3 hc52dbad_0, advisory¹) | Evidence File |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Targeted Amplicon Panel** | AmpliconMode (`-a 10:0.95`) | 0:02.03 | 0:00.07 | **29.0×** | 123.1 MB | 52.7 MB | **0.43× (2.3× lower)** | 0:03.55 / 89.2 MB, advisory [SKIP (CPP-3)](../docs/upstream-bugs.md#cpp-3) | [`amplicon-tier2.json`](evidence/amplicon-tier2.json) |
-| **GIAB HG002 (chr20:10M–30M, 30×)** | SimpleMode (`-f 0.01`) | 1:34.18 | 0:45.63 | **2.1×** | 4.1 GB | 1.1 GB | **0.26× (3.8× lower)** | 0:16.87 / 855 MB, advisory [MISMATCH (CPP-9)](../docs/upstream-bugs.md#cpp-9) + [CPP-1](../docs/upstream-bugs.md#cpp-1) | [`hg002-tier2.json`](evidence/hg002-tier2.json) |
-| **SEQC2 HCC1395 Somatic Exome** | SomaticMode (`tumor\|normal`, `-th 4`²) | 52:09.24 | 17:13.73 | **3.0×** | 3.5 GB | 1.0 GB | **0.28× (3.6× lower)** | 7:05.12 / 2.1 GB, advisory [MISMATCH (CPP-9)](../docs/upstream-bugs.md#cpp-9) | [`seqc2-exome-tier2.json`](evidence/seqc2-exome-tier2.json) |
-| **GIAB HG008 Somatic PDAC** | SomaticMode (`tumor\|normal`, `-th 4`²) | 1:15.71 | 0:48.72 | **1.6×** | 3.3 GB | 0.8 GB | **0.22× (4.5× lower)** | 0:20.54 / 311 MB, advisory [MISMATCH (CPP-9)](../docs/upstream-bugs.md#cpp-9) | [`hg008-tier2.json`](evidence/hg008-tier2.json) |
+| **Targeted Amplicon Panel** | AmpliconMode (`-a 10:0.95`) | `0:02.55` | **`0:00.07`** | **36.4× faster** | `122.2 MiB` | **`53.4 MiB`** | **0.44× (2.3× lower)** | `0:03.75` / `88.9 MiB`, advisory [`SKIP (CPP-3)`](../docs/upstream-bugs.md#cpp-3) | [`amplicon-tier2.json`](evidence/amplicon-tier2.json) |
+| **GIAB HG002 (chr20:10M–30M, 30×)** | SimpleMode (`-f 0.01`) | `1:31.86` | **`0:44.11`** | **2.1× faster** | `4.20 GiB` | **`983.2 MiB`** | **0.23× (4.4× lower)** | `0:18.87` / `853.1 MiB`, advisory [`MISMATCH (CPP-9)`](../docs/upstream-bugs.md#cpp-9) + [`CPP-1`](../docs/upstream-bugs.md#cpp-1) | [`hg002-tier2.json`](evidence/hg002-tier2.json) |
+| **SEQC2 HCC1395 Somatic Exome** | SomaticMode (`tumor\|normal`, `-th 4`²) | `53:53.76` | **`30:35.74`** | **1.8× faster** | `3.52 GiB` | **`760.3 MiB`** | **0.21× (4.7× lower)** | `7:11.99` / `2.15 GiB`, advisory [`MISMATCH (CPP-9)`](../docs/upstream-bugs.md#cpp-9) | [`seqc2-exome-tier2.json`](evidence/seqc2-exome-tier2.json) |
+| **GIAB HG008 Somatic PDAC** | SomaticMode (`tumor\|normal`, `-th 4`²) | `1:27.68` | **`0:41.19`** | **2.1× faster** | `3.29 GiB` | **`1.22 GiB`** | **0.37× (2.7× lower)** | `0:21.96` / `303.6 MiB`, advisory [`MISMATCH (CPP-9)`](../docs/upstream-bugs.md#cpp-9) | [`hg008-tier2.json`](evidence/hg008-tier2.json) |
 
 ¹ Cpp (pinned **vardictcpp 3 `hc52dbad_0` bioconda**, same `vardict-oracle` env) runs beside each gate arm via `harness/perf_budget.py`. The budget verdict stays Rust-vs-Java only. Per-cell cpp wall/RSS above are transcribed from the linked evidence `extra` (`cpp_wall_s`, `cpp_maxrss_kb`, ratios). Known cpp divergences are normalized in [`docs/upstream-bugs.md`](../docs/upstream-bugs.md#cpp-divergences). A missing `cpp_time` records a loud `SKIP`, never a silent pass.
 ² hg008/seqc2-exome at `-th 4`: Java `-th 8` is OOM-killed on 31G hosts (bisected 1✓/4✓/8✗); exact cmds in evidence.
@@ -56,7 +56,7 @@ python3 harness/perf_budget.py hg008-tier2 seqc2-exome-tier2 hg002-tier2 amplico
 | **GIAB NA24385 b37 Truth** | [`na24385-b37-truth.json`](evidence/na24385-b37-truth.json) | [Tier-3](../docs/testing/test-matrix-and-ci-audit.md#tier-3) Concordance | NIST v4.2.1 Ashkenazi Son b37 | **$F_1 = 1.0000$** | **EQUAL** |
 | **Extended Modalities** | [`extended-coverage-tier2.json`](evidence/extended-coverage-tier2.json) | [Tier-2](../docs/testing/test-matrix-and-ci-audit.md#tier-2) Differential | 17 Modes (RNA `-i`, SVs, flags) | 4,993 variants | **MATCH** (0 diffs) |
 | **Multi-Modal Slices** | [`multimodal-slices-tier2.json`](evidence/multimodal-slices-tier2.json) | [Tier-2](../docs/testing/test-matrix-and-ci-audit.md#tier-2) Differential | 18 Slices across 6 Cohorts | 1,129 variants | **MATCH** (0 diffs) |
-| **Chromosome 1 Scaling** | [`scale.json`](evidence/scale.json) | [Tier-2](../docs/testing/test-matrix-and-ci-audit.md#tier-2) Scaling | Full chr1 Span (249 Mbp) | $S_8 = 3.63\times$, RSS 1.40× | **PASS** |
+| **Chromosome 1 Scaling** | [`scale.json`](evidence/scale.json) | [Tier-2](../docs/testing/test-matrix-and-ci-audit.md#tier-2) Scaling | Full chr1 Span (249 Mbp) | $S_8 = 3.72\times$, RSS 1.33× | **PASS** |
 | **Performance Budget** | [`perf-budget.json`](evidence/perf-budget.json) | Regression Gate | 4 Target Workload Regression | Wall/RAM gates | **PASS** |
 | **Musl CI Packaging** | [`musl-ci.json`](evidence/musl-ci.json) | Release Gate | Static PIE Linux Packaging | Bitwise identity | **PASS** |
 
@@ -64,27 +64,27 @@ python3 harness/perf_budget.py hg008-tier2 seqc2-exome-tier2 hg002-tier2 amplico
 
 ## 4. Whole Chromosome 1 Scaling & Flat Memory Footprint
 
-Evaluated via `harness/scale_bench.sh` on HCC1395 across all 248,956,422 bp of chromosome 1. Values below are the single-run certified evidence recorded in `scale.json`.
+Evaluated via `harness/scale_bench.sh` on HCC1395 across all 248,956,422 bp of chromosome 1. Values below are the 3-run median certified evidence recorded in `scale.json` (`perf_fingerprint: 88f27b7bdf3a0dda`).
 
-### Multi-Thread Parallel Speedup (chr1 full span):
+### Multi-Thread Parallel Speedup (chr1 full span, 3-run medians):
 | Threads (`-th`) | Wall Clock Time | Speedup Ratio |
 | :--- | :--- | :--- |
-| 1 core | 26m 57s (1616.54 s) | 1.00× (baseline) |
-| 2 cores | 13m 49s (828.93 s) | 1.95× |
-| 4 cores | 8m 46s (525.72 s) | 3.07× |
-| 8 threads | 7m 26s (445.91 s) | **3.63× parallel** |
+| 1 core | 49m 12s (2951.73 s) | 1.00× (baseline) |
+| 2 cores | 24m 23s (1462.97 s) | 2.02× |
+| 4 cores | 15m 21s (920.58 s) | 3.21× |
+| 8 threads | 13m 13s (793.40 s) | **3.72× parallel** |
 
-### Bounded Resident Memory vs Genomic Span (at `-th 8`):
+### Bounded Resident Memory vs Genomic Span (at `-th 8`, 3-run medians):
 | Genomic Span | Peak RSS |
 | :--- | :--- |
-| 1 Mbp | 816.1 MB (835,652 KB) |
-| 10 Mbp | 1.93 GB (2,023,444 KB) |
-| 100 Mbp | 2.14 GB (2,242,148 KB) |
-| 249 Mbp (Full chr1) | **2.70 GB (2,829,376 KB)** |
+| 1 Mbp | 868.6 MiB (889,428 KB) |
+| 10 Mbp | 2.59 GiB (2,716,564 KB) |
+| 100 Mbp | 3.31 GiB (3,467,664 KB) |
+| 249 Mbp (Full chr1) | **3.44 GiB (3,610,256 KB)** |
 
-**Observed RSS Ratio (249 Mbp vs 10 Mbp): 1.40×** (Passing pre-registered threshold $\le 1.5\times$). Memory remains bounded across deep genomic spans via tiled execution with boundary halo deduplication.
+**Observed RSS Ratio (249 Mbp vs 10 Mbp): 1.33×** (Passing pre-registered threshold $\le 1.5\times$). Memory remains bounded across deep genomic spans via tiled execution with boundary halo deduplication.
 
-Pinned **vardictcpp 3 `hc52dbad_0`** runs beside each loop above (`harness/scale_bench.sh`, advisory only): per-thread cpp wall (`cpp_wall_s`, exome BED workload) and per-span cpp RSS (`cpp_maxrss_kb`, `-R` full-span workload) land separately in `scale.json` `extra` — at `-th 8` BED wall 160.9 s, full-span (249 Mbp) RSS 22.5 GB ([CPP-5](../docs/upstream-bugs.md#cpp-5)); `--chunk` is deliberately unpinned (cpp default rewrites the `Seg` column, so pinning a value would fork output shape).
+Pinned **vardictcpp 3 `hc52dbad_0`** runs beside each loop above (`harness/scale_bench.sh` via `harness/run_cpp.sh`, advisory only): per-thread cpp wall (`cpp_wall_s`, exome BED workload) and per-span cpp RSS (`cpp_maxrss_kb`, `-R` full-span workload with `--chunk 50000 -th 8`) land separately in `scale.json` `extra` — at `-th 8` BED wall 168.27 s, full-span (249 Mbp) chunked RSS 778.6 MiB (797,288 KB; unchunked `-R` uses 22.5 GB per [CPP-5](../docs/upstream-bugs.md#cpp-5)).
 
 ### Reproduction Command:
 ```bash
@@ -125,11 +125,27 @@ cargo bench --no-run   # Compile-only gate
 
 ---
 
-## 7. Dataset Provenance & Asset Acquisition
+## 7. Dataset Provenance & End-to-End Cold-Start Bootstrap
 
-All external genomic benchmark assets are tracked in `harness/assets.tsv` and recorded upon download in `benchmarks/MANIFEST`:
+All external genomic benchmark assets are tracked with cryptographic MD5 checksums in [`harness/assets.tsv`](../harness/assets.tsv) and recorded upon download in [`benchmarks/MANIFEST`](MANIFEST). A bare repository clone can reproduce every reference genome, BAM/CRAM slice, truth VCF/BED, and all 16 release evidence artifacts end-to-end with the commands below:
 
 ```bash
-# Ingest public references and truth sets
-bash harness/fetch_data.sh refs hg002 hg008 seqc2
+# 1. Provision pinned oracle + C++ conda environments (vardict-oracle, vardict-cpp, g4-tools)
+bash harness/setup_oracle.sh
+conda env create -f harness/env/g4-tools.yml
+
+# 2. Fetch, MD5-verify, unpack, index, and stage all references & biological cohorts into scratch/g4/
+#    (or run individual targets: refs | amplicon | hg002 | hg008 | seqc2 | multimodal)
+bash harness/stage_g4.sh all
+
+# 3. Run full live certification (populates scratch/golden-store/ on first run and stamps benchmarks/evidence/*.json)
+bash harness/recertify.sh
 ```
+
+Individual cohort staging scripts invoked by [`harness/stage_g4.sh`](../harness/stage_g4.sh):
+- **Public assets + MD5 check:** `bash harness/fetch_data.sh refs hg002 hg008 seqc2`
+- **Targeted amplicon panel (`scratch/g4/amplicon/`):** `bash harness/get_amplicon_fixture.sh`
+- **GIAB HG002 chr20 slice (`scratch/g4/hg002/`):** `bash harness/get_hg002_slice.sh`
+- **GIAB HG008 paired PDAC slices + CRAM twins (`scratch/g4/hg008/`):** `bash harness/get_hg008_slice.sh`
+- **SEQC2 WES alignment + BED derivation (`scratch/g4/seqc2/`):** `bash harness/stage_g4.sh seqc2` (calls [`harness/seqc2_align.sh`](../harness/seqc2_align.sh) and [`harness/select_slice_regions.py`](../harness/select_slice_regions.py))
+- **18 Multi-modal slices (`scratch/g4/multimodal/`):** `bash harness/get_multimodal_slices.sh`

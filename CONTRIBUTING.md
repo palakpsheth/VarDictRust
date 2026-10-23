@@ -222,7 +222,7 @@ This gate enforces the 8 acceptance criteria defined in [AGENTS.md §15](AGENTS.
 
 Additionally, contributors can execute the diagnostic self-test suite ([Level 6](docs/testing/test-matrix-and-ci-audit.md#level-6-diagnostic-self-tests)) at any time:
 ```bash
-bash harness/run_self_tests.sh   # Executes all 17 diagnostic test scripts in <10s
+bash harness/run_self_tests.sh   # Executes all 21 diagnostic test scripts in <10s
 ```
 
 *For the complete seven-level testing architecture, push-button reproduction commands, and dataset provenance catalog, see the Master Reproducibility Runbook in [`docs/testing/test-matrix-and-ci-audit.md`](docs/testing/test-matrix-and-ci-audit.md).*
@@ -291,7 +291,7 @@ Releases are executed through a disciplined **three-phase workflow** (Pre-Releas
    - [`Cargo.toml`](Cargo.toml) (`[workspace.package] version = "X.Y.Z"`) and [`crates/vardictrust/Cargo.toml`](crates/vardictrust/Cargo.toml) (`vardictrust-core = { version = "X.Y.Z", path = "../vardictrust-core" }`), followed by `cargo update -w` so [`Cargo.lock`](Cargo.lock) updates only the workspace packages.
    - [`CHANGELOG.md`](CHANGELOG.md): add `## [X.Y.Z] - YYYY-MM-DD` (required by `cargo-dist` to populate GitHub Release notes) and preserve exact Bioconda subdir names (`linux-64`, `linux-aarch64`, `osx-arm64`, `osx-64`).
    - [`CITATION.cff`](CITATION.cff) (`version` and `date-released`), [`README.md`](README.md) (install tags and BibTeX version), [`.github/ISSUE_TEMPLATE/bug_report.yml`](.github/ISSUE_TEMPLATE/bug_report.yml), and [`packaging/bioconda/prepare_bioconda_pr.sh`](packaging/bioconda/prepare_bioconda_pr.sh) (`VERSION="${1:-X.Y.Z}"`).
-   - Release certification dossier `docs/release/vX.Y.Z-pr.md` and release metadata references in [`docs/release/waivers.md`](docs/release/waivers.md), [`docs/testing/test-matrix-and-ci-audit.md`](docs/testing/test-matrix-and-ci-audit.md), [`docs/validation/omnibus-empirical-validation.md`](docs/validation/omnibus-empirical-validation.md), [`DIVERGENCES.md`](DIVERGENCES.md), [`benchmarks/README.md`](benchmarks/README.md), [`harness/README.md`](harness/README.md), [`mkdocs.yml`](mkdocs.yml), and [`wiki/`](wiki/).
+   - Release certification dossier `docs/release/vX.Y.Z-pr.md` and release metadata references in [`docs/testing/test-matrix-and-ci-audit.md`](docs/testing/test-matrix-and-ci-audit.md), [`docs/validation/omnibus-empirical-validation.md`](docs/validation/omnibus-empirical-validation.md), [`DIVERGENCES.md`](DIVERGENCES.md), [`benchmarks/README.md`](benchmarks/README.md), [`harness/README.md`](harness/README.md), [`mkdocs.yml`](mkdocs.yml), and [`wiki/`](wiki/).
 3. **Engine Fingerprint & Live Recertification Rule (`AGENTS.md §0b`):**
    - [`harness/engine_fingerprint.sh`](harness/engine_fingerprint.sh) (`normalize_gate_blob()`) canonicalizes workspace-only SemVer fields in `Cargo.toml`, `crates/vardictrust/Cargo.toml`, and `Cargo.lock` before hashing, so a pure workspace version bump preserves the certified engine fingerprint across all 16 evidence JSONs in [`benchmarks/evidence/`](benchmarks/evidence/).
    - If **any** engine source (`crates/*/src`), external dependency (`Cargo.lock`), comparator, runner, or fixture in `GATE_FILES` changed since the last certification, you **must** run `bash harness/recertify.sh` to re-run the live dual-engine parity suites and stamp updated evidence JSONs honestly (never hand-edit `benchmarks/evidence/*.json`).
@@ -310,7 +310,7 @@ cargo build --release -p vardictrust
 # 2. Commit tracked release changes on release/vX.Y.Z (clean HEAD required by engine_fingerprint.sh)
 git commit -m "chore(release): prepare vX.Y.Z release"
 
-# 3. Verify engine fingerprint and run all 17 diagnostic self-tests
+# 3. Verify engine fingerprint and run all 21 diagnostic self-tests
 bash harness/engine_fingerprint.sh
 bash harness/run_self_tests.sh
 
