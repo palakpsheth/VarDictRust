@@ -62,7 +62,7 @@ flowchart TD
     end
 
     subgraph Level5 ["Level 5: Performance & Memory Budgets"]
-        S_Chr1["harness/scale_bench.sh (Chr1: 3.63x speedup, 1.40x RSS)"]
+        S_Chr1["harness/scale_bench.sh (Chr1: 3.72x speedup, 1.33x RSS)"]
         S_Budg["harness/perf_budget.py (4 Targets: HG008, SEQC2, HG002, Amp)"]
     end
 
@@ -335,8 +335,8 @@ Because VarDictRust produces 0 variant discrepancies and 0 filter differences co
 | **GIAB NA24385 b37 WGS** | Germline WGS (GRCh37/b37) | Multi-chr WGS (chr1, 19, 20) | **RUN (MATCH, 0 diffs)** | advisory F1 raw 0.1099 ([CPP-6](../upstream-bugs.md#cpp-6)); b37 [CPP-7](../upstream-bugs.md#cpp-7)/[CPP-8](../upstream-bugs.md#cpp-8) | **RUN (EQUAL, $F_1 = 1.0000$ at `QUAL >= 160`; raw 0.1099)** | NIST GIAB v4.2.1 Ashkenazi Son (b37 build) |
 | **SEQC2 Somatic Slices** | Somatic WES (GRCh38) | chr1, 2, 3, 17, 19, 21 slices | **RUN (MATCH, 0 diffs)** | advisory [MISMATCH (CPP-1)](../upstream-bugs.md#cpp-1) | **RUN (EQUAL, 0 site diffs)** | FDA SEQC2 v1.2.1 Sub-Regions |
 | **Targeted Amplicon Panel** | Amplicon Assay (hg19) | EGFR L861Q primer panel | **RUN (MATCH, 0 diffs)** | advisory [SKIP (CPP-3)](../upstream-bugs.md#cpp-3) | *Methodologically Ineligible* | Targeted primer assay testing `AMPBIAS`; no diploid NIST truth VCF |
-| **RNA-seq Splicing Introns** | Transcriptome (GRCh38) | STAR spliced BAM (chr8) | **RUN (MATCH, 0 diffs)** | advisory (see evidence) | *Methodologically Ineligible* | Tests exon-intron junctions (`-i`); `rtg vcfeval` rejects non-DNA features |
-| **Hartwig COLO829 / COLO829BL** | Somatic WGS (GRCh37) | Tumor/Normal (`s1a/b/c`) | **RUN (MATCH, 0 diffs)** | advisory (see evidence) | *Methodologically Ineligible* | Structural variant benchmark (Valle-Inclan 2022); no diploid small-var VCF |
+| **RNA-seq Splicing Introns** | Transcriptome (GRCh38) | STAR spliced BAM (chr8) | **RUN (MATCH, 0 diffs)** | advisory SKIP (-i splice-table unsupported) | *Methodologically Ineligible* | Tests exon-intron junctions (`-i`); `rtg vcfeval` rejects non-DNA features |
+| **Hartwig COLO829 / COLO829BL** | Somatic WGS (GRCh37) | Tumor/Normal (`s1a/b/c`) | **RUN (MATCH, 0 diffs)** | advisory [MISMATCH (CPP-1)](../upstream-bugs.md#cpp-1); s6 [SKIP (CPP-3)](../upstream-bugs.md#cpp-3) | *Methodologically Ineligible* | Structural variant benchmark (Valle-Inclan 2022); no diploid small-var VCF |
 | **COLO829 CRISPR Target** | CRISPR Cut Site (GRCh37)| Illumina HiSeq WGS | **RUN (MATCH, 0 diffs)** | advisory M4 [MISMATCH (CPP-2)](../upstream-bugs.md#cpp-2) | *Methodologically Ineligible* | Targeted cut site ($50,454,941$); evaluates CRISPR offset `-J/-j` |
 | **10 Standard Slices (`s1a`–`s9`)** | Micro-Slices (GRCh38/b37) | Integration slices | **RUN (MATCH, 0 diffs)** | advisory [MISMATCH (CPP-1)](../upstream-bugs.md#cpp-1); b37 [CPP-7](../upstream-bugs.md#cpp-7)/[CPP-8](../upstream-bugs.md#cpp-8) | *Covered by Parent Truths* | Slices derive from SEQC2/HG002/Colo829 |
 | **92 Integration Corpus Fixtures** | Synthetic / Corner Cases | Upstream test cases | **RUN (100% Live Oracle)** | advisory per-fixture lines; concat-flags [SKIP (CPP-4)](../upstream-bugs.md#cpp-4) | *Methodologically Ineligible* | Miniature synthetic alignments testing CIGAR parser edge cases |
@@ -351,8 +351,8 @@ Level 5 guarantees that VarDictRust delivers decisive scaling improvements over 
 
 1. **Whole-Chromosome Scaling (`harness/scale_bench.sh`):**
    - Evaluated across all 249 Mbp of human chromosome 1 on HCC1395 (`taskset -c 0-7`, $P = 4$ physical cores under pin).
-   - Enforces the signed host-class 8-thread parallel speedup bar $S_8 \ge \text{bar}(P) = 0.6 \times \min(8, P) = 2.4\times$ (achieved **$3.63\times$** in single-run certified evidence, 445.91s vs 1616.54s).
-   - Enforces flat resident set size scaling: peak RSS ratio across a 25-fold increase in genomic span (10 Mbp to 249 Mbp) must remain $\le 1.5\times$ (achieved **$1.40\times$** in single-run certified evidence, 2.70 GB vs 1.93 GB).
+   - Enforces the signed host-class 8-thread parallel speedup bar $S_8 \ge \text{bar}(P) = 0.6 \times \min(8, P) = 2.4\times$ (achieved **3.72×** (8 threads vs 1 thread: `793.40s` vs `2951.73s` 3-run median, certified gate ≥ 2.40×)).
+   - Enforces flat resident set size scaling: peak RSS ratio across a 25-fold increase in genomic span (10 Mbp to 249 Mbp) must remain $\le 1.5\times$ (achieved **1.33×** (249 Mbp vs 10 Mbp: `3.44 GiB` vs `2.59 GiB` 3-run median, certified gate ≤ 1.50×)).
 2. **Four-Target Workload Budget (`harness/perf_budget.py`):**
    - Continuous gate comparing wall clock time and peak resident memory against VarDictJava v1.8.3 across 4 core modalities: HG008 somatic WGS, SEQC2 somatic WES, HG002 germline WGS, and targeted amplicons.
    - Requires $\text{Runtime}_{\text{Rust}} \le \text{Runtime}_{\text{Java}}$ and $\text{RSS}_{\text{Rust}} \le \text{RSS}_{\text{Java}}$.

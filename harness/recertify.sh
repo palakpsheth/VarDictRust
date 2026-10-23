@@ -41,6 +41,8 @@ KEEP_DIR="$ROOT_DIR/scratch/recertify-micro" MIN_VARIANTS=1 \
 
 echo "--- Golden store: pinned-baseline reuse in this run ---"
 bash "$ROOT_DIR/harness/golden_store.sh" stats --run "$GOLDEN_RUN_ID" ${GOLDEN_MIN_HIT:+--min-hit "$GOLDEN_MIN_HIT"}
+# Unset GOLDEN_RUN_ID before acceptance.sh so item 3 stamps each suite's own 33-cell ledger
+unset GOLDEN_RUN_ID
 
 echo "[4/4] Running Master Acceptance Gate (8/8)..."
 bash "$ROOT_DIR/harness/acceptance.sh"

@@ -96,7 +96,7 @@ bash harness/run_self_tests.sh
 
 The runner dynamically discovers and executes:
 - 14 Shell Tests: `test_compare_sh.sh`, `test_concordance.sh`, `test_concordance_sv.sh`, `test_courtesy.sh`, `test_edge_cases.sh`, `test_env_pinned.sh`, `test_evidence.sh`, `test_fetch_data.sh`, `test_golden_wiring.sh`, `test_perf_budget.sh`, `test_run_cpp.sh`, `test_run_oracle.sh`, `test_scale_bench.sh`, `test_seqc2_align.sh`.
-- 7 Python Test Suites: `test_bioconda_recipe.py`, `test_compare_vcf.py` (10 tests), `test_docs_ui.py` (6 tests), `test_golden_store.py` (39 tests), `test_select_slice_regions.py` (4 tests), `test_stdlib_purity.py` (AST zero-PyPI import guard), `test_vcf_header.py` (1 test).
+- 7 Python Test Suites: `test_bioconda_recipe.py`, `test_compare_vcf.py` (10 tests), `test_docs_ui.py` (10 tests), `test_golden_store.py` (39 tests), `test_select_slice_regions.py` (4 tests), `test_stdlib_purity.py` (AST zero-PyPI import guard), `test_vcf_header.py` (1 test).
 
 All 21 diagnostic test scripts pass 100% green.
 
