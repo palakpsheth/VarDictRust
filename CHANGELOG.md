@@ -19,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   guard around `run()`), and decode concrete `noodles::bam::Record` fields and
   auxiliary tags (`nM`/`NM`/`SA`/`MC`/`MQ`) in a single pass without per-read
   trait-object allocations.
+- `CigarModifier::modify_cigar`: added dynamic `(has_d, has_i, has_s)` byte
+  pre-filters across pre-loop and fixpoint-loop regexes (recomputed on every
+  `cigar_str` mutation) and replaced the 5 unconditional post-loop regexes with
+  bounds-checked, allocation-free byte-slice matchers.
 
 ## [1.0.2] - 2026-10-17
 
