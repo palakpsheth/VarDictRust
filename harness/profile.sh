@@ -13,8 +13,11 @@
 #   hg002               HG002 chr20:10M-30M slice (run_hg002.sh arguments)                [no dhat]
 #   hg008               HG008 T|N slice, engine.bed (benchmarks/hg008-v04-guide.md cmd)   [no dhat]
 #   wgs-scale           scratch/g4/seqc2/HCC1395.bam, bounded 10 Mb -R window at -th 8 (scale_bench.sh shape)  [no dhat]
+#   hg002-sub           opt-in (--only): first 83 regions (<10.6M, 594.5 kb) of hg002/eval.bed  [dhat only]
+#   hg008-sub           opt-in (--only): first 60 regions (774.7 kb) of hg008/engine.bed        [dhat only]
 #   cells whose inputs are missing are SKIPped (an error if named via --only). dhat only ever runs on slice cells
-#   (its live-block map costs GBs: the systemd-oomd failure mode); HG002/HG008/WGS get cpu + heap only.
+#   and the opt-in *-sub cells (its live-block map costs GBs: the systemd-oomd failure mode); HG002/HG008/WGS get
+#   cpu + heap only. Set PROFILE_LOOPS=N (default 1) to repeat the cpu modality N times and merge collapsed stacks.
 #
 # Safety: every real run goes through harness/courtesy.sh (nice 19, ionice idle, disk/RAM/maintenance-window gate;
 # a refusal aborts the whole run, never bypassed) and, for dhat and for hg002/hg008/wgs-scale, inside
@@ -44,7 +47,8 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-ALL_CELLS="tiny s1a s8 s9 s3 rna-i hg002 hg008 wgs-scale"
+DEFAULT_CELLS="tiny s1a s8 s9 s3 rna-i hg002 hg008 wgs-scale"
+ALL_CELLS="$DEFAULT_CELLS hg002-sub hg008-sub"
 if [ -n "$ONLY" ]; then
   case " $ALL_CELLS " in *" $ONLY "*) ;; *) echo "profile: unknown cell '$ONLY' (known: $ALL_CELLS)" >&2; exit 2 ;; esac
 fi
@@ -52,6 +56,9 @@ fi
 TH=${PROFILE_THREADS:-8}
 [[ "$TH" =~ ^[0-9]+$ ]] && [ "$TH" -ge 1 ] && [ "$TH" -le 8 ] \
   || { echo "profile: PROFILE_THREADS=$TH out of range 1..8 (Host Policy A3 cap)" >&2; exit 2; }
+LOOPS=${PROFILE_LOOPS:-1}
+[[ "$LOOPS" =~ ^[0-9]+$ ]] && [ "$LOOPS" -ge 1 ] \
+  || { echo "profile: PROFILE_LOOPS=$LOOPS must be >= 1" >&2; exit 2; }
 
 OUT_ROOT=${PROFILE_OUT:-scratch/profiles}
 OUT="$OUT_ROOT/$TAG"
@@ -73,22 +80,34 @@ slice_spec() {   # same columns run_slice.sh reads from harness/slices.tsv; comp
 }
 cell_spec() {
   local D=scratch/g4 FA CHR1
+  C_MODS=(cpu heap); C_SUB_SRC=""; C_SUB_CMD=""
   case "$1" in
-    tiny|s1a|s8|s9|s3) slice_spec "$1" ;;
+    tiny|s1a|s8|s9|s3) slice_spec "$1"; C_MODS=(cpu heap dhat) ;;
     rna-i)
       C_REF=VarDictJava/testdata/fastas/hg38.fa
       C_BAM=VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests/Tcov_zero_SV_DEL_candidate3.bam
       C_PRE=(-G "$C_REF" -b "$C_BAM" -R chr8:90534611-90620070 -f 0.1 -i --emit-intermediate); C_POST=()
-      C_DHAT=1; C_BIG=0; C_EST=${PROFILE_EST_MIN:-5}; C_INPUTS=("$C_REF" "$C_BAM") ;;
+      C_DHAT=1; C_BIG=0; C_EST=${PROFILE_EST_MIN:-5}; C_INPUTS=("$C_REF" "$C_BAM"); C_MODS=(cpu heap dhat) ;;
     hg002)
       C_REF=$D/ref/giabv3/GRCh38_GIABv3.fasta; C_BAM=$D/hg002/HG002.chr20.bam
       C_PRE=(-G "$C_REF" -f 0.01 -N HG002 -b "$C_BAM" -c 1 -S 2 -E 3 -g 4 -z); C_POST=("$D/hg002/eval.bed")
       C_DHAT=0; C_BIG=1; C_EST=${PROFILE_EST_MIN:-25}; C_INPUTS=("$C_REF" "$C_BAM" "$D/hg002/eval.bed") ;;
+    hg002-sub)
+      C_REF=$D/ref/giabv3/GRCh38_GIABv3.fasta; C_BAM=$D/hg002/HG002.chr20.bam
+      C_SUB_SRC="$D/hg002/eval.bed"; C_SUB_CMD='awk "\$2<10600000"'
+      C_PRE=(-G "$C_REF" -f 0.01 -N HG002 -b "$C_BAM" -c 1 -S 2 -E 3 -g 4 -z); C_POST=("$OUT/$1/sub.bed")
+      C_DHAT=1; C_BIG=1; C_EST=${PROFILE_EST_MIN:-15}; C_INPUTS=("$C_REF" "$C_BAM" "$C_SUB_SRC"); C_MODS=(dhat) ;;
     hg008)
       C_REF=$D/ref/giabv3/GRCh38_GIABv3.fa; C_BAM="$D/hg008/HG008-T.slice.bam|$D/hg008/HG008-N.slice.bam"
       C_PRE=(-G "$C_REF" -f 0.01 -N "HG008-T|HG008-N" -b "$C_BAM" -c 1 -S 2 -E 3 -g 4 -z); C_POST=("$D/hg008/engine.bed")
       C_DHAT=0; C_BIG=1; C_EST=${PROFILE_EST_MIN:-20}
       C_INPUTS=("$C_REF" "${C_BAM%%|*}" "${C_BAM##*|}" "$D/hg008/engine.bed") ;;
+    hg008-sub)
+      C_REF=$D/ref/giabv3/GRCh38_GIABv3.fa; C_BAM="$D/hg008/HG008-T.slice.bam|$D/hg008/HG008-N.slice.bam"
+      C_SUB_SRC="$D/hg008/engine.bed"; C_SUB_CMD='head -n 60'
+      C_PRE=(-G "$C_REF" -f 0.01 -N "HG008-T|HG008-N" -b "$C_BAM" -c 1 -S 2 -E 3 -g 4 -z); C_POST=("$OUT/$1/sub.bed")
+      C_DHAT=1; C_BIG=1; C_EST=${PROFILE_EST_MIN:-30}
+      C_INPUTS=("$C_REF" "${C_BAM%%|*}" "${C_BAM##*|}" "$C_SUB_SRC"); C_MODS=(dhat) ;;
     wgs-scale)
       FA=$D/ref/d1vd1/GRCh38.d1.vd1.fa; C_REF=$FA; C_BAM=$D/seqc2/HCC1395.bam
       CHR1=$(awk '$1=="chr1"||$1=="1"{print $1; exit}' "$FA.fai" 2>/dev/null || true)
@@ -107,9 +126,16 @@ overridden() { local var="PROFILE_BIN_${1^^}"; [ -n "${!var:-}" ] || [ -n "${PRO
 qcmd() { printf '%q ' "$@"; echo; }
 
 # --- selection ---------------------------------------------------------------------------------------------
-CELLS=(); for c in $ALL_CELLS; do if [ -z "$ONLY" ] || [ "$c" = "$ONLY" ]; then CELLS+=("$c"); fi; done
-NEED_MODS=(cpu heap)
-for c in "${CELLS[@]}"; do cell_spec "$c"; if [ "$C_DHAT" = 1 ]; then NEED_MODS+=(dhat); break; fi; done
+CELLS=()
+if [ -n "$ONLY" ]; then CELLS=("$ONLY")
+else for c in $DEFAULT_CELLS; do CELLS+=("$c"); done; fi
+NEED_MODS=()
+for m in cpu heap dhat; do
+  for c in "${CELLS[@]}"; do
+    cell_spec "$c"
+    case " ${C_MODS[*]} " in *" $m "*) NEED_MODS+=("$m"); break ;; esac
+  done
+done
 
 if [ "$DRY" = 0 ]; then
   [ -x /usr/bin/time ] || { echo "profile: /usr/bin/time (GNU time) not found" >&2; exit 1; }
@@ -133,17 +159,20 @@ if [ "$DRY" = 0 ]; then
 fi
 
 run_cell() {   # <cell>; returns 0 ok, 1 failed, 3 skipped
-  local cell=$1 d="$OUT/$1" m rc=0 missing="" f mods=(cpu heap)
-  cell_spec "$cell"
+  local cell=$1 d="$OUT/$1" m rc=0 missing="" f mods=()
+  cell_spec "$cell"; mods=("${C_MODS[@]}")
   for f in "${C_INPUTS[@]}"; do [ -e "$f" ] || { missing=$f; break; }; done
   if [ -n "$missing" ]; then
     if [ "$DRY" = 1 ]; then echo "NOTE $cell: input missing here: $missing"
     elif [ -n "$ONLY" ]; then echo "profile: cell '$cell': missing input $missing" >&2; return 1
     else echo "SKIP $cell: missing input $missing"; return 3; fi
   fi
-  [ "$C_DHAT" = 1 ] && mods+=(dhat)
-  [ "$DRY" = 1 ] && echo "PLAN $cell -> $d  (est ${C_EST} min, modalities: ${mods[*]})"
-  [ "$DRY" = 1 ] || { rm -rf "${d:?}"; mkdir -p "$d"; echo "# HEAD $(git rev-parse --short HEAD 2>/dev/null || echo unknown)" > "$d/cmd.txt"; }
+  [ "$DRY" = 1 ] && echo "PLAN $cell -> $d  (est ${C_EST} min, modalities: ${mods[*]}, loops: $LOOPS)"
+  if [ "$DRY" = 0 ]; then
+    rm -rf "${d:?}"; mkdir -p "$d"
+    echo "# HEAD $(git rev-parse --short HEAD 2>/dev/null || echo unknown)" > "$d/cmd.txt"
+    if [ -n "$C_SUB_SRC" ]; then eval "$C_SUB_CMD" < "$C_SUB_SRC" > "$d/sub.bed"; fi
+  fi
   for m in "${mods[@]}"; do
     local b; b=$(bin_for "$m")
     local run=(env "VARDICT_PROFILE_${m^^}=$d" "$b" "${C_PRE[@]}" -th "$TH" "${C_POST[@]}")
@@ -157,8 +186,22 @@ run_cell() {   # <cell>; returns 0 ok, 1 failed, 3 skipped
     { echo "# modality: $m"; qcmd EST_MIN="$C_EST" bash harness/courtesy.sh "${wrapped[@]}"; } >> "$d/cmd.txt"
     echo "# modality: $m cell: $cell" >> "$d/time.txt"
     echo "profile: $cell [$m] ..." >&2
-    EST_MIN="$C_EST" LC_ALL=C bash harness/courtesy.sh "${wrapped[@]}" > "$d/out-$m.vcf" || {
-      rc=$?; echo "profile: FAILED $cell [$m] (exit $rc); see $d/time.txt" >&2; return 1; }
+    if [ "$m" = cpu ] && [ "$LOOPS" -gt 1 ]; then
+      for ((i=1; i<=LOOPS; i++)); do
+        mkdir -p "$d/iter-$i"
+        local irun=(env "VARDICT_PROFILE_CPU=$d/iter-$i" "$b" "${C_PRE[@]}" -th "$TH" "${C_POST[@]}")
+        local iwrap=(/usr/bin/time -v -a -o "$d/time.txt" "${irun[@]}")
+        if [ "$C_BIG" = 1 ]; then iwrap=(${GUARD[@]+"${GUARD[@]}"} "${iwrap[@]}"); fi
+        EST_MIN="$C_EST" LC_ALL=C bash harness/courtesy.sh "${iwrap[@]}" > "$d/out-$m.vcf" || {
+          rc=$?; echo "profile: FAILED $cell [$m iter $i] (exit $rc); see $d/time.txt" >&2; return 1; }
+      done
+      awk '{n=$NF; $NF=""; sub(/[[:space:]]+$/,""); c[$0]+=n} END{for(k in c) print k, c[k]}' "$d"/iter-*/cpu-collapsed.txt | LC_ALL=C sort > "$d/cpu-collapsed.txt"
+      python3 -c 'import glob,json,sys; d=sys.argv[1]; ms=[json.load(open(p)) for p in glob.glob(f"{d}/iter-*/cpu-meta.json")]; json.dump({"ticks_total":sum(m.get("ticks_total",0) for m in ms),"samples_kept":sum(m.get("samples_kept",0) for m in ms),"loops":len(ms)},open(f"{d}/cpu-meta.json","w"))' "$d"
+      rm -rf "$d"/iter-*
+    else
+      EST_MIN="$C_EST" LC_ALL=C bash harness/courtesy.sh "${wrapped[@]}" > "$d/out-$m.vcf" || {
+        rc=$?; echo "profile: FAILED $cell [$m] (exit $rc); see $d/time.txt" >&2; return 1; }
+    fi
   done
   return 0
 }

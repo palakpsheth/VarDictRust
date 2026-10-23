@@ -38,6 +38,10 @@ out=$(PROFILE_OUT="$T/prof" PROFILE_BIN="$T/engine" bash $PS optimized --only rn
 ck "rna-i plan is the extended m1 command" "grep -q -- '-R chr8:90534611-90620070 -f 0.1 -i' <<<\"\$out\""
 out=$(PROFILE_OUT="$T/prof" PROFILE_BIN="$T/engine" bash $PS optimized --only s3 --dry-run 2>&1)
 ck "s3 plan passes tumor|normal as one -b" "grep -q 'Colo829-18_S3-sort.bam.|.*Colo829-19_S4-sort.bam' <<<\"\$out\""
+out=$(PROFILE_OUT="$T/prof" PROFILE_BIN="$T/engine" bash $PS baseline --only hg002-sub --dry-run 2>&1)
+ck "hg002-sub plan runs dhat only on sub.bed" "grep -q 'modalities: dhat' <<<\"\$out\" && grep -q 'hg002-sub/sub.bed' <<<\"\$out\""
+out=$(PROFILE_OUT="$T/prof" PROFILE_BIN="$T/engine" bash $PS baseline --only hg008-sub --dry-run 2>&1)
+ck "hg008-sub plan runs dhat only on sub.bed" "grep -q 'modalities: dhat' <<<\"\$out\" && grep -q 'hg008-sub/sub.bed' <<<\"\$out\""
 
 # default build trees must be git-ignored (a `git add -A` after the first real run must never stage them)
 out=$(env -u PROFILE_BIN -u PROFILE_BIN_CPU -u PROFILE_BIN_HEAP -u PROFILE_BIN_DHAT -u CARGO_TARGET_DIR -u PROFILE_TARGET_BASE \
@@ -94,6 +98,9 @@ SD
   ck "slice cpu/heap runs are not guarded" "[ \$(wc -l < '$T/sd.log') -eq 2 ]"   # probe + the dhat run
   ck "profile outputs land in the cell dir" "[ -s '$d/cpu-collapsed.txt' ] && [ -s '$d/dhat-heap.json' ]"
   ck "catalog.md built from them" "grep -q 'vardictrust_core::stub::hot' '$T/prof/baseline/catalog.md'"
+  # PROFILE_LOOPS=3 repeats cpu modality 3x and sums collapsed counts (3 * 5 = 15)
+  out=$($CE PATH="$T/bin:$PATH" PROFILE_LOOPS=3 PROFILE_OUT="$T/profloop" PROFILE_BIN="$T/engine" bash $PS baseline --only tiny 2>&1); rc=$?
+  ck "PROFILE_LOOPS=3 exits 0 and sums samples" "[ $rc -eq 0 ] && grep -q 'vardictrust_core::stub::hot 15' '$T/profloop/baseline/tiny/cpu-collapsed.txt'"
   # systemd-run --user unavailable: still runs, says so
   printf '#!/usr/bin/env bash\nexit 1\n' > "$T/bin/systemd-run"
   out=$($CE PATH="$T/bin:$PATH" PROFILE_OUT="$T/prof2" PROFILE_BIN="$T/engine" bash $PS optimized --only tiny 2>&1); rc=$?

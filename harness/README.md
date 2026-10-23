@@ -215,3 +215,31 @@ Replay of `/usr/bin/time -v` resource metrics (`time` or `time.gz`) is strictly 
   - Scheduled run start must fall between **05:15 and ~20:30** to avoid the nightly 03:40–05:15 host maintenance window.
   - Requires default core pin `SCALE_CPUS=0-7` with $P \ge 4$ distinct physical cores to satisfy the pre-registered speedup bar $\text{bar}(P) = 0.6 \cdot \min(8, P) = 2.4\times$.
 - **C++ Region Arm Notice:** In `scale_bench.sh`, the C++ region scaling arm is executed as a BED run through `run_cpp.sh` (converting `-R chr:start-end` into an equivalent 0-based BED interval). Consequently, `cpp_*` numbers in `scale.json` are not directly comparable to pre-#31 measurements.
+
+---
+
+## 8. Reproducible Engine Profiling (`harness/profile.sh` & `harness/profile_catalog.py`)
+
+`harness/profile.sh` and `harness/profile_catalog.py` drive reproducible multi-modality profiling (`profile-cpu` 499 Hz `pprof`, `profile-heap` `tikv-jemalloc-ctl` live heap, and `profile-dhat` `dhat` allocation-site profiler) across all benchmark modalities without contaminating production release builds (`harness/tests/test_release_deps.sh` enforces zero profiler crates in `cargo tree -p vardictrust --no-default-features`).
+
+```bash
+# 1. Multi-threaded (-th 8) full baseline / optimized profile (writes scratch/profiles/<tag>/ + catalog.md + SVGs):
+bash harness/profile.sh baseline
+bash harness/profile.sh optimized
+
+# 2. Single-threaded (-th 1) baseline / optimized profile (separates algorithmic cost/RSS from 8-thread contention):
+PROFILE_OUT=scratch/profiles-th1 PROFILE_THREADS=1 bash harness/profile.sh baseline
+PROFILE_OUT=scratch/profiles-th1 PROFILE_THREADS=1 bash harness/profile.sh optimized
+
+# 3. 100-iteration merged CPU profile for sub-second slice cells (<150 ms single-run duration):
+for c in tiny s8 s9 s3 rna-i; do
+  PROFILE_LOOPS=100 bash harness/profile.sh baseline --only "$c"
+done
+
+# 4. Bounded sub-window dhat allocation-site profiles on HG002 (594.5 kb) and HG008 somatic (774.7 kb):
+bash harness/profile.sh baseline --only hg002-sub
+bash harness/profile.sh baseline --only hg008-sub
+
+# 5. Re-build markdown catalog + SVG flamegraphs across all profiled cell directories:
+python3 harness/profile_catalog.py scratch/profiles/baseline/* -o scratch/profiles/baseline/catalog.md
+```
