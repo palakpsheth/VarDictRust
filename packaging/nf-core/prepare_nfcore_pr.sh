@@ -78,11 +78,13 @@ rm -f "$NFCORE_MODULE_PATH/.conda-lock/"*.txt
 
 (
   cd "$NFCORE_MODULES_DIR"
+  export NXF_VER="${NXF_VER:-25.10.4}"
   echo "Provisioning multi-arch Seqera Wave containers for vardictrust=${VERSION}..."
   nf-core modules containers create vardictrust
 
-  echo "Running nf-core modules test --update --profile docker..."
-  nf-core modules test vardictrust --update --profile docker
+  echo "Running nf-test --update-snapshot and stability verification (--profile docker)..."
+  nf-test test modules/nf-core/vardictrust/tests/main.nf.test --update-snapshot --profile docker
+  nf-test test modules/nf-core/vardictrust/tests/main.nf.test --profile docker
 
   echo "Running nf-core modules lint and nextflow v2 syntax lint..."
   nf-core modules lint vardictrust
