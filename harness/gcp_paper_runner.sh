@@ -1296,11 +1296,11 @@ PY
 run_packed_stages_2_to_4() {
   echo "=== [Packed Zero-Contention Dual-Socket Orchestrator (NUMA Node 0: CPUs 0-7 / L3=0 vs NUMA Node 1: CPUs 8-15 / L3=1, SMT 16-31 Idle)] ==="
 
-  # Wave 0: Complete all local staging, conda env provisioning, mkbed() generation, and RAM page-cache warmup BEFORE any timed cell runs
-  echo "=== [Wave 0: Pre-Staging All Assets & Warming 251 GiB RAM Page Cache (Zero Disk/Network I/O During Timed Runs)] ==="
+  # Wave 0A: Verify Tier-P & Stage-3 RNA assets (already on NVMe), build all 5 mkbed.bed files, and warm RAM page cache
+  echo "=== [Wave 0A: Verifying Tier-P + RNA Assets & Warming 251 GiB RAM Page Cache (Zero Disk/Network I/O During Timed Runs)] ==="
   date -u +%Y-%m-%dT%H:%M:%SZ > "${WORK_DIR}/local_staged/bg_prestage.done"
-  CELL_ALLOWLIST="s2_stage_tierp_assets s3_stage_rna_aligned_bam s4_stage_seqc2_full" \
-    bash -c 'source harness/gcp_paper_runner.sh --source-only; run_stage_2; run_stage_3; run_stage_4'
+  CELL_ALLOWLIST="s2_stage_tierp_assets s3_stage_rna_aligned_bam" \
+    bash -c 'source harness/gcp_paper_runner.sh --source-only; run_stage_2; run_stage_3'
   ensure_field_caller_envs
   local tp_dir="${WORK_DIR}/data/tier-p"
   build_tierp_covered_bed "$tp_dir/bams/SRR15006386.bam" "$tp_dir/bams/SRR15006386.mkbed.bed" 11732
@@ -1308,25 +1308,22 @@ run_packed_stages_2_to_4() {
   build_tierp_covered_bed "$tp_dir/bams/SRR15006376.bam" "$tp_dir/bams/SRR15006376.mkbed.bed" 105949
   build_tierp_covered_bed "$tp_dir/bams/SRR15006540.bam" "$tp_dir/bams/SRR15006540.mkbed.bed" 135145
   build_tierp_covered_bed "$tp_dir/bams/SRR8657348.bam"  "$tp_dir/bams/SRR8657348.mkbed.bed"  773667
-  cat "$tp_dir"/bams/*.bam "$tp_dir"/archive/reference/*.fa scratch/g4/seqc2/*.bam > /dev/null 2>&1 || true
+  cat "$tp_dir"/bams/*.bam "$tp_dir"/archive/reference/*.fa > /dev/null 2>&1 || true
 
-  # Wave 1: Dual-Socket NUMA-Isolated 8-core & 1-core queues (Socket 0: CPUs 0-7 / MemNode 0 / L3=0; Socket 1: CPUs 8-15 / MemNode 1 / L3=1; SMT 16-31 Idle)
-  echo "=== [Wave 1: Dual-Socket NUMA-Isolated Execution (Socket 0: CPUs 0-7 / Node 0 || Socket 1: CPUs 8-15 / Node 1)] ==="
+  # Wave 1A: Dual-Socket NUMA-Isolated Stage-2 & Stage-3 queues (Socket 0: CPUs 0-7 / MemNode 0 / L3=0; Socket 1: CPUs 8-15 / MemNode 1 / L3=1; SMT 16-31 Idle)
+  echo "=== [Wave 1A: Dual-Socket NUMA-Isolated Stage 2+3 Execution (Socket 0: CPUs 0-7 / Node 0 || Socket 1: CPUs 8-15 / Node 1)] ==="
   (
     export SOCKET_PIN_CPUS="0-7"
-    export CELL_ALLOWLIST="s2_tierp_v2_SRR15006386_th8 s2_tierp_v2_SRR15006386_th1 s2_tierp_v2_SRR15006375_th8 s2_tierp_v2_SRR15006376_th8 s2_tierp_v2_SRR15006376_th1 s2_tierp_v2_SRR8657348_th8 s2_tierp_v2_SRR8657348_th1 s2_tierp_mode_parity_sweep s2_table3_R_chr1_rust_and_cpp s4_span_chr1_f0 s4_jobs_per_node_2x4c_n3"
+    export CELL_ALLOWLIST="s2_tierp_v2_SRR15006386_th8 s2_tierp_v2_SRR15006386_th1 s2_tierp_v2_SRR15006375_th8 s2_tierp_v2_SRR15006376_th8 s2_tierp_v2_SRR15006376_th1 s2_tierp_v2_SRR8657348_th8 s2_tierp_v2_SRR8657348_th1 s2_tierp_mode_parity_sweep s2_table3_R_chr1_rust_and_cpp"
     run_stage_2
-    run_stage_3
-    run_stage_4
   ) &
   local pid_s0=$!
 
   (
     export SOCKET_PIN_CPUS="8-15"
-    export CELL_ALLOWLIST="s2_tierp_v2_SRR15006375_th1 s2_tierp_v2_SRR15006540_th8 s2_tierp_v2_SRR15006540_th1 s2_tierp_v2_somatic_76_86_th8 s2_tierp_v2_somatic_76_86_th1 s2_fig2_hg002_chr20_truth s3_rna_splice_parity_n3 s4_multimodal_and_cram_twin"
+    export CELL_ALLOWLIST="s2_tierp_v2_SRR15006375_th1 s2_tierp_v2_SRR15006540_th8 s2_tierp_v2_SRR15006540_th1 s2_tierp_v2_somatic_76_86_th8 s2_tierp_v2_somatic_76_86_th1 s2_fig2_hg002_chr20_truth s3_rna_splice_parity_n3"
     run_stage_2
     run_stage_3
-    run_stage_4
   ) &
   local pid_s1=$!
 
@@ -1334,7 +1331,39 @@ run_packed_stages_2_to_4() {
   wait "$pid_s0" || rc_s0=$?
   wait "$pid_s1" || rc_s1=$?
   if [ "$rc_s0" -ne 0 ] || [ "$rc_s1" -ne 0 ]; then
-    echo "FATAL: Dual-socket Wave 1 exited non-zero (rc_s0=$rc_s0, rc_s1=$rc_s1)" >&2
+    echo "FATAL: Dual-socket Wave 1A exited non-zero (rc_s0=$rc_s0, rc_s1=$rc_s1)" >&2
+    return 1
+  fi
+
+  # Wave 0B: Stage-4 Asset Barrier (runs while no timed cells are active; warms SEQC2 BAMs into RAM page cache)
+  echo "=== [Wave 0B: Staging Stage-4 SEQC2 & Multimodal Assets & Warming Page Cache] ==="
+  CELL_ALLOWLIST="s4_stage_seqc2_full" \
+    bash -c 'source harness/gcp_paper_runner.sh --source-only; run_stage_4'
+  ln -sfn truth/truth.vcf.gz scratch/g4/seqc2/truth.vcf.gz
+  ln -sfn truth/truth.vcf.gz.tbi scratch/g4/seqc2/truth.vcf.gz.tbi
+  cat scratch/g4/seqc2/*.bam scratch/g4/ref/d1vd1/*.fa > /dev/null 2>&1 || true
+
+  # Wave 1B: Dual-Socket NUMA-Isolated Stage-4 8-core queues
+  echo "=== [Wave 1B: Dual-Socket NUMA-Isolated Stage-4 8c Execution (Socket 0: CPUs 0-7 / Node 0 || Socket 1: CPUs 8-15 / Node 1)] ==="
+  (
+    export SOCKET_PIN_CPUS="0-7"
+    export CELL_ALLOWLIST="s4_span_chr1_f0 s4_jobs_per_node_2x4c_n3"
+    run_stage_4
+  ) &
+  pid_s0=$!
+
+  (
+    export SOCKET_PIN_CPUS="8-15"
+    export CELL_ALLOWLIST="s4_multimodal_and_cram_twin"
+    run_stage_4
+  ) &
+  pid_s1=$!
+
+  rc_s0=0; rc_s1=0
+  wait "$pid_s0" || rc_s0=$?
+  wait "$pid_s1" || rc_s1=$?
+  if [ "$rc_s0" -ne 0 ] || [ "$rc_s1" -ne 0 ]; then
+    echo "FATAL: Dual-socket Wave 1B exited non-zero (rc_s0=$rc_s0, rc_s1=$rc_s1)" >&2
     return 1
   fi
 
