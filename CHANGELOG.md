@@ -7,6 +7,97 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.3] - 2026-10-24
+
+### Added
+
+- Opt-in zero-default-overhead profiling subsystem (`crates/vardictrust/src/profile.rs`,
+  `crates/vardictrust/tests/profile_smoke.rs`) with Cargo features `profile-cpu`
+  (`pprof` + `inferno` SVG flamegraphs), `profile-heap` (`tikv-jemallocator` +
+  `jemalloc_pprof`), and `profile-dhat` (`dhat::Alloc` allocation-site churn),
+  driven by `harness/profile.sh` and stdlib-only `harness/profile_catalog.py`
+  (`PR #35`).
+- Golden Baseline Store (`harness/golden_store.sh`, `harness/golden_store.py`,
+  `harness/tests/test_golden_store.py`) and turnkey G4 cohort stager
+  (`harness/stage_g4.sh`) for hash-verified, host-scoped caching of pinned
+  `VarDictJava v1.8.3` and `vardictcpp 3` oracle outputs (`PR #32`, `PR #33`).
+- Complete 10-class `vardictcpp` divergence forensic catalog (`CPP-1` through
+  `CPP-10`) in `docs/upstream-bugs.md`, cross-linked across `README.md`,
+  `benchmarks/README.md`, and `docs/validation/omnibus-empirical-validation.md`
+  (`PR #37`).
+- In-tree Nextflow `nf-core/modules` packaging (`packaging/nf-core/modules/vardictrust/`,
+  `packaging/nf-core/prepare_nfcore_pr.sh`) with multi-arch Seqera Wave
+  containers (`linux/amd64`, `linux/arm64`) and `nf-test` snapshots.
+- Four repository-specific Agent Skills under `.agents/skills/`
+  (`vardictrust-issue`, `vardictrust-pr`, `vardictrust-profiling`, and
+  `vardictrust-release` with stdlib-only `check_release_consistency.py`),
+  validated in `harness/tests/test_bioconda_recipe.py`.
+
+### Changed
+
+- Zero-allocation `get_variation` / `get_variation_maybe` (`IndexMap`
+  `raw_entry_mut_v1` with `FxBuildHasher`, stack UTF-8 key buffer) and
+  `FxHashMap` `ref_coverage` + borrowed-key `increment` in `CigarParser`
+  (`PR #35`).
+- Replaced per-bucket `Vec` allocations in `JavaHashMap` with an OpenJDK-isomorphic flat intrusive node arena (`buckets: Vec<u32>`, `nodes: Vec<Node<K, V>>`, free-list reuse), preserving exact bucket/chain iteration and `treeify_bin` semantics while eliminating inner-bucket heap allocations and bare slice indexing (`PR #35`).
+- BAM I/O and record decoding optimization (O-1 + O-3): share parsed `.bai`/`.csi`
+  index and SAM header metadata across worker threads via `META_CACHE`, pool up
+  to 4 BGZF readers per thread/path via `BAM_READER_POOL` (cleared via RAII
+  guard around `run()`), and decode concrete `noodles::bam::Record` fields and
+  auxiliary tags (`nM`/`NM`/`SA`/`MC`/`MQ`) in a single pass without per-read
+  trait-object allocations (`PR #35`).
+- `CigarModifier::modify_cigar`: added dynamic `(has_d, has_i, has_s)` byte
+  pre-filters across pre-loop and fixpoint-loop regexes (recomputed on every
+  `cigar_str` mutation) and replaced the 5 unconditional post-loop regexes with
+  bounds-checked, allocation-free byte-slice matchers (`PR #35`).
+- `VariationRealigner::realignlgins30` / `find_conseq` / `find_35_match` (NEW-1):
+  hoisted `sc5_used` and integer distance bounds ahead of `BTreeMap` lookups in
+  `realignlgins30`, cached empty consensus `Some(Vec::new())` in `find_conseq`,
+  and pre-reversed `seq3` once for forward slice comparison in `find_35_match`
+  (`PR #35`).
+- `ToVarsBuilder` and `realignlgdel` optimization (O-9): replaced upfront
+  `non_insertion_variants.clone()` and per-position `VariationMap::clone()` with
+  a sparse copy-on-write `FxHashMap` overlay, eliminated per-position `Vec` and
+  `Variant` clones and `HashSet<String>` allocations in
+  `is_the_same_variation_on_ref`, and guarded `realignlgdel` soft-clip loops on
+  live `cnt`/`used`/consensus length before cloning `Sclip` (`PR #35`).
+- Reference k-mer seed indexing (`O-4 + O-5`): replaced `HashMap<Vec<u8>, Vec<u32>>`
+  with `SeedMap` (`SeedKey` 17-byte inline key + `SeedPositions::One/Many` +
+  `FxBuildHasher`) and eliminated redundant `bases.clone()` and `LoadedRegion`
+  `String` clones in `get_reference` (`PR #35`).
+- Stack-buffered `round_half_even` (`StackBuf<64>` in `types::round_half_even`
+  with heap fallback for oversized values, O-12a) and allocation-free integer
+  CIGAR deletion suffix check `cigar_contains_dlen_d` in
+  `VariationRealigner::no_passing_reads` (O-7, `PR #35`).
+- Enabled `noodles-bgzf/libdeflate` for whole-block BGZF deflate decompression
+  in BAM/BAI/CSI/VCF.gz readers (O-2, +3.74% median wall-time improvement on
+  `hg002` chr20, `PR #35`).
+- Configured `tikv-jemallocator` as the default Linux global allocator with
+  static `_rjem_malloc_conf` (`background_thread:true,dirty_decay_ms:250,muzzy_decay_ms:0,narenas:8`)
+  and guarded `StructuralVariantsProcessor::find_sv` to filter out sub-`minr`
+  soft-clip clusters before cloning `Sclip`, cutting peak RSS by 1.7×–4.2×
+  (`hg002` `497.1 MiB`, `seqc2` `467.9 MiB`, `hg008` `313.1 MiB`, `chr1`
+  249 Mbp `1.42 GiB` with `1.22×` flat RSS scaling, `PR #35`, `PR #37`).
+- High-region-count Exome BED optimization (`EBO-1..EBO-3`, Issue #36, `PR #37`):
+  added `CachedBgzfReader` with a 1-block thread-local cursor and 8-shard × 16-slot
+  LRU process-wide `BGZF_BLOCK_CACHE` in `bam.rs` (`EBO-1`), deferred
+  `Reference::seed` 12-mer/17-mer hashing until the first soft-clip realignment
+  query via `OnceCell<RawSeedMap>` in `reference.rs` (`EBO-2`), and batched up
+  to 16 consecutive small same-chromosome tiles in `regions::batch_tiles` and
+  `runner::run_parallel_batched` (`EBO-3`), cutting `seqc2-exome-tier2` wall
+  time by **2.51×** (`19m 28.78s` $\to$ `7m 46.34s`, `6.9×` faster than
+  `VarDictJava`) and `scale.json` exome BED wall time across 1–8 threads by
+  **1.38×–2.38×** (`3m 06.43s` at `-th 8`).
+- Recertified all 16 release evidence artifacts in `benchmarks/evidence/*.json`
+  under engine fingerprint `27f3667b32ac14f5` (`perf_fingerprint`
+  `9f75643cf12aa988`; `harness/acceptance.sh` 8/8 PASS, `PR #37`).
+
+### Fixed
+
+- Per-tile BAM streaming for `chrM` RNA splicing (`-i`), ungated parity-restoring
+  `splice-tile-ownership` and `mate-window-ownership` tile ownership rules, and
+  lowercase-`n` `allele_key` passthrough (`PR #29`).
+
 ## [1.0.2] - 2026-10-17
 
 ### Fixed
@@ -129,7 +220,9 @@ Robustness improvements by design (no valid-input output changes relative to Var
 - Correct `##contig` lengths from the `.fai` ([VarDictJava#320](https://github.com/AstraZeneca-NGS/VarDictJava/issues/320));
   fail-fast on missing BAM index ([VarDictJava#187](https://github.com/AstraZeneca-NGS/VarDictJava/issues/187)).
 
-[Unreleased]: https://github.com/palakpsheth/VarDictRust/compare/v1.0.1...HEAD
+[Unreleased]: https://github.com/palakpsheth/VarDictRust/compare/v1.0.3...HEAD
+[1.0.3]: https://github.com/palakpsheth/VarDictRust/compare/v1.0.2...v1.0.3
+[1.0.2]: https://github.com/palakpsheth/VarDictRust/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/palakpsheth/VarDictRust/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/palakpsheth/VarDictRust/releases/tag/v1.0.0
 

@@ -40,8 +40,8 @@ echo "MATCH: rust BAM-vs-CRAM twin"
 # Advisory cpp twin (same floors; never gates).
 if [ "${CPP_SKIP:-0}" = "1" ] || [ "${CPP_SKIP:-0}" = "true" ]; then
   cpp_line="CPP: SKIP: disabled via CPP_SKIP=1"
-elif bash harness/run_cpp.sh "$REF" "$BAM_T|$BAM_N" "$BED" "$OUT/cpp-bam.vcf" "$SM" -z -th "$TH" 2>"$OUT/cpp.err" \
-  && bash harness/run_cpp.sh "$REF" "$CRAM_T|$CRAM_N" "$BED" "$OUT/cpp-cram.vcf" "$SM" -z -th "$TH" 2>>"$OUT/cpp.err"; then
+elif bash harness/golden_store.sh cpp cram-twin-bam "$REF" "$BAM_T|$BAM_N" "$BED" "$OUT/cpp-bam.vcf" "$SM" -z -th "$TH" 2>"$OUT/cpp.err" \
+  && bash harness/golden_store.sh cpp cram-twin-cram "$REF" "$CRAM_T|$CRAM_N" "$BED" "$OUT/cpp-cram.vcf" "$SM" -z -th "$TH" 2>>"$OUT/cpp.err"; then
   if [ ! -s "$OUT/cpp-bam.vcf" ] || [ ! -s "$OUT/cpp-cram.vcf" ]; then
     cpp_line="CPP: SKIP: empty cpp twin VCF"
   elif python3 harness/compare_vcf.py --min-variants "$FLOOR" "$OUT/cpp-bam.vcf" "$OUT/cpp-cram.vcf" > "$OUT/compare_cpp.txt" 2>&1; then
@@ -55,7 +55,8 @@ else
   if [ "$cpp_exit" -eq 3 ]; then
     cpp_line="CPP: SKIP: $(head -1 "$OUT/cpp.err" 2>/dev/null || echo 'vardictcpp unavailable')"
   else
-    cpp_line="CPP: SKIP: engine failure (exit $cpp_exit)"
+    first_err=$(grep -vE '^(ERROR conda\.cli|cpp_chunk=|[[:space:]]*$)' "$OUT/cpp.err" 2>/dev/null | head -n 1 | tr -d '\r' | cut -c 1-140 || true)
+    cpp_line="CPP: SKIP: engine failure (exit $cpp_exit${first_err:+: $first_err})"
   fi
   echo "$cpp_line" > "$OUT/compare_cpp.txt"
 fi

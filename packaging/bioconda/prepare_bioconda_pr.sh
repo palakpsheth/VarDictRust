@@ -12,7 +12,7 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 RECIPE_DIR="$SCRIPT_DIR/recipes/vardictrust"
 META_YAML="$RECIPE_DIR/meta.yaml"
 
-VERSION="${1:-1.0.1}"
+VERSION="${1:-1.0.3}"
 TARBALL_URL="https://github.com/palakpsheth/VarDictRust/archive/refs/tags/v${VERSION}.tar.gz"
 
 echo "Preparing Bioconda recipe for VarDictRust v${VERSION}..."
@@ -21,7 +21,7 @@ echo "Fetching release tarball from GitHub: ${TARBALL_URL}"
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
-if ! curl -LsSf "$TARBALL_URL" -o "$TMP_DIR/release.tar.gz"; then
+if ! curl -LsSf --connect-timeout 10 --max-time 60 --retry 3 "$TARBALL_URL" -o "$TMP_DIR/release.tar.gz"; then
   echo "================================================================================" >&2
   echo "ERROR: Could not fetch release tarball from GitHub!" >&2
   echo "URL: $TARBALL_URL" >&2
@@ -36,9 +36,10 @@ fi
 SHA256="$(sha256sum "$TMP_DIR/release.tar.gz" | awk '{print $1}')"
 echo "Computed live GitHub release SHA256: ${SHA256}"
 
-# Update sha256 in meta.yaml
+# Update sha256, version, and reset build number to 0 in meta.yaml
 sed -i -E "s/sha256: [0-9a-fA-F]+/sha256: ${SHA256}/" "$META_YAML"
 sed -i -E "s/\{% set version = \".*\" %\}/{% set version = \"${VERSION}\" %}/" "$META_YAML"
+sed -i -E "s/^([[:space:]]*number:[[:space:]]*)[0-9]+/\10/" "$META_YAML"
 
 echo "Updated $META_YAML with version ${VERSION} and sha256 ${SHA256}."
 echo ""

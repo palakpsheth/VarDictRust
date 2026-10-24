@@ -16,4 +16,5 @@ for off in 0 1440; do
   fi
 done
 fi
+export COURTESY_ACTIVE=1
 exec nice -n 19 ionice -c 3 "$@"

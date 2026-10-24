@@ -2,8 +2,7 @@
   "cmd": [
     "env",
     "KEEP_DIR=scratch/g4/seqc2/cmp-exome",
-    "MIN_VARIANTS=2000",
-    "JAVA_OPTS=-Xmx8g",
+    "MIN_VARIANTS=623444",
     "bash",
     "harness/compare.sh",
     "scratch/g4/ref/d1vd1/GRCh38.d1.vd1.fa",
@@ -18,10 +17,10 @@
   ],
   "cpp_time": {
     "exit": "0",
-    "max_rss_kb": "2256972",
-    "wall": "7:13.67"
+    "max_rss_kb": "2252120",
+    "wall": "7:11.99"
   },
-  "date": "2026-10-17T07:49:28-07:00",
+  "date": "2026-10-23T22:29:43-07:00",
   "extra": {
     "cpp_chunk": "50000",
     "cpp_head": [
@@ -30,21 +29,40 @@
       "MISMATCH: variant sets differ. java-only(<=10)=[] rust-only(<=10)=[\"('chr2', '178443383', 'T', '<DEL>')\", \"('chr22', '36511000', 'TCTGAAAGACACAAAAAATGTAAGAGAAATGAGCCAGGTTGTGTGATATGATGTTCACTTTCCTTTCTGAACCTCTGCTGGACTGTGCGTGAGTTTTCAACACTTCCATTCCGAAGTTAAGCCTTTCAGATGCTCACAGGGCTGGGCAGGTATTTCCTTCAGTCACCAGCTGGTGGAGCAGGAGAGACAACTTTCAGGCTATTTAACCCGGAGCGGAGCTTTTCCCTCTAGACCACCGGCTTCAATCTGGGACTTCCCTCATCTTCCTCTACCTCTGCCACAGTCCAGCCGCTTCTCTAAAACACCGCTATCCTCCCCAACCACTTGATGTGATCTAAAGGCTCTAGAAGAAGCTCTTGGAGCCAAAGTGAATGCTTCTTCATACTTAAGTCTCAGGGAATTCTCGAAGTTTTATCAAGGTTAAAGATCACAATGGCTACAGAGCTTGCTCCCGTGCTAGCCCACAGATCACTCTAGACCTCAGAAAGTGGGCTGCTACACAC', 'T')\"]",
       "CPP: MISMATCH"
     ],
-    "cpp_version": "vardictcpp 3 hc52dbad_0 bioconda"
+    "cpp_version": "vardictcpp 3 hc52dbad_0 bioconda",
+    "golden": {
+      "events": [
+        {
+          "event": "HIT",
+          "key": "f4ff71cbfb2663a3",
+          "kind": "java",
+          "label": "compare"
+        },
+        {
+          "event": "HIT",
+          "key": "e04af8231e2ba279",
+          "kind": "cpp",
+          "label": "compare"
+        }
+      ],
+      "hit": 2,
+      "live": 0,
+      "run": "compare-1724673-1792819298"
+    }
   },
-  "fingerprint": "74e93280e3ac0d85",
-  "head": "6b94b3e2bbe959598e013139382d68cb40818c63",
+  "fingerprint": "27f3667b32ac14f5",
+  "head": "5fc1266467c995d6e306b8bf2e84475081ce5be8",
   "java_time": {
     "exit": "0",
-    "max_rss_kb": "3687876",
-    "wall": "52:38.26"
+    "max_rss_kb": "3687592",
+    "wall": "53:53.76"
   },
   "n_variants": 623444,
   "name": "seqc2-exome-tier2",
   "result": "MATCH",
   "rust_time": {
     "exit": "0",
-    "max_rss_kb": "1068668",
-    "wall": "17:28.36"
+    "max_rss_kb": "479116",
+    "wall": "7:46.34"
   }
 }

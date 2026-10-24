@@ -22,7 +22,7 @@ use crate::config::Config;
 use crate::reference::{get_reference, is_loaded, Reference};
 use crate::types::{Pos1, VardictError};
 use crate::variations::{Cluster, Mate, Sclip, Variation};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 /// Check cluster for start and end of SV mates.
 /// Ports `VariationRealigner.checkCluster`.
@@ -301,37 +301,115 @@ pub fn find_match(
     }
 
     for i in (0..=seq_vec.len() - seed_len).rev() {
-        let seed = &seq_vec[i..i + seed_len];
-        if let Some(seeds) = reference.seed.get(seed) {
-            if seeds.len() == 1 {
-                let first_seed = seeds[0] as i32;
-                let mut bp = if dir == 1 {
-                    first_seed - i as i32
-                } else {
-                    first_seed + seq_vec.len() as i32 - i as i32 - 1
-                };
+        let Some(seed) = seq_vec.get(i..i + seed_len) else {
+            continue;
+        };
+        if let Some([first_seed_u32]) = reference.seed.get(seed) {
+            let first_seed = *first_seed_u32 as i32;
+            let mut bp = if dir == 1 {
+                first_seed - i as i32
+            } else {
+                first_seed + seq_vec.len() as i32 - i as i32 - 1
+            };
 
-                if crate::realign::is_match_ref(&seq_vec, reference, chr, bp, dir, mm_limit) {
-                    let mut mm = if dir == -1 { -1 } else { 0 };
-                    loop {
-                        if let Some(ch) = crate::util::char_at(&seq_vec, mm) {
-                            if is_has_and_not_equals(reference, chr, bp as u32, ch) {
-                                extra.push(ch);
-                                bp += dir;
-                                mm += dir as isize;
-                                continue;
-                            }
+            if crate::realign::is_match_ref(&seq_vec, reference, chr, bp, dir, mm_limit) {
+                let mut mm = if dir == -1 { -1 } else { 0 };
+                loop {
+                    if let Some(ch) = crate::util::char_at(&seq_vec, mm) {
+                        if is_has_and_not_equals(reference, chr, bp as u32, ch) {
+                            extra.push(ch);
+                            bp += dir;
+                            mm += dir as isize;
+                            continue;
                         }
-                        break;
                     }
-                    if !extra.is_empty() && dir == -1 {
-                        extra.reverse();
+                    break;
+                }
+                if !extra.is_empty() && dir == -1 {
+                    extra.reverse();
+                }
+                if verbose {
+                    eprintln!(
+                        "      Found SV BP: {} BP: {} SEEDpos {} {} {} {} {} extra: {}",
+                        dir,
+                        bp,
+                        first_seed,
+                        position,
+                        String::from_utf8_lossy(seed),
+                        i,
+                        String::from_utf8_lossy(&seq_vec),
+                        String::from_utf8_lossy(&extra)
+                    );
+                }
+                return Match {
+                    base_position: bp,
+                    matched_sequence: extra,
+                };
+            } else {
+                // For complex indels, allowing some mismatches at the end up to 15bp or 20% length
+                let mut sseq = seq_vec.clone();
+                let mut eqcnt = 0;
+                let mut bp_mut = bp;
+                for ii in 1..=15 {
+                    bp_mut += dir;
+                    if dir == 1 {
+                        if sseq.len() > 1 {
+                            sseq = sseq[1..].to_vec();
+                        } else {
+                            sseq.clear();
+                        }
+                        if sseq.is_empty() {
+                            break;
+                        }
+                        if is_has_and_not_equals(reference, chr, bp_mut as u32, sseq[0]) {
+                            continue;
+                        }
+                        eqcnt += 1;
+                        if sseq.len() > 1
+                            && is_has_and_not_equals(reference, chr, (bp_mut + 1) as u32, sseq[1])
+                        {
+                            continue;
+                        }
+                        extra = seq_vec[0..ii].to_vec();
+                    } else {
+                        if sseq.len() > 1 {
+                            sseq = sseq[0..sseq.len() - 1].to_vec();
+                        } else {
+                            sseq.clear();
+                        }
+                        if sseq.is_empty() {
+                            break;
+                        }
+                        if is_has_and_not_equals(
+                            reference,
+                            chr,
+                            bp_mut as u32,
+                            sseq[sseq.len() - 1],
+                        ) {
+                            continue;
+                        }
+                        eqcnt += 1;
+                        if sseq.len() > 1
+                            && is_has_and_not_equals(
+                                reference,
+                                chr,
+                                (bp_mut - 1) as u32,
+                                sseq[sseq.len() - 2],
+                            )
+                        {
+                            continue;
+                        }
+                        extra = seq_vec[seq_vec.len() - ii..].to_vec();
+                    }
+
+                    if eqcnt >= 3 && (eqcnt as f64) / (ii as f64) > 0.5 {
+                        break;
                     }
                     if verbose {
                         eprintln!(
-                            "      Found SV BP: {} BP: {} SEEDpos {} {} {} {} {} extra: {}",
+                            "      FoundSEED SV BP: {} BP: {} SEEDpos {} {} {} {} {} EXTRA: {}",
                             dir,
-                            bp,
+                            bp_mut,
                             first_seed,
                             position,
                             String::from_utf8_lossy(seed),
@@ -340,94 +418,11 @@ pub fn find_match(
                             String::from_utf8_lossy(&extra)
                         );
                     }
-                    return Match {
-                        base_position: bp,
-                        matched_sequence: extra,
-                    };
-                } else {
-                    // For complex indels, allowing some mismatches at the end up to 15bp or 20% length
-                    let mut sseq = seq_vec.clone();
-                    let mut eqcnt = 0;
-                    let mut bp_mut = bp;
-                    for ii in 1..=15 {
-                        bp_mut += dir;
-                        if dir == 1 {
-                            if sseq.len() > 1 {
-                                sseq = sseq[1..].to_vec();
-                            } else {
-                                sseq.clear();
-                            }
-                            if sseq.is_empty() {
-                                break;
-                            }
-                            if is_has_and_not_equals(reference, chr, bp_mut as u32, sseq[0]) {
-                                continue;
-                            }
-                            eqcnt += 1;
-                            if sseq.len() > 1
-                                && is_has_and_not_equals(
-                                    reference,
-                                    chr,
-                                    (bp_mut + 1) as u32,
-                                    sseq[1],
-                                )
-                            {
-                                continue;
-                            }
-                            extra = seq_vec[0..ii].to_vec();
-                        } else {
-                            if sseq.len() > 1 {
-                                sseq = sseq[0..sseq.len() - 1].to_vec();
-                            } else {
-                                sseq.clear();
-                            }
-                            if sseq.is_empty() {
-                                break;
-                            }
-                            if is_has_and_not_equals(
-                                reference,
-                                chr,
-                                bp_mut as u32,
-                                sseq[sseq.len() - 1],
-                            ) {
-                                continue;
-                            }
-                            eqcnt += 1;
-                            if sseq.len() > 1
-                                && is_has_and_not_equals(
-                                    reference,
-                                    chr,
-                                    (bp_mut - 1) as u32,
-                                    sseq[sseq.len() - 2],
-                                )
-                            {
-                                continue;
-                            }
-                            extra = seq_vec[seq_vec.len() - ii..].to_vec();
-                        }
-
-                        if eqcnt >= 3 && (eqcnt as f64) / (ii as f64) > 0.5 {
-                            break;
-                        }
-                        if verbose {
-                            eprintln!(
-                                "      FoundSEED SV BP: {} BP: {} SEEDpos {} {} {} {} {} EXTRA: {}",
-                                dir,
-                                bp_mut,
-                                first_seed,
-                                position,
-                                String::from_utf8_lossy(seed),
-                                i,
-                                String::from_utf8_lossy(&seq_vec),
-                                String::from_utf8_lossy(&extra)
-                            );
-                        }
-                        if crate::realign::is_match_ref(&sseq, reference, chr, bp_mut, dir, 1) {
-                            return Match {
-                                base_position: bp_mut,
-                                matched_sequence: extra,
-                            };
-                        }
+                    if crate::realign::is_match_ref(&sseq, reference, chr, bp_mut, dir, 1) {
+                        return Match {
+                            base_position: bp_mut,
+                            matched_sequence: extra,
+                        };
                     }
                 }
             }
@@ -478,118 +473,112 @@ pub fn find_match_rev(
     }
 
     for i in (0..=seq_vec.len() - seed_len).rev() {
-        let seed = &seq_vec[i..i + seed_len];
-        if let Some(seeds) = reference.seed.get(seed) {
-            if seeds.len() == 1 {
-                let first_seed = seeds[0] as i32;
-                let mut bp = if dir == 1 {
-                    first_seed + seq_vec.len() as i32 - i as i32 - 1
-                } else {
-                    first_seed - i as i32
-                };
+        let Some(seed) = seq_vec.get(i..i + seed_len) else {
+            continue;
+        };
+        if let Some([first_seed_u32]) = reference.seed.get(seed) {
+            let first_seed = *first_seed_u32 as i32;
+            let mut bp = if dir == 1 {
+                first_seed + seq_vec.len() as i32 - i as i32 - 1
+            } else {
+                first_seed - i as i32
+            };
 
-                if crate::realign::is_match_ref(&seq_vec, reference, chr, bp, -1 * dir, mm_limit) {
+            if crate::realign::is_match_ref(&seq_vec, reference, chr, bp, -1 * dir, mm_limit) {
+                if verbose {
+                    eprintln!(
+                        "      Found SV BP (reverse): {} BP: {} SEEDpos: {} {} {} {} {}",
+                        dir,
+                        bp,
+                        first_seed,
+                        position,
+                        String::from_utf8_lossy(seed),
+                        i,
+                        String::from_utf8_lossy(&seq_vec)
+                    );
+                }
+                return Match {
+                    base_position: bp,
+                    matched_sequence: Vec::new(),
+                };
+            } else {
+                // For complex indels, allowing some mismatches at the end up to 15bp or 20% length
+                let mut sseq = seq_vec.clone();
+                let mut eqcnt = 0;
+                let mut bp_mut = bp;
+                for ii in 1..=15 {
+                    bp_mut -= dir;
+                    if dir == -1 {
+                        if sseq.len() > 1 {
+                            sseq = sseq[1..].to_vec();
+                        } else {
+                            sseq.clear();
+                        }
+                        if sseq.is_empty() {
+                            break;
+                        }
+                        if is_has_and_not_equals(reference, chr, bp_mut as u32, sseq[0]) {
+                            continue;
+                        }
+                        eqcnt += 1;
+                        if sseq.len() > 1
+                            && is_has_and_not_equals(reference, chr, (bp_mut + 1) as u32, sseq[1])
+                        {
+                            continue;
+                        }
+                        extra = seq_vec[0..ii].to_vec();
+                    } else {
+                        if sseq.len() > 1 {
+                            sseq = sseq[0..sseq.len() - 1].to_vec();
+                        } else {
+                            sseq.clear();
+                        }
+                        if sseq.is_empty() {
+                            break;
+                        }
+                        if is_has_and_not_equals(
+                            reference,
+                            chr,
+                            bp_mut as u32,
+                            sseq[sseq.len() - 1],
+                        ) {
+                            continue;
+                        }
+                        eqcnt += 1;
+                        if sseq.len() > 1
+                            && is_has_and_not_equals(
+                                reference,
+                                chr,
+                                (bp_mut - 1) as u32,
+                                sseq[sseq.len() - 2],
+                            )
+                        {
+                            continue;
+                        }
+                        extra = seq_vec[seq_vec.len() - ii..].to_vec();
+                    }
+
+                    if eqcnt >= 3 && (eqcnt as f64) / (ii as f64) > 0.5 {
+                        break;
+                    }
                     if verbose {
                         eprintln!(
-                            "      Found SV BP (reverse): {} BP: {} SEEDpos: {} {} {} {} {}",
+                            "      FoundSEED SV BP (reverse): {} BP: {} SEEDpos {} {} {} {} {} EXTRA: {}",
                             dir,
-                            bp,
+                            bp_mut,
                             first_seed,
                             position,
                             String::from_utf8_lossy(seed),
                             i,
-                            String::from_utf8_lossy(&seq_vec)
+                            String::from_utf8_lossy(&seq_vec),
+                            String::from_utf8_lossy(&extra)
                         );
                     }
-                    return Match {
-                        base_position: bp,
-                        matched_sequence: Vec::new(),
-                    };
-                } else {
-                    // For complex indels, allowing some mismatches at the end up to 15bp or 20% length
-                    let mut sseq = seq_vec.clone();
-                    let mut eqcnt = 0;
-                    let mut bp_mut = bp;
-                    for ii in 1..=15 {
-                        bp_mut -= dir;
-                        if dir == -1 {
-                            if sseq.len() > 1 {
-                                sseq = sseq[1..].to_vec();
-                            } else {
-                                sseq.clear();
-                            }
-                            if sseq.is_empty() {
-                                break;
-                            }
-                            if is_has_and_not_equals(reference, chr, bp_mut as u32, sseq[0]) {
-                                continue;
-                            }
-                            eqcnt += 1;
-                            if sseq.len() > 1
-                                && is_has_and_not_equals(
-                                    reference,
-                                    chr,
-                                    (bp_mut + 1) as u32,
-                                    sseq[1],
-                                )
-                            {
-                                continue;
-                            }
-                            extra = seq_vec[0..ii].to_vec();
-                        } else {
-                            if sseq.len() > 1 {
-                                sseq = sseq[0..sseq.len() - 1].to_vec();
-                            } else {
-                                sseq.clear();
-                            }
-                            if sseq.is_empty() {
-                                break;
-                            }
-                            if is_has_and_not_equals(
-                                reference,
-                                chr,
-                                bp_mut as u32,
-                                sseq[sseq.len() - 1],
-                            ) {
-                                continue;
-                            }
-                            eqcnt += 1;
-                            if sseq.len() > 1
-                                && is_has_and_not_equals(
-                                    reference,
-                                    chr,
-                                    (bp_mut - 1) as u32,
-                                    sseq[sseq.len() - 2],
-                                )
-                            {
-                                continue;
-                            }
-                            extra = seq_vec[seq_vec.len() - ii..].to_vec();
-                        }
-
-                        if eqcnt >= 3 && (eqcnt as f64) / (ii as f64) > 0.5 {
-                            break;
-                        }
-                        if verbose {
-                            eprintln!(
-                                "      FoundSEED SV BP (reverse): {} BP: {} SEEDpos {} {} {} {} {} EXTRA: {}",
-                                dir,
-                                bp_mut,
-                                first_seed,
-                                position,
-                                String::from_utf8_lossy(seed),
-                                i,
-                                String::from_utf8_lossy(&seq_vec),
-                                String::from_utf8_lossy(&extra)
-                            );
-                        }
-                        if crate::realign::is_match_ref(&sseq, reference, chr, bp_mut, -1 * dir, 1)
-                        {
-                            return Match {
-                                base_position: bp_mut,
-                                matched_sequence: extra,
-                            };
-                        }
+                    if crate::realign::is_match_ref(&sseq, reference, chr, bp_mut, -1 * dir, 1) {
+                        return Match {
+                            base_position: bp_mut,
+                            matched_sequence: extra,
+                        };
                     }
                 }
             }
@@ -1942,7 +1931,7 @@ pub fn find_sv(
         .soft_clips_5_end
         .iter()
         .filter_map(|(&pos, scv)| {
-            if scv.used || pos < curseg_start || pos > curseg_end {
+            if scv.used || scv.variation.cnt < minr || pos < curseg_start || pos > curseg_end {
                 None
             } else {
                 Some(SortPositionSclip {
@@ -1959,7 +1948,7 @@ pub fn find_sv(
         .soft_clips_3_end
         .iter()
         .filter_map(|(&pos, scv)| {
-            if scv.used || pos < curseg_start || pos > curseg_end {
+            if scv.used || scv.variation.cnt < minr || pos < curseg_start || pos > curseg_end {
                 None
             } else {
                 Some(SortPositionSclip {
@@ -3442,16 +3431,15 @@ pub fn partial_pipeline(
     let query_start = crate::types::Pos0((start.max(1) - 1) as u32);
     let query_end = crate::types::Pos0(end.max(1) as u32);
 
-    let raw_records = crate::bam::query_region(bam_path, chr, query_start, query_end, config)?;
+    // Streaming counterpart of the old query_region-Vec + pileup_into shape:
+    // one lazy pass through a single preprocessor into a parser seeded with
+    // the taken maps, written back exactly as pileup_into does (fresh
+    // SVStructures discarded, discordant seeded 0 — duprate never propagates
+    // out of this path either way). Peak memory stays flat in depth.
+    let mut feed = crate::bam::query_region_iter(bam_path, chr, query_start, query_end, config)?;
 
     // Preprocess records
     let mut preprocessor = crate::bam::RecordPreprocessor::new();
-    let mut records = Vec::new();
-    for r in raw_records {
-        if preprocessor.preprocess_record(&r, config) {
-            records.push(r);
-        }
-    }
 
     let region = crate::regions::Region {
         chr: chr.to_string(),
@@ -3464,18 +3452,84 @@ pub fn partial_pipeline(
     // Java creates a fresh SVStructures in CigarParser(true) for partialPipeline
     // (CigarParser.java:66) and discards it when partialPipeline completes, so the
     // primary region's sv_structures is never mutated by mate-region pileup.
+    //
+    // G3 (mate-window ownership): snapshot variant-map keys so keys planted
+    // by this mate-window re-pileup are attributed in `merge_planted` for the
+    // ToVarsBuilder ownership gate. Pre-existing keys are native (the merge
+    // only accumulates into them), never planted.
+    let before_non: BTreeSet<i32> = var_data.non_insertion_variants.keys().copied().collect();
+    let before_ins: BTreeSet<i32> = var_data.insertion_variants.keys().copied().collect();
     let orig_sv_structures = std::mem::take(&mut var_data.sv_structures);
-    crate::cigar::parse::pileup_into(
-        var_data,
-        &records,
-        reference,
-        &region,
-        config,
-        true, // svflag is true for partial pipeline
-        preprocessor.total_reads as i32,
-        preprocessor.duplicate_reads as i32,
-    )?;
+    {
+        let mut parser = crate::cigar::parse::CigarParser {
+            reference,
+            region: &region,
+            config,
+            svflag: true, // svflag is true for partial pipeline
+            non_insertion_variants: std::mem::take(&mut var_data.non_insertion_variants),
+            insertion_variants: std::mem::take(&mut var_data.insertion_variants),
+            position_to_insertion_count: std::mem::take(&mut var_data.position_to_insertion_count),
+            position_to_deletion_count: std::mem::take(&mut var_data.position_to_deletion_count),
+            sv_structures: std::mem::take(&mut var_data.sv_structures),
+            ref_coverage: std::mem::take(&mut var_data.ref_coverage),
+            soft_clips_5_end: std::mem::take(&mut var_data.soft_clips_5_end),
+            soft_clips_3_end: std::mem::take(&mut var_data.soft_clips_3_end),
+            max_read_length: var_data.max_read_length,
+            splice: std::mem::take(&mut var_data.splice),
+            mnp: std::mem::take(&mut var_data.mnp),
+            splice_count: std::mem::take(&mut var_data.splice_count),
+            discordant_count: 0,
+            total_reads: 0,
+            duplicate_reads: 0,
+            scratch_seq: Vec::new(),
+            scratch_qual: Vec::new(),
+            scratch_cigar_str: String::new(),
+            scratch_elements: Vec::new(),
+            scratch_s: String::new(),
+            scratch_ss: String::new(),
+            scratch_splice_key: String::new(),
+            scratch_f4_desc: String::new(),
+            scratch_f4_qual: String::new(),
+            scratch_f4_seg1: String::new(),
+            scratch_f4_seg2: String::new(),
+        };
+        let mut r = crate::bam::SamRecord::new();
+        while feed.next_into(&mut r)? {
+            if preprocessor.preprocess_record(&r, config) {
+                parser.parse_cigar(&r)?;
+            }
+        }
+        parser.total_reads = preprocessor.total_reads as i32;
+        parser.duplicate_reads = preprocessor.duplicate_reads as i32;
+        var_data.non_insertion_variants = parser.non_insertion_variants;
+        var_data.insertion_variants = parser.insertion_variants;
+        var_data.position_to_insertion_count = parser.position_to_insertion_count;
+        var_data.position_to_deletion_count = parser.position_to_deletion_count;
+        var_data.sv_structures = parser.sv_structures;
+        var_data.ref_coverage = parser.ref_coverage;
+        var_data.soft_clips_5_end = parser.soft_clips_5_end;
+        var_data.soft_clips_3_end = parser.soft_clips_3_end;
+        var_data.max_read_length = var_data.max_read_length.max(parser.max_read_length);
+        var_data.splice = parser.splice;
+        var_data.mnp = parser.mnp;
+        var_data.splice_count = parser.splice_count;
+    }
     var_data.sv_structures = orig_sv_structures;
+    // Attribute mate-window-planted keys: positions present now but
+    // absent from BOTH maps before the merge. Pre-existing keys are native
+    // (the merge only accumulates into them), never planted — even when the
+    // merge adds the FIRST entry of the other map at that position, since
+    // the ToVarsBuilder ownership gate drops the whole position.
+    for &k in var_data.non_insertion_variants.keys() {
+        if !before_non.contains(&k) && !before_ins.contains(&k) {
+            var_data.merge_planted.insert(k);
+        }
+    }
+    for &k in var_data.insertion_variants.keys() {
+        if !before_non.contains(&k) && !before_ins.contains(&k) {
+            var_data.merge_planted.insert(k);
+        }
+    }
 
     Ok(())
 }

@@ -13,9 +13,10 @@
   ],
   "compare_head": [],
   "cpp_time": null,
-  "date": "2026-10-17T12:25:58-07:00",
+  "date": "2026-10-23T22:30:31-07:00",
   "extra": {
     "cpp_f1": 0.1555,
+    "cpp_f1_normalized": 0.1555,
     "cpp_version": "vardictcpp 3 hc52dbad_0 bioconda",
     "java": {
       "f_measure": 0.1555,
@@ -36,8 +37,8 @@
       "tp_call": 1056
     }
   },
-  "fingerprint": "74e93280e3ac0d85",
-  "head": "6b94b3e2bbe959598e013139382d68cb40818c63",
+  "fingerprint": "27f3667b32ac14f5",
+  "head": "5fc1266467c995d6e306b8bf2e84475081ce5be8",
   "java_time": null,
   "n_variants": null,
   "name": "seqc2-truth",

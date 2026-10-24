@@ -6,7 +6,7 @@ use crate::reference::Reference;
 use crate::regions::Region;
 use crate::types::round_half_even;
 use crate::variations::{Variant, VariationData};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub struct MsiResult {
@@ -21,6 +21,34 @@ pub struct ToVarsBuilder<'a> {
     pub region: &'a Region,
     pub chromosomes_lengths: &'a HashMap<String, usize>,
     pub config: &'a Config,
+}
+
+/// G3 (mate-window ownership) single-owner rule for a merge-planted key.
+///
+/// The tile whose active interval contains the position owns it; planted
+/// keys outside the called region clamp to the first (resp. last) tile —
+/// the same edge-clamp principle as `tile_owns_splice_key` (Task 3).
+/// `None` (manually built data) fails open. Single-region runs stamp the
+/// whole called region, so every planted key is owned and the gate never
+/// fires (Java parity by construction).
+fn merge_key_owned(
+    owning_range: Option<(crate::types::Pos1, crate::types::Pos1)>,
+    builder_region: &Region,
+    position: i32,
+) -> bool {
+    let Some((start, end)) = owning_range else {
+        return true;
+    };
+    if start.0 as i32 <= position && position <= end.0 as i32 {
+        return true;
+    }
+    if position < builder_region.start.0 as i32 && start == builder_region.start {
+        return true;
+    }
+    if position > builder_region.end.0 as i32 && end == builder_region.end {
+        return true;
+    }
+    false
 }
 
 /// Fill the fields shared by every create_variant/create_insertion record
@@ -95,21 +123,44 @@ impl<'a> ToVarsBuilder<'a> {
         let mut aligned_variants = crate::javamap::JavaHashMap::new();
         let duprate = var_data.duprate;
 
-        // Clone non_insertion_variants once before the loop to allow mutable references in create_insertion
-        let mut non_insertion_variants_clone = var_data.non_insertion_variants.clone();
+        // Sparse copy-on-write overlay for positions mutated by create_insertion (position + 1);
+        // lookup-only, never iterated.
+        let mut overlay: rustc_hash::FxHashMap<i32, crate::variations::VariationMap> =
+            rustc_hash::FxHashMap::default();
 
         let iter_positions: Vec<i32> = var_data.non_insertion_variants.keys().copied().collect();
         // Do not sort positions, use the JavaHashMap iteration order!
 
+        let mut var = Vec::new();
+        let mut keys = Vec::new();
+        let mut debug_lines = Vec::new();
+
         // Process non-insertion variants
         for position in iter_positions {
-            let var_map = match non_insertion_variants_clone.get(&position) {
-                Some(m) => m.clone(),
+            // `var_map`'s shared NLL borrow of `overlay` and `var_data.non_insertion_variants`
+            // ends at `create_variant` below, before `&mut overlay` is passed to `create_insertion`.
+            let var_map = match overlay
+                .get(&position)
+                .or_else(|| var_data.non_insertion_variants.get(&position))
+            {
+                Some(m) => m,
                 None => continue,
             };
 
             // Skip position if there are no variants on position
             if var_map.map.is_empty() && !var_data.insertion_variants.contains_key(&position) {
+                continue;
+            }
+
+            // G3 (mate-window ownership): a key planted by a mate-window
+            // merge emits only from its owning tile. Provenance comes from
+            // the sv-path `merge_planted` set or the realign-path per-map
+            // flag (set when the merge plants outside the merging tile's
+            // range); the clamp rule owns every key in single-region runs,
+            // so out-of-BED SV rows keep full mate ref-support there.
+            if (var_data.merge_planted.contains(&position) || var_map.merge_planted)
+                && !merge_key_owned(var_data.owning_range, self.region, position)
+            {
                 continue;
             }
 
@@ -124,7 +175,7 @@ impl<'a> ToVarsBuilder<'a> {
                 continue;
             }
 
-            if self.is_the_same_variation_on_ref(position, &var_map, &var_data.insertion_variants) {
+            if self.is_the_same_variation_on_ref(position, var_map, &var_data.insertion_variants) {
                 continue;
             }
 
@@ -133,22 +184,23 @@ impl<'a> ToVarsBuilder<'a> {
                 continue;
             }
 
-            let hicov = self.calc_hicov(var_data.insertion_variants.get(&position), &var_map);
+            let hicov = self.calc_hicov(var_data.insertion_variants.get(&position), var_map);
 
-            let mut var = Vec::new();
-            let mut keys: Vec<String> = var_map.map.keys().cloned().collect();
+            var.clear();
+            keys.clear();
+            keys.extend(var_map.map.keys().cloned());
             if var_map.sv.is_some() {
                 keys.push("SV".to_string());
             }
             keys.sort();
 
-            let mut debug_lines = Vec::new();
+            debug_lines.clear();
 
             self.create_variant(
                 duprate,
                 &mut aligned_variants,
                 position,
-                &var_map,
+                var_map,
                 total_cov,
                 &mut var,
                 &mut debug_lines,
@@ -159,7 +211,8 @@ impl<'a> ToVarsBuilder<'a> {
             let mut current_total_cov = total_cov;
             current_total_cov = self.create_insertion(
                 &var_data.insertion_variants,
-                &mut non_insertion_variants_clone,
+                &var_data.non_insertion_variants,
+                &mut overlay,
                 &var_data.ref_coverage,
                 duprate,
                 position,
@@ -171,7 +224,7 @@ impl<'a> ToVarsBuilder<'a> {
 
             self.sort_variants(&mut var);
 
-            let maxfreq = self.collect_vars_at_position(&mut aligned_variants, position, &var);
+            let maxfreq = self.collect_vars_at_position(&mut aligned_variants, position, &mut var);
 
             if !self.config.pileup
                 && maxfreq <= self.config.freq
@@ -188,7 +241,8 @@ impl<'a> ToVarsBuilder<'a> {
                     current_total_cov,
                     entry,
                     &var_data.ref_coverage,
-                    &non_insertion_variants_clone,
+                    &var_data.non_insertion_variants,
+                    &overlay,
                     duprate,
                     &debug_lines,
                 );
@@ -213,23 +267,26 @@ impl<'a> ToVarsBuilder<'a> {
         vars_at_cur_position: &crate::variations::VariationMap,
         insertion_variants: &crate::javamap::JavaHashMap<i32, crate::variations::VariationMap>,
     ) -> bool {
-        let mut vk: std::collections::HashSet<String> =
-            vars_at_cur_position.map.keys().cloned().collect();
-        if insertion_variants.contains_key(&position) {
-            vk.insert("I".to_string());
+        if self.config.pileup || self.config.bam.contains('|') || self.config.amplicon.is_some() {
+            return false;
         }
-        if vk.len() == 1 {
-            if let Some(ref_base) = self.reference.get_base(&self.region.chr, position as u32) {
-                let ref_base_str = (ref_base as char).to_string();
-                if vk.contains(&ref_base_str) {
-                    let has_bam2 = self.config.bam.contains('|');
-                    let do_pileup = self.config.pileup;
-                    let is_amplicon = self.config.amplicon.is_some();
-                    if !do_pileup && !has_bam2 && !is_amplicon {
-                        return true;
-                    }
-                }
-            }
+        let has_ins = insertion_variants.contains_key(&position);
+        let sole_key: &str = match (vars_at_cur_position.map.len(), has_ins) {
+            (1, false) => match vars_at_cur_position.map.keys().next() {
+                Some(k) => k.as_str(),
+                None => return false,
+            },
+            (0, true) => "I",
+            (1, true) => match vars_at_cur_position.map.keys().next() {
+                Some(k) if k == "I" => "I",
+                _ => return false,
+            },
+            _ => return false,
+        };
+        if let Some(ref_base) = self.reference.get_base(&self.region.chr, position as u32) {
+            let mut buf = [0u8; 4];
+            let ref_base_str = (ref_base as char).encode_utf8(&mut buf);
+            return sole_key == ref_base_str;
         }
         false
     }
@@ -401,11 +458,9 @@ impl<'a> ToVarsBuilder<'a> {
     fn create_insertion(
         &self,
         insertion_variants: &crate::javamap::JavaHashMap<i32, crate::variations::VariationMap>,
-        non_insertion_variants: &mut crate::javamap::JavaHashMap<
-            i32,
-            crate::variations::VariationMap,
-        >,
-        ref_coverage: &BTreeMap<i32, i32>,
+        orig_non_ins: &crate::javamap::JavaHashMap<i32, crate::variations::VariationMap>,
+        overlay: &mut rustc_hash::FxHashMap<i32, crate::variations::VariationMap>,
+        ref_coverage: &rustc_hash::FxHashMap<i32, i32>,
         duprate: f64,
         position: i32,
         mut total_pos_coverage: i32,
@@ -454,12 +509,20 @@ impl<'a> ToVarsBuilder<'a> {
                                     .reference
                                     .get_base(&self.region.chr, (position + 1) as u32)
                                 {
-                                    let ref_base_str = (ref_base as char).to_string();
-                                    if let Some(next_non_ins) =
-                                        non_insertion_variants.get_mut(&(position + 1))
+                                    let mut buf = [0u8; 4];
+                                    let ref_base_str: &str =
+                                        (ref_base as char).encode_utf8(&mut buf);
+                                    let next_pos = position + 1;
+                                    if let std::collections::hash_map::Entry::Vacant(e) =
+                                        overlay.entry(next_pos)
                                     {
+                                        if let Some(orig) = orig_non_ins.get(&next_pos) {
+                                            e.insert(orig.clone());
+                                        }
+                                    }
+                                    if let Some(next_non_ins) = overlay.get_mut(&next_pos) {
                                         if let Some(next_var) =
-                                            next_non_ins.map.get_mut(&ref_base_str)
+                                            next_non_ins.map.get_mut(ref_base_str)
                                         {
                                             next_var.fwd = (next_var.fwd - fwd).max(0);
                                             next_var.rev = (next_var.rev - rev).max(0);
@@ -510,32 +573,30 @@ impl<'a> ToVarsBuilder<'a> {
         &self,
         aligned_variants: &mut crate::javamap::JavaHashMap<i32, crate::variations::Vars>,
         position: i32,
-        var: &[Variant],
+        var: &mut Vec<Variant>,
     ) -> f64 {
         let mut maxfreq = 0.0;
         let ref_base = self
             .reference
             .get_base(&self.region.chr, position as u32)
             .unwrap_or(b'N');
-        let ref_base_str = (ref_base as char).to_string();
+        let mut buf = [0u8; 4];
+        let ref_base_str: &str = (ref_base as char).encode_utf8(&mut buf);
 
-        for tvar in var {
+        for tvar in var.drain(..) {
             if tvar.description == ref_base_str {
                 let entry = aligned_variants
                     .compute_if_absent(position, |_| crate::variations::Vars::new());
 
-                entry.ref_variant = Some(tvar.clone());
+                entry.ref_variant = Some(tvar);
             } else {
                 let entry = aligned_variants
                     .compute_if_absent(position, |_| crate::variations::Vars::new());
 
-                entry.variants.push(tvar.clone());
-                entry
-                    .var_desc_to_variant
-                    .insert(tvar.description.clone(), tvar.clone());
                 if tvar.frequency > maxfreq {
                     maxfreq = tvar.frequency;
                 }
+                entry.variants.push(tvar);
             }
         }
         maxfreq
@@ -557,8 +618,9 @@ impl<'a> ToVarsBuilder<'a> {
         position: i32,
         total_pos_coverage: i32,
         variations_at_pos: &mut crate::variations::Vars,
-        ref_coverage: &BTreeMap<i32, i32>,
-        non_insertion_variants: &crate::javamap::JavaHashMap<i32, crate::variations::VariationMap>,
+        ref_coverage: &rustc_hash::FxHashMap<i32, i32>,
+        orig_non_ins: &crate::javamap::JavaHashMap<i32, crate::variations::VariationMap>,
+        overlay: &rustc_hash::FxHashMap<i32, crate::variations::VariationMap>,
         duprate: f64,
         debug_lines: &[String],
     ) {
@@ -568,13 +630,13 @@ impl<'a> ToVarsBuilder<'a> {
         let genotype1 = if let Some(ref ref_var) = variations_at_pos.ref_variant {
             if ref_var.frequency >= self.config.freq {
                 ref_var.description.clone()
-            } else if !variations_at_pos.variants.is_empty() {
-                variations_at_pos.variants[0].description.clone()
+            } else if let Some(first_var) = variations_at_pos.variants.first() {
+                first_var.description.clone()
             } else {
                 ref_var.description.clone()
             }
-        } else if !variations_at_pos.variants.is_empty() {
-            variations_at_pos.variants[0].description.clone()
+        } else if let Some(first_var) = variations_at_pos.variants.first() {
+            first_var.description.clone()
         } else {
             String::new()
         };
@@ -598,13 +660,17 @@ impl<'a> ToVarsBuilder<'a> {
         let mut total_pos_coverage_adj = total_pos_coverage;
 
         if total_pos_coverage_adj > ref_coverage.get(&position).copied().unwrap_or(0) {
-            if let Some(next_non_ins) = non_insertion_variants.get(&(position + 1)) {
+            if let Some(next_non_ins) = overlay
+                .get(&(position + 1))
+                .or_else(|| orig_non_ins.get(&(position + 1)))
+            {
                 if let Some(ref_base_next) = self
                     .reference
                     .get_base(&self.region.chr, (position + 1) as u32)
                 {
-                    let ref_base_next_str = (ref_base_next as char).to_string();
-                    if let Some(tpref) = next_non_ins.map.get(&ref_base_next_str) {
+                    let mut buf = [0u8; 4];
+                    let ref_base_next_str: &str = (ref_base_next as char).encode_utf8(&mut buf);
+                    if let Some(tpref) = next_non_ins.map.get(ref_base_next_str) {
                         reference_forward_coverage_adj = tpref.fwd;
                         reference_reverse_coverage_adj = tpref.rev;
                     }
@@ -615,9 +681,7 @@ impl<'a> ToVarsBuilder<'a> {
         let mut positions_for_changed_ref_variant = Vec::new();
 
         if !variations_at_pos.variants.is_empty() {
-            let mut updated_variants = Vec::new();
-            for vref in &variations_at_pos.variants {
-                let mut vref = vref.clone();
+            for vref in &mut variations_at_pos.variants {
                 let mut genotype1_current_inner = genotype1_current.clone();
                 let mut genotype2 = vref.description.clone();
                 if genotype2.starts_with('+') {
@@ -946,7 +1010,7 @@ impl<'a> ToVarsBuilder<'a> {
                     "SNV".to_string()
                 };
 
-                self.adjust_variant_counts(position, &mut vref);
+                self.adjust_variant_counts(position, vref);
 
                 if start_position != position && self.config.pileup {
                     positions_for_changed_ref_variant.push(position);
@@ -955,16 +1019,15 @@ impl<'a> ToVarsBuilder<'a> {
                 // ports ToVarsBuilder.java:947 (constructDebugLines inside the
                 // non-reference-variant loop — every variant at the position shares
                 // the same joined debug string)
-                construct_debug_lines(debug_lines, &mut vref, self.config.debug);
-
-                updated_variants.push(vref);
+                construct_debug_lines(debug_lines, vref, self.config.debug);
             }
 
             if self.config.no_sv {
-                updated_variants.retain(|vref| !matches_any_sv(&vref.var_allele));
+                variations_at_pos
+                    .variants
+                    .retain(|vref| !matches_any_sv(&vref.var_allele));
             }
 
-            variations_at_pos.variants = updated_variants;
             // Rebuild var_desc_to_variant from finalized variants (total_pos_cov now set)
             variations_at_pos.var_desc_to_variant.clear();
             for v in &variations_at_pos.variants {
@@ -1396,5 +1459,277 @@ mod tests {
             !aligned_del.contains_key(&pos_outside),
             "Expected SV outside region to be filtered out when deldupvar=true"
         );
+    }
+
+    /// Ports SomaticMode.java:111-113 / ToVarsBuilder.java: when a deletion
+    /// extends past the loaded reference window (e.g. a realignlgdel call
+    /// whose end exceeds region.end + reference_extension), ToVarsBuilder
+    /// observes unloaded bases after `end_position` and leaves `right_seq`
+    /// empty (`""`, serialized as `0` / `RSEQ=0`).
+    #[test]
+    fn unloaded_deletion_end_leaves_right_seq_empty() {
+        let mut ref_genome = Reference::new();
+        ref_genome
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 1,
+                sequence_end: 1000,
+            });
+        ref_genome
+            .reference_sequences
+            .insert("chr1".to_string(), vec![b'A'; 1000]);
+        ref_genome.region_sequences.push(vec![b'A'; 1000]);
+
+        let chr_lengths = HashMap::from([("chr1".to_string(), 2000)]);
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(1),
+            end: Pos1(1000),
+            gene: "TEST".to_string(),
+            amplicon: None,
+        };
+
+        let mut var_data = VariationData::new();
+        var_data.ref_coverage.insert(990, 20);
+        let mut vm = VariationMap::new();
+        let mut v = Variation::new();
+        v.cnt = 10;
+        v.fwd = 5;
+        v.rev = 5;
+        v.qmean = 300.0;
+        v.mqmean = 600.0;
+        v.pmean = 250.0;
+        v.hicnt = 10;
+        vm.map.insert("-100".to_string(), v);
+        var_data.non_insertion_variants.insert(990, vm);
+
+        let cfg = Config::default();
+        let builder = ToVarsBuilder::new(&ref_genome, &region, &chr_lengths, &cfg);
+        let aligned = builder.build_aligned_variants(&var_data);
+        let vars = aligned.get(&990).expect("variant at 990 should be built");
+        assert_eq!(vars.variants.len(), 1);
+        assert_eq!(vars.variants[0].end_pos, 1089);
+        assert_eq!(vars.variants[0].right_seq, "");
+    }
+
+    fn is_the_same_variation_on_ref_legacy(
+        builder: &ToVarsBuilder<'_>,
+        position: i32,
+        vars_at_cur_position: &crate::variations::VariationMap,
+        insertion_variants: &crate::javamap::JavaHashMap<i32, crate::variations::VariationMap>,
+    ) -> bool {
+        let mut vk: std::collections::HashSet<String> =
+            vars_at_cur_position.map.keys().cloned().collect();
+        if insertion_variants.contains_key(&position) {
+            vk.insert("I".to_string());
+        }
+        if vk.len() == 1 {
+            if let Some(ref_base) = builder
+                .reference
+                .get_base(&builder.region.chr, position as u32)
+            {
+                let ref_base_str = (ref_base as char).to_string();
+                if vk.contains(&ref_base_str) {
+                    let has_bam2 = builder.config.bam.contains('|');
+                    let do_pileup = builder.config.pileup;
+                    let is_amplicon = builder.config.amplicon.is_some();
+                    if !do_pileup && !has_bam2 && !is_amplicon {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    #[test]
+    fn is_the_same_variation_on_ref_matches_legacy_hashset() {
+        let key_sets: &[&[&str]] = &[
+            &[],
+            &["A"],
+            &["I"],
+            &["C"],
+            &["A", "G"],
+            &["A", "I"],
+            &["I", "G"],
+        ];
+        let ref_bases: &[Option<u8>] = &[Some(b'A'), Some(b'I'), Some(b'C'), Some(0xE9), None];
+        let chr_lengths = HashMap::from([("chr1".to_string(), 100)]);
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(1),
+            end: Pos1(100),
+            gene: "TEST".to_string(),
+            amplicon: None,
+        };
+
+        for &ref_base in ref_bases {
+            let mut ref_genome = Reference::new();
+            if let Some(b) = ref_base {
+                ref_genome
+                    .loaded_regions
+                    .push(crate::reference::LoadedRegion {
+                        chr: "chr1".to_string(),
+                        sequence_start: 1,
+                        sequence_end: 10,
+                    });
+                ref_genome
+                    .reference_sequences
+                    .insert("chr1".to_string(), vec![b; 10]);
+                ref_genome.region_sequences.push(vec![b; 10]);
+            }
+
+            for &keys in key_sets {
+                let mut vm = VariationMap::new();
+                for &k in keys {
+                    vm.map.insert(k.to_string(), Variation::new());
+                }
+
+                for has_ins in [false, true] {
+                    let mut ins_map = crate::javamap::JavaHashMap::new();
+                    if has_ins {
+                        ins_map.insert(5, VariationMap::new());
+                    }
+
+                    for (pileup, bam, amplicon) in [
+                        (false, "sample.bam", None),
+                        (true, "sample.bam", None),
+                        (false, "tumor.bam|normal.bam", None),
+                        (false, "sample.bam", Some("10:0.95".to_string())),
+                    ] {
+                        let mut cfg = Config::default();
+                        cfg.pileup = pileup;
+                        cfg.bam = bam.to_string();
+                        cfg.amplicon = amplicon;
+
+                        let builder = ToVarsBuilder::new(&ref_genome, &region, &chr_lengths, &cfg);
+                        let actual = builder.is_the_same_variation_on_ref(5, &vm, &ins_map);
+                        let expected =
+                            is_the_same_variation_on_ref_legacy(&builder, 5, &vm, &ins_map);
+                        assert_eq!(
+                            actual, expected,
+                            "mismatch for keys={keys:?}, has_ins={has_ins}, ref_base={ref_base:?}, pileup={pileup}, bam={bam}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn build_aligned_variants_cow_overlay_decrements_next_pos_and_preserves_input() {
+        let mut ref_genome = Reference::new();
+        ref_genome
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 1,
+                sequence_end: 100,
+            });
+        ref_genome
+            .reference_sequences
+            .insert("chr1".to_string(), vec![b'A'; 100]);
+        ref_genome.region_sequences.push(vec![b'A'; 100]);
+
+        let chr_lengths = HashMap::from([("chr1".to_string(), 100)]);
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(1),
+            end: Pos1(100),
+            gene: "TEST".to_string(),
+            amplicon: None,
+        };
+
+        let mut var_data = VariationData::new();
+        // Position 10: total_cov = 10, insertion "+T" has cnt = 15 (> total_cov, extracnt == 0),
+        // fwd = 9, rev = 6.
+        // Position 11: ref_coverage = 40 (so ttcov=15 < 40 - 15 = 25), triggering the P+1
+        // ref base ('A') fwd/rev decrement by (9, 6).
+        var_data.ref_coverage.insert(10, 10);
+        var_data.ref_coverage.insert(11, 40);
+
+        let mut vm10 = VariationMap::new();
+        let mut ref10 = Variation::new();
+        ref10.cnt = 10;
+        ref10.fwd = 5;
+        ref10.rev = 5;
+        ref10.qmean = 300.0;
+        ref10.mqmean = 600.0;
+        ref10.pmean = 200.0;
+        ref10.hicnt = 10;
+        vm10.map.insert("A".to_string(), ref10);
+        var_data.non_insertion_variants.insert(10, vm10);
+
+        let mut ins10_map = VariationMap::new();
+        let mut ins10 = Variation::new();
+        ins10.cnt = 15;
+        ins10.fwd = 9;
+        ins10.rev = 6;
+        ins10.extracnt = 0;
+        ins10.qmean = 450.0;
+        ins10.mqmean = 900.0;
+        ins10.pmean = 300.0;
+        ins10.hicnt = 15;
+        ins10_map.map.insert("+T".to_string(), ins10);
+        var_data.insertion_variants.insert(10, ins10_map);
+
+        let mut vm11 = VariationMap::new();
+        let mut ref11 = Variation::new();
+        ref11.cnt = 30;
+        ref11.fwd = 20;
+        ref11.rev = 10;
+        ref11.qmean = 900.0;
+        ref11.mqmean = 1800.0;
+        ref11.pmean = 600.0;
+        ref11.hicnt = 30;
+        vm11.map.insert("A".to_string(), ref11);
+        let mut alt11 = Variation::new();
+        alt11.cnt = 10;
+        alt11.fwd = 5;
+        alt11.rev = 5;
+        alt11.qmean = 300.0;
+        alt11.mqmean = 600.0;
+        alt11.pmean = 200.0;
+        alt11.hicnt = 10;
+        vm11.map.insert("G".to_string(), alt11);
+        var_data.non_insertion_variants.insert(11, vm11);
+
+        let cfg = Config::default();
+        let builder = ToVarsBuilder::new(&ref_genome, &region, &chr_lengths, &cfg);
+        let aligned = builder.build_aligned_variants(&var_data);
+
+        // Input var_data at position 11 must remain untouched (fwd=20, rev=10)
+        let orig_ref11 = var_data
+            .non_insertion_variants
+            .get(&11)
+            .and_then(|m| m.map.get("A"))
+            .expect("orig ref11");
+        assert_eq!((orig_ref11.fwd, orig_ref11.rev), (20, 10));
+
+        // Position 10's insertion variant should see adjusted ref cov from P+1: (20-9, 10-6) = (11, 4)
+        let vars10 = aligned.get(&10).expect("vars at 10");
+        assert_eq!(vars10.variants.len(), 1);
+        assert_eq!(
+            (
+                vars10.variants[0].ref_fwd_cov,
+                vars10.variants[0].ref_rev_cov
+            ),
+            (11, 4)
+        );
+        assert!(vars10.var_desc_to_variant.contains_key("+T"));
+
+        // Position 11's finalized variants must also see the decremented ref_variant (11, 4)
+        let vars11 = aligned.get(&11).expect("vars at 11");
+        let ref_var11 = vars11.ref_variant.as_ref().expect("ref_variant at 11");
+        assert_eq!((ref_var11.fwd, ref_var11.rev), (11, 4));
+        assert_eq!(
+            (
+                vars11.variants[0].ref_fwd_cov,
+                vars11.variants[0].ref_rev_cov
+            ),
+            (11, 4)
+        );
+        assert!(vars11.var_desc_to_variant.contains_key("G"));
     }
 }

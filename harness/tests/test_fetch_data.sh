@@ -89,4 +89,35 @@ set -e
 [ "$rc_bad" -ne 0 ] || { echo "FAIL: bad md5 should have failed" >&2; exit 1; }
 [ ! -f "$TMPDIR/data/test/bad.txt.done" ] || { echo "FAIL: bad md5 should not create .done file" >&2; exit 1; }
 
+# 4. Test stage_g4.sh usage & get_hg008_slice.sh --beds-only offline BED derivation
+bash harness/stage_g4.sh --help | grep -q "stage_g4.sh" || { echo "FAIL: stage_g4.sh --help failed" >&2; exit 1; }
+set +e
+bash harness/stage_g4.sh unknown_target >/dev/null 2>&1
+rc_unk=$?
+set -e
+[ "$rc_unk" -ne 0 ] || { echo "FAIL: stage_g4.sh unknown_target should fail" >&2; exit 1; }
+
+mkdir -p "$TMPDIR/g4/hg008/truth"
+cat << 'EOF' | gzip -c > "$TMPDIR/g4/hg008/truth/HG008-T_somatic_smvar_benchmark_v0.3_tumorvariants.vcf.gz"
+##fileformat=VCFv4.2
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO
+chr1	10001	.	A	T	60	PASS	.
+chr1	22001	.	C	G	60	PASS	.
+chr1	35001	.	G	A	60	PASS	.
+EOF
+printf "chr1\t5000\t40000\n" > "$TMPDIR/g4/hg008/truth/HG008-T_somatic_smvar_benchmark_v0.3_all.bed"
+
+DATA_DIR="$TMPDIR/g4" bash harness/get_hg008_slice.sh --beds-only >/dev/null
+[ -s "$TMPDIR/g4/hg008/slices.bed" ] || { echo "FAIL: get_hg008_slice.sh did not create slices.bed" >&2; exit 1; }
+[ -s "$TMPDIR/g4/hg008/engine.bed" ] || { echo "FAIL: get_hg008_slice.sh did not create engine.bed" >&2; exit 1; }
+[ -s "$TMPDIR/g4/hg008/eval.bed" ]   || { echo "FAIL: get_hg008_slice.sh did not create eval.bed" >&2; exit 1; }
+[ -s "$TMPDIR/g4/hg008/r1.bed" ]     || { echo "FAIL: get_hg008_slice.sh did not create r1.bed" >&2; exit 1; }
+# Span is 9500..35501 (26001 bp > 20000 bp), so engine.bed must split into 2 tiles
+[ "$(wc -l < "$TMPDIR/g4/hg008/engine.bed")" -eq 2 ] || { echo "FAIL: expected 2 tiles in engine.bed" >&2; exit 1; }
+
+# Verify stage_g4.sh indexes GRCh38_GIABv3.fasta before linking .fa.fai and passes registered SRR7890879/SRR7890880 FASTQ paths
+grep -q 'samtools faidx "\$gv/GRCh38_GIABv3.fasta"' harness/stage_g4.sh || { echo "FAIL: stage_g4.sh missing samtools faidx on GRCh38_GIABv3.fasta" >&2; exit 1; }
+grep -q 'seqc2_align.sh HCC1395 "\$sq/fastq/SRR7890879_1.fastq.gz" "\$sq/fastq/SRR7890879_2.fastq.gz"' harness/stage_g4.sh || { echo "FAIL: stage_g4.sh missing SRR7890879 FASTQ paths" >&2; exit 1; }
+grep -q 'seqc2_align.sh HCC1395BL "\$sq/fastq/SRR7890880_1.fastq.gz" "\$sq/fastq/SRR7890880_2.fastq.gz"' harness/stage_g4.sh || { echo "FAIL: stage_g4.sh missing SRR7890880 FASTQ paths" >&2; exit 1; }
+
 echo "PASS test_fetch_data"

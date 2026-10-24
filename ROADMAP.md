@@ -27,6 +27,17 @@ From v1.1.0, each correction is opt-in via `--fix <id>` (default off) and lands 
 
 ---
 
+## Landed as Default (parity-restoring; never gated)
+
+Owner-ruled 2026-10-22: these two Rust-only tiling artifacts both RESTORE VarDictJava parity (flag-on MATCHes java everywhere measured); the v1.0.2 defaults were never oracle-true here. Both shipped UNGATED as default behavior; the `--fix` ids were unreleased (PR #29 unmerged, no users), so the plumbing was removed, not kept as no-op aliases. (Governance exception to the §5 `--fix` rule above; AGENTS.md §5 amendment proposed as follow-up.)
+
+| ID | Upstream Reference | v1.0.2 Behavior (Not True Parity) | Default Behavior Now |
+|:---|:-------------------|:----------------------------------|:---------------------|
+| `splice-tile-ownership` | Rust-only tiling artifact (no upstream issue — Java counts each junction once over the whole region, unconditionally: `CigarParser.java:86-110`, key `CigarParser.java:1289-1301`) | `-i` splice junctions double-counted under default 100 kb tiling: every tile whose halo-reaching reads touch a junction emits it | Emit each splice junction from exactly one tile (anchor-ownership by key `A`, region-edge clamped) |
+| `mate-window-ownership` | Rust-only tiling artifact, sibling-audit G3 (no upstream issue — Java piles the whole region once, so a mate-window merge can never duplicate a row) | Tiled runs duplicate rows whose mate breakpoint falls in the same BED region but a different tile: the merging tile's `partial_pipeline` plants out-of-active-range keys (`realign.rs`, `sv.rs`) that pass the whole-region builder gate — intermediate tables (#1,#3) and somatic VCF (#4); simple VCF masks exact-`start_pos` cases via `pending` | Gate merged keys to the owning tile's active range (merge-time gating in `realign.rs`, planted-key attribution + builder ownership gate with Task-3-style edge clamping for `sv.rs`); single-region runs own everything so the gate never fires there. Accepted corner: realign-planted SV key outside the whole BED with no sv re-plant is dropped (see task-7-report F2) |
+
+---
+
 ## Needs a Specification First (Debatable Heuristics; No Flag Until Specified)
 
 Graduation from this table to a candidate `--fix` flag requires a community RFC and empirical concordance benchmarking against NIST GIAB and SEQC2 truth sets.

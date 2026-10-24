@@ -3,7 +3,7 @@ members = ["crates/vardictrust-core", "crates/vardictrust"]
 resolver = "2"
 
 [workspace.package]
-version = "1.0.2"
+version = "1.0.3"
 edition = "2021"
 rust-version = "1.86.0"
 license = "MIT AND GPL-2.0-or-later"
@@ -20,7 +20,10 @@ thiserror = "2"
 clap = { version = "4", features = ["derive"] }
 rayon = "1"
 indexmap = "2"
+rustc-hash = "1.1"
+tikv-jemallocator = "0.7"
 noodles = { version = "0.117", default-features = false, features = ["bam","cram","sam","fasta","vcf","bgzf","csi","tabix","core","bed"] }
+noodles-bgzf = { version = "0.52.0", features = ["libdeflate"] }
 fishers_exact = "1"
 log = "0.4"
 env_logger = "0.11"
@@ -39,3 +42,11 @@ strip = true
 [profile.dist]
 inherits = "release"
 lto = "fat"
+
+# Profiling profile: optimizes like release, keeps debug symbols for symbolization,
+# and unwinds on panic so Session::drop runs on panic.
+[profile.profiling]
+inherits = "release"
+strip = false
+debug = 1
+panic = "unwind"

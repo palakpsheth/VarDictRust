@@ -81,23 +81,23 @@ fn run_pipeline_on_records(
     chromosomes_lengths: &HashMap<String, usize>,
     seed_max_read_length: i32,
 ) -> Result<crate::variations::VariationData, VardictError> {
-    let mut raw_records = Vec::new();
+    // Task 4 (streaming feed): one lazy pass per BAM, BAM1-then-BAM2, through
+    // a single sequential preprocessor into a single CigarParser. Records are
+    // dropped promptly after parsing, so peak memory stays flat in depth —
+    // the old `raw_records` Vec held the whole tile. Counts are unknown until
+    // the feed is exhausted (parse_cigar never reads them mid-stream), so
+    // they are set on the parser just before finalization, exactly as
+    // `pileup()` received them. `?` propagates I/O errors with the same Err
+    // semantics as the Vec path; nothing is skipped or unwrapped.
+    let mut feeds = Vec::with_capacity(bam_paths.len());
     for path in bam_paths {
-        raw_records.extend(crate::bam::query_region(
+        feeds.push(crate::bam::query_region_iter(
             Path::new(path),
             chr,
             query_start,
             query_end,
             config,
         )?);
-    }
-
-    let mut preprocessor = crate::bam::RecordPreprocessor::new();
-    let mut records = Vec::new();
-    for r in raw_records {
-        if preprocessor.preprocess_record(&r, config) {
-            records.push(r);
-        }
     }
 
     if let Some(ref_region) = ref_region {
@@ -110,17 +110,29 @@ fn run_pipeline_on_records(
         )?;
     }
 
-    let mut var_data = crate::cigar::parse::pileup(
-        &records,
+    let mut preprocessor = crate::bam::RecordPreprocessor::new();
+    let mut parser = crate::cigar::parse::CigarParser::new(
         reference,
         pileup_region,
         config,
         false,
-        preprocessor.total_reads as i32,
-        preprocessor.duplicate_reads as i32,
+        0,
+        0,
         seed_max_read_length,
-    )?;
-
+    );
+    for mut feed in feeds {
+        // Reused record buffer: zero per-read allocation after warmup (the
+        // retained-churn slope that OOMs deep tiles).
+        let mut r = crate::bam::SamRecord::new();
+        while feed.next_into(&mut r)? {
+            if preprocessor.preprocess_record(&r, config) {
+                parser.parse_cigar(&r)?;
+            }
+        }
+    }
+    parser.total_reads = preprocessor.total_reads as i32;
+    parser.duplicate_reads = preprocessor.duplicate_reads as i32;
+    let mut var_data = parser.into_variation_data();
     let chr_len = *chromosomes_lengths.get(chr).unwrap_or(&0) as u32;
 
     match tail {
@@ -198,7 +210,6 @@ fn run_pipeline_on_records(
             crate::realign::adj_snv(reference, chr, config, &mut var_data);
         }
     }
-
     Ok(var_data)
 }
 
@@ -264,6 +275,15 @@ pub fn write_output_line<W: std::io::Write>(
 ///
 /// Takes a fully-resolved configuration and runs the variant-calling pipeline.
 pub fn run(config: &config::Config) -> Result<(), VardictError> {
+    struct BamCacheGuard;
+    impl Drop for BamCacheGuard {
+        fn drop(&mut self) {
+            crate::bam::clear_bam_caches();
+        }
+    }
+    crate::bam::clear_bam_caches();
+    let _bam_cache_guard = BamCacheGuard;
+
     log::info!("VarDictRust engine starting");
 
     // Detect somatic (paired) mode: BAM path contains '|'
@@ -311,6 +331,7 @@ pub fn run(config: &config::Config) -> Result<(), VardictError> {
     for reg in &flat_regions {
         tiles.extend(crate::regions::tile(reg, tile_size, halo));
     }
+    let tile_batches = crate::regions::batch_tiles(tiles, tile_size, 16, config.threads);
 
     let first_bam_owned = first_bam.to_string();
     let config_clone = config.clone();
@@ -352,8 +373,8 @@ pub fn run(config: &config::Config) -> Result<(), VardictError> {
         std::collections::BTreeMap::new();
 
     // Process tiles in parallel, print variants in deterministic index order
-    crate::runner::run_parallel(
-        tiles,
+    crate::runner::run_parallel_batched(
+        tile_batches,
         config.threads,
         move |tile| -> Result<SimpleTileOutput, VardictError> {
             let bed_region = crate::regions::Region {
@@ -373,6 +394,14 @@ pub fn run(config: &config::Config) -> Result<(), VardictError> {
             };
 
             let mut reference = crate::reference::Reference::new();
+            // Splice pileup runs halo-wide (bed_region) so the owning tile
+            // counts junctions anchored at its last active base, then emits
+            // owned-only (single-ownership, no cross-tile state).
+            let pileup_region = if config_clone.splice {
+                &bed_region
+            } else {
+                &region_for_pileup
+            };
             let var_data = run_pipeline_on_records(
                 std::slice::from_ref(&first_bam_owned),
                 &tile.chr,
@@ -380,7 +409,7 @@ pub fn run(config: &config::Config) -> Result<(), VardictError> {
                 crate::types::Pos0(tile.halo_end.0),
                 Some(&bed_region),
                 &mut reference,
-                &region_for_pileup,
+                pileup_region,
                 if config_clone.splice {
                     PipelineTail::Stop
                 } else {
@@ -397,6 +426,10 @@ pub fn run(config: &config::Config) -> Result<(), VardictError> {
                 let mut introns: Vec<&String> = var_data.splice_count.keys().collect();
                 introns.sort();
                 for intron in introns {
+                    if !tile_owns_splice_key(&tile, tile.original_start, tile.original_end, intron)
+                    {
+                        continue;
+                    }
                     let count = var_data.splice_count.get(intron).map(|a| a[0]).unwrap_or(0);
                     lines.push(format!(
                         "{}\t{}\t{}\t{}",
@@ -880,6 +913,7 @@ fn run_somatic(config: &config::Config) -> Result<(), VardictError> {
     for reg in &flat_regions {
         tiles.extend(crate::regions::tile(reg, tile_size, halo));
     }
+    let tile_batches = crate::regions::batch_tiles(tiles, tile_size, 16, config.threads);
 
     let config_clone = config.clone();
     let chromosomes_lengths_clone = chromosomes_lengths.clone();
@@ -900,8 +934,8 @@ fn run_somatic(config: &config::Config) -> Result<(), VardictError> {
     }
 
     // Process tiles: run both BAMs through pipeline, then somatic postprocess
-    crate::runner::run_parallel(
-        tiles,
+    crate::runner::run_parallel_batched(
+        tile_batches,
         config.threads,
         move |tile| -> Result<Vec<String>, VardictError> {
             // Process BAM1 (tumor)
@@ -921,7 +955,7 @@ fn run_somatic(config: &config::Config) -> Result<(), VardictError> {
             };
 
             let mut reference = crate::reference::Reference::new();
-            let var_data1 = run_pipeline_on_records(
+            let mut var_data1 = run_pipeline_on_records(
                 std::slice::from_ref(&bam1_path),
                 &tile.chr,
                 tile.halo_start.to_zero_based(),
@@ -937,6 +971,29 @@ fn run_somatic(config: &config::Config) -> Result<(), VardictError> {
 
             let max_read_length_bam1 = var_data1.max_read_length;
 
+            // Inter-pass trim (ports SomaticMode.java:111-113, AbstractMode.java:44-56):
+            // in VarDictJava, ToVarsBuilder for BAM1 runs inside pipeline(initialScope1)
+            // and .join()s before BAM2 starts, observing only the initial region reference
+            // load plus BAM1's own SV mate loads (never preloading unqueried deletion spans,
+            // which would alter rightSeq/RSEQ when a realignlgdel deletion end exceeds
+            // region.end + reference_extension). Build aligned1 now and drop pass-1's
+            // pileup maps before pass 2 runs so the full VariationData is freed early.
+            let builder_region = crate::regions::Region {
+                chr: tile.chr.clone(),
+                start: tile.original_start,
+                end: tile.original_end,
+                gene: tile.gene.clone(),
+                amplicon: tile.amplicon.clone(),
+            };
+            let builder1 = crate::tovars::ToVarsBuilder::new(
+                &reference,
+                &builder_region,
+                &chromosomes_lengths_clone,
+                &config_clone,
+            );
+            let aligned1 = builder1.build_aligned_variants(&var_data1);
+            let splice1 = std::mem::take(&mut var_data1.splice);
+            drop(var_data1);
             // Process BAM2 (normal), seeded with BAM1's maxReadLength; the
             // reference loaded above is reused (no second get_reference).
             let var_data2 = run_pipeline_on_records(
@@ -956,23 +1013,7 @@ fn run_somatic(config: &config::Config) -> Result<(), VardictError> {
             // Use max of both BAMs' maxReadLength
             let _combined_max_rl = max_read_length_bam1.max(var_data2.max_read_length);
 
-            let builder_region = crate::regions::Region {
-                chr: tile.chr.clone(),
-                start: tile.original_start,
-                end: tile.original_end,
-                gene: tile.gene.clone(),
-                amplicon: tile.amplicon.clone(),
-            };
-
-            // Build aligned variants for both BAMs
-            let builder1 = crate::tovars::ToVarsBuilder::new(
-                &reference,
-                &builder_region,
-                &chromosomes_lengths_clone,
-                &config_clone,
-            );
-            let aligned1 = builder1.build_aligned_variants(&var_data1);
-
+            // Build aligned variants for BAM2 (aligned1 already built above).
             let builder2 = crate::tovars::ToVarsBuilder::new(
                 &reference,
                 &builder_region,
@@ -980,6 +1021,9 @@ fn run_somatic(config: &config::Config) -> Result<(), VardictError> {
                 &config_clone,
             );
             let aligned2 = builder2.build_aligned_variants(&var_data2);
+            // Inter-pass trim (cont.): var_data2 is fully consumed here;
+            // drop its maps before postprocess.
+            drop(var_data2);
 
             // Run somatic postprocess with combineAnalysis pipeline callback
             let bam1 = bam1_path_for_combine.clone();
@@ -1025,9 +1069,9 @@ fn run_somatic(config: &config::Config) -> Result<(), VardictError> {
                 &builder_region,
                 &aligned1,
                 &aligned2,
-                &var_data1.splice,
+                &splice1,
                 Some(&pipeline_fn),
-                var_data1.max_read_length,
+                max_read_length_bam1,
             );
 
             let mut lines = Vec::new();
@@ -1132,6 +1176,36 @@ fn select_paired_rows(
         .collect()
 }
 
+/// ports CigarParser.java:1289-1301
+///
+/// Single-owner rule for a splice junction key (`A-B`, where `A` is the last
+/// pre-`N` reference base): the tile whose active interval contains `A` owns
+/// the junction; edge-clamped anchors outside the region go to the first
+/// (resp. last) tile. Ownership is over the anchor `A` — aligners never emit
+/// a leading `N`, so a junction always has one.
+fn tile_owns_splice_key(
+    tile: &crate::regions::Tile,
+    reg_start: crate::types::Pos1,
+    reg_end: crate::types::Pos1,
+    key: &str,
+) -> bool {
+    // Fail-open: keys are internally generated so an unparseable key is
+    // unreachable; emit rather than silently drop.
+    let Some(anchor) = key.split_once('-').and_then(|(a, _)| a.parse::<u32>().ok()) else {
+        return true;
+    };
+    if tile.start.0 <= anchor && anchor <= tile.end.0 {
+        return true;
+    }
+    if anchor < reg_start.0 && tile.start == reg_start {
+        return true;
+    }
+    if anchor > reg_end.0 && tile.end == reg_end {
+        return true;
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1234,6 +1308,650 @@ mod tests {
         assert!(
             t0.elapsed() < std::time::Duration::from_secs(5),
             "250 Mbp overlap test took too long"
+        );
+    }
+
+    fn t(start: u32, end: u32) -> crate::regions::Tile {
+        crate::regions::Tile {
+            chr: "chr1".to_string(),
+            start: crate::types::Pos1(start),
+            end: crate::types::Pos1(end),
+            gene: String::new(),
+            halo_start: crate::types::Pos1(start),
+            halo_end: crate::types::Pos1(end),
+            amplicon: None,
+            original_start: crate::types::Pos1(start),
+            original_end: crate::types::Pos1(end),
+        }
+    }
+
+    fn p(v: u32) -> crate::types::Pos1 {
+        crate::types::Pos1(v)
+    }
+
+    #[test]
+    fn splice_key_owned_by_exactly_one_tile() {
+        // tiles [100,399] and [400,699] of region [100,699]; junction "399-450"
+        assert!(tile_owns_splice_key(
+            &t(100, 399),
+            p(100),
+            p(699),
+            "399-450"
+        ));
+        assert!(!tile_owns_splice_key(
+            &t(400, 699),
+            p(100),
+            p(699),
+            "399-450"
+        ));
+        // boundary: anchor 400 belongs to tile 2 only
+        assert!(!tile_owns_splice_key(
+            &t(100, 399),
+            p(100),
+            p(699),
+            "400-450"
+        ));
+        assert!(tile_owns_splice_key(
+            &t(400, 699),
+            p(100),
+            p(699),
+            "400-450"
+        ));
+        // edge clamp: Java counts A = reg_start - 1; first tile owns it
+        assert!(tile_owns_splice_key(&t(100, 399), p(100), p(699), "99-150"));
+        assert!(!tile_owns_splice_key(
+            &t(400, 699),
+            p(100),
+            p(699),
+            "99-150"
+        ));
+        // fail-open: unparseable key is emitted (never silently dropped)
+        assert!(tile_owns_splice_key(&t(100, 399), p(100), p(699), "junk"));
+    }
+
+    // --- Task 2 (red): pileup-level splice tile-emission tests ---
+    //
+    // Per-tile spec mirror of the `run_simple` splice branch plus the Task-1
+    // ownership gate: pile up each tile's halo-queried records (via
+    // `run_pipeline_on_records`, exactly as production does) and emit one
+    // `sample\tchr\tjunction\tcount` line per junction OWNED by the tile.
+    // Task 3 implements `tile_owns_splice_key` and applies this same gate in
+    // production; these tests must green with no test edits.
+
+    use noodles::sam::alignment::record_buf::RecordBuf;
+
+    fn splice_test_config() -> crate::config::Config {
+        let mut config = crate::config::Config::default();
+        config.realign = 0;
+        config.splice = true;
+        config
+    }
+
+    fn splice_test_reference() -> crate::reference::Reference {
+        let mut reference = crate::reference::Reference::new();
+        reference
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 1,
+                sequence_end: 1000,
+            });
+        reference
+            .reference_sequences
+            .insert("chr1".to_string(), vec![b'A'; 1000]);
+        reference
+    }
+
+    fn splice_test_chr_lens() -> std::collections::HashMap<String, usize> {
+        [("chr1".to_string(), 1000usize)].into_iter().collect()
+    }
+
+    fn test_record_buf(
+        name: &str,
+        start: usize,
+        cigar_ops: &[(usize, noodles::sam::alignment::record::cigar::op::Kind)],
+        seq: Vec<u8>,
+    ) -> RecordBuf {
+        use noodles::core::Position;
+        use noodles::sam::alignment::record::cigar::Op;
+        use noodles::sam::alignment::record_buf::Cigar;
+        let cigar: Cigar = cigar_ops
+            .iter()
+            .map(|&(len, kind)| Op::new(kind, len))
+            .collect();
+        let quals = vec![40u8; seq.len()];
+        RecordBuf::builder()
+            .set_name(name)
+            .set_flags(noodles::sam::alignment::record::Flags::empty())
+            .set_reference_sequence_id(0)
+            .set_alignment_start(Position::try_from(start).unwrap())
+            .set_cigar(cigar)
+            .set_sequence(seq.into())
+            .set_quality_scores(quals.into())
+            .build()
+    }
+
+    /// Mirror of `vardictrust/tests/common::indexed_bam` (no shared synthetic-BAM
+    /// builder exists for core): writes `path` plus its `.bam.bai` index.
+    fn write_test_bam(path: &std::path::Path, chr: &str, len: usize, recs: &[RecordBuf]) {
+        use noodles::bam::bai;
+        use noodles::core::Position;
+        use noodles::csi::binning_index::index::reference_sequence::{
+            bin::Chunk, index::LinearIndex,
+        };
+        use noodles::csi::binning_index::Indexer;
+        use noodles::sam::alignment::io::Write as _;
+        use noodles::sam::header::record::value::{
+            map::ReferenceSequence as RefSeqMap, Map as HeaderMap,
+        };
+        use noodles::sam::Header;
+        let rs = HeaderMap::<RefSeqMap>::builder()
+            .set_length(len.try_into().unwrap())
+            .build()
+            .unwrap();
+        let hd = Header::builder().add_reference_sequence(chr, rs).build();
+        let bgzf = noodles::bgzf::io::Writer::new(std::fs::File::create(path).unwrap());
+        let mut w = noodles::bam::io::Writer::from(bgzf);
+        w.write_alignment_header(&hd).unwrap();
+        let mut indexer = Indexer::<LinearIndex>::new(14, 5).expect("valid index parameters");
+        for rec in recs {
+            let start = w.get_ref().virtual_position();
+            w.write_alignment_record(&hd, rec).unwrap();
+            let end = w.get_ref().virtual_position();
+            let s = rec.alignment_start().expect("aligned record");
+            let e = Position::new(s.get() + rec.cigar().alignment_span()).unwrap_or(Position::MIN);
+            indexer
+                .add_record(Some((0, s, e, true)), Chunk::new(start, end))
+                .map_err(std::io::Error::other)
+                .unwrap();
+        }
+        w.try_finish().unwrap();
+        let mut bai_path = std::path::PathBuf::from(path);
+        bai_path.set_extension("bam.bai");
+        bai::io::Writer::new(std::fs::File::create(&bai_path).unwrap())
+            .write_index(&indexer.build(1))
+            .unwrap();
+    }
+
+    /// Desired per-tile splice emission: one line per OWNED junction, in sorted
+    /// key order, mirroring the `run_simple` splice-branch line format.
+    fn gated_splice_lines(
+        tile: &crate::regions::Tile,
+        region_start: crate::types::Pos1,
+        region_end: crate::types::Pos1,
+        sample: &str,
+        splice_count: &std::collections::HashMap<String, [i32; 1]>,
+    ) -> Vec<String> {
+        let mut introns: Vec<&String> = splice_count.keys().collect();
+        introns.sort();
+        let mut lines = Vec::new();
+        for intron in introns {
+            if !tile_owns_splice_key(tile, region_start, region_end, intron) {
+                continue;
+            }
+            let count = splice_count.get(intron).map(|a| a[0]).unwrap_or(0);
+            lines.push(format!("{}\t{}\t{}\t{}", sample, tile.chr, intron, count));
+        }
+        lines
+    }
+
+    fn pileup_tile(
+        bam: &str,
+        tile: &crate::regions::Tile,
+        reference: &mut crate::reference::Reference,
+        config: &crate::config::Config,
+        chr_lens: &std::collections::HashMap<String, usize>,
+    ) -> crate::variations::VariationData {
+        // Pile up over the HALO bounds, not the active bounds: a junction
+        // anchored in the tile's active region is recorded when the CIGAR loop
+        // reaches its N op, which sits one base past the anchor (`start` after
+        // the pre-N match block). Active-region pileup `break`s at
+        // `start > region.end` before reaching an N whose anchor is the tile's
+        // last base, so the owning tile would never count its own junction.
+        // Halo-wide pileup counts every candidate; the ownership gate in
+        // `gated_splice_lines` restores single emission.
+        let pileup_region = crate::regions::Region {
+            chr: tile.chr.clone(),
+            start: tile.halo_start,
+            end: tile.halo_end,
+            gene: tile.gene.clone(),
+            amplicon: None,
+        };
+        let owned = bam.to_string();
+        run_pipeline_on_records(
+            std::slice::from_ref(&owned),
+            &tile.chr,
+            tile.halo_start.to_zero_based(),
+            crate::types::Pos0(tile.halo_end.0),
+            None,
+            reference,
+            &pileup_region,
+            PipelineTail::Stop,
+            config,
+            chr_lens,
+            0,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn splice_tile_emission_halo_junction_emitted_once_with_full_count() {
+        use noodles::sam::alignment::record::cigar::op::Kind;
+        // Region chr1:[100,699], tiles of 300 + halo 50:
+        //   tile 1 active [100,399] halo [100,449];
+        //   tile 2 active [400,699] halo [350,699].
+        // One spliced read at 390 (10M 50N 10M): junction "399-449" anchors in
+        // tile 1 (399) while the body spans 390..459, so tile 2 counts a
+        // junction anchored outside its active region, visible to it only
+        // through its halo-queried read. Desired: exactly one line (from the
+        // owning tile 1) with the whole-region count.
+        let region = crate::regions::Region {
+            chr: "chr1".to_string(),
+            start: crate::types::Pos1(100),
+            end: crate::types::Pos1(699),
+            gene: "TEST".to_string(),
+            amplicon: None,
+        };
+        let tiles = crate::regions::tile(&region, 300, 50);
+        assert_eq!(tiles.len(), 2);
+        assert_eq!(tiles[0].halo_start, crate::types::Pos1(100));
+        assert_eq!(tiles[0].halo_end, crate::types::Pos1(449));
+        assert_eq!(tiles[1].halo_start, crate::types::Pos1(350));
+        assert_eq!(tiles[1].halo_end, crate::types::Pos1(699));
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let bam_path = dir.path().join("splice.bam");
+        write_test_bam(
+            &bam_path,
+            "chr1",
+            1000,
+            &[test_record_buf(
+                "spliced1",
+                390,
+                &[(10, Kind::Match), (50, Kind::Skip), (10, Kind::Match)],
+                vec![b'A'; 20],
+            )],
+        );
+        let bam = bam_path.to_string_lossy().into_owned();
+        let paths = [bam.clone()];
+
+        let config = splice_test_config();
+        let mut reference = splice_test_reference();
+        let chr_lens = splice_test_chr_lens();
+
+        // Whole-region pileup pins the expected count (oracle cross-check).
+        let whole = run_pipeline_on_records(
+            &paths,
+            "chr1",
+            crate::types::Pos1(100).to_zero_based(),
+            crate::types::Pos0(699),
+            None,
+            &mut reference,
+            &region,
+            PipelineTail::Stop,
+            &config,
+            &chr_lens,
+            0,
+        )
+        .unwrap();
+        let whole_count = whole.splice_count.get("399-449").map(|a| a[0]).unwrap_or(0);
+        assert_eq!(whole_count, 1, "oracle: whole-region junction count");
+
+        let mut all_lines = Vec::new();
+        let mut per_tile_counts = Vec::new();
+        for tile in &tiles {
+            let var_data = pileup_tile(&bam, tile, &mut reference, &config, &chr_lens);
+            // Premise: the halo overlap makes the read visible to BOTH tiles'
+            // pileups, so without the ownership gate the junction would be
+            // emitted twice (unowned duplicate).
+            per_tile_counts.push(var_data.splice_count.get("399-449").map(|a| a[0]));
+            all_lines.extend(gated_splice_lines(
+                tile,
+                crate::types::Pos1(100),
+                crate::types::Pos1(699),
+                &config.sample,
+                &var_data.splice_count,
+            ));
+        }
+
+        // Java-blessed expected splice line (sample\tchr\tjunction\tcount).
+        assert_eq!(
+            per_tile_counts,
+            vec![Some(1), Some(1)],
+            "halo overlap: both tiles count the junction (duplicates without the gate)"
+        );
+        assert_eq!(all_lines, vec!["SAMPLE\tchr1\t399-449\t1".to_string()]);
+    }
+
+    #[test]
+    fn splice_tile_emission_empty_tile_zero_lines() {
+        use noodles::sam::alignment::record::cigar::op::Kind;
+        // Tile chr1:[400,699] halo [400,699] over a BAM with reads but NO
+        // spliced (N-op) reads: pileup yields an empty splice_count, so
+        // emission must produce zero lines without panicking on the empty map.
+        let region = crate::regions::Region {
+            chr: "chr1".to_string(),
+            start: crate::types::Pos1(400),
+            end: crate::types::Pos1(699),
+            gene: "TEST".to_string(),
+            amplicon: None,
+        };
+        let tiles = crate::regions::tile(&region, 300, 50);
+        assert_eq!(tiles.len(), 1);
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let bam_path = dir.path().join("nosplice.bam");
+        write_test_bam(
+            &bam_path,
+            "chr1",
+            1000,
+            &[
+                test_record_buf("plain1", 500, &[(50, Kind::Match)], vec![b'A'; 50]),
+                test_record_buf("plain2", 560, &[(50, Kind::Match)], vec![b'A'; 50]),
+            ],
+        );
+        let bam = bam_path.to_string_lossy().into_owned();
+
+        let config = splice_test_config();
+        let mut reference = splice_test_reference();
+        let chr_lens = splice_test_chr_lens();
+
+        let var_data = pileup_tile(&bam, &tiles[0], &mut reference, &config, &chr_lens);
+        assert!(
+            var_data.splice_count.is_empty(),
+            "no N-op reads so splice_count must be empty"
+        );
+        let lines = gated_splice_lines(
+            &tiles[0],
+            crate::types::Pos1(400),
+            crate::types::Pos1(699),
+            &config.sample,
+            &var_data.splice_count,
+        );
+        assert!(
+            lines.is_empty(),
+            "empty splice_count must emit zero lines, got: {:?}",
+            lines
+        );
+    }
+
+    #[test]
+    fn g3_mate_window_merge_emits_out_of_tile_key_from_both_tiles() {
+        use noodles::sam::alignment::record::cigar::op::Kind;
+        // Task 6 (G3, sibling audit rows 16/46-47): mate-window
+        // `partial_pipeline` merges (realign.rs:4012-4063,
+        // sv.rs:3464-3478) plant out-of-active-range keys that pass the
+        // whole-region builder gate, so the merging tile emits rows owned
+        // by another tile -> duplicates in intermediate tables (#1,#3)
+        // and somatic VCF (#4).
+        //
+        // Region chr1:[100,699], tiles of 300 + halo 50:
+        //   tile 1 active [100,399]; tile 2 active [400,699].
+        // SNV reads at q=200 are owned by tile 1. Tile 2's mate-window
+        // merge over [150,250] (the realign.rs:1959-1971 /
+        // sv.rs:1374-1383 call shape for a mate breakpoint near 200)
+        // plants key 200 in tile 2's maps; the whole-region builder gate
+        // (lib.rs:440-446, tovars.rs:116-121) then emits 200 from BOTH
+        // tiles while the whole-region run emits it once.
+        // RED while G3 is unaddressed: tile 2 emits the tile-1-owned key.
+        let region = crate::regions::Region {
+            chr: "chr1".to_string(),
+            start: crate::types::Pos1(100),
+            end: crate::types::Pos1(699),
+            gene: "TEST".to_string(),
+            amplicon: None,
+        };
+        let tiles = crate::regions::tile(&region, 300, 50);
+        assert_eq!(tiles.len(), 2);
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let bam_path = dir.path().join("g3.bam");
+        // 3 reads, 20M at 191 (1-based), alt C at position 200 (ref A).
+        let mut seq = vec![b'A'; 20];
+        seq[9] = b'C';
+        write_test_bam(
+            &bam_path,
+            "chr1",
+            1000,
+            &[
+                test_record_buf("snv1", 191, &[(20, Kind::Match)], seq.clone()),
+                test_record_buf("snv2", 191, &[(20, Kind::Match)], seq.clone()),
+                test_record_buf("snv3", 191, &[(20, Kind::Match)], seq.clone()),
+            ],
+        );
+        let bam = bam_path.to_string_lossy().into_owned();
+        let paths = [bam.clone()];
+
+        let config = crate::config::Config::default();
+        let chr_lens = splice_test_chr_lens();
+
+        // Per-tile pileup over the halo window with the ACTIVE region (the
+        // production shape).
+        let pileup_active = |tile: &crate::regions::Tile,
+                             reference: &mut crate::reference::Reference|
+         -> crate::variations::VariationData {
+            let pileup_region = crate::regions::Region {
+                chr: tile.chr.clone(),
+                start: tile.start,
+                end: tile.end,
+                gene: tile.gene.clone(),
+                amplicon: None,
+            };
+            run_pipeline_on_records(
+                &paths,
+                &tile.chr,
+                tile.halo_start.to_zero_based(),
+                crate::types::Pos0(tile.halo_end.0),
+                None,
+                reference,
+                &pileup_region,
+                PipelineTail::Stop,
+                &config,
+                &chr_lens,
+                0,
+            )
+            .unwrap()
+        };
+
+        // Emission through the production whole-region builder gate
+        // (lib.rs:440-460): builder_region spans the whole BED region.
+        let emit = |var_data: &crate::variations::VariationData,
+                    reference: &crate::reference::Reference|
+         -> Vec<i32> {
+            let builder = crate::tovars::ToVarsBuilder::new(reference, &region, &chr_lens, &config);
+            let aligned = builder.build_aligned_variants(var_data);
+            crate::postprocess::simple::simple_post_process(
+                &config,
+                &region,
+                &aligned,
+                &var_data.splice,
+            )
+            .iter()
+            .map(|v| v.start_pos)
+            .collect()
+        };
+
+        // Tile 1 (owner of q=200).
+        let mut ref1 = splice_test_reference();
+        let var1 = pileup_active(&tiles[0], &mut ref1);
+        assert!(
+            var1.non_insertion_variants.contains_key(&200),
+            "owner tile 1 must pile up key 200"
+        );
+
+        // Tile 2 (merger): its own window holds no reads; the SV/mate path
+        // merges the mate window covering q=200 into its maps.
+        let mut ref2 = splice_test_reference();
+        let mut var2 = pileup_active(&tiles[1], &mut ref2);
+        assert!(
+            !var2.non_insertion_variants.contains_key(&200),
+            "merging tile 2 must not pile up key 200 on its own"
+        );
+        crate::sv::partial_pipeline(
+            &bam_path, &mut var2, &mut ref2, "chr1", 150, 250, &config, &chr_lens,
+        )
+        .unwrap();
+        assert!(
+            var2.non_insertion_variants.contains_key(&200),
+            "G3 mechanism: mate-window merge planted out-of-active key 200 in tile 2's maps"
+        );
+
+        // Whole-region oracle: single pileup + single emission.
+        let mut refw = splice_test_reference();
+        let varw = run_pipeline_on_records(
+            &paths,
+            "chr1",
+            crate::types::Pos1(100).to_zero_based(),
+            crate::types::Pos0(699),
+            None,
+            &mut refw,
+            &region,
+            PipelineTail::Stop,
+            &config,
+            &chr_lens,
+            0,
+        )
+        .unwrap();
+
+        let mut pos1 = emit(&var1, &ref1);
+        let mut pos2 = emit(&var2, &ref2);
+        let mut posw = emit(&varw, &refw);
+        pos1.sort();
+        pos2.sort();
+        posw.sort();
+
+        assert_eq!(
+            posw.iter().filter(|p| **p == 200).count(),
+            1,
+            "oracle: whole-region run emits 200 exactly once, got {:?}",
+            posw
+        );
+        assert!(
+            !pos2.contains(&200),
+            "G3 REPRO: merging tile 2 emits tile-1-owned position 200 \
+             (tiled: {pos1:?} + {pos2:?}, whole: {posw:?})",
+        );
+    }
+
+    #[test]
+    fn g3_merge_planted_requires_absence_from_both_maps() {
+        use noodles::sam::alignment::record::cigar::op::Kind;
+        // Thread 3: `merge_planted` attribution is per position but novelty
+        // was checked per map, so a native non-insertion entry at `k` plus a
+        // mate-window merge adding the FIRST insertion at `k` marked the
+        // whole position planted — and the ToVarsBuilder ownership gate then
+        // dropped the native entry too at out-of-owning-range positions
+        // (native SV outside the active interval is by design: realignlgdel
+        // scans soft-clips up to 5000bp beyond the pileup region while the
+        // SV gate keeps out-of-region SV rows). A position is planted only
+        // when absent from BOTH maps pre-merge.
+        let region = crate::regions::Region {
+            chr: "chr1".to_string(),
+            start: crate::types::Pos1(100),
+            end: crate::types::Pos1(699),
+            gene: "TEST".to_string(),
+            amplicon: None,
+        };
+        let tiles = crate::regions::tile(&region, 300, 50);
+        assert_eq!(tiles.len(), 2);
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let bam_path = dir.path().join("g3_planted.bam");
+        // Insertion reads at 191 (1-based): 10M + 3I + 10M. The mate window
+        // [150,250] covers them; tile 2's halo does not.
+        let mut seq = vec![b'A'; 10];
+        seq.extend_from_slice(b"TTT");
+        seq.extend_from_slice(&[b'A'; 10]);
+        write_test_bam(
+            &bam_path,
+            "chr1",
+            1000,
+            &[
+                test_record_buf(
+                    "ins1",
+                    191,
+                    &[(10, Kind::Match), (3, Kind::Insertion), (10, Kind::Match)],
+                    seq.clone(),
+                ),
+                test_record_buf(
+                    "ins2",
+                    191,
+                    &[(10, Kind::Match), (3, Kind::Insertion), (10, Kind::Match)],
+                    seq.clone(),
+                ),
+                test_record_buf(
+                    "ins3",
+                    191,
+                    &[(10, Kind::Match), (3, Kind::Insertion), (10, Kind::Match)],
+                    seq.clone(),
+                ),
+            ],
+        );
+
+        let config = crate::config::Config::default();
+        let chr_lens = splice_test_chr_lens();
+        let merge = |var_data: &mut crate::variations::VariationData,
+                     reference: &mut crate::reference::Reference| {
+            crate::sv::partial_pipeline(
+                &bam_path, var_data, reference, "chr1", 150, 250, &config, &chr_lens,
+            )
+            .unwrap();
+        };
+
+        // Phase 1 (discovery): empty maps -> every merged key is planted.
+        let mut ref1 = splice_test_reference();
+        let mut var1 = crate::variations::VariationData::new();
+        merge(&mut var1, &mut ref1);
+        let ins_keys: Vec<i32> = var1.insertion_variants.keys().copied().collect();
+        assert!(
+            !ins_keys.is_empty(),
+            "mate-window merge must plant insertion keys, got non_ins={:?} ins={:?}",
+            var1.non_insertion_variants.keys().collect::<Vec<_>>(),
+            ins_keys,
+        );
+        for k in var1
+            .non_insertion_variants
+            .keys()
+            .chain(var1.insertion_variants.keys())
+        {
+            assert!(
+                var1.merge_planted.contains(k),
+                "truly-new key {k} must be planted"
+            );
+        }
+        let target = ins_keys[0];
+
+        // Phase 2 (bug scenario): native non-insertion entry at the insertion
+        // key (stands in for an SV-path native entry outside the active
+        // interval) + mate merge adding the first insertion there.
+        let mut ref2 = splice_test_reference();
+        let mut var2 = crate::variations::VariationData::new();
+        let mut vm = crate::variations::VariationMap::new();
+        let mut v = crate::variations::Variation::new();
+        v.cnt = 3;
+        v.fwd = 2;
+        v.rev = 1;
+        vm.map.insert("C".to_string(), v);
+        var2.non_insertion_variants.insert(target, vm);
+        var2.ref_coverage.insert(target, 10);
+        merge(&mut var2, &mut ref2);
+        assert!(
+            var2.insertion_variants.contains_key(&target),
+            "mate merge must add the first insertion at {target}"
+        );
+        assert!(
+            !var2.merge_planted.contains(&target),
+            "native position {target} must not be planted by a first-insertion merge"
+        );
+
+        // Phase 3 (gate): with the owning range excluding the native
+        // position, the builder still emits it (pre-fix it was dropped).
+        var2.owning_range = Some((tiles[1].start, tiles[1].end));
+        let builder = crate::tovars::ToVarsBuilder::new(&ref2, &region, &chr_lens, &config);
+        let aligned = builder.build_aligned_variants(&var2);
+        assert!(
+            aligned.contains_key(&target),
+            "native position {target} outside the owning range must survive the builder gate"
         );
     }
 }

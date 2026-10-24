@@ -64,7 +64,6 @@ nav:
       - Benchmark Ledger: benchmarks/README.md
       - HG008 V0.4 Data Guide: benchmarks/hg008-v04-guide.md
       - Omnibus Empirical Validation: docs/validation/omnibus-empirical-validation.md
-      - Parity Waivers: docs/release/waivers.md
   - Architecture:
       - Ecosystem Survey: docs/ecosystem-survey.md
       - Divergences & Quirks: DIVERGENCES.md
@@ -82,5 +81,6 @@ nav:
       - Changelog: CHANGELOG.md
       - Security Policy: community/SECURITY.md
       - Code of Conduct: community/CODE_OF_CONDUCT.md
+      - Release v1.0.3 Certification: docs/release/v1.0.3-pr.md
       - Release v1.0.1 Certification: docs/release/v1.0.1-pr.md
       - Release v1.0.0 Certification: docs/release/v1.0.0-pr.md

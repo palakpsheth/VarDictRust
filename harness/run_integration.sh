@@ -272,17 +272,24 @@ run_test() {
             if [[ -n "$extra_flags" ]]; then
                 read -r -a extra_argv <<< "$extra_flags"
             fi
+            for i in "${!extra_argv[@]}"; do [[ "${extra_argv[$i]}" == "-nosv" ]] && extra_argv[$i]="--nosv"; done
             local -a cpp_cmd=(
                 conda run -n vardict-oracle vardictcpp
                 -z -c 1 -S 2 -E 3 -g 4
                 -G "$fasta_path" -b "$bam_arg" -N "$cpp_sample"
                 "${extra_argv[@]}" "$tmpbed"
             )
+            local tmperr
+            tmperr=$(mktemp)
             local cpp_exit=0 cpp_out=""
-            cpp_out=$("${cpp_cmd[@]}" 2>/dev/null) || cpp_exit=$?
+            cpp_out=$("${cpp_cmd[@]}" 2>"$tmperr") || cpp_exit=$?
             if [[ $cpp_exit -ne 0 ]]; then
-                echo "CPP: SKIP: $basename_file (cpp engine exit $cpp_exit)"
+                local first_err
+                first_err=$(grep -vE '^(ERROR conda\.cli|cpp_chunk=|[[:space:]]*$)' "$tmperr" 2>/dev/null | head -n 1 | tr -d '\r' | cut -c 1-140 || true)
+                echo "CPP: SKIP: $basename_file (cpp engine exit $cpp_exit${first_err:+: $first_err})"
+                rm -f "$tmperr"
             else
+                rm -f "$tmperr"
                 local tmpexp tmpgot
                 tmpexp=$(mktemp); tmpgot=$(mktemp)
                 printf '%s\n' "$expected" | LC_ALL=C sort > "$tmpexp"

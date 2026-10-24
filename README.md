@@ -9,13 +9,13 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Security Policy](https://img.shields.io/badge/security-policy-blue.svg)](.github/SECURITY.md)
 
-**VarDictRust** is an ultra-fast, memory-safe variant caller for next-generation sequencing (NGS) that delivers byte-identical results to [VarDictJava](https://github.com/AstraZeneca-NGS/VarDictJava) v1.8.3 while running up to **30× faster** in bounded memory. It consolidates the legacy Java → R → Perl pipeline into a **single, statically compiled binary**, eliminating JVM crashes, out-of-memory errors on deep whole-genome sequencing (WGS), and runtime dependency friction.
+**VarDictRust** is an ultra-fast, memory-safe variant caller for next-generation sequencing (NGS) that delivers byte-identical results to [VarDictJava](https://github.com/AstraZeneca-NGS/VarDictJava) v1.8.3 while running **4.3×–6.9× faster on WGS/WES** (up to **36.4× faster** on amplicons) in **7.7×–10.8× less memory**. It consolidates the Java → R → Perl pipeline into a **single static binary**, eliminating JVM crashes, WGS out-of-memory errors, and runtime dependency friction.
 
-- **Exact Parity:** Bitwise identical variant calls, `FILTER` classifications, and somatic `STATUS` decisions to VarDictJava v1.8.3 across all benchmark cohorts ($\varepsilon = 10^{-6}$, 0 diffs).
-- **High-Throughput Speed:** Up to **29.0× faster** on targeted amplicon panels and **3.63× parallel scaling** on 8 cores across full human chromosomes.
-- **Bounded $O(1)$ Memory:** Flat resident memory scaling ($1.40\times$ peak RSS ratio across a 25-fold increase in genomic span), eliminating JVM heap exhaustion on deep WGS.
-- **Zero Runtime Dependencies:** Single statically linked binary (`x86_64-unknown-linux-musl`). No JVM, R runtime, Perl scripts, or Conda environments needed.
-- **Robust by Construction:** Built under `#![forbid(unsafe_code)]`. Malformed CIGAR strings, unindexed BAMs, and corrupted records produce actionable errors instead of JVM crashes.
+- **Exact Parity:** Bitwise identical variant calls, `FILTER` tags, and somatic `STATUS` decisions to VarDictJava v1.8.3 across all cohorts ($\varepsilon = 10^{-6}$, 0 diffs).
+- **High-Throughput Speed:** **4.3×–6.9× faster** on WGS/WES, **36.4× faster** on amplicon panels, and **3.48× parallel scaling** on 8 threads across full chromosomes.
+- **Bounded $O(1)$ Memory:** Flat RSS scaling ($1.22\times$ from 10 Mbp to 249 Mbp on Chr1, `1.16` $\to$ `1.42 GiB`), using **7.7×–10.8× less RAM** than VarDictJava on WGS/WES.
+- **Zero Runtime Dependencies:** Single static binary (`x86_64-unknown-linux-musl`). No JVM, R, Perl, or Conda needed.
+- **Robust by Construction:** `#![forbid(unsafe_code)]`. Malformed CIGARs, missing indexes, and corrupt records return actionable errors instead of crashing.
 
 ```bash
 # Somatic paired calling (tumor vs normal) — emits standard VCFv4.2 to stdout
@@ -73,18 +73,18 @@ sudo mv vardictrust /usr/local/bin/
 cargo install vardictrust
 
 # Or build the latest release directly from source
-cargo install --git https://github.com/palakpsheth/VarDictRust.git --tag v1.0.1
+cargo install --git https://github.com/palakpsheth/VarDictRust.git --tag v1.0.3
 ```
 
 ### 3. Containerized Execution (Docker, Podman, Apptainer)
 
 ```bash
 # Docker / Podman
-docker run --rm -v $(pwd):/data ghcr.io/palakpsheth/vardictrust:1.0.1 \
+docker run --rm -v $(pwd):/data ghcr.io/palakpsheth/vardictrust:1.0.3 \
   vardictrust -G /data/ref.fa -b /data/sample.bam -R chr1:1000-2000 > output.vcf
 
 # Apptainer / Singularity (HPC Clusters)
-apptainer exec docker://ghcr.io/palakpsheth/vardictrust:1.0.1 vardictrust --help
+apptainer exec docker://ghcr.io/palakpsheth/vardictrust:1.0.3 vardictrust --help
 ```
 
 ### 4. Conda / Bioconda
@@ -164,11 +164,14 @@ vardictrust -G GRCh38.fa -f 0.01 -N SAMPLE -b sample.bam -R chr1:1000000-2000000
 
 ## Operational Modalities
 
-| Modality | Flag Signature | Input Assays | Output Columns | Typical Use Case |
+| Modality | Engine Mode & Flag Signature | Input Assays | Output Schema | Typical Use Case |
 | :--- | :--- | :--- | :--- | :--- |
-| **Germline Calling** | `SimpleMode` (`-b sample.bam`) | WGS, WES, Panels | 36 (default) / 38 (`--fisher`) | Constitutional variant discovery, family trios, population genomics. |
-| **Somatic Paired Calling** | `SomaticMode` (`-b "tumor\|normal"`) | Tumor / Normal WGS / WES | 55 (default) / 61 (`--fisher`) | Cancer somatic mutations, subclonal alleles down to 1% AF, LOH detection. |
-| **Targeted Amplicon Panel** | `AmpliconMode` (`-a 10:0.95`) | AmpliSeq, HaloPlex, PCR | 38 (default) / 40 (`--fisher`) | Overlapping amplicon panels; trims primer bias ([`AMPBIAS`](DIVERGENCES.md#amplicon-primer-trimming)) using 8-column BED. |
+| **Germline Calling** | `SimpleMode` (`-b sample.bam`) | WGS, WES, Targeted Panels | `VCFv4.2` (`10` cols) or `.var` (`36` / `38` cols with `--fisher`) | Constitutional SNV, InDel, and MNV discovery; family trios; population cohorts. |
+| **Somatic Paired Calling** | `SomaticMode` (`-b "tumor\|normal"`) | Paired Tumor / Normal WGS & WES | `VCFv4.2` (`11` cols) or `.var` (`55` / `61` cols with `--fisher`) | Cancer somatic mutations down to 1% AF, LOH detection, `STATUS` classification. |
+| **Targeted Amplicon Panel** | `AmpliconMode` (`-a 10:0.95`) | AmpliSeq, HaloPlex, PCR Panels | `VCFv4.2` (`10` cols) or `.var` (`38` / `40` cols with `--fisher`) | Overlapping amplicon panels; trims primer bias ([`AMPBIAS`](DIVERGENCES.md#amplicon-primer-trimming)) via 8-column BED. |
+| **RNA-Seq Splicing** | `SplicingMode` (`-i` / `--splice`) | Spliced RNA-Seq BAM / CRAM | `4` columns (`qstart-qend`, `cnt`, `mean_pos`, `strand`) | Exon-intron splice junction quantification and split-read intron coverage matrix. |
+| **Structural Variants & CRISPR** | `SimpleMode` / `SomaticMode` (`-L`, `-J`, `-j`) | Short-Read WGS, WES, CRISPR Assays | `VCFv4.2` (`<DEL>`, `<DUP>`, `<INV>`, `<INS>`) + `CRISPR` tag | Large split-read/discordant-mate SV discovery (disable via `-U`) and CRISPR cut-site (`-J`/`-j`) scoring. |
+| **Pileup-Only Inspection** | `SimpleMode` / `AmpliconMode` (`-p` / `--pileup`) | Any Indexed BAM / CRAM | `VCFv4.2` or `.var` across every reference locus | Unfiltered per-base depth, reference quality, and non-variant pileup auditing. |
 
 > [!NOTE]
 > **Assumptions & Coordinate Conventions:**
@@ -183,26 +186,27 @@ vardictrust -G GRCh38.fa -f 0.01 -N SAMPLE -b sample.bam -R chr1:1000000-2000000
 ## Performance & Scaling Scoreboard
 
 - **Exact Parity:** 0 variant discrepancies and identical `FILTER`/`STATUS` decisions against VarDictJava v1.8.3 across all 17 dual-engine differential benchmark runs and 92 integration fixtures ($\varepsilon = 10^{-6}$).
-- **High-Throughput Speedup:** Up to **29.0× faster** on targeted amplicon assays and **3.63× parallel speedup** on 8 cores across whole human chromosomes.
-- **Bounded $O(1)$ Memory:** Flat resident memory scaling ($1.40\times$ peak RSS ratio across a 25-fold chromosome span increase), eliminating JVM heap exhaustion on deep WGS.
+- **High-Throughput Speedup:** **4.3×–6.9× faster** on deep WGS/WES cohorts, **36.4× faster** on targeted amplicon assays, and **3.48× parallel speedup** on 8 threads across whole human chromosomes.
+- **Bounded $O(1)$ Memory:** Flat resident memory scaling ($1.22\times$ peak RSS ratio across a $25\times$ increase in region span on Chromosome 1, `1.16 GiB` $\to$ `1.42 GiB`), using **7.7×–10.8× less memory** than VarDictJava on WGS/WES.
 - **Self-Contained Deployment:** Single statically-linked binary (`x86_64-unknown-linux-musl`) with zero runtime dependencies.
 
-Evaluated on Intel i7-13700H, Linux x86_64, 8 worker threads (`-th 8`). Per-dataset rows report current single-run certified evidence (hg008/seqc2-exome at -th 4²; exact cmds in evidence). The Whole Chromosome 1 Scale row below reports the current single-run certified `scale.json` evidence:
+Evaluated on Intel i7-13700H, Linux x86_64, 8 worker threads (`-th 8`). Per-dataset rows report current single-run certified evidence (`hg008-tier2` and `seqc2-exome-tier2` at `-th 4`²; exact commands in evidence). The Whole Chromosome 1 Scale row reports the 3-run median certified [`scale.json`](benchmarks/evidence/scale.json) evidence:
 
-| Workload / Benchmark | Threads | VarDictJava Wall Time | VarDictRust Wall Time | Speedup Ratio | VarDictJava Peak RSS | VarDictRust Peak RSS | Memory Scaling Ratio | Evidence Artifact | vardictcpp Wall / RSS (advisory¹) |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :---: | :--- |
-| **Targeted Amplicon Panel** | 8 threads | 0:02.03 | 0:00.07 | **29.0× faster** | 123.1 MB | 52.7 MB | **0.43× (2.3× lower)** | [`amplicon-tier2.json`](benchmarks/evidence/amplicon-tier2.json) | 0:03.55 / 89.2 MB, advisory [SKIP (CPP-3)](docs/upstream-bugs.md#cpp-3) |
-| **GIAB HG002 (chr20:10M–30M, 30×)** | 8 threads | 1:34.18 | 0:45.63 | **2.1× faster** | 4.1 GB | 1.1 GB | **0.26× (3.8× lower)** | [`hg002-tier2.json`](benchmarks/evidence/hg002-tier2.json) | 0:16.87 / 855 MB, advisory [MISMATCH (CPP-9)](docs/upstream-bugs.md#cpp-9) + [CPP-1](docs/upstream-bugs.md#cpp-1) |
-| **SEQC2 HCC1395 Somatic Exome** | 4 threads² | 52:09.24 | 17:13.73 | **3.0× faster** | 3.5 GB | 1.0 GB | **0.28× (3.6× lower)** | [`seqc2-exome-tier2.json`](benchmarks/evidence/seqc2-exome-tier2.json) | 7:05.12 / 2.1 GB, advisory [MISMATCH (CPP-9)](docs/upstream-bugs.md#cpp-9) |
-| **GIAB HG008 Somatic PDAC** | 4 threads² | 1:15.71 | 0:48.72 | **1.6× faster** | 3.3 GB | 0.8 GB | **0.22× (4.5× lower)** | [`hg008-tier2.json`](benchmarks/evidence/hg008-tier2.json) | 0:20.54 / 311 MB, advisory [MISMATCH (CPP-9)](docs/upstream-bugs.md#cpp-9) |
-| **Whole Chromosome 1 Scale (249 Mbp)** | 1 → 8 threads | 26m 57s (1 core) | 7m 26s (8 cores) | **3.63× parallel** | OOM on 31G i7 host at -th 8 (Ryzen 8C completed 57m16s; see docs/release/v1.0.0-pr.md) | 2.7 GB (249 Mbp) vs 1.9 GB (10 Mbp) | **1.40× flat RSS scaling** | [`scale.json`](benchmarks/evidence/scale.json) | 22.5 GB full-span RSS; th8 BED wall 160.9 s (exome workload), advisory ([CPP-5](docs/upstream-bugs.md#cpp-5)) |
+| Workload / Benchmark | Threads | VarDictJava Wall Time | vardictcpp Wall Time¹ | VarDictRust Wall Time | Speedup (vs Java) | VarDictJava Peak RSS | vardictcpp Peak RSS¹ | VarDictRust Peak RSS | Memory Use (vs Java) | Evidence Artifact |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :---: |
+| **Targeted Amplicon Panel** | `8` (`-th 8`) | `0:02.55` | `0:03.75` ([`CPP-3`](docs/upstream-bugs.md#cpp-3)) | **`0:00.07`** | **36.4× faster** | `122.2 MiB` | `88.9 MiB` | **`58.7 MiB`** | **2.1× less** | [`amplicon-tier2.json`](benchmarks/evidence/amplicon-tier2.json) |
+| **GIAB HG002 (chr20:10M–30M, 30×)** | `8` (`-th 8`) | `1:31.86` | `0:18.87` ([`CPP-9`](docs/upstream-bugs.md#cpp-9)) | **`0:14.75`** | **6.2× faster** | `4.20 GiB` | `853.1 MiB` | **`497.1 MiB`** | **8.7× less** | [`hg002-tier2.json`](benchmarks/evidence/hg002-tier2.json) |
+| **SEQC2 HCC1395 Somatic Exome** | `4` (`-th 4`²) | `53:53.76` | `7:11.99` ([`CPP-9`](docs/upstream-bugs.md#cpp-9)) | **`7:46.34`** | **6.9× faster** | `3.52 GiB` | `2.15 GiB` | **`467.9 MiB`** | **7.7× less** | [`seqc2-exome-tier2.json`](benchmarks/evidence/seqc2-exome-tier2.json) |
+| **GIAB HG008 Somatic PDAC** | `4` (`-th 4`²) | `1:27.68` | `0:21.96` ([`CPP-9`](docs/upstream-bugs.md#cpp-9)) | **`0:20.44`** | **4.3× faster** | `3.29 GiB` | `303.6 MiB` | **`313.1 MiB`** | **10.8× less** | [`hg008-tier2.json`](benchmarks/evidence/hg008-tier2.json) |
+| **Whole Chromosome 1 Scale (249 Mbp)** | `1 → 8` (`-th 8`³) | `10:48.98` (`-th 1`³) | `2:48.27` ([`CPP-5`](docs/upstream-bugs.md#cpp-5)) | **`3:06.43`** | **3.48× parallel** | `>31.0 GiB` (`OOM`³) | `778.6 MiB` ([`CPP-5`](docs/upstream-bugs.md#cpp-5)) | **`1.42 GiB`** | **1.22× flat RSS**⁴ | [`scale.json`](benchmarks/evidence/scale.json) |
 
-¹ **vardictcpp third arm (advisory, never gating).** Pinned **vardictcpp 3 `hc52dbad_0`** (bioconda, same `vardict-oracle` env) runs beside each gate arm (`-th 8`, `LC_ALL=C /usr/bin/time -v`). The verdict stays Rust-vs-Java. Per-cell cpp wall/RSS above are transcribed from the linked evidence `extra` (`cpp_wall_s`, `cpp_maxrss_kb`). Full ratios live in evidence.
-² hg008/seqc2-exome at `-th 4`: Java `-th 8` is OOM-killed on 31G hosts (bisected 1✓/4✓/8✗); exact cmds in evidence.
-
+¹ **`vardictcpp` comparison (`vardictcpp 3 hc52dbad_0`, bioconda).** Runs alongside each benchmark under identical thread and timer constraints (`LC_ALL=C /usr/bin/time -v`). Release acceptance gates strictly on `VarDictRust == VarDictJava v1.8.3`; linked `CPP-*` codes document where `vardictcpp` diverges from `VarDictJava` (e.g., [`CPP-3`](docs/upstream-bugs.md#cpp-3) TSV-only `-a`, [`CPP-5`](docs/upstream-bugs.md#cpp-5) `22.5 GiB` unchunked `-R` RSS vs `778.6 MiB` with `--chunk 50000`, [`CPP-9`](docs/upstream-bugs.md#cpp-9) caller variant deltas).
+² `hg008-tier2` and `seqc2-exome-tier2` run at `-th 4` because `VarDictJava` at `-th 8` is OOM-killed on 31 GiB hosts (bisected `1✓ / 4✓ / 8✗`); exact commands in evidence.
+³ On `Whole Chromosome 1 Scale`, `VarDictJava` at `-th 8` OOMs on the 31 GiB i7 host (completed in `57:16.00` on an 8-core Ryzen host; see [`docs/release/v1.0.0-pr.md`](docs/release/v1.0.0-pr.md)); the `10:48.98` (`648.98 s`) → **`3:06.43`** (`186.43 s`) wall-time columns report the 3-run median 1-core vs 8-core `VarDictRust` parallel scaling on `chr1`.
+⁴ **Flat $O(1)$ memory ratio:** `1.42 GiB` (`1,493,656 KB`) across all 249 Mbp of `chr1` vs `1.16 GiB` (`1,221,380 KB`) on a 10 Mbp slice (**1.22× RSS ratio** across a 25× span increase; pre-registered gate $\le 1.50\times$).
 
 > [!NOTE]
-> **Bounded $O(1)$ Memory at Any Depth:** VarDictJava holds entire regional chromosome structures in JVM heap collections, leading to JVM heap exhaustion and Out-Of-Memory errors on deep WGS ([Issues #197 and #384](https://github.com/AstraZeneca-NGS/VarDictJava/issues/197)). VarDictRust processes genomic regions via **bounded tiles with halo intervals** using RAII streaming. Across a 25-fold increase in genomic span (10 Mbp to all 249 Mbp of chromosome 1), VarDictRust peak RSS scales by only **$1.40\times$** (1.93 GB → 2.70 GB).
+> **Bounded $O(1)$ Memory at Any Depth:** VarDictJava holds entire regional chromosome structures in JVM heap collections, leading to JVM heap exhaustion and Out-Of-Memory errors on deep WGS ([Issues #197 and #384](https://github.com/AstraZeneca-NGS/VarDictJava/issues/197)). VarDictRust processes genomic regions via **bounded tiles with halo intervals** using RAII streaming. Across a 25-fold increase in genomic span (10 Mbp to all 249 Mbp of chromosome 1), VarDictRust peak RSS scales by only **$1.22\times$** (`1.42 GiB` vs `1.16 GiB` = **1.22× RSS ratio**, certified gate $\le 1.50\times$).
 
 ---
 
@@ -216,34 +220,39 @@ Every release candidate must pass dual-engine differential testing against **Var
 
 All comparisons evaluate the full end-to-end VCF output under float tolerance $\varepsilon = 10^{-6}$:
 
-| Dataset / Benchmark | Modality | Target Region / Assay | VarDictJava Variants | VarDictRust Variants | Verification Tier | Parity Conformance Details | vardictcpp (advisory¹) |
-| :--- | :--- | :--- | :--- | :--- | :---: | :--- | :--- |
-| **Upstream Integration Corpus** | Simple, Somatic, Amplicon | 92 micro-fixtures | **91 PASS / 1 XFAIL*** | **91 PASS / 1 XFAIL*** | **[Tier-1](docs/testing/test-matrix-and-ci-audit.md#tier-1)** | Identical intermediate `.var` tables | advisory per-fixture lines; concat-flags [SKIP (CPP-4)](docs/upstream-bugs.md#cpp-4) |
-| **GIAB HG002 Germline WGS** | SimpleMode (Germline) | chr20:10M–30M (30×) | 227,562 | 227,562 | **[Tier-2](docs/testing/test-matrix-and-ci-audit.md#tier-2)** | 0 diffs across 20 Mbp ($\varepsilon = 10^{-6}$) | advisory [MISMATCH (CPP-9)](docs/upstream-bugs.md#cpp-9) + [CPP-1](docs/upstream-bugs.md#cpp-1) |
-| **SEQC2 HCC1395/BL** | SomaticMode (Tumor/Normal) | Whole Exome (WES) | 623,444 | 623,444 | **[Tier-2](docs/testing/test-matrix-and-ci-audit.md#tier-2)** | 0 diffs across all exons ($\varepsilon = 10^{-6}$) | advisory [MISMATCH (CPP-9)](docs/upstream-bugs.md#cpp-9) |
-| **SEQC2 Somatic Slices** | SomaticMode (Tumor/Normal) | chr1, 2, 3, 17, 19, 21 slices | 4,151 | 4,151 | **[Tier-2](docs/testing/test-matrix-and-ci-audit.md#tier-2)** | 0 diffs in SNV, InDel, and SV | advisory [MISMATCH (CPP-1)](docs/upstream-bugs.md#cpp-1) |
-| **GIAB HG008 Somatic** | SomaticMode (Tumor/Normal) | PDAC high-depth slices | 18,426 | 18,426 | **[Tier-2](docs/testing/test-matrix-and-ci-audit.md#tier-2)** | 0 diffs in somatic status | advisory [MISMATCH (CPP-9)](docs/upstream-bugs.md#cpp-9) |
-| **Targeted Amplicon Panel** | AmpliconMode (`-a 10:0.95`) | Overlapping primer assay | 2 | 2 | **[Tier-2](docs/testing/test-matrix-and-ci-audit.md#tier-2)** | 0 diffs with primer trimming & AMPBIAS | advisory [SKIP (CPP-3)](docs/upstream-bugs.md#cpp-3) |
-| **Chr1 Scale Benchmark** | SimpleMode (Germline) | chr1: 1 Mbp to 249 Mbp | **2,840,119** | **2,840,119** | **Level 5 Scale** | 0 diffs across whole chromosome | advisory (see evidence) |
-| **Extended Modalities Suite** | RNA Splicing, `<INV>`, `<DUP>`, CRISPR, Flags | 17 real biological assays | **17 PASS** | **17 PASS** | **[Tier-2](docs/testing/test-matrix-and-ci-audit.md#tier-2)** | 0 diffs in table & VCF strict-bytes | advisory M4 [MISMATCH (CPP-2)](docs/upstream-bugs.md#cpp-2) |
-| **Multi-Modal Multi-Slice Suite** | Germline, Somatic, RNA | 18 slices across 6 datasets & 9 chromosomes | **1,129** | **1,129** | **[Tier-2](docs/testing/test-matrix-and-ci-audit.md#tier-2)** | 0 diffs across GRCh38 & GRCh37 | advisory [MISMATCH (CPP-1)](docs/upstream-bugs.md#cpp-1); b37 [CPP-7](docs/upstream-bugs.md#cpp-7)/[CPP-8](docs/upstream-bugs.md#cpp-8) |
+| Dataset / Benchmark | Modality | Target Region / Assay | Verification Tier | VarDictJava Variants | VarDictRust Variants | vardictcpp Variants¹ | Rust vs Java Parity | vardictcpp vs Java Parity¹ |
+| :--- | :--- | :--- | :---: | :--- | :--- | :--- | :--- | :--- |
+| **Upstream Integration Corpus** | `Simple`, `Somatic`, `Amplicon` | 92 micro-fixtures | **[Tier-1](docs/testing/test-matrix-and-ci-audit.md#tier-1)** | `91 PASS / 1 XFAIL*` | **`91 PASS / 1 XFAIL*`** | `34 PASS / 32 MISMATCH / 26 SKIP` | **MATCH** (0 live diffs) | [`MISMATCH (CPP-1)`](docs/upstream-bugs.md#cpp-1), [`SKIP (CPP-4)`](docs/upstream-bugs.md#cpp-4) |
+| **GIAB HG002 Germline WGS** | `SimpleMode` (Germline) | `chr20:10M–30M` (30×) | **[Tier-2](docs/testing/test-matrix-and-ci-audit.md#tier-2)** | `227,562` | **`227,562`** | `227,560` | **MATCH** (0 diffs, $\varepsilon = 10^{-6}$) | [`MISMATCH (CPP-9)`](docs/upstream-bugs.md#cpp-9), [`CPP-1`](docs/upstream-bugs.md#cpp-1) |
+| **SEQC2 HCC1395/BL Exome** | `SomaticMode` (`tumor\|normal`) | Whole Exome (WES) | **[Tier-2](docs/testing/test-matrix-and-ci-audit.md#tier-2)** | `623,444` | **`623,444`** | `623,442` | **MATCH** (0 diffs, $\varepsilon = 10^{-6}$) | [`MISMATCH (CPP-9)`](docs/upstream-bugs.md#cpp-9), [`CPP-1`](docs/upstream-bugs.md#cpp-1) |
+| **SEQC2 Somatic Slices** | `SomaticMode` (`tumor\|normal`) | `chr1, 2, 3, 17, 19, 21` slices | **[Tier-2](docs/testing/test-matrix-and-ci-audit.md#tier-2)** | `4,151` | **`4,151`** | `4,151` | **MATCH** (0 diffs in SNV/InDel/SV) | [`MISMATCH (CPP-1)`](docs/upstream-bugs.md#cpp-1), [`CPP-9`](docs/upstream-bugs.md#cpp-9) |
+| **GIAB HG008 Somatic PDAC** | `SomaticMode` (`tumor\|normal`) | PDAC high-depth slices | **[Tier-2](docs/testing/test-matrix-and-ci-audit.md#tier-2)** | `18,426` | **`18,426`** | `18,425` | **MATCH** (0 diffs in somatic status) | [`MISMATCH (CPP-9)`](docs/upstream-bugs.md#cpp-9), [`CPP-1`](docs/upstream-bugs.md#cpp-1) |
+| **GIAB HG008 CRAM Twin** | `SomaticMode` (CRAM vs BAM) | PDAC CRAM reference decode | **[Tier-2](docs/testing/test-matrix-and-ci-audit.md#tier-2)** | `18,426` | **`18,426`** | `18,425` | **MATCH** (0 diffs, BAM == CRAM) | [`MISMATCH (CPP-9)`](docs/upstream-bugs.md#cpp-9), [`CPP-1`](docs/upstream-bugs.md#cpp-1) |
+| **Targeted Amplicon Panel** | `AmpliconMode` (`-a 10:0.95`) | Overlapping primer assay | **[Tier-2](docs/testing/test-matrix-and-ci-audit.md#tier-2)** | `2` | **`2`** | `N/A` (TSV-only) | **MATCH** (0 diffs, `AMPBIAS`) | [`SKIP (CPP-3)`](docs/upstream-bugs.md#cpp-3) |
+| **Chr1 Scale Benchmark** | `SimpleMode` (Germline) | `chr1:1–248,956,422` (249 Mbp) | **[Level 5 Scale](docs/testing/test-matrix-and-ci-audit.md#level-5)** | `2,840,119` | **`2,840,119`** | `2,840,119` | **MATCH** (0 diffs across `chr1`) | [`MISMATCH (CPP-5)`](docs/upstream-bugs.md#cpp-5), [`CPP-1`](docs/upstream-bugs.md#cpp-1) |
+| **Extended Modalities Suite** | `Splicing`, `<INV>`, `<DUP>`, CRISPR, Flags | 17 biological assays | **[Tier-2](docs/testing/test-matrix-and-ci-audit.md#tier-2)** | `4,993` (`17/17 PASS`) | **`4,993` (`17/17 PASS`)** | `2,304` (`0/17 PASS`) | **MATCH** (0 diffs in `.var` & VCF) | [`SKIP (CPP-3)`](docs/upstream-bugs.md#cpp-3), [`MISMATCH (CPP-1)`](docs/upstream-bugs.md#cpp-1), [`CPP-2`](docs/upstream-bugs.md#cpp-2), [`CPP-7`](docs/upstream-bugs.md#cpp-7), [`CPP-8`](docs/upstream-bugs.md#cpp-8), [`CPP-10`](docs/upstream-bugs.md#cpp-10) |
+| **Multi-Modal Multi-Slice Suite** | `Germline`, `Somatic`, `RNA` | 18 slices across 6 cohorts & 9 chrs | **[Tier-2](docs/testing/test-matrix-and-ci-audit.md#tier-2)** | `1,129` (`18/18 PASS`) | **`1,129` (`18/18 PASS`)** | `1,103` (`0/18 PASS`) | **MATCH** (0 diffs, GRCh38 & b37) | `SKIP (-i)`, [`MISMATCH (CPP-1)`](docs/upstream-bugs.md#cpp-1), [`CPP-9`](docs/upstream-bugs.md#cpp-9) |
 
 \* *The 91 PASS / 1 XFAIL metric reflects comparison against stale pre-computed static files in the upstream repository (`VarDictJava/testdata/integrationtestcases/`). For the single static mismatch (`hard_clip_case.fa`), the upstream fixture encodes conflicting reference chunks ([Class D / UB-4](docs/upstream-bugs.md#ub-4)). When evaluated against the live `VarDictJava v1.8.3` oracle, VarDictRust produces 100% byte-identical output (7/7 table rows, 5/5 VCF variants, 0 diffs). Thus, live oracle parity is 100% across all 92 fixtures.*
+¹ **`vardictcpp` third-arm comparison (`vardictcpp 3 hc52dbad_0`, bioconda).** Executed alongside each Tier-1/Tier-2 comparator arm; the release gate remains strictly `VarDictRust == VarDictJava v1.8.3`. Linked `CPP-*` identifiers reference the root-cause divergence catalog in [`docs/upstream-bugs.md`](docs/upstream-bugs.md#cpp-divergences).
 
 - **Intermediate Table Parity ([Tier-1](docs/testing/test-matrix-and-ci-audit.md#tier-1)):** Emitted intermediate `.var` tables match 100% of upstream columns and ordering. Slashes denote standard mode vs. statistical `--fisher` mode (Simple: 36/38 columns; Amplicon: 38/40 columns; Somatic: 55/61 columns). Standard CLI output is standard VCFv4.2 (10 or 11 columns); Splicing Mode (`-i`) outputs a 4-column intron count table.
 
-### 2. Ground Truth Concordance ([Tier-3](docs/testing/test-matrix-and-ci-audit.md#tier-3) via RTG vcfeval, vardictcpp advisory)
+<a id="2-ground-truth-concordance-tier-3-via-rtg-vcfeval-vardictcpp-advisory"></a>
+### 2. Ground Truth Concordance ([Tier-3](docs/testing/test-matrix-and-ci-audit.md#tier-3) via RTG vcfeval)
 
 Evaluated against physical ground truth using Real Time Genomics [`rtg vcfeval`](docs/validation/omnibus-empirical-validation.md#pillar-1):
 
-¹ **vardictcpp third arm (advisory, never gating).** Pinned **vardictcpp 3 `hc52dbad_0`** (bioconda, same `vardict-oracle` env) runs beside each parity arm. The Tier-2 verdict stays java==rust. Per-cell cpp F1s below are transcribed from the linked evidence `extra` (`cpp_f1`). Full counts live in evidence. Known cpp divergences (VCF header provenance + `END` INFO key, `-J`/`-j` parsed-but-ignored) are normalized per [`docs/upstream-bugs.md`](docs/upstream-bugs.md).
+| Benchmark Dataset | Truth Standard | Assay / Threshold | Java & Rust Sites (TP / FP / FN) | vardictcpp Sites (TP / FP / FN)¹ | VarDictJava vcfeval | VarDictRust vcfeval | vardictcpp vcfeval¹ | Rust vs Java | vardictcpp Notes¹ |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :---: | :--- |
+| **GIAB HG002** (Operating Point) | NIST v4.2.1 High-Confidence | Germline (`QUAL >= 128`) | `22,748 / 553 / 871` | `22,748 / 553 / 871` | `F1: 0.9699 (P: 0.9763, R: 0.9635)` | **`F1: 0.9699 (P: 0.9763, R: 0.9635)`** | `F1: 0.9699 (P: 0.9763, R: 0.9635)` | **EQUAL** | [`CPP-6`](docs/upstream-bugs.md#cpp-6) |
+| **GIAB HG002** (Raw Baseline) | NIST v4.2.1 High-Confidence | Germline (`None` / raw) | `22,803 / 22,458 / 813` | `22,803 / 22,442 / 813` | `F1: 0.6622 (P: 0.5038, R: 0.9659)` | **`F1: 0.6622 (P: 0.5038, R: 0.9659)`** | `F1: 0.6624 (P: 0.5040, R: 0.9659)` | **EQUAL** | [`CPP-6`](docs/upstream-bugs.md#cpp-6), [`CPP-9`](docs/upstream-bugs.md#cpp-9) |
+| **GIAB HG005** (Operating Point) | NIST v4.2.1 Han Chinese | Germline (`QUAL >= 226`) | `29 / 1 / 1` | `29 / 1 / 1` | `F1: 0.9667 (P: 0.9667, R: 0.9667)` | **`F1: 0.9667 (P: 0.9667, R: 0.9667)`** | `F1: 0.9667 (P: 0.9667, R: 0.9667)` | **EQUAL** | [`CPP-6`](docs/upstream-bugs.md#cpp-6) |
+| **GIAB NA24385 b37** (Operating Point) | NIST v4.2.1 Ashkenazi Son | Germline b37 (`QUAL >= 160`) | `5 / 0 / 0` | `5 / 0 / 0` | `F1: 1.0000 (P: 1.0000, R: 1.0000)` | **`F1: 1.0000 (P: 1.0000, R: 1.0000)`** | `F1: 1.0000 (P: 1.0000, R: 1.0000)` | **EQUAL** | [`CPP-6`](docs/upstream-bugs.md#cpp-6), [`CPP-7`](docs/upstream-bugs.md#cpp-7) |
+| **SEQC2 HCC1395** (Raw Baseline) | SEQC2 v1.2.1 Somatic Truth | Somatic (`None` / raw) | `1,056 / 11,334 / 140` | `1,056 / 11,333 / 140` | `F1: 0.1555 (P: 0.0852, R: 0.8842)` | **`F1: 0.1555 (P: 0.0852, R: 0.8842)`** | `F1: 0.1555 (P: 0.0852, R: 0.8842)` | **EQUAL** | [`CPP-6`](docs/upstream-bugs.md#cpp-6), [`CPP-9`](docs/upstream-bugs.md#cpp-9) |
+| **GIAB HG008** (Raw Baseline) | NIST Draft Benchmark v0.3 | Somatic (`None` / raw) | `575 / 1,565 / 288` | `575 / 1,563 / 288` | `F1: 0.3856 (P: 0.2687, R: 0.6825)` | **`F1: 0.3856 (P: 0.2687, R: 0.6825)`** | `F1: 0.3858 (P: 0.2689, R: 0.6825)` | **EQUAL** | [`CPP-6`](docs/upstream-bugs.md#cpp-6), [`CPP-9`](docs/upstream-bugs.md#cpp-9) |
 
-| Benchmark Dataset | Truth Standard | Variant Assay / Threshold | Evaluated Sites (TP / FP / FN) | VarDictJava vcfeval | VarDictRust vcfeval | vardictcpp vcfeval (advisory¹) | Truth Concordance |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **GIAB HG002** (Operating Point) | NIST v4.2.1 High-Confidence | Germline Small (`QUAL >= 128`) | 22,748 TP / 553 FP / 871 FN | **F1: 0.9699 (P: 0.9763, R: 0.9635)** | **F1: 0.9699 (P: 0.9763, R: 0.9635)** | advisory N/A (no cpp operating-point F1; raw 0.6624 below) | **EQUAL** |
-| **GIAB HG002** (Raw Baseline) | NIST v4.2.1 High-Confidence | Germline Small (`None` / raw) | 22,803 TP / 22,458 FP / 813 FN | F1 raw: 0.6622 (P: 0.5038, R: 0.9659) | F1 raw: 0.6622 (P: 0.5038, R: 0.9659) | F1 raw: 0.6624, advisory ([CPP-6](docs/upstream-bugs.md#cpp-6)) | **EQUAL** |
-| **SEQC2 HCC1395** | SEQC2 v1.2.1 Somatic Truth | High-Confidence Somatic SNV/InDel | 1,056 TP / 11,334 FP / 140 FN | F1: 0.1555 (P: 0.0852, R: 0.8842) | F1: 0.1555 (P: 0.0852, R: 0.8842) | F1: 0.1555, advisory ([CPP-6](docs/upstream-bugs.md#cpp-6)) | **EQUAL** |
-| **GIAB HG008** | NIST Draft Benchmark v0.3 | Somatic Small Variants | 575 TP / 1,565 FP / 288 FN | F1: 0.3856 (P: 0.2687, R: 0.6825) | F1: 0.3856 (P: 0.2687, R: 0.6825) | F1: 0.3858, advisory ([CPP-6](docs/upstream-bugs.md#cpp-6)) | **EQUAL** |
+¹ **`vardictcpp` vcfeval normalization (`vardictcpp 3 hc52dbad_0`).** Because native `vardictcpp -vcf` omits `##contig` header lines ([`CPP-6`](docs/upstream-bugs.md#cpp-6)) and strips `chr` on ambiguous b37 FASTAs ([`CPP-7`](docs/upstream-bugs.md#cpp-7)), the concordance harness injects reference contigs before running `rtg vcfeval`. Residual 1–16 FP count differences on raw HG002, SEQC2, and HG008 reflect upstream [`CPP-9`](docs/upstream-bugs.md#cpp-9) MNP/SV caller deltas; `VarDictRust` and `VarDictJava` produce identical TP, FP, FN, Precision, Recall, and $F_1$ across every threshold.
 
 *For full scientific details, reference checksums, and exact reproduction commands across all 10 public cohorts and 17 operational modalities, see the [`Omnibus Empirical Validation Report`](docs/validation/omnibus-empirical-validation.md). For the complete Seven-Level Testing Matrix and CI/CD audit, see [`docs/testing/test-matrix-and-ci-audit.md`](docs/testing/test-matrix-and-ci-audit.md).*
 
@@ -255,10 +264,10 @@ Evaluated against physical ground truth using Real Time Genomics [`rtg vcfeval`]
 
 VarDictRust is built under strict compliance with the **[rewrites.bio](https://rewrites.bio) Prime Directive**:
 
-1. **Fidelity over Innovation:** VarDictRust v1.0.0 matches **every** output decision of VarDictJava v1.8.3 on valid inputs. This includes IEEE 754 half-even banker's rounding ([`round_half_even`](DIVERGENCES.md#statistical-rounding--floating-point-half-even)), exact odds ratios, OpenJDK hash iteration layout via the deterministic [`JavaHashMap`](DIVERGENCES.md#ub-3-var-row-order-across-positions-follows-hashmap-iteration-order-282-family) engine, and in-engine somatic status determination ([`SomaticPostProcessModule`](DIVERGENCES.md#somatic-status-determination)).
+1. **Fidelity over Innovation:** VarDictRust v1.0.x matches **every** output decision of VarDictJava v1.8.3 on valid inputs. This includes IEEE 754 half-even banker's rounding ([`round_half_even`](DIVERGENCES.md#statistical-rounding--floating-point-half-even)), exact odds ratios, OpenJDK hash iteration layout via the deterministic [`JavaHashMap`](DIVERGENCES.md#ub-3-var-row-order-across-positions-follows-hashmap-iteration-order-282-family) engine, and in-engine somatic status determination ([`SomaticPostProcessModule`](DIVERGENCES.md#somatic-status-determination)).
 2. **Robustness by Construction:** While VarDictJava crashes on malformed CIGAR strings ([`modifyCigar` issue #341 family](docs/upstream-bugs.md) and [PR #402](DIVERGENCES.md#category-1-cigar-and-realignment-resilience)), null pointers, or missing indices ([Issue #187](DIVERGENCES.md#category-7-cli-diagnostics-and-error-messages)), VarDictRust enforces `#![forbid(unsafe_code)]` and returns actionable `Result<_, VardictError>` errors without panicking.
 3. **Bounded Memory at Any Depth:** While VarDictJava exhausts JVM heap memory on deep WGS ([Issues #197 and #384](https://github.com/AstraZeneca-NGS/VarDictJava/issues/197)), VarDictRust processes reads using bounded genomic tiles with halo intervals, maintaining flat resident memory ($O(1)$ RSS scaling).
-4. **Bug Release Policy:** Upstream VarDictJava output quirks are faithfully replicated in v1.0.0 and tracked in [`docs/upstream-bugs.md`](docs/upstream-bugs.md) (including [UB-1 through UB-7](docs/upstream-bugs.md)). Corrective fixes will ship in v1.1.0+ behind explicit opt-in flags (`--fix <id>`) per [`ROADMAP.md`](ROADMAP.md).
+4. **Bug Release Policy:** Upstream VarDictJava output quirks are faithfully replicated in v1.0.x and tracked in [`docs/upstream-bugs.md`](docs/upstream-bugs.md) (including [UB-1 through UB-7](docs/upstream-bugs.md)). Corrective fixes will ship in v1.1.0+ behind explicit opt-in flags (`--fix <id>`) per [`ROADMAP.md`](ROADMAP.md).
 5. **Documented Quirks & Testing Matrix:** All design choices and parity validations are detailed in [`DIVERGENCES.md`](DIVERGENCES.md) and [`docs/testing/test-matrix-and-ci-audit.md`](docs/testing/test-matrix-and-ci-audit.md).
 
 ---
@@ -362,6 +371,8 @@ Flag parity with VarDictJava v1.8.3 is defined against [`CmdParser.java`](VarDic
 | — | `--threads` | Thread count (`-th`/`--th` aliases; bare `-th` = all cores) | all cores | `no-output` |
 | — | `--tile-size` | Region tile size in bp (bounded-memory WGS) | auto | `no-output` |
 
+*Reproducible Profiling Hooks:* When compiled with opt-in Cargo features (`profile-cpu`, `profile-heap`, or `profile-dhat`), `vardictrust` honors `VARDICT_PROFILE_CPU`, `VARDICT_PROFILE_HEAP`, and `VARDICT_PROFILE_DHAT` output directory environment variables (orchestrated via [`harness/profile.sh`](harness/README.md)).
+
 ---
 
 <a id="ai-tooling--verification-transparency"></a>
@@ -372,7 +383,7 @@ Per the [rewrites.bio](https://rewrites.bio) manifesto, we disclose all AI tools
 
 - **AI Systems Used:** Google DeepMind Gemini / Antigravity CLI, Anthropic Claude Code, and Qoder.
 - **Scope of AI Assistance:** Implementation of core Rust modules under direct human architectural instruction, transliteration of legacy R/Perl statistical functions into pure Rust, test harness development, and adversarial differential verification.
-- **Verification Guarantee (Evidence Before Completion):** **Zero** AI-generated code was accepted based on model assertion. Every single algorithmic component was validated against VarDictJava v1.8.3 across 233 automated Cargo workspace tests (192 core library tests, 2 CRAM stack tests, 13 CLI tests, and 26 integration binary tests), the 92-case integration corpus, 10 slice fixtures, 18 multi-modal slices across 6 cohorts, and multi-gigabyte public benchmark datasets (SEQC2, GIAB HG008, GIAB HG002, GIAB HG005, GIAB NA24385 b37) under strict float tolerance $\varepsilon = 10^{-6}$, with complete push-button reproducibility documented in [`docs/testing/test-matrix-and-ci-audit.md`](docs/testing/test-matrix-and-ci-audit.md).
+- **Verification Guarantee (Evidence Before Completion):** **Zero** AI-generated code was accepted based on model assertion. Every single algorithmic component was validated against VarDictJava v1.8.3 across 277 automated Cargo workspace tests (231 core library tests, 2 amplicon streaming memory tests, 2 CRAM stack tests, 13 CLI tests, and 29 integration binary tests), the 92-case integration corpus, 10 slice fixtures, 18 multi-modal slices across 6 cohorts, and multi-gigabyte public benchmark datasets (SEQC2, GIAB HG008, GIAB HG002, GIAB HG005, GIAB NA24385 b37) under strict float tolerance $\varepsilon = 10^{-6}$, with complete push-button reproducibility documented in [`docs/testing/test-matrix-and-ci-audit.md`](docs/testing/test-matrix-and-ci-audit.md) and workflow skills in [`.agents/skills/`](AGENTS.md#19-repository-specific-agent-skills).
 
 ---
 
@@ -426,7 +437,7 @@ If you use VarDictRust in published research, please cite both the original Lai 
   author    = {Sheth, Palak},
   title     = {{VarDictRust: Memory-Safe, High-Performance Variant Calling for NGS}},
   year      = {2026},
-  version   = {1.0.1},
+  version   = {1.0.3},
   url       = {https://github.com/palakpsheth/VarDictRust}
 }
 ```

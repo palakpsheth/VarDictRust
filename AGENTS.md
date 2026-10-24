@@ -105,7 +105,7 @@ Output must match **VarDictJava v1.8.3** on valid inputs:
 - **Float tolerance:** Fisher p-values/SBF/SSF, odds ratios, AF/AdjAF/HIAF, QUAL means within **ε = 1e-6**, after replicating R's 5-decimal **HALF_EVEN** rounding (Fisher MLE tol `ulp(1)^0.25`).
 - **Bug policy (v1.0):** if v1.8.3 has an **output** bug, **replicate it** and open a tracked issue — do **not** silently "fix" it. Where v1.8.3 **crashes** (e.g. `modifyCigar`), do **not** crash: produce the same output it would on valid inputs. That is allowed and is the whole point.
 - **Three commitments:** credit the original ([README.md](README.md)/`--version`/[Lai et al. 2016](https://doi.org/10.1093/nar/gkw227)/AstraZeneca-NGS); emulate exactly; be transparent about AI (document tools, role, and exactly what was/wasn't validated, against which version + dataset).
-- **Release policy (v1.0 Parity vs v1.1+ Corrections):** v1.0.0 = pure parity with v1.8.3: no output-changing fixes and no fix flags. Corrections ship from v1.1.0 per [ROADMAP.md](ROADMAP.md), each behind `--fix <id>` (default off) with a diff-confinement gate. The default output stays byte-identical to v1.0; with the flag, diffs are confined to the targeted records.
+- **Release policy (v1.0 Parity vs v1.1+ Corrections):** v1.0.x = parity with v1.8.3: no output-changing fixes and no fix flags — except *parity-restoring* fixes, which ship UNGATED as default. A fix qualifies iff (a) flag-on MATCHes the v1.8.3 oracle everywhere measured, (b) the prior default never matched the oracle on that path (Rust-only artifact, no upstream behavior replicated), and (c) its `--fix` id is unreleased (plumbing removed, not kept as no-op). Precedent: `splice-tile-ownership`, `mate-window-ownership` (ROADMAP "Landed as Default"). True output-changing corrections still ship from v1.1.0 per [ROADMAP.md](ROADMAP.md), each behind `--fix <id>` (default off) with a diff-confinement gate.
 
 ---
 
@@ -216,6 +216,7 @@ bash harness/rgate.sh
 # Slice big BAMs for the dev loop:
 bash harness/slice.sh <in.bam> <chr:start-end> <out.bam>
 ```
+**Pinned baseline reuse (never re-prove the same oracle twice):** VarDictJava is EOL/archived — its pin is immutable, so recorded java outputs are permanent goldens. vardictcpp stays on its pinned version; bump it only by deliberate decision (then regenerate cpp goldens). Reuse a baseline IFF inputs + flags + pin are identical, verified by sha manifest; otherwise rerun the oracle and store the new outputs + manifest entry (new tests run only their own cells, then append). Deterministic outputs gate; host-dependent measurements (wall/RSS) are recorded with host context, never gated across hosts.
 
 ## 15. Definition of done (every change)
 1. `cargo fmt --all`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test` all pass.
@@ -249,3 +250,13 @@ Somatic STATUS is computed in **Java** (`SomaticPostProcessModule.determinateTyp
 ## 18. Commits
 Atomic commits per task: `git add -A && git commit -m "<type>: <short desc>"`. Branch off `origin/main` (`git fetch origin && git checkout -b <type>/<slug> origin/main`); never push `main` directly (the pre-push hook blocks it) — merge via a PR opened with `gh`, with the PR template filled. Run `bash harness/setup_hooks.sh` once per clone so the repo-managed hooks are active. Full gate semantics live in [CONTRIBUTING.md](CONTRIBUTING.md) §§5–6 and `harness/pr_check.sh` (6 stages).
 Never commit secrets, **data** (BAM/CRAM/FASTA/VCF beyond the tiny `golden/` fixtures), `target/`, conda envs, or ephemeral agent scratch/planning trees (e.g. `docs/superpowers/` — agent plans belong in the external `<appDataDir>/brain/<conversation-id>` artifact store; see `.gitignore`). **Do** commit `Cargo.lock` (this is an application workspace). MIT-licensed, open-source project. Do not include `Co-Authored-By` commit trailers; machine assistance and AI tool participation are disclosed transparently in [README.md](README.md) and [CITATION.cff](CITATION.cff).
+
+<a id="19-repository-specific-agent-skills"></a>
+## 19. Repository-Specific Agent Skills (`.agents/skills/`)
+Specialized workflow skills live under `.agents/skills/<name>/SKILL.md` (validated by `harness/tests/test_bioconda_recipe.py`):
+- **[`vardictrust-issue`](.agents/skills/vardictrust-issue/SKILL.md):** Filing, triaging, reproducing, or auditing GitHub issues (`v1.0.x` parity/robustness vs `v1.1+ --fix <id>` classification, `harness/slice.sh` minimal slices, and `compare.sh` oracle receipts).
+- **[`vardictrust-pr`](.agents/skills/vardictrust-pr/SKILL.md):** Opening, updating, reviewing, recertifying (`harness/recertify.sh`), or squash-merging pull requests, completing `.github/pull_request_template.md`, and replying inline to review comments.
+- **[`vardictrust-profiling`](.agents/skills/vardictrust-profiling/SKILL.md):** Profiling CPU (`profile-cpu`), jemalloc heap (`profile-heap`), or DHAT allocation churn (`profile-dhat`) via `harness/profile.sh` and `harness/profile_catalog.py` ([`references/rust-profiling-api.md`](.agents/skills/vardictrust-profiling/references/rust-profiling-api.md)).
+- **[`vardictrust-release`](.agents/skills/vardictrust-release/SKILL.md):** Multi-channel release engineering across GitHub Releases (`cargo-dist` SLSA Level 3), Crates.io, Bioconda, Nextflow `nf-core/modules`, and ReadTheDocs ([`scripts/check_release_consistency.py`](.agents/skills/vardictrust-release/scripts/check_release_consistency.py) and [`references/version-surface-map.md`](.agents/skills/vardictrust-release/references/version-surface-map.md)).
+
+**Agent Discovery:** `.agents/skills/` is committed in-tree and auto-discovered natively by Gemini CLI, OpenAI Codex, GitHub Copilot, Cursor, and OpenCode.
