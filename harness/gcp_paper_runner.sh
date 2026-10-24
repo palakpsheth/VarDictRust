@@ -107,7 +107,12 @@ gcs_upload() {
     mkdir -p "$(dirname "$dst")"
     cp -r "$src" "$dst"
   else
-    setsid gsutil -o GSUtil:parallel_composite_upload_threshold=0 -q cp -r "$src" "$dst"
+    local t
+    for t in 1 2 3; do
+      setsid gsutil -o GSUtil:parallel_composite_upload_threshold=0 -q cp -r "$src" "$dst" && return 0
+      sleep 2
+    done
+    return 1
   fi
 }
 
@@ -128,7 +133,12 @@ gcs_mark_done() {
     mkdir -p "${LOCAL_CKPT_DIR}"
     echo "$stamp" > "${LOCAL_CKPT_DIR}/${cell_id}.done"
   else
-    printf '%s\n' "$stamp" | setsid gsutil -q cp - "${GCS_CKPT}/${cell_id}.done"
+    local t
+    for t in 1 2 3; do
+      printf '%s\n' "$stamp" | setsid gsutil -q cp - "${GCS_CKPT}/${cell_id}.done" && return 0
+      sleep 2
+    done
+    return 1
   fi
 }
 
@@ -689,6 +699,7 @@ export PATH=\"\$HOME/miniconda3/envs/g4-tools/bin:\$HOME/miniconda3/bin:\$HOME/.
 bash harness/gcp_paper_runner.sh --worker all
 EOS
       chmod +x '$WORK_DIR/bootstrap_and_run.sh'
+      sudo loginctl enable-linger \"\$(id -un)\"
       sudo systemctl stop vardict-paper-worker.service 2>/dev/null || true
       sudo systemctl reset-failed vardict-paper-worker.service 2>/dev/null || true
       sudo systemd-run --unit=vardict-paper-worker \
