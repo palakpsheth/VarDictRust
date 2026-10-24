@@ -10,7 +10,7 @@ export PATH="$HOME/.local/bin:$PATH"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IN_TREE_MODULE_DIR="$SCRIPT_DIR/modules/vardictrust"
-NFCORE_MODULES_DIR="${NFCORE_MODULES_DIR:-/tmp/opencode/nf-core-modules}"
+: "${NFCORE_MODULES_DIR:?Set NFCORE_MODULES_DIR to a trusted local nf-core/modules checkout path}"
 NFCORE_MODULE_PATH="$NFCORE_MODULES_DIR/modules/nf-core/vardictrust"
 
 VERSION="${1:-1.0.3}"
@@ -30,8 +30,9 @@ if ! python3 -c '
 import json, sys
 data = json.loads(sys.stdin.read())
 ver = sys.argv[1]
-if ver not in data.get("versions", []):
-    print(f"Version {ver} not in anaconda.org versions: {data.get(\"versions\", [])}", file=sys.stderr)
+versions = data.get("versions", [])
+if ver not in versions:
+    print(f"Version {ver} not in anaconda.org versions: {versions}", file=sys.stderr)
     sys.exit(1)
 subdirs = {
     f.get("attrs", {}).get("subdir")

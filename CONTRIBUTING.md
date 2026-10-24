@@ -387,9 +387,9 @@ Push `release/vX.Y.Z` and open a pull request to `main` via `gh pr create`, comp
    ```
    Open and merge a follow-up PR updating `packaging/bioconda/recipes/vardictrust/meta.yaml` on `main`, and submit the recipe update to `bioconda/bioconda-recipes`.
 2. **Update the Nextflow `nf-core/modules` module ([`packaging/nf-core/prepare_nfcore_pr.sh`](packaging/nf-core/prepare_nfcore_pr.sh)):**
-   Once `bioconda::vardictrust=X.Y.Z` is indexed on `anaconda.org` for both `linux-64` and `linux-aarch64`, update `environment.yml`, provision multi-arch Seqera Wave containers, and update `nf-test` snapshots:
+   Once `bioconda::vardictrust=X.Y.Z` is indexed on `anaconda.org` for both `linux-64` and `linux-aarch64`, update `environment.yml`, provision multi-arch Seqera Wave containers, and update `nf-test` snapshots (setting `NFCORE_MODULES_DIR` explicitly to a trusted local `nf-core/modules` checkout):
    ```bash
-   bash packaging/nf-core/prepare_nfcore_pr.sh X.Y.Z
+   NFCORE_MODULES_DIR=/path/to/nf-core-modules bash packaging/nf-core/prepare_nfcore_pr.sh X.Y.Z
    python3 .agents/skills/vardictrust-release/scripts/check_release_consistency.py --version X.Y.Z --phase post-nfcore
    ```
 3. **Trigger ReadTheDocs Documentation Build:**

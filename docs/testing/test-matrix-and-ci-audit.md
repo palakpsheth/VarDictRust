@@ -227,8 +227,8 @@ Located in `crates/vardictrust/src/cli.rs`:
 Located in `crates/vardictrust/tests/`:
 1. **`tests/flags.rs` (19 tests):**
    - Verifies end-to-end CLI flag behavior across `--crispr`, `-u`/`--UN`, `-A`, `--chimeric`, `-k 0`, `--fisher`, `-3`, `-O`, `-X`, `-c/-S/-E/-g`, `-M`, `--deldupvar`, `--DP ERR`, multi-sample BAM header extraction (`-b "b1|b2"`), and unsupported flag rejection (`AGENTS.md §12`).
-2. **`tests/profile_smoke.rs` (3 tests):**
-   - Verifies `--profile-cpu`, `--profile-heap`, and `--profile-dhat` fail-fast feature guards in default builds and artifact generation (`cpu-flamegraph.svg`, `heap-summary.json`, `dhat-heap.json`, `profile-meta.json`) when compiled with opt-in profiling features.
+2. **`tests/profile_smoke.rs` (3 default tests + 4 feature-gated tests):**
+   - Verifies `VARDICT_PROFILE_CPU`, `VARDICT_PROFILE_HEAP`, and `VARDICT_PROFILE_DHAT` environment-variable activation in `profile::Session::start()`, empty-path fail-fast validation (`<VAR> must be a non-empty directory path`), compiled-out stderr warnings with zero files created in default builds, and artifact generation (`cpu-collapsed.txt`, `cpu-profile.pb`, `cpu-meta.json`, `cpu-flamegraph.svg`, `heap.pb.gz`/`heap.pb`, `heap-flamegraph.svg`, `dhat-heap.json`) when compiled with opt-in profiling features.
 3. **`tests/robustness.rs` (5 tests):**
    - `locale_independence_c_vs_de_de`: verifies that floating-point numbers are emitted with standard decimal points (`.`) rather than European decimal commas (`,`) even when `LC_ALL=de_DE.UTF-8` is forced.
    - `test_zero_tile_size_fails_fast_without_hanging`: verifies that `--tile-size 0` returns an actionable `Parse` error instead of entering an infinite loop.

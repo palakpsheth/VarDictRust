@@ -8,6 +8,8 @@ benchmarks/evidence/*.json SHA-256 manifests are synchronized for a target
 release version and phase.
 """
 
+from __future__ import annotations
+
 import argparse
 import hashlib
 import json
@@ -349,8 +351,8 @@ def check_evidence_and_fingerprints(repo_root: Path, errors: list[str]) -> None:
         errors.append("MISSING FILE: harness/engine_fingerprint.sh")
         return
 
-    # Only run live git-index fingerprint check if repo_root has a .git directory
-    # and no uncommitted changes to GATE_FILES.
+    # Run live git-index fingerprint check when repo_root has a .git directory;
+    # record any non-zero exit code (e.g. uncommitted GATE_FILES changes) as a hard error.
     if (repo_root / ".git").exists():
         res_fp = subprocess.run(
             ["bash", str(fp_script)],
@@ -366,6 +368,14 @@ def check_evidence_and_fingerprints(repo_root: Path, errors: list[str]) -> None:
             text=True,
             check=False,
         )
+        if res_fp.returncode != 0:
+            errors.append(
+                f"harness/engine_fingerprint.sh failed (exit {res_fp.returncode}): {res_fp.stderr.strip()}"
+            )
+        if res_perf.returncode != 0:
+            errors.append(
+                f"harness/engine_fingerprint.sh --perf failed (exit {res_perf.returncode}): {res_perf.stderr.strip()}"
+            )
         if res_fp.returncode == 0 and res_perf.returncode == 0:
             fp = res_fp.stdout.strip()
             perf_fp = res_perf.stdout.strip()
@@ -436,9 +446,10 @@ def check_downstream_phases(
         require_regex(
             repo_root,
             "packaging/nf-core/modules/vardictrust/tests/main.nf.test.snap",
-            rf'"vardictrust:\s*{ver_esc}"',
+            rf'"VARDICTRUST",\s*"vardictrust",\s*"{ver_esc}"',
             f"nf-core main.nf.test.snap version == {version}",
             errors,
+            flags=re.MULTILINE | re.DOTALL,
         )
 
 

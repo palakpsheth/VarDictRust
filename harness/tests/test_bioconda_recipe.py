@@ -175,6 +175,17 @@ class TestNfCoreModulePackaging(unittest.TestCase):
             os.access(NFCORE_DIR / "prepare_nfcore_pr.sh", os.X_OK),
             "prepare_nfcore_pr.sh must be executable",
         )
+        script_content = (NFCORE_DIR / "prepare_nfcore_pr.sh").read_text(encoding="utf-8")
+        self.assertIn(
+            '${NFCORE_MODULES_DIR:?',
+            script_content,
+            "prepare_nfcore_pr.sh must require explicit NFCORE_MODULES_DIR",
+        )
+        self.assertNotIn(
+            "/tmp/opencode/nf-core-modules",
+            script_content,
+            "prepare_nfcore_pr.sh must not default to world-writable /tmp path",
+        )
 
     def test_nfcore_main_nf_and_meta_args_id(self):
         main_nf = (NFCORE_MOD_DIR / "main.nf").read_text(encoding="utf-8")

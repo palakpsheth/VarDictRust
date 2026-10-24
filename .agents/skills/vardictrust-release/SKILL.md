@@ -88,7 +88,7 @@ git push -u origin chore/bioconda-vX.Y.Z
 ### Phase 3B & 3C: Nextflow `nf-core/modules` & ReadTheDocs (`--phase post-nfcore`)
 ```bash
 # Run once bioconda::vardictrust=X.Y.Z has both linux-64 and linux-aarch64 tarballs on anaconda.org
-bash packaging/nf-core/prepare_nfcore_pr.sh X.Y.Z
+NFCORE_MODULES_DIR=/path/to/nf-core-modules bash packaging/nf-core/prepare_nfcore_pr.sh X.Y.Z
 python3 .agents/skills/vardictrust-release/scripts/check_release_consistency.py --version X.Y.Z --phase post-nfcore
 bash harness/trigger_rtd.sh build vardictrust latest
 ```
