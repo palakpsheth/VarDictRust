@@ -44,6 +44,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Enabled `noodles-bgzf/libdeflate` for whole-block BGZF deflate decompression
   in BAM/BAI/CSI/VCF.gz readers (O-2, +3.74% median wall-time improvement on
   `hg002` chr20).
+- Tuned `tikv-jemallocator` production arena decay (`dirty_decay_ms:5000`,
+  `muzzy_decay_ms:5000`) with runtime `narenas` auto-tuning (`2 * parallelism`
+  capped at 32) and guarded `StructuralVariantsProcessor::find_sv` to filter out
+  sub-`minr` soft-clip clusters before cloning `Sclip`, cutting peak RSS by
+  1.9×–4.2× (`hg002` `493.9 MiB`, `seqc2` `515.7 MiB`, `hg008` `291.9 MiB`, `chr1`
+  249 Mbp `1.39 GiB` with `1.20×` flat RSS scaling).
+- Recertified all 16 release evidence artifacts in `benchmarks/evidence/*.json`
+  under engine fingerprint `817d89c5fb34515d` (`perf_fingerprint`
+  `44f27d154307d080`; `harness/acceptance.sh` 8/8 PASS).
 
 ## [1.0.2] - 2026-10-17
 

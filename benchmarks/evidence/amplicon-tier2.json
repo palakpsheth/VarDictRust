@@ -22,7 +22,7 @@
     "max_rss_kb": "91040",
     "wall": "0:03.75"
   },
-  "date": "2026-10-22T19:28:36-07:00",
+  "date": "2026-10-23T18:17:41-07:00",
   "extra": {
     "cpp_head": [
       "CPP: SKIP: cpp emitted non-VCF surface (TSV-only mode; VCF comparison inapplicable)"
@@ -45,11 +45,11 @@
       ],
       "hit": 2,
       "live": 0,
-      "run": "compare-3940972-1792722515"
+      "run": "compare-1424005-1792804660"
     }
   },
-  "fingerprint": "a262f19b0a2eb8a8",
-  "head": "87709f33cc804cd3ff787d5e80f30f94f3813acd",
+  "fingerprint": "817d89c5fb34515d",
+  "head": "f9587d50993e89757ae5647315d3d88c50f5fb67",
   "java_time": {
     "exit": "0",
     "max_rss_kb": "125120",
@@ -60,7 +60,7 @@
   "result": "MATCH",
   "rust_time": {
     "exit": "0",
-    "max_rss_kb": "54648",
-    "wall": "0:00.07"
+    "max_rss_kb": "59956",
+    "wall": "0:00.08"
   }
 }
