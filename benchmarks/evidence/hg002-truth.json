@@ -13,7 +13,7 @@
   ],
   "compare_head": [],
   "cpp_time": null,
-  "date": "2026-10-23T18:18:17-07:00",
+  "date": "2026-10-23T22:29:55-07:00",
   "extra": {
     "cpp_f1": 0.6624,
     "cpp_f1_normalized": 0.6624,
@@ -75,8 +75,8 @@
       "tp_call": 22803
     }
   },
-  "fingerprint": "817d89c5fb34515d",
-  "head": "f9587d50993e89757ae5647315d3d88c50f5fb67",
+  "fingerprint": "27f3667b32ac14f5",
+  "head": "5fc1266467c995d6e306b8bf2e84475081ce5be8",
   "java_time": null,
   "n_variants": null,
   "name": "hg002-truth",

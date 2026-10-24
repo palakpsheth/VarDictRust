@@ -3,13 +3,29 @@ use std::collections::BTreeMap;
 use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex};
 
-/// Parallel task runner that processes items in parallel using a custom Rayon
-/// thread pool, collects them, and streams them out in the original input order.
-///
-/// Implements bounded backpressure by using a sliding window. Workers are only
-/// fed new tasks when the number of in-flight tasks is within the window limit.
+/// Executes `worker_fn` in parallel over `items` using at most `num_threads`,
+/// while streaming the results sequentially into `consumer_fn` in the exact
+/// original order of `items`.
 pub fn run_parallel<T, R, F, W>(
     items: Vec<T>,
+    num_threads: usize,
+    worker_fn: F,
+    consumer_fn: W,
+) -> Result<(), VardictError>
+where
+    T: Send + Sync + 'static,
+    R: Send + 'static,
+    F: Fn(T) -> Result<R, VardictError> + Send + Sync + 'static,
+    W: FnMut(R) -> Result<(), VardictError>,
+{
+    let batches: Vec<Vec<T>> = items.into_iter().map(|item| vec![item]).collect();
+    run_parallel_batched(batches, num_threads, worker_fn, consumer_fn)
+}
+
+/// Executes `worker_fn` in parallel over pre-grouped `batches` (`Vec<Vec<T>>`),
+/// streaming flattened results into `consumer_fn` in exact deterministic order (`EBO-3`).
+pub fn run_parallel_batched<T, R, F, W>(
+    batches: Vec<Vec<T>>,
     num_threads: usize,
     worker_fn: F,
     mut consumer_fn: W,
@@ -20,52 +36,69 @@ where
     F: Fn(T) -> Result<R, VardictError> + Send + Sync + 'static,
     W: FnMut(R) -> Result<(), VardictError>,
 {
+    if batches.is_empty() {
+        return Ok(());
+    }
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(num_threads)
         .build()
         .map_err(|e| {
             VardictError::Io(std::io::Error::other(format!(
-                "Failed to build thread pool: {}",
+                "Failed to build rayon thread pool: {}",
                 e
             )))
         })?;
 
     let window_size = if num_threads > 0 { num_threads * 4 } else { 4 };
-    let (tx, rx) = mpsc::channel::<(usize, Result<R, VardictError>)>();
+    let (tx, rx) = mpsc::channel::<(usize, Result<Vec<R>, VardictError>)>();
 
-    // Mutex state: (next_expected_idx, is_shutdown)
-    let shared_state = Arc::new((Mutex::new((0_usize, false)), Condvar::new()));
-    let worker_fn = Arc::new(worker_fn);
-    let pool = Arc::new(pool);
+    // Shared state for throttling: (next_expected_batch_idx, is_shutdown) + lock-free AtomicBool
+    type SharedState = (Mutex<(usize, bool)>, Condvar, std::sync::atomic::AtomicBool);
+    let shared_state: Arc<SharedState> = Arc::new((
+        Mutex::new((0_usize, false)),
+        Condvar::new(),
+        std::sync::atomic::AtomicBool::new(false),
+    ));
 
-    // Use a Drop guard to ensure shutdown flag is set and condvar is notified on early exit
-    struct ShutdownGuard<'a> {
-        state: &'a (Mutex<(usize, bool)>, Condvar),
+    struct ShutdownGuard {
+        state: Arc<SharedState>,
     }
-    impl<'a> Drop for ShutdownGuard<'a> {
+    impl Drop for ShutdownGuard {
         fn drop(&mut self) {
-            let (lock, cvar) = self.state;
-            let mut state = lock.lock().unwrap_or_else(|e| e.into_inner());
+            self.state
+                .2
+                .store(true, std::sync::atomic::Ordering::Release);
+            let mut state = self.state.0.lock().unwrap_or_else(|e| e.into_inner());
             state.1 = true;
-            cvar.notify_all();
+            self.state.1.notify_all();
         }
     }
 
+    let batches_len = batches.len();
+    let worker_fn = Arc::new(worker_fn);
+
     std::thread::scope(|s| {
         let _guard = ShutdownGuard {
-            state: &shared_state,
+            state: Arc::clone(&shared_state),
         };
 
-        let feeder_state = shared_state.clone();
-        let pool_clone = pool.clone();
-        let items_len = items.len();
+        let shared_clone = Arc::clone(&shared_state);
+        let pool_clone = &pool;
+        let worker_fn_clone = Arc::clone(&worker_fn);
 
+        // Feeder thread
         s.spawn(move || {
-            let (lock, cvar) = &*feeder_state;
-            for (idx, item) in items.into_iter().enumerate() {
-                let mut state = lock.lock().unwrap_or_else(|e| e.into_inner());
-                while idx >= state.0 + window_size && !state.1 {
-                    state = cvar.wait(state).unwrap_or_else(|e| e.into_inner());
+            let (lock, cvar, _) = &*shared_clone;
+            for (batch_idx, batch) in batches.into_iter().enumerate() {
+                let mut state = match lock.lock() {
+                    Ok(g) => g,
+                    Err(p) => p.into_inner(),
+                };
+                while batch_idx >= state.0 + window_size && !state.1 {
+                    state = match cvar.wait(state) {
+                        Ok(g) => g,
+                        Err(p) => p.into_inner(),
+                    };
                 }
                 if state.1 {
                     break;
@@ -73,47 +106,69 @@ where
                 drop(state);
 
                 let tx_clone = tx.clone();
-                let w_fn = worker_fn.clone();
+                let w_fn = Arc::clone(&worker_fn_clone);
+                let state_for_worker = Arc::clone(&shared_clone);
                 pool_clone.spawn(move || {
-                    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| w_fn(item)))
-                        .unwrap_or_else(|_| {
-                            Err(VardictError::Io(std::io::Error::other(format!(
-                                "Worker panicked processing tile {}",
-                                idx
-                            ))))
-                        });
-                    let _ = tx_clone.send((idx, res));
+                    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        let mut out = Vec::with_capacity(batch.len());
+                        for (item_idx, item) in batch.into_iter().enumerate() {
+                            if item_idx > 0
+                                && state_for_worker
+                                    .2
+                                    .load(std::sync::atomic::Ordering::Relaxed)
+                            {
+                                break;
+                            }
+                            out.push(w_fn(item)?);
+                        }
+                        Ok(out)
+                    }))
+                    .unwrap_or_else(|_| {
+                        Err(VardictError::Io(std::io::Error::other(format!(
+                            "Worker thread panicked on batch {}",
+                            batch_idx
+                        ))))
+                    });
+                    let _ = tx_clone.send((batch_idx, res));
                 });
             }
         });
 
+        // Consumer loop on main thread
         let mut next_expected_idx = 0;
         let mut pending = BTreeMap::new();
-        let (lock, cvar) = &*shared_state;
+        let (lock, cvar, _) = &*shared_state;
 
-        for (idx, res) in rx {
-            let val = res?;
-            pending.insert(idx, val);
+        for (batch_idx, res) in rx {
+            let batch_vals = res?;
+            pending.insert(batch_idx, batch_vals);
 
             let mut advanced = false;
-            while let Some(val) = pending.remove(&next_expected_idx) {
-                consumer_fn(val)?;
+            while let Some(vals) = pending.remove(&next_expected_idx) {
+                for val in vals {
+                    consumer_fn(val)?;
+                }
                 next_expected_idx += 1;
                 advanced = true;
             }
+
             if advanced {
-                let mut state = lock.lock().unwrap_or_else(|e| e.into_inner());
+                let mut state = match lock.lock() {
+                    Ok(g) => g,
+                    Err(p) => p.into_inner(),
+                };
                 state.0 = next_expected_idx;
                 cvar.notify_all();
             }
-            if next_expected_idx == items_len {
+
+            if next_expected_idx == batches_len {
                 break;
             }
         }
 
-        if next_expected_idx < items_len {
+        if next_expected_idx < batches_len {
             return Err(VardictError::Io(std::io::Error::other(format!(
-                "Tile {} failed or panicked; pipeline aborted early",
+                "Tile batch {} failed or panicked; pipeline aborted early",
                 next_expected_idx
             ))));
         }
@@ -209,5 +264,41 @@ mod tests {
         assert!(result.is_ok(), "Test timed out, feeder thread likely hung");
         let run_result = result.unwrap();
         assert!(run_result.is_err(), "Expected an error from worker panic");
+    }
+
+    #[test]
+    fn test_batched_ordered_output_and_early_abort() {
+        let batches: Vec<Vec<usize>> = (0..20).map(|b| (b * 8..(b + 1) * 8).collect()).collect();
+        let mut results = Vec::new();
+        run_parallel_batched(
+            batches.clone(),
+            4,
+            |item| {
+                if item == 0 {
+                    std::thread::sleep(std::time::Duration::from_millis(30));
+                }
+                Ok(item * 2)
+            },
+            |val| {
+                results.push(val);
+                Ok(())
+            },
+        )
+        .unwrap();
+        let expected: Vec<usize> = (0..160).map(|i| i * 2).collect();
+        assert_eq!(results, expected);
+
+        // Early abort mid-batch must return Err without hanging
+        let mut seen = Vec::new();
+        let res = run_parallel_batched(batches, 4, Ok, |val| {
+            seen.push(val);
+            if val == 5 {
+                Err(VardictError::Other("abort mid-batch".to_string()))
+            } else {
+                Ok(())
+            }
+        });
+        assert!(res.is_err());
+        assert_eq!(seen, vec![0, 1, 2, 3, 4, 5]);
     }
 }

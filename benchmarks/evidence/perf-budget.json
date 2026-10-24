@@ -1,17 +1,13 @@
 {
   "cmd": [
     "python3",
-    "harness/perf_budget.py",
-    "hg008-tier2",
-    "seqc2-exome-tier2",
-    "hg002-tier2",
-    "amplicon-tier2"
+    "harness/perf_budget.py"
   ],
   "compare_head": [],
   "cpp_time": null,
-  "date": "2026-10-23T18:31:34-07:00",
-  "fingerprint": "817d89c5fb34515d",
-  "head": "f9587d50993e89757ae5647315d3d88c50f5fb67",
+  "date": "2026-10-23T23:48:34-07:00",
+  "fingerprint": "27f3667b32ac14f5",
+  "head": "3dd250f9a3cf3dff87575102d090ed2644056a70",
   "java_time": null,
   "n_variants": null,
   "name": "perf-budget",
