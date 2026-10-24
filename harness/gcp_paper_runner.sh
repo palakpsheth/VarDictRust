@@ -99,15 +99,15 @@ build_gcloud_create_cmd() {
   printf '%s\n' "${cmd[@]}"
 }
 
-# Single-stream gsutil upload helper (Task 5a C1/C2: avoid gcloud storage cp hangs
-# and retain MD5 on >150 MB objects via parallel_composite_upload_threshold=0).
+# Single-stream gsutil upload helper (Task 5a C1/C2: avoid gcloud storage cp hangs,
+# avoid gsutil -m process-group SIGTERM teardown, and retain MD5 on >150 MB objects).
 gcs_upload() {
   local src="$1" dst="$2"
   if [ -n "${LOCAL_CKPT_DIR:-}" ]; then
     mkdir -p "$(dirname "$dst")"
     cp -r "$src" "$dst"
   else
-    gsutil -o GSUtil:parallel_composite_upload_threshold=0 -m cp -r "$src" "$dst"
+    setsid gsutil -o GSUtil:parallel_composite_upload_threshold=0 -q cp -r "$src" "$dst"
   fi
 }
 
@@ -116,7 +116,7 @@ gcs_stat_done() {
   if [ -n "${LOCAL_CKPT_DIR:-}" ]; then
     [ -f "${LOCAL_CKPT_DIR}/${cell_id}.done" ]
   else
-    gsutil -q stat "${GCS_CKPT}/${cell_id}.done" 2>/dev/null
+    setsid gsutil -q stat "${GCS_CKPT}/${cell_id}.done" 2>/dev/null
   fi
 }
 
@@ -128,7 +128,7 @@ gcs_mark_done() {
     mkdir -p "${LOCAL_CKPT_DIR}"
     echo "$stamp" > "${LOCAL_CKPT_DIR}/${cell_id}.done"
   else
-    printf '%s\n' "$stamp" | gsutil -q cp - "${GCS_CKPT}/${cell_id}.done"
+    printf '%s\n' "$stamp" | setsid gsutil -q cp - "${GCS_CKPT}/${cell_id}.done"
   fi
 }
 
@@ -141,7 +141,7 @@ gcs_write_heartbeat() {
     mkdir -p "${LOCAL_CKPT_DIR}"
     printf '%s\n' "$payload" > "${LOCAL_CKPT_DIR}/status.json"
   else
-    printf '%s\n' "$payload" | gsutil -q cp - "${GCS_CKPT}/status.json" || true
+    printf '%s\n' "$payload" | setsid gsutil -q cp - "${GCS_CKPT}/status.json" || true
   fi
 }
 
@@ -245,16 +245,16 @@ run_stage_1() {
 
   run_checkpointed_cell "stage1" "s1_stage_assets" 32 "128G" bash -c "
     set -euo pipefail
-    if gsutil -q stat '${GCS_BAMS}/g4-cache/s1_ready.done' 2>/dev/null; then
-      gsutil -m rsync -r '${GCS_BAMS}/g4-cache/amplicon' scratch/g4/amplicon
-      gsutil -m rsync -r '${GCS_BAMS}/g4-cache/hg002' scratch/g4/hg002
-      gsutil -m rsync -r '${GCS_BAMS}/g4-cache/hg008' scratch/g4/hg008
+    if setsid gsutil -q stat '${GCS_BAMS}/g4-cache/s1_ready.done' 2>/dev/null; then
+      setsid gsutil -q rsync -r '${GCS_BAMS}/g4-cache/amplicon' scratch/g4/amplicon
+      setsid gsutil -q rsync -r '${GCS_BAMS}/g4-cache/hg002' scratch/g4/hg002
+      setsid gsutil -q rsync -r '${GCS_BAMS}/g4-cache/hg008' scratch/g4/hg008
     fi
     bash harness/stage_g4.sh refs amplicon hg002 hg008
-    gsutil -o GSUtil:parallel_composite_upload_threshold=0 -m rsync -r scratch/g4/amplicon '${GCS_BAMS}/g4-cache/amplicon' || true
-    gsutil -o GSUtil:parallel_composite_upload_threshold=0 -m rsync -r scratch/g4/hg002 '${GCS_BAMS}/g4-cache/hg002' || true
-    gsutil -o GSUtil:parallel_composite_upload_threshold=0 -m rsync -r scratch/g4/hg008 '${GCS_BAMS}/g4-cache/hg008' || true
-    date -u +%Y-%m-%dT%H:%M:%SZ | gsutil -q cp - '${GCS_BAMS}/g4-cache/s1_ready.done' || true
+    setsid gsutil -o GSUtil:parallel_composite_upload_threshold=0 -q rsync -r scratch/g4/amplicon '${GCS_BAMS}/g4-cache/amplicon' || true
+    setsid gsutil -o GSUtil:parallel_composite_upload_threshold=0 -q rsync -r scratch/g4/hg002 '${GCS_BAMS}/g4-cache/hg002' || true
+    setsid gsutil -o GSUtil:parallel_composite_upload_threshold=0 -q rsync -r scratch/g4/hg008 '${GCS_BAMS}/g4-cache/hg008' || true
+    date -u +%Y-%m-%dT%H:%M:%SZ | setsid gsutil -q cp - '${GCS_BAMS}/g4-cache/s1_ready.done' || true
   "
   ensure_submodule_excludes
 
@@ -327,10 +327,10 @@ run_stage_2() {
 
   run_checkpointed_cell "stage2" "s2_stage_tierp_assets" 32 "128G" bash -c "
     set -euo pipefail
-    gsutil -m cp '${GCS_BAMS}/tier-p/*' '$tp_dir/bams/'
-    gsutil -m cp '${GCS_REFS}/tier-p-truth/*' '$tp_dir/truth/'
+    setsid gsutil -q cp '${GCS_BAMS}/tier-p/*' '$tp_dir/bams/'
+    setsid gsutil -q cp '${GCS_REFS}/tier-p-truth/*' '$tp_dir/truth/'
     if [ ! -f '$tp_dir/archive/Archive.zip' ]; then
-      gsutil cp '${GCS_REFS}/vardictcpp/Archive.zip' '$tp_dir/archive/Archive.zip'
+      setsid gsutil -q cp '${GCS_REFS}/vardictcpp/Archive.zip' '$tp_dir/archive/Archive.zip'
     fi
     unzip -q -o '$tp_dir/archive/Archive.zip' 'reference/*' 'beds/*' 'scripts/*' 'performance_benchmark/*' 'MD5SUMS.txt' -d '$tp_dir/archive/'
     if [ ! -x '$tp_dir/vardictcpp-ae93fe39dc/build/src/vardictcpp' ]; then
@@ -427,7 +427,7 @@ run_stage_3() {
   run_checkpointed_cell "stage3" "s3_stage_rna_aligned_bam" 32 "128G" bash -c "
     set -euo pipefail
     if [ ! -f '$rna_dir/HG002_rep1_Aligned.sortedByCoord.out.bam' ]; then
-      gsutil -m cp '${GCS_BAMS}/rna-hg002/aligned/HG002_rep1_Aligned.sortedByCoord.out.bam*' '$rna_dir/'
+      setsid gsutil -q cp '${GCS_BAMS}/rna-hg002/aligned/HG002_rep1_Aligned.sortedByCoord.out.bam*' '$rna_dir/'
     fi
     samtools quickcheck '$rna_dir/HG002_rep1_Aligned.sortedByCoord.out.bam'
   "
@@ -454,15 +454,15 @@ run_stage_4() {
 
   run_checkpointed_cell "stage4" "s4_stage_seqc2_full" 32 "128G" bash -c "
     set -euo pipefail
-    if gsutil -q stat '${GCS_BAMS}/g4-cache/s4_ready.done' 2>/dev/null; then
+    if setsid gsutil -q stat '${GCS_BAMS}/g4-cache/s4_ready.done' 2>/dev/null; then
       mkdir -p scratch/g4/seqc2 scratch/g4/multimodal
-      gsutil -m rsync -r '${GCS_BAMS}/g4-cache/seqc2' scratch/g4/seqc2
-      gsutil -m rsync -r '${GCS_BAMS}/g4-cache/multimodal' scratch/g4/multimodal
+      setsid gsutil -q rsync -r '${GCS_BAMS}/g4-cache/seqc2' scratch/g4/seqc2
+      setsid gsutil -q rsync -r '${GCS_BAMS}/g4-cache/multimodal' scratch/g4/multimodal
     fi
     bash harness/stage_g4.sh seqc2 multimodal
-    gsutil -o GSUtil:parallel_composite_upload_threshold=0 -m rsync -r -x 'fastq/.*' scratch/g4/seqc2 '${GCS_BAMS}/g4-cache/seqc2' || true
-    gsutil -o GSUtil:parallel_composite_upload_threshold=0 -m rsync -r scratch/g4/multimodal '${GCS_BAMS}/g4-cache/multimodal' || true
-    date -u +%Y-%m-%dT%H:%M:%SZ | gsutil -q cp - '${GCS_BAMS}/g4-cache/s4_ready.done' || true
+    setsid gsutil -o GSUtil:parallel_composite_upload_threshold=0 -q rsync -r -x 'fastq/.*' scratch/g4/seqc2 '${GCS_BAMS}/g4-cache/seqc2' || true
+    setsid gsutil -o GSUtil:parallel_composite_upload_threshold=0 -q rsync -r scratch/g4/multimodal '${GCS_BAMS}/g4-cache/multimodal' || true
+    date -u +%Y-%m-%dT%H:%M:%SZ | setsid gsutil -q cp - '${GCS_BAMS}/g4-cache/s4_ready.done' || true
   "
   ensure_submodule_excludes
 
@@ -540,6 +540,7 @@ run_stage_4() {
 
 run_worker() {
   local target_stage="${1:-all}"
+  trap '' TERM
   worker_preflight
   case "$target_stage" in
     1) run_stage_1 ;;
@@ -647,6 +648,7 @@ run_controller() {
       cat > '$WORK_DIR/bootstrap_and_run.sh' <<'EOS'
 #!/usr/bin/env bash
 set -euo pipefail
+trap '' TERM
 export WORK_DIR='${WORK_DIR}'
 export GCS_CKPT='${GCS_CKPT}'
 export GOLDEN_MODE=off
