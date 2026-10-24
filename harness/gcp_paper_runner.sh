@@ -1452,9 +1452,75 @@ oracle_cache_get_or_run() {
   fi
 }
 
+# Converts an already-generated VarDictJava .var file into a .vcf file using the exact
+# R (teststrandbias.R / testsomatic.R) + Perl (var2vcf_valid.pl / var2vcf_paired.pl) pipeline
+# from harness/run_oracle.sh without re-scanning the BAM a second time.
+oracle_var_to_vcf() {
+  local in_var="$1" ref="$2" bam_spec="$3" out_vcf="$4" sample="$5"
+  shift 5
+  local af="0.01"
+  local has_fisher="false"
+  local args=("$@")
+  local i
+  for ((i = 0; i < ${#args[@]}; i++)); do
+    case "${args[$i]}" in
+      -f)
+        if ((i + 1 < ${#args[@]})); then
+          af="${args[$((i + 1))]}"
+        fi
+        ;;
+      -f*)
+        af="${args[$i]#-f}"
+        ;;
+      -fisher|--fisher)
+        has_fisher="true"
+        ;;
+    esac
+  done
+
+  local tmp_contigs=""
+  if [ -f "${ref}.fai" ]; then
+    tmp_contigs="$(mktemp)"
+    awk '{print $1"\t0\t"$2}' "${ref}.fai" > "$tmp_contigs"
+  fi
+
+  if [[ "$bam_spec" == *"|"* ]]; then
+    conda run -n vardict-oracle bash -c '
+      set -euo pipefail
+      V2V_ARGS=()
+      if [ -n "$6" ] && [ -f "$6" ]; then
+        V2V_ARGS=(-G "$1" -b "$6")
+      fi
+      if [ "$5" = "true" ]; then
+        cat "$7" | var2vcf_paired.pl -N "$3" -f "$2" "${V2V_ARGS[@]}" > "$4"
+      else
+        cat "$7" | testsomatic.R | var2vcf_paired.pl -N "$3" -f "$2" "${V2V_ARGS[@]}" > "$4"
+      fi
+    ' _ "$ref" "$af" "$sample" "$out_vcf" "$has_fisher" "$tmp_contigs" "$in_var"
+  else
+    conda run -n vardict-oracle bash -c '
+      set -euo pipefail
+      V2V_ARGS=()
+      if [ -n "$6" ] && [ -f "$6" ]; then
+        V2V_ARGS=(-G "$1" -b "$6")
+      fi
+      if [ "$5" = "true" ]; then
+        cat "$7" | var2vcf_valid.pl -N "$3" -E -f "$2" "${V2V_ARGS[@]}" > "$4"
+      else
+        cat "$7" | teststrandbias.R | var2vcf_valid.pl -N "$3" -E -f "$2" "${V2V_ARGS[@]}" > "$4"
+      fi
+    ' _ "$ref" "$af" "$sample" "$out_vcf" "$has_fisher" "$tmp_contigs" "$in_var"
+  fi
+  rm -f "$tmp_contigs"
+}
+
 # Seeds ${GCS_ORACLE_CACHE} with all already-generated VarDictJava & vardictcpp .var/.sorted.var/.vcf outputs
 # currently present on NVMe (${WORK_DIR}/cells/) from Stage 1 and Stage 2 so nothing is ever regenerated.
 seed_oracle_cache_from_existing_cells() {
+  if gcs_stat_done "ORACLE_CACHE_SEEDED"; then
+    echo "[SKIP] ORACLE_CACHE_SEEDED already checkpointed in GCS."
+    return 0
+  fi
   echo "=== [Oracle Cache Seed: Backing up existing Stage 1 & Stage 2 Java/Cpp outputs to ${GCS_ORACLE_CACHE}] ==="
   local cells_root="${WORK_DIR}/cells"
   [ -d "$cells_root" ] || return 0
@@ -1479,6 +1545,7 @@ seed_oracle_cache_from_existing_cells() {
     rel="${f#${cells_root}/}"
     oracle_cache_put "cells/${rel}" "$f"
   done < <(find "$cells_root" -maxdepth 3 -type f \( -name 'java*.var' -o -name 'java*.vcf' -o -name 'cpp*.var' -o -name 'cpp*.vcf' \) -size +0c -print0 2>/dev/null || true)
+  gcs_mark_done "ORACLE_CACHE_SEEDED"
 }
 
 record_sweep_row() {
@@ -1582,7 +1649,7 @@ run_v103_parity_sweep() {
 
       target/release/vardictrust -G \"\$REF\" -f 0.01 -N '${acc}' -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -th 32 \"\$BED\" > \"\$KEEP_DIR/rust.vcf\"
       oracle_cache_get_or_run 'tierp/${acc}/java.vcf' \"\$KEEP_DIR/java.vcf\" \
-        env ORACLE_XMX_GB=200 bash harness/run_oracle.sh \"\$REF\" \"\$BAM\" \"\$BED\" \"\$KEEP_DIR/java.vcf\" '${acc}' -f 0.01 -th 32
+        oracle_var_to_vcf \"\$KEEP_DIR/java.var\" \"\$REF\" \"\$BAM\" \"\$KEEP_DIR/java.vcf\" '${acc}' -f 0.01
       compare_and_record_vcf 'sweep_tierp_${acc}' '${acc}' \"\$KEEP_DIR/java.vcf\" \"\$KEEP_DIR/rust.vcf\" \"\$KEEP_DIR/${acc}\"
     "
   done
@@ -1603,7 +1670,7 @@ run_v103_parity_sweep() {
 
     target/release/vardictrust -G \"\$REF\" -f 0.01 -N 'SRR15006376|SRR15006386' -b \"\${TUM}|\${NOR}\" -c 1 -S 2 -E 3 -g 4 -th 32 \"\$BED\" > \"\$KEEP_DIR/rust_som.vcf\"
     oracle_cache_get_or_run 'tierp/somatic_76_86/java_som.vcf' \"\$KEEP_DIR/java_som.vcf\" \
-      env ORACLE_XMX_GB=200 bash harness/run_oracle.sh \"\$REF\" \"\${TUM}|\${NOR}\" \"\$BED\" \"\$KEEP_DIR/java_som.vcf\" 'SRR15006376|SRR15006386' -f 0.01 -th 32
+      oracle_var_to_vcf \"\$KEEP_DIR/java_som.var\" \"\$REF\" \"\${TUM}|\${NOR}\" \"\$KEEP_DIR/java_som.vcf\" 'SRR15006376|SRR15006386' -f 0.01
     compare_and_record_vcf 'sweep_tierp_somatic_76_86' 'somatic_76_86' \"\$KEEP_DIR/java_som.vcf\" \"\$KEEP_DIR/rust_som.vcf\" \"\$KEEP_DIR/somatic_76_86\"
   "
 
@@ -1704,7 +1771,7 @@ run_v103_parity_sweep() {
 
     target/release/vardictrust -G \"\$REF\" -f 0.01 -N HG002 -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -z -th 32 \"\$KEEP_DIR/target20_4col.bed\" > \"\$KEEP_DIR/rust.vcf\"
     oracle_cache_get_or_run 'hg002_chr20_exome/java.vcf' \"\$KEEP_DIR/java.vcf\" \
-      env ORACLE_XMX_GB=200 bash harness/run_oracle.sh \"\$REF\" \"\$BAM\" \"\$KEEP_DIR/target20_4col.bed\" \"\$KEEP_DIR/java.vcf\" HG002 -f 0.01 -z -th 32
+      oracle_var_to_vcf \"\$KEEP_DIR/java.var\" \"\$REF\" \"\$BAM\" \"\$KEEP_DIR/java.vcf\" HG002 -f 0.01
     compare_and_record_vcf 'sweep_hg002_chr20_exome' 'hg002_chr20_exome' \"\$KEEP_DIR/java.vcf\" \"\$KEEP_DIR/rust.vcf\" \"\$KEEP_DIR/hg002_chr20_exome\"
   "
 
@@ -1787,7 +1854,7 @@ run_v103_parity_sweep() {
 
     target/release/vardictrust -G "$REF" -f 0 -N HCC1395 -b "$BAM" -c 1 -S 2 -E 3 -g 4 -z -th 32 "$KEEP_DIR/chr1_10m.bed" > "$KEEP_DIR/rust_chr1_10m_f0.vcf"
     oracle_cache_get_or_run "span_chr1_f0/java_chr1_10m_f0.vcf" "$KEEP_DIR/java_chr1_10m_f0.vcf" \
-      env ORACLE_XMX_GB=200 bash harness/run_oracle.sh "$REF" "$BAM" "$KEEP_DIR/chr1_10m.bed" "$KEEP_DIR/java_chr1_10m_f0.vcf" HCC1395 -f 0 -z -th 32
+      oracle_var_to_vcf "$KEEP_DIR/java_chr1_10m_f0.var" "$REF" "$BAM" "$KEEP_DIR/java_chr1_10m_f0.vcf" HCC1395 -f 0
     compare_and_record_vcf "sweep_span_chr1_f0" "chr1_10m_f0" "$KEEP_DIR/java_chr1_10m_f0.vcf" "$KEEP_DIR/rust_chr1_10m_f0.vcf" "$KEEP_DIR/chr1_10m_f0"
   '
 
@@ -1810,7 +1877,7 @@ run_v103_parity_sweep() {
 
       "$VR" -G "$ref" -N "$sample" -b "$bam" -c 1 -S 2 -E 3 -g 4 -z -th 32 "${extra[@]}" "$bed" > "$KEEP_DIR/${arm}.rust.vcf"
       oracle_cache_get_or_run "wgs_mrd_matrix/${arm}.java.vcf" "$KEEP_DIR/${arm}.java.vcf" \
-        env ORACLE_XMX_GB=200 bash harness/run_oracle.sh "$ref" "$bam" "$bed" "$KEEP_DIR/${arm}.java.vcf" "$sample" -z -th 32 "${extra[@]}"
+        oracle_var_to_vcf "$KEEP_DIR/${arm}.java.var" "$ref" "$bam" "$KEEP_DIR/${arm}.java.vcf" "$sample" "${extra[@]}"
       compare_and_record_vcf "sweep_wgs_mrd_matrix" "$arm" "$KEEP_DIR/${arm}.java.vcf" "$KEEP_DIR/${arm}.rust.vcf" "$KEEP_DIR/${arm}"
     }
 
@@ -1881,7 +1948,7 @@ EOF
 
       \"\$VR\" -G \"\$ref\" -N \"\$sample\" -b \"\$bam\" -c 1 -S 2 -E 3 -g 4 -z -th 32 \"\${extra[@]}\" \"\$bed\" > \"\$KEEP_DIR/\${arm}.rust.vcf\"
       oracle_cache_get_or_run \"ultradeep_mrd/\${arm}.java.vcf\" \"\$KEEP_DIR/\${arm}.java.vcf\" \
-        env ORACLE_XMX_GB=200 bash harness/run_oracle.sh \"\$ref\" \"\$bam\" \"\$bed\" \"\$KEEP_DIR/\${arm}.java.vcf\" \"\$sample\" -z -th 32 \"\${extra[@]}\"
+        oracle_var_to_vcf \"\$KEEP_DIR/\${arm}.java.var\" \"\$ref\" \"\$bam\" \"\$KEEP_DIR/\${arm}.java.vcf\" \"\$sample\" \"\${extra[@]}\"
       compare_and_record_vcf 'sweep_ultradeep_mrd_stress' \"\$arm\" \"\$KEEP_DIR/\${arm}.java.vcf\" \"\$KEEP_DIR/\${arm}.rust.vcf\" \"\$KEEP_DIR/\${arm}\"
     }
 
