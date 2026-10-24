@@ -48,8 +48,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `muzzy_decay_ms:5000`) with runtime `narenas` auto-tuning (`2 * parallelism`
   capped at 32) and guarded `StructuralVariantsProcessor::find_sv` to filter out
   sub-`minr` soft-clip clusters before cloning `Sclip`, cutting peak RSS by
-  1.9×–4.2× (`hg002` `456.8 MiB`, `seqc2` `467.9 MiB`, `hg008` `313.1 MiB`, `chr1`
-  249 Mbp `1.39 GiB` with `1.20×` flat RSS scaling).
+  1.7×–4.2× (`hg002` `497.1 MiB`, `seqc2` `467.9 MiB`, `hg008` `313.1 MiB`, `chr1`
+  249 Mbp `1.42 GiB` with `1.22×` flat RSS scaling).
 - High-region-count Exome BED optimization (`EBO-1..EBO-3`, Issue #36): added
   `CachedBgzfReader` with a 1-block thread-local cursor and 8-shard × 16-slot
   LRU process-wide `BGZF_BLOCK_CACHE` in `bam.rs` (`EBO-1`), deferred
@@ -58,10 +58,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to 16 consecutive small same-chromosome tiles in `regions::batch_tiles` and
   `runner::run_parallel_batched` (`EBO-3`), cutting `seqc2-exome-tier2` wall
   time by **2.51×** (`19m 28.78s` $\to$ `7m 46.34s`, `6.9×` faster than
-  `VarDictJava`).
-- Recertified release evidence artifacts in `benchmarks/evidence/*.json`
+  `VarDictJava`) and `scale.json` exome BED wall time across 1–8 threads by
+  **1.38×–2.38×** (`3m 06.43s` at `-th 8`).
+- Recertified all 16 release evidence artifacts in `benchmarks/evidence/*.json`
   under engine fingerprint `27f3667b32ac14f5` (`perf_fingerprint`
-  `eb83a477758101c1`; `harness/acceptance.sh` 8/8 PASS).
+  `9f75643cf12aa988`; `harness/acceptance.sh` 8/8 PASS).
 
 ## [1.0.2] - 2026-10-17
 
