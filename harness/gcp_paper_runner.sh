@@ -1526,12 +1526,15 @@ bash harness/gcp_paper_runner.sh --worker all
 EOS
       chmod +x '$WORK_DIR/bootstrap_and_run.sh'
       sudo loginctl enable-linger \"\$(id -un)\"
-      sudo systemctl stop vardict-paper-worker.service 2>/dev/null || true
-      sudo systemctl reset-failed vardict-paper-worker.service 2>/dev/null || true
-      sudo systemd-run --unit=vardict-paper-worker \
-        --uid=\"\$(id -un)\" --gid=\"\$(id -gn)\" \
-        --setenv=HOME=\"\$HOME\" \
-        bash '$WORK_DIR/bootstrap_and_run.sh'
+      if systemctl is-active --quiet vardict-paper-worker.service; then
+        echo '[Controller] vardict-paper-worker.service is already active; attaching monitor without restart.'
+      else
+        sudo systemctl reset-failed vardict-paper-worker.service 2>/dev/null || true
+        sudo systemd-run --unit=vardict-paper-worker \
+          --uid=\"\$(id -un)\" --gid=\"\$(id -gn)\" \
+          --setenv=HOME=\"\$HOME\" \
+          bash '$WORK_DIR/bootstrap_and_run.sh'
+      fi
     "
 
     # Poll VM status & GCS heartbeat every 30s until ALL_STAGES.done, worker failure, or Spot preemption
