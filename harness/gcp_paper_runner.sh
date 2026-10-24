@@ -1554,6 +1554,8 @@ record_sweep_row() {
   mkdir -p "$(dirname "$summary")"
   if [ ! -f "$summary" ]; then
     printf 'cell\tsurface\tjava_count\trust_count\tfp_rust_vs_java\tfn_rust_vs_java\tverdict\tnotes\n' > "$summary"
+  else
+    awk -F'\t' -v c="$cell" -v s="$surface" '!($1==c && $2==s)' "$summary" > "${summary}.tmp" && mv -f "${summary}.tmp" "$summary"
   fi
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$cell" "$surface" "$j_cnt" "$r_cnt" "$fp" "$fn" "$verdict" "$notes" | tee -a "$summary"
   if [ -n "${KEEP_DIR:-}" ]; then
@@ -1784,7 +1786,9 @@ run_v103_parity_sweep() {
     BED=\"\$DATA_DIR/hg002/eval.bed\"
 
     # Arm A: Full-transcriptome -i splice-junction table
-    target/release/vardictrust -G \"\$REF\" -f 0.01 -N HG002_RNA -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -z -i --emit-intermediate -th 32 \"\$BED\" > \"\$KEEP_DIR/rust.splice.tsv\"
+    if [ ! -s \"\$KEEP_DIR/rust.splice.tsv\" ]; then
+      target/release/vardictrust -G \"\$REF\" -f 0.01 -N HG002_RNA -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -z -i --emit-intermediate -th 32 \"\$BED\" > \"\$KEEP_DIR/rust.splice.tsv\"
+    fi
     oracle_cache_get_or_run 'rna_hg002_52gb/java.splice.tsv' \"\$KEEP_DIR/java.splice.tsv\" \
       bash -c \"_JAVA_OPTIONS='-Xmx200g' conda run -n vardict-oracle vardict-java -G '\$REF' -f 0.01 -N HG002_RNA -b '\$BAM' -c 1 -S 2 -E 3 -g 4 -z 1 -i -th 32 '\$BED' > '\$KEEP_DIR/java.splice.tsv'\"
     LC_ALL=C sort \"\$KEEP_DIR/java.splice.tsv\" > \"\$KEEP_DIR/java.splice.sorted.tsv\"
@@ -1802,7 +1806,7 @@ run_v103_parity_sweep() {
     record_sweep_row 'sweep_rna_hg002_52gb' 'rna_splice_table' \"\$j_sp\" \"\$r_sp\" \"\$fp_sp\" \"\$fn_sp\" \"\$sp_verdict\" \"\$(head -n 2 \"\$KEEP_DIR/compare_splice_var.txt\" | tr '\n\t' '  ')\"
 
     # Arm B: Splice-aware cDNA variant calling (without -i) on chr20 GIAB eval regions (first 500 intervals)
-    awk '\$1==\"chr20\"' \"\$BED\" | head -n 500 > \"\$KEEP_DIR/chr20_rna_cdna.bed\"
+    awk '\$1==\"chr20\"{print; if (++n==500) exit}' \"\$BED\" > \"\$KEEP_DIR/chr20_rna_cdna.bed\"
     target/release/vardictrust -G \"\$REF\" -f 0.01 -N HG002_RNA -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -z --emit-intermediate -th 32 \"\$KEEP_DIR/chr20_rna_cdna.bed\" > \"\$KEEP_DIR/rust_cdna.var\"
     oracle_cache_get_or_run 'rna_hg002_52gb/java_cdna.var' \"\$KEEP_DIR/java_cdna.var\" \
       bash -c \"_JAVA_OPTIONS='-Xmx200g' conda run -n vardict-oracle vardict-java -G '\$REF' -f 0.01 -N HG002_RNA -b '\$BAM' -c 1 -S 2 -E 3 -g 4 -z 1 -th 32 '\$KEEP_DIR/chr20_rna_cdna.bed' > '\$KEEP_DIR/java_cdna.var'\"
