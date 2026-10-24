@@ -1015,7 +1015,7 @@ run_stage_4() {
           bash harness/compare.sh \
           "$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fasta" \
           "$DATA_DIR/hg002/HG002.chr20.bam" \
-          "$DATA_DIR/hg002/engine.bed" HG002 -f 0.01 -th 8
+          "$DATA_DIR/hg002/eval.bed" HG002 -f 0.01 -th 8
         cp "$KEEP_DIR/hg002/rust.time" "$KEEP_DIR/hg002/rust_run${run}.time"
         cp "$KEEP_DIR/hg002/java.time" "$KEEP_DIR/hg002/java_run${run}.time"
         [ -f "$KEEP_DIR/hg002/cpp.time" ] && cp "$KEEP_DIR/hg002/cpp.time" "$KEEP_DIR/hg002/cpp_run${run}.time" || true
@@ -1058,7 +1058,7 @@ run_stage_4() {
 
     # Sequentially record evidence receipts after the wait barrier (zero file contention)
     python3 harness/record_evidence.py amplicon-tier2 MATCH "$KEEP_DIR/amplicon" -- bash harness/compare.sh "$DATA_DIR/amplicon/ref.fa" "$DATA_DIR/amplicon/amplicon.bam" "$DATA_DIR/amplicon/correct_8columns_amplicon.bed" SAMPLE -a 10:0.95 -th 8
-    python3 harness/record_evidence.py hg002-tier2 MATCH "$KEEP_DIR/hg002" -- bash harness/compare.sh "$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fasta" "$DATA_DIR/hg002/HG002.chr20.bam" "$DATA_DIR/hg002/engine.bed" HG002 -f 0.01 -th 8
+    python3 harness/record_evidence.py hg002-tier2 MATCH "$KEEP_DIR/hg002" -- bash harness/compare.sh "$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fasta" "$DATA_DIR/hg002/HG002.chr20.bam" "$DATA_DIR/hg002/eval.bed" HG002 -f 0.01 -th 8
     python3 harness/record_evidence.py hg008-tier2 MATCH "$KEEP_DIR/hg008" -- bash harness/compare.sh "$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fa" "$DATA_DIR/hg008/HG008-T.slice.bam|$DATA_DIR/hg008/HG008-N.slice.bam" "$DATA_DIR/hg008/engine.bed" "HG008-T|HG008-N" -th 8
     python3 harness/record_evidence.py seqc2-exome-tier2 MATCH "$KEEP_DIR/seqc2" -- bash harness/compare.sh "$DATA_DIR/ref/d1vd1/GRCh38.d1.vd1.fa" "$DATA_DIR/seqc2/HCC1395.bam|$DATA_DIR/seqc2/HCC1395BL.bam" "$DATA_DIR/seqc2/exome.engine.bed" "HCC1395|HCC1395BL" -th 8
 
@@ -1827,8 +1827,8 @@ run_v103_parity_sweep() {
 
     # (b) HG002 Deep WGS (chr20:10M-30M, 227,562 variants)
     oracle_cache_get_or_run "4targets_full/hg002/java.vcf" "$KEEP_DIR/hg002/java.vcf" \
-      env ORACLE_XMX_GB=200 bash harness/run_oracle.sh "$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fasta" "$DATA_DIR/hg002/HG002.chr20.bam" "$DATA_DIR/hg002/engine.bed" "$KEEP_DIR/hg002/java.vcf" HG002 -z -f 0.01 -th 32
-    target/release/vardictrust -G "$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fasta" -f 0.01 -N HG002 -b "$DATA_DIR/hg002/HG002.chr20.bam" -c 1 -S 2 -E 3 -g 4 -z -th 32 "$DATA_DIR/hg002/engine.bed" > "$KEEP_DIR/hg002/rust.vcf"
+      env ORACLE_XMX_GB=200 bash harness/run_oracle.sh "$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fasta" "$DATA_DIR/hg002/HG002.chr20.bam" "$DATA_DIR/hg002/eval.bed" "$KEEP_DIR/hg002/java.vcf" HG002 -z -f 0.01 -th 32
+    target/release/vardictrust -G "$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fasta" -f 0.01 -N HG002 -b "$DATA_DIR/hg002/HG002.chr20.bam" -c 1 -S 2 -E 3 -g 4 -z -th 32 "$DATA_DIR/hg002/eval.bed" > "$KEEP_DIR/hg002/rust.vcf"
     compare_and_record_vcf "sweep_4targets_full" "hg002_deep_wgs" "$KEEP_DIR/hg002/java.vcf" "$KEEP_DIR/hg002/rust.vcf" "$KEEP_DIR/hg002/cmp"
 
     # (c) HG008 Somatic Paired Deep WGS (18,426 variants)
