@@ -37,7 +37,7 @@ The harness operates in two distinct tiers:
 | :--- | :--- | :--- |
 | [`acceptance.sh`](acceptance.sh) | **Master Acceptance Gate:** Executes the 8 mandatory release criteria defined in [`AGENTS.md` §15](../AGENTS.md#15-definition-of-done-every-change). Verifies workspace unit tests, 91/1 corpus parity, Tier-2 micro/macro parity, crash robustness, 4-target performance budget, truth concordance, hygiene, and distribution equivalence. | $<1\text{m}$ |
 | [`pr_check.sh`](pr_check.sh) | **Standard PR Regression Suite:** Enforces a 6-stage verification gate on all PRs: Hygiene (`cargo fmt`, `clippy -D warnings`, `cargo audit`, `cargo deny`), Crash Robustness, 91/1 Corpus, Tier-2 Micro Parity, 4-Target Performance Budget, and Gitleaks secret scanning. | $<35\text{s}$ |
-| [`run_self_tests.sh`](run_self_tests.sh) | **Diagnostic Self-Test Harness:** Discovers and executes all 21 diagnostic test scripts (14 shell tests and 7 python test suites in `harness/tests/`), reporting unified status and elapsed milliseconds. | $<10\text{s}$ |
+| [`run_self_tests.sh`](run_self_tests.sh) | **Diagnostic Self-Test Harness:** Discovers and executes all 24 diagnostic test scripts (16 shell tests and 8 python test suites in `harness/tests/`), reporting unified status and elapsed milliseconds. | $<10\text{s}$ |
 | [`setup_hooks.sh`](setup_hooks.sh) | **Git Hooks Configuration:** Configures repository Git hook path to `.githooks/` (`git config core.hooksPath .githooks`), activating fast local pre-commit hygiene and secret checks. | $<1\text{s}$ |
 | [`engine_fingerprint.sh`](engine_fingerprint.sh) | **Release Engine Fingerprinter:** Computes a 16-character SHA-256 hash across engine source code (`crates/*/src`), comparator drivers, and locked dependencies (`Cargo.lock`). Guarantees evidence records are tied to an exact, unmutated engine commit. | $<1\text{s}$ |
 | [`bin_equiv.sh`](bin_equiv.sh) | **Binary Equivalence Gate:** Validates that statically-compiled `x86_64-unknown-linux-musl` release binaries produce identical variant calls to glibc binaries. | $<30\text{s}$ |
@@ -58,6 +58,8 @@ The harness operates in two distinct tiers:
 | [`get_hg008_slice.sh`](get_hg008_slice.sh) | **HG008 HTTP BAM Slicer & CRAM Twin Builder:** Streams paired Tumor (195×) and Normal (169×) GIAB HG008 slices over HTTPS, derives `slices.bed`/`engine.bed`/`eval.bed`, and encodes `HG008-{T,N}.slice.cram` twins. |
 | [`run_hg002.sh`](run_hg002.sh) | **HG002 Benchmark Driver:** First-class automated runner executing HG002 Tier-2 dual-engine comparison and RTG vcfeval truth concordance. |
 | [`scale_bench.sh`](scale_bench.sh) | **Scaling Benchmark Driver:** Runs whole-chromosome 1 scaling benchmarks across thread allocations (1, 2, 4, 8 threads), measuring speedup and memory linearity. |
+| [`profile.sh`](profile.sh) | **Profiling Driver (issue #30):** `profile.sh {baseline,optimized} [--only <cell>] [--dry-run]` runs the Rust engine only on named cells (`tiny`, `s1a`, `s8`, `s9`, `s3`, `rna-i`, `hg002`, `hg008`, `wgs-scale`) with the `profile-cpu` / `profile-heap` / `profile-dhat` builds, each through `courtesy.sh` (and a `systemd-run` `MemoryMax=14G` scope for dhat and the large cells; dhat never runs on HG002/HG008/WGS), records `/usr/bin/time -v`, and writes `scratch/profiles/<tag>/<cell>/` plus `catalog.md`. Refuses to write under `benchmarks/evidence/`. |
+| [`profile_catalog.py`](profile_catalog.py) | **Profile Catalog Ranker:** stdlib-only `profile_catalog.py <cell-dir>... -o catalog.md [--min-pct 2]`; ranks CPU self time, dhat bytes/blocks and jemalloc heap bytes by the innermost `vardictrust_core::` frame, decodes the pprof `heap.pb.gz` with a hand-written protobuf reader, writes full-stack `*-collapsed.txt` files, renders `dhat-*.svg` when `inferno-flamegraph` is on `PATH`, and links every flamegraph SVG from the catalog. |
 | [`perf_budget.py`](perf_budget.py) | **Performance Budget Verifier:** Evaluates execution time and peak memory against VarDictJava baselines across 4 targets (HG008, SEQC2, HG002, Amplicon), asserting Rust $\le$ Java wall time and RSS. |
 | [`run_multimodal_slices.sh`](run_multimodal_slices.sh) | **Multi-Modal Multi-Slice Parity Suite:** Executes dual-engine live oracle verification across 18 non-overlapping biological slices from 6 diverse public datasets spanning 9 distinct chromosomes. Asserts 18/18 MATCH and writes `benchmarks/evidence/multimodal-slices-tier2.json`. |
 | [`get_multimodal_slices.sh`](get_multimodal_slices.sh) | **Multi-Modal Slice Streamer:** Ingests and streams 18 non-overlapping slices across 6 public datasets (COLO829, Platinum NA12878, SEQC2, GIAB HG005, Amplicon, RNA-seq) consuming $<150\text{ MB}$ disk space. |
@@ -87,7 +89,7 @@ The [`slices.tsv`](slices.tsv) index and [`slices/`](slices/) directory define t
 
 ## 6. Meta-Test Suite (`harness/tests/`)
 
-The harness contains an internal self-test suite (21 test scripts) verifying that the harness tools, comparators, and zero-dependency environment contracts function correctly:
+The harness contains an internal self-test suite (24 test scripts) verifying that the harness tools, comparators, and zero-dependency environment contracts function correctly:
 
 ```bash
 # Run all harness meta-tests using the diagnostic self-test harness
@@ -95,10 +97,10 @@ bash harness/run_self_tests.sh
 ```
 
 The runner dynamically discovers and executes:
-- 14 Shell Tests: `test_compare_sh.sh`, `test_concordance.sh`, `test_concordance_sv.sh`, `test_courtesy.sh`, `test_edge_cases.sh`, `test_env_pinned.sh`, `test_evidence.sh`, `test_fetch_data.sh`, `test_golden_wiring.sh`, `test_perf_budget.sh`, `test_run_cpp.sh`, `test_run_oracle.sh`, `test_scale_bench.sh`, `test_seqc2_align.sh`.
-- 7 Python Test Suites: `test_bioconda_recipe.py`, `test_compare_vcf.py` (10 tests), `test_docs_ui.py` (10 tests), `test_golden_store.py` (39 tests), `test_select_slice_regions.py` (4 tests), `test_stdlib_purity.py` (AST zero-PyPI import guard), `test_vcf_header.py` (1 test).
+- 16 Shell Tests: `test_compare_sh.sh`, `test_concordance.sh`, `test_concordance_sv.sh`, `test_courtesy.sh`, `test_edge_cases.sh`, `test_env_pinned.sh`, `test_evidence.sh`, `test_fetch_data.sh`, `test_golden_wiring.sh`, `test_perf_budget.sh`, `test_profile_sh.sh`, `test_release_deps.sh`, `test_run_cpp.sh`, `test_run_oracle.sh`, `test_scale_bench.sh`, `test_seqc2_align.sh`.
+- 8 Python Test Suites: `test_bioconda_recipe.py`, `test_compare_vcf.py` (10 tests), `test_docs_ui.py` (10 tests), `test_golden_store.py` (39 tests), `test_profile_catalog.py` (20 tests), `test_select_slice_regions.py` (4 tests), `test_stdlib_purity.py` (AST zero-PyPI import guard), `test_vcf_header.py` (1 test).
 
-All 21 diagnostic test scripts pass 100% green.
+All 24 diagnostic test scripts pass 100% green.
 
 ---
 
@@ -213,3 +215,31 @@ Replay of `/usr/bin/time -v` resource metrics (`time` or `time.gz`) is strictly 
   - Scheduled run start must fall between **05:15 and ~20:30** to avoid the nightly 03:40–05:15 host maintenance window.
   - Requires default core pin `SCALE_CPUS=0-7` with $P \ge 4$ distinct physical cores to satisfy the pre-registered speedup bar $\text{bar}(P) = 0.6 \cdot \min(8, P) = 2.4\times$.
 - **C++ Region Arm Notice:** In `scale_bench.sh`, the C++ region scaling arm is executed as a BED run through `run_cpp.sh` (converting `-R chr:start-end` into an equivalent 0-based BED interval). Consequently, `cpp_*` numbers in `scale.json` are not directly comparable to pre-#31 measurements.
+
+---
+
+## 8. Reproducible Engine Profiling (`harness/profile.sh` & `harness/profile_catalog.py`)
+
+`harness/profile.sh` and `harness/profile_catalog.py` drive reproducible multi-modality profiling (`profile-cpu` 499 Hz `pprof`, `profile-heap` `tikv-jemalloc-ctl` live heap, and `profile-dhat` `dhat` allocation-site profiler) across all benchmark modalities without contaminating production release builds (`harness/tests/test_release_deps.sh` enforces zero profiler crates in `cargo tree -p vardictrust --no-default-features`).
+
+```bash
+# 1. Multi-threaded (-th 8) full baseline / optimized profile (writes scratch/profiles/<tag>/ + catalog.md + SVGs):
+bash harness/profile.sh baseline
+bash harness/profile.sh optimized
+
+# 2. Single-threaded (-th 1) baseline / optimized profile (separates algorithmic cost/RSS from 8-thread contention):
+PROFILE_OUT=scratch/profiles-th1 PROFILE_THREADS=1 bash harness/profile.sh baseline
+PROFILE_OUT=scratch/profiles-th1 PROFILE_THREADS=1 bash harness/profile.sh optimized
+
+# 3. 100-iteration merged CPU profile for sub-second slice cells (<150 ms single-run duration):
+for c in tiny s8 s9 s3 rna-i; do
+  PROFILE_LOOPS=100 bash harness/profile.sh baseline --only "$c"
+done
+
+# 4. Bounded sub-window dhat allocation-site profiles on HG002 (594.5 kb) and HG008 somatic (774.7 kb):
+bash harness/profile.sh baseline --only hg002-sub
+bash harness/profile.sh baseline --only hg008-sub
+
+# 5. Re-build markdown catalog + SVG flamegraphs across all profiled cell directories:
+python3 harness/profile_catalog.py scratch/profiles/baseline/*/ -o scratch/profiles/baseline/catalog.md
+```

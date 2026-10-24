@@ -32,3 +32,7 @@ allow = [
     "GPL-2.0-or-later",
 ]
 confidence-threshold = 0.8
+# profiling-only: optional dep of vardictrust feature profile-cpu/profile-heap; never in the release graph
+exceptions = [
+    { allow = ["CDDL-1.0"], crate = "inferno" },
+]

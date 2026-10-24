@@ -171,77 +171,210 @@ impl SamRecord {
 
         self.template_length = record.template_length().unwrap_or(0);
 
-        // Ports the original if/else-if chain exactly: EDIT_DISTANCE is only
-        // consulted when the NM tag is absent or undecodable (a present but
-        // non-int NM still suppresses the fallback).
-        self.nm = match record
-            .data()
-            .get(&noodles::sam::alignment::record::data::field::Tag::new(
-                b'n', b'M',
-            )) {
-            Some(Ok(val)) => val.as_int().map(|x| x as i32),
-            _ => record
-                .data()
-                .get(&noodles::sam::alignment::record::data::field::Tag::EDIT_DISTANCE)
-                .and_then(|r| r.ok())
-                .and_then(|val| val.as_int().map(|x| x as i32)),
-        };
-
-        match record
-            .data()
-            .get(&noodles::sam::alignment::record::data::field::Tag::new(
-                b'S', b'A',
-            ))
-            .and_then(|r| r.ok())
-        {
-            Some(val) => {
-                let buf = self.sa.get_or_insert_with(String::new);
-                buf.clear();
-                match val {
-                    noodles::sam::alignment::record::data::field::Value::String(s) => {
-                        buf.push_str(&String::from_utf8_lossy(s.as_ref()));
-                    }
-                    _ => {
-                        use std::fmt::Write as _;
-                        let _ = write!(buf, "{val:?}");
-                    }
-                }
-            }
-            None => self.sa = None,
-        }
-
-        match record
-            .data()
-            .get(&noodles::sam::alignment::record::data::field::Tag::new(
-                b'M', b'C',
-            ))
-            .and_then(|r| r.ok())
-        {
-            Some(val) => {
-                let buf = self.mc.get_or_insert_with(String::new);
-                buf.clear();
-                match val {
-                    noodles::sam::alignment::record::data::field::Value::String(s) => {
-                        buf.push_str(&String::from_utf8_lossy(s.as_ref()));
-                    }
-                    _ => {
-                        use std::fmt::Write as _;
-                        let _ = write!(buf, "{val:?}");
-                    }
-                }
-            }
-            None => self.mc = None,
-        }
-
-        self.mq = record
-            .data()
-            .get(&noodles::sam::alignment::record::data::field::Tag::new(
-                b'M', b'Q',
-            ))
-            .and_then(|r| r.ok())
-            .and_then(|val| val.as_int().map(|x| x as u8));
+        let data = record.data();
+        self.fill_aux_from_iter(data.iter());
 
         Ok(())
+    }
+
+    /// Concrete `noodles::bam::Record` refill path (O-3): uses inherent methods
+    /// on `noodles::bam::Record` and a single pass over `record.data().iter()`,
+    /// avoiding per-read `Box<dyn Cigar>` / `Box<dyn Sequence>` /
+    /// `Box<dyn QualityScores>` / `Box<dyn Data>` trait-object allocations and
+    /// repeated linear scans of the aux block.
+    pub fn fill_from_bam_record(
+        &mut self,
+        record: &noodles::bam::Record,
+        header: &noodles::sam::Header,
+    ) -> Result<(), std::io::Error> {
+        self.clear();
+
+        if let Some(name) = record.name() {
+            let bytes: &[u8] = name.as_ref();
+            self.name.extend_from_slice(bytes);
+        }
+
+        self.flags = record.flags().bits();
+
+        match record
+            .reference_sequence_id()
+            .and_then(|ref_id| ref_id.ok())
+            .and_then(|id| {
+                header
+                    .reference_sequences()
+                    .get_index(id)
+                    .map(|(name, _)| name)
+            }) {
+            Some(name) => {
+                let buf = self.reference_name.get_or_insert_with(String::new);
+                buf.clear();
+                buf.push_str(&String::from_utf8_lossy(name));
+            }
+            None => self.reference_name = None,
+        }
+
+        self.alignment_start = if let Some(pos) = record.alignment_start() {
+            pos.ok().map(crate::types::Pos1::from)
+        } else {
+            None
+        };
+
+        self.alignment_end = if let Some(pos) = bam_alignment_end(record) {
+            pos.ok().map(crate::types::Pos1::from)
+        } else {
+            None
+        };
+
+        self.mapping_quality = if (self.flags & 0x4) != 0 {
+            None
+        } else {
+            Some(record.mapping_quality().map(|m| m.get()).unwrap_or(255))
+        };
+
+        let cigar = record.cigar();
+        self.cigar.clear();
+        self.cigar.reserve(cigar.len());
+        for op in cigar.iter().flatten() {
+            self.cigar.push((op.len() as u32, op.kind()));
+        }
+
+        let seq = record.sequence();
+        self.sequence.clear();
+        self.sequence.reserve(seq.len());
+        for b in seq.iter() {
+            self.sequence.push(b);
+        }
+
+        let quals = record.quality_scores();
+        let raw_quals: &[u8] = quals.as_ref();
+        self.quality_scores.clear();
+        self.quality_scores.reserve(raw_quals.len());
+        for &score in raw_quals {
+            self.quality_scores.push(score.saturating_add(33));
+        }
+
+        match record
+            .mate_reference_sequence_id()
+            .and_then(|ref_id| ref_id.ok())
+            .and_then(|id| {
+                header
+                    .reference_sequences()
+                    .get_index(id)
+                    .map(|(name, _)| name)
+            }) {
+            Some(name) => {
+                let buf = self.mate_reference_name.get_or_insert_with(String::new);
+                buf.clear();
+                buf.push_str(&String::from_utf8_lossy(name));
+            }
+            None => self.mate_reference_name = None,
+        }
+
+        self.mate_alignment_start = if let Some(pos) = record.mate_alignment_start() {
+            pos.ok().map(crate::types::Pos1::from)
+        } else {
+            None
+        };
+
+        self.template_length = record.template_length();
+
+        self.fill_aux_from_iter(record.data().iter());
+
+        Ok(())
+    }
+
+    fn fill_aux_from_iter<'a, I>(&mut self, iter: I)
+    where
+        I: Iterator<
+            Item = Result<
+                (
+                    noodles::sam::alignment::record::data::field::Tag,
+                    noodles::sam::alignment::record::data::field::Value<'a>,
+                ),
+                std::io::Error,
+            >,
+        >,
+    {
+        use noodles::sam::alignment::record::data::field::{Tag, Value};
+
+        const TAG_NM_LOWER: Tag = Tag::new(b'n', b'M');
+        const TAG_NM_UPPER: Tag = Tag::EDIT_DISTANCE;
+        const TAG_SA: Tag = Tag::new(b'S', b'A');
+        const TAG_MC: Tag = Tag::new(b'M', b'C');
+        const TAG_MQ: Tag = Tag::new(b'M', b'Q');
+
+        let mut seen_nm_lower = false;
+        let mut seen_nm_upper = false;
+        let mut seen_sa = false;
+        let mut seen_mc = false;
+        let mut seen_mq = false;
+        let mut nm_lower_val: Option<i32> = None;
+        let mut nm_upper_val: Option<i32> = None;
+
+        for field_res in iter {
+            let Ok((tag, val)) = field_res else {
+                break;
+            };
+            if tag == TAG_NM_LOWER {
+                if !seen_nm_lower {
+                    seen_nm_lower = true;
+                    nm_lower_val = val.as_int().map(|x| x as i32);
+                }
+            } else if tag == TAG_NM_UPPER {
+                if !seen_nm_upper {
+                    seen_nm_upper = true;
+                    nm_upper_val = val.as_int().map(|x| x as i32);
+                }
+            } else if tag == TAG_SA {
+                if !seen_sa {
+                    seen_sa = true;
+                    let buf = self.sa.get_or_insert_with(String::new);
+                    buf.clear();
+                    match val {
+                        Value::String(s) => {
+                            buf.push_str(&String::from_utf8_lossy(s.as_ref()));
+                        }
+                        _ => {
+                            use std::fmt::Write as _;
+                            let _ = write!(buf, "{val:?}");
+                        }
+                    }
+                }
+            } else if tag == TAG_MC {
+                if !seen_mc {
+                    seen_mc = true;
+                    let buf = self.mc.get_or_insert_with(String::new);
+                    buf.clear();
+                    match val {
+                        Value::String(s) => {
+                            buf.push_str(&String::from_utf8_lossy(s.as_ref()));
+                        }
+                        _ => {
+                            use std::fmt::Write as _;
+                            let _ = write!(buf, "{val:?}");
+                        }
+                    }
+                }
+            } else if tag == TAG_MQ && !seen_mq {
+                seen_mq = true;
+                self.mq = val.as_int().map(|x| x as u8);
+            }
+        }
+
+        // Ports the original if/else-if chain exactly: EDIT_DISTANCE is only
+        // consulted when the nM tag is absent or undecodable (a present but
+        // non-int nM sets seen_nm_lower = true and suppresses the fallback).
+        self.nm = if seen_nm_lower {
+            nm_lower_val
+        } else {
+            nm_upper_val
+        };
+        if !seen_sa {
+            self.sa = None;
+        }
+        if !seen_mc {
+            self.mc = None;
+        }
     }
 
     pub fn from_alignment_record<R>(
@@ -251,163 +384,9 @@ impl SamRecord {
     where
         R: Record,
     {
-        let name = if let Some(name) = record.name() {
-            let bytes: &[u8] = name.as_ref();
-            bytes.to_vec()
-        } else {
-            Vec::new()
-        };
-
-        let flags = record.flags().map(|f| f.bits()).unwrap_or(0);
-
-        let reference_name = record
-            .reference_sequence_id(header)
-            .and_then(|ref_id| ref_id.ok())
-            .and_then(|id| {
-                header
-                    .reference_sequences()
-                    .get_index(id)
-                    .map(|(name, _)| String::from_utf8_lossy(name).into_owned())
-            });
-
-        let alignment_start = if let Some(pos) = record.alignment_start() {
-            pos.ok().map(crate::types::Pos1::from)
-        } else {
-            None
-        };
-
-        let alignment_end = if let Some(pos) = record.alignment_end() {
-            pos.ok().map(crate::types::Pos1::from)
-        } else {
-            None
-        };
-
-        let mapping_quality = if (flags & 0x4) != 0 {
-            None
-        } else {
-            Some(
-                record
-                    .mapping_quality()
-                    .and_then(|m| m.ok())
-                    .map(|m| m.get())
-                    .unwrap_or(255),
-            )
-        };
-
-        let mut cigar = Vec::with_capacity(record.cigar().len());
-        for op in record.cigar().iter().flatten() {
-            cigar.push((op.len() as u32, op.kind()));
-        }
-
-        let mut sequence = Vec::with_capacity(record.sequence().len());
-        for b in record.sequence().iter() {
-            sequence.push(b);
-        }
-
-        let mut quality_scores = Vec::with_capacity(record.quality_scores().len());
-        for score in record.quality_scores().iter().flatten() {
-            quality_scores.push(score.saturating_add(33));
-        }
-
-        let mate_reference_name = record
-            .mate_reference_sequence_id(header)
-            .and_then(|ref_id| ref_id.ok())
-            .and_then(|id| {
-                header
-                    .reference_sequences()
-                    .get_index(id)
-                    .map(|(name, _)| String::from_utf8_lossy(name).into_owned())
-            });
-
-        let mate_alignment_start = if let Some(pos) = record.mate_alignment_start() {
-            pos.ok().map(crate::types::Pos1::from)
-        } else {
-            None
-        };
-
-        let template_length = record.template_length().unwrap_or(0);
-
-        let mut nm = None;
-        if let Some(Ok(val)) =
-            record
-                .data()
-                .get(&noodles::sam::alignment::record::data::field::Tag::new(
-                    b'n', b'M',
-                ))
-        {
-            nm = val.as_int().map(|x| x as i32);
-        } else if let Some(Ok(val)) = record
-            .data()
-            .get(&noodles::sam::alignment::record::data::field::Tag::EDIT_DISTANCE)
-        {
-            nm = val.as_int().map(|x| x as i32);
-        }
-
-        let mut sa = None;
-        if let Some(Ok(val)) =
-            record
-                .data()
-                .get(&noodles::sam::alignment::record::data::field::Tag::new(
-                    b'S', b'A',
-                ))
-        {
-            match val {
-                noodles::sam::alignment::record::data::field::Value::String(s) => {
-                    sa = Some(String::from_utf8_lossy(s.as_ref()).into_owned());
-                }
-                _ => {
-                    sa = Some(format!("{:?}", val));
-                }
-            }
-        }
-
-        let mut mc = None;
-        if let Some(Ok(val)) =
-            record
-                .data()
-                .get(&noodles::sam::alignment::record::data::field::Tag::new(
-                    b'M', b'C',
-                ))
-        {
-            match val {
-                noodles::sam::alignment::record::data::field::Value::String(s) => {
-                    mc = Some(String::from_utf8_lossy(s.as_ref()).into_owned());
-                }
-                _ => {
-                    mc = Some(format!("{:?}", val));
-                }
-            }
-        }
-
-        let mut mq = None;
-        if let Some(Ok(val)) =
-            record
-                .data()
-                .get(&noodles::sam::alignment::record::data::field::Tag::new(
-                    b'M', b'Q',
-                ))
-        {
-            mq = val.as_int().map(|x| x as u8);
-        }
-
-        Ok(SamRecord {
-            name,
-            flags,
-            reference_name,
-            alignment_start,
-            alignment_end,
-            mapping_quality,
-            cigar,
-            sequence,
-            quality_scores,
-            mate_reference_name,
-            mate_alignment_start,
-            template_length,
-            nm,
-            sa,
-            mc,
-            mq,
-        })
+        let mut rec = Self::default();
+        rec.fill_from_alignment_record(record, header)?;
+        Ok(rec)
     }
 }
 
@@ -570,29 +549,178 @@ pub fn query_region(
     )
 }
 
-/// Owning lazy record feed over one queried region (Task 4: OOM fix).
+struct SharedBamMeta {
+    header: noodles::sam::Header,
+    index: noodles::bam::Index,
+}
+
+type RawBamReader = noodles::bam::io::Reader<noodles::bgzf::io::Reader<std::fs::File>>;
+type PathSlot = std::sync::Arc<std::sync::Mutex<Option<std::sync::Arc<SharedBamMeta>>>>;
+type PooledReaderEntry = (std::sync::Arc<SharedBamMeta>, RawBamReader);
+type BamReaderPoolMap = HashMap<PathBuf, Vec<PooledReaderEntry>>;
+
+static META_CACHE: std::sync::OnceLock<std::sync::Mutex<HashMap<PathBuf, PathSlot>>> =
+    std::sync::OnceLock::new();
+
+const MAX_POOLED_READERS_PER_PATH: usize = 4;
+
+thread_local! {
+    static BAM_READER_POOL: RefCell<BamReaderPoolMap> = RefCell::new(HashMap::new());
+}
+
+/// Clear the process-wide shared BAM metadata cache and the calling thread's
+/// pooled BGZF readers. Called at the start and end of [`crate::run`] via an
+/// RAII drop guard (`F-5`).
+pub fn clear_bam_caches() {
+    if let Some(cache) = META_CACHE.get() {
+        cache.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    }
+    let _ = BAM_READER_POOL.try_with(|pool| {
+        if let Ok(mut map) = pool.try_borrow_mut() {
+            map.clear();
+        }
+    });
+}
+
+fn pop_pooled_reader(path: &Path, meta: &std::sync::Arc<SharedBamMeta>) -> Option<RawBamReader> {
+    BAM_READER_POOL
+        .try_with(|pool| {
+            let mut map = pool.try_borrow_mut().ok()?;
+            let vec = map.get_mut(path)?;
+            while let Some((pooled_meta, reader)) = vec.pop() {
+                if std::sync::Arc::ptr_eq(&pooled_meta, meta) {
+                    return Some(reader);
+                }
+            }
+            None
+        })
+        .ok()
+        .flatten()
+}
+
+fn return_pooled_reader(path: PathBuf, meta: std::sync::Arc<SharedBamMeta>, reader: RawBamReader) {
+    let _ = BAM_READER_POOL.try_with(|pool| {
+        if let Ok(mut map) = pool.try_borrow_mut() {
+            let vec = map.entry(path).or_default();
+            vec.retain(|(m, _)| std::sync::Arc::ptr_eq(m, &meta));
+            if vec.len() < MAX_POOLED_READERS_PER_PATH {
+                vec.push((meta, reader));
+            }
+        }
+    });
+}
+
+fn acquire_bam_meta_and_reader(
+    path: &Path,
+) -> Result<(std::sync::Arc<SharedBamMeta>, RawBamReader), crate::types::VardictError> {
+    let slot = {
+        let cache = META_CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
+        let mut map = cache.lock().unwrap_or_else(|e| e.into_inner());
+        std::sync::Arc::clone(
+            map.entry(path.to_path_buf())
+                .or_insert_with(|| std::sync::Arc::new(std::sync::Mutex::new(None))),
+        )
+    };
+
+    let meta = {
+        let mut slot_guard = slot.lock().unwrap_or_else(|e| e.into_inner());
+        match slot_guard.as_ref() {
+            Some(meta) => std::sync::Arc::clone(meta),
+            None => {
+                // Exact same open sequence as `open_reader` (index load ->
+                // File::open -> read_header). Errors return without storing
+                // `Some(...)` so transient/test errors are never cached and
+                // io::ErrorKind is preserved.
+                let index = noodles::bam::fs::read_associated_index(path)
+                    .map_err(crate::types::VardictError::Io)?;
+                let file = std::fs::File::open(path).map_err(crate::types::VardictError::Io)?;
+                let mut reader = noodles::bam::io::Reader::new(file);
+                let header = reader
+                    .read_header()
+                    .map_err(crate::types::VardictError::Io)?;
+                let meta = std::sync::Arc::new(SharedBamMeta { header, index });
+                *slot_guard = Some(std::sync::Arc::clone(&meta));
+                return Ok((meta, reader));
+            }
+        }
+    };
+
+    if let Some(reader) = pop_pooled_reader(path, &meta) {
+        return Ok((meta, reader));
+    }
+    let file = std::fs::File::open(path).map_err(crate::types::VardictError::Io)?;
+    let reader = noodles::bam::io::Reader::new(file);
+    Ok((meta, reader))
+}
+
+/// Compute the 1-based inclusive alignment end directly from concrete
+/// `noodles::bam::Record` inherent methods (`alignment_start` + `cigar().iter()`),
+/// avoiding the two `Box<dyn ...>` allocations of `Record::alignment_end`.
+fn bam_alignment_end(
+    record: &noodles::bam::Record,
+) -> Option<std::io::Result<noodles::core::Position>> {
+    let start = match record.alignment_start().transpose() {
+        Ok(position) => position?,
+        Err(e) => return Some(Err(e)),
+    };
+
+    let mut span = 0usize;
+    for result in record.cigar().iter() {
+        let op = match result {
+            Ok(op) => op,
+            Err(e) => return Some(Err(e)),
+        };
+        if op.kind().consumes_reference() {
+            span = span.saturating_add(op.len());
+        }
+    }
+
+    if span == 0 {
+        Some(Ok(start))
+    } else {
+        let end = usize::from(start).saturating_add(span).saturating_sub(1);
+        noodles::core::Position::new(end).map(Ok)
+    }
+}
+
+/// Owning lazy record feed over one queried region (Task 4: OOM fix;
+/// Task 10: shared `.bai`/header metadata + pooled BGZF reader).
 ///
 /// `noodles`' indexed `Query` borrows both the reader and the header, so it
-/// cannot live in the same struct that owns them — and the `thread_local!
-/// SAM_READER_CACHE` guard is `!Send`, so the per-tile reader is opened
-/// fresh (non-cached) inside the rayon worker instead. `BamFeed` therefore
-/// replicates the indexed-query walk with owned state: the same
-/// `BinningIndex::query` chunk list, the same csi Seek/Read chunk state
-/// machine, and the same `intersects` accept/reject shape, visiting exactly
-/// the records `IndexedReader::query` would, one at a time.
+/// cannot live in the same struct that owns them. `BamFeed` replicates the
+/// indexed-query walk with owned state: the same `BinningIndex::query` chunk
+/// list, the same csi Seek/Read chunk state machine, and the same `intersects`
+/// accept/reject shape, visiting exactly the records `IndexedReader::query`
+/// would, one at a time.
 pub struct BamFeed {
     inner: BamFeedInner,
     sam: SamRecord,
 }
 
 struct BamFeedInner {
-    reader: noodles::bam::io::IndexedReader<noodles::bgzf::io::Reader<std::fs::File>>,
-    header: noodles::sam::Header,
+    path: PathBuf,
+    meta: std::sync::Arc<SharedBamMeta>,
+    reader: Option<RawBamReader>,
+    tainted: bool,
     reference_sequence_id: usize,
     interval: noodles::core::region::Interval,
     chunks: std::vec::IntoIter<noodles::csi::binning_index::index::reference_sequence::bin::Chunk>,
     chunk_end: Option<noodles::bgzf::VirtualPosition>,
     record: noodles::bam::Record,
+}
+
+impl Drop for BamFeedInner {
+    fn drop(&mut self) {
+        if self.tainted {
+            return;
+        }
+        let Some(reader) = self.reader.take() else {
+            return;
+        };
+        let path = std::mem::take(&mut self.path);
+        let meta = std::sync::Arc::clone(&self.meta);
+        return_pooled_reader(path, meta, reader);
+    }
 }
 
 /// Ports noodles-bam 0.96 `io::reader::query::intersects` (private there):
@@ -616,7 +744,7 @@ fn intersects_record(
     } else {
         match (
             record.alignment_start().transpose()?,
-            record.alignment_end().transpose()?,
+            bam_alignment_end(record).transpose()?,
         ) {
             (Some(start), Some(end)) => {
                 let alignment_interval = (start..=end).into();
@@ -632,6 +760,9 @@ impl BamFeedInner {
     /// per-read allocation after warmup). Returns `Ok(false)` at end of feed.
     fn pump(&mut self, out: &mut SamRecord) -> Result<bool, crate::types::VardictError> {
         use noodles::bgzf::io::Seek as _;
+        let Some(reader) = self.reader.as_mut() else {
+            return Ok(false);
+        };
         loop {
             match self.chunk_end {
                 None => {
@@ -639,20 +770,20 @@ impl BamFeedInner {
                         None => return Ok(false),
                         Some(chunk) => chunk,
                     };
-                    if let Err(e) = self
-                        .reader
-                        .get_mut()
-                        .seek_to_virtual_position(chunk.start())
-                    {
+                    if let Err(e) = reader.get_mut().seek_to_virtual_position(chunk.start()) {
+                        self.tainted = true;
                         return Err(crate::types::VardictError::Io(e));
                     }
                     self.chunk_end = Some(chunk.end());
                 }
                 Some(end) => {
-                    if self.reader.get_mut().virtual_position() < end {
-                        let n = match self.reader.read_record(&mut self.record) {
+                    if reader.get_mut().virtual_position() < end {
+                        let n = match reader.read_record(&mut self.record) {
                             Ok(n) => n,
-                            Err(e) => return Err(crate::types::VardictError::Io(e)),
+                            Err(e) => {
+                                self.tainted = true;
+                                return Err(crate::types::VardictError::Io(e));
+                            }
                         };
                         if n == 0 {
                             self.chunk_end = None;
@@ -664,12 +795,19 @@ impl BamFeedInner {
                             self.interval,
                         ) {
                             Ok(true) => {
-                                out.fill_from_alignment_record(&self.record, &self.header)
-                                    .map_err(crate::types::VardictError::Io)?;
+                                if let Err(e) =
+                                    out.fill_from_bam_record(&self.record, &self.meta.header)
+                                {
+                                    self.tainted = true;
+                                    return Err(crate::types::VardictError::Io(e));
+                                }
                                 return Ok(true);
                             }
                             Ok(false) => continue,
-                            Err(e) => return Err(crate::types::VardictError::Io(e)),
+                            Err(e) => {
+                                self.tainted = true;
+                                return Err(crate::types::VardictError::Io(e));
+                            }
                         }
                     } else {
                         self.chunk_end = None;
@@ -757,12 +895,13 @@ impl RecordFeed {
     }
 }
 
-/// Streaming counterpart to [`query_region`]: opens a dedicated non-cached
-/// reader (never the `SAM_READER_CACHE`, whose guard cannot cross the rayon
-/// worker boundary) and returns a lazy [`RecordFeed`] yielding one
+/// Streaming counterpart to [`query_region`]: shares parsed `.bai`/header
+/// metadata across threads via `META_CACHE`, reuses thread-local BGZF readers
+/// via `BAM_READER_POOL`, and returns a lazy [`RecordFeed`] yielding one
 /// `SamRecord` at a time. I/O errors surface per record and propagate with
 /// `?` exactly like the Vec path's collection errors; `start > end` yields
-/// an empty feed (preserving the `query_region` short-circuit).
+/// an empty feed (preserving the `query_region` short-circuit after
+/// metadata/reader acquisition).
 pub fn query_region_iter(
     bam_path: &Path,
     chr: &str,
@@ -770,18 +909,60 @@ pub fn query_region_iter(
     end: Pos0,
     config: &crate::config::Config,
 ) -> Result<RecordFeed, crate::types::VardictError> {
-    let CachedReader { reader, header } = open_reader(bam_path, config)?;
+    let path_str = bam_path.to_string_lossy();
+    if path_str.ends_with(".cram") || path_str.ends_with(".CRAM") {
+        let CachedReader { reader, header } = open_reader(bam_path, config)?;
+        let start_pos = start.to_one_based().0;
+        let end_pos = end.0;
+        if start_pos > end_pos {
+            return Ok(RecordFeed::Cram(CramFeed {
+                _reader: reader,
+                records: Vec::new().into_iter(),
+            }));
+        }
+        let region_str = format!("{}:{}-{}", chr, start_pos, end_pos);
+        let region: noodles::core::Region = region_str.parse().map_err(|e| {
+            crate::types::VardictError::Parse(format!(
+                "failed to parse region '{}': {}",
+                region_str, e
+            ))
+        })?;
+        match reader {
+            IndexedSamReader::Cram(mut reader) => {
+                let query = reader
+                    .query(&header, &region)
+                    .map_err(crate::types::VardictError::Io)?;
+                let mut records = Vec::new();
+                for record in query.records() {
+                    let rec = record.map_err(crate::types::VardictError::Io)?;
+                    records.push(SamRecord::from_alignment_record(&rec, &header)?);
+                }
+                Ok(RecordFeed::Cram(CramFeed {
+                    _reader: IndexedSamReader::Cram(reader),
+                    records: records.into_iter(),
+                }))
+            }
+            IndexedSamReader::Bam(_) => Err(crate::types::VardictError::Other(
+                "unexpected BAM reader for CRAM path".to_string(),
+            )),
+        }
+    } else {
+        use noodles::csi::BinningIndex as _;
 
-    // Preserve the query_region empty-window short-circuit: no filesystem
-    // reads and no region parse, just an empty feed.
-    let start_pos = start.to_one_based().0;
-    let end_pos = end.0;
-    if start_pos > end_pos {
-        return Ok(match reader {
-            IndexedSamReader::Bam(reader) => RecordFeed::Bam(Box::new(BamFeed {
+        let (meta, reader) = acquire_bam_meta_and_reader(bam_path)?;
+
+        // Preserve the query_region empty-window short-circuit after
+        // meta/reader acquisition so a missing BAM with an empty window
+        // still errors (`lib.rs:94`).
+        let start_pos = start.to_one_based().0;
+        let end_pos = end.0;
+        if start_pos > end_pos {
+            return Ok(RecordFeed::Bam(Box::new(BamFeed {
                 inner: BamFeedInner {
-                    reader,
-                    header,
+                    path: bam_path.to_path_buf(),
+                    meta,
+                    reader: Some(reader),
+                    tainted: false,
                     reference_sequence_id: 0,
                     interval: noodles::core::region::Interval::from(..),
                     chunks: Vec::new().into_iter(),
@@ -789,66 +970,57 @@ pub fn query_region_iter(
                     record: noodles::bam::Record::default(),
                 },
                 sam: SamRecord::new(),
-            })),
-            IndexedSamReader::Cram(reader) => RecordFeed::Cram(CramFeed {
-                _reader: IndexedSamReader::Cram(reader),
-                records: Vec::new().into_iter(),
-            }),
-        });
-    }
-
-    let region_str = format!("{}:{}-{}", chr, start_pos, end_pos);
-    let region: noodles::core::Region = region_str.parse().map_err(|e| {
-        crate::types::VardictError::Parse(format!("failed to parse region '{}': {}", region_str, e))
-    })?;
-
-    match reader {
-        IndexedSamReader::Bam(reader) => {
-            // Replicates IndexedReader::query's setup (resolve_region +
-            // BinningIndex::query) with owned results; the borrow ends here.
-            let reference_sequence_id = header
-                .reference_sequences()
-                .get_index_of(region.name())
-                .ok_or_else(|| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::InvalidInput,
-                        format!(
-                            "region reference sequence does not exist in reference sequences: {region:?}"
-                        ),
-                    )
-                })
-                .map_err(crate::types::VardictError::Io)?;
-            let chunks = reader
-                .index()
-                .query(reference_sequence_id, region.interval())
-                .map_err(crate::types::VardictError::Io)?;
-            Ok(RecordFeed::Bam(Box::new(BamFeed {
-                inner: BamFeedInner {
-                    reader,
-                    header,
-                    reference_sequence_id,
-                    interval: region.interval(),
-                    chunks: chunks.into_iter(),
-                    chunk_end: None,
-                    record: noodles::bam::Record::default(),
-                },
-                sam: SamRecord::new(),
-            })))
+            })));
         }
-        IndexedSamReader::Cram(mut reader) => {
-            let query = reader
-                .query(&header, &region)
-                .map_err(crate::types::VardictError::Io)?;
-            let mut records = Vec::new();
-            for record in query.records() {
-                let rec = record.map_err(crate::types::VardictError::Io)?;
-                records.push(SamRecord::from_alignment_record(&rec, &header)?);
+
+        let region_str = format!("{}:{}-{}", chr, start_pos, end_pos);
+        let region: noodles::core::Region = match region_str.parse() {
+            Ok(r) => r,
+            Err(e) => {
+                return_pooled_reader(bam_path.to_path_buf(), meta, reader);
+                return Err(crate::types::VardictError::Parse(format!(
+                    "failed to parse region '{}': {}",
+                    region_str, e
+                )));
             }
-            Ok(RecordFeed::Cram(CramFeed {
-                _reader: IndexedSamReader::Cram(reader),
-                records: records.into_iter(),
-            }))
-        }
+        };
+
+        let Some(reference_sequence_id) = meta
+            .header
+            .reference_sequences()
+            .get_index_of(region.name())
+        else {
+            return_pooled_reader(bam_path.to_path_buf(), meta, reader);
+            return Err(crate::types::VardictError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "region reference sequence does not exist in reference sequences: {region:?}"
+                ),
+            )));
+        };
+
+        let chunks = match meta.index.query(reference_sequence_id, region.interval()) {
+            Ok(c) => c,
+            Err(e) => {
+                return_pooled_reader(bam_path.to_path_buf(), meta, reader);
+                return Err(crate::types::VardictError::Io(e));
+            }
+        };
+
+        Ok(RecordFeed::Bam(Box::new(BamFeed {
+            inner: BamFeedInner {
+                path: bam_path.to_path_buf(),
+                meta,
+                reader: Some(reader),
+                tainted: false,
+                reference_sequence_id,
+                interval: region.interval(),
+                chunks: chunks.into_iter(),
+                chunk_end: None,
+                record: noodles::bam::Record::default(),
+            },
+            sam: SamRecord::new(),
+        })))
     }
 }
 
@@ -1848,5 +2020,904 @@ mod tests {
             mq: None,
         };
         assert!(!preprocessor.preprocess_record(&bad_record, &config));
+    }
+
+    impl SamRecord {
+        fn fill_from_alignment_record_legacy<R>(
+            &mut self,
+            record: &R,
+            header: &noodles::sam::Header,
+        ) -> Result<(), std::io::Error>
+        where
+            R: Record,
+        {
+            self.clear();
+
+            if let Some(name) = record.name() {
+                let bytes: &[u8] = name.as_ref();
+                self.name.extend_from_slice(bytes);
+            }
+
+            self.flags = record.flags().map(|f| f.bits()).unwrap_or(0);
+
+            match record
+                .reference_sequence_id(header)
+                .and_then(|ref_id| ref_id.ok())
+                .and_then(|id| {
+                    header
+                        .reference_sequences()
+                        .get_index(id)
+                        .map(|(name, _)| name)
+                }) {
+                Some(name) => {
+                    let buf = self.reference_name.get_or_insert_with(String::new);
+                    buf.clear();
+                    buf.push_str(&String::from_utf8_lossy(name));
+                }
+                None => self.reference_name = None,
+            }
+
+            self.alignment_start = if let Some(pos) = record.alignment_start() {
+                pos.ok().map(crate::types::Pos1::from)
+            } else {
+                None
+            };
+
+            self.alignment_end = if let Some(pos) = record.alignment_end() {
+                pos.ok().map(crate::types::Pos1::from)
+            } else {
+                None
+            };
+
+            self.mapping_quality = if (self.flags & 0x4) != 0 {
+                None
+            } else {
+                Some(
+                    record
+                        .mapping_quality()
+                        .and_then(|m| m.ok())
+                        .map(|m| m.get())
+                        .unwrap_or(255),
+                )
+            };
+
+            self.cigar.clear();
+            self.cigar.reserve(record.cigar().len());
+            for op in record.cigar().iter().flatten() {
+                self.cigar.push((op.len() as u32, op.kind()));
+            }
+
+            self.sequence.clear();
+            self.sequence.reserve(record.sequence().len());
+            for b in record.sequence().iter() {
+                self.sequence.push(b);
+            }
+
+            self.quality_scores.clear();
+            self.quality_scores.reserve(record.quality_scores().len());
+            for score in record.quality_scores().iter().flatten() {
+                self.quality_scores.push(score.saturating_add(33));
+            }
+
+            match record
+                .mate_reference_sequence_id(header)
+                .and_then(|ref_id| ref_id.ok())
+                .and_then(|id| {
+                    header
+                        .reference_sequences()
+                        .get_index(id)
+                        .map(|(name, _)| name)
+                }) {
+                Some(name) => {
+                    let buf = self.mate_reference_name.get_or_insert_with(String::new);
+                    buf.clear();
+                    buf.push_str(&String::from_utf8_lossy(name));
+                }
+                None => self.mate_reference_name = None,
+            }
+
+            self.mate_alignment_start = if let Some(pos) = record.mate_alignment_start() {
+                pos.ok().map(crate::types::Pos1::from)
+            } else {
+                None
+            };
+
+            self.template_length = record.template_length().unwrap_or(0);
+
+            self.nm =
+                match record
+                    .data()
+                    .get(&noodles::sam::alignment::record::data::field::Tag::new(
+                        b'n', b'M',
+                    )) {
+                    Some(Ok(val)) => val.as_int().map(|x| x as i32),
+                    _ => record
+                        .data()
+                        .get(&noodles::sam::alignment::record::data::field::Tag::EDIT_DISTANCE)
+                        .and_then(|r| r.ok())
+                        .and_then(|val| val.as_int().map(|x| x as i32)),
+                };
+
+            match record
+                .data()
+                .get(&noodles::sam::alignment::record::data::field::Tag::new(
+                    b'S', b'A',
+                ))
+                .and_then(|r| r.ok())
+            {
+                Some(val) => {
+                    let buf = self.sa.get_or_insert_with(String::new);
+                    buf.clear();
+                    match val {
+                        noodles::sam::alignment::record::data::field::Value::String(s) => {
+                            buf.push_str(&String::from_utf8_lossy(s.as_ref()));
+                        }
+                        _ => {
+                            use std::fmt::Write as _;
+                            let _ = write!(buf, "{val:?}");
+                        }
+                    }
+                }
+                None => self.sa = None,
+            }
+
+            match record
+                .data()
+                .get(&noodles::sam::alignment::record::data::field::Tag::new(
+                    b'M', b'C',
+                ))
+                .and_then(|r| r.ok())
+            {
+                Some(val) => {
+                    let buf = self.mc.get_or_insert_with(String::new);
+                    buf.clear();
+                    match val {
+                        noodles::sam::alignment::record::data::field::Value::String(s) => {
+                            buf.push_str(&String::from_utf8_lossy(s.as_ref()));
+                        }
+                        _ => {
+                            use std::fmt::Write as _;
+                            let _ = write!(buf, "{val:?}");
+                        }
+                    }
+                }
+                None => self.mc = None,
+            }
+
+            self.mq = record
+                .data()
+                .get(&noodles::sam::alignment::record::data::field::Tag::new(
+                    b'M', b'Q',
+                ))
+                .and_then(|r| r.ok())
+                .and_then(|val| val.as_int().map(|x| x as u8));
+
+            Ok(())
+        }
+    }
+
+    fn intersects_record_legacy(
+        record: &noodles::bam::Record,
+        reference_sequence_id: usize,
+        region_interval: noodles::core::region::Interval,
+    ) -> Result<bool, std::io::Error> {
+        let Some(id) = record.reference_sequence_id().transpose()? else {
+            return Ok(false);
+        };
+
+        if id != reference_sequence_id {
+            return Ok(false);
+        }
+
+        if region_interval.start().is_none() && region_interval.end().is_none() {
+            Ok(true)
+        } else {
+            match (
+                record.alignment_start().transpose()?,
+                Record::alignment_end(record).transpose()?,
+            ) {
+                (Some(start), Some(end)) => {
+                    let alignment_interval = (start..=end).into();
+                    Ok(region_interval.intersects(alignment_interval))
+                }
+                _ => Ok(false),
+            }
+        }
+    }
+
+    struct BamFeedInnerLegacy {
+        reader: noodles::bam::io::IndexedReader<noodles::bgzf::io::Reader<std::fs::File>>,
+        header: noodles::sam::Header,
+        reference_sequence_id: usize,
+        interval: noodles::core::region::Interval,
+        chunks:
+            std::vec::IntoIter<noodles::csi::binning_index::index::reference_sequence::bin::Chunk>,
+        chunk_end: Option<noodles::bgzf::VirtualPosition>,
+        record: noodles::bam::Record,
+    }
+
+    impl BamFeedInnerLegacy {
+        fn pump(&mut self, out: &mut SamRecord) -> Result<bool, crate::types::VardictError> {
+            use noodles::bgzf::io::Seek as _;
+            loop {
+                match self.chunk_end {
+                    None => {
+                        let chunk = match self.chunks.next() {
+                            None => return Ok(false),
+                            Some(chunk) => chunk,
+                        };
+                        if let Err(e) = self
+                            .reader
+                            .get_mut()
+                            .seek_to_virtual_position(chunk.start())
+                        {
+                            return Err(crate::types::VardictError::Io(e));
+                        }
+                        self.chunk_end = Some(chunk.end());
+                    }
+                    Some(end) => {
+                        if self.reader.get_mut().virtual_position() < end {
+                            let n = match self.reader.read_record(&mut self.record) {
+                                Ok(n) => n,
+                                Err(e) => return Err(crate::types::VardictError::Io(e)),
+                            };
+                            if n == 0 {
+                                self.chunk_end = None;
+                                continue;
+                            }
+                            match intersects_record_legacy(
+                                &self.record,
+                                self.reference_sequence_id,
+                                self.interval,
+                            ) {
+                                Ok(true) => {
+                                    out.fill_from_alignment_record_legacy(
+                                        &self.record,
+                                        &self.header,
+                                    )
+                                    .map_err(crate::types::VardictError::Io)?;
+                                    return Ok(true);
+                                }
+                                Ok(false) => continue,
+                                Err(e) => return Err(crate::types::VardictError::Io(e)),
+                            }
+                        } else {
+                            self.chunk_end = None;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    struct BamFeedLegacy {
+        inner: BamFeedInnerLegacy,
+        sam: SamRecord,
+    }
+
+    impl Iterator for BamFeedLegacy {
+        type Item = Result<SamRecord, crate::types::VardictError>;
+
+        fn next(&mut self) -> Option<Self::Item> {
+            match self.inner.pump(&mut self.sam) {
+                Ok(false) => None,
+                Ok(true) => Some(Ok(self.sam.clone())),
+                Err(e) => Some(Err(e)),
+            }
+        }
+    }
+
+    enum RecordFeedLegacy {
+        Bam(Box<BamFeedLegacy>),
+        Cram(CramFeed),
+    }
+
+    impl Iterator for RecordFeedLegacy {
+        type Item = Result<SamRecord, crate::types::VardictError>;
+
+        fn next(&mut self) -> Option<Self::Item> {
+            match self {
+                RecordFeedLegacy::Bam(feed) => feed.next(),
+                RecordFeedLegacy::Cram(feed) => feed.next(),
+            }
+        }
+    }
+
+    impl RecordFeedLegacy {
+        fn next_into(&mut self, out: &mut SamRecord) -> Result<bool, crate::types::VardictError> {
+            match self {
+                RecordFeedLegacy::Bam(feed) => feed.inner.pump(out),
+                RecordFeedLegacy::Cram(feed) => match feed.records.next() {
+                    None => Ok(false),
+                    Some(rec) => {
+                        *out = rec;
+                        Ok(true)
+                    }
+                },
+            }
+        }
+    }
+
+    fn query_region_iter_legacy(
+        bam_path: &Path,
+        chr: &str,
+        start: Pos0,
+        end: Pos0,
+        config: &crate::config::Config,
+    ) -> Result<RecordFeedLegacy, crate::types::VardictError> {
+        let CachedReader { reader, header } = open_reader(bam_path, config)?;
+
+        let start_pos = start.to_one_based().0;
+        let end_pos = end.0;
+        if start_pos > end_pos {
+            return Ok(match reader {
+                IndexedSamReader::Bam(reader) => RecordFeedLegacy::Bam(Box::new(BamFeedLegacy {
+                    inner: BamFeedInnerLegacy {
+                        reader,
+                        header,
+                        reference_sequence_id: 0,
+                        interval: noodles::core::region::Interval::from(..),
+                        chunks: Vec::new().into_iter(),
+                        chunk_end: None,
+                        record: noodles::bam::Record::default(),
+                    },
+                    sam: SamRecord::new(),
+                })),
+                IndexedSamReader::Cram(reader) => RecordFeedLegacy::Cram(CramFeed {
+                    _reader: IndexedSamReader::Cram(reader),
+                    records: Vec::new().into_iter(),
+                }),
+            });
+        }
+
+        let region_str = format!("{}:{}-{}", chr, start_pos, end_pos);
+        let region: noodles::core::Region = region_str.parse().map_err(|e| {
+            crate::types::VardictError::Parse(format!(
+                "failed to parse region '{}': {}",
+                region_str, e
+            ))
+        })?;
+
+        match reader {
+            IndexedSamReader::Bam(reader) => {
+                let reference_sequence_id = header
+                    .reference_sequences()
+                    .get_index_of(region.name())
+                    .ok_or_else(|| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            format!(
+                                "region reference sequence does not exist in reference sequences: {region:?}"
+                            ),
+                        )
+                    })
+                    .map_err(crate::types::VardictError::Io)?;
+                let chunks = reader
+                    .index()
+                    .query(reference_sequence_id, region.interval())
+                    .map_err(crate::types::VardictError::Io)?;
+                Ok(RecordFeedLegacy::Bam(Box::new(BamFeedLegacy {
+                    inner: BamFeedInnerLegacy {
+                        reader,
+                        header,
+                        reference_sequence_id,
+                        interval: region.interval(),
+                        chunks: chunks.into_iter(),
+                        chunk_end: None,
+                        record: noodles::bam::Record::default(),
+                    },
+                    sam: SamRecord::new(),
+                })))
+            }
+            IndexedSamReader::Cram(mut reader) => {
+                let query = reader
+                    .query(&header, &region)
+                    .map_err(crate::types::VardictError::Io)?;
+                let mut records = Vec::new();
+                for record in query.records() {
+                    let rec = record.map_err(crate::types::VardictError::Io)?;
+                    records.push(SamRecord::from_alignment_record(&rec, &header)?);
+                }
+                Ok(RecordFeedLegacy::Cram(CramFeed {
+                    _reader: IndexedSamReader::Cram(reader),
+                    records: records.into_iter(),
+                }))
+            }
+        }
+    }
+
+    #[test]
+    fn shared_meta_feed_matches_legacy_and_error_strings_match() {
+        use noodles::bam::bai;
+        use noodles::core::Position;
+        use noodles::csi::binning_index::index::reference_sequence::{
+            bin::Chunk, index::LinearIndex,
+        };
+        use noodles::csi::binning_index::Indexer;
+        use noodles::sam::alignment::io::Write as _;
+        use noodles::sam::alignment::record::cigar::{op::Kind, Op};
+        use noodles::sam::alignment::record_buf::{Cigar, RecordBuf};
+        use noodles::sam::header::record::value::{
+            map::ReferenceSequence as RefSeqMap, Map as HeaderMap,
+        };
+        use noodles::sam::Header;
+
+        fn err_signature(e: &crate::types::VardictError) -> (Option<std::io::ErrorKind>, String) {
+            match e {
+                crate::types::VardictError::Io(io) => (Some(io.kind()), io.to_string()),
+                other => (None, other.to_string()),
+            }
+        }
+
+        clear_bam_caches();
+        let config = Config::default();
+
+        // 1. 25 deterministic pseudo-random windows across micro.bam (chr1 and chr2).
+        let micro_bam = Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/micro/micro.bam"
+        ));
+        let mut rng_state: u64 = 0x9E37_79B9_7F4A_7C15;
+        for i in 0..25usize {
+            rng_state = rng_state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            let chr = if i % 2 == 0 { "chr1" } else { "chr2" };
+            let max_coord = if i % 2 == 0 { 300u32 } else { 260u32 };
+            let a = ((rng_state >> 16) as u32) % max_coord;
+            let b = ((rng_state >> 32) as u32) % max_coord;
+            let (start, end) = if i == 24 {
+                // Include an inverted/empty window in the 25 windows
+                (Pos0(200), Pos0(50))
+            } else if a <= b {
+                (Pos0(a), Pos0(b.max(a + 1)))
+            } else {
+                (Pos0(b), Pos0(a))
+            };
+
+            let mut feed_new = query_region_iter(micro_bam, chr, start, end, &config).unwrap();
+            let mut feed_leg =
+                query_region_iter_legacy(micro_bam, chr, start, end, &config).unwrap();
+
+            let mut recs_new = Vec::new();
+            let mut rec_buf = SamRecord::new();
+            while feed_new.next_into(&mut rec_buf).unwrap() {
+                recs_new.push(rec_buf.clone());
+            }
+
+            let mut recs_leg = Vec::new();
+            let mut rec_leg_buf = SamRecord::new();
+            while feed_leg.next_into(&mut rec_leg_buf).unwrap() {
+                recs_leg.push(rec_leg_buf.clone());
+            }
+
+            assert_eq!(recs_new, recs_leg, "window #{i} ({chr}:{start:?}-{end:?})");
+        }
+
+        // 2. Nested same-thread feeds (open feed B inside feed A's iteration loop,
+        //    plus 5 simultaneous feeds to exercise MAX_POOLED_READERS_PER_PATH = 4).
+        {
+            let mut feed_a =
+                query_region_iter(micro_bam, "chr1", Pos0(0), Pos0(300), &config).unwrap();
+            let expected_a: Vec<SamRecord> =
+                query_region_iter_legacy(micro_bam, "chr1", Pos0(0), Pos0(300), &config)
+                    .unwrap()
+                    .map(|r| r.unwrap())
+                    .collect();
+            let expected_b: Vec<SamRecord> =
+                query_region_iter_legacy(micro_bam, "chr2", Pos0(0), Pos0(260), &config)
+                    .unwrap()
+                    .map(|r| r.unwrap())
+                    .collect();
+
+            let mut got_a = Vec::new();
+            let mut rec_a = SamRecord::new();
+            let mut step = 0usize;
+            while feed_a.next_into(&mut rec_a).unwrap() {
+                if step == 3 {
+                    let got_b: Vec<SamRecord> =
+                        query_region_iter(micro_bam, "chr2", Pos0(0), Pos0(260), &config)
+                            .unwrap()
+                            .map(|r| r.unwrap())
+                            .collect();
+                    assert_eq!(got_b, expected_b);
+
+                    // Open 5 simultaneous feeds while feed_a is still open
+                    let mut extra_feeds: Vec<RecordFeed> = (0..5)
+                        .map(|_| {
+                            query_region_iter(micro_bam, "chr2", Pos0(0), Pos0(260), &config)
+                                .unwrap()
+                        })
+                        .collect();
+                    for ef in &mut extra_feeds {
+                        let mut r = SamRecord::new();
+                        assert!(ef.next_into(&mut r).unwrap());
+                    }
+                    drop(extra_feeds);
+                }
+                got_a.push(rec_a.clone());
+                step += 1;
+            }
+            assert_eq!(got_a, expected_a);
+        }
+
+        // 3. Contig names with `:` and `*` (and missing contig with `:` and `*`).
+        let dir = tempfile::TempDir::new().unwrap();
+        let special_bam = dir.path().join("special_contigs.bam");
+        {
+            let rs = HeaderMap::<RefSeqMap>::builder()
+                .set_length(500usize.try_into().unwrap())
+                .build()
+                .unwrap();
+            let hd = Header::builder()
+                .add_reference_sequence("HLA-A*01:01:01:01", rs.clone())
+                .add_reference_sequence("contig*star:colon", rs)
+                .build();
+            let bgzf = noodles::bgzf::io::Writer::new(std::fs::File::create(&special_bam).unwrap());
+            let mut w = noodles::bam::io::Writer::from(bgzf);
+            w.write_alignment_header(&hd).unwrap();
+            let mut indexer = Indexer::<LinearIndex>::new(14, 5).unwrap();
+            for (ref_id, name_prefix) in [(0usize, "hla"), (1usize, "star")] {
+                for idx in 0..5usize {
+                    let pos = 50 + idx * 20;
+                    let cigar: Cigar = [Op::new(Kind::Match, 30)].into_iter().collect();
+                    let rec = RecordBuf::builder()
+                        .set_name(format!("{name_prefix}_{idx}"))
+                        .set_flags(noodles::sam::alignment::record::Flags::empty())
+                        .set_reference_sequence_id(ref_id)
+                        .set_alignment_start(Position::try_from(pos).unwrap())
+                        .set_cigar(cigar)
+                        .set_sequence(vec![b'A'; 30].into())
+                        .set_quality_scores(vec![40u8; 30].into())
+                        .build();
+                    let s_vp = w.get_ref().virtual_position();
+                    w.write_alignment_record(&hd, &rec).unwrap();
+                    let e_vp = w.get_ref().virtual_position();
+                    let s = rec.alignment_start().unwrap();
+                    let e = Position::new(s.get() + 30).unwrap();
+                    indexer
+                        .add_record(Some((ref_id, s, e, true)), Chunk::new(s_vp, e_vp))
+                        .unwrap();
+                }
+            }
+            w.try_finish().unwrap();
+            let bai_path = special_bam.with_extension("bam.bai");
+            bai::io::Writer::new(std::fs::File::create(&bai_path).unwrap())
+                .write_index(&indexer.build(2))
+                .unwrap();
+        }
+        for contig in ["HLA-A*01:01:01:01", "contig*star:colon"] {
+            let new_recs: Vec<SamRecord> =
+                query_region_iter(&special_bam, contig, Pos0(10), Pos0(300), &config)
+                    .unwrap()
+                    .map(|r| r.unwrap())
+                    .collect();
+            let leg_recs: Vec<SamRecord> =
+                query_region_iter_legacy(&special_bam, contig, Pos0(10), Pos0(300), &config)
+                    .unwrap()
+                    .map(|r| r.unwrap())
+                    .collect();
+            assert_eq!(new_recs.len(), 5);
+            assert_eq!(new_recs, leg_recs);
+        }
+        let missing_contig_new = query_region_iter(
+            &special_bam,
+            "missing:contig*name",
+            Pos0(10),
+            Pos0(300),
+            &config,
+        )
+        .err()
+        .expect("missing contig must fail");
+        let missing_contig_leg = query_region_iter_legacy(
+            &special_bam,
+            "missing:contig*name",
+            Pos0(10),
+            Pos0(300),
+            &config,
+        )
+        .err()
+        .expect("missing contig must fail legacy");
+        assert_eq!(
+            err_signature(&missing_contig_new),
+            err_signature(&missing_contig_leg)
+        );
+
+        // 4. Missing BAM + empty window (`start > end`): must still error!
+        let missing_bam = dir.path().join("does_not_exist.bam");
+        let miss_empty_new = query_region_iter(&missing_bam, "chr1", Pos0(500), Pos0(100), &config)
+            .err()
+            .expect("missing BAM with empty window must error");
+        let miss_empty_leg =
+            query_region_iter_legacy(&missing_bam, "chr1", Pos0(500), Pos0(100), &config)
+                .err()
+                .expect("missing BAM with empty window must error in legacy");
+        assert_eq!(
+            err_signature(&miss_empty_new),
+            err_signature(&miss_empty_leg)
+        );
+
+        // 5. Missing `.bai`: must error with identical ErrorKind and NOT cache failure.
+        let no_bai_bam = dir.path().join("no_bai.bam");
+        std::fs::copy(micro_bam, &no_bai_bam).unwrap();
+        let no_bai_new = query_region_iter(&no_bai_bam, "chr1", Pos0(0), Pos0(100), &config)
+            .err()
+            .expect("missing .bai must error");
+        let no_bai_leg = query_region_iter_legacy(&no_bai_bam, "chr1", Pos0(0), Pos0(100), &config)
+            .err()
+            .expect("missing .bai must error in legacy");
+        assert_eq!(err_signature(&no_bai_new), err_signature(&no_bai_leg));
+        // Now supply the .bai and verify the previously failed path succeeds (not poisoned).
+        std::fs::copy(
+            micro_bam.with_extension("bam.bai"),
+            no_bai_bam.with_extension("bam.bai"),
+        )
+        .unwrap();
+        let recovered_recs: Vec<SamRecord> =
+            query_region_iter(&no_bai_bam, "chr1", Pos0(0), Pos0(100), &config)
+                .unwrap()
+                .map(|r| r.unwrap())
+                .collect();
+        assert!(!recovered_recs.is_empty());
+
+        // 6. Truncated BAM header: must error with identical ErrorKind and NOT cache failure.
+        let trunc_hdr_bam = dir.path().join("trunc_hdr.bam");
+        std::fs::write(&trunc_hdr_bam, b"not_a_valid_bgzf_bam_header").unwrap();
+        std::fs::copy(
+            micro_bam.with_extension("bam.bai"),
+            trunc_hdr_bam.with_extension("bam.bai"),
+        )
+        .unwrap();
+        let hdr_err_new = query_region_iter(&trunc_hdr_bam, "chr1", Pos0(0), Pos0(100), &config)
+            .err()
+            .expect("truncated BAM header must error");
+        let hdr_err_leg =
+            query_region_iter_legacy(&trunc_hdr_bam, "chr1", Pos0(0), Pos0(100), &config)
+                .err()
+                .expect("truncated BAM header must error in legacy");
+        assert_eq!(err_signature(&hdr_err_new), err_signature(&hdr_err_leg));
+
+        clear_bam_caches();
+    }
+
+    #[test]
+    fn fill_from_bam_record_matches_legacy_on_aux_and_fields_corpus() {
+        use noodles::core::Position;
+        use noodles::sam::alignment::io::Write as _;
+        use noodles::sam::alignment::record::cigar::{op::Kind, Op};
+        use noodles::sam::alignment::record::Flags;
+        use noodles::sam::alignment::record::MappingQuality;
+        use noodles::sam::alignment::record_buf::{Cigar, RecordBuf};
+        use noodles::sam::header::record::value::{
+            map::ReferenceSequence as RefSeqMap, Map as HeaderMap,
+        };
+        use noodles::sam::Header;
+
+        let rs = HeaderMap::<RefSeqMap>::builder()
+            .set_length(1000usize.try_into().unwrap())
+            .build()
+            .unwrap();
+        let header = Header::builder()
+            .add_reference_sequence("chr1", rs.clone())
+            .add_reference_sequence("chr2", rs)
+            .build();
+
+        fn build_raw_bam_record(
+            header: &Header,
+            base: &RecordBuf,
+            raw_aux_bytes: &[u8],
+        ) -> noodles::bam::Record {
+            let mut encoded = Vec::new();
+            let mut writer = noodles::bam::io::Writer::from(&mut encoded);
+            writer.write_alignment_record(header, base).unwrap();
+            encoded.extend_from_slice(raw_aux_bytes);
+            let block_size = (encoded.len() - 4) as u32;
+            encoded[0..4].copy_from_slice(&block_size.to_le_bytes());
+
+            let mut reader = noodles::bam::io::Reader::from(&encoded[..]);
+            let mut bam_rec = noodles::bam::Record::default();
+            let n = reader.read_record(&mut bam_rec).unwrap();
+            assert!(n > 0);
+            bam_rec
+        }
+
+        let base_mapped = RecordBuf::builder()
+            .set_name("read_mapped")
+            .set_flags(Flags::SEGMENTED | Flags::FIRST_SEGMENT)
+            .set_reference_sequence_id(0)
+            .set_alignment_start(Position::try_from(100usize).unwrap())
+            .set_mapping_quality(MappingQuality::try_from(60u8).unwrap())
+            .set_cigar(
+                [
+                    Op::new(Kind::SoftClip, 2),
+                    Op::new(Kind::Match, 5),
+                    Op::new(Kind::Insertion, 1),
+                    Op::new(Kind::Deletion, 2),
+                    Op::new(Kind::Match, 2),
+                ]
+                .into_iter()
+                .collect::<Cigar>(),
+            )
+            .set_mate_reference_sequence_id(1)
+            .set_mate_alignment_start(Position::try_from(250usize).unwrap())
+            .set_template_length(-150)
+            .set_sequence(b"ACGTACGTAC".to_vec().into())
+            .set_quality_scores(vec![30u8; 10].into())
+            .build();
+
+        let base_unmapped = RecordBuf::builder()
+            .set_name("read_unmapped")
+            .set_flags(Flags::UNMAPPED)
+            .set_sequence(b"ACGT".to_vec().into())
+            .set_quality_scores(vec![20u8; 4].into())
+            .build();
+
+        let base_no_mapq = RecordBuf::builder()
+            .set_name("read_no_mapq")
+            .set_flags(Flags::empty())
+            .set_reference_sequence_id(0)
+            .set_alignment_start(Position::try_from(50usize).unwrap())
+            .set_cigar([Op::new(Kind::Match, 4)].into_iter().collect::<Cigar>())
+            .set_sequence(b"TGCA".to_vec().into())
+            .set_quality_scores(vec![35u8; 4].into())
+            .build();
+
+        // Corpus of raw BAM aux payloads:
+        // 1. `nM` int (`nM:C:4`)
+        // 2. `nM` non-int (`nM:Z:bad\0`) + `NM:C:7` -> non-int `nM` suppresses `NM`
+        // 3. Only `NM` (`NM:C:5`), and `NM:C:5` before `nM:C:2` (`nM` still wins)
+        // 4. Duplicate `nM` (`nM:C:3` then `nM:C:9`) and duplicate `SA` (`SA:Z:first\0` then `SA:Z:second\0`)
+        // 5. `SA` and `MC` as int/char (`SA:C:42`, `MC:A:x`) -> `{val:?}`
+        // 6. Malformed aux field (`XX?`) AFTER wanted tags (wanted tags kept)
+        // 7. Malformed aux field (`XX?`) BEFORE wanted tags (`NM` before error kept; `nM`/`SA`/`MC`/`MQ` after error ignored)
+        // 8. Empty aux on unmapped and no-mapq records
+        let corpus: Vec<noodles::bam::Record> = vec![
+            build_raw_bam_record(
+                &header,
+                &base_mapped,
+                b"nMC\x04SAZchr1,100,+,10M,60,0;\0MCC10M\0MQC\x3c",
+            ),
+            build_raw_bam_record(&header, &base_mapped, b"nMZbad\0NMC\x07"),
+            build_raw_bam_record(&header, &base_mapped, b"NMC\x05"),
+            build_raw_bam_record(&header, &base_mapped, b"NMC\x05nMC\x02"),
+            build_raw_bam_record(
+                &header,
+                &base_mapped,
+                b"nMC\x03nMC\x09SAZfirst\0SAZsecond\0MCZmc1\0MCZmc2\0MQC\x10MQC\x20",
+            ),
+            build_raw_bam_record(&header, &base_mapped, b"SAC\x2aMCAx"),
+            build_raw_bam_record(
+                &header,
+                &base_mapped,
+                b"nMC\x06SAZkept_sa\0MCZkept_mc\0MQC\x25XX?",
+            ),
+            build_raw_bam_record(
+                &header,
+                &base_mapped,
+                b"NMC\x05XX?nMC\x02SAZdropped_sa\0MCZdropped_mc\0MQC\x25",
+            ),
+            build_raw_bam_record(&header, &base_unmapped, b""),
+            build_raw_bam_record(&header, &base_no_mapq, b""),
+        ];
+
+        for (idx, bam_rec) in corpus.iter().enumerate() {
+            let mut expected = SamRecord::new();
+            expected
+                .fill_from_alignment_record_legacy(bam_rec, &header)
+                .unwrap();
+
+            let mut actual_bam = SamRecord::new();
+            actual_bam.fill_from_bam_record(bam_rec, &header).unwrap();
+            assert_eq!(
+                actual_bam, expected,
+                "fresh fill_from_bam_record mismatch at #{idx}"
+            );
+
+            let mut actual_align = SamRecord::new();
+            actual_align
+                .fill_from_alignment_record(bam_rec, &header)
+                .unwrap();
+            assert_eq!(
+                actual_align, expected,
+                "fresh fill_from_alignment_record mismatch at #{idx}"
+            );
+
+            let from_rec = SamRecord::from_alignment_record(bam_rec, &header).unwrap();
+            assert_eq!(
+                from_rec, expected,
+                "from_alignment_record mismatch at #{idx}"
+            );
+        }
+
+        // Verify explicit invariants on key corpus items:
+        {
+            let mut rec = SamRecord::new();
+            // #1: nM non-int + NM -> nm must be None
+            rec.fill_from_bam_record(&corpus[1], &header).unwrap();
+            assert_eq!(rec.nm, None);
+            // #4: duplicate nM / SA -> first wins
+            rec.fill_from_bam_record(&corpus[4], &header).unwrap();
+            assert_eq!(rec.nm, Some(3));
+            assert_eq!(rec.sa.as_deref(), Some("first"));
+            assert_eq!(rec.mc.as_deref(), Some("mc1"));
+            assert_eq!(rec.mq, Some(0x10));
+            // #6: malformed aux AFTER wanted tags -> kept
+            rec.fill_from_bam_record(&corpus[6], &header).unwrap();
+            assert_eq!(rec.nm, Some(6));
+            assert_eq!(rec.sa.as_deref(), Some("kept_sa"));
+            assert_eq!(rec.mc.as_deref(), Some("kept_mc"));
+            assert_eq!(rec.mq, Some(0x25));
+            // #7: malformed aux BEFORE wanted tags -> NM before error kept, tags after error absent
+            rec.fill_from_bam_record(&corpus[7], &header).unwrap();
+            assert_eq!(rec.nm, Some(5));
+            assert_eq!(rec.sa, None);
+            assert_eq!(rec.mc, None);
+            assert_eq!(rec.mq, None);
+        }
+
+        // CRITICAL (C-1): two consecutive `fill_from_bam_record` calls on the
+        // same `SamRecord` where Read 1 has `SA`/`MC` and Read 2 has neither
+        // must leave `rec.sa.is_none() && rec.mc.is_none()` (not `Some("")`!).
+        {
+            let read1 =
+                build_raw_bam_record(&header, &base_mapped, b"SAZchr1,100,+,10M,60,0;\0MCZ10M\0");
+            let read2 = build_raw_bam_record(&header, &base_mapped, b"nMC\x01");
+
+            let mut reused = SamRecord::new();
+            reused.fill_from_bam_record(&read1, &header).unwrap();
+            assert!(reused.sa.is_some() && reused.mc.is_some());
+
+            reused.fill_from_bam_record(&read2, &header).unwrap();
+            assert!(
+                reused.sa.is_none() && reused.mc.is_none(),
+                "C-1 regression: stale Some(\"\") leaked on reused SamRecord: sa={:?}, mc={:?}",
+                reused.sa,
+                reused.mc
+            );
+
+            let mut expected = SamRecord::new();
+            expected
+                .fill_from_alignment_record_legacy(&read2, &header)
+                .unwrap();
+            assert_eq!(reused, expected);
+
+            // Also verify `fill_from_alignment_record` on the same transition
+            reused.fill_from_alignment_record(&read1, &header).unwrap();
+            assert!(reused.sa.is_some() && reused.mc.is_some());
+            reused.fill_from_alignment_record(&read2, &header).unwrap();
+            assert!(reused.sa.is_none() && reused.mc.is_none());
+            assert_eq!(reused, expected);
+        }
+    }
+
+    #[test]
+    fn bgzf_libdeflate_reader_roundtrips_micro_bam_and_rejects_corrupt_block() {
+        use std::io::Read;
+
+        let path = Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/micro/micro.bam"
+        ));
+        let file = std::fs::File::open(path).unwrap();
+        let mut reader = noodles_bgzf::io::Reader::new(file);
+        let mut decompressed = Vec::new();
+        reader.read_to_end(&mut decompressed).unwrap();
+        assert!(
+            decompressed.starts_with(b"BAM\x01"),
+            "decompressed micro.bam must start with BAM\\x01 magic"
+        );
+
+        let raw = std::fs::read(path).unwrap();
+        let mut corrupt = raw.clone();
+        // Corrupt the compressed payload mid-block and ensure libdeflate returns Err
+        let mid = corrupt.len() / 2;
+        corrupt[mid] ^= 0xFF;
+        corrupt[mid + 1] ^= 0xFF;
+        let mut bad_reader = noodles_bgzf::io::Reader::new(std::io::Cursor::new(corrupt));
+        let mut out = Vec::new();
+        assert!(
+            bad_reader.read_to_end(&mut out).is_err(),
+            "corrupted BGZF block must fail decompression"
+        );
     }
 }

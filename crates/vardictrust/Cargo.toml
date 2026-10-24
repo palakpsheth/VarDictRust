@@ -22,6 +22,11 @@ env_logger.workspace = true
 log.workspace = true
 regex = { workspace = true }
 tikv-jemallocator = { workspace = true, optional = true }
+pprof = { version = "0.15", optional = true, default-features = false, features = ["prost-codec"] }  # NO `flamegraph` (quick-xml advisories)
+inferno = { version = "0.12", optional = true, default-features = false }  # CDDL-1.0, profiling-only SVG render
+dhat = { version = "0.3", optional = true }
+jemalloc_pprof = { version = "0.9", optional = true, features = ["flamegraph", "symbolize"] }
+libc = { version = "0.2", optional = true }
 
 [features]
 default = ["jemalloc"]
@@ -30,6 +35,10 @@ default = ["jemalloc"]
 # deep-pileup churn. Toggle off with --no-default-features (falls back to
 # the system allocator). No application code changes; output-identical.
 jemalloc = ["dep:tikv-jemallocator"]
+# Profiling-only features: NEVER in `default`; never enabled by release/dist/bioconda builds.
+profile-cpu  = ["dep:pprof", "dep:inferno", "dep:libc"]
+profile-dhat = ["dep:dhat"]
+profile-heap = ["jemalloc", "tikv-jemallocator/profiling", "dep:jemalloc_pprof"]
 
 [dev-dependencies]
 tempfile.workspace = true

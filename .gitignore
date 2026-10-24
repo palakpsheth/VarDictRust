@@ -1,4 +1,5 @@
 /target
+/target-*/
 /benchmarks/data/
 *.bam
 *.bai
@@ -42,6 +43,10 @@
 .env*
 __pycache__/
 *.pyc
+*.pb
+*.pb.gz
+dhat-heap.json
+cpu-collapsed.txt
 
 # Committed micro fixtures are tiny (<10 KB total), self-contained test data
 # (see golden/PROVENANCE) — the global *.bam/*.bai exclusions do not apply here.

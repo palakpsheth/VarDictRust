@@ -12,7 +12,9 @@ readme.workspace = true
 thiserror.workspace = true
 rayon.workspace = true
 indexmap.workspace = true
+rustc-hash.workspace = true
 noodles.workspace = true
+noodles-bgzf.workspace = true
 log.workspace = true
 regex.workspace = true
 

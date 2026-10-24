@@ -1,7 +1,7 @@
 {
   "suite": "multimodal_multislice_parity_suite",
-  "timestamp": "\"2026-10-23T14:41:08Z\"",
-  "fingerprint": "a262f19b0a2eb8a8",
+  "timestamp": "\"2026-10-24T03:36:26Z\"",
+  "fingerprint": "817d89c5fb34515d",
   "mode": "tier-2-live-oracle-strict-bytes",
   "total_slices": 18,
   "slices_passed": 18,
@@ -14,181 +14,181 @@
     "events": [
       {
         "event": "HIT",
-        "key": "bb5a10e6457184ee",
+        "key": "502046383220e108",
         "kind": "java",
         "label": "mm-HG005_1A"
       },
       {
         "event": "HIT",
-        "key": "b4a2d07eebbea383",
+        "key": "8ada34cbf8f53f9a",
         "kind": "cpp",
         "label": "mm-HG005_1A"
       },
       {
         "event": "HIT",
-        "key": "99551d098e1651b3",
+        "key": "30837fd1207c3b51",
         "kind": "java",
         "label": "mm-HG005_1B"
       },
       {
         "event": "HIT",
-        "key": "69184dce1421de14",
+        "key": "d1ee888fff0cec5b",
         "kind": "cpp",
         "label": "mm-HG005_1B"
       },
       {
         "event": "HIT",
-        "key": "cae6c21ebf7f49e6",
+        "key": "ee94cc89ce62fc49",
         "kind": "java",
         "label": "mm-HG005_1C"
       },
       {
         "event": "HIT",
-        "key": "2fa8c5bd97777328",
+        "key": "cdb627a763b892ea",
         "kind": "cpp",
         "label": "mm-HG005_1C"
       },
       {
         "event": "HIT",
-        "key": "41c48f149bee3cc8",
+        "key": "f05b87d1cb3d2f96",
         "kind": "java",
         "label": "mm-SEQC2_2A"
       },
       {
         "event": "HIT",
-        "key": "7ef8197a186b955b",
+        "key": "99c0cc5bf04bef16",
         "kind": "cpp",
         "label": "mm-SEQC2_2A"
       },
       {
         "event": "HIT",
-        "key": "b467e266d7becf3b",
+        "key": "cdf6bb59ef771f48",
         "kind": "java",
         "label": "mm-SEQC2_2B"
       },
       {
         "event": "HIT",
-        "key": "6537d0d870efb586",
+        "key": "29c014471aed0eeb",
         "kind": "cpp",
         "label": "mm-SEQC2_2B"
       },
       {
         "event": "HIT",
-        "key": "bb6e5c619ff5de68",
+        "key": "7476577b49ed5810",
         "kind": "java",
         "label": "mm-SEQC2_2C"
       },
       {
         "event": "HIT",
-        "key": "d67911748a7f8165",
+        "key": "e9f1e2c36d6c6d40",
         "kind": "cpp",
         "label": "mm-SEQC2_2C"
       },
       {
         "event": "HIT",
-        "key": "c2eb43f2e5fe5f7b",
+        "key": "722ca90067a4c218",
         "kind": "java",
         "label": "mm-HG002_3A"
       },
       {
         "event": "HIT",
-        "key": "d8106001ae1a7f3f",
+        "key": "6c04aa40ea57765a",
         "kind": "cpp",
         "label": "mm-HG002_3A"
       },
       {
         "event": "HIT",
-        "key": "331d9de9ef6b461a",
+        "key": "e5e2bfbfe8bf0c9b",
         "kind": "java",
         "label": "mm-HG002_3B"
       },
       {
         "event": "HIT",
-        "key": "a0e440474b6b584d",
+        "key": "3422ec4082d3177c",
         "kind": "cpp",
         "label": "mm-HG002_3B"
       },
       {
         "event": "HIT",
-        "key": "7832d3ceefb86302",
+        "key": "8eb126899cef6efe",
         "kind": "java",
         "label": "mm-HG002_3C"
       },
       {
         "event": "HIT",
-        "key": "6fdbc3f8d0082d47",
+        "key": "280952836a940baf",
         "kind": "cpp",
         "label": "mm-HG002_3C"
       },
       {
         "event": "HIT",
-        "key": "0ee7a8f297cdac15",
+        "key": "7deab29b28ff81e5",
         "kind": "java",
         "label": "mm-HG008_4A"
       },
       {
         "event": "HIT",
-        "key": "695f49f571e9ebc4",
+        "key": "bf6b1e56616540d9",
         "kind": "cpp",
         "label": "mm-HG008_4A"
       },
       {
         "event": "HIT",
-        "key": "fae0a6a5dbd88ad6",
+        "key": "31532942b8a2e2ff",
         "kind": "java",
         "label": "mm-HG008_4B"
       },
       {
         "event": "HIT",
-        "key": "c46658bd99c3e2d9",
+        "key": "bbf9ab6aedad71ee",
         "kind": "cpp",
         "label": "mm-HG008_4B"
       },
       {
         "event": "HIT",
-        "key": "0c63e318c3ce2f91",
+        "key": "7e91a5a5f685bb2d",
         "kind": "java",
         "label": "mm-HG008_4C"
       },
       {
         "event": "HIT",
-        "key": "b500555e47194316",
+        "key": "ffdbf2aa87afed67",
         "kind": "cpp",
         "label": "mm-HG008_4C"
       },
       {
         "event": "HIT",
-        "key": "0dc95e152eb6d4cd",
+        "key": "153e420951dbbb4e",
         "kind": "java",
         "label": "mm-NA24385_5A"
       },
       {
         "event": "HIT",
-        "key": "a7c10ff4ea42dd55",
+        "key": "805719dfe8b3e531",
         "kind": "cpp",
         "label": "mm-NA24385_5A"
       },
       {
         "event": "HIT",
-        "key": "2036462635c58740",
+        "key": "1f5854b43b32949f",
         "kind": "java",
         "label": "mm-NA24385_5B"
       },
       {
         "event": "HIT",
-        "key": "982528d62f741ae4",
+        "key": "78cc659f2585cf4c",
         "kind": "cpp",
         "label": "mm-NA24385_5B"
       },
       {
         "event": "HIT",
-        "key": "29db28f7f581f8b7",
+        "key": "234f9b55e61fa073",
         "kind": "java",
         "label": "mm-NA24385_5C"
       },
       {
         "event": "HIT",
-        "key": "050caf8a85d4547b",
+        "key": "d244bb1fc475f9a0",
         "kind": "cpp",
         "label": "mm-NA24385_5C"
       },
@@ -213,7 +213,7 @@
     ],
     "hit": 33,
     "live": 0,
-    "run": "mm-1792766461"
+    "run": "mm-1792812982"
   },
   "result": "MATCH",
   "slices": [
@@ -223,7 +223,7 @@
       "region": "chr3 40000000 40010000",
       "variants": 31,
       "status": "MATCH",
-      "time_ms": 388
+      "time_ms": 208
     },
     {
       "slice_id": "HG005_1B",
@@ -231,7 +231,7 @@
       "region": "chr6 30000000 30010000",
       "variants": 10,
       "status": "MATCH",
-      "time_ms": 329
+      "time_ms": 172
     },
     {
       "slice_id": "HG005_1C",
@@ -239,7 +239,7 @@
       "region": "chr21 20000000 20010000",
       "variants": 8,
       "status": "MATCH",
-      "time_ms": 366
+      "time_ms": 192
     },
     {
       "slice_id": "SEQC2_2A",
@@ -247,7 +247,7 @@
       "region": "chr7 140400000 140420000",
       "variants": 31,
       "status": "MATCH",
-      "time_ms": 155
+      "time_ms": 98
     },
     {
       "slice_id": "SEQC2_2B",
@@ -255,7 +255,7 @@
       "region": "chr11 530000 550000",
       "variants": 16,
       "status": "MATCH",
-      "time_ms": 216
+      "time_ms": 129
     },
     {
       "slice_id": "SEQC2_2C",
@@ -263,7 +263,7 @@
       "region": "chr12 25200000 25250000",
       "variants": 55,
       "status": "MATCH",
-      "time_ms": 514
+      "time_ms": 298
     },
     {
       "slice_id": "HG002_3A",
@@ -271,7 +271,7 @@
       "region": "chr20 10000000 10020000",
       "variants": 337,
       "status": "MATCH",
-      "time_ms": 300
+      "time_ms": 162
     },
     {
       "slice_id": "HG002_3B",
@@ -279,7 +279,7 @@
       "region": "chr20 20000000 20020000",
       "variants": 273,
       "status": "MATCH",
-      "time_ms": 301
+      "time_ms": 163
     },
     {
       "slice_id": "HG002_3C",
@@ -287,7 +287,7 @@
       "region": "chr20 30000000 30020000",
       "variants": 4,
       "status": "MATCH",
-      "time_ms": 48
+      "time_ms": 47
     },
     {
       "slice_id": "HG008_4A",
@@ -295,7 +295,7 @@
       "region": "chr1 1743056 1744086 slice_1_6",
       "variants": 23,
       "status": "MATCH",
-      "time_ms": 137
+      "time_ms": 90
     },
     {
       "slice_id": "HG008_4B",
@@ -303,7 +303,7 @@
       "region": "chr1 6170843 6182754 slice_2_3",
       "variants": 50,
       "status": "MATCH",
-      "time_ms": 620
+      "time_ms": 321
     },
     {
       "slice_id": "HG008_4C",
@@ -311,7 +311,7 @@
       "region": "chr1 56757190 56764123 slice_3_4",
       "variants": 42,
       "status": "MATCH",
-      "time_ms": 274
+      "time_ms": 157
     },
     {
       "slice_id": "NA24385_5A",
@@ -319,7 +319,7 @@
       "region": "1 246981051 246981611",
       "variants": 25,
       "status": "MATCH",
-      "time_ms": 497
+      "time_ms": 300
     },
     {
       "slice_id": "NA24385_5B",
@@ -327,7 +327,7 @@
       "region": "19 58559581 58567861",
       "variants": 20,
       "status": "MATCH",
-      "time_ms": 63
+      "time_ms": 57
     },
     {
       "slice_id": "NA24385_5C",
@@ -335,7 +335,7 @@
       "region": "20 36018823 36039513",
       "variants": 181,
       "status": "MATCH",
-      "time_ms": 271
+      "time_ms": 151
     },
     {
       "slice_id": "RNA_6A",
@@ -343,7 +343,7 @@
       "region": "chr8:90534611-90550000",
       "variants": 3,
       "status": "MATCH",
-      "time_ms": 45
+      "time_ms": 42
     },
     {
       "slice_id": "RNA_6B",
@@ -351,7 +351,7 @@
       "region": "chr8:90550000-90580000",
       "variants": 8,
       "status": "MATCH",
-      "time_ms": 54
+      "time_ms": 45
     },
     {
       "slice_id": "RNA_6C",
@@ -359,7 +359,7 @@
       "region": "chr8:90580000-90620070",
       "variants": 12,
       "status": "MATCH",
-      "time_ms": 64
+      "time_ms": 48
     }
   ]
 }

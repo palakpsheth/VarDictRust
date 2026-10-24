@@ -48,7 +48,7 @@ pub struct CigarParser<'a> {
     pub position_to_insertion_count: BTreeMap<i32, HashMap<String, i32>>,
     pub position_to_deletion_count: BTreeMap<i32, HashMap<String, i32>>,
     pub sv_structures: SVStructures,
-    pub ref_coverage: BTreeMap<i32, i32>,
+    pub ref_coverage: rustc_hash::FxHashMap<i32, i32>,
     pub soft_clips_5_end: BTreeMap<i32, Sclip>,
     pub soft_clips_3_end: BTreeMap<i32, Sclip>,
     pub max_read_length: i32,
@@ -145,7 +145,7 @@ impl<'a> CigarParser<'a> {
             position_to_insertion_count: BTreeMap::new(),
             position_to_deletion_count: BTreeMap::new(),
             sv_structures: SVStructures::new(),
-            ref_coverage: BTreeMap::new(),
+            ref_coverage: rustc_hash::FxHashMap::default(),
             soft_clips_5_end: BTreeMap::new(),
             soft_clips_3_end: BTreeMap::new(),
             max_read_length: seed_max_read_length,
@@ -1953,13 +1953,9 @@ impl<'a> CigarParser<'a> {
                 } else if cigar_element_len as usize >= 17 {
                     let sequence =
                         get_reverse_complemented_sequence(record, 0, cigar_element_len as usize);
-                    if sequence.len() >= 17 {
-                        let reverse_complemented_seed = &sequence[..17];
-                        if let Some(positions) = self.reference.seed.get(reverse_complemented_seed)
-                        {
-                            if positions.len() == 1
-                                && (*start - positions[0] as i32).abs() < 2 * self.max_read_length
-                            {
+                    if let Some(reverse_complemented_seed) = sequence.get(..17) {
+                        if let Some([pos0]) = self.reference.seed.get(reverse_complemented_seed) {
+                            if (*start - *pos0 as i32).abs() < 2 * self.max_read_length {
                                 *read_pos_inc += cigar_element_len as usize;
                                 *offset = 0;
                                 *start = position;
@@ -2082,25 +2078,24 @@ impl<'a> CigarParser<'a> {
                         -(cigar_element_len as isize),
                         cigar_element_len as usize,
                     );
-                    if sequence.len() >= 17 {
-                        let reverse_complemented_seed = &sequence[sequence.len() - 17..];
-                        if let Some(positions) = self.reference.seed.get(reverse_complemented_seed)
-                        {
-                            if positions.len() == 1
-                                && (*start - positions[0] as i32).abs() < 2 * self.max_read_length
+                    if let Some(start_idx) = sequence.len().checked_sub(17) {
+                        if let Some(reverse_complemented_seed) = sequence.get(start_idx..) {
+                            if let Some([pos0]) = self.reference.seed.get(reverse_complemented_seed)
                             {
-                                *read_pos_inc += cigar_element_len as usize;
-                                *offset = 0;
-                                *start = position;
-                                if self.config.verbose {
-                                    eprintln!(
-                                        "{} at 3' is a chimeric at {} by SEED 17",
-                                        String::from_utf8_lossy(&sequence),
-                                        start
-                                    );
-                                }
+                                if (*start - *pos0 as i32).abs() < 2 * self.max_read_length {
+                                    *read_pos_inc += cigar_element_len as usize;
+                                    *offset = 0;
+                                    *start = position;
+                                    if self.config.verbose {
+                                        eprintln!(
+                                            "{} at 3' is a chimeric at {} by SEED 17",
+                                            String::from_utf8_lossy(&sequence),
+                                            start
+                                        );
+                                    }
 
-                                return;
+                                    return;
+                                }
                             }
                         }
                     }
@@ -3208,10 +3203,14 @@ fn is_mnp(s: &str) -> bool {
 
 fn increment(hash: &mut BTreeMap<i32, HashMap<String, i32>>, k1: i32, k2: &str) {
     let map = hash.entry(k1).or_default();
-    *map.entry(k2.to_string()).or_default() += 1;
+    if let Some(cnt) = map.get_mut(k2) {
+        *cnt += 1;
+    } else {
+        map.insert(k2.to_owned(), 1);
+    }
 }
 
-fn inc_cnt(hash: &mut BTreeMap<i32, i32>, start: i32, count: i32) {
+fn inc_cnt(hash: &mut rustc_hash::FxHashMap<i32, i32>, start: i32, count: i32) {
     *hash.entry(start).or_default() += count;
 }
 
@@ -4241,5 +4240,32 @@ mod tests {
             "spliced read 15M20N15M has ALIGNED_LENGTH_MD = 30 (not 50) and must be skipped"
         );
         assert_eq!(parser_spliced.max_read_length, 30);
+    }
+
+    #[test]
+    fn increment_and_inc_cnt_preserve_counts() {
+        let mut counts: BTreeMap<i32, HashMap<String, i32>> = BTreeMap::new();
+        increment(&mut counts, 10, "+AT");
+        increment(&mut counts, 10, "+AT");
+        increment(&mut counts, 10, "+G");
+        assert_eq!(counts.get(&10).unwrap().get("+AT"), Some(&2));
+        assert_eq!(counts.get(&10).unwrap().get("+G"), Some(&1));
+
+        let reference = Reference::new();
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(1),
+            end: Pos1(100),
+            gene: "T".to_string(),
+            amplicon: None,
+        };
+        let config = Config::default();
+        let mut parser = CigarParser::new(&reference, &region, &config, false, 0, 0, 0);
+        inc_cnt(&mut parser.ref_coverage, 42, 1);
+        inc_cnt(&mut parser.ref_coverage, 42, 3);
+        inc_cnt(&mut parser.ref_coverage, 43, 2);
+        assert_eq!(parser.ref_coverage.get(&42), Some(&4));
+        assert_eq!(parser.ref_coverage.get(&43), Some(&2));
+        assert_eq!(parser.ref_coverage.get(&99), None);
     }
 }

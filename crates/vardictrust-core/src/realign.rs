@@ -682,6 +682,22 @@ pub fn fill_adaptor_maps(
     (adaptor_forward, adaptor_reverse)
 }
 
+#[inline]
+fn cigar_contains_dlen_d(
+    cigar: &[(u32, noodles::sam::alignment::record::cigar::op::Kind)],
+    dlen: i32,
+) -> bool {
+    use noodles::sam::alignment::record::cigar::op::Kind as CigarKind;
+    if dlen < 0 {
+        return false;
+    }
+    let d = dlen as u64;
+    let m = 10u64.pow(d.checked_ilog10().unwrap_or(0) + 1);
+    cigar
+        .iter()
+        .any(|&(len, k)| k == CigarKind::Deletion && (len as u64) >= d && (len as u64) % m == d)
+}
+
 /// Check if there are no passing reads spanning the start-end coordinates.
 ///
 /// Ports `VariationRealigner.noPassingReads`.
@@ -695,7 +711,6 @@ pub fn no_passing_reads(
     let mut cnt = 0;
     let mut midcnt = 0;
     let dlen = end - start;
-    let dlenqr = format!("{}D", dlen);
 
     'bam: for bam in bams {
         let bam_path = std::path::Path::new(bam);
@@ -729,8 +744,7 @@ pub fn no_passing_reads(
                     continue 'bam;
                 }
             }
-            let cigar_str = crate::bam::get_cigar_string(&record.cigar);
-            if cigar_str.contains(&dlenqr) {
+            if cigar_contains_dlen_d(&record.cigar, dlen) {
                 continue;
             }
             let read_start = match record.alignment_start {
@@ -757,6 +771,142 @@ pub fn no_passing_reads(
     }
 
     cnt <= 0 && midcnt + 1 > 0
+}
+
+#[cfg(test)]
+mod task13_tests {
+    use super::*;
+    use noodles::sam::alignment::record::cigar::op::Kind as CigarKind;
+
+    fn cigar_contains_dlen_d_legacy(cigar: &[(u32, CigarKind)], dlen: i32) -> bool {
+        let dlenqr = format!("{dlen}D");
+        let cigar_str = crate::bam::get_cigar_string(cigar);
+        cigar_str.contains(&dlenqr)
+    }
+
+    #[test]
+    fn cigar_contains_dlen_d_matches_string_contains() {
+        let kinds = [
+            CigarKind::Match,
+            CigarKind::Insertion,
+            CigarKind::Deletion,
+            CigarKind::Skip,
+            CigarKind::SoftClip,
+            CigarKind::HardClip,
+            CigarKind::Pad,
+            CigarKind::SequenceMatch,
+            CigarKind::SequenceMismatch,
+        ];
+
+        // 1. Exhaustive single-op: len, dlen in 0..2000 across Deletion and non-Deletion ops
+        for len in 0..2000u32 {
+            let del_cigar = [(len, CigarKind::Deletion)];
+            let match_cigar = [(len, CigarKind::Match)];
+            for dlen in 0..2000i32 {
+                assert_eq!(
+                    cigar_contains_dlen_d(&del_cigar, dlen),
+                    cigar_contains_dlen_d_legacy(&del_cigar, dlen),
+                    "single-op del mismatch for len={len}, dlen={dlen}"
+                );
+                assert!(!cigar_contains_dlen_d(&match_cigar, dlen));
+            }
+        }
+
+        // 2. Explicit substring parity checks (`15D` vs `5D`, `11D` vs `1D`, `21D` vs `1D`, start/mid/multi-D)
+        assert!(cigar_contains_dlen_d(&[(15, CigarKind::Deletion)], 5));
+        assert!(cigar_contains_dlen_d(&[(11, CigarKind::Deletion)], 1));
+        assert!(cigar_contains_dlen_d(&[(21, CigarKind::Deletion)], 1));
+        assert!(!cigar_contains_dlen_d(&[(5, CigarKind::Deletion)], 15));
+        assert!(cigar_contains_dlen_d(
+            &[(10, CigarKind::Deletion), (50, CigarKind::Match)],
+            10
+        ));
+        assert!(cigar_contains_dlen_d(
+            &[
+                (50, CigarKind::Match),
+                (10, CigarKind::Deletion),
+                (50, CigarKind::Match)
+            ],
+            10
+        ));
+        assert!(cigar_contains_dlen_d(
+            &[
+                (10, CigarKind::Deletion),
+                (20, CigarKind::Match),
+                (100, CigarKind::Deletion)
+            ],
+            100
+        ));
+
+        // 3. Extremes: len in {0, 1, 99999, 100000, u32::MAX}, dlen in {0, -1, -3, i32::MIN, i32::MAX}
+        let extreme_lens = [0u32, 1, 5, 15, 99_999, 100_000, i32::MAX as u32, u32::MAX];
+        let extreme_dlens = [
+            i32::MIN,
+            -100,
+            -3,
+            -1,
+            0,
+            1,
+            5,
+            15,
+            95,
+            99_999,
+            100_000,
+            i32::MAX,
+        ];
+        assert!(!cigar_contains_dlen_d(&[], 5));
+        assert!(!cigar_contains_dlen_d(&[], 0));
+        for &len in &extreme_lens {
+            for &k in &kinds {
+                let c = [(len, k)];
+                for &dlen in &extreme_dlens {
+                    assert_eq!(
+                        cigar_contains_dlen_d(&c, dlen),
+                        cigar_contains_dlen_d_legacy(&c, dlen),
+                        "extreme mismatch for len={len}, kind={k:?}, dlen={dlen}"
+                    );
+                }
+            }
+        }
+
+        // 4. 50,000 seeded multi-op CIGARs
+        let mut rng: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut cigar = Vec::with_capacity(6);
+        for case_idx in 0..50_000usize {
+            cigar.clear();
+            rng = rng
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            let n_ops = ((rng >> 32) as usize % 6) + 1;
+            for _ in 0..n_ops {
+                rng = rng
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                let kind = kinds[(rng >> 16) as usize % kinds.len()];
+                let len = match (rng >> 24) & 3 {
+                    0 => (rng as u32) % 25,
+                    1 => (rng as u32) % 500,
+                    2 => (rng as u32) % 100_000,
+                    _ => rng as u32,
+                };
+                cigar.push((len, kind));
+            }
+            rng = rng
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            let dlen = match (rng >> 40) & 3 {
+                0 => -(((rng as i32).abs() % 50) + 1),
+                1 => (rng as u32 % 25) as i32,
+                2 => (rng as u32 % 500) as i32,
+                _ => (rng as u32 % 100_000) as i32,
+            };
+            assert_eq!(
+                cigar_contains_dlen_d(&cigar, dlen),
+                cigar_contains_dlen_d_legacy(&cigar, dlen),
+                "random multi-op mismatch at #{case_idx}: cigar={cigar:?}, dlen={dlen}"
+            );
+        }
+    }
 }
 
 static BEGIN_MINUS_NUMBER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^-(\d+)").unwrap());
@@ -789,7 +939,7 @@ pub fn realigndel(
     chr_len: u32,
     config: &crate::config::Config,
     non_insertion_variants: &mut crate::javamap::JavaHashMap<i32, VariationMap>,
-    ref_coverage: &mut BTreeMap<i32, i32>,
+    ref_coverage: &mut rustc_hash::FxHashMap<i32, i32>,
     soft_clips_5_end: &mut BTreeMap<i32, Sclip>,
     soft_clips_3_end: &mut BTreeMap<i32, Sclip>,
     max_read_length: i32,
@@ -1331,7 +1481,7 @@ pub fn realignins(
     config: &crate::config::Config,
     insertion_variants: &mut crate::javamap::JavaHashMap<i32, VariationMap>,
     non_insertion_variants: &mut crate::javamap::JavaHashMap<i32, VariationMap>,
-    ref_coverage: &mut BTreeMap<i32, i32>,
+    ref_coverage: &mut rustc_hash::FxHashMap<i32, i32>,
     soft_clips_5_end: &mut BTreeMap<i32, Sclip>,
     soft_clips_3_end: &mut BTreeMap<i32, Sclip>,
     max_read_length: i32,
@@ -1847,7 +1997,7 @@ pub fn realignlgdel(
     config: &crate::config::Config,
     non_insertion_variants: &mut crate::javamap::JavaHashMap<i32, VariationMap>,
     insertion_variants: &mut crate::javamap::JavaHashMap<i32, VariationMap>,
-    ref_coverage: &mut BTreeMap<i32, i32>,
+    ref_coverage: &mut rustc_hash::FxHashMap<i32, i32>,
     soft_clips_5_end: &mut BTreeMap<i32, Sclip>,
     soft_clips_3_end: &mut BTreeMap<i32, Sclip>,
     max_read_length: i32,
@@ -1879,29 +2029,24 @@ pub fn realignlgdel(
     let mut svcov = 0;
 
     for (p, _) in tmp5 {
-        let mut sc5v = match soft_clips_5_end.get(&p).cloned() {
-            Some(sc) => sc,
-            None => continue,
+        let (cnt, seq, sc5_variation) = {
+            let Some(sc) = soft_clips_5_end.get_mut(&p) else {
+                continue;
+            };
+            let cnt = sc.variation.cnt;
+            if cnt < config.min_reads as i32 {
+                break;
+            }
+            if sc.used {
+                continue;
+            }
+            let seq =
+                crate::variations::util::find_conseq(sc, 5, &adaptor_forward, &adaptor_reverse);
+            if seq.len() < 7 {
+                continue;
+            }
+            (cnt, seq, sc.variation.clone())
         };
-        let cnt = sc5v.variation.cnt;
-        if cnt < config.min_reads as i32 {
-            break;
-        }
-        if sc5v.used {
-            continue;
-        }
-        let seq =
-            crate::variations::util::find_conseq(&mut sc5v, 5, &adaptor_forward, &adaptor_reverse);
-        if let Some(entry) = soft_clips_5_end.get_mut(&p) {
-            entry.used = sc5v.used;
-            entry.sequence = sc5v.sequence.clone();
-        }
-        if seq.is_empty() {
-            continue;
-        }
-        if seq.len() < 7 {
-            continue;
-        }
 
         if config.verbose {
             eprintln!(
@@ -2098,13 +2243,11 @@ pub fn realignlgdel(
             let tv = crate::variations::get_variation(non_insertion_variants, bp, &gt_str);
             tv.qstd = true;
             tv.pstd = true;
-            crate::variations::util::adj_cnt(tv, &sc5v.variation, None);
+            crate::variations::util::adj_cnt(tv, &sc5_variation, None);
         }
-        sc5v.used = bp != 0;
 
         if let Some(sc) = soft_clips_5_end.get_mut(&p) {
             sc.used = bp != 0;
-            sc.sequence = sc5v.sequence;
         }
 
         if !ref_coverage.contains_key(&bp) {
@@ -2115,11 +2258,11 @@ pub fn realignlgdel(
 
         if dellen < config.indel_size as i32 {
             for tp in bp..bp + dellen {
-                inc_cnt(ref_coverage, tp, sc5v.variation.cnt);
+                inc_cnt(ref_coverage, tp, sc5_variation.cnt);
             }
         }
 
-        if let Some(mut sclip) = soft_clips_3_end.get(&sc3p).cloned() {
+        if let Some(sclip) = soft_clips_3_end.get_mut(&sc3p) {
             if !sclip.used {
                 {
                     let tv = crate::variations::get_variation(non_insertion_variants, bp, &gt_str);
@@ -2180,9 +2323,6 @@ pub fn realignlgdel(
                 }
 
                 sclip.used = bp != 0;
-                if let Some(sc) = soft_clips_3_end.get_mut(&sc3p) {
-                    sc.used = bp != 0;
-                }
             }
         }
 
@@ -2254,29 +2394,27 @@ pub fn realignlgdel(
     });
 
     for (p, _) in tmp3 {
-        let mut sc3v = match soft_clips_3_end.get(&p).cloned() {
-            Some(sc) => sc,
-            None => continue,
+        let (cnt, seq) = {
+            let Some(sc) = soft_clips_3_end.get_mut(&p) else {
+                continue;
+            };
+            let cnt = sc.variation.cnt;
+            if cnt < config.min_reads as i32 {
+                break;
+            }
+            if sc.used {
+                continue;
+            }
+            let seq =
+                crate::variations::util::find_conseq(sc, 3, &adaptor_forward, &adaptor_reverse);
+            if seq.len() < 7 {
+                continue;
+            }
+            (cnt, seq)
         };
-        let cnt = sc3v.variation.cnt;
-        if cnt < config.min_reads as i32 {
-            break;
-        }
-        if sc3v.used {
+        let Some(mut sc3v) = soft_clips_3_end.get(&p).cloned() else {
             continue;
-        }
-        let seq =
-            crate::variations::util::find_conseq(&mut sc3v, 3, &adaptor_forward, &adaptor_reverse);
-        if let Some(entry) = soft_clips_3_end.get_mut(&p) {
-            entry.used = sc3v.used;
-            entry.sequence = sc3v.sequence.clone();
-        }
-        if seq.is_empty() {
-            continue;
-        }
-        if seq.len() < 7 {
-            continue;
-        }
+        };
 
         if config.verbose {
             eprintln!(
@@ -2540,7 +2678,7 @@ pub fn realignlgins30(
     config: &crate::config::Config,
     non_insertion_variants: &mut crate::javamap::JavaHashMap<i32, VariationMap>,
     insertion_variants: &mut crate::javamap::JavaHashMap<i32, VariationMap>,
-    ref_coverage: &mut BTreeMap<i32, i32>,
+    ref_coverage: &mut rustc_hash::FxHashMap<i32, i32>,
     soft_clips_5_end: &mut BTreeMap<i32, Sclip>,
     soft_clips_3_end: &mut BTreeMap<i32, Sclip>,
     max_read_length: i32,
@@ -2580,34 +2718,39 @@ pub fn realignlgins30(
         }
     });
 
+    let max_dist_53 = (max_read_length as f64 * 2.5) as i32;
+    let max_dist_35 = max_read_length - 10;
     for (p5, cnt5) in tmp5 {
         if soft_clips_5_end.get(&p5).is_none_or(|sc| sc.used) {
             continue;
         }
+        let mut sc5_used = false;
         for (p3, cnt3) in tmp3.iter().copied() {
-            if soft_clips_5_end.get(&p5).is_none_or(|sc| sc.used) {
+            if sc5_used {
                 break;
+            }
+            if p5 - p3 > max_dist_53 || p3 - p5 > max_dist_35 {
+                continue;
             }
             if soft_clips_3_end.get(&p3).is_none_or(|sc| sc.used) {
                 continue;
             }
-            if p5 - p3 > (max_read_length as f64 * 2.5) as i32 {
-                continue;
-            }
-            if p3 - p5 > max_read_length - 10 {
-                continue;
-            }
             let seq5 = {
-                let sc5v = match soft_clips_5_end.get_mut(&p5) {
-                    Some(sc) => sc,
-                    None => continue,
+                let Some(sc5v) = soft_clips_5_end.get_mut(&p5) else {
+                    break;
                 };
-                crate::variations::util::find_conseq(sc5v, 5, &adaptor_forward, &adaptor_reverse)
+                let s = crate::variations::util::find_conseq(
+                    sc5v,
+                    5,
+                    &adaptor_forward,
+                    &adaptor_reverse,
+                );
+                sc5_used = sc5v.used;
+                s
             };
             let seq3 = {
-                let sc3v = match soft_clips_3_end.get_mut(&p3) {
-                    Some(sc) => sc,
-                    None => continue,
+                let Some(sc3v) = soft_clips_3_end.get_mut(&p3) else {
+                    continue;
                 };
                 crate::variations::util::find_conseq(sc3v, 3, &adaptor_forward, &adaptor_reverse)
             };
@@ -2943,7 +3086,7 @@ pub fn realignlgins(
     config: &crate::config::Config,
     non_insertion_variants: &mut crate::javamap::JavaHashMap<i32, VariationMap>,
     insertion_variants: &mut crate::javamap::JavaHashMap<i32, VariationMap>,
-    ref_coverage: &mut BTreeMap<i32, i32>,
+    ref_coverage: &mut rustc_hash::FxHashMap<i32, i32>,
     soft_clips_5_end: &mut BTreeMap<i32, Sclip>,
     soft_clips_3_end: &mut BTreeMap<i32, Sclip>,
     max_read_length: i32,
@@ -3739,6 +3882,7 @@ fn join_ref_for_3_lgins(
     sb
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Match35 {
     pub matched_5_end: i32,
     pub matched_3_end: i32,
@@ -3762,24 +3906,32 @@ pub fn find_35_match(seq5: &[u8], seq3: &[u8], verbose: bool) -> Match35 {
         };
     }
 
+    let rev3: Vec<u8> = seq3.iter().rev().copied().collect();
+
     for i in 0..(len5 - 8) {
         for j in 1..(len3 - 8) {
-            let mut number_of_mismatch = 0;
-            let mut total_length = 0;
-            while total_length + j <= len3 && i + total_length <= len5 {
-                let match_char = if i + total_length < len5 {
-                    let idx3 = len3 - j - total_length;
-                    seq3[idx3] == seq5[i + total_length]
-                } else {
-                    false
-                };
-                if !match_char {
+            let rem3 = len3 - j + 1;
+            let rem5 = len5 - i;
+            let valid_len = rem3.min(rem5);
+            let s3 = rev3.get((j - 1)..(j - 1 + valid_len)).unwrap_or(&[]);
+            let s5 = seq5.get(i..(i + valid_len)).unwrap_or(&[]);
+            let mut number_of_mismatch = 0i32;
+            let mut total_length = 0usize;
+            for (&b3_ch, &b5_ch) in s3.iter().zip(s5.iter()) {
+                if b3_ch != b5_ch {
                     number_of_mismatch += 1;
-                }
-                if number_of_mismatch > long_mismatch {
-                    break;
+                    if number_of_mismatch > long_mismatch {
+                        break;
+                    }
                 }
                 total_length += 1;
+            }
+            if number_of_mismatch <= long_mismatch && rem5 < rem3 {
+                // Legacy while-loop sentinel iteration at i + total_length == len5
+                number_of_mismatch += 1;
+                if number_of_mismatch <= long_mismatch {
+                    total_length += 1;
+                }
             }
             let score = total_length as i32 - number_of_mismatch;
             if score > max_matched_length
@@ -3811,7 +3963,15 @@ pub fn find_35_match(seq5: &[u8], seq3: &[u8], verbose: bool) -> Match35 {
     }
 }
 
-fn inc_cnt(hash: &mut BTreeMap<i32, i32>, start: i32, count: i32) {
+#[cfg(test)]
+mod task7_tests {
+    #[test]
+    fn find_35_match_matches_legacy_on_random_and_adversarial_corpus() {
+        crate::variations::util::tests::run_find_35_match_diff_suite();
+    }
+}
+
+fn inc_cnt(hash: &mut rustc_hash::FxHashMap<i32, i32>, start: i32, count: i32) {
     *hash.entry(start).or_insert(0) += count;
 }
 
@@ -3984,7 +4144,7 @@ fn partial_pipeline(
     region: &crate::regions::Region,
     non_insertion_variants: &mut crate::javamap::JavaHashMap<i32, VariationMap>,
     insertion_variants: &mut crate::javamap::JavaHashMap<i32, VariationMap>,
-    ref_coverage: &mut BTreeMap<i32, i32>,
+    ref_coverage: &mut rustc_hash::FxHashMap<i32, i32>,
     soft_clips_5_end: &mut BTreeMap<i32, Sclip>,
     soft_clips_3_end: &mut BTreeMap<i32, Sclip>,
 ) -> Result<(), crate::types::VardictError> {
@@ -4925,7 +5085,7 @@ mod tests {
         );
         non_insertion_variants.insert(10, map10);
 
-        let mut ref_coverage = BTreeMap::new();
+        let mut ref_coverage = rustc_hash::FxHashMap::default();
         ref_coverage.insert(10, 10);
         ref_coverage.insert(11, 10);
 
@@ -5005,7 +5165,7 @@ mod tests {
         );
         non_insertion_variants.insert(10, map10_non);
 
-        let mut ref_coverage = BTreeMap::new();
+        let mut ref_coverage = rustc_hash::FxHashMap::default();
         ref_coverage.insert(10, 10);
 
         let mut soft_clips_5_end = BTreeMap::new();
@@ -5066,7 +5226,7 @@ mod tests {
 
         let mut non_insertion_variants = crate::javamap::JavaHashMap::new();
         let mut insertion_variants = crate::javamap::JavaHashMap::new();
-        let mut ref_coverage = BTreeMap::new();
+        let mut ref_coverage = rustc_hash::FxHashMap::default();
         ref_coverage.insert(50, 10);
         let mut soft_clips_3_end = BTreeMap::new();
 
@@ -5139,7 +5299,7 @@ mod tests {
 
         let mut non_insertion_variants = crate::javamap::JavaHashMap::new();
         let mut insertion_variants = crate::javamap::JavaHashMap::new();
-        let mut ref_coverage = BTreeMap::new();
+        let mut ref_coverage = rustc_hash::FxHashMap::default();
         ref_coverage.insert(50, 10);
         let mut soft_clips_3_end = BTreeMap::new();
 
@@ -5224,7 +5384,7 @@ mod tests {
             );
             non_insertion_variants.insert(10, map10);
 
-            let mut ref_coverage = BTreeMap::new();
+            let mut ref_coverage = rustc_hash::FxHashMap::default();
             ref_coverage.insert(10, 20);
 
             let mut soft_clips_5_end = BTreeMap::new();
@@ -5291,7 +5451,7 @@ mod tests {
             );
             non_insertion_variants.insert(10, map10);
 
-            let mut ref_coverage = BTreeMap::new();
+            let mut ref_coverage = rustc_hash::FxHashMap::default();
             ref_coverage.insert(10, 20);
 
             let mut soft_clips_5_end = BTreeMap::new();
@@ -5378,7 +5538,7 @@ mod tests {
 
         let mut non_insertion_variants = crate::javamap::JavaHashMap::new();
         let mut insertion_variants = crate::javamap::JavaHashMap::new();
-        let mut ref_coverage = BTreeMap::new();
+        let mut ref_coverage = rustc_hash::FxHashMap::default();
         ref_coverage.insert(60, 10);
         let mut soft_clips_3_end = BTreeMap::new();
         let mut svfdel = Vec::new();

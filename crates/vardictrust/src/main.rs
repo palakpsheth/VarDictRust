@@ -1,24 +1,33 @@
 mod cli;
+mod profile;
 
 use anyhow::Result;
 use clap::Parser;
 
-// Task 4 allocator experiment: jemalloc global allocator. glibc ptmalloc
-// retains freed per-read churn spans (measured: 267 KB live vs 46 MB HWM on
-// the chrM slice, 173x); jemalloc's background purging + decay returns them.
-// Baked-in config: background purging on, fast dirty decay, no muzzy
-// retention; arena count left to jemalloc's default (scales with host CPUs —
-// universal, no box-tuning). Toggle off with --no-default-features.
-// No application code changes; allocator swaps cannot change output
-// (verified by gates).
-#[cfg(feature = "jemalloc")]
+// Priority-based allocator selection: dhat wins when profile-dhat is enabled;
+// otherwise jemalloc (if jemalloc feature enabled); otherwise system allocator.
+#[cfg(feature = "profile-dhat")]
+#[global_allocator]
+static ALLOC: dhat::Alloc = dhat::Alloc;
+#[cfg(all(feature = "jemalloc", not(feature = "profile-dhat")))]
 #[global_allocator]
 static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
-#[cfg(feature = "jemalloc")]
-#[allow(non_upper_case_globals)]
+// Thin-pointer _rjem_malloc_conf:
+// &[u8; N] coerces to a thin pointer (8 bytes on 64-bit), matching jemalloc's
+// expected C `const char *` ABI, unlike a fat slice `&[u8]` (16 bytes).
+#[cfg(all(feature = "jemalloc", not(feature = "profile-heap")))]
 #[export_name = "_rjem_malloc_conf"]
-pub static malloc_conf: &[u8] = b"background_thread:true,dirty_decay_ms:5000,muzzy_decay_ms:0\0";
+pub static MALLOC_CONF: &[u8; 69] =
+    b"background_thread:true,dirty_decay_ms:250,muzzy_decay_ms:0,narenas:8\0";
+#[cfg(feature = "profile-heap")]
+#[export_name = "_rjem_malloc_conf"]
+pub static MALLOC_CONF: &[u8; 105] = b"prof:true,prof_active:true,lg_prof_sample:19,background_thread:true,dirty_decay_ms:5000,muzzy_decay_ms:0\0";
+
+#[cfg(feature = "jemalloc")]
+// Lint false positive: size_of_val(&MALLOC_CONF) intentionally asserts the size of the static reference itself (thin 8-byte pointer vs 16-byte slice).
+#[allow(clippy::size_of_ref)]
+const _: () = assert!(core::mem::size_of_val(&MALLOC_CONF) == core::mem::size_of::<*const u8>());
 
 fn is_broken_pipe(err: &vardictrust_core::types::VardictError) -> bool {
     match err {
@@ -31,6 +40,7 @@ fn is_broken_pipe(err: &vardictrust_core::types::VardictError) -> bool {
 
 fn main() -> Result<()> {
     env_logger::init();
+    let _session = profile::Session::start()?;
     let raw_args: Vec<String> = std::env::args().collect();
     let args = cli::normalize_args(&raw_args);
     cli::check_unsupported(&args)?;

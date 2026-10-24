@@ -8,8 +8,11 @@
 //! - `Variant`: finalized output variant (populated in Phase 3)
 //! - `Vars`: per-position variant container
 
+use indexmap::map::{raw_entry_v1::RawEntryMut, RawEntryApiV1};
 use indexmap::IndexMap;
 use std::collections::{BTreeMap, BTreeSet};
+
+pub type FxBuildHasher = std::hash::BuildHasherDefault<rustc_hash::FxHasher>;
 
 pub mod util;
 
@@ -763,7 +766,7 @@ pub struct Sv {
 /// Ports `collection/VariationMap.java`.
 #[derive(Debug, Clone, Default)]
 pub struct VariationMap {
-    pub map: IndexMap<String, Variation>,
+    pub map: IndexMap<String, Variation, FxBuildHasher>,
     pub sv: Option<Sv>,
     /// Set when a mate-window `partial_pipeline` merge plants this map's
     /// position outside the merging tile's active range (G3). The builder
@@ -777,7 +780,7 @@ pub struct VariationMap {
 impl VariationMap {
     pub fn new() -> Self {
         Self {
-            map: IndexMap::new(),
+            map: IndexMap::default(),
             sv: None,
             merge_planted: false,
         }
@@ -860,7 +863,7 @@ pub struct VariationData {
     pub position_to_insertion_count: BTreeMap<i32, std::collections::HashMap<String, i32>>,
     pub position_to_deletion_count: BTreeMap<i32, std::collections::HashMap<String, i32>>,
     pub sv_structures: SVStructures,
-    pub ref_coverage: BTreeMap<i32, i32>,
+    pub ref_coverage: rustc_hash::FxHashMap<i32, i32>,
     pub soft_clips_5_end: BTreeMap<i32, Sclip>,
     pub soft_clips_3_end: BTreeMap<i32, Sclip>,
     pub max_read_length: i32,
@@ -894,10 +897,10 @@ pub fn get_variation<'a>(
     s: &str,
 ) -> &'a mut Variation {
     let entry = hash.compute_if_absent(start, |_| VariationMap::new());
-    entry
-        .map
-        .entry(s.to_string())
-        .or_insert_with(Variation::new)
+    match entry.map.raw_entry_mut_v1().from_key(s) {
+        RawEntryMut::Occupied(e) => e.into_mut(),
+        RawEntryMut::Vacant(v) => v.insert(s.to_owned(), Variation::new()).1,
+    }
 }
 
 pub fn get_variation_maybe(
@@ -907,8 +910,9 @@ pub fn get_variation_maybe(
 ) -> Option<&Variation> {
     let ref_base = ref_base?;
     let entry = hash.get(&start)?;
-    let key = (ref_base as char).to_string();
-    entry.map.get(&key)
+    let mut buf = [0u8; 4];
+    let k: &str = (ref_base as char).encode_utf8(&mut buf);
+    entry.map.get(k)
 }
 
 pub fn get_variation_maybe_mut(
@@ -918,8 +922,9 @@ pub fn get_variation_maybe_mut(
 ) -> Option<&mut Variation> {
     let ref_base = ref_base?;
     let entry = hash.get_mut(&start)?;
-    let key = (ref_base as char).to_string();
-    entry.map.get_mut(&key)
+    let mut buf = [0u8; 4];
+    let k: &str = (ref_base as char).encode_utf8(&mut buf);
+    entry.map.get_mut(k)
 }
 
 #[cfg(test)]
@@ -1034,6 +1039,34 @@ mod tests {
         v.frequency = 0.35;
         v.mean_mapping_quality = 5.0;
         assert!(v.is_good_var(None, "SNV", &splice, &config));
+    }
+
+    #[test]
+    fn get_variation_hit_does_not_reorder_or_duplicate_and_latin1_matches() {
+        let mut m: crate::javamap::JavaHashMap<i32, VariationMap> =
+            crate::javamap::JavaHashMap::new();
+        get_variation(&mut m, 100, "A").cnt = 3;
+        get_variation(&mut m, 100, "+T").cnt = 1;
+        get_variation(&mut m, 100, "C").cnt = 2;
+        get_variation(&mut m, 100, "A").cnt += 4;
+
+        let keys: Vec<&str> = m
+            .get(&100)
+            .unwrap()
+            .map
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(keys, vec!["A", "+T", "C"]);
+        assert_eq!(get_variation_maybe(&m, 100, Some(b'A')).unwrap().cnt, 7);
+
+        let latin1_key = (0xE9u8 as char).to_string();
+        get_variation(&mut m, 100, &latin1_key).cnt = 9;
+        assert_eq!(get_variation_maybe(&m, 100, Some(0xE9)).unwrap().cnt, 9);
+        get_variation_maybe_mut(&mut m, 100, Some(0xE9))
+            .unwrap()
+            .cnt = 11;
+        assert_eq!(get_variation_maybe(&m, 100, Some(0xE9)).unwrap().cnt, 11);
     }
 }
 

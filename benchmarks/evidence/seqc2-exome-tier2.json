@@ -20,7 +20,7 @@
     "max_rss_kb": "2252120",
     "wall": "7:11.99"
   },
-  "date": "2026-10-22T21:06:38-07:00",
+  "date": "2026-10-23T18:31:10-07:00",
   "extra": {
     "cpp_chunk": "50000",
     "cpp_head": [
@@ -33,25 +33,25 @@
     "golden": {
       "events": [
         {
-          "event": "MISS",
+          "event": "HIT",
           "key": "f4ff71cbfb2663a3",
           "kind": "java",
           "label": "compare"
         },
         {
-          "event": "MISS",
+          "event": "HIT",
           "key": "e04af8231e2ba279",
           "kind": "cpp",
           "label": "compare"
         }
       ],
-      "hit": 0,
-      "live": 2,
-      "run": "compare-3948134-1792722862"
+      "hit": 2,
+      "live": 0,
+      "run": "compare-1427206-1792804817"
     }
   },
-  "fingerprint": "a262f19b0a2eb8a8",
-  "head": "87709f33cc804cd3ff787d5e80f30f94f3813acd",
+  "fingerprint": "817d89c5fb34515d",
+  "head": "f9587d50993e89757ae5647315d3d88c50f5fb67",
   "java_time": {
     "exit": "0",
     "max_rss_kb": "3687592",
@@ -62,7 +62,7 @@
   "result": "MATCH",
   "rust_time": {
     "exit": "0",
-    "max_rss_kb": "778520",
-    "wall": "30:35.74"
+    "max_rss_kb": "528104",
+    "wall": "10:33.12"
   }
 }
