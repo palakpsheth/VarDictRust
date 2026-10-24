@@ -137,6 +137,76 @@ pub fn tile(region: &Region, tile_size: u32, halo: u32) -> Vec<Tile> {
     tiles
 }
 
+/// Groups consecutive small tiles on the same chromosome into coarse-grained
+/// batches (`EBO-3`) so high-region-count Exome BEDs (~300k exons) amortize
+/// Rayon/Condvar/channel scheduling and preserve per-thread BGZF block locality (`M-THROUGHPUT`).
+///
+/// Invariants:
+/// - Effective batch size is capped at `(tiles.len() / (num_threads.max(1) * 4)).clamp(1, max_batch_tiles)`
+///   so small BEDs (`tiles.len() <= num_threads * 4`) never merge tiles and
+///   always keep all worker threads busy.
+/// - Split sub-tiles of a large region (`tile.start != tile.original_start || tile.end != tile.original_end`)
+///   or tiles whose cumulative base span would exceed `target_batch_bp` are never merged.
+/// - Batches never cross chromosome boundaries (`curr.chr != prev.chr`).
+pub fn batch_tiles(
+    tiles: Vec<Tile>,
+    target_batch_bp: u32,
+    max_batch_tiles: usize,
+    num_threads: usize,
+) -> Vec<Vec<Tile>> {
+    if tiles.is_empty() {
+        return Vec::new();
+    }
+    let min_batches = num_threads.max(1).saturating_mul(4);
+    let effective_max = (tiles.len() / min_batches).clamp(1, max_batch_tiles.max(1));
+    if effective_max == 1 {
+        return tiles.into_iter().map(|t| vec![t]).collect();
+    }
+
+    let mut batches: Vec<Vec<Tile>> = Vec::with_capacity(tiles.len() / effective_max + 1);
+    let mut current_batch: Vec<Tile> = Vec::with_capacity(effective_max);
+    let mut current_bp: u32 = 0;
+
+    for t in tiles {
+        let tile_bp = t
+            .halo_end
+            .0
+            .saturating_sub(t.halo_start.0)
+            .saturating_add(1);
+        let is_split_tile = t.start != t.original_start || t.end != t.original_end;
+
+        let can_append = !current_batch.is_empty()
+            && !is_split_tile
+            && current_batch.len() < effective_max
+            && current_bp.saturating_add(tile_bp) <= target_batch_bp
+            && current_batch.last().is_some_and(|prev| {
+                prev.chr == t.chr
+                    && prev.start == prev.original_start
+                    && prev.end == prev.original_end
+            });
+
+        if can_append {
+            current_bp = current_bp.saturating_add(tile_bp);
+            current_batch.push(t);
+        } else {
+            if !current_batch.is_empty() {
+                batches.push(std::mem::replace(
+                    &mut current_batch,
+                    Vec::with_capacity(effective_max),
+                ));
+            }
+            current_bp = tile_bp;
+            current_batch.push(t);
+        }
+    }
+
+    if !current_batch.is_empty() {
+        batches.push(current_batch);
+    }
+
+    batches
+}
+
 /// Helper to parse a u32 from string with comma removal.
 pub fn parse_int_with_commas(s: &str) -> Result<u32, VardictError> {
     let clean = s.replace(",", "");
@@ -719,5 +789,74 @@ Y\t59042860\t59047860\tY_59042860_5\t0\t.\t59042860\t59047860
         assert_eq!(tiles.len(), 1);
         assert_eq!(tiles[0].start, Pos1(u32::MAX));
         assert_eq!(tiles[0].end, Pos1(u32::MAX));
+    }
+
+    #[test]
+    fn test_batch_tiles_preserves_wgs_and_small_beds_while_batching_exome() {
+        // 1. Small BED (20 tiles on 8 threads <= 8 * 4 = 32): effective max is 1 (no batching)
+        let small_tiles: Vec<Tile> = (0..20u32)
+            .map(|i| Tile {
+                chr: "chr1".to_string(),
+                start: Pos1(i * 1000 + 1),
+                end: Pos1(i * 1000 + 200),
+                gene: "G".to_string(),
+                halo_start: Pos1(i * 1000 + 1),
+                halo_end: Pos1(i * 1000 + 200),
+                amplicon: None,
+                original_start: Pos1(i * 1000 + 1),
+                original_end: Pos1(i * 1000 + 200),
+            })
+            .collect();
+        let small_batches = batch_tiles(small_tiles, 100_000, 16, 8);
+        assert_eq!(small_batches.len(), 20);
+        assert!(small_batches.iter().all(|b| b.len() == 1));
+
+        // 2. Large WGS 100 kbp tiles (1000 tiles): each tile span is 100,000 bp, so each stays batch size 1
+        let wgs_region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(1),
+            end: Pos1(100_000_000),
+            gene: "WGS".to_string(),
+            amplicon: None,
+        };
+        let wgs_tiles = tile(&wgs_region, 100_000, 500);
+        assert_eq!(wgs_tiles.len(), 1000);
+        let wgs_batches = batch_tiles(wgs_tiles, 100_000, 16, 8);
+        assert_eq!(wgs_batches.len(), 1000);
+        assert!(wgs_batches.iter().all(|b| b.len() == 1));
+
+        // 3. Exome BED (320 exons of 200 bp across chr1 and chr2 on 4 threads):
+        // effective_max = (320 / 16).clamp(1, 16) = 16; batches break on chromosome change.
+        let mut exome_tiles = Vec::with_capacity(320);
+        for i in 0..320u32 {
+            let chr = if i < 165 { "chr1" } else { "chr2" };
+            let start = (i % 165) * 500 + 1;
+            let end = start + 199;
+            exome_tiles.push(Tile {
+                chr: chr.to_string(),
+                start: Pos1(start),
+                end: Pos1(end),
+                gene: format!("G{i}"),
+                halo_start: Pos1(start),
+                halo_end: Pos1(end),
+                amplicon: None,
+                original_start: Pos1(start),
+                original_end: Pos1(end),
+            });
+        }
+        let exome_batches = batch_tiles(exome_tiles.clone(), 100_000, 16, 4);
+        // 165 tiles on chr1 -> 10 batches of 16 + 1 batch of 5 = 11 batches
+        // 155 tiles on chr2 -> 9 batches of 16 + 1 batch of 11 = 10 batches
+        assert_eq!(exome_batches.len(), 21);
+        assert_eq!(exome_batches[10].len(), 5);
+        assert!(exome_batches[10].iter().all(|t| t.chr == "chr1"));
+        assert!(exome_batches[11].iter().all(|t| t.chr == "chr2"));
+        let flattened: Vec<String> = exome_batches
+            .into_iter()
+            .flatten()
+            .map(|t| t.gene)
+            .collect();
+        let expected: Vec<String> = exome_tiles.into_iter().map(|t| t.gene).collect();
+        assert_eq!(flattened, expected);
     }
 }

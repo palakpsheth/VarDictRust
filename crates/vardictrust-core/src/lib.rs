@@ -331,6 +331,7 @@ pub fn run(config: &config::Config) -> Result<(), VardictError> {
     for reg in &flat_regions {
         tiles.extend(crate::regions::tile(reg, tile_size, halo));
     }
+    let tile_batches = crate::regions::batch_tiles(tiles, tile_size, 16, config.threads);
 
     let first_bam_owned = first_bam.to_string();
     let config_clone = config.clone();
@@ -372,8 +373,8 @@ pub fn run(config: &config::Config) -> Result<(), VardictError> {
         std::collections::BTreeMap::new();
 
     // Process tiles in parallel, print variants in deterministic index order
-    crate::runner::run_parallel(
-        tiles,
+    crate::runner::run_parallel_batched(
+        tile_batches,
         config.threads,
         move |tile| -> Result<SimpleTileOutput, VardictError> {
             let bed_region = crate::regions::Region {
@@ -912,6 +913,7 @@ fn run_somatic(config: &config::Config) -> Result<(), VardictError> {
     for reg in &flat_regions {
         tiles.extend(crate::regions::tile(reg, tile_size, halo));
     }
+    let tile_batches = crate::regions::batch_tiles(tiles, tile_size, 16, config.threads);
 
     let config_clone = config.clone();
     let chromosomes_lengths_clone = chromosomes_lengths.clone();
@@ -932,8 +934,8 @@ fn run_somatic(config: &config::Config) -> Result<(), VardictError> {
     }
 
     // Process tiles: run both BAMs through pipeline, then somatic postprocess
-    crate::runner::run_parallel(
-        tiles,
+    crate::runner::run_parallel_batched(
+        tile_batches,
         config.threads,
         move |tile| -> Result<Vec<String>, VardictError> {
             // Process BAM1 (tumor)
