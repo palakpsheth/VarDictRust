@@ -9,8 +9,11 @@
 #       Attempt 1: SPOT (--provisioning-model=SPOT)
 #       Attempt 2: SPOT (--provisioning-model=SPOT)
 #       Attempt 3: STANDARD (--provisioning-model=STANDARD, On-Demand)
-#   - Per-cell GCS checkpointing (`gs://vardict-paper-trial-results/checkpoints/<cell>.done`)
+#   - Per-cell GCS checkpointing (`gs://vardict-paper-trial-results/checkpoints-v103/<cell>.done`)
 #     so preempted Spot runs resume cleanly without repeating completed cells.
+#   - Detached systemd service on VM (`vardict-paper-worker`) + GCS heartbeat polling so
+#     transient SSH drops never interrupt a healthy VM; preemption is detected via
+#     `gcloud compute instances describe` status transitions.
 #   - Cgroup slice isolation per cell (`systemd-run --scope -p AllowedCPUs=... -p MemoryMax=...`).
 #   - `export GOLDEN_MODE=off` enforced globally on all timed/OOM cells.
 # =============================================================================
@@ -153,11 +156,19 @@ run_checkpointed_cell() {
   export GOLDEN_MODE=off
 
   local rc=0
-  if [ "${USE_SYSTEMD_SLICE:-1}" = "1" ] && command -v systemd-run >/dev/null 2>&1 && [ "$(id -u)" -eq 0 ]; then
-    systemd-run --scope --quiet \
-      -p "AllowedCPUs=0-$((cpus - 1))" \
-      -p "MemoryMax=${mem_max}" \
-      -- "$@" || rc=$?
+  if [ "${USE_SYSTEMD_SLICE:-1}" = "1" ] && command -v systemd-run >/dev/null 2>&1; then
+    if [ "$(id -u)" -eq 0 ]; then
+      systemd-run --scope --quiet \
+        -p "AllowedCPUs=0-$((cpus - 1))" \
+        -p "MemoryMax=${mem_max}" \
+        -- "$@" || rc=$?
+    else
+      sudo -E systemd-run --scope --quiet \
+        --uid="$(id -un)" --gid="$(id -gn)" \
+        -p "AllowedCPUs=0-$((cpus - 1))" \
+        -p "MemoryMax=${mem_max}" \
+        -- "$@" || rc=$?
+    fi
   elif command -v taskset >/dev/null 2>&1; then
     taskset -c "0-$((cpus - 1))" "$@" || rc=$?
   else
@@ -186,9 +197,18 @@ run_checkpointed_cell() {
 # Worker Stage Implementations (Executed on n2-highmem-32 / 2 TB pd-ssd)
 # =============================================================================
 
+ensure_submodule_excludes() {
+  for ex in .git/modules/VarDictJava/info/exclude VarDictJava/.git/info/exclude; do
+    if [ -f "$ex" ]; then
+      grep -qF 'testdata/fastas/*.fa' "$ex" || printf '\ntestdata/fastas/*.fa\ntestdata/fastas/*.fai\n' >> "$ex"
+    fi
+  done
+}
+
 worker_preflight() {
   echo "=== [Worker Preflight] ==="
   [ "$GOLDEN_MODE" = "off" ] || { echo "FATAL: GOLDEN_MODE must be off (got $GOLDEN_MODE)" >&2; exit 2; }
+  ensure_submodule_excludes
   mkdir -p "$WORK_DIR/data" "$WORK_DIR/cells"
   local avail_gb
   avail_gb="$(df -BG --output=avail "$WORK_DIR" | tail -1 | tr -dc '0-9')"
@@ -212,6 +232,7 @@ run_stage_1() {
 
   run_checkpointed_cell "stage1" "s1_stage_assets" 32 "128G" \
     bash harness/stage_g4.sh refs amplicon hg002 hg008
+  ensure_submodule_excludes
 
   # H1a Simple-mode tile-size equivalence (500k, 1M, 2M, 10M vs untiled oracle on HG002 slice sub-window)
   run_checkpointed_cell "stage1" "s1_h1a_simple_tiles" 8 "32G" bash -c '
@@ -311,11 +332,11 @@ run_stage_2() {
       for th in 1 8; do
         for run in 1 2 3; do
           /usr/bin/time -v -o \"\$KEEP_DIR/rust_th\${th}_run\${run}.time\" \
-            target/release/vardictrust -G \"\$REF\" -f 0.01 -N '${acc}' -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -th \"\$th\" \"\$BED\" -vcf > \"\$KEEP_DIR/rust_th\${th}.vcf\"
+            target/release/vardictrust -G \"\$REF\" -f 0.01 -N '${acc}' -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -z -th \"\$th\" \"\$BED\" > \"\$KEEP_DIR/rust_th\${th}.vcf\"
           /usr/bin/time -v -o \"\$KEEP_DIR/cpp_th\${th}_run\${run}.time\" \
-            '$tp_dir/vardictcpp-ae93fe39dc/build/src/vardictcpp' -G \"\$REF\" -f 0.01 -N '${acc}' -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 --chunk 50000 -th \"\$th\" \"\$BED\" -vcf > \"\$KEEP_DIR/cpp_th\${th}.vcf\"
+            '$tp_dir/vardictcpp-ae93fe39dc/build/src/vardictcpp' -G \"\$REF\" -f 0.01 -N '${acc}' -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -z --chunk 50000 -th \"\$th\" \"\$BED\" -vcf > \"\$KEEP_DIR/cpp_th\${th}.vcf\"
           ORACLE_XMX_GB=22 /usr/bin/time -v -o \"\$KEEP_DIR/java_th\${th}_run\${run}.time\" \
-            bash harness/run_oracle.sh \"\$REF\" \"\$BAM\" \"\$BED\" \"\$KEEP_DIR/java_th\${th}.vcf\" '${acc}' -f 0.01 -th \"\$th\"
+            bash harness/run_oracle.sh \"\$REF\" \"\$BAM\" \"\$BED\" \"\$KEEP_DIR/java_th\${th}.vcf\" '${acc}' -f 0.01 -z -th \"\$th\"
         done
         python3 harness/compare_vcf.py \"\$KEEP_DIR/java_th\${th}.vcf\" \"\$KEEP_DIR/rust_th\${th}.vcf\" | tee \"\$KEEP_DIR/compare_th\${th}.txt\"
         grep -q '^MATCH' \"\$KEEP_DIR/compare_th\${th}.txt\"
@@ -333,11 +354,11 @@ run_stage_2() {
     for th in 1 8; do
       for run in 1 2 3; do
         /usr/bin/time -v -o \"\$KEEP_DIR/rust_som_th\${th}_run\${run}.time\" \
-          target/release/vardictrust -G \"\$REF\" -f 0.01 -N 'SRR15006376|SRR15006386' -b \"\${TUM}|\${NOR}\" -c 1 -S 2 -E 3 -g 4 -th \"\$th\" \"\$BED\" > \"\$KEEP_DIR/rust_som_th\${th}.vcf\"
+          target/release/vardictrust -G \"\$REF\" -f 0.01 -N 'SRR15006376|SRR15006386' -b \"\${TUM}|\${NOR}\" -c 1 -S 2 -E 3 -g 4 -z -th \"\$th\" \"\$BED\" > \"\$KEEP_DIR/rust_som_th\${th}.vcf\"
         /usr/bin/time -v -o \"\$KEEP_DIR/cpp_som_th\${th}_run\${run}.time\" \
-          '$tp_dir/vardictcpp-ae93fe39dc/build/src/vardictcpp' -G \"\$REF\" -f 0.01 -N 'SRR15006376|SRR15006386' -b \"\${TUM}|\${NOR}\" -c 1 -S 2 -E 3 -g 4 --chunk 50000 -th \"\$th\" \"\$BED\" -vcf > \"\$KEEP_DIR/cpp_som_th\${th}.vcf\"
+          '$tp_dir/vardictcpp-ae93fe39dc/build/src/vardictcpp' -G \"\$REF\" -f 0.01 -N 'SRR15006376|SRR15006386' -b \"\${TUM}|\${NOR}\" -c 1 -S 2 -E 3 -g 4 -z --chunk 50000 -th \"\$th\" \"\$BED\" -vcf > \"\$KEEP_DIR/cpp_som_th\${th}.vcf\"
         ORACLE_XMX_GB=22 /usr/bin/time -v -o \"\$KEEP_DIR/java_som_th\${th}_run\${run}.time\" \
-          bash harness/run_oracle.sh \"\$REF\" \"\${TUM}|\${NOR}\" \"\$BED\" \"\$KEEP_DIR/java_som_th\${th}.vcf\" 'SRR15006376|SRR15006386' -f 0.01 -th \"\$th\"
+          bash harness/run_oracle.sh \"\$REF\" \"\${TUM}|\${NOR}\" \"\$BED\" \"\$KEEP_DIR/java_som_th\${th}.vcf\" 'SRR15006376|SRR15006386' -f 0.01 -z -th \"\$th\"
       done
       python3 harness/compare_vcf.py \"\$KEEP_DIR/java_som_th\${th}.vcf\" \"\$KEEP_DIR/rust_som_th\${th}.vcf\" | tee \"\$KEEP_DIR/compare_som_th\${th}.txt\"
       grep -q '^MATCH' \"\$KEEP_DIR/compare_som_th\${th}.txt\"
@@ -393,9 +414,9 @@ run_stage_3() {
     BAM='$rna_dir/HG002_rep1_Aligned.sortedByCoord.out.bam'
     BED=\"\$DATA_DIR/hg002/eval.bed\"
     /usr/bin/time -v -o \"\$KEEP_DIR/rust_splice.time\" \
-      target/release/vardictrust -G \"\$REF\" -f 0.01 -N HG002_RNA -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -i --emit-intermediate -th 8 \"\$BED\" > \"\$KEEP_DIR/rust.splice.tsv\"
+      target/release/vardictrust -G \"\$REF\" -f 0.01 -N HG002_RNA -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -z -i --emit-intermediate -th 8 \"\$BED\" > \"\$KEEP_DIR/rust.splice.tsv\"
     _JAVA_OPTIONS='-Xmx44g' /usr/bin/time -v -o \"\$KEEP_DIR/java_splice.time\" \
-      conda run -n vardict-oracle vardict-java -G \"\$REF\" -f 0.01 -N HG002_RNA -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -i -th 8 \"\$BED\" > \"\$KEEP_DIR/java.splice.tsv\"
+      conda run -n vardict-oracle vardict-java -G \"\$REF\" -f 0.01 -N HG002_RNA -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -z 1 -i -th 8 \"\$BED\" > \"\$KEEP_DIR/java.splice.tsv\"
     LC_ALL=C sort \"\$KEEP_DIR/java.splice.tsv\" > \"\$KEEP_DIR/java.splice.sorted.tsv\"
     LC_ALL=C sort \"\$KEEP_DIR/rust.splice.tsv\" > \"\$KEEP_DIR/rust.splice.sorted.tsv\"
     diff -u \"\$KEEP_DIR/java.splice.sorted.tsv\" \"\$KEEP_DIR/rust.splice.sorted.tsv\" > \"\$KEEP_DIR/splice_diff.txt\"
@@ -409,6 +430,7 @@ run_stage_4() {
 
   run_checkpointed_cell "stage4" "s4_stage_seqc2_full" 32 "128G" \
     bash harness/stage_g4.sh seqc2 multimodal
+  ensure_submodule_excludes
 
   # Tier-E SEQC2 full somatic exome 3-way parity + truth
   run_checkpointed_cell "stage4" "s4_tier_e_seqc2_exome_3way" 8 "32G" bash -c '
@@ -516,6 +538,13 @@ cleanup_vm() {
   fi
 }
 
+vm_status() {
+  gcloud compute instances describe "$VM_NAME" \
+    --project="$GCP_PROJECT" \
+    --zone="$GCP_ZONE" \
+    --format="value(status)" 2>/dev/null || echo "ABSENT"
+}
+
 run_controller() {
   local max_attempts="${1:-3}"
   trap cleanup_vm EXIT
@@ -538,7 +567,7 @@ run_controller() {
 
     # Wait for SSH readiness
     local ssh_ok=0
-    for _ in $(seq 1 30); do
+    for _ in $(seq 1 36); do
       if gcloud compute ssh "$VM_NAME" --project="$GCP_PROJECT" --zone="$GCP_ZONE" --command="true" --quiet 2>/dev/null; then
         ssh_ok=1
         break
@@ -550,46 +579,89 @@ run_controller() {
       continue
     fi
 
-    # Bootstrap & run worker on VM
-    echo "[Controller] Bootstrapping repo & launching checkpointed worker on ${VM_NAME}..."
-    if gcloud compute ssh "$VM_NAME" --project="$GCP_PROJECT" --zone="$GCP_ZONE" --quiet --command="
+    # Start detached systemd unit on VM so transient SSH drops never kill the worker
+    echo "[Controller] Bootstrapping VM and starting detached vardict-paper-worker.service..."
+    gcloud compute ssh "$VM_NAME" --project="$GCP_PROJECT" --zone="$GCP_ZONE" --quiet --command="
       set -euo pipefail
       sudo mkdir -p '$WORK_DIR' && sudo chown -R \"\$(id -un):\$(id -gn)\" '$WORK_DIR'
-      if ! command -v git >/dev/null || ! command -v gsutil >/dev/null; then
-        sudo apt-get update -qq && sudo apt-get install -y -qq git curl unzip build-essential cmake pkg-config zlib1g-dev libbz2-dev liblzma-dev libcurl4-openssl-dev libssl-dev time util-linux
-      fi
-      if [ ! -d \"\$HOME/miniconda3\" ]; then
-        curl -sSLf https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -o /tmp/miniconda.sh
-        bash /tmp/miniconda.sh -b -p \"\$HOME/miniconda3\"
-      fi
-      export PATH=\"\$HOME/miniconda3/bin:\$HOME/.cargo/bin:\$PATH\"
-      if ! command -v cargo >/dev/null; then
-        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.96.0
-        export PATH=\"\$HOME/.cargo/bin:\$PATH\"
-      fi
-      if [ ! -d '$WORK_DIR/VarDictRust' ]; then
-        git clone --branch paper/gcp-study --recurse-submodules https://github.com/palakpsheth/VarDictRust.git '$WORK_DIR/VarDictRust'
-      fi
-      cd '$WORK_DIR/VarDictRust'
-      git fetch origin paper/gcp-study && git checkout paper/gcp-study && git reset --hard origin/paper/gcp-study
-      git submodule update --init --recursive
-      if ! conda env list | grep -q '^vardict-oracle '; then
-        conda env create -f benchmarks/env/vardict-oracle.yml -y
-      fi
-      if ! conda env list | grep -q '^g4-tools '; then
-        conda env create -f benchmarks/env/g4-tools.yml -y
-      fi
-      export PATH=\"\$HOME/miniconda3/envs/g4-tools/bin:\$HOME/miniconda3/bin:\$HOME/.cargo/bin:\$PATH\"
-      WORK_DIR='$WORK_DIR' GCS_CKPT='$GCS_CKPT' bash harness/gcp_paper_runner.sh --worker all
-    "; then
+      cat > '$WORK_DIR/bootstrap_and_run.sh' <<'EOS'
+#!/usr/bin/env bash
+set -euo pipefail
+export WORK_DIR='${WORK_DIR}'
+export GCS_CKPT='${GCS_CKPT}'
+export GOLDEN_MODE=off
+exec > >(tee -a \"\${WORK_DIR}/worker.log\") 2>&1
+echo \"[VM Bootstrap] Starting at \$(date -u +%Y-%m-%dT%H:%M:%SZ)\"
+if ! command -v git >/dev/null || ! command -v gsutil >/dev/null || ! command -v cmake >/dev/null; then
+  sudo apt-get update -qq
+  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git curl unzip build-essential cmake pkg-config zlib1g-dev libbz2-dev liblzma-dev libcurl4-openssl-dev libssl-dev time util-linux
+fi
+if [ ! -d \"\$HOME/miniconda3\" ]; then
+  curl -sSLf https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -o /tmp/miniconda.sh
+  bash /tmp/miniconda.sh -b -p \"\$HOME/miniconda3\"
+fi
+export PATH=\"\$HOME/miniconda3/bin:\$HOME/.cargo/bin:\$PATH\"
+conda config --set auto_accept_tos yes >/dev/null 2>&1 || true
+if ! command -v cargo >/dev/null; then
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.96.0
+  export PATH=\"\$HOME/.cargo/bin:\$PATH\"
+fi
+if [ ! -d \"\${WORK_DIR}/VarDictRust\" ]; then
+  git clone --branch paper/gcp-study --recurse-submodules https://github.com/palakpsheth/VarDictRust.git \"\${WORK_DIR}/VarDictRust\"
+fi
+cd \"\${WORK_DIR}/VarDictRust\"
+git fetch origin paper/gcp-study && git checkout paper/gcp-study && git reset --hard origin/paper/gcp-study
+git submodule update --init --recursive
+if ! conda env list | grep -q '^vardict-oracle '; then
+  conda env create -f benchmarks/env/vardict-oracle.yml -y
+fi
+if ! conda env list | grep -q '^g4-tools '; then
+  conda env create -f benchmarks/env/g4-tools.yml -y
+fi
+export PATH=\"\$HOME/miniconda3/envs/g4-tools/bin:\$HOME/miniconda3/bin:\$HOME/.cargo/bin:\$PATH\"
+bash harness/gcp_paper_runner.sh --worker all
+EOS
+      chmod +x '$WORK_DIR/bootstrap_and_run.sh'
+      sudo systemctl stop vardict-paper-worker.service 2>/dev/null || true
+      sudo systemctl reset-failed vardict-paper-worker.service 2>/dev/null || true
+      sudo systemd-run --unit=vardict-paper-worker \
+        --uid=\"\$(id -un)\" --gid=\"\$(id -gn)\" \
+        --setenv=HOME=\"\$HOME\" \
+        bash '$WORK_DIR/bootstrap_and_run.sh'
+    "
+
+    # Poll VM status & GCS heartbeat every 30s until ALL_STAGES.done, worker failure, or Spot preemption
+    while true; do
+      sleep 30
       if gcs_stat_done "ALL_STAGES"; then
         echo "[Controller] Worker completed ALL_STAGES on attempt ${attempt} (${model})!"
         cleanup_vm
         return 0
       fi
-    fi
-
-    echo "[Controller] Attempt ${attempt} (${model}) interrupted or preempted; checking GCS checkpoints before retry..."
+      local st
+      st="$(vm_status)"
+      if [ "$st" != "RUNNING" ]; then
+        echo "[Controller] VM status is '${st}' on attempt ${attempt} (${model}) — Spot preemption or termination detected."
+        break
+      fi
+      # Check if systemd unit is still active on the VM
+      local unit_state
+      unit_state="$(gcloud compute ssh "$VM_NAME" --project="$GCP_PROJECT" --zone="$GCP_ZONE" --quiet --command="systemctl is-active vardict-paper-worker.service || true" 2>/dev/null || echo "ssh_transient")"
+      local hb
+      hb="$(gsutil cat "${GCS_CKPT}/status.json" 2>/dev/null || echo "{}")"
+      echo "[Controller $(date -u +%H:%M:%SZ)] attempt=${attempt}(${model}) vm=${st} unit=${unit_state} heartbeat=${hb}"
+      if [ "$unit_state" = "failed" ] || [ "$unit_state" = "inactive" ]; then
+        if gcs_stat_done "ALL_STAGES"; then
+          echo "[Controller] ALL_STAGES completed!"
+          cleanup_vm
+          return 0
+        fi
+        echo "[Controller] Worker unit exited (${unit_state}) without ALL_STAGES.done; fetching tail of worker.log:" >&2
+        gcloud compute ssh "$VM_NAME" --project="$GCP_PROJECT" --zone="$GCP_ZONE" --quiet --command="tail -n 80 '$WORK_DIR/worker.log' || true" >&2 || true
+        cleanup_vm
+        return 1
+      fi
+    done
   done
 
   echo "[Controller] Exhausted ${max_attempts} attempts without completing ALL_STAGES." >&2
