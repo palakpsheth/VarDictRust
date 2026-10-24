@@ -31,6 +31,8 @@ IGNORED_PREFIXES = (
     ".superpowers/",
     "docs/superpowers/",
     ".agents/",
+    ".claude/",
+    "skills/",
     "target/",
     "scratch/",
     "VarDictJava/",
@@ -108,23 +110,22 @@ def rewrite_markdown_links(content: str, staged_file: pathlib.Path) -> str:
         except ValueError:
             return target
 
+        if not target_resolved.exists():
+            return target
+
         # 1. Target is a .github/ markdown file
         if rel_to_repo.startswith(".github/") and rel_to_repo.endswith(".md"):
             dest_staged = STAGING_DIR / "community" / target_resolved.name
             new_rel = os.path.relpath(dest_staged, staged_file.parent)
             return f"{new_rel}#{anchor}" if anchor else new_rel
 
-        # 2. Target is a non-markdown file or directory
-        if not rel_to_repo.endswith(".md") or target_resolved.is_dir():
-            return f"{GITHUB_BLOB_BASE}/{rel_to_repo}" + (f"#{anchor}" if anchor else "")
-
-        # 3. Target is a markdown file within the repository
+        # 2. Target is a non-markdown file, directory, or excluded from staging (e.g. .agents/)
         dest_staged = STAGING_DIR / rel_to_repo
-        if dest_staged.exists() or (REPO_ROOT / rel_to_repo).exists():
+        if dest_staged.is_file():
             new_rel = os.path.relpath(dest_staged, staged_file.parent)
             return f"{new_rel}#{anchor}" if anchor else new_rel
 
-        return target
+        return f"{GITHUB_BLOB_BASE}/{rel_to_repo}" + (f"#{anchor}" if anchor else "")
 
     links = find_markdown_links(content)
     if not links:

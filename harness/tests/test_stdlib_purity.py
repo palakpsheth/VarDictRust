@@ -71,9 +71,11 @@ class TestStdlibPurity(unittest.TestCase):
             self.stdlib_names = FALLBACK_STDLIB
 
     def test_all_harness_python_files_are_pure_stdlib(self):
-        """Parse all Python files in harness/ and ensure every import is in stdlib."""
-        search_pattern = str(self.harness_dir / "**" / "*.py")
-        py_files = sorted(glob.glob(search_pattern, recursive=True))
+        """Parse all Python files in harness/ and .agents/ and ensure every import is in stdlib."""
+        py_files = sorted(
+            glob.glob(str(self.harness_dir / "**" / "*.py"), recursive=True)
+            + glob.glob(str(self.repo_root / ".agents" / "**" / "*.py"), recursive=True)
+        )
 
         self.assertGreaterEqual(
             len(py_files), 10,

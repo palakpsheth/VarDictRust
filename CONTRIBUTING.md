@@ -130,6 +130,23 @@ pre-commit install
 > [!NOTE]
 > Track A and Track B are mutually exclusive. To switch back to Track A at any time, run `bash harness/setup_hooks.sh`. To disable all hooks, run `git config --unset core.hooksPath`.
 
+<a id="agent-skills"></a>
+### 3.4 Repository-Specific Agent Skills (`.agents/skills/`)
+
+VarDictRust ships four repository-specific [Agent Skills](AGENTS.md#19-repository-specific-agent-skills) under `.agents/skills/` that encode the repository's verification gates, profiling workflows, and release runbooks for both human contributors and AI coding agents:
+
+| Skill | Path | When to Use & Bundled Tools |
+| :--- | :--- | :--- |
+| **`vardictrust-issue`** | [`.agents/skills/vardictrust-issue/SKILL.md`](.agents/skills/vardictrust-issue/SKILL.md) | Filing, triaging, or reproducing GitHub issues (`v1.0.x` parity/crash bugs vs `v1.1+ --fix <id>` proposals) with `harness/slice.sh` and `harness/compare.sh`. |
+| **`vardictrust-pr`** | [`.agents/skills/vardictrust-pr/SKILL.md`](.agents/skills/vardictrust-pr/SKILL.md) | Opening, recertifying (`harness/recertify.sh`), reviewing, or squash-merging PRs, completing `.github/pull_request_template.md`, and replying inline to review threads. |
+| **`vardictrust-profiling`** | [`.agents/skills/vardictrust-profiling/SKILL.md`](.agents/skills/vardictrust-profiling/SKILL.md) | Running `profile-cpu`, `profile-heap`, or `profile-dhat` via `harness/profile.sh` and `harness/profile_catalog.py` ([API reference](.agents/skills/vardictrust-profiling/references/rust-profiling-api.md)). |
+| **`vardictrust-release`** | [`.agents/skills/vardictrust-release/SKILL.md`](.agents/skills/vardictrust-release/SKILL.md) | Cutting a release across GitHub Releases, Crates.io, Bioconda, Nextflow `nf-core/modules`, and ReadTheDocs ([consistency validator](.agents/skills/vardictrust-release/scripts/check_release_consistency.py) & [19-file surface map](.agents/skills/vardictrust-release/references/version-surface-map.md)). |
+
+**Discovery across AI tools:** `.agents/skills/` is committed in-tree and discovered automatically by Gemini CLI, OpenAI Codex, GitHub Copilot, Cursor, and OpenCode. Contributors can also run the bundled release consistency validator directly:
+```bash
+python3 .agents/skills/vardictrust-release/scripts/check_release_consistency.py --version 1.0.3 --phase pre-tag
+```
+
 ---
 
 ## 4. Architectural Invariants & Safety
@@ -206,7 +223,7 @@ Before submitting a pull request, run the comprehensive 6-stage PR validation su
 bash harness/pr_check.sh
 ```
 This suite automatically verifies:
-1. **Stage 1 (Hygiene & Unit Tests):** Formatting, Clippy lints, and all 233 workspace unit and integration tests ([Level 1](docs/testing/test-matrix-and-ci-audit.md#level-1)).
+1. **Stage 1 (Hygiene & Unit Tests):** Formatting, Clippy lints, and all 277 workspace unit and integration tests ([Level 1](docs/testing/test-matrix-and-ci-audit.md#level-1)).
 2. **Stage 2 (Crash Robustness):** PR #402, missing index #187, and Issue #341 family fixtures.
 3. **Stage 3 (Upstream Integration Corpus):** 92 fixtures ([Level 2](docs/testing/test-matrix-and-ci-audit.md#level-2-upstream-integration-regression-corpus-92-fixtures)), asserting `91 PASS / 1 XFAIL` ([UB-4](docs/upstream-bugs.md#ub-4) upstream fixture defect).
 4. **Stage 4 (Dual-Engine Differential Parity):** Micro differential fixture and 17-modality extended coverage against the live VarDictJava oracle ([Level 3](docs/testing/test-matrix-and-ci-audit.md#level-3-dual-engine-differential-parity-testing)).
@@ -236,7 +253,7 @@ bash harness/run_self_tests.sh   # Executes all 24 diagnostic test scripts in <1
 - Do not combine unrelated refactorings or formatting changes with algorithmic edits.
 
 ### 6.2 The Pull Request Checklist
-When opening a pull request, complete all items in [`.github/pull_request_template.md`](.github/pull_request_template.md):
+When opening a pull request (see the [`vardictrust-pr` skill](.agents/skills/vardictrust-pr/SKILL.md)), complete all items in [`.github/pull_request_template.md`](.github/pull_request_template.md):
 - [ ] Code compiles with zero warnings: `cargo clippy --all-targets --all-features -- -D warnings`.
 - [ ] Code formatting verified: `cargo fmt --all -- --check`.
 - [ ] All unit tests pass: `cargo test --workspace`.
@@ -267,7 +284,7 @@ Contributors must adhere to the following governance policies:
 
 ## 8. Getting Help & Security
 
-- **Reporting Issues:** Search existing issues before creating a new report. Include the exact BAM slice, reference region, and command line to reproduce.
+- **Reporting Issues:** Search existing issues before creating a new report (see the [`vardictrust-issue` skill](.agents/skills/vardictrust-issue/SKILL.md)). Include the exact BAM slice, reference region, and command line to reproduce.
 - **Reporting Security Vulnerabilities:** Please review our [Security Policy](.github/SECURITY.md) to report vulnerabilities privately. Do not disclose security issues publicly in GitHub Issues.
 
 ---
@@ -275,7 +292,7 @@ Contributors must adhere to the following governance policies:
 <a id="release-process"></a>
 ## 9. Release Process & Packaging Runbook
 
-Releases are executed through a disciplined **three-phase workflow** (Pre-Release PR → Annotated Tag & CI Release → Post-Tag Downstream Sync) governed by [`AGENTS.md §§0, 0b, 5, 15, 18`](AGENTS.md). Direct pushes to `main` are blocked by `.githooks/pre-push`.
+Releases are executed through a disciplined **three-phase workflow** (Pre-Release PR → Annotated Tag & CI Release → Post-Tag Downstream Sync) governed by [`AGENTS.md §§0, 0b, 5, 15, 18`](AGENTS.md) and automated by the [`vardictrust-release` skill](.agents/skills/vardictrust-release/SKILL.md) ([`check_release_consistency.py`](.agents/skills/vardictrust-release/scripts/check_release_consistency.py)). Direct pushes to `main` are blocked by `.githooks/pre-push`.
 
 ### 9.1 Release Policy & SemVer Governance
 - **`v1.0.x` Patch / Maintenance Releases:** Preserve pure byte-for-byte and floating-point parity ($\varepsilon = 10^{-6}$) with **VarDictJava v1.8.3** on valid inputs ([`AGENTS.md §5`](AGENTS.md#5-emulate-exactly-the-rewritesbio-prime-directive)). Allowed changes include crash/robustness fixes, harness/reproducibility additions, packaging, and documentation updates.
@@ -348,8 +365,8 @@ Push `release/vX.Y.Z` and open a pull request to `main` via `gh pr create`, comp
    ```
 2. **Automated Release Pipeline ([`.github/workflows/release.yml`](.github/workflows/release.yml)):**
    Pushing `vX.Y.Z` triggers `cargo-dist 0.33.0`, which executes:
-   - `plan`: parses `CHANGELOG.md` for `## [X.Y.Z]` and computes the 5 build targets (`x86_64-unknown-linux-gnu`, `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-gnu`, `aarch64-apple-darwin`, `x86_64-apple-darwin`).
-   - `build-local-artifacts` & `build-global-artifacts`: compiles release archives across all 5 target triples and generates the shell installer and SHA-256 checksums (`musl` vs `gnu` VCF byte equivalence on Linux x86_64 is certified pre-tag via [`harness/bin_equiv.sh`](harness/bin_equiv.sh) inside [`harness/recertify.sh`](harness/recertify.sh) and verified by [`harness/acceptance.sh`](harness/acceptance.sh) Item 8).
+   - `plan`: parses `CHANGELOG.md` for `## [X.Y.Z]` and computes the 4 build targets (`x86_64-unknown-linux-gnu`, `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`, `aarch64-apple-darwin`).
+   - `build-local-artifacts` & `build-global-artifacts`: compiles release archives across all 4 target triples and generates the shell installer and SHA-256 checksums (`musl` vs `gnu` VCF byte equivalence on Linux x86_64 is certified pre-tag via [`harness/bin_equiv.sh`](harness/bin_equiv.sh) inside [`harness/recertify.sh`](harness/recertify.sh) and verified by [`harness/acceptance.sh`](harness/acceptance.sh) Item 8).
    - `host`: creates the GitHub Release and generates **SLSA v1.0 Level 3 build provenance attestations** via `actions/attest-build-provenance`.
    - `publish-crates`: publishes `vardictrust-core` to `crates.io` first, then polls up to `30 × 10s` for index propagation before publishing `vardictrust`.
    - `announce`: finalizes and publishes the GitHub Release.
@@ -360,15 +377,22 @@ Push `release/vX.Y.Z` and open a pull request to `main` via `gh pr create`, comp
    gh attestation verify --owner palakpsheth vardictrust-x86_64-unknown-linux-musl.tar.xz
    ```
 
-### 9.6 Phase 3 — Post-Tag Bioconda Recipe Sync & ReadTheDocs Trigger
+### 9.6 Phase 3 — Post-Tag Bioconda, Nextflow `nf-core/modules` & ReadTheDocs Sync
 1. **Update and test the Bioconda recipe ([`packaging/bioconda/recipes/vardictrust/meta.yaml`](packaging/bioconda/recipes/vardictrust/meta.yaml)):**
    [`packaging/bioconda/prepare_bioconda_pr.sh`](packaging/bioconda/prepare_bioconda_pr.sh) enforces Rule 0b by downloading `https://github.com/palakpsheth/VarDictRust/archive/refs/tags/vX.Y.Z.tar.gz` directly from GitHub (refusing local `git archive` fallbacks):
    ```bash
    bash packaging/bioconda/prepare_bioconda_pr.sh X.Y.Z
    bash harness/test_bioconda_recipe.sh
+   python3 .agents/skills/vardictrust-release/scripts/check_release_consistency.py --version X.Y.Z --phase post-bioconda
    ```
    Open and merge a follow-up PR updating `packaging/bioconda/recipes/vardictrust/meta.yaml` on `main`, and submit the recipe update to `bioconda/bioconda-recipes`.
-2. **Trigger ReadTheDocs Documentation Build:**
+2. **Update the Nextflow `nf-core/modules` module ([`packaging/nf-core/prepare_nfcore_pr.sh`](packaging/nf-core/prepare_nfcore_pr.sh)):**
+   Once `bioconda::vardictrust=X.Y.Z` is indexed on `anaconda.org` for both `linux-64` and `linux-aarch64`, update `environment.yml`, provision multi-arch Seqera Wave containers, and update `nf-test` snapshots (setting `NFCORE_MODULES_DIR` explicitly to a trusted local `nf-core/modules` checkout):
+   ```bash
+   NFCORE_MODULES_DIR=/path/to/nf-core-modules bash packaging/nf-core/prepare_nfcore_pr.sh X.Y.Z
+   python3 .agents/skills/vardictrust-release/scripts/check_release_consistency.py --version X.Y.Z --phase post-nfcore
+   ```
+3. **Trigger ReadTheDocs Documentation Build:**
    ```bash
    bash harness/trigger_rtd.sh build vardictrust latest
    bash harness/trigger_rtd.sh builds vardictrust

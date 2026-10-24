@@ -47,7 +47,8 @@ def find_all_markdown_files():
         # Exclude git internals, cargo target, conda environments, scratch, and transient dev directories
         rel = str(path.relative_to(REPO_ROOT))
         if any(rel.startswith(ignore) for ignore in [
-            ".git/", ".superpowers/", ".agents/", "target/", "scratch/", "VarDictJava/", "node_modules/", ".worktrees/"
+            ".git/", ".superpowers/", ".docs_staged/", "site/",
+            "target/", "scratch/", "VarDictJava/", "node_modules/", ".worktrees/"
         ]):
             continue
         md_files.append(path)

@@ -37,6 +37,11 @@
 .superpowers/
 /docs/superpowers/
 
+# Repository-specific Agent Skills are tracked in-tree
+!.agents/
+!.agents/skills/
+!.agents/skills/**
+
 # Rust/Python development
 *.rlib
 *.log
