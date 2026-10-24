@@ -4,7 +4,7 @@
 # Single-Instance GCP Orchestrator & Worker for `paper/gcp-study` (v1.0.3).
 #
 # Architecture (locked in docs/validation/gcp-study-protocol.md §6 & gcp-prereg.md §A12):
-#   - Single dedicated VM: `n2-highmem-32` (32 vCPUs, 256 GB RAM, 2 TB pd-ssd, us-central1-a)
+#   - Single dedicated VM: `n2-highmem-32` (32 vCPUs, 256 GB RAM, 250 GB pd-ssd boot + 8x375 GB [3.0 TB] NVMe Local SSD RAID0, us-central1-a)
 #   - 2-Strike Spot -> On-Demand Escalation Policy:
 #       Attempt 1: SPOT (--provisioning-model=SPOT)
 #       Attempt 2: SPOT (--provisioning-model=SPOT)
@@ -28,9 +28,11 @@ GCP_ZONE="${GCP_ZONE:-us-central1-a}"
 GCP_SA="${CLOUDSDK_CORE_ACCOUNT}"
 VM_NAME="${VM_NAME:-vardict-paper-n2hm32}"
 MACHINE_TYPE="${MACHINE_TYPE:-n2-highmem-32}"
-BOOT_DISK_SIZE="${BOOT_DISK_SIZE:-2048GB}"
+BOOT_DISK_SIZE="${BOOT_DISK_SIZE:-250GB}"
 BOOT_DISK_TYPE="${BOOT_DISK_TYPE:-pd-ssd}"
+LOCAL_SSD_COUNT="${LOCAL_SSD_COUNT:-8}"
 MAX_RUN_DURATION="${MAX_RUN_DURATION:-24h}"
+KEEP_VM_ON_FAIL="${KEEP_VM_ON_FAIL:-1}"
 
 GCS_BAMS="${GCS_BAMS:-gs://vardict-paper-trial-bams}"
 GCS_REFS="${GCS_REFS:-gs://vardict-paper-trial-refs}"
@@ -77,6 +79,12 @@ build_gcloud_create_cmd() {
     "--machine-type=${MACHINE_TYPE}"
     "--boot-disk-size=${BOOT_DISK_SIZE}"
     "--boot-disk-type=${BOOT_DISK_TYPE}"
+  )
+  local i
+  for ((i = 1; i <= LOCAL_SSD_COUNT; i++)); do
+    cmd+=("--local-ssd=interface=NVME")
+  done
+  cmd+=(
     "--image-family=ubuntu-2204-lts"
     "--image-project=ubuntu-os-cloud"
     "--service-account=${GCP_SA}"
@@ -161,13 +169,13 @@ run_checkpointed_cell() {
       systemd-run --scope --quiet \
         -p "AllowedCPUs=0-$((cpus - 1))" \
         -p "MemoryMax=${mem_max}" \
-        -- "$@" || rc=$?
+        -- env PATH="$PATH" HOME="$HOME" DATA_DIR="${DATA_DIR:-scratch/g4}" KEEP_DIR="$cell_dir" GOLDEN_MODE=off "$@" || rc=$?
     else
       sudo -E systemd-run --scope --quiet \
         --uid="$(id -un)" --gid="$(id -gn)" \
         -p "AllowedCPUs=0-$((cpus - 1))" \
         -p "MemoryMax=${mem_max}" \
-        -- "$@" || rc=$?
+        -- env PATH="$PATH" HOME="$HOME" DATA_DIR="${DATA_DIR:-scratch/g4}" KEEP_DIR="$cell_dir" GOLDEN_MODE=off "$@" || rc=$?
     fi
   elif command -v taskset >/dev/null 2>&1; then
     taskset -c "0-$((cpus - 1))" "$@" || rc=$?
@@ -209,12 +217,17 @@ worker_preflight() {
   echo "=== [Worker Preflight] ==="
   [ "$GOLDEN_MODE" = "off" ] || { echo "FATAL: GOLDEN_MODE must be off (got $GOLDEN_MODE)" >&2; exit 2; }
   ensure_submodule_excludes
-  mkdir -p "$WORK_DIR/data" "$WORK_DIR/cells"
+  mkdir -p "$WORK_DIR/data/g4" "$WORK_DIR/cells" scratch
+  if [ ! -L scratch/g4 ]; then
+    rm -rf scratch/g4
+    ln -sfn "$WORK_DIR/data/g4" scratch/g4
+  fi
+  export DATA_DIR="scratch/g4"
   local avail_gb
   avail_gb="$(df -BG --output=avail "$WORK_DIR" | tail -1 | tr -dc '0-9')"
   local min_gb="${MIN_DISK_GB:-1200}"
   if [ "$avail_gb" -lt "$min_gb" ]; then
-    echo "FATAL: $WORK_DIR has ${avail_gb}GB free, need >= ${min_gb}GB (2 TB pd-ssd required)" >&2
+    echo "FATAL: $WORK_DIR has ${avail_gb}GB free, need >= ${min_gb}GB (NVMe RAID0 SSD required)" >&2
     exit 2
   fi
   local fp
@@ -228,10 +241,21 @@ worker_preflight() {
 
 run_stage_1() {
   echo "=== [Stage 1: Task 5b Pre-Full-Genome Gates] ==="
-  export DATA_DIR="${WORK_DIR}/data/g4"
+  export DATA_DIR="scratch/g4"
 
-  run_checkpointed_cell "stage1" "s1_stage_assets" 32 "128G" \
+  run_checkpointed_cell "stage1" "s1_stage_assets" 32 "128G" bash -c "
+    set -euo pipefail
+    if gsutil -q stat '${GCS_BAMS}/g4-cache/s1_ready.done' 2>/dev/null; then
+      gsutil -m rsync -r '${GCS_BAMS}/g4-cache/amplicon' scratch/g4/amplicon
+      gsutil -m rsync -r '${GCS_BAMS}/g4-cache/hg002' scratch/g4/hg002
+      gsutil -m rsync -r '${GCS_BAMS}/g4-cache/hg008' scratch/g4/hg008
+    fi
     bash harness/stage_g4.sh refs amplicon hg002 hg008
+    gsutil -o GSUtil:parallel_composite_upload_threshold=0 -m rsync -r scratch/g4/amplicon '${GCS_BAMS}/g4-cache/amplicon' || true
+    gsutil -o GSUtil:parallel_composite_upload_threshold=0 -m rsync -r scratch/g4/hg002 '${GCS_BAMS}/g4-cache/hg002' || true
+    gsutil -o GSUtil:parallel_composite_upload_threshold=0 -m rsync -r scratch/g4/hg008 '${GCS_BAMS}/g4-cache/hg008' || true
+    date -u +%Y-%m-%dT%H:%M:%SZ | gsutil -q cp - '${GCS_BAMS}/g4-cache/s1_ready.done' || true
+  "
   ensure_submodule_excludes
 
   # H1a Simple-mode tile-size equivalence (500k, 1M, 2M, 10M vs untiled oracle on HG002 slice sub-window)
@@ -396,7 +420,7 @@ run_stage_2() {
 
 run_stage_3() {
   echo "=== [Stage 3: Task 5d Cross-Tier Full-Sample RNA Arm (HG002 GM24385 51.8 GiB BAM)] ==="
-  export DATA_DIR="${WORK_DIR}/data/g4"
+  export DATA_DIR="scratch/g4"
   local rna_dir="${WORK_DIR}/data/rna"
   mkdir -p "$rna_dir"
 
@@ -426,10 +450,20 @@ run_stage_3() {
 
 run_stage_4() {
   echo "=== [Stage 4: Task 5e Tier-E Full SEQC2 Exome & Tier-G Full WGS (1..32 Threads)] ==="
-  export DATA_DIR="${WORK_DIR}/data/g4"
+  export DATA_DIR="scratch/g4"
 
-  run_checkpointed_cell "stage4" "s4_stage_seqc2_full" 32 "128G" \
+  run_checkpointed_cell "stage4" "s4_stage_seqc2_full" 32 "128G" bash -c "
+    set -euo pipefail
+    if gsutil -q stat '${GCS_BAMS}/g4-cache/s4_ready.done' 2>/dev/null; then
+      mkdir -p scratch/g4/seqc2 scratch/g4/multimodal
+      gsutil -m rsync -r '${GCS_BAMS}/g4-cache/seqc2' scratch/g4/seqc2
+      gsutil -m rsync -r '${GCS_BAMS}/g4-cache/multimodal' scratch/g4/multimodal
+    fi
     bash harness/stage_g4.sh seqc2 multimodal
+    gsutil -o GSUtil:parallel_composite_upload_threshold=0 -m rsync -r -x 'fastq/.*' scratch/g4/seqc2 '${GCS_BAMS}/g4-cache/seqc2' || true
+    gsutil -o GSUtil:parallel_composite_upload_threshold=0 -m rsync -r scratch/g4/multimodal '${GCS_BAMS}/g4-cache/multimodal' || true
+    date -u +%Y-%m-%dT%H:%M:%SZ | gsutil -q cp - '${GCS_BAMS}/g4-cache/s4_ready.done' || true
+  "
   ensure_submodule_excludes
 
   # Tier-E SEQC2 full somatic exome 3-way parity + truth
@@ -545,25 +579,39 @@ vm_status() {
     --format="value(status)" 2>/dev/null || echo "ABSENT"
 }
 
+vm_provisioning_model() {
+  gcloud compute instances describe "$VM_NAME" \
+    --project="$GCP_PROJECT" \
+    --zone="$GCP_ZONE" \
+    --format="value(scheduling.provisioningModel)" 2>/dev/null || echo "ABSENT"
+}
+
 run_controller() {
   local max_attempts="${1:-3}"
-  trap cleanup_vm EXIT
 
   for ((attempt = 1; attempt <= max_attempts; attempt++)); do
     if gcs_stat_done "ALL_STAGES"; then
-      echo "[Controller] ALL_STAGES.done already present in ${GCS_CKPT}. Nothing to run."
+      echo "[Controller] ALL_STAGES.done already present in ${GCS_CKPT}. Deleting VM and finishing."
+      cleanup_vm
       return 0
     fi
 
     local model
     model="$(provisioning_model_for_attempt "$attempt")"
     echo "================================================================================"
-    echo " [Controller] Attempt ${attempt}/${max_attempts}: Launching ${VM_NAME} (${MACHINE_TYPE}, ${BOOT_DISK_SIZE} ${BOOT_DISK_TYPE}, model=${model})"
+    echo " [Controller] Attempt ${attempt}/${max_attempts}: ${VM_NAME} (${MACHINE_TYPE}, ${BOOT_DISK_SIZE} ${BOOT_DISK_TYPE} + ${LOCAL_SSD_COUNT}x375GB NVMe, model=${model})"
     echo "================================================================================"
 
-    cleanup_vm
-    mapfile -t create_cmd < <(build_gcloud_create_cmd "$attempt")
-    "${create_cmd[@]}"
+    local cur_status cur_model
+    cur_status="$(vm_status)"
+    cur_model="$(vm_provisioning_model)"
+    if [ "$cur_status" = "RUNNING" ] && [ "$cur_model" = "$model" ]; then
+      echo "[Controller] Reusing already-running VM '${VM_NAME}' (status=${cur_status}, model=${cur_model})"
+    else
+      cleanup_vm
+      mapfile -t create_cmd < <(build_gcloud_create_cmd "$attempt")
+      "${create_cmd[@]}"
+    fi
 
     # Wait for SSH readiness
     local ssh_ok=0
@@ -579,11 +627,23 @@ run_controller() {
       continue
     fi
 
-    # Start detached systemd unit on VM so transient SSH drops never kill the worker
-    echo "[Controller] Bootstrapping VM and starting detached vardict-paper-worker.service..."
+    # Format/mount 8x375GB NVMe Local SSD RAID0 at $WORK_DIR and start detached systemd worker
+    echo "[Controller] Mounting 3.0 TB NVMe RAID0 at $WORK_DIR and starting vardict-paper-worker.service..."
     gcloud compute ssh "$VM_NAME" --project="$GCP_PROJECT" --zone="$GCP_ZONE" --quiet --command="
       set -euo pipefail
-      sudo mkdir -p '$WORK_DIR' && sudo chown -R \"\$(id -un):\$(id -gn)\" '$WORK_DIR'
+      sudo mkdir -p '$WORK_DIR'
+      if ! mountpoint -q '$WORK_DIR'; then
+        if ! command -v mdadm >/dev/null 2>&1; then
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq mdadm
+        fi
+        if [ ! -e /dev/md0 ]; then
+          sudo mdadm --create /dev/md0 --level=0 --raid-devices=${LOCAL_SSD_COUNT} /dev/disk/by-id/google-local-nvme-ssd-* --run --force
+          sudo mkfs.ext4 -F -m 0 /dev/md0
+        fi
+        sudo mount -o discard,defaults /dev/md0 '$WORK_DIR'
+      fi
+      sudo chown -R \"\$(id -un):\$(id -gn)\" '$WORK_DIR'
       cat > '$WORK_DIR/bootstrap_and_run.sh' <<'EOS'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -657,14 +717,19 @@ EOS
           return 0
         fi
         echo "[Controller] Worker unit exited (${unit_state}) without ALL_STAGES.done; fetching tail of worker.log:" >&2
-        gcloud compute ssh "$VM_NAME" --project="$GCP_PROJECT" --zone="$GCP_ZONE" --quiet --command="tail -n 80 '$WORK_DIR/worker.log' || true" >&2 || true
-        cleanup_vm
+        gcloud compute ssh "$VM_NAME" --project="$GCP_PROJECT" --zone="$GCP_ZONE" --quiet --command="tail -n 100 '$WORK_DIR/worker.log' || true" >&2 || true
+        if [ "$KEEP_VM_ON_FAIL" != "1" ]; then
+          cleanup_vm
+        else
+          echo "[Controller] Keeping VM '${VM_NAME}' alive for inspection (KEEP_VM_ON_FAIL=1)." >&2
+        fi
         return 1
       fi
     done
   done
 
   echo "[Controller] Exhausted ${max_attempts} attempts without completing ALL_STAGES." >&2
+  cleanup_vm
   return 1
 }
 
@@ -679,8 +744,9 @@ run_plan_check() {
   cmd1="$(build_gcloud_create_cmd 1 | tr '\n' ' ')"
   cmd3="$(build_gcloud_create_cmd 3 | tr '\n' ' ')"
   [[ "$cmd1" == *"--machine-type=n2-highmem-32"* ]] || { echo "FAIL: machine-type not n2-highmem-32" >&2; exit 1; }
-  [[ "$cmd1" == *"--boot-disk-size=2048GB"* ]] || { echo "FAIL: boot-disk-size not 2048GB" >&2; exit 1; }
+  [[ "$cmd1" == *"--boot-disk-size=250GB"* ]] || { echo "FAIL: boot-disk-size not 250GB" >&2; exit 1; }
   [[ "$cmd1" == *"--boot-disk-type=pd-ssd"* ]] || { echo "FAIL: boot-disk-type not pd-ssd" >&2; exit 1; }
+  [[ "$cmd1" == *"--local-ssd=interface=NVME"* ]] || { echo "FAIL: missing --local-ssd=interface=NVME" >&2; exit 1; }
   [[ "$cmd1" == *"--provisioning-model=SPOT"* ]] || { echo "FAIL: attempt 1 cmd missing SPOT" >&2; exit 1; }
   [[ "$cmd3" == *"--provisioning-model=STANDARD"* ]] || { echo "FAIL: attempt 3 cmd missing STANDARD" >&2; exit 1; }
   [[ "$cmd3" != *"--maintenance-policy=TERMINATE"* ]] || { echo "FAIL: STANDARD cmd must not set maintenance-policy=TERMINATE" >&2; exit 1; }
