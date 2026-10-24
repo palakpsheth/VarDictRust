@@ -98,9 +98,9 @@ SD
   ck "slice cpu/heap runs are not guarded" "[ \$(wc -l < '$T/sd.log') -eq 2 ]"   # probe + the dhat run
   ck "profile outputs land in the cell dir" "[ -s '$d/cpu-collapsed.txt' ] && [ -s '$d/dhat-heap.json' ]"
   ck "catalog.md built from them" "grep -q 'vardictrust_core::stub::hot' '$T/prof/baseline/catalog.md'"
-  # PROFILE_LOOPS=3 repeats cpu modality 3x and sums collapsed counts (3 * 5 = 15)
+  # PROFILE_LOOPS=3 repeats cpu modality 3x, sums collapsed counts (3 * 5 = 15), and retains iter-* dirs
   out=$($CE PATH="$T/bin:$PATH" PROFILE_LOOPS=3 PROFILE_OUT="$T/profloop" PROFILE_BIN="$T/engine" bash $PS baseline --only tiny 2>&1); rc=$?
-  ck "PROFILE_LOOPS=3 exits 0 and sums samples" "[ $rc -eq 0 ] && grep -q 'vardictrust_core::stub::hot 15' '$T/profloop/baseline/tiny/cpu-collapsed.txt'"
+  ck "PROFILE_LOOPS=3 exits 0 and sums samples" "[ $rc -eq 0 ] && grep -q 'vardictrust_core::stub::hot 15' '$T/profloop/baseline/tiny/cpu-collapsed.txt' && [ -d '$T/profloop/baseline/tiny/iter-1' ] && [ -d '$T/profloop/baseline/tiny/iter-3' ]"
   # systemd-run --user unavailable: still runs, says so
   printf '#!/usr/bin/env bash\nexit 1\n' > "$T/bin/systemd-run"
   out=$($CE PATH="$T/bin:$PATH" PROFILE_OUT="$T/prof2" PROFILE_BIN="$T/engine" bash $PS optimized --only tiny 2>&1); rc=$?
@@ -108,10 +108,10 @@ SD
   # courtesy refusal is final, never bypassed
   out=$(env MIN_FREE_GB=0 MIN_AVAIL_GB=0 COURTESY_NOW=0400 PROFILE_OUT="$T/prof3" PROFILE_BIN="$T/engine" bash $PS baseline --only tiny 2>&1); rc=$?
   ck "courtesy maintenance-window refusal aborts" "[ $rc -ne 0 ] && grep -q 'maintenance' <<<\"\$out\" && [ ! -e '$T/prof3' ]"
-  # a failing engine fails the run
+  # a failing engine fails the run and aborts before later cells run
   printf '#!/usr/bin/env bash\nexit 7\n' > "$T/bad"; chmod +x "$T/bad"
-  out=$($CE PATH="$T/bin:$PATH" PROFILE_OUT="$T/prof4" PROFILE_BIN="$T/bad" bash $PS baseline --only tiny 2>&1); rc=$?
-  ck "engine failure propagates" "[ $rc -ne 0 ] && grep -q 'FAILED tiny' <<<\"\$out\""
+  out=$($CE PATH="$T/bin:$PATH" PROFILE_OUT="$T/prof4" PROFILE_BIN="$T/bad" bash $PS baseline 2>&1); rc=$?
+  ck "engine failure propagates and aborts subsequent cells" "[ $rc -ne 0 ] && grep -q 'FAILED tiny' <<<\"\$out\" && [ ! -e '$T/prof4/baseline/s1a' ]"
 else
   echo "test_profile_sh: tiny slice inputs absent; real-execution section skipped" >&2
 fi

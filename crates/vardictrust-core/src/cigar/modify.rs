@@ -2213,9 +2213,9 @@ mod tests {
             rng_state
         };
 
-        let rand_ops = [b'M', b'M', b'M', b'I', b'I', b'D', b'D', b'S', b'N', b'H'];
+        let rand_ops = b"MMMIIDDSNH";
         let rand_lens = [1, 2, 3, 4, 5, 8, 10, 12, 15, 20, 35];
-        let bases = [b'A', b'C', b'G', b'T'];
+        let bases = b"ACGT";
 
         let mut cigar_buf = String::with_capacity(64);
         let mut qseq_buf = Vec::with_capacity(160);

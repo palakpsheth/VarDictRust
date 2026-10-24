@@ -1931,7 +1931,7 @@ pub fn find_sv(
         .soft_clips_5_end
         .iter()
         .filter_map(|(&pos, scv)| {
-            if scv.used || pos < curseg_start || pos > curseg_end {
+            if scv.used || scv.variation.cnt < minr || pos < curseg_start || pos > curseg_end {
                 None
             } else {
                 Some(SortPositionSclip {
@@ -1948,7 +1948,7 @@ pub fn find_sv(
         .soft_clips_3_end
         .iter()
         .filter_map(|(&pos, scv)| {
-            if scv.used || pos < curseg_start || pos > curseg_end {
+            if scv.used || scv.variation.cnt < minr || pos < curseg_start || pos > curseg_end {
                 None
             } else {
                 Some(SortPositionSclip {

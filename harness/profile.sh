@@ -197,7 +197,7 @@ run_cell() {   # <cell>; returns 0 ok, 1 failed, 3 skipped
       done
       awk '{n=$NF; $NF=""; sub(/[[:space:]]+$/,""); c[$0]+=n} END{for(k in c) print k, c[k]}' "$d"/iter-*/cpu-collapsed.txt | LC_ALL=C sort > "$d/cpu-collapsed.txt"
       python3 -c 'import glob,json,sys; d=sys.argv[1]; ms=[json.load(open(p)) for p in glob.glob(f"{d}/iter-*/cpu-meta.json")]; json.dump({"ticks_total":sum(m.get("ticks_total",0) for m in ms),"samples_kept":sum(m.get("samples_kept",0) for m in ms),"loops":len(ms)},open(f"{d}/cpu-meta.json","w"))' "$d"
-      rm -rf "$d"/iter-*
+      for f in cpu-profile.pb cpu-flamegraph.svg; do [ -e "$d/iter-1/$f" ] && cp -f "$d/iter-1/$f" "$d/$f" || true; done
     else
       EST_MIN="$C_EST" LC_ALL=C bash harness/courtesy.sh "${wrapped[@]}" > "$d/out-$m.vcf" || {
         rc=$?; echo "profile: FAILED $cell [$m] (exit $rc); see $d/time.txt" >&2; return 1; }
@@ -209,7 +209,7 @@ run_cell() {   # <cell>; returns 0 ok, 1 failed, 3 skipped
 FAIL=0; RAN=0
 for c in "${CELLS[@]}"; do
   rc=0; run_cell "$c" || rc=$?
-  case $rc in 0) RAN=$((RAN + 1)) ;; 3) ;; *) FAIL=1 ;; esac
+  case $rc in 0) RAN=$((RAN + 1)) ;; 3) ;; *) FAIL=1; break ;; esac
 done
 
 if [ "$DRY" = 0 ] && [ "$RAN" -gt 0 ]; then

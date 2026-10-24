@@ -153,11 +153,13 @@ pub fn find_conseq(
         }
     }
 
+    let mut cleared_by_adaptor = false;
     if !final_seq.is_empty() && final_seq.len() >= 6 {
         if dir == 3 {
             if let Some(seed) = final_seq.get(0..6) {
                 if adaptor_forward.contains_key(seed) {
                     final_seq.clear();
+                    cleared_by_adaptor = true;
                 }
             }
         } else if dir == 5 {
@@ -166,12 +168,15 @@ pub fn find_conseq(
                 rev_seed.reverse();
                 if adaptor_reverse.contains_key(&rev_seed) {
                     final_seq.clear();
+                    cleared_by_adaptor = true;
                 }
             }
         }
     }
 
-    soft_clip.sequence = Some(final_seq.clone());
+    if !cleared_by_adaptor {
+        soft_clip.sequence = Some(final_seq.clone());
+    }
     final_seq
 }
 
@@ -640,6 +645,32 @@ pub(crate) mod tests {
         assert!(
             second.is_empty(),
             "expected cached empty consensus Some(vec![]) to be returned without recomputing"
+        );
+
+        // However, if a valid consensus (>=6bp) was cleared solely by direction-specific
+        // adaptor matching (`dir=3` or `dir=5`), `sc.sequence` must remain `None` so a
+        // subsequent `dir=0` call recomputes and returns the unfiltered consensus.
+        let mut sc_adapt = Sclip::new();
+        for pos in 0..8 {
+            let mut nt = BTreeMap::new();
+            nt.insert(b'C', 12);
+            sc_adapt.nt.insert(pos, nt);
+        }
+        let mut fwd_adapt = BTreeMap::new();
+        fwd_adapt.insert(b"CCCCCC".to_vec(), 1);
+        let dir3 = find_conseq(&mut sc_adapt, 3, &fwd_adapt, &adaptor_reverse);
+        assert!(
+            dir3.is_empty(),
+            "dir=3 should be cleared by forward adaptor"
+        );
+        assert!(
+            sc_adapt.sequence.is_none(),
+            "adaptor-cleared consensus must not lock sc.sequence to empty"
+        );
+        let dir0 = find_conseq(&mut sc_adapt, 0, &fwd_adapt, &adaptor_reverse);
+        assert_eq!(
+            dir0, b"CCCCCCCC",
+            "subsequent dir=0 call must recompute unfiltered consensus"
         );
     }
 

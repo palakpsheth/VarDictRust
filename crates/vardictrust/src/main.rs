@@ -18,8 +18,8 @@ static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 // expected C `const char *` ABI, unlike a fat slice `&[u8]` (16 bytes).
 #[cfg(all(feature = "jemalloc", not(feature = "profile-heap")))]
 #[export_name = "_rjem_malloc_conf"]
-pub static MALLOC_CONF: &[u8; 60] =
-    b"background_thread:true,dirty_decay_ms:5000,muzzy_decay_ms:0\0";
+pub static MALLOC_CONF: &[u8; 69] =
+    b"background_thread:true,dirty_decay_ms:250,muzzy_decay_ms:0,narenas:8\0";
 #[cfg(feature = "profile-heap")]
 #[export_name = "_rjem_malloc_conf"]
 pub static MALLOC_CONF: &[u8; 105] = b"prof:true,prof_active:true,lg_prof_sample:19,background_thread:true,dirty_decay_ms:5000,muzzy_decay_ms:0\0";
