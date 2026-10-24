@@ -124,6 +124,7 @@ class TestBiocondaRecipe(unittest.TestCase):
         self.assertIn("compiler('rust')", meta, "Requirements must require rust compiler")
         self.assertIn("compiler('c')", meta, "Requirements must require c compiler")
         self.assertIn("stdlib('c')", meta, "Requirements must require stdlib('c')")
+        self.assertIn("- make", meta, "Requirements must include make for tikv-jemalloc-sys build.rs")
         self.assertIn("run_exports:", meta, "Bioconda linter requires run_exports pinning")
         self.assertIn("pin_subpackage", meta, "run_exports must use pin_subpackage")
         self.assertIn("binary_relocation: false", meta, "meta.yaml must declare binary_relocation: false")
