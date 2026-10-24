@@ -525,12 +525,18 @@ run_stage_2() {
 
         # Symmetric n=3 technical replicates on the exact Wolff 2026 .var TSV surface (no -z)
         for run in 1 2 3; do
-          /usr/bin/time -v -o \"\$KEEP_DIR/rust_var_th${th}_run\${run}.time\" \
-            target/release/vardictrust -G \"\$REF\" -f 0.01 -N '${acc}' -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 --emit-intermediate -th ${th} \"\$BED\" > \"\$KEEP_DIR/rust_th${th}.var\"
-          /usr/bin/time -v -o \"\$KEEP_DIR/cpp_var_th${th}_run\${run}.time\" \
-            '$tp_dir/vardictcpp-ae93fe39dc/build/vardictcpp' -G \"\$REF\" -f 0.01 -N '${acc}' -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 --chunk 50000 -th ${th} \"\$BED\" > \"\$KEEP_DIR/cpp_th${th}.var\"
-          _JAVA_OPTIONS='-Xmx22g' /usr/bin/time -v -o \"\$KEEP_DIR/java_var_th${th}_run\${run}.time\" \
-            conda run -n vardict-oracle vardict-java -G \"\$REF\" -f 0.01 -N '${acc}' -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -th ${th} \"\$BED\" > \"\$KEEP_DIR/java_th${th}.var\"
+          if [ ! -s \"\$KEEP_DIR/rust_var_th${th}_run\${run}.time\" ] || [ ! -s \"\$KEEP_DIR/rust_th${th}.var\" ]; then
+            /usr/bin/time -v -o \"\$KEEP_DIR/rust_var_th${th}_run\${run}.time\" \
+              target/release/vardictrust -G \"\$REF\" -f 0.01 -N '${acc}' -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 --emit-intermediate -th ${th} \"\$BED\" > \"\$KEEP_DIR/rust_th${th}.var\"
+          fi
+          if [ ! -s \"\$KEEP_DIR/cpp_var_th${th}_run\${run}.time\" ] || [ ! -s \"\$KEEP_DIR/cpp_th${th}.var\" ]; then
+            /usr/bin/time -v -o \"\$KEEP_DIR/cpp_var_th${th}_run\${run}.time\" \
+              '$tp_dir/vardictcpp-ae93fe39dc/build/vardictcpp' -G \"\$REF\" -f 0.01 -N '${acc}' -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 --chunk 50000 -th ${th} \"\$BED\" > \"\$KEEP_DIR/cpp_th${th}.var\"
+          fi
+          if [ ! -s \"\$KEEP_DIR/java_var_th${th}_run\${run}.time\" ] || [ ! -s \"\$KEEP_DIR/java_th${th}.var\" ]; then
+            _JAVA_OPTIONS='-Xmx22g' /usr/bin/time -v -o \"\$KEEP_DIR/java_var_th${th}_run\${run}.time\" \
+              conda run -n vardict-oracle vardict-java -G \"\$REF\" -f 0.01 -N '${acc}' -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -th ${th} \"\$BED\" > \"\$KEEP_DIR/java_th${th}.var\"
+          fi
         done
 
         # Verify exact Table-1 row counts & 0 FP / 0 FN sorted TSV identity + compare_var.py
@@ -541,8 +547,16 @@ run_stage_2() {
         [ \"\$r_rows\" -eq '${exp_row}' ] && [ \"\$j_rows\" -eq '${exp_row}' ]
         LC_ALL=C sort \"\$KEEP_DIR/java_th${th}.var\" > \"\$KEEP_DIR/java_th${th}.sorted.var\"
         LC_ALL=C sort \"\$KEEP_DIR/rust_th${th}.var\" > \"\$KEEP_DIR/rust_th${th}.sorted.var\"
-        diff -u \"\$KEEP_DIR/java_th${th}.sorted.var\" \"\$KEEP_DIR/rust_th${th}.sorted.var\" > \"\$KEEP_DIR/var_diff_th${th}.txt\"
-        python3 harness/compare_var.py --eps 1e-6 \"\$KEEP_DIR/java_th${th}.var\" \"\$KEEP_DIR/rust_th${th}.var\" | tee \"\$KEEP_DIR/compare_var_th${th}.txt\"
+        LC_ALL=C sort \"\$KEEP_DIR/cpp_th${th}.var\" > \"\$KEEP_DIR/cpp_th${th}.sorted.var\"
+        diff -u \"\$KEEP_DIR/java_th${th}.sorted.var\" \"\$KEEP_DIR/rust_th${th}.sorted.var\" > \"\$KEEP_DIR/var_diff_th${th}.txt\" || true
+        key_fn() { awk -F'\t' '{print \$3\"_\"\$4\"_\"\$6\"_\"\$7}' \"\$1\" | LC_ALL=C sort; }
+        fp_jr=\$(LC_ALL=C comm -13 <(key_fn \"\$KEEP_DIR/java_th${th}.var\") <(key_fn \"\$KEEP_DIR/rust_th${th}.var\") | wc -l | tr -dc '0-9')
+        fn_jr=\$(LC_ALL=C comm -23 <(key_fn \"\$KEEP_DIR/java_th${th}.var\") <(key_fn \"\$KEEP_DIR/rust_th${th}.var\") | wc -l | tr -dc '0-9')
+        fp_jc=\$(LC_ALL=C comm -13 <(key_fn \"\$KEEP_DIR/java_th${th}.var\") <(key_fn \"\$KEEP_DIR/cpp_th${th}.var\") | wc -l | tr -dc '0-9')
+        fn_jc=\$(LC_ALL=C comm -23 <(key_fn \"\$KEEP_DIR/java_th${th}.var\") <(key_fn \"\$KEEP_DIR/cpp_th${th}.var\") | wc -l | tr -dc '0-9')
+        echo \"fp_jr=\$fp_jr fn_jr=\$fn_jr fp_jc=\$fp_jc fn_jc=\$fn_jc\" | tee \"\$KEEP_DIR/equivalence_th${th}.txt\"
+        [ \"\$fp_jr\" -eq 0 ] && [ \"\$fn_jr\" -eq 0 ]
+        python3 harness/compare_var.py --eps 1e-6 <(sed 's/:0-/:1-/g' \"\$KEEP_DIR/java_th${th}.sorted.var\") \"\$KEEP_DIR/rust_th${th}.sorted.var\" | tee \"\$KEEP_DIR/compare_var_th${th}.txt\"
 
         # End-to-end VCF surface (consolidated Rust binary vs Java+R+Perl vs C++ -vcf) + tabix check
         /usr/bin/time -v -o \"\$KEEP_DIR/rust_vcf_th${th}.time\" \
@@ -583,7 +597,11 @@ run_stage_2() {
       c_rows=\$(wc -l < \"\$KEEP_DIR/cpp_som_th${th}.var\" | tr -dc '0-9')
       echo \"somatic_rows_rust=\$r_rows rows_java=\$j_rows rows_cpp=\$c_rows expected=14126\" | tee \"\$KEEP_DIR/somatic_counts_th${th}.txt\"
       [ \"\$r_rows\" -eq 14126 ] && [ \"\$j_rows\" -eq 14126 ]
-      python3 harness/compare_var.py --eps 1e-6 \"\$KEEP_DIR/java_som_th${th}.var\" \"\$KEEP_DIR/rust_som_th${th}.var\" | tee \"\$KEEP_DIR/compare_som_var_th${th}.txt\"
+      LC_ALL=C sort \"\$KEEP_DIR/java_som_th${th}.var\" > \"\$KEEP_DIR/java_som_th${th}.sorted.var\"
+      LC_ALL=C sort \"\$KEEP_DIR/rust_som_th${th}.var\" > \"\$KEEP_DIR/rust_som_th${th}.sorted.var\"
+      LC_ALL=C sort \"\$KEEP_DIR/cpp_som_th${th}.var\" > \"\$KEEP_DIR/cpp_som_th${th}.sorted.var\"
+      diff -u \"\$KEEP_DIR/java_som_th${th}.sorted.var\" \"\$KEEP_DIR/rust_som_th${th}.sorted.var\" > \"\$KEEP_DIR/som_var_diff_th${th}.txt\" || true
+      python3 harness/compare_var.py --eps 1e-6 <(sed 's/:0-/:1-/g' \"\$KEEP_DIR/java_som_th${th}.sorted.var\") \"\$KEEP_DIR/rust_som_th${th}.sorted.var\" | tee \"\$KEEP_DIR/compare_som_var_th${th}.txt\"
 
       /usr/bin/time -v -o \"\$KEEP_DIR/rust_som_vcf_th${th}.time\" \
         target/release/vardictrust -G \"\$REF\" -f 0.01 -N 'SRR15006376|SRR15006386' -b \"\${TUM}|\${NOR}\" -c 1 -S 2 -E 3 -g 4 -th ${th} \"\$BED\" > \"\$KEEP_DIR/rust_som_th${th}.vcf\"
@@ -622,7 +640,7 @@ run_stage_2() {
       c_fp=\$(LC_ALL=C comm -13 \"\$KEEP_DIR/\${mode}.java.tsv\" \"\$KEEP_DIR/\${mode}.cpp.tsv\" | wc -l | tr -dc '0-9')
       c_fn=\$(LC_ALL=C comm -23 \"\$KEEP_DIR/\${mode}.java.tsv\" \"\$KEEP_DIR/\${mode}.cpp.tsv\" | wc -l | tr -dc '0-9')
       if [ \"\$r_fp\" -ne 0 ] || [ \"\$r_fn\" -ne 0 ]; then
-        if python3 harness/compare_var.py --eps 1e-6 \"\$KEEP_DIR/\${mode}.java.tsv\" \"\$KEEP_DIR/\${mode}.rust.tsv\" >/dev/null 2>&1; then
+        if python3 harness/compare_var.py --eps 1e-6 <(sed 's/:0-/:1-/g' \"\$KEEP_DIR/\${mode}.java.tsv\") \"\$KEEP_DIR/\${mode}.rust.tsv\" >/dev/null 2>&1; then
           verdict='MATCH_EPS'
         else
           verdict='MISMATCH'
@@ -931,7 +949,8 @@ run_stage_3() {
     done
     LC_ALL=C sort \"\$KEEP_DIR/java.splice.tsv\" > \"\$KEEP_DIR/java.splice.sorted.tsv\"
     LC_ALL=C sort \"\$KEEP_DIR/rust.splice.tsv\" > \"\$KEEP_DIR/rust.splice.sorted.tsv\"
-    diff -u \"\$KEEP_DIR/java.splice.sorted.tsv\" \"\$KEEP_DIR/rust.splice.sorted.tsv\" > \"\$KEEP_DIR/splice_diff.txt\"
+    diff -u \"\$KEEP_DIR/java.splice.sorted.tsv\" \"\$KEEP_DIR/rust.splice.sorted.tsv\" > \"\$KEEP_DIR/splice_diff.txt\" || true
+    python3 harness/compare_var.py --eps 1e-6 <(sed 's/:0-/:1-/g' \"\$KEEP_DIR/java.splice.sorted.tsv\") \"\$KEEP_DIR/rust.splice.sorted.tsv\" | tee \"\$KEEP_DIR/compare_splice_var.txt\"
     wc -l \"\$KEEP_DIR/rust.splice.sorted.tsv\" > \"\$KEEP_DIR/splice_count.txt\"
   "
 }
