@@ -343,7 +343,7 @@ run_stage_2() {
       setsid gsutil -q cp '${GCS_REFS}/vardictcpp/Archive.zip' '$tp_dir/archive/Archive.zip'
     fi
     unzip -q -o '$tp_dir/archive/Archive.zip' 'reference/*' 'beds/*' 'scripts/*' 'performance_benchmark/*' 'MD5SUMS.txt' -d '$tp_dir/archive/'
-    if [ ! -x '$tp_dir/vardictcpp-ae93fe39dc/build/src/vardictcpp' ]; then
+    if [ ! -x '$tp_dir/vardictcpp-ae93fe39dc/build/vardictcpp' ]; then
       rm -rf '$tp_dir/vardictcpp-ae93fe39dc'
       git clone https://github.com/MHH-Bioinformatics-Hematology/vardictcpp.git '$tp_dir/vardictcpp-ae93fe39dc'
       cd '$tp_dir/vardictcpp-ae93fe39dc'
@@ -368,7 +368,7 @@ run_stage_2() {
           /usr/bin/time -v -o \"\$KEEP_DIR/rust_th\${th}_run\${run}.time\" \
             target/release/vardictrust -G \"\$REF\" -f 0.01 -N '${acc}' -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -z -th \"\$th\" \"\$BED\" > \"\$KEEP_DIR/rust_th\${th}.vcf\"
           /usr/bin/time -v -o \"\$KEEP_DIR/cpp_th\${th}_run\${run}.time\" \
-            '$tp_dir/vardictcpp-ae93fe39dc/build/src/vardictcpp' -G \"\$REF\" -f 0.01 -N '${acc}' -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -z --chunk 50000 -th \"\$th\" \"\$BED\" -vcf > \"\$KEEP_DIR/cpp_th\${th}.vcf\"
+            '$tp_dir/vardictcpp-ae93fe39dc/build/vardictcpp' -G \"\$REF\" -f 0.01 -N '${acc}' -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -z --chunk 50000 -th \"\$th\" \"\$BED\" -vcf > \"\$KEEP_DIR/cpp_th\${th}.vcf\"
           ORACLE_XMX_GB=22 /usr/bin/time -v -o \"\$KEEP_DIR/java_th\${th}_run\${run}.time\" \
             bash harness/run_oracle.sh \"\$REF\" \"\$BAM\" \"\$BED\" \"\$KEEP_DIR/java_th\${th}.vcf\" '${acc}' -f 0.01 -z -th \"\$th\"
         done
@@ -390,7 +390,7 @@ run_stage_2() {
         /usr/bin/time -v -o \"\$KEEP_DIR/rust_som_th\${th}_run\${run}.time\" \
           target/release/vardictrust -G \"\$REF\" -f 0.01 -N 'SRR15006376|SRR15006386' -b \"\${TUM}|\${NOR}\" -c 1 -S 2 -E 3 -g 4 -z -th \"\$th\" \"\$BED\" > \"\$KEEP_DIR/rust_som_th\${th}.vcf\"
         /usr/bin/time -v -o \"\$KEEP_DIR/cpp_som_th\${th}_run\${run}.time\" \
-          '$tp_dir/vardictcpp-ae93fe39dc/build/src/vardictcpp' -G \"\$REF\" -f 0.01 -N 'SRR15006376|SRR15006386' -b \"\${TUM}|\${NOR}\" -c 1 -S 2 -E 3 -g 4 -z --chunk 50000 -th \"\$th\" \"\$BED\" -vcf > \"\$KEEP_DIR/cpp_som_th\${th}.vcf\"
+          '$tp_dir/vardictcpp-ae93fe39dc/build/vardictcpp' -G \"\$REF\" -f 0.01 -N 'SRR15006376|SRR15006386' -b \"\${TUM}|\${NOR}\" -c 1 -S 2 -E 3 -g 4 -z --chunk 50000 -th \"\$th\" \"\$BED\" -vcf > \"\$KEEP_DIR/cpp_som_th\${th}.vcf\"
         ORACLE_XMX_GB=22 /usr/bin/time -v -o \"\$KEEP_DIR/java_som_th\${th}_run\${run}.time\" \
           bash harness/run_oracle.sh \"\$REF\" \"\${TUM}|\${NOR}\" \"\$BED\" \"\$KEEP_DIR/java_som_th\${th}.vcf\" 'SRR15006376|SRR15006386' -f 0.01 -z -th \"\$th\"
       done
@@ -409,7 +409,7 @@ run_stage_2() {
         target/release/vardictrust -G \"\$REF\" -f 0.01 -N SRR8657348 -b \"\$BAM\" -th 8 -R chr1:1-249250621 > \"\$KEEP_DIR/rust_R_chr1.vcf\"
       rc=0
       /usr/bin/time -v -o \"\$KEEP_DIR/cpp_R_chr1_run\${run}.time\" \
-        '$tp_dir/vardictcpp-ae93fe39dc/build/src/vardictcpp' -G \"\$REF\" -f 0.01 -N SRR8657348 -b \"\$BAM\" -th 8 -R chr1:1-249250621 -vcf > \"\$KEEP_DIR/cpp_R_chr1.vcf\" || rc=\$?
+        '$tp_dir/vardictcpp-ae93fe39dc/build/vardictcpp' -G \"\$REF\" -f 0.01 -N SRR8657348 -b \"\$BAM\" -th 8 -R chr1:1-249250621 -vcf > \"\$KEEP_DIR/cpp_R_chr1.vcf\" || rc=\$?
       echo \"\$rc\" > \"\$KEEP_DIR/cpp_R_chr1_run\${run}.exit\"
     done
   "
