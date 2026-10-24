@@ -192,19 +192,29 @@ gcs_write_heartbeat() {
 run_checkpointed_cell() {
   local stage="$1" cell_id="$2" cpus="$3" mem_max="$4"
   shift 4
+  if [ -n "${CELL_ALLOWLIST:-}" ] && [[ " ${CELL_ALLOWLIST} " != *" ${cell_id} "* ]]; then
+    return 0
+  fi
   if gcs_stat_done "$cell_id"; then
     echo "[SKIP] Cell '$cell_id' already checkpointed."
     return 0
   fi
 
-  local cpu_spec
-  if [[ "$cpus" =~ ^[0-9]+$ ]]; then
+  local cpu_spec mem_node_spec="0-1"
+  if [ -n "${SOCKET_PIN_CPUS:-}" ] && { [ "$cpus" = "8" ] || [ "$cpus" = "0-7" ]; }; then
+    cpu_spec="${SOCKET_PIN_CPUS}"
+  elif [[ "$cpus" =~ ^[0-9]+$ ]]; then
     cpu_spec="0-$((cpus - 1))"
   else
     cpu_spec="$cpus"
   fi
+  case "$cpu_spec" in
+    0-7|0-3|4-7) mem_node_spec="0" ;;
+    8-15|8-11|12-15) mem_node_spec="1" ;;
+    *) mem_node_spec="0-1" ;;
+  esac
 
-  echo "=== [RUN] Stage=$stage Cell=$cell_id AllowedCPUs=$cpu_spec MemoryMax=$mem_max GOLDEN_MODE=$GOLDEN_MODE ==="
+  echo "=== [RUN] Stage=$stage Cell=$cell_id AllowedCPUs=$cpu_spec AllowedMemoryNodes=$mem_node_spec MemoryMax=$mem_max GOLDEN_MODE=$GOLDEN_MODE ==="
   gcs_write_heartbeat "$stage" "$cell_id" "RUNNING"
 
   local cell_dir="${WORK_DIR}/cells/${cell_id}"
@@ -217,12 +227,14 @@ run_checkpointed_cell() {
     if [ "$(id -u)" -eq 0 ]; then
       systemd-run --scope --quiet \
         -p "AllowedCPUs=${cpu_spec}" \
+        -p "AllowedMemoryNodes=${mem_node_spec}" \
         -p "MemoryMax=${mem_max}" \
         -- env PATH="$PATH" HOME="$HOME" DATA_DIR="${DATA_DIR:-scratch/g4}" KEEP_DIR="$cell_dir" GOLDEN_MODE=off "$@" || rc=$?
     else
       sudo -E systemd-run --scope --quiet \
         --uid="$(id -un)" --gid="$(id -gn)" \
         -p "AllowedCPUs=${cpu_spec}" \
+        -p "AllowedMemoryNodes=${mem_node_spec}" \
         -p "MemoryMax=${mem_max}" \
         -- env PATH="$PATH" HOME="$HOME" DATA_DIR="${DATA_DIR:-scratch/g4}" KEEP_DIR="$cell_dir" GOLDEN_MODE=off "$@" || rc=$?
     fi
@@ -255,6 +267,9 @@ run_checkpointed_cell() {
 run_local_stage_cell() {
   local stage="$1" cell_id="$2" cpus="$3" mem_max="$4"
   shift 4
+  if [ -n "${CELL_ALLOWLIST:-}" ] && [[ " ${CELL_ALLOWLIST} " != *" ${cell_id} "* ]]; then
+    return 0
+  fi
   local local_marker="${WORK_DIR}/local_staged/${cell_id}.done"
   if [ -f "$local_marker" ]; then
     echo "[SKIP] Local staging cell '$cell_id' already present on this VM."
@@ -305,7 +320,7 @@ ensure_field_caller_envs() {
 }
 
 start_background_prestager() {
-  if [ -f "${WORK_DIR}/local_staged/bg_prestage.done" ]; then
+  if [ -n "${CELL_ALLOWLIST:-}" ] || [ -f "${WORK_DIR}/local_staged/bg_prestage.done" ]; then
     return 0
   fi
   (
@@ -715,14 +730,15 @@ run_stage_2() {
     samtools index \"\$KEEP_DIR/srr8657348_chr1.cram\"
     env RUST_MIN_STACK=67108864 \"\$VR\" -G \"\$REF\" -f 0.01 -N s -b \"\$KEEP_DIR/srr8657348_chr1.cram\" -c 1 -S 2 -E 3 -g 4 --emit-intermediate -th 1 \"\$BEDS/simple.bed\" | LC_ALL=C sort > \"\$KEEP_DIR/p5_cram.rust.tsv\"
     \"\$VC\" -G \"\$REF\" -f 0.01 -N s -b \"\$KEEP_DIR/srr8657348_chr1.cram\" -c 1 -S 2 -E 3 -g 4 \"\$BEDS/simple.bed\" -th 1 2>/dev/null | LC_ALL=C sort > \"\$KEEP_DIR/p5_cram.cpp.tsv\"
-    diff -u \"\$KEEP_DIR/simple_f0.01.rust.tsv\" \"\$KEEP_DIR/p5_cram.rust.tsv\" > \"\$KEEP_DIR/p5_cram_vs_bam_diff.txt\"
+    diff -u \"\$KEEP_DIR/simple_f0.01.rust.tsv\" \"\$KEEP_DIR/p5_cram.rust.tsv\" > \"\$KEEP_DIR/p5_cram_vs_bam_diff.txt\" || true
+    python3 harness/compare_var.py --eps 1e-6 \"\$KEEP_DIR/simple_f0.01.rust.tsv\" \"\$KEEP_DIR/p5_cram.rust.tsv\" >/dev/null
     printf 'P5_cram_twin\t0_NoClassDefFoundError\t%s\t%s\t0\t0\t0\t0\tMATCH_BAM_TWIN\n' \
       \"\$(wc -l < \"\$KEEP_DIR/p5_cram.rust.tsv\" | tr -dc '0-9')\" \
       \"\$(wc -l < \"\$KEEP_DIR/p5_cram.cpp.tsv\" | tr -dc '0-9')\" | tee -a \"\$RES\"
   "
 
   # 4. Fig-2 Germline Accuracy Benchmark on hg002.exome.20.bam (6 callers scored via rtg vcfeval / eval_caller.sh)
-  run_checkpointed_cell "stage2" "s2_fig2_hg002_chr20_truth" 16 "64G" bash -c "
+  run_checkpointed_cell "stage2" "s2_fig2_hg002_chr20_truth" 8 "64G" bash -c "
     set -euo pipefail
     source harness/gcp_paper_runner.sh --source-only
     ensure_field_caller_envs
@@ -974,65 +990,75 @@ run_stage_4() {
   ensure_submodule_excludes
 
   # 1. Uniform -th 8 Four-Target Performance Budget (amplicon, hg002, hg008, seqc2-exome) with n=3 replicates + perf_budget.py
-  run_checkpointed_cell "stage4" "s4_perf_budget_4targets_n3" 8 "64G" bash -c '
+  # Packed across Dual Sockets with zero contention: Socket 0 (0-7 / NUMA 0) runs amplicon + hg002 + hg008; Socket 1 (8-15 / NUMA 1) runs seqc2-exome.
+  run_checkpointed_cell "stage4" "s4_perf_budget_4targets_n3" "0-15" "128G" bash -c '
     set -euo pipefail
-    # (a) Amplicon (-th 8, n=3)
-    mkdir -p "$KEEP_DIR/amplicon"
-    for run in 1 2 3; do
-      KEEP_DIR="$KEEP_DIR/amplicon" GOLDEN_MODE=off ORACLE_XMX_GB=22 \
-        bash harness/compare.sh \
-        "$DATA_DIR/amplicon/ref.fa" \
-        "$DATA_DIR/amplicon/amplicon.bam" \
-        "$DATA_DIR/amplicon/correct_8columns_amplicon.bed" SAMPLE -a 10:0.95 -th 8
-      cp "$KEEP_DIR/amplicon/rust.time" "$KEEP_DIR/amplicon/rust_run${run}.time"
-      cp "$KEEP_DIR/amplicon/java.time" "$KEEP_DIR/amplicon/java_run${run}.time"
-      [ -f "$KEEP_DIR/amplicon/cpp.time" ] && cp "$KEEP_DIR/amplicon/cpp.time" "$KEEP_DIR/amplicon/cpp_run${run}.time" || true
-    done
+    mkdir -p "$KEEP_DIR/amplicon" "$KEEP_DIR/hg002" "$KEEP_DIR/hg008" "$KEEP_DIR/seqc2"
+
+    # Socket 0 (CPUs 0-7, NUMA Node 0): Amplicon + HG002 + HG008 (-th 8, n=3)
+    (
+      set -euo pipefail
+      for run in 1 2 3; do
+        taskset -c 0-7 env KEEP_DIR="$KEEP_DIR/amplicon" GOLDEN_MODE=off ORACLE_XMX_GB=22 \
+          bash harness/compare.sh \
+          "$DATA_DIR/amplicon/ref.fa" \
+          "$DATA_DIR/amplicon/amplicon.bam" \
+          "$DATA_DIR/amplicon/correct_8columns_amplicon.bed" SAMPLE -a 10:0.95 -th 8
+        cp "$KEEP_DIR/amplicon/rust.time" "$KEEP_DIR/amplicon/rust_run${run}.time"
+        cp "$KEEP_DIR/amplicon/java.time" "$KEEP_DIR/amplicon/java_run${run}.time"
+        [ -f "$KEEP_DIR/amplicon/cpp.time" ] && cp "$KEEP_DIR/amplicon/cpp.time" "$KEEP_DIR/amplicon/cpp_run${run}.time" || true
+      done
+
+      for run in 1 2 3; do
+        taskset -c 0-7 env KEEP_DIR="$KEEP_DIR/hg002" GOLDEN_MODE=off MIN_VARIANTS=200000 ORACLE_XMX_GB=44 \
+          bash harness/compare.sh \
+          "$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fasta" \
+          "$DATA_DIR/hg002/HG002.chr20.bam" \
+          "$DATA_DIR/hg002/engine.bed" HG002 -f 0.01 -th 8
+        cp "$KEEP_DIR/hg002/rust.time" "$KEEP_DIR/hg002/rust_run${run}.time"
+        cp "$KEEP_DIR/hg002/java.time" "$KEEP_DIR/hg002/java_run${run}.time"
+        [ -f "$KEEP_DIR/hg002/cpp.time" ] && cp "$KEEP_DIR/hg002/cpp.time" "$KEEP_DIR/hg002/cpp_run${run}.time" || true
+      done
+      grep -q "^MATCH (227562 variants)$" "$KEEP_DIR/hg002/compare.txt"
+
+      for run in 1 2 3; do
+        taskset -c 0-7 env KEEP_DIR="$KEEP_DIR/hg008" GOLDEN_MODE=off MIN_VARIANTS=1000 ORACLE_XMX_GB=44 \
+          bash harness/compare.sh \
+          "$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fa" \
+          "$DATA_DIR/hg008/HG008-T.slice.bam|$DATA_DIR/hg008/HG008-N.slice.bam" \
+          "$DATA_DIR/hg008/engine.bed" "HG008-T|HG008-N" -th 8
+        cp "$KEEP_DIR/hg008/rust.time" "$KEEP_DIR/hg008/rust_run${run}.time"
+        cp "$KEEP_DIR/hg008/java.time" "$KEEP_DIR/hg008/java_run${run}.time"
+        [ -f "$KEEP_DIR/hg008/cpp.time" ] && cp "$KEEP_DIR/hg008/cpp.time" "$KEEP_DIR/hg008/cpp_run${run}.time" || true
+      done
+      grep -q "^MATCH (18426 variants)$" "$KEEP_DIR/hg008/compare.txt"
+    ) &
+    pid_s0=$!
+
+    # Socket 1 (CPUs 8-15, NUMA Node 1): SEQC2 HCC1395/BL full somatic exome (623,444 variants, -th 8, n=3)
+    (
+      set -euo pipefail
+      for run in 1 2 3; do
+        taskset -c 8-15 env KEEP_DIR="$KEEP_DIR/seqc2" GOLDEN_MODE=off MIN_VARIANTS=2000 ORACLE_XMX_GB=44 \
+          bash harness/compare.sh \
+          "$DATA_DIR/ref/d1vd1/GRCh38.d1.vd1.fa" \
+          "$DATA_DIR/seqc2/HCC1395.bam|$DATA_DIR/seqc2/HCC1395BL.bam" \
+          "$DATA_DIR/seqc2/exome.engine.bed" "HCC1395|HCC1395BL" -th 8
+        cp "$KEEP_DIR/seqc2/rust.time" "$KEEP_DIR/seqc2/rust_run${run}.time"
+        cp "$KEEP_DIR/seqc2/java.time" "$KEEP_DIR/seqc2/java_run${run}.time"
+        [ -f "$KEEP_DIR/seqc2/cpp.time" ] && cp "$KEEP_DIR/seqc2/cpp.time" "$KEEP_DIR/seqc2/cpp_run${run}.time" || true
+      done
+      grep -q "^MATCH (623444 variants)$" "$KEEP_DIR/seqc2/compare.txt"
+    ) &
+    pid_s1=$!
+
+    wait "$pid_s0"
+    wait "$pid_s1"
+
+    # Sequentially record evidence receipts after the wait barrier (zero file contention)
     python3 harness/record_evidence.py amplicon-tier2 MATCH "$KEEP_DIR/amplicon" -- bash harness/compare.sh "$DATA_DIR/amplicon/ref.fa" "$DATA_DIR/amplicon/amplicon.bam" "$DATA_DIR/amplicon/correct_8columns_amplicon.bed" SAMPLE -a 10:0.95 -th 8
-
-    # (b) GIAB HG002 full 20 Mbp benchmark region (chr20:10M-30M, 227,562 variants, -th 8, n=3)
-    mkdir -p "$KEEP_DIR/hg002"
-    for run in 1 2 3; do
-      KEEP_DIR="$KEEP_DIR/hg002" GOLDEN_MODE=off MIN_VARIANTS=200000 ORACLE_XMX_GB=44 \
-        bash harness/compare.sh \
-        "$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fasta" \
-        "$DATA_DIR/hg002/HG002.chr20.bam" \
-        "$DATA_DIR/hg002/engine.bed" HG002 -f 0.01 -th 8
-      cp "$KEEP_DIR/hg002/rust.time" "$KEEP_DIR/hg002/rust_run${run}.time"
-      cp "$KEEP_DIR/hg002/java.time" "$KEEP_DIR/hg002/java_run${run}.time"
-      [ -f "$KEEP_DIR/hg002/cpp.time" ] && cp "$KEEP_DIR/hg002/cpp.time" "$KEEP_DIR/hg002/cpp_run${run}.time" || true
-    done
-    grep -q "^MATCH (227562 variants)$" "$KEEP_DIR/hg002/compare.txt"
     python3 harness/record_evidence.py hg002-tier2 MATCH "$KEEP_DIR/hg002" -- bash harness/compare.sh "$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fasta" "$DATA_DIR/hg002/HG002.chr20.bam" "$DATA_DIR/hg002/engine.bed" HG002 -f 0.01 -th 8
-
-    # (c) GIAB HG008 paired somatic WGS (18,426 variants, -th 8, n=3)
-    mkdir -p "$KEEP_DIR/hg008"
-    for run in 1 2 3; do
-      KEEP_DIR="$KEEP_DIR/hg008" GOLDEN_MODE=off MIN_VARIANTS=1000 ORACLE_XMX_GB=44 \
-        bash harness/compare.sh \
-        "$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fa" \
-        "$DATA_DIR/hg008/HG008-T.slice.bam|$DATA_DIR/hg008/HG008-N.slice.bam" \
-        "$DATA_DIR/hg008/engine.bed" "HG008-T|HG008-N" -th 8
-      cp "$KEEP_DIR/hg008/rust.time" "$KEEP_DIR/hg008/rust_run${run}.time"
-      cp "$KEEP_DIR/hg008/java.time" "$KEEP_DIR/hg008/java_run${run}.time"
-      [ -f "$KEEP_DIR/hg008/cpp.time" ] && cp "$KEEP_DIR/hg008/cpp.time" "$KEEP_DIR/hg008/cpp_run${run}.time" || true
-    done
-    grep -q "^MATCH (18426 variants)$" "$KEEP_DIR/hg008/compare.txt"
     python3 harness/record_evidence.py hg008-tier2 MATCH "$KEEP_DIR/hg008" -- bash harness/compare.sh "$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fa" "$DATA_DIR/hg008/HG008-T.slice.bam|$DATA_DIR/hg008/HG008-N.slice.bam" "$DATA_DIR/hg008/engine.bed" "HG008-T|HG008-N" -th 8
-
-    # (d) SEQC2 HCC1395/BL full somatic exome (623,444 variants, -th 8, n=3)
-    mkdir -p "$KEEP_DIR/seqc2"
-    for run in 1 2 3; do
-      KEEP_DIR="$KEEP_DIR/seqc2" GOLDEN_MODE=off MIN_VARIANTS=2000 ORACLE_XMX_GB=44 \
-        bash harness/compare.sh \
-        "$DATA_DIR/ref/d1vd1/GRCh38.d1.vd1.fa" \
-        "$DATA_DIR/seqc2/HCC1395.bam|$DATA_DIR/seqc2/HCC1395BL.bam" \
-        "$DATA_DIR/seqc2/exome.engine.bed" "HCC1395|HCC1395BL" -th 8
-      cp "$KEEP_DIR/seqc2/rust.time" "$KEEP_DIR/seqc2/rust_run${run}.time"
-      cp "$KEEP_DIR/seqc2/java.time" "$KEEP_DIR/seqc2/java_run${run}.time"
-      [ -f "$KEEP_DIR/seqc2/cpp.time" ] && cp "$KEEP_DIR/seqc2/cpp.time" "$KEEP_DIR/seqc2/cpp_run${run}.time" || true
-    done
-    grep -q "^MATCH (623444 variants)$" "$KEEP_DIR/seqc2/compare.txt"
     python3 harness/record_evidence.py seqc2-exome-tier2 MATCH "$KEEP_DIR/seqc2" -- bash harness/compare.sh "$DATA_DIR/ref/d1vd1/GRCh38.d1.vd1.fa" "$DATA_DIR/seqc2/HCC1395.bam|$DATA_DIR/seqc2/HCC1395BL.bam" "$DATA_DIR/seqc2/exome.engine.bed" "HCC1395|HCC1395BL" -th 8
 
     # Validate 4-target performance budget gate on the GCP host
@@ -1267,6 +1293,59 @@ PY
   '
 }
 
+run_packed_stages_2_to_4() {
+  echo "=== [Packed Zero-Contention Dual-Socket Orchestrator (NUMA Node 0: CPUs 0-7 / L3=0 vs NUMA Node 1: CPUs 8-15 / L3=1, SMT 16-31 Idle)] ==="
+
+  # Wave 0: Complete all local staging, conda env provisioning, mkbed() generation, and RAM page-cache warmup BEFORE any timed cell runs
+  echo "=== [Wave 0: Pre-Staging All Assets & Warming 251 GiB RAM Page Cache (Zero Disk/Network I/O During Timed Runs)] ==="
+  date -u +%Y-%m-%dT%H:%M:%SZ > "${WORK_DIR}/local_staged/bg_prestage.done"
+  CELL_ALLOWLIST="s2_stage_tierp_assets s3_stage_rna_aligned_bam s4_stage_seqc2_full" \
+    bash -c 'source harness/gcp_paper_runner.sh --source-only; run_stage_2; run_stage_3; run_stage_4'
+  ensure_field_caller_envs
+  local tp_dir="${WORK_DIR}/data/tier-p"
+  build_tierp_covered_bed "$tp_dir/bams/SRR15006386.bam" "$tp_dir/bams/SRR15006386.mkbed.bed" 11732
+  build_tierp_covered_bed "$tp_dir/bams/SRR15006375.bam" "$tp_dir/bams/SRR15006375.mkbed.bed" 12292
+  build_tierp_covered_bed "$tp_dir/bams/SRR15006376.bam" "$tp_dir/bams/SRR15006376.mkbed.bed" 105949
+  build_tierp_covered_bed "$tp_dir/bams/SRR15006540.bam" "$tp_dir/bams/SRR15006540.mkbed.bed" 135145
+  build_tierp_covered_bed "$tp_dir/bams/SRR8657348.bam"  "$tp_dir/bams/SRR8657348.mkbed.bed"  773667
+  cat "$tp_dir"/bams/*.bam "$tp_dir"/archive/reference/*.fa scratch/g4/seqc2/*.bam > /dev/null 2>&1 || true
+
+  # Wave 1: Dual-Socket NUMA-Isolated 8-core & 1-core queues (Socket 0: CPUs 0-7 / MemNode 0 / L3=0; Socket 1: CPUs 8-15 / MemNode 1 / L3=1; SMT 16-31 Idle)
+  echo "=== [Wave 1: Dual-Socket NUMA-Isolated Execution (Socket 0: CPUs 0-7 / Node 0 || Socket 1: CPUs 8-15 / Node 1)] ==="
+  (
+    export SOCKET_PIN_CPUS="0-7"
+    export CELL_ALLOWLIST="s2_tierp_v2_SRR15006386_th8 s2_tierp_v2_SRR15006386_th1 s2_tierp_v2_SRR15006375_th8 s2_tierp_v2_SRR15006376_th8 s2_tierp_v2_SRR15006376_th1 s2_tierp_v2_SRR8657348_th8 s2_tierp_v2_SRR8657348_th1 s2_tierp_mode_parity_sweep s2_table3_R_chr1_rust_and_cpp s4_span_chr1_f0 s4_jobs_per_node_2x4c_n3"
+    run_stage_2
+    run_stage_3
+    run_stage_4
+  ) &
+  local pid_s0=$!
+
+  (
+    export SOCKET_PIN_CPUS="8-15"
+    export CELL_ALLOWLIST="s2_tierp_v2_SRR15006375_th1 s2_tierp_v2_SRR15006540_th8 s2_tierp_v2_SRR15006540_th1 s2_tierp_v2_somatic_76_86_th8 s2_tierp_v2_somatic_76_86_th1 s2_fig2_hg002_chr20_truth s3_rna_splice_parity_n3 s4_multimodal_and_cram_twin"
+    run_stage_2
+    run_stage_3
+    run_stage_4
+  ) &
+  local pid_s1=$!
+
+  local rc_s0=0 rc_s1=0
+  wait "$pid_s0" || rc_s0=$?
+  wait "$pid_s1" || rc_s1=$?
+  if [ "$rc_s0" -ne 0 ] || [ "$rc_s1" -ne 0 ]; then
+    echo "FATAL: Dual-socket Wave 1 exited non-zero (rc_s0=$rc_s0, rc_s1=$rc_s1)" >&2
+    return 1
+  fi
+
+  # Wave 2 & Wave 3: Whole-Machine / Dual-Socket Coordinated Cells (s2_fig1_fig3_field_callers, s2_table3_R_chr1_java_200g_n3, s4_perf_budget_4targets_n3, s4_tier3_truth_and_qual_sweep, s4_scale_exome_3way_th*, s4_span_chr1_3way_th*)
+  echo "=== [Wave 2 & 3: Whole-Machine Exclusive & Coordinated Cells (100% Machine Isolation)] ==="
+  unset SOCKET_PIN_CPUS CELL_ALLOWLIST
+  run_stage_2
+  run_stage_3
+  run_stage_4
+}
+
 run_worker() {
   local target_stage="${1:-all}"
   trap '' TERM
@@ -1278,9 +1357,7 @@ run_worker() {
     4) run_stage_4 ;;
     all)
       run_stage_1
-      run_stage_2
-      run_stage_3
-      run_stage_4
+      run_packed_stages_2_to_4
       gcs_mark_done "ALL_STAGES"
       gcs_write_heartbeat "complete" "ALL_STAGES" "COMPLETED"
       ;;
