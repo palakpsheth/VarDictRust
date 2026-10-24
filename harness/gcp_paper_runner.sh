@@ -675,10 +675,13 @@ cd \"\${WORK_DIR}/VarDictRust\"
 git fetch origin paper/gcp-study && git checkout paper/gcp-study && git reset --hard origin/paper/gcp-study
 git submodule update --init --recursive
 if ! conda env list | grep -q '^vardict-oracle '; then
-  conda env create -f benchmarks/env/vardict-oracle.yml -y
+  conda create -y -n vardict-oracle -c conda-forge -c bioconda \
+    vardict-java=1.8.3 vardict=2019.06.04 vardictcpp=3=hc52dbad_0 \
+    samtools=1.24 bcftools=1.24 htslib=1.24 openjdk=25.0.2 cmake make gxx_linux-64 zlib bzip2 xz libcurl openssl
 fi
 if ! conda env list | grep -q '^g4-tools '; then
-  conda env create -f benchmarks/env/g4-tools.yml -y
+  conda create -y -n g4-tools -c conda-forge -c bioconda \
+    samtools=1.24 bcftools=1.24 htslib=1.24 bedtools=2.31.1 bwa=0.7.19 rtg-tools=3.13 openjdk=25.0.2 python=3.12
 fi
 export PATH=\"\$HOME/miniconda3/envs/g4-tools/bin:\$HOME/miniconda3/bin:\$HOME/.cargo/bin:\$PATH\"
 bash harness/gcp_paper_runner.sh --worker all
