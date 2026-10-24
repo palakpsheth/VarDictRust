@@ -662,6 +662,8 @@ if [ ! -d \"\$HOME/miniconda3\" ]; then
 fi
 export PATH=\"\$HOME/miniconda3/bin:\$HOME/.cargo/bin:\$PATH\"
 conda config --set auto_accept_tos yes >/dev/null 2>&1 || true
+conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main >/dev/null 2>&1 || true
+conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r >/dev/null 2>&1 || true
 if ! command -v cargo >/dev/null; then
   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.96.0
   export PATH=\"\$HOME/.cargo/bin:\$PATH\"
