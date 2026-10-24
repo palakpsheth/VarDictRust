@@ -95,38 +95,61 @@ enum SeedPositions {
     Many(Vec<u32>),
 }
 
+/// Deferred k-mer indexing chunk captured by [`get_reference`] so tiles that
+/// never query `reference.seed` perform zero k-mer hashing (`EBO-2`).
+#[derive(Clone, Debug)]
+struct PendingSeedChunk {
+    bases: std::sync::Arc<[u8]>,
+    sequence_start: u32,
+    sequence_end: u32,
+    chr_len: u32,
+    prev_bounds: Vec<(u32, u32)>,
+}
+
+type RawSeedMap = rustc_hash::FxHashMap<SeedKey, SeedPositions>;
+
 /// Lookup-only k-mer seed table mapping 12-mer and 17-mer byte slices to 1-based positions.
-#[derive(Clone, Debug, Default)]
-pub struct SeedMap(rustc_hash::FxHashMap<SeedKey, SeedPositions>);
+///
+/// K-mer hashing is deferred until the first query (`get`, `len`, `is_empty`),
+/// using `OnceCell` so `get(&self)` returns `Option<&[u32]>` tied to `&self`
+/// without runtime borrow guards or `unsafe` (`M-UNSAFE`, `M-MEM-REUSE`).
+#[derive(Debug, Default)]
+pub struct SeedMap {
+    map: std::cell::OnceCell<RawSeedMap>,
+    pending: std::cell::RefCell<(RawSeedMap, Vec<PendingSeedChunk>)>,
+}
+
+impl Clone for SeedMap {
+    fn clone(&self) -> Self {
+        let map = std::cell::OnceCell::new();
+        if let Some(existing) = self.map.get() {
+            let _ = map.set(existing.clone());
+        }
+        let pending = match self.pending.try_borrow() {
+            Ok(guard) => std::cell::RefCell::new(guard.clone()),
+            Err(_) => std::cell::RefCell::new((RawSeedMap::default(), Vec::new())),
+        };
+        Self { map, pending }
+    }
+}
 
 impl SeedMap {
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Returns `true` if the k-mer lookup table has been materialized.
     #[inline]
-    pub fn get(&self, key: &[u8]) -> Option<&[u32]> {
-        let sk = SeedKey::make_key(key)?;
-        match self.0.get(&sk)? {
-            SeedPositions::One(p) => Some(std::slice::from_ref(p)),
-            SeedPositions::Many(v) => Some(v.as_slice()),
-        }
+    pub fn is_materialized(&self) -> bool {
+        self.map.get().is_some()
     }
 
-    pub fn len(&self) -> usize {
-        self.0.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
-    pub(crate) fn push_pos(&mut self, key: &[u8], pos: u32) {
+    fn insert_into_raw(map: &mut RawSeedMap, key: &[u8], pos: u32) {
         let Some(sk) = SeedKey::make_key(key) else {
             debug_assert!(key.len() <= 17, "seed key exceeds 17 bytes");
             return;
         };
-        match self.0.entry(sk) {
+        match map.entry(sk) {
             std::collections::hash_map::Entry::Occupied(mut e) => match e.get_mut() {
                 SeedPositions::One(first) => {
                     let first_val = *first;
@@ -140,10 +163,107 @@ impl SeedMap {
         }
     }
 
+    /// Ports `ReferenceResource.java:106-125` k-mer indexing for one loaded chunk.
+    fn index_chunk(map: &mut RawSeedMap, chunk: &PendingSeedChunk) {
+        const SEED1_LEN: usize = 17;
+        const SEED2_LEN: usize = 12;
+
+        let bases = chunk.bases.as_ref();
+        let site_end = if chunk.chr_len == chunk.sequence_end {
+            bases.len()
+        } else {
+            bases.len().saturating_sub(SEED1_LEN)
+        };
+
+        for i in 0..site_end {
+            let pos = i as u32 + chunk.sequence_start;
+
+            // Don't index positions already covered by a previously loaded region
+            if chunk
+                .prev_bounds
+                .iter()
+                .any(|&(start, end)| pos >= start && pos <= end)
+            {
+                continue;
+            }
+
+            // Do not create adaptor sequences for the very end of chromosome
+            if chunk.chr_len == chunk.sequence_end && i > bases.len().saturating_sub(SEED1_LEN) {
+                continue;
+            }
+
+            if let Some(key) = bases.get(i..i + SEED1_LEN) {
+                Self::insert_into_raw(map, key, pos);
+            }
+
+            if let Some(key) = bases.get(i..i + SEED2_LEN) {
+                Self::insert_into_raw(map, key, pos);
+            }
+        }
+    }
+
+    #[inline]
+    fn materialize(&self) -> &RawSeedMap {
+        self.map.get_or_init(|| {
+            let Ok(mut guard) = self.pending.try_borrow_mut() else {
+                return RawSeedMap::default();
+            };
+            let (mut map, mut chunks) = std::mem::take(&mut *guard);
+            for chunk in chunks.drain(..) {
+                Self::index_chunk(&mut map, &chunk);
+            }
+            map
+        })
+    }
+
+    #[inline]
+    pub fn get(&self, key: &[u8]) -> Option<&[u32]> {
+        let sk = SeedKey::make_key(key)?;
+        match self.materialize().get(&sk)? {
+            SeedPositions::One(p) => Some(std::slice::from_ref(p)),
+            SeedPositions::Many(v) => Some(v.as_slice()),
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.materialize().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.materialize().is_empty()
+    }
+
+    fn enqueue_chunk(&mut self, chunk: PendingSeedChunk) {
+        let staged = self.pending.get_mut();
+        if let Some(existing) = self.map.take() {
+            staged.0 = existing;
+        }
+        staged.1.push(chunk);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn push_pos(&mut self, key: &[u8], pos: u32) {
+        let staged = self.pending.get_mut();
+        if let Some(existing) = self.map.take() {
+            staged.0 = existing;
+        }
+        for chunk in staged.1.drain(..) {
+            Self::index_chunk(&mut staged.0, &chunk);
+        }
+        Self::insert_into_raw(&mut staged.0, key, pos);
+    }
+
     #[cfg(test)]
     pub fn insert_for_test(&mut self, key: &[u8], positions: Vec<u32>) {
         let sk = SeedKey::make_key(key).expect("test seed key exceeds 17 bytes");
-        self.0.remove(&sk);
+        let staged = self.pending.get_mut();
+        if let Some(existing) = self.map.take() {
+            staged.0 = existing;
+        }
+        for chunk in staged.1.drain(..) {
+            Self::index_chunk(&mut staged.0, &chunk);
+        }
+        staged.0.remove(&sk);
         for p in positions {
             self.push_pos(key, p);
         }
@@ -195,11 +315,6 @@ impl Reference {
             }
         }
         None
-    }
-
-    /// Populates k-mer mapping positions into the seed map.
-    fn add_position_to_seed(&mut self, key_sequence: &[u8], pos: u32) {
-        self.seed.push_pos(key_sequence, pos);
     }
 }
 
@@ -284,40 +399,15 @@ pub fn get_reference(
         .entry(region.chr.clone())
         .or_insert_with(|| bases.clone());
 
-    // k-mer seed indexing logic (ReferenceResource.java:106-125)
-    let seed1_len = 17;
-    let seed2_len = 12;
-
-    let site_end = if len == sequence_end {
-        bases.len()
-    } else {
-        bases.len().saturating_sub(seed1_len)
-    };
-
-    for i in 0..site_end {
-        let pos = i as u32 + sequence_start;
-
-        // Don't index positions already covered by a previously loaded region
-        if prev_bounds
-            .iter()
-            .any(|&(start, end)| pos >= start && pos <= end)
-        {
-            continue;
-        }
-
-        // Do not create adaptor sequences for the very end of chromosome
-        if len == sequence_end && i > bases.len().saturating_sub(seed1_len) {
-            continue;
-        }
-
-        if let Some(key) = bases.get(i..i + seed1_len) {
-            reference.add_position_to_seed(key, pos);
-        }
-
-        if let Some(key) = bases.get(i..i + seed2_len) {
-            reference.add_position_to_seed(key, pos);
-        }
-    }
+    // Defer k-mer seed indexing (`ReferenceResource.java:106-125`) until
+    // `reference.seed` is actually queried (`EBO-2`).
+    reference.seed.enqueue_chunk(PendingSeedChunk {
+        bases: std::sync::Arc::from(bases.as_slice()),
+        sequence_start,
+        sequence_end,
+        chr_len: len,
+        prev_bounds,
+    });
 
     reference.region_sequences.push(bases);
 
@@ -699,6 +789,98 @@ mod tests {
         assert_eq!(pos_list[0], 33, "Unique seed position must be 33");
 
         // Cleanup
+        let _ = fs::remove_file(&fa_path);
+        let _ = fs::remove_file(&fai_path);
+    }
+
+    #[test]
+    fn test_lazy_seed_map_defers_indexing_until_queried() {
+        let temp_dir = std::env::temp_dir();
+        let pid = std::process::id();
+        let fa_path = temp_dir.join(format!("test_lazy_seed_{pid}.fa"));
+        let fai_path = temp_dir.join(format!("test_lazy_seed_{pid}.fa.fai"));
+
+        let seq = b"ACGTACGTACGTACGTACGTACGTACGTACGTNNNNNNNNNNNNNNNNNACGTACGTACGT";
+        let total_len = seq.len();
+        let mut fa_file = File::create(&fa_path).unwrap();
+        fa_file.write_all(b">chr1\n").unwrap();
+        fa_file.write_all(seq).unwrap();
+        fa_file.write_all(b"\n").unwrap();
+
+        let mut fai_file = File::create(&fai_path).unwrap();
+        writeln!(
+            fai_file,
+            "chr1\t{total_len}\t6\t{total_len}\t{}",
+            total_len + 1
+        )
+        .unwrap();
+
+        let mut config = Config::default();
+        config.reference = fa_path.to_string_lossy().into_owned();
+        config.extension_nuc = 0;
+
+        let mut chr_lengths = HashMap::new();
+        chr_lengths.insert("chr1".to_string(), total_len);
+
+        let mut reference = Reference::new();
+        assert!(!reference.seed.is_materialized());
+
+        // Load first sub-region [1, 50]: should NOT materialize SeedMap yet.
+        let r1 = BedRegion {
+            chr: "chr1".to_string(),
+            start: Pos1(1),
+            end: Pos1(50),
+            gene: "G".to_string(),
+            amplicon: None,
+        };
+        get_reference(&r1, 0, &chr_lengths, &config, &mut reference).unwrap();
+        assert!(
+            !reference.seed.is_materialized(),
+            "get_reference must defer k-mer hashing until seed is queried"
+        );
+        // Cloning an unmaterialized Reference must preserve laziness.
+        let cloned_unmaterialized = reference.clone();
+        assert!(!cloned_unmaterialized.seed.is_materialized());
+
+        // First query triggers materialization and returns exact position.
+        let unique_seed = b"NNNNNNNNNNNNNNNNN";
+        assert_eq!(reference.seed.get(unique_seed), Some(&[33u32][..]));
+        assert!(reference.seed.is_materialized());
+        assert_eq!(
+            cloned_unmaterialized.seed.get(unique_seed),
+            Some(&[33u32][..])
+        );
+        assert!(cloned_unmaterialized.seed.is_materialized());
+
+        // Subsequent overlapping get_reference [30, 61] after materialization
+        // must re-defer the new chunk and include it on the next query without
+        // duplicating positions in [1, 50].
+        let r2 = BedRegion {
+            chr: "chr1".to_string(),
+            start: Pos1(30),
+            end: Pos1(total_len as u32),
+            gene: "G".to_string(),
+            amplicon: None,
+        };
+        get_reference(&r2, 0, &chr_lengths, &config, &mut reference).unwrap();
+        assert!(
+            !reference.seed.is_materialized(),
+            "second get_reference must queue chunk lazily"
+        );
+
+        let mut leg_ref = ReferenceLegacy::default();
+        get_reference_legacy(&r1, 0, &chr_lengths, &config, &mut leg_ref).unwrap();
+        get_reference_legacy(&r2, 0, &chr_lengths, &config, &mut leg_ref).unwrap();
+
+        assert_eq!(reference.seed.len(), leg_ref.seed.len());
+        assert!(reference.seed.is_materialized());
+        for (k, leg_positions) in &leg_ref.seed {
+            assert_eq!(
+                reference.seed.get(k.as_slice()),
+                Some(leg_positions.as_slice())
+            );
+        }
+
         let _ = fs::remove_file(&fa_path);
         let _ = fs::remove_file(&fai_path);
     }
