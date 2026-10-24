@@ -241,5 +241,5 @@ bash harness/profile.sh baseline --only hg002-sub
 bash harness/profile.sh baseline --only hg008-sub
 
 # 5. Re-build markdown catalog + SVG flamegraphs across all profiled cell directories:
-python3 harness/profile_catalog.py scratch/profiles/baseline/* -o scratch/profiles/baseline/catalog.md
+python3 harness/profile_catalog.py scratch/profiles/baseline/*/ -o scratch/profiles/baseline/catalog.md
 ```
