@@ -211,6 +211,40 @@ run_checkpointed_cell() {
   echo "=== [DONE] Cell '$cell_id' checkpointed ==="
 }
 
+# Executes a local-disk data staging cell guarded by ${WORK_DIR}/local_staged/${cell_id}.done
+# so a newly provisioned VM after Spot preemption always restages its ephemeral NVMe RAID0 disk.
+run_local_stage_cell() {
+  local stage="$1" cell_id="$2" cpus="$3" mem_max="$4"
+  shift 4
+  local local_marker="${WORK_DIR}/local_staged/${cell_id}.done"
+  if [ -f "$local_marker" ]; then
+    echo "[SKIP] Local staging cell '$cell_id' already present on this VM."
+    return 0
+  fi
+
+  echo "=== [STAGE-LOCAL] Stage=$stage Cell=$cell_id CPUs=0-$((cpus-1)) (${cpus}c) MemoryMax=$mem_max ==="
+  gcs_write_heartbeat "$stage" "$cell_id" "STAGING_LOCAL"
+
+  local cell_dir="${WORK_DIR}/cells/${cell_id}"
+  mkdir -p "$cell_dir" "${WORK_DIR}/local_staged"
+  export KEEP_DIR="$cell_dir"
+  export GOLDEN_MODE=off
+
+  local rc=0
+  "$@" || rc=$?
+  echo "$rc" > "${cell_dir}/cell.exit_code"
+  if [ "$rc" -ne 0 ]; then
+    gcs_write_heartbeat "$stage" "$cell_id" "FAILED_EXIT_${rc}"
+    echo "[ERROR] Local staging cell '$cell_id' exited with code $rc." >&2
+    return "$rc"
+  fi
+
+  date -u +%Y-%m-%dT%H:%M:%SZ > "$local_marker"
+  gcs_mark_done "$cell_id"
+  gcs_write_heartbeat "$stage" "$cell_id" "DONE"
+  echo "=== [DONE] Local staging cell '$cell_id' ready on NVMe ==="
+}
+
 # =============================================================================
 # Worker Stage Implementations (Executed on n2-highmem-32 / 2 TB pd-ssd)
 # =============================================================================
@@ -253,18 +287,29 @@ run_stage_1() {
   echo "=== [Stage 1: Task 5b Pre-Full-Genome Gates] ==="
   export DATA_DIR="scratch/g4"
 
-  run_checkpointed_cell "stage1" "s1_stage_assets" 32 "128G" bash -c "
+  run_local_stage_cell "stage1" "s1_stage_assets" 32 "128G" bash -c "
     set -euo pipefail
+    mkdir -p scratch/g4/amplicon scratch/g4/hg002 scratch/g4/hg008 scratch/g4/ref
     if setsid gsutil -q stat '${GCS_BAMS}/g4-cache/s1_ready.done' 2>/dev/null; then
       setsid gsutil -q rsync -r '${GCS_BAMS}/g4-cache/amplicon' scratch/g4/amplicon
       setsid gsutil -q rsync -r '${GCS_BAMS}/g4-cache/hg002' scratch/g4/hg002
       setsid gsutil -q rsync -r '${GCS_BAMS}/g4-cache/hg008' scratch/g4/hg008
     fi
+    if setsid gsutil -q stat '${GCS_BAMS}/g4-cache/refs_ready.done' 2>/dev/null; then
+      setsid gsutil -q rsync -r '${GCS_BAMS}/g4-cache/ref' scratch/g4/ref
+      python3 harness/convert_fastas.py
+      ln -sfn GRCh38_GIABv3.fasta scratch/g4/ref/giabv3/GRCh38_GIABv3.fa
+      ln -sfn GRCh38_GIABv3.fasta.fai scratch/g4/ref/giabv3/GRCh38_GIABv3.fa.fai
+      ln -sfn GRCh38_GIABv3.sdf scratch/g4/ref/giabv3/GRCh38_GIABv3.fa.sdf
+      ln -sfn GRCh38.d1.vd1.sdf scratch/g4/ref/d1vd1/GRCh38.d1.vd1.fa.sdf
+    fi
     bash harness/stage_g4.sh refs amplicon hg002 hg008
     setsid gsutil -o GSUtil:parallel_composite_upload_threshold=0 -q rsync -r scratch/g4/amplicon '${GCS_BAMS}/g4-cache/amplicon' || true
     setsid gsutil -o GSUtil:parallel_composite_upload_threshold=0 -q rsync -r scratch/g4/hg002 '${GCS_BAMS}/g4-cache/hg002' || true
     setsid gsutil -o GSUtil:parallel_composite_upload_threshold=0 -q rsync -r scratch/g4/hg008 '${GCS_BAMS}/g4-cache/hg008' || true
+    setsid gsutil -o GSUtil:parallel_composite_upload_threshold=0 -q rsync -r scratch/g4/ref '${GCS_BAMS}/g4-cache/ref' || true
     date -u +%Y-%m-%dT%H:%M:%SZ | setsid gsutil -q cp - '${GCS_BAMS}/g4-cache/s1_ready.done' || true
+    date -u +%Y-%m-%dT%H:%M:%SZ | setsid gsutil -q cp - '${GCS_BAMS}/g4-cache/refs_ready.done' || true
   "
   ensure_submodule_excludes
 
@@ -335,7 +380,7 @@ run_stage_2() {
   local tp_dir="${WORK_DIR}/data/tier-p"
   mkdir -p "$tp_dir/bams" "$tp_dir/truth" "$tp_dir/archive"
 
-  run_checkpointed_cell "stage2" "s2_stage_tierp_assets" 32 "128G" bash -c "
+  run_local_stage_cell "stage2" "s2_stage_tierp_assets" 32 "128G" bash -c "
     set -euo pipefail
     setsid gsutil -q cp '${GCS_BAMS}/tier-p/*' '$tp_dir/bams/'
     setsid gsutil -q cp '${GCS_REFS}/tier-p-truth/*' '$tp_dir/truth/'
@@ -353,51 +398,57 @@ run_stage_2() {
   "
 
   # Derive covered BEDs via mkbed() and run 3-way Table-1 parity + Table-2 speed across 5 SRR samples
+  # Split per thread count (th=8, th=1) for fine-grained ~4-min Spot-resilient checkpoints.
   for acc in SRR15006386 SRR15006375 SRR15006376 SRR15006540 SRR8657348; do
-    run_checkpointed_cell "stage2" "s2_tierp_3way_${acc}" 8 "32G" bash -c "
-      set -euo pipefail
-      REF='$tp_dir/archive/reference/hg19.fa'
-      BAM='$tp_dir/bams/${acc}.bam'
-      BED='$tp_dir/bams/${acc}.covered.bed'
-      if [ ! -s \"\$BED\" ]; then
-        bedtools bamtobed -i \"\$BAM\" | awk '\$5 >= 1' | sort -k1,1 -k2,2n | bedtools merge -d 100 -i - | awk 'BEGIN{OFS=\"\t\"}{print \$1,\$2,\$3,\"R\"}' > \"\$BED\"
-      fi
-      wc -l \"\$BED\" > \"\$KEEP_DIR/${acc}.bed_lines\"
-      for th in 1 8; do
+    for th in 8 1; do
+      run_checkpointed_cell "stage2" "s2_tierp_3way_${acc}_th${th}" 8 "32G" bash -c "
+        set -euo pipefail
+        REF='$tp_dir/archive/reference/hg19.fa'
+        BAM='$tp_dir/bams/${acc}.bam'
+        BED='$tp_dir/bams/${acc}.covered.bed'
+        if [ ! -s \"\$BED\" ]; then
+          bedtools bamtobed -i \"\$BAM\" | awk '\$5 >= 1' | sort -k1,1 -k2,2n | bedtools merge -d 100 -i - | awk 'BEGIN{OFS=\"\t\"}{print \$1,\$2,\$3,\"R\"}' > \"\$BED.tmp\"
+          mv \"\$BED.tmp\" \"\$BED\"
+        fi
+        wc -l \"\$BED\" > \"\$KEEP_DIR/${acc}.bed_lines\"
         for run in 1 2 3; do
-          /usr/bin/time -v -o \"\$KEEP_DIR/rust_th\${th}_run\${run}.time\" \
-            target/release/vardictrust -G \"\$REF\" -f 0.01 -N '${acc}' -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -z -th \"\$th\" \"\$BED\" > \"\$KEEP_DIR/rust_th\${th}.vcf\"
-          /usr/bin/time -v -o \"\$KEEP_DIR/cpp_th\${th}_run\${run}.time\" \
-            '$tp_dir/vardictcpp-ae93fe39dc/build/vardictcpp' -G \"\$REF\" -f 0.01 -N '${acc}' -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -z --chunk 50000 -th \"\$th\" \"\$BED\" -vcf > \"\$KEEP_DIR/cpp_th\${th}.vcf\"
-          ORACLE_XMX_GB=22 /usr/bin/time -v -o \"\$KEEP_DIR/java_th\${th}_run\${run}.time\" \
-            bash harness/run_oracle.sh \"\$REF\" \"\$BAM\" \"\$BED\" \"\$KEEP_DIR/java_th\${th}.vcf\" '${acc}' -f 0.01 -z -th \"\$th\"
+          /usr/bin/time -v -o \"\$KEEP_DIR/rust_th${th}_run\${run}.time\" \
+            target/release/vardictrust -G \"\$REF\" -f 0.01 -N '${acc}' -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -z -th ${th} \"\$BED\" > \"\$KEEP_DIR/rust_th${th}.vcf\"
+          /usr/bin/time -v -o \"\$KEEP_DIR/cpp_th${th}_run\${run}.time\" \
+            '$tp_dir/vardictcpp-ae93fe39dc/build/vardictcpp' -G \"\$REF\" -f 0.01 -N '${acc}' -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -z --chunk 50000 -th ${th} \"\$BED\" -vcf > \"\$KEEP_DIR/cpp_th${th}.vcf\"
         done
-        python3 harness/compare_vcf.py \"\$KEEP_DIR/java_th\${th}.vcf\" \"\$KEEP_DIR/rust_th\${th}.vcf\" | tee \"\$KEEP_DIR/compare_th\${th}.txt\"
-        grep -q '^MATCH' \"\$KEEP_DIR/compare_th\${th}.txt\"
-      done
-    "
+        ORACLE_XMX_GB=22 /usr/bin/time -v -o \"\$KEEP_DIR/java_th${th}_run1.time\" \
+          bash harness/run_oracle.sh \"\$REF\" \"\$BAM\" \"\$BED\" \"\$KEEP_DIR/java_th${th}.vcf\" '${acc}' -f 0.01 -z -th ${th}
+        python3 harness/compare_vcf.py \"\$KEEP_DIR/java_th${th}.vcf\" \"\$KEEP_DIR/rust_th${th}.vcf\" | tee \"\$KEEP_DIR/compare_th${th}.txt\"
+        grep -q '^MATCH' \"\$KEEP_DIR/compare_th${th}.txt\"
+      "
+    done
   done
 
-  # Somatic pair SRR15006376 (tumor) | SRR15006386 (normal)
-  run_checkpointed_cell "stage2" "s2_tierp_somatic_76_86" 8 "32G" bash -c "
-    set -euo pipefail
-    REF='$tp_dir/archive/reference/hg19.fa'
-    TUM='$tp_dir/bams/SRR15006376.bam'
-    NOR='$tp_dir/bams/SRR15006386.bam'
-    BED='$tp_dir/bams/SRR15006376.covered.bed'
-    for th in 1 8; do
+  # Somatic pair SRR15006376 (tumor) | SRR15006386 (normal), split by thread count (8, 1)
+  for th in 8 1; do
+    run_checkpointed_cell "stage2" "s2_tierp_somatic_76_86_th${th}" 8 "32G" bash -c "
+      set -euo pipefail
+      REF='$tp_dir/archive/reference/hg19.fa'
+      TUM='$tp_dir/bams/SRR15006376.bam'
+      NOR='$tp_dir/bams/SRR15006386.bam'
+      BED='$tp_dir/bams/SRR15006376.covered.bed'
+      if [ ! -s \"\$BED\" ]; then
+        bedtools bamtobed -i \"\$TUM\" | awk '\$5 >= 1' | sort -k1,1 -k2,2n | bedtools merge -d 100 -i - | awk 'BEGIN{OFS=\"\t\"}{print \$1,\$2,\$3,\"R\"}' > \"\$BED.tmp\"
+        mv \"\$BED.tmp\" \"\$BED\"
+      fi
       for run in 1 2 3; do
-        /usr/bin/time -v -o \"\$KEEP_DIR/rust_som_th\${th}_run\${run}.time\" \
-          target/release/vardictrust -G \"\$REF\" -f 0.01 -N 'SRR15006376|SRR15006386' -b \"\${TUM}|\${NOR}\" -c 1 -S 2 -E 3 -g 4 -z -th \"\$th\" \"\$BED\" > \"\$KEEP_DIR/rust_som_th\${th}.vcf\"
-        /usr/bin/time -v -o \"\$KEEP_DIR/cpp_som_th\${th}_run\${run}.time\" \
-          '$tp_dir/vardictcpp-ae93fe39dc/build/vardictcpp' -G \"\$REF\" -f 0.01 -N 'SRR15006376|SRR15006386' -b \"\${TUM}|\${NOR}\" -c 1 -S 2 -E 3 -g 4 -z --chunk 50000 -th \"\$th\" \"\$BED\" -vcf > \"\$KEEP_DIR/cpp_som_th\${th}.vcf\"
-        ORACLE_XMX_GB=22 /usr/bin/time -v -o \"\$KEEP_DIR/java_som_th\${th}_run\${run}.time\" \
-          bash harness/run_oracle.sh \"\$REF\" \"\${TUM}|\${NOR}\" \"\$BED\" \"\$KEEP_DIR/java_som_th\${th}.vcf\" 'SRR15006376|SRR15006386' -f 0.01 -z -th \"\$th\"
+        /usr/bin/time -v -o \"\$KEEP_DIR/rust_som_th${th}_run\${run}.time\" \
+          target/release/vardictrust -G \"\$REF\" -f 0.01 -N 'SRR15006376|SRR15006386' -b \"\${TUM}|\${NOR}\" -c 1 -S 2 -E 3 -g 4 -z -th ${th} \"\$BED\" > \"\$KEEP_DIR/rust_som_th${th}.vcf\"
+        /usr/bin/time -v -o \"\$KEEP_DIR/cpp_som_th${th}_run\${run}.time\" \
+          '$tp_dir/vardictcpp-ae93fe39dc/build/vardictcpp' -G \"\$REF\" -f 0.01 -N 'SRR15006376|SRR15006386' -b \"\${TUM}|\${NOR}\" -c 1 -S 2 -E 3 -g 4 -z --chunk 50000 -th ${th} \"\$BED\" -vcf > \"\$KEEP_DIR/cpp_som_th${th}.vcf\"
       done
-      python3 harness/compare_vcf.py \"\$KEEP_DIR/java_som_th\${th}.vcf\" \"\$KEEP_DIR/rust_som_th\${th}.vcf\" | tee \"\$KEEP_DIR/compare_som_th\${th}.txt\"
-      grep -q '^MATCH' \"\$KEEP_DIR/compare_som_th\${th}.txt\"
-    done
-  "
+      ORACLE_XMX_GB=22 /usr/bin/time -v -o \"\$KEEP_DIR/java_som_th${th}_run1.time\" \
+        bash harness/run_oracle.sh \"\$REF\" \"\${TUM}|\${NOR}\" \"\$BED\" \"\$KEEP_DIR/java_som_th${th}.vcf\" 'SRR15006376|SRR15006386' -f 0.01 -z -th ${th}
+      python3 harness/compare_vcf.py \"\$KEEP_DIR/java_som_th${th}.vcf\" \"\$KEEP_DIR/rust_som_th${th}.vcf\" | tee \"\$KEEP_DIR/compare_som_th${th}.txt\"
+      grep -q '^MATCH' \"\$KEEP_DIR/compare_som_th${th}.txt\"
+    "
+  done
 
   # Wolff 2026 Table-3 Direct -R chr1:1-249250621 Whole-Chromosome Blowup Cell on SRR8657348
   run_checkpointed_cell "stage2" "s2_table3_R_chr1_rust_and_cpp" 8 "32G" bash -c "
@@ -434,7 +485,7 @@ run_stage_3() {
   local rna_dir="${WORK_DIR}/data/rna"
   mkdir -p "$rna_dir"
 
-  run_checkpointed_cell "stage3" "s3_stage_rna_aligned_bam" 32 "128G" bash -c "
+  run_local_stage_cell "stage3" "s3_stage_rna_aligned_bam" 32 "128G" bash -c "
     set -euo pipefail
     if [ ! -f '$rna_dir/HG002_rep1_Aligned.sortedByCoord.out.bam' ]; then
       setsid gsutil -q cp '${GCS_BAMS}/rna-hg002/aligned/HG002_rep1_Aligned.sortedByCoord.out.bam*' '$rna_dir/'
@@ -462,7 +513,7 @@ run_stage_4() {
   echo "=== [Stage 4: Task 5e Tier-E Full SEQC2 Exome & Tier-G Full WGS (1..32 Threads)] ==="
   export DATA_DIR="scratch/g4"
 
-  run_checkpointed_cell "stage4" "s4_stage_seqc2_full" 32 "128G" bash -c "
+  run_local_stage_cell "stage4" "s4_stage_seqc2_full" 32 "128G" bash -c "
     set -euo pipefail
     if setsid gsutil -q stat '${GCS_BAMS}/g4-cache/s4_ready.done' 2>/dev/null; then
       mkdir -p scratch/g4/seqc2 scratch/g4/multimodal
@@ -599,8 +650,9 @@ vm_provisioning_model() {
 
 run_controller() {
   local max_attempts="${1:-3}"
+  local start_attempt="${2:-1}"
 
-  for ((attempt = 1; attempt <= max_attempts; attempt++)); do
+  for ((attempt = start_attempt; attempt <= max_attempts; attempt++)); do
     if gcs_stat_done "ALL_STAGES"; then
       echo "[Controller] ALL_STAGES.done already present in ${GCS_CKPT}. Deleting VM and finishing."
       cleanup_vm
@@ -796,8 +848,15 @@ case "${1:-}" in
   --controller)
     shift
     max_att=3
-    if [ "${1:-}" = "--max-attempts" ]; then max_att="$2"; shift 2; fi
-    run_controller "$max_att"
+    start_att=1
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --max-attempts) max_att="$2"; shift 2 ;;
+        --start-attempt) start_att="$2"; shift 2 ;;
+        *) echo "Unknown controller option: $1" >&2; exit 1 ;;
+      esac
+    done
+    run_controller "$max_att" "$start_att"
     ;;
   --worker)
     shift
