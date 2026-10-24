@@ -2,7 +2,7 @@
 
 This directory houses the performance evidence, execution logs, benchmark drivers, and environment specifications for **VarDictRust v1.0.1**.
 
-Every benchmark claim is backed by a verifiable, machine-readable evidence artifact in [`benchmarks/evidence/`](evidence/), bound to the certified release engine fingerprint `817d89c5fb34515d`. For complete statistical analyses, biological cohort descriptions, and methodology, see the [Omnibus Empirical Validation Report](../docs/validation/omnibus-empirical-validation.md) and the [Master Test Matrix](../docs/testing/test-matrix-and-ci-audit.md).
+Every benchmark claim is backed by a verifiable, machine-readable evidence artifact in [`benchmarks/evidence/`](evidence/), bound to the certified release engine fingerprint `27f3667b32ac14f5`. For complete statistical analyses, biological cohort descriptions, and methodology, see the [Omnibus Empirical Validation Report](../docs/validation/omnibus-empirical-validation.md) and the [Master Test Matrix](../docs/testing/test-matrix-and-ci-audit.md).
 
 ---
 
@@ -24,10 +24,10 @@ Evaluated via `harness/perf_budget.py`, comparing `vardictrust` against the `Var
 
 | Workload / Target | Modality | Java Wall | Cpp Wall¹ | Rust Wall | Speedup (vs Java) | Java Peak RSS | Cpp Peak RSS¹ | Rust Peak RSS | Memory Scaling (vs Java) | Cpp vs Java Parity¹ | Evidence File |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Targeted Amplicon Panel** | AmpliconMode (`-a 10:0.95`) | `0:02.55` | `0:03.75` | **`0:00.08`** | **31.9× faster** | `122.2 MiB` | `88.9 MiB` | **`58.6 MiB`** | **2.1× less** | **[SKIP (`CPP-3`)](../docs/upstream-bugs.md#cpp-3)** | [`amplicon-tier2.json`](evidence/amplicon-tier2.json) |
-| **GIAB HG002 (chr20:10M–30M, 30×)** | SimpleMode (`-f 0.01`) | `1:31.86` | `0:18.87` | **`0:16.23`** | **5.7× faster** | `4.20 GiB` | `853.1 MiB` | **`493.9 MiB`** | **8.7× less** | **[MISMATCH (`CPP-9`)](../docs/upstream-bugs.md#cpp-9)** · **[`CPP-1`](../docs/upstream-bugs.md#cpp-1)** | [`hg002-tier2.json`](evidence/hg002-tier2.json) |
-| **SEQC2 HCC1395 Somatic Exome** | SomaticMode (`tumor\|normal`, `-th 4`²) | `53:53.76` | `7:11.99` | **`10:33.12`** | **5.1× faster** | `3.52 GiB` | `2.15 GiB` | **`515.7 MiB`** | **7.0× less** | **[MISMATCH (`CPP-9`)](../docs/upstream-bugs.md#cpp-9)** | [`seqc2-exome-tier2.json`](evidence/seqc2-exome-tier2.json) |
-| **GIAB HG008 Somatic PDAC** | SomaticMode (`tumor\|normal`, `-th 4`²) | `1:27.68` | `0:21.96` | **`0:20.76`** | **4.2× faster** | `3.29 GiB` | `303.6 MiB` | **`291.9 MiB`** | **11.6× less** | **[MISMATCH (`CPP-9`)](../docs/upstream-bugs.md#cpp-9)** | [`hg008-tier2.json`](evidence/hg008-tier2.json) |
+| **Targeted Amplicon Panel** | AmpliconMode (`-a 10:0.95`) | `0:02.55` | `0:03.75` | **`0:00.07`** | **36.4× faster** | `122.2 MiB` | `88.9 MiB` | **`58.7 MiB`** | **2.1× less** | **[SKIP (`CPP-3`)](../docs/upstream-bugs.md#cpp-3)** | [`amplicon-tier2.json`](evidence/amplicon-tier2.json) |
+| **GIAB HG002 (chr20:10M–30M, 30×)** | SimpleMode (`-f 0.01`) | `1:31.86` | `0:18.87` | **`0:20.82`** | **4.4× faster** | `4.20 GiB` | `853.1 MiB` | **`456.8 MiB`** | **9.4× less** | **[MISMATCH (`CPP-9`)](../docs/upstream-bugs.md#cpp-9)** · **[`CPP-1`](../docs/upstream-bugs.md#cpp-1)** | [`hg002-tier2.json`](evidence/hg002-tier2.json) |
+| **SEQC2 HCC1395 Somatic Exome** | SomaticMode (`tumor\|normal`, `-th 4`²) | `53:53.76` | `7:11.99` | **`7:46.34`** | **6.9× faster** | `3.52 GiB` | `2.15 GiB` | **`467.9 MiB`** | **7.7× less** | **[MISMATCH (`CPP-9`)](../docs/upstream-bugs.md#cpp-9)** | [`seqc2-exome-tier2.json`](evidence/seqc2-exome-tier2.json) |
+| **GIAB HG008 Somatic PDAC** | SomaticMode (`tumor\|normal`, `-th 4`²) | `1:27.68` | `0:21.96` | **`0:20.44`** | **4.3× faster** | `3.29 GiB` | `303.6 MiB` | **`313.1 MiB`** | **10.8× less** | **[MISMATCH (`CPP-9`)](../docs/upstream-bugs.md#cpp-9)** | [`hg008-tier2.json`](evidence/hg008-tier2.json) |
 
 ¹ Cpp (pinned **vardictcpp 3 `hc52dbad_0` bioconda**, same `vardict-oracle` env) runs beside each gate arm via `harness/perf_budget.py`. The budget verdict stays Rust-vs-Java only. Per-cell cpp wall/RSS above are transcribed from the linked evidence `extra` (`cpp_wall_s`, `cpp_maxrss_kb`, ratios). Known cpp divergences are normalized in [`docs/upstream-bugs.md`](../docs/upstream-bugs.md#cpp-divergences). A missing `cpp_time` records a loud `SKIP`, never a silent pass.
 ² hg008/seqc2-exome at `-th 4`: Java `-th 8` is OOM-killed on 31G hosts (bisected 1✓/4✓/8✗); exact cmds in evidence.

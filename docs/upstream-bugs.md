@@ -337,9 +337,14 @@ Cpp numbers live in evidence `extra` (`cpp_version`, `cpp_head`, `cpp_f1`,
 ### CPP-1 — VCF header provenance + `END` INFO key
 
 cpp emits its own header lineage (no `##reference`, its own `##INFO` set incl.
-`END`) where VarDictJava emits `##reference`/`##contig`. Variant *calls* agree
-(micro: 2/2); the comparator still reports `CPP: MISMATCH` on header/`END`-key
-deltas. Known-normalized: never an engine bug, never gating.
+`END` on every germline SNV/indel) where VarDictJava emits `##reference`/`##contig`
+and restricts `INFO END` to structural variants. Variant *calls* and numeric/string
+values agree 100% on `micro` (`2/2`), 4 of 10 dev slices (`s3`, `s4`, `s8`, `s9`),
+2 of 17 extended-coverage modes (`ext-m2` `<INV>`, `ext-m3` `<DUP>`), and 12 of 15
+non-RNA multi-modal slices (`HG005_1A/1B/1C`, `SEQC2_2A/2B/2C`, `HG002_3C`,
+`HG008_4A/4C`, `NA24385_5A/5B/5C`); [`compare_vcf.py`](../harness/compare_vcf.py)
+still reports `CPP: MISMATCH` on header/`END`-key deltas. Known-normalized:
+never an engine bug, never gating.
 
 <a id="cpp-2"></a>
 ### CPP-2 — `-J`/`-j` parsed but ignored
@@ -416,23 +421,29 @@ emits zero `REF=N` rows. Truth concordance evidence records both `cpp_f1` and
 Advisory only, never gating.
 
 <a id="cpp-9"></a>
-### CPP-9 — Caller deltas: MNP joining + large SV alleles (measured, advisory)
+### CPP-9 — Caller deltas: MNP joining, tie-breaking, large SV deletions, and somatic post-processing (measured, advisory)
 
-Beyond serialization (CPP-1), record-level `CHROM/POS/REF/ALT` comparison
-shows three genuine caller-behavior deltas, all in cpp-vs-java while
-rust==java MATCH holds on the same inputs:
+Beyond serialization ([CPP-1](#cpp-1)), record-level `CHROM/POS/REF/ALT` and
+field-level comparison shows genuine caller-behavior deltas in cpp-vs-java
+while `rust == java` `MATCH` holds on the same inputs:
 
-- **MNP joining (hg002 germline, 347/227,562 sites = 0.15%):** where Java
-  reports one joint allele (e.g. `CT→AA` at chr20:10268361, `TGA→CGC` at
-  chr20:10016944), cpp reports split SNVs (`C→A` plus the agreeing `T→A`
-  at 10268362). Depths/AF identical; only the allele assembly differs.
-  vardictrust replicates the joint form (gate MATCH).
-- **Large SV/indel alleles dropped by cpp:** seqc2-exome `chr2:178443383
-  T→<DEL>` and a ~500 bp insertion at chr22:36511000 present in java,
-  absent in cpp (1–2 alleles per 18k–623k somatic calls); hg008
-  `chr1:6173467` java 200 bp insertion vs cpp `A→C` SNV.
-- **Counts:** hg002 227,562 vs 227,560; exome 623,444 vs 623,442;
-  hg008 18,426 vs 18,425; slices 4,151 vs 4,151 (zero).
+- **Dropped multi-hundred-bp deletions (2 per deep WGS/WES dataset):**
+  - `hg002-tier2`: drops `chr20:17402396` (287 bp Alu deletion, `SPLITREAD=2;SPANPAIR=2`) and `chr20:18661577` (747 bp deletion, `SPLITREAD=2;SPANPAIR=2`).
+  - `hg008-tier2` (and `HG008_4B`): drops `chr1:6173467` (228 bp deletion, emitting an un-realigned `chr1:6173467 A→C` SNV instead) and `chr3:127563710` (301 bp deletion).
+  - `seqc2-exome-tier2`: drops `chr2:178443383 T→<DEL>` (symbolic deletion SV) and `chr22:36511000` (495 bp deletion).
+- **MNP decomposition & equal-AF single-winner tie-breaking (`hg002` germline, 346/227,562 loci = 0.15%):**
+  All 346 Cpp-only `(CHROM, POS, REF, ALT)` keys share the exact same `(CHROM, POS)` coordinate with 346 Java-only keys:
+  - **15 loci** are joint MNPs in Java decomposed into single-base SNVs at the first base in cpp (e.g. `chr20:10016944 TGA→CGC` in Java/Rust vs `T→C` in cpp, also seen in `HG002_3A`; `chr20:10268361 CT→AA` vs `C→A`).
+  - **331 loci** are equal-AF (`VD=1` or `2`) single-winner tie-breaks where Java's `java.util.HashMap` bucket order ([UB-3](#ub-3) / [UB-7](#ub-7)) selects one low-frequency allele (e.g. `chr20:10093752 C→T`, `AF=0.013`; `chr20:20008963 G→T` and `20012549 G→T` in `HG002_3B`) while cpp's deterministic `A < C < G < T` map order selects another (`C→A`, `G→C`, `G→A`) at identical `AF`.
+- **Unrounded `nmfreq` comparison in somatic `STATUS` classification (`seqc2-exome`):**
+  At `chr3:195784364 T→C`, every numeric INFO and FORMAT field is identical between Java/Rust and cpp (`Tumor: DP=975, VD=49, AF=0.0503`; `Normal: DP=1021, VD=51, AF=0.05`, `SSF=0.52814`). Java rounds normal `v2.freq` to 4 decimals (`0.0500 >= nmfreq 0.05`) before `SomaticPostProcessModule.determinateType` and emits `STATUS=Germline`, whereas cpp compares unrounded `51 / 1021 = 0.0499510284 < 0.05` and misclassifies the variant as `STATUS=LikelySomatic`.
+- **Indel/STR/`<DUP>` pileup & realignment count shifts:**
+  - `hg008-tier2` (5 loci): `chr10:18036774 ATATATATATATATATATA→T` flips `STATUS=StrongLOH` (`VD=0` in tumor) to `STATUS=Germline` (`VD=15` in tumor) with an adjacent `chr10:18036792 ATA→TTT` depth shift (`DP=58` vs `73`); `chr1:72290009 C→<DEL>` emits `sample1 VD=254 > DP=155` in cpp (vs `DP=180, VD=178` in Java/Rust); `chr1:237117671` and `chr13:31976202` differ in normal `DP`/`VD`.
+  - `seqc2-exome-tier2` (3 loci): `chr3:195779856 G→<DUP>` (`sample1 DP: 29` vs `422`), `chr3:195783263 T→<DUP>` (`StrongSomatic` `VD=0` vs `LikelySomatic` `VD=12`), and `chr8:8027922` (367 bp deletion where cpp emits a negative mismatch average `sample1 NM=-0.1`).
+  - `hg002-tier2` (7 `<DUP>` SV loci): `QUAL`/`VD`/`AD`/`AF`/`ALD` count differences.
+- **1-ULP (`1e-5`) Fisher exact rounding (`ODDRATIO`, `SSF`, `SOR`, `SBF`):**
+  Native C++ `double` Fisher exact computation vs R's extended-precision `f80` `fisher.test()` accounts for **5/5** field diffs in `seqc2-slices-tier2` (`4,151 / 4,151` keys match), **941/945** diff records in `seqc2-exome-tier2`, and **45/50** diff records in `hg008-tier2`.
+- **Counts:** `hg002` `227,562` vs `227,560`; `seqc2-exome` `623,444` vs `623,442`; `hg008` `18,426` vs `18,425`; `seqc2-slices` `4,151` vs `4,151` (0 key diffs).
 
 Directionally this favors vardictrust's Java fidelity on these datasets,
 but the absolute rates are small, mode-dependent (germline MNP vs somatic
