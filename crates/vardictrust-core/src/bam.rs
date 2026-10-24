@@ -549,12 +549,325 @@ pub fn query_region(
     )
 }
 
+static NEXT_BAM_META_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+/// Synthetic `meta_id` floor reserved for isolated unit tests so concurrent
+/// `clear_bam_caches()` calls in parallel tests never evict in-flight test blocks (`AR-4`).
+#[cfg(test)]
+const TEST_META_ID_BASE: u64 = 1u64 << 63;
+
 struct SharedBamMeta {
+    id: u64,
     header: noodles::sam::Header,
     index: noodles::bam::Index,
 }
 
-type RawBamReader = noodles::bam::io::Reader<noodles::bgzf::io::Reader<std::fs::File>>;
+const BGZF_CACHE_SHARDS: usize = 8;
+const BGZF_CACHE_SLOTS_PER_SHARD: usize = 16;
+
+#[derive(Clone, Debug)]
+struct CachedBgzfBlock {
+    block_cpos: u64,
+    next_cpos: u64,
+    data: std::sync::Arc<[u8]>,
+}
+
+impl Default for CachedBgzfBlock {
+    fn default() -> Self {
+        Self {
+            block_cpos: 0,
+            next_cpos: 0,
+            data: std::sync::Arc::from(&[] as &[u8]),
+        }
+    }
+}
+
+#[derive(Default)]
+struct BgzfCacheShard {
+    entries: Vec<((u64, u64), CachedBgzfBlock)>,
+}
+
+impl BgzfCacheShard {
+    fn get(&mut self, key: (u64, u64)) -> Option<CachedBgzfBlock> {
+        let idx = self.entries.iter().position(|(k, _)| *k == key)?;
+        let entry = self.entries.remove(idx);
+        let block = entry.1.clone();
+        self.entries.push(entry);
+        Some(block)
+    }
+
+    fn insert(&mut self, key: (u64, u64), block: CachedBgzfBlock) {
+        if let Some(idx) = self.entries.iter().position(|(k, _)| *k == key) {
+            self.entries.remove(idx);
+        } else if self.entries.len() >= BGZF_CACHE_SLOTS_PER_SHARD {
+            self.entries.remove(0);
+        }
+        self.entries.push((key, block));
+    }
+
+    fn clear_production(&mut self) {
+        #[cfg(test)]
+        self.entries.retain(|((id, _), _)| *id >= TEST_META_ID_BASE);
+        #[cfg(not(test))]
+        self.entries.clear();
+    }
+}
+
+static BGZF_BLOCK_CACHE: std::sync::OnceLock<
+    [std::sync::Mutex<BgzfCacheShard>; BGZF_CACHE_SHARDS],
+> = std::sync::OnceLock::new();
+
+fn bgzf_cache_shards() -> &'static [std::sync::Mutex<BgzfCacheShard>; BGZF_CACHE_SHARDS] {
+    BGZF_BLOCK_CACHE
+        .get_or_init(|| std::array::from_fn(|_| std::sync::Mutex::new(BgzfCacheShard::default())))
+}
+
+#[inline]
+fn bgzf_shard_index(meta_id: u64, cpos: u64) -> usize {
+    let h = cpos
+        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        .wrapping_add(meta_id.wrapping_mul(0x517C_C1B7_2722_0A95));
+    ((h ^ (h >> 32)) as usize) & (BGZF_CACHE_SHARDS - 1)
+}
+
+/// BGZF reader wrapper with a 1-block thread-local cursor for $O(1)$ same-block
+/// seeks and a bounded process-wide sharded LRU block cache (`EBO-1`).
+pub struct CachedBgzfReader {
+    inner: noodles::bgzf::io::Reader<std::fs::File>,
+    meta_id: u64,
+    current: CachedBgzfBlock,
+    upos: usize,
+    at_eof: bool,
+    /// Tracks the exact `next_cpos` where `self.inner` is positioned with a fully
+    /// consumed buffer; cleared (`None`) before any `inner` I/O so a failed
+    /// read/seek always forces an explicit `inner.seek(vp0)` on subsequent access (`AR-5`).
+    inner_next_cpos: Option<u64>,
+    #[cfg(test)]
+    local_hits: u64,
+    #[cfg(test)]
+    shared_hits: u64,
+    #[cfg(test)]
+    misses: u64,
+}
+
+impl CachedBgzfReader {
+    pub fn new(file: std::fs::File, meta_id: u64) -> Self {
+        Self {
+            inner: noodles::bgzf::io::Reader::new(file),
+            meta_id,
+            current: CachedBgzfBlock::default(),
+            upos: 0,
+            at_eof: false,
+            inner_next_cpos: Some(0),
+            #[cfg(test)]
+            local_hits: 0,
+            #[cfg(test)]
+            shared_hits: 0,
+            #[cfg(test)]
+            misses: 0,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reset_cache_stats(&mut self) {
+        self.local_hits = 0;
+        self.shared_hits = 0;
+        self.misses = 0;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn cache_stats(&self) -> (u64, u64, u64) {
+        (self.local_hits, self.shared_hits, self.misses)
+    }
+
+    #[inline]
+    fn reset_empty_at(&mut self, cpos: u64) {
+        self.current = CachedBgzfBlock {
+            block_cpos: cpos,
+            next_cpos: cpos,
+            data: std::sync::Arc::from(&[] as &[u8]),
+        };
+        self.upos = 0;
+        self.at_eof = false;
+    }
+
+    fn fetch_block(&mut self, cpos: u64) -> std::io::Result<CachedBgzfBlock> {
+        use std::io::BufRead as _;
+
+        let shard_idx = bgzf_shard_index(self.meta_id, cpos);
+        if let Some(shard_mutex) = bgzf_cache_shards().get(shard_idx) {
+            let mut shard = shard_mutex.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(block) = shard.get((self.meta_id, cpos)) {
+                #[cfg(test)]
+                {
+                    self.shared_hits += 1;
+                }
+                return Ok(block);
+            }
+        }
+
+        #[cfg(test)]
+        {
+            self.misses += 1;
+        }
+
+        // Only read sequentially without `seek` if the previous `fetch_block` left
+        // `self.inner` cleanly consumed at `cpos` (`AR-5`).
+        let can_read_seq = self.inner_next_cpos.take() == Some(cpos);
+        if !can_read_seq {
+            let vp0 = noodles::bgzf::VirtualPosition::try_from((cpos, 0))
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+            self.inner.seek(vp0)?;
+        }
+
+        let buf = self.inner.fill_buf()?;
+        let buf_len = buf.len();
+        let data: std::sync::Arc<[u8]> = std::sync::Arc::from(buf);
+        let block_cpos = self.inner.virtual_position().compressed();
+        let next_cpos = self.inner.position();
+        self.inner.consume(buf_len);
+        self.inner_next_cpos = Some(next_cpos);
+
+        let block = CachedBgzfBlock {
+            block_cpos,
+            next_cpos,
+            data,
+        };
+
+        if let Some(shard_mutex) = bgzf_cache_shards().get(shard_idx) {
+            let mut shard = shard_mutex.lock().unwrap_or_else(|e| e.into_inner());
+            shard.insert((self.meta_id, cpos), block.clone());
+        }
+        if block_cpos != cpos && !block.data.is_empty() {
+            let actual_shard = bgzf_shard_index(self.meta_id, block_cpos);
+            if let Some(shard_mutex) = bgzf_cache_shards().get(actual_shard) {
+                let mut shard = shard_mutex.lock().unwrap_or_else(|e| e.into_inner());
+                shard.insert((self.meta_id, block_cpos), block.clone());
+            }
+        }
+
+        Ok(block)
+    }
+
+    #[inline]
+    pub fn virtual_position(&self) -> noodles::bgzf::VirtualPosition {
+        if self.upos < self.current.data.len() {
+            noodles::bgzf::VirtualPosition::try_from((self.current.block_cpos, self.upos as u16))
+                .unwrap_or_default()
+        } else {
+            noodles::bgzf::VirtualPosition::try_from((self.current.next_cpos, 0))
+                .unwrap_or_default()
+        }
+    }
+}
+
+impl std::io::Read for CachedBgzfReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        use std::io::BufRead as _;
+        let src = self.fill_buf()?;
+        let amt = src.len().min(buf.len());
+        if let (Some(dst_slice), Some(src_slice)) = (buf.get_mut(..amt), src.get(..amt)) {
+            dst_slice.copy_from_slice(src_slice);
+        }
+        self.consume(amt);
+        Ok(amt)
+    }
+}
+
+impl std::io::BufRead for CachedBgzfReader {
+    fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+        if self.upos >= self.current.data.len() && !self.at_eof {
+            let next_cpos = self.current.next_cpos;
+            let block = self.fetch_block(next_cpos)?;
+            self.at_eof = block.data.is_empty();
+            self.current = block;
+            self.upos = 0;
+        }
+        Ok(self.current.data.get(self.upos..).unwrap_or(&[]))
+    }
+
+    fn consume(&mut self, amt: usize) {
+        self.upos = self.upos.saturating_add(amt).min(self.current.data.len());
+    }
+}
+
+impl noodles::bgzf::io::Read for CachedBgzfReader {
+    fn virtual_position(&self) -> noodles::bgzf::VirtualPosition {
+        CachedBgzfReader::virtual_position(self)
+    }
+}
+
+impl noodles::bgzf::io::BufRead for CachedBgzfReader {}
+
+impl noodles::bgzf::io::Seek for CachedBgzfReader {
+    fn seek_to_virtual_position(
+        &mut self,
+        pos: noodles::bgzf::VirtualPosition,
+    ) -> std::io::Result<noodles::bgzf::VirtualPosition> {
+        let (cpos, upos_u16) = pos.into();
+        let upos = usize::from(upos_u16);
+
+        // Fast path: target block is already loaded in our 1-block local cursor.
+        if !self.current.data.is_empty()
+            && self.current.block_cpos == cpos
+            && cpos != self.current.next_cpos
+        {
+            if upos <= self.current.data.len() {
+                #[cfg(test)]
+                {
+                    self.local_hits += 1;
+                }
+                self.upos = upos;
+                self.at_eof = false;
+                return Ok(pos);
+            } else {
+                // Match noodles-bgzf (`reader.rs:194-200`): retain loaded block with `upos = 0` (`AR-7`).
+                self.upos = 0;
+                self.at_eof = false;
+                return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput));
+            }
+        }
+
+        let block = match self.fetch_block(cpos) {
+            Ok(b) => b,
+            Err(e) => {
+                self.reset_empty_at(cpos);
+                return Err(e);
+            }
+        };
+
+        if upos > block.data.len() {
+            self.at_eof = block.data.is_empty();
+            self.current = block;
+            self.upos = 0;
+            return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput));
+        }
+
+        self.at_eof = block.data.is_empty();
+        self.current = block;
+        self.upos = upos;
+        Ok(pos)
+    }
+
+    fn seek_with_index(
+        &mut self,
+        index: &noodles::bgzf::gzi::Index,
+        pos: std::io::SeekFrom,
+    ) -> std::io::Result<u64> {
+        match pos {
+            std::io::SeekFrom::Start(upos) => {
+                let vp = index.query(upos)?;
+                self.seek_to_virtual_position(vp)?;
+                Ok(upos)
+            }
+            _ => Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "only SeekFrom::Start is supported by BGZF gzi index",
+            )),
+        }
+    }
+}
+
+type RawBamReader = noodles::bam::io::Reader<CachedBgzfReader>;
 type PathSlot = std::sync::Arc<std::sync::Mutex<Option<std::sync::Arc<SharedBamMeta>>>>;
 type PooledReaderEntry = (std::sync::Arc<SharedBamMeta>, RawBamReader);
 type BamReaderPoolMap = HashMap<PathBuf, Vec<PooledReaderEntry>>;
@@ -574,6 +887,14 @@ thread_local! {
 pub fn clear_bam_caches() {
     if let Some(cache) = META_CACHE.get() {
         cache.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    }
+    if let Some(shards) = BGZF_BLOCK_CACHE.get() {
+        for shard in shards {
+            shard
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clear_production();
+        }
     }
     let _ = BAM_READER_POOL.try_with(|pool| {
         if let Ok(mut map) = pool.try_borrow_mut() {
@@ -634,11 +955,12 @@ fn acquire_bam_meta_and_reader(
                 let index = noodles::bam::fs::read_associated_index(path)
                     .map_err(crate::types::VardictError::Io)?;
                 let file = std::fs::File::open(path).map_err(crate::types::VardictError::Io)?;
-                let mut reader = noodles::bam::io::Reader::new(file);
+                let id = NEXT_BAM_META_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let mut reader = noodles::bam::io::Reader::from(CachedBgzfReader::new(file, id));
                 let header = reader
                     .read_header()
                     .map_err(crate::types::VardictError::Io)?;
-                let meta = std::sync::Arc::new(SharedBamMeta { header, index });
+                let meta = std::sync::Arc::new(SharedBamMeta { id, header, index });
                 *slot_guard = Some(std::sync::Arc::clone(&meta));
                 return Ok((meta, reader));
             }
@@ -649,7 +971,7 @@ fn acquire_bam_meta_and_reader(
         return Ok((meta, reader));
     }
     let file = std::fs::File::open(path).map_err(crate::types::VardictError::Io)?;
-    let reader = noodles::bam::io::Reader::new(file);
+    let reader = noodles::bam::io::Reader::from(CachedBgzfReader::new(file, meta.id));
     Ok((meta, reader))
 }
 
@@ -2919,5 +3241,120 @@ mod tests {
             bad_reader.read_to_end(&mut out).is_err(),
             "corrupted BGZF block must fail decompression"
         );
+    }
+
+    #[test]
+    fn test_cached_bgzf_reader_same_block_shared_and_multiblock_parity() {
+        use noodles::bgzf::io::Seek as _;
+        use std::io::{BufRead as _, Read as _, Write as _};
+
+        const TEST_META_ID: u64 = TEST_META_ID_BASE + 42;
+
+        // 1. Construct a multi-block BGZF file (> 130 KiB uncompressed -> 3 BGZF blocks
+        //    + an empty mid-stream BGZF block + 28-byte EOF block)
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let bgzf_path = tmp_dir.path().join("multiblock.bgz");
+        let mut raw_payload = Vec::with_capacity(150_000);
+        for i in 0..150_000u32 {
+            raw_payload.push(((i.wrapping_mul(31) ^ (i >> 3)) & 0xff) as u8);
+        }
+        {
+            let mut file = std::fs::File::create(&bgzf_path).unwrap();
+            // Write first 100,000 bytes as standard BGZF blocks (without trailing EOF yet)
+            let mut part1 = Vec::new();
+            {
+                let mut w1 = noodles::bgzf::io::Writer::new(&mut part1);
+                w1.write_all(&raw_payload[..100_000]).unwrap();
+                w1.finish().unwrap();
+            }
+            // Strip the 28-byte EOF block from part1, insert a 28-byte empty BGZF block mid-stream,
+            // then append the remaining 50,000 bytes + final 28-byte EOF block.
+            file.write_all(&part1).unwrap();
+            let mut w2 = noodles::bgzf::io::Writer::new(file);
+            w2.write_all(&raw_payload[100_000..]).unwrap();
+            w2.finish().unwrap();
+        }
+
+        // Record ground-truth block boundaries and virtual positions from noodles::bgzf::io::Reader
+        let mut oracle = noodles::bgzf::io::Reader::new(std::fs::File::open(&bgzf_path).unwrap());
+        let mut cached =
+            CachedBgzfReader::new(std::fs::File::open(&bgzf_path).unwrap(), TEST_META_ID);
+
+        assert_eq!(cached.virtual_position(), oracle.virtual_position());
+
+        // Read across all blocks (including mid-stream empty block and final EOF block)
+        let mut oracle_out = Vec::new();
+        let mut cached_out = Vec::new();
+        let mut obuf = [0u8; 4096];
+        let mut cbuf = [0u8; 4096];
+        loop {
+            assert_eq!(cached.virtual_position(), oracle.virtual_position());
+            let on = oracle.read(&mut obuf).unwrap();
+            let cn = cached.read(&mut cbuf).unwrap();
+            assert_eq!(cn, on);
+            assert_eq!(&cbuf[..cn], &obuf[..on]);
+            if on == 0 {
+                break;
+            }
+            oracle_out.extend_from_slice(&obuf[..on]);
+            cached_out.extend_from_slice(&cbuf[..cn]);
+        }
+        assert_eq!(cached_out, raw_payload);
+        assert_eq!(cached.virtual_position(), oracle.virtual_position());
+        assert!(cached.fill_buf().unwrap().is_empty());
+        assert_eq!(cached.virtual_position(), oracle.virtual_position());
+        let eof_vp = oracle.virtual_position();
+
+        // 2. Same-block seek must increment local_hits with 0 misses and 0 shared_hits
+        let first_block_vp1 = noodles::bgzf::VirtualPosition::try_from((0, 100)).unwrap();
+        let first_block_vp2 = noodles::bgzf::VirtualPosition::try_from((0, 2500)).unwrap();
+        cached.seek_to_virtual_position(first_block_vp1).unwrap();
+        oracle.seek(first_block_vp1).unwrap();
+        cached.reset_cache_stats();
+
+        cached.seek_to_virtual_position(first_block_vp2).unwrap();
+        oracle.seek(first_block_vp2).unwrap();
+        assert_eq!(
+            cached.cache_stats(),
+            (1, 0, 0),
+            "same-block seek must hit local 1-block cursor with 0 shared_hits and 0 misses"
+        );
+        assert_eq!(cached.virtual_position(), oracle.virtual_position());
+        let mut s_oracle = [0u8; 512];
+        let mut s_cached = [0u8; 512];
+        oracle.read_exact(&mut s_oracle).unwrap();
+        cached.read_exact(&mut s_cached).unwrap();
+        assert_eq!(s_cached, s_oracle);
+        assert_eq!(cached.virtual_position(), oracle.virtual_position());
+
+        // 3. Cross-thread CachedBgzfReader with same meta_id seeking to block 0 must hit shared BGZF_BLOCK_CACHE
+        let bgzf_path_clone = bgzf_path.clone();
+        let (stats2, s_cached2) = std::thread::spawn(move || {
+            let mut cached2 =
+                CachedBgzfReader::new(std::fs::File::open(&bgzf_path_clone).unwrap(), TEST_META_ID);
+            cached2.seek_to_virtual_position(first_block_vp2).unwrap();
+            let stats = cached2.cache_stats();
+            let mut buf = [0u8; 512];
+            cached2.read_exact(&mut buf).unwrap();
+            (stats, buf)
+        })
+        .join()
+        .unwrap();
+        assert_eq!(
+            stats2,
+            (0, 1, 0),
+            "worker thread reader must hit shared BGZF_BLOCK_CACHE with 0 misses"
+        );
+        assert_eq!(s_cached2, s_oracle);
+
+        // 4. Out-of-bounds upos (> block.len()) must return InvalidInput and match virtual_position
+        let invalid_eof_upos =
+            noodles::bgzf::VirtualPosition::try_from((eof_vp.compressed(), 1)).unwrap();
+        let o_err = oracle.seek(invalid_eof_upos).unwrap_err();
+        let c_err = cached
+            .seek_to_virtual_position(invalid_eof_upos)
+            .unwrap_err();
+        assert_eq!(c_err.kind(), o_err.kind());
+        assert_eq!(cached.virtual_position(), oracle.virtual_position());
     }
 }
