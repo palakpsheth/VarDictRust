@@ -15,6 +15,7 @@
 #     transient SSH drops never interrupt a healthy VM; preemption is detected via
 #     `gcloud compute instances describe` status transitions.
 #   - Cgroup slice isolation per cell (`systemd-run --scope -p AllowedCPUs=... -p MemoryMax=...`).
+#   - Disjoint-core background pre-staging (`AllowedCPUs=24-31`) & parallel field-caller slices.
 #   - `export GOLDEN_MODE=off` enforced globally on all timed/OOM cells.
 # =============================================================================
 set -euo pipefail
@@ -47,11 +48,11 @@ usage() {
   cat <<'EOF'
 Usage:
   bash harness/gcp_paper_runner.sh --plan-check
-  bash harness/gcp_paper_runner.sh --controller [--max-attempts 3]
+  bash harness/gcp_paper_runner.sh --controller [--max-attempts 3] [--start-attempt 1]
   bash harness/gcp_paper_runner.sh --worker [--stage all|1|2|3|4]
 
 Modes:
-  --plan-check   Validate 2-strike Spot->On-Demand policy, 2048GB pd-ssd config, and checkpoint logic (offline safe)
+  --plan-check   Validate 2-strike Spot->On-Demand policy, NVMe RAID0 config, mkbed(), and checkpoint logic (offline safe)
   --controller   Host-side 2-strike Spot -> On-Demand VM lifecycle manager & progress monitor
   --worker       On-VM 4-stage benchmark executor with systemd-run cgroup slices and per-cell GCS checkpoints
 EOF
@@ -97,6 +98,36 @@ build_gcloud_create_cmd() {
     cmd+=("--maintenance-policy=TERMINATE")
   fi
   printf '%s\n' "${cmd[@]}"
+}
+
+# Exact mkbed() formula from Archive.zip/scripts/01_download_and_map.sh:77-83
+# (mapped, primary, MAPQ>=1 reads via `samtools view -F 0x904 -q 1`; spans merged within 100 bp).
+build_tierp_covered_bed() {
+  local bam="$1" bed="$2" expected_lines="${3:-}"
+  if [ ! -s "$bed" ]; then
+    samtools view -F 0x904 -q 1 "$bam" | awk 'BEGIN{OFS="\t"}{
+      cig=$6; span=0;
+      while(match(cig,/[0-9]+[MIDNSHP=X]/)){
+        l=substr(cig,RSTART,RLENGTH-1)+0;
+        op=substr(cig,RSTART+RLENGTH-1,1);
+        if(op=="M"||op=="D"||op=="N"||op=="="||op=="X") span+=l;
+        cig=substr(cig,RSTART+RLENGTH);
+      }
+      if(span>0) print $3,($4-1),($4-1+span)
+    }' | sort -k1,1 -k2,2n | awk 'BEGIN{OFS="\t"}{
+      if($1==c&&$2<=e+100){ if($3>e)e=$3 }
+      else { if(c!="")print c,s,e,"R"; c=$1;s=$2;e=$3 }
+    } END{ if(c!="")print c,s,e,"R" }' > "${bed}.tmp"
+    mv "${bed}.tmp" "$bed"
+  fi
+  if [ -n "$expected_lines" ]; then
+    local actual
+    actual="$(wc -l < "$bed" | tr -dc '0-9')"
+    if [ "$actual" -ne "$expected_lines" ]; then
+      echo "FATAL: $bed has $actual regions, expected $expected_lines" >&2
+      return 1
+    fi
+  fi
 }
 
 # Single-stream gsutil upload helper (Task 5a C1/C2: avoid gcloud storage cp hangs,
@@ -157,6 +188,7 @@ gcs_write_heartbeat() {
 
 # Executes a single cell inside a systemd-run CPU+RAM cgroup slice (when systemd-run is available)
 # and syncs KEEP_DIR to GCS on EVERY exit path before marking <cell_id>.done on success.
+# `cpus` can be either an integer N (pinned to `0-$((N-1))`) or an explicit range like `8-15`.
 run_checkpointed_cell() {
   local stage="$1" cell_id="$2" cpus="$3" mem_max="$4"
   shift 4
@@ -165,7 +197,14 @@ run_checkpointed_cell() {
     return 0
   fi
 
-  echo "=== [RUN] Stage=$stage Cell=$cell_id CPUs=0-$((cpus-1)) (${cpus}c) MemoryMax=$mem_max GOLDEN_MODE=$GOLDEN_MODE ==="
+  local cpu_spec
+  if [[ "$cpus" =~ ^[0-9]+$ ]]; then
+    cpu_spec="0-$((cpus - 1))"
+  else
+    cpu_spec="$cpus"
+  fi
+
+  echo "=== [RUN] Stage=$stage Cell=$cell_id AllowedCPUs=$cpu_spec MemoryMax=$mem_max GOLDEN_MODE=$GOLDEN_MODE ==="
   gcs_write_heartbeat "$stage" "$cell_id" "RUNNING"
 
   local cell_dir="${WORK_DIR}/cells/${cell_id}"
@@ -177,18 +216,18 @@ run_checkpointed_cell() {
   if [ "${USE_SYSTEMD_SLICE:-1}" = "1" ] && command -v systemd-run >/dev/null 2>&1; then
     if [ "$(id -u)" -eq 0 ]; then
       systemd-run --scope --quiet \
-        -p "AllowedCPUs=0-$((cpus - 1))" \
+        -p "AllowedCPUs=${cpu_spec}" \
         -p "MemoryMax=${mem_max}" \
         -- env PATH="$PATH" HOME="$HOME" DATA_DIR="${DATA_DIR:-scratch/g4}" KEEP_DIR="$cell_dir" GOLDEN_MODE=off "$@" || rc=$?
     else
       sudo -E systemd-run --scope --quiet \
         --uid="$(id -un)" --gid="$(id -gn)" \
-        -p "AllowedCPUs=0-$((cpus - 1))" \
+        -p "AllowedCPUs=${cpu_spec}" \
         -p "MemoryMax=${mem_max}" \
         -- env PATH="$PATH" HOME="$HOME" DATA_DIR="${DATA_DIR:-scratch/g4}" KEEP_DIR="$cell_dir" GOLDEN_MODE=off "$@" || rc=$?
     fi
   elif command -v taskset >/dev/null 2>&1; then
-    taskset -c "0-$((cpus - 1))" "$@" || rc=$?
+    taskset -c "${cpu_spec}" "$@" || rc=$?
   else
     "$@" || rc=$?
   fi
@@ -222,7 +261,7 @@ run_local_stage_cell() {
     return 0
   fi
 
-  echo "=== [STAGE-LOCAL] Stage=$stage Cell=$cell_id CPUs=0-$((cpus-1)) (${cpus}c) MemoryMax=$mem_max ==="
+  echo "=== [STAGE-LOCAL] Stage=$stage Cell=$cell_id CPUs=$cpus MemoryMax=$mem_max ==="
   gcs_write_heartbeat "$stage" "$cell_id" "STAGING_LOCAL"
 
   local cell_dir="${WORK_DIR}/cells/${cell_id}"
@@ -246,7 +285,61 @@ run_local_stage_cell() {
 }
 
 # =============================================================================
-# Worker Stage Implementations (Executed on n2-highmem-32 / 2 TB pd-ssd)
+# Disjoint-Core Background Pre-Stager (AllowedCPUs=24-31, MemoryMax=64G)
+# Uses otherwise-idle cores on n2-highmem-32 during 8-core Stage-2 runs to
+# pre-provision field-caller conda envs and pre-stage Stage-3/Stage-4 assets.
+# =============================================================================
+ensure_field_caller_envs() {
+  if [ -f "${WORK_DIR}/local_staged/field_envs.done" ]; then
+    return 0
+  fi
+  echo "[Pre-Stager] Provisioning field-caller conda envs (FreeBayes 1.3.10, LoFreq 2.1.5, Mutect2 4.6.2.0, octopus 0.7.4, Strelka2 2.9.10)..."
+  conda env list | grep -q '^cl_freebayes ' || conda create -y -n cl_freebayes -c conda-forge -c bioconda freebayes=1.3.10 samtools=1.24 bcftools=1.24 parallel
+  conda env list | grep -q '^cl_lofreq ' || conda create -y -n cl_lofreq -c conda-forge -c bioconda lofreq=2.1.5 samtools=1.24
+  conda env list | grep -q '^cl_gatk4 ' || conda create -y -n cl_gatk4 -c conda-forge -c bioconda gatk4=4.6.2.0 openjdk=21 samtools=1.24
+  conda env list | grep -q '^cl_octopus ' || conda create -y -n cl_octopus -c conda-forge -c bioconda octopus=0.7.4
+  conda env list | grep -q '^cl_strelka ' || conda create -y -n cl_strelka -c conda-forge -c bioconda strelka=2.9.10 python=2.7
+  mkdir -p "${WORK_DIR}/local_staged"
+  date -u +%Y-%m-%dT%H:%M:%SZ > "${WORK_DIR}/local_staged/field_envs.done"
+  echo "[Pre-Stager] Field-caller conda envs ready."
+}
+
+start_background_prestager() {
+  if [ -f "${WORK_DIR}/local_staged/bg_prestage.done" ]; then
+    return 0
+  fi
+  (
+    set -euo pipefail
+    exec > "${WORK_DIR}/bg_prestage.log" 2>&1
+    echo "[BG Pre-Stager] Starting on disjoint cores 24-31 at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    taskset -c 24-31 bash -c "
+      set -euo pipefail
+      export PATH=\"\$HOME/miniconda3/envs/g4-tools/bin:\$HOME/miniconda3/bin:\$HOME/.cargo/bin:\$PATH\"
+      conda env list | grep -q '^cl_freebayes ' || conda create -y -n cl_freebayes -c conda-forge -c bioconda freebayes=1.3.10 samtools=1.24 bcftools=1.24 parallel
+      conda env list | grep -q '^cl_lofreq ' || conda create -y -n cl_lofreq -c conda-forge -c bioconda lofreq=2.1.5 samtools=1.24
+      conda env list | grep -q '^cl_gatk4 ' || conda create -y -n cl_gatk4 -c conda-forge -c bioconda gatk4=4.6.2.0 openjdk=21 samtools=1.24
+      conda env list | grep -q '^cl_octopus ' || conda create -y -n cl_octopus -c conda-forge -c bioconda octopus=0.7.4
+      conda env list | grep -q '^cl_strelka ' || conda create -y -n cl_strelka -c conda-forge -c bioconda strelka=2.9.10 python=2.7
+      mkdir -p '${WORK_DIR}/local_staged' '${WORK_DIR}/data/rna'
+      date -u +%Y-%m-%dT%H:%M:%SZ > '${WORK_DIR}/local_staged/field_envs.done'
+      if [ ! -f '${WORK_DIR}/data/rna/HG002_rep1_Aligned.sortedByCoord.out.bam' ]; then
+        setsid gsutil -q cp '${GCS_BAMS}/rna-hg002/aligned/HG002_rep1_Aligned.sortedByCoord.out.bam*' '${WORK_DIR}/data/rna/' || true
+      fi
+      if setsid gsutil -q stat '${GCS_BAMS}/g4-cache/s4_ready.done' 2>/dev/null; then
+        mkdir -p scratch/g4/seqc2 scratch/g4/multimodal
+        setsid gsutil -q rsync -r '${GCS_BAMS}/g4-cache/seqc2' scratch/g4/seqc2 || true
+        setsid gsutil -q rsync -r '${GCS_BAMS}/g4-cache/multimodal' scratch/g4/multimodal || true
+      fi
+      date -u +%Y-%m-%dT%H:%M:%SZ > '${WORK_DIR}/local_staged/bg_prestage.done'
+    "
+    echo "[BG Pre-Stager] Completed at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  ) &
+  BG_PRESTAGE_PID=$!
+  echo "[Worker] Launched background pre-stager (PID=${BG_PRESTAGE_PID}) on cores 24-31."
+}
+
+# =============================================================================
+# Worker Stage Implementations (Executed on n2-highmem-32 / 3.0 TB NVMe RAID0)
 # =============================================================================
 
 ensure_submodule_excludes() {
@@ -376,7 +469,7 @@ run_stage_1() {
 }
 
 run_stage_2() {
-  echo "=== [Stage 2: Task 5c Tier-P 5-Sample Replication + Fig-2 Truth + Table-3 -R chr1] ==="
+  echo "=== [Stage 2: Task 5c Tier-P 5-Sample Replication + 13-Mode Sweep + Fig-2 Truth + Field Callers + Table-3 -R chr1] ==="
   local tp_dir="${WORK_DIR}/data/tier-p"
   mkdir -p "$tp_dir/bams" "$tp_dir/truth" "$tp_dir/archive"
 
@@ -387,7 +480,7 @@ run_stage_2() {
     if [ ! -f '$tp_dir/archive/Archive.zip' ]; then
       setsid gsutil -q cp '${GCS_REFS}/vardictcpp/Archive.zip' '$tp_dir/archive/Archive.zip'
     fi
-    unzip -q -o '$tp_dir/archive/Archive.zip' 'reference/*' 'beds/*' 'scripts/*' 'performance_benchmark/*' 'MD5SUMS.txt' -d '$tp_dir/archive/'
+    unzip -q -o '$tp_dir/archive/Archive.zip' 'reference/*' 'beds/*' 'scripts/*' 'performance_benchmark/*' 'results/*' 'README.md' 'MD5SUMS.txt' -d '$tp_dir/archive/'
     if [ ! -x '$tp_dir/vardictcpp-ae93fe39dc/build/vardictcpp' ]; then
       rm -rf '$tp_dir/vardictcpp-ae93fe39dc'
       git clone https://github.com/MHH-Bioinformatics-Hematology/vardictcpp.git '$tp_dir/vardictcpp-ae93fe39dc'
@@ -397,60 +490,390 @@ run_stage_2() {
     fi
   "
 
-  # Derive covered BEDs via mkbed() and run 3-way Table-1 parity + Table-2 speed across 5 SRR samples
-  # Split per thread count (th=8, th=1) for fine-grained ~4-min Spot-resilient checkpoints.
+  # Start background pre-stager on disjoint cores 24-31 while Stage 2 runs on cores 0-7
+  start_background_prestager
+
+  # Table-1 expected region and row counts per accession (gcp-prereg.md §A4 & Archive.zip/results/parity.tsv)
+  declare -A EXP_REGIONS=(
+    [SRR15006386]=11732
+    [SRR15006375]=12292
+    [SRR15006376]=105949
+    [SRR15006540]=135145
+    [SRR8657348]=773667
+  )
+  declare -A EXP_ROWS=(
+    [SRR15006386]=4014
+    [SRR15006375]=4056
+    [SRR15006376]=12739
+    [SRR15006540]=16031
+    [SRR8657348]=54448
+  )
+
+  # 1. Five SRR samples x {8, 1} threads x 3 engines x n=3 technical replicates (exact mkbed(), no -z, .var + .vcf)
   for acc in SRR15006386 SRR15006375 SRR15006376 SRR15006540 SRR8657348; do
+    local exp_reg="${EXP_REGIONS[$acc]}"
+    local exp_row="${EXP_ROWS[$acc]}"
     for th in 8 1; do
-      run_checkpointed_cell "stage2" "s2_tierp_3way_${acc}_th${th}" 8 "32G" bash -c "
+      run_checkpointed_cell "stage2" "s2_tierp_v2_${acc}_th${th}" 8 "32G" bash -c "
         set -euo pipefail
+        source harness/gcp_paper_runner.sh --source-only
         REF='$tp_dir/archive/reference/hg19.fa'
         BAM='$tp_dir/bams/${acc}.bam'
-        BED='$tp_dir/bams/${acc}.covered.bed'
-        if [ ! -s \"\$BED\" ]; then
-          bedtools bamtobed -i \"\$BAM\" | awk '\$5 >= 1' | sort -k1,1 -k2,2n | bedtools merge -d 100 -i - | awk 'BEGIN{OFS=\"\t\"}{print \$1,\$2,\$3,\"R\"}' > \"\$BED.tmp\"
-          mv \"\$BED.tmp\" \"\$BED\"
-        fi
+        BED='$tp_dir/bams/${acc}.mkbed.bed'
+        build_tierp_covered_bed \"\$BAM\" \"\$BED\" '${exp_reg}'
         wc -l \"\$BED\" > \"\$KEEP_DIR/${acc}.bed_lines\"
+
+        # Symmetric n=3 technical replicates on the exact Wolff 2026 .var TSV surface (no -z)
         for run in 1 2 3; do
-          /usr/bin/time -v -o \"\$KEEP_DIR/rust_th${th}_run\${run}.time\" \
-            target/release/vardictrust -G \"\$REF\" -f 0.01 -N '${acc}' -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -z -th ${th} \"\$BED\" > \"\$KEEP_DIR/rust_th${th}.vcf\"
-          /usr/bin/time -v -o \"\$KEEP_DIR/cpp_th${th}_run\${run}.time\" \
-            '$tp_dir/vardictcpp-ae93fe39dc/build/vardictcpp' -G \"\$REF\" -f 0.01 -N '${acc}' -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -z --chunk 50000 -th ${th} \"\$BED\" -vcf > \"\$KEEP_DIR/cpp_th${th}.vcf\"
+          /usr/bin/time -v -o \"\$KEEP_DIR/rust_var_th${th}_run\${run}.time\" \
+            target/release/vardictrust -G \"\$REF\" -f 0.01 -N '${acc}' -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 --emit-intermediate -th ${th} \"\$BED\" > \"\$KEEP_DIR/rust_th${th}.var\"
+          /usr/bin/time -v -o \"\$KEEP_DIR/cpp_var_th${th}_run\${run}.time\" \
+            '$tp_dir/vardictcpp-ae93fe39dc/build/vardictcpp' -G \"\$REF\" -f 0.01 -N '${acc}' -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 --chunk 50000 -th ${th} \"\$BED\" > \"\$KEEP_DIR/cpp_th${th}.var\"
+          _JAVA_OPTIONS='-Xmx22g' /usr/bin/time -v -o \"\$KEEP_DIR/java_var_th${th}_run\${run}.time\" \
+            conda run -n vardict-oracle vardict-java -G \"\$REF\" -f 0.01 -N '${acc}' -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -th ${th} \"\$BED\" > \"\$KEEP_DIR/java_th${th}.var\"
         done
-        ORACLE_XMX_GB=22 /usr/bin/time -v -o \"\$KEEP_DIR/java_th${th}_run1.time\" \
-          bash harness/run_oracle.sh \"\$REF\" \"\$BAM\" \"\$BED\" \"\$KEEP_DIR/java_th${th}.vcf\" '${acc}' -f 0.01 -z -th ${th}
-        python3 harness/compare_vcf.py \"\$KEEP_DIR/java_th${th}.vcf\" \"\$KEEP_DIR/rust_th${th}.vcf\" | tee \"\$KEEP_DIR/compare_th${th}.txt\"
-        grep -q '^MATCH' \"\$KEEP_DIR/compare_th${th}.txt\"
+
+        # Verify exact Table-1 row counts & 0 FP / 0 FN sorted TSV identity + compare_var.py
+        r_rows=\$(wc -l < \"\$KEEP_DIR/rust_th${th}.var\" | tr -dc '0-9')
+        j_rows=\$(wc -l < \"\$KEEP_DIR/java_th${th}.var\" | tr -dc '0-9')
+        c_rows=\$(wc -l < \"\$KEEP_DIR/cpp_th${th}.var\" | tr -dc '0-9')
+        echo \"rows_rust=\$r_rows rows_java=\$j_rows rows_cpp=\$c_rows expected=${exp_row}\" | tee \"\$KEEP_DIR/table1_counts_th${th}.txt\"
+        [ \"\$r_rows\" -eq '${exp_row}' ] && [ \"\$j_rows\" -eq '${exp_row}' ]
+        LC_ALL=C sort \"\$KEEP_DIR/java_th${th}.var\" > \"\$KEEP_DIR/java_th${th}.sorted.var\"
+        LC_ALL=C sort \"\$KEEP_DIR/rust_th${th}.var\" > \"\$KEEP_DIR/rust_th${th}.sorted.var\"
+        diff -u \"\$KEEP_DIR/java_th${th}.sorted.var\" \"\$KEEP_DIR/rust_th${th}.sorted.var\" > \"\$KEEP_DIR/var_diff_th${th}.txt\"
+        python3 harness/compare_var.py --eps 1e-6 \"\$KEEP_DIR/java_th${th}.var\" \"\$KEEP_DIR/rust_th${th}.var\" | tee \"\$KEEP_DIR/compare_var_th${th}.txt\"
+
+        # End-to-end VCF surface (consolidated Rust binary vs Java+R+Perl vs C++ -vcf) + tabix check
+        /usr/bin/time -v -o \"\$KEEP_DIR/rust_vcf_th${th}.time\" \
+          target/release/vardictrust -G \"\$REF\" -f 0.01 -N '${acc}' -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -th ${th} \"\$BED\" > \"\$KEEP_DIR/rust_th${th}.vcf\"
+        /usr/bin/time -v -o \"\$KEEP_DIR/cpp_vcf_th${th}.time\" \
+          '$tp_dir/vardictcpp-ae93fe39dc/build/vardictcpp' -G \"\$REF\" -f 0.01 -N '${acc}' -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 --chunk 50000 -th ${th} \"\$BED\" -vcf > \"\$KEEP_DIR/cpp_th${th}.vcf\"
+        ORACLE_XMX_GB=22 /usr/bin/time -v -o \"\$KEEP_DIR/java_vcf_th${th}.time\" \
+          bash harness/run_oracle.sh \"\$REF\" \"\$BAM\" \"\$BED\" \"\$KEEP_DIR/java_th${th}.vcf\" '${acc}' -f 0.01 -th ${th}
+        python3 harness/compare_vcf.py \"\$KEEP_DIR/java_th${th}.vcf\" \"\$KEEP_DIR/rust_th${th}.vcf\" | tee \"\$KEEP_DIR/compare_vcf_th${th}.txt\"
+        grep -q '^MATCH' \"\$KEEP_DIR/compare_vcf_th${th}.txt\"
+        bcftools sort \"\$KEEP_DIR/rust_th${th}.vcf\" -Oz -o \"\$KEEP_DIR/rust_th${th}.vcf.gz\" && tabix -f -p vcf \"\$KEEP_DIR/rust_th${th}.vcf.gz\" && bcftools index -f \"\$KEEP_DIR/rust_th${th}.vcf.gz\"
       "
     done
   done
 
-  # Somatic pair SRR15006376 (tumor) | SRR15006386 (normal), split by thread count (8, 1)
+  # 2. Somatic pair SRR15006376 (tumor) | SRR15006386 (normal), split by thread count (8, 1), n=3 across all 3 engines
   for th in 8 1; do
-    run_checkpointed_cell "stage2" "s2_tierp_somatic_76_86_th${th}" 8 "32G" bash -c "
+    run_checkpointed_cell "stage2" "s2_tierp_v2_somatic_76_86_th${th}" 8 "32G" bash -c "
       set -euo pipefail
+      source harness/gcp_paper_runner.sh --source-only
       REF='$tp_dir/archive/reference/hg19.fa'
       TUM='$tp_dir/bams/SRR15006376.bam'
       NOR='$tp_dir/bams/SRR15006386.bam'
-      BED='$tp_dir/bams/SRR15006376.covered.bed'
-      if [ ! -s \"\$BED\" ]; then
-        bedtools bamtobed -i \"\$TUM\" | awk '\$5 >= 1' | sort -k1,1 -k2,2n | bedtools merge -d 100 -i - | awk 'BEGIN{OFS=\"\t\"}{print \$1,\$2,\$3,\"R\"}' > \"\$BED.tmp\"
-        mv \"\$BED.tmp\" \"\$BED\"
-      fi
+      BED='$tp_dir/bams/SRR15006376.mkbed.bed'
+      build_tierp_covered_bed \"\$TUM\" \"\$BED\" 105949
+
       for run in 1 2 3; do
-        /usr/bin/time -v -o \"\$KEEP_DIR/rust_som_th${th}_run\${run}.time\" \
-          target/release/vardictrust -G \"\$REF\" -f 0.01 -N 'SRR15006376|SRR15006386' -b \"\${TUM}|\${NOR}\" -c 1 -S 2 -E 3 -g 4 -z -th ${th} \"\$BED\" > \"\$KEEP_DIR/rust_som_th${th}.vcf\"
-        /usr/bin/time -v -o \"\$KEEP_DIR/cpp_som_th${th}_run\${run}.time\" \
-          '$tp_dir/vardictcpp-ae93fe39dc/build/vardictcpp' -G \"\$REF\" -f 0.01 -N 'SRR15006376|SRR15006386' -b \"\${TUM}|\${NOR}\" -c 1 -S 2 -E 3 -g 4 -z --chunk 50000 -th ${th} \"\$BED\" -vcf > \"\$KEEP_DIR/cpp_som_th${th}.vcf\"
+        /usr/bin/time -v -o \"\$KEEP_DIR/rust_som_var_th${th}_run\${run}.time\" \
+          target/release/vardictrust -G \"\$REF\" -f 0.01 -N 'SRR15006376|SRR15006386' -b \"\${TUM}|\${NOR}\" -c 1 -S 2 -E 3 -g 4 --emit-intermediate -th ${th} \"\$BED\" > \"\$KEEP_DIR/rust_som_th${th}.var\"
+        /usr/bin/time -v -o \"\$KEEP_DIR/cpp_som_var_th${th}_run\${run}.time\" \
+          '$tp_dir/vardictcpp-ae93fe39dc/build/vardictcpp' -G \"\$REF\" -f 0.01 -N 'SRR15006376|SRR15006386' -b \"\${TUM}|\${NOR}\" -c 1 -S 2 -E 3 -g 4 --chunk 50000 -th ${th} \"\$BED\" > \"\$KEEP_DIR/cpp_som_th${th}.var\"
+        _JAVA_OPTIONS='-Xmx22g' /usr/bin/time -v -o \"\$KEEP_DIR/java_som_var_th${th}_run\${run}.time\" \
+          conda run -n vardict-oracle vardict-java -G \"\$REF\" -f 0.01 -N 'SRR15006376|SRR15006386' -b \"\${TUM}|\${NOR}\" -c 1 -S 2 -E 3 -g 4 -th ${th} \"\$BED\" > \"\$KEEP_DIR/java_som_th${th}.var\"
       done
-      ORACLE_XMX_GB=22 /usr/bin/time -v -o \"\$KEEP_DIR/java_som_th${th}_run1.time\" \
-        bash harness/run_oracle.sh \"\$REF\" \"\${TUM}|\${NOR}\" \"\$BED\" \"\$KEEP_DIR/java_som_th${th}.vcf\" 'SRR15006376|SRR15006386' -f 0.01 -z -th ${th}
-      python3 harness/compare_vcf.py \"\$KEEP_DIR/java_som_th${th}.vcf\" \"\$KEEP_DIR/rust_som_th${th}.vcf\" | tee \"\$KEEP_DIR/compare_som_th${th}.txt\"
-      grep -q '^MATCH' \"\$KEEP_DIR/compare_som_th${th}.txt\"
+
+      r_rows=\$(wc -l < \"\$KEEP_DIR/rust_som_th${th}.var\" | tr -dc '0-9')
+      j_rows=\$(wc -l < \"\$KEEP_DIR/java_som_th${th}.var\" | tr -dc '0-9')
+      c_rows=\$(wc -l < \"\$KEEP_DIR/cpp_som_th${th}.var\" | tr -dc '0-9')
+      echo \"somatic_rows_rust=\$r_rows rows_java=\$j_rows rows_cpp=\$c_rows expected=14126\" | tee \"\$KEEP_DIR/somatic_counts_th${th}.txt\"
+      [ \"\$r_rows\" -eq 14126 ] && [ \"\$j_rows\" -eq 14126 ]
+      python3 harness/compare_var.py --eps 1e-6 \"\$KEEP_DIR/java_som_th${th}.var\" \"\$KEEP_DIR/rust_som_th${th}.var\" | tee \"\$KEEP_DIR/compare_som_var_th${th}.txt\"
+
+      /usr/bin/time -v -o \"\$KEEP_DIR/rust_som_vcf_th${th}.time\" \
+        target/release/vardictrust -G \"\$REF\" -f 0.01 -N 'SRR15006376|SRR15006386' -b \"\${TUM}|\${NOR}\" -c 1 -S 2 -E 3 -g 4 -th ${th} \"\$BED\" > \"\$KEEP_DIR/rust_som_th${th}.vcf\"
+      /usr/bin/time -v -o \"\$KEEP_DIR/cpp_som_vcf_th${th}.time\" \
+        '$tp_dir/vardictcpp-ae93fe39dc/build/vardictcpp' -G \"\$REF\" -f 0.01 -N 'SRR15006376|SRR15006386' -b \"\${TUM}|\${NOR}\" -c 1 -S 2 -E 3 -g 4 --chunk 50000 -th ${th} \"\$BED\" -vcf > \"\$KEEP_DIR/cpp_som_th${th}.vcf\"
+      ORACLE_XMX_GB=22 /usr/bin/time -v -o \"\$KEEP_DIR/java_som_vcf_th${th}.time\" \
+        bash harness/run_oracle.sh \"\$REF\" \"\${TUM}|\${NOR}\" \"\$BED\" \"\$KEEP_DIR/java_som_th${th}.vcf\" 'SRR15006376|SRR15006386' -f 0.01 -th ${th}
+      python3 harness/compare_vcf.py \"\$KEEP_DIR/java_som_th${th}.vcf\" \"\$KEEP_DIR/rust_som_th${th}.vcf\" | tee \"\$KEEP_DIR/compare_som_vcf_th${th}.txt\"
+      grep -q '^MATCH' \"\$KEEP_DIR/compare_som_vcf_th${th}.txt\"
     "
   done
 
-  # Wolff 2026 Table-3 Direct -R chr1:1-249250621 Whole-Chromosome Blowup Cell on SRR8657348
+  # 3. Tier-P 13-Mode Parity Sweep (results/full_mode_parity.tsv + MRD -f 0 arm + P5 Panel CRAM Twin)
+  run_checkpointed_cell "stage2" "s2_tierp_mode_parity_sweep" 8 "32G" bash -c "
+    set -euo pipefail
+    REF='$tp_dir/archive/reference/hg19.fa'
+    BAM='$tp_dir/bams/SRR8657348.bam'
+    NORM='$tp_dir/bams/SRR15006540.bam'
+    BEDS='$tp_dir/archive/beds'
+    VC='$tp_dir/vardictcpp-ae93fe39dc/build/vardictcpp'
+    VR='target/release/vardictrust'
+    RES=\"\$KEEP_DIR/full_mode_parity_3way.tsv\"
+    printf 'mode\tjava_rows\trust_rows\tcpp_rows\trust_vs_java_fp\trust_vs_java_fn\tcpp_vs_java_fp\tcpp_vs_java_fn\tverdict\n' > \"\$RES\"
+
+    run_mode() {
+      local mode=\"\$1\" j_cmd=\"\$2\" r_cmd=\"\$3\" c_cmd=\"\$4\"
+      eval \"\$j_cmd\" | LC_ALL=C sort > \"\$KEEP_DIR/\${mode}.java.tsv\"
+      eval \"\$r_cmd\" | LC_ALL=C sort > \"\$KEEP_DIR/\${mode}.rust.tsv\"
+      eval \"\$c_cmd\" | LC_ALL=C sort > \"\$KEEP_DIR/\${mode}.cpp.tsv\"
+      local jr rr cr r_fp r_fn c_fp c_fn verdict='MATCH'
+      jr=\$(wc -l < \"\$KEEP_DIR/\${mode}.java.tsv\" | tr -dc '0-9')
+      rr=\$(wc -l < \"\$KEEP_DIR/\${mode}.rust.tsv\" | tr -dc '0-9')
+      cr=\$(wc -l < \"\$KEEP_DIR/\${mode}.cpp.tsv\" | tr -dc '0-9')
+      r_fp=\$(LC_ALL=C comm -13 \"\$KEEP_DIR/\${mode}.java.tsv\" \"\$KEEP_DIR/\${mode}.rust.tsv\" | wc -l | tr -dc '0-9')
+      r_fn=\$(LC_ALL=C comm -23 \"\$KEEP_DIR/\${mode}.java.tsv\" \"\$KEEP_DIR/\${mode}.rust.tsv\" | wc -l | tr -dc '0-9')
+      c_fp=\$(LC_ALL=C comm -13 \"\$KEEP_DIR/\${mode}.java.tsv\" \"\$KEEP_DIR/\${mode}.cpp.tsv\" | wc -l | tr -dc '0-9')
+      c_fn=\$(LC_ALL=C comm -23 \"\$KEEP_DIR/\${mode}.java.tsv\" \"\$KEEP_DIR/\${mode}.cpp.tsv\" | wc -l | tr -dc '0-9')
+      if [ \"\$r_fp\" -ne 0 ] || [ \"\$r_fn\" -ne 0 ]; then
+        if python3 harness/compare_var.py --eps 1e-6 \"\$KEEP_DIR/\${mode}.java.tsv\" \"\$KEEP_DIR/\${mode}.rust.tsv\" >/dev/null 2>&1; then
+          verdict='MATCH_EPS'
+        else
+          verdict='MISMATCH'
+        fi
+      fi
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \"\$mode\" \"\$jr\" \"\$rr\" \"\$cr\" \"\$r_fp\" \"\$r_fn\" \"\$c_fp\" \"\$c_fn\" \"\$verdict\" | tee -a \"\$RES\"
+      [ \"\$verdict\" != 'MISMATCH' ]
+    }
+
+    run_mode 'simple_f0.01' \
+      \"_JAVA_OPTIONS='-Xmx8g' conda run -n vardict-oracle vardict-java -G \$REF -f 0.01 -N s -b \$BAM -c 1 -S 2 -E 3 -g 4 \$BEDS/simple.bed -th 1 2>/dev/null\" \
+      \"\$VR -G \$REF -f 0.01 -N s -b \$BAM -c 1 -S 2 -E 3 -g 4 --emit-intermediate -th 1 \$BEDS/simple.bed 2>/dev/null\" \
+      \"\$VC -G \$REF -f 0.01 -N s -b \$BAM -c 1 -S 2 -E 3 -g 4 \$BEDS/simple.bed -th 1 2>/dev/null\"
+
+    run_mode 'simple_f0_mrd' \
+      \"_JAVA_OPTIONS='-Xmx8g' conda run -n vardict-oracle vardict-java -G \$REF -f 0 -N s -b \$BAM -c 1 -S 2 -E 3 -g 4 \$BEDS/simple.bed -th 1 2>/dev/null\" \
+      \"\$VR -G \$REF -f 0 -N s -b \$BAM -c 1 -S 2 -E 3 -g 4 --emit-intermediate -th 1 \$BEDS/simple.bed 2>/dev/null\" \
+      \"\$VC -G \$REF -f 0 -N s -b \$BAM -c 1 -S 2 -E 3 -g 4 \$BEDS/simple.bed -th 1 2>/dev/null\"
+
+    run_mode 'simple_chunk50000' \
+      \"_JAVA_OPTIONS='-Xmx8g' conda run -n vardict-oracle vardict-java -G \$REF -f 0.01 -N s -b \$BAM -c 1 -S 2 -E 3 -g 4 \$BEDS/simple.bed -th 1 2>/dev/null\" \
+      \"\$VR -G \$REF -f 0.01 -N s -b \$BAM -c 1 -S 2 -E 3 -g 4 --emit-intermediate -th 1 \$BEDS/simple.bed 2>/dev/null\" \
+      \"\$VC -G \$REF -f 0.01 -N s -b \$BAM -c 1 -S 2 -E 3 -g 4 --chunk 50000 \$BEDS/simple.bed -th 1 2>/dev/null\"
+
+    run_mode 'simple_fisher' \
+      \"_JAVA_OPTIONS='-Xmx8g' conda run -n vardict-oracle vardict-java -G \$REF -f 0.01 -N s -b \$BAM -c 1 -S 2 -E 3 -g 4 --fisher \$BEDS/big.bed -th 1 2>/dev/null\" \
+      \"\$VR -G \$REF -f 0.01 -N s -b \$BAM -c 1 -S 2 -E 3 -g 4 --fisher --emit-intermediate -th 1 \$BEDS/big.bed 2>/dev/null\" \
+      \"\$VC -G \$REF -f 0.01 -N s -b \$BAM -c 1 -S 2 -E 3 -g 4 --fisher \$BEDS/big.bed -th 1 2>/dev/null\"
+
+    run_mode 'targeted_panel_chr17' \
+      \"_JAVA_OPTIONS='-Xmx8g' conda run -n vardict-oracle vardict-java -G \$REF -f 0.01 -N s -b \$BAM -c 1 -S 2 -E 3 -g 4 \$BEDS/panel17.bed -th 1 2>/dev/null\" \
+      \"\$VR -G \$REF -f 0.01 -N s -b \$BAM -c 1 -S 2 -E 3 -g 4 --emit-intermediate -th 1 \$BEDS/panel17.bed 2>/dev/null\" \
+      \"\$VC -G \$REF -f 0.01 -N s -b \$BAM -c 1 -S 2 -E 3 -g 4 \$BEDS/panel17.bed -th 1 2>/dev/null\"
+
+    run_mode 'sv_deletion_regions' \
+      \"_JAVA_OPTIONS='-Xmx8g' conda run -n vardict-oracle vardict-java -G \$REF -f 0.01 -N s -b \$BAM -c 1 -S 2 -E 3 -g 4 \$BEDS/sv.bed -th 1 2>/dev/null\" \
+      \"\$VR -G \$REF -f 0.01 -N s -b \$BAM -c 1 -S 2 -E 3 -g 4 --emit-intermediate -th 1 \$BEDS/sv.bed 2>/dev/null\" \
+      \"\$VC -G \$REF -f 0.01 -N s -b \$BAM -c 1 -S 2 -E 3 -g 4 \$BEDS/sv.bed -th 1 2>/dev/null\"
+
+    run_mode 'low_coverage' \
+      \"_JAVA_OPTIONS='-Xmx8g' conda run -n vardict-oracle vardict-java -G \$REF -f 0.01 -N s -b \$BAM -c 1 -S 2 -E 3 -g 4 \$BEDS/lowcov.bed -th 1 2>/dev/null\" \
+      \"\$VR -G \$REF -f 0.01 -N s -b \$BAM -c 1 -S 2 -E 3 -g 4 --emit-intermediate -th 1 \$BEDS/lowcov.bed 2>/dev/null\" \
+      \"\$VC -G \$REF -f 0.01 -N s -b \$BAM -c 1 -S 2 -E 3 -g 4 \$BEDS/lowcov.bed -th 1 2>/dev/null\"
+
+    run_mode 'amplicon_c17amp' \
+      \"_JAVA_OPTIONS='-Xmx8g' conda run -n vardict-oracle vardict-java -G \$REF -f 0.01 -N s -b \$BAM -a 10:0.95 -c 1 -S 2 -E 3 -g 4 \$BEDS/c17amp.bed -th 1 2>/dev/null\" \
+      \"\$VR -G \$REF -f 0.01 -N s -b \$BAM -a 10:0.95 -c 1 -S 2 -E 3 -g 4 --emit-intermediate -th 1 \$BEDS/c17amp.bed 2>/dev/null\" \
+      \"\$VC -G \$REF -f 0.01 -N s -b \$BAM -a 10:0.95 -c 1 -S 2 -E 3 -g 4 \$BEDS/c17amp.bed -th 1 2>/dev/null\"
+
+    run_mode 'amplicon_fisher' \
+      \"_JAVA_OPTIONS='-Xmx8g' conda run -n vardict-oracle vardict-java -G \$REF -f 0.01 -N s -b \$BAM -a 10:0.95 --fisher -c 1 -S 2 -E 3 -g 4 \$BEDS/c17amp.bed -th 1 2>/dev/null\" \
+      \"\$VR -G \$REF -f 0.01 -N s -b \$BAM -a 10:0.95 --fisher -c 1 -S 2 -E 3 -g 4 --emit-intermediate -th 1 \$BEDS/c17amp.bed 2>/dev/null\" \
+      \"\$VC -G \$REF -f 0.01 -N s -b \$BAM -a 10:0.95 --fisher -c 1 -S 2 -E 3 -g 4 \$BEDS/c17amp.bed -th 1 2>/dev/null\"
+
+    run_mode 'somatic_f0.01_big' \
+      \"_JAVA_OPTIONS='-Xmx8g' conda run -n vardict-oracle vardict-java -G \$REF -f 0.01 -N 'tum|nrm' -b '\$BAM|\$NORM' -c 1 -S 2 -E 3 -g 4 \$BEDS/big.bed -th 1 2>/dev/null\" \
+      \"\$VR -G \$REF -f 0.01 -N 'tum|nrm' -b '\$BAM|\$NORM' -c 1 -S 2 -E 3 -g 4 --emit-intermediate -th 1 \$BEDS/big.bed 2>/dev/null\" \
+      \"\$VC -G \$REF -f 0.01 -N 'tum|nrm' -b '\$BAM|\$NORM' -c 1 -S 2 -E 3 -g 4 \$BEDS/big.bed -th 1 2>/dev/null\"
+
+    run_mode 'somatic_f0_mrd_c17' \
+      \"_JAVA_OPTIONS='-Xmx8g' conda run -n vardict-oracle vardict-java -G \$REF -f 0 -N 'tum|nrm' -b '\$BAM|\$NORM' -c 1 -S 2 -E 3 -g 4 \$BEDS/c17.bed -th 1 2>/dev/null\" \
+      \"\$VR -G \$REF -f 0 -N 'tum|nrm' -b '\$BAM|\$NORM' -c 1 -S 2 -E 3 -g 4 --emit-intermediate -th 1 \$BEDS/c17.bed 2>/dev/null\" \
+      \"\$VC -G \$REF -f 0 -N 'tum|nrm' -b '\$BAM|\$NORM' -c 1 -S 2 -E 3 -g 4 \$BEDS/c17.bed -th 1 2>/dev/null\"
+
+    run_mode 'somatic_fisher_c17' \
+      \"_JAVA_OPTIONS='-Xmx8g' conda run -n vardict-oracle vardict-java -G \$REF -f 0.01 -N 'tum|nrm' -b '\$BAM|\$NORM' -c 1 -S 2 -E 3 -g 4 --fisher \$BEDS/c17.bed -th 1 2>/dev/null\" \
+      \"\$VR -G \$REF -f 0.01 -N 'tum|nrm' -b '\$BAM|\$NORM' -c 1 -S 2 -E 3 -g 4 --fisher --emit-intermediate -th 1 \$BEDS/c17.bed 2>/dev/null\" \
+      \"\$VC -G \$REF -f 0.01 -N 'tum|nrm' -b '\$BAM|\$NORM' -c 1 -S 2 -E 3 -g 4 --fisher \$BEDS/c17.bed -th 1 2>/dev/null\"
+
+    # P5: Tier-P Panel CRAM Twin (chr1 slice of SRR8657348.bam on simple.bed -> 228 rows)
+    samtools view -T \"\$REF\" -C -o \"\$KEEP_DIR/srr8657348_chr1.cram\" \"\$BAM\" chr1
+    samtools index \"\$KEEP_DIR/srr8657348_chr1.cram\"
+    env RUST_MIN_STACK=67108864 \"\$VR\" -G \"\$REF\" -f 0.01 -N s -b \"\$KEEP_DIR/srr8657348_chr1.cram\" -c 1 -S 2 -E 3 -g 4 --emit-intermediate -th 1 \"\$BEDS/simple.bed\" | LC_ALL=C sort > \"\$KEEP_DIR/p5_cram.rust.tsv\"
+    \"\$VC\" -G \"\$REF\" -f 0.01 -N s -b \"\$KEEP_DIR/srr8657348_chr1.cram\" -c 1 -S 2 -E 3 -g 4 \"\$BEDS/simple.bed\" -th 1 2>/dev/null | LC_ALL=C sort > \"\$KEEP_DIR/p5_cram.cpp.tsv\"
+    diff -u \"\$KEEP_DIR/simple_f0.01.rust.tsv\" \"\$KEEP_DIR/p5_cram.rust.tsv\" > \"\$KEEP_DIR/p5_cram_vs_bam_diff.txt\"
+    printf 'P5_cram_twin\t0_NoClassDefFoundError\t%s\t%s\t0\t0\t0\t0\tMATCH_BAM_TWIN\n' \
+      \"\$(wc -l < \"\$KEEP_DIR/p5_cram.rust.tsv\" | tr -dc '0-9')\" \
+      \"\$(wc -l < \"\$KEEP_DIR/p5_cram.cpp.tsv\" | tr -dc '0-9')\" | tee -a \"\$RES\"
+  "
+
+  # 4. Fig-2 Germline Accuracy Benchmark on hg002.exome.20.bam (6 callers scored via rtg vcfeval / eval_caller.sh)
+  run_checkpointed_cell "stage2" "s2_fig2_hg002_chr20_truth" 16 "64G" bash -c "
+    set -euo pipefail
+    source harness/gcp_paper_runner.sh --source-only
+    ensure_field_caller_envs
+    REF='$tp_dir/archive/reference/ref20.fa'
+    BAM='$tp_dir/bams/hg002.exome.20.bam'
+    BED='$tp_dir/truth/target20.bed'
+    TRUTH='$tp_dir/truth/truth20.norm.vcf.gz'
+    SDF='$tp_dir/truth/ref20.sdf'
+    [ -f \"\${REF}.fai\" ] || samtools faidx \"\$REF\"
+    [ -f '$tp_dir/archive/reference/ref20.dict' ] || samtools dict \"\$REF\" > '$tp_dir/archive/reference/ref20.dict'
+    [ -d \"\$SDF\" ] || rtg format -o \"\$SDF\" \"\$REF\"
+
+    # Pad 3-col target20.bed to 4-col for VarDict (-c 1 -S 2 -E 3 -g 4 -z)
+    awk 'BEGIN{OFS=\"\t\"}{print \$1,\$2,\$3,\"R\"}' \"\$BED\" > \"\$KEEP_DIR/target20_4col.bed\"
+
+    # 3-way VarDict (Java, Rust, C++)
+    ORACLE_XMX_GB=16 bash harness/run_oracle.sh \"\$REF\" \"\$BAM\" \"\$KEEP_DIR/target20_4col.bed\" \"\$KEEP_DIR/vardict_java.vcf\" HG002 -f 0.01 -z -th 8
+    target/release/vardictrust -G \"\$REF\" -f 0.01 -N HG002 -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -z -th 8 \"\$KEEP_DIR/target20_4col.bed\" > \"\$KEEP_DIR/vardictrust.vcf\"
+    '$tp_dir/vardictcpp-ae93fe39dc/build/vardictcpp' -G \"\$REF\" -f 0.01 -N HG002 -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -z --chunk 50000 -th 8 \"\$KEEP_DIR/target20_4col.bed\" -vcf > \"\$KEEP_DIR/vardictcpp.vcf\"
+    python3 harness/compare_vcf.py \"\$KEEP_DIR/vardict_java.vcf\" \"\$KEEP_DIR/vardictrust.vcf\" | tee \"\$KEEP_DIR/compare_hg002_chr20.txt\"
+    grep -q '^MATCH' \"\$KEEP_DIR/compare_hg002_chr20.txt\"
+
+    # Competing field callers (FreeBayes 1.3.10, LoFreq 2.1.5, octopus 0.7.4, Mutect2 4.6.2.0)
+    conda run -n cl_freebayes freebayes -f \"\$REF\" -t \"\$BED\" \"\$BAM\" > \"\$KEEP_DIR/freebayes.vcf\"
+    if [ ! -f \"\$KEEP_DIR/hg002.iq.bam\" ]; then
+      conda run -n cl_lofreq lofreq indelqual --dindel -f \"\$REF\" -o \"\$KEEP_DIR/hg002.iq.bam\" \"\$BAM\"
+      samtools index \"\$KEEP_DIR/hg002.iq.bam\"
+    fi
+    rm -f \"\$KEEP_DIR/lofreq.vcf\"
+    conda run -n cl_lofreq lofreq call-parallel --pp-threads 8 --call-indels -f \"\$REF\" -l \"\$BED\" -o \"\$KEEP_DIR/lofreq.vcf\" \"\$KEEP_DIR/hg002.iq.bam\"
+    conda run -n cl_octopus octopus -R \"\$REF\" -I \"\$BAM\" -t \"\$BED\" -o \"\$KEEP_DIR/octopus.vcf\" --threads 8
+    conda run -n cl_gatk4 gatk Mutect2 -R \"\$REF\" -I \"\$BAM\" -L \"\$BED\" --native-pair-hmm-threads 8 -O \"\$KEEP_DIR/m2.vcf.gz\"
+    conda run -n cl_gatk4 gatk FilterMutectCalls -R \"\$REF\" -V \"\$KEEP_DIR/m2.vcf.gz\" -O \"\$KEEP_DIR/mutect2.filt.vcf.gz\"
+
+    # Score all 6 callers identically via Archive.zip/scripts/eval_caller.sh logic
+    OUT_TABLE=\"\$KEEP_DIR/fig2_caller_accuracy.tsv\"
+    printf 'caller\tcalls\tsnv_p\tsnv_r\tsnv_f1\tindel_p\tindel_r\tindel_f1\n' > \"\$OUT_TABLE\"
+    score_caller() {
+      local lbl=\"\$1\" vcf=\"\$2\"
+      bcftools reheader --fai \"\${REF}.fai\" \"\$vcf\" 2>/dev/null \
+        | bcftools norm -f \"\$REF\" -m -any 2>/dev/null \
+        | bcftools view -f PASS,. 2>/dev/null \
+        | bcftools sort -Oz -o \"\$KEEP_DIR/ev_\${lbl}.vcf.gz\"
+      tabix -f -p vcf \"\$KEEP_DIR/ev_\${lbl}.vcf.gz\"
+      local n
+      n=\$(zgrep -vc '^#' \"\$KEEP_DIR/ev_\${lbl}.vcf.gz\" || echo 0)
+      for cls in snp indel; do
+        bcftools view -v \"\$cls\" \"\$KEEP_DIR/ev_\${lbl}.vcf.gz\" -Oz -o \"\$KEEP_DIR/ev_\${lbl}_\${cls}.vcf.gz\"
+        tabix -f -p vcf \"\$KEEP_DIR/ev_\${lbl}_\${cls}.vcf.gz\"
+        bcftools view -v \"\$cls\" \"\$TRUTH\" -Oz -o \"\$KEEP_DIR/tr_\${cls}.vcf.gz\"
+        tabix -f -p vcf \"\$KEEP_DIR/tr_\${cls}.vcf.gz\"
+        rm -rf \"\$KEEP_DIR/rtg_\${lbl}_\${cls}\"
+        rtg vcfeval -b \"\$KEEP_DIR/tr_\${cls}.vcf.gz\" -c \"\$KEEP_DIR/ev_\${lbl}_\${cls}.vcf.gz\" -t \"\$SDF\" \
+          --evaluation-regions \"\$BED\" -o \"\$KEEP_DIR/rtg_\${lbl}_\${cls}\" --vcf-score-field=QUAL >/dev/null 2>&1
+        read -r p r f <<< \"\$(awk 'NR>2 && NF>=8' \"\$KEEP_DIR/rtg_\${lbl}_\${cls}/summary.txt\" | sort -k8 -g | tail -1 | awk '{print \$6,\$7,\$8}')\"
+        eval \"\${cls}_p=\${p:-NA}; \${cls}_r=\${r:-NA}; \${cls}_f=\${f:-NA}\"
+      done
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \"\$lbl\" \"\$n\" \"\$snp_p\" \"\$snp_r\" \"\$snp_f\" \"\$indel_p\" \"\$indel_r\" \"\$indel_f\" | tee -a \"\$OUT_TABLE\"
+    }
+
+    score_caller 'VarDictRust' \"\$KEEP_DIR/vardictrust.vcf\"
+    score_caller 'VarDictJava' \"\$KEEP_DIR/vardict_java.vcf\"
+    score_caller 'vardictcpp' \"\$KEEP_DIR/vardictcpp.vcf\"
+    score_caller 'octopus' \"\$KEEP_DIR/octopus.vcf\"
+    score_caller 'FreeBayes' \"\$KEEP_DIR/freebayes.vcf\"
+    score_caller 'LoFreq' \"\$KEEP_DIR/lofreq.vcf\"
+    score_caller 'Mutect2' \"\$KEEP_DIR/mutect2.filt.vcf.gz\"
+  "
+
+  # 5. Fig-1 (SRR8657348 Single-Sample) & Fig-3 (SRR15006376|SRR15006386 Somatic) Field Callers + Somatic Venn
+  run_checkpointed_cell "stage2" "s2_fig1_fig3_field_callers" 32 "192G" bash -c "
+    set -euo pipefail
+    source harness/gcp_paper_runner.sh --source-only
+    ensure_field_caller_envs
+    REF='$tp_dir/archive/reference/hg19.fa'
+    [ -f '$tp_dir/archive/reference/hg19.dict' ] || samtools dict \"\$REF\" > '$tp_dir/archive/reference/hg19.dict'
+    BAM_SINGLE='$tp_dir/bams/SRR8657348.bam'
+    BED_SINGLE='$tp_dir/bams/SRR8657348.mkbed.bed'
+    build_tierp_covered_bed \"\$BAM_SINGLE\" \"\$BED_SINGLE\" 773667
+    TUM='$tp_dir/bams/SRR15006376.bam'
+    NOR='$tp_dir/bams/SRR15006386.bam'
+    BED_SOM='$tp_dir/bams/SRR15006376.mkbed.bed'
+    build_tierp_covered_bed \"\$TUM\" \"\$BED_SOM\" 105949
+
+    # Prepare LoFreq indelqual BAM for SRR8657348 and FreeBayes region list
+    IQ_BAM='$tp_dir/bams/SRR8657348.iq.bam'
+    if [ ! -f \"\$IQ_BAM\" ]; then
+      conda run -n cl_lofreq lofreq indelqual --dindel -f \"\$REF\" -o \"\$IQ_BAM\" \"\$BAM_SINGLE\"
+      samtools index \"\$IQ_BAM\"
+    fi
+    awk '{print \$1\":\"\$2\"-\"\$3}' \"\$BED_SINGLE\" > \"\$KEEP_DIR/fb_regions.txt\"
+
+    # 10 Hz session-sum VmRSS sampler matching Archive.zip/performance_benchmark/scripts/single_sample_speed.sh
+    run_pinned_session() {
+      local lbl=\"\$1\" cpus=\"\$2\"
+      shift 2
+      local s e sid peak=0 cur rc=0
+      s=\$(date +%s.%N)
+      setsid timeout 10800 taskset -c \"\$cpus\" \"\$@\" >\"\$KEEP_DIR/\${lbl}.stdout\" 2>\"\$KEEP_DIR/\${lbl}.stderr\" &
+      sid=\$!
+      while kill -0 \"\$sid\" 2>/dev/null; do
+        cur=\$(ps -o rss= --sid \"\$sid\" 2>/dev/null | awk '{t+=\$1}END{print t+0}')
+        [ \"\${cur:-0}\" -gt \"\$peak\" ] && peak=\"\$cur\"
+        sleep 0.1
+      done
+      wait \"\$sid\" || rc=\$?
+      e=\$(date +%s.%N)
+      echo \"\$rc\" > \"\$KEEP_DIR/\${lbl}.rc\"
+      awk \"BEGIN{printf \\\"%.2f\\\", \$e-\$s}\" > \"\$KEEP_DIR/\${lbl}.wall_s\"
+      echo \"\$peak\" > \"\$KEEP_DIR/\${lbl}.peak_kb\"
+    }
+
+    # Wave A: 8-core field callers on disjoint 8-vCPU slices (0-7, 8-15, 16-23, 24-31)
+    run_pinned_session 'single_FreeBayes_8c' '0-7' conda run -n cl_freebayes freebayes-parallel \"\$KEEP_DIR/fb_regions.txt\" 8 -f \"\$REF\" \"\$BAM_SINGLE\" &
+    p1=\$!
+    rm -f \"\$KEEP_DIR/single_lf8.vcf\"
+    run_pinned_session 'single_LoFreq_8c' '8-15' conda run -n cl_lofreq lofreq call-parallel --pp-threads 8 --call-indels -f \"\$REF\" -l \"\$BED_SINGLE\" -o \"\$KEEP_DIR/single_lf8.vcf\" \"\$IQ_BAM\" &
+    p2=\$!
+    run_pinned_session 'single_Mutect2_8c' '16-23' conda run -n cl_gatk4 gatk Mutect2 -R \"\$REF\" -I \"\$BAM_SINGLE\" -L \"\$BED_SINGLE\" --native-pair-hmm-threads 8 -O \"\$KEEP_DIR/single_m2_8.vcf.gz\" &
+    p3=\$!
+    run_pinned_session 'single_octopus_8c' '24-31' conda run -n cl_octopus octopus -R \"\$REF\" -I \"\$BAM_SINGLE\" -t \"\$BED_SINGLE\" -o \"\$KEEP_DIR/single_oc8.vcf\" --threads 8 &
+    p4=\$!
+    wait \"\$p1\" \"\$p2\" \"\$p3\" \"\$p4\"
+
+    # Wave B: Somatic 8-core field callers (Mutect2, octopus, LoFreq, Strelka2) on disjoint 8-vCPU slices
+    run_pinned_session 'som_Mutect2_8c' '0-7' conda run -n cl_gatk4 gatk Mutect2 -R \"\$REF\" -I \"\$TUM\" -I \"\$NOR\" -normal SRR15006386 -L \"\$BED_SOM\" --native-pair-hmm-threads 8 -O \"\$KEEP_DIR/som_m2_8.vcf.gz\" &
+    p5=\$!
+    run_pinned_session 'som_octopus_8c' '8-15' conda run -n cl_octopus octopus -R \"\$REF\" -I \"\$TUM\" \"\$NOR\" --normal-sample SRR15006386 -t \"\$BED_SOM\" --threads 8 -o \"\$KEEP_DIR/som_oc8.vcf\" &
+    p6=\$!
+    rm -f \"\$KEEP_DIR\"/som_lf8_*
+    run_pinned_session 'som_LoFreq_8c' '16-23' conda run -n cl_lofreq lofreq somatic -n \"\$NOR\" -t \"\$TUM\" -f \"\$REF\" -l \"\$BED_SOM\" -o \"\$KEEP_DIR/som_lf8_\" --threads 8 &
+    p7=\$!
+    # Strelka2 2.9.10 somatic extension arm (requires bgzipped + tabix-indexed BED)
+    bgzip -c \"\$BED_SOM\" > \"\$KEEP_DIR/som_targets.bed.gz\" && tabix -f -p bed \"\$KEEP_DIR/som_targets.bed.gz\"
+    rm -rf \"\$KEEP_DIR/strelka_work\"
+    conda run -n cl_strelka configureStrelkaSomaticWorkflow.py \
+      --normalBam \"\$NOR\" --tumorBam \"\$TUM\" --referenceFasta \"\$REF\" \
+      --callRegions \"\$KEEP_DIR/som_targets.bed.gz\" --exome --runDir \"\$KEEP_DIR/strelka_work\"
+    run_pinned_session 'som_Strelka2_8c' '24-31' conda run -n cl_strelka \"\$KEEP_DIR/strelka_work/runWorkflow.py\" -m local -j 8 &
+    p8=\$!
+    wait \"\$p5\" \"\$p6\" \"\$p7\" \"\$p8\"
+
+    # Wave C: All eight 1-core field-caller jobs concurrently on dedicated physical cores (0, 2, 4, 6, 8, 10, 12, 14)
+    run_pinned_session 'single_FreeBayes_1c' '0' conda run -n cl_freebayes freebayes -f \"\$REF\" -t \"\$BED_SINGLE\" \"\$BAM_SINGLE\" &
+    c1=\$!
+    rm -f \"\$KEEP_DIR/single_lf1.vcf\"
+    run_pinned_session 'single_LoFreq_1c' '2' conda run -n cl_lofreq lofreq call --call-indels -f \"\$REF\" -l \"\$BED_SINGLE\" -o \"\$KEEP_DIR/single_lf1.vcf\" \"\$IQ_BAM\" &
+    c2=\$!
+    run_pinned_session 'single_Mutect2_1c' '4' conda run -n cl_gatk4 gatk Mutect2 -R \"\$REF\" -I \"\$BAM_SINGLE\" -L \"\$BED_SINGLE\" --native-pair-hmm-threads 1 -O \"\$KEEP_DIR/single_m2_1.vcf.gz\" &
+    c3=\$!
+    run_pinned_session 'single_octopus_1c' '6' conda run -n cl_octopus octopus -R \"\$REF\" -I \"\$BAM_SINGLE\" -t \"\$BED_SINGLE\" -o \"\$KEEP_DIR/single_oc1.vcf\" --threads 1 &
+    c4=\$!
+    run_pinned_session 'som_Mutect2_1c' '8' conda run -n cl_gatk4 gatk Mutect2 -R \"\$REF\" -I \"\$TUM\" -I \"\$NOR\" -normal SRR15006386 -L \"\$BED_SOM\" --native-pair-hmm-threads 1 -O \"\$KEEP_DIR/som_m2_1.vcf.gz\" &
+    c5=\$!
+    run_pinned_session 'som_octopus_1c' '10' conda run -n cl_octopus octopus -R \"\$REF\" -I \"\$TUM\" \"\$NOR\" --normal-sample SRR15006386 -t \"\$BED_SOM\" --threads 1 -o \"\$KEEP_DIR/som_oc1.vcf\" &
+    c6=\$!
+    rm -f \"\$KEEP_DIR\"/som_lf1_*
+    run_pinned_session 'som_LoFreq_1c' '12' conda run -n cl_lofreq lofreq somatic -n \"\$NOR\" -t \"\$TUM\" -f \"\$REF\" -l \"\$BED_SOM\" -o \"\$KEEP_DIR/som_lf1_\" --threads 1 &
+    c7=\$!
+    rm -rf \"\$KEEP_DIR/strelka_work_1c\"
+    conda run -n cl_strelka configureStrelkaSomaticWorkflow.py \
+      --normalBam \"\$NOR\" --tumorBam \"\$TUM\" --referenceFasta \"\$REF\" \
+      --callRegions \"\$KEEP_DIR/som_targets.bed.gz\" --exome --runDir \"\$KEEP_DIR/strelka_work_1c\"
+    run_pinned_session 'som_Strelka2_1c' '14' conda run -n cl_strelka \"\$KEEP_DIR/strelka_work_1c/runWorkflow.py\" -m local -j 1 &
+    c8=\$!
+    wait \"\$c1\" \"\$c2\" \"\$c3\" \"\$c4\" \"\$c5\" \"\$c6\" \"\$c7\" \"\$c8\"
+  "
+
+  # 6. Wolff 2026 Table-3 Direct -R chr1:1-249250621 Whole-Chromosome Blowup Cell on SRR8657348 (n=3 across all 3 engines)
   run_checkpointed_cell "stage2" "s2_table3_R_chr1_rust_and_cpp" 8 "32G" bash -c "
     set -euo pipefail
     REF='$tp_dir/archive/reference/hg19.fa'
@@ -465,8 +888,8 @@ run_stage_2() {
     done
   "
 
-  # Table-3 Java -Xmx4g OOM reproduction & -Xmx200g completion cell
-  run_checkpointed_cell "stage2" "s2_table3_R_chr1_java_200g" 8 "240G" bash -c "
+  # 7. Table-3 Java -Xmx4g OOM reproduction & -Xmx200g n=3 completion cell
+  run_checkpointed_cell "stage2" "s2_table3_R_chr1_java_200g_n3" 8 "240G" bash -c "
     set -euo pipefail
     REF='$tp_dir/archive/reference/hg19.fa'
     BAM='$tp_dir/bams/SRR8657348.bam'
@@ -474,13 +897,15 @@ run_stage_2() {
     _JAVA_OPTIONS='-Xmx4g' /usr/bin/time -v -o \"\$KEEP_DIR/java_xmx4g_R_chr1.time\" \
       conda run -n vardict-oracle vardict-java -G \"\$REF\" -f 0.01 -N SRR8657348 -b \"\$BAM\" -th 8 -R chr1:1-249250621 > /dev/null 2>\"\$KEEP_DIR/java_xmx4g.err\" || rc4=\$?
     echo \"\$rc4\" > \"\$KEEP_DIR/java_xmx4g.exit\"
-    _JAVA_OPTIONS='-Xmx200g' /usr/bin/time -v -o \"\$KEEP_DIR/java_xmx200g_R_chr1.time\" \
-      conda run -n vardict-oracle vardict-java -G \"\$REF\" -f 0.01 -N SRR8657348 -b \"\$BAM\" -th 8 -R chr1:1-249250621 > \"\$KEEP_DIR/java_xmx200g_R_chr1.var\" 2>\"\$KEEP_DIR/java_xmx200g.err\"
+    for run in 1 2 3; do
+      _JAVA_OPTIONS='-Xmx200g' /usr/bin/time -v -o \"\$KEEP_DIR/java_xmx200g_R_chr1_run\${run}.time\" \
+        conda run -n vardict-oracle vardict-java -G \"\$REF\" -f 0.01 -N SRR8657348 -b \"\$BAM\" -th 8 -R chr1:1-249250621 > \"\$KEEP_DIR/java_xmx200g_R_chr1.var\" 2>\"\$KEEP_DIR/java_xmx200g_run\${run}.err\"
+    done
   "
 }
 
 run_stage_3() {
-  echo "=== [Stage 3: Task 5d Cross-Tier Full-Sample RNA Arm (HG002 GM24385 51.8 GiB BAM)] ==="
+  echo "=== [Stage 3: Task 5d Cross-Tier Full-Sample RNA Arm (HG002 GM24385 51.8 GiB BAM, n=3)] ==="
   export DATA_DIR="scratch/g4"
   local rna_dir="${WORK_DIR}/data/rna"
   mkdir -p "$rna_dir"
@@ -493,15 +918,17 @@ run_stage_3() {
     samtools quickcheck '$rna_dir/HG002_rep1_Aligned.sortedByCoord.out.bam'
   "
 
-  run_checkpointed_cell "stage3" "s3_rna_splice_parity" 8 "64G" bash -c "
+  run_checkpointed_cell "stage3" "s3_rna_splice_parity_n3" 8 "64G" bash -c "
     set -euo pipefail
     REF=\"\$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fasta\"
     BAM='$rna_dir/HG002_rep1_Aligned.sortedByCoord.out.bam'
     BED=\"\$DATA_DIR/hg002/eval.bed\"
-    /usr/bin/time -v -o \"\$KEEP_DIR/rust_splice.time\" \
-      target/release/vardictrust -G \"\$REF\" -f 0.01 -N HG002_RNA -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -z -i --emit-intermediate -th 8 \"\$BED\" > \"\$KEEP_DIR/rust.splice.tsv\"
-    _JAVA_OPTIONS='-Xmx44g' /usr/bin/time -v -o \"\$KEEP_DIR/java_splice.time\" \
-      conda run -n vardict-oracle vardict-java -G \"\$REF\" -f 0.01 -N HG002_RNA -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -z 1 -i -th 8 \"\$BED\" > \"\$KEEP_DIR/java.splice.tsv\"
+    for run in 1 2 3; do
+      /usr/bin/time -v -o \"\$KEEP_DIR/rust_splice_run\${run}.time\" \
+        target/release/vardictrust -G \"\$REF\" -f 0.01 -N HG002_RNA -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -z -i --emit-intermediate -th 8 \"\$BED\" > \"\$KEEP_DIR/rust.splice.tsv\"
+      _JAVA_OPTIONS='-Xmx44g' /usr/bin/time -v -o \"\$KEEP_DIR/java_splice_run\${run}.time\" \
+        conda run -n vardict-oracle vardict-java -G \"\$REF\" -f 0.01 -N HG002_RNA -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -z 1 -i -th 8 \"\$BED\" > \"\$KEEP_DIR/java.splice.tsv\"
+    done
     LC_ALL=C sort \"\$KEEP_DIR/java.splice.tsv\" > \"\$KEEP_DIR/java.splice.sorted.tsv\"
     LC_ALL=C sort \"\$KEEP_DIR/rust.splice.tsv\" > \"\$KEEP_DIR/rust.splice.sorted.tsv\"
     diff -u \"\$KEEP_DIR/java.splice.sorted.tsv\" \"\$KEEP_DIR/rust.splice.sorted.tsv\" > \"\$KEEP_DIR/splice_diff.txt\"
@@ -510,7 +937,7 @@ run_stage_3() {
 }
 
 run_stage_4() {
-  echo "=== [Stage 4: Task 5e Tier-E Full SEQC2 Exome & Tier-G Full WGS (1..32 Threads)] ==="
+  echo "=== [Stage 4: Task 5e Tier-E Full SEQC2 Exome, Tier-G Full WGS, 1..32c Scaling, ROC/QUAL Sweep & Strata] ==="
   export DATA_DIR="scratch/g4"
 
   run_local_stage_cell "stage4" "s4_stage_seqc2_full" 32 "128G" bash -c "
@@ -527,75 +954,297 @@ run_stage_4() {
   "
   ensure_submodule_excludes
 
-  # Tier-E SEQC2 full somatic exome 3-way parity + truth
-  run_checkpointed_cell "stage4" "s4_tier_e_seqc2_exome_3way" 8 "32G" bash -c '
+  # 1. Uniform -th 8 Four-Target Performance Budget (amplicon, hg002, hg008, seqc2-exome) with n=3 replicates + perf_budget.py
+  run_checkpointed_cell "stage4" "s4_perf_budget_4targets_n3" 8 "64G" bash -c '
     set -euo pipefail
-    GOLDEN_MODE=off MIN_VARIANTS=2000 ORACLE_XMX_GB=22 \
-      bash harness/compare.sh \
-      "$DATA_DIR/ref/d1vd1/GRCh38.d1.vd1.fa" \
-      "$DATA_DIR/seqc2/HCC1395.bam|$DATA_DIR/seqc2/HCC1395BL.bam" \
-      "$DATA_DIR/seqc2/exome.engine.bed" "HCC1395|HCC1395BL" -th 8
-    grep -q "^MATCH (623444 variants)$" "$KEEP_DIR/compare.txt"
+    # (a) Amplicon (-th 8, n=3)
+    mkdir -p "$KEEP_DIR/amplicon"
+    for run in 1 2 3; do
+      KEEP_DIR="$KEEP_DIR/amplicon" GOLDEN_MODE=off ORACLE_XMX_GB=22 \
+        bash harness/compare.sh \
+        "$DATA_DIR/amplicon/ref.fa" \
+        "$DATA_DIR/amplicon/amplicon.bam" \
+        "$DATA_DIR/amplicon/correct_8columns_amplicon.bed" SAMPLE -a 10:0.95 -th 8
+      cp "$KEEP_DIR/amplicon/rust.time" "$KEEP_DIR/amplicon/rust_run${run}.time"
+      cp "$KEEP_DIR/amplicon/java.time" "$KEEP_DIR/amplicon/java_run${run}.time"
+      [ -f "$KEEP_DIR/amplicon/cpp.time" ] && cp "$KEEP_DIR/amplicon/cpp.time" "$KEEP_DIR/amplicon/cpp_run${run}.time" || true
+    done
+    python3 harness/record_evidence.py amplicon-tier2 MATCH "$KEEP_DIR/amplicon" -- bash harness/compare.sh "$DATA_DIR/amplicon/ref.fa" "$DATA_DIR/amplicon/amplicon.bam" "$DATA_DIR/amplicon/correct_8columns_amplicon.bed" SAMPLE -a 10:0.95 -th 8
+
+    # (b) GIAB HG002 full 20 Mbp benchmark region (chr20:10M-30M, 227,562 variants, -th 8, n=3)
+    mkdir -p "$KEEP_DIR/hg002"
+    for run in 1 2 3; do
+      KEEP_DIR="$KEEP_DIR/hg002" GOLDEN_MODE=off MIN_VARIANTS=200000 ORACLE_XMX_GB=44 \
+        bash harness/compare.sh \
+        "$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fasta" \
+        "$DATA_DIR/hg002/HG002.chr20.bam" \
+        "$DATA_DIR/hg002/engine.bed" HG002 -f 0.01 -th 8
+      cp "$KEEP_DIR/hg002/rust.time" "$KEEP_DIR/hg002/rust_run${run}.time"
+      cp "$KEEP_DIR/hg002/java.time" "$KEEP_DIR/hg002/java_run${run}.time"
+      [ -f "$KEEP_DIR/hg002/cpp.time" ] && cp "$KEEP_DIR/hg002/cpp.time" "$KEEP_DIR/hg002/cpp_run${run}.time" || true
+    done
+    grep -q "^MATCH (227562 variants)$" "$KEEP_DIR/hg002/compare.txt"
+    python3 harness/record_evidence.py hg002-tier2 MATCH "$KEEP_DIR/hg002" -- bash harness/compare.sh "$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fasta" "$DATA_DIR/hg002/HG002.chr20.bam" "$DATA_DIR/hg002/engine.bed" HG002 -f 0.01 -th 8
+
+    # (c) GIAB HG008 paired somatic WGS (18,426 variants, -th 8, n=3)
+    mkdir -p "$KEEP_DIR/hg008"
+    for run in 1 2 3; do
+      KEEP_DIR="$KEEP_DIR/hg008" GOLDEN_MODE=off MIN_VARIANTS=1000 ORACLE_XMX_GB=44 \
+        bash harness/compare.sh \
+        "$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fa" \
+        "$DATA_DIR/hg008/HG008-T.slice.bam|$DATA_DIR/hg008/HG008-N.slice.bam" \
+        "$DATA_DIR/hg008/engine.bed" "HG008-T|HG008-N" -th 8
+      cp "$KEEP_DIR/hg008/rust.time" "$KEEP_DIR/hg008/rust_run${run}.time"
+      cp "$KEEP_DIR/hg008/java.time" "$KEEP_DIR/hg008/java_run${run}.time"
+      [ -f "$KEEP_DIR/hg008/cpp.time" ] && cp "$KEEP_DIR/hg008/cpp.time" "$KEEP_DIR/hg008/cpp_run${run}.time" || true
+    done
+    grep -q "^MATCH (18426 variants)$" "$KEEP_DIR/hg008/compare.txt"
+    python3 harness/record_evidence.py hg008-tier2 MATCH "$KEEP_DIR/hg008" -- bash harness/compare.sh "$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fa" "$DATA_DIR/hg008/HG008-T.slice.bam|$DATA_DIR/hg008/HG008-N.slice.bam" "$DATA_DIR/hg008/engine.bed" "HG008-T|HG008-N" -th 8
+
+    # (d) SEQC2 HCC1395/BL full somatic exome (623,444 variants, -th 8, n=3)
+    mkdir -p "$KEEP_DIR/seqc2"
+    for run in 1 2 3; do
+      KEEP_DIR="$KEEP_DIR/seqc2" GOLDEN_MODE=off MIN_VARIANTS=2000 ORACLE_XMX_GB=44 \
+        bash harness/compare.sh \
+        "$DATA_DIR/ref/d1vd1/GRCh38.d1.vd1.fa" \
+        "$DATA_DIR/seqc2/HCC1395.bam|$DATA_DIR/seqc2/HCC1395BL.bam" \
+        "$DATA_DIR/seqc2/exome.engine.bed" "HCC1395|HCC1395BL" -th 8
+      cp "$KEEP_DIR/seqc2/rust.time" "$KEEP_DIR/seqc2/rust_run${run}.time"
+      cp "$KEEP_DIR/seqc2/java.time" "$KEEP_DIR/seqc2/java_run${run}.time"
+      [ -f "$KEEP_DIR/seqc2/cpp.time" ] && cp "$KEEP_DIR/seqc2/cpp.time" "$KEEP_DIR/seqc2/cpp_run${run}.time" || true
+    done
+    grep -q "^MATCH (623444 variants)$" "$KEEP_DIR/seqc2/compare.txt"
+    python3 harness/record_evidence.py seqc2-exome-tier2 MATCH "$KEEP_DIR/seqc2" -- bash harness/compare.sh "$DATA_DIR/ref/d1vd1/GRCh38.d1.vd1.fa" "$DATA_DIR/seqc2/HCC1395.bam|$DATA_DIR/seqc2/HCC1395BL.bam" "$DATA_DIR/seqc2/exome.engine.bed" "HCC1395|HCC1395BL" -th 8
+
+    # Validate 4-target performance budget gate on the GCP host
+    python3 harness/perf_budget.py hg008-tier2 seqc2-exome-tier2 hg002-tier2 amplicon-tier2 | tee "$KEEP_DIR/perf_budget_gcp.json"
   '
 
-  # Multi-core scaling 1, 2, 4, 8, 16, 32 threads on identical n2-highmem-32 silicon
+  # 2. Tier-3 Ground Truth Concordance + Full ROC/QUAL Sweep (0/30/50/75/100/128/150/200 & 128/160/226) + SNP/InDel/MNP/SV Strata
+  run_checkpointed_cell "stage4" "s4_tier3_truth_and_qual_sweep" 8 "32G" bash -c '
+    set -euo pipefail
+    BUDGET_DIR="${WORK_DIR}/cells/s4_perf_budget_4targets_n3"
+
+    # (a) HG002 Germline Truth (GIAB v4.2.1)
+    bash harness/concordance_germline.sh hg002-truth \
+      "$BUDGET_DIR/hg002/java.vcf" "$BUDGET_DIR/hg002/rust.vcf" \
+      "$DATA_DIR/hg002/truth.vcf.gz" "$DATA_DIR/hg002/eval.bed" \
+      "$DATA_DIR/ref/giabv3/GRCh38_GIABv3.sdf" "$KEEP_DIR/hg002_truth" HG002 "$BUDGET_DIR/hg002/cpp.vcf"
+
+    # (b) SEQC2 Somatic Exome Truth (SEQC2 v1.2.1)
+    bash harness/concordance_pair.sh seqc2-truth \
+      "$BUDGET_DIR/seqc2/java.vcf" "$BUDGET_DIR/seqc2/rust.vcf" \
+      "$DATA_DIR/seqc2/truth.vcf.gz" "$DATA_DIR/seqc2/eval.bed" \
+      "$DATA_DIR/ref/d1vd1/GRCh38.d1.vd1.sdf" "$KEEP_DIR/seqc2_truth" HCC1395 "$BUDGET_DIR/seqc2/cpp.vcf"
+
+    # (c) HG008 Somatic Truth (NIST v0.3 + v0.4 smvar in parallel)
+    bash harness/concordance_pair.sh hg008-truth \
+      "$BUDGET_DIR/hg008/java.vcf" "$BUDGET_DIR/hg008/rust.vcf" \
+      "$DATA_DIR/hg008/truth.vcf.gz" "$DATA_DIR/hg008/eval.bed" \
+      "$DATA_DIR/ref/giabv3/GRCh38_GIABv3.sdf" "$KEEP_DIR/hg008_truth" HG008-T "$BUDGET_DIR/hg008/cpp.vcf"
+
+    # (d) Pre-registered Full ROC/QUAL Sweep (0, 30, 50, 75, 100, 128, 150, 160, 200, 226) on HG002, SEQC2, HG008
+    python3 - "$KEEP_DIR" <<'\''PY'\''
+import json, pathlib, sys
+kd = pathlib.Path(sys.argv[1])
+thresholds = [0, 30, 50, 75, 100, 128, 150, 160, 200, 226]
+sweep = {}
+for cohort, sub in [("hg002", "hg002_truth"), ("seqc2", "seqc2_truth"), ("hg008", "hg008_truth")]:
+    sweep[cohort] = {}
+    for eng in ("java", "rust", "cpp"):
+        sfile = kd / sub / eng / "vcfeval" / "summary.txt"
+        if not sfile.exists():
+            continue
+        rows = []
+        for line in sfile.read_text().splitlines():
+            parts = line.split()
+            if not parts or parts[0].startswith(("Threshold", "-")):
+                continue
+            t_val = None if parts[0] == "None" else float(parts[0])
+            rows.append((t_val, dict(threshold=parts[0], tp_base=int(parts[1]), tp_call=int(parts[2]),
+                                     fp=int(parts[3]), fn=int(parts[4]),
+                                     precision=float(parts[5]), recall=float(parts[6]), f1=float(parts[7]))))
+        eng_sweep = {}
+        for q in thresholds:
+            cand = [r[1] for r in rows if r[0] is not None and r[0] >= q]
+            if cand:
+                eng_sweep[str(q)] = cand[0]
+            elif rows:
+                eng_sweep[str(q)] = rows[-1][1]
+        none_r = [r[1] for r in rows if r[0] is None]
+        if none_r:
+            eng_sweep["None"] = none_r[0]
+        sweep[cohort][eng] = eng_sweep
+(kd / "roc_qual_sweep.json").write_text(json.dumps(sweep, indent=2))
+PY
+
+    # (e) SNP / InDel / MNP / SV & AF-bin stratification across HG002, SEQC2, HG008 (Java vs Rust vs C++)
+    python3 - "$BUDGET_DIR" "$KEEP_DIR/strata_summary.json" <<'\''PY'\''
+import json, pathlib, sys
+bdir = pathlib.Path(sys.argv[1])
+out_path = pathlib.Path(sys.argv[2])
+strata = {}
+for cohort in ("hg002", "seqc2", "hg008"):
+    strata[cohort] = {}
+    for eng in ("java", "rust", "cpp"):
+        vcf = bdir / cohort / f"{eng}.vcf"
+        if not vcf.exists():
+            continue
+        counts = {"SNV": 0, "Insertion": 0, "Deletion": 0, "Complex_MNP": 0, "SV": 0,
+                  "AF_le_0.01": 0, "AF_0.01_0.05": 0, "AF_gt_0.05": 0, "PASS": 0, "total": 0}
+        with open(vcf) as f:
+            for line in f:
+                if line.startswith("#"):
+                    continue
+                parts = line.rstrip("\n").split("\t")
+                if len(parts) < 8:
+                    continue
+                counts["total"] += 1
+                if parts[6] == "PASS":
+                    counts["PASS"] += 1
+                info = dict(kv.split("=", 1) for kv in parts[7].split(";") if "=" in kv)
+                vtype = info.get("TYPE", "")
+                alt = parts[4]
+                if alt.startswith("<") or "SVTYPE" in info:
+                    counts["SV"] += 1
+                elif vtype == "SNV" or (len(parts[3]) == 1 and len(alt) == 1):
+                    counts["SNV"] += 1
+                elif vtype == "Insertion" or (len(parts[3]) == 1 and len(alt) > 1):
+                    counts["Insertion"] += 1
+                elif vtype == "Deletion" or (len(parts[3]) > 1 and len(alt) == 1):
+                    counts["Deletion"] += 1
+                else:
+                    counts["Complex_MNP"] += 1
+                try:
+                    af = float(info.get("AF", "0").split(",")[0])
+                    if af <= 0.01:
+                        counts["AF_le_0.01"] += 1
+                    elif af <= 0.05:
+                        counts["AF_0.01_0.05"] += 1
+                    else:
+                        counts["AF_gt_0.05"] += 1
+                except ValueError:
+                    pass
+        strata[cohort][eng] = counts
+    assert strata[cohort]["java"] == strata[cohort]["rust"], f"Strata mismatch on {cohort}"
+out_path.write_text(json.dumps(strata, indent=2))
+PY
+  '
+
+  # 3. Multi-core scaling 1, 2, 4, 8, 16, 32 threads across all 3 engines (Rust, C++, Java) + T2 Thread Determinism
   for th in 1 2 4 8 16 32; do
     local mem_cap="32G"
-    [ "$th" -ge 16 ] && mem_cap="64G"
-    [ "$th" -ge 32 ] && mem_cap="128G"
-    run_checkpointed_cell "stage4" "s4_scale_exome_th${th}" "$th" "$mem_cap" bash -c "
+    local java_xmx="22"
+    if [ "$th" -ge 16 ]; then mem_cap="64G"; java_xmx="44"; fi
+    if [ "$th" -ge 32 ]; then mem_cap="128G"; java_xmx="88"; fi
+    run_checkpointed_cell "stage4" "s4_scale_exome_3way_th${th}" "$th" "$mem_cap" bash -c "
       set -euo pipefail
+      REF=\"\$DATA_DIR/ref/d1vd1/GRCh38.d1.vd1.fa\"
+      BAM=\"\$DATA_DIR/seqc2/HCC1395.bam\"
+      BED=\"\$DATA_DIR/seqc2/exome.engine.bed\"
       for run in 1 2 3; do
         /usr/bin/time -v -o \"\$KEEP_DIR/rust_th${th}_run\${run}.time\" \
-          target/release/vardictrust \
-          -G \"\$DATA_DIR/ref/d1vd1/GRCh38.d1.vd1.fa\" \
-          -f 0.01 -N HCC1395 \
-          -b \"\$DATA_DIR/seqc2/HCC1395.bam\" \
-          -c 1 -S 2 -E 3 -g 4 -z -th ${th} \
-          \"\$DATA_DIR/seqc2/exome.engine.bed\" > \"\$KEEP_DIR/rust_th${th}.vcf\"
+          target/release/vardictrust -G \"\$REF\" -f 0.01 -N HCC1395 -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -z -th ${th} \"\$BED\" > \"\$KEEP_DIR/rust_th${th}.vcf\"
+        /usr/bin/time -v -o \"\$KEEP_DIR/cpp_th${th}_run\${run}.time\" \
+          bash harness/run_cpp.sh \"\$REF\" \"\$BAM\" \"\$BED\" \"\$KEEP_DIR/cpp_th${th}.vcf\" HCC1395 -th ${th} -z
+        ORACLE_XMX_GB=${java_xmx} /usr/bin/time -v -o \"\$KEEP_DIR/java_th${th}_run\${run}.time\" \
+          bash harness/run_oracle.sh \"\$REF\" \"\$BAM\" \"\$BED\" \"\$KEEP_DIR/java_th${th}.vcf\" HCC1395 -f 0.01 -z -th ${th}
       done
+      python3 harness/compare_vcf.py \"\$KEEP_DIR/java_th${th}.vcf\" \"\$KEEP_DIR/rust_th${th}.vcf\" | tee \"\$KEEP_DIR/compare_th${th}.txt\"
+      grep -q '^MATCH' \"\$KEEP_DIR/compare_th${th}.txt\"
+      if [ '${th}' -gt 1 ] && [ -f '${WORK_DIR}/cells/s4_scale_exome_3way_th1/rust_th1.vcf' ]; then
+        cmp <(grep -v '^##' '${WORK_DIR}/cells/s4_scale_exome_3way_th1/rust_th1.vcf') <(grep -v '^##' \"\$KEEP_DIR/rust_th${th}.vcf\")
+        echo 'DETERMINISTIC_RECORDS_IDENTICAL_TO_TH1' > \"\$KEEP_DIR/determinism_th${th}.txt\"
+      fi
     "
   done
 
-  # Tier-G chr1 span scaling (1 Mbp, 10 Mbp, 100 Mbp, 248,956,422 bp) at 8, 16, 32 threads
+  # 4. Tier-G chr1 span scaling (1 Mbp, 10 Mbp, 100 Mbp, 248,956,422 bp) at 8, 16, 32 threads for BOTH Rust and C++ (n=3)
   for th in 8 16 32; do
     local mem_cap="64G"
     [ "$th" -ge 32 ] && mem_cap="128G"
-    run_checkpointed_cell "stage4" "s4_span_chr1_th${th}" "$th" "$mem_cap" bash -c "
+    run_checkpointed_cell "stage4" "s4_span_chr1_3way_th${th}" "$th" "$mem_cap" bash -c "
       set -euo pipefail
       REF=\"\$DATA_DIR/ref/d1vd1/GRCh38.d1.vd1.fa\"
       BAM=\"\$DATA_DIR/seqc2/HCC1395.bam\"
       for sz in 1000000 10000000 100000000 248956422; do
+        printf 'chr1\t0\t%s\tR%s\n' \"\$sz\" \"\$sz\" > \"\$KEEP_DIR/R\${sz}.bed\"
         for run in 1 2 3; do
           /usr/bin/time -v -o \"\$KEEP_DIR/rust_R\${sz}_th${th}_run\${run}.time\" \
             target/release/vardictrust -G \"\$REF\" -f 0.01 -N HCC1395 -b \"\$BAM\" -th ${th} -R \"chr1:1-\${sz}\" > \"\$KEEP_DIR/rust_R\${sz}_th${th}.vcf\"
+          rc_cpp=0
+          /usr/bin/time -v -o \"\$KEEP_DIR/cpp_R\${sz}_th${th}_run\${run}.time\" \
+            bash harness/run_cpp.sh \"\$REF\" \"\$BAM\" \"\$KEEP_DIR/R\${sz}.bed\" \"\$KEEP_DIR/cpp_R\${sz}_th${th}.vcf\" HCC1395 -th ${th} -z || rc_cpp=\$?
+          echo \"\$rc_cpp\" > \"\$KEEP_DIR/cpp_R\${sz}_th${th}_run\${run}.exit\"
         done
       done
     "
   done
 
-  # Concurrent jobs/node cell: 2 x 4-thread jobs inside an n2-standard-8-equivalent (8c / 32G) slice
-  run_checkpointed_cell "stage4" "s4_jobs_per_node_2x4c" 8 "32G" bash -c '
+  # 5. Tier-G chr1 MRD -f 0 noise-floor operating-point cell (gcp-prereg.md §A2 H3 & §A10)
+  run_checkpointed_cell "stage4" "s4_span_chr1_f0" 8 "64G" bash -c '
+    set -euo pipefail
+    REF="$DATA_DIR/ref/d1vd1/GRCh38.d1.vd1.fa"
+    BAM="$DATA_DIR/seqc2/HCC1395.bam"
+    printf "chr1\t0\t10000000\tR10M\n" > "$KEEP_DIR/chr1_10m.bed"
+    for run in 1 2 3; do
+      /usr/bin/time -v -o "$KEEP_DIR/rust_chr1_10m_f0_run${run}.time" \
+        target/release/vardictrust -G "$REF" -f 0 -N HCC1395 -b "$BAM" -c 1 -S 2 -E 3 -g 4 -z -th 8 "$KEEP_DIR/chr1_10m.bed" > "$KEEP_DIR/rust_chr1_10m_f0.vcf"
+      /usr/bin/time -v -o "$KEEP_DIR/cpp_chr1_10m_f0_run${run}.time" \
+        bash harness/run_cpp.sh "$REF" "$BAM" "$KEEP_DIR/chr1_10m.bed" "$KEEP_DIR/cpp_chr1_10m_f0.vcf" HCC1395 -f 0 -th 8 -z
+    done
+    ORACLE_XMX_GB=44 /usr/bin/time -v -o "$KEEP_DIR/java_chr1_10m_f0_run1.time" \
+      bash harness/run_oracle.sh "$REF" "$BAM" "$KEEP_DIR/chr1_10m.bed" "$KEEP_DIR/java_chr1_10m_f0.vcf" HCC1395 -f 0 -z -th 8
+    python3 harness/compare_vcf.py "$KEEP_DIR/java_chr1_10m_f0.vcf" "$KEEP_DIR/rust_chr1_10m_f0.vcf" | tee "$KEEP_DIR/compare_chr1_10m_f0.txt"
+    grep -q "^MATCH" "$KEEP_DIR/compare_chr1_10m_f0.txt"
+  '
+
+  # 6. Concurrent jobs/node cell: 2 x 4-thread jobs inside an n2-standard-8-equivalent (8c / 32G) slice, n=3 replicates
+  run_checkpointed_cell "stage4" "s4_jobs_per_node_2x4c_n3" 8 "32G" bash -c '
     set -euo pipefail
     REF="$DATA_DIR/ref/d1vd1/GRCh38.d1.vd1.fa"
     BAM="$DATA_DIR/seqc2/HCC1395.bam"
     BED="$DATA_DIR/seqc2/exome.engine.bed"
-    taskset -c 0-3 /usr/bin/time -v -o "$KEEP_DIR/job1_4c.time" \
-      target/release/vardictrust -G "$REF" -f 0.01 -N HCC1395_J1 -b "$BAM" -c 1 -S 2 -E 3 -g 4 -z -th 4 "$BED" > "$KEEP_DIR/job1.vcf" &
-    p1=$!
-    taskset -c 4-7 /usr/bin/time -v -o "$KEEP_DIR/job2_4c.time" \
-      target/release/vardictrust -G "$REF" -f 0.01 -N HCC1395_J2 -b "$BAM" -c 1 -S 2 -E 3 -g 4 -z -th 4 "$BED" > "$KEEP_DIR/job2.vcf" &
-    p2=$!
-    wait "$p1" "$p2"
+    for run in 1 2 3; do
+      taskset -c 0-3 /usr/bin/time -v -o "$KEEP_DIR/job1_4c_run${run}.time" \
+        target/release/vardictrust -G "$REF" -f 0.01 -N HCC1395_J1 -b "$BAM" -c 1 -S 2 -E 3 -g 4 -z -th 4 "$BED" > "$KEEP_DIR/job1.vcf" &
+      p1=$!
+      taskset -c 4-7 /usr/bin/time -v -o "$KEEP_DIR/job2_4c_run${run}.time" \
+        target/release/vardictrust -G "$REF" -f 0.01 -N HCC1395_J2 -b "$BAM" -c 1 -S 2 -E 3 -g 4 -z -th 4 "$BED" > "$KEEP_DIR/job2.vcf" &
+      p2=$!
+      wait "$p1" "$p2"
+    done
   '
 
-  # Full multimodal + extended coverage + CRAM twin recertification on the GCP host
+  # 7. Full multimodal + extended coverage + G4 & E2 CRAM twins + README CLI recipe verification
   run_checkpointed_cell "stage4" "s4_multimodal_and_cram_twin" 8 "32G" bash -c '
     set -euo pipefail
     bash harness/run_extended_coverage.sh
     bash harness/run_multimodal_slices.sh
     CMP_TIMEOUT=12h bash harness/cram_twin.sh
     bash harness/concordance_multimodal.sh
+
+    # E2: Tier-E SEQC2 Exome CRAM Twin (HCC1395/HCC1395BL slice CRAM vs BAM bitwise identity)
+    REF_E="$DATA_DIR/ref/d1vd1/GRCh38.d1.vd1.fa"
+    BAM_T_E="$DATA_DIR/multimodal/seqc2_s3a_tumor.bam"
+    BAM_N_E="$DATA_DIR/multimodal/seqc2_s3a_normal.bam"
+    CRAM_T_E="$KEEP_DIR/seqc2_s3a_tumor.cram"
+    CRAM_N_E="$KEEP_DIR/seqc2_s3a_normal.cram"
+    printf "chr7\t140400000\t140420000\tBRAF\n" > "$KEEP_DIR/e2_braf.bed"
+    samtools view -T "$REF_E" -C -o "$CRAM_T_E" "$BAM_T_E" && samtools index "$CRAM_T_E"
+    samtools view -T "$REF_E" -C -o "$CRAM_N_E" "$BAM_N_E" && samtools index "$CRAM_N_E"
+    target/release/vardictrust -G "$REF_E" -f 0.01 -N "TUMOR|NORMAL" -b "$BAM_T_E|$BAM_N_E" -c 1 -S 2 -E 3 -g 4 -z -th 4 "$KEEP_DIR/e2_braf.bed" > "$KEEP_DIR/e2_rust_bam.vcf"
+    env RUST_MIN_STACK=67108864 target/release/vardictrust -G "$REF_E" -f 0.01 -N "TUMOR|NORMAL" -b "$CRAM_T_E|$CRAM_N_E" -c 1 -S 2 -E 3 -g 4 -z -th 4 "$KEEP_DIR/e2_braf.bed" > "$KEEP_DIR/e2_rust_cram.vcf"
+    python3 harness/compare_vcf.py --strict-bytes "$KEEP_DIR/e2_rust_bam.vcf" "$KEEP_DIR/e2_rust_cram.vcf" | tee "$KEEP_DIR/e2_cram_twin_compare.txt"
+    grep -q "^MATCH" "$KEEP_DIR/e2_cram_twin_compare.txt"
+
+    # Verify README.md CLI recipes live on the GCP instance
+    target/release/vardictrust --version > "$KEEP_DIR/readme_version.txt"
+    target/release/vardictrust -G fixtures/micro/micro.ref.fa -b fixtures/micro/micro.bam -R chr1:40-260 > "$KEEP_DIR/readme_smoke.vcf"
+    grep -q "^chr1" "$KEEP_DIR/readme_smoke.vcf"
+
+    # Sync updated benchmarks/evidence/*.json back to GCS evidence bucket
+    setsid gsutil -o GSUtil:parallel_composite_upload_threshold=0 -q cp -r benchmarks/evidence "$GCS_RESULTS/cells-v103/evidence_certified" || true
   '
 }
 
@@ -821,6 +1470,16 @@ run_plan_check() {
   [[ "$cmd3" == *"--provisioning-model=STANDARD"* ]] || { echo "FAIL: attempt 3 cmd missing STANDARD" >&2; exit 1; }
   [[ "$cmd3" != *"--maintenance-policy=TERMINATE"* ]] || { echo "FAIL: STANDARD cmd must not set maintenance-policy=TERMINATE" >&2; exit 1; }
 
+  # Verify audit fixes in script text: exact mkbed(), symmetric n=3 Java loops, 13-mode sweep, Fig-2/Fig-3 field callers, 3-way scaling
+  grep -Fq 'samtools view -F 0x904 -q 1' "$0" || { echo "FAIL: missing exact samtools view -F 0x904 -q 1 mkbed()" >&2; exit 1; }
+  grep -Fq 'java_var_th${th}_run\${run}.time' "$0" || { echo "FAIL: missing symmetric n=3 Java Tier-P loop" >&2; exit 1; }
+  grep -Fq 's2_tierp_mode_parity_sweep' "$0" || { echo "FAIL: missing s2_tierp_mode_parity_sweep cell" >&2; exit 1; }
+  grep -Fq 's2_fig2_hg002_chr20_truth' "$0" || { echo "FAIL: missing s2_fig2_hg002_chr20_truth cell" >&2; exit 1; }
+  grep -Fq 's2_fig1_fig3_field_callers' "$0" || { echo "FAIL: missing s2_fig1_fig3_field_callers cell" >&2; exit 1; }
+  grep -Fq 's4_scale_exome_3way_th' "$0" || { echo "FAIL: missing 3-way exome scaling cell" >&2; exit 1; }
+  grep -Fq 's4_span_chr1_3way_th' "$0" || { echo "FAIL: missing 3-way chr1 span scaling cell" >&2; exit 1; }
+  grep -Fq 's4_tier3_truth_and_qual_sweep' "$0" || { echo "FAIL: missing Tier-3 truth and ROC/QUAL sweep cell" >&2; exit 1; }
+
   local tmp
   tmp="$(mktemp -d)"
   trap 'rm -rf "$tmp"' RETURN
@@ -838,10 +1497,19 @@ run_plan_check() {
   run_checkpointed_cell "test_stage" "cell_alpha" 2 "4G" bash -c "echo \$(( \$(cat '$count_file') + 1 )) > '$count_file'"
   [ "$(cat "$count_file")" -eq 1 ] || { echo "FAIL: checkpointed cell_alpha ran a second time" >&2; exit 1; }
 
+  # Verify build_tierp_covered_bed on fixtures/micro/micro.bam if samtools is available
+  if command -v samtools >/dev/null 2>&1 && [ -f "fixtures/micro/micro.bam" ]; then
+    build_tierp_covered_bed "fixtures/micro/micro.bam" "$tmp/micro.mkbed.bed" 2
+    [ -s "$tmp/micro.mkbed.bed" ] || { echo "FAIL: micro.mkbed.bed empty" >&2; exit 1; }
+  fi
+
   echo "PASS gcp_paper_runner --plan-check"
 }
 
 case "${1:-}" in
+  --source-only)
+    return 0 2>/dev/null || exit 0
+    ;;
   --plan-check)
     run_plan_check
     ;;
