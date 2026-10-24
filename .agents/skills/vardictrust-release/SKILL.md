@@ -83,6 +83,15 @@ git checkout -b chore/bioconda-vX.Y.Z origin/main
 git add packaging/bioconda/recipes/vardictrust/meta.yaml
 git commit -m "chore(bioconda): update in-tree meta.yaml to vX.Y.Z sha256"
 git push -u origin chore/bioconda-vX.Y.Z
+
+# Once all 4 Bioconda CI checks pass (Lint, Linux Tests, OSX-64 Tests, CircleCI build and test (ARM)):
+# 1. Issue the official BiocondaBot command to apply the "please review & merge" label:
+gh pr comment <bioconda-pr> --repo bioconda/bioconda-recipes --body "@BiocondaBot please add label"
+# 2a. If PR was opened by BiocondaBot (autobump), approve as recipe maintainer:
+gh pr review <bioconda-pr> --repo bioconda/bioconda-recipes --approve
+# 2b. If PR was opened by palakpsheth from a fork (GitHub blocks self-APPROVE), post maintainer sign-off and ping @bioconda/core (which BiocondaBot reposts):
+gh pr review <bioconda-pr> --repo bioconda/bioconda-recipes --comment --body "Maintainer sign-off (@palakpsheth): all 4 multi-arch CI checks are green. Ready for merge."
+gh pr comment <bioconda-pr> --repo bioconda/bioconda-recipes --body "All CI checks (Lint, Linux x86_64, Linux ARM64, macOS x86_64) are green. Ready for review and merge from @bioconda/core. Thank you!"
 ```
 
 ### Phase 3B & 3C: Nextflow `nf-core/modules` & ReadTheDocs (`--phase post-nfcore`)
