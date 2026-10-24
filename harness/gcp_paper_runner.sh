@@ -40,6 +40,7 @@ GCS_REFS="${GCS_REFS:-gs://vardict-paper-trial-refs}"
 GCS_RESULTS="${GCS_RESULTS:-gs://vardict-paper-trial-results}"
 GCS_EVIDENCE="${GCS_EVIDENCE:-gs://vardict-paper-trial-evidence}"
 GCS_CKPT="${GCS_CKPT:-${GCS_RESULTS}/checkpoints-v103}"
+GCS_ORACLE_CACHE="${GCS_ORACLE_CACHE:-${GCS_RESULTS}/oracle-cache-v183}"
 
 EXPECTED_FP="${EXPECTED_FP:-27f3667b32ac14f5}"
 WORK_DIR="${WORK_DIR:-/var/tmp/vardict-paper}"
@@ -1378,8 +1379,108 @@ run_packed_stages_2_to_4() {
 # =============================================================================
 # Option C (Phase C2): All-Cores (32 vCPUs) + Full-RAM (251 GiB / -Xmx200g)
 # Non-Fail-Fast Full-Corpus Differential Parity Sweep (v1.0.3 vs VarDictJava v1.8.3)
-# Zero scale, n=3 timing, -th 1, jobs/node, vardictcpp, or field-caller runs.
+# Zero scale, n=3 timing, -th 1, jobs/node, or field-caller runs.
+# Intermediate GCS backup & reuse of all VarDictJava/vardictcpp truth outputs
+# in ${GCS_ORACLE_CACHE} (`gs://vardict-paper-trial-results/oracle-cache-v183/`).
 # =============================================================================
+
+# Immediately backs up a local oracle truth file (.var/.sorted.var/.vcf/.tsv) + its sha256 sidecar to GCS.
+oracle_cache_put() {
+  local cache_rel="$1" local_file="$2"
+  [ -s "$local_file" ] || return 0
+  sha256sum "$local_file" | awk '{print $1}' > "${local_file}.sha256"
+  if [ -n "${LOCAL_CKPT_DIR:-}" ]; then
+    mkdir -p "$(dirname "${LOCAL_CKPT_DIR}/oracle-cache/${cache_rel}")"
+    cp -f "$local_file" "${LOCAL_CKPT_DIR}/oracle-cache/${cache_rel}"
+    cp -f "${local_file}.sha256" "${LOCAL_CKPT_DIR}/oracle-cache/${cache_rel}.sha256"
+    return 0
+  fi
+  if ! setsid gsutil -q stat "${GCS_ORACLE_CACHE}/${cache_rel}" 2>/dev/null; then
+    echo "[ORACLE-CACHE PUT] Uploading '${local_file}' -> '${GCS_ORACLE_CACHE}/${cache_rel}'"
+    gcs_upload "$local_file" "${GCS_ORACLE_CACHE}/${cache_rel}" || true
+    gcs_upload "${local_file}.sha256" "${GCS_ORACLE_CACHE}/${cache_rel}.sha256" || true
+  fi
+}
+
+# Restores a cached oracle truth file from Local NVMe or GCS if available; otherwise runs the command
+# and immediately backs up the resulting truth file (+ sha256) to GCS so it never needs regeneration.
+oracle_cache_get_or_run() {
+  local cache_rel="$1" local_file="$2"
+  shift 2
+  mkdir -p "$(dirname "$local_file")"
+
+  # 1. Local NVMe hit
+  if [ -s "$local_file" ]; then
+    echo "[ORACLE-CACHE HIT (NVMe)] Reusing '${local_file}' (cache_key=${cache_rel})"
+    oracle_cache_put "$cache_rel" "$local_file"
+    return 0
+  fi
+
+  # 2. Local test-mode cache hit
+  if [ -n "${LOCAL_CKPT_DIR:-}" ] && [ -s "${LOCAL_CKPT_DIR}/oracle-cache/${cache_rel}" ]; then
+    cp -f "${LOCAL_CKPT_DIR}/oracle-cache/${cache_rel}" "$local_file"
+    echo "[ORACLE-CACHE HIT (LOCAL)] Restored '${local_file}' from '${cache_rel}'"
+    return 0
+  fi
+
+  # 3. GCS Oracle Cache hit
+  if [ -z "${LOCAL_CKPT_DIR:-}" ] && setsid gsutil -q stat "${GCS_ORACLE_CACHE}/${cache_rel}" 2>/dev/null; then
+    echo "[ORACLE-CACHE HIT (GCS)] Downloading '${GCS_ORACLE_CACHE}/${cache_rel}' -> '${local_file}'"
+    if setsid gsutil -q cp "${GCS_ORACLE_CACHE}/${cache_rel}" "$local_file"; then
+      if setsid gsutil -q stat "${GCS_ORACLE_CACHE}/${cache_rel}.sha256" 2>/dev/null; then
+        setsid gsutil -q cp "${GCS_ORACLE_CACHE}/${cache_rel}.sha256" "${local_file}.sha256" || true
+        local exp_sha got_sha
+        exp_sha="$(awk '{print $1}' "${local_file}.sha256" 2>/dev/null || true)"
+        got_sha="$(sha256sum "$local_file" | awk '{print $1}')"
+        if [ -n "$exp_sha" ] && [ "$exp_sha" != "$got_sha" ]; then
+          echo "[ORACLE-CACHE WARN] SHA256 mismatch on '${cache_rel}' (expected ${exp_sha}, got ${got_sha}); regenerating..." >&2
+          rm -f "$local_file" "${local_file}.sha256"
+        else
+          return 0
+        fi
+      else
+        return 0
+      fi
+    fi
+  fi
+
+  # 4. Cache miss -> execute generator command and immediately persist to GCS
+  echo "[ORACLE-CACHE MISS] Generating '${local_file}' (cache_key=${cache_rel})..."
+  "$@"
+  if [ -s "$local_file" ]; then
+    oracle_cache_put "$cache_rel" "$local_file"
+  fi
+}
+
+# Seeds ${GCS_ORACLE_CACHE} with all already-generated VarDictJava & vardictcpp .var/.sorted.var/.vcf outputs
+# currently present on NVMe (${WORK_DIR}/cells/) from Stage 1 and Stage 2 so nothing is ever regenerated.
+seed_oracle_cache_from_existing_cells() {
+  echo "=== [Oracle Cache Seed: Backing up existing Stage 1 & Stage 2 Java/Cpp outputs to ${GCS_ORACLE_CACHE}] ==="
+  local cells_root="${WORK_DIR}/cells"
+  [ -d "$cells_root" ] || return 0
+
+  # Canonical Tier-P single-sample mappings for direct reuse by sweep & v1.0.4
+  local acc
+  for acc in SRR15006386 SRR15006375 SRR15006376 SRR15006540 SRR8657348; do
+    local src_dir="${cells_root}/s2_tierp_v2_${acc}_th8"
+    if [ -d "$src_dir" ]; then
+      [ -s "${src_dir}/java_th8.var" ]        && oracle_cache_put "tierp/${acc}/java.var"        "${src_dir}/java_th8.var"
+      [ -s "${src_dir}/java_th8.sorted.var" ] && oracle_cache_put "tierp/${acc}/java.sorted.var" "${src_dir}/java_th8.sorted.var"
+      [ -s "${src_dir}/java_th8.vcf" ]        && oracle_cache_put "tierp/${acc}/java.vcf"        "${src_dir}/java_th8.vcf"
+      [ -s "${src_dir}/cpp_th8.var" ]         && oracle_cache_put "tierp/${acc}/cpp.var"         "${src_dir}/cpp_th8.var"
+      [ -s "${src_dir}/cpp_th8.sorted.var" ]  && oracle_cache_put "tierp/${acc}/cpp.sorted.var"  "${src_dir}/cpp_th8.sorted.var"
+      [ -s "${src_dir}/cpp_th8.vcf" ]         && oracle_cache_put "tierp/${acc}/cpp.vcf"         "${src_dir}/cpp_th8.vcf"
+    fi
+  done
+
+  # Also mirror any other java*/cpp* .var/.vcf artifacts under ${WORK_DIR}/cells/s1_* and s2_*
+  local f rel
+  while IFS= read -r -d '' f; do
+    rel="${f#${cells_root}/}"
+    oracle_cache_put "cells/${rel}" "$f"
+  done < <(find "$cells_root" -maxdepth 3 -type f \( -name 'java*.var' -o -name 'java*.vcf' -o -name 'cpp*.var' -o -name 'cpp*.vcf' \) -size +0c -print0 2>/dev/null || true)
+}
+
 record_sweep_row() {
   local cell="$1" surface="$2" j_cnt="$3" r_cnt="$4" fp="$5" fn="$6" verdict="$7" notes="${8:-}"
   local summary="${WORK_DIR}/cells/v103_sweep_summary.tsv"
@@ -1397,6 +1498,7 @@ compare_and_record_var() {
   local cell="$1" label="$2" j_var="$3" r_var="$4" out_prefix="$5"
   LC_ALL=C sort "$j_var" > "${out_prefix}.java.sorted.var"
   LC_ALL=C sort "$r_var" > "${out_prefix}.rust.sorted.var"
+  oracle_cache_put "${cell}/${label}.java.sorted.var" "${out_prefix}.java.sorted.var"
   local j_rows r_rows fp fn verdict="MATCH"
   j_rows=$(wc -l < "${out_prefix}.java.sorted.var" | tr -dc '0-9')
   r_rows=$(wc -l < "${out_prefix}.rust.sorted.var" | tr -dc '0-9')
@@ -1416,6 +1518,7 @@ compare_and_record_var() {
 
 compare_and_record_vcf() {
   local cell="$1" label="$2" j_vcf="$3" r_vcf="$4" out_prefix="$5"
+  oracle_cache_put "${cell}/${label}.java.vcf" "$j_vcf"
   local j_vars r_vars fp fn verdict="MATCH"
   j_vars=$(grep -vc '^#' "$j_vcf" || true)
   r_vars=$(grep -vc '^#' "$r_vcf" || true)
@@ -1450,7 +1553,10 @@ run_v103_parity_sweep() {
   ln -sfn truth/truth.vcf.gz scratch/g4/seqc2/truth.vcf.gz 2>/dev/null || true
   ln -sfn truth/truth.vcf.gz.tbi scratch/g4/seqc2/truth.vcf.gz.tbi 2>/dev/null || true
 
-  # 1. Tier-P SRR15006540 & SRR8657348 (reuse completed .var on NVMe + run n=1 .vcf at -th 32 / -Xmx200g)
+  # Seed GCS oracle cache with all Stage 1 & Stage 2 Java/Cpp outputs already on NVMe
+  seed_oracle_cache_from_existing_cells
+
+  # 1. Tier-P SRR15006540 & SRR8657348 (reuse cached .var on NVMe/GCS + cache n=1 .vcf at -th 32 / -Xmx200g)
   for item in "SRR15006540:135145" "SRR8657348:773667"; do
     local acc="${item%%:*}"
     local exp_reg="${item##*:}"
@@ -1462,22 +1568,26 @@ run_v103_parity_sweep() {
       BED='$tp_dir/bams/${acc}.mkbed.bed'
       build_tierp_covered_bed \"\$BAM\" \"\$BED\" '${exp_reg}'
       PREV_DIR='${WORK_DIR}/cells/s2_tierp_v2_${acc}_th8'
-      if [ -s \"\$PREV_DIR/rust_th8.var\" ] && [ -s \"\$PREV_DIR/java_th8.var\" ]; then
-        cp \"\$PREV_DIR/rust_th8.var\" \"\$KEEP_DIR/rust.var\"
-        cp \"\$PREV_DIR/java_th8.var\" \"\$KEEP_DIR/java.var\"
+      if [ -s \"\$PREV_DIR/rust_th8.var\" ]; then
+        cp -f \"\$PREV_DIR/rust_th8.var\" \"\$KEEP_DIR/rust.var\"
       else
         target/release/vardictrust -G \"\$REF\" -f 0.01 -N '${acc}' -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 --emit-intermediate -th 32 \"\$BED\" > \"\$KEEP_DIR/rust.var\"
-        _JAVA_OPTIONS='-Xmx200g' conda run -n vardict-oracle vardict-java -G \"\$REF\" -f 0.01 -N '${acc}' -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -th 32 \"\$BED\" > \"\$KEEP_DIR/java.var\"
       fi
+      if [ -s \"\$PREV_DIR/java_th8.var\" ]; then
+        cp -f \"\$PREV_DIR/java_th8.var\" \"\$KEEP_DIR/java.var\"
+      fi
+      oracle_cache_get_or_run 'tierp/${acc}/java.var' \"\$KEEP_DIR/java.var\" \
+        bash -c \"_JAVA_OPTIONS='-Xmx200g' conda run -n vardict-oracle vardict-java -G '\$REF' -f 0.01 -N '${acc}' -b '\$BAM' -c 1 -S 2 -E 3 -g 4 -th 32 '\$BED' > '\$KEEP_DIR/java.var'\"
       compare_and_record_var 'sweep_tierp_${acc}' '${acc}' \"\$KEEP_DIR/java.var\" \"\$KEEP_DIR/rust.var\" \"\$KEEP_DIR/${acc}\"
 
       target/release/vardictrust -G \"\$REF\" -f 0.01 -N '${acc}' -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -th 32 \"\$BED\" > \"\$KEEP_DIR/rust.vcf\"
-      ORACLE_XMX_GB=200 bash harness/run_oracle.sh \"\$REF\" \"\$BAM\" \"\$BED\" \"\$KEEP_DIR/java.vcf\" '${acc}' -f 0.01 -th 32
+      oracle_cache_get_or_run 'tierp/${acc}/java.vcf' \"\$KEEP_DIR/java.vcf\" \
+        env ORACLE_XMX_GB=200 bash harness/run_oracle.sh \"\$REF\" \"\$BAM\" \"\$BED\" \"\$KEEP_DIR/java.vcf\" '${acc}' -f 0.01 -th 32
       compare_and_record_vcf 'sweep_tierp_${acc}' '${acc}' \"\$KEEP_DIR/java.vcf\" \"\$KEEP_DIR/rust.vcf\" \"\$KEEP_DIR/${acc}\"
     "
   done
 
-  # 2. Tier-P Somatic SRR15006376|SRR15006386 (n=1 at -th 32 / -Xmx200g, .var + .vcf)
+  # 2. Tier-P Somatic SRR15006376|SRR15006386 (n=1 at -th 32 / -Xmx200g, .var + .vcf cached in GCS)
   run_checkpointed_cell "sweep" "sweep_tierp_somatic_76_86" "0-31" "infinity" bash -c "
     set -euo pipefail
     source harness/gcp_paper_runner.sh --source-only
@@ -1487,15 +1597,17 @@ run_v103_parity_sweep() {
     BED='$tp_dir/bams/SRR15006376.mkbed.bed'
     build_tierp_covered_bed \"\$TUM\" \"\$BED\" 105949
     target/release/vardictrust -G \"\$REF\" -f 0.01 -N 'SRR15006376|SRR15006386' -b \"\${TUM}|\${NOR}\" -c 1 -S 2 -E 3 -g 4 --emit-intermediate -th 32 \"\$BED\" > \"\$KEEP_DIR/rust_som.var\"
-    _JAVA_OPTIONS='-Xmx200g' conda run -n vardict-oracle vardict-java -G \"\$REF\" -f 0.01 -N 'SRR15006376|SRR15006386' -b \"\${TUM}|\${NOR}\" -c 1 -S 2 -E 3 -g 4 -th 32 \"\$BED\" > \"\$KEEP_DIR/java_som.var\"
+    oracle_cache_get_or_run 'tierp/somatic_76_86/java_som.var' \"\$KEEP_DIR/java_som.var\" \
+      bash -c \"_JAVA_OPTIONS='-Xmx200g' conda run -n vardict-oracle vardict-java -G '\$REF' -f 0.01 -N 'SRR15006376|SRR15006386' -b '\${TUM}|\${NOR}' -c 1 -S 2 -E 3 -g 4 -th 32 '\$BED' > '\$KEEP_DIR/java_som.var'\"
     compare_and_record_var 'sweep_tierp_somatic_76_86' 'somatic_76_86' \"\$KEEP_DIR/java_som.var\" \"\$KEEP_DIR/rust_som.var\" \"\$KEEP_DIR/somatic_76_86\"
 
     target/release/vardictrust -G \"\$REF\" -f 0.01 -N 'SRR15006376|SRR15006386' -b \"\${TUM}|\${NOR}\" -c 1 -S 2 -E 3 -g 4 -th 32 \"\$BED\" > \"\$KEEP_DIR/rust_som.vcf\"
-    ORACLE_XMX_GB=200 bash harness/run_oracle.sh \"\$REF\" \"\${TUM}|\${NOR}\" \"\$BED\" \"\$KEEP_DIR/java_som.vcf\" 'SRR15006376|SRR15006386' -f 0.01 -th 32
+    oracle_cache_get_or_run 'tierp/somatic_76_86/java_som.vcf' \"\$KEEP_DIR/java_som.vcf\" \
+      env ORACLE_XMX_GB=200 bash harness/run_oracle.sh \"\$REF\" \"\${TUM}|\${NOR}\" \"\$BED\" \"\$KEEP_DIR/java_som.vcf\" 'SRR15006376|SRR15006386' -f 0.01 -th 32
     compare_and_record_vcf 'sweep_tierp_somatic_76_86' 'somatic_76_86' \"\$KEEP_DIR/java_som.vcf\" \"\$KEEP_DIR/rust_som.vcf\" \"\$KEEP_DIR/somatic_76_86\"
   "
 
-  # 3. Tier-P 13-Mode Parity Sweep (n=1 at -th 32 / -Xmx200g across all 13 modes, non-fail-fast)
+  # 3. Tier-P 13-Mode Parity Sweep (n=1 at -th 32 / -Xmx200g across all modes, each Java output immediately backed up to GCS)
   run_checkpointed_cell "sweep" "sweep_tierp_13modes" "0-31" "infinity" bash -c "
     set -euo pipefail
     source harness/gcp_paper_runner.sh --source-only
@@ -1507,7 +1619,8 @@ run_v103_parity_sweep() {
 
     run_mode_sweep() {
       local mode=\"\$1\" j_cmd=\"\$2\" r_cmd=\"\$3\"
-      eval \"\$j_cmd\" > \"\$KEEP_DIR/\${mode}.java.raw.var\"
+      oracle_cache_get_or_run \"tierp_13modes/\${mode}.java.raw.var\" \"\$KEEP_DIR/\${mode}.java.raw.var\" \
+        bash -c \"\$j_cmd > '\$KEEP_DIR/\${mode}.java.raw.var'\"
       eval \"\$r_cmd\" > \"\$KEEP_DIR/\${mode}.rust.raw.var\"
       compare_and_record_var 'sweep_tierp_13modes' \"\$mode\" \"\$KEEP_DIR/\${mode}.java.raw.var\" \"\$KEEP_DIR/\${mode}.rust.raw.var\" \"\$KEEP_DIR/\${mode}\"
     }
@@ -1570,7 +1683,8 @@ run_v103_parity_sweep() {
     REF='$tp_dir/archive/reference/hg19.fa'
     BAM='$tp_dir/bams/SRR8657348.bam'
     target/release/vardictrust -G \"\$REF\" -f 0.01 -N SRR8657348 -b \"\$BAM\" --emit-intermediate -th 32 -R chr1:1-249250621 > \"\$KEEP_DIR/rust_R_chr1.var\"
-    _JAVA_OPTIONS='-Xmx200g' conda run -n vardict-oracle vardict-java -G \"\$REF\" -f 0.01 -N SRR8657348 -b \"\$BAM\" -th 32 -R chr1:1-249250621 > \"\$KEEP_DIR/java_R_chr1.var\"
+    oracle_cache_get_or_run 'R_chr1_full/java_R_chr1.var' \"\$KEEP_DIR/java_R_chr1.var\" \
+      bash -c \"_JAVA_OPTIONS='-Xmx200g' conda run -n vardict-oracle vardict-java -G '\$REF' -f 0.01 -N SRR8657348 -b '\$BAM' -th 32 -R chr1:1-249250621 > '\$KEEP_DIR/java_R_chr1.var'\"
     compare_and_record_var 'sweep_R_chr1_full' 'R_chr1_249Mbp' \"\$KEEP_DIR/java_R_chr1.var\" \"\$KEEP_DIR/rust_R_chr1.var\" \"\$KEEP_DIR/R_chr1\"
   "
 
@@ -1584,11 +1698,13 @@ run_v103_parity_sweep() {
     [ -f \"\${REF}.fai\" ] || samtools faidx \"\$REF\"
     awk 'BEGIN{OFS=\"\t\"}{print \$1,\$2,\$3,\"R\"}' \"\$BED\" > \"\$KEEP_DIR/target20_4col.bed\"
     target/release/vardictrust -G \"\$REF\" -f 0.01 -N HG002 -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -z --emit-intermediate -th 32 \"\$KEEP_DIR/target20_4col.bed\" > \"\$KEEP_DIR/rust.var\"
-    _JAVA_OPTIONS='-Xmx200g' conda run -n vardict-oracle vardict-java -G \"\$REF\" -f 0.01 -N HG002 -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -z 1 -th 32 \"\$KEEP_DIR/target20_4col.bed\" > \"\$KEEP_DIR/java.var\"
+    oracle_cache_get_or_run 'hg002_chr20_exome/java.var' \"\$KEEP_DIR/java.var\" \
+      bash -c \"_JAVA_OPTIONS='-Xmx200g' conda run -n vardict-oracle vardict-java -G '\$REF' -f 0.01 -N HG002 -b '\$BAM' -c 1 -S 2 -E 3 -g 4 -z 1 -th 32 '\$KEEP_DIR/target20_4col.bed' > '\$KEEP_DIR/java.var'\"
     compare_and_record_var 'sweep_hg002_chr20_exome' 'hg002_chr20_exome' \"\$KEEP_DIR/java.var\" \"\$KEEP_DIR/rust.var\" \"\$KEEP_DIR/hg002_chr20_exome\"
 
     target/release/vardictrust -G \"\$REF\" -f 0.01 -N HG002 -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -z -th 32 \"\$KEEP_DIR/target20_4col.bed\" > \"\$KEEP_DIR/rust.vcf\"
-    ORACLE_XMX_GB=200 bash harness/run_oracle.sh \"\$REF\" \"\$BAM\" \"\$KEEP_DIR/target20_4col.bed\" \"\$KEEP_DIR/java.vcf\" HG002 -f 0.01 -z -th 32
+    oracle_cache_get_or_run 'hg002_chr20_exome/java.vcf' \"\$KEEP_DIR/java.vcf\" \
+      env ORACLE_XMX_GB=200 bash harness/run_oracle.sh \"\$REF\" \"\$BAM\" \"\$KEEP_DIR/target20_4col.bed\" \"\$KEEP_DIR/java.vcf\" HG002 -f 0.01 -z -th 32
     compare_and_record_vcf 'sweep_hg002_chr20_exome' 'hg002_chr20_exome' \"\$KEEP_DIR/java.vcf\" \"\$KEEP_DIR/rust.vcf\" \"\$KEEP_DIR/hg002_chr20_exome\"
   "
 
@@ -1602,8 +1718,10 @@ run_v103_parity_sweep() {
 
     # Arm A: Full-transcriptome -i splice-junction table
     target/release/vardictrust -G \"\$REF\" -f 0.01 -N HG002_RNA -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -z -i --emit-intermediate -th 32 \"\$BED\" > \"\$KEEP_DIR/rust.splice.tsv\"
-    _JAVA_OPTIONS='-Xmx200g' conda run -n vardict-oracle vardict-java -G \"\$REF\" -f 0.01 -N HG002_RNA -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -z 1 -i -th 32 \"\$BED\" > \"\$KEEP_DIR/java.splice.tsv\"
+    oracle_cache_get_or_run 'rna_hg002_52gb/java.splice.tsv' \"\$KEEP_DIR/java.splice.tsv\" \
+      bash -c \"_JAVA_OPTIONS='-Xmx200g' conda run -n vardict-oracle vardict-java -G '\$REF' -f 0.01 -N HG002_RNA -b '\$BAM' -c 1 -S 2 -E 3 -g 4 -z 1 -i -th 32 '\$BED' > '\$KEEP_DIR/java.splice.tsv'\"
     LC_ALL=C sort \"\$KEEP_DIR/java.splice.tsv\" > \"\$KEEP_DIR/java.splice.sorted.tsv\"
+    oracle_cache_put 'rna_hg002_52gb/java.splice.sorted.tsv' \"\$KEEP_DIR/java.splice.sorted.tsv\"
     LC_ALL=C sort \"\$KEEP_DIR/rust.splice.tsv\" > \"\$KEEP_DIR/rust.splice.sorted.tsv\"
     diff -u \"\$KEEP_DIR/java.splice.sorted.tsv\" \"\$KEEP_DIR/rust.splice.sorted.tsv\" > \"\$KEEP_DIR/splice_diff.txt\" || true
     j_sp=\$(wc -l < \"\$KEEP_DIR/java.splice.sorted.tsv\" | tr -dc '0-9')
@@ -1619,7 +1737,8 @@ run_v103_parity_sweep() {
     # Arm B: Splice-aware cDNA variant calling (without -i) on chr20 GIAB eval regions (first 500 intervals)
     awk '\$1==\"chr20\"' \"\$BED\" | head -n 500 > \"\$KEEP_DIR/chr20_rna_cdna.bed\"
     target/release/vardictrust -G \"\$REF\" -f 0.01 -N HG002_RNA -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -z --emit-intermediate -th 32 \"\$KEEP_DIR/chr20_rna_cdna.bed\" > \"\$KEEP_DIR/rust_cdna.var\"
-    _JAVA_OPTIONS='-Xmx200g' conda run -n vardict-oracle vardict-java -G \"\$REF\" -f 0.01 -N HG002_RNA -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -z 1 -th 32 \"\$KEEP_DIR/chr20_rna_cdna.bed\" > \"\$KEEP_DIR/java_cdna.var\"
+    oracle_cache_get_or_run 'rna_hg002_52gb/java_cdna.var' \"\$KEEP_DIR/java_cdna.var\" \
+      bash -c \"_JAVA_OPTIONS='-Xmx200g' conda run -n vardict-oracle vardict-java -G '\$REF' -f 0.01 -N HG002_RNA -b '\$BAM' -c 1 -S 2 -E 3 -g 4 -z 1 -th 32 '\$KEEP_DIR/chr20_rna_cdna.bed' > '\$KEEP_DIR/java_cdna.var'\"
     compare_and_record_var 'sweep_rna_hg002_52gb' 'rna_cdna_variants' \"\$KEEP_DIR/java_cdna.var\" \"\$KEEP_DIR/rust_cdna.var\" \"\$KEEP_DIR/rna_cdna\"
   "
 
@@ -1630,22 +1749,26 @@ run_v103_parity_sweep() {
     mkdir -p "$KEEP_DIR/amplicon" "$KEEP_DIR/hg002" "$KEEP_DIR/hg008" "$KEEP_DIR/seqc2"
 
     # (a) Amplicon
-    ORACLE_XMX_GB=200 bash harness/run_oracle.sh "$DATA_DIR/amplicon/ref.fa" "$DATA_DIR/amplicon/amplicon.bam" "$DATA_DIR/amplicon/correct_8columns_amplicon.bed" "$KEEP_DIR/amplicon/java.vcf" SAMPLE -z -a 10:0.95 -th 32
+    oracle_cache_get_or_run "4targets_full/amplicon/java.vcf" "$KEEP_DIR/amplicon/java.vcf" \
+      env ORACLE_XMX_GB=200 bash harness/run_oracle.sh "$DATA_DIR/amplicon/ref.fa" "$DATA_DIR/amplicon/amplicon.bam" "$DATA_DIR/amplicon/correct_8columns_amplicon.bed" "$KEEP_DIR/amplicon/java.vcf" SAMPLE -z -a 10:0.95 -th 32
     target/release/vardictrust -G "$DATA_DIR/amplicon/ref.fa" -f 0.01 -N SAMPLE -b "$DATA_DIR/amplicon/amplicon.bam" -c 1 -S 2 -E 3 -g 4 -z -a 10:0.95 -th 32 "$DATA_DIR/amplicon/correct_8columns_amplicon.bed" > "$KEEP_DIR/amplicon/rust.vcf"
     compare_and_record_vcf "sweep_4targets_full" "amplicon_full" "$KEEP_DIR/amplicon/java.vcf" "$KEEP_DIR/amplicon/rust.vcf" "$KEEP_DIR/amplicon/cmp"
 
     # (b) HG002 Deep WGS (chr20:10M-30M, 227,562 variants)
-    ORACLE_XMX_GB=200 bash harness/run_oracle.sh "$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fasta" "$DATA_DIR/hg002/HG002.chr20.bam" "$DATA_DIR/hg002/engine.bed" "$KEEP_DIR/hg002/java.vcf" HG002 -z -f 0.01 -th 32
+    oracle_cache_get_or_run "4targets_full/hg002/java.vcf" "$KEEP_DIR/hg002/java.vcf" \
+      env ORACLE_XMX_GB=200 bash harness/run_oracle.sh "$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fasta" "$DATA_DIR/hg002/HG002.chr20.bam" "$DATA_DIR/hg002/engine.bed" "$KEEP_DIR/hg002/java.vcf" HG002 -z -f 0.01 -th 32
     target/release/vardictrust -G "$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fasta" -f 0.01 -N HG002 -b "$DATA_DIR/hg002/HG002.chr20.bam" -c 1 -S 2 -E 3 -g 4 -z -th 32 "$DATA_DIR/hg002/engine.bed" > "$KEEP_DIR/hg002/rust.vcf"
     compare_and_record_vcf "sweep_4targets_full" "hg002_deep_wgs" "$KEEP_DIR/hg002/java.vcf" "$KEEP_DIR/hg002/rust.vcf" "$KEEP_DIR/hg002/cmp"
 
     # (c) HG008 Somatic Paired Deep WGS (18,426 variants)
-    ORACLE_XMX_GB=200 bash harness/run_oracle.sh "$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fa" "$DATA_DIR/hg008/HG008-T.slice.bam|$DATA_DIR/hg008/HG008-N.slice.bam" "$DATA_DIR/hg008/engine.bed" "$KEEP_DIR/hg008/java.vcf" "HG008-T|HG008-N" -z -f 0.01 -th 32
+    oracle_cache_get_or_run "4targets_full/hg008/java.vcf" "$KEEP_DIR/hg008/java.vcf" \
+      env ORACLE_XMX_GB=200 bash harness/run_oracle.sh "$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fa" "$DATA_DIR/hg008/HG008-T.slice.bam|$DATA_DIR/hg008/HG008-N.slice.bam" "$DATA_DIR/hg008/engine.bed" "$KEEP_DIR/hg008/java.vcf" "HG008-T|HG008-N" -z -f 0.01 -th 32
     target/release/vardictrust -G "$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fa" -f 0.01 -N "HG008-T|HG008-N" -b "$DATA_DIR/hg008/HG008-T.slice.bam|$DATA_DIR/hg008/HG008-N.slice.bam" -c 1 -S 2 -E 3 -g 4 -z -th 32 "$DATA_DIR/hg008/engine.bed" > "$KEEP_DIR/hg008/rust.vcf"
     compare_and_record_vcf "sweep_4targets_full" "hg008_somatic_wgs" "$KEEP_DIR/hg008/java.vcf" "$KEEP_DIR/hg008/rust.vcf" "$KEEP_DIR/hg008/cmp"
 
     # (d) SEQC2 HCC1395|HCC1395BL Full Somatic WES (623,444 variants)
-    ORACLE_XMX_GB=200 bash harness/run_oracle.sh "$DATA_DIR/ref/d1vd1/GRCh38.d1.vd1.fa" "$DATA_DIR/seqc2/HCC1395.bam|$DATA_DIR/seqc2/HCC1395BL.bam" "$DATA_DIR/seqc2/exome.engine.bed" "$KEEP_DIR/seqc2/java.vcf" "HCC1395|HCC1395BL" -z -f 0.01 -th 32
+    oracle_cache_get_or_run "4targets_full/seqc2/java.vcf" "$KEEP_DIR/seqc2/java.vcf" \
+      env ORACLE_XMX_GB=200 bash harness/run_oracle.sh "$DATA_DIR/ref/d1vd1/GRCh38.d1.vd1.fa" "$DATA_DIR/seqc2/HCC1395.bam|$DATA_DIR/seqc2/HCC1395BL.bam" "$DATA_DIR/seqc2/exome.engine.bed" "$KEEP_DIR/seqc2/java.vcf" "HCC1395|HCC1395BL" -z -f 0.01 -th 32
     target/release/vardictrust -G "$DATA_DIR/ref/d1vd1/GRCh38.d1.vd1.fa" -f 0.01 -N "HCC1395|HCC1395BL" -b "$DATA_DIR/seqc2/HCC1395.bam|$DATA_DIR/seqc2/HCC1395BL.bam" -c 1 -S 2 -E 3 -g 4 -z -th 32 "$DATA_DIR/seqc2/exome.engine.bed" > "$KEEP_DIR/seqc2/rust.vcf"
     compare_and_record_vcf "sweep_4targets_full" "seqc2_somatic_exome_full" "$KEEP_DIR/seqc2/java.vcf" "$KEEP_DIR/seqc2/rust.vcf" "$KEEP_DIR/seqc2/cmp"
   '
@@ -1658,11 +1781,13 @@ run_v103_parity_sweep() {
     BAM="$DATA_DIR/seqc2/HCC1395.bam"
     printf "chr1\t0\t10000000\tR10M\n" > "$KEEP_DIR/chr1_10m.bed"
     target/release/vardictrust -G "$REF" -f 0 -N HCC1395 -b "$BAM" -c 1 -S 2 -E 3 -g 4 -z --emit-intermediate -th 32 "$KEEP_DIR/chr1_10m.bed" > "$KEEP_DIR/rust_chr1_10m_f0.var"
-    _JAVA_OPTIONS="-Xmx200g" conda run -n vardict-oracle vardict-java -G "$REF" -f 0 -N HCC1395 -b "$BAM" -c 1 -S 2 -E 3 -g 4 -z 1 -th 32 "$KEEP_DIR/chr1_10m.bed" > "$KEEP_DIR/java_chr1_10m_f0.var"
+    oracle_cache_get_or_run "span_chr1_f0/java_chr1_10m_f0.var" "$KEEP_DIR/java_chr1_10m_f0.var" \
+      bash -c "_JAVA_OPTIONS=\"-Xmx200g\" conda run -n vardict-oracle vardict-java -G \"$REF\" -f 0 -N HCC1395 -b \"$BAM\" -c 1 -S 2 -E 3 -g 4 -z 1 -th 32 \"$KEEP_DIR/chr1_10m.bed\" > \"$KEEP_DIR/java_chr1_10m_f0.var\""
     compare_and_record_var "sweep_span_chr1_f0" "chr1_10m_f0" "$KEEP_DIR/java_chr1_10m_f0.var" "$KEEP_DIR/rust_chr1_10m_f0.var" "$KEEP_DIR/chr1_10m_f0"
 
     target/release/vardictrust -G "$REF" -f 0 -N HCC1395 -b "$BAM" -c 1 -S 2 -E 3 -g 4 -z -th 32 "$KEEP_DIR/chr1_10m.bed" > "$KEEP_DIR/rust_chr1_10m_f0.vcf"
-    ORACLE_XMX_GB=200 bash harness/run_oracle.sh "$REF" "$BAM" "$KEEP_DIR/chr1_10m.bed" "$KEEP_DIR/java_chr1_10m_f0.vcf" HCC1395 -f 0 -z -th 32
+    oracle_cache_get_or_run "span_chr1_f0/java_chr1_10m_f0.vcf" "$KEEP_DIR/java_chr1_10m_f0.vcf" \
+      env ORACLE_XMX_GB=200 bash harness/run_oracle.sh "$REF" "$BAM" "$KEEP_DIR/chr1_10m.bed" "$KEEP_DIR/java_chr1_10m_f0.vcf" HCC1395 -f 0 -z -th 32
     compare_and_record_vcf "sweep_span_chr1_f0" "chr1_10m_f0" "$KEEP_DIR/java_chr1_10m_f0.vcf" "$KEEP_DIR/rust_chr1_10m_f0.vcf" "$KEEP_DIR/chr1_10m_f0"
   '
 
@@ -1679,11 +1804,13 @@ run_v103_parity_sweep() {
       shift 5
       local extra=("$@")
       "$VR" -G "$ref" -N "$sample" -b "$bam" -c 1 -S 2 -E 3 -g 4 -z --emit-intermediate -th 32 "${extra[@]}" "$bed" > "$KEEP_DIR/${arm}.rust.var"
-      _JAVA_OPTIONS="-Xmx200g" conda run -n vardict-oracle vardict-java -G "$ref" -N "$sample" -b "$bam" -c 1 -S 2 -E 3 -g 4 -z 1 -th 32 "${extra[@]}" "$bed" > "$KEEP_DIR/${arm}.java.var"
+      oracle_cache_get_or_run "wgs_mrd_matrix/${arm}.java.var" "$KEEP_DIR/${arm}.java.var" \
+        bash -c "_JAVA_OPTIONS=\"-Xmx200g\" conda run -n vardict-oracle vardict-java -G \"$ref\" -N \"$sample\" -b \"$bam\" -c 1 -S 2 -E 3 -g 4 -z 1 -th 32 ${extra[*]} \"$bed\" > \"$KEEP_DIR/${arm}.java.var\""
       compare_and_record_var "sweep_wgs_mrd_matrix" "$arm" "$KEEP_DIR/${arm}.java.var" "$KEEP_DIR/${arm}.rust.var" "$KEEP_DIR/${arm}"
 
       "$VR" -G "$ref" -N "$sample" -b "$bam" -c 1 -S 2 -E 3 -g 4 -z -th 32 "${extra[@]}" "$bed" > "$KEEP_DIR/${arm}.rust.vcf"
-      ORACLE_XMX_GB=200 bash harness/run_oracle.sh "$ref" "$bam" "$bed" "$KEEP_DIR/${arm}.java.vcf" "$sample" -z -th 32 "${extra[@]}"
+      oracle_cache_get_or_run "wgs_mrd_matrix/${arm}.java.vcf" "$KEEP_DIR/${arm}.java.vcf" \
+        env ORACLE_XMX_GB=200 bash harness/run_oracle.sh "$ref" "$bam" "$bed" "$KEEP_DIR/${arm}.java.vcf" "$sample" -z -th 32 "${extra[@]}"
       compare_and_record_vcf "sweep_wgs_mrd_matrix" "$arm" "$KEEP_DIR/${arm}.java.vcf" "$KEEP_DIR/${arm}.rust.vcf" "$KEEP_DIR/${arm}"
     }
 
@@ -1748,11 +1875,13 @@ EOF
       shift 5
       local extra=(\"\$@\")
       \"\$VR\" -G \"\$ref\" -N \"\$sample\" -b \"\$bam\" -c 1 -S 2 -E 3 -g 4 -z --emit-intermediate -th 32 \"\${extra[@]}\" \"\$bed\" > \"\$KEEP_DIR/\${arm}.rust.var\"
-      _JAVA_OPTIONS='-Xmx200g' conda run -n vardict-oracle vardict-java -G \"\$ref\" -N \"\$sample\" -b \"\$bam\" -c 1 -S 2 -E 3 -g 4 -z 1 -th 32 \"\${extra[@]}\" \"\$bed\" > \"\$KEEP_DIR/\${arm}.java.var\"
+      oracle_cache_get_or_run \"ultradeep_mrd/\${arm}.java.var\" \"\$KEEP_DIR/\${arm}.java.var\" \
+        bash -c \"_JAVA_OPTIONS='-Xmx200g' conda run -n vardict-oracle vardict-java -G '\$ref' -N '\$sample' -b '\$bam' -c 1 -S 2 -E 3 -g 4 -z 1 -th 32 \${extra[*]} '\$bed' > '\$KEEP_DIR/\${arm}.java.var'\"
       compare_and_record_var 'sweep_ultradeep_mrd_stress' \"\$arm\" \"\$KEEP_DIR/\${arm}.java.var\" \"\$KEEP_DIR/\${arm}.rust.var\" \"\$KEEP_DIR/\${arm}\"
 
       \"\$VR\" -G \"\$ref\" -N \"\$sample\" -b \"\$bam\" -c 1 -S 2 -E 3 -g 4 -z -th 32 \"\${extra[@]}\" \"\$bed\" > \"\$KEEP_DIR/\${arm}.rust.vcf\"
-      ORACLE_XMX_GB=200 bash harness/run_oracle.sh \"\$ref\" \"\$bam\" \"\$bed\" \"\$KEEP_DIR/\${arm}.java.vcf\" \"\$sample\" -z -th 32 \"\${extra[@]}\"
+      oracle_cache_get_or_run \"ultradeep_mrd/\${arm}.java.vcf\" \"\$KEEP_DIR/\${arm}.java.vcf\" \
+        env ORACLE_XMX_GB=200 bash harness/run_oracle.sh \"\$ref\" \"\$bam\" \"\$bed\" \"\$KEEP_DIR/\${arm}.java.vcf\" \"\$sample\" -z -th 32 \"\${extra[@]}\"
       compare_and_record_vcf 'sweep_ultradeep_mrd_stress' \"\$arm\" \"\$KEEP_DIR/\${arm}.java.vcf\" \"\$KEEP_DIR/\${arm}.rust.vcf\" \"\$KEEP_DIR/\${arm}\"
     }
 
@@ -1784,20 +1913,30 @@ EOF
     run_ud_arm 'ud_rna_173kx_f0.001_fisher' \"\$FA_GIAB\" '$rna_dir/HG002_rep1_Aligned.sortedByCoord.out.bam' \"\$KEEP_DIR/rna_173kx.bed\" 'HG002_RNA' -f 0.001 --fisher
   "
 
-  # 11. Extended Coverage (17 modalities) + Multimodal Slices (18 slices) + G4 & E2 CRAM Twins (n=1 at -th 32 / -Xmx200g)
+  # 11. Extended Coverage (17 modalities) + Multimodal Slices (18 slices) + G4 & E2 CRAM Twins
+  # Uses GOLDEN_MODE=auto + GOLDEN_STORE_DIR=${WORK_DIR}/golden-store synced with ${GCS_ORACLE_CACHE}/golden-store
+  # so every VarDictJava and vardictcpp VCF is SHA256-pinned and backed up to GCS.
   run_checkpointed_cell "sweep" "sweep_multimodal_and_cram_twin" "0-31" "infinity" bash -c '
     set -euo pipefail
     source harness/gcp_paper_runner.sh --source-only
-    export THREADS=32 OMP_NUM_THREADS=32 RAYON_NUM_THREADS=32 ORACLE_XMX_GB=200 CPP_SKIP=1 SWEEP_NO_FAIL_FAST=1
-    export SWEEP_DIFF_DIR="$KEEP_DIR/diffs"
-    mkdir -p "$SWEEP_DIFF_DIR"
+    export THREADS=32 OMP_NUM_THREADS=32 RAYON_NUM_THREADS=32 ORACLE_XMX_GB=200
+    export GOLDEN_STORE_DIR="${WORK_DIR}/golden-store"
+    mkdir -p "$GOLDEN_STORE_DIR"
+
+    # Restore existing golden-store cells from GCS if present
+    if setsid gsutil -q stat "${GCS_ORACLE_CACHE}/golden-store/cells/*" 2>/dev/null; then
+      echo "[GOLDEN-STORE] Restoring pinned Java/Cpp oracle cells from ${GCS_ORACLE_CACHE}/golden-store..."
+      setsid gsutil -m -q rsync -r "${GCS_ORACLE_CACHE}/golden-store" "$GOLDEN_STORE_DIR" || true
+    fi
 
     rc_ext=0
-    bash harness/run_extended_coverage.sh > "$KEEP_DIR/extended_coverage.log" 2>&1 || rc_ext=$?
+    GOLDEN_MODE=auto GOLDEN_STORE_DIR="$GOLDEN_STORE_DIR" bash harness/run_extended_coverage.sh > "$KEEP_DIR/extended_coverage.log" 2>&1 || rc_ext=$?
+    setsid gsutil -m -o GSUtil:parallel_composite_upload_threshold=0 -q rsync -r "$GOLDEN_STORE_DIR" "${GCS_ORACLE_CACHE}/golden-store" || true
     record_sweep_row "sweep_multimodal_and_cram_twin" "extended_coverage_17modes" "17" "17" "0" "0" "$([ "$rc_ext" -eq 0 ] && echo MATCH || echo DIFF_CAPTURED)" "rc=$rc_ext"
 
     rc_mm=0
-    bash harness/run_multimodal_slices.sh > "$KEEP_DIR/multimodal_slices.log" 2>&1 || rc_mm=$?
+    GOLDEN_MODE=auto GOLDEN_STORE_DIR="$GOLDEN_STORE_DIR" bash harness/run_multimodal_slices.sh > "$KEEP_DIR/multimodal_slices.log" 2>&1 || rc_mm=$?
+    setsid gsutil -m -o GSUtil:parallel_composite_upload_threshold=0 -q rsync -r "$GOLDEN_STORE_DIR" "${GCS_ORACLE_CACHE}/golden-store" || true
     record_sweep_row "sweep_multimodal_and_cram_twin" "multimodal_18slices" "18" "18" "0" "0" "$([ "$rc_mm" -eq 0 ] && echo MATCH || echo DIFF_CAPTURED)" "rc=$rc_mm"
 
     rc_cram=0
@@ -2098,6 +2237,16 @@ run_plan_check() {
 
   run_checkpointed_cell "test_stage" "cell_alpha" 2 "4G" bash -c "echo \$(( \$(cat '$count_file') + 1 )) > '$count_file'"
   [ "$(cat "$count_file")" -eq 1 ] || { echo "FAIL: checkpointed cell_alpha ran a second time" >&2; exit 1; }
+
+  # Verify oracle_cache_get_or_run stores on miss and restores from cache on hit without re-running generator
+  local gen_count="$tmp/oracle_gen_count"
+  echo 0 > "$gen_count"
+  oracle_cache_get_or_run "test/java.var" "$tmp/work1/java.var" bash -c "echo \$(( \$(cat '$gen_count') + 1 )) > '$gen_count'; echo 'ORACLE_TRUTH_ROW' > '$tmp/work1/java.var'"
+  [ "$(cat "$gen_count")" -eq 1 ] || { echo "FAIL: oracle_cache_get_or_run did not run on miss" >&2; exit 1; }
+  [ -s "$LOCAL_CKPT_DIR/oracle-cache/test/java.var" ] || { echo "FAIL: oracle-cache file missing" >&2; exit 1; }
+  oracle_cache_get_or_run "test/java.var" "$tmp/work2/java.var" bash -c "echo \$(( \$(cat '$gen_count') + 1 )) > '$gen_count'; echo 'REGEN_ROW' > '$tmp/work2/java.var'"
+  [ "$(cat "$gen_count")" -eq 1 ] || { echo "FAIL: oracle_cache_get_or_run re-ran generator on cache hit" >&2; exit 1; }
+  [ "$(cat "$tmp/work2/java.var")" = "ORACLE_TRUTH_ROW" ] || { echo "FAIL: restored oracle file content mismatch" >&2; exit 1; }
 
   # Verify build_tierp_covered_bed on fixtures/micro/micro.bam if samtools is available
   if command -v samtools >/dev/null 2>&1 && [ -f "fixtures/micro/micro.bam" ]; then
