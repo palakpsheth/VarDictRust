@@ -41,6 +41,7 @@ The harness operates in two distinct tiers:
 | [`setup_hooks.sh`](setup_hooks.sh) | **Git Hooks Configuration:** Configures repository Git hook path to `.githooks/` (`git config core.hooksPath .githooks`), activating fast local pre-commit hygiene and secret checks. | $<1\text{s}$ |
 | [`engine_fingerprint.sh`](engine_fingerprint.sh) | **Release Engine Fingerprinter:** Computes a 16-character SHA-256 hash across engine source code (`crates/*/src`), comparator drivers, and locked dependencies (`Cargo.lock`). Guarantees evidence records are tied to an exact, unmutated engine commit. | $<1\text{s}$ |
 | [`bin_equiv.sh`](bin_equiv.sh) | **Binary Equivalence Gate:** Validates that statically-compiled `x86_64-unknown-linux-musl` release binaries produce identical variant calls to glibc binaries. | $<30\text{s}$ |
+| [`check_release_consistency.py`](../.agents/skills/vardictrust-release/scripts/check_release_consistency.py) | **Release Consistency & Evidence Validator:** Stdlib-only validator ensuring all 19 version-bearing files, 277 workspace test counts, engine fingerprints (`FP` & `PERF_FP`), and 16 `benchmarks/evidence/*.json` SHA-256 manifests match for `--phase {pre-tag,post-tag,post-bioconda,post-nfcore}`. | $<1\text{s}$ |
 
 ---
 
@@ -243,3 +244,9 @@ bash harness/profile.sh baseline --only hg008-sub
 # 5. Re-build markdown catalog + SVG flamegraphs across all profiled cell directories:
 python3 harness/profile_catalog.py scratch/profiles/baseline/*/ -o scratch/profiles/baseline/catalog.md
 ```
+
+For detailed workflow guides on using the harness for profiling, pull request verification, issue triage, and multi-channel releases, see the repository Agent Skills in [`../.agents/skills/`](../AGENTS.md#19-repository-specific-agent-skills):
+- [`vardictrust-profiling`](../.agents/skills/vardictrust-profiling/SKILL.md) ([Rust API & `MALLOC_CONF` reference](../.agents/skills/vardictrust-profiling/references/rust-profiling-api.md))
+- [`vardictrust-pr`](../.agents/skills/vardictrust-pr/SKILL.md)
+- [`vardictrust-issue`](../.agents/skills/vardictrust-issue/SKILL.md)
+- [`vardictrust-release`](../.agents/skills/vardictrust-release/SKILL.md) ([19-surface map](../.agents/skills/vardictrust-release/references/version-surface-map.md))
