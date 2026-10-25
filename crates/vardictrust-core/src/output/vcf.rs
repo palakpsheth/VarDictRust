@@ -79,6 +79,18 @@ fn chrom_compare(a: &str, b: &str) -> std::cmp::Ordering {
     }
 }
 
+/// Ports `var2vcf_valid.pl:21` `my $Freq = $opt_f ? $opt_f : 0.02;`:
+/// in Perl, `-f 0` is falsy and falls back to `0.02` (unlike `var2vcf_paired.pl:21`
+/// which uses `defined($opt_f)`).
+#[inline]
+fn valid_freq_threshold(config: &Config) -> f64 {
+    if config.af_threshold == 0.0 {
+        0.02
+    } else {
+        config.af_threshold
+    }
+}
+
 /// Print VCF 4.2 compliant header populated with contigs.
 pub fn print_vcf_header<W: Write>(
     w: &mut W,
@@ -218,7 +230,7 @@ pub fn print_vcf_header<W: Write>(
     let sn_val = 1.5;
     let total_depth = 3;
     let var_depth = 2;
-    let freq_val = config.af_threshold;
+    let freq_val = valid_freq_threshold(config);
     let opt_i = 12;
     let opt_m = 5.25;
     let opt_c = 0;
@@ -368,7 +380,7 @@ pub fn filter_variant(
     // is the -f value (default 0.02, :21); it never drops on AF without -S.
     // The same $Freq drives the GT "0/1 vs 0/0" threshold (:220). $Freq is the
     // writer's own -f (`af_threshold`), NOT the engine freq that -p sets to -1.
-    let freq_threshold = config.af_threshold;
+    let freq_threshold = valid_freq_threshold(config);
     if variant.frequency < freq_threshold {
         filters.push(format!("f{}", freq_threshold));
     }
@@ -570,7 +582,7 @@ pub fn format_vcf_record(
     } else {
         let af = variant.frequency;
         let gt_freq = 0.2;
-        let freq_threshold = config.af_threshold;
+        let freq_threshold = valid_freq_threshold(config);
         if 1.0 - af < gt_freq {
             "1/1".to_string()
         } else if af >= 0.5 {
@@ -1028,17 +1040,35 @@ pub fn format_paired_vcf_record(
     // Fisher values exactly as somatic_61 computes them (matches the oracle's
     // testsomatic.R / --fisher columns; degenerate all-zero tables give p=1/OR=0
     // in both R and our FisherExact — verified empirically in vardict-oracle).
-    let fisher1 = crate::stats::FisherExact::new(v1.ref_fwd_cov, v1.ref_rev_cov, v1.fwd, v1.rev);
+    let fisher1 = crate::stats::FisherExact::new_with_mode(
+        v1.ref_fwd_cov,
+        v1.ref_rev_cov,
+        v1.fwd,
+        v1.rev,
+        config.fisher,
+    );
     let p1 = fisher1.get_p_value();
     let or1 = paired_or_transform(&fisher1.get_odds_ratio());
 
-    let fisher2 = crate::stats::FisherExact::new(v2.ref_fwd_cov, v2.ref_rev_cov, v2.fwd, v2.rev);
+    let fisher2 = crate::stats::FisherExact::new_with_mode(
+        v2.ref_fwd_cov,
+        v2.ref_rev_cov,
+        v2.fwd,
+        v2.rev,
+        config.fisher,
+    );
     let p2 = fisher2.get_p_value();
     let or2 = paired_or_transform(&fisher2.get_odds_ratio());
 
     let tref = (v1.total_pos_cov - v1.pos_coverage).max(0);
     let rref = (v2.total_pos_cov - v2.pos_coverage).max(0);
-    let fisher_total = crate::stats::FisherExact::new(v1.pos_coverage, tref, v2.pos_coverage, rref);
+    let fisher_total = crate::stats::FisherExact::new_with_mode(
+        v1.pos_coverage,
+        tref,
+        v2.pos_coverage,
+        rref,
+        config.fisher,
+    );
     // min(greater, less), mirroring testsomatic.R's alternative selection (:31-43).
     let ptot = fisher_total
         .get_p_value_greater()
@@ -1970,5 +2000,43 @@ mod tests {
         config.fisher = true;
         let rec = format_vcf_record(&p2_variant(), &region, &config, &[], 1.0, "0", None);
         assert_eq!(info_field(&rec, "DUPRATE="), "DUPRATE=0.13");
+    }
+
+    #[test]
+    fn test_var2vcf_valid_zero_af_threshold_falls_back_to_0_02() {
+        // Bug D (`var2vcf_valid.pl:21` `my $Freq = $opt_f ? $opt_f : 0.02;`):
+        // when `-f 0` (`af_threshold == 0.0`) is passed in single-sample mode,
+        // Perl treats `0` as falsy and uses `0.02` for the header `##FILTER=<ID=f0.02>`,
+        // the `f0.02` filter check, and the `GT` `0/1 vs 0/0` threshold.
+        let mut config = Config::default();
+        config.af_threshold = 0.0;
+        let mut header_buf = Vec::new();
+        print_vcf_header(&mut header_buf, &config, &HashMap::new()).unwrap();
+        let header_str = String::from_utf8(header_buf).unwrap();
+        assert!(
+            header_str.contains("##FILTER=<ID=f0.02,Description=\"Allele frequency < 0.02\">"),
+            "var2vcf_valid header with -f 0 must emit f0.02"
+        );
+
+        let mut low_af_var = p2_variant();
+        low_af_var.frequency = 0.01;
+        let filters = filter_variant(&low_af_var, &config, 0, None, 1.0, "1.0");
+        assert!(
+            filters.contains(&"f0.02".to_string()),
+            "variant with AF=0.01 under -f 0 must receive f0.02 filter"
+        );
+        let region = Region {
+            chr: "chr20".to_string(),
+            start: crate::types::Pos1(90),
+            end: crate::types::Pos1(110),
+            gene: "T".to_string(),
+            amplicon: None,
+        };
+        let rec = format_vcf_record(&low_af_var, &region, &config, &filters, 1.0, "1.0", None);
+        let sample_col = rec.split('\t').nth(9).unwrap();
+        assert!(
+            sample_col.starts_with("0/0:"),
+            "variant with AF=0.01 < 0.02 under -f 0 must have GT=0/0, got {sample_col}"
+        );
     }
 }

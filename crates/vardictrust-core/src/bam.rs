@@ -137,7 +137,10 @@ impl SamRecord {
         self.sequence.clear();
         self.sequence.reserve(record.sequence().len());
         for b in record.sequence().iter() {
-            self.sequence.push(b);
+            // Normalize reference-matching CRAM bases decoded against soft-masked
+            // lowercase FASTA contigs (`a/c/g/t/n`) to uppercase (`A/C/G/T/N`),
+            // matching BAM 4-bit nibble decoding and HTSJDK `SAMRecord.getReadBases()`.
+            self.sequence.push(b.to_ascii_uppercase());
         }
 
         self.quality_scores.clear();
@@ -390,9 +393,66 @@ impl SamRecord {
     }
 }
 
+/// Reconstruct the SAMtags §1.5 `NM` tag (edit distance to the reference,
+/// excluding clipping and reference skips) for a mapped CRAM record when the
+/// CRAM encoder omitted `NM` on write per CRAM 3.0 §10.6 (the `samtools view -C`
+/// default `store_nm=0`).
+pub(crate) fn compute_cram_nm(rec: &SamRecord, ref_seq: &[u8]) -> Option<i32> {
+    if (rec.flags & 0x4) != 0 || rec.cigar.is_empty() || rec.sequence.is_empty() {
+        return None;
+    }
+    let start_1 = rec.alignment_start?.0;
+    if start_1 == 0 {
+        return None;
+    }
+    let mut ref_pos = (start_1 - 1) as usize;
+    let mut read_pos = 0usize;
+    let mut nm: i32 = 0;
+    for &(len, op) in &rec.cigar {
+        let len = len as usize;
+        match op {
+            CigarKind::Match | CigarKind::SequenceMatch | CigarKind::SequenceMismatch => {
+                for _ in 0..len {
+                    let Some(&read_b) = rec.sequence.get(read_pos) else {
+                        break;
+                    };
+                    let ref_b = ref_seq
+                        .get(ref_pos)
+                        .map(|b| b.to_ascii_uppercase())
+                        .unwrap_or(b'N');
+                    if read_b.to_ascii_uppercase() != ref_b {
+                        nm += 1;
+                    }
+                    read_pos += 1;
+                    ref_pos += 1;
+                }
+            }
+            CigarKind::Insertion => {
+                nm += len as i32;
+                read_pos += len;
+            }
+            CigarKind::Deletion => {
+                nm += len as i32;
+                ref_pos += len;
+            }
+            CigarKind::Skip => {
+                ref_pos += len;
+            }
+            CigarKind::SoftClip => {
+                read_pos += len;
+            }
+            CigarKind::HardClip | CigarKind::Pad => {}
+        }
+    }
+    Some(nm)
+}
+
 pub enum IndexedSamReader {
     Bam(noodles::bam::io::IndexedReader<noodles::bgzf::io::Reader<std::fs::File>>),
-    Cram(noodles::cram::io::IndexedReader<std::fs::File>),
+    Cram(
+        noodles::cram::io::IndexedReader<std::fs::File>,
+        noodles::fasta::Repository,
+    ),
 }
 
 impl IndexedSamReader {
@@ -411,11 +471,18 @@ impl IndexedSamReader {
                 });
                 Ok(Box::new(iter))
             }
-            IndexedSamReader::Cram(reader) => {
+            IndexedSamReader::Cram(reader, repository) => {
                 let query = reader.query(header, region)?;
-                let iter = query.records().map(|record| {
+                let ref_seq = repository.get(region.name()).and_then(|r| r.ok());
+                let iter = query.records().map(move |record| {
                     let rec = record?;
-                    SamRecord::from_alignment_record(&rec, header)
+                    let mut sam_rec = SamRecord::from_alignment_record(&rec, header)?;
+                    if sam_rec.nm.is_none() {
+                        if let Some(ref seq) = ref_seq {
+                            sam_rec.nm = compute_cram_nm(&sam_rec, seq.as_ref().as_ref());
+                        }
+                    }
+                    Ok(sam_rec)
                 });
                 Ok(Box::new(iter))
             }
@@ -474,14 +541,14 @@ pub fn open_reader(
         };
 
         let mut reader = noodles::cram::io::indexed_reader::Builder::default()
-            .set_reference_sequence_repository(repository)
+            .set_reference_sequence_repository(repository.clone())
             .build_from_path(path)
             .map_err(crate::types::VardictError::Io)?;
         let header = reader
             .read_header()
             .map_err(crate::types::VardictError::Io)?;
         Ok(CachedReader {
-            reader: IndexedSamReader::Cram(reader),
+            reader: IndexedSamReader::Cram(reader, repository),
             header,
         })
     } else {
@@ -1250,17 +1317,24 @@ pub fn query_region_iter(
             ))
         })?;
         match reader {
-            IndexedSamReader::Cram(mut reader) => {
+            IndexedSamReader::Cram(mut reader, repository) => {
                 let query = reader
                     .query(&header, &region)
                     .map_err(crate::types::VardictError::Io)?;
+                let ref_seq = repository.get(region.name()).and_then(|r| r.ok());
                 let mut records = Vec::new();
                 for record in query.records() {
                     let rec = record.map_err(crate::types::VardictError::Io)?;
-                    records.push(SamRecord::from_alignment_record(&rec, &header)?);
+                    let mut sam_rec = SamRecord::from_alignment_record(&rec, &header)?;
+                    if sam_rec.nm.is_none() {
+                        if let Some(ref seq) = ref_seq {
+                            sam_rec.nm = compute_cram_nm(&sam_rec, seq.as_ref().as_ref());
+                        }
+                    }
+                    records.push(sam_rec);
                 }
                 Ok(RecordFeed::Cram(CramFeed {
-                    _reader: IndexedSamReader::Cram(reader),
+                    _reader: IndexedSamReader::Cram(reader, repository),
                     records: records.into_iter(),
                 }))
             }
@@ -2685,8 +2759,8 @@ mod tests {
                     },
                     sam: SamRecord::new(),
                 })),
-                IndexedSamReader::Cram(reader) => RecordFeedLegacy::Cram(CramFeed {
-                    _reader: IndexedSamReader::Cram(reader),
+                IndexedSamReader::Cram(reader, repository) => RecordFeedLegacy::Cram(CramFeed {
+                    _reader: IndexedSamReader::Cram(reader, repository),
                     records: Vec::new().into_iter(),
                 }),
             });
@@ -2731,17 +2805,24 @@ mod tests {
                     sam: SamRecord::new(),
                 })))
             }
-            IndexedSamReader::Cram(mut reader) => {
+            IndexedSamReader::Cram(mut reader, repository) => {
                 let query = reader
                     .query(&header, &region)
                     .map_err(crate::types::VardictError::Io)?;
+                let ref_seq = repository.get(region.name()).and_then(|r| r.ok());
                 let mut records = Vec::new();
                 for record in query.records() {
                     let rec = record.map_err(crate::types::VardictError::Io)?;
-                    records.push(SamRecord::from_alignment_record(&rec, &header)?);
+                    let mut sam_rec = SamRecord::from_alignment_record(&rec, &header)?;
+                    if sam_rec.nm.is_none() {
+                        if let Some(ref seq) = ref_seq {
+                            sam_rec.nm = compute_cram_nm(&sam_rec, seq.as_ref().as_ref());
+                        }
+                    }
+                    records.push(sam_rec);
                 }
                 Ok(RecordFeedLegacy::Cram(CramFeed {
-                    _reader: IndexedSamReader::Cram(reader),
+                    _reader: IndexedSamReader::Cram(reader, repository),
                     records: records.into_iter(),
                 }))
             }
@@ -3356,5 +3437,46 @@ mod tests {
             .unwrap_err();
         assert_eq!(c_err.kind(), o_err.kind());
         assert_eq!(cached.virtual_position(), oracle.virtual_position());
+    }
+
+    #[test]
+    fn fill_from_alignment_record_uppercases_soft_masked_cram_bases() {
+        // Bug C: CRAM reference-matching bases reconstructed against soft-masked
+        // lowercase FASTA contigs (`a/c/g/t/n`) must be normalized to uppercase
+        // (`A/C/G/T/N`) in `SamRecord::fill_from_alignment_record`.
+        use noodles::sam::alignment::RecordBuf;
+        let header = noodles::sam::Header::default();
+        let rec_buf = RecordBuf::builder()
+            .set_sequence(noodles::sam::alignment::record_buf::Sequence::from(
+                b"acgtACGTnN".to_vec(),
+            ))
+            .build();
+        let mut sam_rec = SamRecord::new();
+        sam_rec
+            .fill_from_alignment_record(&rec_buf, &header)
+            .unwrap();
+        assert_eq!(sam_rec.sequence, b"ACGTACGTNN");
+    }
+
+    #[test]
+    fn compute_cram_nm_reconstructs_edit_distance_when_omitted_by_cram() {
+        // CRAM 3.0 §10.6 omits `NM` on write by default (`samtools view -C`);
+        // `compute_cram_nm` must reconstruct the SAMtags §1.5 edit distance
+        // (mismatches + insertions + deletions, excluding soft clips and skips).
+        let ref_seq = b"acgtACGTACGT";
+        let rec = SamRecord {
+            flags: 0,
+            alignment_start: Some(Pos1(2)), // 1-based pos 2 -> 'c'
+            cigar: vec![
+                (1, CigarKind::SoftClip),  // 'G' clip (excluded)
+                (4, CigarKind::Match),     // "CGTA" vs "cgtA" (1 mismatch if 'T'->'A')
+                (2, CigarKind::Insertion), // "TT" (+2)
+                (2, CigarKind::Deletion),  // "CG" (+2)
+                (3, CigarKind::Match),     // "TAC" vs "TAC" (0)
+            ],
+            sequence: b"GCGAGTTTAC".to_vec(), // clip 'G', match "CGAG" vs "CGTA" (2 mm), ins "TT", match "TAC"
+            ..SamRecord::default()
+        };
+        assert_eq!(compute_cram_nm(&rec, ref_seq), Some(6));
     }
 }

@@ -247,21 +247,63 @@ impl<'a> CigarParser<'a> {
         let mut scratch_splice_key = std::mem::take(&mut self.scratch_splice_key);
 
         // T046: run CigarModifier if realignment is enabled
+        // Ports CigarParser.java:257 — Java's `reference.referenceSequences` is a
+        // single per-chromosome Map<Integer, Character> shared across all loaded
+        // sub-regions (including secondary regions loaded by SV `partialPipeline`).
+        // Select the loaded region on `self.region.chr` whose stored sequence covers
+        // the read span `[start_pos, start_pos + query_seq.len()]` (falling back to
+        // any overlapping region, then the first region on `self.region.chr`).
         if self.config.realign == 1 {
-            let (ref_slice, ref_start) = if let Some(lr) = self
+            let read_start = start_pos;
+            let read_end = start_pos.saturating_add(query_seq.len() as i32);
+            let seq_for_idx = |idx: usize| -> Option<&[u8]> {
+                if let Some(s) = self.reference.region_sequences.get(idx) {
+                    Some(s.as_slice())
+                } else if idx == 0 {
+                    self.reference
+                        .reference_sequences
+                        .get(&self.region.chr)
+                        .map(Vec::as_slice)
+                } else {
+                    None
+                }
+            };
+            let (ref_slice, ref_start) = self
                 .reference
                 .loaded_regions
                 .iter()
-                .find(|lr| lr.chr == self.region.chr)
-            {
-                if let Some(seq) = self.reference.reference_sequences.get(&self.region.chr) {
-                    (seq.as_slice(), lr.sequence_start as i32)
-                } else {
-                    (&[] as &[u8], 1)
-                }
-            } else {
-                (&[] as &[u8], 1)
-            };
+                .enumerate()
+                .filter(|(_, lr)| lr.chr == self.region.chr)
+                .find_map(|(idx, lr)| {
+                    let seq = seq_for_idx(idx)?;
+                    let lr_start = lr.sequence_start as i32;
+                    let lr_end = lr_start.saturating_add(seq.len() as i32);
+                    (read_start >= lr_start && read_end <= lr_end).then_some((seq, lr_start))
+                })
+                .or_else(|| {
+                    self.reference
+                        .loaded_regions
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, lr)| lr.chr == self.region.chr)
+                        .find_map(|(idx, lr)| {
+                            let seq = seq_for_idx(idx)?;
+                            let lr_start = lr.sequence_start as i32;
+                            let lr_end = lr_start.saturating_add(seq.len() as i32);
+                            (read_end > lr_start && read_start < lr_end).then_some((seq, lr_start))
+                        })
+                })
+                .or_else(|| {
+                    self.reference
+                        .loaded_regions
+                        .iter()
+                        .enumerate()
+                        .find(|(_, lr)| lr.chr == self.region.chr)
+                        .and_then(|(idx, lr)| {
+                            seq_for_idx(idx).map(|seq| (seq, lr.sequence_start as i32))
+                        })
+                })
+                .unwrap_or((&[] as &[u8], 1));
 
             let mut cigar_str = std::mem::take(&mut self.scratch_cigar_str);
             cigar_str.clear();
@@ -4267,5 +4309,87 @@ mod tests {
         assert_eq!(parser.ref_coverage.get(&42), Some(&4));
         assert_eq!(parser.ref_coverage.get(&43), Some(&2));
         assert_eq!(parser.ref_coverage.get(&99), None);
+    }
+
+    #[test]
+    fn parse_cigar_selects_secondary_loaded_region_for_partial_pipeline() {
+        // Issue #42 (Bug A): when SV `partial_pipeline` loads a secondary sub-region
+        // into `reference.loaded_regions[1]` / `reference.region_sequences[1]`,
+        // `CigarParser::parse_cigar` must pass that secondary region's sequence and
+        // `sequence_start` to `CigarModifier` instead of `loaded_regions[0]`.
+        let mut reference = Reference::new();
+        // Primary region at 1..=200
+        let seq0 = vec![b'A'; 200];
+        reference
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr20".to_string(),
+                sequence_start: 1,
+                sequence_end: 200,
+            });
+        reference
+            .reference_sequences
+            .insert("chr20".to_string(), seq0.clone());
+        reference.region_sequences.push(seq0);
+
+        // Secondary region at 1000..=1200 where 1050..1075 is "ACGTACGT..." with a 2-bp
+        // soft-clip match at the 5' end that CigarModifier rewrites when given the
+        // secondary region's reference bases.
+        let mut seq1 = vec![b'T'; 201];
+        // Positions 1050..=1051 (offsets 50..=51) are 'G', 'C'
+        seq1[50] = b'G';
+        seq1[51] = b'C';
+        for (i, slot) in seq1[52..80].iter_mut().enumerate() {
+            *slot = b"ACGT"[i % 4];
+        }
+        reference
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr20".to_string(),
+                sequence_start: 1000,
+                sequence_end: 1200,
+            });
+        reference.region_sequences.push(seq1.clone());
+
+        let region = Region {
+            chr: "chr20".to_string(),
+            start: Pos1(1040),
+            end: Pos1(1100),
+            gene: "G".to_string(),
+            amplicon: None,
+        };
+        let config = Config::default();
+        let mut parser = CigarParser::new(&reference, &region, &config, true, 0, 0, 0);
+
+        // Read aligned at 1052 with 2S28M where the 2S bases ("GC") match 1050..=1051 in seq1.
+        let mut read_seq = vec![b'G', b'C'];
+        read_seq.extend_from_slice(&seq1[52..80]);
+        let record = SamRecord {
+            name: b"r_sec".to_vec(),
+            flags: 0,
+            reference_name: Some("chr20".to_string()),
+            alignment_start: Some(Pos1(1052)),
+            alignment_end: Some(Pos1(1079)),
+            mapping_quality: Some(60),
+            cigar: vec![(2, CigarKind::SoftClip), (28, CigarKind::Match)],
+            sequence: read_seq,
+            quality_scores: vec![60; 30],
+            mate_reference_name: None,
+            mate_alignment_start: None,
+            template_length: 0,
+            nm: Some(0),
+            sa: None,
+            mc: None,
+            mq: None,
+        };
+        parser.parse_cigar(&record).unwrap();
+        // Because CigarModifier matched the 2S ("GC") against 1050..=1051 in `region_sequences[1]`,
+        // it rewrote 2S28M @ 1052 -> 30M @ 1050, adding reference coverage at 1050 and 1051.
+        assert_eq!(
+            parser.ref_coverage.get(&1050),
+            Some(&1),
+            "CigarModifier must use secondary loaded_region[1] reference sequence"
+        );
+        assert_eq!(parser.ref_coverage.get(&1051), Some(&1));
     }
 }

@@ -2031,7 +2031,14 @@ pub fn find_sv(
                         .ref_coverage
                         .insert(bp_adj, pairs + sc5v.variation.cnt);
                 }
-                let p5_cov = var_data.ref_coverage.get(&(p5 + 1)).copied().unwrap_or(0);
+                // Ports StructuralVariantsProcessor.java:732,748: Java mutates `p5--`
+                // at line 732 before `refCoverage.get(p5 + 1)` at line 748, so `p5 + 1`
+                // in Java is `p5_adj + 1` (the original `p5` before decrement).
+                let p5_cov = var_data
+                    .ref_coverage
+                    .get(&(p5_adj + 1))
+                    .copied()
+                    .unwrap_or(0);
                 let bp_cov_updated = var_data.ref_coverage.get(&bp_adj).copied().unwrap_or(0);
                 if bp_cov_updated < p5_cov {
                     var_data.ref_coverage.insert(bp_adj, p5_cov);

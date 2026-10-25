@@ -371,9 +371,9 @@ impl Cli {
             ));
         }
         if let Some(n) = self.tile_size {
-            if n > 10_000_000 {
+            if n > 500_000_000 {
                 return Err(vardictrust_core::types::VardictError::Parse(format!(
-                    "Invalid --tile-size: {}. Must be <= 10000000 to avoid u32 wrap",
+                    "Invalid --tile-size: {}. Must be <= 500000000 to avoid u32 wrap",
                     n
                 )));
             }

@@ -265,7 +265,7 @@ pub fn simple_38(variant: &Variant, region: &Region, sample_name: &str, sv: &str
         sv.to_string()
     };
 
-    let fisher = crate::stats::FisherExact::new(
+    let fisher = crate::stats::FisherExact::new_java(
         variant.ref_fwd_cov as i32,
         variant.ref_rev_cov as i32,
         variant.fwd as i32,
@@ -460,7 +460,7 @@ pub fn amplicon_40(
     let variant = &av.variant;
     let region_str = &av.region;
 
-    let fisher = crate::stats::FisherExact::new(
+    let fisher = crate::stats::FisherExact::new_java(
         variant.ref_fwd_cov as i32,
         variant.ref_rev_cov as i32,
         variant.fwd as i32,
@@ -833,7 +833,7 @@ pub fn somatic_61(
         &end_var.right_seq
     };
 
-    let fisher1 = crate::stats::FisherExact::new(
+    let fisher1 = crate::stats::FisherExact::new_java(
         tumor.ref_fwd_cov as i32,
         tumor.ref_rev_cov as i32,
         tumor.fwd as i32,
@@ -844,7 +844,7 @@ pub fn somatic_61(
 
     let normal_cols = match normal {
         Some(n) => {
-            let f2 = crate::stats::FisherExact::new(
+            let f2 = crate::stats::FisherExact::new_java(
                 n.ref_fwd_cov as i32,
                 n.ref_rev_cov as i32,
                 n.fwd as i32,
@@ -853,7 +853,7 @@ pub fn somatic_61(
             variant_20cols_fisher(n, f2.get_p_value(), &f2.get_odds_ratio())
         }
         None => {
-            let f2 = crate::stats::FisherExact::new(0, 0, 0, 0);
+            let f2 = crate::stats::FisherExact::new_java(0, 0, 0, 0);
             variant_20cols_fisher_empty(f2.get_p_value(), &f2.get_odds_ratio())
         }
     };
@@ -865,8 +865,12 @@ pub fn somatic_61(
     };
     let tref = (ttotal_cov - tvar_cov).max(0);
     let rref = (ntotal_cov - nvar_cov).max(0);
-    let fisher_total =
-        crate::stats::FisherExact::new(tvar_cov as i32, tref as i32, nvar_cov as i32, rref as i32);
+    let fisher_total = crate::stats::FisherExact::new_java(
+        tvar_cov as i32,
+        tref as i32,
+        nvar_cov as i32,
+        rref as i32,
+    );
     let pvalue_greater = fisher_total.get_p_value_greater();
     let pvalue_less = fisher_total.get_p_value_less();
     let total_pvalue = if pvalue_less < pvalue_greater {

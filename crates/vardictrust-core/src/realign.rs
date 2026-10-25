@@ -1563,7 +1563,11 @@ pub fn realignins(
             let sv_flanking = 50;
             let p3 = p + inslen - (ins3.len() as i32) + sv_flanking;
             if ins3.len() > sv_flanking as usize {
-                let start_idx = ins3.len() - sv_flanking as usize;
+                // Ports VariationRealigner.java:744-746:
+                // `sanpseq = substr(ins3, Configuration.SVFLANK - ins3.length());`
+                // Because `SVFLANK - ins3.length() < 0`, `Utils.substr(ins3, neg)`
+                // starts at `ins3.length() + (SVFLANK - ins3.length()) == SVFLANK`.
+                let start_idx = sv_flanking as usize;
                 sanpseq = ins3[start_idx..].to_string();
             }
             sanpseq.push_str(&crate::util::join_ref(reference, chr, p + 1, p + 101));
@@ -5719,5 +5723,22 @@ mod tests {
             super::no_passing_reads("chr1", 100, 110, &[trunc], &config),
             "mid-query failure must skip the whole BAM"
         );
+    }
+
+    #[test]
+    fn test_dup_ins3_flank_substring_offset_matches_java_substr() {
+        // Bug F (`VariationRealigner.java:744-746`):
+        // `if (ins3.length() > Configuration.SVFLANK) { sanpseq = substr(ins3, Configuration.SVFLANK - ins3.length()); }`
+        // Because `SVFLANK - ins3.length() < 0`, `Utils.substr(ins3, neg)` starts at
+        // `ins3.length() + (SVFLANK - ins3.length()) == SVFLANK` (50), matching
+        // `super::substr(ins3, 50 - ins3.len() as isize, None)`.
+        let sv_flank = 50usize;
+        let ins3 = "A".repeat(50) + &"C".repeat(35) + &"G".repeat(40);
+        let java_substr = super::substr(
+            ins3.as_bytes(),
+            (sv_flank as isize) - (ins3.len() as isize),
+            ins3.len() as isize,
+        );
+        assert_eq!(java_substr, &ins3.as_bytes()[sv_flank..]);
     }
 }

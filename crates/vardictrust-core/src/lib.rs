@@ -324,8 +324,9 @@ pub fn run(config: &config::Config) -> Result<(), VardictError> {
 
     let flat_regions: Vec<crate::regions::Region> = regions.into_iter().flatten().collect();
 
-    // Tile regions into overlapping tiles
-    let tile_size = config.tile_size.unwrap_or(100_000);
+    // Tile regions into overlapping tiles (default 1 Mbp so standard BED intervals
+    // up to 1 Mbp execute as a single untiled region like VarDictJava).
+    let tile_size = config.tile_size.unwrap_or(1_000_000);
     let halo = 500;
     let mut tiles = Vec::new();
     for reg in &flat_regions {
@@ -504,11 +505,12 @@ pub fn run(config: &config::Config) -> Result<(), VardictError> {
                     let vcf_line = if ref_empty || (is_sv && splitreads < 1) {
                         String::new()
                     } else {
-                        let fisher = crate::stats::FisherExact::new(
+                        let fisher = crate::stats::FisherExact::new_with_mode(
                             v.ref_fwd_cov as i32,
                             v.ref_rev_cov as i32,
                             v.fwd as i32,
                             v.rev as i32,
+                            config_clone.fisher,
                         );
                         let sbf = fisher.get_p_value();
                         let oddratio_str = fisher.get_odds_ratio();
@@ -842,11 +844,12 @@ fn run_amplicon(
                     // pre-emit skip equals a post-selection skip.
                     continue;
                 }
-                let fisher = crate::stats::FisherExact::new(
+                let fisher = crate::stats::FisherExact::new_with_mode(
                     v.ref_fwd_cov as i32,
                     v.ref_rev_cov as i32,
                     v.fwd as i32,
                     v.rev as i32,
+                    config.fisher,
                 );
                 let sbf = fisher.get_p_value();
                 let oddratio_str = fisher.get_odds_ratio();
@@ -906,8 +909,9 @@ fn run_somatic(config: &config::Config) -> Result<(), VardictError> {
 
     let flat_regions: Vec<crate::regions::Region> = regions.into_iter().flatten().collect();
 
-    // Tile regions
-    let tile_size = config.tile_size.unwrap_or(100_000);
+    // Tile regions (default 1 Mbp so standard BED intervals up to 1 Mbp
+    // execute as a single untiled region like VarDictJava).
+    let tile_size = config.tile_size.unwrap_or(1_000_000);
     let halo = 500;
     let mut tiles = Vec::new();
     for reg in &flat_regions {
