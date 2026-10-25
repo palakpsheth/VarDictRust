@@ -1402,6 +1402,15 @@ oracle_cache_put() {
   fi
 }
 
+is_valid_oracle_cache_file() {
+  local f="$1"
+  [ -s "$f" ] || return 1
+  if [[ "$f" == *.vcf ]]; then
+    [ "$(grep -vc '^#' "$f" 2>/dev/null || true)" -gt 0 ] || return 1
+  fi
+  return 0
+}
+
 # Restores a cached oracle truth file from Local NVMe or GCS if available; otherwise runs the command
 # and immediately backs up the resulting truth file (+ sha256) to GCS so it never needs regeneration.
 oracle_cache_get_or_run() {
@@ -1410,14 +1419,15 @@ oracle_cache_get_or_run() {
   mkdir -p "$(dirname "$local_file")"
 
   # 1. Local NVMe hit
-  if [ -s "$local_file" ]; then
+  if is_valid_oracle_cache_file "$local_file"; then
     echo "[ORACLE-CACHE HIT (NVMe)] Reusing '${local_file}' (cache_key=${cache_rel})"
     oracle_cache_put "$cache_rel" "$local_file"
     return 0
   fi
+  rm -f "$local_file"
 
   # 2. Local test-mode cache hit
-  if [ -n "${LOCAL_CKPT_DIR:-}" ] && [ -s "${LOCAL_CKPT_DIR}/oracle-cache/${cache_rel}" ]; then
+  if [ -n "${LOCAL_CKPT_DIR:-}" ] && is_valid_oracle_cache_file "${LOCAL_CKPT_DIR}/oracle-cache/${cache_rel}"; then
     cp -f "${LOCAL_CKPT_DIR}/oracle-cache/${cache_rel}" "$local_file"
     echo "[ORACLE-CACHE HIT (LOCAL)] Restored '${local_file}' from '${cache_rel}'"
     return 0
@@ -1426,7 +1436,7 @@ oracle_cache_get_or_run() {
   # 3. GCS Oracle Cache hit
   if [ -z "${LOCAL_CKPT_DIR:-}" ] && setsid gsutil -q stat "${GCS_ORACLE_CACHE}/${cache_rel}" 2>/dev/null; then
     echo "[ORACLE-CACHE HIT (GCS)] Downloading '${GCS_ORACLE_CACHE}/${cache_rel}' -> '${local_file}'"
-    if setsid gsutil -q cp "${GCS_ORACLE_CACHE}/${cache_rel}" "$local_file"; then
+    if setsid gsutil -q cp "${GCS_ORACLE_CACHE}/${cache_rel}" "$local_file" && is_valid_oracle_cache_file "$local_file"; then
       if setsid gsutil -q stat "${GCS_ORACLE_CACHE}/${cache_rel}.sha256" 2>/dev/null; then
         setsid gsutil -q cp "${GCS_ORACLE_CACHE}/${cache_rel}.sha256" "${local_file}.sha256" || true
         local exp_sha got_sha
@@ -1441,13 +1451,15 @@ oracle_cache_get_or_run() {
       else
         return 0
       fi
+    else
+      rm -f "$local_file" "${local_file}.sha256"
     fi
   fi
 
   # 4. Cache miss -> execute generator command and immediately persist to GCS
   echo "[ORACLE-CACHE MISS] Generating '${local_file}' (cache_key=${cache_rel})..."
-  "$@"
-  if [ -s "$local_file" ]; then
+  "$@" || { local rc=$?; rm -f "$local_file"; return "$rc"; }
+  if is_valid_oracle_cache_file "$local_file"; then
     oracle_cache_put "$cache_rel" "$local_file"
   fi
 }
