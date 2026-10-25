@@ -832,3 +832,415 @@ fn test_qratio_flag_o() {
         "-o 100.0 must filter out variants with hq_lq_ratio < 100.0"
     );
 }
+
+fn ensure_fastas_converted() {
+    let ref_fa = workspace_root().join("VarDictJava/testdata/fastas/hg19.fa");
+    let grch37_fa = workspace_root().join("VarDictJava/testdata/fastas/GRCh37.fa");
+    if !ref_fa.exists() || !grch37_fa.exists() {
+        let status = Command::new("python3")
+            .arg("harness/convert_fastas.py")
+            .current_dir(workspace_root())
+            .status()
+            .expect("convert fastas");
+        assert!(status.success(), "convert_fastas.py failed");
+    }
+}
+
+#[test]
+fn test_cram_soft_masked_lowercase_ref_and_omitted_nm_matches_bam() {
+    // Real biological dataset regression test for Bug C + mate-window .bai fallback:
+    // Hartwig COLO829 melanoma WGS (`Colo829.chr20.CRISPR.bam`, `chr20:50454281-50455444`)
+    // aligned against `VarDictJava/testdata/fastas/hg19.fa` (which contains soft-masked
+    // lowercase reference bases `a/c/g/t`). Encodes the real BAM into an external-reference
+    // CRAM 3.0 with `NM` tags stripped (`store_nm=0`), and verifies 100% byte-identical
+    // VCF output between the BAM and CRAM (including `NM=` INFO values and `NM5.25` filter).
+    ensure_fastas_converted();
+    let ref_fa = "VarDictJava/testdata/fastas/hg19.fa";
+    let bam = "VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests/Colo829.chr20.CRISPR.bam";
+    let region = "chr20:50454281-50455444";
+
+    let tmp_dir = tempfile::tempdir().expect("tempdir");
+    let sam_out = Command::new("samtools")
+        .args(["view", "-h", bam])
+        .current_dir(workspace_root())
+        .output()
+        .expect("samtools view -h");
+    assert!(sam_out.status.success(), "samtools view -h failed");
+
+    // Normalize @SQ SN:chr20 LN to match hg19.fa.fai (59858789) so samtools writes an
+    // external-reference CRAM (`embed_ref=0`) and strip all `NM:i:*` tags so noodles-cram
+    // must reconstruct `NM` via `compute_cram_nm` against soft-masked lowercase `hg19.fa`.
+    let sam_text = String::from_utf8(sam_out.stdout).expect("utf8 sam");
+    let mut cleaned_sam = String::with_capacity(sam_text.len());
+    for line in sam_text.lines() {
+        if line.starts_with("@SQ\tSN:chr20\t") {
+            cleaned_sam.push_str("@SQ\tSN:chr20\tLN:59858789\n");
+        } else if line.starts_with("@SQ\t") {
+            continue;
+        } else if line.starts_with('@') {
+            cleaned_sam.push_str(line);
+            cleaned_sam.push('\n');
+        } else {
+            let mut cols: Vec<&str> = line.split('\t').collect();
+            if cols.len() > 6 && cols[6] != "=" && cols[6] != "chr20" {
+                cols[6] = "*";
+                cols[7] = "0";
+            }
+            let filtered: Vec<&str> = cols
+                .into_iter()
+                .filter(|c| !c.starts_with("NM:i:"))
+                .collect();
+            cleaned_sam.push_str(&filtered.join("\t"));
+            cleaned_sam.push('\n');
+        }
+    }
+    let sam_path = tmp_dir.path().join("crispr_no_nm.sam");
+    fs::write(&sam_path, cleaned_sam).expect("write sam");
+
+    let cram_path = tmp_dir.path().join("crispr.cram");
+    let enc_status = Command::new("samtools")
+        .args([
+            "view",
+            "-C",
+            "-T",
+            ref_fa,
+            "-o",
+            cram_path.to_str().unwrap(),
+            sam_path.to_str().unwrap(),
+        ])
+        .current_dir(workspace_root())
+        .status()
+        .expect("samtools view -C");
+    assert!(enc_status.success(), "samtools CRAM encode failed");
+
+    let idx_status = Command::new("samtools")
+        .args(["index", cram_path.to_str().unwrap()])
+        .current_dir(workspace_root())
+        .status()
+        .expect("samtools index cram");
+    assert!(idx_status.success(), "samtools index cram failed");
+
+    let out_bam = base_cmd()
+        .args([
+            "-G", ref_fa, "-b", bam, "-N", "COLO829", "-R", region, "-f", "0.001",
+        ])
+        .output()
+        .expect("run on real BAM");
+    assert!(out_bam.status.success());
+
+    let out_cram = base_cmd()
+        .args([
+            "-G",
+            ref_fa,
+            "-b",
+            cram_path.to_str().unwrap(),
+            "-N",
+            "COLO829",
+            "-R",
+            region,
+            "-f",
+            "0.001",
+        ])
+        .output()
+        .expect("run on soft-masked external-ref CRAM");
+    assert!(out_cram.status.success());
+
+    let bam_vars = extract_variants(&out_bam.stdout);
+    let cram_vars = extract_variants(&out_cram.stdout);
+    assert_eq!(bam_vars.len(), 8, "expected 8 real COLO829 variants");
+    assert_eq!(
+        bam_vars, cram_vars,
+        "soft-masked hg19 CRAM with omitted NM must produce byte-identical VCF variants to BAM"
+    );
+
+    // Also verify explicit multi-tile (`--tile-size 400`) execution on the same real BAM:
+    let out_tiled = base_cmd()
+        .args([
+            "-G",
+            ref_fa,
+            "-b",
+            bam,
+            "-N",
+            "COLO829",
+            "-R",
+            region,
+            "-f",
+            "0.001",
+            "--tile-size",
+            "400",
+        ])
+        .output()
+        .expect("run tiled on real BAM");
+    assert!(
+        out_tiled.status.success(),
+        "tiled run failed: {}",
+        String::from_utf8_lossy(&out_tiled.stderr)
+    );
+    assert_eq!(
+        bam_vars,
+        extract_variants(&out_tiled.stdout),
+        "tiled run (--tile-size 400) on real COLO829 BAM must match untiled output"
+    );
+}
+
+#[test]
+fn test_freq_zero_perl_falsy_fallback_vs_truthy_zero_decimal_end_to_end() {
+    // Real biological dataset regression test for Bug D (`var2vcf_valid.pl:21`):
+    // Runs on real GIAB NA24385 deep WGS (`NA24385_chr_20_20156208_20234556.bam`,
+    // `20:20156208-20157500` against `GRCh37.fa`) with `-f 0` vs `-f 0.0`.
+    // Under `-f 0`, Perl treats `"0"` as falsy and falls back to `0.02` (`##FILTER=<ID=f0.02>`,
+    // tagging sub-2% AF variants with `f0.02` and `GT=0/0`), whereas `-f 0.0` is truthy (`0.0`).
+    ensure_fastas_converted();
+    let ref_fa = "VarDictJava/testdata/fastas/GRCh37.fa";
+    let bam = "VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests/NA24385_chr_20_20156208_20234556.bam";
+    let region = "20:20156208-20157500";
+
+    let out_f0 = base_cmd()
+        .args(["-G", ref_fa, "-b", bam, "-R", region, "-f", "0"])
+        .output()
+        .expect("run with -f 0");
+    assert!(out_f0.status.success());
+    let stdout_f0 = String::from_utf8_lossy(&out_f0.stdout);
+
+    let out_f0_dec = base_cmd()
+        .args(["-G", ref_fa, "-b", bam, "-R", region, "-f", "0.0"])
+        .output()
+        .expect("run with -f 0.0");
+    assert!(out_f0_dec.status.success());
+    let stdout_f0_dec = String::from_utf8_lossy(&out_f0_dec.stdout);
+
+    assert!(
+        stdout_f0.contains("##FILTER=<ID=f0.02,Description=\"Allele frequency < 0.02\">"),
+        "-f 0 header must emit f0.02 filter description"
+    );
+    assert!(
+        stdout_f0_dec.contains("##FILTER=<ID=f0,Description=\"Allele frequency < 0\">"),
+        "-f 0.0 header must emit f0 filter description"
+    );
+
+    let vars_f0 = extract_variants(&out_f0.stdout);
+    let vars_f0_dec = extract_variants(&out_f0_dec.stdout);
+    assert_eq!(vars_f0.len(), vars_f0_dec.len());
+    assert!(
+        vars_f0
+            .iter()
+            .any(|v| v.contains("f0.02") && v.contains("\t0/0:")),
+        "real sub-2% AF candidate in NA24385 must receive f0.02 filter and GT=0/0 under -f 0"
+    );
+    assert!(
+        !vars_f0_dec.iter().any(|v| v.contains("f0.02")),
+        "-f 0.0 must not apply f0.02 filter to sub-2% AF candidates"
+    );
+}
+
+#[test]
+fn test_fisher_flag_java_mode_vcf_and_intermediate_table_end_to_end() {
+    // Real biological dataset regression test for Bug H (`FisherExact.java` `--fisher` mode):
+    // Runs on real paired tumor/normal BRAF V600E hotspot (`ArgumentNA_Tumor.bam|ArgumentNA_Normal.bam`,
+    // `chr7:140453010-140453158` against `hg19.fa`) with `--fisher` in both 61-column `.var`
+    // intermediate mode (comparing directly against the checked-in VarDictJava v1.8.3 oracle
+    // fixture) and end-to-end VCF mode.
+    ensure_fastas_converted();
+    let ref_fa = "VarDictJava/testdata/fastas/hg19.fa";
+    let tumor = "VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests/ArgumentNA_Tumor.bam";
+    let normal = "VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests/ArgumentNA_Normal.bam";
+    let bam_pair = format!("{tumor}|{normal}");
+    let tmp_dir = tempfile::tempdir().expect("tempdir");
+    let bed_path = tmp_dir.path().join("argument_na.bed");
+    fs::write(&bed_path, "chr7\t140453010\t140453158\ttestbed\n").expect("write bed");
+
+    let out_var = base_cmd()
+        .args([
+            "-G",
+            ref_fa,
+            "-b",
+            &bam_pair,
+            "-c",
+            "1",
+            "-S",
+            "2",
+            "-E",
+            "3",
+            "-g",
+            "4",
+            "-q",
+            "25",
+            "-F",
+            "0x100",
+            "-f",
+            "0.001",
+            "-k",
+            "1",
+            "-M",
+            "20",
+            "-p",
+            "--fisher",
+            "--emit-intermediate",
+            "-z",
+            bed_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run somatic --fisher --emit-intermediate");
+    assert!(out_var.status.success());
+
+    let expected_path = workspace_root().join(
+        "VarDictJava/testdata/integrationtestcases/Somatic;hg19.fa;ArgumentNA_Tumor.bam-ArgumentNA_Normal.bam;chr7;140453010-140453158;-q25-F0x100-f0.001-k1-M20-p-fisher;.txt",
+    );
+    let expected_raw = fs::read_to_string(&expected_path).expect("read oracle fixture");
+    // Normalize the sample-name column (col 0) just as `run_integration.sh` does.
+    let normalize_rows = |text: &str| -> Vec<String> {
+        text.lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| {
+                let mut cols: Vec<&str> = l.split('\t').collect();
+                if !cols.is_empty() {
+                    cols[0] = "SAMPLE";
+                }
+                assert_eq!(cols.len(), 61, "somatic --fisher must emit 61 columns");
+                cols.join("\t")
+            })
+            .collect()
+    };
+    let actual_rows = normalize_rows(&String::from_utf8_lossy(&out_var.stdout));
+    let expected_body: String = expected_raw
+        .lines()
+        .skip(1)
+        .collect::<Vec<&str>>()
+        .join("\n");
+    let expected_rows = normalize_rows(&expected_body);
+    assert_eq!(
+        actual_rows.len(),
+        expected_rows.len(),
+        "row count must match VarDictJava v1.8.3 oracle fixture (149 pileup positions)"
+    );
+    assert_eq!(
+        actual_rows, expected_rows,
+        "somatic --fisher 61-column intermediate output must match VarDictJava v1.8.3 oracle byte-for-byte"
+    );
+
+    // Also verify end-to-end somatic VCF output with `--fisher` on the same real tumor/normal BAMs:
+    let out_vcf = base_cmd()
+        .args([
+            "-G",
+            ref_fa,
+            "-b",
+            &bam_pair,
+            "-c",
+            "1",
+            "-S",
+            "2",
+            "-E",
+            "3",
+            "-g",
+            "4",
+            "-q",
+            "25",
+            "-F",
+            "0x100",
+            "-f",
+            "0.001",
+            "-k",
+            "1",
+            "-M",
+            "20",
+            "--fisher",
+            "-z",
+            bed_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run somatic --fisher VCF");
+    assert!(out_vcf.status.success());
+    let vcf_vars = extract_variants(&out_vcf.stdout);
+    assert!(
+        !vcf_vars.is_empty()
+            && vcf_vars
+                .iter()
+                .all(|v| v.contains(";SSF=") && v.contains(";SOR=")),
+        "somatic --fisher VCF records must emit SSF and SOR INFO fields"
+    );
+}
+
+#[test]
+fn test_real_sv_duplication_and_5prime_deletion_partial_pipeline_end_to_end() {
+    // Real biological dataset regression test for Bug A (`CigarParser::parse_cigar` secondary
+    // `LoadedRegion` selection during SV `partial_pipeline`), Bug B (`get_reference` `siteEnd = len - 17`
+    // truncation), Bug F (`realignins` `<dupN>` 3' flank `substr` offset), and Bug G (`find_sv`
+    // 5' deletion `p5_adj + 1` coverage lookup) on real Hartwig COLO829 melanoma WGS BAMs
+    // (`Colo829.chr20.MarkingDUPSV.bam` and `Colo829.chr20.CandDel5SV.bam` against `hg19.fa`),
+    // verified byte-for-byte against the checked-in VarDictJava v1.8.3 oracle fixtures.
+    ensure_fastas_converted();
+    let ref_fa = "VarDictJava/testdata/fastas/hg19.fa";
+    let tmp_dir = tempfile::tempdir().expect("tempdir");
+
+    let cases = [
+        (
+            "VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests/Colo829.chr20.MarkingDUPSV.bam",
+            "chr20\t47131954\t47132045\ttestbed\n",
+            "VarDictJava/testdata/integrationtestcases/Simple;hg19.fa;Colo829.chr20.MarkingDUPSV.bam;chr20;47131954-47132045;-f 0.001;.txt",
+        ),
+        (
+            "VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests/Colo829.chr20.CandDel5SV.bam",
+            "chr20\t506503\t507295\ttestbed\n",
+            "VarDictJava/testdata/integrationtestcases/Simple;hg19.fa;Colo829.chr20.CandDel5SV.bam;chr20;506503-507295;-f 0.001;.txt",
+        ),
+    ];
+
+    let normalize_rows = |text: &str| -> Vec<String> {
+        text.lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| {
+                let mut cols: Vec<&str> = l.split('\t').collect();
+                if !cols.is_empty() {
+                    cols[0] = "SAMPLE";
+                }
+                assert_eq!(cols.len(), 36, "Simple .var must emit 36 columns");
+                cols.join("\t")
+            })
+            .collect()
+    };
+
+    for (idx, (bam, bed_line, oracle_rel)) in cases.iter().enumerate() {
+        let bed_path = tmp_dir.path().join(format!("sv_case_{idx}.bed"));
+        fs::write(&bed_path, bed_line).expect("write bed");
+
+        let out = base_cmd()
+            .args([
+                "-G",
+                ref_fa,
+                "-b",
+                bam,
+                "-c",
+                "1",
+                "-S",
+                "2",
+                "-E",
+                "3",
+                "-g",
+                "4",
+                "-f",
+                "0.001",
+                "--emit-intermediate",
+                "-z",
+                bed_path.to_str().unwrap(),
+            ])
+            .output()
+            .expect("run real SV fixture");
+        assert!(out.status.success(), "SV fixture {bam} failed");
+
+        let expected_raw =
+            fs::read_to_string(workspace_root().join(oracle_rel)).expect("read oracle");
+        let expected_body: String = expected_raw
+            .lines()
+            .skip(1)
+            .collect::<Vec<&str>>()
+            .join("\n");
+        let mut actual_rows = normalize_rows(&String::from_utf8_lossy(&out.stdout));
+        let mut expected_rows = normalize_rows(&expected_body);
+        actual_rows.sort();
+        expected_rows.sort();
+        assert_eq!(
+            actual_rows, expected_rows,
+            "real SV fixture {bam} must match VarDictJava v1.8.3 oracle byte-for-byte"
+        );
+    }
+}

@@ -18,7 +18,7 @@ This architecture operates on two complementary pillars:
 - **Pillar A (Biological Parity & Empirical Truth):** Documented in the [Omnibus Master Empirical Validation Report](../validation/omnibus-empirical-validation.md), verifying variant-level concordance against gold-standard consortium benchmarks (NIST GIAB, FDA SEQC2, Hartwig) across GRCh38 and GRCh37.
 - **Pillar B (Engineering Mechanics & Verification Pipeline):** Documented in this report, establishing the software testing hierarchy, developer feedback loops, crash resilience corpus, statistical invariants, continuous performance budgets, and SLSA-attested CI/CD workflows.
 
-Across all testing layers, VarDictRust executes **289 automated Cargo workspace tests** ([Level 1](#level-1): Unit & Component Tests), **92 integration regression testcases** ([Level 2](#level-2): Upstream Integration Regression Corpus), **17 differential parity benchmarks** ([Level 3](#level-3): Dual-Engine Differential Parity Testing), **16 committed evidence JSONs** (spanning differential parity, robustness twins, truth concordance, performance budgets, and musl packaging), **5 ground truth concordance evaluations** via `rtg vcfeval` ([Level 4](#level-4): Ground Truth Concordance Benchmarking, all certified EQUAL), **4 continuous performance budgets** ([Level 5](#level-5): Performance & Memory Budgets), **24 diagnostic self-tests** ([Level 6](#level-6): Diagnostic Self-Tests), and **automated pre-PR and release acceptance compound gates** ([Level 7](#level-7): Pre-PR & Release Acceptance Compound Gates) alongside **6 automated cloud CI/CD pipelines**.
+Across all testing layers, VarDictRust executes **293 automated Cargo workspace tests** ([Level 1](#level-1): Unit & Component Tests), **92 integration regression testcases** ([Level 2](#level-2): Upstream Integration Regression Corpus), **17 differential parity benchmarks** ([Level 3](#level-3): Dual-Engine Differential Parity Testing), **16 committed evidence JSONs** (spanning differential parity, robustness twins, truth concordance, performance budgets, and musl packaging), **5 ground truth concordance evaluations** via `rtg vcfeval` ([Level 4](#level-4): Ground Truth Concordance Benchmarking, all certified EQUAL), **4 continuous performance budgets** ([Level 5](#level-5): Performance & Memory Budgets), **24 diagnostic self-tests** ([Level 6](#level-6): Diagnostic Self-Tests), and **automated pre-PR and release acceptance compound gates** ([Level 7](#level-7): Pre-PR & Release Acceptance Compound Gates) alongside **6 automated cloud CI/CD pipelines**.
 
 ```mermaid
 flowchart TD
@@ -30,10 +30,10 @@ flowchart TD
         P1 & P2 -->|Checks| P_Leak["gitleaks protect --staged"]
     end
 
-    subgraph Level1 ["Level 1: Unit & Component Tests (289 Total)"]
+    subgraph Level1 ["Level 1: Unit & Component Tests (293 Total)"]
         C_Core["crates/vardictrust-core (241 lib + 2 amplicon_stream_mem + 2 cram_stack tests)"]
         C_CLI["crates/vardictrust (15 cli tests)"]
-        C_Flg["crates/vardictrust/tests/flags.rs (19 tests)"]
+        C_Flg["crates/vardictrust/tests/flags.rs (23 tests)"]
         C_Prof["crates/vardictrust/tests/profile_smoke.rs (3 tests)"]
         C_Rob["crates/vardictrust/tests/robustness.rs (5 tests)"]
         C_Det["crates/vardictrust/tests/thread_determinism.rs (1 test)"]
@@ -137,7 +137,7 @@ The table below summarizes the complete testing inventory executed across the de
 | **1** | [**Level 1: Amplicon Streaming Memory**](#level-1) | `crates/vardictrust-core/tests/amplicon_stream_mem.rs` | 2 tests | `cargo test -p vardictrust-core --test amplicon_stream_mem` | Bounded memory on huge BED intervals | $\sim 0.2\text{ s}$ |
 | **1** | [**Level 1: CRAM Decoder Stack**](#level-1) | `crates/vardictrust-core/tests/cram_stack.rs` | 2 tests | `cargo test -p vardictrust-core --test cram_stack` | 64 MiB Rayon stack, CRAM==BAM | $\sim 0.3\text{ s}$ |
 | **1** | [**Level 1: CLI Front-End Tests**](#level-1) | `crates/vardictrust/src/` | 15 tests | `cargo test -p vardictrust --bin vardictrust` | 0 failures, 0 panics | $<0.1\text{ s}$ |
-| **1** | [**Level 1: CLI Flag Parity**](#level-1) | `crates/vardictrust/tests/flags.rs` | 19 tests | `cargo test --test flags` | Flag semantics & error guards PASS | $\sim 0.3\text{ s}$ |
+| **1** | [**Level 1: CLI Flag Parity**](#level-1) | `crates/vardictrust/tests/flags.rs` | 23 tests | `cargo test --test flags` | Flag semantics & error guards PASS | $\sim 0.3\text{ s}$ |
 | **1** | [**Level 1: Profiling Smoke Tests**](#level-1) | `crates/vardictrust/tests/profile_smoke.rs` | 3 tests | `cargo test --test profile_smoke` | Feature guards & profile artifacts PASS | $\sim 0.2\text{ s}$ |
 | **1** | [**Level 1: Crash Robustness Corpus**](#level-1) | `crates/vardictrust/tests/robustness.rs` | 5 tests | `cargo test --test robustness` | PR #402, missing BAI, 0-tile pass | $\sim 0.2\text{ s}$ |
 | **1** | [**Level 1: Thread Determinism**](#level-1) | `crates/vardictrust/tests/thread_determinism.rs` | 1 test | `cargo test --test thread_determinism` | Bitwise identical VCF (1, 2, 4, 8 thr) | $\sim 0.2\text{ s}$ |
@@ -170,9 +170,9 @@ The table below summarizes the complete testing inventory executed across the de
 
 <a id="level-1"></a>
 <a id="level-1-unit--component-tests-208-total"></a>
-## 3. Level 1: Unit & Component Tests (289 Cargo Workspace Tests)
+## 3. Level 1: Unit & Component Tests (293 Cargo Workspace Tests)
 
-Executing `cargo test --workspace` validates **289 tests** across `crates/vardictrust-core`, `crates/vardictrust`, and integration test suites:
+Executing `cargo test --workspace` validates **293 tests** across `crates/vardictrust-core`, `crates/vardictrust`, and integration test suites:
 
 ### 3.1 `crates/vardictrust-core` (241 Library Tests + 4 Integration Tests)
 
@@ -222,11 +222,11 @@ Located in `crates/vardictrust/src/cli.rs`:
 - Verifies accepted and ignored upstream compatibility flags (`-v`).
 - Verifies error propagation on invalid flag arguments (`-F bogus`) and zero tile size (`--tile-size 0`).
 
-### 3.3 Integration Test Binaries (`crates/vardictrust/tests/` — 29 Tests)
+### 3.3 Integration Test Binaries (`crates/vardictrust/tests/` — 33 Tests)
 
 Located in `crates/vardictrust/tests/`:
-1. **`tests/flags.rs` (19 tests):**
-   - Verifies end-to-end CLI flag behavior across `--crispr`, `-u`/`--UN`, `-A`, `--chimeric`, `-k 0`, `--fisher`, `-3`, `-O`, `-X`, `-c/-S/-E/-g`, `-M`, `--deldupvar`, `--DP ERR`, multi-sample BAM header extraction (`-b "b1|b2"`), and unsupported flag rejection (`AGENTS.md §12`).
+1. **`tests/flags.rs` (23 tests):**
+   - Verifies end-to-end CLI flag behavior across `--crispr`, `-u`/`--UN`, `-A`, `--chimeric`, `-k 0`, `--fisher` (including 61-column somatic intermediate table & VCF verification on real paired *BRAF* V600E BAMs), `-f 0` vs `-f 0.0` (Perl falsy `0.02` fallback vs truthy zero on real GIAB `NA24385` WGS), soft-masked external-reference CRAM 3.0 `NM` reconstruction (`Colo829.chr20.CRISPR.bam` on `hg19.fa`), real `<DUP>` and $5'$ deletion SV `partial_pipeline` oracle parity (`Colo829.chr20.MarkingDUPSV.bam` and `CandDel5SV.bam`), `-3`, `-O`, `-X`, `-c/-S/-E/-g`, `-M`, `--deldupvar`, `--DP ERR`, multi-sample BAM header extraction (`-b "b1|b2"`), and unsupported flag rejection (`AGENTS.md §12`).
 2. **`tests/profile_smoke.rs` (3 default tests + 4 feature-gated tests):**
    - Verifies `VARDICT_PROFILE_CPU`, `VARDICT_PROFILE_HEAP`, and `VARDICT_PROFILE_DHAT` environment-variable activation in `profile::Session::start()`, empty-path fail-fast validation (`<VAR> must be a non-empty directory path`), compiled-out stderr warnings with zero files created in default builds, and artifact generation (`cpu-collapsed.txt`, `cpu-profile.pb`, `cpu-meta.json`, `cpu-flamegraph.svg`, `heap.pb.gz`/`heap.pb`, `heap-flamegraph.svg`, `dhat-heap.json`) when compiled with opt-in profiling features.
 3. **`tests/robustness.rs` (5 tests):**
@@ -423,7 +423,7 @@ VarDictRust utilizes 6 automated GitHub Actions workflows with strict security h
 ### 10.1 Continuous Integration (`.github/workflows/ci.yml`)
 - **StepSecurity Runner Hardening:** pinned to `step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25` (`# v2.10.4`) with `egress-policy: audit`.
 - **Submodule Recursion:** checks out complete repository including `VarDictJava` submodule (`actions/checkout@v7.0.1`).
-- **Standard Checks:** runs `cargo fmt --all -- --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test --all` (all 289 workspace tests), `cargo bench --no-run`, and `cargo build --release`.
+- **Standard Checks:** runs `cargo fmt --all -- --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test --all` (all 293 workspace tests), `cargo bench --no-run`, and `cargo build --release`.
 - **Regression Gates in CI:** executes `harness/run_integration.sh` (asserting `91 PASS / 1 XFAIL`) and `tests/robustness.rs`.
 
 ### 10.2 Security & Supply Chain Scans (`.github/workflows/security.yml`)

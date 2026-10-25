@@ -13,38 +13,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Achieved **89 / 89 MATCH** (`0` variant diffs across `11,227,154` called variants)
   against **VarDictJava v1.8.3** across the 12-cell full-chromosome, full-exome,
-  ultra-deep MRD (`2,000x`–`5,000x`), RNA-seq (`--splice`), CRAM twin, and
-  amplicon panel validation corpus ([Issue #42](https://github.com/palakpsheth/VarDictRust/issues/42),
+  ultra-deep MRD (`7,000x`–`173,000x`), RNA-seq (`--splice` & `-i`), CRAM 3.0 twin,
+  and amplicon panel validation corpus ([Issue #42](https://github.com/palakpsheth/VarDictRust/issues/42),
   [PR #43](https://github.com/palakpsheth/VarDictRust/pull/43)):
-  - **`M-1`** (`crates/vardictrust-core/src/reference.rs`): Extended chromosome
-    reference buffers by 2 bp at the $3'$ end (`end + 2`) to match
-    `ReferenceResource.java:203`, preventing boundary k-mer seed truncation at
-    region/tile edges.
-  - **`M-2`** (`crates/vardictrust-core/src/reference.rs`): Added OpenJDK
-    `String.hashCode()` sequence tie-breaking in `SeedMap::most_frequent_position`
-    to match `VariationRealigner.java:1553–1563` `HashMap<String, List<Integer>>`
-    bucket iteration order when two seed k-mers tie in cluster count.
-  - **`M-3`** (`crates/vardictrust-core/src/realign.rs`): Updated insertion
-    realignment `find_mms` intermediate mismatch checks (`<= 3` and
-    `mm_cnt / mlen < 0.25`) to match `VariationRealigner.java:1966–1981`.
-  - **`M-4`** (`crates/vardictrust-core/src/cigar/parse.rs`): Ported insertion
-    trailing $3'$ overhang validation (`check_3prime_let_is_valid`, `< 4 bp` vs.
-    `< 3 bp` when `p >= 2`) matching `CigarParser.java:638–644`.
-  - **`M-5`** (`crates/vardictrust-core/src/cigar/parse.rs`): Ported coupled
-    indel `id_len` extra-length check inside `parse_cigar` matching
-    `CigarParser.java:784–787`.
-  - **`M-6`** (`crates/vardictrust-core/src/cigar/parse.rs`): Ported secondary
-    overlapping region slice selection (`reg2` / `partial_HashMap`) for
-    amplicon/targeted reads matching `CigarParser.java:257–274`.
-  - **`M-7`** (`crates/vardictrust-core/src/postprocess/somatic.rs`): Fixed somatic
-    `combine_analysis` multi-allele rescue to retain secondary Tumor/Normal
-    allele matches when `number_of_processed_variation + 1 < v1.variants.len()`,
-    matching `SomaticMode.java:361–531`.
-  - **`M-8`** (`crates/vardictrust-core/src/realign.rs`): Ported the RNA
-    (`--splice`) $5'$ soft-clip deletion realignment ceiling (`total_len < 5000`)
-    matching `VariationRealigner.java:536`.
-  - **`M-9`** (`crates/vardictrust/src/cli.rs`): Allowed `-f 0` / `-f 0.0` /
-    `-f 0e0` zero VAF threshold (`>= 0.0`) matching VarDictJava CLI behavior.
+  - **Bug A** (`crates/vardictrust-core/src/cigar/parse.rs`, `src/reference.rs`):
+    Select the covering secondary `LoadedRegion` (`region_slice_for_span`) on
+    `self.region.chr` during structural-variant `partial_pipeline` re-parsing and
+    spliced alignments (`CigarParser.java:181–193`, `257`).
+  - **Bug B** (`crates/vardictrust-core/src/reference.rs`): Truncate loaded
+    reference sequences to `site_end = bases.len() - 17` after seeding
+    `PendingSeedChunk` (`ReferenceResource.java:106–112`) so the trailing
+    `SEED_1` (`17 bp`) lookahead is excluded from `region_sequences` and
+    `reference_sequences` while remaining indexable by overlapping subsequent
+    regions.
+  - **Bug C** (`crates/vardictrust-core/src/bam.rs`): Normalize CRAM
+    reference-matching bases decoded against soft-masked lowercase FASTA contigs
+    (`a/c/g/t/n`) to uppercase (`A/C/G/T/N`) in `SamRecord::fill_from_alignment_record`,
+    and reconstruct omitted CRAM 3.0 (`store_nm=0`) `NM` edit distance tags via
+    `compute_cram_nm` per SAMtags §1.5.
+  - **Bug D** (`crates/vardictrust/src/cli.rs`, `crates/vardictrust-core/src/config.rs`,
+    `src/output/vcf.rs`): Replicate Perl falsy `$opt_f ? $opt_f : 0.02` fallback
+    (`var2vcf_valid.pl:21`) via `valid_freq_threshold(config)` when `-f 0` is
+    passed in single-sample mode, while preserving `0.0` for truthy decimal/scientific
+    zero strings (`-f 0.0`, `-f 0e0`).
+  - **Bug E** (`crates/vardictrust-core/src/postprocess/somatic.rs`): Propagate
+    in-place `v2nt.is_noise()` coverage decrements (`total_pos_cov -= pos_coverage`)
+    back into `v2.var_desc_to_variant` and `v2.variants` so subsequent tumor
+    alleles at multi-allelic somatic loci observe the mutated `v2.variants[0]`
+    (`SomaticPostProcessModule.java:172–186`).
+  - **Bug F** (`crates/vardictrust-core/src/realign.rs`): Fix `<dupN>` $3'$ flank
+    substring offset in `realignins` (`start_idx = sv_flanking`, matching
+    `VariationRealigner.java:744–746` `substr(ins3, SVFLANK - ins3.length())`).
+  - **Bug G** (`crates/vardictrust-core/src/sv.rs`): Query
+    `var_data.ref_coverage.get(&(p5_adj + 1))` after `p5--` in `find_sv` $5'$
+    candidate deletion scan (`StructuralVariantsProcessor.java:732, 748`).
+  - **Bug H** (`crates/vardictrust-core/src/stats/fisher.rs`, `src/output/table.rs`,
+    `src/output/vcf.rs`, `src/lib.rs`): Add `FisherExact::new_java` /
+    `new_with_mode(..., config.fisher)` emulating `FisherExact.java:72, 112, 129`
+    with 7-decimal `logdc` banker's rounding (`round_half_even(value, 7)`) and
+    OpenJDK `DoubleStream.sum()` Kahan-Babuška compensated summation
+    (`java_stream_sum`) for ultra-deep `--fisher` parity.
+  - **Adaptive Region Tiling** (`crates/vardictrust-core/src/lib.rs`,
+    `crates/vardictrust/src/cli.rs`): Execute BED intervals `<= 1 Mbp`
+    (`DEFAULT_UNTILED_SPAN_MAX`) as single untiled intervals matching
+    VarDictJava while tiling multi-megabase intervals `> 1 Mbp` into `100 kbp`
+    (`DEFAULT_TILE_SIZE`) windows to preserve `< 1.5 GiB` bounded WGS memory;
+    raise `MAX_TILE_SIZE` to `500 Mbp`.
 - Resolved mate-window BAM index path fallback (`crates/vardictrust-core/src/lib.rs`)
   so tiled structural-variant mate queries accept both `foo.bam.bai` and
   `foo.bai` index naming conventions (`resolve_bam_index_path()`), matching the
@@ -52,6 +66,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Wired `harness/scale_bench.sh` and `harness/run_integration.sh` to cache and
   replay `vardictcpp` invocations via `harness/golden_store.sh`, eliminating
   redundant multi-minute `vardictcpp` re-executions across test and scale loops.
+- Added unit and real-data end-to-end regression tests across `crates/vardictrust-core`
+  and `crates/vardictrust/tests/flags.rs` (`293` total workspace tests: `241` core
+  lib + `4` core integration + `15` CLI unit + `33` CLI integration tests).
 - Recertified all 16 release evidence artifacts in `benchmarks/evidence/*.json`
   under engine fingerprint `552856835a1eec01` (`perf_fingerprint`
   `9346a6e5419cc5e2`; `harness/acceptance.sh` 8/8 PASS).
