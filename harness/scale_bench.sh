@@ -108,15 +108,27 @@ cell() {
     fi
   done
 }
+cpp_cell() {
+  local name=$1 label=$2 i rc; shift 2
+  for ((i = 1; i <= RUNS; i++)); do
+    rc=0
+    LC_ALL=C GOLDEN_TIME_OUT="$OUT/$name.run$i.time" $TASKSET \
+      bash harness/golden_store.sh cpp "$label" "$REF" "$BAM" "$@" > /dev/null || rc=$?
+    if [ "$rc" -ne 0 ]; then
+      echo "scale_bench: CELL FAILED: $name run $i (exit $rc); partial time log: $OUT/$name.run$i.time" >&2
+      return 1
+    fi
+  done
+}
 # warmup: one untimed pass over the smallest span (page cache, allocator, CPU frequency ramp).
 $TASKSET "$BIN" -G "$REF" -f 0.01 -N "$SM" -b "$BAM" -th 8 -R "$CHR1:1-1000000" > /dev/null \
   || { echo "scale_bench: warmup failed" >&2; exit 1; }
 for th in 1 2 4 8; do
   cell "th$th" "$OUT/th$th.vcf" $TASKSET "$BIN" -G "$REF" -f 0.01 -N "$SM" -b "$BAM" -c 1 -S 2 -E 3 -g 4 -z -th "$th" "$BED" || exit 1
-  # BED-capable path reuses run_cpp.sh (BED positional, java-mirror; pins
+  # BED-capable path reuses run_cpp.sh via golden_store.sh (BED positional, java-mirror; pins
   # -c 1 -S 2 -E 3 -g 4 identical to the rust line, adds -vcf for stdout VCF).
   if [ "$CPP_OK" = "true" ]; then
-    cell "cpp_th$th" /dev/null $TASKSET bash harness/run_cpp.sh "$REF" "$BAM" "$BED" "$OUT/cpp_th$th.vcf" "$SM" -th "$th" -z \
+    cpp_cell "cpp_th$th" "scale-th$th" "$BED" "$OUT/cpp_th$th.vcf" "$SM" -th "$th" -z \
       || { rm -f "$OUT"/cpp_th$th.run*.time "$OUT/cpp_th$th.vcf"; echo "CPP: SKIP: vardictcpp th$th failed" >&2; }
   else
     rm -f "$OUT"/cpp_th$th.run*.time "$OUT/cpp_th$th.vcf"
@@ -126,10 +138,10 @@ done
 for th in 2 4 8; do cmp <(grep -v '^##' "$OUT/th1.vcf") <(grep -v '^##' "$OUT/th$th.vcf"); done
 for sz in $SIZES; do
   cell "R$sz" "$OUT/R$sz.vcf" $TASKSET "$BIN" -G "$REF" -f 0.01 -N "$SM" -b "$BAM" -th 8 -R "$CHR1:1-$sz" || exit 1
-  # cpp region arm: both cpp arms go through run_cpp.sh; -R is mirrored as the equivalent 0-based BED [0,sz).
+  # cpp region arm: both cpp arms go through golden_store.sh cpp (run_cpp.sh); -R is mirrored as the equivalent 0-based BED [0,sz).
   if [ "$CPP_OK" = "true" ]; then
     printf '%s\t0\t%s\tR%s\n' "$CHR1" "$sz" "$sz" > "$OUT/R$sz.bed"
-    cell "cpp_R$sz" /dev/null $TASKSET bash harness/run_cpp.sh "$REF" "$BAM" "$OUT/R$sz.bed" "$OUT/cpp_R$sz.vcf" "$SM" -th 8 -z \
+    cpp_cell "cpp_R$sz" "scale-R$sz" "$OUT/R$sz.bed" "$OUT/cpp_R$sz.vcf" "$SM" -th 8 -z \
       || { rm -f "$OUT"/cpp_R$sz.run*.time "$OUT/cpp_R$sz.vcf"; echo "CPP: SKIP: vardictcpp R$sz failed" >&2; }
   else
     rm -f "$OUT"/cpp_R$sz.run*.time "$OUT/cpp_R$sz.vcf"

@@ -273,27 +273,30 @@ run_test() {
                 read -r -a extra_argv <<< "$extra_flags"
             fi
             for i in "${!extra_argv[@]}"; do [[ "${extra_argv[$i]}" == "-nosv" ]] && extra_argv[$i]="--nosv"; done
-            local -a cpp_cmd=(
-                conda run -n vardict-oracle vardictcpp
-                -z -c 1 -S 2 -E 3 -g 4
-                -G "$fasta_path" -b "$bam_arg" -N "$cpp_sample"
-                "${extra_argv[@]}" "$tmpbed"
-            )
-            local tmperr
-            tmperr=$(mktemp)
-            local cpp_exit=0 cpp_out=""
-            cpp_out=$("${cpp_cmd[@]}" 2>"$tmperr") || cpp_exit=$?
+            local -a gs_inputs=(--input "$fasta_path")
+            [[ -f "$fasta_path.fai" ]] && gs_inputs+=(--input "$fasta_path.fai")
+            if [[ "$bam_arg" == *"|"* ]]; then
+                gs_inputs+=(--input "${bam_arg%%|*}" --input "${bam_arg#*|}")
+            else
+                gs_inputs+=(--input "$bam_arg")
+            fi
+            gs_inputs+=(--input "$tmpbed")
+            local tmpcpp tmperr
+            tmpcpp=$(mktemp); tmperr=$(mktemp)
+            local cpp_exit=0
+            bash "$SCRIPT_DIR/golden_store.sh" raw --kind cpp --label "int-$basename_file" --out "$tmpcpp" --err-out "$tmperr" "${gs_inputs[@]}" -- conda run -n vardict-oracle vardictcpp -z -c 1 -S 2 -E 3 -g 4 -G "$fasta_path" -b "$bam_arg" -N "$cpp_sample" "${extra_argv[@]}" "$tmpbed" || cpp_exit=$?
             if [[ $cpp_exit -ne 0 ]]; then
                 local first_err
                 first_err=$(grep -vE '^(ERROR conda\.cli|cpp_chunk=|[[:space:]]*$)' "$tmperr" 2>/dev/null | head -n 1 | tr -d '\r' | cut -c 1-140 || true)
                 echo "CPP: SKIP: $basename_file (cpp engine exit $cpp_exit${first_err:+: $first_err})"
-                rm -f "$tmperr"
+                rm -f "$tmpcpp" "$tmperr"
             else
                 rm -f "$tmperr"
                 local tmpexp tmpgot
                 tmpexp=$(mktemp); tmpgot=$(mktemp)
                 printf '%s\n' "$expected" | LC_ALL=C sort > "$tmpexp"
-                printf '%s\n' "$cpp_out" | LC_ALL=C sort > "$tmpgot"
+                LC_ALL=C sort "$tmpcpp" > "$tmpgot"
+                rm -f "$tmpcpp"
                 local cpp_msg cpp_rc=0
                 cpp_msg=$(python3 "$SCRIPT_DIR/compare_var.py" --eps 1e-6 --cols 3-61 "$tmpexp" "$tmpgot" 2>&1) || cpp_rc=$?
                 rm -f "$tmpexp" "$tmpgot"

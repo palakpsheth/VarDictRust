@@ -5,7 +5,7 @@ T=$(mktemp -d); trap 'rm -rf "$T"' EXIT; fail=0
 SB=harness/scale_bench.sh
 printf '>chr1\nACGT\n' > "$T/ref.fa"; printf 'chr1\t120000000\t6\t60\t61\n' > "$T/ref.fa.fai"
 : > "$T/x.bam"; printf 'chr1\t1\t100\tg\n' > "$T/x.bed"
-mkdir -p "$T/stub"; export STUB_DIR="$T/stub"
+mkdir -p "$T/stub"; export STUB_DIR="$T/stub" GOLDEN_STORE_DIR="$T/golden"
 cat > "$T/engine" <<'ENG'
 #!/usr/bin/env bash
 th=1; for ((i=1;i<=$#;i++)); do if [ "${!i}" = "-th" ]; then j=$((i+1)); th=${!j}; fi; done
