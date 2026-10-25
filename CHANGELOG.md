@@ -45,9 +45,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     matching `VariationRealigner.java:536`.
   - **`M-9`** (`crates/vardictrust/src/cli.rs`): Allowed `-f 0` / `-f 0.0` /
     `-f 0e0` zero VAF threshold (`>= 0.0`) matching VarDictJava CLI behavior.
+- Resolved mate-window BAM index path fallback (`crates/vardictrust-core/src/lib.rs`)
+  so tiled structural-variant mate queries accept both `foo.bam.bai` and
+  `foo.bai` index naming conventions (`resolve_bam_index_path()`), matching the
+  primary BAM reader (`bam.rs`).
+- Wired `harness/scale_bench.sh` and `harness/run_integration.sh` to cache and
+  replay `vardictcpp` invocations via `harness/golden_store.sh`, eliminating
+  redundant multi-minute `vardictcpp` re-executions across test and scale loops.
 - Recertified all 16 release evidence artifacts in `benchmarks/evidence/*.json`
-  under engine fingerprint `6a12e65f55b68849` (`perf_fingerprint`
-  `f528b83880f3e1ce`; `harness/acceptance.sh` 8/8 PASS).
+  under engine fingerprint `552856835a1eec01` (`perf_fingerprint`
+  `9346a6e5419cc5e2`; `harness/acceptance.sh` 8/8 PASS).
 
 ## [1.0.3] - 2026-10-24
 

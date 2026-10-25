@@ -10,50 +10,50 @@
   ],
   "compare_head": [],
   "cpp_time": null,
-  "date": "2026-10-23T23:44:26-07:00",
+  "date": "2026-10-25T08:43:42-07:00",
   "extra": {
     "P": 4,
     "bar": 2.4,
     "certifying": true,
     "courtesy": true,
     "cpp_maxrss_kb": {
-      "1000000": null,
-      "10000000": null,
-      "100000000": null,
-      "248956422": null
+      "1000000": 219456,
+      "10000000": 2912032,
+      "100000000": 21998908,
+      "248956422": 25521616
     },
     "cpp_wall_s": {
-      "1": null,
-      "2": null,
-      "4": null,
-      "8": null
+      "1": 629.09,
+      "2": 359.32,
+      "4": 216.62,
+      "8": 182.8
     },
     "cpus": "0-7",
     "governor": "powersave",
-    "loadavg_end": "7.71 7.60 5.73",
-    "loadavg_start": "1.19 2.97 2.74",
+    "loadavg_end": "8.12 7.58 5.77",
+    "loadavg_start": "2.12 1.73 1.46",
     "maxrss_kb": {
-      "1000000": 485124,
-      "10000000": 1221380,
-      "100000000": 1251856,
-      "248956422": 1493656
+      "1000000": 535536,
+      "10000000": 1217504,
+      "100000000": 1233188,
+      "248956422": 1489212
     },
     "note": ">8 threads not measured (host policy A3); each cell = median of `runs` timed runs",
     "pass": true,
-    "perf_fingerprint": "9f75643cf12aa988",
+    "perf_fingerprint": "9346a6e5419cc5e2",
     "pinned": true,
-    "rss_ratio_chr1_vs_10mb": 1.2229248882411698,
+    "rss_ratio_chr1_vs_10mb": 1.2231680553000237,
     "runs": 3,
-    "speedup_8": 3.4810920989111196,
+    "speedup_8": 3.4419684308263694,
     "wall_s": {
-      "1": 648.98,
-      "2": 334.53,
-      "4": 214.34,
-      "8": 186.43
+      "1": 667.26,
+      "2": 346.0,
+      "4": 218.07,
+      "8": 193.86
     }
   },
-  "fingerprint": "27f3667b32ac14f5",
-  "head": "3dd250f9a3cf3dff87575102d090ed2644056a70",
+  "fingerprint": "552856835a1eec01",
+  "head": "ba769cf5ce6b495b9ce9024b1ed8aa21135f7807",
   "java_time": null,
   "n_variants": null,
   "name": "scale",

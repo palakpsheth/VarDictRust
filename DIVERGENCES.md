@@ -16,14 +16,14 @@ specification. We either match it exactly or prove the difference is unreachable
 ## Master Parity Status & Taxonomy Summary
 
 ```
-Verified Parity Baseline (release/v1.0.4, commit e09b845):
+Verified Parity Baseline (release/v1.0.4, commit 19b5683):
 - Integration Tests:  91 PASS / 1 XFAIL / 0 FAIL / 0 SKIP (100% of valid inputs pass; sole XFAIL is stale fixture [UB-4](docs/upstream-bugs.md#ub-4-hard_clip_casefa-fixture-drift-between-csv-chunks-and-reconstructed-fasta))
-- Core Library Tests: 240 PASS / 0 FAIL (`cargo test -p vardictrust-core --lib`)
-- Total Workspace:    288 PASS / 0 FAIL (`cargo test --workspace` across core, amplicon_stream_mem, cram_stack, cli, flags, profile_smoke, robustness, thread_determinism, version)
+- Core Library Tests: 241 PASS / 0 FAIL (`cargo test -p vardictrust-core --lib`)
+- Total Workspace:    289 PASS / 0 FAIL (`cargo test --workspace` across core, amplicon_stream_mem, cram_stack, cli, flags, profile_smoke, robustness, thread_determinism, version)
 - [Tier-2](docs/testing/test-matrix-and-ci-audit.md#tier-2) Sweeps:      17/17 strict MATCH (micro, s1a-s9 all 10 slices, HG008, SEQC2 exome/slices, HG002, Amplicon, 17-mode extended, 18-slice multimodal)
 - [Tier-3](docs/testing/test-matrix-and-ci-audit.md#tier-3) Truth Concordance:  5/5 EQUAL (GIAB HG002 NIST v4.2.1, SEQC2 v1.2.1, GIAB HG008 NIST Draft v0.3, GIAB HG005 NIST v4.2.1, GIAB NA24385 b37 NIST v4.2.1)
-- Scaling Budget:     PASS (3.48x speedup, 1.22x flat RSS scaling across 249 Mbp chromosome 1)
-- Final Acceptance:   8/8 PASS under release engine fingerprint `6a12e65f55b68849`
+- Scaling Budget:     PASS (3.44x speedup, 1.22x flat RSS scaling across 249 Mbp chromosome 1)
+- Final Acceptance:   8/8 PASS under release engine fingerprint `552856835a1eec01`
 ```
 
 <a id="the-four-canonical-parity-classes-rewritesbio-5-8-11"></a>
