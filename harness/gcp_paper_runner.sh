@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # =============================================================================
 # harness/gcp_paper_runner.sh
-# Single-Instance GCP Orchestrator & Worker for `paper/gcp-study` (v1.0.3).
+# Single-Instance GCP Orchestrator & Worker for `paper/gcp-study` (v1.0.4).
 #
 # Architecture (locked in docs/validation/gcp-study-protocol.md §6 & gcp-prereg.md §A12):
 #   - Single dedicated VM: `n2-highmem-32` (32 vCPUs, 256 GB RAM, 250 GB pd-ssd boot + 8x375 GB [3.0 TB] NVMe Local SSD RAID0, us-central1-a)
@@ -9,7 +9,7 @@
 #       Attempt 1: SPOT (--provisioning-model=SPOT)
 #       Attempt 2: SPOT (--provisioning-model=SPOT)
 #       Attempt 3: STANDARD (--provisioning-model=STANDARD, On-Demand)
-#   - Per-cell GCS checkpointing (`gs://vardict-paper-trial-results/checkpoints-v103/<cell>.done`)
+#   - Per-cell GCS checkpointing (`gs://vardict-paper-trial-results/checkpoints-v104/<cell>.done`)
 #     so preempted Spot runs resume cleanly without repeating completed cells.
 #   - Detached systemd service on VM (`vardict-paper-worker`) + GCS heartbeat polling so
 #     transient SSH drops never interrupt a healthy VM; preemption is detected via
@@ -39,10 +39,10 @@ GCS_BAMS="${GCS_BAMS:-gs://vardict-paper-trial-bams}"
 GCS_REFS="${GCS_REFS:-gs://vardict-paper-trial-refs}"
 GCS_RESULTS="${GCS_RESULTS:-gs://vardict-paper-trial-results}"
 GCS_EVIDENCE="${GCS_EVIDENCE:-gs://vardict-paper-trial-evidence}"
-GCS_CKPT="${GCS_CKPT:-${GCS_RESULTS}/checkpoints-v103}"
+GCS_CKPT="${GCS_CKPT:-${GCS_RESULTS}/checkpoints-v104}"
 GCS_ORACLE_CACHE="${GCS_ORACLE_CACHE:-${GCS_RESULTS}/oracle-cache-v183}"
 
-EXPECTED_FP="${EXPECTED_FP:-27f3667b32ac14f5}"
+EXPECTED_FP="${EXPECTED_FP:-552856835a1eec01}"
 WORK_DIR="${WORK_DIR:-/var/tmp/vardict-paper}"
 
 usage() {
@@ -141,7 +141,11 @@ gcs_upload() {
   else
     local t
     for t in 1 2 3; do
-      setsid gsutil -o GSUtil:parallel_composite_upload_threshold=0 -q cp -r "$src" "$dst" && return 0
+      if [ -d "$src" ]; then
+        setsid gsutil -o GSUtil:parallel_composite_upload_threshold=0 -q rsync -r "$src" "$dst" && return 0
+      else
+        setsid gsutil -o GSUtil:parallel_composite_upload_threshold=0 -q cp "$src" "$dst" && return 0
+      fi
       sleep 2
     done
     return 1
@@ -249,7 +253,7 @@ run_checkpointed_cell() {
   if [ -n "${LOCAL_CKPT_DIR:-}" ]; then
     gcs_upload "$cell_dir" "${LOCAL_CKPT_DIR}/cells/${cell_id}"
   else
-    gcs_upload "$cell_dir" "${GCS_RESULTS}/cells-v103/${cell_id}" || true
+    gcs_upload "$cell_dir" "${GCS_RESULTS}/cells-v104/${cell_id}" || true
   fi
 
   if [ "$rc" -ne 0 ]; then
@@ -398,11 +402,17 @@ run_stage_1() {
 
   run_local_stage_cell "stage1" "s1_stage_assets" 32 "128G" bash -c "
     set -euo pipefail
-    mkdir -p scratch/g4/amplicon scratch/g4/hg002 scratch/g4/hg008 scratch/g4/ref
+    mkdir -p scratch/g4/amplicon scratch/g4/hg002 scratch/g4/hg008 scratch/g4/ref scratch/g4/truth_cache
+    s1_cached=0
+    refs_cached=0
     if setsid gsutil -q stat '${GCS_BAMS}/g4-cache/s1_ready.done' 2>/dev/null; then
       setsid gsutil -q rsync -r '${GCS_BAMS}/g4-cache/amplicon' scratch/g4/amplicon
       setsid gsutil -q rsync -r '${GCS_BAMS}/g4-cache/hg002' scratch/g4/hg002
       setsid gsutil -q rsync -r '${GCS_BAMS}/g4-cache/hg008' scratch/g4/hg008
+      s1_cached=1
+    fi
+    if setsid gsutil -q stat '${GCS_BAMS}/g4-cache/truth_cache/*' 2>/dev/null; then
+      setsid gsutil -q rsync -r '${GCS_BAMS}/g4-cache/truth_cache' scratch/g4/truth_cache || true
     fi
     if setsid gsutil -q stat '${GCS_BAMS}/g4-cache/refs_ready.done' 2>/dev/null; then
       setsid gsutil -q rsync -r '${GCS_BAMS}/g4-cache/ref' scratch/g4/ref
@@ -411,14 +421,24 @@ run_stage_1() {
       ln -sfn GRCh38_GIABv3.fasta.fai scratch/g4/ref/giabv3/GRCh38_GIABv3.fa.fai
       ln -sfn GRCh38_GIABv3.sdf scratch/g4/ref/giabv3/GRCh38_GIABv3.fa.sdf
       ln -sfn GRCh38.d1.vd1.sdf scratch/g4/ref/d1vd1/GRCh38.d1.vd1.fa.sdf
+      refs_cached=1
     fi
     bash harness/stage_g4.sh refs amplicon hg002 hg008
-    setsid gsutil -o GSUtil:parallel_composite_upload_threshold=0 -q rsync -r scratch/g4/amplicon '${GCS_BAMS}/g4-cache/amplicon' || true
-    setsid gsutil -o GSUtil:parallel_composite_upload_threshold=0 -q rsync -r scratch/g4/hg002 '${GCS_BAMS}/g4-cache/hg002' || true
-    setsid gsutil -o GSUtil:parallel_composite_upload_threshold=0 -q rsync -r scratch/g4/hg008 '${GCS_BAMS}/g4-cache/hg008' || true
-    setsid gsutil -o GSUtil:parallel_composite_upload_threshold=0 -q rsync -r scratch/g4/ref '${GCS_BAMS}/g4-cache/ref' || true
-    date -u +%Y-%m-%dT%H:%M:%SZ | setsid gsutil -q cp - '${GCS_BAMS}/g4-cache/s1_ready.done' || true
-    date -u +%Y-%m-%dT%H:%M:%SZ | setsid gsutil -q cp - '${GCS_BAMS}/g4-cache/refs_ready.done' || true
+    hg002_md5=\"\$(md5sum scratch/g4/hg002/HG002.chr20.bam | awk '{print \$1}')\"
+    if [ \"\$hg002_md5\" != 'bd605a455b2e2064931e6097c64695ea' ]; then
+      echo \"FATAL: scratch/g4/hg002/HG002.chr20.bam MD5 '\$hg002_md5' != MANIFEST pin 'bd605a455b2e2064931e6097c64695ea'\" >&2
+      exit 1
+    fi
+    if [ \"\$s1_cached\" -eq 0 ]; then
+      setsid gsutil -o GSUtil:parallel_composite_upload_threshold=0 -q rsync -r scratch/g4/amplicon '${GCS_BAMS}/g4-cache/amplicon' || true
+      setsid gsutil -o GSUtil:parallel_composite_upload_threshold=0 -q rsync -r scratch/g4/hg002 '${GCS_BAMS}/g4-cache/hg002' || true
+      setsid gsutil -o GSUtil:parallel_composite_upload_threshold=0 -q rsync -r scratch/g4/hg008 '${GCS_BAMS}/g4-cache/hg008' || true
+      date -u +%Y-%m-%dT%H:%M:%SZ | setsid gsutil -q cp - '${GCS_BAMS}/g4-cache/s1_ready.done' || true
+    fi
+    if [ \"\$refs_cached\" -eq 0 ]; then
+      setsid gsutil -o GSUtil:parallel_composite_upload_threshold=0 -q rsync -r scratch/g4/ref '${GCS_BAMS}/g4-cache/ref' || true
+      date -u +%Y-%m-%dT%H:%M:%SZ | setsid gsutil -q cp - '${GCS_BAMS}/g4-cache/refs_ready.done' || true
+    fi
   "
   ensure_submodule_excludes
 
@@ -779,7 +799,21 @@ run_stage_2() {
     printf 'caller\tcalls\tsnv_p\tsnv_r\tsnv_f1\tindel_p\tindel_r\tindel_f1\n' > \"\$OUT_TABLE\"
     score_caller() {
       local lbl=\"\$1\" vcf=\"\$2\"
-      bcftools reheader --fai \"\${REF}.fai\" \"\$vcf\" 2>/dev/null \
+      local src_vcf=\"\$vcf\"
+      # Synthesize GT=0/1 sample column for 8-column sites-only VCFs (e.g., LoFreq, matching Archive.zip/tool_vcfs/lofreq.gt.vcf)
+      if ! bcftools view -h \"\$vcf\" 2>/dev/null | tail -n 1 | awk -F'\t' '{exit (NF>=10 ? 0 : 1)}'; then
+        src_vcf=\"\$KEEP_DIR/ev_\${lbl}_gt.vcf\"
+        bcftools view \"\$vcf\" 2>/dev/null | awk -F'\t' 'BEGIN{OFS=\"\t\"}
+          /^##/ { print; next }
+          /^#CHROM/ {
+            print \"##FORMAT=<ID=GT,Number=1,Type=String,Description=\\\"Genotype\\\">\"
+            print \$1,\$2,\$3,\$4,\$5,\$6,\$7,\$8,\"FORMAT\",\"HG002\"
+            next
+          }
+          { print \$1,\$2,\$3,\$4,\$5,\$6,\$7,\$8,\"GT\",\"0/1\" }
+        ' > \"\$src_vcf\"
+      fi
+      bcftools reheader --fai \"\${REF}.fai\" \"\$src_vcf\" 2>/dev/null \
         | bcftools norm -f \"\$REF\" -m -any 2>/dev/null \
         | bcftools view -f PASS,. 2>/dev/null \
         | bcftools sort -Oz -o \"\$KEEP_DIR/ev_\${lbl}.vcf.gz\"
@@ -793,8 +827,12 @@ run_stage_2() {
         tabix -f -p vcf \"\$KEEP_DIR/tr_\${cls}.vcf.gz\"
         rm -rf \"\$KEEP_DIR/rtg_\${lbl}_\${cls}\"
         rtg vcfeval -b \"\$KEEP_DIR/tr_\${cls}.vcf.gz\" -c \"\$KEEP_DIR/ev_\${lbl}_\${cls}.vcf.gz\" -t \"\$SDF\" \
-          --evaluation-regions \"\$BED\" -o \"\$KEEP_DIR/rtg_\${lbl}_\${cls}\" --vcf-score-field=QUAL >/dev/null 2>&1
-        read -r p r f <<< \"\$(awk 'NR>2 && NF>=8' \"\$KEEP_DIR/rtg_\${lbl}_\${cls}/summary.txt\" | sort -k8 -g | tail -1 | awk '{print \$6,\$7,\$8}')\"
+          --evaluation-regions \"\$BED\" --squash-ploidy -o \"\$KEEP_DIR/rtg_\${lbl}_\${cls}\" --vcf-score-field=QUAL >/dev/null 2>&1 || true
+        if [ -f \"\$KEEP_DIR/rtg_\${lbl}_\${cls}/summary.txt\" ]; then
+          read -r p r f <<< \"\$(awk 'NR>2 && NF>=8' \"\$KEEP_DIR/rtg_\${lbl}_\${cls}/summary.txt\" | sort -k8 -g | tail -1 | awk '{print \$6,\$7,\$8}')\"
+        else
+          p=NA; r=NA; f=NA
+        fi
         eval \"\${cls}_p=\${p:-NA}; \${cls}_r=\${r:-NA}; \${cls}_f=\${f:-NA}\"
       done
       printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \"\$lbl\" \"\$n\" \"\$snp_p\" \"\$snp_r\" \"\$snp_f\" \"\$indel_p\" \"\$indel_r\" \"\$indel_f\" | tee -a \"\$OUT_TABLE\"
@@ -978,15 +1016,22 @@ run_stage_4() {
 
   run_local_stage_cell "stage4" "s4_stage_seqc2_full" 32 "128G" bash -c "
     set -euo pipefail
+    s4_cached=0
+    mkdir -p scratch/g4/seqc2 scratch/g4/multimodal scratch/g4/truth_cache
     if setsid gsutil -q stat '${GCS_BAMS}/g4-cache/s4_ready.done' 2>/dev/null; then
-      mkdir -p scratch/g4/seqc2 scratch/g4/multimodal
       setsid gsutil -q rsync -r '${GCS_BAMS}/g4-cache/seqc2' scratch/g4/seqc2
       setsid gsutil -q rsync -r '${GCS_BAMS}/g4-cache/multimodal' scratch/g4/multimodal
+      s4_cached=1
+    fi
+    if setsid gsutil -q stat '${GCS_BAMS}/g4-cache/truth_cache/*' 2>/dev/null; then
+      setsid gsutil -q rsync -r '${GCS_BAMS}/g4-cache/truth_cache' scratch/g4/truth_cache || true
     fi
     bash harness/stage_g4.sh seqc2 multimodal
-    setsid gsutil -o GSUtil:parallel_composite_upload_threshold=0 -q rsync -r -x 'fastq/.*' scratch/g4/seqc2 '${GCS_BAMS}/g4-cache/seqc2' || true
-    setsid gsutil -o GSUtil:parallel_composite_upload_threshold=0 -q rsync -r scratch/g4/multimodal '${GCS_BAMS}/g4-cache/multimodal' || true
-    date -u +%Y-%m-%dT%H:%M:%SZ | setsid gsutil -q cp - '${GCS_BAMS}/g4-cache/s4_ready.done' || true
+    if [ \"\$s4_cached\" -eq 0 ]; then
+      setsid gsutil -o GSUtil:parallel_composite_upload_threshold=0 -q rsync -r -x 'fastq/.*' scratch/g4/seqc2 '${GCS_BAMS}/g4-cache/seqc2' || true
+      setsid gsutil -o GSUtil:parallel_composite_upload_threshold=0 -q rsync -r scratch/g4/multimodal '${GCS_BAMS}/g4-cache/multimodal' || true
+      date -u +%Y-%m-%dT%H:%M:%SZ | setsid gsutil -q cp - '${GCS_BAMS}/g4-cache/s4_ready.done' || true
+    fi
   "
   ensure_submodule_excludes
 
@@ -1070,24 +1115,41 @@ run_stage_4() {
   run_checkpointed_cell "stage4" "s4_tier3_truth_and_qual_sweep" 8 "32G" bash -c '
     set -euo pipefail
     BUDGET_DIR="${WORK_DIR}/cells/s4_perf_budget_4targets_n3"
+    if [ ! -f "$BUDGET_DIR/hg002/rust.vcf" ] && [ -z "${LOCAL_CKPT_DIR:-}" ]; then
+      mkdir -p "$BUDGET_DIR"
+      setsid gsutil -m -q rsync -r "${GCS_RESULTS}/cells-v104/s4_perf_budget_4targets_n3" "$BUDGET_DIR"
+    fi
 
     # (a) HG002 Germline Truth (GIAB v4.2.1)
     bash harness/concordance_germline.sh hg002-truth \
       "$BUDGET_DIR/hg002/java.vcf" "$BUDGET_DIR/hg002/rust.vcf" \
-      "$DATA_DIR/hg002/truth.vcf.gz" "$DATA_DIR/hg002/eval.bed" \
+      "$DATA_DIR/hg002/truth/truth.vcf.gz" "$DATA_DIR/hg002/eval.bed" \
       "$DATA_DIR/ref/giabv3/GRCh38_GIABv3.sdf" "$KEEP_DIR/hg002_truth" HG002 "$BUDGET_DIR/hg002/cpp.vcf"
 
     # (b) SEQC2 Somatic Exome Truth (SEQC2 v1.2.1)
     bash harness/concordance_pair.sh seqc2-truth \
       "$BUDGET_DIR/seqc2/java.vcf" "$BUDGET_DIR/seqc2/rust.vcf" \
-      "$DATA_DIR/seqc2/truth.vcf.gz" "$DATA_DIR/seqc2/eval.bed" \
+      "$DATA_DIR/seqc2/truth/truth.vcf.gz" "$DATA_DIR/seqc2/eval.bed" \
       "$DATA_DIR/ref/d1vd1/GRCh38.d1.vd1.sdf" "$KEEP_DIR/seqc2_truth" HCC1395 "$BUDGET_DIR/seqc2/cpp.vcf"
 
     # (c) HG008 Somatic Truth (NIST v0.3 + v0.4 smvar in parallel)
     bash harness/concordance_pair.sh hg008-truth \
       "$BUDGET_DIR/hg008/java.vcf" "$BUDGET_DIR/hg008/rust.vcf" \
-      "$DATA_DIR/hg008/truth.vcf.gz" "$DATA_DIR/hg008/eval.bed" \
+      "$DATA_DIR/hg008/truth/HG008-T_somatic_smvar_benchmark_v0.3_tumorvariants.vcf.gz" "$DATA_DIR/hg008/eval.bed" \
       "$DATA_DIR/ref/giabv3/GRCh38_GIABv3.sdf" "$KEEP_DIR/hg008_truth" HG008-T "$BUDGET_DIR/hg008/cpp.vcf"
+
+    if [ -f "$DATA_DIR/hg008/truth/HG008-T_somatic_smvar_benchmark_v0.4_GRCh38_tumorvariants.vcf.gz" ] && [ -f "$DATA_DIR/hg008/eval_v04.bed" ]; then
+      bash harness/concordance.sh \
+        "$BUDGET_DIR/hg008/java.vcf" \
+        "$DATA_DIR/hg008/truth/HG008-T_somatic_smvar_benchmark_v0.4_GRCh38_tumorvariants.vcf.gz" \
+        "$DATA_DIR/hg008/eval_v04.bed" "$DATA_DIR/ref/giabv3/GRCh38_GIABv3.sdf" \
+        "$KEEP_DIR/hg008_v04_truth/java" HG008-T > "$KEEP_DIR/hg008_v04_java.txt"
+      bash harness/concordance.sh \
+        "$BUDGET_DIR/hg008/rust.vcf" \
+        "$DATA_DIR/hg008/truth/HG008-T_somatic_smvar_benchmark_v0.4_GRCh38_tumorvariants.vcf.gz" \
+        "$DATA_DIR/hg008/eval_v04.bed" "$DATA_DIR/ref/giabv3/GRCh38_GIABv3.sdf" \
+        "$KEEP_DIR/hg008_v04_truth/rust" HG008-T > "$KEEP_DIR/hg008_v04_rust.txt"
+    fi
 
     # (d) Pre-registered Full ROC/QUAL Sweep (0, 30, 50, 75, 100, 128, 150, 160, 200, 226) on HG002, SEQC2, HG008
     python3 - "$KEEP_DIR" <<'\''PY'\''
@@ -1198,6 +1260,10 @@ PY
       done
       python3 harness/compare_vcf.py \"\$KEEP_DIR/java_th${th}.vcf\" \"\$KEEP_DIR/rust_th${th}.vcf\" | tee \"\$KEEP_DIR/compare_th${th}.txt\"
       grep -q '^MATCH' \"\$KEEP_DIR/compare_th${th}.txt\"
+      if [ '${th}' -gt 1 ] && [ ! -f '${WORK_DIR}/cells/s4_scale_exome_3way_th1/rust_th1.vcf' ] && [ -z \"\${LOCAL_CKPT_DIR:-}\" ]; then
+        mkdir -p '${WORK_DIR}/cells/s4_scale_exome_3way_th1'
+        setsid gsutil -m -q rsync -r '${GCS_RESULTS}/cells-v104/s4_scale_exome_3way_th1' '${WORK_DIR}/cells/s4_scale_exome_3way_th1' || true
+      fi
       if [ '${th}' -gt 1 ] && [ -f '${WORK_DIR}/cells/s4_scale_exome_3way_th1/rust_th1.vcf' ]; then
         cmp <(grep -v '^##' '${WORK_DIR}/cells/s4_scale_exome_3way_th1/rust_th1.vcf') <(grep -v '^##' \"\$KEEP_DIR/rust_th${th}.vcf\")
         echo 'DETERMINISTIC_RECORDS_IDENTICAL_TO_TH1' > \"\$KEEP_DIR/determinism_th${th}.txt\"
@@ -1265,10 +1331,18 @@ PY
   # 7. Full multimodal + extended coverage + G4 & E2 CRAM twins + README CLI recipe verification
   run_checkpointed_cell "stage4" "s4_multimodal_and_cram_twin" 8 "32G" bash -c '
     set -euo pipefail
-    bash harness/run_extended_coverage.sh
-    bash harness/run_multimodal_slices.sh
-    CMP_TIMEOUT=12h bash harness/cram_twin.sh
-    bash harness/concordance_multimodal.sh
+    export GOLDEN_STORE_DIR="${WORK_DIR}/golden-store"
+    mkdir -p "$GOLDEN_STORE_DIR" "$DATA_DIR/truth_cache"
+    if [ -z "${LOCAL_CKPT_DIR:-}" ] && setsid gsutil -q stat "${GCS_ORACLE_CACHE}/golden-store/cells/*" 2>/dev/null; then
+      setsid gsutil -m -q rsync -r "${GCS_ORACLE_CACHE}/golden-store" "$GOLDEN_STORE_DIR" || true
+    fi
+    if [ -z "${LOCAL_CKPT_DIR:-}" ] && setsid gsutil -q stat "${GCS_BAMS}/g4-cache/truth_cache/*" 2>/dev/null; then
+      setsid gsutil -m -q rsync -r "${GCS_BAMS}/g4-cache/truth_cache" "$DATA_DIR/truth_cache" || true
+    fi
+    GOLDEN_MODE=auto GOLDEN_STORE_DIR="$GOLDEN_STORE_DIR" bash harness/run_extended_coverage.sh
+    GOLDEN_MODE=auto GOLDEN_STORE_DIR="$GOLDEN_STORE_DIR" bash harness/run_multimodal_slices.sh
+    CMP_TIMEOUT=12h python3 harness/record_evidence.py hg008-cram-twin -- bash harness/cram_twin.sh
+    GOLDEN_MODE=auto GOLDEN_STORE_DIR="$GOLDEN_STORE_DIR" bash harness/concordance_multimodal.sh
 
     # E2: Tier-E SEQC2 Exome CRAM Twin (HCC1395/HCC1395BL slice CRAM vs BAM bitwise identity)
     REF_E="$DATA_DIR/ref/d1vd1/GRCh38.d1.vd1.fa"
@@ -1290,7 +1364,7 @@ PY
     grep -q "^chr1" "$KEEP_DIR/readme_smoke.vcf"
 
     # Sync updated benchmarks/evidence/*.json back to GCS evidence bucket
-    setsid gsutil -o GSUtil:parallel_composite_upload_threshold=0 -q cp -r benchmarks/evidence "$GCS_RESULTS/cells-v103/evidence_certified" || true
+    setsid gsutil -o GSUtil:parallel_composite_upload_threshold=0 -q rsync -r benchmarks/evidence "$GCS_RESULTS/cells-v104/evidence_certified" || true
   '
 }
 
@@ -2041,10 +2115,10 @@ EOF
 
   # Upload consolidated sweep summary table to GCS
   if [ -f "${WORK_DIR}/cells/v103_sweep_summary.tsv" ]; then
-    gcs_upload "${WORK_DIR}/cells/v103_sweep_summary.tsv" "${GCS_RESULTS}/cells-v103/v103_sweep_summary.tsv" || true
+    gcs_upload "${WORK_DIR}/cells/v103_sweep_summary.tsv" "${GCS_RESULTS}/cells-v104/v104_sweep_summary.tsv" || true
   fi
-  gcs_mark_done "SWEEP_V103_DONE"
-  gcs_write_heartbeat "sweep" "SWEEP_V103_DONE" "COMPLETED"
+  gcs_mark_done "SWEEP_V104_DONE"
+  gcs_write_heartbeat "sweep" "SWEEP_V104_DONE" "COMPLETED"
 }
 
 run_worker() {
@@ -2102,7 +2176,7 @@ run_controller() {
   local done_marker="ALL_STAGES"
   local keep_vm_on_done=0
   if [ "$worker_stage" = "sweep" ]; then
-    done_marker="SWEEP_V103_DONE"
+    done_marker="SWEEP_V104_DONE"
     keep_vm_on_done="${KEEP_VM_ON_SWEEP_DONE:-1}"
   fi
 
@@ -2292,6 +2366,8 @@ run_plan_check() {
   [[ "$cmd3" != *"--maintenance-policy=TERMINATE"* ]] || { echo "FAIL: STANDARD cmd must not set maintenance-policy=TERMINATE" >&2; exit 1; }
 
   # Verify audit fixes in script text: exact mkbed(), symmetric n=3 Java loops, 13-mode sweep, Fig-2/Fig-3 field callers, 3-way scaling
+  [ "$EXPECTED_FP" = "552856835a1eec01" ] || { echo "FAIL: EXPECTED_FP '$EXPECTED_FP' != 552856835a1eec01" >&2; exit 1; }
+  [[ "$GCS_CKPT" == */checkpoints-v104 ]] || { echo "FAIL: GCS_CKPT '$GCS_CKPT' does not end with /checkpoints-v104" >&2; exit 1; }
   grep -Fq 'samtools view -F 0x904 -q 1' "$0" || { echo "FAIL: missing exact samtools view -F 0x904 -q 1 mkbed()" >&2; exit 1; }
   grep -Fq 'java_var_th${th}_run\${run}.time' "$0" || { echo "FAIL: missing symmetric n=3 Java Tier-P loop" >&2; exit 1; }
   grep -Fq 's2_tierp_mode_parity_sweep' "$0" || { echo "FAIL: missing s2_tierp_mode_parity_sweep cell" >&2; exit 1; }
@@ -2300,6 +2376,11 @@ run_plan_check() {
   grep -Fq 's4_scale_exome_3way_th' "$0" || { echo "FAIL: missing 3-way exome scaling cell" >&2; exit 1; }
   grep -Fq 's4_span_chr1_3way_th' "$0" || { echo "FAIL: missing 3-way chr1 span scaling cell" >&2; exit 1; }
   grep -Fq 's4_tier3_truth_and_qual_sweep' "$0" || { echo "FAIL: missing Tier-3 truth and ROC/QUAL sweep cell" >&2; exit 1; }
+  grep -Fq '"$DATA_DIR/hg002/truth/truth.vcf.gz"' "$0" || { echo "FAIL: missing exact hg002 truth path" >&2; exit 1; }
+  grep -Fq '"$DATA_DIR/seqc2/truth/truth.vcf.gz"' "$0" || { echo "FAIL: missing exact seqc2 truth path" >&2; exit 1; }
+  grep -Fq '"$DATA_DIR/hg008/truth/HG008-T_somatic_smvar_benchmark_v0.3_tumorvariants.vcf.gz"' "$0" || { echo "FAIL: missing exact hg008 v0.3 truth path" >&2; exit 1; }
+  grep -Fq 'record_evidence.py hg008-cram-twin' "$0" || { echo "FAIL: missing hg008-cram-twin evidence recording" >&2; exit 1; }
+  grep -Fq 'bd605a455b2e2064931e6097c64695ea' "$0" || { echo "FAIL: missing HG002.chr20.bam MD5 gate" >&2; exit 1; }
   grep -Fq 'run_v103_parity_sweep' "$0" || { echo "FAIL: missing run_v103_parity_sweep" >&2; exit 1; }
   grep -Fq 'sweep_wgs_mrd_matrix' "$0" || { echo "FAIL: missing sweep_wgs_mrd_matrix" >&2; exit 1; }
   grep -Fq 'sweep_ultradeep_mrd_stress' "$0" || { echo "FAIL: missing sweep_ultradeep_mrd_stress" >&2; exit 1; }

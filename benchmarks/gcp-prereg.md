@@ -1,7 +1,7 @@
 # GCP Study Pre-registration Freeze (branch `paper/gcp-study`)
 
 **Status:** FROZEN sections A = spend-gating. Nothing in A changes without owner sign-off + new freeze entry. Section B = open items, each one line + recommendation + why.
-**Frozen:** 2026-10-16 (updated 2026-10-24 for `v1.0.3` / `27f3667b32ac14f5`) · **Owner sign-off:** B1–B3, B5–B6 FROZEN; B4 gated on Task 5b `Gate 7 ref-multiregion` · **Spend to date:** ≈ $0.71 one-time + ≈ $1.45/mo (GCS vendor + refs + Task 5a Tier-P BAMs & RNA FASTQs, `task-5a-report.md §5`) — « $5 task cap, « $100 checkpoint.
+**Frozen:** 2026-10-16 (updated 2026-10-25 for `v1.0.4` / `552856835a1eec01`) · **Owner sign-off:** B1–B3, B5–B6 FROZEN; B4 gated on Task 5b `Gate 7 ref-multiregion` · **Spend to date:** ≈ $0.71 one-time + ≈ $1.45/mo (GCS vendor + refs + Task 5a Tier-P BAMs & RNA FASTQs, `task-5a-report.md §5`) — « $5 task cap, « $100 checkpoint.
 **Requirements parent:** `docs/validation/gcp-study-protocol.md` (§2 H1–H4 + stop rules, §4 tiers + utility table, §5 Tier-3 + field, §6 prereg gates 1–8, §10-Wk1, Appendix A vendoring bullet).
 
 ---
@@ -128,7 +128,7 @@ Plus: `export GOLDEN_MODE=off` on all GCP timed/OOM cells; same BAM+ref+BED+flag
 | octopus | **0.7.4** | `ha3c1580_2` | `cl_octopus` | extract `PROVENANCE.md:17` |
 | Strelka2 | **2.9.10** | `hdfd78af_2` | `g4-tools` / bioconda (ABSENT in vardictcpp archive; our extension arm, `B2` frozen) | `gcp-study-protocol.md:76` |
 | vardictcpp | **archive commit `ae93fe39dc`** (`fix/somatic-amplicon-parity`, verified in Task 5a, `B6` frozen) · **local bioconda `3=hc52dbad_0`** | `ae93fe39dc` / `hc52dbad_0` | `paper-vardictcpp-build` / `vardict-oracle` | `task-5a-report.md §3`; `benchmarks/env/vardict-oracle.yml:97` |
-| VarDictRust | **1.0.3** (`d88395a` / `6236e37`, engine fingerprint **`27f3667b32ac14f5`**) | `rustc 1.96.0 (ac68faa20 2026-05-25)`, `noodles 0.117.0`, `rayon 1.12.0`, `tikv-jemallocator` | release tag `v1.0.3` | `benchmarks/env/toolchain.txt:1`; `Cargo.lock` |
+| VarDictRust | **1.0.4** (`2503907`, engine fingerprint **`552856835a1eec01`**, `--perf` fingerprint **`9346a6e5419cc5e2`**) | `rustc 1.96.0 (ac68faa20 2026-05-25)`, `noodles 0.117.0`, `rayon 1.12.0`, `tikv-jemallocator` | release tag `v1.0.4` | `benchmarks/env/toolchain.txt:1`; `Cargo.lock` |
 | VarDictJava | 1.8.3 (`hdfd78af_0`: `VarDict-1.8.3.jar` + commons-cli 1.2, commons-math3 3.6.1, htsjdk 2.21.1, jregex 1.2_01) | — | `vardict` / `vardict-oracle` | extract `README.md:9-10` |
 | STAR | **2.7.11b** | `h5ca1c30_8` | bioconda (`B1` frozen; with GENCODE v50 basic-CHR GTF) | `gcp-study-protocol.md:76` |
 | rtg-tools | **3.13** | — | `g4-tools` | `benchmarks/env/g4-tools.yml:81` |
