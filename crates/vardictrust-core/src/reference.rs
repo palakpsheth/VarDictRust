@@ -434,10 +434,9 @@ pub fn get_reference(
         .filter(|(_, lr)| lr.chr == region.chr)
         .filter_map(|(idx, lr)| {
             let stored_len = reference.region_sequences.get(idx).map_or(0, Vec::len) as u32;
-            (stored_len > 0).then_some((
-                lr.sequence_start,
-                lr.sequence_start.saturating_add(stored_len - 1),
-            ))
+            stored_len
+                .checked_sub(1)
+                .map(|last| (lr.sequence_start, lr.sequence_start.saturating_add(last)))
         })
         .collect();
 
@@ -573,7 +572,9 @@ mod tests {
             .filter(|(_, lr)| lr.chr == region.chr)
             .filter_map(|(idx, lr)| {
                 let stored_len = reference.region_sequences.get(idx).map_or(0, Vec::len) as u32;
-                (stored_len > 0).then_some((lr.sequence_start, lr.sequence_start + stored_len - 1))
+                stored_len
+                    .checked_sub(1)
+                    .map(|last| (lr.sequence_start, lr.sequence_start.saturating_add(last)))
             })
             .collect();
         for i in 0..site_end {
@@ -992,6 +993,31 @@ mod tests {
                 Some(leg_positions.as_slice())
             );
         }
+
+        // Also verify that a non-terminal window of <= 17 bp with zero extensions
+        // (which truncates to `stored_len == 0`) does not underflow `stored_len - 1`
+        // when a subsequent disjoint region is loaded on the same chromosome.
+        let mut short_cfg = Config::default();
+        short_cfg.reference = fa_path.to_str().unwrap().to_string();
+        short_cfg.extension = 0;
+        short_cfg.extension_nuc = 0;
+        short_cfg.indel_size = 0;
+        let r_tiny = BedRegion {
+            chr: "chr1".to_string(),
+            start: Pos1(1),
+            end: Pos1(10),
+            gene: "G".to_string(),
+            amplicon: None,
+        };
+        let mut ref_tiny = Reference::new();
+        get_reference(&r_tiny, 0, &chr_lengths, &short_cfg, &mut ref_tiny).unwrap();
+        assert_eq!(ref_tiny.region_sequences[0].len(), 0);
+        get_reference(&r2, 0, &chr_lengths, &short_cfg, &mut ref_tiny).unwrap();
+
+        let mut leg_tiny = ReferenceLegacy::default();
+        get_reference_legacy(&r_tiny, 0, &chr_lengths, &short_cfg, &mut leg_tiny).unwrap();
+        get_reference_legacy(&r2, 0, &chr_lengths, &short_cfg, &mut leg_tiny).unwrap();
+        assert_eq!(ref_tiny.seed.len(), leg_tiny.seed.len());
 
         let _ = fs::remove_file(&fa_path);
         let _ = fs::remove_file(&fai_path);
