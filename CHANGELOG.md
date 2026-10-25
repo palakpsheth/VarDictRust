@@ -11,10 +11,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Achieved **89 / 89 MATCH** (`0` variant diffs across `11,227,154` called variants)
-  against **VarDictJava v1.8.3** across the 12-cell full-chromosome, full-exome,
-  ultra-deep MRD (`7,000x`–`173,000x`), RNA-seq (`--splice` & `-i`), CRAM 3.0 twin,
-  and amplicon panel validation corpus ([Issue #42](https://github.com/palakpsheth/VarDictRust/issues/42),
+- Achieved **89 / 89 MATCH** (`fp=0, fn=0` across `1,202,444` compared oracle
+  `.var`/`.vcf`/splice records and `36` multi-slice/mode suites) against
+  **VarDictJava v1.8.3** across the 12-cell full-corpus validation sweep (Tier-P
+  `30,267x`–`45,707x` AML panels `SRR15006540` / `SRR8657348` / `SRR15006375` /
+  `SRR15006376` / `SRR15006386`, `51.8 GiB` HG002 STAR RNA-seq `-i` splice &
+  cDNA, direct whole-chromosome `-R chr1:1-249250621`, full-cohort Amplicon /
+  HG002 Deep WGS / HG008 Somatic WGS / SEQC2 WES `690,800` variants, `24`-arm
+  WGS/WES MRD `-f 0.001` / `-f 0` / `--fisher` matrix, `30`-arm ultra-deep
+  `7,361x`–`173,132x` MRD stress matrix, and `G4`/`E2` CRAM 3.0 twins;
+  [Issue #42](https://github.com/palakpsheth/VarDictRust/issues/42),
   [PR #43](https://github.com/palakpsheth/VarDictRust/pull/43)):
   - **Bug A** (`crates/vardictrust-core/src/cigar/parse.rs`, `src/reference.rs`):
     Select the covering secondary `LoadedRegion` (`region_slice_for_span`) on
@@ -59,10 +65,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     VarDictJava while tiling multi-megabase intervals `> 1 Mbp` into `100 kbp`
     (`DEFAULT_TILE_SIZE`) windows to preserve `< 1.5 GiB` bounded WGS memory;
     raise `MAX_TILE_SIZE` to `500 Mbp`.
-- Resolved mate-window BAM index path fallback (`crates/vardictrust-core/src/lib.rs`)
-  so tiled structural-variant mate queries accept both `foo.bam.bai` and
-  `foo.bai` index naming conventions (`resolve_bam_index_path()`), matching the
-  primary BAM reader (`bam.rs`).
 - Wired `harness/scale_bench.sh` and `harness/run_integration.sh` to cache and
   replay `vardictcpp` invocations via `harness/golden_store.sh`, eliminating
   redundant multi-minute `vardictcpp` re-executions across test and scale loops.

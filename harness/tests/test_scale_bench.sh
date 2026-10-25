@@ -96,9 +96,10 @@ if [ "${1:-}" = "--version" ]; then echo "vardictcpp stub"; exit 0; fi
 printf '##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n'
 CND
 chmod +x "$T/bin/conda"
-reset; PATH="$T/bin:$PATH" SCALE_RUNS=1 SCALE_CPUS="$CPU1" run || { echo "FAIL6 rc"; cat "$T/err"; fail=1; }
+reset; PATH="$T/bin:$PATH" SCALE_RUNS=3 SCALE_CPUS="$CPU1" run || { echo "FAIL6 rc"; cat "$T/err"; fail=1; }
 [ "$(jget "d['cpp_wall_s']['1'] is not None")" = True ] || { echo "FAIL6 cpp BED arm not recorded"; fail=1; }
 [ "$(jget "d['cpp_maxrss_kb']['10000000'] is not None")" = True ] || { echo "FAIL6 cpp region arm not recorded"; fail=1; }
+[ "$(jget "d['cpp_runs']")" = 1 ] && [ -f "$T/out/cpp_th1.run1.time" ] && [ ! -e "$T/out/cpp_th1.run2.time" ] || { echo "FAIL6 cpp golden single-sample baseline replayed into run2"; fail=1; }
 [ "$(cat "$T/out/R10000000.bed")" = "$(printf 'chr1\t0\t10000000\tR10000000')" ] || { echo "FAIL6 region BED"; fail=1; }
 
 # 7. courtesy.sh marks the run so scale_bench can tell it was wrapped

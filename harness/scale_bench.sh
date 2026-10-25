@@ -109,8 +109,9 @@ cell() {
   done
 }
 cpp_cell() {
-  local name=$1 label=$2 i rc; shift 2
-  for ((i = 1; i <= RUNS; i++)); do
+  local name=$1 label=$2 i rc cpp_runs=1; shift 2
+  if [ "${GOLDEN_MODE:-auto}" = "off" ]; then cpp_runs=$RUNS; fi
+  for ((i = 1; i <= cpp_runs; i++)); do
     rc=0
     LC_ALL=C GOLDEN_TIME_OUT="$OUT/$name.run$i.time" $TASKSET \
       bash harness/golden_store.sh cpp "$label" "$REF" "$BAM" "$@" > /dev/null || rc=$?
@@ -162,7 +163,8 @@ def secs(w):
 WALL, RSS = "Elapsed (wall clock) time (h:mm:ss or m:ss)", "Maximum resident set size (kbytes)"
 def med(prefix, key, conv, strict=True):
     vals = []
-    for i in range(1, runs + 1):
+    n_runs = runs if strict else (runs if os.environ.get("GOLDEN_MODE") == "off" else 1)
+    for i in range(1, n_runs + 1):
         f = o / f"{prefix}.run{i}.time"
         if not f.exists(): return None
         txt = f.read_text()
@@ -177,13 +179,14 @@ sp = W[1] / W[8] if W[8] > 0 else None
 rr = M[span] / M[10000000] if 10000000 in M else None
 bar = 0.6 * min(8, P)
 perf = os.environ["PERF_FP"]
+cpp_runs = runs if os.environ.get("GOLDEN_MODE") == "off" else 1
 print(json.dumps({"wall_s": W, "maxrss_kb": M, "speedup_8": sp, "rss_ratio_chr1_vs_10mb": rr,
                   "P": P, "bar": bar,
                   "pass": sp is not None and sp >= bar and rr is not None and rr <= 1.5,
-                  "cpp_wall_s": CW, "cpp_maxrss_kb": CM, "pinned": pinned,
+                  "cpp_wall_s": CW, "cpp_maxrss_kb": CM, "cpp_runs": cpp_runs, "pinned": pinned,
                   "runs": runs, "cpus": os.environ["EFF"], "courtesy": os.environ["COURTESY"] == "true",
                   "governor": os.environ["GOVERNOR"], "loadavg_start": os.environ["LOAD_START"],
                   "loadavg_end": os.environ["LOAD_END"], "perf_fingerprint": perf,
                   "certifying": pinned and os.environ["COURTESY"] == "true" and runs >= 3 and P >= MIN_P and perf != "dirty",
-                  "note": ">8 threads not measured (host policy A3); each cell = median of `runs` timed runs"}, indent=2))
+                  "note": ">8 threads not measured (host policy A3); each rust cell = median of `runs` timed runs; cpp advisory arm = single-sample golden-store baseline (or `runs`-run median when GOLDEN_MODE=off)"}, indent=2))
 PY

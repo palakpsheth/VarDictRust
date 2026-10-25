@@ -178,38 +178,38 @@ Executing `cargo test --workspace` validates **293 tests** across `crates/vardic
 
 The core variant calling engine enforces `#![forbid(unsafe_code)]` and zero unhandled panics. Its 241 library unit tests, 2 amplicon streaming memory tests, and 2 CRAM stack integration tests are partitioned across the following modules:
 
-1. **Output Formatting & Tables (`output/` — 37 tests):**
+1. **Output Formatting & Tables (`output/` — 38 tests):**
    - `output::table` (15 tests): verifies column schema counts (Simple 36/38, Amplicon 38/40, Somatic 55/61), raw float formatting vs banker's rounding, null-record row rendering for `-p` mode, and header generation.
-   - `output::vcf` (22 tests): verifies Perl falsy-row skipping (`perl_row_skipped` matching `var2vcf_valid.pl:141` dropping empty or `"0"` REF cells), IEEE 754 half-even banker's rounding (`round_half_even`), VCFv4.2 header generation, and INFO/FORMAT tag serialization.
-2. **CIGAR Parsing & Indel Realignment (`cigar/` & `realign/` — 49 tests):**
-   - `cigar::modify` & `cigar::parse` (29 tests): verifies query-consumption calculations, insertion/deletion extension with `vext`, trailing $3'$ overhang validation (`check_3prime_let_is_valid`), coupled indel `id_len` checks, secondary overlapping region selection (`reg2` / `partial_HashMap`), soft-clip adjustments, and bounds-checked base retrieval.
-   - `realign` (20 tests): verifies Smith-Waterman local realignment, insertion intermediate mismatch ratios (`find_mms`), RNA (`--splice`) $5'$ soft-clip deletion ceilings (`total_len < 5000`), complex MNP adjustments, 3' soft-clip marking, large deletion realignment, and sequence match checks.
-3. **Postprocessing & Variant Classification (`postprocess/` — 49 tests):**
+   - `output::vcf` (23 tests): verifies Perl falsy-row skipping (`perl_row_skipped` matching `var2vcf_valid.pl:141` dropping empty or `"0"` REF cells), single-sample `-f 0` Perl falsy `0.02` AF threshold fallback (`test_var2vcf_valid_zero_af_threshold_falls_back_to_0_02`), IEEE 754 half-even banker's rounding (`round_half_even`), VCFv4.2 header generation, and INFO/FORMAT tag serialization.
+2. **CIGAR Parsing & Indel Realignment (`cigar/` & `realign/` — 46 tests):**
+   - `cigar::modify`, `cigar::parse` & `cigar::tests` (27 tests: 8 in `cigar::modify`, 17 in `cigar::parse`, 2 in `cigar::tests`): verifies CIGAR string parsing, hostile/corrupt CIGAR operator guards (`PR #402`), indel/soft-clip rewriting (`modify_cigar`), mismatch gate filtering, secondary `LoadedRegion` lookup during structural-variant `partial_pipeline` re-parsing (`parse_cigar_selects_secondary_loaded_region_for_partial_pipeline`), chimeric $3'$ soft-clip seed checks with/without `SA` tags, and CRISPR cut-site filtering.
+   - `realign` (19 tests): verifies $3'$-to-$5'$ overhang matching (`find_35_match`), `<dupN>` $3'$ flank substring offset (`test_dup_ins3_flank_substring_offset_matches_java_substr`), complex MNP adjustments (`adjust_mnp`), large insertion/deletion realignment (`realignins`, `realigndel`, `lgins`, `lgdel`), and soft-clip SV field merging.
+3. **Postprocessing & Variant Classification (`postprocess/` — 48 tests):**
    - `postprocess::simple` (6 tests): verifies single-winner multi-allelic collapsing ([UB-7](../upstream-bugs.md#ub-7)), raw start grouping, and pileup null-record fallback branches.
-   - `postprocess::somatic` (25 tests): verifies tumor/normal subtraction, multi-allele somatic rescue (`combine_analysis`), somatic status classification (`StrongSomatic`, `LikelySomatic`, `StrongLOH`, `LikelyLOH`, `Germline`), normal AF thresholds (`-V`), and delta filters.
-   - `postprocess::amplicon` (18 tests): verifies overlapping primer bias detection (`is_amp_bias_flag`), primer trimming, active-interval streaming sweeps, `GoodVarCount`/`TotalVarCount` ratios, and `AMPBIAS` assignment.
-4. **Statistical Analysis & Distributions (`stats/` — 21 tests):**
-   - `stats::fisher` (10 tests): verifies Fisher's exact test $2 \times 2$ contingency table p-values and odds ratios against R and Java oracles.
+   - `postprocess::somatic` (23 tests): verifies tumor/normal subtraction, multi-allele somatic rescue (`combine_analysis`), in-place `v2nt.is_noise()` coverage propagation across tumor alleles (`test_is_noise_mutation_on_first_v2_variant_propagates_to_second_tumor_allele`), and somatic status classification (`StrongSomatic`, `LikelySomatic`, `StrongLOH`, `LikelyLOH`, `Germline`).
+   - `postprocess::amplicon` (19 tests): verifies overlapping primer bias detection (`is_amp_bias_flag`), primer trimming, active-interval streaming sweeps, `GoodVarCount`/`TotalVarCount` ratios, and `AMPBIAS` assignment.
+4. **Statistical Analysis & Distributions (`stats/` — 22 tests):**
+   - `stats::fisher` (11 tests): verifies Fisher's exact test $2 \times 2$ contingency table p-values and odds ratios against R (`fishers_exact`) and Java (`test_java_fisher_ultradeep_parity`) oracles.
    - `stats::f80` (3 tests): verifies 80-bit extended precision emulation for hypergeometric summations.
    - `stats::rmath` (5 tests): verifies exact R statistical routines (`dbinom_raw`, `dhyper`, `phyper`, `bd0`, `stirlerr`).
    - `stats::zeroin` (3 tests): verifies Brent's zero-finding root solver (`UnirootZeroIn`) for odds ratio confidence intervals.
-5. **Structural Variants & Variation Models (`sv/` & `variations/` — 29 tests):**
-   - `sv` (10 tests): verifies discordant mate-pair clustering (`is_overlap`, `check_cluster`), inversion anchor clustering (`find_inv_sub`), and duplication boundaries (`markDUPSV`).
-   - `variations` (19 tests): verifies candidate variant filters (`is_good_var`), low-complexity sequence masking, strand bias counters, and consensus sequence finding.
-6. **Coordinates, Tiling & Reference (`types`, `regions`, `reference` — 20 tests):**
+5. **Structural Variants & Variation Models (`sv/` & `variations/` — 30 tests):**
+   - `sv` (11 tests): verifies discordant mate-pair clustering (`is_overlap`, `check_cluster`), inversion anchor clustering (`find_inv_sub`), $5'$ candidate deletion post-decrement coverage lookup (`test_find_sv_5prime_deletion_uses_post_decrement_p5_plus_1_ref_coverage`), and short soft-clip deletion `SEED_2` retries.
+   - `variations` (19 tests: 6 in `variations::tests`, 3 in `variations::debug_tests`, 10 in `variations::util`): verifies candidate variant filters (`is_good_var`), low-complexity sequence masking, strand bias counters, and consensus sequence finding.
+6. **Coordinates, Tiling & Reference (`types`, `regions`, `reference` — 18 tests):**
    - `types` (6 tests): verifies strict 0-based (`Pos0`) to 1-based (`Pos1`) coordinate translations and stack-buffered banker's rounding edge cases.
    - `regions` (8 tests): verifies BED parsing, 0-based vs 1-based BED flags (`-z`), segment column resolution, tile-halo boundary coverage, and 16-tile same-chromosome batching (`batch_tiles`).
-   - `reference` (6 tests): verifies FASTA subsequence fetching, 2-bp $3'$ chromosome buffer extension (`end + 2`), lazy `OnceCell<RawSeedMap>` k-mer seeding, OpenJDK `String.hashCode()` seed tie-breaking, and nucleotide caching.
+   - `reference` (4 tests): verifies FASTA subsequence fetching (`get_reference`), `site_end` $17\text{-bp}$ `SEED_1` lookahead truncation (`seed_map_and_get_reference_match_legacy`), k-mer `seedmap` indexing, and lazy `OnceCell<RawSeedMap>` initialization (`test_lazy_seed_map_defers_indexing_until_queried`).
 7. **Utilities (`util/` — 7 tests):**
    - Verifies safe slice extraction, bounds-checked negative-index character lookup, reverse complementation, and arithmetic overflow protection.
-8. **Streaming Execution & Concurrency (`runner`, `bam` — 14 tests):**
+8. **Streaming Execution & Concurrency (`runner`, `bam` — 17 tests):**
    - `runner` (4 tests): verifies worker thread panic catching without process hang, Rayon bounded queue collection, batched tile execution, and deterministic sorted output.
-   - `bam` (10 tests): verifies SAM/BAM decoding, `CachedBgzfReader` block caching, CIGAR query-consumption validation against SEQ length, and corrupt record rejection.
-9. **Singletons, Finalization & Integration Binaries (`javamap`, `config`, `tovars`, `tests`, `tests/amplicon_stream_mem.rs`, `tests/cram_stack.rs` — 19 tests):**
+   - `bam` (13 tests): verifies SAM/BAM/CRAM decoding, soft-masked lowercase CRAM base uppercasing (`fill_from_alignment_record_uppercases_soft_masked_cram_bases`), omitted CRAM `NM` reconstruction (`compute_cram_nm_reconstructs_edit_distance_when_omitted_by_cram`), `CachedBgzfReader` block caching, CIGAR query-consumption validation against SEQ length, and corrupt record rejection.
+9. **Singletons, Finalization & Integration Binaries (`javamap`, `config`, `tovars`, `tests`, `tests/amplicon_stream_mem.rs`, `tests/cram_stack.rs` — 19 tests: 15 library + 4 integration):**
    - `javamap` (2 tests): verifies `JavaHashMap` OpenJDK 8+ hash bucket spread, arena node free-list reuse, binning, and treeify triggers against real Java oracle traces.
    - `config` (1 test): verifies configuration validation.
    - `tovars` (4 tests): verifies candidate variant finalization and sparse copy-on-write overlay parity.
-   - Root library tests (8 tests): verifies splice-tile and mate-window ownership, empty-ref winner suppression, mate-window BAM index resolution, and tile streaming invariants.
+   - Root library tests (8 tests): verifies splice-tile and mate-window ownership, empty-ref winner suppression, amplicon covering-position streaming, and adaptive region tile sizing (`test_effective_tile_size_untiled_up_to_1mbp_and_100kbp_above_1mbp`).
    - `tests/amplicon_stream_mem.rs` (2 tests): verifies bounded memory on huge amplicon intervals across standard `-a` and `-a -p` pileup modes.
    - `tests/cram_stack.rs` (2 tests): verifies 64 MiB Rayon worker stack sizing for `noodles-cram` rANS decoding and CRAM-vs-BAM somatic parity.
 
