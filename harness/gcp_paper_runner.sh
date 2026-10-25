@@ -202,7 +202,7 @@ restore_prev_java_cpp_artifacts() {
   for bucket_prefix in "${GCS_RESULTS}/cells-v103/${cell_id}" "${GCS_RESULTS}/cells-v104/${cell_id}"; do
     if setsid gsutil -q stat "${bucket_prefix}/*" 2>/dev/null; then
       echo "[CACHE-RESTORE] Restoring cached Java/Cpp artifacts from ${bucket_prefix}/ -> ${dst_dir}/"
-      for pat in "java*" "cpp*" "oracle*" "vardict_java*" "vardictcpp*"; do
+      for pat in "java*" "cpp*" "oracle*" "vardict_java*" "vardictcpp*" "single_*" "som_*"; do
         setsid gsutil -m -q cp "${bucket_prefix}/${pat}" "$dst_dir/" 2>/dev/null || true
       done
     fi
@@ -937,18 +937,23 @@ run_stage_2() {
     BED_SOM='$tp_dir/bams/SRR15006376.mkbed.bed'
     build_tierp_covered_bed \"\$TUM\" \"\$BED_SOM\" 105949
 
-    # Prepare LoFreq indelqual BAM for SRR8657348 and FreeBayes region list
+    # Prepare LoFreq indelqual BAM for SRR8657348 and 8 FreeBayes BED chunks (c.0.bed..c.7.bed matching Wolff 2026 PROVENANCE)
     IQ_BAM='$tp_dir/bams/SRR8657348.iq.bam'
     if [ ! -f \"\$IQ_BAM\" ]; then
       conda run -n cl_lofreq lofreq indelqual --dindel -f \"\$REF\" -o \"\$IQ_BAM\" \"\$BAM_SINGLE\"
       samtools index \"\$IQ_BAM\"
     fi
-    awk '{print \$1\":\"\$2\"-\"\$3}' \"\$BED_SINGLE\" > \"\$KEEP_DIR/fb_regions.txt\"
+    mkdir -p \"\$KEEP_DIR/fb_chunks\"
+    split -d -a 1 -n l/8 \"\$BED_SINGLE\" \"\$KEEP_DIR/fb_chunks/c.\" --additional-suffix=.bed
 
     # 10 Hz session-sum VmRSS sampler matching Archive.zip/performance_benchmark/scripts/single_sample_speed.sh
     run_pinned_session() {
       local lbl=\"\$1\" cpus=\"\$2\"
       shift 2
+      if [ \"\$(cat \"\$KEEP_DIR/\${lbl}.rc\" 2>/dev/null || true)\" = \"0\" ] && [ -s \"\$KEEP_DIR/\${lbl}.wall_s\" ]; then
+        echo \"[SKIP] Sub-session '\${lbl}' already completed (rc=0, wall=\$(cat \"\$KEEP_DIR/\${lbl}.wall_s\")s)\"
+        return 0
+      fi
       local s e sid peak=0 cur rc=0
       s=\$(date +%s.%N)
       setsid timeout 10800 taskset -c \"\$cpus\" \"\$@\" >\"\$KEEP_DIR/\${lbl}.stdout\" 2>\"\$KEEP_DIR/\${lbl}.stderr\" &
@@ -966,9 +971,12 @@ run_stage_2() {
     }
 
     # Wave A: 8-core field callers on disjoint 8-vCPU slices (0-7, 8-15, 16-23, 24-31)
-    run_pinned_session 'single_FreeBayes_8c' '0-7' conda run -n cl_freebayes freebayes-parallel \"\$KEEP_DIR/fb_regions.txt\" 8 -f \"\$REF\" \"\$BAM_SINGLE\" &
+    run_pinned_session 'single_FreeBayes_8c' '0-7' conda run -n cl_freebayes bash -c '
+      set -euo pipefail
+      parallel -k -j 8 freebayes -f \"\$1\" -t {} \"\$2\" ::: \"\$3\"/c.{0..7}.bed | vcffirstheader | vcfstreamsort -w 1000 | vcfuniq
+    ' _ \"\$REF\" \"\$BAM_SINGLE\" \"\$KEEP_DIR/fb_chunks\" &
     p1=\$!
-    rm -f \"\$KEEP_DIR/single_lf8.vcf\"
+    if [ \"\$(cat \"\$KEEP_DIR/single_LoFreq_8c.rc\" 2>/dev/null || true)\" != \"0\" ]; then rm -f \"\$KEEP_DIR/single_lf8.vcf\"; fi
     run_pinned_session 'single_LoFreq_8c' '8-15' conda run -n cl_lofreq lofreq call-parallel --pp-threads 8 --call-indels -f \"\$REF\" -l \"\$BED_SINGLE\" -o \"\$KEEP_DIR/single_lf8.vcf\" \"\$IQ_BAM\" &
     p2=\$!
     run_pinned_session 'single_Mutect2_8c' '16-23' conda run -n cl_gatk4 gatk Mutect2 -R \"\$REF\" -I \"\$BAM_SINGLE\" -L \"\$BED_SINGLE\" --native-pair-hmm-threads 8 -O \"\$KEEP_DIR/single_m2_8.vcf.gz\" &
@@ -982,15 +990,17 @@ run_stage_2() {
     p5=\$!
     run_pinned_session 'som_octopus_8c' '8-15' conda run -n cl_octopus octopus -R \"\$REF\" -I \"\$TUM\" \"\$NOR\" --normal-sample SRR15006386 -t \"\$BED_SOM\" --threads 8 -o \"\$KEEP_DIR/som_oc8.vcf\" &
     p6=\$!
-    rm -f \"\$KEEP_DIR\"/som_lf8_*
+    if [ \"\$(cat \"\$KEEP_DIR/som_LoFreq_8c.rc\" 2>/dev/null || true)\" != \"0\" ]; then rm -f \"\$KEEP_DIR\"/som_lf8_*; fi
     run_pinned_session 'som_LoFreq_8c' '16-23' conda run -n cl_lofreq lofreq somatic -n \"\$NOR\" -t \"\$TUM\" -f \"\$REF\" -l \"\$BED_SOM\" -o \"\$KEEP_DIR/som_lf8_\" --threads 8 &
     p7=\$!
     # Strelka2 2.9.10 somatic extension arm (requires bgzipped + tabix-indexed BED)
     bgzip -c \"\$BED_SOM\" > \"\$KEEP_DIR/som_targets.bed.gz\" && tabix -f -p bed \"\$KEEP_DIR/som_targets.bed.gz\"
-    rm -rf \"\$KEEP_DIR/strelka_work\"
-    conda run -n cl_strelka configureStrelkaSomaticWorkflow.py \
-      --normalBam \"\$NOR\" --tumorBam \"\$TUM\" --referenceFasta \"\$REF\" \
-      --callRegions \"\$KEEP_DIR/som_targets.bed.gz\" --exome --runDir \"\$KEEP_DIR/strelka_work\"
+    if [ \"\$(cat \"\$KEEP_DIR/som_Strelka2_8c.rc\" 2>/dev/null || true)\" != \"0\" ]; then
+      rm -rf \"\$KEEP_DIR/strelka_work\"
+      conda run -n cl_strelka configureStrelkaSomaticWorkflow.py \
+        --normalBam \"\$NOR\" --tumorBam \"\$TUM\" --referenceFasta \"\$REF\" \
+        --callRegions \"\$KEEP_DIR/som_targets.bed.gz\" --exome --runDir \"\$KEEP_DIR/strelka_work\"
+    fi
     run_pinned_session 'som_Strelka2_8c' '24-31' conda run -n cl_strelka \"\$KEEP_DIR/strelka_work/runWorkflow.py\" -m local -j 8 &
     p8=\$!
     wait \"\$p5\" \"\$p6\" \"\$p7\" \"\$p8\"
@@ -998,7 +1008,7 @@ run_stage_2() {
     # Wave C: All eight 1-core field-caller jobs concurrently on dedicated physical cores (0, 2, 4, 6, 8, 10, 12, 14)
     run_pinned_session 'single_FreeBayes_1c' '0' conda run -n cl_freebayes freebayes -f \"\$REF\" -t \"\$BED_SINGLE\" \"\$BAM_SINGLE\" &
     c1=\$!
-    rm -f \"\$KEEP_DIR/single_lf1.vcf\"
+    if [ \"\$(cat \"\$KEEP_DIR/single_LoFreq_1c.rc\" 2>/dev/null || true)\" != \"0\" ]; then rm -f \"\$KEEP_DIR/single_lf1.vcf\"; fi
     run_pinned_session 'single_LoFreq_1c' '2' conda run -n cl_lofreq lofreq call --call-indels -f \"\$REF\" -l \"\$BED_SINGLE\" -o \"\$KEEP_DIR/single_lf1.vcf\" \"\$IQ_BAM\" &
     c2=\$!
     run_pinned_session 'single_Mutect2_1c' '4' conda run -n cl_gatk4 gatk Mutect2 -R \"\$REF\" -I \"\$BAM_SINGLE\" -L \"\$BED_SINGLE\" --native-pair-hmm-threads 1 -O \"\$KEEP_DIR/single_m2_1.vcf.gz\" &
@@ -1009,13 +1019,15 @@ run_stage_2() {
     c5=\$!
     run_pinned_session 'som_octopus_1c' '10' conda run -n cl_octopus octopus -R \"\$REF\" -I \"\$TUM\" \"\$NOR\" --normal-sample SRR15006386 -t \"\$BED_SOM\" --threads 1 -o \"\$KEEP_DIR/som_oc1.vcf\" &
     c6=\$!
-    rm -f \"\$KEEP_DIR\"/som_lf1_*
+    if [ \"\$(cat \"\$KEEP_DIR/som_LoFreq_1c.rc\" 2>/dev/null || true)\" != \"0\" ]; then rm -f \"\$KEEP_DIR\"/som_lf1_*; fi
     run_pinned_session 'som_LoFreq_1c' '12' conda run -n cl_lofreq lofreq somatic -n \"\$NOR\" -t \"\$TUM\" -f \"\$REF\" -l \"\$BED_SOM\" -o \"\$KEEP_DIR/som_lf1_\" --threads 1 &
     c7=\$!
-    rm -rf \"\$KEEP_DIR/strelka_work_1c\"
-    conda run -n cl_strelka configureStrelkaSomaticWorkflow.py \
-      --normalBam \"\$NOR\" --tumorBam \"\$TUM\" --referenceFasta \"\$REF\" \
-      --callRegions \"\$KEEP_DIR/som_targets.bed.gz\" --exome --runDir \"\$KEEP_DIR/strelka_work_1c\"
+    if [ \"\$(cat \"\$KEEP_DIR/som_Strelka2_1c.rc\" 2>/dev/null || true)\" != \"0\" ]; then
+      rm -rf \"\$KEEP_DIR/strelka_work_1c\"
+      conda run -n cl_strelka configureStrelkaSomaticWorkflow.py \
+        --normalBam \"\$NOR\" --tumorBam \"\$TUM\" --referenceFasta \"\$REF\" \
+        --callRegions \"\$KEEP_DIR/som_targets.bed.gz\" --exome --runDir \"\$KEEP_DIR/strelka_work_1c\"
+    fi
     run_pinned_session 'som_Strelka2_1c' '14' conda run -n cl_strelka \"\$KEEP_DIR/strelka_work_1c/runWorkflow.py\" -m local -j 1 &
     c8=\$!
     wait \"\$c1\" \"\$c2\" \"\$c3\" \"\$c4\" \"\$c5\" \"\$c6\" \"\$c7\" \"\$c8\"
