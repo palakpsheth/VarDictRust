@@ -416,11 +416,13 @@ pub(crate) fn compute_cram_nm(rec: &SamRecord, ref_seq: &[u8]) -> Option<i32> {
                     let Some(&read_b) = rec.sequence.get(read_pos) else {
                         break;
                     };
-                    let ref_b = ref_seq
-                        .get(ref_pos)
-                        .map(|b| b.to_ascii_uppercase())
-                        .unwrap_or(b'N');
-                    if read_b.to_ascii_uppercase() != ref_b {
+                    let ref_b = ref_seq.get(ref_pos).copied().unwrap_or(b'N');
+                    let is_match = read_b == b'='
+                        || (matches!(
+                            read_b,
+                            b'A' | b'C' | b'G' | b'T' | b'a' | b'c' | b'g' | b't'
+                        ) && read_b.eq_ignore_ascii_case(&ref_b));
+                    if !is_match {
                         nm = nm.saturating_add(1);
                     }
                     read_pos = read_pos.saturating_add(1);
@@ -448,29 +450,15 @@ pub(crate) fn compute_cram_nm(rec: &SamRecord, ref_seq: &[u8]) -> Option<i32> {
 }
 
 fn collect_cram_records(
-    reader: &mut noodles::cram::io::IndexedReader<std::fs::File>,
-    repository: &noodles::fasta::Repository,
+    reader: &mut IndexedSamReader,
     header: &noodles::sam::Header,
     region: &noodles::core::Region,
 ) -> Result<Vec<SamRecord>, crate::types::VardictError> {
-    let query = reader
+    let iter = reader
         .query(header, region)
         .map_err(crate::types::VardictError::Io)?;
-    let mut ref_seq: Option<Option<std::sync::Arc<noodles::fasta::record::Sequence>>> = None;
-    let mut records = Vec::new();
-    for record in query.records() {
-        let rec = record.map_err(crate::types::VardictError::Io)?;
-        let mut sam_rec = SamRecord::from_alignment_record(&rec, header)?;
-        if sam_rec.nm.is_none() {
-            let seq_opt =
-                ref_seq.get_or_insert_with(|| repository.get(region.name()).and_then(|r| r.ok()));
-            if let Some(ref seq) = seq_opt {
-                sam_rec.nm = compute_cram_nm(&sam_rec, seq.as_ref().as_ref());
-            }
-        }
-        records.push(sam_rec);
-    }
-    Ok(records)
+    iter.collect::<Result<Vec<_>, _>>()
+        .map_err(crate::types::VardictError::Io)
 }
 
 pub enum IndexedSamReader {
@@ -1349,10 +1337,10 @@ pub fn query_region_iter(
             ))
         })?;
         match reader {
-            IndexedSamReader::Cram(mut reader, repository) => {
-                let records = collect_cram_records(&mut reader, &repository, &header, &region)?;
+            mut reader @ IndexedSamReader::Cram(..) => {
+                let records = collect_cram_records(&mut reader, &header, &region)?;
                 Ok(RecordFeed::Cram(CramFeed {
-                    _reader: IndexedSamReader::Cram(reader, repository),
+                    _reader: reader,
                     records: records.into_iter(),
                 }))
             }
@@ -2823,10 +2811,10 @@ mod tests {
                     sam: SamRecord::new(),
                 })))
             }
-            IndexedSamReader::Cram(mut reader, repository) => {
-                let records = collect_cram_records(&mut reader, &repository, &header, &region)?;
+            mut reader @ IndexedSamReader::Cram(..) => {
+                let records = collect_cram_records(&mut reader, &header, &region)?;
                 Ok(RecordFeedLegacy::Cram(CramFeed {
-                    _reader: IndexedSamReader::Cram(reader, repository),
+                    _reader: reader,
                     records: records.into_iter(),
                 }))
             }
@@ -3482,6 +3470,19 @@ mod tests {
             ..SamRecord::default()
         };
         assert_eq!(compute_cram_nm(&rec, ref_seq), Some(6));
+
+        // SAMtags §1.5 / HTSJDK `SequenceUtil.calculateSamNmTag`:
+        // read base `=` always matches (0 mismatch), and IUPAC ambiguity codes
+        // like `N` vs `N` count as a mismatch (+1).
+        let ref_with_n = b"ACNT";
+        let rec_eq_and_n = SamRecord {
+            flags: 0,
+            alignment_start: Some(Pos1(1)),
+            cigar: vec![(4, CigarKind::Match)],
+            sequence: b"=CNT".to_vec(), // '=' matches 'A' (0), 'C'=='C' (0), 'N' vs 'N' (+1), 'T'=='T' (0)
+            ..SamRecord::default()
+        };
+        assert_eq!(compute_cram_nm(&rec_eq_and_n, ref_with_n), Some(1));
     }
 
     #[test]

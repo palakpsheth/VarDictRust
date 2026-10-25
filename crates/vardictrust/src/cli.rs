@@ -91,8 +91,8 @@ pub struct Cli {
     pub bam: String,
 
     /// Allele-frequency threshold. Alias: --af-threshold. [default: 0.01]
-    #[arg(short = 'f', long = "af-threshold", default_value_t = 0.01)]
-    pub freq: f64,
+    #[arg(short = 'f', long = "af-threshold", default_value = "0.01")]
+    pub freq: String,
 
     /// Sample name (somatic: "tumor|normal"). Alias: --name.
     #[arg(short = 'N', long = "name")]
@@ -380,10 +380,21 @@ impl Cli {
             }
         }
 
+        let parsed_freq: f64 = self.freq.parse().map_err(|e| {
+            vardictrust_core::types::VardictError::Parse(format!(
+                "Invalid -f value '{}': {}",
+                self.freq, e
+            ))
+        })?;
+        // In Perl (`var2vcf_valid.pl:21`: `my $Freq = $opt_f ? $opt_f : 0.02;`),
+        // only `"0"` (or `""`) is falsy; non-`"0"` zero spellings such as `"0.0"`
+        // or `"0.00"` are truthy strings in Perl boolean context and keep `0.0`.
+        let af_threshold_truthy_zero = parsed_freq == 0.0 && self.freq.trim() != "0";
+
         let (freq, min_reads) = if self.pileup {
             (-1.0, 0)
         } else {
-            (self.freq, self.min_reads)
+            (parsed_freq, self.min_reads)
         };
 
         Ok(vardictrust_core::config::Config {
@@ -393,7 +404,8 @@ impl Cli {
             freq,
             // The writer's $Freq is the literal -f value even under -p (perl
             // receives -f from the pipeline, not java's pileup override).
-            af_threshold: self.freq,
+            af_threshold: parsed_freq,
+            af_threshold_truthy_zero,
             sample: self
                 .sample
                 .clone()
@@ -716,5 +728,26 @@ mod tests {
         // Defined but never read by VarDictJava v1.8.3 (CmdParser.java:224 vs parseCmd 59-186).
         let cli = Cli::try_parse_from(args(&["-b", "a.bam", "-G", "r.fa", "-v"])).unwrap();
         assert!(cli.vcf_output_noop);
+    }
+
+    #[test]
+    fn freq_distinguishes_perl_falsy_zero_from_truthy_zero_decimal() {
+        let cli_zero =
+            Cli::try_parse_from(args(&["-b", "a.bam", "-G", "r.fa", "-f", "0"])).unwrap();
+        let cfg_zero = cli_zero.to_config().unwrap();
+        assert_eq!(cfg_zero.af_threshold, 0.0);
+        assert!(!cfg_zero.af_threshold_truthy_zero);
+
+        let cli_zero_dec =
+            Cli::try_parse_from(args(&["-b", "a.bam", "-G", "r.fa", "-f", "0.0"])).unwrap();
+        let cfg_zero_dec = cli_zero_dec.to_config().unwrap();
+        assert_eq!(cfg_zero_dec.af_threshold, 0.0);
+        assert!(cfg_zero_dec.af_threshold_truthy_zero);
+
+        let cli_zero_exp =
+            Cli::try_parse_from(args(&["-b", "a.bam", "-G", "r.fa", "-f", "0e0"])).unwrap();
+        let cfg_zero_exp = cli_zero_exp.to_config().unwrap();
+        assert_eq!(cfg_zero_exp.af_threshold, 0.0);
+        assert!(cfg_zero_exp.af_threshold_truthy_zero);
     }
 }

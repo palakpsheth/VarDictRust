@@ -80,11 +80,11 @@ fn chrom_compare(a: &str, b: &str) -> std::cmp::Ordering {
 }
 
 /// Ports `var2vcf_valid.pl:21` `my $Freq = $opt_f ? $opt_f : 0.02;`:
-/// in Perl, `-f 0` is falsy and falls back to `0.02` (unlike `var2vcf_paired.pl:21`
-/// which uses `defined($opt_f)`).
+/// in Perl, `-f 0` (`"0"`) is falsy and falls back to `0.02`, whereas non-`"0"`
+/// zero strings like `-f 0.0` are truthy in Perl boolean context and keep `0.0`.
 #[inline]
 fn valid_freq_threshold(config: &Config) -> f64 {
-    if config.af_threshold == 0.0 {
+    if config.af_threshold == 0.0 && !config.af_threshold_truthy_zero {
         0.02
     } else {
         config.af_threshold
@@ -2037,6 +2037,29 @@ mod tests {
         assert!(
             sample_col.starts_with("0/0:"),
             "variant with AF=0.01 < 0.02 under -f 0 must have GT=0/0, got {sample_col}"
+        );
+
+        // Conversely, `-f 0.0` is a truthy string in Perl (`"0.0"`), so
+        // `af_threshold_truthy_zero = true` preserves `0.0` instead of `0.02`.
+        config.af_threshold_truthy_zero = true;
+        let filters_truthy = filter_variant(&low_af_var, &config, 0, None, 1.0, "1.0");
+        assert!(
+            !filters_truthy.iter().any(|f| f.starts_with('f')),
+            "variant with AF=0.01 under truthy -f 0.0 must not receive f0.02 filter"
+        );
+        let rec_truthy = format_vcf_record(
+            &low_af_var,
+            &region,
+            &config,
+            &filters_truthy,
+            1.0,
+            "1.0",
+            None,
+        );
+        let sample_col_truthy = rec_truthy.split('\t').nth(9).unwrap();
+        assert!(
+            sample_col_truthy.starts_with("0/1:"),
+            "variant with AF=0.01 >= 0.0 under truthy -f 0.0 must have GT=0/1, got {sample_col_truthy}"
         );
     }
 }

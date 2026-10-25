@@ -273,12 +273,15 @@ fn print_variations_from_first_sample(
 
         if let Some(mut v2nt_clone) = v2nt {
             let type_str = determinate_type(config, &v2, &vref, &mut v2nt_clone, splice);
-            if let Some(slot) = v2.var_desc_to_variant.get_mut(&nt) {
-                *slot = v2nt_clone.clone();
-            }
-            for v2_item in &mut v2.variants {
-                if v2_item.description == nt {
-                    *v2_item = v2nt_clone.clone();
+            if number_of_processed_variation + 1 < v1.variants.len() {
+                if let Some(slot) = v2.var_desc_to_variant.get_mut(&nt) {
+                    *slot = v2nt_clone.clone();
+                }
+                for v2_item in &mut v2.variants {
+                    if v2_item.description == nt {
+                        *v2_item = v2nt_clone.clone();
+                        break;
+                    }
                 }
             }
             results.push(SomaticVariant {

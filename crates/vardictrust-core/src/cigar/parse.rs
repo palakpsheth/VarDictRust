@@ -255,15 +255,13 @@ impl<'a> CigarParser<'a> {
         // any overlapping region, then the first region on `self.region.chr`).
         if self.config.realign == 1 {
             let qlen = query_seq.len() as i32;
-            let ref_span = get_reference_length(&cigar_elements) as i32;
-            let read_start = start_pos;
-            let read_end = start_pos.saturating_add(ref_span.max(qlen));
-            let ext_start = start_pos.saturating_sub(qlen);
-            let ext_end = start_pos.saturating_add(ref_span).saturating_add(qlen);
+            let span_end = read_end.max(read_start.saturating_add(qlen));
+            let ext_start = read_start.saturating_sub(qlen);
+            let ext_end = span_end.saturating_add(qlen);
             let (ref_slice, ref_start) = self.reference.region_slice_for_span(
                 &self.region.chr,
                 read_start,
-                read_end,
+                span_end,
                 ext_start,
                 ext_end,
             );
@@ -4354,5 +4352,79 @@ mod tests {
             "CigarModifier must use secondary loaded_region[1] reference sequence"
         );
         assert_eq!(parser.ref_coverage.get(&1051), Some(&1));
+
+        // Also verify a spliced read (`15M50N13M2S` at 1052 -> 1130) when an earlier
+        // secondary region covers `read_start + qlen` (`1000..=1090`) but only a wider
+        // secondary region covers the true reference-consuming `read_end` (`1000..=1200`).
+        let mut ref_spliced = Reference::new();
+        ref_spliced
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr20".to_string(),
+                sequence_start: 1000,
+                sequence_end: 1090,
+            });
+        ref_spliced.region_sequences.push(vec![b'T'; 91]);
+        let mut seq2 = vec![b'T'; 201];
+        for (i, slot) in seq2[52..67].iter_mut().enumerate() {
+            *slot = b"ACGT"[i % 4];
+        }
+        for (i, slot) in seq2[117..130].iter_mut().enumerate() {
+            *slot = b"ACGT"[i % 4];
+        }
+        seq2[130] = b'G';
+        seq2[131] = b'C';
+        ref_spliced
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr20".to_string(),
+                sequence_start: 1000,
+                sequence_end: 1200,
+            });
+        ref_spliced.region_sequences.push(seq2.clone());
+
+        let region_spliced = Region {
+            chr: "chr20".to_string(),
+            start: Pos1(1040),
+            end: Pos1(1150),
+            gene: "G".to_string(),
+            amplicon: None,
+        };
+        let mut parser_spliced =
+            CigarParser::new(&ref_spliced, &region_spliced, &config, true, 0, 0, 0);
+        let mut spliced_seq = Vec::with_capacity(30);
+        spliced_seq.extend_from_slice(&seq2[52..67]);
+        spliced_seq.extend_from_slice(&seq2[117..130]);
+        spliced_seq.extend_from_slice(b"GC"); // 2S matching 1130..=1131 in seq2
+        let spliced_record = SamRecord {
+            name: b"r_spliced".to_vec(),
+            flags: 0,
+            reference_name: Some("chr20".to_string()),
+            alignment_start: Some(Pos1(1052)),
+            alignment_end: Some(Pos1(1129)),
+            mapping_quality: Some(60),
+            cigar: vec![
+                (15, CigarKind::Match),
+                (50, CigarKind::Skip),
+                (13, CigarKind::Match),
+                (2, CigarKind::SoftClip),
+            ],
+            sequence: spliced_seq,
+            quality_scores: vec![60; 30],
+            mate_reference_name: None,
+            mate_alignment_start: None,
+            template_length: 0,
+            nm: Some(0),
+            sa: None,
+            mc: None,
+            mq: None,
+        };
+        parser_spliced.parse_cigar(&spliced_record).unwrap();
+        assert_eq!(
+            parser_spliced.ref_coverage.get(&1130),
+            Some(&1),
+            "spliced read spanning 50N past 1090 must select the 1000..=1200 region slice"
+        );
+        assert_eq!(parser_spliced.ref_coverage.get(&1131), Some(&1));
     }
 }
