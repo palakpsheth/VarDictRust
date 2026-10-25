@@ -191,6 +191,26 @@ gcs_write_heartbeat() {
   fi
 }
 
+# Restores previously measured VarDictJava & vardictcpp (.var/.sorted.var/.vcf/.time/.exit/.err)
+# artifacts for a given cell from cells-v103/ and cells-v104/ on GCS so neither oracle nor C++
+# is ever re-run when identical inputs/flags/cgroup slices were already measured on n2-highmem-32.
+restore_prev_java_cpp_artifacts() {
+  local cell_id="$1" dst_dir="$2"
+  [ -z "${LOCAL_CKPT_DIR:-}" ] || return 0
+  mkdir -p "$dst_dir"
+  local bucket_prefix pat
+  for bucket_prefix in "${GCS_RESULTS}/cells-v103/${cell_id}" "${GCS_RESULTS}/cells-v104/${cell_id}"; do
+    if setsid gsutil -q stat "${bucket_prefix}/*" 2>/dev/null; then
+      echo "[CACHE-RESTORE] Restoring cached Java/Cpp artifacts from ${bucket_prefix}/ -> ${dst_dir}/"
+      for pat in "java*" "cpp*" "oracle*" "vardict_java*" "vardictcpp*"; do
+        setsid gsutil -m -q cp "${bucket_prefix}/${pat}" "$dst_dir/" 2>/dev/null || true
+      done
+    fi
+  done
+  # Never reuse stale Rust outputs from a prior version
+  rm -f "$dst_dir"/rust* "$dst_dir"/vardictrust* 2>/dev/null || true
+}
+
 # Executes a single cell inside a systemd-run CPU+RAM cgroup slice (when systemd-run is available)
 # and syncs KEEP_DIR to GCS on EVERY exit path before marking <cell_id>.done on success.
 # `cpus` can be either an integer N (pinned to `0-$((N-1))`) or an explicit range like `8-15`.
@@ -224,6 +244,7 @@ run_checkpointed_cell() {
 
   local cell_dir="${WORK_DIR}/cells/${cell_id}"
   mkdir -p "$cell_dir"
+  restore_prev_java_cpp_artifacts "$cell_id" "$cell_dir"
   export KEEP_DIR="$cell_dir"
   export GOLDEN_MODE=off
 
@@ -446,11 +467,13 @@ run_stage_1() {
   run_checkpointed_cell "stage1" "s1_h1a_simple_tiles" 8 "32G" bash -c '
     set -euo pipefail
     head -n 40 "$DATA_DIR/hg002/eval.bed" > "$KEEP_DIR/h1a_simple.bed"
-    ORACLE_XMX_GB=22 bash harness/run_oracle.sh \
-      "$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fasta" \
-      "$DATA_DIR/hg002/HG002.chr20.bam" \
-      "$KEEP_DIR/h1a_simple.bed" \
-      "$KEEP_DIR/oracle_untiled.vcf" HG002 -f 0.01 -th 8 -z
+    if [ ! -s "$KEEP_DIR/oracle_untiled.vcf" ]; then
+      ORACLE_XMX_GB=22 bash harness/run_oracle.sh \
+        "$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fasta" \
+        "$DATA_DIR/hg002/HG002.chr20.bam" \
+        "$KEEP_DIR/h1a_simple.bed" \
+        "$KEEP_DIR/oracle_untiled.vcf" HG002 -f 0.01 -th 8 -z
+    fi
     for ts in 500000 1000000 2000000 10000000; do
       target/release/vardictrust \
         -G "$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fasta" \
@@ -470,21 +493,37 @@ run_stage_1() {
   run_checkpointed_cell "stage1" "s1_gate7_ref_multiregion" 8 "32G" bash -c '
     set -euo pipefail
     sed -n "1,15p;50,65p" "$DATA_DIR/hg002/eval.bed" > "$KEEP_DIR/gate7_multiregion.bed"
-    GOLDEN_MODE=off MIN_VARIANTS=50 ORACLE_XMX_GB=22 \
-      bash harness/compare.sh \
-      "$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fasta" \
-      "$DATA_DIR/hg002/HG002.chr20.bam" \
-      "$KEEP_DIR/gate7_multiregion.bed" HG002 -f 0.01 -th 8
+    if [ -s "$KEEP_DIR/java.vcf" ] && [ -s "$KEEP_DIR/java.time" ]; then
+      /usr/bin/time -v -o "$KEEP_DIR/rust.time" \
+        target/release/vardictrust -G "$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fasta" -f 0.01 -N HG002 \
+        -b "$DATA_DIR/hg002/HG002.chr20.bam" -c 1 -S 2 -E 3 -g 4 -z -th 8 "$KEEP_DIR/gate7_multiregion.bed" > "$KEEP_DIR/rust.vcf"
+      python3 harness/compare_vcf.py --min-variants 50 "$KEEP_DIR/java.vcf" "$KEEP_DIR/rust.vcf" | tee "$KEEP_DIR/compare.txt"
+      grep -q "^MATCH" "$KEEP_DIR/compare.txt"
+    else
+      GOLDEN_MODE=off MIN_VARIANTS=50 ORACLE_XMX_GB=22 \
+        bash harness/compare.sh \
+        "$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fasta" \
+        "$DATA_DIR/hg002/HG002.chr20.bam" \
+        "$KEEP_DIR/gate7_multiregion.bed" HG002 -f 0.01 -th 8
+    fi
   '
 
   # Gate 1 Ceiling Cell A: Amplicon deep panel (-th 8, assert Rust peak RSS <= 8 GB)
   run_checkpointed_cell "stage1" "s1_ceiling_amplicon" 8 "32G" bash -c '
     set -euo pipefail
-    GOLDEN_MODE=off ORACLE_XMX_GB=22 \
-      bash harness/compare.sh \
-      "$DATA_DIR/amplicon/ref.fa" \
-      "$DATA_DIR/amplicon/amplicon.bam" \
-      "$DATA_DIR/amplicon/correct_8columns_amplicon.bed" SAMPLE -a 10:0.95 -th 8
+    if [ -s "$KEEP_DIR/java.vcf" ] && [ -s "$KEEP_DIR/java.time" ]; then
+      /usr/bin/time -v -o "$KEEP_DIR/rust.time" \
+        target/release/vardictrust -G "$DATA_DIR/amplicon/ref.fa" -f 0.01 -N SAMPLE \
+        -b "$DATA_DIR/amplicon/amplicon.bam" -z -a 10:0.95 -th 8 "$DATA_DIR/amplicon/correct_8columns_amplicon.bed" > "$KEEP_DIR/rust.vcf"
+      python3 harness/compare_vcf.py "$KEEP_DIR/java.vcf" "$KEEP_DIR/rust.vcf" | tee "$KEEP_DIR/compare.txt"
+      grep -q "^MATCH" "$KEEP_DIR/compare.txt"
+    else
+      GOLDEN_MODE=off ORACLE_XMX_GB=22 \
+        bash harness/compare.sh \
+        "$DATA_DIR/amplicon/ref.fa" \
+        "$DATA_DIR/amplicon/amplicon.bam" \
+        "$DATA_DIR/amplicon/correct_8columns_amplicon.bed" SAMPLE -a 10:0.95 -th 8
+    fi
     rss_kb=$(awk -F": " "/Maximum resident set size/{print \$2}" "$KEEP_DIR/rust.time" | tr -dc "0-9")
     echo "amplicon_ceiling_rss_kb=$rss_kb" | tee "$KEEP_DIR/ceiling_amplicon.txt"
     [ "$rss_kb" -le 8000000 ] || { echo "FATAL: amplicon ceiling RSS ${rss_kb} KB > 8 GB" >&2; exit 9; }
@@ -493,11 +532,19 @@ run_stage_1() {
   # Gate 1 Ceiling Cell B: HG008 195x/169x somatic WGS slice (-th 8, assert Rust peak RSS <= 8 GB)
   run_checkpointed_cell "stage1" "s1_ceiling_hg008" 8 "32G" bash -c '
     set -euo pipefail
-    GOLDEN_MODE=off MIN_VARIANTS=1000 ORACLE_XMX_GB=22 \
-      bash harness/compare.sh \
-      "$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fa" \
-      "$DATA_DIR/hg008/HG008-T.slice.bam|$DATA_DIR/hg008/HG008-N.slice.bam" \
-      "$DATA_DIR/hg008/engine.bed" "HG008-T|HG008-N" -th 8
+    if [ -s "$KEEP_DIR/java.vcf" ] && [ -s "$KEEP_DIR/java.time" ]; then
+      /usr/bin/time -v -o "$KEEP_DIR/rust.time" \
+        target/release/vardictrust -G "$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fa" -f 0.01 -N "HG008-T|HG008-N" \
+        -b "$DATA_DIR/hg008/HG008-T.slice.bam|$DATA_DIR/hg008/HG008-N.slice.bam" -c 1 -S 2 -E 3 -g 4 -z -th 8 "$DATA_DIR/hg008/engine.bed" > "$KEEP_DIR/rust.vcf"
+      python3 harness/compare_vcf.py --min-variants 1000 "$KEEP_DIR/java.vcf" "$KEEP_DIR/rust.vcf" | tee "$KEEP_DIR/compare.txt"
+      grep -q "^MATCH" "$KEEP_DIR/compare.txt"
+    else
+      GOLDEN_MODE=off MIN_VARIANTS=1000 ORACLE_XMX_GB=22 \
+        bash harness/compare.sh \
+        "$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fa" \
+        "$DATA_DIR/hg008/HG008-T.slice.bam|$DATA_DIR/hg008/HG008-N.slice.bam" \
+        "$DATA_DIR/hg008/engine.bed" "HG008-T|HG008-N" -th 8
+    fi
     rss_kb=$(awk -F": " "/Maximum resident set size/{print \$2}" "$KEEP_DIR/rust.time" | tr -dc "0-9")
     echo "hg008_ceiling_rss_kb=$rss_kb" | tee "$KEEP_DIR/ceiling_hg008.txt"
     [ "$rss_kb" -le 8000000 ] || { echo "FATAL: HG008 ceiling RSS ${rss_kb} KB > 8 GB" >&2; exit 9; }
@@ -597,10 +644,14 @@ run_stage_2() {
         # End-to-end VCF surface (consolidated Rust binary vs Java+R+Perl vs C++ -vcf) + tabix check
         /usr/bin/time -v -o \"\$KEEP_DIR/rust_vcf_th${th}.time\" \
           target/release/vardictrust -G \"\$REF\" -f 0.01 -N '${acc}' -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -th ${th} \"\$BED\" > \"\$KEEP_DIR/rust_th${th}.vcf\"
-        /usr/bin/time -v -o \"\$KEEP_DIR/cpp_vcf_th${th}.time\" \
-          '$tp_dir/vardictcpp-ae93fe39dc/build/vardictcpp' -G \"\$REF\" -f 0.01 -N '${acc}' -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 --chunk 50000 -th ${th} \"\$BED\" -vcf > \"\$KEEP_DIR/cpp_th${th}.vcf\"
-        ORACLE_XMX_GB=22 /usr/bin/time -v -o \"\$KEEP_DIR/java_vcf_th${th}.time\" \
-          bash harness/run_oracle.sh \"\$REF\" \"\$BAM\" \"\$BED\" \"\$KEEP_DIR/java_th${th}.vcf\" '${acc}' -f 0.01 -th ${th}
+        if [ ! -s \"\$KEEP_DIR/cpp_vcf_th${th}.time\" ] || [ ! -s \"\$KEEP_DIR/cpp_th${th}.vcf\" ]; then
+          /usr/bin/time -v -o \"\$KEEP_DIR/cpp_vcf_th${th}.time\" \
+            '$tp_dir/vardictcpp-ae93fe39dc/build/vardictcpp' -G \"\$REF\" -f 0.01 -N '${acc}' -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 --chunk 50000 -th ${th} \"\$BED\" -vcf > \"\$KEEP_DIR/cpp_th${th}.vcf\"
+        fi
+        if [ ! -s \"\$KEEP_DIR/java_vcf_th${th}.time\" ] || [ ! -s \"\$KEEP_DIR/java_th${th}.vcf\" ]; then
+          ORACLE_XMX_GB=22 /usr/bin/time -v -o \"\$KEEP_DIR/java_vcf_th${th}.time\" \
+            bash harness/run_oracle.sh \"\$REF\" \"\$BAM\" \"\$BED\" \"\$KEEP_DIR/java_th${th}.vcf\" '${acc}' -f 0.01 -th ${th}
+        fi
         python3 harness/compare_vcf.py \"\$KEEP_DIR/java_th${th}.vcf\" \"\$KEEP_DIR/rust_th${th}.vcf\" | tee \"\$KEEP_DIR/compare_vcf_th${th}.txt\"
         grep -q '^MATCH' \"\$KEEP_DIR/compare_vcf_th${th}.txt\"
         bcftools sort \"\$KEEP_DIR/rust_th${th}.vcf\" -Oz -o \"\$KEEP_DIR/rust_th${th}.vcf.gz\" && tabix -f -p vcf \"\$KEEP_DIR/rust_th${th}.vcf.gz\" && bcftools index -f \"\$KEEP_DIR/rust_th${th}.vcf.gz\"
@@ -622,10 +673,14 @@ run_stage_2() {
       for run in 1 2 3; do
         /usr/bin/time -v -o \"\$KEEP_DIR/rust_som_var_th${th}_run\${run}.time\" \
           target/release/vardictrust -G \"\$REF\" -f 0.01 -N 'SRR15006376|SRR15006386' -b \"\${TUM}|\${NOR}\" -c 1 -S 2 -E 3 -g 4 --emit-intermediate -th ${th} \"\$BED\" > \"\$KEEP_DIR/rust_som_th${th}.var\"
-        /usr/bin/time -v -o \"\$KEEP_DIR/cpp_som_var_th${th}_run\${run}.time\" \
-          '$tp_dir/vardictcpp-ae93fe39dc/build/vardictcpp' -G \"\$REF\" -f 0.01 -N 'SRR15006376|SRR15006386' -b \"\${TUM}|\${NOR}\" -c 1 -S 2 -E 3 -g 4 --chunk 50000 -th ${th} \"\$BED\" > \"\$KEEP_DIR/cpp_som_th${th}.var\"
-        _JAVA_OPTIONS='-Xmx22g' /usr/bin/time -v -o \"\$KEEP_DIR/java_som_var_th${th}_run\${run}.time\" \
-          conda run -n vardict-oracle vardict-java -G \"\$REF\" -f 0.01 -N 'SRR15006376|SRR15006386' -b \"\${TUM}|\${NOR}\" -c 1 -S 2 -E 3 -g 4 -th ${th} \"\$BED\" > \"\$KEEP_DIR/java_som_th${th}.var\"
+        if [ ! -s \"\$KEEP_DIR/cpp_som_var_th${th}_run\${run}.time\" ] || [ ! -s \"\$KEEP_DIR/cpp_som_th${th}.var\" ]; then
+          /usr/bin/time -v -o \"\$KEEP_DIR/cpp_som_var_th${th}_run\${run}.time\" \
+            '$tp_dir/vardictcpp-ae93fe39dc/build/vardictcpp' -G \"\$REF\" -f 0.01 -N 'SRR15006376|SRR15006386' -b \"\${TUM}|\${NOR}\" -c 1 -S 2 -E 3 -g 4 --chunk 50000 -th ${th} \"\$BED\" > \"\$KEEP_DIR/cpp_som_th${th}.var\"
+        fi
+        if [ ! -s \"\$KEEP_DIR/java_som_var_th${th}_run\${run}.time\" ] || [ ! -s \"\$KEEP_DIR/java_som_th${th}.var\" ]; then
+          _JAVA_OPTIONS='-Xmx22g' /usr/bin/time -v -o \"\$KEEP_DIR/java_som_var_th${th}_run\${run}.time\" \
+            conda run -n vardict-oracle vardict-java -G \"\$REF\" -f 0.01 -N 'SRR15006376|SRR15006386' -b \"\${TUM}|\${NOR}\" -c 1 -S 2 -E 3 -g 4 -th ${th} \"\$BED\" > \"\$KEEP_DIR/java_som_th${th}.var\"
+        fi
       done
 
       r_rows=\$(wc -l < \"\$KEEP_DIR/rust_som_th${th}.var\" | tr -dc '0-9')
@@ -641,10 +696,14 @@ run_stage_2() {
 
       /usr/bin/time -v -o \"\$KEEP_DIR/rust_som_vcf_th${th}.time\" \
         target/release/vardictrust -G \"\$REF\" -f 0.01 -N 'SRR15006376|SRR15006386' -b \"\${TUM}|\${NOR}\" -c 1 -S 2 -E 3 -g 4 -th ${th} \"\$BED\" > \"\$KEEP_DIR/rust_som_th${th}.vcf\"
-      /usr/bin/time -v -o \"\$KEEP_DIR/cpp_som_vcf_th${th}.time\" \
-        '$tp_dir/vardictcpp-ae93fe39dc/build/vardictcpp' -G \"\$REF\" -f 0.01 -N 'SRR15006376|SRR15006386' -b \"\${TUM}|\${NOR}\" -c 1 -S 2 -E 3 -g 4 --chunk 50000 -th ${th} \"\$BED\" -vcf > \"\$KEEP_DIR/cpp_som_th${th}.vcf\"
-      ORACLE_XMX_GB=22 /usr/bin/time -v -o \"\$KEEP_DIR/java_som_vcf_th${th}.time\" \
-        bash harness/run_oracle.sh \"\$REF\" \"\${TUM}|\${NOR}\" \"\$BED\" \"\$KEEP_DIR/java_som_th${th}.vcf\" 'SRR15006376|SRR15006386' -f 0.01 -th ${th}
+      if [ ! -s \"\$KEEP_DIR/cpp_som_vcf_th${th}.time\" ] || [ ! -s \"\$KEEP_DIR/cpp_som_th${th}.vcf\" ]; then
+        /usr/bin/time -v -o \"\$KEEP_DIR/cpp_som_vcf_th${th}.time\" \
+          '$tp_dir/vardictcpp-ae93fe39dc/build/vardictcpp' -G \"\$REF\" -f 0.01 -N 'SRR15006376|SRR15006386' -b \"\${TUM}|\${NOR}\" -c 1 -S 2 -E 3 -g 4 --chunk 50000 -th ${th} \"\$BED\" -vcf > \"\$KEEP_DIR/cpp_som_th${th}.vcf\"
+      fi
+      if [ ! -s \"\$KEEP_DIR/java_som_vcf_th${th}.time\" ] || [ ! -s \"\$KEEP_DIR/java_som_th${th}.vcf\" ]; then
+        ORACLE_XMX_GB=22 /usr/bin/time -v -o \"\$KEEP_DIR/java_som_vcf_th${th}.time\" \
+          bash harness/run_oracle.sh \"\$REF\" \"\${TUM}|\${NOR}\" \"\$BED\" \"\$KEEP_DIR/java_som_th${th}.vcf\" 'SRR15006376|SRR15006386' -f 0.01 -th ${th}
+      fi
       python3 harness/compare_vcf.py \"\$KEEP_DIR/java_som_th${th}.vcf\" \"\$KEEP_DIR/rust_som_th${th}.vcf\" | tee \"\$KEEP_DIR/compare_som_vcf_th${th}.txt\"
       grep -q '^MATCH' \"\$KEEP_DIR/compare_som_vcf_th${th}.txt\"
     "
@@ -653,6 +712,7 @@ run_stage_2() {
   # 3. Tier-P 13-Mode Parity Sweep (results/full_mode_parity.tsv + MRD -f 0 arm + P5 Panel CRAM Twin)
   run_checkpointed_cell "stage2" "s2_tierp_mode_parity_sweep" 8 "32G" bash -c "
     set -euo pipefail
+    source harness/gcp_paper_runner.sh --source-only
     REF='$tp_dir/archive/reference/hg19.fa'
     BAM='$tp_dir/bams/SRR8657348.bam'
     NORM='$tp_dir/bams/SRR15006540.bam'
@@ -664,9 +724,17 @@ run_stage_2() {
 
     run_mode() {
       local mode=\"\$1\" j_cmd=\"\$2\" r_cmd=\"\$3\" c_cmd=\"\$4\"
-      eval \"\$j_cmd\" | LC_ALL=C sort > \"\$KEEP_DIR/\${mode}.java.tsv\"
+      local j_key=\"\$mode\"
+      [ \"\$mode\" = 'simple_chunk50000' ] && j_key='simple_f0.01'
+      oracle_cache_get_or_run \"tierp_13modes/\${j_key}.java.raw.var\" \"\$KEEP_DIR/\${j_key}.java.raw.var\" \
+        bash -c \"\$j_cmd > '\$KEEP_DIR/\${j_key}.java.raw.var'\"
+      LC_ALL=C sort \"\$KEEP_DIR/\${j_key}.java.raw.var\" > \"\$KEEP_DIR/\${mode}.java.tsv\"
       eval \"\$r_cmd\" | LC_ALL=C sort > \"\$KEEP_DIR/\${mode}.rust.tsv\"
-      eval \"\$c_cmd\" | LC_ALL=C sort > \"\$KEEP_DIR/\${mode}.cpp.tsv\"
+      if [ -z \"\${LOCAL_CKPT_DIR:-}\" ] && setsid gsutil -q stat \"${GCS_RESULTS}/cells-v103/sweep_tierp_13modes/\${mode}.cpp.sorted.var\" 2>/dev/null; then
+        setsid gsutil -q cp \"${GCS_RESULTS}/cells-v103/sweep_tierp_13modes/\${mode}.cpp.sorted.var\" \"\$KEEP_DIR/\${mode}.cpp.tsv\"
+      else
+        eval \"\$c_cmd\" | LC_ALL=C sort > \"\$KEEP_DIR/\${mode}.cpp.tsv\"
+      fi
       local jr rr cr r_fp r_fn c_fp c_fn verdict='MATCH'
       jr=\$(wc -l < \"\$KEEP_DIR/\${mode}.java.tsv\" | tr -dc '0-9')
       rr=\$(wc -l < \"\$KEEP_DIR/\${mode}.rust.tsv\" | tr -dc '0-9')
@@ -775,10 +843,15 @@ run_stage_2() {
     # Pad 3-col target20.bed to 4-col for VarDict (-c 1 -S 2 -E 3 -g 4 -z)
     awk 'BEGIN{OFS=\"\t\"}{print \$1,\$2,\$3,\"R\"}' \"\$BED\" > \"\$KEEP_DIR/target20_4col.bed\"
 
-    # 3-way VarDict (Java, Rust, C++)
-    ORACLE_XMX_GB=16 bash harness/run_oracle.sh \"\$REF\" \"\$BAM\" \"\$KEEP_DIR/target20_4col.bed\" \"\$KEEP_DIR/vardict_java.vcf\" HG002 -f 0.01 -z -th 8
+    # 3-way VarDict (Java, Rust, C++) — reuse SHA256-pinned Java/Cpp VCFs from oracle-cache-v183 / cells-v103
+    oracle_cache_get_or_run 'hg002_chr20_exome/java.vcf' \"\$KEEP_DIR/vardict_java.vcf\" \
+      bash -c \"ORACLE_XMX_GB=16 bash harness/run_oracle.sh '\$REF' '\$BAM' '\$KEEP_DIR/target20_4col.bed' '\$KEEP_DIR/vardict_java.vcf' HG002 -f 0.01 -z -th 8\"
     target/release/vardictrust -G \"\$REF\" -f 0.01 -N HG002 -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -z -th 8 \"\$KEEP_DIR/target20_4col.bed\" > \"\$KEEP_DIR/vardictrust.vcf\"
-    '$tp_dir/vardictcpp-ae93fe39dc/build/vardictcpp' -G \"\$REF\" -f 0.01 -N HG002 -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -z --chunk 50000 -th 8 \"\$KEEP_DIR/target20_4col.bed\" -vcf > \"\$KEEP_DIR/vardictcpp.vcf\"
+    if [ -z \"\${LOCAL_CKPT_DIR:-}\" ] && setsid gsutil -q stat \"${GCS_RESULTS}/cells-v103/sweep_hg002_chr20_exome/hg002_chr20.cpp.vcf\" 2>/dev/null; then
+      setsid gsutil -q cp \"${GCS_RESULTS}/cells-v103/sweep_hg002_chr20_exome/hg002_chr20.cpp.vcf\" \"\$KEEP_DIR/vardictcpp.vcf\"
+    elif [ ! -s \"\$KEEP_DIR/vardictcpp.vcf\" ]; then
+      '$tp_dir/vardictcpp-ae93fe39dc/build/vardictcpp' -G \"\$REF\" -f 0.01 -N HG002 -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -z --chunk 50000 -th 8 \"\$KEEP_DIR/target20_4col.bed\" -vcf > \"\$KEEP_DIR/vardictcpp.vcf\"
+    fi
     python3 harness/compare_vcf.py \"\$KEEP_DIR/vardict_java.vcf\" \"\$KEEP_DIR/vardictrust.vcf\" | tee \"\$KEEP_DIR/compare_hg002_chr20.txt\"
     grep -q '^MATCH' \"\$KEEP_DIR/compare_hg002_chr20.txt\"
 
@@ -954,10 +1027,12 @@ run_stage_2() {
     for run in 1 2 3; do
       /usr/bin/time -v -o \"\$KEEP_DIR/rust_R_chr1_run\${run}.time\" \
         target/release/vardictrust -G \"\$REF\" -f 0.01 -N SRR8657348 -b \"\$BAM\" -th 8 -R chr1:1-249250621 > \"\$KEEP_DIR/rust_R_chr1.vcf\"
-      rc=0
-      /usr/bin/time -v -o \"\$KEEP_DIR/cpp_R_chr1_run\${run}.time\" \
-        '$tp_dir/vardictcpp-ae93fe39dc/build/vardictcpp' -G \"\$REF\" -f 0.01 -N SRR8657348 -b \"\$BAM\" -th 8 -R chr1:1-249250621 -vcf > \"\$KEEP_DIR/cpp_R_chr1.vcf\" || rc=\$?
-      echo \"\$rc\" > \"\$KEEP_DIR/cpp_R_chr1_run\${run}.exit\"
+      if [ ! -s \"\$KEEP_DIR/cpp_R_chr1_run\${run}.time\" ]; then
+        rc=0
+        /usr/bin/time -v -o \"\$KEEP_DIR/cpp_R_chr1_run\${run}.time\" \
+          '$tp_dir/vardictcpp-ae93fe39dc/build/vardictcpp' -G \"\$REF\" -f 0.01 -N SRR8657348 -b \"\$BAM\" -th 8 -R chr1:1-249250621 -vcf > \"\$KEEP_DIR/cpp_R_chr1.vcf\" || rc=\$?
+        echo \"\$rc\" > \"\$KEEP_DIR/cpp_R_chr1_run\${run}.exit\"
+      fi
     done
   "
 
@@ -966,13 +1041,17 @@ run_stage_2() {
     set -euo pipefail
     REF='$tp_dir/archive/reference/hg19.fa'
     BAM='$tp_dir/bams/SRR8657348.bam'
-    rc4=0
-    _JAVA_OPTIONS='-Xmx4g' /usr/bin/time -v -o \"\$KEEP_DIR/java_xmx4g_R_chr1.time\" \
-      conda run -n vardict-oracle vardict-java -G \"\$REF\" -f 0.01 -N SRR8657348 -b \"\$BAM\" -th 8 -R chr1:1-249250621 > /dev/null 2>\"\$KEEP_DIR/java_xmx4g.err\" || rc4=\$?
-    echo \"\$rc4\" > \"\$KEEP_DIR/java_xmx4g.exit\"
+    if [ ! -s \"\$KEEP_DIR/java_xmx4g_R_chr1.time\" ]; then
+      rc4=0
+      _JAVA_OPTIONS='-Xmx4g' /usr/bin/time -v -o \"\$KEEP_DIR/java_xmx4g_R_chr1.time\" \
+        conda run -n vardict-oracle vardict-java -G \"\$REF\" -f 0.01 -N SRR8657348 -b \"\$BAM\" -th 8 -R chr1:1-249250621 > /dev/null 2>\"\$KEEP_DIR/java_xmx4g.err\" || rc4=\$?
+      echo \"\$rc4\" > \"\$KEEP_DIR/java_xmx4g.exit\"
+    fi
     for run in 1 2 3; do
-      _JAVA_OPTIONS='-Xmx200g' /usr/bin/time -v -o \"\$KEEP_DIR/java_xmx200g_R_chr1_run\${run}.time\" \
-        conda run -n vardict-oracle vardict-java -G \"\$REF\" -f 0.01 -N SRR8657348 -b \"\$BAM\" -th 8 -R chr1:1-249250621 > \"\$KEEP_DIR/java_xmx200g_R_chr1.var\" 2>\"\$KEEP_DIR/java_xmx200g_run\${run}.err\"
+      if [ ! -s \"\$KEEP_DIR/java_xmx200g_R_chr1_run\${run}.time\" ] || [ ! -s \"\$KEEP_DIR/java_xmx200g_R_chr1.var\" ]; then
+        _JAVA_OPTIONS='-Xmx200g' /usr/bin/time -v -o \"\$KEEP_DIR/java_xmx200g_R_chr1_run\${run}.time\" \
+          conda run -n vardict-oracle vardict-java -G \"\$REF\" -f 0.01 -N SRR8657348 -b \"\$BAM\" -th 8 -R chr1:1-249250621 > \"\$KEEP_DIR/java_xmx200g_R_chr1.var\" 2>\"\$KEEP_DIR/java_xmx200g_run\${run}.err\"
+      fi
     done
   "
 }
@@ -999,8 +1078,10 @@ run_stage_3() {
     for run in 1 2 3; do
       /usr/bin/time -v -o \"\$KEEP_DIR/rust_splice_run\${run}.time\" \
         target/release/vardictrust -G \"\$REF\" -f 0.01 -N HG002_RNA -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -z -i --emit-intermediate -th 8 \"\$BED\" > \"\$KEEP_DIR/rust.splice.tsv\"
-      _JAVA_OPTIONS='-Xmx44g' /usr/bin/time -v -o \"\$KEEP_DIR/java_splice_run\${run}.time\" \
-        conda run -n vardict-oracle vardict-java -G \"\$REF\" -f 0.01 -N HG002_RNA -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -z 1 -i -th 8 \"\$BED\" > \"\$KEEP_DIR/java.splice.tsv\"
+      if [ ! -s \"\$KEEP_DIR/java_splice_run\${run}.time\" ] || [ ! -s \"\$KEEP_DIR/java.splice.tsv\" ]; then
+        _JAVA_OPTIONS='-Xmx44g' /usr/bin/time -v -o \"\$KEEP_DIR/java_splice_run\${run}.time\" \
+          conda run -n vardict-oracle vardict-java -G \"\$REF\" -f 0.01 -N HG002_RNA -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -z 1 -i -th 8 \"\$BED\" > \"\$KEEP_DIR/java.splice.tsv\"
+      fi
     done
     LC_ALL=C sort \"\$KEEP_DIR/java.splice.tsv\" > \"\$KEEP_DIR/java.splice.sorted.tsv\"
     LC_ALL=C sort \"\$KEEP_DIR/rust.splice.tsv\" > \"\$KEEP_DIR/rust.splice.sorted.tsv\"
@@ -1253,10 +1334,14 @@ PY
       for run in 1 2 3; do
         /usr/bin/time -v -o \"\$KEEP_DIR/rust_th${th}_run\${run}.time\" \
           target/release/vardictrust -G \"\$REF\" -f 0.01 -N HCC1395 -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -z -th ${th} \"\$BED\" > \"\$KEEP_DIR/rust_th${th}.vcf\"
-        /usr/bin/time -v -o \"\$KEEP_DIR/cpp_th${th}_run\${run}.time\" \
-          bash harness/run_cpp.sh \"\$REF\" \"\$BAM\" \"\$BED\" \"\$KEEP_DIR/cpp_th${th}.vcf\" HCC1395 -th ${th} -z
-        ORACLE_XMX_GB=${java_xmx} /usr/bin/time -v -o \"\$KEEP_DIR/java_th${th}_run\${run}.time\" \
-          bash harness/run_oracle.sh \"\$REF\" \"\$BAM\" \"\$BED\" \"\$KEEP_DIR/java_th${th}.vcf\" HCC1395 -f 0.01 -z -th ${th}
+        if [ ! -s \"\$KEEP_DIR/cpp_th${th}_run\${run}.time\" ] || [ ! -s \"\$KEEP_DIR/cpp_th${th}.vcf\" ]; then
+          /usr/bin/time -v -o \"\$KEEP_DIR/cpp_th${th}_run\${run}.time\" \
+            bash harness/run_cpp.sh \"\$REF\" \"\$BAM\" \"\$BED\" \"\$KEEP_DIR/cpp_th${th}.vcf\" HCC1395 -th ${th} -z
+        fi
+        if [ ! -s \"\$KEEP_DIR/java_th${th}_run\${run}.time\" ] || [ ! -s \"\$KEEP_DIR/java_th${th}.vcf\" ]; then
+          ORACLE_XMX_GB=${java_xmx} /usr/bin/time -v -o \"\$KEEP_DIR/java_th${th}_run\${run}.time\" \
+            bash harness/run_oracle.sh \"\$REF\" \"\$BAM\" \"\$BED\" \"\$KEEP_DIR/java_th${th}.vcf\" HCC1395 -f 0.01 -z -th ${th}
+        fi
       done
       python3 harness/compare_vcf.py \"\$KEEP_DIR/java_th${th}.vcf\" \"\$KEEP_DIR/rust_th${th}.vcf\" | tee \"\$KEEP_DIR/compare_th${th}.txt\"
       grep -q '^MATCH' \"\$KEEP_DIR/compare_th${th}.txt\"
@@ -1284,10 +1369,12 @@ PY
         for run in 1 2 3; do
           /usr/bin/time -v -o \"\$KEEP_DIR/rust_R\${sz}_th${th}_run\${run}.time\" \
             target/release/vardictrust -G \"\$REF\" -f 0.01 -N HCC1395 -b \"\$BAM\" -th ${th} -R \"chr1:1-\${sz}\" > \"\$KEEP_DIR/rust_R\${sz}_th${th}.vcf\"
-          rc_cpp=0
-          /usr/bin/time -v -o \"\$KEEP_DIR/cpp_R\${sz}_th${th}_run\${run}.time\" \
-            bash harness/run_cpp.sh \"\$REF\" \"\$BAM\" \"\$KEEP_DIR/R\${sz}.bed\" \"\$KEEP_DIR/cpp_R\${sz}_th${th}.vcf\" HCC1395 -th ${th} -z || rc_cpp=\$?
-          echo \"\$rc_cpp\" > \"\$KEEP_DIR/cpp_R\${sz}_th${th}_run\${run}.exit\"
+          if [ ! -s \"\$KEEP_DIR/cpp_R\${sz}_th${th}_run\${run}.time\" ]; then
+            rc_cpp=0
+            /usr/bin/time -v -o \"\$KEEP_DIR/cpp_R\${sz}_th${th}_run\${run}.time\" \
+              bash harness/run_cpp.sh \"\$REF\" \"\$BAM\" \"\$KEEP_DIR/R\${sz}.bed\" \"\$KEEP_DIR/cpp_R\${sz}_th${th}.vcf\" HCC1395 -th ${th} -z || rc_cpp=\$?
+            echo \"\$rc_cpp\" > \"\$KEEP_DIR/cpp_R\${sz}_th${th}_run\${run}.exit\"
+          fi
         done
       done
     "
@@ -1296,17 +1383,20 @@ PY
   # 5. Tier-G chr1 MRD -f 0 noise-floor operating-point cell (gcp-prereg.md §A2 H3 & §A10)
   run_checkpointed_cell "stage4" "s4_span_chr1_f0" 8 "64G" bash -c '
     set -euo pipefail
+    source harness/gcp_paper_runner.sh --source-only
     REF="$DATA_DIR/ref/d1vd1/GRCh38.d1.vd1.fa"
     BAM="$DATA_DIR/seqc2/HCC1395.bam"
     printf "chr1\t0\t10000000\tR10M\n" > "$KEEP_DIR/chr1_10m.bed"
     for run in 1 2 3; do
       /usr/bin/time -v -o "$KEEP_DIR/rust_chr1_10m_f0_run${run}.time" \
         target/release/vardictrust -G "$REF" -f 0 -N HCC1395 -b "$BAM" -c 1 -S 2 -E 3 -g 4 -z -th 8 "$KEEP_DIR/chr1_10m.bed" > "$KEEP_DIR/rust_chr1_10m_f0.vcf"
-      /usr/bin/time -v -o "$KEEP_DIR/cpp_chr1_10m_f0_run${run}.time" \
-        bash harness/run_cpp.sh "$REF" "$BAM" "$KEEP_DIR/chr1_10m.bed" "$KEEP_DIR/cpp_chr1_10m_f0.vcf" HCC1395 -f 0 -th 8 -z
+      if [ ! -s "$KEEP_DIR/cpp_chr1_10m_f0_run${run}.time" ] || [ ! -s "$KEEP_DIR/cpp_chr1_10m_f0.vcf" ]; then
+        /usr/bin/time -v -o "$KEEP_DIR/cpp_chr1_10m_f0_run${run}.time" \
+          bash harness/run_cpp.sh "$REF" "$BAM" "$KEEP_DIR/chr1_10m.bed" "$KEEP_DIR/cpp_chr1_10m_f0.vcf" HCC1395 -f 0 -th 8 -z
+      fi
     done
-    ORACLE_XMX_GB=44 /usr/bin/time -v -o "$KEEP_DIR/java_chr1_10m_f0_run1.time" \
-      bash harness/run_oracle.sh "$REF" "$BAM" "$KEEP_DIR/chr1_10m.bed" "$KEEP_DIR/java_chr1_10m_f0.vcf" HCC1395 -f 0 -z -th 8
+    oracle_cache_get_or_run "span_chr1_f0/java_chr1_10m_f0.vcf" "$KEEP_DIR/java_chr1_10m_f0.vcf" \
+      bash -c "ORACLE_XMX_GB=44 /usr/bin/time -v -o '\''$KEEP_DIR/java_chr1_10m_f0_run1.time'\'' bash harness/run_oracle.sh '\''$REF'\'' '\''$BAM'\'' '\''$KEEP_DIR/chr1_10m.bed'\'' '\''$KEEP_DIR/java_chr1_10m_f0.vcf'\'' HCC1395 -f 0 -z -th 8"
     python3 harness/compare_vcf.py "$KEEP_DIR/java_chr1_10m_f0.vcf" "$KEEP_DIR/rust_chr1_10m_f0.vcf" | tee "$KEEP_DIR/compare_chr1_10m_f0.txt"
     grep -q "^MATCH" "$KEEP_DIR/compare_chr1_10m_f0.txt"
   '
