@@ -207,8 +207,8 @@ def check_pre_tag_surfaces(repo_root: Path, version: str, errors: list[str]) -> 
     require_regex(
         repo_root,
         "README.md",
-        r"277 automated Cargo workspace tests \(231 core library tests, 2 amplicon streaming memory tests, 2 CRAM stack tests, 13 CLI tests, and 29 integration binary tests\)",
-        "README.md exact 277 test breakdown (231 + 2 + 2 + 13 + 29)",
+        r"288 automated Cargo workspace tests \(240 core library tests, 2 amplicon streaming memory tests, 2 CRAM stack tests, 15 CLI tests, and 29 integration binary tests\)",
+        "README.md exact 288 test breakdown (240 + 2 + 2 + 15 + 29)",
         errors,
     )
 
@@ -223,16 +223,16 @@ def check_pre_tag_surfaces(repo_root: Path, version: str, errors: list[str]) -> 
     require_regex(
         repo_root,
         "DIVERGENCES.md",
-        r"231 PASS.*277 PASS",
-        "DIVERGENCES.md cites 231 core lib / 277 workspace tests",
+        r"240 PASS.*288 PASS",
+        "DIVERGENCES.md cites 240 core lib / 288 workspace tests",
         errors,
         flags=re.MULTILINE | re.DOTALL,
     )
     require_regex(
         repo_root,
         "DIVERGENCES.md",
-        r"27f3667b32ac14f5",
-        "DIVERGENCES.md cites certified fingerprint 27f3667b32ac14f5",
+        r"6a12e65f55b68849",
+        "DIVERGENCES.md cites certified fingerprint 6a12e65f55b68849",
         errors,
     )
     forbid_regex(
@@ -247,8 +247,8 @@ def check_pre_tag_surfaces(repo_root: Path, version: str, errors: list[str]) -> 
     require_regex(
         repo_root,
         "CONTRIBUTING.md",
-        r"all 277 workspace unit and integration tests",
-        "CONTRIBUTING.md §4.1 cites 277 workspace tests",
+        r"all 288 workspace unit and integration tests",
+        "CONTRIBUTING.md §4.1 cites 288 workspace tests",
         errors,
     )
     require_regex(
@@ -261,8 +261,8 @@ def check_pre_tag_surfaces(repo_root: Path, version: str, errors: list[str]) -> 
     forbid_regex(
         repo_root,
         "CONTRIBUTING.md",
-        r"aarch64-unknown-linux-gnu|all 233 workspace",
-        "CONTRIBUTING.md stale target triple or 233 test count",
+        r"aarch64-unknown-linux-gnu|all 233 workspace|all 277 workspace",
+        "CONTRIBUTING.md stale target triple or 233/277 test count",
         errors,
     )
 
@@ -286,15 +286,15 @@ def check_pre_tag_surfaces(repo_root: Path, version: str, errors: list[str]) -> 
     require_regex(
         repo_root,
         "docs/testing/test-matrix-and-ci-audit.md",
-        r"\b277\b",
-        "test-matrix-and-ci-audit.md cites 277 workspace tests",
+        r"\b288\b",
+        "test-matrix-and-ci-audit.md cites 288 workspace tests",
         errors,
     )
     forbid_regex(
         repo_root,
         "docs/testing/test-matrix-and-ci-audit.md",
-        r"a262f19b0a2eb8a8|\b233\b|\b192\b",
-        "test-matrix-and-ci-audit.md stale fingerprint or 233/192 test counts",
+        r"a262f19b0a2eb8a8|\b233\b|\b192\b|\b277\b",
+        "test-matrix-and-ci-audit.md stale fingerprint or 233/192/277 test counts",
         errors,
     )
 
@@ -325,15 +325,15 @@ def check_pre_tag_surfaces(repo_root: Path, version: str, errors: list[str]) -> 
     require_regex(
         repo_root,
         "wiki/Home.md",
-        r"\b277\b",
-        "wiki/Home.md cites 277 workspace tests",
+        r"\b288\b",
+        "wiki/Home.md cites 288 workspace tests",
         errors,
     )
     forbid_regex(
         repo_root,
         "wiki/Home.md",
-        r"\b233\b",
-        "wiki/Home.md stale 233 test count",
+        r"\b233\b|\b277\b",
+        "wiki/Home.md stale 233/277 test count",
         errors,
     )
     require_regex(

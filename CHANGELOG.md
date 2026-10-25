@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.4] - 2026-10-25
+
+### Fixed
+
+- Achieved **89 / 89 MATCH** (`0` variant diffs across `11,227,154` called variants)
+  against **VarDictJava v1.8.3** across the 12-cell full-chromosome, full-exome,
+  ultra-deep MRD (`2,000x`–`5,000x`), RNA-seq (`--splice`), CRAM twin, and
+  amplicon panel validation corpus ([Issue #42](https://github.com/palakpsheth/VarDictRust/issues/42),
+  [PR #43](https://github.com/palakpsheth/VarDictRust/pull/43)):
+  - **`M-1`** (`crates/vardictrust-core/src/reference.rs`): Extended chromosome
+    reference buffers by 2 bp at the $3'$ end (`end + 2`) to match
+    `ReferenceResource.java:203`, preventing boundary k-mer seed truncation at
+    region/tile edges.
+  - **`M-2`** (`crates/vardictrust-core/src/reference.rs`): Added OpenJDK
+    `String.hashCode()` sequence tie-breaking in `SeedMap::most_frequent_position`
+    to match `VariationRealigner.java:1553–1563` `HashMap<String, List<Integer>>`
+    bucket iteration order when two seed k-mers tie in cluster count.
+  - **`M-3`** (`crates/vardictrust-core/src/realign.rs`): Updated insertion
+    realignment `find_mms` intermediate mismatch checks (`<= 3` and
+    `mm_cnt / mlen < 0.25`) to match `VariationRealigner.java:1966–1981`.
+  - **`M-4`** (`crates/vardictrust-core/src/cigar/parse.rs`): Ported insertion
+    trailing $3'$ overhang validation (`check_3prime_let_is_valid`, `< 4 bp` vs.
+    `< 3 bp` when `p >= 2`) matching `CigarParser.java:638–644`.
+  - **`M-5`** (`crates/vardictrust-core/src/cigar/parse.rs`): Ported coupled
+    indel `id_len` extra-length check inside `parse_cigar` matching
+    `CigarParser.java:784–787`.
+  - **`M-6`** (`crates/vardictrust-core/src/cigar/parse.rs`): Ported secondary
+    overlapping region slice selection (`reg2` / `partial_HashMap`) for
+    amplicon/targeted reads matching `CigarParser.java:257–274`.
+  - **`M-7`** (`crates/vardictrust-core/src/postprocess/somatic.rs`): Fixed somatic
+    `combine_analysis` multi-allele rescue to retain secondary Tumor/Normal
+    allele matches when `number_of_processed_variation + 1 < v1.variants.len()`,
+    matching `SomaticMode.java:361–531`.
+  - **`M-8`** (`crates/vardictrust-core/src/realign.rs`): Ported the RNA
+    (`--splice`) $5'$ soft-clip deletion realignment ceiling (`total_len < 5000`)
+    matching `VariationRealigner.java:536`.
+  - **`M-9`** (`crates/vardictrust/src/cli.rs`): Allowed `-f 0` / `-f 0.0` /
+    `-f 0e0` zero VAF threshold (`>= 0.0`) matching VarDictJava CLI behavior.
+- Recertified all 16 release evidence artifacts in `benchmarks/evidence/*.json`
+  under engine fingerprint `6a12e65f55b68849` (`perf_fingerprint`
+  `f528b83880f3e1ce`; `harness/acceptance.sh` 8/8 PASS).
+
 ## [1.0.3] - 2026-10-24
 
 ### Added
@@ -220,7 +262,8 @@ Robustness improvements by design (no valid-input output changes relative to Var
 - Correct `##contig` lengths from the `.fai` ([VarDictJava#320](https://github.com/AstraZeneca-NGS/VarDictJava/issues/320));
   fail-fast on missing BAM index ([VarDictJava#187](https://github.com/AstraZeneca-NGS/VarDictJava/issues/187)).
 
-[Unreleased]: https://github.com/palakpsheth/VarDictRust/compare/v1.0.3...HEAD
+[Unreleased]: https://github.com/palakpsheth/VarDictRust/compare/v1.0.4...HEAD
+[1.0.4]: https://github.com/palakpsheth/VarDictRust/compare/v1.0.3...v1.0.4
 [1.0.3]: https://github.com/palakpsheth/VarDictRust/compare/v1.0.2...v1.0.3
 [1.0.2]: https://github.com/palakpsheth/VarDictRust/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/palakpsheth/VarDictRust/compare/v1.0.0...v1.0.1

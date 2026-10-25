@@ -3,7 +3,7 @@ members = ["crates/vardictrust-core", "crates/vardictrust"]
 resolver = "2"
 
 [workspace.package]
-version = "1.0.3"
+version = "1.0.4"
 edition = "2021"
 rust-version = "1.86.0"
 license = "MIT AND GPL-2.0-or-later"
