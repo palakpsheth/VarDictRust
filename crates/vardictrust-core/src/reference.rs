@@ -188,7 +188,7 @@ impl SeedMap {
             }
 
             // Do not create adaptor sequences for the very end of chromosome
-            if chunk.chr_len == chunk.sequence_end && i > bases.len().saturating_sub(SEED1_LEN) {
+            if chunk.chr_len == chunk.sequence_end && i.saturating_add(SEED1_LEN) > bases.len() {
                 continue;
             }
 
@@ -297,17 +297,23 @@ impl Reference {
         }
     }
 
+    #[inline]
+    fn seq_for_idx<'a>(&'a self, idx: usize, chr: &str) -> Option<&'a [u8]> {
+        if let Some(bases) = self.region_sequences.get(idx) {
+            Some(bases.as_slice())
+        } else if idx == 0 {
+            self.reference_sequences.get(chr).map(Vec::as_slice)
+        } else {
+            None
+        }
+    }
+
     /// Safely gets the base at a 1-based chromosome position.
     pub fn get_base(&self, chr: &str, pos: u32) -> Option<u8> {
         for (idx, lr) in self.loaded_regions.iter().enumerate() {
             if lr.chr == chr && pos >= lr.sequence_start && pos <= lr.sequence_end {
                 let offset = (pos - lr.sequence_start) as usize;
-                if let Some(bases) = self.region_sequences.get(idx) {
-                    if let Some(&b) = bases.get(offset) {
-                        return Some(b);
-                    }
-                }
-                if let Some(bases) = self.reference_sequences.get(chr) {
+                if let Some(bases) = self.seq_for_idx(idx, chr) {
                     if let Some(&b) = bases.get(offset) {
                         return Some(b);
                     }
@@ -315,6 +321,44 @@ impl Reference {
             }
         }
         None
+    }
+
+    /// Selects the stored `LoadedRegion` sequence slice on `chr` covering a read's
+    /// alignment + soft-clip span (`ext_start..=ext_end`, falling back to
+    /// `read_start..=read_end`, any overlapping region, then the first loaded region on `chr`).
+    pub fn region_slice_for_span(
+        &self,
+        chr: &str,
+        read_start: i32,
+        read_end: i32,
+        ext_start: i32,
+        ext_end: i32,
+    ) -> (&[u8], i32) {
+        let candidates = || {
+            self.loaded_regions
+                .iter()
+                .enumerate()
+                .filter(|(_, lr)| lr.chr == chr)
+                .filter_map(|(idx, lr)| {
+                    let seq = self.seq_for_idx(idx, chr)?;
+                    let lr_start = lr.sequence_start as i32;
+                    let lr_end = lr_start.saturating_add(seq.len() as i32);
+                    Some((seq, lr_start, lr_end))
+                })
+        };
+        candidates()
+            .find(|&(_, lr_start, lr_end)| ext_start >= lr_start && ext_end <= lr_end)
+            .or_else(|| {
+                candidates()
+                    .find(|&(_, lr_start, lr_end)| read_start >= lr_start && read_end <= lr_end)
+            })
+            .or_else(|| {
+                candidates()
+                    .find(|&(_, lr_start, lr_end)| read_end > lr_start && read_start < lr_end)
+            })
+            .or_else(|| candidates().next())
+            .map(|(seq, lr_start, _)| (seq, lr_start))
+            .unwrap_or((&[], 1))
     }
 }
 
@@ -379,11 +423,21 @@ pub fn get_reference(
         b.make_ascii_uppercase();
     }
 
+    const SEED1_LEN: usize = 17;
+    // Ports ReferenceResource.java:109 `if (ref.referenceSequences.containsKey(i + sequenceStart))`:
+    // previously loaded regions only populated `ref.referenceSequences` up to their `siteEnd`
+    // (their stored length in `region_sequences`), not the trailing 17-bp k-mer lookahead.
     let prev_bounds: Vec<(u32, u32)> = reference
         .loaded_regions
         .iter()
-        .filter(|lr| lr.chr == region.chr)
-        .map(|lr| (lr.sequence_start, lr.sequence_end))
+        .enumerate()
+        .filter(|(_, lr)| lr.chr == region.chr)
+        .filter_map(|(idx, lr)| {
+            let stored_len = reference.region_sequences.get(idx).map_or(0, Vec::len) as u32;
+            stored_len
+                .checked_sub(1)
+                .map(|last| (lr.sequence_start, lr.sequence_start.saturating_add(last)))
+        })
         .collect();
 
     let loaded_region = LoadedRegion {
@@ -393,14 +447,10 @@ pub fn get_reference(
     };
     reference.loaded_regions.push(loaded_region);
 
-    // Keep reference_sequences populated for primary chromosome region
-    reference
-        .reference_sequences
-        .entry(region.chr.clone())
-        .or_insert_with(|| bases.clone());
-
     // Defer k-mer seed indexing (`ReferenceResource.java:106-125`) until
-    // `reference.seed` is actually queried (`EBO-2`).
+    // `reference.seed` is actually queried (`EBO-2`). The full untrimmed `bases`
+    // (including the trailing `SEED_1` lookahead) is passed to `PendingSeedChunk`
+    // so 17-mer keys at `i < site_end` can slice `bases[i..i + 17]`.
     reference.seed.enqueue_chunk(PendingSeedChunk {
         bases: std::sync::Arc::from(bases.as_slice()),
         sequence_start,
@@ -408,6 +458,22 @@ pub fn get_reference(
         chr_len: len,
         prev_bounds,
     });
+
+    // Ports ReferenceResource.java:106-112:
+    // `int siteEnd = len == sequenceEnd ? exon.length() : exon.length() - Configuration.SEED_1;`
+    // Only `[0..siteEnd)` is inserted into `ref.referenceSequences`.
+    let site_end = if len == sequence_end {
+        bases.len()
+    } else {
+        bases.len().saturating_sub(SEED1_LEN)
+    };
+    bases.truncate(site_end);
+
+    // Keep reference_sequences populated for primary chromosome region
+    reference
+        .reference_sequences
+        .entry(region.chr.clone())
+        .or_insert_with(|| bases.clone());
 
     reference.region_sequences.push(bases);
 
@@ -438,10 +504,11 @@ mod tests {
                         if let Some(&b) = bases.get(offset) {
                             return Some(b);
                         }
-                    }
-                    if let Some(bases) = self.reference_sequences.get(chr) {
-                        if let Some(&b) = bases.get(offset) {
-                            return Some(b);
+                    } else if idx == 0 {
+                        if let Some(bases) = self.reference_sequences.get(chr) {
+                            if let Some(&b) = bases.get(offset) {
+                                return Some(b);
+                            }
                         }
                     }
                 }
@@ -491,17 +558,6 @@ mod tests {
         for b in &mut bases {
             b.make_ascii_uppercase();
         }
-        reference.loaded_regions.push(LoadedRegion {
-            chr: region.chr.clone(),
-            sequence_start,
-            sequence_end,
-        });
-        reference
-            .reference_sequences
-            .entry(region.chr.clone())
-            .or_insert_with(|| bases.clone());
-        reference.region_sequences.push(bases.clone());
-
         let seed1_len = 17;
         let seed2_len = 12;
         let site_end = if len == sequence_end {
@@ -509,13 +565,24 @@ mod tests {
         } else {
             bases.len().saturating_sub(seed1_len)
         };
-        let prev_lrs: Vec<LoadedRegion> =
-            reference.loaded_regions[..reference.loaded_regions.len().saturating_sub(1)].to_vec();
+        let prev_bounds: Vec<(u32, u32)> = reference
+            .loaded_regions
+            .iter()
+            .enumerate()
+            .filter(|(_, lr)| lr.chr == region.chr)
+            .filter_map(|(idx, lr)| {
+                let stored_len = reference.region_sequences.get(idx).map_or(0, Vec::len) as u32;
+                stored_len
+                    .checked_sub(1)
+                    .map(|last| (lr.sequence_start, lr.sequence_start.saturating_add(last)))
+            })
+            .collect();
         for i in 0..site_end {
             let pos = i as u32 + sequence_start;
-            if prev_lrs.iter().any(|lr| {
-                lr.chr == region.chr && pos >= lr.sequence_start && pos <= lr.sequence_end
-            }) {
+            if prev_bounds
+                .iter()
+                .any(|&(start, end)| pos >= start && pos <= end)
+            {
                 continue;
             }
             if len == sequence_end && i > bases.len().saturating_sub(seed1_len) {
@@ -530,6 +597,18 @@ mod tests {
                 reference.seed.entry(key.to_vec()).or_default().push(pos);
             }
         }
+        let mut stored_bases = bases;
+        stored_bases.truncate(site_end);
+        reference.loaded_regions.push(LoadedRegion {
+            chr: region.chr.clone(),
+            sequence_start,
+            sequence_end,
+        });
+        reference
+            .reference_sequences
+            .entry(region.chr.clone())
+            .or_insert_with(|| stored_bases.clone());
+        reference.region_sequences.push(stored_bases);
         Ok(())
     }
 
@@ -724,14 +803,19 @@ mod tests {
 
         // start=5, extend_nuc=2, extension=3 => sequence_start = 5 - 5 = 1 (since 5 <= 5, clamped at 1)
         // end=25, extend_nuc=2, extension=3 => sequence_end = 25 + 5 = 30
+        // Since sequence_end (30) < chr_len (40), ReferenceResource.java:106-112 sets
+        // siteEnd = 30 - SEED_1 (17) = 13, so positions 1..=13 are stored in referenceSequences
+        // while 14..=30 serve only as the 17-mer lookahead window.
         assert_eq!(reference.loaded_regions.len(), 1);
         assert_eq!(reference.loaded_regions[0].sequence_start, 1);
         assert_eq!(reference.loaded_regions[0].sequence_end, 30);
 
-        // Verify base lookup
+        // Verify base lookup matches ReferenceResource.java:106-112 (siteEnd = 13)
         assert_eq!(reference.get_base("chr1", 1), Some(b'A'));
         assert_eq!(reference.get_base("chr1", 2), Some(b'C'));
-        assert_eq!(reference.get_base("chr1", 30), Some(b'C'));
+        assert_eq!(reference.get_base("chr1", 13), Some(b'A'));
+        assert_eq!(reference.get_base("chr1", 14), None); // trailing SEED_1 lookahead excluded
+        assert_eq!(reference.get_base("chr1", 30), None);
         assert_eq!(reference.get_base("chr1", 31), None); // out of bounds
 
         // Verify seed indexing contains our expected 17-mers and 12-mers
@@ -843,8 +927,27 @@ mod tests {
         assert!(!cloned_unmaterialized.seed.is_materialized());
 
         // First query triggers materialization and returns exact position.
+        // Note: r1 [1, 50] has sequence_end=50 < total_len=61, so its site_end is 50 - 17 = 33
+        // (positions 1..=33), while 17-mer at position 34 ("NNNNNNNNNNNNNNNNT", inside r1's
+        // truncated 17-bp lookahead [34..=50]) is NOT indexed until r2 [30, 61] is loaded.
         let unique_seed = b"NNNNNNNNNNNNNNNNN";
+        let lookahead_seed = b"NNNNNNNNNNNNNNNNA";
         assert_eq!(reference.seed.get(unique_seed), Some(&[33u32][..]));
+        assert_eq!(
+            reference.seed.get(lookahead_seed),
+            None,
+            "17-mer starting in r1's truncated 17-bp lookahead (pos 34) must not be indexed by r1 alone"
+        );
+        assert_eq!(
+            reference.get_base("chr1", 33),
+            Some(b'N'),
+            "pos 33 is the last base inside r1's site_end"
+        );
+        assert_eq!(
+            reference.get_base("chr1", 34),
+            None,
+            "pos 34 is in r1's truncated 17-bp lookahead and must not be stored in region_sequences[0]"
+        );
         assert!(reference.seed.is_materialized());
         assert_eq!(
             cloned_unmaterialized.seed.get(unique_seed),
@@ -853,8 +956,8 @@ mod tests {
         assert!(cloned_unmaterialized.seed.is_materialized());
 
         // Subsequent overlapping get_reference [30, 61] after materialization
-        // must re-defer the new chunk and include it on the next query without
-        // duplicating positions in [1, 50].
+        // must re-defer the new chunk and include positions [34..=50] that were in
+        // r1's truncated lookahead, without duplicating positions in [1..=33].
         let r2 = BedRegion {
             chr: "chr1".to_string(),
             start: Pos1(30),
@@ -866,6 +969,16 @@ mod tests {
         assert!(
             !reference.seed.is_materialized(),
             "second get_reference must queue chunk lazily"
+        );
+        assert_eq!(
+            reference.seed.get(lookahead_seed),
+            Some(&[34u32][..]),
+            "overlapping r2 must index pos 34 (which was inside r1's truncated 17-bp lookahead)"
+        );
+        assert_eq!(
+            reference.get_base("chr1", 34),
+            Some(b'N'),
+            "pos 34 must now be served by r2"
         );
 
         let mut leg_ref = ReferenceLegacy::default();
@@ -880,6 +993,31 @@ mod tests {
                 Some(leg_positions.as_slice())
             );
         }
+
+        // Also verify that a non-terminal window of <= 17 bp with zero extensions
+        // (which truncates to `stored_len == 0`) does not underflow `stored_len - 1`
+        // when a subsequent disjoint region is loaded on the same chromosome.
+        let mut short_cfg = Config::default();
+        short_cfg.reference = fa_path.to_str().unwrap().to_string();
+        short_cfg.extension = 0;
+        short_cfg.extension_nuc = 0;
+        short_cfg.indel_size = 0;
+        let r_tiny = BedRegion {
+            chr: "chr1".to_string(),
+            start: Pos1(1),
+            end: Pos1(10),
+            gene: "G".to_string(),
+            amplicon: None,
+        };
+        let mut ref_tiny = Reference::new();
+        get_reference(&r_tiny, 0, &chr_lengths, &short_cfg, &mut ref_tiny).unwrap();
+        assert_eq!(ref_tiny.region_sequences[0].len(), 0);
+        get_reference(&r2, 0, &chr_lengths, &short_cfg, &mut ref_tiny).unwrap();
+
+        let mut leg_tiny = ReferenceLegacy::default();
+        get_reference_legacy(&r_tiny, 0, &chr_lengths, &short_cfg, &mut leg_tiny).unwrap();
+        get_reference_legacy(&r2, 0, &chr_lengths, &short_cfg, &mut leg_tiny).unwrap();
+        assert_eq!(ref_tiny.seed.len(), leg_tiny.seed.len());
 
         let _ = fs::remove_file(&fa_path);
         let _ = fs::remove_file(&fai_path);

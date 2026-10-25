@@ -17,10 +17,11 @@ pub struct FisherExact {
     p_value_less: f64,
     p_value_greater: f64,
     p_value_two_sided: f64,
+    java_fisher: bool,
 }
 
 impl FisherExact {
-    /// Constructs a new contingency table and performs calculations.
+    /// Constructs a new contingency table and performs calculations (R `fisher.test` mode).
     ///
     /// The contingency table has layout:
     /// ```text
@@ -31,6 +32,24 @@ impl FisherExact {
     ///          k (Fwd)   (Rev)
     /// ```
     pub fn new(ref_fwd: i32, ref_rev: i32, alt_fwd: i32, alt_rev: i32) -> Self {
+        Self::new_with_mode(ref_fwd, ref_rev, alt_fwd, alt_rev, false)
+    }
+
+    /// Constructs a new contingency table emulating `FisherExact.java` (`--fisher` mode),
+    /// where `logdc` entries are rounded to 7 decimals (`roundHalfEven("0.0000000", value)`)
+    /// and sums are accumulated in standard IEEE-754 `f64`.
+    pub fn new_java(ref_fwd: i32, ref_rev: i32, alt_fwd: i32, alt_rev: i32) -> Self {
+        Self::new_with_mode(ref_fwd, ref_rev, alt_fwd, alt_rev, true)
+    }
+
+    /// Constructs a new contingency table with explicit R (`false`) vs Java `--fisher` (`true`) mode.
+    pub fn new_with_mode(
+        ref_fwd: i32,
+        ref_rev: i32,
+        alt_fwd: i32,
+        alt_rev: i32,
+        java_fisher: bool,
+    ) -> Self {
         let m = ref_fwd.saturating_add(ref_rev);
         let n = alt_fwd.saturating_add(alt_rev);
         let k = ref_fwd.saturating_add(alt_fwd);
@@ -54,6 +73,7 @@ impl FisherExact {
             p_value_less: 0.0,
             p_value_greater: 0.0,
             p_value_two_sided: 0.0,
+            java_fisher,
         };
 
         fisher.logdc = fisher.logdc_dhyper(m, n, k);
@@ -78,6 +98,9 @@ impl FisherExact {
             );
             if value.is_nan() {
                 value = 0.0;
+            }
+            if self.java_fisher {
+                value = round_half_even(value, 7);
             }
             logdc.push(value);
         }
@@ -120,7 +143,11 @@ impl FisherExact {
         for (i, &supp) in self.support.iter().enumerate() {
             supp_d.push((supp as f64) * dnhyper_result.get(i).copied().unwrap_or(0.0));
         }
-        crate::stats::f80::f80_sum(&supp_d)
+        if self.java_fisher {
+            java_stream_sum(&supp_d)
+        } else {
+            crate::stats::f80::f80_sum(&supp_d)
+        }
     }
 
     fn dnhyper(&self, ncp: f64) -> Vec<f64> {
@@ -142,7 +169,11 @@ impl FisherExact {
             let exp_val = (val - max_result).exp();
             exponent_result.push(exp_val);
         }
-        let sum = crate::stats::f80::f80_sum(&exponent_result);
+        let sum = if self.java_fisher {
+            java_stream_sum(&exponent_result)
+        } else {
+            crate::stats::f80::f80_sum(&exponent_result)
+        };
         let mut final_result = Vec::with_capacity(exponent_result.len());
         for val in exponent_result {
             final_result.push(val / sum);
@@ -192,7 +223,11 @@ impl FisherExact {
                 sum_elements.push(el);
             }
         }
-        self.p_value_two_sided = crate::stats::f80::f80_sum(&sum_elements);
+        self.p_value_two_sided = if self.java_fisher {
+            sum_elements.iter().copied().sum()
+        } else {
+            crate::stats::f80::f80_sum(&sum_elements)
+        };
     }
 
     fn pnhyper(&self, q: i32, upper_tail: bool) -> f64 {
@@ -216,6 +251,27 @@ impl FisherExact {
                 true,
             )
         }
+    }
+}
+
+/// Emulates OpenJDK's `DoubleStream.sum()` (`Collectors.sumWithCompensation` + `computeFinalSum`),
+/// used by `FisherExact.java:112` and `FisherExact.java:129`.
+fn java_stream_sum(values: &[f64]) -> f64 {
+    let mut sum = 0.0_f64;
+    let mut comp = 0.0_f64;
+    let mut simple_sum = 0.0_f64;
+    for &v in values {
+        let tmp = v - comp;
+        let velvel = sum + tmp;
+        comp = (velvel - sum) - tmp;
+        sum = velvel;
+        simple_sum += v;
+    }
+    let tmp = sum - comp;
+    if tmp.is_nan() && simple_sum.is_infinite() {
+        simple_sum
+    } else {
+        tmp
     }
 }
 
@@ -445,5 +501,52 @@ mod tests {
     fn test_fisher_chr17_76093187_sor() {
         let f = FisherExact::new(1, 65, 2, 31);
         assert_eq!(f.get_odds_ratio(), "0.24227");
+    }
+
+    #[test]
+    fn test_java_fisher_ultradeep_parity() {
+        let odd_cases = [
+            ((3506, 936, 2, 2), "3.74441"),
+            ((3463, 353, 1, 1), "9.79777"),
+            ((1327, 50, 1, 1), "26.2886"),
+            ((8742, 9897, 2, 6), "2.64965"),
+            ((3150, 4037, 1, 1), "0.78032"),
+            ((7143, 8187, 1, 2), "1.74489"),
+            ((6051, 7004, 1, 2), "1.72779"),
+            ((11019, 7350, 2, 12), "8.99336"),
+            ((6489, 5960, 1, 5), "5.44288"),
+            ((4617, 4347, 1, 4), "4.24747"),
+            ((4636, 4638, 2, 16), "7.99514"),
+            ((4550, 3886, 1, 7), "8.19429"),
+            ((3742, 2601, 1, 4), "5.75367"),
+            ((3601, 2577, 1, 4), "5.58853"),
+            ((2530, 3095, 1, 4), "3.26911"),
+            ((3931, 6596, 1, 4), "2.38369"),
+            ((1874, 194, 1, 1), "9.63757"),
+            ((777, 572, 1, 4), "5.42793"),
+            ((1792, 2602, 1, 3), "2.06578"),
+            ((10, 8, 1, 3), "3.53775"),
+            ((11, 1, 9, 3), "3.4803"),
+            ((11, 2, 7, 6), "4.43009"),
+            ((18, 14, 2, 6), "3.73129"),
+        ];
+        for ((rf, rr, af, ar), expected_or) in odd_cases {
+            let f = FisherExact::new_java(rf, rr, af, ar);
+            assert_eq!(
+                f.get_odds_ratio(),
+                expected_or,
+                "failed odds ratio for ({rf}, {rr}, {af}, {ar})"
+            );
+        }
+
+        let pval_cases = [((2437, 3314, 0, 3), 0.26742), ((730, 497, 1, 2), 0.56967)];
+        for ((rf, rr, af, ar), expected_p) in pval_cases {
+            let f = FisherExact::new_java(rf, rr, af, ar);
+            assert_eq!(
+                f.get_p_value(),
+                expected_p,
+                "failed p-value for ({rf}, {rr}, {af}, {ar})"
+            );
+        }
     }
 }

@@ -115,6 +115,10 @@ pub struct Config {
     /// var2vcf_paired.pl get it from their own command line, independent of the
     /// engine's pileup override that sets `freq` to -1, CmdParser.java:134-136).
     pub af_threshold: f64,
+    /// True when `-f` was given as a non-`"0"` zero string (e.g. `-f 0.0` or `-f 0.00`),
+    /// which is truthy in Perl (`var2vcf_valid.pl:21` `my $Freq = $opt_f ? $opt_f : 0.02;`)
+    /// whereas `-f 0` (`"0"`) is falsy and falls back to `0.02`.
+    pub af_threshold_truthy_zero: bool,
     /// unique mode alignment enabled (-u)
     pub unique_mode_alignment_enabled: bool,
     /// unique mode second in pair enabled (-UN)
@@ -133,6 +137,7 @@ impl Default for Config {
             bam: String::new(),
             freq: 0.01,
             af_threshold: 0.01,
+            af_threshold_truthy_zero: false,
             sample: "SAMPLE".to_string(),
             region: None,
             bed: None,

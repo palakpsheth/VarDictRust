@@ -240,6 +240,13 @@ fn print_variations_from_first_sample(
     max_read_length: i32,
 ) {
     let mut number_of_processed_variation: usize = 0;
+    // Ports SomaticPostProcessModule.java:172-186 — in Java, `v2.variants` and
+    // `v2.varDescriptionStringToVariants` hold references to the same `Variant`
+    // objects. When `determinateType` calls `v2nt.isNoise()`, it mutates `v2nt`
+    // in place (`totalPosCoverage -= positionCoverage`, etc.), so a subsequent
+    // tumor variant at the same position that falls into the `v2nt == null`
+    // branch reads the mutated `v2.variants.get(0).totalPosCoverage`.
+    let mut v2 = v2.clone();
 
     // Process variants from sample 1 while they pass isGoodVar
     while number_of_processed_variation < v1.variants.len() {
@@ -262,11 +269,21 @@ fn print_variations_from_first_sample(
         }
 
         // Look up same descriptionString in sample2
-        let v2nt = v2.var_desc_to_variant.get(&nt);
+        let v2nt = v2.var_desc_to_variant.get(&nt).cloned();
 
-        if let Some(v2nt) = v2nt {
-            let mut v2nt_clone = v2nt.clone();
-            let type_str = determinate_type(config, v2, &vref, &mut v2nt_clone, splice);
+        if let Some(mut v2nt_clone) = v2nt {
+            let type_str = determinate_type(config, &v2, &vref, &mut v2nt_clone, splice);
+            if number_of_processed_variation + 1 < v1.variants.len() {
+                if let Some(slot) = v2.var_desc_to_variant.get_mut(&nt) {
+                    *slot = v2nt_clone.clone();
+                }
+                for v2_item in &mut v2.variants {
+                    if v2_item.description == nt {
+                        *v2_item = v2nt_clone.clone();
+                        break;
+                    }
+                }
+            }
             results.push(SomaticVariant {
                 variant1: vref,
                 variant2: Some(v2nt_clone),
@@ -277,7 +294,7 @@ fn print_variations_from_first_sample(
             });
         } else {
             // sample 1 only, should be strong somatic (SomaticPostProcessModule.java:177)
-            let var_for_print = build_var_for_print_from_v2(v2);
+            let var_for_print = build_var_for_print_from_v2(&v2);
             let mut type_str = STRONG_SOMATIC.to_string();
             let mut combined_v2nt: Option<Variant> = None;
 
@@ -1350,5 +1367,51 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].status, STRONG_LOH);
         assert_eq!(results[0].variant1.total_pos_cov, 50); // from v1.referenceVariant
+    }
+
+    #[test]
+    fn test_is_noise_mutation_on_first_v2_variant_propagates_to_second_tumor_allele() {
+        // Bug E (`SomaticPostProcessModule.java:172-186`, `Variant.java:205`):
+        // When the first tumor variant at a locus matches `v2.variants.get(0)` and
+        // `determinateType` calls `v2nt.isNoise()`, `isNoise()` decrements
+        // `v2nt.totalPosCoverage -= v2nt.positionCoverage` in place. Because
+        // `v2.variants.get(0)` and `v2.varDescriptionStringToVariants.get(nt)` point
+        // to the same `Variant` object in Java, a second tumor variant at the same
+        // locus that is absent in BAM2 (`v2nt == null`) reads the decremented
+        // `v2.variants.get(0).totalPosCoverage`.
+        let config = test_config();
+        let region = test_region();
+        let splice = HashSet::new();
+
+        let mut bam1 = crate::javamap::JavaHashMap::new();
+        let mut vars1 = Vars::new();
+        let t1 = make_good_variant("G", "A", "G", 0.10);
+        let t2 = make_good_variant("T", "A", "T", 0.05);
+        vars1.variants.push(t1);
+        vars1.variants.push(t2);
+        bam1.insert(150, vars1);
+
+        let mut bam2 = crate::javamap::JavaHashMap::new();
+        let mut vars2 = Vars::new();
+        // Normal has a 1-read low-quality noise variant "G" at index 0 (total_pos_cov = 212)
+        let mut n1 = make_good_variant("G", "A", "G", 1.0 / 212.0);
+        n1.pos_coverage = 1;
+        n1.total_pos_cov = 212;
+        n1.mean_quality = 10.0; // triggers is_noise()
+        n1.hicnt = 0;
+        vars2.variants.push(n1.clone());
+        vars2.var_desc_to_variant.insert("G".to_string(), n1);
+        bam2.insert(150, vars2);
+
+        let results = somatic_post_process(&config, &region, &bam1, &bam2, &splice, None, 150);
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].status, STRONG_SOMATIC);
+        assert_eq!(results[0].variant2.as_ref().unwrap().total_pos_cov, 211);
+        assert_eq!(results[1].status, STRONG_SOMATIC);
+        assert_eq!(
+            results[1].variant2.as_ref().unwrap().total_pos_cov,
+            211,
+            "second tumor variant must observe v2.variants[0].total_pos_cov mutated by is_noise()"
+        );
     }
 }
