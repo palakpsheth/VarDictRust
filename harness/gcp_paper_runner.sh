@@ -255,14 +255,16 @@ run_checkpointed_cell() {
         -p "AllowedCPUs=${cpu_spec}" \
         -p "AllowedMemoryNodes=${mem_node_spec}" \
         -p "MemoryMax=${mem_max}" \
-        -- env PATH="$PATH" HOME="$HOME" DATA_DIR="${DATA_DIR:-scratch/g4}" KEEP_DIR="$cell_dir" GOLDEN_MODE=off "$@" || rc=$?
+        -- env PATH="$PATH" HOME="$HOME" WORK_DIR="$WORK_DIR" DATA_DIR="${DATA_DIR:-scratch/g4}" KEEP_DIR="$cell_dir" GOLDEN_MODE=off \
+        GCS_BAMS="$GCS_BAMS" GCS_REFS="$GCS_REFS" GCS_RESULTS="$GCS_RESULTS" GCS_EVIDENCE="$GCS_EVIDENCE" GCS_CKPT="$GCS_CKPT" GCS_ORACLE_CACHE="$GCS_ORACLE_CACHE" "$@" || rc=$?
     else
       sudo -E systemd-run --scope --quiet \
         --uid="$(id -un)" --gid="$(id -gn)" \
         -p "AllowedCPUs=${cpu_spec}" \
         -p "AllowedMemoryNodes=${mem_node_spec}" \
         -p "MemoryMax=${mem_max}" \
-        -- env PATH="$PATH" HOME="$HOME" DATA_DIR="${DATA_DIR:-scratch/g4}" KEEP_DIR="$cell_dir" GOLDEN_MODE=off "$@" || rc=$?
+        -- env PATH="$PATH" HOME="$HOME" WORK_DIR="$WORK_DIR" DATA_DIR="${DATA_DIR:-scratch/g4}" KEEP_DIR="$cell_dir" GOLDEN_MODE=off \
+        GCS_BAMS="$GCS_BAMS" GCS_REFS="$GCS_REFS" GCS_RESULTS="$GCS_RESULTS" GCS_EVIDENCE="$GCS_EVIDENCE" GCS_CKPT="$GCS_CKPT" GCS_ORACLE_CACHE="$GCS_ORACLE_CACHE" "$@" || rc=$?
     fi
   elif command -v taskset >/dev/null 2>&1; then
     taskset -c "${cpu_spec}" "$@" || rc=$?
@@ -1195,6 +1197,7 @@ run_stage_4() {
   # 2. Tier-3 Ground Truth Concordance + Full ROC/QUAL Sweep (0/30/50/75/100/128/150/200 & 128/160/226) + SNP/InDel/MNP/SV Strata
   run_checkpointed_cell "stage4" "s4_tier3_truth_and_qual_sweep" 8 "32G" bash -c '
     set -euo pipefail
+    source harness/gcp_paper_runner.sh --source-only
     BUDGET_DIR="${WORK_DIR}/cells/s4_perf_budget_4targets_n3"
     if [ ! -f "$BUDGET_DIR/hg002/rust.vcf" ] && [ -z "${LOCAL_CKPT_DIR:-}" ]; then
       mkdir -p "$BUDGET_DIR"
@@ -1389,7 +1392,7 @@ PY
     printf "chr1\t0\t10000000\tR10M\n" > "$KEEP_DIR/chr1_10m.bed"
     for run in 1 2 3; do
       /usr/bin/time -v -o "$KEEP_DIR/rust_chr1_10m_f0_run${run}.time" \
-        target/release/vardictrust -G "$REF" -f 0 -N HCC1395 -b "$BAM" -c 1 -S 2 -E 3 -g 4 -z -th 8 "$KEEP_DIR/chr1_10m.bed" > "$KEEP_DIR/rust_chr1_10m_f0.vcf"
+        target/release/vardictrust -G "$REF" -f 0 -N HCC1395 -b "$BAM" -c 1 -S 2 -E 3 -g 4 -z --tile-size 10000000 -th 8 "$KEEP_DIR/chr1_10m.bed" > "$KEEP_DIR/rust_chr1_10m_f0.vcf"
       if [ ! -s "$KEEP_DIR/cpp_chr1_10m_f0_run${run}.time" ] || [ ! -s "$KEEP_DIR/cpp_chr1_10m_f0.vcf" ]; then
         /usr/bin/time -v -o "$KEEP_DIR/cpp_chr1_10m_f0_run${run}.time" \
           bash harness/run_cpp.sh "$REF" "$BAM" "$KEEP_DIR/chr1_10m.bed" "$KEEP_DIR/cpp_chr1_10m_f0.vcf" HCC1395 -f 0 -th 8 -z
@@ -1421,6 +1424,7 @@ PY
   # 7. Full multimodal + extended coverage + G4 & E2 CRAM twins + README CLI recipe verification
   run_checkpointed_cell "stage4" "s4_multimodal_and_cram_twin" 8 "32G" bash -c '
     set -euo pipefail
+    source harness/gcp_paper_runner.sh --source-only
     export GOLDEN_STORE_DIR="${WORK_DIR}/golden-store"
     mkdir -p "$GOLDEN_STORE_DIR" "$DATA_DIR/truth_cache"
     if [ -z "${LOCAL_CKPT_DIR:-}" ] && setsid gsutil -q stat "${GCS_ORACLE_CACHE}/golden-store/cells/*" 2>/dev/null; then
