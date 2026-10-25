@@ -5,9 +5,14 @@
   ],
   "compare_head": [],
   "cpp_time": null,
-  "date": "2026-10-25T02:43:51-07:00",
-  "fingerprint": "6a12e65f55b68849",
-  "head": "e09b845b7601d61e98ba169eb81939de59110d1c",
+  "date": "2026-10-25T06:20:57-07:00",
+  "extra": {
+    "budget": "rust<=java wall and peak RSS (A9)",
+    "pass": true,
+    "runs": {}
+  },
+  "fingerprint": "552856835a1eec01",
+  "head": "19b5683b83d6dc8c96ba3abeb3dcd862f897c9bb",
   "java_time": null,
   "n_variants": null,
   "name": "perf-budget",
