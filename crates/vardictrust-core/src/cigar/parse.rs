@@ -254,56 +254,19 @@ impl<'a> CigarParser<'a> {
         // the read span `[start_pos, start_pos + query_seq.len()]` (falling back to
         // any overlapping region, then the first region on `self.region.chr`).
         if self.config.realign == 1 {
+            let qlen = query_seq.len() as i32;
+            let ref_span = get_reference_length(&cigar_elements) as i32;
             let read_start = start_pos;
-            let read_end = start_pos.saturating_add(query_seq.len() as i32);
-            let seq_for_idx = |idx: usize| -> Option<&[u8]> {
-                if let Some(s) = self.reference.region_sequences.get(idx) {
-                    Some(s.as_slice())
-                } else if idx == 0 {
-                    self.reference
-                        .reference_sequences
-                        .get(&self.region.chr)
-                        .map(Vec::as_slice)
-                } else {
-                    None
-                }
-            };
-            let (ref_slice, ref_start) = self
-                .reference
-                .loaded_regions
-                .iter()
-                .enumerate()
-                .filter(|(_, lr)| lr.chr == self.region.chr)
-                .find_map(|(idx, lr)| {
-                    let seq = seq_for_idx(idx)?;
-                    let lr_start = lr.sequence_start as i32;
-                    let lr_end = lr_start.saturating_add(seq.len() as i32);
-                    (read_start >= lr_start && read_end <= lr_end).then_some((seq, lr_start))
-                })
-                .or_else(|| {
-                    self.reference
-                        .loaded_regions
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, lr)| lr.chr == self.region.chr)
-                        .find_map(|(idx, lr)| {
-                            let seq = seq_for_idx(idx)?;
-                            let lr_start = lr.sequence_start as i32;
-                            let lr_end = lr_start.saturating_add(seq.len() as i32);
-                            (read_end > lr_start && read_start < lr_end).then_some((seq, lr_start))
-                        })
-                })
-                .or_else(|| {
-                    self.reference
-                        .loaded_regions
-                        .iter()
-                        .enumerate()
-                        .find(|(_, lr)| lr.chr == self.region.chr)
-                        .and_then(|(idx, lr)| {
-                            seq_for_idx(idx).map(|seq| (seq, lr.sequence_start as i32))
-                        })
-                })
-                .unwrap_or((&[] as &[u8], 1));
+            let read_end = start_pos.saturating_add(ref_span.max(qlen));
+            let ext_start = start_pos.saturating_sub(qlen);
+            let ext_end = start_pos.saturating_add(ref_span).saturating_add(qlen);
+            let (ref_slice, ref_start) = self.reference.region_slice_for_span(
+                &self.region.chr,
+                read_start,
+                read_end,
+                ext_start,
+                ext_end,
+            );
 
             let mut cigar_str = std::mem::take(&mut self.scratch_cigar_str);
             cigar_str.clear();

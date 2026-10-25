@@ -188,7 +188,7 @@ impl SeedMap {
             }
 
             // Do not create adaptor sequences for the very end of chromosome
-            if chunk.chr_len == chunk.sequence_end && i > bases.len().saturating_sub(SEED1_LEN) {
+            if chunk.chr_len == chunk.sequence_end && i.saturating_add(SEED1_LEN) > bases.len() {
                 continue;
             }
 
@@ -297,25 +297,68 @@ impl Reference {
         }
     }
 
+    #[inline]
+    fn seq_for_idx<'a>(&'a self, idx: usize, chr: &str) -> Option<&'a [u8]> {
+        if let Some(bases) = self.region_sequences.get(idx) {
+            Some(bases.as_slice())
+        } else if idx == 0 {
+            self.reference_sequences.get(chr).map(Vec::as_slice)
+        } else {
+            None
+        }
+    }
+
     /// Safely gets the base at a 1-based chromosome position.
     pub fn get_base(&self, chr: &str, pos: u32) -> Option<u8> {
         for (idx, lr) in self.loaded_regions.iter().enumerate() {
             if lr.chr == chr && pos >= lr.sequence_start && pos <= lr.sequence_end {
                 let offset = (pos - lr.sequence_start) as usize;
-                if let Some(bases) = self.region_sequences.get(idx) {
+                if let Some(bases) = self.seq_for_idx(idx, chr) {
                     if let Some(&b) = bases.get(offset) {
                         return Some(b);
-                    }
-                } else if idx == 0 {
-                    if let Some(bases) = self.reference_sequences.get(chr) {
-                        if let Some(&b) = bases.get(offset) {
-                            return Some(b);
-                        }
                     }
                 }
             }
         }
         None
+    }
+
+    /// Selects the stored `LoadedRegion` sequence slice on `chr` covering a read's
+    /// alignment + soft-clip span (`ext_start..=ext_end`, falling back to
+    /// `read_start..=read_end`, any overlapping region, then the first loaded region on `chr`).
+    pub fn region_slice_for_span(
+        &self,
+        chr: &str,
+        read_start: i32,
+        read_end: i32,
+        ext_start: i32,
+        ext_end: i32,
+    ) -> (&[u8], i32) {
+        let candidates = || {
+            self.loaded_regions
+                .iter()
+                .enumerate()
+                .filter(|(_, lr)| lr.chr == chr)
+                .filter_map(|(idx, lr)| {
+                    let seq = self.seq_for_idx(idx, chr)?;
+                    let lr_start = lr.sequence_start as i32;
+                    let lr_end = lr_start.saturating_add(seq.len() as i32);
+                    Some((seq, lr_start, lr_end))
+                })
+        };
+        candidates()
+            .find(|&(_, lr_start, lr_end)| ext_start >= lr_start && ext_end <= lr_end)
+            .or_else(|| {
+                candidates()
+                    .find(|&(_, lr_start, lr_end)| read_start >= lr_start && read_end <= lr_end)
+            })
+            .or_else(|| {
+                candidates()
+                    .find(|&(_, lr_start, lr_end)| read_end > lr_start && read_start < lr_end)
+            })
+            .or_else(|| candidates().next())
+            .map(|(seq, lr_start, _)| (seq, lr_start))
+            .unwrap_or((&[], 1))
     }
 }
 
@@ -391,7 +434,10 @@ pub fn get_reference(
         .filter(|(_, lr)| lr.chr == region.chr)
         .filter_map(|(idx, lr)| {
             let stored_len = reference.region_sequences.get(idx).map_or(0, Vec::len) as u32;
-            (stored_len > 0).then_some((lr.sequence_start, lr.sequence_start + stored_len - 1))
+            (stored_len > 0).then_some((
+                lr.sequence_start,
+                lr.sequence_start.saturating_add(stored_len - 1),
+            ))
         })
         .collect();
 
@@ -880,8 +926,27 @@ mod tests {
         assert!(!cloned_unmaterialized.seed.is_materialized());
 
         // First query triggers materialization and returns exact position.
+        // Note: r1 [1, 50] has sequence_end=50 < total_len=61, so its site_end is 50 - 17 = 33
+        // (positions 1..=33), while 17-mer at position 34 ("NNNNNNNNNNNNNNNNT", inside r1's
+        // truncated 17-bp lookahead [34..=50]) is NOT indexed until r2 [30, 61] is loaded.
         let unique_seed = b"NNNNNNNNNNNNNNNNN";
+        let lookahead_seed = b"NNNNNNNNNNNNNNNNA";
         assert_eq!(reference.seed.get(unique_seed), Some(&[33u32][..]));
+        assert_eq!(
+            reference.seed.get(lookahead_seed),
+            None,
+            "17-mer starting in r1's truncated 17-bp lookahead (pos 34) must not be indexed by r1 alone"
+        );
+        assert_eq!(
+            reference.get_base("chr1", 33),
+            Some(b'N'),
+            "pos 33 is the last base inside r1's site_end"
+        );
+        assert_eq!(
+            reference.get_base("chr1", 34),
+            None,
+            "pos 34 is in r1's truncated 17-bp lookahead and must not be stored in region_sequences[0]"
+        );
         assert!(reference.seed.is_materialized());
         assert_eq!(
             cloned_unmaterialized.seed.get(unique_seed),
@@ -890,8 +955,8 @@ mod tests {
         assert!(cloned_unmaterialized.seed.is_materialized());
 
         // Subsequent overlapping get_reference [30, 61] after materialization
-        // must re-defer the new chunk and include it on the next query without
-        // duplicating positions in [1, 50].
+        // must re-defer the new chunk and include positions [34..=50] that were in
+        // r1's truncated lookahead, without duplicating positions in [1..=33].
         let r2 = BedRegion {
             chr: "chr1".to_string(),
             start: Pos1(30),
@@ -903,6 +968,16 @@ mod tests {
         assert!(
             !reference.seed.is_materialized(),
             "second get_reference must queue chunk lazily"
+        );
+        assert_eq!(
+            reference.seed.get(lookahead_seed),
+            Some(&[34u32][..]),
+            "overlapping r2 must index pos 34 (which was inside r1's truncated 17-bp lookahead)"
+        );
+        assert_eq!(
+            reference.get_base("chr1", 34),
+            Some(b'N'),
+            "pos 34 must now be served by r2"
         );
 
         let mut leg_ref = ReferenceLegacy::default();

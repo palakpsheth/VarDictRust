@@ -371,10 +371,11 @@ impl Cli {
             ));
         }
         if let Some(n) = self.tile_size {
-            if n > 500_000_000 {
+            if n > vardictrust_core::MAX_TILE_SIZE {
                 return Err(vardictrust_core::types::VardictError::Parse(format!(
-                    "Invalid --tile-size: {}. Must be <= 500000000 to avoid u32 wrap",
-                    n
+                    "Invalid --tile-size: {}. Must be <= {} to avoid u32 wrap",
+                    n,
+                    vardictrust_core::MAX_TILE_SIZE
                 )));
             }
         }
@@ -656,6 +657,39 @@ mod tests {
             vardictrust_core::types::VardictError::Parse(_)
         ));
         assert!(err.to_string().contains("Invalid --tile-size: 0"));
+    }
+
+    #[test]
+    fn tile_size_max_boundary_500mbp() {
+        let ok_cli = Cli::try_parse_from(args(&[
+            "-b",
+            "a.bam",
+            "-G",
+            "r.fa",
+            "--tile-size",
+            "500000000",
+        ]))
+        .unwrap();
+        assert_eq!(
+            ok_cli.to_config().unwrap().tile_size,
+            Some(vardictrust_core::MAX_TILE_SIZE)
+        );
+
+        let err_cli = Cli::try_parse_from(args(&[
+            "-b",
+            "a.bam",
+            "-G",
+            "r.fa",
+            "--tile-size",
+            "500000001",
+        ]))
+        .unwrap();
+        let err = err_cli.to_config().unwrap_err();
+        assert!(matches!(
+            err,
+            vardictrust_core::types::VardictError::Parse(_)
+        ));
+        assert!(err.to_string().contains("Must be <= 500000000"));
     }
 
     #[test]

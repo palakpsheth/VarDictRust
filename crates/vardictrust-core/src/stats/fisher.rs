@@ -267,7 +267,7 @@ fn java_stream_sum(values: &[f64]) -> f64 {
         sum = velvel;
         simple_sum += v;
     }
-    let tmp = sum + comp;
+    let tmp = sum - comp;
     if tmp.is_nan() && simple_sum.is_infinite() {
         simple_sum
     } else {
@@ -526,6 +526,9 @@ mod tests {
             ((777, 572, 1, 4), "5.42793"),
             ((1792, 2602, 1, 3), "2.06578"),
             ((10, 8, 1, 3), "3.53775"),
+            ((11, 1, 9, 3), "3.4803"),
+            ((11, 2, 7, 6), "4.43009"),
+            ((18, 14, 2, 6), "3.73129"),
         ];
         for ((rf, rr, af, ar), expected_or) in odd_cases {
             let f = FisherExact::new_java(rf, rr, af, ar);

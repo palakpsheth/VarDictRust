@@ -4258,4 +4258,83 @@ mod tests {
             .insert("chr1".to_string(), vec![rev]);
         assert!(!is_best_sv_used(&var_data, 100));
     }
+
+    #[test]
+    fn test_find_sv_5prime_deletion_uses_post_decrement_p5_plus_1_ref_coverage() {
+        // Bug G (`StructuralVariantsProcessor.java:732,748`):
+        // In the 5' candidate deletion branch of `find_sv`, Java decrements `p5--` (`p5_adj = p5 - 1`)
+        // at line 732 before querying `refCoverage.get(p5 + 1)` at line 748, so `p5 + 1` in Java
+        // is `p5_adj + 1` (the original `p5` before decrement).
+        use crate::config::Config;
+        use crate::reference::{LoadedRegion, Reference};
+        use crate::variations::{Sclip, VariationData};
+        use std::collections::HashMap;
+
+        let chr = "chr1";
+        let mut bases = vec![b'A'; 600];
+        let seed_5p = b"CGTACGTACGTACGTAC"; // 17 bp
+                                            // Place seed_5p at 1-based positions 184..=200 so a 5' soft-clip at p5 = 400
+                                            // matches backwards to bp = 200 (`bp_adj = 201`, `p5_adj = 399`, `dellen = 199`).
+        bases[183..200].copy_from_slice(seed_5p);
+
+        let mut reference = Reference::default();
+        reference.loaded_regions.push(LoadedRegion {
+            chr: chr.to_string(),
+            sequence_start: 1,
+            sequence_end: 600,
+        });
+        reference.seed.insert(seed_5p.to_vec(), vec![184]);
+        reference
+            .reference_sequences
+            .insert(chr.to_string(), bases.clone());
+        reference.region_sequences.push(bases);
+
+        let mut var_data = VariationData::default();
+        var_data.max_read_length = 100;
+
+        let mut rev_clip = seed_5p.to_vec();
+        rev_clip.reverse();
+        let mut sc5 = Sclip::default();
+        sc5.variation.cnt = 3;
+        sc5.variation.pmean = 60.0;
+        sc5.variation.qmean = 90.0;
+        sc5.sequence = Some(rev_clip);
+        var_data.soft_clips_5_end.insert(400, sc5);
+
+        let mut cluster = Sclip::default();
+        cluster.start = 150;
+        cluster.end = 200;
+        cluster.mstart = 400;
+        cluster.mend = 450;
+        cluster.softp = 400;
+        cluster.variation.cnt = 2;
+        cluster.variation.qmean = 60.0;
+        cluster.variation.pmean = 40.0;
+        var_data.sv_structures.svfdel.push(cluster);
+
+        // Set ref_coverage at original `p5` (400 == `p5_adj + 1`) to 77, while leaving `p5 + 1` (401) at 0.
+        var_data.ref_coverage.insert(400, 77);
+
+        let mut config = Config::default();
+        config.min_reads = 2;
+        let mut chr_lengths = HashMap::new();
+        chr_lengths.insert(chr.to_string(), 600usize);
+
+        find_sv(
+            &mut var_data,
+            &mut reference,
+            chr,
+            1,
+            600,
+            &config,
+            &chr_lengths,
+        )
+        .unwrap();
+
+        assert_eq!(
+            var_data.ref_coverage.get(&201).copied(),
+            Some(77),
+            "find_sv must promote ref_coverage[bp_adj] (201) to ref_coverage[p5_adj + 1] (400)"
+        );
+    }
 }

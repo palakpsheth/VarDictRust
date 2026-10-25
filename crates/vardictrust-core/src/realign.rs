@@ -5740,5 +5740,74 @@ mod tests {
             ins3.len() as isize,
         );
         assert_eq!(java_substr, &ins3.as_bytes()[sv_flank..]);
+
+        // Also exercise `realignins` directly on a `<dup100>` variant with `ins3.len() = 55 > 50`:
+        // `ins3` has 50 'A's followed by "CAAAA", so `sanpseq = ins3[50..]` starts with 'C' at
+        // `p3 + 1 = 253` (where `p = 100`, `insert = "AT"`, `dup_len = 100`, `ins3.len() = 55`,
+        // `inslen = 157`, `p3 = 100 + 157 - 55 + 50 = 252`). With `start_idx = 50`, `find_mm3`
+        // detects the 'C' mismatch at pos 253 and `realignins` absorbs `non_insertion_variants[253]["C"]`
+        // into `insertion_variants[100][vn]`.
+        let mut reference = crate::reference::Reference::new();
+        reference
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 1,
+                sequence_end: 500,
+            });
+        reference.region_sequences.push(vec![b'A'; 500]);
+
+        let ins3_dup = format!("{}CAAAA", "A".repeat(50));
+        let vn = format!("+AT<dup100>{}", ins3_dup);
+        let mut pos_to_ins = std::collections::BTreeMap::new();
+        let mut inner = std::collections::HashMap::new();
+        inner.insert(vn.clone(), 3);
+        pos_to_ins.insert(100, inner);
+
+        let mut insertion_variants = crate::javamap::JavaHashMap::new();
+        let ins_v = super::get_variation(&mut insertion_variants, 100, &vn);
+        ins_v.cnt = 3;
+        ins_v.qmean = 90.0;
+        ins_v.pmean = 30.0;
+
+        let mut non_insertion_variants = crate::javamap::JavaHashMap::new();
+        let snv = super::get_variation(&mut non_insertion_variants, 253, "C");
+        snv.cnt = 1;
+        snv.qmean = 35.0;
+        snv.pmean = 2.0;
+
+        let mut ref_coverage = rustc_hash::FxHashMap::default();
+        let mut sc5 = std::collections::BTreeMap::new();
+        let mut sc3 = std::collections::BTreeMap::new();
+        let config = crate::config::Config::default();
+
+        super::realignins(
+            None,
+            &pos_to_ins,
+            &reference,
+            "chr1",
+            500,
+            &config,
+            &mut insertion_variants,
+            &mut non_insertion_variants,
+            &mut ref_coverage,
+            &mut sc5,
+            &mut sc3,
+            100,
+        );
+
+        let updated_cnt = insertion_variants
+            .get(&100)
+            .and_then(|m| m.map.get(&vn))
+            .map(|v| v.cnt)
+            .unwrap_or(0);
+        assert_eq!(
+            updated_cnt, 4,
+            "realignins must absorb the 3' flank mismatch at pos 253 when sanpseq starts at offset 50"
+        );
+        assert!(
+            !non_insertion_variants.contains_key(&253),
+            "absorbed mismatch at pos 253 must be removed from non_insertion_variants"
+        );
     }
 }
