@@ -1,13 +1,79 @@
 {
   "cmd": [
     "python3",
-    "harness/perf_budget.py"
+    "harness/perf_budget.py",
+    "hg008-tier2",
+    "seqc2-exome-tier2",
+    "hg002-tier2",
+    "amplicon-tier2"
   ],
   "compare_head": [],
   "cpp_time": null,
-  "date": "2026-10-23T23:48:34-07:00",
-  "fingerprint": "27f3667b32ac14f5",
-  "head": "3dd250f9a3cf3dff87575102d090ed2644056a70",
+  "date": "2026-10-25T10:11:50-07:00",
+  "extra": {
+    "budget": "rust<=java wall and peak RSS (A9)",
+    "pass": true,
+    "runs": {
+      "amplicon-tier2": {
+        "cpp_maxrss_kb": 91040,
+        "cpp_rss_ratio": 0.7276,
+        "cpp_wall_ratio": 1.4706,
+        "cpp_wall_s": 3.75,
+        "evidence_fingerprint": "552856835a1eec01",
+        "java_rss_kb": 125120,
+        "java_wall_s": 2.55,
+        "pass": true,
+        "rss_ratio": 0.4791,
+        "rust_rss_kb": 59948,
+        "rust_wall_s": 0.08,
+        "wall_ratio": 0.0314
+      },
+      "hg002-tier2": {
+        "cpp_maxrss_kb": 873584,
+        "cpp_rss_ratio": 0.1983,
+        "cpp_wall_ratio": 0.2054,
+        "cpp_wall_s": 18.87,
+        "evidence_fingerprint": "552856835a1eec01",
+        "java_rss_kb": 4406336,
+        "java_wall_s": 91.86,
+        "pass": true,
+        "rss_ratio": 0.1076,
+        "rust_rss_kb": 474236,
+        "rust_wall_s": 21.1,
+        "wall_ratio": 0.2297
+      },
+      "hg008-tier2": {
+        "cpp_maxrss_kb": 310920,
+        "cpp_rss_ratio": 0.09,
+        "cpp_wall_ratio": 0.2505,
+        "cpp_wall_s": 21.96,
+        "evidence_fingerprint": "552856835a1eec01",
+        "java_rss_kb": 3455016,
+        "java_wall_s": 87.68,
+        "pass": true,
+        "rss_ratio": 0.0912,
+        "rust_rss_kb": 315200,
+        "rust_wall_s": 20.2,
+        "wall_ratio": 0.2304
+      },
+      "seqc2-exome-tier2": {
+        "cpp_maxrss_kb": 2252120,
+        "cpp_rss_ratio": 0.6107,
+        "cpp_wall_ratio": 0.1336,
+        "cpp_wall_s": 431.99,
+        "evidence_fingerprint": "552856835a1eec01",
+        "java_rss_kb": 3687592,
+        "java_wall_s": 3233.76,
+        "pass": true,
+        "rss_ratio": 0.1299,
+        "rust_rss_kb": 479172,
+        "rust_wall_s": 487.97,
+        "wall_ratio": 0.1509
+      }
+    }
+  },
+  "fingerprint": "552856835a1eec01",
+  "head": "a78094e4cb7e43fb79a3e65323cf2e8802bb6fb4",
   "java_time": null,
   "n_variants": null,
   "name": "perf-budget",

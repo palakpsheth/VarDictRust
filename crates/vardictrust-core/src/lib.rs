@@ -48,12 +48,31 @@ use std::io::Write;
 use std::path::Path;
 use types::VardictError;
 
-/// Default region tile size (`1 Mbp`) so standard BED intervals up to `1 Mbp`
-/// execute as a single untiled region like VarDictJava while bounding WGS memory.
-pub const DEFAULT_TILE_SIZE: u32 = 1_000_000;
+/// Default region tile size (`100 kbp`) for bounded-memory WGS tiling of multi-megabase intervals.
+pub const DEFAULT_TILE_SIZE: u32 = 100_000;
+
+/// Maximum untiled BED interval span (`1 Mbp`): when `--tile-size` is not explicitly specified,
+/// regions up to `1 Mbp` execute as a single untiled interval like VarDictJava, while regions
+/// exceeding `1 Mbp` (such as `-R chr1:1-10000000` or whole-chromosome sweeps) are tiled into
+/// `DEFAULT_TILE_SIZE` (`100 kbp`) windows to preserve `<1.5 GiB` bounded WGS memory.
+pub const DEFAULT_UNTILED_SPAN_MAX: u32 = 1_000_000;
 
 /// Maximum `--tile-size` (`500 Mbp`, above human `chr1` `~249 Mbp`) before `u32` wrap guard.
 pub const MAX_TILE_SIZE: u32 = 500_000_000;
+
+#[inline]
+fn effective_tile_size(reg: &crate::regions::Region, config_tile_size: Option<u32>) -> u32 {
+    if let Some(ts) = config_tile_size {
+        ts
+    } else {
+        let span = reg.end.0.saturating_sub(reg.start.0).saturating_add(1);
+        if span <= DEFAULT_UNTILED_SPAN_MAX {
+            span.max(1)
+        } else {
+            DEFAULT_TILE_SIZE
+        }
+    }
+}
 
 /// Post-pileup chain selection for [`run_pipeline_on_records`], mirroring the
 /// mode-specific pipelines in VarDictJava's SimpleMode/SomaticMode.
@@ -331,13 +350,17 @@ pub fn run(config: &config::Config) -> Result<(), VardictError> {
 
     let flat_regions: Vec<crate::regions::Region> = regions.into_iter().flatten().collect();
 
-    // Tile regions into overlapping tiles (default 1 Mbp so standard BED intervals
-    // up to 1 Mbp execute as a single untiled region like VarDictJava).
+    // Tile regions into overlapping tiles (regions <= 1 Mbp execute untiled like
+    // VarDictJava; multi-megabase intervals > 1 Mbp tile into 100 kbp windows).
     let tile_size = config.tile_size.unwrap_or(DEFAULT_TILE_SIZE);
     let halo = 500;
     let mut tiles = Vec::new();
     for reg in &flat_regions {
-        tiles.extend(crate::regions::tile(reg, tile_size, halo));
+        tiles.extend(crate::regions::tile(
+            reg,
+            effective_tile_size(reg, config.tile_size),
+            halo,
+        ));
     }
     let tile_batches = crate::regions::batch_tiles(tiles, tile_size, 16, config.threads);
 
@@ -916,13 +939,17 @@ fn run_somatic(config: &config::Config) -> Result<(), VardictError> {
 
     let flat_regions: Vec<crate::regions::Region> = regions.into_iter().flatten().collect();
 
-    // Tile regions (default 1 Mbp so standard BED intervals up to 1 Mbp
-    // execute as a single untiled region like VarDictJava).
+    // Tile regions (regions <= 1 Mbp execute untiled like VarDictJava;
+    // multi-megabase intervals > 1 Mbp tile into 100 kbp windows).
     let tile_size = config.tile_size.unwrap_or(DEFAULT_TILE_SIZE);
     let halo = 500;
     let mut tiles = Vec::new();
     for reg in &flat_regions {
-        tiles.extend(crate::regions::tile(reg, tile_size, halo));
+        tiles.extend(crate::regions::tile(
+            reg,
+            effective_tile_size(reg, config.tile_size),
+            halo,
+        ));
     }
     let tile_batches = crate::regions::batch_tiles(tiles, tile_size, 16, config.threads);
 
@@ -1964,5 +1991,51 @@ mod tests {
             aligned.contains_key(&target),
             "native position {target} outside the owning range must survive the builder gate"
         );
+    }
+
+    #[test]
+    fn test_effective_tile_size_untiled_up_to_1mbp_and_100kbp_above_1mbp() {
+        let reg_980k = crate::regions::Region {
+            chr: "chr20".to_string(),
+            start: crate::types::Pos1(10_020_001),
+            end: crate::types::Pos1(11_000_000),
+            gene: "G".to_string(),
+            amplicon: None,
+        };
+        assert_eq!(effective_tile_size(&reg_980k, None), 980_000);
+        assert_eq!(
+            crate::regions::tile(&reg_980k, effective_tile_size(&reg_980k, None), 500).len(),
+            1
+        );
+
+        let reg_1m = crate::regions::Region {
+            chr: "chr1".to_string(),
+            start: crate::types::Pos1(1),
+            end: crate::types::Pos1(1_000_000),
+            gene: "G".to_string(),
+            amplicon: None,
+        };
+        assert_eq!(effective_tile_size(&reg_1m, None), 1_000_000);
+        assert_eq!(
+            crate::regions::tile(&reg_1m, effective_tile_size(&reg_1m, None), 500).len(),
+            1
+        );
+
+        let reg_10m = crate::regions::Region {
+            chr: "chr1".to_string(),
+            start: crate::types::Pos1(1),
+            end: crate::types::Pos1(10_000_000),
+            gene: "G".to_string(),
+            amplicon: None,
+        };
+        assert_eq!(effective_tile_size(&reg_10m, None), DEFAULT_TILE_SIZE);
+        assert_eq!(
+            crate::regions::tile(&reg_10m, effective_tile_size(&reg_10m, None), 500).len(),
+            100
+        );
+
+        // Explicit --tile-size always overrides auto heuristic.
+        assert_eq!(effective_tile_size(&reg_980k, Some(50_000)), 50_000);
+        assert_eq!(effective_tile_size(&reg_10m, Some(2_000_000)), 2_000_000);
     }
 }

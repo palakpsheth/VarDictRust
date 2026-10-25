@@ -108,15 +108,28 @@ cell() {
     fi
   done
 }
+cpp_cell() {
+  local name=$1 label=$2 i rc cpp_runs=1; shift 2
+  if [ "${GOLDEN_MODE:-auto}" = "off" ]; then cpp_runs=$RUNS; fi
+  for ((i = 1; i <= cpp_runs; i++)); do
+    rc=0
+    LC_ALL=C GOLDEN_TIME_OUT="$OUT/$name.run$i.time" $TASKSET \
+      bash harness/golden_store.sh cpp "$label" "$REF" "$BAM" "$@" > /dev/null || rc=$?
+    if [ "$rc" -ne 0 ]; then
+      echo "scale_bench: CELL FAILED: $name run $i (exit $rc); partial time log: $OUT/$name.run$i.time" >&2
+      return 1
+    fi
+  done
+}
 # warmup: one untimed pass over the smallest span (page cache, allocator, CPU frequency ramp).
 $TASKSET "$BIN" -G "$REF" -f 0.01 -N "$SM" -b "$BAM" -th 8 -R "$CHR1:1-1000000" > /dev/null \
   || { echo "scale_bench: warmup failed" >&2; exit 1; }
 for th in 1 2 4 8; do
   cell "th$th" "$OUT/th$th.vcf" $TASKSET "$BIN" -G "$REF" -f 0.01 -N "$SM" -b "$BAM" -c 1 -S 2 -E 3 -g 4 -z -th "$th" "$BED" || exit 1
-  # BED-capable path reuses run_cpp.sh (BED positional, java-mirror; pins
+  # BED-capable path reuses run_cpp.sh via golden_store.sh (BED positional, java-mirror; pins
   # -c 1 -S 2 -E 3 -g 4 identical to the rust line, adds -vcf for stdout VCF).
   if [ "$CPP_OK" = "true" ]; then
-    cell "cpp_th$th" /dev/null $TASKSET bash harness/run_cpp.sh "$REF" "$BAM" "$BED" "$OUT/cpp_th$th.vcf" "$SM" -th "$th" -z \
+    cpp_cell "cpp_th$th" "scale-th$th" "$BED" "$OUT/cpp_th$th.vcf" "$SM" -th "$th" -z \
       || { rm -f "$OUT"/cpp_th$th.run*.time "$OUT/cpp_th$th.vcf"; echo "CPP: SKIP: vardictcpp th$th failed" >&2; }
   else
     rm -f "$OUT"/cpp_th$th.run*.time "$OUT/cpp_th$th.vcf"
@@ -126,10 +139,10 @@ done
 for th in 2 4 8; do cmp <(grep -v '^##' "$OUT/th1.vcf") <(grep -v '^##' "$OUT/th$th.vcf"); done
 for sz in $SIZES; do
   cell "R$sz" "$OUT/R$sz.vcf" $TASKSET "$BIN" -G "$REF" -f 0.01 -N "$SM" -b "$BAM" -th 8 -R "$CHR1:1-$sz" || exit 1
-  # cpp region arm: both cpp arms go through run_cpp.sh; -R is mirrored as the equivalent 0-based BED [0,sz).
+  # cpp region arm: both cpp arms go through golden_store.sh cpp (run_cpp.sh); -R is mirrored as the equivalent 0-based BED [0,sz).
   if [ "$CPP_OK" = "true" ]; then
     printf '%s\t0\t%s\tR%s\n' "$CHR1" "$sz" "$sz" > "$OUT/R$sz.bed"
-    cell "cpp_R$sz" /dev/null $TASKSET bash harness/run_cpp.sh "$REF" "$BAM" "$OUT/R$sz.bed" "$OUT/cpp_R$sz.vcf" "$SM" -th 8 -z \
+    cpp_cell "cpp_R$sz" "scale-R$sz" "$OUT/R$sz.bed" "$OUT/cpp_R$sz.vcf" "$SM" -th 8 -z \
       || { rm -f "$OUT"/cpp_R$sz.run*.time "$OUT/cpp_R$sz.vcf"; echo "CPP: SKIP: vardictcpp R$sz failed" >&2; }
   else
     rm -f "$OUT"/cpp_R$sz.run*.time "$OUT/cpp_R$sz.vcf"
@@ -150,7 +163,8 @@ def secs(w):
 WALL, RSS = "Elapsed (wall clock) time (h:mm:ss or m:ss)", "Maximum resident set size (kbytes)"
 def med(prefix, key, conv, strict=True):
     vals = []
-    for i in range(1, runs + 1):
+    n_runs = runs if strict else (runs if os.environ.get("GOLDEN_MODE") == "off" else 1)
+    for i in range(1, n_runs + 1):
         f = o / f"{prefix}.run{i}.time"
         if not f.exists(): return None
         txt = f.read_text()
@@ -165,13 +179,14 @@ sp = W[1] / W[8] if W[8] > 0 else None
 rr = M[span] / M[10000000] if 10000000 in M else None
 bar = 0.6 * min(8, P)
 perf = os.environ["PERF_FP"]
+cpp_runs = runs if os.environ.get("GOLDEN_MODE") == "off" else 1
 print(json.dumps({"wall_s": W, "maxrss_kb": M, "speedup_8": sp, "rss_ratio_chr1_vs_10mb": rr,
                   "P": P, "bar": bar,
                   "pass": sp is not None and sp >= bar and rr is not None and rr <= 1.5,
-                  "cpp_wall_s": CW, "cpp_maxrss_kb": CM, "pinned": pinned,
+                  "cpp_wall_s": CW, "cpp_maxrss_kb": CM, "cpp_runs": cpp_runs, "pinned": pinned,
                   "runs": runs, "cpus": os.environ["EFF"], "courtesy": os.environ["COURTESY"] == "true",
                   "governor": os.environ["GOVERNOR"], "loadavg_start": os.environ["LOAD_START"],
                   "loadavg_end": os.environ["LOAD_END"], "perf_fingerprint": perf,
                   "certifying": pinned and os.environ["COURTESY"] == "true" and runs >= 3 and P >= MIN_P and perf != "dirty",
-                  "note": ">8 threads not measured (host policy A3); each cell = median of `runs` timed runs"}, indent=2))
+                  "note": ">8 threads not measured (host policy A3); each rust cell = median of `runs` timed runs; cpp advisory arm = single-sample golden-store baseline (or `runs`-run median when GOLDEN_MODE=off)"}, indent=2))
 PY

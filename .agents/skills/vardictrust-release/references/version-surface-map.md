@@ -20,13 +20,13 @@ Reference companion for [`.agents/skills/vardictrust-release/SKILL.md`](../SKILL
 | 8 | `packaging/nf-core/prepare_nfcore_pr.sh` | `VERSION="${1:-X.Y.Z}"` | Default version fallback for Phase 3B Nextflow script |
 | 9 | `harness/run_self_tests.sh` | `# VarDictRust vX.Y.Z — Harness Self-Test Runner` | Header version banner |
 | 10 | `docs/release/vX.Y.Z-pr.md` | `# VarDictRust \`vX.Y.Z\` — Release Certification` | Release certification dossier (`FP`, `PERF_FP`, test counts, 4-channel checklist) |
-| 11 | `README.md` | Badge `release-vX.Y.Z`, `vX.Y.Z` validation link, and `277` test breakdown (`231 + 2 + 2 + 13 + 29`) | Main repository landing page |
-| 12 | `DIVERGENCES.md` | `VarDictRust_vX.Y.Z`, `277 PASS` (`231 PASS` core lib), `3.48x speedup, 1.22x flat RSS`, `27f3667b32ac14f5` | Empirical divergence & certification summary |
-| 13 | `CONTRIBUTING.md` | `277` workspace tests (`§4.1`), `aarch64-unknown-linux-musl` (`§9.1`), and `.agents/skills/` runbook links | Contributor & release guide |
+| 11 | `README.md` | Badge `release-vX.Y.Z`, `vX.Y.Z` validation link, and `293` test breakdown (`241 + 2 + 2 + 15 + 33`) | Main repository landing page |
+| 12 | `DIVERGENCES.md` | `VarDictRust_vX.Y.Z`, `293 PASS` (`241 PASS` core lib), `3.48x speedup, 1.22x flat RSS`, `552856835a1eec01` | Empirical divergence & certification summary |
+| 13 | `CONTRIBUTING.md` | `293` workspace tests (`§4.1`), `aarch64-unknown-linux-musl` (`§9.1`), and `.agents/skills/` runbook links | Contributor & release guide |
 | 14 | `benchmarks/README.md` | `Certified in \`vX.Y.Z\`` and link to `docs/release/vX.Y.Z-pr.md` | Benchmark scoreboard header |
-| 15 | `docs/testing/test-matrix-and-ci-audit.md` | `vX.Y.Z`, `277` workspace tests (`231` core lib + `2` `amplicon_stream_mem` + `2` `cram_stack` + `13` bin + `29` integration), `27f3667b32ac14f5` | Testing matrix & CI audit specification |
-| 16 | `docs/validation/omnibus-empirical-validation.md` | `Release \`vX.Y.Z\`` header, `27f3667b32ac14f5`, and §13 16-file SHA-256 manifest | Omnibus empirical validation report |
-| 17 | `mkdocs.yml`, `wiki/Home.md`, & `wiki/_Sidebar.md` | `Release vX.Y.Z Certification: docs/release/vX.Y.Z-pr.md`, `vX.Y.Z` links, and `277` workspace tests | ReadTheDocs navigation & GitHub Wiki |
+| 15 | `docs/testing/test-matrix-and-ci-audit.md` | `vX.Y.Z`, `293` workspace tests (`241` core lib + `2` `amplicon_stream_mem` + `2` `cram_stack` + `15` bin + `33` integration), `552856835a1eec01` | Testing matrix & CI audit specification |
+| 16 | `docs/validation/omnibus-empirical-validation.md` | `Release \`vX.Y.Z\`` header, `552856835a1eec01`, and §13 16-file SHA-256 manifest | Omnibus empirical validation report |
+| 17 | `mkdocs.yml`, `wiki/Home.md`, & `wiki/_Sidebar.md` | `Release vX.Y.Z Certification: docs/release/vX.Y.Z-pr.md`, `vX.Y.Z` links, and `293` workspace tests | ReadTheDocs navigation & GitHub Wiki |
 
 ---
 

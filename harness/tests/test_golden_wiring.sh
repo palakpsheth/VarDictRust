@@ -4,9 +4,8 @@
 # Exempt per line: comments, `--version` probes, golden_store.sh calls, and `# golden:bypass <reason>`.
 set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
-# Scripts that legitimately name the oracles: the wrappers, the fingerprint file list, the advisory
-# integration-corpus cpp loop, trace/scale benches (their oracle runs are never gated against pinned goldens).
-ALLOW=(run_oracle.sh run_cpp.sh engine_fingerprint.sh run_integration.sh scale_bench.sh trace_compare.sh golden_store.sh)
+# Scripts that legitimately name the oracles: the wrappers, the fingerprint file list, and trace_compare.sh.
+ALLOW=(run_oracle.sh run_cpp.sh engine_fingerprint.sh trace_compare.sh golden_store.sh)
 # Suites whose wiring task has not landed yet — each wiring task deletes its own entry; empty when the branch is done.
 PENDING=()
 in_list() { local x=$1; shift; local y; for y in "$@"; do [ "$x" = "$y" ] && return 0; done; return 1; }
