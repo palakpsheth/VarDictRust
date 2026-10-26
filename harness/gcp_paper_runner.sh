@@ -1934,6 +1934,436 @@ run_stage_5() {
     rm -rf \"\$WORK_LOCAL\"
   "
 
+  # 4. Stage full ~329 GB HG008-T (195x, 160.0 GB) + HG008-N (169x, 169.0 GB) paired PDAC WGS BAMs on NVMe RAID0
+  local hg8_dir="${WORK_DIR}/data/hg008_full"
+  run_local_stage_cell "stage5" "s5_stage_hg008_full_wgs" 32 "128G" bash -c "
+    set -euo pipefail
+    mkdir -p '$hg8_dir'
+    BASE_URL='https://ftp.ncbi.nlm.nih.gov/giab/ftp/data_somatic/HG008/Liss_lab/BCM_Illumina-WGS_20240313'
+    T_URL=\"\${BASE_URL}/HG008-T_Illumina_195x_GRCh38-GIABv3.bam\"
+    N_URL=\"\${BASE_URL}/HG008-N-D_Illumina_169x_GRCh38-GIABv3.bam\"
+    T_BAM='$hg8_dir/HG008-T_Illumina_195x_GRCh38-GIABv3.bam'
+    N_BAM='$hg8_dir/HG008-N-D_Illumina_169x_GRCh38-GIABv3.bam'
+
+    for pair in \"\$T_URL:\$T_BAM:\$DATA_DIR/hg008/HG008-T_Illumina_195x_GRCh38-GIABv3.bam.bai\" \"\$N_URL:\$N_BAM:\$DATA_DIR/hg008/HG008-N-D_Illumina_169x_GRCh38-GIABv3.bam.bai\"; do
+      IFS=':' read -r u b src_bai <<< \"\$pair\"
+      u=\"https:\${u#https:}\"
+      if [ -f \"\$src_bai\" ] && [ ! -f \"\${b}.bai\" ]; then
+        cp -f \"\$src_bai\" \"\${b}.bai\"
+      elif [ ! -f \"\${b}.bai\" ]; then
+        curl -sSLf --retry 5 \"\${u}.bai\" -o \"\${b}.bai\"
+      fi
+    done
+
+    if ! command -v aria2c >/dev/null 2>&1; then
+      sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq aria2
+    fi
+
+    if [ -f \"\$T_BAM\" ] && [ \"\$(stat -c %s \"\$T_BAM\" 2>/dev/null || echo 0)\" -eq 159983848053 ] && samtools quickcheck \"\$T_BAM\"; then
+      echo '[Stage 5] Full HG008-T 195x BAM already staged and verified on NVMe.'
+    else
+      echo '[Stage 5] Downloading full 160.0 GB HG008-T_Illumina_195x_GRCh38-GIABv3.bam to NVMe RAID0...'
+      aria2c -x 16 -s 16 -k 100M --continue=true --allow-overwrite=true --max-tries=10 --retry-wait=5 \
+        -d '$hg8_dir' -o 'HG008-T_Illumina_195x_GRCh38-GIABv3.bam' \"\$T_URL\"
+      [ \"\$(stat -c %s \"\$T_BAM\" 2>/dev/null || echo 0)\" -eq 159983848053 ] || { echo 'FATAL: HG008-T size mismatch' >&2; exit 1; }
+      samtools quickcheck \"\$T_BAM\"
+    fi
+
+    if [ -f \"\$N_BAM\" ] && [ \"\$(stat -c %s \"\$N_BAM\" 2>/dev/null || echo 0)\" -eq 168960212218 ] && samtools quickcheck \"\$N_BAM\"; then
+      echo '[Stage 5] Full HG008-N 169x BAM already staged and verified on NVMe.'
+    else
+      echo '[Stage 5] Downloading full 169.0 GB HG008-N-D_Illumina_169x_GRCh38-GIABv3.bam to NVMe RAID0...'
+      aria2c -x 16 -s 16 -k 100M --continue=true --allow-overwrite=true --max-tries=10 --retry-wait=5 \
+        -d '$hg8_dir' -o 'HG008-N-D_Illumina_169x_GRCh38-GIABv3.bam' \"\$N_URL\"
+      [ \"\$(stat -c %s \"\$N_BAM\" 2>/dev/null || echo 0)\" -eq 168960212218 ] || { echo 'FATAL: HG008-N size mismatch' >&2; exit 1; }
+      samtools quickcheck \"\$N_BAM\"
+    fi
+
+    # Build Arm A BED: 22 un-chunked whole-chromosome intervals (chr1..chr22, 2,875,001,522 bp)
+    awk '\$1 ~ /^chr([1-9]|1[0-9]|2[0-2])\$/ {printf \"%s\t0\t%s\t%s\n\", \$1, \$2, \$1}' \
+      \"\$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fasta.fai\" > '$hg8_dir/hg008_full_22contigs.bed'
+    [ \"\$(wc -l < '$hg8_dir/hg008_full_22contigs.bed')\" -eq 22 ]
+
+    # Build Arm B BED: pre-tiled (<=50 kbp) GIAB HG008 v0.4 benchmark BED across chr1..chr22
+    SRC_BED=\"\$DATA_DIR/hg008/truth/HG008-T_somatic_smvar_benchmark_v0.4_GRCh38_all.bed\"
+    [ -f \"\$SRC_BED\" ] || SRC_BED=\"\$DATA_DIR/hg008/truth/HG008-T_somatic_smvar_benchmark_v0.3_all.bed\"
+    awk '
+      \$1 ~ /^chr([1-9]|1[0-9]|2[0-2])\$/ {
+        s = \$2 + 0;
+        e = \$3 + 0;
+        if (s < e) {
+          step = 50000;
+          for (cur = s; cur < e; cur += step) {
+            cur_end = (cur + step < e ? cur + step : e);
+            idx++;
+            printf \"%s\t%d\t%d\thg008_wgs_%d\n\", \$1, cur, cur_end, idx;
+          }
+        }
+      }
+    ' \"\$SRC_BED\" > '$hg8_dir/hg008_full_giab_v04_50kb.bed'
+    [ \"\$(wc -l < '$hg8_dir/hg008_full_giab_v04_50kb.bed')\" -ge 40000 ]
+    wc -l '$hg8_dir/hg008_full_22contigs.bed' '$hg8_dir/hg008_full_giab_v04_50kb.bed' > \"\$KEEP_DIR/hg008_bed_counts.txt\"
+  "
+
+  # 5. G2 Arm A: Full-Depth HG008-T|N (195x/169x = 364x combined) 22 Un-Chunked Chromosomes at -th 32 / 245G / -Xmx200g
+  run_checkpointed_cell "stage5" "s5_wgs_hg008_full_contigs_3way_th32" 32 "245G" bash -c "
+    set -euo pipefail
+    source harness/gcp_paper_runner.sh --source-only
+    REF=\"\$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fasta\"
+    T_BAM='$hg8_dir/HG008-T_Illumina_195x_GRCh38-GIABv3.bam'
+    N_BAM='$hg8_dir/HG008-N-D_Illumina_169x_GRCh38-GIABv3.bam'
+    BED='$hg8_dir/hg008_full_22contigs.bed'
+    WORK_LOCAL='${WORK_DIR}/tmp_s5_hg008_contigs'
+    mkdir -p \"\$WORK_LOCAL\"
+
+    # (a) VarDictRust v1.0.4 (-th 32, bounded 500 kbp tile streaming across 364x combined somatic WGS)
+    if [ ! -s \"\$KEEP_DIR/rust_hg008_contigs_th32.time\" ] || [ ! -s \"\$WORK_LOCAL/rust_hg008_contigs_th32.vcf\" ]; then
+      /usr/bin/time -v -o \"\$KEEP_DIR/rust_hg008_contigs_th32.time\" \
+        target/release/vardictrust -G \"\$REF\" -f 0.01 -N 'HG008-T|HG008-N' \
+        -b \"\${T_BAM}|\${N_BAM}\" -c 1 -S 2 -E 3 -g 4 -z -th 32 \"\$BED\" > \"\$WORK_LOCAL/rust_hg008_contigs_th32.vcf\"
+    fi
+    rust_vars=\$(grep -vc '^#' \"\$WORK_LOCAL/rust_hg008_contigs_th32.vcf\" || true)
+    echo \"\$rust_vars\" > \"\$KEEP_DIR/rust_hg008_contigs_th32.variant_count\"
+    [ \"\$rust_vars\" -ge 500000 ] || { echo \"FATAL: rust_hg008_contigs_th32.vcf has only \$rust_vars variants (<500,000)\" >&2; exit 1; }
+    bgzip -c -@ 16 \"\$WORK_LOCAL/rust_hg008_contigs_th32.vcf\" > \"\$KEEP_DIR/rust_hg008_contigs_th32.vcf.gz\"
+    tabix -f -p vcf \"\$KEEP_DIR/rust_hg008_contigs_th32.vcf.gz\"
+
+    # (b) vardictcpp (-th 32 --chunk 50000, contained under MemoryMax=245G)
+    if [ ! -s \"\$KEEP_DIR/cpp_hg008_contigs_th32.time\" ]; then
+      rc_cpp=0
+      timeout 10800 /usr/bin/time -v -o \"\$KEEP_DIR/cpp_hg008_contigs_th32.time\" \
+        env CPP_CHUNK=50000 bash harness/run_cpp.sh \"\$REF\" \"\${T_BAM}|\${N_BAM}\" \"\$BED\" \"\$WORK_LOCAL/cpp_hg008_contigs_th32.vcf\" 'HG008-T|HG008-N' -f 0.01 -th 32 -z || rc_cpp=\$?
+      echo \"\$rc_cpp\" > \"\$KEEP_DIR/cpp_hg008_contigs_th32.exit\"
+      if [ -s \"\$WORK_LOCAL/cpp_hg008_contigs_th32.vcf\" ]; then
+        grep -vc '^#' \"\$WORK_LOCAL/cpp_hg008_contigs_th32.vcf\" > \"\$KEEP_DIR/cpp_hg008_contigs_th32.variant_count\" || true
+        bgzip -c -@ 16 \"\$WORK_LOCAL/cpp_hg008_contigs_th32.vcf\" > \"\$KEEP_DIR/cpp_hg008_contigs_th32.vcf.gz\" || true
+      fi
+    fi
+
+    # (c) VarDictJava v1.8.3 (-th 32, -Xmx200g -XX:+ExitOnOutOfMemoryError, contained under MemoryMax=245G with 3h progress cap)
+    if [ ! -s \"\$KEEP_DIR/java_hg008_contigs_th32.time\" ]; then
+      rc_java=0
+      timeout 10800 /usr/bin/time -v -o \"\$KEEP_DIR/java_hg008_contigs_th32.time\" \
+        env ORACLE_XMX_GB=200 JAVA_OPTS='-Xmx200g -XX:+ExitOnOutOfMemoryError' \
+        bash harness/run_oracle.sh \"\$REF\" \"\${T_BAM}|\${N_BAM}\" \"\$BED\" \"\$WORK_LOCAL/java_hg008_contigs_th32.vcf\" 'HG008-T|HG008-N' -f 0.01 -th 32 -z || rc_java=\$?
+      echo \"\$rc_java\" > \"\$KEEP_DIR/java_hg008_contigs_th32.exit\"
+    fi
+    rc_java=\"\$(cat \"\$KEEP_DIR/java_hg008_contigs_th32.exit\" 2>/dev/null || echo 1)\"
+    if [ \"\$rc_java\" -eq 0 ] && [ -s \"\$WORK_LOCAL/java_hg008_contigs_th32.vcf\" ]; then
+      grep -vc '^#' \"\$WORK_LOCAL/java_hg008_contigs_th32.vcf\" > \"\$KEEP_DIR/java_hg008_contigs_th32.variant_count\" || true
+      bgzip -c -@ 16 \"\$WORK_LOCAL/java_hg008_contigs_th32.vcf\" > \"\$KEEP_DIR/java_hg008_contigs_th32.vcf.gz\"
+      tabix -f -p vcf \"\$KEEP_DIR/java_hg008_contigs_th32.vcf.gz\"
+      oracle_cache_put 'hg008_full/java_hg008_contigs_th32.vcf.gz' \"\$KEEP_DIR/java_hg008_contigs_th32.vcf.gz\"
+      echo \"COMPLETED (java_rc=0, rust_vars=\${rust_vars})\" | tee \"\$KEEP_DIR/hg008_contigs_verdict.txt\"
+    else
+      echo \"OOM-or-timeout-vs-completed (java_rc=\${rc_java}, rust_vars=\${rust_vars})\" | tee \"\$KEEP_DIR/hg008_contigs_verdict.txt\"
+    fi
+    rm -rf \"\$WORK_LOCAL\"
+  "
+
+  # 6. G2 Arm B: Full-Depth HG008-T|N (195x/169x) chr1..chr22 GIAB v0.4 Callable Genome (<=50 kbp pre-tiled) + Tier-2 Parity + Tier-3 rtg vcfeval (v0.3 & v0.4)
+  run_checkpointed_cell "stage5" "s5_wgs_hg008_full_giab_3way_th32" 32 "245G" bash -c "
+    set -euo pipefail
+    source harness/gcp_paper_runner.sh --source-only
+    REF=\"\$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fasta\"
+    T_BAM='$hg8_dir/HG008-T_Illumina_195x_GRCh38-GIABv3.bam'
+    N_BAM='$hg8_dir/HG008-N-D_Illumina_169x_GRCh38-GIABv3.bam'
+    BED='$hg8_dir/hg008_full_giab_v04_50kb.bed'
+    TRUTH_V03=\"\$DATA_DIR/hg008/truth/HG008-T_somatic_smvar_benchmark_v0.3_tumorvariants.vcf.gz\"
+    BED_V03=\"\$DATA_DIR/hg008/truth/HG008-T_somatic_smvar_benchmark_v0.3_all.bed\"
+    TRUTH_V04=\"\$DATA_DIR/hg008/truth/HG008-T_somatic_smvar_benchmark_v0.4_GRCh38_tumorvariants.vcf.gz\"
+    BED_V04=\"\$DATA_DIR/hg008/truth/HG008-T_somatic_smvar_benchmark_v0.4_GRCh38_all.bed\"
+    SDF=\"\$DATA_DIR/ref/giabv3/GRCh38_GIABv3.sdf\"
+    WORK_LOCAL='${WORK_DIR}/tmp_s5_hg008_giab'
+    mkdir -p \"\$WORK_LOCAL\"
+
+    # (a) VarDictRust v1.0.4 (-th 32; every interval is <=50 kbp < 500 kbp tile size -> zero cross-tile split)
+    if [ ! -s \"\$KEEP_DIR/rust_hg008_giab_th32.time\" ] || [ ! -s \"\$WORK_LOCAL/rust_hg008_giab_th32.vcf\" ]; then
+      /usr/bin/time -v -o \"\$KEEP_DIR/rust_hg008_giab_th32.time\" \
+        target/release/vardictrust -G \"\$REF\" -f 0.01 -N 'HG008-T|HG008-N' \
+        -b \"\${T_BAM}|\${N_BAM}\" -c 1 -S 2 -E 3 -g 4 -z -th 32 \"\$BED\" > \"\$WORK_LOCAL/rust_hg008_giab_th32.vcf\"
+    fi
+    rust_vars=\$(grep -vc '^#' \"\$WORK_LOCAL/rust_hg008_giab_th32.vcf\" || true)
+    echo \"\$rust_vars\" > \"\$KEEP_DIR/rust_hg008_giab_th32.variant_count\"
+    [ \"\$rust_vars\" -ge 500000 ] || { echo \"FATAL: rust_hg008_giab_th32.vcf has only \$rust_vars variants (<500,000)\" >&2; exit 1; }
+    bgzip -c -@ 16 \"\$WORK_LOCAL/rust_hg008_giab_th32.vcf\" > \"\$KEEP_DIR/rust_hg008_giab_th32.vcf.gz\"
+    tabix -f -p vcf \"\$KEEP_DIR/rust_hg008_giab_th32.vcf.gz\"
+
+    # Evaluate VarDictRust against full-genome HG008 v0.3 & v0.4 truth sets immediately
+    bash harness/concordance.sh \"\$WORK_LOCAL/rust_hg008_giab_th32.vcf\" \"\$TRUTH_V03\" \"\$BED_V03\" \"\$SDF\" \"\$KEEP_DIR/vcfeval_hg008_full_v03/rust\" HG008-T | tee \"\$KEEP_DIR/vcfeval_hg008_full_v03_rust.txt\"
+    if [ -f \"\$TRUTH_V04\" ] && [ -f \"\$BED_V04\" ]; then
+      bash harness/concordance.sh \"\$WORK_LOCAL/rust_hg008_giab_th32.vcf\" \"\$TRUTH_V04\" \"\$BED_V04\" \"\$SDF\" \"\$KEEP_DIR/vcfeval_hg008_full_v04/rust\" HG008-T | tee \"\$KEEP_DIR/vcfeval_hg008_full_v04_rust.txt\"
+    fi
+
+    # (b) vardictcpp (-th 32 --chunk 50000)
+    if [ ! -s \"\$KEEP_DIR/cpp_hg008_giab_th32.time\" ]; then
+      rc_cpp=0
+      timeout 10800 /usr/bin/time -v -o \"\$KEEP_DIR/cpp_hg008_giab_th32.time\" \
+        env CPP_CHUNK=50000 bash harness/run_cpp.sh \"\$REF\" \"\${T_BAM}|\${N_BAM}\" \"\$BED\" \"\$WORK_LOCAL/cpp_hg008_giab_th32.vcf\" 'HG008-T|HG008-N' -f 0.01 -th 32 -z || rc_cpp=\$?
+      echo \"\$rc_cpp\" > \"\$KEEP_DIR/cpp_hg008_giab_th32.exit\"
+      if [ -s \"\$WORK_LOCAL/cpp_hg008_giab_th32.vcf\" ]; then
+        grep -vc '^#' \"\$WORK_LOCAL/cpp_hg008_giab_th32.vcf\" > \"\$KEEP_DIR/cpp_hg008_giab_th32.variant_count\" || true
+        bgzip -c -@ 16 \"\$WORK_LOCAL/cpp_hg008_giab_th32.vcf\" > \"\$KEEP_DIR/cpp_hg008_giab_th32.vcf.gz\" || true
+        bash harness/concordance.sh \"\$WORK_LOCAL/cpp_hg008_giab_th32.vcf\" \"\$TRUTH_V03\" \"\$BED_V03\" \"\$SDF\" \"\$KEEP_DIR/vcfeval_hg008_full_v03/cpp\" HG008-T | tee \"\$KEEP_DIR/vcfeval_hg008_full_v03_cpp.txt\" || true
+      fi
+    fi
+
+    # (c) VarDictJava v1.8.3 (-th 32, -Xmx200g -XX:+ExitOnOutOfMemoryError, 4h progress cap per protocol §3 rule b)
+    if [ ! -s \"\$KEEP_DIR/java_hg008_giab_th32.time\" ]; then
+      rc_java=0
+      timeout 14400 /usr/bin/time -v -o \"\$KEEP_DIR/java_hg008_giab_th32.time\" \
+        env ORACLE_XMX_GB=200 JAVA_OPTS='-Xmx200g -XX:+ExitOnOutOfMemoryError' \
+        bash harness/run_oracle.sh \"\$REF\" \"\${T_BAM}|\${N_BAM}\" \"\$BED\" \"\$WORK_LOCAL/java_hg008_giab_th32.vcf\" 'HG008-T|HG008-N' -f 0.01 -th 32 -z || rc_java=\$?
+      echo \"\$rc_java\" > \"\$KEEP_DIR/java_hg008_giab_th32.exit\"
+    fi
+    rc_java=\"\$(cat \"\$KEEP_DIR/java_hg008_giab_th32.exit\" 2>/dev/null || echo 1)\"
+    if [ \"\$rc_java\" -eq 0 ] && [ -s \"\$WORK_LOCAL/java_hg008_giab_th32.vcf\" ]; then
+      grep -vc '^#' \"\$WORK_LOCAL/java_hg008_giab_th32.vcf\" > \"\$KEEP_DIR/java_hg008_giab_th32.variant_count\" || true
+      bgzip -c -@ 16 \"\$WORK_LOCAL/java_hg008_giab_th32.vcf\" > \"\$KEEP_DIR/java_hg008_giab_th32.vcf.gz\"
+      tabix -f -p vcf \"\$KEEP_DIR/java_hg008_giab_th32.vcf.gz\"
+      oracle_cache_put 'hg008_full/java_hg008_giab_th32.vcf.gz' \"\$KEEP_DIR/java_hg008_giab_th32.vcf.gz\"
+      python3 harness/compare_vcf.py --min-variants 500000 \"\$WORK_LOCAL/java_hg008_giab_th32.vcf\" \"\$WORK_LOCAL/rust_hg008_giab_th32.vcf\" | tee \"\$KEEP_DIR/compare_hg008_giab_th32.txt\"
+      grep -q '^MATCH' \"\$KEEP_DIR/compare_hg008_giab_th32.txt\"
+      bash harness/concordance_pair.sh hg008-full-wgs-v03-truth \
+        \"\$WORK_LOCAL/java_hg008_giab_th32.vcf\" \"\$WORK_LOCAL/rust_hg008_giab_th32.vcf\" \
+        \"\$TRUTH_V03\" \"\$BED_V03\" \"\$SDF\" \"\$KEEP_DIR/vcfeval_hg008_full_v03_pair\" HG008-T \"\$WORK_LOCAL/cpp_hg008_giab_th32.vcf\" | tee \"\$KEEP_DIR/vcfeval_hg008_full_v03_pair.log\"
+      grep -q '^EQUAL:' \"\$KEEP_DIR/vcfeval_hg008_full_v03_pair.log\"
+    else
+      echo \"OOM-or-timeout-vs-completed (java_rc=\${rc_java}, rust_vars=\${rust_vars})\" | tee \"\$KEEP_DIR/hg008_giab_verdict.txt\"
+    fi
+    rm -rf \"\$WORK_LOCAL\"
+  "
+
+  # 7. H3 / Fig-5 GRCh38 Field-Caller Panel (Mutect2 4.6.2.0, Strelka2 2.9.10, LoFreq 2.1.5, Octopus 0.7.4, FreeBayes 1.3.10)
+  #    on SEQC2 Somatic Exome (v1.2.1), HG008 Somatic WGS (v0.3 & v0.4), and HG002 Germline WGS (GIAB v4.2.1)
+  run_checkpointed_cell "stage5" "s5_grch38_field_callers_truth" 32 "192G" bash -c '
+    set -euo pipefail
+    source harness/gcp_paper_runner.sh --source-only
+    ensure_field_caller_envs
+
+    REF_GIAB="$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fasta"
+    SDF_GIAB="$DATA_DIR/ref/giabv3/GRCh38_GIABv3.sdf"
+    REF_D1="$DATA_DIR/ref/d1vd1/GRCh38.d1.vd1.fa"
+    SDF_D1="$DATA_DIR/ref/d1vd1/GRCh38.d1.vd1.sdf"
+    [ -f "${REF_GIAB%.*}.dict" ] || samtools dict "$REF_GIAB" > "${REF_GIAB%.*}.dict"
+    [ -f "${REF_GIAB}.dict" ]    || cp -f "${REF_GIAB%.*}.dict" "${REF_GIAB}.dict"
+    [ -f "${REF_D1%.*}.dict" ]   || samtools dict "$REF_D1" > "${REF_D1%.*}.dict"
+    [ -f "${REF_D1}.dict" ]      || cp -f "${REF_D1%.*}.dict" "${REF_D1}.dict"
+
+    BUDGET_DIR="${WORK_DIR}/cells/s4_perf_budget_4targets_n3"
+    OUT_TSV="$KEEP_DIR/grch38_field_caller_accuracy.tsv"
+    printf "cohort\tcaller\twall_s\tpeak_kb\tcalls\tsnv_p\tsnv_r\tsnv_f1\tindel_p\tindel_r\tindel_f1\n" > "$OUT_TSV"
+
+    run_timed_cmd() {
+      local lbl="$1"
+      shift
+      if [ "$(cat "$KEEP_DIR/${lbl}.rc" 2>/dev/null || true)" = "0" ] && [ -s "$KEEP_DIR/${lbl}.time" ]; then
+        return 0
+      fi
+      local rc=0
+      /usr/bin/time -v -o "$KEEP_DIR/${lbl}.time" "$@" >"$KEEP_DIR/${lbl}.stdout" 2>"$KEEP_DIR/${lbl}.stderr" || rc=$?
+      echo "$rc" > "$KEEP_DIR/${lbl}.rc"
+      return "$rc"
+    }
+
+    score_truth_vcf() {
+      local cohort="$1" caller="$2" vcf="$3" ref="$4" sdf="$5" truth="$6" bed="$7" sample_name="$8" time_file="${9:-}"
+      [ -s "$vcf" ] || return 0
+      local wall="NA" rss="NA"
+      if [ -n "$time_file" ] && [ -s "$time_file" ]; then
+        wall=$(awk -F": " "/Elapsed/{print \$2}" "$time_file" | tail -1)
+        rss=$(awk -F": " "/Maximum resident/{print \$2}" "$time_file" | tr -dc "0-9")
+      fi
+      local work_ev="$KEEP_DIR/eval_${cohort}_${caller}"
+      mkdir -p "$work_ev"
+      local src_vcf="$vcf"
+      if ! bcftools view -h "$vcf" 2>/dev/null | tail -n 1 | awk -F"\t" "{exit (NF>=10 ? 0 : 1)}"; then
+        src_vcf="$work_ev/with_gt.vcf"
+        bcftools view "$vcf" 2>/dev/null | awk -F"\t" -v sm="$sample_name" '\''BEGIN{OFS="\t"}
+          /^##/ { print; next }
+          /^#CHROM/ {
+            print "##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">"
+            print $1,$2,$3,$4,$5,$6,$7,$8,"FORMAT",sm
+            next
+          }
+          { print $1,$2,$3,$4,$5,$6,$7,$8,"GT","0/1" }
+        '\'' > "$src_vcf"
+      fi
+      bcftools reheader --fai "${ref}.fai" "$src_vcf" 2>/dev/null \
+        | bcftools norm -f "$ref" -m -any 2>/dev/null \
+        | bcftools view -f PASS,. 2>/dev/null \
+        | bcftools sort -Oz -o "$work_ev/calls.vcf.gz"
+      tabix -f -p vcf "$work_ev/calls.vcf.gz"
+      local n
+      n=$(zgrep -vc "^#" "$work_ev/calls.vcf.gz" || echo 0)
+      bcftools annotate -x FILTER "$truth" -Oz -o "$work_ev/truth.nofilter.vcf.gz"
+      tabix -f -p vcf "$work_ev/truth.nofilter.vcf.gz"
+      local snp_p=NA snp_r=NA snp_f=NA indel_p=NA indel_r=NA indel_f=NA
+      for cls in snp indel; do
+        bcftools view -v "$cls" "$work_ev/calls.vcf.gz" -Oz -o "$work_ev/calls_${cls}.vcf.gz"
+        tabix -f -p vcf "$work_ev/calls_${cls}.vcf.gz"
+        bcftools view -v "$cls" "$work_ev/truth.nofilter.vcf.gz" -Oz -o "$work_ev/tr_${cls}.vcf.gz"
+        tabix -f -p vcf "$work_ev/tr_${cls}.vcf.gz"
+        rm -rf "$work_ev/rtg_${cls}"
+        rtg vcfeval -b "$work_ev/tr_${cls}.vcf.gz" -c "$work_ev/calls_${cls}.vcf.gz" -t "$sdf" \
+          -e "$bed" --squash-ploidy -T 8 -o "$work_ev/rtg_${cls}" >/dev/null 2>&1 || true
+        if [ -f "$work_ev/rtg_${cls}/summary.txt" ]; then
+          read -r p r f <<< "$(awk "NR>2 && NF>=8" "$work_ev/rtg_${cls}/summary.txt" | sort -k8 -g | tail -1 | awk "{print \$6,\$7,\$8}")"
+          eval "${cls}_p=${p:-NA}; ${cls}_r=${r:-NA}; ${cls}_f=${f:-NA}"
+        fi
+      done
+      printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
+        "$cohort" "$caller" "$wall" "$rss" "$n" "$snp_p" "$snp_r" "$snp_f" "$indel_p" "$indel_r" "$indel_f" | tee -a "$OUT_TSV"
+    }
+
+    # --- A. HG002 GRCh38 Germline Truth Panel (chr20:10M-30M, GIAB v4.2.1) ---
+    BAM_HG2="$DATA_DIR/hg002/HG002.chr20.bam"
+    BED_HG2="$DATA_DIR/hg002/eval.bed"
+    TRUTH_HG2="$DATA_DIR/hg002/truth/truth.vcf.gz"
+    bgzip -c "$BED_HG2" > "$KEEP_DIR/hg002_eval.bed.gz" && tabix -f -p bed "$KEEP_DIR/hg002_eval.bed.gz"
+
+    run_timed_cmd "hg002_FreeBayes_8c" conda run -n cl_freebayes freebayes -f "$REF_GIAB" -t "$BED_HG2" "$BAM_HG2"
+    [ -s "$KEEP_DIR/hg002_FreeBayes_8c.stdout" ] && cp -f "$KEEP_DIR/hg002_FreeBayes_8c.stdout" "$KEEP_DIR/hg002_freebayes.vcf"
+
+    IQ_HG2="$KEEP_DIR/hg002.iq.bam"
+    if [ ! -f "$IQ_HG2" ]; then
+      conda run -n cl_lofreq lofreq indelqual --dindel -f "$REF_GIAB" -o "$IQ_HG2" "$BAM_HG2"
+      samtools index -@ 8 "$IQ_HG2"
+    fi
+    rm -f "$KEEP_DIR/hg002_lofreq.vcf"
+    run_timed_cmd "hg002_LoFreq_8c" conda run -n cl_lofreq lofreq call-parallel --pp-threads 8 --call-indels -f "$REF_GIAB" -l "$BED_HG2" -o "$KEEP_DIR/hg002_lofreq.vcf" "$IQ_HG2"
+
+    run_timed_cmd "hg002_Strelka2_8c" bash -c "
+      set -euo pipefail
+      rm -rf \"$KEEP_DIR/strelka_hg002\"
+      conda run -n cl_strelka configureStrelkaGermlineWorkflow.py --bam \"$BAM_HG2\" --referenceFasta \"$REF_GIAB\" --callRegions \"$KEEP_DIR/hg002_eval.bed.gz\" --runDir \"$KEEP_DIR/strelka_hg002\"
+      conda run -n cl_strelka \"$KEEP_DIR/strelka_hg002/runWorkflow.py\" -m local -j 16
+    "
+
+    run_timed_cmd "hg002_octopus_8c" conda run -n cl_octopus octopus -R "$REF_GIAB" -I "$BAM_HG2" -t "$BED_HG2" --threads 16 -o "$KEEP_DIR/hg002_octopus.vcf"
+
+    score_truth_vcf "HG002_GRCh38" "VarDictRust" "$BUDGET_DIR/hg002/rust.vcf" "$REF_GIAB" "$SDF_GIAB" "$TRUTH_HG2" "$BED_HG2" "HG002" "$BUDGET_DIR/hg002/rust_run1.time"
+    score_truth_vcf "HG002_GRCh38" "VarDictJava" "$BUDGET_DIR/hg002/java.vcf" "$REF_GIAB" "$SDF_GIAB" "$TRUTH_HG2" "$BED_HG2" "HG002" "$BUDGET_DIR/hg002/java_run1.time"
+    score_truth_vcf "HG002_GRCh38" "vardictcpp"  "$BUDGET_DIR/hg002/cpp.vcf"  "$REF_GIAB" "$SDF_GIAB" "$TRUTH_HG2" "$BED_HG2" "HG002" "$BUDGET_DIR/hg002/cpp_run1.time"
+    score_truth_vcf "HG002_GRCh38" "FreeBayes"   "$KEEP_DIR/hg002_freebayes.vcf" "$REF_GIAB" "$SDF_GIAB" "$TRUTH_HG2" "$BED_HG2" "HG002" "$KEEP_DIR/hg002_FreeBayes_8c.time"
+    score_truth_vcf "HG002_GRCh38" "LoFreq"      "$KEEP_DIR/hg002_lofreq.vcf"    "$REF_GIAB" "$SDF_GIAB" "$TRUTH_HG2" "$BED_HG2" "HG002" "$KEEP_DIR/hg002_LoFreq_8c.time"
+    score_truth_vcf "HG002_GRCh38" "Strelka2"    "$KEEP_DIR/strelka_hg002/results/variants/variants.vcf.gz" "$REF_GIAB" "$SDF_GIAB" "$TRUTH_HG2" "$BED_HG2" "HG002" "$KEEP_DIR/hg002_Strelka2_8c.time"
+    score_truth_vcf "HG002_GRCh38" "octopus"     "$KEEP_DIR/hg002_octopus.vcf"   "$REF_GIAB" "$SDF_GIAB" "$TRUTH_HG2" "$BED_HG2" "HG002" "$KEEP_DIR/hg002_octopus_8c.time"
+
+    # --- B. HG008 GRCh38 Somatic Truth Panel (v0.3 & v0.4) ---
+    T_HG8="$DATA_DIR/hg008/HG008-T.slice.bam"
+    N_HG8="$DATA_DIR/hg008/HG008-N.slice.bam"
+    BED_HG8="$DATA_DIR/hg008/eval.bed"
+    TRUTH_HG8_V03="$DATA_DIR/hg008/truth/HG008-T_somatic_smvar_benchmark_v0.3_tumorvariants.vcf.gz"
+    bgzip -c "$BED_HG8" > "$KEEP_DIR/hg008_eval.bed.gz" && tabix -f -p bed "$KEEP_DIR/hg008_eval.bed.gz"
+
+    run_timed_cmd "hg008_Mutect2_8c" bash -c "
+      set -euo pipefail
+      conda run -n cl_gatk4 gatk Mutect2 -R \"$REF_GIAB\" -I \"$T_HG8\" -I \"$N_HG8\" -normal HG008-N-D -L \"$BED_HG8\" --native-pair-hmm-threads 16 -O \"$KEEP_DIR/hg008_m2.unfilt.vcf.gz\"
+      conda run -n cl_gatk4 gatk FilterMutectCalls -R \"$REF_GIAB\" -V \"$KEEP_DIR/hg008_m2.unfilt.vcf.gz\" -O \"$KEEP_DIR/hg008_mutect2.vcf.gz\"
+    "
+
+    run_timed_cmd "hg008_Strelka2_8c" bash -c "
+      set -euo pipefail
+      rm -rf \"$KEEP_DIR/strelka_hg008\"
+      conda run -n cl_strelka configureStrelkaSomaticWorkflow.py --tumorBam \"$T_HG8\" --normalBam \"$N_HG8\" --referenceFasta \"$REF_GIAB\" --callRegions \"$KEEP_DIR/hg008_eval.bed.gz\" --runDir \"$KEEP_DIR/strelka_hg008\"
+      conda run -n cl_strelka \"$KEEP_DIR/strelka_hg008/runWorkflow.py\" -m local -j 16
+      bcftools concat -a -Oz -o \"$KEEP_DIR/hg008_strelka2.vcf.gz\" \"$KEEP_DIR/strelka_hg008/results/variants/somatic.snvs.vcf.gz\" \"$KEEP_DIR/strelka_hg008/results/variants/somatic.indels.vcf.gz\"
+      tabix -f -p vcf \"$KEEP_DIR/hg008_strelka2.vcf.gz\"
+    "
+
+    rm -f "$KEEP_DIR"/hg008_lf_*
+    run_timed_cmd "hg008_LoFreq_8c" bash -c "
+      set -euo pipefail
+      conda run -n cl_lofreq lofreq somatic -n \"$N_HG8\" -t \"$T_HG8\" -f \"$REF_GIAB\" -l \"$BED_HG8\" -o \"$KEEP_DIR/hg008_lf_\" --threads 16
+      bcftools concat -a -Oz -o \"$KEEP_DIR/hg008_lofreq.vcf.gz\" \"$KEEP_DIR/hg008_lf_somatic_final.snvs.vcf.gz\" \"$KEEP_DIR/hg008_lf_somatic_final.indels.vcf.gz\"
+      tabix -f -p vcf \"$KEEP_DIR/hg008_lofreq.vcf.gz\"
+    "
+
+    for eng in rust java cpp; do
+      bcftools view -f PASS -i '\''INFO/STATUS="StrongSomatic" || INFO/STATUS="LikelySomatic"'\'' "$BUDGET_DIR/hg008/${eng}.vcf" -Oz -o "$KEEP_DIR/hg008_${eng}_som.vcf.gz"
+      tabix -f -p vcf "$KEEP_DIR/hg008_${eng}_som.vcf.gz"
+    done
+    score_truth_vcf "HG008_v0.3" "VarDictRust" "$KEEP_DIR/hg008_rust_som.vcf.gz" "$REF_GIAB" "$SDF_GIAB" "$TRUTH_HG8_V03" "$BED_HG8" "HG008-T" "$BUDGET_DIR/hg008/rust_run1.time"
+    score_truth_vcf "HG008_v0.3" "VarDictJava" "$KEEP_DIR/hg008_java_som.vcf.gz" "$REF_GIAB" "$SDF_GIAB" "$TRUTH_HG8_V03" "$BED_HG8" "HG008-T" "$BUDGET_DIR/hg008/java_run1.time"
+    score_truth_vcf "HG008_v0.3" "vardictcpp"  "$KEEP_DIR/hg008_cpp_som.vcf.gz"  "$REF_GIAB" "$SDF_GIAB" "$TRUTH_HG8_V03" "$BED_HG8" "HG008-T" "$BUDGET_DIR/hg008/cpp_run1.time"
+    score_truth_vcf "HG008_v0.3" "Mutect2"     "$KEEP_DIR/hg008_mutect2.vcf.gz"  "$REF_GIAB" "$SDF_GIAB" "$TRUTH_HG8_V03" "$BED_HG8" "HG008-T" "$KEEP_DIR/hg008_Mutect2_8c.time"
+    score_truth_vcf "HG008_v0.3" "Strelka2"    "$KEEP_DIR/hg008_strelka2.vcf.gz" "$REF_GIAB" "$SDF_GIAB" "$TRUTH_HG8_V03" "$BED_HG8" "HG008-T" "$KEEP_DIR/hg008_Strelka2_8c.time"
+    score_truth_vcf "HG008_v0.3" "LoFreq"      "$KEEP_DIR/hg008_lofreq.vcf.gz"   "$REF_GIAB" "$SDF_GIAB" "$TRUTH_HG8_V03" "$BED_HG8" "HG008-T" "$KEEP_DIR/hg008_LoFreq_8c.time"
+
+    # --- C. SEQC2 GRCh38 Somatic Exome Truth Panel (HCC1395 / HCC1395BL, SEQC2 v1.2.1) ---
+    T_SQ="$DATA_DIR/seqc2/HCC1395.bam"
+    N_SQ="$DATA_DIR/seqc2/HCC1395BL.bam"
+    BED_SQ="$DATA_DIR/seqc2/eval.bed"
+    TRUTH_SQ="$DATA_DIR/seqc2/truth/truth.vcf.gz"
+    bgzip -c "$BED_SQ" > "$KEEP_DIR/seqc2_eval.bed.gz" && tabix -f -p bed "$KEEP_DIR/seqc2_eval.bed.gz"
+
+    run_timed_cmd "seqc2_Mutect2_16c" bash -c "
+      set -euo pipefail
+      conda run -n cl_gatk4 gatk Mutect2 -R \"$REF_D1\" -I \"$T_SQ\" -I \"$N_SQ\" -normal HCC1395BL -L \"$BED_SQ\" --native-pair-hmm-threads 16 -O \"$KEEP_DIR/seqc2_m2.unfilt.vcf.gz\"
+      conda run -n cl_gatk4 gatk FilterMutectCalls -R \"$REF_D1\" -V \"$KEEP_DIR/seqc2_m2.unfilt.vcf.gz\" -O \"$KEEP_DIR/seqc2_mutect2.vcf.gz\"
+    "
+
+    run_timed_cmd "seqc2_Strelka2_16c" bash -c "
+      set -euo pipefail
+      rm -rf \"$KEEP_DIR/strelka_seqc2\"
+      conda run -n cl_strelka configureStrelkaSomaticWorkflow.py --tumorBam \"$T_SQ\" --normalBam \"$N_SQ\" --referenceFasta \"$REF_D1\" --callRegions \"$KEEP_DIR/seqc2_eval.bed.gz\" --exome --runDir \"$KEEP_DIR/strelka_seqc2\"
+      conda run -n cl_strelka \"$KEEP_DIR/strelka_seqc2/runWorkflow.py\" -m local -j 16
+      bcftools concat -a -Oz -o \"$KEEP_DIR/seqc2_strelka2.vcf.gz\" \"$KEEP_DIR/strelka_seqc2/results/variants/somatic.snvs.vcf.gz\" \"$KEEP_DIR/strelka_seqc2/results/variants/somatic.indels.vcf.gz\"
+      tabix -f -p vcf \"$KEEP_DIR/seqc2_strelka2.vcf.gz\"
+    "
+
+    rm -f "$KEEP_DIR"/seqc2_lf_*
+    run_timed_cmd "seqc2_LoFreq_16c" bash -c "
+      set -euo pipefail
+      conda run -n cl_lofreq lofreq somatic -n \"$N_SQ\" -t \"$T_SQ\" -f \"$REF_D1\" -l \"$BED_SQ\" -o \"$KEEP_DIR/seqc2_lf_\" --threads 16
+      bcftools concat -a -Oz -o \"$KEEP_DIR/seqc2_lofreq.vcf.gz\" \"$KEEP_DIR/seqc2_lf_somatic_final.snvs.vcf.gz\" \"$KEEP_DIR/seqc2_lf_somatic_final.indels.vcf.gz\"
+      tabix -f -p vcf \"$KEEP_DIR/seqc2_lofreq.vcf.gz\"
+    "
+
+    for eng in rust java cpp; do
+      bcftools view -f PASS -i '\''INFO/STATUS="StrongSomatic" || INFO/STATUS="LikelySomatic"'\'' "$BUDGET_DIR/seqc2/${eng}.vcf" -Oz -o "$KEEP_DIR/seqc2_${eng}_som.vcf.gz"
+      tabix -f -p vcf "$KEEP_DIR/seqc2_${eng}_som.vcf.gz"
+    done
+    score_truth_vcf "SEQC2_v1.2.1" "VarDictRust" "$KEEP_DIR/seqc2_rust_som.vcf.gz" "$REF_D1" "$SDF_D1" "$TRUTH_SQ" "$BED_SQ" "HCC1395" "$BUDGET_DIR/seqc2/rust_run1.time"
+    score_truth_vcf "SEQC2_v1.2.1" "VarDictJava" "$KEEP_DIR/seqc2_java_som.vcf.gz" "$REF_D1" "$SDF_D1" "$TRUTH_SQ" "$BED_SQ" "HCC1395" "$BUDGET_DIR/seqc2/java_run1.time"
+    score_truth_vcf "SEQC2_v1.2.1" "vardictcpp"  "$KEEP_DIR/seqc2_cpp_som.vcf.gz"  "$REF_D1" "$SDF_D1" "$TRUTH_SQ" "$BED_SQ" "HCC1395" "$BUDGET_DIR/seqc2/cpp_run1.time"
+    score_truth_vcf "SEQC2_v1.2.1" "Mutect2"     "$KEEP_DIR/seqc2_mutect2.vcf.gz"  "$REF_D1" "$SDF_D1" "$TRUTH_SQ" "$BED_SQ" "HCC1395" "$KEEP_DIR/seqc2_Mutect2_16c.time"
+    score_truth_vcf "SEQC2_v1.2.1" "Strelka2"    "$KEEP_DIR/seqc2_strelka2.vcf.gz" "$REF_D1" "$SDF_D1" "$TRUTH_SQ" "$BED_SQ" "HCC1395" "$KEEP_DIR/seqc2_Strelka2_16c.time"
+    score_truth_vcf "SEQC2_v1.2.1" "LoFreq"      "$KEEP_DIR/seqc2_lofreq.vcf.gz"   "$REF_D1" "$SDF_D1" "$TRUTH_SQ" "$BED_SQ" "HCC1395" "$KEEP_DIR/seqc2_LoFreq_16c.time"
+  '
+
+  # 8. H4 / §7 Maintenance, Supply-Chain CVE/SBOM, musl-vs-glibc bin_equiv.sh, & 60-Flag CLI Matrix Cell
+  run_checkpointed_cell "stage5" "s5_h4_maintenance_security_matrix" 32 "64G" bash -c '
+    set -euo pipefail
+    source harness/gcp_paper_runner.sh --source-only
+
+    # (a) Upstream GitHub Archive Proof (AstraZeneca-NGS/VarDictJava & AstraZeneca-NGS/VarDict)
+    curl -sSLf https://api.github.com/repos/AstraZeneca-NGS/VarDictJava > "$KEEP_DIR/gh_api_VarDictJava.json"
+    curl -sSLf https://api.github.com/repos/AstraZeneca-NGS/VarDict > "$KEEP_DIR/gh_api_VarDict_perl.json"
+    grep -q "\"archived\": true" "$KEEP_DIR/gh_api_VarDictJava.json"
+
+    # (b) Static-MUSL vs GNU-glibc Binary Equivalence (harness/bin_equiv.sh)
+    if ! command -v musl-gcc >/dev/null 2>&1; then
+      sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq musl-tools
+    fi
+    rustup target add x86_64-unknown-linux-musl
+    bash harness/bin_equiv.sh | tee "$KEEP_DIR/bin_equiv.log"
+    grep -q "MUSL STATIC BINARY EQUIVALENCE: 100% PASS" "$KEEP_DIR/bin_equiv.log"
+
+    # (c) Supply-Chain & Runtime Footprint Audit (Static MUSL vs JVM+R+Perl Conda Env)
+    conda list -n vardict-oracle --json > "$KEEP_DIR/vardict_oracle_conda_packages.json"
+    cargo tree -p vardictrust --prefix none > "$KEEP_DIR/vardictrust_cargo_tree.txt"
+    file target/x86_64-unknown-linux-musl/release/vardictrust > "$KEEP_DIR/musl_file_info.txt"
+    ldd target/x86_64-unknown-linux-musl/release/vardictrust > "$KEEP_DIR/musl_ldd_info.txt" 2>&1 || true
+    stat -c "%n %s" target/release/vardictrust target/x86_64-unknown-linux-musl/release/vardictrust > "$KEEP_DIR/binary_sizes_bytes.txt"
+
+    # (d) 60-Flag CLI Surface & Thread-Default Verification
+    target/release/vardictrust --help > "$KEEP_DIR/vardictrust_help.txt"
+    target/release/vardictrust --version > "$KEEP_DIR/vardictrust_version.txt"
+    cargo test --test cli_flags -- --nocapture > "$KEEP_DIR/cli_flags_test.log" 2>&1 || cargo test -- --nocapture > "$KEEP_DIR/cargo_test_summary.log" 2>&1
+  '
+
   gcs_mark_done "STAGE5_DONE"
   gcs_write_heartbeat "stage5" "STAGE5_DONE" "COMPLETED"
 }
@@ -2894,6 +3324,11 @@ run_plan_check() {
   grep -Fq 's5_stage_hg002_full_wgs' "$0" || { echo "FAIL: missing s5_stage_hg002_full_wgs" >&2; exit 1; }
   grep -Fq 's5_wgs_hg002_full_contigs_3way_th32' "$0" || { echo "FAIL: missing s5_wgs_hg002_full_contigs_3way_th32" >&2; exit 1; }
   grep -Fq 's5_wgs_hg002_full_giab_3way_th32' "$0" || { echo "FAIL: missing s5_wgs_hg002_full_giab_3way_th32" >&2; exit 1; }
+  grep -Fq 's5_stage_hg008_full_wgs' "$0" || { echo "FAIL: missing s5_stage_hg008_full_wgs" >&2; exit 1; }
+  grep -Fq 's5_wgs_hg008_full_contigs_3way_th32' "$0" || { echo "FAIL: missing s5_wgs_hg008_full_contigs_3way_th32" >&2; exit 1; }
+  grep -Fq 's5_wgs_hg008_full_giab_3way_th32' "$0" || { echo "FAIL: missing s5_wgs_hg008_full_giab_3way_th32" >&2; exit 1; }
+  grep -Fq 's5_grch38_field_callers_truth' "$0" || { echo "FAIL: missing s5_grch38_field_callers_truth" >&2; exit 1; }
+  grep -Fq 's5_h4_maintenance_security_matrix' "$0" || { echo "FAIL: missing s5_h4_maintenance_security_matrix" >&2; exit 1; }
 
   local tmp
   tmp="$(mktemp -d)"
