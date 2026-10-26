@@ -1758,13 +1758,11 @@ run_stage_5() {
     BAM_PATH='$hg_dir/HG002.GRCh38.2x250.bam'
     BAI_PATH='$hg_dir/HG002.GRCh38.2x250.bam.bai'
 
-    if [ -f \"\$DATA_DIR/hg002/HG002.remote.bai\" ] && [ ! -f \"\$BAI_PATH\" ]; then
-      cp -f \"\$DATA_DIR/hg002/HG002.remote.bai\" \"\$BAI_PATH\"
-    elif [ ! -f \"\$BAI_PATH\" ]; then
+    if [ ! -f \"\$BAI_PATH\" ] || [ \"\$(md5sum \"\$BAI_PATH\" 2>/dev/null | awk '{print \$1}')\" != 'a3c2b449df6509ca83fbd3fea22b9aee' ]; then
       curl -sSLf --retry 5 \"\${BAM_URL}.bai\" -o \"\$BAI_PATH\"
     fi
     bai_md5=\"\$(md5sum \"\$BAI_PATH\" | awk '{print \$1}')\"
-    [ \"\$bai_md5\" = 'a4c79b44a863e88eeb525b5e8d1501f6' ] || { echo \"FATAL: \$BAI_PATH MD5 \$bai_md5 != a4c79b44a863e88eeb525b5e8d1501f6\" >&2; exit 1; }
+    [ \"\$bai_md5\" = 'a3c2b449df6509ca83fbd3fea22b9aee' ] || { echo \"FATAL: \$BAI_PATH MD5 \$bai_md5 != a3c2b449df6509ca83fbd3fea22b9aee\" >&2; exit 1; }
 
     if [ -f \"\$BAM_PATH\" ] && [ \"\$(stat -c %s \"\$BAM_PATH\" 2>/dev/null || echo 0)\" -eq 130770531934 ] && samtools quickcheck \"\$BAM_PATH\"; then
       echo '[Stage 5] Full HG002.GRCh38.2x250.bam already staged and verified on NVMe.'
