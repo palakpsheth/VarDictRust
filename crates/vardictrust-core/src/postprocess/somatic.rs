@@ -246,7 +246,9 @@ fn print_variations_from_first_sample(
     // in place (`totalPosCoverage -= positionCoverage`, etc.), so a subsequent
     // tumor variant at the same position that falls into the `v2nt == null`
     // branch reads the mutated `v2.variants.get(0).totalPosCoverage`.
-    let mut v2 = v2.clone();
+    // Borrow `v2` via `Cow` and materialize a mutable clone (`to_mut()`) only
+    // when a subsequent tumor variant exists at this locus (#45).
+    let mut v2 = std::borrow::Cow::Borrowed(v2);
 
     // Process variants from sample 1 while they pass isGoodVar
     while number_of_processed_variation < v1.variants.len() {
@@ -274,10 +276,11 @@ fn print_variations_from_first_sample(
         if let Some(mut v2nt_clone) = v2nt {
             let type_str = determinate_type(config, &v2, &vref, &mut v2nt_clone, splice);
             if number_of_processed_variation + 1 < v1.variants.len() {
-                if let Some(slot) = v2.var_desc_to_variant.get_mut(&nt) {
+                let v2_mut = v2.to_mut();
+                if let Some(slot) = v2_mut.var_desc_to_variant.get_mut(&nt) {
                     *slot = v2nt_clone.clone();
                 }
-                for v2_item in &mut v2.variants {
+                for v2_item in &mut v2_mut.variants {
                     if v2_item.description == nt {
                         *v2_item = v2nt_clone.clone();
                         break;
