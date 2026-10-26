@@ -1785,6 +1785,11 @@ run_stage_5() {
       \"\$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fasta.fai\" > '$hg_dir/hg002_full_22contigs.bed'
     [ \"\$(wc -l < '$hg_dir/hg002_full_22contigs.bed')\" -eq 22 ] || { echo 'FATAL: hg002_full_22contigs.bed line count != 22' >&2; exit 1; }
 
+    # Ensure full chr1..chr22 GIAB v4.2.1 truth VCF + BED are fetched from assets.tsv
+    if [ ! -f \"\$DATA_DIR/hg002/truth/HG002_GRCh38_1_22_v4.2.1_benchmark_noinconsistent.bed\" ] || [ ! -f \"\$DATA_DIR/hg002/truth/HG002_GRCh38_1_22_v4.2.1_benchmark.vcf.gz\" ]; then
+      DATA_DIR=\"\$DATA_DIR\" bash harness/fetch_data.sh hg002
+    fi
+
     # Build Arm B BED: pre-tiled (<=50 kbp) GIAB v4.2.1 benchmark BED across chr1..chr22 (2.51 Gbp)
     awk '
       \$1 ~ /^chr([1-9]|1[0-9]|2[0-2])\$/ {
@@ -1983,6 +1988,10 @@ run_stage_5() {
     awk '\$1 ~ /^chr([1-9]|1[0-9]|2[0-2])\$/ {printf \"%s\t0\t%s\t%s\n\", \$1, \$2, \$1}' \
       \"\$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fasta.fai\" > '$hg8_dir/hg008_full_22contigs.bed'
     [ \"\$(wc -l < '$hg8_dir/hg008_full_22contigs.bed')\" -eq 22 ]
+
+    if [ ! -f \"\$DATA_DIR/hg008/truth/HG008-T_somatic_smvar_benchmark_v0.4_GRCh38_all.bed\" ] || [ ! -f \"\$DATA_DIR/hg008/truth/HG008-T_somatic_smvar_benchmark_v0.4_GRCh38_tumorvariants.vcf.gz\" ]; then
+      DATA_DIR=\"\$DATA_DIR\" bash harness/fetch_data.sh hg008
+    fi
 
     # Build Arm B BED: pre-tiled (<=50 kbp) GIAB HG008 v0.4 benchmark BED across chr1..chr22
     SRC_BED=\"\$DATA_DIR/hg008/truth/HG008-T_somatic_smvar_benchmark_v0.4_GRCh38_all.bed\"
