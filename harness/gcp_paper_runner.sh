@@ -1057,13 +1057,15 @@ run_stage_2() {
     BAM='$tp_dir/bams/SRR8657348.bam'
     if [ ! -s \"\$KEEP_DIR/java_xmx4g_R_chr1.time\" ]; then
       rc4=0
-      _JAVA_OPTIONS='-Xmx4g' /usr/bin/time -v -o \"\$KEEP_DIR/java_xmx4g_R_chr1.time\" \
+      JAVA_OPTS='-Xmx4g -XX:+ExitOnOutOfMemoryError' _JAVA_OPTIONS='-Xmx4g -XX:+ExitOnOutOfMemoryError' \
+        timeout 300 /usr/bin/time -v -o \"\$KEEP_DIR/java_xmx4g_R_chr1.time\" \
         conda run -n vardict-oracle vardict-java -G \"\$REF\" -f 0.01 -N SRR8657348 -b \"\$BAM\" -th 8 -R chr1:1-249250621 > /dev/null 2>\"\$KEEP_DIR/java_xmx4g.err\" || rc4=\$?
       echo \"\$rc4\" > \"\$KEEP_DIR/java_xmx4g.exit\"
     fi
     for run in 1 2 3; do
       if [ ! -s \"\$KEEP_DIR/java_xmx200g_R_chr1_run\${run}.time\" ] || [ ! -s \"\$KEEP_DIR/java_xmx200g_R_chr1.var\" ]; then
-        _JAVA_OPTIONS='-Xmx200g' /usr/bin/time -v -o \"\$KEEP_DIR/java_xmx200g_R_chr1_run\${run}.time\" \
+        JAVA_OPTS='-Xmx200g -XX:+ExitOnOutOfMemoryError' _JAVA_OPTIONS='-Xmx200g -XX:+ExitOnOutOfMemoryError' \
+          /usr/bin/time -v -o \"\$KEEP_DIR/java_xmx200g_R_chr1_run\${run}.time\" \
           conda run -n vardict-oracle vardict-java -G \"\$REF\" -f 0.01 -N SRR8657348 -b \"\$BAM\" -th 8 -R chr1:1-249250621 > \"\$KEEP_DIR/java_xmx200g_R_chr1.var\" 2>\"\$KEEP_DIR/java_xmx200g_run\${run}.err\"
       fi
     done
