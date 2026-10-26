@@ -3893,6 +3893,26 @@ pub struct Match35 {
     pub max_matched_length: i32,
 }
 
+#[inline]
+fn swar_mismatch_count_u64(a: u64, b: u64) -> i32 {
+    let diff = a ^ b;
+    if diff == 0 {
+        return 0;
+    }
+    let nz = (diff | ((diff & 0x7F7F_7F7F_7F7F_7F7F).wrapping_add(0x7F7F_7F7F_7F7F_7F7F)))
+        & 0x8080_8080_8080_8080;
+    nz.count_ones() as i32
+}
+
+#[inline]
+fn load_u64_le(slice: &[u8], offset: usize) -> u64 {
+    let mut buf = [0u8; 8];
+    if let Some(src) = slice.get(offset..offset + 8) {
+        buf.copy_from_slice(src);
+    }
+    u64::from_le_bytes(buf)
+}
+
 pub fn find_35_match(seq5: &[u8], seq3: &[u8], verbose: bool) -> Match35 {
     let long_mismatch = 2;
     let mut max_matched_length = 0;
@@ -3902,7 +3922,7 @@ pub fn find_35_match(seq5: &[u8], seq3: &[u8], verbose: bool) -> Match35 {
     let len5 = seq5.len();
     let len3 = seq3.len();
 
-    if len5 < 8 || len3 < 8 {
+    if len5 <= 8 || len3 <= 9 {
         return Match35 {
             matched_5_end: 0,
             matched_3_end: 0,
@@ -3910,25 +3930,81 @@ pub fn find_35_match(seq5: &[u8], seq3: &[u8], verbose: bool) -> Match35 {
         };
     }
 
-    let rev3: Vec<u8> = seq3.iter().rev().copied().collect();
+    let mut rev3_stack = [0u8; 512];
+    let mut rev3_heap = Vec::new();
+    let rev3: &[u8] = if let Some(dst) = rev3_stack.get_mut(..len3) {
+        for (slot, &b) in dst.iter_mut().zip(seq3.iter().rev()) {
+            *slot = b;
+        }
+        dst
+    } else {
+        rev3_heap.extend(seq3.iter().rev().copied());
+        &rev3_heap
+    };
+
+    // Precompute the first 8-byte word of `rev3` at each starting offset `j - 1`
+    // for `j in 1..(len3 - 8)` (`num_j = len3 - 9` words; since `j <= len3 - 9`,
+    // `(j - 1) + 8 <= len3 - 2 < len3` is always in bounds).
+    let num_j = len3 - 9;
+    let mut rev3_w0_stack = [0u64; 512];
+    let mut rev3_w0_heap = Vec::new();
+    let rev3_w0: &[u64] = if let Some(dst) = rev3_w0_stack.get_mut(..num_j) {
+        for (idx, slot) in dst.iter_mut().enumerate() {
+            *slot = load_u64_le(rev3, idx);
+        }
+        dst
+    } else {
+        rev3_w0_heap.reserve(num_j);
+        for idx in 0..num_j {
+            rev3_w0_heap.push(load_u64_le(rev3, idx));
+        }
+        &rev3_w0_heap
+    };
 
     for i in 0..(len5 - 8) {
-        for j in 1..(len3 - 8) {
+        let rem5 = len5 - i;
+        let w5_0 = load_u64_le(seq5, i);
+        for (j_idx, &w3_0) in rev3_w0.iter().enumerate() {
+            // Fast SWAR reject: since `i < len5 - 8` (`rem5 >= 9`) and
+            // `j < len3 - 8` (`rem3 >= 10`), `valid_len = rem3.min(rem5) >= 9`.
+            // If the first 8 bytes alone have > 2 mismatches, the scalar loop is
+            // guaranteed to break at `total_length <= 7` with `number_of_mismatch == 3`,
+            // yielding `score <= 4 < 8`.
+            let mm0 = swar_mismatch_count_u64(w3_0, w5_0);
+            if mm0 > long_mismatch {
+                continue;
+            }
+
+            let j = j_idx + 1;
             let rem3 = len3 - j + 1;
-            let rem5 = len5 - i;
             let valid_len = rem3.min(rem5);
-            let s3 = rev3.get((j - 1)..(j - 1 + valid_len)).unwrap_or(&[]);
+            let s3 = rev3.get(j_idx..(j_idx + valid_len)).unwrap_or(&[]);
             let s5 = seq5.get(i..(i + valid_len)).unwrap_or(&[]);
-            let mut number_of_mismatch = 0i32;
-            let mut total_length = 0usize;
-            for (&b3_ch, &b5_ch) in s3.iter().zip(s5.iter()) {
-                if b3_ch != b5_ch {
-                    number_of_mismatch += 1;
-                    if number_of_mismatch > long_mismatch {
-                        break;
-                    }
+            let mut number_of_mismatch = mm0;
+            let mut total_length = 8usize;
+
+            while total_length + 8 <= valid_len {
+                let w3 = load_u64_le(s3, total_length);
+                let w5 = load_u64_le(s5, total_length);
+                let chunk_mm = swar_mismatch_count_u64(w3, w5);
+                if number_of_mismatch + chunk_mm <= long_mismatch {
+                    number_of_mismatch += chunk_mm;
+                    total_length += 8;
+                } else {
+                    break;
                 }
-                total_length += 1;
+            }
+
+            if let (Some(rem_s3), Some(rem_s5)) = (s3.get(total_length..), s5.get(total_length..)) {
+                for (&b3_ch, &b5_ch) in rem_s3.iter().zip(rem_s5.iter()) {
+                    if b3_ch != b5_ch {
+                        number_of_mismatch += 1;
+                        if number_of_mismatch > long_mismatch {
+                            break;
+                        }
+                    }
+                    total_length += 1;
+                }
             }
             if number_of_mismatch <= long_mismatch && rem5 < rem3 {
                 // Legacy while-loop sentinel iteration at i + total_length == len5

@@ -473,6 +473,28 @@ pub(crate) mod tests {
             let expected = find_35_match_legacy(&s5, &s3, false);
             assert_eq!(actual, expected, "random case {case_idx} failed");
         }
+
+        // 4. Stack-to-heap spill boundary cases (510..=600) and high-bit byte values (0x80..=0xFF)
+        for &l3 in &[510usize, 512, 513, 521, 522, 600] {
+            for &l5 in &[16usize, 512, 522] {
+                let mut s5: Vec<u8> = (0..l5)
+                    .map(|idx| 0x80u8.wrapping_add((idx as u8).wrapping_mul(31)))
+                    .collect();
+                let mut s3: Vec<u8> = (0..l3)
+                    .map(|idx| 0x80u8.wrapping_add((idx as u8).wrapping_mul(17)))
+                    .collect();
+                // Plant a 14-bp reverse match with 1 high-bit mismatch near the tail
+                for t in 0..14 {
+                    s3[t] = s5[l5 - 14 + t];
+                }
+                s5[l5 - 7] ^= 0x81;
+                assert_eq!(
+                    find_35_match(&s5, &s3, false),
+                    find_35_match_legacy(&s5, &s3, false),
+                    "spill/high-bit mismatch at l5={l5}, l3={l3}"
+                );
+            }
+        }
     }
 
     #[test]
