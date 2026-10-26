@@ -207,8 +207,15 @@ restore_prev_java_cpp_artifacts() {
       done
     fi
   done
-  # Never reuse stale Rust outputs from a prior version
-  rm -f "$dst_dir"/rust* "$dst_dir"/vardictrust* 2>/dev/null || true
+  # Never reuse stale Rust outputs from a prior version (keep any output newer than target/release/vardictrust)
+  local rf
+  for rf in "$dst_dir"/rust* "$dst_dir"/vardictrust*; do
+    [ -e "$rf" ] || continue
+    if [ -x "target/release/vardictrust" ] && [ "$rf" -nt "target/release/vardictrust" ]; then
+      continue
+    fi
+    rm -f "$rf" 2>/dev/null || true
+  done
 }
 
 # Executes a single cell inside a systemd-run CPU+RAM cgroup slice (when systemd-run is available)
@@ -226,16 +233,18 @@ run_checkpointed_cell() {
   fi
 
   local cpu_spec mem_node_spec="0-1"
-  if [ -n "${SOCKET_PIN_CPUS:-}" ] && { [ "$cpus" = "8" ] || [ "$cpus" = "0-7" ]; }; then
+  if [ -n "${SOCKET_PIN_CPUS:-}" ] && { [ "$cpus" = "8" ] || [ "$cpus" = "0-7" ] || [ "$cpus" = "8-15" ]; }; then
     cpu_spec="${SOCKET_PIN_CPUS}"
+  elif [ "${SOCKET_PIN_CPUS:-}" = "8-15" ] && [[ "$cpus" =~ ^[0-9]+$ ]] && [ "$cpus" -le 8 ]; then
+    cpu_spec="8-$((8 + cpus - 1))"
   elif [[ "$cpus" =~ ^[0-9]+$ ]]; then
     cpu_spec="0-$((cpus - 1))"
   else
     cpu_spec="$cpus"
   fi
   case "$cpu_spec" in
-    0-7|0-3|4-7) mem_node_spec="0" ;;
-    8-15|8-11|12-15) mem_node_spec="1" ;;
+    0|0-[1-7]|0-3|4-7) mem_node_spec="0" ;;
+    8|8-9|8-1[0-5]|12-15) mem_node_spec="1" ;;
     *) mem_node_spec="0-1" ;;
   esac
 
@@ -1341,35 +1350,28 @@ PY
   for th in 1 2 4 8 16 32; do
     local mem_cap="32G"
     local java_xmx="22"
-    if [ "$th" -ge 16 ]; then mem_cap="64G"; java_xmx="44"; fi
-    if [ "$th" -ge 32 ]; then mem_cap="128G"; java_xmx="88"; fi
-    run_checkpointed_cell "stage4" "s4_scale_exome_3way_th${th}" "$th" "$mem_cap" bash -c "
+    local cell_cpus="$th"
+    local base_core="0"
+    if [ "$th" -eq 1 ]; then
+      cell_cpus="${SOCKET_PIN_CPUS:-0-7}"
+      mem_cap="128G"
+      [ "$cell_cpus" = "8-15" ] && base_core="8"
+    elif [ "$th" -eq 2 ] || [ "$th" -eq 4 ]; then
+      cell_cpus="${SOCKET_PIN_CPUS:-8-15}"
+      mem_cap="128G"
+      [ "$cell_cpus" = "8-15" ] && base_core="8"
+    elif [ "$th" -ge 16 ]; then
+      mem_cap="64G"
+      java_xmx="44"
+    fi
+    if [ "$th" -ge 32 ]; then
+      mem_cap="128G"
+      java_xmx="88"
+    fi
+    run_checkpointed_cell "stage4" "s4_scale_exome_3way_th${th}" "$cell_cpus" "$mem_cap" bash -c "
       set -euo pipefail
-      REF=\"\$DATA_DIR/ref/d1vd1/GRCh38.d1.vd1.fa\"
-      BAM=\"\$DATA_DIR/seqc2/HCC1395.bam\"
-      BED=\"\$DATA_DIR/seqc2/exome.engine.bed\"
-      for run in 1 2 3; do
-        /usr/bin/time -v -o \"\$KEEP_DIR/rust_th${th}_run\${run}.time\" \
-          target/release/vardictrust -G \"\$REF\" -f 0.01 -N HCC1395 -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -z -th ${th} \"\$BED\" > \"\$KEEP_DIR/rust_th${th}.vcf\"
-        if [ ! -s \"\$KEEP_DIR/cpp_th${th}_run\${run}.time\" ] || [ ! -s \"\$KEEP_DIR/cpp_th${th}.vcf\" ]; then
-          /usr/bin/time -v -o \"\$KEEP_DIR/cpp_th${th}_run\${run}.time\" \
-            bash harness/run_cpp.sh \"\$REF\" \"\$BAM\" \"\$BED\" \"\$KEEP_DIR/cpp_th${th}.vcf\" HCC1395 -th ${th} -z
-        fi
-        if [ ! -s \"\$KEEP_DIR/java_th${th}_run\${run}.time\" ] || [ ! -s \"\$KEEP_DIR/java_th${th}.vcf\" ]; then
-          ORACLE_XMX_GB=${java_xmx} /usr/bin/time -v -o \"\$KEEP_DIR/java_th${th}_run\${run}.time\" \
-            bash harness/run_oracle.sh \"\$REF\" \"\$BAM\" \"\$BED\" \"\$KEEP_DIR/java_th${th}.vcf\" HCC1395 -f 0.01 -z -th ${th}
-        fi
-      done
-      python3 harness/compare_vcf.py \"\$KEEP_DIR/java_th${th}.vcf\" \"\$KEEP_DIR/rust_th${th}.vcf\" | tee \"\$KEEP_DIR/compare_th${th}.txt\"
-      grep -q '^MATCH' \"\$KEEP_DIR/compare_th${th}.txt\"
-      if [ '${th}' -gt 1 ] && [ ! -f '${WORK_DIR}/cells/s4_scale_exome_3way_th1/rust_th1.vcf' ] && [ -z \"\${LOCAL_CKPT_DIR:-}\" ]; then
-        mkdir -p '${WORK_DIR}/cells/s4_scale_exome_3way_th1'
-        setsid gsutil -m -q rsync -r '${GCS_RESULTS}/cells-v104/s4_scale_exome_3way_th1' '${WORK_DIR}/cells/s4_scale_exome_3way_th1' || true
-      fi
-      if [ '${th}' -gt 1 ] && [ -f '${WORK_DIR}/cells/s4_scale_exome_3way_th1/rust_th1.vcf' ]; then
-        cmp <(grep -v '^##' '${WORK_DIR}/cells/s4_scale_exome_3way_th1/rust_th1.vcf') <(grep -v '^##' \"\$KEEP_DIR/rust_th${th}.vcf\")
-        echo 'DETERMINISTIC_RECORDS_IDENTICAL_TO_TH1' > \"\$KEEP_DIR/determinism_th${th}.txt\"
-      fi
+      source harness/gcp_paper_runner.sh --source-only
+      run_s4_scale_exome_body '${th}' '${java_xmx}' '${base_core}'
     "
   done
 
@@ -1384,8 +1386,10 @@ PY
       for sz in 1000000 10000000 100000000 248956422; do
         printf 'chr1\t0\t%s\tR%s\n' \"\$sz\" \"\$sz\" > \"\$KEEP_DIR/R\${sz}.bed\"
         for run in 1 2 3; do
-          /usr/bin/time -v -o \"\$KEEP_DIR/rust_R\${sz}_th${th}_run\${run}.time\" \
-            target/release/vardictrust -G \"\$REF\" -f 0.01 -N HCC1395 -b \"\$BAM\" -th ${th} -R \"chr1:1-\${sz}\" > \"\$KEEP_DIR/rust_R\${sz}_th${th}.vcf\"
+          if [ ! -s \"\$KEEP_DIR/rust_R\${sz}_th${th}_run\${run}.time\" ] || [ ! -s \"\$KEEP_DIR/rust_R\${sz}_th${th}.vcf\" ]; then
+            /usr/bin/time -v -o \"\$KEEP_DIR/rust_R\${sz}_th${th}_run\${run}.time\" \
+              target/release/vardictrust -G \"\$REF\" -f 0.01 -N HCC1395 -b \"\$BAM\" -th ${th} -R \"chr1:1-\${sz}\" > \"\$KEEP_DIR/rust_R\${sz}_th${th}.vcf\"
+          fi
           if [ ! -s \"\$KEEP_DIR/cpp_R\${sz}_th${th}_run\${run}.time\" ]; then
             rc_cpp=0
             /usr/bin/time -v -o \"\$KEEP_DIR/cpp_R\${sz}_th${th}_run\${run}.time\" \
@@ -1476,6 +1480,152 @@ PY
   '
 }
 
+run_s4_scale_exome_body() {
+  local th="$1" java_xmx="$2" base_core="${3:-0}"
+  local REF="$DATA_DIR/ref/d1vd1/GRCh38.d1.vd1.fa"
+  local BAM="$DATA_DIR/seqc2/HCC1395.bam"
+  local BED="$DATA_DIR/seqc2/exome.engine.bed"
+
+  run_one_rust() {
+    local run="$1" cpu_pin="${2:-}"
+    local out_vcf="$KEEP_DIR/rust_th${th}_run${run}.vcf"
+    if [ "$run" -eq 1 ] && [ -s "$KEEP_DIR/rust_th${th}_run1.time" ] && [ -s "$KEEP_DIR/rust_th${th}.vcf" ]; then
+      echo "[SKIP] rust_th${th}_run1 already complete."
+      return 0
+    fi
+    if [ "$run" -gt 1 ] && [ -s "$KEEP_DIR/rust_th${th}_run${run}.time" ]; then
+      echo "[SKIP] rust_th${th}_run${run} already complete."
+      return 0
+    fi
+    if [ -n "$cpu_pin" ]; then
+      taskset -c "$cpu_pin" /usr/bin/time -v -o "$KEEP_DIR/rust_th${th}_run${run}.time" \
+        target/release/vardictrust -G "$REF" -f 0.01 -N HCC1395 -b "$BAM" -c 1 -S 2 -E 3 -g 4 -z -th "$th" "$BED" > "$out_vcf"
+    else
+      /usr/bin/time -v -o "$KEEP_DIR/rust_th${th}_run${run}.time" \
+        target/release/vardictrust -G "$REF" -f 0.01 -N HCC1395 -b "$BAM" -c 1 -S 2 -E 3 -g 4 -z -th "$th" "$BED" > "$out_vcf"
+    fi
+    if [ "$run" -eq 1 ]; then
+      mv -f "$out_vcf" "$KEEP_DIR/rust_th${th}.vcf"
+    else
+      rm -f "$out_vcf"
+    fi
+  }
+
+  run_one_cpp() {
+    local run="$1" cpu_pin="${2:-}"
+    local out_vcf="$KEEP_DIR/cpp_th${th}_run${run}.vcf"
+    if [ "$run" -eq 1 ] && [ -s "$KEEP_DIR/cpp_th${th}_run1.time" ] && [ -s "$KEEP_DIR/cpp_th${th}.vcf" ]; then
+      echo "[SKIP] cpp_th${th}_run1 already complete."
+      return 0
+    fi
+    if [ "$run" -gt 1 ] && [ -s "$KEEP_DIR/cpp_th${th}_run${run}.time" ]; then
+      echo "[SKIP] cpp_th${th}_run${run} already complete."
+      return 0
+    fi
+    if [ -n "$cpu_pin" ]; then
+      taskset -c "$cpu_pin" /usr/bin/time -v -o "$KEEP_DIR/cpp_th${th}_run${run}.time" \
+        bash harness/run_cpp.sh "$REF" "$BAM" "$BED" "$out_vcf" HCC1395 -th "$th" -z
+    else
+      /usr/bin/time -v -o "$KEEP_DIR/cpp_th${th}_run${run}.time" \
+        bash harness/run_cpp.sh "$REF" "$BAM" "$BED" "$out_vcf" HCC1395 -th "$th" -z
+    fi
+    if [ "$run" -eq 1 ]; then
+      mv -f "$out_vcf" "$KEEP_DIR/cpp_th${th}.vcf"
+    else
+      rm -f "$out_vcf"
+    fi
+  }
+
+  run_one_java() {
+    local run="$1" cpu_pin="${2:-}"
+    local out_vcf="$KEEP_DIR/java_th${th}_run${run}.vcf"
+    if [ "$run" -eq 1 ] && [ -s "$KEEP_DIR/java_th${th}_run1.time" ] && [ -s "$KEEP_DIR/java_th${th}.vcf" ]; then
+      echo "[SKIP] java_th${th}_run1 already complete."
+      return 0
+    fi
+    if [ "$run" -gt 1 ] && [ -s "$KEEP_DIR/java_th${th}_run${run}.time" ]; then
+      echo "[SKIP] java_th${th}_run${run} already complete."
+      return 0
+    fi
+    if [ -n "$cpu_pin" ]; then
+      ORACLE_XMX_GB="$java_xmx" taskset -c "$cpu_pin" /usr/bin/time -v -o "$KEEP_DIR/java_th${th}_run${run}.time" \
+        bash harness/run_oracle.sh "$REF" "$BAM" "$BED" "$out_vcf" HCC1395 -f 0.01 -z -th "$th"
+    else
+      ORACLE_XMX_GB="$java_xmx" /usr/bin/time -v -o "$KEEP_DIR/java_th${th}_run${run}.time" \
+        bash harness/run_oracle.sh "$REF" "$BAM" "$BED" "$out_vcf" HCC1395 -f 0.01 -z -th "$th"
+    fi
+    if [ "$run" -eq 1 ]; then
+      mv -f "$out_vcf" "$KEEP_DIR/java_th${th}.vcf"
+    else
+      rm -f "$out_vcf"
+    fi
+  }
+
+  local pids=()
+  if [ "$th" -eq 1 ]; then
+    ( for r in 1 2 3; do run_one_rust "$r" "$((base_core + 0))"; done ) &
+    pids+=($!)
+    ( for r in 1 2 3; do run_one_cpp "$r" "$((base_core + 1))"; done ) &
+    pids+=($!)
+    run_one_java 1 "$((base_core + 2))" &
+    pids+=($!)
+    run_one_java 2 "$((base_core + 3))" &
+    pids+=($!)
+    run_one_java 3 "$((base_core + 4))" &
+    pids+=($!)
+  elif [ "$th" -eq 2 ]; then
+    run_one_java 1 "$((base_core + 0))-$((base_core + 1))" &
+    pids+=($!)
+    run_one_java 2 "$((base_core + 2))-$((base_core + 3))" &
+    pids+=($!)
+    run_one_java 3 "$((base_core + 4))-$((base_core + 5))" &
+    pids+=($!)
+    (
+      for r in 1 2 3; do run_one_rust "$r" "$((base_core + 6))-$((base_core + 7))"; done
+      for r in 1 2 3; do run_one_cpp  "$r" "$((base_core + 6))-$((base_core + 7))"; done
+    ) &
+    pids+=($!)
+  elif [ "$th" -eq 4 ]; then
+    (
+      run_one_java 1 "$((base_core + 0))-$((base_core + 3))"
+      run_one_java 2 "$((base_core + 0))-$((base_core + 3))"
+    ) &
+    pids+=($!)
+    (
+      for r in 1 2 3; do run_one_rust "$r" "$((base_core + 4))-$((base_core + 7))"; done
+      for r in 1 2 3; do run_one_cpp  "$r" "$((base_core + 4))-$((base_core + 7))"; done
+      run_one_java 3 "$((base_core + 4))-$((base_core + 7))"
+    ) &
+    pids+=($!)
+  else
+    for r in 1 2 3; do
+      run_one_rust "$r" ""
+      run_one_cpp  "$r" ""
+      run_one_java "$r" ""
+    done
+  fi
+
+  local rc=0 p
+  for p in "${pids[@]}"; do
+    wait "$p" || rc=$?
+  done
+  if [ "$rc" -ne 0 ]; then
+    echo "FATAL: s4_scale_exome_3way_th${th} worker exited with rc=$rc" >&2
+    return "$rc"
+  fi
+
+  python3 harness/compare_vcf.py "$KEEP_DIR/java_th${th}.vcf" "$KEEP_DIR/rust_th${th}.vcf" | tee "$KEEP_DIR/compare_th${th}.txt"
+  grep -q '^MATCH' "$KEEP_DIR/compare_th${th}.txt"
+  if [ "$th" -gt 1 ] && [ ! -f "${WORK_DIR}/cells/s4_scale_exome_3way_th1/rust_th1.vcf" ] && [ -z "${LOCAL_CKPT_DIR:-}" ]; then
+    mkdir -p "${WORK_DIR}/cells/s4_scale_exome_3way_th1"
+    setsid gsutil -m -q rsync -r "${GCS_RESULTS}/cells-v104/s4_scale_exome_3way_th1" "${WORK_DIR}/cells/s4_scale_exome_3way_th1" || true
+  fi
+  if [ "$th" -gt 1 ] && [ -f "${WORK_DIR}/cells/s4_scale_exome_3way_th1/rust_th1.vcf" ]; then
+    cmp <(grep -v '^##' "${WORK_DIR}/cells/s4_scale_exome_3way_th1/rust_th1.vcf") <(grep -v '^##' "$KEEP_DIR/rust_th${th}.vcf")
+    echo 'DETERMINISTIC_RECORDS_IDENTICAL_TO_TH1' > "$KEEP_DIR/determinism_th${th}.txt"
+  fi
+}
+
 run_packed_stages_2_to_4() {
   echo "=== [Packed Zero-Contention Dual-Socket Orchestrator (NUMA Node 0: CPUs 0-7 / L3=0 vs NUMA Node 1: CPUs 8-15 / L3=1, SMT 16-31 Idle)] ==="
 
@@ -1550,11 +1700,41 @@ run_packed_stages_2_to_4() {
     return 1
   fi
 
-  # Wave 2 & Wave 3: Whole-Machine / Dual-Socket Coordinated Cells (s2_fig1_fig3_field_callers, s2_table3_R_chr1_java_200g_n3, s4_perf_budget_4targets_n3, s4_tier3_truth_and_qual_sweep, s4_scale_exome_3way_th*, s4_span_chr1_3way_th*)
-  echo "=== [Wave 2 & 3: Whole-Machine Exclusive & Coordinated Cells (100% Machine Isolation)] ==="
-  unset SOCKET_PIN_CPUS CELL_ALLOWLIST
+  # Wave 2: Whole-Machine & Coordinated Stage 2/3/4 Pre-Scaling Cells
+  echo "=== [Wave 2: Whole-Machine Exclusive & Coordinated Pre-Scaling Cells] ==="
+  unset SOCKET_PIN_CPUS
+  export CELL_ALLOWLIST="s2_fig1_fig3_field_callers s2_table3_R_chr1_java_200g_n3 s4_perf_budget_4targets_n3 s4_tier3_truth_and_qual_sweep"
   run_stage_2
   run_stage_3
+  run_stage_4
+
+  # Wave 3A: Dual-Socket NUMA-Isolated Scaling Cells (th <= 8)
+  echo "=== [Wave 3A: Dual-Socket NUMA-Isolated Scaling Execution (Socket 0: CPUs 0-7 / Node 0 || Socket 1: CPUs 8-15 / Node 1)] ==="
+  (
+    export SOCKET_PIN_CPUS="0-7"
+    export CELL_ALLOWLIST="s4_scale_exome_3way_th1 s4_scale_exome_3way_th8"
+    run_stage_4
+  ) &
+  pid_s0=$!
+
+  (
+    export SOCKET_PIN_CPUS="8-15"
+    export CELL_ALLOWLIST="s4_scale_exome_3way_th2 s4_scale_exome_3way_th4 s4_span_chr1_3way_th8"
+    run_stage_4
+  ) &
+  pid_s1=$!
+
+  rc_s0=0; rc_s1=0
+  wait "$pid_s0" || rc_s0=$?
+  wait "$pid_s1" || rc_s1=$?
+  if [ "$rc_s0" -ne 0 ] || [ "$rc_s1" -ne 0 ]; then
+    echo "FATAL: Dual-socket Wave 3A exited non-zero (rc_s0=$rc_s0, rc_s1=$rc_s1)" >&2
+    return 1
+  fi
+
+  # Wave 3B: Whole-Machine Scaling Cells (th = 16, 32)
+  echo "=== [Wave 3B: Whole-Machine Scaling Cells (th = 16, 32)] ==="
+  unset SOCKET_PIN_CPUS CELL_ALLOWLIST
   run_stage_4
 }
 
