@@ -1739,6 +1739,206 @@ run_packed_stages_2_to_4() {
 }
 
 # =============================================================================
+# Stage 5 (Task 5f): B4 / G1 Full-Depth All-Chromosomes HG002 WGS (chr1..chr22)
+# 32 vCPUs / MemoryMax=245G / -Xmx200g across VarDictRust, vardictcpp, VarDictJava
+# Arm A: 22 un-chunked whole-chromosome intervals (chr1..chr22, 2.875 Gbp)
+# Arm B: Pre-tiled (<=50 kbp) GIAB v4.2.1 callable genome (chr1..chr22, 2.51 Gbp) + rtg vcfeval
+# =============================================================================
+run_stage_5() {
+  echo "=== [Stage 5: Task 5f B4 Full-Depth All-Chromosomes HG002 ~50x GRCh38 WGS (chr1..chr22, 32 vCPUs / 245G RAM / -Xmx200g)] ==="
+  unset SOCKET_PIN_CPUS CELL_ALLOWLIST
+  export DATA_DIR="scratch/g4"
+  local hg_dir="${WORK_DIR}/data/hg002_full"
+
+  # 1. Stage full ~130.77 GB HG002.GRCh38.2x250.bam + .bai on NVMe RAID0 & build Arm A / Arm B whole-genome BEDs
+  run_local_stage_cell "stage5" "s5_stage_hg002_full_wgs" 32 "128G" bash -c "
+    set -euo pipefail
+    mkdir -p '$hg_dir'
+    BAM_URL='https://giab.s3.amazonaws.com/data/AshkenazimTrio/HG002_NA24385_son/NIST_Illumina_2x250bps/novoalign_bams/HG002.GRCh38.2x250.bam'
+    BAM_PATH='$hg_dir/HG002.GRCh38.2x250.bam'
+    BAI_PATH='$hg_dir/HG002.GRCh38.2x250.bam.bai'
+
+    if [ -f \"\$DATA_DIR/hg002/HG002.remote.bai\" ] && [ ! -f \"\$BAI_PATH\" ]; then
+      cp -f \"\$DATA_DIR/hg002/HG002.remote.bai\" \"\$BAI_PATH\"
+    elif [ ! -f \"\$BAI_PATH\" ]; then
+      curl -sSLf --retry 5 \"\${BAM_URL}.bai\" -o \"\$BAI_PATH\"
+    fi
+    bai_md5=\"\$(md5sum \"\$BAI_PATH\" | awk '{print \$1}')\"
+    [ \"\$bai_md5\" = 'a4c79b44a863e88eeb525b5e8d1501f6' ] || { echo \"FATAL: \$BAI_PATH MD5 \$bai_md5 != a4c79b44a863e88eeb525b5e8d1501f6\" >&2; exit 1; }
+
+    if [ -f \"\$BAM_PATH\" ] && [ \"\$(stat -c %s \"\$BAM_PATH\" 2>/dev/null || echo 0)\" -eq 130770531934 ] && samtools quickcheck \"\$BAM_PATH\"; then
+      echo '[Stage 5] Full HG002.GRCh38.2x250.bam already staged and verified on NVMe.'
+    else
+      if ! command -v aria2c >/dev/null 2>&1; then
+        sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq aria2
+      fi
+      echo '[Stage 5] Downloading full 130.77 GB HG002.GRCh38.2x250.bam from GIAB S3 to NVMe RAID0...'
+      aria2c -x 16 -s 16 -k 100M --continue=true --allow-overwrite=true --max-tries=10 --retry-wait=5 \
+        -d '$hg_dir' -o 'HG002.GRCh38.2x250.bam' \"\$BAM_URL\"
+      got_bytes=\"\$(stat -c %s \"\$BAM_PATH\" 2>/dev/null || echo 0)\"
+      [ \"\$got_bytes\" -eq 130770531934 ] || { echo \"FATAL: \$BAM_PATH size \$got_bytes != 130770531934\" >&2; exit 1; }
+      samtools quickcheck \"\$BAM_PATH\"
+    fi
+
+    # Build Arm A BED: 22 un-chunked whole-chromosome intervals (chr1..chr22, 2,875,001,522 bp)
+    awk '\$1 ~ /^chr([1-9]|1[0-9]|2[0-2])\$/ {printf \"%s\t0\t%s\t%s\n\", \$1, \$2, \$1}' \
+      \"\$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fasta.fai\" > '$hg_dir/hg002_full_22contigs.bed'
+    [ \"\$(wc -l < '$hg_dir/hg002_full_22contigs.bed')\" -eq 22 ] || { echo 'FATAL: hg002_full_22contigs.bed line count != 22' >&2; exit 1; }
+
+    # Build Arm B BED: pre-tiled (<=50 kbp) GIAB v4.2.1 benchmark BED across chr1..chr22 (2.51 Gbp)
+    awk '
+      \$1 ~ /^chr([1-9]|1[0-9]|2[0-2])\$/ {
+        s = \$2 + 0;
+        e = \$3 + 0;
+        if (s < e) {
+          step = 50000;
+          for (cur = s; cur < e; cur += step) {
+            cur_end = (cur + step < e ? cur + step : e);
+            idx++;
+            printf \"%s\t%d\t%d\thg002_wgs_%d\n\", \$1, cur, cur_end, idx;
+          }
+        }
+      }
+    ' \"\$DATA_DIR/hg002/truth/HG002_GRCh38_1_22_v4.2.1_benchmark_noinconsistent.bed\" > '$hg_dir/hg002_full_giab_50kb.bed'
+    [ \"\$(wc -l < '$hg_dir/hg002_full_giab_50kb.bed')\" -ge 50000 ] || { echo 'FATAL: hg002_full_giab_50kb.bed interval count < 50000' >&2; exit 1; }
+    cp -f '$hg_dir/hg002_full_22contigs.bed' \"\$KEEP_DIR/\"
+    wc -l '$hg_dir/hg002_full_22contigs.bed' '$hg_dir/hg002_full_giab_50kb.bed' > \"\$KEEP_DIR/bed_counts.txt\"
+  "
+
+  # 2. Arm A: 22 Un-Chunked Whole Chromosomes (chr1..chr22, 2.875 Gbp) across all 3 engines at -th 32 / 245G / -Xmx200g
+  run_checkpointed_cell "stage5" "s5_wgs_hg002_full_contigs_3way_th32" 32 "245G" bash -c "
+    set -euo pipefail
+    source harness/gcp_paper_runner.sh --source-only
+    REF=\"\$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fasta\"
+    BAM='$hg_dir/HG002.GRCh38.2x250.bam'
+    BED='$hg_dir/hg002_full_22contigs.bed'
+    WORK_LOCAL='${WORK_DIR}/tmp_s5_contigs'
+    mkdir -p \"\$WORK_LOCAL\"
+
+    # (a) VarDictRust v1.0.4 (-th 32, bounded 500 kbp tile streaming across all 22 autosomes)
+    if [ ! -s \"\$KEEP_DIR/rust_contigs_th32.time\" ] || [ ! -s \"\$WORK_LOCAL/rust_contigs_th32.vcf\" ]; then
+      /usr/bin/time -v -o \"\$KEEP_DIR/rust_contigs_th32.time\" \
+        target/release/vardictrust -G \"\$REF\" -f 0.01 -N HG002 \
+        -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -z -th 32 \"\$BED\" > \"\$WORK_LOCAL/rust_contigs_th32.vcf\"
+    fi
+    rust_vars=\$(grep -vc '^#' \"\$WORK_LOCAL/rust_contigs_th32.vcf\" || true)
+    echo \"\$rust_vars\" > \"\$KEEP_DIR/rust_contigs_th32.variant_count\"
+    [ \"\$rust_vars\" -ge 1000000 ] || { echo \"FATAL: rust_contigs_th32.vcf has only \$rust_vars variants (<1,000,000)\" >&2; exit 1; }
+    bgzip -c -@ 16 \"\$WORK_LOCAL/rust_contigs_th32.vcf\" > \"\$KEEP_DIR/rust_contigs_th32.vcf.gz\"
+    tabix -f -p vcf \"\$KEEP_DIR/rust_contigs_th32.vcf.gz\"
+
+    # (b) vardictcpp (-th 32 --chunk 50000, contained under MemoryMax=245G)
+    if [ ! -s \"\$KEEP_DIR/cpp_contigs_th32.time\" ]; then
+      rc_cpp=0
+      /usr/bin/time -v -o \"\$KEEP_DIR/cpp_contigs_th32.time\" \
+        env CPP_CHUNK=50000 bash harness/run_cpp.sh \"\$REF\" \"\$BAM\" \"\$BED\" \"\$WORK_LOCAL/cpp_contigs_th32.vcf\" HG002 -f 0.01 -th 32 -z || rc_cpp=\$?
+      echo \"\$rc_cpp\" > \"\$KEEP_DIR/cpp_contigs_th32.exit\"
+      if [ -s \"\$WORK_LOCAL/cpp_contigs_th32.vcf\" ]; then
+        grep -vc '^#' \"\$WORK_LOCAL/cpp_contigs_th32.vcf\" > \"\$KEEP_DIR/cpp_contigs_th32.variant_count\" || true
+        bgzip -c -@ 16 \"\$WORK_LOCAL/cpp_contigs_th32.vcf\" > \"\$KEEP_DIR/cpp_contigs_th32.vcf.gz\" || true
+      fi
+    fi
+
+    # (c) VarDictJava v1.8.3 (-th 32, -Xmx200g -XX:+ExitOnOutOfMemoryError, contained under MemoryMax=245G)
+    if [ ! -s \"\$KEEP_DIR/java_contigs_th32.time\" ]; then
+      rc_java=0
+      /usr/bin/time -v -o \"\$KEEP_DIR/java_contigs_th32.time\" \
+        env ORACLE_XMX_GB=200 JAVA_OPTS='-Xmx200g -XX:+ExitOnOutOfMemoryError' \
+        bash harness/run_oracle.sh \"\$REF\" \"\$BAM\" \"\$BED\" \"\$WORK_LOCAL/java_contigs_th32.vcf\" HG002 -f 0.01 -th 32 -z || rc_java=\$?
+      echo \"\$rc_java\" > \"\$KEEP_DIR/java_contigs_th32.exit\"
+    fi
+    rc_java=\"\$(cat \"\$KEEP_DIR/java_contigs_th32.exit\" 2>/dev/null || echo 1)\"
+    if [ \"\$rc_java\" -eq 0 ] && [ -s \"\$WORK_LOCAL/java_contigs_th32.vcf\" ]; then
+      grep -vc '^#' \"\$WORK_LOCAL/java_contigs_th32.vcf\" > \"\$KEEP_DIR/java_contigs_th32.variant_count\" || true
+      bgzip -c -@ 16 \"\$WORK_LOCAL/java_contigs_th32.vcf\" > \"\$KEEP_DIR/java_contigs_th32.vcf.gz\"
+      tabix -f -p vcf \"\$KEEP_DIR/java_contigs_th32.vcf.gz\"
+      oracle_cache_put 'hg002_full/java_contigs_th32.vcf.gz' \"\$KEEP_DIR/java_contigs_th32.vcf.gz\"
+      python3 harness/compare_vcf.py --min-variants 1000000 \"\$WORK_LOCAL/java_contigs_th32.vcf\" \"\$WORK_LOCAL/rust_contigs_th32.vcf\" | tee \"\$KEEP_DIR/compare_contigs_th32.txt\"
+      grep -q '^MATCH' \"\$KEEP_DIR/compare_contigs_th32.txt\"
+      echo \"COMPLETED_AND_MATCHED (rust_vars=\${rust_vars})\" | tee \"\$KEEP_DIR/contigs_verdict.txt\"
+    else
+      echo \"OOM-vs-completed (java_rc=\${rc_java}, rust_vars=\${rust_vars})\" | tee \"\$KEEP_DIR/contigs_verdict.txt\"
+    fi
+    rm -rf \"\$WORK_LOCAL\"
+  "
+
+  # 3. Arm B: Full chr1..chr22 GIAB v4.2.1 Callable Genome (<=50 kbp pre-tiled, 2.51 Gbp) + Tier-2 Parity + Tier-3 rtg vcfeval
+  run_checkpointed_cell "stage5" "s5_wgs_hg002_full_giab_3way_th32" 32 "245G" bash -c "
+    set -euo pipefail
+    source harness/gcp_paper_runner.sh --source-only
+    REF=\"\$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fasta\"
+    BAM='$hg_dir/HG002.GRCh38.2x250.bam'
+    BED='$hg_dir/hg002_full_giab_50kb.bed'
+    TRUTH_VCF=\"\$DATA_DIR/hg002/truth/HG002_GRCh38_1_22_v4.2.1_benchmark.vcf.gz\"
+    TRUTH_BED=\"\$DATA_DIR/hg002/truth/HG002_GRCh38_1_22_v4.2.1_benchmark_noinconsistent.bed\"
+    SDF=\"\$DATA_DIR/ref/giabv3/GRCh38_GIABv3.sdf\"
+    WORK_LOCAL='${WORK_DIR}/tmp_s5_giab'
+    mkdir -p \"\$WORK_LOCAL\"
+
+    # (a) VarDictRust v1.0.4 (-th 32)
+    if [ ! -s \"\$KEEP_DIR/rust_giab_th32.time\" ] || [ ! -s \"\$WORK_LOCAL/rust_giab_th32.vcf\" ]; then
+      /usr/bin/time -v -o \"\$KEEP_DIR/rust_giab_th32.time\" \
+        target/release/vardictrust -G \"\$REF\" -f 0.01 -N HG002 \
+        -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -z -th 32 \"\$BED\" > \"\$WORK_LOCAL/rust_giab_th32.vcf\"
+    fi
+    rust_vars=\$(grep -vc '^#' \"\$WORK_LOCAL/rust_giab_th32.vcf\" || true)
+    echo \"\$rust_vars\" > \"\$KEEP_DIR/rust_giab_th32.variant_count\"
+    [ \"\$rust_vars\" -ge 1000000 ] || { echo \"FATAL: rust_giab_th32.vcf has only \$rust_vars variants (<1,000,000)\" >&2; exit 1; }
+    bgzip -c -@ 16 \"\$WORK_LOCAL/rust_giab_th32.vcf\" > \"\$KEEP_DIR/rust_giab_th32.vcf.gz\"
+    tabix -f -p vcf \"\$KEEP_DIR/rust_giab_th32.vcf.gz\"
+
+    # (b) vardictcpp (-th 32 --chunk 50000)
+    if [ ! -s \"\$KEEP_DIR/cpp_giab_th32.time\" ]; then
+      rc_cpp=0
+      /usr/bin/time -v -o \"\$KEEP_DIR/cpp_giab_th32.time\" \
+        env CPP_CHUNK=50000 bash harness/run_cpp.sh \"\$REF\" \"\$BAM\" \"\$BED\" \"\$WORK_LOCAL/cpp_giab_th32.vcf\" HG002 -f 0.01 -th 32 -z || rc_cpp=\$?
+      echo \"\$rc_cpp\" > \"\$KEEP_DIR/cpp_giab_th32.exit\"
+      if [ -s \"\$WORK_LOCAL/cpp_giab_th32.vcf\" ]; then
+        grep -vc '^#' \"\$WORK_LOCAL/cpp_giab_th32.vcf\" > \"\$KEEP_DIR/cpp_giab_th32.variant_count\" || true
+        bgzip -c -@ 16 \"\$WORK_LOCAL/cpp_giab_th32.vcf\" > \"\$KEEP_DIR/cpp_giab_th32.vcf.gz\" || true
+      fi
+    fi
+
+    # (c) VarDictJava v1.8.3 (-th 32, -Xmx200g -XX:+ExitOnOutOfMemoryError)
+    if [ ! -s \"\$KEEP_DIR/java_giab_th32.time\" ] || [ ! -s \"\$WORK_LOCAL/java_giab_th32.vcf\" ]; then
+      rc_java=0
+      /usr/bin/time -v -o \"\$KEEP_DIR/java_giab_th32.time\" \
+        env ORACLE_XMX_GB=200 JAVA_OPTS='-Xmx200g -XX:+ExitOnOutOfMemoryError' \
+        bash harness/run_oracle.sh \"\$REF\" \"\$BAM\" \"\$BED\" \"\$WORK_LOCAL/java_giab_th32.vcf\" HG002 -f 0.01 -th 32 -z || rc_java=\$?
+      echo \"\$rc_java\" > \"\$KEEP_DIR/java_giab_th32.exit\"
+    fi
+    rc_java=\"\$(cat \"\$KEEP_DIR/java_giab_th32.exit\" 2>/dev/null || echo 1)\"
+    if [ \"\$rc_java\" -eq 0 ] && [ -s \"\$WORK_LOCAL/java_giab_th32.vcf\" ]; then
+      grep -vc '^#' \"\$WORK_LOCAL/java_giab_th32.vcf\" > \"\$KEEP_DIR/java_giab_th32.variant_count\" || true
+      bgzip -c -@ 16 \"\$WORK_LOCAL/java_giab_th32.vcf\" > \"\$KEEP_DIR/java_giab_th32.vcf.gz\"
+      tabix -f -p vcf \"\$KEEP_DIR/java_giab_th32.vcf.gz\"
+      oracle_cache_put 'hg002_full/java_giab_th32.vcf.gz' \"\$KEEP_DIR/java_giab_th32.vcf.gz\"
+
+      # Tier-2 Full-Genome Parity (VarDictJava vs VarDictRust)
+      python3 harness/compare_vcf.py --min-variants 1000000 \"\$WORK_LOCAL/java_giab_th32.vcf\" \"\$WORK_LOCAL/rust_giab_th32.vcf\" | tee \"\$KEEP_DIR/compare_giab_th32.txt\"
+      grep -q '^MATCH' \"\$KEEP_DIR/compare_giab_th32.txt\"
+
+      if [ -s \"\$WORK_LOCAL/cpp_giab_th32.vcf\" ]; then
+        python3 harness/compare_vcf.py \"\$WORK_LOCAL/java_giab_th32.vcf\" \"\$WORK_LOCAL/cpp_giab_th32.vcf\" > \"\$KEEP_DIR/compare_cpp_vs_java_giab_th32.txt\" 2>&1 || true
+      fi
+
+      # Tier-3 Full-Genome rtg vcfeval Truth Concordance across chr1..chr22
+      bash harness/concordance_germline.sh hg002-full-wgs-truth \
+        \"\$WORK_LOCAL/java_giab_th32.vcf\" \"\$WORK_LOCAL/rust_giab_th32.vcf\" \
+        \"\$TRUTH_VCF\" \"\$TRUTH_BED\" \"\$SDF\" \
+        \"\$KEEP_DIR/vcfeval_hg002_full_wgs\" HG002 \"\$WORK_LOCAL/cpp_giab_th32.vcf\" | tee \"\$KEEP_DIR/vcfeval_hg002_full_wgs.log\"
+      grep -q '^EQUAL:' \"\$KEEP_DIR/vcfeval_hg002_full_wgs.log\"
+    else
+      echo \"OOM-vs-completed (java_rc=\${rc_java}, rust_vars=\${rust_vars})\" | tee \"\$KEEP_DIR/giab_verdict.txt\"
+    fi
+    rm -rf \"\$WORK_LOCAL\"
+  "
+
+  gcs_mark_done "STAGE5_DONE"
+  gcs_write_heartbeat "stage5" "STAGE5_DONE" "COMPLETED"
+}
+
+# =============================================================================
 # Option C (Phase C2): All-Cores (32 vCPUs) + Full-RAM (251 GiB / -Xmx200g)
 # Non-Fail-Fast Full-Corpus Differential Parity Sweep (v1.0.3 vs VarDictJava v1.8.3)
 # Zero scale, n=3 timing, -th 1, jobs/node, or field-caller runs.
@@ -2418,10 +2618,12 @@ run_worker() {
     2) run_stage_2 ;;
     3) run_stage_3 ;;
     4) run_stage_4 ;;
+    5) run_stage_5 ;;
     sweep) run_v103_parity_sweep ;;
     all)
       run_stage_1
       run_packed_stages_2_to_4
+      run_stage_5
       gcs_mark_done "ALL_STAGES"
       gcs_write_heartbeat "complete" "ALL_STAGES" "COMPLETED"
       ;;
@@ -2466,6 +2668,12 @@ run_controller() {
   if [ "$worker_stage" = "sweep" ]; then
     done_marker="SWEEP_V104_DONE"
     keep_vm_on_done="${KEEP_VM_ON_SWEEP_DONE:-1}"
+  elif [ "$worker_stage" = "5" ]; then
+    done_marker="STAGE5_DONE"
+    keep_vm_on_done="${KEEP_VM_ON_DONE:-0}"
+  elif [ "$worker_stage" = "all" ]; then
+    done_marker="STAGE5_DONE"
+    keep_vm_on_done="${KEEP_VM_ON_DONE:-0}"
   fi
 
   for ((attempt = start_attempt; attempt <= max_attempts; attempt++)); do
@@ -2618,6 +2826,17 @@ EOS
           fi
           return 0
         fi
+        if [ "$unit_state" = "inactive" ] && gcs_stat_done "ALL_STAGES" && ! gcs_stat_done "STAGE5_DONE"; then
+          echo "[Controller] Stages 1-4 finished (ALL_STAGES.done); restarting vardict-paper-worker.service to execute Stage 5..."
+          gcloud compute ssh "$VM_NAME" --project="$GCP_PROJECT" --zone="$GCP_ZONE" --quiet --command="
+            sudo systemctl reset-failed vardict-paper-worker.service 2>/dev/null || true
+            sudo systemd-run --unit=vardict-paper-worker \
+              --uid=\"\$(id -un)\" --gid=\"\$(id -gn)\" \
+              --setenv=HOME=\"\$HOME\" \
+              bash '$WORK_DIR/bootstrap_and_run.sh'
+          "
+          continue
+        fi
         echo "[Controller] Worker unit exited (${unit_state}) without ${done_marker}.done; fetching tail of worker.log:" >&2
         gcloud compute ssh "$VM_NAME" --project="$GCP_PROJECT" --zone="$GCP_ZONE" --quiet --command="tail -n 100 '$WORK_DIR/worker.log' || true" >&2 || true
         if [ "$KEEP_VM_ON_FAIL" != "1" ]; then
@@ -2672,6 +2891,9 @@ run_plan_check() {
   grep -Fq 'run_v103_parity_sweep' "$0" || { echo "FAIL: missing run_v103_parity_sweep" >&2; exit 1; }
   grep -Fq 'sweep_wgs_mrd_matrix' "$0" || { echo "FAIL: missing sweep_wgs_mrd_matrix" >&2; exit 1; }
   grep -Fq 'sweep_ultradeep_mrd_stress' "$0" || { echo "FAIL: missing sweep_ultradeep_mrd_stress" >&2; exit 1; }
+  grep -Fq 's5_stage_hg002_full_wgs' "$0" || { echo "FAIL: missing s5_stage_hg002_full_wgs" >&2; exit 1; }
+  grep -Fq 's5_wgs_hg002_full_contigs_3way_th32' "$0" || { echo "FAIL: missing s5_wgs_hg002_full_contigs_3way_th32" >&2; exit 1; }
+  grep -Fq 's5_wgs_hg002_full_giab_3way_th32' "$0" || { echo "FAIL: missing s5_wgs_hg002_full_giab_3way_th32" >&2; exit 1; }
 
   local tmp
   tmp="$(mktemp -d)"
