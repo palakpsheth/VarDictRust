@@ -191,25 +191,36 @@ gcs_write_heartbeat() {
   fi
 }
 
-# Restores previously measured VarDictJava & vardictcpp (.var/.sorted.var/.vcf/.time/.exit/.err)
-# artifacts for a given cell from cells-v103/ and cells-v104/ on GCS so neither oracle nor C++
-# is ever re-run when identical inputs/flags/cgroup slices were already measured on n2-highmem-32.
+# Restores previously measured VarDictJava, vardictcpp, and external field-caller
+# (.var/.sorted.var/.vcf/.time/.exit/.err) artifacts for a given cell from cells-v103/
+# and cells-v104/ on GCS (and preserves existing local non-Rust files) so neither oracle,
+# C++, nor field callers are ever re-run when refreshing VarDictRust (e.g. v1.0.5) on n2-highmem-32.
 restore_prev_java_cpp_artifacts() {
   local cell_id="$1" dst_dir="$2"
-  [ -z "${LOCAL_CKPT_DIR:-}" ] || return 0
   mkdir -p "$dst_dir"
-  local bucket_prefix pat
-  for bucket_prefix in "${GCS_RESULTS}/cells-v103/${cell_id}" "${GCS_RESULTS}/cells-v104/${cell_id}"; do
-    if setsid gsutil -q stat "${bucket_prefix}/*" 2>/dev/null; then
-      echo "[CACHE-RESTORE] Restoring cached Java/Cpp artifacts from ${bucket_prefix}/ -> ${dst_dir}/"
-      for pat in "java*" "cpp*" "oracle*" "vardict_java*" "vardictcpp*" "single_*" "som_*"; do
-        setsid gsutil -m -q cp "${bucket_prefix}/${pat}" "$dst_dir/" 2>/dev/null || true
-      done
-    fi
-  done
+  if [ -z "${LOCAL_CKPT_DIR:-}" ]; then
+    local bucket_prefix pat
+    for bucket_prefix in "${GCS_RESULTS}/cells-v103/${cell_id}" "${GCS_RESULTS}/cells-v104/${cell_id}"; do
+      if setsid gsutil -q stat "${bucket_prefix}/*" 2>/dev/null; then
+        echo "[CACHE-RESTORE] Restoring cached Java/Cpp/Field-Caller artifacts from ${bucket_prefix}/ -> ${dst_dir}/"
+        for pat in "java*" "cpp*" "oracle*" "vardict_java*" "vardictcpp*" "single_*" "som_*" "freebayes*" "lofreq*" "octopus*" "mutect2*" "m2*" "hg002_*" "hg008_*" "seqc2_*" "strelka*"; do
+          setsid gsutil -m -q cp -r "${bucket_prefix}/${pat}" "$dst_dir/" 2>/dev/null || true
+        done
+        if [ "$cell_id" = "s4_perf_budget_4targets_n3" ]; then
+          local sub
+          for sub in amplicon hg002 hg008 seqc2; do
+            mkdir -p "$dst_dir/$sub"
+            for pat in "java*" "cpp*" "oracle*"; do
+              setsid gsutil -m -q cp "${bucket_prefix}/${sub}/${pat}" "$dst_dir/$sub/" 2>/dev/null || true
+            done
+          done
+        fi
+      fi
+    done
+  fi
   # Never reuse stale Rust outputs from a prior version (keep any output newer than target/release/vardictrust)
   local rf
-  for rf in "$dst_dir"/rust* "$dst_dir"/vardictrust*; do
+  for rf in "$dst_dir"/rust* "$dst_dir"/vardictrust* "$dst_dir"/*/rust* "$dst_dir"/*/vardictrust*; do
     [ -e "$rf" ] || continue
     if [ -x "target/release/vardictrust" ] && [ "$rf" -nt "target/release/vardictrust" ]; then
       continue
@@ -285,7 +296,7 @@ run_checkpointed_cell() {
   if [ -n "${LOCAL_CKPT_DIR:-}" ]; then
     gcs_upload "$cell_dir" "${LOCAL_CKPT_DIR}/cells/${cell_id}"
   else
-    gcs_upload "$cell_dir" "${GCS_RESULTS}/cells-v104/${cell_id}" || true
+    gcs_upload "$cell_dir" "${GCS_RESULTS}/${GCS_CELLS_SUBDIR:-cells-v104}/${cell_id}" || true
   fi
 
   if [ "$rc" -ne 0 ]; then
@@ -866,17 +877,25 @@ run_stage_2() {
     python3 harness/compare_vcf.py \"\$KEEP_DIR/vardict_java.vcf\" \"\$KEEP_DIR/vardictrust.vcf\" | tee \"\$KEEP_DIR/compare_hg002_chr20.txt\"
     grep -q '^MATCH' \"\$KEEP_DIR/compare_hg002_chr20.txt\"
 
-    # Competing field callers (FreeBayes 1.3.10, LoFreq 2.1.5, octopus 0.7.4, Mutect2 4.6.2.0)
-    conda run -n cl_freebayes freebayes -f \"\$REF\" -t \"\$BED\" \"\$BAM\" > \"\$KEEP_DIR/freebayes.vcf\"
-    if [ ! -f \"\$KEEP_DIR/hg002.iq.bam\" ]; then
-      conda run -n cl_lofreq lofreq indelqual --dindel -f \"\$REF\" -o \"\$KEEP_DIR/hg002.iq.bam\" \"\$BAM\"
-      samtools index \"\$KEEP_DIR/hg002.iq.bam\"
+    # Competing field callers (FreeBayes 1.3.10, LoFreq 2.1.5, octopus 0.7.4, Mutect2 4.6.2.0) — reuse cached VCFs when present
+    if [ ! -s \"\$KEEP_DIR/freebayes.vcf\" ]; then
+      conda run -n cl_freebayes freebayes -f \"\$REF\" -t \"\$BED\" \"\$BAM\" > \"\$KEEP_DIR/freebayes.vcf\"
     fi
-    rm -f \"\$KEEP_DIR/lofreq.vcf\"
-    conda run -n cl_lofreq lofreq call-parallel --pp-threads 8 --call-indels -f \"\$REF\" -l \"\$BED\" -o \"\$KEEP_DIR/lofreq.vcf\" \"\$KEEP_DIR/hg002.iq.bam\"
-    conda run -n cl_octopus octopus -R \"\$REF\" -I \"\$BAM\" -t \"\$BED\" -o \"\$KEEP_DIR/octopus.vcf\" --threads 8
-    conda run -n cl_gatk4 gatk Mutect2 -R \"\$REF\" -I \"\$BAM\" -L \"\$BED\" --native-pair-hmm-threads 8 -O \"\$KEEP_DIR/m2.vcf.gz\"
-    conda run -n cl_gatk4 gatk FilterMutectCalls -R \"\$REF\" -V \"\$KEEP_DIR/m2.vcf.gz\" -O \"\$KEEP_DIR/mutect2.filt.vcf.gz\"
+    if [ ! -s \"\$KEEP_DIR/lofreq.vcf\" ]; then
+      if [ ! -f \"\$KEEP_DIR/hg002.iq.bam\" ]; then
+        conda run -n cl_lofreq lofreq indelqual --dindel -f \"\$REF\" -o \"\$KEEP_DIR/hg002.iq.bam\" \"\$BAM\"
+        samtools index \"\$KEEP_DIR/hg002.iq.bam\"
+      fi
+      rm -f \"\$KEEP_DIR/lofreq.vcf\"
+      conda run -n cl_lofreq lofreq call-parallel --pp-threads 8 --call-indels -f \"\$REF\" -l \"\$BED\" -o \"\$KEEP_DIR/lofreq.vcf\" \"\$KEEP_DIR/hg002.iq.bam\"
+    fi
+    if [ ! -s \"\$KEEP_DIR/octopus.vcf\" ]; then
+      conda run -n cl_octopus octopus -R \"\$REF\" -I \"\$BAM\" -t \"\$BED\" -o \"\$KEEP_DIR/octopus.vcf\" --threads 8
+    fi
+    if [ ! -s \"\$KEEP_DIR/mutect2.filt.vcf.gz\" ]; then
+      conda run -n cl_gatk4 gatk Mutect2 -R \"\$REF\" -I \"\$BAM\" -L \"\$BED\" --native-pair-hmm-threads 8 -O \"\$KEEP_DIR/m2.vcf.gz\"
+      conda run -n cl_gatk4 gatk FilterMutectCalls -R \"\$REF\" -V \"\$KEEP_DIR/m2.vcf.gz\" -O \"\$KEEP_DIR/mutect2.filt.vcf.gz\"
+    fi
 
     # Score all 6 callers identically via Archive.zip/scripts/eval_caller.sh logic
     OUT_TABLE=\"\$KEEP_DIR/fig2_caller_accuracy.tsv\"
@@ -1151,37 +1170,68 @@ run_stage_4() {
     (
       set -euo pipefail
       for run in 1 2 3; do
-        taskset -c 0-7 env KEEP_DIR="$KEEP_DIR/amplicon" GOLDEN_MODE=off ORACLE_XMX_GB=22 \
-          bash harness/compare.sh \
-          "$DATA_DIR/amplicon/ref.fa" \
-          "$DATA_DIR/amplicon/amplicon.bam" \
-          "$DATA_DIR/amplicon/correct_8columns_amplicon.bed" SAMPLE -a 10:0.95 -th 8
-        cp "$KEEP_DIR/amplicon/rust.time" "$KEEP_DIR/amplicon/rust_run${run}.time"
-        cp "$KEEP_DIR/amplicon/java.time" "$KEEP_DIR/amplicon/java_run${run}.time"
-        [ -f "$KEEP_DIR/amplicon/cpp.time" ] && cp "$KEEP_DIR/amplicon/cpp.time" "$KEEP_DIR/amplicon/cpp_run${run}.time" || true
+        if [ -s "$KEEP_DIR/amplicon/java_run${run}.time" ] && [ -s "$KEEP_DIR/amplicon/java.vcf" ]; then
+          cp -f "$KEEP_DIR/amplicon/java_run${run}.time" "$KEEP_DIR/amplicon/java.time"
+          [ -s "$KEEP_DIR/amplicon/cpp_run${run}.time" ] && cp -f "$KEEP_DIR/amplicon/cpp_run${run}.time" "$KEEP_DIR/amplicon/cpp.time" || true
+          taskset -c 0-7 /usr/bin/time -v -o "$KEEP_DIR/amplicon/rust.time" \
+            target/release/vardictrust -G "$DATA_DIR/amplicon/ref.fa" -f 0.01 -N SAMPLE \
+            -b "$DATA_DIR/amplicon/amplicon.bam" -z -a 10:0.95 -th 8 "$DATA_DIR/amplicon/correct_8columns_amplicon.bed" > "$KEEP_DIR/amplicon/rust.vcf"
+          cp -f "$KEEP_DIR/amplicon/rust.time" "$KEEP_DIR/amplicon/rust_run${run}.time"
+          python3 harness/compare_vcf.py "$KEEP_DIR/amplicon/java.vcf" "$KEEP_DIR/amplicon/rust.vcf" | tee "$KEEP_DIR/amplicon/compare.txt"
+          grep -q "^MATCH" "$KEEP_DIR/amplicon/compare.txt"
+        else
+          taskset -c 0-7 env KEEP_DIR="$KEEP_DIR/amplicon" GOLDEN_MODE=off ORACLE_XMX_GB=22 \
+            bash harness/compare.sh \
+            "$DATA_DIR/amplicon/ref.fa" \
+            "$DATA_DIR/amplicon/amplicon.bam" \
+            "$DATA_DIR/amplicon/correct_8columns_amplicon.bed" SAMPLE -a 10:0.95 -th 8
+          cp "$KEEP_DIR/amplicon/rust.time" "$KEEP_DIR/amplicon/rust_run${run}.time"
+          cp "$KEEP_DIR/amplicon/java.time" "$KEEP_DIR/amplicon/java_run${run}.time"
+          [ -f "$KEEP_DIR/amplicon/cpp.time" ] && cp "$KEEP_DIR/amplicon/cpp.time" "$KEEP_DIR/amplicon/cpp_run${run}.time" || true
+        fi
       done
 
       for run in 1 2 3; do
-        taskset -c 0-7 env KEEP_DIR="$KEEP_DIR/hg002" GOLDEN_MODE=off MIN_VARIANTS=200000 ORACLE_XMX_GB=44 \
-          bash harness/compare.sh \
-          "$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fasta" \
-          "$DATA_DIR/hg002/HG002.chr20.bam" \
-          "$DATA_DIR/hg002/eval.bed" HG002 -f 0.01 -th 8
-        cp "$KEEP_DIR/hg002/rust.time" "$KEEP_DIR/hg002/rust_run${run}.time"
-        cp "$KEEP_DIR/hg002/java.time" "$KEEP_DIR/hg002/java_run${run}.time"
-        [ -f "$KEEP_DIR/hg002/cpp.time" ] && cp "$KEEP_DIR/hg002/cpp.time" "$KEEP_DIR/hg002/cpp_run${run}.time" || true
+        if [ -s "$KEEP_DIR/hg002/java_run${run}.time" ] && [ -s "$KEEP_DIR/hg002/java.vcf" ]; then
+          cp -f "$KEEP_DIR/hg002/java_run${run}.time" "$KEEP_DIR/hg002/java.time"
+          [ -s "$KEEP_DIR/hg002/cpp_run${run}.time" ] && cp -f "$KEEP_DIR/hg002/cpp_run${run}.time" "$KEEP_DIR/hg002/cpp.time" || true
+          taskset -c 0-7 /usr/bin/time -v -o "$KEEP_DIR/hg002/rust.time" \
+            target/release/vardictrust -G "$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fasta" -f 0.01 -N HG002 \
+            -b "$DATA_DIR/hg002/HG002.chr20.bam" -c 1 -S 2 -E 3 -g 4 -z -th 8 "$DATA_DIR/hg002/eval.bed" > "$KEEP_DIR/hg002/rust.vcf"
+          cp -f "$KEEP_DIR/hg002/rust.time" "$KEEP_DIR/hg002/rust_run${run}.time"
+          python3 harness/compare_vcf.py --min-variants 200000 "$KEEP_DIR/hg002/java.vcf" "$KEEP_DIR/hg002/rust.vcf" | tee "$KEEP_DIR/hg002/compare.txt"
+        else
+          taskset -c 0-7 env KEEP_DIR="$KEEP_DIR/hg002" GOLDEN_MODE=off MIN_VARIANTS=200000 ORACLE_XMX_GB=44 \
+            bash harness/compare.sh \
+            "$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fasta" \
+            "$DATA_DIR/hg002/HG002.chr20.bam" \
+            "$DATA_DIR/hg002/eval.bed" HG002 -f 0.01 -th 8
+          cp "$KEEP_DIR/hg002/rust.time" "$KEEP_DIR/hg002/rust_run${run}.time"
+          cp "$KEEP_DIR/hg002/java.time" "$KEEP_DIR/hg002/java_run${run}.time"
+          [ -f "$KEEP_DIR/hg002/cpp.time" ] && cp "$KEEP_DIR/hg002/cpp.time" "$KEEP_DIR/hg002/cpp_run${run}.time" || true
+        fi
       done
       grep -q "^MATCH (227562 variants)$" "$KEEP_DIR/hg002/compare.txt"
 
       for run in 1 2 3; do
-        taskset -c 0-7 env KEEP_DIR="$KEEP_DIR/hg008" GOLDEN_MODE=off MIN_VARIANTS=1000 ORACLE_XMX_GB=44 \
-          bash harness/compare.sh \
-          "$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fa" \
-          "$DATA_DIR/hg008/HG008-T.slice.bam|$DATA_DIR/hg008/HG008-N.slice.bam" \
-          "$DATA_DIR/hg008/engine.bed" "HG008-T|HG008-N" -th 8
-        cp "$KEEP_DIR/hg008/rust.time" "$KEEP_DIR/hg008/rust_run${run}.time"
-        cp "$KEEP_DIR/hg008/java.time" "$KEEP_DIR/hg008/java_run${run}.time"
-        [ -f "$KEEP_DIR/hg008/cpp.time" ] && cp "$KEEP_DIR/hg008/cpp.time" "$KEEP_DIR/hg008/cpp_run${run}.time" || true
+        if [ -s "$KEEP_DIR/hg008/java_run${run}.time" ] && [ -s "$KEEP_DIR/hg008/java.vcf" ]; then
+          cp -f "$KEEP_DIR/hg008/java_run${run}.time" "$KEEP_DIR/hg008/java.time"
+          [ -s "$KEEP_DIR/hg008/cpp_run${run}.time" ] && cp -f "$KEEP_DIR/hg008/cpp_run${run}.time" "$KEEP_DIR/hg008/cpp.time" || true
+          taskset -c 0-7 /usr/bin/time -v -o "$KEEP_DIR/hg008/rust.time" \
+            target/release/vardictrust -G "$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fa" -f 0.01 -N "HG008-T|HG008-N" \
+            -b "$DATA_DIR/hg008/HG008-T.slice.bam|$DATA_DIR/hg008/HG008-N.slice.bam" -c 1 -S 2 -E 3 -g 4 -z -th 8 "$DATA_DIR/hg008/engine.bed" > "$KEEP_DIR/hg008/rust.vcf"
+          cp -f "$KEEP_DIR/hg008/rust.time" "$KEEP_DIR/hg008/rust_run${run}.time"
+          python3 harness/compare_vcf.py --min-variants 1000 "$KEEP_DIR/hg008/java.vcf" "$KEEP_DIR/hg008/rust.vcf" | tee "$KEEP_DIR/hg008/compare.txt"
+        else
+          taskset -c 0-7 env KEEP_DIR="$KEEP_DIR/hg008" GOLDEN_MODE=off MIN_VARIANTS=1000 ORACLE_XMX_GB=44 \
+            bash harness/compare.sh \
+            "$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fa" \
+            "$DATA_DIR/hg008/HG008-T.slice.bam|$DATA_DIR/hg008/HG008-N.slice.bam" \
+            "$DATA_DIR/hg008/engine.bed" "HG008-T|HG008-N" -th 8
+          cp "$KEEP_DIR/hg008/rust.time" "$KEEP_DIR/hg008/rust_run${run}.time"
+          cp "$KEEP_DIR/hg008/java.time" "$KEEP_DIR/hg008/java_run${run}.time"
+          [ -f "$KEEP_DIR/hg008/cpp.time" ] && cp "$KEEP_DIR/hg008/cpp.time" "$KEEP_DIR/hg008/cpp_run${run}.time" || true
+        fi
       done
       grep -q "^MATCH (18426 variants)$" "$KEEP_DIR/hg008/compare.txt"
     ) &
@@ -1191,14 +1241,24 @@ run_stage_4() {
     (
       set -euo pipefail
       for run in 1 2 3; do
-        taskset -c 8-15 env KEEP_DIR="$KEEP_DIR/seqc2" GOLDEN_MODE=off MIN_VARIANTS=2000 ORACLE_XMX_GB=44 \
-          bash harness/compare.sh \
-          "$DATA_DIR/ref/d1vd1/GRCh38.d1.vd1.fa" \
-          "$DATA_DIR/seqc2/HCC1395.bam|$DATA_DIR/seqc2/HCC1395BL.bam" \
-          "$DATA_DIR/seqc2/exome.engine.bed" "HCC1395|HCC1395BL" -th 8
-        cp "$KEEP_DIR/seqc2/rust.time" "$KEEP_DIR/seqc2/rust_run${run}.time"
-        cp "$KEEP_DIR/seqc2/java.time" "$KEEP_DIR/seqc2/java_run${run}.time"
-        [ -f "$KEEP_DIR/seqc2/cpp.time" ] && cp "$KEEP_DIR/seqc2/cpp.time" "$KEEP_DIR/seqc2/cpp_run${run}.time" || true
+        if [ -s "$KEEP_DIR/seqc2/java_run${run}.time" ] && [ -s "$KEEP_DIR/seqc2/java.vcf" ]; then
+          cp -f "$KEEP_DIR/seqc2/java_run${run}.time" "$KEEP_DIR/seqc2/java.time"
+          [ -s "$KEEP_DIR/seqc2/cpp_run${run}.time" ] && cp -f "$KEEP_DIR/seqc2/cpp_run${run}.time" "$KEEP_DIR/seqc2/cpp.time" || true
+          taskset -c 8-15 /usr/bin/time -v -o "$KEEP_DIR/seqc2/rust.time" \
+            target/release/vardictrust -G "$DATA_DIR/ref/d1vd1/GRCh38.d1.vd1.fa" -f 0.01 -N "HCC1395|HCC1395BL" \
+            -b "$DATA_DIR/seqc2/HCC1395.bam|$DATA_DIR/seqc2/HCC1395BL.bam" -c 1 -S 2 -E 3 -g 4 -z -th 8 "$DATA_DIR/seqc2/exome.engine.bed" > "$KEEP_DIR/seqc2/rust.vcf"
+          cp -f "$KEEP_DIR/seqc2/rust.time" "$KEEP_DIR/seqc2/rust_run${run}.time"
+          python3 harness/compare_vcf.py --min-variants 2000 "$KEEP_DIR/seqc2/java.vcf" "$KEEP_DIR/seqc2/rust.vcf" | tee "$KEEP_DIR/seqc2/compare.txt"
+        else
+          taskset -c 8-15 env KEEP_DIR="$KEEP_DIR/seqc2" GOLDEN_MODE=off MIN_VARIANTS=2000 ORACLE_XMX_GB=44 \
+            bash harness/compare.sh \
+            "$DATA_DIR/ref/d1vd1/GRCh38.d1.vd1.fa" \
+            "$DATA_DIR/seqc2/HCC1395.bam|$DATA_DIR/seqc2/HCC1395BL.bam" \
+            "$DATA_DIR/seqc2/exome.engine.bed" "HCC1395|HCC1395BL" -th 8
+          cp "$KEEP_DIR/seqc2/rust.time" "$KEEP_DIR/seqc2/rust_run${run}.time"
+          cp "$KEEP_DIR/seqc2/java.time" "$KEEP_DIR/seqc2/java_run${run}.time"
+          [ -f "$KEEP_DIR/seqc2/cpp.time" ] && cp "$KEEP_DIR/seqc2/cpp.time" "$KEEP_DIR/seqc2/cpp_run${run}.time" || true
+        fi
       done
       grep -q "^MATCH (623444 variants)$" "$KEEP_DIR/seqc2/compare.txt"
     ) &
