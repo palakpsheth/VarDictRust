@@ -3930,7 +3930,11 @@ pub fn find_35_match(seq5: &[u8], seq3: &[u8], verbose: bool) -> Match35 {
         };
     }
 
-    let mut rev3_stack = [0u8; 512];
+    /// Maximum stack elements (`512` bytes for `rev3_stack`, `4 KiB` for `rev3_w0_stack`,
+    /// covering `len3 <= 512 bp`) before falling back to heap allocation on 2 MiB rayon stacks.
+    const MAX_STACK_REV3: usize = 512;
+
+    let mut rev3_stack = [0u8; MAX_STACK_REV3];
     let mut rev3_heap = Vec::new();
     let rev3: &[u8] = if let Some(dst) = rev3_stack.get_mut(..len3) {
         for (slot, &b) in dst.iter_mut().zip(seq3.iter().rev()) {
@@ -3946,7 +3950,7 @@ pub fn find_35_match(seq5: &[u8], seq3: &[u8], verbose: bool) -> Match35 {
     // for `j in 1..(len3 - 8)` (`num_j = len3 - 9` words; since `j <= len3 - 9`,
     // `(j - 1) + 8 <= len3 - 2 < len3` is always in bounds).
     let num_j = len3 - 9;
-    let mut rev3_w0_stack = [0u64; 512];
+    let mut rev3_w0_stack = [0u64; MAX_STACK_REV3];
     let mut rev3_w0_heap = Vec::new();
     let rev3_w0: &[u64] = if let Some(dst) = rev3_w0_stack.get_mut(..num_j) {
         for (idx, slot) in dst.iter_mut().enumerate() {
