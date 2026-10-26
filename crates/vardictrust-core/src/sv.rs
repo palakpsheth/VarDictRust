@@ -2063,10 +2063,6 @@ pub fn find_sv(
                     &format!("-{}", dellen),
                 );
                 crate::variations::util::adj_cnt(vref_mut2, &tmp_var, None);
-
-                if let Some(sc_mut) = var_data.soft_clips_5_end.get_mut(&p5) {
-                    sc_mut.used = true;
-                }
             }
         } else {
             let match_res_rev = find_match_rev(&seq, reference, p5, -1, 17, 3, chr, verbose);
@@ -2135,10 +2131,6 @@ pub fn find_sv(
             let p5_cov_updated = var_data.ref_coverage.get(&p5_adj).copied().unwrap_or(0);
             if p5_cov_updated < bp_cov {
                 var_data.ref_coverage.insert(p5_adj, bp_cov);
-            }
-
-            if let Some(sc_mut) = var_data.soft_clips_5_end.get_mut(&p5) {
-                sc_mut.used = true;
             }
         }
     }
@@ -2252,10 +2244,6 @@ pub fn find_sv(
                     &format!("-{}", dellen),
                 );
                 crate::variations::util::adj_cnt(vref_mut2, &tmp_var, None);
-
-                if let Some(sc_mut) = var_data.soft_clips_3_end.get_mut(&p3) {
-                    sc_mut.used = true;
-                }
             }
         } else {
             let match_res_rev = find_match_rev(&seq, reference, p3, 1, 17, 3, chr, verbose);
@@ -2324,10 +2312,6 @@ pub fn find_sv(
             let p3_cov_updated = var_data.ref_coverage.get(&p3_adj).copied().unwrap_or(0);
             if p3_cov_updated < bp_cov {
                 var_data.ref_coverage.insert(p3_adj, bp_cov);
-            }
-
-            if let Some(sc_mut) = var_data.soft_clips_3_end.get_mut(&p3) {
-                sc_mut.used = true;
             }
         }
     }
@@ -4335,6 +4319,10 @@ mod tests {
             var_data.ref_coverage.get(&201).copied(),
             Some(77),
             "find_sv must promote ref_coverage[bp_adj] (201) to ref_coverage[p5_adj + 1] (400)"
+        );
+        assert!(
+            !var_data.soft_clips_5_end.get(&400).unwrap().used,
+            "StructuralVariantsProcessor.java:687-965 findsv() never marks sc5v.used = true"
         );
     }
 }

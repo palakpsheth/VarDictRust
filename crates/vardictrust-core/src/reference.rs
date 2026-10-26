@@ -389,7 +389,9 @@ pub fn get_reference(
     let start_val = region.start.0;
     let end_val = region.end.0;
 
-    let extend_nuc = config.extension_nuc as u32; // config.numberNucleotideToExtend
+    // Ports ReferenceResource.java:85-89: uses `instance().conf.numberNucleotideToExtend`
+    // (`-x` = `config.extension`, default 0), not `vext` (`-X` = `config.extension_nuc`).
+    let extend_nuc = config.extension.max(0) as u32;
     let total_left = extend_nuc + extension;
 
     let sequence_start = if start_val > total_left {
@@ -526,7 +528,7 @@ mod tests {
     ) -> Result<(), VardictError> {
         let start_val = region.start.0;
         let end_val = region.end.0;
-        let extend_nuc = config.extension_nuc as u32;
+        let extend_nuc = config.extension.max(0) as u32;
         let total_left = extend_nuc + extension;
         let sequence_start = if start_val > total_left {
             start_val - total_left
@@ -686,7 +688,7 @@ mod tests {
 
         let mut config = Config::default();
         config.reference = fa_path.to_string_lossy().into_owned();
-        config.extension_nuc = 50;
+        config.extension = 50;
 
         let mut chr_lengths = HashMap::new();
         chr_lengths.insert("chr1".to_string(), total_len);
@@ -793,7 +795,7 @@ mod tests {
 
         let mut config = Config::default();
         config.reference = fa_path.to_string_lossy().into_owned();
-        config.extension_nuc = 2;
+        config.extension = 2;
 
         let mut chr_lengths = HashMap::new();
         chr_lengths.insert("chr1".to_string(), 40);
