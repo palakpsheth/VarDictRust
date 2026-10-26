@@ -444,7 +444,6 @@ while `rust == java` `MATCH` holds on the same inputs:
 - **1-ULP (`1e-5`) Fisher exact rounding (`ODDRATIO`, `SSF`, `SOR`, `SBF`):**
   Native C++ `double` Fisher exact computation vs R's extended-precision `f80` `fisher.test()` accounts for **5/5** field diffs in `seqc2-slices-tier2` (`4,151 / 4,151` keys match), **941/945** diff records in `seqc2-exome-tier2`, and **45/50** diff records in `hg008-tier2`.
 - **Counts:** `hg002` `227,562` vs `227,560`; `seqc2-exome` `623,444` vs `623,442`; `hg008` `18,426` vs `18,425`; `seqc2-slices` `4,151` vs `4,151` (0 key diffs).
-- **Full-genome `chr1..chr22` `--chunk 50000` boundary duplication (`HG002` `130.8 GB` `2×250` WGS, `-th 32`):** On `hg002_full_22contigs.bed` (`22` un-chunked whole-chromosome intervals, `2.875 Gbp`), `vardictcpp --chunk 50000` subdivides each chromosome without halo deduplication, emitting **`9,953,338` calls vs `VarDictRust`'s `9,643,746` calls (`+309,592` boundary-duplicated/divergent records)** while consuming **`31.91 GB` peak RSS** (`6.48×` `VarDictRust`'s **`4.92 GB` RSS**). On `hg002_full_giab_50kb.bed` (`56,642` intervals already `≤ 50,000 bp` where `--chunk 50000` never splits an interval), the call-count delta shrinks to **`+394`** (`8,111,565` vs `8,111,171` in `VarDictJava`/`VarDictRust`) while `vardictcpp` still consumes **`28.35 GB` peak RSS** (`19.1×` `VarDictRust`'s **`1.48 GB` RSS**).
 
 Directionally this favors vardictrust's Java fidelity on these datasets,
 but the absolute rates are small, mode-dependent (germline MNP vs somatic

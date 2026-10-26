@@ -391,21 +391,15 @@ pub fn get_reference(
 
     // Ports ReferenceResource.java:85-89: uses `instance().conf.numberNucleotideToExtend`
     // (`-x` = `config.extension`, default 0), not `vext` (`-X` = `config.extension_nuc`).
-    let extend_nuc = config.extension.max(0) as u32;
-    let total_left = extend_nuc + extension;
-
-    let sequence_start = if start_val > total_left {
-        start_val - total_left
-    } else {
-        1
-    };
+    let total_ext = (config.extension.max(0) as u32).saturating_add(extension);
+    let sequence_start = start_val.saturating_sub(total_ext).max(1);
 
     let len = chromosomes_lengths.get(&region.chr).copied().unwrap_or(0) as u32;
-    let total_right = extend_nuc + extension;
-    let sequence_end = if len > 0 && end_val + total_right > len {
+    let end_ext = end_val.saturating_add(total_ext);
+    let sequence_end = if len > 0 && end_ext > len {
         len
     } else {
-        end_val + total_right
+        end_ext
     };
 
     if is_loaded(&region.chr, sequence_start, sequence_end, reference) {
@@ -483,7 +477,10 @@ pub fn get_reference(
 }
 
 #[cfg(test)]
-#[allow(clippy::field_reassign_with_default)]
+#[expect(
+    clippy::field_reassign_with_default,
+    reason = "tests configure individual Config fields after Config::default()"
+)]
 mod tests {
     use super::*;
     use std::fs;
@@ -528,19 +525,14 @@ mod tests {
     ) -> Result<(), VardictError> {
         let start_val = region.start.0;
         let end_val = region.end.0;
-        let extend_nuc = config.extension.max(0) as u32;
-        let total_left = extend_nuc + extension;
-        let sequence_start = if start_val > total_left {
-            start_val - total_left
-        } else {
-            1
-        };
+        let total_ext = (config.extension.max(0) as u32).saturating_add(extension);
+        let sequence_start = start_val.saturating_sub(total_ext).max(1);
         let len = chromosomes_lengths.get(&region.chr).copied().unwrap_or(0) as u32;
-        let total_right = extend_nuc + extension;
-        let sequence_end = if len > 0 && end_val + total_right > len {
+        let end_ext = end_val.saturating_add(total_ext);
+        let sequence_end = if len > 0 && end_ext > len {
             len
         } else {
-            end_val + total_right
+            end_ext
         };
         if reference.loaded_regions.iter().any(|lr| {
             lr.chr == region.chr
@@ -689,6 +681,7 @@ mod tests {
         let mut config = Config::default();
         config.reference = fa_path.to_string_lossy().into_owned();
         config.extension = 50;
+        config.extension_nuc = 7; // distinct from `-x` so regression to `extension_nuc` fails immediately
 
         let mut chr_lengths = HashMap::new();
         chr_lengths.insert("chr1".to_string(), total_len);
@@ -718,6 +711,10 @@ mod tests {
             get_reference_legacy(&bed, ext, &chr_lengths, &config, &mut leg_ref).unwrap();
 
             assert_eq!(new_ref.loaded_regions, leg_ref.loaded_regions);
+            assert_eq!(
+                new_ref.loaded_regions[0].sequence_start, 25,
+                "get_reference must extend by config.extension (50) + extension (25) => 100 - 75 = 25, ignoring config.extension_nuc (7)"
+            );
             assert_eq!(new_ref.reference_sequences, leg_ref.reference_sequences);
             assert_eq!(new_ref.region_sequences, leg_ref.region_sequences);
             assert_eq!(new_ref.seed.len(), leg_ref.seed.len());
@@ -854,7 +851,6 @@ mod tests {
 
         let mut config = Config::default();
         config.reference = fa_path.to_string_lossy().into_owned();
-        config.extension_nuc = 0;
 
         let mut chr_lengths = HashMap::new();
         chr_lengths.insert("chr1".to_string(), 49);
@@ -903,7 +899,6 @@ mod tests {
 
         let mut config = Config::default();
         config.reference = fa_path.to_string_lossy().into_owned();
-        config.extension_nuc = 0;
 
         let mut chr_lengths = HashMap::new();
         chr_lengths.insert("chr1".to_string(), total_len);
