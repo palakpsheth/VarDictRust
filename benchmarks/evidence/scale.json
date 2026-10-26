@@ -10,7 +10,7 @@
   ],
   "compare_head": [],
   "cpp_time": null,
-  "date": "2026-10-25T08:43:42-07:00",
+  "date": "2026-10-26T15:13:26-07:00",
   "extra": {
     "P": 4,
     "bar": 2.4,
@@ -22,6 +22,7 @@
       "100000000": 21998908,
       "248956422": 25521616
     },
+    "cpp_runs": 1,
     "cpp_wall_s": {
       "1": 629.09,
       "2": 359.32,
@@ -30,30 +31,30 @@
     },
     "cpus": "0-7",
     "governor": "powersave",
-    "loadavg_end": "8.12 7.58 5.77",
-    "loadavg_start": "2.12 1.73 1.46",
+    "loadavg_end": "9.97 9.09 7.46",
+    "loadavg_start": "6.91 11.53 10.72",
     "maxrss_kb": {
-      "1000000": 535536,
-      "10000000": 1217504,
-      "100000000": 1233188,
-      "248956422": 1489212
+      "1000000": 525688,
+      "10000000": 1270736,
+      "100000000": 1245384,
+      "248956422": 1415424
     },
-    "note": ">8 threads not measured (host policy A3); each cell = median of `runs` timed runs",
+    "note": ">8 threads not measured (host policy A3); each rust cell = median of `runs` timed runs; cpp advisory arm = single-sample golden-store baseline (or `runs`-run median when GOLDEN_MODE=off)",
     "pass": true,
-    "perf_fingerprint": "9346a6e5419cc5e2",
+    "perf_fingerprint": "1298c1d1091a0fc8",
     "pinned": true,
-    "rss_ratio_chr1_vs_10mb": 1.2231680553000237,
+    "rss_ratio_chr1_vs_10mb": 1.1138615731355688,
     "runs": 3,
-    "speedup_8": 3.4419684308263694,
+    "speedup_8": 4.444132772323516,
     "wall_s": {
-      "1": 667.26,
-      "2": 346.0,
-      "4": 218.07,
-      "8": 193.86
+      "1": 665.42,
+      "2": 335.84,
+      "4": 188.41,
+      "8": 149.73
     }
   },
-  "fingerprint": "552856835a1eec01",
-  "head": "ba769cf5ce6b495b9ce9024b1ed8aa21135f7807",
+  "fingerprint": "33bc15964cc36b6d",
+  "head": "e7e01cef2a523847cb3e3bc58cc6acdb4429ccb6",
   "java_time": null,
   "n_variants": null,
   "name": "scale",

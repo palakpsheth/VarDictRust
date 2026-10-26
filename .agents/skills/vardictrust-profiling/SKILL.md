@@ -37,10 +37,14 @@ bash harness/profile.sh baseline --dry-run
 # Profile a single slice cell (cpu + heap + dhat) into scratch/profiles/baseline/s1a/
 bash harness/profile.sh baseline --only s1a
 
-# Profile an opt-in bounded DHAT sub-slice for HG008 somatic or HG002 germline
+# Profile an opt-in bounded DHAT sub-slice or full SEQC2 exome
 bash harness/profile.sh optimized --only hg008-sub
+bash harness/profile.sh optimized --only hg008-cram-sub
+bash harness/profile.sh optimized --only seqc2-slices-sub
+PROFILE_THREADS=4 bash harness/profile.sh optimized --only seqc2-exome
 
-# Run all default cells (tiny, s1a, s8, s9, s3, rna-i, hg002, hg008, wgs-scale) with 3 CPU loops
+# Run all 32 default README modality cells (germline, somatic, --fisher, amplicon, pileup -p,
+# splicing -i, SV, CRISPR -J/-j, CRAM twin, extended CLI flags, hg002, hg008, wgs-scale) with 3 slice CPU loops
 PROFILE_LOOPS=3 PROFILE_THREADS=8 bash harness/profile.sh optimized
 ```
 

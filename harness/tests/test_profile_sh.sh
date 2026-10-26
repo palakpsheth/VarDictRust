@@ -42,6 +42,26 @@ out=$(PROFILE_OUT="$T/prof" PROFILE_BIN="$T/engine" bash $PS baseline --only hg0
 ck "hg002-sub plan runs dhat only on sub.bed" "grep -q 'modalities: dhat' <<<\"\$out\" && grep -q 'hg002-sub/sub.bed' <<<\"\$out\""
 out=$(PROFILE_OUT="$T/prof" PROFILE_BIN="$T/engine" bash $PS baseline --only hg008-sub --dry-run 2>&1)
 ck "hg008-sub plan runs dhat only on sub.bed" "grep -q 'modalities: dhat' <<<\"\$out\" && grep -q 'hg008-sub/sub.bed' <<<\"\$out\""
+out=$(PROFILE_OUT="$T/prof" PROFILE_BIN="$T/engine" bash $PS optimized --only amplicon --dry-run 2>&1)
+ck "amplicon plan passes 0-based flags and -a 10:0.95" "grep -q -- '-c 1 -S 2 -E 3 -g 4 -z -a 10:0.95' <<<\"\$out\" && grep -q 'correct_8columns_amplicon.bed' <<<\"\$out\""
+out=$(PROFILE_OUT="$T/prof" PROFILE_BIN="$T/engine" bash $PS optimized --only s7 --dry-run 2>&1)
+ck "s7 plan passes -a 10:0.95 -p" "grep -q -- '-a 10:0.95 -p' <<<\"\$out\""
+out=$(PROFILE_OUT="$T/prof" PROFILE_BIN="$T/engine" bash $PS optimized --only crispr --dry-run 2>&1)
+ck "crispr plan passes -J and -j" "grep -q -- '-J 50454941 -j 25' <<<\"\$out\" && grep -q -- '--emit-intermediate' <<<\"\$out\""
+out=$(PROFILE_OUT="$T/prof" PROFILE_BIN="$T/engine" bash $PS optimized --only seqc2-fisher --dry-run 2>&1)
+ck "seqc2-fisher plan passes --fisher and sub.bed" "grep -q -- '--fisher' <<<\"\$out\" && grep -q 'seqc2-fisher/sub.bed' <<<\"\$out\""
+out=$(PROFILE_OUT="$T/prof" PROFILE_BIN="$T/engine" bash $PS optimized --only ext-unique --dry-run 2>&1)
+ck "ext-unique plan uses -f 0.01 without slices.tsv -f 0.001" "grep -q -- '-f 0.01' <<<\"\$out\" && ! grep -q -- '-f 0.001' <<<\"\$out\" && grep -q -- '-u -UN' <<<\"\$out\""
+out=$(PROFILE_OUT="$T/prof" PROFILE_BIN="$T/engine" bash $PS optimized --only hg008-cram --dry-run 2>&1)
+ck "hg008-cram plan sets RUST_MIN_STACK=67108864" "grep -q 'RUST_MIN_STACK=67108864' <<<\"\$out\" && ! grep -q 'VARDICT_PROFILE_DHAT' <<<\"\$out\""
+out=$(PROFILE_OUT="$T/prof" PROFILE_BIN="$T/engine" bash $PS optimized --only hg008-cram-sub --dry-run 2>&1)
+ck "hg008-cram-sub plan sets RUST_MIN_STACK=67108864 and dhat only" "grep -q 'RUST_MIN_STACK=67108864' <<<\"\$out\" && grep -q 'modalities: dhat' <<<\"\$out\""
+out=$(PROFILE_OUT="$T/prof" PROFILE_BIN="$T/engine" bash $PS optimized --only seqc2-slices --dry-run 2>&1)
+ck "seqc2-slices plan has no dhat" "! grep -q 'VARDICT_PROFILE_DHAT' <<<\"\$out\" && grep -q 'slices.engine.bed' <<<\"\$out\""
+out=$(PROFILE_OUT="$T/prof" PROFILE_BIN="$T/engine" bash $PS optimized --only seqc2-exome --dry-run 2>&1)
+ck "seqc2-exome plan has no dhat" "! grep -q 'VARDICT_PROFILE_DHAT' <<<\"\$out\" && grep -q 'exome.engine.bed' <<<\"\$out\""
+out=$(PROFILE_LOOPS=3 PROFILE_OUT="$T/prof" PROFILE_BIN="$T/engine" bash $PS optimized --only wgs-scale --dry-run 2>&1)
+ck "C_BIG=1 cell clamps loops to 1" "grep -q 'loops: 1)' <<<\"\$out\""
 
 # default build trees must be git-ignored (a `git add -A` after the first real run must never stage them)
 out=$(env -u PROFILE_BIN -u PROFILE_BIN_CPU -u PROFILE_BIN_HEAP -u PROFILE_BIN_DHAT -u CARGO_TARGET_DIR -u PROFILE_TARGET_BASE \
@@ -101,6 +121,9 @@ SD
   # PROFILE_LOOPS=3 repeats cpu modality 3x, sums collapsed counts (3 * 5 = 15), and retains iter-* dirs
   out=$($CE PATH="$T/bin:$PATH" PROFILE_LOOPS=3 PROFILE_OUT="$T/profloop" PROFILE_BIN="$T/engine" bash $PS baseline --only tiny 2>&1); rc=$?
   ck "PROFILE_LOOPS=3 exits 0 and sums samples" "[ $rc -eq 0 ] && grep -q 'vardictrust_core::stub::hot 15' '$T/profloop/baseline/tiny/cpu-collapsed.txt' && [ -d '$T/profloop/baseline/tiny/iter-1' ] && [ -d '$T/profloop/baseline/tiny/iter-3' ]"
+  # C_GEN_BED materializes sub.bed during DRY=0 execution (ext-segmap uses in-repo GRCh37.fa + NA24385 BAM)
+  out=$($CE PATH="$T/bin:$PATH" PROFILE_OUT="$T/profgen" PROFILE_BIN="$T/engine" bash $PS baseline --only ext-segmap 2>&1); rc=$?
+  ck "C_GEN_BED materializes sub.bed" "[ $rc -eq 0 ] && [ -s '$T/profgen/baseline/ext-segmap/sub.bed' ] && grep -q -- '-s 10 -e 11' '$T/profgen/baseline/ext-segmap/cmd.txt'"
   # systemd-run --user unavailable: still runs, says so
   printf '#!/usr/bin/env bash\nexit 1\n' > "$T/bin/systemd-run"
   out=$($CE PATH="$T/bin:$PATH" PROFILE_OUT="$T/prof2" PROFILE_BIN="$T/engine" bash $PS optimized --only tiny 2>&1); rc=$?

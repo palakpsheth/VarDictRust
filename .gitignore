@@ -52,6 +52,10 @@ __pycache__/
 *.pb.gz
 dhat-heap.json
 cpu-collapsed.txt
+*-collapsed.txt
+cpu-meta.json
+*-flamegraph.svg
+dhat-*.svg
 
 # Committed micro fixtures are tiny (<10 KB total), self-contained test data
 # (see golden/PROVENANCE) — the global *.bam/*.bai exclusions do not apply here.
