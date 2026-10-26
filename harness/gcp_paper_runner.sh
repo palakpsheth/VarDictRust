@@ -1948,9 +1948,8 @@ run_stage_5() {
     T_BAM='$hg8_dir/HG008-T_Illumina_195x_GRCh38-GIABv3.bam'
     N_BAM='$hg8_dir/HG008-N-D_Illumina_169x_GRCh38-GIABv3.bam'
 
-    for pair in \"\$T_URL:\$T_BAM:\$DATA_DIR/hg008/HG008-T_Illumina_195x_GRCh38-GIABv3.bam.bai\" \"\$N_URL:\$N_BAM:\$DATA_DIR/hg008/HG008-N-D_Illumina_169x_GRCh38-GIABv3.bam.bai\"; do
-      IFS=':' read -r u b src_bai <<< \"\$pair\"
-      u=\"https:\${u#https:}\"
+    for pair in \"\$T_URL|\$T_BAM|\$DATA_DIR/hg008/HG008-T_Illumina_195x_GRCh38-GIABv3.bam.bai\" \"\$N_URL|\$N_BAM|\$DATA_DIR/hg008/HG008-N-D_Illumina_169x_GRCh38-GIABv3.bam.bai\"; do
+      IFS='|' read -r u b src_bai <<< \"\$pair\"
       if [ -f \"\$src_bai\" ] && [ ! -f \"\${b}.bai\" ]; then
         cp -f \"\$src_bai\" \"\${b}.bai\"
       elif [ ! -f \"\${b}.bai\" ]; then
@@ -2237,8 +2236,11 @@ run_stage_5() {
       conda run -n cl_lofreq lofreq indelqual --dindel -f "$REF_GIAB" -o "$IQ_HG2" "$BAM_HG2"
       samtools index -@ 8 "$IQ_HG2"
     fi
-    rm -f "$KEEP_DIR/hg002_lofreq.vcf"
-    run_timed_cmd "hg002_LoFreq_8c" conda run -n cl_lofreq lofreq call-parallel --pp-threads 8 --call-indels -f "$REF_GIAB" -l "$BED_HG2" -o "$KEEP_DIR/hg002_lofreq.vcf" "$IQ_HG2"
+    run_timed_cmd "hg002_LoFreq_8c" bash -c "
+      set -euo pipefail
+      rm -f \"$KEEP_DIR/hg002_lofreq.vcf\"
+      conda run -n cl_lofreq lofreq call-parallel --pp-threads 8 --call-indels -f \"$REF_GIAB\" -l \"$BED_HG2\" -o \"$KEEP_DIR/hg002_lofreq.vcf\" \"$IQ_HG2\"
+    "
 
     run_timed_cmd "hg002_Strelka2_8c" bash -c "
       set -euo pipefail
@@ -2279,9 +2281,9 @@ run_stage_5() {
       tabix -f -p vcf \"$KEEP_DIR/hg008_strelka2.vcf.gz\"
     "
 
-    rm -f "$KEEP_DIR"/hg008_lf_*
     run_timed_cmd "hg008_LoFreq_8c" bash -c "
       set -euo pipefail
+      rm -f \"$KEEP_DIR\"/hg008_lf_*
       conda run -n cl_lofreq lofreq somatic -n \"$N_HG8\" -t \"$T_HG8\" -f \"$REF_GIAB\" -l \"$BED_HG8\" -o \"$KEEP_DIR/hg008_lf_\" --threads 16
       bcftools concat -a -Oz -o \"$KEEP_DIR/hg008_lofreq.vcf.gz\" \"$KEEP_DIR/hg008_lf_somatic_final.snvs.vcf.gz\" \"$KEEP_DIR/hg008_lf_somatic_final.indels.vcf.gz\"
       tabix -f -p vcf \"$KEEP_DIR/hg008_lofreq.vcf.gz\"
@@ -2320,9 +2322,9 @@ run_stage_5() {
       tabix -f -p vcf \"$KEEP_DIR/seqc2_strelka2.vcf.gz\"
     "
 
-    rm -f "$KEEP_DIR"/seqc2_lf_*
     run_timed_cmd "seqc2_LoFreq_16c" bash -c "
       set -euo pipefail
+      rm -f \"$KEEP_DIR\"/seqc2_lf_*
       conda run -n cl_lofreq lofreq somatic -n \"$N_SQ\" -t \"$T_SQ\" -f \"$REF_D1\" -l \"$BED_SQ\" -o \"$KEEP_DIR/seqc2_lf_\" --threads 16
       bcftools concat -a -Oz -o \"$KEEP_DIR/seqc2_lofreq.vcf.gz\" \"$KEEP_DIR/seqc2_lf_somatic_final.snvs.vcf.gz\" \"$KEEP_DIR/seqc2_lf_somatic_final.indels.vcf.gz\"
       tabix -f -p vcf \"$KEEP_DIR/seqc2_lofreq.vcf.gz\"
