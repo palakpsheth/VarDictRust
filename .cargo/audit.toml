@@ -1,0 +1,13 @@
+# cargo-audit configuration for VarDictRust
+# Verified by CI (.github/workflows/security.yml), harness/pr_check.sh, and harness/acceptance.sh.
+
+[advisories]
+# paste v1.0.15 (RUSTSEC-2024-0436: unmaintained) is a transitive proc-macro dependency
+# of optional profiling crate jemalloc_pprof v0.9.0 (--features profile-heap only);
+# never compiled into default or release binaries (enforced by test_release_deps.sh).
+ignore = ["RUSTSEC-2024-0436"]
+informational_warnings = ["unmaintained", "unsound", "notice"]
+
+[output]
+deny = ["warnings"]
+quiet = false

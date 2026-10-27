@@ -80,6 +80,62 @@ class TestBiocondaRecipe(unittest.TestCase):
             content,
             "deny.toml must allow GPL-2.0-or-later",
         )
+        self.assertIn("[graph]", content, "deny.toml must define [graph] section")
+        self.assertIn("all-features = true", content, "deny.toml must set all-features = true")
+        self.assertIn("[sources]", content, "deny.toml must define [sources] section")
+        self.assertIn('unknown-registry = "deny"', content, "deny.toml must deny unknown registries")
+        self.assertIn('unknown-git = "deny"', content, "deny.toml must deny unknown git sources")
+        self.assertIn(
+            'allow-registry = ["https://github.com/rust-lang/crates.io-index"]',
+            content,
+            "deny.toml must allow only crates.io-index",
+        )
+
+        audit_path = ROOT_DIR / ".cargo" / "audit.toml"
+        self.assertTrue(audit_path.is_file(), f"Missing .cargo/audit.toml: {audit_path}")
+        audit_content = audit_path.read_text(encoding="utf-8")
+        self.assertIn('ignore = ["RUSTSEC-2024-0436"]', audit_content)
+        self.assertIn('informational_warnings = ["unmaintained", "unsound", "notice"]', audit_content)
+        self.assertIn('deny = ["warnings"]', audit_content)
+        self.assertIn("quiet = false", audit_content)
+
+        dependabot_path = ROOT_DIR / ".github" / "dependabot.yml"
+        self.assertTrue(dependabot_path.is_file(), f"Missing .github/dependabot.yml: {dependabot_path}")
+        dependabot_content = dependabot_path.read_text(encoding="utf-8")
+        self.assertIn('package-ecosystem: "cargo"', dependabot_content)
+        self.assertIn('package-ecosystem: "github-actions"', dependabot_content)
+        self.assertIn('package-ecosystem: "pip"', dependabot_content)
+        self.assertIn('directory: "/docs"', dependabot_content)
+        self.assertIn("docs-dependencies:", dependabot_content)
+        self.assertIn("transitive-dependencies:", dependabot_content)
+        self.assertIn("exclude-patterns:", dependabot_content)
+        expected_cargo_patterns = (
+            "noodles*",
+            "fishers_exact*",
+            "rustc-hash*",
+            "clap*",
+            "rayon*",
+            "anyhow*",
+            "thiserror*",
+            "log*",
+            "env_logger*",
+            "regex*",
+            "tempfile*",
+            "criterion*",
+            "indexmap*",
+            "tikv-jemallocator*",
+            "pprof*",
+            "inferno*",
+            "dhat*",
+            "jemalloc_pprof*",
+            "libc*",
+        )
+        for pattern in expected_cargo_patterns:
+            self.assertIn(
+                f'"{pattern}"',
+                dependabot_content,
+                f"dependabot.yml missing direct Cargo pattern {pattern!r}",
+            )
 
     def test_container_runner_security(self):
         runner_path = ROOT_DIR / "harness" / "test_bioconda_recipe.sh"
