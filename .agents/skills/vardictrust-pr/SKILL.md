@@ -15,12 +15,12 @@ Every change to `VarDictRust` lands via a feature branch off `origin/main` and a
 
 ## Quick Reference: Code-Change Filter & Required Gates
 
-`.githooks/pre-push` inspects `git diff --name-only` against `\.rs$|Cargo\.(toml|lock)$|crates/|harness/`:
+`.githooks/pre-push` inspects `git diff --name-only` against `\.rs$|Cargo\.(toml|lock)$|^crates/|^harness/|^\.github/|^\.githooks/|^\.agents/|^fixtures/|^golden/|^benchmarks/evidence/`:
 
 | PR Scope | `.githooks/pre-push` Classification | `engine_fingerprint.sh` (`FP` / `PERF_FP`) | Required Verification & PR Template Policy |
 | :--- | :--- | :--- | :--- |
-| Docs/Wiki/Skills only (`docs/`, `wiki/`, `README.md`, `.agents/skills/`) | Docs/infra-only (`CODE_CHANGES` empty) | Unchanged | `cargo fmt`, `cargo clippy`, `bash harness/run_self_tests.sh`, `mkdocs build --strict`. Engine checkboxes in `.github/pull_request_template.md` may be marked `N/A` with a 1-line justification. |
-| Feature, Bugfix, or Harness PR (`crates/`, `Cargo.*`, `harness/`) | `CODE_CHANGES` non-empty | Unchanged or Changed | **Tier A Per-PR Gate (`<25s`):** Run `bash harness/pr_check.sh` (6/6: workspace tests, 92-fixture corpus, `micro` + `s1a..s9`, `run_extended_coverage.sh --no-record`, `run_multimodal_slices.sh --no-record`, `perf_budget.py`, `gitleaks`). Do **not** rewrite `benchmarks/evidence/*.json` on normal PRs; mark the Release Recertification checkbox `N/A — deferred to release cut per two-tier testing policy`. |
+| Docs/Wiki only (`docs/`, `wiki/`, `README.md`) | Docs/infra-only (`CODE_CHANGES` empty) | Unchanged | `cargo fmt`, `cargo clippy`, `bash harness/run_self_tests.sh`, `mkdocs build --strict`. Engine checkboxes in `.github/pull_request_template.md` may be marked `N/A` with a 1-line justification. |
+| Feature, Bugfix, Harness, Workflow, or Skill PR (`crates/`, `Cargo.*`, `harness/`, `.github/`, `.githooks/`, `.agents/`) | `CODE_CHANGES` non-empty | Unchanged or Changed | **Tier A Per-PR Gate (`<25s`):** Run `bash harness/pr_check.sh` (6/6: workspace tests, 92-fixture corpus, `micro` + `s1a..s9`, `run_extended_coverage.sh --no-record`, `run_multimodal_slices.sh --no-record`, `perf_budget.py`, `gitleaks`). Do **not** rewrite `benchmarks/evidence/*.json` on normal PRs; mark the Release Recertification checkbox `N/A — deferred to release cut per two-tier testing policy`. |
 | Release Branch (`release/vX.Y.Z`) or Milestone Certification PR | `CODE_CHANGES` non-empty | Certified at `HEAD` | **Tier B Release Gate:** Run `bash harness/recertify.sh` (which refreshes all 15 non-scale `benchmarks/evidence/*.json` files, runs `python3 harness/sync_evidence_docs.py`, and executes `bash harness/acceptance.sh` 8/8) + `bash harness/pr_check.sh` (6/6). (`scale_bench.sh` runs only if `PERF_FP` changed since `scale.json`.) |
 
 ---
@@ -41,7 +41,7 @@ git checkout -b <type>/<slug> origin/main
 ### 2. Pre-PR Verification Sequence
 Commit your changes first, then run:
 ```bash
-# 1. Run all 24 harness self-tests and strict MkDocs build check
+# 1. Run all 25 harness self-tests and strict MkDocs build check
 bash harness/run_self_tests.sh
 python3 harness/prepare_docs_site.py && mkdocs build --strict && rm -rf .docs_staged site
 

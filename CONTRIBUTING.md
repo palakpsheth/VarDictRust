@@ -223,7 +223,7 @@ Before submitting any pull request, run the 6-stage PR validation suite defined 
 bash harness/pr_check.sh
 ```
 This suite completes in `<25s` using the pinned golden baseline store and automatically verifies:
-1. **Stage 1 (Hygiene & Unit Tests):** Formatting, Clippy lints, and all 296 workspace unit and integration tests ([Level 1](docs/testing/test-matrix-and-ci-audit.md#level-1)).
+1. **Stage 1 (Hygiene & Unit Tests):** Formatting, Clippy lints, and all 416 workspace unit and integration tests ([Level 1](docs/testing/test-matrix-and-ci-audit.md#level-1)).
 2. **Stage 2 (Crash Robustness):** PR #402, missing index #187, and Issue #341 family fixtures (executed within the workspace test run).
 3. **Stage 3 (Upstream Integration Corpus):** 92 fixtures ([Level 2](docs/testing/test-matrix-and-ci-audit.md#level-2-upstream-integration-regression-corpus-92-fixtures)) across 8 parallel workers, asserting `91 PASS / 1 XFAIL` ([UB-4](docs/upstream-bugs.md#ub-4) upstream fixture defect).
 4. **Stage 4 (Dual-Engine Differential Parity):** Micro differential fixture, all 10 standard slices (`s1a..s9`), 17-modality extended coverage (`--no-record`), and 18-slice multimodal suite (`--no-record`) against the VarDictJava oracle ([Level 3](docs/testing/test-matrix-and-ci-audit.md#level-3-dual-engine-differential-parity-testing)).
@@ -240,7 +240,7 @@ bash harness/acceptance.sh
 
 Additionally, contributors can execute the diagnostic self-test suite ([Level 6](docs/testing/test-matrix-and-ci-audit.md#level-6-diagnostic-self-tests)) at any time:
 ```bash
-bash harness/run_self_tests.sh   # Executes all 24 diagnostic test scripts in <10s
+bash harness/run_self_tests.sh   # Executes all 25 diagnostic test scripts in <10s
 ```
 
 *For the complete seven-level testing architecture, push-button reproduction commands, and dataset provenance catalog, see the Master Reproducibility Runbook in [`docs/testing/test-matrix-and-ci-audit.md`](docs/testing/test-matrix-and-ci-audit.md).*
@@ -328,7 +328,7 @@ cargo build --release -p vardictrust
 # 2. Commit tracked release changes on release/vX.Y.Z (clean HEAD required by engine_fingerprint.sh)
 git commit -m "chore(release): prepare vX.Y.Z release"
 
-# 3. Verify engine fingerprint and run all 24 diagnostic self-tests
+# 3. Verify engine fingerprint and run all 25 diagnostic self-tests
 bash harness/engine_fingerprint.sh
 bash harness/run_self_tests.sh
 

@@ -13,6 +13,37 @@ else
     DATA_ROOT="$ROOT_DIR"
 fi
 
+if [[ "$DATA_ROOT" != "$ROOT_DIR" ]]; then
+    mkdir -p "$ROOT_DIR/scratch/g4"
+    [[ -e "$ROOT_DIR/scratch/golden-store" || ! -d "$DATA_ROOT/scratch/golden-store" ]] \
+      || ln -s "$DATA_ROOT/scratch/golden-store" "$ROOT_DIR/scratch/golden-store"
+    for sub in ref multimodal truth_cache; do
+        [[ -e "$ROOT_DIR/scratch/g4/$sub" || ! -e "$DATA_ROOT/scratch/g4/$sub" ]] \
+          || ln -s "$DATA_ROOT/scratch/g4/$sub" "$ROOT_DIR/scratch/g4/$sub"
+    done
+    for sub in amplicon hg002 hg008 seqc2; do
+        if [[ -d "$DATA_ROOT/scratch/g4/$sub" ]]; then
+            mkdir -p "$ROOT_DIR/scratch/g4/$sub"
+            for item in "$DATA_ROOT/scratch/g4/$sub"/*; do
+                [[ -e "$item" ]] || continue
+                base_item="$(basename "$item")"
+                [[ "$base_item" == "cmp"* || "$base_item" == "truth" ]] && continue
+                [[ -e "$ROOT_DIR/scratch/g4/$sub/$base_item" ]] \
+                  || ln -s "$item" "$ROOT_DIR/scratch/g4/$sub/$base_item"
+            done
+            if [[ -d "$DATA_ROOT/scratch/g4/$sub/truth" ]]; then
+                mkdir -p "$ROOT_DIR/scratch/g4/$sub/truth"
+                for titem in "$DATA_ROOT/scratch/g4/$sub/truth"/*.vcf.gz*; do
+                    [[ -e "$titem" ]] || continue
+                    tbase="$(basename "$titem")"
+                    [[ -e "$ROOT_DIR/scratch/g4/$sub/truth/$tbase" ]] \
+                      || ln -s "$titem" "$ROOT_DIR/scratch/g4/$sub/truth/$tbase"
+                done
+            fi
+        fi
+    done
+fi
+
 if ! command -v rtg &>/dev/null || ! command -v bcftools &>/dev/null; then
     export PATH="/home/palak/miniconda3/envs/g4-tools/bin:$PATH"
 fi
@@ -64,18 +95,35 @@ PY
 then
     echo "$(ts) [REUSE] scale.json: certified under perf_fingerprint $PERF_FP"
 else
-    echo "$(ts) [RUN] scale.json: perf_fingerprint changed ($PERF_FP); running 24-cell scale benchmark under media_stack minimal..."
-    trap 'python3 "$ROOT_DIR/harness/media_stack_lifecycle.py" up || true' EXIT
-    python3 "$ROOT_DIR/harness/media_stack_lifecycle.py" minimal
+    echo "$(ts) [RUN] scale.json: perf_fingerprint changed ($PERF_FP); running 24-cell scale benchmark..."
+    if [[ -f "$ROOT_DIR/harness/media_stack_lifecycle.py" ]]; then
+        trap 'python3 "$ROOT_DIR/harness/media_stack_lifecycle.py" up || true' EXIT
+        python3 "$ROOT_DIR/harness/media_stack_lifecycle.py" minimal
+    fi
+    if [[ -f scratch/chr1/HG002.chr1.bam && -f scratch/chr1/chr1.bed ]]; then
+        SCALE_BAM="scratch/chr1/HG002.chr1.bam"
+        SCALE_BED="scratch/chr1/chr1.bed"
+        SCALE_SAMPLE="HG002"
+    elif [[ -f scratch/g4/seqc2/HCC1395.bam && -f scratch/g4/seqc2/exome.engine.bed ]]; then
+        SCALE_BAM="scratch/g4/seqc2/HCC1395.bam"
+        SCALE_BED="scratch/g4/seqc2/exome.engine.bed"
+        SCALE_SAMPLE="HCC1395"
+    else
+        SCALE_BAM="$DATA_ROOT/scratch/g4/seqc2/HCC1395.bam"
+        SCALE_BED="$DATA_ROOT/scratch/g4/seqc2/exome.engine.bed"
+        SCALE_SAMPLE="HCC1395"
+    fi
     EST_MIN=55 bash "$ROOT_DIR/harness/courtesy.sh" bash "$ROOT_DIR/harness/scale_bench.sh" \
       scratch/g4/ref/d1vd1/GRCh38.d1.vd1.fa \
-      scratch/chr1/HG002.chr1.bam \
-      scratch/chr1/chr1.bed \
-      HG002 scratch/g4/scale
+      "$SCALE_BAM" \
+      "$SCALE_BED" \
+      "$SCALE_SAMPLE" scratch/g4/scale
     python3 "$ROOT_DIR/harness/record_evidence.py" scale PASS scratch/g4/scale \
-      -- env EST_MIN=55 bash harness/courtesy.sh bash harness/scale_bench.sh scratch/g4/ref/d1vd1/GRCh38.d1.vd1.fa scratch/chr1/HG002.chr1.bam scratch/chr1/chr1.bed HG002 scratch/g4/scale
-    python3 "$ROOT_DIR/harness/media_stack_lifecycle.py" up
-    trap - EXIT
+      -- bash harness/scale_bench.sh scratch/g4/ref/d1vd1/GRCh38.d1.vd1.fa "$SCALE_BAM" "$SCALE_BED" "$SCALE_SAMPLE" scratch/g4/scale
+    if [[ -f "$ROOT_DIR/harness/media_stack_lifecycle.py" ]]; then
+        python3 "$ROOT_DIR/harness/media_stack_lifecycle.py" up
+        trap - EXIT
+    fi
 fi
 
 echo "$(ts) [Recertify 3/5] Running live dual-engine regression & cohort certification suites..."

@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
 # VarDictRust Native Git Pre-Push Hook
-# Blocks direct pushes to main and enforces fast smoke & robustness gate (<30s).
+# Blocks direct pushes to main, detects merge conflicts with origin/main, and enforces fast smoke & robustness gate (<30s).
 set -euo pipefail
+
+ts() { date '+[%H:%M:%S]'; }
+HOOK_T0=$SECONDS
+export RUST_TEST_THREADS="${RUST_TEST_THREADS:-4}"
+export RAYON_NUM_THREADS="${RAYON_NUM_THREADS:-4}"
+export RUST_THREADS="${RUST_THREADS:-1}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -47,8 +53,8 @@ for ((i=0; i<${#REFS[@]}; i+=4)); do
     HAS_NON_DELETION=true
 
     if [[ "$remote_oid" == "$ZERO_OID" ]]; then
-        # New branch push: inspect diff against origin/main or root commit
-        CHANGED=$(git diff --name-only origin/main..."$local_oid" 2>/dev/null || git diff-tree --no-commit-id --name-only -r "$local_oid" 2>/dev/null || true)
+        # New branch push: inspect diff against origin/main, main, or root commit
+        CHANGED=$(git diff --name-only origin/main..."$local_oid" 2>/dev/null || git diff --name-only main..."$local_oid" 2>/dev/null || git diff-tree --no-commit-id --name-only -r "$local_oid" 2>/dev/null || true)
     else
         # Existing branch update: inspect exact pushed commit range
         CHANGED=$(git diff --name-only "$remote_oid".."$local_oid" 2>/dev/null || true)
@@ -61,31 +67,55 @@ if [ "$HAS_NON_DELETION" = false ]; then
     exit 0
 fi
 
-# 4. Check whether any non-deletion update touches code or engine assets
-CODE_CHANGES=$(echo "$ALL_CHANGED_FILES" | grep -E '\.rs$|Cargo\.(toml|lock)$|crates/|harness/' || true)
+# 4. Git-2.34-compatible 3-way mergeability guard against origin/main
+# When a branch has merge conflicts with origin/main, GitHub sets mergeable=false and
+# silently skips all 'on: pull_request:' GitHub Actions workflows.
+git fetch origin main --quiet 2>/dev/null || true
+if git rev-parse --verify origin/main >/dev/null 2>&1; then
+    if ! git merge-base --is-ancestor origin/main HEAD 2>/dev/null; then
+        base="$(git merge-base origin/main HEAD 2>/dev/null || true)"
+        if [[ -n "$base" ]] && git merge-tree "$base" origin/main HEAD | grep -q '^+<<<<<<< \.our$'; then
+            echo "================================================================================" >&2
+            echo " ERROR: Branch has merge conflicts with 'origin/main'!" >&2
+            echo " GitHub Actions skips all 'on: pull_request:' workflows when a PR cannot merge." >&2
+            echo " Resolve conflicts before pushing: git fetch origin main && git rebase origin/main" >&2
+            echo "================================================================================" >&2
+            exit 1
+        fi
+    fi
+fi
+
+# 5. Check whether any non-deletion update touches code, CI, harness, or engine assets
+CODE_CHANGES=$(echo "$ALL_CHANGED_FILES" | grep -E '\.rs$|Cargo\.(toml|lock)$|crates/|harness/|\.github/|\.githooks/|\.agents/|fixtures/|golden/|benchmarks/evidence/' || true)
 
 if [ -z "$CODE_CHANGES" ]; then
-    echo "=== [pre-push] Only docs/metadata changed across pushed refs; skipping engine smoke gate ==="
+    echo "=== $(ts) [pre-push] Only docs/metadata changed across pushed refs; skipping engine smoke gate ==="
     exit 0
 fi
 
-ts() { date '+[%H:%M:%S]'; }
-HOOK_T0=$SECONDS
 cd "$ROOT_DIR"
 echo "=== $(ts) [pre-push] Code changes detected; running fast pre-push smoke gate (<30s) ==="
 
+st_t0=$SECONDS
 echo "$(ts) [pre-push 1/4] Checking formatting and lints..."
 cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
+echo "$(ts) [pre-push 1/4] PASS ($((SECONDS - st_t0))s)"
 
-echo "$(ts) [pre-push 2/4] Running crash robustness suite..."
-cargo test -p vardictrust --test robustness
+st_t0=$SECONDS
+echo "$(ts) [pre-push 2/4] Running core engine behavior and CLI crash robustness suites..."
+cargo test --release -p vardictrust-core --test engine_behavior
+cargo test --release -p vardictrust --test robustness
+echo "$(ts) [pre-push 2/4] PASS ($((SECONDS - st_t0))s)"
 
+st_t0=$SECONDS
 echo "$(ts) [pre-push 3/4] Running Tier-2 micro differential check against VarDictJava oracle..."
 cargo build -q --release -p vardictrust
 export VARDICT_BIN="$ROOT_DIR/target/release/vardictrust"
 COMPARE_NO_TIME=1 MIN_VARIANTS=1 bash "$ROOT_DIR/harness/compare.sh" fixtures/micro/micro.ref.fa fixtures/micro/micro.bam fixtures/micro/micro.bed
+echo "$(ts) [pre-push 3/4] PASS ($((SECONDS - st_t0))s)"
 
+st_t0=$SECONDS
 echo "$(ts) [pre-push 4/4] Scanning commits for secrets..."
 GITLEAKS_BIN=""
 if command -v gitleaks >/dev/null 2>&1; then
@@ -99,5 +129,6 @@ fi
 if [ -n "$GITLEAKS_BIN" ]; then
     "$GITLEAKS_BIN" detect --source . -v
 fi
+echo "$(ts) [pre-push 4/4] PASS ($((SECONDS - st_t0))s)"
 
 echo "=== $(ts) [pre-push] All pre-push gates PASSED ($((SECONDS - HOOK_T0))s) ==="

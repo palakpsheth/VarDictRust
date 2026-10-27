@@ -347,6 +347,73 @@ class TestRepoAgentSkills(unittest.TestCase):
         self.assertNotEqual(res_bad.returncode, 0, "Validator must fail when version mismatches")
         self.assertIn("RELEASE CONSISTENCY FAILED", res_bad.stderr)
 
+    def test_ci_workflow_pipeline_and_concurrency_contract(self):
+        workflows_dir = ROOT_DIR / ".github" / "workflows"
+        for wf_name in ("ci.yml", "differential.yml", "docs.yml", "security.yml"):
+            wf_path = workflows_dir / wf_name
+            self.assertTrue(wf_path.is_file(), f"Missing workflow: {wf_path}")
+            wf_text = wf_path.read_text(encoding="utf-8")
+            self.assertIn("concurrency:", wf_text, f"{wf_name} missing concurrency block")
+            self.assertIn(
+                "cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}",
+                wf_text,
+                f"{wf_name} missing cancel-in-progress guard",
+            )
+            if wf_name in ("ci.yml", "differential.yml", "docs.yml"):
+                self.assertIn("workflow_dispatch:", wf_text, f"{wf_name} missing workflow_dispatch")
+
+        ci_text = (workflows_dir / "ci.yml").read_text(encoding="utf-8")
+        self.assertIn('RUST_TEST_THREADS: "2"', ci_text)
+        self.assertIn('RAYON_NUM_THREADS: "2"', ci_text)
+        self.assertIn('RUST_THREADS: "1"', ci_text)
+        self.assertNotIn("apt-get install -y --no-install-recommends samtools", ci_text)
+        self.assertIn("build-and-test:", ci_text)
+        self.assertIn("name: Build, Unit, Integration, Parity & Coverage Gate", ci_text)
+
+        expected_ci_steps = [
+            "1. Format & Lint Gate (rustfmt & clippy)",
+            "2. Build Instrumented Workspace & Test Targets",
+            "3. Unit Tests (vardictrust-core & vardictrust)",
+            "4. Integration & Hostile-Input Tests (Modes, Filters, CRAM & Bounded Memory)",
+            "5. Corpus & Modality Parity Tests (110 Golden & Modality Cases)",
+            "6. Code Coverage Gate (cargo-llvm-cov >= 90% Lines)",
+            "7. Harness Diagnostic Self-Tests",
+            "8. Release Consistency, Performance Budget & Cleanliness Gate",
+            "9. Publish CI Telemetry Summary",
+        ]
+        last_pos = -1
+        for step_label in expected_ci_steps:
+            pos = ci_text.find(step_label)
+            self.assertNotEqual(pos, -1, f"ci.yml missing step label: {step_label!r}")
+            self.assertGreater(pos, last_pos, f"ci.yml step out of order: {step_label!r}")
+            last_pos = pos
+
+        self.assertIn("cargo llvm-cov clean --workspace", ci_text)
+        self.assertIn("cargo llvm-cov --no-report --workspace --bins --tests -- --list >/dev/null", ci_text)
+        self.assertIn("cargo llvm-cov --no-report --no-clean --workspace --lib --bins -- --test-threads=2", ci_text)
+        self.assertIn("-p vardictrust-core --test engine_behavior --test amplicon_stream_mem --test cram_stack", ci_text)
+        self.assertIn("-p vardictrust-core --test corpus_parity -- --test-threads=2", ci_text)
+        self.assertIn("cargo llvm-cov report --ignore-filename-regex '(^|/)tests/' --fail-under-lines 90", ci_text)
+        self.assertIn("harness/tests/test_git_hooks.sh", ci_text)
+
+        diff_text = (workflows_dir / "differential.yml").read_text(encoding="utf-8")
+        self.assertIn('RUST_TEST_THREADS: "2"', diff_text)
+        self.assertIn('RAYON_NUM_THREADS: "2"', diff_text)
+        expected_diff_steps = [
+            "1. Build Release Binary & Verify Pinned Golden Store",
+            "2. Tier-2 Micro Differential Parity (3-Way Java / Rust / C++)",
+            "3. Tier-2 Standard Slices Differential Parity (10 Slices: s1a..s9)",
+            "4. Tier-2 Extended Modality Differential Parity (17 Modes)",
+            "5. Level 6 Oracle & BAM Edge-Case Self-Tests",
+            "6. Publish Differential Telemetry Summary",
+        ]
+        last_diff_pos = -1
+        for step_label in expected_diff_steps:
+            pos = diff_text.find(step_label)
+            self.assertNotEqual(pos, -1, f"differential.yml missing step label: {step_label!r}")
+            self.assertGreater(pos, last_diff_pos, f"differential.yml step out of order: {step_label!r}")
+            last_diff_pos = pos
+
 
 if __name__ == "__main__":
     unittest.main()

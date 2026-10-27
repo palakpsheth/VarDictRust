@@ -2,13 +2,43 @@ name: Differential Testing
 on:
   push:
     branches: [main]
+    paths:
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'harness/**'
+      - 'fixtures/**'
+      - 'golden/**'
+      - 'benchmarks/**'
+      - '.github/workflows/differential.yml'
   pull_request:
+    paths:
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'harness/**'
+      - 'fixtures/**'
+      - 'golden/**'
+      - 'benchmarks/**'
+      - '.github/workflows/differential.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: "${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}"
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
 
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+  RUST_TEST_THREADS: "2"
+  RAYON_NUM_THREADS: "2"
+
 jobs:
   differential:
+    name: Dual-Engine Differential Parity (Tier-2)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -39,23 +69,30 @@ jobs:
           [ ! -d scratch/golden-store/cells ] || bash harness/golden_store.sh verify
       - name: Materialize reference FASTAs
         run: python3 harness/convert_fastas.py
-      - name: Build release binary
+      - name: 1. Build Release Binary & Verify Pinned Golden Store
+        id: build
         run: |
+          t0=$SECONDS
+          echo "[$(date '+%H:%M:%S')] [Diff Step 1/6] Building release binary and verifying pinned golden store..."
           cargo build --release -p vardictrust
           echo "VARDICT_BIN=$PWD/target/release/vardictrust" >> "$GITHUB_ENV"
           echo "COMPARE_NO_TIME=1" >> "$GITHUB_ENV"
           echo "GOLDEN_RUN_ID=ci-diff-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_ENV"
-      - name: "[Diff Stage 1/4] Run Tier-2 micro differential test"
+          echo "DIFF_STEP0_S=$((SECONDS - t0))" >> "$GITHUB_ENV"
+          echo "DIFF_STEP0_STATUS=PASS" >> "$GITHUB_ENV"
+      - name: 2. Tier-2 Micro Differential Parity (3-Way Java / Rust / C++)
+        id: micro
         run: |
           t0=$SECONDS
-          echo "[$(date '+%H:%M:%S')] [Diff Stage 1/4] Running Tier-2 micro differential gate..."
+          echo "[$(date '+%H:%M:%S')] [Diff Step 2/6] Running Tier-2 micro differential gate..."
           MIN_VARIANTS=1 bash harness/compare.sh fixtures/micro/micro.ref.fa fixtures/micro/micro.bam fixtures/micro/micro.bed
           echo "DIFF_STAGE1_S=$((SECONDS - t0))" >> "$GITHUB_ENV"
           echo "DIFF_STAGE1_STATUS=PASS" >> "$GITHUB_ENV"
-      - name: "[Diff Stage 2/4] Run committed slices differential suite (10 slices)"
+      - name: 3. Tier-2 Standard Slices Differential Parity (10 Slices: s1a..s9)
+        id: slices
         run: |
           t0=$SECONDS
-          echo "[$(date '+%H:%M:%S')] [Diff Stage 2/4] Running 10 standard slices (s1a..s9)..."
+          echo "[$(date '+%H:%M:%S')] [Diff Step 3/6] Running 10 standard slices (s1a..s9)..."
           SLICE_KEEP=$(mktemp -d)
           trap 'rm -rf "$SLICE_KEEP"' EXIT
           export SLICE_KEEP
@@ -69,10 +106,11 @@ jobs:
           done
           echo "DIFF_STAGE2_S=$((SECONDS - t0))" >> "$GITHUB_ENV"
           echo "DIFF_STAGE2_STATUS=PASS" >> "$GITHUB_ENV"
-      - name: "[Diff Stage 3/4] Run extended coverage parity suite (17 modalities, --no-record)"
+      - name: 4. Tier-2 Extended Modality Differential Parity (17 Modes)
+        id: extended
         run: |
           t0=$SECONDS
-          echo "[$(date '+%H:%M:%S')] [Diff Stage 3/4] Running 17-modality extended coverage suite (--no-record)..."
+          echo "[$(date '+%H:%M:%S')] [Diff Step 4/6] Running 17-modality extended coverage suite (--no-record)..."
           EXT_JOBS=1
           if [ -d scratch/golden-store/cells ] && [ -n "$(ls -A scratch/golden-store/cells 2>/dev/null)" ]; then
             EXT_JOBS=4
@@ -80,10 +118,11 @@ jobs:
           EXTENDED_JOBS="$EXT_JOBS" bash harness/run_extended_coverage.sh --no-record
           echo "DIFF_STAGE3_S=$((SECONDS - t0))" >> "$GITHUB_ENV"
           echo "DIFF_STAGE3_STATUS=PASS" >> "$GITHUB_ENV"
-      - name: "[Diff Stage 4/4] Run Level 6 oracle & BAM edge-case self-tests"
+      - name: 5. Level 6 Oracle & BAM Edge-Case Self-Tests
+        id: self-tests
         run: |
           t0=$SECONDS
-          echo "[$(date '+%H:%M:%S')] [Diff Stage 4/4] Running oracle-backed Level 6 self-tests..."
+          echo "[$(date '+%H:%M:%S')] [Diff Step 5/6] Running oracle-backed Level 6 self-tests..."
           TMP_GS=$(mktemp -d)
           trap 'rm -rf "$TMP_GS"' EXIT
           (
@@ -103,18 +142,19 @@ jobs:
           fi
           echo "DIFF_STAGE4_S=$((SECONDS - t0))" >> "$GITHUB_ENV"
           echo "DIFF_STAGE4_STATUS=PASS" >> "$GITHUB_ENV"
-      - name: Publish Differential Telemetry Summary
+      - name: 6. Publish Differential Telemetry Summary
         if: always()
         run: |
           {
             echo "## VarDictRust Two-Tier Differential Summary (Tier A)"
             echo ""
-            echo "| Stage | Suite | Verdict | Elapsed |"
+            echo "| Step | Suite | Verdict | Elapsed |"
             echo "| :--- | :--- | :---: | :---: |"
-            echo "| **Stage 1** | Tier-2 Micro Differential Gate (\`fixtures/micro/\`) | \`${DIFF_STAGE1_STATUS:-FAIL}\` | \`${DIFF_STAGE1_S:-0}s\` |"
-            echo "| **Stage 2** | Tier-2 Standard Slices (\`s1a\`–\`s9\`, 10 slices) | \`${DIFF_STAGE2_STATUS:-FAIL}\` | \`${DIFF_STAGE2_S:-0}s\` |"
-            echo "| **Stage 3** | Tier-2 Extended Modalities (\`17 modes\`, \`--no-record\`) | \`${DIFF_STAGE3_STATUS:-FAIL}\` | \`${DIFF_STAGE3_S:-0}s\` |"
-            echo "| **Stage 4** | Level 6 Oracle & BAM Edge-Case Self-Tests | \`${DIFF_STAGE4_STATUS:-FAIL}\` | \`${DIFF_STAGE4_S:-0}s\` |"
+            echo "| **1** | Build Release Binary & Verify Pinned Golden Store | \`${DIFF_STEP0_STATUS:-FAIL}\` | \`${DIFF_STEP0_S:-0}s\` |"
+            echo "| **2** | Tier-2 Micro Differential Gate (\`fixtures/micro/\`) | \`${DIFF_STAGE1_STATUS:-FAIL}\` | \`${DIFF_STAGE1_S:-0}s\` |"
+            echo "| **3** | Tier-2 Standard Slices (\`s1a\`–\`s9\`, 10 slices) | \`${DIFF_STAGE2_STATUS:-FAIL}\` | \`${DIFF_STAGE2_S:-0}s\` |"
+            echo "| **4** | Tier-2 Extended Modalities (\`17 modes\`, \`--no-record\`) | \`${DIFF_STAGE3_STATUS:-FAIL}\` | \`${DIFF_STAGE3_S:-0}s\` |"
+            echo "| **5** | Level 6 Oracle & BAM Edge-Case Self-Tests | \`${DIFF_STAGE4_STATUS:-FAIL}\` | \`${DIFF_STAGE4_S:-0}s\` |"
             if [ -n "${GOLDEN_RUN_ID:-}" ] && [ -f scratch/golden-store/stats.log ]; then
               echo ""
               echo "### Pinned Golden-Store Baseline Reuse"

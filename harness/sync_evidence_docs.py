@@ -88,6 +88,11 @@ def sync_docs(repo_root: pathlib.Path) -> int:
             text,
         )
         text = re.sub(
+            r"(\|\s*`benchmarks/evidence/[^`]+`\s*\|\s*`)[0-9a-f]{16}(`\s*\|)",
+            rf"\g<1>{fp}\2",
+            text,
+        )
+        text = re.sub(
             r"(under certified release fingerprint )[0-9a-f]{16}",
             rf"\g<1>{fp}",
             text,

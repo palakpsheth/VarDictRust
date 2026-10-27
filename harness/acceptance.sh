@@ -124,7 +124,7 @@ run bash harness/golden_store.sh verify --quiet || { t=0; echo "golden store ver
 mark 3 $t "Tier-2"
 # 4 Robustness: crash corpus (#341 family, PR #402, #187) + CRAM twin
 ITEM_T0=$SECONDS; echo "$(ts) [Acceptance 4/8] Starting Robustness & CRAM Twin..."
-t=1; run cargo test -p vardictrust --test robustness || t=0; run ev hg008-cram-twin || t=0
+t=1; run cargo test --release -p vardictrust-core --test engine_behavior || t=0; run cargo test --release -p vardictrust --test robustness || t=0; run ev hg008-cram-twin || t=0
 if [ "${CPP_SKIP:-0}" != "1" ] && [ "${CPP_SKIP:-0}" != "true" ]; then run ev_cpp hg008-cram-twin || t=0; fi
 mark 4 $t "robustness/CRAM"
 # 5 Scale + Perf Budget (thresholds pre-registered in T21)

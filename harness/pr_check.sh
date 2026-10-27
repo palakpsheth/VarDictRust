@@ -16,10 +16,26 @@ trap 'rm -rf "$SLICE_KEEP_TMP"' EXIT
 export SLICE_KEEP="${SLICE_KEEP:-$SLICE_KEEP_TMP}"
 export VARDICT_BIN="${VARDICT_BIN:-$ROOT_DIR/target/release/vardictrust}"
 export COMPARE_NO_TIME=1
+export RUST_TEST_THREADS="${RUST_TEST_THREADS:-4}"
+export RAYON_NUM_THREADS="${RAYON_NUM_THREADS:-4}"
+export RUST_THREADS="${RUST_THREADS:-1}"
 ts() { date '+[%H:%M:%S]'; }
 PR_T0=$SECONDS
 
 echo "=== $(ts) VarDictRust PR Regression & Performance Gate ==="
+
+# Pre-flight: Git-2.34-compatible 3-way mergeability guard against origin/main
+git fetch origin main --quiet 2>/dev/null || true
+if git rev-parse --verify origin/main >/dev/null 2>&1; then
+  if ! git merge-base --is-ancestor origin/main HEAD 2>/dev/null; then
+    base="$(git merge-base origin/main HEAD 2>/dev/null || true)"
+    if [[ -n "$base" ]] && git merge-tree "$base" origin/main HEAD | grep -q '^+<<<<<<< \.our$'; then
+      echo "ERROR: Branch has merge conflicts with 'origin/main' (causes GitHub Actions pull_request workflows to be skipped)." >&2
+      echo "Run: git fetch origin main && git rebase origin/main" >&2
+      exit 1
+    fi
+  fi
+fi
 
 # Stage 1: Hygiene (fmt, clippy, unit + integration + robustness tests, release binary)
 st_t0=$SECONDS

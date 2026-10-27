@@ -343,7 +343,7 @@ else
 fi
 
 DEFAULT_JOBS=8
-if [[ "${CI:-}" == "true" || "${GOLDEN_MODE:-auto}" != "auto" || ! -d "$ROOT_DIR/scratch/golden-store/cells" || -z "$(ls -A "$ROOT_DIR/scratch/golden-store/cells" 2>/dev/null)" ]]; then
+if [[ "${CI:-}" == "true" || "${GOLDEN_MODE:-auto}" != "auto" || ! -d "$DATA_ROOT/scratch/golden-store/cells" || -z "$(ls -A "$DATA_ROOT/scratch/golden-store/cells" 2>/dev/null)" ]]; then
     DEFAULT_JOBS=1
 fi
 JOBS="${INTEGRATION_JOBS:-$DEFAULT_JOBS}"
