@@ -95,10 +95,16 @@ fn cram_stack_child() {
     println!("COUNT={n}");
 }
 
-fn run_child(stack: usize) -> std::process::Output {
+fn run_child(stack: usize, suppress_core: bool) -> std::process::Output {
     let exe = std::env::current_exe().expect("current test exe");
-    Command::new(exe)
-        .arg("cram_stack_child")
+    let mut cmd = if cfg!(unix) && suppress_core {
+        let mut c = Command::new("sh");
+        c.arg("-c").arg("ulimit -c 0; exec \"$0\" \"$@\"").arg(&exe);
+        c
+    } else {
+        Command::new(&exe)
+    };
+    cmd.arg("cram_stack_child")
         .arg("--exact")
         .arg("--nocapture")
         .env("VDR_CRam_CHILD", "1")
@@ -126,7 +132,14 @@ fn cram_worker_stack_thresholds() {
     } else {
         2 * 1024 * 1024
     };
-    let died = run_child(small);
+    let (died, big) = std::thread::scope(|s| {
+        let h_died = s.spawn(|| run_child(small, true));
+        let h_big = s.spawn(|| run_child(64 * 1024 * 1024, false));
+        (
+            h_died.join().expect("join small-stack child"),
+            h_big.join().expect("join 64 MiB child"),
+        )
+    });
     assert!(
         !died.status.success(),
         "{small}B child unexpectedly SUCCEEDED ({}). If upstream shrank the \
@@ -150,7 +163,6 @@ fn cram_worker_stack_thresholds() {
     println!("PINNED: {small}B worker stack fails ({})", died.status);
 
     // Workaround stack: the decode MUST succeed with the measured count.
-    let big = run_child(64 * 1024 * 1024);
     assert!(
         big.status.success(),
         "64 MiB child failed ({}): {}",
