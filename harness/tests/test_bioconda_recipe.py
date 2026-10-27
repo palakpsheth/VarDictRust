@@ -6,6 +6,7 @@ Automated verification of the canonical Bioconda recipe for VarDictRust.
 Conforms strictly to the Python Standard Library purity constraint (zero PyPI packages).
 """
 
+import importlib
 import os
 import pathlib
 import re
@@ -390,7 +391,8 @@ class TestRepoAgentSkills(unittest.TestCase):
 
         self.assertIn("cargo llvm-cov clean --workspace", ci_text)
         self.assertIn("cargo llvm-cov --no-report --workspace --bins --tests -- --list >/dev/null", ci_text)
-        self.assertIn("cargo llvm-cov --no-report --no-clean --workspace --lib --bins -- --test-threads=2", ci_text)
+        self.assertIn("cargo llvm-cov --no-report --workspace --lib --bins -- --test-threads=2", ci_text)
+        self.assertNotIn("--no-report --no-clean", ci_text)
         self.assertIn("-p vardictrust-core --test engine_behavior --test amplicon_stream_mem --test cram_stack", ci_text)
         self.assertIn("-p vardictrust-core --test corpus_parity -- --test-threads=2", ci_text)
         self.assertIn("cargo llvm-cov report --ignore-filename-regex '(^|/)tests/' --fail-under-lines 90", ci_text)
@@ -413,6 +415,34 @@ class TestRepoAgentSkills(unittest.TestCase):
             self.assertNotEqual(pos, -1, f"differential.yml missing step label: {step_label!r}")
             self.assertGreater(pos, last_diff_pos, f"differential.yml step out of order: {step_label!r}")
             last_diff_pos = pos
+
+    def test_github_workflows_valid_yaml_and_pinned_shas(self):
+        workflows_dir = ROOT_DIR / ".github" / "workflows"
+        wf_files = sorted(workflows_dir.glob("*.yml"))
+        self.assertGreaterEqual(len(wf_files), 6, "Expected at least 6 GitHub workflow YAML files")
+
+        try:
+            yaml_mod = importlib.import_module("yaml")
+        except ImportError:
+            yaml_mod = None
+
+        uses_re = re.compile(r"^\s*(?:-\s*)?uses:\s*([^\s#]+)", re.MULTILINE)
+        sha_re = re.compile(r"@[0-9a-f]{40}$")
+
+        for wf_path in wf_files:
+            wf_text = wf_path.read_text(encoding="utf-8")
+            if yaml_mod is not None:
+                parsed = yaml_mod.safe_load(wf_text)
+                self.assertIsInstance(parsed, dict, f"{wf_path.name} did not parse to a YAML mapping")
+            for match in uses_re.finditer(wf_text):
+                action_ref = match.group(1).strip("\"'")
+                if action_ref.startswith("./"):
+                    continue
+                self.assertRegex(
+                    action_ref,
+                    sha_re,
+                    f"{wf_path.name}: action reference {action_ref!r} must be pinned to a 40-char lowercase hex commit SHA",
+                )
 
 
 if __name__ == "__main__":

@@ -85,6 +85,8 @@ pub fn ensure_fastas_converted() {
             let script = workspace_root().join("harness/convert_fastas.py");
             let status = Command::new("python3")
                 .arg(&script)
+                .arg("--data-root")
+                .arg(&droot)
                 .current_dir(&droot)
                 .status()
                 .expect("run convert_fastas.py");

@@ -440,11 +440,25 @@ def _plausible(kind, out, err_path, pin_cpp_exit=False):
     return True, ""
 
 
+def _is_deterministic_cpp_skip(err_path):
+    try:
+        txt = pathlib.Path(err_path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    markers = (
+        "vardictcpp: unknown option",
+        "vardictcpp: unrecognized option",
+        "vardictcpp: unsupported",
+        "vardictcpp: none of the requested chromosomes were found in the reference",
+    )
+    return any(m in txt for m in markers)
+
+
 def _pin(m, kind, label, key, ident, out, ef, tf, rc, corrupt, sigs, inputs, pin_cpp_exit=False):
     if m == "off":
         return "OFF"
     if rc != 0:
-        if not (kind == "cpp" and pin_cpp_exit and rc < 128 and os.path.getsize(ef) > 0):
+        if not (kind == "cpp" and pin_cpp_exit and rc == 1 and _is_deterministic_cpp_skip(ef)):
             return "FAIL"
     if not pathlib.Path(out).is_file():
         print(f"golden_store: {label}: command exited {rc} but {out} is missing; not pinned", file=sys.stderr)

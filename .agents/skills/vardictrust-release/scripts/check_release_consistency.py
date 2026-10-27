@@ -2,8 +2,8 @@
 """VarDictRust Release Consistency & Evidence Validator (stdlib-only).
 
 Verifies that all version-bearing files, workspace test counts (416 total:
-252 core lib + 110 corpus_parity + 24 engine_behavior + 2 amplicon_stream_mem
-+ 2 cram_stack + 17 CLI bin + 9 CLI integration binary tests), engine
+252 core lib + 110 corpus_parity + 25 engine_behavior + 2 amplicon_stream_mem
++ 2 cram_stack + 17 CLI bin + 8 CLI integration binary tests), engine
 fingerprints (FP & PERF_FP), and 16 benchmarks/evidence/*.json SHA-256
 manifests are synchronized for a target release version and phase.
 """
@@ -24,11 +24,11 @@ EXPECTED_TEST_COUNTS = {
     "total_workspace": 416,
     "core_lib": 252,
     "corpus_parity": 110,
-    "engine_behavior": 24,
+    "engine_behavior": 25,
     "amplicon_stream_mem": 2,
     "cram_stack": 2,
     "cli_bin": 17,
-    "cli_integration": 9,
+    "cli_integration": 8,
     "harness_self_tests": 25,
 }
 
@@ -219,8 +219,8 @@ def check_pre_tag_surfaces(repo_root: Path, version: str, errors: list[str]) -> 
     require_regex(
         repo_root,
         "README.md",
-        r"416 automated Cargo workspace tests \(252 core library tests, 110 corpus and modality parity tests, 24 engine behavior tests, 2 amplicon streaming memory tests, 2 CRAM stack tests, 17 CLI tests, and 9 CLI integration binary tests\)",
-        "README.md exact 416 test breakdown (252 + 110 + 24 + 2 + 2 + 17 + 9)",
+        r"416 automated Cargo workspace tests \(252 core library tests, 110 corpus and modality parity tests, 25 engine behavior tests, 2 amplicon streaming memory tests, 2 CRAM stack tests, 17 CLI tests, and 8 CLI integration binary tests\)",
+        "README.md exact 416 test breakdown (252 + 110 + 25 + 2 + 2 + 17 + 8)",
         errors,
     )
 

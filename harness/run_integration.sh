@@ -41,8 +41,6 @@ fi
 if [[ -z "${BINARY:-}" ]]; then
     if [[ -n "${VARDICT_BIN:-}" && -x "${VARDICT_BIN}" ]]; then
         BINARY="\"$VARDICT_BIN\" -th 1"
-    elif [[ -x "$ROOT_DIR/target/release/vardictrust" ]]; then
-        BINARY="\"$ROOT_DIR/target/release/vardictrust\" -th 1"
     else
         cargo build -q --release -p vardictrust
         BINARY="\"$ROOT_DIR/target/release/vardictrust\" -th 1"
@@ -51,7 +49,7 @@ fi
 
 # Auto-materialize test FASTAs from upstream CSVs if not already present
 if [[ ! -f "$FASTA_DIR/GRCh37.fa" || ! -f "$FASTA_DIR/GRCh37.fa.fai" ]]; then
-    (cd "$DATA_ROOT" && python3 "$ROOT_DIR/harness/convert_fastas.py")
+    python3 "$ROOT_DIR/harness/convert_fastas.py" --data-root "$DATA_ROOT"
 fi
 
 # Load XFAIL defect registry

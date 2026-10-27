@@ -14,11 +14,7 @@ use std::fs::File;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
 
-type FileStamp = (u64, Option<std::time::SystemTime>);
-
 struct CachedFastaReader {
-    fa_stamp: FileStamp,
-    fai_stamp: FileStamp,
     reader: IndexedReader<BufReader<File>>,
 }
 
@@ -31,11 +27,6 @@ pub(crate) fn clear_fasta_reader_cache() {
     FASTA_READER_CACHE.with(|cache| cache.borrow_mut().clear());
 }
 
-fn file_stamp(path: &Path) -> Result<FileStamp, VardictError> {
-    let meta = std::fs::metadata(path).map_err(VardictError::Io)?;
-    Ok((meta.len(), meta.modified().ok()))
-}
-
 /// Fetches a subsequence from an indexed FASTA file using a thread-local cached reader.
 pub fn fetch_subsequence(
     fasta_path: &Path,
@@ -43,30 +34,22 @@ pub fn fetch_subsequence(
     start: Pos1,
     end: Pos1,
 ) -> Result<Vec<u8>, VardictError> {
-    let mut fai_path = fasta_path.to_path_buf();
-    let mut ext = fai_path
-        .extension()
-        .map(|e| e.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    ext.push_str(".fai");
-    fai_path.set_extension(ext);
-
-    let fa_stamp = file_stamp(fasta_path)?;
-    let fai_stamp = file_stamp(&fai_path)?;
-
     FASTA_READER_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
-        let needs_reload = cache
-            .get(fasta_path)
-            .is_none_or(|c| c.fa_stamp != fa_stamp || c.fai_stamp != fai_stamp);
-        if needs_reload {
+        if !cache.contains_key(fasta_path) {
+            let mut fai_path = fasta_path.to_path_buf();
+            let mut ext = fai_path
+                .extension()
+                .map(|e| e.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            ext.push_str(".fai");
+            fai_path.set_extension(ext);
+
             let index = fai::fs::read(&fai_path).map_err(VardictError::Io)?;
             let file = File::open(fasta_path).map_err(VardictError::Io)?;
             cache.insert(
                 fasta_path.to_path_buf(),
                 CachedFastaReader {
-                    fa_stamp,
-                    fai_stamp,
                     reader: IndexedReader::new(BufReader::new(file), index),
                 },
             );

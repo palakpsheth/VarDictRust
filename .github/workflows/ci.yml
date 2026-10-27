@@ -68,7 +68,7 @@ jobs:
         run: |
           t0=$SECONDS
           echo "[$(date '+%H:%M:%S')] [Step 3/9] Running unit tests (252 vardictrust-core --lib + 17 vardictrust --bins)..."
-          cargo llvm-cov --no-report --no-clean --workspace --lib --bins -- --test-threads=2
+          cargo llvm-cov --no-report --workspace --lib --bins -- --test-threads=2
           echo "STEP3_S=$((SECONDS - t0))" >> "$GITHUB_ENV"
           echo "STEP3_STATUS=PASS" >> "$GITHUB_ENV"
       - name: 4. Integration & Hostile-Input Tests (Modes, Filters, CRAM & Bounded Memory)
@@ -76,8 +76,8 @@ jobs:
         run: |
           t0=$SECONDS
           echo "[$(date '+%H:%M:%S')] [Step 4/9] Running integration and hostile-input test suites..."
-          cargo llvm-cov --no-report --no-clean -p vardictrust-core --test engine_behavior --test amplicon_stream_mem --test cram_stack -- --test-threads=2
-          cargo llvm-cov --no-report --no-clean -p vardictrust --test robustness --test profile_smoke --test version --test thread_determinism -- --test-threads=2
+          cargo llvm-cov --no-report -p vardictrust-core --test engine_behavior --test amplicon_stream_mem --test cram_stack -- --test-threads=2
+          cargo llvm-cov --no-report -p vardictrust --test robustness --test profile_smoke --test version -- --test-threads=2
           echo "STEP4_S=$((SECONDS - t0))" >> "$GITHUB_ENV"
           echo "STEP4_STATUS=PASS" >> "$GITHUB_ENV"
       - name: 5. Corpus & Modality Parity Tests (110 Golden & Modality Cases)
@@ -85,7 +85,7 @@ jobs:
         run: |
           t0=$SECONDS
           echo "[$(date '+%H:%M:%S')] [Step 5/9] Running 110 in-process golden corpus and modality parity tests..."
-          cargo llvm-cov --no-report --no-clean -p vardictrust-core --test corpus_parity -- --test-threads=2
+          cargo llvm-cov --no-report -p vardictrust-core --test corpus_parity -- --test-threads=2
           echo "STEP5_S=$((SECONDS - t0))" >> "$GITHUB_ENV"
           echo "STEP5_STATUS=PASS" >> "$GITHUB_ENV"
       - name: 6. Code Coverage Gate (cargo-llvm-cov >= 90% Lines)

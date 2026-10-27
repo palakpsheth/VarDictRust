@@ -42,10 +42,7 @@ where
     if num_threads == 1 {
         for batch in batches {
             for item in batch {
-                let res =
-                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| worker_fn(item)))
-                        .map_err(|_| VardictError::Other("Worker thread panicked".to_string()))?;
-                consumer_fn(res?)?;
+                consumer_fn(worker_fn(item)?)?;
             }
         }
         return Ok(());
@@ -351,19 +348,22 @@ mod tests {
         );
         assert!(matches!(err_res, Err(VardictError::Other(ref m)) if m == "boom"));
 
-        let panic_res = run_parallel_batched(
-            batches,
-            1,
-            |item| {
-                if item == 2 {
-                    panic!("worker panic");
-                }
-                Ok(item)
-            },
-            |_| Ok(()),
-        );
+        let panic_res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run_parallel_batched(
+                batches,
+                1,
+                |item| {
+                    if item == 2 {
+                        panic!("worker panic");
+                    }
+                    Ok(item)
+                },
+                |_| Ok(()),
+            )
+        }));
         assert!(
-            matches!(panic_res, Err(VardictError::Other(ref m)) if m == "Worker thread panicked")
+            panic_res.is_err(),
+            "single-thread caller panics must unwind naturally"
         );
     }
 }

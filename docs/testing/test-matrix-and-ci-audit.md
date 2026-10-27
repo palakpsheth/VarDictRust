@@ -31,11 +31,10 @@ flowchart TD
     end
 
     subgraph Level1 ["Level 1: Unit & Component Tests (416 Total)"]
-        C_Core["crates/vardictrust-core (252 lib + 110 corpus_parity + 24 engine_behavior + 2 amplicon_stream_mem + 2 cram_stack tests)"]
+        C_Core["crates/vardictrust-core (252 lib + 110 corpus_parity + 25 engine_behavior + 2 amplicon_stream_mem + 2 cram_stack tests)"]
         C_CLI["crates/vardictrust (17 cli tests)"]
         C_Prof["crates/vardictrust/tests/profile_smoke.rs (3 tests)"]
         C_Rob["crates/vardictrust/tests/robustness.rs (4 tests)"]
-        C_Det["crates/vardictrust/tests/thread_determinism.rs (1 test)"]
         C_Ver["crates/vardictrust/tests/version.rs (1 test)"]
     end
 
@@ -134,13 +133,12 @@ The table below summarizes the complete testing inventory executed across the de
 | **Pre** | **Pre-Commit Hook (Track B)** | `.pre-commit-config.yaml` | 6 hooks | `git commit` (local) | yaml, toml, whitespace, gitleaks | $<4\text{ s}$ |
 | **1** | [**Level 1: Core Library Tests**](#level-1) | `crates/vardictrust-core/src/` | 252 tests | `cargo test -p vardictrust-core --lib` | 0 failures, 0 panics | $\sim 2\text{ s}$ |
 | **1** | [**Level 1: Corpus & Modality Parity**](#level-1) | `crates/vardictrust-core/tests/corpus_parity.rs` | 110 tests | `cargo test -p vardictrust-core --test corpus_parity` | 92-corpus + 17 modalities + manifest PASS | $\sim 1.5\text{ s}$ |
-| **1** | [**Level 1: Engine Behavior & Hostile Inputs**](#level-1) | `crates/vardictrust-core/tests/engine_behavior.rs` | 24 tests | `cargo test -p vardictrust-core --test engine_behavior` | CRAM, Fisher, SVs, filters, hostile inputs PASS | $\sim 0.4\text{ s}$ |
+| **1** | [**Level 1: Engine Behavior & Hostile Inputs**](#level-1) | `crates/vardictrust-core/tests/engine_behavior.rs` | 25 tests | `cargo test -p vardictrust-core --test engine_behavior` | CRAM, Fisher, SVs, filters, hostile inputs, thread determinism PASS | $\sim 0.4\text{ s}$ |
 | **1** | [**Level 1: Amplicon Streaming Memory**](#level-1) | `crates/vardictrust-core/tests/amplicon_stream_mem.rs` | 2 tests | `cargo test -p vardictrust-core --test amplicon_stream_mem` | Bounded memory on huge BED intervals | $\sim 0.2\text{ s}$ |
 | **1** | [**Level 1: CRAM Decoder Stack**](#level-1) | `crates/vardictrust-core/tests/cram_stack.rs` | 2 tests | `cargo test -p vardictrust-core --test cram_stack` | 64 MiB Rayon stack, CRAM==BAM | $\sim 0.3\text{ s}$ |
 | **1** | [**Level 1: CLI Front-End Tests**](#level-1) | `crates/vardictrust/src/` | 17 tests | `cargo test -p vardictrust --bin vardictrust` | 0 failures, 0 panics | $<0.1\text{ s}$ |
 | **1** | [**Level 1: Profiling Smoke Tests**](#level-1) | `crates/vardictrust/tests/profile_smoke.rs` | 3 tests | `cargo test -p vardictrust --test profile_smoke` | Feature guards & profile artifacts PASS | $\sim 0.2\text{ s}$ |
 | **1** | [**Level 1: Crash Robustness Corpus**](#level-1) | `crates/vardictrust/tests/robustness.rs` | 4 tests | `cargo test -p vardictrust --test robustness` | Locale, `--tile-size 0`, `-F bogus`, corrupt BAMs PASS | $\sim 0.2\text{ s}$ |
-| **1** | [**Level 1: Thread Determinism**](#level-1) | `crates/vardictrust/tests/thread_determinism.rs` | 1 test | `cargo test -p vardictrust --test thread_determinism` | Bitwise identical VCF (1, 2, 4, 8 thr) | $\sim 0.2\text{ s}$ |
 | **1** | [**Level 1: Release Metadata & AI**](#level-1) | `crates/vardictrust/tests/version.rs` | 1 test | `cargo test -p vardictrust --test version` | Version, Lai (2016), AI disclosed | $<0.01\text{ s}$ |
 | **2** | [**Level 2: Integration Regression Corpus**](#level-2)| `harness/run_integration.sh` | 92 fixtures | PR gate & Acceptance Item 2 | `91 PASS / 1 XFAIL` (UB-4 signature, 8 workers) | $\sim 1.6\text{ s}$ |
 | **3** | [**Level 3: Micro Differential**](#level-3) | `fixtures/micro/` | 1 fixture | PR gate & Acceptance Item 3 | Live Oracle MATCH (0 diffs) | $<1\text{ s}$ |
@@ -174,9 +172,9 @@ The table below summarizes the complete testing inventory executed across the de
 
 Executing `cargo test --workspace` validates **416 tests** across `crates/vardictrust-core`, `crates/vardictrust`, and integration test suites (enforcing **`> 90%` Rust line coverage** via `cargo llvm-cov report --ignore-filename-regex '(^|/)tests/' --fail-under-lines 90`):
 
-### 3.1 `crates/vardictrust-core` (252 Library Tests + 138 Integration Tests)
+### 3.1 `crates/vardictrust-core` (252 Library Tests + 139 Integration Tests)
 
-The core variant calling engine enforces `#![forbid(unsafe_code)]` and zero unhandled panics. Its 252 library unit tests, 110 corpus and modality parity tests, 24 engine behavior tests, 2 amplicon streaming memory tests, and 2 CRAM stack integration tests are partitioned across the following modules:
+The core variant calling engine enforces `#![forbid(unsafe_code)]` and zero unhandled panics. Its 252 library unit tests, 110 corpus and modality parity tests, 25 engine behavior tests, 2 amplicon streaming memory tests, and 2 CRAM stack integration tests are partitioned across the following modules:
 
 1. **Output Formatting & Tables (`output/` — 40 tests):**
    - `output::table` (16 tests): verifies column schema counts (Simple 36/38, Amplicon 38/40, Somatic 55/61), raw float formatting vs banker's rounding, null-record row rendering for `-p` mode, and header generation.
@@ -205,13 +203,13 @@ The core variant calling engine enforces `#![forbid(unsafe_code)]` and zero unha
 8. **Streaming Execution & Concurrency (`runner`, `bam` — 19 tests):**
    - `runner` (5 tests): verifies worker thread panic catching without process hang, Rayon bounded queue collection, batched tile execution, and deterministic sorted output.
    - `bam` (14 tests): verifies SAM/BAM/CRAM decoding, soft-masked lowercase CRAM base uppercasing (`fill_from_alignment_record_uppercases_soft_masked_cram_bases`), omitted CRAM `NM` reconstruction (`compute_cram_nm_reconstructs_edit_distance_when_omitted_by_cram`), `CachedBgzfReader` block caching, CIGAR query-consumption validation against SEQ length, and corrupt record rejection.
-9. **Singletons, Finalization & Core Integration Suites (`javamap`, `config`, `tovars`, `tests`, `tests/corpus_parity.rs`, `tests/engine_behavior.rs`, `tests/amplicon_stream_mem.rs`, `tests/cram_stack.rs` — 156 tests: 18 library + 138 integration):**
+9. **Singletons, Finalization & Core Integration Suites (`javamap`, `config`, `tovars`, `tests`, `tests/corpus_parity.rs`, `tests/engine_behavior.rs`, `tests/amplicon_stream_mem.rs`, `tests/cram_stack.rs` — 157 tests: 18 library + 139 integration):**
    - `javamap` (2 tests): verifies `JavaHashMap` OpenJDK 8+ hash bucket spread, arena node free-list reuse, binning, and treeify triggers against real Java oracle traces.
    - `config` (2 tests): verifies configuration validation.
    - `tovars` (5 tests): verifies candidate variant finalization and sparse copy-on-write overlay parity.
    - Root library tests (9 tests): verifies splice-tile and mate-window ownership, empty-ref winner suppression, amplicon covering-position streaming, and adaptive region tile sizing (`test_effective_tile_size_untiled_up_to_1mbp_and_100kbp_above_1mbp`).
    - `tests/corpus_parity.rs` (110 tests): verifies all 92 upstream integration test cases, 17 extended calling modalities (`Simple`, `Somatic`, `Amplicon`, `Splicing`, CRISPR, `<INV>`, `<DUP>`, and CLI flags), and corpus manifest completeness directly in-process via `vardictrust_core`.
-   - `tests/engine_behavior.rs` (24 tests): verifies CRAM soft-masked base normalization and `NM` reconstruction (`cram`), somatic Fisher 61-column output (`fisher`), `-f 0` vs `-f 0.0` VCF threshold filtering (`vcf_filters`), `<DUP>`, $5'$ deletion, and `<INV>` structural variants (`structural_variants`), pileup and filtering modes (`filtering_and_pileup`), and hostile input resilience including PR #402 malformed CIGARs and missing `.bai` indices (`hostile_inputs`).
+   - `tests/engine_behavior.rs` (25 tests): verifies CRAM soft-masked base normalization and `NM` reconstruction (`cram`), somatic Fisher 61-column output (`fisher`), `-f 0` vs `-f 0.0` VCF threshold filtering (`vcf_filters`), `<DUP>`, $5'$ deletion, and `<INV>` structural variants (`structural_variants`), pileup and filtering modes (`filtering_and_pileup`), hostile input resilience including PR #402 malformed CIGARs and missing `.bai` indices (`hostile_inputs`), and multi-thread tile determinism (`concurrency`).
    - `tests/amplicon_stream_mem.rs` (2 tests): verifies bounded memory on huge amplicon intervals across standard `-a` and `-a -p` pileup modes.
    - `tests/cram_stack.rs` (2 tests): verifies 64 MiB Rayon worker stack sizing for `noodles-cram` rANS decoding and CRAM-vs-BAM somatic parity.
 
@@ -224,7 +222,7 @@ Located in `crates/vardictrust/src/cli.rs`:
 - Verifies accepted and ignored upstream compatibility flags (`-v`), multi-sample BAM header extraction (`-b "b1|b2"`), and unsupported flag rejection (`AGENTS.md §12`).
 - Verifies error propagation on invalid flag arguments (`-F bogus`) and zero tile size (`--tile-size 0`).
 
-### 3.3 CLI Integration Test Binaries (`crates/vardictrust/tests/` — 9 Tests)
+### 3.3 CLI Integration Test Binaries (`crates/vardictrust/tests/` — 8 Tests)
 
 Located in `crates/vardictrust/tests/`:
 1. **`tests/profile_smoke.rs` (3 default tests + 4 feature-gated tests):**
@@ -234,9 +232,7 @@ Located in `crates/vardictrust/tests/`:
    - `test_zero_tile_size_fails_fast_without_hanging`: verifies that `--tile-size 0` returns an actionable `Parse` error instead of entering an infinite loop.
    - `test_invalid_flag_syntax_fails_with_actionable_error`: verifies that malformed SAM filter flags (e.g. `-F bogus`) fail with clear error messages.
    - `robustness_corpus_never_crashes`: runs VarDictRust over synthetic corrupt and truncated BAM files without aborting.
-3. **`tests/thread_determinism.rs` (1 test):**
-   - `vcf_output_byte_identical_across_thread_counts`: executes variant calling over identical genomic BAM inputs across 1, 2, 4, and 8 worker threads; verifies that the resulting VCF files are **100% bitwise identical (`diff -u` exits 0)**.
-4. **`tests/version.rs` (1 test):**
+3. **`tests/version.rs` (1 test):**
    - `version_credits_original_and_discloses_ai`: verifies that `vardictrust --version` displays the exact package version (`env!("CARGO_PKG_VERSION")`), original author credit (Zhongwu Lai et al. 2016, AstraZeneca-NGS), upstream commit pins (`0886261` / `009e017`), and full AI tooling disclosures.
 
 ---
@@ -426,7 +422,7 @@ VarDictRust utilizes 6 automated GitHub Actions workflows with strict security h
   1. `1. Format & Lint Gate (rustfmt & clippy)` (`id: fmt-lint`): runs `cargo fmt --all -- --check` and `cargo clippy --all-targets --all-features -- -D warnings`.
   2. `2. Build Instrumented Workspace & Test Targets` (`id: build`): pre-compiles all instrumented library, binary, and integration test targets via `cargo llvm-cov --no-report --workspace --bins --tests -- --list`.
   3. `3. Unit Tests (vardictrust-core & vardictrust)` (`id: unit-tests`): runs all 269 library and CLI binary unit tests (`--lib --bins -- --test-threads=2`).
-  4. `4. Integration & Hostile-Input Tests (Modes, Filters, CRAM & Bounded Memory)` (`id: integration-tests`): runs `engine_behavior` (24 tests), `amplicon_stream_mem` (2), `cram_stack` (2), `robustness` (4), `profile_smoke` (3), `version` (1), and `thread_determinism` (1).
+  4. `4. Integration & Hostile-Input Tests (Modes, Filters, CRAM & Bounded Memory)` (`id: integration-tests`): runs `engine_behavior` (25 tests), `amplicon_stream_mem` (2), `cram_stack` (2), `robustness` (4), `profile_smoke` (3), and `version` (1).
   5. `5. Corpus & Modality Parity Tests (110 Golden & Modality Cases)` (`id: parity-tests`): runs `corpus_parity` (110 tests across all 92 upstream corpus fixtures and 17 extended modalities).
   6. `6. Code Coverage Gate (cargo-llvm-cov >= 90% Lines)` (`id: coverage-gate`): aggregates coverage across steps 3–5 and enforces `--fail-under-lines 90`.
   7. `7. Harness Diagnostic Self-Tests (21 Zero-Conda Suites)` (`id: self-tests`): executes all 13 zero-conda shell self-tests and 8 stdlib Python test suites.

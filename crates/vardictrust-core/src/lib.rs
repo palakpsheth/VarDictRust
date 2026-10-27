@@ -1464,8 +1464,8 @@ mod tests {
             .build()
     }
 
-    /// Mirror of `vardictrust/tests/common::indexed_bam` (no shared synthetic-BAM
-    /// builder exists for core): writes `path` plus its `.bam.bai` index.
+    /// Mirror of `crates/vardictrust-core/tests/common::indexed_bam`: writes `path`
+    /// plus its `.bam.bai` index.
     fn write_test_bam(path: &std::path::Path, chr: &str, len: usize, recs: &[RecordBuf]) {
         use noodles::bam::bai;
         use noodles::core::Position;
@@ -1492,7 +1492,8 @@ mod tests {
             w.write_alignment_record(&hd, rec).unwrap();
             let end = w.get_ref().virtual_position();
             let s = rec.alignment_start().expect("aligned record");
-            let e = Position::new(s.get() + rec.cigar().alignment_span()).unwrap_or(Position::MIN);
+            let e = Position::new(s.get() + rec.cigar().alignment_span().saturating_sub(1).max(1))
+                .unwrap_or(Position::MIN);
             indexer
                 .add_record(Some((0, s, e, true)), Chunk::new(start, end))
                 .map_err(std::io::Error::other)

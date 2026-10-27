@@ -65,7 +65,12 @@ def convert_csv_to_fasta(csv_path: str, fa_path: str, fai_path: str):
     os.replace(tmp_fai, fai_path)
 
 def main():
-    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    import argparse
+    default_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    parser = argparse.ArgumentParser(description="Convert upstream VarDictJava thin-FASTA CSVs to indexed FASTAs.")
+    parser.add_argument("--data-root", default=default_root, help="Root directory containing VarDictJava/testdata/fastas")
+    args = parser.parse_args()
+    root = os.path.abspath(args.data_root)
     fasta_dir = os.path.join(root, "VarDictJava", "testdata", "fastas")
     if not os.path.isdir(fasta_dir):
         print(f"convert_fastas: directory not found: {fasta_dir}", file=sys.stderr)

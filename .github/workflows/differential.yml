@@ -126,7 +126,7 @@ jobs:
           TMP_GS=$(mktemp -d)
           trap 'rm -rf "$TMP_GS"' EXIT
           (
-            unset GOLDEN_RUN_ID
+            unset GOLDEN_RUN_ID VARDICT_BIN COMPARE_NO_TIME
             export GOLDEN_STORE_DIR="$TMP_GS"
             python3 harness/tests/test_vcf_header.py
             bash harness/tests/test_run_oracle.sh

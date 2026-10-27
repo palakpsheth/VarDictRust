@@ -1,9 +1,10 @@
-//! First-class functional engine behavior integration suite (`24` tests).
+//! First-class functional engine behavior integration suite (`25` tests).
 //!
 //! Exercises CRAM decoding, Fisher exact test tables/VCFs, VCF filter edge cases,
-//! structural variant calling, read/pileup filtering flags, and hostile inputs
-//! entirely in-process via `vardictrust_core::run_with_writer` with `threads = 1`
-//! and zero `samtools` or `vardictrust` subprocesses.
+//! structural variant calling, read/pileup filtering flags, hostile inputs, and
+//! multi-thread tile determinism entirely in-process via
+//! `vardictrust_core::run_with_writer` with zero `samtools` or `vardictrust`
+//! subprocesses.
 
 use std::fs;
 use std::sync::atomic::Ordering;
@@ -22,7 +23,7 @@ use vardictrust_core::{
 mod common;
 use common::{
     data_root, ensure_fastas_converted, extract_variants, indexed_bam, run_core_var, run_core_vcf,
-    workspace_root, write_indexed_cram, write_ref,
+    snv_record, workspace_root, write_indexed_cram, write_ref,
 };
 
 fn base_micro_config() -> Config {
@@ -1016,5 +1017,111 @@ mod hostile_inputs {
             out1, out11,
             "VCF output must be byte-identical between 1 bad read and 11 bad reads"
         );
+    }
+}
+
+// 7. mod concurrency (1 test)
+mod concurrency {
+    use super::*;
+
+    fn snv_pair(pos: usize) -> Vec<RecordBuf> {
+        (0..2)
+            .map(|i| snv_record(&format!("s{pos}r{i}"), pos - 20))
+            .collect()
+    }
+
+    fn insertion_pair(pos: usize) -> Vec<RecordBuf> {
+        let cigar: Cigar = [
+            (40usize, Kind::Match),
+            (10, Kind::Insertion),
+            (10, Kind::Match),
+        ]
+        .iter()
+        .map(|&(l, k)| Op::new(k, l))
+        .collect();
+        (0..2)
+            .map(|i| {
+                RecordBuf::builder()
+                    .set_name(format!("i{pos}r{i}"))
+                    .set_flags(noodles::sam::alignment::record::Flags::empty())
+                    .set_reference_sequence_id(0)
+                    .set_alignment_start(Position::try_from(pos - 20).unwrap())
+                    .set_cigar(cigar.clone())
+                    .set_sequence(
+                        [vec![b'A'; 40], vec![b'T'; 10], vec![b'A'; 10]]
+                            .concat()
+                            .into(),
+                    )
+                    .set_quality_scores(vec![40u8; 60].into())
+                    .build()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn vcf_output_byte_identical_across_thread_counts() {
+        let dir = TempDir::new().expect("tempdir");
+        let fa = write_ref(&dir, "chr1", 2000, true);
+
+        let mut recs = Vec::new();
+        for pos in (150..=1000).step_by(80) {
+            recs.extend(snv_pair(pos));
+        }
+        recs.extend(insertion_pair(600));
+        recs.sort_by_key(|r| r.alignment_start());
+        let bam = dir.path().join("det.bam");
+        indexed_bam(&bam, "chr1", 2000, &recs).expect("write indexed bam");
+
+        let bed = dir.path().join("det.bed");
+        fs::write(&bed, "chr1\t100\t1100\tDET\n").expect("write bed");
+
+        let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+        let mut counts: Vec<usize> = [1usize, 2, 8].iter().map(|t| (*t).min(cores)).collect();
+        counts.dedup();
+
+        let runs: Vec<Vec<u8>> = counts
+            .iter()
+            .map(|&t| {
+                let bam_str = bam.to_string_lossy().into_owned();
+                let cfg = Config {
+                    reference: fa.to_string_lossy().into_owned(),
+                    sample: extract_sample_name(&bam_str, None),
+                    bam: bam_str,
+                    bed: Some(bed.to_string_lossy().into_owned()),
+                    col_chr: 0,
+                    col_start: 1,
+                    col_end: 2,
+                    col_seg_start: 1,
+                    col_seg_end: 2,
+                    col_gene: Some(3),
+                    column_for_chromosome: Some(0),
+                    omit_end_tag: true,
+                    threads: t,
+                    tile_size: Some(300),
+                    emit_intermediate: false,
+                    ..Config::default()
+                };
+                let mut buf = Vec::new();
+                vardictrust_core::run_with_writer(&cfg, &mut buf).expect("run_with_writer");
+                buf
+            })
+            .collect();
+
+        let s = String::from_utf8_lossy(&runs[0]);
+        assert!(s.contains("CHROM"), "no VCF header");
+        let rows = s.lines().filter(|l| l.starts_with("chr1\t")).count();
+        assert!(
+            rows >= 12,
+            "expected >=12 variant rows spanning multiple tiles, got {rows}"
+        );
+        for pos in [150, 950] {
+            assert!(
+                s.contains(&format!("chr1\t{pos}\t")),
+                "tile-spanning variant @{pos} missing"
+            );
+        }
+        for pair in runs.windows(2) {
+            assert_eq!(pair[0], pair[1], "VCF bytes differ across thread counts");
+        }
     }
 }

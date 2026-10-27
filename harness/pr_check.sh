@@ -116,10 +116,12 @@ echo "$(ts) All 10 Tier-2 standard slices (s1a..s9) + micro passed."
 echo "$(ts) Running 17-modality extended coverage suite (--no-record)..."
 bash harness/run_extended_coverage.sh --no-record
 
-if [ -d "$DATA_ROOT/scratch/g4/multimodal" ]; then
-  echo "$(ts) Running 18-slice multimodal suite (--no-record)..."
-  bash harness/run_multimodal_slices.sh --no-record
+if [ ! -d "$DATA_ROOT/scratch/g4/multimodal" ]; then
+  echo "ERROR: Multimodal data directory $DATA_ROOT/scratch/g4/multimodal is missing; cannot complete Stage 4 PR gate." >&2
+  exit 1
 fi
+echo "$(ts) Running 18-slice multimodal suite (--no-record)..."
+bash harness/run_multimodal_slices.sh --no-record
 echo "$(ts) [Stage 4/6] PASS ($((SECONDS - st_t0))s)"
 
 # Stage 5: Performance & Memory Benchmark Regression Check

@@ -104,7 +104,7 @@ bash harness/scale_bench.sh \
 Guarantees bitwise-identical VCF records across varying worker thread allocations (1, 2, 4, 8 threads).
 
 ```bash
-cargo test -p vardictrust --test thread_determinism
+cargo test -p vardictrust-core --test engine_behavior concurrency::
 ```
 
 ---

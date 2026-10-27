@@ -188,7 +188,14 @@ class TestRoundTrip(StoreCase):
         r4 = self.raw(kind="cpp", out=out2, extra=("--pin-cpp-exit",),
                       script='echo run >> "$COUNT"; echo "vardictcpp: unknown option" >&2; exit 1')
         self.assertEqual((r4.returncode, self.runs()), (1, 2))
-        self.assertEqual(self.events(), ["MISS", "HIT", "MISS", "HIT"])
+        out3 = self.tmp / "out3.var"
+        r5 = self.raw(kind="cpp", out=out3, extra=("--pin-cpp-exit",),
+                      script='echo run >> "$COUNT"; echo "std::bad_alloc" >&2; exit 1')
+        self.assertEqual(r5.returncode, 1)
+        r6 = self.raw(kind="cpp", out=out3, extra=("--pin-cpp-exit",),
+                      script='echo run >> "$COUNT"; echo "std::bad_alloc" >&2; exit 1')
+        self.assertEqual((r6.returncode, self.runs()), (1, 4))
+        self.assertEqual(self.events(), ["MISS", "HIT", "MISS", "HIT", "FAIL", "FAIL"])
 
     def test_bad_golden_mode_is_rejected(self):
         r = self.raw(env={"GOLDEN_MODE": "sometimes"})

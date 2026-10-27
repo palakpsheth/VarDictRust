@@ -49,11 +49,11 @@ ck "pre-commit compiles staged Python files with py_compile" grep -q 'py_compile
 ck "pre-commit runs test_stdlib_purity.py on staged Python changes" grep -q 'test_stdlib_purity\.py' .githooks/pre-commit
 ck "pre-commit runs check_release_consistency.py on workflow/release surface changes" grep -q 'check_release_consistency\.py' .githooks/pre-commit
 
-# 5. pre-push & acceptance.sh Stage 2 / Item 4 run both engine_behavior and robustness in --release
-for f in .githooks/pre-push harness/acceptance.sh; do
-  ck "$f runs engine_behavior (--release)" grep -q 'cargo test --release -p vardictrust-core --test engine_behavior' "$f"
-  ck "$f runs robustness (--release)" grep -q 'cargo test --release -p vardictrust --test robustness' "$f"
-done
+# 5. pre-push runs engine_behavior and robustness in dev profile; acceptance.sh Item 4 runs them in --release
+ck "pre-push runs engine_behavior (dev)" grep -q 'cargo test -p vardictrust-core --test engine_behavior' .githooks/pre-push
+ck "pre-push runs robustness (dev)" grep -q 'cargo test -p vardictrust --test robustness' .githooks/pre-push
+ck "acceptance.sh runs engine_behavior (--release)" grep -q 'cargo test --release -p vardictrust-core --test engine_behavior' harness/acceptance.sh
+ck "acceptance.sh runs robustness (--release)" grep -q 'cargo test --release -p vardictrust --test robustness' harness/acceptance.sh
 
 # 6. pre-push expanded path detection & diff base fallback
 for pat in '\.github/' '\.githooks/' '\.agents/' 'fixtures/' 'golden/' 'benchmarks/evidence/'; do

@@ -693,17 +693,8 @@ static NEXT_BAM_META_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::Atomi
 #[cfg(test)]
 const TEST_META_ID_BASE: u64 = 1u64 << 63;
 
-type FileStamp = (u64, Option<std::time::SystemTime>);
-
-#[inline]
-fn file_stamp_opt(path: &Path) -> Option<FileStamp> {
-    let meta = std::fs::metadata(path).ok()?;
-    Some((meta.len(), meta.modified().ok()))
-}
-
 struct SharedBamMeta {
     id: u64,
-    stamp: Option<FileStamp>,
     header: noodles::sam::Header,
     index: noodles::bam::Index,
 }
@@ -1164,7 +1155,6 @@ fn return_pooled_reader(path: PathBuf, meta: std::sync::Arc<SharedBamMeta>, read
 fn acquire_bam_meta_and_reader(
     path: &Path,
 ) -> Result<(std::sync::Arc<SharedBamMeta>, RawBamReader), crate::types::VardictError> {
-    let cur_stamp = file_stamp_opt(path);
     let slot = {
         let cache = META_CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
         let mut map = cache.lock().unwrap_or_else(|e| e.into_inner());
@@ -1177,10 +1167,8 @@ fn acquire_bam_meta_and_reader(
     let meta = {
         let mut slot_guard = slot.lock().unwrap_or_else(|e| e.into_inner());
         match slot_guard.as_ref() {
-            Some(meta) if cur_stamp.is_some() && meta.stamp == cur_stamp => {
-                std::sync::Arc::clone(meta)
-            }
-            _ => {
+            Some(meta) => std::sync::Arc::clone(meta),
+            None => {
                 // Exact same open sequence as `open_reader` (index load ->
                 // File::open -> read_header). Errors return without storing
                 // `Some(...)` so transient/test errors are never cached and
@@ -1193,12 +1181,7 @@ fn acquire_bam_meta_and_reader(
                 let header = reader
                     .read_header()
                     .map_err(crate::types::VardictError::Io)?;
-                let meta = std::sync::Arc::new(SharedBamMeta {
-                    id,
-                    stamp: file_stamp_opt(path),
-                    header,
-                    index,
-                });
+                let meta = std::sync::Arc::new(SharedBamMeta { id, header, index });
                 *slot_guard = Some(std::sync::Arc::clone(&meta));
                 return Ok((meta, reader));
             }
@@ -1516,7 +1499,6 @@ struct CachedContigRepo {
 }
 
 struct SharedFastaRepo {
-    stamp: (Option<FileStamp>, Option<FileStamp>),
     adapter: std::sync::Arc<std::sync::Mutex<PreallocatedFastaAdapter>>,
     lru: std::sync::Mutex<Vec<CachedContigRepo>>,
 }
@@ -1564,18 +1546,13 @@ static FASTA_REPO_CACHE: std::sync::OnceLock<
 fn acquire_fasta_repo(
     fasta_path: &Path,
 ) -> Result<std::sync::Arc<SharedFastaRepo>, crate::types::VardictError> {
-    let fai_path = fasta_fai_path(fasta_path);
-    let cur_stamp = (file_stamp_opt(fasta_path), file_stamp_opt(&fai_path));
     let cache = FASTA_REPO_CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
     let mut map = cache.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(existing) = map.get(fasta_path) {
-        if cur_stamp.0.is_some() && cur_stamp.1.is_some() && existing.stamp == cur_stamp {
-            return Ok(std::sync::Arc::clone(existing));
-        }
+        return Ok(std::sync::Arc::clone(existing));
     }
     let adapter = PreallocatedFastaAdapter::open(fasta_path)?;
     let repo = std::sync::Arc::new(SharedFastaRepo {
-        stamp: cur_stamp,
         adapter: std::sync::Arc::new(std::sync::Mutex::new(adapter)),
         lru: std::sync::Mutex::new(Vec::with_capacity(MAX_CACHED_FASTA_CONTIGS)),
     });
@@ -1585,7 +1562,6 @@ fn acquire_fasta_repo(
 
 struct SharedCramMeta {
     id: u64,
-    stamp: Option<FileStamp>,
     header: noodles::sam::Header,
     index: noodles::cram::crai::Index,
     fasta_repo: std::sync::Arc<SharedFastaRepo>,
@@ -1624,7 +1600,6 @@ fn acquire_cram_meta(
 ) -> Result<std::sync::Arc<SharedCramMeta>, crate::types::VardictError> {
     let fasta_path = Path::new(&config.reference);
     let fasta_repo = acquire_fasta_repo(fasta_path)?;
-    let cur_stamp = file_stamp_opt(path);
     let key = (path.to_path_buf(), fasta_path.to_path_buf());
     let slot = {
         let cache = CRAM_META_CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
@@ -1637,10 +1612,7 @@ fn acquire_cram_meta(
 
     let mut slot_guard = slot.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(meta) = slot_guard.as_ref() {
-        if cur_stamp.is_some()
-            && meta.stamp == cur_stamp
-            && std::sync::Arc::ptr_eq(&meta.fasta_repo, &fasta_repo)
-        {
+        if std::sync::Arc::ptr_eq(&meta.fasta_repo, &fasta_repo) {
             return Ok(std::sync::Arc::clone(meta));
         }
     }
@@ -1652,7 +1624,6 @@ fn acquire_cram_meta(
     let id = NEXT_BAM_META_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let meta = std::sync::Arc::new(SharedCramMeta {
         id,
-        stamp: file_stamp_opt(path),
         header,
         index,
         fasta_repo,

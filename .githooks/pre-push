@@ -104,8 +104,8 @@ echo "$(ts) [pre-push 1/4] PASS ($((SECONDS - st_t0))s)"
 
 st_t0=$SECONDS
 echo "$(ts) [pre-push 2/4] Running core engine behavior and CLI crash robustness suites..."
-cargo test --release -p vardictrust-core --test engine_behavior
-cargo test --release -p vardictrust --test robustness
+cargo test -p vardictrust-core --test engine_behavior -- --test-threads="$RUST_TEST_THREADS"
+cargo test -p vardictrust --test robustness -- --test-threads="$RUST_TEST_THREADS"
 echo "$(ts) [pre-push 2/4] PASS ($((SECONDS - st_t0))s)"
 
 st_t0=$SECONDS

@@ -81,6 +81,16 @@ sys.exit(0)
 PY
 }
 
+MEDIA_STACK_LIFECYCLE_SCRIPT="${MEDIA_STACK_LIFECYCLE_SCRIPT:-/home/palak/Documents/media_stack_lifecycle.py}"
+MEDIA_STACK_PYTHON="${MEDIA_STACK_PYTHON:-/home/palak/Documents/venv/bin/python}"
+run_media_stack_hook() {
+    if [[ -f "$MEDIA_STACK_LIFECYCLE_SCRIPT" ]]; then
+        local py="python3"
+        [[ -x "$MEDIA_STACK_PYTHON" ]] && py="$MEDIA_STACK_PYTHON"
+        "$py" "$MEDIA_STACK_LIFECYCLE_SCRIPT" "$1"
+    fi
+}
+
 # Verify scale.json is valid under either FP or PERF_FP; if stale, run scale_bench.sh under media_stack minimal
 if python3 - "$ROOT_DIR/benchmarks/evidence/scale.json" "$FP" "$PERF_FP" <<'PY'
 import json, sys
@@ -90,15 +100,23 @@ try:
 except Exception:
     sys.exit(1)
 x = d.get("extra") or {}
-sys.exit(0 if (d.get("fingerprint") == fp or x.get("perf_fingerprint") == perf) and d.get("result") in ("MATCH", "EQUAL", "PASS") else 1)
+ok = (
+    (d.get("fingerprint") == fp or x.get("perf_fingerprint") == perf)
+    and d.get("result") in ("MATCH", "EQUAL", "PASS")
+    and x.get("pass") is True
+    and bool(x.get("certifying"))
+    and x.get("P", 0) >= 4
+    and x.get("bar", 0) >= 2.4
+)
+sys.exit(0 if ok else 1)
 PY
 then
     echo "$(ts) [REUSE] scale.json: certified under perf_fingerprint $PERF_FP"
 else
     echo "$(ts) [RUN] scale.json: perf_fingerprint changed ($PERF_FP); running 24-cell scale benchmark..."
-    if [[ -f "$ROOT_DIR/harness/media_stack_lifecycle.py" ]]; then
-        trap 'python3 "$ROOT_DIR/harness/media_stack_lifecycle.py" up || true' EXIT
-        python3 "$ROOT_DIR/harness/media_stack_lifecycle.py" minimal
+    if [[ -f "$MEDIA_STACK_LIFECYCLE_SCRIPT" ]]; then
+        trap 'run_media_stack_hook up || true' EXIT
+        run_media_stack_hook minimal
     fi
     if [[ -f scratch/chr1/HG002.chr1.bam && -f scratch/chr1/chr1.bed ]]; then
         SCALE_BAM="scratch/chr1/HG002.chr1.bam"
@@ -120,8 +138,8 @@ else
       "$SCALE_SAMPLE" scratch/g4/scale
     python3 "$ROOT_DIR/harness/record_evidence.py" scale PASS scratch/g4/scale \
       -- bash harness/scale_bench.sh scratch/g4/ref/d1vd1/GRCh38.d1.vd1.fa "$SCALE_BAM" "$SCALE_BED" "$SCALE_SAMPLE" scratch/g4/scale
-    if [[ -f "$ROOT_DIR/harness/media_stack_lifecycle.py" ]]; then
-        python3 "$ROOT_DIR/harness/media_stack_lifecycle.py" up
+    if [[ -f "$MEDIA_STACK_LIFECYCLE_SCRIPT" ]]; then
+        run_media_stack_hook up
         trap - EXIT
     fi
 fi
@@ -278,9 +296,10 @@ else
 fi
 
 if needs_stamp "musl-ci"; then
-    echo "$(ts) [RUN] musl-ci: Certifying Static musl Binary..."
+    echo "$(ts) [RUN] musl-ci: Certifying Static musl Binary & GNU/musl Equivalence..."
     cargo test --target x86_64-unknown-linux-musl
-    python3 harness/record_evidence.py musl-ci PASS - -- cargo test --target x86_64-unknown-linux-musl
+    bash "$ROOT_DIR/harness/bin_equiv.sh"
+    python3 harness/record_evidence.py musl-ci PASS - -- bash -c "cargo test --target x86_64-unknown-linux-musl && bash harness/bin_equiv.sh"
 else
     echo "$(ts) [REUSE] musl-ci: already certified for $FP"
 fi
