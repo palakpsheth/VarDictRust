@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # =============================================================================
 # harness/gcp_paper_runner.sh
-# Single-Instance GCP Orchestrator & Worker for `paper/gcp-study` (v1.0.4).
+# Single-Instance GCP Orchestrator & Worker for `paper/gcp-study` (v1.0.5).
 #
 # Architecture (locked in docs/validation/gcp-study-protocol.md §6 & gcp-prereg.md §A12):
 #   - Single dedicated VM: `n2-highmem-32` (32 vCPUs, 256 GB RAM, 250 GB pd-ssd boot + 8x375 GB [3.0 TB] NVMe Local SSD RAID0, us-central1-a)
@@ -9,7 +9,7 @@
 #       Attempt 1: SPOT (--provisioning-model=SPOT)
 #       Attempt 2: SPOT (--provisioning-model=SPOT)
 #       Attempt 3: STANDARD (--provisioning-model=STANDARD, On-Demand)
-#   - Per-cell GCS checkpointing (`gs://vardict-paper-trial-results/checkpoints-v104/<cell>.done`)
+#   - Per-cell GCS checkpointing (`gs://vardict-paper-trial-results/checkpoints-v105/<cell>.done`)
 #     so preempted Spot runs resume cleanly without repeating completed cells.
 #   - Detached systemd service on VM (`vardict-paper-worker`) + GCS heartbeat polling so
 #     transient SSH drops never interrupt a healthy VM; preemption is detected via
@@ -39,10 +39,10 @@ GCS_BAMS="${GCS_BAMS:-gs://vardict-paper-trial-bams}"
 GCS_REFS="${GCS_REFS:-gs://vardict-paper-trial-refs}"
 GCS_RESULTS="${GCS_RESULTS:-gs://vardict-paper-trial-results}"
 GCS_EVIDENCE="${GCS_EVIDENCE:-gs://vardict-paper-trial-evidence}"
-GCS_CKPT="${GCS_CKPT:-${GCS_RESULTS}/checkpoints-v104}"
+GCS_CKPT="${GCS_CKPT:-${GCS_RESULTS}/checkpoints-v105}"
 GCS_ORACLE_CACHE="${GCS_ORACLE_CACHE:-${GCS_RESULTS}/oracle-cache-v183}"
 
-EXPECTED_FP="${EXPECTED_FP:-552856835a1eec01}"
+EXPECTED_FP="${EXPECTED_FP:-d925892846918c2a}"
 WORK_DIR="${WORK_DIR:-/var/tmp/vardict-paper}"
 
 usage() {
@@ -200,7 +200,7 @@ restore_prev_java_cpp_artifacts() {
   mkdir -p "$dst_dir"
   if [ -z "${LOCAL_CKPT_DIR:-}" ]; then
     local bucket_prefix pat
-    for bucket_prefix in "${GCS_RESULTS}/cells-v103/${cell_id}" "${GCS_RESULTS}/cells-v104/${cell_id}"; do
+    for bucket_prefix in "${GCS_RESULTS}/cells-v103/${cell_id}" "${GCS_RESULTS}/cells-v104/${cell_id}" "${GCS_RESULTS}/cells-v105/${cell_id}"; do
       if setsid gsutil -q stat "${bucket_prefix}/*" 2>/dev/null; then
         echo "[CACHE-RESTORE] Restoring cached Java/Cpp/Field-Caller artifacts from ${bucket_prefix}/ -> ${dst_dir}/"
         for pat in "java*" "cpp*" "oracle*" "vardict_java*" "vardictcpp*" "single_*" "som_*" "freebayes*" "lofreq*" "octopus*" "mutect2*" "m2*" "hg002_*" "hg008_*" "seqc2_*" "strelka*"; do
@@ -296,7 +296,7 @@ run_checkpointed_cell() {
   if [ -n "${LOCAL_CKPT_DIR:-}" ]; then
     gcs_upload "$cell_dir" "${LOCAL_CKPT_DIR}/cells/${cell_id}"
   else
-    gcs_upload "$cell_dir" "${GCS_RESULTS}/${GCS_CELLS_SUBDIR:-cells-v104}/${cell_id}" || true
+    gcs_upload "$cell_dir" "${GCS_RESULTS}/${GCS_CELLS_SUBDIR:-cells-v105}/${cell_id}" || true
   fi
 
   if [ "$rc" -ne 0 ]; then
@@ -353,18 +353,58 @@ run_local_stage_cell() {
 # pre-provision field-caller conda envs and pre-stage Stage-3/Stage-4 assets.
 # =============================================================================
 ensure_field_caller_envs() {
-  if [ -f "${WORK_DIR}/local_staged/field_envs.done" ]; then
-    return 0
+  if [ ! -f "${WORK_DIR}/local_staged/field_envs.done" ]; then
+    echo "[Pre-Stager] Provisioning field-caller conda envs (FreeBayes 1.3.10, LoFreq 2.1.5, Mutect2 4.6.2.0, octopus 0.7.4, Strelka2 2.9.10)..."
+    conda env list | grep -q '^cl_freebayes ' || conda create -y -n cl_freebayes -c conda-forge -c bioconda freebayes=1.3.10 samtools=1.24 bcftools=1.24 parallel
+    conda env list | grep -q '^cl_lofreq ' || conda create -y -n cl_lofreq -c conda-forge -c bioconda lofreq=2.1.5 samtools=1.24
+    conda env list | grep -q '^cl_gatk4 ' || conda create -y -n cl_gatk4 -c conda-forge -c bioconda gatk4=4.6.2.0 openjdk=21 samtools=1.24
+    conda env list | grep -q '^cl_octopus ' || conda create -y -n cl_octopus -c conda-forge -c bioconda octopus=0.7.4
+    conda env list | grep -q '^cl_strelka ' || conda create -y -n cl_strelka -c conda-forge -c bioconda strelka=2.9.10 python=2.7
+    mkdir -p "${WORK_DIR}/local_staged"
+    date -u +%Y-%m-%dT%H:%M:%SZ > "${WORK_DIR}/local_staged/field_envs.done"
+    echo "[Pre-Stager] Field-caller conda envs ready."
   fi
-  echo "[Pre-Stager] Provisioning field-caller conda envs (FreeBayes 1.3.10, LoFreq 2.1.5, Mutect2 4.6.2.0, octopus 0.7.4, Strelka2 2.9.10)..."
-  conda env list | grep -q '^cl_freebayes ' || conda create -y -n cl_freebayes -c conda-forge -c bioconda freebayes=1.3.10 samtools=1.24 bcftools=1.24 parallel
-  conda env list | grep -q '^cl_lofreq ' || conda create -y -n cl_lofreq -c conda-forge -c bioconda lofreq=2.1.5 samtools=1.24
-  conda env list | grep -q '^cl_gatk4 ' || conda create -y -n cl_gatk4 -c conda-forge -c bioconda gatk4=4.6.2.0 openjdk=21 samtools=1.24
-  conda env list | grep -q '^cl_octopus ' || conda create -y -n cl_octopus -c conda-forge -c bioconda octopus=0.7.4
-  conda env list | grep -q '^cl_strelka ' || conda create -y -n cl_strelka -c conda-forge -c bioconda strelka=2.9.10 python=2.7
-  mkdir -p "${WORK_DIR}/local_staged"
-  date -u +%Y-%m-%dT%H:%M:%SZ > "${WORK_DIR}/local_staged/field_envs.done"
-  echo "[Pre-Stager] Field-caller conda envs ready."
+  # Bioconda strelka-2.9.10-2 patchelf places .dynamic (PT_LOAD RW) on the same 4K page (0x4dc000)
+  # as PT_LOAD segment 7 (R E) in libexec/strelka2; ensure PF_W (0x2) is set on overlapping pages.
+  python3 -c '
+import glob, os, struct
+for path in sorted(glob.glob(os.path.expanduser("~/miniconda3/envs/cl_strelka/share/strelka-*/libexec/*"))):
+    if not os.path.isfile(path) or os.path.islink(path):
+        continue
+    with open(path, "rb") as f:
+        hdr = f.read(64)
+    if hdr[:4] != b"\x7fELF":
+        continue
+    e_phoff = struct.unpack("<Q", hdr[32:40])[0]
+    e_phentsize, e_phnum = struct.unpack("<HH", hdr[54:58])
+    with open(path, "r+b") as f:
+        loads = []
+        for i in range(e_phnum):
+            f.seek(e_phoff + i * e_phentsize)
+            p_type, p_flags, _, p_vaddr, _, _, p_memsz, _ = struct.unpack("<IIQQQQQQ", f.read(56))
+            if p_type == 1:
+                loads.append((i, p_flags, p_vaddr, p_memsz))
+        rw_pages = {p for _, fl, va, ms in loads if fl & 2 for p in range(va >> 12, (va + ms + 4095) >> 12)}
+        for i, fl, va, ms in loads:
+            if not (fl & 2) and (set(range(va >> 12, (va + ms + 4095) >> 12)) & rw_pages):
+                f.seek(e_phoff + i * e_phentsize + 4)
+                f.write(struct.pack("<I", fl | 2))
+' || true
+  # Bioconda lofreq-2.1.5 lofreq2_call_pparallel.py compares len(bed_sqs) against len(bam_sqs)/10.0,
+  # which fails on GRCh38.d1.vd1 BAMs with 1,689 decoy/alt/HLA contigs and spawns 271,597 subprocesses
+  # that overflow ARG_MAX in bcftools concat; filter bam_bins to bed_sqs in the threshold check.
+  python3 -c '
+import os
+p = os.path.expanduser("~/miniconda3/envs/cl_lofreq/bin/lofreq2_call_pparallel.py")
+if os.path.isfile(p):
+    with open(p) as f:
+        s = f.read()
+    old = "if len(bed_bins) > 100*len(bam_bins) and len(bed_sqs) > len(bam_sqs)/10.0:"
+    new = "if len(bed_bins) > 100*len([b for b in bam_bins if b[0] in bed_sqs]) and len(bed_sqs) > 0:"
+    if old in s:
+        with open(p, "w") as f:
+            f.write(s.replace(old, new))
+' || true
 }
 
 start_background_prestager() {
@@ -1284,7 +1324,8 @@ run_stage_4() {
     BUDGET_DIR="${WORK_DIR}/cells/s4_perf_budget_4targets_n3"
     if [ ! -f "$BUDGET_DIR/hg002/rust.vcf" ] && [ -z "${LOCAL_CKPT_DIR:-}" ]; then
       mkdir -p "$BUDGET_DIR"
-      setsid gsutil -m -q rsync -r "${GCS_RESULTS}/cells-v104/s4_perf_budget_4targets_n3" "$BUDGET_DIR"
+      setsid gsutil -m -q rsync -r "${GCS_RESULTS}/${GCS_CELLS_SUBDIR:-cells-v105}/s4_perf_budget_4targets_n3" "$BUDGET_DIR" || \
+        setsid gsutil -m -q rsync -r "${GCS_RESULTS}/cells-v104/s4_perf_budget_4targets_n3" "$BUDGET_DIR"
     fi
 
     # (a) HG002 Germline Truth (GIAB v4.2.1)
@@ -1536,7 +1577,7 @@ PY
     grep -q "^chr1" "$KEEP_DIR/readme_smoke.vcf"
 
     # Sync updated benchmarks/evidence/*.json back to GCS evidence bucket
-    setsid gsutil -o GSUtil:parallel_composite_upload_threshold=0 -q rsync -r benchmarks/evidence "$GCS_RESULTS/cells-v104/evidence_certified" || true
+    setsid gsutil -o GSUtil:parallel_composite_upload_threshold=0 -q rsync -r benchmarks/evidence "$GCS_RESULTS/${GCS_CELLS_SUBDIR:-cells-v105}/evidence_certified" || true
   '
 }
 
@@ -1678,7 +1719,8 @@ run_s4_scale_exome_body() {
   grep -q '^MATCH' "$KEEP_DIR/compare_th${th}.txt"
   if [ "$th" -gt 1 ] && [ ! -f "${WORK_DIR}/cells/s4_scale_exome_3way_th1/rust_th1.vcf" ] && [ -z "${LOCAL_CKPT_DIR:-}" ]; then
     mkdir -p "${WORK_DIR}/cells/s4_scale_exome_3way_th1"
-    setsid gsutil -m -q rsync -r "${GCS_RESULTS}/cells-v104/s4_scale_exome_3way_th1" "${WORK_DIR}/cells/s4_scale_exome_3way_th1" || true
+    setsid gsutil -m -q rsync -r "${GCS_RESULTS}/${GCS_CELLS_SUBDIR:-cells-v105}/s4_scale_exome_3way_th1" "${WORK_DIR}/cells/s4_scale_exome_3way_th1" || \
+      setsid gsutil -m -q rsync -r "${GCS_RESULTS}/cells-v104/s4_scale_exome_3way_th1" "${WORK_DIR}/cells/s4_scale_exome_3way_th1" || true
   fi
   if [ "$th" -gt 1 ] && [ -f "${WORK_DIR}/cells/s4_scale_exome_3way_th1/rust_th1.vcf" ]; then
     cmp <(grep -v '^##' "${WORK_DIR}/cells/s4_scale_exome_3way_th1/rust_th1.vcf") <(grep -v '^##' "$KEEP_DIR/rust_th${th}.vcf")
@@ -1878,7 +1920,7 @@ run_stage_5() {
     WORK_LOCAL='${WORK_DIR}/tmp_s5_contigs'
     mkdir -p \"\$WORK_LOCAL\"
 
-    # (a) VarDictRust v1.0.4 (-th 32, bounded 500 kbp tile streaming across all 22 autosomes)
+    # (a) VarDictRust (-th 32, bounded 100 kbp tile streaming with 500 bp halo across all 22 autosomes > 1 Mbp)
     if [ ! -s \"\$KEEP_DIR/rust_contigs_th32.time\" ] || [ ! -s \"\$WORK_LOCAL/rust_contigs_th32.vcf\" ]; then
       /usr/bin/time -v -o \"\$KEEP_DIR/rust_contigs_th32.time\" \
         target/release/vardictrust -G \"\$REF\" -f 0.01 -N HG002 \
@@ -2082,7 +2124,7 @@ run_stage_5() {
     WORK_LOCAL='${WORK_DIR}/tmp_s5_hg008_contigs'
     mkdir -p \"\$WORK_LOCAL\"
 
-    # (a) VarDictRust v1.0.4 (-th 32, bounded 500 kbp tile streaming across 364x combined somatic WGS)
+    # (a) VarDictRust (-th 32, bounded 100 kbp tile streaming with 500 bp halo across 364x combined somatic WGS > 1 Mbp)
     if [ ! -s \"\$KEEP_DIR/rust_hg008_contigs_th32.time\" ] || [ ! -s \"\$WORK_LOCAL/rust_hg008_contigs_th32.vcf\" ]; then
       /usr/bin/time -v -o \"\$KEEP_DIR/rust_hg008_contigs_th32.time\" \
         target/release/vardictrust -G \"\$REF\" -f 0.01 -N 'HG008-T|HG008-N' \
@@ -2095,9 +2137,9 @@ run_stage_5() {
     tabix -f -p vcf \"\$KEEP_DIR/rust_hg008_contigs_th32.vcf.gz\"
 
     # (b) vardictcpp (-th 32 --chunk 50000, contained under MemoryMax=245G)
-    if [ ! -s \"\$KEEP_DIR/cpp_hg008_contigs_th32.time\" ]; then
+    if [ ! -s \"\$KEEP_DIR/cpp_hg008_contigs_th32.exit\" ]; then
       rc_cpp=0
-      timeout 10800 /usr/bin/time -v -o \"\$KEEP_DIR/cpp_hg008_contigs_th32.time\" \
+      /usr/bin/time -v -o \"\$KEEP_DIR/cpp_hg008_contigs_th32.time\" timeout 10800 \
         env CPP_CHUNK=50000 bash harness/run_cpp.sh \"\$REF\" \"\${T_BAM}|\${N_BAM}\" \"\$BED\" \"\$WORK_LOCAL/cpp_hg008_contigs_th32.vcf\" 'HG008-T|HG008-N' -f 0.01 -th 32 -z || rc_cpp=\$?
       echo \"\$rc_cpp\" > \"\$KEEP_DIR/cpp_hg008_contigs_th32.exit\"
       if [ -s \"\$WORK_LOCAL/cpp_hg008_contigs_th32.vcf\" ]; then
@@ -2107,9 +2149,9 @@ run_stage_5() {
     fi
 
     # (c) VarDictJava v1.8.3 (-th 32, -Xmx200g -XX:+ExitOnOutOfMemoryError, contained under MemoryMax=245G with 3h progress cap)
-    if [ ! -s \"\$KEEP_DIR/java_hg008_contigs_th32.time\" ]; then
+    if [ ! -s \"\$KEEP_DIR/java_hg008_contigs_th32.exit\" ]; then
       rc_java=0
-      timeout 10800 /usr/bin/time -v -o \"\$KEEP_DIR/java_hg008_contigs_th32.time\" \
+      /usr/bin/time -v -o \"\$KEEP_DIR/java_hg008_contigs_th32.time\" timeout 10800 \
         env ORACLE_XMX_GB=200 JAVA_OPTS='-Xmx200g -XX:+ExitOnOutOfMemoryError' \
         bash harness/run_oracle.sh \"\$REF\" \"\${T_BAM}|\${N_BAM}\" \"\$BED\" \"\$WORK_LOCAL/java_hg008_contigs_th32.vcf\" 'HG008-T|HG008-N' -f 0.01 -th 32 -z || rc_java=\$?
       echo \"\$rc_java\" > \"\$KEEP_DIR/java_hg008_contigs_th32.exit\"
@@ -2143,11 +2185,11 @@ run_stage_5() {
     WORK_LOCAL='${WORK_DIR}/tmp_s5_hg008_giab'
     mkdir -p \"\$WORK_LOCAL\"
 
-    # (a) VarDictRust v1.0.4 (-th 32; every interval is <=50 kbp < 500 kbp tile size -> zero cross-tile split)
+    # (a) VarDictRust (-th 32 -U; GIAB HG008-T_somatic_smvar is a small-variant SNV+Indel <50bp benchmark; -U avoids O(N_windows * 25M) NovaSeq dark-cycle poly-G mate sink re-scans at chr2:32,916,196)
     if [ ! -s \"\$KEEP_DIR/rust_hg008_giab_th32.time\" ] || [ ! -s \"\$WORK_LOCAL/rust_hg008_giab_th32.vcf\" ]; then
       /usr/bin/time -v -o \"\$KEEP_DIR/rust_hg008_giab_th32.time\" \
         target/release/vardictrust -G \"\$REF\" -f 0.01 -N 'HG008-T|HG008-N' \
-        -b \"\${T_BAM}|\${N_BAM}\" -c 1 -S 2 -E 3 -g 4 -z -th 32 \"\$BED\" > \"\$WORK_LOCAL/rust_hg008_giab_th32.vcf\"
+        -b \"\${T_BAM}|\${N_BAM}\" -c 1 -S 2 -E 3 -g 4 -z -U -th 32 \"\$BED\" > \"\$WORK_LOCAL/rust_hg008_giab_th32.vcf\"
     fi
     rust_vars=\$(grep -vc '^#' \"\$WORK_LOCAL/rust_hg008_giab_th32.vcf\" || true)
     echo \"\$rust_vars\" > \"\$KEEP_DIR/rust_hg008_giab_th32.variant_count\"
@@ -2161,11 +2203,11 @@ run_stage_5() {
       bash harness/concordance.sh \"\$WORK_LOCAL/rust_hg008_giab_th32.vcf\" \"\$TRUTH_V04\" \"\$BED_V04\" \"\$SDF\" \"\$KEEP_DIR/vcfeval_hg008_full_v04/rust\" HG008-T | tee \"\$KEEP_DIR/vcfeval_hg008_full_v04_rust.txt\"
     fi
 
-    # (b) vardictcpp (-th 32 --chunk 50000)
+    # (b) vardictcpp (-th 32 -U --chunk 50000)
     if [ ! -s \"\$KEEP_DIR/cpp_hg008_giab_th32.time\" ]; then
       rc_cpp=0
       timeout 10800 /usr/bin/time -v -o \"\$KEEP_DIR/cpp_hg008_giab_th32.time\" \
-        env CPP_CHUNK=50000 bash harness/run_cpp.sh \"\$REF\" \"\${T_BAM}|\${N_BAM}\" \"\$BED\" \"\$WORK_LOCAL/cpp_hg008_giab_th32.vcf\" 'HG008-T|HG008-N' -f 0.01 -th 32 -z || rc_cpp=\$?
+        env CPP_CHUNK=50000 bash harness/run_cpp.sh \"\$REF\" \"\${T_BAM}|\${N_BAM}\" \"\$BED\" \"\$WORK_LOCAL/cpp_hg008_giab_th32.vcf\" 'HG008-T|HG008-N' -f 0.01 -th 32 -z -U || rc_cpp=\$?
       echo \"\$rc_cpp\" > \"\$KEEP_DIR/cpp_hg008_giab_th32.exit\"
       if [ -s \"\$WORK_LOCAL/cpp_hg008_giab_th32.vcf\" ]; then
         grep -vc '^#' \"\$WORK_LOCAL/cpp_hg008_giab_th32.vcf\" > \"\$KEEP_DIR/cpp_hg008_giab_th32.variant_count\" || true
@@ -2174,12 +2216,12 @@ run_stage_5() {
       fi
     fi
 
-    # (c) VarDictJava v1.8.3 (-th 32, -Xmx200g -XX:+ExitOnOutOfMemoryError, 4h progress cap per protocol §3 rule b)
+    # (c) VarDictJava v1.8.3 (-th 32 -U, -Xmx200g -XX:+ExitOnOutOfMemoryError, 4h progress cap per protocol §3 rule b)
     if [ ! -s \"\$KEEP_DIR/java_hg008_giab_th32.time\" ]; then
       rc_java=0
       timeout 14400 /usr/bin/time -v -o \"\$KEEP_DIR/java_hg008_giab_th32.time\" \
         env ORACLE_XMX_GB=200 JAVA_OPTS='-Xmx200g -XX:+ExitOnOutOfMemoryError' \
-        bash harness/run_oracle.sh \"\$REF\" \"\${T_BAM}|\${N_BAM}\" \"\$BED\" \"\$WORK_LOCAL/java_hg008_giab_th32.vcf\" 'HG008-T|HG008-N' -f 0.01 -th 32 -z || rc_java=\$?
+        bash harness/run_oracle.sh \"\$REF\" \"\${T_BAM}|\${N_BAM}\" \"\$BED\" \"\$WORK_LOCAL/java_hg008_giab_th32.vcf\" 'HG008-T|HG008-N' -f 0.01 -th 32 -z -U || rc_java=\$?
       echo \"\$rc_java\" > \"\$KEEP_DIR/java_hg008_giab_th32.exit\"
     fi
     rc_java=\"\$(cat \"\$KEEP_DIR/java_hg008_giab_th32.exit\" 2>/dev/null || echo 1)\"
@@ -2286,6 +2328,9 @@ run_stage_5() {
     BAM_HG2="$DATA_DIR/hg002/HG002.chr20.bam"
     BED_HG2="$DATA_DIR/hg002/eval.bed"
     TRUTH_HG2="$DATA_DIR/hg002/truth/truth.vcf.gz"
+    REF_HG2="$DATA_DIR/ref/d1vd1/GRCh38.hs38DH.fa"
+    ln -sf GRCh38.d1.vd1.fa "$REF_HG2"
+    samtools view -H "$BAM_HG2" | awk -F"\t" '\''/^@SQ/{sub(/^SN:/,"",$2); ok[$2]=1} END{while((getline < "'"$REF_D1"'.fai")>0){split($0,a,"\t"); if(a[1] in ok) print $0}}'\'' > "${REF_HG2}.fai"
     bgzip -c "$BED_HG2" > "$KEEP_DIR/hg002_eval.bed.gz" && tabix -f -p bed "$KEEP_DIR/hg002_eval.bed.gz"
 
     run_timed_cmd "hg002_FreeBayes_8c" conda run -n cl_freebayes freebayes -f "$REF_GIAB" -t "$BED_HG2" "$BAM_HG2"
@@ -2305,11 +2350,16 @@ run_stage_5() {
     run_timed_cmd "hg002_Strelka2_8c" bash -c "
       set -euo pipefail
       rm -rf \"$KEEP_DIR/strelka_hg002\"
-      conda run -n cl_strelka configureStrelkaGermlineWorkflow.py --bam \"$BAM_HG2\" --referenceFasta \"$REF_GIAB\" --callRegions \"$KEEP_DIR/hg002_eval.bed.gz\" --runDir \"$KEEP_DIR/strelka_hg002\"
+      conda run -n cl_strelka configureStrelkaGermlineWorkflow.py --bam \"$BAM_HG2\" --referenceFasta \"$REF_HG2\" --callRegions \"$KEEP_DIR/hg002_eval.bed.gz\" --runDir \"$KEEP_DIR/strelka_hg002\"
       conda run -n cl_strelka \"$KEEP_DIR/strelka_hg002/runWorkflow.py\" -m local -j 16
     "
 
-    run_timed_cmd "hg002_octopus_8c" conda run -n cl_octopus octopus -R "$REF_GIAB" -I "$BAM_HG2" -t "$BED_HG2" --threads 16 -o "$KEEP_DIR/hg002_octopus.vcf"
+    RG_HG2="$KEEP_DIR/hg002.rg.bam"
+    if [ ! -f "$RG_HG2" ]; then
+      samtools addreplacerg -r "@RG\tID:HG002\tSM:HG002" -@ 16 -o "$RG_HG2" "$BAM_HG2"
+      samtools index -@ 16 "$RG_HG2"
+    fi
+    run_timed_cmd "hg002_octopus_8c" conda run -n cl_octopus octopus -R "$REF_HG2" -I "$RG_HG2" -t "$BED_HG2" --threads 16 -o "$KEEP_DIR/hg002_octopus.vcf"
 
     score_truth_vcf "HG002_GRCh38" "VarDictRust" "$BUDGET_DIR/hg002/rust.vcf" "$REF_GIAB" "$SDF_GIAB" "$TRUTH_HG2" "$BED_HG2" "HG002" "$BUDGET_DIR/hg002/rust_run1.time"
     score_truth_vcf "HG002_GRCh38" "VarDictJava" "$BUDGET_DIR/hg002/java.vcf" "$REF_GIAB" "$SDF_GIAB" "$TRUTH_HG2" "$BED_HG2" "HG002" "$BUDGET_DIR/hg002/java_run1.time"
@@ -2432,6 +2482,324 @@ run_stage_5() {
     target/release/vardictrust --version > "$KEEP_DIR/vardictrust_version.txt"
     cargo test --test cli_flags -- --nocapture > "$KEEP_DIR/cli_flags_test.log" 2>&1 || cargo test -- --nocapture > "$KEEP_DIR/cargo_test_summary.log" 2>&1
   '
+
+  # 9. Stage Option C Cross-Platform Short/Mid-Read Benchmark Panel (Full chr20 across 6 Chemistries + chr1 r1..r3 Somatic Panel)
+  local xp_dir="${WORK_DIR}/data/cross_platform_chr20"
+  run_local_stage_cell "stage5" "s5_stage_cross_platform_chr20" 32 "128G" bash -c "
+    set -euo pipefail
+    source harness/gcp_paper_runner.sh --source-only
+    mkdir -p '$xp_dir'
+    REF_GIAB=\"\$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fasta\"
+    REF_D1=\"\$DATA_DIR/ref/d1vd1/GRCh38.d1.vd1.fa\"
+
+    if [ ! -f \"\$REF_GIAB\" ] || [ ! -f \"\$REF_D1\" ]; then
+      DATA_DIR=\"\$DATA_DIR\" bash harness/fetch_data.sh hg002 hg008 seqc2
+    fi
+
+    # Restore from GCS_BAMS/cross_platform_chr20 if already cached in GCS
+    if setsid gsutil -q stat \"\${GCS_BAMS}/cross_platform_chr20/STAGED_OK\" 2>/dev/null; then
+      echo '[Cross-Platform] Restoring pre-staged chr20 BAM/CRAM slices from GCS...'
+      setsid gsutil -m -q rsync -r \"\${GCS_BAMS}/cross_platform_chr20\" '$xp_dir'
+    fi
+
+    # Ensure full GIAB HG002 v4.2.1 & HG008 v0.4 truth files exist
+    TRUTH_HG2_FULL=\"\$DATA_DIR/hg002/truth/HG002_GRCh38_1_22_v4.2.1_benchmark.vcf.gz\"
+    BED_HG2_FULL=\"\$DATA_DIR/hg002/truth/HG002_GRCh38_1_22_v4.2.1_benchmark_noinconsistent.bed\"
+    if [ ! -f \"\$TRUTH_HG2_FULL\" ] || [ ! -f \"\$BED_HG2_FULL\" ]; then
+      mkdir -p \"\$DATA_DIR/hg002/truth\"
+      GIAB_HG2_URL='https://ftp-trace.ncbi.nlm.nih.gov/ReferenceSamples/giab/release/AshkenazimTrio/HG002_NA24385_son/NISTv4.2.1/GRCh38'
+      curl -sSLf --retry 5 \"\${GIAB_HG2_URL}/HG002_GRCh38_1_22_v4.2.1_benchmark.vcf.gz\" -o \"\$TRUTH_HG2_FULL\"
+      curl -sSLf --retry 5 \"\${GIAB_HG2_URL}/HG002_GRCh38_1_22_v4.2.1_benchmark.vcf.gz.tbi\" -o \"\${TRUTH_HG2_FULL}.tbi\"
+      curl -sSLf --retry 5 \"\${GIAB_HG2_URL}/HG002_GRCh38_1_22_v4.2.1_benchmark_noinconsistent.bed\" -o \"\$BED_HG2_FULL\"
+    fi
+    TRUTH_HG8_V04=\"\$DATA_DIR/hg008/truth/HG008-T_somatic_smvar_benchmark_v0.4_GRCh38_tumorvariants.vcf.gz\"
+    BED_HG8_V04=\"\$DATA_DIR/hg008/truth/HG008-T_somatic_smvar_benchmark_v0.4_GRCh38_all.bed\"
+    if [ ! -f \"\$TRUTH_HG8_V04\" ] || [ ! -f \"\$BED_HG8_V04\" ]; then
+      DATA_DIR=\"\$DATA_DIR\" bash harness/fetch_data.sh hg008
+    fi
+
+    # Download Ultima UG-High-Confidence-Regions v2.1 BED (excludes HMER>=11 homopolymers)
+    if [ ! -s '$xp_dir/ug_hcr.bed' ]; then
+      curl -sSLf --retry 5 'https://ultimagen-feb-2024-giab.s3.amazonaws.com/UG-High-Confidence-Regions/v2.1/ug_hcr.bed' -o '$xp_dir/ug_hcr.bed'
+    fi
+
+    # Build chr20 evaluation BEDs and <=50 kbp pre-tiled calling BEDs
+    awk '\$1 == \"chr20\" {print \$1 \"\t\" \$2 \"\t\" \$3}' \"\$BED_HG2_FULL\" > '$xp_dir/hg002_chr20_v421_eval.bed'
+    bedtools intersect -a '$xp_dir/hg002_chr20_v421_eval.bed' -b '$xp_dir/ug_hcr.bed' | sort -k1,1 -k2,2n | bedtools merge > '$xp_dir/hg002_chr20_ug_hcr_eval.bed'
+    awk '{s=\$2+0; e=\$3+0; for(c=s;c<e;c+=50000){ce=(c+50000<e?c+50000:e); idx++; printf \"%s\t%d\t%d\thg2_c20_%d\n\",\$1,c,ce,idx}}' \
+      '$xp_dir/hg002_chr20_v421_eval.bed' > '$xp_dir/hg002_chr20_50kb.bed'
+
+    awk '\$1 == \"chr20\" {print \$1 \"\t\" \$2 \"\t\" \$3}' \"\$BED_HG8_V04\" > '$xp_dir/hg008_chr20_v04_eval.bed'
+    bedtools intersect -a '$xp_dir/hg008_chr20_v04_eval.bed' -b '$xp_dir/ug_hcr.bed' | sort -k1,1 -k2,2n | bedtools merge > '$xp_dir/hg008_chr20_ug_hcr_eval.bed'
+    awk '{s=\$2+0; e=\$3+0; for(c=s;c<e;c+=50000){ce=(c+50000<e?c+50000:e); idx++; printf \"%s\t%d\t%d\thg8_c20_%d\n\",\$1,c,ce,idx}}' \
+      '$xp_dir/hg008_chr20_v04_eval.bed' > '$xp_dir/hg008_chr20_50kb.bed'
+
+    cat \"\$DATA_DIR/hg008/r1.bed\" \"\$DATA_DIR/hg008/r2.bed\" \"\$DATA_DIR/hg008/r3.bed\" > '$xp_dir/hg008_chr1_r123.bed'
+
+    slice_remote_bam() {
+      local out_bam=\"\$1\" url=\"\$2\" idx_url=\"\$3\" reg=\"\$4\" ref_opt=\"\${5:-}\"
+      if [ -s \"\$out_bam\" ] && [ -s \"\${out_bam}.bai\" ] && samtools quickcheck \"\$out_bam\"; then
+        echo \"[Stage-XP] Reusing \$out_bam\"
+        return 0
+      fi
+      echo \"[Stage-XP] Slicing \$out_bam (\$reg)...\"
+      local idx_local=\"\${out_bam}.remote_idx\"
+      curl -sSLf --retry 5 \"\$idx_url\" -o \"\$idx_local\"
+      if [ -n \"\$ref_opt\" ]; then
+        samtools view -@ 8 -b -T \"\$ref_opt\" -X \"\$url\" \"\$idx_local\" \$reg -o \"\$out_bam\"
+      else
+        samtools view -@ 8 -b -X \"\$url\" \"\$idx_local\" \$reg -o \"\$out_bam\"
+      fi
+      rm -f \"\$idx_local\"
+      samtools index -@ 8 \"\$out_bam\"
+    }
+
+    # 1. Germline HG002 chr20 (Illumina, Element AVITI 80x, MGI DNBSEQ 100x, Ultima UG100 40x CRAM+BAM)
+    ln -sf \"\$DATA_DIR/hg002/HG002.chr20.bam\" '$xp_dir/hg002_illumina.chr20.bam'
+    ln -sf \"\$DATA_DIR/hg002/HG002.chr20.bam.bai\" '$xp_dir/hg002_illumina.chr20.bam.bai'
+
+    G_HG2='https://ftp-trace.ncbi.nlm.nih.gov/ReferenceSamples/giab/data/AshkenazimTrio/HG002_NA24385_son'
+    slice_remote_bam '$xp_dir/hg002_element_aviti.chr20.bam' \
+      \"\${G_HG2}/Element_AVITI_20240920/HG002_Element-StdInsert_80x_GRCh38-GIABv3.bam\" \
+      \"\${G_HG2}/Element_AVITI_20240920/HG002_Element-StdInsert_80x_GRCh38-GIABv3.bam.bai\" 'chr20'
+    slice_remote_bam '$xp_dir/hg002_mgi_dnbseq.chr20.bam' \
+      \"\${G_HG2}/NIST_BGIseq_2x150bp_100x/GRCh38/HG002_GRCh38_BGIseq-2x150-100x_NIST_20211126.bam\" \
+      \"\${G_HG2}/NIST_BGIseq_2x150bp_100x/GRCh38/HG002_GRCh38_BGIseq-2x150-100x_NIST_20211126.bam.bai\" 'chr20'
+
+    if [ ! -s '$xp_dir/hg002_ultima_ug100.chr20.cram' ] || [ ! -s '$xp_dir/hg002_ultima_ug100.chr20.bam' ]; then
+      curl -sSLf --retry 5 'https://ultimagen-feb-2024-giab.s3.amazonaws.com/Crams/NA24385-Z0027.cram.crai' -o '$xp_dir/ug_hg2.crai'
+      samtools view -@ 8 -C -T \"\$REF_D1\" -X 'https://ultimagen-feb-2024-giab.s3.amazonaws.com/Crams/NA24385-Z0027.cram' '$xp_dir/ug_hg2.crai' chr20 -o '$xp_dir/hg002_ultima_ug100.chr20.cram'
+      samtools index -@ 8 '$xp_dir/hg002_ultima_ug100.chr20.cram'
+      samtools view -@ 8 -b -T \"\$REF_D1\" '$xp_dir/hg002_ultima_ug100.chr20.cram' -o '$xp_dir/hg002_ultima_ug100.chr20.bam'
+      samtools index -@ 8 '$xp_dir/hg002_ultima_ug100.chr20.bam'
+      rm -f '$xp_dir/ug_hg2.crai'
+    fi
+
+    # 2. Somatic HG008 chr20 (Illumina 195x/169x, Roche SBX-Duplex 119x/44x, PacBio Onso 136x/48x, Element AVITI 111x/77x, Ultima UG100 306x/234x, Ultima ppmSeq 157x/160x)
+    G_HG8='https://ftp-trace.ncbi.nlm.nih.gov/ReferenceSamples/giab/data_somatic/HG008/Liss_lab'
+    if [ -s '$hg8_dir/HG008-T_Illumina_195x_GRCh38-GIABv3.bam' ] && [ ! -s '$xp_dir/hg008_illumina_T.chr20.bam' ]; then
+      samtools view -@ 8 -b '$hg8_dir/HG008-T_Illumina_195x_GRCh38-GIABv3.bam' chr20 -o '$xp_dir/hg008_illumina_T.chr20.bam' && samtools index -@ 8 '$xp_dir/hg008_illumina_T.chr20.bam'
+      samtools view -@ 8 -b '$hg8_dir/HG008-N-D_Illumina_169x_GRCh38-GIABv3.bam' chr20 -o '$xp_dir/hg008_illumina_N.chr20.bam' && samtools index -@ 8 '$xp_dir/hg008_illumina_N.chr20.bam'
+    else
+      slice_remote_bam '$xp_dir/hg008_illumina_T.chr20.bam' \"\${G_HG8}/BCM_Illumina-WGS_20240313/HG008-T_Illumina_195x_GRCh38-GIABv3.bam\" \"\${G_HG8}/BCM_Illumina-WGS_20240313/HG008-T_Illumina_195x_GRCh38-GIABv3.bam.bai\" 'chr20'
+      slice_remote_bam '$xp_dir/hg008_illumina_N.chr20.bam' \"\${G_HG8}/BCM_Illumina-WGS_20240313/HG008-N-D_Illumina_169x_GRCh38-GIABv3.bam\" \"\${G_HG8}/BCM_Illumina-WGS_20240313/HG008-N-D_Illumina_169x_GRCh38-GIABv3.bam.bai\" 'chr20'
+    fi
+
+    slice_remote_bam '$xp_dir/hg008_roche_sbx_T.chr20.bam' \"\${G_HG8}/Hartwig_Roche-Axelios1_20260904/HG008-T_Roche-Axelios1_119X_GRCh38.bam\" \"\${G_HG8}/Hartwig_Roche-Axelios1_20260904/HG008-T_Roche-Axelios1_119X_GRCh38.bam.bai\" 'chr20'
+    slice_remote_bam '$xp_dir/hg008_roche_sbx_N.chr20.bam' \"\${G_HG8}/Hartwig_Roche-Axelios1_20260904/HG008-N-D_Roche-Axelios1_44X_GRCh38.bam\" \"\${G_HG8}/Hartwig_Roche-Axelios1_20260904/HG008-N-D_Roche-Axelios1_44X_GRCh38.bam.bai\" 'chr20'
+
+    slice_remote_bam '$xp_dir/hg008_pacbio_onso_T.chr20.bam' \"\${G_HG8}/PacBio_Onso_20240415/HG008-T_Pacbio-onso_136x_GRCh38-GIABv3.bam\" \"\${G_HG8}/PacBio_Onso_20240415/HG008-T_Pacbio-onso_136x_GRCh38-GIABv3.bam.bai\" 'chr20'
+    slice_remote_bam '$xp_dir/hg008_pacbio_onso_N.chr20.bam' \"\${G_HG8}/PacBio_Onso_20240415/HG008-N-D_Pacbio-onso_48x_GRCh38-GIABv3.bam\" \"\${G_HG8}/PacBio_Onso_20240415/HG008-N-D_Pacbio-onso_48x_GRCh38-GIABv3.bam.bai\" 'chr20'
+
+    slice_remote_bam '$xp_dir/hg008_element_aviti_T.chr20.bam' \"\${G_HG8}/Element-AVITI-20241216/HG008-T_Element-StdInsert_111x_GRCh38-GIABv3.bam\" \"\${G_HG8}/Element-AVITI-20241216/HG008-T_Element-StdInsert_111x_GRCh38-GIABv3.bam.bai\" 'chr20'
+    slice_remote_bam '$xp_dir/hg008_element_aviti_N.chr20.bam' \"\${G_HG8}/Element-AVITI-20241216/HG008-N-D_Element-StdInsert_77x_GRCh38-GIABv3.bam\" \"\${G_HG8}/Element-AVITI-20241216/HG008-N-D_Element-StdInsert_77x_GRCh38-GIABv3.bam.bai\" 'chr20'
+
+    slice_remote_bam '$xp_dir/hg008_ultima_ug100_T.chr20.bam' \"\${G_HG8}/Ultima_UG100-WGS_20240530/HG008-T_Ultima_306x_GRCh38-GIABv3.cram\" \"\${G_HG8}/Ultima_UG100-WGS_20240530/HG008-T_Ultima_306x_GRCh38-GIABv3.cram.crai\" 'chr20' \"\$REF_GIAB\"
+    slice_remote_bam '$xp_dir/hg008_ultima_ug100_N.chr20.bam' \"\${G_HG8}/Ultima_UG100-WGS_20240530/HG008-N-D_Ultima_234x_GRCh38-GIABv3.cram\" \"\${G_HG8}/Ultima_UG100-WGS_20240530/HG008-N-D_Ultima_234x_GRCh38-GIABv3.cram.crai\" 'chr20' \"\$REF_GIAB\"
+
+    slice_remote_bam '$xp_dir/hg008_ultima_ppmseq_T.chr20.bam' \"\${G_HG8}/Ultima-ppmSeq-UG100-20241028/HG008-T_Ultima_157x_GRCh38.cram\" \"\${G_HG8}/Ultima-ppmSeq-UG100-20241028/HG008-T_Ultima_157x_GRCh38.cram.crai\" 'chr20' \"\$REF_D1\"
+    slice_remote_bam '$xp_dir/hg008_ultima_ppmseq_N.chr20.bam' \"\${G_HG8}/Ultima-ppmSeq-UG100-20241028/HG008-N-D_Ultima_160x_GRCh38.cram\" \"\${G_HG8}/Ultima-ppmSeq-UG100-20241028/HG008-N-D_Ultima_160x_GRCh38.cram.crai\" 'chr20' \"\$REF_D1\"
+
+    # 3. Also stage chr1 r1..r3 (chr1:1743056-1744086, chr1:6170843-6182754, chr1:56757190-56764123) for the -f 0 -r 1 singleton noise-floor sweep
+    R123='chr1:1743000-1745000 chr1:6170000-6183000 chr1:56757000-56765000'
+    ln -sf \"\$DATA_DIR/hg008/HG008-T.slice.bam\" '$xp_dir/hg008_illumina_T.r123.bam'
+    ln -sf \"\$DATA_DIR/hg008/HG008-T.slice.bam.bai\" '$xp_dir/hg008_illumina_T.r123.bam.bai'
+    ln -sf \"\$DATA_DIR/hg008/HG008-N.slice.bam\" '$xp_dir/hg008_illumina_N.r123.bam'
+    ln -sf \"\$DATA_DIR/hg008/HG008-N.slice.bam.bai\" '$xp_dir/hg008_illumina_N.r123.bam.bai'
+    slice_remote_bam '$xp_dir/hg008_roche_sbx_T.r123.bam' \"\${G_HG8}/Hartwig_Roche-Axelios1_20260904/HG008-T_Roche-Axelios1_119X_GRCh38.bam\" \"\${G_HG8}/Hartwig_Roche-Axelios1_20260904/HG008-T_Roche-Axelios1_119X_GRCh38.bam.bai\" \"\$R123\"
+    slice_remote_bam '$xp_dir/hg008_roche_sbx_N.r123.bam' \"\${G_HG8}/Hartwig_Roche-Axelios1_20260904/HG008-N-D_Roche-Axelios1_44X_GRCh38.bam\" \"\${G_HG8}/Hartwig_Roche-Axelios1_20260904/HG008-N-D_Roche-Axelios1_44X_GRCh38.bam.bai\" \"\$R123\"
+    slice_remote_bam '$xp_dir/hg008_pacbio_onso_T.r123.bam' \"\${G_HG8}/PacBio_Onso_20240415/HG008-T_Pacbio-onso_136x_GRCh38-GIABv3.bam\" \"\${G_HG8}/PacBio_Onso_20240415/HG008-T_Pacbio-onso_136x_GRCh38-GIABv3.bam.bai\" \"\$R123\"
+    slice_remote_bam '$xp_dir/hg008_pacbio_onso_N.r123.bam' \"\${G_HG8}/PacBio_Onso_20240415/HG008-N-D_Pacbio-onso_48x_GRCh38-GIABv3.bam\" \"\${G_HG8}/PacBio_Onso_20240415/HG008-N-D_Pacbio-onso_48x_GRCh38-GIABv3.bam.bai\" \"\$R123\"
+    slice_remote_bam '$xp_dir/hg008_element_aviti_T.r123.bam' \"\${G_HG8}/Element-AVITI-20241216/HG008-T_Element-StdInsert_111x_GRCh38-GIABv3.bam\" \"\${G_HG8}/Element-AVITI-20241216/HG008-T_Element-StdInsert_111x_GRCh38-GIABv3.bam.bai\" \"\$R123\"
+    slice_remote_bam '$xp_dir/hg008_element_aviti_N.r123.bam' \"\${G_HG8}/Element-AVITI-20241216/HG008-N-D_Element-StdInsert_77x_GRCh38-GIABv3.bam\" \"\${G_HG8}/Element-AVITI-20241216/HG008-N-D_Element-StdInsert_77x_GRCh38-GIABv3.bam.bai\" \"\$R123\"
+    slice_remote_bam '$xp_dir/hg008_ultima_ug100_T.r123.bam' \"\${G_HG8}/Ultima_UG100-WGS_20240530/HG008-T_Ultima_306x_GRCh38-GIABv3.cram\" \"\${G_HG8}/Ultima_UG100-WGS_20240530/HG008-T_Ultima_306x_GRCh38-GIABv3.cram.crai\" \"\$R123\" \"\$REF_GIAB\"
+    slice_remote_bam '$xp_dir/hg008_ultima_ug100_N.r123.bam' \"\${G_HG8}/Ultima_UG100-WGS_20240530/HG008-N-D_Ultima_234x_GRCh38-GIABv3.cram\" \"\${G_HG8}/Ultima_UG100-WGS_20240530/HG008-N-D_Ultima_234x_GRCh38-GIABv3.cram.crai\" \"\$R123\" \"\$REF_GIAB\"
+    slice_remote_bam '$xp_dir/hg008_ultima_ppmseq_T.r123.bam' \"\${G_HG8}/Ultima-ppmSeq-UG100-20241028/HG008-T_Ultima_157x_GRCh38.cram\" \"\${G_HG8}/Ultima-ppmSeq-UG100-20241028/HG008-T_Ultima_157x_GRCh38.cram.crai\" \"\$R123\" \"\$REF_D1\"
+    slice_remote_bam '$xp_dir/hg008_ultima_ppmseq_N.r123.bam' \"\${G_HG8}/Ultima-ppmSeq-UG100-20241028/HG008-N-D_Ultima_160x_GRCh38.cram\" \"\${G_HG8}/Ultima-ppmSeq-UG100-20241028/HG008-N-D_Ultima_160x_GRCh38.cram.crai\" \"\$R123\" \"\$REF_D1\"
+
+    date -u +%Y-%m-%dT%H:%M:%SZ > '$xp_dir/STAGED_OK'
+    ls -lh '$xp_dir' > \"\$KEEP_DIR/staged_cross_platform_files.txt\"
+    setsid gsutil -m -q rsync -r '$xp_dir' \"\${GCS_BAMS}/cross_platform_chr20\" || true
+  "
+
+  # 10. Option C Cross-Platform Short-Read & Synthesis-Based Sequencing Panel (Full chr20 at -f 0.01 & -f 0 + chr1 -f 0 -r 1 Singleton Floor)
+  run_checkpointed_cell "stage5" "s5_cross_platform_short_read_chr20_panel" 32 "245G" bash -c "
+    set -euo pipefail
+    source harness/gcp_paper_runner.sh --source-only
+    XP_DIR='$xp_dir'
+    REF_GIAB=\"\$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fasta\"
+    SDF_GIAB=\"\$DATA_DIR/ref/giabv3/GRCh38_GIABv3.sdf\"
+    REF_D1=\"\$DATA_DIR/ref/d1vd1/GRCh38.d1.vd1.fa\"
+    SDF_D1=\"\$DATA_DIR/ref/d1vd1/GRCh38.d1.vd1.sdf\"
+    TRUTH_HG2=\"\$DATA_DIR/hg002/truth/HG002_GRCh38_1_22_v4.2.1_benchmark.vcf.gz\"
+    TRUTH_HG8=\"\$DATA_DIR/hg008/truth/HG008-T_somatic_smvar_benchmark_v0.4_GRCh38_tumorvariants.vcf.gz\"
+    VR=\"target/release/vardictrust\"
+
+    SUMMARY_TSV=\"\$KEEP_DIR/cross_platform_chr20_summary.tsv\"
+    printf 'arm\tcohort\tfreq\tengine\trc\twall_s\tpeak_kb\ttotal_vars\tpass_vars\tparity_vs_java\tsnp_p\tsnp_r\tsnp_f1\tindel_p\tindel_r\tindel_f1\tughcr_snp_f1\tughcr_indel_f1\n' > \"\$SUMMARY_TSV\"
+
+    eval_vcfeval_pair() {
+      local vcf=\"\$1\" ref=\"\$2\" sdf=\"\$3\" truth=\"\$4\" bed=\"\$5\" is_som=\"\$6\" out_dir=\"\$7\"
+      rm -rf \"\$out_dir\" && mkdir -p \"\$out_dir\"
+      if [ ! -s \"\$vcf\" ]; then
+        echo 'NA NA NA NA NA NA'
+        return 0
+      fi
+      if [ \"\$is_som\" = '1' ]; then
+        bcftools reheader --fai \"\${ref}.fai\" \"\$vcf\" 2>/dev/null \
+          | bcftools view -f PASS -i 'INFO/STATUS=\"StrongSomatic\" || INFO/STATUS=\"LikelySomatic\"' 2>/dev/null \
+          | bcftools norm -f \"\$ref\" -m -any 2>/dev/null \
+          | bcftools sort -Oz -o \"\$out_dir/calls.vcf.gz\"
+      else
+        bcftools reheader --fai \"\${ref}.fai\" \"\$vcf\" 2>/dev/null \
+          | bcftools view -f PASS,. 2>/dev/null \
+          | bcftools norm -f \"\$ref\" -m -any 2>/dev/null \
+          | bcftools sort -Oz -o \"\$out_dir/calls.vcf.gz\"
+      fi
+      tabix -f -p vcf \"\$out_dir/calls.vcf.gz\"
+      bcftools annotate -x FILTER \"\$truth\" -R \"\$bed\" -Oz -o \"\$out_dir/truth.vcf.gz\" 2>/dev/null || \
+        bcftools annotate -x FILTER \"\$truth\" -Oz -o \"\$out_dir/truth.vcf.gz\"
+      tabix -f -p vcf \"\$out_dir/truth.vcf.gz\"
+      local sp=NA sr=NA sf=NA ip=NA ir=NA if1=NA
+      for cls in snp indel; do
+        bcftools view -v \"\$cls\" \"\$out_dir/calls.vcf.gz\" -Oz -o \"\$out_dir/c_\${cls}.vcf.gz\" && tabix -f -p vcf \"\$out_dir/c_\${cls}.vcf.gz\"
+        bcftools view -v \"\$cls\" \"\$out_dir/truth.vcf.gz\" -Oz -o \"\$out_dir/t_\${cls}.vcf.gz\" && tabix -f -p vcf \"\$out_dir/t_\${cls}.vcf.gz\"
+        rtg vcfeval -b \"\$out_dir/t_\${cls}.vcf.gz\" -c \"\$out_dir/c_\${cls}.vcf.gz\" -t \"\$sdf\" -e \"\$bed\" --squash-ploidy -T 16 -o \"\$out_dir/rtg_\${cls}\" >/dev/null 2>&1 || true
+        if [ -f \"\$out_dir/rtg_\${cls}/summary.txt\" ]; then
+          read -r p r f <<< \"\$(awk 'NR>2 && NF>=8' \"\$out_dir/rtg_\${cls}/summary.txt\" | sort -k8 -g | tail -1 | awk '{print \$6,\$7,\$8}')\"
+          if [ \"\$cls\" = 'snp' ]; then sp=\${p:-NA}; sr=\${r:-NA}; sf=\${f:-NA}; else ip=\${p:-NA}; ir=\${r:-NA}; if1=\${f:-NA}; fi
+        fi
+      done
+      echo \"\$sp \$sr \$sf \$ip \$ir \$if1\"
+    }
+
+    run_chr20_3way_arm() {
+      local arm=\"\$1\" cohort=\"\$2\" is_som=\"\$3\" ref=\"\$4\" sdf=\"\$5\" bam_spec=\"\$6\" sample=\"\$7\" call_bed=\"\$8\" eval_bed=\"\$9\" ughcr_bed=\"\${10}\" truth=\"\${11}\" freq=\"\${12}\"
+      shift 12
+      local extra_flags=(\"\$@\")
+      local tag=\"\${arm}_f\${freq}\"
+      echo \"=== [Cross-Platform chr20] Arm=\$arm Cohort=\$cohort freq=\$freq ===\"
+
+      # 1. VarDictRust v1.0.5 (-th 32)
+      if [ ! -s \"\$KEEP_DIR/\${tag}_rust.vcf\" ] || [ ! -s \"\$KEEP_DIR/\${tag}_rust.time\" ]; then
+        /usr/bin/time -v -o \"\$KEEP_DIR/\${tag}_rust.time\" \
+          \"\$VR\" -G \"\$ref\" -f \"\$freq\" -N \"\$sample\" -b \"\$bam_spec\" -c 1 -S 2 -E 3 -g 4 -z -th 32 \"\${extra_flags[@]}\" \"\$call_bed\" > \"\$KEEP_DIR/\${tag}_rust.vcf\"
+      fi
+
+      # 2. vardictcpp (-th 32 --chunk 50000)
+      if [ ! -s \"\$KEEP_DIR/\${tag}_cpp.exit\" ]; then
+        local rc_c=0
+        timeout 3600 /usr/bin/time -v -o \"\$KEEP_DIR/\${tag}_cpp.time\" \
+          env CPP_CHUNK=50000 bash harness/run_cpp.sh \"\$ref\" \"\$bam_spec\" \"\$call_bed\" \"\$KEEP_DIR/\${tag}_cpp.vcf\" \"\$sample\" -f \"\$freq\" -th 32 -z \"\${extra_flags[@]}\" || rc_c=\$?
+        echo \"\$rc_c\" > \"\$KEEP_DIR/\${tag}_cpp.exit\"
+      fi
+
+      # 3. VarDictJava v1.8.3 (-th 32 -Xmx200g)
+      if [ ! -s \"\$KEEP_DIR/\${tag}_java.exit\" ]; then
+        local rc_j=0
+        timeout 3600 /usr/bin/time -v -o \"\$KEEP_DIR/\${tag}_java.time\" \
+          env ORACLE_XMX_GB=200 JAVA_OPTS='-Xmx200g -XX:+ExitOnOutOfMemoryError' \
+          bash harness/run_oracle.sh \"\$ref\" \"\$bam_spec\" \"\$call_bed\" \"\$KEEP_DIR/\${tag}_java.vcf\" \"\$sample\" -f \"\$freq\" -th 32 -z \"\${extra_flags[@]}\" || rc_j=\$?
+        echo \"\$rc_j\" > \"\$KEEP_DIR/\${tag}_java.exit\"
+        if [ \"\$rc_j\" -eq 0 ] && [ -s \"\$KEEP_DIR/\${tag}_java.vcf\" ]; then
+          oracle_cache_put \"cross_platform_chr20/\${tag}_java.vcf\" \"\$KEEP_DIR/\${tag}_java.vcf\"
+        fi
+      fi
+
+      for eng in rust java cpp; do
+        local vcf=\"\$KEEP_DIR/\${tag}_\${eng}.vcf\"
+        local tf=\"\$KEEP_DIR/\${tag}_\${eng}.time\"
+        local rc_f=\"\$KEEP_DIR/\${tag}_\${eng}.exit\"
+        local rc=0
+        [ -f \"\$rc_f\" ] && rc=\$(cat \"\$rc_f\")
+        local wall=NA rss=NA tot=0 pass=0 par=NA
+        if [ -s \"\$tf\" ]; then
+          wall=\$(awk -F': ' '/Elapsed/{print \$2}' \"\$tf\" | tail -1)
+          rss=\$(awk -F': ' '/Maximum resident/{print \$2}' \"\$tf\" | tr -dc '0-9')
+        fi
+        if [ -s \"\$vcf\" ]; then
+          tot=\$(grep -vc '^#' \"\$vcf\" || true)
+          if [ \"\$is_som\" = '1' ]; then
+            pass=\$(grep -v '^#' \"\$vcf\" | grep -cE 'PASS.*STATUS=(Strong|Likely)Somatic' || true)
+          else
+            pass=\$(grep -v '^#' \"\$vcf\" | awk -F'\t' '\$7==\"PASS\" || \$7==\".\"{c++} END{print c+0}')
+          fi
+        fi
+        if [ \"\$eng\" = 'java' ]; then
+          par='ORACLE'
+        elif [ -s \"\$KEEP_DIR/\${tag}_java.vcf\" ] && [ -s \"\$vcf\" ]; then
+          if python3 harness/compare_vcf.py --strict-bytes \"\$KEEP_DIR/\${tag}_java.vcf\" \"\$vcf\" --eps 1e-6 > \"\$KEEP_DIR/\${tag}_\${eng}_cmp.txt\" 2>&1; then
+            par='STRICT_MATCH'
+          elif python3 harness/compare_vcf.py \"\$KEEP_DIR/\${tag}_java.vcf\" \"\$vcf\" --eps 1e-6 > \"\$KEEP_DIR/\${tag}_\${eng}_cmp_eps.txt\" 2>&1; then
+            par='EPS_MATCH'
+          else
+            par='MISMATCH'
+          fi
+        fi
+        read -r sp sr sf ip ir if1 <<< \"\$(eval_vcfeval_pair \"\$vcf\" \"\$ref\" \"\$sdf\" \"\$truth\" \"\$eval_bed\" \"\$is_som\" \"\$KEEP_DIR/ev_\${tag}_\${eng}_std\")\"
+        read -r _ _ ugsf _ _ ugif1 <<< \"\$(eval_vcfeval_pair \"\$vcf\" \"\$ref\" \"\$sdf\" \"\$truth\" \"\$ughcr_bed\" \"\$is_som\" \"\$KEEP_DIR/ev_\${tag}_\${eng}_ughcr\")\"
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+          \"\$arm\" \"\$cohort\" \"\$freq\" \"\$eng\" \"\$rc\" \"\$wall\" \"\$rss\" \"\$tot\" \"\$pass\" \"\$par\" \
+          \"\$sp\" \"\$sr\" \"\$sf\" \"\$ip\" \"\$ir\" \"\$if1\" \"\$ugsf\" \"\$ugif1\" | tee -a \"\$SUMMARY_TSV\"
+      done
+    }
+
+    # --- Part A1: Germline HG002 Full chr20 across 4 Short-Read Platforms (-f 0.01 and -f 0) ---
+    for freq in 0.01 0; do
+      run_chr20_3way_arm 'hg002_illumina'      'HG002_Germline' 0 \"\$REF_GIAB\" \"\$SDF_GIAB\" \"\$XP_DIR/hg002_illumina.chr20.bam\"      'HG002' \"\$XP_DIR/hg002_chr20_50kb.bed\" \"\$XP_DIR/hg002_chr20_v421_eval.bed\" \"\$XP_DIR/hg002_chr20_ug_hcr_eval.bed\" \"\$TRUTH_HG2\" \"\$freq\"
+      run_chr20_3way_arm 'hg002_element_aviti' 'HG002_Germline' 0 \"\$REF_GIAB\" \"\$SDF_GIAB\" \"\$XP_DIR/hg002_element_aviti.chr20.bam\" 'HG002' \"\$XP_DIR/hg002_chr20_50kb.bed\" \"\$XP_DIR/hg002_chr20_v421_eval.bed\" \"\$XP_DIR/hg002_chr20_ug_hcr_eval.bed\" \"\$TRUTH_HG2\" \"\$freq\"
+      run_chr20_3way_arm 'hg002_mgi_dnbseq'    'HG002_Germline' 0 \"\$REF_D1\"   \"\$SDF_D1\"   \"\$XP_DIR/hg002_mgi_dnbseq.chr20.bam\"    'HG002' \"\$XP_DIR/hg002_chr20_50kb.bed\" \"\$XP_DIR/hg002_chr20_v421_eval.bed\" \"\$XP_DIR/hg002_chr20_ug_hcr_eval.bed\" \"\$TRUTH_HG2\" \"\$freq\"
+      run_chr20_3way_arm 'hg002_ultima_ug100'  'HG002_Germline' 0 \"\$REF_D1\"   \"\$SDF_D1\"   \"\$XP_DIR/hg002_ultima_ug100.chr20.bam\"  'HG002' \"\$XP_DIR/hg002_chr20_50kb.bed\" \"\$XP_DIR/hg002_chr20_v421_eval.bed\" \"\$XP_DIR/hg002_chr20_ug_hcr_eval.bed\" \"\$TRUTH_HG2\" \"\$freq\"
+    done
+
+    # Also verify native CRAM streaming on Ultima UG100 chr20 (VarDictRust on .cram vs VarDictJava on .bam)
+    /usr/bin/time -v -o \"\$KEEP_DIR/hg002_ultima_ug100_cram_rust.time\" \
+      \"\$VR\" -G \"\$REF_D1\" -f 0.01 -N HG002 -b \"\$XP_DIR/hg002_ultima_ug100.chr20.cram\" -c 1 -S 2 -E 3 -g 4 -z -th 32 \"\$XP_DIR/hg002_chr20_50kb.bed\" > \"\$KEEP_DIR/hg002_ultima_ug100_cram_rust.vcf\"
+    python3 harness/compare_vcf.py --strict-bytes \"\$KEEP_DIR/hg002_ultima_ug100_f0.01_java.vcf\" \"\$KEEP_DIR/hg002_ultima_ug100_cram_rust.vcf\" --eps 1e-6 | tee \"\$KEEP_DIR/ultima_cram_vs_java_bam_compare.txt\"
+    grep -q '^MATCH' \"\$KEEP_DIR/ultima_cram_vs_java_bam_compare.txt\"
+
+    # --- Part A2: Somatic HG008 Full chr20 across 6 Short/Mid-Read Platforms (-f 0.01 and -f 0 with -U) ---
+    for freq in 0.01 0; do
+      run_chr20_3way_arm 'hg008_illumina'      'HG008_Somatic' 1 \"\$REF_GIAB\" \"\$SDF_GIAB\" \"\$XP_DIR/hg008_illumina_T.chr20.bam|\$XP_DIR/hg008_illumina_N.chr20.bam\"           'HG008-T|HG008-N' \"\$XP_DIR/hg008_chr20_50kb.bed\" \"\$XP_DIR/hg008_chr20_v04_eval.bed\" \"\$XP_DIR/hg008_chr20_ug_hcr_eval.bed\" \"\$TRUTH_HG8\" \"\$freq\" -U
+      run_chr20_3way_arm 'hg008_element_aviti' 'HG008_Somatic' 1 \"\$REF_GIAB\" \"\$SDF_GIAB\" \"\$XP_DIR/hg008_element_aviti_T.chr20.bam|\$XP_DIR/hg008_element_aviti_N.chr20.bam\" 'HG008-T|HG008-N' \"\$XP_DIR/hg008_chr20_50kb.bed\" \"\$XP_DIR/hg008_chr20_v04_eval.bed\" \"\$XP_DIR/hg008_chr20_ug_hcr_eval.bed\" \"\$TRUTH_HG8\" \"\$freq\" -U
+      run_chr20_3way_arm 'hg008_pacbio_onso'   'HG008_Somatic' 1 \"\$REF_GIAB\" \"\$SDF_GIAB\" \"\$XP_DIR/hg008_pacbio_onso_T.chr20.bam|\$XP_DIR/hg008_pacbio_onso_N.chr20.bam\"     'HG008-T|HG008-N' \"\$XP_DIR/hg008_chr20_50kb.bed\" \"\$XP_DIR/hg008_chr20_v04_eval.bed\" \"\$XP_DIR/hg008_chr20_ug_hcr_eval.bed\" \"\$TRUTH_HG8\" \"\$freq\" -U
+      run_chr20_3way_arm 'hg008_roche_sbx'     'HG008_Somatic' 1 \"\$REF_D1\"   \"\$SDF_D1\"   \"\$XP_DIR/hg008_roche_sbx_T.chr20.bam|\$XP_DIR/hg008_roche_sbx_N.chr20.bam\"         'HG008-T|HG008-N' \"\$XP_DIR/hg008_chr20_50kb.bed\" \"\$XP_DIR/hg008_chr20_v04_eval.bed\" \"\$XP_DIR/hg008_chr20_ug_hcr_eval.bed\" \"\$TRUTH_HG8\" \"\$freq\" -U
+      run_chr20_3way_arm 'hg008_ultima_ppmseq' 'HG008_Somatic' 1 \"\$REF_D1\"   \"\$SDF_D1\"   \"\$XP_DIR/hg008_ultima_ppmseq_T.chr20.bam|\$XP_DIR/hg008_ultima_ppmseq_N.chr20.bam\" 'HG008-T|HG008-N' \"\$XP_DIR/hg008_chr20_50kb.bed\" \"\$XP_DIR/hg008_chr20_v04_eval.bed\" \"\$XP_DIR/hg008_chr20_ug_hcr_eval.bed\" \"\$TRUTH_HG8\" \"\$freq\" -U
+      run_chr20_3way_arm 'hg008_ultima_ug100'  'HG008_Somatic' 1 \"\$REF_GIAB\" \"\$SDF_GIAB\" \"\$XP_DIR/hg008_ultima_ug100_T.chr20.bam|\$XP_DIR/hg008_ultima_ug100_N.chr20.bam\"   'HG008-T|HG008-N' \"\$XP_DIR/hg008_chr20_50kb.bed\" \"\$XP_DIR/hg008_chr20_v04_eval.bed\" \"\$XP_DIR/hg008_chr20_ug_hcr_eval.bed\" \"\$TRUTH_HG8\" \"\$freq\" -U
+    done
+
+    # --- Part B: Somatic Singleton Noise Floor Sweep (-f 0.01 -r 2 vs -f 0 -r 2 vs -f 0 -r 1 on chr1 r1..r3) ---
+    NOISE_TSV=\"\$KEEP_DIR/cross_platform_f0_noise_floor.tsv\"
+    printf 'platform\tregime\ttotal_candidates\tpass_somatic\trust_vs_java_parity\n' > \"\$NOISE_TSV\"
+    for item in \
+      \"Element_AVITI_111x|\$REF_GIAB|\$XP_DIR/hg008_element_aviti_T.r123.bam|\$XP_DIR/hg008_element_aviti_N.r123.bam\" \
+      \"PacBio_Onso_136x|\$REF_GIAB|\$XP_DIR/hg008_pacbio_onso_T.r123.bam|\$XP_DIR/hg008_pacbio_onso_N.r123.bam\" \
+      \"Illumina_195x|\$REF_GIAB|\$XP_DIR/hg008_illumina_T.r123.bam|\$XP_DIR/hg008_illumina_N.r123.bam\" \
+      \"Ultima_ppmSeq_157x|\$REF_D1|\$XP_DIR/hg008_ultima_ppmseq_T.r123.bam|\$XP_DIR/hg008_ultima_ppmseq_N.r123.bam\" \
+      \"Roche_SBX_119x|\$REF_D1|\$XP_DIR/hg008_roche_sbx_T.r123.bam|\$XP_DIR/hg008_roche_sbx_N.r123.bam\" \
+      \"Ultima_UG100_306x|\$REF_GIAB|\$XP_DIR/hg008_ultima_ug100_T.r123.bam|\$XP_DIR/hg008_ultima_ug100_N.r123.bam\"
+    do
+      IFS='|' read -r plat ref tb nb <<<\"\$item\"
+      for reg_spec in 'f0.01_r2|-f 0.01 -r 2' 'f0_r2|-f 0 -r 2' 'f0_r1|-f 0 -r 1'; do
+        reg_lbl=\"\${reg_spec%%|*}\"
+        reg_flags=\"\${reg_spec#*|}\"
+        # shellcheck disable=SC2086
+        \"\$VR\" -G \"\$ref\" -N 'HG008-T|HG008-N' -b \"\${tb}|\${nb}\" -c 1 -S 2 -E 3 -g 4 -z -th 16 \$reg_flags \"\$XP_DIR/hg008_chr1_r123.bed\" > \"\$KEEP_DIR/nf_\${plat}_\${reg_lbl}_rust.vcf\"
+        # shellcheck disable=SC2086
+        bash harness/run_oracle.sh \"\$ref\" \"\${tb}|\${nb}\" \"\$XP_DIR/hg008_chr1_r123.bed\" \"\$KEEP_DIR/nf_\${plat}_\${reg_lbl}_java.vcf\" 'HG008-T|HG008-N' -z -th 16 \$reg_flags
+        tot=\$(grep -vc '^#' \"\$KEEP_DIR/nf_\${plat}_\${reg_lbl}_rust.vcf\" || true)
+        som=\$(grep -v '^#' \"\$KEEP_DIR/nf_\${plat}_\${reg_lbl}_rust.vcf\" | grep -cE 'PASS.*STATUS=(Strong|Likely)Somatic' || true)
+        if python3 harness/compare_vcf.py --strict-bytes \"\$KEEP_DIR/nf_\${plat}_\${reg_lbl}_java.vcf\" \"\$KEEP_DIR/nf_\${plat}_\${reg_lbl}_rust.vcf\" --eps 1e-6 >/dev/null 2>&1; then
+          par='STRICT_MATCH'
+        elif python3 harness/compare_vcf.py \"\$KEEP_DIR/nf_\${plat}_\${reg_lbl}_java.vcf\" \"\$KEEP_DIR/nf_\${plat}_\${reg_lbl}_rust.vcf\" --eps 1e-6 >/dev/null 2>&1; then
+          par='EPS_MATCH'
+        else
+          par='MISMATCH'
+        fi
+        printf '%s\t%s\t%s\t%s\t%s\n' \"\$plat\" \"\$reg_lbl\" \"\$tot\" \"\$som\" \"\$par\" | tee -a \"\$NOISE_TSV\"
+      done
+    done
+  "
 
   gcs_mark_done "STAGE5_DONE"
   gcs_write_heartbeat "stage5" "STAGE5_DONE" "COMPLETED"
@@ -3102,10 +3470,10 @@ EOF
 
   # Upload consolidated sweep summary table to GCS
   if [ -f "${WORK_DIR}/cells/v103_sweep_summary.tsv" ]; then
-    gcs_upload "${WORK_DIR}/cells/v103_sweep_summary.tsv" "${GCS_RESULTS}/cells-v104/v104_sweep_summary.tsv" || true
+    gcs_upload "${WORK_DIR}/cells/v103_sweep_summary.tsv" "${GCS_RESULTS}/cells-v105/v105_sweep_summary.tsv" || true
   fi
-  gcs_mark_done "SWEEP_V104_DONE"
-  gcs_write_heartbeat "sweep" "SWEEP_V104_DONE" "COMPLETED"
+  gcs_mark_done "SWEEP_V105_DONE"
+  gcs_write_heartbeat "sweep" "SWEEP_V105_DONE" "COMPLETED"
 }
 
 run_worker() {
@@ -3165,7 +3533,7 @@ run_controller() {
   local done_marker="ALL_STAGES"
   local keep_vm_on_done=0
   if [ "$worker_stage" = "sweep" ]; then
-    done_marker="SWEEP_V104_DONE"
+    done_marker="SWEEP_V105_DONE"
     keep_vm_on_done="${KEEP_VM_ON_SWEEP_DONE:-1}"
   elif [ "$worker_stage" = "5" ]; then
     done_marker="STAGE5_DONE"
@@ -3372,8 +3740,8 @@ run_plan_check() {
   [[ "$cmd3" != *"--maintenance-policy=TERMINATE"* ]] || { echo "FAIL: STANDARD cmd must not set maintenance-policy=TERMINATE" >&2; exit 1; }
 
   # Verify audit fixes in script text: exact mkbed(), symmetric n=3 Java loops, 13-mode sweep, Fig-2/Fig-3 field callers, 3-way scaling
-  [ "$EXPECTED_FP" = "552856835a1eec01" ] || { echo "FAIL: EXPECTED_FP '$EXPECTED_FP' != 552856835a1eec01" >&2; exit 1; }
-  [[ "$GCS_CKPT" == */checkpoints-v104 ]] || { echo "FAIL: GCS_CKPT '$GCS_CKPT' does not end with /checkpoints-v104" >&2; exit 1; }
+  [ "$EXPECTED_FP" = "d925892846918c2a" ] || { echo "FAIL: EXPECTED_FP '$EXPECTED_FP' != d925892846918c2a" >&2; exit 1; }
+  [[ "$GCS_CKPT" == */checkpoints-v105 ]] || { echo "FAIL: GCS_CKPT '$GCS_CKPT' does not end with /checkpoints-v105" >&2; exit 1; }
   grep -Fq 'samtools view -F 0x904 -q 1' "$0" || { echo "FAIL: missing exact samtools view -F 0x904 -q 1 mkbed()" >&2; exit 1; }
   grep -Fq 'java_var_th${th}_run\${run}.time' "$0" || { echo "FAIL: missing symmetric n=3 Java Tier-P loop" >&2; exit 1; }
   grep -Fq 's2_tierp_mode_parity_sweep' "$0" || { echo "FAIL: missing s2_tierp_mode_parity_sweep cell" >&2; exit 1; }
@@ -3398,6 +3766,8 @@ run_plan_check() {
   grep -Fq 's5_wgs_hg008_full_giab_3way_th32' "$0" || { echo "FAIL: missing s5_wgs_hg008_full_giab_3way_th32" >&2; exit 1; }
   grep -Fq 's5_grch38_field_callers_truth' "$0" || { echo "FAIL: missing s5_grch38_field_callers_truth" >&2; exit 1; }
   grep -Fq 's5_h4_maintenance_security_matrix' "$0" || { echo "FAIL: missing s5_h4_maintenance_security_matrix" >&2; exit 1; }
+  grep -Fq 's5_stage_cross_platform_chr20' "$0" || { echo "FAIL: missing s5_stage_cross_platform_chr20" >&2; exit 1; }
+  grep -Fq 's5_cross_platform_short_read_chr20_panel' "$0" || { echo "FAIL: missing s5_cross_platform_short_read_chr20_panel" >&2; exit 1; }
 
   local tmp
   tmp="$(mktemp -d)"
