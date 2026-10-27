@@ -172,7 +172,7 @@ else
       fail=1
     fi
   done
-  dep_oid=$(git show "HEAD:Cargo.toml" | sed 's/noodles = { version = "0.117"/noodles = { version = "0.118"/' | normalize_gate_blob Cargo.toml | git hash-object -t blob --stdin)
+  dep_oid=$(git show "HEAD:Cargo.toml" | sed -E 's/(noodles = \{ version = ")[^"]+(")/\199.99.99\2/' | normalize_gate_blob Cargo.toml | git hash-object -t blob --stdin)
   base_cargo_oid=$(git show "HEAD:Cargo.toml" | normalize_gate_blob Cargo.toml | git hash-object -t blob --stdin)
   if [ "$dep_oid" = "$base_cargo_oid" ]; then
     echo "FAIL: normalize_gate_blob(Cargo.toml) did not change OID when dependency version changed" >&2

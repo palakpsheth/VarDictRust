@@ -25,7 +25,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Harden GitHub Actions Runner
-        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.10.4
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
         with:
           egress-policy: audit
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -36,7 +36,7 @@ jobs:
       - name: Cache Rust Workspace
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Cache Pinned Oracle & C++ Golden Store
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: scratch/golden-store
           key: golden-store-v1-${{ hashFiles('benchmarks/env/vardict-oracle.yml', 'harness/run_oracle.sh', 'harness/run_cpp.sh', 'harness/golden_store.py', 'harness/golden_store.sh', 'harness/slices.tsv') }}
