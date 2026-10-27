@@ -56,10 +56,16 @@ ck "acceptance.sh runs engine_behavior (--release)" grep -q 'cargo test --releas
 ck "acceptance.sh runs robustness (--release)" grep -q 'cargo test --release -p vardictrust --test robustness' harness/acceptance.sh
 
 # 6. pre-push expanded path detection & diff base fallback
-for pat in '\.github/' '\.githooks/' '\.agents/' 'fixtures/' 'golden/' 'benchmarks/evidence/'; do
-  ck "pre-push CODE_CHANGES matches $pat" grep -q "$pat" .githooks/pre-push
+for pat in '\.github/' '\.githooks/' '\.agents/' 'fixtures/' 'golden/' 'benchmarks/evidence/' 'deny\.toml' '\.cargo/'; do
+  ck "pre-push CODE_CHANGES matches $pat" grep -Fq "$pat" .githooks/pre-push
 done
 ck "pre-push has main...local_oid fallback" grep -q 'main\.\.\."\$local_oid"' .githooks/pre-push
+
+# 6b. Supply-chain checks (cargo deny & cargo audit) in pre-commit, pr_check.sh, and acceptance.sh
+for f in .githooks/pre-commit harness/pr_check.sh harness/acceptance.sh; do
+  ck "$f invokes cargo deny --all-features check advisories licenses bans sources" grep -q -- '--all-features check advisories licenses bans sources' "$f"
+  ck "$f invokes cargo audit" grep -q 'cargo audit' "$f"
+done
 
 # 7. Git-2.34-compatible 3-way merge-tree conflict guard in pre-push and pr_check.sh
 for f in .githooks/pre-push harness/pr_check.sh; do

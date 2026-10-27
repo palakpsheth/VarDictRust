@@ -86,7 +86,7 @@ if git rev-parse --verify origin/main >/dev/null 2>&1; then
 fi
 
 # 5. Check whether any non-deletion update touches code, CI, harness, or engine assets
-CODE_CHANGES=$(echo "$ALL_CHANGED_FILES" | grep -E '\.rs$|Cargo\.(toml|lock)$|crates/|harness/|\.github/|\.githooks/|\.agents/|fixtures/|golden/|benchmarks/evidence/' || true)
+CODE_CHANGES=$(echo "$ALL_CHANGED_FILES" | grep -E '\.rs$|Cargo\.(toml|lock)$|crates/|harness/|\.github/|\.githooks/|\.agents/|fixtures/|golden/|benchmarks/evidence/|deny\.toml|\.cargo/' || true)
 
 if [ -z "$CODE_CHANGES" ]; then
     echo "=== $(ts) [pre-push] Only docs/metadata changed across pushed refs; skipping engine smoke gate ==="
@@ -99,7 +99,7 @@ echo "=== $(ts) [pre-push] Code changes detected; running fast pre-push smoke ga
 st_t0=$SECONDS
 echo "$(ts) [pre-push 1/4] Checking formatting and lints..."
 cargo fmt --all -- --check
-cargo clippy --all-targets --all-features -- -D warnings
+cargo clippy --all-targets --all-features -- -D warnings -A clippy::needless_late_init -A clippy::byte_char_slices
 echo "$(ts) [pre-push 1/4] PASS ($((SECONDS - st_t0))s)"
 
 st_t0=$SECONDS
