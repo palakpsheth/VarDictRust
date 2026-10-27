@@ -20,7 +20,7 @@
     "max_rss_kb": "310920",
     "wall": "0:21.96"
   },
-  "date": "2026-10-26T12:38:07-07:00",
+  "date": "2026-10-26T16:24:30-07:00",
   "extra": {
     "cpp_chunk": "50000",
     "cpp_head": [
@@ -47,11 +47,11 @@
       ],
       "hit": 2,
       "live": 0,
-      "run": "compare-2396125-1793043447"
+      "run": "compare-2955514-1793056978"
     }
   },
-  "fingerprint": "33bc15964cc36b6d",
-  "head": "e7e01cef2a523847cb3e3bc58cc6acdb4429ccb6",
+  "fingerprint": "08b397ab1d32e857",
+  "head": "b90c84ef1c1ea398ff9785f7ac38040302618fd0",
   "java_time": {
     "exit": "0",
     "max_rss_kb": "3455016",
@@ -62,7 +62,7 @@
   "result": "MATCH",
   "rust_time": {
     "exit": "0",
-    "max_rss_kb": "301708",
-    "wall": "0:38.03"
+    "max_rss_kb": "285644",
+    "wall": "1:26.72"
   }
 }

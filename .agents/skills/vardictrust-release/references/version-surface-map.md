@@ -21,11 +21,11 @@ Reference companion for [`.agents/skills/vardictrust-release/SKILL.md`](../SKILL
 | 9 | `harness/run_self_tests.sh` | `# VarDictRust vX.Y.Z — Harness Self-Test Runner` | Header version banner |
 | 10 | `docs/release/vX.Y.Z-pr.md` | `# VarDictRust \`vX.Y.Z\` — Release Certification` | Release certification dossier (`FP`, `PERF_FP`, test counts, 4-channel checklist) |
 | 11 | `README.md` | Badge `release-vX.Y.Z`, `vX.Y.Z` validation link, and `293` test breakdown (`241 + 2 + 2 + 15 + 33`) | Main repository landing page |
-| 12 | `DIVERGENCES.md` | `VarDictRust_vX.Y.Z`, `293 PASS` (`241 PASS` core lib), `3.48x speedup, 1.22x flat RSS`, `33bc15964cc36b6d` | Empirical divergence & certification summary |
+| 12 | `DIVERGENCES.md` | `VarDictRust_vX.Y.Z`, `293 PASS` (`241 PASS` core lib), `3.48x speedup, 1.22x flat RSS`, `08b397ab1d32e857` | Empirical divergence & certification summary |
 | 13 | `CONTRIBUTING.md` | `293` workspace tests (`§4.1`), `aarch64-unknown-linux-musl` (`§9.1`), and `.agents/skills/` runbook links | Contributor & release guide |
 | 14 | `benchmarks/README.md` | `Certified in \`vX.Y.Z\`` and link to `docs/release/vX.Y.Z-pr.md` | Benchmark scoreboard header |
-| 15 | `docs/testing/test-matrix-and-ci-audit.md` | `vX.Y.Z`, `293` workspace tests (`241` core lib + `2` `amplicon_stream_mem` + `2` `cram_stack` + `15` bin + `33` integration), `33bc15964cc36b6d` | Testing matrix & CI audit specification |
-| 16 | `docs/validation/omnibus-empirical-validation.md` | `Release \`vX.Y.Z\`` header, `33bc15964cc36b6d`, and §13 16-file SHA-256 manifest | Omnibus empirical validation report |
+| 15 | `docs/testing/test-matrix-and-ci-audit.md` | `vX.Y.Z`, `293` workspace tests (`241` core lib + `2` `amplicon_stream_mem` + `2` `cram_stack` + `15` bin + `33` integration), `08b397ab1d32e857` | Testing matrix & CI audit specification |
+| 16 | `docs/validation/omnibus-empirical-validation.md` | `Release \`vX.Y.Z\`` header, `08b397ab1d32e857`, and §13 16-file SHA-256 manifest | Omnibus empirical validation report |
 | 17 | `mkdocs.yml`, `wiki/Home.md`, & `wiki/_Sidebar.md` | `Release vX.Y.Z Certification: docs/release/vX.Y.Z-pr.md`, `vX.Y.Z` links, and `293` workspace tests | ReadTheDocs navigation & GitHub Wiki |
 
 ---
