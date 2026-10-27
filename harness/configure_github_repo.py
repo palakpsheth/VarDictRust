@@ -53,11 +53,15 @@ def configure_metadata():
         "homepage": "https://rewrites.bio",
         "has_issues": True,
         "has_projects": False,
-        "has_wiki": False,
+        "has_wiki": True,
         "allow_squash_merge": True,
         "allow_merge_commit": True,
         "allow_rebase_merge": True,
-        "delete_branch_on_merge": False,
+        "delete_branch_on_merge": True,
+        "security_and_analysis": {
+            "secret_scanning_non_provider_patterns": {"status": "enabled"},
+            "secret_scanning_validity_checks": {"status": "enabled"},
+        },
     }
     res = api_request("", method="PATCH", data=payload)
     print(f"  ✓ Description: {res.get('description')}")
@@ -109,10 +113,11 @@ def configure_branch_protection():
         "required_status_checks": {
             "strict": True,
             "contexts": [
-                "check",
+                "Build, Unit, Integration, Parity & Coverage Gate",
+                "Dual-Engine Differential Parity (Tier-2)",
                 "Security & Supply-Chain Scan",
+                "MkDocs Strict Build Gate",
                 "plan",
-                "differential",
             ],
         },
         "enforce_admins": False,
@@ -123,7 +128,7 @@ def configure_branch_protection():
             "require_last_push_approval": False,
         },
         "restrictions": None,
-        "required_linear_history": False,
+        "required_linear_history": True,
         "allow_force_pushes": False,
         "allow_deletions": False,
         "block_creations": False,

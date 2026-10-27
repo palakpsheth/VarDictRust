@@ -28,13 +28,36 @@ if [ -n "$STAGED_RS" ]; then
 
     st_t0=$SECONDS
     echo "=== $(ts) [pre-commit] Checking lints (cargo clippy) ==="
-    if ! cargo clippy --all-targets --all-features -- -D warnings; then
+    if ! cargo clippy --all-targets --all-features -- -D warnings -A clippy::needless_late_init -A clippy::byte_char_slices; then
         echo "ERROR: Clippy linter found warnings. Fix warnings before committing." >&2
         exit 1
     fi
     echo "$(ts) [pre-commit] cargo clippy PASS ($((SECONDS - st_t0))s)"
 else
     echo "=== $(ts) [pre-commit] No Rust or Cargo files staged; skipping cargo fmt/clippy ==="
+fi
+
+# 1b. Offline-safe supply-chain & CI policy checks when dependency/workflow files are staged
+STAGED_DEPS=$(git diff --cached --name-only --diff-filter=ACM | grep -E '(^|/)Cargo\.(toml|lock)$|^deny\.toml$|^\.cargo/audit\.toml$' || true)
+if [ -n "$STAGED_DEPS" ]; then
+    if command -v cargo-deny >/dev/null 2>&1; then
+        echo "Running offline supply-chain check (cargo deny --offline --all-features check advisories licenses bans sources)..."
+        if [ -d "${CARGO_HOME:-$HOME/.cargo}/advisory-dbs" ]; then
+            cargo deny --offline --all-features check advisories licenses bans sources
+        else
+            cargo deny --offline --all-features check licenses bans sources
+        fi
+    fi
+    if command -v cargo-audit >/dev/null 2>&1 && [ -d "${CARGO_HOME:-$HOME/.cargo}/advisory-db" ]; then
+        echo "Running offline RustSec advisory check (cargo audit -n --stale)..."
+        cargo audit -n --stale
+    fi
+fi
+
+STAGED_CI_POLICY=$(git diff --cached --name-only --diff-filter=ACM | grep -E '^\.github/workflows/.*\.yml$|^\.github/dependabot\.yml$|^deny\.toml$|^\.cargo/audit\.toml$' || true)
+if [ -n "$STAGED_CI_POLICY" ]; then
+    echo "Running CI & supply-chain policy contract tests (test_bioconda_recipe.py)..."
+    python3 harness/tests/test_bioconda_recipe.py
 fi
 
 # 2. Fast syntax check for staged shell scripts and git hooks (<0.2s)

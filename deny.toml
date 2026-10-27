@@ -1,6 +1,8 @@
-# cargo-deny — minimal gate: security advisories + license compliance.
-# Run: cargo deny check advisories licenses bans
-# (P4e-lite: no sources section yet — add when dependency policy hardens.)
+# cargo-deny — supply-chain gate: advisories, licenses, crate bans, and source registries.
+# Run: cargo deny --all-features check advisories licenses bans sources
+
+[graph]
+all-features = true
 
 [bans]
 # AGENTS §13: banned/hallucinated crates must fail the gate.
@@ -36,3 +38,9 @@ confidence-threshold = 0.8
 exceptions = [
     { allow = ["CDDL-1.0"], crate = "inferno" },
 ]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

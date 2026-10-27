@@ -407,7 +407,7 @@ The runner dynamically discovers and executes:
 Level 7 aggregates all lower levels into a two-tier verification lifecycle separating rapid per-PR verification from release-cut evidence certification:
 
 1. **Inner Developer Loop ([`harness/rgate.sh`](../../harness/rgate.sh)):** Fast-feedback developer loop (<15s) running formatting, Clippy, workspace tests, 92-fixture corpus (8 workers), and parallel micro/slice differential validation.
-2. **Tier A — Pre-PR Regression Gate ([`harness/pr_check.sh`](../../harness/pr_check.sh)):** Mandatory 6-stage per-PR gate running Hygiene (416 workspace tests), Crash Robustness, Level 2 Corpus (91/1 signature across 8 workers), Level 3 Parity (`micro`, `s1a..s9`, 17-modality extended coverage `--no-record`, 18-slice multimodal suite `--no-record`), Level 5 Performance Budget, and Gitleaks secret scanning (<25s) without rewriting committed `benchmarks/evidence/*.json` files.
+2. **Tier A — Pre-PR Regression Gate ([`harness/pr_check.sh`](../../harness/pr_check.sh)):** Mandatory 6-stage per-PR gate running Hygiene (416 workspace tests), Crash Robustness, Level 2 Corpus (91/1 signature across 8 workers), Level 3 Parity (`micro`, `s1a..s9`, 17-modality extended coverage `--no-record`, 18-slice multimodal suite `--no-record`), Level 5 Performance Budget, and Security & Supply-Chain Hygiene (`gitleaks`, `cargo deny --all-features check advisories licenses bans sources`, and `cargo audit`) (<25s) without rewriting committed `benchmarks/evidence/*.json` files.
 3. **Tier B — Master Release Recertification & Acceptance Gate ([`harness/recertify.sh`](../../harness/recertify.sh) & [`harness/acceptance.sh`](../../harness/acceptance.sh)):** Executed when cutting a release (`release/vX.Y.Z`) or certifying a milestone baseline. `recertify.sh` refreshes all 15 non-scale `benchmarks/evidence/*.json` files (reusing pinned `VarDictJava`/`vardictcpp` baselines and cached `rtg vcfeval` results), updates documentation SHA-256/fingerprint tables (`harness/sync_evidence_docs.py`), and runs `acceptance.sh` across all 8 release items. Every item is strictly PASS or FAIL — there is no waiver mechanism.
 
 ---
@@ -431,8 +431,8 @@ VarDictRust utilizes 6 automated GitHub Actions workflows with strict security h
 
 ### 10.2 Security & Supply Chain Scans (`.github/workflows/security.yml`)
 - **Gitleaks Secret Scanning:** executes `gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e` (`# v3.0.0`) with `fetch-depth: 0` across full git commit history.
-- **Supply Chain Advisories & Licenses:** runs `cargo deny check advisories licenses bans` via `taiki-e/install-action@v2`.
-- **RustSec & Clippy SARIF Audit:** runs `cargo audit`, uploads Clippy SARIF results, and writes stage status to `$GITHUB_STEP_SUMMARY`.
+- **Supply Chain Advisories, Licenses, Bans & Sources:** runs `cargo deny --all-features check advisories licenses bans sources` (configured via `deny.toml`) via `taiki-e/install-action`.
+- **RustSec & Clippy SARIF Audit:** runs `cargo audit` (configured via `.cargo/audit.toml`), uploads Clippy SARIF results, and writes stage status to `$GITHUB_STEP_SUMMARY`.
 
 <a id="103-release-packaging--slsa-level-3-githubworkflowsreleaseyml"></a>
 ### 10.3 Release Packaging & SLSA Level 3 (`.github/workflows/release.yml`)

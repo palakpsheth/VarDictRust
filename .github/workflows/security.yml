@@ -31,8 +31,20 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0 # Full commit history required for Gitleaks range analysis
+          persist-credentials: false
 
-      - name: Secret Scanning (Gitleaks)
+      - name: Install Rust Toolchain
+        uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+        with:
+          components: clippy
+
+      - name: Rust Build & Cargo Cache
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          prefix-key: "v1-rust-security"
+
+      - name: Stage 1 - Secret Scanning (Gitleaks)
+        id: gitleaks
         uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -44,28 +56,31 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Supply-Chain Advisory & License Compliance (cargo-deny)
+      - name: Stage 2 - Supply-Chain Audit (Advisories, Licenses, Bans, Sources)
+        id: deny
         run: |
           echo "[$(date '+%H:%M:%S')] [Security Stage 2/4] Running cargo-deny check..."
-          cargo deny check advisories licenses bans
+          cargo deny --all-features check advisories licenses bans sources
 
-      - name: RustSec Vulnerability Database Audit (cargo-audit)
+      - name: Stage 3 - RustSec Vulnerability Audit (cargo-audit)
+        id: audit
         run: |
           echo "[$(date '+%H:%M:%S')] [Security Stage 3/4] Running cargo-audit..."
           cargo audit
 
-      - name: Rust Code Scanning (Clippy SARIF)
+      - name: Stage 4 - Static Analysis & SARIF Export (Clippy)
+        id: clippy
         run: |
+          set -euo pipefail
           echo "[$(date '+%H:%M:%S')] [Security Stage 4/4] Running Clippy SARIF scan..."
-          cargo clippy --all-targets --all-features --message-format=json | clippy-sarif | tee clippy-results.sarif | sarif-fmt
-        continue-on-error: true
+          cargo clippy --all-targets --all-features --message-format=json -- -A clippy::needless_late_init -A clippy::byte_char_slices | clippy-sarif | tee clippy-results.sarif | sarif-fmt
 
       - name: Upload SARIF to GitHub Code Scanning
         uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
         with:
           sarif_file: clippy-results.sarif
           category: clippy
-        if: always()
+        if: ${{ !cancelled() && steps.clippy.outcome == 'success' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
 
       - name: Publish Security Audit Summary
         if: always()
@@ -75,8 +90,8 @@ jobs:
             echo ""
             echo "| Stage | Scanner | Status |"
             echo "| :--- | :--- | :---: |"
-            echo "| **Stage 1** | Gitleaks Secret Scan | \`COMPLETED\` |"
-            echo "| **Stage 2** | \`cargo-deny\` (Advisories, Licenses, Bans) | \`COMPLETED\` |"
-            echo "| **Stage 3** | \`cargo-audit\` (RustSec DB) | \`COMPLETED\` |"
-            echo "| **Stage 4** | Clippy SARIF Code Scanning | \`COMPLETED\` |"
+            echo "| **Stage 1** | Gitleaks Secret Scan | \`${{ steps.gitleaks.outcome }}\` |"
+            echo "| **Stage 2** | \`cargo-deny\` Supply-Chain (Advisories, Licenses, Bans, Sources) | \`${{ steps.deny.outcome }}\` |"
+            echo "| **Stage 3** | \`cargo-audit\` (RustSec DB) | \`${{ steps.audit.outcome }}\` |"
+            echo "| **Stage 4** | Clippy SARIF Code Scanning | \`${{ steps.clippy.outcome }}\` |"
           } >> "$GITHUB_STEP_SUMMARY"

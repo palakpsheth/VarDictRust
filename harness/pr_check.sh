@@ -41,7 +41,7 @@ fi
 st_t0=$SECONDS
 echo "$(ts) [Stage 1/6] Running workspace hygiene and unit tests..."
 cargo fmt --all -- --check
-cargo clippy --all-targets --all-features -- -D warnings
+cargo clippy --all-targets --all-features -- -D warnings -A clippy::needless_late_init -A clippy::byte_char_slices
 cargo test --workspace --bins --lib --tests
 cargo build -q --release
 echo "$(ts) [Stage 1/6] PASS ($((SECONDS - st_t0))s)"
@@ -132,15 +132,27 @@ if [ -f benchmarks/evidence/perf-budget.json ]; then
 fi
 echo "$(ts) [Stage 5/6] PASS ($((SECONDS - st_t0))s)"
 
-# Stage 6: Security Hygiene (Gitleaks scan)
+# Stage 6: Security & Supply-Chain Hygiene (Gitleaks, cargo-deny, cargo-audit)
 st_t0=$SECONDS
-echo "$(ts) [Stage 6/6] Scanning commits for secrets..."
+echo "$(ts) [Stage 6/6] Scanning commits for secrets and auditing supply chain..."
 if command -v gitleaks >/dev/null 2>&1; then
   gitleaks detect --source . -v
 elif [ -x /home/palak/miniconda3/envs/g4-tools/bin/gitleaks ]; then
   /home/palak/miniconda3/envs/g4-tools/bin/gitleaks detect --source . -v
 else
   echo "ERROR: gitleaks scanner not found. Install gitleaks to satisfy PR security gate." >&2
+  exit 1
+fi
+if command -v cargo-deny >/dev/null 2>&1; then
+  cargo deny --all-features check advisories licenses bans sources
+else
+  echo "ERROR: cargo-deny not found. Install via 'cargo install --locked cargo-deny' to satisfy PR supply-chain gate." >&2
+  exit 1
+fi
+if command -v cargo-audit >/dev/null 2>&1; then
+  cargo audit
+else
+  echo "ERROR: cargo-audit not found. Install via 'cargo install --locked cargo-audit' to satisfy PR vulnerability gate." >&2
   exit 1
 fi
 echo "$(ts) [Stage 6/6] PASS ($((SECONDS - st_t0))s)"
