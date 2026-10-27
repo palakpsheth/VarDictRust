@@ -596,7 +596,7 @@ run_stage_1() {
     if [ -s "$KEEP_DIR/java.vcf" ] && [ -s "$KEEP_DIR/java.time" ]; then
       /usr/bin/time -v -o "$KEEP_DIR/rust.time" \
         target/release/vardictrust -G "$DATA_DIR/amplicon/ref.fa" -f 0.01 -N SAMPLE \
-        -b "$DATA_DIR/amplicon/amplicon.bam" -z -a 10:0.95 -th 8 "$DATA_DIR/amplicon/correct_8columns_amplicon.bed" > "$KEEP_DIR/rust.vcf"
+        -b "$DATA_DIR/amplicon/amplicon.bam" -c 1 -S 2 -E 3 -g 4 -z -a 10:0.95 -th 8 "$DATA_DIR/amplicon/correct_8columns_amplicon.bed" > "$KEEP_DIR/rust.vcf"
       python3 harness/compare_vcf.py "$KEEP_DIR/java.vcf" "$KEEP_DIR/rust.vcf" | tee "$KEEP_DIR/compare.txt"
       grep -q "^MATCH" "$KEEP_DIR/compare.txt"
     else
@@ -1235,7 +1235,7 @@ run_stage_4() {
           [ -s "$KEEP_DIR/amplicon/cpp_run${run}.time" ] && cp -f "$KEEP_DIR/amplicon/cpp_run${run}.time" "$KEEP_DIR/amplicon/cpp.time" || true
           taskset -c 0-7 /usr/bin/time -v -o "$KEEP_DIR/amplicon/rust.time" \
             target/release/vardictrust -G "$DATA_DIR/amplicon/ref.fa" -f 0.01 -N SAMPLE \
-            -b "$DATA_DIR/amplicon/amplicon.bam" -z -a 10:0.95 -th 8 "$DATA_DIR/amplicon/correct_8columns_amplicon.bed" > "$KEEP_DIR/amplicon/rust.vcf"
+            -b "$DATA_DIR/amplicon/amplicon.bam" -c 1 -S 2 -E 3 -g 4 -z -a 10:0.95 -th 8 "$DATA_DIR/amplicon/correct_8columns_amplicon.bed" > "$KEEP_DIR/amplicon/rust.vcf"
           cp -f "$KEEP_DIR/amplicon/rust.time" "$KEEP_DIR/amplicon/rust_run${run}.time"
           python3 harness/compare_vcf.py "$KEEP_DIR/amplicon/java.vcf" "$KEEP_DIR/amplicon/rust.vcf" | tee "$KEEP_DIR/amplicon/compare.txt"
           grep -q "^MATCH" "$KEEP_DIR/amplicon/compare.txt"
