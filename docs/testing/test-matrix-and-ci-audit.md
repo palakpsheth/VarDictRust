@@ -430,7 +430,7 @@ VarDictRust utilizes 6 automated GitHub Actions workflows with strict security h
   5. `5. Corpus & Modality Parity Tests (110 Golden & Modality Cases)` (`id: parity-tests`): runs `corpus_parity` (110 tests across all 92 upstream corpus fixtures and 17 extended modalities).
   6. `6. Code Coverage Gate (cargo-llvm-cov >= 90% Lines)` (`id: coverage-gate`): aggregates coverage across steps 3–5 and enforces `--fail-under-lines 90`.
   7. `7. Harness Diagnostic Self-Tests (21 Zero-Conda Suites)` (`id: self-tests`): executes all 13 zero-conda shell self-tests and 8 stdlib Python test suites.
-  8. `8. Release Consistency, Performance Budget & Cleanliness Gate` (`id: governance-gate`): runs `check_release_consistency.py --phase pre-tag` (with `--require-head-fingerprint` on `release/*` PRs), `perf_budget.py`, `profile_catalog.py --validate-budgets`, and working-tree cleanliness verification.
+  8. `8. Release Consistency, Performance Budget & Cleanliness Gate` (`id: governance-gate`): runs `check_release_consistency.py --phase pre-tag` (with `--require-head-fingerprint` on `release/*` PRs), `perf_budget.py`, and working-tree cleanliness verification.
   9. `9. Publish CI Telemetry Summary`: writes step outcomes, durations, and total line coverage % to `$GITHUB_STEP_SUMMARY`.
 
 ### 10.2 Security & Supply Chain Scans (`.github/workflows/security.yml`)
