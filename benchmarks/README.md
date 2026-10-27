@@ -56,7 +56,7 @@ python3 harness/perf_budget.py hg008-tier2 seqc2-exome-tier2 hg002-tier2 amplico
 | **GIAB NA24385 b37 Truth** | [`na24385-b37-truth.json`](evidence/na24385-b37-truth.json) | [Tier-3](../docs/testing/test-matrix-and-ci-audit.md#tier-3) Concordance | NIST v4.2.1 Ashkenazi Son b37 | **$F_1 = 1.0000$** | **EQUAL** |
 | **Extended Modalities** | [`extended-coverage-tier2.json`](evidence/extended-coverage-tier2.json) | [Tier-2](../docs/testing/test-matrix-and-ci-audit.md#tier-2) Differential | 17 Modes (RNA `-i`, SVs, flags) | 4,993 variants | **MATCH** (0 diffs) |
 | **Multi-Modal Slices** | [`multimodal-slices-tier2.json`](evidence/multimodal-slices-tier2.json) | [Tier-2](../docs/testing/test-matrix-and-ci-audit.md#tier-2) Differential | 18 Slices across 6 Cohorts | 1,129 variants | **MATCH** (0 diffs) |
-| **Chromosome 1 Scaling** | [`scale.json`](evidence/scale.json) | [Tier-2](../docs/testing/test-matrix-and-ci-audit.md#tier-2) Scaling | Full chr1 Span (249 Mbp) | $S_8 = 3.48\times$, RSS 1.22× | **PASS** |
+| **Chromosome 1 Scaling** | [`scale.json`](evidence/scale.json) | [Tier-2](../docs/testing/test-matrix-and-ci-audit.md#tier-2) Scaling | Full chr1 Span (249 Mbp) | $S_8 = 3.13\times$, RSS 1.16× | **PASS** |
 | **Performance Budget** | [`perf-budget.json`](evidence/perf-budget.json) | Regression Gate | 4 Target Workload Regression | Wall/RAM gates | **PASS** |
 | **Musl CI Packaging** | [`musl-ci.json`](evidence/musl-ci.json) | Release Gate | Static PIE Linux Packaging | Bitwise identity | **PASS** |
 
@@ -64,25 +64,25 @@ python3 harness/perf_budget.py hg008-tier2 seqc2-exome-tier2 hg002-tier2 amplico
 
 ## 4. Whole Chromosome 1 Scaling & Flat Memory Footprint
 
-Evaluated via `harness/scale_bench.sh` on HCC1395 across all 248,956,422 bp of chromosome 1. Values below are the 3-run median certified evidence recorded in `scale.json` (`perf_fingerprint: 9f75643cf12aa988`).
+Evaluated via `harness/scale_bench.sh` on HCC1395 across all 248,956,422 bp of chromosome 1. Values below are the 3-run median certified evidence recorded in `scale.json` (`perf_fingerprint: b7decb95be6077f1`).
 
 ### Multi-Thread Parallel Speedup (chr1 full span, 3-run medians):
 | Threads (`-th`) | Wall Clock Time | Speedup Ratio |
 | :--- | :--- | :--- |
-| 1 core | 10m 49s (648.98 s) | 1.00× (baseline) |
-| 2 cores | 5m 35s (334.53 s) | 1.94× |
-| 4 cores | 3m 34s (214.34 s) | 3.03× |
-| 8 threads | 3m 06s (186.43 s) | **3.48× parallel** |
+| 1 core | 7m 29s (448.70 s) | 1.00× (baseline) |
+| 2 cores | 3m 51s (230.61 s) | 1.95× |
+| 4 cores | 2m 33s (153.36 s) | 2.93× |
+| 8 threads | 2m 24s (143.58 s) | **3.13× parallel** |
 
 ### Bounded Resident Memory vs Genomic Span (at `-th 8`, 3-run medians):
 | Genomic Span | Peak RSS |
 | :--- | :--- |
-| 1 Mbp | 473.8 MiB (485,124 KB) |
-| 10 Mbp | 1.16 GiB (1,221,380 KB) |
-| 100 Mbp | 1.19 GiB (1,251,856 KB) |
-| 249 Mbp (Full chr1) | **1.42 GiB (1,493,656 KB)** |
+| 1 Mbp | 547.2 MiB (560,332 KB) |
+| 10 Mbp | 1.18 GiB (1,239,924 KB) |
+| 100 Mbp | 1.19 GiB (1,250,200 KB) |
+| 249 Mbp (Full chr1) | **1.38 GiB (1,443,200 KB)** |
 
-**Observed RSS Ratio (249 Mbp vs 10 Mbp): 1.22×** (Passing pre-registered threshold $\le 1.5\times$). Memory remains bounded across deep genomic spans via tiled execution with boundary halo deduplication.
+**Observed RSS Ratio (249 Mbp vs 10 Mbp): 1.16×** (Passing pre-registered threshold $\le 1.5\times$). Memory remains bounded across deep genomic spans via tiled execution with boundary halo deduplication.
 
 Pinned **vardictcpp 3 `hc52dbad_0`** runs beside each loop above (`harness/scale_bench.sh` via `harness/run_cpp.sh`, advisory only): per-thread cpp wall (`cpp_wall_s`, exome BED workload) and per-span cpp RSS (`cpp_maxrss_kb`, `-R` full-span workload with `--chunk 50000 -th 8`) land separately in `scale.json` `extra` — at `-th 8` BED wall 168.27 s, full-span (249 Mbp) chunked RSS 778.6 MiB (797,288 KB; unchunked `-R` uses 22.5 GB per [CPP-5](../docs/upstream-bugs.md#cpp-5)).
 
