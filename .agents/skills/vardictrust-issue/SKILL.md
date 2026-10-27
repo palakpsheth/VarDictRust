@@ -62,7 +62,7 @@ gh issue create --repo palakpsheth/VarDictRust \
   --label "<bug|enhancement>" \
   --body "$(cat <<'EOF'
 ### VarDictRust Version & Environment
-- **Version:** `vardictrust 1.0.4` (commit `<sha>`, engine fingerprint `<fp>`)
+- **Version:** `vardictrust 1.0.5` (commit `<sha>`, engine fingerprint `<fp>`)
 - **OS / Arch:** `<uname -srm>`
 - **Execution Mode:** `<Simple | Somatic | Amplicon | Splicing>` (`--fisher` / default)
 

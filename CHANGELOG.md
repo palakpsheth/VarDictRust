@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.5] - 2026-10-27
+
+### Added
+
+- First-class in-process `vardictrust-core` test suites (`crates/vardictrust-core/tests/corpus_parity.rs` [110 tests] and `crates/vardictrust-core/tests/engine_behavior.rs` [25 tests], `416` total workspace tests: `252` core lib + `110` `corpus_parity` + `25` `engine_behavior` + `2` `amplicon_stream_mem` + `2` `cram_stack` + `17` CLI bin + `8` CLI integration binary tests) enforced with a `>= 90%` `cargo-llvm-cov` line coverage gate in CI ([PR #49](https://github.com/palakpsheth/VarDictRust/pull/49)).
+- Public `vardictrust_core::run_with_writer` API for direct in-process streaming and testing without subprocess spawn overhead ([PR #49](https://github.com/palakpsheth/VarDictRust/pull/49)).
+- Supply-chain, CI workflow, and git hook hardening: `.cargo/audit.toml` (`cargo-audit` 0.22+ schema with `deny = ["warnings"]`), `deny.toml` (`[graph] all-features = true` and `[sources]` registry lockdowns), reusable `.github/actions/setup-conda-env` composite action, expanded `.github/dependabot.yml` across all 19 direct crate dependencies plus `/docs` pip dependencies, and offline-safe `cargo deny` / `cargo audit` checks in `.githooks/pre-commit`, `harness/pr_check.sh`, and `harness/acceptance.sh` ([PR #49](https://github.com/palakpsheth/VarDictRust/pull/49), [PR #51](https://github.com/palakpsheth/VarDictRust/pull/51)).
+- Automated documentation fingerprint and 16-file SHA-256 manifest synchronizer (`harness/sync_evidence_docs.py`) integrated into `harness/recertify.sh` ([PR #49](https://github.com/palakpsheth/VarDictRust/pull/49)).
+
+### Changed
+
+- Accelerated `VariationRealigner::find_35_match` via SWAR `u64` 8-byte word comparisons (`crates/vardictrust-core/src/realign.rs`), replaced eager CRAM slice vector buffering with streaming cached CRAM container decoding in `crates/vardictrust-core/src/bam.rs`, and borrowed single-allele somatic `Vars` in `crates/vardictrust-core/src/postprocess/somatic.rs` ([Issue #45](https://github.com/palakpsheth/VarDictRust/issues/45), [PR #46](https://github.com/palakpsheth/VarDictRust/pull/46)).
+- Added a synchronous single-thread runner fast-path (`num_threads == 1`) in `crates/vardictrust-core/src/runner.rs` and eliminated ~582,600 redundant per-region `stat()` syscalls on BAM metadata cache hits in `crates/vardictrust-core/src/bam.rs` ([PR #49](https://github.com/palakpsheth/VarDictRust/pull/49)).
+- Consolidated October 2026 dependency and GitHub Actions updates: bumped `noodles` (`0.117` $\to$ `0.118`), `noodles-bam` (`0.96` $\to$ `0.97`), `noodles-cram` (`0.100` $\to$ `0.101`), `noodles-fasta` (`0.67` $\to$ `0.68`), `noodles-sam` (`0.91` $\to$ `0.92`), `noodles-vcf` (`0.94` $\to$ `0.95`), `rustc-hash` (`1.1.0` $\to$ `2.1.3`), `lzma-rust2` (`0.21.0` $\to$ `0.22.0`), `clap_lex` (`1.1.0` $\to$ `1.1.1`), `libc` (`0.2.186` $\to$ `0.2.191`), `mkdocs` (`1.6.1`), `mkdocs-material` (`9.8.0`), `pymdown-extensions` (`12.3`), and SHA-pinned GitHub Actions (`step-security/harden-runner` `v2.22.2`, `taiki-e/install-action` `v2.87.31`, `actions/cache` `v6.1.0`, `actions/setup-python` `v7.1.0`, `github/codeql-action` `v4.39.1`) ([PR #52](https://github.com/palakpsheth/VarDictRust/pull/52), [PR #57](https://github.com/palakpsheth/VarDictRust/pull/57)).
+- Audited and compressed `README.md` with Progressive-JPEG layout, 5-channel installation instructions (including Seqera Wave container digests and Nextflow `nf-core/modules`), and verified CLI flag documentation ([PR #50](https://github.com/palakpsheth/VarDictRust/pull/50)).
+- Recertified all 16 release evidence artifacts in `benchmarks/evidence/*.json` under engine fingerprint `d925892846918c2a` (`perf_fingerprint` `b7decb95be6077f1`; `harness/acceptance.sh` 8/8 PASS) with 100% pinned `VarDictJava`/`vardictcpp` golden-store baseline reuse.
+
+### Fixed
+
+- Achieved **100% full-genome parity (`56,642 / 56,642` intervals, `8,111,171` variants, 0 diffs)** against **VarDictJava v1.8.3** across GIAB HG002 `chr1..chr22` ([Issue #47](https://github.com/palakpsheth/VarDictRust/issues/47), [PR #48](https://github.com/palakpsheth/VarDictRust/pull/48)):
+  - Preserved soft-clip `unused` state across `find_sv` (`<DEL>`, `<DUP>`, `<INV>`) and synchronized `find_conseq` soft-clip mutations back to the live `Sclip` entry via `sync_sclip_after_conseq` in `crates/vardictrust-core/src/sv.rs`, matching `StructuralVariantsProcessor.java:687-965`.
+  - Used `config.extension` (`-x`, default `0`) instead of `config.extension_nuc` (`-X`, default `3`) when computing reference seed fetch bounds in `crates/vardictrust-core/src/reference.rs` (`get_reference`), matching `ReferenceResource.java:85-89`.
+- Removed the `paths:` filter from `.github/workflows/differential.yml` so the required `Dual-Engine Differential Parity (Tier-2)` status check executes on every pull request ([PR #50](https://github.com/palakpsheth/VarDictRust/pull/50)).
+- Replaced hardcoded `noodles` version string matching in `harness/tests/test_evidence.sh` with a version-agnostic `sed -E` substitution ([PR #57](https://github.com/palakpsheth/VarDictRust/pull/57)).
+
 ## [1.0.4] - 2026-10-25
 
 ### Fixed
@@ -288,7 +313,8 @@ Robustness improvements by design (no valid-input output changes relative to Var
 - Correct `##contig` lengths from the `.fai` ([VarDictJava#320](https://github.com/AstraZeneca-NGS/VarDictJava/issues/320));
   fail-fast on missing BAM index ([VarDictJava#187](https://github.com/AstraZeneca-NGS/VarDictJava/issues/187)).
 
-[Unreleased]: https://github.com/palakpsheth/VarDictRust/compare/v1.0.4...HEAD
+[Unreleased]: https://github.com/palakpsheth/VarDictRust/compare/v1.0.5...HEAD
+[1.0.5]: https://github.com/palakpsheth/VarDictRust/compare/v1.0.4...v1.0.5
 [1.0.4]: https://github.com/palakpsheth/VarDictRust/compare/v1.0.3...v1.0.4
 [1.0.3]: https://github.com/palakpsheth/VarDictRust/compare/v1.0.2...v1.0.3
 [1.0.2]: https://github.com/palakpsheth/VarDictRust/compare/v1.0.1...v1.0.2

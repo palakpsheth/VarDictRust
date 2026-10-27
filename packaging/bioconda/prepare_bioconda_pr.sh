@@ -12,7 +12,7 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 RECIPE_DIR="$SCRIPT_DIR/recipes/vardictrust"
 META_YAML="$RECIPE_DIR/meta.yaml"
 
-VERSION="${1:-1.0.4}"
+VERSION="${1:-1.0.5}"
 TARBALL_URL="https://github.com/palakpsheth/VarDictRust/archive/refs/tags/v${VERSION}.tar.gz"
 
 echo "Preparing Bioconda recipe for VarDictRust v${VERSION}..."
