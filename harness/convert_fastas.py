@@ -101,6 +101,22 @@ def main():
                 converted += 1
 
         elapsed = round(time.time() - t0, 2)
+        try:
+            import subprocess
+            excl = subprocess.check_output(
+                ["git", "-C", fasta_dir, "rev-parse", "--git-path", "info/exclude"],
+                text=True, stderr=subprocess.DEVNULL
+            ).strip()
+            if excl:
+                excl_path = excl if os.path.isabs(excl) else os.path.join(fasta_dir, excl)
+                os.makedirs(os.path.dirname(excl_path), exist_ok=True)
+                existing = open(excl_path, "r", encoding="utf-8").read() if os.path.exists(excl_path) else ""
+                with open(excl_path, "a", encoding="utf-8") as ef:
+                    for pat in ("testdata/fastas/*.fa", "testdata/fastas/*.fa.fai"):
+                        if pat not in existing:
+                            ef.write(f"\n{pat}\n")
+        except Exception:
+            pass
         if converted > 0:
             print(f"convert_fastas: successfully materialized {converted} FASTAs in {elapsed}s")
         else:

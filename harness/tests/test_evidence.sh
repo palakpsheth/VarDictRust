@@ -194,7 +194,7 @@ fi
 # 6. ev_scale (acceptance.sh item 5): the scale bench is carried only while the perf-relevant code is unchanged
 #    (extra.perf_fingerprint); there is no waiver. P>=4 / bar>=2.4 is the pre-registered bar.
 eval "$(sed -n '/^ev_scale()/,/^}/p' harness/acceptance.sh)"
-PERF_FP=5e099d1a7661a81e
+PERF_FP=$(bash harness/engine_fingerprint.sh --perf 2>/dev/null || echo 1298c1d1091a0fc8)
 scale_case() {  # <ok|fail> <result> <fingerprint> <extra-json> <message>
   local want=$1 res=$2 fpv=$3 extra=$4 msg=$5 rc=0
   printf '{"name":"t-test-scale","result":"%s","fingerprint":"%s","extra":%s}\n' "$res" "$fpv" "$extra" > "$EVID_DIR/t-test-scale.json"

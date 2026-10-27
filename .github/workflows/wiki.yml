@@ -66,10 +66,13 @@ jobs:
           find "${TMP}" -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} +
           cp -r "main/wiki/." "${TMP}/"
           if [ -z "$(git -C "${TMP}" status --porcelain)" ]; then
-            echo "Wiki already in sync; nothing to do."
+            echo "[$(date '+%H:%M:%S')] Wiki already in sync; nothing to do."
+            echo "## Wiki Sync Summary: Already in sync with \`${SOURCE_SHA}\`" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           git -C "${TMP}" add -A
           git -C "${TMP}" commit -m "docs(wiki): sync from ${SOURCE_SHA}"
           # Wiki repos use master regardless of the main repo's default branch.
           git -C "${TMP}" -c "http.extraheader=AUTHORIZATION: basic ${AUTH}" push -u origin HEAD:master
+          echo "[$(date '+%H:%M:%S')] Wiki synced from ${SOURCE_SHA}."
+          echo "## Wiki Sync Summary: Pushed update from \`${SOURCE_SHA}\`" >> "$GITHUB_STEP_SUMMARY"

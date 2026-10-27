@@ -12,16 +12,30 @@ export GOLDEN_RUN_ID="${GOLDEN_RUN_ID:-compare-$$-$(date +%s)}"
 if [ -n "${KEEP_DIR:-}" ]; then mkdir -p "$KEEP_DIR"; OUT=$KEEP_DIR
 else OUT=$(mktemp -d); trap 'rm -rf "$OUT"' EXIT; fi
 TO=${CMP_TIMEOUT:-12h}
+JAVA_TIME_OUT=""; CPP_TIME_OUT=""
+if [ -n "${KEEP_DIR:-}" ] && [ "${COMPARE_NO_TIME:-0}" != "1" ]; then
+  JAVA_TIME_OUT="$OUT/java.time"
+  CPP_TIME_OUT="$OUT/cpp.time"
+fi
 # Mirror upstream IntegrationTest DEFAULT_ARGS ("-z -c 1 -S 2 -E 3 -g 4"): the
 # corpus and VarDictJava's own suite always run zero-based. run_oracle.sh
 # translates the flag-less -z into Java's explicit "-z 1" form.
-GOLDEN_TIME_OUT="$OUT/java.time" timeout "$TO" \
+GOLDEN_TIME_OUT="$JAVA_TIME_OUT" timeout "$TO" \
   bash harness/golden_store.sh oracle "${GOLDEN_LABEL:-compare}" "$REF" "$BAM" "$BED" "$OUT/java.vcf" "$SAMPLE" -z "$@" \
   || { echo "ENGINE-FAIL: oracle"; exit 2; }
-/usr/bin/time -v -o "$OUT/rust.time" timeout "$TO" \
-  cargo run -q --release -p vardictrust -- -G "$REF" -f "${AF_THR:-0.01}" -N "$SAMPLE" \
-  -b "$BAM" -c 1 -S 2 -E 3 -g 4 -z "$@" "$BED" > "$OUT/rust.vcf" \
-  || { echo "ENGINE-FAIL: vardictrust"; exit 2; }
+RUST_TH_ARGS=()
+if [ -n "${RUST_THREADS:-}" ]; then RUST_TH_ARGS=(-th "$RUST_THREADS"); fi
+if [ -n "${VARDICT_BIN:-}" ]; then
+  /usr/bin/time -v -o "$OUT/rust.time" timeout "$TO" \
+    "$VARDICT_BIN" -G "$REF" -f "${AF_THR:-0.01}" -N "$SAMPLE" \
+    -b "$BAM" -c 1 -S 2 -E 3 -g 4 -z "$@" "${RUST_TH_ARGS[@]}" "$BED" > "$OUT/rust.vcf" \
+    || { echo "ENGINE-FAIL: vardictrust"; exit 2; }
+else
+  /usr/bin/time -v -o "$OUT/rust.time" timeout "$TO" \
+    cargo run -q --release -p vardictrust -- -G "$REF" -f "${AF_THR:-0.01}" -N "$SAMPLE" \
+    -b "$BAM" -c 1 -S 2 -E 3 -g 4 -z "$@" "${RUST_TH_ARGS[@]}" "$BED" > "$OUT/rust.vcf" \
+    || { echo "ENGINE-FAIL: vardictrust"; exit 2; }
+fi
 rc=0
 STRICT_ARG=""
 if [ "${CMP_STRICT:-0}" = "1" ] || [ "${CMP_STRICT:-0}" = "true" ]; then STRICT_ARG="--strict-bytes"; fi
@@ -38,7 +52,7 @@ if [ "${CPP_SKIP:-0}" = "1" ] || [ "${CPP_SKIP:-0}" = "true" ]; then
   cpp_line="CPP: SKIP: disabled via CPP_SKIP=1"
 elif ! command -v conda >/dev/null 2>&1; then
   cpp_line="CPP: SKIP: conda not on PATH"
-elif LC_ALL=C GOLDEN_TIME_OUT="$OUT/cpp.time" timeout "$TO" \
+elif LC_ALL=C GOLDEN_TIME_OUT="$CPP_TIME_OUT" timeout "$TO" \
     bash harness/golden_store.sh cpp "${GOLDEN_LABEL:-compare}" "$REF" "$BAM" "$BED" "$OUT/cpp.vcf" "$SAMPLE" -z "$@" 2>"$OUT/cpp.err"; then
   # Empty-BED/variant-free runs leave a 0-byte file (run_cpp.sh), not a VCF:
   # fall back to a header-only VCF so compare_vcf.py sees a valid empty VCF.

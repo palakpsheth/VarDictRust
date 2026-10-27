@@ -12,23 +12,49 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-DATA_DIR="$ROOT_DIR/scratch/g4/multimodal"
+NO_RECORD=0
+if [[ "${1:-}" == "--no-record" ]]; then
+    NO_RECORD=1
+    shift
+fi
+
+COMMON_GIT_DIR="$(git -C "$ROOT_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+if [[ -n "$COMMON_GIT_DIR" && -d "$(dirname "$COMMON_GIT_DIR")/VarDictJava" ]]; then
+    DATA_ROOT="$(cd "$(dirname "$COMMON_GIT_DIR")" && pwd)"
+else
+    DATA_ROOT="$ROOT_DIR"
+fi
+
+DATA_DIR="$DATA_ROOT/scratch/g4/multimodal"
 EVIDENCE_JSON="$ROOT_DIR/benchmarks/evidence/multimodal-slices-tier2.json"
-TARGET_BIN="$ROOT_DIR/target/release/vardictrust"
+TARGET_BIN="${VARDICT_BIN:-$ROOT_DIR/target/release/vardictrust}"
 THREADS=8
+DEFAULT_JOBS=8
+if [[ "${CI:-}" == "true" || "${GOLDEN_MODE:-auto}" != "auto" || ! -d "$ROOT_DIR/scratch/golden-store/cells" || -z "$(ls -A "$ROOT_DIR/scratch/golden-store/cells" 2>/dev/null)" ]]; then
+    DEFAULT_JOBS=1
+fi
+JOBS="${MULTIMODAL_JOBS:-$DEFAULT_JOBS}"
+RUST_TH=8
+if [[ "$JOBS" -gt 1 ]]; then
+    RUST_TH=1
+fi
 
 # Reference FASTAs
-FA_B37="$ROOT_DIR/VarDictJava/testdata/fastas/GRCh37.fa"
-FA_GIAB="$ROOT_DIR/scratch/g4/ref/giabv3/GRCh38_GIABv3.fasta"
-FA_SEQC2="$ROOT_DIR/scratch/g4/ref/d1vd1/GRCh38.d1.vd1.fa"
-FA_HG38="$ROOT_DIR/VarDictJava/testdata/fastas/hg38.fa"
+FA_B37="$DATA_ROOT/VarDictJava/testdata/fastas/GRCh37.fa"
+FA_GIAB="$DATA_ROOT/scratch/g4/ref/giabv3/GRCh38_GIABv3.fasta"
+FA_SEQC2="$DATA_ROOT/scratch/g4/ref/d1vd1/GRCh38.d1.vd1.fa"
+FA_HG38="$DATA_ROOT/VarDictJava/testdata/fastas/hg38.fa"
 
 # Auto-materialize test FASTAs if missing
 if [[ ! -f "$FA_B37" || ! -f "$FA_HG38" ]]; then
     python3 "$ROOT_DIR/harness/convert_fastas.py"
 fi
 
-CURRENT_FP=$(bash "$ROOT_DIR/harness/engine_fingerprint.sh")
+if [[ "$NO_RECORD" -eq 1 ]]; then
+    CURRENT_FP=$(bash "$ROOT_DIR/harness/engine_fingerprint.sh" 2>/dev/null || echo "uncommitted")
+else
+    CURRENT_FP=$(bash "$ROOT_DIR/harness/engine_fingerprint.sh")
+fi
 export GOLDEN_RUN_ID="${GOLDEN_RUN_ID:-mm-$(date +%s)}"
 
 # Advisory vardictcpp third arm (never gating): staple the conda pin presence
@@ -71,66 +97,70 @@ function run_vcf_compare() {
     shift 7
     local extra_args=("$@")
 
-    echo -n "[$slice_idx/$TOTAL_SLICES] Testing $dataset ($slice_id)... "
+    (
+        echo -n "[$slice_idx/$TOTAL_SLICES] Testing $dataset ($slice_id)... "
 
-    local out_j="$TMPDIR/${slice_id}_java.vcf"
-    local out_r="$TMPDIR/${slice_id}_rust.vcf"
+        local out_j="$TMPDIR/${slice_id}_java.vcf"
+        local out_r="$TMPDIR/${slice_id}_rust.vcf"
 
-    local start_t=$(date +%s%N)
+        local start_t=$(date +%s%N)
 
-    # 1. Oracle
-    bash "$ROOT_DIR/harness/golden_store.sh" oracle "mm-$slice_id" "$ref" "$bam_spec" "$bed_file" "$out_j" "$sample" -z -th "$THREADS" "${extra_args[@]}" 2>/dev/null || {
-        echo "FAIL (Oracle error)"
-        exit 1
-    }
+        # 1. Oracle
+        bash "$ROOT_DIR/harness/golden_store.sh" oracle "mm-$slice_id" "$ref" "$bam_spec" "$bed_file" "$out_j" "$sample" -z -th "$THREADS" "${extra_args[@]}" 2>/dev/null || {
+            echo "FAIL (Oracle error)"
+            exit 1
+        }
 
-    # 2. Rust
-    "$TARGET_BIN" -G "$ref" -N "$sample" -b "$bam_spec" -c 1 -S 2 -E 3 -g 4 -z -th "$THREADS" "${extra_args[@]}" "$bed_file" > "$out_r" 2>/dev/null || {
-        echo "FAIL (Rust error)"
-        exit 1
-    }
+        # 2. Rust
+        "$TARGET_BIN" -G "$ref" -N "$sample" -b "$bam_spec" -c 1 -S 2 -E 3 -g 4 -z -th "$RUST_TH" "${extra_args[@]}" "$bed_file" > "$out_r" 2>/dev/null || {
+            echo "FAIL (Rust error)"
+            exit 1
+        }
 
-    local end_t=$(date +%s%N)
-    local elapsed_ms=$(( (end_t - start_t) / 1000000 ))
+        local end_t=$(date +%s%N)
+        local elapsed_ms=$(( (end_t - start_t) / 1000000 ))
 
-    # 3. Comparator
-    local cmp_out
-    if cmp_out=$(python3 "$ROOT_DIR/harness/compare_vcf.py" --strict-bytes "$out_j" "$out_r" --eps 1e-6 2>&1); then
-        local var_count=$(grep -v "^#" "$out_r" | wc -l)
-        echo "MATCH ($var_count variants, 0 diffs, ${elapsed_ms}ms)"
-        PASSED_COUNT=$((PASSED_COUNT + 1))
-        TOTAL_VARIANTS=$((TOTAL_VARIANTS + var_count))
-        local bed_str=$(cat "$bed_file" | tr '\t' ' ' | head -n 1)
-        SLICE_RESULTS+=("{\"slice_id\": \"$slice_id\", \"dataset\": \"$dataset\", \"region\": \"$bed_str\", \"variants\": $var_count, \"status\": \"MATCH\", \"time_ms\": $elapsed_ms}")
-    else
-        echo "MISMATCH"
-        echo "$cmp_out"
-        diff -u "$out_j" "$out_r" | head -40 || true
-        exit 1
-    fi
-
-    # 4. Advisory vardictcpp third arm (never gates the slice verdict)
-    local out_c="$TMPDIR/${slice_id}_cpp.vcf"
-    local err_c="$TMPDIR/${slice_id}_cpp.err"
-    local cpp_rc=0
-    if [ "${CPP_SKIP:-0}" = "1" ] || [ "${CPP_SKIP:-0}" = "true" ]; then
-        echo "  CPP: SKIP: $slice_id (disabled via CPP_SKIP=1)"
-    elif bash "$ROOT_DIR/harness/golden_store.sh" cpp "mm-$slice_id" "$ref" "$bam_spec" "$bed_file" "$out_c" "$sample" -z -th "$THREADS" "${extra_args[@]}" 2>"$err_c"; then
-        if [ ! -s "$out_c" ]; then
-            grep '^#' "$out_j" > "$out_c" || printf '##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n' > "$out_c"
-        fi
-        local cpp_cmp
-        if cpp_cmp=$(python3 "$ROOT_DIR/harness/compare_vcf.py" "$out_j" "$out_c" --eps 1e-6 2>&1); then
-            echo "  CPP: MATCH ($slice_id)"
+        # 3. Comparator
+        local cmp_out
+        if cmp_out=$(python3 "$ROOT_DIR/harness/compare_vcf.py" --strict-bytes "$out_j" "$out_r" --eps 1e-6 2>&1); then
+            local var_count=$(grep -v "^#" "$out_r" | wc -l)
+            echo "MATCH ($var_count variants, 0 diffs, ${elapsed_ms}ms)"
+            local bed_str=$(cat "$bed_file" | tr '\t' ' ' | head -n 1)
+            echo "$var_count" > "$TMPDIR/slice_${slice_idx}.vars"
+            printf '{"slice_id": "%s", "dataset": "%s", "region": "%s", "variants": %d, "status": "MATCH", "time_ms": %d}\n' \
+                "$slice_id" "$dataset" "$bed_str" "$var_count" "$elapsed_ms" > "$TMPDIR/slice_${slice_idx}.json"
         else
-            echo "  CPP-MISMATCH: $slice_id ($(head -n 1 <<<"$cpp_cmp"))"
+            echo "MISMATCH"
+            echo "$cmp_out"
+            diff -u "$out_j" "$out_r" | head -40 || true
+            exit 1
         fi
-    else
-        cpp_rc=$?
-        local first_err
-        first_err=$(grep -vE '^(ERROR conda\.cli|cpp_chunk=|[[:space:]]*$)' "$err_c" 2>/dev/null | head -n 1 | tr -d '\r' | cut -c 1-140 || true)
-        echo "  CPP: SKIP: $slice_id (cpp engine exit $cpp_rc${first_err:+: $first_err})"
-    fi
+
+        # 4. Advisory vardictcpp third arm (never gates the slice verdict)
+        local out_c="$TMPDIR/${slice_id}_cpp.vcf"
+        local err_c="$TMPDIR/${slice_id}_cpp.err"
+        local cpp_rc=0
+        if [ "${CPP_SKIP:-0}" = "1" ] || [ "${CPP_SKIP:-0}" = "true" ]; then
+            echo "  CPP: SKIP: $slice_id (disabled via CPP_SKIP=1)"
+        elif bash "$ROOT_DIR/harness/golden_store.sh" cpp "mm-$slice_id" "$ref" "$bam_spec" "$bed_file" "$out_c" "$sample" -z -th "$THREADS" "${extra_args[@]}" 2>"$err_c"; then
+            if [ ! -s "$out_c" ]; then
+                grep '^#' "$out_j" > "$out_c" || printf '##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n' > "$out_c"
+            fi
+            local cpp_cmp
+            if cpp_cmp=$(python3 "$ROOT_DIR/harness/compare_vcf.py" "$out_j" "$out_c" --eps 1e-6 2>&1); then
+                echo "  CPP: MATCH ($slice_id)"
+            else
+                echo "  CPP-MISMATCH: $slice_id ($(head -n 1 <<<"$cpp_cmp"))"
+            fi
+        else
+            cpp_rc=$?
+            local first_err
+            first_err=$(grep -vE '^(ERROR conda\.cli|cpp_chunk=|[[:space:]]*$)' "$err_c" 2>/dev/null | head -n 1 | tr -d '\r' | cut -c 1-140 || true)
+            echo "  CPP: SKIP: $slice_id (cpp engine exit $cpp_rc${first_err:+: $first_err})"
+        fi
+    ) > "$TMPDIR/slice_${slice_idx}.log" 2>&1
+    local rc=$?
+    printf '%d\n' "$rc" > "$TMPDIR/slice_${slice_idx}.rc.tmp" && mv "$TMPDIR/slice_${slice_idx}.rc.tmp" "$TMPDIR/slice_${slice_idx}.rc"
 }
 
 function run_rna_slice() {
@@ -141,115 +171,128 @@ function run_rna_slice() {
     local bam="$5"
     local region="$6"
 
-    echo -n "[$slice_idx/$TOTAL_SLICES] Testing $dataset Splicing ($slice_id, $region)... "
+    (
+        echo -n "[$slice_idx/$TOTAL_SLICES] Testing $dataset Splicing ($slice_id, $region)... "
 
-    local out_j="$TMPDIR/${slice_id}_java.tsv"
-    local out_r="$TMPDIR/${slice_id}_rust.tsv"
+        local out_j="$TMPDIR/${slice_id}_java.tsv"
+        local out_r="$TMPDIR/${slice_id}_rust.tsv"
 
-    local start_t=$(date +%s%N)
+        local start_t=$(date +%s%N)
 
-    # 1. Oracle Execution (4-column intron frequency table)
-    bash "$ROOT_DIR/harness/golden_store.sh" raw --kind java --label "mm-$slice_id" --out "$out_j" --input "$ref" --input "$ref.fai" --input "$bam" -- conda run -n vardict-oracle vardict-java -G "$ref" -b "$bam" -R "$region" -f 0.1 -i -th "$THREADS" 2>/dev/null || {
-        echo "FAIL (Oracle RNA error)"
-        exit 1
-    }
+        # 1. Oracle Execution (4-column intron frequency table)
+        bash "$ROOT_DIR/harness/golden_store.sh" raw --kind java --label "mm-$slice_id" --out "$out_j" --input "$ref" --input "$ref.fai" --input "$bam" -- conda run -n vardict-oracle vardict-java -G "$ref" -b "$bam" -R "$region" -f 0.1 -i -th "$THREADS" 2>/dev/null || {
+            echo "FAIL (Oracle RNA error)"
+            exit 1
+        }
 
-    # 2. VarDictRust Execution
-    "$TARGET_BIN" -G "$ref" -b "$bam" -R "$region" -f 0.1 -i --emit-intermediate -th "$THREADS" > "$out_r" 2>/dev/null || {
-        echo "FAIL (VarDictRust RNA error)"
-        exit 1
-    }
+        # 2. VarDictRust Execution
+        "$TARGET_BIN" -G "$ref" -b "$bam" -R "$region" -f 0.1 -i --emit-intermediate -th "$RUST_TH" > "$out_r" 2>/dev/null || {
+            echo "FAIL (VarDictRust RNA error)"
+            exit 1
+        }
 
-    local end_t=$(date +%s%N)
-    local elapsed_ms=$(( (end_t - start_t) / 1000000 ))
+        local end_t=$(date +%s%N)
+        local elapsed_ms=$(( (end_t - start_t) / 1000000 ))
 
-    local diff_lines=$(diff -u <(sort "$out_j") <(sort "$out_r") | wc -l)
-    if [[ "$diff_lines" -eq 0 ]]; then
-        local rows=$(wc -l < "$out_r")
-        echo "MATCH ($rows splicing junctions, 0 diffs, ${elapsed_ms}ms)"
-        PASSED_COUNT=$((PASSED_COUNT + 1))
-        TOTAL_VARIANTS=$((TOTAL_VARIANTS + rows))
-        SLICE_RESULTS+=("{\"slice_id\": \"$slice_id\", \"dataset\": \"$dataset\", \"region\": \"$region\", \"variants\": $rows, \"status\": \"MATCH\", \"time_ms\": $elapsed_ms}")
-    else
-        echo "MISMATCH: $diff_lines diff lines"
-        diff -u <(sort "$out_j") <(sort "$out_r") | head -40
-        exit 1
-    fi
+        local diff_lines=$(diff -u <(sort "$out_j") <(sort "$out_r") | wc -l)
+        if [[ "$diff_lines" -eq 0 ]]; then
+            local rows=$(wc -l < "$out_r")
+            echo "MATCH ($rows splicing junctions, 0 diffs, ${elapsed_ms}ms)"
+            echo "$rows" > "$TMPDIR/slice_${slice_idx}.vars"
+            printf '{"slice_id": "%s", "dataset": "%s", "region": "%s", "variants": %d, "status": "MATCH", "time_ms": %d}\n' \
+                "$slice_id" "$dataset" "$region" "$rows" "$elapsed_ms" > "$TMPDIR/slice_${slice_idx}.json"
+        else
+            echo "MISMATCH: $diff_lines diff lines"
+            diff -u <(sort "$out_j") <(sort "$out_r") | head -40
+            exit 1
+        fi
 
-    # Advisory cpp third arm: vardictcpp ignores -i (no splice-table surface;
-    # probed live T3A-04), so SKIP with reason, no engine run.
-    echo "CPP: SKIP: $slice_id splicing (-i splice-table surface unsupported by vardictcpp)"
+        # Advisory cpp third arm: vardictcpp ignores -i (no splice-table surface;
+        # probed live T3A-04), so SKIP with reason, no engine run.
+        echo "CPP: SKIP: $slice_id splicing (-i splice-table surface unsupported by vardictcpp)"
+    ) > "$TMPDIR/slice_${slice_idx}.log" 2>&1
+    local rc=$?
+    printf '%d\n' "$rc" > "$TMPDIR/slice_${slice_idx}.rc.tmp" && mv "$TMPDIR/slice_${slice_idx}.rc.tmp" "$TMPDIR/slice_${slice_idx}.rc"
 }
 
-# -----------------------------------------------------------------------------
-# 1. NIST GIAB HG005 (Han Chinese Diversity WGS 300x, GRCh38)
-# -----------------------------------------------------------------------------
+# Pre-create all 12 BED files before spawning workers
 printf "chr3\t40000000\t40010000\n" > "$TMPDIR/hg005_1a.bed"
 printf "chr6\t30000000\t30010000\n" > "$TMPDIR/hg005_1b.bed"
 printf "chr21\t20000000\t20010000\n" > "$TMPDIR/hg005_1c.bed"
-
-run_vcf_compare 1  "HG005_1A" "GIAB HG005 Diversity WGS" "$FA_GIAB" "$DATA_DIR/hg005_s4a.bam" "$TMPDIR/hg005_1a.bed" "HG005" -f 0.05
-run_vcf_compare 2  "HG005_1B" "GIAB HG005 Diversity WGS" "$FA_GIAB" "$DATA_DIR/hg005_s4b.bam" "$TMPDIR/hg005_1b.bed" "HG005" -f 0.05
-run_vcf_compare 3  "HG005_1C" "GIAB HG005 Diversity WGS" "$FA_GIAB" "$DATA_DIR/hg005_s4c.bam" "$TMPDIR/hg005_1c.bed" "HG005" -f 0.05
-
-# -----------------------------------------------------------------------------
-# 2. FDA SEQC2 Somatic WES (HCC1395 / HCC1395BL Breast Cancer, GRCh38)
-# -----------------------------------------------------------------------------
 printf "chr7\t140400000\t140420000\n" > "$TMPDIR/seqc2_2a.bed"
 printf "chr11\t530000\t550000\n" > "$TMPDIR/seqc2_2b.bed"
 printf "chr12\t25200000\t25250000\n" > "$TMPDIR/seqc2_2c.bed"
-
-run_vcf_compare 4  "SEQC2_2A" "SEQC2 Somatic WES (BRAF)" "$FA_SEQC2" "$DATA_DIR/seqc2_s3a_tumor.bam|$DATA_DIR/seqc2_s3a_normal.bam" "$TMPDIR/seqc2_2a.bed" "TUMOR|NORMAL" -f 0.05 --fisher
-run_vcf_compare 5  "SEQC2_2B" "SEQC2 Somatic WES (HRAS)" "$FA_SEQC2" "$DATA_DIR/seqc2_s3b_tumor.bam|$DATA_DIR/seqc2_s3b_normal.bam" "$TMPDIR/seqc2_2b.bed" "TUMOR|NORMAL" -f 0.05 --fisher
-run_vcf_compare 6  "SEQC2_2C" "SEQC2 Somatic WES (KRAS)" "$FA_SEQC2" "$DATA_DIR/seqc2_s3c_tumor.bam|$DATA_DIR/seqc2_s3c_normal.bam" "$TMPDIR/seqc2_2c.bed" "TUMOR|NORMAL" -f 0.05 --fisher
-
-# -----------------------------------------------------------------------------
-# 3. NIST GIAB HG002 (Ashkenazi Germline WGS, GRCh38)
-# -----------------------------------------------------------------------------
 printf "chr20\t10000000\t10020000\n" > "$TMPDIR/hg002_3a.bed"
 printf "chr20\t20000000\t20020000\n" > "$TMPDIR/hg002_3b.bed"
 printf "chr20\t30000000\t30020000\n" > "$TMPDIR/hg002_3c.bed"
-
-run_vcf_compare 7  "HG002_3A" "GIAB HG002 Germline WGS" "$FA_GIAB" "$ROOT_DIR/scratch/g4/hg002/HG002.chr20.bam" "$TMPDIR/hg002_3a.bed" "HG002"
-run_vcf_compare 8  "HG002_3B" "GIAB HG002 Germline WGS" "$FA_GIAB" "$ROOT_DIR/scratch/g4/hg002/HG002.chr20.bam" "$TMPDIR/hg002_3b.bed" "HG002"
-run_vcf_compare 9  "HG002_3C" "GIAB HG002 Germline WGS" "$FA_GIAB" "$ROOT_DIR/scratch/g4/hg002/HG002.chr20.bam" "$TMPDIR/hg002_3c.bed" "HG002"
-
-# -----------------------------------------------------------------------------
-# 4. NIST GIAB HG008 / HG008-T (Somatic Paired WGS, GRCh38)
-# -----------------------------------------------------------------------------
-HG008_BAMS="$ROOT_DIR/scratch/g4/hg008/HG008-T.slice.bam|$ROOT_DIR/scratch/g4/hg008/HG008-N.slice.bam"
-
-run_vcf_compare 10 "HG008_4A" "GIAB HG008 Somatic WGS" "$FA_GIAB" "$HG008_BAMS" "$ROOT_DIR/scratch/g4/hg008/r1.bed" "HG008T|HG008N"
-run_vcf_compare 11 "HG008_4B" "GIAB HG008 Somatic WGS" "$FA_GIAB" "$HG008_BAMS" "$ROOT_DIR/scratch/g4/hg008/r2.bed" "HG008T|HG008N"
-run_vcf_compare 12 "HG008_4C" "GIAB HG008 Somatic WGS" "$FA_GIAB" "$HG008_BAMS" "$ROOT_DIR/scratch/g4/hg008/r3.bed" "HG008T|HG008N"
-
-# -----------------------------------------------------------------------------
-# 5. GIAB HG002 NA24385 Multi-Chromosome Deep WGS (GRCh37/b37)
-# -----------------------------------------------------------------------------
 printf "1\t246981051\t246981611\n" > "$TMPDIR/na24385_5a.bed"
 printf "19\t58559581\t58567861\n" > "$TMPDIR/na24385_5b.bed"
 printf "20\t36018823\t36039513\n" > "$TMPDIR/na24385_5c.bed"
 
-BAM_NA24385_1="$ROOT_DIR/VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests/NA24385_chr_1_246981051_246981611.bam"
-BAM_NA24385_19="$ROOT_DIR/VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests/NA24385_chr_19_58559581_58567861.bam"
-BAM_NA24385_20="$ROOT_DIR/VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests/NA24385_chr_20_36018823_36039513.bam"
+HG008_BAMS="$DATA_ROOT/scratch/g4/hg008/HG008-T.slice.bam|$DATA_ROOT/scratch/g4/hg008/HG008-N.slice.bam"
+BAM_NA24385_1="$DATA_ROOT/VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests/NA24385_chr_1_246981051_246981611.bam"
+BAM_NA24385_19="$DATA_ROOT/VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests/NA24385_chr_19_58559581_58567861.bam"
+BAM_NA24385_20="$DATA_ROOT/VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests/NA24385_chr_20_36018823_36039513.bam"
 
-run_vcf_compare 13 "NA24385_5A" "NA24385 b37 WGS (chr1)" "$FA_B37" "$BAM_NA24385_1" "$TMPDIR/na24385_5a.bed" "NA24385" -f 0.001
-run_vcf_compare 14 "NA24385_5B" "NA24385 b37 WGS (chr19)" "$FA_B37" "$BAM_NA24385_19" "$TMPDIR/na24385_5b.bed" "NA24385" -f 0.001
-run_vcf_compare 15 "NA24385_5C" "NA24385 b37 WGS (chr20)" "$FA_B37" "$BAM_NA24385_20" "$TMPDIR/na24385_5c.bed" "NA24385" -f 0.001
+dispatch_slice() {
+    case "$1" in
+        1)  run_vcf_compare 1  "HG005_1A" "GIAB HG005 Diversity WGS" "$FA_GIAB" "$DATA_DIR/hg005_s4a.bam" "$TMPDIR/hg005_1a.bed" "HG005" -f 0.05 ;;
+        2)  run_vcf_compare 2  "HG005_1B" "GIAB HG005 Diversity WGS" "$FA_GIAB" "$DATA_DIR/hg005_s4b.bam" "$TMPDIR/hg005_1b.bed" "HG005" -f 0.05 ;;
+        3)  run_vcf_compare 3  "HG005_1C" "GIAB HG005 Diversity WGS" "$FA_GIAB" "$DATA_DIR/hg005_s4c.bam" "$TMPDIR/hg005_1c.bed" "HG005" -f 0.05 ;;
+        4)  run_vcf_compare 4  "SEQC2_2A" "SEQC2 Somatic WES (BRAF)" "$FA_SEQC2" "$DATA_DIR/seqc2_s3a_tumor.bam|$DATA_DIR/seqc2_s3a_normal.bam" "$TMPDIR/seqc2_2a.bed" "TUMOR|NORMAL" -f 0.05 --fisher ;;
+        5)  run_vcf_compare 5  "SEQC2_2B" "SEQC2 Somatic WES (HRAS)" "$FA_SEQC2" "$DATA_DIR/seqc2_s3b_tumor.bam|$DATA_DIR/seqc2_s3b_normal.bam" "$TMPDIR/seqc2_2b.bed" "TUMOR|NORMAL" -f 0.05 --fisher ;;
+        6)  run_vcf_compare 6  "SEQC2_2C" "SEQC2 Somatic WES (KRAS)" "$FA_SEQC2" "$DATA_DIR/seqc2_s3c_tumor.bam|$DATA_DIR/seqc2_s3c_normal.bam" "$TMPDIR/seqc2_2c.bed" "TUMOR|NORMAL" -f 0.05 --fisher ;;
+        7)  run_vcf_compare 7  "HG002_3A" "GIAB HG002 Germline WGS" "$FA_GIAB" "$DATA_ROOT/scratch/g4/hg002/HG002.chr20.bam" "$TMPDIR/hg002_3a.bed" "HG002" ;;
+        8)  run_vcf_compare 8  "HG002_3B" "GIAB HG002 Germline WGS" "$FA_GIAB" "$DATA_ROOT/scratch/g4/hg002/HG002.chr20.bam" "$TMPDIR/hg002_3b.bed" "HG002" ;;
+        9)  run_vcf_compare 9  "HG002_3C" "GIAB HG002 Germline WGS" "$FA_GIAB" "$DATA_ROOT/scratch/g4/hg002/HG002.chr20.bam" "$TMPDIR/hg002_3c.bed" "HG002" ;;
+        10) run_vcf_compare 10 "HG008_4A" "GIAB HG008 Somatic WGS" "$FA_GIAB" "$HG008_BAMS" "$DATA_ROOT/scratch/g4/hg008/r1.bed" "HG008T|HG008N" ;;
+        11) run_vcf_compare 11 "HG008_4B" "GIAB HG008 Somatic WGS" "$FA_GIAB" "$HG008_BAMS" "$DATA_ROOT/scratch/g4/hg008/r2.bed" "HG008T|HG008N" ;;
+        12) run_vcf_compare 12 "HG008_4C" "GIAB HG008 Somatic WGS" "$FA_GIAB" "$HG008_BAMS" "$DATA_ROOT/scratch/g4/hg008/r3.bed" "HG008T|HG008N" ;;
+        13) run_vcf_compare 13 "NA24385_5A" "NA24385 b37 WGS (chr1)" "$FA_B37" "$BAM_NA24385_1" "$TMPDIR/na24385_5a.bed" "NA24385" -f 0.001 ;;
+        14) run_vcf_compare 14 "NA24385_5B" "NA24385 b37 WGS (chr19)" "$FA_B37" "$BAM_NA24385_19" "$TMPDIR/na24385_5b.bed" "NA24385" -f 0.001 ;;
+        15) run_vcf_compare 15 "NA24385_5C" "NA24385 b37 WGS (chr20)" "$FA_B37" "$BAM_NA24385_20" "$TMPDIR/na24385_5c.bed" "NA24385" -f 0.001 ;;
+        16) run_rna_slice 16 "RNA_6A" "RNA-Seq Splicing" "$FA_HG38" "$DATA_DIR/rna_s6a.bam" "chr8:90534611-90550000" ;;
+        17) run_rna_slice 17 "RNA_6B" "RNA-Seq Splicing" "$FA_HG38" "$DATA_DIR/rna_s6b.bam" "chr8:90550000-90580000" ;;
+        18) run_rna_slice 18 "RNA_6C" "RNA-Seq Splicing" "$FA_HG38" "$DATA_DIR/rna_s6c.bam" "chr8:90580000-90620070" ;;
+    esac
+}
 
-# -----------------------------------------------------------------------------
-# 6. RNA-Seq Transcriptome & Splicing Suite (hg38)
-# -----------------------------------------------------------------------------
-run_rna_slice 16 "RNA_6A" "RNA-Seq Splicing" "$FA_HG38" "$DATA_DIR/rna_s6a.bam" "chr8:90534611-90550000"
-run_rna_slice 17 "RNA_6B" "RNA-Seq Splicing" "$FA_HG38" "$DATA_DIR/rna_s6b.bam" "chr8:90550000-90580000"
-run_rna_slice 18 "RNA_6C" "RNA-Seq Splicing" "$FA_HG38" "$DATA_DIR/rna_s6c.bam" "chr8:90580000-90620070"
+SUITE_START_MS=$(date +%s%3N)
+(
+    for idx in $(seq 1 "$TOTAL_SLICES"); do
+        while [[ $(jobs -rp | wc -l) -ge $JOBS ]]; do
+            wait -n 2>/dev/null || sleep 0.02
+        done
+        {
+            ( set +e; dispatch_slice "$idx" )
+        } &
+    done
+    wait
+) &
+POOL_PID=$!
+
+for idx in $(seq 1 "$TOTAL_SLICES"); do
+    while [[ ! -f "$TMPDIR/slice_${idx}.rc" ]] && kill -0 "$POOL_PID" 2>/dev/null; do
+        sleep 0.03
+    done
+    [[ -f "$TMPDIR/slice_${idx}.log" ]] && cat "$TMPDIR/slice_${idx}.log"
+    if [[ "$(cat "$TMPDIR/slice_${idx}.rc" 2>/dev/null || echo 1)" -ne 0 ]]; then
+        wait "$POOL_PID" 2>/dev/null || true
+        exit 1
+    fi
+    PASSED_COUNT=$((PASSED_COUNT + 1))
+    TOTAL_VARIANTS=$((TOTAL_VARIANTS + $(cat "$TMPDIR/slice_${idx}.vars")))
+    SLICE_RESULTS+=("$(cat "$TMPDIR/slice_${idx}.json")")
+done
+wait "$POOL_PID" 2>/dev/null || true
+SUITE_ELAPSED_MS=$(( $(date +%s%3N) - SUITE_START_MS ))
 
 # -----------------------------------------------------------------------------
 # Generate Machine-Readable Evidence JSON
 # -----------------------------------------------------------------------------
 export GOLDEN_JSON=$(bash "$ROOT_DIR/harness/golden_store.sh" stats --run "$GOLDEN_RUN_ID" --json)
-python3 -c "
+if [[ "$NO_RECORD" -eq 0 ]]; then
+    python3 -c "
 import json
 
 data = {
@@ -270,9 +313,16 @@ data = {
 with open('$EVIDENCE_JSON', 'w') as f:
     json.dump(data, f, indent=2)
 "
+fi
 
+GOLDEN_SUMMARY=$(bash "$ROOT_DIR/harness/golden_store.sh" stats --run "$GOLDEN_RUN_ID" 2>/dev/null || true)
 echo "================================================================================"
-echo " Multi-Modal Parity Suite Result: $PASSED_COUNT/$TOTAL_SLICES MATCH (0 diffs)"
+echo " Multi-Modal Parity Suite Result: $PASSED_COUNT/$TOTAL_SLICES MATCH (0 diffs, ${SUITE_ELAPSED_MS}ms)"
 echo " Total Biological Variants Evaluated: $TOTAL_VARIANTS"
-echo " Certified Evidence: $EVIDENCE_JSON"
+[[ -n "$GOLDEN_SUMMARY" ]] && echo " $GOLDEN_SUMMARY"
+if [[ "$NO_RECORD" -eq 0 ]]; then
+    echo " Certified Evidence: $EVIDENCE_JSON"
+else
+    echo " Mode: --no-record (Evidence JSON unchanged)"
+fi
 echo "================================================================================"

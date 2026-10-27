@@ -175,6 +175,21 @@ class TestRoundTrip(StoreCase):
         self.assertEqual(self.manifests(), [])
         self.assertEqual(self.events(), ["FAIL"])
 
+    def test_pin_cpp_exit_pins_empty_tsv_and_nonzero_cpp_exit(self):
+        out = self.tmp / "out.var"
+        r1 = self.raw(kind="cpp", out=out, extra=("--pin-cpp-exit",), script='echo run >> "$COUNT"; true')
+        self.assertEqual(r1.returncode, 0)
+        r2 = self.raw(kind="cpp", out=out, extra=("--pin-cpp-exit",), script='echo run >> "$COUNT"; true')
+        self.assertEqual((r2.returncode, self.runs()), (0, 1))
+        out2 = self.tmp / "out2.var"
+        r3 = self.raw(kind="cpp", out=out2, extra=("--pin-cpp-exit",),
+                      script='echo run >> "$COUNT"; echo "vardictcpp: unknown option" >&2; exit 1')
+        self.assertEqual(r3.returncode, 1)
+        r4 = self.raw(kind="cpp", out=out2, extra=("--pin-cpp-exit",),
+                      script='echo run >> "$COUNT"; echo "vardictcpp: unknown option" >&2; exit 1')
+        self.assertEqual((r4.returncode, self.runs()), (1, 2))
+        self.assertEqual(self.events(), ["MISS", "HIT", "MISS", "HIT"])
+
     def test_bad_golden_mode_is_rejected(self):
         r = self.raw(env={"GOLDEN_MODE": "sometimes"})
         self.assertNotEqual(r.returncode, 0)

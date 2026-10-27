@@ -69,20 +69,24 @@ if [ -z "$CODE_CHANGES" ]; then
     exit 0
 fi
 
-echo "=== [pre-push] Code changes detected; running fast pre-push smoke gate (<30s) ==="
+ts() { date '+[%H:%M:%S]'; }
+HOOK_T0=$SECONDS
+cd "$ROOT_DIR"
+echo "=== $(ts) [pre-push] Code changes detected; running fast pre-push smoke gate (<30s) ==="
 
-echo "[1/4] Checking formatting and lints..."
+echo "$(ts) [pre-push 1/4] Checking formatting and lints..."
 cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
 
-echo "[2/4] Running crash robustness suite..."
+echo "$(ts) [pre-push 2/4] Running crash robustness suite..."
 cargo test -p vardictrust --test robustness
 
-echo "[3/4] Running Tier-2 micro differential check against VarDictJava oracle..."
+echo "$(ts) [pre-push 3/4] Running Tier-2 micro differential check against VarDictJava oracle..."
 cargo build -q --release -p vardictrust
-MIN_VARIANTS=1 bash "$ROOT_DIR/harness/compare.sh" "$ROOT_DIR/fixtures/micro/micro.ref.fa" "$ROOT_DIR/fixtures/micro/micro.bam" "$ROOT_DIR/fixtures/micro/micro.bed"
+export VARDICT_BIN="$ROOT_DIR/target/release/vardictrust"
+COMPARE_NO_TIME=1 MIN_VARIANTS=1 bash "$ROOT_DIR/harness/compare.sh" fixtures/micro/micro.ref.fa fixtures/micro/micro.bam fixtures/micro/micro.bed
 
-echo "[4/4] Scanning commits for secrets..."
+echo "$(ts) [pre-push 4/4] Scanning commits for secrets..."
 GITLEAKS_BIN=""
 if command -v gitleaks >/dev/null 2>&1; then
     GITLEAKS_BIN="gitleaks"
@@ -96,4 +100,4 @@ if [ -n "$GITLEAKS_BIN" ]; then
     "$GITLEAKS_BIN" detect --source . -v
 fi
 
-echo "=== [pre-push] All pre-push gates PASSED ==="
+echo "=== $(ts) [pre-push] All pre-push gates PASSED ($((SECONDS - HOOK_T0))s) ==="

@@ -20,7 +20,7 @@ VarDictRust is an idiomatic-Rust rewrite of VarDictJava v1.8.3 (`0886261`) built
 | `harness/compare.sh` or `compare_var.py` shows `MISMATCH` vs VarDictJava v1.8.3 | **Parity Bug** (Rust divergence) | `v1.0.x` (fix immediately) | `.github/ISSUE_TEMPLATE/bug_report.yml` | Minimal `harness/slice.sh` BAM + `compare.sh` diff |
 | VarDictRust panics, crashes, OOMs, or hangs on valid or malformed BAM/CRAM/FASTA/BED | **Robustness / Scale Bug** | `v1.0.x` (fix immediately) | `.github/ISSUE_TEMPLATE/bug_report.yml` (`AGENTS.md` §§9–11) | Stack trace / RSS log + minimal reproduction command |
 | Both VarDictRust and VarDictJava v1.8.3 emit biologically questionable output (`VD > DP`, over-filtering, `SHIFT3`) | **Upstream Output Quirk** (`docs/upstream-bugs.md`) | `v1.1.0+` behind `--fix <id>` (`ROADMAP.md`) | `.github/ISSUE_TEMPLATE/feature_request.yml` (`v1.1+ --fix <id>`) | Upstream Java source citation (`Class.java:L1-L2`) + oracle output |
-| Candidate `--fix <id>` flag-on matches v1.8.3 oracle everywhere measured & prior default was a Rust-only artifact | **Parity-Restoring Fix** (`AGENTS.md` §5) | `v1.0.x` (ship **ungated**, remove `--fix` id) | `.github/ISSUE_TEMPLATE/bug_report.yml` | Full 8-suite `harness/acceptance.sh` `MATCH` receipt |
+| Candidate `--fix <id>` flag-on matches v1.8.3 oracle everywhere measured & prior default was a Rust-only artifact | **Parity-Restoring Fix** (`AGENTS.md` §5) | `v1.0.x` (ship **ungated**, remove `--fix` id) | `.github/ISSUE_TEMPLATE/bug_report.yml` | 6-stage `harness/pr_check.sh` `MATCH` receipt per PR + 8-suite `recertify.sh`/`acceptance.sh` at release cut |
 | Wall-clock or peak RSS regression vs certified `benchmarks/evidence/scale.json` | **Performance Regression** | `v1.0.x` | `.github/ISSUE_TEMPLATE/bug_report.yml` | `harness/profile.sh` flamegraph / heap summary + `scale.json` delta |
 
 ---
@@ -62,7 +62,7 @@ gh issue create --repo palakpsheth/VarDictRust \
   --label "<bug|enhancement>" \
   --body "$(cat <<'EOF'
 ### VarDictRust Version & Environment
-- **Version:** `vardictrust 1.0.3` (commit `<sha>`, engine fingerprint `<fp>`)
+- **Version:** `vardictrust 1.0.4` (commit `<sha>`, engine fingerprint `<fp>`)
 - **OS / Arch:** `<uname -srm>`
 - **Execution Mode:** `<Simple | Somatic | Amplicon | Splicing>` (`--fisher` / default)
 

@@ -4,33 +4,122 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   differential:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      - name: Harden GitHub Actions Runner
+        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.10.4
+        with:
+          egress-policy: audit
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           submodules: recursive
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+      - name: Cache Rust Workspace
+        uses: Swatinem/rust-cache@2634bbce9b8fb2cfa56c6fb22cdeed4d8f24fa13 # v2.7.8
+      - name: Cache Pinned Oracle & C++ Golden Store
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: scratch/golden-store
+          key: golden-store-v1-${{ hashFiles('benchmarks/env/vardict-oracle.yml', 'harness/run_oracle.sh', 'harness/run_cpp.sh', 'harness/golden_store.py', 'harness/golden_store.sh', 'harness/slices.tsv') }}
+          restore-keys: |
+            golden-store-v1-
       - uses: conda-incubator/setup-miniconda@be893c923ea9cf1cf7cd510fbdde27c7e18cbdcb # v4.1.0
         with:
           auto-activate: true
           miniconda-version: "latest"
       - name: Setup oracle
-        run: bash harness/setup_oracle.sh
+        run: |
+          bash harness/setup_oracle.sh
+          [ ! -d scratch/golden-store/cells ] || bash harness/golden_store.sh verify
       - name: Materialize reference FASTAs
         run: python3 harness/convert_fastas.py
       - name: Build release binary
-        run: cargo build --release -p vardictrust
-      - name: Run Tier-2 micro differential test
-        run: bash harness/compare.sh fixtures/micro/micro.ref.fa fixtures/micro/micro.bam fixtures/micro/micro.bed
-      - name: Run committed slices differential suite
         run: |
+          cargo build --release -p vardictrust
+          echo "VARDICT_BIN=$PWD/target/release/vardictrust" >> "$GITHUB_ENV"
+          echo "COMPARE_NO_TIME=1" >> "$GITHUB_ENV"
+          echo "GOLDEN_RUN_ID=ci-diff-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_ENV"
+      - name: "[Diff Stage 1/4] Run Tier-2 micro differential test"
+        run: |
+          t0=$SECONDS
+          echo "[$(date '+%H:%M:%S')] [Diff Stage 1/4] Running Tier-2 micro differential gate..."
+          MIN_VARIANTS=1 bash harness/compare.sh fixtures/micro/micro.ref.fa fixtures/micro/micro.bam fixtures/micro/micro.bed
+          echo "DIFF_STAGE1_S=$((SECONDS - t0))" >> "$GITHUB_ENV"
+          echo "DIFF_STAGE1_STATUS=PASS" >> "$GITHUB_ENV"
+      - name: "[Diff Stage 2/4] Run committed slices differential suite (10 slices)"
+        run: |
+          t0=$SECONDS
+          echo "[$(date '+%H:%M:%S')] [Diff Stage 2/4] Running 10 standard slices (s1a..s9)..."
+          SLICE_KEEP=$(mktemp -d)
+          trap 'rm -rf "$SLICE_KEEP"' EXIT
+          export SLICE_KEEP
           for id in $(awk -F'\t' '!/^#/{print $1}' harness/slices.tsv); do
-            echo "=== Running slice: $id ==="
+            s_t0=$(date +%s%3N)
+            echo "[$(date '+%H:%M:%S')] === Running slice: $id ==="
             bash harness/run_slice.sh "$id"
+            s_ms=$(( $(date +%s%3N) - s_t0 ))
+            s_vars=$(grep -vc '^#' "$SLICE_KEEP/$id/rust.vcf" 2>/dev/null || echo 0)
+            echo "[$(date '+%H:%M:%S')] [slice $id] MATCH ($s_vars variants, ${s_ms}ms)"
           done
-      - name: Run extended coverage parity suite (17 modalities)
-        run: bash harness/run_extended_coverage.sh
-
+          echo "DIFF_STAGE2_S=$((SECONDS - t0))" >> "$GITHUB_ENV"
+          echo "DIFF_STAGE2_STATUS=PASS" >> "$GITHUB_ENV"
+      - name: "[Diff Stage 3/4] Run extended coverage parity suite (17 modalities, --no-record)"
+        run: |
+          t0=$SECONDS
+          echo "[$(date '+%H:%M:%S')] [Diff Stage 3/4] Running 17-modality extended coverage suite (--no-record)..."
+          EXT_JOBS=1
+          if [ -d scratch/golden-store/cells ] && [ -n "$(ls -A scratch/golden-store/cells 2>/dev/null)" ]; then
+            EXT_JOBS=4
+          fi
+          EXTENDED_JOBS="$EXT_JOBS" bash harness/run_extended_coverage.sh --no-record
+          echo "DIFF_STAGE3_S=$((SECONDS - t0))" >> "$GITHUB_ENV"
+          echo "DIFF_STAGE3_STATUS=PASS" >> "$GITHUB_ENV"
+      - name: "[Diff Stage 4/4] Run Level 6 oracle & BAM edge-case self-tests"
+        run: |
+          t0=$SECONDS
+          echo "[$(date '+%H:%M:%S')] [Diff Stage 4/4] Running oracle-backed Level 6 self-tests..."
+          TMP_GS=$(mktemp -d)
+          trap 'rm -rf "$TMP_GS"' EXIT
+          (
+            unset GOLDEN_RUN_ID
+            export GOLDEN_STORE_DIR="$TMP_GS"
+            python3 harness/tests/test_vcf_header.py
+            bash harness/tests/test_run_oracle.sh
+            bash harness/tests/test_run_cpp.sh
+            bash harness/tests/test_compare_sh.sh
+            bash harness/tests/test_edge_cases.sh
+          )
+          dirty=$(git status --porcelain --ignore-submodules=untracked)
+          if [ -n "$dirty" ]; then
+            echo "ERROR: Working tree dirty after differential run:" >&2
+            echo "$dirty" >&2
+            exit 1
+          fi
+          echo "DIFF_STAGE4_S=$((SECONDS - t0))" >> "$GITHUB_ENV"
+          echo "DIFF_STAGE4_STATUS=PASS" >> "$GITHUB_ENV"
+      - name: Publish Differential Telemetry Summary
+        if: always()
+        run: |
+          {
+            echo "## VarDictRust Two-Tier Differential Summary (Tier A)"
+            echo ""
+            echo "| Stage | Suite | Verdict | Elapsed |"
+            echo "| :--- | :--- | :---: | :---: |"
+            echo "| **Stage 1** | Tier-2 Micro Differential Gate (\`fixtures/micro/\`) | \`${DIFF_STAGE1_STATUS:-FAIL}\` | \`${DIFF_STAGE1_S:-0}s\` |"
+            echo "| **Stage 2** | Tier-2 Standard Slices (\`s1a\`–\`s9\`, 10 slices) | \`${DIFF_STAGE2_STATUS:-FAIL}\` | \`${DIFF_STAGE2_S:-0}s\` |"
+            echo "| **Stage 3** | Tier-2 Extended Modalities (\`17 modes\`, \`--no-record\`) | \`${DIFF_STAGE3_STATUS:-FAIL}\` | \`${DIFF_STAGE3_S:-0}s\` |"
+            echo "| **Stage 4** | Level 6 Oracle & BAM Edge-Case Self-Tests | \`${DIFF_STAGE4_STATUS:-FAIL}\` | \`${DIFF_STAGE4_S:-0}s\` |"
+            if [ -n "${GOLDEN_RUN_ID:-}" ] && [ -f scratch/golden-store/stats.log ]; then
+              echo ""
+              echo "### Pinned Golden-Store Baseline Reuse"
+              echo '```text'
+              bash harness/golden_store.sh stats --run "$GOLDEN_RUN_ID" || true
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

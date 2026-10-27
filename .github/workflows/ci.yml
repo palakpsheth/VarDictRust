@@ -20,31 +20,114 @@ jobs:
           submodules: recursive
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
         with:
-          components: rustfmt, clippy
+          components: rustfmt, clippy, llvm-tools-preview
+      - name: Cache Rust Workspace
+        uses: Swatinem/rust-cache@2634bbce9b8fb2cfa56c6fb22cdeed4d8f24fa13 # v2.7.8
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.49.18
+        with:
+          tool: cargo-llvm-cov
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Install System Dependencies (samtools)
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends samtools
       - name: Materialize Reference FASTAs
         run: python3 harness/convert_fastas.py
-      - name: Format
-        run: cargo fmt --all -- --check
-      - name: Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings -A clippy::needless_late_init -A clippy::byte_char_slices
-      - name: Test
-        run: cargo test --all
-      - name: Documentation & UI Test Suite
-        run: python3 -m unittest harness/tests/test_docs_ui.py
-      - name: Bench compile
-        run: cargo bench --no-run
-      - name: Build release
-        run: cargo build --release
-      - name: Integration Corpus Regression (91 PASS / 1 XFAIL)
+      - name: "[CI Stage 1/5] Hygiene & Lint Gate (fmt, clippy, bench compile)"
         run: |
-          bash harness/run_integration.sh 2>&1 | tee integration.log
-          grep -qx 'PASS: 91  XFAIL: 1  FAIL: 0  SKIP: 0  XPASS: 0' integration.log
-          [ "$(grep -c '^XFAIL: ' integration.log)" -eq 1 ]
-          grep -qxF 'XFAIL: Simple;hard_clip_case.fa;hard_clip_next_to_del_test2.bam;test;6434-6564;-f 0.0 -p -r 1.txt (UB-4 upstream fixture defect, verified against live-oracle signature)' integration.log
-      - name: Crash Robustness Suite
-        run: cargo test -p vardictrust --test robustness
-
+          t0=$SECONDS
+          echo "[$(date '+%H:%M:%S')] [CI Stage 1/5] Running cargo fmt, clippy, and bench --no-run..."
+          cargo fmt --all -- --check
+          cargo clippy --all-targets --all-features -- -D warnings -A clippy::needless_late_init -A clippy::byte_char_slices
+          cargo bench --no-run
+          echo "STAGE1_S=$((SECONDS - t0))" >> "$GITHUB_ENV"
+          echo "STAGE1_STATUS=PASS" >> "$GITHUB_ENV"
+      - name: "[CI Stage 2/5] Level 1 Workspace Test & > 90% Coverage Gate"
+        run: |
+          t0=$SECONDS
+          echo "[$(date '+%H:%M:%S')] [CI Stage 2/5] Running workspace tests and enforcing >= 90% line coverage..."
+          cargo llvm-cov --workspace --summary-only --ignore-filename-regex '(^|/)tests/' --fail-under-lines 90 -- --test-threads=4 | tee /tmp/ci_coverage.txt
+          echo "STAGE2_S=$((SECONDS - t0))" >> "$GITHUB_ENV"
+          echo "STAGE2_STATUS=PASS" >> "$GITHUB_ENV"
+      - name: "[CI Stage 3/5] Level 6 Zero-Conda Harness Self-Tests & Two-Tier Release Consistency"
+        env:
+          PR_HEAD_REF: ${{ github.head_ref }}
+        run: |
+          t0=$SECONDS
+          echo "[$(date '+%H:%M:%S')] [CI Stage 3/5] Running zero-conda Python/shell self-tests and release consistency validator..."
+          TMP_GS=$(mktemp -d)
+          trap 'rm -rf "$TMP_GS"' EXIT
+          for py_test in \
+            harness/tests/test_bioconda_recipe.py \
+            harness/tests/test_compare_vcf.py \
+            harness/tests/test_docs_ui.py \
+            harness/tests/test_golden_store.py \
+            harness/tests/test_profile_catalog.py \
+            harness/tests/test_select_slice_regions.py \
+            harness/tests/test_stdlib_purity.py; do
+            GOLDEN_STORE_DIR="$TMP_GS" python3 "$py_test"
+          done
+          for sh_test in \
+            harness/tests/test_golden_wiring.sh \
+            harness/tests/test_perf_budget.sh \
+            harness/tests/test_courtesy.sh \
+            harness/tests/test_env_pinned.sh \
+            harness/tests/test_fetch_data.sh \
+            harness/tests/test_release_deps.sh; do
+            GOLDEN_STORE_DIR="$TMP_GS" bash "$sh_test"
+          done
+          EXTRA_REL_FLAGS=()
+          if [[ "${PR_HEAD_REF:-}" == release/* ]]; then
+            EXTRA_REL_FLAGS+=(--require-head-fingerprint)
+          fi
+          python3 .agents/skills/vardictrust-release/scripts/check_release_consistency.py --phase pre-tag "${EXTRA_REL_FLAGS[@]}"
+          echo "STAGE3_S=$((SECONDS - t0))" >> "$GITHUB_ENV"
+          echo "STAGE3_STATUS=PASS" >> "$GITHUB_ENV"
+      - name: "[CI Stage 4/5] Level 2 Integration Corpus (92 Fixtures: 91 PASS / 1 XFAIL)"
+        run: |
+          t0=$SECONDS
+          echo "[$(date '+%H:%M:%S')] [CI Stage 4/5] Building release binary and running 92-fixture integration corpus..."
+          cargo build --release -p vardictrust
+          export VARDICT_BIN="$PWD/target/release/vardictrust"
+          INTEGRATION_JOBS=4 bash harness/run_integration.sh 2>&1 | tee /tmp/ci_integration.log
+          grep -qx 'PASS: 91  XFAIL: 1  FAIL: 0  SKIP: 0  XPASS: 0' /tmp/ci_integration.log
+          [ "$(grep -c '^XFAIL: ' /tmp/ci_integration.log)" -eq 1 ]
+          grep -qxF 'XFAIL: Simple;hard_clip_case.fa;hard_clip_next_to_del_test2.bam;test;6434-6564;-f 0.0 -p -r 1.txt (UB-4 upstream fixture defect, verified against live-oracle signature)' /tmp/ci_integration.log
+          echo "STAGE4_S=$((SECONDS - t0))" >> "$GITHUB_ENV"
+          echo "STAGE4_STATUS=PASS" >> "$GITHUB_ENV"
+      - name: "[CI Stage 5/5] Level 5 Continuous Perf Budget & Working-Tree Cleanliness"
+        run: |
+          t0=$SECONDS
+          echo "[$(date '+%H:%M:%S')] [CI Stage 5/5] Verifying performance budget and working-tree cleanliness..."
+          python3 harness/perf_budget.py hg008-tier2 seqc2-exome-tier2 hg002-tier2 amplicon-tier2
+          dirty=$(git status --porcelain --ignore-submodules=untracked)
+          if [ -n "$dirty" ]; then
+            echo "ERROR: Working tree dirty after CI run:" >&2
+            echo "$dirty" >&2
+            exit 1
+          fi
+          echo "STAGE5_S=$((SECONDS - t0))" >> "$GITHUB_ENV"
+          echo "STAGE5_STATUS=PASS" >> "$GITHUB_ENV"
+      - name: Publish CI Telemetry Summary
+        if: always()
+        run: |
+          {
+            echo "## VarDictRust Two-Tier CI Summary (Tier A)"
+            echo ""
+            echo "| Stage | Gate | Verdict | Elapsed |"
+            echo "| :--- | :--- | :---: | :---: |"
+            echo "| **Stage 1** | Hygiene & Lint (\`fmt\`, \`clippy\`, \`bench --no-run\`) | \`${STAGE1_STATUS:-FAIL}\` | \`${STAGE1_S:-0}s\` |"
+            echo "| **Stage 2** | Workspace Tests & \`> 90%\` Coverage (\`cargo-llvm-cov\`) | \`${STAGE2_STATUS:-FAIL}\` | \`${STAGE2_S:-0}s\` |"
+            echo "| **Stage 3** | Level 6 Harness Self-Tests & Release Consistency | \`${STAGE3_STATUS:-FAIL}\` | \`${STAGE3_S:-0}s\` |"
+            echo "| **Stage 4** | Level 2 Integration Corpus (\`91 PASS / 1 XFAIL\`) | \`${STAGE4_STATUS:-FAIL}\` | \`${STAGE4_S:-0}s\` |"
+            echo "| **Stage 5** | Level 5 Perf Budget & Working-Tree Cleanliness | \`${STAGE5_STATUS:-FAIL}\` | \`${STAGE5_S:-0}s\` |"
+            if [ -f /tmp/ci_coverage.txt ]; then
+              echo ""
+              echo "### Rust Workspace Coverage (\`cargo-llvm-cov\`)"
+              echo '```text'
+              tail -n 20 /tmp/ci_coverage.txt
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

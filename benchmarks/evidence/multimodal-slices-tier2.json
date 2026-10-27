@@ -1,7 +1,7 @@
 {
   "suite": "multimodal_multislice_parity_suite",
-  "timestamp": "\"2026-10-27T01:18:44Z\"",
-  "fingerprint": "08b397ab1d32e857",
+  "timestamp": "\"2026-10-27T03:02:39Z\"",
+  "fingerprint": "11ba91f130e9ce72",
   "mode": "tier-2-live-oracle-strict-bytes",
   "total_slices": 18,
   "slices_passed": 18,
@@ -14,51 +14,279 @@
     "events": [
       {
         "event": "HIT",
+        "key": "812a562f853bf2da",
+        "kind": "java",
+        "label": "compare"
+      },
+      {
+        "event": "HIT",
+        "key": "60b073b76fa647d6",
+        "kind": "cpp",
+        "label": "compare"
+      },
+      {
+        "event": "HIT",
+        "key": "9ffe2ba39a9fe1d4",
+        "kind": "java",
+        "label": "compare"
+      },
+      {
+        "event": "HIT",
+        "key": "49f8f07fe4bb7034",
+        "kind": "cpp",
+        "label": "compare"
+      },
+      {
+        "event": "HIT",
+        "key": "0f8ceb6199fe6df2",
+        "kind": "java",
+        "label": "compare"
+      },
+      {
+        "event": "HIT",
+        "key": "a022fe48312be93f",
+        "kind": "cpp",
+        "label": "compare"
+      },
+      {
+        "event": "HIT",
+        "key": "f4ff71cbfb2663a3",
+        "kind": "java",
+        "label": "compare"
+      },
+      {
+        "event": "HIT",
+        "key": "e04af8231e2ba279",
+        "kind": "cpp",
+        "label": "compare"
+      },
+      {
+        "event": "HIT",
+        "key": "c4273dea4ca47a9e",
+        "kind": "java",
+        "label": "compare"
+      },
+      {
+        "event": "HIT",
+        "key": "c3396f8565410f88",
+        "kind": "cpp",
+        "label": "compare"
+      },
+      {
+        "event": "HIT",
+        "key": "7cc4d107c26574ea",
+        "kind": "cpp",
+        "label": "cram-twin-bam"
+      },
+      {
+        "event": "HIT",
+        "key": "6be32d4c46b655b3",
+        "kind": "cpp",
+        "label": "cram-twin-cram"
+      },
+      {
+        "event": "HIT",
+        "key": "68fe6f4fe2d51734",
+        "kind": "java",
+        "label": "ext-m3"
+      },
+      {
+        "event": "HIT",
+        "key": "95256b2e252bf0f8",
+        "kind": "java",
+        "label": "ext-m4"
+      },
+      {
+        "event": "HIT",
+        "key": "5e9d342c73f278fc",
+        "kind": "java",
+        "label": "ext-m2"
+      },
+      {
+        "event": "HIT",
+        "key": "9e3d07453768ced0",
+        "kind": "java",
+        "label": "ext-m8"
+      },
+      {
+        "event": "HIT",
+        "key": "9929100052fa2625",
+        "kind": "java",
+        "label": "ext-m5"
+      },
+      {
+        "event": "HIT",
+        "key": "dc08ead6d74de200",
+        "kind": "java",
+        "label": "ext-m7"
+      },
+      {
+        "event": "HIT",
+        "key": "0334870c2216a9e7",
+        "kind": "java",
+        "label": "ext-m6"
+      },
+      {
+        "event": "HIT",
+        "key": "df91776f384d0091",
+        "kind": "java",
+        "label": "ext-m1"
+      },
+      {
+        "event": "HIT",
+        "key": "b60e929ae70e8b5e",
+        "kind": "cpp",
+        "label": "ext-m4"
+      },
+      {
+        "event": "HIT",
+        "key": "ab485306690eaee3",
+        "kind": "java",
+        "label": "ext-m9"
+      },
+      {
+        "event": "HIT",
+        "key": "45fcb4b843126775",
+        "kind": "cpp",
+        "label": "ext-m3"
+      },
+      {
+        "event": "HIT",
+        "key": "bbec0a01de25068a",
+        "kind": "cpp",
+        "label": "ext-m2"
+      },
+      {
+        "event": "HIT",
+        "key": "c7ff68712c519446",
+        "kind": "java",
+        "label": "ext-m10"
+      },
+      {
+        "event": "HIT",
+        "key": "70c3fa4c80c2fa91",
+        "kind": "java",
+        "label": "ext-m11"
+      },
+      {
+        "event": "HIT",
+        "key": "6847e830e93ea6ec",
+        "kind": "java",
+        "label": "ext-m12"
+      },
+      {
+        "event": "HIT",
+        "key": "629e880f4edc8d5d",
+        "kind": "cpp",
+        "label": "ext-m10"
+      },
+      {
+        "event": "HIT",
+        "key": "e414dc335d4277f8",
+        "kind": "cpp",
+        "label": "ext-m11"
+      },
+      {
+        "event": "HIT",
+        "key": "a02ae53f65514324",
+        "kind": "cpp",
+        "label": "ext-m12"
+      },
+      {
+        "event": "HIT",
+        "key": "69a0a409fe7bad8a",
+        "kind": "java",
+        "label": "ext-m13"
+      },
+      {
+        "event": "HIT",
+        "key": "7eb2cc08482ab2ef",
+        "kind": "java",
+        "label": "ext-m14"
+      },
+      {
+        "event": "HIT",
+        "key": "004b41ee9cf78a80",
+        "kind": "java",
+        "label": "ext-m15"
+      },
+      {
+        "event": "HIT",
+        "key": "e6d056242d746c8f",
+        "kind": "cpp",
+        "label": "ext-m13"
+      },
+      {
+        "event": "HIT",
+        "key": "c822b61588587dd6",
+        "kind": "cpp",
+        "label": "ext-m14"
+      },
+      {
+        "event": "HIT",
+        "key": "20f3214d292b7dbf",
+        "kind": "cpp",
+        "label": "ext-m15"
+      },
+      {
+        "event": "HIT",
+        "key": "c7fb318d5d22740c",
+        "kind": "java",
+        "label": "ext-m16"
+      },
+      {
+        "event": "HIT",
+        "key": "ee70eec8dbedfcd9",
+        "kind": "java",
+        "label": "ext-m17"
+      },
+      {
+        "event": "HIT",
+        "key": "5ba2668ee40a2bd8",
+        "kind": "cpp",
+        "label": "ext-m16"
+      },
+      {
+        "event": "HIT",
+        "key": "843271922acfd4d4",
+        "kind": "cpp",
+        "label": "ext-m17"
+      },
+      {
+        "event": "HIT",
+        "key": "b5ef5b63326368f1",
+        "kind": "cpp",
+        "label": "ext-m5"
+      },
+      {
+        "event": "HIT",
+        "key": "b1ef0bb96fe1d246",
+        "kind": "cpp",
+        "label": "ext-m6"
+      },
+      {
+        "event": "HIT",
+        "key": "05d6b4ca87c85f9e",
+        "kind": "cpp",
+        "label": "ext-m8"
+      },
+      {
+        "event": "HIT",
+        "key": "7b1a057921ca1362",
+        "kind": "cpp",
+        "label": "ext-m7"
+      },
+      {
+        "event": "HIT",
+        "key": "ef6daf521dc99568",
+        "kind": "cpp",
+        "label": "ext-m9"
+      },
+      {
+        "event": "HIT",
         "key": "bb5a10e6457184ee",
         "kind": "java",
         "label": "mm-HG005_1A"
-      },
-      {
-        "event": "HIT",
-        "key": "b4a2d07eebbea383",
-        "kind": "cpp",
-        "label": "mm-HG005_1A"
-      },
-      {
-        "event": "HIT",
-        "key": "99551d098e1651b3",
-        "kind": "java",
-        "label": "mm-HG005_1B"
-      },
-      {
-        "event": "HIT",
-        "key": "69184dce1421de14",
-        "kind": "cpp",
-        "label": "mm-HG005_1B"
-      },
-      {
-        "event": "HIT",
-        "key": "cae6c21ebf7f49e6",
-        "kind": "java",
-        "label": "mm-HG005_1C"
-      },
-      {
-        "event": "HIT",
-        "key": "2fa8c5bd97777328",
-        "kind": "cpp",
-        "label": "mm-HG005_1C"
-      },
-      {
-        "event": "HIT",
-        "key": "41c48f149bee3cc8",
-        "kind": "java",
-        "label": "mm-SEQC2_2A"
-      },
-      {
-        "event": "HIT",
-        "key": "7ef8197a186b955b",
-        "kind": "cpp",
-        "label": "mm-SEQC2_2A"
       },
       {
         "event": "HIT",
@@ -68,33 +296,21 @@
       },
       {
         "event": "HIT",
-        "key": "6537d0d870efb586",
-        "kind": "cpp",
-        "label": "mm-SEQC2_2B"
-      },
-      {
-        "event": "HIT",
-        "key": "bb6e5c619ff5de68",
+        "key": "cae6c21ebf7f49e6",
         "kind": "java",
-        "label": "mm-SEQC2_2C"
+        "label": "mm-HG005_1C"
       },
       {
         "event": "HIT",
-        "key": "d67911748a7f8165",
-        "kind": "cpp",
-        "label": "mm-SEQC2_2C"
-      },
-      {
-        "event": "HIT",
-        "key": "c2eb43f2e5fe5f7b",
+        "key": "99551d098e1651b3",
         "kind": "java",
-        "label": "mm-HG002_3A"
+        "label": "mm-HG005_1B"
       },
       {
         "event": "HIT",
-        "key": "d8106001ae1a7f3f",
-        "kind": "cpp",
-        "label": "mm-HG002_3A"
+        "key": "41c48f149bee3cc8",
+        "kind": "java",
+        "label": "mm-SEQC2_2A"
       },
       {
         "event": "HIT",
@@ -104,9 +320,33 @@
       },
       {
         "event": "HIT",
-        "key": "a0e440474b6b584d",
+        "key": "c2eb43f2e5fe5f7b",
+        "kind": "java",
+        "label": "mm-HG002_3A"
+      },
+      {
+        "event": "HIT",
+        "key": "bb6e5c619ff5de68",
+        "kind": "java",
+        "label": "mm-SEQC2_2C"
+      },
+      {
+        "event": "HIT",
+        "key": "6537d0d870efb586",
         "kind": "cpp",
-        "label": "mm-HG002_3B"
+        "label": "mm-SEQC2_2B"
+      },
+      {
+        "event": "HIT",
+        "key": "7ef8197a186b955b",
+        "kind": "cpp",
+        "label": "mm-SEQC2_2A"
+      },
+      {
+        "event": "HIT",
+        "key": "b4a2d07eebbea383",
+        "kind": "cpp",
+        "label": "mm-HG005_1A"
       },
       {
         "event": "HIT",
@@ -116,9 +356,9 @@
       },
       {
         "event": "HIT",
-        "key": "6fdbc3f8d0082d47",
+        "key": "a0e440474b6b584d",
         "kind": "cpp",
-        "label": "mm-HG002_3C"
+        "label": "mm-HG002_3B"
       },
       {
         "event": "HIT",
@@ -128,20 +368,26 @@
       },
       {
         "event": "HIT",
-        "key": "695f49f571e9ebc4",
+        "key": "69184dce1421de14",
         "kind": "cpp",
-        "label": "mm-HG008_4A"
+        "label": "mm-HG005_1B"
+      },
+      {
+        "event": "HIT",
+        "key": "d8106001ae1a7f3f",
+        "kind": "cpp",
+        "label": "mm-HG002_3A"
+      },
+      {
+        "event": "HIT",
+        "key": "2fa8c5bd97777328",
+        "kind": "cpp",
+        "label": "mm-HG005_1C"
       },
       {
         "event": "HIT",
         "key": "fae0a6a5dbd88ad6",
         "kind": "java",
-        "label": "mm-HG008_4B"
-      },
-      {
-        "event": "HIT",
-        "key": "c46658bd99c3e2d9",
-        "kind": "cpp",
         "label": "mm-HG008_4B"
       },
       {
@@ -152,9 +398,9 @@
       },
       {
         "event": "HIT",
-        "key": "b500555e47194316",
+        "key": "6fdbc3f8d0082d47",
         "kind": "cpp",
-        "label": "mm-HG008_4C"
+        "label": "mm-HG002_3C"
       },
       {
         "event": "HIT",
@@ -164,20 +410,14 @@
       },
       {
         "event": "HIT",
-        "key": "a7c10ff4ea42dd55",
+        "key": "d67911748a7f8165",
         "kind": "cpp",
-        "label": "mm-NA24385_5A"
+        "label": "mm-SEQC2_2C"
       },
       {
         "event": "HIT",
         "key": "2036462635c58740",
         "kind": "java",
-        "label": "mm-NA24385_5B"
-      },
-      {
-        "event": "HIT",
-        "key": "982528d62f741ae4",
-        "kind": "cpp",
         "label": "mm-NA24385_5B"
       },
       {
@@ -188,9 +428,9 @@
       },
       {
         "event": "HIT",
-        "key": "050caf8a85d4547b",
+        "key": "695f49f571e9ebc4",
         "kind": "cpp",
-        "label": "mm-NA24385_5C"
+        "label": "mm-HG008_4A"
       },
       {
         "event": "HIT",
@@ -206,14 +446,44 @@
       },
       {
         "event": "HIT",
+        "key": "982528d62f741ae4",
+        "kind": "cpp",
+        "label": "mm-NA24385_5B"
+      },
+      {
+        "event": "HIT",
         "key": "75e945b554003c7a",
         "kind": "java",
         "label": "mm-RNA_6C"
+      },
+      {
+        "event": "HIT",
+        "key": "b500555e47194316",
+        "kind": "cpp",
+        "label": "mm-HG008_4C"
+      },
+      {
+        "event": "HIT",
+        "key": "050caf8a85d4547b",
+        "kind": "cpp",
+        "label": "mm-NA24385_5C"
+      },
+      {
+        "event": "HIT",
+        "key": "c46658bd99c3e2d9",
+        "kind": "cpp",
+        "label": "mm-HG008_4B"
+      },
+      {
+        "event": "HIT",
+        "key": "a7c10ff4ea42dd55",
+        "kind": "cpp",
+        "label": "mm-NA24385_5A"
       }
     ],
-    "hit": 33,
+    "hit": 78,
     "live": 0,
-    "run": "mm-1793063908"
+    "run": "recertify-1793068445"
   },
   "result": "MATCH",
   "slices": [
@@ -223,7 +493,7 @@
       "region": "chr3 40000000 40010000",
       "variants": 31,
       "status": "MATCH",
-      "time_ms": 883
+      "time_ms": 842
     },
     {
       "slice_id": "HG005_1B",
@@ -231,7 +501,7 @@
       "region": "chr6 30000000 30010000",
       "variants": 10,
       "status": "MATCH",
-      "time_ms": 681
+      "time_ms": 982
     },
     {
       "slice_id": "HG005_1C",
@@ -239,7 +509,7 @@
       "region": "chr21 20000000 20010000",
       "variants": 8,
       "status": "MATCH",
-      "time_ms": 722
+      "time_ms": 1095
     },
     {
       "slice_id": "SEQC2_2A",
@@ -247,7 +517,7 @@
       "region": "chr7 140400000 140420000",
       "variants": 31,
       "status": "MATCH",
-      "time_ms": 438
+      "time_ms": 565
     },
     {
       "slice_id": "SEQC2_2B",
@@ -255,7 +525,7 @@
       "region": "chr11 530000 550000",
       "variants": 16,
       "status": "MATCH",
-      "time_ms": 576
+      "time_ms": 567
     },
     {
       "slice_id": "SEQC2_2C",
@@ -263,7 +533,7 @@
       "region": "chr12 25200000 25250000",
       "variants": 55,
       "status": "MATCH",
-      "time_ms": 985
+      "time_ms": 1260
     },
     {
       "slice_id": "HG002_3A",
@@ -271,7 +541,7 @@
       "region": "chr20 10000000 10020000",
       "variants": 337,
       "status": "MATCH",
-      "time_ms": 762
+      "time_ms": 1011
     },
     {
       "slice_id": "HG002_3B",
@@ -279,7 +549,7 @@
       "region": "chr20 20000000 20020000",
       "variants": 273,
       "status": "MATCH",
-      "time_ms": 689
+      "time_ms": 815
     },
     {
       "slice_id": "HG002_3C",
@@ -287,7 +557,7 @@
       "region": "chr20 30000000 30020000",
       "variants": 4,
       "status": "MATCH",
-      "time_ms": 182
+      "time_ms": 216
     },
     {
       "slice_id": "HG008_4A",
@@ -295,7 +565,7 @@
       "region": "chr1 1743056 1744086 slice_1_6",
       "variants": 23,
       "status": "MATCH",
-      "time_ms": 382
+      "time_ms": 510
     },
     {
       "slice_id": "HG008_4B",
@@ -303,7 +573,7 @@
       "region": "chr1 6170843 6182754 slice_2_3",
       "variants": 50,
       "status": "MATCH",
-      "time_ms": 1025
+      "time_ms": 1250
     },
     {
       "slice_id": "HG008_4C",
@@ -311,7 +581,7 @@
       "region": "chr1 56757190 56764123 slice_3_4",
       "variants": 42,
       "status": "MATCH",
-      "time_ms": 520
+      "time_ms": 913
     },
     {
       "slice_id": "NA24385_5A",
@@ -319,7 +589,7 @@
       "region": "1 246981051 246981611",
       "variants": 25,
       "status": "MATCH",
-      "time_ms": 891
+      "time_ms": 1462
     },
     {
       "slice_id": "NA24385_5B",
@@ -327,7 +597,7 @@
       "region": "19 58559581 58567861",
       "variants": 20,
       "status": "MATCH",
-      "time_ms": 81
+      "time_ms": 266
     },
     {
       "slice_id": "NA24385_5C",
@@ -335,7 +605,7 @@
       "region": "20 36018823 36039513",
       "variants": 181,
       "status": "MATCH",
-      "time_ms": 198
+      "time_ms": 719
     },
     {
       "slice_id": "RNA_6A",
@@ -343,7 +613,7 @@
       "region": "chr8:90534611-90550000",
       "variants": 3,
       "status": "MATCH",
-      "time_ms": 59
+      "time_ms": 212
     },
     {
       "slice_id": "RNA_6B",
@@ -351,7 +621,7 @@
       "region": "chr8:90550000-90580000",
       "variants": 8,
       "status": "MATCH",
-      "time_ms": 66
+      "time_ms": 279
     },
     {
       "slice_id": "RNA_6C",
@@ -359,7 +629,7 @@
       "region": "chr8:90580000-90620070",
       "variants": 12,
       "status": "MATCH",
-      "time_ms": 75
+      "time_ms": 192
     }
   ]
 }

@@ -13,7 +13,7 @@
   ],
   "compare_head": [],
   "cpp_time": null,
-  "date": "2026-10-26T16:51:53-07:00",
+  "date": "2026-10-26T19:59:16-07:00",
   "extra": {
     "cpp_f1": 0.1555,
     "cpp_f1_normalized": 0.1555,
@@ -37,8 +37,8 @@
       "tp_call": 1056
     }
   },
-  "fingerprint": "08b397ab1d32e857",
-  "head": "b90c84ef1c1ea398ff9785f7ac38040302618fd0",
+  "fingerprint": "11ba91f130e9ce72",
+  "head": "eab3bb8ac3a70f19cf2cb36c7a5816bf095f1994",
   "java_time": null,
   "n_variants": null,
   "name": "seqc2-truth",

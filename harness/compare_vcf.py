@@ -63,30 +63,34 @@ def keyof(r): return (r[0], r[1], r[3], r[4])  # CHROM, POS, REF, ALT
 def group(rows):
     g = defaultdict(list)
     for r in rows: g[keyof(r)].append(r)
-    for k in g: g[k].sort(key="\t".join)
+    for v in g.values():
+        if len(v) > 1: v.sort(key="\t".join)
     return g
 
 def compare_pair(k, j, r, eps, errs, strict=None):
+    if j == r: return
     w = f"{k[0]}:{k[1]} {k[2]}>{k[3]}"
     if j[6] != r[6]: errs.append(f"{w} FILTER: {j[6]!r} != {r[6]!r}")
     if not eq(j[5], r[5], eps): errs.append(f"{w} QUAL: {j[5]!r} != {r[5]!r}")
     elif strict is not None and j[5] != r[5]: strict.append(f"{w} QUAL: {j[5]!r} vs {r[5]!r}")
-    ij, ir = kv(j[7]), kv(r[7])
-    if set(ij) != set(ir):
-        errs.append(f"{w} INFO keys: only-java={sorted(set(ij)-set(ir))} only-rust={sorted(set(ir)-set(ij))}")
-    else:
-        for key in ij:
-            if ij[key] is True or ir[key] is True:
-                if ij[key] != ir[key]: errs.append(f"{w} INFO {key}: {ij[key]!r} != {ir[key]!r}")
-            elif not eq(str(ij[key]), str(ir[key]), eps):
-                errs.append(f"{w} INFO {key}: {ij[key]!r} != {ir[key]!r}")
-            elif strict is not None and str(ij[key]) != str(ir[key]):
-                strict.append(f"{w} INFO {key}: {ij[key]!r} vs {ir[key]!r}")
-    if len(j) > 9 and len(r) > 9:
+    if j[7] != r[7]:
+        ij, ir = kv(j[7]), kv(r[7])
+        if set(ij) != set(ir):
+            errs.append(f"{w} INFO keys: only-java={sorted(set(ij)-set(ir))} only-rust={sorted(set(ir)-set(ij))}")
+        else:
+            for key in ij:
+                if ij[key] is True or ir[key] is True:
+                    if ij[key] != ir[key]: errs.append(f"{w} INFO {key}: {ij[key]!r} != {ir[key]!r}")
+                elif not eq(str(ij[key]), str(ir[key]), eps):
+                    errs.append(f"{w} INFO {key}: {ij[key]!r} != {ir[key]!r}")
+                elif strict is not None and str(ij[key]) != str(ir[key]):
+                    strict.append(f"{w} INFO {key}: {ij[key]!r} vs {ir[key]!r}")
+    if len(j) > 9 and len(r) > 9 and j[8:] != r[8:]:
         if j[8] != r[8]: errs.append(f"{w} FORMAT keys: {j[8]!r} != {r[8]!r}")
         else:
             fkeys = j[8].split(":")
             for si in range(9, min(len(j), len(r))):
+                if j[si] == r[si]: continue
                 for key, xj, xr in zip(fkeys, j[si].split(":"), r[si].split(":")):
                     if not eq(xj, xr, eps): errs.append(f"{w} sample{si-9} {key}: {xj!r} != {xr!r}")
                     elif strict is not None and xj != xr: strict.append(f"{w} sample{si-9} {key}: {xj!r} vs {xr!r}")

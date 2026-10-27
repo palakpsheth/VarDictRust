@@ -20,7 +20,7 @@
     "max_rss_kb": "252992",
     "wall": "0:06.14"
   },
-  "date": "2026-10-26T16:24:41-07:00",
+  "date": "2026-10-26T19:36:14-07:00",
   "extra": {
     "cpp_chunk": "50000",
     "cpp_head": [
@@ -35,6 +35,30 @@
       "events": [
         {
           "event": "HIT",
+          "key": "812a562f853bf2da",
+          "kind": "java",
+          "label": "compare"
+        },
+        {
+          "event": "HIT",
+          "key": "60b073b76fa647d6",
+          "kind": "cpp",
+          "label": "compare"
+        },
+        {
+          "event": "HIT",
+          "key": "9ffe2ba39a9fe1d4",
+          "kind": "java",
+          "label": "compare"
+        },
+        {
+          "event": "HIT",
+          "key": "49f8f07fe4bb7034",
+          "kind": "cpp",
+          "label": "compare"
+        },
+        {
+          "event": "HIT",
           "key": "0f8ceb6199fe6df2",
           "kind": "java",
           "label": "compare"
@@ -46,13 +70,13 @@
           "label": "compare"
         }
       ],
-      "hit": 2,
+      "hit": 6,
       "live": 0,
-      "run": "compare-2957658-1793057070"
+      "run": "recertify-1793068445"
     }
   },
-  "fingerprint": "08b397ab1d32e857",
-  "head": "b90c84ef1c1ea398ff9785f7ac38040302618fd0",
+  "fingerprint": "11ba91f130e9ce72",
+  "head": "eab3bb8ac3a70f19cf2cb36c7a5816bf095f1994",
   "java_time": {
     "exit": "0",
     "max_rss_kb": "2596896",
@@ -63,7 +87,7 @@
   "result": "MATCH",
   "rust_time": {
     "exit": "0",
-    "max_rss_kb": "153736",
-    "wall": "0:07.00"
+    "max_rss_kb": "160048",
+    "wall": "0:06.14"
   }
 }

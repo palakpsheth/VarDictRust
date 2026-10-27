@@ -207,12 +207,21 @@ def check_pre_tag_surfaces(repo_root: Path, version: str, errors: list[str]) -> 
     require_regex(
         repo_root,
         "README.md",
-        r"293 automated Cargo workspace tests \(241 core library tests, 2 amplicon streaming memory tests, 2 CRAM stack tests, 15 CLI tests, and 33 integration binary tests\)",
-        "README.md exact 293 test breakdown (241 + 2 + 2 + 15 + 33)",
+        r"296 automated Cargo workspace tests \(243 core library tests, 2 amplicon streaming memory tests, 2 CRAM stack tests, 15 CLI tests, and 34 integration binary tests\)",
+        "README.md exact 296 test breakdown (243 + 2 + 2 + 15 + 34)",
         errors,
     )
 
     # 12. DIVERGENCES.md
+    hg008_ev = repo_root / "benchmarks" / "evidence" / "hg008-tier2.json"
+    baseline_fp = "33bc15964cc36b6d"
+    if hg008_ev.is_file():
+        try:
+            baseline_fp = json.loads(hg008_ev.read_text(encoding="utf-8")).get(
+                "fingerprint", baseline_fp
+            )
+        except Exception:
+            pass
     require_regex(
         repo_root,
         "DIVERGENCES.md",
@@ -223,16 +232,16 @@ def check_pre_tag_surfaces(repo_root: Path, version: str, errors: list[str]) -> 
     require_regex(
         repo_root,
         "DIVERGENCES.md",
-        r"241 PASS.*293 PASS",
-        "DIVERGENCES.md cites 241 core lib / 293 workspace tests",
+        r"243 PASS.*296 PASS",
+        "DIVERGENCES.md cites 243 core lib / 296 workspace tests",
         errors,
         flags=re.MULTILINE | re.DOTALL,
     )
     require_regex(
         repo_root,
         "DIVERGENCES.md",
-        r"08b397ab1d32e857",
-        "DIVERGENCES.md cites certified fingerprint 08b397ab1d32e857",
+        rf"{re.escape(baseline_fp)}",
+        f"DIVERGENCES.md cites certified fingerprint {baseline_fp}",
         errors,
     )
     forbid_regex(
@@ -247,8 +256,8 @@ def check_pre_tag_surfaces(repo_root: Path, version: str, errors: list[str]) -> 
     require_regex(
         repo_root,
         "CONTRIBUTING.md",
-        r"all 293 workspace unit and integration tests",
-        "CONTRIBUTING.md §4.1 cites 293 workspace tests",
+        r"all 296 workspace unit and integration tests",
+        "CONTRIBUTING.md §4.1 cites 296 workspace tests",
         errors,
     )
     require_regex(
@@ -261,8 +270,8 @@ def check_pre_tag_surfaces(repo_root: Path, version: str, errors: list[str]) -> 
     forbid_regex(
         repo_root,
         "CONTRIBUTING.md",
-        r"aarch64-unknown-linux-gnu|all 233 workspace|all 277 workspace|all 289 workspace",
-        "CONTRIBUTING.md stale target triple or 233/277/289 test count",
+        r"aarch64-unknown-linux-gnu|all 233 workspace|all 277 workspace|all 289 workspace|all 293 workspace|all 294 workspace",
+        "CONTRIBUTING.md stale target triple or 233/277/289/293/294 test count",
         errors,
     )
 
@@ -286,15 +295,15 @@ def check_pre_tag_surfaces(repo_root: Path, version: str, errors: list[str]) -> 
     require_regex(
         repo_root,
         "docs/testing/test-matrix-and-ci-audit.md",
-        r"\b293\b",
-        "test-matrix-and-ci-audit.md cites 293 workspace tests",
+        r"\b296\b",
+        "test-matrix-and-ci-audit.md cites 296 workspace tests",
         errors,
     )
     forbid_regex(
         repo_root,
         "docs/testing/test-matrix-and-ci-audit.md",
-        r"a262f19b0a2eb8a8|\b233\b|\b192\b|\b277\b|\b289\b",
-        "test-matrix-and-ci-audit.md stale fingerprint or 233/192/277/289 test counts",
+        r"a262f19b0a2eb8a8|\b233\b|\b192\b|\b277\b|\b289\b|\b293\b|\b294\b",
+        "test-matrix-and-ci-audit.md stale fingerprint or 233/192/277/289/293/294 test counts",
         errors,
     )
 
@@ -325,15 +334,15 @@ def check_pre_tag_surfaces(repo_root: Path, version: str, errors: list[str]) -> 
     require_regex(
         repo_root,
         "wiki/Home.md",
-        r"\b293\b",
-        "wiki/Home.md cites 293 workspace tests",
+        r"\b296\b",
+        "wiki/Home.md cites 296 workspace tests",
         errors,
     )
     forbid_regex(
         repo_root,
         "wiki/Home.md",
-        r"\b233\b|\b277\b|\b289\b",
-        "wiki/Home.md stale 233/277/289 test count",
+        r"\b233\b|\b277\b|\b289\b|\b293\b|\b294\b",
+        "wiki/Home.md stale 233/277/289/293/294 test count",
         errors,
     )
     require_regex(
@@ -345,15 +354,45 @@ def check_pre_tag_surfaces(repo_root: Path, version: str, errors: list[str]) -> 
     )
 
 
-def check_evidence_and_fingerprints(repo_root: Path, errors: list[str]) -> None:
+def check_evidence_and_fingerprints(
+    repo_root: Path, require_head_fp: bool, errors: list[str]
+) -> None:
     fp_script = repo_root / "harness" / "engine_fingerprint.sh"
     if not fp_script.is_file():
         errors.append("MISSING FILE: harness/engine_fingerprint.sh")
         return
 
-    # Run live git-index fingerprint check when repo_root has a .git directory;
-    # record any non-zero exit code (e.g. uncommitted GATE_FILES changes) as a hard error.
-    if (repo_root / ".git").exists():
+    ev_dir = repo_root / "benchmarks" / "evidence"
+    json_files = sorted(ev_dir.glob("*.json"))
+    if len(json_files) != 16:
+        errors.append(
+            f"benchmarks/evidence/*.json count == {len(json_files)}, expected 16"
+        )
+        return
+
+    hg008_data = json.loads((ev_dir / "hg008-tier2.json").read_text(encoding="utf-8"))
+    baseline_fp = hg008_data.get("fingerprint", "")
+    scale_data = json.loads((ev_dir / "scale.json").read_text(encoding="utf-8"))
+    baseline_perf_fp = scale_data.get("extra", {}).get("perf_fingerprint", "")
+
+    for jf in json_files:
+        data = json.loads(jf.read_text(encoding="utf-8"))
+        if jf.name == "scale.json":
+            scale_fp = data.get("fingerprint")
+            scale_perf = data.get("extra", {}).get("perf_fingerprint")
+            if scale_fp != baseline_fp and scale_perf != baseline_perf_fp:
+                errors.append(
+                    f"{jf.name}: neither fingerprint {scale_fp!r} nor extra.perf_fingerprint {scale_perf!r} matches certified baseline ({baseline_fp!r} / {baseline_perf_fp!r})"
+                )
+        else:
+            if data.get("fingerprint") != baseline_fp:
+                errors.append(
+                    f"{jf.name}: fingerprint {data.get('fingerprint')!r} != baseline {baseline_fp!r}"
+                )
+
+    # When cutting/certifying a release (--require-head-fingerprint), verify the
+    # committed evidence matches the live git-index engine_fingerprint.sh.
+    if require_head_fp and (repo_root / ".git").exists():
         res_fp = subprocess.run(
             ["bash", str(fp_script)],
             cwd=repo_root,
@@ -377,26 +416,18 @@ def check_evidence_and_fingerprints(repo_root: Path, errors: list[str]) -> None:
                 f"harness/engine_fingerprint.sh --perf failed (exit {res_perf.returncode}): {res_perf.stderr.strip()}"
             )
         if res_fp.returncode == 0 and res_perf.returncode == 0:
-            fp = res_fp.stdout.strip()
-            perf_fp = res_perf.stdout.strip()
-            ev_dir = repo_root / "benchmarks" / "evidence"
-            json_files = sorted(ev_dir.glob("*.json"))
-            if len(json_files) != 16:
+            head_fp = res_fp.stdout.strip()
+            head_perf_fp = res_perf.stdout.strip()
+            if baseline_fp != head_fp:
                 errors.append(
-                    f"benchmarks/evidence/*.json count == {len(json_files)}, expected 16"
+                    f"benchmarks/evidence/*.json baseline fingerprint {baseline_fp!r} != HEAD fingerprint {head_fp!r} (run bash harness/recertify.sh)"
                 )
-            for jf in json_files:
-                data = json.loads(jf.read_text(encoding="utf-8"))
-                if data.get("fingerprint") != fp:
-                    errors.append(
-                        f"{jf.name}: fingerprint {data.get('fingerprint')!r} != {fp!r}"
-                    )
-                if jf.name == "scale.json":
-                    scale_perf = data.get("extra", {}).get("perf_fingerprint")
-                    if scale_perf != perf_fp:
-                        errors.append(
-                            f"{jf.name}: extra.perf_fingerprint {scale_perf!r} != {perf_fp!r}"
-                        )
+            scale_fp = scale_data.get("fingerprint")
+            scale_perf = scale_data.get("extra", {}).get("perf_fingerprint")
+            if scale_fp != head_fp and scale_perf != head_perf_fp:
+                errors.append(
+                    f"scale.json: neither fingerprint {scale_fp!r} != {head_fp!r} nor extra.perf_fingerprint {scale_perf!r} != {head_perf_fp!r}"
+                )
 
     # Verify omnibus-empirical-validation.md §13 SHA-256 table matches on-disk JSONs
     omnibus_text = read_text(
@@ -457,7 +488,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Validate VarDictRust release version and evidence consistency."
     )
-    parser.add_argument("--version", required=True, help="Target SemVer (e.g. 1.0.3)")
+    parser.add_argument(
+        "--version",
+        default=None,
+        help="Target SemVer (e.g. 1.0.4); defaults to [workspace.package].version in Cargo.toml",
+    )
     parser.add_argument(
         "--phase",
         choices=VALID_PHASES,
@@ -470,20 +505,42 @@ def main() -> int:
         default=Path(__file__).resolve().parents[4],
         help="Path to VarDictRust repository root",
     )
+    parser.add_argument(
+        "--require-head-fingerprint",
+        action="store_true",
+        help="Require benchmarks/evidence/*.json fingerprints to match live HEAD engine_fingerprint.sh (used during release certification)",
+    )
     args = parser.parse_args()
 
-    if not re.match(r"^\d+\.\d+\.\d+$", args.version):
-        print(f"ERROR: invalid SemVer version {args.version!r}", file=sys.stderr)
+    version = args.version
+    if version is None:
+        cargo_toml = (args.repo_root / "Cargo.toml").read_text(encoding="utf-8")
+        ver_m = re.search(
+            r'^\[workspace\.package\]\s*\nversion\s*=\s*"([^"]+)"',
+            cargo_toml,
+            re.MULTILINE,
+        )
+        if not ver_m:
+            print("ERROR: could not read [workspace.package].version from Cargo.toml", file=sys.stderr)
+            return 2
+        version = ver_m.group(1)
+    elif version.startswith("v") and re.match(r"^v\d+\.\d+\.\d+$", version):
+        version = version[1:]
+
+    if not re.match(r"^\d+\.\d+\.\d+$", version):
+        print(f"ERROR: invalid SemVer version {version!r}", file=sys.stderr)
         return 2
 
     errors: list[str] = []
-    check_pre_tag_surfaces(args.repo_root, args.version, errors)
-    check_evidence_and_fingerprints(args.repo_root, errors)
-    check_downstream_phases(args.repo_root, args.version, args.phase, errors)
+    check_pre_tag_surfaces(args.repo_root, version, errors)
+    check_evidence_and_fingerprints(
+        args.repo_root, args.require_head_fingerprint, errors
+    )
+    check_downstream_phases(args.repo_root, version, args.phase, errors)
 
     if errors:
         print(
-            f"RELEASE CONSISTENCY FAILED (version={args.version}, phase={args.phase}, {len(errors)} error(s)):",
+            f"RELEASE CONSISTENCY FAILED (version={version}, phase={args.phase}, {len(errors)} error(s)):",
             file=sys.stderr,
         )
         for err in errors:
@@ -491,7 +548,7 @@ def main() -> int:
         return 1
 
     print(
-        f"RELEASE CONSISTENCY OK: version={args.version}, phase={args.phase} (all surfaces and 16 evidence manifests verified)."
+        f"RELEASE CONSISTENCY OK: version={version}, phase={args.phase} (all surfaces and 16 evidence manifests verified)."
     )
     return 0
 

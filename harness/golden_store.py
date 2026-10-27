@@ -47,7 +47,23 @@ EVENTS_LIVE = ("MISS", "CORRUPT", "REGEN", "FAIL", "REFUSED", "UNSTABLE", "PINFA
 
 
 def store_dir():
-    return pathlib.Path(os.environ.get("GOLDEN_STORE_DIR") or ROOT / "scratch" / "golden-store")
+    env = os.environ.get("GOLDEN_STORE_DIR")
+    if env:
+        return pathlib.Path(env)
+    local = ROOT / "scratch" / "golden-store"
+    if local.is_dir():
+        return local
+    try:
+        out = subprocess.check_output(
+            ["git", "-C", str(ROOT), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            stderr=subprocess.DEVNULL, text=True,
+        ).strip()
+        common_store = pathlib.Path(out).parent / "scratch" / "golden-store"
+        if common_store.is_dir():
+            return common_store
+    except Exception:
+        pass
+    return local
 
 
 def mode():
@@ -80,25 +96,60 @@ def _hash(path):
     return h.hexdigest()
 
 
+@contextlib.contextmanager
+def _store_lock():
+    d = store_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    lock = d / ".shacache.lock"
+    deadline = time.time() + LOCK_STALE_S
+    while True:
+        try:
+            os.mkdir(lock)
+            break
+        except FileExistsError:
+            try:
+                if time.time() - lock.stat().st_mtime > LOCK_STALE_S:
+                    shutil.rmtree(lock, ignore_errors=True)
+                    continue
+            except OSError:
+                continue
+            if time.time() > deadline:
+                break
+            time.sleep(0.01)
+    try:
+        yield
+    finally:
+        shutil.rmtree(lock, ignore_errors=True)
+
+
 def sha256_file(path):
     """sha256 of a file, cached by (resolved path, size, mtime_ns, ctime_ns); GOLDEN_REHASH=1 skips the cache."""
     p = pathlib.Path(path)
     if not p.is_file():
         sys.exit(f"golden_store: input not found: {path}")
     p = p.resolve()
+    if p.name.startswith("tmp.") and str(p).startswith("/tmp/"):
+        return _hash(p)
     st = p.stat()
     cache = store_dir() / ".shacache.json"
-    try:
-        data = json.loads(cache.read_text())
-    except (OSError, ValueError):
-        data = {}
     k = f"{p}|{st.st_size}|{st.st_mtime_ns}|{st.st_ctime_ns}"
-    if os.environ.get("GOLDEN_REHASH") != "1" and k in data:
-        return data[k]
-    data[k] = digest = _hash(p)
-    if len(data) > 5000:  # temp BEDs add an entry per run: drop entries whose file is gone
-        data = {kk: v for kk, v in data.items() if os.path.exists(kk.split("|")[0])}
-    atomic_write(cache, json.dumps(data, sort_keys=True).encode())
+    if os.environ.get("GOLDEN_REHASH") != "1":
+        try:
+            data = json.loads(cache.read_text())
+            if k in data:
+                return data[k]
+        except (OSError, ValueError):
+            pass
+    digest = _hash(p)
+    with _store_lock():
+        try:
+            data = json.loads(cache.read_text())
+        except (OSError, ValueError):
+            data = {}
+        data[k] = digest
+        if len(data) > 5000:  # temp BEDs add an entry per run: drop entries whose file is gone
+            data = {kk: v for kk, v in data.items() if os.path.exists(kk.split("|")[0])}
+        atomic_write(cache, json.dumps(data, sort_keys=True).encode())
     return digest
 
 
@@ -259,7 +310,7 @@ def _restore_file(entry_dir, rec, dest=None):
     return h.hexdigest() == rec["sha256"]
 
 
-def put(key, ident, label, kind, files, time_file):
+def put(key, ident, label, kind, files, time_file, rc=0):
     with _cell_lock(key):
         d = cell_dir(key)
         m = load_manifest(key)
@@ -276,12 +327,15 @@ def put(key, ident, label, kind, files, time_file):
         except BaseException:
             shutil.rmtree(tmp, ignore_errors=True)
             raise
-        m["entries"].append({
+        entry = {
             "schema": SCHEMA, "label": label, "kind": kind,
             "pin": ident["pin"], "env_pin": ident["env_pin"], "wrapper": ident["wrapper"],
             "inputs": ident["inputs"], "argv": ident["argv"], "env": ident["env"],
             "artifacts": arts, "host": host_info(), "date_utc": now_utc(),
-        })
+        }
+        if rc != 0:
+            entry["rc"] = rc
+        m["entries"].append(entry)
         m["key"] = key
         atomic_write(d / "manifest.json", json.dumps(m, indent=1, sort_keys=True).encode())
         for t in d.glob(".tmp-*"):  # leftovers of killed runs
@@ -374,8 +428,10 @@ def _replay(key, got, out, err_out, time_out):
     return "hit"
 
 
-def _plausible(kind, out, err_path):
+def _plausible(kind, out, err_path, pin_cpp_exit=False):
     if os.path.getsize(out) == 0 and os.path.getsize(err_path) == 0:
+        if kind == "cpp" and pin_cpp_exit and not str(out).endswith(".vcf"):
+            return True, ""
         return False, "empty output and empty stderr"
     if kind == "java" and str(out).endswith(".vcf"):
         with open(out, "rb") as f:
@@ -384,15 +440,16 @@ def _plausible(kind, out, err_path):
     return True, ""
 
 
-def _pin(m, kind, label, key, ident, out, ef, tf, rc, corrupt, sigs, inputs):
+def _pin(m, kind, label, key, ident, out, ef, tf, rc, corrupt, sigs, inputs, pin_cpp_exit=False):
     if m == "off":
         return "OFF"
     if rc != 0:
-        return "FAIL"
+        if not (kind == "cpp" and pin_cpp_exit and rc < 128 and os.path.getsize(ef) > 0):
+            return "FAIL"
     if not pathlib.Path(out).is_file():
-        print(f"golden_store: {label}: command exited 0 but {out} is missing; not pinned", file=sys.stderr)
+        print(f"golden_store: {label}: command exited {rc} but {out} is missing; not pinned", file=sys.stderr)
         return "FAIL"
-    ok, why = _plausible(kind, out, ef)
+    ok, why = _plausible(kind, out, ef, pin_cpp_exit=pin_cpp_exit)
     if not ok:
         print(f"golden_store: {label}: not pinned ({why})", file=sys.stderr)
         return "REFUSED"
@@ -400,7 +457,7 @@ def _pin(m, kind, label, key, ident, out, ef, tf, rc, corrupt, sigs, inputs):
         print(f"golden_store: {label}: an input changed during the run; not pinned", file=sys.stderr)
         return "UNSTABLE"
     try:
-        put(key, ident, label, kind, {"out": out, "err": ef}, tf)
+        put(key, ident, label, kind, {"out": out, "err": ef}, tf, rc=rc)
     except OSError as e:
         print(f"golden_store: {label}: pin failed ({e}); the result of this run is NOT stored", file=sys.stderr)
         return "PINFAIL"
@@ -408,7 +465,7 @@ def _pin(m, kind, label, key, ident, out, ef, tf, rc, corrupt, sigs, inputs):
 
 
 def run_cached(kind, label, inputs, key_args, cmd, out, err_out=None, capture_stdout=False,
-               wrapper="-", literal=()):
+               wrapper="-", literal=(), pin_cpp_exit=False):
     m = mode()
     time_out = os.environ.get("GOLDEN_TIME_OUT")
     if time_out and not os.path.exists(TIME_BIN):
@@ -423,7 +480,7 @@ def run_cached(kind, label, inputs, key_args, cmd, out, err_out=None, capture_st
             r = _replay(key, got, out, err_out, time_out)
             if r == "hit":
                 log_event("HIT", kind, key, label)
-                return 0
+                return got[1].get("rc", 0)
             corrupt = r == "corrupt"
     sigs = _sigs(inputs)
     ef, tf = _tmp("gs-err-"), _tmp("gs-time-")
@@ -435,7 +492,7 @@ def run_cached(kind, label, inputs, key_args, cmd, out, err_out=None, capture_st
         else:
             _stream(ef, sys.stderr.buffer)
             sys.stderr.flush()
-        event = _pin(m, kind, label, key, ident, out, ef, tf, rc, corrupt, sigs, inputs)
+        event = _pin(m, kind, label, key, ident, out, ef, tf, rc, corrupt, sigs, inputs, pin_cpp_exit=pin_cpp_exit)
         log_event(event, kind, key or "-", label)
     finally:
         signal.signal(signal.SIGTERM, prev)
@@ -459,9 +516,13 @@ def _split_dashdash(args):
 def cmd_raw(args):
     opts, cmd = _split_dashdash(args)
     kind = label = out = err_out = None
+    pin_cpp_exit = False
     inputs = []
     it = iter(opts)
     for o in it:
+        if o == "--pin-cpp-exit":
+            pin_cpp_exit = True
+            continue
         v = next(it, None)
         if v is None:
             sys.exit(f"golden_store: {o} needs a value")
@@ -479,7 +540,7 @@ def cmd_raw(args):
             sys.exit(f"golden_store: unknown option {o}")
     if kind not in ("java", "cpp") or not out or not cmd:
         sys.exit("golden_store: raw needs --kind java|cpp, --out, and a command after --")
-    return run_cached(kind, label, inputs, cmd, cmd, out, err_out, capture_stdout=True)
+    return run_cached(kind, label, inputs, cmd, cmd, out, err_out, capture_stdout=True, pin_cpp_exit=pin_cpp_exit)
 
 
 def cmd_verify(args):

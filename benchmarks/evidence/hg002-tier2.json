@@ -22,7 +22,7 @@
     "max_rss_kb": "873584",
     "wall": "0:18.87"
   },
-  "date": "2026-10-26T16:48:30-07:00",
+  "date": "2026-10-26T20:00:23-07:00",
   "extra": {
     "cpp_chunk": "50000",
     "cpp_head": [
@@ -36,6 +36,54 @@
       "events": [
         {
           "event": "HIT",
+          "key": "812a562f853bf2da",
+          "kind": "java",
+          "label": "compare"
+        },
+        {
+          "event": "HIT",
+          "key": "60b073b76fa647d6",
+          "kind": "cpp",
+          "label": "compare"
+        },
+        {
+          "event": "HIT",
+          "key": "9ffe2ba39a9fe1d4",
+          "kind": "java",
+          "label": "compare"
+        },
+        {
+          "event": "HIT",
+          "key": "49f8f07fe4bb7034",
+          "kind": "cpp",
+          "label": "compare"
+        },
+        {
+          "event": "HIT",
+          "key": "0f8ceb6199fe6df2",
+          "kind": "java",
+          "label": "compare"
+        },
+        {
+          "event": "HIT",
+          "key": "a022fe48312be93f",
+          "kind": "cpp",
+          "label": "compare"
+        },
+        {
+          "event": "HIT",
+          "key": "f4ff71cbfb2663a3",
+          "kind": "java",
+          "label": "compare"
+        },
+        {
+          "event": "HIT",
+          "key": "e04af8231e2ba279",
+          "kind": "cpp",
+          "label": "compare"
+        },
+        {
+          "event": "HIT",
           "key": "c4273dea4ca47a9e",
           "kind": "java",
           "label": "compare"
@@ -47,13 +95,13 @@
           "label": "compare"
         }
       ],
-      "hit": 2,
+      "hit": 10,
       "live": 0,
-      "run": "compare-2991458-1793058443"
+      "run": "recertify-1793068445"
     }
   },
-  "fingerprint": "08b397ab1d32e857",
-  "head": "b90c84ef1c1ea398ff9785f7ac38040302618fd0",
+  "fingerprint": "11ba91f130e9ce72",
+  "head": "eab3bb8ac3a70f19cf2cb36c7a5816bf095f1994",
   "java_time": {
     "exit": "0",
     "max_rss_kb": "4406336",
@@ -64,7 +112,7 @@
   "result": "MATCH",
   "rust_time": {
     "exit": "0",
-    "max_rss_kb": "468216",
-    "wall": "0:50.27"
+    "max_rss_kb": "462308",
+    "wall": "0:50.74"
   }
 }

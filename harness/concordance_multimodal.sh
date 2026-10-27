@@ -13,8 +13,18 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-CACHE_DIR="$ROOT_DIR/scratch/g4/truth_cache"
-REF_DIR="$ROOT_DIR/scratch/g4/ref"
+COMMON_GIT_DIR="$(git -C "$ROOT_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+if [[ -n "$COMMON_GIT_DIR" && -d "$(dirname "$COMMON_GIT_DIR")/VarDictJava" ]]; then
+  DATA_ROOT="$(cd "$(dirname "$COMMON_GIT_DIR")" && pwd)"
+else
+  DATA_ROOT="$ROOT_DIR"
+fi
+if [[ -d "$ROOT_DIR/scratch/g4/truth_cache" ]]; then
+  CACHE_DIR="$ROOT_DIR/scratch/g4/truth_cache"
+else
+  CACHE_DIR="$DATA_ROOT/scratch/g4/truth_cache"
+fi
+REF_DIR="$DATA_ROOT/scratch/g4/ref"
 OUT_BASE="$ROOT_DIR/scratch/g4/concordance_multimodal"
 THREADS=8
 
@@ -25,14 +35,14 @@ fi
 mkdir -p "$CACHE_DIR" "$OUT_BASE"
 
 # Ensure GRCh37 SDF exists
-FA_B37="$ROOT_DIR/VarDictJava/testdata/fastas/GRCh37.fa"
+FA_B37="$DATA_ROOT/VarDictJava/testdata/fastas/GRCh37.fa"
 SDF_B37="$REF_DIR/grch37.sdf"
 if [[ ! -d "$SDF_B37" ]]; then
   echo "Formatting GRCh37 SDF..."
   rtg format -o "$SDF_B37" "$FA_B37"
 fi
 
-FA_GIAB="$ROOT_DIR/scratch/g4/ref/giabv3/GRCh38_GIABv3.fasta"
+FA_GIAB="$DATA_ROOT/scratch/g4/ref/giabv3/GRCh38_GIABv3.fasta"
 SDF_GIAB="$REF_DIR/giabv3/GRCh38_GIABv3.sdf"
 
 TMPDIR=$(mktemp -d /tmp/vardict_multimodal_concordance_XXXXXX)
@@ -78,7 +88,7 @@ URL_HG005="https://ftp-trace.ncbi.nlm.nih.gov/ReferenceSamples/giab/release/Chin
 ensure_truth_slice "hg005" "$URL_HG005" "chr3:40000000-40010000"
 
 printf "chr3\t40000000\t40010000\n" > "$CACHE_DIR/hg005_eval.bed"
-BAM_HG005="$ROOT_DIR/scratch/g4/multimodal/hg005_s4a.bam"
+BAM_HG005="$DATA_ROOT/scratch/g4/multimodal/hg005_s4a.bam"
 
 echo "  Calling variants (Oracle & Rust)..."
 bash "$ROOT_DIR/harness/golden_store.sh" oracle conc-hg005 "$FA_GIAB" "$BAM_HG005" "$CACHE_DIR/hg005_eval.bed" "$TMPDIR/hg005_java.vcf" "HG005" -z -th "$THREADS" -f 0.05 2>/dev/null
@@ -119,7 +129,7 @@ URL_NA24385="https://ftp-trace.ncbi.nlm.nih.gov/ReferenceSamples/giab/release/As
 ensure_truth_slice "na24385_b37" "$URL_NA24385" "20:36018823-36039513"
 
 printf "20\t36018823\t36039513\n" > "$CACHE_DIR/na24385_eval.bed"
-BAM_NA24385="$ROOT_DIR/VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests/NA24385_chr_20_36018823_36039513.bam"
+BAM_NA24385="$DATA_ROOT/VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests/NA24385_chr_20_36018823_36039513.bam"
 
 echo "  Calling variants (Oracle & Rust, -N HG002)..."
 bash "$ROOT_DIR/harness/golden_store.sh" oracle conc-na24385 "$FA_B37" "$BAM_NA24385" "$CACHE_DIR/na24385_eval.bed" "$TMPDIR/na24385_java.vcf" "HG002" -z -th "$THREADS" -f 0.001 2>/dev/null

@@ -220,9 +220,9 @@ bash harness/slice.sh <in.bam> <chr:start-end> <out.bam>
 
 ## 15. Definition of done (every change)
 1. `cargo fmt --all`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test` all pass.
-2. The relevant `harness/compare.sh` prints **MATCH** (or the named test passes). Pre-PR compound gate passes: `bash harness/pr_check.sh`.
+2. The relevant `harness/compare.sh` prints **MATCH** (or the named test passes). Pre-PR compound gate passes: `bash harness/pr_check.sh` (Tier A Per-PR Gate: workspace tests, 92-fixture Tier-1 corpus, `micro` + `s1a..s9` slices, 17-modality extended coverage `--no-record`, 18-slice multimodal suite `--no-record`, `perf_budget.py`, and `gitleaks`).
 3. `golden/` updated if output legitimately changed (with provenance).
-4. For any dependency (`Cargo.lock`) or engine code changes merged to `main`, run `bash harness/recertify.sh` (re-running extended coverage and multimodal slice suites) to re-certify live parity and update evidence in `benchmarks/evidence/` under [docs/testing/test-matrix-and-ci-audit.md](docs/testing/test-matrix-and-ci-audit.md).
+4. **Two-Tier Release Recertification Policy:** Normal feature/fix PRs run `bash harness/pr_check.sh` without rewriting `benchmarks/evidence/*.json`. When cutting a release (`release/vX.Y.Z`) or certifying a milestone baseline, run `bash harness/recertify.sh` to refresh all 15 non-scale `benchmarks/evidence/*.json` files, synchronize documentation SHA-256/fingerprint tables (`python3 harness/sync_evidence_docs.py`), and pass `bash harness/acceptance.sh` (8/8) under [docs/testing/test-matrix-and-ci-audit.md](docs/testing/test-matrix-and-ci-audit.md). Run `bash harness/scale_bench.sh` only when `engine_fingerprint.sh --perf` (`PERF_FP`) changed since `benchmarks/evidence/scale.json`.
 5. The commit/PR states: **"validated vs VarDictJava 1.8.3, dataset `<name>`, cmd `<…>`"**.
 6. `gitleaks protect --staged` (commit) / `gitleaks detect --source .` (push) clean.
 7. The PR body completes `.github/pull_request_template.md`, which is authoritative on what may be skipped: engine-gate boxes are either run or marked **N/A with a one-line justification** under the template's docs/infra-only note (the same code-change filter the pre-push hook enforces).
