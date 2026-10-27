@@ -20,7 +20,7 @@ Reference companion for [`.agents/skills/vardictrust-release/SKILL.md`](../SKILL
 | 8 | `packaging/nf-core/prepare_nfcore_pr.sh` | `VERSION="${1:-X.Y.Z}"` | Default version fallback for Phase 3B Nextflow script |
 | 9 | `harness/run_self_tests.sh` | `# VarDictRust vX.Y.Z — Harness Self-Test Runner` | Header version banner |
 | 10 | `docs/release/vX.Y.Z-pr.md` | `# Release vX.Y.Z:` | Release certification dossier (`FP`, `PERF_FP`, test counts, 4-channel checklist) |
-| 11 | `README.md` | `--tag vX.Y.Z`, `version = {X.Y.Z}`, `docs/release/vX.Y.Z-pr.md` link, and `416` test breakdown (`252 + 110 + 25 + 2 + 2 + 17 + 8`) | Main repository landing page |
+| 11 | `README.md` | `--tag vX.Y.Z`, `version = {X.Y.Z}`, and `416` test breakdown (`252 + 110 + 25 + 2 + 2 + 17 + 8`) | Main repository landing page |
 | 12 | `DIVERGENCES.md` | `VarDictRust_vX.Y.Z`, `416 PASS` (`252 PASS` core lib), `3.48x speedup, 1.22x flat RSS`, `85c75a912527800e` | Empirical divergence & certification summary |
 | 13 | `CONTRIBUTING.md` | `416` workspace tests (`§5.4`), `aarch64-unknown-linux-musl` (`§9.1`), and `.agents/skills/` runbook links | Contributor & release guide |
 | 14 | `benchmarks/README.md` | `Certified in \`vX.Y.Z\`` and link to `docs/release/vX.Y.Z-pr.md` | Benchmark scoreboard header |

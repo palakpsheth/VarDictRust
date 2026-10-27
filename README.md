@@ -17,7 +17,7 @@
 - **Exact Parity:** Bitwise identical variant calls, `FILTER` tags, and somatic `STATUS` decisions to VarDictJava v1.8.3 across all cohorts ($\varepsilon = 10^{-6}$, 0 diffs).
 - **High-Throughput Speed:** **4.3×–6.9× faster** on WGS/WES, **36.4× faster** on amplicon panels, and **3.48× parallel scaling** on 8 threads across full chromosomes.
 - **Bounded $O(1)$ Memory:** Flat RSS scaling ($1.22\times$ from 10 Mbp to 249 Mbp on Chr1, `1.16` $\to$ `1.42 GiB`), using **7.7×–10.8× less RAM** than VarDictJava on WGS/WES.
-- **Zero Runtime Dependencies:** Prebuilt Linux static (`x86_64`/`aarch64` `musl`, `gnu`) and macOS (`arm64`/`x86_64`) binaries. No JVM, R, or Perl.
+- **Zero External Runtimes:** Prebuilt static Linux (`x86_64`/`aarch64` `musl`) and native Linux (`x86_64` `gnu`) / macOS (`arm64`/`x86_64`) binaries—no JVM, R, or Perl.
 - **Robust by Construction:** `#![forbid(unsafe_code)]`. Malformed CIGARs, missing indexes, and corrupt records return actionable errors instead of crashing.
 
 ```bash
@@ -55,7 +55,7 @@ Built under the [rewrites.bio](https://rewrites.bio) manifesto: *a faster, more 
 <a id="performance-scaling-scoreboard"></a>
 ## Performance & Scaling Scoreboard
 
-Evaluated on Intel i7-13700H, Linux x86_64, 8 worker threads (`-th 8`; `hg008-tier2` and `seqc2-exome-tier2` at `-th 4`²). Per-dataset rows report the unloaded `v1.0.3` reference benchmark baseline alongside the 3-run median certified [`scale.json`](benchmarks/evidence/scale.json) series (in `v1.0.4` adaptive-tiling `courtesy.sh` recertification, 8-core `chr1` wall time improved from `3:06.43` to `2:18.35` and RSS ratio improved from `1.22×` to `1.18×`):
+Evaluated on Intel i7-13700H, Linux x86_64, 8 worker threads (`-th 8`; `hg008-tier2` and `seqc2-exome-tier2` at `-th 4`²), comparing `vardictrust` against the `VarDictJava v1.8.3` pipeline (Java + R + Perl) and `vardictcpp`¹:
 
 | Workload / Benchmark | Threads | VarDictJava Wall Time | vardictcpp Wall Time¹ | VarDictRust Wall Time | Speedup (vs Java) | VarDictJava Peak RSS | vardictcpp Peak RSS¹ | VarDictRust Peak RSS | Memory Use (vs Java) | Evidence Artifact |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :---: |
@@ -67,7 +67,7 @@ Evaluated on Intel i7-13700H, Linux x86_64, 8 worker threads (`-th 8`; `hg008-ti
 
 ¹ **`vardictcpp` comparison (`vardictcpp 3 hc52dbad_0`, bioconda).** Runs beside each benchmark under identical thread and timer constraints (`LC_ALL=C /usr/bin/time -v`). Release acceptance gates strictly on `VarDictRust == VarDictJava v1.8.3`; linked `CPP-*` codes document where `vardictcpp` diverges from `VarDictJava` (e.g., [`CPP-3`](docs/upstream-bugs.md#cpp-3) TSV-only `-a`, [`CPP-5`](docs/upstream-bugs.md#cpp-5) `22.5 GiB` unchunked `-R` RSS vs `778.6 MiB` with `--chunk 50000`, [`CPP-9`](docs/upstream-bugs.md#cpp-9) caller variant deltas).
 ² `hg008-tier2` and `seqc2-exome-tier2` run at `-th 4` because `VarDictJava` at `-th 8` is OOM-killed on 31 GiB hosts (bisected `1✓ / 4✓ / 8✗`); exact commands in evidence.
-³ On `Whole Chromosome 1 Scale`, `VarDictJava` at `-th 8` OOMs on the 31 GiB i7 host (completed in `57:16.00` on an 8-core Ryzen host; see [`docs/release/v1.0.0-pr.md`](docs/release/v1.0.0-pr.md)); `10:48.98` (`648.98 s`) → **`3:06.43`** (`186.43 s`) reports the 3-run median 1-core vs 8-core `VarDictRust` parallel scaling on `chr1`.
+³ On `Whole Chromosome 1 Scale`, `VarDictJava` at `-th 8` OOMs on the 31 GiB i7 host (completed in `57:16.00` on an 8-core Ryzen host; see the [`Omnibus Empirical Validation Report`](docs/validation/omnibus-empirical-validation.md)); `10:48.98` (`648.98 s`) → **`3:06.43`** (`186.43 s`) reports the 3-run median 1-core vs 8-core `VarDictRust` parallel scaling on `chr1`.
 ⁴ **Flat $O(1)$ memory ratio ([Issues #197 and #384](https://github.com/AstraZeneca-NGS/VarDictJava/issues/197)):** Bounded halo-tile RAII streaming keeps peak RSS at `1.42 GiB` (`1,493,656 KB`) across all 249 Mbp of `chr1` vs `1.16 GiB` (`1,221,380 KB`) on a 10 Mbp slice (**1.22× RSS ratio** across a 25× span increase; pre-registered gate $\le 1.50\times$).
 
 ---
@@ -78,7 +78,7 @@ VarDictRust ships across five channels: pre-compiled static/native binaries (`ca
 
 ### 1. Pre-Compiled Binaries (`cargo-dist` & SLSA Level 3 Provenance)
 
-Prebuilt archives are published on [GitHub Releases](https://github.com/palakpsheth/VarDictRust/releases/latest) for 5 targets (`x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`, `x86_64-unknown-linux-gnu`, `aarch64-apple-darwin`, `x86_64-apple-darwin`):
+Prebuilt archives on [GitHub Releases](https://github.com/palakpsheth/VarDictRust/releases/latest) cover 5 targets: static Linux (`x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`), native Linux (`x86_64-unknown-linux-gnu`), and native macOS (`aarch64-apple-darwin`, `x86_64-apple-darwin`):
 
 ```bash
 # Option A: One-line shell installer (auto-detects Linux/macOS architecture)
@@ -104,7 +104,7 @@ cargo install --git https://github.com/palakpsheth/VarDictRust.git --tag v1.0.4
 
 ### 3. Containerized Execution (Docker, Podman, Apptainer via Seqera Wave)
 
-Multi-arch Seqera Wave containers bundle `vardictrust` and `htslib` (`bgzip`/`tabix`; pinned digests in [`packaging/nf-core/modules/vardictrust/meta.yml`](packaging/nf-core/modules/vardictrust/meta.yml)):
+Multi-arch Seqera Wave containers bundle `vardictrust` and `htslib` (`bgzip`/`tabix`) from the published Bioconda package (pinned digests and exact package version tracked in [`packaging/nf-core/modules/vardictrust/meta.yml`](packaging/nf-core/modules/vardictrust/meta.yml) and [`environment.yml`](packaging/nf-core/modules/vardictrust/environment.yml)):
 
 ```bash
 # Docker / Podman (linux/amd64: 1920a853de03683c | linux/arm64: 88ae818a180b4691)
@@ -142,13 +142,15 @@ nf-core modules install vardictrust
 ```groovy
 include { VARDICTRUST } from './modules/nf-core/vardictrust/main'
 
-// Germline: bams = sample.bam | Somatic: bams = [tumor.bam, normal.bam]
-// Default task.ext.args = '-c 1 -S 2 -E 3 -z'
-VARDICTRUST (
-    ch_bam_bai_bed,   // tuple val(meta), path(bams), path(bais), path(bed)
-    ch_fasta,         // tuple val(meta2), path(fasta)
-    ch_fasta_fai      // tuple val(meta3), path(fasta_fai)
-)
+workflow {
+    // Germline: bams = sample.bam | Somatic: bams = [tumor.bam, normal.bam]
+    // Default task.ext.args = '-c 1 -S 2 -E 3 -z'
+    VARDICTRUST (
+        ch_bam_bai_bed,   // tuple val(meta), path(bams), path(bais), path(bed)
+        ch_fasta,         // tuple val(meta2), path(fasta)
+        ch_fasta_fai      // tuple val(meta3), path(fasta_fai)
+    )
+}
 ```
 
 ### 10-Second Installation Verification
@@ -265,7 +267,7 @@ All comparisons evaluate end-to-end VCF output under float tolerance $\varepsilo
 ¹ **`vardictcpp` third-arm comparison (`vardictcpp 3 hc52dbad_0`, bioconda).** Executed beside each Tier-1/Tier-2 comparator arm; the release gate remains strictly `VarDictRust == VarDictJava v1.8.3`. Linked `CPP-*` identifiers reference [`docs/upstream-bugs.md`](docs/upstream-bugs.md#cpp-divergences).
 
 - **Intermediate Table Parity ([Tier-1](docs/testing/test-matrix-and-ci-audit.md#tier-1)):** Intermediate `.var` tables match 100% of upstream columns and ordering (Simple: 36/38; Amplicon: 38/40; Somatic: 55/61 without/with `--fisher`). Standard CLI output is VCFv4.2 (10 or 11 columns); `-i` emits a 4-column intron count table.
-- **Full-Corpus 12-Cell Sweep ([`docs/release/v1.0.4-pr.md`](docs/release/v1.0.4-pr.md)):** Certified **89 / 89 MATCH** (`fp=0, fn=0` across `1,202,444` oracle `.var`/`.vcf`/splice records) spanning `7,361×–173,132×` ultra-deep AML MRD panels, `51.8 GiB` HG002 STAR RNA-Seq (`-i` splice & cDNA), whole-chromosome `-R chr1:1-249250621`, `--fisher` stress matrices, and CRAM 3.0 twins.
+- **Full-Corpus 12-Cell Sweep ([Omnibus Empirical Validation Report](docs/validation/omnibus-empirical-validation.md)):** Certified **89 / 89 MATCH** (`fp=0, fn=0` across `1,202,444` oracle `.var`/`.vcf`/splice records) spanning `7,361×–173,132×` ultra-deep AML MRD panels, `51.8 GiB` HG002 STAR RNA-Seq (`-i` splice & cDNA), whole-chromosome `-R chr1:1-249250621`, `--fisher` stress matrices, and CRAM 3.0 twins.
 
 <a id="2-ground-truth-concordance-tier-3-via-rtg-vcfeval-vardictcpp-advisory"></a>
 ### 2. Ground Truth Concordance ([Tier-3](docs/testing/test-matrix-and-ci-audit.md#tier-3) via RTG vcfeval)
@@ -307,7 +309,7 @@ Flag parity with VarDictJava v1.8.3 is defined against [`CmdParser.java`](https:
 
 *Evidence Status Vocabulary:*
 - `corpus` — Verified against integration corpus test cases or [Tier-2](docs/testing/test-matrix-and-ci-audit.md#tier-2) oracle sweeps.
-- `unexercised` — Implemented to Java source specification without dedicated corpus fixtures (`0` flags in `v1.0.4`).
+- `unexercised` — Implemented to Java source specification without dedicated corpus fixtures (`0` flags).
 - `no-output` — Performance or concurrency flag; does not alter output bytes.
 - `parity-exempt` — Accepted for CLI compatibility matching upstream semantics.
 
@@ -315,7 +317,7 @@ Flag parity with VarDictJava v1.8.3 is defined against [`CmdParser.java`](https:
 
 | Short | Long | Description | Default | Status |
 | :--- | :--- | :--- | :--- | :--- |
-| `-G` | `--reference` | Reference FASTA (`.fai` required; hg19/hg38/mm10 shortcuts accepted) | required | `corpus` |
+| `-G` | `--reference` | Reference FASTA file path (`.fai` index required) | required | `corpus` |
 | `-b` | `--bam` | Indexed BAM/CRAM; somatic: `"tumor.bam\|normal.bam"` | required | `corpus` |
 | `-N` | `--name` | Sample name (somatic: `"TUMOR\|NORMAL"`) | derived from BAM | `corpus` |
 | `-R` | `--region` | Region `chr:start-end[:gene]` instead of BED | — | `corpus` |
@@ -366,7 +368,7 @@ Flag parity with VarDictJava v1.8.3 is defined against [`CmdParser.java`](https:
 | `-p` | — | Pileup-only mode | off | `corpus` |
 | `-t` | `--dedup` | Remove duplicated reads (one pair per start position) | off | `corpus` |
 | `-u` | — | Unique mode: count overlapping mates once (forward read) | off | `corpus` |
-| `-UN` | `--UN` | Unique mode: count once using first read only | off | `corpus` |
+| `-UN` | `--UN` | Unique mode: count overlapping mates once (first read in pair) | off | `corpus` |
 | — | `--adaptor` | Adaptor sequence(s), comma-separated, excluded from realignment | — | `corpus` |
 
 ### 4. Modality Flags: Somatic & Amplicon
