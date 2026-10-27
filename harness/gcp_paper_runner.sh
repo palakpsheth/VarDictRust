@@ -217,34 +217,22 @@ restore_prev_java_cpp_artifacts() {
   local cell_id="$1" dst_dir="$2"
   mkdir -p "$dst_dir"
   if [ -z "${LOCAL_CKPT_DIR:-}" ]; then
-    local bucket_prefix pat
+    local bucket_prefix
     for bucket_prefix in "${GCS_RESULTS}/cells-v103/${cell_id}" "${GCS_RESULTS}/cells-v104/${cell_id}" "${GCS_RESULTS}/cells-v105/${cell_id}"; do
       if setsid gsutil -q stat "${bucket_prefix}/*" 2>/dev/null; then
         echo "[CACHE-RESTORE] Restoring cached Java/Cpp/Field-Caller artifacts from ${bucket_prefix}/ -> ${dst_dir}/"
-        for pat in "java*" "cpp*" "oracle*" "vardict_java*" "vardictcpp*" "single_*" "som_*" "freebayes*" "lofreq*" "octopus*" "mutect2*" "m2*" "hg002_*" "hg008_*" "seqc2_*" "strelka*"; do
-          setsid gsutil -m -q cp -r "${bucket_prefix}/${pat}" "$dst_dir/" 2>/dev/null || true
-        done
-        if [ "$cell_id" = "s4_perf_budget_4targets_n3" ]; then
-          local sub
-          for sub in amplicon hg002 hg008 seqc2; do
-            mkdir -p "$dst_dir/$sub"
-            for pat in "java*" "cpp*" "oracle*"; do
-              setsid gsutil -m -q cp "${bucket_prefix}/${sub}/${pat}" "$dst_dir/$sub/" 2>/dev/null || true
-            done
-          done
-        fi
+        setsid gsutil -q rsync -r -x "(^|/)([^/]*rust[^/]*|.*compare.*|ceiling_.*|cell\\.exit_code|extra\\.json|.*\\.diff\\.txt|determinism_.*|parity_verdict\\.tsv|strelka_work.*|fb_chunks|vcfeval.*|${cell_id})(/|$)" "${bucket_prefix}" "$dst_dir" 2>/dev/null || true
       fi
     done
   fi
   # Never reuse stale Rust outputs from a prior version (keep any output newer than target/release/vardictrust)
   local rf
-  for rf in "$dst_dir"/rust* "$dst_dir"/vardictrust* "$dst_dir"/*/rust* "$dst_dir"/*/vardictrust*; do
-    [ -e "$rf" ] || continue
+  while IFS= read -r -d '' rf; do
     if [ -x "target/release/vardictrust" ] && [ "$rf" -nt "target/release/vardictrust" ]; then
       continue
     fi
-    rm -f "$rf" 2>/dev/null || true
-  done
+    rm -rf "$rf" 2>/dev/null || true
+  done < <(find "$dst_dir" -maxdepth 3 \( -name "*rust*" -o -name "*vardictrust*" -o -name "*compare*" -o -name "ceiling_*" -o -name "cell.exit_code" -o -name "extra.json" -o -name "*.diff.txt" -o -name "determinism_*" -o -name "parity_verdict.tsv" \) -print0 2>/dev/null || true)
 }
 
 # Executes a single cell inside a systemd-run CPU+RAM cgroup slice (when systemd-run is available)
@@ -1344,8 +1332,8 @@ run_stage_4() {
     BUDGET_DIR="${WORK_DIR}/cells/s4_perf_budget_4targets_n3"
     if [ ! -f "$BUDGET_DIR/hg002/rust.vcf" ] && [ -z "${LOCAL_CKPT_DIR:-}" ]; then
       mkdir -p "$BUDGET_DIR"
-      setsid gsutil -m -q rsync -r "${GCS_RESULTS}/${GCS_CELLS_SUBDIR:-cells-v105}/s4_perf_budget_4targets_n3" "$BUDGET_DIR" || \
-        setsid gsutil -m -q rsync -r "${GCS_RESULTS}/cells-v104/s4_perf_budget_4targets_n3" "$BUDGET_DIR"
+      setsid gsutil -q rsync -r "${GCS_RESULTS}/${GCS_CELLS_SUBDIR:-cells-v105}/s4_perf_budget_4targets_n3" "$BUDGET_DIR" || \
+        setsid gsutil -q rsync -r "${GCS_RESULTS}/cells-v104/s4_perf_budget_4targets_n3" "$BUDGET_DIR"
     fi
 
     # (a) HG002 Germline Truth (GIAB v4.2.1)
@@ -1567,10 +1555,10 @@ PY
     export GOLDEN_STORE_DIR="${WORK_DIR}/golden-store"
     mkdir -p "$GOLDEN_STORE_DIR" "$DATA_DIR/truth_cache"
     if [ -z "${LOCAL_CKPT_DIR:-}" ] && setsid gsutil -q stat "${GCS_ORACLE_CACHE}/golden-store/cells/*" 2>/dev/null; then
-      setsid gsutil -m -q rsync -r "${GCS_ORACLE_CACHE}/golden-store" "$GOLDEN_STORE_DIR" || true
+      setsid gsutil -q rsync -r "${GCS_ORACLE_CACHE}/golden-store" "$GOLDEN_STORE_DIR" || true
     fi
     if [ -z "${LOCAL_CKPT_DIR:-}" ] && setsid gsutil -q stat "${GCS_BAMS}/g4-cache/truth_cache/*" 2>/dev/null; then
-      setsid gsutil -m -q rsync -r "${GCS_BAMS}/g4-cache/truth_cache" "$DATA_DIR/truth_cache" || true
+      setsid gsutil -q rsync -r "${GCS_BAMS}/g4-cache/truth_cache" "$DATA_DIR/truth_cache" || true
     fi
     GOLDEN_MODE=auto GOLDEN_STORE_DIR="$GOLDEN_STORE_DIR" bash harness/run_extended_coverage.sh
     GOLDEN_MODE=auto GOLDEN_STORE_DIR="$GOLDEN_STORE_DIR" bash harness/run_multimodal_slices.sh
@@ -1739,8 +1727,8 @@ run_s4_scale_exome_body() {
   grep -q '^MATCH' "$KEEP_DIR/compare_th${th}.txt"
   if [ "$th" -gt 1 ] && [ ! -f "${WORK_DIR}/cells/s4_scale_exome_3way_th1/rust_th1.vcf" ] && [ -z "${LOCAL_CKPT_DIR:-}" ]; then
     mkdir -p "${WORK_DIR}/cells/s4_scale_exome_3way_th1"
-    setsid gsutil -m -q rsync -r "${GCS_RESULTS}/${GCS_CELLS_SUBDIR:-cells-v105}/s4_scale_exome_3way_th1" "${WORK_DIR}/cells/s4_scale_exome_3way_th1" || \
-      setsid gsutil -m -q rsync -r "${GCS_RESULTS}/cells-v104/s4_scale_exome_3way_th1" "${WORK_DIR}/cells/s4_scale_exome_3way_th1" || true
+    setsid gsutil -q rsync -r "${GCS_RESULTS}/${GCS_CELLS_SUBDIR:-cells-v105}/s4_scale_exome_3way_th1" "${WORK_DIR}/cells/s4_scale_exome_3way_th1" || \
+      setsid gsutil -q rsync -r "${GCS_RESULTS}/cells-v104/s4_scale_exome_3way_th1" "${WORK_DIR}/cells/s4_scale_exome_3way_th1" || true
   fi
   if [ "$th" -gt 1 ] && [ -f "${WORK_DIR}/cells/s4_scale_exome_3way_th1/rust_th1.vcf" ]; then
     cmp <(grep -v '^##' "${WORK_DIR}/cells/s4_scale_exome_3way_th1/rust_th1.vcf") <(grep -v '^##' "$KEEP_DIR/rust_th${th}.vcf")
@@ -2523,7 +2511,7 @@ run_stage_5() {
     # Restore from GCS_BAMS/cross_platform_chr20 if already cached in GCS
     if setsid gsutil -q stat \"\${GCS_BAMS}/cross_platform_chr20/STAGED_OK\" 2>/dev/null; then
       echo '[Cross-Platform] Restoring pre-staged chr20 BAM/CRAM slices from GCS...'
-      setsid gsutil -m -q rsync -r \"\${GCS_BAMS}/cross_platform_chr20\" '$xp_dir'
+      setsid gsutil -q rsync -r \"\${GCS_BAMS}/cross_platform_chr20\" '$xp_dir'
     fi
 
     # Ensure full GIAB HG002 v4.2.1 & HG008 v0.4 truth files exist
@@ -2643,7 +2631,7 @@ run_stage_5() {
 
     date -u +%Y-%m-%dT%H:%M:%SZ > '$xp_dir/STAGED_OK'
     ls -lh '$xp_dir' > \"\$KEEP_DIR/staged_cross_platform_files.txt\"
-    setsid gsutil -m -q rsync -r '$xp_dir' \"\${GCS_BAMS}/cross_platform_chr20\" || true
+    setsid gsutil -o GSUtil:parallel_composite_upload_threshold=0 -q rsync -r '$xp_dir' \"\${GCS_BAMS}/cross_platform_chr20\" || true
   "
 
   # 10. Option C Cross-Platform Short-Read & Synthesis-Based Sequencing Panel (Full chr20 at -f 0.01 & -f 0 + chr1 -f 0 -r 1 Singleton Floor)
@@ -3462,17 +3450,17 @@ EOF
     # Restore existing golden-store cells from GCS if present
     if setsid gsutil -q stat "${GCS_ORACLE_CACHE}/golden-store/cells/*" 2>/dev/null; then
       echo "[GOLDEN-STORE] Restoring pinned Java/Cpp oracle cells from ${GCS_ORACLE_CACHE}/golden-store..."
-      setsid gsutil -m -q rsync -r "${GCS_ORACLE_CACHE}/golden-store" "$GOLDEN_STORE_DIR" || true
+      setsid gsutil -q rsync -r "${GCS_ORACLE_CACHE}/golden-store" "$GOLDEN_STORE_DIR" || true
     fi
 
     rc_ext=0
     GOLDEN_MODE=auto GOLDEN_STORE_DIR="$GOLDEN_STORE_DIR" bash harness/run_extended_coverage.sh > "$KEEP_DIR/extended_coverage.log" 2>&1 || rc_ext=$?
-    setsid gsutil -m -o GSUtil:parallel_composite_upload_threshold=0 -q rsync -r "$GOLDEN_STORE_DIR" "${GCS_ORACLE_CACHE}/golden-store" || true
+    setsid gsutil -o GSUtil:parallel_composite_upload_threshold=0 -q rsync -r "$GOLDEN_STORE_DIR" "${GCS_ORACLE_CACHE}/golden-store" || true
     record_sweep_row "sweep_multimodal_and_cram_twin" "extended_coverage_17modes" "17" "17" "0" "0" "$([ "$rc_ext" -eq 0 ] && echo MATCH || echo DIFF_CAPTURED)" "rc=$rc_ext"
 
     rc_mm=0
     GOLDEN_MODE=auto GOLDEN_STORE_DIR="$GOLDEN_STORE_DIR" bash harness/run_multimodal_slices.sh > "$KEEP_DIR/multimodal_slices.log" 2>&1 || rc_mm=$?
-    setsid gsutil -m -o GSUtil:parallel_composite_upload_threshold=0 -q rsync -r "$GOLDEN_STORE_DIR" "${GCS_ORACLE_CACHE}/golden-store" || true
+    setsid gsutil -o GSUtil:parallel_composite_upload_threshold=0 -q rsync -r "$GOLDEN_STORE_DIR" "${GCS_ORACLE_CACHE}/golden-store" || true
     record_sweep_row "sweep_multimodal_and_cram_twin" "multimodal_18slices" "18" "18" "0" "0" "$([ "$rc_mm" -eq 0 ] && echo MATCH || echo DIFF_CAPTURED)" "rc=$rc_mm"
 
     rc_cram=0
