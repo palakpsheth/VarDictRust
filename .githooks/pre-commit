@@ -42,7 +42,7 @@ STAGED_DEPS=$(git diff --cached --name-only --diff-filter=ACM | grep -E '(^|/)Ca
 if [ -n "$STAGED_DEPS" ]; then
     if command -v cargo-deny >/dev/null 2>&1; then
         echo "Running offline supply-chain check (cargo deny --offline --all-features check advisories licenses bans sources)..."
-        if [ -d "${CARGO_HOME:-$HOME/.cargo}/advisory-db" ]; then
+        if [ -d "${CARGO_HOME:-$HOME/.cargo}/advisory-dbs" ]; then
             cargo deny --offline --all-features check advisories licenses bans sources
         else
             cargo deny --offline --all-features check licenses bans sources

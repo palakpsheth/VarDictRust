@@ -9,6 +9,8 @@ updates:
       time: "04:00"
       timezone: "America/Los_Angeles"
     open-pull-requests-limit: 5
+    allow:
+      - dependency-type: "all"
     # Group dependencies to minimize PR fatigue while separating genomic core from tooling
     groups:
       genomic-dependencies:

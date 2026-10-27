@@ -107,6 +107,7 @@ class TestBiocondaRecipe(unittest.TestCase):
         self.assertIn('package-ecosystem: "pip"', dependabot_content)
         self.assertIn('directory: "/docs"', dependabot_content)
         self.assertIn("docs-dependencies:", dependabot_content)
+        self.assertIn('dependency-type: "all"', dependabot_content)
         self.assertIn("transitive-dependencies:", dependabot_content)
         self.assertIn("exclude-patterns:", dependabot_content)
         expected_cargo_patterns = (
