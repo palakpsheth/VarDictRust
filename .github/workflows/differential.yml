@@ -88,7 +88,7 @@ jobs:
           MIN_VARIANTS=1 bash harness/compare.sh fixtures/micro/micro.ref.fa fixtures/micro/micro.bam fixtures/micro/micro.bed
           echo "DIFF_STAGE1_S=$((SECONDS - t0))" >> "$GITHUB_ENV"
           echo "DIFF_STAGE1_STATUS=PASS" >> "$GITHUB_ENV"
-      - name: 3. Tier-2 Standard Slices Differential Parity (10 Slices: s1a..s9)
+      - name: "3. Tier-2 Standard Slices Differential Parity (10 Slices: s1a..s9)"
         id: slices
         run: |
           t0=$SECONDS
