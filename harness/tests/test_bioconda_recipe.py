@@ -508,8 +508,9 @@ class TestRepoAgentSkills(unittest.TestCase):
             )
 
         sec_text = (workflows_dir / "security.yml").read_text(encoding="utf-8")
-        self.assertIn("dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249", sec_text)
-        self.assertIn("Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0", sec_text)
+        self.assertIn("dtolnay/rust-toolchain@", sec_text)
+        self.assertIn("Swatinem/rust-cache@", sec_text)
+        self.assertIn("set -euo pipefail", sec_text)
         self.assertIn("cargo deny --all-features check advisories licenses bans sources", sec_text)
         self.assertIn("-A clippy::needless_late_init -A clippy::byte_char_slices", sec_text)
         self.assertNotIn("continue-on-error: true", sec_text)

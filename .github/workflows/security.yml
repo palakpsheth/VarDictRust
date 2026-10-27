@@ -71,6 +71,7 @@ jobs:
       - name: Stage 4 - Static Analysis & SARIF Export (Clippy)
         id: clippy
         run: |
+          set -euo pipefail
           echo "[$(date '+%H:%M:%S')] [Security Stage 4/4] Running Clippy SARIF scan..."
           cargo clippy --all-targets --all-features --message-format=json -- -A clippy::needless_late_init -A clippy::byte_char_slices | clippy-sarif | tee clippy-results.sarif | sarif-fmt
 
