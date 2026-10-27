@@ -123,6 +123,12 @@ build_gcloud_create_cmd() {
 # (mapped, primary, MAPQ>=1 reads via `samtools view -F 0x904 -q 1`; spans merged within 100 bp).
 build_tierp_covered_bed() {
   local bam="$1" bed="$2" expected_lines="${3:-}"
+  local bed_name
+  bed_name="$(basename "$bed")"
+  local generated=0
+  if [ ! -s "$bed" ] && [ -z "${LOCAL_CKPT_DIR:-}" ]; then
+    setsid gsutil -q cp "${GCS_BAMS}/tier-p/${bed_name}" "$bed" 2>/dev/null || true
+  fi
   if [ ! -s "$bed" ]; then
     samtools view -F 0x904 -q 1 "$bam" | awk 'BEGIN{OFS="\t"}{
       cig=$6; span=0;
@@ -138,6 +144,7 @@ build_tierp_covered_bed() {
       else { if(c!="")print c,s,e,"R"; c=$1;s=$2;e=$3 }
     } END{ if(c!="")print c,s,e,"R" }' > "${bed}.tmp"
     mv "${bed}.tmp" "$bed"
+    generated=1
   fi
   if [ -n "$expected_lines" ]; then
     local actual
@@ -146,6 +153,9 @@ build_tierp_covered_bed() {
       echo "FATAL: $bed has $actual regions, expected $expected_lines" >&2
       return 1
     fi
+  fi
+  if [ "$generated" -eq 1 ] && [ -z "${LOCAL_CKPT_DIR:-}" ]; then
+    setsid gsutil -o GSUtil:parallel_composite_upload_threshold=0 -q cp "$bed" "${GCS_BAMS}/tier-p/${bed_name}" 2>/dev/null || true
   fi
 }
 
@@ -638,11 +648,17 @@ run_stage_2() {
     fi
     unzip -q -o '$tp_dir/archive/Archive.zip' 'reference/*' 'beds/*' 'scripts/*' 'performance_benchmark/*' 'results/*' 'README.md' 'MD5SUMS.txt' -d '$tp_dir/archive/'
     if [ ! -x '$tp_dir/vardictcpp-ae93fe39dc/build/vardictcpp' ]; then
-      rm -rf '$tp_dir/vardictcpp-ae93fe39dc'
-      git clone https://github.com/MHH-Bioinformatics-Hematology/vardictcpp.git '$tp_dir/vardictcpp-ae93fe39dc'
-      cd '$tp_dir/vardictcpp-ae93fe39dc'
-      git checkout ae93fe39dc
-      conda run -n vardict-oracle bash -c 'cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j 16'
+      mkdir -p '$tp_dir/vardictcpp-ae93fe39dc/build'
+      if setsid gsutil -q cp '${GCS_REFS}/vardictcpp/vardictcpp-ae93fe39dc.bin' '$tp_dir/vardictcpp-ae93fe39dc/build/vardictcpp' 2>/dev/null; then
+        chmod +x '$tp_dir/vardictcpp-ae93fe39dc/build/vardictcpp'
+      else
+        rm -rf '$tp_dir/vardictcpp-ae93fe39dc'
+        git clone https://github.com/MHH-Bioinformatics-Hematology/vardictcpp.git '$tp_dir/vardictcpp-ae93fe39dc'
+        cd '$tp_dir/vardictcpp-ae93fe39dc'
+        git checkout ae93fe39dc
+        conda run -n vardict-oracle bash -c 'cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j 16'
+        setsid gsutil -o GSUtil:parallel_composite_upload_threshold=0 -q cp '$tp_dir/vardictcpp-ae93fe39dc/build/vardictcpp' '${GCS_REFS}/vardictcpp/vardictcpp-ae93fe39dc.bin' || true
+      fi
     fi
   "
 
@@ -1872,11 +1888,17 @@ run_stage_5() {
     BAI_PATH='$hg_dir/HG002.GRCh38.2x250.bam.bai'
 
     if [ ! -f \"\$BAI_PATH\" ] || [ \"\$(md5sum \"\$BAI_PATH\" 2>/dev/null | awk '{print \$1}')\" != 'a3c2b449df6509ca83fbd3fea22b9aee' ]; then
-      curl -sSLf --retry 5 \"\${BAM_URL}.bai\" -o \"\$BAI_PATH\"
+      setsid gsutil -q cp '${GCS_BAMS}/hg002_full/HG002.GRCh38.2x250.bam.bai' \"\$BAI_PATH\" 2>/dev/null || \
+        curl -sSLf --retry 5 \"\${BAM_URL}.bai\" -o \"\$BAI_PATH\"
+      setsid gsutil -o GSUtil:parallel_composite_upload_threshold=0 -q cp \"\$BAI_PATH\" '${GCS_BAMS}/hg002_full/HG002.GRCh38.2x250.bam.bai' || true
     fi
     bai_md5=\"\$(md5sum \"\$BAI_PATH\" | awk '{print \$1}')\"
     [ \"\$bai_md5\" = 'a3c2b449df6509ca83fbd3fea22b9aee' ] || { echo \"FATAL: \$BAI_PATH MD5 \$bai_md5 != a3c2b449df6509ca83fbd3fea22b9aee\" >&2; exit 1; }
 
+    if [ ! -f \"\$BAM_PATH\" ] && setsid gsutil -q stat '${GCS_BAMS}/hg002_full/HG002.GRCh38.2x250.bam' 2>/dev/null; then
+      echo '[Stage 5] Restoring 130.77 GB HG002.GRCh38.2x250.bam from GCS...'
+      setsid gsutil -q cp '${GCS_BAMS}/hg002_full/HG002.GRCh38.2x250.bam' \"\$BAM_PATH\" || true
+    fi
     if [ -f \"\$BAM_PATH\" ] && [ \"\$(stat -c %s \"\$BAM_PATH\" 2>/dev/null || echo 0)\" -eq 130770531934 ] && samtools quickcheck \"\$BAM_PATH\"; then
       echo '[Stage 5] Full HG002.GRCh38.2x250.bam already staged and verified on NVMe.'
     else
@@ -1889,33 +1911,41 @@ run_stage_5() {
       got_bytes=\"\$(stat -c %s \"\$BAM_PATH\" 2>/dev/null || echo 0)\"
       [ \"\$got_bytes\" -eq 130770531934 ] || { echo \"FATAL: \$BAM_PATH size \$got_bytes != 130770531934\" >&2; exit 1; }
       samtools quickcheck \"\$BAM_PATH\"
+      setsid gsutil -o GSUtil:parallel_composite_upload_threshold=0 -q cp \"\$BAM_PATH\" '${GCS_BAMS}/hg002_full/HG002.GRCh38.2x250.bam' || true
     fi
 
     # Build Arm A BED: 22 un-chunked whole-chromosome intervals (chr1..chr22, 2,875,001,522 bp)
-    awk '\$1 ~ /^chr([1-9]|1[0-9]|2[0-2])\$/ {printf \"%s\t0\t%s\t%s\n\", \$1, \$2, \$1}' \
-      \"\$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fasta.fai\" > '$hg_dir/hg002_full_22contigs.bed'
+    if ! setsid gsutil -q cp '${GCS_BAMS}/hg002_full/hg002_full_22contigs.bed' '$hg_dir/hg002_full_22contigs.bed' 2>/dev/null; then
+      awk '\$1 ~ /^chr([1-9]|1[0-9]|2[0-2])\$/ {printf \"%s\t0\t%s\t%s\n\", \$1, \$2, \$1}' \
+        \"\$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fasta.fai\" > '$hg_dir/hg002_full_22contigs.bed'
+      setsid gsutil -o GSUtil:parallel_composite_upload_threshold=0 -q cp '$hg_dir/hg002_full_22contigs.bed' '${GCS_BAMS}/hg002_full/hg002_full_22contigs.bed' || true
+    fi
     [ \"\$(wc -l < '$hg_dir/hg002_full_22contigs.bed')\" -eq 22 ] || { echo 'FATAL: hg002_full_22contigs.bed line count != 22' >&2; exit 1; }
 
-    # Ensure full chr1..chr22 GIAB v4.2.1 truth VCF + BED are fetched from assets.tsv
+    # Ensure full chr1..chr22 GIAB v4.2.1 truth VCF + BED are fetched from assets.tsv and synced to g4-cache
     if [ ! -f \"\$DATA_DIR/hg002/truth/HG002_GRCh38_1_22_v4.2.1_benchmark_noinconsistent.bed\" ] || [ ! -f \"\$DATA_DIR/hg002/truth/HG002_GRCh38_1_22_v4.2.1_benchmark.vcf.gz\" ]; then
       DATA_DIR=\"\$DATA_DIR\" bash harness/fetch_data.sh hg002
+      setsid gsutil -m -o GSUtil:parallel_process_count=1 -o GSUtil:parallel_thread_count=16 -o GSUtil:parallel_composite_upload_threshold=0 -q rsync -r \"\$DATA_DIR/hg002/truth\" '${GCS_BAMS}/g4-cache/hg002/truth' || true
     fi
 
     # Build Arm B BED: pre-tiled (<=50 kbp) GIAB v4.2.1 benchmark BED across chr1..chr22 (2.51 Gbp)
-    awk '
-      \$1 ~ /^chr([1-9]|1[0-9]|2[0-2])\$/ {
-        s = \$2 + 0;
-        e = \$3 + 0;
-        if (s < e) {
-          step = 50000;
-          for (cur = s; cur < e; cur += step) {
-            cur_end = (cur + step < e ? cur + step : e);
-            idx++;
-            printf \"%s\t%d\t%d\thg002_wgs_%d\n\", \$1, cur, cur_end, idx;
+    if ! setsid gsutil -q cp '${GCS_BAMS}/hg002_full/hg002_full_giab_50kb.bed' '$hg_dir/hg002_full_giab_50kb.bed' 2>/dev/null; then
+      awk '
+        \$1 ~ /^chr([1-9]|1[0-9]|2[0-2])\$/ {
+          s = \$2 + 0;
+          e = \$3 + 0;
+          if (s < e) {
+            step = 50000;
+            for (cur = s; cur < e; cur += step) {
+              cur_end = (cur + step < e ? cur + step : e);
+              idx++;
+              printf \"%s\t%d\t%d\thg002_wgs_%d\n\", \$1, cur, cur_end, idx;
+            }
           }
         }
-      }
-    ' \"\$DATA_DIR/hg002/truth/HG002_GRCh38_1_22_v4.2.1_benchmark_noinconsistent.bed\" > '$hg_dir/hg002_full_giab_50kb.bed'
+      ' \"\$DATA_DIR/hg002/truth/HG002_GRCh38_1_22_v4.2.1_benchmark_noinconsistent.bed\" > '$hg_dir/hg002_full_giab_50kb.bed'
+      setsid gsutil -o GSUtil:parallel_composite_upload_threshold=0 -q cp '$hg_dir/hg002_full_giab_50kb.bed' '${GCS_BAMS}/hg002_full/hg002_full_giab_50kb.bed' || true
+    fi
     [ \"\$(wc -l < '$hg_dir/hg002_full_giab_50kb.bed')\" -ge 50000 ] || { echo 'FATAL: hg002_full_giab_50kb.bed interval count < 50000' >&2; exit 1; }
     cp -f '$hg_dir/hg002_full_22contigs.bed' \"\$KEEP_DIR/\"
     wc -l '$hg_dir/hg002_full_22contigs.bed' '$hg_dir/hg002_full_giab_50kb.bed' > \"\$KEEP_DIR/bed_counts.txt\"
@@ -2068,14 +2098,20 @@ run_stage_5() {
       if [ -f \"\$src_bai\" ] && [ ! -f \"\${b}.bai\" ]; then
         cp -f \"\$src_bai\" \"\${b}.bai\"
       elif [ ! -f \"\${b}.bai\" ]; then
-        curl -sSLf --retry 5 \"\${u}.bai\" -o \"\${b}.bai\"
+        setsid gsutil -q cp \"${GCS_BAMS}/hg008_full/\$(basename \"\${b}.bai\")\" \"\${b}.bai\" 2>/dev/null || \
+          curl -sSLf --retry 5 \"\${u}.bai\" -o \"\${b}.bai\"
       fi
+      setsid gsutil -o GSUtil:parallel_composite_upload_threshold=0 -q cp \"\${b}.bai\" \"${GCS_BAMS}/hg008_full/\$(basename \"\${b}.bai\")\" || true
     done
 
     if ! command -v aria2c >/dev/null 2>&1; then
       sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq aria2
     fi
 
+    if [ ! -f \"\$T_BAM\" ] && setsid gsutil -q stat '${GCS_BAMS}/hg008_full/HG008-T_Illumina_195x_GRCh38-GIABv3.bam' 2>/dev/null; then
+      echo '[Stage 5] Restoring 160.0 GB HG008-T_Illumina_195x_GRCh38-GIABv3.bam from GCS...'
+      setsid gsutil -q cp '${GCS_BAMS}/hg008_full/HG008-T_Illumina_195x_GRCh38-GIABv3.bam' \"\$T_BAM\" || true
+    fi
     if [ -f \"\$T_BAM\" ] && [ \"\$(stat -c %s \"\$T_BAM\" 2>/dev/null || echo 0)\" -eq 159983848053 ] && samtools quickcheck \"\$T_BAM\"; then
       echo '[Stage 5] Full HG008-T 195x BAM already staged and verified on NVMe.'
     else
@@ -2084,8 +2120,13 @@ run_stage_5() {
         -d '$hg8_dir' -o 'HG008-T_Illumina_195x_GRCh38-GIABv3.bam' \"\$T_URL\"
       [ \"\$(stat -c %s \"\$T_BAM\" 2>/dev/null || echo 0)\" -eq 159983848053 ] || { echo 'FATAL: HG008-T size mismatch' >&2; exit 1; }
       samtools quickcheck \"\$T_BAM\"
+      setsid gsutil -o GSUtil:parallel_composite_upload_threshold=0 -q cp \"\$T_BAM\" '${GCS_BAMS}/hg008_full/HG008-T_Illumina_195x_GRCh38-GIABv3.bam' || true
     fi
 
+    if [ ! -f \"\$N_BAM\" ] && setsid gsutil -q stat '${GCS_BAMS}/hg008_full/HG008-N-D_Illumina_169x_GRCh38-GIABv3.bam' 2>/dev/null; then
+      echo '[Stage 5] Restoring 169.0 GB HG008-N-D_Illumina_169x_GRCh38-GIABv3.bam from GCS...'
+      setsid gsutil -q cp '${GCS_BAMS}/hg008_full/HG008-N-D_Illumina_169x_GRCh38-GIABv3.bam' \"\$N_BAM\" || true
+    fi
     if [ -f \"\$N_BAM\" ] && [ \"\$(stat -c %s \"\$N_BAM\" 2>/dev/null || echo 0)\" -eq 168960212218 ] && samtools quickcheck \"\$N_BAM\"; then
       echo '[Stage 5] Full HG008-N 169x BAM already staged and verified on NVMe.'
     else
@@ -2094,11 +2135,15 @@ run_stage_5() {
         -d '$hg8_dir' -o 'HG008-N-D_Illumina_169x_GRCh38-GIABv3.bam' \"\$N_URL\"
       [ \"\$(stat -c %s \"\$N_BAM\" 2>/dev/null || echo 0)\" -eq 168960212218 ] || { echo 'FATAL: HG008-N size mismatch' >&2; exit 1; }
       samtools quickcheck \"\$N_BAM\"
+      setsid gsutil -o GSUtil:parallel_composite_upload_threshold=0 -q cp \"\$N_BAM\" '${GCS_BAMS}/hg008_full/HG008-N-D_Illumina_169x_GRCh38-GIABv3.bam' || true
     fi
 
     # Build Arm A BED: 22 un-chunked whole-chromosome intervals (chr1..chr22, 2,875,001,522 bp)
-    awk '\$1 ~ /^chr([1-9]|1[0-9]|2[0-2])\$/ {printf \"%s\t0\t%s\t%s\n\", \$1, \$2, \$1}' \
-      \"\$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fasta.fai\" > '$hg8_dir/hg008_full_22contigs.bed'
+    if ! setsid gsutil -q cp '${GCS_BAMS}/hg008_full/hg008_full_22contigs.bed' '$hg8_dir/hg008_full_22contigs.bed' 2>/dev/null; then
+      awk '\$1 ~ /^chr([1-9]|1[0-9]|2[0-2])\$/ {printf \"%s\t0\t%s\t%s\n\", \$1, \$2, \$1}' \
+        \"\$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fasta.fai\" > '$hg8_dir/hg008_full_22contigs.bed'
+      setsid gsutil -o GSUtil:parallel_composite_upload_threshold=0 -q cp '$hg8_dir/hg008_full_22contigs.bed' '${GCS_BAMS}/hg008_full/hg008_full_22contigs.bed' || true
+    fi
     [ \"\$(wc -l < '$hg8_dir/hg008_full_22contigs.bed')\" -eq 22 ]
 
     if [ ! -f \"\$DATA_DIR/hg008/truth/HG008-T_somatic_smvar_benchmark_v0.4_GRCh38_all.bed\" ] || [ ! -f \"\$DATA_DIR/hg008/truth/HG008-T_somatic_smvar_benchmark_v0.4_GRCh38_tumorvariants.vcf.gz\" ]; then
@@ -2108,20 +2153,23 @@ run_stage_5() {
     # Build Arm B BED: pre-tiled (<=50 kbp) GIAB HG008 v0.4 benchmark BED across chr1..chr22
     SRC_BED=\"\$DATA_DIR/hg008/truth/HG008-T_somatic_smvar_benchmark_v0.4_GRCh38_all.bed\"
     [ -f \"\$SRC_BED\" ] || SRC_BED=\"\$DATA_DIR/hg008/truth/HG008-T_somatic_smvar_benchmark_v0.3_all.bed\"
-    awk '
-      \$1 ~ /^chr([1-9]|1[0-9]|2[0-2])\$/ {
-        s = \$2 + 0;
-        e = \$3 + 0;
-        if (s < e) {
-          step = 50000;
-          for (cur = s; cur < e; cur += step) {
-            cur_end = (cur + step < e ? cur + step : e);
-            idx++;
-            printf \"%s\t%d\t%d\thg008_wgs_%d\n\", \$1, cur, cur_end, idx;
+    if ! setsid gsutil -q cp '${GCS_BAMS}/hg008_full/hg008_full_giab_v04_50kb.bed' '$hg8_dir/hg008_full_giab_v04_50kb.bed' 2>/dev/null; then
+      awk '
+        \$1 ~ /^chr([1-9]|1[0-9]|2[0-2])\$/ {
+          s = \$2 + 0;
+          e = \$3 + 0;
+          if (s < e) {
+            step = 50000;
+            for (cur = s; cur < e; cur += step) {
+              cur_end = (cur + step < e ? cur + step : e);
+              idx++;
+              printf \"%s\t%d\t%d\thg008_wgs_%d\n\", \$1, cur, cur_end, idx;
+            }
           }
         }
-      }
-    ' \"\$SRC_BED\" > '$hg8_dir/hg008_full_giab_v04_50kb.bed'
+      ' \"\$SRC_BED\" > '$hg8_dir/hg008_full_giab_v04_50kb.bed'
+      setsid gsutil -o GSUtil:parallel_composite_upload_threshold=0 -q cp '$hg8_dir/hg008_full_giab_v04_50kb.bed' '${GCS_BAMS}/hg008_full/hg008_full_giab_v04_50kb.bed' || true
+    fi
     [ \"\$(wc -l < '$hg8_dir/hg008_full_giab_v04_50kb.bed')\" -ge 40000 ]
     wc -l '$hg8_dir/hg008_full_22contigs.bed' '$hg8_dir/hg008_full_giab_v04_50kb.bed' > \"\$KEEP_DIR/hg008_bed_counts.txt\"
   "
@@ -2511,13 +2559,13 @@ run_stage_5() {
       DATA_DIR=\"\$DATA_DIR\" bash harness/fetch_data.sh hg002 hg008 seqc2
     fi
 
-    # Restore from GCS_BAMS/cross_platform_chr20 if already cached in GCS
-    if setsid gsutil -q stat \"\${GCS_BAMS}/cross_platform_chr20/STAGED_OK\" 2>/dev/null; then
+    # Restore any already-staged cross-platform chr20 BAM/CRAM slices from GCS_BAMS/cross_platform_chr20
+    if setsid gsutil -q stat \"\${GCS_BAMS}/cross_platform_chr20/*\" 2>/dev/null; then
       echo '[Cross-Platform] Restoring pre-staged chr20 BAM/CRAM slices from GCS...'
-      setsid gsutil -m -o GSUtil:parallel_process_count=1 -o GSUtil:parallel_thread_count=16 -q rsync -r \"\${GCS_BAMS}/cross_platform_chr20\" '$xp_dir'
+      setsid gsutil -m -o GSUtil:parallel_process_count=1 -o GSUtil:parallel_thread_count=16 -q rsync -r -e \"\${GCS_BAMS}/cross_platform_chr20\" '$xp_dir' || true
     fi
 
-    # Ensure full GIAB HG002 v4.2.1 & HG008 v0.4 truth files exist
+    # Ensure full GIAB HG002 v4.2.1 & HG008 v0.4 truth files exist and are synced to g4-cache
     TRUTH_HG2_FULL=\"\$DATA_DIR/hg002/truth/HG002_GRCh38_1_22_v4.2.1_benchmark.vcf.gz\"
     BED_HG2_FULL=\"\$DATA_DIR/hg002/truth/HG002_GRCh38_1_22_v4.2.1_benchmark_noinconsistent.bed\"
     if [ ! -f \"\$TRUTH_HG2_FULL\" ] || [ ! -f \"\$BED_HG2_FULL\" ]; then
@@ -2526,6 +2574,7 @@ run_stage_5() {
       curl -sSLf --retry 5 \"\${GIAB_HG2_URL}/HG002_GRCh38_1_22_v4.2.1_benchmark.vcf.gz\" -o \"\$TRUTH_HG2_FULL\"
       curl -sSLf --retry 5 \"\${GIAB_HG2_URL}/HG002_GRCh38_1_22_v4.2.1_benchmark.vcf.gz.tbi\" -o \"\${TRUTH_HG2_FULL}.tbi\"
       curl -sSLf --retry 5 \"\${GIAB_HG2_URL}/HG002_GRCh38_1_22_v4.2.1_benchmark_noinconsistent.bed\" -o \"\$BED_HG2_FULL\"
+      setsid gsutil -m -o GSUtil:parallel_process_count=1 -o GSUtil:parallel_thread_count=16 -o GSUtil:parallel_composite_upload_threshold=0 -q rsync -r \"\$DATA_DIR/hg002/truth\" '${GCS_BAMS}/g4-cache/hg002/truth' || true
     fi
     TRUTH_HG8_V04=\"\$DATA_DIR/hg008/truth/HG008-T_somatic_smvar_benchmark_v0.4_GRCh38_tumorvariants.vcf.gz\"
     BED_HG8_V04=\"\$DATA_DIR/hg008/truth/HG008-T_somatic_smvar_benchmark_v0.4_GRCh38_all.bed\"
@@ -2536,6 +2585,7 @@ run_stage_5() {
     # Download Ultima UG-High-Confidence-Regions v2.1 BED (excludes HMER>=11 homopolymers)
     if [ ! -s '$xp_dir/ug_hcr.bed' ]; then
       curl -sSLf --retry 5 'https://ultimagen-feb-2024-giab.s3.amazonaws.com/UG-High-Confidence-Regions/v2.1/ug_hcr.bed' -o '$xp_dir/ug_hcr.bed'
+      setsid gsutil -o GSUtil:parallel_composite_upload_threshold=0 -q cp '$xp_dir/ug_hcr.bed' \"\${GCS_BAMS}/cross_platform_chr20/ug_hcr.bed\" || true
     fi
 
     # Build chr20 evaluation BEDs and <=50 kbp pre-tiled calling BEDs
@@ -2553,6 +2603,12 @@ run_stage_5() {
 
     slice_remote_bam() {
       local out_bam=\"\$1\" url=\"\$2\" idx_url=\"\$3\" reg=\"\$4\" ref_opt=\"\${5:-}\"
+      local fn
+      fn=\"\$(basename \"\$out_bam\")\"
+      if [ ! -s \"\$out_bam\" ] && setsid gsutil -q stat \"\${GCS_BAMS}/cross_platform_chr20/\${fn}\" 2>/dev/null; then
+        setsid gsutil -q cp \"\${GCS_BAMS}/cross_platform_chr20/\${fn}\" \"\$out_bam\" || true
+        setsid gsutil -q cp \"\${GCS_BAMS}/cross_platform_chr20/\${fn}.bai\" \"\${out_bam}.bai\" || true
+      fi
       if [ -s \"\$out_bam\" ] && [ -s \"\${out_bam}.bai\" ] && samtools quickcheck \"\$out_bam\"; then
         echo \"[Stage-XP] Reusing \$out_bam\"
         return 0
@@ -2567,6 +2623,8 @@ run_stage_5() {
       fi
       rm -f \"\$idx_local\"
       samtools index -@ 8 \"\$out_bam\"
+      setsid gsutil -o GSUtil:parallel_composite_upload_threshold=0 -q cp \"\$out_bam\" \"\${GCS_BAMS}/cross_platform_chr20/\${fn}\" || true
+      setsid gsutil -o GSUtil:parallel_composite_upload_threshold=0 -q cp \"\${out_bam}.bai\" \"\${GCS_BAMS}/cross_platform_chr20/\${fn}.bai\" || true
     }
 
     # 1. Germline HG002 chr20 (Illumina, Element AVITI 80x, MGI DNBSEQ 100x, Ultima UG100 40x CRAM+BAM)
@@ -2588,6 +2646,10 @@ run_stage_5() {
       samtools view -@ 8 -b -T \"\$REF_D1\" '$xp_dir/hg002_ultima_ug100.chr20.cram' -o '$xp_dir/hg002_ultima_ug100.chr20.bam'
       samtools index -@ 8 '$xp_dir/hg002_ultima_ug100.chr20.bam'
       rm -f '$xp_dir/ug_hg2.crai'
+      setsid gsutil -m -o GSUtil:parallel_process_count=1 -o GSUtil:parallel_thread_count=16 -o GSUtil:parallel_composite_upload_threshold=0 -q cp \
+        '$xp_dir/hg002_ultima_ug100.chr20.cram' '$xp_dir/hg002_ultima_ug100.chr20.cram.crai' \
+        '$xp_dir/hg002_ultima_ug100.chr20.bam' '$xp_dir/hg002_ultima_ug100.chr20.bam.bai' \
+        \"\${GCS_BAMS}/cross_platform_chr20/\" || true
     fi
 
     # 2. Somatic HG008 chr20 (Illumina 195x/169x, Roche SBX-Duplex 119x/44x, PacBio Onso 136x/48x, Element AVITI 111x/77x, Ultima UG100 306x/234x, Ultima ppmSeq 157x/160x)
@@ -2595,6 +2657,10 @@ run_stage_5() {
     if [ -s '$hg8_dir/HG008-T_Illumina_195x_GRCh38-GIABv3.bam' ] && [ ! -s '$xp_dir/hg008_illumina_T.chr20.bam' ]; then
       samtools view -@ 8 -b '$hg8_dir/HG008-T_Illumina_195x_GRCh38-GIABv3.bam' chr20 -o '$xp_dir/hg008_illumina_T.chr20.bam' && samtools index -@ 8 '$xp_dir/hg008_illumina_T.chr20.bam'
       samtools view -@ 8 -b '$hg8_dir/HG008-N-D_Illumina_169x_GRCh38-GIABv3.bam' chr20 -o '$xp_dir/hg008_illumina_N.chr20.bam' && samtools index -@ 8 '$xp_dir/hg008_illumina_N.chr20.bam'
+      setsid gsutil -m -o GSUtil:parallel_process_count=1 -o GSUtil:parallel_thread_count=16 -o GSUtil:parallel_composite_upload_threshold=0 -q cp \
+        '$xp_dir/hg008_illumina_T.chr20.bam' '$xp_dir/hg008_illumina_T.chr20.bam.bai' \
+        '$xp_dir/hg008_illumina_N.chr20.bam' '$xp_dir/hg008_illumina_N.chr20.bam.bai' \
+        \"\${GCS_BAMS}/cross_platform_chr20/\" || true
     else
       slice_remote_bam '$xp_dir/hg008_illumina_T.chr20.bam' \"\${G_HG8}/BCM_Illumina-WGS_20240313/HG008-T_Illumina_195x_GRCh38-GIABv3.bam\" \"\${G_HG8}/BCM_Illumina-WGS_20240313/HG008-T_Illumina_195x_GRCh38-GIABv3.bam.bai\" 'chr20'
       slice_remote_bam '$xp_dir/hg008_illumina_N.chr20.bam' \"\${G_HG8}/BCM_Illumina-WGS_20240313/HG008-N-D_Illumina_169x_GRCh38-GIABv3.bam\" \"\${G_HG8}/BCM_Illumina-WGS_20240313/HG008-N-D_Illumina_169x_GRCh38-GIABv3.bam.bai\" 'chr20'
@@ -2634,7 +2700,7 @@ run_stage_5() {
 
     date -u +%Y-%m-%dT%H:%M:%SZ > '$xp_dir/STAGED_OK'
     ls -lh '$xp_dir' > \"\$KEEP_DIR/staged_cross_platform_files.txt\"
-    setsid gsutil -m -o GSUtil:parallel_process_count=1 -o GSUtil:parallel_thread_count=16 -o GSUtil:parallel_composite_upload_threshold=0 -q rsync -r '$xp_dir' \"\${GCS_BAMS}/cross_platform_chr20\" || true
+    setsid gsutil -m -o GSUtil:parallel_process_count=1 -o GSUtil:parallel_thread_count=16 -o GSUtil:parallel_composite_upload_threshold=0 -q rsync -r -e '$xp_dir' \"\${GCS_BAMS}/cross_platform_chr20\" || true
   "
 
   # 10. Option C Cross-Platform Short-Read & Synthesis-Based Sequencing Panel (Full chr20 at -f 0.01 & -f 0 + chr1 -f 0 -r 1 Singleton Floor)
