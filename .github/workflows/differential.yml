@@ -66,6 +66,11 @@ jobs:
       - name: Setup oracle
         run: |
           bash harness/setup_oracle.sh
+          if [ -d "${CONDA:-$HOME/miniconda3}/envs/vardict-oracle/bin" ]; then
+            echo "${CONDA:-$HOME/miniconda3}/envs/vardict-oracle/bin" >> "$GITHUB_PATH"
+          elif command -v conda >/dev/null 2>&1; then
+            echo "$(conda info --base)/envs/vardict-oracle/bin" >> "$GITHUB_PATH"
+          fi
           [ ! -d scratch/golden-store/cells ] || bash harness/golden_store.sh verify
       - name: Materialize reference FASTAs
         run: python3 harness/convert_fastas.py

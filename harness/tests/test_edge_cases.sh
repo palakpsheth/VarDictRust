@@ -7,6 +7,21 @@
 # 4. contig_boundary.bam: reads at contig start (chr1:1-50) and contig end (chr1:251-300).
 set -euo pipefail
 
+if ! command -v samtools >/dev/null 2>&1; then
+  for cbin in "${CONDA:-}/envs/vardict-oracle/bin" "$HOME/miniconda3/envs/vardict-oracle/bin" "$HOME/anaconda3/envs/vardict-oracle/bin"; do
+    if [ -x "$cbin/samtools" ]; then
+      export PATH="$cbin:$PATH"
+      break
+    fi
+  done
+  if ! command -v samtools >/dev/null 2>&1 && command -v conda >/dev/null 2>&1; then
+    cbase=$(conda info --base 2>/dev/null || true)
+    if [ -n "$cbase" ] && [ -x "$cbase/envs/vardict-oracle/bin/samtools" ]; then
+      export PATH="$cbase/envs/vardict-oracle/bin:$PATH"
+    fi
+  fi
+fi
+
 DIR="${EDGE_CASES_DIR:-scratch/test_edge_cases}"
 mkdir -p "$DIR"
 
