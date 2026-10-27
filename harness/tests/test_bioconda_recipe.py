@@ -425,6 +425,8 @@ class TestRepoAgentSkills(unittest.TestCase):
         diff_text = (workflows_dir / "differential.yml").read_text(encoding="utf-8")
         self.assertIn('RUST_TEST_THREADS: "2"', diff_text)
         self.assertIn('RAYON_NUM_THREADS: "2"', diff_text)
+        self.assertIn("name: Dual-Engine Differential Parity (Tier-2)", diff_text)
+        self.assertNotIn("paths:", diff_text, "differential.yml must not filter paths or required PR checks hang on docs PRs")
         expected_diff_steps = [
             "1. Build Release Binary & Verify Pinned Golden Store",
             "2. Tier-2 Micro Differential Parity (3-Way Java / Rust / C++)",

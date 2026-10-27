@@ -2,25 +2,7 @@ name: Differential Testing
 on:
   push:
     branches: [main]
-    paths:
-      - 'crates/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'harness/**'
-      - 'fixtures/**'
-      - 'golden/**'
-      - 'benchmarks/**'
-      - '.github/workflows/differential.yml'
   pull_request:
-    paths:
-      - 'crates/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'harness/**'
-      - 'fixtures/**'
-      - 'golden/**'
-      - 'benchmarks/**'
-      - '.github/workflows/differential.yml'
   workflow_dispatch:
 
 concurrency:
