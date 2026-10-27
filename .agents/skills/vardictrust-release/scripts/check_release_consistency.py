@@ -219,6 +219,13 @@ def check_pre_tag_surfaces(repo_root: Path, version: str, errors: list[str]) -> 
     require_regex(
         repo_root,
         "README.md",
+        rf"docs/release/v{ver_esc}-pr\.md",
+        f"README.md links to docs/release/v{version}-pr.md",
+        errors,
+    )
+    require_regex(
+        repo_root,
+        "README.md",
         r"416 automated Cargo workspace tests \(252 core library tests, 110 corpus and modality parity tests, 25 engine behavior tests, 2 amplicon streaming memory tests, 2 CRAM stack tests, 17 CLI tests, and 8 CLI integration binary tests\)",
         "README.md exact 416 test breakdown (252 + 110 + 25 + 2 + 2 + 17 + 8)",
         errors,

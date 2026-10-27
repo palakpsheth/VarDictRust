@@ -236,6 +236,30 @@ class TestNfCoreModulePackaging(unittest.TestCase):
             f"Orphaned .conda-lock files detected: {actual_names ^ expected_names}",
         )
 
+    def test_readme_container_uris_match_nfcore_meta(self):
+        readme = (ROOT_DIR / "README.md").read_text(encoding="utf-8")
+        meta_yml = (NFCORE_MOD_DIR / "meta.yml").read_text(encoding="utf-8")
+        self.assertNotIn(
+            "ghcr.io/palakpsheth/vardictrust",
+            readme,
+            "README.md must not reference unpublished ghcr.io/palakpsheth/vardictrust images",
+        )
+        wave_uris = re.findall(
+            r"(?:oras://)?community\.wave\.seqera\.io/library/htslib_vardictrust:[0-9a-f]{16}",
+            readme,
+        )
+        self.assertGreaterEqual(
+            len(wave_uris),
+            2,
+            "README.md must document verified multi-arch Seqera Wave container URIs",
+        )
+        for uri in wave_uris:
+            self.assertIn(
+                uri,
+                meta_yml,
+                f"README.md Wave container URI {uri!r} not found in packaging/nf-core/modules/vardictrust/meta.yml",
+            )
+
 
 class TestRepoAgentSkills(unittest.TestCase):
     """Verify .agents/skills/ SDO frontmatter, markdown hygiene, and release consistency validator."""

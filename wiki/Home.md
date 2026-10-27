@@ -10,7 +10,7 @@ VarDictRust is an idiomatic Rust rewrite of **VarDictJava v1.8.3** (a somatic an
 
 ### 1. Getting Started & User Guide
 - **[README](https://github.com/palakpsheth/VarDictRust#readme)** — Executive overview, performance scoreboards, quickstart commands, and installation.
-- **[Installation Guide](https://github.com/palakpsheth/VarDictRust#installation)** — Pre-built static musl binaries, cargo install, containers (Docker/Podman/Singularity), and conda/bioconda instructions.
+- **[Installation Guide](https://github.com/palakpsheth/VarDictRust#installation)** — Pre-built static/native binaries (`cargo-dist` SLSA Level 3), Cargo install, Seqera Wave containers (Docker/Podman/Apptainer), Conda/Bioconda (`conda`/`mamba`/`pixi`), and Nextflow (`nf-core/modules`).
 - **[Usage Recipes & Modalities](https://github.com/palakpsheth/VarDictRust#usage-recipes)** — Diátaxis recipes for Germline WGS, Somatic Tumor-Normal, Targeted Amplicon (`-a`), RNA-seq Splicing (`-i`), and UNIX streaming pipelines.
 - **[CLI Parameter Reference](https://github.com/palakpsheth/VarDictRust#cli-parameter-reference)** — Complete 60-flag reference across 6 functional groups.
 - **[Contributing Guidelines & Release Runbook](https://github.com/palakpsheth/VarDictRust/blob/main/CONTRIBUTING.md#release-process)** — Development prerequisites, code style, pre-commit hygiene, test harnesses, and release process.

@@ -8,7 +8,7 @@ description: Use when preparing, verifying, tagging, or publishing a VarDictRust
 ## Overview
 
 VarDictRust ships across **four binary/package channels** plus **ReadTheDocs**:
-1. **GitHub Releases (`cargo-dist` + SLSA Level 3 provenance):** Prebuilt archives for `x86_64-unknown-linux-gnu`, `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`, and `aarch64-apple-darwin`, shell installer (`vardictrust-installer.sh`), and `sha256.sum`.
+1. **GitHub Releases (`cargo-dist` + SLSA Level 3 provenance):** Prebuilt archives for `x86_64-unknown-linux-gnu`, `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`, `aarch64-apple-darwin`, and `x86_64-apple-darwin`, shell installer (`vardictrust-installer.sh`), and `sha256.sum`.
 2. **Crates.io:** Sequential publish of `vardictrust-core` followed by `vardictrust`.
 3. **Bioconda (`bioconda/bioconda-recipes`):** Conda package built from the tagged GitHub source tarball (`packaging/bioconda/`).
 4. **Nextflow (`nf-core/modules`):** `vardictrust` module (`packaging/nf-core/modules/vardictrust/`) with multi-arch Wave Singularity/Docker containers built from Bioconda (`bioconda::vardictrust` + `bioconda::htslib`).
