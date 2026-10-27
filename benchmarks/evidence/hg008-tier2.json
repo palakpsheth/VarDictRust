@@ -20,7 +20,7 @@
     "max_rss_kb": "310920",
     "wall": "0:21.96"
   },
-  "date": "2026-10-26T19:35:26-07:00",
+  "date": "2026-10-27T01:52:46-07:00",
   "extra": {
     "cpp_chunk": "50000",
     "cpp_head": [
@@ -32,6 +32,54 @@
     "cpp_version": "vardictcpp 3 hc52dbad_0 bioconda",
     "golden": {
       "events": [
+        {
+          "event": "HIT",
+          "key": "d959a1f9d0caade3",
+          "kind": "cpp",
+          "label": "scale-th1"
+        },
+        {
+          "event": "HIT",
+          "key": "51b5d8c406281b9f",
+          "kind": "cpp",
+          "label": "scale-th2"
+        },
+        {
+          "event": "HIT",
+          "key": "100bfb0e1109fc67",
+          "kind": "cpp",
+          "label": "scale-th4"
+        },
+        {
+          "event": "HIT",
+          "key": "06cd7f28339d9ce8",
+          "kind": "cpp",
+          "label": "scale-th8"
+        },
+        {
+          "event": "HIT",
+          "key": "31ce21cdef2b8ff5",
+          "kind": "cpp",
+          "label": "scale-R1000000"
+        },
+        {
+          "event": "HIT",
+          "key": "300bf8323f02eb97",
+          "kind": "cpp",
+          "label": "scale-R10000000"
+        },
+        {
+          "event": "HIT",
+          "key": "a33080203a44b627",
+          "kind": "cpp",
+          "label": "scale-R100000000"
+        },
+        {
+          "event": "HIT",
+          "key": "561b46c9fc809e16",
+          "kind": "cpp",
+          "label": "scale-R248956422"
+        },
         {
           "event": "HIT",
           "key": "812a562f853bf2da",
@@ -57,13 +105,13 @@
           "label": "compare"
         }
       ],
-      "hit": 4,
+      "hit": 12,
       "live": 0,
-      "run": "recertify-1793068445"
+      "run": "recertify-1793088057"
     }
   },
-  "fingerprint": "11ba91f130e9ce72",
-  "head": "eab3bb8ac3a70f19cf2cb36c7a5816bf095f1994",
+  "fingerprint": "85c75a912527800e",
+  "head": "af0ab21089a61931df62b7e91493a278186b36ae",
   "java_time": {
     "exit": "0",
     "max_rss_kb": "3455016",
@@ -74,7 +122,7 @@
   "result": "MATCH",
   "rust_time": {
     "exit": "0",
-    "max_rss_kb": "300032",
-    "wall": "1:15.26"
+    "max_rss_kb": "314612",
+    "wall": "1:03.82"
   }
 }

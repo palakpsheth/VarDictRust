@@ -1,15 +1,14 @@
 {
   "cmd": [
-    "cargo",
-    "test",
-    "--target",
-    "x86_64-unknown-linux-musl"
+    "bash",
+    "-c",
+    "cargo test --target x86_64-unknown-linux-musl && bash harness/bin_equiv.sh"
   ],
   "compare_head": [],
   "cpp_time": null,
-  "date": "2026-10-26T20:05:05-07:00",
-  "fingerprint": "11ba91f130e9ce72",
-  "head": "eab3bb8ac3a70f19cf2cb36c7a5816bf095f1994",
+  "date": "2026-10-27T02:22:26-07:00",
+  "fingerprint": "85c75a912527800e",
+  "head": "af0ab21089a61931df62b7e91493a278186b36ae",
   "java_time": null,
   "n_variants": null,
   "name": "musl-ci",

@@ -10,7 +10,7 @@
     "MATCH (18426 variants)"
   ],
   "cpp_time": null,
-  "date": "2026-10-26T20:02:28-07:00",
+  "date": "2026-10-27T02:17:57-07:00",
   "extra": {
     "cpp_chunk": "50000",
     "cpp_head": [
@@ -19,15 +19,15 @@
     ],
     "cpp_version": "vardictcpp 3 hc52dbad_0 bioconda"
   },
-  "fingerprint": "11ba91f130e9ce72",
-  "head": "eab3bb8ac3a70f19cf2cb36c7a5816bf095f1994",
+  "fingerprint": "85c75a912527800e",
+  "head": "af0ab21089a61931df62b7e91493a278186b36ae",
   "java_time": null,
   "n_variants": 18426,
   "name": "hg008-cram-twin",
   "result": "MATCH",
   "rust_time": {
     "exit": "0",
-    "max_rss_kb": "300032",
-    "wall": "1:15.26"
+    "max_rss_kb": "314612",
+    "wall": "1:03.82"
   }
 }
