@@ -1,0 +1,60 @@
+name: Setup VarDictRust Conda Test Environment
+description: >
+  Provisions and caches the pinned VarDictJava 1.8.3 / vardictcpp oracle and
+  g4-tools bioinformatics CLI environment (samtools, bcftools, htslib, bedtools,
+  rtg-tools), mirroring the local workstation setup on GitHub Actions runners.
+inputs:
+  profile:
+    description: "Environment profile to provision: 'oracle' (vardict-oracle + g4-tools) or 'tools' (g4-tools CLI only)"
+    required: false
+    default: "oracle"
+
+runs:
+  using: composite
+  steps:
+    - name: Setup Miniconda
+      uses: conda-incubator/setup-miniconda@be893c923ea9cf1cf7cd510fbdde27c7e18cbdcb # v4.1.0
+      with:
+        auto-activate: true
+        miniconda-version: "latest"
+
+    - name: Cache Conda Environments
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: ${{ env.CONDA }}/envs
+        key: conda-env-v1-${{ runner.os }}-${{ inputs.profile }}-${{ hashFiles('benchmarks/env/vardict-oracle.yml', 'harness/env/g4-tools.yml', 'harness/setup_oracle.sh') }}
+        restore-keys: |
+          conda-env-v1-${{ runner.os }}-${{ inputs.profile }}-
+
+    - name: Provision Conda Environment (${{ inputs.profile }})
+      shell: bash
+      env:
+        INPUT_PROFILE: ${{ inputs.profile }}
+      run: |
+        set -euo pipefail
+        CONDA_ROOT="${CONDA:-$(conda info --base)}"
+        solver_arg=""
+        if conda create --help 2>&1 | grep -q -- '--solver'; then
+          solver_arg="--solver=libmamba"
+        fi
+
+        if [ "$INPUT_PROFILE" = "oracle" ]; then
+          bash harness/setup_oracle.sh
+          if [ ! -x "$CONDA_ROOT/envs/vardict-oracle/bin/bedtools" ] || [ ! -x "$CONDA_ROOT/envs/vardict-oracle/bin/rtg" ]; then
+            conda install -y -n vardict-oracle $solver_arg -c bioconda -c conda-forge \
+              bedtools rtg-tools
+          fi
+          if [ ! -e "$CONDA_ROOT/envs/g4-tools" ]; then
+            ln -s "$CONDA_ROOT/envs/vardict-oracle" "$CONDA_ROOT/envs/g4-tools"
+          fi
+          echo "$CONDA_ROOT/envs/vardict-oracle/bin" >> "$GITHUB_PATH"
+        elif [ "$INPUT_PROFILE" = "tools" ]; then
+          if [ ! -x "$CONDA_ROOT/envs/g4-tools/bin/samtools" ] || [ ! -x "$CONDA_ROOT/envs/g4-tools/bin/bedtools" ]; then
+            conda create -y -n g4-tools $solver_arg -c bioconda -c conda-forge \
+              samtools bcftools htslib bedtools rtg-tools
+          fi
+          echo "$CONDA_ROOT/envs/g4-tools/bin" >> "$GITHUB_PATH"
+        else
+          echo "ERROR: unknown setup-conda-env profile '$INPUT_PROFILE' (expected 'oracle' or 'tools')" >&2
+          exit 1
+        fi

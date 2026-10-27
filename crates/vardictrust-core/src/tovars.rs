@@ -351,7 +351,7 @@ impl<'a> ToVarsBuilder<'a> {
             msi = tmsi;
             msint = tmsint;
         }
-        if msi <= (shift3 as f64) / (dellen as f64) {
+        if dellen > 0 && msi <= (shift3 as f64) / (dellen as f64) {
             msi = (shift3 as f64) / (dellen as f64);
         }
 
@@ -380,7 +380,7 @@ impl<'a> ToVarsBuilder<'a> {
             msi = tmsi;
             msint = tmsint;
         }
-        if msi <= (shift3 as f64) / (tseq1.len() as f64) {
+        if !tseq1.is_empty() && msi <= (shift3 as f64) / (tseq1.len() as f64) {
             msi = (shift3 as f64) / (tseq1.len() as f64);
         }
 
@@ -474,6 +474,13 @@ impl<'a> ToVarsBuilder<'a> {
             insertion_description_strings.sort();
 
             for description_string in &insertion_description_strings {
+                if description_string
+                    .strip_prefix('+')
+                    .unwrap_or(description_string)
+                    .is_empty()
+                {
+                    continue;
+                }
                 let mut ttcov = total_pos_coverage;
                 if description_string.contains('&') {
                     if let Some(&cov_next) = ref_coverage.get(&(position + 1)) {
@@ -1195,16 +1202,18 @@ pub fn find_msi(tseq1: &[u8], tseq2: &[u8], left: &[u8]) -> MsiResult {
     }
 
     let mut shift3 = 0;
-    while shift3 < tseq2.len() {
-        let tseq_char = if shift3 < tseq1_len {
-            tseq1[shift3]
-        } else {
-            tseq2[shift3 - tseq1_len]
-        };
-        if tseq_char == tseq2[shift3] {
-            shift3 += 1;
-        } else {
-            break;
+    if tseq1_len > 0 {
+        while shift3 < tseq2.len() {
+            let tseq_char = if shift3 < tseq1_len {
+                tseq1[shift3]
+            } else {
+                tseq2[shift3 - tseq1_len]
+            };
+            if tseq_char == tseq2[shift3] {
+                shift3 += 1;
+            } else {
+                break;
+            }
         }
     }
 
@@ -1731,5 +1740,61 @@ mod tests {
             (11, 4)
         );
         assert!(vars11.var_desc_to_variant.contains_key("G"));
+    }
+
+    #[test]
+    fn build_aligned_variants_degenerate_plus_allele_does_not_panic() {
+        let mut ref_genome = Reference::new();
+        ref_genome
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 1,
+                sequence_end: 100,
+            });
+        ref_genome
+            .reference_sequences
+            .insert("chr1".to_string(), vec![b'A'; 100]);
+        ref_genome.region_sequences.push(vec![b'A'; 100]);
+
+        let chr_lengths = HashMap::from([("chr1".to_string(), 100)]);
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(1),
+            end: Pos1(100),
+            gene: "TEST".to_string(),
+            amplicon: None,
+        };
+
+        let mut var_data = VariationData::new();
+        var_data.ref_coverage.insert(10, 20);
+
+        let mut vm10 = VariationMap::new();
+        let mut ref10 = Variation::new();
+        ref10.cnt = 10;
+        ref10.fwd = 5;
+        ref10.rev = 5;
+        ref10.qmean = 300.0;
+        ref10.mqmean = 600.0;
+        ref10.pmean = 200.0;
+        ref10.hicnt = 10;
+        vm10.map.insert("A".to_string(), ref10.clone());
+        // Also test a degenerate "+" in non_insertion_variants and insertion_variants
+        vm10.map.insert("+".to_string(), ref10.clone());
+        var_data.non_insertion_variants.insert(10, vm10);
+
+        let mut ins10_map = VariationMap::new();
+        ins10_map.map.insert("+".to_string(), ref10);
+        var_data.insertion_variants.insert(10, ins10_map);
+
+        let mut cfg = Config::default();
+        cfg.crispr_cutting_site = Some(12);
+        let builder = ToVarsBuilder::new(&ref_genome, &region, &chr_lengths, &cfg);
+        let aligned = builder.build_aligned_variants(&var_data);
+        for (_, vars) in aligned.iter() {
+            for v in &vars.variants {
+                assert!(v.msi.is_finite(), "MSI must remain finite, got {}", v.msi);
+            }
+        }
     }
 }

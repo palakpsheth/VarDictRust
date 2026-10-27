@@ -4,7 +4,7 @@
 # Usage: [DATA_DIR=scratch/g4] bash harness/get_hg008_slice.sh [--beds-only]
 set -euo pipefail
 
-if ! command -v samtools &>/dev/null || ! command -v bedtools &>/dev/null; then
+if [ "${NO_G4_TOOLS:-0}" = 0 ] && [ -d /home/palak/miniconda3/envs/g4-tools/bin ] && { ! command -v samtools &>/dev/null || ! command -v bedtools &>/dev/null; }; then
   export PATH="/home/palak/miniconda3/envs/g4-tools/bin:$PATH"
 fi
 
@@ -67,8 +67,39 @@ if [ -f "$EVAL_BED" ] && [ -s "$EVAL_BED" ]; then
   echo "HG008 eval.bed already exists: $EVAL_BED"
 else
   echo "Intersecting $SLICES_BED with $TRUTH_BED -> $EVAL_BED..."
-  bedtools intersect -a "$SLICES_BED" -b "$TRUTH_BED" \
-    | cut -f1-3 | bedtools sort -i - | bedtools merge -i - > "$EVAL_BED.tmp"
+  if command -v bedtools >/dev/null 2>&1; then
+    bedtools intersect -a "$SLICES_BED" -b "$TRUTH_BED" \
+      | cut -f1-3 | bedtools sort -i - | bedtools merge -i - > "$EVAL_BED.tmp"
+  else
+    python3 - "$SLICES_BED" "$TRUTH_BED" > "$EVAL_BED.tmp" <<'PY'
+import sys
+def read_bed(p):
+    out = {}
+    with open(p) as f:
+        for line in f:
+            if not line.strip() or line.startswith(("#", "track", "browser")):
+                continue
+            parts = line.split("\t")
+            out.setdefault(parts[0], []).append((int(parts[1]), int(parts[2])))
+    return out
+a, b = read_bed(sys.argv[1]), read_bed(sys.argv[2])
+for chrom in sorted(set(a) & set(b)):
+    ints = sorted(
+        (max(s1, s2), min(e1, e2))
+        for s1, e1 in a[chrom]
+        for s2, e2 in b[chrom]
+        if max(s1, s2) < min(e1, e2)
+    )
+    merged = []
+    for s, e in ints:
+        if merged and s <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], e))
+        else:
+            merged.append((s, e))
+    for s, e in merged:
+        print(f"{chrom}\t{s}\t{e}")
+PY
+  fi
   mv "$EVAL_BED.tmp" "$EVAL_BED"
 fi
 

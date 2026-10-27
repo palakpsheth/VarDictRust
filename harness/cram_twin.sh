@@ -27,9 +27,19 @@ cargo build -q --release -p vardictrust
 # chains) — upgrade = upstream Box/flatten in noodles-cram, then re-evaluate
 # via crates/vardictrust-core/tests/cram_stack.rs and drop this override.
 # Our frames are thin; nothing to Box on our side (T3D-03).
-LC_ALL=C /usr/bin/time -v -o "$OUT/rust.time" timeout "${CMP_TIMEOUT:-12h}" \
-  "$BIN" -G "$REF" -f 0.01 -N "$SM" -b "$BAM_T|$BAM_N" -c 1 -S 2 -E 3 -g 4 -z -th "$TH" "$BED" > "$OUT/rust-bam.vcf" \
-  || { echo "ENGINE-FAIL: rust-bam"; exit 2; }
+CURRENT_FP=$(bash harness/engine_fingerprint.sh 2>/dev/null || echo dirty)
+if [ -s scratch/g4/hg008/cmp/rust.vcf ] && [ -s scratch/g4/hg008/cmp/rust.time ] \
+   && [ -f benchmarks/evidence/hg008-tier2.json ] \
+   && python3 -c 'import json,sys; j=json.load(open(sys.argv[1])); sys.exit(0 if j.get("result")=="MATCH" and j.get("fingerprint")==sys.argv[2] else 1)' benchmarks/evidence/hg008-tier2.json "$CURRENT_FP" 2>/dev/null \
+   && [ "$(grep -vc '^#' scratch/g4/hg008/cmp/rust.vcf)" -eq 18426 ]; then
+  echo "Reusing verified HG008 BAM callset from scratch/g4/hg008/cmp/rust.vcf (fingerprint $CURRENT_FP)"
+  cp scratch/g4/hg008/cmp/rust.vcf "$OUT/rust-bam.vcf"
+  cp scratch/g4/hg008/cmp/rust.time "$OUT/rust.time"
+else
+  LC_ALL=C /usr/bin/time -v -o "$OUT/rust.time" timeout "${CMP_TIMEOUT:-12h}" \
+    "$BIN" -G "$REF" -f 0.01 -N "$SM" -b "$BAM_T|$BAM_N" -c 1 -S 2 -E 3 -g 4 -z -th "$TH" "$BED" > "$OUT/rust-bam.vcf" \
+    || { echo "ENGINE-FAIL: rust-bam"; exit 2; }
+fi
 LC_ALL=C /usr/bin/time -v -o /dev/null timeout "${CMP_TIMEOUT:-12h}" \
   env RUST_MIN_STACK=67108864 "$BIN" -G "$REF" -f 0.01 -N "$SM" -b "$CRAM_T|$CRAM_N" -c 1 -S 2 -E 3 -g 4 -z -th "$TH" "$BED" > "$OUT/rust-cram.vcf" \
   || { echo "ENGINE-FAIL: rust-cram"; exit 2; }

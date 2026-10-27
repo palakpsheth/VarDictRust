@@ -35,13 +35,15 @@ The harness operates in two distinct tiers:
 
 | Script | Purpose & Gate Coverage | Runtime |
 | :--- | :--- | :--- |
-| [`acceptance.sh`](acceptance.sh) | **Master Acceptance Gate:** Executes the 8 mandatory release criteria defined in [`AGENTS.md` §15](../AGENTS.md#15-definition-of-done-every-change). Verifies workspace unit tests, 91/1 corpus parity, Tier-2 micro/macro parity, crash robustness, 4-target performance budget, truth concordance, hygiene, and distribution equivalence. | $<1\text{m}$ |
-| [`pr_check.sh`](pr_check.sh) | **Standard PR Regression Suite:** Enforces a 6-stage verification gate on all PRs: Hygiene (`cargo fmt`, `clippy -D warnings`, `cargo audit`, `cargo deny`), Crash Robustness, 91/1 Corpus, Tier-2 Micro Parity, 4-Target Performance Budget, and Gitleaks secret scanning. | $<35\text{s}$ |
-| [`run_self_tests.sh`](run_self_tests.sh) | **Diagnostic Self-Test Harness:** Discovers and executes all 24 diagnostic test scripts (16 shell tests and 8 python test suites in `harness/tests/`), reporting unified status and elapsed milliseconds. | $<10\text{s}$ |
+| [`acceptance.sh`](acceptance.sh) | **Master Acceptance Gate (Tier B Release Gate):** Executes the 8 mandatory release criteria defined in [`AGENTS.md` §15](../AGENTS.md#15-definition-of-done-every-change). Verifies workspace unit tests, 91/1 corpus parity, Tier-2 micro/macro parity, crash robustness, 4-target performance budget, truth concordance, hygiene, and distribution equivalence. | $<1\text{m}$ |
+| [`recertify.sh`](recertify.sh) | **Release Recertification Driver (Tier B Release Gate):** One-command release recertifier that refreshes all 15 non-scale `benchmarks/evidence/*.json` files (reusing pinned `VarDictJava`/`vardictcpp` baselines and cached `rtg vcfeval` results), syncs documentation SHA-256/fingerprint tables via `sync_evidence_docs.py`, and runs `acceptance.sh`. | $\sim 8\text{m}$ |
+| [`sync_evidence_docs.py`](sync_evidence_docs.py) | **Evidence Documentation Synchronizer:** Stdlib-only script updating `FP`, `PERF_FP`, and the 16-row §13 SHA-256 table across `omnibus-empirical-validation.md`, `DIVERGENCES.md`, `test-matrix-and-ci-audit.md`, `benchmarks/README.md`, and `docs/release/vX.Y.Z-pr.md`. | $<1\text{s}$ |
+| [`pr_check.sh`](pr_check.sh) | **Standard PR Regression Suite (Tier A Per-PR Gate):** Enforces a 6-stage verification gate on all PRs: Hygiene (`cargo fmt`, `clippy -D warnings`, 416 workspace tests), Crash Robustness, 91/1 Corpus (8 workers), Tier-2 Parity (`micro`, `s1a..s9`, 17-modality `--no-record`, 18-slice `--no-record`), 4-Target Performance Budget, and Gitleaks secret scanning. | $<25\text{s}$ |
+| [`run_self_tests.sh`](run_self_tests.sh) | **Diagnostic Self-Test Harness:** Discovers and executes all 25 diagnostic test scripts (17 shell tests and 8 python test suites in `harness/tests/`), reporting unified status and elapsed milliseconds. | $<10\text{s}$ |
 | [`setup_hooks.sh`](setup_hooks.sh) | **Git Hooks Configuration:** Configures repository Git hook path to `.githooks/` (`git config core.hooksPath .githooks`), activating fast local pre-commit hygiene and secret checks. | $<1\text{s}$ |
 | [`engine_fingerprint.sh`](engine_fingerprint.sh) | **Release Engine Fingerprinter:** Computes a 16-character SHA-256 hash across engine source code (`crates/*/src`), comparator drivers, and locked dependencies (`Cargo.lock`). Guarantees evidence records are tied to an exact, unmutated engine commit. | $<1\text{s}$ |
 | [`bin_equiv.sh`](bin_equiv.sh) | **Binary Equivalence Gate:** Validates that statically-compiled `x86_64-unknown-linux-musl` release binaries produce identical variant calls to glibc binaries. | $<30\text{s}$ |
-| [`check_release_consistency.py`](../.agents/skills/vardictrust-release/scripts/check_release_consistency.py) | **Release Consistency & Evidence Validator:** Stdlib-only validator ensuring all 19 version-bearing files, 277 workspace test counts, engine fingerprints (`FP` & `PERF_FP`), and 16 `benchmarks/evidence/*.json` SHA-256 manifests match for `--phase {pre-tag,post-tag,post-bioconda,post-nfcore}`. | $<1\text{s}$ |
+| [`check_release_consistency.py`](../.agents/skills/vardictrust-release/scripts/check_release_consistency.py) | **Release Consistency & Evidence Validator:** Stdlib-only validator ensuring all 19 version-bearing files, 416 workspace test counts, engine fingerprints (`FP` & `PERF_FP`), and 16 `benchmarks/evidence/*.json` SHA-256 manifests match for `--phase {pre-tag,post-tag,post-bioconda,post-nfcore}` (with `--require-head-fingerprint` at release cut). | $<1\text{s}$ |
 
 ---
 
@@ -90,7 +92,7 @@ The [`slices.tsv`](slices.tsv) index and [`slices/`](slices/) directory define t
 
 ## 6. Meta-Test Suite (`harness/tests/`)
 
-The harness contains an internal self-test suite (24 test scripts) verifying that the harness tools, comparators, and zero-dependency environment contracts function correctly:
+The harness contains an internal self-test suite (25 test scripts) verifying that the harness tools, comparators, and zero-dependency environment contracts function correctly:
 
 ```bash
 # Run all harness meta-tests using the diagnostic self-test harness
@@ -98,10 +100,10 @@ bash harness/run_self_tests.sh
 ```
 
 The runner dynamically discovers and executes:
-- 16 Shell Tests: `test_compare_sh.sh`, `test_concordance.sh`, `test_concordance_sv.sh`, `test_courtesy.sh`, `test_edge_cases.sh`, `test_env_pinned.sh`, `test_evidence.sh`, `test_fetch_data.sh`, `test_golden_wiring.sh`, `test_perf_budget.sh`, `test_profile_sh.sh`, `test_release_deps.sh`, `test_run_cpp.sh`, `test_run_oracle.sh`, `test_scale_bench.sh`, `test_seqc2_align.sh`.
+- 17 Shell Tests: `test_compare_sh.sh`, `test_concordance.sh`, `test_concordance_sv.sh`, `test_courtesy.sh`, `test_edge_cases.sh`, `test_env_pinned.sh`, `test_evidence.sh`, `test_fetch_data.sh`, `test_git_hooks.sh`, `test_golden_wiring.sh`, `test_perf_budget.sh`, `test_profile_sh.sh`, `test_release_deps.sh`, `test_run_cpp.sh`, `test_run_oracle.sh`, `test_scale_bench.sh`, `test_seqc2_align.sh`.
 - 8 Python Test Suites: `test_bioconda_recipe.py`, `test_compare_vcf.py` (10 tests), `test_docs_ui.py` (10 tests), `test_golden_store.py` (39 tests), `test_profile_catalog.py` (20 tests), `test_select_slice_regions.py` (4 tests), `test_stdlib_purity.py` (AST zero-PyPI import guard), `test_vcf_header.py` (1 test).
 
-All 24 diagnostic test scripts pass 100% green.
+All 25 diagnostic test scripts pass 100% green.
 
 ---
 

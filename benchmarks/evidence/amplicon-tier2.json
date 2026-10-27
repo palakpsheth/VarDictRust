@@ -22,7 +22,7 @@
     "max_rss_kb": "91040",
     "wall": "0:03.75"
   },
-  "date": "2026-10-26T16:22:58-07:00",
+  "date": "2026-10-27T01:51:39-07:00",
   "extra": {
     "cpp_head": [
       "CPP: SKIP: cpp emitted non-VCF surface (TSV-only mode; VCF comparison inapplicable)"
@@ -30,6 +30,54 @@
     "cpp_skip_reason": "cpp emitted non-VCF surface (TSV-only mode; VCF comparison inapplicable)",
     "golden": {
       "events": [
+        {
+          "event": "HIT",
+          "key": "d959a1f9d0caade3",
+          "kind": "cpp",
+          "label": "scale-th1"
+        },
+        {
+          "event": "HIT",
+          "key": "51b5d8c406281b9f",
+          "kind": "cpp",
+          "label": "scale-th2"
+        },
+        {
+          "event": "HIT",
+          "key": "100bfb0e1109fc67",
+          "kind": "cpp",
+          "label": "scale-th4"
+        },
+        {
+          "event": "HIT",
+          "key": "06cd7f28339d9ce8",
+          "kind": "cpp",
+          "label": "scale-th8"
+        },
+        {
+          "event": "HIT",
+          "key": "31ce21cdef2b8ff5",
+          "kind": "cpp",
+          "label": "scale-R1000000"
+        },
+        {
+          "event": "HIT",
+          "key": "300bf8323f02eb97",
+          "kind": "cpp",
+          "label": "scale-R10000000"
+        },
+        {
+          "event": "HIT",
+          "key": "a33080203a44b627",
+          "kind": "cpp",
+          "label": "scale-R100000000"
+        },
+        {
+          "event": "HIT",
+          "key": "561b46c9fc809e16",
+          "kind": "cpp",
+          "label": "scale-R248956422"
+        },
         {
           "event": "HIT",
           "key": "812a562f853bf2da",
@@ -43,13 +91,13 @@
           "label": "compare"
         }
       ],
-      "hit": 2,
+      "hit": 10,
       "live": 0,
-      "run": "compare-2955426-1793056976"
+      "run": "recertify-1793088057"
     }
   },
-  "fingerprint": "08b397ab1d32e857",
-  "head": "b90c84ef1c1ea398ff9785f7ac38040302618fd0",
+  "fingerprint": "85c75a912527800e",
+  "head": "af0ab21089a61931df62b7e91493a278186b36ae",
   "java_time": {
     "exit": "0",
     "max_rss_kb": "125120",
@@ -60,7 +108,7 @@
   "result": "MATCH",
   "rust_time": {
     "exit": "0",
-    "max_rss_kb": "58992",
-    "wall": "0:00.34"
+    "max_rss_kb": "11680",
+    "wall": "0:00.01"
   }
 }

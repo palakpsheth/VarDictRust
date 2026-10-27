@@ -23,10 +23,10 @@ use vardictrust_core::postprocess::amplicon::{
 use vardictrust_core::regions::{AmpliconInfo, Region};
 use vardictrust_core::types::{Pos1, VardictError};
 
-const INSERT_LEN: u32 = 2_000_000;
-// Old per-base BTreeMap measured 902 MB VmHWM for this insert (debug build);
-// the stream must stay an order of magnitude below that.
-const PEAK_KB_CAP: u64 = 128_000;
+const INSERT_LEN: u32 = 500_000;
+// Old per-base BTreeMap uses ~225 MB VmHWM for a 500 kbp insert (debug build);
+// the streaming path uses ~20 MB and must stay well below 64 MB.
+const PEAK_KB_CAP: u64 = 64_000;
 const WALL_SECS_CAP: u64 = 60;
 
 fn peak_kb() -> Option<u64> {

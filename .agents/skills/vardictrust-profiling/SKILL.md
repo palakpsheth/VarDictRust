@@ -62,11 +62,11 @@ cargo test -p vardictrust --test profile_smoke
 cargo test -p vardictrust --test profile_smoke --features "profile-cpu,profile-heap"
 cargo test -p vardictrust --test profile_smoke --features "profile-dhat"
 
-# 2. Verify zero output divergence vs VarDictJava v1.8.3
+# 2. Tier A (Per-PR Gate, <25s): Verify zero output divergence vs VarDictJava v1.8.3
 bash harness/rgate.sh
+bash harness/pr_check.sh
 
-# 3. Any change under crates/vardictrust-core/src or crates/vardictrust/src (including profile.rs)
-#    changes FP and PERF_FP — re-certify live evidence before opening a PR:
+# 3. Tier B (Release cut release/vX.Y.Z or milestone certification when crates/*/src or Cargo.lock changed):
 # bash harness/courtesy.sh bash harness/recertify.sh
 ```
 
@@ -83,5 +83,5 @@ bash harness/rgate.sh
 ## Red Flags — STOP Immediately If You Catch Yourself
 
 - Leaving `profile-cpu`, `profile-heap`, or `profile-dhat` in `default = [...]` in `crates/vardictrust/Cargo.toml`.
-- Editing `crates/vardictrust/src/profile.rs` without running `bash harness/recertify.sh` (`crates/vardictrust/src` is hashed by `harness/engine_fingerprint.sh`).
+- Hand-editing `benchmarks/evidence/*.json` after editing `crates/vardictrust/src/profile.rs` (routine PRs run `bash harness/pr_check.sh`; release certification PRs run `bash harness/recertify.sh`).
 - Committing `scratch/profiles/`, `/tmp/prof-*`, `*.svg`, `*.pb`, `*.pb.gz`, or `dhat-heap.json` artifacts into the Git repository.

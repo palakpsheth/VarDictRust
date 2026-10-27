@@ -217,29 +217,30 @@ bash harness/compare.sh <ref.fa> <sample.bam> <regions.bed> [sample_name]
 bash harness/compare.sh <ref.fa> "tumor.bam|normal.bam" <regions.bed> [sample_name]
 ```
 
-### 5.4 Comprehensive PR Verification (`pr_check.sh`)
-Before submitting a pull request, run the comprehensive 6-stage PR validation suite defined in [`harness/pr_check.sh`](harness/README.md#key-scripts--runners):
+### 5.4 Comprehensive PR Verification (`pr_check.sh` — Tier A Per-PR Gate)
+Before submitting any pull request, run the 6-stage PR validation suite defined in [`harness/pr_check.sh`](harness/README.md#key-scripts--runners):
 ```bash
 bash harness/pr_check.sh
 ```
-This suite automatically verifies:
-1. **Stage 1 (Hygiene & Unit Tests):** Formatting, Clippy lints, and all 293 workspace unit and integration tests ([Level 1](docs/testing/test-matrix-and-ci-audit.md#level-1)).
-2. **Stage 2 (Crash Robustness):** PR #402, missing index #187, and Issue #341 family fixtures.
-3. **Stage 3 (Upstream Integration Corpus):** 92 fixtures ([Level 2](docs/testing/test-matrix-and-ci-audit.md#level-2-upstream-integration-regression-corpus-92-fixtures)), asserting `91 PASS / 1 XFAIL` ([UB-4](docs/upstream-bugs.md#ub-4) upstream fixture defect).
-4. **Stage 4 (Dual-Engine Differential Parity):** Micro differential fixture and 17-modality extended coverage against the live VarDictJava oracle ([Level 3](docs/testing/test-matrix-and-ci-audit.md#level-3-dual-engine-differential-parity-testing)).
+This suite completes in `<25s` using the pinned golden baseline store and automatically verifies:
+1. **Stage 1 (Hygiene & Unit Tests):** Formatting, Clippy lints, and all 416 workspace unit and integration tests ([Level 1](docs/testing/test-matrix-and-ci-audit.md#level-1)).
+2. **Stage 2 (Crash Robustness):** PR #402, missing index #187, and Issue #341 family fixtures (executed within the workspace test run).
+3. **Stage 3 (Upstream Integration Corpus):** 92 fixtures ([Level 2](docs/testing/test-matrix-and-ci-audit.md#level-2-upstream-integration-regression-corpus-92-fixtures)) across 8 parallel workers, asserting `91 PASS / 1 XFAIL` ([UB-4](docs/upstream-bugs.md#ub-4) upstream fixture defect).
+4. **Stage 4 (Dual-Engine Differential Parity):** Micro differential fixture, all 10 standard slices (`s1a..s9`), 17-modality extended coverage (`--no-record`), and 18-slice multimodal suite (`--no-record`) against the VarDictJava oracle ([Level 3](docs/testing/test-matrix-and-ci-audit.md#level-3-dual-engine-differential-parity-testing)).
 5. **Stage 5 (Performance & Memory Budgets):** 4-target regression budget via [`harness/perf_budget.py`](harness/perf_budget.py) ([Level 5](docs/testing/test-matrix-and-ci-audit.md#level-5-performance--memory-budgets)).
 6. **Stage 6 (Security Hygiene):** Staged and repository secret scanning with `gitleaks`.
 
-### 5.5 Master Release Acceptance Gate (`acceptance.sh`)
-For full release qualification or certifying engine changes against committed benchmark evidence, run the 8-item acceptance gate:
+### 5.5 Master Release Recertification & Acceptance Gate (`recertify.sh` & `acceptance.sh` — Tier B Release Gate)
+When cutting a release (`release/vX.Y.Z`) or certifying a milestone baseline against committed benchmark evidence, run the push-button recertification and 8-item acceptance gate:
 ```bash
+bash harness/recertify.sh
 bash harness/acceptance.sh
 ```
-This gate enforces the 8 acceptance criteria defined in [AGENTS.md §15](AGENTS.md#15-definition-of-done-every-change) and [docs/testing/test-matrix-and-ci-audit.md §2](docs/testing/test-matrix-and-ci-audit.md#2-master-verification-matrix), validating engine fingerprints across all 16 committed evidence JSONs.
+`harness/recertify.sh` refreshes all 15 non-scale evidence JSONs in `benchmarks/evidence/*.json` (reusing pinned `VarDictJava`/`vardictcpp` baselines and cached `rtg vcfeval` truth evaluations), synchronizes the 16-row SHA-256 and fingerprint tables across documentation via `python3 harness/sync_evidence_docs.py`, and executes `bash harness/acceptance.sh` to enforce the 8 acceptance criteria defined in [AGENTS.md §15](AGENTS.md#15-definition-of-done-every-change) and [docs/testing/test-matrix-and-ci-audit.md §2](docs/testing/test-matrix-and-ci-audit.md#2-master-verification-matrix). (`harness/scale_bench.sh` is required only when `bash harness/engine_fingerprint.sh --perf` changed since `benchmarks/evidence/scale.json`.)
 
 Additionally, contributors can execute the diagnostic self-test suite ([Level 6](docs/testing/test-matrix-and-ci-audit.md#level-6-diagnostic-self-tests)) at any time:
 ```bash
-bash harness/run_self_tests.sh   # Executes all 24 diagnostic test scripts in <10s
+bash harness/run_self_tests.sh   # Executes all 25 diagnostic test scripts in <10s
 ```
 
 *For the complete seven-level testing architecture, push-button reproduction commands, and dataset provenance catalog, see the Master Reproducibility Runbook in [`docs/testing/test-matrix-and-ci-audit.md`](docs/testing/test-matrix-and-ci-audit.md).*
@@ -327,7 +328,7 @@ cargo build --release -p vardictrust
 # 2. Commit tracked release changes on release/vX.Y.Z (clean HEAD required by engine_fingerprint.sh)
 git commit -m "chore(release): prepare vX.Y.Z release"
 
-# 3. Verify engine fingerprint and run all 24 diagnostic self-tests
+# 3. Verify engine fingerprint and run all 25 diagnostic self-tests
 bash harness/engine_fingerprint.sh
 bash harness/run_self_tests.sh
 
@@ -342,13 +343,10 @@ rm -rf .docs_staged site
 cargo publish -p vardictrust-core --dry-run
 cargo package --list -p vardictrust
 
-# 6. Run 6-stage PR gate (restore timestamp-only diff in extended-coverage-tier2.json if fingerprint is unchanged)
+# 6. Run Tier B Release Recertification (refreshes any stale evidence JSONs, syncs documentation SHA-256/fingerprint tables, and runs acceptance.sh 8/8) + 6-stage PR gate (--no-record, zero working-tree dirtiness)
+bash harness/recertify.sh
 bash harness/pr_check.sh
-git checkout -- benchmarks/evidence/extended-coverage-tier2.json
-
-# 7. Run 8-item Master Release Acceptance Gate (must exit 0 with 8/8 PASS, including Item 8 musl-ci.json from harness/bin_equiv.sh; restore timestamp/timing noise if fingerprint is unchanged)
-bash harness/acceptance.sh
-git checkout -- benchmarks/evidence/extended-coverage-tier2.json benchmarks/evidence/multimodal-slices-tier2.json
+python3 .agents/skills/vardictrust-release/scripts/check_release_consistency.py --version X.Y.Z --phase pre-tag --require-head-fingerprint
 ```
 
 ### 9.4 Phase 1 — Opening & Merging the Release PR

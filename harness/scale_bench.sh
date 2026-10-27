@@ -97,21 +97,28 @@ elif $VARDICTCPP_BIN --version >/dev/null 2>&1; then
 fi
 # cell <name> <stdout-file> <cmd...>: RUNS timed executions; per-run `time -v` logs <OUT>/<name>.run<i>.time are
 # preserved (also on failure); stdout of the last run is kept. Returns 1 naming the failed cell/run.
+ts() { date '+[%H:%M:%S]'; }
+echo "$(ts) [scale_bench] Starting: cpus=$EFF, P=$P_PHYS, runs=$RUNS, perf_fp=$PERF_FP"
 cell() {
-  local name=$1 outf=$2 i rc; shift 2
+  local name=$1 outf=$2 i rc w rss; shift 2
   for ((i = 1; i <= RUNS; i++)); do
+    echo "$(ts) [scale_bench] $name run $i/$RUNS starting..."
     rc=0
     LC_ALL=C /usr/bin/time -v -o "$OUT/$name.run$i.time" "$@" > "$outf" || rc=$?
     if [ "$rc" -ne 0 ]; then
       echo "scale_bench: CELL FAILED: $name run $i (exit $rc); partial time log: $OUT/$name.run$i.time" >&2
       return 1
     fi
+    w=$(awk -F': ' '/Elapsed \(wall clock\)/{print $2}' "$OUT/$name.run$i.time" 2>/dev/null || echo "?")
+    rss=$(awk -F': ' '/Maximum resident set size/{print $2}' "$OUT/$name.run$i.time" 2>/dev/null || echo "?")
+    echo "$(ts) [scale_bench] $name run $i/$RUNS complete: wall=$w, max_rss=${rss} kB"
   done
 }
 cpp_cell() {
-  local name=$1 label=$2 i rc cpp_runs=1; shift 2
+  local name=$1 label=$2 i rc cpp_runs=1 w rss; shift 2
   if [ "${GOLDEN_MODE:-auto}" = "off" ]; then cpp_runs=$RUNS; fi
   for ((i = 1; i <= cpp_runs; i++)); do
+    echo "$(ts) [scale_bench] $name run $i/$cpp_runs starting..."
     rc=0
     LC_ALL=C GOLDEN_TIME_OUT="$OUT/$name.run$i.time" $TASKSET \
       bash harness/golden_store.sh cpp "$label" "$REF" "$BAM" "$@" > /dev/null || rc=$?
@@ -119,11 +126,17 @@ cpp_cell() {
       echo "scale_bench: CELL FAILED: $name run $i (exit $rc); partial time log: $OUT/$name.run$i.time" >&2
       return 1
     fi
+    w=$(awk -F': ' '/Elapsed \(wall clock\)/{print $2}' "$OUT/$name.run$i.time" 2>/dev/null || echo "?")
+    rss=$(awk -F': ' '/Maximum resident set size/{print $2}' "$OUT/$name.run$i.time" 2>/dev/null || echo "?")
+    echo "$(ts) [scale_bench] $name run $i/$cpp_runs complete: wall=$w, max_rss=${rss} kB"
   done
 }
 # warmup: one untimed pass over the smallest span (page cache, allocator, CPU frequency ramp).
+w_t0=$SECONDS
+echo "$(ts) [scale_bench] Warmup starting ($CHR1:1-1000000)..."
 $TASKSET "$BIN" -G "$REF" -f 0.01 -N "$SM" -b "$BAM" -th 8 -R "$CHR1:1-1000000" > /dev/null \
   || { echo "scale_bench: warmup failed" >&2; exit 1; }
+echo "$(ts) [scale_bench] Warmup complete ($((SECONDS - w_t0))s)"
 for th in 1 2 4 8; do
   cell "th$th" "$OUT/th$th.vcf" $TASKSET "$BIN" -G "$REF" -f 0.01 -N "$SM" -b "$BAM" -c 1 -S 2 -E 3 -g 4 -z -th "$th" "$BED" || exit 1
   # BED-capable path reuses run_cpp.sh via golden_store.sh (BED positional, java-mirror; pins
@@ -189,4 +202,12 @@ print(json.dumps({"wall_s": W, "maxrss_kb": M, "speedup_8": sp, "rss_ratio_chr1_
                   "loadavg_end": os.environ["LOAD_END"], "perf_fingerprint": perf,
                   "certifying": pinned and os.environ["COURTESY"] == "true" and runs >= 3 and P >= MIN_P and perf != "dirty",
                   "note": ">8 threads not measured (host policy A3); each rust cell = median of `runs` timed runs; cpp advisory arm = single-sample golden-store baseline (or `runs`-run median when GOLDEN_MODE=off)"}, indent=2))
+PY
+python3 - "$OUT/extra.json" <<'PY'
+import datetime, json, sys
+d = json.load(open(sys.argv[1]))
+ts = datetime.datetime.now().strftime("[%H:%M:%S]")
+sp = d.get("speedup_8")
+rr = d.get("rss_ratio_chr1_vs_10mb")
+print(f"{ts} [scale_bench] Summary: speedup_8={sp:.2f}x (bar={d.get('bar')}), rss_ratio={rr:.2f}x, pass={d.get('pass')}, certifying={d.get('certifying')}")
 PY

@@ -15,13 +15,13 @@ Every change to `VarDictRust` lands via a feature branch off `origin/main` and a
 
 ## Quick Reference: Code-Change Filter & Required Gates
 
-`.githooks/pre-push` inspects `git diff --name-only` against `^(crates/|Cargo\.toml$|Cargo\.lock$|harness/|\.github/workflows/)`:
+`.githooks/pre-push` inspects `git diff --name-only` against `\.rs$|Cargo\.(toml|lock)$|^crates/|^harness/|^\.github/|^\.githooks/|^\.agents/|^fixtures/|^golden/|^benchmarks/evidence/`:
 
 | PR Scope | `.githooks/pre-push` Classification | `engine_fingerprint.sh` (`FP` / `PERF_FP`) | Required Verification & PR Template Policy |
 | :--- | :--- | :--- | :--- |
-| Docs/Wiki/Skills only (`docs/`, `wiki/`, `README.md`, `.agents/skills/`) | Docs/infra-only (`CODE_CHANGES` empty) | Unchanged | `cargo fmt`, `cargo clippy`, `bash harness/run_self_tests.sh`, `mkdocs build --strict`. Engine checkboxes in `.github/pull_request_template.md` may be marked `N/A` with a 1-line justification. |
-| `Cargo.toml` / `Cargo.lock` workspace version bump or `harness/` test edits | `CODE_CHANGES` non-empty | Unchanged (`normalize_gate_blob` strips workspace SemVer) | Full `bash harness/pr_check.sh` (6/6) + `bash harness/acceptance.sh` (8/8). **All engine checkboxes in `.github/pull_request_template.md` MUST be checked `[x]`** (never `N/A`). Revert timestamp-only dirt in `extended-coverage-tier2.json` and `multimodal-slices-tier2.json` after `acceptance.sh`. |
-| `crates/vardictrust-core/`, `crates/vardictrust/`, external deps, or gated `harness/` runners | `CODE_CHANGES` non-empty | **Changed** (`FP` and/or `PERF_FP` updates) | Run `bash harness/recertify.sh` (or `bash harness/courtesy.sh bash harness/recertify.sh`) to regenerate live evidence in `benchmarks/evidence/*.json`, update SHA-256 table in `docs/validation/omnibus-empirical-validation.md` §13, then run `pr_check.sh` + `acceptance.sh`. |
+| Docs/Wiki only (`docs/`, `wiki/`, `README.md`) | Docs/infra-only (`CODE_CHANGES` empty) | Unchanged | `cargo fmt`, `cargo clippy`, `bash harness/run_self_tests.sh`, `mkdocs build --strict`. Engine checkboxes in `.github/pull_request_template.md` may be marked `N/A` with a 1-line justification. |
+| Feature, Bugfix, Harness, Workflow, or Skill PR (`crates/`, `Cargo.*`, `harness/`, `.github/`, `.githooks/`, `.agents/`) | `CODE_CHANGES` non-empty | Unchanged or Changed | **Tier A Per-PR Gate (`<25s`):** Run `bash harness/pr_check.sh` (6/6: workspace tests, 92-fixture corpus, `micro` + `s1a..s9`, `run_extended_coverage.sh --no-record`, `run_multimodal_slices.sh --no-record`, `perf_budget.py`, `gitleaks`). Do **not** rewrite `benchmarks/evidence/*.json` on normal PRs; mark the Release Recertification checkbox `N/A — deferred to release cut per two-tier testing policy`. |
+| Release Branch (`release/vX.Y.Z`) or Milestone Certification PR | `CODE_CHANGES` non-empty | Certified at `HEAD` | **Tier B Release Gate:** Run `bash harness/recertify.sh` (which refreshes all 15 non-scale `benchmarks/evidence/*.json` files, runs `python3 harness/sync_evidence_docs.py`, and executes `bash harness/acceptance.sh` 8/8) + `bash harness/pr_check.sh` (6/6). (`scale_bench.sh` runs only if `PERF_FP` changed since `scale.json`.) |
 
 ---
 
@@ -39,30 +39,17 @@ git checkout -b <type>/<slug> origin/main
   `validated vs VarDictJava 1.8.3, dataset <name>, cmd <…>`
 
 ### 2. Pre-PR Verification Sequence
-Commit your changes first (`engine_fingerprint.sh` requires a clean working tree on gated paths), then run:
+Commit your changes first, then run:
 ```bash
-# 1. Format, strict Clippy lints, and 277-test workspace suite (zero warnings)
-cargo fmt --all -- --check
-cargo clippy --all-targets --all-features -- -D warnings
-RUST_TEST_THREADS=4 cargo test --workspace
-
-# 2. Check engine and performance fingerprints
-bash harness/engine_fingerprint.sh
-bash harness/engine_fingerprint.sh --perf
-
-# 3. If FP or PERF_FP changed, recertify live evidence honestly (NEVER hand-edit JSONs)
-# bash harness/courtesy.sh bash harness/recertify.sh
-
-# 4. Run all 24 harness self-tests and strict MkDocs build check
+# 1. Run all 25 harness self-tests and strict MkDocs build check
 bash harness/run_self_tests.sh
 python3 harness/prepare_docs_site.py && mkdocs build --strict && rm -rf .docs_staged site
 
-# 5. Run 6-stage pre-PR compound gate, 8-suite acceptance gate, and secret scan
+# 2. Tier A (Every PR): Run 6-stage pre-PR compound gate (<25s, --no-record on Tier-2 suites)
 bash harness/pr_check.sh
-bash harness/acceptance.sh
-# If FP did not change, restore timestamp-only updates from live Tier-2 runners:
-git checkout -- benchmarks/evidence/extended-coverage-tier2.json benchmarks/evidence/multimodal-slices-tier2.json
-gitleaks detect --source . -v
+
+# 3. Tier B (Release branch release/vX.Y.Z or milestone certification ONLY):
+# bash harness/recertify.sh
 ```
 
 ### 3. Push & Open Pull Request (`gh pr create`)
@@ -100,8 +87,8 @@ When automated reviewers (`gemini-code-assist`, Copilot, CodeRabbit) or humans p
 
 | Excuse / Rationalization | Reality / Mandatory Action |
 | :--- | :--- |
-| "Only a comment or variable name changed in `crates/`; I'll manually update `engine_fingerprint` in `benchmarks/evidence/*.json`." | **Class-0 Integrity Violation (`AGENTS.md` §0b).** Never hand-edit `benchmarks/evidence/*.json`. Run `bash harness/recertify.sh`. |
-| "I only bumped `Cargo.toml` and `harness/tests/*`, so I'll mark the engine checkboxes `N/A` in the PR body." | `.githooks/pre-push` classifies `Cargo.*` and `harness/` as `CODE_CHANGES`. Run `pr_check.sh` + `acceptance.sh` and check `[x]` every box. |
+| "Only a comment or variable name changed in `crates/`; I'll manually update `engine_fingerprint` in `benchmarks/evidence/*.json`." | **Class-0 Integrity Violation (`AGENTS.md` §0b).** Never hand-edit `benchmarks/evidence/*.json`. Routine feature/bugfix PRs run `bash harness/pr_check.sh` (`<25s`, `--no-record`) without touching `benchmarks/evidence/*.json`; release certification PRs (`release/vX.Y.Z`) run `bash harness/recertify.sh`. |
+| "I only bumped `Cargo.toml` and `harness/tests/*`, so I'll mark the engine checkboxes `N/A` in the PR body." | `.githooks/pre-push` classifies `Cargo.*` and `harness/` as `CODE_CHANGES`. Run `bash harness/pr_check.sh` (6/6) and check `[x]` the Tier A engine checkboxes (marking the Tier B Release Recertification checkbox `N/A — deferred to release cut per two-tier testing policy` on routine PRs, or running `recertify.sh` + `acceptance.sh` on `release/vX.Y.Z` PRs). |
 | "I'll post one top-level PR comment instead of replying to each inline review comment." | Reply directly to each inline review thread (`/pulls/<PR>/comments/<id>/replies`) so reviewers and auditors can trace every resolution. |
 
 ## Red Flags — STOP Immediately If You Catch Yourself

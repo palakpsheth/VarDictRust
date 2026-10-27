@@ -7,6 +7,7 @@ fi
 
 TMPDIR=$(mktemp -d -t test_concordance_XXXXXX)
 trap 'rm -rf "$TMPDIR"' EXIT
+export GOLDEN_STORE_DIR="$TMPDIR/golden"
 
 REF="fixtures/micro/micro.ref.fa"
 

@@ -14,19 +14,61 @@ fi
 
 NAME=$1; J=$2; R=$3; TRUTH=$4; BED=$5; SDF=$6; OUT=$7; SAMPLE=$8; CPP_VCF=${9:-}
 mkdir -p "$OUT/java" "$OUT/rust"
-
-# 1. Prepare truth VCF (strip filters so rtg doesn't drop truth variants)
 TRUTH_NOFILTER="$OUT/truth.nofilter.vcf.gz"
-if [ ! -f "$TRUTH_NOFILTER" ] || [ ! -f "$TRUTH_NOFILTER.tbi" ]; then
-  bcftools annotate -x FILTER "$TRUTH" | bcftools sort -Oz -o "$TRUTH_NOFILTER"
-  tabix -f -p vcf "$TRUTH_NOFILTER"
-fi
 
-# 2. Process each engine
+# 1. Process each engine
+VCFEVAL_STORE="${GOLDEN_STORE_DIR:-scratch/golden-store}/vcfeval"
+GMODE="${GOLDEN_MODE:-auto}"
+
 run_eval() {
   local eng=$1
   local vcf_in=$2
   local eng_out="$OUT/$eng"
+  mkdir -p "$eng_out"
+
+  local cache_key
+  cache_key=$(python3 - "$vcf_in" "$TRUTH" "$BED" "$SDF" "$SAMPLE" <<'PY'
+import hashlib, os, subprocess, sys
+calls, truth, bed, sdf, sample = sys.argv[1:6]
+h = hashlib.sha256()
+h.update(b"germline\0" + sample.encode() + b"\0")
+try:
+    rtg_ver = subprocess.check_output(["rtg", "version"], text=True, stderr=subprocess.DEVNULL).splitlines()[0]
+except Exception:
+    rtg_ver = "unknown"
+h.update(rtg_ver.encode() + b"\0")
+for p in (bed, truth, os.path.join(sdf, "mainIndex")):
+    if os.path.isfile(p):
+        with open(p, "rb") as f:
+            while chunk := f.read(1 << 20):
+                h.update(chunk)
+    h.update(b"\0")
+with open(calls, "rb") as f:
+    for line in f:
+        if line.startswith((b"##fileDate=", b"##source=")):
+            continue
+        h.update(line)
+print(h.hexdigest()[:32])
+PY
+  )
+  local cache_entry="$VCFEVAL_STORE/$cache_key"
+
+  if [ "$GMODE" = "auto" ] && [ -s "$cache_entry/summary.json" ] \
+     && [ -f "$cache_entry/tp.sites" ] && [ -f "$cache_entry/tp-baseline.sites" ] \
+     && [ -f "$cache_entry/fp.sites" ] && [ -f "$cache_entry/fn.sites" ] \
+     && python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if d.get("tp_baseline",0)+d.get("fn",0)>0 else 1)' "$cache_entry/summary.json" 2>/dev/null; then
+    echo "Reusing cached rtg vcfeval for $eng ($cache_key)..."
+    cp "$cache_entry/summary.json" "$eng_out/summary.json"
+    for f in tp tp-baseline fp fn; do
+      cp "$cache_entry/$f.sites" "$eng_out/$f.sites"
+    done
+    return 0
+  fi
+
+  if [ ! -f "$TRUTH_NOFILTER" ] || [ ! -f "$TRUTH_NOFILTER.tbi" ]; then
+    bcftools annotate -x FILTER "$TRUTH" | bcftools sort -Oz -o "$TRUTH_NOFILTER"
+    tabix -f -p vcf "$TRUTH_NOFILTER"
+  fi
 
   echo "Filtering $eng calls with -f PASS..." &&
   bcftools view -f PASS "$vcf_in" | bcftools sort -Oz -o "$eng_out/calls.pass.vcf.gz" &&
@@ -67,7 +109,18 @@ PY
     else
       touch "$eng_out/$f.sites"
     fi
-  done
+  done &&
+  if [ "$GMODE" != "off" ] && [ -s "$eng_out/summary.json" ]; then
+    mkdir -p "$VCFEVAL_STORE"
+    local stage_dir
+    stage_dir=$(mktemp -d "$VCFEVAL_STORE/.tmp.XXXXXX")
+    cp "$eng_out/summary.json" "$stage_dir/summary.json"
+    for f in tp tp-baseline fp fn; do
+      cp "$eng_out/$f.sites" "$stage_dir/$f.sites"
+    done
+    rm -rf "$cache_entry"
+    mv "$stage_dir" "$cache_entry" 2>/dev/null || rm -rf "$stage_dir"
+  fi
 }
 
 run_eval "java" "$J"
@@ -92,7 +145,7 @@ elif [ -n "$CPP_VCF" ]; then
     # QUAL or INFO is touched, so the vcfeval F1 is unaffected.
     # (Twin block in concordance_pair.sh; keep the two in sync.)
     mkdir -p "$OUT/cpp"
-    if { { bcftools view -h "$TRUTH_NOFILTER" | grep '^##contig=<ID=' || true;
+    if { { bcftools view -h "$TRUTH" | grep '^##contig=<ID=' || true;
            grep '^##contig=<ID=' "$CPP_VCF" || true; } \
             | awk -F'[=,>]' '!seen[$3]++' > "$OUT/cpp.contigs.hdr" \
         && { grep -m1 '^##fileformat=' "$CPP_VCF" || true; cat "$OUT/cpp.contigs.hdr";

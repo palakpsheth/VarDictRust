@@ -22,18 +22,37 @@ sha256_hash() {
 #   Line 1: CSV header "Mode,fasta,bam,chr,start,end[,ampStart,ampEnd][,extra_args]"
 #   Lines 2+: expected tab-delimited output
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+COMMON_GIT_DIR="$(git -C "$ROOT_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+if [[ -n "$COMMON_GIT_DIR" && -d "$(dirname "$COMMON_GIT_DIR")/VarDictJava" ]]; then
+    DATA_ROOT="$(cd "$(dirname "$COMMON_GIT_DIR")" && pwd)"
+else
+    DATA_ROOT="$ROOT_DIR"
+fi
 TESTDATA_DIR="VarDictJava/testdata/integrationtestcases"
 FASTA_DIR="VarDictJava/testdata/fastas"
 BAM_DIR="VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests"
-BINARY="cargo run -q --release -p vardictrust --"
+if [[ ! -d "$TESTDATA_DIR" && -d "$DATA_ROOT/$TESTDATA_DIR" ]]; then
+    TESTDATA_DIR="$DATA_ROOT/$TESTDATA_DIR"
+    FASTA_DIR="$DATA_ROOT/$FASTA_DIR"
+    BAM_DIR="$DATA_ROOT/$BAM_DIR"
+fi
+if [[ -z "${BINARY:-}" ]]; then
+    if [[ -n "${VARDICT_BIN:-}" && -x "${VARDICT_BIN}" ]]; then
+        BINARY="\"$VARDICT_BIN\" -th 1"
+    else
+        cargo build -q --release -p vardictrust
+        BINARY="\"$ROOT_DIR/target/release/vardictrust\" -th 1"
+    fi
+fi
 
 # Auto-materialize test FASTAs from upstream CSVs if not already present
 if [[ ! -f "$FASTA_DIR/GRCh37.fa" || ! -f "$FASTA_DIR/GRCh37.fa.fai" ]]; then
-    python3 harness/convert_fastas.py
+    python3 "$ROOT_DIR/harness/convert_fastas.py" --data-root "$DATA_ROOT"
 fi
 
 # Load XFAIL defect registry
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 XFAIL_REGISTRY="$SCRIPT_DIR/integration_xfail.tsv"
 declare -A XFAIL_CASES=()
 declare -A XFAIL_ISSUES=()
@@ -78,7 +97,7 @@ if [[ "${CPP_SKIP:-0}" == "1" || "${CPP_SKIP:-0}" == "true" ]]; then
     CPP_SKIP_REASON="disabled via CPP_SKIP=1"
 elif ! command -v conda >/dev/null 2>&1; then
     CPP_SKIP_REASON="conda not on PATH"
-elif ! conda run -n vardict-oracle vardictcpp --version >/dev/null 2>&1; then
+elif [[ ! -x "$(dirname "$(dirname "$(command -v conda)")")/envs/vardict-oracle/bin/vardictcpp" ]] && ! conda run -n vardict-oracle vardictcpp --version >/dev/null 2>&1; then
     CPP_SKIP_REASON="vardictcpp not available in conda env vardict-oracle"
 else
     CPP_AVAILABLE=1
@@ -284,7 +303,7 @@ run_test() {
             local tmpcpp tmperr
             tmpcpp=$(mktemp); tmperr=$(mktemp)
             local cpp_exit=0
-            bash "$SCRIPT_DIR/golden_store.sh" raw --kind cpp --label "int-$basename_file" --out "$tmpcpp" --err-out "$tmperr" "${gs_inputs[@]}" -- conda run -n vardict-oracle vardictcpp -z -c 1 -S 2 -E 3 -g 4 -G "$fasta_path" -b "$bam_arg" -N "$cpp_sample" "${extra_argv[@]}" "$tmpbed" || cpp_exit=$?
+            bash "$SCRIPT_DIR/golden_store.sh" raw --pin-cpp-exit --kind cpp --label "int-$basename_file" --out "$tmpcpp" --err-out "$tmperr" "${gs_inputs[@]}" -- conda run -n vardict-oracle vardictcpp -z -c 1 -S 2 -E 3 -g 4 -G "$fasta_path" -b "$bam_arg" -N "$cpp_sample" "${extra_argv[@]}" "$tmpbed" || cpp_exit=$?
             if [[ $cpp_exit -ne 0 ]]; then
                 local first_err
                 first_err=$(grep -vE '^(ERROR conda\.cli|cpp_chunk=|[[:space:]]*$)' "$tmperr" 2>/dev/null | head -n 1 | tr -d '\r' | cut -c 1-140 || true)
@@ -314,15 +333,75 @@ run_test() {
     rm -f "$tmpbed"
 }
 
-# If specific files passed, test them; otherwise test all Simple cases
+# If specific files passed, test them; otherwise test all cases in parallel
 if [[ $# -gt 0 ]]; then
-    for f in "$@"; do
-        run_test "$f"
+    TEST_FILES=("$@")
+else
+    TEST_FILES=("$TESTDATA_DIR"/*.txt)
+fi
+
+DEFAULT_JOBS=8
+if [[ "${CI:-}" == "true" || "${GOLDEN_MODE:-auto}" != "auto" || ! -d "$DATA_ROOT/scratch/golden-store/cells" || -z "$(ls -A "$DATA_ROOT/scratch/golden-store/cells" 2>/dev/null)" ]]; then
+    DEFAULT_JOBS=1
+fi
+JOBS="${INTEGRATION_JOBS:-$DEFAULT_JOBS}"
+SUITE_START_MS=$(date +%s%3N)
+
+if [[ "$JOBS" -le 1 || "${#TEST_FILES[@]}" -le 1 ]]; then
+    for idx in "${!TEST_FILES[@]}"; do
+        run_test "${TEST_FILES[$idx]}"
+        done_n=$((idx + 1))
+        if [[ -n "${INTEGRATION_PROGRESS_FD:-}" ]] && (( done_n % 25 == 0 || done_n == ${#TEST_FILES[@]} )); then
+            printf '[%s] [integration] [%d/%d] fixtures complete (%dms)\n' "$(date '+%H:%M:%S')" "$done_n" "${#TEST_FILES[@]}" "$(( $(date +%s%3N) - SUITE_START_MS ))" >&"$INTEGRATION_PROGRESS_FD"
+        fi
     done
 else
-    for f in "$TESTDATA_DIR"/*.txt; do
-        run_test "$f"
+    WORK_TMP=$(mktemp -d)
+    trap 'rm -rf "$WORK_TMP"' EXIT
+    (
+        for idx in "${!TEST_FILES[@]}"; do
+            while [[ $(jobs -rp | wc -l) -ge $JOBS ]]; do
+                wait -n 2>/dev/null || sleep 0.02
+            done
+            {
+                PASS=0; XFAIL=0; FAIL=0; SKIP=0; XPASS=0; CPP_MISMATCH=0; ERRORS=()
+                ( set +e; run_test "${TEST_FILES[$idx]}" > "$WORK_TMP/$idx.out" 2>"$WORK_TMP/$idx.err"; \
+                  printf '%d\t%d\t%d\t%d\t%d\t%d\n' "$PASS" "$XFAIL" "$FAIL" "$SKIP" "$XPASS" "$CPP_MISMATCH" > "$WORK_TMP/$idx.meta.tmp" && mv "$WORK_TMP/$idx.meta.tmp" "$WORK_TMP/$idx.meta"; \
+                  if [[ ${#ERRORS[@]} -gt 0 ]]; then printf '%s\n' "${ERRORS[@]}" > "$WORK_TMP/$idx.errs"; fi )
+            } &
+        done
+        wait
+    ) &
+    POOL_PID=$!
+    for idx in "${!TEST_FILES[@]}"; do
+        while [[ ! -f "$WORK_TMP/$idx.meta" ]] && kill -0 "$POOL_PID" 2>/dev/null; do
+            sleep 0.02
+        done
+        [[ -s "$WORK_TMP/$idx.err" ]] && cat "$WORK_TMP/$idx.err" >&2
+        [[ -f "$WORK_TMP/$idx.out" ]] && cat "$WORK_TMP/$idx.out"
+        if [[ -f "$WORK_TMP/$idx.meta" ]]; then
+            IFS=$'\t' read -r p xf fl sk xp cm < "$WORK_TMP/$idx.meta"
+            PASS=$((PASS + p))
+            XFAIL=$((XFAIL + xf))
+            FAIL=$((FAIL + fl))
+            SKIP=$((SKIP + sk))
+            XPASS=$((XPASS + xp))
+            CPP_MISMATCH=$((CPP_MISMATCH + cm))
+        else
+            FAIL=$((FAIL + 1))
+            ERRORS+=("MISSING_META: ${TEST_FILES[$idx]}")
+        fi
+        if [[ -f "$WORK_TMP/$idx.errs" ]]; then
+            while IFS= read -r e; do
+                ERRORS+=("$e")
+            done < "$WORK_TMP/$idx.errs"
+        fi
+        done_n=$((idx + 1))
+        if [[ -n "${INTEGRATION_PROGRESS_FD:-}" ]] && (( done_n % 25 == 0 || done_n == ${#TEST_FILES[@]} )); then
+            printf '[%s] [integration] [%d/%d] fixtures complete (%dms)\n' "$(date '+%H:%M:%S')" "$done_n" "${#TEST_FILES[@]}" "$(( $(date +%s%3N) - SUITE_START_MS ))" >&"$INTEGRATION_PROGRESS_FD"
+        fi
     done
+    wait "$POOL_PID" 2>/dev/null || true
 fi
 
 echo ""

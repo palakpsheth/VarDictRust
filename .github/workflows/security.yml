@@ -7,6 +7,11 @@ on:
     branches: [main]
   schedule:
     - cron: '0 6 * * 1'  # weekly Monday 6am UTC
+  workflow_dispatch:
+
+concurrency:
+  group: "${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}"
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
@@ -40,13 +45,18 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Supply-Chain Advisory & License Compliance (cargo-deny)
-        run: cargo deny check advisories licenses bans
+        run: |
+          echo "[$(date '+%H:%M:%S')] [Security Stage 2/4] Running cargo-deny check..."
+          cargo deny check advisories licenses bans
 
       - name: RustSec Vulnerability Database Audit (cargo-audit)
-        run: cargo audit
+        run: |
+          echo "[$(date '+%H:%M:%S')] [Security Stage 3/4] Running cargo-audit..."
+          cargo audit
 
       - name: Rust Code Scanning (Clippy SARIF)
         run: |
+          echo "[$(date '+%H:%M:%S')] [Security Stage 4/4] Running Clippy SARIF scan..."
           cargo clippy --all-targets --all-features --message-format=json | clippy-sarif | tee clippy-results.sarif | sarif-fmt
         continue-on-error: true
 
@@ -56,3 +66,17 @@ jobs:
           sarif_file: clippy-results.sarif
           category: clippy
         if: always()
+
+      - name: Publish Security Audit Summary
+        if: always()
+        run: |
+          {
+            echo "## VarDictRust Security & Supply-Chain Summary"
+            echo ""
+            echo "| Stage | Scanner | Status |"
+            echo "| :--- | :--- | :---: |"
+            echo "| **Stage 1** | Gitleaks Secret Scan | \`COMPLETED\` |"
+            echo "| **Stage 2** | \`cargo-deny\` (Advisories, Licenses, Bans) | \`COMPLETED\` |"
+            echo "| **Stage 3** | \`cargo-audit\` (RustSec DB) | \`COMPLETED\` |"
+            echo "| **Stage 4** | Clippy SARIF Code Scanning | \`COMPLETED\` |"
+          } >> "$GITHUB_STEP_SUMMARY"

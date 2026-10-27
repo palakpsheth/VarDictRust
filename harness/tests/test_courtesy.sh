@@ -27,7 +27,7 @@ set -e
 
 # Case 5: Insufficient available RAM -> exit 5
 set +e
-MIN_AVAIL_GB=999999 COURTESY_NOW=0600 EST_MIN=60 bash harness/courtesy.sh true >/dev/null 2>&1
+MIN_FREE_GB=0 MIN_AVAIL_GB=999999 COURTESY_NOW=0600 EST_MIN=60 bash harness/courtesy.sh true >/dev/null 2>&1
 rc=$?
 set -e
 [ "$rc" -eq 5 ] || { echo "FAIL test_courtesy: expected 5 for MIN_AVAIL_GB, got $rc" >&2; exit 1; }

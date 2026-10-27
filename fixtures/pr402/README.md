@@ -52,12 +52,12 @@ The fixture represents a 600 bp region on `chr7` designed to test caller resilie
 
 ## 3. Active Usage & Verification
 
-This fixture is actively exercised by the integration test suite in [`crates/vardictrust/tests/robustness.rs`](../../crates/vardictrust/tests/robustness.rs):
+This fixture is actively exercised by the engine and CIGAR robustness test suites in [`crates/vardictrust-core/tests/engine_behavior.rs`](../../crates/vardictrust-core/tests/engine_behavior.rs) and [`crates/vardictrust-core/src/cigar/modify.rs`](../../crates/vardictrust-core/src/cigar/modify.rs):
 
 ```rust
-// crates/vardictrust/tests/robustness.rs:203
+// crates/vardictrust-core/tests/engine_behavior.rs
 #[test]
-fn test_pr402_11_bad_reads_does_not_abort() { ... }
+fn malformed_cigar_returns_clean_result() { ... }
 ```
 
 ### Invariants Verified:

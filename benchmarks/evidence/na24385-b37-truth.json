@@ -1,19 +1,19 @@
 {
   "cmd": [
-    "/mnt/media_backups/VarDictRust/harness/concordance_germline.sh",
+    "/mnt/media_backups/VarDictRust/.worktrees/two-tier-testing/harness/concordance_germline.sh",
     "na24385-b37-truth",
-    "/tmp/vardict_multimodal_concordance_Dpuoar/na24385_java.vcf",
-    "/tmp/vardict_multimodal_concordance_Dpuoar/na24385_rust.vcf",
-    "/mnt/media_backups/VarDictRust/scratch/g4/truth_cache/na24385_b37_truth.vcf.gz",
-    "/mnt/media_backups/VarDictRust/scratch/g4/truth_cache/na24385_eval.bed",
+    "/tmp/vardict_multimodal_concordance_pIHVlV/na24385_java.vcf",
+    "/tmp/vardict_multimodal_concordance_pIHVlV/na24385_rust.vcf",
+    "/mnt/media_backups/VarDictRust/.worktrees/two-tier-testing/scratch/g4/truth_cache/na24385_b37_truth.vcf.gz",
+    "/mnt/media_backups/VarDictRust/.worktrees/two-tier-testing/scratch/g4/truth_cache/na24385_eval.bed",
     "/mnt/media_backups/VarDictRust/scratch/g4/ref/grch37.sdf",
-    "/mnt/media_backups/VarDictRust/scratch/g4/concordance_multimodal/na24385",
+    "/mnt/media_backups/VarDictRust/.worktrees/two-tier-testing/scratch/g4/concordance_multimodal/na24385",
     "HG002",
-    "/tmp/vardict_multimodal_concordance_Dpuoar/na24385_cpp.vcf"
+    "/tmp/vardict_multimodal_concordance_pIHVlV/na24385_cpp.vcf"
   ],
   "compare_head": [],
   "cpp_time": null,
-  "date": "2026-10-26T16:52:33-07:00",
+  "date": "2026-10-27T02:18:23-07:00",
   "extra": {
     "cpp_f1": 0.1099,
     "cpp_f1_normalized": 0.1099,
@@ -75,8 +75,8 @@
       "tp_call": 5
     }
   },
-  "fingerprint": "08b397ab1d32e857",
-  "head": "b90c84ef1c1ea398ff9785f7ac38040302618fd0",
+  "fingerprint": "85c75a912527800e",
+  "head": "af0ab21089a61931df62b7e91493a278186b36ae",
   "java_time": null,
   "n_variants": null,
   "name": "na24385-b37-truth",

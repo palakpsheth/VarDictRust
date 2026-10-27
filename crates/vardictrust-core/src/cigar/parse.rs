@@ -120,7 +120,12 @@ fn allele_key(base: u8, buf: &mut String) -> &str {
 /// `base_qual` filter instead. `shortcut: O(1) bounds check, no upgrade needed`.
 #[inline]
 fn qual_phred<Q: AsRef<[u8]>>(query_qual: &Q, idx: usize) -> f64 {
-    query_qual.as_ref().get(idx).copied().unwrap_or(33) as f64 - 33.0
+    query_qual
+        .as_ref()
+        .get(idx)
+        .copied()
+        .unwrap_or(33)
+        .saturating_sub(33) as f64
 }
 
 impl<'a> CigarParser<'a> {
@@ -654,7 +659,7 @@ impl<'a> CigarParser<'a> {
                                     query_qual.get(read_pos_inc + 1),
                                 ) {
                                     buf_s.push(qb as char);
-                                    q += qq as f64 - 33.0;
+                                    q += qq.saturating_sub(33) as f64;
                                     qbases += 1;
                                 }
                                 i += 1;
@@ -679,7 +684,7 @@ impl<'a> CigarParser<'a> {
                                 }
                                 for qi in 1..=next_next_len {
                                     if let Some(&qq) = query_qual.get(read_pos_inc + 1 + qi) {
-                                        q += qq as f64 - 33.0;
+                                        q += qq.saturating_sub(33) as f64;
                                         qibases += 1;
                                     }
                                 }
@@ -704,7 +709,7 @@ impl<'a> CigarParser<'a> {
                                     buf_s.push('&');
                                     buf_s.push_str(&tpl.sequence);
                                     for b in tpl.quality_sequence.bytes() {
-                                        q += b as f64 - 33.0;
+                                        q += b.saturating_sub(33) as f64;
                                         qibases += 1;
                                     }
                                     for osi in 0..toffset {
@@ -732,7 +737,7 @@ impl<'a> CigarParser<'a> {
                                     query_qual.get(read_pos_inc + 1),
                                 ) {
                                     buf_s.push(qb as char);
-                                    q += qq as f64 - 33.0;
+                                    q += qq.saturating_sub(33) as f64;
                                     qbases += 1;
                                 }
                                 i += 1;
@@ -756,7 +761,7 @@ impl<'a> CigarParser<'a> {
 
                             for qi in 1..=next_len {
                                 if let Some(&qq) = query_qual.get(read_pos_inc + 1 + qi) {
-                                    q += qq as f64 - 33.0;
+                                    q += qq.saturating_sub(33) as f64;
                                     qibases += 1;
                                 }
                             }
@@ -1116,7 +1121,7 @@ impl<'a> CigarParser<'a> {
         let mut tmpq = 0.0;
         if !quality_segment.is_empty() {
             for b in quality_segment.bytes() {
-                tmpq += (b as f64) - 33.0;
+                tmpq += b.saturating_sub(33) as f64;
             }
             tmpq /= quality_segment.len() as f64;
         }
@@ -1640,7 +1645,7 @@ impl<'a> CigarParser<'a> {
             let mut tmpq = 0.0;
             if !quality_string.is_empty() {
                 for b in quality_string.bytes() {
-                    tmpq += (b as f64) - 33.0;
+                    tmpq += b.saturating_sub(33) as f64;
                 }
                 tmpq /= quality_string.len() as f64;
             }
@@ -1844,7 +1849,7 @@ impl<'a> CigarParser<'a> {
                 seq_variation.add_cnt(
                     dir,
                     si - (cigar_element_len as i32 - number_of_high_quality_bases),
-                    query_quality[si as usize].saturating_sub(33) as f64,
+                    qual_phred(&query_quality, si as usize),
                     mapping_quality,
                     number_of_mismatches as f64,
                     self.config.base_qual,
@@ -1899,7 +1904,7 @@ impl<'a> CigarParser<'a> {
                 seq_variation.add_cnt(
                     dir,
                     number_of_high_quality_bases - si as i32,
-                    query_quality[idx].saturating_sub(33) as f64,
+                    qual_phred(&query_quality, idx),
                     mapping_quality,
                     number_of_mismatches as f64,
                     self.config.base_qual,
@@ -2210,7 +2215,7 @@ impl<'a> CigarParser<'a> {
             if query_sequence[read_idx] == b'N' || query_sequence[read_idx] == b'n' {
                 break;
             }
-            let q = query_quality[read_idx].saturating_sub(33) as f64;
+            let q = qual_phred(&query_quality, read_idx);
             if q < self.config.base_qual {
                 break;
             }
@@ -4426,5 +4431,136 @@ mod tests {
             "spliced read spanning 50N past 1090 must select the 1000..=1200 region slice"
         );
         assert_eq!(parser_spliced.ref_coverage.get(&1131), Some(&1));
+    }
+
+    #[test]
+    fn parse_cigar_handles_empty_and_truncated_quality_scores() {
+        let mut reference = Reference::new();
+        reference
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 1,
+                sequence_end: 100,
+            });
+        reference
+            .region_sequences
+            .push(b"ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT".to_vec());
+        reference.reference_sequences.insert(
+            "chr1".to_string(),
+            b"ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT".to_vec(),
+        );
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(1),
+            end: Pos1(100),
+            gene: "G".to_string(),
+            amplicon: None,
+        };
+        let mut config = Config::default();
+        config.base_qual = 0.0;
+        let mut parser = CigarParser::new(&reference, &region, &config, true, 0, 0, 0);
+
+        // 1. Completely empty quality_scores (`*` in SAM) with 5' softclip, match/mismatch, indel, and 3' softclip
+        let rec_empty_qual = SamRecord {
+            name: b"r_empty_qual".to_vec(),
+            flags: 0,
+            reference_name: Some("chr1".to_string()),
+            alignment_start: Some(Pos1(10)),
+            alignment_end: Some(Pos1(25)),
+            mapping_quality: Some(60),
+            cigar: vec![
+                (4, CigarKind::SoftClip),
+                (5, CigarKind::Match),
+                (2, CigarKind::Deletion),
+                (1, CigarKind::Match),
+                (2, CigarKind::Insertion),
+                (4, CigarKind::Match),
+                (4, CigarKind::SoftClip),
+            ],
+            sequence: b"TTTTCGTACATTCGGGGGGG".to_vec(),
+            quality_scores: Vec::new(),
+            mate_reference_name: None,
+            mate_alignment_start: None,
+            template_length: 0,
+            nm: Some(4),
+            sa: None,
+            mc: None,
+            mq: None,
+        };
+        parser.parse_cigar(&rec_empty_qual).unwrap();
+
+        // 2. Truncated quality_scores shorter than sequence across 5' and 3' softclips and sub-33 bytes
+        let rec_trunc_qual = SamRecord {
+            name: b"r_trunc_qual".to_vec(),
+            flags: 0,
+            reference_name: Some("chr1".to_string()),
+            alignment_start: Some(Pos1(20)),
+            alignment_end: Some(Pos1(30)),
+            mapping_quality: Some(60),
+            cigar: vec![
+                (5, CigarKind::SoftClip),
+                (6, CigarKind::Match),
+                (5, CigarKind::SoftClip),
+            ],
+            sequence: b"GGGGGCGTACGTTTTT".to_vec(),
+            // Only 12 quality bytes for 16-base sequence (so 3' softclip has 1 high-qual + missing bytes)
+            // plus a sub-33 byte (10) to verify saturation to Phred 0.
+            quality_scores: vec![70, 70, 70, 70, 10, 70, 70, 70, 70, 70, 70, 70],
+            mate_reference_name: None,
+            mate_alignment_start: None,
+            template_length: 0,
+            nm: Some(0),
+            sa: None,
+            mc: None,
+            mq: None,
+        };
+        parser.parse_cigar(&rec_trunc_qual).unwrap();
+        assert_eq!(qual_phred(&[10u8], 0), 0.0);
+        assert_eq!(qual_phred(&Vec::<u8>::new(), 5), 0.0);
+    }
+
+    #[test]
+    fn chimeric_realignment_debug_log_gated_solely_on_verbose() {
+        let mut reference = Reference::new();
+        reference
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chrZ".to_string(),
+                sequence_start: 1,
+                sequence_end: 100,
+            });
+        reference
+            .reference_sequences
+            .insert("chrZ".to_string(), vec![b'T'; 100]);
+        let record_sa = chimeric_seed_test_record(Some("chrZ,10,-,5M24S,60,0".to_string()));
+        let record_seed = chimeric_seed_test_record(None);
+        let seq_tail = get_reverse_complemented_sequence(&record_seed, -24, 24);
+        let seed = seq_tail[seq_tail.len() - 17..].to_vec();
+        reference.seed.insert(seed, vec![30]);
+        let region = Region {
+            chr: "chrZ".to_string(),
+            start: Pos1(1),
+            end: Pos1(100),
+            gene: "T".to_string(),
+            amplicon: None,
+        };
+
+        for verbose in [false, true] {
+            let mut config = Config::default();
+            config.verbose = verbose;
+            let mut parser = CigarParser::new(&reference, &region, &config, false, 0, 100, 100);
+            assert!(parser.is_read_chimeric_with_sa(
+                &record_sa,
+                1,
+                "chrZ,10,-,5M24S,60,0",
+                false,
+                false,
+            ));
+            parser.parse_cigar(&record_sa).unwrap();
+            assert!(parser.soft_clips_3_end.is_empty());
+            parser.parse_cigar(&record_seed).unwrap();
+            assert!(parser.soft_clips_3_end.is_empty());
+        }
     }
 }

@@ -25,7 +25,15 @@ pub fn normalize_args(args: &[String]) -> Vec<String> {
         .map(|arg| {
             if arg == "-th" || arg == "--th" {
                 "--threads".to_string()
-            } else if let Some(v) = arg.strip_prefix("-th=") {
+            } else if let Some(v) = arg
+                .strip_prefix("-th=")
+                .or_else(|| arg.strip_prefix("--th="))
+            {
+                format!("--threads={v}")
+            } else if let Some(v) = arg
+                .strip_prefix("-th")
+                .filter(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
+            {
                 format!("--threads={v}")
             } else if arg == "-UN" {
                 "--UN".to_string()
@@ -391,17 +399,11 @@ impl Cli {
         // or `"0.00"` are truthy strings in Perl boolean context and keep `0.0`.
         let af_threshold_truthy_zero = parsed_freq == 0.0 && self.freq.trim() != "0";
 
-        let (freq, min_reads) = if self.pileup {
-            (-1.0, 0)
-        } else {
-            (parsed_freq, self.min_reads)
-        };
-
-        Ok(vardictrust_core::config::Config {
+        let mut cfg = vardictrust_core::config::Config {
             exception_counter: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             reference: self.reference.clone(),
             bam: self.bam.clone(),
-            freq,
+            freq: parsed_freq,
             // The writer's $Freq is the literal -f value even under -p (perl
             // receives -f from the pipeline, not java's pileup override).
             af_threshold: parsed_freq,
@@ -409,7 +411,7 @@ impl Cli {
             sample: self
                 .sample
                 .clone()
-                .unwrap_or_else(|| extract_sample_name(&self.bam)),
+                .unwrap_or_else(|| vardictrust_core::config::extract_sample_name(&self.bam, None)),
             region: self.region.clone(),
             bed: self.bed.clone(),
             delimiter: self.delimiter.clone(),
@@ -447,7 +449,7 @@ impl Cli {
                 Some(n) => n.max(1),
             },
             realign: self.realign,
-            min_reads,
+            min_reads: self.min_reads,
             base_qual: self.base_qual,
             map_qual: self.map_qual,
             read_pos: self.read_pos,
@@ -503,41 +505,9 @@ impl Cli {
             unique_mode_second_in_pair_enabled: self.unique_mode_second_in_pair_enabled,
             omit_end_tag: self.col_end.is_some(),
             include_n: self.include_n,
-        })
-    }
-}
-
-fn extract_sample_name(bam_path: &str) -> String {
-    // Split by '|' to handle somatic BAMs, and take the first BAM
-    let first_bam = bam_path.split('|').next().unwrap_or(bam_path);
-    // Get the filename
-    let filename = if let Some(idx) = first_bam.rfind('/') {
-        &first_bam[idx + 1..]
-    } else {
-        first_bam
-    };
-
-    if let Ok(re1) = regex::Regex::new(r"([^/\\._]+).sorted[^/]*\.bam") {
-        if let Some(caps) = re1.captures(filename) {
-            if let Some(m) = caps.get(1) {
-                return m.as_str().to_string();
-            }
-        }
-    }
-
-    if let Ok(re2) = regex::Regex::new(r"([^/\\]+)[_\.][^/\\]*bam") {
-        if let Some(caps) = re2.captures(filename) {
-            if let Some(m) = caps.get(1) {
-                return m.as_str().to_string();
-            }
-        }
-    }
-
-    // Fallback: use the filename itself or "SAMPLE"
-    if !filename.is_empty() {
-        filename.to_string()
-    } else {
-        "SAMPLE".to_string()
+        };
+        cfg.apply_pileup_overrides();
+        Ok(cfg)
     }
 }
 
@@ -749,5 +719,53 @@ mod tests {
         let cfg_zero_exp = cli_zero_exp.to_config().unwrap();
         assert_eq!(cfg_zero_exp.af_threshold, 0.0);
         assert!(cfg_zero_exp.af_threshold_truthy_zero);
+    }
+
+    #[test]
+    fn unsupported_flags_all_seven_return_clear_error() {
+        for flag in ["-n", "-C", "-T", "--trim", "--VS", "-Z", "--downsample"] {
+            let err = check_unsupported(&args(&[flag])).unwrap_err();
+            assert!(
+                matches!(err, vardictrust_core::types::VardictError::Unsupported(_)),
+                "expected Unsupported error for {flag}, got {err:?}"
+            );
+            assert!(
+                err.to_string()
+                    .contains("not implemented in v1.0; use VarDictJava"),
+                "unexpected error message for {flag}: {err}"
+            );
+            let eq_form = format!("{flag}=val");
+            let err_eq =
+                check_unsupported(&["vardictrust".to_string(), eq_form.clone()]).unwrap_err();
+            assert!(
+                matches!(
+                    err_eq,
+                    vardictrust_core::types::VardictError::Unsupported(_)
+                ),
+                "expected Unsupported error for {eq_form}, got {err_eq:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn normalize_args_all_five_thread_flag_forms() {
+        let cases: &[(&[&str], usize)] = &[
+            (&["-b", "a.bam", "-G", "r.fa", "-th", "4"], 4),
+            (&["-b", "a.bam", "-G", "r.fa", "-th8"], 8),
+            (&["-b", "a.bam", "-G", "r.fa", "--th", "4"], 4),
+            (&["-b", "a.bam", "-G", "r.fa", "-th=4"], 4),
+            (&["-b", "a.bam", "-G", "r.fa", "--th=4"], 4),
+        ];
+        for &(argv, expected_threads) in cases {
+            let norm = normalize_args(&args(argv));
+            let cli = Cli::try_parse_from(&norm)
+                .unwrap_or_else(|e| panic!("failed to parse {argv:?} (norm={norm:?}): {e}"));
+            assert_eq!(cli.threads, Some(expected_threads), "argv={argv:?}");
+            assert_eq!(
+                cli.to_config().unwrap().threads,
+                expected_threads,
+                "argv={argv:?}"
+            );
+        }
     }
 }

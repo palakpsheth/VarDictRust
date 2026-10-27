@@ -205,6 +205,71 @@ fn num_cpus() -> usize {
         .unwrap_or(1)
 }
 
+impl Config {
+    /// Apply pileup mode (`-p`) parameter overrides matching `Configuration.java:162-165`.
+    pub fn apply_pileup_overrides(&mut self) {
+        if self.pileup {
+            self.freq = -1.0;
+            self.min_reads = 0;
+        }
+    }
+}
+
+/// Extract sample name from a BAM file path (or `bam1|bam2` specification),
+/// optionally applying a custom regex capture group 1 first, then falling back
+/// to `cli.rs`'s default regexes (`Configuration.java`).
+pub fn extract_sample_name(bam_path: &str, sample_regexp: Option<&str>) -> String {
+    static SAMPLE_RE1: std::sync::LazyLock<Option<regex::Regex>> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"([^/\\._]+).sorted[^/]*\.bam").ok());
+    static SAMPLE_RE2: std::sync::LazyLock<Option<regex::Regex>> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"([^/\\]+)[_\.][^/\\]*bam").ok());
+
+    let first_bam = bam_path
+        .split('|')
+        .next()
+        .unwrap_or(bam_path)
+        .split(':')
+        .next()
+        .unwrap_or(bam_path);
+
+    if let Some(re_str) = sample_regexp {
+        if let Ok(re) = regex::Regex::new(re_str) {
+            if let Some(caps) = re.captures(first_bam).or_else(|| re.captures(bam_path)) {
+                if let Some(m) = caps.get(1) {
+                    return m.as_str().to_string();
+                }
+            }
+        }
+    }
+
+    let filename = if let Some(idx) = first_bam.rfind('/') {
+        &first_bam[idx + 1..]
+    } else {
+        first_bam
+    };
+
+    if let Some(re1) = SAMPLE_RE1.as_ref() {
+        if let Some(caps) = re1.captures(filename) {
+            if let Some(m) = caps.get(1) {
+                return m.as_str().to_string();
+            }
+        }
+    }
+    if let Some(re2) = SAMPLE_RE2.as_ref() {
+        if let Some(caps) = re2.captures(filename) {
+            if let Some(m) = caps.get(1) {
+                return m.as_str().to_string();
+            }
+        }
+    }
+
+    if !filename.is_empty() {
+        filename.to_string()
+    } else {
+        "SAMPLE".to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -226,5 +291,32 @@ mod tests {
         assert_eq!(c.col_seg_end, 10);
         assert_eq!(c.col_gene, Some(12));
         assert_eq!(c.column_for_chromosome, None);
+    }
+
+    #[test]
+    fn extract_sample_name_and_pileup_overrides() {
+        assert_eq!(
+            extract_sample_name("/path/to/MySample.sorted.bam", None),
+            "MySample"
+        );
+        assert_eq!(
+            extract_sample_name("/path/to/Tumor.bam|/path/to/Normal.bam", None),
+            "Tumor"
+        );
+        assert_eq!(
+            extract_sample_name("sample_ABC_123.bam", Some(r"sample_([A-Z]+)_\d+")),
+            "ABC"
+        );
+        assert_eq!(extract_sample_name("", None), "SAMPLE");
+
+        let mut cfg = Config::default();
+        cfg.apply_pileup_overrides();
+        assert!((cfg.freq - 0.01).abs() < f64::EPSILON);
+        assert_eq!(cfg.min_reads, 2);
+
+        cfg.pileup = true;
+        cfg.apply_pileup_overrides();
+        assert!((cfg.freq - (-1.0)).abs() < f64::EPSILON);
+        assert_eq!(cfg.min_reads, 0);
     }
 }

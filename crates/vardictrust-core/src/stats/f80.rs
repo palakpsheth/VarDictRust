@@ -222,4 +222,42 @@ mod tests {
         // Let's assert the raw output matches the R long double accumulation precision
         assert_eq!(result, 43.999999999999992895);
     }
+
+    #[test]
+    fn test_f80_from_to_add_and_sum_boundary_paths() {
+        let zero = F80::from_f64(0.0);
+        assert_eq!(zero.mant, 0);
+        assert_eq!(zero.to_f64(), 0.0);
+
+        // Adding with zero on either side returns the other operand unchanged
+        let one = F80::from_f64(1.0);
+        assert_eq!(zero.add_f80(one).to_f64(), 1.0);
+        assert_eq!(one.add_f80(zero).to_f64(), 1.0);
+
+        // Large exponent difference (exp_diff >= 120) sticky path
+        let tiny = F80 {
+            exp: -200,
+            mant: 1u64 << 63,
+        };
+        assert_eq!(one.add_f80(tiny).to_f64(), 1.0);
+
+        // Overflow back to f64::INFINITY when exp >= 1024
+        let huge = F80 {
+            exp: 1024,
+            mant: 1u64 << 63,
+        };
+        assert_eq!(huge.to_f64(), f64::INFINITY);
+
+        // Deep underflow (shift > 53) returns 0.0
+        let deep_sub = F80 {
+            exp: -1100,
+            mant: 1u64 << 63,
+        };
+        assert_eq!(deep_sub.to_f64(), 0.0);
+
+        // Subnormal round-trip
+        let min_sub = f64::from_bits(1);
+        assert_eq!(F80::from_f64(min_sub).to_f64(), min_sub);
+        assert_eq!(f80_sum(&[]), 0.0);
+    }
 }

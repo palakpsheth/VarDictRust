@@ -65,7 +65,12 @@ def convert_csv_to_fasta(csv_path: str, fa_path: str, fai_path: str):
     os.replace(tmp_fai, fai_path)
 
 def main():
-    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    import argparse
+    default_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    parser = argparse.ArgumentParser(description="Convert upstream VarDictJava thin-FASTA CSVs to indexed FASTAs.")
+    parser.add_argument("--data-root", default=default_root, help="Root directory containing VarDictJava/testdata/fastas")
+    args = parser.parse_args()
+    root = os.path.abspath(args.data_root)
     fasta_dir = os.path.join(root, "VarDictJava", "testdata", "fastas")
     if not os.path.isdir(fasta_dir):
         print(f"convert_fastas: directory not found: {fasta_dir}", file=sys.stderr)
@@ -101,6 +106,22 @@ def main():
                 converted += 1
 
         elapsed = round(time.time() - t0, 2)
+        try:
+            import subprocess
+            excl = subprocess.check_output(
+                ["git", "-C", fasta_dir, "rev-parse", "--git-path", "info/exclude"],
+                text=True, stderr=subprocess.DEVNULL
+            ).strip()
+            if excl:
+                excl_path = excl if os.path.isabs(excl) else os.path.join(fasta_dir, excl)
+                os.makedirs(os.path.dirname(excl_path), exist_ok=True)
+                existing = open(excl_path, "r", encoding="utf-8").read() if os.path.exists(excl_path) else ""
+                with open(excl_path, "a", encoding="utf-8") as ef:
+                    for pat in ("testdata/fastas/*.fa", "testdata/fastas/*.fa.fai"):
+                        if pat not in existing:
+                            ef.write(f"\n{pat}\n")
+        except Exception:
+            pass
         if converted > 0:
             print(f"convert_fastas: successfully materialized {converted} FASTAs in {elapsed}s")
         else:

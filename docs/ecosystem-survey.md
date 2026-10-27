@@ -81,7 +81,7 @@ gates before core aligner work").
 | **Work small, per-function evidence** | [AGENTS.md §7 Port Loop](../AGENTS.md#7-the-port-loop-rewritesbio-work-small) with exact Java source code citations. |
 | **Fail loudly on unsupported features** | [AGENTS.md §12 Unsupported Error Policy](../AGENTS.md#12-unsupported-features-error-loudly) implemented in [`cli.rs`](../crates/vardictrust/src/cli.rs) via `UNSUPPORTED_FLAGS`. |
 | **Real-data, like-for-like benchmarks** | Documented in [`benchmarks/README.md`](../benchmarks/README.md); strictly avoided parallelism-only speedup claims. |
-| **Thread & partition invariance** | Formally verified in [`thread_determinism.rs`](../crates/vardictrust/tests/thread_determinism.rs). |
+| **Thread & partition invariance** | Formally verified in [`engine_behavior.rs`](../crates/vardictrust-core/tests/engine_behavior.rs). |
 | **Upstream bugs, manually verified** | Documented in [`docs/upstream-bugs.md`](upstream-bugs.md) ([UB-1](upstream-bugs.md#ub-1--p-spurious-all-zero-record-at-position-00) through [UB-7](upstream-bugs.md#ub-7-multi-allelic-site-single-winner-collapsing-var2vcf_validpl135-205)). |
 | **Credit & AI transparency** | Comprehensive attribution and disclosures in [`README.md`](../README.md) and [`benchmarks/evidence/`](../benchmarks/evidence/). |
 

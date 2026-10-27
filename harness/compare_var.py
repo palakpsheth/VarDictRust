@@ -34,6 +34,7 @@ def main():
             errs.append(f"row {i}: field count java={len(j)} rust={len(r)}")
         else:
             top = min(hi, len(j)) if hi else len(j)
+            if j[lo:top] == r[lo:top]: continue
             for c in range(lo, top):
                 if not eq(j[c], r[c], a.eps):
                     errs.append(f"row {i} col {c+1}: {j[c]!r} != {r[c]!r}")
