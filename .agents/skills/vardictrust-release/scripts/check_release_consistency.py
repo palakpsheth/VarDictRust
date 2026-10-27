@@ -231,8 +231,8 @@ def check_pre_tag_surfaces(repo_root: Path, version: str, errors: list[str]) -> 
     require_regex(
         repo_root,
         "DIVERGENCES.md",
-        r"33bc15964cc36b6d",
-        "DIVERGENCES.md cites certified fingerprint 33bc15964cc36b6d",
+        r"08b397ab1d32e857",
+        "DIVERGENCES.md cites certified fingerprint 08b397ab1d32e857",
         errors,
     )
     forbid_regex(

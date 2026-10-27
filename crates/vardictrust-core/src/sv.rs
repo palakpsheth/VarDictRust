@@ -248,6 +248,17 @@ pub fn is_best_sv_used(var_data: &crate::variations::VariationData, softp: i32) 
     best_cnt >= 0 && best_used
 }
 
+/// Syncs `Sclip.used` (set on poly-A/T or low-complexity sequences in
+/// `VariationUtils.java:125-134`) and cached `Sclip.sequence` (`:148`) from a
+/// temporary `Sclip` clone back to the live `soft_clips_{5,3}_end` map entry.
+#[inline]
+fn sync_sclip_after_conseq(map: &mut BTreeMap<i32, Sclip>, pos: i32, scv: &Sclip) {
+    if let Some(live) = map.get_mut(&pos) {
+        live.used = scv.used;
+        live.sequence.clone_from(&scv.sequence);
+    }
+}
+
 /// Represents a structural variant match returned by `find_match`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Match {
@@ -913,6 +924,11 @@ pub fn find_inv_sub(
                 &adaptor_forward,
                 &adaptor_reverse,
             );
+            if dir == 1 {
+                sync_sclip_after_conseq(&mut var_data.soft_clips_3_end, softp, &scv);
+            } else {
+                sync_sclip_after_conseq(&mut var_data.soft_clips_5_end, softp, &scv);
+            }
             if seq.is_empty() {
                 continue;
             }
@@ -960,6 +976,11 @@ pub fn find_inv_sub(
                     &adaptor_forward,
                     &adaptor_reverse,
                 );
+                if dir == 1 {
+                    sync_sclip_after_conseq(&mut var_data.soft_clips_3_end, cp, &scv);
+                } else {
+                    sync_sclip_after_conseq(&mut var_data.soft_clips_5_end, cp, &scv);
+                }
                 if seq_check.is_empty() {
                     continue;
                 }
@@ -1347,6 +1368,7 @@ pub fn find_del(
                 &adaptor_forward,
                 &adaptor_reverse,
             );
+            sync_sclip_after_conseq(&mut var_data.soft_clips_3_end, softp_cand, &scv);
             if seq.is_empty() || seq.len() < 12 {
                 continue;
             }
@@ -1474,9 +1496,6 @@ pub fn find_del(
             }
 
             var_data.sv_structures.svfdel[idx].used = true;
-            if let Some(scv_mut) = var_data.soft_clips_3_end.get_mut(&softp_cand) {
-                scv_mut.used = true;
-            }
 
             let mut svrdel_mut_refs: Vec<&mut Vec<Sclip>> =
                 vec![&mut var_data.sv_structures.svrdel];
@@ -1595,9 +1614,6 @@ pub fn find_del(
                 }
 
                 var_data.sv_structures.svfdel[idx].used = true;
-                if let Some(scv_mut) = var_data.soft_clips_3_end.get_mut(&softp) {
-                    scv_mut.used = true;
-                }
 
                 let mut svrdel_mut_refs: Vec<&mut Vec<Sclip>> =
                     vec![&mut var_data.sv_structures.svrdel];
@@ -1661,6 +1677,7 @@ pub fn find_del(
                 &adaptor_forward,
                 &adaptor_reverse,
             );
+            sync_sclip_after_conseq(&mut var_data.soft_clips_5_end, softp_cand, &scv);
             if seq.is_empty() || seq.len() < 12 {
                 continue;
             }
@@ -1766,9 +1783,6 @@ pub fn find_del(
             }
 
             var_data.sv_structures.svrdel[idx].used = true;
-            if let Some(scv_mut) = var_data.soft_clips_5_end.get_mut(&softp_cand) {
-                scv_mut.used = true;
-            }
 
             let mut svfdel_mut_refs: Vec<&mut Vec<Sclip>> =
                 vec![&mut var_data.sv_structures.svfdel];
@@ -1890,9 +1904,6 @@ pub fn find_del(
                 }
 
                 var_data.sv_structures.svrdel[idx].used = true;
-                if let Some(scv_mut) = var_data.soft_clips_5_end.get_mut(&softp_cand) {
-                    scv_mut.used = true;
-                }
 
                 let mut svfdel_mut_refs: Vec<&mut Vec<Sclip>> =
                     vec![&mut var_data.sv_structures.svfdel];
@@ -1983,6 +1994,7 @@ pub fn find_sv(
 
         let seq =
             crate::variations::util::find_conseq(&mut sc5v, 0, &adaptor_forward, &adaptor_reverse);
+        sync_sclip_after_conseq(&mut var_data.soft_clips_5_end, p5, &sc5v);
         if seq.is_empty() || seq.len() < 12 {
             continue;
         }
@@ -2063,10 +2075,6 @@ pub fn find_sv(
                     &format!("-{}", dellen),
                 );
                 crate::variations::util::adj_cnt(vref_mut2, &tmp_var, None);
-
-                if let Some(sc_mut) = var_data.soft_clips_5_end.get_mut(&p5) {
-                    sc_mut.used = true;
-                }
             }
         } else {
             let match_res_rev = find_match_rev(&seq, reference, p5, -1, 17, 3, chr, verbose);
@@ -2136,10 +2144,6 @@ pub fn find_sv(
             if p5_cov_updated < bp_cov {
                 var_data.ref_coverage.insert(p5_adj, bp_cov);
             }
-
-            if let Some(sc_mut) = var_data.soft_clips_5_end.get_mut(&p5) {
-                sc_mut.used = true;
-            }
         }
     }
 
@@ -2164,6 +2168,7 @@ pub fn find_sv(
 
         let seq =
             crate::variations::util::find_conseq(&mut sc3v, 0, &adaptor_forward, &adaptor_reverse);
+        sync_sclip_after_conseq(&mut var_data.soft_clips_3_end, p3, &sc3v);
 
         if seq.is_empty() || seq.len() < 12 {
             continue;
@@ -2252,10 +2257,6 @@ pub fn find_sv(
                     &format!("-{}", dellen),
                 );
                 crate::variations::util::adj_cnt(vref_mut2, &tmp_var, None);
-
-                if let Some(sc_mut) = var_data.soft_clips_3_end.get_mut(&p3) {
-                    sc_mut.used = true;
-                }
             }
         } else {
             let match_res_rev = find_match_rev(&seq, reference, p3, 1, 17, 3, chr, verbose);
@@ -2324,10 +2325,6 @@ pub fn find_sv(
             let p3_cov_updated = var_data.ref_coverage.get(&p3_adj).copied().unwrap_or(0);
             if p3_cov_updated < bp_cov {
                 var_data.ref_coverage.insert(p3_adj, bp_cov);
-            }
-
-            if let Some(sc_mut) = var_data.soft_clips_3_end.get_mut(&p3) {
-                sc_mut.used = true;
             }
         }
     }
@@ -2505,7 +2502,7 @@ pub fn find_del_disc(
     // svrdel (3' candidate deletions)
     let n_svrdel = var_data.sv_structures.svrdel.len();
     for idx in 0..n_svrdel {
-        let (used, vars_count, start, end, mstart, mend, softp) = {
+        let (used, vars_count, start, end, mstart, mend, softp, del_softp) = {
             let del = &var_data.sv_structures.svrdel[idx];
             if del.used || del.variation.cnt < minr + 5 {
                 continue;
@@ -2532,6 +2529,7 @@ pub fn find_del_disc(
                 del.mstart,
                 del.mend,
                 bp,
+                del.softp,
             )
         };
 
@@ -2579,6 +2577,12 @@ pub fn find_del_disc(
             .unwrap_or(0);
         sv.pairs += vars_count;
         sv.clusters += 1;
+
+        if del_softp != 0 {
+            if let Some(sc5) = var_data.soft_clips_5_end.get_mut(&del_softp) {
+                sc5.used = true;
+            }
+        }
 
         let mut tv = Variation::new();
         tv.cnt = 2 * vars_count;
@@ -3025,6 +3029,7 @@ pub fn find_dup_disc(
                 &adaptor_forward,
                 &adaptor_reverse,
             );
+            sync_sclip_after_conseq(&mut var_data.soft_clips_3_end, pe, &current_sclip3);
             let match_res = find_match(&seq, reference, bp, 1, 17, 3, chr, verbose);
             let mut tbp = match_res.base_position;
 
@@ -3233,6 +3238,7 @@ pub fn find_dup_disc(
                 &adaptor_forward,
                 &adaptor_reverse,
             );
+            sync_sclip_after_conseq(&mut var_data.soft_clips_5_end, bp, &current_sclip5);
             let match_res = find_match(&seq, reference, pe, -1, 17, 3, chr, verbose);
             let tbp = match_res.base_position;
 
@@ -4335,6 +4341,42 @@ mod tests {
             var_data.ref_coverage.get(&201).copied(),
             Some(77),
             "find_sv must promote ref_coverage[bp_adj] (201) to ref_coverage[p5_adj + 1] (400)"
+        );
+        assert!(
+            !var_data.soft_clips_5_end.get(&400).unwrap().used,
+            "StructuralVariantsProcessor.java:687-965 findsv() never marks sc5v.used = true"
+        );
+
+        // Conversely, when `findconseq(sc5v, 0)` encounters a poly-A / low-complexity
+        // consensus (> 12 bp with >= 7 'A's, VariationUtils.java:125-134), it sets
+        // `softClip.used = true` on the live `Sclip` reference (`sync_sclip_after_conseq`).
+        let mut sc5_polya = Sclip::default();
+        sc5_polya.variation.cnt = 3;
+        sc5_polya.variation.hicnt = 3;
+        for pos_idx in 0..15 {
+            sc5_polya.nt.entry(pos_idx).or_default().insert(b'A', 3);
+        }
+        var_data.soft_clips_5_end.insert(450, sc5_polya);
+
+        find_sv(
+            &mut var_data,
+            &mut reference,
+            chr,
+            1,
+            600,
+            &config,
+            &chr_lengths,
+        )
+        .unwrap();
+
+        let live_polya = var_data.soft_clips_5_end.get(&450).unwrap();
+        assert!(
+            live_polya.used,
+            "find_sv must propagate find_conseq's poly-A/low-complexity used=true to the live soft_clips_5_end entry"
+        );
+        assert_eq!(
+            live_polya.sequence.as_deref(),
+            Some(&b"AAAAAAAAAAAAAAA"[..])
         );
     }
 }

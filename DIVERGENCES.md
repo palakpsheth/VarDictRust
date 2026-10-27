@@ -23,7 +23,7 @@ Verified Parity Baseline (release/v1.0.4, commit 19b5683):
 - [Tier-2](docs/testing/test-matrix-and-ci-audit.md#tier-2) Sweeps:      17/17 strict MATCH (micro, s1a-s9 all 10 slices, HG008, SEQC2 exome/slices, HG002, Amplicon, 17-mode extended, 18-slice multimodal)
 - [Tier-3](docs/testing/test-matrix-and-ci-audit.md#tier-3) Truth Concordance:  5/5 EQUAL (GIAB HG002 NIST v4.2.1, SEQC2 v1.2.1, GIAB HG008 NIST Draft v0.3, GIAB HG005 NIST v4.2.1, GIAB NA24385 b37 NIST v4.2.1)
 - Scaling Budget:     PASS (3.44x speedup, 1.22x flat RSS scaling across 249 Mbp chromosome 1)
-- Final Acceptance:   8/8 PASS under release engine fingerprint `33bc15964cc36b6d`
+- Final Acceptance:   8/8 PASS under release engine fingerprint `08b397ab1d32e857`
 ```
 
 <a id="the-four-canonical-parity-classes-rewritesbio-5-8-11"></a>
