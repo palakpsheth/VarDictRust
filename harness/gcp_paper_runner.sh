@@ -33,6 +33,7 @@ BOOT_DISK_SIZE="${BOOT_DISK_SIZE:-100GB}"
 BOOT_DISK_TYPE="${BOOT_DISK_TYPE:-pd-ssd}"
 LOCAL_SSD_COUNT="${LOCAL_SSD_COUNT:-4}"
 MAX_RUN_DURATION="${MAX_RUN_DURATION:-24h}"
+MIN_CPU_PLATFORM="${MIN_CPU_PLATFORM:-Intel Ice Lake}"
 KEEP_VM_ON_FAIL="${KEEP_VM_ON_FAIL:-1}"
 
 GCS_BAMS="${GCS_BAMS:-gs://vardict-paper-trial-bams}"
@@ -97,6 +98,7 @@ build_gcloud_create_cmd() {
     "--project=${GCP_PROJECT}"
     "--zone=${zone}"
     "--machine-type=${MACHINE_TYPE}"
+    "--min-cpu-platform=${MIN_CPU_PLATFORM}"
     "--boot-disk-size=${BOOT_DISK_SIZE}"
     "--boot-disk-type=${BOOT_DISK_TYPE}"
   )
@@ -3610,6 +3612,13 @@ vm_provisioning_model() {
     --format="value(scheduling.provisioningModel)" 2>/dev/null || echo "ABSENT"
 }
 
+vm_cpu_platform() {
+  gcloud compute instances describe "$VM_NAME" \
+    --project="$GCP_PROJECT" \
+    --zone="$GCP_ZONE" \
+    --format="value(cpuPlatform)" 2>/dev/null || echo "ABSENT"
+}
+
 run_controller() {
   local max_attempts="${1:-6}"
   local start_attempt="${2:-1}"
@@ -3646,11 +3655,12 @@ run_controller() {
     echo " [Controller] Attempt ${attempt}/${max_attempts} (stage=${worker_stage}, zone=${GCP_ZONE}): ${VM_NAME} (${MACHINE_TYPE}, ${BOOT_DISK_SIZE} ${BOOT_DISK_TYPE} + ${LOCAL_SSD_COUNT}x375GB NVMe, model=${model})"
     echo "================================================================================"
 
-    local cur_status cur_model
+    local cur_status cur_model cur_cpu
     cur_status="$(vm_status)"
     cur_model="$(vm_provisioning_model)"
-    if [ "$cur_status" = "RUNNING" ] && [ "$cur_model" = "$model" ]; then
-      echo "[Controller] Reusing already-running VM '${VM_NAME}' (status=${cur_status}, model=${cur_model})"
+    cur_cpu="$(vm_cpu_platform)"
+    if [ "$cur_status" = "RUNNING" ] && [ "$cur_model" = "$model" ] && [ "$cur_cpu" = "$MIN_CPU_PLATFORM" ]; then
+      echo "[Controller] Reusing already-running VM '${VM_NAME}' (status=${cur_status}, model=${cur_model}, cpuPlatform=${cur_cpu})"
     else
       cleanup_vm
       mapfile -t create_cmd < <(build_gcloud_create_cmd "$attempt")
@@ -3822,6 +3832,7 @@ run_plan_check() {
   cmd1="$(build_gcloud_create_cmd 1 | tr '\n' ' ')"
   cmd6="$(build_gcloud_create_cmd 6 | tr '\n' ' ')"
   [[ "$cmd1" == *"--machine-type=n2-standard-32"* ]] || { echo "FAIL: machine-type not n2-standard-32" >&2; exit 1; }
+  [[ "$cmd1" == *"--min-cpu-platform=Intel Ice Lake"* ]] || { echo "FAIL: min-cpu-platform not Intel Ice Lake" >&2; exit 1; }
   [[ "$cmd1" == *"--boot-disk-size=100GB"* ]] || { echo "FAIL: boot-disk-size not 100GB" >&2; exit 1; }
   [[ "$cmd1" == *"--boot-disk-type=pd-ssd"* ]] || { echo "FAIL: boot-disk-type not pd-ssd" >&2; exit 1; }
   [[ "$cmd1" == *"--local-ssd=interface=NVME"* ]] || { echo "FAIL: missing --local-ssd=interface=NVME" >&2; exit 1; }
