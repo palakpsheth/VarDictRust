@@ -498,6 +498,51 @@ class TestRepoAgentSkills(unittest.TestCase):
             self.assertGreater(pos, last_diff_pos, f"differential.yml step out of order: {step_label!r}")
             last_diff_pos = pos
 
+        for wf_name in ("ci.yml", "differential.yml", "docs.yml", "security.yml", "release.yml"):
+            wf_text = (workflows_dir / wf_name).read_text(encoding="utf-8")
+            self.assertIn("persist-credentials: false", wf_text, f"{wf_name} missing persist-credentials: false")
+            self.assertEqual(
+                wf_text.count("persist-credentials: false"),
+                wf_text.count("actions/checkout@"),
+                f"{wf_name} must set persist-credentials: false on every actions/checkout step",
+            )
+
+        sec_text = (workflows_dir / "security.yml").read_text(encoding="utf-8")
+        self.assertIn("dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249", sec_text)
+        self.assertIn("Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0", sec_text)
+        self.assertIn("cargo deny --all-features check advisories licenses bans sources", sec_text)
+        self.assertIn("-A clippy::needless_late_init -A clippy::byte_char_slices", sec_text)
+        self.assertNotIn("continue-on-error: true", sec_text)
+        self.assertIn("steps.clippy.outcome == 'success'", sec_text)
+        self.assertIn("steps.gitleaks.outcome", sec_text)
+        self.assertIn("steps.deny.outcome", sec_text)
+        self.assertIn("steps.audit.outcome", sec_text)
+        self.assertIn("steps.clippy.outcome", sec_text)
+
+        docs_text = (workflows_dir / "docs.yml").read_text(encoding="utf-8")
+        self.assertIn('cache-dependency-path: "docs/requirements.txt"', docs_text)
+
+        rel_text = (workflows_dir / "release.yml").read_text(encoding="utf-8")
+        self.assertIn('permissions:\n  "contents": "read"', rel_text)
+        self.assertIn('    permissions:\n      "contents": "write"', rel_text)
+        self.assertIn('RELEASE_TAG: "${{ needs.plan.outputs.tag }}"', rel_text)
+        self.assertIn('gh release create "$RELEASE_TAG"', rel_text)
+
+        cfg_text = (ROOT_DIR / "harness" / "configure_github_repo.py").read_text(encoding="utf-8")
+        self.assertIn('"has_wiki": True', cfg_text)
+        self.assertIn('"delete_branch_on_merge": True', cfg_text)
+        self.assertIn('"required_linear_history": True', cfg_text)
+        self.assertIn('"secret_scanning_non_provider_patterns"', cfg_text)
+        self.assertIn('"secret_scanning_validity_checks"', cfg_text)
+        for ctx in (
+            '"Build, Unit, Integration, Parity & Coverage Gate"',
+            '"Dual-Engine Differential Parity (Tier-2)"',
+            '"Security & Supply-Chain Scan"',
+            '"MkDocs Strict Build Gate"',
+            '"plan"',
+        ):
+            self.assertIn(ctx, cfg_text, f"configure_github_repo.py missing required check context {ctx}")
+
     def test_github_workflows_valid_yaml_and_pinned_shas(self):
         workflows_dir = ROOT_DIR / ".github" / "workflows"
         wf_files = sorted(workflows_dir.glob("*.yml"))
