@@ -144,14 +144,13 @@ else
   exit 1
 fi
 if command -v cargo-deny >/dev/null 2>&1; then
-  cargo deny --all-features check advisories licenses bans sources \
-    || cargo deny --offline --all-features check advisories licenses bans sources
+  cargo deny --all-features check advisories licenses bans sources
 else
   echo "ERROR: cargo-deny not found. Install via 'cargo install --locked cargo-deny' to satisfy PR supply-chain gate." >&2
   exit 1
 fi
 if command -v cargo-audit >/dev/null 2>&1; then
-  cargo audit || cargo audit -n --stale
+  cargo audit
 else
   echo "ERROR: cargo-audit not found. Install via 'cargo install --locked cargo-audit' to satisfy PR vulnerability gate." >&2
   exit 1
