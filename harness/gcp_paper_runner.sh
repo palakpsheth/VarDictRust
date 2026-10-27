@@ -27,11 +27,11 @@ export CLOUDSDK_CORE_PROJECT="${CLOUDSDK_CORE_PROJECT:-vardict-paper-trial}"
 GCP_PROJECT="${CLOUDSDK_CORE_PROJECT}"
 GCP_ZONE="${GCP_ZONE:-us-central1-a}"
 GCP_SA="${CLOUDSDK_CORE_ACCOUNT}"
-VM_NAME="${VM_NAME:-vardict-paper-n2hm32}"
-MACHINE_TYPE="${MACHINE_TYPE:-n2-highmem-32}"
-BOOT_DISK_SIZE="${BOOT_DISK_SIZE:-250GB}"
+VM_NAME="${VM_NAME:-vardict-paper-n2s32}"
+MACHINE_TYPE="${MACHINE_TYPE:-n2-standard-32}"
+BOOT_DISK_SIZE="${BOOT_DISK_SIZE:-100GB}"
 BOOT_DISK_TYPE="${BOOT_DISK_TYPE:-pd-ssd}"
-LOCAL_SSD_COUNT="${LOCAL_SSD_COUNT:-8}"
+LOCAL_SSD_COUNT="${LOCAL_SSD_COUNT:-2}"
 MAX_RUN_DURATION="${MAX_RUN_DURATION:-24h}"
 KEEP_VM_ON_FAIL="${KEEP_VM_ON_FAIL:-1}"
 
@@ -59,25 +59,43 @@ Modes:
 EOF
 }
 
-# Maps attempt number (1..3) to GCP provisioning model per Gate 8 (2-Strike Spot -> On-Demand).
+# Maps attempt number (1..6) to GCP provisioning model (Attempts 1..5: SPOT; Attempt 6: STANDARD On-Demand).
 provisioning_model_for_attempt() {
   local attempt="$1"
-  if [ "$attempt" -le 2 ]; then
+  if [ "$attempt" -le 5 ]; then
     echo "SPOT"
   else
     echo "STANDARD"
   fi
 }
 
+# Maps attempt number (1..6) across us-central1 zones to maximize Spot capacity availability before Attempt 6 On-Demand.
+zone_for_attempt() {
+  local attempt="$1"
+  if [ "${GCP_ZONE_LOCK:-0}" = "1" ]; then
+    echo "${GCP_ZONE}"
+    return 0
+  fi
+  case "$attempt" in
+    1) echo "us-central1-a" ;;
+    2) echo "us-central1-b" ;;
+    3) echo "us-central1-c" ;;
+    4) echo "us-central1-f" ;;
+    5) echo "us-central1-a" ;;
+    *) echo "us-central1-a" ;;
+  esac
+}
+
 # Builds the exact `gcloud compute instances create` command array for a given attempt.
 build_gcloud_create_cmd() {
   local attempt="$1"
-  local model
+  local model zone
   model="$(provisioning_model_for_attempt "$attempt")"
+  zone="$(zone_for_attempt "$attempt")"
   local cmd=(
     gcloud compute instances create "$VM_NAME"
     "--project=${GCP_PROJECT}"
-    "--zone=${GCP_ZONE}"
+    "--zone=${zone}"
     "--machine-type=${MACHINE_TYPE}"
     "--boot-disk-size=${BOOT_DISK_SIZE}"
     "--boot-disk-type=${BOOT_DISK_TYPE}"
@@ -243,7 +261,7 @@ run_checkpointed_cell() {
     return 0
   fi
 
-  local cpu_spec mem_node_spec="0-1"
+  local cpu_spec mem_node_spec="0"
   if [ -n "${SOCKET_PIN_CPUS:-}" ] && { [ "$cpus" = "8" ] || [ "$cpus" = "0-7" ] || [ "$cpus" = "8-15" ]; }; then
     cpu_spec="${SOCKET_PIN_CPUS}"
   elif [ "${SOCKET_PIN_CPUS:-}" = "8-15" ] && [[ "$cpus" =~ ^[0-9]+$ ]] && [ "$cpus" -le 8 ]; then
@@ -253,11 +271,13 @@ run_checkpointed_cell() {
   else
     cpu_spec="$cpus"
   fi
-  case "$cpu_spec" in
-    0|0-[1-7]|0-3|4-7) mem_node_spec="0" ;;
-    8|8-9|8-1[0-5]|12-15) mem_node_spec="1" ;;
-    *) mem_node_spec="0-1" ;;
-  esac
+  if [ -d /sys/devices/system/node/node1 ]; then
+    case "$cpu_spec" in
+      0|0-[1-7]|0-3|4-7) mem_node_spec="0" ;;
+      8|8-9|8-1[0-5]|12-15) mem_node_spec="1" ;;
+      *) mem_node_spec="0-1" ;;
+    esac
+  fi
 
   echo "=== [RUN] Stage=$stage Cell=$cell_id AllowedCPUs=$cpu_spec AllowedMemoryNodes=$mem_node_spec MemoryMax=$mem_max GOLDEN_MODE=$GOLDEN_MODE ==="
   gcs_write_heartbeat "$stage" "$cell_id" "RUNNING"
@@ -991,7 +1011,7 @@ run_stage_2() {
   "
 
   # 5. Fig-1 (SRR8657348 Single-Sample) & Fig-3 (SRR15006376|SRR15006386 Somatic) Field Callers + Somatic Venn
-  run_checkpointed_cell "stage2" "s2_fig1_fig3_field_callers" 32 "192G" bash -c "
+  run_checkpointed_cell "stage2" "s2_fig1_fig3_field_callers" 32 "115G" bash -c "
     set -euo pipefail
     source harness/gcp_paper_runner.sh --source-only
     ensure_field_caller_envs
@@ -1119,7 +1139,7 @@ run_stage_2() {
   "
 
   # 7. Table-3 Java -Xmx4g OOM reproduction & -Xmx200g n=3 completion cell
-  run_checkpointed_cell "stage2" "s2_table3_R_chr1_java_200g_n3" 8 "240G" bash -c "
+  run_checkpointed_cell "stage2" "s2_table3_R_chr1_java_200g_n3" 8 "115G" bash -c "
     set -euo pipefail
     REF='$tp_dir/archive/reference/hg19.fa'
     BAM='$tp_dir/bams/SRR8657348.bam'
@@ -1910,8 +1930,8 @@ run_stage_5() {
     wc -l '$hg_dir/hg002_full_22contigs.bed' '$hg_dir/hg002_full_giab_50kb.bed' > \"\$KEEP_DIR/bed_counts.txt\"
   "
 
-  # 2. Arm A: 22 Un-Chunked Whole Chromosomes (chr1..chr22, 2.875 Gbp) across all 3 engines at -th 32 / 245G / -Xmx200g
-  run_checkpointed_cell "stage5" "s5_wgs_hg002_full_contigs_3way_th32" 32 "245G" bash -c "
+  # 2. Arm A: 22 Un-Chunked Whole Chromosomes (chr1..chr22, 2.875 Gbp) across all 3 engines at -th 32 / 115G / -Xmx200g
+  run_checkpointed_cell "stage5" "s5_wgs_hg002_full_contigs_3way_th32" 32 "115G" bash -c "
     set -euo pipefail
     source harness/gcp_paper_runner.sh --source-only
     REF=\"\$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fasta\"
@@ -1968,7 +1988,7 @@ run_stage_5() {
   "
 
   # 3. Arm B: Full chr1..chr22 GIAB v4.2.1 Callable Genome (<=50 kbp pre-tiled, 2.51 Gbp) + Tier-2 Parity + Tier-3 rtg vcfeval
-  run_checkpointed_cell "stage5" "s5_wgs_hg002_full_giab_3way_th32" 32 "245G" bash -c "
+  run_checkpointed_cell "stage5" "s5_wgs_hg002_full_giab_3way_th32" 32 "115G" bash -c "
     set -euo pipefail
     source harness/gcp_paper_runner.sh --source-only
     REF=\"\$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fasta\"
@@ -2038,6 +2058,8 @@ run_stage_5() {
     fi
     rm -rf \"\$WORK_LOCAL\"
   "
+  # Free ~131 GB HG002 full WGS BAM after both HG002 full-genome cells complete so 2x375GB NVMe has ample room for HG008 (329 GB)
+  rm -f "$hg_dir"/*.bam "$hg_dir"/*.bai 2>/dev/null || true
 
   # 4. Stage full ~329 GB HG008-T (195x, 160.0 GB) + HG008-N (169x, 169.0 GB) paired PDAC WGS BAMs on NVMe RAID0
   local hg8_dir="${WORK_DIR}/data/hg008_full"
@@ -2113,8 +2135,8 @@ run_stage_5() {
     wc -l '$hg8_dir/hg008_full_22contigs.bed' '$hg8_dir/hg008_full_giab_v04_50kb.bed' > \"\$KEEP_DIR/hg008_bed_counts.txt\"
   "
 
-  # 5. G2 Arm A: Full-Depth HG008-T|N (195x/169x = 364x combined) 22 Un-Chunked Chromosomes at -th 32 / 245G / -Xmx200g
-  run_checkpointed_cell "stage5" "s5_wgs_hg008_full_contigs_3way_th32" 32 "245G" bash -c "
+  # 5. G2 Arm A: Full-Depth HG008-T|N (195x/169x = 364x combined) 22 Un-Chunked Chromosomes at -th 32 / 115G / -Xmx200g
+  run_checkpointed_cell "stage5" "s5_wgs_hg008_full_contigs_3way_th32" 32 "115G" bash -c "
     set -euo pipefail
     source harness/gcp_paper_runner.sh --source-only
     REF=\"\$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fasta\"
@@ -2170,7 +2192,7 @@ run_stage_5() {
   "
 
   # 6. G2 Arm B: Full-Depth HG008-T|N (195x/169x) chr1..chr22 GIAB v0.4 Callable Genome (<=50 kbp pre-tiled) + Tier-2 Parity + Tier-3 rtg vcfeval (v0.3 & v0.4)
-  run_checkpointed_cell "stage5" "s5_wgs_hg008_full_giab_3way_th32" 32 "245G" bash -c "
+  run_checkpointed_cell "stage5" "s5_wgs_hg008_full_giab_3way_th32" 32 "115G" bash -c "
     set -euo pipefail
     source harness/gcp_paper_runner.sh --source-only
     REF=\"\$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fasta\"
@@ -2241,10 +2263,12 @@ run_stage_5() {
     fi
     rm -rf \"\$WORK_LOCAL\"
   "
+  # Free ~329 GB HG008 full WGS BAMs after both HG008 full-genome cells complete so 2x375GB NVMe has ample room for Cell 8/9
+  rm -f "$hg8_dir"/*.bam "$hg8_dir"/*.bai 2>/dev/null || true
 
   # 7. H3 / Fig-5 GRCh38 Field-Caller Panel (Mutect2 4.6.2.0, Strelka2 2.9.10, LoFreq 2.1.5, Octopus 0.7.4, FreeBayes 1.3.10)
   #    on SEQC2 Somatic Exome (v1.2.1), HG008 Somatic WGS (v0.3 & v0.4), and HG002 Germline WGS (GIAB v4.2.1)
-  run_checkpointed_cell "stage5" "s5_grch38_field_callers_truth" 32 "192G" bash -c '
+  run_checkpointed_cell "stage5" "s5_grch38_field_callers_truth" 32 "115G" bash -c '
     set -euo pipefail
     source harness/gcp_paper_runner.sh --source-only
     ensure_field_caller_envs
@@ -2623,7 +2647,7 @@ run_stage_5() {
   "
 
   # 10. Option C Cross-Platform Short-Read & Synthesis-Based Sequencing Panel (Full chr20 at -f 0.01 & -f 0 + chr1 -f 0 -r 1 Singleton Floor)
-  run_checkpointed_cell "stage5" "s5_cross_platform_short_read_chr20_panel" 32 "245G" bash -c "
+  run_checkpointed_cell "stage5" "s5_cross_platform_short_read_chr20_panel" 32 "115G" bash -c "
     set -euo pipefail
     source harness/gcp_paper_runner.sh --source-only
     XP_DIR='$xp_dir'
@@ -2694,11 +2718,11 @@ run_stage_5() {
         echo \"\$rc_c\" > \"\$KEEP_DIR/\${tag}_cpp.exit\"
       fi
 
-      # 3. VarDictJava v1.8.3 (-th 32 -Xmx200g)
+      # 3. VarDictJava v1.8.3 (-th 32 -Xmx48g)
       if [ ! -s \"\$KEEP_DIR/\${tag}_java.exit\" ]; then
         local rc_j=0
         timeout 3600 /usr/bin/time -v -o \"\$KEEP_DIR/\${tag}_java.time\" \
-          env ORACLE_XMX_GB=200 JAVA_OPTS='-Xmx200g -XX:+ExitOnOutOfMemoryError' \
+          env ORACLE_XMX_GB=48 JAVA_OPTS='-Xmx48g -XX:+ExitOnOutOfMemoryError' \
           bash harness/run_oracle.sh \"\$ref\" \"\$bam_spec\" \"\$call_bed\" \"\$KEEP_DIR/\${tag}_java.vcf\" \"\$sample\" -f \"\$freq\" -th 32 -z \"\${extra_flags[@]}\" || rc_j=\$?
         echo \"\$rc_j\" > \"\$KEEP_DIR/\${tag}_java.exit\"
         if [ \"\$rc_j\" -eq 0 ] && [ -s \"\$KEEP_DIR/\${tag}_java.vcf\" ]; then
@@ -3506,10 +3530,13 @@ run_worker() {
 # =============================================================================
 
 cleanup_vm() {
-  if gcloud compute instances describe "$VM_NAME" --project="$GCP_PROJECT" --zone="$GCP_ZONE" >/dev/null 2>&1; then
-    echo "[Controller] Deleting VM '$VM_NAME' in '$GCP_ZONE'..."
-    gcloud compute instances delete "$VM_NAME" --project="$GCP_PROJECT" --zone="$GCP_ZONE" --quiet || true
-  fi
+  local z
+  for z in us-central1-a us-central1-b us-central1-c us-central1-f "$GCP_ZONE"; do
+    if gcloud compute instances describe "$VM_NAME" --project="$GCP_PROJECT" --zone="$z" >/dev/null 2>&1; then
+      echo "[Controller] Deleting VM '$VM_NAME' in '$z'..."
+      gcloud compute instances delete "$VM_NAME" --project="$GCP_PROJECT" --zone="$z" --quiet || true
+    fi
+  done
 }
 
 vm_status() {
@@ -3527,7 +3554,7 @@ vm_provisioning_model() {
 }
 
 run_controller() {
-  local max_attempts="${1:-3}"
+  local max_attempts="${1:-6}"
   local start_attempt="${2:-1}"
   local worker_stage="${WORKER_STAGE:-all}"
   local done_marker="ALL_STAGES"
@@ -3557,8 +3584,9 @@ run_controller() {
 
     local model
     model="$(provisioning_model_for_attempt "$attempt")"
+    GCP_ZONE="$(zone_for_attempt "$attempt")"
     echo "================================================================================"
-    echo " [Controller] Attempt ${attempt}/${max_attempts} (stage=${worker_stage}): ${VM_NAME} (${MACHINE_TYPE}, ${BOOT_DISK_SIZE} ${BOOT_DISK_TYPE} + ${LOCAL_SSD_COUNT}x375GB NVMe, model=${model})"
+    echo " [Controller] Attempt ${attempt}/${max_attempts} (stage=${worker_stage}, zone=${GCP_ZONE}): ${VM_NAME} (${MACHINE_TYPE}, ${BOOT_DISK_SIZE} ${BOOT_DISK_TYPE} + ${LOCAL_SSD_COUNT}x375GB NVMe, model=${model})"
     echo "================================================================================"
 
     local cur_status cur_model
@@ -3724,20 +3752,22 @@ EOS
 run_plan_check() {
   echo "=== [gcp_paper_runner: --plan-check] ==="
   [ "$GOLDEN_MODE" = "off" ] || { echo "FAIL: GOLDEN_MODE != off" >&2; exit 1; }
-  [ "$(provisioning_model_for_attempt 1)" = "SPOT" ] || { echo "FAIL: attempt 1 must be SPOT" >&2; exit 1; }
-  [ "$(provisioning_model_for_attempt 2)" = "SPOT" ] || { echo "FAIL: attempt 2 must be SPOT" >&2; exit 1; }
-  [ "$(provisioning_model_for_attempt 3)" = "STANDARD" ] || { echo "FAIL: attempt 3 must escalate to STANDARD" >&2; exit 1; }
+  for att in 1 2 3 4 5; do
+    [ "$(provisioning_model_for_attempt "$att")" = "SPOT" ] || { echo "FAIL: attempt $att must be SPOT" >&2; exit 1; }
+  done
+  [ "$(provisioning_model_for_attempt 6)" = "STANDARD" ] || { echo "FAIL: attempt 6 must escalate to STANDARD" >&2; exit 1; }
 
-  local cmd1 cmd3
+  local cmd1 cmd6
   cmd1="$(build_gcloud_create_cmd 1 | tr '\n' ' ')"
-  cmd3="$(build_gcloud_create_cmd 3 | tr '\n' ' ')"
-  [[ "$cmd1" == *"--machine-type=n2-highmem-32"* ]] || { echo "FAIL: machine-type not n2-highmem-32" >&2; exit 1; }
-  [[ "$cmd1" == *"--boot-disk-size=250GB"* ]] || { echo "FAIL: boot-disk-size not 250GB" >&2; exit 1; }
+  cmd6="$(build_gcloud_create_cmd 6 | tr '\n' ' ')"
+  [[ "$cmd1" == *"--machine-type=n2-standard-32"* ]] || { echo "FAIL: machine-type not n2-standard-32" >&2; exit 1; }
+  [[ "$cmd1" == *"--boot-disk-size=100GB"* ]] || { echo "FAIL: boot-disk-size not 100GB" >&2; exit 1; }
   [[ "$cmd1" == *"--boot-disk-type=pd-ssd"* ]] || { echo "FAIL: boot-disk-type not pd-ssd" >&2; exit 1; }
   [[ "$cmd1" == *"--local-ssd=interface=NVME"* ]] || { echo "FAIL: missing --local-ssd=interface=NVME" >&2; exit 1; }
+  [ "$(build_gcloud_create_cmd 1 | grep -c '^--local-ssd=interface=NVME$')" -eq 2 ] || { echo "FAIL: expected 2 NVMe local SSDs" >&2; exit 1; }
   [[ "$cmd1" == *"--provisioning-model=SPOT"* ]] || { echo "FAIL: attempt 1 cmd missing SPOT" >&2; exit 1; }
-  [[ "$cmd3" == *"--provisioning-model=STANDARD"* ]] || { echo "FAIL: attempt 3 cmd missing STANDARD" >&2; exit 1; }
-  [[ "$cmd3" != *"--maintenance-policy=TERMINATE"* ]] || { echo "FAIL: STANDARD cmd must not set maintenance-policy=TERMINATE" >&2; exit 1; }
+  [[ "$cmd6" == *"--provisioning-model=STANDARD"* ]] || { echo "FAIL: attempt 6 cmd missing STANDARD" >&2; exit 1; }
+  [[ "$cmd6" != *"--maintenance-policy=TERMINATE"* ]] || { echo "FAIL: STANDARD cmd must not set maintenance-policy=TERMINATE" >&2; exit 1; }
 
   # Verify audit fixes in script text: exact mkbed(), symmetric n=3 Java loops, 13-mode sweep, Fig-2/Fig-3 field callers, 3-way scaling
   [ "$EXPECTED_FP" = "d925892846918c2a" ] || { echo "FAIL: EXPECTED_FP '$EXPECTED_FP' != d925892846918c2a" >&2; exit 1; }
@@ -3814,7 +3844,7 @@ case "${1:-}" in
     ;;
   --controller)
     shift
-    max_att=3
+    max_att=6
     start_att=1
     while [ $# -gt 0 ]; do
       case "$1" in
