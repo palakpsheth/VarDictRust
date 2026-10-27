@@ -99,7 +99,7 @@ tar -xf vardictrust-x86_64-unknown-linux-musl.tar.xz && sudo mv vardictrust /usr
 cargo install vardictrust
 
 # Or build the latest tagged release from source
-cargo install --git https://github.com/palakpsheth/VarDictRust.git --tag v1.0.4
+cargo install --git https://github.com/palakpsheth/VarDictRust.git --tag v1.0.5
 ```
 
 ### 3. Containerized Execution (Docker, Podman, Apptainer via Seqera Wave)
@@ -473,7 +473,7 @@ If you use VarDictRust in published research, cite both Lai et al. (2016) and th
   author    = {Sheth, Palak},
   title     = {{VarDictRust: Memory-Safe, High-Performance Variant Calling for NGS}},
   year      = {2026},
-  version   = {1.0.4},
+  version   = {1.0.5},
   url       = {https://github.com/palakpsheth/VarDictRust}
 }
 ```

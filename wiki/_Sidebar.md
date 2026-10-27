@@ -29,6 +29,7 @@
 ### Testing & Release
 - **[Test Matrix & CI](https://github.com/palakpsheth/VarDictRust/blob/main/docs/testing/test-matrix-and-ci-audit.md)**
 - **[Harness & Comparators](https://github.com/palakpsheth/VarDictRust/blob/main/harness/README.md)**
+- **[v1.0.5 Release PR](https://github.com/palakpsheth/VarDictRust/blob/main/docs/release/v1.0.5-pr.md)**
 - **[v1.0.4 Release PR](https://github.com/palakpsheth/VarDictRust/blob/main/docs/release/v1.0.4-pr.md)**
 - **[v1.0.3 Release PR](https://github.com/palakpsheth/VarDictRust/blob/main/docs/release/v1.0.3-pr.md)**
 - **[v1.0.1 Release PR](https://github.com/palakpsheth/VarDictRust/blob/main/docs/release/v1.0.1-pr.md)**

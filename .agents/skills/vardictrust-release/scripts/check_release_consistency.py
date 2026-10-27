@@ -503,7 +503,7 @@ def main() -> int:
     parser.add_argument(
         "--version",
         default=None,
-        help="Target SemVer (e.g. 1.0.4); defaults to [workspace.package].version in Cargo.toml",
+        help="Target SemVer (e.g. 1.0.5); defaults to [workspace.package].version in Cargo.toml",
     )
     parser.add_argument(
         "--phase",
