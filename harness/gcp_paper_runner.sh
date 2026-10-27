@@ -1980,7 +1980,7 @@ run_stage_5() {
     WORK_LOCAL='${WORK_DIR}/tmp_s5_giab'
     mkdir -p \"\$WORK_LOCAL\"
 
-    # (a) VarDictRust v1.0.4 (-th 32)
+    # (a) VarDictRust v1.0.5 (-th 32)
     if [ ! -s \"\$KEEP_DIR/rust_giab_th32.time\" ] || [ ! -s \"\$WORK_LOCAL/rust_giab_th32.vcf\" ]; then
       /usr/bin/time -v -o \"\$KEEP_DIR/rust_giab_th32.time\" \
         target/release/vardictrust -G \"\$REF\" -f 0.01 -N HG002 \
@@ -2966,7 +2966,7 @@ seed_oracle_cache_from_existing_cells() {
   local cells_root="${WORK_DIR}/cells"
   [ -d "$cells_root" ] || return 0
 
-  # Canonical Tier-P single-sample mappings for direct reuse by sweep & v1.0.4
+  # Canonical Tier-P single-sample mappings for direct reuse by sweep & v1.0.5
   local acc
   for acc in SRR15006386 SRR15006375 SRR15006376 SRR15006540 SRR8657348; do
     local src_dir="${cells_root}/s2_tierp_v2_${acc}_th8"
