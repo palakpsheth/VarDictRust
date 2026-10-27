@@ -421,6 +421,12 @@ class TestRepoAgentSkills(unittest.TestCase):
         wf_files = sorted(workflows_dir.glob("*.yml"))
         self.assertGreaterEqual(len(wf_files), 6, "Expected at least 6 GitHub workflow YAML files")
 
+        action_files = sorted((ROOT_DIR / ".github" / "actions").glob("*/action.yml"))
+        self.assertGreaterEqual(len(action_files), 1, "Expected at least 1 local composite action YAML file")
+
+        diff_text = (workflows_dir / "differential.yml").read_text(encoding="utf-8")
+        self.assertIn("uses: ./.github/actions/setup-conda-env", diff_text)
+
         try:
             yaml_mod = importlib.import_module("yaml")
         except ImportError:
@@ -429,7 +435,7 @@ class TestRepoAgentSkills(unittest.TestCase):
         uses_re = re.compile(r"^\s*(?:-\s*)?uses:\s*([^\s#]+)", re.MULTILINE)
         sha_re = re.compile(r"@[0-9a-f]{40}$")
 
-        for wf_path in wf_files:
+        for wf_path in wf_files + action_files:
             wf_text = wf_path.read_text(encoding="utf-8")
             if yaml_mod is not None:
                 parsed = yaml_mod.safe_load(wf_text)
@@ -437,6 +443,8 @@ class TestRepoAgentSkills(unittest.TestCase):
             for match in uses_re.finditer(wf_text):
                 action_ref = match.group(1).strip("\"'")
                 if action_ref.startswith("./"):
+                    target_action = ROOT_DIR / action_ref.removeprefix("./") / "action.yml"
+                    self.assertTrue(target_action.is_file(), f"Missing local composite action: {target_action}")
                     continue
                 self.assertRegex(
                     action_ref,

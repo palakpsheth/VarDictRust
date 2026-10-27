@@ -59,18 +59,12 @@ jobs:
           key: golden-store-v1-${{ hashFiles('benchmarks/env/vardict-oracle.yml', 'harness/run_oracle.sh', 'harness/run_cpp.sh', 'harness/golden_store.py', 'harness/golden_store.sh', 'harness/slices.tsv') }}
           restore-keys: |
             golden-store-v1-
-      - uses: conda-incubator/setup-miniconda@be893c923ea9cf1cf7cd510fbdde27c7e18cbdcb # v4.1.0
+      - name: Setup Conda Oracle & Bioinformatics Test Environment
+        uses: ./.github/actions/setup-conda-env
         with:
-          auto-activate: true
-          miniconda-version: "latest"
-      - name: Setup oracle
+          profile: oracle
+      - name: Verify Pinned Golden Store Manifest
         run: |
-          bash harness/setup_oracle.sh
-          if [ -d "${CONDA:-$HOME/miniconda3}/envs/vardict-oracle/bin" ]; then
-            echo "${CONDA:-$HOME/miniconda3}/envs/vardict-oracle/bin" >> "$GITHUB_PATH"
-          elif command -v conda >/dev/null 2>&1; then
-            echo "$(conda info --base)/envs/vardict-oracle/bin" >> "$GITHUB_PATH"
-          fi
           [ ! -d scratch/golden-store/cells ] || bash harness/golden_store.sh verify
       - name: Materialize reference FASTAs
         run: python3 harness/convert_fastas.py
@@ -138,6 +132,7 @@ jobs:
             bash harness/tests/test_run_cpp.sh
             bash harness/tests/test_compare_sh.sh
             bash harness/tests/test_edge_cases.sh
+            bash harness/tests/test_concordance.sh
           )
           dirty=$(git status --porcelain --ignore-submodules=untracked)
           if [ -n "$dirty" ]; then
