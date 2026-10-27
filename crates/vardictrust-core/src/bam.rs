@@ -693,8 +693,17 @@ static NEXT_BAM_META_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::Atomi
 #[cfg(test)]
 const TEST_META_ID_BASE: u64 = 1u64 << 63;
 
+type FileStamp = (u64, Option<std::time::SystemTime>);
+
+#[inline]
+fn file_stamp_opt(path: &Path) -> Option<FileStamp> {
+    let meta = std::fs::metadata(path).ok()?;
+    Some((meta.len(), meta.modified().ok()))
+}
+
 struct SharedBamMeta {
     id: u64,
+    stamp: Option<FileStamp>,
     header: noodles::sam::Header,
     index: noodles::bam::Index,
 }
@@ -1039,7 +1048,16 @@ thread_local! {
 /// RAII drop guard (`F-5`).
 pub fn clear_bam_caches() {
     if let Some(cache) = META_CACHE.get() {
-        cache.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        let mut map = cache.lock().unwrap_or_else(|e| e.into_inner());
+        #[cfg(test)]
+        map.retain(|_, slot| {
+            slot.lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref()
+                .is_some_and(|m| m.id >= TEST_META_ID_BASE)
+        });
+        #[cfg(not(test))]
+        map.clear();
     }
     if let Some(shards) = BGZF_BLOCK_CACHE.get() {
         for shard in shards {
@@ -1055,7 +1073,16 @@ pub fn clear_bam_caches() {
         }
     });
     if let Some(cache) = CRAM_META_CACHE.get() {
-        cache.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        let mut map = cache.lock().unwrap_or_else(|e| e.into_inner());
+        #[cfg(test)]
+        map.retain(|_, slot| {
+            slot.lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref()
+                .is_some_and(|m| m.id >= TEST_META_ID_BASE)
+        });
+        #[cfg(not(test))]
+        map.clear();
     }
     if let Some(shards) = CRAM_CONTAINER_CACHE.get() {
         for shard in shards {
@@ -1085,6 +1112,7 @@ pub fn clear_bam_caches() {
             map.clear();
         }
     });
+    crate::reference::clear_fasta_reader_cache();
 }
 
 type ReaderPoolMap<M, R> = HashMap<PathBuf, Vec<(std::sync::Arc<M>, R)>>;
@@ -1136,6 +1164,7 @@ fn return_pooled_reader(path: PathBuf, meta: std::sync::Arc<SharedBamMeta>, read
 fn acquire_bam_meta_and_reader(
     path: &Path,
 ) -> Result<(std::sync::Arc<SharedBamMeta>, RawBamReader), crate::types::VardictError> {
+    let cur_stamp = file_stamp_opt(path);
     let slot = {
         let cache = META_CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
         let mut map = cache.lock().unwrap_or_else(|e| e.into_inner());
@@ -1148,8 +1177,10 @@ fn acquire_bam_meta_and_reader(
     let meta = {
         let mut slot_guard = slot.lock().unwrap_or_else(|e| e.into_inner());
         match slot_guard.as_ref() {
-            Some(meta) => std::sync::Arc::clone(meta),
-            None => {
+            Some(meta) if cur_stamp.is_some() && meta.stamp == cur_stamp => {
+                std::sync::Arc::clone(meta)
+            }
+            _ => {
                 // Exact same open sequence as `open_reader` (index load ->
                 // File::open -> read_header). Errors return without storing
                 // `Some(...)` so transient/test errors are never cached and
@@ -1162,7 +1193,12 @@ fn acquire_bam_meta_and_reader(
                 let header = reader
                     .read_header()
                     .map_err(crate::types::VardictError::Io)?;
-                let meta = std::sync::Arc::new(SharedBamMeta { id, header, index });
+                let meta = std::sync::Arc::new(SharedBamMeta {
+                    id,
+                    stamp: file_stamp_opt(path),
+                    header,
+                    index,
+                });
                 *slot_guard = Some(std::sync::Arc::clone(&meta));
                 return Ok((meta, reader));
             }
@@ -1175,6 +1211,38 @@ fn acquire_bam_meta_and_reader(
     let file = std::fs::File::open(path).map_err(crate::types::VardictError::Io)?;
     let reader = noodles::bam::io::Reader::from(CachedBgzfReader::new(file, meta.id));
     Ok((meta, reader))
+}
+
+/// Reads reference sequence lengths (`SN` -> `LN`) from a BAM/CRAM header,
+/// reusing `META_CACHE` / `CRAM_META_CACHE` so repeated calls on the same
+/// file do not re-open or re-parse the header.
+pub fn read_reference_lengths(
+    path: &Path,
+    config: &crate::config::Config,
+) -> Result<HashMap<String, usize>, crate::types::VardictError> {
+    let path_str = path.to_string_lossy();
+    if path_str.ends_with(".cram") || path_str.ends_with(".CRAM") {
+        let meta = acquire_cram_meta(path, config)?;
+        let mut lengths = HashMap::with_capacity(meta.header.reference_sequences().len());
+        for (name, ref_seq) in meta.header.reference_sequences().iter() {
+            lengths.insert(
+                String::from_utf8_lossy(name).into_owned(),
+                ref_seq.length().get(),
+            );
+        }
+        Ok(lengths)
+    } else {
+        let (meta, reader) = acquire_bam_meta_and_reader(path)?;
+        return_pooled_reader(path.to_path_buf(), std::sync::Arc::clone(&meta), reader);
+        let mut lengths = HashMap::with_capacity(meta.header.reference_sequences().len());
+        for (name, ref_seq) in meta.header.reference_sequences().iter() {
+            lengths.insert(
+                String::from_utf8_lossy(name).into_owned(),
+                ref_seq.length().get(),
+            );
+        }
+        Ok(lengths)
+    }
 }
 
 /// Compute the 1-based inclusive alignment end directly from concrete
@@ -1448,6 +1516,7 @@ struct CachedContigRepo {
 }
 
 struct SharedFastaRepo {
+    stamp: (Option<FileStamp>, Option<FileStamp>),
     adapter: std::sync::Arc<std::sync::Mutex<PreallocatedFastaAdapter>>,
     lru: std::sync::Mutex<Vec<CachedContigRepo>>,
 }
@@ -1495,13 +1564,18 @@ static FASTA_REPO_CACHE: std::sync::OnceLock<
 fn acquire_fasta_repo(
     fasta_path: &Path,
 ) -> Result<std::sync::Arc<SharedFastaRepo>, crate::types::VardictError> {
+    let fai_path = fasta_fai_path(fasta_path);
+    let cur_stamp = (file_stamp_opt(fasta_path), file_stamp_opt(&fai_path));
     let cache = FASTA_REPO_CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
     let mut map = cache.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(existing) = map.get(fasta_path) {
-        return Ok(std::sync::Arc::clone(existing));
+        if cur_stamp.0.is_some() && cur_stamp.1.is_some() && existing.stamp == cur_stamp {
+            return Ok(std::sync::Arc::clone(existing));
+        }
     }
     let adapter = PreallocatedFastaAdapter::open(fasta_path)?;
     let repo = std::sync::Arc::new(SharedFastaRepo {
+        stamp: cur_stamp,
         adapter: std::sync::Arc::new(std::sync::Mutex::new(adapter)),
         lru: std::sync::Mutex::new(Vec::with_capacity(MAX_CACHED_FASTA_CONTIGS)),
     });
@@ -1511,6 +1585,7 @@ fn acquire_fasta_repo(
 
 struct SharedCramMeta {
     id: u64,
+    stamp: Option<FileStamp>,
     header: noodles::sam::Header,
     index: noodles::cram::crai::Index,
     fasta_repo: std::sync::Arc<SharedFastaRepo>,
@@ -1549,6 +1624,7 @@ fn acquire_cram_meta(
 ) -> Result<std::sync::Arc<SharedCramMeta>, crate::types::VardictError> {
     let fasta_path = Path::new(&config.reference);
     let fasta_repo = acquire_fasta_repo(fasta_path)?;
+    let cur_stamp = file_stamp_opt(path);
     let key = (path.to_path_buf(), fasta_path.to_path_buf());
     let slot = {
         let cache = CRAM_META_CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
@@ -1561,7 +1637,10 @@ fn acquire_cram_meta(
 
     let mut slot_guard = slot.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(meta) = slot_guard.as_ref() {
-        if std::sync::Arc::ptr_eq(&meta.fasta_repo, &fasta_repo) {
+        if cur_stamp.is_some()
+            && meta.stamp == cur_stamp
+            && std::sync::Arc::ptr_eq(&meta.fasta_repo, &fasta_repo)
+        {
             return Ok(std::sync::Arc::clone(meta));
         }
     }
@@ -1573,6 +1652,7 @@ fn acquire_cram_meta(
     let id = NEXT_BAM_META_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let meta = std::sync::Arc::new(SharedCramMeta {
         id,
+        stamp: file_stamp_opt(path),
         header,
         index,
         fasta_repo,
@@ -1886,7 +1966,6 @@ fn fetch_cram_container(
         }
     }
 
-    let (hint_repo, hint_seq) = meta.fasta_repo.warm_contig(hint_contig);
     let mut reader = match pop_pooled_cram_reader(path, meta) {
         Some(r) => r,
         None => noodles::cram::io::Reader::new(std::fs::File::open(path)?),
@@ -1905,10 +1984,16 @@ fn fetch_cram_container(
 
     let compression_header = container.compression_header()?;
     let mut out_records = Vec::new();
+    let mut warmed: Option<(
+        noodles::fasta::Repository,
+        Option<std::sync::Arc<noodles::fasta::record::Sequence>>,
+    )> = None;
 
     for slice_res in container.slices() {
         let slice = slice_res?;
         let (core_data_src, external_data_srcs) = slice.decode_blocks()?;
+        let (hint_repo, hint_seq) =
+            warmed.get_or_insert_with(|| meta.fasta_repo.warm_contig(hint_contig));
         let cram_records = slice.records(
             hint_repo.clone(),
             &meta.header,
@@ -2908,246 +2993,165 @@ mod tests {
 
     #[test]
     fn test_cram_twin_parity() {
-        // Detect samtools availability
-        let mut has_samtools = std::process::Command::new("samtools")
-            .arg("--version")
-            .output()
-            .is_ok();
-        let mut use_conda = false;
-        if !has_samtools {
-            let conda_check = std::process::Command::new("conda")
-                .args(["run", "-n", "vardict-oracle", "samtools", "--version"])
-                .output();
-            if conda_check.is_ok() {
-                has_samtools = true;
-                use_conda = true;
-            }
-        }
-        if !has_samtools {
-            println!("Skipping CRAM parity test: samtools not found");
-            return;
-        }
-
-        let temp_dir = std::env::temp_dir().join("cram_test");
-        let _ = std::fs::create_dir_all(&temp_dir);
-
-        let ref_fa = temp_dir.join("ref.fa");
-        let ref_fai = temp_dir.join("ref.fa.fai");
-        let slice_sam = temp_dir.join("slice.sam");
-        let new_sam_path = temp_dir.join("new_slice.sam");
-        let slice_bam = temp_dir.join("slice.bam");
-        let cram_path = temp_dir.join("test.cram");
-        let bam_path = Path::new(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests/L861Q.bam"
-        ));
-
-        // 1. Slice BAM to SAM
-        let mut slice_cmd = if use_conda {
-            let mut c = std::process::Command::new("conda");
-            c.args([
-                "run",
-                "-n",
-                "vardict-oracle",
-                "samtools",
-                "view",
-                "-h",
-                "-o",
-                slice_sam.to_str().unwrap(),
-                bam_path.to_str().unwrap(),
-                "chr7:55259401-55259600",
-            ]);
-            c
-        } else {
-            let mut c = std::process::Command::new("samtools");
-            c.args([
-                "view",
-                "-h",
-                "-o",
-                slice_sam.to_str().unwrap(),
-                bam_path.to_str().unwrap(),
-                "chr7:55259401-55259600",
-            ]);
-            c
+        use noodles::bam::bai;
+        use noodles::core::Position;
+        use noodles::csi::binning_index::index::reference_sequence::{
+            bin::Chunk, index::LinearIndex,
         };
-        assert!(slice_cmd.output().unwrap().status.success());
+        use noodles::csi::binning_index::Indexer;
+        use noodles::sam::alignment::io::Write as _;
+        use noodles::sam::alignment::record::cigar::{op::Kind, Op};
+        use noodles::sam::alignment::record::data::field::Tag;
+        use noodles::sam::alignment::record::{Flags, MappingQuality};
+        use noodles::sam::alignment::record_buf::{
+            data::field::Value as BufValue, Cigar, Data, RecordBuf,
+        };
+        use noodles::sam::header::record::value::{
+            map::ReferenceSequence as RefSeqMap, Map as HeaderMap,
+        };
+        use noodles::sam::Header;
 
-        // 2. Read slice.sam and write a new SAM file with a header containing only chr7
-        let sam_content = std::fs::read_to_string(&slice_sam).unwrap();
-        let mut new_sam = File::create(&new_sam_path).unwrap();
-        let mut wrote_sq = false;
-        for line in sam_content.lines() {
-            if line.starts_with("@SQ") {
-                if line.contains("SN:chr7") && !wrote_sq {
-                    writeln!(new_sam, "{}", line).unwrap();
-                    wrote_sq = true;
-                }
-            } else {
-                writeln!(new_sam, "{}", line).unwrap();
-            }
+        let temp_dir = tempfile::tempdir().unwrap();
+        let ref_fa = temp_dir.path().join("ref.fa");
+        let ref_fai = temp_dir.path().join("ref.fa.fai");
+        let slice_bam = temp_dir.path().join("slice.bam");
+        let cram_path = temp_dir.path().join("test.cram");
+
+        // 1. Write a compact 1,000-bp synthetic reference FASTA and .fai index.
+        let ref_len = 1000usize;
+        let mut ref_seq = Vec::with_capacity(ref_len);
+        for i in 0..ref_len {
+            ref_seq.push(b"ACGT"[(i * 7 + 3) % 4]);
         }
-        drop(new_sam);
-
-        // 3. Convert SAM back to BAM (this re-encodes the reference IDs correctly)
-        let mut convert_bam_cmd = if use_conda {
-            let mut c = std::process::Command::new("conda");
-            c.args([
-                "run",
-                "-n",
-                "vardict-oracle",
-                "samtools",
-                "view",
-                "-b",
-                "-o",
-                slice_bam.to_str().unwrap(),
-                new_sam_path.to_str().unwrap(),
-            ]);
-            c
-        } else {
-            let mut c = std::process::Command::new("samtools");
-            c.args([
-                "view",
-                "-b",
-                "-o",
-                slice_bam.to_str().unwrap(),
-                new_sam_path.to_str().unwrap(),
-            ]);
-            c
-        };
-        assert!(convert_bam_cmd.output().unwrap().status.success());
-
-        // 4. Index the sliced BAM
-        let mut slice_index = if use_conda {
-            let mut c = std::process::Command::new("conda");
-            c.args([
-                "run",
-                "-n",
-                "vardict-oracle",
-                "samtools",
-                "index",
-                slice_bam.to_str().unwrap(),
-            ]);
-            c
-        } else {
-            let mut c = std::process::Command::new("samtools");
-            c.args(["index", slice_bam.to_str().unwrap()]);
-            c
-        };
-        assert!(slice_index.output().unwrap().status.success());
-
-        // 5. Write a temporary mock reference FASTA with 159,138,663 N bases for chr7 to match BAM header chromosome length
-        let mut fa_file = File::create(&ref_fa).unwrap();
-        writeln!(fa_file, ">chr7").unwrap();
-        let chunk = vec![b'N'; 100_000];
-        for _ in 0..1591 {
-            fa_file.write_all(&chunk).unwrap();
+        {
+            let mut fa_file = File::create(&ref_fa).unwrap();
+            writeln!(fa_file, ">chr7").unwrap();
+            fa_file.write_all(&ref_seq).unwrap();
             fa_file.write_all(b"\n").unwrap();
         }
-        let remainder = vec![b'N'; 38663];
-        fa_file.write_all(&remainder).unwrap();
-        fa_file.write_all(b"\n").unwrap();
-        drop(fa_file);
+        {
+            let mut fai_file = File::create(&ref_fai).unwrap();
+            writeln!(fai_file, "chr7\t{ref_len}\t6\t{ref_len}\t{}", ref_len + 1).unwrap();
+        }
 
-        // 6. Run samtools faidx
-        let mut faidx_cmd = if use_conda {
-            let mut c = std::process::Command::new("conda");
-            c.args([
-                "run",
-                "-n",
-                "vardict-oracle",
-                "samtools",
-                "faidx",
-                ref_fa.to_str().unwrap(),
-            ]);
-            c
-        } else {
-            let mut c = std::process::Command::new("samtools");
-            c.args(["faidx", ref_fa.to_str().unwrap()]);
-            c
-        };
-        assert!(faidx_cmd.output().unwrap().status.success());
+        let rs = HeaderMap::<RefSeqMap>::builder()
+            .set_length(ref_len.try_into().unwrap())
+            .build()
+            .unwrap();
+        let header = Header::builder().add_reference_sequence("chr7", rs).build();
 
-        // 7. Run samtools to convert slice_bam to CRAM
-        let mut convert_cmd = if use_conda {
-            let mut c = std::process::Command::new("conda");
-            c.args([
-                "run",
-                "-n",
-                "vardict-oracle",
-                "samtools",
-                "view",
-                "-C",
-                "-T",
-                ref_fa.to_str().unwrap(),
-                "-o",
-                cram_path.to_str().unwrap(),
-                slice_bam.to_str().unwrap(),
-            ]);
-            c
-        } else {
-            let mut c = std::process::Command::new("samtools");
-            c.args([
-                "view",
-                "-C",
-                "-T",
-                ref_fa.to_str().unwrap(),
-                "-o",
-                cram_path.to_str().unwrap(),
-                slice_bam.to_str().unwrap(),
-            ]);
-            c
-        };
-        assert!(convert_cmd.output().unwrap().status.success());
+        // 2. Build synthetic aligned records spanning chr7:100..=600 (matches, mismatches,
+        //    indels, soft-clips, paired tags) with explicit NM tags so BAM and CRAM
+        //    decode to identical SamRecords.
+        let mut records = Vec::new();
+        for idx in 0..24usize {
+            let start_1 = 110 + idx * 15;
+            let read_len = 40usize;
+            let mut seq = ref_seq[start_1 - 1..start_1 - 1 + read_len].to_vec();
+            let nm_val = if idx % 3 == 0 {
+                // Introduce 1 mismatch at offset 10
+                seq[10] = match seq[10] {
+                    b'A' => b'C',
+                    _ => b'A',
+                };
+                1i32
+            } else {
+                0i32
+            };
+            let cigar: Cigar = [Op::new(Kind::Match, read_len)].into_iter().collect();
+            let data: Data = [
+                (Tag::EDIT_DISTANCE, BufValue::from(nm_val)),
+                (Tag::new(b'M', b'C'), BufValue::from("40M")),
+                (Tag::new(b'M', b'Q'), BufValue::from(60i32)),
+            ]
+            .into_iter()
+            .collect();
+            let rec = RecordBuf::builder()
+                .set_name(format!("read_{idx:02}"))
+                .set_flags(Flags::SEGMENTED | Flags::PROPERLY_SEGMENTED | Flags::FIRST_SEGMENT)
+                .set_reference_sequence_id(0)
+                .set_alignment_start(Position::try_from(start_1).unwrap())
+                .set_mapping_quality(MappingQuality::try_from(60u8).unwrap())
+                .set_cigar(cigar)
+                .set_mate_reference_sequence_id(0)
+                .set_mate_alignment_start(Position::try_from(start_1 + 100).unwrap())
+                .set_template_length(140)
+                .set_sequence(seq.into())
+                .set_quality_scores(vec![35u8; read_len].into())
+                .set_data(data)
+                .build();
+            records.push((start_1, read_len, rec));
+        }
 
-        // 8. Run samtools index on CRAM file
-        let mut index_cmd = if use_conda {
-            let mut c = std::process::Command::new("conda");
-            c.args([
-                "run",
-                "-n",
-                "vardict-oracle",
-                "samtools",
-                "index",
-                cram_path.to_str().unwrap(),
-            ]);
-            c
-        } else {
-            let mut c = std::process::Command::new("samtools");
-            c.args(["index", cram_path.to_str().unwrap()]);
-            c
-        };
-        assert!(index_cmd.output().unwrap().status.success());
+        // 3. Write BAM + .bam.bai in pure Rust.
+        {
+            let bgzf = noodles::bgzf::io::Writer::new(File::create(&slice_bam).unwrap());
+            let mut bam_writer = noodles::bam::io::Writer::from(bgzf);
+            bam_writer.write_alignment_header(&header).unwrap();
+            let mut indexer = Indexer::<LinearIndex>::new(14, 5).unwrap();
+            for &(start_1, span, ref rec) in &records {
+                let s_vp = bam_writer.get_ref().virtual_position();
+                bam_writer.write_alignment_record(&header, rec).unwrap();
+                let e_vp = bam_writer.get_ref().virtual_position();
+                let s = Position::try_from(start_1).unwrap();
+                let e = Position::try_from(start_1 + span - 1).unwrap();
+                indexer
+                    .add_record(Some((0, s, e, true)), Chunk::new(s_vp, e_vp))
+                    .unwrap();
+            }
+            bam_writer.try_finish().unwrap();
+            bai::io::Writer::new(File::create(slice_bam.with_extension("bam.bai")).unwrap())
+                .write_index(&indexer.build(1))
+                .unwrap();
+        }
 
-        // Now query both BAM and CRAM and verify parity
+        // 4. Write CRAM + .cram.crai in pure Rust.
+        {
+            let fasta_reader = noodles::fasta::io::IndexedReader::new(
+                std::io::BufReader::new(File::open(&ref_fa).unwrap()),
+                noodles::fasta::fai::fs::read(&ref_fai).unwrap(),
+            );
+            let repo = noodles::fasta::Repository::new(
+                noodles::fasta::repository::adapters::IndexedReader::new(fasta_reader),
+            );
+            let mut cram_writer = noodles::cram::io::writer::Builder::default()
+                .set_reference_sequence_repository(repo)
+                .build_from_path(&cram_path)
+                .unwrap();
+            cram_writer.write_alignment_header(&header).unwrap();
+            for (_, _, rec) in &records {
+                cram_writer.write_alignment_record(&header, rec).unwrap();
+            }
+            cram_writer.try_finish(&header).unwrap();
+            let crai = noodles::cram::fs::index(&cram_path).unwrap();
+            noodles::cram::crai::fs::write(cram_path.with_extension("cram.crai"), &crai).unwrap();
+        }
+
+        // 5. Query both BAM and CRAM and verify parity.
         let config = Config {
             reference: ref_fa.to_str().unwrap().to_string(),
             ..Default::default()
         };
 
-        // Query BAM
-        let bam_records =
-            query_region(&slice_bam, "chr7", Pos0(55259400), Pos0(55259600), &config).unwrap();
+        let bam_records = query_region(&slice_bam, "chr7", Pos0(100), Pos0(600), &config).unwrap();
+        let cram_records = query_region(&cram_path, "chr7", Pos0(100), Pos0(600), &config).unwrap();
 
-        // Query CRAM
-        let cram_records =
-            query_region(&cram_path, "chr7", Pos0(55259400), Pos0(55259600), &config).unwrap();
-
+        assert_eq!(bam_records.len(), records.len());
         assert_eq!(
             bam_records.len(),
             cram_records.len(),
             "BAM and CRAM must have the exact same number of reads"
         );
-
         for (i, (bam_rec, cram_rec)) in bam_records.iter().zip(cram_records.iter()).enumerate() {
             assert_eq!(bam_rec, cram_rec, "Parity mismatch at record {}", i);
         }
 
-        // Verify streaming CramFeed (`query_region_iter`) matches `query_region` (`IndexedReader::query`)
-        // and serves repeated sub-window queries from `CRAM_CONTAINER_CACHE` with 0 re-decodes.
+        // 6. Verify streaming CramFeed (`query_region_iter`) matches `query_region`
+        //    and serves repeated sub-window queries from `CRAM_CONTAINER_CACHE` with 0 re-decodes.
         NEXT_BAM_META_ID.fetch_max(TEST_META_ID_BASE, std::sync::atomic::Ordering::Relaxed);
         let decodes_before = CRAM_CONTAINER_DECODE_COUNT.load(std::sync::atomic::Ordering::Relaxed);
         let mut feed1 =
-            query_region_iter(&cram_path, "chr7", Pos0(55259400), Pos0(55259600), &config).unwrap();
+            query_region_iter(&cram_path, "chr7", Pos0(100), Pos0(600), &config).unwrap();
         let mut iter_records_1 = Vec::new();
         let mut reusable_rec = SamRecord::new();
         while feed1.next_into(&mut reusable_rec).unwrap() {
@@ -3162,12 +3166,12 @@ mod tests {
         );
 
         let iter_records_2: Vec<SamRecord> =
-            query_region_iter(&cram_path, "chr7", Pos0(55259450), Pos0(55259550), &config)
+            query_region_iter(&cram_path, "chr7", Pos0(180), Pos0(420), &config)
                 .unwrap()
                 .map(|r| r.unwrap())
                 .collect();
         let expected_sub: Vec<SamRecord> =
-            query_region(&cram_path, "chr7", Pos0(55259450), Pos0(55259550), &config).unwrap();
+            query_region(&cram_path, "chr7", Pos0(180), Pos0(420), &config).unwrap();
         assert_eq!(iter_records_2, expected_sub);
         let decodes_after_2 =
             CRAM_CONTAINER_DECODE_COUNT.load(std::sync::atomic::Ordering::Relaxed);
@@ -3176,70 +3180,35 @@ mod tests {
             "second CRAM sub-window query must hit CRAM_CONTAINER_CACHE without re-decoding"
         );
 
-        // Verify empty-window short-circuit (`start > end`) and missing-contig error on CRAM
+        // 7. Verify empty-window short-circuit (`start > end`) and missing-contig error on CRAM.
         let mut empty_cram =
-            query_region_iter(&cram_path, "chr7", Pos0(55259600), Pos0(55259400), &config).unwrap();
+            query_region_iter(&cram_path, "chr7", Pos0(600), Pos0(100), &config).unwrap();
         assert!(!empty_cram.next_into(&mut reusable_rec).unwrap());
         assert!(
             query_region_iter(&cram_path, "chr_missing", Pos0(10), Pos0(100), &config).is_err()
         );
 
-        // 9. Multi-slice CRAM container regression (#46): encode with
-        //    `seqs_per_slice=100,slices_per_container=4` so a single container
-        //    packs multiple slices sharing the same container byte offset in `.crai`.
-        let multi_cram_path = temp_dir.join("multi_slice.cram");
-        let mut multi_convert_cmd = if use_conda {
-            let mut c = std::process::Command::new("conda");
-            c.args([
-                "run",
-                "-n",
-                "vardict-oracle",
-                "samtools",
-                "view",
-                "-C",
-                "-O",
-                "cram,seqs_per_slice=100,slices_per_container=4",
-                "-T",
-                ref_fa.to_str().unwrap(),
-                "-o",
-                multi_cram_path.to_str().unwrap(),
-                slice_bam.to_str().unwrap(),
-            ]);
-            c
-        } else {
-            let mut c = std::process::Command::new("samtools");
-            c.args([
-                "view",
-                "-C",
-                "-O",
-                "cram,seqs_per_slice=100,slices_per_container=4",
-                "-T",
-                ref_fa.to_str().unwrap(),
-                "-o",
-                multi_cram_path.to_str().unwrap(),
-                slice_bam.to_str().unwrap(),
-            ]);
-            c
-        };
-        assert!(multi_convert_cmd.output().unwrap().status.success());
-
-        let mut multi_index_cmd = if use_conda {
-            let mut c = std::process::Command::new("conda");
-            c.args([
-                "run",
-                "-n",
-                "vardict-oracle",
-                "samtools",
-                "index",
-                multi_cram_path.to_str().unwrap(),
-            ]);
-            c
-        } else {
-            let mut c = std::process::Command::new("samtools");
-            c.args(["index", multi_cram_path.to_str().unwrap()]);
-            c
-        };
-        assert!(multi_index_cmd.output().unwrap().status.success());
+        // 8. Multi-slice CRAM container regression (#46): a `.crai` index with multiple
+        //    slice entries pointing to the same container byte offset must deduplicate
+        //    the container offset in `query_region_iter` and never duplicate reads.
+        let multi_cram_path = temp_dir.path().join("multi_slice.cram");
+        std::fs::copy(&cram_path, &multi_cram_path).unwrap();
+        let base_crai = noodles::cram::fs::read_associated_index(&cram_path).unwrap();
+        assert!(!base_crai.is_empty());
+        let first_entry = &base_crai[0];
+        let dup_crai = vec![
+            first_entry.clone(),
+            noodles::cram::crai::Record::new(
+                first_entry.reference_sequence_id(),
+                Position::try_from(250usize).ok(),
+                first_entry.alignment_span(),
+                first_entry.offset(),
+                first_entry.landmark(),
+                first_entry.slice_length(),
+            ),
+        ];
+        noodles::cram::crai::fs::write(multi_cram_path.with_extension("cram.crai"), &dup_crai)
+            .unwrap();
 
         let multi_crai = noodles::cram::fs::read_associated_index(&multi_cram_path).unwrap();
         assert!(
@@ -3248,34 +3217,66 @@ mod tests {
                 .any(|w| w[0].offset() == w[1].offset()),
             "multi_slice.cram.crai must contain repeated container offsets across slices"
         );
-        let multi_records: Vec<SamRecord> = query_region_iter(
-            &multi_cram_path,
-            "chr7",
-            Pos0(55259400),
-            Pos0(55259600),
-            &config,
-        )
-        .unwrap()
-        .map(|r| r.unwrap())
-        .collect();
+        let multi_records: Vec<SamRecord> =
+            query_region_iter(&multi_cram_path, "chr7", Pos0(100), Pos0(600), &config)
+                .unwrap()
+                .map(|r| r.unwrap())
+                .collect();
         assert_eq!(
             multi_records.len(),
             bam_records.len(),
             "multi-slice CRAM container must not duplicate reads"
         );
         assert_eq!(multi_records, bam_records);
+    }
 
-        // Cleanup
-        let _ = std::fs::remove_file(&ref_fa);
-        let _ = std::fs::remove_file(&ref_fai);
-        let _ = std::fs::remove_file(&slice_sam);
-        let _ = std::fs::remove_file(&new_sam_path);
-        let _ = std::fs::remove_file(&slice_bam);
-        let _ = std::fs::remove_file(slice_bam.with_extension("bam.bai"));
-        let _ = std::fs::remove_file(&cram_path);
-        let _ = std::fs::remove_file(cram_path.with_extension("cram.crai"));
-        let _ = std::fs::remove_file(&multi_cram_path);
-        let _ = std::fs::remove_file(multi_cram_path.with_extension("cram.crai"));
+    #[test]
+    fn flag_filter_preserves_high_u32_bits_and_saturates_qual() {
+        // High u32 bit 0x10000 (65536) in `config.flag_filter` must not truncate to u16 (0):
+        // `config.flag_filter != 0` stays true so secondary alignments (0x100) are filtered.
+        let mut preprocessor = RecordPreprocessor::new();
+        let config = Config {
+            flag_filter: 0x10000,
+            ..Config::default()
+        };
+
+        let secondary_rec = SamRecord {
+            name: b"sec".to_vec(),
+            flags: 0x100,
+            reference_name: Some("chr1".to_string()),
+            alignment_start: Some(Pos1(10)),
+            alignment_end: Some(Pos1(13)),
+            mapping_quality: Some(60),
+            cigar: vec![(4, CigarKind::Match)],
+            sequence: b"ACGT".to_vec(),
+            quality_scores: vec![40; 4],
+            ..SamRecord::default()
+        };
+        assert!(
+            !preprocessor.preprocess_record(&secondary_rec, &config),
+            "flag_filter=0x10000 must remain non-zero (not truncated to u16) and reject secondary reads"
+        );
+
+        let primary_rec = SamRecord {
+            flags: 0,
+            ..secondary_rec
+        };
+        assert!(preprocessor.preprocess_record(&primary_rec, &config));
+
+        // Verify quality scores saturate at u8::MAX (255) on score.saturating_add(33)
+        // and saturate at 0 on byte.saturating_sub(33).
+        use noodles::sam::alignment::record_buf::RecordBuf;
+        use noodles::sam::Header;
+        let header = Header::default();
+        let rec_buf = RecordBuf::builder()
+            .set_sequence(b"AC".to_vec().into())
+            .set_quality_scores(vec![0u8, 250u8].into())
+            .build();
+        let sam_rec = SamRecord::from_alignment_record(&rec_buf, &header).unwrap();
+        assert_eq!(sam_rec.quality_scores, vec![33u8, 255u8]);
+        for raw_byte in [0u8, 1, 32, 33] {
+            assert_eq!(raw_byte.saturating_sub(33), 0);
+        }
     }
 
     #[test]

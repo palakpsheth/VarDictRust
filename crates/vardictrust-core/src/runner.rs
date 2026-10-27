@@ -39,6 +39,17 @@ where
     if batches.is_empty() {
         return Ok(());
     }
+    if num_threads == 1 {
+        for batch in batches {
+            for item in batch {
+                let res =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| worker_fn(item)))
+                        .map_err(|_| VardictError::Other("Worker thread panicked".to_string()))?;
+                consumer_fn(res?)?;
+            }
+        }
+        return Ok(());
+    }
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(num_threads)
         .build()
@@ -300,5 +311,59 @@ mod tests {
         });
         assert!(res.is_err());
         assert_eq!(seen, vec![0, 1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn test_run_parallel_single_thread_synchronous_and_error() {
+        let batches = vec![vec![1usize, 2, 3], vec![4, 5]];
+        let caller_tid = std::thread::current().id();
+        let mut results = Vec::new();
+        run_parallel_batched(
+            batches.clone(),
+            1,
+            move |item| {
+                assert_eq!(
+                    std::thread::current().id(),
+                    caller_tid,
+                    "num_threads == 1 must execute synchronously on the calling thread"
+                );
+                Ok(item * 10)
+            },
+            |val| {
+                results.push(val);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(results, vec![10, 20, 30, 40, 50]);
+
+        let err_res = run_parallel_batched(
+            batches.clone(),
+            1,
+            |item| {
+                if item == 3 {
+                    Err(VardictError::Other("boom".to_string()))
+                } else {
+                    Ok(item)
+                }
+            },
+            |_| Ok(()),
+        );
+        assert!(matches!(err_res, Err(VardictError::Other(ref m)) if m == "boom"));
+
+        let panic_res = run_parallel_batched(
+            batches,
+            1,
+            |item| {
+                if item == 2 {
+                    panic!("worker panic");
+                }
+                Ok(item)
+            },
+            |_| Ok(()),
+        );
+        assert!(
+            matches!(panic_res, Err(VardictError::Other(ref m)) if m == "Worker thread panicked")
+        );
     }
 }

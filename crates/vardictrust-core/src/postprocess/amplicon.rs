@@ -295,18 +295,29 @@ pub fn amplicon_post_process_streaming(
     splice: &HashSet<String>,
     emit: &mut dyn FnMut(AmpliconVariant) -> Result<(), crate::types::VardictError>,
 ) -> Result<(), crate::types::VardictError> {
+    // Scratch collections reused across positions to avoid per-base allocations.
+    // good variants: (variant, region_string)
+    let mut gvs: Vec<(Variant, String)> = Vec::new();
+    // reference variants
+    let mut ref_vars: Vec<Variant> = Vec::new();
+    // coverage per amplicon
+    let mut vcovs: Vec<i32> = Vec::new();
+    // good amplicon set: "ampliconNumber-refallele-varallele" (populated lazily)
+    let mut goodmap: HashSet<String> = HashSet::new();
+    // good variants on each amplicon: amplicon_index → list of good variants
+    let mut good_variants_on_amp: BTreeMap<usize, Vec<Variant>> = BTreeMap::new();
+    // bad variants (-D debug column)
+    let mut bad_vars: Vec<(Option<Variant>, String)> = Vec::new();
+
     // Iterate over positions sorted (BTreeMap already sorted)
     for (position, amplicon_regions) in positions {
-        // good variants: (variant, region_string)
-        let mut gvs: Vec<(Variant, String)> = Vec::new();
-        // reference variants
-        let mut ref_vars: Vec<Variant> = Vec::new();
-        // coverage per amplicon
-        let mut vcovs: Vec<i32> = Vec::new();
-        // good amplicon set: "ampliconNumber-refallele-varallele"
-        let mut goodmap: HashSet<String> = HashSet::new();
-        // good variants on each amplicon: amplicon_index → list of good variants
-        let mut good_variants_on_amp: BTreeMap<usize, Vec<Variant>> = BTreeMap::new();
+        gvs.clear();
+        ref_vars.clear();
+        vcovs.clear();
+        if !goodmap.is_empty() {
+            goodmap.clear();
+        }
+        good_variants_on_amp.clear();
 
         let mut maxcov: i32 = 0;
         let mut maxaf: f64 = 0.0;
@@ -339,10 +350,6 @@ pub fn amplicon_post_process_streaming(
                             if tv_clone.frequency > maxaf {
                                 maxaf = tv_clone.frequency;
                             }
-                            goodmap.insert(format!(
-                                "{}-{}-{}",
-                                amplicon_number, tv_clone.ref_allele, tv_clone.var_allele
-                            ));
                             gvs.push((tv_clone.clone(), region_str));
                             good_vars.push(tv_clone);
                         }
@@ -476,15 +483,25 @@ pub fn amplicon_post_process_streaming(
             // Compute bad variants: amplicons where this variant is not good but falls
             // within the insert region. Mirrors Java AmpliconPostProcessModule logic.
             let mut bad_count = 0;
-            let mut bad_vars: Vec<(Option<Variant>, String)> = Vec::new();
+            bad_vars.clear();
             if initial_gvscnt != total_amplicons || current_flag {
-                for &(amp_num, ref amp_reg) in &amplicon_regions {
-                    let key = format!("{}-{}-{}", amp_num, vref.ref_allele, vref.var_allele);
-                    if goodmap.contains(&key) {
-                        continue;
+                if goodmap.is_empty() && !good_variants_on_amp.is_empty() {
+                    for (&amp_idx, vars) in &good_variants_on_amp {
+                        for tv in vars {
+                            goodmap
+                                .insert(format!("{}-{}-{}", amp_idx, tv.ref_allele, tv.var_allele));
+                        }
                     }
+                }
+                for &(amp_num, ref amp_reg) in &amplicon_regions {
                     if config.pileup && vref.ref_allele == vref.var_allele {
                         continue;
+                    }
+                    if !goodmap.is_empty() {
+                        let key = format!("{}-{}-{}", amp_num, vref.ref_allele, vref.var_allele);
+                        if goodmap.contains(&key) {
+                            continue;
+                        }
                     }
                     if let Some(ref amp) = amp_reg.amplicon {
                         let insert_start = amp.insert_start.0 as i32;
@@ -544,7 +561,7 @@ pub fn amplicon_post_process_streaming(
                         .iter()
                         .map(|(v, r)| (Some(v.clone()), r.clone()))
                         .collect(),
-                    bad_vars,
+                    std::mem::take(&mut bad_vars),
                 )
             } else {
                 (Vec::new(), Vec::new())

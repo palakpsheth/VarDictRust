@@ -502,7 +502,7 @@ fn hiaf_cell(hi_freq: f64) -> String {
     if hi_freq == 0.0 {
         "0".to_string()
     } else {
-        format!("{:.4}", hi_freq)
+        format!("{:.4}", crate::types::round_half_even(hi_freq, 4))
     }
 }
 
@@ -644,7 +644,7 @@ pub fn format_vcf_record(
     };
 
     let nm_str = if variant.nm > 0.0 {
-        format!("{:.1}", variant.nm)
+        format!("{:.1}", crate::types::round_half_even(variant.nm, 1))
     } else {
         "0".to_string()
     };
@@ -936,7 +936,7 @@ fn paired_or_transform(raw: &str) -> (String, f64) {
     }
     let x = perl_num(raw);
     if x < 1.0 && x > 0.0 {
-        let s = format!("{:.2}", 1.0 / x);
+        let s = format!("{:.2}", crate::types::round_half_even(1.0 / x, 2));
         let v = s.parse::<f64>().unwrap_or(0.0);
         (s, v)
     } else {
@@ -2061,5 +2061,34 @@ mod tests {
             sample_col_truthy.starts_with("0/1:"),
             "variant with AF=0.01 >= 0.0 under truthy -f 0.0 must have GT=0/1, got {sample_col_truthy}"
         );
+    }
+
+    #[test]
+    fn paired_vcf_uses_half_even_rounding() {
+        // Verify paired_or_transform, hiaf_cell, and nm_str use round_half_even
+        assert_eq!(paired_or_transform("Inf"), ("0".to_string(), 0.0));
+        // 1.0 / 0.8 = 1.25 -> "1.25", 1.25
+        assert_eq!(paired_or_transform("0.8"), ("1.25".to_string(), 1.25));
+        assert_eq!(hiaf_cell(0.125), "0.1250");
+
+        let config = Config::default();
+        let mut t = clean_normal();
+        t.mean_mapping_quality = 42.5; // half-even 0dp -> 42
+        t.nm = 1.25; // half-even 1dp -> 1.2
+        t.msi = 2.125; // half-even 3dp -> 2.125
+        let sv = somatic_sv(t.clone(), Some(clean_normal()), "Somatic");
+        let rec = format_paired_vcf_record(&sv, "chr1", &config);
+        assert!(rec.rest.contains("MSI=2.125;"), "{}", rec.rest);
+        assert!(rec.rest.contains(":42:"), "{}", rec.rest);
+
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: crate::types::Pos1(1),
+            end: crate::types::Pos1(200),
+            gene: "T".to_string(),
+            amplicon: None,
+        };
+        let single = format_vcf_record(&t, &region, &config, &[], 1.0, "1.0", None);
+        assert!(single.contains("NM=1.2;"), "{single}");
     }
 }

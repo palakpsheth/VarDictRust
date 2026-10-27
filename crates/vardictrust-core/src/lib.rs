@@ -44,7 +44,6 @@ pub mod util;
 pub mod variations;
 
 use std::collections::HashMap;
-use std::io::Write;
 use std::path::Path;
 use types::VardictError;
 
@@ -310,11 +309,21 @@ pub fn run(config: &config::Config) -> Result<(), VardictError> {
     crate::bam::clear_bam_caches();
     let _bam_cache_guard = BamCacheGuard;
 
+    let writer = create_output_writer(config);
+    run_with_writer(config, writer)
+}
+
+/// Runs the variant-calling pipeline writing all output to `writer` without clearing
+/// process-wide BAM/CRAM/FASTA caches before/after the call.
+pub fn run_with_writer<W: std::io::Write>(
+    config: &config::Config,
+    mut writer: W,
+) -> Result<(), VardictError> {
     log::info!("VarDictRust engine starting");
 
     // Detect somatic (paired) mode: BAM path contains '|'
     if config.bam.contains('|') {
-        return run_somatic(config);
+        return run_somatic(config, &mut writer);
     }
 
     let first_bam = config
@@ -323,14 +332,8 @@ pub fn run(config: &config::Config) -> Result<(), VardictError> {
         .next()
         .ok_or_else(|| VardictError::Parse("No BAM files specified".to_string()))?;
 
-    // Open first BAM to read references lengths
-    let cached_reader = crate::bam::open_reader(Path::new(first_bam), config)?;
-    let mut chromosomes_lengths = HashMap::new();
-    for (name, ref_seq) in cached_reader.header.reference_sequences().iter() {
-        let name_str = String::from_utf8_lossy(name).into_owned();
-        let len = ref_seq.length().get();
-        chromosomes_lengths.insert(name_str, len);
-    }
+    // Read reference lengths from cached BAM/CRAM header
+    let chromosomes_lengths = crate::bam::read_reference_lengths(Path::new(first_bam), config)?;
 
     // Parse target regions
     let regions = if let Some(ref r_str) = config.region {
@@ -345,7 +348,7 @@ pub fn run(config: &config::Config) -> Result<(), VardictError> {
 
     // Amplicon mode: process per-amplicon and combine via amplicon post-process
     if config.amplicon.is_some() {
-        return run_amplicon(config, &chromosomes_lengths, regions);
+        return run_amplicon(config, &chromosomes_lengths, regions, &mut writer);
     }
 
     let flat_regions: Vec<crate::regions::Region> = regions.into_iter().flatten().collect();
@@ -367,8 +370,6 @@ pub fn run(config: &config::Config) -> Result<(), VardictError> {
     let first_bam_owned = first_bam.to_string();
     let config_clone = config.clone();
     let chromosomes_lengths_clone = chromosomes_lengths.clone();
-
-    let mut writer = create_output_writer(config);
 
     // -h/--header column line (CmdParser.java:67; SimpleMode.java:33 calls
     // printHeader() before any variant output).
@@ -708,10 +709,11 @@ pub(crate) fn amplicons_covering_position(
 
 /// Amplicon mode: process each amplicon region separately, then combine via
 /// amplicon post-processing. Ports AmpliconMode.java.
-fn run_amplicon(
+fn run_amplicon<W: std::io::Write>(
     config: &config::Config,
     chromosomes_lengths: &HashMap<String, usize>,
     segments: Vec<Vec<crate::regions::Region>>,
+    writer: &mut W,
 ) -> Result<(), VardictError> {
     let first_bam = config
         .bam
@@ -719,17 +721,15 @@ fn run_amplicon(
         .next()
         .ok_or_else(|| VardictError::Parse("No BAM files specified".to_string()))?;
 
-    let mut writer = create_output_writer(config);
-
     // -h/--header column line (AmpliconMode.java:39, 135-146).
     if config.column_header {
-        crate::output::table::print_header(&mut writer, config).map_err(VardictError::Io)?;
+        crate::output::table::print_header(writer, config).map_err(VardictError::Io)?;
     }
 
     // Print VCF header once when not in intermediate mode (same var2vcf_valid.pl
     // header as simple mode — amplicon rides the same writer, perl :140-145).
     if !config.emit_intermediate {
-        crate::output::vcf::print_vcf_header(&mut writer, config, chromosomes_lengths)
+        crate::output::vcf::print_vcf_header(writer, config, chromosomes_lengths)
             .map_err(VardictError::Io)?;
     }
 
@@ -781,7 +781,7 @@ fn run_amplicon(
                             config.debug,
                         )
                     };
-                    write_output_line(&mut writer, &line)
+                    write_output_line(writer, &line)
                 },
             )?;
             continue;
@@ -861,7 +861,7 @@ fn run_amplicon(
                         config.debug,
                     )
                 };
-                write_output_line(&mut writer, &line)?;
+                write_output_line(writer, &line)?;
             } else {
                 // VCF mode: same writer as simple mode (var2vcf_valid.pl), with the
                 // amplicon columns (37-40) selecting $isamp behavior (:145).
@@ -895,7 +895,7 @@ fn run_amplicon(
                     &oddratio_str,
                     amp,
                 );
-                write_output_line(&mut writer, &record)?;
+                write_output_line(writer, &record)?;
             }
         }
     }
@@ -907,7 +907,10 @@ fn run_amplicon(
 
 /// Somatic (paired) mode: process tumor BAM, then normal BAM, then compare.
 /// Ports SomaticMode.java's processBothBamsInPipeline.
-fn run_somatic(config: &config::Config) -> Result<(), VardictError> {
+fn run_somatic<W: std::io::Write>(
+    config: &config::Config,
+    writer: &mut W,
+) -> Result<(), VardictError> {
     let parts: Vec<&str> = config.bam.split('|').collect();
     if parts.len() != 2 {
         return Err(VardictError::Parse(
@@ -917,14 +920,8 @@ fn run_somatic(config: &config::Config) -> Result<(), VardictError> {
     let bam1_path = parts[0].to_string();
     let bam2_path = parts[1].to_string();
 
-    // Open first BAM to read reference lengths
-    let cached_reader = crate::bam::open_reader(Path::new(&bam1_path), config)?;
-    let mut chromosomes_lengths = HashMap::new();
-    for (name, ref_seq) in cached_reader.header.reference_sequences().iter() {
-        let name_str = String::from_utf8_lossy(name).into_owned();
-        let len = ref_seq.length().get();
-        chromosomes_lengths.insert(name_str, len);
-    }
+    // Read reference lengths from cached BAM/CRAM header
+    let chromosomes_lengths = crate::bam::read_reference_lengths(Path::new(&bam1_path), config)?;
 
     // Parse target regions
     let regions = if let Some(ref r_str) = config.region {
@@ -958,16 +955,14 @@ fn run_somatic(config: &config::Config) -> Result<(), VardictError> {
     let bam1_path_for_combine = bam1_path.clone();
     let bam2_path_for_combine = bam2_path.clone();
 
-    let mut writer = create_output_writer(config);
-
     // -h/--header column line (SomaticMode.java:35, 134-150).
     if config.column_header {
-        crate::output::table::print_header(&mut writer, config).map_err(VardictError::Io)?;
+        crate::output::table::print_header(writer, config).map_err(VardictError::Io)?;
     }
 
     // Paired VCF header when not in intermediate mode
     if !config.emit_intermediate {
-        crate::output::vcf::print_paired_vcf_header(&mut writer, config, &chromosomes_lengths)
+        crate::output::vcf::print_paired_vcf_header(writer, config, &chromosomes_lengths)
             .map_err(VardictError::Io)?;
     }
 
@@ -1174,7 +1169,7 @@ fn run_somatic(config: &config::Config) -> Result<(), VardictError> {
         },
         |lines| {
             for line in lines {
-                write_output_line(&mut writer, &line)?;
+                write_output_line(writer, &line)?;
             }
             Ok(())
         },
@@ -2037,5 +2032,39 @@ mod tests {
         // Explicit --tile-size always overrides auto heuristic.
         assert_eq!(effective_tile_size(&reg_980k, Some(50_000)), 50_000);
         assert_eq!(effective_tile_size(&reg_10m, Some(2_000_000)), 2_000_000);
+    }
+
+    #[test]
+    fn write_output_line_propagates_broken_pipe_error() {
+        struct BrokenPipeWriter;
+        impl std::io::Write for BrokenPipeWriter {
+            fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "broken pipe",
+                ))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let mut writer = BrokenPipeWriter;
+        let err = write_output_line(&mut writer, "chr1\t100").unwrap_err();
+        match err {
+            VardictError::Io(e) => assert_eq!(e.kind(), std::io::ErrorKind::BrokenPipe),
+            other => panic!("expected VardictError::Io(BrokenPipe), got {other:?}"),
+        }
+
+        let mut cfg = crate::config::Config::default();
+        assert!(matches!(
+            create_output_writer(&cfg),
+            OutputDestination::Stdout(_)
+        ));
+        cfg.debug_print = Some("ERR".to_string());
+        assert!(matches!(
+            create_output_writer(&cfg),
+            OutputDestination::Stderr(_)
+        ));
     }
 }

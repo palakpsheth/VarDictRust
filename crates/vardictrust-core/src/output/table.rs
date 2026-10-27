@@ -277,14 +277,14 @@ pub fn simple_38(variant: &Variant, region: &Region, sample_name: &str, sv: &str
     let hifreq_str = if variant.hi_freq == 0.0 {
         "0".to_string()
     } else {
-        format!("{:.4}", variant.hi_freq)
+        format!("{:.4}", crate::types::round_half_even(variant.hi_freq, 4))
     };
 
     let nm_val = if variant.nm > 0.0 { variant.nm } else { 0.0 };
     let nm_str = if nm_val == 0.0 {
         "0".to_string()
     } else {
-        format!("{:.1}", nm_val)
+        format!("{:.1}", crate::types::round_half_even(nm_val, 1))
     };
 
     // Same null-record printer-defaults rule as simple_36.
@@ -472,14 +472,14 @@ pub fn amplicon_40(
     let hifreq_str = if variant.hi_freq == 0.0 {
         "0".to_string()
     } else {
-        format!("{:.4}", variant.hi_freq)
+        format!("{:.4}", crate::types::round_half_even(variant.hi_freq, 4))
     };
 
     let nm_val = if variant.nm > 0.0 { variant.nm } else { 0.0 };
     let nm_str = if nm_val == 0.0 {
         "0".to_string()
     } else {
-        format!("{:.1}", nm_val)
+        format!("{:.1}", crate::types::round_half_even(nm_val, 1))
     };
 
     let left_seq = if variant.left_seq.is_empty() {
@@ -570,10 +570,13 @@ fn debug_amp_variant(v: Option<&Variant>) -> String {
     let genotype = v.genotype.as_deref().unwrap_or("0");
     let pstd = if v.pstd { 1 } else { 0 };
     let qstd = if v.qstd { 1 } else { 0 };
-    let mean_pos = format!("{:.1}", v.mean_position);
-    let mean_qual = format!("{:.1}", v.mean_quality);
-    let mapq = format!("{:.1}", v.mean_mapping_quality);
-    let qratio = format!("{:.3}", v.hq_lq_ratio);
+    let mean_pos = format!("{:.1}", crate::types::round_half_even(v.mean_position, 1));
+    let mean_qual = format!("{:.1}", crate::types::round_half_even(v.mean_quality, 1));
+    let mapq = format!(
+        "{:.1}",
+        crate::types::round_half_even(v.mean_mapping_quality, 1)
+    );
+    let qratio = format!("{:.3}", crate::types::round_half_even(v.hq_lq_ratio, 3));
     format!(
         "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
         v.total_pos_cov,
@@ -601,7 +604,7 @@ fn fmt_3dp_msi(v: f64) -> String {
     if v == 0.0 {
         "0".to_string()
     } else {
-        format!("{:.3}", v)
+        format!("{:.3}", crate::types::round_half_even(v, 3))
     }
 }
 
@@ -1348,5 +1351,63 @@ mod header_tests {
         let h = render(&cfg);
         assert_eq!(h.split('\t').count(), 38);
         assert!(h.ends_with("GoodVarCount\tTotalVarCount\tNocov\tAmpflag\n"));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::postprocess::amplicon::AmpliconVariant;
+    use crate::regions::Region;
+    use crate::types::Pos1;
+
+    #[test]
+    fn table_formatters_use_half_even_rounding() {
+        assert_eq!(fmt_3dp_msi(0.0), "0");
+        assert_eq!(fmt_3dp_msi(1.125), "1.125");
+        assert_eq!(fmt_3dp_msi(1.0005), "1.000");
+
+        let mut v = Variant::new();
+        v.ref_allele = "A".to_string();
+        v.var_allele = "G".to_string();
+        v.start_pos = 100;
+        v.end_pos = 100;
+        v.mean_position = 10.25; // -> 10.2 (half-even)
+        v.mean_quality = 30.35; // -> 30.4 (half-even)
+        v.mean_mapping_quality = 40.25; // -> 40.2 (half-even)
+        v.hq_lq_ratio = 2.125;
+        v.hi_freq = 0.125;
+        v.nm = 1.25; // -> 1.2 (half-even)
+        v.msi = 2.0005;
+
+        let dbg = debug_amp_variant(Some(&v));
+        assert!(dbg.contains(" 10.2 0 30.4 0 40.2 2.125 0.1250 "), "{dbg}");
+
+        let rg = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(1),
+            end: Pos1(200),
+            gene: "G".to_string(),
+            amplicon: None,
+        };
+        let s38 = simple_38(&v, &rg, "S", "");
+        let cols38: Vec<&str> = s38.split('\t').collect();
+        assert_eq!(cols38[24], "0.1250");
+        assert_eq!(cols38[29], "1.2");
+
+        let av = AmpliconVariant {
+            variant: v,
+            gdamp: 1,
+            tlamp: 1,
+            ncamp: 0,
+            ampflag: false,
+            region: "chr1:1-200".to_string(),
+            good_variants: vec![],
+            bad_variants: vec![],
+        };
+        let a40 = amplicon_40(&av, &rg, "S", false);
+        let cols40: Vec<&str> = a40.split('\t').collect();
+        assert_eq!(cols40[24], "0.1250");
+        assert_eq!(cols40[29], "1.2");
     }
 }
