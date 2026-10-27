@@ -31,7 +31,7 @@ VM_NAME="${VM_NAME:-vardict-paper-n2s32}"
 MACHINE_TYPE="${MACHINE_TYPE:-n2-standard-32}"
 BOOT_DISK_SIZE="${BOOT_DISK_SIZE:-100GB}"
 BOOT_DISK_TYPE="${BOOT_DISK_TYPE:-pd-ssd}"
-LOCAL_SSD_COUNT="${LOCAL_SSD_COUNT:-2}"
+LOCAL_SSD_COUNT="${LOCAL_SSD_COUNT:-4}"
 MAX_RUN_DURATION="${MAX_RUN_DURATION:-24h}"
 KEEP_VM_ON_FAIL="${KEEP_VM_ON_FAIL:-1}"
 
@@ -3597,7 +3597,11 @@ run_controller() {
     else
       cleanup_vm
       mapfile -t create_cmd < <(build_gcloud_create_cmd "$attempt")
-      "${create_cmd[@]}"
+      if ! "${create_cmd[@]}"; then
+        echo "[Controller] Instance creation failed on attempt ${attempt} (${model}, zone=${GCP_ZONE}); advancing to next attempt..." >&2
+        sleep 15
+        continue
+      fi
     fi
 
     # Wait for SSH readiness
@@ -3764,7 +3768,7 @@ run_plan_check() {
   [[ "$cmd1" == *"--boot-disk-size=100GB"* ]] || { echo "FAIL: boot-disk-size not 100GB" >&2; exit 1; }
   [[ "$cmd1" == *"--boot-disk-type=pd-ssd"* ]] || { echo "FAIL: boot-disk-type not pd-ssd" >&2; exit 1; }
   [[ "$cmd1" == *"--local-ssd=interface=NVME"* ]] || { echo "FAIL: missing --local-ssd=interface=NVME" >&2; exit 1; }
-  [ "$(build_gcloud_create_cmd 1 | grep -c '^--local-ssd=interface=NVME$')" -eq 2 ] || { echo "FAIL: expected 2 NVMe local SSDs" >&2; exit 1; }
+  [ "$(build_gcloud_create_cmd 1 | grep -c '^--local-ssd=interface=NVME$')" -eq 4 ] || { echo "FAIL: expected 4 NVMe local SSDs (minimum allowed on n2-standard-32)" >&2; exit 1; }
   [[ "$cmd1" == *"--provisioning-model=SPOT"* ]] || { echo "FAIL: attempt 1 cmd missing SPOT" >&2; exit 1; }
   [[ "$cmd6" == *"--provisioning-model=STANDARD"* ]] || { echo "FAIL: attempt 6 cmd missing STANDARD" >&2; exit 1; }
   [[ "$cmd6" != *"--maintenance-policy=TERMINATE"* ]] || { echo "FAIL: STANDARD cmd must not set maintenance-policy=TERMINATE" >&2; exit 1; }
