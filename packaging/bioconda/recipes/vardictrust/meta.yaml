@@ -1,5 +1,5 @@
 {% set name = "vardictrust" %}
-{% set version = "1.0.3" %}
+{% set version = "1.0.5" %}
 
 package:
   name: {{ name|lower }}
@@ -7,7 +7,7 @@ package:
 
 source:
   url: https://github.com/palakpsheth/VarDictRust/archive/refs/tags/v{{ version }}.tar.gz
-  sha256: f7f1a95c0c82defff2835462ef3f1d520416fa72545d653307ab68fabca2335a
+  sha256: b3c4e99937dbb63135c4bb6ed7f6a0e9504aeab3a6c24ec7edc0a96efe1225dd
 
 build:
   number: 0
