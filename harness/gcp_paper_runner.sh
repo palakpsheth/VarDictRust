@@ -496,11 +496,13 @@ worker_preflight() {
     ln -sfn "$WORK_DIR/data/g4" scratch/g4
   fi
   export DATA_DIR="scratch/g4"
-  local avail_gb
+  local size_gb avail_gb
+  size_gb="$(df -BG --output=size "$WORK_DIR" | tail -1 | tr -dc '0-9')"
   avail_gb="$(df -BG --output=avail "$WORK_DIR" | tail -1 | tr -dc '0-9')"
-  local min_gb="${MIN_DISK_GB:-1200}"
-  if [ "$avail_gb" -lt "$min_gb" ]; then
-    echo "FATAL: $WORK_DIR has ${avail_gb}GB free, need >= ${min_gb}GB (NVMe RAID0 SSD required)" >&2
+  local min_size_gb="${MIN_DISK_SIZE_GB:-1200}"
+  local min_avail_gb="${MIN_DISK_GB:-400}"
+  if [ "$size_gb" -lt "$min_size_gb" ] || [ "$avail_gb" -lt "$min_avail_gb" ]; then
+    echo "FATAL: $WORK_DIR has ${size_gb}GB total / ${avail_gb}GB free, need >= ${min_size_gb}GB total and >= ${min_avail_gb}GB free (NVMe RAID0 SSD required)" >&2
     exit 2
   fi
   local fp
