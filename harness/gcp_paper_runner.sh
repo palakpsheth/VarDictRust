@@ -2009,6 +2009,12 @@ run_stage_5() {
     tabix -f -p vcf \"\$KEEP_DIR/rust_contigs_th32.vcf.gz\"
 
     # (b) vardictcpp (-th 32 --chunk 50000, contained under MemoryMax=245G)
+    oracle_cache_get 'hg002_full/cpp_contigs_th32.time' \"\$KEEP_DIR/cpp_contigs_th32.time\" || true
+    oracle_cache_get 'hg002_full/cpp_contigs_th32.exit' \"\$KEEP_DIR/cpp_contigs_th32.exit\" || true
+    oracle_cache_get 'hg002_full/cpp_contigs_th32.vcf.gz' \"\$KEEP_DIR/cpp_contigs_th32.vcf.gz\" || true
+    if [ ! -s \"\$WORK_LOCAL/cpp_contigs_th32.vcf\" ] && [ -s \"\$KEEP_DIR/cpp_contigs_th32.vcf.gz\" ]; then
+      bgzip -dc -@ 16 \"\$KEEP_DIR/cpp_contigs_th32.vcf.gz\" > \"\$WORK_LOCAL/cpp_contigs_th32.vcf\"
+    fi
     if [ ! -s \"\$KEEP_DIR/cpp_contigs_th32.time\" ]; then
       rc_cpp=0
       /usr/bin/time -v -o \"\$KEEP_DIR/cpp_contigs_th32.time\" \
@@ -2019,8 +2025,13 @@ run_stage_5() {
         bgzip -c -@ 16 \"\$WORK_LOCAL/cpp_contigs_th32.vcf\" > \"\$KEEP_DIR/cpp_contigs_th32.vcf.gz\" || true
       fi
     fi
+    oracle_cache_put 'hg002_full/cpp_contigs_th32.time' \"\$KEEP_DIR/cpp_contigs_th32.time\"
+    oracle_cache_put 'hg002_full/cpp_contigs_th32.exit' \"\$KEEP_DIR/cpp_contigs_th32.exit\"
+    oracle_cache_put 'hg002_full/cpp_contigs_th32.vcf.gz' \"\$KEEP_DIR/cpp_contigs_th32.vcf.gz\"
 
     # (c) VarDictJava v1.8.3 (-th 32, -Xmx200g -XX:+ExitOnOutOfMemoryError, contained under MemoryMax=245G)
+    oracle_cache_get 'hg002_full/java_contigs_th32.time' \"\$KEEP_DIR/java_contigs_th32.time\" || true
+    oracle_cache_get 'hg002_full/java_contigs_th32.exit' \"\$KEEP_DIR/java_contigs_th32.exit\" || true
     if [ ! -s \"\$KEEP_DIR/java_contigs_th32.time\" ]; then
       rc_java=0
       /usr/bin/time -v -o \"\$KEEP_DIR/java_contigs_th32.time\" \
@@ -2028,6 +2039,8 @@ run_stage_5() {
         bash harness/run_oracle.sh \"\$REF\" \"\$BAM\" \"\$BED\" \"\$WORK_LOCAL/java_contigs_th32.vcf\" HG002 -f 0.01 -th 32 -z || rc_java=\$?
       echo \"\$rc_java\" > \"\$KEEP_DIR/java_contigs_th32.exit\"
     fi
+    oracle_cache_put 'hg002_full/java_contigs_th32.time' \"\$KEEP_DIR/java_contigs_th32.time\"
+    oracle_cache_put 'hg002_full/java_contigs_th32.exit' \"\$KEEP_DIR/java_contigs_th32.exit\"
     rc_java=\"\$(cat \"\$KEEP_DIR/java_contigs_th32.exit\" 2>/dev/null || echo 1)\"
     if [ \"\$rc_java\" -eq 0 ] && [ -s \"\$WORK_LOCAL/java_contigs_th32.vcf\" ]; then
       grep -vc '^#' \"\$WORK_LOCAL/java_contigs_th32.vcf\" > \"\$KEEP_DIR/java_contigs_th32.variant_count\" || true
@@ -2071,10 +2084,13 @@ run_stage_5() {
     fi
 
     # (b) vardictcpp (-th 32 --chunk 50000)
+    oracle_cache_get 'hg002_full/cpp_giab_th32.time' \"\$KEEP_DIR/cpp_giab_th32.time\" || true
+    oracle_cache_get 'hg002_full/cpp_giab_th32.exit' \"\$KEEP_DIR/cpp_giab_th32.exit\" || true
+    oracle_cache_get 'hg002_full/cpp_giab_th32.vcf.gz' \"\$KEEP_DIR/cpp_giab_th32.vcf.gz\" || true
     if [ ! -s \"\$WORK_LOCAL/cpp_giab_th32.vcf\" ] && [ -s \"\$KEEP_DIR/cpp_giab_th32.vcf.gz\" ]; then
       bgzip -dc -@ 16 \"\$KEEP_DIR/cpp_giab_th32.vcf.gz\" > \"\$WORK_LOCAL/cpp_giab_th32.vcf\"
     fi
-    if [ ! -s \"\$KEEP_DIR/cpp_giab_th32.time\" ]; then
+    if [ ! -s \"\$KEEP_DIR/cpp_giab_th32.time\" ] || [ ! -s \"\$WORK_LOCAL/cpp_giab_th32.vcf\" ]; then
       rc_cpp=0
       /usr/bin/time -v -o \"\$KEEP_DIR/cpp_giab_th32.time\" \
         env CPP_CHUNK=50000 bash harness/run_cpp.sh \"\$REF\" \"\$BAM\" \"\$BED\" \"\$WORK_LOCAL/cpp_giab_th32.vcf\" HG002 -f 0.01 -th 32 -z || rc_cpp=\$?
@@ -2084,8 +2100,13 @@ run_stage_5() {
         bgzip -c -@ 16 \"\$WORK_LOCAL/cpp_giab_th32.vcf\" > \"\$KEEP_DIR/cpp_giab_th32.vcf.gz\" || true
       fi
     fi
+    oracle_cache_put 'hg002_full/cpp_giab_th32.time' \"\$KEEP_DIR/cpp_giab_th32.time\"
+    oracle_cache_put 'hg002_full/cpp_giab_th32.exit' \"\$KEEP_DIR/cpp_giab_th32.exit\"
+    oracle_cache_put 'hg002_full/cpp_giab_th32.vcf.gz' \"\$KEEP_DIR/cpp_giab_th32.vcf.gz\"
 
     # (c) VarDictJava v1.8.3 (-th 32, -Xmx200g -XX:+ExitOnOutOfMemoryError)
+    oracle_cache_get 'hg002_full/java_giab_th32.time' \"\$KEEP_DIR/java_giab_th32.time\" || true
+    oracle_cache_get 'hg002_full/java_giab_th32.exit' \"\$KEEP_DIR/java_giab_th32.exit\" || true
     if [ ! -s \"\$WORK_LOCAL/java_giab_th32.vcf\" ]; then
       if [ -s \"\$KEEP_DIR/java_giab_th32.vcf.gz\" ] || oracle_cache_get 'hg002_full/java_giab_th32.vcf.gz' \"\$KEEP_DIR/java_giab_th32.vcf.gz\"; then
         bgzip -dc -@ 16 \"\$KEEP_DIR/java_giab_th32.vcf.gz\" > \"\$WORK_LOCAL/java_giab_th32.vcf\"
@@ -2098,6 +2119,8 @@ run_stage_5() {
         bash harness/run_oracle.sh \"\$REF\" \"\$BAM\" \"\$BED\" \"\$WORK_LOCAL/java_giab_th32.vcf\" HG002 -f 0.01 -th 32 -z || rc_java=\$?
       echo \"\$rc_java\" > \"\$KEEP_DIR/java_giab_th32.exit\"
     fi
+    oracle_cache_put 'hg002_full/java_giab_th32.time' \"\$KEEP_DIR/java_giab_th32.time\"
+    oracle_cache_put 'hg002_full/java_giab_th32.exit' \"\$KEEP_DIR/java_giab_th32.exit\"
     rc_java=\"\$(cat \"\$KEEP_DIR/java_giab_th32.exit\" 2>/dev/null || echo 1)\"
     if [ \"\$rc_java\" -eq 0 ] && [ -s \"\$WORK_LOCAL/java_giab_th32.vcf\" ]; then
       if [ ! -s \"\$KEEP_DIR/java_giab_th32.vcf.gz\" ]; then
@@ -2245,6 +2268,12 @@ run_stage_5() {
     tabix -f -p vcf \"\$KEEP_DIR/rust_hg008_contigs_th32.vcf.gz\" || true
 
     # (b) vardictcpp (-th 32 --chunk 50000, contained under MemoryMax=245G)
+    oracle_cache_get 'hg008_full/cpp_hg008_contigs_th32.time' \"\$KEEP_DIR/cpp_hg008_contigs_th32.time\" || true
+    oracle_cache_get 'hg008_full/cpp_hg008_contigs_th32.exit' \"\$KEEP_DIR/cpp_hg008_contigs_th32.exit\" || true
+    oracle_cache_get 'hg008_full/cpp_hg008_contigs_th32.vcf.gz' \"\$KEEP_DIR/cpp_hg008_contigs_th32.vcf.gz\" || true
+    if [ ! -s \"\$WORK_LOCAL/cpp_hg008_contigs_th32.vcf\" ] && [ -s \"\$KEEP_DIR/cpp_hg008_contigs_th32.vcf.gz\" ]; then
+      bgzip -dc -@ 16 \"\$KEEP_DIR/cpp_hg008_contigs_th32.vcf.gz\" > \"\$WORK_LOCAL/cpp_hg008_contigs_th32.vcf\"
+    fi
     if [ ! -s \"\$KEEP_DIR/cpp_hg008_contigs_th32.exit\" ]; then
       rc_cpp=0
       /usr/bin/time -v -o \"\$KEEP_DIR/cpp_hg008_contigs_th32.time\" timeout 10800 \
@@ -2255,8 +2284,13 @@ run_stage_5() {
         bgzip -c -@ 16 \"\$WORK_LOCAL/cpp_hg008_contigs_th32.vcf\" > \"\$KEEP_DIR/cpp_hg008_contigs_th32.vcf.gz\" || true
       fi
     fi
+    oracle_cache_put 'hg008_full/cpp_hg008_contigs_th32.time' \"\$KEEP_DIR/cpp_hg008_contigs_th32.time\"
+    oracle_cache_put 'hg008_full/cpp_hg008_contigs_th32.exit' \"\$KEEP_DIR/cpp_hg008_contigs_th32.exit\"
+    oracle_cache_put 'hg008_full/cpp_hg008_contigs_th32.vcf.gz' \"\$KEEP_DIR/cpp_hg008_contigs_th32.vcf.gz\"
 
     # (c) VarDictJava v1.8.3 (-th 32, -Xmx200g -XX:+ExitOnOutOfMemoryError, contained under MemoryMax=245G with 3h progress cap)
+    oracle_cache_get 'hg008_full/java_hg008_contigs_th32.time' \"\$KEEP_DIR/java_hg008_contigs_th32.time\" || true
+    oracle_cache_get 'hg008_full/java_hg008_contigs_th32.exit' \"\$KEEP_DIR/java_hg008_contigs_th32.exit\" || true
     if [ ! -s \"\$KEEP_DIR/java_hg008_contigs_th32.exit\" ]; then
       rc_java=0
       /usr/bin/time -v -o \"\$KEEP_DIR/java_hg008_contigs_th32.time\" timeout 10800 \
@@ -2264,6 +2298,8 @@ run_stage_5() {
         bash harness/run_oracle.sh \"\$REF\" \"\${T_BAM}|\${N_BAM}\" \"\$BED\" \"\$WORK_LOCAL/java_hg008_contigs_th32.vcf\" 'HG008-T|HG008-N' -f 0.01 -th 32 -z || rc_java=\$?
       echo \"\$rc_java\" > \"\$KEEP_DIR/java_hg008_contigs_th32.exit\"
     fi
+    oracle_cache_put 'hg008_full/java_hg008_contigs_th32.time' \"\$KEEP_DIR/java_hg008_contigs_th32.time\"
+    oracle_cache_put 'hg008_full/java_hg008_contigs_th32.exit' \"\$KEEP_DIR/java_hg008_contigs_th32.exit\"
     rc_java=\"\$(cat \"\$KEEP_DIR/java_hg008_contigs_th32.exit\" 2>/dev/null || echo 1)\"
     if [ \"\$rc_java\" -eq 0 ] && [ -s \"\$WORK_LOCAL/java_hg008_contigs_th32.vcf\" ]; then
       grep -vc '^#' \"\$WORK_LOCAL/java_hg008_contigs_th32.vcf\" > \"\$KEEP_DIR/java_hg008_contigs_th32.variant_count\" || true
@@ -2312,6 +2348,12 @@ run_stage_5() {
     fi
 
     # (b) vardictcpp (-th 32 -U --chunk 50000)
+    oracle_cache_get 'hg008_full/cpp_hg008_giab_th32.time' \"\$KEEP_DIR/cpp_hg008_giab_th32.time\" || true
+    oracle_cache_get 'hg008_full/cpp_hg008_giab_th32.exit' \"\$KEEP_DIR/cpp_hg008_giab_th32.exit\" || true
+    oracle_cache_get 'hg008_full/cpp_hg008_giab_th32.vcf.gz' \"\$KEEP_DIR/cpp_hg008_giab_th32.vcf.gz\" || true
+    if [ ! -s \"\$WORK_LOCAL/cpp_hg008_giab_th32.vcf\" ] && [ -s \"\$KEEP_DIR/cpp_hg008_giab_th32.vcf.gz\" ]; then
+      bgzip -dc -@ 16 \"\$KEEP_DIR/cpp_hg008_giab_th32.vcf.gz\" > \"\$WORK_LOCAL/cpp_hg008_giab_th32.vcf\"
+    fi
     if [ ! -s \"\$KEEP_DIR/cpp_hg008_giab_th32.time\" ]; then
       rc_cpp=0
       timeout 10800 /usr/bin/time -v -o \"\$KEEP_DIR/cpp_hg008_giab_th32.time\" \
@@ -2323,8 +2365,18 @@ run_stage_5() {
         bash harness/concordance.sh \"\$WORK_LOCAL/cpp_hg008_giab_th32.vcf\" \"\$TRUTH_V03\" \"\$BED_V03\" \"\$SDF\" \"\$KEEP_DIR/vcfeval_hg008_full_v03/cpp\" HG008-T | tee \"\$KEEP_DIR/vcfeval_hg008_full_v03_cpp.txt\" || true
       fi
     fi
+    oracle_cache_put 'hg008_full/cpp_hg008_giab_th32.time' \"\$KEEP_DIR/cpp_hg008_giab_th32.time\"
+    oracle_cache_put 'hg008_full/cpp_hg008_giab_th32.exit' \"\$KEEP_DIR/cpp_hg008_giab_th32.exit\"
+    oracle_cache_put 'hg008_full/cpp_hg008_giab_th32.vcf.gz' \"\$KEEP_DIR/cpp_hg008_giab_th32.vcf.gz\"
 
     # (c) VarDictJava v1.8.3 (-th 32 -U, -Xmx200g -XX:+ExitOnOutOfMemoryError, 4h progress cap per protocol §3 rule b)
+    oracle_cache_get 'hg008_full/java_hg008_giab_th32.time' \"\$KEEP_DIR/java_hg008_giab_th32.time\" || true
+    oracle_cache_get 'hg008_full/java_hg008_giab_th32.exit' \"\$KEEP_DIR/java_hg008_giab_th32.exit\" || true
+    if [ ! -s \"\$WORK_LOCAL/java_hg008_giab_th32.vcf\" ]; then
+      if [ -s \"\$KEEP_DIR/java_hg008_giab_th32.vcf.gz\" ] || oracle_cache_get 'hg008_full/java_hg008_giab_th32.vcf.gz' \"\$KEEP_DIR/java_hg008_giab_th32.vcf.gz\"; then
+        bgzip -dc -@ 16 \"\$KEEP_DIR/java_hg008_giab_th32.vcf.gz\" > \"\$WORK_LOCAL/java_hg008_giab_th32.vcf\"
+      fi
+    fi
     if [ ! -s \"\$KEEP_DIR/java_hg008_giab_th32.time\" ]; then
       rc_java=0
       timeout 14400 /usr/bin/time -v -o \"\$KEEP_DIR/java_hg008_giab_th32.time\" \
@@ -2332,6 +2384,8 @@ run_stage_5() {
         bash harness/run_oracle.sh \"\$REF\" \"\${T_BAM}|\${N_BAM}\" \"\$BED\" \"\$WORK_LOCAL/java_hg008_giab_th32.vcf\" 'HG008-T|HG008-N' -f 0.01 -th 32 -z -U || rc_java=\$?
       echo \"\$rc_java\" > \"\$KEEP_DIR/java_hg008_giab_th32.exit\"
     fi
+    oracle_cache_put 'hg008_full/java_hg008_giab_th32.time' \"\$KEEP_DIR/java_hg008_giab_th32.time\"
+    oracle_cache_put 'hg008_full/java_hg008_giab_th32.exit' \"\$KEEP_DIR/java_hg008_giab_th32.exit\"
     rc_java=\"\$(cat \"\$KEEP_DIR/java_hg008_giab_th32.exit\" 2>/dev/null || echo 1)\"
     if [ \"\$rc_java\" -eq 0 ] && [ -s \"\$WORK_LOCAL/java_hg008_giab_th32.vcf\" ]; then
       grep -vc '^#' \"\$WORK_LOCAL/java_hg008_giab_th32.vcf\" > \"\$KEEP_DIR/java_hg008_giab_th32.variant_count\" || true
@@ -2829,24 +2883,33 @@ run_stage_5() {
       fi
 
       # 2. vardictcpp (-th 32 --chunk 50000)
+      oracle_cache_get \"cross_platform_chr20/\${tag}_cpp.vcf\"  \"\$KEEP_DIR/\${tag}_cpp.vcf\"  || true
+      oracle_cache_get \"cross_platform_chr20/\${tag}_cpp.time\" \"\$KEEP_DIR/\${tag}_cpp.time\" || true
+      oracle_cache_get \"cross_platform_chr20/\${tag}_cpp.exit\" \"\$KEEP_DIR/\${tag}_cpp.exit\" || true
       if [ ! -s \"\$KEEP_DIR/\${tag}_cpp.exit\" ]; then
         local rc_c=0
         timeout 3600 /usr/bin/time -v -o \"\$KEEP_DIR/\${tag}_cpp.time\" \
           env CPP_CHUNK=50000 bash harness/run_cpp.sh \"\$ref\" \"\$bam_spec\" \"\$call_bed\" \"\$KEEP_DIR/\${tag}_cpp.vcf\" \"\$sample\" -f \"\$freq\" -th 32 -z \"\${extra_flags[@]}\" || rc_c=\$?
         echo \"\$rc_c\" > \"\$KEEP_DIR/\${tag}_cpp.exit\"
       fi
+      oracle_cache_put \"cross_platform_chr20/\${tag}_cpp.vcf\"  \"\$KEEP_DIR/\${tag}_cpp.vcf\"
+      oracle_cache_put \"cross_platform_chr20/\${tag}_cpp.time\" \"\$KEEP_DIR/\${tag}_cpp.time\"
+      oracle_cache_put \"cross_platform_chr20/\${tag}_cpp.exit\" \"\$KEEP_DIR/\${tag}_cpp.exit\"
 
       # 3. VarDictJava v1.8.3 (-th 32 -Xmx48g)
+      oracle_cache_get \"cross_platform_chr20/\${tag}_java.vcf\"  \"\$KEEP_DIR/\${tag}_java.vcf\"  || true
+      oracle_cache_get \"cross_platform_chr20/\${tag}_java.time\" \"\$KEEP_DIR/\${tag}_java.time\" || true
+      oracle_cache_get \"cross_platform_chr20/\${tag}_java.exit\" \"\$KEEP_DIR/\${tag}_java.exit\" || true
       if [ ! -s \"\$KEEP_DIR/\${tag}_java.exit\" ]; then
         local rc_j=0
         timeout 3600 /usr/bin/time -v -o \"\$KEEP_DIR/\${tag}_java.time\" \
           env ORACLE_XMX_GB=48 JAVA_OPTS='-Xmx48g -XX:+ExitOnOutOfMemoryError' \
           bash harness/run_oracle.sh \"\$ref\" \"\$bam_spec\" \"\$call_bed\" \"\$KEEP_DIR/\${tag}_java.vcf\" \"\$sample\" -f \"\$freq\" -th 32 -z \"\${extra_flags[@]}\" || rc_j=\$?
         echo \"\$rc_j\" > \"\$KEEP_DIR/\${tag}_java.exit\"
-        if [ \"\$rc_j\" -eq 0 ] && [ -s \"\$KEEP_DIR/\${tag}_java.vcf\" ]; then
-          oracle_cache_put \"cross_platform_chr20/\${tag}_java.vcf\" \"\$KEEP_DIR/\${tag}_java.vcf\"
-        fi
       fi
+      oracle_cache_put \"cross_platform_chr20/\${tag}_java.vcf\"  \"\$KEEP_DIR/\${tag}_java.vcf\"
+      oracle_cache_put \"cross_platform_chr20/\${tag}_java.time\" \"\$KEEP_DIR/\${tag}_java.time\"
+      oracle_cache_put \"cross_platform_chr20/\${tag}_java.exit\" \"\$KEEP_DIR/\${tag}_java.exit\"
 
       for eng in rust java cpp; do
         local vcf=\"\$KEEP_DIR/\${tag}_\${eng}.vcf\"
@@ -2928,8 +2991,12 @@ run_stage_5() {
         reg_flags=\"\${reg_spec#*|}\"
         # shellcheck disable=SC2086
         \"\$VR\" -G \"\$ref\" -N 'HG008-T|HG008-N' -b \"\${tb}|\${nb}\" -c 1 -S 2 -E 3 -g 4 -z -th 16 \$reg_flags \"\$XP_DIR/hg008_chr1_r123.bed\" > \"\$KEEP_DIR/nf_\${plat}_\${reg_lbl}_rust.vcf\"
-        # shellcheck disable=SC2086
-        bash harness/run_oracle.sh \"\$ref\" \"\${tb}|\${nb}\" \"\$XP_DIR/hg008_chr1_r123.bed\" \"\$KEEP_DIR/nf_\${plat}_\${reg_lbl}_java.vcf\" 'HG008-T|HG008-N' -z -th 16 \$reg_flags
+        oracle_cache_get \"cross_platform_chr20/nf_\${plat}_\${reg_lbl}_java.vcf\" \"\$KEEP_DIR/nf_\${plat}_\${reg_lbl}_java.vcf\" || true
+        if [ ! -s \"\$KEEP_DIR/nf_\${plat}_\${reg_lbl}_java.vcf\" ]; then
+          # shellcheck disable=SC2086
+          bash harness/run_oracle.sh \"\$ref\" \"\${tb}|\${nb}\" \"\$XP_DIR/hg008_chr1_r123.bed\" \"\$KEEP_DIR/nf_\${plat}_\${reg_lbl}_java.vcf\" 'HG008-T|HG008-N' -z -th 16 \$reg_flags
+        fi
+        oracle_cache_put \"cross_platform_chr20/nf_\${plat}_\${reg_lbl}_java.vcf\" \"\$KEEP_DIR/nf_\${plat}_\${reg_lbl}_java.vcf\"
         tot=\$(grep -vc '^#' \"\$KEEP_DIR/nf_\${plat}_\${reg_lbl}_rust.vcf\" || true)
         som=\$(grep -v '^#' \"\$KEEP_DIR/nf_\${plat}_\${reg_lbl}_rust.vcf\" | grep -cE 'PASS.*STATUS=(Strong|Likely)Somatic' || true)
         if python3 harness/compare_vcf.py --strict-bytes \"\$KEEP_DIR/nf_\${plat}_\${reg_lbl}_java.vcf\" \"\$KEEP_DIR/nf_\${plat}_\${reg_lbl}_rust.vcf\" --eps 1e-6 >/dev/null 2>&1; then
@@ -2972,6 +3039,24 @@ oracle_cache_put() {
     gcs_upload "$local_file" "${GCS_ORACLE_CACHE}/${cache_rel}" || true
     gcs_upload "${local_file}.sha256" "${GCS_ORACLE_CACHE}/${cache_rel}.sha256" || true
   fi
+}
+
+# Restores a cached oracle/cpp file from Local test-mode or GCS (${GCS_ORACLE_CACHE}) if present.
+oracle_cache_get() {
+  local cache_rel="$1" local_file="$2"
+  mkdir -p "$(dirname "$local_file")"
+  if [ -s "$local_file" ]; then
+    return 0
+  fi
+  if [ -n "${LOCAL_CKPT_DIR:-}" ] && [ -s "${LOCAL_CKPT_DIR}/oracle-cache/${cache_rel}" ]; then
+    cp -f "${LOCAL_CKPT_DIR}/oracle-cache/${cache_rel}" "$local_file"
+    return 0
+  fi
+  if [ -z "${LOCAL_CKPT_DIR:-}" ] && setsid gsutil -q stat "${GCS_ORACLE_CACHE}/${cache_rel}" 2>/dev/null; then
+    echo "[ORACLE-CACHE GET (GCS)] Downloading '${GCS_ORACLE_CACHE}/${cache_rel}' -> '${local_file}'"
+    setsid gsutil -q cp "${GCS_ORACLE_CACHE}/${cache_rel}" "$local_file" && [ -s "$local_file" ] && return 0
+  fi
+  return 1
 }
 
 is_valid_oracle_cache_file() {
@@ -3123,12 +3208,12 @@ seed_oracle_cache_from_existing_cells() {
     fi
   done
 
-  # Also mirror any other java*/cpp* .var/.vcf artifacts under ${WORK_DIR}/cells/s1_* and s2_*
+  # Also mirror any other java*/cpp* .var/.sorted.var/.vcf/.vcf.gz/.time/.exit artifacts under ${WORK_DIR}/cells/
   local f rel
   while IFS= read -r -d '' f; do
     rel="${f#${cells_root}/}"
     oracle_cache_put "cells/${rel}" "$f"
-  done < <(find "$cells_root" -maxdepth 3 -type f \( -name 'java*.var' -o -name 'java*.vcf' -o -name 'cpp*.var' -o -name 'cpp*.vcf' \) -size +0c -print0 2>/dev/null || true)
+  done < <(find "$cells_root" -maxdepth 3 -type f \( -name '*java*.var' -o -name '*java*.vcf' -o -name '*java*.vcf.gz' -o -name '*java*.time' -o -name '*java*.exit' -o -name '*cpp*.var' -o -name '*cpp*.vcf' -o -name '*cpp*.vcf.gz' -o -name '*cpp*.time' -o -name '*cpp*.exit' \) -size +0c -print0 2>/dev/null || true)
   gcs_mark_done "ORACLE_CACHE_SEEDED"
 }
 
