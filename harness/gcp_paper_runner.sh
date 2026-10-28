@@ -2242,7 +2242,7 @@ run_stage_5() {
     echo \"\$rust_vars\" > \"\$KEEP_DIR/rust_hg008_contigs_th32.variant_count\"
     [ \"\$rust_vars\" -ge 500000 ] || { echo \"FATAL: rust_hg008_contigs_th32.vcf has only \$rust_vars variants (<500,000)\" >&2; exit 1; }
     bgzip -c -@ 16 \"\$WORK_LOCAL/rust_hg008_contigs_th32.vcf\" > \"\$KEEP_DIR/rust_hg008_contigs_th32.vcf.gz\"
-    tabix -f -p vcf \"\$KEEP_DIR/rust_hg008_contigs_th32.vcf.gz\"
+    tabix -f -p vcf \"\$KEEP_DIR/rust_hg008_contigs_th32.vcf.gz\" || true
 
     # (b) vardictcpp (-th 32 --chunk 50000, contained under MemoryMax=245G)
     if [ ! -s \"\$KEEP_DIR/cpp_hg008_contigs_th32.exit\" ]; then
@@ -2303,7 +2303,7 @@ run_stage_5() {
     echo \"\$rust_vars\" > \"\$KEEP_DIR/rust_hg008_giab_th32.variant_count\"
     [ \"\$rust_vars\" -ge 500000 ] || { echo \"FATAL: rust_hg008_giab_th32.vcf has only \$rust_vars variants (<500,000)\" >&2; exit 1; }
     bgzip -c -@ 16 \"\$WORK_LOCAL/rust_hg008_giab_th32.vcf\" > \"\$KEEP_DIR/rust_hg008_giab_th32.vcf.gz\"
-    tabix -f -p vcf \"\$KEEP_DIR/rust_hg008_giab_th32.vcf.gz\"
+    tabix -f -p vcf \"\$KEEP_DIR/rust_hg008_giab_th32.vcf.gz\" || true
 
     # Evaluate VarDictRust against full-genome HG008 v0.3 & v0.4 truth sets immediately
     bash harness/concordance.sh \"\$WORK_LOCAL/rust_hg008_giab_th32.vcf\" \"\$TRUTH_V03\" \"\$BED_V03\" \"\$SDF\" \"\$KEEP_DIR/vcfeval_hg008_full_v03/rust\" HG008-T | tee \"\$KEEP_DIR/vcfeval_hg008_full_v03_rust.txt\"
