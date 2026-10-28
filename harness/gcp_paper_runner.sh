@@ -2067,6 +2067,9 @@ run_stage_5() {
     tabix -f -p vcf \"\$KEEP_DIR/rust_giab_th32.vcf.gz\"
 
     # (b) vardictcpp (-th 32 --chunk 50000)
+    if [ ! -s \"\$WORK_LOCAL/cpp_giab_th32.vcf\" ] && [ -s \"\$KEEP_DIR/cpp_giab_th32.vcf.gz\" ]; then
+      bgzip -dc -@ 16 \"\$KEEP_DIR/cpp_giab_th32.vcf.gz\" > \"\$WORK_LOCAL/cpp_giab_th32.vcf\"
+    fi
     if [ ! -s \"\$KEEP_DIR/cpp_giab_th32.time\" ]; then
       rc_cpp=0
       /usr/bin/time -v -o \"\$KEEP_DIR/cpp_giab_th32.time\" \
@@ -2079,6 +2082,11 @@ run_stage_5() {
     fi
 
     # (c) VarDictJava v1.8.3 (-th 32, -Xmx200g -XX:+ExitOnOutOfMemoryError)
+    if [ ! -s \"\$WORK_LOCAL/java_giab_th32.vcf\" ]; then
+      if [ -s \"\$KEEP_DIR/java_giab_th32.vcf.gz\" ] || oracle_cache_get 'hg002_full/java_giab_th32.vcf.gz' \"\$KEEP_DIR/java_giab_th32.vcf.gz\"; then
+        bgzip -dc -@ 16 \"\$KEEP_DIR/java_giab_th32.vcf.gz\" > \"\$WORK_LOCAL/java_giab_th32.vcf\"
+      fi
+    fi
     if [ ! -s \"\$KEEP_DIR/java_giab_th32.time\" ] || [ ! -s \"\$WORK_LOCAL/java_giab_th32.vcf\" ]; then
       rc_java=0
       /usr/bin/time -v -o \"\$KEEP_DIR/java_giab_th32.time\" \
