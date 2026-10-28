@@ -132,13 +132,18 @@ build_gcloud_create_cmd() {
 
 # Exact mkbed() formula from Archive.zip/scripts/01_download_and_map.sh:77-83
 # (mapped, primary, MAPQ>=1 reads via `samtools view -F 0x904 -q 1`; spans merged within 100 bp).
+# Single-process, 16-thread gsutil helper (Task 5a C1/C2: avoid gcloud storage cp hangs,
+# avoid Ubuntu 24.04 snap multiprocessing.Pool fork deadlocks via parallel_process_count=1,
+# keep 16 concurrent HTTP transfer threads, and retain MD5 on >150 MB objects).
+GSUTIL_MT_FLAGS=(-m -o "GSUtil:parallel_process_count=1" -o "GSUtil:parallel_thread_count=16")
+
 build_tierp_covered_bed() {
   local bam="$1" bed="$2" expected_lines="${3:-}"
   local bed_name
   bed_name="$(basename "$bed")"
   local generated=0
   if [ ! -s "$bed" ] && [ -z "${LOCAL_CKPT_DIR:-}" ]; then
-    setsid gsutil -q cp "${GCS_BAMS}/tier-p/${bed_name}" "$bed" 2>/dev/null || true
+    setsid gsutil "${GSUTIL_MT_FLAGS[@]}" -q cp "${GCS_BAMS}/tier-p/${bed_name}" "$bed" 2>/dev/null || true
   fi
   if [ ! -s "$bed" ]; then
     samtools view -F 0x904 -q 1 "$bam" | awk 'BEGIN{OFS="\t"}{
@@ -166,14 +171,9 @@ build_tierp_covered_bed() {
     fi
   fi
   if [ "$generated" -eq 1 ] && [ -z "${LOCAL_CKPT_DIR:-}" ]; then
-    setsid gsutil -o GSUtil:parallel_composite_upload_threshold=0 -q cp "$bed" "${GCS_BAMS}/tier-p/${bed_name}" 2>/dev/null || true
+    setsid gsutil "${GSUTIL_MT_FLAGS[@]}" -o GSUtil:parallel_composite_upload_threshold=0 -q cp "$bed" "${GCS_BAMS}/tier-p/${bed_name}" 2>/dev/null || true
   fi
 }
-
-# Single-process, 16-thread gsutil helper (Task 5a C1/C2: avoid gcloud storage cp hangs,
-# avoid Ubuntu 24.04 snap multiprocessing.Pool fork deadlocks via parallel_process_count=1,
-# keep 16 concurrent HTTP transfer threads, and retain MD5 on >150 MB objects).
-GSUTIL_MT_FLAGS=(-m -o "GSUtil:parallel_process_count=1" -o "GSUtil:parallel_thread_count=16")
 
 gcs_upload() {
   local src="$1" dst="$2"
@@ -186,7 +186,7 @@ gcs_upload() {
       if [ -d "$src" ]; then
         setsid gsutil "${GSUTIL_MT_FLAGS[@]}" -o GSUtil:parallel_composite_upload_threshold=0 -q rsync -r "$src" "$dst" && return 0
       else
-        setsid gsutil -o GSUtil:parallel_composite_upload_threshold=0 -q cp "$src" "$dst" && return 0
+        setsid gsutil "${GSUTIL_MT_FLAGS[@]}" -o GSUtil:parallel_composite_upload_threshold=0 -q cp "$src" "$dst" && return 0
       fi
       sleep 2
     done
@@ -458,7 +458,7 @@ start_background_prestager() {
       mkdir -p '${WORK_DIR}/local_staged' '${WORK_DIR}/data/rna'
       date -u +%Y-%m-%dT%H:%M:%SZ > '${WORK_DIR}/local_staged/field_envs.done'
       if [ ! -f '${WORK_DIR}/data/rna/HG002_rep1_Aligned.sortedByCoord.out.bam' ]; then
-        setsid gsutil -q cp '${GCS_BAMS}/rna-hg002/aligned/HG002_rep1_Aligned.sortedByCoord.out.bam*' '${WORK_DIR}/data/rna/' || true
+        setsid gsutil -m -o GSUtil:parallel_process_count=1 -o GSUtil:parallel_thread_count=16 -q cp '${GCS_BAMS}/rna-hg002/aligned/HG002_rep1_Aligned.sortedByCoord.out.bam*' '${WORK_DIR}/data/rna/' || true
       fi
       if setsid gsutil -q stat '${GCS_BAMS}/g4-cache/s4_ready.done' 2>/dev/null; then
         mkdir -p scratch/g4/seqc2 scratch/g4/multimodal
@@ -678,12 +678,12 @@ run_stage_2() {
     setsid gsutil -m -o GSUtil:parallel_process_count=1 -o GSUtil:parallel_thread_count=16 -q cp '${GCS_BAMS}/tier-p/*' '$tp_dir/bams/'
     setsid gsutil -m -o GSUtil:parallel_process_count=1 -o GSUtil:parallel_thread_count=16 -q cp '${GCS_REFS}/tier-p-truth/*' '$tp_dir/truth/'
     if [ ! -f '$tp_dir/archive/Archive.zip' ]; then
-      setsid gsutil -q cp '${GCS_REFS}/vardictcpp/Archive.zip' '$tp_dir/archive/Archive.zip'
+      setsid gsutil -m -o GSUtil:parallel_process_count=1 -o GSUtil:parallel_thread_count=16 -q cp '${GCS_REFS}/vardictcpp/Archive.zip' '$tp_dir/archive/Archive.zip'
     fi
     unzip -q -o '$tp_dir/archive/Archive.zip' 'reference/*' 'beds/*' 'scripts/*' 'performance_benchmark/*' 'results/*' 'README.md' 'MD5SUMS.txt' -d '$tp_dir/archive/'
     if [ ! -x '$tp_dir/vardictcpp-ae93fe39dc/build/vardictcpp' ]; then
       mkdir -p '$tp_dir/vardictcpp-ae93fe39dc/build'
-      if setsid gsutil -q cp '${GCS_REFS}/vardictcpp/vardictcpp-ae93fe39dc.bin' '$tp_dir/vardictcpp-ae93fe39dc/build/vardictcpp' 2>/dev/null; then
+      if setsid gsutil -m -o GSUtil:parallel_process_count=1 -o GSUtil:parallel_thread_count=16 -q cp '${GCS_REFS}/vardictcpp/vardictcpp-ae93fe39dc.bin' '$tp_dir/vardictcpp-ae93fe39dc/build/vardictcpp' 2>/dev/null; then
         chmod +x '$tp_dir/vardictcpp-ae93fe39dc/build/vardictcpp'
       else
         rm -rf '$tp_dir/vardictcpp-ae93fe39dc'
@@ -691,7 +691,7 @@ run_stage_2() {
         cd '$tp_dir/vardictcpp-ae93fe39dc'
         git checkout ae93fe39dc
         conda run -n vardict-oracle bash -c 'cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j 16'
-        setsid gsutil -o GSUtil:parallel_composite_upload_threshold=0 -q cp '$tp_dir/vardictcpp-ae93fe39dc/build/vardictcpp' '${GCS_REFS}/vardictcpp/vardictcpp-ae93fe39dc.bin' || true
+        setsid gsutil -m -o GSUtil:parallel_process_count=1 -o GSUtil:parallel_thread_count=16 -o GSUtil:parallel_composite_upload_threshold=0 -q cp '$tp_dir/vardictcpp-ae93fe39dc/build/vardictcpp' '${GCS_REFS}/vardictcpp/vardictcpp-ae93fe39dc.bin' || true
       fi
     fi
   "
@@ -854,7 +854,7 @@ run_stage_2() {
       LC_ALL=C sort \"\$KEEP_DIR/\${j_key}.java.raw.var\" > \"\$KEEP_DIR/\${mode}.java.tsv\"
       eval \"\$r_cmd\" | LC_ALL=C sort > \"\$KEEP_DIR/\${mode}.rust.tsv\"
       if [ -z \"\${LOCAL_CKPT_DIR:-}\" ] && setsid gsutil -q stat \"${GCS_RESULTS}/cells-v103/sweep_tierp_13modes/\${mode}.cpp.sorted.var\" 2>/dev/null; then
-        setsid gsutil -q cp \"${GCS_RESULTS}/cells-v103/sweep_tierp_13modes/\${mode}.cpp.sorted.var\" \"\$KEEP_DIR/\${mode}.cpp.tsv\"
+        setsid gsutil -m -o GSUtil:parallel_process_count=1 -o GSUtil:parallel_thread_count=16 -q cp \"${GCS_RESULTS}/cells-v103/sweep_tierp_13modes/\${mode}.cpp.sorted.var\" \"\$KEEP_DIR/\${mode}.cpp.tsv\"
       else
         eval \"\$c_cmd\" | LC_ALL=C sort > \"\$KEEP_DIR/\${mode}.cpp.tsv\"
       fi
@@ -971,7 +971,7 @@ run_stage_2() {
       bash -c \"ORACLE_XMX_GB=16 bash harness/run_oracle.sh '\$REF' '\$BAM' '\$KEEP_DIR/target20_4col.bed' '\$KEEP_DIR/vardict_java.vcf' HG002 -f 0.01 -z -th 8\"
     target/release/vardictrust -G \"\$REF\" -f 0.01 -N HG002 -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -z -th 8 \"\$KEEP_DIR/target20_4col.bed\" > \"\$KEEP_DIR/vardictrust.vcf\"
     if [ -z \"\${LOCAL_CKPT_DIR:-}\" ] && setsid gsutil -q stat \"${GCS_RESULTS}/cells-v103/sweep_hg002_chr20_exome/hg002_chr20.cpp.vcf\" 2>/dev/null; then
-      setsid gsutil -q cp \"${GCS_RESULTS}/cells-v103/sweep_hg002_chr20_exome/hg002_chr20.cpp.vcf\" \"\$KEEP_DIR/vardictcpp.vcf\"
+      setsid gsutil -m -o GSUtil:parallel_process_count=1 -o GSUtil:parallel_thread_count=16 -q cp \"${GCS_RESULTS}/cells-v103/sweep_hg002_chr20_exome/hg002_chr20.cpp.vcf\" \"\$KEEP_DIR/vardictcpp.vcf\"
     elif [ ! -s \"\$KEEP_DIR/vardictcpp.vcf\" ]; then
       '$tp_dir/vardictcpp-ae93fe39dc/build/vardictcpp' -G \"\$REF\" -f 0.01 -N HG002 -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -z --chunk 50000 -th 8 \"\$KEEP_DIR/target20_4col.bed\" -vcf > \"\$KEEP_DIR/vardictcpp.vcf\"
     fi
@@ -1210,7 +1210,7 @@ run_stage_3() {
   run_local_stage_cell "stage3" "s3_stage_rna_aligned_bam" 32 "128G" bash -c "
     set -euo pipefail
     if [ ! -f '$rna_dir/HG002_rep1_Aligned.sortedByCoord.out.bam' ]; then
-      setsid gsutil -q cp '${GCS_BAMS}/rna-hg002/aligned/HG002_rep1_Aligned.sortedByCoord.out.bam*' '$rna_dir/'
+      setsid gsutil -m -o GSUtil:parallel_process_count=1 -o GSUtil:parallel_thread_count=16 -q cp '${GCS_BAMS}/rna-hg002/aligned/HG002_rep1_Aligned.sortedByCoord.out.bam*' '$rna_dir/'
     fi
     samtools quickcheck '$rna_dir/HG002_rep1_Aligned.sortedByCoord.out.bam'
   "
@@ -1922,16 +1922,16 @@ run_stage_5() {
     BAI_PATH='$hg_dir/HG002.GRCh38.2x250.bam.bai'
 
     if [ ! -f \"\$BAI_PATH\" ] || [ \"\$(md5sum \"\$BAI_PATH\" 2>/dev/null | awk '{print \$1}')\" != 'a3c2b449df6509ca83fbd3fea22b9aee' ]; then
-      setsid gsutil -q cp '${GCS_BAMS}/hg002_full/HG002.GRCh38.2x250.bam.bai' \"\$BAI_PATH\" 2>/dev/null || \
+      setsid gsutil -m -o GSUtil:parallel_process_count=1 -o GSUtil:parallel_thread_count=16 -q cp '${GCS_BAMS}/hg002_full/HG002.GRCh38.2x250.bam.bai' \"\$BAI_PATH\" 2>/dev/null || \
         curl -sSLf --retry 5 \"\${BAM_URL}.bai\" -o \"\$BAI_PATH\"
-      setsid gsutil -o GSUtil:parallel_composite_upload_threshold=0 -q cp \"\$BAI_PATH\" '${GCS_BAMS}/hg002_full/HG002.GRCh38.2x250.bam.bai' || true
+      setsid gsutil -m -o GSUtil:parallel_process_count=1 -o GSUtil:parallel_thread_count=16 -o GSUtil:parallel_composite_upload_threshold=0 -q cp \"\$BAI_PATH\" '${GCS_BAMS}/hg002_full/HG002.GRCh38.2x250.bam.bai' || true
     fi
     bai_md5=\"\$(md5sum \"\$BAI_PATH\" | awk '{print \$1}')\"
     [ \"\$bai_md5\" = 'a3c2b449df6509ca83fbd3fea22b9aee' ] || { echo \"FATAL: \$BAI_PATH MD5 \$bai_md5 != a3c2b449df6509ca83fbd3fea22b9aee\" >&2; exit 1; }
 
     if [ ! -f \"\$BAM_PATH\" ] && setsid gsutil -q stat '${GCS_BAMS}/hg002_full/HG002.GRCh38.2x250.bam' 2>/dev/null; then
       echo '[Stage 5] Restoring 130.77 GB HG002.GRCh38.2x250.bam from GCS...'
-      setsid gsutil -q cp '${GCS_BAMS}/hg002_full/HG002.GRCh38.2x250.bam' \"\$BAM_PATH\" || true
+      setsid gsutil -m -o GSUtil:parallel_process_count=1 -o GSUtil:parallel_thread_count=16 -q cp '${GCS_BAMS}/hg002_full/HG002.GRCh38.2x250.bam' \"\$BAM_PATH\" || true
     fi
     if [ -f \"\$BAM_PATH\" ] && [ \"\$(stat -c %s \"\$BAM_PATH\" 2>/dev/null || echo 0)\" -eq 130770531934 ] && samtools quickcheck \"\$BAM_PATH\"; then
       echo '[Stage 5] Full HG002.GRCh38.2x250.bam already staged and verified on NVMe.'
@@ -1945,14 +1945,14 @@ run_stage_5() {
       got_bytes=\"\$(stat -c %s \"\$BAM_PATH\" 2>/dev/null || echo 0)\"
       [ \"\$got_bytes\" -eq 130770531934 ] || { echo \"FATAL: \$BAM_PATH size \$got_bytes != 130770531934\" >&2; exit 1; }
       samtools quickcheck \"\$BAM_PATH\"
-      setsid gsutil -o GSUtil:parallel_composite_upload_threshold=0 -q cp \"\$BAM_PATH\" '${GCS_BAMS}/hg002_full/HG002.GRCh38.2x250.bam' || true
+      setsid gsutil -m -o GSUtil:parallel_process_count=1 -o GSUtil:parallel_thread_count=16 -o GSUtil:parallel_composite_upload_threshold=0 -q cp \"\$BAM_PATH\" '${GCS_BAMS}/hg002_full/HG002.GRCh38.2x250.bam' || true
     fi
 
     # Build Arm A BED: 22 un-chunked whole-chromosome intervals (chr1..chr22, 2,875,001,522 bp)
-    if ! setsid gsutil -q cp '${GCS_BAMS}/hg002_full/hg002_full_22contigs.bed' '$hg_dir/hg002_full_22contigs.bed' 2>/dev/null; then
+    if ! setsid gsutil -m -o GSUtil:parallel_process_count=1 -o GSUtil:parallel_thread_count=16 -q cp '${GCS_BAMS}/hg002_full/hg002_full_22contigs.bed' '$hg_dir/hg002_full_22contigs.bed' 2>/dev/null; then
       awk '\$1 ~ /^chr([1-9]|1[0-9]|2[0-2])\$/ {printf \"%s\t0\t%s\t%s\n\", \$1, \$2, \$1}' \
         \"\$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fasta.fai\" > '$hg_dir/hg002_full_22contigs.bed'
-      setsid gsutil -o GSUtil:parallel_composite_upload_threshold=0 -q cp '$hg_dir/hg002_full_22contigs.bed' '${GCS_BAMS}/hg002_full/hg002_full_22contigs.bed' || true
+      setsid gsutil -m -o GSUtil:parallel_process_count=1 -o GSUtil:parallel_thread_count=16 -o GSUtil:parallel_composite_upload_threshold=0 -q cp '$hg_dir/hg002_full_22contigs.bed' '${GCS_BAMS}/hg002_full/hg002_full_22contigs.bed' || true
     fi
     [ \"\$(wc -l < '$hg_dir/hg002_full_22contigs.bed')\" -eq 22 ] || { echo 'FATAL: hg002_full_22contigs.bed line count != 22' >&2; exit 1; }
 
@@ -1963,7 +1963,7 @@ run_stage_5() {
     fi
 
     # Build Arm B BED: pre-tiled (<=50 kbp) GIAB v4.2.1 benchmark BED across chr1..chr22 (2.51 Gbp)
-    if ! setsid gsutil -q cp '${GCS_BAMS}/hg002_full/hg002_full_giab_50kb.bed' '$hg_dir/hg002_full_giab_50kb.bed' 2>/dev/null; then
+    if ! setsid gsutil -m -o GSUtil:parallel_process_count=1 -o GSUtil:parallel_thread_count=16 -q cp '${GCS_BAMS}/hg002_full/hg002_full_giab_50kb.bed' '$hg_dir/hg002_full_giab_50kb.bed' 2>/dev/null; then
       awk '
         \$1 ~ /^chr([1-9]|1[0-9]|2[0-2])\$/ {
           s = \$2 + 0;
@@ -1978,7 +1978,7 @@ run_stage_5() {
           }
         }
       ' \"\$DATA_DIR/hg002/truth/HG002_GRCh38_1_22_v4.2.1_benchmark_noinconsistent.bed\" > '$hg_dir/hg002_full_giab_50kb.bed'
-      setsid gsutil -o GSUtil:parallel_composite_upload_threshold=0 -q cp '$hg_dir/hg002_full_giab_50kb.bed' '${GCS_BAMS}/hg002_full/hg002_full_giab_50kb.bed' || true
+      setsid gsutil -m -o GSUtil:parallel_process_count=1 -o GSUtil:parallel_thread_count=16 -o GSUtil:parallel_composite_upload_threshold=0 -q cp '$hg_dir/hg002_full_giab_50kb.bed' '${GCS_BAMS}/hg002_full/hg002_full_giab_50kb.bed' || true
     fi
     [ \"\$(wc -l < '$hg_dir/hg002_full_giab_50kb.bed')\" -ge 50000 ] || { echo 'FATAL: hg002_full_giab_50kb.bed interval count < 50000' >&2; exit 1; }
     cp -f '$hg_dir/hg002_full_22contigs.bed' \"\$KEEP_DIR/\"
@@ -2167,10 +2167,10 @@ run_stage_5() {
       if [ -f \"\$src_bai\" ] && [ ! -f \"\${b}.bai\" ]; then
         cp -f \"\$src_bai\" \"\${b}.bai\"
       elif [ ! -f \"\${b}.bai\" ]; then
-        setsid gsutil -q cp \"${GCS_BAMS}/hg008_full/\$(basename \"\${b}.bai\")\" \"\${b}.bai\" 2>/dev/null || \
+        setsid gsutil -m -o GSUtil:parallel_process_count=1 -o GSUtil:parallel_thread_count=16 -q cp \"${GCS_BAMS}/hg008_full/\$(basename \"\${b}.bai\")\" \"\${b}.bai\" 2>/dev/null || \
           curl -sSLf --retry 5 \"\${u}.bai\" -o \"\${b}.bai\"
       fi
-      setsid gsutil -o GSUtil:parallel_composite_upload_threshold=0 -q cp \"\${b}.bai\" \"${GCS_BAMS}/hg008_full/\$(basename \"\${b}.bai\")\" || true
+      setsid gsutil -m -o GSUtil:parallel_process_count=1 -o GSUtil:parallel_thread_count=16 -o GSUtil:parallel_composite_upload_threshold=0 -q cp \"\${b}.bai\" \"${GCS_BAMS}/hg008_full/\$(basename \"\${b}.bai\")\" || true
     done
 
     if ! command -v aria2c >/dev/null 2>&1; then
@@ -2179,7 +2179,7 @@ run_stage_5() {
 
     if [ ! -f \"\$T_BAM\" ] && setsid gsutil -q stat '${GCS_BAMS}/hg008_full/HG008-T_Illumina_195x_GRCh38-GIABv3.bam' 2>/dev/null; then
       echo '[Stage 5] Restoring 160.0 GB HG008-T_Illumina_195x_GRCh38-GIABv3.bam from GCS...'
-      setsid gsutil -q cp '${GCS_BAMS}/hg008_full/HG008-T_Illumina_195x_GRCh38-GIABv3.bam' \"\$T_BAM\" || true
+      setsid gsutil -m -o GSUtil:parallel_process_count=1 -o GSUtil:parallel_thread_count=16 -q cp '${GCS_BAMS}/hg008_full/HG008-T_Illumina_195x_GRCh38-GIABv3.bam' \"\$T_BAM\" || true
     fi
     if [ -f \"\$T_BAM\" ] && [ \"\$(stat -c %s \"\$T_BAM\" 2>/dev/null || echo 0)\" -eq 159983848053 ] && samtools quickcheck \"\$T_BAM\"; then
       echo '[Stage 5] Full HG008-T 195x BAM already staged and verified on NVMe.'
@@ -2189,12 +2189,12 @@ run_stage_5() {
         -d '$hg8_dir' -o 'HG008-T_Illumina_195x_GRCh38-GIABv3.bam' \"\$T_URL\"
       [ \"\$(stat -c %s \"\$T_BAM\" 2>/dev/null || echo 0)\" -eq 159983848053 ] || { echo 'FATAL: HG008-T size mismatch' >&2; exit 1; }
       samtools quickcheck \"\$T_BAM\"
-      setsid gsutil -o GSUtil:parallel_composite_upload_threshold=0 -q cp \"\$T_BAM\" '${GCS_BAMS}/hg008_full/HG008-T_Illumina_195x_GRCh38-GIABv3.bam' || true
+      setsid gsutil -m -o GSUtil:parallel_process_count=1 -o GSUtil:parallel_thread_count=16 -o GSUtil:parallel_composite_upload_threshold=0 -q cp \"\$T_BAM\" '${GCS_BAMS}/hg008_full/HG008-T_Illumina_195x_GRCh38-GIABv3.bam' || true
     fi
 
     if [ ! -f \"\$N_BAM\" ] && setsid gsutil -q stat '${GCS_BAMS}/hg008_full/HG008-N-D_Illumina_169x_GRCh38-GIABv3.bam' 2>/dev/null; then
       echo '[Stage 5] Restoring 169.0 GB HG008-N-D_Illumina_169x_GRCh38-GIABv3.bam from GCS...'
-      setsid gsutil -q cp '${GCS_BAMS}/hg008_full/HG008-N-D_Illumina_169x_GRCh38-GIABv3.bam' \"\$N_BAM\" || true
+      setsid gsutil -m -o GSUtil:parallel_process_count=1 -o GSUtil:parallel_thread_count=16 -q cp '${GCS_BAMS}/hg008_full/HG008-N-D_Illumina_169x_GRCh38-GIABv3.bam' \"\$N_BAM\" || true
     fi
     if [ -f \"\$N_BAM\" ] && [ \"\$(stat -c %s \"\$N_BAM\" 2>/dev/null || echo 0)\" -eq 168960212218 ] && samtools quickcheck \"\$N_BAM\"; then
       echo '[Stage 5] Full HG008-N 169x BAM already staged and verified on NVMe.'
@@ -2204,14 +2204,14 @@ run_stage_5() {
         -d '$hg8_dir' -o 'HG008-N-D_Illumina_169x_GRCh38-GIABv3.bam' \"\$N_URL\"
       [ \"\$(stat -c %s \"\$N_BAM\" 2>/dev/null || echo 0)\" -eq 168960212218 ] || { echo 'FATAL: HG008-N size mismatch' >&2; exit 1; }
       samtools quickcheck \"\$N_BAM\"
-      setsid gsutil -o GSUtil:parallel_composite_upload_threshold=0 -q cp \"\$N_BAM\" '${GCS_BAMS}/hg008_full/HG008-N-D_Illumina_169x_GRCh38-GIABv3.bam' || true
+      setsid gsutil -m -o GSUtil:parallel_process_count=1 -o GSUtil:parallel_thread_count=16 -o GSUtil:parallel_composite_upload_threshold=0 -q cp \"\$N_BAM\" '${GCS_BAMS}/hg008_full/HG008-N-D_Illumina_169x_GRCh38-GIABv3.bam' || true
     fi
 
     # Build Arm A BED: 22 un-chunked whole-chromosome intervals (chr1..chr22, 2,875,001,522 bp)
-    if ! setsid gsutil -q cp '${GCS_BAMS}/hg008_full/hg008_full_22contigs.bed' '$hg8_dir/hg008_full_22contigs.bed' 2>/dev/null; then
+    if ! setsid gsutil -m -o GSUtil:parallel_process_count=1 -o GSUtil:parallel_thread_count=16 -q cp '${GCS_BAMS}/hg008_full/hg008_full_22contigs.bed' '$hg8_dir/hg008_full_22contigs.bed' 2>/dev/null; then
       awk '\$1 ~ /^chr([1-9]|1[0-9]|2[0-2])\$/ {printf \"%s\t0\t%s\t%s\n\", \$1, \$2, \$1}' \
         \"\$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fasta.fai\" > '$hg8_dir/hg008_full_22contigs.bed'
-      setsid gsutil -o GSUtil:parallel_composite_upload_threshold=0 -q cp '$hg8_dir/hg008_full_22contigs.bed' '${GCS_BAMS}/hg008_full/hg008_full_22contigs.bed' || true
+      setsid gsutil -m -o GSUtil:parallel_process_count=1 -o GSUtil:parallel_thread_count=16 -o GSUtil:parallel_composite_upload_threshold=0 -q cp '$hg8_dir/hg008_full_22contigs.bed' '${GCS_BAMS}/hg008_full/hg008_full_22contigs.bed' || true
     fi
     [ \"\$(wc -l < '$hg8_dir/hg008_full_22contigs.bed')\" -eq 22 ]
 
@@ -2222,7 +2222,7 @@ run_stage_5() {
     # Build Arm B BED: pre-tiled (<=50 kbp) GIAB HG008 v0.4 benchmark BED across chr1..chr22
     SRC_BED=\"\$DATA_DIR/hg008/truth/HG008-T_somatic_smvar_benchmark_v0.4_GRCh38_all.bed\"
     [ -f \"\$SRC_BED\" ] || SRC_BED=\"\$DATA_DIR/hg008/truth/HG008-T_somatic_smvar_benchmark_v0.3_all.bed\"
-    if ! setsid gsutil -q cp '${GCS_BAMS}/hg008_full/hg008_full_giab_v04_50kb.bed' '$hg8_dir/hg008_full_giab_v04_50kb.bed' 2>/dev/null; then
+    if ! setsid gsutil -m -o GSUtil:parallel_process_count=1 -o GSUtil:parallel_thread_count=16 -q cp '${GCS_BAMS}/hg008_full/hg008_full_giab_v04_50kb.bed' '$hg8_dir/hg008_full_giab_v04_50kb.bed' 2>/dev/null; then
       awk '
         \$1 ~ /^chr([1-9]|1[0-9]|2[0-2])\$/ {
           s = \$2 + 0;
@@ -2237,7 +2237,7 @@ run_stage_5() {
           }
         }
       ' \"\$SRC_BED\" > '$hg8_dir/hg008_full_giab_v04_50kb.bed'
-      setsid gsutil -o GSUtil:parallel_composite_upload_threshold=0 -q cp '$hg8_dir/hg008_full_giab_v04_50kb.bed' '${GCS_BAMS}/hg008_full/hg008_full_giab_v04_50kb.bed' || true
+      setsid gsutil -m -o GSUtil:parallel_process_count=1 -o GSUtil:parallel_thread_count=16 -o GSUtil:parallel_composite_upload_threshold=0 -q cp '$hg8_dir/hg008_full_giab_v04_50kb.bed' '${GCS_BAMS}/hg008_full/hg008_full_giab_v04_50kb.bed' || true
     fi
     [ \"\$(wc -l < '$hg8_dir/hg008_full_giab_v04_50kb.bed')\" -ge 40000 ]
     wc -l '$hg8_dir/hg008_full_22contigs.bed' '$hg8_dir/hg008_full_giab_v04_50kb.bed' > \"\$KEEP_DIR/hg008_bed_counts.txt\"
@@ -2689,7 +2689,7 @@ run_stage_5() {
     # Download Ultima UG-High-Confidence-Regions v2.1 BED (excludes HMER>=11 homopolymers)
     if [ ! -s '$xp_dir/ug_hcr.bed' ]; then
       curl -sSLf --retry 5 'https://ultimagen-feb-2024-giab.s3.amazonaws.com/UG-High-Confidence-Regions/v2.1/ug_hcr.bed' -o '$xp_dir/ug_hcr.bed'
-      setsid gsutil -o GSUtil:parallel_composite_upload_threshold=0 -q cp '$xp_dir/ug_hcr.bed' \"\${GCS_BAMS}/cross_platform_chr20/ug_hcr.bed\" || true
+      setsid gsutil -m -o GSUtil:parallel_process_count=1 -o GSUtil:parallel_thread_count=16 -o GSUtil:parallel_composite_upload_threshold=0 -q cp '$xp_dir/ug_hcr.bed' \"\${GCS_BAMS}/cross_platform_chr20/ug_hcr.bed\" || true
     fi
 
     # Build chr20 evaluation BEDs and <=50 kbp pre-tiled calling BEDs
@@ -2710,8 +2710,7 @@ run_stage_5() {
       local fn
       fn=\"\$(basename \"\$out_bam\")\"
       if [ ! -s \"\$out_bam\" ] && setsid gsutil -q stat \"\${GCS_BAMS}/cross_platform_chr20/\${fn}\" 2>/dev/null; then
-        setsid gsutil -q cp \"\${GCS_BAMS}/cross_platform_chr20/\${fn}\" \"\$out_bam\" || true
-        setsid gsutil -q cp \"\${GCS_BAMS}/cross_platform_chr20/\${fn}.bai\" \"\${out_bam}.bai\" || true
+        setsid gsutil -m -o GSUtil:parallel_process_count=1 -o GSUtil:parallel_thread_count=16 -q cp \"\${GCS_BAMS}/cross_platform_chr20/\${fn}\" \"\${GCS_BAMS}/cross_platform_chr20/\${fn}.bai\" \"\$(dirname \"\$out_bam\")/\" || true
       fi
       if [ -s \"\$out_bam\" ] && [ -s \"\${out_bam}.bai\" ] && samtools quickcheck \"\$out_bam\"; then
         echo \"[Stage-XP] Reusing \$out_bam\"
@@ -2727,8 +2726,7 @@ run_stage_5() {
       fi
       rm -f \"\$idx_local\"
       samtools index -@ 8 \"\$out_bam\"
-      setsid gsutil -o GSUtil:parallel_composite_upload_threshold=0 -q cp \"\$out_bam\" \"\${GCS_BAMS}/cross_platform_chr20/\${fn}\" || true
-      setsid gsutil -o GSUtil:parallel_composite_upload_threshold=0 -q cp \"\${out_bam}.bai\" \"\${GCS_BAMS}/cross_platform_chr20/\${fn}.bai\" || true
+      setsid gsutil -m -o GSUtil:parallel_process_count=1 -o GSUtil:parallel_thread_count=16 -o GSUtil:parallel_composite_upload_threshold=0 -q cp \"\$out_bam\" \"\${out_bam}.bai\" \"\${GCS_BAMS}/cross_platform_chr20/\" || true
     }
 
     # 1. Germline HG002 chr20 (Illumina 2x250, Element AVITI 80x, MGI DNBSEQ 100x, Ultima UG100 40x CRAM+BAM)
@@ -3053,7 +3051,7 @@ oracle_cache_get() {
   fi
   if [ -z "${LOCAL_CKPT_DIR:-}" ] && setsid gsutil -q stat "${GCS_ORACLE_CACHE}/${cache_rel}" 2>/dev/null; then
     echo "[ORACLE-CACHE GET (GCS)] Downloading '${GCS_ORACLE_CACHE}/${cache_rel}' -> '${local_file}'"
-    setsid gsutil -q cp "${GCS_ORACLE_CACHE}/${cache_rel}" "$local_file" && [ -s "$local_file" ] && return 0
+    setsid gsutil "${GSUTIL_MT_FLAGS[@]}" -q cp "${GCS_ORACLE_CACHE}/${cache_rel}" "$local_file" && [ -s "$local_file" ] && return 0
   fi
   return 1
 }
@@ -3092,9 +3090,9 @@ oracle_cache_get_or_run() {
   # 3. GCS Oracle Cache hit
   if [ -z "${LOCAL_CKPT_DIR:-}" ] && setsid gsutil -q stat "${GCS_ORACLE_CACHE}/${cache_rel}" 2>/dev/null; then
     echo "[ORACLE-CACHE HIT (GCS)] Downloading '${GCS_ORACLE_CACHE}/${cache_rel}' -> '${local_file}'"
-    if setsid gsutil -q cp "${GCS_ORACLE_CACHE}/${cache_rel}" "$local_file" && is_valid_oracle_cache_file "$local_file"; then
+    if setsid gsutil "${GSUTIL_MT_FLAGS[@]}" -q cp "${GCS_ORACLE_CACHE}/${cache_rel}" "$local_file" && is_valid_oracle_cache_file "$local_file"; then
       if setsid gsutil -q stat "${GCS_ORACLE_CACHE}/${cache_rel}.sha256" 2>/dev/null; then
-        setsid gsutil -q cp "${GCS_ORACLE_CACHE}/${cache_rel}.sha256" "${local_file}.sha256" || true
+        setsid gsutil "${GSUTIL_MT_FLAGS[@]}" -q cp "${GCS_ORACLE_CACHE}/${cache_rel}.sha256" "${local_file}.sha256" || true
         local exp_sha got_sha
         exp_sha="$(awk '{print $1}' "${local_file}.sha256" 2>/dev/null || true)"
         got_sha="$(sha256sum "$local_file" | awk '{print $1}')"
@@ -4020,10 +4018,15 @@ run_plan_check() {
   grep -Fq 's5_cross_platform_short_read_chr20_panel' "$0" || { echo "FAIL: missing s5_cross_platform_short_read_chr20_panel" >&2; exit 1; }
 
   # Enforce the 6 Future-Version Operational Invariants:
-  # Invariant 3: 16-thread single-process gsutil (zero bare gsutil -m without parallel_process_count=1)
+  # Invariant 3: 16-thread single-process gsutil (zero bare gsutil -m without parallel_process_count=1,
+  # and zero non-stdin gsutil cp/rsync without GSUTIL_MT_FLAGS or parallel_process_count=1 + parallel_thread_count=16)
   grep -Fq 'GSUTIL_MT_FLAGS=(-m -o "GSUtil:parallel_process_count=1" -o "GSUtil:parallel_thread_count=16")' "$0" || { echo "FAIL: missing 16-thread single-process GSUTIL_MT_FLAGS" >&2; exit 1; }
-  if grep -vE '^[[:space:]]*(#|echo )' "$0" | grep -E 'gsutil[[:space:]]+-m[[:space:]]+(cp|rsync)' >/dev/null 2>&1; then
+  if grep -vE '^[[:space:]]*(#|echo |if grep )' "$0" | grep -E 'gsutil[[:space:]]+-m[[:space:]]+(cp|rsync)' >/dev/null 2>&1; then
     echo "FAIL: bare gsutil -m without parallel_process_count=1 causes Ubuntu 24.04 snap multiprocessing.Pool deadlock" >&2
+    exit 1
+  fi
+  if grep -vE '^[[:space:]]*(#|echo |if grep )' "$0" | grep -E 'gsutil.*\b(cp|rsync)\b' | grep -vE '(GSUTIL_MT_FLAGS|parallel_thread_count=16|cp -[[:space:]])' >/dev/null 2>&1; then
+    echo "FAIL: non-stdin gsutil cp/rsync missing 16-thread single-process flags (GSUTIL_MT_FLAGS)" >&2
     exit 1
   fi
   # Invariant 4: Static & reusable asset GCS push/pull hooks
