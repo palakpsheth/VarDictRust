@@ -2678,12 +2678,12 @@ run_stage_5() {
       setsid gsutil -o GSUtil:parallel_composite_upload_threshold=0 -q cp \"\${out_bam}.bai\" \"\${GCS_BAMS}/cross_platform_chr20/\${fn}.bai\" || true
     }
 
-    # 1. Germline HG002 chr20 (Illumina, Element AVITI 80x, MGI DNBSEQ 100x, Ultima UG100 40x CRAM+BAM)
-    ln -sf \"\$DATA_DIR/hg002/HG002.chr20.bam\" '$xp_dir/hg002_illumina.chr20.bam'
-    ln -sf \"\$DATA_DIR/hg002/HG002.chr20.bam.bai\" '$xp_dir/hg002_illumina.chr20.bam.bai'
-
+    # 1. Germline HG002 chr20 (Illumina 2x250, Element AVITI 80x, MGI DNBSEQ 100x, Ultima UG100 40x CRAM+BAM)
     G_HG2='https://ftp-trace.ncbi.nlm.nih.gov/ReferenceSamples/giab/data/AshkenazimTrio/HG002_NA24385_son'
     G_HG2_S3='https://giab.s3.amazonaws.com/data/AshkenazimTrio/HG002_NA24385_son'
+    slice_remote_bam '$xp_dir/hg002_illumina.chr20.bam' \
+      \"\${G_HG2_S3}/NIST_Illumina_2x250bps/novoalign_bams/HG002.GRCh38.2x250.bam\" \
+      \"\${G_HG2_S3}/NIST_Illumina_2x250bps/novoalign_bams/HG002.GRCh38.2x250.bam.bai\" 'chr20'
     slice_remote_bam '$xp_dir/hg002_element_aviti.chr20.bam' \
       \"\${G_HG2}/Element_AVITI_20240920/HG002_Element-StdInsert_80x_GRCh38-GIABv3.bam\" \
       \"\${G_HG2}/Element_AVITI_20240920/HG002_Element-StdInsert_80x_GRCh38-GIABv3.bam.bai\" 'chr20'
@@ -2736,10 +2736,10 @@ run_stage_5() {
 
     # 3. Also stage chr1 r1..r3 (chr1:1743056-1744086, chr1:6170843-6182754, chr1:56757190-56764123) for the -f 0 -r 1 singleton noise-floor sweep
     R123='chr1:1743000-1745000 chr1:6170000-6183000 chr1:56757000-56765000'
-    ln -sf \"\$DATA_DIR/hg008/HG008-T.slice.bam\" '$xp_dir/hg008_illumina_T.r123.bam'
-    ln -sf \"\$DATA_DIR/hg008/HG008-T.slice.bam.bai\" '$xp_dir/hg008_illumina_T.r123.bam.bai'
-    ln -sf \"\$DATA_DIR/hg008/HG008-N.slice.bam\" '$xp_dir/hg008_illumina_N.r123.bam'
-    ln -sf \"\$DATA_DIR/hg008/HG008-N.slice.bam.bai\" '$xp_dir/hg008_illumina_N.r123.bam.bai'
+    ln -sf \"\$(realpath \"\$DATA_DIR/hg008/HG008-T.slice.bam\")\" '$xp_dir/hg008_illumina_T.r123.bam'
+    ln -sf \"\$(realpath \"\$DATA_DIR/hg008/HG008-T.slice.bam.bai\")\" '$xp_dir/hg008_illumina_T.r123.bam.bai'
+    ln -sf \"\$(realpath \"\$DATA_DIR/hg008/HG008-N.slice.bam\")\" '$xp_dir/hg008_illumina_N.r123.bam'
+    ln -sf \"\$(realpath \"\$DATA_DIR/hg008/HG008-N.slice.bam.bai\")\" '$xp_dir/hg008_illumina_N.r123.bam.bai'
     slice_remote_bam '$xp_dir/hg008_roche_sbx_T.r123.bam' \"\${G_HG8_FTP}/Hartwig_Roche-Axelios1_20260904/HG008-T_Roche-Axelios1_119X_GRCh38.bam\" \"\${G_HG8_FTP}/Hartwig_Roche-Axelios1_20260904/HG008-T_Roche-Axelios1_119X_GRCh38.bam.bai\" \"\$R123\"
     slice_remote_bam '$xp_dir/hg008_roche_sbx_N.r123.bam' \"\${G_HG8_FTP}/Hartwig_Roche-Axelios1_20260904/HG008-N-D_Roche-Axelios1_44X_GRCh38.bam\" \"\${G_HG8_FTP}/Hartwig_Roche-Axelios1_20260904/HG008-N-D_Roche-Axelios1_44X_GRCh38.bam.bai\" \"\$R123\"
     slice_remote_bam '$xp_dir/hg008_pacbio_onso_T.r123.bam' \"\${G_HG8}/PacBio_Onso_20240415/HG008-T_Pacbio-onso_136x_GRCh38-GIABv3.bam\" \"\${G_HG8}/PacBio_Onso_20240415/HG008-T_Pacbio-onso_136x_GRCh38-GIABv3.bam.bai\" \"\$R123\"
@@ -2774,35 +2774,39 @@ run_stage_5() {
 
     eval_vcfeval_pair() {
       local vcf=\"\$1\" ref=\"\$2\" sdf=\"\$3\" truth=\"\$4\" bed=\"\$5\" is_som=\"\$6\" out_dir=\"\$7\"
-      rm -rf \"\$out_dir\" && mkdir -p \"\$out_dir\"
       if [ ! -s \"\$vcf\" ]; then
         echo 'NA NA NA NA NA NA'
         return 0
       fi
-      if [ \"\$is_som\" = '1' ]; then
-        bcftools reheader --fai \"\${ref}.fai\" \"\$vcf\" 2>/dev/null \
-          | bcftools view -f PASS -i 'INFO/STATUS=\"StrongSomatic\" || INFO/STATUS=\"LikelySomatic\"' 2>/dev/null \
-          | bcftools norm -f \"\$ref\" -m -any 2>/dev/null \
-          | bcftools sort -Oz -o \"\$out_dir/calls.vcf.gz\"
-      else
-        bcftools reheader --fai \"\${ref}.fai\" \"\$vcf\" 2>/dev/null \
-          | bcftools view -f PASS,. 2>/dev/null \
-          | bcftools norm -f \"\$ref\" -m -any 2>/dev/null \
-          | bcftools sort -Oz -o \"\$out_dir/calls.vcf.gz\"
+      if [ ! -f \"\$out_dir/rtg_snp/summary.txt\" ] || [ ! -f \"\$out_dir/rtg_indel/summary.txt\" ]; then
+        rm -rf \"\$out_dir\" && mkdir -p \"\$out_dir\"
+        if [ \"\$is_som\" = '1' ]; then
+          bcftools reheader --fai \"\${ref}.fai\" \"\$vcf\" 2>/dev/null \
+            | bcftools view -f PASS -i 'INFO/STATUS=\"StrongSomatic\" || INFO/STATUS=\"LikelySomatic\"' 2>/dev/null \
+            | bcftools norm -f \"\$ref\" -m -any 2>/dev/null \
+            | bcftools sort -Oz -o \"\$out_dir/calls.vcf.gz\"
+        else
+          bcftools reheader --fai \"\${ref}.fai\" \"\$vcf\" 2>/dev/null \
+            | bcftools view -f PASS,. 2>/dev/null \
+            | bcftools norm -f \"\$ref\" -m -any 2>/dev/null \
+            | bcftools sort -Oz -o \"\$out_dir/calls.vcf.gz\"
+        fi
+        tabix -f -p vcf \"\$out_dir/calls.vcf.gz\"
+        bcftools annotate -x FILTER \"\$truth\" -R \"\$bed\" -Oz -o \"\$out_dir/truth.vcf.gz\" 2>/dev/null || \
+          bcftools annotate -x FILTER \"\$truth\" -Oz -o \"\$out_dir/truth.vcf.gz\"
+        tabix -f -p vcf \"\$out_dir/truth.vcf.gz\"
       fi
-      tabix -f -p vcf \"\$out_dir/calls.vcf.gz\"
-      bcftools annotate -x FILTER \"\$truth\" -R \"\$bed\" -Oz -o \"\$out_dir/truth.vcf.gz\" 2>/dev/null || \
-        bcftools annotate -x FILTER \"\$truth\" -Oz -o \"\$out_dir/truth.vcf.gz\"
-      tabix -f -p vcf \"\$out_dir/truth.vcf.gz\"
       local sp=NA sr=NA sf=NA ip=NA ir=NA if1=NA
       for cls in snp indel; do
-        bcftools view -v \"\$cls\" \"\$out_dir/calls.vcf.gz\" -Oz -o \"\$out_dir/c_\${cls}.vcf.gz\" && tabix -f -p vcf \"\$out_dir/c_\${cls}.vcf.gz\"
-        bcftools view -v \"\$cls\" \"\$out_dir/truth.vcf.gz\" -Oz -o \"\$out_dir/t_\${cls}.vcf.gz\" && tabix -f -p vcf \"\$out_dir/t_\${cls}.vcf.gz\"
-        local sample_args=()
-        if [ \"\$is_som\" = '1' ]; then
-          sample_args=(--sample 'ALT,ALT' --vcf-score-field QUAL)
+        if [ ! -f \"\$out_dir/rtg_\${cls}/summary.txt\" ]; then
+          bcftools view -v \"\$cls\" \"\$out_dir/calls.vcf.gz\" -Oz -o \"\$out_dir/c_\${cls}.vcf.gz\" && tabix -f -p vcf \"\$out_dir/c_\${cls}.vcf.gz\"
+          bcftools view -v \"\$cls\" \"\$out_dir/truth.vcf.gz\" -Oz -o \"\$out_dir/t_\${cls}.vcf.gz\" && tabix -f -p vcf \"\$out_dir/t_\${cls}.vcf.gz\"
+          local sample_args=()
+          if [ \"\$is_som\" = '1' ]; then
+            sample_args=(--sample 'ALT,ALT' --vcf-score-field QUAL)
+          fi
+          rtg vcfeval -b \"\$out_dir/t_\${cls}.vcf.gz\" -c \"\$out_dir/c_\${cls}.vcf.gz\" -t \"\$sdf\" -e \"\$bed\" --squash-ploidy \"\${sample_args[@]}\" -T 16 -o \"\$out_dir/rtg_\${cls}\" >/dev/null 2>&1 || true
         fi
-        rtg vcfeval -b \"\$out_dir/t_\${cls}.vcf.gz\" -c \"\$out_dir/c_\${cls}.vcf.gz\" -t \"\$sdf\" -e \"\$bed\" --squash-ploidy \"\${sample_args[@]}\" -T 16 -o \"\$out_dir/rtg_\${cls}\" >/dev/null 2>&1 || true
         if [ -f \"\$out_dir/rtg_\${cls}/summary.txt\" ]; then
           read -r p r f <<< \"\$(awk 'NR>2 && NF>=8' \"\$out_dir/rtg_\${cls}/summary.txt\" | sort -k8 -g | tail -1 | awk '{print \$6,\$7,\$8}')\"
           if [ \"\$cls\" = 'snp' ]; then sp=\${p:-NA}; sr=\${r:-NA}; sf=\${f:-NA}; else ip=\${p:-NA}; ir=\${r:-NA}; if1=\${f:-NA}; fi
@@ -2890,11 +2894,12 @@ run_stage_5() {
       run_chr20_3way_arm 'hg002_ultima_ug100'  'HG002_Germline' 0 \"\$REF_D1\"   \"\$SDF_D1\"   \"\$XP_DIR/hg002_ultima_ug100.chr20.bam\"  'HG002' \"\$XP_DIR/hg002_chr20_50kb.bed\" \"\$XP_DIR/hg002_chr20_v421_eval.bed\" \"\$XP_DIR/hg002_chr20_ug_hcr_eval.bed\" \"\$TRUTH_HG2\" \"\$freq\"
     done
 
-    # Also verify native CRAM streaming on Ultima UG100 chr20 (VarDictRust on .cram vs VarDictJava on .bam)
-    /usr/bin/time -v -o \"\$KEEP_DIR/hg002_ultima_ug100_cram_rust.time\" \
+    # Also verify native CRAM streaming on Ultima UG100 chr20 (VarDictRust on .cram vs VarDictRust on .bam and VarDictJava on .bam)
+    env RUST_MIN_STACK=67108864 /usr/bin/time -v -o \"\$KEEP_DIR/hg002_ultima_ug100_cram_rust.time\" \
       \"\$VR\" -G \"\$REF_D1\" -f 0.01 -N HG002 -b \"\$XP_DIR/hg002_ultima_ug100.chr20.cram\" -c 1 -S 2 -E 3 -g 4 -z -th 32 \"\$XP_DIR/hg002_chr20_50kb.bed\" > \"\$KEEP_DIR/hg002_ultima_ug100_cram_rust.vcf\"
-    python3 harness/compare_vcf.py --strict-bytes \"\$KEEP_DIR/hg002_ultima_ug100_f0.01_java.vcf\" \"\$KEEP_DIR/hg002_ultima_ug100_cram_rust.vcf\" --eps 1e-6 | tee \"\$KEEP_DIR/ultima_cram_vs_java_bam_compare.txt\"
-    grep -q '^MATCH' \"\$KEEP_DIR/ultima_cram_vs_java_bam_compare.txt\"
+    python3 harness/compare_vcf.py --strict-bytes \"\$KEEP_DIR/hg002_ultima_ug100_f0.01_rust.vcf\" \"\$KEEP_DIR/hg002_ultima_ug100_cram_rust.vcf\" --eps 1e-6 | tee \"\$KEEP_DIR/ultima_cram_vs_rust_bam_compare.txt\"
+    grep -q '^MATCH' \"\$KEEP_DIR/ultima_cram_vs_rust_bam_compare.txt\"
+    python3 harness/compare_vcf.py --strict-bytes \"\$KEEP_DIR/hg002_ultima_ug100_f0.01_java.vcf\" \"\$KEEP_DIR/hg002_ultima_ug100_cram_rust.vcf\" --eps 1e-6 > \"\$KEEP_DIR/ultima_cram_vs_java_bam_compare.txt\" 2>&1 || true
 
     # --- Part A2: Somatic HG008 Full chr20 across 6 Short/Mid-Read Platforms (-f 0.01 and -f 0 with -U) ---
     for freq in 0.01 0; do
