@@ -1,22 +1,32 @@
 #!/usr/bin/env bash
 # =============================================================================
 # harness/gcp_paper_runner.sh
-# Single-Instance GCP Orchestrator & Worker for `paper/gcp-study` (v1.0.5).
+# Single-Instance GCP Orchestrator & Worker for `paper/gcp-study` (v1.0.5+).
 #
-# Architecture (locked in docs/validation/gcp-study-protocol.md §6 & gcp-prereg.md §A12):
-#   - Single dedicated VM: `n2-highmem-32` (32 vCPUs, 256 GB RAM, 250 GB pd-ssd boot + 8x375 GB [3.0 TB] NVMe Local SSD RAID0, us-central1-a)
-#   - 2-Strike Spot -> On-Demand Escalation Policy:
-#       Attempt 1: SPOT (--provisioning-model=SPOT)
-#       Attempt 2: SPOT (--provisioning-model=SPOT)
-#       Attempt 3: STANDARD (--provisioning-model=STANDARD, On-Demand)
-#   - Per-cell GCS checkpointing (`gs://vardict-paper-trial-results/checkpoints-v105/<cell>.done`)
-#     so preempted Spot runs resume cleanly without repeating completed cells.
-#   - Detached systemd service on VM (`vardict-paper-worker`) + GCS heartbeat polling so
-#     transient SSH drops never interrupt a healthy VM; preemption is detected via
-#     `gcloud compute instances describe` status transitions.
-#   - Cgroup slice isolation per cell (`systemd-run --scope -p AllowedCPUs=... -p MemoryMax=...`).
-#   - Disjoint-core background pre-staging (`AllowedCPUs=24-31`) & parallel field-caller slices.
-#   - `export GOLDEN_MODE=off` enforced globally on all timed/OOM cells.
+# Locked Operational Invariants (docs/validation/gcp-study-protocol.md §6 & benchmarks/gcp-prereg.md §A12/B8):
+#   1. CPU Microarchitecture Lock (`MIN_CPU_PLATFORM="Intel Ice Lake"`):
+#      Always pass `--min-cpu-platform="Intel Ice Lake"` on `n2-standard-32` so GCP schedules
+#      onto 3rd Gen Intel Xeon Scalable (`Platinum 8373C @ 2.60GHz / 3.50GHz turbo`, 1 NUMA socket,
+#      identical CPU silicon to the cached `n2-highmem-32` Java/Cpp baseline) and NEVER drifts
+#      onto 2nd Gen `Intel Cascade Lake` (`2.80 GHz`, ~22% slower IPC).
+#   2. Right-Sized VM + 5-Spot -> 6th-On-Demand Escalation Policy:
+#      `n2-standard-32` (32 vCPUs, 128 GB RAM, 100 GB pd-ssd boot + 4x375 GB [1.5 TB] NVMe RAID0).
+#      Attempts 1..5 rotate `SPOT` across `us-central1-{a,b,c,f,a}` (continuing across zone Spot
+#      stockouts); Attempt 6 escalates to `STANDARD` (On-Demand).
+#   3. Ubuntu 24.04 Snap `gsutil` Multithreading without Multiprocessing Deadlock:
+#      Always use `GSUTIL_MT_FLAGS=(-m -o "GSUtil:parallel_process_count=1" -o "GSUtil:parallel_thread_count=16")`
+#      (1 Python process, 16 transfer threads — zero `multiprocessing.Pool` `fork()` deadlocks or
+#      `<defunct>` zombie children) and single-pass `gsutil rsync -r -x` in `restore_prev_java_cpp_artifacts()`.
+#   4. Static & Reusable Asset GCS Push/Pull Persistence:
+#      All generated static assets (`*.mkbed.bed`, `vardictcpp-ae93fe39dc.bin`, `HG002`/`HG008`
+#      full WGS BAMs/BEDs/truth, and `chr20`/`r123` cross-platform slices) pull from GCS before
+#      generating and push immediately on cache miss so new VMs restore in seconds.
+#   5. Cached Amplicon VCF Flag Parity:
+#      Every `vardictrust -a ...` run against cached Java VCFs must pass `-c 1 -S 2 -E 3 -g 4`
+#      so `omit_end_tag` matches `compare.sh` / `var2vcf_valid.pl -E`.
+#   6. Future-Version Bump Checklist (`v1.0.6+` / `v1.1+`):
+#      Update `EXPECTED_FP`, `GCS_CKPT` (`checkpoints-vXYZ`), `GCS_CELLS_SUBDIR` (`cells-vXYZ`),
+#      and append the prior `cells-v105` prefix to `restore_prev_java_cpp_artifacts()`.
 # =============================================================================
 set -euo pipefail
 
@@ -499,6 +509,27 @@ worker_preflight() {
     echo "FATAL: engine fingerprint mismatch: got '$fp', expected '$EXPECTED_FP'" >&2
     exit 2
   fi
+  local meta_cpu=""
+  meta_cpu="$(curl -fsSL -H 'Metadata-Flavor: Google' http://metadata.google.internal/computeMetadata/v1/instance/cpu-platform 2>/dev/null || true)"
+  if [ -n "$meta_cpu" ] && [ "$meta_cpu" != "$MIN_CPU_PLATFORM" ]; then
+    echo "FATAL: VM cpuPlatform is '$meta_cpu', expected '$MIN_CPU_PLATFORM' (Cascade Lake placement drift is forbidden)" >&2
+    exit 2
+  fi
+  {
+    echo "timestamp_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "expected_fp=${EXPECTED_FP}"
+    echo "perf_fp=$(bash harness/engine_fingerprint.sh --perf)"
+    echo "gcp_cpu_platform=${meta_cpu:-local}"
+    echo "gcp_machine_type=$(curl -fsSL -H 'Metadata-Flavor: Google' http://metadata.google.internal/computeMetadata/v1/instance/machine-type 2>/dev/null || true)"
+    echo "gcp_zone=$(curl -fsSL -H 'Metadata-Flavor: Google' http://metadata.google.internal/computeMetadata/v1/instance/zone 2>/dev/null || true)"
+    echo "=== lscpu ==="
+    lscpu 2>/dev/null || true
+    echo "=== free -h ==="
+    free -h 2>/dev/null || true
+    echo "=== df -h WORK_DIR ==="
+    df -h "$WORK_DIR" 2>/dev/null || true
+  } > "$WORK_DIR/cells/host_hardware_manifest.txt"
+  gcs_upload "$WORK_DIR/cells/host_hardware_manifest.txt" "${GCS_RESULTS}/${GCS_CELLS_SUBDIR:-cells-v105}/host_hardware_manifest.txt" || true
   cargo build --release -p vardictrust
 }
 
@@ -3870,6 +3901,24 @@ run_plan_check() {
   grep -Fq 's5_h4_maintenance_security_matrix' "$0" || { echo "FAIL: missing s5_h4_maintenance_security_matrix" >&2; exit 1; }
   grep -Fq 's5_stage_cross_platform_chr20' "$0" || { echo "FAIL: missing s5_stage_cross_platform_chr20" >&2; exit 1; }
   grep -Fq 's5_cross_platform_short_read_chr20_panel' "$0" || { echo "FAIL: missing s5_cross_platform_short_read_chr20_panel" >&2; exit 1; }
+
+  # Enforce the 6 Future-Version Operational Invariants:
+  # Invariant 3: 16-thread single-process gsutil (zero bare gsutil -m without parallel_process_count=1)
+  grep -Fq 'GSUTIL_MT_FLAGS=(-m -o "GSUtil:parallel_process_count=1" -o "GSUtil:parallel_thread_count=16")' "$0" || { echo "FAIL: missing 16-thread single-process GSUTIL_MT_FLAGS" >&2; exit 1; }
+  if grep -vE '^[[:space:]]*(#|echo )' "$0" | grep -E 'gsutil[[:space:]]+-m[[:space:]]+(cp|rsync)' >/dev/null 2>&1; then
+    echo "FAIL: bare gsutil -m without parallel_process_count=1 causes Ubuntu 24.04 snap multiprocessing.Pool deadlock" >&2
+    exit 1
+  fi
+  # Invariant 4: Static & reusable asset GCS push/pull hooks
+  grep -Fq 'vardictcpp-ae93fe39dc.bin' "$0" || { echo "FAIL: missing vardictcpp binary GCS cache hook" >&2; exit 1; }
+  grep -Fq 'wgs-hg002/s5_hg002_ready.done' "$0" || { echo "FAIL: missing wgs-hg002 GCS cache hook" >&2; exit 1; }
+  grep -Fq 'wgs-hg008/s5_hg008_ready.done' "$0" || { echo "FAIL: missing wgs-hg008 GCS cache hook" >&2; exit 1; }
+  grep -Fq 'cross-platform-chr20/s5_chr20_slices_ready.done' "$0" || { echo "FAIL: missing cross-platform-chr20 GCS cache hook" >&2; exit 1; }
+  # Invariant 5: Cached amplicon VCF runs must always pass -c 1 -S 2 -E 3 -g 4
+  if grep -n 'vardictrust.*-a 10:0.95' "$0" | grep -v -- '-c 1 -S 2 -E 3 -g 4' >/dev/null 2>&1; then
+    echo "FAIL: vardictrust amplicon (-a 10:0.95) invocation missing '-c 1 -S 2 -E 3 -g 4' (breaks omit_end_tag parity)" >&2
+    exit 1
+  fi
 
   local tmp
   tmp="$(mktemp -d)"
