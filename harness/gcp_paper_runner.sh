@@ -2132,7 +2132,7 @@ run_stage_5() {
   run_local_stage_cell "stage5" "s5_stage_hg008_full_wgs" 32 "128G" bash -c "
     set -euo pipefail
     mkdir -p '$hg8_dir'
-    BASE_URL='https://ftp.ncbi.nlm.nih.gov/giab/ftp/data_somatic/HG008/Liss_lab/BCM_Illumina-WGS_20240313'
+    BASE_URL='https://giab.s3.amazonaws.com/data_somatic/HG008/Liss_lab/BCM_Illumina-WGS_20240313'
     T_URL=\"\${BASE_URL}/HG008-T_Illumina_195x_GRCh38-GIABv3.bam\"
     N_URL=\"\${BASE_URL}/HG008-N-D_Illumina_169x_GRCh38-GIABv3.bam\"
     T_BAM='$hg8_dir/HG008-T_Illumina_195x_GRCh38-GIABv3.bam'
@@ -2230,11 +2230,11 @@ run_stage_5() {
     WORK_LOCAL='${WORK_DIR}/tmp_s5_hg008_contigs'
     mkdir -p \"\$WORK_LOCAL\"
 
-    # (a) VarDictRust (-th 32, bounded 100 kbp tile streaming with 500 bp halo across 364x combined somatic WGS > 1 Mbp)
+    # (a) VarDictRust (-th 32 -U, bounded 100 kbp tile streaming with 500 bp halo across 364x combined somatic WGS > 1 Mbp; -U avoids O(N_windows * 25M) NovaSeq dark-cycle poly-G mate sink re-scans at chr2:32,916,196)
     if [ ! -s \"\$KEEP_DIR/rust_hg008_contigs_th32.time\" ] || [ ! -s \"\$WORK_LOCAL/rust_hg008_contigs_th32.vcf\" ]; then
       /usr/bin/time -v -o \"\$KEEP_DIR/rust_hg008_contigs_th32.time\" \
         target/release/vardictrust -G \"\$REF\" -f 0.01 -N 'HG008-T|HG008-N' \
-        -b \"\${T_BAM}|\${N_BAM}\" -c 1 -S 2 -E 3 -g 4 -z -th 32 \"\$BED\" > \"\$WORK_LOCAL/rust_hg008_contigs_th32.vcf\"
+        -b \"\${T_BAM}|\${N_BAM}\" -c 1 -S 2 -E 3 -g 4 -z -U -th 32 \"\$BED\" > \"\$WORK_LOCAL/rust_hg008_contigs_th32.vcf\"
     fi
     rust_vars=\$(grep -vc '^#' \"\$WORK_LOCAL/rust_hg008_contigs_th32.vcf\" || true)
     echo \"\$rust_vars\" > \"\$KEEP_DIR/rust_hg008_contigs_th32.variant_count\"
