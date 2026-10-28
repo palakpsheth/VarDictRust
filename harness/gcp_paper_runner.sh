@@ -70,30 +70,29 @@ Modes:
 EOF
 }
 
-# Maps attempt number (1..6) to GCP provisioning model (Attempts 1..5: SPOT; Attempt 6: STANDARD On-Demand).
+# Maps attempt number to GCP provisioning model (SPOT by default across all attempts;
+# set ALLOW_ONDEMAND=1 to escalate attempt >= 6 to STANDARD On-Demand).
 provisioning_model_for_attempt() {
   local attempt="$1"
-  if [ "$attempt" -le 5 ]; then
+  if [ "$attempt" -le 5 ] || [ "${ALLOW_ONDEMAND:-0}" != "1" ]; then
     echo "SPOT"
   else
     echo "STANDARD"
   fi
 }
 
-# Maps attempt number (1..6) across us-central1 zones to maximize Spot capacity availability before Attempt 6 On-Demand.
+# Maps attempt number across us-central1 zones to maximize Spot capacity availability.
 zone_for_attempt() {
   local attempt="$1"
   if [ "${GCP_ZONE_LOCK:-0}" = "1" ]; then
     echo "${GCP_ZONE}"
     return 0
   fi
-  case "$attempt" in
-    1) echo "us-central1-a" ;;
-    2) echo "us-central1-b" ;;
-    3) echo "us-central1-c" ;;
-    4) echo "us-central1-f" ;;
-    5) echo "us-central1-a" ;;
-    *) echo "us-central1-a" ;;
+  case "$(( (attempt - 1) % 4 ))" in
+    0) echo "us-central1-a" ;;
+    1) echo "us-central1-b" ;;
+    2) echo "us-central1-c" ;;
+    3) echo "us-central1-f" ;;
   esac
 }
 
@@ -3972,14 +3971,14 @@ EOS
 run_plan_check() {
   echo "=== [gcp_paper_runner: --plan-check] ==="
   [ "$GOLDEN_MODE" = "off" ] || { echo "FAIL: GOLDEN_MODE != off" >&2; exit 1; }
-  for att in 1 2 3 4 5; do
-    [ "$(provisioning_model_for_attempt "$att")" = "SPOT" ] || { echo "FAIL: attempt $att must be SPOT" >&2; exit 1; }
+  for att in 1 2 3 4 5 6; do
+    [ "$(provisioning_model_for_attempt "$att")" = "SPOT" ] || { echo "FAIL: attempt $att must default to SPOT" >&2; exit 1; }
   done
-  [ "$(provisioning_model_for_attempt 6)" = "STANDARD" ] || { echo "FAIL: attempt 6 must escalate to STANDARD" >&2; exit 1; }
+  [ "$(ALLOW_ONDEMAND=1 provisioning_model_for_attempt 6)" = "STANDARD" ] || { echo "FAIL: ALLOW_ONDEMAND=1 attempt 6 must escalate to STANDARD" >&2; exit 1; }
 
   local cmd1 cmd6
   cmd1="$(build_gcloud_create_cmd 1 | tr '\n' ' ')"
-  cmd6="$(build_gcloud_create_cmd 6 | tr '\n' ' ')"
+  cmd6="$(ALLOW_ONDEMAND=1 build_gcloud_create_cmd 6 | tr '\n' ' ')"
   [[ "$cmd1" == *"--machine-type=n2-standard-32"* ]] || { echo "FAIL: machine-type not n2-standard-32" >&2; exit 1; }
   [[ "$cmd1" == *"--min-cpu-platform=Intel Ice Lake"* ]] || { echo "FAIL: min-cpu-platform not Intel Ice Lake" >&2; exit 1; }
   [[ "$cmd1" == *"--boot-disk-size=100GB"* ]] || { echo "FAIL: boot-disk-size not 100GB" >&2; exit 1; }
