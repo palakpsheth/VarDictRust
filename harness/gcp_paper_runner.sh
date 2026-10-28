@@ -2440,7 +2440,7 @@ run_stage_5() {
     TRUTH_HG2="$DATA_DIR/hg002/truth/truth.vcf.gz"
     REF_HG2="$DATA_DIR/ref/d1vd1/GRCh38.hs38DH.fa"
     ln -sf GRCh38.d1.vd1.fa "$REF_HG2"
-    samtools view -H "$BAM_HG2" | awk -F"\t" '\''/^@SQ/{sub(/^SN:/,"",$2); ok[$2]=1} END{while((getline < "'"$REF_D1"'.fai")>0){split($0,a,"\t"); if(a[1] in ok) print $0}}'\'' > "${REF_HG2}.fai"
+    samtools view -H "$BAM_HG2" | awk -F"\t" -v fai="${REF_D1}.fai" '\''/^@SQ/{sub(/^SN:/,"",$2); ok[$2]=1} END{while((getline < fai)>0){split($0,a,"\t"); if(a[1] in ok) print $0}}'\'' > "${REF_HG2}.fai"
     bgzip -c "$BED_HG2" > "$KEEP_DIR/hg002_eval.bed.gz" && tabix -f -p bed "$KEEP_DIR/hg002_eval.bed.gz"
 
     run_timed_cmd "hg002_FreeBayes_8c" conda run -n cl_freebayes freebayes -f "$REF_GIAB" -t "$BED_HG2" "$BAM_HG2"
@@ -2679,12 +2679,13 @@ run_stage_5() {
     ln -sf \"\$DATA_DIR/hg002/HG002.chr20.bam.bai\" '$xp_dir/hg002_illumina.chr20.bam.bai'
 
     G_HG2='https://ftp-trace.ncbi.nlm.nih.gov/ReferenceSamples/giab/data/AshkenazimTrio/HG002_NA24385_son'
+    G_HG2_S3='https://giab.s3.amazonaws.com/data/AshkenazimTrio/HG002_NA24385_son'
     slice_remote_bam '$xp_dir/hg002_element_aviti.chr20.bam' \
       \"\${G_HG2}/Element_AVITI_20240920/HG002_Element-StdInsert_80x_GRCh38-GIABv3.bam\" \
       \"\${G_HG2}/Element_AVITI_20240920/HG002_Element-StdInsert_80x_GRCh38-GIABv3.bam.bai\" 'chr20'
     slice_remote_bam '$xp_dir/hg002_mgi_dnbseq.chr20.bam' \
-      \"\${G_HG2}/NIST_BGIseq_2x150bp_100x/GRCh38/HG002_GRCh38_BGIseq-2x150-100x_NIST_20211126.bam\" \
-      \"\${G_HG2}/NIST_BGIseq_2x150bp_100x/GRCh38/HG002_GRCh38_BGIseq-2x150-100x_NIST_20211126.bam.bai\" 'chr20'
+      \"\${G_HG2_S3}/NIST_BGIseq_2x150bp_100x/GRCh38/HG002_GRCh38_BGIseq-2x150-100x_NIST_20211126.bam\" \
+      \"\${G_HG2_S3}/NIST_BGIseq_2x150bp_100x/GRCh38/HG002_GRCh38_BGIseq-2x150-100x_NIST_20211126.bam.bai\" 'chr20'
 
     if [ ! -s '$xp_dir/hg002_ultima_ug100.chr20.cram' ] || [ ! -s '$xp_dir/hg002_ultima_ug100.chr20.bam' ]; then
       curl -sSLf --retry 5 'https://ultimagen-feb-2024-giab.s3.amazonaws.com/Crams/NA24385-Z0027.cram.crai' -o '$xp_dir/ug_hg2.crai'
@@ -2700,7 +2701,8 @@ run_stage_5() {
     fi
 
     # 2. Somatic HG008 chr20 (Illumina 195x/169x, Roche SBX-Duplex 119x/44x, PacBio Onso 136x/48x, Element AVITI 111x/77x, Ultima UG100 306x/234x, Ultima ppmSeq 157x/160x)
-    G_HG8='https://ftp-trace.ncbi.nlm.nih.gov/ReferenceSamples/giab/data_somatic/HG008/Liss_lab'
+    G_HG8_FTP='https://ftp-trace.ncbi.nlm.nih.gov/ReferenceSamples/giab/data_somatic/HG008/Liss_lab'
+    G_HG8='https://giab.s3.amazonaws.com/data_somatic/HG008/Liss_lab'
     if [ -s '$hg8_dir/HG008-T_Illumina_195x_GRCh38-GIABv3.bam' ] && [ ! -s '$xp_dir/hg008_illumina_T.chr20.bam' ]; then
       samtools view -@ 8 -b '$hg8_dir/HG008-T_Illumina_195x_GRCh38-GIABv3.bam' chr20 -o '$xp_dir/hg008_illumina_T.chr20.bam' && samtools index -@ 8 '$xp_dir/hg008_illumina_T.chr20.bam'
       samtools view -@ 8 -b '$hg8_dir/HG008-N-D_Illumina_169x_GRCh38-GIABv3.bam' chr20 -o '$xp_dir/hg008_illumina_N.chr20.bam' && samtools index -@ 8 '$xp_dir/hg008_illumina_N.chr20.bam'
@@ -2713,8 +2715,8 @@ run_stage_5() {
       slice_remote_bam '$xp_dir/hg008_illumina_N.chr20.bam' \"\${G_HG8}/BCM_Illumina-WGS_20240313/HG008-N-D_Illumina_169x_GRCh38-GIABv3.bam\" \"\${G_HG8}/BCM_Illumina-WGS_20240313/HG008-N-D_Illumina_169x_GRCh38-GIABv3.bam.bai\" 'chr20'
     fi
 
-    slice_remote_bam '$xp_dir/hg008_roche_sbx_T.chr20.bam' \"\${G_HG8}/Hartwig_Roche-Axelios1_20260904/HG008-T_Roche-Axelios1_119X_GRCh38.bam\" \"\${G_HG8}/Hartwig_Roche-Axelios1_20260904/HG008-T_Roche-Axelios1_119X_GRCh38.bam.bai\" 'chr20'
-    slice_remote_bam '$xp_dir/hg008_roche_sbx_N.chr20.bam' \"\${G_HG8}/Hartwig_Roche-Axelios1_20260904/HG008-N-D_Roche-Axelios1_44X_GRCh38.bam\" \"\${G_HG8}/Hartwig_Roche-Axelios1_20260904/HG008-N-D_Roche-Axelios1_44X_GRCh38.bam.bai\" 'chr20'
+    slice_remote_bam '$xp_dir/hg008_roche_sbx_T.chr20.bam' \"\${G_HG8_FTP}/Hartwig_Roche-Axelios1_20260904/HG008-T_Roche-Axelios1_119X_GRCh38.bam\" \"\${G_HG8_FTP}/Hartwig_Roche-Axelios1_20260904/HG008-T_Roche-Axelios1_119X_GRCh38.bam.bai\" 'chr20'
+    slice_remote_bam '$xp_dir/hg008_roche_sbx_N.chr20.bam' \"\${G_HG8_FTP}/Hartwig_Roche-Axelios1_20260904/HG008-N-D_Roche-Axelios1_44X_GRCh38.bam\" \"\${G_HG8_FTP}/Hartwig_Roche-Axelios1_20260904/HG008-N-D_Roche-Axelios1_44X_GRCh38.bam.bai\" 'chr20'
 
     slice_remote_bam '$xp_dir/hg008_pacbio_onso_T.chr20.bam' \"\${G_HG8}/PacBio_Onso_20240415/HG008-T_Pacbio-onso_136x_GRCh38-GIABv3.bam\" \"\${G_HG8}/PacBio_Onso_20240415/HG008-T_Pacbio-onso_136x_GRCh38-GIABv3.bam.bai\" 'chr20'
     slice_remote_bam '$xp_dir/hg008_pacbio_onso_N.chr20.bam' \"\${G_HG8}/PacBio_Onso_20240415/HG008-N-D_Pacbio-onso_48x_GRCh38-GIABv3.bam\" \"\${G_HG8}/PacBio_Onso_20240415/HG008-N-D_Pacbio-onso_48x_GRCh38-GIABv3.bam.bai\" 'chr20'
@@ -2734,8 +2736,8 @@ run_stage_5() {
     ln -sf \"\$DATA_DIR/hg008/HG008-T.slice.bam.bai\" '$xp_dir/hg008_illumina_T.r123.bam.bai'
     ln -sf \"\$DATA_DIR/hg008/HG008-N.slice.bam\" '$xp_dir/hg008_illumina_N.r123.bam'
     ln -sf \"\$DATA_DIR/hg008/HG008-N.slice.bam.bai\" '$xp_dir/hg008_illumina_N.r123.bam.bai'
-    slice_remote_bam '$xp_dir/hg008_roche_sbx_T.r123.bam' \"\${G_HG8}/Hartwig_Roche-Axelios1_20260904/HG008-T_Roche-Axelios1_119X_GRCh38.bam\" \"\${G_HG8}/Hartwig_Roche-Axelios1_20260904/HG008-T_Roche-Axelios1_119X_GRCh38.bam.bai\" \"\$R123\"
-    slice_remote_bam '$xp_dir/hg008_roche_sbx_N.r123.bam' \"\${G_HG8}/Hartwig_Roche-Axelios1_20260904/HG008-N-D_Roche-Axelios1_44X_GRCh38.bam\" \"\${G_HG8}/Hartwig_Roche-Axelios1_20260904/HG008-N-D_Roche-Axelios1_44X_GRCh38.bam.bai\" \"\$R123\"
+    slice_remote_bam '$xp_dir/hg008_roche_sbx_T.r123.bam' \"\${G_HG8_FTP}/Hartwig_Roche-Axelios1_20260904/HG008-T_Roche-Axelios1_119X_GRCh38.bam\" \"\${G_HG8_FTP}/Hartwig_Roche-Axelios1_20260904/HG008-T_Roche-Axelios1_119X_GRCh38.bam.bai\" \"\$R123\"
+    slice_remote_bam '$xp_dir/hg008_roche_sbx_N.r123.bam' \"\${G_HG8_FTP}/Hartwig_Roche-Axelios1_20260904/HG008-N-D_Roche-Axelios1_44X_GRCh38.bam\" \"\${G_HG8_FTP}/Hartwig_Roche-Axelios1_20260904/HG008-N-D_Roche-Axelios1_44X_GRCh38.bam.bai\" \"\$R123\"
     slice_remote_bam '$xp_dir/hg008_pacbio_onso_T.r123.bam' \"\${G_HG8}/PacBio_Onso_20240415/HG008-T_Pacbio-onso_136x_GRCh38-GIABv3.bam\" \"\${G_HG8}/PacBio_Onso_20240415/HG008-T_Pacbio-onso_136x_GRCh38-GIABv3.bam.bai\" \"\$R123\"
     slice_remote_bam '$xp_dir/hg008_pacbio_onso_N.r123.bam' \"\${G_HG8}/PacBio_Onso_20240415/HG008-N-D_Pacbio-onso_48x_GRCh38-GIABv3.bam\" \"\${G_HG8}/PacBio_Onso_20240415/HG008-N-D_Pacbio-onso_48x_GRCh38-GIABv3.bam.bai\" \"\$R123\"
     slice_remote_bam '$xp_dir/hg008_element_aviti_T.r123.bam' \"\${G_HG8}/Element-AVITI-20241216/HG008-T_Element-StdInsert_111x_GRCh38-GIABv3.bam\" \"\${G_HG8}/Element-AVITI-20241216/HG008-T_Element-StdInsert_111x_GRCh38-GIABv3.bam.bai\" \"\$R123\"
