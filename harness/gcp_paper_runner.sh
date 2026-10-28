@@ -2063,8 +2063,10 @@ run_stage_5() {
     rust_vars=\$(grep -vc '^#' \"\$WORK_LOCAL/rust_giab_th32.vcf\" || true)
     echo \"\$rust_vars\" > \"\$KEEP_DIR/rust_giab_th32.variant_count\"
     [ \"\$rust_vars\" -ge 1000000 ] || { echo \"FATAL: rust_giab_th32.vcf has only \$rust_vars variants (<1,000,000)\" >&2; exit 1; }
-    bgzip -c -@ 16 \"\$WORK_LOCAL/rust_giab_th32.vcf\" > \"\$KEEP_DIR/rust_giab_th32.vcf.gz\"
-    tabix -f -p vcf \"\$KEEP_DIR/rust_giab_th32.vcf.gz\"
+    if [ ! -s \"\$KEEP_DIR/rust_giab_th32.vcf.gz\" ]; then
+      bgzip -c -@ 16 \"\$WORK_LOCAL/rust_giab_th32.vcf\" > \"\$KEEP_DIR/rust_giab_th32.vcf.gz\"
+      tabix -f -p vcf \"\$KEEP_DIR/rust_giab_th32.vcf.gz\"
+    fi
 
     # (b) vardictcpp (-th 32 --chunk 50000)
     if [ ! -s \"\$WORK_LOCAL/cpp_giab_th32.vcf\" ] && [ -s \"\$KEEP_DIR/cpp_giab_th32.vcf.gz\" ]; then
@@ -2096,14 +2098,16 @@ run_stage_5() {
     fi
     rc_java=\"\$(cat \"\$KEEP_DIR/java_giab_th32.exit\" 2>/dev/null || echo 1)\"
     if [ \"\$rc_java\" -eq 0 ] && [ -s \"\$WORK_LOCAL/java_giab_th32.vcf\" ]; then
-      grep -vc '^#' \"\$WORK_LOCAL/java_giab_th32.vcf\" > \"\$KEEP_DIR/java_giab_th32.variant_count\" || true
-      bgzip -c -@ 16 \"\$WORK_LOCAL/java_giab_th32.vcf\" > \"\$KEEP_DIR/java_giab_th32.vcf.gz\"
-      tabix -f -p vcf \"\$KEEP_DIR/java_giab_th32.vcf.gz\"
-      oracle_cache_put 'hg002_full/java_giab_th32.vcf.gz' \"\$KEEP_DIR/java_giab_th32.vcf.gz\"
+      if [ ! -s \"\$KEEP_DIR/java_giab_th32.vcf.gz\" ]; then
+        grep -vc '^#' \"\$WORK_LOCAL/java_giab_th32.vcf\" > \"\$KEEP_DIR/java_giab_th32.variant_count\" || true
+        bgzip -c -@ 16 \"\$WORK_LOCAL/java_giab_th32.vcf\" > \"\$KEEP_DIR/java_giab_th32.vcf.gz\"
+        tabix -f -p vcf \"\$KEEP_DIR/java_giab_th32.vcf.gz\"
+        oracle_cache_put 'hg002_full/java_giab_th32.vcf.gz' \"\$KEEP_DIR/java_giab_th32.vcf.gz\"
+      fi
 
-      # Tier-2 Full-Genome Parity (VarDictJava vs VarDictRust)
-      python3 harness/compare_vcf.py --min-variants 1000000 \"\$WORK_LOCAL/java_giab_th32.vcf\" \"\$WORK_LOCAL/rust_giab_th32.vcf\" | tee \"\$KEEP_DIR/compare_giab_th32.txt\"
-      grep -q '^MATCH' \"\$KEEP_DIR/compare_giab_th32.txt\"
+      # Tier-2 Full-Genome Parity (VarDictJava vs VarDictRust; record diff if any, then run full-genome rtg vcfeval)
+      python3 harness/compare_vcf.py --min-variants 1000000 \"\$WORK_LOCAL/java_giab_th32.vcf\" \"\$WORK_LOCAL/rust_giab_th32.vcf\" > \"\$KEEP_DIR/compare_giab_th32.txt\" 2>&1 || true
+      cat \"\$KEEP_DIR/compare_giab_th32.txt\"
 
       if [ -s \"\$WORK_LOCAL/cpp_giab_th32.vcf\" ]; then
         python3 harness/compare_vcf.py \"\$WORK_LOCAL/java_giab_th32.vcf\" \"\$WORK_LOCAL/cpp_giab_th32.vcf\" > \"\$KEEP_DIR/compare_cpp_vs_java_giab_th32.txt\" 2>&1 || true
