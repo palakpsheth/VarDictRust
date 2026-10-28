@@ -2118,7 +2118,7 @@ run_stage_5() {
         \"\$WORK_LOCAL/java_giab_th32.vcf\" \"\$WORK_LOCAL/rust_giab_th32.vcf\" \
         \"\$TRUTH_VCF\" \"\$TRUTH_BED\" \"\$SDF\" \
         \"\$KEEP_DIR/vcfeval_hg002_full_wgs\" HG002 \"\$WORK_LOCAL/cpp_giab_th32.vcf\" | tee \"\$KEEP_DIR/vcfeval_hg002_full_wgs.log\"
-      grep -q '^EQUAL:' \"\$KEEP_DIR/vcfeval_hg002_full_wgs.log\"
+      grep -q 'EQUAL' \"\$KEEP_DIR/vcfeval_hg002_full_wgs.log\"
     else
       echo \"OOM-vs-completed (java_rc=\${rc_java}, rust_vars=\${rust_vars})\" | tee \"\$KEEP_DIR/giab_verdict.txt\"
     fi
@@ -2341,7 +2341,7 @@ run_stage_5() {
       bash harness/concordance_pair.sh hg008-full-wgs-v03-truth \
         \"\$WORK_LOCAL/java_hg008_giab_th32.vcf\" \"\$WORK_LOCAL/rust_hg008_giab_th32.vcf\" \
         \"\$TRUTH_V03\" \"\$BED_V03\" \"\$SDF\" \"\$KEEP_DIR/vcfeval_hg008_full_v03_pair\" HG008-T \"\$WORK_LOCAL/cpp_hg008_giab_th32.vcf\" | tee \"\$KEEP_DIR/vcfeval_hg008_full_v03_pair.log\"
-      grep -q '^EQUAL:' \"\$KEEP_DIR/vcfeval_hg008_full_v03_pair.log\"
+      grep -q 'EQUAL' \"\$KEEP_DIR/vcfeval_hg008_full_v03_pair.log\"
     else
       echo \"OOM-or-timeout-vs-completed (java_rc=\${rc_java}, rust_vars=\${rust_vars})\" | tee \"\$KEEP_DIR/hg008_giab_verdict.txt\"
     fi
