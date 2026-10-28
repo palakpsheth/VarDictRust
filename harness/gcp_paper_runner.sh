@@ -2888,7 +2888,7 @@ run_stage_5() {
       oracle_cache_get \"cross_platform_chr20/\${tag}_cpp.exit\" \"\$KEEP_DIR/\${tag}_cpp.exit\" || true
       if [ ! -s \"\$KEEP_DIR/\${tag}_cpp.exit\" ]; then
         local rc_c=0
-        timeout 3600 /usr/bin/time -v -o \"\$KEEP_DIR/\${tag}_cpp.time\" \
+        timeout 14400 /usr/bin/time -v -o \"\$KEEP_DIR/\${tag}_cpp.time\" \
           env CPP_CHUNK=50000 bash harness/run_cpp.sh \"\$ref\" \"\$bam_spec\" \"\$call_bed\" \"\$KEEP_DIR/\${tag}_cpp.vcf\" \"\$sample\" -f \"\$freq\" -th 32 -z \"\${extra_flags[@]}\" || rc_c=\$?
         echo \"\$rc_c\" > \"\$KEEP_DIR/\${tag}_cpp.exit\"
       fi
@@ -2902,7 +2902,7 @@ run_stage_5() {
       oracle_cache_get \"cross_platform_chr20/\${tag}_java.exit\" \"\$KEEP_DIR/\${tag}_java.exit\" || true
       if [ ! -s \"\$KEEP_DIR/\${tag}_java.exit\" ]; then
         local rc_j=0
-        timeout 3600 /usr/bin/time -v -o \"\$KEEP_DIR/\${tag}_java.time\" \
+        timeout 14400 /usr/bin/time -v -o \"\$KEEP_DIR/\${tag}_java.time\" \
           env ORACLE_XMX_GB=48 JAVA_OPTS='-Xmx48g -XX:+ExitOnOutOfMemoryError' \
           bash harness/run_oracle.sh \"\$ref\" \"\$bam_spec\" \"\$call_bed\" \"\$KEEP_DIR/\${tag}_java.vcf\" \"\$sample\" -f \"\$freq\" -th 32 -z \"\${extra_flags[@]}\" || rc_j=\$?
         echo \"\$rc_j\" > \"\$KEEP_DIR/\${tag}_java.exit\"
