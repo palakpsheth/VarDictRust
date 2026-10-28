@@ -2423,8 +2423,12 @@ run_stage_5() {
         bcftools view -v "$cls" "$work_ev/truth.nofilter.vcf.gz" -Oz -o "$work_ev/tr_${cls}.vcf.gz"
         tabix -f -p vcf "$work_ev/tr_${cls}.vcf.gz"
         rm -rf "$work_ev/rtg_${cls}"
+        local sample_args=()
+        if [ "$cohort" != "HG002_GRCh38" ]; then
+          sample_args=(--sample "ALT,ALT" --vcf-score-field QUAL)
+        fi
         rtg vcfeval -b "$work_ev/tr_${cls}.vcf.gz" -c "$work_ev/calls_${cls}.vcf.gz" -t "$sdf" \
-          -e "$bed" --squash-ploidy -T 8 -o "$work_ev/rtg_${cls}" >/dev/null 2>&1 || true
+          -e "$bed" --squash-ploidy "${sample_args[@]}" -T 8 -o "$work_ev/rtg_${cls}" >/dev/null 2>&1 || true
         if [ -f "$work_ev/rtg_${cls}/summary.txt" ]; then
           read -r p r f <<< "$(awk "NR>2 && NF>=8" "$work_ev/rtg_${cls}/summary.txt" | sort -k8 -g | tail -1 | awk "{print \$6,\$7,\$8}")"
           eval "${cls}_p=${p:-NA}; ${cls}_r=${r:-NA}; ${cls}_f=${f:-NA}"
@@ -2794,7 +2798,11 @@ run_stage_5() {
       for cls in snp indel; do
         bcftools view -v \"\$cls\" \"\$out_dir/calls.vcf.gz\" -Oz -o \"\$out_dir/c_\${cls}.vcf.gz\" && tabix -f -p vcf \"\$out_dir/c_\${cls}.vcf.gz\"
         bcftools view -v \"\$cls\" \"\$out_dir/truth.vcf.gz\" -Oz -o \"\$out_dir/t_\${cls}.vcf.gz\" && tabix -f -p vcf \"\$out_dir/t_\${cls}.vcf.gz\"
-        rtg vcfeval -b \"\$out_dir/t_\${cls}.vcf.gz\" -c \"\$out_dir/c_\${cls}.vcf.gz\" -t \"\$sdf\" -e \"\$bed\" --squash-ploidy -T 16 -o \"\$out_dir/rtg_\${cls}\" >/dev/null 2>&1 || true
+        local sample_args=()
+        if [ \"\$is_som\" = '1' ]; then
+          sample_args=(--sample 'ALT,ALT' --vcf-score-field QUAL)
+        fi
+        rtg vcfeval -b \"\$out_dir/t_\${cls}.vcf.gz\" -c \"\$out_dir/c_\${cls}.vcf.gz\" -t \"\$sdf\" -e \"\$bed\" --squash-ploidy \"\${sample_args[@]}\" -T 16 -o \"\$out_dir/rtg_\${cls}\" >/dev/null 2>&1 || true
         if [ -f \"\$out_dir/rtg_\${cls}/summary.txt\" ]; then
           read -r p r f <<< \"\$(awk 'NR>2 && NF>=8' \"\$out_dir/rtg_\${cls}/summary.txt\" | sort -k8 -g | tail -1 | awk '{print \$6,\$7,\$8}')\"
           if [ \"\$cls\" = 'snp' ]; then sp=\${p:-NA}; sr=\${r:-NA}; sf=\${f:-NA}; else ip=\${p:-NA}; ir=\${r:-NA}; if1=\${f:-NA}; fi
@@ -3749,6 +3757,10 @@ run_controller() {
         sudo mount -o discard,defaults /dev/md0 '$WORK_DIR'
       fi
       sudo chown -R \"\$(id -un):\$(id -gn)\" '$WORK_DIR'
+      if ! command -v musl-gcc >/dev/null 2>&1; then
+        sudo apt-get update -qq
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq musl-tools
+      fi
       cat > '$WORK_DIR/bootstrap_and_run.sh' <<'EOS'
 #!/usr/bin/env bash
 set -euo pipefail
