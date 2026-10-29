@@ -3454,7 +3454,7 @@ pub fn partial_pipeline(
     // out of this path either way). Peak memory stays flat in depth.
     let bam_str = bam_path.to_string_lossy();
     let mut feeds = Vec::with_capacity(2);
-    for single_bam in bam_str.split(':') {
+    for single_bam in bam_str.split(':').filter(|s| !s.is_empty()) {
         feeds.push(crate::bam::query_region_iter(
             std::path::Path::new(single_bam),
             chr,

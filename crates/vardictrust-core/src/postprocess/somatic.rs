@@ -12,9 +12,15 @@ use crate::variations::{Variant, Vars};
 use std::collections::HashSet;
 
 /// Callback that runs the full pipeline (pileup→realign→SV→tovars) on both BAMs
-/// combined over a given region, returning aligned variants keyed by position.
-pub type PipelineFn<'a> =
-    dyn Fn(&Region) -> Result<crate::javamap::JavaHashMap<i32, Vars>, VardictError> + 'a;
+/// combined over a given region, returning aligned variants keyed by position
+/// while updating the shared `splice` set and `max_read_length` in place
+/// (`SomaticPostProcessModule.java:198-200, 303-311, 398-406`).
+pub type PipelineFn<'a> = dyn Fn(
+        &Region,
+        &mut HashSet<String>,
+        &mut i32,
+    ) -> Result<crate::javamap::JavaHashMap<i32, Vars>, VardictError>
+    + 'a;
 
 // STATUS constants matching VarDictJava's SomaticPostProcessModule
 const STRONG_SOMATIC: &str = "StrongSomatic";
@@ -70,6 +76,8 @@ pub fn somatic_post_process(
     max_read_length: i32,
 ) -> Vec<SomaticVariant> {
     let mut results = Vec::new();
+    let mut splice = splice.clone();
+    let mut max_read_length = max_read_length;
 
     // Merge all positions from both samples and sort
     let mut all_positions: Vec<i32> = aligned_variants_bam1
@@ -91,11 +99,11 @@ pub fn somatic_post_process(
             (None, None) => continue,
             (None, Some(v2)) => {
                 // No coverage for sample 1 → Deletion
-                calling_for_one_sample(config, v2, true, DELETION, splice, &mut results);
+                calling_for_one_sample(config, v2, true, DELETION, &splice, &mut results);
             }
             (Some(v1), None) => {
                 // No coverage for sample 2 → SampleSpecific
-                calling_for_one_sample(config, v1, false, SAMPLE_SPECIFIC, splice, &mut results);
+                calling_for_one_sample(config, v1, false, SAMPLE_SPECIFIC, &splice, &mut results);
             }
             (Some(v1), Some(v2)) => {
                 // Both samples have coverage
@@ -105,10 +113,10 @@ pub fn somatic_post_process(
                     v1,
                     v2,
                     &region.chr,
-                    splice,
+                    &mut splice,
                     &mut results,
                     pipeline,
-                    max_read_length,
+                    &mut max_read_length,
                 );
             }
         }
@@ -189,10 +197,10 @@ fn calling_for_both_samples(
     v1: &Vars,
     v2: &Vars,
     chr: &str,
-    splice: &HashSet<String>,
+    splice: &mut HashSet<String>,
     results: &mut Vec<SomaticVariant>,
     pipeline: Option<&PipelineFn<'_>>,
-    max_read_length: i32,
+    max_read_length: &mut i32,
 ) {
     if v1.variants.is_empty() && v2.variants.is_empty() {
         return;
@@ -228,16 +236,17 @@ fn calling_for_both_samples(
 /// Analyse and output variations from BAM1 based on variations from BAM2.
 ///
 /// Ports `SomaticPostProcessModule.printVariationsFromFirstSample()`.
+#[allow(clippy::too_many_arguments)]
 fn print_variations_from_first_sample(
     config: &Config,
     position: i32,
     v1: &Vars,
     v2: &Vars,
     chr: &str,
-    splice: &HashSet<String>,
+    splice: &mut HashSet<String>,
     results: &mut Vec<SomaticVariant>,
     pipeline: Option<&PipelineFn<'_>>,
-    max_read_length: i32,
+    max_read_length: &mut i32,
 ) {
     let mut number_of_processed_variation: usize = 0;
     // Ports SomaticPostProcessModule.java:172-186 — in Java, `v2.variants` and
@@ -316,6 +325,7 @@ fn print_variations_from_first_sample(
                         &vref,
                         chr,
                         position,
+                        splice,
                         max_read_length,
                     ) {
                         CombineVerdict::Skip => {
@@ -434,16 +444,17 @@ fn print_variations_from_first_sample(
 ///
 /// Ports `SomaticPostProcessModule.printVariationsFromSecondSample()`
 /// (SomaticPostProcessModule.java:285-336).
+#[allow(clippy::too_many_arguments)]
 fn print_variations_from_second_sample(
     config: &Config,
     v1: &Vars,
     v2: &Vars,
     chr: &str,
     position: i32,
-    splice: &HashSet<String>,
+    splice: &mut HashSet<String>,
     results: &mut Vec<SomaticVariant>,
     pipeline: Option<&PipelineFn<'_>>,
-    max_read_length: i32,
+    max_read_length: &mut i32,
 ) {
     for v2var_orig in &v2.variants {
         if v2var_orig.ref_allele == v2var_orig.var_allele {
@@ -465,8 +476,15 @@ fn print_variations_from_second_sample(
         let mut tumor_from_combine: Option<Variant> = None;
         if should_combine {
             if let Some(pipeline_fn) = pipeline {
-                match combine_analysis(config, pipeline_fn, &v2var, chr, position, max_read_length)
-                {
+                match combine_analysis(
+                    config,
+                    pipeline_fn,
+                    &v2var,
+                    chr,
+                    position,
+                    splice,
+                    max_read_length,
+                ) {
                     CombineVerdict::Skip => continue, // :313-315
                     CombineVerdict::Germline(v) => {
                         type_str = GERMLINE.to_string(); // :318-319
@@ -561,7 +579,8 @@ fn combine_analysis(
     variant1: &Variant,
     chr: &str,
     position: i32,
-    max_read_length: i32,
+    splice: &mut HashSet<String>,
+    max_read_length: &mut i32,
 ) -> CombineVerdict {
     if config.verbose {
         eprintln!("Start Combine {} {}", position, variant1.description);
@@ -574,8 +593,8 @@ fn combine_analysis(
     // Region spans the variant ± maxReadLength (:398)
     let region = Region {
         chr: chr.to_string(),
-        start: crate::types::Pos1(variant1.start_pos.saturating_sub(max_read_length).max(1) as u32),
-        end: crate::types::Pos1(variant1.end_pos.saturating_add(max_read_length) as u32),
+        start: crate::types::Pos1(variant1.start_pos.saturating_sub(*max_read_length).max(1) as u32),
+        end: crate::types::Pos1(variant1.end_pos.saturating_add(*max_read_length) as u32),
         gene: String::new(),
         amplicon: None,
     };
@@ -585,7 +604,7 @@ fn combine_analysis(
     // continues from the next position; abort only after >10 continued exceptions
     // (Utils.java:261-278, Configuration.java:300). The port keeps the FALSE-skip
     // control flow but emits the error instead of swallowing it.
-    let combined_vars = match pipeline(&region) {
+    let combined_vars = match pipeline(&region, splice, max_read_length) {
         Ok(vars) => vars,
         Err(e) => {
             if config.verbose {
@@ -1098,9 +1117,13 @@ mod tests {
         desc: Option<&str>,
         pc: i32,
         total: i32,
-    ) -> impl Fn(&Region) -> Result<crate::javamap::JavaHashMap<i32, Vars>, crate::types::VardictError>
+    ) -> impl Fn(
+        &Region,
+        &mut HashSet<String>,
+        &mut i32,
+    ) -> Result<crate::javamap::JavaHashMap<i32, Vars>, crate::types::VardictError>
            + '_ {
-        move |_region: &Region| {
+        move |_region: &Region, _splice: &mut HashSet<String>, _max_rl: &mut i32| {
             let mut vars = Vars::new();
             if let Some(d) = desc {
                 let mut v = Variant::new();
@@ -1134,8 +1157,18 @@ mod tests {
         let config = test_config();
         let v = make_insertion_variant();
         let pipeline = combined_pipeline(150, None, 0, 0);
+        let mut splice = HashSet::new();
+        let mut max_rl = 150;
         assert!(matches!(
-            combine_analysis(&config, &pipeline, &v, "chr1", 150, 150),
+            combine_analysis(
+                &config,
+                &pipeline,
+                &v,
+                "chr1",
+                150,
+                &mut splice,
+                &mut max_rl
+            ),
             CombineVerdict::Skip
         ));
     }
@@ -1149,8 +1182,18 @@ mod tests {
         let mut v = make_insertion_variant();
         v.start_pos = 148; // differs from iteration key 150
         let pipeline = combined_pipeline(150, Some("+GAACCACTGAGACAGGA"), 3, 10);
+        let mut splice = HashSet::new();
+        let mut max_rl = 150;
         assert!(matches!(
-            combine_analysis(&config, &pipeline, &v, "chr1", 150, 150),
+            combine_analysis(
+                &config,
+                &pipeline,
+                &v,
+                "chr1",
+                150,
+                &mut splice,
+                &mut max_rl
+            ),
             CombineVerdict::Keep
         ));
     }
@@ -1161,8 +1204,18 @@ mod tests {
         let config = test_config();
         let v = make_insertion_variant(); // pc=3
         let pipeline = combined_pipeline(150, Some("+GAACCACTGAGACAGGA"), 4, 20); // delta=1 < minr=2
+        let mut splice = HashSet::new();
+        let mut max_rl = 150;
         assert!(matches!(
-            combine_analysis(&config, &pipeline, &v, "chr1", 150, 150),
+            combine_analysis(
+                &config,
+                &pipeline,
+                &v,
+                "chr1",
+                150,
+                &mut splice,
+                &mut max_rl
+            ),
             CombineVerdict::Keep
         ));
     }
@@ -1173,8 +1226,18 @@ mod tests {
         let config = test_config();
         let v = make_insertion_variant(); // pc=3
         let pipeline = combined_pipeline(150, Some("+GAACCACTGAGACAGGA"), 0, 5); // 0 < 1
+        let mut splice = HashSet::new();
+        let mut max_rl = 150;
         assert!(matches!(
-            combine_analysis(&config, &pipeline, &v, "chr1", 150, 150),
+            combine_analysis(
+                &config,
+                &pipeline,
+                &v,
+                "chr1",
+                150,
+                &mut splice,
+                &mut max_rl
+            ),
             CombineVerdict::Skip
         ));
     }
@@ -1186,8 +1249,18 @@ mod tests {
         let mut v = make_insertion_variant();
         v.end_pos = v.start_pos + config.sv_min_len as i32 + 1;
         let pipeline = combined_pipeline(150, None, 0, 0);
+        let mut splice = HashSet::new();
+        let mut max_rl = 150;
         assert!(matches!(
-            combine_analysis(&config, &pipeline, &v, "chr1", 150, 150),
+            combine_analysis(
+                &config,
+                &pipeline,
+                &v,
+                "chr1",
+                150,
+                &mut splice,
+                &mut max_rl
+            ),
             CombineVerdict::Keep
         ));
     }
@@ -1199,7 +1272,17 @@ mod tests {
         let mut v = make_insertion_variant();
         v.genotype = Some("0/1".to_string());
         let pipeline = combined_pipeline(150, Some("+GAACCACTGAGACAGGA"), 6, 20);
-        match combine_analysis(&config, &pipeline, &v, "chr1", 150, 150) {
+        let mut splice = HashSet::new();
+        let mut max_rl = 150;
+        match combine_analysis(
+            &config,
+            &pipeline,
+            &v,
+            "chr1",
+            150,
+            &mut splice,
+            &mut max_rl,
+        ) {
             CombineVerdict::Germline(var2) => {
                 assert_eq!(var2.pos_coverage, 3); // 6 - 3
                 assert_eq!(var2.total_pos_cov, 10); // 20 - 10
@@ -1416,5 +1499,69 @@ mod tests {
             211,
             "second tumor variant must observe v2.variants[0].total_pos_cov mutated by is_noise()"
         );
+    }
+
+    #[test]
+    fn combine_analysis_propagates_updated_max_read_length_and_splice_to_subsequent_windows() {
+        // SomaticPostProcessModule.java:198-200, 303-311, 398-406:
+        // When `combineAnalysis` runs on an indel at position 150 and discovers a longer
+        // `maxReadLength` (e.g. 100 -> 250) and new splice junctions, it updates
+        // `this.maxReadLength` and the shared `splice` set so the next `combineAnalysis`
+        // call at position 180 queries `180 - 250 .. 180 + 250` (`1..430`) and sees the
+        // updated `splice` set.
+        let config = test_config();
+        let region = test_region();
+        let splice = HashSet::new();
+
+        let mut bam1 = crate::javamap::JavaHashMap::new();
+        let mut vars1_150 = Vars::new();
+        let mut v150 = make_insertion_variant();
+        v150.start_pos = 150;
+        v150.end_pos = 150;
+        vars1_150.variants.push(v150);
+        bam1.insert(150, vars1_150);
+
+        let mut vars1_180 = Vars::new();
+        let mut v180 = make_insertion_variant();
+        v180.start_pos = 180;
+        v180.end_pos = 180;
+        vars1_180.variants.push(v180);
+        bam1.insert(180, vars1_180);
+
+        let mut bam2 = crate::javamap::JavaHashMap::new();
+        bam2.insert(150, Vars::new());
+        bam2.insert(180, Vars::new());
+
+        let observed_windows: std::cell::RefCell<Vec<(u32, u32, bool)>> =
+            std::cell::RefCell::new(Vec::new());
+        let pipeline = |comb_reg: &Region,
+                        splice_set: &mut HashSet<String>,
+                        max_rl: &mut i32|
+         -> Result<crate::javamap::JavaHashMap<i32, Vars>, VardictError> {
+            observed_windows.borrow_mut().push((
+                comb_reg.start.0,
+                comb_reg.end.0,
+                splice_set.contains("155-175"),
+            ));
+            *max_rl = (*max_rl).max(250);
+            splice_set.insert("155-175".to_string());
+            Ok(crate::javamap::JavaHashMap::new())
+        };
+
+        let _ = somatic_post_process(
+            &config,
+            &region,
+            &bam1,
+            &bam2,
+            &splice,
+            Some(&pipeline),
+            100,
+        );
+        let windows = observed_windows.into_inner();
+        assert_eq!(windows.len(), 2);
+        // First combine_analysis at pos 150 with initial max_read_length = 100 -> [50, 250], splice empty
+        assert_eq!(windows[0], (50, 250, false));
+        // Second combine_analysis at pos 180 must use updated max_read_length = 250 -> [1, 430] and updated splice
+        assert_eq!(windows[1], (1, 430, true));
     }
 }

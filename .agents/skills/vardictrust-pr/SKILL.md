@@ -63,19 +63,46 @@ gh pr create --repo palakpsheth/VarDictRust \
   --body-file /tmp/pr_body.md
 ```
 
-### 4. Inline Code Review Resolution & CI Polling
-When automated reviewers (`gemini-code-assist`, Copilot, CodeRabbit) or humans post inline review comments:
-1. Fetch all review threads and inline comments:
+### 4. Mandatory Multi-Skill Review, Copilot Review Wait & Thread Resolution (`AGENTS.md` §15.8)
+Every PR in `VarDictRust` **must** complete both the multi-skill review gate and the Copilot review thread-resolution gate before merging:
+1. **Run Multi-Skill Review (`/ponytail-review`, `/rust-router`, and `/pragmatic-rust-guidelines`):**
+   Audit `git diff origin/main...HEAD` through all three skills (`/ponytail-review`, `/rust-router`, and `/pragmatic-rust-guidelines`) and fix all findings using Red/Green TDD before merging.
+2. **Wait for `copilot-pull-request-reviewer[bot]` Review Completion:**
+   **Never** merge a PR solely because CI checks are green while `copilot-pull-request-reviewer[bot]` review is still pending. Poll until `copilot-pull-request-reviewer[bot]` posts its review on the PR:
    ```bash
-   gh api repos/palakpsheth/VarDictRust/pulls/<PR>/comments \
+   gh api --paginate repos/palakpsheth/VarDictRust/pulls/<PR>/reviews \
+     --jq '.[] | {id: .id, user: .user.login, state: .state, commit_id: .commit_id}'
+   gh api --paginate repos/palakpsheth/VarDictRust/pulls/<PR>/comments \
      --jq '.[] | {id: .id, path: .path, line: .line, user: .user.login, body: .body}'
    ```
-2. Verify each suggestion technically before implementing. Push a surgical fix commit, re-run verification gates, and reply **inline** to each comment ID with the commit SHA and verification receipt:
+3. **Refute or Fix, Reply Inline, and Resolve Every Review Thread (`resolveReviewThread`):**
+   Verify each review comment technically. Fix valid findings (or refute invalid ones with code/oracle evidence), push and re-verify gates, reply **inline** to each comment ID, and resolve every review thread via GraphQL before merging:
    ```bash
+   # Reply inline to each review comment:
    gh api -X POST repos/palakpsheth/VarDictRust/pulls/<PR>/comments/<COMMENT_ID>/replies \
      -f body="Fixed in \`<commit-sha>\` — <concise technical explanation and verification receipt>."
+
+   # Query all review thread node IDs with GraphQL cursor pagination and resolve each thread:
+   gh api graphql --paginate -f query='
+     query($pr: Int!, $endCursor: String) {
+       repository(owner: "palakpsheth", name: "VarDictRust") {
+         pullRequest(number: $pr) {
+           reviewThreads(first: 100, after: $endCursor) {
+             pageInfo { hasNextPage endCursor }
+             nodes { id isResolved comments(first: 1) { nodes { databaseId path } } }
+           }
+         }
+       }
+     }' -F pr=<PR>
+
+   gh api graphql -f query='
+     mutation($threadId: ID!) {
+       resolveReviewThread(input: {threadId: $threadId}) {
+         thread { id isResolved }
+       }
+     }' -f threadId="<THREAD_NODE_ID>"
    ```
-3. Confirm all CI checks are green before squash-merging:
+4. **Confirm All CI Checks Green & Zero Unresolved Threads Before Squash-Merging:**
    ```bash
    gh pr checks <PR>
    gh pr merge <PR> --squash --delete-branch
@@ -89,7 +116,8 @@ When automated reviewers (`gemini-code-assist`, Copilot, CodeRabbit) or humans p
 | :--- | :--- |
 | "Only a comment or variable name changed in `crates/`; I'll manually update `engine_fingerprint` in `benchmarks/evidence/*.json`." | **Class-0 Integrity Violation (`AGENTS.md` §0b).** Never hand-edit `benchmarks/evidence/*.json`. Routine feature/bugfix PRs run `bash harness/pr_check.sh` (`<25s`, `--no-record`) without touching `benchmarks/evidence/*.json`; release certification PRs (`release/vX.Y.Z`) run `bash harness/recertify.sh`. |
 | "I only bumped `Cargo.toml` and `harness/tests/*`, so I'll mark the engine checkboxes `N/A` in the PR body." | `.githooks/pre-push` classifies `Cargo.*` and `harness/` as `CODE_CHANGES`. Run `bash harness/pr_check.sh` (6/6) and check `[x]` the Tier A engine checkboxes (marking the Tier B Release Recertification checkbox `N/A — deferred to release cut per two-tier testing policy` on routine PRs, or running `recertify.sh` + `acceptance.sh` on `release/vX.Y.Z` PRs). |
-| "I'll post one top-level PR comment instead of replying to each inline review comment." | Reply directly to each inline review thread (`/pulls/<PR>/comments/<id>/replies`) so reviewers and auditors can trace every resolution. |
+| "I'll post one top-level PR comment instead of replying to each inline review comment." | Reply directly to each inline review thread (`/pulls/<PR>/comments/<id>/replies`) and resolve every review thread via `resolveReviewThread` so reviewers and auditors can trace every resolution. |
+| "All 11 CI checks are green, so I can merge right away without waiting for Copilot or running the review skills." | **Forbidden (`AGENTS.md` §15.8).** Every PR must run `/ponytail-review`, `/rust-router`, and `/pragmatic-rust-guidelines`, wait for `copilot-pull-request-reviewer[bot]` to complete its review, refute/fix + reply inline to every comment, and resolve all review threads (`resolveReviewThread`) before squash-merging. |
 
 ## Red Flags — STOP Immediately If You Catch Yourself
 

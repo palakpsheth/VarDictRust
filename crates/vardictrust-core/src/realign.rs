@@ -4138,14 +4138,10 @@ fn ensure_reference_loaded(
         gene: String::new(),
         amplicon: None,
     };
-    let mut chr_lengths = std::collections::HashMap::with_capacity(1);
-    if chr_len > 0 {
-        chr_lengths.insert(chr.to_string(), chr_len as usize);
-    }
-    crate::reference::get_reference(
+    crate::reference::get_reference_with_chr_len(
         &mod_region,
         max_read_length.max(0) as u32,
-        &chr_lengths,
+        chr_len,
         config,
         reference,
     )

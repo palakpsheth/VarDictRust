@@ -22,6 +22,13 @@ where
     run_parallel_batched(batches, num_threads, worker_fn, consumer_fn)
 }
 
+/// Worker thread stack size (16 MiB) for Rayon tile workers (`M-DOCUMENTED-MAGIC`).
+///
+/// Deep CRAM container decompression (`noodles-cram` RANS/bzip2/lzma codecs) combined
+/// with recursive structural-variant and indel realignment frames on 50x–150x WGS tiles
+/// exceeds Rayon's default 2 MiB worker stack, causing `SIGABRT` stack overflows if set lower.
+const WORKER_THREAD_STACK_BYTES: usize = 16 * 1024 * 1024;
+
 /// Executes `worker_fn` in parallel over pre-grouped `batches` (`Vec<Vec<T>>`),
 /// streaming flattened results into `consumer_fn` in exact deterministic order (`EBO-3`).
 pub fn run_parallel_batched<T, R, F, W>(
@@ -49,7 +56,7 @@ where
     }
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(num_threads)
-        .stack_size(16 * 1024 * 1024)
+        .stack_size(WORKER_THREAD_STACK_BYTES)
         .build()
         .map_err(|e| {
             VardictError::Io(std::io::Error::other(format!(
