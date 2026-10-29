@@ -2897,6 +2897,11 @@ run_stage_5() {
       oracle_cache_get \"cross_platform_chr20/\${tag}_java.vcf\"  \"\$KEEP_DIR/\${tag}_java.vcf\"  || true
       oracle_cache_get \"cross_platform_chr20/\${tag}_java.time\" \"\$KEEP_DIR/\${tag}_java.time\" || true
       oracle_cache_get \"cross_platform_chr20/\${tag}_java.exit\" \"\$KEEP_DIR/\${tag}_java.exit\" || true
+      if [ ! -s \"\$KEEP_DIR/\${tag}_java.exit\" ] && [ \"\$freq\" = '0' ] && [ \"\$(cat \"\$KEEP_DIR/\${arm}_f0.01_java.exit\" 2>/dev/null || true)\" = '124' ]; then
+        echo \"[Cross-Platform chr20] \${arm} already hit 14400s timeout (rc=124) at -f 0.01; recording monotonic superset timeout (rc=124) at -f 0\"
+        echo '124' > \"\$KEEP_DIR/\${tag}_java.exit\"
+        cp -f \"\$KEEP_DIR/\${arm}_f0.01_java.time\" \"\$KEEP_DIR/\${tag}_java.time\" 2>/dev/null || true
+      fi
       if [ ! -s \"\$KEEP_DIR/\${tag}_java.exit\" ]; then
         local rc_j=0
         timeout 14400 /usr/bin/time -v -o \"\$KEEP_DIR/\${tag}_java.time\" \
