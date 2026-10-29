@@ -616,7 +616,9 @@ pub(crate) fn get_rounded_value_to_print(value: f64, digits: i32) -> String {
         return value.to_string();
     }
     let rounded = crate::types::round_half_even(value, digits);
-    if rounded == rounded.round() {
+    if rounded == 0.0 {
+        "0".to_string()
+    } else if rounded == rounded.round() {
         format!("{:.0}", rounded)
     } else {
         let mut s = format!("{:.*}", digits as usize, rounded);
@@ -1409,5 +1411,6 @@ mod tests {
         let cols40: Vec<&str> = a40.split('\t').collect();
         assert_eq!(cols40[24], "0.1250");
         assert_eq!(cols40[29], "1.2");
+        assert_eq!(get_rounded_value_to_print(-0.00001, 4), "0");
     }
 }

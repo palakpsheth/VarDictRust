@@ -409,8 +409,8 @@ pub fn amplicon_post_process_streaming(
                     emit(AmpliconVariant {
                         variant: vref,
                         gdamp: 0,
-                        tlamp: amplicon_regions.len() as i32,
-                        ncamp: nocov,
+                        tlamp: 0,
+                        ncamp: 0,
                         ampflag: false,
                         region: format!("{}:{}-{}", region.chr, position, position),
                         good_variants: Vec::new(),
@@ -425,16 +425,15 @@ pub fn amplicon_post_process_streaming(
             vref_list = fill_vref_list(&gvs);
         }
 
-        // Detect amplicon bias
-        let flag = is_amp_bias_flag(&good_variants_on_amp);
+        // Detect amplicon bias (AmpliconPostProcessModule.java:135-137)
+        let mut current_flag = is_amp_bias_flag(&good_variants_on_amp);
+        let mut good_variants = gvs.clone();
 
         let total_amplicons = amplicon_regions.len() as i32;
 
         for vref in &vref_list {
-            let mut current_flag = flag;
-
             // If flag is set, re-check by looking at top variant's description across all amplicons
-            let good_variants = if current_flag {
+            if current_flag {
                 if let Some(top_gv) = gvs.first() {
                     let gdnt = &top_gv.0.description;
                     let mut gcnt: Vec<(Variant, String)> = Vec::new();
@@ -468,13 +467,9 @@ pub fn amplicon_post_process_streaming(
                             .partial_cmp(&a.0.frequency)
                             .unwrap_or(std::cmp::Ordering::Equal)
                     });
-                    gcnt
-                } else {
-                    gvs.clone()
+                    good_variants = gcnt;
                 }
-            } else {
-                gvs.clone()
-            };
+            }
 
             // Count how many amplicons support this variant (initialGvscnt)
             let initial_gvscnt = count_variant_on_amplicons(vref, &good_variants_on_amp);
@@ -537,6 +532,9 @@ pub fn amplicon_post_process_streaming(
                         }
                     }
                 }
+            }
+            if current_flag && current_gvscnt < initial_gvscnt {
+                current_flag = false;
             }
             let gdamp = current_gvscnt;
             let tlamp = current_gvscnt + bad_count;
@@ -1399,6 +1397,86 @@ mod tests {
         assert!(
             elapsed < std::time::Duration::from_secs(60),
             "2 Mbp -p stream took too long: {elapsed:?}",
+        );
+    }
+
+    #[test]
+    fn primer_overlap_clears_amp_bias_flag_and_pileup_null_row_zeros_tlamp_ncamp() {
+        // 1. AmpliconPostProcessModule.java:108-115: pileup null row (no ref_vars) emits tlamp=0, ncamp=0.
+        let mut config = make_test_config();
+        config.pileup = true;
+        let region = make_amp_region("chr1", 100, 200);
+        let splice = HashSet::new();
+        let vars_per_amplicon = vec![crate::javamap::JavaHashMap::new()];
+        let mut amplicons_on_positions = BTreeMap::new();
+        amplicons_on_positions.insert(150, vec![(0, make_amp_region("chr1", 100, 200))]);
+        let null_rows = amplicon_post_process(
+            &config,
+            &region,
+            &vars_per_amplicon,
+            &amplicons_on_positions,
+            &splice,
+        )
+        .unwrap();
+        assert_eq!(null_rows.len(), 1);
+        assert_eq!(
+            (null_rows[0].gdamp, null_rows[0].tlamp, null_rows[0].ncamp),
+            (0, 0, 0)
+        );
+
+        // 2. AmpliconPostProcessModule.java:186-188: when current_flag is true and a multi-base
+        // variant overlaps an amplicon primer so current_gvscnt < initial_gvscnt, current_flag resets to false.
+        config.pileup = false;
+        let mut v_del = make_good_variant(150, "ACGTACGT", "A", 0.25);
+        v_del.end_pos = 157;
+        v_del.description = "-7".to_string();
+        let mut v_snv = make_good_variant(150, "A", "T", 0.15);
+        v_snv.description = "T".to_string();
+
+        let mut vars_amp0 = crate::javamap::JavaHashMap::new();
+        let mut v0 = Vars::new();
+        v0.variants.push(v_del.clone());
+        v0.var_desc_to_variant
+            .insert("-7".to_string(), v_del.clone());
+        vars_amp0.insert(150, v0);
+
+        let mut vars_amp1 = crate::javamap::JavaHashMap::new();
+        let mut v1 = Vars::new();
+        // Amp 1 has both v_del and v_snv so is_amp_bias_flag is true (different good-variant counts: 1 vs 2)
+        v1.variants.push(v_del.clone());
+        v1.variants.push(v_snv.clone());
+        v1.var_desc_to_variant.insert("-7".to_string(), v_del);
+        v1.var_desc_to_variant.insert("T".to_string(), v_snv);
+        vars_amp1.insert(150, v1);
+
+        // Amp 2 has insert_end = 153 so v_del (150..157) overlaps its primer and decrements current_gvscnt (2 -> 1)
+        let vars_amp2 = crate::javamap::JavaHashMap::new();
+        let mut amp2_reg = make_amp_region("chr1", 100, 160);
+        if let Some(ref mut amp) = amp2_reg.amplicon {
+            amp.insert_start = crate::types::Pos1(110);
+            amp.insert_end = crate::types::Pos1(153);
+        }
+
+        let mut amps = BTreeMap::new();
+        amps.insert(
+            150,
+            vec![
+                (0, make_amp_region("chr1", 100, 200)),
+                (1, make_amp_region("chr1", 100, 200)),
+                (2, amp2_reg),
+            ],
+        );
+        let res = amplicon_post_process(
+            &config,
+            &region,
+            &[vars_amp0, vars_amp1, vars_amp2],
+            &amps,
+            &splice,
+        )
+        .unwrap();
+        assert!(
+            !res[0].ampflag,
+            "primer overlap decrementing gvscnt must clear ampflag"
         );
     }
 }

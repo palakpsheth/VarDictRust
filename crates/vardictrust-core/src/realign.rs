@@ -2108,7 +2108,15 @@ pub fn realignlgdel(
                 if bp + max_read_length >= region.start.0 as i32 {
                     tte = region.start.0 as i32 - 1;
                 }
-                if let Err(e) = ensure_reference_loaded(reference, chr, tts, tte, config) {
+                if let Err(e) = ensure_reference_loaded(
+                    reference,
+                    chr,
+                    tts,
+                    tte,
+                    max_read_length,
+                    chr_len,
+                    config,
+                ) {
                     log::warn!("ensure_reference_loaded failed: {:?}", e);
                 }
                 if let Err(e) = partial_pipeline(
@@ -2475,7 +2483,15 @@ pub fn realignlgdel(
                 if bp - max_read_length <= region.end.0 as i32 {
                     tts = region.end.0 as i32 + 1;
                 }
-                if let Err(e) = ensure_reference_loaded(reference, chr, tts, tte, config) {
+                if let Err(e) = ensure_reference_loaded(
+                    reference,
+                    chr,
+                    tts,
+                    tte,
+                    max_read_length,
+                    chr_len,
+                    config,
+                ) {
                     log::warn!("ensure_reference_loaded failed: {:?}", e);
                 }
                 if let Err(e) = partial_pipeline(
@@ -3167,7 +3183,15 @@ pub fn realignlgins(
                 if bi - max_read_length <= region.end.0 as i32 {
                     tts = region.end.0 as i32 + 1;
                 }
-                if let Err(e) = ensure_reference_loaded(reference, chr, tts, tte, config) {
+                if let Err(e) = ensure_reference_loaded(
+                    reference,
+                    chr,
+                    tts,
+                    tte,
+                    max_read_length,
+                    chr_len,
+                    config,
+                ) {
                     log::warn!("ensure_reference_loaded failed: {:?}", e);
                 }
                 if let Err(e) = partial_pipeline(
@@ -3441,7 +3465,15 @@ pub fn realignlgins(
                 if bi + max_read_length >= region.start.0 as i32 {
                     tte = region.start.0 as i32 - 1;
                 }
-                if let Err(e) = ensure_reference_loaded(reference, chr, tts, tte, config) {
+                if let Err(e) = ensure_reference_loaded(
+                    reference,
+                    chr,
+                    tts,
+                    tte,
+                    max_read_length,
+                    chr_len,
+                    config,
+                ) {
                     log::warn!("ensure_reference_loaded failed: {:?}", e);
                 }
                 if let Err(e) = partial_pipeline(
@@ -4092,47 +4124,31 @@ fn ensure_reference_loaded(
     chr: &str,
     start: i32,
     end: i32,
+    max_read_length: i32,
+    chr_len: u32,
     config: &crate::config::Config,
 ) -> Result<(), crate::types::VardictError> {
-    if crate::reference::is_loaded(chr, start as u32, end as u32, reference) {
+    if crate::reference::is_loaded(chr, start.max(1) as u32, end.max(1) as u32, reference) {
         return Ok(());
     }
-    let mut min_start = start.max(1) as u32;
-    let mut max_end = end.max(1) as u32;
-    for lr in &reference.loaded_regions {
-        if lr.chr == chr {
-            min_start = min_start.min(lr.sequence_start);
-            max_end = max_end.max(lr.sequence_end);
-        }
+    let mod_region = crate::regions::Region {
+        chr: chr.to_string(),
+        start: Pos1(start.max(1) as u32),
+        end: Pos1(end.max(1) as u32),
+        gene: String::new(),
+        amplicon: None,
+    };
+    let mut chr_lengths = std::collections::HashMap::with_capacity(1);
+    if chr_len > 0 {
+        chr_lengths.insert(chr.to_string(), chr_len as usize);
     }
-    let fasta_path = std::path::Path::new(&config.reference);
-    let mut bases =
-        crate::reference::fetch_subsequence(fasta_path, chr, Pos1(min_start), Pos1(max_end))?;
-    for b in &mut bases {
-        b.make_ascii_uppercase();
-    }
-    if let Some(idx) = reference
-        .loaded_regions
-        .iter()
-        .position(|lr| lr.chr == *chr)
-    {
-        reference.loaded_regions[idx].sequence_start = min_start;
-        reference.loaded_regions[idx].sequence_end = max_end;
-        if idx < reference.region_sequences.len() {
-            reference.region_sequences[idx] = bases.clone();
-        }
-    } else {
-        reference
-            .loaded_regions
-            .push(crate::reference::LoadedRegion {
-                chr: chr.to_string(),
-                sequence_start: min_start,
-                sequence_end: max_end,
-            });
-        reference.region_sequences.push(bases.clone());
-    }
-    reference.reference_sequences.insert(chr.to_string(), bases);
-    Ok(())
+    crate::reference::get_reference(
+        &mod_region,
+        max_read_length.max(0) as u32,
+        &chr_lengths,
+        config,
+        reference,
+    )
 }
 
 fn merge_sclip(dest: &mut Sclip, src: Sclip) {
@@ -4253,7 +4269,8 @@ fn partial_pipeline(
     // single parser. Peak memory stays flat in candidate-window depth.
     let mut parser =
         crate::cigar::parse::CigarParser::new(reference, &pileup_region, config, true, 0, 0, 0);
-    for bam in bams {
+    for (idx, bam) in bams.iter().enumerate() {
+        preprocessor.reset_for_next_bam();
         let bam_path = std::path::Path::new(bam);
         let mut feed = crate::bam::query_region_iter(
             bam_path,
@@ -4263,10 +4280,15 @@ fn partial_pipeline(
             config,
         )?;
         let mut r = crate::bam::SamRecord::new();
+        let mut any_passed = false;
         while feed.next_into(&mut r)? {
             if preprocessor.preprocess_record(&r, config) {
+                any_passed = true;
                 parser.parse_cigar(&r)?;
             }
+        }
+        if idx > 0 && !any_passed {
+            break;
         }
     }
     parser.total_reads = preprocessor.total_reads as i32;
@@ -5888,6 +5910,75 @@ mod tests {
         assert!(
             !non_insertion_variants.contains_key(&253),
             "absorbed mismatch at pos 253 must be removed from non_insertion_variants"
+        );
+    }
+
+    #[test]
+    fn test_ensure_reference_loaded_appends_secondary_region_and_populates_seeds() {
+        // Ports VariationRealigner.java:149, 250, 916, 1020:
+        // When `realignlgdel` or `realignlgins` loads an out-of-window mate region,
+        // Java calls `ReferenceResource.getReference(modifiedRegion, maxReadLength, ...)`
+        // which appends a second `LoadedRegion` (preserving the primary region's bounds)
+        // and populates `reference.seed` for the newly loaded interval.
+        let pid = std::process::id();
+        let fasta_path = std::env::temp_dir().join(format!("vr_ensure_ref_{pid}.fa"));
+        let fai_path = std::env::temp_dir().join(format!("vr_ensure_ref_{pid}.fa.fai"));
+        let seq_line = format!("{}{}\n", "A".repeat(350), "CGTACGTACGTACGTAC".repeat(15));
+        let chr_len = seq_line.trim().len();
+        std::fs::write(&fasta_path, format!(">chr1\n{}", seq_line)).unwrap();
+        std::fs::write(
+            &fai_path,
+            format!("chr1\t{}\t6\t{}\t{}\n", chr_len, chr_len, chr_len + 1),
+        )
+        .unwrap();
+
+        let mut config = crate::config::Config::default();
+        config.reference = fasta_path.to_string_lossy().into_owned();
+
+        let mut reference = crate::reference::Reference::new();
+        let primary_region = crate::regions::Region {
+            chr: "chr1".to_string(),
+            start: crate::types::Pos1(1),
+            end: crate::types::Pos1(100),
+            gene: String::new(),
+            amplicon: None,
+        };
+        let mut chr_lengths = std::collections::HashMap::new();
+        chr_lengths.insert("chr1".to_string(), chr_len);
+        crate::reference::get_reference(&primary_region, 50, &chr_lengths, &config, &mut reference)
+            .unwrap();
+        assert_eq!(reference.loaded_regions.len(), 1);
+        let primary_bounds = (
+            reference.loaded_regions[0].sequence_start,
+            reference.loaded_regions[0].sequence_end,
+        );
+
+        super::ensure_reference_loaded(
+            &mut reference,
+            "chr1",
+            400,
+            450,
+            50,
+            chr_len as u32,
+            &config,
+        )
+        .unwrap();
+
+        let _ = std::fs::remove_file(&fasta_path);
+        let _ = std::fs::remove_file(&fai_path);
+
+        assert_eq!(
+            reference.loaded_regions.len(),
+            2,
+            "ensure_reference_loaded must append a secondary LoadedRegion via get_reference rather than overwriting loaded_regions[0]"
+        );
+        assert_eq!(
+            (
+                reference.loaded_regions[0].sequence_start,
+                reference.loaded_regions[0].sequence_end
+            ),
+            primary_bounds,
+            "primary LoadedRegion bounds must be preserved"
         );
     }
 }
