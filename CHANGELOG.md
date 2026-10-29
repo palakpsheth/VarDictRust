@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.6] - 2026-10-29
+
+### Changed
+
+- Increased Rayon worker thread pool stack size to `16 MiB` (`WORKER_THREAD_STACK_BYTES = 16 * 1024 * 1024` in `crates/vardictrust-core/src/runner.rs`) to prevent stack exhaustion on deep CRAM rANS/LZMA container decoding and recursive structural variant realignment paths, and eliminated per-region `HashMap` allocation in `reference::get_reference_with_chr_len` (`crates/vardictrust-core/src/reference.rs`, `src/realign.rs`) ([Issue #60](https://github.com/palakpsheth/VarDictRust/issues/60), [PR #61](https://github.com/palakpsheth/VarDictRust/pull/61), [PR #62](https://github.com/palakpsheth/VarDictRust/pull/62)).
+- Expanded the in-process workspace test suite from `416` to `427` tests (`263` `vardictrust-core` library unit tests + `110` `corpus_parity` + `25` `engine_behavior` + `2` `amplicon_stream_mem` + `2` `cram_stack` + `17` CLI bin + `8` CLI integration binary tests) and codified the mandatory multi-skill PR review and inline review thread resolution gate (`AGENTS.md §15.8`, `CONTRIBUTING.md §6.1`, `.github/pull_request_template.md`, `.agents/skills/vardictrust-pr/SKILL.md`, `harness/tests/test_bioconda_recipe.py`) ([PR #61](https://github.com/palakpsheth/VarDictRust/pull/61), [PR #62](https://github.com/palakpsheth/VarDictRust/pull/62)).
+- Synchronized in-tree Bioconda recipe metadata (`packaging/bioconda/recipes/vardictrust/meta.yaml`) with the `v1.0.5` source tarball digest ([PR #59](https://github.com/palakpsheth/VarDictRust/pull/59)).
+- Simplified `harness/engine_fingerprint.sh` by removing the legacy `normalize_gate_blob()` / `blob_oid()` SemVer normalization workaround so `FP` and `PERF_FP` hash raw `HEAD:<path>` git blob OIDs directly under the Two-Tier Release Recertification Policy (`AGENTS.md §15.4`).
+- Recertified all 16 release evidence artifacts in `benchmarks/evidence/*.json` under engine fingerprint `5865a2a0b24a8c17` (`perf_fingerprint` `c490c36317b8f25b`; `harness/acceptance.sh` 8/8 PASS) against live pinned `VarDictJava v1.8.3` and `vardictcpp` oracle executions on an isolated 32-vCPU GCP `n2-standard-32` host (`2 hit / 90 live` golden-store executions).
+
+### Fixed
+
+- Resolved 14 deep-coverage **VarDictJava v1.8.3** parity edge cases across `Simple`, `Somatic`, `Amplicon`, and `Splicing` modes and 7 sequencing chemistries (`Illumina`, `PacBio HiFi`, `ONT`, `Element`, `Ultima`, `MGI`, `Roche SBX`) at both `-f 0.01` and `-f 0` (`-r 2` and `-r 1` noise floor) ([Issue #60](https://github.com/palakpsheth/VarDictRust/issues/60), [PR #61](https://github.com/palakpsheth/VarDictRust/pull/61), [PR #62](https://github.com/palakpsheth/VarDictRust/pull/62)):
+  - Cleared per-BAM duplicate tracking while preserving cumulative `total_reads`/`duplicate_reads` (`RecordPreprocessor::reset_for_next_bam`, `Scope.resetDuplicates`), replicated `BAMReader.hasMoreBams` (`if idx > 0 && !any_passed { break; }`) across colon-delimited multi-BAM inputs (`bam1:bam2`), and validated both tumor and normal BAM specifications upfront (`parse_colon_bams` in `crates/vardictrust-core/src/lib.rs`, `src/bam.rs`, `src/realign.rs`, `src/sv.rs`).
+  - Seeded BAM2's `CigarParser` and `sv::find_all_sv` (`find_del_disc`) with BAM1's discovered `splice` set and propagated updated `max_read_length` and `splice` state across subsequent `combine_analysis` windows in somatic mode (`crates/vardictrust-core/src/lib.rs`, `src/postprocess/somatic.rs`, matching `SomaticMode.java:104-122` and `SomaticPostProcessModule.java:198-200, 303-311, 398-406`).
+  - Updated `max_read_length` prior to the `0x800` supplementary-read early return (`CigarParser.java:181-190`), counted reference `N` bases as mismatches (`nmm++`, `m++`) with unconditional `offset` increment in `M`-after-`I` lookahead (`CigarParser.java:460-476`), and used signed `i32` loop bounds (`for k in 0..element_len`) when rescuing trailing mismatches into a $3'$ soft-clip (`CigarParser.java:1322-1457`) (`crates/vardictrust-core/src/cigar/parse.rs`).
+  - Unconditionally cached adaptor-cleared empty consensus sequences (`soft_clip.sequence = Some(final_seq.clone())`) in `find_conseq` (`VariationUtils.java:136-148`, `crates/vardictrust-core/src/variations/util.rs`), delegated `ensure_reference_loaded` to `reference::get_reference_with_chr_len` (`VariationRealigner.java:149, 250, 916, 1020`, `crates/vardictrust-core/src/realign.rs`), preserved `vref.cnt` in $5'$/$3'$ SV inversion branches (`StructuralVariantsProcessor.java:781-795, 922-936`, `crates/vardictrust-core/src/sv.rs`), and allowed signed `next_var.fwd`/`rev` decrements during DUP/INV reference adjustment (`ToVarsBuilder.java:337-340`, `crates/vardictrust-core/src/tovars.rs`).
+  - Selected somatic `max_af_variant` on 4-decimal banker-rounded `freq` (`SomaticPostProcessModule.java:118-127, 219-227`), emitted `tlamp = 0, ncamp = 0` on amplicon null pileup rows while persisting `good_variants` across amplicons (`AmpliconPostProcessModule.java:152-246`), canonicalized negative-zero `round_half_even` formatting (`-0` $	o$ `"0"`), applied two-stage `1dp -> 0dp` `HALF_EVEN` rounding to paired `MQ` (`var2vcf_paired.pl`), evaluated VCF filter thresholds on rounded `HIAF`/`SN`/`MSI`/`SBF`, and emitted `;CRISPR=` in single-sample VCF INFO when `-J` is enabled (`crates/vardictrust-core/src/lib.rs`, `src/postprocess/amplicon.rs`, `src/output/table.rs`, `src/output/vcf.rs`).
+
 ## [1.0.5] - 2026-10-27
 
 ### Added
@@ -313,7 +332,8 @@ Robustness improvements by design (no valid-input output changes relative to Var
 - Correct `##contig` lengths from the `.fai` ([VarDictJava#320](https://github.com/AstraZeneca-NGS/VarDictJava/issues/320));
   fail-fast on missing BAM index ([VarDictJava#187](https://github.com/AstraZeneca-NGS/VarDictJava/issues/187)).
 
-[Unreleased]: https://github.com/palakpsheth/VarDictRust/compare/v1.0.5...HEAD
+[Unreleased]: https://github.com/palakpsheth/VarDictRust/compare/v1.0.6...HEAD
+[1.0.6]: https://github.com/palakpsheth/VarDictRust/compare/v1.0.5...v1.0.6
 [1.0.5]: https://github.com/palakpsheth/VarDictRust/compare/v1.0.4...v1.0.5
 [1.0.4]: https://github.com/palakpsheth/VarDictRust/compare/v1.0.3...v1.0.4
 [1.0.3]: https://github.com/palakpsheth/VarDictRust/compare/v1.0.2...v1.0.3

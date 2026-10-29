@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """VarDictRust Release Consistency & Evidence Validator (stdlib-only).
 
-Verifies that all version-bearing files, workspace test counts (416 total:
-252 core lib + 110 corpus_parity + 25 engine_behavior + 2 amplicon_stream_mem
+Verifies that all version-bearing files, workspace test counts (427 total:
+263 core lib + 110 corpus_parity + 25 engine_behavior + 2 amplicon_stream_mem
 + 2 cram_stack + 17 CLI bin + 8 CLI integration binary tests), engine
 fingerprints (FP & PERF_FP), and 16 benchmarks/evidence/*.json SHA-256
 manifests are synchronized for a target release version and phase.
@@ -21,8 +21,8 @@ import sys
 VALID_PHASES = ("pre-tag", "post-tag", "post-bioconda", "post-nfcore")
 
 EXPECTED_TEST_COUNTS = {
-    "total_workspace": 416,
-    "core_lib": 252,
+    "total_workspace": 427,
+    "core_lib": 263,
     "corpus_parity": 110,
     "engine_behavior": 25,
     "amplicon_stream_mem": 2,
@@ -219,8 +219,8 @@ def check_pre_tag_surfaces(repo_root: Path, version: str, errors: list[str]) -> 
     require_regex(
         repo_root,
         "README.md",
-        r"416 automated Cargo workspace tests \(252 core library tests, 110 corpus and modality parity tests, 25 engine behavior tests, 2 amplicon streaming memory tests, 2 CRAM stack tests, 17 CLI tests, and 8 CLI integration binary tests\)",
-        "README.md exact 416 test breakdown (252 + 110 + 25 + 2 + 2 + 17 + 8)",
+        r"427 automated Cargo workspace tests \(263 core library tests, 110 corpus and modality parity tests, 25 engine behavior tests, 2 amplicon streaming memory tests, 2 CRAM stack tests, 17 CLI tests, and 8 CLI integration binary tests\)",
+        "README.md exact 427 test breakdown (263 + 110 + 25 + 2 + 2 + 17 + 8)",
         errors,
     )
 
@@ -244,8 +244,8 @@ def check_pre_tag_surfaces(repo_root: Path, version: str, errors: list[str]) -> 
     require_regex(
         repo_root,
         "DIVERGENCES.md",
-        r"252 PASS.*416 PASS",
-        "DIVERGENCES.md cites 252 core lib / 416 workspace tests",
+        r"263 PASS.*427 PASS",
+        "DIVERGENCES.md cites 263 core lib / 427 workspace tests",
         errors,
         flags=re.MULTILINE | re.DOTALL,
     )
@@ -268,8 +268,8 @@ def check_pre_tag_surfaces(repo_root: Path, version: str, errors: list[str]) -> 
     require_regex(
         repo_root,
         "CONTRIBUTING.md",
-        r"all 416 workspace unit and integration tests",
-        "CONTRIBUTING.md §4.1 cites 416 workspace tests",
+        r"all 427 workspace unit and integration tests",
+        "CONTRIBUTING.md §4.1 cites 427 workspace tests",
         errors,
     )
     require_regex(
@@ -307,8 +307,8 @@ def check_pre_tag_surfaces(repo_root: Path, version: str, errors: list[str]) -> 
     require_regex(
         repo_root,
         "docs/testing/test-matrix-and-ci-audit.md",
-        r"\b416\b",
-        "test-matrix-and-ci-audit.md cites 416 workspace tests",
+        r"\b427\b",
+        "test-matrix-and-ci-audit.md cites 427 workspace tests",
         errors,
     )
     forbid_regex(
@@ -346,8 +346,8 @@ def check_pre_tag_surfaces(repo_root: Path, version: str, errors: list[str]) -> 
     require_regex(
         repo_root,
         "wiki/Home.md",
-        r"\b416\b",
-        "wiki/Home.md cites 416 workspace tests",
+        r"\b427\b",
+        "wiki/Home.md cites 427 workspace tests",
         errors,
     )
     forbid_regex(
@@ -503,7 +503,7 @@ def main() -> int:
     parser.add_argument(
         "--version",
         default=None,
-        help="Target SemVer (e.g. 1.0.5); defaults to [workspace.package].version in Cargo.toml",
+        help="Target SemVer (e.g. 1.0.6); defaults to [workspace.package].version in Cargo.toml",
     )
     parser.add_argument(
         "--phase",

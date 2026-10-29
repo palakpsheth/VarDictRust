@@ -144,7 +144,7 @@ VarDictRust ships four repository-specific [Agent Skills](AGENTS.md#19-repositor
 
 **Discovery across AI tools:** `.agents/skills/` is committed in-tree and discovered automatically by Gemini CLI, OpenAI Codex, GitHub Copilot, Cursor, and OpenCode. Contributors can also run the bundled release consistency validator directly:
 ```bash
-python3 .agents/skills/vardictrust-release/scripts/check_release_consistency.py --version 1.0.5 --phase pre-tag
+python3 .agents/skills/vardictrust-release/scripts/check_release_consistency.py --version 1.0.6 --phase pre-tag
 ```
 
 ---
@@ -223,7 +223,7 @@ Before submitting any pull request, run the 6-stage PR validation suite defined 
 bash harness/pr_check.sh
 ```
 This suite completes in `<25s` using the pinned golden baseline store and automatically verifies:
-1. **Stage 1 (Hygiene & Unit Tests):** Formatting, Clippy lints, and all 416 workspace unit and integration tests ([Level 1](docs/testing/test-matrix-and-ci-audit.md#level-1)).
+1. **Stage 1 (Hygiene & Unit Tests):** Formatting, Clippy lints, and all 427 workspace unit and integration tests ([Level 1](docs/testing/test-matrix-and-ci-audit.md#level-1)).
 2. **Stage 2 (Crash Robustness):** PR #402, missing index #187, and Issue #341 family fixtures (executed within the workspace test run).
 3. **Stage 3 (Upstream Integration Corpus):** 92 fixtures ([Level 2](docs/testing/test-matrix-and-ci-audit.md#level-2-upstream-integration-regression-corpus-92-fixtures)) across 8 parallel workers, asserting `91 PASS / 1 XFAIL` ([UB-4](docs/upstream-bugs.md#ub-4) upstream fixture defect).
 4. **Stage 4 (Dual-Engine Differential Parity):** Micro differential fixture, all 10 standard slices (`s1a..s9`), 17-modality extended coverage (`--no-record`), and 18-slice multimodal suite (`--no-record`) against the VarDictJava oracle ([Level 3](docs/testing/test-matrix-and-ci-audit.md#level-3-dual-engine-differential-parity-testing)).
@@ -326,7 +326,7 @@ Releases are executed through a disciplined **three-phase workflow** (Pre-Releas
    - [`CITATION.cff`](CITATION.cff) (`version` and `date-released`), [`README.md`](README.md) (install tags and BibTeX version), [`.github/ISSUE_TEMPLATE/bug_report.yml`](.github/ISSUE_TEMPLATE/bug_report.yml), and [`packaging/bioconda/prepare_bioconda_pr.sh`](packaging/bioconda/prepare_bioconda_pr.sh) (`VERSION="${1:-X.Y.Z}"`).
    - Release certification dossier `docs/release/vX.Y.Z-pr.md` and release metadata references in [`docs/testing/test-matrix-and-ci-audit.md`](docs/testing/test-matrix-and-ci-audit.md), [`docs/validation/omnibus-empirical-validation.md`](docs/validation/omnibus-empirical-validation.md), [`DIVERGENCES.md`](DIVERGENCES.md), [`benchmarks/README.md`](benchmarks/README.md), [`harness/README.md`](harness/README.md), [`mkdocs.yml`](mkdocs.yml), and [`wiki/`](wiki/).
 3. **Engine Fingerprint & Live Recertification Rule (`AGENTS.md §0b`):**
-   - [`harness/engine_fingerprint.sh`](harness/engine_fingerprint.sh) (`normalize_gate_blob()`) canonicalizes workspace-only SemVer fields in `Cargo.toml`, `crates/vardictrust/Cargo.toml`, and `Cargo.lock` before hashing, so a pure workspace version bump preserves the certified engine fingerprint across all 16 evidence JSONs in [`benchmarks/evidence/`](benchmarks/evidence/).
+   - [`harness/engine_fingerprint.sh`](harness/engine_fingerprint.sh) hashes the raw `HEAD:<path>` git blob OIDs of all `GATE_FILES` (including `Cargo.toml`, `crates/vardictrust/Cargo.toml`, and `Cargo.lock`), so bumping `X.Y.Z` in Step 2 advances `FP` and `PERF_FP` and requires running `bash harness/recertify.sh` on `release/vX.Y.Z` to certify all 16 evidence JSONs in [`benchmarks/evidence/`](benchmarks/evidence/).
    - If **any** engine source (`crates/*/src`), external dependency (`Cargo.lock`), comparator, runner, or fixture in `GATE_FILES` changed since the last certification, you **must** run `bash harness/recertify.sh` to re-run the live dual-engine parity suites and stamp updated evidence JSONs honestly (never hand-edit `benchmarks/evidence/*.json`).
 
 ### 9.3 Phase 1 — Commit-First Verification Sequence & Crates.io Dry-Run
