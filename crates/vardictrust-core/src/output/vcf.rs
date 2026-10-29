@@ -359,7 +359,10 @@ pub fn filter_variant(
     let var_depth = 2;
     let dp = variant.total_pos_cov;
     let hicnt = variant.hicnt;
-    let hiaf = variant.hi_freq;
+    let hiaf = crate::types::round_half_even(variant.hi_freq, 4);
+    let sn = crate::types::round_half_even(variant.hq_lq_ratio, 3);
+    let msi = crate::types::round_half_even(variant.msi, 3);
+    let sbf_r = crate::types::round_half_even(sbf, 5);
     let hi_check = (hicnt as f64 * hiaf) >= 0.5;
 
     // T098: d3 check
@@ -411,7 +414,7 @@ pub fn filter_variant(
 
     // SN1.5 check
     let sn_threshold = 1.5;
-    if variant.hq_lq_ratio < sn_threshold {
+    if sn < sn_threshold {
         filters.push(format!("SN{}", sn_threshold));
     }
 
@@ -426,11 +429,9 @@ pub fn filter_variant(
     let ref_len = variant.ref_allele.len() as i32;
     let alt_len = variant.var_allele.len() as i32;
     let len_diff = (ref_len - alt_len).abs();
-    let msi_check1 = variant.msi > opt_i
-        && variant.msint > 1
-        && variant.frequency < 0.2
-        && len_diff == variant.msint;
-    let msi_check2 = variant.msi >= 13.0
+    let msi_check1 =
+        msi > opt_i && variant.msint > 1 && variant.frequency < 0.2 && len_diff == variant.msint;
+    let msi_check2 = msi >= 13.0
         && variant.msint == 1
         && variant.frequency <= 0.275
         && len_diff == variant.msint;
@@ -451,9 +452,9 @@ pub fn filter_variant(
         transformed_or = 1.0 / raw_odd_ratio;
     }
 
-    if variant.hi_freq < 0.25
+    if hiaf < 0.25
         && variant.bias == "2;1"
-        && sbf < 0.01
+        && sbf_r < 0.01
         && (transformed_or > 5.0 || transformed_or == 0.0)
         && (variant.end_pos - variant.start_pos) < 100
     {
@@ -462,9 +463,7 @@ pub fn filter_variant(
 
     // LongMSI check
     if len_diff == variant.msint {
-        if (variant.hi_freq <= 0.275 && variant.msi >= 13.0)
-            || (variant.hi_freq <= 0.2 && variant.msi >= 8.0 && variant.msint > 1)
-        {
+        if (hiaf <= 0.275 && msi >= 13.0) || (hiaf <= 0.2 && msi >= 8.0 && variant.msint > 1) {
             filters.push("LongMSI".to_string());
         }
     }
@@ -712,7 +711,11 @@ pub fn format_vcf_record(
         } else {
             get_rounded_value_to_print(variant.duprate, 1)
         };
-        format!(";DUPRATE={}", dup_str)
+        if matches!(config.crispr_cutting_site, Some(n) if n != 0) {
+            format!(";DUPRATE={};CRISPR={}", dup_str, variant.crispr)
+        } else {
+            format!(";DUPRATE={}", dup_str)
+        }
     };
 
     let info = format!(
@@ -996,7 +999,7 @@ fn paired_sample_field(
     let nm = if v.nm > 0.0 { v.nm } else { 0.0 };
     let mq = format!(
         "{:.0}",
-        crate::types::round_half_even(v.mean_mapping_quality, 0)
+        crate::types::round_half_even(crate::types::round_half_even(v.mean_mapping_quality, 1), 0)
     );
     format!(
         "{}:{}:{}:{},{}:{},{}:{},{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
@@ -2081,6 +2084,18 @@ mod tests {
         assert!(rec.rest.contains("MSI=2.125;"), "{}", rec.rest);
         assert!(rec.rest.contains(":42:"), "{}", rec.rest);
 
+        // Two-stage .var (1dp) -> var2vcf_paired.pl sprintf("%.0f") (0dp) rounding:
+        // 32.53846 -> 32.5 in .var -> 32 in paired VCF FORMAT:MQ (not 33).
+        let mut t_two_stage = clean_normal();
+        t_two_stage.mean_mapping_quality = 423.0 / 13.0;
+        let sv_two_stage = somatic_sv(t_two_stage, Some(clean_normal()), "Somatic");
+        let rec_two_stage = format_paired_vcf_record(&sv_two_stage, "chr1", &config);
+        assert!(
+            rec_two_stage.rest.contains(":32:"),
+            "{}",
+            rec_two_stage.rest
+        );
+
         let region = Region {
             chr: "chr1".to_string(),
             start: crate::types::Pos1(1),
@@ -2090,5 +2105,17 @@ mod tests {
         };
         let single = format_vcf_record(&t, &region, &config, &[], 1.0, "1.0", None);
         assert!(single.contains("NM=1.2;"), "{single}");
+
+        // CRISPR INFO tag when crispr_cutting_site is set (var2vcf_valid.pl:310)
+        let mut crispr_cfg = Config::default();
+        crispr_cfg.crispr_cutting_site = Some(50);
+        let mut t_crispr = clean_normal();
+        t_crispr.crispr = 3;
+        let single_crispr =
+            format_vcf_record(&t_crispr, &region, &crispr_cfg, &[], 1.0, "1.0", None);
+        assert!(
+            single_crispr.contains(";CRISPR=3;"),
+            "expected ;CRISPR=3; in INFO column, got: {single_crispr}"
+        );
     }
 }

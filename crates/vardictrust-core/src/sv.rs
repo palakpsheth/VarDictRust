@@ -1184,7 +1184,12 @@ pub fn find_inv_sub(
                 scv_live.used = true;
             }
 
-            let bams_vec: Vec<String> = config.bam.split('|').map(|s| s.to_string()).collect();
+            let bams_vec: Vec<String> = bam_path
+                .to_string_lossy()
+                .split(':')
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+                .collect();
             let bams_opt = if bams_vec.is_empty() {
                 None
             } else {
@@ -2120,9 +2125,8 @@ pub fn find_sv(
                 vn = format!("-{}^{}{}", bp - p5_adj + 1, tins, extra);
             }
 
-            let vref =
+            let _vref =
                 crate::variations::get_variation(&mut var_data.non_insertion_variants, p5_adj, &vn);
-            vref.cnt = 0;
 
             let sv = crate::variations::VariationMap::get_sv(
                 &mut var_data.non_insertion_variants,
@@ -2302,9 +2306,8 @@ pub fn find_sv(
                 vn = format!("-{}^{}{}", bp - p3_adj + 1, extra, tins);
             }
 
-            let vref =
+            let _vref =
                 crate::variations::get_variation(&mut var_data.non_insertion_variants, p3_adj, &vn);
-            vref.cnt = 0;
 
             let sv = crate::variations::VariationMap::get_sv(
                 &mut var_data.non_insertion_variants,
@@ -3449,7 +3452,17 @@ pub fn partial_pipeline(
     // the taken maps, written back exactly as pileup_into does (fresh
     // SVStructures discarded, discordant seeded 0 — duprate never propagates
     // out of this path either way). Peak memory stays flat in depth.
-    let mut feed = crate::bam::query_region_iter(bam_path, chr, query_start, query_end, config)?;
+    let bam_str = bam_path.to_string_lossy();
+    let mut feeds = Vec::with_capacity(2);
+    for single_bam in bam_str.split(':').filter(|s| !s.is_empty()) {
+        feeds.push(crate::bam::query_region_iter(
+            std::path::Path::new(single_bam),
+            chr,
+            query_start,
+            query_end,
+            config,
+        )?);
+    }
 
     // Preprocess records
     let mut preprocessor = crate::bam::RecordPreprocessor::new();
@@ -3507,9 +3520,17 @@ pub fn partial_pipeline(
             scratch_f4_seg2: String::new(),
         };
         let mut r = crate::bam::SamRecord::new();
-        while feed.next_into(&mut r)? {
-            if preprocessor.preprocess_record(&r, config) {
-                parser.parse_cigar(&r)?;
+        for (idx, mut feed) in feeds.into_iter().enumerate() {
+            preprocessor.reset_for_next_bam();
+            let mut any_passed = false;
+            while feed.next_into(&mut r)? {
+                if preprocessor.preprocess_record(&r, config) {
+                    any_passed = true;
+                    parser.parse_cigar(&r)?;
+                }
+            }
+            if idx > 0 && !any_passed {
+                break;
             }
         }
         parser.total_reads = preprocessor.total_reads as i32;
@@ -4377,6 +4398,82 @@ mod tests {
         assert_eq!(
             live_polya.sequence.as_deref(),
             Some(&b"AAAAAAAAAAAAAAA"[..])
+        );
+    }
+
+    #[test]
+    fn test_find_sv_inversion_accumulates_existing_variation_count() {
+        // Ports StructuralVariantsProcessor.java:781-795, 922-936:
+        // Unlike the deletion branches in `findsv` (which set `vref.cnt = 0`),
+        // the 5' and 3' inversion branches call `getVariation(...)` without zeroing
+        // `vref.cnt` and then accumulate via `adjCnt(vref, scv.vars)`.
+        use crate::config::Config;
+        use crate::reference::{LoadedRegion, Reference};
+        use crate::variations::{Sclip, VariationData};
+        use std::collections::HashMap;
+
+        let chr = "chr1";
+        let mut bases = vec![b'A'; 600];
+        let seed_g = [b'G'; 17];
+        bases[383..400].copy_from_slice(&seed_g); // 1-based 384..=400
+
+        let mut reference = Reference::default();
+        reference.loaded_regions.push(LoadedRegion {
+            chr: chr.to_string(),
+            sequence_start: 1,
+            sequence_end: 600,
+        });
+        reference.seed.insert(seed_g.to_vec(), vec![384]);
+        reference
+            .reference_sequences
+            .insert(chr.to_string(), bases.clone());
+        reference.region_sequences.push(bases);
+
+        let mut var_data = VariationData::default();
+        var_data.max_read_length = 100;
+
+        let mut sc3 = Sclip::default();
+        sc3.variation.cnt = 3;
+        sc3.variation.hicnt = 3;
+        sc3.variation.pmean = 60.0;
+        sc3.variation.qmean = 90.0;
+        sc3.sequence = Some(vec![b'C'; 17]);
+        var_data.soft_clips_3_end.insert(100, sc3);
+
+        // Pre-populate the exact 3' inversion key at pos 100 with cnt = 2.
+        let ins5 = complement_seq(&crate::util::join_ref(&reference, chr, 351, 400));
+        let ins3 = complement_seq(&crate::util::join_ref(&reference, chr, 100, 149));
+        let vn = format!("-301^{}<inv201>{}", ins5, ins3);
+        let pre_vref =
+            crate::variations::get_variation(&mut var_data.non_insertion_variants, 100, &vn);
+        pre_vref.cnt = 2;
+        pre_vref.hicnt = 2;
+
+        let mut config = Config::default();
+        config.min_reads = 2;
+        let mut chr_lengths = HashMap::new();
+        chr_lengths.insert(chr.to_string(), 600usize);
+
+        find_sv(
+            &mut var_data,
+            &mut reference,
+            chr,
+            1,
+            600,
+            &config,
+            &chr_lengths,
+        )
+        .unwrap();
+
+        let post_cnt = var_data
+            .non_insertion_variants
+            .get(&100)
+            .and_then(|m| m.map.get(&vn))
+            .map(|v| v.cnt)
+            .unwrap_or(0);
+        assert_eq!(
+            post_cnt, 5,
+            "find_sv inversion branch must accumulate onto existing vref.cnt (2 + 3 = 5) instead of zeroing vref.cnt"
         );
     }
 }

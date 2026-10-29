@@ -226,6 +226,7 @@ bash harness/slice.sh <in.bam> <chr:start-end> <out.bam>
 5. The commit/PR states: **"validated vs VarDictJava 1.8.3, dataset `<name>`, cmd `<…>`"**.
 6. `gitleaks protect --staged` (commit) / `gitleaks detect --source .` (push) clean.
 7. The PR body completes `.github/pull_request_template.md`, which is authoritative on what may be skipped: engine-gate boxes are either run or marked **N/A with a one-line justification** under the template's docs/infra-only note (the same code-change filter the pre-push hook enforces).
+8. **Mandatory Multi-Skill Review & Copilot Review Thread Resolution Gate:** Every PR must be reviewed and fixed through `/ponytail-review`, `/rust-router`, and `/pragmatic-rust-guidelines` before merge. Every PR must also wait for `copilot-pull-request-reviewer[bot]` (and any other automated or human reviewers) to finish its review — never merge solely because CI checks are green while Copilot review is pending or in progress. Every review comment must be refuted or fixed with an inline reply (`repos/<owner>/<repo>/pulls/<PR>/comments/<ID>/replies`) and every review thread must be resolved (`resolveReviewThread` GraphQL mutation) before squash-merging.
 
 ## 16. Repo layout
 ```
@@ -248,7 +249,7 @@ somatic STATUS → `src/postprocess/`); `printers/*` (→ `src/output/`); `varia
 Somatic STATUS is computed in **Java** (`SomaticPostProcessModule.determinateType`), not Perl.
 
 ## 18. Commits
-Atomic commits per task: `git add -A && git commit -m "<type>: <short desc>"`. Branch off `origin/main` (`git fetch origin && git checkout -b <type>/<slug> origin/main`); never push `main` directly (the pre-push hook blocks it) — merge via a PR opened with `gh`, with the PR template filled. Run `bash harness/setup_hooks.sh` once per clone so the repo-managed hooks are active. Full gate semantics live in [CONTRIBUTING.md](CONTRIBUTING.md) §§5–6 and `harness/pr_check.sh` (6 stages).
+Atomic commits per task: `git add -A && git commit -m "<type>: <short desc>"`. Branch off `origin/main` (`git fetch origin && git checkout -b <type>/<slug> origin/main`); never push `main` directly (the pre-push hook blocks it) — merge via a PR opened with `gh`, with the PR template filled, `/ponytail-review` + `/rust-router` + `/pragmatic-rust-guidelines` completed, and `copilot-pull-request-reviewer[bot]` review waited for, replied to inline, and resolved (`resolveReviewThread`) per §15.8. Run `bash harness/setup_hooks.sh` once per clone so the repo-managed hooks are active. Full gate semantics live in [CONTRIBUTING.md](CONTRIBUTING.md) §§5–6 and `harness/pr_check.sh` (6 stages).
 Never commit secrets, **data** (BAM/CRAM/FASTA/VCF beyond the tiny `golden/` fixtures), `target/`, conda envs, or ephemeral agent scratch/planning trees (e.g. `docs/superpowers/` — agent plans belong in the external `<appDataDir>/brain/<conversation-id>` artifact store; see `.gitignore`). **Do** commit `Cargo.lock` (this is an application workspace). MIT-licensed, open-source project. Do not include `Co-Authored-By` commit trailers; machine assistance and AI tool participation are disclosed transparently in [README.md](README.md) and [CITATION.cff](CITATION.cff).
 
 <a id="19-repository-specific-agent-skills"></a>

@@ -2350,6 +2350,12 @@ impl RecordPreprocessor {
         }
     }
 
+    /// Resets per-BAM duplicate tracking state (`RecordPreprocessor.java:80-82`).
+    pub fn reset_for_next_bam(&mut self) {
+        self.duplicates.clear();
+        self.first_matching_position = -1;
+    }
+
     /// Preprocesses a record, returning true if it passes all filters.
     pub fn preprocess_record(
         &mut self,
@@ -4336,5 +4342,39 @@ mod tests {
             ..SamRecord::default()
         };
         assert_eq!(compute_cram_nm(&rec, ref_seq), Some(i32::MAX));
+    }
+
+    #[test]
+    fn record_preprocessor_reset_for_next_bam_clears_duplicates_while_preserving_totals() {
+        // Issue #60 (#3): CigarParser.java:108-120 calls `preprocessor.reset()` at the start
+        // of each BAM in a multi-BAM colon-separated run (`combineAnalysis` Tumor:Normal),
+        // clearing `duplicates` and resetting `firstMatchingPosition = -1` while preserving
+        // `totalReads` and `duplicateReads` counters (`RecordPreprocessor.java:80-82`).
+        let mut prep = RecordPreprocessor::new();
+        let config = Config {
+            dedup: true,
+            ..Default::default()
+        };
+        let rec = SamRecord {
+            flags: 0x9,
+            alignment_start: Some(Pos1(12_214_074)),
+            mate_alignment_start: Some(Pos1(12_214_215)),
+            template_length: 142,
+            cigar: vec![(151, CigarKind::Match)],
+            sequence: vec![b'A'; 151],
+            ..SamRecord::default()
+        };
+        assert!(prep.preprocess_record(&rec, &config));
+        assert!(!prep.preprocess_record(&rec, &config));
+        assert_eq!(prep.total_reads, 2);
+        assert_eq!(prep.duplicate_reads, 1);
+
+        prep.reset_for_next_bam();
+        assert!(
+            prep.preprocess_record(&rec, &config),
+            "identical coordinates in second BAM must not be filtered as duplicate of first BAM"
+        );
+        assert_eq!(prep.total_reads, 3);
+        assert_eq!(prep.duplicate_reads, 1);
     }
 }

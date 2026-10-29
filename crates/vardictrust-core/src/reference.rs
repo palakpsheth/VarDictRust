@@ -400,6 +400,18 @@ pub fn get_reference(
     config: &Config,
     reference: &mut Reference,
 ) -> Result<(), VardictError> {
+    let chr_len = chromosomes_lengths.get(&region.chr).copied().unwrap_or(0) as u32;
+    get_reference_with_chr_len(region, extension, chr_len, config, reference)
+}
+
+/// Ports `ReferenceResource.java:getReference` with a pre-resolved chromosome length (`M-MEM-REUSE`).
+pub fn get_reference_with_chr_len(
+    region: &BedRegion,
+    extension: u32,
+    len: u32,
+    config: &Config,
+    reference: &mut Reference,
+) -> Result<(), VardictError> {
     let start_val = region.start.0;
     let end_val = region.end.0;
 
@@ -408,7 +420,6 @@ pub fn get_reference(
     let total_ext = (config.extension.max(0) as u32).saturating_add(extension);
     let sequence_start = start_val.saturating_sub(total_ext).max(1);
 
-    let len = chromosomes_lengths.get(&region.chr).copied().unwrap_or(0) as u32;
     let end_ext = end_val.saturating_add(total_ext);
     let sequence_end = if len > 0 && end_ext > len {
         len

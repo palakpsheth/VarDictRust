@@ -261,6 +261,21 @@ When opening a pull request (see the [`vardictrust-pr` skill](.agents/skills/var
 - [ ] PR validation suite passes: `bash harness/pr_check.sh`.
 - [ ] No regression against the 4-target performance budget (runtime regression $\le 5\%$, peak RSS 0% increase across HG008, SEQC2, HG002, and Amplicon).
 - [ ] No secrets or credentials in git history (`gitleaks`).
+- [ ] Multi-skill review completed and findings fixed through `/ponytail-review`, `/rust-router`, and `/pragmatic-rust-guidelines`.
+- [ ] Waited for `copilot-pull-request-reviewer[bot]` review to finish; every review comment refuted or fixed with an inline reply and every review thread resolved (`resolveReviewThread`).
+
+### 6.3 Mandatory Multi-Skill & Automated PR Review Resolution Gate ([AGENTS.md §15.8](AGENTS.md#15-definition-of-done-every-change))
+Before merging any pull request into `main`:
+1. **Multi-Skill Audit & Fix:** Run `/ponytail-review`, `/rust-router`, and `/pragmatic-rust-guidelines` on the PR diff (`git diff origin/main...HEAD`) and fix all identified correctness, ownership/mutability, error-handling, performance, and idiomatic Rust issues via Red/Green TDD.
+2. **Wait for Copilot PR Review Completion:** Never merge a PR solely because GitHub Actions CI checks are green while `copilot-pull-request-reviewer[bot]` is still pending in `requested_reviewers` or has not posted its review for the latest commit. Poll until the Copilot review is posted:
+   ```bash
+   gh api --paginate repos/palakpsheth/VarDictRust/pulls/<PR>/reviews \
+     --jq '.[] | {id: .id, user: .user.login, state: .state, commit_id: .commit_id}'
+   ```
+3. **Refute or Fix, Reply Inline, and Resolve Every Thread:** For every inline comment posted by `copilot-pull-request-reviewer[bot]` or any other automated/human reviewer:
+   - Evaluate the finding technically; push a surgical fix commit (or prepare a technical refutation with code/oracle evidence if the suggestion is invalid) and re-run `bash harness/pr_check.sh`.
+   - Reply inline to each comment (`repos/palakpsheth/VarDictRust/pulls/<PR>/comments/<COMMENT_ID>/replies`).
+   - Resolve every review thread via the GitHub GraphQL `resolveReviewThread` mutation before running `gh pr merge <PR> --squash --delete-branch`.
 
 ---
 

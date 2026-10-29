@@ -396,6 +396,37 @@ class TestRepoAgentSkills(unittest.TestCase):
                 else:
                     expected_cols = None
 
+    def test_pr_review_governance_contract(self):
+        surfaces = (
+            ROOT_DIR / "AGENTS.md",
+            ROOT_DIR / "CONTRIBUTING.md",
+            ROOT_DIR / ".github" / "pull_request_template.md",
+            SKILLS_DIR / "vardictrust-pr" / "SKILL.md",
+        )
+        required_tokens = (
+            "/ponytail-review",
+            "/rust-router",
+            "/pragmatic-rust-guidelines",
+            "copilot-pull-request-reviewer[bot]",
+            "resolveReviewThread",
+        )
+        for surface in surfaces:
+            self.assertTrue(surface.is_file(), f"Missing PR governance surface: {surface}")
+            content = surface.read_text(encoding="utf-8")
+            for token in required_tokens:
+                self.assertIn(
+                    token,
+                    content,
+                    f"{surface.relative_to(ROOT_DIR)} must document mandatory PR review requirement {token!r}",
+                )
+        skill_content = (SKILLS_DIR / "vardictrust-pr" / "SKILL.md").read_text(encoding="utf-8")
+        contrib_content = (ROOT_DIR / "CONTRIBUTING.md").read_text(encoding="utf-8")
+        self.assertIn("gh api --paginate repos/palakpsheth/VarDictRust/pulls/<PR>/reviews", skill_content)
+        self.assertIn("gh api --paginate repos/palakpsheth/VarDictRust/pulls/<PR>/comments", skill_content)
+        self.assertIn("gh api graphql --paginate", skill_content)
+        self.assertIn("pageInfo { hasNextPage endCursor }", skill_content)
+        self.assertIn("gh api --paginate repos/palakpsheth/VarDictRust/pulls/<PR>/reviews", contrib_content)
+
     def test_release_consistency_script_passes_and_catches_drift(self):
         script = SKILLS_DIR / "vardictrust-release" / "scripts" / "check_release_consistency.py"
         self.assertTrue(script.is_file(), f"Missing validator script: {script}")

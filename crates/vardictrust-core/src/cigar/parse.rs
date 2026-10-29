@@ -198,11 +198,6 @@ impl<'a> CigarParser<'a> {
             return Ok(());
         }
 
-        // If supplementary alignment is present and flag filter is enabled, ignore it
-        if self.config.flag_filter != 0 && (record.flags & 0x800) != 0 {
-            return Ok(());
-        }
-
         let direction = (record.flags & 0x10) != 0;
         let insertion_deletion_length = get_insertion_deletion_length(&record.cigar);
 
@@ -365,6 +360,18 @@ impl<'a> CigarParser<'a> {
         let total_length_including_soft_clipped = get_soft_clipped_length(&cigar_elements);
         if total_length_including_soft_clipped > self.max_read_length as u32 {
             self.max_read_length = total_length_including_soft_clipped as i32;
+        }
+
+        // If supplementary alignment is present and flag filter is enabled, ignore it
+        // Ports CigarParser.java:307-315: supplementary check runs AFTER updating maxReadLength.
+        if self.config.flag_filter != 0 && (record.flags & 0x800) != 0 {
+            self.scratch_seq = query_seq;
+            self.scratch_qual = query_qual;
+            self.scratch_elements = cigar_elements;
+            self.scratch_s = buf_s;
+            self.scratch_ss = buf_ss;
+            self.scratch_splice_key = scratch_splice_key;
+            return Ok(());
         }
 
         // CRISPR mode: skip reads not overlapping the cutting site region
@@ -833,8 +840,6 @@ impl<'a> CigarParser<'a> {
                         read_pos_inc += moffset as usize;
                         start += moffset;
                         read_pos_exc += moffset as usize;
-                    } else {
-                        offset = 0;
                     }
                     ci += 1;
                 }
@@ -1561,9 +1566,6 @@ impl<'a> CigarParser<'a> {
                     }
                     let ts_pos = *start + vi as i32;
                     if let Some(ref_ch) = self.reference.get_base(&self.region.chr, ts_pos as u32) {
-                        if ref_ch == b'N' || ref_ch == b'n' {
-                            break;
-                        }
                         if q_char != ref_ch {
                             current_offset = vi + 1;
                             nmoff += 1;
@@ -2110,7 +2112,7 @@ impl<'a> CigarParser<'a> {
                 }
             }
 
-            let mut element_len = cigar_element_len;
+            let mut element_len = cigar_element_len as i32;
             while *read_pos_inc < query_seq.len() {
                 // §9: single fetch — the loop condition only needs is_some.
                 let Some(ref_base) = self.reference.get_base(&self.region.chr, *start as u32)
@@ -2150,8 +2152,9 @@ impl<'a> CigarParser<'a> {
                 let mut sum_of_read_qualities = 0;
                 let mut number_of_high_quality_bases = 0;
                 let mut number_of_low_quality_bases = 0;
-                for si in 0..element_len as usize {
-                    let idx = *read_pos_inc + si;
+                let mut si = 0i32;
+                while si < element_len {
+                    let idx = *read_pos_inc + si as usize;
                     if idx >= query_seq.len() {
                         break;
                     }
@@ -2172,6 +2175,7 @@ impl<'a> CigarParser<'a> {
                     }
                     sum_of_read_qualities += base_qual as i32;
                     number_of_high_quality_bases += 1;
+                    si += 1;
                 }
                 self.sclip3_high_quality_processing(
                     query_seq,
@@ -2183,7 +2187,7 @@ impl<'a> CigarParser<'a> {
                     number_of_high_quality_bases,
                     number_of_low_quality_bases,
                     *start,
-                    element_len,
+                    element_len.max(0) as u32,
                     *read_pos_inc,
                 );
             }
@@ -4562,5 +4566,189 @@ mod tests {
             parser.parse_cigar(&record_seed).unwrap();
             assert!(parser.soft_clips_3_end.is_empty());
         }
+    }
+
+    #[test]
+    fn supplementary_read_updates_max_read_length_before_early_return() {
+        // Issue #60 (#18): CigarParser.java:307-315 updates `maxReadLength` from
+        // `totalLengthIncludingSoftClipped` before checking `(flags & 0x800) != 0`.
+        // Observed on HG008 Ultima UG100 chr20:323309 where a 317 bp supplementary
+        // read increases maxReadLength from 287 to 317.
+        let mut reference = Reference::new();
+        reference
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr20".to_string(),
+                sequence_start: 1,
+                sequence_end: 500,
+            });
+        let ref_seq = vec![b'A'; 500];
+        reference.region_sequences.push(ref_seq.clone());
+        reference
+            .reference_sequences
+            .insert("chr20".to_string(), ref_seq);
+        let region = Region {
+            chr: "chr20".to_string(),
+            start: Pos1(1),
+            end: Pos1(500),
+            gene: "T".to_string(),
+            amplicon: None,
+        };
+        let config = Config::default();
+        let mut parser = CigarParser::new(&reference, &region, &config, false, 0, 500, 287);
+        let rec = SamRecord {
+            name: b"ug100_supp_317bp".to_vec(),
+            flags: 0x800, // supplementary
+            reference_name: Some("chr20".to_string()),
+            alignment_start: Some(Pos1(10)),
+            alignment_end: Some(Pos1(326)),
+            mapping_quality: Some(60),
+            cigar: vec![(317, CigarKind::Match)],
+            sequence: vec![b'A'; 317],
+            quality_scores: vec![73; 317],
+            ..SamRecord::default()
+        };
+        parser.parse_cigar(&rec).unwrap();
+        assert_eq!(
+            parser.max_read_length, 317,
+            "supplementary read must update max_read_length before early return"
+        );
+    }
+
+    #[test]
+    fn m_after_i_n_reference_base_counts_as_mismatch_and_advances_offset() {
+        // Issue #60 (#4): CigarParser.java:1680-1695 (`isCloserThenVextAndGoodBase`)
+        // compares `q != refCh` directly when `refCh == 'N'`, setting `offset = vi + 1`
+        // and incrementing `nmoff` so the `M` after `I` merges into a complex variant
+        // instead of breaking early on `N`. Observed on HG002 MGI DNBSEQ chr20:31059956.
+        let mut reference = Reference::new();
+        reference
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr20".to_string(),
+                sequence_start: 1,
+                sequence_end: 60,
+            });
+        let mut ref_seq = vec![b'A'; 60];
+        // At 1-based pos 11 (index 10), place 'N' right after the 1I at pos 10.
+        ref_seq[10] = b'N';
+        reference.region_sequences.push(ref_seq.clone());
+        reference
+            .reference_sequences
+            .insert("chr20".to_string(), ref_seq);
+        let region = Region {
+            chr: "chr20".to_string(),
+            start: Pos1(1),
+            end: Pos1(50),
+            gene: "T".to_string(),
+            amplicon: None,
+        };
+        let config = Config::default();
+        let mut parser = CigarParser::new(&reference, &region, &config, false, 0, 1, 60);
+        // 10M (pos 1..10) + 1I ('C') + 10M (pos 11..20, where ref[11] == 'N' and read has 'G')
+        let mut seq = vec![b'A'; 21];
+        seq[10] = b'C'; // 1I
+        seq[11] = b'G'; // pos 11 against ref 'N'
+        let rec = SamRecord {
+            name: b"mgi_n_after_ins".to_vec(),
+            flags: 0,
+            reference_name: Some("chr20".to_string()),
+            alignment_start: Some(Pos1(1)),
+            alignment_end: Some(Pos1(20)),
+            mapping_quality: Some(60),
+            cigar: vec![
+                (10, CigarKind::Match),
+                (1, CigarKind::Insertion),
+                (10, CigarKind::Match),
+            ],
+            sequence: seq,
+            quality_scores: vec![73; 21],
+            nm: Some(2),
+            ..SamRecord::default()
+        };
+        parser.parse_cigar(&rec).unwrap();
+        let ins_at_10 = parser
+            .insertion_variants
+            .get(&10)
+            .expect("expected insertion map at pos 10");
+        assert!(
+            ins_at_10.map.contains_key("+C&G"),
+            "expected +C&G complex insertion spanning ref 'N' at pos 11, got keys: {:?}",
+            ins_at_10.map.keys().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn sclip3_rescue_negative_element_len_does_not_underflow() {
+        // Issue #60 (#10, #12): CigarParser.java:611-616, 1238-1258 preserves `offset`
+        // when `moffset == 0` on a second `I` and uses signed comparison in the 3'
+        // soft-clip rescue loop (`for (int si = 0; si < cigarElementLength; si++)`).
+        // Observed on HG002 Ultima UG100 chr20:13697661 and HG008 Roche SBX chr20:72357.
+        let mut reference = Reference::new();
+        reference
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 1,
+                sequence_end: 60,
+            });
+        let mut ref_seq = vec![b'A'; 60];
+        ref_seq[11] = b'T'; // 1-based pos 12
+        ref_seq[24] = b'T'; // 1-based pos 25 (i = 14 of 16M, within extension_nuc = 2)
+        ref_seq[37] = b'T'; // 1-based pos 38
+        reference.region_sequences.push(ref_seq.clone());
+        reference
+            .reference_sequences
+            .insert("chr1".to_string(), ref_seq);
+
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(1),
+            end: Pos1(50),
+            gene: "T".to_string(),
+            amplicon: None,
+        };
+        let config = Config::default();
+        let mut parser = CigarParser::new(&reference, &region, &config, false, 0, 100, 100);
+
+        let mut seq = vec![b'A'; 42];
+        seq[10] = b'G'; // first 2I ("GG")
+        seq[11] = b'G';
+        seq[13] = b'C'; // mismatch at pos 12 (vi = 1 after first 2I -> offset = 2)
+        seq[26] = b'C'; // mismatch at pos 25 (i = 14 of 16M -> absorbed into second 2I)
+        seq[28] = b'G'; // second 2I ("GG")
+        seq[29] = b'G';
+        seq[41] = b'C'; // trailing mismatch at pos 38
+        let qual = vec![73; 42];
+        let rec = SamRecord {
+            name: b"r1".to_vec(),
+            flags: 0,
+            reference_name: Some("chr1".to_string()),
+            alignment_start: Some(Pos1(1)),
+            alignment_end: Some(Pos1(37)),
+            mapping_quality: Some(60),
+            cigar: vec![
+                (10, CigarKind::Match),
+                (2, CigarKind::Insertion),
+                (16, CigarKind::Match),
+                (2, CigarKind::Insertion),
+                (11, CigarKind::Match),
+                (1, CigarKind::SoftClip),
+            ],
+            sequence: seq,
+            quality_scores: qual,
+            mate_reference_name: None,
+            mate_alignment_start: None,
+            template_length: 0,
+            nm: Some(3),
+            sa: None,
+            mc: None,
+            mq: None,
+        };
+        parser.parse_cigar(&rec).unwrap();
+        assert!(
+            parser.soft_clips_3_end.is_empty(),
+            "negative remaining 3' soft-clip element_len must not wrap around and populate soft_clips_3_end"
+        );
     }
 }

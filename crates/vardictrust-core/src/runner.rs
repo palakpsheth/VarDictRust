@@ -22,6 +22,13 @@ where
     run_parallel_batched(batches, num_threads, worker_fn, consumer_fn)
 }
 
+/// Worker thread stack size (16 MiB) for Rayon tile workers (`M-DOCUMENTED-MAGIC`).
+///
+/// Deep CRAM container decompression (`noodles-cram` RANS/bzip2/lzma codecs) combined
+/// with recursive structural-variant and indel realignment frames on 50x–150x WGS tiles
+/// exceeds Rayon's default 2 MiB worker stack, causing `SIGABRT` stack overflows if set lower.
+const WORKER_THREAD_STACK_BYTES: usize = 16 * 1024 * 1024;
+
 /// Executes `worker_fn` in parallel over pre-grouped `batches` (`Vec<Vec<T>>`),
 /// streaming flattened results into `consumer_fn` in exact deterministic order (`EBO-3`).
 pub fn run_parallel_batched<T, R, F, W>(
@@ -49,6 +56,7 @@ where
     }
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(num_threads)
+        .stack_size(WORKER_THREAD_STACK_BYTES)
         .build()
         .map_err(|e| {
             VardictError::Io(std::io::Error::other(format!(
@@ -365,5 +373,33 @@ mod tests {
             panic_res.is_err(),
             "single-thread caller panics must unwind naturally"
         );
+    }
+
+    #[test]
+    fn worker_pool_supports_deep_stack_frames_for_cram_and_sv_recursion() {
+        #[inline(never)]
+        fn recurse_stack(depth: usize, seed: u8) -> u64 {
+            let mut frame = [seed; 512 * 1024];
+            std::hint::black_box(&mut frame);
+            if depth == 0 {
+                frame[0] as u64 + frame[frame.len() - 1] as u64
+            } else {
+                frame[0] as u64 + recurse_stack(depth - 1, seed.wrapping_add(1))
+            }
+        }
+
+        // 8 frames * 512 KiB = 4 MiB stack (> default 2 MiB Rayon worker stack, <= 16 MiB)
+        let mut out = Vec::new();
+        run_parallel(
+            vec![1u8, 2u8],
+            2,
+            |seed| Ok(recurse_stack(8, seed)),
+            |val| {
+                out.push(val);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(out.len(), 2);
     }
 }
