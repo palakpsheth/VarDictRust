@@ -50,10 +50,10 @@ GCS_BAMS="${GCS_BAMS:-gs://vardict-paper-trial-bams}"
 GCS_REFS="${GCS_REFS:-gs://vardict-paper-trial-refs}"
 GCS_RESULTS="${GCS_RESULTS:-gs://vardict-paper-trial-results}"
 GCS_EVIDENCE="${GCS_EVIDENCE:-gs://vardict-paper-trial-evidence}"
-GCS_CKPT="${GCS_CKPT:-${GCS_RESULTS}/checkpoints-v105}"
+GCS_CKPT="${GCS_CKPT:-${GCS_RESULTS}/checkpoints-v106}"
 GCS_ORACLE_CACHE="${GCS_ORACLE_CACHE:-${GCS_RESULTS}/oracle-cache-v183}"
 
-EXPECTED_FP="${EXPECTED_FP:-256fd851c7657ea6}"
+EXPECTED_FP="${EXPECTED_FP:-5865a2a0b24a8c17}"
 WORK_DIR="${WORK_DIR:-/var/tmp/vardict-paper}"
 
 usage() {
@@ -350,7 +350,7 @@ run_checkpointed_cell() {
   if [ -n "${LOCAL_CKPT_DIR:-}" ]; then
     gcs_upload "$cell_dir" "${LOCAL_CKPT_DIR}/cells/${cell_id}"
   else
-    gcs_upload "$cell_dir" "${GCS_RESULTS}/${GCS_CELLS_SUBDIR:-cells-v105}/${cell_id}" || true
+    gcs_upload "$cell_dir" "${GCS_RESULTS}/${GCS_CELLS_SUBDIR:-cells-v106}/${cell_id}" || true
   fi
 
   if [ "$rc" -ne 0 ]; then
@@ -552,7 +552,7 @@ worker_preflight() {
     echo "=== df -h WORK_DIR ==="
     df -h "$WORK_DIR" 2>/dev/null || true
   } > "$WORK_DIR/cells/host_hardware_manifest.txt"
-  gcs_upload "$WORK_DIR/cells/host_hardware_manifest.txt" "${GCS_RESULTS}/${GCS_CELLS_SUBDIR:-cells-v105}/host_hardware_manifest.txt" || true
+  gcs_upload "$WORK_DIR/cells/host_hardware_manifest.txt" "${GCS_RESULTS}/${GCS_CELLS_SUBDIR:-cells-v106}/host_hardware_manifest.txt" || true
   cargo build --release -p vardictrust
 }
 
@@ -1407,8 +1407,8 @@ run_stage_4() {
     BUDGET_DIR="${WORK_DIR}/cells/s4_perf_budget_4targets_n3"
     if [ ! -f "$BUDGET_DIR/hg002/rust.vcf" ] && [ -z "${LOCAL_CKPT_DIR:-}" ]; then
       mkdir -p "$BUDGET_DIR"
-      setsid gsutil "${GSUTIL_MT_FLAGS[@]}" -q rsync -r "${GCS_RESULTS}/${GCS_CELLS_SUBDIR:-cells-v105}/s4_perf_budget_4targets_n3" "$BUDGET_DIR" || \
-        setsid gsutil "${GSUTIL_MT_FLAGS[@]}" -q rsync -r "${GCS_RESULTS}/cells-v104/s4_perf_budget_4targets_n3" "$BUDGET_DIR"
+      setsid gsutil "${GSUTIL_MT_FLAGS[@]}" -q rsync -r "${GCS_RESULTS}/${GCS_CELLS_SUBDIR:-cells-v106}/s4_perf_budget_4targets_n3" "$BUDGET_DIR" || \
+        setsid gsutil "${GSUTIL_MT_FLAGS[@]}" -q rsync -r "${GCS_RESULTS}/cells-v105/s4_perf_budget_4targets_n3" "$BUDGET_DIR"
     fi
 
     # (a) HG002 Germline Truth (GIAB v4.2.1)
@@ -1660,7 +1660,7 @@ PY
     grep -q "^chr1" "$KEEP_DIR/readme_smoke.vcf"
 
     # Sync updated benchmarks/evidence/*.json back to GCS evidence bucket
-    setsid gsutil "${GSUTIL_MT_FLAGS[@]}" -o GSUtil:parallel_composite_upload_threshold=0 -q rsync -r benchmarks/evidence "$GCS_RESULTS/${GCS_CELLS_SUBDIR:-cells-v105}/evidence_certified" || true
+    setsid gsutil "${GSUTIL_MT_FLAGS[@]}" -o GSUtil:parallel_composite_upload_threshold=0 -q rsync -r benchmarks/evidence "$GCS_RESULTS/${GCS_CELLS_SUBDIR:-cells-v106}/evidence_certified" || true
   '
 }
 
@@ -1802,8 +1802,8 @@ run_s4_scale_exome_body() {
   grep -q '^MATCH' "$KEEP_DIR/compare_th${th}.txt"
   if [ "$th" -gt 1 ] && [ ! -f "${WORK_DIR}/cells/s4_scale_exome_3way_th1/rust_th1.vcf" ] && [ -z "${LOCAL_CKPT_DIR:-}" ]; then
     mkdir -p "${WORK_DIR}/cells/s4_scale_exome_3way_th1"
-    setsid gsutil "${GSUTIL_MT_FLAGS[@]}" -q rsync -r "${GCS_RESULTS}/${GCS_CELLS_SUBDIR:-cells-v105}/s4_scale_exome_3way_th1" "${WORK_DIR}/cells/s4_scale_exome_3way_th1" || \
-      setsid gsutil "${GSUTIL_MT_FLAGS[@]}" -q rsync -r "${GCS_RESULTS}/cells-v104/s4_scale_exome_3way_th1" "${WORK_DIR}/cells/s4_scale_exome_3way_th1" || true
+    setsid gsutil "${GSUTIL_MT_FLAGS[@]}" -q rsync -r "${GCS_RESULTS}/${GCS_CELLS_SUBDIR:-cells-v106}/s4_scale_exome_3way_th1" "${WORK_DIR}/cells/s4_scale_exome_3way_th1" || \
+      setsid gsutil "${GSUTIL_MT_FLAGS[@]}" -q rsync -r "${GCS_RESULTS}/cells-v105/s4_scale_exome_3way_th1" "${WORK_DIR}/cells/s4_scale_exome_3way_th1" || true
   fi
   if [ "$th" -gt 1 ] && [ -f "${WORK_DIR}/cells/s4_scale_exome_3way_th1/rust_th1.vcf" ]; then
     cmp <(grep -v '^##' "${WORK_DIR}/cells/s4_scale_exome_3way_th1/rust_th1.vcf") <(grep -v '^##' "$KEEP_DIR/rust_th${th}.vcf")
@@ -4055,8 +4055,8 @@ run_plan_check() {
   [[ "$cmd6" != *"--maintenance-policy=TERMINATE"* ]] || { echo "FAIL: STANDARD cmd must not set maintenance-policy=TERMINATE" >&2; exit 1; }
 
   # Verify audit fixes in script text: exact mkbed(), symmetric n=3 Java loops, 13-mode sweep, Fig-2/Fig-3 field callers, 3-way scaling
-  [ "$EXPECTED_FP" = "256fd851c7657ea6" ] || { echo "FAIL: EXPECTED_FP '$EXPECTED_FP' != 256fd851c7657ea6" >&2; exit 1; }
-  [[ "$GCS_CKPT" == */checkpoints-v105 ]] || { echo "FAIL: GCS_CKPT '$GCS_CKPT' does not end with /checkpoints-v105" >&2; exit 1; }
+  [ "$EXPECTED_FP" = "5865a2a0b24a8c17" ] || { echo "FAIL: EXPECTED_FP '$EXPECTED_FP' != 5865a2a0b24a8c17" >&2; exit 1; }
+  [[ "$GCS_CKPT" == */checkpoints-v106 ]] || { echo "FAIL: GCS_CKPT '$GCS_CKPT' does not end with /checkpoints-v106" >&2; exit 1; }
   grep -Fq 'samtools view -F 0x904 -q 1' "$0" || { echo "FAIL: missing exact samtools view -F 0x904 -q 1 mkbed()" >&2; exit 1; }
   grep -Fq 'java_var_th${th}_run\${run}.time' "$0" || { echo "FAIL: missing symmetric n=3 Java Tier-P loop" >&2; exit 1; }
   grep -Fq 's2_tierp_mode_parity_sweep' "$0" || { echo "FAIL: missing s2_tierp_mode_parity_sweep cell" >&2; exit 1; }
