@@ -81,10 +81,20 @@ enum PipelineTail {
     /// Full post-pileup pipeline (AbstractMode.java:44-56, VariationRealigner.java:73-90):
     /// adjust_mnp unconditionally, realign_indels under `-k 1`, then find_all_sv + adj_snv.
     Full,
-    /// Somatic BAM pass (SomaticMode.java / SomaticPostProcessModule.combineAnalysis):
-    /// shares AbstractMode.pipeline (VariationRealigner.java:81-89 calls adjustMNP()
-    /// unconditionally before gating realignIndels() on performLocalRealignment).
-    Somatic,
+}
+
+/// Splits a colon-delimited BAM specification into non-empty file paths,
+/// returning `Err(VardictError::Parse(empty_err))` when no path is present.
+fn parse_colon_bams(spec: &str, empty_err: &str) -> Result<Vec<String>, VardictError> {
+    let bams: Vec<String> = spec
+        .split(':')
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .collect();
+    if bams.is_empty() {
+        return Err(VardictError::Parse(empty_err.to_string()));
+    }
+    Ok(bams)
 }
 
 /// Per-region pipeline shared by simple, amplicon and somatic modes: query the
@@ -106,6 +116,7 @@ fn run_pipeline_on_records(
     config: &config::Config,
     chromosomes_lengths: &HashMap<String, usize>,
     seed_max_read_length: i32,
+    initial_splice: Option<std::collections::HashSet<String>>,
 ) -> Result<crate::variations::VariationData, VardictError> {
     // Task 4 (streaming feed): one lazy pass per BAM, BAM1-then-BAM2, through
     // a single sequential preprocessor into a single CigarParser. Records are
@@ -146,6 +157,9 @@ fn run_pipeline_on_records(
         0,
         seed_max_read_length,
     );
+    if let Some(seed_splice) = initial_splice {
+        parser.splice = seed_splice;
+    }
     for (idx, mut feed) in feeds.into_iter().enumerate() {
         preprocessor.reset_for_next_bam();
         // Reused record buffer: zero per-read allocation after warmup (the
@@ -171,7 +185,7 @@ fn run_pipeline_on_records(
 
     match tail {
         PipelineTail::Stop => {}
-        PipelineTail::Full | PipelineTail::Somatic => {
+        PipelineTail::Full => {
             crate::realign::adjust_mnp(
                 reference,
                 chr,
@@ -301,11 +315,7 @@ pub fn run_with_writer<W: std::io::Write>(
         .split('|')
         .next()
         .ok_or_else(|| VardictError::Parse("No BAM files specified".to_string()))?;
-    let bam_list: Vec<String> = first_bam_spec
-        .split(':')
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
-        .collect();
+    let bam_list = parse_colon_bams(first_bam_spec, "No BAM files specified")?;
     let first_bam = bam_list
         .first()
         .map(|s| s.as_str())
@@ -428,6 +438,7 @@ pub fn run_with_writer<W: std::io::Write>(
                 &config_clone,
                 &chromosomes_lengths_clone,
                 0,
+                None,
             )?;
 
             let mut lines = Vec::new();
@@ -625,11 +636,7 @@ fn process_amplicon_region(
     };
 
     let mut reference = crate::reference::Reference::new();
-    let bam_list: Vec<String> = bam
-        .split(':')
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
-        .collect();
+    let bam_list = parse_colon_bams(bam, "No BAM files specified")?;
     let var_data = run_pipeline_on_records(
         &bam_list,
         &region.chr,
@@ -642,6 +649,7 @@ fn process_amplicon_region(
         config,
         chromosomes_lengths,
         0,
+        None,
     )?;
 
     // Variant calling over the insert region (amplicon insert bounds)
@@ -899,16 +907,8 @@ fn run_somatic<W: std::io::Write>(
             "Somatic mode requires exactly two BAM files separated by '|'".to_string(),
         ));
     }
-    let bam1_bams: Vec<String> = parts[0]
-        .split(':')
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
-        .collect();
-    let bam2_bams: Vec<String> = parts[1]
-        .split(':')
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
-        .collect();
+    let bam1_bams = parse_colon_bams(parts[0], "No tumor BAM file specified")?;
+    let bam2_bams = parse_colon_bams(parts[1], "No normal BAM file specified")?;
     let first_bam1 = bam1_bams
         .first()
         .ok_or_else(|| VardictError::Parse("No tumor BAM file specified".to_string()))?;
@@ -989,10 +989,11 @@ fn run_somatic<W: std::io::Write>(
                 Some(&bed_region),
                 &mut reference,
                 &region_for_pileup,
-                PipelineTail::Somatic,
+                PipelineTail::Full,
                 &config_clone,
                 &chromosomes_lengths_clone,
                 0,
+                None,
             )?;
 
             let max_read_length_bam1 = var_data1.max_read_length;
@@ -1018,10 +1019,11 @@ fn run_somatic<W: std::io::Write>(
                 &config_clone,
             );
             let aligned1 = builder1.build_aligned_variants(&var_data1);
-            let mut splice = std::mem::take(&mut var_data1.splice);
+            let splice1 = std::mem::take(&mut var_data1.splice);
             drop(var_data1);
-            // Process BAM2 (normal), seeded with BAM1's maxReadLength; the
-            // reference loaded above is reused (no second get_reference).
+            // Process BAM2 (normal), seeded with BAM1's maxReadLength and shared
+            // `splice` set (`SomaticMode.java:104-122`); the reference loaded above
+            // is reused (no second get_reference).
             let mut var_data2 = run_pipeline_on_records(
                 &bam2_bams,
                 &tile.chr,
@@ -1030,15 +1032,16 @@ fn run_somatic<W: std::io::Write>(
                 None,
                 &mut reference,
                 &region_for_pileup,
-                PipelineTail::Somatic,
+                PipelineTail::Full,
                 &config_clone,
                 &chromosomes_lengths_clone,
                 max_read_length_bam1,
+                Some(splice1),
             )?;
 
             // Use max of both BAMs' maxReadLength (SomaticPostProcessModule.java:64)
             let combined_max_rl = max_read_length_bam1.max(var_data2.max_read_length);
-            splice.extend(std::mem::take(&mut var_data2.splice));
+            let splice = std::mem::take(&mut var_data2.splice);
 
             // Build aligned variants for BAM2 (aligned1 already built above).
             let builder2 = crate::tovars::ToVarsBuilder::new(
@@ -1059,8 +1062,10 @@ fn run_somatic<W: std::io::Write>(
             bams_for_combine.extend(bam2_bams_for_combine.iter().cloned());
             let config_for_combine = config_clone.clone();
             let chr_lens_for_combine = chromosomes_lengths_clone.clone();
-            let combine_max_rl_cell = std::cell::Cell::new(combined_max_rl);
-            let pipeline_fn = |combine_region: &crate::regions::Region| -> Result<
+            let pipeline_fn = |combine_region: &crate::regions::Region,
+                               splice_set: &mut std::collections::HashSet<String>,
+                               max_rl: &mut i32|
+             -> Result<
                 crate::javamap::JavaHashMap<i32, crate::variations::Vars>,
                 VardictError,
             > {
@@ -1071,8 +1076,7 @@ fn run_somatic<W: std::io::Write>(
                 // `combine_region` (`reference.seed` and `referenceSequences` bounds
                 // scoped to `combine_region`, not the outer tile).
                 let mut pipeline_ref = crate::reference::Reference::new();
-                let seed_rl = combine_max_rl_cell.get();
-                let var_data = run_pipeline_on_records(
+                let mut var_data = run_pipeline_on_records(
                     &bams_for_combine,
                     &combine_region.chr,
                     crate::types::Pos0(combine_region.start.0.saturating_sub(1)),
@@ -1080,12 +1084,14 @@ fn run_somatic<W: std::io::Write>(
                     Some(combine_region),
                     &mut pipeline_ref,
                     combine_region,
-                    PipelineTail::Somatic,
+                    PipelineTail::Full,
                     &config_for_combine,
                     &chr_lens_for_combine,
-                    seed_rl,
+                    *max_rl,
+                    Some(splice_set.clone()),
                 )?;
-                combine_max_rl_cell.set(seed_rl.max(var_data.max_read_length));
+                *splice_set = std::mem::take(&mut var_data.splice);
+                *max_rl = (*max_rl).max(var_data.max_read_length);
 
                 // ToVarsBuilder
                 let builder = crate::tovars::ToVarsBuilder::new(
@@ -1578,6 +1584,7 @@ mod tests {
             config,
             chr_lens,
             0,
+            None,
         )
         .unwrap()
     }
@@ -1640,6 +1647,7 @@ mod tests {
             &config,
             &chr_lens,
             0,
+            None,
         )
         .unwrap();
         let whole_count = whole.splice_count.get("399-449").map(|a| a[0]).unwrap_or(0);
@@ -1797,6 +1805,7 @@ mod tests {
                 &config,
                 &chr_lens,
                 0,
+                None,
             )
             .unwrap()
         };
@@ -1858,6 +1867,7 @@ mod tests {
             &config,
             &chr_lens,
             0,
+            None,
         )
         .unwrap();
 
@@ -2081,5 +2091,129 @@ mod tests {
             create_output_writer(&cfg),
             OutputDestination::Stderr(_)
         ));
+    }
+
+    #[test]
+    fn somatic_rejects_empty_normal_bam_spec() {
+        for bam_spec in ["tumor.bam|", "tumor.bam|::"] {
+            let cfg = crate::config::Config {
+                bam: bam_spec.to_string(),
+                region: Some("chr1:1-100".to_string()),
+                ..Default::default()
+            };
+            let mut out = Vec::new();
+            let err = run_with_writer(&cfg, &mut out).unwrap_err();
+            match err {
+                VardictError::Parse(msg) => {
+                    assert!(
+                        msg.contains("No normal BAM file specified"),
+                        "expected 'No normal BAM file specified' for {bam_spec:?}, got {msg:?}"
+                    );
+                }
+                other => panic!("expected VardictError::Parse for {bam_spec:?}, got {other:?}"),
+            }
+        }
+
+        let simple_cfg = crate::config::Config {
+            bam: "::".to_string(),
+            region: Some("chr1:1-100".to_string()),
+            ..Default::default()
+        };
+        let mut out = Vec::new();
+        let err = run_with_writer(&simple_cfg, &mut out).unwrap_err();
+        match err {
+            VardictError::Parse(msg) => {
+                assert!(
+                    msg.contains("No BAM files specified"),
+                    "expected 'No BAM files specified', got {msg:?}"
+                );
+            }
+            other => panic!("expected VardictError::Parse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn somatic_bam2_sv_pipeline_inherits_bam1_splice_set() {
+        // SomaticMode.java:104-122 passes the same mutable `Set<String> splice` instance
+        // into both `initialScope1` and `initialScope2`, so splice junctions discovered in
+        // BAM1 suppress < 250 kbp discordant-pair deletions during BAM2's
+        // `StructuralVariantsProcessor.findDELdisc` (`sv.rs:2396`).
+        use noodles::core::Position;
+        use noodles::sam::alignment::record::cigar::{op::Kind, Op};
+        use noodles::sam::alignment::record::Flags;
+        use noodles::sam::alignment::record_buf::Cigar;
+        use noodles::sam::alignment::RecordBuf;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let fasta_path = dir.path().join("ref.fa");
+        let fai_path = dir.path().join("ref.fa.fai");
+        let ref_bases = "A".repeat(2000);
+        std::fs::write(&fasta_path, format!(">chr1\n{ref_bases}\n")).unwrap();
+        std::fs::write(&fai_path, "chr1\t2000\t6\t2000\t2001\n").unwrap();
+
+        let tumor_bam = dir.path().join("tumor.bam");
+        let normal_bam = dir.path().join("normal.bam");
+
+        let spliced_cigar: Cigar = [
+            Op::new(Kind::Match, 10),
+            Op::new(Kind::Skip, 50),
+            Op::new(Kind::Match, 10),
+        ]
+        .into_iter()
+        .collect();
+        let spliced_read = RecordBuf::builder()
+            .set_name("t_splice")
+            .set_flags(Flags::empty())
+            .set_reference_sequence_id(0)
+            .set_alignment_start(Position::try_from(50usize).unwrap())
+            .set_mapping_quality(noodles::sam::alignment::record::MappingQuality::new(60).unwrap())
+            .set_cigar(spliced_cigar)
+            .set_sequence(vec![b'A'; 20].into())
+            .set_quality_scores(vec![40u8; 20].into())
+            .build();
+        write_test_bam(&tumor_bam, "chr1", 2000, &[spliced_read]);
+
+        let mut normal_reads = Vec::new();
+        for i in 0..7usize {
+            let cigar: Cigar = [Op::new(Kind::Match, 20)].into_iter().collect();
+            let rec = RecordBuf::builder()
+                .set_name(format!("n_disc_{i}"))
+                .set_flags(Flags::SEGMENTED | Flags::MATE_REVERSE_COMPLEMENTED)
+                .set_reference_sequence_id(0)
+                .set_alignment_start(Position::try_from(200 + i).unwrap())
+                .set_mapping_quality(
+                    noodles::sam::alignment::record::MappingQuality::new(60).unwrap(),
+                )
+                .set_cigar(cigar)
+                .set_mate_reference_sequence_id(0)
+                .set_mate_alignment_start(Position::try_from(1500usize).unwrap())
+                .set_template_length(1320)
+                .set_sequence(vec![b'A'; 20].into())
+                .set_quality_scores(vec![40u8; 20].into())
+                .build();
+            normal_reads.push(rec);
+        }
+        write_test_bam(&normal_bam, "chr1", 2000, &normal_reads);
+
+        let cfg = crate::config::Config {
+            bam: format!(
+                "{}|{}",
+                tumor_bam.to_string_lossy(),
+                normal_bam.to_string_lossy()
+            ),
+            reference: fasta_path.to_string_lossy().into_owned(),
+            region: Some("chr1:1-900".to_string()),
+            emit_intermediate: true,
+            min_reads: 2,
+            freq: 0.01,
+            ..Default::default()
+        };
+        let mut out = Vec::new();
+        run_with_writer(&cfg, &mut out).unwrap();
+        let output = String::from_utf8(out).unwrap();
+        assert!(
+            !output.contains("<DEL>"),
+            "BAM2 < 250 kbp discordant DEL must be suppressed when BAM1 observed a splice junction, got:\n{output}"
+        );
     }
 }

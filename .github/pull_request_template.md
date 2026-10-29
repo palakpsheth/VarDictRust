@@ -46,4 +46,6 @@ Every PR modifying variant calling, pileup, or realignment logic must verify per
 - [ ] Cluster resource etiquette respected (concurrency capped at $\le 8$ threads or `RUST_TEST_THREADS=4`).
 - [ ] Zero `Co-Authored-By` commit trailers per commit policy.
 - [ ] Engine fingerprint verified (`bash harness/engine_fingerprint.sh`).
+- [ ] Multi-skill review completed and findings fixed (`/ponytail-review`, `/rust-router`, and `/pragmatic-rust-guidelines` per [AGENTS.md §15.8](../AGENTS.md#15-definition-of-done-every-change)).
+- [ ] Waited for `copilot-pull-request-reviewer[bot]` review to finish; every review comment refuted or fixed with an inline reply and every review thread resolved (`resolveReviewThread`).
 - [ ] Security disclosures follow [SECURITY.md](SECURITY.md) (contact: `palakpsheth@gmail.com`).
