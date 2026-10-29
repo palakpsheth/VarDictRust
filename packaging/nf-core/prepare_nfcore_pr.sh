@@ -13,7 +13,7 @@ IN_TREE_MODULE_DIR="$SCRIPT_DIR/modules/vardictrust"
 : "${NFCORE_MODULES_DIR:?Set NFCORE_MODULES_DIR to a trusted local nf-core/modules checkout path}"
 NFCORE_MODULE_PATH="$NFCORE_MODULES_DIR/modules/nf-core/vardictrust"
 
-VERSION="${1:-1.0.5}"
+VERSION="${1:-1.0.6}"
 ANACONDA_API="https://api.anaconda.org/package/bioconda/vardictrust"
 
 for tool in curl python3 nf-core nextflow nf-test docker; do

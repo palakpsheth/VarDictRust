@@ -19,10 +19,10 @@
   ],
   "cpp_time": {
     "exit": "0",
-    "max_rss_kb": "91040",
-    "wall": "0:03.75"
+    "max_rss_kb": "122584",
+    "wall": "0:04.57"
   },
-  "date": "2026-10-27T10:53:25-07:00",
+  "date": "2026-10-29T17:36:44+00:00",
   "extra": {
     "cpp_head": [
       "CPP: SKIP: cpp emitted non-VCF surface (TSV-only mode; VCF comparison inapplicable)"
@@ -31,84 +31,84 @@
     "golden": {
       "events": [
         {
-          "event": "HIT",
-          "key": "d959a1f9d0caade3",
+          "event": "MISS",
+          "key": "0a755cdd283d4c52",
           "kind": "cpp",
           "label": "scale-th1"
         },
         {
-          "event": "HIT",
-          "key": "51b5d8c406281b9f",
+          "event": "MISS",
+          "key": "3937f3695d6c24de",
           "kind": "cpp",
           "label": "scale-th2"
         },
         {
-          "event": "HIT",
-          "key": "100bfb0e1109fc67",
+          "event": "MISS",
+          "key": "beffe97eb64b5a16",
           "kind": "cpp",
           "label": "scale-th4"
         },
         {
-          "event": "HIT",
-          "key": "06cd7f28339d9ce8",
+          "event": "MISS",
+          "key": "a9e8bb1074fb535e",
           "kind": "cpp",
           "label": "scale-th8"
         },
         {
-          "event": "HIT",
-          "key": "31ce21cdef2b8ff5",
+          "event": "MISS",
+          "key": "d9ffc440a5b8e555",
           "kind": "cpp",
           "label": "scale-R1000000"
         },
         {
-          "event": "HIT",
-          "key": "300bf8323f02eb97",
+          "event": "MISS",
+          "key": "d61d24e53007e1b3",
           "kind": "cpp",
           "label": "scale-R10000000"
         },
         {
-          "event": "HIT",
-          "key": "a33080203a44b627",
+          "event": "MISS",
+          "key": "9823301fcf277d13",
           "kind": "cpp",
           "label": "scale-R100000000"
         },
         {
-          "event": "HIT",
-          "key": "561b46c9fc809e16",
+          "event": "MISS",
+          "key": "1c0f2c69aab6d31c",
           "kind": "cpp",
           "label": "scale-R248956422"
         },
         {
-          "event": "HIT",
-          "key": "812a562f853bf2da",
+          "event": "MISS",
+          "key": "b83ac72132c632e7",
           "kind": "java",
           "label": "compare"
         },
         {
-          "event": "HIT",
-          "key": "60b073b76fa647d6",
+          "event": "MISS",
+          "key": "c212453fec5fda62",
           "kind": "cpp",
           "label": "compare"
         }
       ],
-      "hit": 10,
-      "live": 0,
-      "run": "recertify-1793120292"
+      "hit": 0,
+      "live": 10,
+      "run": "recertify-1793288302"
     }
   },
-  "fingerprint": "d925892846918c2a",
-  "head": "23532783ae6e3f9c2c13a08c86c663a5726c43c7",
+  "fingerprint": "5865a2a0b24a8c17",
+  "head": "28722a739fe55b524f2c888303b1bb69fc3f430d",
   "java_time": {
     "exit": "0",
-    "max_rss_kb": "125120",
-    "wall": "0:02.55"
+    "max_rss_kb": "123904",
+    "wall": "0:02.77"
   },
   "n_variants": 2,
   "name": "amplicon-tier2",
   "result": "MATCH",
   "rust_time": {
     "exit": "0",
-    "max_rss_kb": "11840",
+    "max_rss_kb": "11776",
     "wall": "0:00.01"
   }
 }
