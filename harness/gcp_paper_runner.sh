@@ -53,7 +53,7 @@ GCS_EVIDENCE="${GCS_EVIDENCE:-gs://vardict-paper-trial-evidence}"
 GCS_CKPT="${GCS_CKPT:-${GCS_RESULTS}/checkpoints-v105}"
 GCS_ORACLE_CACHE="${GCS_ORACLE_CACHE:-${GCS_RESULTS}/oracle-cache-v183}"
 
-EXPECTED_FP="${EXPECTED_FP:-d925892846918c2a}"
+EXPECTED_FP="${EXPECTED_FP:-256fd851c7657ea6}"
 WORK_DIR="${WORK_DIR:-/var/tmp/vardict-paper}"
 
 usage() {
@@ -201,6 +201,28 @@ gcs_stat_done() {
   else
     setsid gsutil -q stat "${GCS_CKPT}/${cell_id}.done" 2>/dev/null
   fi
+}
+
+# Returns 0 (true) if at least one listed compute cell is still pending (not .done in GCS),
+# or 1 (false) if ALL listed compute cells are already checkpointed (.done in GCS).
+any_cell_pending() {
+  local cid
+  if [ -n "${LOCAL_CKPT_DIR:-}" ]; then
+    for cid in "$@"; do
+      if [ ! -f "${LOCAL_CKPT_DIR}/${cid}.done" ]; then
+        return 0
+      fi
+    done
+    return 1
+  fi
+  local done_list
+  done_list="$(setsid gsutil ls "${GCS_CKPT}/*.done" 2>/dev/null || true)"
+  for cid in "$@"; do
+    if ! printf '%s\n' "$done_list" | grep -q "/${cid}\\.done$"; then
+      return 0
+    fi
+  done
+  return 1
 }
 
 gcs_mark_done() {
@@ -1790,6 +1812,29 @@ run_s4_scale_exome_body() {
 }
 
 run_packed_stages_2_to_4() {
+  local s24_cells=(
+    s2_tierp_v2_SRR15006386_th8 s2_tierp_v2_SRR15006386_th1
+    s2_tierp_v2_SRR15006375_th8 s2_tierp_v2_SRR15006375_th1
+    s2_tierp_v2_SRR15006376_th8 s2_tierp_v2_SRR15006376_th1
+    s2_tierp_v2_SRR15006540_th8 s2_tierp_v2_SRR15006540_th1
+    s2_tierp_v2_SRR8657348_th8  s2_tierp_v2_SRR8657348_th1
+    s2_tierp_v2_somatic_76_86_th8 s2_tierp_v2_somatic_76_86_th1
+    s2_tierp_mode_parity_sweep s2_fig2_hg002_chr20_truth
+    s2_fig1_fig3_field_callers s2_table3_R_chr1_rust_and_cpp
+    s2_table3_R_chr1_java_200g_n3 s3_rna_splice_parity_n3
+    s4_perf_budget_4targets_n3 s4_tier3_truth_and_qual_sweep
+    s4_scale_exome_3way_th1 s4_scale_exome_3way_th2
+    s4_scale_exome_3way_th4 s4_scale_exome_3way_th8
+    s4_span_chr1_3way_th8 s4_scale_exome_3way_th16
+    s4_scale_exome_3way_th32 s4_span_chr1_3way_th32
+    s4_span_chr1_f0 s4_jobs_per_node_2x4c_n3
+    s4_multimodal_and_cram_twin
+  )
+  if ! any_cell_pending "${s24_cells[@]}"; then
+    echo "[SKIP] All Stage 2-4 compute cells already checkpointed in GCS; skipping Stage 2-4 local asset staging and execution."
+    return 0
+  fi
+
   echo "=== [Packed Zero-Contention Dual-Socket Orchestrator (NUMA Node 0: CPUs 0-7 / L3=0 vs NUMA Node 1: CPUs 8-15 / L3=1, SMT 16-31 Idle)] ==="
 
   # Wave 0A: Verify Tier-P & Stage-3 RNA assets (already on NVMe), build all 5 mkbed.bed files, and warm RAM page cache
@@ -1914,7 +1959,8 @@ run_stage_5() {
   local hg_dir="${WORK_DIR}/data/hg002_full"
 
   # 1. Stage full ~130.77 GB HG002.GRCh38.2x250.bam + .bai on NVMe RAID0 & build Arm A / Arm B whole-genome BEDs
-  run_local_stage_cell "stage5" "s5_stage_hg002_full_wgs" 32 "128G" bash -c "
+  if any_cell_pending s5_wgs_hg002_full_contigs_3way_th32 s5_wgs_hg002_full_giab_3way_th32; then
+    run_local_stage_cell "stage5" "s5_stage_hg002_full_wgs" 32 "128G" bash -c "
     set -euo pipefail
     mkdir -p '$hg_dir'
     BAM_URL='https://giab.s3.amazonaws.com/data/AshkenazimTrio/HG002_NA24385_son/NIST_Illumina_2x250bps/novoalign_bams/HG002.GRCh38.2x250.bam'
@@ -1984,6 +2030,9 @@ run_stage_5() {
     cp -f '$hg_dir/hg002_full_22contigs.bed' \"\$KEEP_DIR/\"
     wc -l '$hg_dir/hg002_full_22contigs.bed' '$hg_dir/hg002_full_giab_50kb.bed' > \"\$KEEP_DIR/bed_counts.txt\"
   "
+  else
+    echo "[SKIP] All HG002 full-WGS compute cells already checkpointed in GCS; skipping 130.77 GB local staging."
+  fi
 
   # 2. Arm A: 22 Un-Chunked Whole Chromosomes (chr1..chr22, 2.875 Gbp) across all 3 engines at -th 32 / 115G / -Xmx200g
   run_checkpointed_cell "stage5" "s5_wgs_hg002_full_contigs_3way_th32" 32 "115G" bash -c "
@@ -2153,7 +2202,8 @@ run_stage_5() {
 
   # 4. Stage full ~329 GB HG008-T (195x, 160.0 GB) + HG008-N (169x, 169.0 GB) paired PDAC WGS BAMs on NVMe RAID0
   local hg8_dir="${WORK_DIR}/data/hg008_full"
-  run_local_stage_cell "stage5" "s5_stage_hg008_full_wgs" 32 "128G" bash -c "
+  if any_cell_pending s5_wgs_hg008_full_contigs_3way_th32 s5_wgs_hg008_full_giab_3way_th32; then
+    run_local_stage_cell "stage5" "s5_stage_hg008_full_wgs" 32 "128G" bash -c "
     set -euo pipefail
     mkdir -p '$hg8_dir'
     BASE_URL='https://giab.s3.amazonaws.com/data_somatic/HG008/Liss_lab/BCM_Illumina-WGS_20240313'
@@ -2242,6 +2292,9 @@ run_stage_5() {
     [ \"\$(wc -l < '$hg8_dir/hg008_full_giab_v04_50kb.bed')\" -ge 40000 ]
     wc -l '$hg8_dir/hg008_full_22contigs.bed' '$hg8_dir/hg008_full_giab_v04_50kb.bed' > \"\$KEEP_DIR/hg008_bed_counts.txt\"
   "
+  else
+    echo "[SKIP] All HG008 full-WGS compute cells already checkpointed in GCS; skipping 329 GB local staging."
+  fi
 
   # 5. G2 Arm A: Full-Depth HG008-T|N (195x/169x = 364x combined) 22 Un-Chunked Chromosomes at -th 32 / 115G / -Xmx200g
   run_checkpointed_cell "stage5" "s5_wgs_hg008_full_contigs_3way_th32" 32 "115G" bash -c "
@@ -2652,7 +2705,8 @@ run_stage_5() {
 
   # 9. Stage Option C Cross-Platform Short/Mid-Read Benchmark Panel (Full chr20 across 6 Chemistries + chr1 r1..r3 Somatic Panel)
   local xp_dir="${WORK_DIR}/data/cross_platform_chr20"
-  run_local_stage_cell "stage5" "s5_stage_cross_platform_chr20" 32 "128G" bash -c "
+  if any_cell_pending s5_cross_platform_short_read_chr20_panel; then
+    run_local_stage_cell "stage5" "s5_stage_cross_platform_chr20" 32 "128G" bash -c "
     set -euo pipefail
     source harness/gcp_paper_runner.sh --source-only
     mkdir -p '$xp_dir'
@@ -2806,6 +2860,9 @@ run_stage_5() {
     ls -lh '$xp_dir' > \"\$KEEP_DIR/staged_cross_platform_files.txt\"
     setsid gsutil -m -o GSUtil:parallel_process_count=1 -o GSUtil:parallel_thread_count=16 -o GSUtil:parallel_composite_upload_threshold=0 -q rsync -r -e '$xp_dir' \"\${GCS_BAMS}/cross_platform_chr20\" || true
   "
+  else
+    echo "[SKIP] s5_cross_platform_short_read_chr20_panel already checkpointed in GCS; skipping cross-platform local staging."
+  fi
 
   # 10. Option C Cross-Platform Short-Read & Synthesis-Based Sequencing Panel (Full chr20 at -f 0.01 & -f 0 + chr1 -f 0 -r 1 Singleton Floor)
   run_checkpointed_cell "stage5" "s5_cross_platform_short_read_chr20_panel" 32 "115G" bash -c "
@@ -2883,6 +2940,11 @@ run_stage_5() {
       oracle_cache_get \"cross_platform_chr20/\${tag}_cpp.vcf\"  \"\$KEEP_DIR/\${tag}_cpp.vcf\"  || true
       oracle_cache_get \"cross_platform_chr20/\${tag}_cpp.time\" \"\$KEEP_DIR/\${tag}_cpp.time\" || true
       oracle_cache_get \"cross_platform_chr20/\${tag}_cpp.exit\" \"\$KEEP_DIR/\${tag}_cpp.exit\" || true
+      if [ ! -s \"\$KEEP_DIR/\${tag}_cpp.exit\" ] && [ \"\$freq\" = '0' ] && [ \"\$(cat \"\$KEEP_DIR/\${arm}_f0.01_cpp.exit\" 2>/dev/null || true)\" = '124' ]; then
+        echo \"[Cross-Platform chr20] \${arm} C++ already hit 14400s timeout (rc=124) at -f 0.01; recording monotonic superset timeout (rc=124) at -f 0\"
+        echo '124' > \"\$KEEP_DIR/\${tag}_cpp.exit\"
+        cp -f \"\$KEEP_DIR/\${arm}_f0.01_cpp.time\" \"\$KEEP_DIR/\${tag}_cpp.time\" 2>/dev/null || true
+      fi
       if [ ! -s \"\$KEEP_DIR/\${tag}_cpp.exit\" ]; then
         local rc_c=0
         timeout 14400 /usr/bin/time -v -o \"\$KEEP_DIR/\${tag}_cpp.time\" \
@@ -3993,7 +4055,7 @@ run_plan_check() {
   [[ "$cmd6" != *"--maintenance-policy=TERMINATE"* ]] || { echo "FAIL: STANDARD cmd must not set maintenance-policy=TERMINATE" >&2; exit 1; }
 
   # Verify audit fixes in script text: exact mkbed(), symmetric n=3 Java loops, 13-mode sweep, Fig-2/Fig-3 field callers, 3-way scaling
-  [ "$EXPECTED_FP" = "d925892846918c2a" ] || { echo "FAIL: EXPECTED_FP '$EXPECTED_FP' != d925892846918c2a" >&2; exit 1; }
+  [ "$EXPECTED_FP" = "256fd851c7657ea6" ] || { echo "FAIL: EXPECTED_FP '$EXPECTED_FP' != 256fd851c7657ea6" >&2; exit 1; }
   [[ "$GCS_CKPT" == */checkpoints-v105 ]] || { echo "FAIL: GCS_CKPT '$GCS_CKPT' does not end with /checkpoints-v105" >&2; exit 1; }
   grep -Fq 'samtools view -F 0x904 -q 1' "$0" || { echo "FAIL: missing exact samtools view -F 0x904 -q 1 mkbed()" >&2; exit 1; }
   grep -Fq 'java_var_th${th}_run\${run}.time' "$0" || { echo "FAIL: missing symmetric n=3 Java Tier-P loop" >&2; exit 1; }
@@ -4061,6 +4123,14 @@ run_plan_check() {
 
   run_checkpointed_cell "test_stage" "cell_alpha" 2 "4G" bash -c "echo \$(( \$(cat '$count_file') + 1 )) > '$count_file'"
   [ "$(cat "$count_file")" -eq 1 ] || { echo "FAIL: checkpointed cell_alpha ran a second time" >&2; exit 1; }
+  if any_cell_pending "cell_alpha"; then
+    echo "FAIL: any_cell_pending returned 0 for already-done cell_alpha" >&2
+    exit 1
+  fi
+  if ! any_cell_pending "cell_alpha" "cell_beta"; then
+    echo "FAIL: any_cell_pending returned 1 when cell_beta is still pending" >&2
+    exit 1
+  fi
 
   # Verify oracle_cache_get_or_run stores on miss and restores from cache on hit without re-running generator
   local gen_count="$tmp/oracle_gen_count"
