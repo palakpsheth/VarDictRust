@@ -70,9 +70,9 @@ Every PR in `VarDictRust` **must** complete both the multi-skill review gate and
 2. **Wait for `copilot-pull-request-reviewer[bot]` Review Completion:**
    **Never** merge a PR solely because CI checks are green while `copilot-pull-request-reviewer[bot]` review is still pending. Poll until `copilot-pull-request-reviewer[bot]` posts its review on the PR:
    ```bash
-   gh api repos/palakpsheth/VarDictRust/pulls/<PR>/reviews \
+   gh api --paginate repos/palakpsheth/VarDictRust/pulls/<PR>/reviews \
      --jq '.[] | {id: .id, user: .user.login, state: .state, commit_id: .commit_id}'
-   gh api repos/palakpsheth/VarDictRust/pulls/<PR>/comments \
+   gh api --paginate repos/palakpsheth/VarDictRust/pulls/<PR>/comments \
      --jq '.[] | {id: .id, path: .path, line: .line, user: .user.login, body: .body}'
    ```
 3. **Refute or Fix, Reply Inline, and Resolve Every Review Thread (`resolveReviewThread`):**
@@ -82,12 +82,13 @@ Every PR in `VarDictRust` **must** complete both the multi-skill review gate and
    gh api -X POST repos/palakpsheth/VarDictRust/pulls/<PR>/comments/<COMMENT_ID>/replies \
      -f body="Fixed in \`<commit-sha>\` — <concise technical explanation and verification receipt>."
 
-   # Query unresolved review thread node IDs and resolve each thread via GraphQL:
-   gh api graphql -f query='
-     query($pr: Int!) {
+   # Query all review thread node IDs with GraphQL cursor pagination and resolve each thread:
+   gh api graphql --paginate -f query='
+     query($pr: Int!, $endCursor: String) {
        repository(owner: "palakpsheth", name: "VarDictRust") {
          pullRequest(number: $pr) {
-           reviewThreads(first: 50) {
+           reviewThreads(first: 100, after: $endCursor) {
+             pageInfo { hasNextPage endCursor }
              nodes { id isResolved comments(first: 1) { nodes { databaseId path } } }
            }
          }

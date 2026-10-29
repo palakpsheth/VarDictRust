@@ -419,6 +419,13 @@ class TestRepoAgentSkills(unittest.TestCase):
                     content,
                     f"{surface.relative_to(ROOT_DIR)} must document mandatory PR review requirement {token!r}",
                 )
+        skill_content = (SKILLS_DIR / "vardictrust-pr" / "SKILL.md").read_text(encoding="utf-8")
+        contrib_content = (ROOT_DIR / "CONTRIBUTING.md").read_text(encoding="utf-8")
+        self.assertIn("gh api --paginate repos/palakpsheth/VarDictRust/pulls/<PR>/reviews", skill_content)
+        self.assertIn("gh api --paginate repos/palakpsheth/VarDictRust/pulls/<PR>/comments", skill_content)
+        self.assertIn("gh api graphql --paginate", skill_content)
+        self.assertIn("pageInfo { hasNextPage endCursor }", skill_content)
+        self.assertIn("gh api --paginate repos/palakpsheth/VarDictRust/pulls/<PR>/reviews", contrib_content)
 
     def test_release_consistency_script_passes_and_catches_drift(self):
         script = SKILLS_DIR / "vardictrust-release" / "scripts" / "check_release_consistency.py"

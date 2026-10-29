@@ -269,7 +269,7 @@ Before merging any pull request into `main`:
 1. **Multi-Skill Audit & Fix:** Run `/ponytail-review`, `/rust-router`, and `/pragmatic-rust-guidelines` on the PR diff (`git diff origin/main...HEAD`) and fix all identified correctness, ownership/mutability, error-handling, performance, and idiomatic Rust issues via Red/Green TDD.
 2. **Wait for Copilot PR Review Completion:** Never merge a PR solely because GitHub Actions CI checks are green while `copilot-pull-request-reviewer[bot]` is still pending in `requested_reviewers` or has not posted its review for the latest commit. Poll until the Copilot review is posted:
    ```bash
-   gh api repos/palakpsheth/VarDictRust/pulls/<PR>/reviews \
+   gh api --paginate repos/palakpsheth/VarDictRust/pulls/<PR>/reviews \
      --jq '.[] | {id: .id, user: .user.login, state: .state, commit_id: .commit_id}'
    ```
 3. **Refute or Fix, Reply Inline, and Resolve Every Thread:** For every inline comment posted by `copilot-pull-request-reviewer[bot]` or any other automated/human reviewer:
