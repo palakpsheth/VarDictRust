@@ -1,7 +1,7 @@
 {
   "suite": "multimodal_multislice_parity_suite",
-  "timestamp": "\"2026-10-27T18:23:29Z\"",
-  "fingerprint": "d925892846918c2a",
+  "timestamp": "\"2026-10-29T19:23:47Z\"",
+  "fingerprint": "5865a2a0b24a8c17",
   "mode": "tier-2-live-oracle-strict-bytes",
   "total_slices": 18,
   "slices_passed": 18,
@@ -13,525 +13,525 @@
   "golden": {
     "events": [
       {
-        "event": "HIT",
-        "key": "d959a1f9d0caade3",
+        "event": "MISS",
+        "key": "0a755cdd283d4c52",
         "kind": "cpp",
         "label": "scale-th1"
       },
       {
-        "event": "HIT",
-        "key": "51b5d8c406281b9f",
+        "event": "MISS",
+        "key": "3937f3695d6c24de",
         "kind": "cpp",
         "label": "scale-th2"
       },
       {
-        "event": "HIT",
-        "key": "100bfb0e1109fc67",
+        "event": "MISS",
+        "key": "beffe97eb64b5a16",
         "kind": "cpp",
         "label": "scale-th4"
       },
       {
-        "event": "HIT",
-        "key": "06cd7f28339d9ce8",
+        "event": "MISS",
+        "key": "a9e8bb1074fb535e",
         "kind": "cpp",
         "label": "scale-th8"
       },
       {
-        "event": "HIT",
-        "key": "31ce21cdef2b8ff5",
+        "event": "MISS",
+        "key": "d9ffc440a5b8e555",
         "kind": "cpp",
         "label": "scale-R1000000"
       },
       {
-        "event": "HIT",
-        "key": "300bf8323f02eb97",
+        "event": "MISS",
+        "key": "d61d24e53007e1b3",
         "kind": "cpp",
         "label": "scale-R10000000"
       },
       {
-        "event": "HIT",
-        "key": "a33080203a44b627",
+        "event": "MISS",
+        "key": "9823301fcf277d13",
         "kind": "cpp",
         "label": "scale-R100000000"
       },
       {
-        "event": "HIT",
-        "key": "561b46c9fc809e16",
+        "event": "MISS",
+        "key": "1c0f2c69aab6d31c",
         "kind": "cpp",
         "label": "scale-R248956422"
       },
       {
-        "event": "HIT",
-        "key": "812a562f853bf2da",
+        "event": "MISS",
+        "key": "b83ac72132c632e7",
         "kind": "java",
         "label": "compare"
       },
       {
-        "event": "HIT",
-        "key": "60b073b76fa647d6",
+        "event": "MISS",
+        "key": "c212453fec5fda62",
         "kind": "cpp",
         "label": "compare"
       },
       {
-        "event": "HIT",
-        "key": "9ffe2ba39a9fe1d4",
+        "event": "MISS",
+        "key": "1a2bfc4fab496d15",
         "kind": "java",
         "label": "compare"
       },
       {
-        "event": "HIT",
-        "key": "49f8f07fe4bb7034",
+        "event": "MISS",
+        "key": "d64cfb8e65cfc592",
         "kind": "cpp",
         "label": "compare"
       },
       {
-        "event": "HIT",
-        "key": "0f8ceb6199fe6df2",
+        "event": "MISS",
+        "key": "065dacf58e89f511",
         "kind": "java",
         "label": "compare"
       },
       {
-        "event": "HIT",
-        "key": "a022fe48312be93f",
+        "event": "MISS",
+        "key": "6e2d9b6aa1063115",
         "kind": "cpp",
         "label": "compare"
       },
       {
-        "event": "HIT",
-        "key": "f4ff71cbfb2663a3",
+        "event": "MISS",
+        "key": "3462ad40a8d77c5c",
         "kind": "java",
         "label": "compare"
       },
       {
-        "event": "HIT",
-        "key": "e04af8231e2ba279",
+        "event": "MISS",
+        "key": "5d55a5be7dbada04",
         "kind": "cpp",
         "label": "compare"
       },
       {
-        "event": "HIT",
-        "key": "c4273dea4ca47a9e",
+        "event": "MISS",
+        "key": "ae0bbe0141581a05",
         "kind": "java",
         "label": "compare"
       },
       {
-        "event": "HIT",
-        "key": "c3396f8565410f88",
+        "event": "MISS",
+        "key": "23c829e7d80756e1",
         "kind": "cpp",
         "label": "compare"
       },
       {
-        "event": "HIT",
-        "key": "7cc4d107c26574ea",
+        "event": "MISS",
+        "key": "cd54d435c6ef7faa",
         "kind": "cpp",
         "label": "cram-twin-bam"
       },
       {
-        "event": "HIT",
-        "key": "6be32d4c46b655b3",
+        "event": "MISS",
+        "key": "90807b58624497c0",
         "kind": "cpp",
         "label": "cram-twin-cram"
       },
       {
-        "event": "HIT",
-        "key": "9e3d07453768ced0",
+        "event": "MISS",
+        "key": "573f08c91e3bfe97",
         "kind": "java",
-        "label": "ext-m8"
+        "label": "ext-m4"
       },
       {
-        "event": "HIT",
-        "key": "0334870c2216a9e7",
+        "event": "MISS",
+        "key": "3e197debebe693cb",
         "kind": "java",
-        "label": "ext-m6"
+        "label": "ext-m2"
       },
       {
-        "event": "HIT",
-        "key": "9929100052fa2625",
+        "event": "MISS",
+        "key": "621e6b882dd8b93a",
         "kind": "java",
-        "label": "ext-m5"
+        "label": "ext-m3"
       },
       {
-        "event": "HIT",
-        "key": "df91776f384d0091",
+        "event": "MISS",
+        "key": "8f338f75fa231376",
         "kind": "java",
         "label": "ext-m1"
       },
       {
-        "event": "HIT",
-        "key": "5e9d342c73f278fc",
-        "kind": "java",
-        "label": "ext-m2"
-      },
-      {
-        "event": "HIT",
-        "key": "68fe6f4fe2d51734",
-        "kind": "java",
-        "label": "ext-m3"
-      },
-      {
-        "event": "HIT",
-        "key": "dc08ead6d74de200",
-        "kind": "java",
-        "label": "ext-m7"
-      },
-      {
-        "event": "HIT",
-        "key": "95256b2e252bf0f8",
-        "kind": "java",
-        "label": "ext-m4"
-      },
-      {
-        "event": "HIT",
-        "key": "b60e929ae70e8b5e",
+        "event": "MISS",
+        "key": "89c16efedf6e8d20",
         "kind": "cpp",
         "label": "ext-m4"
       },
       {
-        "event": "HIT",
-        "key": "ab485306690eaee3",
+        "event": "MISS",
+        "key": "34511eac4c218eec",
+        "kind": "java",
+        "label": "ext-m7"
+      },
+      {
+        "event": "MISS",
+        "key": "264e7115e3eba029",
+        "kind": "java",
+        "label": "ext-m5"
+      },
+      {
+        "event": "MISS",
+        "key": "c2b9558121655927",
+        "kind": "java",
+        "label": "ext-m6"
+      },
+      {
+        "event": "MISS",
+        "key": "5e7000dab5c895c5",
+        "kind": "java",
+        "label": "ext-m8"
+      },
+      {
+        "event": "MISS",
+        "key": "5578f768bf38a1a2",
+        "kind": "cpp",
+        "label": "ext-m2"
+      },
+      {
+        "event": "MISS",
+        "key": "41c19a5df992cefb",
+        "kind": "cpp",
+        "label": "ext-m3"
+      },
+      {
+        "event": "MISS",
+        "key": "4a1825c85709cf00",
+        "kind": "java",
+        "label": "ext-m10"
+      },
+      {
+        "event": "MISS",
+        "key": "53266967790606aa",
         "kind": "java",
         "label": "ext-m9"
       },
       {
-        "event": "HIT",
-        "key": "bbec0a01de25068a",
-        "kind": "cpp",
-        "label": "ext-m2"
-      },
-      {
-        "event": "HIT",
-        "key": "45fcb4b843126775",
-        "kind": "cpp",
-        "label": "ext-m3"
-      },
-      {
-        "event": "HIT",
-        "key": "c7ff68712c519446",
-        "kind": "java",
-        "label": "ext-m10"
-      },
-      {
-        "event": "HIT",
-        "key": "70c3fa4c80c2fa91",
+        "event": "MISS",
+        "key": "e79a109808588d5e",
         "kind": "java",
         "label": "ext-m11"
       },
       {
-        "event": "HIT",
-        "key": "6847e830e93ea6ec",
+        "event": "MISS",
+        "key": "5be40df1e4da780f",
         "kind": "java",
         "label": "ext-m12"
       },
       {
-        "event": "HIT",
-        "key": "e414dc335d4277f8",
-        "kind": "cpp",
-        "label": "ext-m11"
-      },
-      {
-        "event": "HIT",
-        "key": "629e880f4edc8d5d",
+        "event": "MISS",
+        "key": "581c5e61c54dd967",
         "kind": "cpp",
         "label": "ext-m10"
       },
       {
-        "event": "HIT",
-        "key": "a02ae53f65514324",
-        "kind": "cpp",
-        "label": "ext-m12"
-      },
-      {
-        "event": "HIT",
-        "key": "69a0a409fe7bad8a",
-        "kind": "java",
-        "label": "ext-m13"
-      },
-      {
-        "event": "HIT",
-        "key": "7eb2cc08482ab2ef",
-        "kind": "java",
-        "label": "ext-m14"
-      },
-      {
-        "event": "HIT",
-        "key": "004b41ee9cf78a80",
-        "kind": "java",
-        "label": "ext-m15"
-      },
-      {
-        "event": "HIT",
-        "key": "e6d056242d746c8f",
-        "kind": "cpp",
-        "label": "ext-m13"
-      },
-      {
-        "event": "HIT",
-        "key": "c822b61588587dd6",
-        "kind": "cpp",
-        "label": "ext-m14"
-      },
-      {
-        "event": "HIT",
-        "key": "20f3214d292b7dbf",
-        "kind": "cpp",
-        "label": "ext-m15"
-      },
-      {
-        "event": "HIT",
-        "key": "c7fb318d5d22740c",
-        "kind": "java",
-        "label": "ext-m16"
-      },
-      {
-        "event": "HIT",
-        "key": "ee70eec8dbedfcd9",
-        "kind": "java",
-        "label": "ext-m17"
-      },
-      {
-        "event": "HIT",
-        "key": "843271922acfd4d4",
-        "kind": "cpp",
-        "label": "ext-m17"
-      },
-      {
-        "event": "HIT",
-        "key": "7b1a057921ca1362",
+        "event": "MISS",
+        "key": "64e4fc0a0a27d6a1",
         "kind": "cpp",
         "label": "ext-m7"
       },
       {
-        "event": "HIT",
-        "key": "5ba2668ee40a2bd8",
-        "kind": "cpp",
-        "label": "ext-m16"
-      },
-      {
-        "event": "HIT",
-        "key": "05d6b4ca87c85f9e",
-        "kind": "cpp",
-        "label": "ext-m8"
-      },
-      {
-        "event": "HIT",
-        "key": "b5ef5b63326368f1",
+        "event": "MISS",
+        "key": "8eafacd4299f80b9",
         "kind": "cpp",
         "label": "ext-m5"
       },
       {
-        "event": "HIT",
-        "key": "b1ef0bb96fe1d246",
+        "event": "MISS",
+        "key": "9f9c9e615ebc173a",
         "kind": "cpp",
         "label": "ext-m6"
       },
       {
-        "event": "HIT",
-        "key": "ef6daf521dc99568",
+        "event": "MISS",
+        "key": "c873d70cb5e64e79",
+        "kind": "cpp",
+        "label": "ext-m8"
+      },
+      {
+        "event": "MISS",
+        "key": "c704d5a9151b2958",
+        "kind": "cpp",
+        "label": "ext-m11"
+      },
+      {
+        "event": "MISS",
+        "key": "6efcae6dfa8ae3c8",
+        "kind": "cpp",
+        "label": "ext-m12"
+      },
+      {
+        "event": "MISS",
+        "key": "c6347f2955e214b4",
+        "kind": "java",
+        "label": "ext-m13"
+      },
+      {
+        "event": "MISS",
+        "key": "0d3179e2abd6997a",
+        "kind": "java",
+        "label": "ext-m14"
+      },
+      {
+        "event": "MISS",
+        "key": "d7831f641ccd5c1d",
+        "kind": "java",
+        "label": "ext-m15"
+      },
+      {
+        "event": "MISS",
+        "key": "000768c178ba2a0b",
         "kind": "cpp",
         "label": "ext-m9"
       },
       {
-        "event": "HIT",
-        "key": "331d9de9ef6b461a",
+        "event": "MISS",
+        "key": "25a9b024add09df1",
         "kind": "java",
-        "label": "mm-HG002_3B"
+        "label": "ext-m16"
       },
       {
-        "event": "HIT",
-        "key": "41c48f149bee3cc8",
+        "event": "MISS",
+        "key": "4c114d7183c63723",
+        "kind": "java",
+        "label": "ext-m17"
+      },
+      {
+        "event": "MISS",
+        "key": "22c121f024b8df12",
+        "kind": "cpp",
+        "label": "ext-m17"
+      },
+      {
+        "event": "MISS",
+        "key": "6bf3cac52f1b19e0",
+        "kind": "cpp",
+        "label": "ext-m13"
+      },
+      {
+        "event": "MISS",
+        "key": "163761fa4bb7b7dd",
+        "kind": "cpp",
+        "label": "ext-m14"
+      },
+      {
+        "event": "MISS",
+        "key": "8a90d5fc6a6ff638",
+        "kind": "cpp",
+        "label": "ext-m15"
+      },
+      {
+        "event": "MISS",
+        "key": "e6b34c4530dbbf95",
+        "kind": "cpp",
+        "label": "ext-m16"
+      },
+      {
+        "event": "MISS",
+        "key": "b8c76663ba986ed7",
         "kind": "java",
         "label": "mm-SEQC2_2A"
       },
       {
-        "event": "HIT",
-        "key": "b467e266d7becf3b",
+        "event": "MISS",
+        "key": "7adcc85bbb33c268",
         "kind": "java",
         "label": "mm-SEQC2_2B"
       },
       {
-        "event": "HIT",
-        "key": "bb5a10e6457184ee",
-        "kind": "java",
-        "label": "mm-HG005_1A"
-      },
-      {
-        "event": "HIT",
-        "key": "bb6e5c619ff5de68",
-        "kind": "java",
-        "label": "mm-SEQC2_2C"
-      },
-      {
-        "event": "HIT",
-        "key": "cae6c21ebf7f49e6",
-        "kind": "java",
-        "label": "mm-HG005_1C"
-      },
-      {
-        "event": "HIT",
-        "key": "99551d098e1651b3",
+        "event": "MISS",
+        "key": "8793dc712bab4d5d",
         "kind": "java",
         "label": "mm-HG005_1B"
       },
       {
-        "event": "HIT",
-        "key": "c2eb43f2e5fe5f7b",
+        "event": "MISS",
+        "key": "6e2a2d454c11ac3f",
+        "kind": "java",
+        "label": "mm-HG002_3B"
+      },
+      {
+        "event": "MISS",
+        "key": "cdc0c07a55c214e0",
         "kind": "java",
         "label": "mm-HG002_3A"
       },
       {
-        "event": "HIT",
-        "key": "a0e440474b6b584d",
-        "kind": "cpp",
-        "label": "mm-HG002_3B"
+        "event": "MISS",
+        "key": "c3b64f838d4d431b",
+        "kind": "java",
+        "label": "mm-HG005_1A"
       },
       {
-        "event": "HIT",
-        "key": "6537d0d870efb586",
-        "kind": "cpp",
-        "label": "mm-SEQC2_2B"
+        "event": "MISS",
+        "key": "6eff6c60bec09c35",
+        "kind": "java",
+        "label": "mm-HG005_1C"
       },
       {
-        "event": "HIT",
-        "key": "7ef8197a186b955b",
+        "event": "MISS",
+        "key": "794bc7a3970858fc",
+        "kind": "java",
+        "label": "mm-SEQC2_2C"
+      },
+      {
+        "event": "MISS",
+        "key": "09da11f7f8b43e85",
         "kind": "cpp",
         "label": "mm-SEQC2_2A"
       },
       {
-        "event": "HIT",
-        "key": "d8106001ae1a7f3f",
+        "event": "MISS",
+        "key": "d525936218164e62",
         "kind": "cpp",
-        "label": "mm-HG002_3A"
+        "label": "mm-SEQC2_2B"
       },
       {
-        "event": "HIT",
-        "key": "69184dce1421de14",
+        "event": "MISS",
+        "key": "690fc778e8c531d1",
         "kind": "cpp",
         "label": "mm-HG005_1B"
       },
       {
-        "event": "HIT",
-        "key": "7832d3ceefb86302",
-        "kind": "java",
-        "label": "mm-HG002_3C"
-      },
-      {
-        "event": "HIT",
-        "key": "0ee7a8f297cdac15",
-        "kind": "java",
-        "label": "mm-HG008_4A"
-      },
-      {
-        "event": "HIT",
-        "key": "fae0a6a5dbd88ad6",
-        "kind": "java",
-        "label": "mm-HG008_4B"
-      },
-      {
-        "event": "HIT",
-        "key": "0c63e318c3ce2f91",
-        "kind": "java",
-        "label": "mm-HG008_4C"
-      },
-      {
-        "event": "HIT",
-        "key": "0dc95e152eb6d4cd",
-        "kind": "java",
-        "label": "mm-NA24385_5A"
-      },
-      {
-        "event": "HIT",
-        "key": "d67911748a7f8165",
+        "event": "MISS",
+        "key": "0d748ea0d8265956",
         "kind": "cpp",
-        "label": "mm-SEQC2_2C"
+        "label": "mm-HG002_3B"
       },
       {
-        "event": "HIT",
-        "key": "2fa8c5bd97777328",
+        "event": "MISS",
+        "key": "378fa44af1e04d11",
         "kind": "cpp",
-        "label": "mm-HG005_1C"
+        "label": "mm-HG002_3A"
       },
       {
-        "event": "HIT",
-        "key": "b4a2d07eebbea383",
+        "event": "MISS",
+        "key": "a73684b8b45450fa",
         "kind": "cpp",
         "label": "mm-HG005_1A"
       },
       {
-        "event": "HIT",
-        "key": "6fdbc3f8d0082d47",
+        "event": "MISS",
+        "key": "6118f4daf3f5be0f",
         "kind": "cpp",
+        "label": "mm-HG005_1C"
+      },
+      {
+        "event": "MISS",
+        "key": "934953560748a84a",
+        "kind": "cpp",
+        "label": "mm-SEQC2_2C"
+      },
+      {
+        "event": "MISS",
+        "key": "87bd64dc88c01059",
+        "kind": "java",
         "label": "mm-HG002_3C"
       },
       {
-        "event": "HIT",
-        "key": "2036462635c58740",
+        "event": "MISS",
+        "key": "3e2c16e02597e8eb",
         "kind": "java",
         "label": "mm-NA24385_5B"
       },
       {
-        "event": "HIT",
-        "key": "29db28f7f581f8b7",
+        "event": "MISS",
+        "key": "27eb116708f9e639",
         "kind": "java",
-        "label": "mm-NA24385_5C"
+        "label": "mm-HG008_4A"
       },
       {
-        "event": "HIT",
-        "key": "93438b52a07c1014",
+        "event": "MISS",
+        "key": "dc89afed5062bcaa",
+        "kind": "java",
+        "label": "mm-HG008_4C"
+      },
+      {
+        "event": "MISS",
+        "key": "5fa2cd303818bb67",
         "kind": "java",
         "label": "mm-RNA_6A"
       },
       {
-        "event": "HIT",
-        "key": "40b56592fc45c393",
+        "event": "MISS",
+        "key": "53a1d320204556b8",
+        "kind": "java",
+        "label": "mm-NA24385_5C"
+      },
+      {
+        "event": "MISS",
+        "key": "5caebbf239d04fcd",
+        "kind": "java",
+        "label": "mm-HG008_4B"
+      },
+      {
+        "event": "MISS",
+        "key": "fd382e3ff870cd1e",
+        "kind": "cpp",
+        "label": "mm-HG002_3C"
+      },
+      {
+        "event": "MISS",
+        "key": "affe0bd110741a51",
         "kind": "java",
         "label": "mm-RNA_6B"
       },
       {
-        "event": "HIT",
-        "key": "695f49f571e9ebc4",
-        "kind": "cpp",
-        "label": "mm-HG008_4A"
-      },
-      {
-        "event": "HIT",
-        "key": "b500555e47194316",
-        "kind": "cpp",
-        "label": "mm-HG008_4C"
-      },
-      {
-        "event": "HIT",
-        "key": "75e945b554003c7a",
-        "kind": "java",
-        "label": "mm-RNA_6C"
-      },
-      {
-        "event": "HIT",
-        "key": "982528d62f741ae4",
+        "event": "MISS",
+        "key": "c1286603ca43a3f2",
         "kind": "cpp",
         "label": "mm-NA24385_5B"
       },
       {
-        "event": "HIT",
-        "key": "050caf8a85d4547b",
+        "event": "MISS",
+        "key": "a2ad586ae87318d8",
+        "kind": "cpp",
+        "label": "mm-HG008_4A"
+      },
+      {
+        "event": "MISS",
+        "key": "67ff2f4ff7c80138",
+        "kind": "java",
+        "label": "mm-NA24385_5A"
+      },
+      {
+        "event": "MISS",
+        "key": "2ed306b3345df848",
+        "kind": "cpp",
+        "label": "mm-HG008_4C"
+      },
+      {
+        "event": "MISS",
+        "key": "02fd6c5e9e13fa6d",
         "kind": "cpp",
         "label": "mm-NA24385_5C"
       },
       {
-        "event": "HIT",
-        "key": "c46658bd99c3e2d9",
+        "event": "MISS",
+        "key": "b149ac9b753786ed",
+        "kind": "java",
+        "label": "mm-RNA_6C"
+      },
+      {
+        "event": "MISS",
+        "key": "39a6800584d637af",
         "kind": "cpp",
         "label": "mm-HG008_4B"
       },
       {
-        "event": "HIT",
-        "key": "a7c10ff4ea42dd55",
+        "event": "MISS",
+        "key": "2081888c075df121",
         "kind": "cpp",
         "label": "mm-NA24385_5A"
       }
     ],
-    "hit": 86,
-    "live": 0,
-    "run": "recertify-1793120292"
+    "hit": 0,
+    "live": 86,
+    "run": "recertify-1793288302"
   },
   "result": "MATCH",
   "slices": [
@@ -541,7 +541,7 @@
       "region": "chr3 40000000 40010000",
       "variants": 31,
       "status": "MATCH",
-      "time_ms": 1640
+      "time_ms": 6625
     },
     {
       "slice_id": "HG005_1B",
@@ -549,7 +549,7 @@
       "region": "chr6 30000000 30010000",
       "variants": 10,
       "status": "MATCH",
-      "time_ms": 1123
+      "time_ms": 6446
     },
     {
       "slice_id": "HG005_1C",
@@ -557,7 +557,7 @@
       "region": "chr21 20000000 20010000",
       "variants": 8,
       "status": "MATCH",
-      "time_ms": 1501
+      "time_ms": 6669
     },
     {
       "slice_id": "SEQC2_2A",
@@ -565,7 +565,7 @@
       "region": "chr7 140400000 140420000",
       "variants": 31,
       "status": "MATCH",
-      "time_ms": 881
+      "time_ms": 5844
     },
     {
       "slice_id": "SEQC2_2B",
@@ -573,7 +573,7 @@
       "region": "chr11 530000 550000",
       "variants": 16,
       "status": "MATCH",
-      "time_ms": 967
+      "time_ms": 6036
     },
     {
       "slice_id": "SEQC2_2C",
@@ -581,7 +581,7 @@
       "region": "chr12 25200000 25250000",
       "variants": 55,
       "status": "MATCH",
-      "time_ms": 1455
+      "time_ms": 7984
     },
     {
       "slice_id": "HG002_3A",
@@ -589,7 +589,7 @@
       "region": "chr20 10000000 10020000",
       "variants": 337,
       "status": "MATCH",
-      "time_ms": 1109
+      "time_ms": 6526
     },
     {
       "slice_id": "HG002_3B",
@@ -597,7 +597,7 @@
       "region": "chr20 20000000 20020000",
       "variants": 273,
       "status": "MATCH",
-      "time_ms": 794
+      "time_ms": 6421
     },
     {
       "slice_id": "HG002_3C",
@@ -605,7 +605,7 @@
       "region": "chr20 30000000 30020000",
       "variants": 4,
       "status": "MATCH",
-      "time_ms": 248
+      "time_ms": 3969
     },
     {
       "slice_id": "HG008_4A",
@@ -613,7 +613,7 @@
       "region": "chr1 1743056 1744086 slice_1_6",
       "variants": 23,
       "status": "MATCH",
-      "time_ms": 614
+      "time_ms": 5910
     },
     {
       "slice_id": "HG008_4B",
@@ -621,7 +621,7 @@
       "region": "chr1 6170843 6182754 slice_2_3",
       "variants": 50,
       "status": "MATCH",
-      "time_ms": 1722
+      "time_ms": 8219
     },
     {
       "slice_id": "HG008_4C",
@@ -629,7 +629,7 @@
       "region": "chr1 56757190 56764123 slice_3_4",
       "variants": 42,
       "status": "MATCH",
-      "time_ms": 699
+      "time_ms": 6436
     },
     {
       "slice_id": "NA24385_5A",
@@ -637,7 +637,7 @@
       "region": "1 246981051 246981611",
       "variants": 25,
       "status": "MATCH",
-      "time_ms": 2230
+      "time_ms": 12317
     },
     {
       "slice_id": "NA24385_5B",
@@ -645,7 +645,7 @@
       "region": "19 58559581 58567861",
       "variants": 20,
       "status": "MATCH",
-      "time_ms": 398
+      "time_ms": 4793
     },
     {
       "slice_id": "NA24385_5C",
@@ -653,7 +653,7 @@
       "region": "20 36018823 36039513",
       "variants": 181,
       "status": "MATCH",
-      "time_ms": 1022
+      "time_ms": 6433
     },
     {
       "slice_id": "RNA_6A",
@@ -661,7 +661,7 @@
       "region": "chr8:90534611-90550000",
       "variants": 3,
       "status": "MATCH",
-      "time_ms": 291
+      "time_ms": 4707
     },
     {
       "slice_id": "RNA_6B",
@@ -669,7 +669,7 @@
       "region": "chr8:90550000-90580000",
       "variants": 8,
       "status": "MATCH",
-      "time_ms": 235
+      "time_ms": 3733
     },
     {
       "slice_id": "RNA_6C",
@@ -677,7 +677,7 @@
       "region": "chr8:90580000-90620070",
       "variants": 12,
       "status": "MATCH",
-      "time_ms": 380
+      "time_ms": 3365
     }
   ]
 }

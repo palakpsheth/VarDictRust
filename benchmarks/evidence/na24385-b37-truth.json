@@ -1,19 +1,19 @@
 {
   "cmd": [
-    "/mnt/media_backups/VarDictRust/harness/concordance_germline.sh",
+    "/var/tmp/vardict-paper/release-v106/harness/concordance_germline.sh",
     "na24385-b37-truth",
-    "/tmp/vardict_multimodal_concordance_Jk9hcT/na24385_java.vcf",
-    "/tmp/vardict_multimodal_concordance_Jk9hcT/na24385_rust.vcf",
-    "/mnt/media_backups/VarDictRust/scratch/g4/truth_cache/na24385_b37_truth.vcf.gz",
-    "/mnt/media_backups/VarDictRust/scratch/g4/truth_cache/na24385_eval.bed",
-    "/mnt/media_backups/VarDictRust/scratch/g4/ref/grch37.sdf",
-    "/mnt/media_backups/VarDictRust/scratch/g4/concordance_multimodal/na24385",
+    "/tmp/vardict_multimodal_concordance_SbJyRB/na24385_java.vcf",
+    "/tmp/vardict_multimodal_concordance_SbJyRB/na24385_rust.vcf",
+    "/var/tmp/vardict-paper/release-v106/scratch/g4/truth_cache/na24385_b37_truth.vcf.gz",
+    "/var/tmp/vardict-paper/release-v106/scratch/g4/truth_cache/na24385_eval.bed",
+    "/var/tmp/vardict-paper/release-v106/scratch/g4/ref/grch37.sdf",
+    "/var/tmp/vardict-paper/release-v106/scratch/g4/concordance_multimodal/na24385",
     "HG002",
-    "/tmp/vardict_multimodal_concordance_Jk9hcT/na24385_cpp.vcf"
+    "/tmp/vardict_multimodal_concordance_SbJyRB/na24385_cpp.vcf"
   ],
   "compare_head": [],
   "cpp_time": null,
-  "date": "2026-10-27T11:24:11-07:00",
+  "date": "2026-10-29T19:24:26+00:00",
   "extra": {
     "cpp_f1": 0.1099,
     "cpp_f1_normalized": 0.1099,
@@ -75,8 +75,8 @@
       "tp_call": 5
     }
   },
-  "fingerprint": "d925892846918c2a",
-  "head": "23532783ae6e3f9c2c13a08c86c663a5726c43c7",
+  "fingerprint": "5865a2a0b24a8c17",
+  "head": "28722a739fe55b524f2c888303b1bb69fc3f430d",
   "java_time": null,
   "n_variants": null,
   "name": "na24385-b37-truth",
