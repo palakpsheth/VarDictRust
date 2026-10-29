@@ -531,8 +531,8 @@ impl<'a> ToVarsBuilder<'a> {
                                         if let Some(next_var) =
                                             next_non_ins.map.get_mut(ref_base_str)
                                         {
-                                            next_var.fwd = (next_var.fwd - fwd).max(0);
-                                            next_var.rev = (next_var.rev - rev).max(0);
+                                            next_var.fwd -= fwd;
+                                            next_var.rev -= rev;
                                         }
                                     }
                                 }
@@ -1740,6 +1740,48 @@ mod tests {
             (11, 4)
         );
         assert!(vars11.var_desc_to_variant.contains_key("G"));
+
+        // Issue #60: ToVarsBuilder.java:337-340 performs signed subtraction
+        // (`nextVar.fwd -= fwd; nextVar.rev -= rev;`) without clamping at 0.
+        let mut var_data_signed = var_data.clone();
+        var_data_signed
+            .insertion_variants
+            .get_mut(&10)
+            .unwrap()
+            .map
+            .get_mut("+T")
+            .unwrap()
+            .fwd = 12;
+        var_data_signed
+            .insertion_variants
+            .get_mut(&10)
+            .unwrap()
+            .map
+            .get_mut("+T")
+            .unwrap()
+            .rev = 3;
+        var_data_signed
+            .non_insertion_variants
+            .get_mut(&11)
+            .unwrap()
+            .map
+            .get_mut("A")
+            .unwrap()
+            .fwd = 10;
+        var_data_signed
+            .non_insertion_variants
+            .get_mut(&11)
+            .unwrap()
+            .map
+            .get_mut("A")
+            .unwrap()
+            .rev = 20;
+        let aligned_signed = builder.build_aligned_variants(&var_data_signed);
+        let ref_var11_signed = aligned_signed
+            .get(&11)
+            .and_then(|v| v.ref_variant.as_ref())
+            .expect("ref_variant at 11");
+        assert_eq!((ref_var11_signed.fwd, ref_var11_signed.rev), (-2, 17));
     }
 
     #[test]
