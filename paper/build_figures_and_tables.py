@@ -1531,7 +1531,7 @@ def build_all_tables(doc: dict[str, Any], inv_rows: list[dict[str, str]], tab_di
         ),
         "sweep_hg002_chr20_exome": (
             "Multi-Regime Sweep: HG002 Chr20 Exome",
-            "GIAB HG002 Chromosome 20 whole-exome slice [11, 20] (.var & VCF)",
+            "GIAB HG002 Chromosome 20 whole-exome slice [11] (.var & VCF)",
             "",
         ),
         "sweep_multimodal_and_cram_twin": (
@@ -2343,7 +2343,7 @@ def build_all_tables(doc: dict[str, Any], inv_rows: list[dict[str, str]], tab_di
         f"Supplementary Table S1. Complete {len(inv_rows)}-Experiment Benchmark Provenance Inventory, Execution Status & Manuscript Crosswalk",
         s1_headers,
         s1_rows,
-        "<sup>a</sup>Assay classes span targeted clinical panels and amplicons [11], whole-exome sequencing [10, 20], 51.8 GiB transcriptome RNA-seq [13], 10-platform Chromosome 20 sequencing chemistries [6, 13, 19], and full-genome germline/somatic WGS [13–19, 21–25]. "
+        "<sup>a</sup>Assay classes span targeted clinical panels and amplicons [11], whole-exome sequencing [10], 51.8 GiB transcriptome RNA-seq [13], 10-platform Chromosome 20 sequencing chemistries [6, 13, 19], and full-genome germline/somatic WGS [13–19, 21–25]. "
         f"<sup>b</sup>Every experiment completed with process exit code 0 across {len(inv_rows)}/{len(inv_rows)} benchmark archive directories (exact Clopper-Pearson 95% CI {fmt_clopper_pearson_ci(len(inv_rows), len(inv_rows))}) and maps directly to the figures and tables listed in Column 6. "
         "Canonical ledger: benchmarks/gcp-study-v106/cells_60_inventory.tsv (with SHA-256 manifests) is the single source of truth; this table is a generated formatted view of that file.",
     )
