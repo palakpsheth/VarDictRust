@@ -3265,7 +3265,7 @@
       "stage": "sweep",
       "tier": "Tier P",
       "exit_code": 0,
-      "parity_verdict": "MISMATCH: row count java=4705 rust=4692; MATCH=0/1",
+      "parity_verdict": "MATCH (4705 rows); MATCH=1/1",
       "files": [
         "R_chr1.compare_var.txt",
         "R_chr1.java.sorted.var.sha256",
@@ -3275,10 +3275,10 @@
         "parity_verdict.tsv"
       ],
       "metrics": {
-        "R_chr1.compare_var": "MISMATCH: row count java=4705 rust=4692",
+        "R_chr1.compare_var": "MATCH (4705 rows)",
         "sweep_arms_total": 1,
-        "sweep_arms_match": 0,
-        "sweep_arms_diff_captured": 1
+        "sweep_arms_match": 1,
+        "sweep_arms_diff_captured": 0
       },
       "paper_targets": [
         "Fig 1",
@@ -3397,7 +3397,7 @@
       "stage": "sweep",
       "tier": "Tier E",
       "exit_code": 0,
-      "parity_verdict": "MISMATCH: row count java=7077 rust=7079; MISMATCH: variant sets differ. java-only(<=10)=[\"('chr1', '6543711', 'T', '<INV>')\"] rust-only(<=10)=[\"('chr1', '2654672', 'C', '<DEL>')\", \"('chr1', '4217875', 'T', 'C')\", \"('chr1', '602122', 'C', 'CCCCTGCCTCCCTCTGCAGCTGTCCACGCCCAGCCAGCCT')\"]; MATCH=0/2",
+      "parity_verdict": "MATCH (7077 rows); MATCH (7032 variants); MATCH=2/2",
       "files": [
         "cell.exit_code",
         "chr1_10m_f0.compare_var.txt",
@@ -3410,11 +3410,11 @@
         "parity_verdict.tsv"
       ],
       "metrics": {
-        "chr1_10m_f0.compare_var": "MISMATCH: row count java=7077 rust=7079",
-        "chr1_10m_f0.compare_vcf": "MISMATCH: variant sets differ. java-only(<=10)=[\"('chr1', '6543711', 'T', '<INV>')\"] rust-only(<=10)=[\"('chr1', '2654672', 'C', '<DEL>')\", \"('chr1', '4217875', 'T', 'C')\", \"('chr1', '602122', 'C', 'CCCCTGCCTCCCTCTGCAGCTGTCCACGCCCAGCCAGCCT')\"]",
+        "chr1_10m_f0.compare_var": "MATCH (7077 rows)",
+        "chr1_10m_f0.compare_vcf": "MATCH (7032 variants)",
         "sweep_arms_total": 2,
-        "sweep_arms_match": 0,
-        "sweep_arms_diff_captured": 2
+        "sweep_arms_match": 2,
+        "sweep_arms_diff_captured": 0
       },
       "paper_targets": [
         "Fig 1",
@@ -10363,8 +10363,8 @@
   "sweep": {
     "total_cells": 12,
     "total_arms": 87,
-    "match_arms": 84,
-    "diff_captured_arms": 3,
+    "match_arms": 87,
+    "diff_captured_arms": 0,
     "by_cell": {
       "sweep_4targets_full": [
         {
@@ -10418,11 +10418,11 @@
           "cell": "sweep_R_chr1_full",
           "arm": "R_chr1_249Mbp.var",
           "java_rows": 4705,
-          "rust_rows": 4692,
-          "fp": 5,
-          "fn": 18,
-          "verdict": "DIFF_CAPTURED",
-          "detail": "MISMATCH: row count java=4705 rust=4692"
+          "rust_rows": 4705,
+          "fp": 0,
+          "fn": 0,
+          "verdict": "MATCH",
+          "detail": "MATCH (4705 rows)"
         }
       ],
       "sweep_hg002_chr20_exome": [
@@ -10525,22 +10525,22 @@
           "cell": "sweep_span_chr1_f0",
           "arm": "chr1_10m_f0.var",
           "java_rows": 7077,
-          "rust_rows": 7079,
-          "fp": 3,
-          "fn": 1,
-          "verdict": "DIFF_CAPTURED",
-          "detail": "MISMATCH: row count java=7077 rust=7079"
+          "rust_rows": 7077,
+          "fp": 0,
+          "fn": 0,
+          "verdict": "MATCH",
+          "detail": "MATCH (7077 rows)"
         },
         {
           "cell_id": "sweep_span_chr1_f0",
           "cell": "sweep_span_chr1_f0",
           "arm": "chr1_10m_f0.vcf",
           "java_rows": 7032,
-          "rust_rows": 7034,
-          "fp": 3,
-          "fn": 1,
-          "verdict": "DIFF_CAPTURED",
-          "detail": "MISMATCH: variant sets differ. java-only(<=10)=[\"('chr1', '6543711', 'T', '<INV>')\"] rust-only(<=10)=[\"('chr1', '2654672', 'C', '<DEL>')\", \"('chr1', '4217875', 'T', 'C')\", \"('chr1', '602122', 'C', 'CCCCTGCCTCCCTCTGCAGCTGTCCACGCCCAGCCAGCCT')\"]"
+          "rust_rows": 7032,
+          "fp": 0,
+          "fn": 0,
+          "verdict": "MATCH",
+          "detail": "MATCH (7032 variants)"
         }
       ],
       "sweep_tierp_13modes": [
@@ -11398,11 +11398,11 @@
         "cell": "sweep_R_chr1_full",
         "arm": "R_chr1_249Mbp.var",
         "java_rows": 4705,
-        "rust_rows": 4692,
-        "fp": 5,
-        "fn": 18,
-        "verdict": "DIFF_CAPTURED",
-        "detail": "MISMATCH: row count java=4705 rust=4692"
+        "rust_rows": 4705,
+        "fp": 0,
+        "fn": 0,
+        "verdict": "MATCH",
+        "detail": "MATCH (4705 rows)"
       },
       {
         "cell_id": "sweep_hg002_chr20_exome",
@@ -11497,22 +11497,22 @@
         "cell": "sweep_span_chr1_f0",
         "arm": "chr1_10m_f0.var",
         "java_rows": 7077,
-        "rust_rows": 7079,
-        "fp": 3,
-        "fn": 1,
-        "verdict": "DIFF_CAPTURED",
-        "detail": "MISMATCH: row count java=7077 rust=7079"
+        "rust_rows": 7077,
+        "fp": 0,
+        "fn": 0,
+        "verdict": "MATCH",
+        "detail": "MATCH (7077 rows)"
       },
       {
         "cell_id": "sweep_span_chr1_f0",
         "cell": "sweep_span_chr1_f0",
         "arm": "chr1_10m_f0.vcf",
         "java_rows": 7032,
-        "rust_rows": 7034,
-        "fp": 3,
-        "fn": 1,
-        "verdict": "DIFF_CAPTURED",
-        "detail": "MISMATCH: variant sets differ. java-only(<=10)=[\"('chr1', '6543711', 'T', '<INV>')\"] rust-only(<=10)=[\"('chr1', '2654672', 'C', '<DEL>')\", \"('chr1', '4217875', 'T', 'C')\", \"('chr1', '602122', 'C', 'CCCCTGCCTCCCTCTGCAGCTGTCCACGCCCAGCCAGCCT')\"]"
+        "rust_rows": 7032,
+        "fp": 0,
+        "fn": 0,
+        "verdict": "MATCH",
+        "detail": "MATCH (7032 variants)"
       },
       {
         "cell_id": "sweep_tierp_13modes",
@@ -17577,8 +17577,8 @@
     "s4_multimodal_slices": "18/18",
     "s4_multimodal_vars": "1,129",
     "sweep_total_arms": 87,
-    "sweep_match_arms": 84,
-    "sweep_diff_arms": 3,
+    "sweep_match_arms": 87,
+    "sweep_diff_arms": 0,
     "s5_hg002_contigs_rust_wall_str": "25:16.61",
     "s5_hg002_contigs_rust_wall_s": "1516.61",
     "s5_hg002_contigs_rust_rss_gb": "4.93",

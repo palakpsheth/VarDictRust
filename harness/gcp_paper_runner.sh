@@ -3520,13 +3520,13 @@ run_v103_parity_sweep() {
     compare_and_record_var 'sweep_tierp_13modes' 'P5_cram_vs_bam_twin' \"\$KEEP_DIR/simple_f0.01.rust.raw.var\" \"\$KEEP_DIR/p5_cram.rust.raw.var\" \"\$KEEP_DIR/p5_cram_twin\"
   "
 
-  # 4. Direct Whole-Chromosome -R chr1:1-249250621 (249.25 Mbp) on SRR8657348 (n=1 at -th 32 / -Xmx200g)
+  # 4. Direct Whole-Chromosome -R chr1:1-249250621 (249.25 Mbp) on SRR8657348 (n=1 at -th 32 / -Xmx200g, --tile-size 250000000 untiled)
   run_checkpointed_cell "sweep" "sweep_R_chr1_full" "0-31" "infinity" bash -c "
     set -euo pipefail
     source harness/gcp_paper_runner.sh --source-only
     REF='$tp_dir/archive/reference/hg19.fa'
     BAM='$tp_dir/bams/SRR8657348.bam'
-    target/release/vardictrust -G \"\$REF\" -f 0.01 -N SRR8657348 -b \"\$BAM\" --emit-intermediate -th 32 -R chr1:1-249250621 > \"\$KEEP_DIR/rust_R_chr1.var\"
+    target/release/vardictrust -G \"\$REF\" -f 0.01 -N SRR8657348 -b \"\$BAM\" --tile-size 250000000 --emit-intermediate -th 32 -R chr1:1-249250621 > \"\$KEEP_DIR/rust_R_chr1.var\"
     oracle_cache_get_or_run 'R_chr1_full/java_R_chr1.var' \"\$KEEP_DIR/java_R_chr1.var\" \
       bash -c \"_JAVA_OPTIONS='-Xmx200g' conda run -n vardict-oracle vardict-java -G '\$REF' -f 0.01 -N SRR8657348 -b '\$BAM' -th 32 -R chr1:1-249250621 > '\$KEEP_DIR/java_R_chr1.var'\" # golden:bypass gcp-oracle-cache-v183
     compare_and_record_var 'sweep_R_chr1_full' 'R_chr1_249Mbp' \"\$KEEP_DIR/java_R_chr1.var\" \"\$KEEP_DIR/rust_R_chr1.var\" \"\$KEEP_DIR/R_chr1\"
@@ -3619,19 +3619,19 @@ run_v103_parity_sweep() {
     compare_and_record_vcf "sweep_4targets_full" "seqc2_somatic_exome_full" "$KEEP_DIR/seqc2/java.vcf" "$KEEP_DIR/seqc2/rust.vcf" "$KEEP_DIR/seqc2/cmp"
   '
 
-  # 8. Tier-G chr1:0-10,000,000 MRD -f 0 Noise Floor on HCC1395.bam (n=1 at -th 32 / -Xmx200g, .var + .vcf)
+  # 8. Tier-G chr1:0-10,000,000 MRD -f 0 Noise Floor on HCC1395.bam (n=1 at -th 32 / -Xmx200g, --tile-size 10000000 untiled, .var + .vcf)
   run_checkpointed_cell "sweep" "sweep_span_chr1_f0" "0-31" "infinity" bash -c '
     set -euo pipefail
     source harness/gcp_paper_runner.sh --source-only
     REF="$DATA_DIR/ref/d1vd1/GRCh38.d1.vd1.fa"
     BAM="$DATA_DIR/seqc2/HCC1395.bam"
     printf "chr1\t0\t10000000\tR10M\n" > "$KEEP_DIR/chr1_10m.bed"
-    target/release/vardictrust -G "$REF" -f 0 -N HCC1395 -b "$BAM" -c 1 -S 2 -E 3 -g 4 -z --emit-intermediate -th 32 "$KEEP_DIR/chr1_10m.bed" > "$KEEP_DIR/rust_chr1_10m_f0.var"
+    target/release/vardictrust -G "$REF" -f 0 -N HCC1395 -b "$BAM" -c 1 -S 2 -E 3 -g 4 -z --tile-size 10000000 --emit-intermediate -th 32 "$KEEP_DIR/chr1_10m.bed" > "$KEEP_DIR/rust_chr1_10m_f0.var"
     oracle_cache_get_or_run "span_chr1_f0/java_chr1_10m_f0.var" "$KEEP_DIR/java_chr1_10m_f0.var" \
       bash -c "_JAVA_OPTIONS=\"-Xmx200g\" conda run -n vardict-oracle vardict-java -G \"$REF\" -f 0 -N HCC1395 -b \"$BAM\" -c 1 -S 2 -E 3 -g 4 -z 1 -th 32 \"$KEEP_DIR/chr1_10m.bed\" > \"$KEEP_DIR/java_chr1_10m_f0.var\"" # golden:bypass gcp-oracle-cache-v183
     compare_and_record_var "sweep_span_chr1_f0" "chr1_10m_f0" "$KEEP_DIR/java_chr1_10m_f0.var" "$KEEP_DIR/rust_chr1_10m_f0.var" "$KEEP_DIR/chr1_10m_f0"
 
-    target/release/vardictrust -G "$REF" -f 0 -N HCC1395 -b "$BAM" -c 1 -S 2 -E 3 -g 4 -z -th 32 "$KEEP_DIR/chr1_10m.bed" > "$KEEP_DIR/rust_chr1_10m_f0.vcf"
+    target/release/vardictrust -G "$REF" -f 0 -N HCC1395 -b "$BAM" -c 1 -S 2 -E 3 -g 4 -z --tile-size 10000000 -th 32 "$KEEP_DIR/chr1_10m.bed" > "$KEEP_DIR/rust_chr1_10m_f0.vcf"
     oracle_cache_get_or_run "span_chr1_f0/java_chr1_10m_f0.vcf" "$KEEP_DIR/java_chr1_10m_f0.vcf" \
       oracle_var_to_vcf "$KEEP_DIR/java_chr1_10m_f0.var" "$REF" "$BAM" "$KEEP_DIR/java_chr1_10m_f0.vcf" HCC1395 -f 0
     compare_and_record_vcf "sweep_span_chr1_f0" "chr1_10m_f0" "$KEEP_DIR/java_chr1_10m_f0.vcf" "$KEEP_DIR/rust_chr1_10m_f0.vcf" "$KEEP_DIR/chr1_10m_f0"

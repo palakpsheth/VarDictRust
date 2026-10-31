@@ -162,6 +162,8 @@ def build_macro_context(doc: dict[str, Any]) -> dict[str, str]:
     m["optc_match_pct"] = f"{(sw_match / sw_tot) * 100.0:.2f}"
     m["cp95_78_87"] = fmt_cp_ci(sw_match, sw_tot)
     m["cp95_optc_sweep"] = fmt_cp_ci(sw_match, sw_tot)
+    m["sw_rchr1_rows"] = f"{int(sw['by_cell']['sweep_R_chr1_full'][0]['java_rows']):,}"
+    m["sw_span_f0_rows"] = f"{int(sw['by_cell']['sweep_span_chr1_f0'][0]['java_rows']):,}"
     k_mos, n_mos = (int(x) for x in str(doc["flat_macros"]["s6_mosaic_tp_best"]).split("/"))
     m["s6_mosaic_rust_tp"] = str(k_mos)
     m["s6_mosaic_truth_total"] = str(n_mos)

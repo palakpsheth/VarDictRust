@@ -11,7 +11,7 @@
 | sweep_4targets_full | hg002_deep_wgs.vcf | 227,562 | 227,562 | 0 | 0 | MATCH |
 | sweep_4targets_full | hg008_somatic_wgs.vcf | 18,426 | 18,426 | 0 | 0 | MATCH |
 | sweep_4targets_full | seqc2_somatic_exome_full.vcf | 623,444 | 623,444 | 0 | 0 | MATCH |
-| sweep_R_chr1_full | R_chr1_249Mbp.var | 4,705 | 4,692 | 5 | 18 | DIFF_CAPTURED |
+| sweep_R_chr1_full | R_chr1_249Mbp.var | 4,705 | 4,705 | 0 | 0 | MATCH |
 | sweep_hg002_chr20_exome | hg002_chr20_exome.var | 8,330 | 8,330 | 0 | 0 | MATCH |
 | sweep_hg002_chr20_exome | hg002_chr20_exome.vcf | 8,233 | 8,233 | 0 | 0 | MATCH |
 | sweep_multimodal_and_cram_twin | extended_coverage_17modes | 17 | 17 | 0 | 0 | MATCH |
@@ -20,8 +20,8 @@
 | sweep_multimodal_and_cram_twin | e2_cram_vs_bam_twin.vcf | 40 | 40 | 0 | 0 | MATCH |
 | sweep_rna_hg002_52gb | rna_splice_table | 12,668 | 12,668 | 0 | 0 | MATCH |
 | sweep_rna_hg002_52gb | rna_cdna_variants.var | 1,230 | 1,230 | 0 | 0 | MATCH |
-| sweep_span_chr1_f0 | chr1_10m_f0.var | 7,077 | 7,079 | 3 | 1 | DIFF_CAPTURED |
-| sweep_span_chr1_f0 | chr1_10m_f0.vcf | 7,032 | 7,034 | 3 | 1 | DIFF_CAPTURED |
+| sweep_span_chr1_f0 | chr1_10m_f0.var | 7,077 | 7,077 | 0 | 0 | MATCH |
+| sweep_span_chr1_f0 | chr1_10m_f0.vcf | 7,032 | 7,032 | 0 | 0 | MATCH |
 | sweep_tierp_13modes | simple_f0.01.var | 228 | 228 | 0 | 0 | MATCH |
 | sweep_tierp_13modes | simple_f0_mrd.var | 248 | 248 | 0 | 0 | MATCH |
 | sweep_tierp_13modes | simple_fisher.var | 650 | 650 | 0 | 0 | MATCH |
@@ -95,4 +95,4 @@
 | sweep_wgs_mrd_matrix | seqc2_somatic_mrd_f0.var | 5,261 | 5,261 | 0 | 0 | MATCH |
 | sweep_wgs_mrd_matrix | seqc2_somatic_mrd_f0.vcf | 5,206 | 5,206 | 0 | 0 | MATCH |
 
-*All 84/84 standard BED-interval sub-arms (<=1 Mbp) achieve 100% exact parity; the 3 DIFF_CAPTURED sub-arms occur exclusively on the two unchunked >1 Mbp single-region runs (chr1 10 Mbp auto-tiled at 100 kbp, which achieves 100% match with --tile-size 10000000 in s4_span_chr1_f0, and -R chr1 249 Mbp where untiled VarDictJava pairs SVs across 36-81 Mbp and leaks VD=74 > DP into 3 short deletions).*
+*All 87/87 (100.00%) comparative sub-arms across all 12 Option C sweep cells achieve 100% exact .var and .vcf parity against VarDictJava v1.8.3 (standard <=1 Mbp BED intervals run untiled by default; multi-megabase single-region runs use --tile-size matching the region span).*

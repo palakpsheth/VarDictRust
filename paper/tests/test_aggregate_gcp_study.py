@@ -64,17 +64,10 @@ class TestAggregateGcpStudy(unittest.TestCase):
 
         sw = doc["sweep"]
         self.assertEqual(sw["total_arms"], 87)
-        self.assertEqual(sw["match_arms"], 84)
-        self.assertEqual(sw["diff_captured_arms"], 3)
+        self.assertEqual(sw["match_arms"], 87)
+        self.assertEqual(sw["diff_captured_arms"], 0)
         diff_cells = {(r["cell_id"], r["arm"]) for r in sw["rows"] if r["verdict"] != "MATCH"}
-        self.assertEqual(
-            diff_cells,
-            {
-                ("sweep_R_chr1_full", "R_chr1_249Mbp.var"),
-                ("sweep_span_chr1_f0", "chr1_10m_f0.var"),
-                ("sweep_span_chr1_f0", "chr1_10m_f0.vcf"),
-            },
-        )
+        self.assertEqual(diff_cells, set())
 
 
 

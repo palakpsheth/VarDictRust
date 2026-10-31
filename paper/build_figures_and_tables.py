@@ -468,13 +468,14 @@ def build_fig2(doc: dict[str, Any], fig_dir: Path) -> None:
     ]
     y_pos = np.arange(len(cell_names))
     ax_a.barh(y_pos, match_cnts, color=PALETTE["VarDictRust"], label="Exact Match (.var & .vcf)")
-    ax_a.barh(
-        y_pos,
-        diff_cnts,
-        left=match_cnts,
-        color=PALETTE["Strelka2"],
-        label="Unchunked >1 Mbp Auto-Tiled vs Untiled Java",
-    )
+    if any(diff_cnts):
+        ax_a.barh(
+            y_pos,
+            diff_cnts,
+            left=match_cnts,
+            color=PALETTE["Strelka2"],
+            label="Unchunked >1 Mbp Auto-Tiled vs Untiled Java",
+        )
     ax_a.set_yticks(y_pos)
     ax_a.set_yticklabels(cell_names, fontsize=7.5)
     ax_a.set_xlabel("Evaluated Parity Sub-Arms")
@@ -1464,11 +1465,11 @@ def build_all_tables(doc: dict[str, Any], inv_rows: list[dict[str, str]], tab_di
     ]
     sweep_clean_desc = {
         "sweep_4targets_full": ("Multi-Regime Sweep: 4-Assay Regression", "Targeted amplicon, HG002, HG008 & SEQC2 slices (.var & .vcf)"),
-        "sweep_R_chr1_full": ("Multi-Regime Sweep: Unchunked 249 Mbp -R chr1", "Whole-chromosome -R chr1:1-249250621 (100 kbp auto-tiling vs untiled Java; .var)"),
+        "sweep_R_chr1_full": ("Multi-Regime Sweep: Contiguous 249 Mbp -R chr1", "Whole-chromosome -R chr1:1-249250621 (--tile-size 250000000 untiled; .var)"),
         "sweep_hg002_chr20_exome": ("Multi-Regime Sweep: HG002 Chr20 Exome", "HG002 Chromosome 20 whole-exome slice (.var & .vcf)"),
         "sweep_multimodal_and_cram_twin": ("Multi-Regime Sweep: Multimodal & CRAM Twin", "18-slice multimodal suite & CRAM-vs-BAM twin (.var & .vcf)"),
         "sweep_rna_hg002_52gb": ("Multi-Regime Sweep: 51.8 GiB RNA-Seq", "HG002 GM24385 splice-aware RNA-seq (-i; .var & .vcf)"),
-        "sweep_span_chr1_f0": ("Multi-Regime Sweep: Unchunked 10 Mbp Chr1 (-f 0)", "Chromosome 1 10 Mbp single BED row (100 kbp auto-tiling vs untiled Java; .var & .vcf)"),
+        "sweep_span_chr1_f0": ("Multi-Regime Sweep: 10 Mbp Chr1 (-f 0)", "Chromosome 1 10 Mbp single BED row (--tile-size 10000000 untiled; .var & .vcf)"),
         "sweep_tierp_13modes": ("Multi-Regime Sweep: 13-Mode CLI Matrix", "13 functional CLI modes across germline, somatic & amplicon regimes"),
         "sweep_tierp_somatic_76_86": ("Multi-Regime Sweep: AML Somatic Pair", "Clinical AML tumor-normal somatic panel (SRR15006376 / SRR15006386)"),
         "sweep_tierp_SRR15006540": ("Multi-Regime Sweep: AML Panel SRR15006540", "Clinical AML germline panel SRR15006540 (.var & .vcf)"),
@@ -2160,7 +2161,7 @@ def build_all_tables(doc: dict[str, Any], inv_rows: list[dict[str, str]], tab_di
         f"Supplementary Table S2 (Table S2). Baseline Equivalence Cells and Complete {sw['total_arms']}-Arm Full-Core .var & .vcf Parity Sweep",
         s2_headers,
         s2_rows,
-        f"All {sw['match_arms']}/{sw['match_arms']} standard BED-interval sub-arms (<=1 Mbp) achieve 100% exact parity; the {sw['diff_captured_arms']} DIFF_CAPTURED sub-arms occur exclusively on the two unchunked >1 Mbp single-region runs (chr1 10 Mbp auto-tiled at 100 kbp, which achieves 100% match with --tile-size 10000000 in s4_span_chr1_f0, and -R chr1 249 Mbp where untiled VarDictJava pairs SVs across 36-81 Mbp and leaks VD=74 > DP into 3 short deletions).",
+        f"All {sw['match_arms']}/{sw['total_arms']} ({sw['match_arms'] / sw['total_arms'] * 100.0:.2f}%) comparative sub-arms across all 12 Option C sweep cells achieve 100% exact .var and .vcf parity against VarDictJava v1.8.3 (standard <=1 Mbp BED intervals run untiled by default; multi-megabase single-region runs use --tile-size matching the region span).",
     )
 
     # ------------------------------------------------------------------

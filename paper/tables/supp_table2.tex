@@ -15,7 +15,7 @@ sweep\_4targets\_full & amplicon\_full.vcf & 2 & 2 & 0 & 0 & MATCH \\
 sweep\_4targets\_full & hg002\_deep\_wgs.vcf & 227,562 & 227,562 & 0 & 0 & MATCH \\
 sweep\_4targets\_full & hg008\_somatic\_wgs.vcf & 18,426 & 18,426 & 0 & 0 & MATCH \\
 sweep\_4targets\_full & seqc2\_somatic\_exome\_full.vcf & 623,444 & 623,444 & 0 & 0 & MATCH \\
-sweep\_R\_chr1\_full & R\_chr1\_249Mbp.var & 4,705 & 4,692 & 5 & 18 & DIFF\_CAPTURED \\
+sweep\_R\_chr1\_full & R\_chr1\_249Mbp.var & 4,705 & 4,705 & 0 & 0 & MATCH \\
 sweep\_hg002\_chr20\_exome & hg002\_chr20\_exome.var & 8,330 & 8,330 & 0 & 0 & MATCH \\
 sweep\_hg002\_chr20\_exome & hg002\_chr20\_exome.vcf & 8,233 & 8,233 & 0 & 0 & MATCH \\
 sweep\_multimodal\_and\_cram\_twin & extended\_coverage\_17modes & 17 & 17 & 0 & 0 & MATCH \\
@@ -24,8 +24,8 @@ sweep\_multimodal\_and\_cram\_twin & cram\_twin\_g4\_hg008 & 1 & 1 & 0 & 0 & MAT
 sweep\_multimodal\_and\_cram\_twin & e2\_cram\_vs\_bam\_twin.vcf & 40 & 40 & 0 & 0 & MATCH \\
 sweep\_rna\_hg002\_52gb & rna\_splice\_table & 12,668 & 12,668 & 0 & 0 & MATCH \\
 sweep\_rna\_hg002\_52gb & rna\_cdna\_variants.var & 1,230 & 1,230 & 0 & 0 & MATCH \\
-sweep\_span\_chr1\_f0 & chr1\_10m\_f0.var & 7,077 & 7,079 & 3 & 1 & DIFF\_CAPTURED \\
-sweep\_span\_chr1\_f0 & chr1\_10m\_f0.vcf & 7,032 & 7,034 & 3 & 1 & DIFF\_CAPTURED \\
+sweep\_span\_chr1\_f0 & chr1\_10m\_f0.var & 7,077 & 7,077 & 0 & 0 & MATCH \\
+sweep\_span\_chr1\_f0 & chr1\_10m\_f0.vcf & 7,032 & 7,032 & 0 & 0 & MATCH \\
 sweep\_tierp\_13modes & simple\_f0.01.var & 228 & 228 & 0 & 0 & MATCH \\
 sweep\_tierp\_13modes & simple\_f0\_mrd.var & 248 & 248 & 0 & 0 & MATCH \\
 sweep\_tierp\_13modes & simple\_fisher.var & 650 & 650 & 0 & 0 & MATCH \\
@@ -100,5 +100,5 @@ sweep\_wgs\_mrd\_matrix & seqc2\_somatic\_mrd\_f0.var & 5,261 & 5,261 & 0 & 0 & 
 sweep\_wgs\_mrd\_matrix & seqc2\_somatic\_mrd\_f0.vcf & 5,206 & 5,206 & 0 & 0 & MATCH \\
 \hline
 \end{tabular}
-\\[4pt]\footnotesize{All 84/84 standard BED-interval sub-arms (\textless{}=1 Mbp) achieve 100\% exact parity; the 3 DIFF\_CAPTURED sub-arms occur exclusively on the two unchunked \textgreater{}1 Mbp single-region runs (chr1 10 Mbp auto-tiled at 100 kbp, which achieves 100\% match with --tile-size 10000000 in s4\_span\_chr1\_f0, and -R chr1 249 Mbp where untiled VarDictJava pairs SVs across 36-81 Mbp and leaks VD=74 \textgreater{} DP into 3 short deletions).}
+\\[4pt]\footnotesize{All 87/87 (100.00\%) comparative sub-arms across all 12 Option C sweep cells achieve 100\% exact .var and .vcf parity against VarDictJava v1.8.3 (standard \textless{}=1 Mbp BED intervals run untiled by default; multi-megabase single-region runs use --tile-size matching the region span).}
 \end{table}

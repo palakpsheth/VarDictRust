@@ -322,9 +322,11 @@ class TestBuildFiguresAndTables(unittest.TestCase):
                 self.assertNotIn("MISMATCH", line, f"False vardictcpp MISMATCH leaked into Supp Table S1: {line}")
 
         table1_md = (TAB_DIR / "table1.md").read_text(encoding="utf-8")
+        self.assertIn("87/87 Sweep Sub-Arms Exact Match", table1_md)
         self.assertIn("24/24 Sub-Arms Exact Match", table1_md)
         self.assertIn("30/30 Sub-Arms Exact Match", table1_md)
-        self.assertIn("100% Exact Match with --tile-size 10000000", table1_md)
+        self.assertIn("1/1 Sub-Arms Exact Match", table1_md)
+        self.assertIn("2/2 Sub-Arms Exact Match", table1_md)
 
 
 

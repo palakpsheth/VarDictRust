@@ -109,7 +109,7 @@ done
 ```
 
 ### 1.5 Option C: Comprehensive 87-Arm `.var` and `.vcf` Parity Sweep (`sweep_*`)
-The `12` Option C cells (`sweep_4targets_full`, `sweep_R_chr1_full`, `sweep_hg002_chr20_exome`, `sweep_multimodal_and_cram_twin`, `sweep_rna_hg002_52gb`, `sweep_span_chr1_f0`, `sweep_tierp_13modes`, `sweep_tierp_SRR15006540`, `sweep_tierp_SRR8657348`, `sweep_tierp_somatic_76_86`, `sweep_ultradeep_mrd_stress`, and `sweep_wgs_mrd_matrix`) validate `.var` and `.vcf` equivalence across `87` comparative arms (`84/87` `MATCH`, `96.55%`, `Table S2`):
+The `12` Option C cells (`sweep_4targets_full`, `sweep_R_chr1_full`, `sweep_hg002_chr20_exome`, `sweep_multimodal_and_cram_twin`, `sweep_rna_hg002_52gb`, `sweep_span_chr1_f0`, `sweep_tierp_13modes`, `sweep_tierp_SRR15006540`, `sweep_tierp_SRR8657348`, `sweep_tierp_somatic_76_86`, `sweep_ultradeep_mrd_stress`, and `sweep_wgs_mrd_matrix`) validate `.var` and `.vcf` equivalence across `87` comparative arms (`87/87` `MATCH`, `100.00%`, `Table S2`):
 ```bash
 # Ultra-deep 45000x ctDNA MRD stress (-f 0.0005 and -f 0 with --fisher, sweep_ultradeep_mrd_stress):
 python3 harness/compare_var.py golden/ultradeep_f0005.var rust_ultradeep_f0005.var --eps 1e-6
@@ -195,7 +195,7 @@ with $p_{\text{lo} } = 0$ when $k = 0$ and $p_{\text{hi} } = 1$ when $k = n$:
 - Cross-platform chr20 runs where `VarDictJava` completed (`11/11`): `100%` (`95%` CI `71.51%–100.00%`)
 - Cross-platform `-f 0` somatic noise-floor `STRICT-BYTES` sweep (`18/18`): `100%` (`95%` CI `81.47%–100.00%`)
 - GA4GH `v3.5` `70`-cell stratification matrix (`70/70`): `100%` (`95%` CI `94.87%–100.00%`)
-- Option C parity sweep across all parameter-sweep arms (`84/87`): `96.55%` (`95%` CI `90.25%–99.28%`, with `100%` [`84/84`] exact match across all standard $\le 1,000,000$ bp BED-interval sub-arms across all `10` BED-mode sweep cells, and `3` un-chunked $> 1,000,000$ bp single-interval sub-arms in `sweep_span_chr1_f0` [which achieves `100%` exact match across all `7,032` variants when run with `--tile-size 10000000` in `s4_span_chr1_f0`] and `sweep_R_chr1_full` [where untiled `249` Mbp `VarDictJava` pairs SVs across `36`–`81` Mbp centromeric distances and leaks `VD = 74 > DP` into `3` short deletions with impossible `740%`–`1850%` allele frequencies]; `Table S2`)
+- Option C parity sweep across all parameter-sweep arms (`87/87`): `100.00%` (`95%` CI `95.85%–100.00%`, with `100%` [`87/87`] exact `.var` and `.vcf` match across all `12` sweep cells, including standard $\le 1,000,000$ bp BED-interval suites running untiled by default and the two $> 1,000,000$ bp single-interval suites `sweep_span_chr1_f0` [`--tile-size 10000000`, `7,077` `.var` / `7,032` `.vcf`] and `sweep_R_chr1_full` [`--tile-size 250000000`, `4,705` `.var` rows]; `Table S2`)
 - NIST Mosaic SNV `v1.10` sensitivity (`84/85`): `98.82%` (`95%` CI `93.62%–99.97%`)
 
 ### 4.2 Non-Parametric Runtime and Memory Hypothesis Testing
@@ -252,11 +252,11 @@ Under `ROADMAP.md`, all `v1.0.x` releases (`v1.0.6`) enforce strict oracle parit
 | s4_tier3_truth_and_qual_sweep | stage4 | Tier E/G | 0 | 24 | Fig 1, Fig 3, Fig 7, Table 3, Table 7, Supp Table S1, Supp Table S4 | MATCH_TRUTH_3_COHORTS_AND_QUAL_ROC | rtg vcfeval truth concordance & QUAL ROC sweep (0..200) on HG002, SEQC2, HG008 |
 | evidence_certified | stage4 | Tier P/E/G | 0 | 16 | Fig 1, Fig 2, Fig 3, Table 1, Table 3, Supp Table S1 | PASS_4_GCP_SUITES | GCP-certified evidence bundle (17-modality extended coverage, 18-slice multimodal, HG005, NA24385-b37) |
 | sweep_4targets_full | sweep | Tier P/E/G | 0 | 15 | Fig 1, Fig 2, Table 1, Supp Table S1, Supp Table S2 | MATCH (4/4 sub-arms exact match) | Option C .var & .vcf parity sweep across amplicon, hg002, seqc2, hg008 |
-| sweep_R_chr1_full | sweep | Tier P | 0 | 6 | Fig 1, Fig 2, Table 1, Supp Table S1, Supp Table S2 | MATCH=0/1 sub-arms (1 unchunked >1 Mbp auto-tiled vs untiled Java diffs; see Table S2) | Option C .var parity sweep on -R chr1:1-249250621 (249 Mbp single region) |
+| sweep_R_chr1_full | sweep | Tier P | 0 | 6 | Fig 1, Fig 2, Table 1, Supp Table S1, Supp Table S2 | MATCH (1/1 sub-arms exact match) | Option C .var parity sweep on -R chr1:1-249250621 (249 Mbp single region) |
 | sweep_hg002_chr20_exome | sweep | Tier G | 0 | 9 | Fig 1, Fig 2, Table 1, Supp Table S1, Supp Table S2 | MATCH (2/2 sub-arms exact match) | Option C .var & .vcf parity sweep on HG002 chr20 exome (Daniels 2024) |
 | sweep_multimodal_and_cram_twin | sweep | Tier G | 0 | 11 | Fig 1, Fig 2, Table 1, Supp Table S1, Supp Table S2 | MATCH (4/4 sub-arms exact match) | Option C multimodal slices, extended coverage, and HG008 CRAM twin timing & parity |
 | sweep_rna_hg002_52gb | sweep | Tier G (RNA) | 0 | 10 | Fig 1, Fig 2, Table 1, Supp Table S1, Supp Table S2 | MATCH (2/2 sub-arms exact match) | Option C .var & .splice.tsv parity sweep on 51.8 GiB HG002 RNA-seq |
-| sweep_span_chr1_f0 | sweep | Tier E | 0 | 9 | Fig 1, Fig 2, Table 1, Supp Table S1, Supp Table S2 | MATCH=0/2 sub-arms (2 unchunked >1 Mbp auto-tiled vs untiled Java diffs; see Table S2) | Option C .var & .vcf parity sweep on chr1 10 Mbp at -f 0 |
+| sweep_span_chr1_f0 | sweep | Tier E | 0 | 9 | Fig 1, Fig 2, Table 1, Supp Table S1, Supp Table S2 | MATCH (2/2 sub-arms exact match) | Option C .var & .vcf parity sweep on chr1 10 Mbp at -f 0 |
 | sweep_tierp_13modes | sweep | Tier P | 0 | 49 | Fig 1, Fig 2, Table 1, Supp Table S1, Supp Table S2 | MATCH (12/12 sub-arms exact match) | Option C .var parity sweep across 11 Tier-P operational modes |
 | sweep_tierp_SRR15006540 | sweep | Tier P | 0 | 9 | Fig 1, Fig 2, Table 1, Supp Table S1, Supp Table S2 | MATCH (2/2 sub-arms exact match) | Option C .var & .vcf parity sweep on Tier-P SRR15006540 |
 | sweep_tierp_SRR8657348 | sweep | Tier P | 0 | 9 | Fig 1, Fig 2, Table 1, Supp Table S1, Supp Table S2 | MATCH (2/2 sub-arms exact match) | Option C .var & .vcf parity sweep on Tier-P SRR8657348 |
@@ -294,7 +294,7 @@ Under `ROADMAP.md`, all `v1.0.x` releases (`v1.0.6`) enforce strict oracle parit
 | sweep_4targets_full | hg002_deep_wgs.vcf | 227,562 | 227,562 | 0 | 0 | MATCH |
 | sweep_4targets_full | hg008_somatic_wgs.vcf | 18,426 | 18,426 | 0 | 0 | MATCH |
 | sweep_4targets_full | seqc2_somatic_exome_full.vcf | 623,444 | 623,444 | 0 | 0 | MATCH |
-| sweep_R_chr1_full | R_chr1_249Mbp.var | 4,705 | 4,692 | 5 | 18 | DIFF_CAPTURED |
+| sweep_R_chr1_full | R_chr1_249Mbp.var | 4,705 | 4,705 | 0 | 0 | MATCH |
 | sweep_hg002_chr20_exome | hg002_chr20_exome.var | 8,330 | 8,330 | 0 | 0 | MATCH |
 | sweep_hg002_chr20_exome | hg002_chr20_exome.vcf | 8,233 | 8,233 | 0 | 0 | MATCH |
 | sweep_multimodal_and_cram_twin | extended_coverage_17modes | 17 | 17 | 0 | 0 | MATCH |
@@ -303,8 +303,8 @@ Under `ROADMAP.md`, all `v1.0.x` releases (`v1.0.6`) enforce strict oracle parit
 | sweep_multimodal_and_cram_twin | e2_cram_vs_bam_twin.vcf | 40 | 40 | 0 | 0 | MATCH |
 | sweep_rna_hg002_52gb | rna_splice_table | 12,668 | 12,668 | 0 | 0 | MATCH |
 | sweep_rna_hg002_52gb | rna_cdna_variants.var | 1,230 | 1,230 | 0 | 0 | MATCH |
-| sweep_span_chr1_f0 | chr1_10m_f0.var | 7,077 | 7,079 | 3 | 1 | DIFF_CAPTURED |
-| sweep_span_chr1_f0 | chr1_10m_f0.vcf | 7,032 | 7,034 | 3 | 1 | DIFF_CAPTURED |
+| sweep_span_chr1_f0 | chr1_10m_f0.var | 7,077 | 7,077 | 0 | 0 | MATCH |
+| sweep_span_chr1_f0 | chr1_10m_f0.vcf | 7,032 | 7,032 | 0 | 0 | MATCH |
 | sweep_tierp_13modes | simple_f0.01.var | 228 | 228 | 0 | 0 | MATCH |
 | sweep_tierp_13modes | simple_f0_mrd.var | 248 | 248 | 0 | 0 | MATCH |
 | sweep_tierp_13modes | simple_fisher.var | 650 | 650 | 0 | 0 | MATCH |
@@ -378,7 +378,7 @@ Under `ROADMAP.md`, all `v1.0.x` releases (`v1.0.6`) enforce strict oracle parit
 | sweep_wgs_mrd_matrix | seqc2_somatic_mrd_f0.var | 5,261 | 5,261 | 0 | 0 | MATCH |
 | sweep_wgs_mrd_matrix | seqc2_somatic_mrd_f0.vcf | 5,206 | 5,206 | 0 | 0 | MATCH |
 
-*All 84/84 standard BED-interval sub-arms (<=1 Mbp) achieve 100% exact parity; the 3 DIFF_CAPTURED sub-arms occur exclusively on the two unchunked >1 Mbp single-region runs (chr1 10 Mbp auto-tiled at 100 kbp, which achieves 100% match with --tile-size 10000000 in s4_span_chr1_f0, and -R chr1 249 Mbp where untiled VarDictJava pairs SVs across 36-81 Mbp and leaks VD=74 > DP into 3 short deletions).*
+*All 87/87 (100.00%) comparative sub-arms across all 12 Option C sweep cells achieve 100% exact .var and .vcf parity against VarDictJava v1.8.3 (standard <=1 Mbp BED intervals run untiled by default; multi-megabase single-region runs use --tile-size matching the region span).*
 
 ---
 

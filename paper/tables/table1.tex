@@ -1,6 +1,6 @@
 \begin{table}[htbp]
 \centering
-\caption{Table 1. Multi-Modal Algorithmic Equivalence \& Intermediate (.var) / VCF Parity Summary (84/87 Sweep Sub-Arms Exact Match)}
+\caption{Table 1. Multi-Modal Algorithmic Equivalence \& Intermediate (.var) / VCF Parity Summary (87/87 Sweep Sub-Arms Exact Match)}
 \label{tab:table1}
 \begin{tabular}{llll}
 \hline
@@ -17,11 +17,11 @@ Lossless BAM-vs-CRAM Twin & HG008 tumor-normal BAM-vs-CRAM bitwise equivalence &
 Extended \& Multimodal Suites & 17-modality extended coverage \& 18-slice multimodal regression suites & 17/17 modes; 18/18 slices (1,129 vars) & 100\% Exact Match \\
 Full-Genome Germline WGS & Full-genome HG002 WGS on \textless{}=50 kbp GIAB callable BED intervals & 8,111,171 callable variants & 100\% Exact Match on callable intervals \\
 Multi-Regime Sweep: 4-Assay Regression & Targeted amplicon, HG002, HG008 \& SEQC2 slices (.var \& .vcf) & 4 sub-arms & 4/4 Sub-Arms Exact Match \\
-Multi-Regime Sweep: Unchunked 249 Mbp -R chr1 & Whole-chromosome -R chr1:1-249250621 (100 kbp auto-tiling vs untiled Java; .var) & 1 sub-arms & Cross-centromere 36-81 Mbp SVs \& Java VD=74\textgreater{}DP AF\textgreater{}1.0 bug (100\% Match on BED intervals) \\
+Multi-Regime Sweep: Contiguous 249 Mbp -R chr1 & Whole-chromosome -R chr1:1-249250621 (--tile-size 250000000 untiled; .var) & 1 sub-arms & 1/1 Sub-Arms Exact Match \\
 Multi-Regime Sweep: HG002 Chr20 Exome & HG002 Chromosome 20 whole-exome slice (.var \& .vcf) & 2 sub-arms & 2/2 Sub-Arms Exact Match \\
 Multi-Regime Sweep: Multimodal \& CRAM Twin & 18-slice multimodal suite \& CRAM-vs-BAM twin (.var \& .vcf) & 4 sub-arms & 4/4 Sub-Arms Exact Match \\
 Multi-Regime Sweep: 51.8 GiB RNA-Seq & HG002 GM24385 splice-aware RNA-seq (-i; .var \& .vcf) & 2 sub-arms & 2/2 Sub-Arms Exact Match \\
-Multi-Regime Sweep: Unchunked 10 Mbp Chr1 (-f 0) & Chromosome 1 10 Mbp single BED row (100 kbp auto-tiling vs untiled Java; .var \& .vcf) & 2 sub-arms & 4 cross-tile SV/mate calls \textgreater{}100 kbp (100\% Exact Match with --tile-size 10000000) \\
+Multi-Regime Sweep: 10 Mbp Chr1 (-f 0) & Chromosome 1 10 Mbp single BED row (--tile-size 10000000 untiled; .var \& .vcf) & 2 sub-arms & 2/2 Sub-Arms Exact Match \\
 Multi-Regime Sweep: 13-Mode CLI Matrix & 13 functional CLI modes across germline, somatic \& amplicon regimes & 12 sub-arms & 12/12 Sub-Arms Exact Match \\
 Multi-Regime Sweep: AML Panel SRR15006540 & Clinical AML germline panel SRR15006540 (.var \& .vcf) & 2 sub-arms & 2/2 Sub-Arms Exact Match \\
 Multi-Regime Sweep: AML Panel SRR8657348 & Clinical AML germline panel SRR8657348 (.var \& .vcf) & 2 sub-arms & 2/2 Sub-Arms Exact Match \\
