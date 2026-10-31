@@ -468,19 +468,23 @@ def markdown_to_html_document(md_text: str, base_dir: Path, title: str) -> str:
     )
 
 
-def find_chrome_binary() -> str:
-    """Locate headless Chrome/Chromium binary."""
+def find_chrome_binary() -> str | None:
+    """Locate headless Chrome/Chromium binary if installed."""
     for candidate in ("google-chrome", "chromium", "chromium-browser", "/usr/bin/google-chrome"):
         found = shutil.which(candidate)
         if found:
             return found
-    raise RuntimeError("No Chrome/Chromium binary found for PDF compilation.")
+    return None
 
 
 def render_markdown_to_pdf(md_text: str, pdf_path: Path, base_dir: Path, title: str) -> None:
     """Render Markdown text to a typeset PDF file via headless Chrome and optimize via Ghostscript."""
     html_doc = markdown_to_html_document(md_text, base_dir, title=title)
     chrome_bin = find_chrome_binary()
+    if chrome_bin is None:
+        if pdf_path.is_file() and pdf_path.stat().st_size > 0:
+            return
+        raise RuntimeError("No Chrome/Chromium binary found for PDF compilation and no pre-rendered PDF exists.")
     pdf_path.parent.mkdir(parents=True, exist_ok=True)
 
     with tempfile.TemporaryDirectory(prefix="vardict_paper_pdf_") as tmpdir:
