@@ -104,34 +104,27 @@ def build_macro_context(doc: dict[str, Any]) -> dict[str, str]:
     m["f_titration"] = "0.002"
     m["f_zero"] = "0"
     m["amp_param"] = "10:0.95"
-    m["cpp_chunk_bp"] = "50,000"
+    m_chunk = re.search(r"CPP_CHUNK=(\d+)", s5["wgs_hg008_full_giab_3way_th32"]["cpp"]["command"])
+    cpp_chunk_int = int(m_chunk.group(1)) if m_chunk else 50000
+    m["cpp_chunk_bp"] = f"{cpp_chunk_int:,}"
     m["rust_halo_kbp"] = "100"
-    m["giab_arm_b_max_kbp"] = "50"
-    m["cpp_chunk_kbp"] = "50"
+    m["giab_arm_b_max_kbp"] = str(cpp_chunk_int // 1000)
+    m["cpp_chunk_kbp"] = str(cpp_chunk_int // 1000)
     m["nvme_raid0_tb"] = "1.5"
     m["gcp_remaining_usd"] = f"{meta['gcp_budget_usd'] - meta['gcp_spend_usd']:.2f}"
     m["gcp_spend_pct"] = f"{(meta['gcp_spend_usd'] / meta['gcp_budget_usd']) * 100.0:.1f}%"
-    m["s1_tile_500k"] = "500,000"
-    m["s1_tile_1m"] = "1,000,000"
-    m["s1_tile_2m"] = "2,000,000"
-    m["s1_tile_10m"] = "10,000,000"
-    m["s4_span_1m"] = "1,000,000"
-    m["s4_span_10m"] = "10,000,000"
-    m["s4_span_50m"] = "50,000,000"
-    m["s4_span_100m"] = "100,000,000"
-    m["s4_span_249m"] = "248,956,422"
+    tiles = s1["s1_h1a_simple_tiles"]["tile_sizes_bp"]
+    m["s1_tile_500k"] = f"{tiles[0]:,}"
+    m["s1_tile_1m"] = f"{tiles[1]:,}"
+    m["s1_tile_2m"] = f"{tiles[2]:,}"
+    m["s1_tile_10m"] = f"{tiles[3]:,}"
+    span_ints = sorted(int(k.lstrip("R")) for k in s4["span_chr1_3way"]["th8"]["spans"])
+    m["s4_span_1m"] = f"{span_ints[0]:,}"
+    m["s4_span_10m"] = f"{span_ints[1]:,}"
+    m["s4_span_100m"] = f"{span_ints[2]:,}"
+    m["s4_span_249m"] = f"{span_ints[3]:,}"
     m["s6_v50q_gain_gbp"] = "0.23"
-    m["s6_v50q_snv_r_gain_pct"] = "5.01%"
-    m["s6_v50q_indel_r_gain_pct"] = "17.26%"
-    m["s6_cmrg_snv_r_gain_pct"] = "17.47%"
-    m["s6_cmrg_indel_r_gain_pct"] = "27.98%"
-    m["s6_tit_vaf_range_pct"] = "10.0% to 0.5%"
-    m["s6_tit_vaf_20_pct"] = "10.0%"
-    m["s6_tit_vaf_10_pct"] = "5.0%"
-    m["s6_tit_vaf_5_pct"] = "2.5%"
-    m["s6_tit_vaf_2_pct"] = "1.0%"
-    m["s6_tit_vaf_1_pct"] = "0.5%"
-    m["s6_mosaic_vaf_range_pct"] = "1.0%–30.0%"
+    m["s6_mosaic_vaf_range_pct"] = "1%–30%"
     m["s1_amplicon_speedup_vs_java"] = f"{s1['s1_ceiling_amplicon']['java']['wall_s'] / s1['s1_ceiling_amplicon']['rust']['wall_s']:.0f}"
     m["s1_amplicon_rss_ratio_vs_java"] = f"{s1['s1_ceiling_amplicon']['java']['max_rss_kb'] / s1['s1_ceiling_amplicon']['rust']['max_rss_kb']:.1f}"
     m["s1_gate7_speedup_vs_java"] = f"{s1['s1_gate7_ref_multiregion']['java']['wall_s'] / s1['s1_gate7_ref_multiregion']['rust']['wall_s']:.1f}"
@@ -155,7 +148,8 @@ def build_macro_context(doc: dict[str, Any]) -> dict[str, str]:
     m["sweep_match_pct"] = f"{(sw_match / sw_tot) * 100.0:.2f}%"
     m["cp95_78_87"] = fmt_cp_ci(sw_match, sw_tot)
     m["cp95_78_78_single_region"] = fmt_cp_ci(sw_match, sw_match)
-    m["cp95_84_85"] = fmt_cp_ci(84, 85)
+    k_mos, n_mos = (int(x) for x in str(doc["flat_macros"]["s6_mosaic_tp_best"]).split("/"))
+    m["cp95_84_85"] = fmt_cp_ci(k_mos, n_mos)
 
     # Stage 1 details
     amp = s1["s1_ceiling_amplicon"]
@@ -258,13 +252,15 @@ def build_macro_context(doc: dict[str, Any]) -> dict[str, str]:
 
     # Stage 2 Table 3 -R chr1
     rchr1 = s2["table3_R_chr1"]
-    m["s2_rchr1_bp"] = "249,250,621"
-    m["s2_rchr1_mbp"] = "249.25"
+    rchr1_bp_int = int(rchr1["region"].split("-")[1])
+    m["s2_rchr1_bp"] = f"{rchr1_bp_int:,}"
+    m["s2_rchr1_mbp"] = f"{rchr1_bp_int / 1e6:.2f}"
     m["s2_rchr1_rust_wall_range"] = f"{rchr1['rust']['wall_s_min']:.2f}–{rchr1['rust']['wall_s_max']:.2f}"
     m["s2_rchr1_cpp_wall_range"] = f"{rchr1['cpp']['wall_s_min']:.2f}–{rchr1['cpp']['wall_s_max']:.2f}"
     m["s2_rchr1_java200g_wall_range"] = f"{rchr1['java_xmx200g']['wall_s_min']:.2f}–{rchr1['java_xmx200g']['wall_s_max']:.2f}"
     m["s2_rchr1_java4g_oom_wall_s"] = f"{rchr1['java_xmx4g_oom']['wall_s']:.2f}"
     m["s2_rchr1_java4g_oom_rss_gib"] = f"{rchr1['java_xmx4g_oom']['max_rss_gib']:.2f}"
+    m["s2_fig1_fig3_wgs_bed_intervals"] = m["s2_SRR8657348_intervals"]
 
     # Stage 2 Fig 1 & Fig 3 field callers
     f13 = s2["fig1_fig3_field_callers"]
@@ -286,9 +282,10 @@ def build_macro_context(doc: dict[str, Any]) -> dict[str, str]:
         m[f"s2_venn_{k}"] = str(v)
 
     # Stage 2 Fig 2 HG002 chr20 exome truth
-    m["s2_fig2_truth_vars"] = "2,443"
     m["s2_fig2_region_mbp"] = "2.31"
-    m["s2_fig2_parity_vars"] = "8,233"
+    m_fig2_par = re.search(r"(\d+)\s+variants", doc["cells"]["s2_fig2_hg002_chr20_truth"]["metrics"]["compare_hg002_chr20"])
+    if m_fig2_par:
+        m["s2_fig2_parity_vars"] = f"{int(m_fig2_par.group(1)):,}"
     for row in s2["fig2_hg002_chr20_truth"]:
         cname = row["caller"]
         m[f"s2_fig2_{cname}_calls"] = f"{row['calls']:,}"
@@ -318,8 +315,10 @@ def build_macro_context(doc: dict[str, Any]) -> dict[str, str]:
         m[f"s4_pb_{safe}_cpp_rss_mb"] = f"{tdict['cpp_maxrss_kb'] / 1024.0:.1f}"
 
     # Stage 4 Exome scaling 1..32c
-    m["s4_exome_total_vars"] = "339,698"
     ex = s4["scale_exome_3way"]
+    m_ex_tot = re.search(r"(\d+)\s+variants", ex["th1"]["compare"])
+    if m_ex_tot:
+        m["s4_exome_total_vars"] = f"{int(m_ex_tot.group(1)):,}"
     for tk in ("th1", "th2", "th4", "th8", "th16", "th32"):
         td = ex[tk]
         m[f"s4_exome_{tk}_rust_wall_s"] = f"{td['rust']['wall_s_mean']:.2f}"
@@ -350,7 +349,10 @@ def build_macro_context(doc: dict[str, Any]) -> dict[str, str]:
         m[f"s4_span_{tk}_249m_cpp_gib"] = f"{sd['spans']['R248956422']['cpp']['max_rss_gib_mean']:.2f}"
 
     spf0 = s4["span_chr1_f0"]
-    m["s4_span_f0_vars"] = "7,032"
+    m_spf0_v = re.search(r"(\d+)\s+variants", doc["cells"]["s4_span_chr1_f0"]["parity_verdict"])
+    if m_spf0_v:
+        m["s4_span_f0_vars"] = f"{int(m_spf0_v.group(1)):,}"
+        m["s4_span_chr1_f0_vars"] = m["s4_span_f0_vars"]
     m["s4_span_f0_rust_wall_s"] = f"{spf0['rust']['wall_s_mean']:.2f}"
     m["s4_span_f0_rust_gib"] = f"{spf0['rust']['max_rss_gib_mean']:.2f}"
     m["s4_span_f0_cpp_wall_s"] = f"{spf0['cpp']['wall_s_mean']:.2f}"
@@ -362,6 +364,8 @@ def build_macro_context(doc: dict[str, Any]) -> dict[str, str]:
     m["s4_jpn_job2_wall_s"] = f"{jpn['job2_4c']['wall_s_mean']:.2f}"
     m["s4_jpn_job2_rss_mb"] = f"{jpn['job2_4c']['max_rss_mb_mean']:.1f}"
     m["s4_jpn_combined_gib"] = f"{jpn['combined_peak_rss_gib_mean']:.3f}"
+    m["s4_jpn_8jobs_rust_gib"] = f"{4.0 * jpn['combined_peak_rss_gib_mean']:.2f}"
+    m["s4_jpn_8jobs_java_gib"] = f"{8.0 * ex['th4']['java']['max_rss_gib_mean']:.1f}"
 
     # Stage 4 Tier-3 truth & strata
     t3c = s4["tier3_truth_and_qual_sweep"]["cohorts"]
@@ -381,6 +385,7 @@ def build_macro_context(doc: dict[str, Any]) -> dict[str, str]:
         m[f"s4_t3_{cid}_none_p"] = f"{none['precision']:.4f}"
         m[f"s4_t3_{cid}_none_r"] = f"{none['sensitivity']:.4f}"
         m[f"s4_t3_{cid}_none_f1"] = f"{none['f_measure']:.4f}"
+        m[f"s4_t3_{cid}_fp_reduction_pct"] = f"{(1.0 - best['fp'] / none['fp']) * 100.0:.1f}%"
 
     t3s = s4["tier3_truth_and_qual_sweep"]["strata_summary"]
     for cid in ("hg002", "seqc2", "hg008"):
@@ -405,11 +410,8 @@ def build_macro_context(doc: dict[str, Any]) -> dict[str, str]:
     # Stage 5 WGS details
     m["s5_hg002_bam_gb"] = "130.8"
     m["s5_hg008_bam_gb"] = "329.0"
-    m["s5_contigs_bp"] = "2,875,001,522"
     m["s5_hg002_giab_gbp"] = "2.51"
-    m["s5_hg002_giab_intervals"] = "56,642"
     m["s5_hg008_giab_gbp"] = "2.37"
-    m["s5_hg008_giab_intervals"] = "50,554"
 
     h2_a = s5["wgs_hg002_full_contigs_3way_th32"]
     h2_b = s5["wgs_hg002_full_giab_3way_th32"]
@@ -421,9 +423,7 @@ def build_macro_context(doc: dict[str, Any]) -> dict[str, str]:
     m["s5_hg008_giab_cpp_rss_ratio_vs_rust"] = f"{h8_b['cpp']['max_rss_kb'] / h8_b['rust']['max_rss_kb']:.1f}"
     m["s5_hg002_giab_cpp_diff_vars"] = f"{h2_b['cpp']['variant_count'] - h2_b['rust']['variant_count']:,}"
     m["s5_hg008_contigs_cpp_wall_str"] = h8_a["cpp"]["wall_str"]
-    m["s5_hg008_contigs_cpp_vars"] = "13,182,812"
     m["s5_hg008_giab_cpp_wall_str"] = h8_b["cpp"]["wall_str"]
-    m["s5_hg008_giab_cpp_vars"] = "10,287,644"
 
     h2_v_best = h2_b["vcfeval"]["rust"]["operating_points"]["best"]
     h2_v_none = h2_b["vcfeval"]["rust"]["operating_points"]["none"]
@@ -477,15 +477,25 @@ def build_macro_context(doc: dict[str, Any]) -> dict[str, str]:
 
     # Stage 6 HG002 v5.0q / CMRG / Mosaic
     m["s6_v50q_gbp"] = "2.74"
+    v50q_by_key: dict[tuple[str, str], dict[str, Any]] = {}
     for row in s6["hg002_v50q_cmrg_mosaic_eval"]:
         b = row["benchmark"]
         c = row["caller"]
+        v50q_by_key[(b, c)] = row
         m[f"s6_{b}_{c}_snv_p"] = f"{row['snv_p']:.4f}"
         m[f"s6_{b}_{c}_snv_r"] = f"{row['snv_r']:.4f}"
         m[f"s6_{b}_{c}_snv_f1"] = f"{row['snv_f1']:.4f}"
         m[f"s6_{b}_{c}_indel_p"] = f"{row['indel_p']:.4f}"
         m[f"s6_{b}_{c}_indel_r"] = f"{row['indel_r']:.4f}"
         m[f"s6_{b}_{c}_indel_f1"] = f"{row['indel_f1']:.4f}"
+    v50q_fc = v50q_by_key[("NIST_v5.0q_T2T_Q100", "VarDictRust_FullContigs")]
+    v50q_g50 = v50q_by_key[("NIST_v5.0q_T2T_Q100", "VarDictJava_GIAB50kb")]
+    cmrg_fc = v50q_by_key[("NIST_CMRG_v1.00_273Genes", "VarDictRust_FullContigs")]
+    cmrg_g50 = v50q_by_key[("NIST_CMRG_v1.00_273Genes", "VarDictJava_GIAB50kb")]
+    m["s6_v50q_snv_r_gain_pct"] = f"{(v50q_fc['snv_r'] - v50q_g50['snv_r']) * 100.0:.2f}%"
+    m["s6_v50q_indel_r_gain_pct"] = f"{(v50q_fc['indel_r'] - v50q_g50['indel_r']) * 100.0:.2f}%"
+    m["s6_cmrg_snv_r_gain_pct"] = f"{(cmrg_fc['snv_r'] - cmrg_g50['snv_r']) * 100.0:.2f}%"
+    m["s6_cmrg_indel_r_gain_pct"] = f"{(cmrg_fc['indel_r'] - cmrg_g50['indel_r']) * 100.0:.2f}%"
     m["s6_mosaic_recall_pct"] = f"{float(m['s6_mosaic_recall_best']) * 100.0:.2f}%"
 
     # Stage 6 HG008 v0.4 11-caller matrix
@@ -515,6 +525,10 @@ def build_macro_context(doc: dict[str, Any]) -> dict[str, str]:
     m["s6_tit_rss_ratio_range"] = f"{min(t_rr):.1f}×–{max(t_rr):.1f}×"
     m["s6_tit_rust_rss_kb_range"] = f"{min(r['peak_kb'] for r in rust_tit):,}–{max(r['peak_kb'] for r in rust_tit):,}"
     m["s6_tit_java_rss_kb_range"] = f"{min(j['peak_kb'] for j in java_tit):,}–{max(j['peak_kb'] for j in java_tit):,}"
+    for r in rust_tit:
+        p = int(r["purity_pct"])
+        m[f"s6_tit_vaf_{p}_pct"] = f"{p / 2.0:.1f}%"
+    m["s6_tit_vaf_range_pct"] = f"{m['s6_tit_vaf_20_pct']} to {m['s6_tit_vaf_1_pct']}"
     for r in tit_rows:
         p = r["purity_pct"]
         cal = r["caller"]

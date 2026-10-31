@@ -55,7 +55,7 @@ done
 Stage 2 comprises `17` cells replicating and extending Wolff et al. (2026) [11]:
 - **12 Tier-P v2 AML Panel Cells (`n = 3` technical replicates each at `-th 1` and `-th 8`):** `s2_tierp_v2_SRR15006375_th1`, `s2_tierp_v2_SRR15006375_th8`, `s2_tierp_v2_SRR15006376_th1`, `s2_tierp_v2_SRR15006376_th8`, `s2_tierp_v2_SRR15006386_th1`, `s2_tierp_v2_SRR15006386_th8`, `s2_tierp_v2_SRR15006540_th1`, `s2_tierp_v2_SRR15006540_th8`, `s2_tierp_v2_SRR8657348_th1`, `s2_tierp_v2_SRR8657348_th8`, `s2_tierp_v2_somatic_76_86_th1`, and `s2_tierp_v2_somatic_76_86_th8`.
 - **Contiguous Chromosome 1 (`-R chr1:1-249250621`, `249,250,621` bp):** `s2_table3_R_chr1_java_200g_n3` (`JAVA_OPTS="-Xmx4g"` OOM `rc=3` at `31.08` s; `JAVA_OPTS="-Xmx200g"` completes in `501.83` s at `106.47` GiB RSS) and `s2_table3_R_chr1_rust_and_cpp` (`VarDictRust` `9.75` s, `318.6` MB RSS vs `vardictcpp` `105.89` s, `10.58` GiB RSS).
-- **13-Mode Functional Sweep & Field Callers:** `s2_tierp_mode_parity_sweep` (`13/13` modes), `s2_fig1_fig3_field_callers` (`FreeBayes`, `LoFreq`, `Mutect2`, `Octopus`, `Strelka2`), and `s2_fig2_hg002_chr20_truth` (`2,443` truth variants).
+- **13-Mode Functional Sweep & Field Callers:** `s2_tierp_mode_parity_sweep` (`13/13` modes), `s2_fig1_fig3_field_callers` (`FreeBayes`, `LoFreq`, `Mutect2`, `Octopus`, `Strelka2`), and `s2_fig2_hg002_chr20_truth` (`8,233` candidate variants).
 
 ```bash
 # Tier-P single-sample & paired somatic replication (s2_tierp_v2_*):
@@ -108,7 +108,7 @@ python3 harness/compare_vcf.py golden/hg005_300x_mrd.vcf rust_hg005_300x_mrd.vcf
 ### 1.6 Stage 5: Full-Genome WGS (Arm A vs Arm B), 10-Platform Chr20 Panel, and Supply Chain (`s5_*`)
 Stage 5 comprises `7` cells (`s5_wgs_hg002_full_contigs_3way_th32`, `s5_wgs_hg002_full_giab_3way_th32`, `s5_wgs_hg008_full_contigs_3way_th32`, `s5_wgs_hg008_full_giab_3way_th32`, `s5_grch38_field_callers_truth`, `s5_cross_platform_short_read_chr20_panel`, and `s5_h4_maintenance_security_matrix`):
 ```bash
-# Arm A: Un-chunked full chromosomes (chr1..chr22, 2,875,001,522 bp, s5_wgs_hg002_full_contigs_3way_th32 & s5_wgs_hg008_full_contigs_3way_th32):
+# Arm A: Un-chunked full chromosomes (chr1..chr22, s5_wgs_hg002_full_contigs_3way_th32 & s5_wgs_hg008_full_contigs_3way_th32):
 timeout 10800 /usr/bin/time -v vardictrust -G GRCh38_GIABv3.fasta -f 0.01 -N HG002 \
   -b HG002_2x250_131GB.bam -th 32 --fisher -z -c 1 -S 2 -E 3 -g 4 --vcf grch38_22autosomes_full.bed > hg002_arm_a.vcf
 

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ast
 import csv
 import re
 import subprocess
@@ -222,6 +223,21 @@ class TestPaperReproducibility(unittest.TestCase):
         ]
         for phrase in required_phrases:
             self.assertIn(phrase, combined, f"Missing required referee/biostatistics disclosure: {phrase!r}")
+
+    def test_build_manuscript_script_has_no_hardcoded_empirical_strings(self) -> None:
+        self.assertTrue(BUILD_SCRIPT.is_file(), f"Missing {BUILD_SCRIPT}")
+        tree = ast.parse(BUILD_SCRIPT.read_text(encoding="utf-8"), filename=str(BUILD_SCRIPT))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                val = node.value
+                self.assertIsNone(
+                    re.search(r"\b\d{1,3},\d{3}(?:,\d{3})?\b", val),
+                    f"Hardcoded comma-grouped count {val!r} at {BUILD_SCRIPT.name}:{getattr(node, 'lineno', '?')}",
+                )
+                self.assertIsNone(
+                    re.search(r"\b\d+\.\d+%", val),
+                    f"Hardcoded percentage string {val!r} at {BUILD_SCRIPT.name}:{getattr(node, 'lineno', '?')}",
+                )
 
     def test_compiler_check_mode_is_idempotent(self) -> None:
         self.assertTrue(BUILD_SCRIPT.is_file(), f"Missing {BUILD_SCRIPT}")
