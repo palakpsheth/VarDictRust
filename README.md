@@ -294,7 +294,18 @@ Evaluated against physical ground truth using Real Time Genomics [`rtg vcfeval`]
 <a id="evaluation-manuscript-reproducibility"></a>
 ## Evaluation Manuscript & Reproducibility
 
-The v1.0.6 evaluation is written up as a repository-tracked manuscript (not yet peer-reviewed): [manuscript](paper/manuscript.md) ([typeset PDF](paper/manuscript.pdf)) with [supplement](paper/supplement.md) ([typeset PDF](paper/supplement.pdf)). Results cover eight topics: Tier-1/2 oracle equivalence across 13 modes and the 87-arm sweep; AML benchmark replication and field-caller comparison; germline/somatic truth accuracy and QUAL operating points; bounded-memory scaling with multicore work-stealing and node packing; full-genome WGS scaling; cross-platform chemistry generalization and the 70-cell GA4GH stratification; GIAB v5.0q/CMRG/Mosaic discovery via unchunked calling; and deep-learning/commercial caller comparison with low-VAF titration and supply-chain hardening. Figures ([`fig1..fig8`](paper/figures/)) and tables ([main 1–8 and supplementary S1–S6](paper/tables/)) regenerate deterministically via the [paper reproducibility package](paper/README.md) (`bash paper/reproduce_all.sh`).
+The v1.0.6 evaluation is written up as a repository-tracked manuscript (not yet peer-reviewed): [manuscript](paper/manuscript.md) ([typeset PDF](paper/manuscript.pdf)) with [supplement](paper/supplement.md) ([typeset PDF](paper/supplement.pdf)).
+
+- **Oracle equivalence** — Tier-1/2 parity across 13 modes and the 87-arm sweep ([Table 1](paper/tables/table1.md), [Figure 1](paper/figures/fig1.svg)).
+- **AML replication** — benchmark replication and field-caller comparison ([Table 2](paper/tables/table2.md), [Figure 2](paper/figures/fig2.svg)).
+- **Truth accuracy** — germline/somatic truth sets and QUAL operating points ([Table 3](paper/tables/table3.md), [Figure 3](paper/figures/fig3.svg)).
+- **Bounded-memory scaling** — multicore work-stealing and node packing ([Table 4](paper/tables/table4.md), [Figure 4](paper/figures/fig4.svg)).
+- **Whole-genome scaling** — unchunked full chromosomes vs callable intervals ([Table 5](paper/tables/table5.md), [Figure 5](paper/figures/fig5.svg)).
+- **Cross-platform generalization** — 10 chemistries and the 70-cell GA4GH stratification ([Table 6](paper/tables/table6.md), [Figure 6](paper/figures/fig6.svg)).
+- **New-biology discovery** — GIAB v5.0q/CMRG/Mosaic via unchunked calling ([Table 7](paper/tables/table7.md), [Figure 7](paper/figures/fig7.svg)).
+- **Caller landscape & hardening** — deep-learning/commercial comparison, low-VAF titration, supply-chain ([Table 8](paper/tables/table8.md), [Figure 8](paper/figures/fig8.svg)).
+
+Figures ([`fig1..fig8`](paper/figures/)) and tables ([main 1–8 and supplementary S1–S6](paper/tables/)) regenerate deterministically via the [paper reproducibility package](paper/README.md) (`bash paper/reproduce_all.sh`).
 
 ---
 
