@@ -51,6 +51,7 @@ GCS_REFS="${GCS_REFS:-gs://vardict-paper-trial-refs}"
 GCS_RESULTS="${GCS_RESULTS:-gs://vardict-paper-trial-results}"
 GCS_EVIDENCE="${GCS_EVIDENCE:-gs://vardict-paper-trial-evidence}"
 GCS_CKPT="${GCS_CKPT:-${GCS_RESULTS}/checkpoints-v106}"
+GCS_CELLS_SUBDIR="${GCS_CELLS_SUBDIR:-cells-v106}"
 GCS_ORACLE_CACHE="${GCS_ORACLE_CACHE:-${GCS_RESULTS}/oracle-cache-v183}"
 
 EXPECTED_FP="${EXPECTED_FP:-5865a2a0b24a8c17}"
@@ -61,12 +62,12 @@ usage() {
 Usage:
   bash harness/gcp_paper_runner.sh --plan-check
   bash harness/gcp_paper_runner.sh --controller [--max-attempts 3] [--start-attempt 1]
-  bash harness/gcp_paper_runner.sh --worker [--stage all|1|2|3|4]
+  bash harness/gcp_paper_runner.sh --worker [--stage all|1|2|3|4|5|6|sweep]
 
 Modes:
   --plan-check   Validate 2-strike Spot->On-Demand policy, NVMe RAID0 config, mkbed(), and checkpoint logic (offline safe)
   --controller   Host-side 2-strike Spot -> On-Demand VM lifecycle manager & progress monitor
-  --worker       On-VM 4-stage benchmark executor with systemd-run cgroup slices and per-cell GCS checkpoints
+  --worker       On-VM 6-stage benchmark executor with systemd-run cgroup slices and per-cell GCS checkpoints
 EOF
 }
 
@@ -256,29 +257,35 @@ gcs_write_heartbeat() {
 }
 
 # Restores previously measured VarDictJava, vardictcpp, and external field-caller
-# (.var/.sorted.var/.vcf/.time/.exit/.err) artifacts for a given cell from cells-v103/
-# and cells-v104/ on GCS (and preserves existing local non-Rust files) so neither oracle,
-# C++, nor field callers are ever re-run when refreshing VarDictRust (e.g. v1.0.5) on n2-highmem-32.
+# (.var/.sorted.var/.vcf/.time/.exit/.err/.rc + non-Rust rtg vcfeval) artifacts for a given cell
+# from oracle-cache-v183/cells/ and cells-v106 on GCS (and preserves existing local non-Rust files)
+# so neither oracle, C++, nor field callers are ever re-run when refreshing VarDictRust.
 restore_prev_java_cpp_artifacts() {
   local cell_id="$1" dst_dir="$2"
   mkdir -p "$dst_dir"
   if [ -z "${LOCAL_CKPT_DIR:-}" ]; then
     local bucket_prefix
-    for bucket_prefix in "${GCS_RESULTS}/cells-v103/${cell_id}" "${GCS_RESULTS}/cells-v104/${cell_id}" "${GCS_RESULTS}/cells-v105/${cell_id}"; do
+    for bucket_prefix in "${GCS_ORACLE_CACHE}/cells/${cell_id}" "${GCS_RESULTS}/cells-v106/${cell_id}" "${GCS_CELLS}/${cell_id}"; do
       if setsid gsutil -q stat "${bucket_prefix}/*" 2>/dev/null; then
         echo "[CACHE-RESTORE] Restoring cached Java/Cpp/Field-Caller artifacts from ${bucket_prefix}/ -> ${dst_dir}/"
-        setsid gsutil "${GSUTIL_MT_FLAGS[@]}" -q rsync -r -x "(^|/)([^/]*rust[^/]*|.*compare.*|ceiling_.*|cell\\.exit_code|extra\\.json|.*\\.diff\\.txt|determinism_.*|parity_verdict\\.tsv|strelka_work.*|fb_chunks|vcfeval.*|${cell_id})(/|$)" "${bucket_prefix}" "$dst_dir" 2>/dev/null || true
+        setsid gsutil "${GSUTIL_MT_FLAGS[@]}" -q rsync -r -x "(^|/)([^/]*rust[^/]*|[^/]*VarDictRust[^/]*|.*compare.*|ceiling_.*|cell\\.exit_code|extra\\.json|.*\\.diff\\.txt|determinism_.*|parity_verdict\\.tsv|fig2_caller_accuracy\\.tsv|grch38_field_caller_accuracy\\.tsv|cross_platform_chr20_summary\\.tsv|cross_platform_f0_noise_floor\\.tsv|hg002_v50q_cmrg_mosaic_summary\\.tsv|hg008_modern_ml_commercial_callers_v04\\.tsv|low_vaf_titration_curve\\.tsv|ga4gh_v35_cross_platform_stratification\\.tsv|mode_parity_13\\.tsv|roc_qual_sweep\\.json|strata_summary\\.json|strelka_work.*|fb_chunks|${cell_id})(/|$)" "${bucket_prefix}" "$dst_dir" 2>/dev/null || true
       fi
     done
   fi
-  # Never reuse stale Rust outputs from a prior version (keep any output newer than target/release/vardictrust)
-  local rf
-  while IFS= read -r -d '' rf; do
-    if [ -x "target/release/vardictrust" ] && [ "$rf" -nt "target/release/vardictrust" ]; then
-      continue
-    fi
-    rm -rf "$rf" 2>/dev/null || true
-  done < <(find "$dst_dir" -maxdepth 3 \( -name "*rust*" -o -name "*vardictrust*" -o -name "*compare*" -o -name "ceiling_*" -o -name "cell.exit_code" -o -name "extra.json" -o -name "*.diff.txt" -o -name "determinism_*" -o -name "parity_verdict.tsv" \) -print0 2>/dev/null || true)
+  # Never reuse stale Rust outputs or derived summary tables from a prior version,
+  # while preserving current-version outputs across Spot VM preemption restarts.
+  local prev_fp=""
+  [ -f "$dst_dir/.rust_fp" ] && prev_fp="$(cat "$dst_dir/.rust_fp" 2>/dev/null || true)"
+  if [ "$prev_fp" != "$EXPECTED_FP" ] || [ "${FORCE_RUST_RERUN:-0}" = "1" ]; then
+    local rf
+    while IFS= read -r -d '' rf; do
+      if [ -x "target/release/vardictrust" ] && [ "$rf" -nt "target/release/vardictrust" ] && [ "${FORCE_RUST_RERUN:-0}" != "1" ]; then
+        continue
+      fi
+      rm -rf "$rf" 2>/dev/null || true
+    done < <(find "$dst_dir" -maxdepth 3 \( -name "*rust*" -o -name "*vardictrust*" -o -name "*VarDictRust*" -o -name "*compare*" -o -name "ceiling_*" -o -name "cell.exit_code" -o -name "extra.json" -o -name "*.diff.txt" -o -name "determinism_*" -o -name "parity_verdict.tsv" -o -name "fig2_caller_accuracy.tsv" -o -name "grch38_field_caller_accuracy.tsv" -o -name "cross_platform_chr20_summary.tsv" -o -name "cross_platform_f0_noise_floor.tsv" -o -name "hg002_v50q_cmrg_mosaic_summary.tsv" -o -name "hg008_modern_ml_commercial_callers_v04.tsv" -o -name "low_vaf_titration_curve.tsv" -o -name "ga4gh_v35_cross_platform_stratification.tsv" -o -name "mode_parity_13.tsv" -o -name "roc_qual_sweep.json" -o -name "strata_summary.json" -o -name "job1*" -o -name "job2*" -o -name "bin_equiv.log" -o -name "musl_*" -o -name "binary_sizes_bytes.txt" -o -name "cli_flags_test.log" \) -print0 2>/dev/null || true)
+    echo "$EXPECTED_FP" > "$dst_dir/.rust_fp"
+  fi
 }
 
 # Executes a single cell inside a systemd-run CPU+RAM cgroup slice (when systemd-run is available)
@@ -520,8 +527,8 @@ worker_preflight() {
   local size_gb avail_gb
   size_gb="$(df -BG --output=size "$WORK_DIR" | tail -1 | tr -dc '0-9')"
   avail_gb="$(df -BG --output=avail "$WORK_DIR" | tail -1 | tr -dc '0-9')"
-  local min_size_gb="${MIN_DISK_SIZE_GB:-1200}"
-  local min_avail_gb="${MIN_DISK_GB:-400}"
+  local min_size_gb="${MIN_DISK_SIZE_GB:-700}"
+  local min_avail_gb="${MIN_DISK_GB:-200}"
   if [ "$size_gb" -lt "$min_size_gb" ] || [ "$avail_gb" -lt "$min_avail_gb" ]; then
     echo "FATAL: $WORK_DIR has ${size_gb}GB total / ${avail_gb}GB free, need >= ${min_size_gb}GB total and >= ${min_avail_gb}GB free (NVMe RAID0 SSD required)" >&2
     exit 2
@@ -552,7 +559,7 @@ worker_preflight() {
     echo "=== df -h WORK_DIR ==="
     df -h "$WORK_DIR" 2>/dev/null || true
   } > "$WORK_DIR/cells/host_hardware_manifest.txt"
-  gcs_upload "$WORK_DIR/cells/host_hardware_manifest.txt" "${GCS_RESULTS}/${GCS_CELLS_SUBDIR:-cells-v106}/host_hardware_manifest.txt" || true
+  gcs_upload "$WORK_DIR/cells/host_hardware_manifest.txt" "${GCS_RESULTS}/${GCS_CELLS_SUBDIR:-cells-v105}/host_hardware_manifest.txt" || true
   cargo build --release -p vardictrust
 }
 
@@ -963,7 +970,10 @@ run_stage_2() {
     samtools view -T \"\$REF\" -C -o \"\$KEEP_DIR/srr8657348_chr1.cram\" \"\$BAM\" chr1
     samtools index \"\$KEEP_DIR/srr8657348_chr1.cram\"
     env RUST_MIN_STACK=67108864 \"\$VR\" -G \"\$REF\" -f 0.01 -N s -b \"\$KEEP_DIR/srr8657348_chr1.cram\" -c 1 -S 2 -E 3 -g 4 --emit-intermediate -th 1 \"\$BEDS/simple.bed\" | LC_ALL=C sort > \"\$KEEP_DIR/p5_cram.rust.tsv\"
-    \"\$VC\" -G \"\$REF\" -f 0.01 -N s -b \"\$KEEP_DIR/srr8657348_chr1.cram\" -c 1 -S 2 -E 3 -g 4 \"\$BEDS/simple.bed\" -th 1 2>/dev/null | LC_ALL=C sort > \"\$KEEP_DIR/p5_cram.cpp.tsv\"
+    if [ ! -s \"\$KEEP_DIR/p5_cram.cpp.tsv\" ]; then
+      \"\$VC\" -G \"\$REF\" -f 0.01 -N s -b \"\$KEEP_DIR/srr8657348_chr1.cram\" -c 1 -S 2 -E 3 -g 4 \"\$BEDS/simple.bed\" -th 1 2>/dev/null | LC_ALL=C sort > \"\$KEEP_DIR/p5_cram.cpp.tsv\"
+    fi
+    oracle_cache_put 'tierp_13modes/p5_cram.cpp.tsv' \"\$KEEP_DIR/p5_cram.cpp.tsv\"
     diff -u \"\$KEEP_DIR/simple_f0.01.rust.tsv\" \"\$KEEP_DIR/p5_cram.rust.tsv\" > \"\$KEEP_DIR/p5_cram_vs_bam_diff.txt\" || true
     python3 harness/compare_var.py --eps 1e-6 \"\$KEEP_DIR/simple_f0.01.rust.tsv\" \"\$KEEP_DIR/p5_cram.rust.tsv\" >/dev/null
     printf 'P5_cram_twin\t0_NoClassDefFoundError\t%s\t%s\t0\t0\t0\t0\tMATCH_BAM_TWIN\n' \
@@ -1025,6 +1035,16 @@ run_stage_2() {
     printf 'caller\tcalls\tsnv_p\tsnv_r\tsnv_f1\tindel_p\tindel_r\tindel_f1\n' > \"\$OUT_TABLE\"
     score_caller() {
       local lbl=\"\$1\" vcf=\"\$2\"
+      if [ \"\$lbl\" != 'VarDictRust' ] && [ -s \"\$KEEP_DIR/ev_\${lbl}.vcf.gz\" ] && [ -f \"\$KEEP_DIR/rtg_\${lbl}_snp/summary.txt\" ] && [ -f \"\$KEEP_DIR/rtg_\${lbl}_indel/summary.txt\" ]; then
+        local n snp_p=NA snp_r=NA snp_f=NA indel_p=NA indel_r=NA indel_f=NA
+        n=\$(zgrep -vc '^#' \"\$KEEP_DIR/ev_\${lbl}.vcf.gz\" || echo 0)
+        for cls in snp indel; do
+          read -r p r f <<< \"\$(awk 'NR>2 && NF>=8' \"\$KEEP_DIR/rtg_\${lbl}_\${cls}/summary.txt\" | sort -k8 -g | tail -1 | awk '{print \$6,\$7,\$8}')\"
+          eval \"\${cls}_p=\${p:-NA}; \${cls}_r=\${r:-NA}; \${cls}_f=\${f:-NA}\"
+        done
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \"\$lbl\" \"\$n\" \"\$snp_p\" \"\$snp_r\" \"\$snp_f\" \"\$indel_p\" \"\$indel_r\" \"\$indel_f\" | tee -a \"\$OUT_TABLE\"
+        return 0
+      fi
       local src_vcf=\"\$vcf\"
       # Synthesize GT=0/1 sample column for 8-column sites-only VCFs (e.g., LoFreq, matching Archive.zip/tool_vcfs/lofreq.gt.vcf)
       if ! bcftools view -h \"\$vcf\" 2>/dev/null | tail -n 1 | awk -F'\t' '{exit (NF>=10 ? 0 : 1)}'; then
@@ -1407,8 +1427,8 @@ run_stage_4() {
     BUDGET_DIR="${WORK_DIR}/cells/s4_perf_budget_4targets_n3"
     if [ ! -f "$BUDGET_DIR/hg002/rust.vcf" ] && [ -z "${LOCAL_CKPT_DIR:-}" ]; then
       mkdir -p "$BUDGET_DIR"
-      setsid gsutil "${GSUTIL_MT_FLAGS[@]}" -q rsync -r "${GCS_RESULTS}/${GCS_CELLS_SUBDIR:-cells-v106}/s4_perf_budget_4targets_n3" "$BUDGET_DIR" || \
-        setsid gsutil "${GSUTIL_MT_FLAGS[@]}" -q rsync -r "${GCS_RESULTS}/cells-v105/s4_perf_budget_4targets_n3" "$BUDGET_DIR"
+      setsid gsutil "${GSUTIL_MT_FLAGS[@]}" -q rsync -r "${GCS_RESULTS}/${GCS_CELLS_SUBDIR:-cells-v105}/s4_perf_budget_4targets_n3" "$BUDGET_DIR" || \
+        setsid gsutil "${GSUTIL_MT_FLAGS[@]}" -q rsync -r "${GCS_RESULTS}/cells-v104/s4_perf_budget_4targets_n3" "$BUDGET_DIR"
     fi
 
     # (a) HG002 Germline Truth (GIAB v4.2.1)
@@ -1637,7 +1657,7 @@ PY
     fi
     GOLDEN_MODE=auto GOLDEN_STORE_DIR="$GOLDEN_STORE_DIR" bash harness/run_extended_coverage.sh
     GOLDEN_MODE=auto GOLDEN_STORE_DIR="$GOLDEN_STORE_DIR" bash harness/run_multimodal_slices.sh
-    CMP_TIMEOUT=12h python3 harness/record_evidence.py hg008-cram-twin -- bash harness/cram_twin.sh
+    CMP_TIMEOUT=12h KEEP_DIR="$KEEP_DIR/cram" python3 harness/record_evidence.py hg008-cram-twin -- bash harness/cram_twin.sh
     GOLDEN_MODE=auto GOLDEN_STORE_DIR="$GOLDEN_STORE_DIR" bash harness/concordance_multimodal.sh
 
     # E2: Tier-E SEQC2 Exome CRAM Twin (HCC1395/HCC1395BL slice CRAM vs BAM bitwise identity)
@@ -1803,7 +1823,7 @@ run_s4_scale_exome_body() {
   if [ "$th" -gt 1 ] && [ ! -f "${WORK_DIR}/cells/s4_scale_exome_3way_th1/rust_th1.vcf" ] && [ -z "${LOCAL_CKPT_DIR:-}" ]; then
     mkdir -p "${WORK_DIR}/cells/s4_scale_exome_3way_th1"
     setsid gsutil "${GSUTIL_MT_FLAGS[@]}" -q rsync -r "${GCS_RESULTS}/${GCS_CELLS_SUBDIR:-cells-v106}/s4_scale_exome_3way_th1" "${WORK_DIR}/cells/s4_scale_exome_3way_th1" || \
-      setsid gsutil "${GSUTIL_MT_FLAGS[@]}" -q rsync -r "${GCS_RESULTS}/cells-v105/s4_scale_exome_3way_th1" "${WORK_DIR}/cells/s4_scale_exome_3way_th1" || true
+      setsid gsutil "${GSUTIL_MT_FLAGS[@]}" -q rsync -r "${GCS_RESULTS}/cells-v104/s4_scale_exome_3way_th1" "${WORK_DIR}/cells/s4_scale_exome_3way_th1" || true
   fi
   if [ "$th" -gt 1 ] && [ -f "${WORK_DIR}/cells/s4_scale_exome_3way_th1/rust_th1.vcf" ]; then
     cmp <(grep -v '^##' "${WORK_DIR}/cells/s4_scale_exome_3way_th1/rust_th1.vcf") <(grep -v '^##' "$KEEP_DIR/rust_th${th}.vcf")
@@ -2499,6 +2519,17 @@ run_stage_5() {
         rss=$(awk -F": " "/Maximum resident/{print \$2}" "$time_file" | tr -dc "0-9")
       fi
       local work_ev="$KEEP_DIR/eval_${cohort}_${caller}"
+      if [ "$caller" != "VarDictRust" ] && [ -s "$work_ev/calls.vcf.gz" ] && [ -f "$work_ev/rtg_snp/summary.txt" ] && [ -f "$work_ev/rtg_indel/summary.txt" ]; then
+        local n snp_p=NA snp_r=NA snp_f=NA indel_p=NA indel_r=NA indel_f=NA
+        n=$(zgrep -vc "^#" "$work_ev/calls.vcf.gz" || echo 0)
+        for cls in snp indel; do
+          read -r p r f <<< "$(awk "NR>2 && NF>=8" "$work_ev/rtg_${cls}/summary.txt" | sort -k8 -g | tail -1 | awk "{print \$6,\$7,\$8}")"
+          eval "${cls}_p=${p:-NA}; ${cls}_r=${r:-NA}; ${cls}_f=${f:-NA}"
+        done
+        printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
+          "$cohort" "$caller" "$wall" "$rss" "$n" "$snp_p" "$snp_r" "$snp_f" "$indel_p" "$indel_r" "$indel_f" | tee -a "$OUT_TSV"
+        return 0
+      fi
       mkdir -p "$work_ev"
       local src_vcf="$vcf"
       if ! bcftools view -h "$vcf" 2>/dev/null | tail -n 1 | awk -F"\t" "{exit (NF>=10 ? 0 : 1)}"; then
@@ -2878,7 +2909,9 @@ run_stage_5() {
     VR=\"target/release/vardictrust\"
 
     SUMMARY_TSV=\"\$KEEP_DIR/cross_platform_chr20_summary.tsv\"
-    printf 'arm\tcohort\tfreq\tengine\trc\twall_s\tpeak_kb\ttotal_vars\tpass_vars\tparity_vs_java\tsnp_p\tsnp_r\tsnp_f1\tindel_p\tindel_r\tindel_f1\tughcr_snp_f1\tughcr_indel_f1\n' > \"\$SUMMARY_TSV\"
+    if [ ! -s \"\$SUMMARY_TSV\" ]; then
+      printf 'arm\tcohort\tfreq\tengine\trc\twall_s\tpeak_kb\ttotal_vars\tpass_vars\tparity_vs_java\tsnp_p\tsnp_r\tsnp_f1\tindel_p\tindel_r\tindel_f1\tughcr_snp_f1\tughcr_indel_f1\n' > \"\$SUMMARY_TSV\"
+    fi
 
     eval_vcfeval_pair() {
       local vcf=\"\$1\" ref=\"\$2\" sdf=\"\$3\" truth=\"\$4\" bed=\"\$5\" is_som=\"\$6\" out_dir=\"\$7\"
@@ -2928,6 +2961,10 @@ run_stage_5() {
       shift 12
       local extra_flags=(\"\$@\")
       local tag=\"\${arm}_f\${freq}\"
+      if awk -F'\t' -v a=\"\$arm\" -v f=\"\$freq\" '\$1==a && \$3==f {c++} END{exit !(c==3)}' \"\$SUMMARY_TSV\" 2>/dev/null; then
+        echo \"=== [Cross-Platform chr20] [SKIP] Arm=\$arm freq=\$freq already complete in \$SUMMARY_TSV ===\"
+        return 0
+      fi
       echo \"=== [Cross-Platform chr20] Arm=\$arm Cohort=\$cohort freq=\$freq ===\"
 
       # 1. VarDictRust v1.0.5 (-th 32)
@@ -3022,11 +3059,17 @@ run_stage_5() {
     done
 
     # Also verify native CRAM streaming on Ultima UG100 chr20 (VarDictRust on .cram vs VarDictRust on .bam and VarDictJava on .bam)
-    env RUST_MIN_STACK=67108864 /usr/bin/time -v -o \"\$KEEP_DIR/hg002_ultima_ug100_cram_rust.time\" \
-      \"\$VR\" -G \"\$REF_D1\" -f 0.01 -N HG002 -b \"\$XP_DIR/hg002_ultima_ug100.chr20.cram\" -c 1 -S 2 -E 3 -g 4 -z -th 32 \"\$XP_DIR/hg002_chr20_50kb.bed\" > \"\$KEEP_DIR/hg002_ultima_ug100_cram_rust.vcf\"
-    python3 harness/compare_vcf.py --strict-bytes \"\$KEEP_DIR/hg002_ultima_ug100_f0.01_rust.vcf\" \"\$KEEP_DIR/hg002_ultima_ug100_cram_rust.vcf\" --eps 1e-6 | tee \"\$KEEP_DIR/ultima_cram_vs_rust_bam_compare.txt\"
+    if [ ! -s \"\$KEEP_DIR/hg002_ultima_ug100_cram_rust.vcf\" ] || [ ! -s \"\$KEEP_DIR/hg002_ultima_ug100_cram_rust.time\" ]; then
+      env RUST_MIN_STACK=67108864 /usr/bin/time -v -o \"\$KEEP_DIR/hg002_ultima_ug100_cram_rust.time\" \
+        \"\$VR\" -G \"\$REF_D1\" -f 0.01 -N HG002 -b \"\$XP_DIR/hg002_ultima_ug100.chr20.cram\" -c 1 -S 2 -E 3 -g 4 -z -th 32 \"\$XP_DIR/hg002_chr20_50kb.bed\" > \"\$KEEP_DIR/hg002_ultima_ug100_cram_rust.vcf\"
+    fi
+    if [ ! -s \"\$KEEP_DIR/ultima_cram_vs_rust_bam_compare.txt\" ]; then
+      python3 harness/compare_vcf.py --strict-bytes \"\$KEEP_DIR/hg002_ultima_ug100_f0.01_rust.vcf\" \"\$KEEP_DIR/hg002_ultima_ug100_cram_rust.vcf\" --eps 1e-6 | tee \"\$KEEP_DIR/ultima_cram_vs_rust_bam_compare.txt\"
+    fi
     grep -q '^MATCH' \"\$KEEP_DIR/ultima_cram_vs_rust_bam_compare.txt\"
-    python3 harness/compare_vcf.py --strict-bytes \"\$KEEP_DIR/hg002_ultima_ug100_f0.01_java.vcf\" \"\$KEEP_DIR/hg002_ultima_ug100_cram_rust.vcf\" --eps 1e-6 > \"\$KEEP_DIR/ultima_cram_vs_java_bam_compare.txt\" 2>&1 || true
+    if [ ! -s \"\$KEEP_DIR/ultima_cram_vs_java_bam_compare.txt\" ]; then
+      python3 harness/compare_vcf.py --strict-bytes \"\$KEEP_DIR/hg002_ultima_ug100_f0.01_java.vcf\" \"\$KEEP_DIR/hg002_ultima_ug100_cram_rust.vcf\" --eps 1e-6 > \"\$KEEP_DIR/ultima_cram_vs_java_bam_compare.txt\" 2>&1 || true
+    fi
 
     # --- Part A2: Somatic HG008 Full chr20 across 6 Short/Mid-Read Platforms (-f 0.01 and -f 0 with -U) ---
     for freq in 0.01 0; do
@@ -3762,10 +3805,10 @@ EOF
 
   # Upload consolidated sweep summary table to GCS
   if [ -f "${WORK_DIR}/cells/v103_sweep_summary.tsv" ]; then
-    gcs_upload "${WORK_DIR}/cells/v103_sweep_summary.tsv" "${GCS_RESULTS}/cells-v105/v105_sweep_summary.tsv" || true
+    gcs_upload "${WORK_DIR}/cells/v103_sweep_summary.tsv" "${GCS_RESULTS}/${GCS_CELLS_SUBDIR:-cells-v106}/sweep_summary.tsv" || true
   fi
-  gcs_mark_done "SWEEP_V105_DONE"
-  gcs_write_heartbeat "sweep" "SWEEP_V105_DONE" "COMPLETED"
+  gcs_mark_done "SWEEP_V106_DONE"
+  gcs_write_heartbeat "sweep" "SWEEP_V106_DONE" "COMPLETED"
 }
 
 run_worker() {
@@ -3778,11 +3821,17 @@ run_worker() {
     3) run_stage_3 ;;
     4) run_stage_4 ;;
     5) run_stage_5 ;;
+    6)
+      source harness/run_stage_6.sh
+      run_stage_6
+      ;;
     sweep) run_v103_parity_sweep ;;
     all)
       run_stage_1
       run_packed_stages_2_to_4
       run_stage_5
+      source harness/run_stage_6.sh
+      run_stage_6
       gcs_mark_done "ALL_STAGES"
       gcs_write_heartbeat "complete" "ALL_STAGES" "COMPLETED"
       ;;
@@ -3835,13 +3884,16 @@ run_controller() {
   local done_marker="ALL_STAGES"
   local keep_vm_on_done=0
   if [ "$worker_stage" = "sweep" ]; then
-    done_marker="SWEEP_V105_DONE"
+    done_marker="SWEEP_V106_DONE"
     keep_vm_on_done="${KEEP_VM_ON_SWEEP_DONE:-1}"
   elif [ "$worker_stage" = "5" ]; then
     done_marker="STAGE5_DONE"
     keep_vm_on_done="${KEEP_VM_ON_DONE:-0}"
+  elif [ "$worker_stage" = "6" ]; then
+    done_marker="STAGE6_DONE"
+    keep_vm_on_done="${KEEP_VM_ON_DONE:-0}"
   elif [ "$worker_stage" = "all" ]; then
-    done_marker="STAGE5_DONE"
+    done_marker="STAGE6_DONE"
     keep_vm_on_done="${KEEP_VM_ON_DONE:-0}"
   fi
 
@@ -4057,6 +4109,7 @@ run_plan_check() {
   # Verify audit fixes in script text: exact mkbed(), symmetric n=3 Java loops, 13-mode sweep, Fig-2/Fig-3 field callers, 3-way scaling
   [ "$EXPECTED_FP" = "5865a2a0b24a8c17" ] || { echo "FAIL: EXPECTED_FP '$EXPECTED_FP' != 5865a2a0b24a8c17" >&2; exit 1; }
   [[ "$GCS_CKPT" == */checkpoints-v106 ]] || { echo "FAIL: GCS_CKPT '$GCS_CKPT' does not end with /checkpoints-v106" >&2; exit 1; }
+  [ -f "harness/run_stage_6.sh" ] || { echo "FAIL: missing harness/run_stage_6.sh" >&2; exit 1; }
   grep -Fq 'samtools view -F 0x904 -q 1' "$0" || { echo "FAIL: missing exact samtools view -F 0x904 -q 1 mkbed()" >&2; exit 1; }
   grep -Fq 'java_var_th${th}_run\${run}.time' "$0" || { echo "FAIL: missing symmetric n=3 Java Tier-P loop" >&2; exit 1; }
   grep -Fq 's2_tierp_mode_parity_sweep' "$0" || { echo "FAIL: missing s2_tierp_mode_parity_sweep cell" >&2; exit 1; }
