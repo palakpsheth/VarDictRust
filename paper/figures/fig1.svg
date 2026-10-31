@@ -136,84 +136,84 @@ z
     <text style="font-weight: 700; font-size: 7.1px; font-family: 'DejaVu Sans'; text-anchor: middle; fill: #0f172a" x="119.986346" y="75.722297" transform="rotate(-0 119.986346 75.722297)">1. Tile-Size Invariance &amp;</text>
    </g>
    <g id="text_2">
-    <text style="font-size: 6.5px; font-family: 'DejaVu Sans'; fill: #334155" transform="translate(89.468338 106.758882)">Multi-Region Parity</text>
-    <text style="font-size: 6.5px; font-family: 'DejaVu Sans'; fill: #334155" transform="translate(90.14119 114.560659)">(0.5–10 Mbp Tiles)</text>
+    <text style="font-size: 7px; font-family: 'DejaVu Sans'; fill: #334155" transform="translate(87.120799 106.588716)">Multi-Region Parity</text>
+    <text style="font-size: 7px; font-family: 'DejaVu Sans'; fill: #334155" transform="translate(87.845408 114.99063)">(0.5–10 Mbp Tiles)</text>
    </g>
    <g id="text_3">
-    <text style="font-weight: 700; font-size: 6.8px; font-family: 'DejaVu Sans'; fill: #0072b2" transform="translate(66.71419 150.538352)">4 experiments | 22 artifacts</text>
-    <text style="font-weight: 700; font-size: 6.8px; font-family: 'DejaVu Sans'; fill: #0072b2" transform="translate(87.654471 158.700212)">100% Completed</text>
+    <text style="font-weight: 700; font-size: 7px; font-family: 'DejaVu Sans'; fill: #0072b2" transform="translate(65.147362 150.470723)">4 experiments | 22 artifacts</text>
+    <text style="font-weight: 700; font-size: 7px; font-family: 'DejaVu Sans'; fill: #0072b2" transform="translate(86.703533 158.872638)">100% Completed</text>
    </g>
    <g id="text_4">
     <text style="font-weight: 700; font-size: 7.1px; font-family: 'DejaVu Sans'; text-anchor: middle; fill: #0f172a" x="244.978346" y="75.722297" transform="rotate(-0 244.978346 75.722297)">2. Clinical AML Panels &amp;</text>
    </g>
    <g id="text_5">
-    <text style="font-size: 6.5px; font-family: 'DejaVu Sans'; fill: #334155" transform="translate(213.063854 106.758882)">13-Mode Functional</text>
-    <text style="font-size: 6.5px; font-family: 'DejaVu Sans'; fill: #334155" transform="translate(215.902018 114.560659)">Equivalence Suite</text>
+    <text style="font-size: 7px; font-family: 'DejaVu Sans'; fill: #334155" transform="translate(210.608893 106.588716)">13-Mode Functional</text>
+    <text style="font-size: 7px; font-family: 'DejaVu Sans'; fill: #334155" transform="translate(213.665377 114.99063)">Equivalence Suite</text>
    </g>
    <g id="text_6">
-    <text style="font-weight: 700; font-size: 6.8px; font-family: 'DejaVu Sans'; fill: #009e73" transform="translate(186.974877 150.538352)">17 experiments | 347 artifacts</text>
-    <text style="font-weight: 700; font-size: 6.8px; font-family: 'DejaVu Sans'; fill: #009e73" transform="translate(212.646471 158.700212)">100% Completed</text>
+    <text style="font-weight: 700; font-size: 7px; font-family: 'DejaVu Sans'; fill: #009e73" transform="translate(185.268893 150.470723)">17 experiments | 347 artifacts</text>
+    <text style="font-weight: 700; font-size: 7px; font-family: 'DejaVu Sans'; fill: #009e73" transform="translate(211.695533 158.872638)">100% Completed</text>
    </g>
    <g id="text_7">
     <text style="font-weight: 700; font-size: 7.1px; font-family: 'DejaVu Sans'; text-anchor: middle; fill: #0f172a" x="369.970346" y="75.722297" transform="rotate(-0 369.970346 75.722297)">3. Transcriptome</text>
    </g>
    <g id="text_8">
-    <text style="font-size: 6.5px; font-family: 'DejaVu Sans'; fill: #334155" transform="translate(333.972026 106.758882)">Splice-Aware RNA-Seq</text>
-    <text style="font-size: 6.5px; font-family: 'DejaVu Sans'; fill: #334155" transform="translate(341.315502 114.560659)">(51.8 GiB HG002)</text>
+    <text style="font-size: 7px; font-family: 'DejaVu Sans'; fill: #334155" transform="translate(331.202924 106.588716)">Splice-Aware RNA-Seq</text>
+    <text style="font-size: 7px; font-family: 'DejaVu Sans'; fill: #334155" transform="translate(339.111283 114.99063)">(51.8 GiB HG002)</text>
    </g>
    <g id="text_9">
-    <text style="font-weight: 700; font-size: 6.8px; font-family: 'DejaVu Sans'; fill: #56b4e9" transform="translate(316.69819 150.538352)">1 experiments | 10 artifacts</text>
-    <text style="font-weight: 700; font-size: 6.8px; font-family: 'DejaVu Sans'; fill: #56b4e9" transform="translate(337.638471 158.700212)">100% Completed</text>
+    <text style="font-weight: 700; font-size: 7px; font-family: 'DejaVu Sans'; fill: #56b4e9" transform="translate(317.214408 150.470723)">1 experiment | 10 artifacts</text>
+    <text style="font-weight: 700; font-size: 7px; font-family: 'DejaVu Sans'; fill: #56b4e9" transform="translate(336.687533 158.872638)">100% Completed</text>
    </g>
    <g id="text_10">
     <text style="font-weight: 700; font-size: 7.1px; font-family: 'DejaVu Sans'; text-anchor: middle; fill: #0f172a" x="494.962346" y="75.722297" transform="rotate(-0 494.962346 75.722297)">4. Multi-Core Exome</text>
    </g>
    <g id="text_11">
-    <text style="font-size: 6.5px; font-family: 'DejaVu Sans'; fill: #334155" transform="translate(470.858518 106.759136)">Scaling &amp; Chr1</text>
-    <text style="font-size: 6.5px; font-family: 'DejaVu Sans'; fill: #334155" transform="translate(475.763987 114.560405)">Span Stress</text>
+    <text style="font-size: 7px; font-family: 'DejaVu Sans'; fill: #334155" transform="translate(469.004377 106.588989)">Scaling &amp; Chr1</text>
+    <text style="font-size: 7px; font-family: 'DejaVu Sans'; fill: #334155" transform="translate(474.28719 114.990356)">Span Stress</text>
    </g>
    <g id="text_12">
-    <text style="font-weight: 700; font-size: 6.8px; font-family: 'DejaVu Sans'; fill: #e69f00" transform="translate(436.958877 150.538352)">15 experiments | 295 artifacts</text>
-    <text style="font-weight: 700; font-size: 6.8px; font-family: 'DejaVu Sans'; fill: #e69f00" transform="translate(462.630471 158.700212)">100% Completed</text>
+    <text style="font-weight: 700; font-size: 7px; font-family: 'DejaVu Sans'; fill: #e69f00" transform="translate(435.252893 150.470723)">15 experiments | 295 artifacts</text>
+    <text style="font-weight: 700; font-size: 7px; font-family: 'DejaVu Sans'; fill: #e69f00" transform="translate(461.679533 158.872638)">100% Completed</text>
    </g>
    <g id="text_13">
     <text style="font-weight: 700; font-size: 7.1px; font-family: 'DejaVu Sans'; text-anchor: middle; fill: #0f172a" x="619.954346" y="75.722297" transform="rotate(-0 619.954346 75.722297)">5. Multi-Regime (.var)</text>
    </g>
    <g id="text_14">
-    <text style="font-size: 6.5px; font-family: 'DejaVu Sans'; fill: #334155" transform="translate(590.168096 106.758882)">&amp; Ultra-Deep MRD</text>
-    <text style="font-size: 6.5px; font-family: 'DejaVu Sans'; fill: #334155" transform="translate(598.895362 114.560659)">Parity Sweep</text>
+    <text style="font-size: 7px; font-family: 'DejaVu Sans'; fill: #334155" transform="translate(587.876846 106.588716)">&amp; Ultra-Deep MRD</text>
+    <text style="font-size: 7px; font-family: 'DejaVu Sans'; fill: #334155" transform="translate(597.27544 114.99063)">Parity Sweep</text>
    </g>
    <g id="text_15">
-    <text style="font-weight: 700; font-size: 6.8px; font-family: 'DejaVu Sans'; fill: #cc79a7" transform="translate(561.950877 150.538352)">12 experiments | 329 artifacts</text>
-    <text style="font-weight: 700; font-size: 6.8px; font-family: 'DejaVu Sans'; fill: #cc79a7" transform="translate(587.622471 158.700212)">100% Completed</text>
+    <text style="font-weight: 700; font-size: 7px; font-family: 'DejaVu Sans'; fill: #cc79a7" transform="translate(560.244893 150.470723)">12 experiments | 329 artifacts</text>
+    <text style="font-weight: 700; font-size: 7px; font-family: 'DejaVu Sans'; fill: #cc79a7" transform="translate(586.671533 158.872638)">100% Completed</text>
    </g>
    <g id="text_16">
     <text style="font-weight: 700; font-size: 7.1px; font-family: 'DejaVu Sans'; text-anchor: middle; fill: #0f172a" x="744.946346" y="75.722297" transform="rotate(-0 744.946346 75.722297)">6. Full-Genome WGS</text>
    </g>
    <g id="text_17">
-    <text style="font-size: 6.5px; font-family: 'DejaVu Sans'; fill: #334155" transform="translate(719.446541 106.758882)">&amp; 10-Chemistry</text>
-    <text style="font-size: 6.5px; font-family: 'DejaVu Sans'; fill: #334155" transform="translate(721.439705 114.560659)">Platform Panel</text>
+    <text style="font-size: 7px; font-family: 'DejaVu Sans'; fill: #334155" transform="translate(717.485018 106.588716)">&amp; 10-Chemistry</text>
+    <text style="font-size: 7px; font-family: 'DejaVu Sans'; fill: #334155" transform="translate(719.631502 114.99063)">Platform Panel</text>
    </g>
    <g id="text_18">
-    <text style="font-weight: 700; font-size: 6.8px; font-family: 'DejaVu Sans'; fill: #d55e00" transform="translate(689.308533 150.538352)">7 experiments | 584 artifacts</text>
-    <text style="font-weight: 700; font-size: 6.8px; font-family: 'DejaVu Sans'; fill: #d55e00" transform="translate(712.614471 158.700212)">100% Completed</text>
+    <text style="font-weight: 700; font-size: 7px; font-family: 'DejaVu Sans'; fill: #d55e00" transform="translate(687.672127 150.470723)">7 experiments | 584 artifacts</text>
+    <text style="font-weight: 700; font-size: 7px; font-family: 'DejaVu Sans'; fill: #d55e00" transform="translate(711.663533 158.872638)">100% Completed</text>
    </g>
    <g id="text_19">
     <text style="font-weight: 700; font-size: 7.1px; font-family: 'DejaVu Sans'; text-anchor: middle; fill: #0f172a" x="869.938346" y="75.722297" transform="rotate(-0 869.938346 75.722297)">7. Next-Gen Truth Sets</text>
    </g>
    <g id="text_20">
-    <text style="font-size: 6.5px; font-family: 'DejaVu Sans'; fill: #334155" transform="translate(829.740416 106.758628)">(T2T-Q100 v5.0q, CMRG,</text>
-    <text style="font-size: 6.5px; font-family: 'DejaVu Sans'; fill: #334155" transform="translate(833.611979 114.560405)">Mosaic &amp; HG008 v0.4)</text>
+    <text style="font-size: 7px; font-family: 'DejaVu Sans'; fill: #334155" transform="translate(826.648268 106.588442)">(T2T-Q100 v5.0q, CMRG,</text>
+    <text style="font-size: 7px; font-family: 'DejaVu Sans'; fill: #334155" transform="translate(830.817643 114.990356)">Mosaic &amp; HG008 v0.4)</text>
    </g>
    <g id="text_21">
-    <text style="font-weight: 700; font-size: 6.8px; font-family: 'DejaVu Sans'; fill: #332288" transform="translate(816.66619 150.538352)">4 experiments | 48 artifacts</text>
-    <text style="font-weight: 700; font-size: 6.8px; font-family: 'DejaVu Sans'; fill: #332288" transform="translate(837.606471 158.700212)">100% Completed</text>
+    <text style="font-weight: 700; font-size: 7px; font-family: 'DejaVu Sans'; fill: #332288" transform="translate(815.099362 150.470723)">4 experiments | 48 artifacts</text>
+    <text style="font-weight: 700; font-size: 7px; font-family: 'DejaVu Sans'; fill: #332288" transform="translate(836.655533 158.872638)">100% Completed</text>
    </g>
    <g id="text_22">
     <text style="font-weight: 700; font-size: 7.2px; font-family: 'DejaVu Sans'; text-anchor: middle; fill: #1e293b" x="494.324632" y="218.201767" transform="rotate(-0 494.324632 218.201767)">Hardware Lock: GCP n2-standard-32 (32 vCPU, 128 GiB RAM, NVMe RAID0) | Comparators: VarDictJava v1.8.3 &amp; vardictcpp | 100% Reproducible</text>
    </g>
    <g id="text_23">
-    <text style="font-weight: 700; font-size: 10px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #262626" x="51.113203" y="18.398438" transform="rotate(-0 51.113203 18.398438)">A. Multi-Modal Empirical Evaluation Architecture Across Six Benchmark Suites (VarDictRust v1.0.6 vs. VarDictJava v1.8.3 &amp; vardictcpp)</text>
+    <text style="font-weight: 700; font-size: 10px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #262626" x="51.113203" y="18.398438" transform="rotate(-0 51.113203 18.398438)">A. Multi-Suite Empirical Evaluation Architecture (Six Suites + Parity Sweep, (VarDictRust v1.0.6 vs. VarDictJava v1.8.3 &amp; vardictcpp)</text>
    </g>
   </g>
   <g id="axes_2">

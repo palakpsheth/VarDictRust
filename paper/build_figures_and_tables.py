@@ -338,7 +338,7 @@ def build_fig1(doc: dict[str, Any], inv_rows: list[dict[str, str]], fig_dir: Pat
 
     meta = doc["meta"]
     ax_arch.set_title(
-        f"A. Multi-Modal Empirical Evaluation Architecture Across Six Benchmark Suites "
+        f"A. Multi-Suite Empirical Evaluation Architecture (Six Suites + Parity Sweep, "
         f"(VarDictRust v{meta['version']} vs. VarDictJava v1.8.3 & vardictcpp)",
         loc="left",
         pad=8,
@@ -387,16 +387,18 @@ def build_fig1(doc: dict[str, Any], inv_rows: list[dict[str, str]], fig_dir: Pat
             "\n".join(st_lines[1:]),
             ha="center",
             va="center",
-            fontsize=6.5,
+            fontsize=7.0,
             color="#334155",
         )
+        exp_word = "experiment" if stage_counts[st_key] == 1 else "experiments"
+        art_word = "artifact" if stage_files[st_key] == 1 else "artifacts"
         ax_arch.text(
             x0 + 0.90,
             1.85,
-            f"{stage_counts[st_key]} experiments | {stage_files[st_key]} artifacts\n100% Completed",
+            f"{stage_counts[st_key]} {exp_word} | {stage_files[st_key]} {art_word}\n100% Completed",
             ha="center",
             va="center",
-            fontsize=6.8,
+            fontsize=7.0,
             fontweight="bold",
             color=box_colors[idx],
         )
@@ -601,7 +603,7 @@ def build_fig2(doc: dict[str, Any], fig_dir: Path) -> None:
             f"{w_val:.0f}s\n({r_val:.0f} MB)",
             ha="center",
             va="bottom",
-            fontsize=6.8,
+            fontsize=7.0,
         )
     ax_d.set_ylim(1, max(walls_d) * 4.0)
 
@@ -769,7 +771,7 @@ def build_fig3(doc: dict[str, Any], fig_dir: Path) -> None:
     ax_c.set_ylabel("SNV F1 Score")
     ax_c.set_ylim(0.25, 1.05)
     ax_c.set_title("C. Native GRCh38 Germline & Somatic Field Callers (SNV F1 vs. Speed)", loc="left")
-    ax_c.legend(handles=legend_handles_c, loc="lower left", ncol=2, frameon=True, fontsize=6.5)
+    ax_c.legend(handles=legend_handles_c, loc="lower left", ncol=2, frameon=True, fontsize=7.0)
 
     # Panel D: Low-VAF Tumor-Purity Titration Curve (10% -> 0.5% Expected VAF)
     ax_d = axes[1, 1]
@@ -946,6 +948,7 @@ def build_fig4(doc: dict[str, Any], fig_dir: Path) -> None:
         PALETTE["vardictcpp"],
     ]
     bars_e = ax_e.bar(labels_e, vals_e, color=cols_e, edgecolor="#1E293B")
+    ax_e.tick_params(axis="x", rotation=18)
     ax_e.axvline(2.5, color="#475569", linestyle="--", linewidth=1.2)
     ax_e.set_ylabel("Peak RSS (GiB)")
     ax_e.set_ylim(0, max(vals_e) * 1.25)
@@ -1018,7 +1021,7 @@ def build_fig5(doc: dict[str, Any], fig_dir: Path) -> None:
                 tag,
                 ha="center",
                 va="bottom",
-                fontsize=6.3,
+                fontsize=7.0,
                 color=PALETTE["alert"],
                 fontweight="bold",
             )
@@ -1038,7 +1041,7 @@ def build_fig5(doc: dict[str, Any], fig_dir: Path) -> None:
     ax_a.set_ylabel("Peak RSS at 32 Threads (GB)")
     ax_a.set_ylim(0, max(java_rss) * 1.25)
     ax_a.set_title("A. Full-Genome Peak RSS (Unchunked vs. <=50 kbp)", loc="left", fontsize=9.0)
-    ax_a.legend(loc="upper right", frameon=True, fontsize=7.2)
+    ax_a.legend(loc="upper center", bbox_to_anchor=(0.5, -0.32), ncol=3, frameon=True, fontsize=7.2)
 
     # Panel B: Completed Wall Time (Minutes) — only plotting completed runs
     ax_b = axes[1]
@@ -1131,7 +1134,7 @@ def build_fig6(doc: dict[str, Any], fig_dir: Path) -> None:
     # Panel A: 10-Platform chr20 SNV F1 on Standard GIAB vs UG-HCR v2.1 BED (Rust -f 0.01)
     ax_a = fig.add_subplot(gs[0, 0])
     rust_001 = [r for r in part_a if r["engine"] == "rust" and r["freq"] == "0.01"]
-    arms_a = [PLATFORM_LABELS.get(r["arm"], r["arm"]) for r in rust_001]
+    arms_a = [PLATFORM_LABELS.get(r["arm"], r["arm"]).replace(" ", "\n", 1) for r in rust_001]
     std_f1 = [r["snp_f1"] for r in rust_001]
     ug_f1 = [r["ughcr_snp_f1"] for r in rust_001]
     x_a = np.arange(len(arms_a))
@@ -1139,7 +1142,7 @@ def build_fig6(doc: dict[str, Any], fig_dir: Path) -> None:
     ax_a.bar(x_a - w_a / 2.0, std_f1, width=w_a, color=PALETTE["VarDictRust"], label="Standard GIAB BED")
     ax_a.bar(x_a + w_a / 2.0, ug_f1, width=w_a, color=PALETTE["vardictcpp"], label="UG-HCR v2.1 BED")
     ax_a.set_xticks(x_a)
-    ax_a.set_xticklabels(arms_a, rotation=22, ha="right", fontsize=7.2)
+    ax_a.set_xticklabels(arms_a, rotation=30, ha="right", fontsize=7.2)
     rust_part_a = [r for r in part_a if r["engine"] == "rust"]
     rust_done_a = sum(1 for r in rust_part_a if r["rc"] == 0)
     ax_a.set_ylim(0.5, 1.05)
@@ -1148,7 +1151,7 @@ def build_fig6(doc: dict[str, Any], fig_dir: Path) -> None:
         f"A. 10-Platform Sequencing Chemistry Chr20 SNV F1 ({rust_done_a}/{len(rust_part_a)} Rust Runs Complete)",
         loc="left",
     )
-    ax_a.legend(loc="lower right", frameon=True)
+    ax_a.legend(loc="upper center", bbox_to_anchor=(0.5, -0.42), ncol=2, frameon=True, fontsize=7.2)
 
     # Panel B: Part B 18/18 Exact Match Somatic Candidate Scaling Across Minimum VAF/Read Thresholds
     ax_b = fig.add_subplot(gs[0, 1])
@@ -1174,7 +1177,9 @@ def build_fig6(doc: dict[str, Any], fig_dir: Path) -> None:
         )
     ax_b.set_yscale("log")
     ax_b.set_xticks(x_b)
-    ax_b.set_xticklabels([p.replace("_", "\n", 1).replace("_", " ") for p in platforms_b], fontsize=7.2)
+    ax_b.set_xticklabels(
+        [p.replace("_", "\n", 1).replace("_", " ") for p in platforms_b], rotation=28, ha="right", fontsize=7.2
+    )
     ax_b.set_ylabel("Total Candidate Variants (log scale)")
     ax_b.set_title(
         f"B. Somatic Candidate Scaling Across Minimum VAF/Read Thresholds ({cp['part_b_strict_match_count']}/{len(part_b)} Exact Match)",
@@ -1208,7 +1213,7 @@ def build_fig6(doc: dict[str, Any], fig_dir: Path) -> None:
         cbar_kws={"label": "SNV F1 Score"},
         annot_kws={"size": 7.5},
     )
-    ax_c.tick_params(axis="x", rotation=18)
+    ax_c.tick_params(axis="x", rotation=28)
     ax_c.set_title(
         f"C. {len(ga_rows)}-Cell GA4GH v3.5 Genomic Stratification Matrix Across 10 Sequencing Chemistries (100% Java==Rust)",
         loc="left",
@@ -1248,7 +1253,7 @@ def build_fig7(doc: dict[str, Any], fig_dir: Path) -> None:
     ax_a.set_ylim(0.6, 1.03)
     ax_a.set_ylabel("SNV Recall (Sensitivity)")
     ax_a.set_title("A. HG002 v5.0q T2T-Q100 & CMRG v1.00 SNV Recall", loc="left", fontsize=9.2)
-    ax_a.legend(loc="lower left", frameon=True, fontsize=7.2)
+    ax_a.legend(loc="upper right", frameon=True, fontsize=7.2)
 
     # Panel B: NIST Mosaic SNV v1.10 Recall + CMRG InDel Recall
     ax_b = fig.add_subplot(gs[1, 0])
@@ -1374,7 +1379,9 @@ def build_fig8(doc: dict[str, Any], fig_dir: Path) -> None:
     ax_b.set_ylim(0, max(var_counts) * 1.30)
     ax_b.set_title("B. Multi-Thread Determinism (1–32c = 0 Diffs)", loc="left", fontsize=8.8)
     for b, v in zip(bars_b, var_counts):
-        ax_b.text(b.get_x() + b.get_width() / 2.0, v * 1.02, f"{v:,}", ha="center", va="bottom", fontsize=6.6, fontweight="bold")
+        ax_b.text(
+            b.get_x() + b.get_width() / 2.0, v * 1.02, f"{v:,}", ha="center", va="bottom", fontsize=7.0, fontweight="bold"
+        )
     ax_b.text(
         0.5,
         0.90,

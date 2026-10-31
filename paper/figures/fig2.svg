@@ -1313,32 +1313,32 @@ L 960.824609 345.857261
 " style="fill: none; stroke: #334155; stroke-width: 0.8; stroke-linejoin: miter; stroke-linecap: square"/>
    </g>
    <g id="text_70">
-    <text style="font-size: 6.8px; font-family: 'DejaVu Sans'; fill: #262626" transform="translate(621.776309 426.747013)">135s</text>
-    <text style="font-size: 6.8px; font-family: 'DejaVu Sans'; fill: #262626" transform="translate(614.54759 434.908341)">(382 MB)</text>
+    <text style="font-size: 7px; font-family: 'DejaVu Sans'; fill: #262626" transform="translate(621.53334 426.438907)">135s</text>
+    <text style="font-size: 7px; font-family: 'DejaVu Sans'; fill: #262626" transform="translate(614.092012 434.840275)">(382 MB)</text>
    </g>
    <g id="text_71">
-    <text style="font-size: 6.8px; font-family: 'DejaVu Sans'; fill: #262626" transform="translate(670.854553 398.159002)">373s</text>
-    <text style="font-size: 6.8px; font-family: 'DejaVu Sans'; fill: #262626" transform="translate(661.462584 406.32033)">(5680 MB)</text>
+    <text style="font-size: 7px; font-family: 'DejaVu Sans'; fill: #262626" transform="translate(670.611584 397.850897)">373s</text>
+    <text style="font-size: 7px; font-family: 'DejaVu Sans'; fill: #262626" transform="translate(660.943381 406.252264)">(5680 MB)</text>
    </g>
    <g id="text_72">
-    <text style="font-size: 6.8px; font-family: 'DejaVu Sans'; fill: #262626" transform="translate(722.096047 467.721786)">32s</text>
-    <text style="font-size: 6.8px; font-family: 'DejaVu Sans'; fill: #262626" transform="translate(712.704078 475.883114)">(786 MB)</text>
+    <text style="font-size: 7px; font-family: 'DejaVu Sans'; fill: #262626" transform="translate(721.916703 467.413681)">32s</text>
+    <text style="font-size: 7px; font-family: 'DejaVu Sans'; fill: #262626" transform="translate(712.2485 475.815048)">(786 MB)</text>
    </g>
    <g id="text_73">
-    <text style="font-size: 6.8px; font-family: 'DejaVu Sans'; fill: #262626" transform="translate(769.01104 415.761516)">200s</text>
-    <text style="font-size: 6.8px; font-family: 'DejaVu Sans'; fill: #262626" transform="translate(759.619072 423.922844)">(1157 MB)</text>
+    <text style="font-size: 7px; font-family: 'DejaVu Sans'; fill: #262626" transform="translate(768.768072 415.453411)">200s</text>
+    <text style="font-size: 7px; font-family: 'DejaVu Sans'; fill: #262626" transform="translate(759.099868 423.854778)">(1157 MB)</text>
    </g>
    <g id="text_74">
-    <text style="font-size: 6.8px; font-family: 'DejaVu Sans'; fill: #262626" transform="translate(818.089284 388.719271)">522s</text>
-    <text style="font-size: 6.8px; font-family: 'DejaVu Sans'; fill: #262626" transform="translate(808.697315 396.880599)">(2096 MB)</text>
+    <text style="font-size: 7px; font-family: 'DejaVu Sans'; fill: #262626" transform="translate(817.846315 388.411166)">522s</text>
+    <text style="font-size: 7px; font-family: 'DejaVu Sans'; fill: #262626" transform="translate(808.178112 396.812533)">(2096 MB)</text>
    </g>
    <g id="text_75">
-    <text style="font-size: 6.8px; font-family: 'DejaVu Sans'; fill: #262626" transform="translate(867.167528 392.839403)">451s</text>
-    <text style="font-size: 6.8px; font-family: 'DejaVu Sans'; fill: #262626" transform="translate(857.775559 401.000731)">(2462 MB)</text>
+    <text style="font-size: 7px; font-family: 'DejaVu Sans'; fill: #262626" transform="translate(866.924559 392.531297)">451s</text>
+    <text style="font-size: 7px; font-family: 'DejaVu Sans'; fill: #262626" transform="translate(857.256356 400.932665)">(2462 MB)</text>
    </g>
    <g id="text_76">
-    <text style="font-size: 6.8px; font-family: 'DejaVu Sans'; fill: #262626" transform="translate(916.245772 371.269558)">969s</text>
-    <text style="font-size: 6.8px; font-family: 'DejaVu Sans'; fill: #262626" transform="translate(906.853803 379.430886)">(2300 MB)</text>
+    <text style="font-size: 7px; font-family: 'DejaVu Sans'; fill: #262626" transform="translate(916.002803 370.961453)">969s</text>
+    <text style="font-size: 7px; font-family: 'DejaVu Sans'; fill: #262626" transform="translate(906.3346 379.36282)">(2300 MB)</text>
    </g>
    <g id="text_77">
     <text style="font-weight: 700; font-size: 10px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #262626" x="593.719346" y="339.857261" transform="rotate(-0 593.719346 339.857261)">D. Somatic Tumor-Normal Runtime (358 Concordant SNVs)</text>

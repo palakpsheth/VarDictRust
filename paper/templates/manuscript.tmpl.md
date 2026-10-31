@@ -55,9 +55,9 @@ We built `VarDictRust` (`v{{m:version}}`) under the [rewrites.bio](https://rewri
 
 <a id="fig1_architecture_pipeline"></a>
 
-![Figure 1: Pipeline consolidation and bounded tile-plus-halo streaming architecture of VarDictRust.](figures/fig1.svg)
+![Figure 1: Multi-suite cloud benchmark architecture of VarDictRust.](figures/fig1.svg)
 
-**Figure 1. Pipeline consolidation and bounded tile-plus-halo streaming architecture of `VarDictRust`.** **(a)** Legacy `VarDictJava` v1.8.3 three-language execution pipeline (`Java -> R -> Perl`, `{{m:s5_h4_conda_pkgs}}` Conda packages) versus the consolidated `VarDictRust` v{{m:version}} static binary (`{{m:s5_h4_musl_mb}}` MB `musl` / `{{m:s5_h4_gnu_mb}}` MB `glibc`, `0` runtime dependencies). **(b)** Bounded tile-plus-halo (`{{m:s1_tile_1m}}` bp untiled span threshold; `{{m:rust_default_tile_kbp}}` kbp tile + `{{m:rust_halo_kbp}}` kbp realignment halo on spans $> {{m:s1_tile_1m}}$ bp) streaming state machine with `Rayon` work-stealing concurrency and deterministic boundary deduplication, contrasted with unbounded whole-region heap allocation in `VarDictJava` and `vardictcpp`. **(c)** Summary of the `{{m:total_cells}}`-experiment cloud benchmark architecture spanning six evaluation domains and the `{{m:sweep_total_arms}}`-configuration multi-regime intermediate (`.var`) and VCF equivalence sweep.
+**Figure 1. Multi-suite cloud benchmark architecture of `VarDictRust`.** **(a)** Six evaluation suites plus the multi-regime parity sweep (`{{m:total_cells}}` experiments total), with per-suite experiment and archived-artifact counts; the hardware lock and comparator set are bannered in the panel. **(b)** Completed benchmark experiments per evaluation suite. **(c)** Archived verification artifacts per suite (`Supplementary Table S1`).
 
 ---
 
@@ -105,7 +105,7 @@ Against external callers (`FreeBayes`, `LoFreq`, `Mutect2`, `Octopus`, `Strelka2
 
 ![Figure 2: Multi-regime oracle equivalence and AML targeted panel replication.](figures/fig2.svg)
 
-**Figure 2. Multi-regime oracle equivalence and AML targeted panel replication.** **(a)** Exact parity summary across the `{{m:s2_modes_total}}` operational modes, `{{m:s4_ext_cov_modalities}}` extended coverage modalities, `{{m:s4_multimodal_slices}}` multimodal slices, and `{{m:optc_match_arms}}/{{m:optc_total_arms}}` multi-regime parameter-sweep configurations (`Supplementary Table S2`). **(b)** Contiguous chromosome 1 (`-R chr1:1-249250621`, `{{m:s2_rchr1_mbp}}` Mbp on `{{m:s2_rchr1_sample}}`) scaling showing `VarDictJava` `-Xmx4g` out-of-memory failure, `-Xmx200g` heap expansion (`{{m:s2_rchr1_java200g_rss_gib}}` GiB), `vardictcpp` growth (`{{m:s2_rchr1_cpp_rss_gib}}` GiB), and `VarDictRust` bounded streaming (`{{m:s2_rchr1_rust_rss_mb}}` MB, `{{m:s2_rchr1_rust_wall_s}}` s). **(c, d)** Wall-clock runtime across the Wolff et al. [11] AML panel cohort (`n = 3` technical replicates) and field callers (`FreeBayes`, `LoFreq`, `Mutect2`, `Octopus`, `Strelka2`).
+**Figure 2. Multi-regime oracle equivalence and AML targeted panel replication.** **(a)** Exact Tier-1/2 parity sub-arms across the multi-regime sweep cells (`{{m:sweep_match_arms}}/{{m:sweep_total_arms}}` exact match), including the `{{m:s2_modes_total}}`-mode CLI matrix and ultra-deep MRD stress (`Supplementary Table S2`). **(b)** Tile-size invariance on SEQC2 HCC1395: identical calls across all tile sizes (`{{m:s1_tile_vars}}` variants; `Supplementary Table S1`). **(c)** Wall-clock runtime across the Wolff et al. [11] AML panel cohort (`n = 3` technical replicates). **(d)** Somatic tumor-normal runtime and concordant SNV summary across field callers (`FreeBayes`, `LoFreq`, `Mutect2`, `Octopus`, `Strelka2`).
 
 {{table:table2}}
 
@@ -185,7 +185,7 @@ Crossing all `{{m:s5_cross_platform_arms}}` chemistries with `7` GA4GH `v3.5` ge
 
 ![Figure 6: Cross-platform short-read sequencing chemistry panel and 70-cell GA4GH v3.5 stratification heatmap.](figures/fig6.svg)
 
-**Figure 6. Cross-platform short-read sequencing chemistry panel and `{{m:s6_ga4gh_cells}}`-cell GA4GH `v3.5` stratification heatmap.** **(a)** Runtime, completion rate (`VarDictRust` `{{m:s5_chr20_total_runs}}/{{m:s5_chr20_total_runs}}` vs `VarDictJava` `{{m:s5_chr20_java_completed_runs}}/{{m:s5_chr20_total_runs}}`), and accuracy across `{{m:s5_cross_platform_arms}}` germline and somatic chemistries on chromosome 20 (`{{m:s5_chr20_mbp}}` Mbp; `Table 6`). **(b)** Byte-equivalent candidate and `PASS` somatic variant counts (`{{m:s5_f0_noise_floor_strict_match}}` exact match) across the unfiltered somatic noise-floor sweep (`-f {{m:f_zero}}`; `Supplementary Table S4`). **(c)** `{{m:s6_ga4gh_cells}}`-cell (`10` chemistries × `7` GA4GH `v3.5` strata) SNV and indel $F_1$ heatmap (`Supplementary Table S5`).
+**Figure 6. Cross-platform short-read sequencing chemistry panel and `{{m:s6_ga4gh_cells}}`-cell GA4GH `v3.5` stratification heatmap.** **(a)** Completion rate (`VarDictRust` `{{m:s5_chr20_total_runs}}/{{m:s5_chr20_total_runs}}` vs `VarDictJava` `{{m:s5_chr20_java_completed_runs}}/{{m:s5_chr20_total_runs}}`) and accuracy across `{{m:s5_cross_platform_arms}}` germline and somatic chemistries on chromosome 20 (`{{m:s5_chr20_mbp}}` Mbp; `Table 6`). **(b)** Byte-equivalent candidate and `PASS` somatic variant counts (`{{m:s5_f0_noise_floor_strict_match}}` exact match) across the unfiltered somatic noise-floor sweep (`-f {{m:f_zero}}`; `Supplementary Table S4`). **(c)** `{{m:s6_ga4gh_cells}}`-cell (`10` chemistries × `7` GA4GH `v3.5` strata) SNV $F_1$ heatmap (`Supplementary Table S5`).
 
 {{table:table6}}
 

@@ -1096,22 +1096,22 @@ L 418.218466 345.857261
    </g>
    <g id="legend_3">
     <g id="patch_47">
-     <path d="M 55.663203 575.548437 
-L 212.465547 575.548437 
-Q 213.765547 575.548437 213.765547 574.248438 
-L 213.765547 526.145898 
-Q 213.765547 524.845898 212.465547 524.845898 
-L 55.663203 524.845898 
-Q 54.363203 524.845898 54.363203 526.145898 
-L 54.363203 574.248438 
-Q 54.363203 575.548437 55.663203 575.548437 
+     <path d="M 56.013203 575.298437 
+L 224.877266 575.298437 
+Q 226.277266 575.298437 226.277266 573.898438 
+L 226.277266 522.095703 
+Q 226.277266 520.695703 224.877266 520.695703 
+L 56.013203 520.695703 
+Q 54.613203 520.695703 54.613203 522.095703 
+L 54.613203 573.898438 
+Q 54.613203 575.298437 56.013203 575.298437 
 z
 " style="fill: #ffffff; opacity: 0.8; stroke: #cccccc; stroke-linejoin: miter"/>
     </g>
     <g id="line2d_34">
-     <path d="M 56.963203 530.109883 
-L 63.463203 530.109883 
-L 69.963203 530.109883 
+     <path d="M 57.413203 526.364609 
+L 64.413203 526.364609 
+L 71.413203 526.364609 
 " style="fill: none; stroke: #ffffff; stroke-width: 1.5; stroke-linecap: round"/>
      <defs>
       <path id="m67edaf7433" d="M 0 3.25 
@@ -1127,16 +1127,16 @@ z
 " style="stroke: #0f172a"/>
      </defs>
      <g>
-      <use xlink:href="#m67edaf7433" x="63.463203" y="530.109883" style="fill: #0072b2; stroke: #0f172a"/>
+      <use xlink:href="#m67edaf7433" x="64.413203" y="526.364609" style="fill: #0072b2; stroke: #0f172a"/>
      </g>
     </g>
     <g id="text_46">
-     <text style="font-size: 6.5px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #262626" x="75.163203" y="532.384883" transform="rotate(-0 75.163203 532.384883)">VarDictRust</text>
+     <text style="font-size: 7px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #262626" x="77.013203" y="528.814609" transform="rotate(-0 77.013203 528.814609)">VarDictRust</text>
     </g>
     <g id="line2d_35">
-     <path d="M 56.963203 539.860391 
-L 63.463203 539.860391 
-L 69.963203 539.860391 
+     <path d="M 57.413203 536.865156 
+L 64.413203 536.865156 
+L 71.413203 536.865156 
 " style="fill: none; stroke: #ffffff; stroke-width: 1.5; stroke-linecap: round"/>
      <defs>
       <path id="mf82582399a" d="M 0 3.25 
@@ -1152,16 +1152,16 @@ z
 " style="stroke: #0f172a"/>
      </defs>
      <g>
-      <use xlink:href="#mf82582399a" x="63.463203" y="539.860391" style="fill: #d55e00; stroke: #0f172a"/>
+      <use xlink:href="#mf82582399a" x="64.413203" y="536.865156" style="fill: #d55e00; stroke: #0f172a"/>
      </g>
     </g>
     <g id="text_47">
-     <text style="font-size: 6.5px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #262626" x="75.163203" y="542.135391" transform="rotate(-0 75.163203 542.135391)">VarDictJava</text>
+     <text style="font-size: 7px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #262626" x="77.013203" y="539.315156" transform="rotate(-0 77.013203 539.315156)">VarDictJava</text>
     </g>
     <g id="line2d_36">
-     <path d="M 56.963203 549.610898 
-L 63.463203 549.610898 
-L 69.963203 549.610898 
+     <path d="M 57.413203 547.365703 
+L 64.413203 547.365703 
+L 71.413203 547.365703 
 " style="fill: none; stroke: #ffffff; stroke-width: 1.5; stroke-linecap: round"/>
      <defs>
       <path id="mf8aecbc74c" d="M 0 3.25 
@@ -1177,16 +1177,16 @@ z
 " style="stroke: #0f172a"/>
      </defs>
      <g>
-      <use xlink:href="#mf8aecbc74c" x="63.463203" y="549.610898" style="fill: #009e73; stroke: #0f172a"/>
+      <use xlink:href="#mf8aecbc74c" x="64.413203" y="547.365703" style="fill: #009e73; stroke: #0f172a"/>
      </g>
     </g>
     <g id="text_48">
-     <text style="font-size: 6.5px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #262626" x="75.163203" y="551.885898" transform="rotate(-0 75.163203 551.885898)">vardictcpp</text>
+     <text style="font-size: 7px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #262626" x="77.013203" y="549.815703" transform="rotate(-0 77.013203 549.815703)">vardictcpp</text>
     </g>
     <g id="line2d_37">
-     <path d="M 56.963203 559.361406 
-L 63.463203 559.361406 
-L 69.963203 559.361406 
+     <path d="M 57.413203 557.86625 
+L 64.413203 557.86625 
+L 71.413203 557.86625 
 " style="fill: none; stroke: #ffffff; stroke-width: 1.5; stroke-linecap: round"/>
      <defs>
       <path id="mcf0b575f09" d="M 0 3.25 
@@ -1202,16 +1202,16 @@ z
 " style="stroke: #0f172a"/>
      </defs>
      <g>
-      <use xlink:href="#mcf0b575f09" x="63.463203" y="559.361406" style="fill: #332288; stroke: #0f172a"/>
+      <use xlink:href="#mcf0b575f09" x="64.413203" y="557.86625" style="fill: #332288; stroke: #0f172a"/>
      </g>
     </g>
     <g id="text_49">
-     <text style="font-size: 6.5px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #262626" x="75.163203" y="561.636406" transform="rotate(-0 75.163203 561.636406)">FreeBayes</text>
+     <text style="font-size: 7px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #262626" x="77.013203" y="560.31625" transform="rotate(-0 77.013203 560.31625)">FreeBayes</text>
     </g>
     <g id="line2d_38">
-     <path d="M 56.963203 569.111914 
-L 63.463203 569.111914 
-L 69.963203 569.111914 
+     <path d="M 57.413203 568.366797 
+L 64.413203 568.366797 
+L 71.413203 568.366797 
 " style="fill: none; stroke: #ffffff; stroke-width: 1.5; stroke-linecap: round"/>
      <defs>
       <path id="m8bdba8fd57" d="M 0 3.25 
@@ -1227,16 +1227,16 @@ z
 " style="stroke: #0f172a"/>
      </defs>
      <g>
-      <use xlink:href="#m8bdba8fd57" x="63.463203" y="569.111914" style="fill: #cc79a7; stroke: #0f172a"/>
+      <use xlink:href="#m8bdba8fd57" x="64.413203" y="568.366797" style="fill: #cc79a7; stroke: #0f172a"/>
      </g>
     </g>
     <g id="text_50">
-     <text style="font-size: 6.5px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #262626" x="75.163203" y="571.386914" transform="rotate(-0 75.163203 571.386914)">Mutect2</text>
+     <text style="font-size: 7px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #262626" x="77.013203" y="570.816797" transform="rotate(-0 77.013203 570.816797)">Mutect2</text>
     </g>
     <g id="line2d_39">
-     <path d="M 125.971875 530.109883 
-L 132.471875 530.109883 
-L 138.971875 530.109883 
+     <path d="M 131.730234 526.364609 
+L 138.730234 526.364609 
+L 145.730234 526.364609 
 " style="fill: none; stroke: #ffffff; stroke-width: 1.5; stroke-linecap: round"/>
      <defs>
       <path id="m44262d4fd1" d="M 0 3.25 
@@ -1252,16 +1252,16 @@ z
 " style="stroke: #0f172a"/>
      </defs>
      <g>
-      <use xlink:href="#m44262d4fd1" x="132.471875" y="530.109883" style="fill: #e69f00; stroke: #0f172a"/>
+      <use xlink:href="#m44262d4fd1" x="138.730234" y="526.364609" style="fill: #e69f00; stroke: #0f172a"/>
      </g>
     </g>
     <g id="text_51">
-     <text style="font-size: 6.5px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #262626" x="144.171875" y="532.384883" transform="rotate(-0 144.171875 532.384883)">Strelka2</text>
+     <text style="font-size: 7px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #262626" x="151.330234" y="528.814609" transform="rotate(-0 151.330234 528.814609)">Strelka2</text>
     </g>
     <g id="line2d_40">
-     <path d="M 125.971875 539.860391 
-L 132.471875 539.860391 
-L 138.971875 539.860391 
+     <path d="M 131.730234 536.865156 
+L 138.730234 536.865156 
+L 145.730234 536.865156 
 " style="fill: none; stroke: #ffffff; stroke-width: 1.5; stroke-linecap: round"/>
      <defs>
       <path id="m5ca23e1226" d="M 0 3.25 
@@ -1277,16 +1277,16 @@ z
 " style="stroke: #0f172a"/>
      </defs>
      <g>
-      <use xlink:href="#m5ca23e1226" x="132.471875" y="539.860391" style="fill: #56b4e9; stroke: #0f172a"/>
+      <use xlink:href="#m5ca23e1226" x="138.730234" y="536.865156" style="fill: #56b4e9; stroke: #0f172a"/>
      </g>
     </g>
     <g id="text_52">
-     <text style="font-size: 6.5px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #262626" x="144.171875" y="542.135391" transform="rotate(-0 144.171875 542.135391)">LoFreq</text>
+     <text style="font-size: 7px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #262626" x="151.330234" y="539.315156" transform="rotate(-0 151.330234 539.315156)">LoFreq</text>
     </g>
     <g id="line2d_41">
-     <path d="M 125.971875 549.610898 
-L 132.471875 549.610898 
-L 138.971875 549.610898 
+     <path d="M 131.730234 547.365703 
+L 138.730234 547.365703 
+L 145.730234 547.365703 
 " style="fill: none; stroke: #ffffff; stroke-width: 1.5; stroke-linecap: round"/>
      <defs>
       <path id="m8500fc9f24" d="M 0 3.25 
@@ -1302,16 +1302,16 @@ z
 " style="stroke: #0f172a"/>
      </defs>
      <g>
-      <use xlink:href="#m8500fc9f24" x="132.471875" y="549.610898" style="fill: #64748b; stroke: #0f172a"/>
+      <use xlink:href="#m8500fc9f24" x="138.730234" y="547.365703" style="fill: #64748b; stroke: #0f172a"/>
      </g>
     </g>
     <g id="text_53">
-     <text style="font-size: 6.5px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #262626" x="144.171875" y="551.885898" transform="rotate(-0 144.171875 551.885898)">HG002 Germline</text>
+     <text style="font-size: 7px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #262626" x="151.330234" y="549.815703" transform="rotate(-0 151.330234 549.815703)">HG002 Germline</text>
     </g>
     <g id="line2d_42">
-     <path d="M 125.971875 559.361406 
-L 132.471875 559.361406 
-L 138.971875 559.361406 
+     <path d="M 131.730234 557.86625 
+L 138.730234 557.86625 
+L 145.730234 557.86625 
 " style="fill: none; stroke: #ffffff; stroke-width: 1.5; stroke-linecap: round"/>
      <defs>
       <path id="mee8409d7e0" d="M -3.25 3.25 
@@ -1322,16 +1322,16 @@ z
 " style="stroke: #0f172a; stroke-linejoin: miter"/>
      </defs>
      <g>
-      <use xlink:href="#mee8409d7e0" x="132.471875" y="559.361406" style="fill: #64748b; stroke: #0f172a; stroke-linejoin: miter"/>
+      <use xlink:href="#mee8409d7e0" x="138.730234" y="557.86625" style="fill: #64748b; stroke: #0f172a; stroke-linejoin: miter"/>
      </g>
     </g>
     <g id="text_54">
-     <text style="font-size: 6.5px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #262626" x="144.171875" y="561.636406" transform="rotate(-0 144.171875 561.636406)">HG008 Somatic v0.3</text>
+     <text style="font-size: 7px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #262626" x="151.330234" y="560.31625" transform="rotate(-0 151.330234 560.31625)">HG008 Somatic v0.3</text>
     </g>
     <g id="line2d_43">
-     <path d="M 125.971875 569.111914 
-L 132.471875 569.111914 
-L 138.971875 569.111914 
+     <path d="M 131.730234 568.366797 
+L 138.730234 568.366797 
+L 145.730234 568.366797 
 " style="fill: none; stroke: #ffffff; stroke-width: 1.5; stroke-linecap: round"/>
      <defs>
       <path id="m7e608b74d6" d="M 0 -3.25 
@@ -1341,11 +1341,11 @@ z
 " style="stroke: #0f172a; stroke-linejoin: miter"/>
      </defs>
      <g>
-      <use xlink:href="#m7e608b74d6" x="132.471875" y="569.111914" style="fill: #64748b; stroke: #0f172a; stroke-linejoin: miter"/>
+      <use xlink:href="#m7e608b74d6" x="138.730234" y="568.366797" style="fill: #64748b; stroke: #0f172a; stroke-linejoin: miter"/>
      </g>
     </g>
     <g id="text_55">
-     <text style="font-size: 6.5px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #262626" x="144.171875" y="571.386914" transform="rotate(-0 144.171875 571.386914)">SEQC2 Somatic</text>
+     <text style="font-size: 7px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #262626" x="151.330234" y="570.816797" transform="rotate(-0 151.330234 570.816797)">SEQC2 Somatic</text>
     </g>
    </g>
   </g>

@@ -263,50 +263,50 @@ L 399.269754 23.790562
    </g>
    <g id="legend_1">
     <g id="patch_16">
-     <path d="M 56.153203 241.48468 
-L 202.985953 241.48468 
-Q 204.425953 241.48468 204.425953 240.04468 
-L 204.425953 208.362993 
-Q 204.425953 206.922993 202.985953 206.922993 
-L 56.153203 206.922993 
-Q 54.713203 206.922993 54.713203 208.362993 
-L 54.713203 240.04468 
-Q 54.713203 241.48468 56.153203 241.48468 
+     <path d="M 247.397004 61.95225 
+L 394.229754 61.95225 
+Q 395.669754 61.95225 395.669754 60.51225 
+L 395.669754 28.830562 
+Q 395.669754 27.390562 394.229754 27.390562 
+L 247.397004 27.390562 
+Q 245.957004 27.390562 245.957004 28.830562 
+L 245.957004 60.51225 
+Q 245.957004 61.95225 247.397004 61.95225 
 z
 " style="fill: #ffffff; opacity: 0.8; stroke: #cccccc; stroke-linejoin: miter"/>
     </g>
     <g id="patch_17">
-     <path d="M 57.593203 215.273868 
-L 71.993203 215.273868 
-L 71.993203 210.233868 
-L 57.593203 210.233868 
+     <path d="M 248.837004 35.741437 
+L 263.237004 35.741437 
+L 263.237004 30.701437 
+L 248.837004 30.701437 
 z
 " style="fill: #0072b2; stroke: #ffffff; stroke-linejoin: miter"/>
     </g>
     <g id="text_15">
-     <text style="font-size: 7.2px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #262626" x="77.753203" y="215.273868" transform="rotate(-0 77.753203 215.273868)">VarDictRust (Unchunked Contigs)</text>
+     <text style="font-size: 7.2px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #262626" x="268.997004" y="35.741437" transform="rotate(-0 268.997004 35.741437)">VarDictRust (Unchunked Contigs)</text>
     </g>
     <g id="patch_18">
-     <path d="M 57.593203 226.07443 
-L 71.993203 226.07443 
-L 71.993203 221.03443 
-L 57.593203 221.03443 
+     <path d="M 248.837004 46.542 
+L 263.237004 46.542 
+L 263.237004 41.502 
+L 248.837004 41.502 
 z
 " style="fill: #56b4e9; stroke: #ffffff; stroke-linejoin: miter"/>
     </g>
     <g id="text_16">
-     <text style="font-size: 7.2px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #262626" x="77.753203" y="226.07443" transform="rotate(-0 77.753203 226.07443)">VarDictRust (&lt;=50 kbp GIAB BED)</text>
+     <text style="font-size: 7.2px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #262626" x="268.997004" y="46.542" transform="rotate(-0 268.997004 46.542)">VarDictRust (&lt;=50 kbp GIAB BED)</text>
     </g>
     <g id="patch_19">
-     <path d="M 57.593203 236.874993 
-L 71.993203 236.874993 
-L 71.993203 231.834993 
-L 57.593203 231.834993 
+     <path d="M 248.837004 57.342562 
+L 263.237004 57.342562 
+L 263.237004 52.302562 
+L 248.837004 52.302562 
 z
 " style="fill: #d55e00; stroke: #ffffff; stroke-linejoin: miter"/>
     </g>
     <g id="text_17">
-     <text style="font-size: 7.2px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #262626" x="77.753203" y="236.874993" transform="rotate(-0 77.753203 236.874993)">VarDictJava (&lt;=50 kbp GIAB BED)</text>
+     <text style="font-size: 7.2px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #262626" x="268.997004" y="57.342562" transform="rotate(-0 268.997004 57.342562)">VarDictJava (&lt;=50 kbp GIAB BED)</text>
     </g>
    </g>
   </g>
