@@ -1,45 +1,45 @@
-### Table 7. Next-Generation Truth Benchmarks (GIAB v5.0q T2T-Q100, CMRG v1.00, Mosaic SNV v1.10) & HG008 GIAB v0.4 Somatic Caller Landscape
+### Table 7. Next-Generation Truth Benchmarks (GIAB v5.0q T2T-Q100 [14, 16], CMRG v1.00 [15], Mosaic SNV v1.10 [19]) & HG008 GIAB v0.4 [19] Somatic Caller Landscape
 
-| Benchmark / Evaluation Scope | Caller / Configuration | Sequencing Chemistry | SNV Precision / Recall / F1 | InDel Precision / Recall / F1 |
+| Benchmark / Evaluation Scope | Caller / Configuration | Sequencing Chemistry | SNV Precision / Recall / F1 [12] | InDel Precision / Recall / F1 [12] |
 | :--- | :--- | :--- | :--- | :--- |
-| GIAB HG002 v4.2.1 (GRCh38 All) | VarDictRust (Unchunked Contigs) | Illumina 2x250 bp WGS | 0.5081 / 0.9577 / 0.6639 | 0.5698 / 0.8836 / 0.6928 |
-| GIAB HG002 v4.2.1 (GRCh38 All) | VarDictRust (<=50 kbp GIAB BED) | Illumina 2x250 bp WGS | 0.5081 / 0.9576 / 0.6639 | 0.5697 / 0.8835 / 0.6928 |
-| GIAB HG002 v4.2.1 (GRCh38 All) | VarDictJava (<=50 kbp GIAB BED) | Illumina 2x250 bp WGS | 0.5081 / 0.9576 / 0.6639 | 0.5697 / 0.8835 / 0.6928 |
-| GIAB HG002 v5.0q (T2T-Q100 Assembly) | VarDictRust (Unchunked Contigs) | Illumina 2x250 bp WGS | 0.5155 / 0.9367 / 0.6650 | 0.6151 / 0.7007 / 0.6551 |
-| GIAB HG002 v5.0q (T2T-Q100 Assembly) | VarDictRust (<=50 kbp GIAB BED) | Illumina 2x250 bp WGS | 0.5083 / 0.8866 / 0.6461 | 0.5708 / 0.5281 / 0.5487 |
-| GIAB HG002 v5.0q (T2T-Q100 Assembly) | VarDictJava (<=50 kbp GIAB BED) | Illumina 2x250 bp WGS | 0.5083 / 0.8866 / 0.6461 | 0.5708 / 0.5281 / 0.5487 |
-| GIAB HG002 CMRG v1.00 (273 Challenging Medically Relevant Genes) | VarDictRust (Unchunked Contigs) | Illumina 2x250 bp WGS | 0.5482 / 0.8920 / 0.6791 | 0.6310 / 0.7702 / 0.6937 |
-| GIAB HG002 CMRG v1.00 (273 Challenging Medically Relevant Genes) | VarDictRust (<=50 kbp GIAB BED) | Illumina 2x250 bp WGS | 0.5355 / 0.7173 / 0.6132 | 0.5803 / 0.4904 / 0.5316 |
-| GIAB HG002 CMRG v1.00 (273 Challenging Medically Relevant Genes) | VarDictJava (<=50 kbp GIAB BED) | Illumina 2x250 bp WGS | 0.5355 / 0.7173 / 0.6132 | 0.5803 / 0.4904 / 0.5316 |
-| GIAB HG002 Mosaic SNV v1.10 (Low-VAF Somatic-Like Benchmark) | VarDictRust (Unchunked Contigs) | Illumina 2x250 bp WGS | Recall = 0.9882 (98.82%; Recall-Only Benchmark) | SNV-Only Truth Set (No Truth InDels) |
-| GIAB HG002 Mosaic SNV v1.10 (Low-VAF Somatic-Like Benchmark) | VarDictRust (<=50 kbp GIAB BED) | Illumina 2x250 bp WGS | Recall = 0.9882 (98.82%; Recall-Only Benchmark) | SNV-Only Truth Set (No Truth InDels) |
-| GIAB HG002 Mosaic SNV v1.10 (Low-VAF Somatic-Like Benchmark) | VarDictJava (<=50 kbp GIAB BED) | Illumina 2x250 bp WGS | Recall = 0.9882 (98.82%; Recall-Only Benchmark) | SNV-Only Truth Set (No Truth InDels) |
-| GIAB HG008 Somatic v0.4 (Full-Genome WGS, All Callable) | VarDictRust v1.0.6 | Illumina 195x 169x | 0.8262 / 0.7542 / 0.7886 | 0.6288 / 0.4011 / 0.4898 |
-| GIAB HG008 Somatic v0.4 (Full-Genome WGS, Excl. Genomic Instability) | VarDictRust v1.0.6 | Illumina 195x 169x | 0.8258 / 0.7810 / 0.8028 | 0.6703 / 0.4832 / 0.5616 |
-| GIAB HG008 Somatic v0.4 (Targeted Benchmark Regions) | VarDictRust v1.0.6 | Illumina 195x 169x | 0.9916 / 0.6048 / 0.7513 | 0.9479 / 0.3095 / 0.4667 |
-| GIAB HG008 Somatic v0.4 (Full-Genome WGS, All Callable) | DRAGEN v4.2.4 Linear | Illumina WGS | 0.9546 / 0.8643 / 0.9072 | 0.9140 / 0.4320 / 0.5867 |
-| GIAB HG008 Somatic v0.4 (Full-Genome WGS, Excl. Genomic Instability) | DRAGEN v4.2.4 Linear | Illumina WGS | 0.9570 / 0.8848 / 0.9195 | 0.9307 / 0.7067 / 0.8034 |
-| GIAB HG008 Somatic v0.4 (Targeted Benchmark Regions) | DRAGEN v4.2.4 Linear | Illumina WGS | 0.9905 / 0.7104 / 0.8274 | 0.8585 / 0.3095 / 0.4550 |
-| GIAB HG008 Somatic v0.4 (Full-Genome WGS, All Callable) | DRAGEN v4.2.4 Graph | Illumina WGS | 0.9591 / 0.8633 / 0.9087 | 0.9170 / 0.4323 / 0.5876 |
-| GIAB HG008 Somatic v0.4 (Full-Genome WGS, Excl. Genomic Instability) | DRAGEN v4.2.4 Graph | Illumina WGS | 0.9615 / 0.8836 / 0.9209 | 0.9335 / 0.7067 / 0.8044 |
-| GIAB HG008 Somatic v0.4 (Targeted Benchmark Regions) | DRAGEN v4.2.4 Graph | Illumina WGS | 0.9905 / 0.7104 / 0.8274 | 0.8585 / 0.3095 / 0.4550 |
-| GIAB HG008 Somatic v0.4 (Full-Genome WGS, All Callable) | Lancet2 NYGC | Illumina WGS | 0.9933 / 0.7936 / 0.8823 | 0.9833 / 0.2179 / 0.3568 |
-| GIAB HG008 Somatic v0.4 (Full-Genome WGS, Excl. Genomic Instability) | Lancet2 NYGC | Illumina WGS | 0.9960 / 0.8231 / 0.9013 | 0.9867 / 0.3618 / 0.5295 |
-| GIAB HG008 Somatic v0.4 (Targeted Benchmark Regions) | Lancet2 NYGC | Illumina WGS | 1.0000 / 0.5843 / 0.7376 | 1.0000 / 0.1599 / 0.2757 |
-| GIAB HG008 Somatic v0.4 (Full-Genome WGS, All Callable) | Hartwig SAGE 2026 | Illumina WGS | 0.9956 / 0.8161 / 0.8969 | 0.9710 / 0.6309 / 0.7649 |
-| GIAB HG008 Somatic v0.4 (Full-Genome WGS, Excl. Genomic Instability) | Hartwig SAGE 2026 | Illumina WGS | 0.9958 / 0.8413 / 0.9121 | 0.9653 / 0.7883 / 0.8679 |
-| GIAB HG008 Somatic v0.4 (Targeted Benchmark Regions) | Hartwig SAGE 2026 | Illumina WGS | 1.0000 / 0.6048 / 0.7537 | 0.9858 / 0.4728 / 0.6391 |
-| GIAB HG008 Somatic v0.4 (Full-Genome WGS, All Callable) | DeepSomatic v1.6.0 | PacBio HiFi | 0.9886 / 0.8512 / 0.9148 | 0.9158 / 0.1845 / 0.3072 |
-| GIAB HG008 Somatic v0.4 (Full-Genome WGS, Excl. Genomic Instability) | DeepSomatic v1.6.0 | PacBio HiFi | 0.9953 / 0.8763 / 0.9320 | 0.9140 / 0.3165 / 0.4702 |
-| GIAB HG008 Somatic v0.4 (Targeted Benchmark Regions) | DeepSomatic v1.6.0 | PacBio HiFi | 1.0000 / 0.6627 / 0.7971 | 1.0000 / 0.1395 / 0.2448 |
-| GIAB HG008 Somatic v0.4 (Full-Genome WGS, All Callable) | ClairS v0.4.1 | PacBio HiFi | 0.9793 / 0.8419 / 0.9054 | 0.9791 / 0.1302 / 0.2298 |
-| GIAB HG008 Somatic v0.4 (Full-Genome WGS, Excl. Genomic Instability) | ClairS v0.4.1 | PacBio HiFi | 0.9793 / 0.8736 / 0.9234 | 0.9797 / 0.2264 / 0.3678 |
-| GIAB HG008 Somatic v0.4 (Targeted Benchmark Regions) | ClairS v0.4.1 | PacBio HiFi | 1.0000 / 0.6491 / 0.7872 | 1.0000 / 0.1122 / 0.2018 |
-| GIAB HG008 Somatic v0.4 (Full-Genome WGS, All Callable) | Ultima DeepVariant Somatic | Ultima UG100 | 0.9749 / 0.9101 / 0.9414 | 0.9429 / 0.2459 / 0.3900 |
-| GIAB HG008 Somatic v0.4 (Full-Genome WGS, Excl. Genomic Instability) | Ultima DeepVariant Somatic | Ultima UG100 | 0.9751 / 0.9444 / 0.9595 | 0.9486 / 0.4218 / 0.5839 |
-| GIAB HG008 Somatic v0.4 (Targeted Benchmark Regions) | Ultima DeepVariant Somatic | Ultima UG100 | 1.0000 / 0.7700 / 0.8701 | 0.9859 / 0.2381 / 0.3836 |
-| GIAB HG008 Somatic v0.4 (Targeted Benchmark Regions) | Mutect2 | Illumina 195x 169x | 0.9874 / 0.6661 / 0.7955 | 0.9431 / 0.3946 / 0.5564 |
-| GIAB HG008 Somatic v0.4 (Targeted Benchmark Regions) | Strelka2 | Illumina 195x 169x | 0.9896 / 0.8075 / 0.8893 | 0.9545 / 0.2857 / 0.4398 |
-| GIAB HG008 Somatic v0.4 (Targeted Benchmark Regions) | LoFreq | Illumina 195x 169x | 1.0000 / 0.7053 / 0.8272 | 0.0000 / 0.0000 / 0.0000 (0 Indel calls) |
+| GIAB HG002 v4.2.1 (GRCh38 All) [13, 18]<sup>a</sup> | VarDictRust (Unchunked Contigs)<sup>b</sup> | Illumina 2x250 bp WGS | 0.5081 / 0.9577 / 0.6639 | 0.5698 / 0.8836 / 0.6928 |
+| GIAB HG002 v4.2.1 (GRCh38 All) [13, 18]<sup>a</sup> | VarDictRust (<=50 kbp GIAB BED) | Illumina 2x250 bp WGS | 0.5081 / 0.9576 / 0.6639 | 0.5697 / 0.8835 / 0.6928 |
+| GIAB HG002 v4.2.1 (GRCh38 All) [13, 18]<sup>a</sup> | VarDictJava [1] (<=50 kbp GIAB BED) | Illumina 2x250 bp WGS | 0.5081 / 0.9576 / 0.6639 | 0.5697 / 0.8835 / 0.6928 |
+| GIAB HG002 v5.0q (T2T-Q100 Assembly) [14, 16]<sup>a,b</sup> | VarDictRust (Unchunked Contigs)<sup>b</sup> | Illumina 2x250 bp WGS | 0.5155 / 0.9367 / 0.6650 | 0.6151 / 0.7007 / 0.6551 |
+| GIAB HG002 v5.0q (T2T-Q100 Assembly) [14, 16]<sup>a,b</sup> | VarDictRust (<=50 kbp GIAB BED) | Illumina 2x250 bp WGS | 0.5083 / 0.8866 / 0.6461 | 0.5708 / 0.5281 / 0.5487 |
+| GIAB HG002 v5.0q (T2T-Q100 Assembly) [14, 16]<sup>a,b</sup> | VarDictJava [1] (<=50 kbp GIAB BED) | Illumina 2x250 bp WGS | 0.5083 / 0.8866 / 0.6461 | 0.5708 / 0.5281 / 0.5487 |
+| GIAB HG002 CMRG v1.00 (273 Challenging Medically Relevant Genes) [15]<sup>a,b</sup> | VarDictRust (Unchunked Contigs)<sup>b</sup> | Illumina 2x250 bp WGS | 0.5482 / 0.8920 / 0.6791 | 0.6310 / 0.7702 / 0.6937 |
+| GIAB HG002 CMRG v1.00 (273 Challenging Medically Relevant Genes) [15]<sup>a,b</sup> | VarDictRust (<=50 kbp GIAB BED) | Illumina 2x250 bp WGS | 0.5355 / 0.7173 / 0.6132 | 0.5803 / 0.4904 / 0.5316 |
+| GIAB HG002 CMRG v1.00 (273 Challenging Medically Relevant Genes) [15]<sup>a,b</sup> | VarDictJava [1] (<=50 kbp GIAB BED) | Illumina 2x250 bp WGS | 0.5355 / 0.7173 / 0.6132 | 0.5803 / 0.4904 / 0.5316 |
+| GIAB HG002 Mosaic SNV v1.10 (Low-VAF Somatic-Like Benchmark) [19]<sup>c</sup> | VarDictRust (Unchunked Contigs)<sup>b</sup> | Illumina 2x250 bp WGS | Recall = 0.9882 (98.82%)<sup>c</sup> | SNV-Only Truth Set (No Truth InDels)<sup>c</sup> |
+| GIAB HG002 Mosaic SNV v1.10 (Low-VAF Somatic-Like Benchmark) [19]<sup>c</sup> | VarDictRust (<=50 kbp GIAB BED) | Illumina 2x250 bp WGS | Recall = 0.9882 (98.82%)<sup>c</sup> | SNV-Only Truth Set (No Truth InDels)<sup>c</sup> |
+| GIAB HG002 Mosaic SNV v1.10 (Low-VAF Somatic-Like Benchmark) [19]<sup>c</sup> | VarDictJava [1] (<=50 kbp GIAB BED) | Illumina 2x250 bp WGS | Recall = 0.9882 (98.82%)<sup>c</sup> | SNV-Only Truth Set (No Truth InDels)<sup>c</sup> |
+| GIAB HG008 Somatic v0.4 (Full-Genome WGS, All Callable) [19]<sup>d</sup> | VarDictRust v1.0.6 | Illumina WGS (195x T / 169x N) | 0.8262 / 0.7542 / 0.7886 | 0.6288 / 0.4011 / 0.4898 |
+| GIAB HG008 Somatic v0.4 (Full-Genome WGS, Excl. Genomic Instability) [19]<sup>d</sup> | VarDictRust v1.0.6 | Illumina WGS (195x T / 169x N) | 0.8258 / 0.7810 / 0.8028 | 0.6703 / 0.4832 / 0.5616 |
+| GIAB HG008 Somatic v0.4 (Targeted Benchmark Regions) [19]<sup>e</sup> | VarDictRust v1.0.6 | Illumina WGS (195x T / 169x N) | 0.9916 / 0.6048 / 0.7513 | 0.9479 / 0.3095 / 0.4667 |
+| GIAB HG008 Somatic v0.4 (Full-Genome WGS, All Callable) [19]<sup>d</sup> | DRAGEN v4.2.4 Linear [21]<sup>d</sup> | Illumina WGS | 0.9546 / 0.8643 / 0.9072 | 0.9140 / 0.4320 / 0.5867 |
+| GIAB HG008 Somatic v0.4 (Full-Genome WGS, Excl. Genomic Instability) [19]<sup>d</sup> | DRAGEN v4.2.4 Linear [21]<sup>d</sup> | Illumina WGS | 0.9570 / 0.8848 / 0.9195 | 0.9307 / 0.7067 / 0.8034 |
+| GIAB HG008 Somatic v0.4 (Targeted Benchmark Regions) [19]<sup>e</sup> | DRAGEN v4.2.4 Linear [21]<sup>d</sup> | Illumina WGS | 0.9905 / 0.7104 / 0.8274 | 0.8585 / 0.3095 / 0.4550 |
+| GIAB HG008 Somatic v0.4 (Full-Genome WGS, All Callable) [19]<sup>d</sup> | DRAGEN v4.2.4 Graph [21]<sup>d</sup> | Illumina WGS | 0.9591 / 0.8633 / 0.9087 | 0.9170 / 0.4323 / 0.5876 |
+| GIAB HG008 Somatic v0.4 (Full-Genome WGS, Excl. Genomic Instability) [19]<sup>d</sup> | DRAGEN v4.2.4 Graph [21]<sup>d</sup> | Illumina WGS | 0.9615 / 0.8836 / 0.9209 | 0.9335 / 0.7067 / 0.8044 |
+| GIAB HG008 Somatic v0.4 (Targeted Benchmark Regions) [19]<sup>e</sup> | DRAGEN v4.2.4 Graph [21]<sup>d</sup> | Illumina WGS | 0.9905 / 0.7104 / 0.8274 | 0.8585 / 0.3095 / 0.4550 |
+| GIAB HG008 Somatic v0.4 (Full-Genome WGS, All Callable) [19]<sup>d</sup> | Lancet2 (NYGC) [24]<sup>d</sup> | Illumina WGS | 0.9933 / 0.7936 / 0.8823 | 0.9833 / 0.2179 / 0.3568 |
+| GIAB HG008 Somatic v0.4 (Full-Genome WGS, Excl. Genomic Instability) [19]<sup>d</sup> | Lancet2 (NYGC) [24]<sup>d</sup> | Illumina WGS | 0.9960 / 0.8231 / 0.9013 | 0.9867 / 0.3618 / 0.5295 |
+| GIAB HG008 Somatic v0.4 (Targeted Benchmark Regions) [19]<sup>e</sup> | Lancet2 (NYGC) [24]<sup>d</sup> | Illumina WGS | 1.0000 / 0.5843 / 0.7376 | 1.0000 / 0.1599 / 0.2757 |
+| GIAB HG008 Somatic v0.4 (Full-Genome WGS, All Callable) [19]<sup>d</sup> | Hartwig SAGE [25]<sup>d</sup> | Illumina WGS | 0.9956 / 0.8161 / 0.8969 | 0.9710 / 0.6309 / 0.7649 |
+| GIAB HG008 Somatic v0.4 (Full-Genome WGS, Excl. Genomic Instability) [19]<sup>d</sup> | Hartwig SAGE [25]<sup>d</sup> | Illumina WGS | 0.9958 / 0.8413 / 0.9121 | 0.9653 / 0.7883 / 0.8679 |
+| GIAB HG008 Somatic v0.4 (Targeted Benchmark Regions) [19]<sup>e</sup> | Hartwig SAGE [25]<sup>d</sup> | Illumina WGS | 1.0000 / 0.6048 / 0.7537 | 0.9858 / 0.4728 / 0.6391 |
+| GIAB HG008 Somatic v0.4 (Full-Genome WGS, All Callable) [19]<sup>d</sup> | DeepSomatic v1.6.0 [22]<sup>d</sup> | PacBio HiFi | 0.9886 / 0.8512 / 0.9148 | 0.9158 / 0.1845 / 0.3072 |
+| GIAB HG008 Somatic v0.4 (Full-Genome WGS, Excl. Genomic Instability) [19]<sup>d</sup> | DeepSomatic v1.6.0 [22]<sup>d</sup> | PacBio HiFi | 0.9953 / 0.8763 / 0.9320 | 0.9140 / 0.3165 / 0.4702 |
+| GIAB HG008 Somatic v0.4 (Targeted Benchmark Regions) [19]<sup>e</sup> | DeepSomatic v1.6.0 [22]<sup>d</sup> | PacBio HiFi | 1.0000 / 0.6627 / 0.7971 | 1.0000 / 0.1395 / 0.2448 |
+| GIAB HG008 Somatic v0.4 (Full-Genome WGS, All Callable) [19]<sup>d</sup> | ClairS v0.4.1 [23]<sup>d</sup> | PacBio HiFi | 0.9793 / 0.8419 / 0.9054 | 0.9791 / 0.1302 / 0.2298 |
+| GIAB HG008 Somatic v0.4 (Full-Genome WGS, Excl. Genomic Instability) [19]<sup>d</sup> | ClairS v0.4.1 [23]<sup>d</sup> | PacBio HiFi | 0.9793 / 0.8736 / 0.9234 | 0.9797 / 0.2264 / 0.3678 |
+| GIAB HG008 Somatic v0.4 (Targeted Benchmark Regions) [19]<sup>e</sup> | ClairS v0.4.1 [23]<sup>d</sup> | PacBio HiFi | 1.0000 / 0.6491 / 0.7872 | 1.0000 / 0.1122 / 0.2018 |
+| GIAB HG008 Somatic v0.4 (Full-Genome WGS, All Callable) [19]<sup>d</sup> | Ultima DeepVariant Somatic [6]<sup>d</sup> | Ultima UG100 | 0.9749 / 0.9101 / 0.9414 | 0.9429 / 0.2459 / 0.3900 |
+| GIAB HG008 Somatic v0.4 (Full-Genome WGS, Excl. Genomic Instability) [19]<sup>d</sup> | Ultima DeepVariant Somatic [6]<sup>d</sup> | Ultima UG100 | 0.9751 / 0.9444 / 0.9595 | 0.9486 / 0.4218 / 0.5839 |
+| GIAB HG008 Somatic v0.4 (Targeted Benchmark Regions) [19]<sup>e</sup> | Ultima DeepVariant Somatic [6]<sup>d</sup> | Ultima UG100 | 1.0000 / 0.7700 / 0.8701 | 0.9859 / 0.2381 / 0.3836 |
+| GIAB HG008 Somatic v0.4 (Targeted Benchmark Regions) [19]<sup>e</sup> | Mutect2 [8] | Illumina WGS (195x T / 169x N) | 0.9874 / 0.6661 / 0.7955 | 0.9431 / 0.3946 / 0.5564 |
+| GIAB HG008 Somatic v0.4 (Targeted Benchmark Regions) [19]<sup>e</sup> | Strelka2 [4] | Illumina WGS (195x T / 169x N) | 0.9896 / 0.8075 / 0.8893 | 0.9545 / 0.2857 / 0.4398 |
+| GIAB HG008 Somatic v0.4 (Targeted Benchmark Regions) [19]<sup>e</sup> | LoFreq [7] | Illumina WGS (195x T / 169x N) | 1.0000 / 0.7053 / 0.8272 | 0.0000 / 0.0000 / 0.0000<sup>e</sup> |
 
-*External HG008 v0.4 full-WGS callsets are sourced from NIST GIAB Liss Lab (DRAGEN, DeepSomatic, ClairS, Ultima DeepVariant, Hartwig SAGE, Lancet2); Mosaic SNV v1.10 reports unmasked recall (98.82%) as primary metric because the calling BED was not restricted to the 89-locus somatic mosaic region file.*
+*<sup>a</sup>Evaluates full-genome GIAB HG002 [13, 18] 2x250 bp WGS callsets across the legacy v4.2.1 benchmark (2.51 Gbp) [13], the T2T-Q100 assembly-backed v5.0q benchmark (2.74 Gbp) [14, 16], and the 273-gene Challenging Medically Relevant Genes (CMRG v1.00) benchmark [15]. <sup>b</sup>On v4.2.1 callable BED intervals (<=50 kbp), VarDictRust and VarDictJava v1.8.3 [1] achieve identical accuracy; on v5.0q and CMRG v1.00, unchunked full-contig calling in VarDictRust recovers +5.01% SNV / +17.26% InDel recall on v5.0q and +17.47% SNV / +27.98% InDel recall on CMRG loci located outside legacy v4.2.1 BED masks (where VarDictJava OOMs on unchunked contigs). <sup>c</sup>NIST GIAB HG002 Mosaic SNV v1.10 [19] is an SNV-only benchmark of 85 low-VAF (1%–30% VAF) somatic-like loci; because whole-genome calling was performed without restricting to the 89-locus mosaic target BED, unmasked sensitivity (84/85 = 98.82% recall) is the informative metric. <sup>d</sup>External full-genome HG008 GIAB v0.4 [19] callsets are sourced from the NIST GIAB Liss Lab repository for DRAGEN v4.2.4 [21], DeepSomatic v1.6.0 [22], ClairS v0.4.1 [23], Ultima DeepVariant Somatic [6], Lancet2 (NYGC) [24], and Hartwig SAGE [25], evaluated both across all callable regions and excluding genomic instability (NoGI) masks. <sup>e</sup>Targeted HG008 v0.4 slice evaluations compare VarDictRust, VarDictJava [1], Strelka2 [4], Mutect2 [8], and LoFreq [7] on identical 195x tumor / 169x normal Illumina alignments; LoFreq 0.0000 indel scores reflect absent indel quality calibration tags.*

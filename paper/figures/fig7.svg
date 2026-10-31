@@ -658,7 +658,7 @@ L 971.813203 389.263668
 " clip-path="url(#p8d92a7b47f)" style="fill: none; stroke-dasharray: 3.7,1.6; stroke-dashoffset: 0; stroke: #cbd5e1; stroke-opacity: 0.35"/>
      </g>
      <g id="text_47">
-      <text style="font-size: 7.6px; font-family: 'DejaVu Sans'; text-anchor: end; fill: #262626" x="561.933169" y="392.150778" transform="rotate(-0 561.933169 392.150778)">Lancet2_NYGC (WGS)</text>
+      <text style="font-size: 7.6px; font-family: 'DejaVu Sans'; text-anchor: end; fill: #262626" x="561.933169" y="392.150778" transform="rotate(-0 561.933169 392.150778)">Lancet2 (NYGC) (WGS)</text>
      </g>
     </g>
     <g id="ytick_20">
@@ -668,7 +668,7 @@ L 971.813203 348.410426
 " clip-path="url(#p8d92a7b47f)" style="fill: none; stroke-dasharray: 3.7,1.6; stroke-dashoffset: 0; stroke: #cbd5e1; stroke-opacity: 0.35"/>
      </g>
      <g id="text_48">
-      <text style="font-size: 7.6px; font-family: 'DejaVu Sans'; text-anchor: end; fill: #262626" x="561.933169" y="351.297832" transform="rotate(-0 561.933169 351.297832)">Hartwig_SAGE_2026 (WGS)</text>
+      <text style="font-size: 7.6px; font-family: 'DejaVu Sans'; text-anchor: end; fill: #262626" x="561.933169" y="351.297832" transform="rotate(-0 561.933169 351.297832)">Hartwig SAGE (WGS)</text>
      </g>
     </g>
     <g id="ytick_21">
@@ -688,7 +688,7 @@ L 971.813203 266.703941
 " clip-path="url(#p8d92a7b47f)" style="fill: none; stroke-dasharray: 3.7,1.6; stroke-dashoffset: 0; stroke: #cbd5e1; stroke-opacity: 0.35"/>
      </g>
      <g id="text_50">
-      <text style="font-size: 7.6px; font-family: 'DejaVu Sans'; text-anchor: end; fill: #262626" x="561.933169" y="269.591348" transform="rotate(-0 561.933169 269.591348)">ClairS_v0.4.1 (WGS)</text>
+      <text style="font-size: 7.6px; font-family: 'DejaVu Sans'; text-anchor: end; fill: #262626" x="561.933169" y="269.591348" transform="rotate(-0 561.933169 269.591348)">ClairS v0.4.1 (WGS)</text>
      </g>
     </g>
     <g id="ytick_23">

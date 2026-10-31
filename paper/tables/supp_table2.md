@@ -1,98 +1,98 @@
-### Supplementary Table S2 (Table S2). Baseline Equivalence Cells and Complete 87-Arm Full-Core .var & .vcf Parity Sweep
+### Supplementary Table S2. Baseline Equivalence Suites and Complete 87-Arm Full-Core Intermediate (.var) & VCF Parity Sweep
 
-| Cell ID | Sub-Arm / Equivalence Scope | VarDictJava Rows/Vars | VarDictRust Rows/Vars | FP vs. Java | FN vs. Java | Verdict |
+| Evaluation Suite | Sub-Arm / Configuration & Format<sup>a</sup> | VarDictJava [1] Rows / Variants | VarDictRust Rows / Variants | FP vs. Java | FN vs. Java | Parity Verdict<sup>a</sup> |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| s1_ceiling_amplicon | EGFR/MRE11a amplicon (-a) ceiling & parity | MATCH (2 variants) | MATCH (2 variants) | 0 | 0 | MATCH |
-| s1_ceiling_hg008 | NIST GIAB HG008 somatic slice ceiling & parity | MATCH (18426 variants) | MATCH (18426 variants) | 0 | 0 | MATCH |
-| s1_gate7_ref_multiregion | HG002 Chr20 multi-region reference offset verification | MATCH (2572 variants) | MATCH (2572 variants) | 0 | 0 | MATCH |
-| s1_h1a_simple_tiles | SEQC2 HCC1395 tile-size invariance (0.5, 1, 2, 10 Mbp tiles) | 5,090 | 5,090 | 0 | 0 | MATCH across all 4 tile sizes |
-| s4_multimodal_and_cram_twin | HG008 lossless BAM-vs-CRAM twin & multimodal slices | 1,129 | 1,129 | 0 | 0 | STRICT-BYTES: 0 textual difference(s) within eps; MATCH (40 variants) |
-| sweep_4targets_full | amplicon_full.vcf | 2 | 2 | 0 | 0 | MATCH |
-| sweep_4targets_full | hg002_deep_wgs.vcf | 227,562 | 227,562 | 0 | 0 | MATCH |
-| sweep_4targets_full | hg008_somatic_wgs.vcf | 18,426 | 18,426 | 0 | 0 | MATCH |
-| sweep_4targets_full | seqc2_somatic_exome_full.vcf | 623,444 | 623,444 | 0 | 0 | MATCH |
-| sweep_R_chr1_full | R_chr1_249Mbp.var | 4,705 | 4,705 | 0 | 0 | MATCH |
-| sweep_hg002_chr20_exome | hg002_chr20_exome.var | 8,330 | 8,330 | 0 | 0 | MATCH |
-| sweep_hg002_chr20_exome | hg002_chr20_exome.vcf | 8,233 | 8,233 | 0 | 0 | MATCH |
-| sweep_multimodal_and_cram_twin | extended_coverage_17modes | 17 | 17 | 0 | 0 | MATCH |
-| sweep_multimodal_and_cram_twin | multimodal_18slices | 18 | 18 | 0 | 0 | MATCH |
-| sweep_multimodal_and_cram_twin | cram_twin_g4_hg008 | 1 | 1 | 0 | 0 | MATCH |
-| sweep_multimodal_and_cram_twin | e2_cram_vs_bam_twin.vcf | 40 | 40 | 0 | 0 | MATCH |
-| sweep_rna_hg002_52gb | rna_splice_table | 12,668 | 12,668 | 0 | 0 | MATCH |
-| sweep_rna_hg002_52gb | rna_cdna_variants.var | 1,230 | 1,230 | 0 | 0 | MATCH |
-| sweep_span_chr1_f0 | chr1_10m_f0.var | 7,077 | 7,077 | 0 | 0 | MATCH |
-| sweep_span_chr1_f0 | chr1_10m_f0.vcf | 7,032 | 7,032 | 0 | 0 | MATCH |
-| sweep_tierp_13modes | simple_f0.01.var | 228 | 228 | 0 | 0 | MATCH |
-| sweep_tierp_13modes | simple_f0_mrd.var | 248 | 248 | 0 | 0 | MATCH |
-| sweep_tierp_13modes | simple_fisher.var | 650 | 650 | 0 | 0 | MATCH |
-| sweep_tierp_13modes | targeted_panel_chr17.var | 83 | 83 | 0 | 0 | MATCH |
-| sweep_tierp_13modes | sv_deletion_regions.var | 3 | 3 | 0 | 0 | MATCH |
-| sweep_tierp_13modes | low_coverage.var | 146 | 146 | 0 | 0 | MATCH |
-| sweep_tierp_13modes | amplicon_c17amp.var | 145 | 145 | 0 | 0 | MATCH |
-| sweep_tierp_13modes | amplicon_fisher.var | 145 | 145 | 0 | 0 | MATCH |
-| sweep_tierp_13modes | somatic_f0.01_big.var | 664 | 664 | 0 | 0 | MATCH |
-| sweep_tierp_13modes | somatic_f0_mrd_c17.var | 1,396 | 1,396 | 0 | 0 | MATCH |
-| sweep_tierp_13modes | somatic_fisher_c17.var | 527 | 527 | 0 | 0 | MATCH |
-| sweep_tierp_13modes | P5_cram_vs_bam_twin.var | 228 | 228 | 0 | 0 | MATCH |
-| sweep_tierp_SRR15006540 | SRR15006540.var | 16,031 | 16,031 | 0 | 0 | MATCH |
-| sweep_tierp_SRR15006540 | SRR15006540.vcf | 15,912 | 15,912 | 0 | 0 | MATCH |
-| sweep_tierp_SRR8657348 | SRR8657348.var | 54,448 | 54,448 | 0 | 0 | MATCH |
-| sweep_tierp_SRR8657348 | SRR8657348.vcf | 53,224 | 53,224 | 0 | 0 | MATCH |
-| sweep_tierp_somatic_76_86 | somatic_76_86.var | 14,126 | 14,126 | 0 | 0 | MATCH |
-| sweep_tierp_somatic_76_86 | somatic_76_86.vcf | 14,000 | 14,000 | 0 | 0 | MATCH |
-| sweep_ultradeep_mrd_stress | ud_SRR15006375_f0.0005_fisher.var | 2,780 | 2,780 | 0 | 0 | MATCH |
-| sweep_ultradeep_mrd_stress | ud_SRR15006375_f0.0005_fisher.vcf | 2,645 | 2,645 | 0 | 0 | MATCH |
-| sweep_ultradeep_mrd_stress | ud_SRR15006375_f0_fisher.var | 6,182 | 6,182 | 0 | 0 | MATCH |
-| sweep_ultradeep_mrd_stress | ud_SRR15006375_f0_fisher.vcf | 5,685 | 5,685 | 0 | 0 | MATCH |
-| sweep_ultradeep_mrd_stress | ud_SRR15006540_f0.0005_fisher.var | 5,046 | 5,046 | 0 | 0 | MATCH |
-| sweep_ultradeep_mrd_stress | ud_SRR15006540_f0.0005_fisher.vcf | 4,711 | 4,711 | 0 | 0 | MATCH |
-| sweep_ultradeep_mrd_stress | ud_SRR15006540_f0_fisher.var | 7,044 | 7,044 | 0 | 0 | MATCH |
-| sweep_ultradeep_mrd_stress | ud_SRR15006540_f0_fisher.vcf | 6,313 | 6,313 | 0 | 0 | MATCH |
-| sweep_ultradeep_mrd_stress | ud_SRR15006386_f0.0005_fisher.var | 3,028 | 3,028 | 0 | 0 | MATCH |
-| sweep_ultradeep_mrd_stress | ud_SRR15006386_f0.0005_fisher.vcf | 2,888 | 2,888 | 0 | 0 | MATCH |
-| sweep_ultradeep_mrd_stress | ud_SRR15006386_f0_fisher.var | 6,153 | 6,153 | 0 | 0 | MATCH |
-| sweep_ultradeep_mrd_stress | ud_SRR15006386_f0_fisher.vcf | 5,608 | 5,608 | 0 | 0 | MATCH |
-| sweep_ultradeep_mrd_stress | ud_SRR15006376_f0.0005_fisher.var | 2,844 | 2,844 | 0 | 0 | MATCH |
-| sweep_ultradeep_mrd_stress | ud_SRR15006376_f0.0005_fisher.vcf | 2,732 | 2,732 | 0 | 0 | MATCH |
-| sweep_ultradeep_mrd_stress | ud_SRR15006376_f0_fisher.var | 3,841 | 3,841 | 0 | 0 | MATCH |
-| sweep_ultradeep_mrd_stress | ud_SRR15006376_f0_fisher.vcf | 3,630 | 3,630 | 0 | 0 | MATCH |
-| sweep_ultradeep_mrd_stress | ud_som_76_86_29kx_f0.0005_fisher.var | 4,045 | 4,045 | 0 | 0 | MATCH |
-| sweep_ultradeep_mrd_stress | ud_som_76_86_29kx_f0.0005_fisher.vcf | 3,855 | 3,855 | 0 | 0 | MATCH |
-| sweep_ultradeep_mrd_stress | ud_som_76_86_29kx_f0_fisher.var | 6,890 | 6,890 | 0 | 0 | MATCH |
-| sweep_ultradeep_mrd_stress | ud_som_76_86_29kx_f0_fisher.vcf | 6,309 | 6,309 | 0 | 0 | MATCH |
-| sweep_ultradeep_mrd_stress | ud_som_75_86_45kx_f0.0005_fisher.var | 4,481 | 4,481 | 0 | 0 | MATCH |
-| sweep_ultradeep_mrd_stress | ud_som_75_86_45kx_f0.0005_fisher.vcf | 4,262 | 4,262 | 0 | 0 | MATCH |
-| sweep_ultradeep_mrd_stress | ud_som_75_86_45kx_f0_fisher.var | 7,474 | 7,474 | 0 | 0 | MATCH |
-| sweep_ultradeep_mrd_stress | ud_som_75_86_45kx_f0_fisher.vcf | 6,828 | 6,828 | 0 | 0 | MATCH |
-| sweep_ultradeep_mrd_stress | ud_hg008_15kx_f0.0005_fisher.var | 19 | 19 | 0 | 0 | MATCH |
-| sweep_ultradeep_mrd_stress | ud_hg008_15kx_f0.0005_fisher.vcf | 16 | 16 | 0 | 0 | MATCH |
-| sweep_ultradeep_mrd_stress | ud_hg002_7kx_f0.0005_fisher.var | 1,008 | 1,008 | 0 | 0 | MATCH |
-| sweep_ultradeep_mrd_stress | ud_hg002_7kx_f0.0005_fisher.vcf | 640 | 640 | 0 | 0 | MATCH |
-| sweep_ultradeep_mrd_stress | ud_rna_173kx_f0.001_fisher.var | 139 | 139 | 0 | 0 | MATCH |
-| sweep_ultradeep_mrd_stress | ud_rna_173kx_f0.001_fisher.vcf | 120 | 120 | 0 | 0 | MATCH |
-| sweep_wgs_mrd_matrix | hg002_wgs_mrd_f0.001.var | 15,083 | 15,083 | 0 | 0 | MATCH |
-| sweep_wgs_mrd_matrix | hg002_wgs_mrd_f0.001.vcf | 14,769 | 14,769 | 0 | 0 | MATCH |
-| sweep_wgs_mrd_matrix | hg002_wgs_mrd_f0.var | 15,083 | 15,083 | 0 | 0 | MATCH |
-| sweep_wgs_mrd_matrix | hg002_wgs_mrd_f0.vcf | 14,769 | 14,769 | 0 | 0 | MATCH |
-| sweep_wgs_mrd_matrix | hg008_somatic_wgs_mrd_f0.001.var | 21,379 | 21,379 | 0 | 0 | MATCH |
-| sweep_wgs_mrd_matrix | hg008_somatic_wgs_mrd_f0.001.vcf | 20,293 | 20,293 | 0 | 0 | MATCH |
-| sweep_wgs_mrd_matrix | hg008_somatic_wgs_mrd_f0.001_fisher.var | 21,379 | 21,379 | 0 | 0 | MATCH |
-| sweep_wgs_mrd_matrix | hg008_somatic_wgs_mrd_f0.001_fisher.vcf | 20,293 | 20,293 | 0 | 0 | MATCH |
-| sweep_wgs_mrd_matrix | hg008_somatic_wgs_mrd_f0.var | 21,379 | 21,379 | 0 | 0 | MATCH |
-| sweep_wgs_mrd_matrix | hg008_somatic_wgs_mrd_f0.vcf | 20,293 | 20,293 | 0 | 0 | MATCH |
-| sweep_wgs_mrd_matrix | hg005_300x_wgs_chr3_f0.001.var | 339 | 339 | 0 | 0 | MATCH |
-| sweep_wgs_mrd_matrix | hg005_300x_wgs_chr3_f0.001.vcf | 325 | 325 | 0 | 0 | MATCH |
-| sweep_wgs_mrd_matrix | hg005_300x_wgs_chr3_f0.var | 339 | 339 | 0 | 0 | MATCH |
-| sweep_wgs_mrd_matrix | hg005_300x_wgs_chr3_f0.vcf | 325 | 325 | 0 | 0 | MATCH |
-| sweep_wgs_mrd_matrix | hg005_300x_wgs_chr6_f0.001.var | 305 | 305 | 0 | 0 | MATCH |
-| sweep_wgs_mrd_matrix | hg005_300x_wgs_chr6_f0.001.vcf | 299 | 299 | 0 | 0 | MATCH |
-| sweep_wgs_mrd_matrix | hg005_300x_wgs_chr21_f0.001.var | 286 | 286 | 0 | 0 | MATCH |
-| sweep_wgs_mrd_matrix | hg005_300x_wgs_chr21_f0.001.vcf | 284 | 284 | 0 | 0 | MATCH |
-| sweep_wgs_mrd_matrix | seqc2_somatic_mrd_f0.001.var | 5,261 | 5,261 | 0 | 0 | MATCH |
-| sweep_wgs_mrd_matrix | seqc2_somatic_mrd_f0.001.vcf | 5,206 | 5,206 | 0 | 0 | MATCH |
-| sweep_wgs_mrd_matrix | seqc2_somatic_mrd_f0.001_fisher.var | 5,261 | 5,261 | 0 | 0 | MATCH |
-| sweep_wgs_mrd_matrix | seqc2_somatic_mrd_f0.001_fisher.vcf | 5,206 | 5,206 | 0 | 0 | MATCH |
-| sweep_wgs_mrd_matrix | seqc2_somatic_mrd_f0.var | 5,261 | 5,261 | 0 | 0 | MATCH |
-| sweep_wgs_mrd_matrix | seqc2_somatic_mrd_f0.vcf | 5,206 | 5,206 | 0 | 0 | MATCH |
+| Amplicon Baseline | EGFR/MRE11A targeted amplicon calling (-a 10:0.95) (VCF) | 2 | 2 | 0 | 0 | 100% Exact Match |
+| Somatic Benchmark Slice | NIST GIAB HG008 [19] tumor-normal somatic slice (VCF) | 18,426 | 18,426 | 0 | 0 | 100% Exact Match |
+| Multi-Region Reference Offset | GIAB HG002 [13, 18] Chr20 multi-region coordinate offset verification (VCF) | 2,572 | 2,572 | 0 | 0 | 100% Exact Match |
+| Tile-Size Invariance<sup>b</sup> | SEQC2 HCC1395 [10] halo-tiling invariance (0.5, 1, 2, 10 Mbp tiles) (VCF) | 5,090 | 5,090 | 0 | 0 | 100% Exact Match (all 4 tile sizes)<sup>b</sup> |
+| Lossless BAM-vs-CRAM Twin | GIAB HG008 [19] lossless BAM-vs-CRAM [26] twin & 18 multimodal slices (VCF) | 1,129 | 1,129 | 0 | 0 | 100% Exact Match (0 byte differences) |
+| 4-Assay Regression Suite | Targeted EGFR/MRE11A amplicon (-a) (VCF) | 2 | 2 | 0 | 0 | 100% Exact Match |
+| 4-Assay Regression Suite | GIAB HG002 [13, 18] deep WGS slice (VCF) | 227,562 | 227,562 | 0 | 0 | 100% Exact Match |
+| 4-Assay Regression Suite | GIAB HG008 [19] tumor-normal somatic slice (VCF) | 18,426 | 18,426 | 0 | 0 | 100% Exact Match |
+| 4-Assay Regression Suite | SEQC2 HCC1395 [10] paired somatic exome slice (VCF) | 623,444 | 623,444 | 0 | 0 | 100% Exact Match |
+| Contiguous 249 Mbp -R chr1 [11]<sup>c</sup> | Unchunked -R chr1:1-249250621 single window (--tile-size 250000000) (.var)<sup>c</sup> | 4,705 | 4,705 | 0 | 0 | 100% Exact Match<sup>c</sup> |
+| GIAB HG002 Chr20 Exome [11, 20] | GIAB HG002 Chr20 exome [20] (.var) | 8,330 | 8,330 | 0 | 0 | 100% Exact Match |
+| GIAB HG002 Chr20 Exome [11, 20] | GIAB HG002 Chr20 exome [20] (VCF) | 8,233 | 8,233 | 0 | 0 | 100% Exact Match |
+| Multimodal & CRAM Twin Suite [26] | 17-modality extended CLI coverage suite (.var & VCF) | 17 | 17 | 0 | 0 | 100% Exact Match |
+| Multimodal & CRAM Twin Suite [26] | 18-slice multimodal regression suite (VCF) | 18 | 18 | 0 | 0 | 100% Exact Match |
+| Multimodal & CRAM Twin Suite [26] | GIAB HG008 [19] CRAM-vs-BAM [26] twin slice (VCF) | 1 | 1 | 0 | 0 | 100% Exact Match |
+| Multimodal & CRAM Twin Suite [26] | Lossless CRAM-vs-BAM [26] bitwise twin verification (VCF) | 40 | 40 | 0 | 0 | 100% Exact Match |
+| 51.8 GiB HG002 RNA-Seq [13] | 51.8 GiB HG002 GM24385 [13] splice junction table (-i) (.splice.tsv) | 12,668 | 12,668 | 0 | 0 | 100% Exact Match |
+| 51.8 GiB HG002 RNA-Seq [13] | 51.8 GiB HG002 GM24385 [13] cDNA variant calls (-i) (.var) | 1,230 | 1,230 | 0 | 0 | 100% Exact Match |
+| 10 Mbp Chr1 All-Positions (-f 0)<sup>c</sup> | Chromosome 1 10 Mbp at -f 0 (--tile-size 10000000) (.var)<sup>c</sup> | 7,077 | 7,077 | 0 | 0 | 100% Exact Match<sup>c</sup> |
+| 10 Mbp Chr1 All-Positions (-f 0)<sup>c</sup> | Chromosome 1 10 Mbp at -f 0 (--tile-size 10000000) (VCF)<sup>c</sup> | 7,032 | 7,032 | 0 | 0 | 100% Exact Match<sup>c</sup> |
+| 12-Sub-Arm CLI Mode Matrix [11] | Simple germline calling (-f 0.01) (.var) | 228 | 228 | 0 | 0 | 100% Exact Match |
+| 12-Sub-Arm CLI Mode Matrix [11] | Simple zero-threshold MRD calling (-f 0) (.var) | 248 | 248 | 0 | 0 | 100% Exact Match |
+| 12-Sub-Arm CLI Mode Matrix [11] | Simple germline calling with native Fisher exact test (--fisher) (.var) | 650 | 650 | 0 | 0 | 100% Exact Match |
+| 12-Sub-Arm CLI Mode Matrix [11] | Chromosome 17 targeted clinical panel (.var) | 83 | 83 | 0 | 0 | 100% Exact Match |
+| 12-Sub-Arm CLI Mode Matrix [11] | Structural variant deletion regions (.var) | 3 | 3 | 0 | 0 | 100% Exact Match |
+| 12-Sub-Arm CLI Mode Matrix [11] | Low-coverage germline boundary calling (.var) | 146 | 146 | 0 | 0 | 100% Exact Match |
+| 12-Sub-Arm CLI Mode Matrix [11] | Chromosome 17 amplicon awareness (-a) (.var) | 145 | 145 | 0 | 0 | 100% Exact Match |
+| 12-Sub-Arm CLI Mode Matrix [11] | Amplicon calling with native Fisher exact test (-a --fisher) (.var) | 145 | 145 | 0 | 0 | 100% Exact Match |
+| 12-Sub-Arm CLI Mode Matrix [11] | Paired tumor-normal somatic calling (-f 0.01) (.var) | 664 | 664 | 0 | 0 | 100% Exact Match |
+| 12-Sub-Arm CLI Mode Matrix [11] | Paired somatic zero-threshold MRD calling (-f 0) (.var) | 1,396 | 1,396 | 0 | 0 | 100% Exact Match |
+| 12-Sub-Arm CLI Mode Matrix [11] | Paired somatic calling with native Fisher exact test (--fisher) (.var) | 527 | 527 | 0 | 0 | 100% Exact Match |
+| 12-Sub-Arm CLI Mode Matrix [11] | CRAM-vs-BAM [26] lossless twin intermediate table (-G) (.var) | 228 | 228 | 0 | 0 | 100% Exact Match |
+| AML Panel SRR15006540 [11] | Clinical AML panel SRR15006540 [11] (.var) | 16,031 | 16,031 | 0 | 0 | 100% Exact Match |
+| AML Panel SRR15006540 [11] | Clinical AML panel SRR15006540 [11] (VCF) | 15,912 | 15,912 | 0 | 0 | 100% Exact Match |
+| AML Panel SRR8657348 [11] | Clinical AML panel SRR8657348 [11] (.var) | 54,448 | 54,448 | 0 | 0 | 100% Exact Match |
+| AML Panel SRR8657348 [11] | Clinical AML panel SRR8657348 [11] (VCF) | 53,224 | 53,224 | 0 | 0 | 100% Exact Match |
+| AML Somatic Pair (SRR15006376 / SRR15006386) [11] | Clinical AML somatic pair SRR15006376 / SRR15006386 [11] (.var) | 14,126 | 14,126 | 0 | 0 | 100% Exact Match |
+| AML Somatic Pair (SRR15006376 / SRR15006386) [11] | Clinical AML somatic pair SRR15006376 / SRR15006386 [11] (VCF) | 14,000 | 14,000 | 0 | 0 | 100% Exact Match |
+| Ultra-Deep MRD Stress Suite | SRR15006375 (-f 0.0005 --fisher) (.var) | 2,780 | 2,780 | 0 | 0 | 100% Exact Match |
+| Ultra-Deep MRD Stress Suite | SRR15006375 (-f 0.0005 --fisher) (VCF) | 2,645 | 2,645 | 0 | 0 | 100% Exact Match |
+| Ultra-Deep MRD Stress Suite | SRR15006375 (-f 0 --fisher) (.var) | 6,182 | 6,182 | 0 | 0 | 100% Exact Match |
+| Ultra-Deep MRD Stress Suite | SRR15006375 (-f 0 --fisher) (VCF) | 5,685 | 5,685 | 0 | 0 | 100% Exact Match |
+| Ultra-Deep MRD Stress Suite | SRR15006540 (-f 0.0005 --fisher) (.var) | 5,046 | 5,046 | 0 | 0 | 100% Exact Match |
+| Ultra-Deep MRD Stress Suite | SRR15006540 (-f 0.0005 --fisher) (VCF) | 4,711 | 4,711 | 0 | 0 | 100% Exact Match |
+| Ultra-Deep MRD Stress Suite | SRR15006540 (-f 0 --fisher) (.var) | 7,044 | 7,044 | 0 | 0 | 100% Exact Match |
+| Ultra-Deep MRD Stress Suite | SRR15006540 (-f 0 --fisher) (VCF) | 6,313 | 6,313 | 0 | 0 | 100% Exact Match |
+| Ultra-Deep MRD Stress Suite | SRR15006386 (-f 0.0005 --fisher) (.var) | 3,028 | 3,028 | 0 | 0 | 100% Exact Match |
+| Ultra-Deep MRD Stress Suite | SRR15006386 (-f 0.0005 --fisher) (VCF) | 2,888 | 2,888 | 0 | 0 | 100% Exact Match |
+| Ultra-Deep MRD Stress Suite | SRR15006386 (-f 0 --fisher) (.var) | 6,153 | 6,153 | 0 | 0 | 100% Exact Match |
+| Ultra-Deep MRD Stress Suite | SRR15006386 (-f 0 --fisher) (VCF) | 5,608 | 5,608 | 0 | 0 | 100% Exact Match |
+| Ultra-Deep MRD Stress Suite | SRR15006376 (-f 0.0005 --fisher) (.var) | 2,844 | 2,844 | 0 | 0 | 100% Exact Match |
+| Ultra-Deep MRD Stress Suite | SRR15006376 (-f 0.0005 --fisher) (VCF) | 2,732 | 2,732 | 0 | 0 | 100% Exact Match |
+| Ultra-Deep MRD Stress Suite | SRR15006376 (-f 0 --fisher) (.var) | 3,841 | 3,841 | 0 | 0 | 100% Exact Match |
+| Ultra-Deep MRD Stress Suite | SRR15006376 (-f 0 --fisher) (VCF) | 3,630 | 3,630 | 0 | 0 | 100% Exact Match |
+| Ultra-Deep MRD Stress Suite | AML Somatic SRR15006376 / SRR15006386 (29kx depth) (-f 0.0005 --fisher) (.var) | 4,045 | 4,045 | 0 | 0 | 100% Exact Match |
+| Ultra-Deep MRD Stress Suite | AML Somatic SRR15006376 / SRR15006386 (29kx depth) (-f 0.0005 --fisher) (VCF) | 3,855 | 3,855 | 0 | 0 | 100% Exact Match |
+| Ultra-Deep MRD Stress Suite | AML Somatic SRR15006376 / SRR15006386 (29kx depth) (-f 0 --fisher) (.var) | 6,890 | 6,890 | 0 | 0 | 100% Exact Match |
+| Ultra-Deep MRD Stress Suite | AML Somatic SRR15006376 / SRR15006386 (29kx depth) (-f 0 --fisher) (VCF) | 6,309 | 6,309 | 0 | 0 | 100% Exact Match |
+| Ultra-Deep MRD Stress Suite | AML Somatic SRR15006375 / SRR15006386 (45kx depth) (-f 0.0005 --fisher) (.var) | 4,481 | 4,481 | 0 | 0 | 100% Exact Match |
+| Ultra-Deep MRD Stress Suite | AML Somatic SRR15006375 / SRR15006386 (45kx depth) (-f 0.0005 --fisher) (VCF) | 4,262 | 4,262 | 0 | 0 | 100% Exact Match |
+| Ultra-Deep MRD Stress Suite | AML Somatic SRR15006375 / SRR15006386 (45kx depth) (-f 0 --fisher) (.var) | 7,474 | 7,474 | 0 | 0 | 100% Exact Match |
+| Ultra-Deep MRD Stress Suite | AML Somatic SRR15006375 / SRR15006386 (45kx depth) (-f 0 --fisher) (VCF) | 6,828 | 6,828 | 0 | 0 | 100% Exact Match |
+| Ultra-Deep MRD Stress Suite | GIAB HG008 [19] Somatic (15kx depth) (-f 0.0005 --fisher) (.var) | 19 | 19 | 0 | 0 | 100% Exact Match |
+| Ultra-Deep MRD Stress Suite | GIAB HG008 [19] Somatic (15kx depth) (-f 0.0005 --fisher) (VCF) | 16 | 16 | 0 | 0 | 100% Exact Match |
+| Ultra-Deep MRD Stress Suite | GIAB HG002 [13] Germline (7kx depth) (-f 0.0005 --fisher) (.var) | 1,008 | 1,008 | 0 | 0 | 100% Exact Match |
+| Ultra-Deep MRD Stress Suite | GIAB HG002 [13] Germline (7kx depth) (-f 0.0005 --fisher) (VCF) | 640 | 640 | 0 | 0 | 100% Exact Match |
+| Ultra-Deep MRD Stress Suite | HG002 GM24385 [13] RNA-Seq (173kx depth) (-f 0.001 --fisher) (.var) | 139 | 139 | 0 | 0 | 100% Exact Match |
+| Ultra-Deep MRD Stress Suite | HG002 GM24385 [13] RNA-Seq (173kx depth) (-f 0.001 --fisher) (VCF) | 120 | 120 | 0 | 0 | 100% Exact Match |
+| WGS & WES Low-VAF MRD Matrix | GIAB HG002 [13, 18] WGS MRD (-f 0.001) (.var) | 15,083 | 15,083 | 0 | 0 | 100% Exact Match |
+| WGS & WES Low-VAF MRD Matrix | GIAB HG002 [13, 18] WGS MRD (-f 0.001) (VCF) | 14,769 | 14,769 | 0 | 0 | 100% Exact Match |
+| WGS & WES Low-VAF MRD Matrix | GIAB HG002 [13, 18] WGS MRD (-f 0) (.var) | 15,083 | 15,083 | 0 | 0 | 100% Exact Match |
+| WGS & WES Low-VAF MRD Matrix | GIAB HG002 [13, 18] WGS MRD (-f 0) (VCF) | 14,769 | 14,769 | 0 | 0 | 100% Exact Match |
+| WGS & WES Low-VAF MRD Matrix | GIAB HG008 [19] Somatic WGS MRD (-f 0.001) (.var) | 21,379 | 21,379 | 0 | 0 | 100% Exact Match |
+| WGS & WES Low-VAF MRD Matrix | GIAB HG008 [19] Somatic WGS MRD (-f 0.001) (VCF) | 20,293 | 20,293 | 0 | 0 | 100% Exact Match |
+| WGS & WES Low-VAF MRD Matrix | GIAB HG008 [19] Somatic WGS MRD (-f 0.001 --fisher) (.var) | 21,379 | 21,379 | 0 | 0 | 100% Exact Match |
+| WGS & WES Low-VAF MRD Matrix | GIAB HG008 [19] Somatic WGS MRD (-f 0.001 --fisher) (VCF) | 20,293 | 20,293 | 0 | 0 | 100% Exact Match |
+| WGS & WES Low-VAF MRD Matrix | GIAB HG008 [19] Somatic WGS MRD (-f 0) (.var) | 21,379 | 21,379 | 0 | 0 | 100% Exact Match |
+| WGS & WES Low-VAF MRD Matrix | GIAB HG008 [19] Somatic WGS MRD (-f 0) (VCF) | 20,293 | 20,293 | 0 | 0 | 100% Exact Match |
+| WGS & WES Low-VAF MRD Matrix | GIAB HG005 [13] 300x WGS chr3 (-f 0.001) (.var) | 339 | 339 | 0 | 0 | 100% Exact Match |
+| WGS & WES Low-VAF MRD Matrix | GIAB HG005 [13] 300x WGS chr3 (-f 0.001) (VCF) | 325 | 325 | 0 | 0 | 100% Exact Match |
+| WGS & WES Low-VAF MRD Matrix | GIAB HG005 [13] 300x WGS chr3 (-f 0) (.var) | 339 | 339 | 0 | 0 | 100% Exact Match |
+| WGS & WES Low-VAF MRD Matrix | GIAB HG005 [13] 300x WGS chr3 (-f 0) (VCF) | 325 | 325 | 0 | 0 | 100% Exact Match |
+| WGS & WES Low-VAF MRD Matrix | GIAB HG005 [13] 300x WGS chr6 (-f 0.001) (.var) | 305 | 305 | 0 | 0 | 100% Exact Match |
+| WGS & WES Low-VAF MRD Matrix | GIAB HG005 [13] 300x WGS chr6 (-f 0.001) (VCF) | 299 | 299 | 0 | 0 | 100% Exact Match |
+| WGS & WES Low-VAF MRD Matrix | GIAB HG005 [13] 300x WGS chr21 (-f 0.001) (.var) | 286 | 286 | 0 | 0 | 100% Exact Match |
+| WGS & WES Low-VAF MRD Matrix | GIAB HG005 [13] 300x WGS chr21 (-f 0.001) (VCF) | 284 | 284 | 0 | 0 | 100% Exact Match |
+| WGS & WES Low-VAF MRD Matrix | SEQC2 HCC1395 [10] Somatic Exome MRD (-f 0.001) (.var) | 5,261 | 5,261 | 0 | 0 | 100% Exact Match |
+| WGS & WES Low-VAF MRD Matrix | SEQC2 HCC1395 [10] Somatic Exome MRD (-f 0.001) (VCF) | 5,206 | 5,206 | 0 | 0 | 100% Exact Match |
+| WGS & WES Low-VAF MRD Matrix | SEQC2 HCC1395 [10] Somatic Exome MRD (-f 0.001 --fisher) (.var) | 5,261 | 5,261 | 0 | 0 | 100% Exact Match |
+| WGS & WES Low-VAF MRD Matrix | SEQC2 HCC1395 [10] Somatic Exome MRD (-f 0.001 --fisher) (VCF) | 5,206 | 5,206 | 0 | 0 | 100% Exact Match |
+| WGS & WES Low-VAF MRD Matrix | SEQC2 HCC1395 [10] Somatic Exome MRD (-f 0) (.var) | 5,261 | 5,261 | 0 | 0 | 100% Exact Match |
+| WGS & WES Low-VAF MRD Matrix | SEQC2 HCC1395 [10] Somatic Exome MRD (-f 0) (VCF) | 5,206 | 5,206 | 0 | 0 | 100% Exact Match |
 
-*All 87/87 (100.00%) comparative sub-arms across all 12 Option C sweep cells achieve 100% exact .var and .vcf parity against VarDictJava v1.8.3 (standard <=1 Mbp BED intervals run untiled by default; multi-megabase single-region runs use --tile-size matching the region span).*
+*<sup>a</sup>All 87/87 (100.00%) comparative sub-arms across all 12 multi-regime sweep suites and all 5 baseline equivalence suites achieve 100% exact intermediate (.var, .splice.tsv) and VCF parity against VarDictJava v1.8.3 [1] (0 false positives and 0 false negatives at eps=1e-6). <sup>b</sup>Halo-tiling invariance confirms identical variant output across 0.5, 1.0, 2.0, and 10.0 Mbp tile sizes on SEQC2 HCC1395 [10]. <sup>c</sup>Standard BED intervals (<=1 Mbp) run untiled by default; the two multi-megabase single-interval stress suites (10 Mbp chr1 at -f 0 and 249.25 Mbp -R chr1) use --tile-size matching the region span so that single-window VarDictRust is compared directly against single-window VarDictJava [1].*

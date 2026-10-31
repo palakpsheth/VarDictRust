@@ -65,8 +65,8 @@ EXPECTED_TABLE_IDS = [
     "table4_memory_scaling_and_packing",
     "table5_full_wgs_arm_a_vs_b",
     "table6_cross_platform_chr20",
-    "table7_v50q_cmrg_mosaic",
-    "table8_hg008_modern_callers_and_titration",
+    "table7_v50q_cmrg_mosaic_and_hg008_v04",
+    "table8_supply_chain_and_divergences",
 ]
 
 EXPECTED_SUPP_TABLE_IDS = [

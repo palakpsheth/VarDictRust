@@ -298,8 +298,30 @@ table {
   font-family: "Liberation Sans", "DejaVu Sans", Arial, sans-serif;
   font-size: 6.5pt;
   line-height: 1.22;
-  margin: 6pt 0 10pt 0;
+  margin: 6pt 0 4pt 0;
   table-layout: auto;
+}
+sup, sub {
+  font-size: 72%;
+  line-height: 0;
+}
+table sup {
+  font-weight: 600;
+}
+div.table-footnote {
+  font-family: "Liberation Sans", "DejaVu Sans", Arial, sans-serif;
+  font-size: 6.9pt;
+  line-height: 1.28;
+  color: #334155;
+  margin: 0 0 10pt 0;
+  break-before: avoid;
+  page-break-before: avoid;
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+div.table-footnote p {
+  margin: 0;
+  text-align: left;
 }
 thead {
   display: table-header-group;
@@ -416,6 +438,13 @@ def _postprocess_body_html(body_html: str) -> str:
     body_html = re.sub(
         r'<figure class="paper-figure">\s*(<img[^>]+/>)\s*</figure>\s*<p>(<strong>Figure\s+\d+[\s\S]*?)</p>',
         r'<figure class="paper-figure">\n  \1\n  <figcaption>\2</figcaption>\n</figure>',
+        body_html,
+    )
+
+    # 1b. Wrap table footnote paragraph immediately following </table> into <div class="table-footnote">
+    body_html = re.sub(
+        r"(</table>)\s*<p>(<em>[\s\S]*?</em>)</p>",
+        r'\1\n<div class="table-footnote"><p>\2</p></div>',
         body_html,
     )
 

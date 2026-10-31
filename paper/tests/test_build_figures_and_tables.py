@@ -234,27 +234,20 @@ class TestBuildFiguresAndTables(unittest.TestCase):
         supp_tables_md = "\n".join(
             (TAB_DIR / f"supp_table{i}.md").read_text(encoding="utf-8") for i in range(1, 7)
         )
-        supp_domain_md = "\n".join(
-            (TAB_DIR / f"supp_table{i}.md").read_text(encoding="utf-8") for i in range(2, 7)
-        )
 
         for row in inv_rows:
             cid = row["cell_id"]
             self.assertIn(cid, supp1_md, f"Cell {cid} missing from supp_table1.md")
             self.assertIn(cid.replace("_", "\\_"), supp1_tex, f"Cell {cid} missing from supp_table1.tex")
             self.assertIn(cid, supp_tables_md, f"Cell {cid} missing from supp_table1..6.md")
-            self.assertIn(
-                cid,
-                supp_domain_md,
-                f"Cell {cid} missing from supplementary domain tables (supp_table2..6.md)",
-            )
 
-        for i in range(1, 9):
-            main_md_path = TAB_DIR / f"table{i}.md"
-            main_md = main_md_path.read_text(encoding="utf-8")
+        clean_table_stems = [f"table{i}" for i in range(1, 9)] + [f"supp_table{i}" for i in range(2, 7)]
+        for stem in clean_table_stems:
+            t_md_path = TAB_DIR / f"{stem}.md"
+            t_md = t_md_path.read_text(encoding="utf-8")
             self.assertIsNone(
-                re.search(r"\b(s[1-6]_[a-z0-9_]+|sweep_[a-z0-9_]+|evidence_certified)\b", main_md),
-                f"Raw internal cell_id found in {main_md_path}",
+                re.search(r"\b(s[1-6]_[a-z0-9_]+|sweep_[a-z0-9_]+|evidence_certified)\b", t_md),
+                f"Raw internal cell_id found in {t_md_path}",
             )
             for bad_tok in (
                 "Option C",
@@ -271,9 +264,40 @@ class TestBuildFiguresAndTables(unittest.TestCase):
             ):
                 self.assertNotIn(
                     bad_tok,
-                    main_md,
-                    f"Internal harness jargon {bad_tok!r} found in {main_md_path}",
+                    t_md,
+                    f"Internal harness jargon {bad_tok!r} found in {t_md_path}",
                 )
+
+    def test_all_tables_have_citations_and_superscript_notes(self) -> None:
+        table_stems = [f"table{i}" for i in range(1, 9)] + [f"supp_table{i}" for i in range(1, 7)]
+        for stem in table_stems:
+            md_path = TAB_DIR / f"{stem}.md"
+            tex_path = TAB_DIR / f"{stem}.tex"
+            md_txt = md_path.read_text(encoding="utf-8")
+            tex_txt = tex_path.read_text(encoding="utf-8")
+
+            self.assertRegex(md_txt, r"\[\d+(?:[–,-]\s*\d+)*\]", f"Missing bracketed citation [N] in {md_path}")
+            self.assertIn("<sup>a</sup>", md_txt, f"Missing superscript note <sup>a</sup> in {md_path}")
+            self.assertNotIn("`<sup>", md_txt, f"Backtick-escaped <sup> found in {md_path}")
+
+            self.assertIn("$^{\\text{a}}$", tex_txt, f"Missing LaTeX superscript $^{{\\text{{a}}}}$ in {tex_path}")
+            self.assertNotIn("<sup>", tex_txt, f"Unconverted raw HTML <sup> found in {tex_path}")
+            self.assertIn("\\resizebox{\\textwidth}{!}{%", tex_txt, f"Missing \\resizebox in {tex_path}")
+            self.assertIsNone(
+                re.search(r"\\caption\{(Table|Supplementary Table)\s+", tex_txt),
+                f"Duplicate leading Table prefix in LaTeX \\caption in {tex_path}",
+            )
+
+            for stale_phrase in (
+                "Wall-Clock Timeout (>10 min)",
+                "1 Threads",
+                "1 sub-arms",
+                "1 Sub-Arms",
+                "17-Run",
+                "25 evaluations",
+            ):
+                self.assertNotIn(stale_phrase, md_txt, f"Stale/inaccurate phrase {stale_phrase!r} in {md_path}")
+                self.assertNotIn(stale_phrase, tex_txt, f"Stale/inaccurate phrase {stale_phrase!r} in {tex_path}")
 
     def test_no_hardcoded_numbers_in_builder_script(self) -> None:
         self.assertTrue(SCRIPT.is_file(), f"Missing {SCRIPT}")
@@ -325,7 +349,7 @@ class TestBuildFiguresAndTables(unittest.TestCase):
         self.assertIn("87/87 Sweep Sub-Arms Exact Match", table1_md)
         self.assertIn("24/24 Sub-Arms Exact Match", table1_md)
         self.assertIn("30/30 Sub-Arms Exact Match", table1_md)
-        self.assertIn("1/1 Sub-Arms Exact Match", table1_md)
+        self.assertIn("1/1 Sub-Arm Exact Match", table1_md)
         self.assertIn("2/2 Sub-Arms Exact Match", table1_md)
 
 

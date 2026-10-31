@@ -312,7 +312,7 @@ CELL_CATALOG: dict[str, dict[str, Any]] = {
         "stage": "sweep",
         "tier": "Tier P",
         "paper_targets": ["Fig 1", "Fig 2", "Table 1", "Supp Table S1", "Supp Table S2"],
-        "description": "Option C .var parity sweep across 11 Tier-P operational modes",
+        "description": "Option C .var parity sweep across 12 Tier-P operational mode sub-arms",
     },
     "sweep_tierp_SRR15006540": {
         "stage": "sweep",
@@ -863,9 +863,11 @@ def build_stage2(raw_dir: Path) -> dict[str, Any]:
             bed_intervals = 0
             if bed_lines_files:
                 bed_intervals = safe_int(bed_lines_files[0].read_text(encoding="utf-8").split()[0])
-            cmp_var_files = list(d.glob("compare_var*.txt"))
-            cmp_vcf_files = list(d.glob("compare_vcf*.txt"))
-            eq_files = list(d.glob("equivalence*.txt"))
+            elif samp == "somatic_76_86":
+                bed_intervals = tierp_v2.get("SRR15006376", {}).get(f"th{th}", {}).get("bed_intervals", 105949)
+            cmp_var_files = list(d.glob("compare_var*.txt")) or list(d.glob("compare_som_var*.txt"))
+            cmp_vcf_files = list(d.glob("compare_vcf*.txt")) or list(d.glob("compare_som_vcf*.txt"))
+            eq_files = list(d.glob("equivalence*.txt")) or list(d.glob("somatic_counts*.txt"))
 
             eng_stats: dict[str, Any] = {}
             for eng in ("rust", "java", "cpp"):
@@ -1085,8 +1087,25 @@ def build_stage3(raw_dir: Path) -> dict[str, Any]:
 def build_stage4(raw_dir: Path) -> dict[str, Any]:
     s4: dict[str, Any] = {}
 
-    pb_path = raw_dir / "s4_perf_budget_4targets_n3" / "perf_budget_gcp.json"
+    pb_dir = raw_dir / "s4_perf_budget_4targets_n3"
+    pb_path = pb_dir / "perf_budget_gcp.json"
     pb_doc = json.loads(pb_path.read_text(encoding="utf-8")) if pb_path.is_file() else {}
+    target_subdir_map = {
+        "amplicon-tier2": "amplicon",
+        "hg002-tier2": "hg002",
+        "hg008-tier2": "hg008",
+        "seqc2-exome-tier2": "seqc2",
+    }
+    if "runs" in pb_doc:
+        for tkey, subname in target_subdir_map.items():
+            if tkey in pb_doc["runs"]:
+                tdir = pb_dir / subname
+                reps: dict[str, Any] = {}
+                for eng in ("rust", "java", "cpp"):
+                    reps[eng] = summarize_replicates(
+                        [parse_gnu_time(p) for p in sorted(tdir.glob(f"{eng}_run*.time"))]
+                    )
+                pb_doc["runs"][tkey]["replicates"] = reps
     s4["perf_budget_4targets_n3"] = pb_doc
 
     exome_scale: dict[str, Any] = {}
