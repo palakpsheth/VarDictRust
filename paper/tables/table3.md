@@ -16,20 +16,20 @@
 | GIAB NA24385 GRCh37 v4.2.1 [13] (Optimal QUAL >= 160.0)<sup>b</sup> | VarDictRust == VarDictJava [1] | TP=5, FP=0 | 1.0000 / 1.0000 / 1.0000 | Combined SNV + InDel evaluation<sup>b</sup> | 100% Exact Match (0 site differences) |
 | GIAB HG002 GRCh38 Benchmark Slice [13, 18] | VarDictRust | 0:21.30 (21.30 s) / 474.8 MB | 0.5041 / 0.9634 / 0.6619 | 0.5781 / 0.9463 / 0.7177 | 100% Exact Match (VarDictRust == VarDictJava) |
 | GIAB HG002 GRCh38 Benchmark Slice [13, 18] | VarDictJava [1] | 2:39.59 (159.59 s) / 10732.2 MB | 0.5041 / 0.9634 / 0.6619 | 0.5781 / 0.9463 / 0.7177 | 100% Exact Match (VarDictRust == VarDictJava) |
-| GIAB HG002 GRCh38 Benchmark Slice [13, 18] | vardictcpp [11] | 0:21.14 (21.14 s) / 859.1 MB | 0.5043 / 0.9634 / 0.6620 | 0.5783 / 0.9463 / 0.7179 | MNP / SV Divergence vs. Java<sup>e</sup> |
+| GIAB HG002 GRCh38 Benchmark Slice [13, 18] | vardictcpp [11] | 0:21.14 (21.14 s) / 859.1 MB | 0.5043 / 0.9634 / 0.6620 | 0.5783 / 0.9463 / 0.7179 | MNP / SV Divergence vs. Java<sup>d</sup> |
 | GIAB HG002 GRCh38 Benchmark Slice [13, 18] | FreeBayes [3] | 6:08.72 (368.72 s) / 206.7 MB | 0.9686 / 0.9598 / 0.9642 | 0.9373 / 0.9538 / 0.9455 | Native GRCh38 Comparator |
 | GIAB HG002 GRCh38 Benchmark Slice [13, 18] | LoFreq [7] | 6:16.78 (376.78 s) / 119.0 MB | 0.8924 / 0.9909 / 0.9391 | 0.5809 / 0.9601 / 0.7238 | Native GRCh38 Comparator |
 | GIAB HG002 GRCh38 Benchmark Slice [13, 18] | Strelka2 [4] | 8:22.19 (502.19 s) / 130.1 MB | 0.9931 / 0.9909 / 0.9920 | 0.9438 / 0.9836 / 0.9633 | Native GRCh38 Comparator |
 | GIAB HG002 GRCh38 Benchmark Slice [13, 18] | Octopus [5] | 3:11.50 (191.50 s) / 3558.9 MB | 0.9911 / 0.9861 / 0.9886 | 0.9051 / 0.9810 / 0.9415 | Native GRCh38 Comparator |
 | GIAB HG008 v0.3 Somatic Slice [19] | VarDictRust | 0:17.14 (17.14 s) / 510.5 MB | 0.9757 / 0.6552 / 0.7840 | 0.9370 / 0.4034 / 0.5640 | 100% Exact Match (VarDictRust == VarDictJava) |
 | GIAB HG008 v0.3 Somatic Slice [19] | VarDictJava [1] | 1:19.15 (79.15 s) / 17448.2 MB | 0.9757 / 0.6552 / 0.7840 | 0.9370 / 0.4034 / 0.5640 | 100% Exact Match (VarDictRust == VarDictJava) |
-| GIAB HG008 v0.3 Somatic Slice [19] | vardictcpp [11] | 0:17.30 (17.30 s) / 565.1 MB | 0.9757 / 0.6552 / 0.7840 | 0.9444 / 0.4034 / 0.5653 | MNP / SV Divergence vs. Java<sup>e</sup> |
+| GIAB HG008 v0.3 Somatic Slice [19] | vardictcpp [11] | 0:17.30 (17.30 s) / 565.1 MB | 0.9757 / 0.6552 / 0.7840 | 0.9444 / 0.4034 / 0.5653 | MNP / SV Divergence vs. Java<sup>d</sup> |
 | GIAB HG008 v0.3 Somatic Slice [19] | Mutect2 [8] | 7:27.31 (447.31 s) / 1263.1 MB | 0.9825 / 0.6438 / 0.7779 | 0.9355 / 0.3932 / 0.5537 | Native GRCh38 Comparator |
 | GIAB HG008 v0.3 Somatic Slice [19] | Strelka2 [4] | 0:36.35 (36.35 s) / 119.0 MB | 0.9896 / 0.7794 / 0.8720 | 0.9545 / 0.2847 / 0.4386 | Native GRCh38 Comparator |
 | GIAB HG008 v0.3 Somatic Slice [19] | LoFreq [7] | 1:18.71 (78.71 s) / 251.5 MB | 1.0000 / 0.6814 / 0.8105 | 0.0000 / 0.0000 / 0.0000<sup>c</sup> | Native GRCh38 Comparator |
 | SEQC2 HCC1395 v1.2.1 Somatic Exome [10] | VarDictRust | 4:39.29 (279.29 s) / 514.3 MB | 0.7336 / 0.7532 / 0.7433 | 0.3077 / 0.4800 / 0.3750 | 100% Exact Match (VarDictRust == VarDictJava) |
 | SEQC2 HCC1395 v1.2.1 Somatic Exome [10] | VarDictJava [1] | 1:06:07 (3967.00 s) / 14275.5 MB | 0.7336 / 0.7532 / 0.7433 | 0.3077 / 0.4800 / 0.3750 | 100% Exact Match (VarDictRust == VarDictJava) |
-| SEQC2 HCC1395 v1.2.1 Somatic Exome [10] | vardictcpp [11] | 4:53.71 (293.71 s) / 2259.8 MB | 0.7336 / 0.7532 / 0.7433 | 0.3077 / 0.4800 / 0.3750 | MNP / SV Divergence vs. Java<sup>e</sup> |
+| SEQC2 HCC1395 v1.2.1 Somatic Exome [10] | vardictcpp [11] | 4:53.71 (293.71 s) / 2259.8 MB | 0.7336 / 0.7532 / 0.7433 | 0.3077 / 0.4800 / 0.3750 | MNP / SV Divergence vs. Java<sup>d</sup> |
 | SEQC2 HCC1395 v1.2.1 Somatic Exome [10] | Mutect2 [8] | 44:01.05 (2641.05 s) / 1580.9 MB | 0.6152 / 0.8361 / 0.7089 | 0.6087 / 0.8400 / 0.7059 | Native GRCh38 Comparator |
 | SEQC2 HCC1395 v1.2.1 Somatic Exome [10] | Strelka2 [4] | 2:52.88 (172.88 s) / 118.8 MB | 0.3044 / 0.8689 / 0.4509 | 0.4324 / 0.6400 / 0.5161 | Native GRCh38 Comparator |
 | SEQC2 HCC1395 v1.2.1 Somatic Exome [10] | LoFreq [7] | 9:01.90 (541.90 s) / 281.6 MB | 0.9526 / 0.7627 / 0.8471 | 0.0000 / 0.0000 / 0.0000<sup>c</sup> | Native GRCh38 Comparator |

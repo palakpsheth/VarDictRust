@@ -1788,7 +1788,7 @@ def build_all_tables(doc: dict[str, Any], inv_rows: list[dict[str, str]], tab_di
         if "VarDict" in r["caller"]:
             verdict_fc = "100% Exact Match (VarDictRust == VarDictJava)"
         elif r["caller"] == "vardictcpp":
-            verdict_fc = "MNP / SV Divergence vs. Java<sup>e</sup>"
+            verdict_fc = "MNP / SV Divergence vs. Java<sup>d</sup>"
         else:
             verdict_fc = "Native GRCh38 Comparator"
         t3_rows.append(
@@ -2957,7 +2957,8 @@ def build_all_tables(doc: dict[str, Any], inv_rows: list[dict[str, str]], tab_di
         s5_rows,
         f"<sup>a</sup>Evaluates Chromosome 20 callsets at -f 0.01 across 4 GIAB HG002 [13, 18] germline platforms and 6 GIAB HG008 [19] somatic platforms; across all {len(s5_rows)}/{len(s5_rows)} stratification cells (Clopper-Pearson 95% CI {fmt_clopper_pearson_ci(len(s5_rows), len(s5_rows))}), VarDictRust v1.0.6 and VarDictJava v1.8.3 [1] exhibit 0 site differences. "
         "<sup>b</sup>Genomic strata follow the NIST GIAB / GA4GH v3.5 [17] stratification BED definitions on GRCh38 (homopolymers of 4–6 bp, 7–11 bp, and >=12 bp, all tandem repeats, segmental duplications, low-mappability regions, and RefSeq coding sequences). "
-        "<sup>c</sup>Within the Chromosome 20 RefSeq CDS stratum of GIAB HG008 v0.4 [19], the somatic truth set contains SNVs only and zero truth InDels.",
+        "<sup>c</sup>Within the Chromosome 20 RefSeq CDS stratum of GIAB HG008 v0.4 [19], the somatic truth set contains SNVs only and zero truth InDels. "
+        "Source ledger: stratification values are generated from the stage6 TSVs via master_gcp_metrics.json; this table is the formatted view.",
     )
 
     # ------------------------------------------------------------------
@@ -3113,7 +3114,8 @@ def build_all_tables(doc: dict[str, Any], inv_rows: list[dict[str, str]], tab_di
         s6_rows,
         "<sup>a</sup>Evaluates all 13 functional CLI modes across VarDictJava v1.8.3 [1], VarDictRust v1.0.6, and vardictcpp [11]; VarDictRust achieves 0 false positives (FP=0) and 0 false negatives (FN=0) across all 13/13 modes, whereas vardictcpp exhibits FP=1, FN=1 on simple_fisher. "
         "<sup>b</sup>Stock Bioconda VarDictJava v1.8.3 [1] fails with java.lang.NoClassDefFoundError on CRAM inputs; VarDictRust decodes CRAM natively via pure-Rust noodles and matches the lossless BAM twin oracle with 0 differences. "
-        "<sup>c</sup>Catalogs the 10 functional, schema, and algorithmic divergence classes (CPP-1 through CPP-10) empirically observed in vardictcpp (commit ae93fe39dc) [11] during the 60-experiment benchmark study.",
+        "<sup>c</sup>Catalogs the 10 functional, schema, and algorithmic divergence classes (CPP-1 through CPP-10) empirically observed in vardictcpp (commit ae93fe39dc) [11] during the 60-experiment benchmark study. "
+        "Source ledger: mode-parity rows are generated from the sweep matrix via master_gcp_metrics.json; this table is the formatted view.",
     )
 
 
