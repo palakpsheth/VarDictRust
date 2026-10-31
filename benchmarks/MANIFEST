@@ -96,6 +96,7 @@ hartwig_sage_ilmn.vcf.gz	https://ftp-trace.ncbi.nlm.nih.gov/ReferenceSamples/gia
 GA4GH_v3.5_GRCh38_stratifications	https://ftp-trace.ncbi.nlm.nih.gov/ReferenceSamples/giab/release/genome-stratifications/v3.5/GRCh38@all/	gs://vardict-paper-trial-bams/g4-cache/stratifications_v35/	gcs-staged	18492104	2026-10-29T14:40:00-07:00
 
 # Canonical Tracked Study Synthesis Artifacts (VarDictRust v1.0.6, Engine Fingerprint 5865a2a0b24a8c17, SHA-256)
+benchmarks/gcp-study-v106/SHA256SUMS.tsv	gs://vardict-paper-trial-results/cells-v106/	5e4055ad588a9c99f57c09dbe4c8b49f56254d66dc57056016c72c99897ac15c	sha256-computed-locally	1116	2026-10-30T18:30:00-07:00
 benchmarks/gcp-study-v106/cells_60_inventory.tsv	gs://vardict-paper-trial-results/cells-v106/	1e02cdebffe6d9386989ade4e56604ced3a297332f813a6ab2a6801aed25450a	sha256-computed-locally	18266	2026-10-30T18:30:00-07:00
 benchmarks/gcp-study-v106/master_gcp_metrics.json	gs://vardict-paper-trial-results/cells-v106/	784adb2a01ae9d92800ca834f72c24dd6fcc2a2d1155becf2cf8da969fb0f8f2	sha256-computed-locally	564556	2026-10-30T18:30:00-07:00
 benchmarks/gcp-study-v106/stage5/cross_platform_chr20_summary.tsv	gs://vardict-paper-trial-results/cells-v106/s5_cross_platform_short_read_chr20_panel/cross_platform_chr20_summary.tsv	f410b906dffb10f671979bd6862a6d814e45ccdb5652660577bfd1bd3a6718f6	sha256-computed-locally	7589	2026-10-30T18:30:00-07:00
