@@ -7,6 +7,7 @@ import html
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 import markdown
@@ -136,7 +137,7 @@ def preprocess_markdown_for_html(md_text: str, base_dir: Path) -> str:
         return (
             f'\n\n<figure class="paper-figure">\n'
             f'  <img src="{uri}" alt="{alt}" />\n'
-            f'</figure>\n\n'
+            f"</figure>\n\n"
         )
 
     text = re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", _replace_image, text)
@@ -148,9 +149,15 @@ def preprocess_markdown_for_html(md_text: str, base_dir: Path) -> str:
         if stripped.startswith("|") and stripped.endswith("|"):
             # Do not touch separator rows like | :--- | :--- |
             if not re.match(r"^\|\s*[:\-| ]+\|\s*$", stripped):
-                line = line.replace("<=", "&le;").replace(">=", "&ge;").replace("->", "&rarr;")
+                line = (
+                    line.replace("<=", "&le;")
+                    .replace(">=", "&ge;")
+                    .replace("->", "&rarr;")
+                )
                 # Escape any remaining raw '<' that is not an HTML tag we emitted (<span, </span, <sub, </sub, <sup, </sup, <i, </i)
-                line = re.sub(r"<(?!(?:  |/?(?:span|sub|sup|i|code|strong|em|a)\b))", "&lt;", line)
+                line = re.sub(
+                    r"<(?!(?:  |/?(?:span|sub|sup|i|code|strong|em|a)\b))", "&lt;", line
+                )
         # Ensure blank line before list items (- ... or 1. ...) so Python-Markdown starts a list block
         if re.match(r"^\s*(?:-\s+|\d+\.\s+)", line):
             if processed_lines and processed_lines[-1].strip() != "":
@@ -465,8 +472,14 @@ def _postprocess_body_html(body_html: str) -> str:
             parts[i] = re.sub(r"([_/])([A-Za-z0-9])", r"\1&#8203;\2", parts[i])
         return "".join(parts)
 
-    s = re.sub(r"<td>([\s\S]*?)</td>", lambda m: f"<td>{_add_zwsp_in_tags(m.group(1))}</td>", s)
-    s = re.sub(r"<code>([\s\S]*?)</code>", lambda m: f"<code>{_add_zwsp_in_tags(m.group(1))}</code>", s)
+    s = re.sub(
+        r"<td>([\s\S]*?)</td>", lambda m: f"<td>{_add_zwsp_in_tags(m.group(1))}</td>", s
+    )
+    s = re.sub(
+        r"<code>([\s\S]*?)</code>",
+        lambda m: f"<code>{_add_zwsp_in_tags(m.group(1))}</code>",
+        s,
+    )
 
     for idx, block in enumerate(pre_blocks):
         s = s.replace(f"@@PREBLOCK{idx}@@", block)
@@ -499,21 +512,37 @@ def markdown_to_html_document(md_text: str, base_dir: Path, title: str) -> str:
 
 def find_chrome_binary() -> str | None:
     """Locate headless Chrome/Chromium binary if installed."""
-    for candidate in ("google-chrome", "chromium", "chromium-browser", "/usr/bin/google-chrome"):
+    for candidate in (
+        "google-chrome",
+        "chromium",
+        "chromium-browser",
+        "/usr/bin/google-chrome",
+    ):
         found = shutil.which(candidate)
         if found:
             return found
     return None
 
 
-def render_markdown_to_pdf(md_text: str, pdf_path: Path, base_dir: Path, title: str) -> None:
+def render_markdown_to_pdf(
+    md_text: str, pdf_path: Path, base_dir: Path, title: str
+) -> None:
     """Render Markdown text to a typeset PDF file via headless Chrome and optimize via Ghostscript."""
     html_doc = markdown_to_html_document(md_text, base_dir, title=title)
     chrome_bin = find_chrome_binary()
     if chrome_bin is None:
         if pdf_path.is_file() and pdf_path.stat().st_size > 0:
+            print(
+                f"WARNING: no Chrome/Chromium found; reusing pre-rendered {pdf_path} "
+                "which may be stale relative to the regenerated Markdown. "
+                "Set PAPER_ALLOW_STALE_PDF=1 to silence this only when reuse is intended; "
+                "reproduce_all.sh fails fast without Chrome by default.",
+                file=sys.stderr,
+            )
             return
-        raise RuntimeError("No Chrome/Chromium binary found for PDF compilation and no pre-rendered PDF exists.")
+        raise RuntimeError(
+            "No Chrome/Chromium binary found for PDF compilation and no pre-rendered PDF exists."
+        )
     pdf_path.parent.mkdir(parents=True, exist_ok=True)
 
     with tempfile.TemporaryDirectory(prefix="vardict_paper_pdf_") as tmpdir:

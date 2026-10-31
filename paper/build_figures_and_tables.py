@@ -2459,7 +2459,7 @@ def build_all_tables(
             "All 10 Platforms x 7 Strata [17]<sup>e</sup>",
             f"{len(ga_rows)} GA4GH v3.5 Cells",
             f"{len(ga_rows)}/{len(ga_rows)} Completed",
-            "100% Exact Match (VarDictRust == VarDictJava)<sup>b,e</sup>",
+            f"70/70 Rust truth evaluations (Java parity: {j_comp_cnt}/{j_comp_cnt} completing paired runs)<sup>b,e</sup>",
             "—",
             f"Mean SNV F1={sum(r['snv_f1'] for r in ga_rows) / len(ga_rows):.4f}",
             f"See Supplementary Table S5 for all {len(ga_rows)} cells<sup>e</sup>",
@@ -2475,7 +2475,8 @@ def build_all_tables(
         f"<sup>b</sup>VarDictRust achieves 100% exact equivalence against VarDictJava v1.8.3 [1] across all {j_comp_cnt}/{j_comp_cnt} completing Chromosome 20 runs and all {nf_cnt}/{nf_cnt} targeted singleton noise-floor runs (Supplementary Table S4); runs marked Timeout (rc=124, >3 h) exceeded the multi-hour stage wall-clock limit under extreme-depth somatic pileups. "
         "<sup>c</sup>On completing runs where VarDictJava also finished, vardictcpp [11] diverges from the oracle due to MNP splitting and omitted somatic SVs (CPP-2, CPP-9); rows marked Oracle Timed Out completed in vardictcpp while the VarDictJava reference run timed out. "
         "<sup>d</sup>Accuracy is evaluated via rtg vcfeval [12] against both the unmasked NIST GIAB high-confidence BED [13, 19] and the intersection with the Ultima Genomics High-Confidence Region (UG-HCR v2.1) [6] homopolymer-exclusion mask. "
-        f"<sup>e</sup>Summarizes the {len(ga_rows)}-cell GA4GH v3.5 [17] stratification matrix (10 platforms x 7 difficult genomic strata; full breakdown in Supplementary Table S5).",
+        f"<sup>e</sup>Summarizes the {len(ga_rows)}-cell GA4GH v3.5 [17] stratification matrix (10 platforms x 7 difficult genomic strata; full breakdown in Supplementary Table S5). "
+        "The matrix evaluates Rust callsets against GIAB truth only (no Java oracle runs); its 70/70 figure is truth-evaluation completion, not Java–Rust parity — parity is established on the completing paired runs in footnote b.",
     )
 
     # ------------------------------------------------------------------
@@ -3373,7 +3374,7 @@ def build_all_tables(
         "Supplementary Table S4. Verified Truth-Set Operating Points, Variant-Class Stratification, 18-Arm Somatic Noise-Floor Matrix & Low-VAF Titration Detail",
         s4_headers,
         s4_rows,
-        "<sup>a</sup>VarDictRust and VarDictJava v1.8.3 [1] produce identical rtg vcfeval [12] TP, FP, FN, precision, recall, and F1 scores at every QUAL threshold from 0 to 200 across all 5 truth cohorts. "
+        "<sup>a</sup>VarDictRust and VarDictJava v1.8.3 [1] produce identical rtg vcfeval [12] TP, FP, FN, precision, recall, and F1 scores at the unfiltered (All-PASS) and optimal QUAL operating points of all 5 truth cohorts (displayed rows; per-cohort optima: HG002 >= 128, SEQC2 >= 126, HG008 >= 176). "
         "<sup>b</sup>Variant-class stratification compares VarDictRust, VarDictJava [1], and vardictcpp [11] across SNVs, insertions, deletions, complex MNPs, and structural variants (SVs), showing that vardictcpp splits complex MNPs on HG002 and omits SVs on SEQC2 and HG008 (CPP-2, CPP-9). "
         f"<sup>c</sup>Across all {nf_cnt}/{nf_cnt} targeted Chromosome 20 somatic noise-floor runs (6 HG008 platforms x 3 low-VAF regimes: -f 0.01 -r 2, -f 0 -r 2, and singleton -f 0 -r 1), VarDictRust and VarDictJava emit identical candidate and PASS variant sets. "
         f"<sup>d</sup>In silico tumor-purity titration admixtures were generated from GIAB HG008 [19] tumor and matched normal BAMs via samtools view -s [26] at 20%, 10%, 5%, 2%, and 1% tumor purity ({10:.1f}% to {0.5:.1f}% expected clonal VAF) and called at -f 0.002; undefined 0/0 precision and F1 values at 0.0000 recall are normalized to 0.0000. "

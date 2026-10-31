@@ -45,23 +45,56 @@ def sync_docs(repo_root: pathlib.Path, check: bool = False) -> int:
 
     # 1. Update docs/validation/omnibus-empirical-validation.md
     omnibus_path = repo_root / "docs" / "validation" / "omnibus-empirical-validation.md"
-    if omnibus_path.is_file():
+    # The omnibus §13 SHA-256 table is a required surface: every evidence JSON
+    # must have exactly one row. A deleted or reformatted row must fail loudly
+    # instead of passing silently via an unmatched substitution.
+    required_docs = [
+        omnibus_path,
+        repo_root / "DIVERGENCES.md",
+        repo_root / "docs" / "testing" / "test-matrix-and-ci-audit.md",
+        repo_root / "benchmarks" / "README.md",
+        repo_root
+        / ".agents"
+        / "skills"
+        / "vardictrust-release"
+        / "references"
+        / "version-surface-map.md",
+    ]
+    for req in required_docs:
+        if not req.is_file():
+            print(
+                f"ERROR: required documentation surface missing: {req.relative_to(repo_root)}",
+                file=sys.stderr,
+            )
+            return 1
+    sha_rows_verified = 0
+    if omnibus_path.is_file():  # guaranteed present by required_docs check above
         orig_text = omnibus_path.read_text(encoding="utf-8")
         text = re.sub(
             r"(\*\*Certified Release Engine Fingerprint:\*\*\s*`)[0-9a-f]{16}(`)",
             rf"\g<1>{fp}\2",
             orig_text,
         )
+        sha_rows_verified = 0
         for jf in json_files:
             jf_data = json.loads(jf.read_text(encoding="utf-8"))
             jf_fp = jf_data.get("fingerprint", fp)
             jf_sha = hashlib.sha256(jf.read_bytes()).hexdigest()
             fname_esc = re.escape(jf.name)
-            text = re.sub(
+            text, n = re.subn(
                 rf"(\|\s*\[`{fname_esc}`\]\([^)]+\)\s*\|\s*`)[0-9a-f]{{16}}(`\s*\|\s*`)[0-9a-f]{{64}}(`\s*\|)",
                 rf"\g<1>{jf_fp}\g<2>{jf_sha}\3",
                 text,
             )
+            sha_rows_verified += n
+        if sha_rows_verified != len(json_files):
+            print(
+                f"ERROR: omnibus SHA-256 table has {sha_rows_verified} matching rows, "
+                f"expected one per evidence JSON ({len(json_files)}); a manifest row "
+                "may have been deleted or reformatted.",
+                file=sys.stderr,
+            )
+            return 1
         if text != orig_text:
             if check:
                 mismatches.append(str(omnibus_path.relative_to(repo_root)))
@@ -192,12 +225,12 @@ def sync_docs(repo_root: pathlib.Path, check: bool = False) -> int:
             )
             return 1
         print(
-            f"Evidence documentation surfaces in sync: fingerprint={fp}, perf_fingerprint={perf_fp} (16 SHA-256 rows verified)."
+            f"Evidence documentation surfaces in sync: fingerprint={fp}, perf_fingerprint={perf_fp} ({sha_rows_verified} SHA-256 rows verified)."
         )
         return 0
 
     print(
-        f"Synced evidence documentation surfaces: fingerprint={fp}, perf_fingerprint={perf_fp} (16 SHA-256 rows updated)."
+        f"Synced evidence documentation surfaces: fingerprint={fp}, perf_fingerprint={perf_fp} ({sha_rows_verified} SHA-256 rows updated)."
     )
     return 0
 

@@ -6,9 +6,11 @@ This package provides a deterministic, single-command reproducibility pipeline f
 
 ---
 
-## 1. Quickstart: 100% Offline Reproduction
+## 1. Quickstart: Offline Reproduction (After One-Time Setup)
 
 All aggregated metrics, per-cell runtime/RSS measurements, truth evaluations, and cryptographic digests from the 60 Google Cloud Platform (GCP) study cells are committed in-tree under [`benchmarks/gcp-study-v106/`](../benchmarks/gcp-study-v106/).
+
+> **Prerequisites (one-time, needs network):** building the Python virtual environment (`.venv`) via `uv` downloads dependencies from PyPI, and PDF rendering needs a headless Chrome/Chromium binary. Do this once with network access; everything after it runs fully offline from committed data. To run the pipeline on a machine without Chrome, export `PAPER_ALLOW_STALE_PDF=1` to reuse the checked-in PDFs — without it, `reproduce_all.sh` fails fast instead of reporting stale PDFs as reproduced (see §5).
 
 To reproduce every figure, table, compiled manuscript, LinkedIn carousel slide, and verification gate from scratch:
 
@@ -126,3 +128,5 @@ bash harness/gcp_paper_runner.sh --plan-check
 # 4. Verify release documentation surfaces match evidence manifests:
 python3 harness/sync_evidence_docs.py --check
 ```
+
+`reproduce_all.sh` requires a headless Chrome/Chromium binary to render PDFs. If none is found it exits before compiling (no stale PDFs reported as reproduced). For Chromeless environments (e.g. docs-only CI), `PAPER_ALLOW_STALE_PDF=1 bash paper/reproduce_all.sh` reuses the checked-in PDFs with a loud warning; Markdown/evidence gates still run.

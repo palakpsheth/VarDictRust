@@ -22,6 +22,18 @@ fi
 
 PY="$ROOT/.venv/bin/python"
 
+# Fail fast when no Chrome/Chromium renderer is available: otherwise the
+# pipeline would silently reuse checked-in PDFs and report stale artifacts
+# as reproduced. Chromeless environments may opt into tracked-PDF reuse with
+# PAPER_ALLOW_STALE_PDF=1 (Markdown/evidence gates still run).
+if [[ "${PAPER_ALLOW_STALE_PDF:-0}" != "1" ]]; then
+  if ! command -v google-chrome >/dev/null 2>&1 && ! command -v chromium >/dev/null 2>&1 && ! command -v chromium-browser >/dev/null 2>&1 && [[ ! -x /usr/bin/google-chrome ]]; then
+    echo "ERROR: no headless Chrome/Chromium binary found; cannot render manuscript/supplement PDFs." >&2
+    echo "Install google-chrome or chromium, or run with PAPER_ALLOW_STALE_PDF=1 to reuse the checked-in PDFs (figures/text changes will NOT be re-rendered)." >&2
+    exit 1
+  fi
+fi
+
 if [[ "${1:-}" == "--sync-gcs" ]]; then
   echo "Syncing raw GCP study cell results from GCS..."
   mkdir -p benchmarks/data/gcp-study-v106
