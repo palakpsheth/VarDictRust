@@ -32,7 +32,7 @@ vardictrust -G GRCh38.fa -f 0.01 -N "TUMOR|NORMAL" -b "tumor.bam|normal.bam" -R 
 # chr7   55152340  .   G    A    184   PASS    TYPE=SNV;AF=0.245;STATUS=StrongSomatic  GT:DP:VD:AD:AF:RD:ALD  0/1:120:29:91,29...  0/0:115:0:115,0...
 ```
 
-Built under the [rewrites.bio](https://rewrites.bio) manifesto: *a faster, more robust tool that produces the same results*. See the [Omnibus Empirical Validation Report](docs/validation/omnibus-empirical-validation.md) for biological provenance, mathematical proofs, and cohort datasets.
+Built under the [rewrites.bio](https://rewrites.bio) manifesto: *a faster, more robust tool that produces the same results*. See the [Omnibus Empirical Validation Report](docs/validation/omnibus-empirical-validation.md) for biological provenance, mathematical proofs, and cohort datasets. The repository-tracked evaluation manuscript (compiled text, typeset PDFs, figures, tables, and one-command reproduction) lives in the [paper reproducibility package](paper/README.md): [manuscript](paper/manuscript.md) ([PDF](paper/manuscript.pdf)) and [supplement](paper/supplement.md) ([PDF](paper/supplement.pdf)).
 
 ---
 
@@ -478,6 +478,8 @@ If you use VarDictRust in published research, cite both Lai et al. (2016) and th
 }
 ```
 Full citation metadata is available in [`CITATION.cff`](CITATION.cff).
+
+The evaluation manuscript itself is repository-tracked (not yet peer-reviewed): [manuscript Markdown](paper/manuscript.md) ([typeset PDF](paper/manuscript.pdf)), [supplement Markdown](paper/supplement.md) ([typeset PDF](paper/supplement.pdf)), with figures, tables, and the deterministic reproduction pipeline documented in the [paper reproducibility package](paper/README.md).
 
 ---
 

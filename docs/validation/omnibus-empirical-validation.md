@@ -10,6 +10,7 @@
 **Author / Maintainer:** [Palak Sheth](https://www.linkedin.com/in/palak-p-sheth/) <palakpsheth@gmail.com>  
 **Companion Engineering Audit:** [`docs/testing/test-matrix-and-ci-audit.md`](../testing/test-matrix-and-ci-audit.md) (Master Test Matrix & CI/CD Pipeline Audit)  
 **Benchmark Specification & Hardware Ledger:** [`benchmarks/README.md`](../../benchmarks/README.md)  
+**Reproducibility Package (manuscript, supplement, figures, tables, one-command rerun):** [`paper/README.md`](../../paper/README.md)  
 **Verification Framework:** [Three-Tier Parity & Truth Standard](../testing/test-matrix-and-ci-audit.md#tier-1) (Tier-1 Intermediate Table, Tier-2 Full VCF Oracle Differential, Tier-3 Biological Ground Truth)
 
 ---
