@@ -549,16 +549,95 @@ Every claim in this omnibus report is backed by a permanent, machine-readable ev
 
 ---
 
-## 14. Exact Reproduction Commands
+## 14. GCP 60-Cell Multi-Stage Cloud Benchmark & Cross-Platform/Truth-Set Expansion (v1.0.6, n2-standard-32 / c3d-standard-32)
+
+In addition to the 16 repository-tracked acceptance artifacts in §13, `VarDictRust v1.0.6` (`2a8e9a3`, engine fingerprint `5865a2a0b24a8c17`, `--perf` fingerprint `c490c36317b8f25b`) was evaluated across a **6-stage, 60-directory Google Cloud Platform (GCP) study (`gs://vardict-paper-trial-results/cells-v106/`)** orchestrated by [`harness/gcp_paper_runner.sh`](../../harness/gcp_paper_runner.sh) and [`harness/run_stage_6.sh`](../../harness/run_stage_6.sh), governed by [`benchmarks/gcp-prereg.md`](../../benchmarks/gcp-prereg.md) and [`docs/validation/gcp-study-protocol.md`](gcp-study-protocol.md), and synthesized in `benchmarks/gcp-study-v106/master_gcp_metrics.json` (`docs/validation/provenance/task-5b-to-6-report.md`).
+
+### 14.1 Six-Stage 60-Directory Architecture, Hardware & Cloud Ledger
+
+All 59 compute cells and 1 `evidence_certified` bundle executed on dedicated GCP `n2-standard-32` (`32 vCPUs`, `128 GiB RAM`, `100 GB pd-ssd` boot + `4×375 GB` [`1.5 TB`] NVMe Local SSD RAID0) and `n2-highmem-32` (`32 vCPUs`, `256 GB RAM`, `250 GB pd-ssd` boot + `8×375 GB` [`3.0 TB`] NVMe Local SSD RAID0) instances locked to identical **`Intel Xeon Platinum 8373C` (`--min-cpu-platform="Intel Ice Lake"`, `2.60 GHz` base / `3.50 GHz` all-core turbo)** silicon (with local development/smoke validation on `c3d-standard-32` / Linux x86_64) under `systemd-run --scope -p AllowedCPUs=0-$((P-1)) -p MemoryMax=<CAP>`:
+
+| Stage | Scope & Benchmark Cohort | Directories in `cells-v106/` | Primary Gate / Outcome |
+| :--- | :--- | :---: | :--- |
+| **Stage 1** | Pre-flight memory ceiling (`amplicon`, `HG008`), multi-region reference (`Gate 7`), & `H1a` tile-size invariance (`0.5..10 Mbp`) | `4` | **`4/4 PASS`** (`100% MATCH`; ceiling RSS `11.5 MB` / `502.8 MB` $\ll 8\text{ GB}$) |
+| **Stage 2** | `Tier P` Wolff (2026) AML panel replication (`5` samples + somatic pair at `1c`/`8c`, `n=3`), Table 3 `-R chr1` (`249 Mbp`), Fig 1–3 field callers, & `13`-mode parity sweep | `17` | **`17/17 PASS`** (`100%` `.var`/`.vcf` `MATCH`; `-R chr1` `0.31 GiB` Rust vs `10.58 GiB` C++ vs `106.47 GiB` Java `-Xmx200g`) |
+| **Stage 3** | Full-transcriptome `HG002` GM24385 mRNA (`51.8 GiB` STAR 2-pass BAM, `-i` splice mode, `n=3`) | `1` | **`1/1 PASS`** (`12,668` splice rows `100%` sorted-set `MATCH`; `4.94s` / `359.9 MB` Rust vs `23.31s` / `4.79 GiB` Java) |
+| **Stage 4** | `Tier E/G` `1..32c` scaling (`SEQC2` exome), `chr1` `1..249 Mbp` span curve (`8/16/32c`), `2×4c` node packing, `QUAL` ROC sweep (`0..200`), CRAM twin, + `evidence_certified` | `15` (`14` + `1`) | **`15/15 PASS`** (`11.98×` 32c exome speedup; `1.18×` `chr1` RSS ratio at `-th 8`) |
+| **Option C Sweep** | Full-core (`-th 32`) intermediate `.var` & `.vcf` parity sweep across `87` sub-arms (`Tier P/E/G`, RNA `51.8 GiB`, ultra-deep MRD `-f 0.0005` / `-f 0` up to `45,000×`) | `12` | **`12/12 PASS`** (`78/87` sub-arms `MATCH`; `9/87` expected multi-tile boundary diffs under `H1a`) |
+| **Stage 5** | Full-genome `chr1..chr22` WGS (`HG002` `130.8 GB` & `HG008` `329.0 GB` `364×` `Arm A` contigs + `Arm B` `≤50 kbp` GIAB BED), `10`-platform `chr20` panel + `18/18` `-f 0` noise floor, GRCh38 field callers, & `H4` security matrix | `7` | **`7/7 PASS`** (`HG002` `Arm B` `8,111,171` variants `100% MATCH` on callable intervals; `18/18 STRICT_MATCH` noise floor) |
+| **Stage 6** | Literature-gap closure (`B9`): `HG002` `GIAB v5.0q` (`T2T-Q100`), `CMRG v1.00`, `Mosaic SNV v1.10`; `HG008 v0.4` `12`-caller ML/commercial matrix; `20%→1%` purity titration; `70`-cell `GA4GH v3.5` stratification | `4` | **`4/4 PASS`** (`84/85 = 98.82%` Mosaic SNV recall; `16.7×` SNV $F_1$ & `25.1×` recall advantage at `0.5%` VAF; `70/70` `GA4GH v3.5` strata `0` diffs) |
+| **Total** | **Complete 6-Stage Cloud Study (`gs://vardict-paper-trial-results/cells-v106/`)** | **`60`** | **`$228.90 / $300.00` total spend (`0` active VMs/disks; `760.96 GiB` cached at `~$3.51/wk`)** |
+
+### 14.2 Stages 1–4 & Option C Sweep: Whole-Chromosome `-R chr1` Memory Blowup, Transcriptome `-i`, and 1–32 Core Scaling
+
+1. **Wolff (2026) Table 1–3 & Fig 1–3 Replication (`Stage 2`):** Across all `5` single-sample AML MiSeq panels (`SRR15006375`, `SRR15006376`, `SRR15006386`, `SRR15006540`, `SRR8657348` `773,667` intervals) and the somatic pair (`SRR15006376|SRR15006386`) at `-th 1` and `-th 8` (`n=3`), `VarDictRust v1.0.6` achieves `100%` `.var` and `.vcf` parity (`FP = FN = 0`) with **`2.36×–5.56×` speedup** and **`4.3×–26.5×` lower peak RSS** than `VarDictJava v1.8.3` (`187.5–493.2 MB` vs `2.03–7.44 GB`). On the Table 3 un-chunked whole-chromosome `-R chr1:1-249250621` (`249.25 Mbp`, `SRR8657348`) stress test (`s2_table3_R_chr1_java_200g_n3`, `s2_table3_R_chr1_rust_and_cpp`), `VarDictJava` OOM-crashes at `-Xmx4g` (`rc=3`) and requires **`106.47 GiB` (`111.65 GB`) peak RSS (`501.83s`)** at `-Xmx200g`, `vardictcpp` consumes **`10.58 GiB` (`11.10 GB`) peak RSS (`105.89s`)**, and `VarDictRust v1.0.6` finishes in **`9.75s` at `0.31 GiB` (`318.6 MB`) peak RSS** — **`51.5×` faster and `342.2×` less RAM than `VarDictJava`**, and **`10.9×` faster and `34.0×` less RAM than `vardictcpp`**.
+2. **Full-Transcriptome RNA-seq Splice Calling (`Stage 3`, `s3_rna_splice_parity_n3`):** On the `51.8 GiB` STAR 2-pass aligned `HG002` GM24385 mRNA transcriptome BAM (`-i` splice mode), `VarDictRust v1.0.6` reproduces all **`12,668` intermediate rows (`100%` sorted-set `MATCH`)** in **`4.94s` at `359.9 MB` RSS** vs `VarDictJava`'s `23.31s` at `4.79 GiB` RSS (**`4.72×` faster, `13.6×` less RAM**; `vardictcpp` `SKIP`s `-i`).
+3. **Whole-Exome 1–32 Thread Scaling & Span Invariance (`Stage 4`):** On the full `SEQC2 HCC1395` whole exome (`120,307` target exons, `339,698` variants, `s4_scale_exome_3way_th{1..32}`), `VarDictRust v1.0.6` scales from `812.75s` (`1c`) to `118.90s` (`8c`) and **`67.86s` (`32c`, `11.98×` parallel speedup, `747.2 MB` peak RSS)** vs `VarDictJava`'s `1,991.64s` / `21.77 GiB` RSS at `32c` (`29.3×` faster, `29.8×` less RAM). Across `chr1` `10 Mbp → 249 Mbp`, peak RSS ratio is **`1.18×` at `-th 8`**, **`1.29×` at `-th 16`**, and **`1.41×` at `-th 32`** (all `< 1.5×` pre-registered `H2` bound).
+
+### 14.3 Stage 5: Full-Genome `chr1..chr22` WGS (`HG002` & `HG008` `364×`) and 10-Platform Sequencing Chemistry Panel
+
+Stage 5 evaluated full-genome `chr1..chr22` autosome calling (`-th 32`) under both **`Arm A` (`22` un-chunked whole-chromosome intervals, `2,875,001,522 bp`)** and **`Arm B` (`≤50 kbp` pre-tiled GIAB callable intervals)**:
+
+| Full-Genome WGS Cell (`-th 32`) | Input BAM Size & Depth | `VarDictJava v1.8.3` (`-Xmx200g`) | `vardictcpp` (`--chunk 50000`) | `VarDictRust v1.0.6` (`5865a2a0b24a8c17`) | Parity / Truth Verdict |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **`HG002` `Arm A` (`22` Contigs)** (`s5_wgs_hg002_full_contigs_3way_th32`) | `130.8 GB` (`~50×` `2×250 bp`) | **OOM Crash (`rc=3`)** at `213.70 GB` RSS | `18m 50.80s` · `31.91 GB` RSS (`9,953,338` vars; `+309,569` boundary dupes) | **`25m 16.61s` · `4.93 GB` (`4.70 GiB`) RSS** (`9,643,769` vars) | **`OOM-vs-completed`** (`6.5×` less RAM than C++) |
+| **`HG002` `Arm B` (`≤50 kbp` GIAB)** (`s5_wgs_hg002_full_giab_3way_th32`) | `130.8 GB` (`2.51 Gbp`, `56,642` intervals) | `3h 08m 15s` · `34.14 GB` RSS (`8,111,171` vars) | `11m 40.98s` · `28.35 GB` RSS (`8,111,565` vars) | **`20m 21.21s` · `1.43 GB` (`1.37 GiB`) RSS** (`8,111,171` vars) | **`100% MATCH` on callable intervals** · `rtg vcfeval` **EQUAL** ($F_1 = 0.9651$ best-$F_1$, $0.6624$ `None`) |
+| **`HG008` `Arm A` (`22` Contigs)** (`s5_wgs_hg008_full_contigs_3way_th32`) | `329.0 GB` (`195×/169× = 364×` T/N) | **OOM Crash (`rc=3`)** at `214.10 GB` RSS | `1h 02m 50s` · `91.85 GB` RSS (`13,182,812` vars) | **`2h 49m 52s` · `12.14 GB` (`11.57 GiB`) RSS** (`13,067,287` vars) | **`OOM-vs-completed`** (`7.6×` less RAM than C++) |
+| **`HG008` `Arm B` (`≤50 kbp` GIAB)** (`s5_wgs_hg008_full_giab_3way_th32`) | `329.0 GB` (`2.37 Gbp`, `50,554` intervals) | **Timeout (`rc=124`, `>6h`)** at `62.51 GB` RSS | `21m 46s` · `21.16 GB` RSS (`10,287,644` vars) | **`1h 45m 55s` · `4.88 GB` (`4.65 GiB`) RSS** (`10,195,118` vars) | **`OOM/Timeout-vs-completed`** · `GIAB v0.3` $F_1 = 0.6547$, `v0.4` $F_1 = 0.6585$ |
+
+In `s5_cross_platform_short_read_chr20_panel` (`benchmarks/gcp-study-v106/stage5/cross_platform_chr20_summary.tsv` and `cross_platform_f0_noise_floor.tsv`), `VarDictRust v1.0.6` was evaluated across **`10` sequencing platform arms** on full `chr20` (`64.44 Mb`) at both `-f 0.01` and `-f 0` (`4` `HG002` germline: `Illumina NovaSeq 6000`, `Element AVITI 80×`, `MGI DNBSEQ 100×`, `Ultima UG100 40× CRAM+BAM`; `6` `HG008` somatic: `Illumina NovaSeq 195×/169×`, `Roche Axelios 1 SBX-Duplex 119×/44×`, `PacBio Onso SBB 136×/48×`, `Element AVITI 111×/77×`, `Ultima UG100 Standard 306×/234×`, `Ultima UG100 ppmSeq 157×/160×`), plus an **`18`-arm singleton noise-floor stress panel (`-f 0 -r 1`)** across `HG008` `r1.bed`–`r3.bed`. `VarDictRust v1.0.6` achieved **`18/18 STRICT_MATCH` (`0` textual differences within $\varepsilon = 10^{-6}$)** on the `-f 0 -r 1` noise floor (`239,713` variants across `6` somatic chemistries × `3` regions) and identical `rtg vcfeval` SNV/InDel $F_1$ to `VarDictJava v1.8.3` across all `10` platforms on both standard GIAB and Ultima `UG-HCR v2.1` beds (`SNV` $F_1 = 0.9922\text{–}0.9970$ on `HG002`; `SNV` $F_1 = 0.8588\text{–}0.9583$ on `HG008` across `Illumina`, `Element AVITI`, and `PacBio Onso`).
+
+### 14.4 Stage 6: Literature-Gap Closure (`GIAB v5.0q T2T-Q100`, `CMRG v1.00`, `Mosaic SNV v1.10`, 12-Caller `HG008 v0.4`, Low-VAF Titration & 70-Cell `GA4GH v3.5`)
+
+Stage 6 (`harness/run_stage_6.sh`, `gcp-prereg.md §B9`) executed four post-registration exploratory analyses to benchmark `VarDictRust v1.0.6` against 2024–2026 community truth standards and modern deep-learning/commercial somatic callers:
+
+1. **Modern `HG002` Truth Benchmarks (`s6_hg002_v50q_cmrg_mosaic_eval`, `stage6/hg002_v50q_cmrg_mosaic_summary.tsv`):**
+   - **NIST GIAB `v5.0q` (`T2T-HG002-Q100`, `chr1..chr22`, `2.74 Gbp`):** `VarDictRust v1.0.6` (`Arm A` full contigs) achieves **`93.67%` SNV recall (`0.6650` best-$F_1$)** and **`70.07%` InDel recall (`0.6551` best-$F_1$)**; on `Arm B` (`≤50 kbp` GIAB BED), `VarDictRust` and `VarDictJava` achieve **identical** precision, recall, and $F_1$ (`SNV` $R = 0.8344, F_1 = 0.6584$; `InDel` $R = 0.6407, F_1 = 0.6499$).
+   - **NIST `CMRG v1.00` (`273` Challenging Medically Relevant Genes):** `VarDictRust v1.0.6` (`Arm A`) achieves **`89.20%` SNV recall (`0.6791` best-$F_1$)** and **`77.02%` InDel recall (`0.6937` best-$F_1$)** (`Arm B` `VarDictRust == VarDictJava`: `SNV` $F_1 = 0.5067$, `InDel` $F_1 = 0.5698$).
+   - **NIST GIAB `Mosaic SNV v1.10` (`85` Somatic Mosaic SNVs in `HG002`):** `VarDictRust v1.0.6` recovers **`84 / 85` (`98.82%` sensitivity)** on `Arm A` and **`82 / 85` (`96.47%` sensitivity, identical to `VarDictJava`)** on `Arm B`.
+2. **`HG008 v0.4` 12-Caller Modern ML & Commercial Landscape (`s6_hg008_modern_ml_and_commercial_callers`, `stage6/hg008_modern_ml_commercial_callers_v04.tsv`):** Evaluated across `HG008_FullWGS_v0.4_All`, `HG008_FullWGS_v0.4_NoGI`, and `HG008_Slice_v0.4_All` alongside `7` NIST GIAB `Liss_lab` callsets (`DRAGEN v4.2.4 Linear`, `DRAGEN v4.2.4 Graph`, `DeepSomatic v1.6.0`, `ClairS v0.4.1`, `Ultima DeepVariant`, `Hartwig SAGE`, `Lancet2`) and `3` CPU callers (`Mutect2`, `Strelka2`, `LoFreq`). On `HG008_FullWGS_v0.4_All`, `VarDictRust v1.0.6` achieves **`97.10%` SNV recall (`0.7209` best-$F_1$)** and **`83.17%` InDel recall** (exceeding `DRAGEN v4.2.4 Linear/Graph` InDel recall of `62.74%` and `Ultima DeepVariant` InDel recall of `26.55%`), while on `HG008_Slice_v0.4_All` `VarDictRust` achieves **`97.81%` SNV recall (`0.9355` SNV $F_1$)** and **`84.42%` InDel recall (`0.8400` InDel $F_1$)**.
+3. **Low-VAF Somatic Tumor-Purity Titration Curve (`s6_low_vaf_titration_truth_curve`, `stage6/low_vaf_titration_curve.tsv`):** Across `5` synthetic `HG008` tumor-normal admixtures (`20%`, `10%`, `5%`, `2%`, `1%` tumor purity $\leftrightarrow$ `10%`, `5%`, `2.5%`, `1%`, `0.5%` expected clonal VAF) called at `-f 0.002 -th 16`, `VarDictRust v1.0.6` matches `VarDictJava v1.8.3` at every purity level while running **`2.4×–3.2×` faster (`18.17–21.52s` vs `51.63–59.98s`)**:
+
+| Tumor Purity / Expected Clonal VAF | `VarDictRust v1.0.6` (`== VarDictJava`) SNV $R$ / $F_1$ | `VarDictRust v1.0.6` (`== VarDictJava`) InDel $R$ / $F_1$ | `Mutect2 v4.6.2.0` SNV $R$ / $F_1$ | `Strelka2 v2.9.10` SNV $R$ / $F_1$ | `LoFreq v2.1.5` SNV $R$ / $F_1$ |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| **`20%` Purity (`~10.0%` VAF)** | **`0.7836` / `0.6929`** | **`0.6104` / `0.5629`** | `0.8586` / `0.9164` | `0.7836` / `0.7931` | `0.7615` / `0.8577` |
+| **`10%` Purity (`~5.0%` VAF)** | **`0.4600` / `0.5177`** | **`0.3117` / `0.3692`** | `0.5809` / `0.7286` | `0.4003` / `0.5516` | `0.3356` / `0.5000` |
+| **`5%` Purity (`~2.5%` VAF)** | **`0.2283` / `0.2952`** | **`0.1429` / `0.2000`** | `0.2334` / `0.3769` | `0.1193` / `0.2096` | `0.0681` / `0.1274` |
+| **`2%` Purity (`~1.0%` VAF)** | **`0.0716` / `0.1058`** | **`0.0779` / `0.1091`** | `0.0256` / `0.0498` | `0.0085` / `0.0169` | `0.0017` / `0.0034` |
+| **`1%` Purity (`~0.5%` VAF)** | **`0.0426` / `0.0569`** | **`0.0390` / `0.0638`** | `0.0017` / `0.0034` | `0.0017` / `0.0034` | `0.0000` / `NA` |
+
+At `1%` purity (`~0.5%` VAF), probabilistic callers (`Mutect2`, `Strelka2`, `LoFreq`) collapse to $\le 0.17\%$ SNV sensitivity ($F_1 \le 0.0034$, `0%` InDel recall), whereas `VarDictRust v1.0.6` (`== VarDictJava v1.8.3`) retains **`4.26%` SNV recall (`0.0569` $F_1$, `25.1×` higher recall and `16.7×` higher $F_1$ than `Mutect2`/`Strelka2`)** and **`3.90%` InDel recall (`0.0638` $F_1$)**.
+4. **`70`-Cell `GA4GH v3.5` Cross-Platform Stratification Matrix (`s6_ga4gh_v35_stratification_matrix`, `stage6/ga4gh_v35_cross_platform_stratification.tsv`):** Evaluates `7` `GA4GH v3.5` GRCh38 strata (`Homopolymer_4to6bp`, `Homopolymer_7to11bp`, `Homopolymer_ge12bp`, `AllTandemRepeats`, `SegmentalDuplications`, `LowMappability`, `RefSeq_CDS`) across all `10` sequencing platforms (`70` cells total), confirming `100%` `VarDictRust == VarDictJava` concordance across every stratum and platform.
+
+### 14.5 Tracked Study Synthesis Artifacts & SHA-256 Ledger (`benchmarks/gcp-study-v106/`)
+
+All synthesized tables and metrics from the 60-cell GCP study are committed in-tree under `benchmarks/gcp-study-v106/` (`SHA256SUMS.tsv`):
+
+| Tracked Study Artifact Path | Size (Bytes) | SHA-256 Digest | Contents & Provenance Scope |
+| :--- | ---: | :--- | :--- |
+| `benchmarks/gcp-study-v106/cells_60_inventory.tsv` | `18,266` | `1e02cdebffe6d9386989ade4e56604ced3a297332f813a6ab2a6801aed25450a` | Complete `60`-directory inventory (`cell_id`, `stage`, `tier`, `exit_code`, `parity_verdict`, `paper_targets`). |
+| `benchmarks/gcp-study-v106/master_gcp_metrics.json` | `564,556` | `784adb2a01ae9d92800ca834f72c24dd6fcc2a2d1155becf2cf8da969fb0f8f2` | Unified JSON synthesis of all `60` GCS directories, `16` evidence JSONs, and `flat_macros`. |
+| `benchmarks/gcp-study-v106/stage5/cross_platform_chr20_summary.tsv` | `7,589` | `f410b906dffb10f671979bd6862a6d814e45ccdb5652660577bfd1bd3a6718f6` | Stage 5 `10`-platform `chr20` 3-way timing, RSS, parity, and `rtg vcfeval` summary at `-f 0.01` & `-f 0`. |
+| `benchmarks/gcp-study-v106/stage5/cross_platform_f0_noise_floor.tsv` | `868` | `d68febe93eaff27cda6a8a0da9a558a154cb996a9332a5a4a4934cbc5ac18f1c` | Stage 5 `18/18 STRICT_MATCH` `-f 0 -r 1` singleton noise-floor stress test across `6` somatic chemistries. |
+| `benchmarks/gcp-study-v106/stage5/cross_platform_rtg_eval_both_beds.tsv` | `9,299` | `b5803e6fdbcf33b040c15d1c655836533666df056a7336ab73ac2ac74761a0eb` | Stage 5 `rtg vcfeval` (`None` vs `Best_F1`) across standard GIAB and Ultima `UG-HCR v2.1` beds. |
+| `benchmarks/gcp-study-v106/stage5/grch38_field_caller_accuracy.tsv` | `1,685` | `5ca701e62d1670aa164e53bb9f785bd0329b753b1e15d25d649ada15007f6b9a` | Stage 5 native GRCh38 field-caller accuracy (`HG002`, `HG008 v0.3`, `SEQC2 v1.2.1`). |
+| `benchmarks/gcp-study-v106/stage6/ga4gh_v35_cross_platform_stratification.tsv` | `6,422` | `e2db677c4dbe4c503f6f93f07077543513dfec2b211ac4a3eb925028c6c18387` | Stage 6 `70`-cell `GA4GH v3.5` (`7` strata × `10` sequencing platforms) stratification matrix. |
+| `benchmarks/gcp-study-v106/stage6/hg002_v50q_cmrg_mosaic_summary.tsv` | `1,042` | `193e768124385ee07058acbfd8c8b30ce62a725f8b417db7f9bb0435cbd027d1` | Stage 6 `HG002` `GIAB v5.0q` (`T2T-Q100`), `CMRG v1.00`, and `Mosaic SNV v1.10` (`84/85`) summary. |
+| `benchmarks/gcp-study-v106/stage6/hg008_modern_ml_commercial_callers_v04.tsv` | `2,660` | `113729bddb39a975b4c964e918f81a9e5fd1c53e83722a92b52d43ad35d19726` | Stage 6 `HG008 v0.4` `12`-caller benchmark (`DRAGEN`, `DeepSomatic`, `ClairS`, `SAGE`, `Lancet2`, `Ultima DV`, etc.). |
+| `benchmarks/gcp-study-v106/stage6/low_vaf_titration_curve.tsv` | `2,428` | `1ec64cd8377f08f8a3356c35e8e3931dd55bfe14ad764956b85fd0008023f088` | Stage 6 `HG008` `20%→1%` purity (`10%→0.5%` VAF) titration curve at `-f 0.002` across `6` callers. |
+
+---
+
+## 15. Exact Reproduction Commands
 
 All benchmark suites are 100% reproducible on any POSIX system equipped with `samtools`, JDK 8+, and the `vardict-oracle` conda environment (setup via [`harness/setup_oracle.sh`](../../harness/setup_oracle.sh)):
 
-### 14.1 GIAB HG002 Unified First-Class Validation Runner (Tier-2 & Tier-3)
+### 15.1 GIAB HG002 Unified First-Class Validation Runner (Tier-2 & Tier-3)
 ```bash
 bash harness/run_hg002.sh
 ```
 
-### 14.2 SEQC2 Somatic Whole-Exome Comparison (Tier-2 & Tier-3)
+### 15.2 SEQC2 Somatic Whole-Exome Comparison (Tier-2 & Tier-3)
 ```bash
 # 1. Fetch reference genome and SEQC2 assets (configured via DATA_DIR, default: scratch/g4)
 bash harness/fetch_data.sh refs seqc2
@@ -571,7 +650,7 @@ bash harness/compare.sh \
   "HCC1395|HCC1395BL" -th 8
 ```
 
-### 14.3 Targeted Amplicon Panel Comparison (Tier-2)
+### 15.3 Targeted Amplicon Panel Comparison (Tier-2)
 ```bash
 # 1. Prepare amplicon overlapping panel fixture
 bash harness/get_amplicon_fixture.sh
@@ -584,12 +663,12 @@ bash harness/compare.sh \
   SAMPLE -a 10:0.95 -th 8
 ```
 
-### 14.4 Extended Modality Suite (Pillar 8, Tier-2)
+### 15.4 Extended Modality Suite (Pillar 8, Tier-2)
 ```bash
 bash harness/run_extended_coverage.sh
 ```
 
-### 14.5 Multi-Slice Multi-Modal Dataset Expansion Suite (Pillar 9, Tier-2)
+### 15.5 Multi-Slice Multi-Modal Dataset Expansion Suite (Pillar 9, Tier-2)
 ```bash
 # 1. Ingest and stage multi-modal BAM slices (<3 minutes, <150 MB total disk space)
 bash harness/get_multimodal_slices.sh
@@ -601,19 +680,28 @@ bash harness/run_multimodal_slices.sh
 # EST_MIN=15 bash harness/courtesy.sh bash harness/run_multimodal_slices.sh
 ```
 
-### 14.6 Master Upstream Integration Regression Corpus (Pillar 6, Tier-1)
+### 15.6 Master Upstream Integration Regression Corpus (Pillar 6, Tier-1)
 ```bash
 bash harness/run_integration.sh
 ```
 
-### 14.7 Master Compound Release Acceptance Gate
+### 15.7 Master Compound Release Acceptance Gate
 ```bash
 bash harness/acceptance.sh
 ```
 
+### 15.8 Six-Stage 60-Cell GCP Study Runner & Plan Verification
+```bash
+# Verify the 6-stage GCP execution plan and invariants without cloud spend
+bash harness/gcp_paper_runner.sh --plan-check
+
+# Verify SHA-256 integrity of all tracked v1.0.6 study synthesis artifacts
+(cd benchmarks/gcp-study-v106 && sha256sum -c <(awk 'NR>1 {print $1 "  " $2}' SHA256SUMS.tsv))
+```
+
 ---
 
-## 15. References & Benchmark Citations
+## 16. References & Benchmark Citations
 
 ```bibtex
 @article{lai2016vardict,
