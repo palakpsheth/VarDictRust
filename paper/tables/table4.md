@@ -1,0 +1,22 @@
+### Table 4. Bounded Memory (H2), Whole-Exome 1-32 Core Scaling, Chromosome 1 Span Invariance & Node Packing
+
+| Cell ID | Workload & Configuration | VarDictJava Wall / Peak RSS | vardictcpp Wall / Peak RSS | VarDictRust Wall / Peak RSS | Speedup / Memory Scaling Verdict |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| s4_perf_budget_4targets_n3 | Perf Budget: amplicon-tier2 (8c) | 3.07s / 120.1 MB | 5.24s / 119.7 MB | 0.01s / 11.8 MB | Wall ratio=0.0033, RSS ratio=0.0978 |
+| s4_perf_budget_4targets_n3 | Perf Budget: hg002-tier2 (8c) | 153.25s / 10509.5 MB | 20.10s / 860.8 MB | 21.29s / 475.7 MB | Wall ratio=0.1389, RSS ratio=0.0453 |
+| s4_perf_budget_4targets_n3 | Perf Budget: hg008-tier2 (8c) | 77.28s / 17318.4 MB | 16.91s / 569.0 MB | 17.11s / 515.9 MB | Wall ratio=0.2214, RSS ratio=0.0298 |
+| s4_perf_budget_4targets_n3 | Perf Budget: seqc2-exome-tier2 (8c) | 4045.00s / 16085.0 MB | 287.70s / 2245.7 MB | 277.52s / 516.7 MB | Wall ratio=0.0686, RSS ratio=0.0321 |
+| s3_rna_splice_parity_n3 | 51.8 GiB HG002 RNA-seq (-i splice, 8c, n=3) | 23.31 (23.03-23.70)s / 4.79 GiB | SKIP (-i unsupported) | 4.94 (4.90-5.01)s / 359.9 MB | 4.72x faster, 13.6x leaner |
+| s4_scale_exome_3way_th1 | SEQC2 Whole Exome (-th 1, n=3) | 5757.67 (5717.00-5789.00)s / 1.79 GiB | 1005.71 (993.97-1012.37)s / 1.21 GiB | 812.75 (805.74-825.81)s / 343.5 MB | Rust S_P=1.00x (7.1x vs Java, 5.3x leaner) |
+| s4_scale_exome_3way_th2 | SEQC2 Whole Exome (-th 2, n=3) | 5802.33 (5762.00-5839.00)s / 4.74 GiB | 530.70 (529.51-531.93)s / 1.29 GiB | 409.14 (405.60-411.13)s / 415.1 MB | Rust S_P=1.99x (14.2x vs Java, 11.7x leaner) |
+| s4_scale_exome_3way_th4 | SEQC2 Whole Exome (-th 4, n=3) | 2270.51 (2254.41-2280.43)s / 6.79 GiB | 267.32 (267.11-267.51)s / 1.37 GiB | 212.30 (211.15-213.44)s / 443.1 MB | Rust S_P=3.83x (10.7x vs Java, 15.7x leaner) |
+| s4_scale_exome_3way_th8 | SEQC2 Whole Exome (-th 8, n=3) | 1814.63 (1752.96-1911.57)s / 9.05 GiB | 139.14 (138.32-140.40)s / 1.49 GiB | 118.90 (117.36-119.88)s / 536.9 MB | Rust S_P=6.84x (15.3x vs Java, 17.3x leaner) |
+| s4_scale_exome_3way_th16 | SEQC2 Whole Exome (-th 16, n=3) | 1893.66 (1866.57-1929.42)s / 17.44 GiB | 74.17 (73.64-75.12)s / 1.69 GiB | 75.77 (74.66-76.76)s / 607.5 MB | Rust S_P=10.73x (25.0x vs Java, 29.4x leaner) |
+| s4_scale_exome_3way_th32 | SEQC2 Whole Exome (-th 32, n=3) | 1991.64 (1969.99-2003.54)s / 21.77 GiB | 63.68 (63.41-64.15)s / 2.06 GiB | 67.86 (67.27-68.20)s / 747.2 MB | Rust S_P=11.98x (29.4x vs Java, 29.8x leaner) |
+| s4_span_chr1_3way_th8 | chr1 Span 1M..249M (-th 8, n=3) | OOM at -Xmx4g (see Table 2 -Xmx200g) | 249M: 30.33s / 0.79 GiB | 10M: 1.17 GiB -> 249M: 1.38 GiB | 249M/10M RSS ratio = 1.176x (<=1.50x H2 PASS) |
+| s4_span_chr1_3way_th16 | chr1 Span 1M..249M (-th 16, n=3) | OOM at -Xmx4g (see Table 2 -Xmx200g) | 249M: 18.39s / 1.14 GiB | 10M: 1.79 GiB -> 249M: 2.31 GiB | 249M/10M RSS ratio = 1.291x (<=1.50x H2 PASS) |
+| s4_span_chr1_3way_th32 | chr1 Span 1M..249M (-th 32, n=3) | OOM at -Xmx4g (see Table 2 -Xmx200g) | 249M: 16.23s / 1.70 GiB | 10M: 2.62 GiB -> 249M: 3.69 GiB | 249M/10M RSS ratio = 1.405x (<=1.50x H2 PASS) |
+| s4_span_chr1_f0 | chr1 10 Mbp All-Positions (-f 0, 8c, n=3) | MATCH via oracle cache | 6.01 (5.99-6.04)s / 0.37 GiB | 19.58 (19.24-20.09)s / 5.90 GiB | MATCH (7032 variants) |
+| s4_jobs_per_node_2x4c_n3 | Concurrent 2x4c SEQC2 Exome Node Packing (n=3) | — | — | Job1: 211.38s (437.5M); Job2: 211.05s (442.0M) | Combined Peak RSS = 0.859 GiB (0 OOMs) |
+
+*All multi-core and span cells executed on GCP n2-standard-32 (Intel Xeon Platinum 8373C Ice Lake) with n=3 technical replicates.*
