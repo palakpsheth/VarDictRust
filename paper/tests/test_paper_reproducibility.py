@@ -119,12 +119,15 @@ class TestPaperReproducibility(unittest.TestCase):
             "### Results",
             "### Conclusions",
             "## Availability of data and materials",
+            "--nosv",
+        ):
+            self.assertIn(req, ms_text, f"Missing required token/section in manuscript.md: {req}")
+        for sup_req in (
             "5865a2a0b24a8c17",
             "c490c36317b8f25b",
-            "--nosv",
             "Liss_lab",
         ):
-            self.assertIn(req, ms_text, f"Missing required token/section: {req}")
+            self.assertIn(sup_req, sup_text, f"Missing required provenance token in supplement.md: {sup_req}")
 
     def test_templates_contain_no_hardcoded_empirical_numbers(self) -> None:
         self.assertTrue(MANUSCRIPT_TMPL.is_file(), f"Missing {MANUSCRIPT_TMPL}")
@@ -193,38 +196,75 @@ class TestPaperReproducibility(unittest.TestCase):
     def test_all_60_cells_referenced_across_manuscript_and_supplement(self) -> None:
         ms_text = MANUSCRIPT.read_text(encoding="utf-8")
         sup_text = SUPPLEMENT.read_text(encoding="utf-8")
-        combined = ms_text + "\n" + sup_text
 
         with INV_PATH.open(encoding="utf-8") as f:
             rows = list(csv.DictReader(f, delimiter="\t"))
         self.assertEqual(len(rows), 60)
         for r in rows:
             cid = r["cell_id"]
-            self.assertIn(cid, combined, f"Cell {cid} missing from manuscript+supplement")
             self.assertIn(cid, sup_text, f"Cell {cid} missing from supplement.md")
+            self.assertNotIn(cid, ms_text, f"Internal cell_id {cid} leaked into main manuscript.md")
+
+    def test_manuscript_free_of_internal_plan_jargon(self) -> None:
+        ms_text = MANUSCRIPT.read_text(encoding="utf-8")
+        forbidden_jargon = [
+            "Option C",
+            "Tier-P",
+            "Tier P",
+            "H1a",
+            "Gate 7",
+            "evidence_certified",
+            "c3d-standard-32",
+            "228.90",
+            "Stage 1",
+            "Stage 2",
+            "Stage 3",
+            "Stage 4",
+            "Stage 5",
+            "Stage 6",
+        ]
+        for term in forbidden_jargon:
+            self.assertNotIn(
+                term,
+                ms_text,
+                f"Internal plan jargon {term!r} found in main manuscript.md",
+            )
 
     def test_referee_and_biostatistics_compliance(self) -> None:
         ms_text = MANUSCRIPT.read_text(encoding="utf-8")
         sup_text = SUPPLEMENT.read_text(encoding="utf-8")
-        combined = ms_text + "\n" + sup_text
 
-        required_phrases = [
+        ms_required_phrases = [
             "Clopper-Pearson",
             "technical replicates",
             "Mann-Whitney",
             "--fix",
+            "--nosv",
+            "in silico",
+            "```bash",
+        ]
+        for phrase in ms_required_phrases:
+            self.assertIn(
+                phrase,
+                ms_text,
+                f"Missing required scientific/biostatistics disclosure in manuscript.md: {phrase!r}",
+            )
+
+        sup_required_phrases = [
             "s2_fig1_fig3_field_callers",
             "rc=124",
             "rc=3",
-            "--nosv",
             "Liss_lab",
-            "in silico",
             "c3d-standard-32",
             "2a8e9a3",
             "```bash",
         ]
-        for phrase in required_phrases:
-            self.assertIn(phrase, combined, f"Missing required referee/biostatistics disclosure: {phrase!r}")
+        for phrase in sup_required_phrases:
+            self.assertIn(
+                phrase,
+                sup_text,
+                f"Missing required provenance disclosure in supplement.md: {phrase!r}",
+            )
 
     def test_build_manuscript_script_has_no_hardcoded_empirical_strings(self) -> None:
         self.assertTrue(BUILD_SCRIPT.is_file(), f"Missing {BUILD_SCRIPT}")

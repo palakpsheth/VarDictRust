@@ -9,7 +9,6 @@ idempotency/reproducibility verification mode.
 from __future__ import annotations
 
 import argparse
-import csv
 import json
 import re
 import sys
@@ -105,6 +104,7 @@ def build_macro_context(doc: dict[str, Any]) -> dict[str, str]:
     # Protocol & structural constants derived from JSON or standard protocol parameters
     m["eps_tol"] = "1e-6"
     m["eps_sci"] = "10^{-6}"
+    m["commit"] = str(ev["hg008-cram-twin"]["head"])
     m["f_std"] = "0.01"
     m["f_mrd_wgs"] = "0.001"
     m["f_mrd_ud"] = "0.0005"
@@ -152,10 +152,16 @@ def build_macro_context(doc: dict[str, Any]) -> dict[str, str]:
     m["cp95_70_70"] = fmt_cp_ci(len(ga_rows), len(ga_rows))
     sw_match = int(sw["match_arms"])
     sw_tot = int(sw["total_arms"])
+    sw_diff = sw_tot - sw_match
     m["sweep_match_pct"] = f"{(sw_match / sw_tot) * 100.0:.2f}%"
+    m["optc_match_arms"] = str(sw_match)
+    m["optc_total_arms"] = str(sw_tot)
+    m["optc_diff_arms"] = str(sw_diff)
+    m["optc_match_pct"] = f"{(sw_match / sw_tot) * 100.0:.2f}"
     m["cp95_78_87"] = fmt_cp_ci(sw_match, sw_tot)
-    m["cp95_78_78_single_region"] = fmt_cp_ci(sw_match, sw_match)
     k_mos, n_mos = (int(x) for x in str(doc["flat_macros"]["s6_mosaic_tp_best"]).split("/"))
+    m["s6_mosaic_rust_tp"] = str(k_mos)
+    m["s6_mosaic_truth_total"] = str(n_mos)
     m["cp95_84_85"] = fmt_cp_ci(k_mos, n_mos)
 
     # Stage 1 details
@@ -260,6 +266,7 @@ def build_macro_context(doc: dict[str, Any]) -> dict[str, str]:
     # Stage 2 Table 3 -R chr1
     rchr1 = s2["table3_R_chr1"]
     rchr1_bp_int = int(rchr1["region"].split("-")[1])
+    m["s2_rchr1_sample"] = str(rchr1["sample"])
     m["s2_rchr1_bp"] = f"{rchr1_bp_int:,}"
     m["s2_rchr1_mbp"] = f"{rchr1_bp_int / 1e6:.2f}"
     m["s2_rchr1_rust_wall_range"] = f"{rchr1['rust']['wall_s_min']:.2f}–{rchr1['rust']['wall_s_max']:.2f}"
@@ -342,6 +349,8 @@ def build_macro_context(doc: dict[str, Any]) -> dict[str, str]:
         m[f"s4_exome_{tk}_speedup_vs_java"] = f"{td['java']['wall_s_mean'] / td['rust']['wall_s_mean']:.1f}"
         m[f"s4_exome_{tk}_rss_ratio_vs_java"] = f"{td['java']['max_rss_kb_mean'] / td['rust']['max_rss_kb_mean']:.1f}"
         m[f"s4_exome_{tk}_rss_ratio_vs_cpp"] = f"{td['cpp']['max_rss_kb_mean'] / td['rust']['max_rss_kb_mean']:.1f}"
+    m["s4_exome_32t_speedup_vs_1t"] = m["s4_exome_th32_rust_sp"]
+    m["s4_exome_32t_rss_ratio_vs_java"] = m["s4_exome_th32_rss_ratio_vs_java"]
 
     # Stage 4 Span chr1
     sp_c1 = s4["span_chr1_3way"]
@@ -430,6 +439,7 @@ def build_macro_context(doc: dict[str, Any]) -> dict[str, str]:
     m["s5_hg008_giab_cpp_rss_ratio_vs_rust"] = f"{h8_b['cpp']['max_rss_kb'] / h8_b['rust']['max_rss_kb']:.1f}"
     m["s5_hg002_giab_cpp_diff_vars"] = f"{h2_b['cpp']['variant_count'] - h2_b['rust']['variant_count']:,}"
     m["s5_hg008_contigs_cpp_wall_str"] = h8_a["cpp"]["wall_str"]
+    m["s5_hg008_giab_java_wall_str"] = h8_b["java"]["wall_str"]
     m["s5_hg008_giab_cpp_wall_str"] = h8_b["cpp"]["wall_str"]
 
     h2_v_best = h2_b["vcfeval"]["rust"]["operating_points"]["best"]
@@ -504,6 +514,7 @@ def build_macro_context(doc: dict[str, Any]) -> dict[str, str]:
     m["s6_cmrg_snv_r_gain_pct"] = f"{(cmrg_fc['snv_r'] - cmrg_g50['snv_r']) * 100.0:.2f}%"
     m["s6_cmrg_indel_r_gain_pct"] = f"{(cmrg_fc['indel_r'] - cmrg_g50['indel_r']) * 100.0:.2f}%"
     m["s6_mosaic_recall_pct"] = f"{float(m['s6_mosaic_recall_best']) * 100.0:.2f}%"
+    m["s6_mosaic_rust_r_pct"] = m["s6_mosaic_recall_pct"]
 
     # Stage 6 HG008 v0.4 11-caller matrix
     v04_rows = s6["hg008_modern_ml_and_commercial_callers"]
@@ -557,36 +568,15 @@ def build_macro_context(doc: dict[str, Any]) -> dict[str, str]:
     return m
 
 
-def render_cells_60_ledger(inv_path: Path) -> str:
-    """Render the 60-cell inventory TSV as a Markdown table."""
-    with inv_path.open(encoding="utf-8") as f:
-        rows = list(csv.DictReader(f, delimiter="\t"))
-    lines = [
-        "| Cell ID | Stage | Tier | Exit Code | Files | Paper Targets | Parity Verdict | Description |",
-        "| :--- | :--- | :--- | :---: | ---: | :--- | :--- | :--- |",
-    ]
-    for r in rows:
-        verdict = r["parity_verdict"][:80].replace("|", "/")
-        desc = r["description"].replace("|", "/")
-        lines.append(
-            f"| `{r['cell_id']}` | `{r['stage']}` | {r['tier']} | `{r['exit_code']}` | "
-            f"`{r['file_count']}` | {r['paper_targets']} | `{verdict}` | {desc} |"
-        )
-    return "\n".join(lines)
-
-
 def compile_template(
     tmpl_text: str,
     macros: dict[str, str],
     tables_dir: Path,
-    inv_path: Path,
+    inv_path: Path | None = None,
 ) -> str:
-    """Expand {{m:<key>}}, {{table:<name>}}, and {{cells_60_ledger}} in template text."""
-    # 1. Expand {{cells_60_ledger}}
-    if "{{cells_60_ledger}}" in tmpl_text:
-        tmpl_text = tmpl_text.replace("{{cells_60_ledger}}", render_cells_60_ledger(inv_path))
-
-    # 2. Expand {{table:<name>}}
+    """Expand {{m:<key>}} and {{table:<name>}} in template text."""
+    _ = inv_path
+    # 1. Expand {{table:<name>}}
     def replace_table(match: re.Match[str]) -> str:
         tname = match.group(1).strip()
         if tname in TABLE_ALIASES:

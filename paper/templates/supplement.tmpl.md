@@ -2,7 +2,7 @@
 
 **Authors:** Palak Sheth<sup>1,*</sup>  
 <sup>1</sup>Independent Researcher, [rewrites.bio](https://rewrites.bio) Initiative (`palak@rewrites.bio`)  
-**Engine Release:** `VarDictRust` `v{{m:version}}` (commit `2a8e9a3`, engine fingerprint `{{m:fingerprint}}`, performance fingerprint `{{m:perf_fingerprint}}`)  
+**Engine Release:** `VarDictRust` `v{{m:version}}` (commit `{{m:commit}}`, engine fingerprint `{{m:fingerprint}}`, performance fingerprint `{{m:perf_fingerprint}}`)  
 **Reference Oracles:** `{{m:oracle_version}}` and `{{m:cpp_version}}`  
 **Cloud Benchmark Host:** `{{m:host}}` (`{{m:nvme_raid0_tb}}` TB NVMe RAID0 scratch; exploratory staging also verified on `c3d-standard-32`)
 
@@ -11,6 +11,7 @@
 ## Table of Contents
 
 1. **Supplementary Methods: Exact Command-Line Invocations Across All 60 Benchmark Cells**
+   - 1.0 Manuscript Figure and Table to 60-Cell Provenance Crosswalk
    - 1.1 Stage 1: Ceiling, Multi-Region Boundary, and Tile-Invariance Cells (`4` cells)
    - 1.2 Stage 2: Tier-P AML Replication, 13-Mode Sweep, Field Callers, and `-R chr1` (`17` cells)
    - 1.3 Stage 3: Full-Sample {{m:s3_rna_bam_gib}} GiB RNA-Seq Splice Calling (`1` cell)
@@ -28,6 +29,17 @@
 ## 1. Supplementary Methods: Exact Command-Line Invocations Across All 60 Benchmark Cells
 
 All `{{m:total_cells}}` verification cells (`{{m:compute_cells}}` cloud compute cells plus `1` certified local-to-cloud evidence bundle `evidence_certified`) were executed on `{{m:host}}` (`Ubuntu 24.04 LTS`, Linux kernel `6.8`, `{{m:nvme_raid0_tb}}` TB 4-way NVMe RAID0 mounted at `/var/tmp/vardict-paper`). Every timed execution was wrapped in `/usr/bin/time -v` across `n = 3` independent technical replicates (`Stage 2`, `Stage 3`, `Stage 4`) or guarded by `timeout 10800` (`3` hours, exit code `rc=124` on timeout; `rc=3` on JVM `OutOfMemoryError`).
+
+### 1.0 Manuscript Figure and Table to 60-Cell Provenance Crosswalk
+To ensure complete machine-traceable auditability while keeping the main manuscript prose accessible to general readers, the table below maps every main-text Figure (`Figure 1`–`Figure 8`) and Table (`Table 1`–`Table 8`) to its underlying `cell_id` directories in `benchmarks/gcp-study-v106/` (`Table S1`):
+- **`Figure 1` & `Table 1` (Architecture, Operational Modes, and 87-Arm Equivalence Sweep):** `s1_ceiling_amplicon`, `s1_ceiling_hg008`, `s1_gate7_ref_multiregion`, `s1_h1a_simple_tiles`, `s2_tierp_mode_parity_sweep`, `s3_rna_splice_parity_n3`, `s4_multimodal_and_cram_twin`, `evidence_certified`, and the `12` `sweep_*` cells (`sweep_4targets_full`, `sweep_R_chr1_full`, `sweep_hg002_chr20_exome`, `sweep_multimodal_and_cram_twin`, `sweep_rna_hg002_52gb`, `sweep_span_chr1_f0`, `sweep_tierp_13modes`, `sweep_tierp_SRR15006540`, `sweep_tierp_SRR8657348`, `sweep_tierp_somatic_76_86`, `sweep_ultradeep_mrd_stress`, `sweep_wgs_mrd_matrix`).
+- **`Figure 2` & `Table 2` (Wolff et al. AML Cohort, Field Callers, and Contiguous `-R chr1`):** `s2_tierp_v2_SRR15006375_th1`, `s2_tierp_v2_SRR15006375_th8`, `s2_tierp_v2_SRR15006376_th1`, `s2_tierp_v2_SRR15006376_th8`, `s2_tierp_v2_SRR15006386_th1`, `s2_tierp_v2_SRR15006386_th8`, `s2_tierp_v2_SRR15006540_th1`, `s2_tierp_v2_SRR15006540_th8`, `s2_tierp_v2_SRR8657348_th1`, `s2_tierp_v2_SRR8657348_th8`, `s2_tierp_v2_somatic_76_86_th1`, `s2_tierp_v2_somatic_76_86_th8`, `s2_table3_R_chr1_java_200g_n3`, `s2_table3_R_chr1_rust_and_cpp`, and `s2_fig1_fig3_field_callers`.
+- **`Figure 3` & `Table 3` (Germline/Somatic Truth Concordance and `QUAL` Operating Points):** `s2_fig2_hg002_chr20_truth`, `s4_tier3_truth_and_qual_sweep`, `s5_grch38_field_callers_truth`, and `evidence_certified`.
+- **`Figure 4` & `Table 4` (Multicore Scaling, Chromosome 1 Span-to-RSS Invariance, and Node Packing):** `s4_perf_budget_4targets_n3`, `s4_scale_exome_3way_th1`, `s4_scale_exome_3way_th2`, `s4_scale_exome_3way_th4`, `s4_scale_exome_3way_th8`, `s4_scale_exome_3way_th16`, `s4_scale_exome_3way_th32`, `s4_span_chr1_3way_th8`, `s4_span_chr1_3way_th16`, `s4_span_chr1_3way_th32`, `s4_span_chr1_f0`, and `s4_jobs_per_node_2x4c_n3`.
+- **`Figure 5` & `Table 5` (Full-Genome WGS Un-Chunked Contigs vs Pre-Chunked Callable Intervals):** `s5_wgs_hg002_full_contigs_3way_th32`, `s5_wgs_hg002_full_giab_3way_th32`, `s5_wgs_hg008_full_contigs_3way_th32`, and `s5_wgs_hg008_full_giab_3way_th32`.
+- **`Figure 6` & `Table 6` (10-Chemistry Chr20 Panel, `-f 0.0` Noise Floor, and 70-Cell GA4GH `v3.5` Matrix):** `s5_cross_platform_short_read_chr20_panel` and `s6_ga4gh_v35_stratification_matrix`.
+- **`Figure 7` & `Table 7` (Next-Generation `GIAB v5.0Q T2T-Q100`, `CMRG v1.00`, and `Mosaic v1.10`):** `s6_hg002_v50q_cmrg_mosaic_eval`.
+- **`Figure 8` & `Table 8` (11-Caller `HG008 v0.4`, Low-VAF Titration, Supply Chain, and `vardictcpp` Audit):** `s6_hg008_modern_ml_and_commercial_callers`, `s6_low_vaf_titration_truth_curve`, and `s5_h4_maintenance_security_matrix`.
 
 ### 1.1 Stage 1: Ceiling, Multi-Region Boundary, and Tile-Invariance Cells (`s1_*`)
 Stage 1 comprises `4` cells (`s1_ceiling_amplicon`, `s1_ceiling_hg008`, `s1_gate7_ref_multiregion`, and `s1_h1a_simple_tiles`):
@@ -54,19 +66,19 @@ done
 ### 1.2 Stage 2: Tier-P AML Replication, 13-Mode Sweep, Field Callers, and `-R chr1` (`s2_*`)
 Stage 2 comprises `17` cells replicating and extending Wolff et al. (2026) [11]:
 - **12 Tier-P v2 AML Panel Cells (`n = 3` technical replicates each at `-th 1` and `-th 8`):** `s2_tierp_v2_SRR15006375_th1`, `s2_tierp_v2_SRR15006375_th8`, `s2_tierp_v2_SRR15006376_th1`, `s2_tierp_v2_SRR15006376_th8`, `s2_tierp_v2_SRR15006386_th1`, `s2_tierp_v2_SRR15006386_th8`, `s2_tierp_v2_SRR15006540_th1`, `s2_tierp_v2_SRR15006540_th8`, `s2_tierp_v2_SRR8657348_th1`, `s2_tierp_v2_SRR8657348_th8`, `s2_tierp_v2_somatic_76_86_th1`, and `s2_tierp_v2_somatic_76_86_th8`.
-- **Contiguous Chromosome 1 (`-R chr1:1-249250621`, `{{m:s2_rchr1_bp}}` bp):** `s2_table3_R_chr1_java_200g_n3` (`JAVA_OPTS="-Xmx4g"` OOM `rc=3` at `{{m:s2_rchr1_java4g_oom_wall_s}}` s; `JAVA_OPTS="-Xmx200g"` completes in `{{m:s2_rchr1_java200g_wall_s}}` s at `{{m:s2_rchr1_java200g_rss_gib}}` GiB RSS) and `s2_table3_R_chr1_rust_and_cpp` (`VarDictRust` `{{m:s2_rchr1_rust_wall_s}}` s, `{{m:s2_rchr1_rust_rss_mb}}` MB RSS vs `vardictcpp` `{{m:s2_rchr1_cpp_wall_s}}` s, `{{m:s2_rchr1_cpp_rss_gib}}` GiB RSS).
+- **Contiguous Chromosome 1 (`-R chr1:1-249250621`, `{{m:s2_rchr1_bp}}` bp on `{{m:s2_rchr1_sample}}`):** `s2_table3_R_chr1_java_200g_n3` (`JAVA_OPTS="-Xmx4g"` OOM `rc=3` at `{{m:s2_rchr1_java4g_oom_wall_s}}` s; `JAVA_OPTS="-Xmx200g"` completes in `{{m:s2_rchr1_java200g_wall_s}}` s at `{{m:s2_rchr1_java200g_rss_gib}}` GiB RSS) and `s2_table3_R_chr1_rust_and_cpp` (`VarDictRust` `{{m:s2_rchr1_rust_wall_s}}` s, `{{m:s2_rchr1_rust_rss_mb}}` MB RSS vs `vardictcpp` `{{m:s2_rchr1_cpp_wall_s}}` s, `{{m:s2_rchr1_cpp_rss_gib}}` GiB RSS).
 - **13-Mode Functional Sweep & Field Callers:** `s2_tierp_mode_parity_sweep` (`{{m:s2_modes_rust_match}}/{{m:s2_modes_total}}` modes), `s2_fig1_fig3_field_callers` (`FreeBayes`, `LoFreq`, `Mutect2`, `Octopus`, `Strelka2`), and `s2_fig2_hg002_chr20_truth` (`{{m:s2_fig2_parity_vars}}` candidate variants).
 
 ```bash
 # Tier-P single-sample & paired somatic replication (s2_tierp_v2_*):
-/usr/bin/time -v vardictrust -G hg19.fa -f {{m:f_std}} -N SRR8657348 \
-  -b SRR8657348.bam -th 8 --fisher -z -c 1 -S 2 -E 3 -g 4 --vcf SRR8657348.bed > SRR8657348.vcf
+/usr/bin/time -v vardictrust -G hg19.fa -f {{m:f_std}} -N {{m:s2_rchr1_sample}} \
+  -b {{m:s2_rchr1_sample}}.bam -th 8 --fisher -z -c 1 -S 2 -E 3 -g 4 --vcf {{m:s2_rchr1_sample}}.bed > {{m:s2_rchr1_sample}}.vcf
 
-# Table 3 contiguous chromosome 1 (-R chr1:1-249250621, s2_table3_R_chr1_*):
-/usr/bin/time -v vardictrust -G hg19.fa -f {{m:f_std}} -N SRR15006375 \
-  -b SRR15006375.bam -th 8 -R chr1:1-249250621 > rust_chr1.var
-JAVA_OPTS="-Xmx200g" /usr/bin/time -v VarDict -G hg19.fa -f {{m:f_std}} -N SRR15006375 \
-  -b SRR15006375.bam -th 8 -R chr1:1-249250621 > java_chr1.var
+# Table 3 contiguous chromosome 1 (-R chr1:1-249250621 on {{m:s2_rchr1_sample}}, s2_table3_R_chr1_*):
+/usr/bin/time -v vardictrust -G hg19.fa -f {{m:f_std}} -N {{m:s2_rchr1_sample}} \
+  -b {{m:s2_rchr1_sample}}.bam -th 8 -R chr1:1-249250621 > rust_chr1.var
+JAVA_OPTS="-Xmx200g" /usr/bin/time -v VarDict -G hg19.fa -f {{m:f_std}} -N {{m:s2_rchr1_sample}} \
+  -b {{m:s2_rchr1_sample}}.bam -th 8 -R chr1:1-249250621 > java_chr1.var
 ```
 
 ### 1.3 Stage 3: Full-Sample {{m:s3_rna_bam_gib}} GiB RNA-Seq Splice Calling (`s3_rna_splice_parity_n3`)
@@ -86,14 +98,14 @@ for TH in 1 2 4 8 16 32; do
     --vcf seqc2_exome.bed > "seqc2_th${TH}.vcf"
 done
 
-# Chromosome 1 span-to-RSS invariance across 1M, 10M, 50M, 100M, 249M bp (s4_span_chr1_3way_th8..th32):
-for SPAN in 1000000 10000000 50000000 100000000 248956422; do
+# Chromosome 1 span-to-RSS invariance across 1M, 10M, 100M, 249M bp (s4_span_chr1_3way_th8..th32):
+for SPAN in 1000000 10000000 100000000 248956422; do
   /usr/bin/time -v vardictrust -G GRCh38.fa -f {{m:f_std}} -N HG002 \
     -b HG002_chr1.bam -th 32 -R "chr1:1-${SPAN}" > "chr1_${SPAN}.var"
 done
 
 # All-positions (-f {{m:f_zero}}) pileup stress on chr1 10 Mbp (s4_span_chr1_f0) and 2x4c node packing (s4_jobs_per_node_2x4c_n3):
-/usr/bin/time -v vardictrust -G GRCh38.fa -f {{m:f_zero}} -N HG002 -b HG002_chr1.bam -th 16 -R chr1:10000001-20000000 > chr1_f0.var
+/usr/bin/time -v vardictrust -G GRCh38.fa -f {{m:f_zero}} -N HG002 -b HG002_chr1.bam -th 8 -R chr1:10000001-20000000 > chr1_f0.var
 ```
 
 ### 1.5 Option C: Comprehensive 87-Arm `.var` and `.vcf` Parity Sweep (`sweep_*`)
@@ -113,15 +125,18 @@ timeout 10800 /usr/bin/time -v vardictrust -G GRCh38_GIABv3.fasta -f {{m:f_std}}
   -b HG002_2x250_131GB.bam -th 32 --fisher -z -c 1 -S 2 -E 3 -g 4 --vcf grch38_22autosomes_full.bed > hg002_arm_a.vcf
 
 timeout 10800 /usr/bin/time -v vardictrust -G GRCh38_GIABv3.fasta -f {{m:f_std}} -N "HG008-T|HG008-N" \
-  -b "HG008-T_195x.bam|HG008-N_169x.bam" -th 32 --fisher -z -c 1 -S 2 -E 3 -g 4 --vcf grch38_22autosomes_full.bed > hg008_arm_a.vcf
+  -b "HG008-T_195x.bam|HG008-N_169x.bam" -th 32 -U --fisher -z -c 1 -S 2 -E 3 -g 4 --vcf grch38_22autosomes_full.bed > hg008_arm_a.vcf
 
 # Arm B: Pre-chunked <=50 kbp GIAB callable intervals (s5_wgs_hg002_full_giab_3way_th32 & s5_wgs_hg008_full_giab_3way_th32):
 timeout 10800 /usr/bin/time -v vardictrust -G GRCh38_GIABv3.fasta -f {{m:f_std}} -N HG002 \
   -b HG002_2x250_131GB.bam -th 32 --fisher -z -c 1 -S 2 -E 3 -g 4 --vcf HG002_GRCh38_v421_50kb.bed > hg002_arm_b.vcf
+
+timeout 10800 /usr/bin/time -v vardictrust -G GRCh38_GIABv3.fasta -f {{m:f_std}} -N "HG008-T|HG008-N" \
+  -b "HG008-T_195x.bam|HG008-N_169x.bam" -th 32 -U --fisher -z -c 1 -S 2 -E 3 -g 4 --vcf HG008_GRCh38_v0.3_50kb.bed > hg008_arm_b.vcf
 ```
 
 ### 1.7 Stage 6: GA4GH v3.5 Stratification, GIAB v5.0Q/CMRG/Mosaic, HG008 v0.4 11-Caller Matrix, and Low-VAF Titration (`s6_*`)
-Stage 6 comprises `4` cells (`s6_ga4gh_v35_stratification_matrix`, `s6_hg002_v50q_cmrg_mosaic_eval`, `s6_hg008_modern_ml_and_commercial_callers`, and `s6_low_vaf_titration_truth_curve`):
+Stage 6 comprises `4` cells (`s6_ga4gh_v35_stratification_matrix`, `s6_hg002_v50q_cmrg_mosaic_eval`, `s6_hg008_modern_ml_and_commercial_callers`—including the official NIST GIAB `Liss_lab` somatic callsets for `DRAGEN v4.2.4`, `DeepSomatic v1.6.0`, and `ClairS v0.4.1`, alongside `Lancet2` (`NYGC`), `Hartwig SAGE`, and `Ultima DeepVariant Somatic`—and `s6_low_vaf_titration_truth_curve`):
 ```bash
 # Controlled in silico tumor-purity titration (20%, 10%, 5%, 2%, 1% purity at -f {{m:f_titration}}, s6_low_vaf_titration_truth_curve):
 for PURITY in 20 10 5 2 1; do
@@ -153,17 +168,17 @@ Empirically, increasing $L$ by `250`× on chromosome 1 (`1` Mbp to `249` Mbp, `s
 
 ## 3. Supplementary Note 2: Ten-Point Technical Audit of `vardictcpp` Divergences (`CPP-1` through `CPP-10`)
 
-Across cells `s2_tierp_mode_parity_sweep`, `s5_h4_maintenance_security_matrix`, and `s5_wgs_hg002_full_contigs_3way_th32`, we cataloged ten reproducibility and capability gaps in `{{m:cpp_version}}` (`Table 8`, `Table S6`):
-- **`CPP-1` (No Native VCF Output):** `vardictcpp` only outputs raw intermediate `.var` text and still requires piping into external Perl scripts (`var2vcf_valid.pl` / `var2vcf_paired.pl`) to generate VCF files.
-- **`CPP-2` (Missing Modes: Amplicon `-a`, Splice `-i`, and Structural Variants):** `vardictcpp` hardcodes `--nosv` and does not implement structural variant calling (`StructuralVariantsProcessor`), amplicon primer clipping (`-a`), or RNA-seq splice junction reporting (`-i`).
-- **`CPP-3` (CRAM Incompatibility):** Passing a CRAM alignment with `-G ref.fa` fails or emits empty output in `vardictcpp`, whereas `VarDictRust` natively decodes CRAM via `noodles`.
-- **`CPP-4` (`-R` Region Parser Crash):** Passing a chromosome name without colon coordinates (e.g., `-R chr20`) triggers an unhandled `std::out_of_range` / `SIGABRT` crash in `vardictcpp`.
-- **`CPP-5` (Unbounded Interval Memory Without External `CPP_CHUNK`):** Without an external BED-splitting wrapper (`CPP_CHUNK={{m:cpp_chunk_bp}}`), `vardictcpp` consumes `{{m:s2_rchr1_cpp_rss_gib}}` GiB on `chr1`, `{{m:s5_hg002_contigs_cpp_rss_gb}}` GB on HG002 WGS, and `{{m:s5_hg008_contigs_cpp_rss_gb}}` GB (`rc=124` timeout) on HG008 WGS.
-- **`CPP-6` (Chunk-Boundary Duplicate Emission):** When `vardictcpp` runs on chunked or contiguous whole genomes, it emits `{{m:s5_hg002_contigs_cpp_excess}}` excess duplicate/boundary-shifted calls on HG002 Arm A (`{{m:s5_hg002_contigs_cpp_vars}}` vs `{{m:s5_hg002_contigs_rust_vars}}`) and `+{{m:s5_hg002_giab_cpp_diff_vars}}` on Arm B (`{{m:s5_hg002_giab_cpp_vars}}` vs `{{m:s5_hg002_giab_vars}}`).
-- **`CPP-7` (Fisher Exact Odds-Ratio & Rounding Drift):** `vardictcpp` diverges from R's `fisher.test` conditional MLE root-finder and `HALF_EVEN` 5-decimal rounding on edge contingency tables.
-- **`CPP-8` (Single-End Realignment Drop):** In `s2_tierp_mode_parity_sweep`, `vardictcpp` diverges on `1/13` modes (`{{m:s2_modes_cpp_exact}}/{{m:s2_modes_total}}` exact) due to indel realignment differences on single-end/unpaired reads.
-- **`CPP-9` (High-Purity Titration Indel Recall Drop):** At `20%` tumor purity (`s6_low_vaf_titration_truth_curve`), `vardictcpp` drops somatic indel $F_1$ to `{{m:s6_tit_p20_vardictcpp_indel_f1}}` (recall `{{m:s6_tit_p20_vardictcpp_indel_r_pct}}`) and SNV $F_1$ to `{{m:s6_tit_p20_vardictcpp_snv_f1}}` (recall `{{m:s6_tit_p20_vardictcpp_snv_r_pct}}`), whereas `VarDictRust` matches `VarDictJava` exactly (`Indel` $F_1 = {{m:s6_tit_p20_VarDictRust_indel_f1}}$, recall `{{m:s6_tit_p20_VarDictRust_indel_r_pct}}`; `SNV` $F_1 = {{m:s6_tit_p20_VarDictRust_snv_f1}}$, recall `{{m:s6_tit_p20_VarDictRust_snv_r_pct}}`).
-- **`CPP-10` (Dynamic Shared-Library Fragility):** `vardictcpp` requires dynamic linkage against system `libhts`, `libcurl`, `liblzma`, `libbz2`, and `libdeflate`, plus a Perl runtime for VCF generation, whereas `VarDictRust` ships as a `{{m:s5_h4_musl_mb}}` MB zero-dependency static `musl` binary.
+Across cells `s2_tierp_mode_parity_sweep`, `s5_h4_maintenance_security_matrix`, `s5_wgs_hg002_full_contigs_3way_th32`, and `s6_low_vaf_titration_truth_curve`, we cataloged ten reproducibility and capability gaps in `{{m:cpp_version}}`, matching the taxonomy in `Table S6` verbatim (`Table 8`, `Table S6`):
+- **`CPP-1` (VCF Header & `INFO/END` Schema):** `vardictcpp` omits the `##INFO=<ID=END>` header definition and diverges from `var2vcf_valid.pl` / `var2vcf_paired.pl` VCF 4.3 schema formatting.
+- **`CPP-2` (CRISPR (`-J`/`-j`) & Structural Variant Modes):** `vardictcpp` sets `--nosv` (`-U`) by default and omits CRISPR cleavage-site (`-J`/`-j`) and structural variant (`StructuralVariantsProcessor`) assembly (`1/13` modes failed in `s2_tierp_mode_parity_sweep`, `{{m:s2_modes_cpp_exact}}/{{m:s2_modes_total}}` exact).
+- **`CPP-3` (Amplicon (`-a`) Output Format):** In amplicon primer-clipping mode (`-a {{m:amp_param}}`, `s1_ceiling_amplicon`), `vardictcpp` emits raw tab-separated `.var` text instead of VCF (`0` VCF lines), breaking downstream `bcftools` and `rtg vcfeval` consumers.
+- **`CPP-4` (Concatenated CLI Flag Parsing):** Passing bundled single-character flags (e.g., `-z -c 1` combined or legacy `VarDictJava` bundled options) causes `vardictcpp` to fail CLI parsing with exit code `120`.
+- **`CPP-5` (50 kbp Chunk Boundary Deduplication):** Without an external BED-splitting wrapper (`--chunk {{m:cpp_chunk_bp}}` / `CPP_CHUNK={{m:cpp_chunk_bp}}`), `vardictcpp` consumes `{{m:s2_rchr1_cpp_rss_gib}}` GiB on `chr1`, `{{m:s5_hg002_contigs_cpp_rss_gb}}` GB on HG002 Arm A, and `{{m:s5_hg008_contigs_cpp_rss_gb}}` GB (`rc=124` timeout) on HG008 Arm A; when intervals are chunked, `vardictcpp` lacks boundary ownership deduplication, emitting `+{{m:s5_hg002_contigs_cpp_excess}}` excess duplicate/boundary-shifted calls on HG002 Arm A (`{{m:s5_hg002_contigs_cpp_vars}}` vs `{{m:s5_hg002_contigs_rust_vars}}`) and `+{{m:s5_hg002_giab_cpp_diff_vars}}` on Arm B (`{{m:s5_hg002_giab_cpp_vars}}` vs `{{m:s5_hg002_giab_vars}}`).
+- **`CPP-6` (Missing `##contig` Header Lines):** `vardictcpp` omits `##contig=<ID=...,length=...>` lines from VCF headers (`VarDictJava` issue `#320`), causing strict VCF validators and `rtg vcfeval` header checks to warn or fail.
+- **`CPP-7` (GRCh37 / b37 Chromosome Naming):** `vardictcpp` hardcodes `chr`-prefix assumptions in internal chromosome handling, breaking or diverging on `b37` / `GRCh37` numeric contigs (`1`..`22`, `X`, `Y`, `MT`).
+- **`CPP-8` (BAM/CRAM Reference & Decode):** `vardictcpp` diverges on CRAM reference decoding (`-G ref.fa`) and requires dynamic linkage against external `libhts`, `libcurl`, `liblzma`, `libbz2`, and `libdeflate`, whereas `VarDictRust` natively decodes BAM and CRAM in a `{{m:s5_h4_musl_mb}}` MB zero-dependency static `musl` binary (`s4_multimodal_and_cram_twin`).
+- **`CPP-9` (MNP Phasing, Tie-Break & Somatic SV Drops):** `vardictcpp` diverges from `VarDictJava` on complex multinucleotide variant (MNP) phasing, realignment tie-breaking, and somatic variant retention—most visibly at `20%` tumor purity (`s6_low_vaf_titration_truth_curve`), where `vardictcpp` drops somatic indel $F_1$ to `{{m:s6_tit_p20_vardictcpp_indel_f1}}` (recall `{{m:s6_tit_p20_vardictcpp_indel_r_pct}}`) and SNV $F_1$ to `{{m:s6_tit_p20_vardictcpp_snv_f1}}` (recall `{{m:s6_tit_p20_vardictcpp_snv_r_pct}}`), whereas `VarDictRust` matches `VarDictJava` (`Indel` $F_1 = {{m:s6_tit_p20_VarDictRust_indel_f1}}$, recall `{{m:s6_tit_p20_VarDictRust_indel_r_pct}}`; `SNV` $F_1 = {{m:s6_tit_p20_VarDictRust_snv_f1}}$, recall `{{m:s6_tit_p20_VarDictRust_snv_r_pct}}`).
+- **`CPP-10` (RNA-Seq Splice Mode (`-i`.var / `.splice.tsv`):** `vardictcpp` does not implement `-i` exon-junction splice-site accounting (`s3_rna_splice_parity_n3`, `{{m:s3_rna_bam_gib}}` GiB RNA-seq BAM, `{{m:s3_rna_splice_rows}}` records).
 
 ---
 
@@ -180,8 +195,8 @@ with $p_{\text{lo} } = 0$ when $k = 0$ and $p_{\text{hi} } = 1$ when $k = n$:
 - Cross-platform chr20 runs where `VarDictJava` completed (`{{m:s5_chr20_java_completed_runs}}/{{m:s5_chr20_java_completed_runs}}`): `100%` (`95%` CI `{{m:cp95_chr20_java_completed}}`)
 - Cross-platform `-f {{m:f_zero}}` somatic noise-floor `STRICT-BYTES` sweep (`{{m:s5_f0_noise_floor_strict_match}}`): `100%` (`95%` CI `{{m:cp95_noise_18_18}}`)
 - GA4GH `v3.5` `{{m:s6_ga4gh_cells}}`-cell stratification matrix (`{{m:s6_ga4gh_cells}}/{{m:s6_ga4gh_cells}}`): `100%` (`95%` CI `{{m:cp95_70_70}}`)
-- Option C parity sweep across all arms (`{{m:sweep_match_arms}}/{{m:sweep_total_arms}}`): `{{m:sweep_match_pct}}` (`95%` CI `{{m:cp95_78_87}}`), and `{{m:sweep_match_arms}}/{{m:sweep_match_arms}}` (`100%`, `95%` CI `{{m:cp95_78_78_single_region}}`) on single-region runs
-- NIST Mosaic SNV `v1.10` sensitivity (`{{m:s6_mosaic_tp_best}}`): `{{m:s6_mosaic_recall_pct}}` (`95%` CI `{{m:cp95_84_85}}`)
+- Option C parity sweep across all parameter-sweep arms (`{{m:optc_match_arms}}/{{m:optc_total_arms}}`): `{{m:optc_match_pct}}%` (`95%` CI `{{m:cp95_78_87}}`, with `100%` match across all standard single-region and non-overlapping BED runs and `{{m:optc_diff_arms}}` multi-megabase `32`-thread tiled runs exhibiting boundary realignment differences where `VarDictJava` processes un-tiled megabase spans or overlapping BED intervals; `Table S2`)
+- NIST Mosaic SNV `v1.10` sensitivity (`{{m:s6_mosaic_rust_tp}}/{{m:s6_mosaic_truth_total}}`): `{{m:s6_mosaic_rust_r_pct}}` (`95%` CI `{{m:cp95_84_85}}`)
 
 ### 4.2 Non-Parametric Runtime and Memory Hypothesis Testing
 Across the $N = 12$ Tier-P sample-by-thread cells (`s2_tierp_v2_*`, each measured across `n = 3` technical replicates), we report both the cell mean and full replicate range (`min–max`, `Table S3`) rather than normal-theory standard errors (which are unstable at $n = 3$). Comparing `VarDictRust` against `VarDictJava` across the $N = 12$ cells yields two-sided Mann-Whitney $U = {{m:s2_tierp_mwu_wall_u}}$ ($p = {{m:s2_tierp_mwu_wall_p}}$) for wall-clock time and $U = {{m:s2_tierp_mwu_rss_u}}$ ($p = {{m:s2_tierp_mwu_rss_p}}$) for peak RSS, and an exact paired sign-flip permutation test p-value of $p = 2^{-12} = {{m:s2_tierp_sign_perm_p}}$.

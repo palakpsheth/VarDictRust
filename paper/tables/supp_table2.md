@@ -1,7 +1,12 @@
-### Supplementary Table S2 (Table S2). Complete 87-Arm Option C Full-Core Non-Fail-Fast .var & .vcf Parity Sweep
+### Supplementary Table S2 (Table S2). Baseline Equivalence Cells and Complete 87-Arm Full-Core .var & .vcf Parity Sweep
 
-| Sweep Cell ID | Sub-Arm Name | VarDictJava Rows/Vars | VarDictRust Rows/Vars | FP vs Java | FN vs Java | Verdict |
+| Cell ID | Sub-Arm / Equivalence Scope | VarDictJava Rows/Vars | VarDictRust Rows/Vars | FP vs. Java | FN vs. Java | Verdict |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| s1_ceiling_amplicon | EGFR/MRE11a amplicon (-a) ceiling & parity | MATCH (2 variants) | MATCH (2 variants) | 0 | 0 | MATCH |
+| s1_ceiling_hg008 | NIST GIAB HG008 somatic slice ceiling & parity | MATCH (18426 variants) | MATCH (18426 variants) | 0 | 0 | MATCH |
+| s1_gate7_ref_multiregion | HG002 Chr20 multi-region reference offset verification | MATCH (2572 variants) | MATCH (2572 variants) | 0 | 0 | MATCH |
+| s1_h1a_simple_tiles | SEQC2 HCC1395 tile-size invariance (0.5, 1, 2, 10 Mbp tiles) | 5,090 | 5,090 | 0 | 0 | MATCH across all 4 tile sizes |
+| s4_multimodal_and_cram_twin | HG008 lossless BAM-vs-CRAM twin & multimodal slices | 1,129 | 1,129 | 0 | 0 | STRICT-BYTES: 0 textual difference(s) within eps; MATCH (40 variants) |
 | sweep_4targets_full | amplicon_full.vcf | 2 | 2 | 0 | 0 | MATCH |
 | sweep_4targets_full | hg002_deep_wgs.vcf | 227,562 | 227,562 | 0 | 0 | MATCH |
 | sweep_4targets_full | hg008_somatic_wgs.vcf | 18,426 | 18,426 | 0 | 0 | MATCH |
@@ -90,4 +95,4 @@
 | sweep_wgs_mrd_matrix | seqc2_somatic_mrd_f0.var | 5,261 | 5,261 | 0 | 0 | MATCH |
 | sweep_wgs_mrd_matrix | seqc2_somatic_mrd_f0.vcf | 5,206 | 5,206 | 0 | 0 | MATCH |
 
-*The 9 DIFF_CAPTURED sub-arms occur exclusively on multi-megabase un-chunked regions where full-core (-th 32) halo tiling crosses repetitive homopolymer/SV boundaries.*
+*The 9 DIFF_CAPTURED sub-arms occur exclusively on multi-megabase unchunked regions where full-core (-th 32) halo tiling crosses repetitive homopolymer/SV boundaries.*

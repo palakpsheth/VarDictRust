@@ -231,25 +231,49 @@ class TestBuildFiguresAndTables(unittest.TestCase):
 
         supp1_md = (TAB_DIR / "supp_table1.md").read_text(encoding="utf-8")
         supp1_tex = (TAB_DIR / "supp_table1.tex").read_text(encoding="utf-8")
-        all_tables_md = "\n".join(
-            p.read_text(encoding="utf-8") for p in sorted(TAB_DIR.glob("*.md"))
+        supp_tables_md = "\n".join(
+            (TAB_DIR / f"supp_table{i}.md").read_text(encoding="utf-8") for i in range(1, 7)
         )
-        domain_tables_md = "\n".join(
-            p.read_text(encoding="utf-8")
-            for p in sorted(TAB_DIR.glob("*.md"))
-            if p.name != "supp_table1.md"
+        supp_domain_md = "\n".join(
+            (TAB_DIR / f"supp_table{i}.md").read_text(encoding="utf-8") for i in range(2, 7)
         )
 
         for row in inv_rows:
             cid = row["cell_id"]
             self.assertIn(cid, supp1_md, f"Cell {cid} missing from supp_table1.md")
             self.assertIn(cid.replace("_", "\\_"), supp1_tex, f"Cell {cid} missing from supp_table1.tex")
-            self.assertIn(cid, all_tables_md, f"Cell {cid} missing from generated markdown tables")
+            self.assertIn(cid, supp_tables_md, f"Cell {cid} missing from supp_table1..6.md")
             self.assertIn(
                 cid,
-                domain_tables_md,
-                f"Cell {cid} missing from domain tables (table1..8, supp_table2..6)",
+                supp_domain_md,
+                f"Cell {cid} missing from supplementary domain tables (supp_table2..6.md)",
             )
+
+        for i in range(1, 9):
+            main_md_path = TAB_DIR / f"table{i}.md"
+            main_md = main_md_path.read_text(encoding="utf-8")
+            self.assertIsNone(
+                re.search(r"\b(s[1-6]_[a-z0-9_]+|sweep_[a-z0-9_]+|evidence_certified)\b", main_md),
+                f"Raw internal cell_id found in {main_md_path}",
+            )
+            for bad_tok in (
+                "Option C",
+                "Tier P",
+                "Tier-P",
+                "H1a",
+                "Gate 7",
+                "Stage 1",
+                "Stage 2",
+                "Stage 3",
+                "Stage 4",
+                "Stage 5",
+                "Stage 6",
+            ):
+                self.assertNotIn(
+                    bad_tok,
+                    main_md,
+                    f"Internal harness jargon {bad_tok!r} found in {main_md_path}",
+                )
 
     def test_no_hardcoded_numbers_in_builder_script(self) -> None:
         self.assertTrue(SCRIPT.is_file(), f"Missing {SCRIPT}")

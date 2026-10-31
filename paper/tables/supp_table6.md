@@ -19,11 +19,11 @@
 | s5_h4_maintenance_security_matrix | CPP-2: CRISPR (-J/-j) & Structural Modes | Supported | Supported (100% MATCH) | Unimplemented / drops flags | Verified on extended-coverage-tier2 |
 | s5_h4_maintenance_security_matrix | CPP-3: Amplicon (-a) Output Format | 38/40-col .var + VCF | Exact 38/40-col .var + VCF MATCH | Emits raw TSV instead of VCF | Breaks compare_vcf.py & bcftools |
 | s5_h4_maintenance_security_matrix | CPP-4: Concatenated CLI Flag Parsing | Supported | Supported (60-flag parity) | Exits with code 120 on bundled flags | CLI wrapper incompatibility |
-| s5_h4_maintenance_security_matrix | CPP-5: Chunk Boundary Deduplication (--chunk) | Single-region (or OOM) | 100 kbp halo tiling + cross-tile dedup | Emits +309,569 duplicate boundary calls on HG002 Arm A | Uncoordinated 50 kbp chunk splitting |
+| s5_h4_maintenance_security_matrix | CPP-5: Chunk Boundary Deduplication (--chunk) | Single-region (or OOM) | 100 kbp halo tiling + cross-tile dedup | Emits +309,569 duplicate boundary calls on unchunked HG002 WGS | Uncoordinated 50 kbp chunk splitting |
 | s5_h4_maintenance_security_matrix | CPP-6: Missing ##contig Header Lines | Emits ##contig from .fai | Emits exact ##contig lines from .fai | Omits ##contig header lines | Requires header injection for rtg vcfeval |
 | s5_h4_maintenance_security_matrix | CPP-7: GRCh37 / b37 Chromosome Naming | Supported | Supported (NA24385-b37 EQUAL) | Hardcoded chr-prefix assumptions | Tested on na24385-b37-truth |
 | s5_h4_maintenance_security_matrix | CPP-8: BAM/CRAM Reference & Decode | BAM (CRAM needs classpath) | Native BAM + CRAM (-G) zero-diff | Fails or diverges on CRAM twins | Verified on hg008-cram-twin & Ultima CRAM |
-| s5_h4_maintenance_security_matrix | CPP-9: MNP Splitting & Somatic SV Drops | Reference pileup & realigner | Exact parity with VarDictJava | Differs on 394 HG002 Arm B calls & drops SVs | Realignment & tie-break divergence |
+| s5_h4_maintenance_security_matrix | CPP-9: MNP Splitting & Somatic SV Drops | Reference pileup & realigner | Exact parity with VarDictJava | Differs on 394 callable HG002 WGS calls & drops SVs | Realignment & tie-break divergence |
 | s5_h4_maintenance_security_matrix | CPP-10: RNA-Seq Splice Mode (-i) | Supported (12,668 rows on HG002 mRNA) | Supported (12,668 rows 100% MATCH) | Unimplemented (SKIP) | Verified on 51.8 GiB HG002 STAR BAM |
 
 *Every divergence class was empirically observed and cataloged during the 60-cell GCP evaluation.*

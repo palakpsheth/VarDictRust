@@ -1,11 +1,16 @@
 \begin{table}[htbp]
 \centering
-\caption{Supplementary Table S2 (Table S2). Complete 87-Arm Option C Full-Core Non-Fail-Fast .var \& .vcf Parity Sweep}
+\caption{Supplementary Table S2 (Table S2). Baseline Equivalence Cells and Complete 87-Arm Full-Core .var \& .vcf Parity Sweep}
 \label{tab:supp-table2}
 \begin{tabular}{lllllll}
 \hline
-Sweep Cell ID & Sub-Arm Name & VarDictJava Rows/Vars & VarDictRust Rows/Vars & FP vs Java & FN vs Java & Verdict \\
+Cell ID & Sub-Arm / Equivalence Scope & VarDictJava Rows/Vars & VarDictRust Rows/Vars & FP vs. Java & FN vs. Java & Verdict \\
 \hline
+s1\_ceiling\_amplicon & EGFR/MRE11a amplicon (-a) ceiling \& parity & MATCH (2 variants) & MATCH (2 variants) & 0 & 0 & MATCH \\
+s1\_ceiling\_hg008 & NIST GIAB HG008 somatic slice ceiling \& parity & MATCH (18426 variants) & MATCH (18426 variants) & 0 & 0 & MATCH \\
+s1\_gate7\_ref\_multiregion & HG002 Chr20 multi-region reference offset verification & MATCH (2572 variants) & MATCH (2572 variants) & 0 & 0 & MATCH \\
+s1\_h1a\_simple\_tiles & SEQC2 HCC1395 tile-size invariance (0.5, 1, 2, 10 Mbp tiles) & 5,090 & 5,090 & 0 & 0 & MATCH across all 4 tile sizes \\
+s4\_multimodal\_and\_cram\_twin & HG008 lossless BAM-vs-CRAM twin \& multimodal slices & 1,129 & 1,129 & 0 & 0 & STRICT-BYTES: 0 textual difference(s) within eps; MATCH (40 variants) \\
 sweep\_4targets\_full & amplicon\_full.vcf & 2 & 2 & 0 & 0 & MATCH \\
 sweep\_4targets\_full & hg002\_deep\_wgs.vcf & 227,562 & 227,562 & 0 & 0 & MATCH \\
 sweep\_4targets\_full & hg008\_somatic\_wgs.vcf & 18,426 & 18,426 & 0 & 0 & MATCH \\
@@ -95,5 +100,5 @@ sweep\_wgs\_mrd\_matrix & seqc2\_somatic\_mrd\_f0.var & 5,261 & 5,261 & 0 & 0 & 
 sweep\_wgs\_mrd\_matrix & seqc2\_somatic\_mrd\_f0.vcf & 5,206 & 5,206 & 0 & 0 & MATCH \\
 \hline
 \end{tabular}
-\\[4pt]\footnotesize{The 9 DIFF\_CAPTURED sub-arms occur exclusively on multi-megabase un-chunked regions where full-core (-th 32) halo tiling crosses repetitive homopolymer/SV boundaries.}
+\\[4pt]\footnotesize{The 9 DIFF\_CAPTURED sub-arms occur exclusively on multi-megabase unchunked regions where full-core (-th 32) halo tiling crosses repetitive homopolymer/SV boundaries.}
 \end{table}
