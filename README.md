@@ -43,6 +43,7 @@ Built under the [rewrites.bio](https://rewrites.bio) manifesto: *a faster, more 
 - [Usage & Pipeline Recipes](#usage--pipeline-recipes)
 - [Operational Modalities](#operational-modalities)
 - [Empirical Parity & Validation Status](#empirical-parity--validation-status)
+- [Evaluation Manuscript & Reproducibility](#evaluation-manuscript--reproducibility)
 - [Architectural Parity & Upstream Policy](#architectural-parity--upstream-policy)
 - [CLI Parameter Reference](#cli-parameter-reference)
 - [AI Tooling & Verification Transparency](#ai-tooling--verification-transparency)
@@ -286,6 +287,14 @@ Evaluated against physical ground truth using Real Time Genomics [`rtg vcfeval`]
 ¹ **`vardictcpp` vcfeval normalization (`vardictcpp 3 hc52dbad_0`).** Native `vardictcpp -vcf` omits `##contig` headers ([`CPP-6`](docs/upstream-bugs.md#cpp-6)) and strips `chr` on ambiguous b37 FASTAs ([`CPP-7`](docs/upstream-bugs.md#cpp-7)); the concordance harness injects contigs before `rtg vcfeval`. Residual 1–16 FP deltas on raw HG002, SEQC2, and HG008 reflect [`CPP-9`](docs/upstream-bugs.md#cpp-9); `VarDictRust` and `VarDictJava` produce identical TP, FP, FN, Precision, Recall, and $F_1$ across every threshold.
 
 *See the [`Omnibus Empirical Validation Report`](docs/validation/omnibus-empirical-validation.md) for reference checksums and reproduction commands across all 10 cohorts and 17 modalities, and [`docs/testing/test-matrix-and-ci-audit.md`](docs/testing/test-matrix-and-ci-audit.md) for the Seven-Level Testing Matrix.*
+
+---
+
+<a id="evaluation-manuscript--reproducibility"></a>
+<a id="evaluation-manuscript-reproducibility"></a>
+## Evaluation Manuscript & Reproducibility
+
+The v1.0.6 evaluation is written up as a repository-tracked manuscript (not yet peer-reviewed): [manuscript](paper/manuscript.md) ([typeset PDF](paper/manuscript.pdf)) with [supplement](paper/supplement.md) ([typeset PDF](paper/supplement.pdf)). Results cover eight topics: Tier-1/2 oracle equivalence across 13 modes and the 87-arm sweep; AML benchmark replication and field-caller comparison; germline/somatic truth accuracy and QUAL operating points; bounded-memory scaling with multicore work-stealing and node packing; full-genome WGS scaling; cross-platform chemistry generalization and the 70-cell GA4GH stratification; GIAB v5.0q/CMRG/Mosaic discovery via unchunked calling; and deep-learning/commercial caller comparison with low-VAF titration and supply-chain hardening. Figures ([`fig1..fig8`](paper/figures/)) and tables ([main 1–8 and supplementary S1–S6](paper/tables/)) regenerate deterministically via the [paper reproducibility package](paper/README.md) (`bash paper/reproduce_all.sh`).
 
 ---
 
