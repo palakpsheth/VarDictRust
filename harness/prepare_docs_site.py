@@ -162,7 +162,10 @@ def stage_docs():
     md_files = [
         p
         for p in REPO_ROOT.rglob("*.md")
-        if not any(p.relative_to(REPO_ROOT).as_posix().startswith(ign) for ign in IGNORED_PREFIXES)
+        if not any(
+            p.relative_to(REPO_ROOT).as_posix().startswith(ign)
+            for ign in IGNORED_PREFIXES
+        )
     ]
 
     for p in md_files:
@@ -178,6 +181,14 @@ def stage_docs():
         staged_figs_dir.mkdir(parents=True, exist_ok=True)
         for svg_file in paper_figs_dir.glob("*.svg"):
             shutil.copy2(svg_file, staged_figs_dir / svg_file.name)
+
+    # 1c. Stage typeset manuscript/supplement PDFs so README/docs links stay
+    # internal to the docs site instead of rewriting to GitHub blob URLs.
+    for pdf_name in ("manuscript.pdf", "supplement.pdf"):
+        pdf_file = REPO_ROOT / "paper" / pdf_name
+        if pdf_file.is_file():
+            (STAGING_DIR / "paper").mkdir(parents=True, exist_ok=True)
+            shutil.copy2(pdf_file, STAGING_DIR / "paper" / pdf_name)
 
     # 2. Stage .github/ documents into community/ (MkDocs ignores dot-directories by default)
     github_dir = REPO_ROOT / ".github"
