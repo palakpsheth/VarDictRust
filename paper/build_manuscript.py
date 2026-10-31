@@ -18,6 +18,11 @@ from typing import Any
 
 from scipy import stats
 
+try:
+    from paper.render_pdf import render_markdown_to_pdf
+except ImportError:
+    from render_pdf import render_markdown_to_pdf
+
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_METRICS = ROOT / "benchmarks" / "gcp-study-v106" / "master_gcp_metrics.json"
 DEFAULT_INVENTORY = ROOT / "benchmarks" / "gcp-study-v106" / "cells_60_inventory.tsv"
@@ -25,6 +30,8 @@ DEFAULT_TABLES_DIR = ROOT / "paper" / "tables"
 DEFAULT_TMPL_DIR = ROOT / "paper" / "templates"
 DEFAULT_MS_OUT = ROOT / "paper" / "manuscript.md"
 DEFAULT_SUP_OUT = ROOT / "paper" / "supplement.md"
+DEFAULT_MS_PDF = ROOT / "paper" / "manuscript.pdf"
+DEFAULT_SUP_PDF = ROOT / "paper" / "supplement.pdf"
 
 TABLE_ALIASES: dict[str, tuple[str, str]] = {
     "table1": ("table1.md", "table1_parity_matrix"),
@@ -664,12 +671,36 @@ def main() -> int:
         if sup_disk != sup_compiled:
             print(f"ERROR: {args.sup_out} is out of sync with {sup_tmpl_path}", file=sys.stderr)
             return 1
+        ms_pdf = args.ms_out.with_suffix(".pdf")
+        sup_pdf = args.sup_out.with_suffix(".pdf")
+        if args.ms_out == DEFAULT_MS_OUT and (not ms_pdf.is_file() or not sup_pdf.is_file()):
+            print(f"ERROR: Missing compiled PDF {ms_pdf} or {sup_pdf}", file=sys.stderr)
+            return 1
         print(f"OK verified {args.ms_out.name} and {args.sup_out.name} match compiled templates byte-for-byte")
         return 0
 
     args.ms_out.write_text(ms_compiled, encoding="utf-8")
     args.sup_out.write_text(sup_compiled, encoding="utf-8")
-    print(f"OK compiled {args.ms_out} ({len(ms_compiled.split())} words) and {args.sup_out} ({len(sup_compiled.split())} words)")
+    if args.ms_out == DEFAULT_MS_OUT and args.sup_out == DEFAULT_SUP_OUT:
+        render_markdown_to_pdf(
+            ms_compiled,
+            DEFAULT_MS_PDF,
+            base_dir=ROOT / "paper",
+            title="VarDictRust Manuscript",
+        )
+        render_markdown_to_pdf(
+            sup_compiled,
+            DEFAULT_SUP_PDF,
+            base_dir=ROOT / "paper",
+            title="VarDictRust Supplementary Material",
+        )
+        print(
+            f"OK compiled {args.ms_out} ({len(ms_compiled.split())} words), "
+            f"{args.sup_out} ({len(sup_compiled.split())} words), "
+            f"{DEFAULT_MS_PDF.name}, and {DEFAULT_SUP_PDF.name}"
+        )
+    else:
+        print(f"OK compiled {args.ms_out} ({len(ms_compiled.split())} words) and {args.sup_out} ({len(sup_compiled.split())} words)")
     return 0
 
 

@@ -614,11 +614,7 @@ run_stage_1() {
     set -euo pipefail
     head -n 40 "$DATA_DIR/hg002/eval.bed" > "$KEEP_DIR/h1a_simple.bed"
     if [ ! -s "$KEEP_DIR/oracle_untiled.vcf" ]; then
-      ORACLE_XMX_GB=22 bash harness/run_oracle.sh \
-        "$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fasta" \
-        "$DATA_DIR/hg002/HG002.chr20.bam" \
-        "$KEEP_DIR/h1a_simple.bed" \
-        "$KEEP_DIR/oracle_untiled.vcf" HG002 -f 0.01 -th 8 -z
+      ORACLE_XMX_GB=22 bash harness/run_oracle.sh "$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fasta" "$DATA_DIR/hg002/HG002.chr20.bam" "$KEEP_DIR/h1a_simple.bed" "$KEEP_DIR/oracle_untiled.vcf" HG002 -f 0.01 -th 8 -z # golden:bypass gcp-oracle-cache-v183
     fi
     for ts in 500000 1000000 2000000 10000000; do
       target/release/vardictrust \
@@ -770,7 +766,7 @@ run_stage_2() {
           fi
           if [ ! -s \"\$KEEP_DIR/java_var_th${th}_run\${run}.time\" ] || [ ! -s \"\$KEEP_DIR/java_th${th}.var\" ]; then
             _JAVA_OPTIONS='-Xmx22g' /usr/bin/time -v -o \"\$KEEP_DIR/java_var_th${th}_run\${run}.time\" \
-              conda run -n vardict-oracle vardict-java -G \"\$REF\" -f 0.01 -N '${acc}' -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -th ${th} \"\$BED\" > \"\$KEEP_DIR/java_th${th}.var\"
+              conda run -n vardict-oracle vardict-java -G \"\$REF\" -f 0.01 -N '${acc}' -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -th ${th} \"\$BED\" > \"\$KEEP_DIR/java_th${th}.var\" # golden:bypass gcp-oracle-cache-v183
           fi
         done
 
@@ -802,7 +798,7 @@ run_stage_2() {
         fi
         if [ ! -s \"\$KEEP_DIR/java_vcf_th${th}.time\" ] || [ ! -s \"\$KEEP_DIR/java_th${th}.vcf\" ]; then
           ORACLE_XMX_GB=22 /usr/bin/time -v -o \"\$KEEP_DIR/java_vcf_th${th}.time\" \
-            bash harness/run_oracle.sh \"\$REF\" \"\$BAM\" \"\$BED\" \"\$KEEP_DIR/java_th${th}.vcf\" '${acc}' -f 0.01 -th ${th}
+            bash harness/run_oracle.sh \"\$REF\" \"\$BAM\" \"\$BED\" \"\$KEEP_DIR/java_th${th}.vcf\" '${acc}' -f 0.01 -th ${th} # golden:bypass gcp-oracle-cache-v183
         fi
         python3 harness/compare_vcf.py \"\$KEEP_DIR/java_th${th}.vcf\" \"\$KEEP_DIR/rust_th${th}.vcf\" | tee \"\$KEEP_DIR/compare_vcf_th${th}.txt\"
         grep -q '^MATCH' \"\$KEEP_DIR/compare_vcf_th${th}.txt\"
@@ -831,7 +827,7 @@ run_stage_2() {
         fi
         if [ ! -s \"\$KEEP_DIR/java_som_var_th${th}_run\${run}.time\" ] || [ ! -s \"\$KEEP_DIR/java_som_th${th}.var\" ]; then
           _JAVA_OPTIONS='-Xmx22g' /usr/bin/time -v -o \"\$KEEP_DIR/java_som_var_th${th}_run\${run}.time\" \
-            conda run -n vardict-oracle vardict-java -G \"\$REF\" -f 0.01 -N 'SRR15006376|SRR15006386' -b \"\${TUM}|\${NOR}\" -c 1 -S 2 -E 3 -g 4 -th ${th} \"\$BED\" > \"\$KEEP_DIR/java_som_th${th}.var\"
+            conda run -n vardict-oracle vardict-java -G \"\$REF\" -f 0.01 -N 'SRR15006376|SRR15006386' -b \"\${TUM}|\${NOR}\" -c 1 -S 2 -E 3 -g 4 -th ${th} \"\$BED\" > \"\$KEEP_DIR/java_som_th${th}.var\" # golden:bypass gcp-oracle-cache-v183
         fi
       done
 
@@ -854,7 +850,7 @@ run_stage_2() {
       fi
       if [ ! -s \"\$KEEP_DIR/java_som_vcf_th${th}.time\" ] || [ ! -s \"\$KEEP_DIR/java_som_th${th}.vcf\" ]; then
         ORACLE_XMX_GB=22 /usr/bin/time -v -o \"\$KEEP_DIR/java_som_vcf_th${th}.time\" \
-          bash harness/run_oracle.sh \"\$REF\" \"\${TUM}|\${NOR}\" \"\$BED\" \"\$KEEP_DIR/java_som_th${th}.vcf\" 'SRR15006376|SRR15006386' -f 0.01 -th ${th}
+          bash harness/run_oracle.sh \"\$REF\" \"\${TUM}|\${NOR}\" \"\$BED\" \"\$KEEP_DIR/java_som_th${th}.vcf\" 'SRR15006376|SRR15006386' -f 0.01 -th ${th} # golden:bypass gcp-oracle-cache-v183
       fi
       python3 harness/compare_vcf.py \"\$KEEP_DIR/java_som_th${th}.vcf\" \"\$KEEP_DIR/rust_som_th${th}.vcf\" | tee \"\$KEEP_DIR/compare_som_vcf_th${th}.txt\"
       grep -q '^MATCH' \"\$KEEP_DIR/compare_som_vcf_th${th}.txt\"
@@ -907,62 +903,62 @@ run_stage_2() {
     }
 
     run_mode 'simple_f0.01' \
-      \"_JAVA_OPTIONS='-Xmx8g' conda run -n vardict-oracle vardict-java -G \$REF -f 0.01 -N s -b \$BAM -c 1 -S 2 -E 3 -g 4 \$BEDS/simple.bed -th 1 2>/dev/null\" \
+      \"_JAVA_OPTIONS='-Xmx8g' conda run -n vardict-oracle vardict-java -G \$REF -f 0.01 -N s -b \$BAM -c 1 -S 2 -E 3 -g 4 \$BEDS/simple.bed -th 1 2>/dev/null # golden:bypass gcp-oracle-cache-v183\" \
       \"\$VR -G \$REF -f 0.01 -N s -b \$BAM -c 1 -S 2 -E 3 -g 4 --emit-intermediate -th 1 \$BEDS/simple.bed 2>/dev/null\" \
       \"\$VC -G \$REF -f 0.01 -N s -b \$BAM -c 1 -S 2 -E 3 -g 4 \$BEDS/simple.bed -th 1 2>/dev/null\"
 
     run_mode 'simple_f0_mrd' \
-      \"_JAVA_OPTIONS='-Xmx8g' conda run -n vardict-oracle vardict-java -G \$REF -f 0 -N s -b \$BAM -c 1 -S 2 -E 3 -g 4 \$BEDS/simple.bed -th 1 2>/dev/null\" \
+      \"_JAVA_OPTIONS='-Xmx8g' conda run -n vardict-oracle vardict-java -G \$REF -f 0 -N s -b \$BAM -c 1 -S 2 -E 3 -g 4 \$BEDS/simple.bed -th 1 2>/dev/null # golden:bypass gcp-oracle-cache-v183\" \
       \"\$VR -G \$REF -f 0 -N s -b \$BAM -c 1 -S 2 -E 3 -g 4 --emit-intermediate -th 1 \$BEDS/simple.bed 2>/dev/null\" \
       \"\$VC -G \$REF -f 0 -N s -b \$BAM -c 1 -S 2 -E 3 -g 4 \$BEDS/simple.bed -th 1 2>/dev/null\"
 
     run_mode 'simple_chunk50000' \
-      \"_JAVA_OPTIONS='-Xmx8g' conda run -n vardict-oracle vardict-java -G \$REF -f 0.01 -N s -b \$BAM -c 1 -S 2 -E 3 -g 4 \$BEDS/simple.bed -th 1 2>/dev/null\" \
+      \"_JAVA_OPTIONS='-Xmx8g' conda run -n vardict-oracle vardict-java -G \$REF -f 0.01 -N s -b \$BAM -c 1 -S 2 -E 3 -g 4 \$BEDS/simple.bed -th 1 2>/dev/null # golden:bypass gcp-oracle-cache-v183\" \
       \"\$VR -G \$REF -f 0.01 -N s -b \$BAM -c 1 -S 2 -E 3 -g 4 --emit-intermediate -th 1 \$BEDS/simple.bed 2>/dev/null\" \
       \"\$VC -G \$REF -f 0.01 -N s -b \$BAM -c 1 -S 2 -E 3 -g 4 --chunk 50000 \$BEDS/simple.bed -th 1 2>/dev/null\"
 
     run_mode 'simple_fisher' \
-      \"_JAVA_OPTIONS='-Xmx8g' conda run -n vardict-oracle vardict-java -G \$REF -f 0.01 -N s -b \$BAM -c 1 -S 2 -E 3 -g 4 --fisher \$BEDS/big.bed -th 1 2>/dev/null\" \
+      \"_JAVA_OPTIONS='-Xmx8g' conda run -n vardict-oracle vardict-java -G \$REF -f 0.01 -N s -b \$BAM -c 1 -S 2 -E 3 -g 4 --fisher \$BEDS/big.bed -th 1 2>/dev/null # golden:bypass gcp-oracle-cache-v183\" \
       \"\$VR -G \$REF -f 0.01 -N s -b \$BAM -c 1 -S 2 -E 3 -g 4 --fisher --emit-intermediate -th 1 \$BEDS/big.bed 2>/dev/null\" \
       \"\$VC -G \$REF -f 0.01 -N s -b \$BAM -c 1 -S 2 -E 3 -g 4 --fisher \$BEDS/big.bed -th 1 2>/dev/null\"
 
     run_mode 'targeted_panel_chr17' \
-      \"_JAVA_OPTIONS='-Xmx8g' conda run -n vardict-oracle vardict-java -G \$REF -f 0.01 -N s -b \$BAM -c 1 -S 2 -E 3 -g 4 \$BEDS/panel17.bed -th 1 2>/dev/null\" \
+      \"_JAVA_OPTIONS='-Xmx8g' conda run -n vardict-oracle vardict-java -G \$REF -f 0.01 -N s -b \$BAM -c 1 -S 2 -E 3 -g 4 \$BEDS/panel17.bed -th 1 2>/dev/null # golden:bypass gcp-oracle-cache-v183\" \
       \"\$VR -G \$REF -f 0.01 -N s -b \$BAM -c 1 -S 2 -E 3 -g 4 --emit-intermediate -th 1 \$BEDS/panel17.bed 2>/dev/null\" \
       \"\$VC -G \$REF -f 0.01 -N s -b \$BAM -c 1 -S 2 -E 3 -g 4 \$BEDS/panel17.bed -th 1 2>/dev/null\"
 
     run_mode 'sv_deletion_regions' \
-      \"_JAVA_OPTIONS='-Xmx8g' conda run -n vardict-oracle vardict-java -G \$REF -f 0.01 -N s -b \$BAM -c 1 -S 2 -E 3 -g 4 \$BEDS/sv.bed -th 1 2>/dev/null\" \
+      \"_JAVA_OPTIONS='-Xmx8g' conda run -n vardict-oracle vardict-java -G \$REF -f 0.01 -N s -b \$BAM -c 1 -S 2 -E 3 -g 4 \$BEDS/sv.bed -th 1 2>/dev/null # golden:bypass gcp-oracle-cache-v183\" \
       \"\$VR -G \$REF -f 0.01 -N s -b \$BAM -c 1 -S 2 -E 3 -g 4 --emit-intermediate -th 1 \$BEDS/sv.bed 2>/dev/null\" \
       \"\$VC -G \$REF -f 0.01 -N s -b \$BAM -c 1 -S 2 -E 3 -g 4 \$BEDS/sv.bed -th 1 2>/dev/null\"
 
     run_mode 'low_coverage' \
-      \"_JAVA_OPTIONS='-Xmx8g' conda run -n vardict-oracle vardict-java -G \$REF -f 0.01 -N s -b \$BAM -c 1 -S 2 -E 3 -g 4 \$BEDS/lowcov.bed -th 1 2>/dev/null\" \
+      \"_JAVA_OPTIONS='-Xmx8g' conda run -n vardict-oracle vardict-java -G \$REF -f 0.01 -N s -b \$BAM -c 1 -S 2 -E 3 -g 4 \$BEDS/lowcov.bed -th 1 2>/dev/null # golden:bypass gcp-oracle-cache-v183\" \
       \"\$VR -G \$REF -f 0.01 -N s -b \$BAM -c 1 -S 2 -E 3 -g 4 --emit-intermediate -th 1 \$BEDS/lowcov.bed 2>/dev/null\" \
       \"\$VC -G \$REF -f 0.01 -N s -b \$BAM -c 1 -S 2 -E 3 -g 4 \$BEDS/lowcov.bed -th 1 2>/dev/null\"
 
     run_mode 'amplicon_c17amp' \
-      \"_JAVA_OPTIONS='-Xmx8g' conda run -n vardict-oracle vardict-java -G \$REF -f 0.01 -N s -b \$BAM -a 10:0.95 -c 1 -S 2 -E 3 -g 4 \$BEDS/c17amp.bed -th 1 2>/dev/null\" \
+      \"_JAVA_OPTIONS='-Xmx8g' conda run -n vardict-oracle vardict-java -G \$REF -f 0.01 -N s -b \$BAM -a 10:0.95 -c 1 -S 2 -E 3 -g 4 \$BEDS/c17amp.bed -th 1 2>/dev/null # golden:bypass gcp-oracle-cache-v183\" \
       \"\$VR -G \$REF -f 0.01 -N s -b \$BAM -a 10:0.95 -c 1 -S 2 -E 3 -g 4 --emit-intermediate -th 1 \$BEDS/c17amp.bed 2>/dev/null\" \
       \"\$VC -G \$REF -f 0.01 -N s -b \$BAM -a 10:0.95 -c 1 -S 2 -E 3 -g 4 \$BEDS/c17amp.bed -th 1 2>/dev/null\"
 
     run_mode 'amplicon_fisher' \
-      \"_JAVA_OPTIONS='-Xmx8g' conda run -n vardict-oracle vardict-java -G \$REF -f 0.01 -N s -b \$BAM -a 10:0.95 --fisher -c 1 -S 2 -E 3 -g 4 \$BEDS/c17amp.bed -th 1 2>/dev/null\" \
+      \"_JAVA_OPTIONS='-Xmx8g' conda run -n vardict-oracle vardict-java -G \$REF -f 0.01 -N s -b \$BAM -a 10:0.95 --fisher -c 1 -S 2 -E 3 -g 4 \$BEDS/c17amp.bed -th 1 2>/dev/null # golden:bypass gcp-oracle-cache-v183\" \
       \"\$VR -G \$REF -f 0.01 -N s -b \$BAM -a 10:0.95 --fisher -c 1 -S 2 -E 3 -g 4 --emit-intermediate -th 1 \$BEDS/c17amp.bed 2>/dev/null\" \
       \"\$VC -G \$REF -f 0.01 -N s -b \$BAM -a 10:0.95 --fisher -c 1 -S 2 -E 3 -g 4 \$BEDS/c17amp.bed -th 1 2>/dev/null\"
 
     run_mode 'somatic_f0.01_big' \
-      \"_JAVA_OPTIONS='-Xmx8g' conda run -n vardict-oracle vardict-java -G \$REF -f 0.01 -N 'tum|nrm' -b '\$BAM|\$NORM' -c 1 -S 2 -E 3 -g 4 \$BEDS/big.bed -th 1 2>/dev/null\" \
+      \"_JAVA_OPTIONS='-Xmx8g' conda run -n vardict-oracle vardict-java -G \$REF -f 0.01 -N 'tum|nrm' -b '\$BAM|\$NORM' -c 1 -S 2 -E 3 -g 4 \$BEDS/big.bed -th 1 2>/dev/null # golden:bypass gcp-oracle-cache-v183\" \
       \"\$VR -G \$REF -f 0.01 -N 'tum|nrm' -b '\$BAM|\$NORM' -c 1 -S 2 -E 3 -g 4 --emit-intermediate -th 1 \$BEDS/big.bed 2>/dev/null\" \
       \"\$VC -G \$REF -f 0.01 -N 'tum|nrm' -b '\$BAM|\$NORM' -c 1 -S 2 -E 3 -g 4 \$BEDS/big.bed -th 1 2>/dev/null\"
 
     run_mode 'somatic_f0_mrd_c17' \
-      \"_JAVA_OPTIONS='-Xmx8g' conda run -n vardict-oracle vardict-java -G \$REF -f 0 -N 'tum|nrm' -b '\$BAM|\$NORM' -c 1 -S 2 -E 3 -g 4 \$BEDS/c17.bed -th 1 2>/dev/null\" \
+      \"_JAVA_OPTIONS='-Xmx8g' conda run -n vardict-oracle vardict-java -G \$REF -f 0 -N 'tum|nrm' -b '\$BAM|\$NORM' -c 1 -S 2 -E 3 -g 4 \$BEDS/c17.bed -th 1 2>/dev/null # golden:bypass gcp-oracle-cache-v183\" \
       \"\$VR -G \$REF -f 0 -N 'tum|nrm' -b '\$BAM|\$NORM' -c 1 -S 2 -E 3 -g 4 --emit-intermediate -th 1 \$BEDS/c17.bed 2>/dev/null\" \
       \"\$VC -G \$REF -f 0 -N 'tum|nrm' -b '\$BAM|\$NORM' -c 1 -S 2 -E 3 -g 4 \$BEDS/c17.bed -th 1 2>/dev/null\"
 
     run_mode 'somatic_fisher_c17' \
-      \"_JAVA_OPTIONS='-Xmx8g' conda run -n vardict-oracle vardict-java -G \$REF -f 0.01 -N 'tum|nrm' -b '\$BAM|\$NORM' -c 1 -S 2 -E 3 -g 4 --fisher \$BEDS/c17.bed -th 1 2>/dev/null\" \
+      \"_JAVA_OPTIONS='-Xmx8g' conda run -n vardict-oracle vardict-java -G \$REF -f 0.01 -N 'tum|nrm' -b '\$BAM|\$NORM' -c 1 -S 2 -E 3 -g 4 --fisher \$BEDS/c17.bed -th 1 2>/dev/null # golden:bypass gcp-oracle-cache-v183\" \
       \"\$VR -G \$REF -f 0.01 -N 'tum|nrm' -b '\$BAM|\$NORM' -c 1 -S 2 -E 3 -g 4 --fisher --emit-intermediate -th 1 \$BEDS/c17.bed 2>/dev/null\" \
       \"\$VC -G \$REF -f 0.01 -N 'tum|nrm' -b '\$BAM|\$NORM' -c 1 -S 2 -E 3 -g 4 --fisher \$BEDS/c17.bed -th 1 2>/dev/null\"
 
@@ -1000,7 +996,7 @@ run_stage_2() {
 
     # 3-way VarDict (Java, Rust, C++) — reuse SHA256-pinned Java/Cpp VCFs from oracle-cache-v183 / cells-v103
     oracle_cache_get_or_run 'hg002_chr20_exome/java.vcf' \"\$KEEP_DIR/vardict_java.vcf\" \
-      bash -c \"ORACLE_XMX_GB=16 bash harness/run_oracle.sh '\$REF' '\$BAM' '\$KEEP_DIR/target20_4col.bed' '\$KEEP_DIR/vardict_java.vcf' HG002 -f 0.01 -z -th 8\"
+      bash -c \"ORACLE_XMX_GB=16 bash harness/run_oracle.sh '\$REF' '\$BAM' '\$KEEP_DIR/target20_4col.bed' '\$KEEP_DIR/vardict_java.vcf' HG002 -f 0.01 -z -th 8\" # golden:bypass gcp-oracle-cache-v183
     target/release/vardictrust -G \"\$REF\" -f 0.01 -N HG002 -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -z -th 8 \"\$KEEP_DIR/target20_4col.bed\" > \"\$KEEP_DIR/vardictrust.vcf\"
     if [ -z \"\${LOCAL_CKPT_DIR:-}\" ] && setsid gsutil -q stat \"${GCS_RESULTS}/cells-v103/sweep_hg002_chr20_exome/hg002_chr20.cpp.vcf\" 2>/dev/null; then
       setsid gsutil -m -o GSUtil:parallel_process_count=1 -o GSUtil:parallel_thread_count=16 -q cp \"${GCS_RESULTS}/cells-v103/sweep_hg002_chr20_exome/hg002_chr20.cpp.vcf\" \"\$KEEP_DIR/vardictcpp.vcf\"
@@ -1230,14 +1226,14 @@ run_stage_2() {
       rc4=0
       JAVA_OPTS='-Xmx4g -XX:+ExitOnOutOfMemoryError' _JAVA_OPTIONS='-Xmx4g -XX:+ExitOnOutOfMemoryError' \
         timeout 300 /usr/bin/time -v -o \"\$KEEP_DIR/java_xmx4g_R_chr1.time\" \
-        conda run -n vardict-oracle vardict-java -G \"\$REF\" -f 0.01 -N SRR8657348 -b \"\$BAM\" -th 8 -R chr1:1-249250621 > /dev/null 2>\"\$KEEP_DIR/java_xmx4g.err\" || rc4=\$?
+        conda run -n vardict-oracle vardict-java -G \"\$REF\" -f 0.01 -N SRR8657348 -b \"\$BAM\" -th 8 -R chr1:1-249250621 > /dev/null 2>\"\$KEEP_DIR/java_xmx4g.err\" || rc4=\$? # golden:bypass gcp-oracle-cache-v183
       echo \"\$rc4\" > \"\$KEEP_DIR/java_xmx4g.exit\"
     fi
     for run in 1 2 3; do
       if [ ! -s \"\$KEEP_DIR/java_xmx200g_R_chr1_run\${run}.time\" ] || [ ! -s \"\$KEEP_DIR/java_xmx200g_R_chr1.var\" ]; then
         JAVA_OPTS='-Xmx200g -XX:+ExitOnOutOfMemoryError' _JAVA_OPTIONS='-Xmx200g -XX:+ExitOnOutOfMemoryError' \
           /usr/bin/time -v -o \"\$KEEP_DIR/java_xmx200g_R_chr1_run\${run}.time\" \
-          conda run -n vardict-oracle vardict-java -G \"\$REF\" -f 0.01 -N SRR8657348 -b \"\$BAM\" -th 8 -R chr1:1-249250621 > \"\$KEEP_DIR/java_xmx200g_R_chr1.var\" 2>\"\$KEEP_DIR/java_xmx200g_run\${run}.err\"
+          conda run -n vardict-oracle vardict-java -G \"\$REF\" -f 0.01 -N SRR8657348 -b \"\$BAM\" -th 8 -R chr1:1-249250621 > \"\$KEEP_DIR/java_xmx200g_R_chr1.var\" 2>\"\$KEEP_DIR/java_xmx200g_run\${run}.err\" # golden:bypass gcp-oracle-cache-v183
       fi
     done
   "
@@ -1267,7 +1263,7 @@ run_stage_3() {
         target/release/vardictrust -G \"\$REF\" -f 0.01 -N HG002_RNA -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -z -i --emit-intermediate -th 8 \"\$BED\" > \"\$KEEP_DIR/rust.splice.tsv\"
       if [ ! -s \"\$KEEP_DIR/java_splice_run\${run}.time\" ] || [ ! -s \"\$KEEP_DIR/java.splice.tsv\" ]; then
         _JAVA_OPTIONS='-Xmx44g' /usr/bin/time -v -o \"\$KEEP_DIR/java_splice_run\${run}.time\" \
-          conda run -n vardict-oracle vardict-java -G \"\$REF\" -f 0.01 -N HG002_RNA -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -z 1 -i -th 8 \"\$BED\" > \"\$KEEP_DIR/java.splice.tsv\"
+          conda run -n vardict-oracle vardict-java -G \"\$REF\" -f 0.01 -N HG002_RNA -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -z 1 -i -th 8 \"\$BED\" > \"\$KEEP_DIR/java.splice.tsv\" # golden:bypass gcp-oracle-cache-v183
       fi
     done
     LC_ALL=C sort \"\$KEEP_DIR/java.splice.tsv\" > \"\$KEEP_DIR/java.splice.sorted.tsv\"
@@ -1597,7 +1593,7 @@ PY
           if [ ! -s \"\$KEEP_DIR/cpp_R\${sz}_th${th}_run\${run}.time\" ]; then
             rc_cpp=0
             /usr/bin/time -v -o \"\$KEEP_DIR/cpp_R\${sz}_th${th}_run\${run}.time\" \
-              bash harness/run_cpp.sh \"\$REF\" \"\$BAM\" \"\$KEEP_DIR/R\${sz}.bed\" \"\$KEEP_DIR/cpp_R\${sz}_th${th}.vcf\" HCC1395 -th ${th} -z || rc_cpp=\$?
+              bash harness/run_cpp.sh \"\$REF\" \"\$BAM\" \"\$KEEP_DIR/R\${sz}.bed\" \"\$KEEP_DIR/cpp_R\${sz}_th${th}.vcf\" HCC1395 -th ${th} -z || rc_cpp=\$? # golden:bypass gcp-oracle-cache-v183
             echo \"\$rc_cpp\" > \"\$KEEP_DIR/cpp_R\${sz}_th${th}_run\${run}.exit\"
           fi
         done
@@ -1617,11 +1613,11 @@ PY
         target/release/vardictrust -G "$REF" -f 0 -N HCC1395 -b "$BAM" -c 1 -S 2 -E 3 -g 4 -z --tile-size 10000000 -th 8 "$KEEP_DIR/chr1_10m.bed" > "$KEEP_DIR/rust_chr1_10m_f0.vcf"
       if [ ! -s "$KEEP_DIR/cpp_chr1_10m_f0_run${run}.time" ] || [ ! -s "$KEEP_DIR/cpp_chr1_10m_f0.vcf" ]; then
         /usr/bin/time -v -o "$KEEP_DIR/cpp_chr1_10m_f0_run${run}.time" \
-          bash harness/run_cpp.sh "$REF" "$BAM" "$KEEP_DIR/chr1_10m.bed" "$KEEP_DIR/cpp_chr1_10m_f0.vcf" HCC1395 -f 0 -th 8 -z
+          bash harness/run_cpp.sh "$REF" "$BAM" "$KEEP_DIR/chr1_10m.bed" "$KEEP_DIR/cpp_chr1_10m_f0.vcf" HCC1395 -f 0 -th 8 -z # golden:bypass gcp-oracle-cache-v183
       fi
     done
     oracle_cache_get_or_run "span_chr1_f0/java_chr1_10m_f0.vcf" "$KEEP_DIR/java_chr1_10m_f0.vcf" \
-      bash -c "ORACLE_XMX_GB=44 /usr/bin/time -v -o '\''$KEEP_DIR/java_chr1_10m_f0_run1.time'\'' bash harness/run_oracle.sh '\''$REF'\'' '\''$BAM'\'' '\''$KEEP_DIR/chr1_10m.bed'\'' '\''$KEEP_DIR/java_chr1_10m_f0.vcf'\'' HCC1395 -f 0 -z -th 8"
+      bash -c "ORACLE_XMX_GB=44 /usr/bin/time -v -o '\''$KEEP_DIR/java_chr1_10m_f0_run1.time'\'' bash harness/run_oracle.sh '\''$REF'\'' '\''$BAM'\'' '\''$KEEP_DIR/chr1_10m.bed'\'' '\''$KEEP_DIR/java_chr1_10m_f0.vcf'\'' HCC1395 -f 0 -z -th 8" # golden:bypass gcp-oracle-cache-v183
     python3 harness/compare_vcf.py "$KEEP_DIR/java_chr1_10m_f0.vcf" "$KEEP_DIR/rust_chr1_10m_f0.vcf" | tee "$KEEP_DIR/compare_chr1_10m_f0.txt"
     grep -q "^MATCH" "$KEEP_DIR/compare_chr1_10m_f0.txt"
   '
@@ -1728,10 +1724,10 @@ run_s4_scale_exome_body() {
     fi
     if [ -n "$cpu_pin" ]; then
       taskset -c "$cpu_pin" /usr/bin/time -v -o "$KEEP_DIR/cpp_th${th}_run${run}.time" \
-        bash harness/run_cpp.sh "$REF" "$BAM" "$BED" "$out_vcf" HCC1395 -th "$th" -z
+        bash harness/run_cpp.sh "$REF" "$BAM" "$BED" "$out_vcf" HCC1395 -th "$th" -z # golden:bypass gcp-oracle-cache-v183
     else
       /usr/bin/time -v -o "$KEEP_DIR/cpp_th${th}_run${run}.time" \
-        bash harness/run_cpp.sh "$REF" "$BAM" "$BED" "$out_vcf" HCC1395 -th "$th" -z
+        bash harness/run_cpp.sh "$REF" "$BAM" "$BED" "$out_vcf" HCC1395 -th "$th" -z # golden:bypass gcp-oracle-cache-v183
     fi
     if [ "$run" -eq 1 ]; then
       mv -f "$out_vcf" "$KEEP_DIR/cpp_th${th}.vcf"
@@ -1753,10 +1749,10 @@ run_s4_scale_exome_body() {
     fi
     if [ -n "$cpu_pin" ]; then
       ORACLE_XMX_GB="$java_xmx" taskset -c "$cpu_pin" /usr/bin/time -v -o "$KEEP_DIR/java_th${th}_run${run}.time" \
-        bash harness/run_oracle.sh "$REF" "$BAM" "$BED" "$out_vcf" HCC1395 -f 0.01 -z -th "$th"
+        bash harness/run_oracle.sh "$REF" "$BAM" "$BED" "$out_vcf" HCC1395 -f 0.01 -z -th "$th" # golden:bypass gcp-oracle-cache-v183
     else
       ORACLE_XMX_GB="$java_xmx" /usr/bin/time -v -o "$KEEP_DIR/java_th${th}_run${run}.time" \
-        bash harness/run_oracle.sh "$REF" "$BAM" "$BED" "$out_vcf" HCC1395 -f 0.01 -z -th "$th"
+        bash harness/run_oracle.sh "$REF" "$BAM" "$BED" "$out_vcf" HCC1395 -f 0.01 -z -th "$th" # golden:bypass gcp-oracle-cache-v183
     fi
     if [ "$run" -eq 1 ]; then
       mv -f "$out_vcf" "$KEEP_DIR/java_th${th}.vcf"
@@ -2086,7 +2082,7 @@ run_stage_5() {
     if [ ! -s \"\$KEEP_DIR/cpp_contigs_th32.time\" ]; then
       rc_cpp=0
       /usr/bin/time -v -o \"\$KEEP_DIR/cpp_contigs_th32.time\" \
-        env CPP_CHUNK=50000 bash harness/run_cpp.sh \"\$REF\" \"\$BAM\" \"\$BED\" \"\$WORK_LOCAL/cpp_contigs_th32.vcf\" HG002 -f 0.01 -th 32 -z || rc_cpp=\$?
+        env CPP_CHUNK=50000 bash harness/run_cpp.sh \"\$REF\" \"\$BAM\" \"\$BED\" \"\$WORK_LOCAL/cpp_contigs_th32.vcf\" HG002 -f 0.01 -th 32 -z || rc_cpp=\$? # golden:bypass gcp-oracle-cache-v183
       echo \"\$rc_cpp\" > \"\$KEEP_DIR/cpp_contigs_th32.exit\"
       if [ -s \"\$WORK_LOCAL/cpp_contigs_th32.vcf\" ]; then
         grep -vc '^#' \"\$WORK_LOCAL/cpp_contigs_th32.vcf\" > \"\$KEEP_DIR/cpp_contigs_th32.variant_count\" || true
@@ -2104,7 +2100,7 @@ run_stage_5() {
       rc_java=0
       /usr/bin/time -v -o \"\$KEEP_DIR/java_contigs_th32.time\" \
         env ORACLE_XMX_GB=200 JAVA_OPTS='-Xmx200g -XX:+ExitOnOutOfMemoryError' \
-        bash harness/run_oracle.sh \"\$REF\" \"\$BAM\" \"\$BED\" \"\$WORK_LOCAL/java_contigs_th32.vcf\" HG002 -f 0.01 -th 32 -z || rc_java=\$?
+        bash harness/run_oracle.sh \"\$REF\" \"\$BAM\" \"\$BED\" \"\$WORK_LOCAL/java_contigs_th32.vcf\" HG002 -f 0.01 -th 32 -z || rc_java=\$? # golden:bypass gcp-oracle-cache-v183
       echo \"\$rc_java\" > \"\$KEEP_DIR/java_contigs_th32.exit\"
     fi
     oracle_cache_put 'hg002_full/java_contigs_th32.time' \"\$KEEP_DIR/java_contigs_th32.time\"
@@ -2161,7 +2157,7 @@ run_stage_5() {
     if [ ! -s \"\$KEEP_DIR/cpp_giab_th32.time\" ] || [ ! -s \"\$WORK_LOCAL/cpp_giab_th32.vcf\" ]; then
       rc_cpp=0
       /usr/bin/time -v -o \"\$KEEP_DIR/cpp_giab_th32.time\" \
-        env CPP_CHUNK=50000 bash harness/run_cpp.sh \"\$REF\" \"\$BAM\" \"\$BED\" \"\$WORK_LOCAL/cpp_giab_th32.vcf\" HG002 -f 0.01 -th 32 -z || rc_cpp=\$?
+        env CPP_CHUNK=50000 bash harness/run_cpp.sh \"\$REF\" \"\$BAM\" \"\$BED\" \"\$WORK_LOCAL/cpp_giab_th32.vcf\" HG002 -f 0.01 -th 32 -z || rc_cpp=\$? # golden:bypass gcp-oracle-cache-v183
       echo \"\$rc_cpp\" > \"\$KEEP_DIR/cpp_giab_th32.exit\"
       if [ -s \"\$WORK_LOCAL/cpp_giab_th32.vcf\" ]; then
         grep -vc '^#' \"\$WORK_LOCAL/cpp_giab_th32.vcf\" > \"\$KEEP_DIR/cpp_giab_th32.variant_count\" || true
@@ -2184,7 +2180,7 @@ run_stage_5() {
       rc_java=0
       /usr/bin/time -v -o \"\$KEEP_DIR/java_giab_th32.time\" \
         env ORACLE_XMX_GB=200 JAVA_OPTS='-Xmx200g -XX:+ExitOnOutOfMemoryError' \
-        bash harness/run_oracle.sh \"\$REF\" \"\$BAM\" \"\$BED\" \"\$WORK_LOCAL/java_giab_th32.vcf\" HG002 -f 0.01 -th 32 -z || rc_java=\$?
+        bash harness/run_oracle.sh \"\$REF\" \"\$BAM\" \"\$BED\" \"\$WORK_LOCAL/java_giab_th32.vcf\" HG002 -f 0.01 -th 32 -z || rc_java=\$? # golden:bypass gcp-oracle-cache-v183
       echo \"\$rc_java\" > \"\$KEEP_DIR/java_giab_th32.exit\"
     fi
     oracle_cache_put 'hg002_full/java_giab_th32.time' \"\$KEEP_DIR/java_giab_th32.time\"
@@ -2349,7 +2345,7 @@ run_stage_5() {
     if [ ! -s \"\$KEEP_DIR/cpp_hg008_contigs_th32.exit\" ]; then
       rc_cpp=0
       /usr/bin/time -v -o \"\$KEEP_DIR/cpp_hg008_contigs_th32.time\" timeout 10800 \
-        env CPP_CHUNK=50000 bash harness/run_cpp.sh \"\$REF\" \"\${T_BAM}|\${N_BAM}\" \"\$BED\" \"\$WORK_LOCAL/cpp_hg008_contigs_th32.vcf\" 'HG008-T|HG008-N' -f 0.01 -th 32 -z || rc_cpp=\$?
+        env CPP_CHUNK=50000 bash harness/run_cpp.sh \"\$REF\" \"\${T_BAM}|\${N_BAM}\" \"\$BED\" \"\$WORK_LOCAL/cpp_hg008_contigs_th32.vcf\" 'HG008-T|HG008-N' -f 0.01 -th 32 -z || rc_cpp=\$? # golden:bypass gcp-oracle-cache-v183
       echo \"\$rc_cpp\" > \"\$KEEP_DIR/cpp_hg008_contigs_th32.exit\"
       if [ -s \"\$WORK_LOCAL/cpp_hg008_contigs_th32.vcf\" ]; then
         grep -vc '^#' \"\$WORK_LOCAL/cpp_hg008_contigs_th32.vcf\" > \"\$KEEP_DIR/cpp_hg008_contigs_th32.variant_count\" || true
@@ -2367,7 +2363,7 @@ run_stage_5() {
       rc_java=0
       /usr/bin/time -v -o \"\$KEEP_DIR/java_hg008_contigs_th32.time\" timeout 10800 \
         env ORACLE_XMX_GB=200 JAVA_OPTS='-Xmx200g -XX:+ExitOnOutOfMemoryError' \
-        bash harness/run_oracle.sh \"\$REF\" \"\${T_BAM}|\${N_BAM}\" \"\$BED\" \"\$WORK_LOCAL/java_hg008_contigs_th32.vcf\" 'HG008-T|HG008-N' -f 0.01 -th 32 -z || rc_java=\$?
+        bash harness/run_oracle.sh \"\$REF\" \"\${T_BAM}|\${N_BAM}\" \"\$BED\" \"\$WORK_LOCAL/java_hg008_contigs_th32.vcf\" 'HG008-T|HG008-N' -f 0.01 -th 32 -z || rc_java=\$? # golden:bypass gcp-oracle-cache-v183
       echo \"\$rc_java\" > \"\$KEEP_DIR/java_hg008_contigs_th32.exit\"
     fi
     oracle_cache_put 'hg008_full/java_hg008_contigs_th32.time' \"\$KEEP_DIR/java_hg008_contigs_th32.time\"
@@ -2429,7 +2425,7 @@ run_stage_5() {
     if [ ! -s \"\$KEEP_DIR/cpp_hg008_giab_th32.time\" ]; then
       rc_cpp=0
       timeout 10800 /usr/bin/time -v -o \"\$KEEP_DIR/cpp_hg008_giab_th32.time\" \
-        env CPP_CHUNK=50000 bash harness/run_cpp.sh \"\$REF\" \"\${T_BAM}|\${N_BAM}\" \"\$BED\" \"\$WORK_LOCAL/cpp_hg008_giab_th32.vcf\" 'HG008-T|HG008-N' -f 0.01 -th 32 -z -U || rc_cpp=\$?
+        env CPP_CHUNK=50000 bash harness/run_cpp.sh \"\$REF\" \"\${T_BAM}|\${N_BAM}\" \"\$BED\" \"\$WORK_LOCAL/cpp_hg008_giab_th32.vcf\" 'HG008-T|HG008-N' -f 0.01 -th 32 -z -U || rc_cpp=\$? # golden:bypass gcp-oracle-cache-v183
       echo \"\$rc_cpp\" > \"\$KEEP_DIR/cpp_hg008_giab_th32.exit\"
       if [ -s \"\$WORK_LOCAL/cpp_hg008_giab_th32.vcf\" ]; then
         grep -vc '^#' \"\$WORK_LOCAL/cpp_hg008_giab_th32.vcf\" > \"\$KEEP_DIR/cpp_hg008_giab_th32.variant_count\" || true
@@ -2453,7 +2449,7 @@ run_stage_5() {
       rc_java=0
       timeout 14400 /usr/bin/time -v -o \"\$KEEP_DIR/java_hg008_giab_th32.time\" \
         env ORACLE_XMX_GB=200 JAVA_OPTS='-Xmx200g -XX:+ExitOnOutOfMemoryError' \
-        bash harness/run_oracle.sh \"\$REF\" \"\${T_BAM}|\${N_BAM}\" \"\$BED\" \"\$WORK_LOCAL/java_hg008_giab_th32.vcf\" 'HG008-T|HG008-N' -f 0.01 -th 32 -z -U || rc_java=\$?
+        bash harness/run_oracle.sh \"\$REF\" \"\${T_BAM}|\${N_BAM}\" \"\$BED\" \"\$WORK_LOCAL/java_hg008_giab_th32.vcf\" 'HG008-T|HG008-N' -f 0.01 -th 32 -z -U || rc_java=\$? # golden:bypass gcp-oracle-cache-v183
       echo \"\$rc_java\" > \"\$KEEP_DIR/java_hg008_giab_th32.exit\"
     fi
     oracle_cache_put 'hg008_full/java_hg008_giab_th32.time' \"\$KEEP_DIR/java_hg008_giab_th32.time\"
@@ -2985,7 +2981,7 @@ run_stage_5() {
       if [ ! -s \"\$KEEP_DIR/\${tag}_cpp.exit\" ]; then
         local rc_c=0
         timeout 14400 /usr/bin/time -v -o \"\$KEEP_DIR/\${tag}_cpp.time\" \
-          env CPP_CHUNK=50000 bash harness/run_cpp.sh \"\$ref\" \"\$bam_spec\" \"\$call_bed\" \"\$KEEP_DIR/\${tag}_cpp.vcf\" \"\$sample\" -f \"\$freq\" -th 32 -z \"\${extra_flags[@]}\" || rc_c=\$?
+          env CPP_CHUNK=50000 bash harness/run_cpp.sh \"\$ref\" \"\$bam_spec\" \"\$call_bed\" \"\$KEEP_DIR/\${tag}_cpp.vcf\" \"\$sample\" -f \"\$freq\" -th 32 -z \"\${extra_flags[@]}\" || rc_c=\$? # golden:bypass gcp-oracle-cache-v183
         echo \"\$rc_c\" > \"\$KEEP_DIR/\${tag}_cpp.exit\"
       fi
       oracle_cache_put \"cross_platform_chr20/\${tag}_cpp.vcf\"  \"\$KEEP_DIR/\${tag}_cpp.vcf\"
@@ -3005,7 +3001,7 @@ run_stage_5() {
         local rc_j=0
         timeout 14400 /usr/bin/time -v -o \"\$KEEP_DIR/\${tag}_java.time\" \
           env ORACLE_XMX_GB=48 JAVA_OPTS='-Xmx48g -XX:+ExitOnOutOfMemoryError' \
-          bash harness/run_oracle.sh \"\$ref\" \"\$bam_spec\" \"\$call_bed\" \"\$KEEP_DIR/\${tag}_java.vcf\" \"\$sample\" -f \"\$freq\" -th 32 -z \"\${extra_flags[@]}\" || rc_j=\$?
+          bash harness/run_oracle.sh \"\$ref\" \"\$bam_spec\" \"\$call_bed\" \"\$KEEP_DIR/\${tag}_java.vcf\" \"\$sample\" -f \"\$freq\" -th 32 -z \"\${extra_flags[@]}\" || rc_j=\$? # golden:bypass gcp-oracle-cache-v183
         echo \"\$rc_j\" > \"\$KEEP_DIR/\${tag}_java.exit\"
       fi
       oracle_cache_put \"cross_platform_chr20/\${tag}_java.vcf\"  \"\$KEEP_DIR/\${tag}_java.vcf\"
@@ -3101,7 +3097,7 @@ run_stage_5() {
         oracle_cache_get \"cross_platform_chr20/nf_\${plat}_\${reg_lbl}_java.vcf\" \"\$KEEP_DIR/nf_\${plat}_\${reg_lbl}_java.vcf\" || true
         if [ ! -s \"\$KEEP_DIR/nf_\${plat}_\${reg_lbl}_java.vcf\" ]; then
           # shellcheck disable=SC2086
-          bash harness/run_oracle.sh \"\$ref\" \"\${tb}|\${nb}\" \"\$XP_DIR/hg008_chr1_r123.bed\" \"\$KEEP_DIR/nf_\${plat}_\${reg_lbl}_java.vcf\" 'HG008-T|HG008-N' -z -th 16 \$reg_flags
+          bash harness/run_oracle.sh \"\$ref\" \"\${tb}|\${nb}\" \"\$XP_DIR/hg008_chr1_r123.bed\" \"\$KEEP_DIR/nf_\${plat}_\${reg_lbl}_java.vcf\" 'HG008-T|HG008-N' -z -th 16 \$reg_flags # golden:bypass gcp-oracle-cache-v183
         fi
         oracle_cache_put \"cross_platform_chr20/nf_\${plat}_\${reg_lbl}_java.vcf\" \"\$KEEP_DIR/nf_\${plat}_\${reg_lbl}_java.vcf\"
         tot=\$(grep -vc '^#' \"\$KEEP_DIR/nf_\${plat}_\${reg_lbl}_rust.vcf\" || true)
@@ -3422,7 +3418,7 @@ run_v103_parity_sweep() {
         cp -f \"\$PREV_DIR/java_th8.var\" \"\$KEEP_DIR/java.var\"
       fi
       oracle_cache_get_or_run 'tierp/${acc}/java.var' \"\$KEEP_DIR/java.var\" \
-        bash -c \"_JAVA_OPTIONS='-Xmx200g' conda run -n vardict-oracle vardict-java -G '\$REF' -f 0.01 -N '${acc}' -b '\$BAM' -c 1 -S 2 -E 3 -g 4 -th 32 '\$BED' > '\$KEEP_DIR/java.var'\"
+        bash -c \"_JAVA_OPTIONS='-Xmx200g' conda run -n vardict-oracle vardict-java -G '\$REF' -f 0.01 -N '${acc}' -b '\$BAM' -c 1 -S 2 -E 3 -g 4 -th 32 '\$BED' > '\$KEEP_DIR/java.var'\" # golden:bypass gcp-oracle-cache-v183
       compare_and_record_var 'sweep_tierp_${acc}' '${acc}' \"\$KEEP_DIR/java.var\" \"\$KEEP_DIR/rust.var\" \"\$KEEP_DIR/${acc}\"
 
       target/release/vardictrust -G \"\$REF\" -f 0.01 -N '${acc}' -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -th 32 \"\$BED\" > \"\$KEEP_DIR/rust.vcf\"
@@ -3443,7 +3439,7 @@ run_v103_parity_sweep() {
     build_tierp_covered_bed \"\$TUM\" \"\$BED\" 105949
     target/release/vardictrust -G \"\$REF\" -f 0.01 -N 'SRR15006376|SRR15006386' -b \"\${TUM}|\${NOR}\" -c 1 -S 2 -E 3 -g 4 --emit-intermediate -th 32 \"\$BED\" > \"\$KEEP_DIR/rust_som.var\"
     oracle_cache_get_or_run 'tierp/somatic_76_86/java_som.var' \"\$KEEP_DIR/java_som.var\" \
-      bash -c \"_JAVA_OPTIONS='-Xmx200g' conda run -n vardict-oracle vardict-java -G '\$REF' -f 0.01 -N 'SRR15006376|SRR15006386' -b '\${TUM}|\${NOR}' -c 1 -S 2 -E 3 -g 4 -th 32 '\$BED' > '\$KEEP_DIR/java_som.var'\"
+      bash -c \"_JAVA_OPTIONS='-Xmx200g' conda run -n vardict-oracle vardict-java -G '\$REF' -f 0.01 -N 'SRR15006376|SRR15006386' -b '\${TUM}|\${NOR}' -c 1 -S 2 -E 3 -g 4 -th 32 '\$BED' > '\$KEEP_DIR/java_som.var'\" # golden:bypass gcp-oracle-cache-v183
     compare_and_record_var 'sweep_tierp_somatic_76_86' 'somatic_76_86' \"\$KEEP_DIR/java_som.var\" \"\$KEEP_DIR/rust_som.var\" \"\$KEEP_DIR/somatic_76_86\"
 
     target/release/vardictrust -G \"\$REF\" -f 0.01 -N 'SRR15006376|SRR15006386' -b \"\${TUM}|\${NOR}\" -c 1 -S 2 -E 3 -g 4 -th 32 \"\$BED\" > \"\$KEEP_DIR/rust_som.vcf\"
@@ -3471,47 +3467,47 @@ run_v103_parity_sweep() {
     }
 
     run_mode_sweep 'simple_f0.01' \
-      \"_JAVA_OPTIONS='-Xmx200g' conda run -n vardict-oracle vardict-java -G \$REF -f 0.01 -N s -b \$BAM -c 1 -S 2 -E 3 -g 4 \$BEDS/simple.bed -th 32 2>/dev/null\" \
+      \"_JAVA_OPTIONS='-Xmx200g' conda run -n vardict-oracle vardict-java -G \$REF -f 0.01 -N s -b \$BAM -c 1 -S 2 -E 3 -g 4 \$BEDS/simple.bed -th 32 2>/dev/null # golden:bypass gcp-oracle-cache-v183\" \
       \"\$VR -G \$REF -f 0.01 -N s -b \$BAM -c 1 -S 2 -E 3 -g 4 --emit-intermediate -th 32 \$BEDS/simple.bed 2>/dev/null\"
 
     run_mode_sweep 'simple_f0_mrd' \
-      \"_JAVA_OPTIONS='-Xmx200g' conda run -n vardict-oracle vardict-java -G \$REF -f 0 -N s -b \$BAM -c 1 -S 2 -E 3 -g 4 \$BEDS/simple.bed -th 32 2>/dev/null\" \
+      \"_JAVA_OPTIONS='-Xmx200g' conda run -n vardict-oracle vardict-java -G \$REF -f 0 -N s -b \$BAM -c 1 -S 2 -E 3 -g 4 \$BEDS/simple.bed -th 32 2>/dev/null # golden:bypass gcp-oracle-cache-v183\" \
       \"\$VR -G \$REF -f 0 -N s -b \$BAM -c 1 -S 2 -E 3 -g 4 --emit-intermediate -th 32 \$BEDS/simple.bed 2>/dev/null\"
 
     run_mode_sweep 'simple_fisher' \
-      \"_JAVA_OPTIONS='-Xmx200g' conda run -n vardict-oracle vardict-java -G \$REF -f 0.01 -N s -b \$BAM -c 1 -S 2 -E 3 -g 4 --fisher \$BEDS/big.bed -th 32 2>/dev/null\" \
+      \"_JAVA_OPTIONS='-Xmx200g' conda run -n vardict-oracle vardict-java -G \$REF -f 0.01 -N s -b \$BAM -c 1 -S 2 -E 3 -g 4 --fisher \$BEDS/big.bed -th 32 2>/dev/null # golden:bypass gcp-oracle-cache-v183\" \
       \"\$VR -G \$REF -f 0.01 -N s -b \$BAM -c 1 -S 2 -E 3 -g 4 --fisher --emit-intermediate -th 32 \$BEDS/big.bed 2>/dev/null\"
 
     run_mode_sweep 'targeted_panel_chr17' \
-      \"_JAVA_OPTIONS='-Xmx200g' conda run -n vardict-oracle vardict-java -G \$REF -f 0.01 -N s -b \$BAM -c 1 -S 2 -E 3 -g 4 \$BEDS/panel17.bed -th 32 2>/dev/null\" \
+      \"_JAVA_OPTIONS='-Xmx200g' conda run -n vardict-oracle vardict-java -G \$REF -f 0.01 -N s -b \$BAM -c 1 -S 2 -E 3 -g 4 \$BEDS/panel17.bed -th 32 2>/dev/null # golden:bypass gcp-oracle-cache-v183\" \
       \"\$VR -G \$REF -f 0.01 -N s -b \$BAM -c 1 -S 2 -E 3 -g 4 --emit-intermediate -th 32 \$BEDS/panel17.bed 2>/dev/null\"
 
     run_mode_sweep 'sv_deletion_regions' \
-      \"_JAVA_OPTIONS='-Xmx200g' conda run -n vardict-oracle vardict-java -G \$REF -f 0.01 -N s -b \$BAM -c 1 -S 2 -E 3 -g 4 \$BEDS/sv.bed -th 32 2>/dev/null\" \
+      \"_JAVA_OPTIONS='-Xmx200g' conda run -n vardict-oracle vardict-java -G \$REF -f 0.01 -N s -b \$BAM -c 1 -S 2 -E 3 -g 4 \$BEDS/sv.bed -th 32 2>/dev/null # golden:bypass gcp-oracle-cache-v183\" \
       \"\$VR -G \$REF -f 0.01 -N s -b \$BAM -c 1 -S 2 -E 3 -g 4 --emit-intermediate -th 32 \$BEDS/sv.bed 2>/dev/null\"
 
     run_mode_sweep 'low_coverage' \
-      \"_JAVA_OPTIONS='-Xmx200g' conda run -n vardict-oracle vardict-java -G \$REF -f 0.01 -N s -b \$BAM -c 1 -S 2 -E 3 -g 4 \$BEDS/lowcov.bed -th 32 2>/dev/null\" \
+      \"_JAVA_OPTIONS='-Xmx200g' conda run -n vardict-oracle vardict-java -G \$REF -f 0.01 -N s -b \$BAM -c 1 -S 2 -E 3 -g 4 \$BEDS/lowcov.bed -th 32 2>/dev/null # golden:bypass gcp-oracle-cache-v183\" \
       \"\$VR -G \$REF -f 0.01 -N s -b \$BAM -c 1 -S 2 -E 3 -g 4 --emit-intermediate -th 32 \$BEDS/lowcov.bed 2>/dev/null\"
 
     run_mode_sweep 'amplicon_c17amp' \
-      \"_JAVA_OPTIONS='-Xmx200g' conda run -n vardict-oracle vardict-java -G \$REF -f 0.01 -N s -b \$BAM -a 10:0.95 -c 1 -S 2 -E 3 -g 4 \$BEDS/c17amp.bed -th 32 2>/dev/null\" \
+      \"_JAVA_OPTIONS='-Xmx200g' conda run -n vardict-oracle vardict-java -G \$REF -f 0.01 -N s -b \$BAM -a 10:0.95 -c 1 -S 2 -E 3 -g 4 \$BEDS/c17amp.bed -th 32 2>/dev/null # golden:bypass gcp-oracle-cache-v183\" \
       \"\$VR -G \$REF -f 0.01 -N s -b \$BAM -a 10:0.95 -c 1 -S 2 -E 3 -g 4 --emit-intermediate -th 32 \$BEDS/c17amp.bed 2>/dev/null\"
 
     run_mode_sweep 'amplicon_fisher' \
-      \"_JAVA_OPTIONS='-Xmx200g' conda run -n vardict-oracle vardict-java -G \$REF -f 0.01 -N s -b \$BAM -a 10:0.95 --fisher -c 1 -S 2 -E 3 -g 4 \$BEDS/c17amp.bed -th 32 2>/dev/null\" \
+      \"_JAVA_OPTIONS='-Xmx200g' conda run -n vardict-oracle vardict-java -G \$REF -f 0.01 -N s -b \$BAM -a 10:0.95 --fisher -c 1 -S 2 -E 3 -g 4 \$BEDS/c17amp.bed -th 32 2>/dev/null # golden:bypass gcp-oracle-cache-v183\" \
       \"\$VR -G \$REF -f 0.01 -N s -b \$BAM -a 10:0.95 --fisher -c 1 -S 2 -E 3 -g 4 --emit-intermediate -th 32 \$BEDS/c17amp.bed 2>/dev/null\"
 
     run_mode_sweep 'somatic_f0.01_big' \
-      \"_JAVA_OPTIONS='-Xmx200g' conda run -n vardict-oracle vardict-java -G \$REF -f 0.01 -N 'tum|nrm' -b '\$BAM|\$NORM' -c 1 -S 2 -E 3 -g 4 \$BEDS/big.bed -th 32 2>/dev/null\" \
+      \"_JAVA_OPTIONS='-Xmx200g' conda run -n vardict-oracle vardict-java -G \$REF -f 0.01 -N 'tum|nrm' -b '\$BAM|\$NORM' -c 1 -S 2 -E 3 -g 4 \$BEDS/big.bed -th 32 2>/dev/null # golden:bypass gcp-oracle-cache-v183\" \
       \"\$VR -G \$REF -f 0.01 -N 'tum|nrm' -b '\$BAM|\$NORM' -c 1 -S 2 -E 3 -g 4 --emit-intermediate -th 32 \$BEDS/big.bed 2>/dev/null\"
 
     run_mode_sweep 'somatic_f0_mrd_c17' \
-      \"_JAVA_OPTIONS='-Xmx200g' conda run -n vardict-oracle vardict-java -G \$REF -f 0 -N 'tum|nrm' -b '\$BAM|\$NORM' -c 1 -S 2 -E 3 -g 4 \$BEDS/c17.bed -th 32 2>/dev/null\" \
+      \"_JAVA_OPTIONS='-Xmx200g' conda run -n vardict-oracle vardict-java -G \$REF -f 0 -N 'tum|nrm' -b '\$BAM|\$NORM' -c 1 -S 2 -E 3 -g 4 \$BEDS/c17.bed -th 32 2>/dev/null # golden:bypass gcp-oracle-cache-v183\" \
       \"\$VR -G \$REF -f 0 -N 'tum|nrm' -b '\$BAM|\$NORM' -c 1 -S 2 -E 3 -g 4 --emit-intermediate -th 32 \$BEDS/c17.bed 2>/dev/null\"
 
     run_mode_sweep 'somatic_fisher_c17' \
-      \"_JAVA_OPTIONS='-Xmx200g' conda run -n vardict-oracle vardict-java -G \$REF -f 0.01 -N 'tum|nrm' -b '\$BAM|\$NORM' -c 1 -S 2 -E 3 -g 4 --fisher \$BEDS/c17.bed -th 32 2>/dev/null\" \
+      \"_JAVA_OPTIONS='-Xmx200g' conda run -n vardict-oracle vardict-java -G \$REF -f 0.01 -N 'tum|nrm' -b '\$BAM|\$NORM' -c 1 -S 2 -E 3 -g 4 --fisher \$BEDS/c17.bed -th 32 2>/dev/null # golden:bypass gcp-oracle-cache-v183\" \
       \"\$VR -G \$REF -f 0.01 -N 'tum|nrm' -b '\$BAM|\$NORM' -c 1 -S 2 -E 3 -g 4 --fisher --emit-intermediate -th 32 \$BEDS/c17.bed 2>/dev/null\"
 
     # P5: Tier-P Panel CRAM Twin (chr1 slice of SRR8657348.bam on simple.bed)
@@ -3529,7 +3525,7 @@ run_v103_parity_sweep() {
     BAM='$tp_dir/bams/SRR8657348.bam'
     target/release/vardictrust -G \"\$REF\" -f 0.01 -N SRR8657348 -b \"\$BAM\" --emit-intermediate -th 32 -R chr1:1-249250621 > \"\$KEEP_DIR/rust_R_chr1.var\"
     oracle_cache_get_or_run 'R_chr1_full/java_R_chr1.var' \"\$KEEP_DIR/java_R_chr1.var\" \
-      bash -c \"_JAVA_OPTIONS='-Xmx200g' conda run -n vardict-oracle vardict-java -G '\$REF' -f 0.01 -N SRR8657348 -b '\$BAM' -th 32 -R chr1:1-249250621 > '\$KEEP_DIR/java_R_chr1.var'\"
+      bash -c \"_JAVA_OPTIONS='-Xmx200g' conda run -n vardict-oracle vardict-java -G '\$REF' -f 0.01 -N SRR8657348 -b '\$BAM' -th 32 -R chr1:1-249250621 > '\$KEEP_DIR/java_R_chr1.var'\" # golden:bypass gcp-oracle-cache-v183
     compare_and_record_var 'sweep_R_chr1_full' 'R_chr1_249Mbp' \"\$KEEP_DIR/java_R_chr1.var\" \"\$KEEP_DIR/rust_R_chr1.var\" \"\$KEEP_DIR/R_chr1\"
   "
 
@@ -3544,7 +3540,7 @@ run_v103_parity_sweep() {
     awk 'BEGIN{OFS=\"\t\"}{print \$1,\$2,\$3,\"R\"}' \"\$BED\" > \"\$KEEP_DIR/target20_4col.bed\"
     target/release/vardictrust -G \"\$REF\" -f 0.01 -N HG002 -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -z --emit-intermediate -th 32 \"\$KEEP_DIR/target20_4col.bed\" > \"\$KEEP_DIR/rust.var\"
     oracle_cache_get_or_run 'hg002_chr20_exome/java.var' \"\$KEEP_DIR/java.var\" \
-      bash -c \"_JAVA_OPTIONS='-Xmx200g' conda run -n vardict-oracle vardict-java -G '\$REF' -f 0.01 -N HG002 -b '\$BAM' -c 1 -S 2 -E 3 -g 4 -z 1 -th 32 '\$KEEP_DIR/target20_4col.bed' > '\$KEEP_DIR/java.var'\"
+      bash -c \"_JAVA_OPTIONS='-Xmx200g' conda run -n vardict-oracle vardict-java -G '\$REF' -f 0.01 -N HG002 -b '\$BAM' -c 1 -S 2 -E 3 -g 4 -z 1 -th 32 '\$KEEP_DIR/target20_4col.bed' > '\$KEEP_DIR/java.var'\" # golden:bypass gcp-oracle-cache-v183
     compare_and_record_var 'sweep_hg002_chr20_exome' 'hg002_chr20_exome' \"\$KEEP_DIR/java.var\" \"\$KEEP_DIR/rust.var\" \"\$KEEP_DIR/hg002_chr20_exome\"
 
     target/release/vardictrust -G \"\$REF\" -f 0.01 -N HG002 -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -z -th 32 \"\$KEEP_DIR/target20_4col.bed\" > \"\$KEEP_DIR/rust.vcf\"
@@ -3566,7 +3562,7 @@ run_v103_parity_sweep() {
       target/release/vardictrust -G \"\$REF\" -f 0.01 -N HG002_RNA -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -z -i --emit-intermediate -th 32 \"\$BED\" > \"\$KEEP_DIR/rust.splice.tsv\"
     fi
     oracle_cache_get_or_run 'rna_hg002_52gb/java.splice.tsv' \"\$KEEP_DIR/java.splice.tsv\" \
-      bash -c \"_JAVA_OPTIONS='-Xmx200g' conda run -n vardict-oracle vardict-java -G '\$REF' -f 0.01 -N HG002_RNA -b '\$BAM' -c 1 -S 2 -E 3 -g 4 -z 1 -i -th 32 '\$BED' > '\$KEEP_DIR/java.splice.tsv'\"
+      bash -c \"_JAVA_OPTIONS='-Xmx200g' conda run -n vardict-oracle vardict-java -G '\$REF' -f 0.01 -N HG002_RNA -b '\$BAM' -c 1 -S 2 -E 3 -g 4 -z 1 -i -th 32 '\$BED' > '\$KEEP_DIR/java.splice.tsv'\" # golden:bypass gcp-oracle-cache-v183
     LC_ALL=C sort \"\$KEEP_DIR/java.splice.tsv\" > \"\$KEEP_DIR/java.splice.sorted.tsv\"
     oracle_cache_put 'rna_hg002_52gb/java.splice.sorted.tsv' \"\$KEEP_DIR/java.splice.sorted.tsv\"
     LC_ALL=C sort \"\$KEEP_DIR/rust.splice.tsv\" > \"\$KEEP_DIR/rust.splice.sorted.tsv\"
@@ -3585,7 +3581,7 @@ run_v103_parity_sweep() {
     awk '\$1==\"chr20\"{print; if (++n==500) exit}' \"\$BED\" > \"\$KEEP_DIR/chr20_rna_cdna.bed\"
     target/release/vardictrust -G \"\$REF\" -f 0.01 -N HG002_RNA -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -z --emit-intermediate -th 32 \"\$KEEP_DIR/chr20_rna_cdna.bed\" > \"\$KEEP_DIR/rust_cdna.var\"
     oracle_cache_get_or_run 'rna_hg002_52gb/java_cdna.var' \"\$KEEP_DIR/java_cdna.var\" \
-      bash -c \"_JAVA_OPTIONS='-Xmx200g' conda run -n vardict-oracle vardict-java -G '\$REF' -f 0.01 -N HG002_RNA -b '\$BAM' -c 1 -S 2 -E 3 -g 4 -z 1 -th 32 '\$KEEP_DIR/chr20_rna_cdna.bed' > '\$KEEP_DIR/java_cdna.var'\"
+      bash -c \"_JAVA_OPTIONS='-Xmx200g' conda run -n vardict-oracle vardict-java -G '\$REF' -f 0.01 -N HG002_RNA -b '\$BAM' -c 1 -S 2 -E 3 -g 4 -z 1 -th 32 '\$KEEP_DIR/chr20_rna_cdna.bed' > '\$KEEP_DIR/java_cdna.var'\" # golden:bypass gcp-oracle-cache-v183
     compare_and_record_var 'sweep_rna_hg002_52gb' 'rna_cdna_variants' \"\$KEEP_DIR/java_cdna.var\" \"\$KEEP_DIR/rust_cdna.var\" \"\$KEEP_DIR/rna_cdna\"
   "
 
@@ -3597,25 +3593,25 @@ run_v103_parity_sweep() {
 
     # (a) Amplicon
     oracle_cache_get_or_run "4targets_full/amplicon/java.vcf" "$KEEP_DIR/amplicon/java.vcf" \
-      env ORACLE_XMX_GB=200 bash harness/run_oracle.sh "$DATA_DIR/amplicon/ref.fa" "$DATA_DIR/amplicon/amplicon.bam" "$DATA_DIR/amplicon/correct_8columns_amplicon.bed" "$KEEP_DIR/amplicon/java.vcf" SAMPLE -z -a 10:0.95 -th 32
+      env ORACLE_XMX_GB=200 bash harness/run_oracle.sh "$DATA_DIR/amplicon/ref.fa" "$DATA_DIR/amplicon/amplicon.bam" "$DATA_DIR/amplicon/correct_8columns_amplicon.bed" "$KEEP_DIR/amplicon/java.vcf" SAMPLE -z -a 10:0.95 -th 32 # golden:bypass gcp-oracle-cache-v183
     target/release/vardictrust -G "$DATA_DIR/amplicon/ref.fa" -f 0.01 -N SAMPLE -b "$DATA_DIR/amplicon/amplicon.bam" -c 1 -S 2 -E 3 -g 4 -z -a 10:0.95 -th 32 "$DATA_DIR/amplicon/correct_8columns_amplicon.bed" > "$KEEP_DIR/amplicon/rust.vcf"
     compare_and_record_vcf "sweep_4targets_full" "amplicon_full" "$KEEP_DIR/amplicon/java.vcf" "$KEEP_DIR/amplicon/rust.vcf" "$KEEP_DIR/amplicon/cmp"
 
     # (b) HG002 Deep WGS (chr20:10M-30M, 227,562 variants)
     oracle_cache_get_or_run "4targets_full/hg002/java.vcf" "$KEEP_DIR/hg002/java.vcf" \
-      env ORACLE_XMX_GB=200 bash harness/run_oracle.sh "$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fasta" "$DATA_DIR/hg002/HG002.chr20.bam" "$DATA_DIR/hg002/eval.bed" "$KEEP_DIR/hg002/java.vcf" HG002 -z -f 0.01 -th 32
+      env ORACLE_XMX_GB=200 bash harness/run_oracle.sh "$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fasta" "$DATA_DIR/hg002/HG002.chr20.bam" "$DATA_DIR/hg002/eval.bed" "$KEEP_DIR/hg002/java.vcf" HG002 -z -f 0.01 -th 32 # golden:bypass gcp-oracle-cache-v183
     target/release/vardictrust -G "$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fasta" -f 0.01 -N HG002 -b "$DATA_DIR/hg002/HG002.chr20.bam" -c 1 -S 2 -E 3 -g 4 -z -th 32 "$DATA_DIR/hg002/eval.bed" > "$KEEP_DIR/hg002/rust.vcf"
     compare_and_record_vcf "sweep_4targets_full" "hg002_deep_wgs" "$KEEP_DIR/hg002/java.vcf" "$KEEP_DIR/hg002/rust.vcf" "$KEEP_DIR/hg002/cmp"
 
     # (c) HG008 Somatic Paired Deep WGS (18,426 variants)
     oracle_cache_get_or_run "4targets_full/hg008/java.vcf" "$KEEP_DIR/hg008/java.vcf" \
-      env ORACLE_XMX_GB=200 bash harness/run_oracle.sh "$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fa" "$DATA_DIR/hg008/HG008-T.slice.bam|$DATA_DIR/hg008/HG008-N.slice.bam" "$DATA_DIR/hg008/engine.bed" "$KEEP_DIR/hg008/java.vcf" "HG008-T|HG008-N" -z -f 0.01 -th 32
+      env ORACLE_XMX_GB=200 bash harness/run_oracle.sh "$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fa" "$DATA_DIR/hg008/HG008-T.slice.bam|$DATA_DIR/hg008/HG008-N.slice.bam" "$DATA_DIR/hg008/engine.bed" "$KEEP_DIR/hg008/java.vcf" "HG008-T|HG008-N" -z -f 0.01 -th 32 # golden:bypass gcp-oracle-cache-v183
     target/release/vardictrust -G "$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fa" -f 0.01 -N "HG008-T|HG008-N" -b "$DATA_DIR/hg008/HG008-T.slice.bam|$DATA_DIR/hg008/HG008-N.slice.bam" -c 1 -S 2 -E 3 -g 4 -z -th 32 "$DATA_DIR/hg008/engine.bed" > "$KEEP_DIR/hg008/rust.vcf"
     compare_and_record_vcf "sweep_4targets_full" "hg008_somatic_wgs" "$KEEP_DIR/hg008/java.vcf" "$KEEP_DIR/hg008/rust.vcf" "$KEEP_DIR/hg008/cmp"
 
     # (d) SEQC2 HCC1395|HCC1395BL Full Somatic WES (623,444 variants)
     oracle_cache_get_or_run "4targets_full/seqc2/java.vcf" "$KEEP_DIR/seqc2/java.vcf" \
-      env ORACLE_XMX_GB=200 bash harness/run_oracle.sh "$DATA_DIR/ref/d1vd1/GRCh38.d1.vd1.fa" "$DATA_DIR/seqc2/HCC1395.bam|$DATA_DIR/seqc2/HCC1395BL.bam" "$DATA_DIR/seqc2/exome.engine.bed" "$KEEP_DIR/seqc2/java.vcf" "HCC1395|HCC1395BL" -z -f 0.01 -th 32
+      env ORACLE_XMX_GB=200 bash harness/run_oracle.sh "$DATA_DIR/ref/d1vd1/GRCh38.d1.vd1.fa" "$DATA_DIR/seqc2/HCC1395.bam|$DATA_DIR/seqc2/HCC1395BL.bam" "$DATA_DIR/seqc2/exome.engine.bed" "$KEEP_DIR/seqc2/java.vcf" "HCC1395|HCC1395BL" -z -f 0.01 -th 32 # golden:bypass gcp-oracle-cache-v183
     target/release/vardictrust -G "$DATA_DIR/ref/d1vd1/GRCh38.d1.vd1.fa" -f 0.01 -N "HCC1395|HCC1395BL" -b "$DATA_DIR/seqc2/HCC1395.bam|$DATA_DIR/seqc2/HCC1395BL.bam" -c 1 -S 2 -E 3 -g 4 -z -th 32 "$DATA_DIR/seqc2/exome.engine.bed" > "$KEEP_DIR/seqc2/rust.vcf"
     compare_and_record_vcf "sweep_4targets_full" "seqc2_somatic_exome_full" "$KEEP_DIR/seqc2/java.vcf" "$KEEP_DIR/seqc2/rust.vcf" "$KEEP_DIR/seqc2/cmp"
   '
@@ -3629,7 +3625,7 @@ run_v103_parity_sweep() {
     printf "chr1\t0\t10000000\tR10M\n" > "$KEEP_DIR/chr1_10m.bed"
     target/release/vardictrust -G "$REF" -f 0 -N HCC1395 -b "$BAM" -c 1 -S 2 -E 3 -g 4 -z --emit-intermediate -th 32 "$KEEP_DIR/chr1_10m.bed" > "$KEEP_DIR/rust_chr1_10m_f0.var"
     oracle_cache_get_or_run "span_chr1_f0/java_chr1_10m_f0.var" "$KEEP_DIR/java_chr1_10m_f0.var" \
-      bash -c "_JAVA_OPTIONS=\"-Xmx200g\" conda run -n vardict-oracle vardict-java -G \"$REF\" -f 0 -N HCC1395 -b \"$BAM\" -c 1 -S 2 -E 3 -g 4 -z 1 -th 32 \"$KEEP_DIR/chr1_10m.bed\" > \"$KEEP_DIR/java_chr1_10m_f0.var\""
+      bash -c "_JAVA_OPTIONS=\"-Xmx200g\" conda run -n vardict-oracle vardict-java -G \"$REF\" -f 0 -N HCC1395 -b \"$BAM\" -c 1 -S 2 -E 3 -g 4 -z 1 -th 32 \"$KEEP_DIR/chr1_10m.bed\" > \"$KEEP_DIR/java_chr1_10m_f0.var\"" # golden:bypass gcp-oracle-cache-v183
     compare_and_record_var "sweep_span_chr1_f0" "chr1_10m_f0" "$KEEP_DIR/java_chr1_10m_f0.var" "$KEEP_DIR/rust_chr1_10m_f0.var" "$KEEP_DIR/chr1_10m_f0"
 
     target/release/vardictrust -G "$REF" -f 0 -N HCC1395 -b "$BAM" -c 1 -S 2 -E 3 -g 4 -z -th 32 "$KEEP_DIR/chr1_10m.bed" > "$KEEP_DIR/rust_chr1_10m_f0.vcf"
@@ -3652,7 +3648,7 @@ run_v103_parity_sweep() {
       local extra=("$@")
       "$VR" -G "$ref" -N "$sample" -b "$bam" -c 1 -S 2 -E 3 -g 4 -z --emit-intermediate -th 32 "${extra[@]}" "$bed" > "$KEEP_DIR/${arm}.rust.var"
       oracle_cache_get_or_run "wgs_mrd_matrix/${arm}.java.var" "$KEEP_DIR/${arm}.java.var" \
-        bash -c "_JAVA_OPTIONS=\"-Xmx200g\" conda run -n vardict-oracle vardict-java -G \"$ref\" -N \"$sample\" -b \"$bam\" -c 1 -S 2 -E 3 -g 4 -z 1 -th 32 ${extra[*]} \"$bed\" > \"$KEEP_DIR/${arm}.java.var\""
+        bash -c "_JAVA_OPTIONS=\"-Xmx200g\" conda run -n vardict-oracle vardict-java -G \"$ref\" -N \"$sample\" -b \"$bam\" -c 1 -S 2 -E 3 -g 4 -z 1 -th 32 ${extra[*]} \"$bed\" > \"$KEEP_DIR/${arm}.java.var\"" # golden:bypass gcp-oracle-cache-v183
       compare_and_record_var "sweep_wgs_mrd_matrix" "$arm" "$KEEP_DIR/${arm}.java.var" "$KEEP_DIR/${arm}.rust.var" "$KEEP_DIR/${arm}"
 
       "$VR" -G "$ref" -N "$sample" -b "$bam" -c 1 -S 2 -E 3 -g 4 -z -th 32 "${extra[@]}" "$bed" > "$KEEP_DIR/${arm}.rust.vcf"
@@ -3723,7 +3719,7 @@ EOF
       local extra=(\"\$@\")
       \"\$VR\" -G \"\$ref\" -N \"\$sample\" -b \"\$bam\" -c 1 -S 2 -E 3 -g 4 -z --emit-intermediate -th 32 \"\${extra[@]}\" \"\$bed\" > \"\$KEEP_DIR/\${arm}.rust.var\"
       oracle_cache_get_or_run \"ultradeep_mrd/\${arm}.java.var\" \"\$KEEP_DIR/\${arm}.java.var\" \
-        bash -c \"_JAVA_OPTIONS='-Xmx200g' conda run -n vardict-oracle vardict-java -G '\$ref' -N '\$sample' -b '\$bam' -c 1 -S 2 -E 3 -g 4 -z 1 -th 32 \${extra[*]} '\$bed' > '\$KEEP_DIR/\${arm}.java.var'\"
+        bash -c \"_JAVA_OPTIONS='-Xmx200g' conda run -n vardict-oracle vardict-java -G '\$ref' -N '\$sample' -b '\$bam' -c 1 -S 2 -E 3 -g 4 -z 1 -th 32 \${extra[*]} '\$bed' > '\$KEEP_DIR/\${arm}.java.var'\" # golden:bypass gcp-oracle-cache-v183
       compare_and_record_var 'sweep_ultradeep_mrd_stress' \"\$arm\" \"\$KEEP_DIR/\${arm}.java.var\" \"\$KEEP_DIR/\${arm}.rust.var\" \"\$KEEP_DIR/\${arm}\"
 
       \"\$VR\" -G \"\$ref\" -N \"\$sample\" -b \"\$bam\" -c 1 -S 2 -E 3 -g 4 -z -th 32 \"\${extra[@]}\" \"\$bed\" > \"\$KEEP_DIR/\${arm}.rust.vcf\"

@@ -41,6 +41,7 @@ IGNORED_PREFIXES = (
     "site/",
     ".worktrees/",
     "wiki/",
+    "paper/templates/",
 )
 
 # Linear regex matching simple raw HTML anchors <a id="..." ...></a> or <a name="..." ...></a>
@@ -169,6 +170,14 @@ def stage_docs():
         target = STAGING_DIR / rel
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(p, target)
+
+    # 1b. Stage SVG figures referenced by paper/manuscript.md
+    paper_figs_dir = REPO_ROOT / "paper" / "figures"
+    if paper_figs_dir.exists():
+        staged_figs_dir = STAGING_DIR / "paper" / "figures"
+        staged_figs_dir.mkdir(parents=True, exist_ok=True)
+        for svg_file in paper_figs_dir.glob("*.svg"):
+            shutil.copy2(svg_file, staged_figs_dir / svg_file.name)
 
     # 2. Stage .github/ documents into community/ (MkDocs ignores dot-directories by default)
     github_dir = REPO_ROOT / ".github"

@@ -21,7 +21,7 @@ This single command automatically:
 1. Bootstraps a local Python virtual environment (`.venv`) using `uv` with dependencies from [`paper/requirements.txt`](requirements.txt).
 2. Verifies the SHA-256 hashes of all committed study synthesis tables against [`benchmarks/gcp-study-v106/SHA256SUMS.tsv`](../benchmarks/gcp-study-v106/SHA256SUMS.tsv).
 3. Regenerates all **8 Main Figures** ([`paper/figures/fig1..fig8.{svg,pdf}`](figures/)) and all **14 Tables** ([`paper/tables/table1..table8.{md,tex}`](tables/) and [`paper/tables/supp_table1..supp_table6.{md,tex}`](tables/)).
-4. Compiles and byte-verifies the manuscript and supplement ([`paper/manuscript.md`](manuscript.md) and [`paper/supplement.md`](supplement.md)) against their templates.
+4. Compiles and byte-verifies the manuscript and supplement ([`paper/manuscript.md`](manuscript.md), [`paper/supplement.md`](supplement.md)) and renders typeset PDFs ([`paper/manuscript.pdf`](manuscript.pdf), [`paper/supplement.pdf`](supplement.pdf)) with embedded vector figures.
 5. Generates the 10-slide high-resolution LinkedIn carousel in `scratch/linkedin/`.
 6. Executes all unit test suites, release consistency audits, GCP runner plan checks, and documentation evidence synchronizers.
 
@@ -56,6 +56,7 @@ paper/
 ├── aggregate_gcp_study.py         # 60-cell JSON/TSV metric aggregator & validator
 ├── build_figures_and_tables.py    # Figure (1..8 SVG/PDF) & Table (1..8, S1..S6 MD/TeX) builder
 ├── build_manuscript.py            # Template-interpolating manuscript/supplement compiler
+├── render_pdf.py                  # Typeset HTML5 + headless Chrome + Ghostscript PDF renderer
 ├── templates/
 │   ├── manuscript.tmpl.md         # Full paper template with dynamic Jinja-style macros
 │   └── supplement.tmpl.md         # Supplementary note template with dynamic macros
@@ -69,8 +70,10 @@ paper/
 │   ├── test_aggregate_gcp_study.py
 │   ├── test_build_figures_and_tables.py
 │   └── test_paper_reproducibility.py
-├── manuscript.md                  # Compiled ready-to-render main manuscript
-└── supplement.md                  # Compiled ready-to-render supplementary material
+├── manuscript.md                  # Compiled ready-to-render main manuscript (Markdown)
+├── manuscript.pdf                 # Compiled typeset main manuscript (PDF with vector figures)
+├── supplement.md                  # Compiled ready-to-render supplementary material (Markdown)
+└── supplement.pdf                 # Compiled typeset supplementary material (PDF)
 ```
 
 ---
@@ -98,7 +101,7 @@ The 60 cloud study cells span 6 experimental stages plus multi-core Option C par
 | **Table 7** | Next-Gen Truth Benchmarks & HG008 Landscape | `s4_tier3_*`, `s6_hg002_v50q_*`, `s6_hg008_modern_*` | Stage 4, Stage 6 |
 | **Table 8** | Supply-Chain Security (H4), Static musl & Divergences | `s2_tierp_mode_*`, `s5_h4_maintenance_security_matrix` | Stage 2, Stage 5 |
 | **Table S1** | Complete 60-Directory GCP Study Inventory | All 60 directories in `cells_60_inventory.tsv` | All 6 Stages + Sweeps |
-| **Table S2** | Complete 104-Arm Option C Full-Core Parity Sweep | `sweep_*` (11 sweep directories, 104 sub-arms) | Option C Full-Core Sweeps |
+| **Table S2** | Complete 87-Arm Option C Full-Core Parity Sweep | `sweep_*` (12 sweep directories, 87 evaluated arms) | Option C Full-Core Sweeps |
 | **Table S3** | Complete Technical Replicate (n=3) Wall-Clock & RSS | `s2_tierp_*`, `s4_scale_*`, `s4_span_*`, `s4_perf_*`, etc. | Technical Replicates (n=3) |
 | **Table S4** | QUAL ROC Sweep & 18-Arm Somatic Noise Floor | `s4_tier3_*`, `s5_cross_platform_*` (Part B) | Stage 4, Stage 5 |
 | **Table S5** | Complete 70-Cell GA4GH v3.5 Genomic Stratification | `s6_ga4gh_v35_stratification_matrix` | Stage 6 |

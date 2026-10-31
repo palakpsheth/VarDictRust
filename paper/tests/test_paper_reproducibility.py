@@ -17,6 +17,8 @@ MANUSCRIPT_TMPL = ROOT / "paper" / "templates" / "manuscript.tmpl.md"
 SUPPLEMENT_TMPL = ROOT / "paper" / "templates" / "supplement.tmpl.md"
 MANUSCRIPT = ROOT / "paper" / "manuscript.md"
 SUPPLEMENT = ROOT / "paper" / "supplement.md"
+MANUSCRIPT_PDF = ROOT / "paper" / "manuscript.pdf"
+SUPPLEMENT_PDF = ROOT / "paper" / "supplement.pdf"
 INV_PATH = ROOT / "benchmarks" / "gcp-study-v106" / "cells_60_inventory.tsv"
 
 FORBIDDEN_TEMPLATE_EMPIRICAL_STRINGS = {
@@ -255,6 +257,14 @@ class TestPaperReproducibility(unittest.TestCase):
             text=True,
         )
         self.assertEqual(res2.returncode, 0, msg=f"stderr={res2.stderr}\nstdout={res2.stdout}")
+
+    def test_manuscript_and_supplement_pdfs_exist_and_valid(self) -> None:
+        for pdf_path in (MANUSCRIPT_PDF, SUPPLEMENT_PDF):
+            self.assertTrue(pdf_path.is_file(), f"Missing {pdf_path}")
+            self.assertGreater(pdf_path.stat().st_size, 50_000, f"PDF unexpectedly small: {pdf_path}")
+            raw = pdf_path.read_bytes()
+            self.assertTrue(raw.startswith(b"%PDF-"), f"Invalid PDF header in {pdf_path}")
+            self.assertIn(b"%%EOF", raw[-1024:], f"Missing %%EOF trailer in {pdf_path}")
 
 
 if __name__ == "__main__":

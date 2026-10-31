@@ -193,40 +193,24 @@ Under `ROADMAP.md`, all `v1.0.x` releases (`v{{m:version}}`) enforce strict orac
 
 ## 5. Supplementary Tables (`Table S1` – `Table S6`) and Complete 60-Cell Verification Ledger
 
-### Table S1: Complete 60-Cell Cloud Benchmark Inventory and Provenance Summary
-
 {{table:supp_table1}}
 
-#### Machine-Verified 60-Cell Ledger (`benchmarks/gcp-study-v106/cells_60_inventory.tsv`)
-
-{{cells_60_ledger}}
-
 ---
-
-### Table S2: Option C 87-Arm `.var` and `.vcf` Differential Parity Matrix
 
 {{table:supp_table2}}
 
 ---
 
-### Table S3: Stage 2 Tier-P v2 Technical Replicate (`n = 3`) Distributions (`Mean` and `Min–Max`)
-
 {{table:supp_table3}}
 
 ---
-
-### Table S4: Stage 4 `QUAL` Threshold ROC Operating Points and Stage 5 `-f 0` Somatic Noise-Floor Sweep
 
 {{table:supp_table4}}
 
 ---
 
-### Table S5: Stage 6 70-Cell GA4GH `v3.5` Genomic Context Stratification Matrix (`10` Platforms × `7` Strata)
-
 {{table:supp_table5}}
 
 ---
-
-### Table S6: Stage 2 13-Mode Functional Sweep, Structural Variant/Splice/Amplicon Parity, and `CPP-1..10` Matrix
 
 {{table:supp_table6}}

@@ -498,13 +498,13 @@ cell_s6_low_vaf_titration() {
     # 2. VarDictJava v1.8.3 (-f 0.002 -th 16)
     if [ ! -s "$WORK_TITR/p${pur}_java.vcf" ]; then
       /usr/bin/time -v -o "$KEEP_DIR/p${pur}_java.time" \
-        env ORACLE_XMX_GB=32 bash harness/run_oracle.sh "$REF" "${ADMIX_BAM}|${N_BAM}" "$ENGINE_BED" "$WORK_TITR/p${pur}_java.vcf" "HG008-T|HG008-N-D" -f 0.002 -th 16
+        env ORACLE_XMX_GB=32 bash harness/run_oracle.sh "$REF" "${ADMIX_BAM}|${N_BAM}" "$ENGINE_BED" "$WORK_TITR/p${pur}_java.vcf" "HG008-T|HG008-N-D" -f 0.002 -th 16 # golden:bypass gcp-oracle-cache-v183
     fi
 
     # 3. vardictcpp (-f 0.002 -th 16)
     if [ ! -s "$WORK_TITR/p${pur}_cpp.vcf" ]; then
       /usr/bin/time -v -o "$KEEP_DIR/p${pur}_cpp.time" \
-        env CPP_CHUNK=50000 bash harness/run_cpp.sh "$REF" "${ADMIX_BAM}|${N_BAM}" "$ENGINE_BED" "$WORK_TITR/p${pur}_cpp.vcf" "HG008-T|HG008-N-D" -f 0.002 -th 16
+        env CPP_CHUNK=50000 bash harness/run_cpp.sh "$REF" "${ADMIX_BAM}|${N_BAM}" "$ENGINE_BED" "$WORK_TITR/p${pur}_cpp.vcf" "HG008-T|HG008-N-D" -f 0.002 -th 16 # golden:bypass gcp-oracle-cache-v183
     fi
 
     parity_rust="MISMATCH"

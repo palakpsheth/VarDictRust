@@ -15,5 +15,6 @@ for off in 0 1440; do
     echo "courtesy: [$hhmm +${EST_MIN}m] overlaps 03:40-05:15 maintenance; start after 05:15 or split" >&2; exit 4
   fi
 done
+fi
 export COURTESY_ACTIVE=1
 exec nice -n 19 ionice -c 3 "$@"

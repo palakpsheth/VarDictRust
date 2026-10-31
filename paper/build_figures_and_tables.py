@@ -252,13 +252,13 @@ def load_tsv(path: Path) -> list[dict[str, str]]:
 
 def build_fig1(doc: dict[str, Any], inv_rows: list[dict[str, str]], fig_dir: Path) -> None:
     """Figure 1: Study Architecture & 60-Cell Experimental Design."""
-    fig = plt.figure(figsize=(15, 8.5))
-    gs = fig.add_gridspec(2, 2, height_ratios=[1.15, 1.0], hspace=0.35, wspace=0.25)
+    fig = plt.figure(figsize=(16, 8.8))
+    gs = fig.add_gridspec(2, 2, height_ratios=[1.18, 1.0], hspace=0.36, wspace=0.25)
 
     # Panel A (top full-width): 6-Stage + Option C Architecture Diagram
     ax_arch = fig.add_subplot(gs[0, :])
     ax_arch.set_xlim(0, 14)
-    ax_arch.set_ylim(0, 4.2)
+    ax_arch.set_ylim(0, 4.3)
     ax_arch.axis("off")
 
     meta = doc["meta"]
@@ -270,25 +270,25 @@ def build_fig1(doc: dict[str, Any], inv_rows: list[dict[str, str]], fig_dir: Pat
     )
 
     stage_Order = [
-        ("stage1", "Stage 1: Ceiling & Tiling\n(H1a 0.5-10 Mbp, Gate 7)"),
-        ("stage2", "Stage 2: Tier P AML Panels\n(Wolff 2026, -R chr1, 13 Modes)"),
+        ("stage1", "Stage 1: Ceiling & Tiling\n(H1a 0.5-10M, Gate 7)"),
+        ("stage2", "Stage 2: Tier P Panels\n(Wolff 2026, -R chr1, 13m)"),
         ("stage3", "Stage 3: Tier G RNA-Seq\n(51.8 GiB HG002 mRNA -i)"),
-        ("stage4", "Stage 4: Scaling & ROC\n(1-32c Exome, chr1 Span, QUAL)"),
-        ("sweep", "Option C: Full-Core Sweep\n(.var/.vcf Parity & MRD -f 0)"),
-        ("stage5", "Stage 5: Full WGS & 10-Chem\n(HG002/HG008 Arm A/B, H4)"),
-        ("stage6", "Stage 6: Next-Gen Truth\n(v5.0Q, CMRG, Mosaic, v0.4 ML)"),
+        ("stage4", "Stage 4: Scaling & ROC\n(1-32c Exome, chr1, QUAL)"),
+        ("sweep", "Option C: Parity Sweep\n(.var/.vcf & MRD -f 0)"),
+        ("stage5", "Stage 5: Full WGS & 10-Chem\n(HG002/008 Arm A/B, H4)"),
+        ("stage6", "Stage 6: Next-Gen Truth\n(v5.0Q, CMRG, Mosaic, v0.4)"),
     ]
     stage_counts = {st: sum(1 for r in inv_rows if r["stage"] == st) for st, _ in stage_Order}
     stage_files = {st: sum(int(r["file_count"]) for r in inv_rows if r["stage"] == st) for st, _ in stage_Order}
 
     box_colors = ["#0072B2", "#009E73", "#56B4E9", "#E69F00", "#CC79A7", "#D55E00", "#332288"]
     for idx, (st_key, st_label) in enumerate(stage_Order):
-        x0 = 0.2 + idx * 1.96
+        x0 = 0.18 + idx * 1.96
         rect = mpatches.FancyBboxPatch(
-            (x0, 1.35),
-            1.78,
+            (x0, 1.4),
+            1.80,
             2.35,
-            boxstyle="round,pad=0.08",
+            boxstyle="round,pad=0.06",
             facecolor=box_colors[idx],
             edgecolor="#1E293B",
             alpha=0.16,
@@ -296,40 +296,40 @@ def build_fig1(doc: dict[str, Any], inv_rows: list[dict[str, str]], fig_dir: Pat
         )
         ax_arch.add_patch(rect)
         ax_arch.text(
-            x0 + 0.89,
+            x0 + 0.90,
             3.35,
             st_label.split("\n")[0],
             ha="center",
             va="center",
-            fontsize=8.5,
+            fontsize=7.5,
             fontweight="bold",
             color="#0F172A",
         )
         ax_arch.text(
-            x0 + 0.89,
+            x0 + 0.90,
             2.65,
             st_label.split("\n")[1],
             ha="center",
             va="center",
-            fontsize=7.5,
+            fontsize=6.8,
             color="#334155",
         )
         ax_arch.text(
-            x0 + 0.89,
-            1.85,
-            f"{stage_counts[st_key]} dirs | {stage_files[st_key]} artifacts\n100% rc=0 PASS",
+            x0 + 0.90,
+            1.88,
+            f"{stage_counts[st_key]} dirs | {stage_files[st_key]} files\n100% rc=0 PASS",
             ha="center",
             va="center",
-            fontsize=7.5,
+            fontsize=7.2,
             fontweight="bold",
             color=box_colors[idx],
         )
 
     # Bottom banner inside Panel A showing hardware & synthesis flow
     banner = mpatches.FancyBboxPatch(
-        (0.2, 0.2),
-        13.5,
-        0.85,
+        (0.18, 0.15),
+        13.54,
+        0.95,
         boxstyle="round,pad=0.06",
         facecolor="#F1F5F9",
         edgecolor="#64748B",
@@ -339,11 +339,11 @@ def build_fig1(doc: dict[str, Any], inv_rows: list[dict[str, str]], fig_dir: Pat
     ax_arch.text(
         6.95,
         0.62,
-        f"Hardware Lock: {meta['host']} | Comparators: {meta['oracle_version']} & {meta['cpp_version']} | "
-        f"Cloud Spend: ${meta['gcp_spend_usd']:.2f} / ${meta['gcp_budget_usd']:.2f} ({meta['gcs_cache_gib']} GiB GCS Cache)",
+        f"Hardware Lock: {meta['host']} | Comparators: {meta['oracle_version']} & {meta['cpp_version']}\n"
+        f"Cloud Spend: ${meta['gcp_spend_usd']:.2f} / ${meta['gcp_budget_usd']:.2f} Budget ({meta['gcs_cache_gib']} GiB GCS Cache; 60/60 Cells Complete)",
         ha="center",
         va="center",
-        fontsize=8,
+        fontsize=6.6,
         fontweight="bold",
         color="#1E293B",
     )
@@ -1008,8 +1008,8 @@ def build_fig6(doc: dict[str, Any], fig_dir: Path) -> None:
 
 def build_fig7(doc: dict[str, Any], fig_dir: Path) -> None:
     """Figure 7: Next-Generation Truth Benchmarks (T2T-Q100 v5.0Q, CMRG, Mosaic) & HG008 v0.4 Caller Landscape."""
-    fig = plt.figure(figsize=(16, 9.5))
-    gs = fig.add_gridspec(2, 2, width_ratios=[1.0, 1.15], hspace=0.38, wspace=0.28)
+    fig = plt.figure(figsize=(16.5, 9.5))
+    gs = fig.add_gridspec(2, 2, width_ratios=[1.0, 1.15], hspace=0.38, wspace=0.46)
 
     v50_rows = doc["stage6"]["hg002_v50q_cmrg_mosaic_eval"]
 
@@ -1066,18 +1066,27 @@ def build_fig7(doc: dict[str, Any], fig_dir: Path) -> None:
     combined_c = full_all + slice_all
     y_c = np.arange(len(combined_c))
     h_c = 0.36
-    c_labels = [
-        f"{r['caller']} ({'Slice' if 'Slice' in r['scope'] else 'WGS'})" for r in combined_c
-    ]
+    c_labels = []
+    for r in combined_c:
+        short_c = (
+            r["caller"]
+            .replace("Ultima_DeepVariant_Somatic", "Ultima DV Somatic")
+            .replace("VarDictRust_FullContigs", "VarDictRust (Arm A)")
+            .replace("VarDictRust_GIAB50kb", "VarDictRust (Arm B)")
+            .replace("DRAGEN_v4.2.4_", "DRAGEN v4.2.4 ")
+            .replace("DeepSomatic_v1.6", "DeepSomatic v1.6")
+            .replace("ClairS_v0.1.7", "ClairS v0.1.7")
+        )
+        c_labels.append(f"{short_c} ({'Slice' if 'Slice' in r['scope'] else 'WGS'})")
     snv_c = [r["snv_f1"] for r in combined_c]
     ind_c = [r["indel_f1"] for r in combined_c]
     ax_c.barh(y_c - h_c / 2.0, snv_c, height=h_c, color=PALETTE["VarDictRust"], label="SNV F1 (GIAB v0.4)")
     ax_c.barh(y_c + h_c / 2.0, ind_c, height=h_c, color=PALETTE["VarDictJava"], label="InDel F1 (GIAB v0.4)")
     ax_c.set_yticks(y_c)
-    ax_c.set_yticklabels(c_labels, fontsize=8)
+    ax_c.set_yticklabels(c_labels, fontsize=7.8)
     ax_c.set_xlim(0, 1.08)
     ax_c.set_xlabel("HG008 GIAB v0.4 F1 Score")
-    ax_c.set_title("C. HG008 v0.4 Somatic Landscape Across VarDictRust & 10 Modern/Field Callers", loc="left")
+    ax_c.set_title("C. HG008 v0.4 Somatic Landscape Across VarDictRust & 10 Callers", loc="left")
     ax_c.legend(loc="lower right", frameon=True)
 
     save_pub_figure(fig, fig_dir, "fig7")
@@ -1085,8 +1094,8 @@ def build_fig7(doc: dict[str, Any], fig_dir: Path) -> None:
 
 def build_fig8(doc: dict[str, Any], fig_dir: Path) -> None:
     """Figure 8: Supply-Chain Security, Multi-Thread Determinism, 60-Flag CLI Parity & CPP-1..10 Catalog (H4)."""
-    fig, axes = plt.subplots(1, 3, figsize=(16, 5.2))
-    plt.subplots_adjust(wspace=0.30)
+    fig, axes = plt.subplots(1, 3, figsize=(16.5, 5.4))
+    plt.subplots_adjust(wspace=0.38)
 
     h4 = doc["stage5"]["h4_maintenance_security_matrix"]
 
@@ -1095,13 +1104,13 @@ def build_fig8(doc: dict[str, Any], fig_dir: Path) -> None:
     gnu_mb = h4["gnu_binary_bytes"] / (1024.0 * 1024.0)
     musl_mb = h4["musl_binary_bytes"] / (1024.0 * 1024.0)
     conda_cnt = h4["oracle_conda_package_count"]
-    labels_a = ["VarDictRust\n(GNU Binary MB)", "VarDictRust\n(Static musl MB)", "VarDictJava Oracle\n(Conda Packages)", "RustSec\nCVEs"]
+    labels_a = ["Rust GNU\n(MiB)", "Rust musl\n(MiB)", "Java Conda\n(Packages)", "RustSec\n(CVEs)"]
     vals_a = [gnu_mb, musl_mb, float(conda_cnt), float(h4["rustsec_cves"])]
     cols_a = [PALETTE["VarDictRust"], PALETTE["VarDictRust"], PALETTE["VarDictJava"], PALETTE["vardictcpp"]]
     bars_a = ax_a.bar(labels_a, vals_a, color=cols_a, edgecolor="#1E293B")
     ax_a.set_ylabel("Size (MiB) / Package or CVE Count")
     ax_a.set_ylim(0, max(vals_a) * 1.22)
-    ax_a.set_title(f"A. H4 Supply-Chain Footprint (SLSA Level {h4['slsa_level']}, 0 CVEs)", loc="left")
+    ax_a.set_title(f"A. H4 Supply-Chain Footprint (SLSA Level {h4['slsa_level']}, 0 CVEs)", loc="left", fontsize=9.2)
     for b, v in zip(bars_a, vals_a):
         ax_a.text(b.get_x() + b.get_width() / 2.0, v + 2, f"{v:.2f}" if v < 10 and v > 0 else f"{int(v)}", ha="center", va="bottom", fontsize=8, fontweight="bold")
 
@@ -1118,7 +1127,7 @@ def build_fig8(doc: dict[str, Any], fig_dir: Path) -> None:
     bars_b = ax_b.bar([f"{t}c" for t in threads_b], var_counts, color=PALETTE["VarDictRust"], edgecolor="#1E293B")
     ax_b.set_ylabel("Emitted Somatic Variants (SEQC2 Exome)")
     ax_b.set_ylim(0, max(var_counts) * 1.22)
-    ax_b.set_title("B. Multi-Thread Determinism (1..32 Cores = 0 Record Diffs)", loc="left")
+    ax_b.set_title("B. Multi-Thread Determinism (1..32c = 0 Diffs)", loc="left", fontsize=9.2)
     for b, v in zip(bars_b, var_counts):
         ax_b.text(b.get_x() + b.get_width() / 2.0, v * 1.02, f"{v:,}\nMATCH", ha="center", va="bottom", fontsize=7, fontweight="bold")
 
@@ -1134,7 +1143,7 @@ def build_fig8(doc: dict[str, Any], fig_dir: Path) -> None:
     cpp_hg008_sv_diff = abs(strata["hg008"]["cpp"]["total"] - strata["hg008"]["rust"]["total"])
 
     div_labels = [
-        "CPP-5: HG002 Arm A\nChunk Boundary Dupes",
+        "CPP-5: HG002 Arm A\nBoundary Dupes",
         "CPP-9: HG002 Arm B\nMNP/Tie-Break Diffs",
         "CPP-9: HG002 Slice\nMNP Split Diffs",
         "CPP-9: SEQC2 Exome\nDropped SV Calls",
@@ -1148,7 +1157,7 @@ def build_fig8(doc: dict[str, Any], fig_dir: Path) -> None:
     ax_c.set_yticklabels(div_labels, fontsize=7.5)
     ax_c.set_xlabel("Discrepant Variant Count vs VarDictJava Oracle (log scale)")
     ax_c.set_xlim(0.5, max(div_vals) * 8.0)
-    ax_c.set_title(f"C. Empirical vardictcpp Divergences ({h4['cpp_divergences_cataloged']} Classes Cataloged)", loc="left")
+    ax_c.set_title(f"C. Empirical vardictcpp Divergences ({h4['cpp_divergences_cataloged']} Classes)", loc="left", fontsize=9.2)
     for b, v in zip(bars_c, div_vals):
         ax_c.text(v * 1.18, b.get_y() + b.get_height() / 2.0, f"{v:,}", ha="left", va="center", fontsize=8, fontweight="bold")
 
