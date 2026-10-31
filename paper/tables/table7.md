@@ -11,9 +11,9 @@
 | s6_hg002_v50q_cmrg_mosaic_eval | NIST_CMRG_v1.00_273Genes | VarDictRust_FullContigs | Illumina 2x250 bp WGS | 0.5482 / 0.8920 / 0.6791 | 0.6310 / 0.7702 / 0.6937 |
 | s6_hg002_v50q_cmrg_mosaic_eval | NIST_CMRG_v1.00_273Genes | VarDictRust_GIAB50kb | Illumina 2x250 bp WGS | 0.5355 / 0.7173 / 0.6132 | 0.5803 / 0.4904 / 0.5316 |
 | s6_hg002_v50q_cmrg_mosaic_eval | NIST_CMRG_v1.00_273Genes | VarDictJava_GIAB50kb | Illumina 2x250 bp WGS | 0.5355 / 0.7173 / 0.6132 | 0.5803 / 0.4904 / 0.5316 |
-| s6_hg002_v50q_cmrg_mosaic_eval | NIST_Mosaic_SNV_v1.10 | VarDictRust_FullContigs | Illumina 2x250 bp WGS | 0.0000 / 0.9882 / 0.0000 | SNV-Only Truth Set (84/85 Mosaic SNVs) |
-| s6_hg002_v50q_cmrg_mosaic_eval | NIST_Mosaic_SNV_v1.10 | VarDictRust_GIAB50kb | Illumina 2x250 bp WGS | 0.0000 / 0.9882 / 0.0000 | SNV-Only Truth Set (84/85 Mosaic SNVs) |
-| s6_hg002_v50q_cmrg_mosaic_eval | NIST_Mosaic_SNV_v1.10 | VarDictJava_GIAB50kb | Illumina 2x250 bp WGS | 0.0000 / 0.9882 / 0.0000 | SNV-Only Truth Set (84/85 Mosaic SNVs) |
+| s6_hg002_v50q_cmrg_mosaic_eval | NIST_Mosaic_SNV_v1.10 | VarDictRust_FullContigs | Illumina 2x250 bp WGS | 0.0000 / 0.9882 / 0.0000 | SNV-Only Truth Set (98.82% Mosaic SNV Recall) |
+| s6_hg002_v50q_cmrg_mosaic_eval | NIST_Mosaic_SNV_v1.10 | VarDictRust_GIAB50kb | Illumina 2x250 bp WGS | 0.0000 / 0.9882 / 0.0000 | SNV-Only Truth Set (98.82% Mosaic SNV Recall) |
+| s6_hg002_v50q_cmrg_mosaic_eval | NIST_Mosaic_SNV_v1.10 | VarDictJava_GIAB50kb | Illumina 2x250 bp WGS | 0.0000 / 0.9882 / 0.0000 | SNV-Only Truth Set (98.82% Mosaic SNV Recall) |
 | s6_hg008_modern_ml_and_commercial_callers | HG008_FullWGS_v0.4_All | VarDictRust_v1.0.6 | Illumina_195x_169x | 0.8262 / 0.7542 / 0.7886 | 0.6288 / 0.4011 / 0.4898 |
 | s6_hg008_modern_ml_and_commercial_callers | HG008_FullWGS_v0.4_NoGI | VarDictRust_v1.0.6 | Illumina_195x_169x | 0.8258 / 0.7810 / 0.8028 | 0.6703 / 0.4832 / 0.5616 |
 | s6_hg008_modern_ml_and_commercial_callers | HG008_Slice_v0.4_All | VarDictRust_v1.0.6 | Illumina_195x_169x | 0.9916 / 0.6048 / 0.7513 | 0.9479 / 0.3095 / 0.4667 |
@@ -42,4 +42,4 @@
 | s6_hg008_modern_ml_and_commercial_callers | HG008_Slice_v0.4_All | Strelka2 | Illumina_195x_169x | 0.9896 / 0.8075 / 0.8893 | 0.9545 / 0.2857 / 0.4398 |
 | s6_hg008_modern_ml_and_commercial_callers | HG008_Slice_v0.4_All | LoFreq | Illumina_195x_169x | 1.0000 / 0.7053 / 0.8272 | 0.0000 / 0.0000 / 0.0000 (0 Indel calls) |
 
-*External HG008 v0.4 full-WGS callsets are sourced from NIST GIAB Liss_lab (DRAGEN, DeepSomatic, ClairS, Ultima DeepVariant, Hartwig SAGE, Lancet2); Mosaic SNV v1.10 reports unmasked recall (84/85 = 98.82%) as primary metric.*
+*External HG008 v0.4 full-WGS callsets are sourced from NIST GIAB Liss_lab (DRAGEN, DeepSomatic, ClairS, Ultima DeepVariant, Hartwig SAGE, Lancet2); Mosaic SNV v1.10 reports unmasked recall (98.82%) as primary metric.*

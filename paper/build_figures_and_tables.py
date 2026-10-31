@@ -212,7 +212,7 @@ def write_dual_table(
         "\\begin{table}[htbp]",
         "\\centering",
         f"\\caption{{{sanitize_tex_cell(title)}}}",
-        f"\\label{{tab:{sanitize_tex_cell(stem)}}}",
+        f"\\label{{tab:{stem.replace('_', '-')}}}",
         f"\\begin{{tabular}}{{{col_spec}}}",
         "\\hline",
         " & ".join(clean_headers_tex) + " \\\\",
@@ -516,34 +516,38 @@ def build_fig3(doc: dict[str, Any], fig_dir: Path) -> None:
     ax_a.set_title("A. HG002 chr20 Exome Truth Concordance (VarDictRust == VarDictJava)", loc="left")
     ax_a.legend(loc="lower right", frameon=True)
 
-    # Panel B: Multi-Cohort Optimal vs Unfiltered F1 across HG002, SEQC2, HG008, HG005, NA24385-b37
+    # Panel B: QUAL Sweep Trajectory (roc_qual_sweep.json) across HG002, SEQC2, HG008 + HG005/NA24385-b37
     ax_b = axes[0, 1]
-    t3_cohorts = doc["stage4"]["tier3_truth_and_qual_sweep"]["cohorts"]
+    t3_sweep = doc["stage4"]["tier3_truth_and_qual_sweep"]["roc_qual_sweep"]
     ev_cert = doc["evidence_certified"]
-    cohort_labels = ["HG002", "SEQC2", "HG008", "HG005", "NA24385-b37"]
-    opt_f1 = [
-        t3_cohorts["hg002"]["engines"]["rust"]["operating_points"]["best"]["f_measure"],
-        t3_cohorts["seqc2"]["engines"]["rust"]["operating_points"]["best"]["f_measure"],
-        t3_cohorts["hg008"]["engines"]["rust"]["operating_points"]["best"]["f_measure"],
-        ev_cert["hg005-truth"]["extra"]["rust"]["optimal"]["f_measure"],
-        ev_cert["na24385-b37-truth"]["extra"]["rust"]["optimal"]["f_measure"],
+    cohort_styles = [
+        ("hg002", "HG002 Germline", PALETTE["VarDictRust"]),
+        ("hg008", "HG008 Somatic v0.3", PALETTE["vardictcpp"]),
+        ("seqc2", "SEQC2 HCC1395", PALETTE["VarDictJava"]),
     ]
-    none_f1 = [
-        t3_cohorts["hg002"]["engines"]["rust"]["operating_points"]["none"]["f_measure"],
-        t3_cohorts["seqc2"]["engines"]["rust"]["operating_points"]["none"]["f_measure"],
-        t3_cohorts["hg008"]["engines"]["rust"]["operating_points"]["none"]["f_measure"],
-        ev_cert["hg005-truth"]["extra"]["rust"]["none"]["f_measure"],
-        ev_cert["na24385-b37-truth"]["extra"]["rust"]["none"]["f_measure"],
-    ]
-    x_b = np.arange(len(cohort_labels))
-    ax_b.bar(x_b - w_a / 2.0, opt_f1, width=w_a, color=PALETTE["VarDictRust"], label="QUAL-Calibrated Optimal F1")
-    ax_b.bar(x_b + w_a / 2.0, none_f1, width=w_a, color="#94A3B8", label="Unthresholded Candidate F1 (-f 0.01)")
-    ax_b.set_xticks(x_b)
-    ax_b.set_xticklabels(cohort_labels)
-    ax_b.set_ylim(0, 1.12)
-    ax_b.set_ylabel("F1 Score (Delta Rust vs Java = 0)")
-    ax_b.set_title("B. Tier-3 Truth Operating Points Across 5 Reference Cohorts", loc="left")
-    ax_b.legend(loc="upper right", frameon=True)
+    for c_key, c_lbl, c_col in cohort_styles:
+        r_pts = t3_sweep[c_key]["rust"]
+        j_pts = t3_sweep[c_key]["java"]
+        q_keys = sorted((int(k) for k in r_pts if k.isdigit()))
+        r_f1s = [r_pts[str(q)]["f1"] for q in q_keys]
+        j_f1s = [j_pts[str(q)]["f1"] for q in q_keys]
+        ax_b.plot(q_keys, r_f1s, marker="o", linewidth=2.0, color=c_col, label=f"{c_lbl} (Rust)")
+        ax_b.plot(q_keys, j_f1s, linestyle="--", linewidth=1.2, color="#0F172A", alpha=0.55)
+    h5_opt = ev_cert["hg005-truth"]["extra"]["rust"]["optimal"]["f_measure"]
+    b37_opt = ev_cert["na24385-b37-truth"]["extra"]["rust"]["optimal"]["f_measure"]
+    ax_b.text(
+        0.03,
+        0.06,
+        f"Java==Rust Delta=0 across all QUAL\nHG005 Opt F1={h5_opt:.4f} | NA24385-b37 Opt F1={b37_opt:.4f}",
+        transform=ax_b.transAxes,
+        fontsize=7.5,
+        bbox={"boxstyle": "round,pad=0.3", "facecolor": "#F8FAFC", "edgecolor": "#CBD5E1"},
+    )
+    ax_b.set_xlabel("Minimum QUAL Filter Cutoff")
+    ax_b.set_ylabel("F1 Score (Rust solid == Java dashed)")
+    ax_b.set_ylim(0.05, 1.08)
+    ax_b.set_title("B. Tier-3 QUAL Sweep Curves & 5-Cohort Truth Concordance", loc="left")
+    ax_b.legend(loc="center right", frameon=True, fontsize=7.5)
 
     # Panel C: Native GRCh38 Field Callers F1 vs Wall Time
     ax_c = axes[1, 0]
@@ -591,10 +595,20 @@ def build_fig3(doc: dict[str, Any], fig_dir: Path) -> None:
             color=PALETTE.get(caller, PALETTE["neutral"]),
             label=f"{caller} (==Java)" if caller == "VarDictRust" else caller,
         )
+    min_vaf = min(r["expected_clonal_vaf_pct"] for r in tit_rows)
+    r_low_rust = next(r for r in tit_rows if r["caller"] == "VarDictRust" and r["expected_clonal_vaf_pct"] == min_vaf)
+    r_low_comp = next(
+        r for r in tit_rows if r["caller"] in ("Mutect2", "Strelka2") and r["expected_clonal_vaf_pct"] == min_vaf and r["snv_f1"] > 0
+    )
+    f1_adv = r_low_rust["snv_f1"] / r_low_comp["snv_f1"]
+    rec_adv = r_low_rust["snv_r"] / r_low_comp["snv_r"]
     ax_d.invert_xaxis()
     ax_d.set_xlabel("Expected Clonal Somatic VAF (%) [20% -> 1% Tumor Purity]")
     ax_d.set_ylabel("SNV F1 Score (-f 0.002)")
-    ax_d.set_title("D. Low-VAF Titration Curve (16.7x F1 & 25.1x Recall Advantage at 0.5% VAF)", loc="left")
+    ax_d.set_title(
+        f"D. Low-VAF Titration Curve ({f1_adv:.1f}x F1 & {rec_adv:.1f}x Recall Advantage at {min_vaf:.1f}% VAF)",
+        loc="left",
+    )
     ax_d.legend(loc="upper right", frameon=True, fontsize=7.5)
 
     save_pub_figure(fig, fig_dir, "fig3")
@@ -922,9 +936,14 @@ def build_fig6(doc: dict[str, Any], fig_dir: Path) -> None:
     ax_a.bar(x_a + w_a / 2.0, ug_f1, width=w_a, color=PALETTE["vardictcpp"], label="UG-HCR v2.1 BED")
     ax_a.set_xticks(x_a)
     ax_a.set_xticklabels(arms_a, rotation=25, ha="right", fontsize=7.5)
+    rust_part_a = [r for r in part_a if r["engine"] == "rust"]
+    rust_done_a = sum(1 for r in rust_part_a if r["rc"] == 0)
     ax_a.set_ylim(0.5, 1.05)
     ax_a.set_ylabel("chr20 SNV F1 Score")
-    ax_a.set_title("A. 10-Platform Sequencing Chemistry chr20 SNV F1 (20/20 Rust Runs Complete)", loc="left")
+    ax_a.set_title(
+        f"A. 10-Platform Sequencing Chemistry chr20 SNV F1 ({rust_done_a}/{len(rust_part_a)} Rust Runs Complete)",
+        loc="left",
+    )
     ax_a.legend(loc="lower right", frameon=True)
 
     # Panel B: Part B 18/18 STRICT_MATCH Singleton Noise-Floor Stress Panel
@@ -1029,7 +1048,10 @@ def build_fig7(doc: dict[str, Any], fig_dir: Path) -> None:
     ax_b.set_xticklabels(labels_b)
     ax_b.set_ylim(0, 1.15)
     ax_b.set_ylabel("Recall (Sensitivity)")
-    ax_b.set_title("B. Mosaic SNV v1.10 (84/85 = 98.82% Recall) & CMRG InDel Recovery", loc="left")
+    ax_b.set_title(
+        f"B. Mosaic SNV v1.10 ({mosaic_rows[0]['snv_r'] * 100.0:.2f}% Recall) & CMRG InDel Recovery",
+        loc="left",
+    )
     for b, v in zip(bars_m, mos_r):
         ax_b.text(b.get_x() + b.get_width() / 2.0, v + 0.02, f"{v:.4f}", ha="center", va="bottom", fontsize=7.5, fontweight="bold")
     for b, v in zip(bars_ci, cmrg_ind_r):
@@ -1321,12 +1343,14 @@ def build_all_tables(doc: dict[str, Any], inv_rows: list[dict[str, str]], tab_di
         ]
     )
     fc_info = s2["fig1_fig3_field_callers"]
+    bed_348 = s2["tierp_v2"]["SRR8657348"]["th1"]["bed_intervals"]
+    bed_376 = s2["tierp_v2"]["SRR15006376"]["th1"]["bed_intervals"]
     t2_rows.append(
         [
             "s2_fig1_fig3_field_callers",
             "SRR8657348 & Somatic 76/86",
             "1 & 8",
-            "773,667 / 105,949",
+            f"{bed_348:,} / {bed_376:,}",
             f"Somatic 8c: {fc_info['somatic_SRR15006376_SRR15006386']['VarDictJava']['th8']['wall_s']:.2f}s",
             f"Somatic 8c: {fc_info['somatic_SRR15006376_SRR15006386']['vardictcpp']['th8']['wall_s']:.2f}s",
             f"Somatic 8c: {fc_info['somatic_SRR15006376_SRR15006386']['VarDictRust']['th8']['wall_s']:.2f}s",
@@ -1440,7 +1464,7 @@ def build_all_tables(doc: dict[str, Any], inv_rows: list[dict[str, str]], tab_di
         "Table 3. Germline & Somatic Truth Accuracy (H3), Native GRCh38 Field Callers & Low-VAF Tumor-Purity Titration (20% to 1% Purity)",
         t3_headers,
         t3_rows,
-        "Undefined 0/0 precision/F1 at 0.0000 recall (e.g., LoFreq indels or 0.5-1.0% VAF) are normalized to 0.0000 with explicit 0-call annotations. Low-VAF titration uses in silico HG008 T/N read admixtures called with -f 0.002.",
+        "Undefined 0/0 precision/F1 at 0.0000 recall (e.g., LoFreq indels or lowest-purity VAF strata) are normalized to 0.0000 with explicit 0-call annotations. Low-VAF titration uses in silico HG008 T/N read admixtures called with -f 0.002.",
     )
 
     # ------------------------------------------------------------------
@@ -1500,7 +1524,7 @@ def build_all_tables(doc: dict[str, Any], inv_rows: list[dict[str, str]], tab_di
                 "OOM at -Xmx4g (see Table 2 -Xmx200g)",
                 f"249M: {c249['wall_s_mean']:.2f}s / {c249['max_rss_gib_mean']:.2f} GiB",
                 f"10M: {r10['max_rss_gib_mean']:.2f} GiB -> 249M: {r249['max_rss_gib_mean']:.2f} GiB",
-                f"249M/10M RSS ratio = {sd['rust_rss_ratio_249m_vs_10m']:.3f}x (<=1.50x H2 PASS)",
+                f"249M/10M RSS ratio = {sd['rust_rss_ratio_249m_vs_10m']:.3f}x ({inv_by_id[sd['cell_id']]['parity_verdict']})",
             ]
         )
     f0d = s4["span_chr1_f0"]
@@ -1552,6 +1576,8 @@ def build_all_tables(doc: dict[str, Any], inv_rows: list[dict[str, str]], tab_di
     h2_opt = h2_b["vcfeval"]["rust"]["operating_points"]["best"]
     h8_v03 = h8_b["vcfeval_v03_rust"]["best"]
     h8_v04 = h8_b["vcfeval_v04_rust"]["best"]
+    h2_a_cpp_rss_ratio = h2_a["cpp"]["max_rss_kb"] / h2_a["rust"]["max_rss_kb"]
+    h8_a_cpp_rss_ratio = h8_a["cpp"]["max_rss_kb"] / h8_a["rust"]["max_rss_kb"]
     t5_rows: list[list[Any]] = [
         [
             "s5_wgs_hg002_full_contigs_3way_th32",
@@ -1559,7 +1585,7 @@ def build_all_tables(doc: dict[str, Any], inv_rows: list[dict[str, str]], tab_di
             f"OOM Crash (rc={h2_a['java']['exit_code']}) at {h2_a['java']['max_rss_gb_dec']:.2f} GB RSS ({h2_a['java']['wall_str']})",
             f"{h2_a['cpp']['wall_str']} / {h2_a['cpp']['max_rss_gb_dec']:.2f} GB RSS ({h2_a['cpp']['variant_count']:,} vars; +{h2_a['cpp']['boundary_excess_variants']:,} boundary dupes)",
             f"{h2_a['rust']['wall_str']} ({h2_a['rust']['wall_s']:.2f}s) / {h2_a['rust']['max_rss_gb_dec']:.2f} GB ({h2_a['rust']['max_rss_gib']:.2f} GiB) RSS ({h2_a['rust']['variant_count']:,} vars)",
-            "OOM-vs-completed (Rust 6.5x less RAM than C++, 0 boundary dupes)",
+            f"OOM-vs-completed (Rust {h2_a_cpp_rss_ratio:.1f}x less RAM than C++, {h2_a['rust'].get('boundary_excess_variants', 0)} boundary dupes)",
         ],
         [
             "s5_wgs_hg002_full_giab_3way_th32",
@@ -1575,7 +1601,7 @@ def build_all_tables(doc: dict[str, Any], inv_rows: list[dict[str, str]], tab_di
             f"OOM Crash (rc={h8_a['java']['exit_code']}) at {h8_a['java']['max_rss_gb_dec']:.2f} GB RSS ({h8_a['java']['wall_str']})",
             f"rc={h8_a['cpp']['exit_code']} / {h8_a['cpp']['max_rss_gb_dec']:.2f} GB RSS",
             f"{h8_a['rust']['wall_str']} ({h8_a['rust']['wall_s']:.2f}s) / {h8_a['rust']['max_rss_gb_dec']:.2f} GB ({h8_a['rust']['max_rss_gib']:.2f} GiB) RSS ({h8_a['rust']['variant_count']:,} vars)",
-            "OOM-vs-completed (Rust 7.6x less RAM than C++)",
+            f"OOM-vs-completed (Rust {h8_a_cpp_rss_ratio:.1f}x less RAM than C++)",
         ],
         [
             "s5_wgs_hg008_full_giab_3way_th32",
@@ -1636,12 +1662,12 @@ def build_all_tables(doc: dict[str, Any], inv_rows: list[dict[str, str]], tab_di
         [
             "s6_ga4gh_v35_stratification_matrix",
             "All 10 Platforms x 7 Strata",
-            "70 GA4GH v3.5 Cells",
-            "70/70 Completed",
+            f"{len(ga_rows)} GA4GH v3.5 Cells",
+            f"{len(ga_rows)}/{len(ga_rows)} Completed",
             "100% Java==Rust Concordance",
             "—",
             f"Mean SNV F1={sum(r['snv_f1'] for r in ga_rows) / len(ga_rows):.4f}",
-            "See Supp Table S5 for all 70 cells",
+            f"See Supp Table S5 for all {len(ga_rows)} cells",
         ]
     )
     write_dual_table(
@@ -1665,9 +1691,10 @@ def build_all_tables(doc: dict[str, Any], inv_rows: list[dict[str, str]], tab_di
         "InDel Precision / Recall / F1",
     ]
     t7_rows: list[list[Any]] = []
+    mosaic_snv_r_pct = next(r["snv_r"] for r in s6["hg002_v50q_cmrg_mosaic_eval"] if r["snv_only_benchmark"]) * 100.0
     for r in s6["hg002_v50q_cmrg_mosaic_eval"]:
         ind_col = (
-            "SNV-Only Truth Set (84/85 Mosaic SNVs)"
+            f"SNV-Only Truth Set ({r['snv_r'] * 100.0:.2f}% Mosaic SNV Recall)"
             if r["snv_only_benchmark"]
             else f"{r['indel_p']:.4f} / {r['indel_r']:.4f} / {r['indel_f1']:.4f}"
         )
@@ -1703,7 +1730,7 @@ def build_all_tables(doc: dict[str, Any], inv_rows: list[dict[str, str]], tab_di
         "Table 7. Next-Generation Truth Benchmarks (GIAB v5.0q T2T-Q100, CMRG v1.00, Mosaic SNV v1.10) & HG008 v0.4 11-Caller Landscape",
         t7_headers,
         t7_rows,
-        "External HG008 v0.4 full-WGS callsets are sourced from NIST GIAB Liss_lab (DRAGEN, DeepSomatic, ClairS, Ultima DeepVariant, Hartwig SAGE, Lancet2); Mosaic SNV v1.10 reports unmasked recall (84/85 = 98.82%) as primary metric.",
+        f"External HG008 v0.4 full-WGS callsets are sourced from NIST GIAB Liss_lab (DRAGEN, DeepSomatic, ClairS, Ultima DeepVariant, Hartwig SAGE, Lancet2); Mosaic SNV v1.10 reports unmasked recall ({mosaic_snv_r_pct:.2f}%) as primary metric.",
     )
 
     # ------------------------------------------------------------------
@@ -1833,7 +1860,7 @@ def build_all_tables(doc: dict[str, Any], inv_rows: list[dict[str, str]], tab_di
         f"Supplementary Table S2 (Table S2). Complete {sw['total_arms']}-Arm Option C Full-Core Non-Fail-Fast .var & .vcf Parity Sweep",
         s2_headers,
         s2_rows,
-        "The 9 DIFF_CAPTURED sub-arms occur exclusively on multi-megabase un-chunked regions where full-core (-th 32) halo tiling crosses repetitive homopolymer/SV boundaries.",
+        f"The {sw['diff_captured_arms']} DIFF_CAPTURED sub-arms occur exclusively on multi-megabase un-chunked regions where full-core (-th 32) halo tiling crosses repetitive homopolymer/SV boundaries.",
     )
 
     # ------------------------------------------------------------------
@@ -2086,6 +2113,7 @@ def verify_outputs(fig_dir: Path, tab_dir: Path, inv_rows: list[dict[str, str]])
 
     stems = [f"table{i}" for i in range(1, 9)] + [f"supp_table{i}" for i in range(1, 7)]
     all_md = []
+    domain_md = []
     for stem in stems:
         md = tab_dir / f"{stem}.md"
         tex = tab_dir / f"{stem}.tex"
@@ -2100,12 +2128,17 @@ def verify_outputs(fig_dir: Path, tab_dir: Path, inv_rows: list[dict[str, str]])
         if re.search(r"\b(nan|NaN|None|TODO|TBD)\b", tex_txt):
             raise ValueError(f"Forbidden NaN/None token in {tex}")
         all_md.append(md_txt)
+        if stem != "supp_table1":
+            domain_md.append(md_txt)
 
     combined_md = "\n".join(all_md)
+    combined_domain_md = "\n".join(domain_md)
     for r in inv_rows:
         cid = r["cell_id"]
         if cid not in combined_md:
             raise ValueError(f"Cell {cid} missing from generated Markdown tables")
+        if cid not in combined_domain_md:
+            raise ValueError(f"Cell {cid} missing from domain tables (table1..8, supp_table2..6)")
 
 
 def build_all(input_json: Path, fig_dir: Path, tab_dir: Path) -> None:

@@ -67,4 +67,4 @@
 | s6_low_vaf_titration_truth_curve | HG008 1% Purity (0.5% VAF) | LoFreq | 1:14.51 (74.51s) / 252.0 MB | 0.0000 / 0.0000 / 0.0000 (0 calls) | 0.0000 / 0.0000 / 0.0000 (0 calls) | NA |
 | s6_low_vaf_titration_truth_curve | HG008 1% Purity (0.5% VAF) | Mutect2 | 6:47.62 (407.62s) / 1180.5 MB | 1.0000 / 0.0017 / 0.0034 | 0.0000 / 0.0000 / 0.0000 (0 calls) | NA |
 
-*Undefined 0/0 precision/F1 at 0.0000 recall (e.g., LoFreq indels or 0.5-1.0% VAF) are normalized to 0.0000 with explicit 0-call annotations. Low-VAF titration uses in silico HG008 T/N read admixtures called with -f 0.002.*
+*Undefined 0/0 precision/F1 at 0.0000 recall (e.g., LoFreq indels or lowest-purity VAF strata) are normalized to 0.0000 with explicit 0-call annotations. Low-VAF titration uses in silico HG008 T/N read admixtures called with -f 0.002.*

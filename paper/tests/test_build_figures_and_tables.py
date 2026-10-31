@@ -217,6 +217,11 @@ class TestBuildFiguresAndTables(unittest.TestCase):
             )
             self.assertIn("|", md_txt, f"Expected Markdown table pipes in {md}")
             self.assertIn("\\begin{tabular}", tex_txt, f"Expected LaTeX tabular in {tex}")
+            self.assertIn(
+                f"\\label{{tab:{stem.replace('_', '-')}}}",
+                tex_txt,
+                f"Expected clean hyphenated LaTeX label in {tex}",
+            )
 
     def test_all_60_cells_represented_in_tables(self) -> None:
         self.assertTrue(SCRIPT.is_file(), f"Missing {SCRIPT}")
@@ -229,12 +234,22 @@ class TestBuildFiguresAndTables(unittest.TestCase):
         all_tables_md = "\n".join(
             p.read_text(encoding="utf-8") for p in sorted(TAB_DIR.glob("*.md"))
         )
+        domain_tables_md = "\n".join(
+            p.read_text(encoding="utf-8")
+            for p in sorted(TAB_DIR.glob("*.md"))
+            if p.name != "supp_table1.md"
+        )
 
         for row in inv_rows:
             cid = row["cell_id"]
             self.assertIn(cid, supp1_md, f"Cell {cid} missing from supp_table1.md")
             self.assertIn(cid.replace("_", "\\_"), supp1_tex, f"Cell {cid} missing from supp_table1.tex")
             self.assertIn(cid, all_tables_md, f"Cell {cid} missing from generated markdown tables")
+            self.assertIn(
+                cid,
+                domain_tables_md,
+                f"Cell {cid} missing from domain tables (table1..8, supp_table2..6)",
+            )
 
     def test_no_hardcoded_numbers_in_builder_script(self) -> None:
         self.assertTrue(SCRIPT.is_file(), f"Missing {SCRIPT}")
@@ -263,6 +278,11 @@ class TestBuildFiguresAndTables(unittest.TestCase):
                     for bad_s in FORBIDDEN_DOMAIN_STRINGS:
                         if bad_s in val:
                             violations.append(f"line {lineno}: hardcoded metric string {bad_s!r} in {val!r}")
+                    m_pat = re.search(r"\d+\.\d+x|\d+\.\d+%|\d{1,3},\d{3}", val)
+                    if m_pat:
+                        violations.append(
+                            f"line {lineno}: hardcoded empirical ratio/percentage/count {m_pat.group(0)!r} in {val!r}"
+                        )
 
         self.assertEqual(
             violations,

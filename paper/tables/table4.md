@@ -13,9 +13,9 @@
 | s4_scale_exome_3way_th8 | SEQC2 Whole Exome (-th 8, n=3) | 1814.63 (1752.96-1911.57)s / 9.05 GiB | 139.14 (138.32-140.40)s / 1.49 GiB | 118.90 (117.36-119.88)s / 536.9 MB | Rust S_P=6.84x (15.3x vs Java, 17.3x leaner) |
 | s4_scale_exome_3way_th16 | SEQC2 Whole Exome (-th 16, n=3) | 1893.66 (1866.57-1929.42)s / 17.44 GiB | 74.17 (73.64-75.12)s / 1.69 GiB | 75.77 (74.66-76.76)s / 607.5 MB | Rust S_P=10.73x (25.0x vs Java, 29.4x leaner) |
 | s4_scale_exome_3way_th32 | SEQC2 Whole Exome (-th 32, n=3) | 1991.64 (1969.99-2003.54)s / 21.77 GiB | 63.68 (63.41-64.15)s / 2.06 GiB | 67.86 (67.27-68.20)s / 747.2 MB | Rust S_P=11.98x (29.4x vs Java, 29.8x leaner) |
-| s4_span_chr1_3way_th8 | chr1 Span 1M..249M (-th 8, n=3) | OOM at -Xmx4g (see Table 2 -Xmx200g) | 249M: 30.33s / 0.79 GiB | 10M: 1.17 GiB -> 249M: 1.38 GiB | 249M/10M RSS ratio = 1.176x (<=1.50x H2 PASS) |
-| s4_span_chr1_3way_th16 | chr1 Span 1M..249M (-th 16, n=3) | OOM at -Xmx4g (see Table 2 -Xmx200g) | 249M: 18.39s / 1.14 GiB | 10M: 1.79 GiB -> 249M: 2.31 GiB | 249M/10M RSS ratio = 1.291x (<=1.50x H2 PASS) |
-| s4_span_chr1_3way_th32 | chr1 Span 1M..249M (-th 32, n=3) | OOM at -Xmx4g (see Table 2 -Xmx200g) | 249M: 16.23s / 1.70 GiB | 10M: 2.62 GiB -> 249M: 3.69 GiB | 249M/10M RSS ratio = 1.405x (<=1.50x H2 PASS) |
+| s4_span_chr1_3way_th8 | chr1 Span 1M..249M (-th 8, n=3) | OOM at -Xmx4g (see Table 2 -Xmx200g) | 249M: 30.33s / 0.79 GiB | 10M: 1.17 GiB -> 249M: 1.38 GiB | 249M/10M RSS ratio = 1.176x (PASS_SPAN_1M_TO_249M_N3) |
+| s4_span_chr1_3way_th16 | chr1 Span 1M..249M (-th 16, n=3) | OOM at -Xmx4g (see Table 2 -Xmx200g) | 249M: 18.39s / 1.14 GiB | 10M: 1.79 GiB -> 249M: 2.31 GiB | 249M/10M RSS ratio = 1.291x (PASS_SPAN_1M_TO_249M_N3) |
+| s4_span_chr1_3way_th32 | chr1 Span 1M..249M (-th 32, n=3) | OOM at -Xmx4g (see Table 2 -Xmx200g) | 249M: 16.23s / 1.70 GiB | 10M: 2.62 GiB -> 249M: 3.69 GiB | 249M/10M RSS ratio = 1.405x (PASS_SPAN_1M_TO_249M_N3) |
 | s4_span_chr1_f0 | chr1 10 Mbp All-Positions (-f 0, 8c, n=3) | MATCH via oracle cache | 6.01 (5.99-6.04)s / 0.37 GiB | 19.58 (19.24-20.09)s / 5.90 GiB | MATCH (7032 variants) |
 | s4_jobs_per_node_2x4c_n3 | Concurrent 2x4c SEQC2 Exome Node Packing (n=3) | — | — | Job1: 211.38s (437.5M); Job2: 211.05s (442.0M) | Combined Peak RSS = 0.859 GiB (0 OOMs) |
 

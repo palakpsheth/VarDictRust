@@ -503,7 +503,7 @@ L 415.372689 329.78432
     <text style="font-size: 7.5px; font-family: 'DejaVu Sans'; text-anchor: middle; fill: #262626" x="377.809974" y="451.060577" transform="rotate(-0 377.809974 451.060577)">0.4904</text>
    </g>
    <g id="text_34">
-    <text style="font-weight: 700; font-size: 10px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #262626" x="51.113203" y="323.78432" transform="rotate(-0 51.113203 323.78432)">B. Mosaic SNV v1.10 (84/85 = 98.82% Recall) &amp; CMRG InDel Recovery</text>
+    <text style="font-weight: 700; font-size: 10px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #262626" x="51.113203" y="323.78432" transform="rotate(-0 51.113203 323.78432)">B. Mosaic SNV v1.10 (98.82% Recall) &amp; CMRG InDel Recovery</text>
    </g>
    <g id="legend_2">
     <g id="patch_31">
