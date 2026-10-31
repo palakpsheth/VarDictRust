@@ -283,7 +283,7 @@
         "Table 3",
         "Supp Table S1"
       ],
-      "description": "Wolff 2026 Fig 2 / Daniels 2024 HG002 chr20 exome 7-caller truth accuracy"
+      "description": "Wolff 2026 Fig 2 HG002 chr20 exome 7-caller truth accuracy"
     },
     "s2_table3_R_chr1_java_200g_n3": {
       "stage": "stage2",
@@ -3319,7 +3319,7 @@
         "Supp Table S1",
         "Supp Table S2"
       ],
-      "description": "Option C .var & .vcf parity sweep on HG002 chr20 exome (Daniels 2024)"
+      "description": "Option C .var & .vcf parity sweep on HG002 chr20 exome"
     },
     "sweep_multimodal_and_cram_twin": {
       "stage": "sweep",

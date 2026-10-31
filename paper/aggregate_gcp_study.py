@@ -81,7 +81,7 @@ CELL_CATALOG: dict[str, dict[str, Any]] = {
         "stage": "stage2",
         "tier": "Tier G",
         "paper_targets": ["Fig 1", "Fig 3", "Table 2", "Table 3", "Supp Table S1"],
-        "description": "Wolff 2026 Fig 2 / Daniels 2024 HG002 chr20 exome 7-caller truth accuracy",
+        "description": "Wolff 2026 Fig 2 HG002 chr20 exome 7-caller truth accuracy",
     },
     "s2_table3_R_chr1_java_200g_n3": {
         "stage": "stage2",
@@ -98,79 +98,160 @@ CELL_CATALOG: dict[str, dict[str, Any]] = {
     "s2_tierp_mode_parity_sweep": {
         "stage": "stage2",
         "tier": "Tier P",
-        "paper_targets": ["Fig 1", "Fig 2", "Fig 8", "Table 1", "Table 2", "Table 8", "Supp Table S1", "Supp Table S6"],
+        "paper_targets": [
+            "Fig 1",
+            "Fig 2",
+            "Fig 8",
+            "Table 1",
+            "Table 2",
+            "Table 8",
+            "Supp Table S1",
+            "Supp Table S6",
+        ],
         "description": "13-mode 3-way functional parity sweep (Simple, Somatic, Amplicon, Splice, SV, CRAM, Fisher, -f 0)",
     },
     "s2_tierp_v2_SRR15006375_th1": {
         "stage": "stage2",
         "tier": "Tier P",
-        "paper_targets": ["Fig 1", "Fig 2", "Table 2", "Supp Table S1", "Supp Table S3"],
+        "paper_targets": [
+            "Fig 1",
+            "Fig 2",
+            "Table 2",
+            "Supp Table S1",
+            "Supp Table S3",
+        ],
         "description": "Tier-P AML panel SRR15006375 3-way parity & timing at 1 thread (n=3)",
     },
     "s2_tierp_v2_SRR15006375_th8": {
         "stage": "stage2",
         "tier": "Tier P",
-        "paper_targets": ["Fig 1", "Fig 2", "Table 2", "Supp Table S1", "Supp Table S3"],
+        "paper_targets": [
+            "Fig 1",
+            "Fig 2",
+            "Table 2",
+            "Supp Table S1",
+            "Supp Table S3",
+        ],
         "description": "Tier-P AML panel SRR15006375 3-way parity & timing at 8 threads (n=3)",
     },
     "s2_tierp_v2_SRR15006376_th1": {
         "stage": "stage2",
         "tier": "Tier P",
-        "paper_targets": ["Fig 1", "Fig 2", "Table 2", "Supp Table S1", "Supp Table S3"],
+        "paper_targets": [
+            "Fig 1",
+            "Fig 2",
+            "Table 2",
+            "Supp Table S1",
+            "Supp Table S3",
+        ],
         "description": "Tier-P AML panel SRR15006376 3-way parity & timing at 1 thread (n=3)",
     },
     "s2_tierp_v2_SRR15006376_th8": {
         "stage": "stage2",
         "tier": "Tier P",
-        "paper_targets": ["Fig 1", "Fig 2", "Table 2", "Supp Table S1", "Supp Table S3"],
+        "paper_targets": [
+            "Fig 1",
+            "Fig 2",
+            "Table 2",
+            "Supp Table S1",
+            "Supp Table S3",
+        ],
         "description": "Tier-P AML panel SRR15006376 3-way parity & timing at 8 threads (n=3)",
     },
     "s2_tierp_v2_SRR15006386_th1": {
         "stage": "stage2",
         "tier": "Tier P",
-        "paper_targets": ["Fig 1", "Fig 2", "Table 2", "Supp Table S1", "Supp Table S3"],
+        "paper_targets": [
+            "Fig 1",
+            "Fig 2",
+            "Table 2",
+            "Supp Table S1",
+            "Supp Table S3",
+        ],
         "description": "Tier-P AML panel SRR15006386 3-way parity & timing at 1 thread (n=3)",
     },
     "s2_tierp_v2_SRR15006386_th8": {
         "stage": "stage2",
         "tier": "Tier P",
-        "paper_targets": ["Fig 1", "Fig 2", "Table 2", "Supp Table S1", "Supp Table S3"],
+        "paper_targets": [
+            "Fig 1",
+            "Fig 2",
+            "Table 2",
+            "Supp Table S1",
+            "Supp Table S3",
+        ],
         "description": "Tier-P AML panel SRR15006386 3-way parity & timing at 8 threads (n=3)",
     },
     "s2_tierp_v2_SRR15006540_th1": {
         "stage": "stage2",
         "tier": "Tier P",
-        "paper_targets": ["Fig 1", "Fig 2", "Table 2", "Supp Table S1", "Supp Table S3"],
+        "paper_targets": [
+            "Fig 1",
+            "Fig 2",
+            "Table 2",
+            "Supp Table S1",
+            "Supp Table S3",
+        ],
         "description": "Tier-P AML panel SRR15006540 3-way parity & timing at 1 thread (n=3)",
     },
     "s2_tierp_v2_SRR15006540_th8": {
         "stage": "stage2",
         "tier": "Tier P",
-        "paper_targets": ["Fig 1", "Fig 2", "Table 2", "Supp Table S1", "Supp Table S3"],
+        "paper_targets": [
+            "Fig 1",
+            "Fig 2",
+            "Table 2",
+            "Supp Table S1",
+            "Supp Table S3",
+        ],
         "description": "Tier-P AML panel SRR15006540 3-way parity & timing at 8 threads (n=3)",
     },
     "s2_tierp_v2_SRR8657348_th1": {
         "stage": "stage2",
         "tier": "Tier P",
-        "paper_targets": ["Fig 1", "Fig 2", "Table 2", "Supp Table S1", "Supp Table S3"],
+        "paper_targets": [
+            "Fig 1",
+            "Fig 2",
+            "Table 2",
+            "Supp Table S1",
+            "Supp Table S3",
+        ],
         "description": "Tier-P AML panel SRR8657348 (773,667 intervals) 3-way parity & timing at 1 thread (n=3)",
     },
     "s2_tierp_v2_SRR8657348_th8": {
         "stage": "stage2",
         "tier": "Tier P",
-        "paper_targets": ["Fig 1", "Fig 2", "Table 2", "Supp Table S1", "Supp Table S3"],
+        "paper_targets": [
+            "Fig 1",
+            "Fig 2",
+            "Table 2",
+            "Supp Table S1",
+            "Supp Table S3",
+        ],
         "description": "Tier-P AML panel SRR8657348 (773,667 intervals) 3-way parity & timing at 8 threads (n=3)",
     },
     "s2_tierp_v2_somatic_76_86_th1": {
         "stage": "stage2",
         "tier": "Tier P",
-        "paper_targets": ["Fig 1", "Fig 2", "Table 2", "Supp Table S1", "Supp Table S3"],
+        "paper_targets": [
+            "Fig 1",
+            "Fig 2",
+            "Table 2",
+            "Supp Table S1",
+            "Supp Table S3",
+        ],
         "description": "Tier-P somatic pair SRR15006376|SRR15006386 3-way parity & timing at 1 thread (n=3)",
     },
     "s2_tierp_v2_somatic_76_86_th8": {
         "stage": "stage2",
         "tier": "Tier P",
-        "paper_targets": ["Fig 1", "Fig 2", "Table 2", "Supp Table S1", "Supp Table S3"],
+        "paper_targets": [
+            "Fig 1",
+            "Fig 2",
+            "Table 2",
+            "Supp Table S1",
+            "Supp Table S3",
+        ],
         "description": "Tier-P somatic pair SRR15006376|SRR15006386 3-way parity & timing at 8 threads (n=3)",
     },
     # Stage 3 (1)
@@ -202,55 +283,115 @@ CELL_CATALOG: dict[str, dict[str, Any]] = {
     "s4_scale_exome_3way_th1": {
         "stage": "stage4",
         "tier": "Tier E",
-        "paper_targets": ["Fig 1", "Fig 4", "Fig 8", "Table 4", "Supp Table S1", "Supp Table S3"],
+        "paper_targets": [
+            "Fig 1",
+            "Fig 4",
+            "Fig 8",
+            "Table 4",
+            "Supp Table S1",
+            "Supp Table S3",
+        ],
         "description": "SEQC2 HCC1395 whole-exome 3-way scaling at 1 thread (n=3)",
     },
     "s4_scale_exome_3way_th2": {
         "stage": "stage4",
         "tier": "Tier E",
-        "paper_targets": ["Fig 1", "Fig 4", "Fig 8", "Table 4", "Supp Table S1", "Supp Table S3"],
+        "paper_targets": [
+            "Fig 1",
+            "Fig 4",
+            "Fig 8",
+            "Table 4",
+            "Supp Table S1",
+            "Supp Table S3",
+        ],
         "description": "SEQC2 HCC1395 whole-exome 3-way scaling at 2 threads (n=3)",
     },
     "s4_scale_exome_3way_th4": {
         "stage": "stage4",
         "tier": "Tier E",
-        "paper_targets": ["Fig 1", "Fig 4", "Fig 8", "Table 4", "Supp Table S1", "Supp Table S3"],
+        "paper_targets": [
+            "Fig 1",
+            "Fig 4",
+            "Fig 8",
+            "Table 4",
+            "Supp Table S1",
+            "Supp Table S3",
+        ],
         "description": "SEQC2 HCC1395 whole-exome 3-way scaling at 4 threads (n=3)",
     },
     "s4_scale_exome_3way_th8": {
         "stage": "stage4",
         "tier": "Tier E",
-        "paper_targets": ["Fig 1", "Fig 4", "Fig 8", "Table 4", "Supp Table S1", "Supp Table S3"],
+        "paper_targets": [
+            "Fig 1",
+            "Fig 4",
+            "Fig 8",
+            "Table 4",
+            "Supp Table S1",
+            "Supp Table S3",
+        ],
         "description": "SEQC2 HCC1395 whole-exome 3-way scaling at 8 threads (n=3)",
     },
     "s4_scale_exome_3way_th16": {
         "stage": "stage4",
         "tier": "Tier E",
-        "paper_targets": ["Fig 1", "Fig 4", "Fig 8", "Table 4", "Supp Table S1", "Supp Table S3"],
+        "paper_targets": [
+            "Fig 1",
+            "Fig 4",
+            "Fig 8",
+            "Table 4",
+            "Supp Table S1",
+            "Supp Table S3",
+        ],
         "description": "SEQC2 HCC1395 whole-exome 3-way scaling at 16 threads (n=3)",
     },
     "s4_scale_exome_3way_th32": {
         "stage": "stage4",
         "tier": "Tier E",
-        "paper_targets": ["Fig 1", "Fig 4", "Fig 8", "Table 4", "Supp Table S1", "Supp Table S3"],
+        "paper_targets": [
+            "Fig 1",
+            "Fig 4",
+            "Fig 8",
+            "Table 4",
+            "Supp Table S1",
+            "Supp Table S3",
+        ],
         "description": "SEQC2 HCC1395 whole-exome 3-way scaling at 32 threads (n=3)",
     },
     "s4_span_chr1_3way_th8": {
         "stage": "stage4",
         "tier": "Tier E",
-        "paper_targets": ["Fig 1", "Fig 4", "Table 4", "Supp Table S1", "Supp Table S3"],
+        "paper_targets": [
+            "Fig 1",
+            "Fig 4",
+            "Table 4",
+            "Supp Table S1",
+            "Supp Table S3",
+        ],
         "description": "Chromosome 1 span-to-RSS scaling (1, 10, 100, 249 Mbp) at 8 threads (n=3)",
     },
     "s4_span_chr1_3way_th16": {
         "stage": "stage4",
         "tier": "Tier E",
-        "paper_targets": ["Fig 1", "Fig 4", "Table 4", "Supp Table S1", "Supp Table S3"],
+        "paper_targets": [
+            "Fig 1",
+            "Fig 4",
+            "Table 4",
+            "Supp Table S1",
+            "Supp Table S3",
+        ],
         "description": "Chromosome 1 span-to-RSS scaling (1, 10, 100, 249 Mbp) at 16 threads (n=3)",
     },
     "s4_span_chr1_3way_th32": {
         "stage": "stage4",
         "tier": "Tier E",
-        "paper_targets": ["Fig 1", "Fig 4", "Table 4", "Supp Table S1", "Supp Table S3"],
+        "paper_targets": [
+            "Fig 1",
+            "Fig 4",
+            "Table 4",
+            "Supp Table S1",
+            "Supp Table S3",
+        ],
         "description": "Chromosome 1 span-to-RSS scaling (1, 10, 100, 249 Mbp) at 32 threads (n=3)",
     },
     "s4_span_chr1_f0": {
@@ -262,93 +403,186 @@ CELL_CATALOG: dict[str, dict[str, Any]] = {
     "s4_tier3_truth_and_qual_sweep": {
         "stage": "stage4",
         "tier": "Tier E/G",
-        "paper_targets": ["Fig 1", "Fig 3", "Fig 7", "Table 3", "Table 7", "Supp Table S1", "Supp Table S4"],
+        "paper_targets": [
+            "Fig 1",
+            "Fig 3",
+            "Fig 7",
+            "Table 3",
+            "Table 7",
+            "Supp Table S1",
+            "Supp Table S4",
+        ],
         "description": "rtg vcfeval truth concordance & QUAL ROC sweep (0..200) on HG002, SEQC2, HG008",
     },
     "evidence_certified": {
         "stage": "stage4",
         "tier": "Tier P/E/G",
-        "paper_targets": ["Fig 1", "Fig 2", "Fig 3", "Table 1", "Table 3", "Supp Table S1"],
+        "paper_targets": [
+            "Fig 1",
+            "Fig 2",
+            "Fig 3",
+            "Table 1",
+            "Table 3",
+            "Supp Table S1",
+        ],
         "description": "GCP-certified evidence bundle (17-modality extended coverage, 18-slice multimodal, HG005, NA24385-b37)",
     },
     # Option C Parity Sweep (12)
     "sweep_4targets_full": {
         "stage": "sweep",
         "tier": "Tier P/E/G",
-        "paper_targets": ["Fig 1", "Fig 2", "Table 1", "Supp Table S1", "Supp Table S2"],
+        "paper_targets": [
+            "Fig 1",
+            "Fig 2",
+            "Table 1",
+            "Supp Table S1",
+            "Supp Table S2",
+        ],
         "description": "Option C .var & .vcf parity sweep across amplicon, hg002, seqc2, hg008",
     },
     "sweep_R_chr1_full": {
         "stage": "sweep",
         "tier": "Tier P",
-        "paper_targets": ["Fig 1", "Fig 2", "Table 1", "Supp Table S1", "Supp Table S2"],
+        "paper_targets": [
+            "Fig 1",
+            "Fig 2",
+            "Table 1",
+            "Supp Table S1",
+            "Supp Table S2",
+        ],
         "description": "Option C .var parity sweep on -R chr1:1-249250621 (249 Mbp single region)",
     },
     "sweep_hg002_chr20_exome": {
         "stage": "sweep",
         "tier": "Tier G",
-        "paper_targets": ["Fig 1", "Fig 2", "Table 1", "Supp Table S1", "Supp Table S2"],
-        "description": "Option C .var & .vcf parity sweep on HG002 chr20 exome (Daniels 2024)",
+        "paper_targets": [
+            "Fig 1",
+            "Fig 2",
+            "Table 1",
+            "Supp Table S1",
+            "Supp Table S2",
+        ],
+        "description": "Option C .var & .vcf parity sweep on HG002 chr20 exome",
     },
     "sweep_multimodal_and_cram_twin": {
         "stage": "sweep",
         "tier": "Tier G",
-        "paper_targets": ["Fig 1", "Fig 2", "Table 1", "Supp Table S1", "Supp Table S2"],
+        "paper_targets": [
+            "Fig 1",
+            "Fig 2",
+            "Table 1",
+            "Supp Table S1",
+            "Supp Table S2",
+        ],
         "description": "Option C multimodal slices, extended coverage, and HG008 CRAM twin timing & parity",
     },
     "sweep_rna_hg002_52gb": {
         "stage": "sweep",
         "tier": "Tier G (RNA)",
-        "paper_targets": ["Fig 1", "Fig 2", "Table 1", "Supp Table S1", "Supp Table S2"],
+        "paper_targets": [
+            "Fig 1",
+            "Fig 2",
+            "Table 1",
+            "Supp Table S1",
+            "Supp Table S2",
+        ],
         "description": "Option C .var & .splice.tsv parity sweep on 51.8 GiB HG002 RNA-seq",
     },
     "sweep_span_chr1_f0": {
         "stage": "sweep",
         "tier": "Tier E",
-        "paper_targets": ["Fig 1", "Fig 2", "Table 1", "Supp Table S1", "Supp Table S2"],
+        "paper_targets": [
+            "Fig 1",
+            "Fig 2",
+            "Table 1",
+            "Supp Table S1",
+            "Supp Table S2",
+        ],
         "description": "Option C .var & .vcf parity sweep on chr1 10 Mbp at -f 0",
     },
     "sweep_tierp_13modes": {
         "stage": "sweep",
         "tier": "Tier P",
-        "paper_targets": ["Fig 1", "Fig 2", "Table 1", "Supp Table S1", "Supp Table S2"],
+        "paper_targets": [
+            "Fig 1",
+            "Fig 2",
+            "Table 1",
+            "Supp Table S1",
+            "Supp Table S2",
+        ],
         "description": "Option C .var parity sweep across 12 Tier-P operational mode sub-arms",
     },
     "sweep_tierp_SRR15006540": {
         "stage": "sweep",
         "tier": "Tier P",
-        "paper_targets": ["Fig 1", "Fig 2", "Table 1", "Supp Table S1", "Supp Table S2"],
+        "paper_targets": [
+            "Fig 1",
+            "Fig 2",
+            "Table 1",
+            "Supp Table S1",
+            "Supp Table S2",
+        ],
         "description": "Option C .var & .vcf parity sweep on Tier-P SRR15006540",
     },
     "sweep_tierp_SRR8657348": {
         "stage": "sweep",
         "tier": "Tier P",
-        "paper_targets": ["Fig 1", "Fig 2", "Table 1", "Supp Table S1", "Supp Table S2"],
+        "paper_targets": [
+            "Fig 1",
+            "Fig 2",
+            "Table 1",
+            "Supp Table S1",
+            "Supp Table S2",
+        ],
         "description": "Option C .var & .vcf parity sweep on Tier-P SRR8657348",
     },
     "sweep_tierp_somatic_76_86": {
         "stage": "sweep",
         "tier": "Tier P",
-        "paper_targets": ["Fig 1", "Fig 2", "Table 1", "Supp Table S1", "Supp Table S2"],
+        "paper_targets": [
+            "Fig 1",
+            "Fig 2",
+            "Table 1",
+            "Supp Table S1",
+            "Supp Table S2",
+        ],
         "description": "Option C .var & .vcf parity sweep on Tier-P somatic pair SRR15006376|SRR15006386",
     },
     "sweep_ultradeep_mrd_stress": {
         "stage": "sweep",
         "tier": "Tier P/G",
-        "paper_targets": ["Fig 1", "Fig 2", "Table 1", "Supp Table S1", "Supp Table S2"],
+        "paper_targets": [
+            "Fig 1",
+            "Fig 2",
+            "Table 1",
+            "Supp Table S1",
+            "Supp Table S2",
+        ],
         "description": "Option C ultra-deep MRD stress test (-f 0.0005 and -f 0 with --fisher up to 45,000x)",
     },
     "sweep_wgs_mrd_matrix": {
         "stage": "sweep",
         "tier": "Tier E/G",
-        "paper_targets": ["Fig 1", "Fig 2", "Table 1", "Supp Table S1", "Supp Table S2"],
+        "paper_targets": [
+            "Fig 1",
+            "Fig 2",
+            "Table 1",
+            "Supp Table S1",
+            "Supp Table S2",
+        ],
         "description": "Option C WGS & exome MRD matrix (-f 0.001 and -f 0 across HG002, HG005 300x, SEQC2, HG008)",
     },
     # Stage 5 (7)
     "s5_cross_platform_short_read_chr20_panel": {
         "stage": "stage5",
         "tier": "Tier G (10-Platform)",
-        "paper_targets": ["Fig 1", "Fig 6", "Table 6", "Supp Table S1", "Supp Table S4"],
+        "paper_targets": [
+            "Fig 1",
+            "Fig 6",
+            "Table 6",
+            "Supp Table S1",
+            "Supp Table S4",
+        ],
         "description": "10-platform sequencing chemistry chr20 panel (Part A -f 0.01/-f 0 std/UG-HCR; Part B 18-arm noise floor; Ultima CRAM twin)",
     },
     "s5_grch38_field_callers_truth": {
@@ -360,7 +594,13 @@ CELL_CATALOG: dict[str, dict[str, Any]] = {
     "s5_h4_maintenance_security_matrix": {
         "stage": "stage5",
         "tier": "All Tiers",
-        "paper_targets": ["Fig 1", "Fig 8", "Table 8", "Supp Table S1", "Supp Table S6"],
+        "paper_targets": [
+            "Fig 1",
+            "Fig 8",
+            "Table 8",
+            "Supp Table S1",
+            "Supp Table S6",
+        ],
         "description": "H4 supply-chain security, static musl binary, CLI flag parity, and CPP-1..10 divergence matrix",
     },
     "s5_wgs_hg002_full_contigs_3way_th32": {
@@ -391,7 +631,13 @@ CELL_CATALOG: dict[str, dict[str, Any]] = {
     "s6_ga4gh_v35_stratification_matrix": {
         "stage": "stage6",
         "tier": "Tier G (GA4GH v3.5)",
-        "paper_targets": ["Fig 1", "Fig 6", "Table 6", "Supp Table S1", "Supp Table S5"],
+        "paper_targets": [
+            "Fig 1",
+            "Fig 6",
+            "Table 6",
+            "Supp Table S1",
+            "Supp Table S5",
+        ],
         "description": "70-cell GA4GH v3.5 genomic stratification matrix (7 strata x 10 sequencing platforms)",
     },
     "s6_hg002_v50q_cmrg_mosaic_eval": {
@@ -469,7 +715,7 @@ def parse_wall_to_seconds(val: Any) -> float:
     if not s or s.upper() in ("NA", "NAN", "NONE", "-"):
         return 0.0
     if ":" in s:
-        parts = [ safe_float(p) for p in s.split(":") ]
+        parts = [safe_float(p) for p in s.split(":")]
         if len(parts) == 2:
             return round(parts[0] * 60.0 + parts[1], 2)
         if len(parts) == 3:
@@ -482,7 +728,9 @@ def parse_gnu_time(path: Path) -> dict[str, Any]:
     if not path.is_file():
         return {}
     txt = path.read_text(encoding="utf-8", errors="replace")
-    wall_m = re.search(r"Elapsed \(wall clock\) time \(h:mm:ss or m:ss\):\s*([0-9:.]+)", txt)
+    wall_m = re.search(
+        r"Elapsed \(wall clock\) time \(h:mm:ss or m:ss\):\s*([0-9:.]+)", txt
+    )
     rss_m = re.search(r"Maximum resident set size \(kbytes\):\s*(\d+)", txt)
     user_m = re.search(r"User time \(seconds\):\s*([0-9.]+)", txt)
     sys_m = re.search(r"System time \(seconds\):\s*([0-9.]+)", txt)
@@ -505,7 +753,9 @@ def parse_gnu_time(path: Path) -> dict[str, Any]:
     for ext in (".exit", ".rc"):
         sib = path.with_suffix(ext)
         if sib.is_file():
-            exit_code = safe_int(sib.read_text(encoding="utf-8", errors="replace"), exit_code)
+            exit_code = safe_int(
+                sib.read_text(encoding="utf-8", errors="replace"), exit_code
+            )
             break
 
     return {
@@ -525,7 +775,11 @@ def parse_gnu_time(path: Path) -> dict[str, Any]:
 
 def summarize_replicates(records: list[dict[str, Any]]) -> dict[str, Any]:
     """Compute mean, min, max, median, sd across n>=1 replicate time dicts."""
-    valid = [r for r in records if r and (r.get("wall_s", 0.0) > 0 or r.get("max_rss_kb", 0) > 0)]
+    valid = [
+        r
+        for r in records
+        if r and (r.get("wall_s", 0.0) > 0 or r.get("max_rss_kb", 0) > 0)
+    ]
     if not valid:
         return {
             "n": 0,
@@ -573,7 +827,12 @@ def parse_rtg_summary_txt(path: Path) -> dict[str, Any]:
     rows: list[dict[str, Any]] = []
     for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
         s = line.strip()
-        if not s or s.startswith("Threshold") or s.startswith("-") or s.startswith("Selected"):
+        if (
+            not s
+            or s.startswith("Threshold")
+            or s.startswith("-")
+            or s.startswith("Selected")
+        ):
             continue
         if s.startswith("{") or s.startswith("}") or ":" in s:
             continue
@@ -598,7 +857,9 @@ def parse_rtg_summary_txt(path: Path) -> dict[str, Any]:
     return {"best": best_row, "none": none_row, "rows": rows}
 
 
-def load_vcf_snv_set(path: Path, somatic_only: bool = False) -> set[tuple[str, int, str, str]]:
+def load_vcf_snv_set(
+    path: Path, somatic_only: bool = False
+) -> set[tuple[str, int, str, str]]:
     """Load (chrom, pos, ref, alt) SNV tuples from a VCF or VCF.gz file."""
     if not path.is_file():
         return set()
@@ -724,13 +985,19 @@ def parse_parity_verdict_tsv(pv: Path) -> list[dict[str, Any]]:
     return rows
 
 
-def infer_cell_verdict_and_metrics(cell_id: str, cell_dir: Path) -> tuple[int, str, dict[str, Any]]:
+def infer_cell_verdict_and_metrics(
+    cell_id: str, cell_dir: Path
+) -> tuple[int, str, dict[str, Any]]:
     """Extract cell exit_code, parity_verdict, and primary summary metrics for a cell directory."""
     if cell_id == "evidence_certified":
         return 0, "PASS_4_GCP_SUITES", {"gcp_suites": 4, "head_prefix": GCP_HEAD_PREFIX}
 
     exit_file = cell_dir / "cell.exit_code"
-    exit_code = safe_int(exit_file.read_text(encoding="utf-8", errors="replace"), 0) if exit_file.is_file() else 0
+    exit_code = (
+        safe_int(exit_file.read_text(encoding="utf-8", errors="replace"), 0)
+        if exit_file.is_file()
+        else 0
+    )
 
     metrics: dict[str, Any] = {}
     verdicts: list[str] = []
@@ -758,7 +1025,9 @@ def infer_cell_verdict_and_metrics(cell_id: str, cell_dir: Path) -> tuple[int, s
     if time_files:
         parsed_times = {tf.stem: parse_gnu_time(tf) for tf in time_files}
         for eng in ("rust", "java", "cpp"):
-            eng_runs = [v for k, v in parsed_times.items() if k.startswith(eng) and "_run" in k]
+            eng_runs = [
+                v for k, v in parsed_times.items() if k.startswith(eng) and "_run" in k
+            ]
             if eng_runs:
                 metrics[f"{eng}_replicates"] = summarize_replicates(eng_runs)
             elif eng in parsed_times:
@@ -768,7 +1037,11 @@ def infer_cell_verdict_and_metrics(cell_id: str, cell_dir: Path) -> tuple[int, s
                     "max_rss_kb": parsed_times[eng]["max_rss_kb"],
                 }
 
-    for vf_name in ("contigs_verdict.txt", "hg008_contigs_verdict.txt", "hg008_giab_verdict.txt"):
+    for vf_name in (
+        "contigs_verdict.txt",
+        "hg008_contigs_verdict.txt",
+        "hg008_giab_verdict.txt",
+    ):
         vf = cell_dir / vf_name
         if vf.is_file():
             vtxt = vf.read_text(encoding="utf-8", errors="replace").strip()
@@ -783,7 +1056,9 @@ def infer_cell_verdict_and_metrics(cell_id: str, cell_dir: Path) -> tuple[int, s
             jr_match = sum(1 for r in rows if r.get("verdict", "").startswith("MATCH"))
             verdicts.append(f"MATCH={jr_match}/{len(rows)}_MODES")
     elif cell_id == "s2_fig2_hg002_chr20_truth":
-        verdicts.append("MATCH_TRUTH_7_CALLERS (VarDictRust==VarDictJava SNV_F1=0.9858,INDEL_F1=0.8956)")
+        verdicts.append(
+            "MATCH_TRUTH_7_CALLERS (VarDictRust==VarDictJava SNV_F1=0.9858,INDEL_F1=0.8956)"
+        )
     elif cell_id == "s2_fig1_fig3_field_callers":
         verdicts.append("PASS_16_FIELD_CALLER_RUNS")
     elif cell_id == "s2_table3_R_chr1_java_200g_n3":
@@ -822,7 +1097,9 @@ def build_stage1(raw_dir: Path) -> dict[str, Any]:
     for cid in ("s1_ceiling_amplicon", "s1_ceiling_hg008", "s1_gate7_ref_multiregion"):
         d = raw_dir / cid
         s1[cid] = {
-            "compare": (d / "compare.txt").read_text(encoding="utf-8").strip() if (d / "compare.txt").is_file() else "",
+            "compare": (d / "compare.txt").read_text(encoding="utf-8").strip()
+            if (d / "compare.txt").is_file()
+            else "",
             "rust": parse_gnu_time(d / "rust.time"),
             "java": parse_gnu_time(d / "java.time"),
             "cpp": parse_gnu_time(d / "cpp.time"),
@@ -862,17 +1139,35 @@ def build_stage2(raw_dir: Path) -> dict[str, Any]:
             bed_lines_files = list(d.glob("*.bed_lines"))
             bed_intervals = 0
             if bed_lines_files:
-                bed_intervals = safe_int(bed_lines_files[0].read_text(encoding="utf-8").split()[0])
+                bed_intervals = safe_int(
+                    bed_lines_files[0].read_text(encoding="utf-8").split()[0]
+                )
             elif samp == "somatic_76_86":
-                bed_intervals = tierp_v2.get("SRR15006376", {}).get(f"th{th}", {}).get("bed_intervals", 105949)
-            cmp_var_files = list(d.glob("compare_var*.txt")) or list(d.glob("compare_som_var*.txt"))
-            cmp_vcf_files = list(d.glob("compare_vcf*.txt")) or list(d.glob("compare_som_vcf*.txt"))
-            eq_files = list(d.glob("equivalence*.txt")) or list(d.glob("somatic_counts*.txt"))
+                bed_intervals = (
+                    tierp_v2.get("SRR15006376", {})
+                    .get(f"th{th}", {})
+                    .get("bed_intervals", 105949)
+                )
+            cmp_var_files = list(d.glob("compare_var*.txt")) or list(
+                d.glob("compare_som_var*.txt")
+            )
+            cmp_vcf_files = list(d.glob("compare_vcf*.txt")) or list(
+                d.glob("compare_som_vcf*.txt")
+            )
+            eq_files = list(d.glob("equivalence*.txt")) or list(
+                d.glob("somatic_counts*.txt")
+            )
 
             eng_stats: dict[str, Any] = {}
             for eng in ("rust", "java", "cpp"):
-                var_runs = [parse_gnu_time(p) for p in sorted(d.glob(f"{eng}_*_th{th}_run*.time"))]
-                vcf_times = [parse_gnu_time(p) for p in sorted(d.glob(f"{eng}_*vcf*_th{th}.time"))]
+                var_runs = [
+                    parse_gnu_time(p)
+                    for p in sorted(d.glob(f"{eng}_*_th{th}_run*.time"))
+                ]
+                vcf_times = [
+                    parse_gnu_time(p)
+                    for p in sorted(d.glob(f"{eng}_*vcf*_th{th}.time"))
+                ]
                 eng_stats[eng] = {
                     "replicates": summarize_replicates(var_runs),
                     "vcf_single": vcf_times[0] if vcf_times else {},
@@ -887,16 +1182,28 @@ def build_stage2(raw_dir: Path) -> dict[str, Any]:
             tierp_v2[samp][f"th{th}"] = {
                 "cell_id": cid,
                 "bed_intervals": bed_intervals,
-                "compare_var": cmp_var_files[0].read_text(encoding="utf-8").strip() if cmp_var_files else "",
-                "compare_vcf": cmp_vcf_files[0].read_text(encoding="utf-8").strip() if cmp_vcf_files else "",
-                "equivalence": eq_files[0].read_text(encoding="utf-8").strip() if eq_files else "",
+                "compare_var": cmp_var_files[0].read_text(encoding="utf-8").strip()
+                if cmp_var_files
+                else "",
+                "compare_vcf": cmp_vcf_files[0].read_text(encoding="utf-8").strip()
+                if cmp_vcf_files
+                else "",
+                "equivalence": eq_files[0].read_text(encoding="utf-8").strip()
+                if eq_files
+                else "",
                 "rust": eng_stats["rust"],
                 "java": eng_stats["java"],
                 "cpp": eng_stats["cpp"],
-                "rust_speedup_vs_java": round(java_w / rust_w, 2) if rust_w > 0 else 0.0,
+                "rust_speedup_vs_java": round(java_w / rust_w, 2)
+                if rust_w > 0
+                else 0.0,
                 "rust_speedup_vs_cpp": round(cpp_w / rust_w, 2) if rust_w > 0 else 0.0,
-                "java_rss_ratio_vs_rust": round(java_r / rust_r, 2) if rust_r > 0 else 0.0,
-                "cpp_rss_ratio_vs_rust": round(cpp_r / rust_r, 2) if rust_r > 0 else 0.0,
+                "java_rss_ratio_vs_rust": round(java_r / rust_r, 2)
+                if rust_r > 0
+                else 0.0,
+                "cpp_rss_ratio_vs_rust": round(cpp_r / rust_r, 2)
+                if rust_r > 0
+                else 0.0,
             }
     s2["tierp_v2"] = tierp_v2
 
@@ -923,11 +1230,19 @@ def build_stage2(raw_dir: Path) -> dict[str, Any]:
     s2["tierp_mode_parity_sweep"] = {
         "rows": mode_rows,
         "total_modes": len(mode_rows),
-        "rust_match_count": sum(1 for r in mode_rows if r["rust_vs_java_fp"] == 0 and r["rust_vs_java_fn"] == 0),
-        "cpp_exact_count": sum(1 for r in mode_rows if r["cpp_vs_java_fp"] == 0 and r["cpp_vs_java_fn"] == 0),
+        "rust_match_count": sum(
+            1
+            for r in mode_rows
+            if r["rust_vs_java_fp"] == 0 and r["rust_vs_java_fn"] == 0
+        ),
+        "cpp_exact_count": sum(
+            1
+            for r in mode_rows
+            if r["cpp_vs_java_fp"] == 0 and r["cpp_vs_java_fn"] == 0
+        ),
     }
 
-    # 3. Fig 2 HG002 chr20 exome truth (Daniels 2024)
+    # 3. Fig 2 HG002 chr20 exome truth (Wolff 2026 Fig 2)
     fig2_tsv = raw_dir / "s2_fig2_hg002_chr20_truth" / "fig2_caller_accuracy.tsv"
     fig2_rows: list[dict[str, Any]] = []
     if fig2_tsv.is_file():
@@ -954,9 +1269,21 @@ def build_stage2(raw_dir: Path) -> dict[str, Any]:
         fc_single[caller] = {}
         for th in (1, 8):
             stem = f"single_{caller}_{th}c"
-            wall_s = safe_float((d_fc / f"{stem}.wall_s").read_text(encoding="utf-8")) if (d_fc / f"{stem}.wall_s").is_file() else 0.0
-            peak_kb = safe_int((d_fc / f"{stem}.peak_kb").read_text(encoding="utf-8")) if (d_fc / f"{stem}.peak_kb").is_file() else 0
-            rc = safe_int((d_fc / f"{stem}.rc").read_text(encoding="utf-8")) if (d_fc / f"{stem}.rc").is_file() else 0
+            wall_s = (
+                safe_float((d_fc / f"{stem}.wall_s").read_text(encoding="utf-8"))
+                if (d_fc / f"{stem}.wall_s").is_file()
+                else 0.0
+            )
+            peak_kb = (
+                safe_int((d_fc / f"{stem}.peak_kb").read_text(encoding="utf-8"))
+                if (d_fc / f"{stem}.peak_kb").is_file()
+                else 0
+            )
+            rc = (
+                safe_int((d_fc / f"{stem}.rc").read_text(encoding="utf-8"))
+                if (d_fc / f"{stem}.rc").is_file()
+                else 0
+            )
             fc_single[caller][f"th{th}"] = {
                 "wall_s": round(wall_s, 2),
                 "max_rss_kb": peak_kb,
@@ -964,7 +1291,11 @@ def build_stage2(raw_dir: Path) -> dict[str, Any]:
                 "max_rss_gib": round(peak_kb / (1024.0 * 1024.0), 3),
                 "rc": rc,
             }
-    for eng_lbl, eng_key in (("VarDictRust", "rust"), ("VarDictJava", "java"), ("vardictcpp", "cpp")):
+    for eng_lbl, eng_key in (
+        ("VarDictRust", "rust"),
+        ("VarDictJava", "java"),
+        ("vardictcpp", "cpp"),
+    ):
         fc_single[eng_lbl] = {}
         for th in (1, 8):
             rep = tierp_v2["SRR8657348"][f"th{th}"][eng_key]["replicates"]
@@ -981,9 +1312,21 @@ def build_stage2(raw_dir: Path) -> dict[str, Any]:
         fc_somatic[caller] = {}
         for th in (1, 8):
             stem = f"som_{caller}_{th}c"
-            wall_s = safe_float((d_fc / f"{stem}.wall_s").read_text(encoding="utf-8")) if (d_fc / f"{stem}.wall_s").is_file() else 0.0
-            peak_kb = safe_int((d_fc / f"{stem}.peak_kb").read_text(encoding="utf-8")) if (d_fc / f"{stem}.peak_kb").is_file() else 0
-            rc = safe_int((d_fc / f"{stem}.rc").read_text(encoding="utf-8")) if (d_fc / f"{stem}.rc").is_file() else 0
+            wall_s = (
+                safe_float((d_fc / f"{stem}.wall_s").read_text(encoding="utf-8"))
+                if (d_fc / f"{stem}.wall_s").is_file()
+                else 0.0
+            )
+            peak_kb = (
+                safe_int((d_fc / f"{stem}.peak_kb").read_text(encoding="utf-8"))
+                if (d_fc / f"{stem}.peak_kb").is_file()
+                else 0
+            )
+            rc = (
+                safe_int((d_fc / f"{stem}.rc").read_text(encoding="utf-8"))
+                if (d_fc / f"{stem}.rc").is_file()
+                else 0
+            )
             fc_somatic[caller][f"th{th}"] = {
                 "wall_s": round(wall_s, 2),
                 "max_rss_kb": peak_kb,
@@ -991,7 +1334,11 @@ def build_stage2(raw_dir: Path) -> dict[str, Any]:
                 "max_rss_gib": round(peak_kb / (1024.0 * 1024.0), 3),
                 "rc": rc,
             }
-    for eng_lbl, eng_key in (("VarDictRust", "rust"), ("VarDictJava", "java"), ("vardictcpp", "cpp")):
+    for eng_lbl, eng_key in (
+        ("VarDictRust", "rust"),
+        ("VarDictJava", "java"),
+        ("vardictcpp", "cpp"),
+    ):
         fc_somatic[eng_lbl] = {}
         for th in (1, 8):
             rep = tierp_v2["somatic_76_86"][f"th{th}"][eng_key]["replicates"]
@@ -1009,13 +1356,25 @@ def build_stage2(raw_dir: Path) -> dict[str, Any]:
     m2_snvs = load_vcf_snv_set(d_fc / "som_m2_8.vcf.gz", somatic_only=False)
     oc_som_snvs = load_vcf_snv_set(d_fc / "som_oc8.vcf", somatic_only=True)
     oc_all_snvs = load_vcf_snv_set(d_fc / "som_oc8.vcf", somatic_only=False)
-    lf_snvs = load_vcf_snv_set(d_fc / "som_lf8_somatic_final.snvs.vcf.gz", somatic_only=False)
+    lf_snvs = load_vcf_snv_set(
+        d_fc / "som_lf8_somatic_final.snvs.vcf.gz", somatic_only=False
+    )
 
     venn_somatic = compute_4way_venn(
-        {"VarDict": vd_som_snvs, "Mutect2": m2_snvs, "octopus": oc_som_snvs, "LoFreq": lf_snvs}
+        {
+            "VarDict": vd_som_snvs,
+            "Mutect2": m2_snvs,
+            "octopus": oc_som_snvs,
+            "LoFreq": lf_snvs,
+        }
     )
     venn_unfiltered = compute_4way_venn(
-        {"VarDict": vd_all_snvs, "Mutect2": m2_snvs, "octopus": oc_all_snvs, "LoFreq": lf_snvs}
+        {
+            "VarDict": vd_all_snvs,
+            "Mutect2": m2_snvs,
+            "octopus": oc_all_snvs,
+            "LoFreq": lf_snvs,
+        }
     )
 
     s2["fig1_fig3_field_callers"] = {
@@ -1031,10 +1390,19 @@ def build_stage2(raw_dir: Path) -> dict[str, Any]:
     # 5. Wolff 2026 Table 3 -R chr1:1-249250621
     d_j200 = raw_dir / "s2_table3_R_chr1_java_200g_n3"
     d_rc = raw_dir / "s2_table3_R_chr1_rust_and_cpp"
-    java_200g_rep = summarize_replicates([parse_gnu_time(p) for p in sorted(d_j200.glob("java_xmx200g_R_chr1_run*.time"))])
+    java_200g_rep = summarize_replicates(
+        [
+            parse_gnu_time(p)
+            for p in sorted(d_j200.glob("java_xmx200g_R_chr1_run*.time"))
+        ]
+    )
     java_4g = parse_gnu_time(d_j200 / "java_xmx4g_R_chr1.time")
-    rust_rchr1_rep = summarize_replicates([parse_gnu_time(p) for p in sorted(d_rc.glob("rust_R_chr1_run*.time"))])
-    cpp_rchr1_rep = summarize_replicates([parse_gnu_time(p) for p in sorted(d_rc.glob("cpp_R_chr1_run*.time"))])
+    rust_rchr1_rep = summarize_replicates(
+        [parse_gnu_time(p) for p in sorted(d_rc.glob("rust_R_chr1_run*.time"))]
+    )
+    cpp_rchr1_rep = summarize_replicates(
+        [parse_gnu_time(p) for p in sorted(d_rc.glob("cpp_R_chr1_run*.time"))]
+    )
 
     s2["table3_R_chr1"] = {
         "region": "chr1:1-249250621",
@@ -1044,10 +1412,14 @@ def build_stage2(raw_dir: Path) -> dict[str, Any]:
         "cpp": cpp_rchr1_rep,
         "java_xmx200g": java_200g_rep,
         "java_xmx4g_oom": java_4g,
-        "rust_speedup_vs_java200g": round(java_200g_rep["wall_s_mean"] / rust_rchr1_rep["wall_s_mean"], 2)
+        "rust_speedup_vs_java200g": round(
+            java_200g_rep["wall_s_mean"] / rust_rchr1_rep["wall_s_mean"], 2
+        )
         if rust_rchr1_rep["wall_s_mean"] > 0
         else 0.0,
-        "rust_speedup_vs_cpp": round(cpp_rchr1_rep["wall_s_mean"] / rust_rchr1_rep["wall_s_mean"], 2)
+        "rust_speedup_vs_cpp": round(
+            cpp_rchr1_rep["wall_s_mean"] / rust_rchr1_rep["wall_s_mean"], 2
+        )
         if rust_rchr1_rep["wall_s_mean"] > 0
         else 0.0,
         "java200g_rss_ratio_vs_rust": round(
@@ -1055,7 +1427,9 @@ def build_stage2(raw_dir: Path) -> dict[str, Any]:
         )
         if rust_rchr1_rep["max_rss_kb_mean"] > 0
         else 0.0,
-        "cpp_rss_ratio_vs_rust": round(cpp_rchr1_rep["max_rss_kb_mean"] / rust_rchr1_rep["max_rss_kb_mean"], 2)
+        "cpp_rss_ratio_vs_rust": round(
+            cpp_rchr1_rep["max_rss_kb_mean"] / rust_rchr1_rep["max_rss_kb_mean"], 2
+        )
         if rust_rchr1_rep["max_rss_kb_mean"] > 0
         else 0.0,
     }
@@ -1064,10 +1438,22 @@ def build_stage2(raw_dir: Path) -> dict[str, Any]:
 
 def build_stage3(raw_dir: Path) -> dict[str, Any]:
     d = raw_dir / "s3_rna_splice_parity_n3"
-    rust_rep = summarize_replicates([parse_gnu_time(p) for p in sorted(d.glob("rust_splice_run*.time"))])
-    java_rep = summarize_replicates([parse_gnu_time(p) for p in sorted(d.glob("java_splice_run*.time"))])
-    cmp_txt = (d / "compare_splice_var.txt").read_text(encoding="utf-8").strip() if (d / "compare_splice_var.txt").is_file() else ""
-    diff_bytes = (d / "splice_diff.txt").stat().st_size if (d / "splice_diff.txt").is_file() else 0
+    rust_rep = summarize_replicates(
+        [parse_gnu_time(p) for p in sorted(d.glob("rust_splice_run*.time"))]
+    )
+    java_rep = summarize_replicates(
+        [parse_gnu_time(p) for p in sorted(d.glob("java_splice_run*.time"))]
+    )
+    cmp_txt = (
+        (d / "compare_splice_var.txt").read_text(encoding="utf-8").strip()
+        if (d / "compare_splice_var.txt").is_file()
+        else ""
+    )
+    diff_bytes = (
+        (d / "splice_diff.txt").stat().st_size
+        if (d / "splice_diff.txt").is_file()
+        else 0
+    )
     return {
         "sample": "HG002_GM24385_RNA_51.8GiB",
         "compare_splice_var": cmp_txt,
@@ -1075,10 +1461,14 @@ def build_stage3(raw_dir: Path) -> dict[str, Any]:
         "splice_diff_bytes": diff_bytes,
         "rust": rust_rep,
         "java": java_rep,
-        "rust_speedup_vs_java": round(java_rep["wall_s_mean"] / rust_rep["wall_s_mean"], 2)
+        "rust_speedup_vs_java": round(
+            java_rep["wall_s_mean"] / rust_rep["wall_s_mean"], 2
+        )
         if rust_rep["wall_s_mean"] > 0
         else 0.0,
-        "java_rss_ratio_vs_rust": round(java_rep["max_rss_kb_mean"] / rust_rep["max_rss_kb_mean"], 2)
+        "java_rss_ratio_vs_rust": round(
+            java_rep["max_rss_kb_mean"] / rust_rep["max_rss_kb_mean"], 2
+        )
         if rust_rep["max_rss_kb_mean"] > 0
         else 0.0,
     }
@@ -1089,7 +1479,9 @@ def build_stage4(raw_dir: Path) -> dict[str, Any]:
 
     pb_dir = raw_dir / "s4_perf_budget_4targets_n3"
     pb_path = pb_dir / "perf_budget_gcp.json"
-    pb_doc = json.loads(pb_path.read_text(encoding="utf-8")) if pb_path.is_file() else {}
+    pb_doc = (
+        json.loads(pb_path.read_text(encoding="utf-8")) if pb_path.is_file() else {}
+    )
     target_subdir_map = {
         "amplicon-tier2": "amplicon",
         "hg002-tier2": "hg002",
@@ -1103,7 +1495,10 @@ def build_stage4(raw_dir: Path) -> dict[str, Any]:
                 reps: dict[str, Any] = {}
                 for eng in ("rust", "java", "cpp"):
                     reps[eng] = summarize_replicates(
-                        [parse_gnu_time(p) for p in sorted(tdir.glob(f"{eng}_run*.time"))]
+                        [
+                            parse_gnu_time(p)
+                            for p in sorted(tdir.glob(f"{eng}_run*.time"))
+                        ]
                     )
                 pb_doc["runs"][tkey]["replicates"] = reps
     s4["perf_budget_4targets_n3"] = pb_doc
@@ -1113,10 +1508,16 @@ def build_stage4(raw_dir: Path) -> dict[str, Any]:
     for th in (1, 2, 4, 8, 16, 32):
         cid = f"s4_scale_exome_3way_th{th}"
         d = raw_dir / cid
-        cmp_txt = (d / f"compare_th{th}.txt").read_text(encoding="utf-8").strip() if (d / f"compare_th{th}.txt").is_file() else ""
+        cmp_txt = (
+            (d / f"compare_th{th}.txt").read_text(encoding="utf-8").strip()
+            if (d / f"compare_th{th}.txt").is_file()
+            else ""
+        )
         th_entry: dict[str, Any] = {"cell_id": cid, "threads": th, "compare": cmp_txt}
         for eng in ("rust", "java", "cpp"):
-            rep = summarize_replicates([parse_gnu_time(p) for p in sorted(d.glob(f"{eng}_th{th}_run*.time"))])
+            rep = summarize_replicates(
+                [parse_gnu_time(p) for p in sorted(d.glob(f"{eng}_th{th}_run*.time"))]
+            )
             if th == 1:
                 base_walls[eng] = rep["wall_s_mean"]
             w1 = base_walls.get(eng, 0.0)
@@ -1132,7 +1533,11 @@ def build_stage4(raw_dir: Path) -> dict[str, Any]:
             else 0.0
         )
         th_entry["java_rss_ratio_vs_rust"] = (
-            round(th_entry["java"]["max_rss_kb_mean"] / th_entry["rust"]["max_rss_kb_mean"], 2)
+            round(
+                th_entry["java"]["max_rss_kb_mean"]
+                / th_entry["rust"]["max_rss_kb_mean"],
+                2,
+            )
             if th_entry["rust"]["max_rss_kb_mean"] > 0
             else 0.0
         )
@@ -1149,10 +1554,16 @@ def build_stage4(raw_dir: Path) -> dict[str, Any]:
             th_spans[f"R{sp}"] = {
                 "span_bp": sp,
                 "rust": summarize_replicates(
-                    [parse_gnu_time(p) for p in sorted(d.glob(f"rust_R{sp}_th{th}_run*.time"))]
+                    [
+                        parse_gnu_time(p)
+                        for p in sorted(d.glob(f"rust_R{sp}_th{th}_run*.time"))
+                    ]
                 ),
                 "cpp": summarize_replicates(
-                    [parse_gnu_time(p) for p in sorted(d.glob(f"cpp_R{sp}_th{th}_run*.time"))]
+                    [
+                        parse_gnu_time(p)
+                        for p in sorted(d.glob(f"cpp_R{sp}_th{th}_run*.time"))
+                    ]
                 ),
             }
         r_10m = th_spans["R10000000"]["rust"]["max_rss_kb_mean"]
@@ -1161,37 +1572,55 @@ def build_stage4(raw_dir: Path) -> dict[str, Any]:
             "cell_id": cid,
             "threads": th,
             "spans": th_spans,
-            "rust_rss_ratio_249m_vs_10m": round(r_249m / r_10m, 3) if r_10m > 0 else 0.0,
+            "rust_rss_ratio_249m_vs_10m": round(r_249m / r_10m, 3)
+            if r_10m > 0
+            else 0.0,
         }
     s4["span_chr1_3way"] = span_chr1
 
     d_f0 = raw_dir / "s4_span_chr1_f0"
     s4["span_chr1_f0"] = {
-        "compare": (d_f0 / "compare_chr1_10m_f0.txt").read_text(encoding="utf-8").strip()
+        "compare": (d_f0 / "compare_chr1_10m_f0.txt")
+        .read_text(encoding="utf-8")
+        .strip()
         if (d_f0 / "compare_chr1_10m_f0.txt").is_file()
         else "",
-        "rust": summarize_replicates([parse_gnu_time(p) for p in sorted(d_f0.glob("rust_chr1_10m_f0_run*.time"))]),
-        "cpp": summarize_replicates([parse_gnu_time(p) for p in sorted(d_f0.glob("cpp_chr1_10m_f0_run*.time"))]),
+        "rust": summarize_replicates(
+            [parse_gnu_time(p) for p in sorted(d_f0.glob("rust_chr1_10m_f0_run*.time"))]
+        ),
+        "cpp": summarize_replicates(
+            [parse_gnu_time(p) for p in sorted(d_f0.glob("cpp_chr1_10m_f0_run*.time"))]
+        ),
     }
 
     d_jpn = raw_dir / "s4_jobs_per_node_2x4c_n3"
-    j1 = summarize_replicates([parse_gnu_time(p) for p in sorted(d_jpn.glob("job1_4c_run*.time"))])
-    j2 = summarize_replicates([parse_gnu_time(p) for p in sorted(d_jpn.glob("job2_4c_run*.time"))])
+    j1 = summarize_replicates(
+        [parse_gnu_time(p) for p in sorted(d_jpn.glob("job1_4c_run*.time"))]
+    )
+    j2 = summarize_replicates(
+        [parse_gnu_time(p) for p in sorted(d_jpn.glob("job2_4c_run*.time"))]
+    )
     s4["jobs_per_node_2x4c_n3"] = {
         "job1_4c": j1,
         "job2_4c": j2,
         "combined_peak_rss_kb_mean": j1["max_rss_kb_mean"] + j2["max_rss_kb_mean"],
-        "combined_peak_rss_gib_mean": round((j1["max_rss_kb_mean"] + j2["max_rss_kb_mean"]) / (1024.0 * 1024.0), 3),
+        "combined_peak_rss_gib_mean": round(
+            (j1["max_rss_kb_mean"] + j2["max_rss_kb_mean"]) / (1024.0 * 1024.0), 3
+        ),
         "max_wall_s_mean": max(j1["wall_s_mean"], j2["wall_s_mean"]),
     }
 
     d_mm = raw_dir / "s4_multimodal_and_cram_twin"
     d_sw_mm = raw_dir / "sweep_multimodal_and_cram_twin"
     s4["multimodal_and_cram_twin"] = {
-        "e2_cram_twin_compare": (d_mm / "e2_cram_twin_compare.txt").read_text(encoding="utf-8").strip()
+        "e2_cram_twin_compare": (d_mm / "e2_cram_twin_compare.txt")
+        .read_text(encoding="utf-8")
+        .strip()
         if (d_mm / "e2_cram_twin_compare.txt").is_file()
         else "",
-        "hg008_cram_twin_compare": (d_sw_mm / "compare.txt").read_text(encoding="utf-8").strip()
+        "hg008_cram_twin_compare": (d_sw_mm / "compare.txt")
+        .read_text(encoding="utf-8")
+        .strip()
         if (d_sw_mm / "compare.txt").is_file()
         else "",
         "hg008_cram_twin_rust": parse_gnu_time(d_sw_mm / "rust.time"),
@@ -1201,19 +1630,33 @@ def build_stage4(raw_dir: Path) -> dict[str, Any]:
     truth_cohorts: dict[str, Any] = {}
     for cohort in ("hg002", "seqc2", "hg008"):
         c_dir = d_t3 / f"{cohort}_truth"
-        extra = json.loads((c_dir / "extra.json").read_text(encoding="utf-8")) if (c_dir / "extra.json").is_file() else {}
+        extra = (
+            json.loads((c_dir / "extra.json").read_text(encoding="utf-8"))
+            if (c_dir / "extra.json").is_file()
+            else {}
+        )
         eng_evals: dict[str, Any] = {}
         for eng in ("rust", "java", "cpp"):
             sjson_p = c_dir / eng / "summary.json"
             stxt_p = c_dir / eng / "vcfeval" / "summary.txt"
             eng_evals[eng] = {
-                "summary": json.loads(sjson_p.read_text(encoding="utf-8")) if sjson_p.is_file() else {},
+                "summary": json.loads(sjson_p.read_text(encoding="utf-8"))
+                if sjson_p.is_file()
+                else {},
                 "operating_points": parse_rtg_summary_txt(stxt_p),
             }
         truth_cohorts[cohort] = {"extra": extra, "engines": eng_evals}
 
-    strata_doc = json.loads((d_t3 / "strata_summary.json").read_text(encoding="utf-8")) if (d_t3 / "strata_summary.json").is_file() else {}
-    roc_doc = json.loads((d_t3 / "roc_qual_sweep.json").read_text(encoding="utf-8")) if (d_t3 / "roc_qual_sweep.json").is_file() else {}
+    strata_doc = (
+        json.loads((d_t3 / "strata_summary.json").read_text(encoding="utf-8"))
+        if (d_t3 / "strata_summary.json").is_file()
+        else {}
+    )
+    roc_doc = (
+        json.loads((d_t3 / "roc_qual_sweep.json").read_text(encoding="utf-8"))
+        if (d_t3 / "roc_qual_sweep.json").is_file()
+        else {}
+    )
 
     s4["tier3_truth_and_qual_sweep"] = {
         "cohorts": truth_cohorts,
@@ -1263,14 +1706,18 @@ def build_stage5(raw_dir: Path, out_dir: Path) -> dict[str, Any]:
         else "",
         "rust": {
             **parse_gnu_time(d_h2_c / "rust_contigs_th32.time"),
-            "variant_count": safe_int((d_h2_c / "rust_contigs_th32.variant_count").read_text(encoding="utf-8"))
+            "variant_count": safe_int(
+                (d_h2_c / "rust_contigs_th32.variant_count").read_text(encoding="utf-8")
+            )
             if (d_h2_c / "rust_contigs_th32.variant_count").is_file()
             else 0,
         },
         "java": parse_gnu_time(d_h2_c / "java_contigs_th32.time"),
         "cpp": {
             **parse_gnu_time(d_h2_c / "cpp_contigs_th32.time"),
-            "variant_count": safe_int((d_h2_c / "cpp_contigs_th32.variant_count").read_text(encoding="utf-8"))
+            "variant_count": safe_int(
+                (d_h2_c / "cpp_contigs_th32.variant_count").read_text(encoding="utf-8")
+            )
             if (d_h2_c / "cpp_contigs_th32.variant_count").is_file()
             else 0,
             "boundary_excess_variants": 9953338 - 9643769,
@@ -1283,38 +1730,52 @@ def build_stage5(raw_dir: Path, out_dir: Path) -> dict[str, Any]:
         sjson_p = d_h2_g / "vcfeval_hg002_full_wgs" / eng / "summary.json"
         stxt_p = d_h2_g / "vcfeval_hg002_full_wgs" / eng / "vcfeval" / "summary.txt"
         h2_wgs_vcfeval[eng] = {
-            "summary": json.loads(sjson_p.read_text(encoding="utf-8")) if sjson_p.is_file() else {},
+            "summary": json.loads(sjson_p.read_text(encoding="utf-8"))
+            if sjson_p.is_file()
+            else {},
             "operating_points": parse_rtg_summary_txt(stxt_p),
         }
     r_h2g = parse_gnu_time(d_h2_g / "rust_giab_th32.time")
     j_h2g = parse_gnu_time(d_h2_g / "java_giab_th32.time")
     c_h2g = parse_gnu_time(d_h2_g / "cpp_giab_th32.time")
     s5["wgs_hg002_full_giab_3way_th32"] = {
-        "compare_rust_vs_java": (d_h2_g / "compare_giab_th32.txt").read_text(encoding="utf-8").strip()
+        "compare_rust_vs_java": (d_h2_g / "compare_giab_th32.txt")
+        .read_text(encoding="utf-8")
+        .strip()
         if (d_h2_g / "compare_giab_th32.txt").is_file()
         else "",
-        "compare_cpp_vs_java": (d_h2_g / "compare_cpp_vs_java_giab_th32.txt").read_text(encoding="utf-8").strip()
+        "compare_cpp_vs_java": (d_h2_g / "compare_cpp_vs_java_giab_th32.txt")
+        .read_text(encoding="utf-8")
+        .strip()
         if (d_h2_g / "compare_cpp_vs_java_giab_th32.txt").is_file()
         else "",
         "rust": {
             **r_h2g,
-            "variant_count": safe_int((d_h2_g / "rust_giab_th32.variant_count").read_text(encoding="utf-8"))
+            "variant_count": safe_int(
+                (d_h2_g / "rust_giab_th32.variant_count").read_text(encoding="utf-8")
+            )
             if (d_h2_g / "rust_giab_th32.variant_count").is_file()
             else 0,
         },
         "java": {
             **j_h2g,
-            "variant_count": safe_int((d_h2_g / "java_giab_th32.variant_count").read_text(encoding="utf-8"))
+            "variant_count": safe_int(
+                (d_h2_g / "java_giab_th32.variant_count").read_text(encoding="utf-8")
+            )
             if (d_h2_g / "java_giab_th32.variant_count").is_file()
             else 0,
         },
         "cpp": {
             **c_h2g,
-            "variant_count": safe_int((d_h2_g / "cpp_giab_th32.variant_count").read_text(encoding="utf-8"))
+            "variant_count": safe_int(
+                (d_h2_g / "cpp_giab_th32.variant_count").read_text(encoding="utf-8")
+            )
             if (d_h2_g / "cpp_giab_th32.variant_count").is_file()
             else 0,
         },
-        "rust_speedup_vs_java": round(j_h2g["wall_s"] / r_h2g["wall_s"], 2) if r_h2g.get("wall_s", 0) > 0 else 0.0,
+        "rust_speedup_vs_java": round(j_h2g["wall_s"] / r_h2g["wall_s"], 2)
+        if r_h2g.get("wall_s", 0) > 0
+        else 0.0,
         "java_rss_ratio_vs_rust": round(j_h2g["max_rss_kb"] / r_h2g["max_rss_kb"], 2)
         if r_h2g.get("max_rss_kb", 0) > 0
         else 0.0,
@@ -1326,12 +1787,18 @@ def build_stage5(raw_dir: Path, out_dir: Path) -> dict[str, Any]:
 
     d_h8_c = raw_dir / "s5_wgs_hg008_full_contigs_3way_th32"
     s5["wgs_hg008_full_contigs_3way_th32"] = {
-        "verdict": (d_h8_c / "hg008_contigs_verdict.txt").read_text(encoding="utf-8").strip()
+        "verdict": (d_h8_c / "hg008_contigs_verdict.txt")
+        .read_text(encoding="utf-8")
+        .strip()
         if (d_h8_c / "hg008_contigs_verdict.txt").is_file()
         else "",
         "rust": {
             **parse_gnu_time(d_h8_c / "rust_hg008_contigs_th32.time"),
-            "variant_count": safe_int((d_h8_c / "rust_hg008_contigs_th32.variant_count").read_text(encoding="utf-8"))
+            "variant_count": safe_int(
+                (d_h8_c / "rust_hg008_contigs_th32.variant_count").read_text(
+                    encoding="utf-8"
+                )
+            )
             if (d_h8_c / "rust_hg008_contigs_th32.variant_count").is_file()
             else 0,
         },
@@ -1341,30 +1808,45 @@ def build_stage5(raw_dir: Path, out_dir: Path) -> dict[str, Any]:
 
     d_h8_g = raw_dir / "s5_wgs_hg008_full_giab_3way_th32"
     s5["wgs_hg008_full_giab_3way_th32"] = {
-        "verdict": (d_h8_g / "hg008_giab_verdict.txt").read_text(encoding="utf-8").strip()
+        "verdict": (d_h8_g / "hg008_giab_verdict.txt")
+        .read_text(encoding="utf-8")
+        .strip()
         if (d_h8_g / "hg008_giab_verdict.txt").is_file()
         else "",
         "rust": {
             **parse_gnu_time(d_h8_g / "rust_hg008_giab_th32.time"),
-            "variant_count": safe_int((d_h8_g / "rust_hg008_giab_th32.variant_count").read_text(encoding="utf-8"))
+            "variant_count": safe_int(
+                (d_h8_g / "rust_hg008_giab_th32.variant_count").read_text(
+                    encoding="utf-8"
+                )
+            )
             if (d_h8_g / "rust_hg008_giab_th32.variant_count").is_file()
             else 0,
         },
         "java": parse_gnu_time(d_h8_g / "java_hg008_giab_th32.time"),
         "cpp": parse_gnu_time(d_h8_g / "cpp_hg008_giab_th32.time"),
-        "vcfeval_v03_rust": parse_rtg_summary_txt(d_h8_g / "vcfeval_hg008_full_v03" / "rust" / "vcfeval" / "summary.txt"),
-        "vcfeval_v04_rust": parse_rtg_summary_txt(d_h8_g / "vcfeval_hg008_full_v04" / "rust" / "vcfeval" / "summary.txt"),
+        "vcfeval_v03_rust": parse_rtg_summary_txt(
+            d_h8_g / "vcfeval_hg008_full_v03" / "rust" / "vcfeval" / "summary.txt"
+        ),
+        "vcfeval_v04_rust": parse_rtg_summary_txt(
+            d_h8_g / "vcfeval_hg008_full_v04" / "rust" / "vcfeval" / "summary.txt"
+        ),
     }
 
     # 2. GRCh38 field callers truth (normalize NaN -> 0.0000 with zero_indel_calls flag)
-    fc_tsv = raw_dir / "s5_grch38_field_callers_truth" / "grch38_field_caller_accuracy.tsv"
+    fc_tsv = (
+        raw_dir / "s5_grch38_field_callers_truth" / "grch38_field_caller_accuracy.tsv"
+    )
     fc_rows: list[dict[str, Any]] = []
     if fc_tsv.is_file():
         shutil.copy2(fc_tsv, out_dir / "stage5" / "grch38_field_caller_accuracy.tsv")
         with fc_tsv.open(encoding="utf-8") as f:
             for r in csv.DictReader(f, delimiter="\t"):
                 indel_r = safe_float(r["indel_r"])
-                zero_indels = indel_r == 0.0 and str(r["indel_p"]).strip().upper() in ("NAN", "NA")
+                zero_indels = indel_r == 0.0 and str(r["indel_p"]).strip().upper() in (
+                    "NAN",
+                    "NA",
+                )
                 fc_rows.append(
                     {
                         "cohort": r["cohort"],
@@ -1403,8 +1885,12 @@ def build_stage5(raw_dir: Path, out_dir: Path) -> dict[str, Any]:
         if not m:
             continue
         arm, freq, eng, bed = m.groups()
-        snp_res = parse_rtg_summary_txt(ev_dir / "rtg_snp" / "summary.txt").get("none", {})
-        ind_res = parse_rtg_summary_txt(ev_dir / "rtg_indel" / "summary.txt").get("none", {})
+        snp_res = parse_rtg_summary_txt(ev_dir / "rtg_snp" / "summary.txt").get(
+            "none", {}
+        )
+        ind_res = parse_rtg_summary_txt(ev_dir / "rtg_indel" / "summary.txt").get(
+            "none", {}
+        )
         rec = {
             "arm": arm,
             "freq": freq,
@@ -1430,7 +1916,10 @@ def build_stage5(raw_dir: Path, out_dir: Path) -> dict[str, Any]:
         ughcr_tsv = out_dir / "stage5" / "cross_platform_rtg_eval_both_beds.tsv"
         with ughcr_tsv.open("w", encoding="utf-8", newline="") as f:
             writer = csv.DictWriter(
-                f, fieldnames=list(ughcr_rows_out[0].keys()), delimiter="\t", lineterminator="\n"
+                f,
+                fieldnames=list(ughcr_rows_out[0].keys()),
+                delimiter="\t",
+                lineterminator="\n",
             )
             writer.writeheader()
             writer.writerows(ughcr_rows_out)
@@ -1472,10 +1961,14 @@ def build_stage5(raw_dir: Path, out_dir: Path) -> dict[str, Any]:
                         "std_indel_fn": std_ev.get("indel_fn", 0),
                         "ughcr_snp_p": ug_ev.get("snp_p", 0.0),
                         "ughcr_snp_r": ug_ev.get("snp_r", 0.0),
-                        "ughcr_snp_f1": safe_float(r.get("ughcr_snp_f1", ug_ev.get("snp_f1", 0.0))),
+                        "ughcr_snp_f1": safe_float(
+                            r.get("ughcr_snp_f1", ug_ev.get("snp_f1", 0.0))
+                        ),
                         "ughcr_indel_p": ug_ev.get("indel_p", 0.0),
                         "ughcr_indel_r": ug_ev.get("indel_r", 0.0),
-                        "ughcr_indel_f1": safe_float(r.get("ughcr_indel_f1", ug_ev.get("indel_f1", 0.0))),
+                        "ughcr_indel_f1": safe_float(
+                            r.get("ughcr_indel_f1", ug_ev.get("indel_f1", 0.0))
+                        ),
                     }
                 )
 
@@ -1496,11 +1989,17 @@ def build_stage5(raw_dir: Path, out_dir: Path) -> dict[str, Any]:
     s5["cross_platform_short_read_chr20_panel"] = {
         "part_a_rows": cp_rows,
         "part_b_f0_noise_floor_rows": nf_rows,
-        "part_b_strict_match_count": sum(1 for r in nf_rows if r["rust_vs_java_parity"] == "STRICT_MATCH"),
-        "ultima_cram_vs_java_bam": (d_cp / "ultima_cram_vs_java_bam_compare.txt").read_text(encoding="utf-8").strip()
+        "part_b_strict_match_count": sum(
+            1 for r in nf_rows if r["rust_vs_java_parity"] == "STRICT_MATCH"
+        ),
+        "ultima_cram_vs_java_bam": (d_cp / "ultima_cram_vs_java_bam_compare.txt")
+        .read_text(encoding="utf-8")
+        .strip()
         if (d_cp / "ultima_cram_vs_java_bam_compare.txt").is_file()
         else "",
-        "ultima_cram_vs_rust_bam": (d_cp / "ultima_cram_vs_rust_bam_compare.txt").read_text(encoding="utf-8").strip()
+        "ultima_cram_vs_rust_bam": (d_cp / "ultima_cram_vs_rust_bam_compare.txt")
+        .read_text(encoding="utf-8")
+        .strip()
         if (d_cp / "ultima_cram_vs_rust_bam_compare.txt").is_file()
         else "",
     }
@@ -1509,18 +2008,24 @@ def build_stage5(raw_dir: Path, out_dir: Path) -> dict[str, Any]:
     d_h4 = raw_dir / "s5_h4_maintenance_security_matrix"
     bin_sizes: dict[str, int] = {}
     if (d_h4 / "binary_sizes_bytes.txt").is_file():
-        for line in (d_h4 / "binary_sizes_bytes.txt").read_text(encoding="utf-8").splitlines():
+        for line in (
+            (d_h4 / "binary_sizes_bytes.txt").read_text(encoding="utf-8").splitlines()
+        ):
             parts = line.split()
             if len(parts) == 2:
                 bin_sizes[parts[0]] = safe_int(parts[1])
     conda_pkgs = (
-        json.loads((d_h4 / "vardict_oracle_conda_packages.json").read_text(encoding="utf-8"))
+        json.loads(
+            (d_h4 / "vardict_oracle_conda_packages.json").read_text(encoding="utf-8")
+        )
         if (d_h4 / "vardict_oracle_conda_packages.json").is_file()
         else []
     )
     s5["h4_maintenance_security_matrix"] = {
         "gnu_binary_bytes": bin_sizes.get("target/release/vardictrust", 4680696),
-        "musl_binary_bytes": bin_sizes.get("target/x86_64-unknown-linux-musl/release/vardictrust", 4785296),
+        "musl_binary_bytes": bin_sizes.get(
+            "target/x86_64-unknown-linux-musl/release/vardictrust", 4785296
+        ),
         "musl_ldd": (d_h4 / "musl_ldd_info.txt").read_text(encoding="utf-8").strip()
         if (d_h4 / "musl_ldd_info.txt").is_file()
         else "statically linked",
@@ -1536,7 +2041,11 @@ def build_stage6(raw_dir: Path, out_dir: Path) -> dict[str, Any]:
     s6: dict[str, Any] = {}
 
     # 1. HG002 v5.0Q T2T-Q100, CMRG v1.00, Mosaic v1.10
-    v50_tsv = raw_dir / "s6_hg002_v50q_cmrg_mosaic_eval" / "hg002_v50q_cmrg_mosaic_summary.tsv"
+    v50_tsv = (
+        raw_dir
+        / "s6_hg002_v50q_cmrg_mosaic_eval"
+        / "hg002_v50q_cmrg_mosaic_summary.tsv"
+    )
     v50_rows: list[dict[str, Any]] = []
     if v50_tsv.is_file():
         shutil.copy2(v50_tsv, out_dir / "stage6" / "hg002_v50q_cmrg_mosaic_summary.tsv")
@@ -1559,14 +2068,23 @@ def build_stage6(raw_dir: Path, out_dir: Path) -> dict[str, Any]:
     s6["hg002_v50q_cmrg_mosaic_eval"] = v50_rows
 
     # 2. HG008 v0.4 modern ML & commercial callers (normalize NaN -> 0.0000 with zero_indel_calls flag)
-    h8_tsv = raw_dir / "s6_hg008_modern_ml_and_commercial_callers" / "hg008_modern_ml_commercial_callers_v04.tsv"
+    h8_tsv = (
+        raw_dir
+        / "s6_hg008_modern_ml_and_commercial_callers"
+        / "hg008_modern_ml_commercial_callers_v04.tsv"
+    )
     h8_rows: list[dict[str, Any]] = []
     if h8_tsv.is_file():
-        shutil.copy2(h8_tsv, out_dir / "stage6" / "hg008_modern_ml_commercial_callers_v04.tsv")
+        shutil.copy2(
+            h8_tsv, out_dir / "stage6" / "hg008_modern_ml_commercial_callers_v04.tsv"
+        )
         with h8_tsv.open(encoding="utf-8") as f:
             for r in csv.DictReader(f, delimiter="\t"):
                 indel_r = safe_float(r["indel_r"])
-                zero_indels = indel_r == 0.0 and str(r["indel_p"]).strip().upper() in ("NAN", "NA")
+                zero_indels = indel_r == 0.0 and str(r["indel_p"]).strip().upper() in (
+                    "NAN",
+                    "NA",
+                )
                 h8_rows.append(
                     {
                         "scope": r["scope"],
@@ -1584,7 +2102,9 @@ def build_stage6(raw_dir: Path, out_dir: Path) -> dict[str, Any]:
     s6["hg008_modern_ml_and_commercial_callers"] = h8_rows
 
     # 3. Low-VAF titration truth curve (20% -> 1% purity / 10% -> 0.5% VAF)
-    tit_tsv = raw_dir / "s6_low_vaf_titration_truth_curve" / "low_vaf_titration_curve.tsv"
+    tit_tsv = (
+        raw_dir / "s6_low_vaf_titration_truth_curve" / "low_vaf_titration_curve.tsv"
+    )
     tit_rows: list[dict[str, Any]] = []
     if tit_tsv.is_file():
         shutil.copy2(tit_tsv, out_dir / "stage6" / "low_vaf_titration_curve.tsv")
@@ -1592,12 +2112,20 @@ def build_stage6(raw_dir: Path, out_dir: Path) -> dict[str, Any]:
             for r in csv.DictReader(f, delimiter="\t"):
                 snv_r = safe_float(r["snv_r"])
                 indel_r = safe_float(r["indel_r"])
-                zero_snvs = snv_r == 0.0 and str(r["snv_p"]).strip().upper() in ("NAN", "NA")
-                zero_indels = indel_r == 0.0 and str(r["indel_p"]).strip().upper() in ("NAN", "NA")
+                zero_snvs = snv_r == 0.0 and str(r["snv_p"]).strip().upper() in (
+                    "NAN",
+                    "NA",
+                )
+                zero_indels = indel_r == 0.0 and str(r["indel_p"]).strip().upper() in (
+                    "NAN",
+                    "NA",
+                )
                 tit_rows.append(
                     {
                         "purity_pct": safe_int(r["purity_pct"]),
-                        "expected_clonal_vaf_pct": safe_float(r["expected_clonal_vaf_pct"]),
+                        "expected_clonal_vaf_pct": safe_float(
+                            r["expected_clonal_vaf_pct"]
+                        ),
                         "caller": r["caller"],
                         "wall_str": r["wall_s"],
                         "wall_s": parse_wall_to_seconds(r["wall_s"]),
@@ -1617,10 +2145,16 @@ def build_stage6(raw_dir: Path, out_dir: Path) -> dict[str, Any]:
     s6["low_vaf_titration_truth_curve"] = tit_rows
 
     # 4. GA4GH v3.5 7-stratum x 10-platform stratification matrix
-    ga_tsv = raw_dir / "s6_ga4gh_v35_stratification_matrix" / "ga4gh_v35_cross_platform_stratification.tsv"
+    ga_tsv = (
+        raw_dir
+        / "s6_ga4gh_v35_stratification_matrix"
+        / "ga4gh_v35_cross_platform_stratification.tsv"
+    )
     ga_rows: list[dict[str, Any]] = []
     if ga_tsv.is_file():
-        shutil.copy2(ga_tsv, out_dir / "stage6" / "ga4gh_v35_cross_platform_stratification.tsv")
+        shutil.copy2(
+            ga_tsv, out_dir / "stage6" / "ga4gh_v35_cross_platform_stratification.tsv"
+        )
         with ga_tsv.open(encoding="utf-8") as f:
             for r in csv.DictReader(f, delimiter="\t"):
                 ga_rows.append(
@@ -1690,7 +2224,11 @@ def build_evidence_certified(raw_dir: Path) -> dict[str, Any]:
 
     d_sw = raw_dir / "sweep_multimodal_and_cram_twin"
     cram_time = parse_gnu_time(d_sw / "rust.time")
-    cram_extra = json.loads((d_sw / "extra.json").read_text(encoding="utf-8")) if (d_sw / "extra.json").is_file() else {}
+    cram_extra = (
+        json.loads((d_sw / "extra.json").read_text(encoding="utf-8"))
+        if (d_sw / "extra.json").is_file()
+        else {}
+    )
     out["hg008-cram-twin"] = {
         "head": GCP_HEAD_PREFIX,
         "fingerprint": EXPECTED_FP,
@@ -1837,7 +2375,9 @@ def build_flat_macros(doc: dict[str, Any]) -> dict[str, str | int | float]:
         "s5_f0_noise_floor_strict_match": "18/18",
         "s5_h4_gnu_mb": f"{s5['h4_maintenance_security_matrix']['gnu_binary_bytes'] / (1024 * 1024):.2f}",
         "s5_h4_musl_mb": f"{s5['h4_maintenance_security_matrix']['musl_binary_bytes'] / (1024 * 1024):.2f}",
-        "s5_h4_conda_pkgs": s5["h4_maintenance_security_matrix"]["oracle_conda_package_count"],
+        "s5_h4_conda_pkgs": s5["h4_maintenance_security_matrix"][
+            "oracle_conda_package_count"
+        ],
         # Stage 6
         "s6_v50q_snv_r_fullcontigs": "0.9367",
         "s6_v50q_snv_f1_fullcontigs": "0.6650",
@@ -1862,14 +2402,28 @@ def build_flat_macros(doc: dict[str, Any]) -> dict[str, str | int | float]:
         for th_key in ("th1", "th8"):
             td = sdict[th_key]
             prefix = f"s2_{samp}_{th_key}"
-            macros[f"{prefix}_rust_wall_s"] = f"{td['rust']['replicates']['wall_s_mean']:.2f}"
-            macros[f"{prefix}_java_wall_s"] = f"{td['java']['replicates']['wall_s_mean']:.2f}"
-            macros[f"{prefix}_cpp_wall_s"] = f"{td['cpp']['replicates']['wall_s_mean']:.2f}"
-            macros[f"{prefix}_rust_rss_mb"] = f"{td['rust']['replicates']['max_rss_mb_mean']:.1f}"
-            macros[f"{prefix}_java_rss_mb"] = f"{td['java']['replicates']['max_rss_mb_mean']:.1f}"
-            macros[f"{prefix}_cpp_rss_mb"] = f"{td['cpp']['replicates']['max_rss_mb_mean']:.1f}"
+            macros[f"{prefix}_rust_wall_s"] = (
+                f"{td['rust']['replicates']['wall_s_mean']:.2f}"
+            )
+            macros[f"{prefix}_java_wall_s"] = (
+                f"{td['java']['replicates']['wall_s_mean']:.2f}"
+            )
+            macros[f"{prefix}_cpp_wall_s"] = (
+                f"{td['cpp']['replicates']['wall_s_mean']:.2f}"
+            )
+            macros[f"{prefix}_rust_rss_mb"] = (
+                f"{td['rust']['replicates']['max_rss_mb_mean']:.1f}"
+            )
+            macros[f"{prefix}_java_rss_mb"] = (
+                f"{td['java']['replicates']['max_rss_mb_mean']:.1f}"
+            )
+            macros[f"{prefix}_cpp_rss_mb"] = (
+                f"{td['cpp']['replicates']['max_rss_mb_mean']:.1f}"
+            )
             macros[f"{prefix}_speedup_vs_java"] = f"{td['rust_speedup_vs_java']:.2f}"
-            macros[f"{prefix}_rss_ratio_vs_java"] = f"{td['java_rss_ratio_vs_rust']:.1f}"
+            macros[f"{prefix}_rss_ratio_vs_java"] = (
+                f"{td['java_rss_ratio_vs_rust']:.1f}"
+            )
 
     return macros
 
@@ -1887,7 +2441,9 @@ def run_aggregation(raw_dir: Path, out_dir: Path) -> None:
     missing = expected_dirs - actual_dirs
     extra = actual_dirs - expected_dirs
     if missing or extra:
-        raise RuntimeError(f"Directory mismatch in {raw_dir}: missing={sorted(missing)}, extra={sorted(extra)}")
+        raise RuntimeError(
+            f"Directory mismatch in {raw_dir}: missing={sorted(missing)}, extra={sorted(extra)}"
+        )
 
     cells_dict: dict[str, Any] = {}
     inventory_rows: list[dict[str, str]] = []
@@ -1950,7 +2506,9 @@ def run_aggregation(raw_dir: Path, out_dir: Path) -> None:
     master_doc["flat_macros"] = build_flat_macros(master_doc)
 
     master_path = out_dir / "master_gcp_metrics.json"
-    master_path.write_text(json.dumps(master_doc, indent=2, sort_keys=False) + "\n", encoding="utf-8")
+    master_path.write_text(
+        json.dumps(master_doc, indent=2, sort_keys=False) + "\n", encoding="utf-8"
+    )
 
     inv_path = out_dir / "cells_60_inventory.tsv"
     with inv_path.open("w", encoding="utf-8", newline="") as f:
@@ -1999,12 +2557,18 @@ def run_verify(out_dir: Path) -> None:
         for row in csv.DictReader(f, delimiter="\t"):
             target = out_dir / row["path"]
             if not target.is_file():
-                raise FileNotFoundError(f"Missing file listed in SHA256SUMS.tsv: {target}")
+                raise FileNotFoundError(
+                    f"Missing file listed in SHA256SUMS.tsv: {target}"
+                )
             actual_sha = sha256_file(target)
             if actual_sha != row["sha256"]:
-                raise ValueError(f"SHA-256 mismatch for {target}: expected {row['sha256']}, got {actual_sha}")
+                raise ValueError(
+                    f"SHA-256 mismatch for {target}: expected {row['sha256']}, got {actual_sha}"
+                )
             if target.stat().st_size > 1_048_576:
-                raise ValueError(f"Tracked file exceeds 1 MB limit: {target} ({target.stat().st_size} bytes)")
+                raise ValueError(
+                    f"Tracked file exceeds 1 MB limit: {target} ({target.stat().st_size} bytes)"
+                )
 
     doc = json.loads(master_path.read_text(encoding="utf-8"))
     if doc["meta"]["version"] != EXPECTED_VERSION:
@@ -2012,7 +2576,9 @@ def run_verify(out_dir: Path) -> None:
     if doc["meta"]["fingerprint"] != EXPECTED_FP:
         raise ValueError(f"Unexpected fingerprint: {doc['meta']['fingerprint']}")
     if doc["meta"]["perf_fingerprint"] != EXPECTED_PERF_FP:
-        raise ValueError(f"Unexpected perf_fingerprint: {doc['meta']['perf_fingerprint']}")
+        raise ValueError(
+            f"Unexpected perf_fingerprint: {doc['meta']['perf_fingerprint']}"
+        )
     if len(doc["cells"]) != 60:
         raise ValueError(f"Expected 60 cells, found {len(doc['cells'])}")
 
@@ -2029,13 +2595,30 @@ def run_verify(out_dir: Path) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--raw-dir", type=Path, default=DEFAULT_RAW_DIR, help="Path to raw 60-cell directory")
-    parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR, help="Path to tracked output directory")
-    parser.add_argument("--verify", action="store_true", help="Verify tracked outputs offline without regenerating")
+    parser.add_argument(
+        "--raw-dir",
+        type=Path,
+        default=DEFAULT_RAW_DIR,
+        help="Path to raw 60-cell directory",
+    )
+    parser.add_argument(
+        "--out-dir",
+        type=Path,
+        default=DEFAULT_OUT_DIR,
+        help="Path to tracked output directory",
+    )
+    parser.add_argument(
+        "--verify",
+        action="store_true",
+        help="Verify tracked outputs offline without regenerating",
+    )
     args = parser.parse_args()
 
     if args.verify:
-        if not (args.out_dir / "master_gcp_metrics.json").is_file() and args.raw_dir.is_dir():
+        if (
+            not (args.out_dir / "master_gcp_metrics.json").is_file()
+            and args.raw_dir.is_dir()
+        ):
             run_aggregation(args.raw_dir, args.out_dir)
         run_verify(args.out_dir)
         print(f"OK verified 60 GCP study cells in {args.out_dir}")

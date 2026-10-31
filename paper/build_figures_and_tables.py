@@ -156,7 +156,11 @@ def save_pub_figure(fig: plt.Figure, out_dir: Path, stem: str) -> None:
         format="pdf",
         bbox_inches="tight",
         pad_inches=0.15,
-        metadata={"CreationDate": None, "ModDate": None, "Creator": "VarDictRust Reproducible Pipeline"},
+        metadata={
+            "CreationDate": None,
+            "ModDate": None,
+            "Creator": "VarDictRust Reproducible Pipeline",
+        },
     )
     plt.close(fig)
     # Strip any residual non-deterministic date metadata in SVG text
@@ -253,7 +257,9 @@ def write_dual_table(
     ]
     for r in clean_rows_md:
         if len(r) != len(clean_headers_md):
-            raise ValueError(f"Row column mismatch in {stem}: expected {len(clean_headers_md)}, got {len(r)}")
+            raise ValueError(
+                f"Row column mismatch in {stem}: expected {len(clean_headers_md)}, got {len(r)}"
+            )
         md_lines.append("| " + " | ".join(r) + " |")
     if footnote:
         md_lines.extend(["", f"*{sanitize_md_cell(footnote)}*"])
@@ -294,7 +300,9 @@ def write_dual_table(
     tex_path.write_text("\n".join(tex_lines) + "\n", encoding="utf-8")
 
 
-def fmt_mean_range(rep: dict[str, Any], key_prefix: str, scale: float = 1.0, decimals: int = 2) -> str:
+def fmt_mean_range(
+    rep: dict[str, Any], key_prefix: str, scale: float = 1.0, decimals: int = 2
+) -> str:
     """Format technical replicate summary as mean (min–max) per statistical reporting protocol."""
     mean_v = float(rep.get(f"{key_prefix}_mean", 0.0)) / scale
     min_v = float(rep.get(f"{key_prefix}_min", 0.0)) / scale
@@ -305,7 +313,11 @@ def fmt_mean_range(rep: dict[str, Any], key_prefix: str, scale: float = 1.0, dec
 def fmt_clopper_pearson_ci(k: int, n: int, alpha: float = 0.05) -> str:
     """Format exact Clopper-Pearson binomial confidence interval in percentage points."""
     lo = 0.0 if k == 0 else float(stats.beta.ppf(alpha / 2.0, k, n - k + 1)) * 100.0
-    hi = 100.0 if k == n else float(stats.beta.ppf(1.0 - alpha / 2.0, k + 1, n - k)) * 100.0
+    hi = (
+        100.0
+        if k == n
+        else float(stats.beta.ppf(1.0 - alpha / 2.0, k + 1, n - k)) * 100.0
+    )
     return f"{lo:.2f}%–{hi:.2f}%"
 
 
@@ -325,7 +337,9 @@ def load_tsv(path: Path) -> list[dict[str, str]]:
 # ==============================================================================
 
 
-def build_fig1(doc: dict[str, Any], inv_rows: list[dict[str, str]], fig_dir: Path) -> None:
+def build_fig1(
+    doc: dict[str, Any], inv_rows: list[dict[str, str]], fig_dir: Path
+) -> None:
     """Figure 1: Study Architecture & Multi-Modal Experimental Design."""
     fig = plt.figure(figsize=(16, 8.8))
     gs = fig.add_gridspec(2, 2, height_ratios=[1.18, 1.0], hspace=0.38, wspace=0.25)
@@ -345,18 +359,37 @@ def build_fig1(doc: dict[str, Any], inv_rows: list[dict[str, str]], fig_dir: Pat
     )
 
     stage_Order = [
-        ("stage1", "1. Tile-Size Invariance &\nMulti-Region Parity\n(0.5–10 Mbp Tiles)"),
+        (
+            "stage1",
+            "1. Tile-Size Invariance &\nMulti-Region Parity\n(0.5–10 Mbp Tiles)",
+        ),
         ("stage2", "2. Clinical AML Panels &\n13-Mode Functional\nEquivalence Suite"),
         ("stage3", "3. Transcriptome\nSplice-Aware RNA-Seq\n(51.8 GiB HG002)"),
         ("stage4", "4. Multi-Core Exome\nScaling & Chr1\nSpan Stress"),
         ("sweep", "5. Multi-Regime (.var)\n& Ultra-Deep MRD\nParity Sweep"),
         ("stage5", "6. Full-Genome WGS\n& 10-Chemistry\nPlatform Panel"),
-        ("stage6", "7. Next-Gen Truth Sets\n(T2T-Q100 v5.0q, CMRG,\nMosaic & HG008 v0.4)"),
+        (
+            "stage6",
+            "7. Next-Gen Truth Sets\n(T2T-Q100 v5.0q, CMRG,\nMosaic & HG008 v0.4)",
+        ),
     ]
-    stage_counts = {st: sum(1 for r in inv_rows if r["stage"] == st) for st, _ in stage_Order}
-    stage_files = {st: sum(int(r["file_count"]) for r in inv_rows if r["stage"] == st) for st, _ in stage_Order}
+    stage_counts = {
+        st: sum(1 for r in inv_rows if r["stage"] == st) for st, _ in stage_Order
+    }
+    stage_files = {
+        st: sum(int(r["file_count"]) for r in inv_rows if r["stage"] == st)
+        for st, _ in stage_Order
+    }
 
-    box_colors = ["#0072B2", "#009E73", "#56B4E9", "#E69F00", "#CC79A7", "#D55E00", "#332288"]
+    box_colors = [
+        "#0072B2",
+        "#009E73",
+        "#56B4E9",
+        "#E69F00",
+        "#CC79A7",
+        "#D55E00",
+        "#332288",
+    ]
     for idx, (st_key, st_label) in enumerate(stage_Order):
         x0 = 0.18 + idx * 1.96
         rect = mpatches.FancyBboxPatch(
@@ -439,7 +472,9 @@ def build_fig1(doc: dict[str, Any], inv_rows: list[dict[str, str]], fig_dir: Pat
     # Panel B (bottom left): Benchmark Experiments by Suite
     ax_b = fig.add_subplot(gs[1, 0])
     vals_b = [stage_counts[s[0]] for s in stage_Order]
-    bars_b = ax_b.bar(suite_short_labels, vals_b, color=box_colors, edgecolor="#1E293B", linewidth=0.8)
+    bars_b = ax_b.bar(
+        suite_short_labels, vals_b, color=box_colors, edgecolor="#1E293B", linewidth=0.8
+    )
     ax_b.set_title("B. Benchmark Experiments per Evaluation Suite", loc="left")
     ax_b.set_ylabel("Completed Benchmark Experiments")
     ax_b.tick_params(axis="x", rotation=18)
@@ -458,7 +493,9 @@ def build_fig1(doc: dict[str, Any], inv_rows: list[dict[str, str]], fig_dir: Pat
     # Panel C (bottom right): Archived Verification Artifacts by Suite
     ax_c = fig.add_subplot(gs[1, 1])
     vals_c = [stage_files[s[0]] for s in stage_Order]
-    bars_c = ax_c.bar(suite_short_labels, vals_c, color=box_colors, edgecolor="#1E293B", linewidth=0.8)
+    bars_c = ax_c.bar(
+        suite_short_labels, vals_c, color=box_colors, edgecolor="#1E293B", linewidth=0.8
+    )
     ax_c.set_title("C. Archived Verification Artifacts per Suite", loc="left")
     ax_c.set_ylabel("Archived Verification Artifacts")
     ax_c.tick_params(axis="x", rotation=18)
@@ -508,7 +545,12 @@ def build_fig2(doc: dict[str, Any], fig_dir: Path) -> None:
         for _, keys in panel_a_groups
     ]
     y_pos = np.arange(len(cell_names))
-    ax_a.barh(y_pos, match_cnts, color=PALETTE["VarDictRust"], label="Exact Match (.var & .vcf)")
+    ax_a.barh(
+        y_pos,
+        match_cnts,
+        color=PALETTE["VarDictRust"],
+        label="Exact Match (.var & .vcf)",
+    )
     if any(diff_cnts):
         ax_a.barh(
             y_pos,
@@ -529,10 +571,18 @@ def build_fig2(doc: dict[str, Any], fig_dir: Path) -> None:
     # Panel B: Tile-Size Invariance (0.5 - 10 Mbp) + 13-Mode Sweep
     ax_b = axes[0, 1]
     tiles_info = doc["stage1"]["s1_h1a_simple_tiles"]
-    tile_labels = [f"{int(sz) / 1000000.0:.1f} Mbp" for sz in tiles_info["tile_sizes_bp"]]
+    tile_labels = [
+        f"{int(sz) / 1000000.0:.1f} Mbp" for sz in tiles_info["tile_sizes_bp"]
+    ]
     tile_vars = [int(tiles_info["variant_count"]) for _ in tile_labels]
     mode_info = doc["stage2"]["tierp_mode_parity_sweep"]
-    bars_b = ax_b.bar(tile_labels, tile_vars, color=PALETTE["VarDictRust"], width=0.5, edgecolor="#1E293B")
+    bars_b = ax_b.bar(
+        tile_labels,
+        tile_vars,
+        color=PALETTE["VarDictRust"],
+        width=0.5,
+        edgecolor="#1E293B",
+    )
     ax_b.set_ylabel("Called Variants on SEQC2 HCC1395")
     ax_b.set_ylim(0, max(tile_vars) * 1.25)
     ax_b.set_title(
@@ -556,7 +606,9 @@ def build_fig2(doc: dict[str, Any], fig_dir: Path) -> None:
     samples = list(tierp.keys())
     x = np.arange(len(samples))
     w = 0.25
-    for idx, (eng, lbl) in enumerate([("java", "VarDictJava"), ("cpp", "vardictcpp"), ("rust", "VarDictRust")]):
+    for idx, (eng, lbl) in enumerate(
+        [("java", "VarDictJava"), ("cpp", "vardictcpp"), ("rust", "VarDictRust")]
+    ):
         means = [tierp[s]["th8"][eng]["replicates"]["wall_s_mean"] for s in samples]
         mins = [tierp[s]["th8"][eng]["replicates"]["wall_s_min"] for s in samples]
         maxs = [tierp[s]["th8"][eng]["replicates"]["wall_s_max"] for s in samples]
@@ -574,7 +626,12 @@ def build_fig2(doc: dict[str, Any], fig_dir: Path) -> None:
             label=lbl,
         )
     ax_c.set_xticks(x)
-    ax_c.set_xticklabels([s.replace("somatic_76_86", "SRR15006376/86") for s in samples], rotation=20, ha="right", fontsize=7.5)
+    ax_c.set_xticklabels(
+        [s.replace("somatic_76_86", "SRR15006376/86") for s in samples],
+        rotation=20,
+        ha="right",
+        fontsize=7.5,
+    )
     ax_c.set_ylabel("Wall Time at 8 Threads (s, mean + range)")
     ax_c.set_title("C. Clinical AML Panel 8-Thread Runtime (Wolff 2026)", loc="left")
     ax_c.legend(loc="upper left", frameon=True)
@@ -582,7 +639,15 @@ def build_fig2(doc: dict[str, Any], fig_dir: Path) -> None:
     # Panel D: Somatic Tumor-Normal Runtime & Concordant SNV Summary
     ax_d = axes[1, 1]
     fc_som = doc["stage2"]["fig1_fig3_field_callers"]["somatic_SRR15006376_SRR15006386"]
-    callers_d = ["VarDictRust", "VarDictJava", "vardictcpp", "Strelka2", "LoFreq", "octopus", "Mutect2"]
+    callers_d = [
+        "VarDictRust",
+        "VarDictJava",
+        "vardictcpp",
+        "Strelka2",
+        "LoFreq",
+        "octopus",
+        "Mutect2",
+    ]
     callers_d_labels = ["Octopus" if c == "octopus" else c for c in callers_d]
     walls_d = [fc_som[c]["th8"]["wall_s"] for c in callers_d]
     rss_d = [fc_som[c]["th8"]["max_rss_mb"] for c in callers_d]
@@ -590,7 +655,9 @@ def build_fig2(doc: dict[str, Any], fig_dir: Path) -> None:
     bars_d = ax_d.bar(callers_d_labels, walls_d, color=colors_d, edgecolor="#1E293B")
     ax_d.set_yscale("log")
     ax_d.set_ylabel("Somatic 8-Thread Wall Time (s, log scale)")
-    venn_tot = doc["stage2"]["fig1_fig3_field_callers"]["somatic_snv_venn"]["somatic_filtered"]["totals"]
+    venn_tot = doc["stage2"]["fig1_fig3_field_callers"]["somatic_snv_venn"][
+        "somatic_filtered"
+    ]["totals"]
     ax_d.set_title(
         f"D. Somatic Tumor-Normal Runtime ({venn_tot['VarDict']} Concordant SNVs)",
         loc="left",
@@ -618,18 +685,31 @@ def build_fig3(doc: dict[str, Any], fig_dir: Path) -> None:
     # Panel A: HG002 chr20 Exome 7-Caller Truth Accuracy (Wolff [11] Fig 2)
     ax_a = axes[0, 0]
     fig2_rows = doc["stage2"]["fig2_hg002_chr20_truth"]
-    c_names = ["Octopus" if r["caller"] == "octopus" else r["caller"] for r in fig2_rows]
+    c_names = [
+        "Octopus" if r["caller"] == "octopus" else r["caller"] for r in fig2_rows
+    ]
     snv_f1 = [r["snv_f1"] for r in fig2_rows]
     ind_f1 = [r["indel_f1"] for r in fig2_rows]
     x_a = np.arange(len(c_names))
     w_a = 0.35
-    ax_a.bar(x_a - w_a / 2.0, snv_f1, width=w_a, color=PALETTE["VarDictRust"], label="SNV F1")
-    ax_a.bar(x_a + w_a / 2.0, ind_f1, width=w_a, color=PALETTE["VarDictJava"], label="InDel F1")
+    ax_a.bar(
+        x_a - w_a / 2.0, snv_f1, width=w_a, color=PALETTE["VarDictRust"], label="SNV F1"
+    )
+    ax_a.bar(
+        x_a + w_a / 2.0,
+        ind_f1,
+        width=w_a,
+        color=PALETTE["VarDictJava"],
+        label="InDel F1",
+    )
     ax_a.set_xticks(x_a)
     ax_a.set_xticklabels(c_names, rotation=20, ha="right")
     ax_a.set_ylim(0.75, 1.03)
     ax_a.set_ylabel("rtg vcfeval F1 Score")
-    ax_a.set_title("A. HG002 Chr20 Exome Truth Concordance (VarDictRust == VarDictJava)", loc="left")
+    ax_a.set_title(
+        "A. HG002 Chr20 Exome Truth Concordance (VarDictRust == VarDictJava)",
+        loc="left",
+    )
     ax_a.legend(loc="lower right", frameon=True)
 
     # Panel B: 5-Cohort Truth-Set F1 Score: Unfiltered PASS vs. Optimal QUAL Cutoff
@@ -639,10 +719,18 @@ def build_fig3(doc: dict[str, Any], fig_dir: Path) -> None:
     b_cohorts = [
         (
             "HG002\n(GRCh38)",
-            t3_cohorts["hg002"]["engines"]["rust"]["operating_points"]["none"]["f_measure"],
-            t3_cohorts["hg002"]["engines"]["rust"]["operating_points"]["best"]["f_measure"],
-            t3_cohorts["hg002"]["engines"]["java"]["operating_points"]["none"]["f_measure"],
-            t3_cohorts["hg002"]["engines"]["java"]["operating_points"]["best"]["f_measure"],
+            t3_cohorts["hg002"]["engines"]["rust"]["operating_points"]["none"][
+                "f_measure"
+            ],
+            t3_cohorts["hg002"]["engines"]["rust"]["operating_points"]["best"][
+                "f_measure"
+            ],
+            t3_cohorts["hg002"]["engines"]["java"]["operating_points"]["none"][
+                "f_measure"
+            ],
+            t3_cohorts["hg002"]["engines"]["java"]["operating_points"]["best"][
+                "f_measure"
+            ],
         ),
         (
             "HG005\n(GRCh38)",
@@ -660,17 +748,33 @@ def build_fig3(doc: dict[str, Any], fig_dir: Path) -> None:
         ),
         (
             "SEQC2\nHCC1395",
-            t3_cohorts["seqc2"]["engines"]["rust"]["operating_points"]["none"]["f_measure"],
-            t3_cohorts["seqc2"]["engines"]["rust"]["operating_points"]["best"]["f_measure"],
-            t3_cohorts["seqc2"]["engines"]["java"]["operating_points"]["none"]["f_measure"],
-            t3_cohorts["seqc2"]["engines"]["java"]["operating_points"]["best"]["f_measure"],
+            t3_cohorts["seqc2"]["engines"]["rust"]["operating_points"]["none"][
+                "f_measure"
+            ],
+            t3_cohorts["seqc2"]["engines"]["rust"]["operating_points"]["best"][
+                "f_measure"
+            ],
+            t3_cohorts["seqc2"]["engines"]["java"]["operating_points"]["none"][
+                "f_measure"
+            ],
+            t3_cohorts["seqc2"]["engines"]["java"]["operating_points"]["best"][
+                "f_measure"
+            ],
         ),
         (
             "HG008\n(GIAB v0.3)",
-            t3_cohorts["hg008"]["engines"]["rust"]["operating_points"]["none"]["f_measure"],
-            t3_cohorts["hg008"]["engines"]["rust"]["operating_points"]["best"]["f_measure"],
-            t3_cohorts["hg008"]["engines"]["java"]["operating_points"]["none"]["f_measure"],
-            t3_cohorts["hg008"]["engines"]["java"]["operating_points"]["best"]["f_measure"],
+            t3_cohorts["hg008"]["engines"]["rust"]["operating_points"]["none"][
+                "f_measure"
+            ],
+            t3_cohorts["hg008"]["engines"]["rust"]["operating_points"]["best"][
+                "f_measure"
+            ],
+            t3_cohorts["hg008"]["engines"]["java"]["operating_points"]["none"][
+                "f_measure"
+            ],
+            t3_cohorts["hg008"]["engines"]["java"]["operating_points"]["best"][
+                "f_measure"
+            ],
         ),
     ]
     x_b = np.arange(len(b_cohorts))
@@ -716,7 +820,11 @@ def build_fig3(doc: dict[str, Any], fig_dir: Path) -> None:
     ax_b.set_xticklabels([item[0] for item in b_cohorts], fontsize=7.8)
     ax_b.set_ylabel("rtg vcfeval F1 Score")
     ax_b.set_ylim(0.55, 1.06)
-    ax_b.set_title("B. Unfiltered PASS vs. Optimal QUAL Cutoff F1 (Java==Rust)", loc="left", fontsize=9.2)
+    ax_b.set_title(
+        "B. Unfiltered PASS vs. Optimal QUAL Cutoff F1 (Java==Rust)",
+        loc="left",
+        fontsize=9.2,
+    )
     ax_b.legend(loc="lower right", frameon=True, fontsize=7.2)
 
     # Panel C: Native GRCh38 Field Callers F1 vs Wall Time
@@ -735,7 +843,15 @@ def build_fig3(doc: dict[str, Any], fig_dir: Path) -> None:
             alpha=0.88,
             edgecolors="#0F172A",
         )
-    caller_order_c = ["VarDictRust", "VarDictJava", "vardictcpp", "FreeBayes", "Mutect2", "Strelka2", "LoFreq"]
+    caller_order_c = [
+        "VarDictRust",
+        "VarDictJava",
+        "vardictcpp",
+        "FreeBayes",
+        "Mutect2",
+        "Strelka2",
+        "LoFreq",
+    ]
     cohort_marker_labels = [
         ("HG002_GRCh38", "o", "HG002 Germline"),
         ("HG008_v0.3", "s", "HG008 Somatic v0.3"),
@@ -770,13 +886,25 @@ def build_fig3(doc: dict[str, Any], fig_dir: Path) -> None:
     ax_c.set_xlabel("Wall Time (s, log scale)")
     ax_c.set_ylabel("SNV F1 Score")
     ax_c.set_ylim(0.25, 1.05)
-    ax_c.set_title("C. Native GRCh38 Germline & Somatic Field Callers (SNV F1 vs. Speed)", loc="left")
-    ax_c.legend(handles=legend_handles_c, loc="lower left", ncol=2, frameon=True, fontsize=7.0)
+    ax_c.set_title(
+        "C. Native GRCh38 Germline & Somatic Field Callers (SNV F1 vs. Speed)",
+        loc="left",
+    )
+    ax_c.legend(
+        handles=legend_handles_c, loc="lower left", ncol=2, frameon=True, fontsize=7.0
+    )
 
     # Panel D: Low-VAF Tumor-Purity Titration Curve (10% -> 0.5% Expected VAF)
     ax_d = axes[1, 1]
     tit_rows = doc["stage6"]["low_vaf_titration_truth_curve"]
-    callers_tit = ["VarDictRust", "VarDictJava", "vardictcpp", "Strelka2", "Mutect2", "LoFreq"]
+    callers_tit = [
+        "VarDictRust",
+        "VarDictJava",
+        "vardictcpp",
+        "Strelka2",
+        "Mutect2",
+        "LoFreq",
+    ]
     for caller in callers_tit:
         c_rows = sorted(
             [r for r in tit_rows if r["caller"] == caller],
@@ -796,9 +924,17 @@ def build_fig3(doc: dict[str, Any], fig_dir: Path) -> None:
             label=f"{caller} (==Java)" if caller == "VarDictRust" else caller,
         )
     min_vaf = min(r["expected_clonal_vaf_pct"] for r in tit_rows)
-    r_low_rust = next(r for r in tit_rows if r["caller"] == "VarDictRust" and r["expected_clonal_vaf_pct"] == min_vaf)
+    r_low_rust = next(
+        r
+        for r in tit_rows
+        if r["caller"] == "VarDictRust" and r["expected_clonal_vaf_pct"] == min_vaf
+    )
     r_low_comp = next(
-        r for r in tit_rows if r["caller"] in ("Mutect2", "Strelka2") and r["expected_clonal_vaf_pct"] == min_vaf and r["snv_f1"] > 0
+        r
+        for r in tit_rows
+        if r["caller"] in ("Mutect2", "Strelka2")
+        and r["expected_clonal_vaf_pct"] == min_vaf
+        and r["snv_f1"] > 0
     )
     f1_adv = r_low_rust["snv_f1"] / r_low_comp["snv_f1"]
     rec_adv = r_low_rust["snv_r"] / r_low_comp["snv_r"]
@@ -840,12 +976,26 @@ def build_fig4(doc: dict[str, Any], fig_dir: Path) -> None:
     ]
     x_a = np.arange(len(targets_a))
     w_a = 0.35
-    ax_a.bar(x_a - w_a / 2.0, java_rss_gb, width=w_a, color=PALETTE["VarDictJava"], label="VarDictJava")
-    ax_a.bar(x_a + w_a / 2.0, rust_rss_gb, width=w_a, color=PALETTE["VarDictRust"], label="VarDictRust")
+    ax_a.bar(
+        x_a - w_a / 2.0,
+        java_rss_gb,
+        width=w_a,
+        color=PALETTE["VarDictJava"],
+        label="VarDictJava",
+    )
+    ax_a.bar(
+        x_a + w_a / 2.0,
+        rust_rss_gb,
+        width=w_a,
+        color=PALETTE["VarDictRust"],
+        label="VarDictRust",
+    )
     ax_a.set_xticks(x_a)
     ax_a.set_xticklabels(targets_a, rotation=20, ha="right")
     ax_a.set_ylabel("Peak RSS (GB)")
-    ax_a.set_title("A. Germline, Somatic & RNA-Seq Peak Memory", loc="left", fontsize=9.0)
+    ax_a.set_title(
+        "A. Germline, Somatic & RNA-Seq Peak Memory", loc="left", fontsize=9.0
+    )
     ax_a.legend(loc="upper left", frameon=True)
 
     # Panel B: Wolff Table 3 -R chr1:1-249250621 Whole-Chromosome Memory Blowup
@@ -882,9 +1032,15 @@ def build_fig4(doc: dict[str, Any], fig_dir: Path) -> None:
     ax_c = fig.add_subplot(gs[0, 2])
     ex_scale = doc["stage4"]["scale_exome_3way"]
     threads_c = [1, 2, 4, 8, 16, 32]
-    for eng, lbl in [("java", "VarDictJava"), ("cpp", "vardictcpp"), ("rust", "VarDictRust")]:
+    for eng, lbl in [
+        ("java", "VarDictJava"),
+        ("cpp", "vardictcpp"),
+        ("rust", "VarDictRust"),
+    ]:
         walls = [ex_scale[f"th{th}"][eng]["wall_s_mean"] for th in threads_c]
-        ax_c.plot(threads_c, walls, marker="o", linewidth=2.0, color=PALETTE[lbl], label=lbl)
+        ax_c.plot(
+            threads_c, walls, marker="o", linewidth=2.0, color=PALETTE[lbl], label=lbl
+        )
     ax_c.set_xscale("log", base=2)
     ax_c.set_yscale("log")
     ax_c.set_xticks(threads_c)
@@ -892,7 +1048,9 @@ def build_fig4(doc: dict[str, Any], fig_dir: Path) -> None:
     ax_c.set_xlabel("Thread Count (-th)")
     ax_c.set_ylabel("SEQC2 Exome Wall Time (s, log scale)")
     sp32 = ex_scale["th32"]["rust"]["speedup_sp"]
-    ax_c.set_title(f"C. SEQC2 Exome 1–32c Scaling ({sp32:.2f}x Speedup)", loc="left", fontsize=9.0)
+    ax_c.set_title(
+        f"C. SEQC2 Exome 1–32c Scaling ({sp32:.2f}x Speedup)", loc="left", fontsize=9.0
+    )
     ax_c.legend(loc="upper right", frameon=True)
 
     # Panel D: Chromosome 1 Span-to-RSS Scaling (1 Mbp -> 249 Mbp at 8/16/32c)
@@ -901,8 +1059,14 @@ def build_fig4(doc: dict[str, Any], fig_dir: Path) -> None:
     spans_bp = [1000000, 10000000, 100000000, 248956422]
     spans_mbp = [s / 1000000.0 for s in spans_bp]
     for th, ls in [(8, "-"), (16, "--"), (32, ":")]:
-        r_gib = [span_d[f"th{th}"]["spans"][f"R{s}"]["rust"]["max_rss_gib_mean"] for s in spans_bp]
-        c_gib = [span_d[f"th{th}"]["spans"][f"R{s}"]["cpp"]["max_rss_gib_mean"] for s in spans_bp]
+        r_gib = [
+            span_d[f"th{th}"]["spans"][f"R{s}"]["rust"]["max_rss_gib_mean"]
+            for s in spans_bp
+        ]
+        c_gib = [
+            span_d[f"th{th}"]["spans"][f"R{s}"]["cpp"]["max_rss_gib_mean"]
+            for s in spans_bp
+        ]
         ratio = span_d[f"th{th}"]["rust_rss_ratio_249m_vs_10m"]
         ax_d.plot(
             spans_mbp,
@@ -925,14 +1089,24 @@ def build_fig4(doc: dict[str, Any], fig_dir: Path) -> None:
     ax_d.set_xscale("log")
     ax_d.set_xlabel("Contiguous Chromosome 1 Span (Mbp, log scale)")
     ax_d.set_ylabel("Peak RSS (GiB)")
-    ax_d.set_title("D. Chromosome 1 Span-to-RSS Invariance (1 Mbp to 249 Mbp across 8, 16, 32 Threads)", loc="left", fontsize=9.0)
+    ax_d.set_title(
+        "D. Chromosome 1 Span-to-RSS Invariance (1 Mbp to 249 Mbp across 8, 16, 32 Threads)",
+        loc="left",
+        fontsize=9.0,
+    )
     ax_d.legend(loc="upper left", ncol=2, frameon=True, fontsize=7.5)
 
     # Panel E: Concurrent 2x4c Node Packing & -f 0 All-Positions Stress
     ax_e = fig.add_subplot(gs[1, 2])
     jpn = doc["stage4"]["jobs_per_node_2x4c_n3"]
     f0_st = doc["stage4"]["span_chr1_f0"]
-    labels_e = ["Job 1\n(4c Exome)", "Job 2\n(4c Exome)", "Combined\n(2x4c Node)", "Rust chr1\n10M -f 0", "C++ chr1\n10M -f 0"]
+    labels_e = [
+        "Job 1\n(4c Exome)",
+        "Job 2\n(4c Exome)",
+        "Combined\n(2x4c Node)",
+        "Rust chr1\n10M -f 0",
+        "C++ chr1\n10M -f 0",
+    ]
     vals_e = [
         jpn["job1_4c"]["max_rss_gib_mean"],
         jpn["job2_4c"]["max_rss_gib_mean"],
@@ -952,7 +1126,9 @@ def build_fig4(doc: dict[str, Any], fig_dir: Path) -> None:
     ax_e.axvline(2.5, color="#475569", linestyle="--", linewidth=1.2)
     ax_e.set_ylabel("Peak RSS (GiB)")
     ax_e.set_ylim(0, max(vals_e) * 1.25)
-    ax_e.set_title("E. 2x4-Thread Node Packing & Chr1 -f 0 Memory", loc="left", fontsize=9.0)
+    ax_e.set_title(
+        "E. 2x4-Thread Node Packing & Chr1 -f 0 Memory", loc="left", fontsize=9.0
+    )
     for b, v in zip(bars_e, vals_e):
         ax_e.text(
             b.get_x() + b.get_width() / 2.0,
@@ -1006,11 +1182,36 @@ def build_fig5(doc: dict[str, Any], fig_dir: Path) -> None:
     ]
     x = np.arange(len(groups_a))
     w = 0.26
-    bars_j = ax_a.bar(x - w, java_rss, width=w, color=PALETTE["VarDictJava"], label="VarDictJava (-Xmx200g)")
-    bars_c = ax_a.bar(x, cpp_rss, width=w, color=PALETTE["vardictcpp"], label="vardictcpp (--chunk 50k)")
-    bars_r = ax_a.bar(x + w, rust_rss, width=w, color=PALETTE["VarDictRust"], label="VarDictRust v1.0.6")
+    bars_j = ax_a.bar(
+        x - w,
+        java_rss,
+        width=w,
+        color=PALETTE["VarDictJava"],
+        label="VarDictJava (-Xmx200g)",
+    )
+    bars_c = ax_a.bar(
+        x,
+        cpp_rss,
+        width=w,
+        color=PALETTE["vardictcpp"],
+        label="vardictcpp (--chunk 50k)",
+    )
+    bars_r = ax_a.bar(
+        x + w,
+        rust_rss,
+        width=w,
+        color=PALETTE["VarDictRust"],
+        label="VarDictRust v1.0.6",
+    )
     # Hatch OOM/Timeout bars per statistical reporting rule
-    for idx_b, rc in enumerate([h2_a["java"]["exit_code"], h2_b["java"]["exit_code"], h8_a["java"]["exit_code"], h8_b["java"]["exit_code"]]):
+    for idx_b, rc in enumerate(
+        [
+            h2_a["java"]["exit_code"],
+            h2_b["java"]["exit_code"],
+            h8_a["java"]["exit_code"],
+            h8_b["java"]["exit_code"],
+        ]
+    ):
         if rc != 0:
             bars_j[idx_b].set_hatch("//")
             bars_j[idx_b].set_alpha(0.55)
@@ -1040,8 +1241,16 @@ def build_fig5(doc: dict[str, Any], fig_dir: Path) -> None:
     ax_a.set_xticklabels(groups_a, fontsize=7.0)
     ax_a.set_ylabel("Peak RSS at 32 Threads (GB)")
     ax_a.set_ylim(0, max(java_rss) * 1.25)
-    ax_a.set_title("A. Full-Genome Peak RSS (Unchunked vs. <=50 kbp)", loc="left", fontsize=9.0)
-    ax_a.legend(loc="upper center", bbox_to_anchor=(0.5, -0.32), ncol=3, frameon=True, fontsize=7.2)
+    ax_a.set_title(
+        "A. Full-Genome Peak RSS (Unchunked vs. <=50 kbp)", loc="left", fontsize=9.0
+    )
+    ax_a.legend(
+        loc="upper center",
+        bbox_to_anchor=(0.5, -0.32),
+        ncol=3,
+        frameon=True,
+        fontsize=7.2,
+    )
 
     # Panel B: Completed Wall Time (Minutes) — only plotting completed runs
     ax_b = axes[1]
@@ -1054,7 +1263,9 @@ def build_fig5(doc: dict[str, Any], fig_dir: Path) -> None:
         ]
     ):
         if j_d.get("exit_code", 0) == 0 and j_d.get("wall_s", 0.0) > 0:
-            ax_b.bar(idx_g - w, j_d["wall_s"] / 60.0, width=w, color=PALETTE["VarDictJava"])
+            ax_b.bar(
+                idx_g - w, j_d["wall_s"] / 60.0, width=w, color=PALETTE["VarDictJava"]
+            )
         else:
             ax_b.text(
                 idx_g - w,
@@ -1104,10 +1315,30 @@ def build_fig5(doc: dict[str, Any], fig_dir: Path) -> None:
     h2_none = h2_b["vcfeval"]["rust"]["operating_points"]["none"]
     h8_v03 = h8_b["vcfeval_v03_rust"]["best"]
     h8_v04 = h8_b["vcfeval_v04_rust"]["best"]
-    labels_c = ["HG002 v4.2.1\n(Optimal)", "HG002 v4.2.1\n(All-PASS)", "HG008 v0.3\n(Optimal)", "HG008 v0.4\n(Optimal)"]
-    p_vals = [h2_opt["precision"], h2_none["precision"], h8_v03["precision"], h8_v04["precision"]]
-    r_vals = [h2_opt["sensitivity"], h2_none["sensitivity"], h8_v03["sensitivity"], h8_v04["sensitivity"]]
-    f1_vals = [h2_opt["f_measure"], h2_none["f_measure"], h8_v03["f_measure"], h8_v04["f_measure"]]
+    labels_c = [
+        "HG002 v4.2.1\n(Optimal)",
+        "HG002 v4.2.1\n(All-PASS)",
+        "HG008 v0.3\n(Optimal)",
+        "HG008 v0.4\n(Optimal)",
+    ]
+    p_vals = [
+        h2_opt["precision"],
+        h2_none["precision"],
+        h8_v03["precision"],
+        h8_v04["precision"],
+    ]
+    r_vals = [
+        h2_opt["sensitivity"],
+        h2_none["sensitivity"],
+        h8_v03["sensitivity"],
+        h8_v04["sensitivity"],
+    ]
+    f1_vals = [
+        h2_opt["f_measure"],
+        h2_none["f_measure"],
+        h8_v03["f_measure"],
+        h8_v04["f_measure"],
+    ]
     x_c = np.arange(len(labels_c))
     ax_c.bar(x_c - w, p_vals, width=w, color="#56B4E9", label="Precision")
     ax_c.bar(x_c, r_vals, width=w, color="#009E73", label="Recall")
@@ -1116,7 +1347,9 @@ def build_fig5(doc: dict[str, Any], fig_dir: Path) -> None:
     ax_c.set_xticklabels(labels_c, fontsize=7.5)
     ax_c.set_ylim(0, 1.12)
     ax_c.set_ylabel("Full-Genome rtg vcfeval Metric")
-    ax_c.set_title("C. Full-Genome WGS Truth Accuracy (Java==Rust)", loc="left", fontsize=9.0)
+    ax_c.set_title(
+        "C. Full-Genome WGS Truth Accuracy (Java==Rust)", loc="left", fontsize=9.0
+    )
     ax_c.legend(loc="lower right", frameon=True, fontsize=7.5)
 
     save_pub_figure(fig, fig_dir, "fig5")
@@ -1134,13 +1367,27 @@ def build_fig6(doc: dict[str, Any], fig_dir: Path) -> None:
     # Panel A: 10-Platform chr20 SNV F1 on Standard GIAB vs UG-HCR v2.1 BED (Rust -f 0.01)
     ax_a = fig.add_subplot(gs[0, 0])
     rust_001 = [r for r in part_a if r["engine"] == "rust" and r["freq"] == "0.01"]
-    arms_a = [PLATFORM_LABELS.get(r["arm"], r["arm"]).replace(" ", "\n", 1) for r in rust_001]
+    arms_a = [
+        PLATFORM_LABELS.get(r["arm"], r["arm"]).replace(" ", "\n", 1) for r in rust_001
+    ]
     std_f1 = [r["snp_f1"] for r in rust_001]
     ug_f1 = [r["ughcr_snp_f1"] for r in rust_001]
     x_a = np.arange(len(arms_a))
     w_a = 0.36
-    ax_a.bar(x_a - w_a / 2.0, std_f1, width=w_a, color=PALETTE["VarDictRust"], label="Standard GIAB BED")
-    ax_a.bar(x_a + w_a / 2.0, ug_f1, width=w_a, color=PALETTE["vardictcpp"], label="UG-HCR v2.1 BED")
+    ax_a.bar(
+        x_a - w_a / 2.0,
+        std_f1,
+        width=w_a,
+        color=PALETTE["VarDictRust"],
+        label="Standard GIAB BED",
+    )
+    ax_a.bar(
+        x_a + w_a / 2.0,
+        ug_f1,
+        width=w_a,
+        color=PALETTE["vardictcpp"],
+        label="UG-HCR v2.1 BED",
+    )
     ax_a.set_xticks(x_a)
     ax_a.set_xticklabels(arms_a, rotation=30, ha="right", fontsize=7.2)
     rust_part_a = [r for r in part_a if r["engine"] == "rust"]
@@ -1151,7 +1398,13 @@ def build_fig6(doc: dict[str, Any], fig_dir: Path) -> None:
         f"A. 10-Platform Sequencing Chemistry Chr20 SNV F1 ({rust_done_a}/{len(rust_part_a)} Rust Runs Complete)",
         loc="left",
     )
-    ax_a.legend(loc="upper center", bbox_to_anchor=(0.5, -0.42), ncol=2, frameon=True, fontsize=7.2)
+    ax_a.legend(
+        loc="upper center",
+        bbox_to_anchor=(0.5, -0.42),
+        ncol=2,
+        frameon=True,
+        fontsize=7.2,
+    )
 
     # Panel B: Part B 18/18 Exact Match Somatic Candidate Scaling Across Minimum VAF/Read Thresholds
     ax_b = fig.add_subplot(gs[0, 1])
@@ -1165,7 +1418,14 @@ def build_fig6(doc: dict[str, Any], fig_dir: Path) -> None:
     reg_colors = [PALETTE["VarDictRust"], PALETTE["vardictcpp"], PALETTE["VarDictJava"]]
     for idx_r, reg in enumerate(regimes):
         vals = [
-            next((r["total_candidates"] for r in part_b if r["platform"] == p and r["regime"] == reg), 0)
+            next(
+                (
+                    r["total_candidates"]
+                    for r in part_b
+                    if r["platform"] == p and r["regime"] == reg
+                ),
+                0,
+            )
             for p in platforms_b
         ]
         ax_b.bar(
@@ -1178,7 +1438,10 @@ def build_fig6(doc: dict[str, Any], fig_dir: Path) -> None:
     ax_b.set_yscale("log")
     ax_b.set_xticks(x_b)
     ax_b.set_xticklabels(
-        [p.replace("_", "\n", 1).replace("_", " ") for p in platforms_b], rotation=28, ha="right", fontsize=7.2
+        [p.replace("_", "\n", 1).replace("_", " ") for p in platforms_b],
+        rotation=28,
+        ha="right",
+        fontsize=7.2,
     )
     ax_b.set_ylabel("Total Candidate Variants (log scale)")
     ax_b.set_title(
@@ -1200,7 +1463,14 @@ def build_fig6(doc: dict[str, Any], fig_dir: Path) -> None:
     mat = np.zeros((len(strata), len(arms_ga)))
     for i_s, st in enumerate(strata):
         for j_a, arm in enumerate(arms_ga):
-            val = next((r["snv_f1"] for r in ga_rows if r["stratum"] == st and r["arm"] == arm), 0.0)
+            val = next(
+                (
+                    r["snv_f1"]
+                    for r in ga_rows
+                    if r["stratum"] == st and r["arm"] == arm
+                ),
+                0.0,
+            )
             mat[i_s, j_a] = val
     sns.heatmap(
         mat,
@@ -1232,13 +1502,24 @@ def build_fig7(doc: dict[str, Any], fig_dir: Path) -> None:
     # Panel A: NIST v4.2.1, v5.0q T2T-Q100, and CMRG v1.00 Recall (Unchunked Contigs vs <=50 kbp GIAB BED)
     ax_a = fig.add_subplot(gs[0, 0])
     benches_a = ["NIST_v4.2.1_All", "NIST_v5.0q_T2T_Q100", "NIST_CMRG_v1.00_273Genes"]
-    callers_a = ["VarDictRust_FullContigs", "VarDictRust_GIAB50kb", "VarDictJava_GIAB50kb"]
+    callers_a = [
+        "VarDictRust_FullContigs",
+        "VarDictRust_GIAB50kb",
+        "VarDictJava_GIAB50kb",
+    ]
     x_a = np.arange(len(benches_a))
     w_a = 0.25
     cols_a = [PALETTE["VarDictRust"], "#56B4E9", PALETTE["VarDictJava"]]
     for idx_c, c_name in enumerate(callers_a):
         vals = [
-            next((r["snv_r"] for r in v50_rows if r["benchmark"] == b and r["caller"] == c_name), 0.0)
+            next(
+                (
+                    r["snv_r"]
+                    for r in v50_rows
+                    if r["benchmark"] == b and r["caller"] == c_name
+                ),
+                0.0,
+            )
             for b in benches_a
         ]
         ax_a.bar(
@@ -1249,23 +1530,45 @@ def build_fig7(doc: dict[str, Any], fig_dir: Path) -> None:
             label=CALLER_PROTOCOL_LABELS.get(c_name, c_name),
         )
     ax_a.set_xticks(x_a)
-    ax_a.set_xticklabels(["GIAB v4.2.1\n(GRCh38)", "GIAB v5.0q\n(T2T-Q100)", "CMRG v1.00\n(273 Genes)"])
+    ax_a.set_xticklabels(
+        ["GIAB v4.2.1\n(GRCh38)", "GIAB v5.0q\n(T2T-Q100)", "CMRG v1.00\n(273 Genes)"]
+    )
     ax_a.set_ylim(0.6, 1.03)
     ax_a.set_ylabel("SNV Recall (Sensitivity)")
-    ax_a.set_title("A. HG002 v5.0q T2T-Q100 & CMRG v1.00 SNV Recall", loc="left", fontsize=9.2)
+    ax_a.set_title(
+        "A. HG002 v5.0q T2T-Q100 & CMRG v1.00 SNV Recall", loc="left", fontsize=9.2
+    )
     ax_a.legend(loc="upper right", frameon=True, fontsize=7.2)
 
     # Panel B: NIST Mosaic SNV v1.10 Recall + CMRG InDel Recall
     ax_b = fig.add_subplot(gs[1, 0])
     mosaic_rows = [r for r in v50_rows if r["benchmark"] == "NIST_Mosaic_SNV_v1.10"]
     cmrg_rows = [r for r in v50_rows if r["benchmark"] == "NIST_CMRG_v1.00_273Genes"]
-    labels_b = [CALLER_PROTOCOL_LABELS.get(r["caller"], r["caller"]).replace(" (", "\n(") for r in mosaic_rows]
+    labels_b = [
+        CALLER_PROTOCOL_LABELS.get(r["caller"], r["caller"]).replace(" (", "\n(")
+        for r in mosaic_rows
+    ]
     mos_r = [r["snv_r"] for r in mosaic_rows]
-    cmrg_ind_r = [next((cr["indel_r"] for cr in cmrg_rows if cr["caller"] == r["caller"]), 0.0) for r in mosaic_rows]
+    cmrg_ind_r = [
+        next((cr["indel_r"] for cr in cmrg_rows if cr["caller"] == r["caller"]), 0.0)
+        for r in mosaic_rows
+    ]
     x_b = np.arange(len(labels_b))
     w_b = 0.34
-    bars_m = ax_b.bar(x_b - w_b / 2.0, mos_r, width=w_b, color=PALETTE["VarDictRust"], label="Mosaic SNV v1.10 Recall")
-    bars_ci = ax_b.bar(x_b + w_b / 2.0, cmrg_ind_r, width=w_b, color=PALETTE["vardictcpp"], label="CMRG v1.00 InDel Recall")
+    bars_m = ax_b.bar(
+        x_b - w_b / 2.0,
+        mos_r,
+        width=w_b,
+        color=PALETTE["VarDictRust"],
+        label="Mosaic SNV v1.10 Recall",
+    )
+    bars_ci = ax_b.bar(
+        x_b + w_b / 2.0,
+        cmrg_ind_r,
+        width=w_b,
+        color=PALETTE["vardictcpp"],
+        label="CMRG v1.00 InDel Recall",
+    )
     ax_b.set_xticks(x_b)
     ax_b.set_xticklabels(labels_b, fontsize=7.5)
     ax_b.set_ylim(0, 1.15)
@@ -1276,9 +1579,24 @@ def build_fig7(doc: dict[str, Any], fig_dir: Path) -> None:
         fontsize=9.2,
     )
     for b, v in zip(bars_m, mos_r):
-        ax_b.text(b.get_x() + b.get_width() / 2.0, v + 0.02, f"{v:.4f}", ha="center", va="bottom", fontsize=7.5, fontweight="bold")
+        ax_b.text(
+            b.get_x() + b.get_width() / 2.0,
+            v + 0.02,
+            f"{v:.4f}",
+            ha="center",
+            va="bottom",
+            fontsize=7.5,
+            fontweight="bold",
+        )
     for b, v in zip(bars_ci, cmrg_ind_r):
-        ax_b.text(b.get_x() + b.get_width() / 2.0, v + 0.02, f"{v:.4f}", ha="center", va="bottom", fontsize=7.5)
+        ax_b.text(
+            b.get_x() + b.get_width() / 2.0,
+            v + 0.02,
+            f"{v:.4f}",
+            ha="center",
+            va="bottom",
+            fontsize=7.5,
+        )
     ax_b.legend(loc="lower right", frameon=True)
 
     # Panel C: HG008 v0.4 11-Caller Modern ML & Commercial Somatic Landscape
@@ -1288,7 +1606,8 @@ def build_fig7(doc: dict[str, Any], fig_dir: Path) -> None:
     slice_all = [
         r
         for r in h8_rows
-        if r["scope"] == "HG008_Slice_v0.4_All" and r["caller"] in ("VarDictRust_v1.0.6", "Mutect2", "Strelka2", "LoFreq")
+        if r["scope"] == "HG008_Slice_v0.4_All"
+        and r["caller"] in ("VarDictRust_v1.0.6", "Mutect2", "Strelka2", "LoFreq")
     ]
     combined_c = full_all + slice_all
     y_c = np.arange(len(combined_c))
@@ -1316,13 +1635,29 @@ def build_fig7(doc: dict[str, Any], fig_dir: Path) -> None:
             c_labels.append(f"{short_c} (WGS)")
     snv_c = [r["snv_f1"] for r in combined_c]
     ind_c = [r["indel_f1"] for r in combined_c]
-    ax_c.barh(y_c - h_c / 2.0, snv_c, height=h_c, color=PALETTE["VarDictRust"], label="SNV F1 (GIAB v0.4)")
-    ax_c.barh(y_c + h_c / 2.0, ind_c, height=h_c, color=PALETTE["VarDictJava"], label="InDel F1 (GIAB v0.4)")
+    ax_c.barh(
+        y_c - h_c / 2.0,
+        snv_c,
+        height=h_c,
+        color=PALETTE["VarDictRust"],
+        label="SNV F1 (GIAB v0.4)",
+    )
+    ax_c.barh(
+        y_c + h_c / 2.0,
+        ind_c,
+        height=h_c,
+        color=PALETTE["VarDictJava"],
+        label="InDel F1 (GIAB v0.4)",
+    )
     ax_c.set_yticks(y_c)
     ax_c.set_yticklabels(c_labels, fontsize=7.6)
     ax_c.set_xlim(0, 1.08)
     ax_c.set_xlabel("HG008 GIAB v0.4 F1 Score")
-    ax_c.set_title("C. HG008 GIAB v0.4 Somatic Landscape Across 11 Callers", loc="left", fontsize=9.2)
+    ax_c.set_title(
+        "C. HG008 GIAB v0.4 Somatic Landscape Across 11 Callers",
+        loc="left",
+        fontsize=9.2,
+    )
     ax_c.legend(loc="lower right", frameon=True)
 
     save_pub_figure(fig, fig_dir, "fig7")
@@ -1340,7 +1675,11 @@ def build_fig8(doc: dict[str, Any], fig_dir: Path) -> None:
     gnu_mb = h4["gnu_binary_bytes"] / (1024.0 * 1024.0)
     musl_mb = h4["musl_binary_bytes"] / (1024.0 * 1024.0)
     conda_cnt = h4["oracle_conda_package_count"]
-    labels_a = ["VarDictRust\nGNU Binary", "VarDictRust\nStatic musl", "VarDictRust\nScratch OCI"]
+    labels_a = [
+        "VarDictRust\nGNU Binary",
+        "VarDictRust\nStatic musl",
+        "VarDictRust\nScratch OCI",
+    ]
     vals_a = [gnu_mb, musl_mb, 20.0]
     cols_a = [PALETTE["VarDictRust"], PALETTE["VarDictRust"], "#56B4E9"]
     bars_a = ax_a.bar(labels_a, vals_a, width=0.5, color=cols_a, edgecolor="#1E293B")
@@ -1352,7 +1691,15 @@ def build_fig8(doc: dict[str, Any], fig_dir: Path) -> None:
         fontsize=8.8,
     )
     for b, v in zip(bars_a, vals_a):
-        ax_a.text(b.get_x() + b.get_width() / 2.0, v + 0.5, f"{v:.2f} MiB", ha="center", va="bottom", fontsize=8, fontweight="bold")
+        ax_a.text(
+            b.get_x() + b.get_width() / 2.0,
+            v + 0.5,
+            f"{v:.2f} MiB",
+            ha="center",
+            va="bottom",
+            fontsize=8,
+            fontweight="bold",
+        )
     ax_a.text(
         0.5,
         0.86,
@@ -1362,7 +1709,11 @@ def build_fig8(doc: dict[str, Any], fig_dir: Path) -> None:
         ha="center",
         va="center",
         fontsize=7.2,
-        bbox={"boxstyle": "round,pad=0.3", "facecolor": "#F8FAFC", "edgecolor": "#CBD5E1"},
+        bbox={
+            "boxstyle": "round,pad=0.3",
+            "facecolor": "#F8FAFC",
+            "edgecolor": "#CBD5E1",
+        },
     )
 
     # Panel B: 1..32 Thread Output Determinism on SEQC2 Whole Exome
@@ -1374,13 +1725,26 @@ def build_fig8(doc: dict[str, Any], fig_dir: Path) -> None:
         cmp_str = ex_scale[f"th{th}"]["compare"]
         m = re.search(r"(\d+)", cmp_str)
         var_counts.append(int(m.group(1)) if m else 0)
-    bars_b = ax_b.bar([f"{t}c" for t in threads_b], var_counts, color=PALETTE["VarDictRust"], edgecolor="#1E293B")
+    bars_b = ax_b.bar(
+        [f"{t}c" for t in threads_b],
+        var_counts,
+        color=PALETTE["VarDictRust"],
+        edgecolor="#1E293B",
+    )
     ax_b.set_ylabel("Emitted Somatic Variants (SEQC2 Exome)")
     ax_b.set_ylim(0, max(var_counts) * 1.30)
-    ax_b.set_title("B. Multi-Thread Determinism (1–32c = 0 Diffs)", loc="left", fontsize=8.8)
+    ax_b.set_title(
+        "B. Multi-Thread Determinism (1–32c = 0 Diffs)", loc="left", fontsize=8.8
+    )
     for b, v in zip(bars_b, var_counts):
         ax_b.text(
-            b.get_x() + b.get_width() / 2.0, v * 1.02, f"{v:,}", ha="center", va="bottom", fontsize=7.0, fontweight="bold"
+            b.get_x() + b.get_width() / 2.0,
+            v * 1.02,
+            f"{v:,}",
+            ha="center",
+            va="bottom",
+            fontsize=7.0,
+            fontweight="bold",
         )
     ax_b.text(
         0.5,
@@ -1390,7 +1754,11 @@ def build_fig8(doc: dict[str, Any], fig_dir: Path) -> None:
         ha="center",
         va="center",
         fontsize=7.2,
-        bbox={"boxstyle": "round,pad=0.25", "facecolor": "#F8FAFC", "edgecolor": "#CBD5E1"},
+        bbox={
+            "boxstyle": "round,pad=0.25",
+            "facecolor": "#F8FAFC",
+            "edgecolor": "#CBD5E1",
+        },
     )
 
     # Panel C: Empirical vardictcpp Variant Discrepancies vs VarDictJava Oracle
@@ -1400,9 +1768,15 @@ def build_fig8(doc: dict[str, Any], fig_dir: Path) -> None:
     strata = doc["stage4"]["tier3_truth_and_qual_sweep"]["strata_summary"]
     cpp_boundary_dupes = h2_c["cpp"]["boundary_excess_variants"]
     cpp_giab_diff = abs(h2_g["cpp"]["variant_count"] - h2_g["rust"]["variant_count"])
-    cpp_hg002_mnp_diff = abs(strata["hg002"]["cpp"]["total"] - strata["hg002"]["rust"]["total"])
-    cpp_seqc2_sv_diff = abs(strata["seqc2"]["cpp"]["total"] - strata["seqc2"]["rust"]["total"])
-    cpp_hg008_sv_diff = abs(strata["hg008"]["cpp"]["total"] - strata["hg008"]["rust"]["total"])
+    cpp_hg002_mnp_diff = abs(
+        strata["hg002"]["cpp"]["total"] - strata["hg002"]["rust"]["total"]
+    )
+    cpp_seqc2_sv_diff = abs(
+        strata["seqc2"]["cpp"]["total"] - strata["seqc2"]["rust"]["total"]
+    )
+    cpp_hg008_sv_diff = abs(
+        strata["hg008"]["cpp"]["total"] - strata["hg008"]["rust"]["total"]
+    )
 
     div_labels = [
         "HG002 Unchunked WGS\n(50 kbp Boundary Dupes)",
@@ -1411,7 +1785,13 @@ def build_fig8(doc: dict[str, Any], fig_dir: Path) -> None:
         "SEQC2 Somatic Exome\n(Omitted SVs)",
         "HG008 Somatic Slice\n(Omitted Indel/SV)",
     ]
-    div_vals = [cpp_boundary_dupes, cpp_giab_diff, cpp_hg002_mnp_diff, cpp_seqc2_sv_diff, cpp_hg008_sv_diff]
+    div_vals = [
+        cpp_boundary_dupes,
+        cpp_giab_diff,
+        cpp_hg002_mnp_diff,
+        cpp_seqc2_sv_diff,
+        cpp_hg008_sv_diff,
+    ]
     y_c = np.arange(len(div_labels))
     bars_c = ax_c.barh(y_c, div_vals, color=PALETTE["VarDictJava"], edgecolor="#1E293B")
     ax_c.set_xscale("log")
@@ -1419,9 +1799,19 @@ def build_fig8(doc: dict[str, Any], fig_dir: Path) -> None:
     ax_c.set_yticklabels(div_labels, fontsize=7.2)
     ax_c.set_xlabel("Discrepant Variant Count vs. Oracle (log scale)")
     ax_c.set_xlim(0.5, max(div_vals) * 8.0)
-    ax_c.set_title("C. Empirical vardictcpp Variant Discrepancies", loc="left", fontsize=8.8)
+    ax_c.set_title(
+        "C. Empirical vardictcpp Variant Discrepancies", loc="left", fontsize=8.8
+    )
     for b, v in zip(bars_c, div_vals):
-        ax_c.text(v * 1.18, b.get_y() + b.get_height() / 2.0, f"{v:,}", ha="left", va="center", fontsize=8, fontweight="bold")
+        ax_c.text(
+            v * 1.18,
+            b.get_y() + b.get_height() / 2.0,
+            f"{v:,}",
+            ha="left",
+            va="center",
+            fontsize=8,
+            fontweight="bold",
+        )
 
     save_pub_figure(fig, fig_dir, "fig8")
 
@@ -1431,7 +1821,9 @@ def build_fig8(doc: dict[str, Any], fig_dir: Path) -> None:
 # ==============================================================================
 
 
-def build_all_tables(doc: dict[str, Any], inv_rows: list[dict[str, str]], tab_dir: Path) -> None:
+def build_all_tables(
+    doc: dict[str, Any], inv_rows: list[dict[str, str]], tab_dir: Path
+) -> None:
     """Generate Tables 1-8 and Supplementary Tables S1-S6 in Markdown and LaTeX."""
     s1 = doc["stage1"]
     s2 = doc["stage2"]
@@ -1627,7 +2019,9 @@ def build_all_tables(doc: dict[str, Any], inv_rows: list[dict[str, str]], tab_di
     r_rss_12: list[float] = []
     j_rss_12: list[float] = []
     for samp, sdict in s2["tierp_v2"].items():
-        clean_samp = samp.replace("somatic_76_86", "SRR15006376 / SRR15006386 (Somatic Pair)")
+        clean_samp = samp.replace(
+            "somatic_76_86", "SRR15006376 / SRR15006386 (Somatic Pair)"
+        )
         for th_k in ("th1", "th8"):
             td = sdict[th_k]
             j_rep = td["java"]["replicates"]
@@ -1637,7 +2031,10 @@ def build_all_tables(doc: dict[str, Any], inv_rows: list[dict[str, str]], tab_di
             j_walls_12.append(float(j_rep["wall_s_mean"]))
             r_rss_12.append(float(r_rep["max_rss_mb_mean"]))
             j_rss_12.append(float(j_rep["max_rss_mb_mean"]))
-            bed_int = td["bed_intervals"] or s2["tierp_v2"]["SRR15006376"]["th1"]["bed_intervals"]
+            bed_int = (
+                td["bed_intervals"]
+                or s2["tierp_v2"]["SRR15006376"]["th1"]["bed_intervals"]
+            )
             t2_rows.append(
                 [
                     clean_samp,
@@ -1744,7 +2141,9 @@ def build_all_tables(doc: dict[str, Any], inv_rows: list[dict[str, str]], tab_di
                 f"{r['calls']:,} calls",
                 f"{r['snv_p']:.4f} / {r['snv_r']:.4f} / {r['snv_f1']:.4f}",
                 f"{r['indel_p']:.4f} / {r['indel_r']:.4f} / {r['indel_f1']:.4f}",
-                "100% Exact Match (VarDictRust == VarDictJava)" if "VarDict" in r["caller"] else "External Germline Caller",
+                "100% Exact Match (VarDictRust == VarDictJava)"
+                if "VarDict" in r["caller"]
+                else "External Germline Caller",
             ]
         )
     for c_key, c_lbl in [
@@ -1754,7 +2153,9 @@ def build_all_tables(doc: dict[str, Any], inv_rows: list[dict[str, str]], tab_di
     ]:
         # Main Table 3 keeps the representative F1-maximizing operating point per
         # cohort; the paired unfiltered (All-PASS) rows live in Supp Table S4.
-        op_best = s4["tier3_truth_and_qual_sweep"]["cohorts"][c_key]["engines"]["rust"]["operating_points"]["best"]
+        op_best = s4["tier3_truth_and_qual_sweep"]["cohorts"][c_key]["engines"]["rust"][
+            "operating_points"
+        ]["best"]
         t3_rows.append(
             [
                 f"{c_lbl} (Optimal QUAL >= {float(op_best['threshold']):.1f})<sup>b</sup>",
@@ -2015,15 +2416,27 @@ def build_all_tables(doc: dict[str, Any], inv_rows: list[dict[str, str]], tab_di
         rr = ed["rust"]
         jr = ed["java"]
         cr = ed["cpp"]
-        j_verdict_clean = "100% Exact Match" if rr["parity_vs_java"] == "STRICT_MATCH" else rr["parity_vs_java"]
+        j_verdict_clean = (
+            "100% Exact Match"
+            if rr["parity_vs_java"] == "STRICT_MATCH"
+            else rr["parity_vs_java"]
+        )
         if cr["parity_vs_java"] in ("DIFF_CAPTURED", "MISMATCH"):
             c_verdict_clean = "MNP/SV Divergence<sup>c</sup>"
         elif cr["parity_vs_java"] == "NA":
             c_verdict_clean = "Oracle Timed Out<sup>b,c</sup>"
         else:
             c_verdict_clean = cr["parity_vs_java"]
-        j_str = "Timeout (rc=124, >3 h)<sup>b</sup>" if jr["rc"] != 0 else f"{jr['wall_str']} ({j_verdict_clean})"
-        c_str = "Timeout (rc=124, >3 h)<sup>b</sup>" if cr["rc"] != 0 else f"{cr['wall_str']} ({c_verdict_clean})"
+        j_str = (
+            "Timeout (rc=124, >3 h)<sup>b</sup>"
+            if jr["rc"] != 0
+            else f"{jr['wall_str']} ({j_verdict_clean})"
+        )
+        c_str = (
+            "Timeout (rc=124, >3 h)<sup>b</sup>"
+            if cr["rc"] != 0
+            else f"{cr['wall_str']} ({c_verdict_clean})"
+        )
         cohort_lbl = rr["cohort"].replace("_", " ")
         t6_rows.append(
             [
@@ -2038,7 +2451,9 @@ def build_all_tables(doc: dict[str, Any], inv_rows: list[dict[str, str]], tab_di
         )
     ga_rows = s6["ga4gh_v35_stratification_matrix"]
     j_comp_cnt = sum(1 for r in part_a if r["engine"] == "java" and r["rc"] == 0)
-    nf_cnt = int(s5["cross_platform_short_read_chr20_panel"]["part_b_strict_match_count"])
+    nf_cnt = int(
+        s5["cross_platform_short_read_chr20_panel"]["part_b_strict_match_count"]
+    )
     t6_rows.append(
         [
             "All 10 Platforms x 7 Strata [17]<sup>e</sup>",
@@ -2078,7 +2493,7 @@ def build_all_tables(doc: dict[str, Any], inv_rows: list[dict[str, str]], tab_di
         "NIST_v4.2.1_All": "GIAB HG002 v4.2.1 (GRCh38 All) [13, 18]<sup>a</sup>",
         "NIST_v5.0q_T2T_Q100": "GIAB HG002 v5.0q (T2T-Q100 Assembly) [14, 16]<sup>a,b</sup>",
         "NIST_CMRG_v1.00_273Genes": "GIAB HG002 CMRG v1.00 (273 Challenging Medically Relevant Genes) [15]<sup>a,b</sup>",
-        "NIST_Mosaic_SNV_v1.10": "GIAB HG002 Mosaic SNV v1.10 (Low-VAF Somatic-Like Benchmark) [19]<sup>c</sup>",
+        "NIST_Mosaic_SNV_v1.10": "GIAB HG002 Mosaic SNV v1.10 (Low-VAF Somatic-Like Benchmark) [20]<sup>c</sup>",
         "HG008_FullWGS_v0.4_All": "GIAB HG008 Somatic v0.4 (Full-Genome WGS, All Callable) [19]<sup>d</sup>",
         "HG008_FullWGS_v0.4_NoGI": "GIAB HG008 Somatic v0.4 (Full-Genome WGS, Excl. Genomic Instability) [19]<sup>d</sup>",
         "HG008_Slice_v0.4_All": "GIAB HG008 Somatic v0.4 (Targeted Benchmark Regions) [19]<sup>e</sup>",
@@ -2106,8 +2521,17 @@ def build_all_tables(doc: dict[str, Any], inv_rows: list[dict[str, str]], tab_di
         "PacBio_HiFi": "PacBio HiFi",
         "Ultima_UG100": "Ultima UG100",
     }
-    mosaic_snv_r_pct = next(r["snv_r"] for r in s6["hg002_v50q_cmrg_mosaic_eval"] if r["snv_only_benchmark"]) * 100.0
-    k_mos, n_mos = (int(x) for x in str(doc["flat_macros"]["s6_mosaic_tp_best"]).split("/"))
+    mosaic_snv_r_pct = (
+        next(
+            r["snv_r"]
+            for r in s6["hg002_v50q_cmrg_mosaic_eval"]
+            if r["snv_only_benchmark"]
+        )
+        * 100.0
+    )
+    k_mos, n_mos = (
+        int(x) for x in str(doc["flat_macros"]["s6_mosaic_tp_best"]).split("/")
+    )
     for r in s6["hg002_v50q_cmrg_mosaic_eval"]:
         snv_col = (
             f"Recall = {r['snv_r']:.4f} ({r['snv_r'] * 100.0:.2f}%)<sup>c</sup>"
@@ -2150,12 +2574,12 @@ def build_all_tables(doc: dict[str, Any], inv_rows: list[dict[str, str]], tab_di
     write_dual_table(
         tab_dir,
         "table7",
-        "Table 7. Next-Generation Truth Benchmarks (GIAB v5.0q T2T-Q100 [14, 16], CMRG v1.00 [15], Mosaic SNV v1.10 [19]) & HG008 GIAB v0.4 [19] Somatic Caller Landscape",
+        "Table 7. Next-Generation Truth Benchmarks (GIAB v5.0q T2T-Q100 [14, 16], CMRG v1.00 [15], Mosaic SNV v1.10 [20]) & HG008 GIAB v0.4 [19] Somatic Caller Landscape",
         t7_headers,
         t7_rows,
         "<sup>a</sup>Evaluates full-genome GIAB HG002 [13, 18] 2x250 bp WGS callsets across the legacy v4.2.1 benchmark (2.51 Gbp) [13], the T2T-Q100 assembly-backed v5.0q benchmark (2.74 Gbp) [14, 16], and the 273-gene Challenging Medically Relevant Genes (CMRG v1.00) benchmark [15]. "
         f"<sup>b</sup>On v4.2.1 callable BED intervals (<={50000 // 1000} kbp), VarDictRust and VarDictJava v1.8.3 [1] achieve identical accuracy; on v5.0q and CMRG v1.00, unchunked full-contig calling in VarDictRust recovers +{((v50q_fc['snv_r'] - v50q_bed['snv_r']) * 100.0):.2f}% SNV / +{((v50q_fc['indel_r'] - v50q_bed['indel_r']) * 100.0):.2f}% InDel recall on v5.0q and +{((cmrg_fc['snv_r'] - cmrg_bed['snv_r']) * 100.0):.2f}% SNV / +{((cmrg_fc['indel_r'] - cmrg_bed['indel_r']) * 100.0):.2f}% InDel recall on CMRG loci located outside legacy v4.2.1 BED masks (where VarDictJava OOMs on unchunked contigs). "
-        f"<sup>c</sup>NIST GIAB HG002 Mosaic SNV v1.10 [19] is an SNV-only benchmark of {n_mos} low-VAF (1%–30% VAF) somatic-like loci; because whole-genome calling was performed without restricting to the 89-locus mosaic target BED, unmasked sensitivity ({k_mos}/{n_mos} = {mosaic_snv_r_pct:.2f}% recall) is the informative metric. "
+        f"<sup>c</sup>NIST GIAB HG002 Mosaic SNV v1.10 [20] is an SNV-only benchmark of {n_mos} low-VAF (1%–30% VAF) somatic-like loci evaluated here ({k_mos}/{n_mos} = {mosaic_snv_r_pct:.2f}% unmasked sensitivity). "
         "<sup>d</sup>External full-genome HG008 GIAB v0.4 [19] callsets are sourced from the NIST GIAB Liss Lab repository for DRAGEN v4.2.4 [21], DeepSomatic v1.6.0 [22], ClairS v0.4.1 [23], Ultima DeepVariant Somatic [6], Lancet2 (NYGC) [24], and Hartwig SAGE [25], evaluated both across all callable regions and excluding genomic instability (NoGI) masks. "
         "<sup>e</sup>Targeted HG008 v0.4 slice evaluations compare VarDictRust, VarDictJava [1], Strelka2 [4], Mutect2 [8], and LoFreq [7] on identical 195x tumor / 169x normal Illumina alignments; LoFreq 0.0000 indel scores reflect absent indel quality calibration tags.",
     )
@@ -2249,7 +2673,7 @@ def build_all_tables(doc: dict[str, Any], inv_rows: list[dict[str, str]], tab_di
         "All Tiers": "Cross-Modal Security & Parity",
         "Tier G (WGS)": "Full-Genome WGS (chr1–chr22)",
         "Tier G (GA4GH v3.5)": "GA4GH v3.5 Stratification [17]",
-        "Tier G (v5.0Q/CMRG/Mosaic)": "Next-Gen GIAB Truth [14–16, 19]",
+        "Tier G (v5.0Q/CMRG/Mosaic)": "Next-Gen GIAB Truth [14–16, 20]",
         "Tier G (HG008 v0.4)": "GIAB HG008 v0.4 Somatic [19]",
         "Tier E (Titration)": "Somatic Low-VAF Titration [19]",
     }
@@ -2291,7 +2715,10 @@ def build_all_tables(doc: dict[str, Any], inv_rows: list[dict[str, str]], tab_di
         m_both = re.match(r"^MATCH \((\d+) rows\); MATCH \((\d+) variants\)$", raw_v)
         if m_both:
             return f"100% Exact Match ({int(m_both.group(1)):,} .var rows; {int(m_both.group(2)):,} VCF variants)"
-        m_four = re.match(r"^MATCH \((\d+) variants\); MATCH \(\d+ variants\); MATCH \(\d+ variants\); MATCH \(\d+ variants\)$", raw_v)
+        m_four = re.match(
+            r"^MATCH \((\d+) variants\); MATCH \(\d+ variants\); MATCH \(\d+ variants\); MATCH \(\d+ variants\)$",
+            raw_v,
+        )
         if m_four:
             return f"100% Exact Match across 4 tile sizes ({int(m_four.group(1)):,} variants)"
         m_single = re.match(r"^MATCH \((\d+) (variants|rows)\)$", raw_v)
@@ -2305,14 +2732,21 @@ def build_all_tables(doc: dict[str, Any], inv_rows: list[dict[str, str]], tab_di
             .replace("Tier-P ", "Clinical AML ")
             .replace("H4 ", "")
             .replace("Arm A (22 un-chunked chromosomes)", "(22 unchunked chromosomes)")
-            .replace("Arm B (<=50 kbp GIAB callable intervals)", f"(<={50000 // 1000} kbp GIAB callable intervals)")
-            .replace("Arm B (<=50 kbp GIAB v0.4 intervals)", f"(<={50000 // 1000} kbp GIAB v0.4 callable intervals)")
+            .replace(
+                "Arm B (<=50 kbp GIAB callable intervals)",
+                f"(<={50000 // 1000} kbp GIAB callable intervals)",
+            )
+            .replace(
+                "Arm B (<=50 kbp GIAB v0.4 intervals)",
+                f"(<={50000 // 1000} kbp GIAB v0.4 callable intervals)",
+            )
             .replace("Wolff 2026", "Wolff [11]")
-            .replace(" / Daniels 2024", "")
-            .replace(" (Daniels 2024)", "")
             .replace("v5.0Q", "v5.0q")
             .replace("octopus", "Octopus")
-            .replace("s3_simple, s4_somatic, hg008_somatic", "HG002 germline, SEQC2 somatic exome, and HG008 somatic")
+            .replace(
+                "s3_simple, s4_somatic, hg008_somatic",
+                "HG002 germline, SEQC2 somatic exome, and HG008 somatic",
+            )
             .replace("SRR15006376|SRR15006386", "SRR15006376 / SRR15006386")
         )
         return d
@@ -2460,13 +2894,23 @@ def build_all_tables(doc: dict[str, Any], inv_rows: list[dict[str, str]], tab_di
     def _clean_s2_arm(raw_arm: str) -> str:
         if raw_arm in s2_arm_clean:
             return s2_arm_clean[raw_arm]
-        fmt_tag = "(.var)" if raw_arm.endswith(".var") else ("(VCF)" if raw_arm.endswith(".vcf") else "")
+        fmt_tag = (
+            "(.var)"
+            if raw_arm.endswith(".var")
+            else ("(VCF)" if raw_arm.endswith(".vcf") else "")
+        )
         stem_a = raw_arm.removesuffix(".var").removesuffix(".vcf")
         if stem_a.startswith("ud_"):
             s_a = (
                 stem_a.removeprefix("ud_")
-                .replace("som_76_86_29kx", "AML Somatic SRR15006376 / SRR15006386 (29kx depth)")
-                .replace("som_75_86_45kx", "AML Somatic SRR15006375 / SRR15006386 (45kx depth)")
+                .replace(
+                    "som_76_86_29kx",
+                    "AML Somatic SRR15006376 / SRR15006386 (29kx depth)",
+                )
+                .replace(
+                    "som_75_86_45kx",
+                    "AML Somatic SRR15006375 / SRR15006386 (45kx depth)",
+                )
                 .replace("hg008_15kx", "GIAB HG008 [19] Somatic (15kx depth)")
                 .replace("hg002_7kx", "GIAB HG002 [13] Germline (7kx depth)")
                 .replace("rna_173kx", "HG002 GM24385 [13] RNA-Seq (173kx depth)")
@@ -2533,7 +2977,9 @@ def build_all_tables(doc: dict[str, Any], inv_rows: list[dict[str, str]], tab_di
         "cpp": "vardictcpp [11]",
     }
     for samp, sdict in s2["tierp_v2"].items():
-        clean_samp = samp.replace("somatic_76_86", "Somatic Pair (SRR15006376 / SRR15006386)")
+        clean_samp = samp.replace(
+            "somatic_76_86", "Somatic Pair (SRR15006376 / SRR15006386)"
+        )
         for th_k in ("th1", "th8"):
             td = sdict[th_k]
             for eng in ("rust", "java", "cpp"):
@@ -2576,7 +3022,15 @@ def build_all_tables(doc: dict[str, Any], inv_rows: list[dict[str, str]], tab_di
                 f"{rep['max_rss_mb_mean']:.1f} MB ({rep['max_rss_gib_mean']:.3f} GiB)",
             ]
         )
-    for c_name in ("VarDictRust", "VarDictJava", "vardictcpp", "Strelka2", "LoFreq", "octopus", "Mutect2"):
+    for c_name in (
+        "VarDictRust",
+        "VarDictJava",
+        "vardictcpp",
+        "Strelka2",
+        "LoFreq",
+        "octopus",
+        "Mutect2",
+    ):
         fc_d = fc_info["somatic_SRR15006376_SRR15006386"][c_name]["th8"]
         s3_rows.append(
             [
@@ -2698,9 +3152,15 @@ def build_all_tables(doc: dict[str, Any], inv_rows: list[dict[str, str]], tab_di
         )
     for wgs_lbl, wgs_d in [
         ("GIAB HG002 [13, 18] Full WGS (22 Unchunked Chromosomes)", h2_a),
-        (f"GIAB HG002 [13, 18] Full WGS (<={50000 // 1000} kbp GIAB Callable BED)", h2_b),
+        (
+            f"GIAB HG002 [13, 18] Full WGS (<={50000 // 1000} kbp GIAB Callable BED)",
+            h2_b,
+        ),
         ("GIAB HG008 [19] 364x Full WGS (22 Unchunked Chromosomes, -U)", h8_a),
-        (f"GIAB HG008 [19] 364x Full WGS (<={50000 // 1000} kbp GIAB Callable BED, -U)", h8_b),
+        (
+            f"GIAB HG008 [19] 364x Full WGS (<={50000 // 1000} kbp GIAB Callable BED, -U)",
+            h8_b,
+        ),
     ]:
         s3_rows.append(
             [
@@ -2744,7 +3204,9 @@ def build_all_tables(doc: dict[str, Any], inv_rows: list[dict[str, str]], tab_di
         ("seqc2", "SEQC2 HCC1395 [10]"),
         ("hg008", "GIAB HG008 v0.3 [19]"),
     ]:
-        ops = s4["tier3_truth_and_qual_sweep"]["cohorts"][c_key]["engines"]["rust"]["operating_points"]
+        ops = s4["tier3_truth_and_qual_sweep"]["cohorts"][c_key]["engines"]["rust"][
+            "operating_points"
+        ]
         op_none = ops["none"]
         op_best = ops["best"]
         s4_rows.append(
@@ -2887,7 +3349,7 @@ def build_all_tables(doc: dict[str, Any], inv_rows: list[dict[str, str]], tab_di
             ],
             [
                 "Next-Gen Germline & Mosaic Suite",
-                "GIAB HG002 v4.2.1 [13], v5.0q T2T-Q100 [14, 16], CMRG [15] & Mosaic [19]",
+                "GIAB HG002 v4.2.1 [13], v5.0q T2T-Q100 [14, 16], CMRG [15] & Mosaic [20]",
                 f"{len(s6['hg002_v50q_cmrg_mosaic_eval'])}-Evaluation Next-Gen Germline & Mosaic Suite",
                 f"Full Contigs (Rust) & <={50000 // 1000} kbp BED (VarDictRust == VarDictJava [1])",
                 f"v5.0q SNV F1={v50q_fc['snv_f1']:.4f} (Full) / {v50q_bed['snv_f1']:.4f} (BED)",
@@ -3127,7 +3589,9 @@ def build_all_tables(doc: dict[str, Any], inv_rows: list[dict[str, str]], tab_di
     )
 
 
-def verify_outputs(fig_dir: Path, tab_dir: Path, inv_rows: list[dict[str, str]]) -> None:
+def verify_outputs(
+    fig_dir: Path, tab_dir: Path, inv_rows: list[dict[str, str]]
+) -> None:
     """Verify all 8 figures (SVG+PDF) and 14 tables (MD+TeX) exist, are valid, and represent all 60 cells."""
     for i in range(1, 9):
         svg = fig_dir / f"fig{i}.svg"
@@ -3139,7 +3603,9 @@ def verify_outputs(fig_dir: Path, tab_dir: Path, inv_rows: list[dict[str, str]])
         svg_text = svg.read_text(encoding="utf-8")
         ET.fromstring(svg_text)
         if "<text" not in svg_text:
-            raise ValueError(f"SVG {svg} is missing searchable <text> elements (svg.fonttype must be 'none')")
+            raise ValueError(
+                f"SVG {svg} is missing searchable <text> elements (svg.fonttype must be 'none')"
+            )
 
     stems = [f"table{i}" for i in range(1, 9)] + [f"supp_table{i}" for i in range(1, 7)]
     for stem in stems:
@@ -3156,11 +3622,27 @@ def verify_outputs(fig_dir: Path, tab_dir: Path, inv_rows: list[dict[str, str]])
         if re.search(r"\b(nan|NaN|None|TODO|TBD)\b", tex_txt):
             raise ValueError(f"Forbidden NaN/None token in {tex}")
         if stem != "supp_table1":
-            if re.search(r"\b(s[1-6]_[a-z0-9_]+|sweep_[a-z0-9_]+|evidence_certified)\b", md_txt):
+            if re.search(
+                r"\b(s[1-6]_[a-z0-9_]+|sweep_[a-z0-9_]+|evidence_certified)\b", md_txt
+            ):
                 raise ValueError(f"Table {md} contains raw internal cell_id slug")
-        for bad_tok in ("Option C", "Tier P", "Tier-P", "H1a", "Gate 7", "Stage 1", "Stage 2", "Stage 3", "Stage 4", "Stage 5", "Stage 6"):
+        for bad_tok in (
+            "Option C",
+            "Tier P",
+            "Tier-P",
+            "H1a",
+            "Gate 7",
+            "Stage 1",
+            "Stage 2",
+            "Stage 3",
+            "Stage 4",
+            "Stage 5",
+            "Stage 6",
+        ):
             if bad_tok in md_txt:
-                raise ValueError(f"Table {md} contains internal jargon token {bad_tok!r}")
+                raise ValueError(
+                    f"Table {md} contains internal jargon token {bad_tok!r}"
+                )
 
     s1_txt = (tab_dir / "supp_table1.md").read_text(encoding="utf-8")
     for r in inv_rows:
@@ -3191,33 +3673,63 @@ def build_all(input_json: Path, fig_dir: Path, tab_dir: Path) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--input", type=Path, default=DEFAULT_INPUT, help="Path to master_gcp_metrics.json")
-    parser.add_argument("--fig-dir", type=Path, default=DEFAULT_FIG_DIR, help="Output directory for figures")
-    parser.add_argument("--tab-dir", type=Path, default=DEFAULT_TAB_DIR, help="Output directory for tables")
-    parser.add_argument("--verify", action="store_true", help="Verify (and build if missing) all figures and tables")
+    parser.add_argument(
+        "--input",
+        type=Path,
+        default=DEFAULT_INPUT,
+        help="Path to master_gcp_metrics.json",
+    )
+    parser.add_argument(
+        "--fig-dir",
+        type=Path,
+        default=DEFAULT_FIG_DIR,
+        help="Output directory for figures",
+    )
+    parser.add_argument(
+        "--tab-dir",
+        type=Path,
+        default=DEFAULT_TAB_DIR,
+        help="Output directory for tables",
+    )
+    parser.add_argument(
+        "--verify",
+        action="store_true",
+        help="Verify (and build if missing) all figures and tables",
+    )
     args = parser.parse_args()
 
     if args.verify:
-        missing_any = any(
-            not (args.fig_dir / f"fig{i}.svg").is_file() or not (args.fig_dir / f"fig{i}.pdf").is_file()
-            for i in range(1, 9)
-        ) or any(
-            not (args.tab_dir / f"table{i}.md").is_file() or not (args.tab_dir / f"table{i}.tex").is_file()
-            for i in range(1, 9)
-        ) or any(
-            not (args.tab_dir / f"supp_table{i}.md").is_file() or not (args.tab_dir / f"supp_table{i}.tex").is_file()
-            for i in range(1, 7)
+        missing_any = (
+            any(
+                not (args.fig_dir / f"fig{i}.svg").is_file()
+                or not (args.fig_dir / f"fig{i}.pdf").is_file()
+                for i in range(1, 9)
+            )
+            or any(
+                not (args.tab_dir / f"table{i}.md").is_file()
+                or not (args.tab_dir / f"table{i}.tex").is_file()
+                for i in range(1, 9)
+            )
+            or any(
+                not (args.tab_dir / f"supp_table{i}.md").is_file()
+                or not (args.tab_dir / f"supp_table{i}.tex").is_file()
+                for i in range(1, 7)
+            )
         )
         if missing_any:
             build_all(args.input, args.fig_dir, args.tab_dir)
         else:
             inv_rows = load_tsv(args.input.parent / "cells_60_inventory.tsv")
             verify_outputs(args.fig_dir, args.tab_dir, inv_rows)
-        print(f"OK verified 8 SVG/PDF figures in {args.fig_dir} and 14 MD/TeX tables in {args.tab_dir}")
+        print(
+            f"OK verified 8 SVG/PDF figures in {args.fig_dir} and 14 MD/TeX tables in {args.tab_dir}"
+        )
         return 0
 
     build_all(args.input, args.fig_dir, args.tab_dir)
-    print(f"OK generated and verified 8 SVG/PDF figures in {args.fig_dir} and 14 MD/TeX tables in {args.tab_dir}")
+    print(
+        f"OK generated and verified 8 SVG/PDF figures in {args.fig_dir} and 14 MD/TeX tables in {args.tab_dir}"
+    )
     return 0
 
 
