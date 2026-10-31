@@ -1,6 +1,6 @@
 # Ecosystem Survey — AI-assisted Rust rewrites of bioinformatics tools
 
-**Author / Maintainer:** Palak Sheth <palakpsheth@gmail.com>  
+**Author / Maintainer:** [Palak Sheth](https://www.linkedin.com/in/palak-p-sheth/) <palakpsheth@gmail.com>  
 **Repository:** [https://github.com/palakpsheth/VarDictRust](https://github.com/palakpsheth/VarDictRust)  
 **Governing Manifesto:** [rewrites.bio](https://rewrites.bio)  
 

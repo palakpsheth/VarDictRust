@@ -230,6 +230,47 @@ class TestPaperReproducibility(unittest.TestCase):
                 f"Internal plan jargon {term!r} found in main manuscript.md",
             )
 
+    def test_prose_free_of_ai_cliches_and_throat_clearing(self) -> None:
+        ms_text = MANUSCRIPT.read_text(encoding="utf-8")
+        sup_text = SUPPLEMENT.read_text(encoding="utf-8")
+        combined = ms_text + "\n" + sup_text
+        banned_ai_phrases = [
+            "central challenge",
+            "cornerstone",
+            "recurring tension",
+            "underappreciated consequence",
+            "merit explicit consideration",
+            "architectural divide",
+            "meticulously",
+            "ballooned",
+            "bloated",
+            "delve",
+            "tapestry",
+            "testament",
+            "paradigm shift",
+            "underscores",
+            "To ensure complete machine-traceable auditability",
+            "claims of Wolff et al. [11], we replicated the Wolff et al. [11]",
+            "palak@rewrites.bio",
+            "github.com/rewrites-bio",
+            "rewrites.bio) Initiative",
+            "rewrites.bio) initiative",
+        ]
+        for phrase in banned_ai_phrases:
+            self.assertNotIn(
+                phrase,
+                combined,
+                f"Banned AI cliché or throat-clearing phrase {phrase!r} found in manuscript/supplement",
+            )
+        for req_author in (
+            "https://www.linkedin.com/in/palak-p-sheth/",
+            "palakpsheth@gmail.com",
+            "https://github.com/palakpsheth/VarDictRust",
+        ):
+            self.assertIn(req_author, ms_text, f"Missing author/repo metadata {req_author!r} in manuscript.md")
+        self.assertIn("https://www.linkedin.com/in/palak-p-sheth/", sup_text)
+        self.assertIn("palakpsheth@gmail.com", sup_text)
+
     def test_referee_and_biostatistics_compliance(self) -> None:
         ms_text = MANUSCRIPT.read_text(encoding="utf-8")
         sup_text = SUPPLEMENT.read_text(encoding="utf-8")

@@ -427,7 +427,7 @@ Per the [rewrites.bio](https://rewrites.bio) manifesto, we disclose all AI tools
 <a id="attribution-citation"></a>
 ## Attribution & Citation
 
-VarDictRust is authored and maintained by **Palak Sheth** (<palakpsheth@gmail.com>), developed as an idiomatic Rust rewrite of **VarDict** and **VarDictJava** originally created by Zhongwu Lai and the AstraZeneca-NGS team:
+VarDictRust is authored and maintained by **[Palak Sheth](https://www.linkedin.com/in/palak-p-sheth/)** (<palakpsheth@gmail.com>), developed as an idiomatic Rust rewrite of **VarDict** and **VarDictJava** originally created by Zhongwu Lai and the AstraZeneca-NGS team:
 
 > Lai Z, Markovets A, Ahdesmaki M, et al. VarDict: a novel and versatile variant caller for next-generation sequencing in cancer research. *Nucleic Acids Research*, 2016;44(11):e108. doi:[10.1093/nar/gkw227](https://doi.org/10.1093/nar/gkw227)
 

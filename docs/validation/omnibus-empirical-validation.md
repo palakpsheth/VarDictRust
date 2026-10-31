@@ -7,7 +7,7 @@
 **Target Architecture:** Rust 2021 Edition (`crates/vardictrust-core`, `crates/vardictrust`)  
 **Binary Distribution:** Standalone `x86_64-unknown-linux-musl` static PIE binary (zero external shared libraries)  
 **Repository:** [https://github.com/palakpsheth/VarDictRust](https://github.com/palakpsheth/VarDictRust)  
-**Author / Maintainer:** Palak Sheth <palakpsheth@gmail.com>  
+**Author / Maintainer:** [Palak Sheth](https://www.linkedin.com/in/palak-p-sheth/) <palakpsheth@gmail.com>  
 **Companion Engineering Audit:** [`docs/testing/test-matrix-and-ci-audit.md`](../testing/test-matrix-and-ci-audit.md) (Master Test Matrix & CI/CD Pipeline Audit)  
 **Benchmark Specification & Hardware Ledger:** [`benchmarks/README.md`](../../benchmarks/README.md)  
 **Verification Framework:** [Three-Tier Parity & Truth Standard](../testing/test-matrix-and-ci-audit.md#tier-1) (Tier-1 Intermediate Table, Tier-2 Full VCF Oracle Differential, Tier-3 Biological Ground Truth)
@@ -739,7 +739,7 @@ bash harness/gcp_paper_runner.sh --plan-check
 }
 
 @misc{rewrites_bio_2026,
-  author    = {{rewrites.bio Consortium}},
+  author    = {{Seqera Labs}},
   title     = {{The Software Rewrite Manifesto for the Life Sciences}},
   year      = {2026},
   url       = {https://rewrites.bio}

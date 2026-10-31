@@ -50,7 +50,7 @@ def configure_metadata():
     print("[1/5] Configuring repository metadata and settings...")
     payload = {
         "description": "Fast, memory-safe, idiomatic Rust rewrite of VarDictJava v1.8.3 for deep NGS variant calling",
-        "homepage": "https://rewrites.bio",
+        "homepage": "https://vardictrust.readthedocs.io/",
         "has_issues": True,
         "has_projects": False,
         "has_wiki": True,

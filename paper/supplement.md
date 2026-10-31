@@ -1,7 +1,7 @@
 # Supplementary Material: VarDictRust: A Memory-Bounded, Oracle-Equivalent Rust Consolidation of the VarDict Variant-Calling Pipeline for Deep Whole-Genome and Ultra-Low-VAF Sequencing
 
-**Authors:** Palak Sheth<sup>1,*</sup>  
-<sup>1</sup>Independent Researcher, [rewrites.bio](https://rewrites.bio) Initiative (`palak@rewrites.bio`)  
+**Authors:** [Palak Sheth](https://www.linkedin.com/in/palak-p-sheth/)<sup>1,*</sup>  
+<sup>1</sup>Independent Researcher ([palakpsheth@gmail.com](mailto:palakpsheth@gmail.com) | [https://www.linkedin.com/in/palak-p-sheth/](https://www.linkedin.com/in/palak-p-sheth/))  
 **Engine Release:** `VarDictRust` `v1.0.6` (commit `2a8e9a3`, engine fingerprint `5865a2a0b24a8c17`, performance fingerprint `c490c36317b8f25b`)  
 **Reference Oracles:** `VarDictJava v1.8.3 (0886261)` and `vardictcpp ae93fe39dc (Wolff 2026)`  
 **Cloud Benchmark Host:** `GCP n2-standard-32 (Intel Xeon Platinum 8373C Ice Lake, 32 vCPUs, 128 GiB RAM, 4x375 GB NVMe RAID0)` (`1.5` TB NVMe RAID0 scratch; exploratory staging also verified on `c3d-standard-32`)
@@ -11,14 +11,14 @@
 ## Table of Contents
 
 1. **Supplementary Methods: Exact Command-Line Invocations Across All 60 Benchmark Cells**
-   - 1.0 Manuscript Figure and Table to 60-Cell Provenance Crosswalk
-   - 1.1 Domain 1: Ceiling, Multi-Region Boundary, and Tile-Invariance Cells (`4` cells)
-   - 1.2 Domain 2: Wolff et al. AML Panel Replication, 13-Mode Sweep, Field Callers, and `-R chr1` (`17` cells)
-   - 1.3 Domain 3: Full-Sample 51.8 GiB RNA-Seq Splice Calling (`1` cell)
-   - 1.4 Domain 4: Whole-Exome Scaling, Chromosome 1 Span-to-RSS, Node Packing, and `QUAL` ROC (`15` cells)
-   - 1.5 Multi-Regime Parameter Sweep: Comprehensive 87-Arm `.var` and `.vcf` Parity Sweep (`12` cells)
-   - 1.6 Domain 5: Full-Genome WGS (Unchunked Full Chromosomes vs. Pre-Chunked Callable Intervals), 10-Platform Chr20 Panel, and Supply Chain (`7` cells)
-   - 1.7 Domain 6: GA4GH v3.5 Stratification, GIAB v5.0q/CMRG/Mosaic, HG008 v0.4 11-Caller Matrix, and Low-VAF Titration (`4` cells)
+    - 1.0 Manuscript Figure and Table to 60-Cell Provenance Crosswalk
+    - 1.1 Domain 1: Ceiling, Multi-Region Boundary, and Tile-Invariance Cells (`4` cells)
+    - 1.2 Domain 2: Wolff et al. AML Panel Replication, 13-Mode Sweep, Field Callers, and `-R chr1` (`17` cells)
+    - 1.3 Domain 3: Full-Sample 51.8 GiB RNA-Seq Splice Calling (`1` cell)
+    - 1.4 Domain 4: Whole-Exome Scaling, Chromosome 1 Span-to-RSS, Node Packing, and `QUAL` ROC (`15` cells)
+    - 1.5 Multi-Regime Parameter Sweep: Comprehensive 87-Arm `.var` and `.vcf` Parity Sweep (`12` cells)
+    - 1.6 Domain 5: Full-Genome WGS (Unchunked Full Chromosomes vs. Pre-Chunked Callable Intervals), 10-Platform Chr20 Panel, and Supply Chain (`7` cells)
+    - 1.7 Domain 6: GA4GH v3.5 Stratification, GIAB v5.0q/CMRG/Mosaic, HG008 v0.4 11-Caller Matrix, and Low-VAF Titration (`4` cells)
 2. **Supplementary Note 1: Analytical Derivation of JVM (`VarDictJava`) and `vardictcpp` Heap Retention (Unchunked Chromosomes vs. Pre-Chunked Callable Intervals)**
 3. **Supplementary Note 2: Ten-Point Technical Audit of `vardictcpp` Divergences (`CPP-1` through `CPP-10`)**
 4. **Supplementary Note 3: Biostatistical Methodology, Exact Clopper-Pearson Intervals, and `--fix` Governance**
@@ -29,10 +29,10 @@
 
 ## 1. Supplementary Methods: Exact Command-Line Invocations Across All 60 Benchmark Cells
 
-All `60` verification cells (`59` cloud compute cells plus `1` certified local-to-cloud evidence bundle `evidence_certified`) were executed on `GCP n2-standard-32 (Intel Xeon Platinum 8373C Ice Lake, 32 vCPUs, 128 GiB RAM, 4x375 GB NVMe RAID0)` (`Ubuntu 24.04 LTS`, Linux kernel `6.8`, `1.5` TB 4-way NVMe RAID0 mounted at `/var/tmp/vardict-paper`). Every timed execution was wrapped in `/usr/bin/time -v` across `n = 3` independent technical replicates or guarded by `timeout 10800` (`3` hours, exit code `rc=124` on timeout; `rc=3` on JVM `OutOfMemoryError`).
+All `60` verification cells (`59` cloud compute cells plus `1` certified local-to-cloud evidence bundle `evidence_certified`) ran on `GCP n2-standard-32 (Intel Xeon Platinum 8373C Ice Lake, 32 vCPUs, 128 GiB RAM, 4x375 GB NVMe RAID0)` (`Ubuntu 24.04 LTS`, Linux kernel `6.8`, `1.5` TB 4-way NVMe RAID0 mounted at `/var/tmp/vardict-paper`). Timed runs used `/usr/bin/time -v` across `n = 3` independent technical replicates or `timeout 10800` (`3` hours, exit code `rc=124` on timeout; `rc=3` on JVM `OutOfMemoryError`).
 
 ### 1.0 Manuscript Figure and Table to 60-Cell Provenance Crosswalk
-To ensure complete machine-traceable auditability while keeping the main manuscript prose accessible to general readers, the crosswalk below maps every main-text Figure (`Figure 1`–`Figure 8`) and Table (`Table 1`–`Table 8`) to its underlying `cell_id` directories in `benchmarks/gcp-study-v106/` (`Supplementary Table S1`):
+The crosswalk below maps each main-text Figure (`Figure 1`–`Figure 8`) and Table (`Table 1`–`Table 8`) to its benchmark directory in `benchmarks/gcp-study-v106/` (`Supplementary Table S1`):
 - **`Figure 1` & `Table 1` (Architecture, Operational Modes, and 87-Arm Equivalence Sweep):** `s1_ceiling_amplicon`, `s1_ceiling_hg008`, `s1_gate7_ref_multiregion`, `s1_h1a_simple_tiles`, `s2_tierp_mode_parity_sweep`, `s3_rna_splice_parity_n3`, `s4_multimodal_and_cram_twin`, `evidence_certified`, and the `12` `sweep_*` cells (`sweep_4targets_full`, `sweep_R_chr1_full`, `sweep_hg002_chr20_exome`, `sweep_multimodal_and_cram_twin`, `sweep_rna_hg002_52gb`, `sweep_span_chr1_f0`, `sweep_tierp_13modes`, `sweep_tierp_SRR15006540`, `sweep_tierp_SRR8657348`, `sweep_tierp_somatic_76_86`, `sweep_ultradeep_mrd_stress`, `sweep_wgs_mrd_matrix`).
 - **`Figure 2` & `Table 2` (Wolff et al. AML Cohort, Field Callers, and Contiguous `-R chr1`):** `s2_tierp_v2_SRR15006375_th1`, `s2_tierp_v2_SRR15006375_th8`, `s2_tierp_v2_SRR15006376_th1`, `s2_tierp_v2_SRR15006376_th8`, `s2_tierp_v2_SRR15006386_th1`, `s2_tierp_v2_SRR15006386_th8`, `s2_tierp_v2_SRR15006540_th1`, `s2_tierp_v2_SRR15006540_th8`, `s2_tierp_v2_SRR8657348_th1`, `s2_tierp_v2_SRR8657348_th8`, `s2_tierp_v2_somatic_76_86_th1`, `s2_tierp_v2_somatic_76_86_th8`, `s2_table3_R_chr1_java_200g_n3`, `s2_table3_R_chr1_rust_and_cpp`, and `s2_fig1_fig3_field_callers`.
 - **`Figure 3` & `Table 3` (Germline/Somatic Truth Concordance, `QUAL` Operating Points, and Low-VAF Titration):** `s2_fig2_hg002_chr20_truth`, `s4_tier3_truth_and_qual_sweep`, `s5_grch38_field_callers_truth`, `s6_low_vaf_titration_truth_curve`, and `evidence_certified`.
@@ -156,30 +156,30 @@ rtg vcfeval -b HG002_GRCh38_v5.0q_T2T.vcf.gz -e HG002_GRCh38_v5.0q_T2T.bed \
 
 ## 2. Supplementary Note 1: Analytical Derivation of JVM (`VarDictJava`) and `vardictcpp` Heap Retention (Unchunked Chromosomes vs. Pre-Chunked Callable Intervals)
 
-In `VarDictJava` v1.8.3 (`CigarParser.java` and `VariationRealigner.java`), the pileup engine processes each BED region $[S, E]$ of length $L = E - S + 1$ by instantiating two region-wide heap structures before emitting a single variant row:
-1. A reference base map `Reference.referenceSequences` (`Map<Integer, Character>`) containing $O(L)$ boxed `java.lang.Integer` (`16` bytes) and `java.lang.Character` (`16` bytes) objects plus `HashMap$Node` headers (`32` bytes), consuming $\approx 64\text{–}96$ bytes per reference base ($\approx 16\text{–}24$ GiB for human `chr1` of length $L = 249,250,621$ bp per worker thread).
-2. A position-indexed variation map `Map<Integer, VariationMap<String, Variation>> nonInsertionVariants` and `insertionVariants`, where every covered genomic coordinate $p \in [S, E]$ allocates a `VariationMap` and one `Variation` object per observed allele (including the reference allele). At sequencing depth $D$, the active heap footprint per worker thread scales as:
+In `VarDictJava` v1.8.3 (`CigarParser.java` and `VariationRealigner.java`), the pileup engine processes each BED region $[S, E]$ of length $L = E - S + 1$ by instantiating two region-wide heap structures before emitting any variant row:
+1. A reference base map `Reference.referenceSequences` (`Map<Integer, Character>`) holding $O(L)$ boxed `java.lang.Integer` (`16` bytes) and `java.lang.Character` (`16` bytes) objects plus `HashMap$Node` headers (`32` bytes), consuming $\approx 64\text{–}96$ bytes per reference base ($\approx 16\text{–}24$ GiB for human `chr1` of length $L = 249,250,621$ bp per worker thread).
+2. A position-indexed variation map `Map<Integer, VariationMap<String, Variation>> nonInsertionVariants` and `insertionVariants`, where each covered coordinate $p \in [S, E]$ allocates a `VariationMap` and one `Variation` object per observed allele. At sequencing depth $D$, the active heap footprint across $T$ worker threads scales as:
    $$\text{RSS}_{\text{Java / C++} }(L, T) = \Theta\!\left(\sum_{t=1}^{T} L_t \cdot (c_{\text{ref} } + c_{\text{var} } \cdot \bar{a}(D))\right)$$
-   where $L_t$ is the length of the region assigned to thread $t$ and $\bar{a}(D)$ is the mean number of candidate alleles per locus. When $L_t \le 50$ kbp (pre-chunked callable intervals), $L_t$ is small enough that GC can reclaim objects between intervals (`34.14` GB on HG002 pre-chunked intervals; `62.51` GB with timeout `rc=124` on HG008 pre-chunked intervals). When $L_t \in [50, 249]$ Mbp (unchunked chromosomes or `-R chr1:1-249250621`), live objects cannot be garbage-collected until the entire chromosome completes, driving `VarDictJava` to `106.47` GiB on `chr1` alone and `>213.7` GB (`rc=3` `OutOfMemoryError`) on multi-threaded full genomes (`Table 2`, `Table 5`). Similarly, `vardictcpp` retains per-region C++ `robin_hood` / `std::unordered_map` structures across each interval, consuming `10.58` GiB on `chr1`, `31.91` GB on HG002 unchunked chromosomes, and `91.85` GB (`rc=124` timeout) on HG008 unchunked chromosomes unless an external shell script pre-splits the BED file (`CPP_CHUNK=50,000`).
+   where $L_t$ is the region length assigned to thread $t$ and $\bar{a}(D)$ is the mean allele count per locus. When $L_t \le 50$ kbp (pre-chunked intervals), garbage collection reclaims objects between intervals (`34.14` GB on HG002; `62.51` GB with timeout `rc=124` on HG008). When $L_t \in [50, 249]$ Mbp (unchunked chromosomes or `-R chr1:1-249250621`), live objects remain reachable until the chromosome finishes, driving `VarDictJava` to `106.47` GiB on `chr1` and `>213.7` GB (`rc=3` `OutOfMemoryError`) on multi-threaded full genomes (`Table 2`, `Table 5`). `vardictcpp` similarly retains per-region C++ hash tables across each interval, consuming `10.58` GiB on `chr1`, `31.91` GB on HG002 unchunked chromosomes, and `91.85` GB (`rc=124` timeout) on HG008 unchunked chromosomes unless an external script pre-splits the BED file (`CPP_CHUNK=50,000`).
 
-By contrast, `VarDictRust` leaves intervals $\le 1,000,000$ bp untiled and partitions any region of length $L > 1,000,000$ bp into fixed tiles of default width $W = 100$ kbp with halo $H = 10$ kbp (`200` kbp in `-i` splice mode; `Figure 1b`), bounding memory strictly to:
+`VarDictRust` leaves intervals $\le 1,000,000$ bp untiled and partitions any region $L > 1,000,000$ bp into tiles of default width $W = 100$ kbp with halo $H = 10$ kbp (`200` kbp in `-i` splice mode; `Figure 1b`), bounding memory to:
 $$\text{RSS}_{\text{VarDictRust} }(L, T) = O\!\left(T \cdot (W + 2H)\right) \perp L$$
-Empirically, increasing $L$ by `250`× on chromosome 1 (`1` Mbp to `249` Mbp, `s4_span_chr1_3way_th8`..`th32`) changes `VarDictRust` RSS by only `1.18`×–`1.41`× (`1.38`–`3.69` GiB), enabling unchunked full-genome calling in `4.93` GB (HG002) and `12.14` GB (HG008).
+Increasing $L$ by `250`× on chromosome 1 (`1` Mbp to `249` Mbp, `s4_span_chr1_3way_th8`..`th32`) changes `VarDictRust` RSS by `1.18`×–`1.41`× (`1.38`–`3.69` GiB), allowing unchunked full-genome calling in `4.93` GB (HG002) and `12.14` GB (HG008).
 
 ---
 
 ## 3. Supplementary Note 2: Ten-Point Technical Audit of `vardictcpp` Divergences (`CPP-1` through `CPP-10`)
 
-Across cells `s2_tierp_mode_parity_sweep`, `s5_h4_maintenance_security_matrix`, `s5_wgs_hg002_full_contigs_3way_th32`, and `s6_low_vaf_titration_truth_curve`, we cataloged ten reproducibility and capability gaps in `vardictcpp ae93fe39dc (Wolff 2026)`, matching the taxonomy in `Supplementary Table S6` verbatim (`Table 8`, `Supplementary Table S6`):
+Across cells `s2_tierp_mode_parity_sweep`, `s5_h4_maintenance_security_matrix`, `s5_wgs_hg002_full_contigs_3way_th32`, and `s6_low_vaf_titration_truth_curve`, we cataloged ten reproducibility and capability gaps in `vardictcpp ae93fe39dc (Wolff 2026)` (`Table 8`, `Supplementary Table S6`):
 - **`CPP-1` (VCF Header & `INFO/END` Schema):** `vardictcpp` omits the `##INFO=<ID=END>` header definition and diverges from `var2vcf_valid.pl` / `var2vcf_paired.pl` VCF 4.3 schema formatting.
 - **`CPP-2` (CRISPR (`-J`/`-j`) & Structural Variant Modes):** `vardictcpp` sets `--nosv` (`-U`) by default and omits CRISPR cleavage-site (`-J`/`-j`) and structural variant (`StructuralVariantsProcessor`) assembly (`1/13` modes failed in `s2_tierp_mode_parity_sweep`, `12/13` exact).
 - **`CPP-3` (Amplicon (`-a`) Output Format):** In amplicon primer-clipping mode (`-a 10:0.95`, `s1_ceiling_amplicon`), `vardictcpp` emits raw tab-separated `.var` text instead of VCF (`0` VCF lines), breaking downstream `bcftools` and `rtg vcfeval` consumers.
 - **`CPP-4` (Concatenated CLI Flag Parsing):** Passing bundled single-character flags (e.g., `-z -c 1` combined or legacy `VarDictJava` bundled options) causes `vardictcpp` to fail CLI parsing with exit code `120`.
-- **`CPP-5` (50 kbp Chunk Boundary Deduplication):** Without an external BED-splitting wrapper (`--chunk 50,000` / `CPP_CHUNK=50,000`), `vardictcpp` consumes `10.58` GiB on `chr1`, `31.91` GB on HG002 unchunked chromosomes, and `91.85` GB (`rc=124` timeout) on HG008 unchunked chromosomes; when intervals are chunked, `vardictcpp` lacks boundary ownership deduplication, emitting `+309,569` excess duplicate/boundary-shifted calls on HG002 unchunked chromosomes (`9,953,338` vs `9,643,769`) and `+394` on pre-chunked intervals (`8,111,565` vs `8,111,171`).
+- **`CPP-5` (50 kbp Chunk Boundary Deduplication):** Without external BED splitting (`--chunk 50,000` / `CPP_CHUNK=50,000`), `vardictcpp` consumes `10.58` GiB on `chr1`, `31.91` GB on HG002 unchunked chromosomes, and `91.85` GB (`rc=124` timeout) on HG008 unchunked chromosomes. When intervals are chunked, `vardictcpp` lacks boundary deduplication, emitting `+309,569` duplicate/shifted calls on HG002 unchunked chromosomes (`9,953,338` vs `9,643,769`) and `+394` on pre-chunked intervals (`8,111,565` vs `8,111,171`).
 - **`CPP-6` (Missing `##contig` Header Lines):** `vardictcpp` omits `##contig=<ID=...,length=...>` lines from VCF headers (`VarDictJava` issue `#320`), causing strict VCF validators and `rtg vcfeval` header checks to warn or fail.
 - **`CPP-7` (GRCh37 / b37 Chromosome Naming):** `vardictcpp` hardcodes `chr`-prefix assumptions in internal chromosome handling, breaking or diverging on `b37` / `GRCh37` numeric contigs (`1`..`22`, `X`, `Y`, `MT`).
 - **`CPP-8` (BAM/CRAM Reference & Decode):** `vardictcpp` diverges on CRAM reference decoding (`-G ref.fa`) and requires dynamic linkage against external `libhts`, `libcurl`, `liblzma`, `libbz2`, and `libdeflate`, whereas `VarDictRust` natively decodes BAM and CRAM in a `4.56` MB zero-dependency static `musl` binary (`s4_multimodal_and_cram_twin`).
-- **`CPP-9` (MNP Phasing, Tie-Break & Somatic SV Drops):** `vardictcpp` diverges from `VarDictJava` on complex multinucleotide variant (MNP) phasing, realignment tie-breaking, and somatic variant retention—most visibly at `20%` tumor purity (`s6_low_vaf_titration_truth_curve`), where `vardictcpp` drops somatic indel $F_1$ to `0.2466` (recall `15.65%`) and SNV $F_1$ to `0.6914` (recall `57.07%`), whereas `VarDictRust` matches `VarDictJava` (`Indel` $F_1 = 0.3104$, recall `20.75%`; `SNV` $F_1 = 0.7512$, recall `65.59%`).
+- **`CPP-9` (MNP Phasing, Tie-Break & Somatic SV Drops):** `vardictcpp` diverges from `VarDictJava` on complex MNP phasing, realignment tie-breaking, and somatic variant retention. At `20%` tumor purity (`s6_low_vaf_titration_truth_curve`), `vardictcpp` drops somatic indel $F_1$ to `0.2466` (recall `15.65%`) and SNV $F_1$ to `0.6914` (recall `57.07%`), whereas `VarDictRust` matches `VarDictJava` (`Indel` $F_1 = 0.3104$, recall `20.75%`; `SNV` $F_1 = 0.7512$, recall `65.59%`).
 - **`CPP-10` (RNA-Seq Splice Mode (`-i`.var / `.splice.tsv`):** `vardictcpp` does not implement `-i` exon-junction splice-site accounting (`s3_rna_splice_parity_n3`, `51.8` GiB RNA-seq BAM, `12,668` records).
 
 ---
@@ -187,7 +187,7 @@ Across cells `s2_tierp_mode_parity_sweep`, `s5_h4_maintenance_security_matrix`, 
 ## 4. Supplementary Note 3: Biostatistical Methodology, Exact Clopper-Pearson Intervals, and `--fix` Governance
 
 ### 4.1 Exact Clopper-Pearson Binomial Confidence Intervals
-For all binary oracle-concordance and completion rates ($k$ successes out of $n$ independent evaluation cells/arms), we compute exact two-sided $1 - \alpha = 95\%$ Clopper-Pearson binomial confidence intervals $[p_{\text{lo} }, p_{\text{hi} }]$ via the inverse Beta distribution:
+For binary oracle-concordance and completion rates ($k$ successes out of $n$ independent cells/arms), we compute exact two-sided $1 - \alpha = 95\%$ Clopper-Pearson binomial CIs $[p_{\text{lo} }, p_{\text{hi} }]$ via the inverse Beta distribution:
 $$p_{\text{lo} } = \text{Beta}^{-1}\!\left(\frac{\alpha}{2};\, k,\, n - k + 1\right), \quad p_{\text{hi} } = \text{Beta}^{-1}\!\left(1 - \frac{\alpha}{2};\, k + 1,\, n - k\right)$$
 with $p_{\text{lo} } = 0$ when $k = 0$ and $p_{\text{hi} } = 1$ when $k = n$:
 - Complete `60`-cell verification campaign (`60/60` exit `0`): `100%` (`95%` CI `94.04%–100.00%`)
@@ -197,14 +197,14 @@ with $p_{\text{lo} } = 0$ when $k = 0$ and $p_{\text{hi} } = 1$ when $k = n$:
 - Cross-platform chr20 runs where `VarDictJava` completed (`11/11`): `100%` (`95%` CI `71.51%–100.00%`)
 - Cross-platform `-f 0` somatic noise-floor `STRICT-BYTES` sweep (`18/18`): `100%` (`95%` CI `81.47%–100.00%`)
 - GA4GH `v3.5` `70`-cell stratification matrix (`70/70`): `100%` (`95%` CI `94.87%–100.00%`)
-- Multi-regime parity sweep across all parameter-sweep arms (`87/87`): `100.00%` (`95%` CI `95.85%–100.00%`, with `100%` [`87/87`] exact `.var` and `.vcf` match across all `12` sweep cells, including standard $\le 1,000,000$ bp BED-interval suites running untiled by default and the two $> 1,000,000$ bp single-interval suites `sweep_span_chr1_f0` [`--tile-size 10000000`, `7,077` `.var` / `7,032` `.vcf`] and `sweep_R_chr1_full` [`--tile-size 250000000`, `4,705` `.var` rows]; `Supplementary Table S2`)
+- Multi-regime parity sweep across `12` suites (`87/87`): `100.00%` (`95%` CI `95.85%–100.00%`; includes untiled $\le 1,000,000$ bp BED suites and single-window `--tile-size` runs on `sweep_span_chr1_f0` [`7,077` `.var` / `7,032` `.vcf`] and `sweep_R_chr1_full` [`4,705` `.var`]; `Supplementary Table S2`)
 - NIST Mosaic SNV `v1.10` sensitivity (`84/85`): `98.82%` (`95%` CI `93.62%–99.97%`)
 
 ### 4.2 Non-Parametric Runtime and Memory Hypothesis Testing
-Across the $N = 12$ AML sample-by-thread cells (`s2_tierp_v2_*`, each measured across `n = 3` technical replicates), we report both the cell mean and full replicate range (`min–max`, `Supplementary Table S3`) rather than normal-theory standard errors (which are unstable at $n = 3$). Comparing `VarDictRust` against `VarDictJava` across the $N = 12$ cells yields two-sided Mann-Whitney $U = 4.0$ ($p = 9.735e-05$) for wall-clock time and $U = 0.0$ ($p = 3.658e-05$) for peak RSS, and an exact paired sign-flip permutation test p-value of $p = 2^{-12} = 0.00024$.
+Across the $N = 12$ AML sample-by-thread cells (`s2_tierp_v2_*`, `n = 3` technical replicates each), we report the mean and replicate range (`min–max`, `Supplementary Table S3`). Comparing `VarDictRust` against `VarDictJava` across $N = 12$ yields two-sided Mann-Whitney $U = 4.0$ ($p = 9.735e-05$) for wall time, $U = 0.0$ ($p = 3.658e-05$) for peak RSS, and an exact paired sign-flip permutation p-value of $p = 2^{-12} = 0.00024$.
 
 ### 4.3 Release Governance: `v1.0.x` Parity Versus `v1.1+` Opt-In `--fix` Flags
-Under our release governance policy, all `v1.0.x` releases (`v1.0.6`) enforce strict oracle parity on valid inputs. True output-changing upstream bug fixes (e.g., `#92` `VD > DP`, `#62` over-filtering, `#292` `SHIFT3`, `#342` `<dup-N>` symbolic alleles) are gated behind explicit `--fix <id>` flags starting in `v1.1.0`, while parity-restoring fixes (`splice-tile-ownership`, `mate-window-ownership`) ship as verified defaults.
+All `v1.0.x` releases (`v1.0.6`) enforce strict oracle parity on valid inputs. Output-changing upstream fixes (`#92` `VD > DP`, `#62` over-filtering, `#292` `SHIFT3`, `#342` `<dup-N>` symbolic alleles) are gated behind opt-in `--fix <id>` flags starting in `v1.1.0`, while parity-restoring fixes (`splice-tile-ownership`, `mate-window-ownership`) ship as verified defaults.
 
 ---
 
