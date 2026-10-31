@@ -1745,8 +1745,9 @@ def build_all_tables(doc: dict[str, Any], inv_rows: list[dict[str, str]], tab_di
         ("seqc2", "SEQC2 HCC1395 Somatic Exome [10]"),
         ("hg008", "GIAB HG008 Somatic Slice v0.3 [19]"),
     ]:
+        # Main Table 3 keeps the representative F1-maximizing operating point per
+        # cohort; the paired unfiltered (All-PASS) rows live in Supp Table S4.
         op_best = s4["tier3_truth_and_qual_sweep"]["cohorts"][c_key]["engines"]["rust"]["operating_points"]["best"]
-        op_none = s4["tier3_truth_and_qual_sweep"]["cohorts"][c_key]["engines"]["rust"]["operating_points"]["none"]
         t3_rows.append(
             [
                 f"{c_lbl} (Optimal QUAL >= {float(op_best['threshold']):.1f})<sup>b</sup>",
@@ -1757,38 +1758,17 @@ def build_all_tables(doc: dict[str, Any], inv_rows: list[dict[str, str]], tab_di
                 "100% Exact Match (0 site differences)",
             ]
         )
-        t3_rows.append(
-            [
-                f"{c_lbl} (All-PASS, -f 0.01)<sup>b</sup>",
-                "VarDictRust == VarDictJava [1]",
-                f"TP={op_none['tp_baseline']:,}, FP={op_none['fp']:,}",
-                f"{op_none['precision']:.4f} / {op_none['sensitivity']:.4f} / {op_none['f_measure']:.4f}",
-                "Combined SNV + InDel evaluation<sup>b</sup>",
-                "100% Exact Match (0 site differences)",
-            ]
-        )
     for ev_k, ev_lbl in [
         ("hg005-truth", "GIAB HG005 GRCh38 v4.2.1 [13]"),
         ("na24385-b37-truth", "GIAB NA24385 GRCh37 v4.2.1 [13]"),
     ]:
         ro = ev[ev_k]["extra"]["rust"]["optimal"]
-        rn = ev[ev_k]["extra"]["rust"]["none"]
         t3_rows.append(
             [
                 f"{ev_lbl} (Optimal QUAL >= {float(ro['threshold']):.1f})<sup>b</sup>",
                 "VarDictRust == VarDictJava [1]",
                 f"TP={ro['tp_baseline']:,}, FP={ro['fp']:,}",
                 f"{ro['precision']:.4f} / {ro['sensitivity']:.4f} / {ro['f_measure']:.4f}",
-                "Combined SNV + InDel evaluation<sup>b</sup>",
-                "100% Exact Match (0 site differences)",
-            ]
-        )
-        t3_rows.append(
-            [
-                f"{ev_lbl} (All-PASS, -f 0.01)<sup>b</sup>",
-                "VarDictRust == VarDictJava [1]",
-                f"TP={rn['tp_baseline']:,}, FP={rn['fp']:,}",
-                f"{rn['precision']:.4f} / {rn['sensitivity']:.4f} / {rn['f_measure']:.4f}",
                 "Combined SNV + InDel evaluation<sup>b</sup>",
                 "100% Exact Match (0 site differences)",
             ]
@@ -1821,51 +1801,17 @@ def build_all_tables(doc: dict[str, Any], inv_rows: list[dict[str, str]], tab_di
                 verdict_fc,
             ]
         )
-    for r in s6["low_vaf_titration_truth_curve"]:
-        snv_str = (
-            "0.0000 / 0.0000 / 0.0000<sup>c</sup>"
-            if r["zero_snv_calls"]
-            else f"{r['snv_p']:.4f} / {r['snv_r']:.4f} / {r['snv_f1']:.4f}"
-        )
-        ind_str = (
-            "0.0000 / 0.0000 / 0.0000<sup>c</sup>"
-            if r["zero_indel_calls"]
-            else f"{r['indel_p']:.4f} / {r['indel_r']:.4f} / {r['indel_f1']:.4f}"
-        )
-        c_disp = caller_cite_t3.get(r["caller"], r["caller"])
-        if r["parity_vs_java"] in ("EQUAL", "MATCH", "ORACLE"):
-            verdict_tit = "100% Exact Match (VarDictRust == VarDictJava)"
-        elif r["caller"] == "vardictcpp":
-            verdict_tit = (
-                "MNP / Tie-Break Divergence vs. Java<sup>e</sup>"
-                if int(r["purity_pct"]) == 20
-                else "VCF Header / Non-Benchmark Indel Divergence<sup>e</sup>"
-            )
-        else:
-            verdict_tit = "External Somatic Caller"
-        t3_rows.append(
-            [
-                f"GIAB HG008 {r['purity_pct']}% Purity ({r['expected_clonal_vaf_pct']:.1f}% VAF) [19]<sup>d</sup>",
-                c_disp,
-                f"{r['wall_str']} ({r['wall_s']:.2f} s) / {r['peak_mb']:.1f} MB",
-                snv_str,
-                ind_str,
-                verdict_tit,
-            ]
-        )
     write_dual_table(
         tab_dir,
         "table3",
-        "Table 3. Germline & Somatic Truth Accuracy [12], Native GRCh38 Field Callers & Low-VAF Tumor-Purity Titration (20% to 1% Purity)",
+        "Table 3. Germline & Somatic Truth Accuracy [12] and Native GRCh38 Field Callers",
         t3_headers,
         t3_rows,
         "<sup>a</sup>Truth-set accuracy evaluated with haplotype-aware rtg vcfeval [12] against NIST GIAB HG002/HG005/NA24385 v4.2.1 [13, 18] (including the Daniels et al. [20] Chr20 exome protocol replicated by Wolff et al. [11]), SEQC2 HCC1395 v1.2.1 [10], and GIAB HG008 v0.3 [19] high-confidence BED masks. "
-        "<sup>b</sup>Rows 8–17 report combined all-variant (SNV + InDel) rtg vcfeval [12] precision, recall, and F1 at the unfiltered PASS baseline (-f 0.01) and at the F1-maximizing QUAL threshold across a 0..200 ROC sweep. "
-        "<sup>c</sup>Undefined 0/0 precision and F1 values at 0.0000 recall (e.g., LoFreq [7] somatic runs without indel quality calibration tags or ultra-low-purity strata with 0 emitted calls) are normalized to 0.0000. "
-        f"<sup>d</sup>In silico tumor-purity titration admixtures were generated from GIAB HG008 [19] tumor and matched normal BAMs via samtools view -s [26] at 20%, 10%, 5%, 2%, and 1% tumor purity ({10:.1f}% to {0.5:.1f}% expected clonal VAF) and called at -f 0.002. "
-        "<sup>e</sup>While VarDictRust matches VarDictJava [1] across all 5 titration purities, vardictcpp [11] omits ##contig headers (CPP-6) and exhibits MNP/tie-break divergence at 20% purity (SNV F1 0.8407 vs. 0.8408) plus non-benchmark indel differences at 10%–1% purity.",
+        "<sup>b</sup>Representative operating-point rows report the F1-maximizing QUAL threshold per cohort from the full 0..200 ROC sweep; paired unfiltered (All-PASS, -f 0.01) and optimal rows for all five cohorts are tabulated in Supplementary Table S4. "
+        "<sup>c</sup>Undefined 0/0 precision and F1 values at 0.0000 recall (e.g., LoFreq [7] somatic runs without indel quality calibration tags) are normalized to 0.0000. "
+        "<sup>d</sup>On callable BED intervals vardictcpp [11] exhibits MNP/tie-break divergence vs. the VarDictJava oracle and omits somatic SV calls; the full CPP-1 to CPP-10 divergence taxonomy is cataloged in Supplementary Table S6.",
     )
-
     # ------------------------------------------------------------------
     # Table 4: Bounded Memory, 1..32c Scaling, Chr1 Span & Node Packing
     # ------------------------------------------------------------------
@@ -2390,7 +2336,8 @@ def build_all_tables(doc: dict[str, Any], inv_rows: list[dict[str, str]], tab_di
         s1_headers,
         s1_rows,
         "<sup>a</sup>Assay classes span targeted clinical panels and amplicons [11], whole-exome sequencing [10, 20], 51.8 GiB transcriptome RNA-seq [13], 10-platform Chromosome 20 sequencing chemistries [6, 13, 19], and full-genome germline/somatic WGS [13–19, 21–25]. "
-        f"<sup>b</sup>Every experiment completed with process exit code 0 across {len(inv_rows)}/{len(inv_rows)} benchmark archive directories (exact Clopper-Pearson 95% CI {fmt_clopper_pearson_ci(len(inv_rows), len(inv_rows))}) and maps directly to the figures and tables listed in Column 6.",
+        f"<sup>b</sup>Every experiment completed with process exit code 0 across {len(inv_rows)}/{len(inv_rows)} benchmark archive directories (exact Clopper-Pearson 95% CI {fmt_clopper_pearson_ci(len(inv_rows), len(inv_rows))}) and maps directly to the figures and tables listed in Column 6. "
+        "Canonical ledger: benchmarks/gcp-study-v106/cells_60_inventory.tsv (with SHA-256 manifests) is the single source of truth; this table is a generated formatted view of that file.",
     )
 
     # ------------------------------------------------------------------
@@ -2554,7 +2501,8 @@ def build_all_tables(doc: dict[str, Any], inv_rows: list[dict[str, str]], tab_di
         s2_rows,
         f"<sup>a</sup>All {sw['match_arms']}/{sw['total_arms']} ({sw['match_arms'] / sw['total_arms'] * 100.0:.2f}%) comparative sub-arms across all 12 multi-regime sweep suites and all 5 baseline equivalence suites achieve 100% exact intermediate (.var, .splice.tsv) and VCF parity against VarDictJava v1.8.3 [1] (0 false positives and 0 false negatives at eps=1e-6). "
         "<sup>b</sup>Halo-tiling invariance confirms identical variant output across 0.5, 1.0, 2.0, and 10.0 Mbp tile sizes on SEQC2 HCC1395 [10]. "
-        "<sup>c</sup>Standard BED intervals (<=1 Mbp) run untiled by default; the two multi-megabase single-interval stress suites (10 Mbp chr1 at -f 0 and 249.25 Mbp -R chr1) use --tile-size matching the region span so that single-window VarDictRust is compared directly against single-window VarDictJava [1].",
+        "<sup>c</sup>Standard BED intervals (<=1 Mbp) run untiled by default; the two multi-megabase single-interval stress suites (10 Mbp chr1 at -f 0 and 249.25 Mbp -R chr1) use --tile-size matching the region span so that single-window VarDictRust is compared directly against single-window VarDictJava [1]. "
+        "Source ledger: sweep arm counts and verdicts are generated from master_gcp_metrics.json; this table is the formatted view.",
     )
 
     # ------------------------------------------------------------------
@@ -2766,7 +2714,8 @@ def build_all_tables(doc: dict[str, Any], inv_rows: list[dict[str, str]], tab_di
         s3_rows,
         "<sup>a</sup>Unless otherwise noted, rows report all n=3 technical replicate measurements along with the replicate mean (min–max) on GCP n2-standard-32 (Intel Xeon Platinum 8373C Ice Lake) instances, measured via /usr/bin/time -v. "
         "<sup>b</sup>The 7-caller somatic comparison on SRR15006376 / SRR15006386 [11] profiles single-run 8-thread executions across VarDictRust, VarDictJava [1], vardictcpp [11], Strelka2 [4], LoFreq [7], Octopus [5], and Mutect2 [8]. "
-        "<sup>c</sup>Full-genome 32-thread WGS runs on GIAB HG002 (130.8 GB) [13, 18] and GIAB HG008 (329.0 GB, 364x combined depth) [19] report single-run wall-clock times as MM:SS.ss or H:MM:SS (with total seconds in parentheses).",
+        "<sup>c</sup>Full-genome 32-thread WGS runs on GIAB HG002 (130.8 GB) [13, 18] and GIAB HG008 (329.0 GB, 364x combined depth) [19] report single-run wall-clock times as MM:SS.ss or H:MM:SS (with total seconds in parentheses). "
+        "Source ledger: replicate measurements aggregate the stage5 and stage6 TSVs via master_gcp_metrics.json; this table is the formatted view.",
     )
 
     # ------------------------------------------------------------------
@@ -2872,6 +2821,42 @@ def build_all_tables(doc: dict[str, Any], inv_rows: list[dict[str, str]], tab_di
                 "0 differences vs. VarDictJava (eps=1e-6)<sup>c</sup>",
             ]
         )
+    # Full 5-purity low-VAF titration detail matrix (moved from Table 3 so the
+    # main table keeps representative cohorts; all 30 caller-purity evaluations
+    # stay visible here with identical values).
+    for r in s6["low_vaf_titration_truth_curve"]:
+        snv_det = (
+            "0.0000 / 0.0000 / 0.0000"
+            if r["zero_snv_calls"]
+            else f"{r['snv_p']:.4f} / {r['snv_r']:.4f} / {r['snv_f1']:.4f}"
+        )
+        ind_det = (
+            "0.0000 / 0.0000 / 0.0000"
+            if r["zero_indel_calls"]
+            else f"{r['indel_p']:.4f} / {r['indel_r']:.4f} / {r['indel_f1']:.4f}"
+        )
+        c_disp = caller_cite_t3.get(r["caller"], r["caller"])
+        if r["parity_vs_java"] in ("EQUAL", "MATCH", "ORACLE"):
+            verdict_det = "100% Exact Match (VarDictRust == VarDictJava)"
+        elif r["caller"] == "vardictcpp":
+            verdict_det = (
+                "MNP / Tie-Break Divergence vs. Java<sup>e</sup>"
+                if int(r["purity_pct"]) == 20
+                else "VCF Header / Non-Benchmark Indel Divergence<sup>e</sup>"
+            )
+        else:
+            verdict_det = "External Somatic Caller"
+        s4_rows.append(
+            [
+                "Low-VAF Tumor-Purity Titration (Detail)<sup>d</sup>",
+                f"GIAB HG008 {r['purity_pct']}% Purity ({r['expected_clonal_vaf_pct']:.1f}% VAF) [19]",
+                "-f 0.002 Somatic Calling Regime",
+                f"{c_disp}; {verdict_det}",
+                f"{r['wall_str']} ({r['wall_s']:.2f} s) / {r['peak_mb']:.1f} MB",
+                snv_det,
+                ind_det,
+            ]
+        )
     s4_rows.extend(
         [
             [
@@ -2891,15 +2876,6 @@ def build_all_tables(doc: dict[str, Any], inv_rows: list[dict[str, str]], tab_di
                 f"HG002 SNV F1={s5['grch38_field_callers_truth'][0]['snv_f1']:.4f}",
                 f"HG002 InDel F1={s5['grch38_field_callers_truth'][0]['indel_f1']:.4f}",
                 "100% Exact Match (see Table 3)",
-            ],
-            [
-                "Low-VAF Tumor-Purity Titration",
-                "GIAB HG008 [19] Tumor-Purity Titration (20% to 1%)",
-                f"{len(s6['low_vaf_titration_truth_curve'])}-Run Low-VAF Somatic Curve (-f 0.002)",
-                "VarDictRust == VarDictJava [1]",
-                f"20% Purity SNV F1={s6['low_vaf_titration_truth_curve'][0]['snv_f1']:.4f}",
-                f"1% Purity SNV F1={s6['low_vaf_titration_truth_curve'][-6]['snv_f1']:.4f}",
-                "100% Exact Match across all 5 purities (see Table 3)",
             ],
             [
                 "Next-Gen Germline & Mosaic Suite",
@@ -2924,14 +2900,16 @@ def build_all_tables(doc: dict[str, Any], inv_rows: list[dict[str, str]], tab_di
     write_dual_table(
         tab_dir,
         "supp_table4",
-        "Supplementary Table S4. Verified Truth-Set Operating Points, Variant-Class Stratification & 18-Arm Somatic Noise-Floor Matrix",
+        "Supplementary Table S4. Verified Truth-Set Operating Points, Variant-Class Stratification, 18-Arm Somatic Noise-Floor Matrix & Low-VAF Titration Detail",
         s4_headers,
         s4_rows,
         "<sup>a</sup>VarDictRust and VarDictJava v1.8.3 [1] produce identical rtg vcfeval [12] TP, FP, FN, precision, recall, and F1 scores at every QUAL threshold from 0 to 200 across all 5 truth cohorts. "
         "<sup>b</sup>Variant-class stratification compares VarDictRust, VarDictJava [1], and vardictcpp [11] across SNVs, insertions, deletions, complex MNPs, and structural variants (SVs), showing that vardictcpp splits complex MNPs on HG002 and omits SVs on SEQC2 and HG008 (CPP-2, CPP-9). "
-        f"<sup>c</sup>Across all {nf_cnt}/{nf_cnt} targeted Chromosome 20 somatic noise-floor runs (6 HG008 platforms x 3 low-VAF regimes: -f 0.01 -r 2, -f 0 -r 2, and singleton -f 0 -r 1), VarDictRust and VarDictJava emit identical candidate and PASS variant sets.",
+        f"<sup>c</sup>Across all {nf_cnt}/{nf_cnt} targeted Chromosome 20 somatic noise-floor runs (6 HG008 platforms x 3 low-VAF regimes: -f 0.01 -r 2, -f 0 -r 2, and singleton -f 0 -r 1), VarDictRust and VarDictJava emit identical candidate and PASS variant sets. "
+        f"<sup>d</sup>In silico tumor-purity titration admixtures were generated from GIAB HG008 [19] tumor and matched normal BAMs via samtools view -s [26] at 20%, 10%, 5%, 2%, and 1% tumor purity ({10:.1f}% to {0.5:.1f}% expected clonal VAF) and called at -f 0.002; undefined 0/0 precision and F1 values at 0.0000 recall are normalized to 0.0000. "
+        "<sup>e</sup>While VarDictRust matches VarDictJava [1] across all 5 titration purities, vardictcpp [11] omits ##contig headers (CPP-6) and exhibits MNP/tie-break divergence at 20% purity (SNV F1 0.8407 vs. 0.8408) plus non-benchmark indel differences at 10%–1% purity. "
+        "Source ledger: truth, stratification, and titration values are generated from the stage5 and stage6 TSVs via master_gcp_metrics.json; this table is the formatted view.",
     )
-
     # ------------------------------------------------------------------
     # Supplementary Table S5: Complete 70-Cell GA4GH v3.5 Stratification Matrix
     # ------------------------------------------------------------------
