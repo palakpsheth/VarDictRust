@@ -213,7 +213,7 @@ z
     <text style="font-weight: 700; font-size: 7.2px; font-family: 'DejaVu Sans'; text-anchor: middle; fill: #1e293b" x="494.324632" y="218.201767" transform="rotate(-0 494.324632 218.201767)">Hardware Lock: GCP n2-standard-32 (32 vCPU, 128 GiB RAM, NVMe RAID0) | Comparators: VarDictJava v1.8.3 &amp; vardictcpp | 100% Reproducible</text>
    </g>
    <g id="text_23">
-    <text style="font-weight: 700; font-size: 10px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #262626" x="51.113203" y="18.398438" transform="rotate(-0 51.113203 18.398438)">A. Multi-Suite Empirical Evaluation Architecture (Six Suites + Parity Sweep, (VarDictRust v1.0.6 vs. VarDictJava v1.8.3 &amp; vardictcpp)</text>
+    <text style="font-weight: 700; font-size: 10px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #262626" x="51.113203" y="18.398438" transform="rotate(-0 51.113203 18.398438)">A. Multi-Suite Empirical Evaluation Architecture (Six Suites + Parity Sweep, VarDictRust v1.0.6 vs. VarDictJava v1.8.3 &amp; vardictcpp)</text>
    </g>
   </g>
   <g id="axes_2">

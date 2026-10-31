@@ -339,7 +339,7 @@ def build_fig1(doc: dict[str, Any], inv_rows: list[dict[str, str]], fig_dir: Pat
     meta = doc["meta"]
     ax_arch.set_title(
         f"A. Multi-Suite Empirical Evaluation Architecture (Six Suites + Parity Sweep, "
-        f"(VarDictRust v{meta['version']} vs. VarDictJava v1.8.3 & vardictcpp)",
+        f"VarDictRust v{meta['version']} vs. VarDictJava v1.8.3 & vardictcpp)",
         loc="left",
         pad=8,
     )
@@ -478,7 +478,7 @@ def build_fig1(doc: dict[str, Any], inv_rows: list[dict[str, str]], fig_dir: Pat
 
 
 def build_fig2(doc: dict[str, Any], fig_dir: Path) -> None:
-    """Figure 2: Algorithmic Parity & Direct vardictcpp (Wolff et al. 2026) Replication."""
+    """Figure 2: Algorithmic Parity & Direct vardictcpp (Wolff 2026) Replication."""
     fig, axes = plt.subplots(2, 2, figsize=(15, 10))
     plt.subplots_adjust(hspace=0.38, wspace=0.28)
 
@@ -576,7 +576,7 @@ def build_fig2(doc: dict[str, Any], fig_dir: Path) -> None:
     ax_c.set_xticks(x)
     ax_c.set_xticklabels([s.replace("somatic_76_86", "SRR15006376/86") for s in samples], rotation=20, ha="right", fontsize=7.5)
     ax_c.set_ylabel("Wall Time at 8 Threads (s, mean + range)")
-    ax_c.set_title("C. Clinical AML Panel 8-Thread Runtime (Wolff et al. 2026)", loc="left")
+    ax_c.set_title("C. Clinical AML Panel 8-Thread Runtime (Wolff 2026)", loc="left")
     ax_c.legend(loc="upper left", frameon=True)
 
     # Panel D: Somatic Tumor-Normal Runtime & Concordant SNV Summary
@@ -615,7 +615,7 @@ def build_fig3(doc: dict[str, Any], fig_dir: Path) -> None:
     fig, axes = plt.subplots(2, 2, figsize=(15, 10))
     plt.subplots_adjust(hspace=0.38, wspace=0.28)
 
-    # Panel A: Daniels 2024 HG002 chr20 Exome 7-Caller Truth Accuracy
+    # Panel A: HG002 chr20 Exome 7-Caller Truth Accuracy (Wolff [11] Fig 2)
     ax_a = axes[0, 0]
     fig2_rows = doc["stage2"]["fig2_hg002_chr20_truth"]
     c_names = ["Octopus" if r["caller"] == "octopus" else r["caller"] for r in fig2_rows]
@@ -1609,7 +1609,7 @@ def build_all_tables(doc: dict[str, Any], inv_rows: list[dict[str, str]], tab_di
     )
 
     # ------------------------------------------------------------------
-    # Table 2: Direct vardictcpp (Wolff et al. 2026) Replication
+    # Table 2: Direct vardictcpp (Wolff 2026) Replication
     # ------------------------------------------------------------------
     t2_headers = [
         "Sample / Cohort [11]",
@@ -1708,7 +1708,7 @@ def build_all_tables(doc: dict[str, Any], inv_rows: list[dict[str, str]], tab_di
         "<sup>b</sup>VarDictJava v1.8.3 [1] timings measure the full three-process pipeline (vardict-java | teststrandbias.R/testsomatic.R | var2vcf_valid.pl/var2vcf_paired.pl). "
         f"<sup>c</sup>vardictcpp (commit ae93fe39dc) [11] timings measure its default --chunk {50000:,} binary execution, which omits R Fisher exact strand/somatic p-value scripts and Perl VCF formatting. "
         f"<sup>d</sup>Across the 12 paired AML panel conditions, VarDictRust reduces wall time (two-sided Mann-Whitney U={mwu_w.statistic:.1f}, p={mwu_w.pvalue:.4g}; paired sign-permutation p={sign_p:.5f}) and peak RSS (U={mwu_m.statistic:.1f}, p={mwu_m.pvalue:.4g}) relative to VarDictJava. "
-        f"<sup>e</sup>On unchunked -R chr1:1-{int(rchr1['region'].split('-')[1])} ({rchr1_mbp:.2f} Mbp), VarDictJava crashes with OutOfMemoryError (rc=3) at {rchr1['java_xmx4g_oom']['wall_s']:.2f} s under the 4 GiB heap cap (-Xmx4g) used by Wolff et al. [11], but completes in {fmt_mean_range(rchr1['java_xmx200g'], 'wall_s')} s at {rchr1['java_xmx200g']['max_rss_gib_mean']:.2f} GiB RSS when provisioned with -Xmx200g. "
+        f"<sup>e</sup>On unchunked -R chr1:1-{int(rchr1['region'].split('-')[1])} ({rchr1_mbp:.2f} Mbp), VarDictJava crashes with OutOfMemoryError (rc=3) at {rchr1['java_xmx4g_oom']['wall_s']:.2f} s under the 4 GiB heap cap (-Xmx4g) used by Wolff [11], but completes in {fmt_mean_range(rchr1['java_xmx200g'], 'wall_s')} s at {rchr1['java_xmx200g']['max_rss_gib_mean']:.2f} GiB RSS when provisioned with -Xmx200g. "
         f"<sup>f</sup>Row 15 summarizes the 16-run field-caller benchmark comparing VarDictRust, VarDictJava [1], vardictcpp [11], FreeBayes [3], Strelka2 [4], Octopus [5], LoFreq [7], and Mutect2 [8]; the 4-caller somatic Venn intersection (VarDict, Mutect2, Strelka2, LoFreq) identifies {fc_info['somatic_snv_venn']['somatic_filtered']['totals']['VarDict']} concordant VarDict somatic SNVs with 100% identity between VarDictRust and VarDictJava.",
     )
 
@@ -1739,7 +1739,7 @@ def build_all_tables(doc: dict[str, Any], inv_rows: list[dict[str, str]], tab_di
         c_disp = caller_cite_t3.get(r["caller"], r["caller"])
         t3_rows.append(
             [
-                "GIAB HG002 Chr20 Exome [11, 13, 20]<sup>a</sup>",
+                "GIAB HG002 Chr20 Exome [11, 13]<sup>a</sup>",
                 c_disp,
                 f"{r['calls']:,} calls",
                 f"{r['snv_p']:.4f} / {r['snv_r']:.4f} / {r['snv_f1']:.4f}",
@@ -1814,7 +1814,7 @@ def build_all_tables(doc: dict[str, Any], inv_rows: list[dict[str, str]], tab_di
         "Table 3. Germline & Somatic Truth Accuracy [12] and Native GRCh38 Field Callers",
         t3_headers,
         t3_rows,
-        "<sup>a</sup>Truth-set accuracy evaluated with haplotype-aware rtg vcfeval [12] against NIST GIAB HG002/HG005/NA24385 v4.2.1 [13, 18] (including the Daniels et al. [20] Chr20 exome protocol replicated by Wolff et al. [11]), SEQC2 HCC1395 v1.2.1 [10], and GIAB HG008 v0.3 [19] high-confidence BED masks. "
+        "<sup>a</sup>Truth-set accuracy evaluated with haplotype-aware rtg vcfeval [12] against NIST GIAB HG002/HG005/NA24385 v4.2.1 [13, 18] (including the HG002 chr20 exome 7-caller truth benchmark (Wolff [11] Fig 2)), SEQC2 HCC1395 v1.2.1 [10], and GIAB HG008 v0.3 [19] high-confidence BED masks. "
         "<sup>b</sup>Representative operating-point rows report the F1-maximizing QUAL threshold per cohort from the full 0..200 ROC sweep; paired unfiltered (All-PASS, -f 0.01) and optimal rows for all five cohorts are tabulated in Supplementary Table S4. "
         "<sup>c</sup>Undefined 0/0 precision and F1 values at 0.0000 recall (e.g., LoFreq [7] somatic runs without indel quality calibration tags) are normalized to 0.0000. "
         "<sup>d</sup>On callable BED intervals vardictcpp [11] exhibits MNP/tie-break divergence vs. the VarDictJava oracle and omits somatic SV calls; the full CPP-1 to CPP-10 divergence taxonomy is cataloged in Supplementary Table S6.",
@@ -2307,8 +2307,9 @@ def build_all_tables(doc: dict[str, Any], inv_rows: list[dict[str, str]], tab_di
             .replace("Arm A (22 un-chunked chromosomes)", "(22 unchunked chromosomes)")
             .replace("Arm B (<=50 kbp GIAB callable intervals)", f"(<={50000 // 1000} kbp GIAB callable intervals)")
             .replace("Arm B (<=50 kbp GIAB v0.4 intervals)", f"(<={50000 // 1000} kbp GIAB v0.4 callable intervals)")
-            .replace("Wolff 2026", "Wolff et al. [11]")
-            .replace("Daniels 2024", "Daniels et al. [20]")
+            .replace("Wolff 2026", "Wolff [11]")
+            .replace(" / Daniels 2024", "")
+            .replace(" (Daniels 2024)", "")
             .replace("v5.0Q", "v5.0q")
             .replace("octopus", "Octopus")
             .replace("s3_simple, s4_somatic, hg008_somatic", "HG002 germline, SEQC2 somatic exome, and HG008 somatic")
@@ -2409,7 +2410,7 @@ def build_all_tables(doc: dict[str, Any], inv_rows: list[dict[str, str]], tab_di
     s2_suite_map = {
         "sweep_4targets_full": "4-Assay Regression Suite",
         "sweep_R_chr1_full": "Contiguous 249 Mbp -R chr1 [11]<sup>c</sup>",
-        "sweep_hg002_chr20_exome": "GIAB HG002 Chr20 Exome [11, 20]",
+        "sweep_hg002_chr20_exome": "GIAB HG002 Chr20 Exome [11]",
         "sweep_multimodal_and_cram_twin": "Multimodal & CRAM Twin Suite [26]",
         "sweep_rna_hg002_52gb": "51.8 GiB HG002 RNA-Seq [13]",
         "sweep_span_chr1_f0": "10 Mbp Chr1 All-Positions (-f 0)<sup>c</sup>",
@@ -2426,8 +2427,8 @@ def build_all_tables(doc: dict[str, Any], inv_rows: list[dict[str, str]], tab_di
         "hg008_somatic_wgs.vcf": "GIAB HG008 [19] tumor-normal somatic slice (VCF)",
         "seqc2_somatic_exome_full.vcf": "SEQC2 HCC1395 [10] paired somatic exome slice (VCF)",
         "R_chr1_249Mbp.var": "Unchunked -R chr1:1-249250621 single window (--tile-size 250000000) (.var)<sup>c</sup>",
-        "hg002_chr20_exome.var": "GIAB HG002 Chr20 exome [20] (.var)",
-        "hg002_chr20_exome.vcf": "GIAB HG002 Chr20 exome [20] (VCF)",
+        "hg002_chr20_exome.var": "GIAB HG002 Chr20 exome [11] (.var)",
+        "hg002_chr20_exome.vcf": "GIAB HG002 Chr20 exome [11] (VCF)",
         "extended_coverage_17modes": "17-modality extended CLI coverage suite (.var & VCF)",
         "multimodal_18slices": "18-slice multimodal regression suite (VCF)",
         "cram_twin_g4_hg008": "GIAB HG008 [19] CRAM-vs-BAM [26] twin slice (VCF)",
@@ -2868,7 +2869,7 @@ def build_all_tables(doc: dict[str, Any], inv_rows: list[dict[str, str]], tab_di
         [
             [
                 "Chr20 Exome 7-Caller Benchmark",
-                "GIAB HG002 Chr20 Exome [11, 13, 20]",
+                "GIAB HG002 Chr20 Exome [11, 13]",
                 f"{len(s2['fig2_hg002_chr20_truth'])}-Caller Truth Benchmark",
                 "VarDictRust == VarDictJava [1]",
                 f"Calls={s2['fig2_hg002_chr20_truth'][0]['calls']:,}",
@@ -2914,7 +2915,7 @@ def build_all_tables(doc: dict[str, Any], inv_rows: list[dict[str, str]], tab_di
         "<sup>b</sup>Variant-class stratification compares VarDictRust, VarDictJava [1], and vardictcpp [11] across SNVs, insertions, deletions, complex MNPs, and structural variants (SVs), showing that vardictcpp splits complex MNPs on HG002 and omits SVs on SEQC2 and HG008 (CPP-2, CPP-9). "
         f"<sup>c</sup>Across all {nf_cnt}/{nf_cnt} targeted Chromosome 20 somatic noise-floor runs (6 HG008 platforms x 3 low-VAF regimes: -f 0.01 -r 2, -f 0 -r 2, and singleton -f 0 -r 1), VarDictRust and VarDictJava emit identical candidate and PASS variant sets. "
         f"<sup>d</sup>In silico tumor-purity titration admixtures were generated from GIAB HG008 [19] tumor and matched normal BAMs via samtools view -s [26] at 20%, 10%, 5%, 2%, and 1% tumor purity ({10:.1f}% to {0.5:.1f}% expected clonal VAF) and called at -f 0.002; undefined 0/0 precision and F1 values at 0.0000 recall are normalized to 0.0000. "
-        "<sup>e</sup>While VarDictRust matches VarDictJava [1] across all 5 titration purities, vardictcpp [11] omits ##contig headers (CPP-6) and exhibits MNP/tie-break divergence at 20% purity (SNV F1 0.8407 vs. 0.8408) plus non-benchmark indel differences at 10%–1% purity. "
+        "<sup>e</sup>While VarDictRust matches VarDictJava [1] across all 5 titration purities, vardictcpp [11] omits ##contig headers (CPP-6) and exhibits MNP/tie-break divergence at 20% purity (SNV F1 0.7512 vs. 0.6914) plus non-benchmark indel differences at 10%–1% purity. "
         "Source ledger: truth, stratification, and titration values are generated from the stage5 and stage6 TSVs via master_gcp_metrics.json; this table is the formatted view.",
     )
     # ------------------------------------------------------------------

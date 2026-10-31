@@ -12,8 +12,8 @@
 | 4-Assay Regression Suite | GIAB HG008 [19] tumor-normal somatic slice (VCF) | 18,426 | 18,426 | 0 | 0 | 100% Exact Match |
 | 4-Assay Regression Suite | SEQC2 HCC1395 [10] paired somatic exome slice (VCF) | 623,444 | 623,444 | 0 | 0 | 100% Exact Match |
 | Contiguous 249 Mbp -R chr1 [11]<sup>c</sup> | Unchunked -R chr1:1-249250621 single window (--tile-size 250000000) (.var)<sup>c</sup> | 4,705 | 4,705 | 0 | 0 | 100% Exact Match<sup>c</sup> |
-| GIAB HG002 Chr20 Exome [11, 20] | GIAB HG002 Chr20 exome [20] (.var) | 8,330 | 8,330 | 0 | 0 | 100% Exact Match |
-| GIAB HG002 Chr20 Exome [11, 20] | GIAB HG002 Chr20 exome [20] (VCF) | 8,233 | 8,233 | 0 | 0 | 100% Exact Match |
+| GIAB HG002 Chr20 Exome [11] | GIAB HG002 Chr20 exome [11] (.var) | 8,330 | 8,330 | 0 | 0 | 100% Exact Match |
+| GIAB HG002 Chr20 Exome [11] | GIAB HG002 Chr20 exome [11] (VCF) | 8,233 | 8,233 | 0 | 0 | 100% Exact Match |
 | Multimodal & CRAM Twin Suite [26] | 17-modality extended CLI coverage suite (.var & VCF) | 17 | 17 | 0 | 0 | 100% Exact Match |
 | Multimodal & CRAM Twin Suite [26] | 18-slice multimodal regression suite (VCF) | 18 | 18 | 0 | 0 | 100% Exact Match |
 | Multimodal & CRAM Twin Suite [26] | GIAB HG008 [19] CRAM-vs-BAM [26] twin slice (VCF) | 1 | 1 | 0 | 0 | 100% Exact Match |
