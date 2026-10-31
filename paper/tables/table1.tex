@@ -1,0 +1,34 @@
+\begin{table}[htbp]
+\centering
+\caption{Table 1. Algorithmic Parity (H1/H1a) \& Option C Full-Core Sweep Summary (78/87 Sub-Arms MATCH)}
+\label{tab:table1}
+\begin{tabular}{lllll}
+\hline
+Study Cell / Suite ID & Stage \& Tier & Assay / Modality Scope & Evaluated Arms / Variants & VarDictRust vs VarDictJava Verdict \\
+\hline
+s1\_ceiling\_amplicon & Stage 1 (Tier P) & EGFR/MRE11a amplicon (-a) ceiling \& parity & MATCH (2 variants) & 100\% MATCH \\
+s1\_ceiling\_hg008 & Stage 1 (Tier G) & NIST GIAB HG008 somatic slice ceiling \& parity & MATCH (18426 variants) & 100\% MATCH \\
+s1\_gate7\_ref\_multiregion & Stage 1 (Tier G) & HG002 chr20 multi-region reference offset gate & MATCH (2572 variants) & 100\% MATCH \\
+s1\_h1a\_simple\_tiles & Stage 1 (Tier E) & Tile-size invariance (0.5, 1, 2, 10 Mbp) on SEQC2 & 4 tile sizes x 5,090 variants & 100\% MATCH (all\_match=True) \\
+s2\_tierp\_mode\_parity\_sweep & Stage 2 (Tier P) & 13-mode 3-way functional parity sweep & 13 modes & MATCH (13/13 modes) \\
+s3\_rna\_splice\_parity\_n3 & Stage 3 (Tier G RNA) & 51.8 GiB HG002 GM24385 mRNA (-i splice mode) & 12,668 splice rows & MATCH (12668 rows) (diff=0 B) \\
+s4\_span\_chr1\_f0 & Stage 4 (Tier E) & Chromosome 1 10 Mbp all-positions (-f 0) parity & MATCH (7032 variants) & 100\% MATCH \\
+s4\_multimodal\_and\_cram\_twin & Stage 4 (Tier G) & Lossless BAM-vs-CRAM twin bitwise parity & STRICT-BYTES: 0 textual difference(s) within eps; MATCH (40 variants) & 100\% STRICT-BYTES MATCH \\
+evidence\_certified & Stage 4 (Tier P/E/G) & 17-modality extended coverage \& 18-slice multimodal & 17/17 modes; 18/18 slices (1,129 vars) & 100\% MATCH \\
+s5\_wgs\_hg002\_full\_giab\_3way\_th32 & Stage 5 (Tier G WGS) & Full-genome HG002 Arm B (\textless{}=50 kbp GIAB callable BED) & 8,111,171 callable variants & 100\% MATCH on callable intervals \\
+sweep\_4targets\_full & Option C Sweep & Option C .var \& .vcf parity sweep across amplicon, hg002, seqc2, hg008 & 4 sub-arms & MATCH=4/4 \\
+sweep\_R\_chr1\_full & Option C Sweep & Option C .var parity sweep on -R chr1:1-249250621 (249 Mbp single region) & 1 sub-arms & MATCH=0/1 \\
+sweep\_hg002\_chr20\_exome & Option C Sweep & Option C .var \& .vcf parity sweep on HG002 chr20 exome (Daniels 2024) & 2 sub-arms & MATCH=2/2 \\
+sweep\_multimodal\_and\_cram\_twin & Option C Sweep & Option C multimodal slices, extended coverage, and HG008 CRAM twin timing \& parity & 4 sub-arms & MATCH=4/4 \\
+sweep\_rna\_hg002\_52gb & Option C Sweep & Option C .var \& .splice.tsv parity sweep on 51.8 GiB HG002 RNA-seq & 2 sub-arms & MATCH=2/2 \\
+sweep\_span\_chr1\_f0 & Option C Sweep & Option C .var \& .vcf parity sweep on chr1 10 Mbp at -f 0 & 2 sub-arms & MATCH=0/2 \\
+sweep\_tierp\_13modes & Option C Sweep & Option C .var parity sweep across 11 Tier-P operational modes & 12 sub-arms & MATCH=12/12 \\
+sweep\_tierp\_SRR15006540 & Option C Sweep & Option C .var \& .vcf parity sweep on Tier-P SRR15006540 & 2 sub-arms & MATCH=2/2 \\
+sweep\_tierp\_SRR8657348 & Option C Sweep & Option C .var \& .vcf parity sweep on Tier-P SRR8657348 & 2 sub-arms & MATCH=2/2 \\
+sweep\_tierp\_somatic\_76\_86 & Option C Sweep & Option C .var \& .vcf parity sweep on Tier-P somatic pair SRR15006376/SRR15006386 & 2 sub-arms & MATCH=2/2 \\
+sweep\_ultradeep\_mrd\_stress & Option C Sweep & Option C ultra-deep MRD stress test (-f 0.0005 and -f 0 with --fisher up to 45,000x) & 30 sub-arms & MATCH=28/30 \\
+sweep\_wgs\_mrd\_matrix & Option C Sweep & Option C WGS \& exome MRD matrix (-f 0.001 and -f 0 across HG002, HG005 300x, SEQC2, HG008) & 24 sub-arms & MATCH=20/24 \\
+\hline
+\end{tabular}
+\\[4pt]\footnotesize{All parity comparisons align records by CHROM/POS/REF/ALT with float tolerance eps=1e-6 after R banker's rounding.}
+\end{table}

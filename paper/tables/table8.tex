@@ -1,0 +1,17 @@
+\begin{table}[htbp]
+\centering
+\caption{Table 8. Supply-Chain Security (H4), Static musl Binary Equivalence, Functional Coverage \& Divergence Summary}
+\label{tab:table8}
+\begin{tabular}{lllll}
+\hline
+Source Cell ID & Dimension / Criterion & VarDictJava v1.8.3 (0886261) & vardictcpp (ae93fe39dc) & VarDictRust v1.0.6 (5865a2a0b24a8c17) \\
+\hline
+s5\_h4\_maintenance\_security\_matrix & Upstream Repository Maintenance Status & Archived Read-Only (EOL) & Preprint Prototype (10 Divergences) & Actively Maintained (MIT, v1.0.6) \\
+s5\_h4\_maintenance\_security\_matrix & Runtime Dependency \& Binary Footprint & JVM + R + Perl (102 conda packages) & C++17 + htslib dynamic libs & 4.46 MiB GNU / 4.56 MiB Static musl (statically linked) \\
+s5\_h4\_maintenance\_security\_matrix & Supply-Chain Attestation \& Vulnerability Audit & Unpinned ecosystem dependencies & No SLSA provenance & SLSA Level 3 + 0 RustSec CVEs \\
+s2\_tierp\_mode\_parity\_sweep & 13-Mode Functional Coverage \& CRAM Support & 12/13 (CRAM fails without htsjdk classpath) & 12/13 (Amplicon CPP-3 \& Splice -i unsupported) & 13/13 Modes (100\% MATCH) \\
+s5\_h4\_maintenance\_security\_matrix & Empirical Divergence Classes vs Oracle & Reference Oracle (Baseline) & CPP-1..10 (+309,569 boundary dupes on HG002 Arm A) & 0 Divergences on Valid Inputs (\#![forbid(unsafe\_code)]) \\
+\hline
+\end{tabular}
+\\[4pt]\footnotesize{Static musl binary equivalence verified via harness/bin\_equiv.sh and certified in evidence\_certified/musl-ci.json.}
+\end{table}

@@ -1,0 +1,76 @@
+### Supplementary Table S5 (Table S5). Complete 70-Cell GA4GH v3.5 Genomic Stratification Matrix (7 Strata x 10 Platforms)
+
+| Cell ID | Cohort | Platform Arm | GA4GH v3.5 Stratum | SNV Precision | SNV Recall | SNV F1 | InDel Precision / Recall / F1 |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| s6_ga4gh_v35_stratification_matrix | HG002_Germline | hg002_illumina | Homopolymer_4to6bp | 0.4869 | 0.9645 | 0.6471 | 0.4874 / 0.9134 / 0.6356 |
+| s6_ga4gh_v35_stratification_matrix | HG002_Germline | hg002_illumina | Homopolymer_7to11bp | 0.6056 | 0.9278 | 0.7328 | 0.6079 / 0.9474 / 0.7406 |
+| s6_ga4gh_v35_stratification_matrix | HG002_Germline | hg002_illumina | Homopolymer_ge12bp | 0.6828 | 0.8704 | 0.7653 | 0.8869 / 0.7491 / 0.8122 |
+| s6_ga4gh_v35_stratification_matrix | HG002_Germline | hg002_illumina | AllTandemRepeats | 0.5462 | 0.9126 | 0.6833 | 0.8782 / 0.8357 / 0.8564 |
+| s6_ga4gh_v35_stratification_matrix | HG002_Germline | hg002_illumina | SegmentalDuplications | 0.5343 | 0.8980 | 0.6700 | 0.5650 / 0.8514 / 0.6792 |
+| s6_ga4gh_v35_stratification_matrix | HG002_Germline | hg002_illumina | LowMappability | 0.5202 | 0.8309 | 0.6398 | 0.4419 / 0.8199 / 0.5742 |
+| s6_ga4gh_v35_stratification_matrix | HG002_Germline | hg002_illumina | RefSeq_CDS | 0.3644 | 0.9831 | 0.5317 | 0.1209 / 1.0000 / 0.2157 |
+| s6_ga4gh_v35_stratification_matrix | HG002_Germline | hg002_element_aviti | Homopolymer_4to6bp | 0.9491 | 0.9685 | 0.9587 | 0.9371 / 0.9308 / 0.9339 |
+| s6_ga4gh_v35_stratification_matrix | HG002_Germline | hg002_element_aviti | Homopolymer_7to11bp | 0.9657 | 0.9325 | 0.9488 | 0.9626 / 0.9533 / 0.9579 |
+| s6_ga4gh_v35_stratification_matrix | HG002_Germline | hg002_element_aviti | Homopolymer_ge12bp | 0.9793 | 0.8765 | 0.9251 | 0.9882 / 0.8968 / 0.9403 |
+| s6_ga4gh_v35_stratification_matrix | HG002_Germline | hg002_element_aviti | AllTandemRepeats | 0.8662 | 0.9383 | 0.9008 | 0.9430 / 0.8396 / 0.8883 |
+| s6_ga4gh_v35_stratification_matrix | HG002_Germline | hg002_element_aviti | SegmentalDuplications | 0.7358 | 0.8980 | 0.8088 | 0.7485 / 0.8446 / 0.7937 |
+| s6_ga4gh_v35_stratification_matrix | HG002_Germline | hg002_element_aviti | LowMappability | 0.6786 | 0.8419 | 0.7515 | 0.6406 / 0.7640 / 0.6969 |
+| s6_ga4gh_v35_stratification_matrix | HG002_Germline | hg002_element_aviti | RefSeq_CDS | 0.9311 | 0.9887 | 0.9591 | 0.7857 / 1.0000 / 0.8800 |
+| s6_ga4gh_v35_stratification_matrix | HG002_Germline | hg002_mgi_dnbseq | Homopolymer_4to6bp | 0.5416 | 0.9632 | 0.6934 | 0.4645 / 0.9279 / 0.6191 |
+| s6_ga4gh_v35_stratification_matrix | HG002_Germline | hg002_mgi_dnbseq | Homopolymer_7to11bp | 0.5844 | 0.9284 | 0.7173 | 0.2319 / 0.9519 / 0.3729 |
+| s6_ga4gh_v35_stratification_matrix | HG002_Germline | hg002_mgi_dnbseq | Homopolymer_ge12bp | 0.4531 | 0.8796 | 0.5981 | 0.7337 / 0.8764 / 0.7987 |
+| s6_ga4gh_v35_stratification_matrix | HG002_Germline | hg002_mgi_dnbseq | AllTandemRepeats | 0.4990 | 0.9326 | 0.6502 | 0.6606 / 0.8336 / 0.7371 |
+| s6_ga4gh_v35_stratification_matrix | HG002_Germline | hg002_mgi_dnbseq | SegmentalDuplications | 0.5267 | 0.8960 | 0.6634 | 0.4792 / 0.8581 / 0.6150 |
+| s6_ga4gh_v35_stratification_matrix | HG002_Germline | hg002_mgi_dnbseq | LowMappability | 0.3691 | 0.8269 | 0.5104 | 0.3342 / 0.7888 / 0.4695 |
+| s6_ga4gh_v35_stratification_matrix | HG002_Germline | hg002_mgi_dnbseq | RefSeq_CDS | 0.4110 | 0.9831 | 0.5796 | 0.2703 / 0.9091 / 0.4167 |
+| s6_ga4gh_v35_stratification_matrix | HG002_Germline | hg002_ultima_ug100 | Homopolymer_4to6bp | 0.8208 | 0.9409 | 0.8768 | 0.0195 / 0.7546 / 0.0381 |
+| s6_ga4gh_v35_stratification_matrix | HG002_Germline | hg002_ultima_ug100 | Homopolymer_7to11bp | 0.5572 | 0.7097 | 0.6243 | 0.0514 / 0.4792 / 0.0928 |
+| s6_ga4gh_v35_stratification_matrix | HG002_Germline | hg002_ultima_ug100 | Homopolymer_ge12bp | 0.2666 | 0.6944 | 0.3853 | 0.2957 / 0.4573 / 0.3591 |
+| s6_ga4gh_v35_stratification_matrix | HG002_Germline | hg002_ultima_ug100 | AllTandemRepeats | 0.7497 | 0.9100 | 0.8221 | 0.2424 / 0.7895 / 0.3709 |
+| s6_ga4gh_v35_stratification_matrix | HG002_Germline | hg002_ultima_ug100 | SegmentalDuplications | 0.8726 | 0.8755 | 0.8740 | 0.0277 / 0.7297 / 0.0535 |
+| s6_ga4gh_v35_stratification_matrix | HG002_Germline | hg002_ultima_ug100 | LowMappability | 0.8497 | 0.7799 | 0.8133 | 0.0359 / 0.6708 / 0.0682 |
+| s6_ga4gh_v35_stratification_matrix | HG002_Germline | hg002_ultima_ug100 | RefSeq_CDS | 0.7489 | 0.9568 | 0.8402 | 0.0016 / 0.7273 / 0.0033 |
+| s6_ga4gh_v35_stratification_matrix | HG008_Somatic | hg008_illumina | Homopolymer_4to6bp | 0.9545 | 0.8750 | 0.9130 | 0.7778 / 0.4118 / 0.5385 |
+| s6_ga4gh_v35_stratification_matrix | HG008_Somatic | hg008_illumina | Homopolymer_7to11bp | 1.0000 | 1.0000 | 1.0000 | 1.0000 / 0.7647 / 0.8667 |
+| s6_ga4gh_v35_stratification_matrix | HG008_Somatic | hg008_illumina | Homopolymer_ge12bp | 0.8000 | 0.5000 | 0.6154 | 0.8235 / 0.3373 / 0.4786 |
+| s6_ga4gh_v35_stratification_matrix | HG008_Somatic | hg008_illumina | AllTandemRepeats | 0.1296 | 0.6364 | 0.2154 | 0.0563 / 0.2105 / 0.0889 |
+| s6_ga4gh_v35_stratification_matrix | HG008_Somatic | hg008_illumina | SegmentalDuplications | 0.9000 | 0.7500 | 0.8182 | 0.8333 / 0.5556 / 0.6667 |
+| s6_ga4gh_v35_stratification_matrix | HG008_Somatic | hg008_illumina | LowMappability | 0.3158 | 1.0000 | 0.4800 | 0.3000 / 1.0000 / 0.4615 |
+| s6_ga4gh_v35_stratification_matrix | HG008_Somatic | hg008_illumina | RefSeq_CDS | 1.0000 | 1.0000 | 1.0000 | No Truth Indels in Stratum |
+| s6_ga4gh_v35_stratification_matrix | HG008_Somatic | hg008_element_aviti | Homopolymer_4to6bp | 0.8958 | 0.8958 | 0.8958 | 0.9375 / 0.8824 / 0.9091 |
+| s6_ga4gh_v35_stratification_matrix | HG008_Somatic | hg008_element_aviti | Homopolymer_7to11bp | 1.0000 | 1.0000 | 1.0000 | 1.0000 / 0.8824 / 0.9375 |
+| s6_ga4gh_v35_stratification_matrix | HG008_Somatic | hg008_element_aviti | Homopolymer_ge12bp | 0.8000 | 0.5000 | 0.6154 | 0.9500 / 0.6867 / 0.7972 |
+| s6_ga4gh_v35_stratification_matrix | HG008_Somatic | hg008_element_aviti | AllTandemRepeats | 0.0909 | 0.6364 | 0.1591 | 0.1154 / 0.3158 / 0.1690 |
+| s6_ga4gh_v35_stratification_matrix | HG008_Somatic | hg008_element_aviti | SegmentalDuplications | 0.7143 | 0.8333 | 0.7692 | 0.8333 / 0.5556 / 0.6667 |
+| s6_ga4gh_v35_stratification_matrix | HG008_Somatic | hg008_element_aviti | LowMappability | 0.2683 | 0.9167 | 0.4151 | 0.2727 / 1.0000 / 0.4286 |
+| s6_ga4gh_v35_stratification_matrix | HG008_Somatic | hg008_element_aviti | RefSeq_CDS | 1.0000 | 1.0000 | 1.0000 | No Truth Indels in Stratum |
+| s6_ga4gh_v35_stratification_matrix | HG008_Somatic | hg008_pacbio_onso | Homopolymer_4to6bp | 0.9286 | 0.8125 | 0.8667 | 0.6667 / 0.7059 / 0.6857 |
+| s6_ga4gh_v35_stratification_matrix | HG008_Somatic | hg008_pacbio_onso | Homopolymer_7to11bp | 0.7500 | 0.7500 | 0.7500 | 0.8125 / 0.7647 / 0.7879 |
+| s6_ga4gh_v35_stratification_matrix | HG008_Somatic | hg008_pacbio_onso | Homopolymer_ge12bp | 0.8000 | 0.5000 | 0.6154 | 0.9231 / 0.5783 / 0.7111 |
+| s6_ga4gh_v35_stratification_matrix | HG008_Somatic | hg008_pacbio_onso | AllTandemRepeats | 0.0976 | 0.7273 | 0.1720 | 0.0625 / 0.1579 / 0.0896 |
+| s6_ga4gh_v35_stratification_matrix | HG008_Somatic | hg008_pacbio_onso | SegmentalDuplications | 0.6000 | 0.7500 | 0.6667 | 0.6667 / 0.4444 / 0.5333 |
+| s6_ga4gh_v35_stratification_matrix | HG008_Somatic | hg008_pacbio_onso | LowMappability | 0.2353 | 1.0000 | 0.3810 | 0.2143 / 1.0000 / 0.3529 |
+| s6_ga4gh_v35_stratification_matrix | HG008_Somatic | hg008_pacbio_onso | RefSeq_CDS | 1.0000 | 1.0000 | 1.0000 | No Truth Indels in Stratum |
+| s6_ga4gh_v35_stratification_matrix | HG008_Somatic | hg008_roche_sbx | Homopolymer_4to6bp | 0.8571 | 0.8750 | 0.8660 | 0.4000 / 0.2353 / 0.2963 |
+| s6_ga4gh_v35_stratification_matrix | HG008_Somatic | hg008_roche_sbx | Homopolymer_7to11bp | 0.8000 | 1.0000 | 0.8889 | 0.7000 / 0.4118 / 0.5185 |
+| s6_ga4gh_v35_stratification_matrix | HG008_Somatic | hg008_roche_sbx | Homopolymer_ge12bp | 1.0000 | 0.5000 | 0.6667 | 0.3913 / 0.1084 / 0.1698 |
+| s6_ga4gh_v35_stratification_matrix | HG008_Somatic | hg008_roche_sbx | AllTandemRepeats | 0.7143 | 0.4545 | 0.5556 | 0.5000 / 0.1053 / 0.1739 |
+| s6_ga4gh_v35_stratification_matrix | HG008_Somatic | hg008_roche_sbx | SegmentalDuplications | 0.8889 | 0.6667 | 0.7619 | 0.7500 / 0.3333 / 0.4615 |
+| s6_ga4gh_v35_stratification_matrix | HG008_Somatic | hg008_roche_sbx | LowMappability | 0.7857 | 0.9167 | 0.8462 | 0.5000 / 1.0000 / 0.6667 |
+| s6_ga4gh_v35_stratification_matrix | HG008_Somatic | hg008_roche_sbx | RefSeq_CDS | 1.0000 | 1.0000 | 1.0000 | No Truth Indels in Stratum |
+| s6_ga4gh_v35_stratification_matrix | HG008_Somatic | hg008_ultima_ppmseq | Homopolymer_4to6bp | 0.8667 | 0.8125 | 0.8387 | 0.2857 / 0.1176 / 0.1667 |
+| s6_ga4gh_v35_stratification_matrix | HG008_Somatic | hg008_ultima_ppmseq | Homopolymer_7to11bp | 1.0000 | 0.2500 | 0.4000 | 0.0000 / 0.0000 / 0.0000 |
+| s6_ga4gh_v35_stratification_matrix | HG008_Somatic | hg008_ultima_ppmseq | Homopolymer_ge12bp | 1.0000 | 0.1250 | 0.2222 | 1.0000 / 0.0241 / 0.0471 |
+| s6_ga4gh_v35_stratification_matrix | HG008_Somatic | hg008_ultima_ppmseq | AllTandemRepeats | 0.2500 | 0.6364 | 0.3590 | 0.0435 / 0.0526 / 0.0476 |
+| s6_ga4gh_v35_stratification_matrix | HG008_Somatic | hg008_ultima_ppmseq | SegmentalDuplications | 0.7273 | 0.6667 | 0.6957 | 0.5000 / 0.2222 / 0.3077 |
+| s6_ga4gh_v35_stratification_matrix | HG008_Somatic | hg008_ultima_ppmseq | LowMappability | 0.6154 | 0.6667 | 0.6400 | 1.0000 / 0.3333 / 0.5000 |
+| s6_ga4gh_v35_stratification_matrix | HG008_Somatic | hg008_ultima_ppmseq | RefSeq_CDS | 1.0000 | 1.0000 | 1.0000 | No Truth Indels in Stratum |
+| s6_ga4gh_v35_stratification_matrix | HG008_Somatic | hg008_ultima_ug100 | Homopolymer_4to6bp | 0.9512 | 0.8125 | 0.8764 | 0.5000 / 0.1176 / 0.1905 |
+| s6_ga4gh_v35_stratification_matrix | HG008_Somatic | hg008_ultima_ug100 | Homopolymer_7to11bp | 1.0000 | 0.2500 | 0.4000 | 0.0000 / 0.0000 / 0.0000 |
+| s6_ga4gh_v35_stratification_matrix | HG008_Somatic | hg008_ultima_ug100 | Homopolymer_ge12bp | 1.0000 | 0.1250 | 0.2222 | 0.2308 / 0.0361 / 0.0625 |
+| s6_ga4gh_v35_stratification_matrix | HG008_Somatic | hg008_ultima_ug100 | AllTandemRepeats | 0.6250 | 0.4545 | 0.5263 | 0.1429 / 0.0526 / 0.0769 |
+| s6_ga4gh_v35_stratification_matrix | HG008_Somatic | hg008_ultima_ug100 | SegmentalDuplications | 1.0000 | 0.8333 | 0.9091 | 1.0000 / 0.2222 / 0.3636 |
+| s6_ga4gh_v35_stratification_matrix | HG008_Somatic | hg008_ultima_ug100 | LowMappability | 0.9167 | 0.9167 | 0.9167 | 0.5000 / 0.3333 / 0.4000 |
+| s6_ga4gh_v35_stratification_matrix | HG008_Somatic | hg008_ultima_ug100 | RefSeq_CDS | 1.0000 | 1.0000 | 1.0000 | No Truth Indels in Stratum |
+
+*All 70 stratification cells confirm 0 site differences between VarDictRust v1.0.6 and VarDictJava v1.8.3.*
