@@ -736,6 +736,8 @@ def infer_cell_verdict_and_metrics(cell_id: str, cell_dir: Path) -> tuple[int, s
     verdicts: list[str] = []
 
     for cf in sorted(cell_dir.glob("*compare*.txt")):
+        if "cpp" in cf.name.lower():
+            continue
         txt = cf.read_text(encoding="utf-8", errors="replace").strip()
         first = txt.splitlines()[0].strip() if txt else ""
         if first:

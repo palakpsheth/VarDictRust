@@ -44,6 +44,39 @@ class TestAggregateGcpStudy(unittest.TestCase):
             self.assertEqual(r["exit_code"], "0", f"Cell {r['cell_id']} non-zero exit")
             self.assertTrue(r["paper_targets"].strip(), f"Orphan cell {r['cell_id']}")
 
+    def test_no_cpp_comparison_leak_and_reconciled_sweep_parity(self) -> None:
+        master_path = OUT_DIR / "master_gcp_metrics.json"
+        doc = json.loads(master_path.read_text(encoding="utf-8"))
+        cells = doc["cells"]
+
+        for cid, cdata in cells.items():
+            metrics = cdata.get("metrics", {})
+            for k in metrics:
+                if "compare" in k:
+                    self.assertNotIn(
+                        "cpp",
+                        k.lower(),
+                        f"Cell {cid} metrics leaked vardictcpp comparison file {k}",
+                    )
+
+        self.assertNotIn("MISMATCH", cells["s5_wgs_hg002_full_giab_3way_th32"]["parity_verdict"])
+        self.assertNotIn("MISMATCH", cells["s6_low_vaf_titration_truth_curve"]["parity_verdict"])
+
+        sw = doc["sweep"]
+        self.assertEqual(sw["total_arms"], 87)
+        self.assertEqual(sw["match_arms"], 84)
+        self.assertEqual(sw["diff_captured_arms"], 3)
+        diff_cells = {(r["cell_id"], r["arm"]) for r in sw["rows"] if r["verdict"] != "MATCH"}
+        self.assertEqual(
+            diff_cells,
+            {
+                ("sweep_R_chr1_full", "R_chr1_249Mbp.var"),
+                ("sweep_span_chr1_f0", "chr1_10m_f0.var"),
+                ("sweep_span_chr1_f0", "chr1_10m_f0.vcf"),
+            },
+        )
+
+
 
 if __name__ == "__main__":
     unittest.main()

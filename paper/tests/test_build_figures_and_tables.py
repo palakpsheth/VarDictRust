@@ -315,6 +315,18 @@ class TestBuildFiguresAndTables(unittest.TestCase):
             + "\n".join(f"  - {v}" for v in violations),
         )
 
+    def test_tables_free_of_false_cpp_mismatches_and_stale_sweep_diffs(self) -> None:
+        supp1_md = (TAB_DIR / "supp_table1.md").read_text(encoding="utf-8")
+        for line in supp1_md.splitlines():
+            if "s5_wgs_hg002_full_giab_3way_th32" in line or "s6_low_vaf_titration_truth_curve" in line:
+                self.assertNotIn("MISMATCH", line, f"False vardictcpp MISMATCH leaked into Supp Table S1: {line}")
+
+        table1_md = (TAB_DIR / "table1.md").read_text(encoding="utf-8")
+        self.assertIn("24/24 Sub-Arms Exact Match", table1_md)
+        self.assertIn("30/30 Sub-Arms Exact Match", table1_md)
+        self.assertIn("100% Exact Match with --tile-size 10000000", table1_md)
+
+
 
 if __name__ == "__main__":
     unittest.main()

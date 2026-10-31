@@ -1069,7 +1069,7 @@ def build_slides(
         fm = gcp_doc["flat_macros"]
         mm_summary = [
             ("18 Multi-Modal Slices (HG005, SEQC2, HG002, b37, SV)", f"{mm_sl['total_variants_evaluated']:,} vars across 18/18 slices | MATCH"),
-            ("Option C Full-Core Parity Sweep (12 cells, 87 arms)", f"{fm['sweep_match_arms']}/{fm['sweep_match_arms']} single-region .var/.vcf | MATCH"),
+            ("Option C Full-Core Parity Sweep (12 cells, 87 arms)", f"{fm['sweep_match_arms']}/{fm['sweep_total_arms']} BED-mode .var/.vcf | MATCH"),
             ("Stage 5 10-Platform chr20 Panel (-f 0.01 & -f 0 MRD)", "Illumina, AVITI, Onso, SBX, UG100, DNBSEQ | PASS"),
             ("Stage 5 -f 0 Noise Floor Audit (f0.01_r2, f0_r2, f0_r1)", f"{fm['s5_f0_noise_floor_strict_match']} STRICT_MATCH vs Java"),
             ("Stage 6 GA4GH v3.5 Stratification (10 arms x 7 strata)", f"{fm['s6_ga4gh_cells']}/{fm['s6_ga4gh_cells']} cells evaluated | PASS"),

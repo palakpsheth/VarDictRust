@@ -114,7 +114,9 @@ def build_macro_context(doc: dict[str, Any]) -> dict[str, str]:
     m_chunk = re.search(r"CPP_CHUNK=(\d+)", s5["wgs_hg008_full_giab_3way_th32"]["cpp"]["command"])
     cpp_chunk_int = int(m_chunk.group(1)) if m_chunk else 50000
     m["cpp_chunk_bp"] = f"{cpp_chunk_int:,}"
-    m["rust_halo_kbp"] = "100"
+    m["rust_default_tile_kbp"] = "100"
+    m["rust_halo_kbp"] = "10"
+    m["rust_splice_halo_kbp"] = "200"
     m["giab_arm_b_max_kbp"] = str(cpp_chunk_int // 1000)
     m["cpp_chunk_kbp"] = str(cpp_chunk_int // 1000)
     m["nvme_raid0_tb"] = "1.5"
@@ -159,6 +161,7 @@ def build_macro_context(doc: dict[str, Any]) -> dict[str, str]:
     m["optc_diff_arms"] = str(sw_diff)
     m["optc_match_pct"] = f"{(sw_match / sw_tot) * 100.0:.2f}"
     m["cp95_78_87"] = fmt_cp_ci(sw_match, sw_tot)
+    m["cp95_optc_sweep"] = fmt_cp_ci(sw_match, sw_tot)
     k_mos, n_mos = (int(x) for x in str(doc["flat_macros"]["s6_mosaic_tp_best"]).split("/"))
     m["s6_mosaic_rust_tp"] = str(k_mos)
     m["s6_mosaic_truth_total"] = str(n_mos)

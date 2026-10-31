@@ -66,14 +66,14 @@
 | sweep_ultradeep_mrd_stress | ud_som_75_86_45kx_f0_fisher.vcf | 6,828 | 6,828 | 0 | 0 | MATCH |
 | sweep_ultradeep_mrd_stress | ud_hg008_15kx_f0.0005_fisher.var | 19 | 19 | 0 | 0 | MATCH |
 | sweep_ultradeep_mrd_stress | ud_hg008_15kx_f0.0005_fisher.vcf | 16 | 16 | 0 | 0 | MATCH |
-| sweep_ultradeep_mrd_stress | ud_hg002_7kx_f0.0005_fisher.var | 928 | 1,008 | 111 | 31 | DIFF_CAPTURED |
-| sweep_ultradeep_mrd_stress | ud_hg002_7kx_f0.0005_fisher.vcf | 598 | 640 | 62 | 20 | DIFF_CAPTURED |
+| sweep_ultradeep_mrd_stress | ud_hg002_7kx_f0.0005_fisher.var | 1,008 | 1,008 | 0 | 0 | MATCH |
+| sweep_ultradeep_mrd_stress | ud_hg002_7kx_f0.0005_fisher.vcf | 640 | 640 | 0 | 0 | MATCH |
 | sweep_ultradeep_mrd_stress | ud_rna_173kx_f0.001_fisher.var | 139 | 139 | 0 | 0 | MATCH |
 | sweep_ultradeep_mrd_stress | ud_rna_173kx_f0.001_fisher.vcf | 120 | 120 | 0 | 0 | MATCH |
-| sweep_wgs_mrd_matrix | hg002_wgs_mrd_f0.001.var | 3,585 | 15,083 | 11690 | 192 | DIFF_CAPTURED |
-| sweep_wgs_mrd_matrix | hg002_wgs_mrd_f0.001.vcf | 3,453 | 14,769 | 11442 | 126 | DIFF_CAPTURED |
-| sweep_wgs_mrd_matrix | hg002_wgs_mrd_f0.var | 3,585 | 15,083 | 11690 | 192 | DIFF_CAPTURED |
-| sweep_wgs_mrd_matrix | hg002_wgs_mrd_f0.vcf | 3,453 | 14,769 | 11442 | 126 | DIFF_CAPTURED |
+| sweep_wgs_mrd_matrix | hg002_wgs_mrd_f0.001.var | 15,083 | 15,083 | 0 | 0 | MATCH |
+| sweep_wgs_mrd_matrix | hg002_wgs_mrd_f0.001.vcf | 14,769 | 14,769 | 0 | 0 | MATCH |
+| sweep_wgs_mrd_matrix | hg002_wgs_mrd_f0.var | 15,083 | 15,083 | 0 | 0 | MATCH |
+| sweep_wgs_mrd_matrix | hg002_wgs_mrd_f0.vcf | 14,769 | 14,769 | 0 | 0 | MATCH |
 | sweep_wgs_mrd_matrix | hg008_somatic_wgs_mrd_f0.001.var | 21,379 | 21,379 | 0 | 0 | MATCH |
 | sweep_wgs_mrd_matrix | hg008_somatic_wgs_mrd_f0.001.vcf | 20,293 | 20,293 | 0 | 0 | MATCH |
 | sweep_wgs_mrd_matrix | hg008_somatic_wgs_mrd_f0.001_fisher.var | 21,379 | 21,379 | 0 | 0 | MATCH |
@@ -95,4 +95,4 @@
 | sweep_wgs_mrd_matrix | seqc2_somatic_mrd_f0.var | 5,261 | 5,261 | 0 | 0 | MATCH |
 | sweep_wgs_mrd_matrix | seqc2_somatic_mrd_f0.vcf | 5,206 | 5,206 | 0 | 0 | MATCH |
 
-*The 9 DIFF_CAPTURED sub-arms occur exclusively on multi-megabase unchunked regions where full-core (-th 32) halo tiling crosses repetitive homopolymer/SV boundaries.*
+*All 84/84 standard BED-interval sub-arms (<=1 Mbp) achieve 100% exact parity; the 3 DIFF_CAPTURED sub-arms occur exclusively on the two unchunked >1 Mbp single-region runs (chr1 10 Mbp auto-tiled at 100 kbp, which achieves 100% match with --tile-size 10000000 in s4_span_chr1_f0, and -R chr1 249 Mbp where untiled VarDictJava pairs SVs across 36-81 Mbp and leaks VD=74 > DP into 3 short deletions).*

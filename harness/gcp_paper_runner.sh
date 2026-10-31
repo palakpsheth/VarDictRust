@@ -3137,7 +3137,7 @@ oracle_cache_put() {
     cp -f "${local_file}.sha256" "${LOCAL_CKPT_DIR}/oracle-cache/${cache_rel}.sha256"
     return 0
   fi
-  if ! setsid gsutil -q stat "${GCS_ORACLE_CACHE}/${cache_rel}" 2>/dev/null; then
+  if [ "${FORCE_ORACLE_REFRESH:-0}" = "1" ] || ! setsid gsutil -q stat "${GCS_ORACLE_CACHE}/${cache_rel}" 2>/dev/null; then
     echo "[ORACLE-CACHE PUT] Uploading '${local_file}' -> '${GCS_ORACLE_CACHE}/${cache_rel}'"
     gcs_upload "$local_file" "${GCS_ORACLE_CACHE}/${cache_rel}" || true
     gcs_upload "${local_file}.sha256" "${GCS_ORACLE_CACHE}/${cache_rel}.sha256" || true
@@ -3331,6 +3331,9 @@ record_sweep_row() {
   fi
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$cell" "$surface" "$j_cnt" "$r_cnt" "$fp" "$fn" "$verdict" "$notes" | tee -a "$summary"
   if [ -n "${KEEP_DIR:-}" ]; then
+    if [ -f "$KEEP_DIR/parity_verdict.tsv" ]; then
+      awk -F'\t' -v c="$cell" -v s="$surface" '!($1==c && $2==s)' "$KEEP_DIR/parity_verdict.tsv" > "$KEEP_DIR/parity_verdict.tsv.tmp" && mv -f "$KEEP_DIR/parity_verdict.tsv.tmp" "$KEEP_DIR/parity_verdict.tsv"
+    fi
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$cell" "$surface" "$j_cnt" "$r_cnt" "$fp" "$fn" "$verdict" "$notes" >> "$KEEP_DIR/parity_verdict.tsv"
   fi
 }

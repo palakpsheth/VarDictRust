@@ -3607,7 +3607,7 @@
       "stage": "sweep",
       "tier": "Tier P/G",
       "exit_code": 0,
-      "parity_verdict": "MATCH (2780 rows); MATCH (2645 variants); MATCH (6182 rows); MATCH (5685 variants); MATCH (2844 rows); MATCH (2732 variants); MATCH (3841 rows); MATCH (3630 variants); MATCH (3028 rows); MATCH (2888 variants); MATCH (6153 rows); MATCH (5608 variants); MATCH (5046 rows); MATCH (4711 variants); MATCH (7044 rows); MATCH (6313 variants); MISMATCH: row count java=928 rust=1008; MISMATCH: variant sets differ. java-only(<=10)=[\"('chr20', '26541676', 'C', 'G')\", \"('chr20', '26541694', 'G', 'A')\", \"('chr20', '26541730', 'C', 'G')\", \"('chr20', '26541756', 'C', 'T')\", \"('chr20', '26541779', 'G', 'C')\", \"('chr20', '26541844', 'G', 'A')\", \"('chr20', '26541865', 'G', 'T')\", \"('chr20', '26541875', 'G', 'C')\", \"('chr20', '26541889', 'T', 'C')\", \"('chr20', '26542003', 'C', 'G')\"] rust-only(<=10)=[\"('chr20', '26541077', 'T', 'A')\", \"('chr20', '26541187', 'T', 'A')\", \"('chr20', '26541350', 'C', 'A')\", \"('chr20', '26541415', 'C', 'T')\", \"('chr20', '26541473', 'G', 'T')\", \"('chr20', '26541497', 'C', 'T')\", \"('chr20', '26541503', 'G', 'C')\", \"('chr20', '26541515', 'G', 'T')\", \"('chr20', '26541557', 'A', 'G')\", \"('chr20', '26541577', 'A', 'G')\"]; MATCH (19 rows); MATCH (16 variants); MATCH (139 rows); MATCH (120 variants); MATCH (4481 rows); MATCH (4262 variants); MATCH (7474 rows); MATCH (6828 variants); MATCH (4045 rows); MATCH (3855 variants); MATCH (6890 rows); MATCH (6309 variants); MATCH=28/30",
+      "parity_verdict": "MATCH (2780 rows); MATCH (2645 variants); MATCH (6182 rows); MATCH (5685 variants); MATCH (2844 rows); MATCH (2732 variants); MATCH (3841 rows); MATCH (3630 variants); MATCH (3028 rows); MATCH (2888 variants); MATCH (6153 rows); MATCH (5608 variants); MATCH (5046 rows); MATCH (4711 variants); MATCH (7044 rows); MATCH (6313 variants); MATCH (1008 rows); MATCH (640 variants); MATCH (19 rows); MATCH (16 variants); MATCH (139 rows); MATCH (120 variants); MATCH (4481 rows); MATCH (4262 variants); MATCH (7474 rows); MATCH (6828 variants); MATCH (4045 rows); MATCH (3855 variants); MATCH (6890 rows); MATCH (6309 variants); MATCH=30/30",
       "files": [
         "cell.exit_code",
         "parity_verdict.tsv",
@@ -3734,8 +3734,8 @@
         "ud_SRR15006540_f0.0005_fisher.compare_vcf": "MATCH (4711 variants)",
         "ud_SRR15006540_f0_fisher.compare_var": "MATCH (7044 rows)",
         "ud_SRR15006540_f0_fisher.compare_vcf": "MATCH (6313 variants)",
-        "ud_hg002_7kx_f0.0005_fisher.compare_var": "MISMATCH: row count java=928 rust=1008",
-        "ud_hg002_7kx_f0.0005_fisher.compare_vcf": "MISMATCH: variant sets differ. java-only(<=10)=[\"('chr20', '26541676', 'C', 'G')\", \"('chr20', '26541694', 'G', 'A')\", \"('chr20', '26541730', 'C', 'G')\", \"('chr20', '26541756', 'C', 'T')\", \"('chr20', '26541779', 'G', 'C')\", \"('chr20', '26541844', 'G', 'A')\", \"('chr20', '26541865', 'G', 'T')\", \"('chr20', '26541875', 'G', 'C')\", \"('chr20', '26541889', 'T', 'C')\", \"('chr20', '26542003', 'C', 'G')\"] rust-only(<=10)=[\"('chr20', '26541077', 'T', 'A')\", \"('chr20', '26541187', 'T', 'A')\", \"('chr20', '26541350', 'C', 'A')\", \"('chr20', '26541415', 'C', 'T')\", \"('chr20', '26541473', 'G', 'T')\", \"('chr20', '26541497', 'C', 'T')\", \"('chr20', '26541503', 'G', 'C')\", \"('chr20', '26541515', 'G', 'T')\", \"('chr20', '26541557', 'A', 'G')\", \"('chr20', '26541577', 'A', 'G')\"]",
+        "ud_hg002_7kx_f0.0005_fisher.compare_var": "MATCH (1008 rows)",
+        "ud_hg002_7kx_f0.0005_fisher.compare_vcf": "MATCH (640 variants)",
         "ud_hg008_15kx_f0.0005_fisher.compare_var": "MATCH (19 rows)",
         "ud_hg008_15kx_f0.0005_fisher.compare_vcf": "MATCH (16 variants)",
         "ud_rna_173kx_f0.001_fisher.compare_var": "MATCH (139 rows)",
@@ -3749,8 +3749,8 @@
         "ud_som_76_86_29kx_f0_fisher.compare_var": "MATCH (6890 rows)",
         "ud_som_76_86_29kx_f0_fisher.compare_vcf": "MATCH (6309 variants)",
         "sweep_arms_total": 30,
-        "sweep_arms_match": 28,
-        "sweep_arms_diff_captured": 2
+        "sweep_arms_match": 30,
+        "sweep_arms_diff_captured": 0
       },
       "paper_targets": [
         "Fig 1",
@@ -3765,7 +3765,7 @@
       "stage": "sweep",
       "tier": "Tier E/G",
       "exit_code": 0,
-      "parity_verdict": "MISMATCH: row count java=3585 rust=15083; MISMATCH: variant sets differ. java-only(<=10)=[\"('chr20', '10006514', 'T', 'C')\", \"('chr20', '10006827', 'T', '<DUP>')\", \"('chr20', '10016860', 'T', '<DUP>')\", \"('chr20', '10023959', 'T', '<DUP>')\", \"('chr20', '10025781', 'T', '<DUP>')\", \"('chr20', '10041912', 'A', '<DUP>')\", \"('chr20', '10043640', 'C', 'T')\", \"('chr20', '10050368', 'C', '<DUP>')\", \"('chr20', '10052556', 'T', '<DUP>')\", \"('chr20', '10063847', 'T', '<DUP>')\"] rust-only(<=10)=[\"('chr20', '10000008', 'T', 'G')\", \"('chr20', '10000118', 'C', 'T')\", \"('chr20', '10000135', 'G', 'T')\", \"('chr20', '10000255', 'T', 'A')\", \"('chr20', '10000291', 'G', 'C')\", \"('chr20', '10000384', 'A', 'T')\", \"('chr20', '10000409', 'T', 'C')\", \"('chr20', '10000431', 'C', 'A')\", \"('chr20', '10000486', 'T', 'C')\", \"('chr20', '10000531', 'A', 'G')\"]; MISMATCH: row count java=3585 rust=15083; MISMATCH: variant sets differ. java-only(<=10)=[\"('chr20', '10006514', 'T', 'C')\", \"('chr20', '10006827', 'T', '<DUP>')\", \"('chr20', '10016860', 'T', '<DUP>')\", \"('chr20', '10023959', 'T', '<DUP>')\", \"('chr20', '10025781', 'T', '<DUP>')\", \"('chr20', '10041912', 'A', '<DUP>')\", \"('chr20', '10043640', 'C', 'T')\", \"('chr20', '10050368', 'C', '<DUP>')\", \"('chr20', '10052556', 'T', '<DUP>')\", \"('chr20', '10063847', 'T', '<DUP>')\"] rust-only(<=10)=[\"('chr20', '10000008', 'T', 'G')\", \"('chr20', '10000118', 'C', 'T')\", \"('chr20', '10000135', 'G', 'T')\", \"('chr20', '10000255', 'T', 'A')\", \"('chr20', '10000291', 'G', 'C')\", \"('chr20', '10000384', 'A', 'T')\", \"('chr20', '10000409', 'T', 'C')\", \"('chr20', '10000431', 'C', 'A')\", \"('chr20', '10000486', 'T', 'C')\", \"('chr20', '10000531', 'A', 'G')\"]; MATCH (286 rows); MATCH (284 variants); MATCH (339 rows); MATCH (325 variants); MATCH (339 rows); MATCH (325 variants); MATCH (305 rows); MATCH (299 variants); MATCH (21379 rows); MATCH (20293 variants); MATCH (21379 rows); MATCH (20293 variants); MATCH (21379 rows); MATCH (20293 variants); MATCH (5261 rows); MATCH (5206 variants); MATCH (5261 rows); MATCH (5206 variants); MATCH (5261 rows); MATCH (5206 variants); MATCH=20/24",
+      "parity_verdict": "MATCH (15083 rows); MATCH (14769 variants); MATCH (15083 rows); MATCH (14769 variants); MATCH (286 rows); MATCH (284 variants); MATCH (339 rows); MATCH (325 variants); MATCH (339 rows); MATCH (325 variants); MATCH (305 rows); MATCH (299 variants); MATCH (21379 rows); MATCH (20293 variants); MATCH (21379 rows); MATCH (20293 variants); MATCH (21379 rows); MATCH (20293 variants); MATCH (5261 rows); MATCH (5206 variants); MATCH (5261 rows); MATCH (5206 variants); MATCH (5261 rows); MATCH (5206 variants); MATCH=24/24",
       "files": [
         "cell.exit_code",
         "hg002_wgs_mrd_f0.001.compare_var.txt",
@@ -3855,10 +3855,10 @@
         "seqc2_somatic_mrd_f0.vcf.diff.txt"
       ],
       "metrics": {
-        "hg002_wgs_mrd_f0.001.compare_var": "MISMATCH: row count java=3585 rust=15083",
-        "hg002_wgs_mrd_f0.001.compare_vcf": "MISMATCH: variant sets differ. java-only(<=10)=[\"('chr20', '10006514', 'T', 'C')\", \"('chr20', '10006827', 'T', '<DUP>')\", \"('chr20', '10016860', 'T', '<DUP>')\", \"('chr20', '10023959', 'T', '<DUP>')\", \"('chr20', '10025781', 'T', '<DUP>')\", \"('chr20', '10041912', 'A', '<DUP>')\", \"('chr20', '10043640', 'C', 'T')\", \"('chr20', '10050368', 'C', '<DUP>')\", \"('chr20', '10052556', 'T', '<DUP>')\", \"('chr20', '10063847', 'T', '<DUP>')\"] rust-only(<=10)=[\"('chr20', '10000008', 'T', 'G')\", \"('chr20', '10000118', 'C', 'T')\", \"('chr20', '10000135', 'G', 'T')\", \"('chr20', '10000255', 'T', 'A')\", \"('chr20', '10000291', 'G', 'C')\", \"('chr20', '10000384', 'A', 'T')\", \"('chr20', '10000409', 'T', 'C')\", \"('chr20', '10000431', 'C', 'A')\", \"('chr20', '10000486', 'T', 'C')\", \"('chr20', '10000531', 'A', 'G')\"]",
-        "hg002_wgs_mrd_f0.compare_var": "MISMATCH: row count java=3585 rust=15083",
-        "hg002_wgs_mrd_f0.compare_vcf": "MISMATCH: variant sets differ. java-only(<=10)=[\"('chr20', '10006514', 'T', 'C')\", \"('chr20', '10006827', 'T', '<DUP>')\", \"('chr20', '10016860', 'T', '<DUP>')\", \"('chr20', '10023959', 'T', '<DUP>')\", \"('chr20', '10025781', 'T', '<DUP>')\", \"('chr20', '10041912', 'A', '<DUP>')\", \"('chr20', '10043640', 'C', 'T')\", \"('chr20', '10050368', 'C', '<DUP>')\", \"('chr20', '10052556', 'T', '<DUP>')\", \"('chr20', '10063847', 'T', '<DUP>')\"] rust-only(<=10)=[\"('chr20', '10000008', 'T', 'G')\", \"('chr20', '10000118', 'C', 'T')\", \"('chr20', '10000135', 'G', 'T')\", \"('chr20', '10000255', 'T', 'A')\", \"('chr20', '10000291', 'G', 'C')\", \"('chr20', '10000384', 'A', 'T')\", \"('chr20', '10000409', 'T', 'C')\", \"('chr20', '10000431', 'C', 'A')\", \"('chr20', '10000486', 'T', 'C')\", \"('chr20', '10000531', 'A', 'G')\"]",
+        "hg002_wgs_mrd_f0.001.compare_var": "MATCH (15083 rows)",
+        "hg002_wgs_mrd_f0.001.compare_vcf": "MATCH (14769 variants)",
+        "hg002_wgs_mrd_f0.compare_var": "MATCH (15083 rows)",
+        "hg002_wgs_mrd_f0.compare_vcf": "MATCH (14769 variants)",
         "hg005_300x_wgs_chr21_f0.001.compare_var": "MATCH (286 rows)",
         "hg005_300x_wgs_chr21_f0.001.compare_vcf": "MATCH (284 variants)",
         "hg005_300x_wgs_chr3_f0.001.compare_var": "MATCH (339 rows)",
@@ -3880,8 +3880,8 @@
         "seqc2_somatic_mrd_f0.compare_var": "MATCH (5261 rows)",
         "seqc2_somatic_mrd_f0.compare_vcf": "MATCH (5206 variants)",
         "sweep_arms_total": 24,
-        "sweep_arms_match": 20,
-        "sweep_arms_diff_captured": 4
+        "sweep_arms_match": 24,
+        "sweep_arms_diff_captured": 0
       },
       "paper_targets": [
         "Fig 1",
@@ -4492,7 +4492,7 @@
       "stage": "stage5",
       "tier": "Tier G (WGS)",
       "exit_code": 0,
-      "parity_verdict": "MISMATCH: variant sets differ. java-only(<=10)=[\"('chr1', '101219815', 'T', 'TTGTGTGTGTGTGTG')\", \"('chr1', '101627179', 'CT', 'C')\", \"('chr1', '102682360', 'A', 'ATTTT')\", \"('chr1', '103393385', 'C', 'CTT')\", \"('chr1', '10496038', 'GCG', 'TCA')\", \"('chr1', '107768444', 'A', 'T')\", \"('chr1', '108341054', 'GC', 'G')\", \"('chr1', '110911165', 'TG', 'CA')\", \"('chr1', '110994817', 'T', 'TACAC')\", \"('chr1', '111548243', 'A', 'G')\"] rust-only(<=10)=[\"('chr1', '101219815', 'T', 'TTG')\", \"('chr1', '101627179', 'C', 'CT')\", \"('chr1', '102682360', 'A', 'ATTT')\", \"('chr1', '103393385', 'C', 'CT')\", \"('chr1', '10496038', 'GCG', 'ACA')\", \"('chr1', '107768444', 'A', 'G')\", \"('chr1', '108341054', 'G', 'A')\", \"('chr1', '110911165', 'T', 'C')\", \"('chr1', '110994817', 'T', 'TAC')\", \"('chr1', '111548243', 'A', 'C')\"]; MATCH (8111171 variants)",
+      "parity_verdict": "MATCH (8111171 variants)",
       "files": [
         "cell.exit_code",
         "compare_cpp_vs_java_giab_th32.txt",
@@ -4523,7 +4523,6 @@
         "vcfeval_hg002_full_wgs.log"
       ],
       "metrics": {
-        "compare_cpp_vs_java_giab_th32": "MISMATCH: variant sets differ. java-only(<=10)=[\"('chr1', '101219815', 'T', 'TTGTGTGTGTGTGTG')\", \"('chr1', '101627179', 'CT', 'C')\", \"('chr1', '102682360', 'A', 'ATTTT')\", \"('chr1', '103393385', 'C', 'CTT')\", \"('chr1', '10496038', 'GCG', 'TCA')\", \"('chr1', '107768444', 'A', 'T')\", \"('chr1', '108341054', 'GC', 'G')\", \"('chr1', '110911165', 'TG', 'CA')\", \"('chr1', '110994817', 'T', 'TACAC')\", \"('chr1', '111548243', 'A', 'G')\"] rust-only(<=10)=[\"('chr1', '101219815', 'T', 'TTG')\", \"('chr1', '101627179', 'C', 'CT')\", \"('chr1', '102682360', 'A', 'ATTT')\", \"('chr1', '103393385', 'C', 'CT')\", \"('chr1', '10496038', 'GCG', 'ACA')\", \"('chr1', '107768444', 'A', 'G')\", \"('chr1', '108341054', 'G', 'A')\", \"('chr1', '110911165', 'T', 'C')\", \"('chr1', '110994817', 'T', 'TAC')\", \"('chr1', '111548243', 'A', 'C')\"]",
         "compare_giab_th32": "MATCH (8111171 variants)"
       },
       "paper_targets": [
@@ -4662,7 +4661,7 @@
       "stage": "stage6",
       "tier": "Tier E (Titration)",
       "exit_code": 0,
-      "parity_verdict": "MISMATCH:; MATCH (17161 variants); MISMATCH: variant sets differ. java-only(<=10)=[] rust-only(<=10)=[\"('chr13', '31976202', 'A', 'ATTTTTTTTTTTTTTTTTTTTTT')\", \"('chr13', '82243237', 'A', 'TTTTTTTTT')\"]; MATCH (16350 variants); MISMATCH:; MATCH (17593 variants); MISMATCH: variant sets differ. java-only(<=10)=[] rust-only(<=10)=[\"('chr13', '31976202', 'A', 'ATTTTTTTTTTTTTTTTTTTTTT')\", \"('chr13', '82243237', 'A', 'TTTTTTTTT')\"]; MATCH (16512 variants); MISMATCH:; MATCH (16857 variants); MATCH_30_TITRATION_EVALS (VarDictRust==VarDictJava)",
+      "parity_verdict": "MATCH (17161 variants); MATCH (16350 variants); MATCH (17593 variants); MATCH (16512 variants); MATCH (16857 variants); MATCH_30_TITRATION_EVALS (VarDictRust==VarDictJava)",
       "files": [
         "cell.exit_code",
         "low_vaf_titration_curve.tsv",
@@ -4708,15 +4707,10 @@
         "p5_strelka2.time"
       ],
       "metrics": {
-        "p10_compare_cpp_java": "MISMATCH:",
         "p10_compare_rust_java": "MATCH (17161 variants)",
-        "p1_compare_cpp_java": "MISMATCH: variant sets differ. java-only(<=10)=[] rust-only(<=10)=[\"('chr13', '31976202', 'A', 'ATTTTTTTTTTTTTTTTTTTTTT')\", \"('chr13', '82243237', 'A', 'TTTTTTTTT')\"]",
         "p1_compare_rust_java": "MATCH (16350 variants)",
-        "p20_compare_cpp_java": "MISMATCH:",
         "p20_compare_rust_java": "MATCH (17593 variants)",
-        "p2_compare_cpp_java": "MISMATCH: variant sets differ. java-only(<=10)=[] rust-only(<=10)=[\"('chr13', '31976202', 'A', 'ATTTTTTTTTTTTTTTTTTTTTT')\", \"('chr13', '82243237', 'A', 'TTTTTTTTT')\"]",
         "p2_compare_rust_java": "MATCH (16512 variants)",
-        "p5_compare_cpp_java": "MISMATCH:",
         "p5_compare_rust_java": "MATCH (16857 variants)"
       },
       "paper_targets": [
@@ -10369,8 +10363,8 @@
   "sweep": {
     "total_cells": 12,
     "total_arms": 87,
-    "match_arms": 78,
-    "diff_captured_arms": 9,
+    "match_arms": 84,
+    "diff_captured_arms": 3,
     "by_cell": {
       "sweep_4targets_full": [
         {
@@ -11046,23 +11040,23 @@
           "cell_id": "sweep_ultradeep_mrd_stress",
           "cell": "sweep_ultradeep_mrd_stress",
           "arm": "ud_hg002_7kx_f0.0005_fisher.var",
-          "java_rows": 928,
+          "java_rows": 1008,
           "rust_rows": 1008,
-          "fp": 111,
-          "fn": 31,
-          "verdict": "DIFF_CAPTURED",
-          "detail": "MISMATCH: row count java=928 rust=1008"
+          "fp": 0,
+          "fn": 0,
+          "verdict": "MATCH",
+          "detail": "MATCH (1008 rows)"
         },
         {
           "cell_id": "sweep_ultradeep_mrd_stress",
           "cell": "sweep_ultradeep_mrd_stress",
           "arm": "ud_hg002_7kx_f0.0005_fisher.vcf",
-          "java_rows": 598,
+          "java_rows": 640,
           "rust_rows": 640,
-          "fp": 62,
-          "fn": 20,
-          "verdict": "DIFF_CAPTURED",
-          "detail": "MISMATCH: variant sets differ. java-only(<=10)=[\"('chr20', '26541676', 'C', 'G')\", \"('chr20', '26541694', 'G', 'A')\", \"('chr20', '26541730', 'C', 'G')\", \"('chr20', '26541756', 'C', 'T')\", \"('chr20', '26541779', 'G', 'C')\", \"('chr20', '26541844', 'G', 'A')\", \"('chr20', '26541865', 'G', 'T')\", \"('chr20', '26541875', 'G', 'C')\", \"('chr20', '26541889', 'T', 'C')\", \"('chr20', '26542003', 'C', 'G')\"] rust-only(<=10)=[\"('chr20', '26541077', 'T', 'A')\", \"('chr20', '26541187', 'T', 'A')\", \"('chr20', '26541350', 'C', 'A')\", \"('chr20', '26541415', 'C', 'T')\", \"('chr20', '26541473', 'G', 'T')\", \"('chr20', '26541497', 'C', 'T')\", \"('chr20', '26541503', 'G', 'C')\", \"('chr20', '26541515', 'G', 'T')\", \"('chr20', '26541557', 'A', 'G')\", \"('chr20', '26541577', 'A', 'G')\"]"
+          "fp": 0,
+          "fn": 0,
+          "verdict": "MATCH",
+          "detail": "MATCH (640 variants)"
         },
         {
           "cell_id": "sweep_ultradeep_mrd_stress",
@@ -11092,45 +11086,45 @@
           "cell_id": "sweep_wgs_mrd_matrix",
           "cell": "sweep_wgs_mrd_matrix",
           "arm": "hg002_wgs_mrd_f0.001.var",
-          "java_rows": 3585,
+          "java_rows": 15083,
           "rust_rows": 15083,
-          "fp": 11690,
-          "fn": 192,
-          "verdict": "DIFF_CAPTURED",
-          "detail": "MISMATCH: row count java=3585 rust=15083"
+          "fp": 0,
+          "fn": 0,
+          "verdict": "MATCH",
+          "detail": "MATCH (15083 rows)"
         },
         {
           "cell_id": "sweep_wgs_mrd_matrix",
           "cell": "sweep_wgs_mrd_matrix",
           "arm": "hg002_wgs_mrd_f0.001.vcf",
-          "java_rows": 3453,
+          "java_rows": 14769,
           "rust_rows": 14769,
-          "fp": 11442,
-          "fn": 126,
-          "verdict": "DIFF_CAPTURED",
-          "detail": "MISMATCH: variant sets differ. java-only(<=10)=[\"('chr20', '10006514', 'T', 'C')\", \"('chr20', '10006827', 'T', '<DUP>')\", \"('chr20', '10016860', 'T', '<DUP>')\", \"('chr20', '10023959', 'T', '<DUP>')\", \"('chr20', '10025781', 'T', '<DUP>')\", \"('chr20', '10041912', 'A', '<DUP>')\", \"('chr20', '10043640', 'C', 'T')\", \"('chr20', '10050368', 'C', '<DUP>')\", \"('chr20', '10052556', 'T', '<DUP>')\", \"('chr20', '10063847', 'T', '<DUP>')\"] rust-only(<=10)=[\"('chr20', '10000008', 'T', 'G')\", \"('chr20', '10000118', 'C', 'T')\", \"('chr20', '10000135', 'G', 'T')\", \"('chr20', '10000255', 'T', 'A')\", \"('chr20', '10000291', 'G', 'C')\", \"('chr20', '10000384', 'A', 'T')\", \"('chr20', '10000409', 'T', 'C')\", \"('chr20', '10000431', 'C', 'A')\", \"('chr20', '10000486', 'T', 'C')\", \"('chr20', '10000531', 'A', 'G')\"]"
+          "fp": 0,
+          "fn": 0,
+          "verdict": "MATCH",
+          "detail": "MATCH (14769 variants)"
         },
         {
           "cell_id": "sweep_wgs_mrd_matrix",
           "cell": "sweep_wgs_mrd_matrix",
           "arm": "hg002_wgs_mrd_f0.var",
-          "java_rows": 3585,
+          "java_rows": 15083,
           "rust_rows": 15083,
-          "fp": 11690,
-          "fn": 192,
-          "verdict": "DIFF_CAPTURED",
-          "detail": "MISMATCH: row count java=3585 rust=15083"
+          "fp": 0,
+          "fn": 0,
+          "verdict": "MATCH",
+          "detail": "MATCH (15083 rows)"
         },
         {
           "cell_id": "sweep_wgs_mrd_matrix",
           "cell": "sweep_wgs_mrd_matrix",
           "arm": "hg002_wgs_mrd_f0.vcf",
-          "java_rows": 3453,
+          "java_rows": 14769,
           "rust_rows": 14769,
-          "fp": 11442,
-          "fn": 126,
-          "verdict": "DIFF_CAPTURED",
-          "detail": "MISMATCH: variant sets differ. java-only(<=10)=[\"('chr20', '10006514', 'T', 'C')\", \"('chr20', '10006827', 'T', '<DUP>')\", \"('chr20', '10016860', 'T', '<DUP>')\", \"('chr20', '10023959', 'T', '<DUP>')\", \"('chr20', '10025781', 'T', '<DUP>')\", \"('chr20', '10041912', 'A', '<DUP>')\", \"('chr20', '10043640', 'C', 'T')\", \"('chr20', '10050368', 'C', '<DUP>')\", \"('chr20', '10052556', 'T', '<DUP>')\", \"('chr20', '10063847', 'T', '<DUP>')\"] rust-only(<=10)=[\"('chr20', '10000008', 'T', 'G')\", \"('chr20', '10000118', 'C', 'T')\", \"('chr20', '10000135', 'G', 'T')\", \"('chr20', '10000255', 'T', 'A')\", \"('chr20', '10000291', 'G', 'C')\", \"('chr20', '10000384', 'A', 'T')\", \"('chr20', '10000409', 'T', 'C')\", \"('chr20', '10000431', 'C', 'A')\", \"('chr20', '10000486', 'T', 'C')\", \"('chr20', '10000531', 'A', 'G')\"]"
+          "fp": 0,
+          "fn": 0,
+          "verdict": "MATCH",
+          "detail": "MATCH (14769 variants)"
         },
         {
           "cell_id": "sweep_wgs_mrd_matrix",
@@ -12008,23 +12002,23 @@
         "cell_id": "sweep_ultradeep_mrd_stress",
         "cell": "sweep_ultradeep_mrd_stress",
         "arm": "ud_hg002_7kx_f0.0005_fisher.var",
-        "java_rows": 928,
+        "java_rows": 1008,
         "rust_rows": 1008,
-        "fp": 111,
-        "fn": 31,
-        "verdict": "DIFF_CAPTURED",
-        "detail": "MISMATCH: row count java=928 rust=1008"
+        "fp": 0,
+        "fn": 0,
+        "verdict": "MATCH",
+        "detail": "MATCH (1008 rows)"
       },
       {
         "cell_id": "sweep_ultradeep_mrd_stress",
         "cell": "sweep_ultradeep_mrd_stress",
         "arm": "ud_hg002_7kx_f0.0005_fisher.vcf",
-        "java_rows": 598,
+        "java_rows": 640,
         "rust_rows": 640,
-        "fp": 62,
-        "fn": 20,
-        "verdict": "DIFF_CAPTURED",
-        "detail": "MISMATCH: variant sets differ. java-only(<=10)=[\"('chr20', '26541676', 'C', 'G')\", \"('chr20', '26541694', 'G', 'A')\", \"('chr20', '26541730', 'C', 'G')\", \"('chr20', '26541756', 'C', 'T')\", \"('chr20', '26541779', 'G', 'C')\", \"('chr20', '26541844', 'G', 'A')\", \"('chr20', '26541865', 'G', 'T')\", \"('chr20', '26541875', 'G', 'C')\", \"('chr20', '26541889', 'T', 'C')\", \"('chr20', '26542003', 'C', 'G')\"] rust-only(<=10)=[\"('chr20', '26541077', 'T', 'A')\", \"('chr20', '26541187', 'T', 'A')\", \"('chr20', '26541350', 'C', 'A')\", \"('chr20', '26541415', 'C', 'T')\", \"('chr20', '26541473', 'G', 'T')\", \"('chr20', '26541497', 'C', 'T')\", \"('chr20', '26541503', 'G', 'C')\", \"('chr20', '26541515', 'G', 'T')\", \"('chr20', '26541557', 'A', 'G')\", \"('chr20', '26541577', 'A', 'G')\"]"
+        "fp": 0,
+        "fn": 0,
+        "verdict": "MATCH",
+        "detail": "MATCH (640 variants)"
       },
       {
         "cell_id": "sweep_ultradeep_mrd_stress",
@@ -12052,45 +12046,45 @@
         "cell_id": "sweep_wgs_mrd_matrix",
         "cell": "sweep_wgs_mrd_matrix",
         "arm": "hg002_wgs_mrd_f0.001.var",
-        "java_rows": 3585,
+        "java_rows": 15083,
         "rust_rows": 15083,
-        "fp": 11690,
-        "fn": 192,
-        "verdict": "DIFF_CAPTURED",
-        "detail": "MISMATCH: row count java=3585 rust=15083"
+        "fp": 0,
+        "fn": 0,
+        "verdict": "MATCH",
+        "detail": "MATCH (15083 rows)"
       },
       {
         "cell_id": "sweep_wgs_mrd_matrix",
         "cell": "sweep_wgs_mrd_matrix",
         "arm": "hg002_wgs_mrd_f0.001.vcf",
-        "java_rows": 3453,
+        "java_rows": 14769,
         "rust_rows": 14769,
-        "fp": 11442,
-        "fn": 126,
-        "verdict": "DIFF_CAPTURED",
-        "detail": "MISMATCH: variant sets differ. java-only(<=10)=[\"('chr20', '10006514', 'T', 'C')\", \"('chr20', '10006827', 'T', '<DUP>')\", \"('chr20', '10016860', 'T', '<DUP>')\", \"('chr20', '10023959', 'T', '<DUP>')\", \"('chr20', '10025781', 'T', '<DUP>')\", \"('chr20', '10041912', 'A', '<DUP>')\", \"('chr20', '10043640', 'C', 'T')\", \"('chr20', '10050368', 'C', '<DUP>')\", \"('chr20', '10052556', 'T', '<DUP>')\", \"('chr20', '10063847', 'T', '<DUP>')\"] rust-only(<=10)=[\"('chr20', '10000008', 'T', 'G')\", \"('chr20', '10000118', 'C', 'T')\", \"('chr20', '10000135', 'G', 'T')\", \"('chr20', '10000255', 'T', 'A')\", \"('chr20', '10000291', 'G', 'C')\", \"('chr20', '10000384', 'A', 'T')\", \"('chr20', '10000409', 'T', 'C')\", \"('chr20', '10000431', 'C', 'A')\", \"('chr20', '10000486', 'T', 'C')\", \"('chr20', '10000531', 'A', 'G')\"]"
+        "fp": 0,
+        "fn": 0,
+        "verdict": "MATCH",
+        "detail": "MATCH (14769 variants)"
       },
       {
         "cell_id": "sweep_wgs_mrd_matrix",
         "cell": "sweep_wgs_mrd_matrix",
         "arm": "hg002_wgs_mrd_f0.var",
-        "java_rows": 3585,
+        "java_rows": 15083,
         "rust_rows": 15083,
-        "fp": 11690,
-        "fn": 192,
-        "verdict": "DIFF_CAPTURED",
-        "detail": "MISMATCH: row count java=3585 rust=15083"
+        "fp": 0,
+        "fn": 0,
+        "verdict": "MATCH",
+        "detail": "MATCH (15083 rows)"
       },
       {
         "cell_id": "sweep_wgs_mrd_matrix",
         "cell": "sweep_wgs_mrd_matrix",
         "arm": "hg002_wgs_mrd_f0.vcf",
-        "java_rows": 3453,
+        "java_rows": 14769,
         "rust_rows": 14769,
-        "fp": 11442,
-        "fn": 126,
-        "verdict": "DIFF_CAPTURED",
-        "detail": "MISMATCH: variant sets differ. java-only(<=10)=[\"('chr20', '10006514', 'T', 'C')\", \"('chr20', '10006827', 'T', '<DUP>')\", \"('chr20', '10016860', 'T', '<DUP>')\", \"('chr20', '10023959', 'T', '<DUP>')\", \"('chr20', '10025781', 'T', '<DUP>')\", \"('chr20', '10041912', 'A', '<DUP>')\", \"('chr20', '10043640', 'C', 'T')\", \"('chr20', '10050368', 'C', '<DUP>')\", \"('chr20', '10052556', 'T', '<DUP>')\", \"('chr20', '10063847', 'T', '<DUP>')\"] rust-only(<=10)=[\"('chr20', '10000008', 'T', 'G')\", \"('chr20', '10000118', 'C', 'T')\", \"('chr20', '10000135', 'G', 'T')\", \"('chr20', '10000255', 'T', 'A')\", \"('chr20', '10000291', 'G', 'C')\", \"('chr20', '10000384', 'A', 'T')\", \"('chr20', '10000409', 'T', 'C')\", \"('chr20', '10000431', 'C', 'A')\", \"('chr20', '10000486', 'T', 'C')\", \"('chr20', '10000531', 'A', 'G')\"]"
+        "fp": 0,
+        "fn": 0,
+        "verdict": "MATCH",
+        "detail": "MATCH (14769 variants)"
       },
       {
         "cell_id": "sweep_wgs_mrd_matrix",
@@ -17583,8 +17577,8 @@
     "s4_multimodal_slices": "18/18",
     "s4_multimodal_vars": "1,129",
     "sweep_total_arms": 87,
-    "sweep_match_arms": 78,
-    "sweep_diff_arms": 9,
+    "sweep_match_arms": 84,
+    "sweep_diff_arms": 3,
     "s5_hg002_contigs_rust_wall_str": "25:16.61",
     "s5_hg002_contigs_rust_wall_s": "1516.61",
     "s5_hg002_contigs_rust_rss_gb": "4.93",

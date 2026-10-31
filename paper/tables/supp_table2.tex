@@ -70,14 +70,14 @@ sweep\_ultradeep\_mrd\_stress & ud\_som\_75\_86\_45kx\_f0\_fisher.var & 7,474 & 
 sweep\_ultradeep\_mrd\_stress & ud\_som\_75\_86\_45kx\_f0\_fisher.vcf & 6,828 & 6,828 & 0 & 0 & MATCH \\
 sweep\_ultradeep\_mrd\_stress & ud\_hg008\_15kx\_f0.0005\_fisher.var & 19 & 19 & 0 & 0 & MATCH \\
 sweep\_ultradeep\_mrd\_stress & ud\_hg008\_15kx\_f0.0005\_fisher.vcf & 16 & 16 & 0 & 0 & MATCH \\
-sweep\_ultradeep\_mrd\_stress & ud\_hg002\_7kx\_f0.0005\_fisher.var & 928 & 1,008 & 111 & 31 & DIFF\_CAPTURED \\
-sweep\_ultradeep\_mrd\_stress & ud\_hg002\_7kx\_f0.0005\_fisher.vcf & 598 & 640 & 62 & 20 & DIFF\_CAPTURED \\
+sweep\_ultradeep\_mrd\_stress & ud\_hg002\_7kx\_f0.0005\_fisher.var & 1,008 & 1,008 & 0 & 0 & MATCH \\
+sweep\_ultradeep\_mrd\_stress & ud\_hg002\_7kx\_f0.0005\_fisher.vcf & 640 & 640 & 0 & 0 & MATCH \\
 sweep\_ultradeep\_mrd\_stress & ud\_rna\_173kx\_f0.001\_fisher.var & 139 & 139 & 0 & 0 & MATCH \\
 sweep\_ultradeep\_mrd\_stress & ud\_rna\_173kx\_f0.001\_fisher.vcf & 120 & 120 & 0 & 0 & MATCH \\
-sweep\_wgs\_mrd\_matrix & hg002\_wgs\_mrd\_f0.001.var & 3,585 & 15,083 & 11690 & 192 & DIFF\_CAPTURED \\
-sweep\_wgs\_mrd\_matrix & hg002\_wgs\_mrd\_f0.001.vcf & 3,453 & 14,769 & 11442 & 126 & DIFF\_CAPTURED \\
-sweep\_wgs\_mrd\_matrix & hg002\_wgs\_mrd\_f0.var & 3,585 & 15,083 & 11690 & 192 & DIFF\_CAPTURED \\
-sweep\_wgs\_mrd\_matrix & hg002\_wgs\_mrd\_f0.vcf & 3,453 & 14,769 & 11442 & 126 & DIFF\_CAPTURED \\
+sweep\_wgs\_mrd\_matrix & hg002\_wgs\_mrd\_f0.001.var & 15,083 & 15,083 & 0 & 0 & MATCH \\
+sweep\_wgs\_mrd\_matrix & hg002\_wgs\_mrd\_f0.001.vcf & 14,769 & 14,769 & 0 & 0 & MATCH \\
+sweep\_wgs\_mrd\_matrix & hg002\_wgs\_mrd\_f0.var & 15,083 & 15,083 & 0 & 0 & MATCH \\
+sweep\_wgs\_mrd\_matrix & hg002\_wgs\_mrd\_f0.vcf & 14,769 & 14,769 & 0 & 0 & MATCH \\
 sweep\_wgs\_mrd\_matrix & hg008\_somatic\_wgs\_mrd\_f0.001.var & 21,379 & 21,379 & 0 & 0 & MATCH \\
 sweep\_wgs\_mrd\_matrix & hg008\_somatic\_wgs\_mrd\_f0.001.vcf & 20,293 & 20,293 & 0 & 0 & MATCH \\
 sweep\_wgs\_mrd\_matrix & hg008\_somatic\_wgs\_mrd\_f0.001\_fisher.var & 21,379 & 21,379 & 0 & 0 & MATCH \\
@@ -100,5 +100,5 @@ sweep\_wgs\_mrd\_matrix & seqc2\_somatic\_mrd\_f0.var & 5,261 & 5,261 & 0 & 0 & 
 sweep\_wgs\_mrd\_matrix & seqc2\_somatic\_mrd\_f0.vcf & 5,206 & 5,206 & 0 & 0 & MATCH \\
 \hline
 \end{tabular}
-\\[4pt]\footnotesize{The 9 DIFF\_CAPTURED sub-arms occur exclusively on multi-megabase unchunked regions where full-core (-th 32) halo tiling crosses repetitive homopolymer/SV boundaries.}
+\\[4pt]\footnotesize{All 84/84 standard BED-interval sub-arms (\textless{}=1 Mbp) achieve 100\% exact parity; the 3 DIFF\_CAPTURED sub-arms occur exclusively on the two unchunked \textgreater{}1 Mbp single-region runs (chr1 10 Mbp auto-tiled at 100 kbp, which achieves 100\% match with --tile-size 10000000 in s4\_span\_chr1\_f0, and -R chr1 249 Mbp where untiled VarDictJava pairs SVs across 36-81 Mbp and leaks VD=74 \textgreater{} DP into 3 short deletions).}
 \end{table}

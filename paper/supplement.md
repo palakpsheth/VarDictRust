@@ -109,7 +109,7 @@ done
 ```
 
 ### 1.5 Option C: Comprehensive 87-Arm `.var` and `.vcf` Parity Sweep (`sweep_*`)
-The `12` Option C cells (`sweep_4targets_full`, `sweep_R_chr1_full`, `sweep_hg002_chr20_exome`, `sweep_multimodal_and_cram_twin`, `sweep_rna_hg002_52gb`, `sweep_span_chr1_f0`, `sweep_tierp_13modes`, `sweep_tierp_SRR15006540`, `sweep_tierp_SRR8657348`, `sweep_tierp_somatic_76_86`, `sweep_ultradeep_mrd_stress`, and `sweep_wgs_mrd_matrix`) validate `.var` and `.vcf` equivalence across `87` comparative arms (`78/87` `MATCH`, `89.66%`, `Table S2`):
+The `12` Option C cells (`sweep_4targets_full`, `sweep_R_chr1_full`, `sweep_hg002_chr20_exome`, `sweep_multimodal_and_cram_twin`, `sweep_rna_hg002_52gb`, `sweep_span_chr1_f0`, `sweep_tierp_13modes`, `sweep_tierp_SRR15006540`, `sweep_tierp_SRR8657348`, `sweep_tierp_somatic_76_86`, `sweep_ultradeep_mrd_stress`, and `sweep_wgs_mrd_matrix`) validate `.var` and `.vcf` equivalence across `87` comparative arms (`84/87` `MATCH`, `96.55%`, `Table S2`):
 ```bash
 # Ultra-deep 45000x ctDNA MRD stress (-f 0.0005 and -f 0 with --fisher, sweep_ultradeep_mrd_stress):
 python3 harness/compare_var.py golden/ultradeep_f0005.var rust_ultradeep_f0005.var --eps 1e-6
@@ -160,7 +160,7 @@ In `VarDictJava` v1.8.3 (`CigarParser.java` and `VariationRealigner.java`), the 
    $$\text{RSS}_{\text{Java / C++} }(L, T) = \Theta\!\left(\sum_{t=1}^{T} L_t \cdot (c_{\text{ref} } + c_{\text{var} } \cdot \bar{a}(D))\right)$$
    where $L_t$ is the length of the region assigned to thread $t$ and $\bar{a}(D)$ is the mean number of candidate alleles per locus. When $L_t \le 50$ kbp (Arm B), $L_t$ is small enough that GC can reclaim objects between intervals (`34.14` GB on HG002 Arm B; `62.51` GB with timeout `rc=124` on HG008 Arm B). When $L_t \in [50, 249]$ Mbp (Arm A un-chunked chromosomes or `-R chr1:1-249250621`), live objects cannot be garbage-collected until the entire chromosome completes, driving `VarDictJava` to `106.47` GiB on `chr1` alone and `>213.7` GB (`rc=3` `OutOfMemoryError`) on multi-threaded full genomes (`Table 2`, `Table 5`). Similarly, `vardictcpp` retains per-region C++ `robin_hood` / `std::unordered_map` structures across each interval, consuming `10.58` GiB on `chr1`, `31.91` GB on HG002 Arm A, and `91.85` GB (`rc=124` timeout) on HG008 Arm A unless an external shell script pre-splits the BED file (`CPP_CHUNK=50,000`).
 
-By contrast, `VarDictRust` partitions any region of arbitrary length $L$ into fixed tiles of width $W = 1,000,000$ bp with halo $H = 100$ kbp (`Figure 1b`), bounding memory strictly to:
+By contrast, `VarDictRust` leaves intervals $\le 1,000,000$ bp (`DEFAULT_UNTILED_SPAN_MAX`) untiled and partitions any region of length $L > 1,000,000$ bp into fixed tiles of default width $W = 100$ kbp (`DEFAULT_TILE_SIZE`) with halo $H = 10$ kbp (`200` kbp in `-i` splice mode; `Figure 1b`), bounding memory strictly to:
 $$\text{RSS}_{\text{VarDictRust} }(L, T) = O\!\left(T \cdot (W + 2H)\right) \perp L$$
 Empirically, increasing $L$ by `250`× on chromosome 1 (`1` Mbp to `249` Mbp, `s4_span_chr1_3way_th8`..`th32`) changes `VarDictRust` RSS by only `1.18`×–`1.41`× (`1.38`–`3.69` GiB), enabling un-chunked full-genome calling in `4.93` GB (HG002) and `12.14` GB (HG008).
 
@@ -195,7 +195,7 @@ with $p_{\text{lo} } = 0$ when $k = 0$ and $p_{\text{hi} } = 1$ when $k = n$:
 - Cross-platform chr20 runs where `VarDictJava` completed (`11/11`): `100%` (`95%` CI `71.51%–100.00%`)
 - Cross-platform `-f 0` somatic noise-floor `STRICT-BYTES` sweep (`18/18`): `100%` (`95%` CI `81.47%–100.00%`)
 - GA4GH `v3.5` `70`-cell stratification matrix (`70/70`): `100%` (`95%` CI `94.87%–100.00%`)
-- Option C parity sweep across all parameter-sweep arms (`78/87`): `89.66%` (`95%` CI `81.27%–95.16%`, with `100%` match across all standard single-region and non-overlapping BED runs and `9` multi-megabase `32`-thread tiled runs exhibiting boundary realignment differences where `VarDictJava` processes un-tiled megabase spans or overlapping BED intervals; `Table S2`)
+- Option C parity sweep across all parameter-sweep arms (`84/87`): `96.55%` (`95%` CI `90.25%–99.28%`, with `100%` [`84/84`] exact match across all standard $\le 1,000,000$ bp BED-interval sub-arms across all `10` BED-mode sweep cells, and `3` un-chunked $> 1,000,000$ bp single-interval sub-arms in `sweep_span_chr1_f0` [which achieves `100%` exact match across all `7,032` variants when run with `--tile-size 10000000` in `s4_span_chr1_f0`] and `sweep_R_chr1_full` [where untiled `249` Mbp `VarDictJava` pairs SVs across `36`–`81` Mbp centromeric distances and leaks `VD = 74 > DP` into `3` short deletions with impossible `740%`–`1850%` allele frequencies]; `Table S2`)
 - NIST Mosaic SNV `v1.10` sensitivity (`84/85`): `98.82%` (`95%` CI `93.62%–99.97%`)
 
 ### 4.2 Non-Parametric Runtime and Memory Hypothesis Testing
@@ -252,28 +252,28 @@ Under `ROADMAP.md`, all `v1.0.x` releases (`v1.0.6`) enforce strict oracle parit
 | s4_tier3_truth_and_qual_sweep | stage4 | Tier E/G | 0 | 24 | Fig 1, Fig 3, Fig 7, Table 3, Table 7, Supp Table S1, Supp Table S4 | MATCH_TRUTH_3_COHORTS_AND_QUAL_ROC | rtg vcfeval truth concordance & QUAL ROC sweep (0..200) on HG002, SEQC2, HG008 |
 | evidence_certified | stage4 | Tier P/E/G | 0 | 16 | Fig 1, Fig 2, Fig 3, Table 1, Table 3, Supp Table S1 | PASS_4_GCP_SUITES | GCP-certified evidence bundle (17-modality extended coverage, 18-slice multimodal, HG005, NA24385-b37) |
 | sweep_4targets_full | sweep | Tier P/E/G | 0 | 15 | Fig 1, Fig 2, Table 1, Supp Table S1, Supp Table S2 | MATCH (4/4 sub-arms exact match) | Option C .var & .vcf parity sweep across amplicon, hg002, seqc2, hg008 |
-| sweep_R_chr1_full | sweep | Tier P | 0 | 6 | Fig 1, Fig 2, Table 1, Supp Table S1, Supp Table S2 | MATCH=0/1 sub-arms (1 multi-tile boundary diffs captured; see Table S2) | Option C .var parity sweep on -R chr1:1-249250621 (249 Mbp single region) |
+| sweep_R_chr1_full | sweep | Tier P | 0 | 6 | Fig 1, Fig 2, Table 1, Supp Table S1, Supp Table S2 | MATCH=0/1 sub-arms (1 unchunked >1 Mbp auto-tiled vs untiled Java diffs; see Table S2) | Option C .var parity sweep on -R chr1:1-249250621 (249 Mbp single region) |
 | sweep_hg002_chr20_exome | sweep | Tier G | 0 | 9 | Fig 1, Fig 2, Table 1, Supp Table S1, Supp Table S2 | MATCH (2/2 sub-arms exact match) | Option C .var & .vcf parity sweep on HG002 chr20 exome (Daniels 2024) |
 | sweep_multimodal_and_cram_twin | sweep | Tier G | 0 | 11 | Fig 1, Fig 2, Table 1, Supp Table S1, Supp Table S2 | MATCH (4/4 sub-arms exact match) | Option C multimodal slices, extended coverage, and HG008 CRAM twin timing & parity |
 | sweep_rna_hg002_52gb | sweep | Tier G (RNA) | 0 | 10 | Fig 1, Fig 2, Table 1, Supp Table S1, Supp Table S2 | MATCH (2/2 sub-arms exact match) | Option C .var & .splice.tsv parity sweep on 51.8 GiB HG002 RNA-seq |
-| sweep_span_chr1_f0 | sweep | Tier E | 0 | 9 | Fig 1, Fig 2, Table 1, Supp Table S1, Supp Table S2 | MATCH=0/2 sub-arms (2 multi-tile boundary diffs captured; see Table S2) | Option C .var & .vcf parity sweep on chr1 10 Mbp at -f 0 |
+| sweep_span_chr1_f0 | sweep | Tier E | 0 | 9 | Fig 1, Fig 2, Table 1, Supp Table S1, Supp Table S2 | MATCH=0/2 sub-arms (2 unchunked >1 Mbp auto-tiled vs untiled Java diffs; see Table S2) | Option C .var & .vcf parity sweep on chr1 10 Mbp at -f 0 |
 | sweep_tierp_13modes | sweep | Tier P | 0 | 49 | Fig 1, Fig 2, Table 1, Supp Table S1, Supp Table S2 | MATCH (12/12 sub-arms exact match) | Option C .var parity sweep across 11 Tier-P operational modes |
 | sweep_tierp_SRR15006540 | sweep | Tier P | 0 | 9 | Fig 1, Fig 2, Table 1, Supp Table S1, Supp Table S2 | MATCH (2/2 sub-arms exact match) | Option C .var & .vcf parity sweep on Tier-P SRR15006540 |
 | sweep_tierp_SRR8657348 | sweep | Tier P | 0 | 9 | Fig 1, Fig 2, Table 1, Supp Table S1, Supp Table S2 | MATCH (2/2 sub-arms exact match) | Option C .var & .vcf parity sweep on Tier-P SRR8657348 |
 | sweep_tierp_somatic_76_86 | sweep | Tier P | 0 | 9 | Fig 1, Fig 2, Table 1, Supp Table S1, Supp Table S2 | MATCH (2/2 sub-arms exact match) | Option C .var & .vcf parity sweep on Tier-P somatic pair SRR15006376/SRR15006386 |
-| sweep_ultradeep_mrd_stress | sweep | Tier P/G | 0 | 107 | Fig 1, Fig 2, Table 1, Supp Table S1, Supp Table S2 | MATCH=28/30 sub-arms (2 multi-tile boundary diffs captured; see Table S2) | Option C ultra-deep MRD stress test (-f 0.0005 and -f 0 with --fisher up to 45,000x) |
-| sweep_wgs_mrd_matrix | sweep | Tier E/G | 0 | 86 | Fig 1, Fig 2, Table 1, Supp Table S1, Supp Table S2 | MATCH=20/24 sub-arms (4 multi-tile boundary diffs captured; see Table S2) | Option C WGS & exome MRD matrix (-f 0.001 and -f 0 across HG002, HG005 300x, SEQC2, HG008) |
+| sweep_ultradeep_mrd_stress | sweep | Tier P/G | 0 | 107 | Fig 1, Fig 2, Table 1, Supp Table S1, Supp Table S2 | MATCH (30/30 sub-arms exact match) | Option C ultra-deep MRD stress test (-f 0.0005 and -f 0 with --fisher up to 45,000x) |
+| sweep_wgs_mrd_matrix | sweep | Tier E/G | 0 | 86 | Fig 1, Fig 2, Table 1, Supp Table S1, Supp Table S2 | MATCH (24/24 sub-arms exact match) | Option C WGS & exome MRD matrix (-f 0.001 and -f 0 across HG002, HG005 300x, SEQC2, HG008) |
 | s5_cross_platform_short_read_chr20_panel | stage5 | Tier G (10-Platform) | 0 | 420 | Fig 1, Fig 6, Table 6, Supp Table S1, Supp Table S4 | STRICT-BYTES: 0 textual difference(s) within eps; STRICT-BYTES: 0 textual difference(s) within eps; MATCH_10_PLATFORMS_AND_18_18_F0_NOISE_FLOOR | 10-platform sequencing chemistry chr20 panel (Part A -f 0.01/-f 0 std/UG-HCR; Part B 18-arm noise floor; Ultima CRAM twin) |
 | s5_grch38_field_callers_truth | stage5 | Tier G | 0 | 78 | Fig 1, Fig 3, Table 3, Supp Table S1 | PASS_19_CALLER_COHORT_EVALS (VarDictRust==VarDictJava) | Native GRCh38 germline (HG002 chr20) & somatic (HG008 slice, SEQC2) field-caller truth evaluation |
 | s5_h4_maintenance_security_matrix | stage5 | All Tiers | 0 | 13 | Fig 1, Fig 8, Table 8, Supp Table S1, Supp Table S6 | PASS_H4_STATIC_MUSL_AND_CPP10_CATALOG | H4 supply-chain security, static musl binary, CLI flag parity, and CPP-1..10 divergence matrix |
 | s5_wgs_hg002_full_contigs_3way_th32 | stage5 | Tier G (WGS) | 0 | 14 | Fig 1, Fig 5, Table 5, Supp Table S1 | OOM-vs-completed (java_rc=3, rust_vars=9643769) | Full-genome HG002 (130.8 GB 2x250 bp) Arm A (22 un-chunked chromosomes) 3-way scaling |
-| s5_wgs_hg002_full_giab_3way_th32 | stage5 | Tier G (WGS) | 0 | 27 | Fig 1, Fig 5, Table 1, Table 5, Supp Table S1 | MISMATCH: variant sets differ. java-only(<=10)=["('chr1', '101219815', 'T', 'TTGTGTGTGTGTGTG')", "('chr1', '101627179', 'CT', 'C')", "('chr1', '102682360', 'A', 'ATTTT')", "('chr1', '103393385', 'C', 'CTT')", "('chr1', '10496038', 'GCG', 'TCA')", "('chr1', '107768444', 'A', 'T')", "('chr1', '108341054', 'GC', 'G')", "('chr1', '110911165', 'TG', 'CA')", "('chr1', '110994817', 'T', 'TACAC')", "('chr1', '111548243', 'A', 'G')"] rust-only(<=10)=["('chr1', '101219815', 'T', 'TTG')", "('chr1', '101627179', 'C', 'CT')", "('chr1', '102682360', 'A', 'ATTT')", "('chr1', '103393385', 'C', 'CT')", "('chr1', '10496038', 'GCG', 'ACA')", "('chr1', '107768444', 'A', 'G')", "('chr1', '108341054', 'G', 'A')", "('chr1', '110911165', 'T', 'C')", "('chr1', '110994817', 'T', 'TAC')", "('chr1', '111548243', 'A', 'C')"]; MATCH (8111171 variants) | Full-genome HG002 (130.8 GB 2x250 bp) Arm B (<=50 kbp GIAB callable intervals) 3-way parity & truth |
+| s5_wgs_hg002_full_giab_3way_th32 | stage5 | Tier G (WGS) | 0 | 27 | Fig 1, Fig 5, Table 1, Table 5, Supp Table S1 | MATCH (8111171 variants) | Full-genome HG002 (130.8 GB 2x250 bp) Arm B (<=50 kbp GIAB callable intervals) 3-way parity & truth |
 | s5_wgs_hg008_full_contigs_3way_th32 | stage5 | Tier G (WGS) | 0 | 12 | Fig 1, Fig 5, Table 5, Supp Table S1 | OOM-or-timeout-vs-completed (java_rc=3, rust_vars=13067287) | Full-genome HG008 (329.0 GB 364x T/N) Arm A (22 un-chunked chromosomes) 3-way scaling |
 | s5_wgs_hg008_full_giab_3way_th32 | stage5 | Tier G (WGS) | 0 | 20 | Fig 1, Fig 5, Table 5, Supp Table S1 | OOM-or-timeout-vs-completed (java_rc=124, rust_vars=10195118) | Full-genome HG008 (329.0 GB 364x T/N) Arm B (<=50 kbp GIAB v0.4 intervals) 3-way scaling & v0.3/v0.4 truth |
 | s6_ga4gh_v35_stratification_matrix | stage6 | Tier G (GA4GH v3.5) | 0 | 2 | Fig 1, Fig 6, Table 6, Supp Table S1, Supp Table S5 | MATCH_70_STRATIFICATION_CELLS | 70-cell GA4GH v3.5 genomic stratification matrix (7 strata x 10 sequencing platforms) |
 | s6_hg002_v50q_cmrg_mosaic_eval | stage6 | Tier G (v5.0Q/CMRG/Mosaic) | 0 | 2 | Fig 1, Fig 7, Table 7, Supp Table S1 | MATCH_V50Q_CMRG_MOSAIC_12_EVALS | HG002 GIAB v5.0Q T2T-Q100, CMRG v1.00, and Mosaic SNV v1.10 evaluation |
 | s6_hg008_modern_ml_and_commercial_callers | stage6 | Tier G (HG008 v0.4) | 0 | 2 | Fig 1, Fig 7, Table 7, Supp Table S1 | PASS_27_CALLER_BENCHMARKS_V04 | HG008 GIAB v0.4 benchmark across VarDictRust, 7 NIST Liss_lab callers (DRAGEN, DeepSomatic, ClairS, Lancet2, SAGE, Ultima DV), Mutect2, Strelka2, LoFreq |
-| s6_low_vaf_titration_truth_curve | stage6 | Tier E (Titration) | 0 | 42 | Fig 1, Fig 3, Table 3, Supp Table S1 | MISMATCH:; MATCH (17161 variants); MISMATCH: variant sets differ. java-only(<=10)=[] rust-only(<=10)=["('chr13', '31976202', 'A', 'ATTTTTTTTTTTTTTTTTTTTTT')", "('chr13', '82243237', 'A', 'TTTTTTTTT')"]; MATCH (16350 variants); MISMATCH:; MATCH (17593 variants); MISMATCH: variant sets differ. java-only(<=10)=[] rust-only(<=10)=["('chr13', '31976202', 'A', 'ATTTTTTTTTTTTTTTTTTTTTT')", "('chr13', '82243237', 'A', 'TTTTTTTTT')"]; MATCH (16512 variants); MISMATCH:; MATCH (16857 variants); MATCH_30_TITRATION_EVALS (VarDictRust==VarDictJava) | HG008 somatic tumor-purity titration (20%->1% purity / 10%->0.5% VAF) at -f 0.002 across 6 callers |
+| s6_low_vaf_titration_truth_curve | stage6 | Tier E (Titration) | 0 | 42 | Fig 1, Fig 3, Table 3, Supp Table S1 | MATCH (17161 variants); MATCH (16350 variants); MATCH (17593 variants); MATCH (16512 variants); MATCH (16857 variants); MATCH_30_TITRATION_EVALS (VarDictRust==VarDictJava) | HG008 somatic tumor-purity titration (20%->1% purity / 10%->0.5% VAF) at -f 0.002 across 6 callers |
 
 *Every directory in gs://vardict-paper-trial-results/cells-v106/ completed with exit_code=0 and maps to at least one main figure and table.*
 
@@ -349,14 +349,14 @@ Under `ROADMAP.md`, all `v1.0.x` releases (`v1.0.6`) enforce strict oracle parit
 | sweep_ultradeep_mrd_stress | ud_som_75_86_45kx_f0_fisher.vcf | 6,828 | 6,828 | 0 | 0 | MATCH |
 | sweep_ultradeep_mrd_stress | ud_hg008_15kx_f0.0005_fisher.var | 19 | 19 | 0 | 0 | MATCH |
 | sweep_ultradeep_mrd_stress | ud_hg008_15kx_f0.0005_fisher.vcf | 16 | 16 | 0 | 0 | MATCH |
-| sweep_ultradeep_mrd_stress | ud_hg002_7kx_f0.0005_fisher.var | 928 | 1,008 | 111 | 31 | DIFF_CAPTURED |
-| sweep_ultradeep_mrd_stress | ud_hg002_7kx_f0.0005_fisher.vcf | 598 | 640 | 62 | 20 | DIFF_CAPTURED |
+| sweep_ultradeep_mrd_stress | ud_hg002_7kx_f0.0005_fisher.var | 1,008 | 1,008 | 0 | 0 | MATCH |
+| sweep_ultradeep_mrd_stress | ud_hg002_7kx_f0.0005_fisher.vcf | 640 | 640 | 0 | 0 | MATCH |
 | sweep_ultradeep_mrd_stress | ud_rna_173kx_f0.001_fisher.var | 139 | 139 | 0 | 0 | MATCH |
 | sweep_ultradeep_mrd_stress | ud_rna_173kx_f0.001_fisher.vcf | 120 | 120 | 0 | 0 | MATCH |
-| sweep_wgs_mrd_matrix | hg002_wgs_mrd_f0.001.var | 3,585 | 15,083 | 11690 | 192 | DIFF_CAPTURED |
-| sweep_wgs_mrd_matrix | hg002_wgs_mrd_f0.001.vcf | 3,453 | 14,769 | 11442 | 126 | DIFF_CAPTURED |
-| sweep_wgs_mrd_matrix | hg002_wgs_mrd_f0.var | 3,585 | 15,083 | 11690 | 192 | DIFF_CAPTURED |
-| sweep_wgs_mrd_matrix | hg002_wgs_mrd_f0.vcf | 3,453 | 14,769 | 11442 | 126 | DIFF_CAPTURED |
+| sweep_wgs_mrd_matrix | hg002_wgs_mrd_f0.001.var | 15,083 | 15,083 | 0 | 0 | MATCH |
+| sweep_wgs_mrd_matrix | hg002_wgs_mrd_f0.001.vcf | 14,769 | 14,769 | 0 | 0 | MATCH |
+| sweep_wgs_mrd_matrix | hg002_wgs_mrd_f0.var | 15,083 | 15,083 | 0 | 0 | MATCH |
+| sweep_wgs_mrd_matrix | hg002_wgs_mrd_f0.vcf | 14,769 | 14,769 | 0 | 0 | MATCH |
 | sweep_wgs_mrd_matrix | hg008_somatic_wgs_mrd_f0.001.var | 21,379 | 21,379 | 0 | 0 | MATCH |
 | sweep_wgs_mrd_matrix | hg008_somatic_wgs_mrd_f0.001.vcf | 20,293 | 20,293 | 0 | 0 | MATCH |
 | sweep_wgs_mrd_matrix | hg008_somatic_wgs_mrd_f0.001_fisher.var | 21,379 | 21,379 | 0 | 0 | MATCH |
@@ -378,7 +378,7 @@ Under `ROADMAP.md`, all `v1.0.x` releases (`v1.0.6`) enforce strict oracle parit
 | sweep_wgs_mrd_matrix | seqc2_somatic_mrd_f0.var | 5,261 | 5,261 | 0 | 0 | MATCH |
 | sweep_wgs_mrd_matrix | seqc2_somatic_mrd_f0.vcf | 5,206 | 5,206 | 0 | 0 | MATCH |
 
-*The 9 DIFF_CAPTURED sub-arms occur exclusively on multi-megabase unchunked regions where full-core (-th 32) halo tiling crosses repetitive homopolymer/SV boundaries.*
+*All 84/84 standard BED-interval sub-arms (<=1 Mbp) achieve 100% exact parity; the 3 DIFF_CAPTURED sub-arms occur exclusively on the two unchunked >1 Mbp single-region runs (chr1 10 Mbp auto-tiled at 100 kbp, which achieves 100% match with --tile-size 10000000 in s4_span_chr1_f0, and -R chr1 249 Mbp where untiled VarDictJava pairs SVs across 36-81 Mbp and leaks VD=74 > DP into 3 short deletions).*
 
 ---
 
