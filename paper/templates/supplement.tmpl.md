@@ -13,7 +13,7 @@
 1. **Supplementary Methods: Exact Command-Line Invocations Across All 60 Benchmark Cells**
     - 1.0 Manuscript Figure and Table to 60-Cell Provenance Crosswalk
     - 1.1 Domain 1: Ceiling, Multi-Region Boundary, and Tile-Invariance Cells (`4` cells)
-    - 1.2 Domain 2: Wolff et al. AML Panel Replication, 13-Mode Sweep, Field Callers, and `-R chr1` (`17` cells)
+    - 1.2 Domain 2: Wolff AML Panel Replication, 13-Mode Sweep, Field Callers, and `-R chr1` (`17` cells)
     - 1.3 Domain 3: Full-Sample {{m:s3_rna_bam_gib}} GiB RNA-Seq Splice Calling (`1` cell)
     - 1.4 Domain 4: Whole-Exome Scaling, Chromosome 1 Span-to-RSS, Node Packing, and `QUAL` ROC (`15` cells)
     - 1.5 Multi-Regime Parameter Sweep: Comprehensive 87-Arm `.var` and `.vcf` Parity Sweep (`12` cells)
@@ -42,7 +42,7 @@ The crosswalk below maps each main-text Figure (`Figure 1`–`Figure 8`) and Tab
 
 - **`Figure 1` & `Table 1` (Architecture, Operational Modes, and 87-Arm Equivalence Sweep):** `s1_ceiling_amplicon`, `s1_ceiling_hg008`, `s1_gate7_ref_multiregion`, `s1_h1a_simple_tiles`, `s2_tierp_mode_parity_sweep`, `s3_rna_splice_parity_n3`, `s4_multimodal_and_cram_twin`, and `evidence_certified`. The `12` `sweep_*` cells add `sweep_4targets_full`, `sweep_R_chr1_full`, `sweep_hg002_chr20_exome`, `sweep_multimodal_and_cram_twin`, `sweep_rna_hg002_52gb`, `sweep_span_chr1_f0`, `sweep_tierp_13modes`, `sweep_tierp_SRR15006540`, `sweep_tierp_SRR8657348`, `sweep_tierp_somatic_76_86`, `sweep_ultradeep_mrd_stress`, and `sweep_wgs_mrd_matrix`.
 
-- **`Figure 2` & `Table 2` (Wolff et al. AML Cohort, Field Callers, and Contiguous `-R chr1`):** The `12` AML panel cells are `s2_tierp_v2_SRR15006375_th1`, `s2_tierp_v2_SRR15006375_th8`, `s2_tierp_v2_SRR15006376_th1`, `s2_tierp_v2_SRR15006376_th8`, `s2_tierp_v2_SRR15006386_th1`, and `s2_tierp_v2_SRR15006386_th8`. They continue with `s2_tierp_v2_SRR15006540_th1`, `s2_tierp_v2_SRR15006540_th8`, `s2_tierp_v2_SRR8657348_th1`, `s2_tierp_v2_SRR8657348_th8`, `s2_tierp_v2_somatic_76_86_th1`, and `s2_tierp_v2_somatic_76_86_th8`. Contiguous `-R chr1` adds `s2_table3_R_chr1_java_200g_n3` and `s2_table3_R_chr1_rust_and_cpp`. Field callers add `s2_fig1_fig3_field_callers`.
+- **`Figure 2` & `Table 2` (Wolff AML Cohort, Field Callers, and Contiguous `-R chr1`):** The `12` AML panel cells are `s2_tierp_v2_SRR15006375_th1`, `s2_tierp_v2_SRR15006375_th8`, `s2_tierp_v2_SRR15006376_th1`, `s2_tierp_v2_SRR15006376_th8`, `s2_tierp_v2_SRR15006386_th1`, and `s2_tierp_v2_SRR15006386_th8`. They continue with `s2_tierp_v2_SRR15006540_th1`, `s2_tierp_v2_SRR15006540_th8`, `s2_tierp_v2_SRR8657348_th1`, `s2_tierp_v2_SRR8657348_th8`, `s2_tierp_v2_somatic_76_86_th1`, and `s2_tierp_v2_somatic_76_86_th8`. Contiguous `-R chr1` adds `s2_table3_R_chr1_java_200g_n3` and `s2_table3_R_chr1_rust_and_cpp`. Field callers add `s2_fig1_fig3_field_callers`.
 
 - **`Figure 3` & `Table 3` (Germline/Somatic Truth Concordance and `QUAL` Operating Points):** `s2_fig2_hg002_chr20_truth`, `s4_tier3_truth_and_qual_sweep`, `s5_grch38_field_callers_truth`, and `evidence_certified`. The full unfiltered-vs-optimal `QUAL` ROC pairs and the low-VAF titration detail matrix (`s6_low_vaf_titration_truth_curve`) live in `Supplementary Table S4`.
 
@@ -79,8 +79,8 @@ for TILE in 500000 1000000 2000000 10000000; do
 done
 ```
 
-### 1.2 Domain 2: Wolff et al. AML Panel Replication, 13-Mode Sweep, Field Callers, and `-R chr1` (`s2_*`)
-Domain 2 comprises `17` cells replicating and extending Wolff et al. (2026) [11]:
+### 1.2 Domain 2: Wolff AML Panel Replication, 13-Mode Sweep, Field Callers, and `-R chr1` (`s2_*`)
+Domain 2 comprises `17` cells replicating and extending Wolff (2026) [11]:
 
 - **12 AML Panel Cells (`n = 3` technical replicates each at `-th 1` and `-th 8`):** `s2_tierp_v2_SRR15006375_th1`, `s2_tierp_v2_SRR15006375_th8`, `s2_tierp_v2_SRR15006376_th1`, `s2_tierp_v2_SRR15006376_th8`, `s2_tierp_v2_SRR15006386_th1`, `s2_tierp_v2_SRR15006386_th8`, `s2_tierp_v2_SRR15006540_th1`, `s2_tierp_v2_SRR15006540_th8`, `s2_tierp_v2_SRR8657348_th1`, `s2_tierp_v2_SRR8657348_th8`, `s2_tierp_v2_somatic_76_86_th1`, and `s2_tierp_v2_somatic_76_86_th8`.
 
