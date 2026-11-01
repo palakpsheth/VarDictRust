@@ -785,6 +785,64 @@ pub enum Side {
     Three,
 }
 
+/// ROADMAP `sv-lazy-mate-pileup`: pure pre-check for the `find_inv_sub`
+/// loop-top mate-window re-scan.
+///
+/// Returns true when the primary-region soft-clip maps already hold a usable
+/// mate clip — an unused entry whose consensus (`seq.len() >= 12`, the
+/// minimum `find_match_rev` seed) matches the reference — mirroring the
+/// `softp != 0` fetch and the `softp == 0` scan branches read-only (cloned
+/// `find_conseq`, no map mutation, no `used` writeback). Callers skip the
+/// costly `partial_pipeline` BAM re-scan only when this returns false (zero
+/// usable mates); the reference load is kept so cross-candidate `is_loaded`
+/// side effects match Java, and boundary dedup (`merge_planted`) still runs
+/// on every executed pileup.
+// shortcut: windows WITH a matching clip still pay the full mate-window
+// re-scan; upgrade to index-level mate counting if SV stays spiky.
+#[allow(clippy::too_many_arguments)]
+fn mate_window_has_match(
+    dir: i32,
+    softp: i32,
+    start: i32,
+    end: i32,
+    soft_clips_5_end: &BTreeMap<i32, Sclip>,
+    soft_clips_3_end: &BTreeMap<i32, Sclip>,
+    max_read_length: i32,
+    adaptor_forward: &BTreeMap<Vec<u8>, i32>,
+    adaptor_reverse: &BTreeMap<Vec<u8>, i32>,
+    reference: &Reference,
+    chr: &str,
+) -> bool {
+    let clips = if dir == 1 {
+        soft_clips_3_end
+    } else {
+        soft_clips_5_end
+    };
+    let probe = |pos: i32| -> bool {
+        let Some(entry) = clips.get(&pos) else {
+            return false;
+        };
+        if entry.used {
+            return false;
+        }
+        let mut scv = entry.clone();
+        let seq =
+            crate::variations::util::find_conseq(&mut scv, 0, adaptor_forward, adaptor_reverse);
+        if seq.len() < 12 {
+            return false;
+        }
+        if find_match_rev(&seq, reference, pos, dir, 17, 3, chr, false).base_position != 0 {
+            return true;
+        }
+        find_match_rev(&seq, reference, pos, dir, 12, 0, chr, false).base_position != 0
+    };
+    if softp != 0 {
+        return probe(softp);
+    }
+    let sp = if dir == 1 { end } else { start };
+    (1..=(2 * max_read_length)).any(|i| probe(sp + i * dir))
+}
+
 /// Helper function to perform structural variant calling for inversions.
 /// Ports `StructuralVariantsProcessor.findINVsub`.
 pub fn find_inv_sub(
@@ -880,6 +938,25 @@ pub fn find_inv_sub(
                 amplicon: None,
             };
             get_reference(&mod_region, 500, chromosomes_lengths, config, reference)?;
+            // ROADMAP sv-lazy-mate-pileup: skip the mate-window BAM re-scan
+            // when zero usable mate clips match (pure peek above; live maps
+            // untouched so the executed path stays verbatim). The reference
+            // load is kept: later candidates probe `is_loaded` the same way.
+            if !mate_window_has_match(
+                dir,
+                softp,
+                start,
+                end,
+                &var_data.soft_clips_5_end,
+                &var_data.soft_clips_3_end,
+                max_read_length,
+                &adaptor_forward,
+                &adaptor_reverse,
+                reference,
+                chr,
+            ) {
+                continue;
+            }
             partial_pipeline(
                 bam_path,
                 var_data,
@@ -4475,5 +4552,88 @@ mod tests {
             post_cnt, 5,
             "find_sv inversion branch must accumulate onto existing vref.cnt (2 + 3 = 5) instead of zeroing vref.cnt"
         );
+    }
+
+    /// Unit test for the ROADMAP `sv-lazy-mate-pileup` pre-check:
+    /// true only for an unused clip whose consensus matches the reference,
+    /// and pure (no map mutation, no `used` writeback).
+    #[test]
+    fn test_mate_window_has_match_peek() {
+        let chr = "chrT";
+        let mut reference = Reference::default();
+        reference
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: chr.to_string(),
+                sequence_start: 1,
+                sequence_end: 1000,
+            });
+        let mut ref_seq = vec![b'A'; 1000];
+        for g in &mut ref_seq[380..400] {
+            *g = b'G';
+        }
+        reference.seed.insert(vec![b'G'; 17], vec![384]);
+        reference
+            .reference_sequences
+            .insert(chr.to_string(), ref_seq);
+
+        let config = crate::config::Config::default();
+        let (adaptor_forward, adaptor_reverse) = crate::realign::fill_adaptor_maps(&config.adaptor);
+
+        let mut clips3 = BTreeMap::new();
+        let mut scv = Sclip::default();
+        scv.sequence = Some(vec![b'C'; 20]);
+        clips3.insert(160, scv);
+        let clips5 = BTreeMap::new();
+
+        // Unused clip with matching consensus -> proceed (true).
+        assert!(mate_window_has_match(
+            1,
+            160,
+            100,
+            150,
+            &clips5,
+            &clips3,
+            100,
+            &adaptor_forward,
+            &adaptor_reverse,
+            &reference,
+            chr,
+        ));
+        // Absent position -> skip (false).
+        assert!(!mate_window_has_match(
+            1,
+            999,
+            100,
+            150,
+            &clips5,
+            &clips3,
+            100,
+            &adaptor_forward,
+            &adaptor_reverse,
+            &reference,
+            chr,
+        ));
+        // Used clip -> skip (false).
+        let mut used = Sclip::default();
+        used.used = true;
+        used.sequence = Some(vec![b'C'; 20]);
+        let mut clips3_used = BTreeMap::new();
+        clips3_used.insert(160, used);
+        assert!(!mate_window_has_match(
+            1,
+            160,
+            100,
+            150,
+            &clips5,
+            &clips3_used,
+            100,
+            &adaptor_forward,
+            &adaptor_reverse,
+            &reference,
+            chr,
+        ));
+        // Pure: the peek wrote nothing back into the live maps.
+        assert!(!clips3.get(&160).unwrap().used);
     }
 }
