@@ -1358,6 +1358,9 @@ pub fn format_paired_vcf_record(
     // machine, so cross-row sharing is impossible — this is the most reuse
     // the retained-struct design allows.)
     let mut col = String::new();
+    // `rest` holds INFO + keys + both sample columns; 768 covers the common
+    // paired row so the assembly never regrows (records are retained per
+    // batch for the Cluster machine, so the slack is bounded by design).
     let mut rest = String::with_capacity(768);
     rest.push_str(&info);
     rest.push('\t');
