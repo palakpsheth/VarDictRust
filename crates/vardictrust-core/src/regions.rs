@@ -859,4 +859,62 @@ Y\t59042860\t59047860\tY_59042860_5\t0\t.\t59042860\t59047860
         let expected: Vec<String> = exome_tiles.into_iter().map(|t| t.gene).collect();
         assert_eq!(flattened, expected);
     }
+
+    /// Task 4 pin: tile active intervals partition the region with no gap
+    /// and no overlap (each base owned by exactly one tile, so boundary
+    /// variants can never duplicate or drop), halos extend `halo` each side
+    /// clamped to the region, and split sub-tiles are never merged by
+    /// batching (never merge split sub-tiles across halo).
+    #[test]
+    fn tile_boundary_partition_dedup_pin() {
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(1),
+            end: Pos1(1_000_000),
+            gene: "WGS".to_string(),
+            amplicon: None,
+        };
+        let halo = 500u32;
+        let tiles = tile(&region, 100_000, halo);
+        assert_eq!(tiles.len(), 10);
+
+        // Active intervals: exact partition, single ownership per base.
+        assert_eq!(tiles[0].start, Pos1(1));
+        assert_eq!(tiles[tiles.len() - 1].end, Pos1(1_000_000));
+        for pair in tiles.windows(2) {
+            assert_eq!(
+                pair[0].end.0 + 1,
+                pair[1].start.0,
+                "adjacent active intervals must abut exactly"
+            );
+            // Interior halos overlap by exactly 2 * halo.
+            assert_eq!(
+                pair[0].halo_end.0 - pair[1].halo_start.0 + 1,
+                2 * halo,
+                "adjacent halos must overlap by exactly 2 * halo"
+            );
+        }
+
+        // Halo clamping at region bounds.
+        assert_eq!(tiles[0].halo_start, Pos1(1));
+        assert_eq!(tiles[0].halo_end, Pos1(100_000 + halo));
+        let last = tiles.len() - 1;
+        assert_eq!(tiles[last].halo_start, Pos1(900_001 - halo));
+        assert_eq!(tiles[last].halo_end, Pos1(1_000_000));
+        // Interior tile halos extend exactly `halo` each side.
+        assert_eq!(tiles[1].halo_start, Pos1(100_001 - halo));
+        assert_eq!(tiles[1].halo_end, Pos1(200_000 + halo));
+
+        // Split sub-tiles of one region are never merged across the halo.
+        let batches = batch_tiles(tiles.clone(), 100_000, 16, 8);
+        assert_eq!(batches.len(), 10);
+        assert!(batches.iter().all(|b| b.len() == 1));
+        let flattened: Vec<(u32, u32)> = batches
+            .into_iter()
+            .flatten()
+            .map(|t| (t.start.0, t.end.0))
+            .collect();
+        let expected: Vec<(u32, u32)> = tiles.iter().map(|t| (t.start.0, t.end.0)).collect();
+        assert_eq!(flattened, expected);
+    }
 }

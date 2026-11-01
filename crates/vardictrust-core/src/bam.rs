@@ -2898,6 +2898,125 @@ mod tests {
         assert_eq!(err_kind(&stream_err), err_kind(&vec_err));
     }
 
+    /// Task 4 pin: a reused `SamRecord` refilled via `next_into` must carry
+    /// no prior aux fields — a record WITH `nM`/`NM`/`SA`/`MC`/`MQ` tags
+    /// followed by a record WITHOUT them must decode the second with all
+    /// aux `None` (per-tile-worker buffer reuse must never leak tags).
+    #[test]
+    fn bam_reuse_clears_aux() {
+        use noodles::core::Position;
+        use noodles::sam::alignment::io::Write as _;
+        use noodles::sam::alignment::record::cigar::{op::Kind, Op};
+        use noodles::sam::alignment::record::data::field::Tag;
+        use noodles::sam::alignment::record_buf::{
+            data::field::Value as BufValue, Cigar, Data, RecordBuf,
+        };
+        use noodles::sam::header::record::value::{
+            map::ReferenceSequence as RefSeqMap, Map as HeaderMap,
+        };
+        use noodles::sam::Header;
+
+        fn record(name: &str, with_aux: bool) -> RecordBuf {
+            let cigar: Cigar = [Op::new(Kind::Match, 50)].into_iter().collect();
+            let mut builder = RecordBuf::builder()
+                .set_name(name)
+                .set_flags(noodles::sam::alignment::record::Flags::empty())
+                .set_reference_sequence_id(0)
+                .set_alignment_start(Position::try_from(100usize).unwrap())
+                .set_cigar(cigar)
+                .set_sequence(vec![b'A'; 50].into())
+                .set_quality_scores(vec![40u8; 50].into());
+            if with_aux {
+                let data: Data = [
+                    (Tag::new(b'n', b'M'), BufValue::from(5i32)),
+                    (Tag::EDIT_DISTANCE, BufValue::from(7i32)),
+                    (Tag::new(b'S', b'A'), BufValue::from("chr1,200,+,50M,60,0;")),
+                    (Tag::new(b'M', b'C'), BufValue::from("50M")),
+                    (Tag::new(b'M', b'Q'), BufValue::from(60i32)),
+                ]
+                .into_iter()
+                .collect();
+                builder = builder.set_data(data);
+            }
+            builder.build()
+        }
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let bam_path = dir.path().join("aux.bam");
+        {
+            let rs = HeaderMap::<RefSeqMap>::builder()
+                .set_length(1000usize.try_into().unwrap())
+                .build()
+                .unwrap();
+            let header = Header::builder().add_reference_sequence("chr1", rs).build();
+            let bgzf = noodles::bgzf::io::Writer::new(std::fs::File::create(&bam_path).unwrap());
+            let mut writer = noodles::bam::io::Writer::from(bgzf);
+            writer.write_alignment_header(&header).unwrap();
+            let mut indexer = noodles::csi::binning_index::Indexer::<
+                noodles::csi::binning_index::index::reference_sequence::index::LinearIndex,
+            >::new(14, 5)
+            .expect("valid index parameters");
+            for rec in [record("with_aux", true), record("plain", false)] {
+                let start = writer.get_ref().virtual_position();
+                writer.write_alignment_record(&header, &rec).unwrap();
+                let end = writer.get_ref().virtual_position();
+                let s = rec.alignment_start().expect("aligned record");
+                let e = Position::try_from(100usize + 50 - 1).unwrap();
+                indexer
+                    .add_record(
+                        Some((0, s, e, true)),
+                        noodles::csi::binning_index::index::reference_sequence::bin::Chunk::new(
+                            start, end,
+                        ),
+                    )
+                    .map_err(std::io::Error::other)
+                    .unwrap();
+            }
+            writer.try_finish().unwrap();
+            noodles::bam::bai::io::Writer::new(
+                std::fs::File::create(bam_path.with_extension("bam.bai")).unwrap(),
+            )
+            .write_index(&indexer.build(1))
+            .unwrap();
+        }
+
+        let config = Config {
+            ..Default::default()
+        };
+        let mut feed = query_region_iter(&bam_path, "chr1", Pos0(50), Pos0(500), &config).unwrap();
+        let mut reused = SamRecord::new();
+        assert!(feed.next_into(&mut reused).unwrap(), "first record");
+        assert_eq!(reused.name, b"with_aux");
+        assert_eq!(reused.nm, Some(5), "lowercase nM wins over NM");
+        assert_eq!(
+            reused.sa.as_deref(),
+            Some("chr1,200,+,50M,60,0;"),
+            "SA survives BAM roundtrip"
+        );
+        assert_eq!(reused.mc.as_deref(), Some("50M"));
+        assert_eq!(reused.mq, Some(60));
+        assert!(feed.next_into(&mut reused).unwrap(), "second record");
+        assert_eq!(reused.name, b"plain");
+        assert_eq!(reused.sequence.len(), 50);
+        assert_eq!(
+            reused.nm, None,
+            "stale NM must not leak into tagless record"
+        );
+        assert_eq!(
+            reused.sa, None,
+            "stale SA must not leak into tagless record"
+        );
+        assert_eq!(
+            reused.mc, None,
+            "stale MC must not leak into tagless record"
+        );
+        assert_eq!(
+            reused.mq, None,
+            "stale MQ must not leak into tagless record"
+        );
+        assert!(!feed.next_into(&mut reused).unwrap(), "feed exhausted");
+    }
+
     #[test]
     fn test_bam_open_and_query() {
         let bam_path = Path::new(concat!(
