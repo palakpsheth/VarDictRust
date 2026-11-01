@@ -607,12 +607,7 @@ impl<'a> ToVarsBuilder<'a> {
             .iter()
             .filter(|t| t.description.as_str() != ref_base_str)
             .count();
-        if non_ref_rows > 0 {
-            aligned_variants
-                .compute_if_absent(position, |_| crate::variations::Vars::new())
-                .variants
-                .reserve(non_ref_rows);
-        }
+        let mut reserved = false;
 
         for tvar in var.drain(..) {
             if tvar.description == ref_base_str {
@@ -623,6 +618,10 @@ impl<'a> ToVarsBuilder<'a> {
             } else {
                 let entry = aligned_variants
                     .compute_if_absent(position, |_| crate::variations::Vars::new());
+                if !reserved {
+                    entry.variants.reserve(non_ref_rows);
+                    reserved = true;
+                }
 
                 if tvar.frequency > maxfreq {
                     maxfreq = tvar.frequency;
@@ -1977,7 +1976,7 @@ mod tests {
         let cfg = Config::default();
         let builder = ToVarsBuilder::new(&ref_genome, &region, &chr_lengths, &cfg);
 
-        let positions: Vec<i32> = (1..=13).collect();
+        let positions: Vec<i32> = (1..=12).chain(std::iter::once(17)).collect();
         let mk_row = || {
             let mut v = Variant::new();
             v.description = "G".to_string(); // non-ref (ref base is A)
