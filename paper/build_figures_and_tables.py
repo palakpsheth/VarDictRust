@@ -2216,7 +2216,7 @@ def build_all_tables(
         t3_headers,
         t3_rows,
         "<sup>a</sup>Truth-set accuracy evaluated with haplotype-aware rtg vcfeval [12] against NIST GIAB HG002/HG005/NA24385 v4.2.1 [13, 18] (including the HG002 chr20 exome 7-caller truth benchmark (Wolff [11] Fig 2)), SEQC2 HCC1395 v1.2.1 [10], and GIAB HG008 v0.3 [19] high-confidence BED masks. "
-        "<sup>b</sup>Representative operating-point rows report the F1-maximizing QUAL threshold per cohort from the full 0..200 ROC sweep; paired unfiltered (All-PASS, -f 0.01) and optimal rows for all five cohorts are tabulated in Supplementary Table S4. "
+        "<sup>b</sup>Representative operating-point rows report the F1-maximizing QUAL threshold per cohort from unfiltered (All-PASS, -f 0.01) and optimal operating-point measurements; paired rows for all five cohorts are tabulated in Supplementary Table S4. "
         "<sup>c</sup>Undefined 0/0 precision and F1 values at 0.0000 recall (e.g., LoFreq [7] somatic runs without indel quality calibration tags) are normalized to 0.0000. "
         "<sup>d</sup>On callable BED intervals vardictcpp [11] exhibits MNP/tie-break divergence vs. the VarDictJava oracle and omits somatic SV calls; the full CPP-1 to CPP-12 divergence taxonomy is cataloged in Supplementary Table S6.",
     )
