@@ -131,8 +131,14 @@ impl<'a> ToVarsBuilder<'a> {
         let iter_positions: Vec<i32> = var_data.non_insertion_variants.keys().copied().collect();
         // Do not sort positions, use the JavaHashMap iteration order!
 
-        let mut var = Vec::new();
-        let mut keys = Vec::new();
+        // Task 6: per-position row buffers, allocated once per build and
+        // cleared per position below (`clear()` retains capacity). Bound 4
+        // covers the common 1-2 allele shape (MNP ties included); larger
+        // positions regrow as before. `debug_lines` stays `new()`: it is
+        // only pushed when `config.debug`, so the common path allocates
+        // nothing. Order/skip semantics untouched — capacity only.
+        let mut var = Vec::with_capacity(4);
+        let mut keys = Vec::with_capacity(4);
         let mut debug_lines = Vec::new();
 
         // Process non-insertion variants
