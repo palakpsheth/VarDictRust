@@ -7,7 +7,7 @@ use crate::variations::{
 };
 use regex::Regex;
 use std::collections::BTreeMap;
-use std::sync::{LazyLock, Mutex, OnceLock};
+use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 
 /// Result of local insertion adjustment.
 pub struct BaseInsertion {
@@ -668,12 +668,15 @@ pub fn fill_and_sort_tmp(
 /// caller's own and `realigndel` is never skipped.
 // M-FAST-HASHER: FxHash for trusted internal keys (`config.adaptor` is
 // fixed per run, never attacker-controlled) instead of SipHash.
-static ADAPTOR_MAP_CACHE: OnceLock<Mutex<rustc_hash::FxHashMap<Vec<String>, AdaptorMapPair>>> =
+// Values are `Arc` so a cache hit can take a cheap handle under the lock and
+// deep-clone only after the guard drops — otherwise every hit serializes two
+// BTreeMap copies across tile workers.
+static ADAPTOR_MAP_CACHE: OnceLock<Mutex<rustc_hash::FxHashMap<Vec<String>, Arc<AdaptorMapPair>>>> =
     OnceLock::new();
 
 type AdaptorMapPair = (BTreeMap<Vec<u8>, i32>, BTreeMap<Vec<u8>, i32>);
 
-fn adaptor_map_cache() -> &'static Mutex<rustc_hash::FxHashMap<Vec<String>, AdaptorMapPair>> {
+fn adaptor_map_cache() -> &'static Mutex<rustc_hash::FxHashMap<Vec<String>, Arc<AdaptorMapPair>>> {
     ADAPTOR_MAP_CACHE.get_or_init(|| Mutex::new(rustc_hash::FxHashMap::default()))
 }
 
@@ -688,10 +691,13 @@ pub fn fill_adaptor_maps(adaptor_seqs: &[String]) -> AdaptorMapPair {
     // Borrowed lookup: hits (the common case — `config.adaptor` is fixed per
     // run) skip the `to_vec` + per-`String` clones entirely. `Vec<String>:
     // Borrow<[String]>` lets the map be probed with the caller's slice.
-    if let Ok(cache) = adaptor_map_cache().lock() {
-        if let Some(hit) = cache.get(adaptor_seqs) {
-            return hit.clone();
-        }
+    // The guard is scoped so the deep clone below runs unlocked.
+    let hit = match adaptor_map_cache().lock() {
+        Ok(cache) => cache.get(adaptor_seqs).map(Arc::clone),
+        Err(_) => None,
+    };
+    if let Some(pair) = hit {
+        return (*pair).clone();
     }
     let mut adaptor_forward = BTreeMap::new();
     let mut adaptor_reverse = BTreeMap::new();
@@ -714,7 +720,7 @@ pub fn fill_adaptor_maps(adaptor_seqs: &[String]) -> AdaptorMapPair {
     // The owned key is built only on a miss (hits return above, keyless).
     if let Ok(mut cache) = adaptor_map_cache().lock() {
         if cache.len() < 16 {
-            cache.insert(adaptor_seqs.to_vec(), built.clone());
+            cache.insert(adaptor_seqs.to_vec(), Arc::new(built.clone()));
         }
     }
     built
