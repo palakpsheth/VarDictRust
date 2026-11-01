@@ -32,4 +32,14 @@ rc=$?
 set -e
 [ "$rc" -eq 5 ] || { echo "FAIL test_courtesy: expected 5 for MIN_AVAIL_GB, got $rc" >&2; exit 1; }
 
+# Case 6: SKIP_BLACKOUT=1 with EST_MIN overlapping blackout (inside window) skips exit 4
+SKIP_BLACKOUT=1 MIN_FREE_GB=0 MIN_AVAIL_GB=0 COURTESY_NOW=0400 EST_MIN=60 bash harness/courtesy.sh true
+
+# Case 7: SKIP_BLACKOUT=1 still enforces floors -> exit 3
+set +e
+SKIP_BLACKOUT=1 MIN_FREE_GB=999999 COURTESY_NOW=0400 EST_MIN=60 bash harness/courtesy.sh true >/dev/null 2>&1
+rc=$?
+set -e
+[ "$rc" -eq 3 ] || { echo "FAIL test_courtesy: expected 3 for SKIP_BLACKOUT floors, got $rc" >&2; exit 1; }
+
 echo "PASS test_courtesy"

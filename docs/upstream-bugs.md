@@ -332,6 +332,8 @@ Cpp numbers live in evidence `extra` (`cpp_version`, `cpp_head`, `cpp_f1`,
 | [CPP-8](#cpp-8) | N-REF null rows emitted in native `-vcf` | b37 extended-coverage cells |
 | [CPP-9](#cpp-9) | Caller deltas: MNP joining + large SV alleles | hg002/exome/hg008 Tier-2 arms |
 | [CPP-10](#cpp-10) | `-DP`/`--DP` parsed but ignored (printer stays stdout) | Extended-coverage M17 cell |
+| [CPP-11](#cpp-11) | CRAM reference & decode divergence | CRAM twin cells (HG008, Ultima) |
+| [CPP-12](#cpp-12) | Transcriptome splice mode (`-i`) unimplemented | S3 RNA-Seq splice cell |
 
 <a id="cpp-1"></a>
 ### CPP-1 — VCF header provenance + `END` INFO key
@@ -444,6 +446,7 @@ while `rust == java` `MATCH` holds on the same inputs:
 - **1-ULP (`1e-5`) Fisher exact rounding (`ODDRATIO`, `SSF`, `SOR`, `SBF`):**
   Native C++ `double` Fisher exact computation vs R's extended-precision `f80` `fisher.test()` accounts for **5/5** field diffs in `seqc2-slices-tier2` (`4,151 / 4,151` keys match), **941/945** diff records in `seqc2-exome-tier2`, and **45/50** diff records in `hg008-tier2`.
 - **Counts:** `hg002` `227,562` vs `227,560`; `seqc2-exome` `623,444` vs `623,442`; `hg008` `18,426` vs `18,425`; `seqc2-slices` `4,151` vs `4,151` (0 key diffs).
+- **Full-genome `chr1..chr22` `--chunk 50000` boundary duplication (`HG002` `130.8 GB` `2×250` WGS, `-th 32`):** On `hg002_full_22contigs.bed` (`22` un-chunked whole-chromosome intervals, `2.875 Gbp`), `vardictcpp --chunk 50000` subdivides each chromosome without halo deduplication, emitting **`9,953,338` calls vs `VarDictRust`'s `9,643,746` calls (`+309,592` boundary-duplicated/divergent records)** while consuming **`31.91 GB` peak RSS** (`6.48×` `VarDictRust`'s **`4.92 GB` RSS**). On `hg002_full_giab_50kb.bed` (`56,642` intervals already `≤ 50,000 bp` where `--chunk 50000` never splits an interval), the call-count delta shrinks to **`+394`** (`8,111,565` vs `8,111,171` in `VarDictJava`/`VarDictRust`) while `vardictcpp` still consumes **`28.35 GB` peak RSS** (`19.1×` `VarDictRust`'s **`1.48 GB` RSS**).
 
 Directionally this favors vardictrust's Java fidelity on these datasets,
 but the absolute rates are small, mode-dependent (germline MNP vs somatic
@@ -460,4 +463,22 @@ prints variants to stdout, so the M17 stderr comparison reports an advisory
 `CPP-MISMATCH`; Java and Rust both honour it (M17 gate arm MATCH); advisory only,
 no engine impact; reproduced with `-N` (without `-N` cpp exits 1 — that was a
 harness omission fixed here).
+
+<a id="cpp-11"></a>
+### CPP-11 — CRAM reference & decode divergence
+
+Pinned vardictcpp diverges on CRAM reference decoding (`-G ref.fa`): it requires
+dynamic linkage against external `libhts`, `libcurl`, `liblzma`, `libbz2`, and
+`libdeflate`, while stock Bioconda VarDictJava fails on CRAM without an injected
+htsjdk classpath. VarDictRust decodes BAM and CRAM natively via pure-Rust noodles
+and matches the lossless BAM twin oracle with 0 differences (`s4_multimodal_and_cram_twin`;
+Supplementary Table S6). Advisory only, no engine impact.
+
+<a id="cpp-12"></a>
+### CPP-12 — Transcriptome splice mode (`-i`) unimplemented
+
+Pinned vardictcpp does not implement `-i` exon-junction splice-site accounting, so
+the S3 RNA-Seq cell (51.8 GiB GIAB HG002 GM24385 STAR BAM, `s3_rna_splice_parity_n3`)
+has no cpp arm; VarDictRust matches VarDictJava on all splice rows
+(Supplementary Table S6). Advisory only, no engine impact.
 

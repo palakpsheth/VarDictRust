@@ -1,0 +1,45 @@
+\begin{table}[htbp]
+\centering
+\caption{Germline \& Somatic Truth Accuracy [12] and Native GRCh38 Field Callers}
+\label{tab:table3}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{llllll}
+\hline
+Cohort / Purity Stratum & Caller / Engine & Runtime / Evaluated Calls & SNV (or Combined) Precision / Recall / F1 [12]$^{\text{b}}$ & InDel Precision / Recall / F1 [12]$^{\text{b,c}}$ & Concordance / Parity Verdict \\
+\hline
+GIAB HG002 Chr20 Exome [11, 13]$^{\text{a}}$ & VarDictRust & 7,422 calls & 0.9981 / 0.9738 / 0.9858 & 0.9747 / 0.8283 / 0.8956 & 100\% Exact Match (VarDictRust == VarDictJava) \\
+GIAB HG002 Chr20 Exome [11, 13]$^{\text{a}}$ & VarDictJava [1] & 7,422 calls & 0.9981 / 0.9738 / 0.9858 & 0.9747 / 0.8283 / 0.8956 & 100\% Exact Match (VarDictRust == VarDictJava) \\
+GIAB HG002 Chr20 Exome [11, 13]$^{\text{a}}$ & vardictcpp [11] & 7,421 calls & 0.9981 / 0.9738 / 0.9858 & 0.9747 / 0.8283 / 0.8956 & External Germline Caller \\
+GIAB HG002 Chr20 Exome [11, 13]$^{\text{a}}$ & Octopus [5] & 2,436 calls & 0.9973 / 0.9878 / 0.9925 & 0.9336 / 0.9056 / 0.9194 & External Germline Caller \\
+GIAB HG002 Chr20 Exome [11, 13]$^{\text{a}}$ & FreeBayes [3] & 4,292 calls & 0.9972 / 0.9765 / 0.9867 & 0.9439 / 0.8670 / 0.9038 & External Germline Caller \\
+GIAB HG002 Chr20 Exome [11, 13]$^{\text{a}}$ & LoFreq [7] & 2,598 calls & 0.9908 / 0.9701 / 0.9803 & 0.9358 / 0.8755 / 0.9047 & External Germline Caller \\
+GIAB HG002 Chr20 Exome [11, 13]$^{\text{a}}$ & Mutect2 [8] & 2,246 calls & 0.9995 / 0.9330 / 0.9651 & 0.9939 / 0.7039 / 0.8241 & External Germline Caller \\
+GIAB HG002 GRCh38 Slice [13, 18] (Optimal QUAL \textgreater{}= 128.0)$^{\text{b}}$ & VarDictRust == VarDictJava [1] & TP=23,004, FP=553 & 0.9763 / 0.9635 / 0.9699 & Combined SNV + InDel evaluation$^{\text{b}}$ & 100\% Exact Match (0 site differences) \\
+SEQC2 HCC1395 Somatic Exome [10] (Optimal QUAL \textgreater{}= 126.0)$^{\text{b}}$ & VarDictRust == VarDictJava [1] & TP=794, FP=293 & 0.7279 / 0.6567 / 0.6905 & Combined SNV + InDel evaluation$^{\text{b}}$ & 100\% Exact Match (0 site differences) \\
+GIAB HG008 Somatic Slice v0.3 [19] (Optimal QUAL \textgreater{}= 176.0)$^{\text{b}}$ & VarDictRust == VarDictJava [1] & TP=593, FP=38 & 0.9354 / 0.6538 / 0.7696 & Combined SNV + InDel evaluation$^{\text{b}}$ & 100\% Exact Match (0 site differences) \\
+GIAB HG005 GRCh38 v4.2.1 [13] (Optimal QUAL \textgreater{}= 226.0)$^{\text{b}}$ & VarDictRust == VarDictJava [1] & TP=29, FP=1 & 0.9667 / 0.9667 / 0.9667 & Combined SNV + InDel evaluation$^{\text{b}}$ & 100\% Exact Match (0 site differences) \\
+GIAB NA24385 GRCh37 v4.2.1 [13] (Optimal QUAL \textgreater{}= 160.0)$^{\text{b}}$ & VarDictRust == VarDictJava [1] & TP=5, FP=0 & 1.0000 / 1.0000 / 1.0000 & Combined SNV + InDel evaluation$^{\text{b}}$ & 100\% Exact Match (0 site differences) \\
+GIAB HG002 GRCh38 Benchmark Slice [13, 18] & VarDictRust & 0:21.30 (21.30 s) / 474.8 MB & 0.5041 / 0.9634 / 0.6619 & 0.5781 / 0.9463 / 0.7177 & 100\% Exact Match (VarDictRust == VarDictJava) \\
+GIAB HG002 GRCh38 Benchmark Slice [13, 18] & VarDictJava [1] & 2:39.59 (159.59 s) / 10732.2 MB & 0.5041 / 0.9634 / 0.6619 & 0.5781 / 0.9463 / 0.7177 & 100\% Exact Match (VarDictRust == VarDictJava) \\
+GIAB HG002 GRCh38 Benchmark Slice [13, 18] & vardictcpp [11] & 0:21.14 (21.14 s) / 859.1 MB & 0.5043 / 0.9634 / 0.6620 & 0.5783 / 0.9463 / 0.7179 & MNP / SV Divergence vs. Java$^{\text{d}}$ \\
+GIAB HG002 GRCh38 Benchmark Slice [13, 18] & FreeBayes [3] & 6:08.72 (368.72 s) / 206.7 MB & 0.9686 / 0.9598 / 0.9642 & 0.9373 / 0.9538 / 0.9455 & Native GRCh38 Comparator \\
+GIAB HG002 GRCh38 Benchmark Slice [13, 18] & LoFreq [7] & 6:16.78 (376.78 s) / 119.0 MB & 0.8924 / 0.9909 / 0.9391 & 0.5809 / 0.9601 / 0.7238 & Native GRCh38 Comparator \\
+GIAB HG002 GRCh38 Benchmark Slice [13, 18] & Strelka2 [4] & 8:22.19 (502.19 s) / 130.1 MB & 0.9931 / 0.9909 / 0.9920 & 0.9438 / 0.9836 / 0.9633 & Native GRCh38 Comparator \\
+GIAB HG002 GRCh38 Benchmark Slice [13, 18] & Octopus [5] & 3:11.50 (191.50 s) / 3558.9 MB & 0.9911 / 0.9861 / 0.9886 & 0.9051 / 0.9810 / 0.9415 & Native GRCh38 Comparator \\
+GIAB HG008 v0.3 Somatic Slice [19] & VarDictRust & 0:17.14 (17.14 s) / 510.5 MB & 0.9757 / 0.6552 / 0.7840 & 0.9370 / 0.4034 / 0.5640 & 100\% Exact Match (VarDictRust == VarDictJava) \\
+GIAB HG008 v0.3 Somatic Slice [19] & VarDictJava [1] & 1:19.15 (79.15 s) / 17448.2 MB & 0.9757 / 0.6552 / 0.7840 & 0.9370 / 0.4034 / 0.5640 & 100\% Exact Match (VarDictRust == VarDictJava) \\
+GIAB HG008 v0.3 Somatic Slice [19] & vardictcpp [11] & 0:17.30 (17.30 s) / 565.1 MB & 0.9757 / 0.6552 / 0.7840 & 0.9444 / 0.4034 / 0.5653 & MNP / SV Divergence vs. Java$^{\text{d}}$ \\
+GIAB HG008 v0.3 Somatic Slice [19] & Mutect2 [8] & 7:27.31 (447.31 s) / 1263.1 MB & 0.9825 / 0.6438 / 0.7779 & 0.9355 / 0.3932 / 0.5537 & Native GRCh38 Comparator \\
+GIAB HG008 v0.3 Somatic Slice [19] & Strelka2 [4] & 0:36.35 (36.35 s) / 119.0 MB & 0.9896 / 0.7794 / 0.8720 & 0.9545 / 0.2847 / 0.4386 & Native GRCh38 Comparator \\
+GIAB HG008 v0.3 Somatic Slice [19] & LoFreq [7] & 1:18.71 (78.71 s) / 251.5 MB & 1.0000 / 0.6814 / 0.8105 & 0.0000 / 0.0000 / 0.0000$^{\text{c}}$ & Native GRCh38 Comparator \\
+SEQC2 HCC1395 v1.2.1 Somatic Exome [10] & VarDictRust & 4:39.29 (279.29 s) / 514.3 MB & 0.7336 / 0.7532 / 0.7433 & 0.3077 / 0.4800 / 0.3750 & 100\% Exact Match (VarDictRust == VarDictJava) \\
+SEQC2 HCC1395 v1.2.1 Somatic Exome [10] & VarDictJava [1] & 1:06:07 (3967.00 s) / 14275.5 MB & 0.7336 / 0.7532 / 0.7433 & 0.3077 / 0.4800 / 0.3750 & 100\% Exact Match (VarDictRust == VarDictJava) \\
+SEQC2 HCC1395 v1.2.1 Somatic Exome [10] & vardictcpp [11] & 4:53.71 (293.71 s) / 2259.8 MB & 0.7336 / 0.7532 / 0.7433 & 0.3077 / 0.4800 / 0.3750 & MNP / SV Divergence vs. Java$^{\text{d}}$ \\
+SEQC2 HCC1395 v1.2.1 Somatic Exome [10] & Mutect2 [8] & 44:01.05 (2641.05 s) / 1580.9 MB & 0.6152 / 0.8361 / 0.7089 & 0.6087 / 0.8400 / 0.7059 & Native GRCh38 Comparator \\
+SEQC2 HCC1395 v1.2.1 Somatic Exome [10] & Strelka2 [4] & 2:52.88 (172.88 s) / 118.8 MB & 0.3044 / 0.8689 / 0.4509 & 0.4324 / 0.6400 / 0.5161 & Native GRCh38 Comparator \\
+SEQC2 HCC1395 v1.2.1 Somatic Exome [10] & LoFreq [7] & 9:01.90 (541.90 s) / 281.6 MB & 0.9526 / 0.7627 / 0.8471 & 0.0000 / 0.0000 / 0.0000$^{\text{c}}$ & Native GRCh38 Comparator \\
+\hline
+\end{tabular}%
+}
+\\[4pt]\footnotesize{$^{\text{a}}$Truth-set accuracy evaluated with haplotype-aware rtg vcfeval [12] against NIST GIAB HG002/HG005/NA24385 v4.2.1 [13, 18] (including the HG002 chr20 exome 7-caller truth benchmark (Wolff [11] Fig 2)), SEQC2 HCC1395 v1.2.1 [10], and GIAB HG008 v0.3 [19] high-confidence BED masks. $^{\text{b}}$Representative operating-point rows report the F1-maximizing QUAL threshold per cohort from unfiltered (All-PASS, -f 0.01) and optimal operating-point measurements; paired rows for all five cohorts are tabulated in Supplementary Table S4. $^{\text{c}}$Undefined 0/0 precision and F1 values at 0.0000 recall (e.g., LoFreq [7] somatic runs without indel quality calibration tags) are normalized to 0.0000. $^{\text{d}}$On callable BED intervals vardictcpp [11] exhibits MNP/tie-break divergence vs. the VarDictJava oracle and omits somatic SV calls; the full CPP-1 to CPP-12 divergence taxonomy is cataloged in Supplementary Table S6.}
+\end{table}

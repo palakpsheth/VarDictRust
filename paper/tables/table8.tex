@@ -1,0 +1,19 @@
+\begin{table}[htbp]
+\centering
+\caption{Supply-Chain Security, Static musl Binary Equivalence, Functional Coverage \& Divergence Summary}
+\label{tab:table8}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{llll}
+\hline
+Engineering \& Security Dimension & VarDictJava v1.8.3 [1] (0886261) & vardictcpp [11] (ae93fe39dc) & VarDictRust v1.0.6 (5865a2a0b24a8c17)$^{\text{e}}$ \\
+\hline
+Upstream Repository Maintenance Status & Archived Read-Only (EOL)$^{\text{a}}$ & Preprint Prototype (10 Divergences)$^{\text{b}}$ & Actively Maintained (MIT, v1.0.6)$^{\text{a,e}}$ \\
+Runtime Dependency \& Binary Footprint & JVM + R + Perl (102 Conda packages)$^{\text{c}}$ & C++17 + HTSlib [26] dynamic libraries & 4.46 MiB GNU / 4.56 MiB Static musl (statically linked)$^{\text{d}}$ \\
+Supply-Chain Attestation \& Vulnerability Audit & Unpinned ecosystem dependencies$^{\text{c}}$ & No SLSA provenance & SLSA Level 3 + 0 RustSec CVEs$^{\text{d}}$ \\
+13-Mode Functional Coverage \& CRAM Support & 12/13 (CRAM fails without htsjdk classpath)$^{\text{c}}$ & 12/13 .var (simple\_fisher FP=1, FN=1; Amplicon VCF \& Splice -i unsupported)$^{\text{b}}$ & 13/13 Modes (100\% Exact Match)$^{\text{d}}$ \\
+Empirical Divergence Classes vs. Oracle & Reference Oracle (Baseline)$^{\text{a}}$ & 10 Cataloged Divergence Classes (CPP-1 to CPP-12)$^{\text{b}}$ & 0 Divergences on Valid Inputs (\#![forbid(unsafe\_code)])$^{\text{a,e}}$ \\
+\hline
+\end{tabular}%
+}
+\\[4pt]\footnotesize{$^{\text{a}}$VarDictJava v1.8.3 [1] (commit 0886261; Perl/R submodule 009e017) is archived read-only; VarDictRust v1.0.6 preserves 100\% valid-input output equivalence while eliminating \textgreater{}30 upstream crash, OOM, CRAM, and header defects (issues \#7, \#38, \#181, \#187, \#197, \#243, \#249, \#253, \#282, \#283, \#320, \#341, \#356, \#380, \#384) by enforcing \#![forbid(unsafe\_code)] and checked bounds arithmetic. $^{\text{b}}$On the 13-mode .var functional suite, vardictcpp [11] matches VarDictJava on 12/13 modes (diverging on simple\_fisher with FP=1, FN=1) and additionally lacks amplicon VCF formatting (CPP-3) and RNA-seq -i splice support (CPP-12), while emitting +309,569 chunk-boundary duplicates on unchunked HG002 WGS (CPP-5; full CPP-1 to CPP-12 taxonomy in Supplementary Table S6). $^{\text{c}}$The pinned Bioconda VarDictJava environment requires 102 runtime packages across OpenJDK, R, and Perl and fails with NoClassDefFoundError on CRAM inputs unless external htsjdk jars are injected. $^{\text{d}}$VarDictRust compiles to a single 4.56 MiB statically linked x86\_64-unknown-linux-musl binary (statically linked) with native pure-Rust BAM/CRAM decoding (noodles), 0 RustSec advisories, and automated SLSA Level 3 build provenance. $^{\text{e}}$Hash 5865a2a0b24a8c17 denotes the certified VarDictRust v1.0.6 engine source fingerprint; under the project release governance, v1.0.x guarantees exact valid-input parity with VarDictJava v1.8.3, while opt-in biological output corrections ship behind explicit --fix flags in v1.1+.}
+\end{table}

@@ -20,7 +20,7 @@ import re
 import sys
 
 
-def sync_docs(repo_root: pathlib.Path) -> int:
+def sync_docs(repo_root: pathlib.Path, check: bool = False) -> int:
     ev_dir = repo_root / "benchmarks" / "evidence"
     json_files = sorted(ev_dir.glob("*.json"))
     if len(json_files) != 16:
@@ -41,46 +41,97 @@ def sync_docs(repo_root: pathlib.Path) -> int:
         )
         return 1
 
+    mismatches = []
+
     # 1. Update docs/validation/omnibus-empirical-validation.md
     omnibus_path = repo_root / "docs" / "validation" / "omnibus-empirical-validation.md"
-    if omnibus_path.is_file():
-        text = omnibus_path.read_text(encoding="utf-8")
+    # The omnibus §13 SHA-256 table is a required surface: every evidence JSON
+    # must have exactly one row. A deleted or reformatted row must fail loudly
+    # instead of passing silently via an unmatched substitution.
+    required_docs = [
+        omnibus_path,
+        repo_root / "DIVERGENCES.md",
+        repo_root / "docs" / "testing" / "test-matrix-and-ci-audit.md",
+        repo_root / "benchmarks" / "README.md",
+        repo_root
+        / ".agents"
+        / "skills"
+        / "vardictrust-release"
+        / "references"
+        / "version-surface-map.md",
+    ]
+    for req in required_docs:
+        if not req.is_file():
+            print(
+                f"ERROR: required documentation surface missing: {req.relative_to(repo_root)}",
+                file=sys.stderr,
+            )
+            return 1
+    sha_rows_verified = 0
+    if omnibus_path.is_file():  # guaranteed present by required_docs check above
+        orig_text = omnibus_path.read_text(encoding="utf-8")
         text = re.sub(
             r"(\*\*Certified Release Engine Fingerprint:\*\*\s*`)[0-9a-f]{16}(`)",
             rf"\g<1>{fp}\2",
-            text,
+            orig_text,
         )
+        sha_rows_verified = 0
         for jf in json_files:
             jf_data = json.loads(jf.read_text(encoding="utf-8"))
             jf_fp = jf_data.get("fingerprint", fp)
             jf_sha = hashlib.sha256(jf.read_bytes()).hexdigest()
             fname_esc = re.escape(jf.name)
-            text = re.sub(
+            text, n = re.subn(
                 rf"(\|\s*\[`{fname_esc}`\]\([^)]+\)\s*\|\s*`)[0-9a-f]{{16}}(`\s*\|\s*`)[0-9a-f]{{64}}(`\s*\|)",
                 rf"\g<1>{jf_fp}\g<2>{jf_sha}\3",
                 text,
             )
-        omnibus_path.write_text(text, encoding="utf-8")
+            if n != 1:
+                have = "missing" if n == 0 else f"duplicated ({n} matches)"
+                print(
+                    f"ERROR: omnibus SHA-256 table row for {jf.name} is {have}; "
+                    "expected exactly one row per evidence JSON.",
+                    file=sys.stderr,
+                )
+                return 1
+            sha_rows_verified += n
+        if sha_rows_verified != len(json_files):
+            print(
+                f"ERROR: omnibus SHA-256 table has {sha_rows_verified} matching rows, "
+                f"expected one per evidence JSON ({len(json_files)}); a manifest row "
+                "may have been deleted or reformatted.",
+                file=sys.stderr,
+            )
+            return 1
+        if text != orig_text:
+            if check:
+                mismatches.append(str(omnibus_path.relative_to(repo_root)))
+            else:
+                omnibus_path.write_text(text, encoding="utf-8")
 
     # 2. Update DIVERGENCES.md
     div_path = repo_root / "DIVERGENCES.md"
     if div_path.is_file():
-        text = div_path.read_text(encoding="utf-8")
+        orig_text = div_path.read_text(encoding="utf-8")
         text = re.sub(
             r"(under release engine fingerprint `)[0-9a-f]{16}(`)",
             rf"\g<1>{fp}\2",
-            text,
+            orig_text,
         )
-        div_path.write_text(text, encoding="utf-8")
+        if text != orig_text:
+            if check:
+                mismatches.append(str(div_path.relative_to(repo_root)))
+            else:
+                div_path.write_text(text, encoding="utf-8")
 
     # 3. Update docs/testing/test-matrix-and-ci-audit.md
     matrix_path = repo_root / "docs" / "testing" / "test-matrix-and-ci-audit.md"
     if matrix_path.is_file():
-        text = matrix_path.read_text(encoding="utf-8")
+        orig_text = matrix_path.read_text(encoding="utf-8")
         text = re.sub(
             r"(\*\*Certified Release Engine Fingerprint:\*\*\s*`)[0-9a-f]{16}(`)",
             rf"\g<1>{fp}\2",
-            text,
+            orig_text,
         )
         text = re.sub(
             r"(\|\s*\*\*(?:MATCH|EQUAL|PASS)\*\*\s*\|\s*`)[0-9a-f]{16}(`\s*\|)",
@@ -97,18 +148,26 @@ def sync_docs(repo_root: pathlib.Path) -> int:
             rf"\g<1>{fp}",
             text,
         )
-        matrix_path.write_text(text, encoding="utf-8")
+        if text != orig_text:
+            if check:
+                mismatches.append(str(matrix_path.relative_to(repo_root)))
+            else:
+                matrix_path.write_text(text, encoding="utf-8")
 
     # 4. Update benchmarks/README.md
     bench_readme = repo_root / "benchmarks" / "README.md"
     if bench_readme.is_file():
-        text = bench_readme.read_text(encoding="utf-8")
+        orig_text = bench_readme.read_text(encoding="utf-8")
         text = re.sub(
             r"(certified release engine fingerprint `)[0-9a-f]{16}(`)",
             rf"\g<1>{fp}\2",
-            text,
+            orig_text,
         )
-        bench_readme.write_text(text, encoding="utf-8")
+        if text != orig_text:
+            if check:
+                mismatches.append(str(bench_readme.relative_to(repo_root)))
+            else:
+                bench_readme.write_text(text, encoding="utf-8")
 
     # 5. Update active docs/release/v<current_version>-pr.md
     cargo_toml = (repo_root / "Cargo.toml").read_text(encoding="utf-8")
@@ -121,11 +180,11 @@ def sync_docs(repo_root: pathlib.Path) -> int:
         ver = ver_m.group(1)
         pr_doc = repo_root / "docs" / "release" / f"v{ver}-pr.md"
         if pr_doc.is_file():
-            text = pr_doc.read_text(encoding="utf-8")
+            orig_text = pr_doc.read_text(encoding="utf-8")
             text = re.sub(
                 r"(\*\*Release Fingerprint:\*\*\s*`)[0-9a-f]{16}(`\s*\(`perf_fingerprint`\s*`)[0-9a-f]{16}(`\))",
                 rf"\g<1>{fp}\g<2>{perf_fp}\3",
-                text,
+                orig_text,
             )
             text = re.sub(
                 r"(under certified engine fingerprint `)[0-9a-f]{16}(`\s*\(`perf_fingerprint`\s*`)[0-9a-f]{16}(`\):)",
@@ -138,7 +197,11 @@ def sync_docs(repo_root: pathlib.Path) -> int:
                 text,
                 flags=re.MULTILINE,
             )
-            pr_doc.write_text(text, encoding="utf-8")
+            if text != orig_text:
+                if check:
+                    mismatches.append(str(pr_doc.relative_to(repo_root)))
+                else:
+                    pr_doc.write_text(text, encoding="utf-8")
 
     # 6. Update .agents/skills/vardictrust-release/references/version-surface-map.md
     surface_map = (
@@ -150,16 +213,32 @@ def sync_docs(repo_root: pathlib.Path) -> int:
         / "version-surface-map.md"
     )
     if surface_map.is_file():
-        text = surface_map.read_text(encoding="utf-8")
+        orig_text = surface_map.read_text(encoding="utf-8")
         text = re.sub(
             r"(\|\s*1[256]\s*\|[^\n]*?`)[0-9a-f]{16}(`)",
             rf"\g<1>{fp}\2",
-            text,
+            orig_text,
         )
-        surface_map.write_text(text, encoding="utf-8")
+        if text != orig_text:
+            if check:
+                mismatches.append(str(surface_map.relative_to(repo_root)))
+            else:
+                surface_map.write_text(text, encoding="utf-8")
+
+    if check:
+        if mismatches:
+            print(
+                f"ERROR: documentation surfaces out of sync with benchmarks/evidence/*.json: {', '.join(mismatches)}",
+                file=sys.stderr,
+            )
+            return 1
+        print(
+            f"Evidence documentation surfaces in sync: fingerprint={fp}, perf_fingerprint={perf_fp} ({sha_rows_verified} SHA-256 rows verified)."
+        )
+        return 0
 
     print(
-        f"Synced evidence documentation surfaces: fingerprint={fp}, perf_fingerprint={perf_fp} (16 SHA-256 rows updated)."
+        f"Synced evidence documentation surfaces: fingerprint={fp}, perf_fingerprint={perf_fp} ({sha_rows_verified} SHA-256 rows updated)."
     )
     return 0
 
@@ -174,8 +253,13 @@ def main() -> int:
         default=pathlib.Path(__file__).resolve().parent.parent,
         help="Path to VarDictRust repository root",
     )
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="Check whether documentation surfaces are in sync without writing changes (exits 1 if out of sync)",
+    )
     args = parser.parse_args()
-    return sync_docs(args.repo_root)
+    return sync_docs(args.repo_root, check=args.check)
 
 
 if __name__ == "__main__":

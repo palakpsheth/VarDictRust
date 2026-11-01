@@ -32,7 +32,7 @@ vardictrust -G GRCh38.fa -f 0.01 -N "TUMOR|NORMAL" -b "tumor.bam|normal.bam" -R 
 # chr7   55152340  .   G    A    184   PASS    TYPE=SNV;AF=0.245;STATUS=StrongSomatic  GT:DP:VD:AD:AF:RD:ALD  0/1:120:29:91,29...  0/0:115:0:115,0...
 ```
 
-Built under the [rewrites.bio](https://rewrites.bio) manifesto: *a faster, more robust tool that produces the same results*. See the [Omnibus Empirical Validation Report](docs/validation/omnibus-empirical-validation.md) for biological provenance, mathematical proofs, and cohort datasets.
+Built under the [rewrites.bio](https://rewrites.bio) manifesto: *a faster, more robust tool that produces the same results*. See the [Omnibus Empirical Validation Report](docs/validation/omnibus-empirical-validation.md) for biological provenance, mathematical proofs, and cohort datasets. The repository-tracked evaluation manuscript (compiled text, typeset PDFs, figures, tables, and one-command reproduction) lives in the [paper reproducibility package](paper/README.md): [manuscript](paper/manuscript.md) ([PDF](paper/manuscript.pdf)) and [supplement](paper/supplement.md) ([PDF](paper/supplement.pdf)).
 
 ---
 
@@ -43,6 +43,7 @@ Built under the [rewrites.bio](https://rewrites.bio) manifesto: *a faster, more 
 - [Usage & Pipeline Recipes](#usage--pipeline-recipes)
 - [Operational Modalities](#operational-modalities)
 - [Empirical Parity & Validation Status](#empirical-parity--validation-status)
+- [Evaluation Manuscript & Reproducibility](#evaluation-manuscript--reproducibility)
 - [Architectural Parity & Upstream Policy](#architectural-parity--upstream-policy)
 - [CLI Parameter Reference](#cli-parameter-reference)
 - [AI Tooling & Verification Transparency](#ai-tooling--verification-transparency)
@@ -289,6 +290,25 @@ Evaluated against physical ground truth using Real Time Genomics [`rtg vcfeval`]
 
 ---
 
+<a id="evaluation-manuscript--reproducibility"></a>
+<a id="evaluation-manuscript-reproducibility"></a>
+## Evaluation Manuscript & Reproducibility
+
+The v1.0.6 evaluation is written up as a repository-tracked manuscript (not yet peer-reviewed): [manuscript](paper/manuscript.md) ([typeset PDF](paper/manuscript.pdf)) with [supplement](paper/supplement.md) ([typeset PDF](paper/supplement.pdf)).
+
+- **Oracle equivalence** — Tier-1/2 parity across 13 modes and the 87-arm sweep ([Table 1](paper/tables/table1.md), [Figure 1](paper/figures/fig1.svg)).
+- **AML replication** — benchmark replication and field-caller comparison ([Table 2](paper/tables/table2.md), [Figure 2](paper/figures/fig2.svg)).
+- **Truth accuracy** — germline/somatic truth sets and QUAL operating points ([Table 3](paper/tables/table3.md), [Figure 3](paper/figures/fig3.svg)).
+- **Bounded-memory scaling** — multicore work-stealing and node packing ([Table 4](paper/tables/table4.md), [Figure 4](paper/figures/fig4.svg)).
+- **Whole-genome scaling** — unchunked full chromosomes vs callable intervals ([Table 5](paper/tables/table5.md), [Figure 5](paper/figures/fig5.svg)).
+- **Cross-platform generalization** — 10 chemistries and the 70-cell GA4GH stratification ([Table 6](paper/tables/table6.md), [Figure 6](paper/figures/fig6.svg)).
+- **New-biology discovery** — GIAB v5.0q/CMRG/Mosaic via unchunked calling ([Table 7](paper/tables/table7.md), [Figure 7](paper/figures/fig7.svg)).
+- **Caller landscape & hardening** — deep-learning/commercial comparison, low-VAF titration, supply-chain ([Table 8](paper/tables/table8.md), [Figure 8](paper/figures/fig8.svg)).
+
+Figures ([`fig1..fig8`](paper/figures/)) and tables ([main 1–8 and supplementary S1–S6](paper/tables/)) regenerate deterministically via the [paper reproducibility package](paper/README.md) (`bash paper/reproduce_all.sh`).
+
+---
+
 <a id="architectural-parity--upstream-policy"></a>
 <a id="architectural-parity-upstream-policy"></a>
 ## Architectural Parity & Upstream Policy
@@ -427,7 +447,7 @@ Per the [rewrites.bio](https://rewrites.bio) manifesto, we disclose all AI tools
 <a id="attribution-citation"></a>
 ## Attribution & Citation
 
-VarDictRust is authored and maintained by **Palak Sheth** (<palakpsheth@gmail.com>), developed as an idiomatic Rust rewrite of **VarDict** and **VarDictJava** originally created by Zhongwu Lai and the AstraZeneca-NGS team:
+VarDictRust is authored and maintained by **[Palak Sheth](https://www.linkedin.com/in/palak-p-sheth/)** (<palakpsheth@gmail.com>), developed as an idiomatic Rust rewrite of **VarDict** and **VarDictJava** originally created by Zhongwu Lai and the AstraZeneca-NGS team:
 
 > Lai Z, Markovets A, Ahdesmaki M, et al. VarDict: a novel and versatile variant caller for next-generation sequencing in cancer research. *Nucleic Acids Research*, 2016;44(11):e108. doi:[10.1093/nar/gkw227](https://doi.org/10.1093/nar/gkw227)
 
@@ -478,6 +498,8 @@ If you use VarDictRust in published research, cite both Lai et al. (2016) and th
 }
 ```
 Full citation metadata is available in [`CITATION.cff`](CITATION.cff).
+
+The evaluation manuscript itself is repository-tracked (not yet peer-reviewed): [manuscript Markdown](paper/manuscript.md) ([typeset PDF](paper/manuscript.pdf)), [supplement Markdown](paper/supplement.md) ([typeset PDF](paper/supplement.pdf)), with figures, tables, and the deterministic reproduction pipeline documented in the [paper reproducibility package](paper/README.md).
 
 ---
 

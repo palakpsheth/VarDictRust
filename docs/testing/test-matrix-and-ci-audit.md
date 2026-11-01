@@ -5,7 +5,7 @@
 **Target Release:** VarDictRust v1.0.6 (`release/v1.0.6`)  
 **Certified Release Engine Fingerprint:** `5865a2a0b24a8c17` (Certified Invariant)  
 **Repository:** [https://github.com/palakpsheth/VarDictRust](https://github.com/palakpsheth/VarDictRust)  
-**Author / Maintainer:** Palak Sheth <palakpsheth@gmail.com>  
+**Author / Maintainer:** [Palak Sheth](https://www.linkedin.com/in/palak-p-sheth/) <palakpsheth@gmail.com>  
 **Companion Report:** [`docs/validation/omnibus-empirical-validation.md`](../validation/omnibus-empirical-validation.md) (Biological Truth & Empirical Parity)  
 
 ---
