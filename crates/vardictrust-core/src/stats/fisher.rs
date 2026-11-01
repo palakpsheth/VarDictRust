@@ -56,7 +56,9 @@ impl FisherExact {
         let x = ref_fwd;
         let lo = std::cmp::max(0, k - n);
         let hi = std::cmp::min(k, m);
-        let mut support = Vec::new();
+        // Pre-sized only; push order and values are unchanged.
+        let mut support =
+            Vec::with_capacity(hi.saturating_sub(lo).saturating_add(1).max(0) as usize);
         for j in lo..=hi {
             support.push(j);
         }
@@ -116,14 +118,20 @@ impl FisherExact {
         if x == self.hi as f64 {
             return f64::INFINITY;
         }
-        let mu = self.mnhyper(1.0);
+        // Function-local per-thread scratch, passed by `&mut` into every
+        // `mnhyper` evaluation below (including all `uniroot` iterations).
+        // Never shared across rayon workers; each call owns its buffer, so no
+        // cross-thread aliasing is possible. MLE tolerance `eps.powf(0.25)`
+        // is verbatim.
+        let mut scratch = Vec::with_capacity(self.support.len());
+        let mu = self.mnhyper_with(1.0, &mut scratch);
         let root;
         let tol = eps.powf(0.25);
         if mu > x {
-            let f = |t: f64| self.mnhyper(t) - x;
+            let f = |t: f64| self.mnhyper_with(t, &mut scratch) - x;
             root = crate::stats::zeroin::uniroot(0.0, 1.0, f, tol);
         } else if mu < x {
-            let f = |t: f64| self.mnhyper(1.0 / t) - x;
+            let f = |t: f64| self.mnhyper_with(1.0 / t, &mut scratch) - x;
             root = 1.0 / crate::stats::zeroin::uniroot(eps, 1.0, f, tol);
         } else {
             root = 1.0;
@@ -131,54 +139,70 @@ impl FisherExact {
         root
     }
 
+    #[cfg(test)]
     pub(crate) fn mnhyper(&self, ncp: f64) -> f64 {
+        // Thin delegate preserving the existing `pub(crate)` signature (used by
+        // `zeroin` tests): fresh function-local scratch per call.
+        let mut scratch = Vec::with_capacity(self.support.len());
+        self.mnhyper_with(ncp, &mut scratch)
+    }
+
+    /// Scratch-based mean evaluation. `scratch` is a function-local per-thread
+    /// buffer (`&mut` only, never shared across threads); the products are
+    /// formed in place in support order and summed with the same
+    /// `java_stream_sum` vs `f80_sum` split as before, so results are
+    /// element-for-element identical to the previous allocating version.
+    fn mnhyper_with(&self, ncp: f64, scratch: &mut Vec<f64>) -> f64 {
         if ncp == 0.0 {
             return self.lo as f64;
         }
         if ncp.is_infinite() {
             return self.hi as f64;
         }
-        let dnhyper_result = self.dnhyper(ncp);
-        let mut supp_d = Vec::with_capacity(self.support.len());
-        for (i, &supp) in self.support.iter().enumerate() {
-            supp_d.push((supp as f64) * dnhyper_result.get(i).copied().unwrap_or(0.0));
+        self.dnhyper_into(ncp, scratch);
+        for (i, prob) in scratch.iter_mut().enumerate() {
+            let supp = self.support.get(i).copied().unwrap_or(0) as f64;
+            *prob *= supp;
         }
         if self.java_fisher {
-            java_stream_sum(&supp_d)
+            java_stream_sum(scratch)
         } else {
-            crate::stats::f80::f80_sum(&supp_d)
+            crate::stats::f80::f80_sum(scratch)
         }
     }
 
-    fn dnhyper(&self, ncp: f64) -> Vec<f64> {
-        let mut result = Vec::with_capacity(self.support.len());
+    /// Density of the non-central hypergeometric distribution on its support,
+    /// written into the caller-owned scratch buffer `out` (function-local
+    /// per-thread `&mut Vec`, never shared across rayon workers). The loop
+    /// order, max-subtraction, summation choice, and normalization are
+    /// identical to the previous allocating `dnhyper`; only the allocations
+    /// are gone (single buffer reused in place).
+    fn dnhyper_into(&self, ncp: f64, out: &mut Vec<f64>) {
+        out.clear();
+        out.reserve(self.support.len());
         let ln_ncp = ncp.ln();
         for i in 0..self.support.len() {
             let logdc_val = self.logdc.get(i).copied().unwrap_or(0.0);
             let supp_val = self.support.get(i).copied().unwrap_or(0) as f64;
-            result.push(logdc_val + ln_ncp * supp_val);
+            out.push(logdc_val + ln_ncp * supp_val);
         }
         let mut max_result = f64::NEG_INFINITY;
-        for &val in &result {
+        for &val in out.iter() {
             if val > max_result {
                 max_result = val;
             }
         }
-        let mut exponent_result = Vec::with_capacity(result.len());
-        for val in result {
-            let exp_val = (val - max_result).exp();
-            exponent_result.push(exp_val);
+        for val in out.iter_mut() {
+            *val = (*val - max_result).exp();
         }
         let sum = if self.java_fisher {
-            java_stream_sum(&exponent_result)
+            java_stream_sum(out)
         } else {
-            crate::stats::f80::f80_sum(&exponent_result)
+            crate::stats::f80::f80_sum(out)
         };
-        let mut final_result = Vec::with_capacity(exponent_result.len());
-        for val in exponent_result {
-            final_result.push(val / sum);
+        for val in out.iter_mut() {
+            *val /= sum;
         }
-        final_result
     }
 
     /// Returns the odds ratio formatted as String, matching R outputs.
@@ -213,12 +237,17 @@ impl FisherExact {
         self.p_value_greater = self.pnhyper(self.x, true);
 
         let rel_err = 1.0 + 1e-7;
-        let d = self.dnhyper(1.0);
+        // Function-local per-thread scratch buffers, passed by `&mut` only
+        // (never shared across rayon workers). The collect-then-sum shape is
+        // kept verbatim: candidates are gathered in density order, then summed
+        // with the same `iter().sum()` vs `f80_sum` split as before.
+        let mut density = Vec::with_capacity(self.support.len());
+        self.dnhyper_into(1.0, &mut density);
         let target_idx = (self.x - self.lo) as usize;
-        let target = d.get(target_idx).copied().unwrap_or(0.0);
+        let target = density.get(target_idx).copied().unwrap_or(0.0);
         let threshold = target * rel_err;
-        let mut sum_elements = Vec::new();
-        for el in d {
+        let mut sum_elements = Vec::with_capacity(density.len());
+        for el in density {
             if el <= threshold {
                 sum_elements.push(el);
             }
