@@ -6,7 +6,7 @@ use crate::variations::{
     get_variation, get_variation_maybe, get_variation_maybe_mut, Sclip, Variation, VariationMap,
 };
 use regex::Regex;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::sync::{LazyLock, Mutex, OnceLock};
 
 /// Result of local insertion adjustment.
@@ -666,12 +666,15 @@ pub fn fill_and_sort_tmp(
 /// for a run, so per-candidate `realigndel` calls from `realignlgdel` reuse
 /// one build. Only the input-keyed maps are cached — `dels5` is always the
 /// caller's own and `realigndel` is never skipped.
-static ADAPTOR_MAP_CACHE: OnceLock<Mutex<HashMap<Vec<String>, AdaptorMapPair>>> = OnceLock::new();
+// M-FAST-HASHER: FxHash for trusted internal keys (`config.adaptor` is
+// fixed per run, never attacker-controlled) instead of SipHash.
+static ADAPTOR_MAP_CACHE: OnceLock<Mutex<rustc_hash::FxHashMap<Vec<String>, AdaptorMapPair>>> =
+    OnceLock::new();
 
 type AdaptorMapPair = (BTreeMap<Vec<u8>, i32>, BTreeMap<Vec<u8>, i32>);
 
-fn adaptor_map_cache() -> &'static Mutex<HashMap<Vec<String>, AdaptorMapPair>> {
-    ADAPTOR_MAP_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+fn adaptor_map_cache() -> &'static Mutex<rustc_hash::FxHashMap<Vec<String>, AdaptorMapPair>> {
+    ADAPTOR_MAP_CACHE.get_or_init(|| Mutex::new(rustc_hash::FxHashMap::default()))
 }
 
 pub fn fill_adaptor_maps(adaptor_seqs: &[String]) -> AdaptorMapPair {
