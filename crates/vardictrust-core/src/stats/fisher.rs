@@ -139,20 +139,12 @@ impl FisherExact {
         root
     }
 
-    #[cfg(test)]
-    pub(crate) fn mnhyper(&self, ncp: f64) -> f64 {
-        // Thin delegate preserving the existing `pub(crate)` signature (used by
-        // `zeroin` tests): fresh function-local scratch per call.
-        let mut scratch = Vec::with_capacity(self.support.len());
-        self.mnhyper_with(ncp, &mut scratch)
-    }
-
     /// Scratch-based mean evaluation. `scratch` is a function-local per-thread
     /// buffer (`&mut` only, never shared across threads); the products are
     /// formed in place in support order and summed with the same
     /// `java_stream_sum` vs `f80_sum` split as before, so results are
     /// element-for-element identical to the previous allocating version.
-    fn mnhyper_with(&self, ncp: f64, scratch: &mut Vec<f64>) -> f64 {
+    pub(crate) fn mnhyper_with(&self, ncp: f64, scratch: &mut Vec<f64>) -> f64 {
         if ncp == 0.0 {
             return self.lo as f64;
         }

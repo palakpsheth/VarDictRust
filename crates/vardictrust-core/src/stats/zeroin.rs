@@ -138,7 +138,8 @@ mod tests {
     #[allow(clippy::excessive_precision)]
     fn test_zeroin_chr16() {
         let fisher = crate::stats::FisherExact::new(5, 21, 1, 12);
-        let eval = |t: f64| fisher.mnhyper(1.0 / t) - 5.0;
+        let mut scratch = Vec::new();
+        let eval = |t: f64| fisher.mnhyper_with(1.0 / t, &mut scratch) - 5.0;
         let eps = f64::EPSILON;
         let tol = eps.powf(0.25);
         let root = uniroot(eps, 1.0, eval, tol);
