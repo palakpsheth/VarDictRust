@@ -1027,9 +1027,10 @@ fn paired_qual_col(vd1: i32, qual1: f64, vd2: i32, qual2: f64) -> i32 {
 }
 
 /// Per-sample FORMAT string, written into `buf` (cleared first).
-/// Byte-identical to [`paired_sample_field`]; the caller reuses one buffer
-/// across the tumor/normal columns instead of two temp `String`s that would
-/// be copied into the record and dropped.
+/// Ports var2vcf_paired.pl:240-241. Single-buffer build (no temp `String`
+/// except the documented OR/BIAS transforms, whose port logic and pins stay
+/// in `paired_or_transform` / `paired_bias_fmt`). Callers reuse one buffer
+/// across the tumor/normal columns.
 fn paired_sample_field_into(
     buf: &mut String,
     v: &crate::variations::Variant,
@@ -1038,6 +1039,8 @@ fn paired_sample_field_into(
     oddratio: &(String, f64),
 ) {
     buf.clear();
+    // 192 B covers the 21-field sample column at typical widths; longer
+    // alleles regrow once and the capacity is retained across rows.
     buf.reserve(192);
     let mq =
         crate::types::round_half_even(crate::types::round_half_even(v.mean_mapping_quality, 1), 0);
@@ -1084,21 +1087,6 @@ fn paired_sample_field_into(
     } else {
         buf.push('0');
     }
-}
-
-/// Per-sample FORMAT string. Ports var2vcf_paired.pl:240-241.
-/// Single-buffer build (no temp `String` except the documented OR/BIAS
-/// transforms, whose port logic and pins stay in `paired_or_transform` /
-/// `paired_bias_fmt`).
-fn paired_sample_field(
-    v: &crate::variations::Variant,
-    gt: &str,
-    sbf: f64,
-    oddratio: &(String, f64),
-) -> String {
-    let mut buf = String::new();
-    paired_sample_field_into(&mut buf, v, gt, sbf, oddratio);
-    buf
 }
 
 /// Format one somatic variant into a paired VCF record.
@@ -1363,17 +1351,23 @@ pub fn format_paired_vcf_record(
 
     let format_keys =
         "GT:DP:VD:ALD:RD:AD:AF:BIAS:PMEAN:PSTD:QUAL:QSTD:SBF:ODDRATIO:MQ:SN:HIAF:ADJAF:NM";
-    let s1 = paired_sample_field(v1, gt, p1, &or1);
-    let s2 = paired_sample_field(v2, gtm, p2, &or2);
 
+    // Sample columns share one scratch buffer: `_into` clears per call, and
+    // the values are copied into `rest` immediately, so no allocation
+    // survives the row. (`rest` itself is retained by the delayed-print
+    // machine, so cross-row sharing is impossible — this is the most reuse
+    // the retained-struct design allows.)
+    let mut col = String::new();
     let mut rest = String::with_capacity(768);
     rest.push_str(&info);
     rest.push('\t');
     rest.push_str(format_keys);
     rest.push('\t');
-    rest.push_str(&s1);
+    paired_sample_field_into(&mut col, v1, gt, p1, &or1);
+    rest.push_str(&col);
     rest.push('\t');
-    rest.push_str(&s2);
+    paired_sample_field_into(&mut col, v2, gtm, p2, &or2);
+    rest.push_str(&col);
 
     PairedVcfRecord {
         prefix,
@@ -2066,18 +2060,27 @@ mod tests {
     }
 
     #[test]
-    fn test_paired_sample_field_into_matches_one_shot() {
-        // Reuse-pattern pin: `_into` must clear and reproduce the one-shot
-        // bytes exactly, even over a longer previous row (no bleed-through
-        // between paired sample columns).
+    fn test_paired_sample_field_into_clears_and_is_deterministic() {
+        // Reuse-contract pin: `_into` clears any previous content (no
+        // bleed-through between the tumor/normal columns or across rows)
+        // and is deterministic for the same inputs.
         let v = clean_normal();
         let oddratio = ("0.5".to_string(), 0.5);
         let mut buf = String::new();
         buf.push_str("LONGER-PREVIOUS-ROW-CONTENT-THAT-MUST-VANISH");
         paired_sample_field_into(&mut buf, &v, "0/1", 0.5, &oddratio);
-        assert_eq!(buf, paired_sample_field(&v, "0/1", 0.5, &oddratio));
+        let first = buf.clone();
+        assert!(first.starts_with("0/1:"), "gt leads: {first}");
+        assert!(
+            !first.contains("VANISH"),
+            "previous content cleared: {first}"
+        );
         paired_sample_field_into(&mut buf, &v, "0/1", 0.5, &oddratio);
-        assert_eq!(buf, paired_sample_field(&v, "0/1", 0.5, &oddratio));
+        assert_eq!(buf, first, "same inputs, same bytes");
+        // Different genotype takes a different path through the same buffer.
+        paired_sample_field_into(&mut buf, &v, "1/1", 0.5, &oddratio);
+        assert!(buf.starts_with("1/1:"), "gt leads: {buf}");
+        assert_ne!(buf, first);
     }
 
     #[test]
