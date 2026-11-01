@@ -705,13 +705,32 @@ pub fn fill_adaptor_maps(adaptor_seqs: &[String]) -> AdaptorMapPair {
     for sequence in adaptor_seqs {
         let seq_bytes = sequence.as_bytes();
         for i in 0..=6 {
-            if i + adseed <= seq_bytes.len() {
-                let forward_seed = seq_bytes[i..i + adseed].to_vec();
-                let mut comp_reverse_seed = forward_seed.clone();
-                crate::util::reverse_complement(&mut comp_reverse_seed);
-                adaptor_forward.insert(forward_seed, (i + 1) as i32);
-                adaptor_reverse.insert(comp_reverse_seed, (i + 1) as i32);
+            // Ports VarDictLauncher.java:108:
+            //   for (int i = 0; i <= 6 && i + Configuration.ADSEED < sequence.length(); i++)
+            if i + adseed >= seq_bytes.len() {
+                break;
             }
+            let forward_seed = seq_bytes[i..i + adseed].to_vec();
+            // Ports VarDictLauncher.java:110 -> Utils.java:234-244 ->
+            // htsjdk.samtools.util.SequenceUtil.complement(byte), which complements
+            // only ACGTacgt and returns any other byte unchanged.
+            let comp_reverse_seed: Vec<u8> = forward_seed
+                .iter()
+                .rev()
+                .map(|&b| match b {
+                    b'A' => b'T',
+                    b'C' => b'G',
+                    b'G' => b'C',
+                    b'T' => b'A',
+                    b'a' => b't',
+                    b'c' => b'g',
+                    b'g' => b'c',
+                    b't' => b'a',
+                    other => other,
+                })
+                .collect();
+            adaptor_forward.insert(forward_seed, (i + 1) as i32);
+            adaptor_reverse.insert(comp_reverse_seed, (i + 1) as i32);
         }
     }
     let built = (adaptor_forward, adaptor_reverse);
@@ -760,6 +779,78 @@ mod task3_tests {
         // skips the cache; the empty key must never collide with a fill).
         let empty_after = fill_adaptor_maps(&[]);
         assert!(empty_after.0.is_empty() && empty_after.1.is_empty());
+    }
+
+    /// Ports `VarDictLauncher.java:106-117` (`i <= 6 && i + ADSEED < sequence.length()`)
+    /// and `Utils.java:228-244` (`htsjdk.samtools.util.SequenceUtil.complement(byte)`).
+    #[test]
+    fn fill_adaptor_maps_java_seed_count() {
+        let base_alphabet = b"ACGTGHKMRSTVWY";
+        for len in 0..=14usize {
+            let seq: String = (0..len)
+                .map(|idx| base_alphabet[(idx * 3 + len) % base_alphabet.len()] as char)
+                .collect();
+            let (fwd, rev) = fill_adaptor_maps(std::slice::from_ref(&seq));
+            let expected_count = (0..=6usize).filter(|&i| i + 6 < len).count();
+            assert_eq!(
+                fwd.len(),
+                expected_count,
+                "forward seed count mismatch for adaptor length {len} ({seq})"
+            );
+            assert_eq!(
+                rev.len(),
+                expected_count,
+                "reverse seed count mismatch for adaptor length {len} ({seq})"
+            );
+        }
+
+        for (len, expected) in [(6usize, 0usize), (9, 3), (10, 4), (12, 6), (13, 7), (33, 7)] {
+            let seq: String = (0..len)
+                .map(|i| {
+                    let b = match i % 4 {
+                        0 => b'A',
+                        1 => b'C',
+                        2 => b'G',
+                        _ => b'T',
+                    };
+                    // Make every 6-mer distinct
+                    (if i == 6 {
+                        b'C'
+                    } else if i == 7 {
+                        b'A'
+                    } else {
+                        b
+                    }) as char
+                })
+                .collect();
+            let (fwd, _) = fill_adaptor_maps(&[seq]);
+            let max_i = fwd.values().copied().max().unwrap_or(0) as usize;
+            assert_eq!(max_i, expected, "max seed index 1-based for len={len}");
+        }
+
+        // 12-bp adaptor `AAAAAATTGCTC`: Java loop stops at i=5 (`5 + 6 < 12`),
+        // so trailing 6-mer at i=6 (`TTGCTC`) is never inserted.
+        let (fwd12, _) = fill_adaptor_maps(&["AAAAAATTGCTC".to_string()]);
+        assert_eq!(fwd12.len(), 6);
+        assert!(
+            !fwd12.contains_key(b"TTGCTC".as_slice()),
+            "12-bp adaptor must not include trailing 6-mer at i=6"
+        );
+
+        // Non-ACGT IUPAC byte ('R') in forward seed `ACGTRG` (reversed `GRTGCA`):
+        // htsjdk SequenceUtil.complement(byte) complements only ACGTacgt and leaves
+        // 'R' unchanged -> `CRACGT` (not `CNACGT`).
+        let (fwd_iupac, rev_iupac) = fill_adaptor_maps(&["ACGTRGCTCAAAA".to_string()]);
+        assert_eq!(fwd_iupac.get(b"ACGTRG".as_slice()), Some(&1));
+        assert_eq!(rev_iupac.get(b"CRACGT".as_slice()), Some(&1));
+        assert!(!rev_iupac.contains_key(b"CNACGT".as_slice()));
+
+        // Trailing empty element (as produced when CLI splits on `,` cleanly or skips empty)
+        let (fwd_clean, rev_clean) = fill_adaptor_maps(&["ACGTTGCTC".to_string()]);
+        let (fwd_empty_tail, rev_empty_tail) =
+            fill_adaptor_maps(&["ACGTTGCTC".to_string(), String::new()]);
+        assert_eq!(fwd_clean, fwd_empty_tail);
+        assert_eq!(rev_clean, rev_empty_tail);
     }
 
     fn task3_reference() -> Reference {
