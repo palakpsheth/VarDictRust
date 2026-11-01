@@ -870,18 +870,19 @@ fn mate_window_has_match(
     false
 }
 
-/// Pure overlap guard for the lazy skip: the mate-window BAM pileup over
-/// `[mstart - 200, mend + 200]` is skipped only when it provably plants
-/// nothing observable. Plants land within a read length of the queried
-/// window, so both guards use the `max_read_length`-expanded range.
-/// Guard A (probe disjointness): the peeked positions cannot gain (or lose)
-/// clips from the skipped pileup. Guard B (key disjointness): the pileup
-/// range is disjoint from the owning tile's key range, so no accumulation
-/// into pre-existing keys — everything the pileup would add is a new key,
-/// which the ownership gate drops. Unstamped (`None`) fails open to the full
-/// path. Residual: mate reads longer than `max_read_length` (also the only
-/// `max_read_length` growth channel) are outside the margin; adjudicated by
-/// the parity gates.
+/// Pure overlap guard for the lazy skip: the mate-window BAM re-scan is
+/// skipped only when the expanded window `[mstart - 200, mend + 200]`
+/// (plus a `max_read_length` margin for long mates) lies FULLY INSIDE the
+/// owning tile range. The main pileup already processed every read
+/// overlapping the tile with identical filters, so such a re-scan could add
+/// no new clips and the peek verdict stands. A window reaching outside the
+/// tile may cover reads the main pileup never saw — only a full re-scan can
+/// discover mate clips there, so anything else fails open to the full path.
+/// (An earlier revision skipped the disjoint case instead; that is backwards:
+/// disjoint windows are exactly the un-piled ones.) Unstamped (`None`)
+/// fails open to the full path. Residual: mate reads longer than
+/// `max_read_length` (also the only `max_read_length` growth channel) are
+/// outside the margin; adjudicated by the parity gates.
 #[allow(clippy::too_many_arguments)]
 fn mate_window_skip_safe(
     dir: i32,
@@ -910,7 +911,9 @@ fn mate_window_skip_safe(
     let Some((rs, re)) = owning_range else {
         return false;
     };
-    phi < rs.0 as i32 || plo > re.0 as i32
+    // Subset rule: every read overlapping the window was already piled by
+    // the main pileup (same filters), so the re-scan is redundant.
+    plo >= rs.0 as i32 && phi <= re.0 as i32
 }
 
 /// Helper function to perform structural variant calling for inversions.
@@ -1010,10 +1013,11 @@ pub fn find_inv_sub(
             get_reference(&mod_region, 500, chromosomes_lengths, config, reference)?;
             // ROADMAP sv-lazy-mate-pileup: skip the mate-window BAM re-scan
             // only when the sync-preserving peek finds zero usable mates AND
-            // both overlap guards hold (probe positions and owning key range
-            // disjoint from the pileup window, so the skipped pileup plants
-            // nothing observable). The reference load is kept: later
-            // candidates probe `is_loaded` the same way.
+            // both guards hold: the peeked positions are disjoint from the
+            // window and the window lies fully inside the owning tile range
+            // (so every overlapping read was already piled — the re-scan is
+            // redundant). The reference load is kept: later candidates probe
+            // `is_loaded` the same way.
             if !mate_window_has_match(
                 dir,
                 softp,
@@ -4771,13 +4775,15 @@ mod tests {
     }
 
     /// Fix-round test (findings 1/3): the overlap guard skips only when probe
-    /// positions and the owning key range are both disjoint from the expanded
-    /// pileup window.
+    /// positions are disjoint from the expanded pileup window AND the window
+    /// lies fully inside the owning tile range (subset rule: the main pileup
+    /// already saw every overlapping read, so the re-scan is redundant).
     #[test]
     fn test_mate_window_skip_safe_guards() {
         let owned = Some((Pos1(1), Pos1(500)));
-        // Disjoint probes + disjoint range -> skip allowed.
-        assert!(mate_window_skip_safe(
+        // Disjoint probes + disjoint range -> FULL PATH (a disjoint window
+        // holds reads the main pileup never saw; only a re-scan finds them).
+        assert!(!mate_window_skip_safe(
             1, 160, 100, 150, 1000, 1100, 100, owned
         ));
         // Probe inside the expanded window [700, 1400] -> full path.
@@ -4799,13 +4805,48 @@ mod tests {
         assert!(!mate_window_skip_safe(
             1, 160, 100, 150, 1000, 1100, 100, None
         ));
-        // Scan branch: range (151..=350) disjoint -> skip allowed ...
-        assert!(mate_window_skip_safe(
+        // Scan branch: window outside owning -> full path even when the
+        // probe range is disjoint (same un-piled-reads reason).
+        assert!(!mate_window_skip_safe(
             1, 0, 100, 150, 1000, 1100, 100, owned
         ));
         // ... but overlapping the window -> full path.
         assert!(!mate_window_skip_safe(
             1, 0, 100, 800, 1000, 1100, 100, owned
+        ));
+    }
+
+    /// Soundness pin: a far mate window in the NEIGHBOR tile must never be
+    /// skipped. Its reads were never piled (main pileup covers only the
+    /// owning tile), so the peek cannot vouch for them — only a full
+    /// re-scan can discover mate clips there. Probes are disjoint AND the
+    /// window is disjoint from owning, yet the answer must be full path.
+    #[test]
+    fn test_mate_window_skip_safe_far_neighbor_window_no_skip() {
+        let owning_b = Some((Pos1(100001), Pos1(200000)));
+        // dir=1 soft-clip at 150000: probes [150101..150300], far from the
+        // expanded mate window [98700,99400] in the neighbor tile.
+        assert!(!mate_window_skip_safe(
+            1, 0, 150000, 150100, 99000, 99100, 100, owning_b
+        ));
+        // softp form, same geometry.
+        assert!(!mate_window_skip_safe(
+            1, 140000, 150000, 150100, 99000, 99100, 100, owning_b
+        ));
+    }
+
+    /// Soundness pin: a mate window fully INSIDE the owning tile may be
+    /// skipped (when the peek finds no usable clip): every overlapping read
+    /// was already piled by the main pileup with identical filters, so the
+    /// re-scan could add no new clips and the peek verdict stands.
+    #[test]
+    fn test_mate_window_skip_safe_subset_window_may_skip() {
+        let owning = Some((Pos1(100001), Pos1(200000)));
+        // dir=1 soft-clip at 150000: probes [150001..170001]; window
+        // [120000,120100] expanded to [119700,120400] is inside owning and
+        // disjoint from the probes.
+        assert!(mate_window_skip_safe(
+            1, 0, 150000, 150100, 120000, 120100, 100, owning
         ));
     }
 }
