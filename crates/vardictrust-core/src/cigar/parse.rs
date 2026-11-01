@@ -4,7 +4,6 @@ use crate::bam::{get_mate_reference_name, SamRecord};
 use crate::config::Config;
 use crate::reference::Reference;
 use crate::regions::Region;
-use crate::sv::is_has_and_not_equals;
 use crate::types::VardictError;
 use crate::variations::{
     get_variation, get_variation_maybe_mut as get_variation_maybe, Mate, SVStructures, Sclip,
@@ -548,18 +547,17 @@ impl<'a> CigarParser<'a> {
                         let mut start_with_deletion = false;
 
                         // T048: MNV Growth Look-Ahead
+                        // H1: single fused reference lookup (`ref_mismatch_not_n`)
+                        // instead of two identical `get_base` calls per base.
                         while (start + 1) as u32 >= self.region.start.0
                             && (start + 1) as u32 <= self.region.end.0
                             && i + 1 < cigar_element_len
                             && q >= self.config.base_qual
-                            && is_has_and_not_equals(
+                            && ref_mismatch_not_n(
                                 self.reference,
                                 &self.region.chr,
                                 start as u32,
-                                query_seq[read_pos_inc],
-                            )
-                            && is_not_equals_n(
-                                self.reference.get_base(&self.region.chr, start as u32),
+                                query_seq.get(read_pos_inc).copied(),
                             )
                         {
                             let next_read_idx = read_pos_inc + 1;
@@ -3189,11 +3187,18 @@ pub fn get_match_insertion_length(cigar: &[(u32, CigarKind)]) -> u32 {
         .sum()
 }
 
-fn is_not_equals_n(ref_base: Option<u8>) -> bool {
-    if let Some(b) = ref_base {
-        b != b'N' && b != b'n'
-    } else {
-        false
+/// Fused single-lookup form of the old MNV guard conjunction
+/// `is_has_and_not_equals(ref, chr, pos, qb) && is_not_equals_n(get_base(..))`:
+/// one `get_base` (linear region scan + map lookups) per evaluation instead
+/// of two identical ones. Truth table identical by construction (unit-tested).
+/// `None` query base (read exhausted) yields `false` instead of panicking on a
+/// bare index (AGENTS.md §9); the old code only survived that case by never
+/// reaching it. Ports `CigarParser.java` MNV-growth mismatch gate.
+#[inline]
+fn ref_mismatch_not_n(reference: &Reference, chr: &str, pos: u32, query_base: Option<u8>) -> bool {
+    match (reference.get_base(chr, pos), query_base) {
+        (Some(ref_base), Some(qb)) => ref_base != qb && ref_base != b'N' && ref_base != b'n',
+        _ => false,
     }
 }
 
@@ -3369,6 +3374,111 @@ mod tests {
             assert_eq!(allele_key(base, &mut buf), want);
         }
         assert_eq!(allele_key(b'X', &mut buf), "X");
+    }
+
+    #[test]
+    fn ref_mismatch_not_n_fuses_double_lookup() {
+        // H1 direction: the MNV look-ahead evaluated `is_has_and_not_equals`
+        // (one `get_base`: linear region scan + map lookups) AND
+        // `is_not_equals_n(get_base(..))` (a second, identical `get_base`) per
+        // base. `ref_mismatch_not_n` must equal that conjunction with one lookup.
+        let mut reference = Reference::new();
+        reference
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 1,
+                sequence_end: 20,
+            });
+        let mut seq = vec![b'A'; 20];
+        seq[10] = b'N'; // pos 11
+        seq[11] = b'G'; // pos 12
+        reference.region_sequences.push(seq.clone());
+        reference
+            .reference_sequences
+            .insert("chr1".to_string(), seq);
+        // (query_base, pos, expected conjunction)
+        for (qb, pos, want) in [
+            (Some(b'C'), 10u32, true),  // A != C, ref not N
+            (Some(b'A'), 10u32, false), // ref == query
+            (Some(b'C'), 11u32, false), // ref is N
+            (Some(b'N'), 11u32, false), // ref == query (both N)
+            (Some(b'C'), 99u32, false), // pos uncovered -> None
+            (Some(b'n'), 10u32, true),  // A != n, ref not N
+            (Some(b'A'), 12u32, true),  // G != A, ref not N
+            (Some(b'G'), 12u32, false), // ref == query
+            (None, 10u32, false),       // read exhausted -> no growth, no panic
+        ] {
+            assert_eq!(
+                ref_mismatch_not_n(&reference, "chr1", pos, qb),
+                want,
+                "qb={:?} pos={}",
+                qb.map(|b| b as char),
+                pos
+            );
+        }
+    }
+
+    #[test]
+    fn mnv_growth_records_identical_hicnt_locnt_qmean_nm() {
+        // Parity anchor for the MNV look-ahead hoist: a two-base MNV must keep
+        // producing identical hicnt/locnt/qmean/nm into tovars/realign inputs.
+        let mut reference = Reference::new();
+        reference
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 1,
+                sequence_end: 100,
+            });
+        let seq = vec![b'A'; 100];
+        reference.region_sequences.push(seq.clone());
+        reference
+            .reference_sequences
+            .insert("chr1".to_string(), seq);
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(1),
+            end: Pos1(100),
+            gene: "G".to_string(),
+            amplicon: None,
+        };
+        let mut config = Config::default();
+        // Isolate the pileup MNV loop from CigarModifier rewriting (realign=1
+        // would soft-clip/shift the mismatching 5' bases before pileup).
+        config.realign = 0;
+        let mut parser = CigarParser::new(&reference, &region, &config, false, 0, 0, 0);
+        let rec = SamRecord {
+            name: b"r_mnv".to_vec(),
+            flags: 0,
+            reference_name: Some("chr1".to_string()),
+            alignment_start: Some(Pos1(10)),
+            alignment_end: Some(Pos1(17)),
+            mapping_quality: Some(60),
+            cigar: vec![(8, CigarKind::Match)],
+            sequence: b"CGAAAAAA".to_vec(),
+            quality_scores: vec![70; 8],
+            mate_reference_name: None,
+            mate_alignment_start: None,
+            template_length: 0,
+            nm: Some(2),
+            sa: None,
+            mc: None,
+            mq: None,
+        };
+        parser.parse_cigar(&rec).unwrap();
+        let hv = parser
+            .non_insertion_variants
+            .get(&10)
+            .and_then(|entry| entry.map.get("C&G"))
+            .expect("MNV variation C&G at pos 10 must exist");
+        assert_eq!(hv.cnt, 1);
+        assert_eq!(hv.hicnt, 1);
+        assert_eq!(hv.locnt, 0);
+        assert_eq!(hv.qmean, 37.0);
+        assert_eq!(hv.nm, 1.0);
+        assert_eq!(hv.pmean, 2.0);
+        assert_eq!(hv.mqmean, 60.0);
     }
 
     #[test]
