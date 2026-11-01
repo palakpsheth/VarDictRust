@@ -678,6 +678,13 @@ fn adaptor_map_cache() -> &'static Mutex<rustc_hash::FxHashMap<Vec<String>, Adap
 }
 
 pub fn fill_adaptor_maps(adaptor_seqs: &[String]) -> AdaptorMapPair {
+    // Fast path: the default config carries no adaptors (`Config::default`
+    // leaves `adaptor` empty), so every default-config candidate would take
+    // the shared-cache lock and hash an empty key for a build that is a
+    // no-op. Return the two empty maps directly instead.
+    if adaptor_seqs.is_empty() {
+        return (BTreeMap::new(), BTreeMap::new());
+    }
     // Borrowed lookup: hits (the common case — `config.adaptor` is fixed per
     // run) skip the `to_vec` + per-`String` clones entirely. `Vec<String>:
     // Borrow<[String]>` lets the map be probed with the caller's slice.
@@ -743,6 +750,10 @@ mod task3_tests {
             ma1.1, mb.1,
             "different adaptor input must not reuse a cached reverse map"
         );
+        // Empty input after fills must still return empty maps (fast path
+        // skips the cache; the empty key must never collide with a fill).
+        let empty_after = fill_adaptor_maps(&[]);
+        assert!(empty_after.0.is_empty() && empty_after.1.is_empty());
     }
 
     fn task3_reference() -> Reference {
