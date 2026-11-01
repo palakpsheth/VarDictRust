@@ -6,8 +6,8 @@ use crate::variations::{
     get_variation, get_variation_maybe, get_variation_maybe_mut, Sclip, Variation, VariationMap,
 };
 use regex::Regex;
-use std::collections::BTreeMap;
-use std::sync::LazyLock;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::{LazyLock, Mutex, OnceLock};
 
 /// Result of local insertion adjustment.
 pub struct BaseInsertion {
@@ -661,9 +661,26 @@ pub fn fill_and_sort_tmp(
 }
 
 /// Fill adaptor maps from sequence string list.
-pub fn fill_adaptor_maps(
-    adaptor_seqs: &[String],
-) -> (BTreeMap<Vec<u8>, i32>, BTreeMap<Vec<u8>, i32>) {
+///
+/// Results are cached keyed by the exact input list: `config.adaptor` is fixed
+/// for a run, so per-candidate `realigndel` calls from `realignlgdel` reuse
+/// one build. Only the input-keyed maps are cached — `dels5` is always the
+/// caller's own and `realigndel` is never skipped.
+static ADAPTOR_MAP_CACHE: OnceLock<Mutex<HashMap<Vec<String>, AdaptorMapPair>>> = OnceLock::new();
+
+type AdaptorMapPair = (BTreeMap<Vec<u8>, i32>, BTreeMap<Vec<u8>, i32>);
+
+fn adaptor_map_cache() -> &'static Mutex<HashMap<Vec<String>, AdaptorMapPair>> {
+    ADAPTOR_MAP_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+pub fn fill_adaptor_maps(adaptor_seqs: &[String]) -> AdaptorMapPair {
+    let key: Vec<String> = adaptor_seqs.to_vec();
+    if let Ok(cache) = adaptor_map_cache().lock() {
+        if let Some(hit) = cache.get(&key) {
+            return hit.clone();
+        }
+    }
     let mut adaptor_forward = BTreeMap::new();
     let mut adaptor_reverse = BTreeMap::new();
     let adseed = 6;
@@ -679,7 +696,166 @@ pub fn fill_adaptor_maps(
             }
         }
     }
-    (adaptor_forward, adaptor_reverse)
+    let built = (adaptor_forward, adaptor_reverse);
+    // shortcut: fixed small cap; per-run inputs are ~1 distinct list, so this
+    // only guards pathological caller variation. Upgrade to LRU if ever >cap.
+    if let Ok(mut cache) = adaptor_map_cache().lock() {
+        if cache.len() < 16 {
+            cache.insert(key, built.clone());
+        }
+    }
+    built
+}
+
+#[cfg(test)]
+mod task3_tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    /// s8 INV-SV guard: `fill_adaptor_maps` may only cache keyed by its exact
+    /// input. A global (non-keyed) cache would return `ma` for input `b`.
+    #[test]
+    fn fill_adaptor_maps_is_keyed_by_input_contents() {
+        let empty = fill_adaptor_maps(&[]);
+        assert!(empty.0.is_empty() && empty.1.is_empty());
+
+        let a = vec!["ACGTACGTACGT".to_string()];
+        let b = vec!["TTTTTTTTTTTT".to_string()];
+        let ma1 = fill_adaptor_maps(&a);
+        let ma2 = fill_adaptor_maps(&a);
+        assert_eq!(
+            ma1, ma2,
+            "same adaptor input must yield identical maps (cache hit must be exact)"
+        );
+        assert!(ma1.0.keys().all(|k| k.len() == 6));
+        let mb = fill_adaptor_maps(&b);
+        assert_ne!(
+            ma1.0, mb.0,
+            "different adaptor input must not reuse a cached forward map"
+        );
+        assert_ne!(
+            ma1.1, mb.1,
+            "different adaptor input must not reuse a cached reverse map"
+        );
+    }
+
+    fn task3_reference() -> Reference {
+        let mut reference = Reference::new();
+        reference
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 1,
+                sequence_end: 2000,
+            });
+        reference
+            .reference_sequences
+            .insert("chr1".to_string(), vec![b'A'; 2000]);
+        reference
+    }
+
+    fn task3_sclip(consensus: u8, cnt: i32) -> Sclip {
+        let mut sc = Sclip::new();
+        sc.variation.cnt = cnt;
+        for idx in 0..8 {
+            let mut nt = BTreeMap::new();
+            nt.insert(consensus, 10);
+            sc.nt.insert(idx, nt);
+        }
+        sc
+    }
+
+    /// s8 INV-SV branch pin (`-N^SEQ<INVn>SEQ` shape): `realigndel` must take
+    /// the `inv5`/`inv3` override path and must consume each call's own `dels5`
+    /// input. Regresses if `dels5` is cached across calls or the call is
+    /// bypassed (soft clips stay unused, counts never move).
+    #[test]
+    fn realigndel_inv_sv_branch_consumes_per_call_dels5() {
+        let reference = task3_reference();
+        let config = crate::config::Config::default();
+        let mut non_ins = crate::javamap::JavaHashMap::new();
+        let mut ref_cov = rustc_hash::FxHashMap::default();
+        let mut sc5 = BTreeMap::new();
+        let mut sc3 = BTreeMap::new();
+
+        // Call 1: INV deletion at p1; 5' soft clip consensus matches inv3.
+        let p1 = 1000;
+        let vn1 = "-50^AAAAAAAA<INV123>TTTTTTTT".to_string();
+        let mut dels5_a: BTreeMap<i32, HashMap<String, i32>> = BTreeMap::new();
+        let mut inner_a = HashMap::new();
+        inner_a.insert(vn1.clone(), 7);
+        dels5_a.insert(p1, inner_a);
+        sc5.insert(1050, task3_sclip(b'T', 5));
+
+        realigndel(
+            None,
+            &dels5_a,
+            &reference,
+            "chr1",
+            2000,
+            &config,
+            &mut non_ins,
+            &mut ref_cov,
+            &mut sc5,
+            &mut sc3,
+            150,
+        );
+
+        assert!(
+            sc5.get(&1050).map(|s| s.used).unwrap_or(false),
+            "realigndel must absorb the 5' soft clip via the inv3 override (call skipped?)"
+        );
+        let cnt1 = non_ins
+            .get(&p1)
+            .and_then(|e| e.map.get(vn1.as_str()))
+            .map(|v| v.cnt)
+            .unwrap_or(-999);
+        assert_eq!(cnt1, 5, "vn1 must absorb the soft-clip count");
+        assert_eq!(ref_cov.get(&p1).copied().unwrap_or(-999), 5);
+
+        // Call 2: a *different* dels5 at p2. If dels5 were cached, vn2 would
+        // never apply and the fresh soft clip would stay unused.
+        let p2 = 1200;
+        let vn2 = "-30^CCCCCCCC<INV7>GGGGGGGG".to_string();
+        let mut dels5_b: BTreeMap<i32, HashMap<String, i32>> = BTreeMap::new();
+        let mut inner_b = HashMap::new();
+        inner_b.insert(vn2.clone(), 7);
+        dels5_b.insert(p2, inner_b);
+        sc5.insert(1230, task3_sclip(b'G', 3));
+
+        realigndel(
+            None,
+            &dels5_b,
+            &reference,
+            "chr1",
+            2000,
+            &config,
+            &mut non_ins,
+            &mut ref_cov,
+            &mut sc5,
+            &mut sc3,
+            150,
+        );
+
+        assert!(
+            sc5.get(&1230).map(|s| s.used).unwrap_or(false),
+            "second dels5 input must be honored (dels5 must not be cached)"
+        );
+        let cnt2 = non_ins
+            .get(&p2)
+            .and_then(|e| e.map.get(vn2.as_str()))
+            .map(|v| v.cnt)
+            .unwrap_or(-999);
+        assert_eq!(cnt2, 3, "vn2 must absorb the second soft-clip count");
+        assert_eq!(ref_cov.get(&p2).copied().unwrap_or(-999), 3);
+        // First call's effects intact and not double-applied.
+        let cnt1_again = non_ins
+            .get(&p1)
+            .and_then(|e| e.map.get(vn1.as_str()))
+            .map(|v| v.cnt)
+            .unwrap_or(-999);
+        assert_eq!(cnt1_again, 5);
+    }
 }
 
 #[inline]
