@@ -30,14 +30,30 @@ where
 const WORKER_THREAD_STACK_FLOOR_BYTES: usize = 16 * 1024 * 1024;
 
 /// Task 4: pool `stack_size` from env with a 16 MiB floor. Reads the
-/// `RUST_MIN_STACK` byte count already used by `harness/cram_twin.sh`
-/// (`RUST_MIN_STACK=64M`) so the CRAM arm automatically gets at least as
-/// much worker stack as the main thread; absent or unparsable values fall
-/// back to the floor (default behavior unchanged).
+/// `RUST_MIN_STACK` value already used by `harness/cram_twin.sh` (`64M`) so
+/// the CRAM arm automatically gets at least as much worker stack as the main
+/// thread. Accepts plain byte counts (`67108864`) and case-insensitive
+/// `K`/`M`/`G` suffixes (`64M` = 67_108_864); absent, empty, unparsable, or
+/// overflowing values fall back to the floor (default behavior unchanged).
 fn worker_thread_stack_bytes_for_env(raw: Option<&str>) -> usize {
-    raw.and_then(|v| v.parse::<usize>().ok())
+    raw.and_then(parse_stack_bytes)
         .map(|bytes| bytes.max(WORKER_THREAD_STACK_FLOOR_BYTES))
         .unwrap_or(WORKER_THREAD_STACK_FLOOR_BYTES)
+}
+
+/// Parse a byte count with an optional case-insensitive `K`/`M`/`G` suffix.
+/// Saturating via `checked_mul`; `None` on empty/garbage/overflow so the
+/// caller falls back to the floor. No panics: suffix split and digit parse
+/// are both `Option`-chained (§9).
+fn parse_stack_bytes(raw: &str) -> Option<usize> {
+    let s = raw.trim();
+    let (digits, mult) = match s.as_bytes().last() {
+        Some(b'k' | b'K') => (s.get(..s.len().saturating_sub(1))?, 1024usize),
+        Some(b'm' | b'M') => (s.get(..s.len().saturating_sub(1))?, 1024 * 1024),
+        Some(b'g' | b'G') => (s.get(..s.len().saturating_sub(1))?, 1024 * 1024 * 1024),
+        _ => (s, 1),
+    };
+    digits.parse::<usize>().ok()?.checked_mul(mult)
 }
 
 fn worker_thread_stack_bytes() -> usize {
@@ -410,6 +426,30 @@ mod tests {
         assert_eq!(
             worker_thread_stack_bytes_for_env(Some("67108864")),
             67108864
+        );
+        // Suffixed forms (case-insensitive) parse to the same byte counts.
+        assert_eq!(worker_thread_stack_bytes_for_env(Some("64M")), 67108864);
+        assert_eq!(worker_thread_stack_bytes_for_env(Some("64m")), 67108864);
+        assert_eq!(
+            worker_thread_stack_bytes_for_env(Some("16384K")),
+            16 * 1024 * 1024
+        );
+        assert_eq!(
+            worker_thread_stack_bytes_for_env(Some("1G")),
+            1024 * 1024 * 1024
+        );
+        // Suffix-only, trailing garbage, and overflow all fall back to the floor.
+        assert_eq!(
+            worker_thread_stack_bytes_for_env(Some("M")),
+            16 * 1024 * 1024
+        );
+        assert_eq!(
+            worker_thread_stack_bytes_for_env(Some("64MB")),
+            16 * 1024 * 1024
+        );
+        assert_eq!(
+            worker_thread_stack_bytes_for_env(Some("999999999999999999999G")),
+            16 * 1024 * 1024
         );
         // Live reading never drops below the floor whatever the environment holds.
         assert!(worker_thread_stack_bytes() >= 16 * 1024 * 1024);
