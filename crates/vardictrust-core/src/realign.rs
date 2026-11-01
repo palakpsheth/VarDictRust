@@ -675,9 +675,11 @@ fn adaptor_map_cache() -> &'static Mutex<HashMap<Vec<String>, AdaptorMapPair>> {
 }
 
 pub fn fill_adaptor_maps(adaptor_seqs: &[String]) -> AdaptorMapPair {
-    let key: Vec<String> = adaptor_seqs.to_vec();
+    // Borrowed lookup: hits (the common case — `config.adaptor` is fixed per
+    // run) skip the `to_vec` + per-`String` clones entirely. `Vec<String>:
+    // Borrow<[String]>` lets the map be probed with the caller's slice.
     if let Ok(cache) = adaptor_map_cache().lock() {
-        if let Some(hit) = cache.get(&key) {
+        if let Some(hit) = cache.get(adaptor_seqs) {
             return hit.clone();
         }
     }
@@ -699,9 +701,10 @@ pub fn fill_adaptor_maps(adaptor_seqs: &[String]) -> AdaptorMapPair {
     let built = (adaptor_forward, adaptor_reverse);
     // shortcut: fixed small cap; per-run inputs are ~1 distinct list, so this
     // only guards pathological caller variation. Upgrade to LRU if ever >cap.
+    // The owned key is built only on a miss (hits return above, keyless).
     if let Ok(mut cache) = adaptor_map_cache().lock() {
         if cache.len() < 16 {
-            cache.insert(key, built.clone());
+            cache.insert(adaptor_seqs.to_vec(), built.clone());
         }
     }
     built
