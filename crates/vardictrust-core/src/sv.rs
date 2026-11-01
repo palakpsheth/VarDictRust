@@ -785,18 +785,20 @@ pub enum Side {
     Three,
 }
 
-/// ROADMAP `sv-lazy-mate-pileup`: pure pre-check for the `find_inv_sub`
-/// loop-top mate-window re-scan.
+/// ROADMAP `sv-lazy-mate-pileup`: sync-preserving pre-check for the
+/// `find_inv_sub` loop-top mate-window re-scan.
 ///
 /// Returns true when the primary-region soft-clip maps already hold a usable
 /// mate clip — an unused entry whose consensus (`seq.len() >= 12`, the
 /// minimum `find_match_rev` seed) matches the reference — mirroring the
-/// `softp != 0` fetch and the `softp == 0` scan branches read-only (cloned
-/// `find_conseq`, no map mutation, no `used` writeback). Callers skip the
+/// `softp != 0` fetch and the `softp == 0` scan branches, including the real
+/// path's fetch→`find_conseq`→sync→match order: the `used`/`sequence`
+/// writeback runs even for non-matching clips, so a peek-fail `continue`
+/// leaves the same live-map state the executed path would. Callers skip the
 /// costly `partial_pipeline` BAM re-scan only when this returns false (zero
-/// usable mates); the reference load is kept so cross-candidate `is_loaded`
-/// side effects match Java, and boundary dedup (`merge_planted`) still runs
-/// on every executed pileup.
+/// usable mates) AND `mate_window_skip_safe` holds; the reference load is
+/// kept so cross-candidate `is_loaded` side effects match Java, and boundary
+/// dedup (`merge_planted`) still runs on every executed pileup.
 // shortcut: windows WITH a matching clip still pay the full mate-window
 // re-scan; upgrade to index-level mate counting if SV stays spiky.
 #[allow(clippy::too_many_arguments)]
@@ -805,21 +807,27 @@ fn mate_window_has_match(
     softp: i32,
     start: i32,
     end: i32,
-    soft_clips_5_end: &BTreeMap<i32, Sclip>,
-    soft_clips_3_end: &BTreeMap<i32, Sclip>,
+    soft_clips_5_end: &mut BTreeMap<i32, Sclip>,
+    soft_clips_3_end: &mut BTreeMap<i32, Sclip>,
     max_read_length: i32,
     adaptor_forward: &BTreeMap<Vec<u8>, i32>,
     adaptor_reverse: &BTreeMap<Vec<u8>, i32>,
     reference: &Reference,
     chr: &str,
 ) -> bool {
-    let clips = if dir == 1 {
-        soft_clips_3_end
-    } else {
-        soft_clips_5_end
+    let match_at = |seq: &[u8], pos: i32| -> bool {
+        if find_match_rev(seq, reference, pos, dir, 17, 3, chr, false).base_position != 0 {
+            return true;
+        }
+        find_match_rev(seq, reference, pos, dir, 12, 0, chr, false).base_position != 0
     };
-    let probe = |pos: i32| -> bool {
-        let Some(entry) = clips.get(&pos) else {
+    if softp != 0 {
+        let clips = if dir == 1 {
+            soft_clips_3_end
+        } else {
+            soft_clips_5_end
+        };
+        let Some(entry) = clips.get(&softp) else {
             return false;
         };
         if entry.used {
@@ -828,19 +836,81 @@ fn mate_window_has_match(
         let mut scv = entry.clone();
         let seq =
             crate::variations::util::find_conseq(&mut scv, 0, adaptor_forward, adaptor_reverse);
+        sync_sclip_after_conseq(clips, softp, &scv);
         if seq.len() < 12 {
             return false;
         }
-        if find_match_rev(&seq, reference, pos, dir, 17, 3, chr, false).base_position != 0 {
+        return match_at(&seq, softp);
+    }
+    let clips = if dir == 1 {
+        soft_clips_3_end
+    } else {
+        soft_clips_5_end
+    };
+    let sp = if dir == 1 { end } else { start };
+    for i in 1..=(2 * max_read_length) {
+        let cp = sp + i * dir;
+        let Some(entry) = clips.get(&cp) else {
+            continue;
+        };
+        if entry.used {
+            continue;
+        }
+        let mut scv = entry.clone();
+        let seq =
+            crate::variations::util::find_conseq(&mut scv, 0, adaptor_forward, adaptor_reverse);
+        sync_sclip_after_conseq(clips, cp, &scv);
+        if seq.len() < 12 {
+            continue;
+        }
+        if match_at(&seq, cp) {
             return true;
         }
-        find_match_rev(&seq, reference, pos, dir, 12, 0, chr, false).base_position != 0
-    };
-    if softp != 0 {
-        return probe(softp);
     }
-    let sp = if dir == 1 { end } else { start };
-    (1..=(2 * max_read_length)).any(|i| probe(sp + i * dir))
+    false
+}
+
+/// Pure overlap guard for the lazy skip: the mate-window BAM pileup over
+/// `[mstart - 200, mend + 200]` is skipped only when it provably plants
+/// nothing observable. Plants land within a read length of the queried
+/// window, so both guards use the `max_read_length`-expanded range.
+/// Guard A (probe disjointness): the peeked positions cannot gain (or lose)
+/// clips from the skipped pileup. Guard B (key disjointness): the pileup
+/// range is disjoint from the owning tile's key range, so no accumulation
+/// into pre-existing keys — everything the pileup would add is a new key,
+/// which the ownership gate drops. Unstamped (`None`) fails open to the full
+/// path. Residual: mate reads longer than `max_read_length` (also the only
+/// `max_read_length` growth channel) are outside the margin; adjudicated by
+/// the parity gates.
+#[allow(clippy::too_many_arguments)]
+fn mate_window_skip_safe(
+    dir: i32,
+    softp: i32,
+    start: i32,
+    end: i32,
+    mstart: i32,
+    mend: i32,
+    max_read_length: i32,
+    owning_range: Option<(Pos1, Pos1)>,
+) -> bool {
+    let plo = mstart - 200 - max_read_length;
+    let phi = mend + 200 + max_read_length;
+    let probes_disjoint = if softp != 0 {
+        softp < plo || softp > phi
+    } else {
+        let sp = if dir == 1 { end } else { start };
+        let a = sp + dir;
+        let b = sp + 2 * max_read_length * dir;
+        let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+        hi < plo || lo > phi
+    };
+    if !probes_disjoint {
+        return false;
+    }
+    let Some((rs, re)) = owning_range else {
+        return false;
+    };
+    phi < rs.0 as i32 || plo > re.0 as i32
 }
 
 /// Helper function to perform structural variant calling for inversions.
@@ -939,21 +1009,32 @@ pub fn find_inv_sub(
             };
             get_reference(&mod_region, 500, chromosomes_lengths, config, reference)?;
             // ROADMAP sv-lazy-mate-pileup: skip the mate-window BAM re-scan
-            // when zero usable mate clips match (pure peek above; live maps
-            // untouched so the executed path stays verbatim). The reference
-            // load is kept: later candidates probe `is_loaded` the same way.
+            // only when the sync-preserving peek finds zero usable mates AND
+            // both overlap guards hold (probe positions and owning key range
+            // disjoint from the pileup window, so the skipped pileup plants
+            // nothing observable). The reference load is kept: later
+            // candidates probe `is_loaded` the same way.
             if !mate_window_has_match(
                 dir,
                 softp,
                 start,
                 end,
-                &var_data.soft_clips_5_end,
-                &var_data.soft_clips_3_end,
+                &mut var_data.soft_clips_5_end,
+                &mut var_data.soft_clips_3_end,
                 max_read_length,
                 &adaptor_forward,
                 &adaptor_reverse,
-                reference,
+                &*reference,
                 chr,
+            ) && mate_window_skip_safe(
+                dir,
+                softp,
+                start,
+                end,
+                mstart,
+                mend,
+                max_read_length,
+                var_data.owning_range,
             ) {
                 continue;
             }
@@ -4556,7 +4637,7 @@ mod tests {
 
     /// Unit test for the ROADMAP `sv-lazy-mate-pileup` pre-check:
     /// true only for an unused clip whose consensus matches the reference,
-    /// and pure (no map mutation, no `used` writeback).
+    /// with the real path's `used`/`sequence` writeback preserved.
     #[test]
     fn test_mate_window_has_match_peek() {
         let chr = "chrT";
@@ -4584,7 +4665,7 @@ mod tests {
         let mut scv = Sclip::default();
         scv.sequence = Some(vec![b'C'; 20]);
         clips3.insert(160, scv);
-        let clips5 = BTreeMap::new();
+        let mut clips5 = BTreeMap::new();
 
         // Unused clip with matching consensus -> proceed (true).
         assert!(mate_window_has_match(
@@ -4592,8 +4673,8 @@ mod tests {
             160,
             100,
             150,
-            &clips5,
-            &clips3,
+            &mut clips5,
+            &mut clips3,
             100,
             &adaptor_forward,
             &adaptor_reverse,
@@ -4606,15 +4687,15 @@ mod tests {
             999,
             100,
             150,
-            &clips5,
-            &clips3,
+            &mut clips5,
+            &mut clips3,
             100,
             &adaptor_forward,
             &adaptor_reverse,
             &reference,
             chr,
         ));
-        // Used clip -> skip (false).
+        // Used clip -> skip (false), and the peek leaves it untouched.
         let mut used = Sclip::default();
         used.used = true;
         used.sequence = Some(vec![b'C'; 20]);
@@ -4625,15 +4706,106 @@ mod tests {
             160,
             100,
             150,
-            &clips5,
-            &clips3_used,
+            &mut clips5,
+            &mut clips3_used,
             100,
             &adaptor_forward,
             &adaptor_reverse,
             &reference,
             chr,
         ));
-        // Pure: the peek wrote nothing back into the live maps.
-        assert!(!clips3.get(&160).unwrap().used);
+        assert!(clips3_used.get(&160).unwrap().used);
+    }
+
+    /// Fix-round test (finding 2): the peek preserves the real path's
+    /// `find_conseq` writeback — a low-complexity clip is marked `used` even
+    /// when the peek fails, so later candidates see identical flags.
+    #[test]
+    fn test_mate_window_peek_preserves_conseq_writeback() {
+        let chr = "chrT";
+        let mut reference = Reference::default();
+        reference
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: chr.to_string(),
+                sequence_start: 1,
+                sequence_end: 1000,
+            });
+        let mut ref_seq = vec![b'A'; 1000];
+        for g in &mut ref_seq[380..400] {
+            *g = b'G';
+        }
+        reference.seed.insert(vec![b'G'; 17], vec![384]);
+        reference
+            .reference_sequences
+            .insert(chr.to_string(), ref_seq);
+
+        let config = crate::config::Config::default();
+        let (adaptor_forward, adaptor_reverse) = crate::realign::fill_adaptor_maps(&config.adaptor);
+
+        // Poly-A clip, no cached consensus: conseq yields A*20 (low
+        // complexity -> used) which matches nothing in the G-engineered ref.
+        let mut scv = Sclip::default();
+        for pos in 0..20 {
+            scv.nt.insert(pos, BTreeMap::from([(b'A', 5)]));
+        }
+        let mut clips3 = BTreeMap::new();
+        clips3.insert(160, scv);
+        let mut clips5 = BTreeMap::new();
+        assert!(!mate_window_has_match(
+            1,
+            160,
+            100,
+            150,
+            &mut clips5,
+            &mut clips3,
+            100,
+            &adaptor_forward,
+            &adaptor_reverse,
+            &reference,
+            chr,
+        ));
+        let live = clips3.get(&160).unwrap();
+        assert!(live.used, "peek must sync find_conseq used=true back");
+        assert_eq!(live.sequence.as_deref(), Some(vec![b'A'; 20].as_slice()));
+    }
+
+    /// Fix-round test (findings 1/3): the overlap guard skips only when probe
+    /// positions and the owning key range are both disjoint from the expanded
+    /// pileup window.
+    #[test]
+    fn test_mate_window_skip_safe_guards() {
+        let owned = Some((Pos1(1), Pos1(500)));
+        // Disjoint probes + disjoint range -> skip allowed.
+        assert!(mate_window_skip_safe(
+            1, 160, 100, 150, 1000, 1100, 100, owned
+        ));
+        // Probe inside the expanded window [700, 1400] -> full path.
+        assert!(!mate_window_skip_safe(
+            1, 800, 100, 150, 1000, 1100, 100, owned
+        ));
+        // Pileup range overlaps the owning range -> full path.
+        assert!(!mate_window_skip_safe(
+            1,
+            160,
+            100,
+            150,
+            1000,
+            1100,
+            100,
+            Some((Pos1(1), Pos1(800)))
+        ));
+        // Unstamped data fails open to the full path.
+        assert!(!mate_window_skip_safe(
+            1, 160, 100, 150, 1000, 1100, 100, None
+        ));
+        // Scan branch: range (151..=350) disjoint -> skip allowed ...
+        assert!(mate_window_skip_safe(
+            1, 0, 100, 150, 1000, 1100, 100, owned
+        ));
+        // ... but overlapping the window -> full path.
+        assert!(!mate_window_skip_safe(
+            1, 0, 100, 800, 1000, 1100, 100, owned
+        ));
     }
 }
