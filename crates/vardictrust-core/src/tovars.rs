@@ -1944,4 +1944,71 @@ mod tests {
             vec!["G", "TA"]
         );
     }
+
+    #[test]
+    fn h1_early_reserve_preserves_hashmap_resize_order_across_threshold() {
+        // Regression for the H1 pre-reserve `compute_if_absent`: it must not
+        // shift any key insertion relative to the drain-only path. 13 keys
+        // cross the 16-bucket / 0.75-load-factor resize boundary (threshold
+        // 12), where a moved insert would change JavaHashMap iteration order
+        // and therefore `.var` row order (UB-3). Same key, same position in
+        // the sequence -> identical table layout.
+        let mut ref_genome = Reference::new();
+        ref_genome
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 1,
+                sequence_end: 100,
+            });
+        ref_genome
+            .reference_sequences
+            .insert("chr1".to_string(), vec![b'A'; 100]);
+        ref_genome.region_sequences.push(vec![b'A'; 100]);
+
+        let chr_lengths = HashMap::from([("chr1".to_string(), 100)]);
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(1),
+            end: Pos1(100),
+            gene: "TEST".to_string(),
+            amplicon: None,
+        };
+        let cfg = Config::default();
+        let builder = ToVarsBuilder::new(&ref_genome, &region, &chr_lengths, &cfg);
+
+        let positions: Vec<i32> = (1..=13).collect();
+        let mk_row = || {
+            let mut v = Variant::new();
+            v.description = "G".to_string(); // non-ref (ref base is A)
+            v.frequency = 0.1;
+            v.mean_quality = 30.0;
+            v.pos_coverage = 2;
+            v
+        };
+
+        // New path: early reserve + drain (one non-ref row per position).
+        let mut aligned = crate::javamap::JavaHashMap::new();
+        for &p in &positions {
+            let mut var = vec![mk_row()];
+            builder.collect_vars_at_position(&mut aligned, p, &mut var);
+        }
+
+        // Legacy path: drain-only insertion (first row's compute_if_absent).
+        let mut legacy = crate::javamap::JavaHashMap::new();
+        for &p in &positions {
+            legacy
+                .compute_if_absent(p, |_| crate::variations::Vars::new())
+                .variants
+                .push(mk_row());
+        }
+
+        assert_eq!(aligned.len(), 13);
+        assert_eq!(legacy.len(), 13);
+        assert_eq!(
+            aligned.keys().copied().collect::<Vec<i32>>(),
+            legacy.keys().copied().collect::<Vec<i32>>(),
+            "pre-reserve must not change JavaHashMap iteration order across the resize"
+        );
+    }
 }
