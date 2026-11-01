@@ -764,7 +764,8 @@ def parse_gnu_time(path: Path) -> dict[str, Any]:
         "max_rss_kb": rss_kb,
         "max_rss_mb": round(rss_kb / 1024.0, 2),
         "max_rss_gib": round(rss_kb / (1024.0 * 1024.0), 3),
-        "max_rss_gb_dec": round(rss_kb / 1_000_000.0, 3),
+        # Decimal gigabytes: 1 GB = 1e9 bytes = 1024**3/1e9 KiB per GiB step.
+        "max_rss_gb_dec": round(rss_kb * 1024.0 / 1_000_000_000.0, 3),
         "user_s": round(float(user_m.group(1)), 2) if user_m else 0.0,
         "sys_s": round(float(sys_m.group(1)), 2) if sys_m else 0.0,
         "cpu_pct": int(cpu_m.group(1)) if cpu_m else 0,

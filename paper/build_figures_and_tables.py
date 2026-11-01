@@ -1995,7 +1995,7 @@ def build_all_tables(
         t1_headers,
         t1_rows,
         f"<sup>a</sup>All parity comparisons align records by CHROM/POS/REF/ALT against the VarDictJava v1.8.3 [1] oracle with floating-point tolerance eps=1e-6 after replicating R 5-decimal round-half-to-even (HALF_EVEN) rounding; across all {sw['match_arms']}/{sw['total_arms']} ({sw['match_arms'] / sw['total_arms'] * 100.0:.2f}%) comparative sub-arms, the exact two-sided Clopper-Pearson 95% binomial confidence interval is {cp_sweep}. "
-        f"<sup>b</sup>Halo-tiled streaming partitions intervals >1 Mbp into {100000 // 1000} kbp tiles with {10000 // 1000} kbp overlap halos and deterministic boundary deduplication, yielding identical calls across 0.5, 1.0, 2.0, and 10.0 Mbp tile sizes. "
+        f"<sup>b</sup>Halo-tiled streaming partitions intervals >1 Mbp into 100 kbp tiles with 500 bp overlap halos and deterministic boundary deduplication, yielding identical calls across 0.5, 1.0, 2.0, and 10.0 Mbp tile sizes. "
         f"<sup>c</sup>Standard BED intervals (<=1 Mbp) execute untiled by default; for the two multi-megabase single-interval stress suites (10 Mbp chr1 at -f 0 and 249.25 Mbp -R chr1), VarDictRust was invoked with a single window (--tile-size 10000000 and --tile-size 250000000, respectively) so that single-window VarDictRust is compared directly against single-window VarDictJava [1]. "
         "<sup>d</sup>Evaluated both without --fisher (replicating R teststrandbias.R / testsomatic.R) and with --fisher (native two-sided Fisher exact test and root-finding MLE odds ratio).",
     )
@@ -2218,7 +2218,7 @@ def build_all_tables(
         "<sup>a</sup>Truth-set accuracy evaluated with haplotype-aware rtg vcfeval [12] against NIST GIAB HG002/HG005/NA24385 v4.2.1 [13, 18] (including the HG002 chr20 exome 7-caller truth benchmark (Wolff [11] Fig 2)), SEQC2 HCC1395 v1.2.1 [10], and GIAB HG008 v0.3 [19] high-confidence BED masks. "
         "<sup>b</sup>Representative operating-point rows report the F1-maximizing QUAL threshold per cohort from the full 0..200 ROC sweep; paired unfiltered (All-PASS, -f 0.01) and optimal rows for all five cohorts are tabulated in Supplementary Table S4. "
         "<sup>c</sup>Undefined 0/0 precision and F1 values at 0.0000 recall (e.g., LoFreq [7] somatic runs without indel quality calibration tags) are normalized to 0.0000. "
-        "<sup>d</sup>On callable BED intervals vardictcpp [11] exhibits MNP/tie-break divergence vs. the VarDictJava oracle and omits somatic SV calls; the full CPP-1 to CPP-10 divergence taxonomy is cataloged in Supplementary Table S6.",
+        "<sup>d</sup>On callable BED intervals vardictcpp [11] exhibits MNP/tie-break divergence vs. the VarDictJava oracle and omits somatic SV calls; the full CPP-1 to CPP-12 divergence taxonomy is cataloged in Supplementary Table S6.",
     )
     # ------------------------------------------------------------------
     # Table 4: Bounded Memory, 1..32c Scaling, Chr1 Span & Node Packing
@@ -2328,7 +2328,7 @@ def build_all_tables(
         t4_headers,
         t4_rows,
         "<sup>a</sup>All multi-core and span benchmarks were executed on GCP n2-standard-32 (Intel Xeon Platinum 8373C Ice Lake, 32 vCPUs, 128 GiB RAM) with n=3 technical replicates reported as mean (min–max); Rows 1–4 evaluate four targeted/slice workloads (including a paired somatic exome slice in Row 4), whereas Rows 6–11 scale single-sample whole-exome calling on SEQC2 HCC1395 [10] across 1–32 threads. "
-        f"<sup>b</sup>Transcriptome splice-aware mode (-i) uses a {200} kbp halo to retain split reads across canonical and non-canonical exon-exon junctions; vardictcpp [11] does not implement -i (CPP-10). "
+        f"<sup>b</sup>Transcriptome splice-aware mode (-i) uses a 500 bp halo to retain split reads across canonical and non-canonical exon-exon junctions; vardictcpp [11] does not implement -i (CPP-12). "
         f"<sup>c</sup>Span invariance sweeps single contiguous -R chr1:1-L intervals across L in {{1, 10, 100, 249.25}} Mbp on SEQC2 HCC1395 [10], confirming that 249 Mbp vs. 10 Mbp peak RSS remains below the {1.5:.2f}x bounded-memory threshold at 8, 16, and 32 threads. "
         f"<sup>d</sup>Two concurrent 4-thread SEQC2 exome jobs packed on the same node consume {jpn['combined_peak_rss_gib_mean']:.3f} GiB combined RSS, enabling 8 concurrent 4-thread jobs in {4.0 * jpn['combined_peak_rss_gib_mean']:.2f} GiB vs. >{8.0 * s4['scale_exome_3way']['th4']['java']['max_rss_gib_mean']:.1f} GiB for VarDictJava [1]. "
         "<sup>e</sup>Evaluated on a single 10 Mbp Chromosome 1 interval at -f 0 using --tile-size 10000000 so that single-window VarDictRust matches single-window VarDictJava [1] with 0 differences.",
@@ -2392,7 +2392,7 @@ def build_all_tables(
         f"<sup>a</sup>Full-genome WGS benchmarks were executed on a 32-vCPU, 256 GiB RAM Intel Ice Lake instance across two BED geometries: 22 unchunked autosomal contigs (chr1..chr22, 2.88 Gbp) and NIST GIAB high-confidence callable BED intervals (<={50000 // 1000} kbp per interval; 2.51 Gbp on HG002 v4.2.1 [13, 18] and 2.37 Gbp on HG008 v0.4 [19]). "
         f"<sup>b</sup>VarDictJava v1.8.3 [1] was provisioned with a 200 GiB JVM heap (-Xmx200g); rc=3 denotes an OutOfMemoryError abort and rc=124 denotes termination at the wall-clock timeout (3 h for vardictcpp [11] and 4 h for the 3-process VarDictJava pipeline). "
         f"<sup>c</sup>On unchunked HG002 contigs, vardictcpp --chunk {50000:,} [11] splits chromosomes without cross-window deduplication (CPP-5), emitting +{h2_a['cpp']['boundary_excess_variants']:,} duplicate boundary calls; on <={50000 // 1000} kbp callable intervals, vardictcpp still differs from the VarDictJava oracle on {abs(h2_b['cpp']['variant_count'] - h2_b['rust']['variant_count']):,} calls due to MNP/tie-break divergences (CPP-9). "
-        "<sup>d</sup>HG008 364x tumor-normal full-WGS runs use -U (--nosv) across all three engines to evaluate small-variant somatic calling without structural-variant realignment overhead.",
+        "<sup>d</sup>HG008 364x tumor-normal full-WGS runs target small-variant somatic calling without structural-variant realignment overhead: VarDictRust enables -U (--nosv); the VarDictJava and vardictcpp invocations in harness/gcp_paper_runner.sh omit -U. Both non-Rust engines failed to complete either geometry (Java OOM rc=3; C++ timeout rc=124), so no completed head-to-head comparison exists on these cells — the comparison is completion-only.",
     )
 
     # ------------------------------------------------------------------
@@ -2623,7 +2623,7 @@ def build_all_tables(
         [
             "Empirical Divergence Classes vs. Oracle",
             "Reference Oracle (Baseline)<sup>a</sup>",
-            f"{h4['cpp_divergences_cataloged']} Cataloged Divergence Classes (CPP-1 to CPP-10)<sup>b</sup>",
+            f"{h4['cpp_divergences_cataloged']} Cataloged Divergence Classes (CPP-1 to CPP-12)<sup>b</sup>",
             "0 Divergences on Valid Inputs (#![forbid(unsafe_code)])<sup>a,e</sup>",
         ],
     ]
@@ -2634,7 +2634,7 @@ def build_all_tables(
         t8_headers,
         t8_rows,
         "<sup>a</sup>VarDictJava v1.8.3 [1] (commit 0886261; Perl/R submodule 009e017) is archived read-only; VarDictRust v1.0.6 preserves 100% valid-input output equivalence while eliminating >30 upstream crash, OOM, CRAM, and header defects (issues #7, #38, #181, #187, #197, #243, #249, #253, #282, #283, #320, #341, #356, #380, #384) by enforcing #![forbid(unsafe_code)] and checked bounds arithmetic. "
-        f"<sup>b</sup>On the 13-mode .var functional suite, vardictcpp [11] matches VarDictJava on {s2['tierp_mode_parity_sweep']['cpp_exact_count']}/13 modes (diverging on simple_fisher with FP=1, FN=1) and additionally lacks amplicon VCF formatting (CPP-3) and RNA-seq -i splice support (CPP-10), while emitting +{h2_a['cpp']['boundary_excess_variants']:,} chunk-boundary duplicates on unchunked HG002 WGS (CPP-5; full CPP-1 to CPP-10 taxonomy in Supplementary Table S6). "
+        f"<sup>b</sup>On the 13-mode .var functional suite, vardictcpp [11] matches VarDictJava on {s2['tierp_mode_parity_sweep']['cpp_exact_count']}/13 modes (diverging on simple_fisher with FP=1, FN=1) and additionally lacks amplicon VCF formatting (CPP-3) and RNA-seq -i splice support (CPP-12), while emitting +{h2_a['cpp']['boundary_excess_variants']:,} chunk-boundary duplicates on unchunked HG002 WGS (CPP-5; full CPP-1 to CPP-12 taxonomy in Supplementary Table S6). "
         f"<sup>c</sup>The pinned Bioconda VarDictJava environment requires {h4['oracle_conda_package_count']} runtime packages across OpenJDK, R, and Perl and fails with NoClassDefFoundError on CRAM inputs unless external htsjdk jars are injected. "
         f"<sup>d</sup>VarDictRust compiles to a single {h4['musl_binary_bytes'] / (1024 * 1024):.2f} MiB statically linked x86_64-unknown-linux-musl binary ({h4['musl_ldd']}) with native pure-Rust BAM/CRAM decoding (noodles), {h4['rustsec_cves']} RustSec advisories, and automated SLSA Level {h4['slsa_level']} build provenance. "
         "<sup>e</sup>Hash 5865a2a0b24a8c17 denotes the certified VarDictRust v1.0.6 engine source fingerprint; under the project release governance, v1.0.x guarantees exact valid-input parity with VarDictJava v1.8.3, while opt-in biological output corrections ship behind explicit --fix flags in v1.1+.",
@@ -3543,11 +3543,11 @@ def build_all_tables(
         ),
         (
             "CPP-8",
-            "BAM/CRAM [26] Reference & Decode",
-            "BAM (CRAM requires external htsjdk classpath)",
-            "Native BAM + CRAM (-G) zero-difference parity",
-            "Fails or diverges on CRAM twin alignments",
-            "Verified on GIAB HG008 [19] & Ultima CRAM twins",
+            "N-REF Rows Emitted in Native -vcf",
+            "Drops N-base rows (var2vcf)",
+            "Drops N-base rows (matches oracle)",
+            "Emits REF=N calls at every covered position on decoy N-stub windows",
+            "Direct consequence of CPP-7 on decoy >chr20 N-stub windows",
         ),
         (
             "CPP-9",
@@ -3559,6 +3559,22 @@ def build_all_tables(
         ),
         (
             "CPP-10",
+            "-DP/--DP Parsed but Ignored (Printer Stays stdout)",
+            "Honours -DP (M17 gate arm MATCH)",
+            "Honours -DP (M17 gate arm MATCH)",
+            "Ignores -DP/--DP ERR (M17 CPP-MISMATCH, printer redirect differs)",
+            "Accepted under 'Accepted (parsed)' in vardictcpp --help; output unchanged",
+        ),
+        (
+            "CPP-11",
+            "BAM/CRAM [26] Reference & Decode",
+            "BAM (CRAM requires external htsjdk classpath)",
+            "Native BAM + CRAM (-G) zero-difference parity",
+            "Fails or diverges on CRAM twin alignments",
+            "Verified on GIAB HG008 [19] & Ultima CRAM twins",
+        ),
+        (
+            "CPP-12",
             "Transcriptome RNA-Seq Splice Mode (-i)",
             f"Supported ({s3['splice_rows']:,} rows on HG002 mRNA [13])",
             f"Supported ({s3['splice_rows']:,} rows, 100% Exact Match)",
@@ -3580,12 +3596,12 @@ def build_all_tables(
     write_dual_table(
         tab_dir,
         "supp_table6",
-        "Supplementary Table S6. 13-Mode Functional Parity Matrix and CPP-1 to CPP-10 vardictcpp [11] Divergence Taxonomy",
+        "Supplementary Table S6. 13-Mode Functional Parity Matrix and CPP-1 to CPP-12 vardictcpp [11] Divergence Taxonomy",
         s6_headers,
         s6_rows,
         "<sup>a</sup>Evaluates all 13 functional CLI modes across VarDictJava v1.8.3 [1], VarDictRust v1.0.6, and vardictcpp [11]; VarDictRust achieves 0 false positives (FP=0) and 0 false negatives (FN=0) across all 13/13 modes, whereas vardictcpp exhibits FP=1, FN=1 on simple_fisher. "
         "<sup>b</sup>Stock Bioconda VarDictJava v1.8.3 [1] fails with java.lang.NoClassDefFoundError on CRAM inputs; VarDictRust decodes CRAM natively via pure-Rust noodles and matches the lossless BAM twin oracle with 0 differences. "
-        "<sup>c</sup>Catalogs the 10 functional, schema, and algorithmic divergence classes (CPP-1 through CPP-10) empirically observed in vardictcpp (commit ae93fe39dc) [11] during the 60-experiment benchmark study. "
+        "<sup>c</sup>Catalogs the 12 functional, schema, and algorithmic divergence classes (CPP-1 through CPP-12) empirically observed in vardictcpp (commit ae93fe39dc) [11] during the 60-experiment benchmark study. "
         "Source ledger: mode-parity rows are generated from the sweep matrix via master_gcp_metrics.json; this table is the formatted view.",
     )
 

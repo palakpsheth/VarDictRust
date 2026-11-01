@@ -22,7 +22,7 @@
 
 2. **Supplementary Note 1: Analytical Derivation of JVM (`VarDictJava`) and `vardictcpp` Heap Retention (Unchunked Chromosomes vs. Pre-Chunked Callable Intervals)**
 
-3. **Supplementary Note 2: Ten-Point Technical Audit of `vardictcpp` Divergences (`CPP-1` through `CPP-10`)**
+3. **Supplementary Note 2: Twelve-Point Technical Audit of `vardictcpp` Divergences (`CPP-1` through `CPP-12`)**
 
 4. **Supplementary Note 3: Biostatistical Methodology, Exact Clopper-Pearson Intervals, and `--fix` Governance**
 
@@ -189,7 +189,7 @@ Increasing $L$ by `250`× on chromosome 1 (`1` Mbp to `249` Mbp, `s4_span_chr1_3
 
 ---
 
-## 3. Supplementary Note 2: Ten-Point Technical Audit of `vardictcpp` Divergences (`CPP-1` through `CPP-10`)
+## 3. Supplementary Note 2: Twelve-Point Technical Audit of `vardictcpp` Divergences (`CPP-1` through `CPP-12`)
 
 Across cells `s2_tierp_mode_parity_sweep`, `s5_h4_maintenance_security_matrix`, `s5_wgs_hg002_full_contigs_3way_th32`, and `s6_low_vaf_titration_truth_curve`, we cataloged ten reproducibility and capability gaps in `{{m:cpp_version}}` (`Table 8`, `Supplementary Table S6`):
 
@@ -207,11 +207,15 @@ Across cells `s2_tierp_mode_parity_sweep`, `s5_h4_maintenance_security_matrix`, 
 
 - **`CPP-7` (GRCh37 / b37 Chromosome Naming):** `vardictcpp` hardcodes `chr`-prefix assumptions in internal chromosome handling. That breaks or diverges on `b37` / `GRCh37` numeric contigs (`1`..`22`, `X`, `Y`, `MT`).
 
-- **`CPP-8` (BAM/CRAM Reference & Decode):** `vardictcpp` diverges on CRAM reference decoding (`-G ref.fa`). It requires dynamic linkage against external `libhts`, `libcurl`, `liblzma`, `libbz2`, and `libdeflate`. `VarDictRust` natively decodes BAM and CRAM in a `{{m:s5_h4_musl_mb}}` MB zero-dependency static `musl` binary (`s4_multimodal_and_cram_twin`).
+- **`CPP-8` (N-REF Rows Emitted in Native `-vcf`):** when `vardictcpp` queries the decoy `>chr20` N-stub in `GRCh37.fa`, it reads all `N`s and emits a variant call with `REF=N` at every covered position across the window, whereas `VarDictJava`'s `var2vcf` drops N-base rows.
 
 - **`CPP-9` (MNP Phasing, Tie-Break & Somatic SV Drops):** `vardictcpp` diverges from `VarDictJava` on complex MNP phasing, realignment tie-breaking, and somatic variant retention. At `20%` tumor purity (`s6_low_vaf_titration_truth_curve`), `vardictcpp` drops somatic indel $F_1$ to `{{m:s6_tit_p20_vardictcpp_indel_f1}}` (recall `{{m:s6_tit_p20_vardictcpp_indel_r_pct}}`). SNV $F_1$ drops to `{{m:s6_tit_p20_vardictcpp_snv_f1}}` (recall `{{m:s6_tit_p20_vardictcpp_snv_r_pct}}`). `VarDictRust` matches `VarDictJava` instead (`Indel` $F_1 = {{m:s6_tit_p20_VarDictRust_indel_f1}}$, recall `{{m:s6_tit_p20_VarDictRust_indel_r_pct}}`; `SNV` $F_1 = {{m:s6_tit_p20_VarDictRust_snv_f1}}$, recall `{{m:s6_tit_p20_VarDictRust_snv_r_pct}}`).
 
-- **`CPP-10` (RNA-Seq Splice Mode (`-i`.var / `.splice.tsv`):** `vardictcpp` does not implement `-i` exon-junction splice-site accounting (`s3_rna_splice_parity_n3`, `{{m:s3_rna_bam_gib}}` GiB RNA-seq BAM, `{{m:s3_rna_splice_rows}}` records).
+- **`CPP-10` (`-DP`/`--DP` Parsed but Ignored):** pinned `vardictcpp` accepts `-DP`/`--DP ERR` but still prints variants to stdout, so the M17 printer-redirect comparison reports a `CPP-MISMATCH` while `VarDictJava` and `VarDictRust` honour the flag.
+
+- **`CPP-11` (BAM/CRAM Reference & Decode):** `vardictcpp` diverges on CRAM reference decoding (`-G ref.fa`). It requires dynamic linkage against external `libhts`, `libcurl`, `liblzma`, `libbz2`, and `libdeflate`. `VarDictRust` natively decodes BAM and CRAM in a `{{m:s5_h4_musl_mb}}` MB zero-dependency static `musl` binary (`s4_multimodal_and_cram_twin`).
+
+- **`CPP-12` (RNA-Seq Splice Mode (`-i`.var / `.splice.tsv`):** `vardictcpp` does not implement `-i` exon-junction splice-site accounting (`s3_rna_splice_parity_n3`, `{{m:s3_rna_bam_gib}}` GiB RNA-seq BAM, `{{m:s3_rna_splice_rows}}` records).
 
 ---
 

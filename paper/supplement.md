@@ -22,7 +22,7 @@
 
 2. **Supplementary Note 1: Analytical Derivation of JVM (`VarDictJava`) and `vardictcpp` Heap Retention (Unchunked Chromosomes vs. Pre-Chunked Callable Intervals)**
 
-3. **Supplementary Note 2: Ten-Point Technical Audit of `vardictcpp` Divergences (`CPP-1` through `CPP-10`)**
+3. **Supplementary Note 2: Twelve-Point Technical Audit of `vardictcpp` Divergences (`CPP-1` through `CPP-12`)**
 
 4. **Supplementary Note 3: Biostatistical Methodology, Exact Clopper-Pearson Intervals, and `--fix` Governance**
 
@@ -183,13 +183,13 @@ In `VarDictJava` v1.8.3 (`CigarParser.java` and `VariationRealigner.java`), the 
    $$\text{RSS}_{\text{Java / C++} }(L, T) = \Theta\!\left(\sum_{t=1}^{T} L_t \cdot (c_{\text{ref} } + c_{\text{var} } \cdot \bar{a}(D))\right)$$
    where $L_t$ is the region length assigned to thread $t$ and $\bar{a}(D)$ is the mean allele count per locus. When $L_t \le 50$ kbp (pre-chunked intervals), garbage collection reclaims objects between intervals (`34.14` GB on HG002; `62.51` GB with timeout `rc=124` on HG008). When $L_t \in [50, 249]$ Mbp (unchunked chromosomes or `-R chr1:1-249250621`), live objects remain reachable until the chromosome finishes. That drives `VarDictJava` to `106.47` GiB on `chr1` and `>213.7` GB (`rc=3` `OutOfMemoryError`) on multi-threaded full genomes (`Table 2`, `Table 5`). `vardictcpp` similarly retains per-region C++ hash tables across each interval. It consumes `10.58` GiB on `chr1`, `31.91` GB on HG002 unchunked chromosomes, and `91.85` GB (`rc=124` timeout) on HG008 unchunked chromosomes. An external script must pre-split the BED file (`CPP_CHUNK=50,000`) to avoid this.
 
-`VarDictRust` leaves intervals $\le 1,000,000$ bp untiled. Any region $L > 1,000,000$ bp splits into tiles. Default width is $W = 100$ kbp with halo $H = 10$ kbp (`200` kbp in `-i` splice mode; `Figure 1b`). Memory is then bounded by:
+`VarDictRust` leaves intervals $\le 1,000,000$ bp untiled. Any region $L > 1,000,000$ bp splits into tiles. Default width is $W = 100$ kbp with halo $H = 0.5$ kbp (`0.5` kbp in `-i` splice mode; `Figure 1b`). Memory is then bounded by:
 $$\text{RSS}_{\text{VarDictRust} }(L, T) = O\!\left(T \cdot (W + 2H)\right) \perp L$$
 Increasing $L$ by `250`× on chromosome 1 (`1` Mbp to `249` Mbp, `s4_span_chr1_3way_th8`..`th32`) changes `VarDictRust` RSS by `1.18`×–`1.41`× (`1.38`–`3.69` GiB), allowing unchunked full-genome calling in `4.93` GB (HG002) and `12.14` GB (HG008).
 
 ---
 
-## 3. Supplementary Note 2: Ten-Point Technical Audit of `vardictcpp` Divergences (`CPP-1` through `CPP-10`)
+## 3. Supplementary Note 2: Twelve-Point Technical Audit of `vardictcpp` Divergences (`CPP-1` through `CPP-12`)
 
 Across cells `s2_tierp_mode_parity_sweep`, `s5_h4_maintenance_security_matrix`, `s5_wgs_hg002_full_contigs_3way_th32`, and `s6_low_vaf_titration_truth_curve`, we cataloged ten reproducibility and capability gaps in `vardictcpp ae93fe39dc (Wolff 2026)` (`Table 8`, `Supplementary Table S6`):
 
@@ -207,11 +207,15 @@ Across cells `s2_tierp_mode_parity_sweep`, `s5_h4_maintenance_security_matrix`, 
 
 - **`CPP-7` (GRCh37 / b37 Chromosome Naming):** `vardictcpp` hardcodes `chr`-prefix assumptions in internal chromosome handling. That breaks or diverges on `b37` / `GRCh37` numeric contigs (`1`..`22`, `X`, `Y`, `MT`).
 
-- **`CPP-8` (BAM/CRAM Reference & Decode):** `vardictcpp` diverges on CRAM reference decoding (`-G ref.fa`). It requires dynamic linkage against external `libhts`, `libcurl`, `liblzma`, `libbz2`, and `libdeflate`. `VarDictRust` natively decodes BAM and CRAM in a `4.56` MB zero-dependency static `musl` binary (`s4_multimodal_and_cram_twin`).
+- **`CPP-8` (N-REF Rows Emitted in Native `-vcf`):** when `vardictcpp` queries the decoy `>chr20` N-stub in `GRCh37.fa`, it reads all `N`s and emits a variant call with `REF=N` at every covered position across the window, whereas `VarDictJava`'s `var2vcf` drops N-base rows.
 
 - **`CPP-9` (MNP Phasing, Tie-Break & Somatic SV Drops):** `vardictcpp` diverges from `VarDictJava` on complex MNP phasing, realignment tie-breaking, and somatic variant retention. At `20%` tumor purity (`s6_low_vaf_titration_truth_curve`), `vardictcpp` drops somatic indel $F_1$ to `0.2466` (recall `15.65%`). SNV $F_1$ drops to `0.6914` (recall `57.07%`). `VarDictRust` matches `VarDictJava` instead (`Indel` $F_1 = 0.3104$, recall `20.75%`; `SNV` $F_1 = 0.7512$, recall `65.59%`).
 
-- **`CPP-10` (RNA-Seq Splice Mode (`-i`.var / `.splice.tsv`):** `vardictcpp` does not implement `-i` exon-junction splice-site accounting (`s3_rna_splice_parity_n3`, `51.8` GiB RNA-seq BAM, `12,668` records).
+- **`CPP-10` (`-DP`/`--DP` Parsed but Ignored):** pinned `vardictcpp` accepts `-DP`/`--DP ERR` but still prints variants to stdout, so the M17 printer-redirect comparison reports a `CPP-MISMATCH` while `VarDictJava` and `VarDictRust` honour the flag.
+
+- **`CPP-11` (BAM/CRAM Reference & Decode):** `vardictcpp` diverges on CRAM reference decoding (`-G ref.fa`). It requires dynamic linkage against external `libhts`, `libcurl`, `liblzma`, `libbz2`, and `libdeflate`. `VarDictRust` natively decodes BAM and CRAM in a `4.56` MB zero-dependency static `musl` binary (`s4_multimodal_and_cram_twin`).
+
+- **`CPP-12` (RNA-Seq Splice Mode (`-i`.var / `.splice.tsv`):** `vardictcpp` does not implement `-i` exon-junction splice-site accounting (`s3_rna_splice_parity_n3`, `51.8` GiB RNA-seq BAM, `12,668` records).
 
 ---
 
@@ -531,10 +535,10 @@ All `v1.0.x` releases (`v1.0.6`) enforce strict oracle parity on valid inputs. O
 | All-Positions Pileup (-f 0) | Chromosome 1 10 Mbp All-Positions (-f 0) | 8 | vardictcpp [11] | 6.04, 5.99, 5.99 | 6.01 (5.99–6.04) | 386,612, 380,596, 386,420 | 375.5 MB (0.367 GiB) |
 | Concurrent 2x4-Thread Node Packing | SEQC2 [10] Whole Exome (Concurrent Job 1) | 4 | VarDictRust | 212.56, 209.64, 211.94 | 211.38 (209.64–212.56) | 449,244, 446,504, 448,288 | 437.5 MB (0.427 GiB) |
 | Concurrent 2x4-Thread Node Packing | SEQC2 [10] Whole Exome (Concurrent Job 2) | 4 | VarDictRust | 212.43, 209.86, 210.85 | 211.05 (209.86–212.43) | 453,764, 451,428, 452,540 | 442.0 MB (0.432 GiB) |
-| Full-Genome WGS Scaling (chr1–chr22)<sup>c</sup> | GIAB HG002 [13, 18] Full WGS (22 Unchunked Chromosomes) | 32 | VarDictRust | 1516.61 | 25:16.61 (1,516.61 s)<sup>c</sup> | 4,928,384 | 4.93 GB (4.70 GiB) |
-| Full-Genome WGS Scaling (chr1–chr22)<sup>c</sup> | GIAB HG002 [13, 18] Full WGS (<=50 kbp GIAB Callable BED) | 32 | VarDictRust | 1221.21 | 20:21.21 (1,221.21 s)<sup>c</sup> | 1,433,128 | 1.43 GB (1.37 GiB) |
-| Full-Genome WGS Scaling (chr1–chr22)<sup>c</sup> | GIAB HG008 [19] 364x Full WGS (22 Unchunked Chromosomes, -U) | 32 | VarDictRust | 10192.00 | 2:49:52 (10,192.00 s)<sup>c</sup> | 12,135,724 | 12.14 GB (11.57 GiB) |
-| Full-Genome WGS Scaling (chr1–chr22)<sup>c</sup> | GIAB HG008 [19] 364x Full WGS (<=50 kbp GIAB Callable BED, -U) | 32 | VarDictRust | 6355.00 | 1:45:55 (6,355.00 s)<sup>c</sup> | 4,877,136 | 4.88 GB (4.65 GiB) |
+| Full-Genome WGS Scaling (chr1–chr22)<sup>c</sup> | GIAB HG002 [13, 18] Full WGS (22 Unchunked Chromosomes) | 32 | VarDictRust | 1516.61 | 25:16.61 (1,516.61 s)<sup>c</sup> | 4,928,384 | 5.05 GB (4.70 GiB) |
+| Full-Genome WGS Scaling (chr1–chr22)<sup>c</sup> | GIAB HG002 [13, 18] Full WGS (<=50 kbp GIAB Callable BED) | 32 | VarDictRust | 1221.21 | 20:21.21 (1,221.21 s)<sup>c</sup> | 1,433,128 | 1.47 GB (1.37 GiB) |
+| Full-Genome WGS Scaling (chr1–chr22)<sup>c</sup> | GIAB HG008 [19] 364x Full WGS (22 Unchunked Chromosomes, -U) | 32 | VarDictRust | 10192.00 | 2:49:52 (10,192.00 s)<sup>c</sup> | 12,135,724 | 12.43 GB (11.57 GiB) |
+| Full-Genome WGS Scaling (chr1–chr22)<sup>c</sup> | GIAB HG008 [19] 364x Full WGS (<=50 kbp GIAB Callable BED, -U) | 32 | VarDictRust | 6355.00 | 1:45:55 (6,355.00 s)<sup>c</sup> | 4,877,136 | 4.99 GB (4.65 GiB) |
 
 *<sup>a</sup>Unless otherwise noted, rows report all n=3 technical replicate measurements along with the replicate mean (min–max) on GCP n2-standard-32 (Intel Xeon Platinum 8373C Ice Lake) instances, measured via /usr/bin/time -v. <sup>b</sup>The 7-caller somatic comparison on SRR15006376 / SRR15006386 [11] profiles single-run 8-thread executions across VarDictRust, VarDictJava [1], vardictcpp [11], Strelka2 [4], LoFreq [7], Octopus [5], and Mutect2 [8]. <sup>c</sup>Full-genome 32-thread WGS runs on GIAB HG002 (130.8 GB) [13, 18] and GIAB HG008 (329.0 GB, 364x combined depth) [19] report single-run wall-clock times as MM:SS.ss or H:MM:SS (with total seconds in parentheses). Source ledger: replicate measurements aggregate the stage5 and stage6 TSVs via master_gcp_metrics.json; this table is the formatted view.*
 
@@ -705,7 +709,7 @@ All `v1.0.x` releases (`v1.0.6`) enforce strict oracle parity on valid inputs. O
 
 <a id="supp_table6_sv_and_amplicon_splice"></a>
 
-### Supplementary Table S6. 13-Mode Functional Parity Matrix and CPP-1 to CPP-10 vardictcpp [11] Divergence Taxonomy
+### Supplementary Table S6. 13-Mode Functional Parity Matrix and CPP-1 to CPP-12 vardictcpp [11] Divergence Taxonomy
 
 | Evaluation Category | CLI Mode / Divergence Class | VarDictJava v1.8.3 [1] Rows / Behavior | VarDictRust v1.0.6 Rows / Behavior | vardictcpp [11] Rows / Behavior | Verification Verdict & Root Cause |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -729,11 +733,13 @@ All `v1.0.x` releases (`v1.0.6`) enforce strict oracle parity on valid inputs. O
 | vardictcpp Divergence Taxonomy [11]<sup>c</sup> | CPP-5: Chunk Boundary Deduplication (--chunk 50,000) | Single-region calling (or OOM on contigs) | 100 kbp halo tiling + cross-tile dedup | Emits +309,569 duplicate boundary calls on unchunked HG002 WGS | Uncoordinated 50 kbp window splitting without dedup |
 | vardictcpp Divergence Taxonomy [11]<sup>c</sup> | CPP-6: Missing ##contig VCF Header Lines | Emits ##contig lines from reference .fai | Emits exact ##contig lines from reference .fai | Omits ##contig header lines | Requires manual header injection prior to rtg vcfeval [12] |
 | vardictcpp Divergence Taxonomy [11]<sup>c</sup> | CPP-7: GRCh37 / b37 Numeric Chromosome Naming | Supported | Supported (100% Match on GIAB NA24385 GRCh37 [13]) | Hardcoded chr-prefix assumptions | Verified on GIAB NA24385 GRCh37 v4.2.1 benchmark [13] |
-| vardictcpp Divergence Taxonomy [11]<sup>c</sup> | CPP-8: BAM/CRAM [26] Reference & Decode | BAM (CRAM requires external htsjdk classpath) | Native BAM + CRAM (-G) zero-difference parity | Fails or diverges on CRAM twin alignments | Verified on GIAB HG008 [19] & Ultima CRAM twins |
+| vardictcpp Divergence Taxonomy [11]<sup>c</sup> | CPP-8: N-REF Rows Emitted in Native -vcf | Drops N-base rows (var2vcf) | Drops N-base rows (matches oracle) | Emits REF=N calls at every covered position on decoy N-stub windows | Direct consequence of CPP-7 on decoy >chr20 N-stub windows |
 | vardictcpp Divergence Taxonomy [11]<sup>c</sup> | CPP-9: Complex MNP Splitting & Somatic SV Drops | Reference pileup & local realigner | Exact parity with VarDictJava [1] | Differs on 394 callable HG002 WGS calls & drops SVs | Local realignment & tie-break divergence vs. oracle |
-| vardictcpp Divergence Taxonomy [11]<sup>c</sup> | CPP-10: Transcriptome RNA-Seq Splice Mode (-i) | Supported (12,668 rows on HG002 mRNA [13]) | Supported (12,668 rows, 100% Exact Match) | Unimplemented (unsupported flag) | Verified on 51.8 GiB GIAB HG002 GM24385 STAR BAM [13] |
+| vardictcpp Divergence Taxonomy [11]<sup>c</sup> | CPP-10: -DP/--DP Parsed but Ignored (Printer Stays stdout) | Honours -DP (M17 gate arm MATCH) | Honours -DP (M17 gate arm MATCH) | Ignores -DP/--DP ERR (M17 CPP-MISMATCH, printer redirect differs) | Accepted under 'Accepted (parsed)' in vardictcpp --help; output unchanged |
+| vardictcpp Divergence Taxonomy [11]<sup>c</sup> | CPP-11: BAM/CRAM [26] Reference & Decode | BAM (CRAM requires external htsjdk classpath) | Native BAM + CRAM (-G) zero-difference parity | Fails or diverges on CRAM twin alignments | Verified on GIAB HG008 [19] & Ultima CRAM twins |
+| vardictcpp Divergence Taxonomy [11]<sup>c</sup> | CPP-12: Transcriptome RNA-Seq Splice Mode (-i) | Supported (12,668 rows on HG002 mRNA [13]) | Supported (12,668 rows, 100% Exact Match) | Unimplemented (unsupported flag) | Verified on 51.8 GiB GIAB HG002 GM24385 STAR BAM [13] |
 
-*<sup>a</sup>Evaluates all 13 functional CLI modes across VarDictJava v1.8.3 [1], VarDictRust v1.0.6, and vardictcpp [11]; VarDictRust achieves 0 false positives (FP=0) and 0 false negatives (FN=0) across all 13/13 modes, whereas vardictcpp exhibits FP=1, FN=1 on simple_fisher. <sup>b</sup>Stock Bioconda VarDictJava v1.8.3 [1] fails with java.lang.NoClassDefFoundError on CRAM inputs; VarDictRust decodes CRAM natively via pure-Rust noodles and matches the lossless BAM twin oracle with 0 differences. <sup>c</sup>Catalogs the 10 functional, schema, and algorithmic divergence classes (CPP-1 through CPP-10) empirically observed in vardictcpp (commit ae93fe39dc) [11] during the 60-experiment benchmark study. Source ledger: mode-parity rows are generated from the sweep matrix via master_gcp_metrics.json; this table is the formatted view.*
+*<sup>a</sup>Evaluates all 13 functional CLI modes across VarDictJava v1.8.3 [1], VarDictRust v1.0.6, and vardictcpp [11]; VarDictRust achieves 0 false positives (FP=0) and 0 false negatives (FN=0) across all 13/13 modes, whereas vardictcpp exhibits FP=1, FN=1 on simple_fisher. <sup>b</sup>Stock Bioconda VarDictJava v1.8.3 [1] fails with java.lang.NoClassDefFoundError on CRAM inputs; VarDictRust decodes CRAM natively via pure-Rust noodles and matches the lossless BAM twin oracle with 0 differences. <sup>c</sup>Catalogs the 12 functional, schema, and algorithmic divergence classes (CPP-1 through CPP-12) empirically observed in vardictcpp (commit ae93fe39dc) [11] during the 60-experiment benchmark study. Source ledger: mode-parity rows are generated from the sweep matrix via master_gcp_metrics.json; this table is the formatted view.*
 
 ---
 

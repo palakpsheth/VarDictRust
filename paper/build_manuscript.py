@@ -40,29 +40,53 @@ TABLE_ALIASES: dict[str, tuple[str, str]] = {
     "table3": ("table3.md", "table3_truth_and_field_callers"),
     "table3_truth_and_field_callers": ("table3.md", "table3_truth_and_field_callers"),
     "table4": ("table4.md", "table4_memory_scaling_and_packing"),
-    "table4_memory_scaling_and_packing": ("table4.md", "table4_memory_scaling_and_packing"),
+    "table4_memory_scaling_and_packing": (
+        "table4.md",
+        "table4_memory_scaling_and_packing",
+    ),
     "table5": ("table5.md", "table5_full_wgs_arm_a_vs_b"),
     "table5_full_wgs_arm_a_vs_b": ("table5.md", "table5_full_wgs_arm_a_vs_b"),
     "table6": ("table6.md", "table6_cross_platform_chr20"),
     "table6_cross_platform_chr20": ("table6.md", "table6_cross_platform_chr20"),
     "table7": ("table7.md", "table7_v50q_cmrg_mosaic_and_hg008_v04"),
     "table7_v50q_cmrg_mosaic": ("table7.md", "table7_v50q_cmrg_mosaic_and_hg008_v04"),
-    "table7_v50q_cmrg_mosaic_and_hg008_v04": ("table7.md", "table7_v50q_cmrg_mosaic_and_hg008_v04"),
+    "table7_v50q_cmrg_mosaic_and_hg008_v04": (
+        "table7.md",
+        "table7_v50q_cmrg_mosaic_and_hg008_v04",
+    ),
     "table8": ("table8.md", "table8_supply_chain_and_divergences"),
-    "table8_hg008_modern_callers_and_titration": ("table8.md", "table8_supply_chain_and_divergences"),
-    "table8_supply_chain_and_divergences": ("table8.md", "table8_supply_chain_and_divergences"),
+    "table8_hg008_modern_callers_and_titration": (
+        "table8.md",
+        "table8_supply_chain_and_divergences",
+    ),
+    "table8_supply_chain_and_divergences": (
+        "table8.md",
+        "table8_supply_chain_and_divergences",
+    ),
     "supp_table1": ("supp_table1.md", "supp_table1_60cell_inventory"),
     "supp_table1_60cell_inventory": ("supp_table1.md", "supp_table1_60cell_inventory"),
     "supp_table2": ("supp_table2.md", "supp_table2_option_c_87arms"),
     "supp_table2_option_c_87arms": ("supp_table2.md", "supp_table2_option_c_87arms"),
     "supp_table3": ("supp_table3.md", "supp_table3_n3_technical_replicates"),
-    "supp_table3_n3_technical_replicates": ("supp_table3.md", "supp_table3_n3_technical_replicates"),
+    "supp_table3_n3_technical_replicates": (
+        "supp_table3.md",
+        "supp_table3_n3_technical_replicates",
+    ),
     "supp_table4": ("supp_table4.md", "supp_table4_qual_roc_and_noise_floor"),
-    "supp_table4_qual_roc_and_noise_floor": ("supp_table4.md", "supp_table4_qual_roc_and_noise_floor"),
+    "supp_table4_qual_roc_and_noise_floor": (
+        "supp_table4.md",
+        "supp_table4_qual_roc_and_noise_floor",
+    ),
     "supp_table5": ("supp_table5.md", "supp_table5_ga4gh_70cell_matrix"),
-    "supp_table5_ga4gh_70cell_matrix": ("supp_table5.md", "supp_table5_ga4gh_70cell_matrix"),
+    "supp_table5_ga4gh_70cell_matrix": (
+        "supp_table5.md",
+        "supp_table5_ga4gh_70cell_matrix",
+    ),
     "supp_table6": ("supp_table6.md", "supp_table6_sv_and_amplicon_splice"),
-    "supp_table6_sv_and_amplicon_splice": ("supp_table6.md", "supp_table6_sv_and_amplicon_splice"),
+    "supp_table6_sv_and_amplicon_splice": (
+        "supp_table6.md",
+        "supp_table6_sv_and_amplicon_splice",
+    ),
 }
 
 
@@ -71,7 +95,11 @@ def clopper_pearson_ci(k: int, n: int, alpha: float = 0.05) -> tuple[float, floa
     if n <= 0:
         return (0.0, 0.0)
     lo = 0.0 if k == 0 else float(stats.beta.ppf(alpha / 2.0, k, n - k + 1)) * 100.0
-    hi = 100.0 if k == n else float(stats.beta.ppf(1.0 - alpha / 2.0, k + 1, n - k)) * 100.0
+    hi = (
+        100.0
+        if k == n
+        else float(stats.beta.ppf(1.0 - alpha / 2.0, k + 1, n - k)) * 100.0
+    )
     return (lo, hi)
 
 
@@ -86,7 +114,12 @@ def build_macro_context(doc: dict[str, Any]) -> dict[str, str]:
     for k, v in doc.get("flat_macros", {}).items():
         if isinstance(v, float):
             # Preserve exact formatting for common currency/metrics if needed
-            if k in ("gcp_spend_usd", "gcp_budget_usd", "gcs_cache_gib", "gcs_weekly_usd"):
+            if k in (
+                "gcp_spend_usd",
+                "gcp_budget_usd",
+                "gcs_cache_gib",
+                "gcs_weekly_usd",
+            ):
                 m[k] = f"{v:.2f}"
             else:
                 m[k] = str(v)
@@ -113,17 +146,23 @@ def build_macro_context(doc: dict[str, Any]) -> dict[str, str]:
     m["f_titration"] = "0.002"
     m["f_zero"] = "0"
     m["amp_param"] = "10:0.95"
-    m_chunk = re.search(r"CPP_CHUNK=(\d+)", s5["wgs_hg008_full_giab_3way_th32"]["cpp"]["command"])
+    m_chunk = re.search(
+        r"CPP_CHUNK=(\d+)", s5["wgs_hg008_full_giab_3way_th32"]["cpp"]["command"]
+    )
     cpp_chunk_int = int(m_chunk.group(1)) if m_chunk else 50000
     m["cpp_chunk_bp"] = f"{cpp_chunk_int:,}"
     m["rust_default_tile_kbp"] = "100"
-    m["rust_halo_kbp"] = "10"
-    m["rust_splice_halo_kbp"] = "200"
+    # Halo widths mirror the engine constants in crates/vardictrust-core/src/lib.rs
+    # (let halo = 500 /* bp per side */ at both tile() call sites): 0.5 kbp.
+    m["rust_halo_kbp"] = "0.5"
+    m["rust_splice_halo_kbp"] = "0.5"
     m["giab_arm_b_max_kbp"] = str(cpp_chunk_int // 1000)
     m["cpp_chunk_kbp"] = str(cpp_chunk_int // 1000)
     m["nvme_raid0_tb"] = "1.5"
     m["gcp_remaining_usd"] = f"{meta['gcp_budget_usd'] - meta['gcp_spend_usd']:.2f}"
-    m["gcp_spend_pct"] = f"{(meta['gcp_spend_usd'] / meta['gcp_budget_usd']) * 100.0:.1f}%"
+    m["gcp_spend_pct"] = (
+        f"{(meta['gcp_spend_usd'] / meta['gcp_budget_usd']) * 100.0:.1f}%"
+    )
     tiles = s1["s1_h1a_simple_tiles"]["tile_sizes_bp"]
     m["s1_tile_500k"] = f"{tiles[0]:,}"
     m["s1_tile_1m"] = f"{tiles[1]:,}"
@@ -136,21 +175,36 @@ def build_macro_context(doc: dict[str, Any]) -> dict[str, str]:
     m["s4_span_249m"] = f"{span_ints[3]:,}"
     m["s6_v50q_gain_gbp"] = "0.23"
     m["s6_mosaic_vaf_range_pct"] = "1%–30%"
-    m["s1_amplicon_speedup_vs_java"] = f"{s1['s1_ceiling_amplicon']['java']['wall_s'] / s1['s1_ceiling_amplicon']['rust']['wall_s']:.0f}"
-    m["s1_amplicon_rss_ratio_vs_java"] = f"{s1['s1_ceiling_amplicon']['java']['max_rss_kb'] / s1['s1_ceiling_amplicon']['rust']['max_rss_kb']:.1f}"
-    m["s1_gate7_speedup_vs_java"] = f"{s1['s1_gate7_ref_multiregion']['java']['wall_s'] / s1['s1_gate7_ref_multiregion']['rust']['wall_s']:.1f}"
-    m["s1_gate7_rss_ratio_vs_java"] = f"{s1['s1_gate7_ref_multiregion']['java']['max_rss_kb'] / s1['s1_gate7_ref_multiregion']['rust']['max_rss_kb']:.1f}"
+    m["s1_amplicon_speedup_vs_java"] = (
+        f"{s1['s1_ceiling_amplicon']['java']['wall_s'] / s1['s1_ceiling_amplicon']['rust']['wall_s']:.0f}"
+    )
+    m["s1_amplicon_rss_ratio_vs_java"] = (
+        f"{s1['s1_ceiling_amplicon']['java']['max_rss_kb'] / s1['s1_ceiling_amplicon']['rust']['max_rss_kb']:.1f}"
+    )
+    m["s1_gate7_speedup_vs_java"] = (
+        f"{s1['s1_gate7_ref_multiregion']['java']['wall_s'] / s1['s1_gate7_ref_multiregion']['rust']['wall_s']:.1f}"
+    )
+    m["s1_gate7_rss_ratio_vs_java"] = (
+        f"{s1['s1_gate7_ref_multiregion']['java']['max_rss_kb'] / s1['s1_gate7_ref_multiregion']['rust']['max_rss_kb']:.1f}"
+    )
 
     # Exact Clopper-Pearson 95% binomial CIs
     total_cells = int(meta["total_cells"])
     m["cp95_60_60"] = fmt_cp_ci(total_cells, total_cells)
-    m["cp95_13_13"] = fmt_cp_ci(int(s2["tierp_mode_parity_sweep"]["rust_match_count"]), int(s2["tierp_mode_parity_sweep"]["total_modes"]))
+    m["cp95_13_13"] = fmt_cp_ci(
+        int(s2["tierp_mode_parity_sweep"]["rust_match_count"]),
+        int(s2["tierp_mode_parity_sweep"]["total_modes"]),
+    )
     ext_mod = ev["extended-coverage-tier2"]
-    m["cp95_17_17"] = fmt_cp_ci(int(ext_mod["modalities_passed"]), int(ext_mod["modalities_tested"]))
+    m["cp95_17_17"] = fmt_cp_ci(
+        int(ext_mod["modalities_passed"]), int(ext_mod["modalities_tested"])
+    )
     mm_sl = ev["multimodal-slices-tier2"]
     m["cp95_18_18"] = fmt_cp_ci(int(mm_sl["slices_passed"]), int(mm_sl["total_slices"]))
     nf_rows = s5["cross_platform_short_read_chr20_panel"]["part_b_f0_noise_floor_rows"]
-    nf_match = int(s5["cross_platform_short_read_chr20_panel"]["part_b_strict_match_count"])
+    nf_match = int(
+        s5["cross_platform_short_read_chr20_panel"]["part_b_strict_match_count"]
+    )
     m["cp95_noise_18_18"] = fmt_cp_ci(nf_match, len(nf_rows))
     ga_rows = s6["ga4gh_v35_stratification_matrix"]
     m["cp95_70_70"] = fmt_cp_ci(len(ga_rows), len(ga_rows))
@@ -165,8 +219,12 @@ def build_macro_context(doc: dict[str, Any]) -> dict[str, str]:
     m["cp95_78_87"] = fmt_cp_ci(sw_match, sw_tot)
     m["cp95_optc_sweep"] = fmt_cp_ci(sw_match, sw_tot)
     m["sw_rchr1_rows"] = f"{int(sw['by_cell']['sweep_R_chr1_full'][0]['java_rows']):,}"
-    m["sw_span_f0_rows"] = f"{int(sw['by_cell']['sweep_span_chr1_f0'][0]['java_rows']):,}"
-    k_mos, n_mos = (int(x) for x in str(doc["flat_macros"]["s6_mosaic_tp_best"]).split("/"))
+    m["sw_span_f0_rows"] = (
+        f"{int(sw['by_cell']['sweep_span_chr1_f0'][0]['java_rows']):,}"
+    )
+    k_mos, n_mos = (
+        int(x) for x in str(doc["flat_macros"]["s6_mosaic_tp_best"]).split("/")
+    )
     m["s6_mosaic_rust_tp"] = str(k_mos)
     m["s6_mosaic_truth_total"] = str(n_mos)
     m["cp95_84_85"] = fmt_cp_ci(k_mos, n_mos)
@@ -185,8 +243,12 @@ def build_macro_context(doc: dict[str, Any]) -> dict[str, str]:
     m["s1_hg008_cpp_wall_s"] = f"{h8c['cpp']['wall_s']:.2f}"
     m["s1_hg008_cpp_rss_mb"] = f"{h8c['cpp']['max_rss_mb']:.1f}"
     m["s1_hg008_rust_rss_kb"] = f"{h8c['rust']['max_rss_kb']:,}"
-    m["s1_hg008_speedup_vs_java"] = f"{h8c['java']['wall_s'] / h8c['rust']['wall_s']:.2f}"
-    m["s1_hg008_rss_ratio_vs_java"] = f"{h8c['java']['max_rss_kb'] / h8c['rust']['max_rss_kb']:.1f}"
+    m["s1_hg008_speedup_vs_java"] = (
+        f"{h8c['java']['wall_s'] / h8c['rust']['wall_s']:.2f}"
+    )
+    m["s1_hg008_rss_ratio_vs_java"] = (
+        f"{h8c['java']['max_rss_kb'] / h8c['rust']['max_rss_kb']:.1f}"
+    )
 
     g7 = s1["s1_gate7_ref_multiregion"]
     m["s1_gate7_rust_wall_s"] = f"{g7['rust']['wall_s']:.2f}"
@@ -225,15 +287,29 @@ def build_macro_context(doc: dict[str, Any]) -> dict[str, str]:
             j_stat = cell["java"]["replicates"]
             c_stat = cell["cpp"]["replicates"]
             m[f"s2_{sample_id}_{th_key}_rust_wall_s"] = f"{r_stat['wall_s_mean']:.2f}"
-            m[f"s2_{sample_id}_{th_key}_rust_wall_range"] = f"{r_stat['wall_s_min']:.2f}–{r_stat['wall_s_max']:.2f}"
+            m[f"s2_{sample_id}_{th_key}_rust_wall_range"] = (
+                f"{r_stat['wall_s_min']:.2f}–{r_stat['wall_s_max']:.2f}"
+            )
             m[f"s2_{sample_id}_{th_key}_java_wall_s"] = f"{j_stat['wall_s_mean']:.2f}"
-            m[f"s2_{sample_id}_{th_key}_java_wall_range"] = f"{j_stat['wall_s_min']:.2f}–{j_stat['wall_s_max']:.2f}"
+            m[f"s2_{sample_id}_{th_key}_java_wall_range"] = (
+                f"{j_stat['wall_s_min']:.2f}–{j_stat['wall_s_max']:.2f}"
+            )
             m[f"s2_{sample_id}_{th_key}_cpp_wall_s"] = f"{c_stat['wall_s_mean']:.2f}"
-            m[f"s2_{sample_id}_{th_key}_cpp_wall_range"] = f"{c_stat['wall_s_min']:.2f}–{c_stat['wall_s_max']:.2f}"
-            m[f"s2_{sample_id}_{th_key}_rust_rss_mb"] = f"{r_stat['max_rss_mb_mean']:.1f}"
-            m[f"s2_{sample_id}_{th_key}_java_rss_mb"] = f"{j_stat['max_rss_mb_mean']:.1f}"
-            m[f"s2_{sample_id}_{th_key}_java_rss_gb"] = f"{j_stat['max_rss_gb_dec_mean']:.2f}"
-            m[f"s2_{sample_id}_{th_key}_cpp_rss_mb"] = f"{c_stat['max_rss_mb_mean']:.1f}"
+            m[f"s2_{sample_id}_{th_key}_cpp_wall_range"] = (
+                f"{c_stat['wall_s_min']:.2f}–{c_stat['wall_s_max']:.2f}"
+            )
+            m[f"s2_{sample_id}_{th_key}_rust_rss_mb"] = (
+                f"{r_stat['max_rss_mb_mean']:.1f}"
+            )
+            m[f"s2_{sample_id}_{th_key}_java_rss_mb"] = (
+                f"{j_stat['max_rss_mb_mean']:.1f}"
+            )
+            m[f"s2_{sample_id}_{th_key}_java_rss_gb"] = (
+                f"{j_stat['max_rss_gb_dec_mean']:.2f}"
+            )
+            m[f"s2_{sample_id}_{th_key}_cpp_rss_mb"] = (
+                f"{c_stat['max_rss_mb_mean']:.1f}"
+            )
 
             sp = float(cell["rust_speedup_vs_java"])
             rr = float(cell["java_rss_ratio_vs_rust"])
@@ -276,9 +352,15 @@ def build_macro_context(doc: dict[str, Any]) -> dict[str, str]:
     m["s2_rchr1_sample"] = str(rchr1["sample"])
     m["s2_rchr1_bp"] = f"{rchr1_bp_int:,}"
     m["s2_rchr1_mbp"] = f"{rchr1_bp_int / 1e6:.2f}"
-    m["s2_rchr1_rust_wall_range"] = f"{rchr1['rust']['wall_s_min']:.2f}–{rchr1['rust']['wall_s_max']:.2f}"
-    m["s2_rchr1_cpp_wall_range"] = f"{rchr1['cpp']['wall_s_min']:.2f}–{rchr1['cpp']['wall_s_max']:.2f}"
-    m["s2_rchr1_java200g_wall_range"] = f"{rchr1['java_xmx200g']['wall_s_min']:.2f}–{rchr1['java_xmx200g']['wall_s_max']:.2f}"
+    m["s2_rchr1_rust_wall_range"] = (
+        f"{rchr1['rust']['wall_s_min']:.2f}–{rchr1['rust']['wall_s_max']:.2f}"
+    )
+    m["s2_rchr1_cpp_wall_range"] = (
+        f"{rchr1['cpp']['wall_s_min']:.2f}–{rchr1['cpp']['wall_s_max']:.2f}"
+    )
+    m["s2_rchr1_java200g_wall_range"] = (
+        f"{rchr1['java_xmx200g']['wall_s_min']:.2f}–{rchr1['java_xmx200g']['wall_s_max']:.2f}"
+    )
     m["s2_rchr1_java4g_oom_wall_s"] = f"{rchr1['java_xmx4g_oom']['wall_s']:.2f}"
     m["s2_rchr1_java4g_oom_rss_gib"] = f"{rchr1['java_xmx4g_oom']['max_rss_gib']:.2f}"
     m["s2_fig1_fig3_wgs_bed_intervals"] = m["s2_SRR8657348_intervals"]
@@ -304,7 +386,10 @@ def build_macro_context(doc: dict[str, Any]) -> dict[str, str]:
 
     # Stage 2 Fig 2 HG002 chr20 exome truth
     m["s2_fig2_region_mbp"] = "2.31"
-    m_fig2_par = re.search(r"(\d+)\s+variants", doc["cells"]["s2_fig2_hg002_chr20_truth"]["metrics"]["compare_hg002_chr20"])
+    m_fig2_par = re.search(
+        r"(\d+)\s+variants",
+        doc["cells"]["s2_fig2_hg002_chr20_truth"]["metrics"]["compare_hg002_chr20"],
+    )
     if m_fig2_par:
         m["s2_fig2_parity_vars"] = f"{int(m_fig2_par.group(1)):,}"
     for row in s2["fig2_hg002_chr20_truth"]:
@@ -319,8 +404,12 @@ def build_macro_context(doc: dict[str, Any]) -> dict[str, str]:
 
     # Stage 3 RNA
     m["s3_rna_bam_gib"] = "51.8"
-    m["s3_rna_rust_wall_range"] = f"{s3['rust']['wall_s_min']:.2f}–{s3['rust']['wall_s_max']:.2f}"
-    m["s3_rna_java_wall_range"] = f"{s3['java']['wall_s_min']:.2f}–{s3['java']['wall_s_max']:.2f}"
+    m["s3_rna_rust_wall_range"] = (
+        f"{s3['rust']['wall_s_min']:.2f}–{s3['rust']['wall_s_max']:.2f}"
+    )
+    m["s3_rna_java_wall_range"] = (
+        f"{s3['java']['wall_s_min']:.2f}–{s3['java']['wall_s_max']:.2f}"
+    )
 
     # Stage 4 Perf budget 4 targets
     pb_runs = s4["perf_budget_4targets_n3"]["runs"]
@@ -343,19 +432,31 @@ def build_macro_context(doc: dict[str, Any]) -> dict[str, str]:
     for tk in ("th1", "th2", "th4", "th8", "th16", "th32"):
         td = ex[tk]
         m[f"s4_exome_{tk}_rust_wall_s"] = f"{td['rust']['wall_s_mean']:.2f}"
-        m[f"s4_exome_{tk}_rust_wall_range"] = f"{td['rust']['wall_s_min']:.2f}–{td['rust']['wall_s_max']:.2f}"
+        m[f"s4_exome_{tk}_rust_wall_range"] = (
+            f"{td['rust']['wall_s_min']:.2f}–{td['rust']['wall_s_max']:.2f}"
+        )
         m[f"s4_exome_{tk}_rust_rss_mb"] = f"{td['rust']['max_rss_mb_mean']:.1f}"
         m[f"s4_exome_{tk}_rust_rss_gib"] = f"{td['rust']['max_rss_gib_mean']:.2f}"
         m[f"s4_exome_{tk}_rust_sp"] = f"{td['rust']['speedup_sp']:.2f}"
         m[f"s4_exome_{tk}_java_wall_s"] = f"{td['java']['wall_s_mean']:.2f}"
-        m[f"s4_exome_{tk}_java_wall_range"] = f"{td['java']['wall_s_min']:.2f}–{td['java']['wall_s_max']:.2f}"
+        m[f"s4_exome_{tk}_java_wall_range"] = (
+            f"{td['java']['wall_s_min']:.2f}–{td['java']['wall_s_max']:.2f}"
+        )
         m[f"s4_exome_{tk}_java_rss_gib"] = f"{td['java']['max_rss_gib_mean']:.2f}"
         m[f"s4_exome_{tk}_cpp_wall_s"] = f"{td['cpp']['wall_s_mean']:.2f}"
-        m[f"s4_exome_{tk}_cpp_wall_range"] = f"{td['cpp']['wall_s_min']:.2f}–{td['cpp']['wall_s_max']:.2f}"
+        m[f"s4_exome_{tk}_cpp_wall_range"] = (
+            f"{td['cpp']['wall_s_min']:.2f}–{td['cpp']['wall_s_max']:.2f}"
+        )
         m[f"s4_exome_{tk}_cpp_rss_gib"] = f"{td['cpp']['max_rss_gib_mean']:.2f}"
-        m[f"s4_exome_{tk}_speedup_vs_java"] = f"{td['java']['wall_s_mean'] / td['rust']['wall_s_mean']:.1f}"
-        m[f"s4_exome_{tk}_rss_ratio_vs_java"] = f"{td['java']['max_rss_kb_mean'] / td['rust']['max_rss_kb_mean']:.1f}"
-        m[f"s4_exome_{tk}_rss_ratio_vs_cpp"] = f"{td['cpp']['max_rss_kb_mean'] / td['rust']['max_rss_kb_mean']:.1f}"
+        m[f"s4_exome_{tk}_speedup_vs_java"] = (
+            f"{td['java']['wall_s_mean'] / td['rust']['wall_s_mean']:.1f}"
+        )
+        m[f"s4_exome_{tk}_rss_ratio_vs_java"] = (
+            f"{td['java']['max_rss_kb_mean'] / td['rust']['max_rss_kb_mean']:.1f}"
+        )
+        m[f"s4_exome_{tk}_rss_ratio_vs_cpp"] = (
+            f"{td['cpp']['max_rss_kb_mean'] / td['rust']['max_rss_kb_mean']:.1f}"
+        )
     m["s4_exome_32t_speedup_vs_1t"] = m["s4_exome_th32_rust_sp"]
     m["s4_exome_32t_rss_ratio_vs_java"] = m["s4_exome_th32_rss_ratio_vs_java"]
 
@@ -365,14 +466,26 @@ def build_macro_context(doc: dict[str, Any]) -> dict[str, str]:
     for tk in ("th8", "th16", "th32"):
         sd = sp_c1[tk]
         m[f"s4_span_{tk}_ratio_exact"] = f"{sd['rust_rss_ratio_249m_vs_10m']:.3f}"
-        m[f"s4_span_{tk}_10m_rust_gib"] = f"{sd['spans']['R10000000']['rust']['max_rss_gib_mean']:.2f}"
-        m[f"s4_span_{tk}_249m_rust_gib"] = f"{sd['spans']['R248956422']['rust']['max_rss_gib_mean']:.2f}"
-        m[f"s4_span_{tk}_249m_rust_wall_s"] = f"{sd['spans']['R248956422']['rust']['wall_s_mean']:.2f}"
-        m[f"s4_span_{tk}_249m_cpp_wall_s"] = f"{sd['spans']['R248956422']['cpp']['wall_s_mean']:.2f}"
-        m[f"s4_span_{tk}_249m_cpp_gib"] = f"{sd['spans']['R248956422']['cpp']['max_rss_gib_mean']:.2f}"
+        m[f"s4_span_{tk}_10m_rust_gib"] = (
+            f"{sd['spans']['R10000000']['rust']['max_rss_gib_mean']:.2f}"
+        )
+        m[f"s4_span_{tk}_249m_rust_gib"] = (
+            f"{sd['spans']['R248956422']['rust']['max_rss_gib_mean']:.2f}"
+        )
+        m[f"s4_span_{tk}_249m_rust_wall_s"] = (
+            f"{sd['spans']['R248956422']['rust']['wall_s_mean']:.2f}"
+        )
+        m[f"s4_span_{tk}_249m_cpp_wall_s"] = (
+            f"{sd['spans']['R248956422']['cpp']['wall_s_mean']:.2f}"
+        )
+        m[f"s4_span_{tk}_249m_cpp_gib"] = (
+            f"{sd['spans']['R248956422']['cpp']['max_rss_gib_mean']:.2f}"
+        )
 
     spf0 = s4["span_chr1_f0"]
-    m_spf0_v = re.search(r"(\d+)\s+variants", doc["cells"]["s4_span_chr1_f0"]["parity_verdict"])
+    m_spf0_v = re.search(
+        r"(\d+)\s+variants", doc["cells"]["s4_span_chr1_f0"]["parity_verdict"]
+    )
     if m_spf0_v:
         m["s4_span_f0_vars"] = f"{int(m_spf0_v.group(1)):,}"
         m["s4_span_chr1_f0_vars"] = m["s4_span_f0_vars"]
@@ -408,7 +521,9 @@ def build_macro_context(doc: dict[str, Any]) -> dict[str, str]:
         m[f"s4_t3_{cid}_none_p"] = f"{none['precision']:.4f}"
         m[f"s4_t3_{cid}_none_r"] = f"{none['sensitivity']:.4f}"
         m[f"s4_t3_{cid}_none_f1"] = f"{none['f_measure']:.4f}"
-        m[f"s4_t3_{cid}_fp_reduction_pct"] = f"{(1.0 - best['fp'] / none['fp']) * 100.0:.1f}%"
+        m[f"s4_t3_{cid}_fp_reduction_pct"] = (
+            f"{(1.0 - best['fp'] / none['fp']) * 100.0:.1f}%"
+        )
 
     t3s = s4["tier3_truth_and_qual_sweep"]["strata_summary"]
     for cid in ("hg002", "seqc2", "hg008"):
@@ -441,10 +556,18 @@ def build_macro_context(doc: dict[str, Any]) -> dict[str, str]:
     h8_a = s5["wgs_hg008_full_contigs_3way_th32"]
     h8_b = s5["wgs_hg008_full_giab_3way_th32"]
 
-    m["s5_hg002_contigs_cpp_rss_ratio_vs_rust"] = f"{h2_a['cpp']['max_rss_kb'] / h2_a['rust']['max_rss_kb']:.1f}"
-    m["s5_hg008_contigs_cpp_rss_ratio_vs_rust"] = f"{h8_a['cpp']['max_rss_kb'] / h8_a['rust']['max_rss_kb']:.1f}"
-    m["s5_hg008_giab_cpp_rss_ratio_vs_rust"] = f"{h8_b['cpp']['max_rss_kb'] / h8_b['rust']['max_rss_kb']:.1f}"
-    m["s5_hg002_giab_cpp_diff_vars"] = f"{h2_b['cpp']['variant_count'] - h2_b['rust']['variant_count']:,}"
+    m["s5_hg002_contigs_cpp_rss_ratio_vs_rust"] = (
+        f"{h2_a['cpp']['max_rss_kb'] / h2_a['rust']['max_rss_kb']:.1f}"
+    )
+    m["s5_hg008_contigs_cpp_rss_ratio_vs_rust"] = (
+        f"{h8_a['cpp']['max_rss_kb'] / h8_a['rust']['max_rss_kb']:.1f}"
+    )
+    m["s5_hg008_giab_cpp_rss_ratio_vs_rust"] = (
+        f"{h8_b['cpp']['max_rss_kb'] / h8_b['rust']['max_rss_kb']:.1f}"
+    )
+    m["s5_hg002_giab_cpp_diff_vars"] = (
+        f"{h2_b['cpp']['variant_count'] - h2_b['rust']['variant_count']:,}"
+    )
     m["s5_hg008_contigs_cpp_wall_str"] = h8_a["cpp"]["wall_str"]
     m["s5_hg008_giab_java_wall_str"] = h8_b["java"]["wall_str"]
     m["s5_hg008_giab_cpp_wall_str"] = h8_b["cpp"]["wall_str"]
@@ -478,21 +601,43 @@ def build_macro_context(doc: dict[str, Any]) -> dict[str, str]:
     java_completing = [r for r in java_cp if r["rc"] == 0]
     m["s5_chr20_java_completed_runs"] = str(len(java_completing))
     m["s5_chr20_java_timeout_runs"] = str(len(java_cp) - len(java_completing))
-    m["cp95_chr20_java_completed"] = fmt_cp_ci(len(java_completing), len(java_completing))
+    m["cp95_chr20_java_completed"] = fmt_cp_ci(
+        len(java_completing), len(java_completing)
+    )
 
     hg2_std_snv = [r["snp_f1"] for r in rust_cp if r["cohort"] == "HG002_Germline"]
     hg2_ug_snv = [r["ughcr_snp_f1"] for r in rust_cp if r["cohort"] == "HG002_Germline"]
-    hg8_f01_std_snv = [r["snp_f1"] for r in rust_cp if r["cohort"] == "HG008_Somatic" and str(r["freq"]) == "0.01"]
-    hg8_f01_ug_snv = [r["ughcr_snp_f1"] for r in rust_cp if r["cohort"] == "HG008_Somatic" and str(r["freq"]) == "0.01"]
+    hg8_f01_std_snv = [
+        r["snp_f1"]
+        for r in rust_cp
+        if r["cohort"] == "HG008_Somatic" and str(r["freq"]) == "0.01"
+    ]
+    hg8_f01_ug_snv = [
+        r["ughcr_snp_f1"]
+        for r in rust_cp
+        if r["cohort"] == "HG008_Somatic" and str(r["freq"]) == "0.01"
+    ]
     hg8_all_std_snv = [r["snp_f1"] for r in rust_cp if r["cohort"] == "HG008_Somatic"]
-    hg8_all_ug_snv = [r["ughcr_snp_f1"] for r in rust_cp if r["cohort"] == "HG008_Somatic"]
+    hg8_all_ug_snv = [
+        r["ughcr_snp_f1"] for r in rust_cp if r["cohort"] == "HG008_Somatic"
+    ]
 
-    m["s5_chr20_hg2_std_snv_f1_range"] = f"{min(hg2_std_snv):.4f}–{max(hg2_std_snv):.4f}"
+    m["s5_chr20_hg2_std_snv_f1_range"] = (
+        f"{min(hg2_std_snv):.4f}–{max(hg2_std_snv):.4f}"
+    )
     m["s5_chr20_hg2_ug_snv_f1_range"] = f"{min(hg2_ug_snv):.4f}–{max(hg2_ug_snv):.4f}"
-    m["s5_chr20_hg8_f01_std_snv_f1_range"] = f"{min(hg8_f01_std_snv):.4f}–{max(hg8_f01_std_snv):.4f}"
-    m["s5_chr20_hg8_f01_ug_snv_f1_range"] = f"{min(hg8_f01_ug_snv):.4f}–{max(hg8_f01_ug_snv):.4f}"
-    m["s5_chr20_hg8_all_std_snv_f1_range"] = f"{min(hg8_all_std_snv):.4f}–{max(hg8_all_std_snv):.4f}"
-    m["s5_chr20_hg8_all_ug_snv_f1_range"] = f"{min(hg8_all_ug_snv):.4f}–{max(hg8_all_ug_snv):.4f}"
+    m["s5_chr20_hg8_f01_std_snv_f1_range"] = (
+        f"{min(hg8_f01_std_snv):.4f}–{max(hg8_f01_std_snv):.4f}"
+    )
+    m["s5_chr20_hg8_f01_ug_snv_f1_range"] = (
+        f"{min(hg8_f01_ug_snv):.4f}–{max(hg8_f01_ug_snv):.4f}"
+    )
+    m["s5_chr20_hg8_all_std_snv_f1_range"] = (
+        f"{min(hg8_all_std_snv):.4f}–{max(hg8_all_std_snv):.4f}"
+    )
+    m["s5_chr20_hg8_all_ug_snv_f1_range"] = (
+        f"{min(hg8_all_ug_snv):.4f}–{max(hg8_all_ug_snv):.4f}"
+    )
 
     tot_nf_cand = sum(int(r["total_candidates"]) for r in nf_rows)
     tot_nf_pass = sum(int(r["pass_somatic"]) for r in nf_rows)
@@ -516,10 +661,18 @@ def build_macro_context(doc: dict[str, Any]) -> dict[str, str]:
     v50q_g50 = v50q_by_key[("NIST_v5.0q_T2T_Q100", "VarDictJava_GIAB50kb")]
     cmrg_fc = v50q_by_key[("NIST_CMRG_v1.00_273Genes", "VarDictRust_FullContigs")]
     cmrg_g50 = v50q_by_key[("NIST_CMRG_v1.00_273Genes", "VarDictJava_GIAB50kb")]
-    m["s6_v50q_snv_r_gain_pct"] = f"{(v50q_fc['snv_r'] - v50q_g50['snv_r']) * 100.0:.2f}%"
-    m["s6_v50q_indel_r_gain_pct"] = f"{(v50q_fc['indel_r'] - v50q_g50['indel_r']) * 100.0:.2f}%"
-    m["s6_cmrg_snv_r_gain_pct"] = f"{(cmrg_fc['snv_r'] - cmrg_g50['snv_r']) * 100.0:.2f}%"
-    m["s6_cmrg_indel_r_gain_pct"] = f"{(cmrg_fc['indel_r'] - cmrg_g50['indel_r']) * 100.0:.2f}%"
+    m["s6_v50q_snv_r_gain_pct"] = (
+        f"{(v50q_fc['snv_r'] - v50q_g50['snv_r']) * 100.0:.2f}%"
+    )
+    m["s6_v50q_indel_r_gain_pct"] = (
+        f"{(v50q_fc['indel_r'] - v50q_g50['indel_r']) * 100.0:.2f}%"
+    )
+    m["s6_cmrg_snv_r_gain_pct"] = (
+        f"{(cmrg_fc['snv_r'] - cmrg_g50['snv_r']) * 100.0:.2f}%"
+    )
+    m["s6_cmrg_indel_r_gain_pct"] = (
+        f"{(cmrg_fc['indel_r'] - cmrg_g50['indel_r']) * 100.0:.2f}%"
+    )
     m["s6_mosaic_recall_pct"] = f"{float(m['s6_mosaic_recall_best']) * 100.0:.2f}%"
     m["s6_mosaic_rust_r_pct"] = m["s6_mosaic_recall_pct"]
 
@@ -544,12 +697,20 @@ def build_macro_context(doc: dict[str, Any]) -> dict[str, str]:
     java_tit = [r for r in tit_rows if r["caller"] == "VarDictJava"]
     t_sp = [j["wall_s"] / r["wall_s"] for r, j in zip(rust_tit, java_tit)]
     t_rr = [j["peak_kb"] / r["peak_kb"] for r, j in zip(rust_tit, java_tit)]
-    m["s6_tit_rust_wall_range"] = f"{min(r['wall_s'] for r in rust_tit):.2f}–{max(r['wall_s'] for r in rust_tit):.2f}"
-    m["s6_tit_java_wall_range"] = f"{min(j['wall_s'] for j in java_tit):.2f}–{max(j['wall_s'] for j in java_tit):.2f}"
+    m["s6_tit_rust_wall_range"] = (
+        f"{min(r['wall_s'] for r in rust_tit):.2f}–{max(r['wall_s'] for r in rust_tit):.2f}"
+    )
+    m["s6_tit_java_wall_range"] = (
+        f"{min(j['wall_s'] for j in java_tit):.2f}–{max(j['wall_s'] for j in java_tit):.2f}"
+    )
     m["s6_tit_speedup_range"] = f"{min(t_sp):.1f}×–{max(t_sp):.1f}×"
     m["s6_tit_rss_ratio_range"] = f"{min(t_rr):.1f}×–{max(t_rr):.1f}×"
-    m["s6_tit_rust_rss_kb_range"] = f"{min(r['peak_kb'] for r in rust_tit):,}–{max(r['peak_kb'] for r in rust_tit):,}"
-    m["s6_tit_java_rss_kb_range"] = f"{min(j['peak_kb'] for j in java_tit):,}–{max(j['peak_kb'] for j in java_tit):,}"
+    m["s6_tit_rust_rss_kb_range"] = (
+        f"{min(r['peak_kb'] for r in rust_tit):,}–{max(r['peak_kb'] for r in rust_tit):,}"
+    )
+    m["s6_tit_java_rss_kb_range"] = (
+        f"{min(j['peak_kb'] for j in java_tit):,}–{max(j['peak_kb'] for j in java_tit):,}"
+    )
     for r in rust_tit:
         p = int(r["purity_pct"])
         m[f"s6_tit_vaf_{p}_pct"] = f"{p / 2.0:.1f}%"
@@ -583,6 +744,7 @@ def compile_template(
 ) -> str:
     """Expand {{m:<key>}} and {{table:<name>}} in template text."""
     _ = inv_path
+
     # 1. Expand {{table:<name>}}
     def replace_table(match: re.Match[str]) -> str:
         tname = match.group(1).strip()
@@ -593,7 +755,9 @@ def compile_template(
             anchor_id = tname.removesuffix(".md")
         tpath = tables_dir / fname
         if not tpath.is_file():
-            raise KeyError(f"Missing table file {tpath} for macro {{{{table:{tname}}}}}")
+            raise KeyError(
+                f"Missing table file {tpath} for macro {{{{table:{tname}}}}}"
+            )
         tcontent = tpath.read_text(encoding="utf-8").strip()
         return f'<a id="{anchor_id}"></a>\n\n{tcontent}'
 
@@ -611,20 +775,58 @@ def compile_template(
     # 4. Verify zero unresolved {{...}} macros remain
     leftover = re.search(r"\{\{[^}]+\}\}", compiled)
     if leftover:
-        raise ValueError(f"Unresolved template macro found after compilation: {leftover.group(0)}")
+        raise ValueError(
+            f"Unresolved template macro found after compilation: {leftover.group(0)}"
+        )
 
     return compiled
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Compile reproducible manuscript.md and supplement.md from templates.")
-    parser.add_argument("--metrics", type=Path, default=DEFAULT_METRICS, help="Path to master_gcp_metrics.json")
-    parser.add_argument("--inventory", type=Path, default=DEFAULT_INVENTORY, help="Path to cells_60_inventory.tsv")
-    parser.add_argument("--tables-dir", type=Path, default=DEFAULT_TABLES_DIR, help="Directory containing table*.md")
-    parser.add_argument("--tmpl-dir", type=Path, default=DEFAULT_TMPL_DIR, help="Directory containing *.tmpl.md")
-    parser.add_argument("--ms-out", type=Path, default=DEFAULT_MS_OUT, help="Output path for manuscript.md")
-    parser.add_argument("--sup-out", type=Path, default=DEFAULT_SUP_OUT, help="Output path for supplement.md")
-    parser.add_argument("--check", action="store_true", help="Verify existing manuscript.md and supplement.md match templates")
+    parser = argparse.ArgumentParser(
+        description="Compile reproducible manuscript.md and supplement.md from templates."
+    )
+    parser.add_argument(
+        "--metrics",
+        type=Path,
+        default=DEFAULT_METRICS,
+        help="Path to master_gcp_metrics.json",
+    )
+    parser.add_argument(
+        "--inventory",
+        type=Path,
+        default=DEFAULT_INVENTORY,
+        help="Path to cells_60_inventory.tsv",
+    )
+    parser.add_argument(
+        "--tables-dir",
+        type=Path,
+        default=DEFAULT_TABLES_DIR,
+        help="Directory containing table*.md",
+    )
+    parser.add_argument(
+        "--tmpl-dir",
+        type=Path,
+        default=DEFAULT_TMPL_DIR,
+        help="Directory containing *.tmpl.md",
+    )
+    parser.add_argument(
+        "--ms-out",
+        type=Path,
+        default=DEFAULT_MS_OUT,
+        help="Output path for manuscript.md",
+    )
+    parser.add_argument(
+        "--sup-out",
+        type=Path,
+        default=DEFAULT_SUP_OUT,
+        help="Output path for supplement.md",
+    )
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="Verify existing manuscript.md and supplement.md match templates",
+    )
     args = parser.parse_args()
 
     if not args.metrics.is_file():
@@ -658,22 +860,35 @@ def main() -> int:
 
     if args.check:
         if not args.ms_out.is_file() or not args.sup_out.is_file():
-            print("ERROR: --check failed because manuscript.md or supplement.md does not exist.", file=sys.stderr)
+            print(
+                "ERROR: --check failed because manuscript.md or supplement.md does not exist.",
+                file=sys.stderr,
+            )
             return 1
         ms_disk = args.ms_out.read_text(encoding="utf-8")
         sup_disk = args.sup_out.read_text(encoding="utf-8")
         if ms_disk != ms_compiled:
-            print(f"ERROR: {args.ms_out} is out of sync with {ms_tmpl_path}", file=sys.stderr)
+            print(
+                f"ERROR: {args.ms_out} is out of sync with {ms_tmpl_path}",
+                file=sys.stderr,
+            )
             return 1
         if sup_disk != sup_compiled:
-            print(f"ERROR: {args.sup_out} is out of sync with {sup_tmpl_path}", file=sys.stderr)
+            print(
+                f"ERROR: {args.sup_out} is out of sync with {sup_tmpl_path}",
+                file=sys.stderr,
+            )
             return 1
         ms_pdf = args.ms_out.with_suffix(".pdf")
         sup_pdf = args.sup_out.with_suffix(".pdf")
-        if args.ms_out == DEFAULT_MS_OUT and (not ms_pdf.is_file() or not sup_pdf.is_file()):
+        if args.ms_out == DEFAULT_MS_OUT and (
+            not ms_pdf.is_file() or not sup_pdf.is_file()
+        ):
             print(f"ERROR: Missing compiled PDF {ms_pdf} or {sup_pdf}", file=sys.stderr)
             return 1
-        print(f"OK verified {args.ms_out.name} and {args.sup_out.name} match compiled templates byte-for-byte")
+        print(
+            f"OK verified {args.ms_out.name} and {args.sup_out.name} match compiled templates byte-for-byte"
+        )
         return 0
 
     args.ms_out.write_text(ms_compiled, encoding="utf-8")
@@ -697,7 +912,9 @@ def main() -> int:
             f"{DEFAULT_MS_PDF.name}, and {DEFAULT_SUP_PDF.name}"
         )
     else:
-        print(f"OK compiled {args.ms_out} ({len(ms_compiled.split())} words) and {args.sup_out} ({len(sup_compiled.split())} words)")
+        print(
+            f"OK compiled {args.ms_out} ({len(ms_compiled.split())} words) and {args.sup_out} ({len(sup_compiled.split())} words)"
+        )
     return 0
 
 

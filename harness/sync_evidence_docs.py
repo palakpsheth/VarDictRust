@@ -86,6 +86,14 @@ def sync_docs(repo_root: pathlib.Path, check: bool = False) -> int:
                 rf"\g<1>{jf_fp}\g<2>{jf_sha}\3",
                 text,
             )
+            if n != 1:
+                have = "missing" if n == 0 else f"duplicated ({n} matches)"
+                print(
+                    f"ERROR: omnibus SHA-256 table row for {jf.name} is {have}; "
+                    "expected exactly one row per evidence JSON.",
+                    file=sys.stderr,
+                )
+                return 1
             sha_rows_verified += n
         if sha_rows_verified != len(json_files):
             print(
