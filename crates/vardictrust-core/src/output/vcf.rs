@@ -1026,17 +1026,18 @@ fn paired_qual_col(vd1: i32, qual1: f64, vd2: i32, qual2: f64) -> i32 {
     }
 }
 
-/// Per-sample FORMAT string. Ports var2vcf_paired.pl:240-241.
-/// Single-buffer build (no temp `String` except the documented OR/BIAS
-/// transforms, whose port logic and pins stay in `paired_or_transform` /
-/// `paired_bias_fmt`).
-fn paired_sample_field(
+/// Per-sample FORMAT string, written into `buf` (cleared first).
+/// Byte-identical to [`paired_sample_field`]; the caller reuses one buffer
+/// across the tumor/normal columns instead of two temp `String`s that would
+/// be copied into the record and dropped.
+fn paired_sample_field_into(
+    buf: &mut String,
     v: &crate::variations::Variant,
     gt: &str,
     sbf: f64,
     oddratio: &(String, f64),
-) -> String {
-    let mut buf = String::new();
+) {
+    buf.clear();
     buf.reserve(192);
     let mq =
         crate::types::round_half_even(crate::types::round_half_even(v.mean_mapping_quality, 1), 0);
@@ -1054,35 +1055,49 @@ fn paired_sample_field(
     buf.push(',');
     let _ = write!(buf, "{}", v.pos_coverage);
     buf.push(':');
-    push_stripped(&mut buf, v.frequency, 4);
+    push_stripped(buf, v.frequency, 4);
     buf.push(':');
     buf.push_str(&paired_bias_fmt(&v.bias));
     buf.push(':');
-    push_stripped(&mut buf, v.mean_position, 1);
+    push_stripped(buf, v.mean_position, 1);
     buf.push(':');
     buf.push(if v.pstd { '1' } else { '0' });
     buf.push(':');
-    push_stripped(&mut buf, v.mean_quality, 1);
+    push_stripped(buf, v.mean_quality, 1);
     buf.push(':');
     buf.push(if v.qstd { '1' } else { '0' });
     buf.push(':');
-    push_stripped(&mut buf, sbf, 5);
+    push_stripped(buf, sbf, 5);
     buf.push(':');
     buf.push_str(&oddratio.0);
     buf.push(':');
     let _ = write!(buf, "{:.0}", mq);
     buf.push(':');
-    push_stripped(&mut buf, v.hq_lq_ratio, 3);
+    push_stripped(buf, v.hq_lq_ratio, 3);
     buf.push(':');
-    push_stripped(&mut buf, v.hi_freq, 4);
+    push_stripped(buf, v.hi_freq, 4);
     buf.push(':');
-    push_stripped(&mut buf, v.extra_freq, 4);
+    push_stripped(buf, v.extra_freq, 4);
     buf.push(':');
     if v.nm > 0.0 {
-        push_stripped(&mut buf, v.nm, 1);
+        push_stripped(buf, v.nm, 1);
     } else {
         buf.push('0');
     }
+}
+
+/// Per-sample FORMAT string. Ports var2vcf_paired.pl:240-241.
+/// Single-buffer build (no temp `String` except the documented OR/BIAS
+/// transforms, whose port logic and pins stay in `paired_or_transform` /
+/// `paired_bias_fmt`).
+fn paired_sample_field(
+    v: &crate::variations::Variant,
+    gt: &str,
+    sbf: f64,
+    oddratio: &(String, f64),
+) -> String {
+    let mut buf = String::new();
+    paired_sample_field_into(&mut buf, v, gt, sbf, oddratio);
     buf
 }
 
@@ -2048,6 +2063,21 @@ mod tests {
         };
         let pr = format_paired_vcf_record(&sv, "chr1", &config);
         assert_eq!(pr.prefix.split('\t').nth(5).unwrap(), "71");
+    }
+
+    #[test]
+    fn test_paired_sample_field_into_matches_one_shot() {
+        // Reuse-pattern pin: `_into` must clear and reproduce the one-shot
+        // bytes exactly, even over a longer previous row (no bleed-through
+        // between paired sample columns).
+        let v = clean_normal();
+        let oddratio = ("0.5".to_string(), 0.5);
+        let mut buf = String::new();
+        buf.push_str("LONGER-PREVIOUS-ROW-CONTENT-THAT-MUST-VANISH");
+        paired_sample_field_into(&mut buf, &v, "0/1", 0.5, &oddratio);
+        assert_eq!(buf, paired_sample_field(&v, "0/1", 0.5, &oddratio));
+        paired_sample_field_into(&mut buf, &v, "0/1", 0.5, &oddratio);
+        assert_eq!(buf, paired_sample_field(&v, "0/1", 0.5, &oddratio));
     }
 
     #[test]
