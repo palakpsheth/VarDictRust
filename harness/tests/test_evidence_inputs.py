@@ -17,6 +17,7 @@ import hashlib
 import json
 import os
 import pathlib
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -208,6 +209,143 @@ class TestEvidenceInputs(unittest.TestCase):
                 env={k: v for k, v in os.environ.items() if k != "RECERTIFY_NEW_INPUTS"},
             )
             self.assertEqual(res_changed.returncode, 0, "changed input digest must force needs_stamp rerun (exit 0)")
+
+    def test_sync_evidence_docs_updates_tier2_tables_and_summary_ranges(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tpath = pathlib.Path(tmp)
+            rel_files = [
+                "Cargo.toml",
+                "README.md",
+                "DIVERGENCES.md",
+                "benchmarks/README.md",
+                "docs/validation/omnibus-empirical-validation.md",
+                "docs/testing/test-matrix-and-ci-audit.md",
+                ".agents/skills/vardictrust-release/references/version-surface-map.md",
+            ]
+            for rel in rel_files:
+                src = ROOT_DIR / rel
+                dst = tpath / rel
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst)
+
+            ev_dst = tpath / "benchmarks" / "evidence"
+            ev_dst.mkdir(parents=True, exist_ok=True)
+            for jf in (ROOT_DIR / "benchmarks" / "evidence").glob("*.json"):
+                shutil.copy2(jf, ev_dst / jf.name)
+
+            sync_script = str(ROOT_DIR / "harness" / "sync_evidence_docs.py")
+            res_init = subprocess.run(
+                [sys.executable, sync_script, "--repo-root", str(tpath), "--check"],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(
+                res_init.returncode,
+                0,
+                f"Initial --check failed: {res_init.stderr}",
+            )
+
+            # Mutate hg008-tier2.json and hg008-cram-twin.json timings/RSS in temp copy
+            hg008_path = ev_dst / "hg008-tier2.json"
+            hg008_data = json.loads(hg008_path.read_text(encoding="utf-8"))
+            hg008_data["rust_time"]["wall"] = "0:38.20"
+            hg008_data["rust_time"]["max_rss_kb"] = "531860"
+            hg008_path.write_text(
+                json.dumps(hg008_data, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+
+            cram_path = ev_dst / "hg008-cram-twin.json"
+            cram_data = json.loads(cram_path.read_text(encoding="utf-8"))
+            cram_data["rust_time"]["wall"] = "0:50.00"
+            cram_data["rust_time"]["max_rss_kb"] = "256000"
+            cram_data["rust_cram_time"]["wall"] = "1:15.00"
+            cram_data["rust_cram_time"]["max_rss_kb"] = "1572864"
+            cram_path.write_text(
+                json.dumps(cram_data, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+
+            scale_path = ev_dst / "scale.json"
+            scale_data = json.loads(scale_path.read_text(encoding="utf-8"))
+            scale_data["extra"]["speedup_8"] = 3.25
+            scale_data["extra"]["rss_ratio_chr1_vs_10mb"] = 1.15
+            scale_path.write_text(
+                json.dumps(scale_data, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+
+            # --check must detect drift across all 4 surfaces
+            res_drift = subprocess.run(
+                [sys.executable, sync_script, "--repo-root", str(tpath), "--check"],
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(res_drift.returncode, 0, "--check should fail when timings drift")
+            for expected_surface in (
+                "README.md",
+                "benchmarks/README.md",
+                "docs/validation/omnibus-empirical-validation.md",
+                "docs/testing/test-matrix-and-ci-audit.md",
+            ):
+                self.assertIn(expected_surface, res_drift.stderr)
+
+            # Sync and verify updated values
+            res_sync = subprocess.run(
+                [sys.executable, sync_script, "--repo-root", str(tpath)],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(res_sync.returncode, 0, f"Sync failed: {res_sync.stderr}")
+
+            readme_text = (tpath / "README.md").read_text(encoding="utf-8")
+            self.assertIn("**2.8×–14.0× faster on WGS/WES**", readme_text)
+            self.assertIn("in **6.0×–16.5× less memory**", readme_text)
+            self.assertIn("**2.8×–14.0× faster** on WGS/WES", readme_text)
+            self.assertIn("**6.0×–16.5× less RAM** than VarDictJava on WGS/WES", readme_text)
+            self.assertIn(
+                "| **GIAB HG008 Somatic PDAC** | `4` (`-th 4`²) | `1:47.00` | `0:21.96` ([`CPP-9`](docs/upstream-bugs.md#cpp-9)) | **`0:38.20`** | **2.8× faster** | `3.04 GiB` | `303.6 MiB` | **`519.4 MiB`** | **6.0× less** | [`hg008-tier2.json`](benchmarks/evidence/hg008-tier2.json) |",
+                readme_text,
+            )
+            self.assertIn(
+                "| **GIAB HG008 CRAM-vs-BAM Twin** | `4` (`-th 4`²) | `0:50.00` (Rust BAM) | — | **`1:15.00` (Rust CRAM)** | **1.50× CRAM/BAM** | `250.0 MiB` (BAM) | — | **`1.50 GiB` (CRAM)** | **Bounded `512 MiB` cache** | [`hg008-cram-twin.json`](benchmarks/evidence/hg008-cram-twin.json) |",
+                readme_text,
+            )
+
+            bench_text = (tpath / "benchmarks" / "README.md").read_text(encoding="utf-8")
+            self.assertIn(
+                "| `1:47.00` | `0:21.96` | **`0:38.20`** | **2.8× faster** | `3.04 GiB` | `303.6 MiB` | **`519.4 MiB`** | **6.0× less** | **[MISMATCH (`CPP-9`)](../docs/upstream-bugs.md#cpp-9)** | [`hg008-tier2.json`](evidence/hg008-tier2.json) |",
+                bench_text,
+            )
+            self.assertIn(
+                "| `0:50.00` (Rust BAM) | — | **`1:15.00` (Rust CRAM)** | **1.50× CRAM/BAM** | `250.0 MiB` (BAM) | — | **`1.50 GiB` (CRAM)** | **Bounded `512 MiB` cache** |",
+                bench_text,
+            )
+            self.assertIn("$S_8 = 3.25\\times$, RSS 1.15×", bench_text)
+
+            omnibus_text = (tpath / "docs" / "validation" / "omnibus-empirical-validation.md").read_text(encoding="utf-8")
+            self.assertIn("**3.25× parallel**", omnibus_text)
+            self.assertIn("**1.15× flat RSS scaling**", omnibus_text)
+            self.assertIn("**$1.15\\times$ (`1.106\\times`)**", omnibus_text)
+            self.assertIn(
+                "| `1:47.00` | `0:21.96` | **`0:38.20`** | **2.8× faster** | `3.04 GiB` | `303.6 MiB` | **`519.4 MiB`** | **6.0× less** | [`hg008-tier2.json`](../../benchmarks/evidence/hg008-tier2.json) |",
+                omnibus_text,
+            )
+            self.assertIn(
+                "| `0:50.00` (Rust BAM) | — | **`1:15.00` (Rust CRAM)** | **1.50× CRAM/BAM** | `250.0 MiB` (BAM) | — | **`1.50 GiB` (CRAM)** | **Bounded `512 MiB` cache** | [`hg008-cram-twin.json`](../../benchmarks/evidence/hg008-cram-twin.json) |",
+                omnibus_text,
+            )
+
+            matrix_text = (tpath / "docs" / "testing" / "test-matrix-and-ci-audit.md").read_text(encoding="utf-8")
+            self.assertIn("(`cram_to_bam_wall_ratio <= 2.50`, achieved `1.50×`)", matrix_text)
+
+            # --check must now exit 0
+            res_after = subprocess.run(
+                [sys.executable, sync_script, "--repo-root", str(tpath), "--check"],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(res_after.returncode, 0, f"--check after sync failed: {res_after.stderr}")
 
 
 if __name__ == "__main__":
