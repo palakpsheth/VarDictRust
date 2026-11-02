@@ -52,7 +52,7 @@ jobs:
           echo "[$(date '+%H:%M:%S')] [Step 1/9] Running cargo fmt --check, cargo clippy -D warnings, and bench compile..."
           cargo fmt --all -- --check
           cargo clippy --all-targets --all-features -- -D warnings -A clippy::needless_late_init -A clippy::byte_char_slices
-          cargo bench --no-run
+          cargo test --benches -p vardictrust-core
           echo "STEP1_S=$((SECONDS - t0))" >> "$GITHUB_ENV"
           echo "STEP1_STATUS=PASS" >> "$GITHUB_ENV"
       - name: 2. Build Instrumented Workspace & Test Targets
@@ -109,12 +109,14 @@ jobs:
             harness/tests/test_compare_vcf.py \
             harness/tests/test_docs_ui.py \
             harness/tests/test_golden_store.py \
+            harness/tests/test_perf_budget.py \
             harness/tests/test_profile_catalog.py \
             harness/tests/test_select_slice_regions.py \
             harness/tests/test_stdlib_purity.py; do
             GOLDEN_STORE_DIR="$TMP_GS" python3 "$py_test"
           done
           for sh_test in \
+            harness/tests/test_bench_profile.sh \
             harness/tests/test_concordance_sv.sh \
             harness/tests/test_courtesy.sh \
             harness/tests/test_env_pinned.sh \
@@ -123,6 +125,7 @@ jobs:
             harness/tests/test_git_hooks.sh \
             harness/tests/test_golden_wiring.sh \
             harness/tests/test_perf_budget.sh \
+            harness/tests/test_perf_pr.sh \
             harness/tests/test_profile_sh.sh \
             harness/tests/test_release_deps.sh \
             harness/tests/test_scale_bench.sh \

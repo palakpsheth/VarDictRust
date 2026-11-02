@@ -104,6 +104,61 @@ if ! grep -q '"cpp_wall_s": 3.59' <<<"$out_5c"; then
   echo "FAIL: case_cpp_tsv_surface should retain completed cpp_time"; fail=1
 fi
 
+# Test 6: rust_time.exit != "0" -> exit 1
+cat > "$T/benchmarks/evidence/case_rust_exit_nonzero.json" <<'EOF'
+{
+  "fingerprint": "abc123",
+  "java_time": {"wall": "1:00.00", "max_rss_kb": "2000000", "exit": "0"},
+  "rust_time": {"wall": "0:00.01", "max_rss_kb": "10000", "exit": "101"}
+}
+EOF
+if (cd "$T" && python3 "$HERE/harness/perf_budget.py" case_rust_exit_nonzero >/dev/null 2>&1); then
+  echo "FAIL: case_rust_exit_nonzero should fail"; fail=1
+fi
+
+# Test 7: result != PASS/MATCH/EQUAL -> exit 1
+cat > "$T/benchmarks/evidence/case_result_not_pass.json" <<'EOF'
+{
+  "fingerprint": "abc123",
+  "result": "ENGINE-FAIL",
+  "java_time": {"wall": "1:00.00", "max_rss_kb": "2000000", "exit": "0"},
+  "rust_time": {"wall": "0:10.00", "max_rss_kb": "500000", "exit": "0"}
+}
+EOF
+if (cd "$T" && python3 "$HERE/harness/perf_budget.py" case_result_not_pass >/dev/null 2>&1); then
+  echo "FAIL: case_result_not_pass should fail"; fail=1
+fi
+
+# Test 8: --vs-cpp ratio enforcement and amplicon floor exclusion
+cat > "$T/benchmarks/evidence/case_cpp_ratio.json" <<'EOF'
+{
+  "fingerprint": "abc123",
+  "result": "MATCH",
+  "java_time": {"wall": "1:00.00", "max_rss_kb": "2000000", "exit": "0"},
+  "rust_time": {"wall": "0:30.00", "max_rss_kb": "500000", "exit": "0"},
+  "cpp_time": {"wall": "0:20.00", "max_rss_kb": "300000", "exit": "0"}
+}
+EOF
+if (cd "$T" && python3 "$HERE/harness/perf_budget.py" --vs-cpp 1.2 case_cpp_ratio >/dev/null 2>&1); then
+  echo "FAIL: case_cpp_ratio (1.5x > 1.2x) should fail"; fail=1
+fi
+if ! (cd "$T" && python3 "$HERE/harness/perf_budget.py" --vs-cpp 1.6 case_cpp_ratio >/dev/null 2>&1); then
+  echo "FAIL: case_cpp_ratio (1.5x <= 1.6x) should pass"; fail=1
+fi
+
+cat > "$T/benchmarks/evidence/amplicon-tier2.json" <<'EOF'
+{
+  "fingerprint": "abc123",
+  "result": "MATCH",
+  "java_time": {"wall": "0:02.77", "max_rss_kb": "123904", "exit": "0"},
+  "rust_time": {"wall": "0:00.01", "max_rss_kb": "11776", "exit": "0"},
+  "cpp_time": {"wall": "0:00.005", "max_rss_kb": "90880", "exit": "0"}
+}
+EOF
+if ! (cd "$T" && python3 "$HERE/harness/perf_budget.py" --vs-cpp 1.0 amplicon-tier2 >/dev/null 2>&1); then
+  echo "FAIL: amplicon-tier2 should be excluded from --vs-cpp floor"; fail=1
+fi
+
 if [ $fail -eq 0 ]; then
   echo "PASS test_perf_budget"
   exit 0

@@ -39,6 +39,7 @@ jemalloc = ["dep:tikv-jemallocator"]
 profile-cpu  = ["dep:pprof", "dep:inferno", "dep:libc"]
 profile-dhat = ["dep:dhat"]
 profile-heap = ["jemalloc", "tikv-jemallocator/profiling", "dep:jemalloc_pprof"]
+profile-counters = ["vardictrust-core/profile-counters"]
 
 [dev-dependencies]
 tempfile.workspace = true
