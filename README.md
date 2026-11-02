@@ -15,7 +15,7 @@
 **VarDictRust** is a fast, memory-safe NGS variant caller that delivers byte-identical results to [VarDictJava](https://github.com/AstraZeneca-NGS/VarDictJava) v1.8.3 while running **3.3×–14.0× faster on WGS/WES** (up to **304.0× faster** on amplicons) in **7.8×–16.5× less memory**. It consolidates the Java → R → Perl pipeline into a **single binary**, eliminating JVM crashes, WGS out-of-memory errors, and runtime dependency friction.
 
 - **Exact Parity:** Bitwise identical variant calls, `FILTER` tags, and somatic `STATUS` decisions to VarDictJava v1.8.3 across all cohorts ($\varepsilon = 10^{-6}$, 0 diffs).
-- **High-Throughput Speed:** **3.3×–14.0× faster** on WGS/WES, **304.0× faster** on amplicon panels, and **3.14× parallel scaling** on 8 threads across full chromosomes (`7:15.96` $\to$ `2:18.92` on `chr1`; **24.8× faster** than VarDictJava's `57:16.00` run).
+- **High-Throughput Speed:** **3.3×–14.0× faster** on WGS/WES, **304.0× faster** on amplicon panels, and **3.14× parallel scaling** on 8 threads across full chromosomes (`7:15.96` $\to$ `2:18.92` on `chr1`, where VarDictJava OOM-crashes on 31 GiB hosts).
 - **Bounded $O(1)$ Memory:** Flat RSS scaling ($1.11\times$ from 10 Mbp to 249 Mbp on Chr1, `1.15` $\to$ `1.27 GiB`), using **7.8×–16.5× less RAM** than VarDictJava on WGS/WES and **19.2× less RAM** than unchunked `vardictcpp` (`24.34 GiB`) on whole-chromosome 1.
 - **Zero External Runtimes:** Prebuilt static Linux (`x86_64`/`aarch64` `musl`) and native Linux (`x86_64` `gnu`) / macOS (`arm64`/`x86_64`) binaries—no JVM, R, or Perl.
 - **Robust by Construction:** `#![forbid(unsafe_code)]`. Malformed CIGARs, missing indexes, and corrupt records return actionable errors instead of crashing.

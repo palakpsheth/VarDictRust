@@ -191,6 +191,12 @@ def sync_docs(repo_root: pathlib.Path, check: bool = False) -> int:
             "docs/testing/test-matrix-and-ci-audit.md",
         )
         text = sub_required(
+            r"(\|\s*\*\*Chr1 Scale Benchmark\*\*\s*\|\s*\[`scale\.json`\]\([^)]+\)\s*\|\s*Chromosome 1 Full Scaling\s*\|\s*\$S_8 = )[0-9]+\.[0-9]+(\\times\$, RSS \$)[0-9]+\.[0-9]+(\\times\$)",
+            rf"\g<1>{s8:.2f}\g<2>{rss_ratio:.2f}\3",
+            text,
+            "docs/testing/test-matrix-and-ci-audit.md",
+        )
+        text = sub_required(
             r"(achieved \*\*)[0-9]+\.[0-9]+×(\*\* \(8 threads vs 1 thread: `)[0-9]+\.[0-9]+s(` vs `)[0-9]+\.[0-9]+s(` 3-run median)",
             rf"\g<1>{s8:.2f}×\g<2>{th8_s:.2f}s\g<3>{th1_s:.2f}s\4",
             text,
