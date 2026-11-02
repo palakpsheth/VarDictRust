@@ -1,8 +1,9 @@
-//! Process-level CLI smoke and robustness tests (`4` tests).
+//! Process-level CLI smoke and robustness tests (`5` tests).
 //!
 //! Verifies end-to-end binary stream redirection (`--DP ERR` / `--defaultPrinter ERR`),
 //! verbose stderr region debug output (`-y` / `--verbose`), non-zero exit codes on
-//! unsupported/invalid CLI flags, and C vs `de_DE` locale independence on `micro.bam`.
+//! unsupported/invalid CLI flags, C vs `de_DE` locale independence on `micro.bam`,
+//! and clean jemalloc startup without `<jemalloc>:` stderr warnings.
 
 use std::path::Path;
 use std::process::Command;
@@ -192,5 +193,50 @@ fn locale_independence_c_vs_de_de_on_micro_bam() {
     assert_eq!(
         c.stdout, de.stdout,
         "output bytes differ between LC_ALL=C and de_DE"
+    );
+}
+
+#[test]
+fn jemalloc_startup_emits_no_stderr_warnings() {
+    let ver = base_cmd()
+        .args(["--version"])
+        .output()
+        .expect("spawn vardictrust --version");
+    assert!(
+        ver.status.success(),
+        "--version failed: {}",
+        String::from_utf8_lossy(&ver.stderr)
+    );
+    let ver_stderr = String::from_utf8_lossy(&ver.stderr);
+    assert!(
+        !ver_stderr.contains("<jemalloc>:"),
+        "unexpected jemalloc warning on --version stderr: {ver_stderr}"
+    );
+
+    let call = base_cmd()
+        .args([
+            "-G",
+            "fixtures/micro/micro.ref.fa",
+            "-b",
+            "fixtures/micro/micro.bam",
+            "-R",
+            "chr1:40-260",
+            "--threads=1",
+        ])
+        .output()
+        .expect("spawn vardictrust on micro.bam");
+    assert!(
+        call.status.success(),
+        "micro.bam call failed: {}",
+        String::from_utf8_lossy(&call.stderr)
+    );
+    assert!(
+        call.stdout.windows(5).any(|w| w == b"CHROM"),
+        "stdout must contain VCF header"
+    );
+    let call_stderr = String::from_utf8_lossy(&call.stderr);
+    assert!(
+        !call_stderr.contains("<jemalloc>:"),
+        "unexpected jemalloc warning on micro.bam stderr: {call_stderr}"
     );
 }
