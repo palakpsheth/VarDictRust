@@ -2376,14 +2376,9 @@ impl RecordPreprocessor {
             }
         }
 
-        // 2. Secondary alignment filter (unless samfilter is explicitly 0)
+        // 2. Secondary alignment filter (unless samfilter is explicitly "0", SamView.java:101)
         let is_secondary = (record.flags & 0x100) != 0;
-        if is_secondary && config.flag_filter != 0 {
-            return false;
-        }
-
-        // Unmapped reads filter
-        if (record.flags & 0x4) != 0 {
+        if is_secondary && config.skip_secondary_and_supplementary() {
             return false;
         }
 
@@ -2393,7 +2388,7 @@ impl RecordPreprocessor {
             return false;
         }
 
-        // 4. SAM flag filter
+        // 4. SAM flag filter (default 0x504 includes 0x4 unmapped; -F 0 disables it per SamView.java:109)
         if config.flag_filter != 0 && (u32::from(record.flags) & config.flag_filter) != 0 {
             return false;
         }
@@ -3016,12 +3011,35 @@ mod tests {
         assert!(!feed.next_into(&mut reused).unwrap(), "feed exhausted");
     }
 
+    fn vardict_java_test_bam(rel: &str) -> std::path::PathBuf {
+        let local = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(rel);
+        if local.exists() {
+            return local;
+        }
+        if let Ok(out) = std::process::Command::new("git")
+            .args(["worktree", "list", "--porcelain"])
+            .output()
+        {
+            for line in String::from_utf8_lossy(&out.stdout).lines() {
+                if let Some(wt) = line.strip_prefix("worktree ") {
+                    let candidate = Path::new(wt.trim()).join(rel);
+                    if candidate.exists() {
+                        return candidate;
+                    }
+                }
+            }
+        }
+        local
+    }
+
     #[test]
     fn test_bam_open_and_query() {
-        let bam_path = Path::new(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests/L861Q.bam"
-        ));
+        let bam_path_buf = vardict_java_test_bam(
+            "VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests/L861Q.bam",
+        );
+        let bam_path = bam_path_buf.as_path();
         let config = Config::default();
 
         let cached = open_reader(bam_path, &config).unwrap();
@@ -3039,14 +3057,15 @@ mod tests {
 
     #[test]
     fn flag_filter() {
-        let bam_path = Path::new(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests/L861Q.bam"
-        ));
+        let bam_path_buf = vardict_java_test_bam(
+            "VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests/L861Q.bam",
+        );
+        let bam_path = bam_path_buf.as_path();
 
         // 1. Without flag filter
         let config_no_filter = Config {
             flag_filter: 0,
+            samfilter_raw: "0".to_string(),
             ..Default::default()
         };
 
@@ -3084,6 +3103,22 @@ mod tests {
             passed_count, 1031,
             "Filtered count must match samtools view -c -F 0x504"
         );
+
+        // 3. I1: -F "0x0" has flag_filter == 0 but samfilter_raw != "0", so secondary (0x100) reads are skipped,
+        //    whereas -F "0" retains secondary reads; unmapped (0x4) reads increment total_reads under -F 0.
+        let mut sec_rec = SamRecord::new();
+        sec_rec.flags = 0x100;
+        sec_rec.cigar = vec![(10, CigarKind::Match)];
+        sec_rec.sequence = vec![b'A'; 10];
+        let mut prep_zero = RecordPreprocessor::new();
+        assert!(prep_zero.preprocess_record(&sec_rec, &config_no_filter));
+        let config_hex_zero = Config {
+            flag_filter: 0,
+            samfilter_raw: "0x0".to_string(),
+            ..Default::default()
+        };
+        let mut prep_hex_zero = RecordPreprocessor::new();
+        assert!(!prep_hex_zero.preprocess_record(&sec_rec, &config_hex_zero));
     }
 
     #[test]

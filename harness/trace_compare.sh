@@ -23,6 +23,13 @@ for arg in "$@"; do
   esac
 done
 
+for ((i=0; i<${#EXTRA_ARGS[@]}-1; i++)); do
+  if [ "${EXTRA_ARGS[$i]}" = "-f" ]; then
+    AF="${EXTRA_ARGS[$((i+1))]}"
+    break
+  fi
+done
+
 TMP=$(mktemp -d)
 trap "rm -rf $TMP" EXIT
 

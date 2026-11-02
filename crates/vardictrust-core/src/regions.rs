@@ -216,6 +216,67 @@ pub fn parse_int_with_commas(s: &str) -> Result<u32, VardictError> {
         .map_err(|e| VardictError::Parse(format!("invalid integer '{}': {}", s, e)))
 }
 
+/// Ports `String.split(delimiter)` (`java.lang.String.split(regex, 0)`):
+/// splits `line` by regex `delim` and discards trailing empty segments when `parts.len() > 1`.
+pub fn java_split<'a>(line: &'a str, delim: &str) -> Result<Vec<&'a str>, VardictError> {
+    let mut parts: Vec<&'a str> = if delim == "\t" || delim == r"\t" {
+        line.split('\t').collect()
+    } else if delim.len() == 1
+        && !delim.starts_with([
+            '.', '$', '^', '{', '[', '(', '|', ')', '*', '+', '?', '\\', '}', ']',
+        ])
+    {
+        line.split(delim).collect()
+    } else {
+        let re = regex::RegexBuilder::new(delim)
+            .unicode(false)
+            .build()
+            .map_err(|e| VardictError::Parse(format!("invalid delimiter regex '{delim}': {e}")))?;
+        re.split(line).collect()
+    };
+    if parts.len() > 1 {
+        while parts.last().is_some_and(|s| s.is_empty()) {
+            parts.pop();
+        }
+    }
+    Ok(parts)
+}
+
+/// Ports `VarDictLauncher.java:139-176`: scans non-header (`#`, `browser`, `track`) lines of a
+/// BED reader and returns `true` iff any line has 8 columns with integer columns `1, 2, 6, 7`
+/// satisfying `a[6] >= a[1]` and `a[7] <= a[2]`.
+pub fn detect_amplicon_bed_from_reader<R: BufRead>(
+    reader: R,
+    delimiter: &str,
+) -> Result<bool, VardictError> {
+    for line_res in reader.lines() {
+        let line = line_res?;
+        if line.starts_with('#') || line.starts_with("browser") || line.starts_with("track") {
+            continue;
+        }
+        let a = java_split(&line, delimiter)?;
+        if let [_, a1, a2, _, _, _, a6, a7] = a.as_slice() {
+            if let (Ok(s1), Ok(e1), Ok(s2), Ok(e2)) = (
+                parse_int_with_commas(a1),
+                parse_int_with_commas(a2),
+                parse_int_with_commas(a6),
+                parse_int_with_commas(a7),
+            ) {
+                if s2 >= s1 && e2 <= e1 {
+                    return Ok(true);
+                }
+            }
+        }
+    }
+    Ok(false)
+}
+
+/// File-path wrapper around [`detect_amplicon_bed_from_reader`].
+pub fn detect_amplicon_bed<P: AsRef<Path>>(path: P, delimiter: &str) -> Result<bool, VardictError> {
+    let file = File::open(path)?;
+    detect_amplicon_bed_from_reader(BufReader::new(file), delimiter)
+}
+
 /// Parses BED file in non-amplicon mode.
 pub fn parse_non_amp_bed_from_reader<R: BufRead>(
     reader: R,
@@ -237,36 +298,34 @@ pub fn parse_non_amp_bed_from_reader<R: BufRead>(
 
     for line_res in reader.lines() {
         let line = line_res?;
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
+        if line.trim().is_empty()
+            || line.starts_with('#')
+            || line.starts_with("browser")
+            || line.starts_with("track")
+        {
             continue;
         }
 
-        let cols: Vec<&str> = trimmed.split(&config.delimiter).collect();
+        let cols = java_split(&line, &config.delimiter)?;
 
         let mut current_format = format;
         let mut current_zero_based = is_zero_based;
 
-        // Auto-detect 4-column BED format
-        if config.column_for_chromosome.is_none() && cols.len() == 4 {
-            if let (Ok(a1), Ok(a2)) = (
-                parse_int_with_commas(cols[1]),
-                parse_int_with_commas(cols[2]),
-            ) {
-                if a1 <= a2 {
-                    current_format = CUSTOM_BED_ROW_FORMAT;
-                    // Preserve user's gene column if explicitly set
-                    if let Some(user_gene_col) = config.col_gene {
-                        current_format.gene_column = user_gene_col;
-                    }
-                    if zero_based_override.is_none() {
-                        current_zero_based = true;
-                    }
+        // Auto-detect 4-column BED format (RegionBuilder.java:58-68)
+        let effective_override =
+            zero_based_override.or_else(|| config.zero_based_defined.then_some(config.zero_based));
+        if let (None, [_, c1, c2, _]) = (config.column_for_chromosome, cols.as_slice()) {
+            let a1 = parse_int_with_commas(c1)?;
+            let a2 = parse_int_with_commas(c2)?;
+            if a1 <= a2 {
+                current_format = CUSTOM_BED_ROW_FORMAT;
+                if effective_override.is_none() {
+                    current_zero_based = true;
                 }
             }
         }
 
-        let active_zero_based = zero_based_override.unwrap_or(current_zero_based);
+        let active_zero_based = effective_override.unwrap_or(current_zero_based);
 
         if cols.len() <= current_format.chr_column
             || cols.len() <= current_format.start_column
@@ -332,7 +391,7 @@ pub fn parse_non_amp_bed_from_reader<R: BufRead>(
             }
 
             if thick_start > thick_end {
-                thick_start = thick_end;
+                continue;
             }
 
             let final_start = std::cmp::max(1, thick_start) as u32;
@@ -364,18 +423,21 @@ pub fn parse_amp_bed_from_reader<R: BufRead>(
 
     for line_res in reader.lines() {
         let line = line_res?;
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
+        if line.trim().is_empty()
+            || line.starts_with('#')
+            || line.starts_with("browser")
+            || line.starts_with("track")
+        {
             continue;
         }
 
-        let cols: Vec<&str> = trimmed.split(&config.delimiter).collect();
+        let cols = java_split(&line, &config.delimiter)?;
 
         if cols.len() <= 7 {
             return Err(VardictError::Parse(format!(
                 "Amplicon BED line has fewer than 8 columns (got {}): '{}'",
                 cols.len(),
-                trimmed
+                line.trim()
             )));
         }
 
@@ -422,7 +484,11 @@ pub fn parse_amp_bed_from_reader<R: BufRead>(
     let mut previous_chr = String::new();
     let mut previous_end: i32 = -1;
 
-    for (_, chr_regions) in tsegs {
+    let keys: Vec<String> = tsegs.keys().cloned().collect();
+    for chr_key in crate::javamap::java_hashmap_key_order(&keys) {
+        let Some(chr_regions) = tsegs.swap_remove(chr_key) else {
+            continue;
+        };
         // Parser invariant: every region pushed above carries amplicon info.
         // §9: propagate as an internal error instead of unwrapping; the
         // sort key is extracted once so the stable order is unchanged.
@@ -916,5 +982,110 @@ Y\t59042860\t59047860\tY_59042860_5\t0\t.\t59042860\t59047860
             .collect();
         let expected: Vec<(u32, u32)> = tiles.iter().map(|t| (t.start.0, t.end.0)).collect();
         assert_eq!(flattened, expected);
+    }
+
+    #[test]
+    fn detect_amplicon_bed_truth_table() {
+        // 8-col valid amplicon (thick inside outer) -> true
+        assert!(detect_amplicon_bed_from_reader(
+            "chr1\t100\t200\tGENE\t0\t+\t120\t180\n".as_bytes(),
+            "\t"
+        )
+        .unwrap());
+        // Header lines skipped before first data line -> true
+        assert!(detect_amplicon_bed_from_reader(
+            "#comment\nbrowser pos\ntrack name=foo\nchr1\t100\t200\tGENE\t0\t+\t120\t180\n"
+                .as_bytes(),
+            "\t"
+        )
+        .unwrap());
+        // 8-col where thick extends outside outer (s2 < s1 or e2 > e1) -> false
+        assert!(!detect_amplicon_bed_from_reader(
+            "chr1\t100\t200\tGENE\t0\t+\t90\t180\n".as_bytes(),
+            "\t"
+        )
+        .unwrap());
+        // 8-col non-numeric col 6 -> false
+        assert!(!detect_amplicon_bed_from_reader(
+            "chr1\t100\t200\tGENE\t0\t+\tfoo\t180\n".as_bytes(),
+            "\t"
+        )
+        .unwrap());
+        // 4-col standard BED -> false
+        assert!(
+            !detect_amplicon_bed_from_reader("chr1\t100\t200\tGENE\n".as_bytes(), "\t").unwrap()
+        );
+        // 9-col row followed by a valid 8-col amplicon row -> true (scans all rows)
+        assert!(detect_amplicon_bed_from_reader(
+            "chr1\t100\t200\tGENE\t0\t+\t120\t180\textra\nchr1\t300\t400\tGENE2\t0\t+\t320\t380\n"
+                .as_bytes(),
+            "\t"
+        )
+        .unwrap());
+    }
+
+    #[test]
+    fn bed_reader_java_semantics() {
+        let mut chrs = HashMap::new();
+        chrs.insert("chr1".to_string(), 10000usize);
+        let cfg = Config::default();
+
+        // 1a. 4-col auto-detect (c4.bed: RegionBuilder.java:16, 48-68) uses CUSTOM_BED_ROW_FORMAT
+        //     where gene_column = 2 ("101"), thick_start_column = 3 ("5"), thick_end_column = 1 ("101").
+        let c4_bed = "chr1\t101\t101\t5\n";
+        let c4_segs =
+            parse_non_amp_bed_from_reader(c4_bed.as_bytes(), &cfg, &chrs, Some(false)).unwrap();
+        assert_eq!(c4_segs.len(), 1);
+        assert_eq!(c4_segs[0].len(), 1);
+        assert_eq!(c4_segs[0][0].gene, "101");
+        assert_eq!(c4_segs[0][0].start, Pos1(101));
+        assert_eq!(c4_segs[0][0].end, Pos1(101));
+
+        // 1b. Explicit column flags (-c 1 -S 2 -E 3 -g 4): preserves trailing space in gene name,
+        //     strips trailing empty tabs via java_split, and skips browser/track header lines.
+        let mut trail_cfg = Config::default();
+        trail_cfg.column_for_chromosome = Some(0);
+        trail_cfg.col_chr = 0;
+        trail_cfg.col_start = 1;
+        trail_cfg.col_end = 2;
+        trail_cfg.col_seg_start = 1;
+        trail_cfg.col_seg_end = 2;
+        trail_cfg.col_gene = Some(3);
+        trail_cfg.zero_based = true;
+        let bed = "browser position chr1:1-1000\ntrack name=test\nchr1\t100\t200\tGENE \t\t\n";
+        let segs = parse_non_amp_bed_from_reader(bed.as_bytes(), &trail_cfg, &chrs, None).unwrap();
+        assert_eq!(segs.len(), 1);
+        assert_eq!(segs[0].len(), 1);
+        assert_eq!(segs[0][0].gene, "GENE ");
+        assert_eq!(segs[0][0].start, Pos1(101));
+        assert_eq!(segs[0][0].end, Pos1(200));
+
+        // 2. Regex delimiter `\s+` splits runs of whitespace
+        let mut regex_cfg = trail_cfg.clone();
+        regex_cfg.delimiter = r"\s+".to_string();
+        let ws_bed = "chr1   100   200   TP53\n";
+        let ws_segs =
+            parse_non_amp_bed_from_reader(ws_bed.as_bytes(), &regex_cfg, &chrs, None).unwrap();
+        assert_eq!(ws_segs[0][0].gene, "TP53");
+
+        // 3. Inverted region (start > end under 1-based) is skipped rather than clamped
+        let mut inv_cfg = Config::default();
+        inv_cfg.column_for_chromosome = Some(0);
+        inv_cfg.col_chr = 0;
+        inv_cfg.col_start = 1;
+        inv_cfg.col_end = 2;
+        inv_cfg.col_seg_start = 1;
+        inv_cfg.col_seg_end = 2;
+        inv_cfg.zero_based = false;
+        let inv_bed = "chr1\t200\t100\tGENE\n";
+        let inv_segs =
+            parse_non_amp_bed_from_reader(inv_bed.as_bytes(), &inv_cfg, &chrs, Some(false))
+                .unwrap();
+        assert_eq!(inv_segs.len(), 1);
+        assert!(inv_segs[0].is_empty(), "inverted region must be skipped");
+
+        // 4. 4-col BED with non-numeric col 1/2 errors loudly (RegionBuilderTest.testIncorrectRegions)
+        let bad_4col = "chr1\tbad\t200\tGENE\n";
+        assert!(parse_non_amp_bed_from_reader(bad_4col.as_bytes(), &cfg, &chrs, None).is_err());
     }
 }

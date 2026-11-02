@@ -200,12 +200,17 @@ impl<'a> CigarParser<'a> {
         let direction = (record.flags & 0x10) != 0;
         let insertion_deletion_length = get_insertion_deletion_length(&record.cigar);
 
-        // T045 mismatch gate: drop read if NM - (I + D) > max_mismatches
+        // T045 mismatch gate: drop read if NM - (I + D) > max_mismatches (CigarParser.java:244-251)
         if let Some(nm_val) = record.nm {
             let total_mismatches = nm_val.saturating_sub(insertion_deletion_length as i32);
             if total_mismatches > self.config.max_mismatches as i32 {
                 return Ok(()); // Drop read
             }
+        } else if record.cigar.is_empty() || (record.flags & 0x4) != 0 {
+            return Ok(());
+        }
+        if record.cigar.is_empty() {
+            return Ok(());
         }
 
         let mut start_pos = record.alignment_start.map(|p| p.0 as i32).unwrap_or(0);
@@ -363,7 +368,7 @@ impl<'a> CigarParser<'a> {
 
         // If supplementary alignment is present and flag filter is enabled, ignore it
         // Ports CigarParser.java:307-315: supplementary check runs AFTER updating maxReadLength.
-        if self.config.flag_filter != 0 && (record.flags & 0x800) != 0 {
+        if self.config.skip_secondary_and_supplementary() && (record.flags & 0x800) != 0 {
             self.scratch_seq = query_seq;
             self.scratch_qual = query_qual;
             self.scratch_elements = cigar_elements;

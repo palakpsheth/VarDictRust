@@ -150,15 +150,19 @@ pub fn print_header<W: std::io::Write>(
         "Ampflag",
     ];
 
-    let mut names: Vec<&str> = if config.bam.contains('|') {
-        SOMATIC.to_vec()
-    } else if config.amplicon.is_some() {
+    if config.splice {
+        writeln!(w, "Sample\tChr\tIntron\tIntron count")?;
+        return Ok(());
+    }
+    let mut names: Vec<&str> = if config.region.is_none() && config.amplicon.is_some() {
         AMPLICON.to_vec()
+    } else if config.bam.contains('|') {
+        SOMATIC.to_vec()
     } else {
         SIMPLE.to_vec()
     };
     if !config.bam.contains('|')
-        && config.amplicon.is_none()
+        && (config.region.is_some() || config.amplicon.is_none())
         && matches!(config.crispr_cutting_site, Some(n) if n != 0)
     {
         // SimpleMode.java:124-126: CRISPR mode appends a column.
@@ -430,7 +434,8 @@ pub fn amplicon_38_into(
     let _ = write!(buf, "{}\t", variant.ref_rev_cov);
     let _ = write!(buf, "{}\t", variant.fwd);
     let _ = write!(buf, "{}\t", variant.rev);
-    buf.push_str(variant.genotype.as_deref().unwrap_or("0"));
+    let gt_default = if variant.null_record { "" } else { "0" };
+    buf.push_str(variant.genotype.as_deref().unwrap_or(gt_default));
     buf.push('\t');
     push_keep(buf, variant.frequency, 4);
     buf.push('\t');
@@ -460,14 +465,15 @@ pub fn amplicon_38_into(
     buf.push('\t');
     let _ = write!(buf, "{}\t", variant.hicnt);
     let _ = write!(buf, "{}\t", variant.hicov);
+    let flank_empty = if variant.null_record { "\t" } else { "0\t" };
     if variant.left_seq.is_empty() {
-        buf.push_str("0\t");
+        buf.push_str(flank_empty);
     } else {
         buf.push_str(&variant.left_seq);
         buf.push('\t');
     }
     if variant.right_seq.is_empty() {
-        buf.push_str("0\t");
+        buf.push_str(flank_empty);
     } else {
         buf.push_str(&variant.right_seq);
         buf.push('\t');
@@ -562,7 +568,8 @@ pub fn amplicon_40_into(
     let _ = write!(buf, "{}\t", variant.ref_rev_cov);
     let _ = write!(buf, "{}\t", variant.fwd);
     let _ = write!(buf, "{}\t", variant.rev);
-    buf.push_str(variant.genotype.as_deref().unwrap_or("0"));
+    let gt_default = if variant.null_record { "" } else { "0" };
+    buf.push_str(variant.genotype.as_deref().unwrap_or(gt_default));
     buf.push('\t');
     push_java_rounded(buf, variant.frequency, 4);
     buf.push('\t');
@@ -596,14 +603,15 @@ pub fn amplicon_40_into(
     buf.push('\t');
     let _ = write!(buf, "{}\t", variant.hicnt);
     let _ = write!(buf, "{}\t", variant.hicov);
+    let flank_empty = if variant.null_record { "\t" } else { "0\t" };
     if variant.left_seq.is_empty() {
-        buf.push_str("0\t");
+        buf.push_str(flank_empty);
     } else {
         buf.push_str(&variant.left_seq);
         buf.push('\t');
     }
     if variant.right_seq.is_empty() {
-        buf.push_str("0\t");
+        buf.push_str(flank_empty);
     } else {
         buf.push_str(&variant.right_seq);
         buf.push('\t');
@@ -1980,5 +1988,67 @@ mod tests {
             checked += 1;
         }
         assert_eq!(checked, 432, "expected all 432 oracle rows, got {checked}");
+    }
+
+    #[test]
+    fn amplicon_null_record_and_header_precedence() {
+        let rg = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(1),
+            end: Pos1(200),
+            gene: "G".to_string(),
+            amplicon: None,
+        };
+        let mut v = Variant::new();
+        v.start_pos = 100;
+        v.end_pos = 100;
+        v.bias = "0;0".to_string();
+        v.null_record = true;
+        let av = AmpliconVariant {
+            variant: v,
+            gdamp: 0,
+            tlamp: 0,
+            ncamp: 0,
+            ampflag: false,
+            region: "chr1:100-100".to_string(),
+            good_variants: vec![],
+            bad_variants: vec![],
+        };
+        let row38 = amplicon_38(&av, &rg, "S", false);
+        let c38: Vec<&str> = row38.split('\t').collect();
+        assert_eq!(c38.len(), 38);
+        assert_eq!(c38[13], "", "null_record genotype must be empty");
+        assert_eq!(c38[15], "0;0", "null_record bias must be '0;0'");
+        assert_eq!(c38[30], "", "null_record 5pFlankSeq must be empty");
+        assert_eq!(c38[31], "", "null_record 3pFlankSeq must be empty");
+
+        let row40 = amplicon_40(&av, &rg, "S", false);
+        let c40: Vec<&str> = row40.split('\t').collect();
+        assert_eq!(c40.len(), 40);
+        assert_eq!(c40[13], "", "null_record genotype must be empty");
+        assert_eq!(c40[15], "0;0", "null_record bias must be '0;0'");
+        assert_eq!(c40[32], "", "null_record 5pFlankSeq must be empty");
+        assert_eq!(c40[33], "", "null_record 3pFlankSeq must be empty");
+
+        // Header precedence: Splicing > (-R overrides Amplicon) > Amplicon > Somatic
+        let mut cfg = crate::config::Config::default();
+        cfg.splice = true;
+        cfg.bam = "t.bam|n.bam".to_string();
+        let mut h = Vec::new();
+        print_header(&mut h, &cfg).unwrap();
+        assert_eq!(
+            String::from_utf8(h).unwrap(),
+            "Sample\tChr\tIntron\tIntron count\n"
+        );
+
+        cfg.splice = false;
+        cfg.amplicon = Some("10:0.95".to_string());
+        let mut h_amp = Vec::new();
+        print_header(&mut h_amp, &cfg).unwrap();
+        let h_amp_str = String::from_utf8(h_amp).unwrap();
+        assert!(
+            h_amp_str.ends_with("GoodVarCount\tTotalVarCount\tNocov\tAmpflag\n"),
+            "Amplicon mode takes precedence over paired BAM when -R is absent: {h_amp_str}"
+        );
     }
 }

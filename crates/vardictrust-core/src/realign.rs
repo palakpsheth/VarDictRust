@@ -2295,6 +2295,7 @@ pub fn realignlgdel(
     max_read_length: i32,
     svfdel: &mut Vec<Sclip>,
     svrdel: &mut Vec<Sclip>,
+    splice: &mut std::collections::HashSet<String>,
 ) {
     let (adaptor_forward, adaptor_reverse) = fill_adaptor_maps(&config.adaptor);
     let extension = 5000;
@@ -2420,6 +2421,7 @@ pub fn realignlgdel(
                     ref_coverage,
                     soft_clips_5_end,
                     soft_clips_3_end,
+                    splice,
                 ) {
                     log::warn!("partial_pipeline failed: {:?}", e);
                 }
@@ -2795,6 +2797,7 @@ pub fn realignlgdel(
                     ref_coverage,
                     soft_clips_5_end,
                     soft_clips_3_end,
+                    splice,
                 ) {
                     log::warn!("partial_pipeline failed: {:?}", e);
                 }
@@ -3399,6 +3402,7 @@ pub fn realignlgins(
     max_read_length: i32,
     svfdup: &mut Vec<Sclip>,
     svrdup: &mut Vec<Sclip>,
+    splice: &mut std::collections::HashSet<String>,
 ) {
     let (adaptor_forward, adaptor_reverse) = fill_adaptor_maps(&config.adaptor);
     let extension = 5000;
@@ -3494,6 +3498,7 @@ pub fn realignlgins(
                     ref_coverage,
                     soft_clips_5_end,
                     soft_clips_3_end,
+                    splice,
                 ) {
                     log::warn!("partial_pipeline failed: {:?}", e);
                 }
@@ -3776,6 +3781,7 @@ pub fn realignlgins(
                     ref_coverage,
                     soft_clips_5_end,
                     soft_clips_3_end,
+                    splice,
                 ) {
                     log::warn!("partial_pipeline failed: {:?}", e);
                 }
@@ -4058,6 +4064,7 @@ pub fn realign_indels(
         var_data.max_read_length,
         &mut var_data.sv_structures.svfdel,
         &mut var_data.sv_structures.svrdel,
+        &mut var_data.splice,
     );
 
     // 4. realignlgins30
@@ -4092,6 +4099,7 @@ pub fn realign_indels(
         var_data.max_read_length,
         &mut var_data.sv_structures.svfdup,
         &mut var_data.sv_structures.svrdup,
+        &mut var_data.splice,
     );
 
     if config.verbose {
@@ -4530,6 +4538,7 @@ fn partial_pipeline(
     ref_coverage: &mut rustc_hash::FxHashMap<i32, i32>,
     soft_clips_5_end: &mut BTreeMap<i32, Sclip>,
     soft_clips_3_end: &mut BTreeMap<i32, Sclip>,
+    splice: &mut std::collections::HashSet<String>,
 ) -> Result<(), crate::types::VardictError> {
     let bams = match bams {
         Some(b) => b,
@@ -4576,6 +4585,7 @@ fn partial_pipeline(
     }
 
     let var_data = parser.into_variation_data();
+    splice.extend(var_data.splice);
 
     // G3 (mate-window ownership): attribute — don't drop — merged
     // mate-window VARIANT keys outside the owning tile's active range
@@ -5619,6 +5629,7 @@ mod tests {
 
         let mut svfdel = Vec::new();
         let mut svrdel = Vec::new();
+        let mut splice = std::collections::HashSet::new();
 
         let config = crate::config::Config::default();
         let region = crate::regions::Region {
@@ -5644,6 +5655,7 @@ mod tests {
             100,
             &mut svfdel,
             &mut svrdel,
+            &mut splice,
         );
 
         // Verification:
@@ -5692,6 +5704,7 @@ mod tests {
 
         let mut svfdup = Vec::new();
         let mut svrdup = Vec::new();
+        let mut splice = std::collections::HashSet::new();
 
         let config = crate::config::Config::default();
         let region = crate::regions::Region {
@@ -5717,6 +5730,7 @@ mod tests {
             100,
             &mut svfdup,
             &mut svrdup,
+            &mut splice,
         );
 
         // Verification: Softclip should be used
@@ -5930,6 +5944,7 @@ mod tests {
         let mut soft_clips_3_end = BTreeMap::new();
         let mut svfdel = Vec::new();
         let mut svrdel = Vec::new();
+        let mut splice = std::collections::HashSet::new();
 
         let mut config = crate::config::Config::default();
         config.indel_size = 5; // ensure find_bp returns 0 so find_match runs
@@ -5956,6 +5971,7 @@ mod tests {
             100,
             &mut svfdel,
             &mut svrdel,
+            &mut splice,
         );
 
         let entry45 = non_insertion_variants
@@ -6313,6 +6329,7 @@ mod tests {
             let mut sc3 = std::collections::BTreeMap::new();
             let mut svfdup = Vec::new();
             let mut svrdup = Vec::new();
+            let mut splice = std::collections::HashSet::new();
 
             // Populate a 5' soft-clip at p = 101 whose consensus matches motif + diverse flanking reference
             let mut sclip = Sclip::new();
@@ -6365,6 +6382,7 @@ mod tests {
                 max_rl,
                 &mut svfdup,
                 &mut svrdup,
+                &mut splice,
             );
             assert!(
                 ins_vars
@@ -6384,5 +6402,146 @@ mod tests {
                 "unexpected mref cnt at bi=100 for max_read_length={max_rl}"
             );
         }
+    }
+
+    #[test]
+    fn fill_adaptor_maps_java_seed_count() {
+        // I2: VarDictLauncher.java:108 uses strict `< sequence.length()` (`i + 6 < len`),
+        // and SequenceUtil.complement complements only ACGTacgt (leaving N unchanged).
+        let (fwd6, rev6) = super::fill_adaptor_maps(&["ACGTAC".to_string()]);
+        assert!(fwd6.is_empty());
+        assert!(rev6.is_empty());
+
+        let (fwd7, rev7) = super::fill_adaptor_maps(&["ACGNTAC".to_string()]);
+        assert_eq!(fwd7.len(), 1);
+        assert_eq!(fwd7.get(b"ACGNTA".as_slice()), Some(&1));
+        assert_eq!(rev7.get(b"TANCGT".as_slice()), Some(&1));
+    }
+
+    #[test]
+    fn partial_pipeline_merges_splice() {
+        use noodles::core::Position;
+        use noodles::sam::alignment::io::Write as AlignmentWrite;
+        use noodles::sam::alignment::record::cigar::op::Kind;
+        use noodles::sam::alignment::record::cigar::Op;
+        use noodles::sam::alignment::record::data::field::Tag;
+        use noodles::sam::alignment::record_buf::data::field::Value as BufValue;
+        use noodles::sam::alignment::record_buf::{
+            Cigar, Data, QualityScores, RecordBuf, Sequence,
+        };
+        use std::num::NonZeroUsize;
+
+        let pid = std::process::id();
+        let bam_path = std::env::temp_dir().join(format!("vr_partial_splice_{pid}.bam"));
+        let header = noodles::sam::Header::builder()
+            .add_reference_sequence(
+                "chr1",
+                noodles::sam::header::record::value::map::Map::<
+                    noodles::sam::header::record::value::map::ReferenceSequence,
+                >::new(NonZeroUsize::new(200).unwrap()),
+            )
+            .build();
+        {
+            use noodles::csi::binning_index::index::reference_sequence::{
+                bin::Chunk, index::LinearIndex,
+            };
+            use noodles::csi::binning_index::Indexer;
+            let file = std::fs::File::create(&bam_path).unwrap();
+            let mut writer = noodles::bam::io::Writer::new(file);
+            writer.write_header(&header).unwrap();
+            // 10M20N10M starting at 1-based pos 10 -> splice "19-40"
+            let cigar: Cigar = [
+                Op::new(Kind::Match, 10),
+                Op::new(Kind::Skip, 20),
+                Op::new(Kind::Match, 10),
+            ]
+            .into_iter()
+            .collect();
+            let data: Data = [(Tag::EDIT_DISTANCE, BufValue::from(0i32))]
+                .into_iter()
+                .collect();
+            let rec = RecordBuf::builder()
+                .set_name("r_splice")
+                .set_flags(noodles::sam::alignment::record::Flags::empty())
+                .set_reference_sequence_id(0)
+                .set_alignment_start(Position::try_from(10usize).unwrap())
+                .set_mapping_quality(
+                    noodles::sam::alignment::record::MappingQuality::try_from(60).unwrap(),
+                )
+                .set_cigar(cigar)
+                .set_sequence(Sequence::from(b"AAAAAAAAAAAAAAAAAAAA".to_vec()))
+                .set_quality_scores(QualityScores::from(vec![35u8; 20]))
+                .set_data(data)
+                .build();
+            let start_vp = writer.get_ref().virtual_position();
+            writer.write_alignment_record(&header, &rec).unwrap();
+            let end_vp = writer.get_ref().virtual_position();
+            writer.try_finish().unwrap();
+
+            let mut indexer = Indexer::<LinearIndex>::new(14, 5).unwrap();
+            let s = Position::try_from(10usize).unwrap();
+            let e = Position::try_from(49usize).unwrap();
+            indexer
+                .add_record(Some((0, s, e, true)), Chunk::new(start_vp, end_vp))
+                .unwrap();
+            let bai_path = bam_path.with_extension("bam.bai");
+            noodles::bam::bai::io::Writer::new(std::fs::File::create(&bai_path).unwrap())
+                .write_index(&indexer.build(1))
+                .unwrap();
+        }
+
+        let mut reference = Reference::new();
+        reference
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 1,
+                sequence_end: 200,
+            });
+        reference
+            .reference_sequences
+            .insert("chr1".to_string(), vec![b'A'; 200]);
+
+        let config = crate::config::Config::default();
+        let region = crate::regions::Region {
+            chr: "chr1".to_string(),
+            start: Pos1(1),
+            end: Pos1(200),
+            gene: String::new(),
+            amplicon: None,
+        };
+        let mut non_ins = crate::javamap::JavaHashMap::new();
+        let mut ins = crate::javamap::JavaHashMap::new();
+        let mut ref_cov = rustc_hash::FxHashMap::default();
+        let mut sc5 = BTreeMap::new();
+        let mut sc3 = BTreeMap::new();
+        let mut splice = std::collections::HashSet::new();
+        let bams = vec![bam_path.to_string_lossy().into_owned()];
+
+        super::partial_pipeline(
+            Some(&bams),
+            "chr1",
+            1,
+            100,
+            &reference,
+            &config,
+            &region,
+            &mut non_ins,
+            &mut ins,
+            &mut ref_cov,
+            &mut sc5,
+            &mut sc3,
+            &mut splice,
+        )
+        .unwrap();
+
+        let _ = std::fs::remove_file(&bam_path);
+        let _ = std::fs::remove_file(bam_path.with_extension("bam.bai"));
+
+        assert!(
+            splice.contains("19-39"),
+            "partial_pipeline must merge parser.splice into caller's splice set, got: {:?}",
+            splice
+        );
     }
 }
