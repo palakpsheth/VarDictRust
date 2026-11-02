@@ -2857,8 +2857,7 @@ pub fn realignlgdel(
                     }
                 }
                 if let Some(sv) = move_sv {
-                    let dest =
-                        non_insertion_variants.compute_if_absent(bp, |_| VariationMap::new());
+                    let dest = non_insertion_variants.get_or_put_with(bp, VariationMap::new);
                     dest.sv = Some(sv);
                     dest.map
                         .insert("SV".to_string(), crate::variations::Variation::new());
@@ -4610,7 +4609,7 @@ fn partial_pipeline(
         merge_sclip(soft_clips_3_end.entry(pos).or_insert_with(Sclip::new), sc);
     }
     for (pos, var_map) in var_data.non_insertion_variants {
-        let dest = non_insertion_variants.compute_if_absent(pos, |_| VariationMap::new());
+        let dest = non_insertion_variants.get_or_put_with(pos, VariationMap::new);
         if !mate_owned(pos) {
             dest.merge_planted = true;
         }
@@ -4650,7 +4649,7 @@ fn partial_pipeline(
         }
     }
     for (pos, var_map) in var_data.insertion_variants {
-        let dest = insertion_variants.compute_if_absent(pos, |_| VariationMap::new());
+        let dest = insertion_variants.get_or_put_with(pos, VariationMap::new);
         if !mate_owned(pos) {
             dest.merge_planted = true;
         }
@@ -5103,7 +5102,7 @@ mod tests {
         mnp_var.fwd = 5;
         var_data
             .non_insertion_variants
-            .compute_if_absent(50, |_| crate::variations::VariationMap::new())
+            .get_or_put_with(50, crate::variations::VariationMap::new)
             .map
             .insert("T&A".to_string(), mnp_var);
 
@@ -5115,7 +5114,7 @@ mod tests {
         left_var.fwd = 2;
         var_data
             .non_insertion_variants
-            .compute_if_absent(50, |_| crate::variations::VariationMap::new())
+            .get_or_put_with(50, crate::variations::VariationMap::new)
             .map
             .insert("T".to_string(), left_var);
 
@@ -5127,7 +5126,7 @@ mod tests {
         right_var.fwd = 2;
         var_data
             .non_insertion_variants
-            .compute_if_absent(51, |_| crate::variations::VariationMap::new())
+            .get_or_put_with(51, crate::variations::VariationMap::new)
             .map
             .insert("A".to_string(), right_var);
 
@@ -5194,7 +5193,7 @@ mod tests {
         mnp_var.hicnt = 1;
         var_data
             .non_insertion_variants
-            .compute_if_absent(50, |_| crate::variations::VariationMap::new())
+            .get_or_put_with(50, crate::variations::VariationMap::new)
             .map
             .insert("C&T".to_string(), mnp_var);
 
@@ -5314,7 +5313,7 @@ mod tests {
         snv.fwd = 2;
         var_data
             .non_insertion_variants
-            .compute_if_absent(49, |_| crate::variations::VariationMap::new())
+            .get_or_put_with(49, crate::variations::VariationMap::new)
             .map
             .insert("C".to_string(), snv);
 

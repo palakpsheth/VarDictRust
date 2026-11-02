@@ -752,6 +752,15 @@ impl Default for Vars {
     }
 }
 
+/// Retrieve or insert `Vars` at `position` using `HashMap.get` + `HashMap.put` (`putVal`) semantics.
+/// Ports `VariationUtils.getOrPutVars` (`VariationUtils.java:384-391`).
+pub fn get_or_put_vars(
+    map: &mut crate::javamap::JavaHashMap<i32, Vars>,
+    position: i32,
+) -> &mut Vars {
+    map.get_or_put_with(position, Vars::new)
+}
+
 /// Structural variant info stored inside a VariationMap.
 /// Ports `collection/VariationMap.java`'s static SV class.
 #[derive(Debug, Clone, Default)]
@@ -792,7 +801,7 @@ impl VariationMap {
         hash: &mut crate::javamap::JavaHashMap<i32, VariationMap>,
         start: i32,
     ) -> &mut Sv {
-        let entry = hash.compute_if_absent(start, |_| VariationMap::new());
+        let entry = hash.get_or_put_with(start, VariationMap::new);
         // §9: get_or_insert_with replaces the just-inserted unwrap; the "SV"
         // variation is ensured separately (remove_sv clears both together, so
         // sv==None implies no "SV" entry — the contains_key check preserves
@@ -896,7 +905,7 @@ pub fn get_variation<'a>(
     start: i32,
     s: &str,
 ) -> &'a mut Variation {
-    let entry = hash.compute_if_absent(start, |_| VariationMap::new());
+    let entry = hash.get_or_put_with(start, VariationMap::new);
     match entry.map.raw_entry_mut_v1().from_key(s) {
         RawEntryMut::Occupied(e) => e.into_mut(),
         RawEntryMut::Vacant(v) => v.insert(s.to_owned(), Variation::new()).1,

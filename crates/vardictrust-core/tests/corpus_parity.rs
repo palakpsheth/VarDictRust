@@ -310,18 +310,20 @@ fn run_corpus_case(fname: &str) {
         run_core_var(&cfg).unwrap_or_else(|e| panic!("in-process run failed on {fname}: {e}"));
     let actual_trimmed = actual_str.trim_end_matches(&['\n', '\r'][..]);
 
-    let mut actual_sorted: Vec<&str> = if actual_trimmed.is_empty() {
+    let actual_lines: Vec<&str> = if actual_trimmed.is_empty() {
         vec![""]
     } else {
         actual_trimmed.split('\n').collect()
     };
+    let mut actual_sorted = actual_lines.clone();
     actual_sorted.sort_unstable();
 
-    let mut expected_sorted: Vec<&str> = if expected.is_empty() {
+    let expected_lines: Vec<&str> = if expected.is_empty() {
         vec![""]
     } else {
         expected.split('\n').collect()
     };
+    let mut expected_sorted = expected_lines.clone();
     expected_sorted.sort_unstable();
 
     if actual_sorted == expected_sorted {
@@ -329,6 +331,22 @@ fn run_corpus_case(fname: &str) {
             !xfails.contains_key(fname),
             "XPASS on registered XFAIL {fname}"
         );
+        if std::env::var("STRICT_VAR_ORDER").ok().as_deref() != Some("0") && !cfg.splice {
+            let row_key = |line: &str| -> String {
+                let cols: Vec<&str> = line.split('\t').take(7).collect();
+                cols.join("\t")
+            };
+            let actual_keys: Vec<String> = actual_lines.iter().map(|l| row_key(l)).collect();
+            let expected_keys: Vec<String> = expected_lines.iter().map(|l| row_key(l)).collect();
+            assert_eq!(
+                actual_keys, expected_keys,
+                "UNSORTED ROW KEY ORDER MISMATCH on {fname}"
+            );
+            assert_eq!(
+                actual_lines, expected_lines,
+                "UNSORTED ROW ORDER MISMATCH on {fname}"
+            );
+        }
     } else if let Some(exp_sha) = xfails.get(fname) {
         let mut joined = actual_sorted.join("\n");
         joined.push('\n');

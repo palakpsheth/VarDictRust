@@ -1058,15 +1058,27 @@ carry [Tier-2](docs/testing/test-matrix-and-ci-audit.md#tier-2) MATCH evidence. 
 
 Corpus rerun unchanged: 91 PASS / 1 XFAIL (UB-4, pre-XFAIL-registry wording).
 
-**Residual — RESOLVED via `JavaHashMap`.** Formerly permanent
+**Residual — RESOLVED via `JavaHashMap::get_or_put_with`.** Formerly permanent
 limitation. The s1a AF-tie emission order at
 chr20:20202875 was a **Java `java.util.HashMap` iteration-order artifact across
 position keys**. OpenJDK 8+ `java.util.HashMap` spread, bin, resize, and
 iteration semantics were faithfully implemented in `vardictrust_core::javamap::JavaHashMap`
-(validated by Java oracle op-log replay tests). Wire-in at output-reaching variant
-maps (`non_insertion_variants`, `insertion_variants`, and `aligned_variants`) replicates
-Java's cross-position emission sequence, achieving 100% variant parity (1048/1048 variants,
-calling `('20','20202875','TA','T')` exactly matching Java).
+(validated by Java oracle op-log replay tests). In particular, VarDictJava populates
+its position maps (`nonInsertionVariants`, `insertionVariants`, and `alignedVariants`)
+via the `get(k)` + `if (v == null) { v = new V(); put(k, v); }` idiom
+(`VariationUtils.getOrPutVars`, `VariationUtils.getVariation`, `VariationMap.getSV`),
+which follows `HashMap.putVal` semantics: tail append on collision, 9-node treeify
+threshold (`binCount >= TREEIFY_THRESHOLD - 1` before appending the 9th node), and
+post-insert `++size > threshold` resize (distinct from `HashMap.computeIfAbsent`,
+which prepends at bucket head, treeifies at 8 nodes, and checks `size > threshold`
+before lookup). Routing all position-map mutation sites through single-lookup
+`JavaHashMap::get_or_put_with` replicates Java's exact cross-position emission
+sequence across both the s1a locus (1048/1048 variants, calling
+`('20','20202875','TA','T')` matching Java) and all 90 passing non-splicing
+upstream corpus fixtures in unsorted `.var` emission order (splicing `-i`
+fixtures are excluded because `SplicingMode` merges across multi-region
+two-pass windows, and the 1 registered XFAIL fixture is tracked separately
+under UB-4).
 
 <a id="ub-3-var-row-order-across-positions-follows-hashmap-iteration-order-282-family"></a>
 <a id="ub-3-javahashmap-iteration-and-allele-frequency-tie-breaking"></a>
