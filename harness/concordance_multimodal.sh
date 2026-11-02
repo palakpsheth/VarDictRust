@@ -117,7 +117,7 @@ echo "  Verifying live oracle parity..."
 python3 "$ROOT_DIR/harness/compare_vcf.py" --strict-bytes "$TMPDIR/hg005_java.vcf" "$TMPDIR/hg005_rust.vcf" --eps 1e-6 >/dev/null
 
 echo "  Running rtg vcfeval concordance..."
-bash "$ROOT_DIR/harness/concordance_germline.sh" "hg005-truth" \
+RECORD_EVIDENCE_INPUTS="$FA_GIAB:$BAM_HG005" bash "$ROOT_DIR/harness/concordance_germline.sh" "hg005-truth" \
   "$TMPDIR/hg005_java.vcf" "$TMPDIR/hg005_rust.vcf" \
   "$CACHE_DIR/hg005_truth.vcf.gz" "$CACHE_DIR/hg005_eval.bed" \
   "$SDF_GIAB" "$OUT_BASE/hg005" "HG005" "$CPP_HG005"
@@ -156,7 +156,7 @@ echo "  Verifying live oracle parity..."
 python3 "$ROOT_DIR/harness/compare_vcf.py" --strict-bytes "$TMPDIR/na24385_java.vcf" "$TMPDIR/na24385_rust.vcf" --eps 1e-6 >/dev/null
 
 echo "  Running rtg vcfeval concordance..."
-bash "$ROOT_DIR/harness/concordance_germline.sh" "na24385-b37-truth" \
+RECORD_EVIDENCE_INPUTS="$FA_B37:$BAM_NA24385" bash "$ROOT_DIR/harness/concordance_germline.sh" "na24385-b37-truth" \
   "$TMPDIR/na24385_java.vcf" "$TMPDIR/na24385_rust.vcf" \
   "$CACHE_DIR/na24385_b37_truth.vcf.gz" "$CACHE_DIR/na24385_eval.bed" \
   "$SDF_B37" "$OUT_BASE/na24385" "HG002" "$CPP_NA24385"

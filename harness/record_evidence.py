@@ -66,6 +66,12 @@ def sha256_file(path: pathlib.Path) -> str:
 
 def collect_inputs(cmd_tokens, extra_paths):
     candidates = list(extra_paths)
+    env_inputs = os.environ.get("RECORD_EVIDENCE_INPUTS", "")
+    if env_inputs:
+        for item in env_inputs.split(":"):
+            if item.strip():
+                candidates.append(item.strip())
+    keep_resolved = keep.resolve() if keep is not None and keep.exists() else None
     for tok in cmd_tokens:
         if "=" in tok and not tok.startswith("-"):
             continue
@@ -74,6 +80,18 @@ def collect_inputs(cmd_tokens, extra_paths):
             if not part or part.startswith("-"):
                 continue
             if part.endswith(INPUT_EXTS):
+                p_cand = pathlib.Path(part)
+                base_name = p_cand.name
+                if base_name in ("java.vcf", "rust.vcf", "cpp.vcf") or base_name.endswith(
+                    ("_java.vcf", "_rust.vcf", "_cpp.vcf")
+                ):
+                    continue
+                try:
+                    rp = p_cand.resolve()
+                    if keep_resolved is not None and rp.is_relative_to(keep_resolved):
+                        continue
+                except Exception:
+                    pass
                 candidates.append(part)
 
     seen = set()
@@ -140,14 +158,21 @@ skip_r = str((extra_in or {}).get("cpp_skip_reason") or "") if isinstance(extra_
 if cpp_tv and (cpp_tv.get("exit") != "0" or skip_r.startswith((*PRE_EXEC_SKIP, "engine failure"))):
     cpp_tv = None
 
+canonical_ev_dir = (pathlib.Path(__file__).resolve().parent.parent / "benchmarks" / "evidence").resolve()
+try:
+    resolved_out_dir = out_dir.resolve()
+except Exception:
+    resolved_out_dir = out_dir
+is_canonical_ev = resolved_out_dir == canonical_ev_dir
+
 fp_env = os.environ.get("RECORD_EVIDENCE_FP")
-if fp_env:
+if fp_env and not is_canonical_ev:
     fp = fp_env.strip()
 else:
     try:
         fp = subprocess.check_output(["bash", "harness/engine_fingerprint.sh"], text=True).strip()
     except subprocess.CalledProcessError:
-        if out_dir != pathlib.Path("benchmarks/evidence"):
+        if not is_canonical_ev:
             fp = "0000000000000000"
         else:
             raise

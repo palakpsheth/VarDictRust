@@ -129,26 +129,37 @@ export GOLDEN_RUN_ID="recertify-$(date +%s)"
 
 needs_stamp() {
     local name="$1"
-    python3 - "${RECERTIFY_EVIDENCE_DIR:-$ROOT_DIR/benchmarks/evidence}/${name}.json" "$FP" <<'PY'
+    python3 - "${RECERTIFY_EVIDENCE_DIR:-$ROOT_DIR/benchmarks/evidence}/${name}.json" "$FP" "$name" <<'PY'
 import hashlib, json, os, pathlib, sys
 
-def inputs_match(d: dict) -> bool:
-    for inp in d.get("inputs") or []:
-        p = pathlib.Path(inp.get("path", ""))
+def inputs_match(d: dict, allow_empty: bool = False) -> bool:
+    inputs = d.get("inputs")
+    if not isinstance(inputs, list):
+        return False
+    if not inputs:
+        return allow_empty
+    for inp in inputs:
+        if not isinstance(inp, dict):
+            return False
+        p_str = inp.get("path", "")
         want = inp.get("sha256", "")
         want_sz = inp.get("size_bytes")
-        if p.is_file() and want:
-            if want_sz is not None and p.stat().st_size != want_sz:
-                return False
-            h = hashlib.sha256()
-            with p.open("rb") as fh:
-                for chunk in iter(lambda: fh.read(1 << 20), b""):
-                    h.update(chunk)
-            if h.hexdigest() != want:
-                return False
+        if not p_str or not want:
+            return False
+        p = pathlib.Path(p_str)
+        if not p.is_file():
+            return False
+        if want_sz is not None and p.stat().st_size != want_sz:
+            return False
+        h = hashlib.sha256()
+        with p.open("rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                h.update(chunk)
+        if h.hexdigest() != want:
+            return False
     return True
 
-p, fp = sys.argv[1], sys.argv[2]
+p, fp, name = sys.argv[1], sys.argv[2], sys.argv[3]
 if os.environ.get("RECERTIFY_NEW_INPUTS") == "1":
     sys.exit(0)
 try:
@@ -156,10 +167,11 @@ try:
         d = json.load(fh)
 except Exception:
     sys.exit(0)
+allow_empty = name in ("perf-budget", "musl-ci")
 if (
     d.get("fingerprint") == fp
     and d.get("result") in ("MATCH", "EQUAL", "PASS")
-    and inputs_match(d)
+    and inputs_match(d, allow_empty=allow_empty)
 ):
     sys.exit(1)
 sys.exit(0)
@@ -181,19 +193,28 @@ if python3 - "${RECERTIFY_EVIDENCE_DIR:-$ROOT_DIR/benchmarks/evidence}/scale.jso
 import hashlib, json, os, pathlib, sys
 
 def inputs_match(d: dict) -> bool:
-    for inp in d.get("inputs") or []:
-        p = pathlib.Path(inp.get("path", ""))
+    inputs = d.get("inputs")
+    if not isinstance(inputs, list) or not inputs:
+        return False
+    for inp in inputs:
+        if not isinstance(inp, dict):
+            return False
+        p_str = inp.get("path", "")
         want = inp.get("sha256", "")
         want_sz = inp.get("size_bytes")
-        if p.is_file() and want:
-            if want_sz is not None and p.stat().st_size != want_sz:
-                return False
-            h = hashlib.sha256()
-            with p.open("rb") as fh:
-                for chunk in iter(lambda: fh.read(1 << 20), b""):
-                    h.update(chunk)
-            if h.hexdigest() != want:
-                return False
+        if not p_str or not want:
+            return False
+        p = pathlib.Path(p_str)
+        if not p.is_file():
+            return False
+        if want_sz is not None and p.stat().st_size != want_sz:
+            return False
+        h = hashlib.sha256()
+        with p.open("rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                h.update(chunk)
+        if h.hexdigest() != want:
+            return False
     return True
 
 p, fp, perf = sys.argv[1], sys.argv[2], sys.argv[3]
@@ -357,7 +378,14 @@ if needs_stamp "hg008-cram-twin"; then
     step_t0=$SECONDS
     echo "$(ts) [RUN] hg008-cram-twin: Certifying HG008 CRAM Twin..."
     KEEP_DIR=scratch/g4/hg008/cram CMP_TIMEOUT=12h bash harness/cram_twin.sh
-    python3 harness/record_evidence.py hg008-cram-twin MATCH scratch/g4/hg008/cram \
+    python3 harness/record_evidence.py \
+      --input scratch/g4/ref/giabv3/GRCh38_GIABv3.fa \
+      --input scratch/g4/hg008/HG008-T.slice.cram \
+      --input scratch/g4/hg008/HG008-N.slice.cram \
+      --input scratch/g4/hg008/HG008-T.slice.bam \
+      --input scratch/g4/hg008/HG008-N.slice.bam \
+      --input scratch/g4/hg008/engine.bed \
+      hg008-cram-twin MATCH scratch/g4/hg008/cram \
       -- env KEEP_DIR=scratch/g4/hg008/cram CMP_TIMEOUT=12h bash harness/cram_twin.sh
     echo "$(ts) [DONE] hg008-cram-twin ($((SECONDS - step_t0))s)"
 else

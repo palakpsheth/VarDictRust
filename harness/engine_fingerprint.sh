@@ -9,6 +9,7 @@ GATE_FILES=(
   crates/vardictrust/Cargo.toml
   crates/vardictrust-core/src
   crates/vardictrust/src
+  harness/lib/portable.sh
   harness/compare.sh
   harness/run_oracle.sh
   harness/run_cpp.sh

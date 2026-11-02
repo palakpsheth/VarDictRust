@@ -28,7 +28,7 @@ ck "dry-run exits 0" "[ $rc -eq 0 ]"
 ck "dry-run names the cell" "grep -q '^PLAN tiny' <<<\"\$out\""
 ck "dry-run shows courtesy wrapper" "grep -q 'harness/courtesy.sh' <<<\"\$out\""
 ck "dry-run shows all three profiler envs" "grep -q 'VARDICT_PROFILE_CPU=' <<<\"\$out\" && grep -q 'VARDICT_PROFILE_HEAP=' <<<\"\$out\" && grep -q 'VARDICT_PROFILE_DHAT=' <<<\"\$out\""
-ck "dry-run uses the stub binary and time -v" "grep -q \"$T/engine\" <<<\"\$out\" && grep -q '/usr/bin/time -v' <<<\"\$out\""
+ck "dry-run uses the stub binary and time -v" "grep -q \"$T/engine\" <<<\"\$out\" && grep -Eq '(/usr/bin/time -v|gtime -v|portable\\.sh --time-v)' <<<\"\$out\""
 ck "dry-run caps threads at 8" "grep -q -- '-th 8' <<<\"\$out\""
 ck "dry-run writes nothing" "[ ! -e '$T/prof' ] && [ ! -e '$T/engine.log' ]"
 # dhat is slice-only: the WGS and HG002 plans have no dhat modality
