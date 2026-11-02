@@ -1074,8 +1074,11 @@ which prepends at bucket head, treeifies at 8 nodes, and checks `size > threshol
 before lookup). Routing all position-map mutation sites through single-lookup
 `JavaHashMap::get_or_put_with` replicates Java's exact cross-position emission
 sequence across both the s1a locus (1048/1048 variants, calling
-`('20','20202875','TA','T')` matching Java) and all 92 upstream corpus fixtures
-in unsorted `.var` emission order.
+`('20','20202875','TA','T')` matching Java) and all 90 passing non-splicing
+upstream corpus fixtures in unsorted `.var` emission order (splicing `-i`
+fixtures are excluded because `SplicingMode` merges across multi-region
+two-pass windows, and the 1 registered XFAIL fixture is tracked separately
+under UB-4).
 
 <a id="ub-3-var-row-order-across-positions-follows-hashmap-iteration-order-282-family"></a>
 <a id="ub-3-javahashmap-iteration-and-allele-frequency-tie-breaking"></a>
