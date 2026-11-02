@@ -80,7 +80,7 @@ echo "Generating LinkedIn carousel slides..."
 echo "Running paper, carousel, release-consistency, docs-UI, and evidence-sync gates..."
 "$PY" -m pytest paper/tests/ harness/tests/test_linkedin_carousel.py harness/tests/test_docs_ui.py -v
 "$PY" .agents/skills/vardictrust-release/scripts/check_release_consistency.py \
-  --version 1.0.6 --phase post-bioconda --require-head-fingerprint
+  --phase pre-tag --require-head-fingerprint
 bash harness/gcp_paper_runner.sh --plan-check
 "$PY" harness/sync_evidence_docs.py --check
 

@@ -29,7 +29,7 @@ EXPECTED_TEST_COUNTS = {
     "cram_stack": 3,
     "cli_bin": 19,
     "cli_integration": 9,
-    "harness_self_tests": 25,
+    "harness_self_tests": 36,
 }
 
 
@@ -153,8 +153,8 @@ def check_pre_tag_surfaces(repo_root: Path, version: str, errors: list[str]) -> 
     forbid_regex(
         repo_root,
         "CHANGELOG.md",
-        r"dirty_decay_ms:5000,\s*muzzy_decay_ms:5000",
-        "stale MALLOC_CONF description in CHANGELOG.md",
+        r"dirty_decay_ms:5000,\s*muzzy_decay_ms:5000|--max-ref-cache-mb|SingleRefSequenceProvider|round_half_even_f64_val|SmallVec<\[\(usize, usize\); 2\]>|dirty_decay_ms:0,narenas:4|harness/lib/oracle_platform\.sh|JavaHashMap<K:|m2f2",
+        "stale MALLOC_CONF or superseded PR draft symbols in CHANGELOG.md",
         errors,
     )
 
@@ -183,12 +183,27 @@ def check_pre_tag_surfaces(repo_root: Path, version: str, errors: list[str]) -> 
         errors,
     )
 
-    # 9. harness/run_self_tests.sh
+    # 9. harness/run_self_tests.sh & harness/tests/
+    sh_cnt = len(list((repo_root / "harness" / "tests").glob("test_*.sh")))
+    py_cnt = len(list((repo_root / "harness" / "tests").glob("test_*.py")))
+    total_self_tests = sh_cnt + py_cnt
+    if total_self_tests != EXPECTED_TEST_COUNTS["harness_self_tests"]:
+        errors.append(
+            f"harness/tests/ has {total_self_tests} scripts ({sh_cnt} .sh + {py_cnt} .py), "
+            f"expected {EXPECTED_TEST_COUNTS['harness_self_tests']}"
+        )
     require_regex(
         repo_root,
         "harness/run_self_tests.sh",
         rf"^# VarDictRust v{ver_esc}\b",
         f"harness/run_self_tests.sh header == v{version}",
+        errors,
+    )
+    require_regex(
+        repo_root,
+        "harness/run_self_tests.sh",
+        r"all 36 harness diagnostic scripts \(25 shell tests\s*\n#\s*and 11 python test suites",
+        "harness/run_self_tests.sh cites 36 diagnostic scripts (25 shell + 11 python)",
         errors,
     )
 
@@ -198,6 +213,13 @@ def check_pre_tag_surfaces(repo_root: Path, version: str, errors: list[str]) -> 
         f"docs/release/v{version}-pr.md",
         rf"# Release v{ver_esc}:",
         f"docs/release/v{version}-pr.md title header",
+        errors,
+    )
+    forbid_regex(
+        repo_root,
+        f"docs/release/v{version}-pr.md",
+        r"--max-ref-cache-mb|SingleRefSequenceProvider|round_half_even_f64_val|SmallVec<\[\(usize, usize\); 2\]>|dirty_decay_ms:0,narenas:4|harness/lib/oracle_platform\.sh|JavaHashMap<K:|m2f2",
+        f"docs/release/v{version}-pr.md superseded PR draft symbols",
         errors,
     )
 
@@ -221,6 +243,20 @@ def check_pre_tag_surfaces(repo_root: Path, version: str, errors: list[str]) -> 
         "README.md",
         r"519 automated Cargo workspace tests \(350 core library tests, 110 corpus and modality parity tests, 26 engine behavior tests, 2 amplicon streaming memory tests, 3 CRAM stack tests, 19 CLI tests, and 9 CLI integration binary tests\)",
         "README.md exact 519 test breakdown (350 + 110 + 26 + 2 + 3 + 19 + 9)",
+        errors,
+    )
+    require_regex(
+        repo_root,
+        "README.md",
+        r"36 harness diagnostic self-tests",
+        "README.md cites 36 harness diagnostic self-tests",
+        errors,
+    )
+    forbid_regex(
+        repo_root,
+        "README.md",
+        r"4\.3×–6\.9×|36\.4×|3\.48×|1\.42 GiB|3\.84×|2:23\.49|1:17:34|2:03\.11|13:04\.76|3:24\.57|25 harness diagnostic self-tests",
+        "README.md stale v1.0.6 benchmark metrics or 25 self-tests",
         errors,
     )
 
@@ -259,8 +295,8 @@ def check_pre_tag_surfaces(repo_root: Path, version: str, errors: list[str]) -> 
     forbid_regex(
         repo_root,
         "DIVERGENCES.md",
-        r"817d89c5fb34515d|profile_features|3\.58x speedup",
-        "DIVERGENCES.md stale fingerprint/test name/speedup",
+        r"817d89c5fb34515d|profile_features|3\.58x speedup|1\.42 GiB|3\.48x speedup|affb71e",
+        "DIVERGENCES.md stale fingerprint/test name/speedup/RSS/commit",
         errors,
     )
 
@@ -287,12 +323,26 @@ def check_pre_tag_surfaces(repo_root: Path, version: str, errors: list[str]) -> 
         errors,
     )
 
-    # 14. benchmarks/README.md
+    # 14. benchmarks/README.md & harness/README.md
     require_regex(
         repo_root,
         "benchmarks/README.md",
         rf"v{ver_esc}",
         f"benchmarks/README.md cites v{version}",
+        errors,
+    )
+    require_regex(
+        repo_root,
+        "harness/README.md",
+        r"36 diagnostic test scripts",
+        "harness/README.md cites 36 diagnostic test scripts",
+        errors,
+    )
+    forbid_regex(
+        repo_root,
+        "harness/README.md",
+        r"\b427\b|25 diagnostic test scripts|25 test scripts|17 Shell Tests|8 Python Test Suites|4-target performance budget",
+        "harness/README.md stale test counts or 4-target budget",
         errors,
     )
 
@@ -311,11 +361,18 @@ def check_pre_tag_surfaces(repo_root: Path, version: str, errors: list[str]) -> 
         "test-matrix-and-ci-audit.md cites 519 workspace tests",
         errors,
     )
+    require_regex(
+        repo_root,
+        "docs/testing/test-matrix-and-ci-audit.md",
+        r"36 specialized scripts(?:\*\*)? \(25 shell tests and 11 Python unit test suites\)",
+        "test-matrix-and-ci-audit.md cites 36 specialized scripts (25 shell + 11 Python)",
+        errors,
+    )
     forbid_regex(
         repo_root,
         "docs/testing/test-matrix-and-ci-audit.md",
-        r"a262f19b0a2eb8a8|\b233\b|\b192\b|\b277\b|\b289\b|\b293\b|\b294\b|\b296\b|\b243\b",
-        "test-matrix-and-ci-audit.md stale fingerprint or 233/192/277/289/293/294/296/243 test counts",
+        r"a262f19b0a2eb8a8|\b233\b|\b192\b|\b277\b|\b289\b|\b293\b|\b294\b|\b296\b|\b243\b|\b263\b|\b269\b|\b159\b|\b139\b|3\.84×|3\.84x|1\.34 GiB|25 diagnostic self-tests|25 scripts|25 specialized scripts|ALL 25 HARNESS|--max-ref-cache-mb|4 continuous performance budgets|Four-Target Workload Budget|harness/lib/oracle_platform\.sh|harness/bench_profile\.sh|test_sync_sclip_after_conseq_preserves_unmatched_entries_for_later_sv_checks|test_get_reference_uses_config_extension_not_hardcoded_refext",
+        "test-matrix-and-ci-audit.md stale fingerprint, test counts, scale metrics, or 4-target budget",
         errors,
     )
 

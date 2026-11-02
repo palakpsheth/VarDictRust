@@ -18,9 +18,9 @@ against VarDictJava as the baseline — paper figures are never quoted as ours.
 
 ---
 
-## 2. Four-Target Performance Budget
+## 2. Five-Target Performance Budget
 
-Evaluated via `harness/perf_budget.py`, comparing `vardictrust` against the `VarDictJava v1.8.3` pipeline (Java + R + Perl). Requirement: Rust wall time $\le$ Java wall time AND Rust peak RSS $\le$ Java peak RSS.
+Evaluated via `harness/perf_budget.py`, comparing `vardictrust` against the `VarDictJava v1.8.3` pipeline (Java + R + Perl). Requirement: Rust wall time $\le$ Java wall time AND Rust peak RSS $\le$ Java peak RSS. For the 5th target (`hg008-cram-twin`), CRAM-to-BAM wall time ratio must remain $\le 2.50\times$ with 100% bitwise VCF identity.
 
 | Workload / Target | Modality | Java Wall | Cpp Wall¹ | Rust Wall | Speedup (vs Java) | Java Peak RSS | Cpp Peak RSS¹ | Rust Peak RSS | Memory Scaling (vs Java) | Cpp vs Java Parity¹ | Evidence File |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -28,13 +28,14 @@ Evaluated via `harness/perf_budget.py`, comparing `vardictrust` against the `Var
 | **GIAB HG002 (chr20:10M–30M, 30×)** | SimpleMode (`-f 0.01`) | `2:40.54` | `0:18.87` | **`0:48.30`** | **3.3× faster** | `3.89 GiB` | `853.1 MiB` | **`272.9 MiB`** | **14.6× less** | **[MISMATCH (`CPP-9`)](../docs/upstream-bugs.md#cpp-9)** · **[`CPP-1`](../docs/upstream-bugs.md#cpp-1)** | [`hg002-tier2.json`](evidence/hg002-tier2.json) |
 | **SEQC2 HCC1395 Somatic Exome** | SomaticMode (`tumor\|normal`, `-th 4`²) | `1:37:23` | `7:11.99` | **`8:53.46`** | **11.0× faster** | `3.19 GiB` | `2.15 GiB` | **`419.3 MiB`** | **7.8× less** | **[MISMATCH (`CPP-9`)](../docs/upstream-bugs.md#cpp-9)** | [`seqc2-exome-tier2.json`](evidence/seqc2-exome-tier2.json) |
 | **GIAB HG008 Somatic PDAC** | SomaticMode (`tumor\|normal`, `-th 4`²) | `1:47.00` | `0:21.96` | **`0:31.57`** | **3.4× faster** | `3.04 GiB` | `303.6 MiB` | **`258.3 MiB`** | **12.1× less** | **[MISMATCH (`CPP-9`)](../docs/upstream-bugs.md#cpp-9)** | [`hg008-tier2.json`](evidence/hg008-tier2.json) |
+| **GIAB HG008 CRAM-vs-BAM Twin** | SomaticMode CRAM vs BAM (`-th 4`²) | `0:55.46` (Rust BAM) | — | **`1:17.29` (Rust CRAM)** | **1.39× CRAM/BAM** | `251.4 MiB` (BAM) | — | **`1.28 GiB` (CRAM)** | **Bounded `512 MiB` cache** | **MATCH (`18,426` Rust; `18,425` Cpp CRAM==BAM)** | [`hg008-cram-twin.json`](evidence/hg008-cram-twin.json) |
 
 ¹ Cpp (pinned **vardictcpp 3 `hc52dbad_0` bioconda**, same `vardict-oracle` env) runs beside each gate arm via `harness/perf_budget.py`. The budget verdict stays Rust-vs-Java only. Per-cell cpp wall/RSS above are transcribed from the linked evidence `extra` (`cpp_wall_s`, `cpp_maxrss_kb`, ratios). Known cpp divergences are normalized in [`docs/upstream-bugs.md`](../docs/upstream-bugs.md#cpp-divergences). A missing `cpp_time` records a loud `SKIP`, never a silent pass.
 ² hg008/seqc2-exome at `-th 4`: Java `-th 8` is OOM-killed on 31G hosts (bisected 1✓/4✓/8✗); exact cmds in evidence.
 
 ### Reproduction Command:
 ```bash
-python3 harness/perf_budget.py hg008-tier2 seqc2-exome-tier2 hg002-tier2 amplicon-tier2
+python3 harness/perf_budget.py hg008-tier2 seqc2-exome-tier2 hg002-tier2 amplicon-tier2 hg008-cram-twin
 ```
 
 ---
@@ -57,7 +58,7 @@ python3 harness/perf_budget.py hg008-tier2 seqc2-exome-tier2 hg002-tier2 amplico
 | **Extended Modalities** | [`extended-coverage-tier2.json`](evidence/extended-coverage-tier2.json) | [Tier-2](../docs/testing/test-matrix-and-ci-audit.md#tier-2) Differential | 17 Modes (RNA `-i`, SVs, flags) | 4,993 variants | **MATCH** (0 diffs) |
 | **Multi-Modal Slices** | [`multimodal-slices-tier2.json`](evidence/multimodal-slices-tier2.json) | [Tier-2](../docs/testing/test-matrix-and-ci-audit.md#tier-2) Differential | 18 Slices across 6 Cohorts | 1,129 variants | **MATCH** (0 diffs) |
 | **Chromosome 1 Scaling** | [`scale.json`](evidence/scale.json) | [Tier-2](../docs/testing/test-matrix-and-ci-audit.md#tier-2) Scaling | Full chr1 Span (249 Mbp) | $S_8 = 3.14\times$, RSS 1.11× | **PASS** |
-| **Performance Budget** | [`perf-budget.json`](evidence/perf-budget.json) | Regression Gate | 4 Target Workload Regression | Wall/RAM gates | **PASS** |
+| **Performance Budget** | [`perf-budget.json`](evidence/perf-budget.json) | Regression Gate | 5 Target Workload Regression | Wall/RAM gates | **PASS** |
 | **Musl CI Packaging** | [`musl-ci.json`](evidence/musl-ci.json) | Release Gate | Static PIE Linux Packaging | Bitwise identity | **PASS** |
 
 ---

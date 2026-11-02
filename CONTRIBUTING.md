@@ -228,7 +228,7 @@ This suite completes in `<25s` using the pinned golden baseline store and automa
 2. **Stage 2 (Crash Robustness):** PR #402, missing index #187, and Issue #341 family fixtures (executed within the workspace test run).
 3. **Stage 3 (Upstream Integration Corpus):** 92 fixtures ([Level 2](docs/testing/test-matrix-and-ci-audit.md#level-2-upstream-integration-regression-corpus-92-fixtures)) across 8 parallel workers, asserting `91 PASS / 1 XFAIL` ([UB-4](docs/upstream-bugs.md#ub-4) upstream fixture defect).
 4. **Stage 4 (Dual-Engine Differential Parity):** Micro differential fixture, all 10 standard slices (`s1a..s9`), 17-modality extended coverage (`--no-record`), and 18-slice multimodal suite (`--no-record`) against the VarDictJava oracle ([Level 3](docs/testing/test-matrix-and-ci-audit.md#level-3-dual-engine-differential-parity-testing)).
-5. **Stage 5 (Performance & Memory Budgets):** 4-target regression budget via [`harness/perf_budget.py`](harness/perf_budget.py) ([Level 5](docs/testing/test-matrix-and-ci-audit.md#level-5-performance--memory-budgets)).
+5. **Stage 5 (Performance & Memory Budgets):** 5-target regression budget via [`harness/perf_budget.py`](harness/perf_budget.py) ([Level 5](docs/testing/test-matrix-and-ci-audit.md#level-5-performance--memory-budgets)).
 6. **Stage 6 (Security Hygiene):** Staged and repository secret scanning with `gitleaks`.
 
 ### 5.5 Master Release Recertification & Acceptance Gate (`recertify.sh` & `acceptance.sh` — Tier B Release Gate)
@@ -241,7 +241,7 @@ bash harness/acceptance.sh
 
 Additionally, contributors can execute the diagnostic self-test suite ([Level 6](docs/testing/test-matrix-and-ci-audit.md#level-6-diagnostic-self-tests)) at any time:
 ```bash
-bash harness/run_self_tests.sh   # Executes all 25 diagnostic test scripts in <10s
+bash harness/run_self_tests.sh   # Executes all 36 diagnostic test scripts in <10s
 ```
 
 *For the complete seven-level testing architecture, push-button reproduction commands, and dataset provenance catalog, see the Master Reproducibility Runbook in [`docs/testing/test-matrix-and-ci-audit.md`](docs/testing/test-matrix-and-ci-audit.md).*
@@ -260,7 +260,7 @@ When opening a pull request (see the [`vardictrust-pr` skill](.agents/skills/var
 - [ ] Code formatting verified: `cargo fmt --all -- --check`.
 - [ ] All unit tests pass: `cargo test --workspace`.
 - [ ] PR validation suite passes: `bash harness/pr_check.sh`.
-- [ ] No regression against the 4-target performance budget (runtime regression $\le 5\%$, peak RSS 0% increase across HG008, SEQC2, HG002, and Amplicon).
+- [ ] No regression against the 5-target performance budget (runtime regression $\le 5\%$, peak RSS 0% increase across HG008, SEQC2, HG002, Amplicon, and HG008 CRAM twin $\le 2.50\times$).
 - [ ] No secrets or credentials in git history (`gitleaks`).
 - [ ] Multi-skill review completed and findings fixed through `/ponytail-review`, `/rust-router`, and `/pragmatic-rust-guidelines`.
 - [ ] Waited for `copilot-pull-request-reviewer[bot]` review to finish; every review comment refuted or fixed with an inline reply and every review thread resolved (`resolveReviewThread`).
@@ -344,7 +344,7 @@ cargo build --release -p vardictrust
 # 2. Commit tracked release changes on release/vX.Y.Z (clean HEAD required by engine_fingerprint.sh)
 git commit -m "chore(release): prepare vX.Y.Z release"
 
-# 3. Verify engine fingerprint and run all 25 diagnostic self-tests
+# 3. Verify engine fingerprint and run all 36 diagnostic self-tests
 bash harness/engine_fingerprint.sh
 bash harness/run_self_tests.sh
 
