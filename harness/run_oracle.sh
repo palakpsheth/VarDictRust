@@ -1,6 +1,27 @@
 #!/usr/bin/env bash
 set -euo pipefail
 # Usage: run_oracle.sh <ref.fa> <bam | tumor.bam|normal.bam> <bed> <out.vcf> [sample] [extra VarDict args...]
+HOST_OS="$(uname -s)"
+HOST_ARCH="$(uname -m)"
+if [ "$HOST_OS" != "Linux" ] || [ "$HOST_ARCH" != "x86_64" ]; then
+  if [ "${ORACLE_CONTAINER:-0}" = "1" ]; then
+    ORACLE_IMAGE="${ORACLE_CONTAINER_IMAGE:-vardict-oracle:linux-amd64}"
+    REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+    OUT_DIR="$(mkdir -p "$(dirname "${4:-.}")" && cd "$(dirname "${4:-.}")" && pwd)"
+    exec docker run --rm --platform linux/amd64 \
+      -e AF_THR="${AF_THR:-}" \
+      -e ORACLE_XMX_GB="${ORACLE_XMX_GB:-}" \
+      -e KEEP_DIR="${KEEP_DIR:-}" \
+      -v "$REPO_ROOT:$REPO_ROOT" \
+      -v "$OUT_DIR:$OUT_DIR" \
+      -v /tmp:/tmp \
+      -w "$PWD" \
+      "$ORACLE_IMAGE" \
+      bash "$REPO_ROOT/harness/run_oracle.sh" "$@"
+  fi
+  echo "ORACLE-PLATFORM: unsupported oracle host ${HOST_OS}/${HOST_ARCH} (R long double divergence); set ORACLE_CONTAINER=1 to run the linux/amd64 oracle container." >&2
+  exit 2
+fi
 REF=$1; BAM=$2; BED=$3; OUT=$4; SAMPLE=${5:-SAMPLE}; shift 5 || shift $#
 AF=${AF_THR:-0.01}
 

@@ -23,7 +23,7 @@ The harness operates in two distinct tiers:
 | [`compare_vcf.py`](compare_vcf.py) | **VCF Differential Comparator:** Python comparator that parses and aligns records by coordinate and allele, comparing FILTER, INFO, and FORMAT fields with exact float tolerances ($\varepsilon = 10^{-6}$) and validating VCF header metadata. Supports `--strict-bytes`. |
 | [`compare_var.py`](compare_var.py) | **Table Differential Comparator:** Compares raw intermediate `.var` output tables row-by-row, validating allele frequency ties and column alignment. |
 | [`golden_store.sh`](golden_store.sh) | **Golden Baseline Store CLI:** Manages cached, hash-keyed oracle baseline outputs (`scratch/golden-store/`) across Java and C++ runs with atomic locking, verification, and telemetry. |
-| [`run_oracle.sh`](run_oracle.sh) | **Oracle Execution Wrapper:** Executes upstream `VarDictJava v1.8.3` within the isolated `vardict-oracle` conda environment (OpenJDK 8 + Perl/R pipeline). |
+| [`run_oracle.sh`](run_oracle.sh) | **Oracle Execution Wrapper:** Executes upstream `VarDictJava v1.8.3` within the isolated `vardict-oracle` conda environment (OpenJDK 8 + Perl/R pipeline). Enforces the `Linux/x86_64` 80-bit `long double` (`sizeof.longdouble == 16`) R requirement; fails fast with `ORACLE-PLATFORM` on non-`Linux/x86_64` hosts unless `ORACLE_CONTAINER=1` is set to run the `linux/amd64` oracle container. |
 | [`setup_oracle.sh`](setup_oracle.sh) | **Oracle Environment Setup:** One-time configuration script provisioning the `vardict-oracle` conda environment. |
 | [`rgate.sh`](rgate.sh) | **Rapid Developer Smoke Gate:** Runs a fast $(<30\text{s})$ differential smoke-test against micro-fixtures, ideal for fast inner-loop development. |
 | [`slice.sh`](slice.sh) | **BAM Slicer Utility:** Extracts local genomic intervals using `samtools` for rapid inner-loop fixture generation. |
@@ -184,9 +184,12 @@ An oracle execution is pinned into the store on exit code 0 *only* if all validi
   ```
   Tombstoning appends `{"tombstone": true, "reason": "..."}` to `manifest.json`. Subsequent invocations treat the cell as absent, executing live and re-pinning a fresh entry.
 
-### 7.6 Host-Bound Performance Telemetry
+### 7.6 Host-Bound Performance Telemetry & Platform Isolation
 
-Replay of `/usr/bin/time -v` resource metrics (`time` or `time.gz`) is strictly restricted to the **same host** where measurements were taken. `golden_store.py` records host hardware attributes (`cpu` model name and `nproc` core count from `/proc/cpuinfo`) in `manifest.json`. If a cell is accessed on a different machine, output artifacts (`out` and `err`) are replayed, but the time sidecar is omitted and timing falls back to live measurement. This preserves the invariant of AGENTS.md §14: deterministic variant calling outputs gate globally, but host-dependent runtime and memory metrics are never conflated across hardware architectures.
+Replay of `/usr/bin/time -v` resource metrics (`time` or `time.gz`) is strictly restricted to the **same host** where measurements were taken. `golden_store.py` records host hardware and platform attributes (`cpu` model name, `nproc` core count, `os`, `machine`, and R's `.Machine$sizeof.longdouble` as `r_sizeof_longdouble`) in `manifest.json`. Because R's `fisher.test()` MLE (`uniroot` + `dnhyper`) in `teststrandbias.R` and `testsomatic.R` relies on x87 80-bit extended precision (`sizeof(long double) == 16` on `Linux/x86_64`), running the oracle natively on `Darwin/arm64` (`sizeof(long double) == 8`) or `Linux/aarch64` diverges on boundary odds ratios (e.g. `c(9,6,5,1)` rounding to `0.31604` instead of `0.31603`). Therefore:
+- `run_oracle.sh` and `compare.sh` fail fast (exit code 2, `ORACLE-PLATFORM`) on non-`Linux/x86_64` hosts unless `ORACLE_CONTAINER=1` is set to dispatch the oracle inside a `linux/amd64` container (`docker run --rm --platform linux/amd64 ...`).
+- `golden_store.py` preserves exact 16-hex SHA-256 cell IDs on `Linux-x86_64` while appending `"platform": "<os>-<machine>"` to the cell key payload on non-`Linux-x86_64` hosts so non-`Linux-x86_64` runs never collide with or poison `Linux-x86_64` golden cells.
+- If a cell is accessed on a different machine, output artifacts (`out` and `err`) are replayed, but the time sidecar is omitted and timing falls back to live measurement. This preserves the invariant of AGENTS.md §14: deterministic variant calling outputs gate globally, but host-dependent runtime and memory metrics are never conflated across hardware architectures.
 
 ### 7.7 Telemetry, Stamping & Evidence Blocks
 

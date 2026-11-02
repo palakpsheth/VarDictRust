@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """harness/tests/test_golden_store.py — golden baseline store (issue #31). stdlib only."""
+import hashlib
 import importlib.util
 import json
 import os
@@ -118,6 +119,57 @@ class TestKey(StoreCase):
                      self.tmp / "nope.bam", "--", "true")
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("input not found", r.stderr)
+
+    def test_host_info_records_os_machine_and_r_sizeof_longdouble(self):
+        orig_uname = gs.os.uname
+        self.addCleanup(setattr, gs.os, "uname", orig_uname)
+
+        gs.os.uname = lambda: os.uname_result(("Linux", "host", "6.8.0", "#1", "x86_64"))
+        info_linux = gs.host_info()
+        self.assertEqual(info_linux["os"], "Linux")
+        self.assertEqual(info_linux["machine"], "x86_64")
+        self.assertEqual(info_linux["r_sizeof_longdouble"], 16)
+
+        gs.os.uname = lambda: os.uname_result(("Darwin", "host", "23.4.0", "#1", "arm64"))
+        info_mac = gs.host_info()
+        self.assertEqual(info_mac["os"], "Darwin")
+        self.assertEqual(info_mac["machine"], "arm64")
+        self.assertEqual(info_mac["r_sizeof_longdouble"], 8)
+
+    def test_compute_cell_id_preserves_linux_x86_64_and_namespaces_other_platforms(self):
+        expected_ident = {
+            "schema": gs.SCHEMA,
+            "kind": "java",
+            "pin": gs.oracle_pin("java"),
+            "env_pin": gs.sha256_file(gs.ROOT / "benchmarks" / "env" / "vardict-oracle.yml"),
+            "wrapper": "-",
+            "inputs": [gs.sha256_file(self.ref)],
+            "argv": ["@IN0", "-f", "0.1"],
+            "env": {k: "" for k in gs.ENV_KEYS["java"]},
+        }
+        expected_key = hashlib.sha256(
+            json.dumps(expected_ident, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()[:16]
+
+        k_linux, ident_linux = gs.compute_cell_id(
+            "java", [self.ref], [str(self.ref), "-f", "0.1"], host_platform="Linux-x86_64"
+        )
+        self.assertEqual(k_linux, expected_key, "Linux-x86_64 cell ID must match existing 16-hex SHA-256")
+        self.assertNotIn("platform", ident_linux)
+
+        k_mac, ident_mac = gs.compute_cell_id(
+            "java", [self.ref], [str(self.ref), "-f", "0.1"], host_platform="Darwin-arm64"
+        )
+        self.assertNotEqual(k_mac, expected_key, "Darwin-arm64 must not collide with Linux-x86_64 cell ID")
+        self.assertEqual(ident_mac.get("platform"), "Darwin-arm64")
+
+        k_arm, ident_arm = gs.compute_cell_id(
+            "java", [self.ref], [str(self.ref), "-f", "0.1"], host_platform="Linux-aarch64"
+        )
+        self.assertNotEqual(k_arm, expected_key)
+        self.assertNotEqual(k_arm, k_mac)
+        self.assertEqual(ident_arm.get("platform"), "Linux-aarch64")
+
 
 
 class TestRoundTrip(StoreCase):

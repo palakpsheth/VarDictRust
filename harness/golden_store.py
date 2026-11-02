@@ -173,13 +173,23 @@ def normalise_argv(args, inputs):
     return out
 
 
-def cell_key(kind, inputs, args, wrapper="-", literal=()):
+def _host_platform(host_platform=None):
+    if host_platform is not None:
+        return host_platform
+    u = os.uname()
+    return f"{u.sysname}-{u.machine}"
+
+
+def cell_key(kind, inputs, args, wrapper="-", literal=(), host_platform=None):
     """Key = sha256 of everything that can change the oracle's output.
 
     `literal` inputs are hashed but their path string stays in argv: VarDict embeds the -G path
     verbatim in `##reference=` and compare_vcf.py does not exempt it, so a different spelling of
     the same FASTA must be a different cell. The thread count (-th) is deliberately kept: a time
-    file measured at one -th must not be replayed into a run at another."""
+    file measured at one -th must not be replayed into a run at another.
+    On Linux-x86_64, `platform` is omitted from `ident` so existing 16-hex SHA-256 cell IDs stay
+    unchanged; non-Linux-x86_64 hosts append `platform` so they never collide with or poison
+    Linux-x86_64 cells."""
     lit = {str(p) for p in literal}
     subst = [p for p in inputs if str(p) not in lit]
     ident = {
@@ -192,8 +202,14 @@ def cell_key(kind, inputs, args, wrapper="-", literal=()):
         "argv": normalise_argv(list(args), subst),
         "env": {k: os.environ.get(k, "") for k in ENV_KEYS[kind]},
     }
+    plat = _host_platform(host_platform)
+    if plat != "Linux-x86_64":
+        ident["platform"] = plat
     blob = json.dumps(ident, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(blob).hexdigest()[:16], ident
+
+
+compute_cell_id = cell_key
 
 
 def _sigs(inputs):
@@ -255,6 +271,31 @@ def live_entry(key):
     return len(entries) - 1, entries[-1]
 
 
+_REAL_UNAME = (os.uname().sysname, os.uname().machine)
+_R_LONGDOUBLE_CACHE = {}
+
+
+def _r_sizeof_longdouble(sysname, machine):
+    rscript = shutil.which("Rscript") if (sysname, machine) == _REAL_UNAME else None
+    key = (sysname, machine, rscript)
+    if key in _R_LONGDOUBLE_CACHE:
+        return _R_LONGDOUBLE_CACHE[key]
+    val = None
+    if rscript:
+        try:
+            out = subprocess.check_output(
+                [rscript, "-e", "cat(.Machine$sizeof.longdouble)"],
+                stderr=subprocess.DEVNULL, text=True, timeout=5,
+            ).strip()
+            val = int(out)
+        except Exception:
+            val = None
+    if val is None:
+        val = 16 if (sysname == "Linux" and machine == "x86_64") else (8 if machine in ("arm64", "aarch64") else 16)
+    _R_LONGDOUBLE_CACHE[key] = val
+    return val
+
+
 def host_info():
     cpu = "unknown"
     try:
@@ -265,7 +306,15 @@ def host_info():
                     break
     except OSError:
         pass
-    return {"cpu": cpu, "nproc": os.cpu_count(), "kernel": platform.release()}
+    uname = os.uname()
+    return {
+        "cpu": cpu,
+        "nproc": os.cpu_count(),
+        "kernel": platform.release(),
+        "os": uname.sysname,
+        "machine": uname.machine,
+        "r_sizeof_longdouble": _r_sizeof_longdouble(uname.sysname, uname.machine),
+    }
 
 
 def _host_matches(recorded):

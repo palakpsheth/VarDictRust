@@ -570,4 +570,12 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn linux_x86_64_r_fisher_canaries() {
+        assert_eq!(FisherExact::new(9, 6, 5, 1).get_odds_ratio(), "0.31603");
+        assert_eq!(FisherExact::new(27, 17, 3, 8).get_odds_ratio(), "4.12268");
+        assert_eq!(FisherExact::new(10, 8, 1, 3).get_odds_ratio(), "3.53774");
+        assert_eq!(FisherExact::new(2, 150, 7, 183).get_odds_ratio(), "0.34953");
+    }
 }

@@ -47,10 +47,11 @@ git submodule update --init --recursive
      rustup component add clippy rustfmt
      ```
 2. **Oracle Environment (VarDictJava v1.8.3):**
-   - The reference oracle runs VarDictJava v1.8.3 via bioconda:
+   - The reference oracle runs VarDictJava v1.8.3 via bioconda on `Linux x86_64` (where R uses x87 80-bit `long double`, `.Machine$sizeof.longdouble == 16`, required for exact Fisher MLE parity in `teststrandbias.R` and `testsomatic.R`):
      ```bash
      bash harness/setup_oracle.sh
      ```
+   - On macOS (`Darwin/arm64`) or `Linux/aarch64` hosts, `harness/run_oracle.sh` and `harness/compare.sh` fail fast with `ORACLE-PLATFORM` unless `ORACLE_CONTAINER=1` is set to execute the oracle inside a `linux/amd64` container (`docker run --rm --platform linux/amd64 ...`).
 3. **Bioinformatics & Security Utilities:**
    - Tools required for testing and secret scanning: `samtools`, `bwa`, `rtg-tools`, and `gitleaks`:
      ```bash
