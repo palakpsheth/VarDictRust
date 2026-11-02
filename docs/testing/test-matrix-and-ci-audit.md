@@ -353,7 +353,7 @@ Because VarDictRust produces 0 variant discrepancies and 0 filter differences co
 Level 5 guarantees that VarDictRust delivers decisive scaling improvements over VarDictJava while preventing memory regressions:
 
 1. **Whole-Chromosome Scaling (`harness/scale_bench.sh`):**
-   - Evaluated across all 249 Mbp of human chromosome 1 on HCC1395 (`SCALE_CPUS=0-3,16-19` / `taskset -c 0-3,16-19`, $P = 4$ physical cores under pin).
+   - Evaluated across all 249 Mbp of human chromosome 1 on HCC1395 (`SCALE_CPUS=0-7` / `taskset -c 0-7`, $P = 4$ physical cores under pin).
    - Enforces the signed host-class 8-thread parallel speedup bar $S_8 \ge \text{bar}(P) = 0.6 \times \min(8, P) = 2.4\times$ (achieved **3.14×** (8 threads vs 1 thread: `138.92s` vs `435.96s` 3-run median, certified gate ≥ 2.40×)).
    - Enforces flat resident set size scaling: peak RSS ratio across a 25-fold increase in genomic span (10 Mbp to 249 Mbp) must remain $\le 1.5\times$ (achieved **1.11×** (249 Mbp vs 10 Mbp: `1.27 GiB` vs `1.15 GiB` 3-run median, certified gate ≤ 1.50×)).
 2. **Five-Target Workload Budget (`harness/perf_budget.py`):**

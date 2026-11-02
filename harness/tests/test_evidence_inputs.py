@@ -13,6 +13,9 @@ Verifies that:
    `RECERTIFY_NEW_INPUTS=1` is set.
 """
 
+from __future__ import annotations
+
+import ast
 import hashlib
 import json
 import os
@@ -24,6 +27,11 @@ import tempfile
 import unittest
 
 ROOT_DIR = pathlib.Path(__file__).resolve().parent.parent.parent
+if str(ROOT_DIR / "harness") not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR / "harness"))
+
+import perf_budget  # noqa: E402
+import sync_evidence_docs  # noqa: E402
 
 
 class TestEvidenceInputs(unittest.TestCase):
@@ -291,14 +299,41 @@ class TestEvidenceInputs(unittest.TestCase):
 
             scale_path = ev_dst / "scale.json"
             scale_data = json.loads(scale_path.read_text(encoding="utf-8"))
-            scale_data["extra"]["speedup_8"] = 3.25
-            scale_data["extra"]["rss_ratio_chr1_vs_10mb"] = 1.15
+            scale_data["extra"]["wall_s"] = {
+                "1": 450.0,
+                "2": 225.0,
+                "4": 150.0,
+                "8": 138.46,
+            }
+            scale_data["extra"]["maxrss_kb"] = {
+                "1000000": 524288,
+                "10000000": 1258291,
+                "100000000": 1310720,
+                "248956422": 1447035,
+            }
+            scale_data["extra"]["speedup_8"] = round(450.0 / 138.46, 6)
+            scale_data["extra"]["rss_ratio_chr1_vs_10mb"] = 1447035 / 1258291
+            scale_data["extra"]["cpp_wall_s"] = {
+                "1": 600.0,
+                "2": 350.0,
+                "4": 210.0,
+                "8": 195.5,
+            }
+            scale_data["extra"]["cpp_maxrss_kb"] = {
+                "1000000": 220000,
+                "10000000": 2900000,
+                "100000000": 22000000,
+                "248956422": 26214400,
+            }
+            scale_data["extra"]["perf_fingerprint"] = "fedcba9876543210"
+            scale_data["extra"]["cpus"] = "0-3,8-11"
+            scale_data["extra"]["P"] = 4
             scale_path.write_text(
                 json.dumps(scale_data, indent=2, sort_keys=True) + "\n",
                 encoding="utf-8",
             )
 
-            # --check must detect drift across all 4 surfaces
+            # --check must detect drift across all 6 surfaces
             res_drift = subprocess.run(
                 [sys.executable, sync_script, "--repo-root", str(tpath), "--check"],
                 capture_output=True,
@@ -307,9 +342,11 @@ class TestEvidenceInputs(unittest.TestCase):
             self.assertNotEqual(res_drift.returncode, 0, "--check should fail when timings drift")
             for expected_surface in (
                 "README.md",
+                "DIVERGENCES.md",
                 "benchmarks/README.md",
                 "docs/validation/omnibus-empirical-validation.md",
                 "docs/testing/test-matrix-and-ci-audit.md",
+                ".agents/skills/vardictrust-release/references/version-surface-map.md",
             ):
                 self.assertIn(expected_surface, res_drift.stderr)
 
@@ -345,11 +382,32 @@ class TestEvidenceInputs(unittest.TestCase):
                 bench_text,
             )
             self.assertIn("$S_8 = 3.25\\times$, RSS 1.15×", bench_text)
+            self.assertIn("pinned physical cores `0-3,8-11` for `scale.json`", bench_text)
+            self.assertIn("(`perf_fingerprint: fedcba9876543210`)", bench_text)
+            self.assertIn("| 1 core | 7m 30s (450.00 s) | 1.00× (baseline) |", bench_text)
+            self.assertIn("| 2 cores | 3m 45s (225.00 s) | 2.00× |", bench_text)
+            self.assertIn("| 4 cores | 2m 30s (150.00 s) | 3.00× |", bench_text)
+            self.assertIn("| 8 threads | 2m 18s (138.46 s) | **3.25× parallel** |", bench_text)
+            self.assertIn("| 1 Mbp | 512.0 MiB (524,288 KB) |", bench_text)
+            self.assertIn("| 249 Mbp (Full chr1) | **1.38 GiB (1,447,035 KB)** |", bench_text)
+            self.assertIn("**Observed RSS Ratio (249 Mbp vs 10 Mbp): 1.15× (`1.150×`)**", bench_text)
+            self.assertIn(
+                "at `-th 8` BED wall 195.50 s, full-span (249 Mbp) unchunked `-R` RSS 25.00 GiB (26,214,400 KB",
+                bench_text,
+            )
 
             omnibus_text = (tpath / "docs" / "validation" / "omnibus-empirical-validation.md").read_text(encoding="utf-8")
             self.assertIn("**3.25× parallel**", omnibus_text)
             self.assertIn("**1.15× flat RSS scaling**", omnibus_text)
-            self.assertIn("**$1.15\\times$ (`1.106\\times`)**", omnibus_text)
+            self.assertIn("**$1.15\\times$ (`1.150\\times`)**", omnibus_text)
+            self.assertIn(
+                "**3.25×** parallel speedup at 8 threads on chromosome 1 (3-run median) with flat memory scaling (**1.15×** (`1.150×`) RSS ratio: 1.20 GiB at 10 Mb vs 1.38 GiB at 249 Mb).",
+                omnibus_text,
+            )
+            self.assertIn(
+                "| **3.25× speedup, 1.15× flat RSS** | advisory 25.00 GiB unchunked `-R` RSS / 195.50 s BED wall ([CPP-5](../upstream-bugs.md#cpp-5)) |",
+                omnibus_text,
+            )
             self.assertIn(
                 "| `1:47.00` | `0:21.96` | **`0:38.20`** | **2.8× faster** | `3.04 GiB` | `303.6 MiB` | **`519.4 MiB`** | **6.0× less** | [`hg008-tier2.json`](../../benchmarks/evidence/hg008-tier2.json) |",
                 omnibus_text,
@@ -361,6 +419,10 @@ class TestEvidenceInputs(unittest.TestCase):
 
             matrix_text = (tpath / "docs" / "testing" / "test-matrix-and-ci-audit.md").read_text(encoding="utf-8")
             self.assertIn("(`cram_to_bam_wall_ratio <= 2.50`, achieved `1.50×`)", matrix_text)
+            self.assertIn(
+                "(`SCALE_CPUS=0-3,8-11` / `taskset -c 0-3,8-11`, $P = 4$ physical cores under pin).",
+                matrix_text,
+            )
 
             # --check must now exit 0
             res_after = subprocess.run(
@@ -369,6 +431,292 @@ class TestEvidenceInputs(unittest.TestCase):
                 text=True,
             )
             self.assertEqual(res_after.returncode, 0, f"--check after sync failed: {res_after.stderr}")
+
+    def test_python38_future_annotations_present(self):
+        for rel in (
+            "harness/sync_evidence_docs.py",
+            "harness/perf_budget.py",
+            "harness/tests/test_evidence_inputs.py",
+        ):
+            fpath = ROOT_DIR / rel
+            tree = ast.parse(fpath.read_text(encoding="utf-8"), filename=str(fpath))
+            imports = [
+                node for node in tree.body if isinstance(node, (ast.Import, ast.ImportFrom))
+            ]
+            self.assertTrue(imports, f"No top-level imports found in {rel}")
+            first = imports[0]
+            self.assertIsInstance(first, ast.ImportFrom, f"First import in {rel} is not ImportFrom")
+            self.assertEqual(first.module, "__future__", f"First import in {rel} is not from __future__")
+            self.assertEqual(
+                [alias.name for alias in first.names],
+                ["annotations"],
+                f"First import in {rel} is not 'from __future__ import annotations'",
+            )
+
+    def test_sync_evidence_docs_handles_null_cpp_metrics_and_roundtrips(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tpath = pathlib.Path(tmp)
+            rel_files = [
+                "Cargo.toml",
+                "README.md",
+                "DIVERGENCES.md",
+                "benchmarks/README.md",
+                "docs/validation/omnibus-empirical-validation.md",
+                "docs/testing/test-matrix-and-ci-audit.md",
+                ".agents/skills/vardictrust-release/references/version-surface-map.md",
+            ]
+            for rel in rel_files:
+                src = ROOT_DIR / rel
+                dst = tpath / rel
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst)
+
+            ev_dst = tpath / "benchmarks" / "evidence"
+            ev_dst.mkdir(parents=True, exist_ok=True)
+            for jf in (ROOT_DIR / "benchmarks" / "evidence").glob("*.json"):
+                shutil.copy2(jf, ev_dst / jf.name)
+
+            sync_script = str(ROOT_DIR / "harness" / "sync_evidence_docs.py")
+            # Ensure initial state in tpath is synced with live evidence
+            res_pre = subprocess.run(
+                [sys.executable, sync_script, "--repo-root", str(tpath)],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(res_pre.returncode, 0, f"Pre-sync failed: {res_pre.stderr}")
+
+            md_files = [r for r in rel_files if r.endswith(".md")]
+            initial_contents = {
+                rel: (tpath / rel).read_text(encoding="utf-8") for rel in md_files
+            }
+
+            # Null out cpp_time on all 5 Tier-2 JSON files and cpp_wall_s/cpp_maxrss_kb on scale.json
+            for t2 in (
+                "amplicon-tier2.json",
+                "hg002-tier2.json",
+                "seqc2-exome-tier2.json",
+                "seqc2-slices-tier2.json",
+                "hg008-tier2.json",
+            ):
+                p = ev_dst / t2
+                d = json.loads(p.read_text(encoding="utf-8"))
+                d["cpp_time"] = None
+                p.write_text(json.dumps(d, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+            scale_p = ev_dst / "scale.json"
+            scale_d = json.loads(scale_p.read_text(encoding="utf-8"))
+            scale_d["extra"]["cpp_wall_s"] = {"1": None, "2": None, "4": None, "8": None}
+            scale_d["extra"]["cpp_maxrss_kb"] = {
+                "1000000": None,
+                "10000000": None,
+                "100000000": None,
+                "248956422": None,
+            }
+            scale_p.write_text(json.dumps(scale_d, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+            res_null = subprocess.run(
+                [sys.executable, sync_script, "--repo-root", str(tpath)],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(res_null.returncode, 0, f"Null-C++ sync failed: {res_null.stderr}")
+            res_null_check = subprocess.run(
+                [sys.executable, sync_script, "--repo-root", str(tpath), "--check"],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(
+                res_null_check.returncode, 0, f"Null-C++ --check failed: {res_null_check.stderr}"
+            )
+
+            readme_null = (tpath / "README.md").read_text(encoding="utf-8")
+            self.assertIn("| **GIAB HG008 Somatic PDAC** | `4` (`-th 4`²) | `1:47.00` | — | **`0:16.84`** |", readme_null)
+            self.assertIn("and **— less RAM** than unchunked `vardictcpp` (`—`) on whole-chromosome 1.", readme_null)
+            self.assertIn("| `7:15.96` (Rust `-th 1`³; Java `OOM`) | — ([`CPP-5`](docs/upstream-bugs.md#cpp-5)) | **`2:18.92`** |", readme_null)
+
+            bench_null = (tpath / "benchmarks" / "README.md").read_text(encoding="utf-8")
+            self.assertIn("| **GIAB HG008 Somatic PDAC** | SomaticMode (`tumor\\|normal`, `-th 4`²) | `1:47.00` | — | **`0:16.84`** |", bench_null)
+            self.assertIn("at `-th 8` BED wall —, full-span (249 Mbp) unchunked `-R` RSS — (per [CPP-5](../docs/upstream-bugs.md#cpp-5)).", bench_null)
+
+            omnibus_null = (tpath / "docs" / "validation" / "omnibus-empirical-validation.md").read_text(encoding="utf-8")
+            self.assertIn("| advisory — ([CPP-5](../upstream-bugs.md#cpp-5)) |", omnibus_null)
+            self.assertIn("| `7:15.96` (1 core Rust) | — | **`2:18.92` (8 cores)** |", omnibus_null)
+
+            # Restore original JSON files and verify 100% lossless byte-identical round-trip
+            for jf in (ROOT_DIR / "benchmarks" / "evidence").glob("*.json"):
+                shutil.copy2(jf, ev_dst / jf.name)
+
+            res_restore = subprocess.run(
+                [sys.executable, sync_script, "--repo-root", str(tpath)],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(res_restore.returncode, 0, f"Restore sync failed: {res_restore.stderr}")
+            res_restore_check = subprocess.run(
+                [sys.executable, sync_script, "--repo-root", str(tpath), "--check"],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(
+                res_restore_check.returncode, 0, f"Restore --check failed: {res_restore_check.stderr}"
+            )
+
+            for rel in md_files:
+                restored = (tpath / rel).read_text(encoding="utf-8")
+                self.assertEqual(
+                    restored,
+                    initial_contents[rel],
+                    f"Lossless round-trip failed for {rel}",
+                )
+
+    def test_parse_wall_s_and_invalid_numeric_evidence_rejected(self):
+        bad_walls = [
+            "1:2:3:4",
+            "0:00.00",
+            "-0.0",
+            "1.0:10.00",
+            "1:60.00",
+            "1:60:00",
+            "-1:00",
+            "nan",
+            "inf",
+            "",
+            True,
+        ]
+        for bad in bad_walls:
+            with self.subTest(func="parse_wall_s", val=bad):
+                with self.assertRaises(ValueError):
+                    sync_evidence_docs.parse_wall_s(bad)
+            with self.subTest(func="perf_budget.secs", val=bad):
+                with self.assertRaises(ValueError):
+                    perf_budget.secs(bad)
+
+        for bad_int in (3.7, True, 0, -5, "12.3"):
+            with self.subTest(func="_require_pos_int", val=bad_int):
+                with self.assertRaises(ValueError):
+                    sync_evidence_docs._require_pos_int(bad_int, "test_int")
+
+        self.assertEqual(sync_evidence_docs.format_wall_human_min_sec(59.9), "1m 00s")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tpath = pathlib.Path(tmp)
+            rel_files = [
+                "Cargo.toml",
+                "README.md",
+                "DIVERGENCES.md",
+                "benchmarks/README.md",
+                "docs/validation/omnibus-empirical-validation.md",
+                "docs/testing/test-matrix-and-ci-audit.md",
+                ".agents/skills/vardictrust-release/references/version-surface-map.md",
+            ]
+            for rel in rel_files:
+                src = ROOT_DIR / rel
+                dst = tpath / rel
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst)
+
+            ev_dst = tpath / "benchmarks" / "evidence"
+            ev_dst.mkdir(parents=True, exist_ok=True)
+            for jf in (ROOT_DIR / "benchmarks" / "evidence").glob("*.json"):
+                shutil.copy2(jf, ev_dst / jf.name)
+
+            sync_script = str(ROOT_DIR / "harness" / "sync_evidence_docs.py")
+
+            # Case 1: scale.json extra.wall_s is missing, has "8": None, or has "8": 0.0
+            scale_p = ev_dst / "scale.json"
+            orig_scale = scale_p.read_text(encoding="utf-8")
+            for mut_scale in (
+                lambda d: d["extra"].pop("wall_s", None),
+                lambda d: d["extra"]["wall_s"].__setitem__("8", None),
+                lambda d: d["extra"]["wall_s"].__setitem__("8", 0.0),
+            ):
+                scale_d = json.loads(orig_scale)
+                mut_scale(scale_d)
+                scale_p.write_text(json.dumps(scale_d), encoding="utf-8")
+                res1 = subprocess.run(
+                    [sys.executable, sync_script, "--repo-root", str(tpath)],
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertNotEqual(res1.returncode, 0)
+                self.assertIn("ERROR:", res1.stderr)
+            scale_p.write_text(orig_scale, encoding="utf-8")
+
+            # Case 2: hg008-tier2.json rust_time.wall is "0:00.00" or rust_time.max_rss_kb is 0
+            hg008_p = ev_dst / "hg008-tier2.json"
+            orig_hg008 = hg008_p.read_text(encoding="utf-8")
+            for field, bad_v in (("wall", "0:00.00"), ("max_rss_kb", 0)):
+                hg008_d = json.loads(orig_hg008)
+                hg008_d["rust_time"][field] = bad_v
+                hg008_p.write_text(json.dumps(hg008_d), encoding="utf-8")
+                res2 = subprocess.run(
+                    [sys.executable, sync_script, "--repo-root", str(tpath)],
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertNotEqual(res2.returncode, 0)
+                self.assertIn("ERROR:", res2.stderr)
+            hg008_p.write_text(orig_hg008, encoding="utf-8")
+
+    def test_sync_evidence_docs_late_pattern_error_leaves_all_files_unchanged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tpath = pathlib.Path(tmp)
+            rel_files = [
+                "Cargo.toml",
+                "README.md",
+                "DIVERGENCES.md",
+                "benchmarks/README.md",
+                "docs/validation/omnibus-empirical-validation.md",
+                "docs/testing/test-matrix-and-ci-audit.md",
+                ".agents/skills/vardictrust-release/references/version-surface-map.md",
+            ]
+            for rel in rel_files:
+                src = ROOT_DIR / rel
+                dst = tpath / rel
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst)
+
+            ev_dst = tpath / "benchmarks" / "evidence"
+            ev_dst.mkdir(parents=True, exist_ok=True)
+            for jf in (ROOT_DIR / "benchmarks" / "evidence").glob("*.json"):
+                shutil.copy2(jf, ev_dst / jf.name)
+
+            # Mutate hg008-tier2.json so earlier markdown files would be staged for modification
+            hg008_p = ev_dst / "hg008-tier2.json"
+            hg008_d = json.loads(hg008_p.read_text(encoding="utf-8"))
+            hg008_d["rust_time"]["wall"] = "0:38.20"
+            hg008_p.write_text(
+                json.dumps(hg008_d, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+            )
+
+            # Corrupt the last surface (.agents/skills/vardictrust-release/references/version-surface-map.md)
+            smap_p = tpath / ".agents/skills/vardictrust-release/references/version-surface-map.md"
+            smap_p.write_text("# Corrupted surface map with no matching table rows\n", encoding="utf-8")
+
+            md_files = [r for r in rel_files if r.endswith(".md")]
+            digests_before = {
+                rel: hashlib.sha256((tpath / rel).read_bytes()).hexdigest()
+                for rel in md_files
+            }
+
+            sync_script = str(ROOT_DIR / "harness" / "sync_evidence_docs.py")
+            res = subprocess.run(
+                [sys.executable, sync_script, "--repo-root", str(tpath)],
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(res.returncode, 0, "Expected non-zero exit on pattern error")
+            self.assertIn("ERROR: required pattern not found", res.stderr)
+
+            digests_after = {
+                rel: hashlib.sha256((tpath / rel).read_bytes()).hexdigest()
+                for rel in md_files
+            }
+            self.assertEqual(
+                digests_before,
+                digests_after,
+                "Files were partially written despite a late pattern error",
+            )
 
 
 if __name__ == "__main__":

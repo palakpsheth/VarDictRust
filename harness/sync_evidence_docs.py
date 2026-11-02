@@ -13,25 +13,99 @@ Adheres strictly to AGENTS.md §0b (never modifies `benchmarks/evidence/*.json`)
 and `test_stdlib_purity.py` (100% Python standard library).
 """
 
+from __future__ import annotations
+
 import argparse
 import hashlib
 import json
+import math
 import pathlib
 import re
 import sys
 
+README_TIER2_CPP_TAGS: dict[str, str] = {
+    "amplicon-tier2": "CPP-3",
+    "hg002-tier2": "CPP-9",
+    "seqc2-exome-tier2": "CPP-9",
+    "seqc2-slices-tier2": "CPP-1",
+    "hg008-tier2": "CPP-9",
+}
 
-def parse_wall_s(wall_str: str) -> float:
-    parts = [float(x) for x in str(wall_str).split(":")]
+CPP_SKIP_PREFIXES = (
+    "disabled via CPP_SKIP",
+    "conda not on PATH",
+    "vardictcpp not available",
+    "vardictcpp unavailable",
+    "engine failure",
+)
+
+
+def parse_wall_s(wall_str: object) -> float:
+    if not isinstance(wall_str, str) or not wall_str.strip():
+        raise ValueError(f"invalid wall time string: {wall_str!r}")
+    raw_parts = wall_str.strip().split(":")
+    if len(raw_parts) not in (1, 2, 3):
+        raise ValueError(
+            f"invalid wall time format (expected S, M:S, or H:M:S): {wall_str!r}"
+        )
+    for leading in raw_parts[:-1]:
+        if not re.fullmatch(r"\d+", leading):
+            raise ValueError(
+                f"invalid leading integer component in wall time: {wall_str!r}"
+            )
+    if not re.fullmatch(r"\d+(?:\.\d+)?", raw_parts[-1]):
+        raise ValueError(f"invalid seconds component in wall time: {wall_str!r}")
+    parts = [float(x) for x in raw_parts]
+    if not all(math.isfinite(x) and x >= 0.0 for x in parts):
+        raise ValueError(f"non-finite or negative wall time: {wall_str!r}")
     if len(parts) == 2:
-        return parts[0] * 60.0 + parts[1]
-    if len(parts) == 3:
-        return parts[0] * 3600.0 + parts[1] * 60.0 + parts[2]
-    return parts[0]
+        if parts[1] >= 60.0:
+            raise ValueError(f"seconds >= 60 in M:S wall time: {wall_str!r}")
+        total = parts[0] * 60.0 + parts[1]
+    elif len(parts) == 3:
+        if parts[1] >= 60.0 or parts[2] >= 60.0:
+            raise ValueError(
+                f"minutes or seconds >= 60 in H:M:S wall time: {wall_str!r}"
+            )
+        total = parts[0] * 3600.0 + parts[1] * 60.0 + parts[2]
+    else:
+        total = parts[0]
+    if not math.isfinite(total) or total <= 0.0:
+        raise ValueError(f"wall time must be > 0 seconds: {wall_str!r}")
+    return total
+
+
+def _require_pos_float(val: object, label: str) -> float:
+    if val is None or isinstance(val, bool):
+        raise ValueError(f"invalid float for {label}: {val!r}")
+    if not isinstance(val, (int, float, str)):
+        raise ValueError(f"invalid float for {label}: {val!r}")
+    try:
+        fval = float(val)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"invalid float for {label}: {val!r}") from exc
+    if not math.isfinite(fval) or fval <= 0.0:
+        raise ValueError(f"non-positive or non-finite float for {label}: {val!r}")
+    return fval
+
+
+def _require_pos_int(val: object, label: str) -> int:
+    if val is None or isinstance(val, bool) or isinstance(val, float):
+        raise ValueError(f"invalid int for {label}: {val!r}")
+    if isinstance(val, int):
+        ival = val
+    elif isinstance(val, str) and re.fullmatch(r"\d+", val.strip()):
+        ival = int(val.strip())
+    else:
+        raise ValueError(f"invalid int for {label}: {val!r}")
+    if ival <= 0:
+        raise ValueError(f"non-positive int for {label}: {val!r}")
+    return ival
 
 
 def format_wall_mmss(sec_val: float) -> str:
-    total_cents = round(float(sec_val) * 100)
+    fval = _require_pos_float(sec_val, "wall_s")
+    total_cents = int(round(fval * 100))
     mins, cents = divmod(total_cents, 6000)
     secs = cents / 100.0
     if mins >= 60:
@@ -40,8 +114,14 @@ def format_wall_mmss(sec_val: float) -> str:
     return f"{mins}:{secs:05.2f}"
 
 
+def format_wall_human_min_sec(sec_val: float) -> str:
+    fval = _require_pos_float(sec_val, "wall_s")
+    mins, secs = divmod(int(round(fval)), 60)
+    return f"{mins}m {secs:02d}s"
+
+
 def format_rss(max_rss_kb: int | str) -> str:
-    kb = int(max_rss_kb)
+    kb = _require_pos_int(max_rss_kb, "max_rss_kb")
     if kb >= 1048576:
         return f"{kb / 1048576.0:.2f} GiB"
     return f"{kb / 1024.0:.1f} MiB"
@@ -49,20 +129,52 @@ def format_rss(max_rss_kb: int | str) -> str:
 
 def load_tier2_metrics(ev_dir: pathlib.Path, name: str) -> dict[str, object]:
     data = json.loads((ev_dir / f"{name}.json").read_text(encoding="utf-8"))
-    java_wall = str(data["java_time"]["wall"])
-    cpp_wall = str(data["cpp_time"]["wall"])
-    rust_wall = str(data["rust_time"]["wall"])
-    java_rss_kb = int(data["java_time"]["max_rss_kb"])
-    cpp_rss_kb = int(data["cpp_time"]["max_rss_kb"])
-    rust_rss_kb = int(data["rust_time"]["max_rss_kb"])
+    java_t = data.get("java_time")
+    rust_t = data.get("rust_time")
+    if not isinstance(java_t, dict) or not isinstance(rust_t, dict):
+        raise ValueError(f"{name}.json missing java_time or rust_time dict")
+
+    java_wall = str(java_t.get("wall", "")).strip()
+    rust_wall = str(rust_t.get("wall", "")).strip()
+    java_s = parse_wall_s(java_wall)
+    rust_s = parse_wall_s(rust_wall)
+    java_rss_kb = _require_pos_int(
+        java_t.get("max_rss_kb"), f"{name}.java_time.max_rss_kb"
+    )
+    rust_rss_kb = _require_pos_int(
+        rust_t.get("max_rss_kb"), f"{name}.rust_time.max_rss_kb"
+    )
+
+    cpp_t = data.get("cpp_time")
+    extra = data.get("extra") if isinstance(data.get("extra"), dict) else {}
+    skip_r = str(extra.get("cpp_skip_reason") or "")
+    non_exec = skip_r.startswith(CPP_SKIP_PREFIXES)
+    if (
+        isinstance(cpp_t, dict)
+        and str(cpp_t.get("exit", "0")) == "0"
+        and cpp_t.get("wall") is not None
+        and cpp_t.get("max_rss_kb") is not None
+        and not non_exec
+    ):
+        cpp_wall_raw = str(cpp_t["wall"]).strip()
+        parse_wall_s(cpp_wall_raw)
+        cpp_rss_kb = _require_pos_int(
+            cpp_t["max_rss_kb"], f"{name}.cpp_time.max_rss_kb"
+        )
+        cpp_wall: str | None = cpp_wall_raw
+        cpp_rss: str | None = format_rss(cpp_rss_kb)
+    else:
+        cpp_wall = None
+        cpp_rss = None
+
     return {
         "java_wall": java_wall,
         "cpp_wall": cpp_wall,
         "rust_wall": rust_wall,
         "java_rss": format_rss(java_rss_kb),
-        "cpp_rss": format_rss(cpp_rss_kb),
+        "cpp_rss": cpp_rss,
         "rust_rss": format_rss(rust_rss_kb),
-        "speedup": round(parse_wall_s(java_wall) / parse_wall_s(rust_wall), 1),
+        "speedup": round(java_s / rust_s, 1),
         "mem_ratio": round(java_rss_kb / rust_rss_kb, 1),
     }
 
@@ -77,75 +189,171 @@ def sync_docs(repo_root: pathlib.Path, check: bool = False) -> int:
         )
         return 1
 
-    hg008_data = json.loads((ev_dir / "hg008-tier2.json").read_text(encoding="utf-8"))
-    fp = hg008_data.get("fingerprint", "")
-    scale_data = json.loads((ev_dir / "scale.json").read_text(encoding="utf-8"))
-    scale_extra = scale_data.get("extra", {})
-    perf_fp = scale_extra.get("perf_fingerprint", "")
-    if not re.match(r"^[0-9a-f]{16}$", fp) or not re.match(r"^[0-9a-f]{16}$", perf_fp):
-        print(
-            f"ERROR: invalid fingerprint ({fp!r}) or perf_fingerprint ({perf_fp!r})",
-            file=sys.stderr,
+    try:
+        hg008_data = json.loads(
+            (ev_dir / "hg008-tier2.json").read_text(encoding="utf-8")
         )
+        fp = str(hg008_data.get("fingerprint", ""))
+        scale_data = json.loads((ev_dir / "scale.json").read_text(encoding="utf-8"))
+        scale_extra = scale_data.get("extra")
+        if not isinstance(scale_extra, dict):
+            raise ValueError("scale.json missing 'extra' dict")
+        perf_fp = str(scale_extra.get("perf_fingerprint", ""))
+        if not re.match(r"^[0-9a-f]{16}$", fp) or not re.match(
+            r"^[0-9a-f]{16}$", perf_fp
+        ):
+            print(
+                f"ERROR: invalid fingerprint ({fp!r}) or perf_fingerprint ({perf_fp!r})",
+                file=sys.stderr,
+            )
+            return 1
+
+        tier2_names = (
+            "amplicon-tier2",
+            "hg002-tier2",
+            "seqc2-exome-tier2",
+            "seqc2-slices-tier2",
+            "hg008-tier2",
+        )
+        tier2 = {name: load_tier2_metrics(ev_dir, name) for name in tier2_names}
+        wgs_names = (
+            "hg002-tier2",
+            "seqc2-exome-tier2",
+            "seqc2-slices-tier2",
+            "hg008-tier2",
+        )
+        wgs_min_speedup = min(float(tier2[k]["speedup"]) for k in wgs_names)  # type: ignore[arg-type]
+        wgs_max_speedup = max(float(tier2[k]["speedup"]) for k in wgs_names)  # type: ignore[arg-type]
+        amp_speedup = float(tier2["amplicon-tier2"]["speedup"])  # type: ignore[arg-type]
+        wgs_min_mem = min(float(tier2[k]["mem_ratio"]) for k in wgs_names)  # type: ignore[arg-type]
+        wgs_max_mem = max(float(tier2[k]["mem_ratio"]) for k in wgs_names)  # type: ignore[arg-type]
+
+        cram_data = json.loads(
+            (ev_dir / "hg008-cram-twin.json").read_text(encoding="utf-8")
+        )
+        cram_rust_t = cram_data.get("rust_time")
+        cram_rc_t = cram_data.get("rust_cram_time")
+        if not isinstance(cram_rust_t, dict) or not isinstance(cram_rc_t, dict):
+            raise ValueError(
+                "hg008-cram-twin.json missing rust_time or rust_cram_time dict"
+            )
+        bam_wall = str(cram_rust_t.get("wall", "")).strip()
+        cram_wall = str(cram_rc_t.get("wall", "")).strip()
+        bam_s = parse_wall_s(bam_wall)
+        cram_s = parse_wall_s(cram_wall)
+        bam_rss = format_rss(
+            _require_pos_int(
+                cram_rust_t.get("max_rss_kb"),
+                "hg008-cram-twin.rust_time.max_rss_kb",
+            )
+        )
+        cram_rss = format_rss(
+            _require_pos_int(
+                cram_rc_t.get("max_rss_kb"),
+                "hg008-cram-twin.rust_cram_time.max_rss_kb",
+            )
+        )
+        cram_ratio = cram_s / bam_s
+
+        p_cores = _require_pos_int(scale_extra.get("P"), "scale.extra.P")
+        cpus_raw = scale_extra.get("cpus")
+        if not isinstance(cpus_raw, str) or not cpus_raw.strip():
+            raise ValueError(f"invalid scale.extra.cpus: {cpus_raw!r}")
+        cpus = cpus_raw.strip()
+
+        s8 = _require_pos_float(
+            scale_extra.get("speedup_8", scale_extra.get("s8")),
+            "scale.extra.speedup_8",
+        )
+        rss_ratio = _require_pos_float(
+            scale_extra.get("rss_ratio_chr1_vs_10mb", scale_extra.get("rss_ratio")),
+            "scale.extra.rss_ratio_chr1_vs_10mb",
+        )
+
+        wall_s_map = scale_extra.get("wall_s")
+        if not isinstance(wall_s_map, dict):
+            raise ValueError("scale.extra.wall_s must be a dict")
+        th1_s = _require_pos_float(wall_s_map.get("1"), "scale.extra.wall_s[1]")
+        th2_s = _require_pos_float(wall_s_map.get("2"), "scale.extra.wall_s[2]")
+        th4_s = _require_pos_float(wall_s_map.get("4"), "scale.extra.wall_s[4]")
+        th8_s = _require_pos_float(wall_s_map.get("8"), "scale.extra.wall_s[8]")
+        th1_mmss = format_wall_mmss(th1_s)
+        th8_mmss = format_wall_mmss(th8_s)
+        th1_hm = format_wall_human_min_sec(th1_s)
+        th2_hm = format_wall_human_min_sec(th2_s)
+        th4_hm = format_wall_human_min_sec(th4_s)
+        th8_hm = format_wall_human_min_sec(th8_s)
+        s2 = th1_s / th2_s
+        s4 = th1_s / th4_s
+
+        rss_kb_map = scale_extra.get("maxrss_kb", scale_extra.get("rss_kb"))
+        if not isinstance(rss_kb_map, dict):
+            raise ValueError("scale.extra.maxrss_kb must be a dict")
+        span1_rss_kb = _require_pos_int(
+            rss_kb_map.get("1000000"), "scale.extra.maxrss_kb[1000000]"
+        )
+        span10_rss_kb = _require_pos_int(
+            rss_kb_map.get("10000000"), "scale.extra.maxrss_kb[10000000]"
+        )
+        span100_rss_kb = _require_pos_int(
+            rss_kb_map.get("100000000"), "scale.extra.maxrss_kb[100000000]"
+        )
+        chr1_raw = (
+            rss_kb_map.get("248956422")
+            if "248956422" in rss_kb_map
+            else rss_kb_map.get("249250621")
+        )
+        chr1_rss_kb = _require_pos_int(chr1_raw, "scale.extra.maxrss_kb[248956422]")
+        span1_rss_str = format_rss(span1_rss_kb)
+        span10_rss_str = format_rss(span10_rss_kb)
+        span100_rss_str = format_rss(span100_rss_kb)
+        chr1_rss_str = format_rss(chr1_rss_kb)
+        chr1_rss_gib = float(chr1_rss_kb) / (1024.0 * 1024.0)
+        span10_rss_gib = float(span10_rss_kb) / (1024.0 * 1024.0)
+        rss_ratio_3dec = float(chr1_rss_kb) / float(span10_rss_kb)
+
+        cpp_wall_s_map = scale_extra.get("cpp_wall_s")
+        cpp_th8_raw = (
+            cpp_wall_s_map.get("8") if isinstance(cpp_wall_s_map, dict) else None
+        )
+        if cpp_th8_raw is not None:
+            cpp_th8_s: float | None = _require_pos_float(
+                cpp_th8_raw, "scale.extra.cpp_wall_s[8]"
+            )
+            cpp_th8_mmss: str | None = format_wall_mmss(cpp_th8_s)
+        else:
+            cpp_th8_s = None
+            cpp_th8_mmss = None
+
+        cpp_rss_kb_map = scale_extra.get("cpp_maxrss_kb")
+        cpp_chr1_raw = (
+            (
+                cpp_rss_kb_map.get("248956422")
+                if "248956422" in cpp_rss_kb_map
+                else cpp_rss_kb_map.get("249250621")
+            )
+            if isinstance(cpp_rss_kb_map, dict)
+            else None
+        )
+        if cpp_chr1_raw is not None:
+            cpp_chr1_rss_kb: int | None = _require_pos_int(
+                cpp_chr1_raw, "scale.extra.cpp_maxrss_kb[248956422]"
+            )
+            cpp_chr1_rss_gib: float | None = float(cpp_chr1_rss_kb) / (1024.0 * 1024.0)
+            cpp_chr1_mem_ratio: float | None = round(
+                cpp_chr1_rss_kb / chr1_rss_kb, 1
+            )
+        else:
+            cpp_chr1_rss_kb = None
+            cpp_chr1_rss_gib = None
+            cpp_chr1_mem_ratio = None
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        print(f"ERROR: invalid evidence metrics: {exc}", file=sys.stderr)
         return 1
 
-    tier2_names = (
-        "amplicon-tier2",
-        "hg002-tier2",
-        "seqc2-exome-tier2",
-        "seqc2-slices-tier2",
-        "hg008-tier2",
-    )
-    tier2 = {name: load_tier2_metrics(ev_dir, name) for name in tier2_names}
-    wgs_names = (
-        "hg002-tier2",
-        "seqc2-exome-tier2",
-        "seqc2-slices-tier2",
-        "hg008-tier2",
-    )
-    wgs_min_speedup = min(float(tier2[k]["speedup"]) for k in wgs_names)
-    wgs_max_speedup = max(float(tier2[k]["speedup"]) for k in wgs_names)
-    amp_speedup = float(tier2["amplicon-tier2"]["speedup"])
-    wgs_min_mem = min(float(tier2[k]["mem_ratio"]) for k in wgs_names)
-    wgs_max_mem = max(float(tier2[k]["mem_ratio"]) for k in wgs_names)
-
-    cram_data = json.loads(
-        (ev_dir / "hg008-cram-twin.json").read_text(encoding="utf-8")
-    )
-    bam_wall = str(cram_data["rust_time"]["wall"])
-    cram_wall = str(cram_data["rust_cram_time"]["wall"])
-    bam_rss = format_rss(cram_data["rust_time"]["max_rss_kb"])
-    cram_rss = format_rss(cram_data["rust_cram_time"]["max_rss_kb"])
-    cram_ratio = parse_wall_s(cram_wall) / parse_wall_s(bam_wall)
-
-    s8 = float(scale_extra.get("speedup_8", scale_extra.get("s8", 0.0)))
-    rss_ratio = float(
-        scale_extra.get("rss_ratio_chr1_vs_10mb", scale_extra.get("rss_ratio", 0.0))
-    )
-    rss_kb_map = scale_extra.get("maxrss_kb", scale_extra.get("rss_kb", {}))
-    chr1_rss_kb = int(rss_kb_map.get("248956422", rss_kb_map.get("249250621", 0)))
-    span10_rss_kb = int(rss_kb_map.get("10000000", 0))
-    chr1_rss_gib = float(chr1_rss_kb) / (1024.0 * 1024.0)
-    span10_rss_gib = float(span10_rss_kb) / (1024.0 * 1024.0)
-    wall_s_map = scale_extra.get("wall_s", {})
-    th1_s = float(wall_s_map.get("1", 0.0))
-    th8_s = float(wall_s_map.get("8", 0.0))
-    th1_mmss = format_wall_mmss(th1_s)
-    th8_mmss = format_wall_mmss(th8_s)
-    cpp_wall_s_map = scale_extra.get("cpp_wall_s", {})
-    cpp_th8_s = float(cpp_wall_s_map.get("8", 0.0))
-    cpp_th8_mmss = format_wall_mmss(cpp_th8_s)
-    cpp_rss_kb_map = scale_extra.get("cpp_maxrss_kb", {})
-    cpp_chr1_rss_kb = int(
-        cpp_rss_kb_map.get("248956422", cpp_rss_kb_map.get("249250621", 0))
-    )
-    cpp_chr1_rss_gib = float(cpp_chr1_rss_kb) / (1024.0 * 1024.0)
-    cpp_chr1_mem_ratio = (
-        round(cpp_chr1_rss_kb / chr1_rss_kb, 1) if chr1_rss_kb else 0.0
-    )
-
-    mismatches = []
+    mismatches: list[str] = []
     pattern_errors: list[str] = []
+    staged_writes: list[tuple[pathlib.Path, str]] = []
 
     def sub_required(
         pattern: str, repl: str, text: str, label: str, flags: int = 0
@@ -159,20 +367,33 @@ def sync_docs(repo_root: pathlib.Path, check: bool = False) -> int:
 
     def sub_tier2_row(text: str, name: str, label: str) -> str:
         m = tier2[name]
+        if m["cpp_wall"] is None or m["cpp_rss"] is None:
+            cpp_wall_cell = "—"
+            cpp_rss_cell = "—"
+        else:
+            if label == "README.md" and name in README_TIER2_CPP_TAGS:
+                tag = README_TIER2_CPP_TAGS[name]
+                cpp_wall_cell = (
+                    f"`{m['cpp_wall']}` ([`{tag}`](docs/upstream-bugs.md#{tag.lower()}))"
+                )
+            else:
+                cpp_wall_cell = f"`{m['cpp_wall']}`"
+            cpp_rss_cell = f"`{m['cpp_rss']}`"
+
         pattern = (
             r"(\|\s*`)"
             r"[0-9:]+(?:\.[0-9]+)?"
-            r"(`\s*\|\s*`)"
-            r"[0-9:]+(?:\.[0-9]+)?"
-            r"(`(?:\s*\(\[`CPP-[0-9]+`\]\([^)]+\)\))?\s*\|\s*\*\*`)"
+            r"(`\s*\|\s*)"
+            r"(?:`[0-9:]+(?:\.[0-9]+)?`(?:\s*\(\[`CPP-[0-9]+`\]\([^)]+\)\))?|—)"
+            r"(\s*\|\s*\*\*`)"
             r"[0-9:]+(?:\.[0-9]+)?"
             r"(`\*\*\s*\|\s*\*\*)"
             r"[0-9]+\.[0-9]+× faster"
             r"(\*\*\s*\|\s*`)"
             r"[0-9]+\.[0-9]+ (?:MiB|GiB)"
-            r"(`\s*\|\s*`)"
-            r"[0-9]+\.[0-9]+ (?:MiB|GiB)"
-            r"(`\s*\|\s*\*\*`)"
+            r"(`\s*\|\s*)"
+            r"(?:`[0-9]+\.[0-9]+ (?:MiB|GiB)`|—)"
+            r"(\s*\|\s*\*\*`)"
             r"[0-9]+\.[0-9]+ (?:MiB|GiB)"
             r"(`\*\*\s*\|\s*\*\*)"
             r"[0-9]+\.[0-9]+× less"
@@ -180,11 +401,11 @@ def sync_docs(repo_root: pathlib.Path, check: bool = False) -> int:
         )
         repl = (
             rf"\g<1>{m['java_wall']}"
-            rf"\g<2>{m['cpp_wall']}"
+            rf"\g<2>{cpp_wall_cell}"
             rf"\g<3>{m['rust_wall']}"
             rf"\g<4>{m['speedup']:.1f}× faster"
             rf"\g<5>{m['java_rss']}"
-            rf"\g<6>{m['cpp_rss']}"
+            rf"\g<6>{cpp_rss_cell}"
             rf"\g<7>{m['rust_rss']}"
             rf"\g<8>{m['mem_ratio']:.1f}× less"
             rf"\9"
@@ -217,9 +438,6 @@ def sync_docs(repo_root: pathlib.Path, check: bool = False) -> int:
 
     # 1. Update docs/validation/omnibus-empirical-validation.md
     omnibus_path = repo_root / "docs" / "validation" / "omnibus-empirical-validation.md"
-    # The omnibus §13 SHA-256 table is a required surface: every evidence JSON
-    # must have exactly one row. A deleted or reformatted row must fail loudly
-    # instead of passing silently via an unmatched substitution.
     required_docs = [
         repo_root / "README.md",
         omnibus_path,
@@ -240,13 +458,33 @@ def sync_docs(repo_root: pathlib.Path, check: bool = False) -> int:
                 file=sys.stderr,
             )
             return 1
+
     sha_rows_verified = 0
-    if omnibus_path.is_file():  # guaranteed present by required_docs check above
+    if omnibus_path.is_file():
         orig_text = omnibus_path.read_text(encoding="utf-8")
         text = sub_required(
             r"(\*\*Certified Release Engine Fingerprint:\*\*\s*`)[0-9a-f]{16}(`)",
             rf"\g<1>{fp}\2",
             orig_text,
+            "docs/validation/omnibus-empirical-validation.md",
+        )
+        text = sub_required(
+            r"(7\.\s*\*\*Whole Chromosome 1 Scale Benchmark \(Pillar 7\)\*\*[^\n]*?;\s*\*\*)[0-9]+\.[0-9]+×(\*\*\s*parallel speedup at 8 threads on chromosome 1 \(3-run median\) with flat memory scaling \(\*\*)[0-9]+\.[0-9]+×(\*\*\s*\(`)[0-9]+\.[0-9]+×(`\)\s*RSS ratio:\s*)[0-9]+\.[0-9]+ GiB(\s*at 10 Mb vs\s*)[0-9]+\.[0-9]+ GiB(\s*at 249 Mb\)\.)",
+            rf"\g<1>{s8:.2f}×\g<2>{rss_ratio:.2f}×\g<3>{rss_ratio_3dec:.3f}×\g<4>{span10_rss_gib:.2f} GiB\g<5>{chr1_rss_gib:.2f} GiB\6",
+            text,
+            "docs/validation/omnibus-empirical-validation.md",
+        )
+        if cpp_th8_s is not None and cpp_chr1_rss_gib is not None:
+            omnibus_p7_cpp = (
+                f"advisory {cpp_chr1_rss_gib:.2f} GiB unchunked `-R` RSS / "
+                f"{cpp_th8_s:.2f} s BED wall ([CPP-5](../upstream-bugs.md#cpp-5))"
+            )
+        else:
+            omnibus_p7_cpp = "advisory — ([CPP-5](../upstream-bugs.md#cpp-5))"
+        text = sub_required(
+            r"(\|\s*\*\*7\*\*\s*\|\s*\*\*Chromosome 1 Scale\*\*[^\n]*?\|\s*\*\*MATCH \(0 diffs\)\*\*\s*\|\s*\*\*)[0-9]+\.[0-9]+× speedup, [0-9]+\.[0-9]+× flat RSS(\*\*\s*\|\s*)(?:advisory [0-9]+\.[0-9]+ GiB unchunked `-R` RSS / [0-9]+\.[0-9]+ s BED wall \(\[CPP-5\]\(\.\./upstream-bugs\.md#cpp-5\)\)|advisory — \(\[CPP-5\]\(\.\./upstream-bugs\.md#cpp-5\)\))(\s*\|)",
+            rf"\g<1>{s8:.2f}× speedup, {rss_ratio:.2f}× flat RSS\g<2>{omnibus_p7_cpp}\3",
+            text,
             "docs/validation/omnibus-empirical-validation.md",
         )
         for t2_name in (
@@ -261,12 +499,22 @@ def sync_docs(repo_root: pathlib.Path, check: bool = False) -> int:
         text = sub_cram_twin_row(
             text, "docs/validation/omnibus-empirical-validation.md"
         )
-        rss_ratio_3dec = (
-            float(chr1_rss_kb) / float(span10_rss_kb) if span10_rss_kb else 0.0
+        omnibus_s12_cpp_wall = (
+            f"`{cpp_th8_mmss}` (BED `-th 8`)" if cpp_th8_mmss is not None else "—"
+        )
+        omnibus_s12_cpp_rss = (
+            f"`{cpp_chr1_rss_gib:.2f} GiB` (`-R`)"
+            if cpp_chr1_rss_gib is not None
+            else "—"
+        )
+        omnibus_s12_cpp_parity = (
+            f"**[`CPP-5` (`{cpp_chr1_rss_gib:.2f} GiB` unchunked)](../upstream-bugs.md#cpp-5)**"
+            if cpp_chr1_rss_gib is not None
+            else "**[`CPP-5`](../upstream-bugs.md#cpp-5)**"
         )
         text = sub_required(
-            r"(\|\s*\*\*Whole Chromosome 1 Scale \(249 Mbp\)\*\*\s*\|\s*`1 → 8` threads\s*\|\s*`)[0-9:]+(?:\.[0-9]+)?(` \(1 core Rust\)\s*\|\s*`)[0-9:]+(?:\.[0-9]+)?(` \(BED `-th 8`\)\s*\|\s*\*\*`)[0-9:]+(?:\.[0-9]+)?(` \(8 cores\)\*\*\s*\|\s*\*\*)[0-9]+\.[0-9]+× parallel(\*\*\s*\|\s*`OOM \(> 31 GiB at -th 8\)`\s*\|\s*`)[0-9]+\.[0-9]+ GiB(` \(`-R`\)\s*\|\s*\*\*`)[0-9]+\.[0-9]+ GiB(`\*\* \(`)[0-9]+\.[0-9]+ GiB(` at 10 Mbp\)\s*\|\s*\*\*)[0-9]+\.[0-9]+× flat RSS scaling(\*\*\s*\|\s*\[`scale\.json`\]\([^)]+\)\s*\|\s*\*\*\[`CPP-5` \(`)[0-9]+\.[0-9]+ GiB(` unchunked\)\]\([^)]+\)\*\*\s*\|)",
-            rf"\g<1>{th1_mmss}\g<2>{cpp_th8_mmss}\g<3>{th8_mmss}\g<4>{s8:.2f}× parallel\g<5>{cpp_chr1_rss_gib:.2f} GiB\g<6>{chr1_rss_gib:.2f} GiB\g<7>{span10_rss_gib:.2f} GiB\g<8>{rss_ratio:.2f}× flat RSS scaling\g<9>{cpp_chr1_rss_gib:.2f} GiB\10",
+            r"(\|\s*\*\*Whole Chromosome 1 Scale \(249 Mbp\)\*\*\s*\|\s*`1 → 8` threads\s*\|\s*`)[0-9:]+(?:\.[0-9]+)?(` \(1 core Rust\)\s*\|\s*)(?:`[0-9:]+(?:\.[0-9]+)?` \(BED `-th 8`\)|—)(\s*\|\s*\*\*`)[0-9:]+(?:\.[0-9]+)?(` \(8 cores\)\*\*\s*\|\s*\*\*)[0-9]+\.[0-9]+× parallel(\*\*\s*\|\s*`OOM \(> 31 GiB at -th 8\)`\s*\|\s*)(?:`[0-9]+\.[0-9]+ GiB` \(`-R`\)|—)(\s*\|\s*\*\*`)[0-9]+\.[0-9]+ GiB(`\*\* \(`)[0-9]+\.[0-9]+ GiB(` at 10 Mbp\)\s*\|\s*\*\*)[0-9]+\.[0-9]+× flat RSS scaling(\*\*\s*\|\s*\[`scale\.json`\]\([^)]+\)\s*\|\s*)(?:\*\*\[`CPP-5` \(`[0-9]+\.[0-9]+ GiB` unchunked\)\]\(\.\./upstream-bugs\.md#cpp-5\)\*\*|\*\*\[`CPP-5`\]\(\.\./upstream-bugs\.md#cpp-5\)\*\*)(\s*\|)",
+            rf"\g<1>{th1_mmss}\g<2>{omnibus_s12_cpp_wall}\g<3>{th8_mmss}\g<4>{s8:.2f}× parallel\g<5>{omnibus_s12_cpp_rss}\g<6>{chr1_rss_gib:.2f} GiB\g<7>{span10_rss_gib:.2f} GiB\g<8>{rss_ratio:.2f}× flat RSS scaling\g<9>{omnibus_s12_cpp_parity}\10",
             text,
             "docs/validation/omnibus-empirical-validation.md",
         )
@@ -305,10 +553,8 @@ def sync_docs(repo_root: pathlib.Path, check: bool = False) -> int:
             )
             return 1
         if text != orig_text:
-            if check:
-                mismatches.append(str(omnibus_path.relative_to(repo_root)))
-            else:
-                omnibus_path.write_text(text, encoding="utf-8")
+            mismatches.append(str(omnibus_path.relative_to(repo_root)))
+            staged_writes.append((omnibus_path, text))
 
     # 2. Update DIVERGENCES.md
     div_path = repo_root / "DIVERGENCES.md"
@@ -333,10 +579,8 @@ def sync_docs(repo_root: pathlib.Path, check: bool = False) -> int:
             "DIVERGENCES.md",
         )
         if text != orig_text:
-            if check:
-                mismatches.append(str(div_path.relative_to(repo_root)))
-            else:
-                div_path.write_text(text, encoding="utf-8")
+            mismatches.append(str(div_path.relative_to(repo_root)))
+            staged_writes.append((div_path, text))
 
     # 3. Update docs/testing/test-matrix-and-ci-audit.md
     matrix_path = repo_root / "docs" / "testing" / "test-matrix-and-ci-audit.md"
@@ -373,6 +617,12 @@ def sync_docs(repo_root: pathlib.Path, check: bool = False) -> int:
             "docs/testing/test-matrix-and-ci-audit.md",
         )
         text = sub_required(
+            r"(Evaluated across all 249 Mbp of human chromosome 1 on HCC1395 \(`SCALE_CPUS=)[^`]+(` / `taskset -c )[^`]+(`, \$P = )[0-9]+(\$ physical cores under pin\)\.)",
+            rf"\g<1>{cpus}\g<2>{cpus}\g<3>{p_cores}\4",
+            text,
+            "docs/testing/test-matrix-and-ci-audit.md",
+        )
+        text = sub_required(
             r"(achieved \*\*)[0-9]+\.[0-9]+×(\*\* \(8 threads vs 1 thread: `)[0-9]+\.[0-9]+s(` vs `)[0-9]+\.[0-9]+s(` 3-run median)",
             rf"\g<1>{s8:.2f}×\g<2>{th8_s:.2f}s\g<3>{th1_s:.2f}s\4",
             text,
@@ -391,10 +641,8 @@ def sync_docs(repo_root: pathlib.Path, check: bool = False) -> int:
             "docs/testing/test-matrix-and-ci-audit.md",
         )
         if text != orig_text:
-            if check:
-                mismatches.append(str(matrix_path.relative_to(repo_root)))
-            else:
-                matrix_path.write_text(text, encoding="utf-8")
+            mismatches.append(str(matrix_path.relative_to(repo_root)))
+            staged_writes.append((matrix_path, text))
 
     # 4. Update benchmarks/README.md
     bench_readme = repo_root / "benchmarks" / "README.md"
@@ -404,6 +652,12 @@ def sync_docs(repo_root: pathlib.Path, check: bool = False) -> int:
             r"(certified release engine fingerprint `)[0-9a-f]{16}(`)",
             rf"\g<1>{fp}\2",
             orig_text,
+            "benchmarks/README.md",
+        )
+        text = sub_required(
+            r"(8 worker threads / `\$P = )[0-9]+(\$` pinned physical cores `)[^`]+(` for `scale\.json`)",
+            rf"\g<1>{p_cores}\g<2>{cpus}\3",
+            text,
             "benchmarks/README.md",
         )
         for t2_name in (
@@ -420,11 +674,60 @@ def sync_docs(repo_root: pathlib.Path, check: bool = False) -> int:
             text,
             "benchmarks/README.md",
         )
+        text = sub_required(
+            r"(recorded in `scale\.json` \(`perf_fingerprint:\s*)[0-9a-f]{16}(`\)\.)",
+            rf"\g<1>{perf_fp}\2",
+            text,
+            "benchmarks/README.md",
+        )
+        text = sub_required(
+            r"(\|\s*1 core\s*\|\s*)[0-9]+m [0-9]{2}s \([0-9]+\.[0-9]+ s\)(\s*\|\s*1\.00× \(baseline\)\s*\|\n"
+            r"\|\s*2 cores\s*\|\s*)[0-9]+m [0-9]{2}s \([0-9]+\.[0-9]+ s\)(\s*\|\s*)[0-9]+\.[0-9]+×(\s*\|\n"
+            r"\|\s*4 cores\s*\|\s*)[0-9]+m [0-9]{2}s \([0-9]+\.[0-9]+ s\)(\s*\|\s*)[0-9]+\.[0-9]+×(\s*\|\n"
+            r"\|\s*8 threads\s*\|\s*)[0-9]+m [0-9]{2}s \([0-9]+\.[0-9]+ s\)(\s*\|\s*\*\*)[0-9]+\.[0-9]+× parallel(\*\*\s*\|)",
+            rf"\g<1>{th1_hm} ({th1_s:.2f} s)\g<2>{th2_hm} ({th2_s:.2f} s)\g<3>{s2:.2f}×\g<4>{th4_hm} ({th4_s:.2f} s)\g<5>{s4:.2f}×\g<6>{th8_hm} ({th8_s:.2f} s)\g<7>{s8:.2f}× parallel\8",
+            text,
+            "benchmarks/README.md",
+        )
+        text = sub_required(
+            r"(\|\s*1 Mbp\s*\|\s*)[0-9]+\.[0-9]+ (?:MiB|GiB) \([0-9,]+ KB\)(\s*\|\n"
+            r"\|\s*10 Mbp\s*\|\s*)[0-9]+\.[0-9]+ (?:MiB|GiB) \([0-9,]+ KB\)(\s*\|\n"
+            r"\|\s*100 Mbp\s*\|\s*)[0-9]+\.[0-9]+ (?:MiB|GiB) \([0-9,]+ KB\)(\s*\|\n"
+            r"\|\s*249 Mbp \(Full chr1\)\s*\|\s*\*\*)[0-9]+\.[0-9]+ (?:MiB|GiB) \([0-9,]+ KB\)(\*\*\s*\|)",
+            rf"\g<1>{span1_rss_str} ({span1_rss_kb:,} KB)\g<2>{span10_rss_str} ({span10_rss_kb:,} KB)\g<3>{span100_rss_str} ({span100_rss_kb:,} KB)\g<4>{chr1_rss_str} ({chr1_rss_kb:,} KB)\5",
+            text,
+            "benchmarks/README.md",
+        )
+        text = sub_required(
+            r"(\*\*Observed RSS Ratio \(249 Mbp vs 10 Mbp\):\s*)[0-9]+\.[0-9]+× \(`[0-9]+\.[0-9]+×`\)(\*\*)",
+            rf"\g<1>{rss_ratio:.2f}× (`{rss_ratio_3dec:.3f}×`)\2",
+            text,
+            "benchmarks/README.md",
+        )
+        if (
+            cpp_th8_s is not None
+            and cpp_chr1_rss_gib is not None
+            and cpp_chr1_rss_kb is not None
+        ):
+            bench_cpp_tail = (
+                f"at `-th 8` BED wall {cpp_th8_s:.2f} s, full-span (249 Mbp) "
+                f"unchunked `-R` RSS {cpp_chr1_rss_gib:.2f} GiB "
+                f"({cpp_chr1_rss_kb:,} KB per [CPP-5](../docs/upstream-bugs.md#cpp-5))."
+            )
+        else:
+            bench_cpp_tail = (
+                "at `-th 8` BED wall —, full-span (249 Mbp) unchunked `-R` RSS — "
+                "(per [CPP-5](../docs/upstream-bugs.md#cpp-5))."
+            )
+        text = sub_required(
+            r"(land separately in `scale\.json` `extra` — )(?:at `-th 8` BED wall [0-9]+\.[0-9]+ s, full-span \(249 Mbp\) unchunked `-R` RSS [0-9]+\.[0-9]+ GiB \([0-9,]+ KB per \[CPP-5\]\(\.\./docs/upstream-bugs\.md#cpp-5\)\)\.|at `-th 8` BED wall —, full-span \(249 Mbp\) unchunked `-R` RSS — \(per \[CPP-5\]\(\.\./docs/upstream-bugs\.md#cpp-5\)\)\.)",
+            rf"\g<1>{bench_cpp_tail}",
+            text,
+            "benchmarks/README.md",
+        )
         if text != orig_text:
-            if check:
-                mismatches.append(str(bench_readme.relative_to(repo_root)))
-            else:
-                bench_readme.write_text(text, encoding="utf-8")
+            mismatches.append(str(bench_readme.relative_to(repo_root)))
+            staged_writes.append((bench_readme, text))
 
     # 4b. Update README.md
     readme_path = repo_root / "README.md"
@@ -442,18 +745,38 @@ def sync_docs(repo_root: pathlib.Path, check: bool = False) -> int:
             text,
             "README.md",
         )
+        if cpp_chr1_mem_ratio is not None and cpp_chr1_rss_gib is not None:
+            readme_cpp_mem_clause = (
+                f" and **{cpp_chr1_mem_ratio:.1f}× less RAM** than unchunked "
+                f"`vardictcpp` (`{cpp_chr1_rss_gib:.2f} GiB`) on whole-chromosome 1."
+            )
+        else:
+            readme_cpp_mem_clause = (
+                " and **— less RAM** than unchunked `vardictcpp` (`—`) "
+                "on whole-chromosome 1."
+            )
         text = sub_required(
-            r"(- \*\*Bounded \$O\(1\)\$ Memory:\*\* Flat RSS scaling \(\$)[0-9]+\.[0-9]+(\\times\$ from 10 Mbp to 249 Mbp on Chr1, `)[0-9]+\.[0-9]+(` \$\\to\$ `)[0-9]+\.[0-9]+ GiB(`\), using \*\*)[0-9]+\.[0-9]+×–[0-9]+\.[0-9]+× less RAM(\*\* than VarDictJava on WGS/WES and \*\*)[0-9]+\.[0-9]+× less RAM(\*\* than unchunked `vardictcpp` \(`)[0-9]+\.[0-9]+ GiB(`\) on whole-chromosome 1\.)",
-            rf"\g<1>{rss_ratio:.2f}\g<2>{span10_rss_gib:.2f}\g<3>{chr1_rss_gib:.2f} GiB\g<4>{wgs_min_mem:.1f}×–{wgs_max_mem:.1f}× less RAM\g<5>{cpp_chr1_mem_ratio:.1f}× less RAM\g<6>{cpp_chr1_rss_gib:.2f} GiB\7",
+            r"(- \*\*Bounded \$O\(1\)\$ Memory:\*\* Flat RSS scaling \(\$)[0-9]+\.[0-9]+(\\times\$ from 10 Mbp to 249 Mbp on Chr1, `)[0-9]+\.[0-9]+(` \$\\to\$ `)[0-9]+\.[0-9]+ GiB(`\), using \*\*)[0-9]+\.[0-9]+×–[0-9]+\.[0-9]+× less RAM(\*\* than VarDictJava on WGS/WES)(?: and \*\*(?:[0-9]+\.[0-9]+×|—) less RAM\*\* than unchunked `vardictcpp` \(`(?:[0-9]+\.[0-9]+ GiB|—)`\) on whole-chromosome 1\.)",
+            rf"\g<1>{rss_ratio:.2f}\g<2>{span10_rss_gib:.2f}\g<3>{chr1_rss_gib:.2f} GiB\g<4>{wgs_min_mem:.1f}×–{wgs_max_mem:.1f}× less RAM\g<5>{readme_cpp_mem_clause}",
             text,
             "README.md",
         )
         for t2_name in tier2_names:
             text = sub_tier2_row(text, t2_name, "README.md")
         text = sub_cram_twin_row(text, "README.md")
+        readme_scale_cpp_wall = (
+            f"`{cpp_th8_mmss}` ([`CPP-5`](docs/upstream-bugs.md#cpp-5))"
+            if cpp_th8_mmss is not None
+            else "— ([`CPP-5`](docs/upstream-bugs.md#cpp-5))"
+        )
+        readme_scale_cpp_rss = (
+            f"`{cpp_chr1_rss_gib:.2f} GiB` ([`CPP-5`](docs/upstream-bugs.md#cpp-5))"
+            if cpp_chr1_rss_gib is not None
+            else "— ([`CPP-5`](docs/upstream-bugs.md#cpp-5))"
+        )
         text = sub_required(
-            r"(\|\s*\*\*Whole Chromosome 1 Scale \(249 Mbp\)\*\*\s*\|\s*[^|]+\|\s*`)[0-9:]+(?:\.[0-9]+)?(` \(Rust `-th 1`³; Java `OOM`\)\s*\|\s*`)[0-9:]+(?:\.[0-9]+)?(` \(\[`CPP-5`\]\([^)]+\)\)\s*\|\s*\*\*`)[0-9:]+(?:\.[0-9]+)?(`\*\*\s*\|\s*\*\*)[0-9]+\.[0-9]+× parallel(\*\*\s*\|\s*`>31\.0 GiB` \(`OOM`³\)\s*\|\s*`)[0-9]+\.[0-9]+ GiB(` \(\[`CPP-5`\]\([^)]+\)\)\s*\|\s*\*\*`)[0-9]+\.[0-9]+ GiB(`\*\*\s*\|\s*\*\*)[0-9]+\.[0-9]+× flat RSS(\*\*⁴\s*\|\s*\[`scale\.json`\]\([^)]+\)\s*\|)",
-            rf"\g<1>{th1_mmss}\g<2>{cpp_th8_mmss}\g<3>{th8_mmss}\g<4>{s8:.2f}× parallel\g<5>{cpp_chr1_rss_gib:.2f} GiB\g<6>{chr1_rss_gib:.2f} GiB\g<7>{rss_ratio:.2f}× flat RSS\8",
+            r"(\|\s*\*\*Whole Chromosome 1 Scale \(249 Mbp\)\*\*\s*\|\s*[^|]+\|\s*`)[0-9:]+(?:\.[0-9]+)?(` \(Rust `-th 1`³; Java `OOM`\)\s*\|\s*)(?:`[0-9:]+(?:\.[0-9]+)?`|—) \(\[`CPP-5`\]\([^)]+\)\)(\s*\|\s*\*\*`)[0-9:]+(?:\.[0-9]+)?(`\*\*\s*\|\s*\*\*)[0-9]+\.[0-9]+× parallel(\*\*\s*\|\s*`>31\.0 GiB` \(`OOM`³\)\s*\|\s*)(?:`[0-9]+\.[0-9]+ GiB`|—) \(\[`CPP-5`\]\([^)]+\)\)(\s*\|\s*\*\*`)[0-9]+\.[0-9]+ GiB(`\*\*\s*\|\s*\*\*)[0-9]+\.[0-9]+× flat RSS(\*\*⁴\s*\|\s*\[`scale\.json`\]\([^)]+\)\s*\|)",
+            rf"\g<1>{th1_mmss}\g<2>{readme_scale_cpp_wall}\g<3>{th8_mmss}\g<4>{s8:.2f}× parallel\g<5>{readme_scale_cpp_rss}\g<6>{chr1_rss_gib:.2f} GiB\g<7>{rss_ratio:.2f}× flat RSS\8",
             text,
             "README.md",
         )
@@ -470,10 +793,8 @@ def sync_docs(repo_root: pathlib.Path, check: bool = False) -> int:
             "README.md",
         )
         if text != orig_text:
-            if check:
-                mismatches.append(str(readme_path.relative_to(repo_root)))
-            else:
-                readme_path.write_text(text, encoding="utf-8")
+            mismatches.append(str(readme_path.relative_to(repo_root)))
+            staged_writes.append((readme_path, text))
 
     # 5. Update active docs/release/v<current_version>-pr.md
     cargo_toml = (repo_root / "Cargo.toml").read_text(encoding="utf-8")
@@ -514,10 +835,8 @@ def sync_docs(repo_root: pathlib.Path, check: bool = False) -> int:
                 flags=re.MULTILINE,
             )
             if text != orig_text:
-                if check:
-                    mismatches.append(str(pr_doc.relative_to(repo_root)))
-                else:
-                    pr_doc.write_text(text, encoding="utf-8")
+                mismatches.append(str(pr_doc.relative_to(repo_root)))
+                staged_writes.append((pr_doc, text))
 
     # 6. Update .agents/skills/vardictrust-release/references/version-surface-map.md
     surface_map = (
@@ -543,10 +862,8 @@ def sync_docs(repo_root: pathlib.Path, check: bool = False) -> int:
             ".agents/skills/vardictrust-release/references/version-surface-map.md",
         )
         if text != orig_text:
-            if check:
-                mismatches.append(str(surface_map.relative_to(repo_root)))
-            else:
-                surface_map.write_text(text, encoding="utf-8")
+            mismatches.append(str(surface_map.relative_to(repo_root)))
+            staged_writes.append((surface_map, text))
 
     if pattern_errors:
         for err in pattern_errors:
@@ -564,6 +881,9 @@ def sync_docs(repo_root: pathlib.Path, check: bool = False) -> int:
             f"Evidence documentation surfaces in sync: fingerprint={fp}, perf_fingerprint={perf_fp} ({sha_rows_verified} SHA-256 rows verified)."
         )
         return 0
+
+    for doc_path, new_text in staged_writes:
+        doc_path.write_text(new_text, encoding="utf-8")
 
     print(
         f"Synced evidence documentation surfaces: fingerprint={fp}, perf_fingerprint={perf_fp} ({sha_rows_verified} SHA-256 rows updated)."

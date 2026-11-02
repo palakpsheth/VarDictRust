@@ -13,9 +13,13 @@ PASS iff for every named evidence:
   6. When --vs-cpp SPEC is provided, rust_wall_s / cpp_wall_s <= threshold (excluding amplicon floor).
 Exit 0 = PASS, 1 = FAIL."""
 
+from __future__ import annotations
+
 import argparse
 import json
+import math
 import pathlib
+import re
 import sys
 
 
@@ -29,11 +33,40 @@ SUITE_NAMES = frozenset([
 ])
 
 
-def secs(w):
+def secs(w: object) -> float:
+    if isinstance(w, bool):
+        raise ValueError(f"invalid wall time boolean: {w!r}")
     if isinstance(w, (int, float)):
-        return float(w)
-    p = [float(x) for x in str(w).split(":")]
-    return p[-1] + (60.0 * p[-2] if len(p) >= 2 else 0.0) + (3600.0 * p[-3] if len(p) == 3 else 0.0)
+        val = float(w)
+        if not math.isfinite(val) or val <= 0.0:
+            raise ValueError(f"wall time must be finite and > 0: {w!r}")
+        return val
+    if not isinstance(w, str) or not w.strip():
+        raise ValueError(f"invalid wall time string: {w!r}")
+    raw_parts = w.strip().split(":")
+    if len(raw_parts) not in (1, 2, 3):
+        raise ValueError(f"invalid wall time format (expected S, M:S, or H:M:S): {w!r}")
+    for leading in raw_parts[:-1]:
+        if not re.fullmatch(r"\d+", leading):
+            raise ValueError(f"invalid leading integer component in wall time: {w!r}")
+    if not re.fullmatch(r"\d+(?:\.\d+)?", raw_parts[-1]):
+        raise ValueError(f"invalid seconds component in wall time: {w!r}")
+    parts = [float(x) for x in raw_parts]
+    if not all(math.isfinite(x) and x >= 0.0 for x in parts):
+        raise ValueError(f"non-finite or negative wall time: {w!r}")
+    if len(parts) == 2:
+        if parts[1] >= 60.0:
+            raise ValueError(f"seconds >= 60 in M:S wall time: {w!r}")
+        total = parts[0] * 60.0 + parts[1]
+    elif len(parts) == 3:
+        if parts[1] >= 60.0 or parts[2] >= 60.0:
+            raise ValueError(f"minutes or seconds >= 60 in H:M:S wall time: {w!r}")
+        total = parts[0] * 3600.0 + parts[1] * 60.0 + parts[2]
+    else:
+        total = parts[0]
+    if not math.isfinite(total) or total <= 0.0:
+        raise ValueError(f"wall time must be > 0 seconds: {w!r}")
+    return total
 
 
 def extract_rust_wall(d):
@@ -183,7 +216,13 @@ def main():
         if not is_suite_schema or (j is not None and r is not None):
             if not j or not r or None in (j.get("wall"), r.get("wall"), j.get("max_rss_kb"), r.get("max_rss_kb")):
                 sys.exit(f"perf_budget: {n} lacks java/rust timing")
-            jw, rw, jm, rm = secs(j["wall"]), secs(r["wall"]), int(j["max_rss_kb"]), int(r["max_rss_kb"])
+            try:
+                jw, rw = secs(j["wall"]), secs(r["wall"])
+                jm, rm = int(j["max_rss_kb"]), int(r["max_rss_kb"])
+            except (TypeError, ValueError):
+                sys.exit(f"perf_budget: {n} has invalid java/rust timing")
+            if jw <= 0 or rw <= 0 or jm <= 0 or rm <= 0:
+                sys.exit(f"perf_budget: {n} has invalid java/rust timing")
             p = p and (rw <= jw and rm <= jm)
             row = {
                 "java_wall_s": jw,

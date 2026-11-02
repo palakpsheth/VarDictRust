@@ -19,7 +19,7 @@ import unittest
 
 # Standard library module names fallback for Python 3.8 / 3.9
 FALLBACK_STDLIB = frozenset([
-    "abc", "argparse", "ast", "asyncio", "base64", "bisect", "builtins",
+    "__future__", "abc", "argparse", "ast", "asyncio", "base64", "bisect", "builtins",
     "bz2", "calendar", "cmath", "collections", "concurrent", "configparser",
     "contextlib", "copy", "csv", "ctypes", "dataclasses", "datetime",
     "decimal", "difflib", "dis", "distutils", "doctest", "email", "enum",
@@ -53,6 +53,7 @@ ALLOWED_LOCAL_MODULES = frozenset([
     "record_evidence",
     "generate_validation_table",
     "convert_fastas",
+    "sync_evidence_docs",
 ])
 
 

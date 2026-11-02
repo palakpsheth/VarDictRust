@@ -11,7 +11,7 @@ Every benchmark claim is backed by a verifiable, machine-readable evidence artif
 All release benchmarks were executed under standardized host constraints (below).
 Every performance number in this directory is measured on the stated host
 against VarDictJava as the baseline — paper figures are never quoted as ours.
-- **CPU/host:** Isolated GCP `n2-standard-32` (Intel Xeon @ 2.80 GHz, Linux x86_64, 8 worker threads / `$P = 4$` pinned physical cores `0-3,16-19` for `scale.json`, Ubuntu LTS).
+- **CPU/host:** Isolated GCP `n2-standard-32` (Intel Xeon @ 2.80 GHz, Linux x86_64, 8 worker threads / `$P = 4$` pinned physical cores `0-7` for `scale.json`, Ubuntu LTS).
 - **Concurrency:** Normalized to **8 CPU threads** (`-th 8`) as a standard multi-tenant cluster baseline (not an engine scaling ceiling).
 - **Storage:** Local NVMe SSD.
 - **Toolchain:** Rust 1.96.0 (`x86_64-unknown-linux-musl` and `x86_64-unknown-linux-gnu`), OpenJDK 25.0.2 / OpenJDK 8 for oracle (`vardict-oracle`).
