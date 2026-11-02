@@ -92,6 +92,22 @@ impl<const N: usize> fmt::Write for StackBuf<N> {
     }
 }
 
+/// Returns `true` when `(value, digits)` hits OpenJDK `DecimalFormat` (`DigitList.set`
+/// fixed-point underflow branch `-decimalAt == maximumDigits`), where the shortest
+/// decimal representation `5e-(d+1)` rounds to `±0.0` under `HALF_EVEN` even though the
+/// exact binary `f64` exceeds the midpoint `5 × 10^-(d+1)`.
+#[inline]
+fn is_decimal_format_underflow_tie(value: f64, digits: i32) -> bool {
+    let abs_bits = value.abs().to_bits();
+    matches!(
+        (digits, abs_bits),
+        (3, 0x3f40_624d_d2f1_a9fc) // 5e-4
+            | (4, 0x3f0a_36e2_eb1c_432d) // 5e-5
+            | (5, 0x3ed4_f8b5_88e3_68f1) // 5e-6
+            | (8, 0x3e35_798e_e230_8c3a) // 5e-9
+    )
+}
+
 /// Banker's rounding to `digits` decimal places.
 ///
 /// Matches Java's `DecimalFormat` with `RoundingMode.HALF_EVEN`.
@@ -99,6 +115,9 @@ impl<const N: usize> fmt::Write for StackBuf<N> {
 pub fn round_half_even(value: f64, digits: i32) -> f64 {
     if !value.is_finite() {
         return value;
+    }
+    if is_decimal_format_underflow_tie(value, digits) {
+        return 0.0_f64.copysign(value);
     }
     let prec = digits.max(0) as usize;
     let mut buf = StackBuf::<64>::new();
@@ -197,6 +216,9 @@ mod tests {
     fn round_half_even_legacy(value: f64, digits: i32) -> f64 {
         if !value.is_finite() {
             return value;
+        }
+        if is_decimal_format_underflow_tie(value, digits) {
+            return 0.0_f64.copysign(value);
         }
         let s = format!("{:.*}", digits.max(0) as usize, value);
         s.parse::<f64>().unwrap_or(value)

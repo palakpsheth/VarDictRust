@@ -4574,8 +4574,6 @@ fn partial_pipeline(
             break;
         }
     }
-    parser.total_reads = preprocessor.total_reads as i32;
-    parser.duplicate_reads = preprocessor.duplicate_reads as i32;
 
     let var_data = parser.into_variation_data();
 

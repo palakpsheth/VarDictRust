@@ -125,6 +125,8 @@ def main():
     if strict is not None:
         print(f"STRICT-BYTES: {len(strict)} textual difference(s) within eps")
         for e in strict[:20]: print("  " + e)
+        if strict:
+            sys.exit(1)
     print(f"MATCH ({len(LJ)} variants)"); sys.exit(0)
 
 if __name__ == "__main__":

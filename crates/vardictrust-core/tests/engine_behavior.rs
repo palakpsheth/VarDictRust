@@ -582,6 +582,65 @@ mod filtering_and_pileup {
             0,
             "with -t, duplicate reads at chr7:1 are removed and 0 variants called"
         );
+
+        // Issue G Part 1: when -t removes duplicate reads but a variant still passes
+        // (e.g. 2 identical single-end reads at pos 20 + 1 at pos 21 + 1 at pos 22, all
+        // carrying SNV at pos 40 -> 1 of 4 reads is a duplicate, leaving DP=3, VD=3),
+        // VarDictJava v1.8.3 snapshots totalReads/duplicateReads before the read loop
+        // (CigarParser.java:78,162-163), so DUPRATE is always "0" in .var and VCF.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let fa = write_ref(&tmp, "chr1", 200, true);
+        let bam_path = tmp.path().join("dedup_snv.bam");
+        let make_read_with_snv_at_40 = |name: &str, start: usize| -> RecordBuf {
+            let snv_offset = 40 - start;
+            let mut seq = vec![b'A'; 50];
+            seq[snv_offset] = b'C';
+            let cigar: Cigar = [Op::new(Kind::Match, 50)].into_iter().collect();
+            RecordBuf::builder()
+                .set_name(name)
+                .set_flags(noodles::sam::alignment::record::Flags::empty())
+                .set_reference_sequence_id(0)
+                .set_alignment_start(Position::try_from(start).unwrap())
+                .set_cigar(cigar)
+                .set_sequence(seq.into())
+                .set_quality_scores(vec![40u8; 50].into())
+                .build()
+        };
+        let recs = vec![
+            make_read_with_snv_at_40("r1_dup_a", 20),
+            make_read_with_snv_at_40("r1_dup_b", 20),
+            make_read_with_snv_at_40("r2_uniq", 21),
+            make_read_with_snv_at_40("r3_uniq", 22),
+        ];
+        indexed_bam(&bam_path, "chr1", 200, &recs).expect("write dedup_snv.bam");
+        let cfg_dup_rate = Config {
+            reference: fa.to_string_lossy().into_owned(),
+            bam: bam_path.to_string_lossy().into_owned(),
+            sample: "S".to_string(),
+            region: Some("chr1:1-150".to_string()),
+            freq: 0.01,
+            af_threshold: 0.01,
+            dedup: true,
+            threads: 1,
+            ..Config::default()
+        };
+        let var_out = run_core_var(&cfg_dup_rate).expect(".var with -t");
+        let var_cols: Vec<&str> = var_out
+            .lines()
+            .next()
+            .expect("one .var row")
+            .split('\t')
+            .collect();
+        assert_eq!(var_cols[7], "3", "DP must reflect 1 removed duplicate read");
+        assert_eq!(var_cols[34], "0", "36-col .var Duprate must be 0");
+
+        let vcf_out = extract_variants(&run_core_vcf(&cfg_dup_rate).expect("VCF with -t"));
+        assert_eq!(vcf_out.len(), 1);
+        assert!(
+            vcf_out[0].contains(";DUPRATE=0;"),
+            "VCF INFO must contain DUPRATE=0, got: {}",
+            vcf_out[0]
+        );
     }
 
     #[test]

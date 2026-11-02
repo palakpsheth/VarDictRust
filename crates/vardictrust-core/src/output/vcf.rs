@@ -2,12 +2,27 @@
 //! Ports var2vcf_valid.pl.
 
 use crate::config::Config;
-use crate::output::table::{push_keep, push_stripped};
+use crate::output::table::{push_java_rounded, push_keep, push_stripped};
 use crate::regions::Region;
 use crate::variations::Variant;
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::io::{self, Write};
+
+/// Push a rounded float into `buf` matching the active pipeline:
+/// - With `--fisher` (`fisher == true`), `var2vcf_*.pl` consumes Java's
+///   `Utils.getRoundedValueToPrint` strings directly without an intermediate R step
+///   (preserving trailing `.` on fractional values that round to integers, e.g. `"2."`).
+/// - Without `--fisher` (`fisher == false`), `teststrandbias.R` / `testsomatic.R`
+///   parses numeric columns and `write.table` strips both trailing zeros and trailing `.`.
+#[inline]
+fn push_vcf_rounded(buf: &mut String, fisher: bool, value: f64, digits: i32) {
+    if fisher {
+        push_java_rounded(buf, value, digits);
+    } else {
+        push_stripped(buf, value, digits);
+    }
+}
 
 /// Load contig lengths from reference .fai index, falling back to BAM header.
 /// Ports print_contigs / print_reference logic and fixes issue #320.
@@ -653,7 +668,7 @@ pub fn format_vcf_record_into(
     }
     let _ = write!(buf, ";VD={}", variant.pos_coverage);
     buf.push_str(";AF=");
-    push_stripped(buf, variant.frequency, 4);
+    push_vcf_rounded(buf, config.fisher, variant.frequency, 4);
     buf.push_str(";BIAS=");
     for c in variant.bias.chars() {
         buf.push(if c == ';' { ':' } else { c });
@@ -664,13 +679,13 @@ pub fn format_vcf_record_into(
         variant.ref_fwd_cov, variant.ref_rev_cov, variant.fwd, variant.rev
     );
     buf.push_str(";PMEAN=");
-    push_stripped(buf, variant.mean_position, 1);
+    push_vcf_rounded(buf, config.fisher, variant.mean_position, 1);
     let _ = write!(buf, ";PSTD={}", if variant.pstd { 1 } else { 0 });
     buf.push_str(";QUAL=");
-    push_stripped(buf, variant.mean_quality, 1);
+    push_vcf_rounded(buf, config.fisher, variant.mean_quality, 1);
     let _ = write!(buf, ";QSTD={}", if variant.qstd { 1 } else { 0 });
     buf.push_str(";SBF=");
-    push_stripped(buf, sbf, 5);
+    push_vcf_rounded(buf, config.fisher, sbf, 5);
     // ports var2vcf_valid.pl:147-151 + :236 interpolation: "Inf" → 0; a value in
     // (0,1) is replaced by its reciprocal and stringified with Perl's default
     // numeric format (%.15g); any other table string passes through unchanged.
@@ -684,9 +699,9 @@ pub fn format_vcf_record_into(
         }
     }
     buf.push_str(";MQ=");
-    push_stripped(buf, variant.mean_mapping_quality, 1);
+    push_vcf_rounded(buf, config.fisher, variant.mean_mapping_quality, 1);
     buf.push_str(";SN=");
-    push_stripped(buf, variant.hq_lq_ratio, 3);
+    push_vcf_rounded(buf, config.fisher, variant.hq_lq_ratio, 3);
     // Java's RAW table cell for hifreq (trailing zeros kept): ports
     // SimpleOutputVariant.java:127-129 / :211 — `hifreq == 0 ? "0" :
     // new DecimalFormat("0.0000").format(hifreq)` — NOT getRoundedValueToPrint.
@@ -695,10 +710,10 @@ pub fn format_vcf_record_into(
     buf.push_str(";HIAF=");
     buf.push_str(&hiaf_cell(variant.hi_freq));
     buf.push_str(";ADJAF=");
-    push_stripped(buf, variant.extra_freq, 4);
+    push_vcf_rounded(buf, config.fisher, variant.extra_freq, 4);
     let _ = write!(buf, ";SHIFT3={}", variant.shift3);
     buf.push_str(";MSI=");
-    push_stripped(buf, variant.msi, 3);
+    push_vcf_rounded(buf, config.fisher, variant.msi, 3);
     let _ = write!(buf, ";MSILEN={}", variant.msint);
     buf.push_str(";NM=");
     if variant.nm > 0.0 {
@@ -736,10 +751,10 @@ pub fn format_vcf_record_into(
         // (SimpleOutputVariant.java:175). Without --fisher the 36-col cell is
         // DecimalFormat("0.0")-based (SimpleOutputVariant.java:223) and R echoes it
         // numeric-stripped (teststrandbias.R colClasses leaves input col 35
-        // numeric), i.e. a 1dp value. Both stripped, zero-guarded ("0").
+        // numeric), i.e. a 1dp value.
         buf.push_str(";DUPRATE=");
         if config.fisher {
-            push_stripped(buf, variant.duprate, 2);
+            push_java_rounded(buf, variant.duprate, 2);
         } else {
             push_stripped(buf, variant.duprate, 1);
         }
@@ -791,7 +806,7 @@ pub fn format_vcf_record_into(
         let _ = write!(buf, "{}", rd);
     }
     buf.push(':');
-    push_stripped(buf, variant.frequency, 4);
+    push_vcf_rounded(buf, config.fisher, variant.frequency, 4);
     buf.push(':');
     let _ = write!(
         buf,
@@ -1037,6 +1052,7 @@ fn paired_sample_field_into(
     gt: &str,
     sbf: f64,
     oddratio: &(String, f64),
+    fisher: bool,
 ) {
     buf.clear();
     // 192 B covers the 21-field sample column at typical widths; longer
@@ -1058,32 +1074,32 @@ fn paired_sample_field_into(
     buf.push(',');
     let _ = write!(buf, "{}", v.pos_coverage);
     buf.push(':');
-    push_stripped(buf, v.frequency, 4);
+    push_vcf_rounded(buf, fisher, v.frequency, 4);
     buf.push(':');
     buf.push_str(&paired_bias_fmt(&v.bias));
     buf.push(':');
-    push_stripped(buf, v.mean_position, 1);
+    push_vcf_rounded(buf, fisher, v.mean_position, 1);
     buf.push(':');
     buf.push(if v.pstd { '1' } else { '0' });
     buf.push(':');
-    push_stripped(buf, v.mean_quality, 1);
+    push_vcf_rounded(buf, fisher, v.mean_quality, 1);
     buf.push(':');
     buf.push(if v.qstd { '1' } else { '0' });
     buf.push(':');
-    push_stripped(buf, sbf, 5);
+    push_vcf_rounded(buf, fisher, sbf, 5);
     buf.push(':');
     buf.push_str(&oddratio.0);
     buf.push(':');
     let _ = write!(buf, "{:.0}", mq);
     buf.push(':');
-    push_stripped(buf, v.hq_lq_ratio, 3);
+    push_vcf_rounded(buf, fisher, v.hq_lq_ratio, 3);
     buf.push(':');
-    push_stripped(buf, v.hi_freq, 4);
+    push_vcf_rounded(buf, fisher, v.hi_freq, 4);
     buf.push(':');
-    push_stripped(buf, v.extra_freq, 4);
+    push_vcf_rounded(buf, fisher, v.extra_freq, 4);
     buf.push(':');
     if v.nm > 0.0 {
-        push_stripped(buf, v.nm, 1);
+        push_vcf_rounded(buf, fisher, v.nm, 1);
     } else {
         buf.push('0');
     }
@@ -1327,13 +1343,13 @@ pub fn format_paired_vcf_record(
     info.push_str(&var_type);
     let _ = write!(info, ";DP={};VD={}", dp1, vd1);
     info.push_str(";AF=");
-    push_stripped(&mut info, v1.frequency, 4);
+    push_vcf_rounded(&mut info, config.fisher, v1.frequency, 4);
     let _ = write!(info, ";SHIFT3={}", end_var.shift3);
     info.push_str(";MSI=");
     push_keep(&mut info, end_var.msi, 3);
     let _ = write!(info, ";MSILEN={}", end_var.msint);
     info.push_str(";SSF=");
-    push_stripped(&mut info, ptot, 5);
+    push_vcf_rounded(&mut info, config.fisher, ptot, 5);
     info.push_str(";SOR=");
     info.push_str(&sor_str);
     info.push_str(";LSEQ=");
@@ -1366,10 +1382,10 @@ pub fn format_paired_vcf_record(
     rest.push('\t');
     rest.push_str(format_keys);
     rest.push('\t');
-    paired_sample_field_into(&mut col, v1, gt, p1, &or1);
+    paired_sample_field_into(&mut col, v1, gt, p1, &or1, config.fisher);
     rest.push_str(&col);
     rest.push('\t');
-    paired_sample_field_into(&mut col, v2, gtm, p2, &or2);
+    paired_sample_field_into(&mut col, v2, gtm, p2, &or2, config.fisher);
     rest.push_str(&col);
 
     PairedVcfRecord {
@@ -2071,17 +2087,17 @@ mod tests {
         let oddratio = ("0.5".to_string(), 0.5);
         let mut buf = String::new();
         buf.push_str("LONGER-PREVIOUS-ROW-CONTENT-THAT-MUST-VANISH");
-        paired_sample_field_into(&mut buf, &v, "0/1", 0.5, &oddratio);
+        paired_sample_field_into(&mut buf, &v, "0/1", 0.5, &oddratio, false);
         let first = buf.clone();
         assert!(first.starts_with("0/1:"), "gt leads: {first}");
         assert!(
             !first.contains("VANISH"),
             "previous content cleared: {first}"
         );
-        paired_sample_field_into(&mut buf, &v, "0/1", 0.5, &oddratio);
+        paired_sample_field_into(&mut buf, &v, "0/1", 0.5, &oddratio, false);
         assert_eq!(buf, first, "same inputs, same bytes");
         // Different genotype takes a different path through the same buffer.
-        paired_sample_field_into(&mut buf, &v, "1/1", 0.5, &oddratio);
+        paired_sample_field_into(&mut buf, &v, "1/1", 0.5, &oddratio, false);
         assert!(buf.starts_with("1/1:"), "gt leads: {buf}");
         assert_ne!(buf, first);
     }
@@ -2272,6 +2288,23 @@ mod tests {
         assert!(
             single_crispr.contains(";CRISPR=3;"),
             "expected ;CRISPR=3; in INFO column, got: {single_crispr}"
+        );
+
+        // --fisher VCF preserves Java getRoundedValueToPrint trailing '.' on fractional
+        // values that round to integers (e.g., SN=2.0001 -> "SN=2." with --fisher vs "SN=2" without).
+        let mut t_sn = clean_normal();
+        t_sn.hq_lq_ratio = 2.0001;
+        let mut fisher_cfg = Config::default();
+        fisher_cfg.fisher = true;
+        let vcf_no_fisher = format_vcf_record(&t_sn, &region, &config, &[], 1.0, "1.0", None);
+        let vcf_fisher = format_vcf_record(&t_sn, &region, &fisher_cfg, &[], 1.0, "1.0", None);
+        assert!(
+            vcf_no_fisher.contains(";SN=2;"),
+            "expected ;SN=2; without --fisher, got: {vcf_no_fisher}"
+        );
+        assert!(
+            vcf_fisher.contains(";SN=2.;"),
+            "expected ;SN=2.; with --fisher, got: {vcf_fisher}"
         );
     }
 }

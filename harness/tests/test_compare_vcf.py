@@ -46,6 +46,29 @@ class T(unittest.TestCase):
         self.assertIn("MATCH (1 variants)", out)
     def test_strict_bytes_reports(self):
         rc, out = run([rec(1, info="NM=1.0")], [rec(1, info="NM=1")], "--strict-bytes")
-        self.assertEqual(rc, 0)
+        self.assertEqual(rc, 1)
         self.assertIn("STRICT-BYTES: 1", out)
+    def test_strict_bytes_vcf_formatting_diffs(self):
+        for j_info, r_info in [
+            ("DUPRATE=0", "DUPRATE=0.0"),
+            ("MQ=2.", "MQ=2"),
+            ("ODDRATIO=1.0E-4", "ODDRATIO=0.0001"),
+        ]:
+            self.assertEqual(run([rec(1, info=j_info)], [rec(1, info=r_info)])[0], 0)
+            rc, out = run([rec(1, info=j_info)], [rec(1, info=r_info)], "--strict-bytes")
+            self.assertEqual(rc, 1, f"expected strict-bytes failure for {j_info} vs {r_info}")
+            self.assertIn("STRICT-BYTES: 1", out)
+    def test_strict_bytes_var_formatting_diffs(self):
+        base = ["S", "G", "chr1", "10", "10", "A", "T", "10", "5", "3", "2", "3", "2", "A/T", "0.5"] + ["0"] * 21
+        for val_a, val_b in [("0", "0.0"), ("2.", "2"), ("1.0E-4", "0.0001")]:
+            row_a = list(base); row_a[14] = val_a
+            row_b = list(base); row_b[14] = val_b
+            d = tempfile.mkdtemp()
+            j, r = os.path.join(d, "j.var"), os.path.join(d, "r.var")
+            with open(j, "w") as f: f.write("\t".join(row_a) + "\n")
+            with open(r, "w") as f: f.write("\t".join(row_b) + "\n")
+            p_nostrict = subprocess.run([sys.executable, "harness/compare_var.py", j, r], capture_output=True, text=True)
+            self.assertEqual(p_nostrict.returncode, 0)
+            p_strict = subprocess.run([sys.executable, "harness/compare_var.py", "--strict-bytes", j, r], capture_output=True, text=True)
+            self.assertEqual(p_strict.returncode, 1, f"expected strict-bytes failure in compare_var.py for {val_a} vs {val_b}")
 if __name__ == "__main__": unittest.main()

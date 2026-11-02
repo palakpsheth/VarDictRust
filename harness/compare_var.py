@@ -21,6 +21,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("java"); ap.add_argument("rust"); ap.add_argument("--eps", type=float, default=1e-6)
     ap.add_argument("--cols", default=None, help="1-based inclusive range, e.g. 8-13")
+    ap.add_argument("--strict-bytes", action="store_true")
     a = ap.parse_args()
     J, R = load(a.java), load(a.rust)
     if len(J) != len(R):
@@ -36,7 +37,7 @@ def main():
             top = min(hi, len(j)) if hi else len(j)
             if j[lo:top] == r[lo:top]: continue
             for c in range(lo, top):
-                if not eq(j[c], r[c], a.eps):
+                if (a.strict_bytes and j[c] != r[c]) or not eq(j[c], r[c], a.eps):
                     errs.append(f"row {i} col {c+1}: {j[c]!r} != {r[c]!r}")
         if len(errs) >= 20: break
     if errs:

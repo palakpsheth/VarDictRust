@@ -3533,8 +3533,6 @@ pub fn partial_pipeline(
                 break;
             }
         }
-        parser.total_reads = preprocessor.total_reads as i32;
-        parser.duplicate_reads = preprocessor.duplicate_reads as i32;
         var_data.non_insertion_variants = parser.non_insertion_variants;
         var_data.insertion_variants = parser.insertion_variants;
         var_data.position_to_insertion_count = parser.position_to_insertion_count;

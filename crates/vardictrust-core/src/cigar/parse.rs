@@ -2260,6 +2260,10 @@ impl<'a> CigarParser<'a> {
 
     /// Finalize and return the collected VariationData.
     /// Ports `CigarParser.java:101-150`.
+    /// Note (G2): `CigarParser.java:78,162-163` copies `totalReads` and
+    /// `duplicateReads` from `InitialData` in `initFromScope(scope)` BEFORE the
+    /// `processor.nextRecord()` loop at `:86`, so both fields are 0 here in the
+    /// production pipeline and `duprate` always evaluates to `0.0`.
     pub fn into_variation_data(self) -> VariationData {
         let duprate = if self.svflag {
             if (self.discordant_count + 1) as f64

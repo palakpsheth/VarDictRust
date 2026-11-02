@@ -195,7 +195,8 @@ impl FisherExact {
         }
     }
 
-    /// Returns the odds ratio formatted as String, matching R outputs.
+    /// Returns the odds ratio formatted as String, matching Java (`--fisher`) or R outputs.
+    /// Ports `FisherExact.java:149-156`.
     pub fn get_odds_ratio(&self) -> String {
         let odd_ratio = self.mle(self.x as f64);
         if odd_ratio.is_infinite() {
@@ -203,7 +204,12 @@ impl FisherExact {
         } else if odd_ratio == odd_ratio.round() {
             format!("{:.0}", odd_ratio)
         } else {
-            format!("{}", round_as_r(odd_ratio))
+            let rounded = round_as_r(odd_ratio);
+            if self.java_fisher {
+                crate::variations::java_double_to_string(rounded)
+            } else {
+                format!("{}", rounded)
+            }
         }
     }
 
@@ -575,5 +581,37 @@ mod tests {
         assert_eq!(FisherExact::new(27, 17, 3, 8).get_odds_ratio(), "4.12268");
         assert_eq!(FisherExact::new(10, 8, 1, 3).get_odds_ratio(), "3.53774");
         assert_eq!(FisherExact::new(2, 150, 7, 183).get_odds_ratio(), "0.34953");
+    }
+
+    #[test]
+    fn fisher_java_odds_ratio_double_to_string_pins() {
+        assert_eq!(
+            FisherExact::new_java(2, 300, 300, 2).get_odds_ratio(),
+            "1.0E-4"
+        );
+        assert_eq!(
+            FisherExact::new_java(2, 400, 400, 2).get_odds_ratio(),
+            "6.0E-5"
+        );
+        assert_eq!(
+            FisherExact::new_java(1, 2, 1200, 1).get_odds_ratio(),
+            "6.2E-4"
+        );
+        assert_eq!(
+            FisherExact::new_java(1, 100, 100, 1).get_odds_ratio(),
+            "1.6E-4"
+        );
+        assert_eq!(FisherExact::new_java(1, 1, 1, 8).get_odds_ratio(), "6.0");
+        assert_eq!(FisherExact::new_java(8, 1, 1, 1).get_odds_ratio(), "6.0");
+        assert_eq!(
+            FisherExact::new_java(200, 1, 4, 800).get_odds_ratio(),
+            "16384.0"
+        );
+        assert_eq!(
+            FisherExact::new_java(300, 3, 3, 1200).get_odds_ratio(),
+            "16384.0"
+        );
+        // R mode keeps non-scientific formatting ("0.0001")
+        assert_eq!(FisherExact::new(2, 300, 300, 2).get_odds_ratio(), "0.0001");
     }
 }
