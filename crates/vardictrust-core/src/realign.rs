@@ -3664,7 +3664,7 @@ pub fn realignlgins(
             if rpflag
                 && has_bams
                 && ins.len() >= 5
-                && ins.len() < max_read_length as usize - 10
+                && (ins.len() as i32) < max_read_length - 10
                 && mref.cnt != 0
                 && no_passing_reads(chr, bi, bi + ins.len() as i32, bams_slice, config)
             {
@@ -3973,7 +3973,7 @@ pub fn realignlgins(
             if rpflag
                 && has_bams
                 && ins.len() >= 5
-                && ins.len() < max_read_length as usize - 10
+                && (ins.len() as i32) < max_read_length - 10
                 && mref.cnt != 0
                 && no_passing_reads(chr, bi, bi + ins.len() as i32, bams_slice, config)
             {
@@ -6261,5 +6261,128 @@ mod tests {
             primary_bounds,
             "primary LoadedRegion bounds must be preserved"
         );
+    }
+
+    #[test]
+    fn realignlgins_small_max_read_length_does_not_underflow() {
+        // J1: When max_read_length < 10 (e.g. 0 on pure =/X reads),
+        // `(ins.len() as i32) < max_read_length - 10` must evaluate to false in signed i32
+        // without wrapping `usize` in release or panicking in debug.
+        use crate::config::Config;
+        use crate::javamap::JavaHashMap;
+        use crate::reference::{LoadedRegion, Reference};
+        use crate::regions::Region;
+        use crate::types::Pos1;
+        use crate::variations::{Sclip, Variation, VariationMap};
+
+        let chr = "chr1";
+        let mut bases: Vec<u8> = (0..300)
+            .map(|i| b"ACGT"[(i * 7 + (i / 3) * 5 + (i / 11)) % 4])
+            .collect();
+        // Make 101..=120 non-homopolymer repeating unit so rpflag can be true
+        let motif = b"ACGTTGCAACGTTGCAACGT";
+        bases[100..120].copy_from_slice(motif);
+        bases[120..140].copy_from_slice(motif);
+
+        let mut reference = Reference::new();
+        reference.loaded_regions.push(LoadedRegion {
+            chr: chr.to_string(),
+            sequence_start: 1,
+            sequence_end: 300,
+        });
+        reference
+            .reference_sequences
+            .insert(chr.to_string(), bases.clone());
+        reference.region_sequences.push(bases.clone());
+
+        let region = Region {
+            chr: chr.to_string(),
+            start: Pos1(1),
+            end: Pos1(300),
+            gene: "G".to_string(),
+            amplicon: None,
+        };
+        let mut config = Config::default();
+        config.min_reads = 1;
+
+        for (max_rl, expected_ref_cnt) in [(30i32, 0i32), (0, 1), (5, 1), (9, 1)] {
+            let mut non_ins: JavaHashMap<i32, VariationMap> = JavaHashMap::new();
+            let mut ins_vars: JavaHashMap<i32, VariationMap> = JavaHashMap::new();
+            let mut ref_cov = rustc_hash::FxHashMap::default();
+            let mut sc5 = std::collections::BTreeMap::new();
+            let mut sc3 = std::collections::BTreeMap::new();
+            let mut svfdup = Vec::new();
+            let mut svrdup = Vec::new();
+
+            // Populate a 5' soft-clip at p = 101 whose consensus matches motif + diverse flanking reference
+            let mut sclip = Sclip::new();
+            sclip.variation.cnt = 5;
+            sclip.variation.hicnt = 5;
+            sclip.variation.pmean = 100.0;
+            sclip.variation.qmean = 150.0;
+            // 5' sclip seq is stored reversed from breakpoint p=101 going left:
+            // construct a 21-bp clip where find_bi (n >= 6) finds a 6-bp insertion at bi=100
+            let mut clip_seq = Vec::new();
+            clip_seq.extend_from_slice(&bases[85..100]); // 15 bp diverse flank matching 86..=100
+            clip_seq.extend_from_slice(&motif[..6]); // 6 bp inserted repeat matching 101..=106
+            for (idx, &b) in clip_seq.iter().rev().enumerate() {
+                let mut v = Variation::new();
+                v.cnt = 5;
+                v.hicnt = 5;
+                v.qmean = 150.0;
+                sclip.seq.entry(idx as i32).or_default().insert(b, v);
+                *sclip
+                    .nt
+                    .entry(idx as i32)
+                    .or_default()
+                    .entry(b)
+                    .or_insert(0) += 5;
+            }
+            sc5.insert(101, sclip);
+
+            // Reference variant at bi=100 with cnt=1
+            let mref = crate::variations::get_variation(
+                &mut non_ins,
+                100,
+                &(bases[99] as char).to_string(),
+            );
+            mref.cnt = 1;
+            mref.hicnt = 1;
+
+            let dummy_bams = vec!["nonexistent.bam".to_string()];
+            super::realignlgins(
+                Some(&dummy_bams),
+                &mut reference,
+                chr,
+                300,
+                &region,
+                &config,
+                &mut non_ins,
+                &mut ins_vars,
+                &mut ref_cov,
+                &mut sc5,
+                &mut sc3,
+                max_rl,
+                &mut svfdup,
+                &mut svrdup,
+            );
+            assert!(
+                ins_vars
+                    .get(&100)
+                    .is_some_and(|m| m.map.contains_key("+ACGTTG")),
+                "expected +ACGTTG insertion candidate at bi=100 for max_read_length={max_rl}"
+            );
+            // When max_rl=30, (ins.len() as i32) < max_rl - 10 (6 < 20) is true so mref is absorbed (cnt=0).
+            // When max_rl in [0, 5, 9], signed (ins.len() as i32) < max_rl - 10 is false so mref stays 1.
+            let ref_cnt = non_ins
+                .get(&100)
+                .and_then(|m| m.map.get(&(bases[99] as char).to_string()))
+                .map(|v| v.cnt)
+                .unwrap_or(0);
+            assert_eq!(
+                ref_cnt, expected_ref_cnt,
+                "unexpected mref cnt at bi=100 for max_read_length={max_rl}"
+            );
+        }
     }
 }

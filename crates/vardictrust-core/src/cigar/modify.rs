@@ -493,9 +493,15 @@ impl<'a> CigarModifier<'a> {
         // 4. Main indel simplification loop
         let mut flag_loop = flag;
         let mut iter_count = 0;
+        let max_iter = this
+            .cigar_str
+            .bytes()
+            .filter(u8::is_ascii_alphabetic)
+            .count()
+            + 1;
         while flag_loop && this.indel > 0 && (has_d || has_i) {
             iter_count += 1;
-            if iter_count > 100 {
+            if iter_count > max_iter {
                 log::warn!(
                     "Infinite loop check triggered in modify_cigar! CIGAR: {}",
                     this.cigar_str
@@ -858,9 +864,15 @@ impl<'a> CigarModifier<'a> {
         // 4. Main indel simplification loop
         let mut flag_loop = flag;
         let mut iter_count = 0;
+        let max_iter = this
+            .cigar_str
+            .bytes()
+            .filter(u8::is_ascii_alphabetic)
+            .count()
+            + 1;
         while flag_loop && this.indel > 0 {
             iter_count += 1;
-            if iter_count > 100 {
+            if iter_count > max_iter {
                 log::warn!(
                     "Infinite loop check triggered in modify_cigar! CIGAR: {}",
                     this.cigar_str
@@ -2275,5 +2287,112 @@ mod tests {
                 &config,
             );
         }
+    }
+
+    #[test]
+    fn modify_cigar_runs_past_100_merges() {
+        let mut ref_seq = Vec::with_capacity(4500);
+        let bases = b"ACGT";
+        let mut state: u64 = 0xCAFE_BABE_1234_5678;
+        for i in 0..4500 {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            let mut b = bases[(state as usize) % 4];
+            if i > 0 && ref_seq[i - 1] == b {
+                b = bases[((state as usize) + 1) % 4];
+            }
+            ref_seq.push(b);
+        }
+        let seed = SeedMap::new();
+        let config = get_default_config();
+
+        for n in [199usize, 201, 249] {
+            let input_cigar = format!("20M{}1D20M", "1D10M".repeat(n));
+            let num_d = n + 1;
+            let num_pairs = num_d / 2;
+            let expected_cigar = format!(
+                "20M12D10I{}20M",
+                "10M12D10I".repeat(num_pairs.saturating_sub(1))
+            );
+
+            // Construct read matching reference at pos 100 with each 1D skipped
+            let mut qseq = Vec::with_capacity(40 + n * 10);
+            let mut ref_cursor = 99usize; // 0-based for pos 100
+            qseq.extend_from_slice(&ref_seq[ref_cursor..ref_cursor + 20]);
+            ref_cursor += 20;
+            for _ in 0..n {
+                ref_cursor += 1; // 1D
+                qseq.extend_from_slice(&ref_seq[ref_cursor..ref_cursor + 10]);
+                ref_cursor += 10;
+            }
+            ref_cursor += 1; // trailing 1D
+            qseq.extend_from_slice(&ref_seq[ref_cursor..ref_cursor + 20]);
+            let qqual = vec![b'I'; qseq.len()];
+
+            let mod_new = CigarModifier::new(
+                100,
+                input_cigar.clone(),
+                qseq.clone(),
+                qqual.clone(),
+                &ref_seq,
+                1,
+                &seed,
+                num_d as i32,
+                qseq.len() as i32,
+                &config,
+            )
+            .modify_cigar()
+            .unwrap();
+            let mod_leg = CigarModifier::new(
+                100,
+                input_cigar,
+                qseq,
+                qqual,
+                &ref_seq,
+                1,
+                &seed,
+                num_d as i32,
+                3000,
+                &config,
+            )
+            .modify_cigar_legacy()
+            .unwrap();
+
+            assert_eq!(mod_new.cigar, expected_cigar, "failed for N={n}");
+            assert_eq!(mod_leg.cigar, expected_cigar, "legacy failed for N={n}");
+        }
+
+        // Negative control: first D-M-D has M=20 (> 15), blocking first-match combine_to_close_to_correct
+        let neg_cigar = format!("20M1D20M{}1D20M", "1D10M".repeat(249));
+        let mut qseq_neg = Vec::with_capacity(60 + 249 * 10);
+        let mut ref_cursor = 99usize;
+        qseq_neg.extend_from_slice(&ref_seq[ref_cursor..ref_cursor + 20]);
+        ref_cursor += 21;
+        qseq_neg.extend_from_slice(&ref_seq[ref_cursor..ref_cursor + 20]);
+        ref_cursor += 20;
+        for _ in 0..249 {
+            ref_cursor += 1;
+            qseq_neg.extend_from_slice(&ref_seq[ref_cursor..ref_cursor + 10]);
+            ref_cursor += 10;
+        }
+        ref_cursor += 1;
+        qseq_neg.extend_from_slice(&ref_seq[ref_cursor..ref_cursor + 20]);
+        let qqual_neg = vec![b'I'; qseq_neg.len()];
+        let mod_neg = CigarModifier::new(
+            100,
+            neg_cigar.clone(),
+            qseq_neg,
+            qqual_neg,
+            &ref_seq,
+            1,
+            &seed,
+            251,
+            3000,
+            &config,
+        )
+        .modify_cigar()
+        .unwrap();
+        assert_eq!(mod_neg.cigar, neg_cigar);
     }
 }

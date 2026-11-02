@@ -222,22 +222,17 @@ pub fn is_best_sv_used(var_data: &crate::variations::VariationData, softp: i32) 
         check_sv(sv);
     }
 
-    // Deterministic forward-before-reverse traversal: each map's keys are
-    // sorted, and svffus is fully scanned before svrfus, preserving Java's
-    // precedence class (Sclip lists are per-key, so ties keep the first
-    // highest-count candidate in forward-then-reverse order).
-    let mut ffus_keys: Vec<&String> = var_data.sv_structures.svffus.keys().collect();
-    ffus_keys.sort();
-    for key in ffus_keys {
+    // Deterministic forward-before-reverse traversal in Java HashMap<String, List<Sclip>>
+    // key order (bucket order by String.hashCode, preserving first-insertion order within
+    // a bucket), with svffus fully scanned before svrfus (VariationRealigner.java:143-164).
+    for key in crate::javamap::java_hashmap_key_order(var_data.sv_structures.svffus.keys()) {
         if let Some(sv_list) = var_data.sv_structures.svffus.get(key) {
             for sv in sv_list {
                 check_sv(sv);
             }
         }
     }
-    let mut rfus_keys: Vec<&String> = var_data.sv_structures.svrfus.keys().collect();
-    rfus_keys.sort();
-    for key in rfus_keys {
+    for key in crate::javamap::java_hashmap_key_order(var_data.sv_structures.svrfus.keys()) {
         if let Some(sv_list) = var_data.sv_structures.svrfus.get(key) {
             for sv in sv_list {
                 check_sv(sv);
@@ -4282,6 +4277,100 @@ mod tests {
             .svrfus
             .insert("chr1".to_string(), vec![rev]);
         assert!(!is_best_sv_used(&var_data, 100));
+    }
+
+    #[test]
+    fn is_best_sv_used_follows_java_string_hash_order() {
+        // chrX hashes to bucket 5 at cap=16 (hashCode=3052875), while chr1 hashes to bucket 10 (hashCode=3052836).
+        // Java HashMap iterates [chrX, chr1] regardless of insertion order, whereas lexicographic sort iterates [chr1, chrX].
+        use crate::variations::{Sclip, VariationData};
+
+        // Case a: chr1 unused (inserted first), chrX used -> Java scans chrX first -> true
+        let mut var_data_a = VariationData::default();
+        let mut sc_chr1 = Sclip::new();
+        sc_chr1.softp = 100;
+        sc_chr1.variation.cnt = 4;
+        sc_chr1.used = false;
+        let mut sc_chrx = Sclip::new();
+        sc_chrx.softp = 100;
+        sc_chrx.variation.cnt = 4;
+        sc_chrx.used = true;
+        var_data_a
+            .sv_structures
+            .svffus
+            .insert("chr1".to_string(), vec![sc_chr1]);
+        var_data_a
+            .sv_structures
+            .svffus
+            .insert("chrX".to_string(), vec![sc_chrx]);
+        assert!(is_best_sv_used(&var_data_a, 100));
+
+        // Case b: chr1 used (inserted first), chrX unused -> Java scans chrX first -> false
+        let mut var_data_b = VariationData::default();
+        let mut sc_chr1_b = Sclip::new();
+        sc_chr1_b.softp = 100;
+        sc_chr1_b.variation.cnt = 4;
+        sc_chr1_b.used = true;
+        let mut sc_chrx_b = Sclip::new();
+        sc_chrx_b.softp = 100;
+        sc_chrx_b.variation.cnt = 4;
+        sc_chrx_b.used = false;
+        var_data_b
+            .sv_structures
+            .svffus
+            .insert("chr1".to_string(), vec![sc_chr1_b]);
+        var_data_b
+            .sv_structures
+            .svffus
+            .insert("chrX".to_string(), vec![sc_chrx_b]);
+        assert!(!is_best_sv_used(&var_data_b, 100));
+    }
+
+    #[test]
+    fn is_best_sv_used_same_bucket_keeps_insertion_order() {
+        // chr1 (hashCode=3052836) and chr12 (hashCode=94637966) both map to bucket 10 at cap=16.
+        // Java HashMap keeps insertion order within a bucket.
+        use crate::variations::{Sclip, VariationData};
+
+        // Insert chr12 (unused) then chr1 (used) -> [chr12, chr1] -> false
+        let mut var_data_1 = VariationData::default();
+        let mut sc_chr12 = Sclip::new();
+        sc_chr12.softp = 100;
+        sc_chr12.variation.cnt = 4;
+        sc_chr12.used = false;
+        let mut sc_chr1 = Sclip::new();
+        sc_chr1.softp = 100;
+        sc_chr1.variation.cnt = 4;
+        sc_chr1.used = true;
+        var_data_1
+            .sv_structures
+            .svffus
+            .insert("chr12".to_string(), vec![sc_chr12]);
+        var_data_1
+            .sv_structures
+            .svffus
+            .insert("chr1".to_string(), vec![sc_chr1]);
+        assert!(!is_best_sv_used(&var_data_1, 100));
+
+        // Insert chr1 (used) then chr12 (unused) -> [chr1, chr12] -> true
+        let mut var_data_2 = VariationData::default();
+        let mut sc_chr1_2 = Sclip::new();
+        sc_chr1_2.softp = 100;
+        sc_chr1_2.variation.cnt = 4;
+        sc_chr1_2.used = true;
+        let mut sc_chr12_2 = Sclip::new();
+        sc_chr12_2.softp = 100;
+        sc_chr12_2.variation.cnt = 4;
+        sc_chr12_2.used = false;
+        var_data_2
+            .sv_structures
+            .svffus
+            .insert("chr1".to_string(), vec![sc_chr1_2]);
+        var_data_2
+            .sv_structures
+            .svffus
+            .insert("chr12".to_string(), vec![sc_chr12_2]);
+        assert!(is_best_sv_used(&var_data_2, 100));
     }
 
     #[test]

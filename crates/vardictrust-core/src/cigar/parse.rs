@@ -41,9 +41,9 @@ pub struct CigarParser<'a> {
     // order; splice_count DOES reach stdout (lib.rs -x print) but its VarDictJava
     // counterpart is also a HashMap iterated unordered (CigarParser.java:65,
     // :102-106), so record-set parity is unaffected. All four are `new HashMap<>()`
-    // in CigarParser.java:62-65. The same audit covers SVStructures
-    // svffus/svrfus/svfusfend/svfusrend (variations/mod.rs): keyed lookups and
-    // per-list operations only (SVStructures.java:38-40).
+    // in CigarParser.java:62-65. SVStructures svffus/svrfus (variations/mod.rs)
+    // use IndexMap + java_hashmap_key_order because is_best_sv_used (sv.rs)
+    // tie-breaks across mate contigs in Java HashMap<String, List<Sclip>> order.
     pub position_to_insertion_count: BTreeMap<i32, HashMap<String, i32>>,
     pub position_to_deletion_count: BTreeMap<i32, HashMap<String, i32>>,
     pub sv_structures: SVStructures,
@@ -1106,7 +1106,7 @@ impl<'a> CigarParser<'a> {
         quality_segment: &str,
         nmoff: i32,
         start: i32,
-        read_pos_exc: usize,
+        read_pos_exc: i32,
         cigar_element_len: u32,
     ) {
         let hv = get_variation(&mut self.non_insertion_variants, start, desc_string);
@@ -1115,10 +1115,10 @@ impl<'a> CigarParser<'a> {
         hv.inc_dir(dir);
         hv.cnt += 1;
 
-        let tp = if read_pos_exc < rlen1 as usize - read_pos_exc {
-            read_pos_exc as i32 + 1
+        let tp = if read_pos_exc < rlen1 - read_pos_exc {
+            read_pos_exc + 1
         } else {
-            rlen1 - read_pos_exc as i32
+            rlen1 - read_pos_exc
         };
 
         let mut tmpq = 0.0;
@@ -1424,7 +1424,7 @@ impl<'a> CigarParser<'a> {
                 &quality_of_segment,
                 nmoff,
                 *start,
-                *read_pos_exc,
+                *read_pos_exc as i32,
                 cigar_element_len,
             );
         }
@@ -1636,10 +1636,11 @@ impl<'a> CigarParser<'a> {
             hv.inc_dir(direction);
             hv.cnt += 1;
 
-            let tp = if *read_pos_exc < read_len_match_ins as usize - *read_pos_exc {
-                *read_pos_exc as i32 + 1
+            let rpe = *read_pos_exc as i32;
+            let tp = if rpe < read_len_match_ins - rpe {
+                rpe + 1
             } else {
-                read_len_match_ins - *read_pos_exc as i32
+                read_len_match_ins - rpe
             };
 
             let mut tmpq = 0.0;
@@ -2327,14 +2328,7 @@ impl<'a> CigarParser<'a> {
 
         let mut end = start;
         for &(len, op) in cigar_elements {
-            if matches!(
-                op,
-                CigarKind::Match
-                    | CigarKind::Deletion
-                    | CigarKind::Skip
-                    | CigarKind::SequenceMatch
-                    | CigarKind::SequenceMismatch
-            ) {
+            if matches!(op, CigarKind::Match | CigarKind::Deletion | CigarKind::Skip) {
                 end += len as i32;
             }
         }
@@ -3081,9 +3075,9 @@ pub fn get_insertion_deletion_length(cigar: &[(u32, CigarKind)]) -> u32 {
         .sum()
 }
 
-/// Helper to calculate the read length including matched, soft-clipped and insertions segments.
-/// Ports `CigarParser.java:1605-1614`.
-pub fn get_soft_clipped_length(cigar: &[(u32, CigarKind)]) -> u32 {
+/// Sum of query-consuming CIGAR operators (`M | I | S | = | X`) in `u64` (no `u32` wrap).
+/// Used by the BAM record query-consumption consistency gate (SAMv1 §1.4.6).
+pub fn query_consumed_len(cigar: &[(u32, CigarKind)]) -> u64 {
     cigar
         .iter()
         .filter(|(_, kind)| {
@@ -3094,6 +3088,21 @@ pub fn get_soft_clipped_length(cigar: &[(u32, CigarKind)]) -> u32 {
                     | CigarKind::SoftClip
                     | CigarKind::SequenceMatch
                     | CigarKind::SequenceMismatch
+            )
+        })
+        .map(|&(len, _)| u64::from(len))
+        .sum()
+}
+
+/// Helper to calculate the read length including matched, soft-clipped and insertions segments.
+/// Ports `CigarParser.java:1605-1614`.
+pub fn get_soft_clipped_length(cigar: &[(u32, CigarKind)]) -> u32 {
+    cigar
+        .iter()
+        .filter(|(_, kind)| {
+            matches!(
+                kind,
+                CigarKind::Match | CigarKind::Insertion | CigarKind::SoftClip
             )
         })
         .map(|(len, _)| *len)
@@ -3178,15 +3187,7 @@ fn parse_cigar_with_amp_case(
 pub fn get_match_insertion_length(cigar: &[(u32, CigarKind)]) -> u32 {
     cigar
         .iter()
-        .filter(|(_, kind)| {
-            matches!(
-                kind,
-                CigarKind::Match
-                    | CigarKind::Insertion
-                    | CigarKind::SequenceMatch
-                    | CigarKind::SequenceMismatch
-            )
-        })
+        .filter(|(_, kind)| matches!(kind, CigarKind::Match | CigarKind::Insertion))
         .map(|(len, _)| *len)
         .sum()
 }
@@ -4864,5 +4865,350 @@ mod tests {
             parser.soft_clips_3_end.is_empty(),
             "negative remaining 3' soft-clip element_len must not wrap around and populate soft_clips_3_end"
         );
+    }
+
+    fn make_non_repeating_ref(len: usize) -> Vec<u8> {
+        let bases = b"ACGT";
+        let mut s = Vec::with_capacity(len);
+        let mut state: u64 = 0x1234_5678_9ABC_DEF0;
+        for i in 0..len {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            let mut b = bases[(state as usize) % 4];
+            if i > 0 && s[i - 1] == b {
+                b = bases[((state as usize) + 1) % 4];
+            }
+            s.push(b);
+        }
+        s
+    }
+
+    #[test]
+    fn deletion_tp_after_skipped_intron_del_is_negative() {
+        let mut ref_seq = make_non_repeating_ref(1000);
+        // Ensure CigarModifier's 3'-end check (which counts 50D in ALIGNED_LENGTH_MND)
+        // sees matching bases at 543..553 so 10M is not soft-clipped.
+        let tail = ref_seq[493..503].to_vec();
+        ref_seq[543..553].copy_from_slice(&tail);
+        let mut reference = Reference::new();
+        reference
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 1,
+                sequence_end: 1000,
+            });
+        reference.region_sequences.push(ref_seq.clone());
+        reference
+            .reference_sequences
+            .insert("chr1".to_string(), ref_seq.clone());
+
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(99),
+            end: Pos1(700),
+            gene: "G".to_string(),
+            amplicon: None,
+        };
+        let config = Config::default();
+        let mut parser = CigarParser::new(&reference, &region, &config, false, 0, 1, 1000);
+
+        // 20M (101..=120) + 50D (skipped next to 300N) + 300N (121..=420) + 70M (421..=490) + 3D (491..=493) + 10M (494..=503)
+        let mut seq = Vec::with_capacity(100);
+        seq.extend_from_slice(&ref_seq[100..120]);
+        seq.extend_from_slice(&ref_seq[420..490]);
+        seq.extend_from_slice(&ref_seq[493..503]);
+
+        let rec = SamRecord {
+            name: b"j1_del".to_vec(),
+            flags: 0,
+            reference_name: Some("chr1".to_string()),
+            alignment_start: Some(Pos1(101)),
+            alignment_end: Some(Pos1(553)),
+            mapping_quality: Some(60),
+            cigar: vec![
+                (20, CigarKind::Match),
+                (50, CigarKind::Deletion),
+                (300, CigarKind::Skip),
+                (70, CigarKind::Match),
+                (3, CigarKind::Deletion),
+                (10, CigarKind::Match),
+            ],
+            sequence: seq,
+            quality_scores: vec![b'I'; 100],
+            nm: Some(53),
+            ..SamRecord::default()
+        };
+        parser.parse_cigar(&rec).unwrap();
+
+        let vmap = parser
+            .non_insertion_variants
+            .get(&491)
+            .expect("expected deletion variant at pos 491");
+        let del_var = vmap.map.get("-3").expect("expected -3 deletion at pos 491");
+        assert_eq!(del_var.pp, -40);
+        assert_eq!(del_var.pmean, -40.0);
+    }
+
+    #[test]
+    fn insertion_tp_after_skipped_intron_del_is_negative() {
+        let ref_seq = make_non_repeating_ref(1000);
+        let mut reference = Reference::new();
+        reference
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 1,
+                sequence_end: 1000,
+            });
+        reference.region_sequences.push(ref_seq.clone());
+        reference
+            .reference_sequences
+            .insert("chr1".to_string(), ref_seq.clone());
+
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(99),
+            end: Pos1(700),
+            gene: "G".to_string(),
+            amplicon: None,
+        };
+        let config = Config::default();
+        let mut parser = CigarParser::new(&reference, &region, &config, false, 0, 1, 1000);
+
+        // 20M (101..=120) + 50D (skipped next to 300N) + 300N (121..=420) + 60M (421..=480) + 2I + 28M (481..=508)
+        let mut seq = Vec::with_capacity(110);
+        seq.extend_from_slice(&ref_seq[100..120]);
+        seq.extend_from_slice(&ref_seq[420..480]);
+        // Pick 2I bases different from flanking reference bases so 3' shift does not move it
+        let avoid1 = ref_seq[479];
+        let avoid2 = ref_seq[480];
+        let ins_base = [b'A', b'C', b'G', b'T']
+            .into_iter()
+            .find(|&b| b != avoid1 && b != avoid2)
+            .unwrap();
+        seq.push(ins_base);
+        seq.push(ins_base);
+        seq.extend_from_slice(&ref_seq[480..508]);
+
+        let rec = SamRecord {
+            name: b"j1_ins".to_vec(),
+            flags: 0,
+            reference_name: Some("chr1".to_string()),
+            alignment_start: Some(Pos1(101)),
+            alignment_end: Some(Pos1(558)),
+            mapping_quality: Some(60),
+            cigar: vec![
+                (20, CigarKind::Match),
+                (50, CigarKind::Deletion),
+                (300, CigarKind::Skip),
+                (60, CigarKind::Match),
+                (2, CigarKind::Insertion),
+                (28, CigarKind::Match),
+            ],
+            sequence: seq,
+            quality_scores: vec![b'I'; 110],
+            nm: Some(52),
+            ..SamRecord::default()
+        };
+        parser.parse_cigar(&rec).unwrap();
+
+        let ins_key = format!("+{}{}", ins_base as char, ins_base as char);
+        let vmap = parser
+            .insertion_variants
+            .get(&480)
+            .expect("expected insertion variant at pos 480");
+        let ins_var = vmap
+            .map
+            .get(&ins_key)
+            .expect("expected +2I insertion at pos 480");
+        assert_eq!(ins_var.pp, -20);
+        assert_eq!(ins_var.pmean, -20.0);
+    }
+
+    #[test]
+    fn tp_boundary_p_eq_rlen1_and_rlen1_plus_1() {
+        let ref_seq = make_non_repeating_ref(1000);
+        let mut reference = Reference::new();
+        reference
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 1,
+                sequence_end: 1000,
+            });
+        reference.region_sequences.push(ref_seq.clone());
+        reference
+            .reference_sequences
+            .insert("chr1".to_string(), ref_seq.clone());
+
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(99),
+            end: Pos1(700),
+            gene: "G".to_string(),
+            amplicon: None,
+        };
+        let config = Config::default();
+
+        // Case 1: p == rlen1 -> tp == 0 (20M + 10D + 300N + 70M + 3D + 10M => rlen1=100, p at 3D = 20+10+70 = 100)
+        let mut parser0 = CigarParser::new(&reference, &region, &config, false, 0, 1, 1000);
+        let mut seq0 = Vec::with_capacity(100);
+        seq0.extend_from_slice(&ref_seq[100..120]);
+        seq0.extend_from_slice(&ref_seq[420..490]);
+        seq0.extend_from_slice(&ref_seq[493..503]);
+        let rec0 = SamRecord {
+            name: b"j1_p_eq_rlen1".to_vec(),
+            flags: 0,
+            reference_name: Some("chr1".to_string()),
+            alignment_start: Some(Pos1(101)),
+            alignment_end: Some(Pos1(513)),
+            mapping_quality: Some(60),
+            cigar: vec![
+                (20, CigarKind::Match),
+                (10, CigarKind::Deletion),
+                (300, CigarKind::Skip),
+                (70, CigarKind::Match),
+                (3, CigarKind::Deletion),
+                (10, CigarKind::Match),
+            ],
+            sequence: seq0,
+            quality_scores: vec![b'I'; 100],
+            nm: Some(13),
+            ..SamRecord::default()
+        };
+        parser0.parse_cigar(&rec0).unwrap();
+        let del0 = &parser0.non_insertion_variants.get(&491).unwrap().map["-3"];
+        assert_eq!(del0.pp, 0);
+        assert_eq!(del0.pmean, 0.0);
+
+        // Case 2: p == rlen1 + 1 -> tp == -1 (20M + 11D + 300N + 70M + 3D + 10M => rlen1=100, p at 3D = 101)
+        let mut parser1 = CigarParser::new(&reference, &region, &config, false, 0, 1, 1000);
+        let mut seq1 = Vec::with_capacity(100);
+        seq1.extend_from_slice(&ref_seq[100..120]);
+        seq1.extend_from_slice(&ref_seq[420..490]);
+        seq1.extend_from_slice(&ref_seq[493..503]);
+        let rec1 = SamRecord {
+            name: b"j1_p_eq_rlen1_plus_1".to_vec(),
+            flags: 0,
+            reference_name: Some("chr1".to_string()),
+            alignment_start: Some(Pos1(101)),
+            alignment_end: Some(Pos1(514)),
+            mapping_quality: Some(60),
+            cigar: vec![
+                (20, CigarKind::Match),
+                (11, CigarKind::Deletion),
+                (300, CigarKind::Skip),
+                (70, CigarKind::Match),
+                (3, CigarKind::Deletion),
+                (10, CigarKind::Match),
+            ],
+            sequence: seq1,
+            quality_scores: vec![b'I'; 100],
+            nm: Some(14),
+            ..SamRecord::default()
+        };
+        parser1.parse_cigar(&rec1).unwrap();
+        let del1 = &parser1.non_insertion_variants.get(&491).unwrap().map["-3"];
+        assert_eq!(del1.pp, -1);
+        assert_eq!(del1.pmean, -1.0);
+    }
+
+    #[test]
+    fn eqx_cigar_excluded_from_read_length_helpers_and_sv_end() {
+        assert_eq!(
+            get_match_insertion_length(&[(100, CigarKind::SequenceMatch)]),
+            0
+        );
+        let sclip_eqx = [
+            (10, CigarKind::SoftClip),
+            (50, CigarKind::SequenceMatch),
+            (1, CigarKind::SequenceMismatch),
+            (49, CigarKind::SequenceMatch),
+        ];
+        assert_eq!(get_soft_clipped_length(&sclip_eqx), 10);
+        assert_eq!(query_consumed_len(&sclip_eqx), 110);
+        assert_eq!(
+            query_consumed_len(&[(268_435_455, CigarKind::Match); 17]),
+            17 * 268_435_455u64
+        );
+
+        // Without =/X, helpers must match query_consumed_len / M+I sums
+        let classic = [
+            (10, CigarKind::SoftClip),
+            (50, CigarKind::Match),
+            (2, CigarKind::Insertion),
+            (3, CigarKind::Deletion),
+            (48, CigarKind::Match),
+        ];
+        assert_eq!(get_soft_clipped_length(&classic), 110);
+        assert_eq!(get_match_insertion_length(&classic), 100);
+        assert_eq!(query_consumed_len(&classic), 110);
+
+        // Test 10=1X10= read through CigarParser:
+        // get_reference_length consumes =/X (21 bp), while rlen1 == 0 and max_read_length == 0,
+        // giving tp = -10 at 1X (pos 11) and SV end == start.
+        let cigar_10eq_1x_10eq = [
+            (10, CigarKind::SequenceMatch),
+            (1, CigarKind::SequenceMismatch),
+            (10, CigarKind::SequenceMatch),
+        ];
+        assert_eq!(get_reference_length(&cigar_10eq_1x_10eq), 21);
+        assert_eq!(get_match_insertion_length(&cigar_10eq_1x_10eq), 0);
+        assert_eq!(get_soft_clipped_length(&cigar_10eq_1x_10eq), 0);
+        assert_eq!(query_consumed_len(&cigar_10eq_1x_10eq), 21);
+
+        let ref_seq = vec![b'A'; 100];
+        let mut reference = Reference::new();
+        reference
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 1,
+                sequence_end: 100,
+            });
+        reference.region_sequences.push(ref_seq.clone());
+        reference
+            .reference_sequences
+            .insert("chr1".to_string(), ref_seq);
+
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(1),
+            end: Pos1(100),
+            gene: "G".to_string(),
+            amplicon: None,
+        };
+        let config = Config::default();
+        let mut parser = CigarParser::new(&reference, &region, &config, false, 0, 1, 0);
+
+        let mut seq = vec![b'A'; 21];
+        seq[10] = b'T'; // 1X at 1-based pos 11 (read_pos_exc = 10)
+        let rec = SamRecord {
+            name: b"eqx_read".to_vec(),
+            flags: 0x1, // paired with mate on chr2 to also exercise prepare_sv_structures_for_analysis
+            reference_name: Some("chr1".to_string()),
+            alignment_start: Some(Pos1(1)),
+            alignment_end: Some(Pos1(21)),
+            mapping_quality: Some(60),
+            mate_reference_name: Some("chr2".to_string()),
+            mate_alignment_start: Some(Pos1(500)),
+            cigar: cigar_10eq_1x_10eq.to_vec(),
+            sequence: seq,
+            quality_scores: vec![b'I'; 21],
+            nm: Some(1),
+            ..SamRecord::default()
+        };
+        parser.parse_cigar(&rec).unwrap();
+        assert_eq!(parser.max_read_length, 0);
+        assert_eq!(
+            parser.sv_structures.svfusfend.get("chr2").copied(),
+            Some(1),
+            "SV end loop must exclude =/X, keeping end == start (1)"
+        );
+        let snv = &parser.non_insertion_variants.get(&11).unwrap().map["T"];
+        assert_eq!(snv.pp, -10);
+        assert_eq!(snv.pmean, -10.0);
     }
 }

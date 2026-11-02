@@ -26,6 +26,7 @@ From v1.1.0, each correction is opt-in via `--fix <id>` (default off) and lands 
 | `ub7` | [UB-7](docs/upstream-bugs.md#ub-7-multi-allelic-site-single-winner-collapsing-var2vcf_validpl135-205) | Single-winner multi-allelic collapsing drops secondary alleles without `-A` | Retain secondary qualifying alleles in multi-allelic VCF records |
 | `duprate-live` | [`CigarParser.java:78,162-163`](https://github.com/AstraZeneca-NGS/VarDictJava/blob/master/src/main/java/com/astrazeneca/vardict/modules/CigarParser.java#L78) | `initFromScope` copies `totalReads = 0` and `duplicateReads = 0` before `processor.nextRecord()` loop, so `duprate` is always `0` even with `-t` | Propagate live `RecordPreprocessor` duplicate/total read counts to `CigarParser` after the read loop |
 | `rounding-underflow-tie` | `Utils.java:101-103` (OpenJDK `DigitList` fixed-point underflow branch) | `roundHalfEven` rounds `±5e-(d+1)` (`d in {3, 4, 5, 8}`) to `±0.0` despite exact binary `f64` exceeding `5×10^-(d+1)` | Round exact binary `f64` values exceeding `5×10^-(d+1)` up to `±10^-d` |
+| `eqx-read-length` | `CigarParser.java:1605-1629,1990-1991` | `getSoftClippedLength`, `getMatchInsertionLength`, and SV `ALIGNED_LENGTH_MND` exclude `=`/`X` (`SequenceMatch`/`SequenceMismatch`), yielding `rlen1 = 0` and negative `PMEAN` (0 calls) on `=`/`X` BAMs | Count `=` and `X` alongside `M` in read-length and SV span calculations |
 
 ---
 
