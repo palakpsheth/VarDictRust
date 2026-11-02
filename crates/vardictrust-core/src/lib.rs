@@ -29,6 +29,7 @@
 pub mod bam;
 pub mod cigar;
 pub mod config;
+pub mod counters;
 pub mod javamap;
 pub mod output;
 pub mod postprocess;

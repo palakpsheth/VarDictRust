@@ -17,3 +17,49 @@ micro.expected.var (2026-08-24)
   golden/micro.expected.var is the byte-identical intermediate table
   (identical from both engines); harness/smoke.sh byte-compares release
   binaries against it.
+
+crates/vardictrust-core/testdata/format/java_fmt_oracle.tsv (2026-11-01)
+  Generator: fixtures/jvm-oracles/JavaFmtOracle.java
+  Environment: OpenJDK 21.0.12.1 (linux-x86_64) against bioconda
+  vardict-java-1.8.3-0 (VarDictJava v1.8.3 commit 0886261,
+  VarDict-1.8.3.jar).
+  Contents: 433 deterministic rows covering Utils.roundHalfEven,
+  Utils.getRoundedValueToPrint, DecimalFormat("#.#"/"#.###"/"#.####"/
+  "#.#####"/"#.########"), and Double.toString across tie boundaries
+  (0.023, -0.023, 2.00001, 0.0005@3dp, 5e-5@4dp, 5e-6@5dp, 5e-9@8dp,
+  1.0e-4, 6.0, 16384.0, and deterministic ratio grids).
+
+crates/vardictrust-core/testdata/javamap/{ops_put_threshold.txt,ops_getput.txt,ops_getput_random.txt} (2026-11-01)
+  Generator: fixtures/jvm-oracles/JavaMapOracle.java
+  Environment: OpenJDK 21.0.12.1 (linux-x86_64) executing real
+  java.util.HashMap<Integer, Integer> operations (P=put, G=get+put,
+  C=computeIfAbsent, R=remove, D=dump keySet iteration order and table
+  capacity).
+  Contents:
+    - ops_put_threshold.txt: stride-16 collision sequence testing the
+      8-node vs 9-node treeify/resize threshold for put vs computeIfAbsent.
+    - ops_getput.txt: dense sequential and interleaved get-then-put
+      sequences with intermediate iteration order dumps.
+    - ops_getput_random.txt: seeded (LCG 0x5DEECE66DL) get-then-put,
+      put, and remove trace with periodic keySet order dumps.
+
+crates/vardictrust-core/testdata/fisher/java_fisher_oracle.tsv (2026-11-01)
+  Generator: fixtures/jvm-oracles/FisherOracle.java
+  Environment: OpenJDK 21.0.12.1 (linux-x86_64) against bioconda
+  vardict-java-1.8.3-0 (VarDict-1.8.3.jar + commons-math3-3.6.1.jar,
+  VarDictJava v1.8.3 commit 0886261).
+  Contents: 260 2x2 contingency tables recording exact IEEE-754 hex bits
+  and values for FisherExact.{getPValue,getPValueLess,getPValueGreater}
+  and getOddRatio, including (0,63,1,0), (86,41,0,1), and 200+ tables
+  spanning low/high depth and somatic tie regimes.
+
+crates/vardictrust-core/testdata/fisher/r_fisher_oracle.tsv (2026-11-01)
+  Generator: fixtures/jvm-oracles/RFisherOracle.R
+  Environment: R 4.6.0 on x86_64-conda-linux-gnu (vardict-oracle conda
+  env, sizeof.longdouble=16) calling stats::fisher.test and round(x, 5)
+  as in VarDictJava's teststrandbias.R / testsomatic.R (commit 009e017).
+  Contents: 260 2x2 contingency tables recording round(p.value, 5),
+  round(less, 5), round(greater, 5), and round(estimate, 5) + IEEE-754
+  hex bits, including (60,259,1,0), (6,313,1,0), the 4 aarch64/darwin
+  canary tables (9,6,5,1), (27,17,3,8), (10,8,1,3), (2,150,7,183), and
+  (14,35,6,5), (18,2,12,5), (25,3,15,6), (12,40,8,9), plus 200+ tables.

@@ -1,0 +1,60 @@
+# generator=fixtures/jvm-oracles/JavaMapOracle.java (mode=threshold)
+# java.version=21.0.12.1
+NEW
+P 0
+P 16
+P 32
+P 48
+P 64
+P 80
+P 96
+P 112
+D P_stride16_n8 cap=16 regime=list ORDER 0 16 32 48 64 80 96 112
+P 128
+D P_stride16_n9 cap=32 regime=list ORDER 0 32 64 96 128 16 48 80 112
+NEW
+P 0
+P 32
+P 64
+P 96
+P 128
+P 160
+P 192
+P 224
+D P_stride32_n8 cap=16 regime=list ORDER 0 32 64 96 128 160 192 224
+P 256
+D P_stride32_n9 cap=32 regime=list ORDER 0 32 64 96 128 160 192 224 256
+NEW
+G 0
+G 16
+G 32
+G 48
+G 64
+G 80
+G 96
+G 112
+D G_stride16_n8 cap=16 regime=list ORDER 0 16 32 48 64 80 96 112
+G 128
+D G_stride16_n9 cap=32 regime=list ORDER 0 32 64 96 128 16 48 80 112
+NEW
+G 0
+G 32
+G 64
+G 96
+G 128
+G 160
+G 192
+G 224
+D G_stride32_n8 cap=16 regime=list ORDER 0 32 64 96 128 160 192 224
+G 256
+D G_stride32_n9 cap=32 regime=list ORDER 0 32 64 96 128 160 192 224 256
+NEW
+C 0
+C 16
+C 32
+C 48
+C 64
+C 80
+C 96
+C 112
+D C_stride16_n8 cap=32 regime=list ORDER 96 64 32 0 112 80 48 16

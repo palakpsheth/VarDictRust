@@ -18,6 +18,11 @@ noodles-bgzf.workspace = true
 log.workspace = true
 regex.workspace = true
 
+[features]
+# Opt-in per-thread work counters for profiling complexity drivers (Issue N Part D).
+# Never enabled in default/release builds; zero cost when disabled.
+profile-counters = []
+
 [dev-dependencies]
 criterion.workspace = true
 fishers_exact.workspace = true

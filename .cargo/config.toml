@@ -3,3 +3,9 @@
 # For host-specific AVX2 microarchitectural optimizations:
 #   RUSTFLAGS="-C target-cpu=native" cargo build --release
 
+[profile.bench]
+inherits = "release"
+strip = false
+debug = 1
+
+

@@ -1,0 +1,44 @@
+[package]
+name = "vardictrust-core-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+# Standalone workspace so main Cargo.lock and cargo-deny (libfuzzer-sys NCSA license) stay untouched.
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+noodles = { version = "0.84.0", features = ["bam", "sam"] }
+vardictrust-core = { path = ".." }
+
+[[bin]]
+name = "fuzz_modify_cigar"
+path = "fuzz_targets/fuzz_modify_cigar.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_realign"
+path = "fuzz_targets/fuzz_realign.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_bed_parser"
+path = "fuzz_targets/fuzz_bed_parser.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_sam_aux"
+path = "fuzz_targets/fuzz_sam_aux.rs"
+test = false
+doc = false
+bench = false
