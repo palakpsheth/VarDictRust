@@ -307,4 +307,37 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn round_half_even_matches_jvm_oracle() {
+        let tsv = include_str!("../testdata/format/java_fmt_oracle.tsv");
+        let mut count = 0usize;
+        for (line_no, line) in tsv.lines().enumerate() {
+            if line.starts_with('#') || line.trim().is_empty() {
+                continue;
+            }
+            let cols: Vec<&str> = line.split('\t').collect();
+            assert_eq!(cols.len(), 9, "line {}: expected 9 columns", line_no + 1);
+            let digits: i32 = cols[0].parse().unwrap();
+            let v_bits = u64::from_str_radix(cols[3], 16).unwrap();
+            let expected_bits = u64::from_str_radix(cols[5], 16).unwrap();
+            let v = f64::from_bits(v_bits);
+            let actual = round_half_even(v, digits);
+            assert_eq!(
+                actual.to_bits(),
+                expected_bits,
+                "line {}: round_half_even(v={} [0x{:016x}], d={}) = {} [0x{:016x}], expected {} [0x{:016x}]",
+                line_no + 1,
+                cols[2],
+                v_bits,
+                digits,
+                actual,
+                actual.to_bits(),
+                cols[4],
+                expected_bits
+            );
+            count += 1;
+        }
+        assert!(count >= 400, "expected >= 400 oracle rows, got {count}");
+    }
 }
