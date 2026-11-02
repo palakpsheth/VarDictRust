@@ -1,7 +1,7 @@
 #!/usr/bin/env Rscript
 # Deterministic R fisher.test oracle generator for VarDictRust (Issues B, M & N).
 # Executes on Linux x86_64 in the vardict-oracle conda environment:
-#   /home/palak/miniconda3/envs/vardict-oracle/bin/Rscript fixtures/jvm-oracles/RFisherOracle.R > testdata/fisher/r_fisher_oracle.tsv
+#   "${CONDA_PREFIX:-$HOME/miniconda3}/envs/vardict-oracle/bin/Rscript" fixtures/jvm-oracles/RFisherOracle.R > crates/vardictrust-core/testdata/fisher/r_fisher_oracle.tsv
 
 options(scipen = 999)
 
@@ -13,7 +13,7 @@ cat("# columns: ref_fwd\tref_rev\talt_fwd\talt_rev\tp_two\tp_less\tp_greater\tod
 
 # Read the same (ref_fwd, ref_rev, alt_fwd, alt_rev) table coordinates from java_fisher_oracle.tsv
 args <- commandArgs(trailingOnly = TRUE)
-in_path <- if (length(args) >= 1) args[1] else "testdata/fisher/java_fisher_oracle.tsv"
+in_path <- if (length(args) >= 1) args[1] else "crates/vardictrust-core/testdata/fisher/java_fisher_oracle.tsv"
 lines <- readLines(in_path)
 
 for (line in lines) {

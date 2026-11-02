@@ -308,24 +308,27 @@ pub fn reset_all() {
 #[inline(always)]
 pub fn reset_all() {}
 
-/// Zero-default-cost work counter macro.
-///
-/// Expands to nothing when the `profile-counters` feature is disabled, so
-/// arguments are not evaluated and no code is emitted in default builds.
+/// Zero-default-cost work counter macro (enabled when `vardictrust-core/profile-counters` is active).
+#[cfg(feature = "profile-counters")]
 #[macro_export]
 macro_rules! count {
     ($c:ident, $n:expr) => {{
-        #[cfg(feature = "profile-counters")]
-        {
-            $crate::counters::add($crate::counters::Ctr::$c, $n as u64);
-        }
+        $crate::counters::add($crate::counters::Ctr::$c, $n as u64);
     }};
     ($c:ident) => {{
-        #[cfg(feature = "profile-counters")]
-        {
-            $crate::counters::inc($crate::counters::Ctr::$c);
-        }
+        $crate::counters::inc($crate::counters::Ctr::$c);
     }};
+}
+
+/// Zero-default-cost work counter macro.
+///
+/// Expands to nothing when the `profile-counters` feature on `vardictrust-core` is disabled,
+/// so arguments are not evaluated and no code is emitted in default builds.
+#[cfg(not(feature = "profile-counters"))]
+#[macro_export]
+macro_rules! count {
+    ($c:ident, $n:expr) => {{}};
+    ($c:ident) => {{}};
 }
 
 #[cfg(test)]

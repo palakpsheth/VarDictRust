@@ -11,7 +11,7 @@ fuzz_target!(|data: &[u8]| {
 
     let dir = if data[0] & 1 == 0 { 1 } else { -1 };
     let is_len3 = (data[0] & 2) != 0;
-    let indel_len = (data[1] as usize).clamp(1, 200);
+    let indel_len = (data[1] as i32).clamp(1, 200);
     let pos = (u16::from_le_bytes([data[2], data[3]]) as i32).clamp(1, 1000);
 
     let rest = &data[4..];

@@ -12,7 +12,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-noodles = { version = "0.84.0", features = ["bam", "sam"] }
+noodles = { version = "0.118.0", features = ["bam", "sam"] }
 vardictrust-core = { path = ".." }
 
 [[bin]]

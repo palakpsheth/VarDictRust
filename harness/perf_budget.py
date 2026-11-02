@@ -73,17 +73,19 @@ def parse_vs_cpp(spec):
     return default_ratio, overrides
 
 
-def resolve_target_path(name, curr_dir):
+def resolve_target_path(name, curr_dir, explicit_dir=False):
     p = pathlib.Path(name)
-    if p.is_file():
+    if not explicit_dir and p.is_file():
         return p.stem if p.suffix == ".json" else p.name, p
-    cand1 = curr_dir / (name if name.endswith(".json") else f"{name}.json")
-    if cand1.is_file():
-        return pathlib.Path(name).stem if name.endswith(".json") else name, cand1
-    cand2 = pathlib.Path("benchmarks/evidence") / (name if name.endswith(".json") else f"{name}.json")
+    leaf = p.name if p.suffix == ".json" else (name if name.endswith(".json") else f"{name}.json")
+    stem = pathlib.Path(leaf).stem
+    cand1 = curr_dir / leaf
+    if cand1.is_file() or explicit_dir:
+        return stem, cand1
+    cand2 = pathlib.Path("benchmarks/evidence") / leaf
     if cand2.is_file():
-        return pathlib.Path(name).stem if name.endswith(".json") else name, cand2
-    return name, cand1
+        return stem, cand2
+    return stem, cand1
 
 
 def main():
@@ -95,16 +97,12 @@ def main():
     parser.add_argument("names", nargs="*")
     args = parser.parse_args()
 
-    curr_dir = pathlib.Path(args.current) if args.current else pathlib.Path("benchmarks/evidence")
+    explicit_curr = args.current is not None
+    curr_dir = pathlib.Path(args.current) if explicit_curr else pathlib.Path("benchmarks/evidence")
     base_dir = pathlib.Path(args.baseline) if args.baseline else None
     cpp_default, cpp_overrides = parse_vs_cpp(args.vs_cpp)
 
     target_list = list(args.names)
-    if args.current:
-        for auto_suite in ("extended_coverage", "multimodal_slices", "cram_parity"):
-            if (curr_dir / f"{auto_suite}.json").is_file():
-                if auto_suite not in target_list and f"{auto_suite}.json" not in target_list:
-                    target_list.append(auto_suite)
     if not target_list:
         if curr_dir.is_dir():
             for f in sorted(curr_dir.glob("*.json")):
@@ -112,13 +110,18 @@ def main():
                     target_list.append(f.stem)
         if not target_list:
             sys.exit("perf_budget: no evidence targets specified or found")
+    elif explicit_curr:
+        for auto_suite in ("extended_coverage", "multimodal_slices", "cram_parity"):
+            if (curr_dir / f"{auto_suite}.json").is_file():
+                if auto_suite not in target_list and f"{auto_suite}.json" not in target_list:
+                    target_list.append(auto_suite)
 
     rows = {}
     ok = True
     max_mult = 1.0 + (args.tolerance / 100.0)
 
     for raw_name in target_list:
-        n, path = resolve_target_path(raw_name, curr_dir)
+        n, path = resolve_target_path(raw_name, curr_dir, explicit_dir=explicit_curr)
         if not path.is_file():
             sys.exit(f"perf_budget: {n} file not found at {path}")
         with open(path, "r", encoding="utf-8") as fh:
@@ -247,8 +250,12 @@ def main():
 
         # 5. Baseline vs current relative regression check
         if base_dir is not None:
-            _, bpath = resolve_target_path(n, base_dir)
-            if bpath.is_file():
+            _, bpath = resolve_target_path(n, base_dir, explicit_dir=True)
+            if not bpath.is_file():
+                if n not in SUITE_NAMES:
+                    row["baseline_error"] = f"missing baseline file {bpath}"
+                    p = False
+            else:
                 with open(bpath, "r", encoding="utf-8") as bfh:
                     bd = json.load(bfh)
                 base_rw = extract_rust_wall(bd)

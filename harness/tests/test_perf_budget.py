@@ -178,6 +178,28 @@ class TestPerfBudget(unittest.TestCase):
         )
         self.assertEqual(res_pass.returncode, 0, f"7.5% wall-time delta should pass 10% tolerance: {res_pass.stderr}")
 
+        # Missing baseline file in explicit --baseline directory -> must fail
+        empty_base = self.tmp_path / "empty_base"
+        empty_base.mkdir(parents=True, exist_ok=True)
+        res_missing_base = self._run_budget(
+            "--baseline", str(empty_base), "--current", str(curr), "--tolerance", "10", "hg008-tier2"
+        )
+        self.assertNotEqual(res_missing_base.returncode, 0, "Missing baseline file in explicit --baseline must fail")
+
+        # --current with no explicit names must discover both hg008-tier2.json and extended_coverage.json
+        curr_doc["rust_time"]["wall"] = "0:40.00"
+        self._write_json(curr / "hg008-tier2.json", curr_doc)
+        self._write_json(
+            curr / "extended_coverage.json",
+            {"fingerprint": "abc123", "rust_exit": 0, "result": "MATCH", "rust_wall_s": 5.0},
+        )
+        res_disc = self._run_budget("--baseline", str(base), "--current", str(curr), "--tolerance", "10")
+        self.assertNotEqual(
+            res_disc.returncode,
+            0,
+            "Auto-discovery on --current must still include hg008-tier2.json when extended_coverage.json is present",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

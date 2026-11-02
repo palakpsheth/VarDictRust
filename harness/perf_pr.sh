@@ -84,6 +84,7 @@ import pathlib
 import statistics
 import subprocess
 import sys
+import tempfile
 import time
 
 base_bin, head_bin, thr_s, rss_thr_s, runs_s, slices_s, out_json, allow_diff_s = sys.argv[1:9]
@@ -149,8 +150,8 @@ def run_once(binary, args, capture=False):
         wall = time.perf_counter() - t0
         return proc.returncode, wall, 0, hashlib.sha256(out).hexdigest(), err.decode("utf-8", errors="replace")
     else:
-        with open(os.devnull, "wb") as devnull:
-            proc = subprocess.Popen([binary, *args], stdout=devnull, stderr=subprocess.PIPE)
+        with open(os.devnull, "wb") as devnull, tempfile.TemporaryFile() as stderr_tmp:
+            proc = subprocess.Popen([binary, *args], stdout=devnull, stderr=stderr_tmp)
             try:
                 _, status, rusage = os.wait4(proc.pid, 0)
                 rc = os.waitstatus_to_exitcode(status) if hasattr(os, "waitstatus_to_exitcode") else (status >> 8)
@@ -158,7 +159,8 @@ def run_once(binary, args, capture=False):
             except AttributeError:
                 rc = proc.wait()
                 max_rss = 0
-            err = proc.stderr.read().decode("utf-8", errors="replace") if proc.stderr else ""
+            stderr_tmp.seek(0)
+            err = stderr_tmp.read().decode("utf-8", errors="replace")
         wall = time.perf_counter() - t0
         return rc, wall, max_rss, "", err
 
