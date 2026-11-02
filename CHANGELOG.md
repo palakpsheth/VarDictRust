@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.7] - 2026-11-01
+
+### Added
+
+- Bounded FIFO reference cache (`--max-ref-cache-mb`, default `512 MiB`) with active-pin reference counting (`pin_count`) and delegated multi-ref CRAM sequence accounting (`delegated_bytes`), alongside zero-copy `SingleRefSequenceProvider` CRAM container decoding (`crates/vardictrust-core/src/reference.rs`, `src/bam.rs`, `src/config.rs`, `crates/vardictrust/src/main.rs`) ([PR #81](https://github.com/palakpsheth/VarDictRust/pull/81)).
+- Multi-threaded amplicon execution across `(chrom, seg_idx)` groups via `runner::run_parallel` with deterministic input-order reassembly (`crates/vardictrust-core/src/lib.rs`) ([PR #82](https://github.com/palakpsheth/VarDictRust/pull/82)).
+- Production no-panic lint ratchet (`harness/lint_ratchet.sh`) wired into `harness/pr_check.sh` and `harness/rgate.sh`, plus `x86_64` 80-bit `long double` oracle platform guard (`harness/lib/oracle_platform.sh`) and POSIX-portable shell helpers (`harness/lib/portable.sh`) ([PR #71](https://github.com/palakpsheth/VarDictRust/pull/71), [PR #72](https://github.com/palakpsheth/VarDictRust/pull/72), [PR #80](https://github.com/palakpsheth/VarDictRust/pull/80)).
+- Expanded the automated Cargo workspace test suite from `427` to `519` tests (`350` `vardictrust-core` library unit tests + `110` `corpus_parity` + `26` `engine_behavior` + `2` `amplicon_stream_mem` + `3` `cram_stack` + `19` CLI bin + `9` CLI integration binary tests) and added 11 harness diagnostic self-test scripts.
+
+### Changed
+
+- Replaced hot-path `VariationMap::get_variation` string formatting/cloning with `indexmap::map::RawEntryMut`, replaced `format!("{:.N}")` float rounding with integer power-of-10 `round_half_even_f64_val`, and replaced `Vec<(usize, usize)>` in `VariationRealigner::find_35_match` with stack-allocated `SmallVec<[(usize, usize); 2]>` (`crates/vardictrust-core/src/variations/mod.rs`, `src/output/table.rs`, `src/realign.rs`) ([Issue #63](https://github.com/palakpsheth/VarDictRust/issues/63), [PR #82](https://github.com/palakpsheth/VarDictRust/pull/82)).
+- Enforced `hg008-cram-twin` (`cram_to_bam_wall_ratio <= 2.50`) and `cram_parity` (`cram_to_bam_wall_ratio <= 1.50`) in `harness/perf_budget.py`, `harness/pr_check.sh`, `harness/recertify.sh`, and `harness/gcp_paper_runner.sh` ([PR #73](https://github.com/palakpsheth/VarDictRust/pull/73), [PR #81](https://github.com/palakpsheth/VarDictRust/pull/81)).
+
+### Fixed
+
+- Resolved comprehensive A–N **VarDictJava v1.8.3** parity and robustness findings across [PR #67](https://github.com/palakpsheth/VarDictRust/pull/67)–[PR #82](https://github.com/palakpsheth/VarDictRust/pull/82):
+  - Removed unsupported `muzzy_decay_ms:5000` from macOS Mach-O `_rjem_malloc_conf` (`crates/vardictrust/src/main.rs`) ([PR #70](https://github.com/palakpsheth/VarDictRust/pull/70)).
+  - Replicated `java.util.HashMap` `MIN_TREEIFY_CAPACITY` (`< 64` resize before treeifying), `TreeNode.split()` capacity check, and `Comparable` tie-break (`JavaHashMap<K: Eq + Hash + Ord>`) (`crates/vardictrust-core/src/javamap.rs`) ([PR #74](https://github.com/palakpsheth/VarDictRust/pull/74)).
+  - Replicated `CigarModifier` double-insertion merge, `parse_cigar` deletion-to-mismatch conversion, `check_sv` inner-key iteration order, and `find_conseq` `maxCnt == 1` tie-break (`crates/vardictrust-core/src/cigar/modify.rs`, `src/cigar/parse.rs`, `src/sv.rs`, `src/variations/util.rs`) ([PR #75](https://github.com/palakpsheth/VarDictRust/pull/75)).
+  - Replicated Java `DecimalFormat("0.0000")` / `R round()` `HALF_EVEN` formatting, `--fisher` vs non-`--fisher` p-value/odds-ratio precision, `qmean`/`pmean`/`m2f2` rounding, and single-sample `-k 0` realignment disabling (`crates/vardictrust-core/src/output/table.rs`, `src/output/vcf.rs`, `src/postprocess/simple.rs`, `src/postprocess/somatic.rs`, `src/stats/fisher.rs`) ([PR #76](https://github.com/palakpsheth/VarDictRust/pull/76), [PR #77](https://github.com/palakpsheth/VarDictRust/pull/77)).
+  - Propagated `max_read_length` across contiguous SimpleMode tile sub-windows (`SimpleMode.java:53, 81-116`) and aligned VCF `FILTER`, `<INV>` `END`, `-E`/`-C`, and CRISPR header/INFO parity (`crates/vardictrust-core/src/lib.rs`, `src/output/vcf.rs`) ([PR #78](https://github.com/palakpsheth/VarDictRust/pull/78)).
+  - Preserved amplicon pileup (`-p`) null-reference rows (`AmpliconPostProcessModule.java:152-186`) and hardened CLI flag/adapter validation (`-e`, `-d`, `-c`, `-S`, `-E`, `-s`, `-A`, `-T`, `--adaptor`) (`crates/vardictrust-core/src/postprocess/amplicon.rs`, `crates/vardictrust/src/main.rs`) ([PR #69](https://github.com/palakpsheth/VarDictRust/pull/69), [PR #79](https://github.com/palakpsheth/VarDictRust/pull/79)).
+  - Added truncated BGZF EOF (`UnexpectedEof`) detection in `crates/vardictrust-core/src/bam.rs` and checked integer conversions across `crates/vardictrust-core` ([PR #80](https://github.com/palakpsheth/VarDictRust/pull/80)).
+
 ## [1.0.6] - 2026-10-29
 
 ### Changed
@@ -332,7 +357,8 @@ Robustness improvements by design (no valid-input output changes relative to Var
 - Correct `##contig` lengths from the `.fai` ([VarDictJava#320](https://github.com/AstraZeneca-NGS/VarDictJava/issues/320));
   fail-fast on missing BAM index ([VarDictJava#187](https://github.com/AstraZeneca-NGS/VarDictJava/issues/187)).
 
-[Unreleased]: https://github.com/palakpsheth/VarDictRust/compare/v1.0.6...HEAD
+[Unreleased]: https://github.com/palakpsheth/VarDictRust/compare/v1.0.7...HEAD
+[1.0.7]: https://github.com/palakpsheth/VarDictRust/compare/v1.0.6...v1.0.7
 [1.0.6]: https://github.com/palakpsheth/VarDictRust/compare/v1.0.5...v1.0.6
 [1.0.5]: https://github.com/palakpsheth/VarDictRust/compare/v1.0.4...v1.0.5
 [1.0.4]: https://github.com/palakpsheth/VarDictRust/compare/v1.0.3...v1.0.4

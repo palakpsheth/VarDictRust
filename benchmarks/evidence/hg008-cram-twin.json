@@ -10,7 +10,7 @@
     "MATCH (18426 variants)"
   ],
   "cpp_time": null,
-  "date": "2026-10-29T19:22:46+00:00",
+  "date": "2026-11-02T00:04:08-08:00",
   "extra": {
     "cpp_chunk": "50000",
     "cpp_head": [
@@ -19,15 +19,77 @@
     ],
     "cpp_version": "vardictcpp 3 hc52dbad_0 bioconda"
   },
-  "fingerprint": "5865a2a0b24a8c17",
-  "head": "28722a739fe55b524f2c888303b1bb69fc3f430d",
+  "fingerprint": "356eb13ba068790c",
+  "head": "336c212a3d2b6755e376a7433d5dbe211220dc8d",
+  "inputs": [
+    {
+      "path": "scratch/g4/ref/giabv3/GRCh38_GIABv3.fa",
+      "sha256": "0713026dfdd61fb1cd68be4b9689a9e5c55c8708a3843248b0b574506fd0f0e9",
+      "size_bytes": 3145187795
+    },
+    {
+      "path": "scratch/g4/ref/giabv3/GRCh38_GIABv3.fa.fai",
+      "sha256": "41a18c49dd97005d216e9313ba4bd3c646e1110f728e7988183aa44e3f000ad9",
+      "size_bytes": 9001
+    },
+    {
+      "path": "scratch/g4/hg008/HG008-T.slice.cram",
+      "sha256": "f03c4434f8d8308e830b87fdbc70f90571b05b2496220469a3e11543e444c40c",
+      "size_bytes": 86742675
+    },
+    {
+      "path": "scratch/g4/hg008/HG008-T.slice.cram.crai",
+      "sha256": "324c1c1319929b511383924cc50063323abf8ee73ecab0c6e332c13805ad7c0e",
+      "size_bytes": 8122
+    },
+    {
+      "path": "scratch/g4/hg008/HG008-N.slice.cram",
+      "sha256": "bbf7ac11a6f2d69b8011c0e232a78f6a76cf1f70741f5bf4a70698ffb8c7690a",
+      "size_bytes": 77124691
+    },
+    {
+      "path": "scratch/g4/hg008/HG008-N.slice.cram.crai",
+      "sha256": "20201d722046214c0f9f229c3443e5e41392d767ddf65d38d5ce60d2f176154b",
+      "size_bytes": 8236
+    },
+    {
+      "path": "scratch/g4/hg008/HG008-T.slice.bam",
+      "sha256": "f20dd728ee88102c4a13acc97fa2f585f797647f7007c665dfae05120a3e377d",
+      "size_bytes": 240203456
+    },
+    {
+      "path": "scratch/g4/hg008/HG008-T.slice.bam.bai",
+      "sha256": "52cf6171894e038fc88478aafffeae976c8343766ef89ebc38b16b864fbff584",
+      "size_bytes": 1142656
+    },
+    {
+      "path": "scratch/g4/hg008/HG008-N.slice.bam",
+      "sha256": "f72c7afd6b1358ca28ef12b157053acf95c157b55a6c33d8e01906c5b73c8a9a",
+      "size_bytes": 220822631
+    },
+    {
+      "path": "scratch/g4/hg008/HG008-N.slice.bam.bai",
+      "sha256": "3fe69178961a78a197269d0ecba96637658d7b50e3a05dd479d1c3609b854ef3",
+      "size_bytes": 1142592
+    },
+    {
+      "path": "scratch/g4/hg008/engine.bed",
+      "sha256": "4d71967cd1bd840cef3d62b3713fce1599504b1a062be3b540da287649eff2b7",
+      "size_bytes": 11062
+    }
+  ],
   "java_time": null,
   "n_variants": 18426,
   "name": "hg008-cram-twin",
   "result": "MATCH",
+  "rust_cram_time": {
+    "exit": "0",
+    "max_rss_kb": "1346388",
+    "wall": "1:17.29"
+  },
   "rust_time": {
     "exit": "0",
-    "max_rss_kb": "297644",
-    "wall": "0:31.70"
+    "max_rss_kb": "257440",
+    "wall": "0:55.46"
   }
 }

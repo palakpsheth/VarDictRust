@@ -1,19 +1,19 @@
 {
   "cmd": [
-    "/var/tmp/vardict-paper/release-v106/harness/concordance_germline.sh",
+    "/mnt/media_backups/VarDictRust/harness/concordance_germline.sh",
     "na24385-b37-truth",
-    "/tmp/vardict_multimodal_concordance_SbJyRB/na24385_java.vcf",
-    "/tmp/vardict_multimodal_concordance_SbJyRB/na24385_rust.vcf",
-    "/var/tmp/vardict-paper/release-v106/scratch/g4/truth_cache/na24385_b37_truth.vcf.gz",
-    "/var/tmp/vardict-paper/release-v106/scratch/g4/truth_cache/na24385_eval.bed",
-    "/var/tmp/vardict-paper/release-v106/scratch/g4/ref/grch37.sdf",
-    "/var/tmp/vardict-paper/release-v106/scratch/g4/concordance_multimodal/na24385",
+    "/tmp/vardict_multimodal_concordance_Zsueff/na24385_java.vcf",
+    "/tmp/vardict_multimodal_concordance_Zsueff/na24385_rust.vcf",
+    "/mnt/media_backups/VarDictRust/scratch/g4/truth_cache/na24385_b37_truth.vcf.gz",
+    "/mnt/media_backups/VarDictRust/scratch/g4/truth_cache/na24385_eval.bed",
+    "/mnt/media_backups/VarDictRust/scratch/g4/ref/grch37.sdf",
+    "/mnt/media_backups/VarDictRust/scratch/g4/concordance_multimodal/na24385",
     "HG002",
-    "/tmp/vardict_multimodal_concordance_SbJyRB/na24385_cpp.vcf"
+    "/tmp/vardict_multimodal_concordance_Zsueff/na24385_cpp.vcf"
   ],
   "compare_head": [],
   "cpp_time": null,
-  "date": "2026-10-29T19:24:26+00:00",
+  "date": "2026-11-02T00:05:10-08:00",
   "extra": {
     "cpp_f1": 0.1099,
     "cpp_f1_normalized": 0.1099,
@@ -75,8 +75,40 @@
       "tp_call": 5
     }
   },
-  "fingerprint": "5865a2a0b24a8c17",
-  "head": "28722a739fe55b524f2c888303b1bb69fc3f430d",
+  "fingerprint": "356eb13ba068790c",
+  "head": "336c212a3d2b6755e376a7433d5dbe211220dc8d",
+  "inputs": [
+    {
+      "path": "/mnt/media_backups/VarDictRust/scratch/g4/truth_cache/na24385_b37_truth.vcf.gz",
+      "sha256": "704927d29fb57338a7d327dc3b8097ebe84ed7de3fc39593f58945a3ed2be46b",
+      "size_bytes": 2649
+    },
+    {
+      "path": "/mnt/media_backups/VarDictRust/scratch/g4/truth_cache/na24385_eval.bed",
+      "sha256": "e5a04bcdebee3dd2d1d1700d2ff2b25a32d683726c64a2aef2a6a8249419e404",
+      "size_bytes": 21
+    },
+    {
+      "path": "/mnt/media_backups/VarDictRust/VarDictJava/testdata/fastas/GRCh37.fa",
+      "sha256": "085ec9c8941d68ccdf69378b83b7209abf88dd248c83da028776c6a221ae3e6f",
+      "size_bytes": 1005866239
+    },
+    {
+      "path": "/mnt/media_backups/VarDictRust/VarDictJava/testdata/fastas/GRCh37.fa.fai",
+      "sha256": "72aba5e4bc986caae6b6ce61055428a49a489a1a42084ca117c7d75bbc00fbc1",
+      "size_bytes": 248
+    },
+    {
+      "path": "/mnt/media_backups/VarDictRust/VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests/NA24385_chr_20_36018823_36039513.bam",
+      "sha256": "292375564f58fb504db1f75de4b99fda050501023200beb11349af830019ceae",
+      "size_bytes": 731769
+    },
+    {
+      "path": "/mnt/media_backups/VarDictRust/VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests/NA24385_chr_20_36018823_36039513.bam.bai",
+      "sha256": "bfe281124b0fd0fe4d6597ae8df27b5671ac368f517242350babd6f7d8fb27d5",
+      "size_bytes": 18400
+    }
+  ],
   "java_time": null,
   "n_variants": null,
   "name": "na24385-b37-truth",

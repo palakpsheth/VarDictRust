@@ -80,15 +80,35 @@ else
 fi
 
 if [[ "${RECERTIFY_NEW_INPUTS:-0}" != "1" ]]; then
-    python3 - "${RECERTIFY_EVIDENCE_DIR:-$ROOT_DIR/benchmarks/evidence}" <<'PY'
+    python3 - "${RECERTIFY_EVIDENCE_DIR:-$ROOT_DIR/benchmarks/evidence}" "$ROOT_DIR/scratch/golden-store/.shacache.json" <<'PY'
 import hashlib, json, pathlib, sys
 
+shacache = {}
+cache_path = pathlib.Path(sys.argv[2])
+if cache_path.is_file():
+    try:
+        shacache = json.loads(cache_path.read_text(encoding="utf-8"))
+    except Exception:
+        shacache = {}
+
+memo = {}
+
 def sha256_file(path: pathlib.Path) -> str:
+    rp = path.resolve()
+    if rp in memo:
+        return memo[rp]
+    st = rp.stat()
+    k = f"{rp}|{st.st_size}|{st.st_mtime_ns}|{st.st_ctime_ns}"
+    if k in shacache:
+        memo[rp] = shacache[k]
+        return shacache[k]
     h = hashlib.sha256()
-    with path.open("rb") as fh:
+    with rp.open("rb") as fh:
         for chunk in iter(lambda: fh.read(1 << 20), b""):
             h.update(chunk)
-    return h.hexdigest()
+    digest = h.hexdigest()
+    memo[rp] = digest
+    return digest
 
 ev_dir = pathlib.Path(sys.argv[1])
 for jf in sorted(ev_dir.glob("*.json")):

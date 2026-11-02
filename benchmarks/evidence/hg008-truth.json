@@ -13,7 +13,7 @@
   ],
   "compare_head": [],
   "cpp_time": null,
-  "date": "2026-10-29T17:40:08+00:00",
+  "date": "2026-11-01T22:09:06-08:00",
   "extra": {
     "cpp_f1": 0.3858,
     "cpp_f1_normalized": 0.3858,
@@ -37,8 +37,20 @@
       "tp_call": 575
     }
   },
-  "fingerprint": "5865a2a0b24a8c17",
-  "head": "28722a739fe55b524f2c888303b1bb69fc3f430d",
+  "fingerprint": "356eb13ba068790c",
+  "head": "336c212a3d2b6755e376a7433d5dbe211220dc8d",
+  "inputs": [
+    {
+      "path": "scratch/g4/hg008/truth/HG008-T_somatic_smvar_benchmark_v0.3_tumorvariants.vcf.gz",
+      "sha256": "6ff5b215e0dc634c85da6164cffbd5790233258fcc48c88a598331430b061cad",
+      "size_bytes": 283528
+    },
+    {
+      "path": "scratch/g4/hg008/eval.bed",
+      "sha256": "19e254a3fd5ff195d12d22539affbf6183457caaabcffa63b7938018922f50ca",
+      "size_bytes": 6223
+    }
+  ],
   "java_time": null,
   "n_variants": null,
   "name": "hg008-truth",

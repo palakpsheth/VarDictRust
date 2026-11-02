@@ -85,6 +85,7 @@ nav:
       - Changelog: CHANGELOG.md
       - Security Policy: community/SECURITY.md
       - Code of Conduct: community/CODE_OF_CONDUCT.md
+      - Release v1.0.7 Certification: docs/release/v1.0.7-pr.md
       - Release v1.0.6 Certification: docs/release/v1.0.6-pr.md
       - Release v1.0.5 Certification: docs/release/v1.0.5-pr.md
       - Release v1.0.4 Certification: docs/release/v1.0.4-pr.md
