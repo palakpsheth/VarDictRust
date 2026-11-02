@@ -85,7 +85,7 @@ portable_time_v() {
     if [ -x /usr/bin/time ] && /usr/bin/time -l true >/dev/null 2>&1; then
         { /usr/bin/time -l sh -c 'exec "$@" 2>&3 3>&-' sh "$@" 2>"$tmp_time"; } 3>&2 || rc=$?
     elif command -v python3 >/dev/null 2>&1; then
-        python3 - "$tmp_time" "$@" <<'PY' || rc=$?
+        python3 -c '
 import resource, subprocess, sys
 tmp_time = sys.argv[1]
 proc = subprocess.run(sys.argv[2:])
@@ -93,7 +93,7 @@ ru = resource.getrusage(resource.RUSAGE_CHILDREN)
 with open(tmp_time, "w", encoding="utf-8") as fh:
     fh.write(f"  {int(ru.ru_maxrss)}  maximum resident set size\n")
 sys.exit(proc.returncode)
-PY
+' "$tmp_time" "$@" || rc=$?
     else
         rm -f "$tmp_time"
         echo "portable_time_v: no supported timing backend (/usr/bin/time, gtime, or python3)" >&2

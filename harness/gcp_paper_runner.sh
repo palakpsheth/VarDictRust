@@ -2723,7 +2723,7 @@ run_stage_5() {
     cargo tree -p vardictrust --prefix none > "$KEEP_DIR/vardictrust_cargo_tree.txt"
     file target/x86_64-unknown-linux-musl/release/vardictrust > "$KEEP_DIR/musl_file_info.txt"
     ldd target/x86_64-unknown-linux-musl/release/vardictrust > "$KEEP_DIR/musl_ldd_info.txt" 2>&1 || true
-    for b in target/release/vardictrust target/x86_64-unknown-linux-musl/release/vardictrust; do printf '%s %s\n' "$b" "$(portable_filesize "$b")"; done > "$KEEP_DIR/binary_sizes_bytes.txt"
+    for b in target/release/vardictrust target/x86_64-unknown-linux-musl/release/vardictrust; do printf "%s %s\n" "$b" "$(portable_filesize "$b")"; done > "$KEEP_DIR/binary_sizes_bytes.txt"
 
     # (d) 60-Flag CLI Surface & Thread-Default Verification
     target/release/vardictrust --help > "$KEEP_DIR/vardictrust_help.txt"

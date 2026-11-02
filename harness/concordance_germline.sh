@@ -238,7 +238,7 @@ else:
     print(f"CPP: {note}")
 json.dump(extra, open(o + "/extra.json", "w"), indent=2, sort_keys=True)
 PY
-python3 harness/record_evidence.py "$NAME" "$res" "$OUT" -- "$0" "$@"
+python3 harness/record_evidence.py --input "$TRUTH" --input "$BED" "$NAME" "$res" "$OUT" -- "$0" "$@"
 
 echo "Germline concordance result: $res"
 [ "$res" = EQUAL ]
