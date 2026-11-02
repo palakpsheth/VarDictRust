@@ -8,13 +8,18 @@ if [ "$HOST_OS" != "Linux" ] || [ "$HOST_ARCH" != "x86_64" ]; then
     ORACLE_IMAGE="${ORACLE_CONTAINER_IMAGE:-vardict-oracle:linux-amd64}"
     REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
     OUT_DIR="$(mkdir -p "$(dirname "${4:-.}")" && cd "$(dirname "${4:-.}")" && pwd)"
+    MOUNT_ARGS=(-v "$REPO_ROOT:$REPO_ROOT" -v "$OUT_DIR:$OUT_DIR" -v /tmp:/tmp)
+    for p in "${1:-}" "${2%|*}" "${2#*|}" "${3:-}"; do
+      if [ -n "$p" ] && [ -d "$(dirname "$p")" ]; then
+        d="$(cd "$(dirname "$p")" && pwd)"
+        MOUNT_ARGS+=(-v "$d:$d")
+      fi
+    done
     exec docker run --rm --platform linux/amd64 \
       -e AF_THR="${AF_THR:-}" \
       -e ORACLE_XMX_GB="${ORACLE_XMX_GB:-}" \
       -e KEEP_DIR="${KEEP_DIR:-}" \
-      -v "$REPO_ROOT:$REPO_ROOT" \
-      -v "$OUT_DIR:$OUT_DIR" \
-      -v /tmp:/tmp \
+      "${MOUNT_ARGS[@]}" \
       -w "$PWD" \
       "$ORACLE_IMAGE" \
       bash "$REPO_ROOT/harness/run_oracle.sh" "$@"

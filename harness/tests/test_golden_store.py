@@ -136,6 +136,10 @@ class TestKey(StoreCase):
         self.assertEqual(info_mac["machine"], "arm64")
         self.assertEqual(info_mac["r_sizeof_longdouble"], 8)
 
+        gs.os.uname = lambda: os.uname_result(("FreeBSD", "host", "14.0", "#1", "riscv64"))
+        info_other = gs.host_info()
+        self.assertEqual(info_other["r_sizeof_longdouble"], "unknown")
+
     def test_compute_cell_id_preserves_linux_x86_64_and_namespaces_other_platforms(self):
         expected_ident = {
             "schema": gs.SCHEMA,
@@ -169,6 +173,25 @@ class TestKey(StoreCase):
         self.assertNotEqual(k_arm, expected_key)
         self.assertNotEqual(k_arm, k_mac)
         self.assertEqual(ident_arm.get("platform"), "Linux-aarch64")
+
+        os.environ["ORACLE_CONTAINER"] = "1"
+        os.environ["ORACLE_CONTAINER_IMAGE"] = "vardict-oracle:sha256-a"
+        self.addCleanup(os.environ.pop, "ORACLE_CONTAINER", None)
+        self.addCleanup(os.environ.pop, "ORACLE_CONTAINER_IMAGE", None)
+        k_c1, ident_c1 = gs.compute_cell_id(
+            "java", [self.ref], [str(self.ref), "-f", "0.1"], host_platform="Darwin-arm64"
+        )
+        os.environ["ORACLE_CONTAINER_IMAGE"] = "vardict-oracle:sha256-b"
+        k_c2, ident_c2 = gs.compute_cell_id(
+            "java", [self.ref], [str(self.ref), "-f", "0.1"], host_platform="Darwin-arm64"
+        )
+        self.assertNotEqual(k_c1, k_c2, "ORACLE_CONTAINER_IMAGE must key container-backed java cells")
+        self.assertEqual(ident_c1.get("container_image"), "vardict-oracle:sha256-a")
+        self.assertEqual(ident_c2.get("container_image"), "vardict-oracle:sha256-b")
+        k_linux_c, _ = gs.compute_cell_id(
+            "java", [self.ref], [str(self.ref), "-f", "0.1"], host_platform="Linux-x86_64"
+        )
+        self.assertEqual(k_linux_c, expected_key, "native Linux-x86_64 key must remain unchanged")
 
 
 

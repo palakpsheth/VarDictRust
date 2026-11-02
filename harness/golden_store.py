@@ -205,6 +205,10 @@ def cell_key(kind, inputs, args, wrapper="-", literal=(), host_platform=None):
     plat = _host_platform(host_platform)
     if plat != "Linux-x86_64":
         ident["platform"] = plat
+        if kind == "java" and os.environ.get("ORACLE_CONTAINER") == "1":
+            ident["container_image"] = os.environ.get(
+                "ORACLE_CONTAINER_IMAGE", "vardict-oracle:linux-amd64"
+            )
     blob = json.dumps(ident, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(blob).hexdigest()[:16], ident
 
@@ -276,22 +280,37 @@ _R_LONGDOUBLE_CACHE = {}
 
 
 def _r_sizeof_longdouble(sysname, machine):
-    rscript = shutil.which("Rscript") if (sysname, machine) == _REAL_UNAME else None
-    key = (sysname, machine, rscript)
+    is_real_host = (sysname, machine) == _REAL_UNAME
+    conda = shutil.which("conda") if is_real_host else None
+    rscript = shutil.which("Rscript") if is_real_host else None
+    container = os.environ.get("ORACLE_CONTAINER") == "1"
+    image = os.environ.get("ORACLE_CONTAINER_IMAGE", "vardict-oracle:linux-amd64") if container else ""
+    key = (sysname, machine, conda, rscript, container, image)
     if key in _R_LONGDOUBLE_CACHE:
         return _R_LONGDOUBLE_CACHE[key]
     val = None
-    if rscript:
-        try:
-            out = subprocess.check_output(
-                [rscript, "-e", "cat(.Machine$sizeof.longdouble)"],
-                stderr=subprocess.DEVNULL, text=True, timeout=5,
-            ).strip()
-            val = int(out)
-        except Exception:
-            val = None
+    if is_real_host:
+        cmds = []
+        if container and (sysname, machine) != ("Linux", "x86_64") and shutil.which("docker"):
+            cmds.append(["docker", "run", "--rm", "--platform", "linux/amd64", image, "Rscript", "-e", "cat(.Machine$sizeof.longdouble)"])
+        if conda and os.environ.get("CONDA_DEFAULT_ENV") != "vardict-oracle":
+            cmds.append([conda, "run", "--no-capture-output", "-n", "vardict-oracle", "Rscript", "-e", "cat(.Machine$sizeof.longdouble)"])
+        if rscript:
+            cmds.append([rscript, "-e", "cat(.Machine$sizeof.longdouble)"])
+        for cmd in cmds:
+            try:
+                out = subprocess.check_output(cmd, stderr=subprocess.DEVNULL, text=True, timeout=5).strip()
+                val = int(out.splitlines()[-1].strip())
+                break
+            except Exception:
+                val = None
     if val is None:
-        val = 16 if (sysname == "Linux" and machine == "x86_64") else (8 if machine in ("arm64", "aarch64") else 16)
+        if sysname == "Linux" and machine == "x86_64":
+            val = 16
+        elif machine in ("arm64", "aarch64"):
+            val = 8
+        else:
+            val = "unknown"
     _R_LONGDOUBLE_CACHE[key] = val
     return val
 
