@@ -140,13 +140,13 @@ jobs:
           PR_HEAD_REF: ${{ github.head_ref }}
         run: |
           t0=$SECONDS
-          echo "[$(date '+%H:%M:%S')] [Step 8/9] Verifying release consistency, 4-target perf budget, and working-tree cleanliness..."
+          echo "[$(date '+%H:%M:%S')] [Step 8/9] Verifying release consistency, 5-target perf budget, and working-tree cleanliness..."
           EXTRA_REL_FLAGS=()
           if [[ "${PR_HEAD_REF:-}" == release/* ]]; then
             EXTRA_REL_FLAGS+=(--require-head-fingerprint)
           fi
           python3 .agents/skills/vardictrust-release/scripts/check_release_consistency.py --phase pre-tag "${EXTRA_REL_FLAGS[@]}"
-          python3 harness/perf_budget.py hg008-tier2 seqc2-exome-tier2 hg002-tier2 amplicon-tier2
+          python3 harness/perf_budget.py hg008-tier2 seqc2-exome-tier2 hg002-tier2 amplicon-tier2 hg008-cram-twin
           dirty=$(git status --porcelain --ignore-submodules=untracked)
           if [ -n "$dirty" ]; then
             echo "ERROR: Working tree dirty after CI run:" >&2

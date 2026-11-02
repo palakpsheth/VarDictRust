@@ -41,7 +41,7 @@ git checkout -b <type>/<slug> origin/main
 ### 2. Pre-PR Verification Sequence
 Commit your changes first, then run:
 ```bash
-# 1. Run all 25 harness self-tests and strict MkDocs build check
+# 1. Run all 36 harness self-tests and strict MkDocs build check
 bash harness/run_self_tests.sh
 python3 harness/prepare_docs_site.py && mkdocs build --strict && rm -rf .docs_staged site
 

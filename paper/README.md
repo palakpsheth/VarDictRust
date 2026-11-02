@@ -120,7 +120,7 @@ To run individual test and verification suites without executing the entire pipe
 .venv/bin/pytest paper/tests/ harness/tests/test_linkedin_carousel.py harness/tests/test_docs_ui.py -v
 
 # 2. Check release version and manifest consistency:
-python3 .agents/skills/vardictrust-release/scripts/check_release_consistency.py --version 1.0.6 --phase post-bioconda --require-head-fingerprint
+python3 .agents/skills/vardictrust-release/scripts/check_release_consistency.py --phase pre-tag --require-head-fingerprint
 
 # 3. Check dry-run GCP study runner plan and local caching:
 bash harness/gcp_paper_runner.sh --plan-check

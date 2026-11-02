@@ -33,7 +33,8 @@ def sync_docs(repo_root: pathlib.Path, check: bool = False) -> int:
     hg008_data = json.loads((ev_dir / "hg008-tier2.json").read_text(encoding="utf-8"))
     fp = hg008_data.get("fingerprint", "")
     scale_data = json.loads((ev_dir / "scale.json").read_text(encoding="utf-8"))
-    perf_fp = scale_data.get("extra", {}).get("perf_fingerprint", "")
+    scale_extra = scale_data.get("extra", {})
+    perf_fp = scale_extra.get("perf_fingerprint", "")
     if not re.match(r"^[0-9a-f]{16}$", fp) or not re.match(r"^[0-9a-f]{16}$", perf_fp):
         print(
             f"ERROR: invalid fingerprint ({fp!r}) or perf_fingerprint ({perf_fp!r})",
@@ -41,7 +42,30 @@ def sync_docs(repo_root: pathlib.Path, check: bool = False) -> int:
         )
         return 1
 
+    s8 = float(scale_extra.get("speedup_8", scale_extra.get("s8", 0.0)))
+    rss_ratio = float(
+        scale_extra.get("rss_ratio_chr1_vs_10mb", scale_extra.get("rss_ratio", 0.0))
+    )
+    rss_kb_map = scale_extra.get("maxrss_kb", scale_extra.get("rss_kb", {}))
+    chr1_rss_kb = rss_kb_map.get("248956422", rss_kb_map.get("249250621", 0))
+    chr1_rss_gib = float(chr1_rss_kb) / (1024.0 * 1024.0)
+    span10_rss_gib = float(rss_kb_map.get("10000000", 0)) / (1024.0 * 1024.0)
+    wall_s_map = scale_extra.get("wall_s", {})
+    th1_s = float(wall_s_map.get("1", 0.0))
+    th8_s = float(wall_s_map.get("8", 0.0))
+
     mismatches = []
+    pattern_errors: list[str] = []
+
+    def sub_required(
+        pattern: str, repl: str, text: str, label: str, flags: int = 0
+    ) -> str:
+        new_text, count = re.subn(pattern, repl, text, flags=flags)
+        if count == 0:
+            pattern_errors.append(
+                f"ERROR: required pattern not found in {label}: {pattern!r}"
+            )
+        return new_text
 
     # 1. Update docs/validation/omnibus-empirical-validation.md
     omnibus_path = repo_root / "docs" / "validation" / "omnibus-empirical-validation.md"
@@ -70,10 +94,11 @@ def sync_docs(repo_root: pathlib.Path, check: bool = False) -> int:
     sha_rows_verified = 0
     if omnibus_path.is_file():  # guaranteed present by required_docs check above
         orig_text = omnibus_path.read_text(encoding="utf-8")
-        text = re.sub(
+        text = sub_required(
             r"(\*\*Certified Release Engine Fingerprint:\*\*\s*`)[0-9a-f]{16}(`)",
             rf"\g<1>{fp}\2",
             orig_text,
+            "docs/validation/omnibus-empirical-validation.md",
         )
         sha_rows_verified = 0
         for jf in json_files:
@@ -113,10 +138,23 @@ def sync_docs(repo_root: pathlib.Path, check: bool = False) -> int:
     div_path = repo_root / "DIVERGENCES.md"
     if div_path.is_file():
         orig_text = div_path.read_text(encoding="utf-8")
-        text = re.sub(
+        text = sub_required(
             r"(under release engine fingerprint `)[0-9a-f]{16}(`)",
             rf"\g<1>{fp}\2",
             orig_text,
+            "DIVERGENCES.md",
+        )
+        text = sub_required(
+            r"([0-9]+\.[0-9]+ GiB peak RSS across the full 249 Mbp chromosome in the 3-run median certified series[^)]*)",
+            f"{chr1_rss_gib:.2f} GiB peak RSS across the full 249 Mbp chromosome in the 3-run median certified series, {rss_ratio:.2f}× flat RSS ratio vs 10 Mbp",
+            text,
+            "DIVERGENCES.md",
+        )
+        text = sub_required(
+            r"(Scaling Budget:\s+PASS \()[0-9]+\.[0-9]+x speedup, [0-9]+\.[0-9]+x flat RSS",
+            rf"\g<1>{s8:.2f}x speedup, {rss_ratio:.2f}x flat RSS",
+            text,
+            "DIVERGENCES.md",
         )
         if text != orig_text:
             if check:
@@ -128,25 +166,47 @@ def sync_docs(repo_root: pathlib.Path, check: bool = False) -> int:
     matrix_path = repo_root / "docs" / "testing" / "test-matrix-and-ci-audit.md"
     if matrix_path.is_file():
         orig_text = matrix_path.read_text(encoding="utf-8")
-        text = re.sub(
+        text = sub_required(
             r"(\*\*Certified Release Engine Fingerprint:\*\*\s*`)[0-9a-f]{16}(`)",
             rf"\g<1>{fp}\2",
             orig_text,
+            "docs/testing/test-matrix-and-ci-audit.md",
         )
-        text = re.sub(
+        text = sub_required(
             r"(\|\s*\*\*(?:MATCH|EQUAL|PASS)\*\*\s*\|\s*`)[0-9a-f]{16}(`\s*\|)",
             rf"\g<1>{fp}\2",
             text,
+            "docs/testing/test-matrix-and-ci-audit.md",
         )
-        text = re.sub(
-            r"(\|\s*`benchmarks/evidence/[^`]+`\s*\|\s*`)[0-9a-f]{16}(`\s*\|)",
-            rf"\g<1>{fp}\2",
-            text,
-        )
-        text = re.sub(
+        text = sub_required(
             r"(under certified release fingerprint )[0-9a-f]{16}",
             rf"\g<1>{fp}",
             text,
+            "docs/testing/test-matrix-and-ci-audit.md",
+        )
+        text = sub_required(
+            r'(S_Chr1\["harness/scale_bench\.sh \(Chr1: )[0-9]+\.[0-9]+x speedup, [0-9]+\.[0-9]+x RSS(\)"\])',
+            rf"\g<1>{s8:.2f}x speedup, {rss_ratio:.2f}x RSS\2",
+            text,
+            "docs/testing/test-matrix-and-ci-audit.md",
+        )
+        text = sub_required(
+            r"(\|\s*\*\*Chr1 Scale Benchmark\*\*\s*\|\s*\[`scale\.json`\]\([^)]+\)\s*\|\s*Chromosome 1 Full Scaling\s*\|\s*\$S_8 = )[0-9]+\.[0-9]+(\\times\$, RSS \$)[0-9]+\.[0-9]+(\\times\$)",
+            rf"\g<1>{s8:.2f}\g<2>{rss_ratio:.2f}\3",
+            text,
+            "docs/testing/test-matrix-and-ci-audit.md",
+        )
+        text = sub_required(
+            r"(achieved \*\*)[0-9]+\.[0-9]+×(\*\* \(8 threads vs 1 thread: `)[0-9]+\.[0-9]+s(` vs `)[0-9]+\.[0-9]+s(` 3-run median)",
+            rf"\g<1>{s8:.2f}×\g<2>{th8_s:.2f}s\g<3>{th1_s:.2f}s\4",
+            text,
+            "docs/testing/test-matrix-and-ci-audit.md",
+        )
+        text = sub_required(
+            r"(achieved \*\*)[0-9]+\.[0-9]+×(\*\* \(249 Mbp vs 10 Mbp: `)[0-9]+\.[0-9]+ GiB(` vs `)[0-9]+\.[0-9]+ GiB(` 3-run median)",
+            rf"\g<1>{rss_ratio:.2f}×\g<2>{chr1_rss_gib:.2f} GiB\g<3>{span10_rss_gib:.2f} GiB\4",
+            text,
+            "docs/testing/test-matrix-and-ci-audit.md",
         )
         if text != orig_text:
             if check:
@@ -158,10 +218,11 @@ def sync_docs(repo_root: pathlib.Path, check: bool = False) -> int:
     bench_readme = repo_root / "benchmarks" / "README.md"
     if bench_readme.is_file():
         orig_text = bench_readme.read_text(encoding="utf-8")
-        text = re.sub(
+        text = sub_required(
             r"(certified release engine fingerprint `)[0-9a-f]{16}(`)",
             rf"\g<1>{fp}\2",
             orig_text,
+            "benchmarks/README.md",
         )
         if text != orig_text:
             if check:
@@ -180,21 +241,31 @@ def sync_docs(repo_root: pathlib.Path, check: bool = False) -> int:
         ver = ver_m.group(1)
         pr_doc = repo_root / "docs" / "release" / f"v{ver}-pr.md"
         if pr_doc.is_file():
+            pr_label = f"docs/release/v{ver}-pr.md"
             orig_text = pr_doc.read_text(encoding="utf-8")
-            text = re.sub(
+            text = sub_required(
                 r"(\*\*Release Fingerprint:\*\*\s*`)[0-9a-f]{16}(`\s*\(`perf_fingerprint`\s*`)[0-9a-f]{16}(`\))",
                 rf"\g<1>{fp}\g<2>{perf_fp}\3",
                 orig_text,
+                pr_label,
             )
-            text = re.sub(
+            text = sub_required(
+                r"(\*\*Release Recertification Receipt \(`)[0-9a-f]{16}(`\):\*\*)",
+                rf"\g<1>{fp}\2",
+                text,
+                pr_label,
+            )
+            text = sub_required(
                 r"(under certified engine fingerprint `)[0-9a-f]{16}(`\s*\(`perf_fingerprint`\s*`)[0-9a-f]{16}(`\):)",
                 rf"\g<1>{fp}\g<2>{perf_fp}\3",
                 text,
+                pr_label,
             )
-            text = re.sub(
+            text = sub_required(
                 r"^(fingerprint )[0-9a-f]{16}$",
                 rf"\g<1>{fp}",
                 text,
+                pr_label,
                 flags=re.MULTILINE,
             )
             if text != orig_text:
@@ -214,16 +285,28 @@ def sync_docs(repo_root: pathlib.Path, check: bool = False) -> int:
     )
     if surface_map.is_file():
         orig_text = surface_map.read_text(encoding="utf-8")
-        text = re.sub(
+        text = sub_required(
             r"(\|\s*1[256]\s*\|[^\n]*?`)[0-9a-f]{16}(`)",
             rf"\g<1>{fp}\2",
             orig_text,
+            ".agents/skills/vardictrust-release/references/version-surface-map.md",
+        )
+        text = sub_required(
+            r"(\|\s*12\s*\|\s*`DIVERGENCES\.md`\s*\|[^\n]*?`)[0-9]+\.[0-9]+x speedup, [0-9]+\.[0-9]+x flat RSS(`)",
+            rf"\g<1>{s8:.2f}x speedup, {rss_ratio:.2f}x flat RSS\2",
+            text,
+            ".agents/skills/vardictrust-release/references/version-surface-map.md",
         )
         if text != orig_text:
             if check:
                 mismatches.append(str(surface_map.relative_to(repo_root)))
             else:
                 surface_map.write_text(text, encoding="utf-8")
+
+    if pattern_errors:
+        for err in pattern_errors:
+            print(err, file=sys.stderr)
+        return 1
 
     if check:
         if mismatches:
