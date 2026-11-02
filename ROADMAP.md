@@ -24,6 +24,7 @@ From v1.1.0, each correction is opt-in via `--fix <id>` (default off) and lands 
 | `ub5` | [UB-5](docs/upstream-bugs.md#ub-5-simplemode-structural-variant-split-read-requirement-var2vcf_validpl197-205) | `var2vcf_valid.pl` drops `<DUP>`/`<INV>` when `splitreads < 1` | Preserve discordant-pair SVs lacking split reads |
 | `ub6` | [UB-6](docs/upstream-bugs.md#ub-6-mate-pair-boundary-parameter-in-mark_dup_sv-structuralvariantsprocessorjava1468) | `markDUPSV` pre-decrements `pe`, truncating window boundary by 1 bp | Pass pre-decrement `pe + 1` window boundary |
 | `ub7` | [UB-7](docs/upstream-bugs.md#ub-7-multi-allelic-site-single-winner-collapsing-var2vcf_validpl135-205) | Single-winner multi-allelic collapsing drops secondary alleles without `-A` | Retain secondary qualifying alleles in multi-allelic VCF records |
+| `duprate-live` | [`CigarParser.java:78,162-163`](https://github.com/AstraZeneca-NGS/VarDictJava/blob/master/src/main/java/com/astrazeneca/vardict/modules/CigarParser.java#L78) | `initFromScope` copies `totalReads = 0` and `duplicateReads = 0` before `processor.nextRecord()` loop, so `duprate` is always `0` even with `-t` | Propagate live `RecordPreprocessor` duplicate/total read counts to `CigarParser` after the read loop |
 
 ---
 

@@ -323,33 +323,33 @@ pub fn simple_38_into(
         buf.push_str(variant.genotype.as_deref().unwrap_or("0"));
         buf.push('\t');
     }
-    push_stripped(buf, variant.frequency, 4);
+    push_java_rounded(buf, variant.frequency, 4);
     buf.push('\t');
     buf.push_str(&variant.bias);
     buf.push('\t');
-    push_stripped(buf, variant.mean_position, 1);
+    push_java_rounded(buf, variant.mean_position, 1);
     buf.push('\t');
     buf.push(if variant.pstd { '1' } else { '0' });
     buf.push('\t');
-    push_stripped(buf, variant.mean_quality, 1);
+    push_java_rounded(buf, variant.mean_quality, 1);
     buf.push('\t');
     buf.push(if variant.qstd { '1' } else { '0' });
     buf.push('\t');
-    push_stripped(buf, pvalue, 5);
+    push_java_rounded(buf, pvalue, 5);
     buf.push('\t');
     buf.push_str(&oddratio);
     buf.push('\t');
-    push_stripped(buf, variant.mean_mapping_quality, 1);
+    push_java_rounded(buf, variant.mean_mapping_quality, 1);
     buf.push('\t');
-    push_stripped(buf, variant.hq_lq_ratio, 3);
+    push_java_rounded(buf, variant.hq_lq_ratio, 3);
     buf.push('\t');
     // hifreq/nm cells keep trailing zeros in BOTH modes (raw-cell rule).
     push_keep(buf, variant.hi_freq, 4);
     buf.push('\t');
-    push_stripped(buf, variant.extra_freq, 4);
+    push_java_rounded(buf, variant.extra_freq, 4);
     buf.push('\t');
     let _ = write!(buf, "{}\t", variant.shift3);
-    push_stripped(buf, variant.msi, 3);
+    push_java_rounded(buf, variant.msi, 3);
     buf.push('\t');
     let _ = write!(buf, "{}\t", variant.msint);
     push_nm(buf, variant.nm);
@@ -377,7 +377,7 @@ pub fn simple_38_into(
     let _ = write!(buf, "{}-{}\t", region.start.0, region.end.0);
     buf.push_str(&variant.var_type);
     buf.push('\t');
-    push_stripped(buf, variant.duprate, 2);
+    push_java_rounded(buf, variant.duprate, 2);
     buf.push('\t');
     if sv.is_empty() {
         buf.push('0');
@@ -564,32 +564,32 @@ pub fn amplicon_40_into(
     let _ = write!(buf, "{}\t", variant.rev);
     buf.push_str(variant.genotype.as_deref().unwrap_or("0"));
     buf.push('\t');
-    push_stripped(buf, variant.frequency, 4);
+    push_java_rounded(buf, variant.frequency, 4);
     buf.push('\t');
     buf.push_str(&variant.bias);
     buf.push('\t');
-    push_stripped(buf, variant.mean_position, 1);
+    push_java_rounded(buf, variant.mean_position, 1);
     buf.push('\t');
     buf.push(if variant.pstd { '1' } else { '0' });
     buf.push('\t');
-    push_stripped(buf, variant.mean_quality, 1);
+    push_java_rounded(buf, variant.mean_quality, 1);
     buf.push('\t');
     buf.push(if variant.qstd { '1' } else { '0' });
     buf.push('\t');
-    push_stripped(buf, pvalue, 5);
+    push_java_rounded(buf, pvalue, 5);
     buf.push('\t');
     buf.push_str(&oddratio);
     buf.push('\t');
-    push_stripped(buf, variant.mean_mapping_quality, 1);
+    push_java_rounded(buf, variant.mean_mapping_quality, 1);
     buf.push('\t');
-    push_stripped(buf, variant.hq_lq_ratio, 3);
+    push_java_rounded(buf, variant.hq_lq_ratio, 3);
     buf.push('\t');
     push_keep(buf, variant.hi_freq, 4);
     buf.push('\t');
-    push_stripped(buf, variant.extra_freq, 4);
+    push_java_rounded(buf, variant.extra_freq, 4);
     buf.push('\t');
     let _ = write!(buf, "{}\t", variant.shift3);
-    push_stripped(buf, variant.msi, 3);
+    push_java_rounded(buf, variant.msi, 3);
     buf.push('\t');
     let _ = write!(buf, "{}\t", variant.msint);
     push_nm(buf, variant.nm);
@@ -703,27 +703,42 @@ fn debug_amp_variant(v: Option<&Variant>) -> String {
 }
 
 /// Java-compatible formatter that rounds a float using banker's rounding
-/// to a maximum of `digits` decimal places, and strips any trailing zeros.
-/// Ports `Utils.getRoundedValueToPrint`. Shared with the VCF writer (vcf.rs).
-/// Same value mapping as [`push_stripped`]; kept for the VCF rare paths and
-/// the formatter-mode pins below.
+/// to `digits` decimal places and strips trailing `'0'` characters.
+/// Ports `Utils.getRoundedValueToPrint` (`Utils.java:105-109`):
+/// checks `value == Math.round(value)` on the raw unrounded `value` first;
+/// otherwise formats with `DecimalFormat(pattern)` and runs `.replaceAll("0+$", "")`,
+/// leaving a trailing `'.'` when a fractional value rounds to an integer (`"2."`, `"-0."`).
 pub(crate) fn get_rounded_value_to_print(value: f64, digits: i32) -> String {
+    let mut buf = String::new();
+    push_java_rounded(&mut buf, value, digits);
+    buf
+}
+
+/// Push `Utils.getRoundedValueToPrint` directly into `buf` without a temp `String`.
+/// Used by all `--fisher` `.var` writers (`SimpleOutputVariant` 38-col,
+/// `AmpliconOutputVariant` 40-col, `SomaticOutputVariant` 61-col).
+pub(crate) fn push_java_rounded(buf: &mut String, value: f64, digits: i32) {
     if value.is_nan() || value.is_infinite() {
-        return value.to_string();
+        let _ = write!(buf, "{}", value);
+        return;
+    }
+    if value == value.round() {
+        if value == 0.0 {
+            if value.is_sign_negative() {
+                buf.push_str("-0");
+            } else {
+                buf.push('0');
+            }
+        } else {
+            let _ = write!(buf, "{:.0}", value);
+        }
+        return;
     }
     let rounded = crate::types::round_half_even(value, digits);
-    if rounded == 0.0 {
-        "0".to_string()
-    } else if rounded == rounded.round() {
-        format!("{:.0}", rounded)
-    } else {
-        let mut s = format!("{:.*}", digits as usize, rounded);
-        if s.contains('.') {
-            while s.ends_with('0') {
-                s.pop();
-            }
-        }
-        s
+    let start = buf.len();
+    let _ = write!(buf, "{:.*}", digits.max(0) as usize, rounded);
+    while buf.len() > start && buf.as_bytes().get(buf.len() - 1) == Some(&b'0') {
+        buf.pop();
     }
 }
 
@@ -745,12 +760,9 @@ pub(crate) fn push_keep(buf: &mut String, v: f64, digits: i32) {
     }
 }
 
-/// Strip-mode float cell: HALF_EVEN at `digits` decimals with trailing zeros
-/// stripped (`"0"` when zero, integers without a dot). Same value mapping as
-/// [`get_rounded_value_to_print`] — the other `round_half_even` call site —
-/// but pushed into the row buffer in place (no temp `String`): trailing zeros
-/// are truncated off the buffer tail.
-/// Ports `Utils.getRoundedValueToPrint` (the `--fisher` writers).
+/// Strip-mode float cell for R `write.table` / Perl `var2vcf_*.pl` VCF output:
+/// HALF_EVEN at `digits` decimals with trailing zeros AND trailing decimal point
+/// stripped (`"0"` when rounded == 0, integers without a dot).
 pub(crate) fn push_stripped(buf: &mut String, value: f64, digits: i32) {
     if value.is_nan() || value.is_infinite() {
         let _ = write!(buf, "{}", value);
@@ -942,33 +954,33 @@ fn push_20cols_fisher(buf: &mut String, v: &Variant, pvalue: f64, oddratio: &str
     let _ = write!(buf, "{}\t", v.rev);
     buf.push_str(v.genotype.as_deref().unwrap_or("0"));
     buf.push('\t');
-    push_stripped(buf, v.frequency, 4);
+    push_java_rounded(buf, v.frequency, 4);
     buf.push('\t');
     buf.push_str(&v.bias);
     buf.push('\t');
-    push_stripped(buf, v.mean_position, 1);
+    push_java_rounded(buf, v.mean_position, 1);
     buf.push('\t');
     buf.push(if v.pstd { '1' } else { '0' });
     buf.push('\t');
-    push_stripped(buf, v.mean_quality, 1);
+    push_java_rounded(buf, v.mean_quality, 1);
     buf.push('\t');
     buf.push(if v.qstd { '1' } else { '0' });
     buf.push('\t');
-    push_stripped(buf, v.mean_mapping_quality, 1);
+    push_java_rounded(buf, v.mean_mapping_quality, 1);
     buf.push('\t');
-    push_stripped(buf, v.hq_lq_ratio, 3);
+    push_java_rounded(buf, v.hq_lq_ratio, 3);
     buf.push('\t');
-    push_stripped(buf, v.hi_freq, 4);
+    push_java_rounded(buf, v.hi_freq, 4);
     buf.push('\t');
-    push_stripped(buf, v.extra_freq, 4);
+    push_java_rounded(buf, v.extra_freq, 4);
     buf.push('\t');
     if v.nm > 0.0 {
-        push_stripped(buf, v.nm, 1);
+        push_java_rounded(buf, v.nm, 1);
     } else {
         buf.push('0');
     }
     buf.push('\t');
-    push_stripped(buf, pvalue, 5);
+    push_java_rounded(buf, pvalue, 5);
     buf.push('\t');
     buf.push_str(oddratio);
 }
@@ -1091,7 +1103,7 @@ pub fn somatic_61_into(
     buf.push('\t');
     buf.push_str(&tumor.var_type);
     buf.push('\t');
-    push_stripped(buf, tumor.duprate, 1);
+    push_java_rounded(buf, tumor.duprate, 1);
     buf.push('\t');
     if sv1.is_empty() {
         buf.push_str("0\t");
@@ -1100,7 +1112,7 @@ pub fn somatic_61_into(
         buf.push('\t');
     }
     match normal {
-        Some(n) => push_stripped(buf, n.duprate, 1),
+        Some(n) => push_java_rounded(buf, n.duprate, 1),
         None => buf.push('0'),
     }
     buf.push('\t');
@@ -1110,7 +1122,7 @@ pub fn somatic_61_into(
         buf.push_str(sv2);
         buf.push('\t');
     }
-    push_stripped(buf, total_pvalue, 5);
+    push_java_rounded(buf, total_pvalue, 5);
     buf.push('\t');
     buf.push_str(&total_oddratio);
 }
@@ -1529,7 +1541,7 @@ mod buffer_reuse_tests {
         assert_eq!(get_rounded_value_to_print(0.375, 4), "0.375");
         assert_eq!(get_rounded_value_to_print(1.0, 4), "1");
         assert_eq!(get_rounded_value_to_print(0.0, 4), "0");
-        assert_eq!(get_rounded_value_to_print(-0.00001, 4), "0");
+        assert_eq!(get_rounded_value_to_print(-0.00001, 4), "-0.");
         assert_eq!(get_rounded_value_to_print(f64::NAN, 4), "NaN");
         let mut b = String::new();
         push_keep(&mut b, 0.375, 4);
@@ -1906,6 +1918,67 @@ mod tests {
         let cols40: Vec<&str> = a40.split('\t').collect();
         assert_eq!(cols40[24], "0.1250");
         assert_eq!(cols40[29], "1.2");
-        assert_eq!(get_rounded_value_to_print(-0.00001, 4), "0");
+    }
+
+    #[test]
+    fn java_rounded_value_to_print_pins() {
+        assert_eq!(get_rounded_value_to_print(0.023, 1), "0.");
+        assert_eq!(get_rounded_value_to_print(-0.023, 1), "-0.");
+        assert_eq!(get_rounded_value_to_print(0.96, 1), "1.");
+        assert_eq!(get_rounded_value_to_print(0.003, 2), "0.");
+        assert_eq!(get_rounded_value_to_print(0.996, 2), "1.");
+        assert_eq!(get_rounded_value_to_print(35.96, 1), "36.");
+        assert_eq!(get_rounded_value_to_print(1.0 / 30000.0, 4), "0.");
+        assert_eq!(get_rounded_value_to_print(-0.00001, 4), "-0.");
+        assert_eq!(get_rounded_value_to_print(2.00001, 4), "2.");
+        assert_eq!(get_rounded_value_to_print(2001.0 / 2000.0, 3), "1.");
+        assert_eq!(get_rounded_value_to_print(29.94, 1), "29.9");
+        assert_eq!(get_rounded_value_to_print(30.0, 1), "30");
+        assert_eq!(get_rounded_value_to_print(0.0, 4), "0");
+        assert_eq!(get_rounded_value_to_print(-0.0, 4), "-0");
+
+        // VCF R-echo stripped path keeps -0.00001 -> "0" (#60 item 18 guard).
+        let mut vcf_buf = String::new();
+        push_stripped(&mut vcf_buf, -0.00001, 4);
+        assert_eq!(vcf_buf, "0");
+    }
+
+    #[test]
+    fn format_oracle_table_parity() {
+        const ORACLE: &str = include_str!("../../testdata/format/java_fmt_oracle.tsv");
+        // The 4 JDK DecimalFormat sub-ulp underflow tie inputs (±5e-(d+1) for d in {3,4,5,8})
+        let mut checked = 0usize;
+        for (line_idx, line) in ORACLE.lines().enumerate() {
+            if line.starts_with('#') || line.trim().is_empty() {
+                continue;
+            }
+            let cols: Vec<&str> = line.split('\t').collect();
+            assert_eq!(cols.len(), 9, "malformed oracle row {}", line_idx + 1);
+            let digits: i32 = cols[0].parse().expect("digits");
+            let v_bits = u64::from_str_radix(cols[3], 16).expect("value_bits_hex");
+            let value = f64::from_bits(v_bits);
+            let expected_gvtp = cols[6];
+            let expected_dts = cols[8];
+
+            assert_eq!(
+                crate::variations::java_double_to_string(value),
+                expected_dts,
+                "Double.toString mismatch on row {} (value={})",
+                line_idx + 1,
+                cols[2]
+            );
+
+            let actual_gvtp = get_rounded_value_to_print(value, digits);
+            assert_eq!(
+                actual_gvtp,
+                expected_gvtp,
+                "getRoundedValueToPrint mismatch on row {} (digits={}, value={})",
+                line_idx + 1,
+                digits,
+                cols[2]
+            );
+            checked += 1;
+        }
+        assert_eq!(checked, 432, "expected all 432 oracle rows, got {checked}");
     }
 }

@@ -705,17 +705,49 @@ impl Default for Variant {
     }
 }
 
-/// Format an f64 the way Java's `Double.toString` does for the value domain seen
-/// in debug output (mapping quality): integral values keep a ".0" suffix
-/// ("60.0"), non-integral values use shortest round-trip repr ("35.3").
-/// Caveat: exact only for |v| < 1e7 — above that Java switches to scientific
-/// notation ("1.0E7") while this still prints plain digits; such magnitudes do
-/// not occur in the fields routed through here.
+/// Format an f64 matching Java's `Double.toString(double)` (`FloatingDecimal` /
+/// Steele & White):
+/// - `NaN`, `Infinity`, `-Infinity`
+/// - `0.0` -> `"0.0"`, `-0.0` -> `"-0.0"`
+/// - `1e-3 <= |v| < 1e7`: plain decimal with `.0` suffix on integral values
+/// - `|v| < 1e-3` or `|v| >= 1e7`: uppercase `E` scientific notation with at
+///   least one digit after the decimal point (`1.0E-4`, `1.0E7`, `1.25E7`).
 pub fn java_double_to_string(v: f64) -> String {
-    if v.is_finite() && v.fract() == 0.0 && v.abs() < 1e7 {
-        format!("{v:.1}")
+    if v.is_nan() {
+        return "NaN".to_string();
+    }
+    if v.is_infinite() {
+        return if v.is_sign_positive() {
+            "Infinity".to_string()
+        } else {
+            "-Infinity".to_string()
+        };
+    }
+    if v == 0.0 {
+        return if v.is_sign_negative() {
+            "-0.0".to_string()
+        } else {
+            "0.0".to_string()
+        };
+    }
+    let abs = v.abs();
+    if (1e-3..1e7).contains(&abs) {
+        let mut s = format!("{v}");
+        if !s.contains('.') {
+            s.push_str(".0");
+        }
+        s
     } else {
-        format!("{v}")
+        let s = format!("{v:e}");
+        if let Some((mantissa, exp)) = s.split_once('e') {
+            if mantissa.contains('.') {
+                format!("{mantissa}E{exp}")
+            } else {
+                format!("{mantissa}.0E{exp}")
+            }
+        } else {
+            s
+        }
     }
 }
 
@@ -1150,5 +1182,18 @@ mod debug_tests {
         assert_eq!(java_double_to_string(60.0), "60.0");
         assert_eq!(java_double_to_string(35.3), "35.3");
         assert_eq!(java_double_to_string(0.0), "0.0");
+        assert_eq!(java_double_to_string(-0.0), "-0.0");
+        assert_eq!(java_double_to_string(1.0e-4), "1.0E-4");
+        assert_eq!(java_double_to_string(-1.0e-4), "-1.0E-4");
+        assert_eq!(java_double_to_string(6.0e-5), "6.0E-5");
+        assert_eq!(java_double_to_string(6.2e-4), "6.2E-4");
+        assert_eq!(java_double_to_string(1.6e-4), "1.6E-4");
+        assert_eq!(java_double_to_string(6.0), "6.0");
+        assert_eq!(java_double_to_string(16384.0), "16384.0");
+        assert_eq!(java_double_to_string(1.0e7), "1.0E7");
+        assert_eq!(java_double_to_string(1.25e7), "1.25E7");
+        assert_eq!(java_double_to_string(f64::NAN), "NaN");
+        assert_eq!(java_double_to_string(f64::INFINITY), "Infinity");
+        assert_eq!(java_double_to_string(f64::NEG_INFINITY), "-Infinity");
     }
 }

@@ -122,11 +122,11 @@ fn run_pipeline_on_records(
     // Task 4 (streaming feed): one lazy pass per BAM, BAM1-then-BAM2, through
     // a single sequential preprocessor into a single CigarParser. Records are
     // dropped promptly after parsing, so peak memory stays flat in depth —
-    // the old `raw_records` Vec held the whole tile. Counts are unknown until
-    // the feed is exhausted (parse_cigar never reads them mid-stream), so
-    // they are set on the parser just before finalization, exactly as
-    // `pileup()` received them. `?` propagates I/O errors with the same Err
-    // semantics as the Vec path; nothing is skipped or unwrapped.
+    // the old `raw_records` Vec held the whole tile. Note: `CigarParser.java:78`
+    // calls `initFromScope(scope)` BEFORE the `processor.nextRecord()` loop, so
+    // `totalReads` and `duplicateReads` remain 0 at finalization (G2 parity).
+    // `?` propagates I/O errors with the same Err semantics as the Vec path;
+    // nothing is skipped or unwrapped.
     let mut feeds = Vec::with_capacity(bam_paths.len());
     for path in bam_paths {
         feeds.push(crate::bam::query_region_iter(
@@ -178,8 +178,6 @@ fn run_pipeline_on_records(
             break;
         }
     }
-    parser.total_reads = preprocessor.total_reads as i32;
-    parser.duplicate_reads = preprocessor.duplicate_reads as i32;
     let mut var_data = parser.into_variation_data();
     let chr_len = *chromosomes_lengths.get(chr).unwrap_or(&0) as u32;
     let joined_bams = bam_paths.join(":");
