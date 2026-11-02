@@ -677,6 +677,11 @@ pub fn query_region(
     end: Pos0,
     config: &crate::config::Config,
 ) -> Result<Vec<SamRecord>, crate::types::VardictError> {
+    let path_str = bam_path.to_string_lossy();
+    if path_str.ends_with(".cram") || path_str.ends_with(".CRAM") {
+        return query_region_iter(bam_path, chr, start, end, config)?.collect();
+    }
+
     SAM_READER_CACHE.with(
         |cache| -> Result<Vec<SamRecord>, crate::types::VardictError> {
             let mut cache = cache.borrow_mut();
@@ -707,41 +712,6 @@ pub fn query_region(
                     region_str, e
                 ))
             })?;
-
-            let path_str = bam_path.to_string_lossy();
-            if path_str.ends_with(".cram") || path_str.ends_with(".CRAM") {
-                let meta = acquire_cram_meta(bam_path, config)?;
-                let reference_sequence_id = meta
-                    .header
-                    .reference_sequences()
-                    .get_index_of(region.name())
-                    .ok_or_else(|| {
-                        crate::types::VardictError::Io(std::io::Error::new(
-                            std::io::ErrorKind::InvalidInput,
-                            "invalid reference sequence name",
-                        ))
-                    })?;
-                let interval = region.interval();
-                for crai_rec in meta
-                    .index
-                    .iter()
-                    .filter(|rec| crai_record_intersects(rec, reference_sequence_id, interval))
-                {
-                    let offset = crai_rec.offset();
-                    for sibling in meta.index.iter().filter(|r| r.offset() == offset) {
-                        if let (Some(ref_id), Some(s)) =
-                            (sibling.reference_sequence_id(), sibling.alignment_start())
-                        {
-                            let span = sibling.alignment_span();
-                            if span > 0 {
-                                let s_idx = usize::from(s);
-                                let e_idx = s_idx.saturating_add(span - 1);
-                                validate_cram_span(bam_path, &meta, ref_id, s_idx, e_idx)?;
-                            }
-                        }
-                    }
-                }
-            }
 
             let iter = cached
                 .reader
@@ -1652,6 +1622,7 @@ struct SharedCramMeta {
     id: u64,
     header: noodles::sam::Header,
     index: noodles::cram::crai::Index,
+    spans_by_offset: HashMap<u64, Vec<(usize, usize, usize)>>,
     fasta_repo: std::sync::Arc<SharedFastaRepo>,
 }
 
@@ -1706,6 +1677,22 @@ fn acquire_cram_meta(
     }
 
     let index = noodles::cram::fs::read_associated_index(path)?;
+    let mut spans_by_offset: HashMap<u64, Vec<(usize, usize, usize)>> = HashMap::new();
+    for crai_rec in index.iter() {
+        if let (Some(ref_id), Some(start)) =
+            (crai_rec.reference_sequence_id(), crai_rec.alignment_start())
+        {
+            let span = crai_rec.alignment_span();
+            if span > 0 {
+                let s_idx = usize::from(start);
+                let e_idx = s_idx.saturating_add(span - 1);
+                spans_by_offset
+                    .entry(crai_rec.offset())
+                    .or_default()
+                    .push((ref_id, s_idx, e_idx));
+            }
+        }
+    }
     let file = std::fs::File::open(path)?;
     let mut reader = noodles::cram::io::Reader::new(file);
     let header = reader.read_header()?;
@@ -1714,6 +1701,7 @@ fn acquire_cram_meta(
         id,
         header,
         index,
+        spans_by_offset,
         fasta_repo,
     });
     *slot_guard = Some(std::sync::Arc::clone(&meta));
@@ -2113,16 +2101,9 @@ fn fetch_cram_container(
         return Ok(None);
     }
 
-    for crai_rec in meta.index.iter().filter(|r| r.offset() == container_offset) {
-        if let (Some(ref_id), Some(start)) =
-            (crai_rec.reference_sequence_id(), crai_rec.alignment_start())
-        {
-            let span = crai_rec.alignment_span();
-            if span > 0 {
-                let s_idx = usize::from(start);
-                let e_idx = s_idx.saturating_add(span - 1);
-                validate_cram_span(path, meta, ref_id, s_idx, e_idx)?;
-            }
+    if let Some(spans) = meta.spans_by_offset.get(&container_offset) {
+        for &(ref_id, s_idx, e_idx) in spans {
+            validate_cram_span(path, meta, ref_id, s_idx, e_idx)?;
         }
     }
 
@@ -4971,6 +4952,12 @@ mod tests {
         assert!(
             err.to_string().contains("exceeding FASTA"),
             "unexpected error: {err}"
+        );
+        let vec_err = query_region(&cram_path, "chr1", Pos0(0), Pos0(700), &short_config)
+            .expect_err("query_region on multi-ref slice with short FASTA must return Err");
+        assert!(
+            vec_err.to_string().contains("exceeding FASTA"),
+            "unexpected error: {vec_err}"
         );
     }
 
