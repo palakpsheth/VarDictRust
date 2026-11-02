@@ -4,14 +4,11 @@ set -euo pipefail
 export LC_ALL=C
 export LANG=C
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/lib/portable.sh"
+
 sha256_hash() {
-    if command -v sha256sum >/dev/null 2>&1; then
-        sha256sum | awk '{print $1}'
-    elif command -v shasum >/dev/null 2>&1; then
-        shasum -a 256 | awk '{print $1}'
-    else
-        python3 -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())'
-    fi
+    portable_sha256
 }
 
 # Run VarDictRust against VarDictJava integration test cases.
@@ -189,7 +186,7 @@ run_test() {
 
     # Create temp BED
     local tmpbed
-    tmpbed=$(mktemp --suffix=.bed)
+    tmpbed=$(mktemp "${TMPDIR:-/tmp}/vardict_int_bed.XXXXXX")
     if [[ "$mode" == "Amplicon" ]]; then
         local amp_start="${fields[6]}"
         local amp_end="${fields[7]}"
@@ -356,14 +353,14 @@ if [[ "${CI:-}" == "true" || "${GOLDEN_MODE:-auto}" != "auto" || ! -d "$DATA_ROO
     DEFAULT_JOBS=1
 fi
 JOBS="${INTEGRATION_JOBS:-$DEFAULT_JOBS}"
-SUITE_START_MS=$(date +%s%3N)
+SUITE_START_MS=$(now_ms)
 
 if [[ "$JOBS" -le 1 || "${#TEST_FILES[@]}" -le 1 ]]; then
     for idx in "${!TEST_FILES[@]}"; do
         run_test "${TEST_FILES[$idx]}"
         done_n=$((idx + 1))
         if [[ -n "${INTEGRATION_PROGRESS_FD:-}" ]] && (( done_n % 25 == 0 || done_n == ${#TEST_FILES[@]} )); then
-            printf '[%s] [integration] [%d/%d] fixtures complete (%dms)\n' "$(date '+%H:%M:%S')" "$done_n" "${#TEST_FILES[@]}" "$(( $(date +%s%3N) - SUITE_START_MS ))" >&"$INTEGRATION_PROGRESS_FD"
+            printf '[%s] [integration] [%d/%d] fixtures complete (%dms)\n' "$(date '+%H:%M:%S')" "$done_n" "${#TEST_FILES[@]}" "$(( $(now_ms) - SUITE_START_MS ))" >&"$INTEGRATION_PROGRESS_FD"
         fi
     done
 else
@@ -409,7 +406,7 @@ else
         fi
         done_n=$((idx + 1))
         if [[ -n "${INTEGRATION_PROGRESS_FD:-}" ]] && (( done_n % 25 == 0 || done_n == ${#TEST_FILES[@]} )); then
-            printf '[%s] [integration] [%d/%d] fixtures complete (%dms)\n' "$(date '+%H:%M:%S')" "$done_n" "${#TEST_FILES[@]}" "$(( $(date +%s%3N) - SUITE_START_MS ))" >&"$INTEGRATION_PROGRESS_FD"
+            printf '[%s] [integration] [%d/%d] fixtures complete (%dms)\n' "$(date '+%H:%M:%S')" "$done_n" "${#TEST_FILES[@]}" "$(( $(now_ms) - SUITE_START_MS ))" >&"$INTEGRATION_PROGRESS_FD"
         fi
     done
     wait "$POOL_PID" 2>/dev/null || true

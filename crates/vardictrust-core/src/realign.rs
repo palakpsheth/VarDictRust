@@ -1847,9 +1847,7 @@ pub fn realignins(
         };
 
         let mut sanpseq = String::new();
-        let find_mm3_res;
-
-        if !ins3.is_empty() {
+        let find_mm3_res = if !ins3.is_empty() {
             let sv_flanking = 50;
             let p3 = p + inslen - (ins3.len() as i32) + sv_flanking;
             if ins3.len() > sv_flanking as usize {
@@ -1861,7 +1859,7 @@ pub fn realignins(
                 sanpseq = ins3[start_idx..].to_string();
             }
             sanpseq.push_str(&crate::util::join_ref(reference, chr, p + 1, p + 101));
-            find_mm3_res = find_mm3(reference, chr, p3 + 1, sanpseq.as_bytes(), soft_clips_3_end);
+            find_mm3(reference, chr, p3 + 1, sanpseq.as_bytes(), soft_clips_3_end)
         } else {
             let start_pos_ref = p + (extra.len() as i32) + 1 + (compm.len() as i32) + newdel;
             sanpseq = tn.clone();
@@ -1871,8 +1869,8 @@ pub fn realignins(
                 start_pos_ref,
                 sanend,
             ));
-            find_mm3_res = find_mm3(reference, chr, p + 1, sanpseq.as_bytes(), soft_clips_3_end);
-        }
+            find_mm3(reference, chr, p + 1, sanpseq.as_bytes(), soft_clips_3_end)
+        };
 
         let p5_pos = p + (extra.len() as i32) + (compm.len() as i32) + newdel;
         let find_mm5_res = find_mm5(reference, chr, p5_pos, wupseq.as_bytes(), soft_clips_5_end);

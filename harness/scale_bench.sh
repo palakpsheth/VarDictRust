@@ -15,6 +15,7 @@
 # needs: pinned (taskset enforced), niced by courtesy.sh, >=3 runs, P>=4 (the frozen bar is 0.6*P=2.4), and a clean
 # engine tree (perf_fingerprint).
 set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/portable.sh"
 NO_CPP=0
 if [ "${1:-}" = "--no-cpp" ]; then NO_CPP=1; shift; fi
 if [ "$NO_CPP" = 1 ]; then export CPP_SKIP=1; fi
@@ -79,7 +80,7 @@ PY
 [ -n "${P_PHYS:-}" ] || { echo "scale_bench: could not derive P from lscpu" >&2; exit 2; }
 PERF_FP=$(bash harness/engine_fingerprint.sh --perf 2>/dev/null || echo dirty)   # fail fast, not after hours
 GOVERNOR=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || echo unknown)
-LOAD_START=$(cut -d' ' -f1-3 /proc/loadavg)
+LOAD_START=$(portable_loadavg)
 # Full-span size from the reference index (no hardcoded chr1 length).
 CHR1=$(awk '$1=="chr1"||$1=="1"{print $1; exit}' "$REF.fai")
 SPAN=$(awk '$1=="chr1"||$1=="1"{print $2; exit}' "$REF.fai")
@@ -104,7 +105,7 @@ cell() {
   for ((i = 1; i <= RUNS; i++)); do
     echo "$(ts) [scale_bench] $name run $i/$RUNS starting..."
     rc=0
-    LC_ALL=C /usr/bin/time -v -o "$OUT/$name.run$i.time" "$@" > "$outf" || rc=$?
+    LC_ALL=C portable_time_v -o "$OUT/$name.run$i.time" "$@" > "$outf" || rc=$?
     if [ "$rc" -ne 0 ]; then
       echo "scale_bench: CELL FAILED: $name run $i (exit $rc); partial time log: $OUT/$name.run$i.time" >&2
       return 1
@@ -162,7 +163,7 @@ for sz in $SIZES; do
     echo "CPP: SKIP: $CPP_SKIP_MSG" >&2
   fi
 done
-LOAD_END=$(cut -d' ' -f1-3 /proc/loadavg)
+LOAD_END=$(portable_loadavg)
 SIZES="$SIZES" SPAN="$SPAN" RUNS="$RUNS" COURTESY="$COURTESY" GOVERNOR="$GOVERNOR" LOAD_START="$LOAD_START" LOAD_END="$LOAD_END" EFF="$EFF" PERF_FP="$PERF_FP" \
 python3 - "$OUT" "$PINNED" "$P_PHYS" > "$OUT/extra.json" <<'PY'
 import json, os, pathlib, re, statistics, sys

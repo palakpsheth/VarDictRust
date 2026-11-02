@@ -2,10 +2,11 @@
 # Usage: EST_MIN=<minutes> courtesy.sh <cmd...>   — decision A3: never touch services.
 # When stack is down for maintenance, export SKIP_BLACKOUT=1; floors still enforced.
 set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/portable.sh"
 : "${EST_MIN:?courtesy: set EST_MIN (estimated runtime, minutes)}"
-free=$(df -BG --output=avail "${COURTESY_DIR:-.}" | tail -1 | tr -dc 0-9)
+free=$(disk_free_gb "${COURTESY_DIR:-.}")
 [ "$free" -ge "${MIN_FREE_GB:-150}" ] || { echo "courtesy: ${free}G free < ${MIN_FREE_GB:-150}G" >&2; exit 3; }
-avail=$(( $(awk '/MemAvailable/{print $2}' /proc/meminfo) / 1048576 ))
+avail=$(mem_avail_gb)
 [ "$avail" -ge "${MIN_AVAIL_GB:-12}" ] || { echo "courtesy: ${avail}G RAM available < ${MIN_AVAIL_GB:-12}G" >&2; exit 5; }
 hhmm=${COURTESY_NOW:-$(date +%H%M)}
 if [ "${SKIP_BLACKOUT:-0}" != "1" ]; then
@@ -17,4 +18,4 @@ for off in 0 1440; do
 done
 fi
 export COURTESY_ACTIVE=1
-exec nice -n 19 ionice -c 3 "$@"
+exec_nice_idle "$@"

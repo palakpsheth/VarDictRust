@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Usage: fetch_data.sh <group>...  (refs seqc2 hg008 hg002). Resumable; md5-verified; appends benchmarks/MANIFEST.
 set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/portable.sh"
 
 if [ "$#" -eq 0 ]; then
   echo "Usage: $0 <group>...  (refs seqc2 hg008 hg002)" >&2
@@ -32,13 +33,13 @@ while IFS=$'\t' read -r group name url md5 dest; do
     rm -f "$out"
     exit 1
   fi
-  got=$(md5sum "$out" | cut -d' ' -f1)
+  got=$(portable_md5 "$out")
   if [ "$got" != "$md5" ]; then
     echo "fetch: MD5 MISMATCH $name got=$got want=$md5" >&2
     rm -f "$out"
     exit 1
   fi
   src=upstream
-  grep -qF "$name" "$MAN" || printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$name" "$url" "$got" "$src" "$(stat -c %s "$out")" "$(date -Is)" >> "$MAN"
+  grep -qF "$name" "$MAN" || printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$name" "$url" "$got" "$src" "$(portable_filesize "$out")" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" >> "$MAN"
   touch "$out.done"
 done < "$ASSETS"

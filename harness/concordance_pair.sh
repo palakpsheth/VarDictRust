@@ -7,9 +7,10 @@
 # as a rank line; the gate and exit code stay java==rust only (Task-3 ruling:
 # header/END-key deltas are known-normalized, cpp rank never gated).
 set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/portable.sh"
 
 if ! command -v rtg &>/dev/null || ! command -v bcftools &>/dev/null; then
-  export PATH="/home/palak/miniconda3/envs/g4-tools/bin:$PATH"
+  export PATH="$G4_TOOLS_BIN:$PATH"
 fi
 
 NAME=$1; J=$2; R=$3; TRUTH=$4; BED=$5; SDF=$6; OUT=$7; TS=$8; CPP_VCF=${9:-}
@@ -110,5 +111,5 @@ else:
     print(f"CPP: {note}")
 json.dump(extra, open(o + "/extra.json", "w"), indent=2, sort_keys=True)
 PY
-python3 harness/record_evidence.py "$NAME" "$res" "$OUT" -- "$0" "$@"
+python3 harness/record_evidence.py --input "$TRUTH" --input "$BED" "$NAME" "$res" "$OUT" -- "$0" "$@"
 [ "$res" = EQUAL ]

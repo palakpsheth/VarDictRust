@@ -12,9 +12,10 @@
 #   bash harness/stage_g4.sh [all|refs|amplicon|hg002|hg008|seqc2|seqc2-beds|multimodal]...
 # =============================================================================
 set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/portable.sh"
 
 if ! command -v samtools &>/dev/null || ! command -v bedtools &>/dev/null || ! command -v bcftools &>/dev/null; then
-  export PATH="/home/palak/miniconda3/envs/g4-tools/bin:$PATH"
+  export PATH="$G4_TOOLS_BIN:$PATH"
 fi
 
 D="${DATA_DIR:-scratch/g4}"

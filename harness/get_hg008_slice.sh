@@ -3,9 +3,10 @@
 # and encode CRAM twins (HG008-T.slice.cram / HG008-N.slice.cram) for cram_twin.sh.
 # Usage: [DATA_DIR=scratch/g4] bash harness/get_hg008_slice.sh [--beds-only]
 set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/portable.sh"
 
-if [ "${NO_G4_TOOLS:-0}" = 0 ] && [ -d /home/palak/miniconda3/envs/g4-tools/bin ] && { ! command -v samtools &>/dev/null || ! command -v bedtools &>/dev/null; }; then
-  export PATH="/home/palak/miniconda3/envs/g4-tools/bin:$PATH"
+if [ "${NO_G4_TOOLS:-0}" = 0 ] && [ -d "$G4_TOOLS_BIN" ] && { ! command -v samtools &>/dev/null || ! command -v bedtools &>/dev/null; }; then
+  export PATH="$G4_TOOLS_BIN:$PATH"
 fi
 
 BEDS_ONLY=0

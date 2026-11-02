@@ -46,6 +46,7 @@
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 ROOT_DIR=$PWD
+source "$ROOT_DIR/harness/lib/portable.sh"
 
 usage() { echo "usage: profile.sh baseline|optimized [--only <cell>] [--dry-run]" >&2; exit 2; }
 TAG=${1:-}; [ $# -gt 0 ] && shift || true
@@ -254,8 +255,9 @@ run_cell() {   # <cell>; returns 0 ok, 1 failed, 3 skipped
   fi
   for m in "${mods[@]}"; do
     local b; b=$(bin_for "$m")
+    local time_cmd=("$TIME_V_BIN" "${TIME_V_ARGS[@]}")
     local run=(env ${C_ENV[@]+"${C_ENV[@]}"} "VARDICT_PROFILE_${m^^}=$d" "$b" "${C_PRE[@]}" -th "$TH" "${C_POST[@]}")
-    local wrapped=(/usr/bin/time -v -a -o "$d/time.txt" "${run[@]}")
+    local wrapped=("${time_cmd[@]}" -a -o "$d/time.txt" "${run[@]}")
     if [ "$DRY" = 1 ]; then
       local note=""; if [ "$C_BIG" = 1 ] || [ "$m" = dhat ]; then note="[systemd-run MemoryMax=14G guard if available] "; fi
       printf '  [%s] EST_MIN=%s bash harness/courtesy.sh %s%s> %s\n' "$m" "$C_EST" "$note" "$(qcmd "${wrapped[@]}")" "$d/out-$m.vcf"
@@ -269,7 +271,7 @@ run_cell() {   # <cell>; returns 0 ok, 1 failed, 3 skipped
       for ((i=1; i<=loops; i++)); do
         mkdir -p "$d/iter-$i"
         local irun=(env ${C_ENV[@]+"${C_ENV[@]}"} "VARDICT_PROFILE_CPU=$d/iter-$i" "$b" "${C_PRE[@]}" -th "$TH" "${C_POST[@]}")
-        local iwrap=(/usr/bin/time -v -a -o "$d/time.txt" "${irun[@]}")
+        local iwrap=("${time_cmd[@]}" -a -o "$d/time.txt" "${irun[@]}")
         if [ "$C_BIG" = 1 ]; then iwrap=(${GUARD[@]+"${GUARD[@]}"} "${iwrap[@]}"); fi
         EST_MIN="$C_EST" LC_ALL=C bash harness/courtesy.sh "${iwrap[@]}" > "$d/out-$m.vcf" || {
           rc=$?; echo "profile: FAILED $cell [$m iter $i] (exit $rc); see $d/time.txt" >&2; return 1; }

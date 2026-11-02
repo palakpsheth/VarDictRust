@@ -12,6 +12,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+source "$SCRIPT_DIR/lib/portable.sh"
 NO_RECORD=0
 if [[ "${1:-}" == "--no-record" ]]; then
     NO_RECORD=1
@@ -103,7 +104,7 @@ function run_vcf_compare() {
         local out_j="$TMPDIR/${slice_id}_java.vcf"
         local out_r="$TMPDIR/${slice_id}_rust.vcf"
 
-        local start_t=$(date +%s%N)
+        local start_t=$(now_ms)
 
         # 1. Oracle
         bash "$ROOT_DIR/harness/golden_store.sh" oracle "mm-$slice_id" "$ref" "$bam_spec" "$bed_file" "$out_j" "$sample" -z -th "$THREADS" "${extra_args[@]}" 2>/dev/null || {
@@ -117,8 +118,8 @@ function run_vcf_compare() {
             exit 1
         }
 
-        local end_t=$(date +%s%N)
-        local elapsed_ms=$(( (end_t - start_t) / 1000000 ))
+        local end_t=$(now_ms)
+        local elapsed_ms=$(( end_t - start_t ))
 
         # 3. Comparator
         local cmp_out
@@ -177,7 +178,7 @@ function run_rna_slice() {
         local out_j="$TMPDIR/${slice_id}_java.tsv"
         local out_r="$TMPDIR/${slice_id}_rust.tsv"
 
-        local start_t=$(date +%s%N)
+        local start_t=$(now_ms)
 
         # 1. Oracle Execution (4-column intron frequency table)
         bash "$ROOT_DIR/harness/golden_store.sh" raw --kind java --label "mm-$slice_id" --out "$out_j" --input "$ref" --input "$ref.fai" --input "$bam" -- conda run -n vardict-oracle vardict-java -G "$ref" -b "$bam" -R "$region" -f 0.1 -i -th "$THREADS" 2>/dev/null || {
@@ -191,8 +192,8 @@ function run_rna_slice() {
             exit 1
         }
 
-        local end_t=$(date +%s%N)
-        local elapsed_ms=$(( (end_t - start_t) / 1000000 ))
+        local end_t=$(now_ms)
+        local elapsed_ms=$(( end_t - start_t ))
 
         local diff_lines=$(diff -u <(sort "$out_j") <(sort "$out_r") | wc -l)
         if [[ "$diff_lines" -eq 0 ]]; then
@@ -257,7 +258,7 @@ dispatch_slice() {
     esac
 }
 
-SUITE_START_MS=$(date +%s%3N)
+SUITE_START_MS=$(now_ms)
 (
     for idx in $(seq 1 "$TOTAL_SLICES"); do
         while [[ $(jobs -rp | wc -l) -ge $JOBS ]]; do
@@ -285,34 +286,66 @@ for idx in $(seq 1 "$TOTAL_SLICES"); do
     SLICE_RESULTS+=("$(cat "$TMPDIR/slice_${idx}.json")")
 done
 wait "$POOL_PID" 2>/dev/null || true
-SUITE_ELAPSED_MS=$(( $(date +%s%3N) - SUITE_START_MS ))
+SUITE_ELAPSED_MS=$(( $(now_ms) - SUITE_START_MS ))
 
 # -----------------------------------------------------------------------------
 # Generate Machine-Readable Evidence JSON
 # -----------------------------------------------------------------------------
 export GOLDEN_JSON=$(bash "$ROOT_DIR/harness/golden_store.sh" stats --run "$GOLDEN_RUN_ID" --json)
 if [[ "$NO_RECORD" -eq 0 ]]; then
-    python3 -c "
-import json
+    python3 - "$FA_B37" "$FA_GIAB" "$FA_SEQC2" "$FA_HG38" \
+      "$DATA_DIR/hg005_s4a.bam" "$DATA_DIR/hg005_s4b.bam" "$DATA_DIR/hg005_s4c.bam" \
+      "$DATA_DIR/seqc2_s3a_tumor.bam" "$DATA_DIR/seqc2_s3a_normal.bam" \
+      "$DATA_DIR/seqc2_s3b_tumor.bam" "$DATA_DIR/seqc2_s3b_normal.bam" \
+      "$DATA_DIR/seqc2_s3c_tumor.bam" "$DATA_DIR/seqc2_s3c_normal.bam" \
+      "$DATA_ROOT/scratch/g4/hg002/HG002.chr20.bam" \
+      "$DATA_ROOT/scratch/g4/hg008/HG008-T.slice.bam" "$DATA_ROOT/scratch/g4/hg008/HG008-N.slice.bam" \
+      "$DATA_ROOT/scratch/g4/hg008/r1.bed" "$DATA_ROOT/scratch/g4/hg008/r2.bed" "$DATA_ROOT/scratch/g4/hg008/r3.bed" \
+      "$BAM_NA24385_1" "$BAM_NA24385_19" "$BAM_NA24385_20" \
+      "$DATA_DIR/rna_s6a.bam" "$DATA_DIR/rna_s6b.bam" "$DATA_DIR/rna_s6c.bam" <<PY
+import hashlib, json, os, pathlib, sys
+
+def sha256_file(path: pathlib.Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+seen, inputs_list = set(), []
+def add(c: str):
+    p = pathlib.Path(c)
+    if not p.is_file() or str(p) in seen:
+        return
+    seen.add(str(p))
+    inputs_list.append({"path": str(p), "size_bytes": p.stat().st_size, "sha256": sha256_file(p)})
+
+for c in sys.argv[1:]:
+    add(c)
+    if c.endswith((".fa", ".fasta")):
+        add(c + ".fai")
+    elif c.endswith(".bam"):
+        add(c + ".bai")
 
 data = {
     'suite': 'multimodal_multislice_parity_suite',
-    'timestamp': '$(date -u +\"%Y-%m-%dT%H:%M:%SZ\")',
+    'timestamp': '$(date -u +"%Y-%m-%dT%H:%M:%SZ")',
     'fingerprint': '$CURRENT_FP',
     'mode': 'tier-2-live-oracle-strict-bytes',
+    'inputs': inputs_list,
     'total_slices': $TOTAL_SLICES,
     'slices_passed': $PASSED_COUNT,
     'total_variants_evaluated': $TOTAL_VARIANTS,
     'float_tolerance_eps': 1e-6,
     $CPP_JSON_LINE
-    'golden': json.loads(__import__('os').environ['GOLDEN_JSON']),
+    'golden': json.loads(os.environ['GOLDEN_JSON']),
     'result': 'MATCH' if $PASSED_COUNT == $TOTAL_SLICES else 'MISMATCH',
     'slices': [$(IFS=,; echo "${SLICE_RESULTS[*]}")]
 }
 
 with open('$EVIDENCE_JSON', 'w') as f:
     json.dump(data, f, indent=2)
-"
+PY
 fi
 
 GOLDEN_SUMMARY=$(bash "$ROOT_DIR/harness/golden_store.sh" stats --run "$GOLDEN_RUN_ID" 2>/dev/null || true)

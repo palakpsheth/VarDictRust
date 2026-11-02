@@ -51,7 +51,7 @@ jobs:
           t0=$SECONDS
           echo "[$(date '+%H:%M:%S')] [Step 1/9] Running cargo fmt --check, cargo clippy -D warnings, and bench compile..."
           cargo fmt --all -- --check
-          cargo clippy --all-targets --all-features -- -D warnings -A clippy::needless_late_init -A clippy::byte_char_slices
+          cargo clippy --all-targets --all-features -- -D warnings
           cargo test --benches -p vardictrust-core
           echo "STEP1_S=$((SECONDS - t0))" >> "$GITHUB_ENV"
           echo "STEP1_STATUS=PASS" >> "$GITHUB_ENV"

@@ -7,6 +7,7 @@
 # Exit 0 = both twins MATCH; non-zero otherwise. KEEP_DIR persists the four
 # VCFs, both compare_*.txt, *.time, and extra.json for record_evidence.py.
 set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/portable.sh"
 REF=scratch/g4/ref/giabv3/GRCh38_GIABv3.fa
 BED=scratch/g4/hg008/engine.bed
 BAM_T=scratch/g4/hg008/HG008-T.slice.bam; BAM_N=scratch/g4/hg008/HG008-N.slice.bam
@@ -36,11 +37,11 @@ if [ -s scratch/g4/hg008/cmp/rust.vcf ] && [ -s scratch/g4/hg008/cmp/rust.time ]
   cp scratch/g4/hg008/cmp/rust.vcf "$OUT/rust-bam.vcf"
   cp scratch/g4/hg008/cmp/rust.time "$OUT/rust.time"
 else
-  LC_ALL=C /usr/bin/time -v -o "$OUT/rust.time" timeout "${CMP_TIMEOUT:-12h}" \
+  LC_ALL=C portable_time_v -o "$OUT/rust.time" timeout "${CMP_TIMEOUT:-12h}" \
     "$BIN" -G "$REF" -f 0.01 -N "$SM" -b "$BAM_T|$BAM_N" -c 1 -S 2 -E 3 -g 4 -z -th "$TH" "$BED" > "$OUT/rust-bam.vcf" \
     || { echo "ENGINE-FAIL: rust-bam"; exit 2; }
 fi
-LC_ALL=C /usr/bin/time -v -o /dev/null timeout "${CMP_TIMEOUT:-12h}" \
+LC_ALL=C portable_time_v -o /dev/null timeout "${CMP_TIMEOUT:-12h}" \
   env RUST_MIN_STACK=67108864 "$BIN" -G "$REF" -f 0.01 -N "$SM" -b "$CRAM_T|$CRAM_N" -c 1 -S 2 -E 3 -g 4 -z -th "$TH" "$BED" > "$OUT/rust-cram.vcf" \
   || { echo "ENGINE-FAIL: rust-cram"; exit 2; }
 python3 harness/compare_vcf.py --min-variants "$FLOOR" "$OUT/rust-bam.vcf" "$OUT/rust-cram.vcf" \

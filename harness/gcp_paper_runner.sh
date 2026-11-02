@@ -29,6 +29,7 @@
 #      and append the prior `cells-v105` prefix to `restore_prev_java_cpp_artifacts()`.
 # =============================================================================
 set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/portable.sh"
 
 export GOLDEN_MODE=off
 export CLOUDSDK_CORE_ACCOUNT="${CLOUDSDK_CORE_ACCOUNT:-vardict-agent@vardict-paper-trial.iam.gserviceaccount.com}"
@@ -525,8 +526,8 @@ worker_preflight() {
   fi
   export DATA_DIR="scratch/g4"
   local size_gb avail_gb
-  size_gb="$(df -BG --output=size "$WORK_DIR" | tail -1 | tr -dc '0-9')"
-  avail_gb="$(df -BG --output=avail "$WORK_DIR" | tail -1 | tr -dc '0-9')"
+  size_gb="$(disk_total_gb "$WORK_DIR")"
+  avail_gb="$(disk_free_gb "$WORK_DIR")"
   local min_size_gb="${MIN_DISK_SIZE_GB:-700}"
   local min_avail_gb="${MIN_DISK_GB:-200}"
   if [ "$size_gb" -lt "$min_size_gb" ] || [ "$avail_gb" -lt "$min_avail_gb" ]; then
@@ -591,7 +592,7 @@ run_stage_1() {
       refs_cached=1
     fi
     bash harness/stage_g4.sh refs amplicon hg002 hg008
-    hg002_md5=\"\$(md5sum scratch/g4/hg002/HG002.chr20.bam | awk '{print \$1}')\"
+    hg002_md5=\"\$(portable_md5 scratch/g4/hg002/HG002.chr20.bam)\"
     if [ \"\$hg002_md5\" != 'bd605a455b2e2064931e6097c64695ea' ]; then
       echo \"FATAL: scratch/g4/hg002/HG002.chr20.bam MD5 '\$hg002_md5' != MANIFEST pin 'bd605a455b2e2064931e6097c64695ea'\" >&2
       exit 1
@@ -636,7 +637,7 @@ run_stage_1() {
     set -euo pipefail
     sed -n "1,15p;50,65p" "$DATA_DIR/hg002/eval.bed" > "$KEEP_DIR/gate7_multiregion.bed"
     if [ -s "$KEEP_DIR/java.vcf" ] && [ -s "$KEEP_DIR/java.time" ]; then
-      /usr/bin/time -v -o "$KEEP_DIR/rust.time" \
+      $TIME_V -o "$KEEP_DIR/rust.time" \
         target/release/vardictrust -G "$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fasta" -f 0.01 -N HG002 \
         -b "$DATA_DIR/hg002/HG002.chr20.bam" -c 1 -S 2 -E 3 -g 4 -z -th 8 "$KEEP_DIR/gate7_multiregion.bed" > "$KEEP_DIR/rust.vcf"
       python3 harness/compare_vcf.py --min-variants 50 "$KEEP_DIR/java.vcf" "$KEEP_DIR/rust.vcf" | tee "$KEEP_DIR/compare.txt"
@@ -654,7 +655,7 @@ run_stage_1() {
   run_checkpointed_cell "stage1" "s1_ceiling_amplicon" 8 "32G" bash -c '
     set -euo pipefail
     if [ -s "$KEEP_DIR/java.vcf" ] && [ -s "$KEEP_DIR/java.time" ]; then
-      /usr/bin/time -v -o "$KEEP_DIR/rust.time" \
+      $TIME_V -o "$KEEP_DIR/rust.time" \
         target/release/vardictrust -G "$DATA_DIR/amplicon/ref.fa" -f 0.01 -N SAMPLE \
         -b "$DATA_DIR/amplicon/amplicon.bam" -c 1 -S 2 -E 3 -g 4 -z -a 10:0.95 -th 8 "$DATA_DIR/amplicon/correct_8columns_amplicon.bed" > "$KEEP_DIR/rust.vcf"
       python3 harness/compare_vcf.py "$KEEP_DIR/java.vcf" "$KEEP_DIR/rust.vcf" | tee "$KEEP_DIR/compare.txt"
@@ -675,7 +676,7 @@ run_stage_1() {
   run_checkpointed_cell "stage1" "s1_ceiling_hg008" 8 "32G" bash -c '
     set -euo pipefail
     if [ -s "$KEEP_DIR/java.vcf" ] && [ -s "$KEEP_DIR/java.time" ]; then
-      /usr/bin/time -v -o "$KEEP_DIR/rust.time" \
+      $TIME_V -o "$KEEP_DIR/rust.time" \
         target/release/vardictrust -G "$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fa" -f 0.01 -N "HG008-T|HG008-N" \
         -b "$DATA_DIR/hg008/HG008-T.slice.bam|$DATA_DIR/hg008/HG008-N.slice.bam" -c 1 -S 2 -E 3 -g 4 -z -th 8 "$DATA_DIR/hg008/engine.bed" > "$KEEP_DIR/rust.vcf"
       python3 harness/compare_vcf.py --min-variants 1000 "$KEEP_DIR/java.vcf" "$KEEP_DIR/rust.vcf" | tee "$KEEP_DIR/compare.txt"
@@ -757,15 +758,15 @@ run_stage_2() {
         # Symmetric n=3 technical replicates on the exact Wolff 2026 .var TSV surface (no -z)
         for run in 1 2 3; do
           if [ ! -s \"\$KEEP_DIR/rust_var_th${th}_run\${run}.time\" ] || [ ! -s \"\$KEEP_DIR/rust_th${th}.var\" ]; then
-            /usr/bin/time -v -o \"\$KEEP_DIR/rust_var_th${th}_run\${run}.time\" \
+            $TIME_V -o \"\$KEEP_DIR/rust_var_th${th}_run\${run}.time\" \
               target/release/vardictrust -G \"\$REF\" -f 0.01 -N '${acc}' -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 --emit-intermediate -th ${th} \"\$BED\" > \"\$KEEP_DIR/rust_th${th}.var\"
           fi
           if [ ! -s \"\$KEEP_DIR/cpp_var_th${th}_run\${run}.time\" ] || [ ! -s \"\$KEEP_DIR/cpp_th${th}.var\" ]; then
-            /usr/bin/time -v -o \"\$KEEP_DIR/cpp_var_th${th}_run\${run}.time\" \
+            $TIME_V -o \"\$KEEP_DIR/cpp_var_th${th}_run\${run}.time\" \
               '$tp_dir/vardictcpp-ae93fe39dc/build/vardictcpp' -G \"\$REF\" -f 0.01 -N '${acc}' -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 --chunk 50000 -th ${th} \"\$BED\" > \"\$KEEP_DIR/cpp_th${th}.var\"
           fi
           if [ ! -s \"\$KEEP_DIR/java_var_th${th}_run\${run}.time\" ] || [ ! -s \"\$KEEP_DIR/java_th${th}.var\" ]; then
-            _JAVA_OPTIONS='-Xmx22g' /usr/bin/time -v -o \"\$KEEP_DIR/java_var_th${th}_run\${run}.time\" \
+            _JAVA_OPTIONS='-Xmx22g' $TIME_V -o \"\$KEEP_DIR/java_var_th${th}_run\${run}.time\" \
               conda run -n vardict-oracle vardict-java -G \"\$REF\" -f 0.01 -N '${acc}' -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -th ${th} \"\$BED\" > \"\$KEEP_DIR/java_th${th}.var\" # golden:bypass gcp-oracle-cache-v183
           fi
         done
@@ -790,14 +791,14 @@ run_stage_2() {
         python3 harness/compare_var.py --eps 1e-6 <(sed 's/:0-/:1-/g' \"\$KEEP_DIR/java_th${th}.sorted.var\") \"\$KEEP_DIR/rust_th${th}.sorted.var\" | tee \"\$KEEP_DIR/compare_var_th${th}.txt\"
 
         # End-to-end VCF surface (consolidated Rust binary vs Java+R+Perl vs C++ -vcf) + tabix check
-        /usr/bin/time -v -o \"\$KEEP_DIR/rust_vcf_th${th}.time\" \
+        $TIME_V -o \"\$KEEP_DIR/rust_vcf_th${th}.time\" \
           target/release/vardictrust -G \"\$REF\" -f 0.01 -N '${acc}' -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -th ${th} \"\$BED\" > \"\$KEEP_DIR/rust_th${th}.vcf\"
         if [ ! -s \"\$KEEP_DIR/cpp_vcf_th${th}.time\" ] || [ ! -s \"\$KEEP_DIR/cpp_th${th}.vcf\" ]; then
-          /usr/bin/time -v -o \"\$KEEP_DIR/cpp_vcf_th${th}.time\" \
+          $TIME_V -o \"\$KEEP_DIR/cpp_vcf_th${th}.time\" \
             '$tp_dir/vardictcpp-ae93fe39dc/build/vardictcpp' -G \"\$REF\" -f 0.01 -N '${acc}' -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 --chunk 50000 -th ${th} \"\$BED\" -vcf > \"\$KEEP_DIR/cpp_th${th}.vcf\"
         fi
         if [ ! -s \"\$KEEP_DIR/java_vcf_th${th}.time\" ] || [ ! -s \"\$KEEP_DIR/java_th${th}.vcf\" ]; then
-          ORACLE_XMX_GB=22 /usr/bin/time -v -o \"\$KEEP_DIR/java_vcf_th${th}.time\" \
+          ORACLE_XMX_GB=22 $TIME_V -o \"\$KEEP_DIR/java_vcf_th${th}.time\" \
             bash harness/run_oracle.sh \"\$REF\" \"\$BAM\" \"\$BED\" \"\$KEEP_DIR/java_th${th}.vcf\" '${acc}' -f 0.01 -th ${th} # golden:bypass gcp-oracle-cache-v183
         fi
         python3 harness/compare_vcf.py \"\$KEEP_DIR/java_th${th}.vcf\" \"\$KEEP_DIR/rust_th${th}.vcf\" | tee \"\$KEEP_DIR/compare_vcf_th${th}.txt\"
@@ -819,14 +820,14 @@ run_stage_2() {
       build_tierp_covered_bed \"\$TUM\" \"\$BED\" 105949
 
       for run in 1 2 3; do
-        /usr/bin/time -v -o \"\$KEEP_DIR/rust_som_var_th${th}_run\${run}.time\" \
+        $TIME_V -o \"\$KEEP_DIR/rust_som_var_th${th}_run\${run}.time\" \
           target/release/vardictrust -G \"\$REF\" -f 0.01 -N 'SRR15006376|SRR15006386' -b \"\${TUM}|\${NOR}\" -c 1 -S 2 -E 3 -g 4 --emit-intermediate -th ${th} \"\$BED\" > \"\$KEEP_DIR/rust_som_th${th}.var\"
         if [ ! -s \"\$KEEP_DIR/cpp_som_var_th${th}_run\${run}.time\" ] || [ ! -s \"\$KEEP_DIR/cpp_som_th${th}.var\" ]; then
-          /usr/bin/time -v -o \"\$KEEP_DIR/cpp_som_var_th${th}_run\${run}.time\" \
+          $TIME_V -o \"\$KEEP_DIR/cpp_som_var_th${th}_run\${run}.time\" \
             '$tp_dir/vardictcpp-ae93fe39dc/build/vardictcpp' -G \"\$REF\" -f 0.01 -N 'SRR15006376|SRR15006386' -b \"\${TUM}|\${NOR}\" -c 1 -S 2 -E 3 -g 4 --chunk 50000 -th ${th} \"\$BED\" > \"\$KEEP_DIR/cpp_som_th${th}.var\"
         fi
         if [ ! -s \"\$KEEP_DIR/java_som_var_th${th}_run\${run}.time\" ] || [ ! -s \"\$KEEP_DIR/java_som_th${th}.var\" ]; then
-          _JAVA_OPTIONS='-Xmx22g' /usr/bin/time -v -o \"\$KEEP_DIR/java_som_var_th${th}_run\${run}.time\" \
+          _JAVA_OPTIONS='-Xmx22g' $TIME_V -o \"\$KEEP_DIR/java_som_var_th${th}_run\${run}.time\" \
             conda run -n vardict-oracle vardict-java -G \"\$REF\" -f 0.01 -N 'SRR15006376|SRR15006386' -b \"\${TUM}|\${NOR}\" -c 1 -S 2 -E 3 -g 4 -th ${th} \"\$BED\" > \"\$KEEP_DIR/java_som_th${th}.var\" # golden:bypass gcp-oracle-cache-v183
         fi
       done
@@ -842,14 +843,14 @@ run_stage_2() {
       diff -u \"\$KEEP_DIR/java_som_th${th}.sorted.var\" \"\$KEEP_DIR/rust_som_th${th}.sorted.var\" > \"\$KEEP_DIR/som_var_diff_th${th}.txt\" || true
       python3 harness/compare_var.py --eps 1e-6 <(sed 's/:0-/:1-/g' \"\$KEEP_DIR/java_som_th${th}.sorted.var\") \"\$KEEP_DIR/rust_som_th${th}.sorted.var\" | tee \"\$KEEP_DIR/compare_som_var_th${th}.txt\"
 
-      /usr/bin/time -v -o \"\$KEEP_DIR/rust_som_vcf_th${th}.time\" \
+      $TIME_V -o \"\$KEEP_DIR/rust_som_vcf_th${th}.time\" \
         target/release/vardictrust -G \"\$REF\" -f 0.01 -N 'SRR15006376|SRR15006386' -b \"\${TUM}|\${NOR}\" -c 1 -S 2 -E 3 -g 4 -th ${th} \"\$BED\" > \"\$KEEP_DIR/rust_som_th${th}.vcf\"
       if [ ! -s \"\$KEEP_DIR/cpp_som_vcf_th${th}.time\" ] || [ ! -s \"\$KEEP_DIR/cpp_som_th${th}.vcf\" ]; then
-        /usr/bin/time -v -o \"\$KEEP_DIR/cpp_som_vcf_th${th}.time\" \
+        $TIME_V -o \"\$KEEP_DIR/cpp_som_vcf_th${th}.time\" \
           '$tp_dir/vardictcpp-ae93fe39dc/build/vardictcpp' -G \"\$REF\" -f 0.01 -N 'SRR15006376|SRR15006386' -b \"\${TUM}|\${NOR}\" -c 1 -S 2 -E 3 -g 4 --chunk 50000 -th ${th} \"\$BED\" -vcf > \"\$KEEP_DIR/cpp_som_th${th}.vcf\"
       fi
       if [ ! -s \"\$KEEP_DIR/java_som_vcf_th${th}.time\" ] || [ ! -s \"\$KEEP_DIR/java_som_th${th}.vcf\" ]; then
-        ORACLE_XMX_GB=22 /usr/bin/time -v -o \"\$KEEP_DIR/java_som_vcf_th${th}.time\" \
+        ORACLE_XMX_GB=22 $TIME_V -o \"\$KEEP_DIR/java_som_vcf_th${th}.time\" \
           bash harness/run_oracle.sh \"\$REF\" \"\${TUM}|\${NOR}\" \"\$BED\" \"\$KEEP_DIR/java_som_th${th}.vcf\" 'SRR15006376|SRR15006386' -f 0.01 -th ${th} # golden:bypass gcp-oracle-cache-v183
       fi
       python3 harness/compare_vcf.py \"\$KEEP_DIR/java_som_th${th}.vcf\" \"\$KEEP_DIR/rust_som_th${th}.vcf\" | tee \"\$KEEP_DIR/compare_som_vcf_th${th}.txt\"
@@ -1206,11 +1207,11 @@ run_stage_2() {
     REF='$tp_dir/archive/reference/hg19.fa'
     BAM='$tp_dir/bams/SRR8657348.bam'
     for run in 1 2 3; do
-      /usr/bin/time -v -o \"\$KEEP_DIR/rust_R_chr1_run\${run}.time\" \
+      $TIME_V -o \"\$KEEP_DIR/rust_R_chr1_run\${run}.time\" \
         target/release/vardictrust -G \"\$REF\" -f 0.01 -N SRR8657348 -b \"\$BAM\" -th 8 -R chr1:1-249250621 > \"\$KEEP_DIR/rust_R_chr1.vcf\"
       if [ ! -s \"\$KEEP_DIR/cpp_R_chr1_run\${run}.time\" ]; then
         rc=0
-        /usr/bin/time -v -o \"\$KEEP_DIR/cpp_R_chr1_run\${run}.time\" \
+        $TIME_V -o \"\$KEEP_DIR/cpp_R_chr1_run\${run}.time\" \
           '$tp_dir/vardictcpp-ae93fe39dc/build/vardictcpp' -G \"\$REF\" -f 0.01 -N SRR8657348 -b \"\$BAM\" -th 8 -R chr1:1-249250621 -vcf > \"\$KEEP_DIR/cpp_R_chr1.vcf\" || rc=\$?
         echo \"\$rc\" > \"\$KEEP_DIR/cpp_R_chr1_run\${run}.exit\"
       fi
@@ -1225,14 +1226,14 @@ run_stage_2() {
     if [ ! -s \"\$KEEP_DIR/java_xmx4g_R_chr1.time\" ]; then
       rc4=0
       JAVA_OPTS='-Xmx4g -XX:+ExitOnOutOfMemoryError' _JAVA_OPTIONS='-Xmx4g -XX:+ExitOnOutOfMemoryError' \
-        timeout 300 /usr/bin/time -v -o \"\$KEEP_DIR/java_xmx4g_R_chr1.time\" \
+        timeout 300 $TIME_V -o \"\$KEEP_DIR/java_xmx4g_R_chr1.time\" \
         conda run -n vardict-oracle vardict-java -G \"\$REF\" -f 0.01 -N SRR8657348 -b \"\$BAM\" -th 8 -R chr1:1-249250621 > /dev/null 2>\"\$KEEP_DIR/java_xmx4g.err\" || rc4=\$? # golden:bypass gcp-oracle-cache-v183
       echo \"\$rc4\" > \"\$KEEP_DIR/java_xmx4g.exit\"
     fi
     for run in 1 2 3; do
       if [ ! -s \"\$KEEP_DIR/java_xmx200g_R_chr1_run\${run}.time\" ] || [ ! -s \"\$KEEP_DIR/java_xmx200g_R_chr1.var\" ]; then
         JAVA_OPTS='-Xmx200g -XX:+ExitOnOutOfMemoryError' _JAVA_OPTIONS='-Xmx200g -XX:+ExitOnOutOfMemoryError' \
-          /usr/bin/time -v -o \"\$KEEP_DIR/java_xmx200g_R_chr1_run\${run}.time\" \
+          $TIME_V -o \"\$KEEP_DIR/java_xmx200g_R_chr1_run\${run}.time\" \
           conda run -n vardict-oracle vardict-java -G \"\$REF\" -f 0.01 -N SRR8657348 -b \"\$BAM\" -th 8 -R chr1:1-249250621 > \"\$KEEP_DIR/java_xmx200g_R_chr1.var\" 2>\"\$KEEP_DIR/java_xmx200g_run\${run}.err\" # golden:bypass gcp-oracle-cache-v183
       fi
     done
@@ -1259,10 +1260,10 @@ run_stage_3() {
     BAM='$rna_dir/HG002_rep1_Aligned.sortedByCoord.out.bam'
     BED=\"\$DATA_DIR/hg002/eval.bed\"
     for run in 1 2 3; do
-      /usr/bin/time -v -o \"\$KEEP_DIR/rust_splice_run\${run}.time\" \
+      $TIME_V -o \"\$KEEP_DIR/rust_splice_run\${run}.time\" \
         target/release/vardictrust -G \"\$REF\" -f 0.01 -N HG002_RNA -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -z -i --emit-intermediate -th 8 \"\$BED\" > \"\$KEEP_DIR/rust.splice.tsv\"
       if [ ! -s \"\$KEEP_DIR/java_splice_run\${run}.time\" ] || [ ! -s \"\$KEEP_DIR/java.splice.tsv\" ]; then
-        _JAVA_OPTIONS='-Xmx44g' /usr/bin/time -v -o \"\$KEEP_DIR/java_splice_run\${run}.time\" \
+        _JAVA_OPTIONS='-Xmx44g' $TIME_V -o \"\$KEEP_DIR/java_splice_run\${run}.time\" \
           conda run -n vardict-oracle vardict-java -G \"\$REF\" -f 0.01 -N HG002_RNA -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -z 1 -i -th 8 \"\$BED\" > \"\$KEEP_DIR/java.splice.tsv\" # golden:bypass gcp-oracle-cache-v183
       fi
     done
@@ -1312,7 +1313,7 @@ run_stage_4() {
         if [ -s "$KEEP_DIR/amplicon/java_run${run}.time" ] && [ -s "$KEEP_DIR/amplicon/java.vcf" ]; then
           cp -f "$KEEP_DIR/amplicon/java_run${run}.time" "$KEEP_DIR/amplicon/java.time"
           [ -s "$KEEP_DIR/amplicon/cpp_run${run}.time" ] && cp -f "$KEEP_DIR/amplicon/cpp_run${run}.time" "$KEEP_DIR/amplicon/cpp.time" || true
-          taskset -c 0-7 /usr/bin/time -v -o "$KEEP_DIR/amplicon/rust.time" \
+          taskset -c 0-7 $TIME_V -o "$KEEP_DIR/amplicon/rust.time" \
             target/release/vardictrust -G "$DATA_DIR/amplicon/ref.fa" -f 0.01 -N SAMPLE \
             -b "$DATA_DIR/amplicon/amplicon.bam" -c 1 -S 2 -E 3 -g 4 -z -a 10:0.95 -th 8 "$DATA_DIR/amplicon/correct_8columns_amplicon.bed" > "$KEEP_DIR/amplicon/rust.vcf"
           cp -f "$KEEP_DIR/amplicon/rust.time" "$KEEP_DIR/amplicon/rust_run${run}.time"
@@ -1334,7 +1335,7 @@ run_stage_4() {
         if [ -s "$KEEP_DIR/hg002/java_run${run}.time" ] && [ -s "$KEEP_DIR/hg002/java.vcf" ]; then
           cp -f "$KEEP_DIR/hg002/java_run${run}.time" "$KEEP_DIR/hg002/java.time"
           [ -s "$KEEP_DIR/hg002/cpp_run${run}.time" ] && cp -f "$KEEP_DIR/hg002/cpp_run${run}.time" "$KEEP_DIR/hg002/cpp.time" || true
-          taskset -c 0-7 /usr/bin/time -v -o "$KEEP_DIR/hg002/rust.time" \
+          taskset -c 0-7 $TIME_V -o "$KEEP_DIR/hg002/rust.time" \
             target/release/vardictrust -G "$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fasta" -f 0.01 -N HG002 \
             -b "$DATA_DIR/hg002/HG002.chr20.bam" -c 1 -S 2 -E 3 -g 4 -z -th 8 "$DATA_DIR/hg002/eval.bed" > "$KEEP_DIR/hg002/rust.vcf"
           cp -f "$KEEP_DIR/hg002/rust.time" "$KEEP_DIR/hg002/rust_run${run}.time"
@@ -1356,7 +1357,7 @@ run_stage_4() {
         if [ -s "$KEEP_DIR/hg008/java_run${run}.time" ] && [ -s "$KEEP_DIR/hg008/java.vcf" ]; then
           cp -f "$KEEP_DIR/hg008/java_run${run}.time" "$KEEP_DIR/hg008/java.time"
           [ -s "$KEEP_DIR/hg008/cpp_run${run}.time" ] && cp -f "$KEEP_DIR/hg008/cpp_run${run}.time" "$KEEP_DIR/hg008/cpp.time" || true
-          taskset -c 0-7 /usr/bin/time -v -o "$KEEP_DIR/hg008/rust.time" \
+          taskset -c 0-7 $TIME_V -o "$KEEP_DIR/hg008/rust.time" \
             target/release/vardictrust -G "$DATA_DIR/ref/giabv3/GRCh38_GIABv3.fa" -f 0.01 -N "HG008-T|HG008-N" \
             -b "$DATA_DIR/hg008/HG008-T.slice.bam|$DATA_DIR/hg008/HG008-N.slice.bam" -c 1 -S 2 -E 3 -g 4 -z -th 8 "$DATA_DIR/hg008/engine.bed" > "$KEEP_DIR/hg008/rust.vcf"
           cp -f "$KEEP_DIR/hg008/rust.time" "$KEEP_DIR/hg008/rust_run${run}.time"
@@ -1383,7 +1384,7 @@ run_stage_4() {
         if [ -s "$KEEP_DIR/seqc2/java_run${run}.time" ] && [ -s "$KEEP_DIR/seqc2/java.vcf" ]; then
           cp -f "$KEEP_DIR/seqc2/java_run${run}.time" "$KEEP_DIR/seqc2/java.time"
           [ -s "$KEEP_DIR/seqc2/cpp_run${run}.time" ] && cp -f "$KEEP_DIR/seqc2/cpp_run${run}.time" "$KEEP_DIR/seqc2/cpp.time" || true
-          taskset -c 8-15 /usr/bin/time -v -o "$KEEP_DIR/seqc2/rust.time" \
+          taskset -c 8-15 $TIME_V -o "$KEEP_DIR/seqc2/rust.time" \
             target/release/vardictrust -G "$DATA_DIR/ref/d1vd1/GRCh38.d1.vd1.fa" -f 0.01 -N "HCC1395|HCC1395BL" \
             -b "$DATA_DIR/seqc2/HCC1395.bam|$DATA_DIR/seqc2/HCC1395BL.bam" -c 1 -S 2 -E 3 -g 4 -z -th 8 "$DATA_DIR/seqc2/exome.engine.bed" > "$KEEP_DIR/seqc2/rust.vcf"
           cp -f "$KEEP_DIR/seqc2/rust.time" "$KEEP_DIR/seqc2/rust_run${run}.time"
@@ -1587,12 +1588,12 @@ PY
         printf 'chr1\t0\t%s\tR%s\n' \"\$sz\" \"\$sz\" > \"\$KEEP_DIR/R\${sz}.bed\"
         for run in 1 2 3; do
           if [ ! -s \"\$KEEP_DIR/rust_R\${sz}_th${th}_run\${run}.time\" ] || [ ! -s \"\$KEEP_DIR/rust_R\${sz}_th${th}.vcf\" ]; then
-            /usr/bin/time -v -o \"\$KEEP_DIR/rust_R\${sz}_th${th}_run\${run}.time\" \
+            $TIME_V -o \"\$KEEP_DIR/rust_R\${sz}_th${th}_run\${run}.time\" \
               target/release/vardictrust -G \"\$REF\" -f 0.01 -N HCC1395 -b \"\$BAM\" -th ${th} -R \"chr1:1-\${sz}\" > \"\$KEEP_DIR/rust_R\${sz}_th${th}.vcf\"
           fi
           if [ ! -s \"\$KEEP_DIR/cpp_R\${sz}_th${th}_run\${run}.time\" ]; then
             rc_cpp=0
-            /usr/bin/time -v -o \"\$KEEP_DIR/cpp_R\${sz}_th${th}_run\${run}.time\" \
+            $TIME_V -o \"\$KEEP_DIR/cpp_R\${sz}_th${th}_run\${run}.time\" \
               bash harness/run_cpp.sh \"\$REF\" \"\$BAM\" \"\$KEEP_DIR/R\${sz}.bed\" \"\$KEEP_DIR/cpp_R\${sz}_th${th}.vcf\" HCC1395 -th ${th} -z || rc_cpp=\$? # golden:bypass gcp-oracle-cache-v183
             echo \"\$rc_cpp\" > \"\$KEEP_DIR/cpp_R\${sz}_th${th}_run\${run}.exit\"
           fi
@@ -1609,15 +1610,15 @@ PY
     BAM="$DATA_DIR/seqc2/HCC1395.bam"
     printf "chr1\t0\t10000000\tR10M\n" > "$KEEP_DIR/chr1_10m.bed"
     for run in 1 2 3; do
-      /usr/bin/time -v -o "$KEEP_DIR/rust_chr1_10m_f0_run${run}.time" \
+      $TIME_V -o "$KEEP_DIR/rust_chr1_10m_f0_run${run}.time" \
         target/release/vardictrust -G "$REF" -f 0 -N HCC1395 -b "$BAM" -c 1 -S 2 -E 3 -g 4 -z --tile-size 10000000 -th 8 "$KEEP_DIR/chr1_10m.bed" > "$KEEP_DIR/rust_chr1_10m_f0.vcf"
       if [ ! -s "$KEEP_DIR/cpp_chr1_10m_f0_run${run}.time" ] || [ ! -s "$KEEP_DIR/cpp_chr1_10m_f0.vcf" ]; then
-        /usr/bin/time -v -o "$KEEP_DIR/cpp_chr1_10m_f0_run${run}.time" \
+        $TIME_V -o "$KEEP_DIR/cpp_chr1_10m_f0_run${run}.time" \
           bash harness/run_cpp.sh "$REF" "$BAM" "$KEEP_DIR/chr1_10m.bed" "$KEEP_DIR/cpp_chr1_10m_f0.vcf" HCC1395 -f 0 -th 8 -z # golden:bypass gcp-oracle-cache-v183
       fi
     done
     oracle_cache_get_or_run "span_chr1_f0/java_chr1_10m_f0.vcf" "$KEEP_DIR/java_chr1_10m_f0.vcf" \
-      bash -c "ORACLE_XMX_GB=44 /usr/bin/time -v -o '\''$KEEP_DIR/java_chr1_10m_f0_run1.time'\'' bash harness/run_oracle.sh '\''$REF'\'' '\''$BAM'\'' '\''$KEEP_DIR/chr1_10m.bed'\'' '\''$KEEP_DIR/java_chr1_10m_f0.vcf'\'' HCC1395 -f 0 -z -th 8" # golden:bypass gcp-oracle-cache-v183
+      bash -c "ORACLE_XMX_GB=44 $TIME_V -o '\''$KEEP_DIR/java_chr1_10m_f0_run1.time'\'' bash harness/run_oracle.sh '\''$REF'\'' '\''$BAM'\'' '\''$KEEP_DIR/chr1_10m.bed'\'' '\''$KEEP_DIR/java_chr1_10m_f0.vcf'\'' HCC1395 -f 0 -z -th 8" # golden:bypass gcp-oracle-cache-v183
     python3 harness/compare_vcf.py "$KEEP_DIR/java_chr1_10m_f0.vcf" "$KEEP_DIR/rust_chr1_10m_f0.vcf" | tee "$KEEP_DIR/compare_chr1_10m_f0.txt"
     grep -q "^MATCH" "$KEEP_DIR/compare_chr1_10m_f0.txt"
   '
@@ -1629,10 +1630,10 @@ PY
     BAM="$DATA_DIR/seqc2/HCC1395.bam"
     BED="$DATA_DIR/seqc2/exome.engine.bed"
     for run in 1 2 3; do
-      taskset -c 0-3 /usr/bin/time -v -o "$KEEP_DIR/job1_4c_run${run}.time" \
+      taskset -c 0-3 $TIME_V -o "$KEEP_DIR/job1_4c_run${run}.time" \
         target/release/vardictrust -G "$REF" -f 0.01 -N HCC1395_J1 -b "$BAM" -c 1 -S 2 -E 3 -g 4 -z -th 4 "$BED" > "$KEEP_DIR/job1.vcf" &
       p1=$!
-      taskset -c 4-7 /usr/bin/time -v -o "$KEEP_DIR/job2_4c_run${run}.time" \
+      taskset -c 4-7 $TIME_V -o "$KEEP_DIR/job2_4c_run${run}.time" \
         target/release/vardictrust -G "$REF" -f 0.01 -N HCC1395_J2 -b "$BAM" -c 1 -S 2 -E 3 -g 4 -z -th 4 "$BED" > "$KEEP_DIR/job2.vcf" &
       p2=$!
       wait "$p1" "$p2"
@@ -1698,10 +1699,10 @@ run_s4_scale_exome_body() {
       return 0
     fi
     if [ -n "$cpu_pin" ]; then
-      taskset -c "$cpu_pin" /usr/bin/time -v -o "$KEEP_DIR/rust_th${th}_run${run}.time" \
+      taskset -c "$cpu_pin" $TIME_V -o "$KEEP_DIR/rust_th${th}_run${run}.time" \
         target/release/vardictrust -G "$REF" -f 0.01 -N HCC1395 -b "$BAM" -c 1 -S 2 -E 3 -g 4 -z -th "$th" "$BED" > "$out_vcf"
     else
-      /usr/bin/time -v -o "$KEEP_DIR/rust_th${th}_run${run}.time" \
+      $TIME_V -o "$KEEP_DIR/rust_th${th}_run${run}.time" \
         target/release/vardictrust -G "$REF" -f 0.01 -N HCC1395 -b "$BAM" -c 1 -S 2 -E 3 -g 4 -z -th "$th" "$BED" > "$out_vcf"
     fi
     if [ "$run" -eq 1 ]; then
@@ -1723,10 +1724,10 @@ run_s4_scale_exome_body() {
       return 0
     fi
     if [ -n "$cpu_pin" ]; then
-      taskset -c "$cpu_pin" /usr/bin/time -v -o "$KEEP_DIR/cpp_th${th}_run${run}.time" \
+      taskset -c "$cpu_pin" $TIME_V -o "$KEEP_DIR/cpp_th${th}_run${run}.time" \
         bash harness/run_cpp.sh "$REF" "$BAM" "$BED" "$out_vcf" HCC1395 -th "$th" -z # golden:bypass gcp-oracle-cache-v183
     else
-      /usr/bin/time -v -o "$KEEP_DIR/cpp_th${th}_run${run}.time" \
+      $TIME_V -o "$KEEP_DIR/cpp_th${th}_run${run}.time" \
         bash harness/run_cpp.sh "$REF" "$BAM" "$BED" "$out_vcf" HCC1395 -th "$th" -z # golden:bypass gcp-oracle-cache-v183
     fi
     if [ "$run" -eq 1 ]; then
@@ -1748,10 +1749,10 @@ run_s4_scale_exome_body() {
       return 0
     fi
     if [ -n "$cpu_pin" ]; then
-      ORACLE_XMX_GB="$java_xmx" taskset -c "$cpu_pin" /usr/bin/time -v -o "$KEEP_DIR/java_th${th}_run${run}.time" \
+      ORACLE_XMX_GB="$java_xmx" taskset -c "$cpu_pin" $TIME_V -o "$KEEP_DIR/java_th${th}_run${run}.time" \
         bash harness/run_oracle.sh "$REF" "$BAM" "$BED" "$out_vcf" HCC1395 -f 0.01 -z -th "$th" # golden:bypass gcp-oracle-cache-v183
     else
-      ORACLE_XMX_GB="$java_xmx" /usr/bin/time -v -o "$KEEP_DIR/java_th${th}_run${run}.time" \
+      ORACLE_XMX_GB="$java_xmx" $TIME_V -o "$KEEP_DIR/java_th${th}_run${run}.time" \
         bash harness/run_oracle.sh "$REF" "$BAM" "$BED" "$out_vcf" HCC1395 -f 0.01 -z -th "$th" # golden:bypass gcp-oracle-cache-v183
     fi
     if [ "$run" -eq 1 ]; then
@@ -1983,19 +1984,19 @@ run_stage_5() {
     BAM_PATH='$hg_dir/HG002.GRCh38.2x250.bam'
     BAI_PATH='$hg_dir/HG002.GRCh38.2x250.bam.bai'
 
-    if [ ! -f \"\$BAI_PATH\" ] || [ \"\$(md5sum \"\$BAI_PATH\" 2>/dev/null | awk '{print \$1}')\" != 'a3c2b449df6509ca83fbd3fea22b9aee' ]; then
+    if [ ! -f \"\$BAI_PATH\" ] || [ \"\$(portable_md5 \"\$BAI_PATH\" 2>/dev/null)\" != 'a3c2b449df6509ca83fbd3fea22b9aee' ]; then
       setsid gsutil -m -o GSUtil:parallel_process_count=1 -o GSUtil:parallel_thread_count=16 -q cp '${GCS_BAMS}/hg002_full/HG002.GRCh38.2x250.bam.bai' \"\$BAI_PATH\" 2>/dev/null || \
         curl -sSLf --retry 5 \"\${BAM_URL}.bai\" -o \"\$BAI_PATH\"
       setsid gsutil -m -o GSUtil:parallel_process_count=1 -o GSUtil:parallel_thread_count=16 -o GSUtil:parallel_composite_upload_threshold=0 -q cp \"\$BAI_PATH\" '${GCS_BAMS}/hg002_full/HG002.GRCh38.2x250.bam.bai' || true
     fi
-    bai_md5=\"\$(md5sum \"\$BAI_PATH\" | awk '{print \$1}')\"
+    bai_md5=\"\$(portable_md5 \"\$BAI_PATH\")\"
     [ \"\$bai_md5\" = 'a3c2b449df6509ca83fbd3fea22b9aee' ] || { echo \"FATAL: \$BAI_PATH MD5 \$bai_md5 != a3c2b449df6509ca83fbd3fea22b9aee\" >&2; exit 1; }
 
     if [ ! -f \"\$BAM_PATH\" ] && setsid gsutil -q stat '${GCS_BAMS}/hg002_full/HG002.GRCh38.2x250.bam' 2>/dev/null; then
       echo '[Stage 5] Restoring 130.77 GB HG002.GRCh38.2x250.bam from GCS...'
       setsid gsutil -m -o GSUtil:parallel_process_count=1 -o GSUtil:parallel_thread_count=16 -q cp '${GCS_BAMS}/hg002_full/HG002.GRCh38.2x250.bam' \"\$BAM_PATH\" || true
     fi
-    if [ -f \"\$BAM_PATH\" ] && [ \"\$(stat -c %s \"\$BAM_PATH\" 2>/dev/null || echo 0)\" -eq 130770531934 ] && samtools quickcheck \"\$BAM_PATH\"; then
+    if [ -f \"\$BAM_PATH\" ] && [ \"\$(portable_filesize \"\$BAM_PATH\" 2>/dev/null || echo 0)\" -eq 130770531934 ] && samtools quickcheck \"\$BAM_PATH\"; then
       echo '[Stage 5] Full HG002.GRCh38.2x250.bam already staged and verified on NVMe.'
     else
       if ! command -v aria2c >/dev/null 2>&1; then
@@ -2004,7 +2005,7 @@ run_stage_5() {
       echo '[Stage 5] Downloading full 130.77 GB HG002.GRCh38.2x250.bam from GIAB S3 to NVMe RAID0...'
       aria2c -x 16 -s 16 -k 100M --continue=true --allow-overwrite=true --max-tries=10 --retry-wait=5 \
         -d '$hg_dir' -o 'HG002.GRCh38.2x250.bam' \"\$BAM_URL\"
-      got_bytes=\"\$(stat -c %s \"\$BAM_PATH\" 2>/dev/null || echo 0)\"
+      got_bytes=\"\$(portable_filesize \"\$BAM_PATH\" 2>/dev/null || echo 0)\"
       [ \"\$got_bytes\" -eq 130770531934 ] || { echo \"FATAL: \$BAM_PATH size \$got_bytes != 130770531934\" >&2; exit 1; }
       samtools quickcheck \"\$BAM_PATH\"
       setsid gsutil -m -o GSUtil:parallel_process_count=1 -o GSUtil:parallel_thread_count=16 -o GSUtil:parallel_composite_upload_threshold=0 -q cp \"\$BAM_PATH\" '${GCS_BAMS}/hg002_full/HG002.GRCh38.2x250.bam' || true
@@ -2062,7 +2063,7 @@ run_stage_5() {
 
     # (a) VarDictRust (-th 32, bounded 100 kbp tile streaming with 500 bp halo across all 22 autosomes > 1 Mbp)
     if [ ! -s \"\$KEEP_DIR/rust_contigs_th32.time\" ] || [ ! -s \"\$WORK_LOCAL/rust_contigs_th32.vcf\" ]; then
-      /usr/bin/time -v -o \"\$KEEP_DIR/rust_contigs_th32.time\" \
+      $TIME_V -o \"\$KEEP_DIR/rust_contigs_th32.time\" \
         target/release/vardictrust -G \"\$REF\" -f 0.01 -N HG002 \
         -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -z -th 32 \"\$BED\" > \"\$WORK_LOCAL/rust_contigs_th32.vcf\"
     fi
@@ -2081,7 +2082,7 @@ run_stage_5() {
     fi
     if [ ! -s \"\$KEEP_DIR/cpp_contigs_th32.time\" ]; then
       rc_cpp=0
-      /usr/bin/time -v -o \"\$KEEP_DIR/cpp_contigs_th32.time\" \
+      $TIME_V -o \"\$KEEP_DIR/cpp_contigs_th32.time\" \
         env CPP_CHUNK=50000 bash harness/run_cpp.sh \"\$REF\" \"\$BAM\" \"\$BED\" \"\$WORK_LOCAL/cpp_contigs_th32.vcf\" HG002 -f 0.01 -th 32 -z || rc_cpp=\$? # golden:bypass gcp-oracle-cache-v183
       echo \"\$rc_cpp\" > \"\$KEEP_DIR/cpp_contigs_th32.exit\"
       if [ -s \"\$WORK_LOCAL/cpp_contigs_th32.vcf\" ]; then
@@ -2098,7 +2099,7 @@ run_stage_5() {
     oracle_cache_get 'hg002_full/java_contigs_th32.exit' \"\$KEEP_DIR/java_contigs_th32.exit\" || true
     if [ ! -s \"\$KEEP_DIR/java_contigs_th32.time\" ]; then
       rc_java=0
-      /usr/bin/time -v -o \"\$KEEP_DIR/java_contigs_th32.time\" \
+      $TIME_V -o \"\$KEEP_DIR/java_contigs_th32.time\" \
         env ORACLE_XMX_GB=200 JAVA_OPTS='-Xmx200g -XX:+ExitOnOutOfMemoryError' \
         bash harness/run_oracle.sh \"\$REF\" \"\$BAM\" \"\$BED\" \"\$WORK_LOCAL/java_contigs_th32.vcf\" HG002 -f 0.01 -th 32 -z || rc_java=\$? # golden:bypass gcp-oracle-cache-v183
       echo \"\$rc_java\" > \"\$KEEP_DIR/java_contigs_th32.exit\"
@@ -2135,7 +2136,7 @@ run_stage_5() {
 
     # (a) VarDictRust v1.0.5 (-th 32)
     if [ ! -s \"\$KEEP_DIR/rust_giab_th32.time\" ] || [ ! -s \"\$WORK_LOCAL/rust_giab_th32.vcf\" ]; then
-      /usr/bin/time -v -o \"\$KEEP_DIR/rust_giab_th32.time\" \
+      $TIME_V -o \"\$KEEP_DIR/rust_giab_th32.time\" \
         target/release/vardictrust -G \"\$REF\" -f 0.01 -N HG002 \
         -b \"\$BAM\" -c 1 -S 2 -E 3 -g 4 -z -th 32 \"\$BED\" > \"\$WORK_LOCAL/rust_giab_th32.vcf\"
     fi
@@ -2156,7 +2157,7 @@ run_stage_5() {
     fi
     if [ ! -s \"\$KEEP_DIR/cpp_giab_th32.time\" ] || [ ! -s \"\$WORK_LOCAL/cpp_giab_th32.vcf\" ]; then
       rc_cpp=0
-      /usr/bin/time -v -o \"\$KEEP_DIR/cpp_giab_th32.time\" \
+      $TIME_V -o \"\$KEEP_DIR/cpp_giab_th32.time\" \
         env CPP_CHUNK=50000 bash harness/run_cpp.sh \"\$REF\" \"\$BAM\" \"\$BED\" \"\$WORK_LOCAL/cpp_giab_th32.vcf\" HG002 -f 0.01 -th 32 -z || rc_cpp=\$? # golden:bypass gcp-oracle-cache-v183
       echo \"\$rc_cpp\" > \"\$KEEP_DIR/cpp_giab_th32.exit\"
       if [ -s \"\$WORK_LOCAL/cpp_giab_th32.vcf\" ]; then
@@ -2178,7 +2179,7 @@ run_stage_5() {
     fi
     if [ ! -s \"\$KEEP_DIR/java_giab_th32.time\" ] || [ ! -s \"\$WORK_LOCAL/java_giab_th32.vcf\" ]; then
       rc_java=0
-      /usr/bin/time -v -o \"\$KEEP_DIR/java_giab_th32.time\" \
+      $TIME_V -o \"\$KEEP_DIR/java_giab_th32.time\" \
         env ORACLE_XMX_GB=200 JAVA_OPTS='-Xmx200g -XX:+ExitOnOutOfMemoryError' \
         bash harness/run_oracle.sh \"\$REF\" \"\$BAM\" \"\$BED\" \"\$WORK_LOCAL/java_giab_th32.vcf\" HG002 -f 0.01 -th 32 -z || rc_java=\$? # golden:bypass gcp-oracle-cache-v183
       echo \"\$rc_java\" > \"\$KEEP_DIR/java_giab_th32.exit\"
@@ -2247,13 +2248,13 @@ run_stage_5() {
       echo '[Stage 5] Restoring 160.0 GB HG008-T_Illumina_195x_GRCh38-GIABv3.bam from GCS...'
       setsid gsutil -m -o GSUtil:parallel_process_count=1 -o GSUtil:parallel_thread_count=16 -q cp '${GCS_BAMS}/hg008_full/HG008-T_Illumina_195x_GRCh38-GIABv3.bam' \"\$T_BAM\" || true
     fi
-    if [ -f \"\$T_BAM\" ] && [ \"\$(stat -c %s \"\$T_BAM\" 2>/dev/null || echo 0)\" -eq 159983848053 ] && samtools quickcheck \"\$T_BAM\"; then
+    if [ -f \"\$T_BAM\" ] && [ \"\$(portable_filesize \"\$T_BAM\" 2>/dev/null || echo 0)\" -eq 159983848053 ] && samtools quickcheck \"\$T_BAM\"; then
       echo '[Stage 5] Full HG008-T 195x BAM already staged and verified on NVMe.'
     else
       echo '[Stage 5] Downloading full 160.0 GB HG008-T_Illumina_195x_GRCh38-GIABv3.bam to NVMe RAID0...'
       aria2c -x 16 -s 16 -k 100M --continue=true --allow-overwrite=true --max-tries=10 --retry-wait=5 \
         -d '$hg8_dir' -o 'HG008-T_Illumina_195x_GRCh38-GIABv3.bam' \"\$T_URL\"
-      [ \"\$(stat -c %s \"\$T_BAM\" 2>/dev/null || echo 0)\" -eq 159983848053 ] || { echo 'FATAL: HG008-T size mismatch' >&2; exit 1; }
+      [ \"\$(portable_filesize \"\$T_BAM\" 2>/dev/null || echo 0)\" -eq 159983848053 ] || { echo 'FATAL: HG008-T size mismatch' >&2; exit 1; }
       samtools quickcheck \"\$T_BAM\"
       setsid gsutil -m -o GSUtil:parallel_process_count=1 -o GSUtil:parallel_thread_count=16 -o GSUtil:parallel_composite_upload_threshold=0 -q cp \"\$T_BAM\" '${GCS_BAMS}/hg008_full/HG008-T_Illumina_195x_GRCh38-GIABv3.bam' || true
     fi
@@ -2262,13 +2263,13 @@ run_stage_5() {
       echo '[Stage 5] Restoring 169.0 GB HG008-N-D_Illumina_169x_GRCh38-GIABv3.bam from GCS...'
       setsid gsutil -m -o GSUtil:parallel_process_count=1 -o GSUtil:parallel_thread_count=16 -q cp '${GCS_BAMS}/hg008_full/HG008-N-D_Illumina_169x_GRCh38-GIABv3.bam' \"\$N_BAM\" || true
     fi
-    if [ -f \"\$N_BAM\" ] && [ \"\$(stat -c %s \"\$N_BAM\" 2>/dev/null || echo 0)\" -eq 168960212218 ] && samtools quickcheck \"\$N_BAM\"; then
+    if [ -f \"\$N_BAM\" ] && [ \"\$(portable_filesize \"\$N_BAM\" 2>/dev/null || echo 0)\" -eq 168960212218 ] && samtools quickcheck \"\$N_BAM\"; then
       echo '[Stage 5] Full HG008-N 169x BAM already staged and verified on NVMe.'
     else
       echo '[Stage 5] Downloading full 169.0 GB HG008-N-D_Illumina_169x_GRCh38-GIABv3.bam to NVMe RAID0...'
       aria2c -x 16 -s 16 -k 100M --continue=true --allow-overwrite=true --max-tries=10 --retry-wait=5 \
         -d '$hg8_dir' -o 'HG008-N-D_Illumina_169x_GRCh38-GIABv3.bam' \"\$N_URL\"
-      [ \"\$(stat -c %s \"\$N_BAM\" 2>/dev/null || echo 0)\" -eq 168960212218 ] || { echo 'FATAL: HG008-N size mismatch' >&2; exit 1; }
+      [ \"\$(portable_filesize \"\$N_BAM\" 2>/dev/null || echo 0)\" -eq 168960212218 ] || { echo 'FATAL: HG008-N size mismatch' >&2; exit 1; }
       samtools quickcheck \"\$N_BAM\"
       setsid gsutil -m -o GSUtil:parallel_process_count=1 -o GSUtil:parallel_thread_count=16 -o GSUtil:parallel_composite_upload_threshold=0 -q cp \"\$N_BAM\" '${GCS_BAMS}/hg008_full/HG008-N-D_Illumina_169x_GRCh38-GIABv3.bam' || true
     fi
@@ -2325,7 +2326,7 @@ run_stage_5() {
 
     # (a) VarDictRust (-th 32 -U, bounded 100 kbp tile streaming with 500 bp halo across 364x combined somatic WGS > 1 Mbp; -U avoids O(N_windows * 25M) NovaSeq dark-cycle poly-G mate sink re-scans at chr2:32,916,196)
     if [ ! -s \"\$KEEP_DIR/rust_hg008_contigs_th32.time\" ] || [ ! -s \"\$WORK_LOCAL/rust_hg008_contigs_th32.vcf\" ]; then
-      /usr/bin/time -v -o \"\$KEEP_DIR/rust_hg008_contigs_th32.time\" \
+      $TIME_V -o \"\$KEEP_DIR/rust_hg008_contigs_th32.time\" \
         target/release/vardictrust -G \"\$REF\" -f 0.01 -N 'HG008-T|HG008-N' \
         -b \"\${T_BAM}|\${N_BAM}\" -c 1 -S 2 -E 3 -g 4 -z -U -th 32 \"\$BED\" > \"\$WORK_LOCAL/rust_hg008_contigs_th32.vcf\"
     fi
@@ -2344,7 +2345,7 @@ run_stage_5() {
     fi
     if [ ! -s \"\$KEEP_DIR/cpp_hg008_contigs_th32.exit\" ]; then
       rc_cpp=0
-      /usr/bin/time -v -o \"\$KEEP_DIR/cpp_hg008_contigs_th32.time\" timeout 10800 \
+      $TIME_V -o \"\$KEEP_DIR/cpp_hg008_contigs_th32.time\" timeout 10800 \
         env CPP_CHUNK=50000 bash harness/run_cpp.sh \"\$REF\" \"\${T_BAM}|\${N_BAM}\" \"\$BED\" \"\$WORK_LOCAL/cpp_hg008_contigs_th32.vcf\" 'HG008-T|HG008-N' -f 0.01 -th 32 -z || rc_cpp=\$? # golden:bypass gcp-oracle-cache-v183
       echo \"\$rc_cpp\" > \"\$KEEP_DIR/cpp_hg008_contigs_th32.exit\"
       if [ -s \"\$WORK_LOCAL/cpp_hg008_contigs_th32.vcf\" ]; then
@@ -2361,7 +2362,7 @@ run_stage_5() {
     oracle_cache_get 'hg008_full/java_hg008_contigs_th32.exit' \"\$KEEP_DIR/java_hg008_contigs_th32.exit\" || true
     if [ ! -s \"\$KEEP_DIR/java_hg008_contigs_th32.exit\" ]; then
       rc_java=0
-      /usr/bin/time -v -o \"\$KEEP_DIR/java_hg008_contigs_th32.time\" timeout 10800 \
+      $TIME_V -o \"\$KEEP_DIR/java_hg008_contigs_th32.time\" timeout 10800 \
         env ORACLE_XMX_GB=200 JAVA_OPTS='-Xmx200g -XX:+ExitOnOutOfMemoryError' \
         bash harness/run_oracle.sh \"\$REF\" \"\${T_BAM}|\${N_BAM}\" \"\$BED\" \"\$WORK_LOCAL/java_hg008_contigs_th32.vcf\" 'HG008-T|HG008-N' -f 0.01 -th 32 -z || rc_java=\$? # golden:bypass gcp-oracle-cache-v183
       echo \"\$rc_java\" > \"\$KEEP_DIR/java_hg008_contigs_th32.exit\"
@@ -2399,7 +2400,7 @@ run_stage_5() {
 
     # (a) VarDictRust (-th 32 -U; GIAB HG008-T_somatic_smvar is a small-variant SNV+Indel <50bp benchmark; -U avoids O(N_windows * 25M) NovaSeq dark-cycle poly-G mate sink re-scans at chr2:32,916,196)
     if [ ! -s \"\$KEEP_DIR/rust_hg008_giab_th32.time\" ] || [ ! -s \"\$WORK_LOCAL/rust_hg008_giab_th32.vcf\" ]; then
-      /usr/bin/time -v -o \"\$KEEP_DIR/rust_hg008_giab_th32.time\" \
+      $TIME_V -o \"\$KEEP_DIR/rust_hg008_giab_th32.time\" \
         target/release/vardictrust -G \"\$REF\" -f 0.01 -N 'HG008-T|HG008-N' \
         -b \"\${T_BAM}|\${N_BAM}\" -c 1 -S 2 -E 3 -g 4 -z -U -th 32 \"\$BED\" > \"\$WORK_LOCAL/rust_hg008_giab_th32.vcf\"
     fi
@@ -2424,7 +2425,7 @@ run_stage_5() {
     fi
     if [ ! -s \"\$KEEP_DIR/cpp_hg008_giab_th32.time\" ]; then
       rc_cpp=0
-      timeout 10800 /usr/bin/time -v -o \"\$KEEP_DIR/cpp_hg008_giab_th32.time\" \
+      timeout 10800 $TIME_V -o \"\$KEEP_DIR/cpp_hg008_giab_th32.time\" \
         env CPP_CHUNK=50000 bash harness/run_cpp.sh \"\$REF\" \"\${T_BAM}|\${N_BAM}\" \"\$BED\" \"\$WORK_LOCAL/cpp_hg008_giab_th32.vcf\" 'HG008-T|HG008-N' -f 0.01 -th 32 -z -U || rc_cpp=\$? # golden:bypass gcp-oracle-cache-v183
       echo \"\$rc_cpp\" > \"\$KEEP_DIR/cpp_hg008_giab_th32.exit\"
       if [ -s \"\$WORK_LOCAL/cpp_hg008_giab_th32.vcf\" ]; then
@@ -2447,7 +2448,7 @@ run_stage_5() {
     fi
     if [ ! -s \"\$KEEP_DIR/java_hg008_giab_th32.time\" ]; then
       rc_java=0
-      timeout 14400 /usr/bin/time -v -o \"\$KEEP_DIR/java_hg008_giab_th32.time\" \
+      timeout 14400 $TIME_V -o \"\$KEEP_DIR/java_hg008_giab_th32.time\" \
         env ORACLE_XMX_GB=200 JAVA_OPTS='-Xmx200g -XX:+ExitOnOutOfMemoryError' \
         bash harness/run_oracle.sh \"\$REF\" \"\${T_BAM}|\${N_BAM}\" \"\$BED\" \"\$WORK_LOCAL/java_hg008_giab_th32.vcf\" 'HG008-T|HG008-N' -f 0.01 -th 32 -z -U || rc_java=\$? # golden:bypass gcp-oracle-cache-v183
       echo \"\$rc_java\" > \"\$KEEP_DIR/java_hg008_giab_th32.exit\"
@@ -2501,7 +2502,7 @@ run_stage_5() {
         return 0
       fi
       local rc=0
-      /usr/bin/time -v -o "$KEEP_DIR/${lbl}.time" "$@" >"$KEEP_DIR/${lbl}.stdout" 2>"$KEEP_DIR/${lbl}.stderr" || rc=$?
+      $TIME_V -o "$KEEP_DIR/${lbl}.time" "$@" >"$KEEP_DIR/${lbl}.stdout" 2>"$KEEP_DIR/${lbl}.stderr" || rc=$?
       echo "$rc" > "$KEEP_DIR/${lbl}.rc"
       return "$rc"
     }
@@ -2722,7 +2723,7 @@ run_stage_5() {
     cargo tree -p vardictrust --prefix none > "$KEEP_DIR/vardictrust_cargo_tree.txt"
     file target/x86_64-unknown-linux-musl/release/vardictrust > "$KEEP_DIR/musl_file_info.txt"
     ldd target/x86_64-unknown-linux-musl/release/vardictrust > "$KEEP_DIR/musl_ldd_info.txt" 2>&1 || true
-    stat -c "%n %s" target/release/vardictrust target/x86_64-unknown-linux-musl/release/vardictrust > "$KEEP_DIR/binary_sizes_bytes.txt"
+    for b in target/release/vardictrust target/x86_64-unknown-linux-musl/release/vardictrust; do printf "%s %s\n" "$b" "$(portable_filesize "$b")"; done > "$KEEP_DIR/binary_sizes_bytes.txt"
 
     # (d) 60-Flag CLI Surface & Thread-Default Verification
     target/release/vardictrust --help > "$KEEP_DIR/vardictrust_help.txt"
@@ -2965,7 +2966,7 @@ run_stage_5() {
 
       # 1. VarDictRust v1.0.5 (-th 32)
       if [ ! -s \"\$KEEP_DIR/\${tag}_rust.vcf\" ] || [ ! -s \"\$KEEP_DIR/\${tag}_rust.time\" ]; then
-        /usr/bin/time -v -o \"\$KEEP_DIR/\${tag}_rust.time\" \
+        $TIME_V -o \"\$KEEP_DIR/\${tag}_rust.time\" \
           \"\$VR\" -G \"\$ref\" -f \"\$freq\" -N \"\$sample\" -b \"\$bam_spec\" -c 1 -S 2 -E 3 -g 4 -z -th 32 \"\${extra_flags[@]}\" \"\$call_bed\" > \"\$KEEP_DIR/\${tag}_rust.vcf\"
       fi
 
@@ -2980,7 +2981,7 @@ run_stage_5() {
       fi
       if [ ! -s \"\$KEEP_DIR/\${tag}_cpp.exit\" ]; then
         local rc_c=0
-        timeout 14400 /usr/bin/time -v -o \"\$KEEP_DIR/\${tag}_cpp.time\" \
+        timeout 14400 $TIME_V -o \"\$KEEP_DIR/\${tag}_cpp.time\" \
           env CPP_CHUNK=50000 bash harness/run_cpp.sh \"\$ref\" \"\$bam_spec\" \"\$call_bed\" \"\$KEEP_DIR/\${tag}_cpp.vcf\" \"\$sample\" -f \"\$freq\" -th 32 -z \"\${extra_flags[@]}\" || rc_c=\$? # golden:bypass gcp-oracle-cache-v183
         echo \"\$rc_c\" > \"\$KEEP_DIR/\${tag}_cpp.exit\"
       fi
@@ -2999,7 +3000,7 @@ run_stage_5() {
       fi
       if [ ! -s \"\$KEEP_DIR/\${tag}_java.exit\" ]; then
         local rc_j=0
-        timeout 14400 /usr/bin/time -v -o \"\$KEEP_DIR/\${tag}_java.time\" \
+        timeout 14400 $TIME_V -o \"\$KEEP_DIR/\${tag}_java.time\" \
           env ORACLE_XMX_GB=48 JAVA_OPTS='-Xmx48g -XX:+ExitOnOutOfMemoryError' \
           bash harness/run_oracle.sh \"\$ref\" \"\$bam_spec\" \"\$call_bed\" \"\$KEEP_DIR/\${tag}_java.vcf\" \"\$sample\" -f \"\$freq\" -th 32 -z \"\${extra_flags[@]}\" || rc_j=\$? # golden:bypass gcp-oracle-cache-v183
         echo \"\$rc_j\" > \"\$KEEP_DIR/\${tag}_java.exit\"
@@ -3056,7 +3057,7 @@ run_stage_5() {
 
     # Also verify native CRAM streaming on Ultima UG100 chr20 (VarDictRust on .cram vs VarDictRust on .bam and VarDictJava on .bam)
     if [ ! -s \"\$KEEP_DIR/hg002_ultima_ug100_cram_rust.vcf\" ] || [ ! -s \"\$KEEP_DIR/hg002_ultima_ug100_cram_rust.time\" ]; then
-      env RUST_MIN_STACK=67108864 /usr/bin/time -v -o \"\$KEEP_DIR/hg002_ultima_ug100_cram_rust.time\" \
+      env RUST_MIN_STACK=67108864 $TIME_V -o \"\$KEEP_DIR/hg002_ultima_ug100_cram_rust.time\" \
         \"\$VR\" -G \"\$REF_D1\" -f 0.01 -N HG002 -b \"\$XP_DIR/hg002_ultima_ug100.chr20.cram\" -c 1 -S 2 -E 3 -g 4 -z -th 32 \"\$XP_DIR/hg002_chr20_50kb.bed\" > \"\$KEEP_DIR/hg002_ultima_ug100_cram_rust.vcf\"
     fi
     if [ ! -s \"\$KEEP_DIR/ultima_cram_vs_rust_bam_compare.txt\" ]; then
@@ -3130,7 +3131,7 @@ run_stage_5() {
 oracle_cache_put() {
   local cache_rel="$1" local_file="$2"
   [ -s "$local_file" ] || return 0
-  sha256sum "$local_file" | awk '{print $1}' > "${local_file}.sha256"
+  portable_sha256 "$local_file" > "${local_file}.sha256"
   if [ -n "${LOCAL_CKPT_DIR:-}" ]; then
     mkdir -p "$(dirname "${LOCAL_CKPT_DIR}/oracle-cache/${cache_rel}")"
     cp -f "$local_file" "${LOCAL_CKPT_DIR}/oracle-cache/${cache_rel}"
@@ -3201,7 +3202,7 @@ oracle_cache_get_or_run() {
         setsid gsutil "${GSUTIL_MT_FLAGS[@]}" -q cp "${GCS_ORACLE_CACHE}/${cache_rel}.sha256" "${local_file}.sha256" || true
         local exp_sha got_sha
         exp_sha="$(awk '{print $1}' "${local_file}.sha256" 2>/dev/null || true)"
-        got_sha="$(sha256sum "$local_file" | awk '{print $1}')"
+        got_sha="$(portable_sha256 "$local_file")"
         if [ -n "$exp_sha" ] && [ "$exp_sha" != "$got_sha" ]; then
           echo "[ORACLE-CACHE WARN] SHA256 mismatch on '${cache_rel}' (expected ${exp_sha}, got ${got_sha}); regenerating..." >&2
           rm -f "$local_file" "${local_file}.sha256"

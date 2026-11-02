@@ -7,6 +7,7 @@
 #   4. s6_ga4gh_v35_stratification_matrix
 # =============================================================================
 set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/portable.sh"
 
 ensure_vcf_clean_helper() {
   local helper_py="${WORK_DIR:-/var/tmp/vardict-paper}/vcf_clean_chr1_22.py"
@@ -491,19 +492,19 @@ cell_s6_low_vaf_titration() {
 
     # 1. VarDictRust (-f 0.002 -th 16; always run fresh for current VarDictRust binary)
     rm -rf "$WORK_TITR/ev_p${pur}_VarDictRust"
-    /usr/bin/time -v -o "$KEEP_DIR/p${pur}_rust.time" \
+    portable_time_v -o "$KEEP_DIR/p${pur}_rust.time" \
       target/release/vardictrust -G "$REF" -f 0.002 -N "HG008-T|HG008-N-D" \
       -b "${ADMIX_BAM}|${N_BAM}" -c 1 -S 2 -E 3 -g 4 -th 16 "$ENGINE_BED" > "$WORK_TITR/p${pur}_rust.vcf"
 
     # 2. VarDictJava v1.8.3 (-f 0.002 -th 16)
     if [ ! -s "$WORK_TITR/p${pur}_java.vcf" ]; then
-      /usr/bin/time -v -o "$KEEP_DIR/p${pur}_java.time" \
+      portable_time_v -o "$KEEP_DIR/p${pur}_java.time" \
         env ORACLE_XMX_GB=32 bash harness/run_oracle.sh "$REF" "${ADMIX_BAM}|${N_BAM}" "$ENGINE_BED" "$WORK_TITR/p${pur}_java.vcf" "HG008-T|HG008-N-D" -f 0.002 -th 16 # golden:bypass gcp-oracle-cache-v183
     fi
 
     # 3. vardictcpp (-f 0.002 -th 16)
     if [ ! -s "$WORK_TITR/p${pur}_cpp.vcf" ]; then
-      /usr/bin/time -v -o "$KEEP_DIR/p${pur}_cpp.time" \
+      portable_time_v -o "$KEEP_DIR/p${pur}_cpp.time" \
         env CPP_CHUNK=50000 bash harness/run_cpp.sh "$REF" "${ADMIX_BAM}|${N_BAM}" "$ENGINE_BED" "$WORK_TITR/p${pur}_cpp.vcf" "HG008-T|HG008-N-D" -f 0.002 -th 16 # golden:bypass gcp-oracle-cache-v183
     fi
 
@@ -519,7 +520,7 @@ cell_s6_low_vaf_titration() {
     # 4. Strelka2 2.9.10
     if [ ! -s "$WORK_TITR/p${pur}_strelka2.vcf.gz" ]; then
       rm -rf "$WORK_TITR/strelka_p${pur}"
-      /usr/bin/time -v -o "$KEEP_DIR/p${pur}_strelka2.time" \
+      portable_time_v -o "$KEEP_DIR/p${pur}_strelka2.time" \
         bash -c 'conda run -n cl_strelka configureStrelkaSomaticWorkflow.py --tumorBam "$1" --normalBam "$2" --referenceFasta "$3" --callRegions "$4" --runDir "$5" && conda run -n cl_strelka "$5/runWorkflow.py" -m local -j 16' _ "$ADMIX_BAM" "$N_BAM" "$REF" "$WORK_TITR/eval.bed.gz" "$WORK_TITR/strelka_p${pur}" >/dev/null 2>&1
       bcftools concat -a "$WORK_TITR/strelka_p${pur}/results/variants/somatic.snvs.vcf.gz" "$WORK_TITR/strelka_p${pur}/results/variants/somatic.indels.vcf.gz" \
         | bcftools sort -Oz -o "$WORK_TITR/p${pur}_strelka2.vcf.gz"
@@ -529,7 +530,7 @@ cell_s6_low_vaf_titration() {
     # 5. LoFreq 2.1.5
     if [ ! -s "$WORK_TITR/p${pur}_lofreq.vcf.gz" ]; then
       rm -f "$WORK_TITR/lf_p${pur}_"*
-      /usr/bin/time -v -o "$KEEP_DIR/p${pur}_lofreq.time" \
+      portable_time_v -o "$KEEP_DIR/p${pur}_lofreq.time" \
         conda run -n cl_lofreq lofreq somatic -n "$N_BAM" -t "$ADMIX_BAM" -f "$REF" -l "$EVAL_BED" -o "$WORK_TITR/lf_p${pur}_" --threads 16 >/dev/null 2>&1 || true
       if [ -f "$WORK_TITR/lf_p${pur}_somatic_final.snvs.vcf.gz" ]; then
         cp -f "$WORK_TITR/lf_p${pur}_somatic_final.snvs.vcf.gz" "$WORK_TITR/p${pur}_lofreq.vcf.gz"
@@ -539,7 +540,7 @@ cell_s6_low_vaf_titration() {
 
     # 6. Mutect2 4.6.2.0
     if [ ! -s "$WORK_TITR/p${pur}_mutect2.vcf.gz" ]; then
-      /usr/bin/time -v -o "$KEEP_DIR/p${pur}_mutect2.time" \
+      portable_time_v -o "$KEEP_DIR/p${pur}_mutect2.time" \
         bash -c 'conda run -n cl_gatk4 gatk Mutect2 -R "$1" -I "$2" -I "$3" -normal HG008-N-D -L "$4" --native-pair-hmm-threads 16 -O "$5" && conda run -n cl_gatk4 gatk FilterMutectCalls -R "$1" -V "$5" -O "$6"' _ "$REF" "$ADMIX_BAM" "$N_BAM" "$EVAL_BED" "$WORK_TITR/m2_p${pur}.unfilt.vcf.gz" "$WORK_TITR/p${pur}_mutect2.vcf.gz" >/dev/null 2>&1
     fi
 

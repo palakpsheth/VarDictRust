@@ -28,7 +28,7 @@ ck "dry-run exits 0" "[ $rc -eq 0 ]"
 ck "dry-run names the cell" "grep -q '^PLAN tiny' <<<\"\$out\""
 ck "dry-run shows courtesy wrapper" "grep -q 'harness/courtesy.sh' <<<\"\$out\""
 ck "dry-run shows all three profiler envs" "grep -q 'VARDICT_PROFILE_CPU=' <<<\"\$out\" && grep -q 'VARDICT_PROFILE_HEAP=' <<<\"\$out\" && grep -q 'VARDICT_PROFILE_DHAT=' <<<\"\$out\""
-ck "dry-run uses the stub binary and time -v" "grep -q \"$T/engine\" <<<\"\$out\" && grep -q '/usr/bin/time -v' <<<\"\$out\""
+ck "dry-run uses the stub binary and time -v" "grep -q \"$T/engine\" <<<\"\$out\" && grep -Eq '(/usr/bin/time -v|gtime -v|portable\\.sh --time-v)' <<<\"\$out\""
 ck "dry-run caps threads at 8" "grep -q -- '-th 8' <<<\"\$out\""
 ck "dry-run writes nothing" "[ ! -e '$T/prof' ] && [ ! -e '$T/engine.log' ]"
 # dhat is slice-only: the WGS and HG002 plans have no dhat modality
@@ -90,8 +90,9 @@ out=$(PROFILE_OUT="$T/prof" PROFILE_BIN_CPU="$T/nonexistent" PROFILE_BIN_HEAP="$
 ck "missing binary refused outside dry-run" "[ $rc -ne 0 ] && grep -q 'missing/not executable' <<<\"\$out\" && [ ! -e '$T/prof' ]"
 
 # ---- skip semantics: a mirror checkout with no data ------------------------------------------------------
-M="$T/mirror"; mkdir -p "$M/harness" "$M/benchmarks/evidence"
+M="$T/mirror"; mkdir -p "$M/harness/lib" "$M/benchmarks/evidence"
 cp harness/profile.sh harness/courtesy.sh harness/profile_catalog.py harness/slices.tsv "$M/harness/"
+cp harness/lib/portable.sh "$M/harness/lib/"
 out=$(cd "$M" && MIN_FREE_GB=0 MIN_AVAIL_GB=0 COURTESY_NOW=0600 PROFILE_BIN="$T/engine" bash harness/profile.sh baseline --only hg002 2>&1); rc=$?
 ck "missing input is an error when named via --only" "[ $rc -ne 0 ] && grep -q 'missing input' <<<\"\$out\""
 out=$(cd "$M" && MIN_FREE_GB=0 MIN_AVAIL_GB=0 COURTESY_NOW=0600 PROFILE_BIN="$T/engine" bash harness/profile.sh baseline 2>&1); rc=$?

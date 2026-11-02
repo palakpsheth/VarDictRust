@@ -6,9 +6,10 @@
 #   2. Dual-engine compare.sh parity (MATCH, 0 diffs).
 #   3. NIST v4.2.1 truth concordance (EQUAL, dual thresholds).
 set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/portable.sh"
 
 if ! command -v samtools &>/dev/null || ! command -v bcftools &>/dev/null || ! command -v tabix &>/dev/null || ! command -v rtg &>/dev/null; then
-  export PATH="/home/palak/miniconda3/envs/g4-tools/bin:$PATH"
+  export PATH="$G4_TOOLS_BIN:$PATH"
 fi
 
 DATA_DIR="scratch/g4"

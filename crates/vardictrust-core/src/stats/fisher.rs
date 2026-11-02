@@ -125,18 +125,16 @@ impl FisherExact {
         // is verbatim.
         let mut scratch = Vec::with_capacity(self.support.len());
         let mu = self.mnhyper_with(1.0, &mut scratch);
-        let root;
         let tol = eps.powf(0.25);
         if mu > x {
             let f = |t: f64| self.mnhyper_with(t, &mut scratch) - x;
-            root = crate::stats::zeroin::uniroot(0.0, 1.0, f, tol);
+            crate::stats::zeroin::uniroot(0.0, 1.0, f, tol)
         } else if mu < x {
             let f = |t: f64| self.mnhyper_with(1.0 / t, &mut scratch) - x;
-            root = 1.0 / crate::stats::zeroin::uniroot(eps, 1.0, f, tol);
+            1.0 / crate::stats::zeroin::uniroot(eps, 1.0, f, tol)
         } else {
-            root = 1.0;
+            1.0
         }
-        root
     }
 
     /// Scratch-based mean evaluation. `scratch` is a function-local per-thread

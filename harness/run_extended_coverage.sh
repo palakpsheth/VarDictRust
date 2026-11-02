@@ -6,6 +6,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+source "$SCRIPT_DIR/lib/portable.sh"
 NO_RECORD=0
 if [[ "${1:-}" == "--no-record" ]]; then
     NO_RECORD=1
@@ -611,16 +612,16 @@ else
 fi
 }
 
-SUITE_START_MS=$(date +%s%3N)
+SUITE_START_MS=$(now_ms)
 (
     for m in $(seq 1 17); do
         while [[ $(jobs -rp | wc -l) -ge $JOBS ]]; do
             wait -n 2>/dev/null || sleep 0.02
         done
         {
-            m_t0=$(date +%s%3N)
+            m_t0=$(now_ms)
             ( set +e; "run_m${m}" > "$TMPDIR/m${m}.log" 2>&1 ); rc=$?
-            m_ms=$(( $(date +%s%3N) - m_t0 ))
+            m_ms=$(( $(now_ms) - m_t0 ))
             if [[ -f "$TMPDIR/m${m}.log" ]]; then
                 sed -i "1s/diffs)/diffs, ${m_ms}ms)/" "$TMPDIR/m${m}.log" || true
             fi
@@ -644,7 +645,7 @@ for m in $(seq 1 17); do
     PASSED=$((PASSED + 1))
 done
 wait "$POOL_PID" 2>/dev/null || true
-SUITE_ELAPSED_MS=$(( $(date +%s%3N) - SUITE_START_MS ))
+SUITE_ELAPSED_MS=$(( $(now_ms) - SUITE_START_MS ))
 M1_ROWS=$(cat "$TMPDIR/m1.count")
 M2_VARS=$(cat "$TMPDIR/m2.count")
 M3_VARS=$(cat "$TMPDIR/m3.count")
@@ -675,6 +676,30 @@ if [[ "$PASSED" -eq "$TOTAL" ]]; then
     fi
     # Write official evidence JSON
     GOLDEN_JSON=$(bash "$ROOT_DIR/harness/golden_store.sh" stats --run "$GOLDEN_RUN_ID" --json)
+    INPUTS_JSON=$(python3 - "$HG38_FA" "$HG19_FA" "$B37_FA" "$BAM_SPLICING" "$BAM_INVSV" "$BAM_DUPSV" "$BAM_CRISPR" "$BAM_NA24385" "$BED_S8" "$BED_S9" "$BED_S1A" "$BED_TINY" <<'PY'
+import hashlib, json, pathlib, sys
+def sha256_file(path: pathlib.Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+seen, out = set(), []
+def add(c: str):
+    p = pathlib.Path(c)
+    if not p.is_file() or str(p) in seen:
+        return
+    seen.add(str(p))
+    out.append({"path": str(p), "size_bytes": p.stat().st_size, "sha256": sha256_file(p)})
+for c in sys.argv[1:]:
+    add(c)
+    if c.endswith((".fa", ".fasta")):
+        add(c + ".fai")
+    elif c.endswith(".bam"):
+        add(c + ".bai")
+print(json.dumps(out))
+PY
+    )
     EVIDENCE_FILE="$ROOT_DIR/benchmarks/evidence/extended-coverage-tier2.json"
     TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
     cat <<EOF > "$EVIDENCE_FILE"
@@ -682,6 +707,7 @@ if [[ "$PASSED" -eq "$TOTAL" ]]; then
   "benchmark": "extended-coverage-tier2",
   "fingerprint": "$FP",
   "result": "MATCH",
+  "inputs": $INPUTS_JSON,
   "modalities_tested": $TOTAL,
   "modalities_passed": $PASSED,
   "diff_count": 0,

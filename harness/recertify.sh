@@ -5,7 +5,15 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+source "$SCRIPT_DIR/lib/portable.sh"
 cd "$ROOT_DIR"
+
+DRY_RUN=0
+if [[ "${1:-}" == "--dry-run" ]]; then
+    DRY_RUN=1
+    shift
+fi
+
 COMMON_GIT_DIR="$(git -C "$ROOT_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
 if [[ -n "$COMMON_GIT_DIR" && -d "$(dirname "$COMMON_GIT_DIR")/VarDictJava" ]]; then
     DATA_ROOT="$(cd "$(dirname "$COMMON_GIT_DIR")" && pwd)"
@@ -45,7 +53,7 @@ if [[ "$DATA_ROOT" != "$ROOT_DIR" ]]; then
 fi
 
 if ! command -v rtg &>/dev/null || ! command -v bcftools &>/dev/null; then
-    export PATH="/home/palak/miniconda3/envs/g4-tools/bin:$PATH"
+    export PATH="$G4_TOOLS_BIN:$PATH"
 fi
 
 ts() { date '+[%H:%M:%S]'; }
@@ -53,6 +61,59 @@ RECERT_T0=$SECONDS
 echo "================================================================================"
 echo " VarDictRust Live Dual-Engine Release Parity Recertification"
 echo "================================================================================"
+
+HG002_EVAL_BED_SHA256="df8cc38f4a269c0923120abf1d4f4429fc2fc92e55e6a5eda23468b5ec6e1bb1"
+HG002_EVAL_BED="${HG002_EVAL_BED_OVERRIDE:-$ROOT_DIR/scratch/g4/hg002/eval.bed}"
+if [[ ! -f "$HG002_EVAL_BED" && -f "$DATA_ROOT/scratch/g4/hg002/eval.bed" ]]; then
+    HG002_EVAL_BED="$DATA_ROOT/scratch/g4/hg002/eval.bed"
+fi
+if [[ -f "$HG002_EVAL_BED" ]]; then
+    bed_sha="$(portable_sha256 "$HG002_EVAL_BED")"
+    bed_bytes="$(portable_filesize "$HG002_EVAL_BED")"
+    echo "$(ts) [Input Check] scratch/g4/hg002/eval.bed: size_bytes=${bed_bytes} sha256=${bed_sha} MIN_VARIANTS=227562"
+    if [[ "$bed_sha" != "$HG002_EVAL_BED_SHA256" && "${RECERTIFY_NEW_INPUTS:-0}" != "1" ]]; then
+        echo "ERROR: input SHA-256 mismatch on scratch/g4/hg002/eval.bed (got $bed_sha, expected $HG002_EVAL_BED_SHA256). Set RECERTIFY_NEW_INPUTS=1 to authorize new inputs." >&2
+        exit 1
+    fi
+else
+    echo "$(ts) [Input Check] scratch/g4/hg002/eval.bed: pinned sha256=${HG002_EVAL_BED_SHA256} MIN_VARIANTS=227562"
+fi
+
+if [[ "${RECERTIFY_NEW_INPUTS:-0}" != "1" ]]; then
+    python3 - "${RECERTIFY_EVIDENCE_DIR:-$ROOT_DIR/benchmarks/evidence}" <<'PY'
+import hashlib, json, pathlib, sys
+
+def sha256_file(path: pathlib.Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+ev_dir = pathlib.Path(sys.argv[1])
+for jf in sorted(ev_dir.glob("*.json")):
+    try:
+        data = json.loads(jf.read_text(encoding="utf-8"))
+    except Exception:
+        continue
+    for inp in data.get("inputs") or []:
+        p = pathlib.Path(inp.get("path", ""))
+        want = inp.get("sha256", "")
+        if p.is_file() and want:
+            got = sha256_file(p)
+            if got != want:
+                sys.stderr.write(
+                    f"ERROR: input SHA-256 mismatch for {p} in {jf.name}: got {got}, expected {want}. "
+                    "Set RECERTIFY_NEW_INPUTS=1 to authorize new inputs.\n"
+                )
+                sys.exit(1)
+PY
+fi
+
+if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "$(ts) [Dry Run] Input SHA-256 verification and recertification plan passed (MIN_VARIANTS=227562)."
+    exit 0
+fi
 
 echo "$(ts) [Recertify 1/5] Building release binary..."
 cargo build --release -p vardictrust
@@ -68,21 +129,57 @@ export GOLDEN_RUN_ID="recertify-$(date +%s)"
 
 needs_stamp() {
     local name="$1"
-    python3 - "$ROOT_DIR/benchmarks/evidence/${name}.json" "$FP" <<'PY'
-import json, sys
-p, fp = sys.argv[1], sys.argv[2]
+    python3 - "${RECERTIFY_EVIDENCE_DIR:-$ROOT_DIR/benchmarks/evidence}/${name}.json" "$FP" "$name" <<'PY'
+import hashlib, json, os, pathlib, sys
+
+def inputs_match(d: dict, allow_empty: bool = False) -> bool:
+    inputs = d.get("inputs")
+    if not isinstance(inputs, list):
+        return False
+    if not inputs:
+        return allow_empty
+    for inp in inputs:
+        if not isinstance(inp, dict):
+            return False
+        p_str = inp.get("path", "")
+        want = inp.get("sha256", "")
+        want_sz = inp.get("size_bytes")
+        if not p_str or not want:
+            return False
+        p = pathlib.Path(p_str)
+        if not p.is_file():
+            return False
+        if want_sz is not None and p.stat().st_size != want_sz:
+            return False
+        h = hashlib.sha256()
+        with p.open("rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                h.update(chunk)
+        if h.hexdigest() != want:
+            return False
+    return True
+
+p, fp, name = sys.argv[1], sys.argv[2], sys.argv[3]
+if os.environ.get("RECERTIFY_NEW_INPUTS") == "1":
+    sys.exit(0)
 try:
-    d = json.load(open(p))
+    with open(p, encoding="utf-8") as fh:
+        d = json.load(fh)
 except Exception:
     sys.exit(0)
-if d.get("fingerprint") == fp and d.get("result") in ("MATCH", "EQUAL", "PASS"):
+allow_empty = name in ("perf-budget", "musl-ci")
+if (
+    d.get("fingerprint") == fp
+    and d.get("result") in ("MATCH", "EQUAL", "PASS")
+    and inputs_match(d, allow_empty=allow_empty)
+):
     sys.exit(1)
 sys.exit(0)
 PY
 }
 
-MEDIA_STACK_LIFECYCLE_SCRIPT="${MEDIA_STACK_LIFECYCLE_SCRIPT:-/home/palak/Documents/media_stack_lifecycle.py}"
-MEDIA_STACK_PYTHON="${MEDIA_STACK_PYTHON:-/home/palak/Documents/venv/bin/python}"
+MEDIA_STACK_LIFECYCLE_SCRIPT="${MEDIA_STACK_LIFECYCLE_SCRIPT:-$HOME/Documents/media_stack_lifecycle.py}"
+MEDIA_STACK_PYTHON="${MEDIA_STACK_PYTHON:-$HOME/Documents/venv/bin/python}"
 run_media_stack_hook() {
     if [[ -f "$MEDIA_STACK_LIFECYCLE_SCRIPT" ]]; then
         local py="python3"
@@ -92,11 +189,40 @@ run_media_stack_hook() {
 }
 
 # Verify scale.json is valid under either FP or PERF_FP; if stale, run scale_bench.sh under media_stack minimal
-if python3 - "$ROOT_DIR/benchmarks/evidence/scale.json" "$FP" "$PERF_FP" <<'PY'
-import json, sys
+if python3 - "${RECERTIFY_EVIDENCE_DIR:-$ROOT_DIR/benchmarks/evidence}/scale.json" "$FP" "$PERF_FP" <<'PY'
+import hashlib, json, os, pathlib, sys
+
+def inputs_match(d: dict) -> bool:
+    inputs = d.get("inputs")
+    if not isinstance(inputs, list) or not inputs:
+        return False
+    for inp in inputs:
+        if not isinstance(inp, dict):
+            return False
+        p_str = inp.get("path", "")
+        want = inp.get("sha256", "")
+        want_sz = inp.get("size_bytes")
+        if not p_str or not want:
+            return False
+        p = pathlib.Path(p_str)
+        if not p.is_file():
+            return False
+        if want_sz is not None and p.stat().st_size != want_sz:
+            return False
+        h = hashlib.sha256()
+        with p.open("rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                h.update(chunk)
+        if h.hexdigest() != want:
+            return False
+    return True
+
 p, fp, perf = sys.argv[1], sys.argv[2], sys.argv[3]
+if os.environ.get("RECERTIFY_NEW_INPUTS") == "1":
+    sys.exit(1)
 try:
-    d = json.load(open(p))
+    with open(p, encoding="utf-8") as fh:
+        d = json.load(fh)
 except Exception:
     sys.exit(1)
 x = d.get("extra") or {}
@@ -107,6 +233,7 @@ ok = (
     and bool(x.get("certifying"))
     and x.get("P", 0) >= 4
     and x.get("bar", 0) >= 2.4
+    and inputs_match(d)
 )
 sys.exit(0 if ok else 1)
 PY
@@ -251,7 +378,14 @@ if needs_stamp "hg008-cram-twin"; then
     step_t0=$SECONDS
     echo "$(ts) [RUN] hg008-cram-twin: Certifying HG008 CRAM Twin..."
     KEEP_DIR=scratch/g4/hg008/cram CMP_TIMEOUT=12h bash harness/cram_twin.sh
-    python3 harness/record_evidence.py hg008-cram-twin MATCH scratch/g4/hg008/cram \
+    python3 harness/record_evidence.py \
+      --input scratch/g4/ref/giabv3/GRCh38_GIABv3.fa \
+      --input scratch/g4/hg008/HG008-T.slice.cram \
+      --input scratch/g4/hg008/HG008-N.slice.cram \
+      --input scratch/g4/hg008/HG008-T.slice.bam \
+      --input scratch/g4/hg008/HG008-N.slice.bam \
+      --input scratch/g4/hg008/engine.bed \
+      hg008-cram-twin MATCH scratch/g4/hg008/cram \
       -- env KEEP_DIR=scratch/g4/hg008/cram CMP_TIMEOUT=12h bash harness/cram_twin.sh
     echo "$(ts) [DONE] hg008-cram-twin ($((SECONDS - step_t0))s)"
 else
