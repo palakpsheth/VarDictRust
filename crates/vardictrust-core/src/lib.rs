@@ -749,6 +749,13 @@ fn run_amplicon<W: std::io::Write>(
             // Fully streaming -p table path: each row goes straight to the
             // writer, so working memory stays O(segment + one position) no
             // matter how large the insert interval is.
+            // Caller-owned row buffer: `_into` clears per row and the writer
+            // consumes bytes immediately, so one buffer serves the whole
+            // stream with no per-row `String` allocation. The callback is
+            // `&mut FnMut` (sequential calls), so sharing is race-free.
+            // (Collected-`Vec` emit paths keep per-row allocation by
+            // construction — each retained line owns its storage.)
+            let mut row_buf = String::new();
             crate::postprocess::amplicon::amplicon_post_process_streaming(
                 config,
                 current_region,
@@ -756,22 +763,24 @@ fn run_amplicon<W: std::io::Write>(
                 crate::postprocess::amplicon::amplicon_position_stream(&segment),
                 &splice,
                 &mut |av| {
-                    let line = if config.fisher {
-                        crate::output::table::amplicon_40(
+                    if config.fisher {
+                        crate::output::table::amplicon_40_into(
+                            &mut row_buf,
                             &av,
                             current_region,
                             &config.sample,
                             config.debug,
-                        )
+                        );
                     } else {
-                        crate::output::table::amplicon_38(
+                        crate::output::table::amplicon_38_into(
+                            &mut row_buf,
                             &av,
                             current_region,
                             &config.sample,
                             config.debug,
-                        )
-                    };
-                    write_output_line(writer, &line)
+                        );
+                    }
+                    write_output_line(writer, &row_buf)
                 },
             )?;
             continue;
@@ -834,24 +843,32 @@ fn run_amplicon<W: std::io::Write>(
             )?
         };
 
+        // Caller-owned row buffer: both branches below write straight to the
+        // writer (`_into` clears per row), so one buffer serves the whole
+        // loop with no per-row `String` allocation. Sequential loop body —
+        // race-free. (`continue` paths skip the write and leave the buffer
+        // for the next row, which clears it first.)
+        let mut row_buf = String::new();
         for av in results {
             if config.emit_intermediate {
-                let line = if config.fisher {
-                    crate::output::table::amplicon_40(
+                if config.fisher {
+                    crate::output::table::amplicon_40_into(
+                        &mut row_buf,
                         &av,
                         current_region,
                         &config.sample,
                         config.debug,
                     )
                 } else {
-                    crate::output::table::amplicon_38(
+                    crate::output::table::amplicon_38_into(
+                        &mut row_buf,
                         &av,
                         current_region,
                         &config.sample,
                         config.debug,
                     )
                 };
-                write_output_line(writer, &line)?;
+                write_output_line(writer, &row_buf)?;
             } else {
                 // VCF mode: same writer as simple mode (var2vcf_valid.pl), with the
                 // amplicon columns (37-40) selecting $isamp behavior (:145).
@@ -876,7 +893,8 @@ fn run_amplicon<W: std::io::Write>(
                 let amp = Some((av.gdamp, av.tlamp, av.ncamp, av.ampflag));
                 let filters =
                     crate::output::vcf::filter_variant(v, config, 0, amp, sbf, &oddratio_str);
-                let record = crate::output::vcf::format_vcf_record(
+                crate::output::vcf::format_vcf_record_into(
+                    &mut row_buf,
                     v,
                     current_region,
                     config,
@@ -885,7 +903,7 @@ fn run_amplicon<W: std::io::Write>(
                     &oddratio_str,
                     amp,
                 );
-                write_output_line(writer, &record)?;
+                write_output_line(writer, &row_buf)?;
             }
         }
     }

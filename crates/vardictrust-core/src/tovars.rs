@@ -131,8 +131,14 @@ impl<'a> ToVarsBuilder<'a> {
         let iter_positions: Vec<i32> = var_data.non_insertion_variants.keys().copied().collect();
         // Do not sort positions, use the JavaHashMap iteration order!
 
-        let mut var = Vec::new();
-        let mut keys = Vec::new();
+        // Task 6: per-position row buffers, allocated once per build and
+        // cleared per position below (`clear()` retains capacity). Bound 4
+        // covers the common 1-2 allele shape (MNP ties included); larger
+        // positions regrow as before. `debug_lines` stays `new()`: it is
+        // only pushed when `config.debug`, so the common path allocates
+        // nothing. Order/skip semantics untouched — capacity only.
+        let mut var = Vec::with_capacity(4);
+        let mut keys = Vec::with_capacity(4);
         let mut debug_lines = Vec::new();
 
         // Process non-insertion variants
@@ -590,6 +596,19 @@ impl<'a> ToVarsBuilder<'a> {
         let mut buf = [0u8; 4];
         let ref_base_str: &str = (ref_base as char).encode_utf8(&mut buf);
 
+        // H1: bound per-element Vec::push regrowth (dhat: ~8% on deep
+        // pileup). The entry starts empty on this path (one drain per
+        // position per build), so a single reserve of the exact non-ref row
+        // count covers every push below. Guarded by non_ref_rows > 0, so
+        // entry creation timing is unchanged: the drain loop creates the
+        // entry on its first row exactly as before (a hit here performs no
+        // structural change), and an empty `var` creates nothing.
+        let non_ref_rows = var
+            .iter()
+            .filter(|t| t.description.as_str() != ref_base_str)
+            .count();
+        let mut reserved = false;
+
         for tvar in var.drain(..) {
             if tvar.description == ref_base_str {
                 let entry = aligned_variants
@@ -599,6 +618,10 @@ impl<'a> ToVarsBuilder<'a> {
             } else {
                 let entry = aligned_variants
                     .compute_if_absent(position, |_| crate::variations::Vars::new());
+                if !reserved {
+                    entry.variants.reserve(non_ref_rows);
+                    reserved = true;
+                }
 
                 if tvar.frequency > maxfreq {
                     maxfreq = tvar.frequency;
@@ -1037,6 +1060,13 @@ impl<'a> ToVarsBuilder<'a> {
 
             // Rebuild var_desc_to_variant from finalized variants (total_pos_cov now set)
             variations_at_pos.var_desc_to_variant.clear();
+            // H1: single upfront reserve for the exact row count (dhat:
+            // indexmap reserve ~7% on deep pileup). reserve() never reorders
+            // entries (UB-3/CPP-9 safe); clear() retains capacity, so this is
+            // a no-op when capacity already suffices.
+            variations_at_pos
+                .var_desc_to_variant
+                .reserve(variations_at_pos.variants.len());
             for v in &variations_at_pos.variants {
                 variations_at_pos
                     .var_desc_to_variant
@@ -1838,5 +1868,146 @@ mod tests {
                 assert!(v.msi.is_finite(), "MSI must remain finite, got {}", v.msi);
             }
         }
+    }
+
+    #[test]
+    fn h1_two_allele_low_af_drain_row_set_and_mnp_tiebreak_order() {
+        // H1 pin: two-allele low-AF pileup drain. `var` arrives sorted
+        // (MNP tie-break shape: tied mean_quality*pos_coverage broken by
+        // description, CPP-9); the drain must split ref vs non-ref rows,
+        // keep the sorted order in `entry.variants`, and report maxfreq.
+        let mut ref_genome = Reference::new();
+        ref_genome
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 1,
+                sequence_end: 100,
+            });
+        ref_genome
+            .reference_sequences
+            .insert("chr1".to_string(), vec![b'A'; 100]);
+        ref_genome.region_sequences.push(vec![b'A'; 100]);
+
+        let chr_lengths = HashMap::from([("chr1".to_string(), 100)]);
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(1),
+            end: Pos1(100),
+            gene: "TEST".to_string(),
+            amplicon: None,
+        };
+        let cfg = Config::default();
+        let builder = ToVarsBuilder::new(&ref_genome, &region, &chr_lengths, &cfg);
+
+        let mk = |description: &str, frequency: f64, mean_quality: f64, pos_coverage: i32| {
+            let mut v = Variant::new();
+            v.description = description.to_string();
+            v.frequency = frequency;
+            v.mean_quality = mean_quality;
+            v.pos_coverage = pos_coverage;
+            v
+        };
+        // Pileup order: MNP alt, ref, SNV alt; tied metric 60 on the alts,
+        // ref metric 50 so it sorts last (metric value is synthetic here).
+        let mut var = vec![
+            mk("TA", 0.02, 30.0, 2),
+            mk("A", 0.90, 10.0, 5),
+            mk("G", 0.03, 20.0, 3),
+        ];
+        builder.sort_variants(&mut var);
+        assert_eq!(
+            var.iter()
+                .map(|v| v.description.as_str())
+                .collect::<Vec<_>>(),
+            vec!["G", "TA", "A"],
+            "MNP tie-break: tied metric must sort by description"
+        );
+
+        let mut aligned = crate::javamap::JavaHashMap::new();
+        let maxfreq = builder.collect_vars_at_position(&mut aligned, 10, &mut var);
+
+        assert!(var.is_empty(), "drain must consume every row");
+        assert_eq!(maxfreq, 0.03);
+        let entry = aligned.get(&10).expect("entry at 10");
+        assert_eq!(
+            entry.ref_variant.as_ref().expect("ref row").description,
+            "A"
+        );
+        assert_eq!(
+            entry
+                .variants
+                .iter()
+                .map(|v| v.description.as_str())
+                .collect::<Vec<_>>(),
+            vec!["G", "TA"]
+        );
+    }
+
+    #[test]
+    fn h1_early_reserve_preserves_hashmap_resize_order_across_threshold() {
+        // Regression for the H1 pre-reserve `compute_if_absent`: it must not
+        // shift any key insertion relative to the drain-only path. 13 keys
+        // cross the 16-bucket / 0.75-load-factor resize boundary (threshold
+        // 12), where a moved insert would change JavaHashMap iteration order
+        // and therefore `.var` row order (UB-3). Same key, same position in
+        // the sequence -> identical table layout.
+        let mut ref_genome = Reference::new();
+        ref_genome
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 1,
+                sequence_end: 100,
+            });
+        ref_genome
+            .reference_sequences
+            .insert("chr1".to_string(), vec![b'A'; 100]);
+        ref_genome.region_sequences.push(vec![b'A'; 100]);
+
+        let chr_lengths = HashMap::from([("chr1".to_string(), 100)]);
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(1),
+            end: Pos1(100),
+            gene: "TEST".to_string(),
+            amplicon: None,
+        };
+        let cfg = Config::default();
+        let builder = ToVarsBuilder::new(&ref_genome, &region, &chr_lengths, &cfg);
+
+        let positions: Vec<i32> = (1..=12).chain(std::iter::once(17)).collect();
+        let mk_row = || {
+            let mut v = Variant::new();
+            v.description = "G".to_string(); // non-ref (ref base is A)
+            v.frequency = 0.1;
+            v.mean_quality = 30.0;
+            v.pos_coverage = 2;
+            v
+        };
+
+        // New path: early reserve + drain (one non-ref row per position).
+        let mut aligned = crate::javamap::JavaHashMap::new();
+        for &p in &positions {
+            let mut var = vec![mk_row()];
+            builder.collect_vars_at_position(&mut aligned, p, &mut var);
+        }
+
+        // Legacy path: drain-only insertion (first row's compute_if_absent).
+        let mut legacy = crate::javamap::JavaHashMap::new();
+        for &p in &positions {
+            legacy
+                .compute_if_absent(p, |_| crate::variations::Vars::new())
+                .variants
+                .push(mk_row());
+        }
+
+        assert_eq!(aligned.len(), 13);
+        assert_eq!(legacy.len(), 13);
+        assert_eq!(
+            aligned.keys().copied().collect::<Vec<i32>>(),
+            legacy.keys().copied().collect::<Vec<i32>>(),
+            "pre-reserve must not change JavaHashMap iteration order across the resize"
+        );
     }
 }

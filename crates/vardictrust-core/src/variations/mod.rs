@@ -1068,6 +1068,23 @@ mod tests {
             .cnt = 11;
         assert_eq!(get_variation_maybe(&m, 100, Some(0xE9)).unwrap().cnt, 11);
     }
+
+    #[test]
+    fn get_variation_two_allele_low_af_keeps_insertion_order() {
+        // H1 pin: two-allele low-AF pileup (higher-AF SNV + low-AF insertion);
+        // hits must accumulate without reorder or duplicate keys.
+        let mut m: crate::javamap::JavaHashMap<i32, VariationMap> =
+            crate::javamap::JavaHashMap::new();
+        get_variation(&mut m, 50, "G").cnt = 40;
+        get_variation(&mut m, 50, "+AT").cnt = 2;
+        get_variation(&mut m, 50, "G").cnt += 1;
+        get_variation(&mut m, 50, "+AT").cnt += 1;
+
+        let keys: Vec<&str> = m.get(&50).unwrap().map.keys().map(String::as_str).collect();
+        assert_eq!(keys, vec!["G", "+AT"]);
+        assert_eq!(m.get(&50).unwrap().map.get("G").unwrap().cnt, 41);
+        assert_eq!(m.get(&50).unwrap().map.get("+AT").unwrap().cnt, 3);
+    }
 }
 
 #[cfg(test)]

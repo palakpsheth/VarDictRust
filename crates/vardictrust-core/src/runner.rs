@@ -22,12 +22,43 @@ where
     run_parallel_batched(batches, num_threads, worker_fn, consumer_fn)
 }
 
-/// Worker thread stack size (16 MiB) for Rayon tile workers (`M-DOCUMENTED-MAGIC`).
+/// Worker thread stack floor (16 MiB) for Rayon tile workers (`M-DOCUMENTED-MAGIC`).
 ///
 /// Deep CRAM container decompression (`noodles-cram` RANS/bzip2/lzma codecs) combined
 /// with recursive structural-variant and indel realignment frames on 50x–150x WGS tiles
-/// exceeds Rayon's default 2 MiB worker stack, causing `SIGABRT` stack overflows if set lower.
-const WORKER_THREAD_STACK_BYTES: usize = 16 * 1024 * 1024;
+/// exceeds Rayon's default 2 MiB worker stack, causing `SIGABRT` stack overflows if lower.
+const WORKER_THREAD_STACK_FLOOR_BYTES: usize = 16 * 1024 * 1024;
+
+/// Task 4: pool `stack_size` from env with a 16 MiB floor. Reads the
+/// `RUST_MIN_STACK` value already used by `harness/cram_twin.sh` (`64M`) so
+/// the CRAM arm automatically gets at least as much worker stack as the main
+/// thread. Accepts plain byte counts (`67108864`) and case-insensitive
+/// `K`/`M`/`G` suffixes (`64M` = 67_108_864); absent, empty, unparsable, or
+/// overflowing values fall back to the floor (default behavior unchanged).
+fn worker_thread_stack_bytes_for_env(raw: Option<&str>) -> usize {
+    raw.and_then(parse_stack_bytes)
+        .map(|bytes| bytes.max(WORKER_THREAD_STACK_FLOOR_BYTES))
+        .unwrap_or(WORKER_THREAD_STACK_FLOOR_BYTES)
+}
+
+/// Parse a byte count with an optional case-insensitive `K`/`M`/`G` suffix.
+/// Saturating via `checked_mul`; `None` on empty/garbage/overflow so the
+/// caller falls back to the floor. No panics: suffix split and digit parse
+/// are both `Option`-chained (§9).
+fn parse_stack_bytes(raw: &str) -> Option<usize> {
+    let s = raw.trim();
+    let (digits, mult) = match s.as_bytes().last() {
+        Some(b'k' | b'K') => (s.get(..s.len().saturating_sub(1))?, 1024usize),
+        Some(b'm' | b'M') => (s.get(..s.len().saturating_sub(1))?, 1024 * 1024),
+        Some(b'g' | b'G') => (s.get(..s.len().saturating_sub(1))?, 1024 * 1024 * 1024),
+        _ => (s, 1),
+    };
+    digits.parse::<usize>().ok()?.checked_mul(mult)
+}
+
+fn worker_thread_stack_bytes() -> usize {
+    worker_thread_stack_bytes_for_env(std::env::var("RUST_MIN_STACK").ok().as_deref())
+}
 
 /// Executes `worker_fn` in parallel over pre-grouped `batches` (`Vec<Vec<T>>`),
 /// streaming flattened results into `consumer_fn` in exact deterministic order (`EBO-3`).
@@ -56,7 +87,7 @@ where
     }
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(num_threads)
-        .stack_size(WORKER_THREAD_STACK_BYTES)
+        .stack_size(worker_thread_stack_bytes())
         .build()
         .map_err(|e| {
             VardictError::Io(std::io::Error::other(format!(
@@ -373,6 +404,55 @@ mod tests {
             panic_res.is_err(),
             "single-thread caller panics must unwind naturally"
         );
+    }
+
+    #[test]
+    fn worker_stack_env_floor_pin() {
+        // Absent or unparsable input falls back to the 16 MiB floor.
+        assert_eq!(worker_thread_stack_bytes_for_env(None), 16 * 1024 * 1024);
+        assert_eq!(
+            worker_thread_stack_bytes_for_env(Some("bogus")),
+            16 * 1024 * 1024
+        );
+        assert_eq!(
+            worker_thread_stack_bytes_for_env(Some("")),
+            16 * 1024 * 1024
+        );
+        // Values below the floor clamp up; values above pass through.
+        assert_eq!(
+            worker_thread_stack_bytes_for_env(Some("4194304")),
+            16 * 1024 * 1024
+        );
+        assert_eq!(
+            worker_thread_stack_bytes_for_env(Some("67108864")),
+            67108864
+        );
+        // Suffixed forms (case-insensitive) parse to the same byte counts.
+        assert_eq!(worker_thread_stack_bytes_for_env(Some("64M")), 67108864);
+        assert_eq!(worker_thread_stack_bytes_for_env(Some("64m")), 67108864);
+        assert_eq!(
+            worker_thread_stack_bytes_for_env(Some("16384K")),
+            16 * 1024 * 1024
+        );
+        assert_eq!(
+            worker_thread_stack_bytes_for_env(Some("1G")),
+            1024 * 1024 * 1024
+        );
+        // Suffix-only, trailing garbage, and overflow all fall back to the floor.
+        assert_eq!(
+            worker_thread_stack_bytes_for_env(Some("M")),
+            16 * 1024 * 1024
+        );
+        assert_eq!(
+            worker_thread_stack_bytes_for_env(Some("64MB")),
+            16 * 1024 * 1024
+        );
+        assert_eq!(
+            worker_thread_stack_bytes_for_env(Some("999999999999999999999G")),
+            16 * 1024 * 1024
+        );
+        // Live reading never drops below the floor whatever the environment holds.
+        assert!(worker_thread_stack_bytes() >= 16 * 1024 * 1024);
     }
 
     #[test]

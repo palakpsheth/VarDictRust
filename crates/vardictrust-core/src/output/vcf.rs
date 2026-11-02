@@ -2,10 +2,11 @@
 //! Ports var2vcf_valid.pl.
 
 use crate::config::Config;
-use crate::output::table::get_rounded_value_to_print;
+use crate::output::table::{push_keep, push_stripped};
 use crate::regions::Region;
 use crate::variations::Variant;
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::io::{self, Write};
 
 /// Load contig lengths from reference .fai index, falling back to BAM header.
@@ -555,9 +556,13 @@ fn perl_num_str(x: f64) -> String {
     }
 }
 
-/// Format a variant call to a VCF record line.
+/// Write a variant call as a VCF record line into `buf` (cleared first).
+/// Byte-identical to [`format_vcf_record`]; the caller's buffer is reused
+/// across rows (one reserve, `clear()` per variant) instead of one temp
+/// `String` per INFO field plus a final `format!`.
 /// Ports VCF serialization (T105).
-pub fn format_vcf_record(
+pub fn format_vcf_record_into(
+    buf: &mut String,
     variant: &Variant,
     region: &Region,
     config: &Config,
@@ -566,30 +571,33 @@ pub fn format_vcf_record(
     oddratio_str: &str,
     // Amplicon columns 37-40 (GDAMP, TLAMP, NCAMP, AMPFLAG); None = simple mode.
     amp: Option<(i32, i32, i32, bool)>,
-) -> String {
-    let ref_allele = variant.ref_allele.clone();
-    let mut var_allele = variant.var_allele.clone();
+) {
+    buf.clear();
+    // Golden single-sample VCF p50 is 398 B, max 551 B: 512 covers the common
+    // record, long alleles regrow once.
+    buf.reserve(512);
     let var_type = if variant.var_type.is_empty() {
         "REF"
     } else {
-        &variant.var_type
+        variant.var_type.as_str()
     };
 
-    let gt = if ref_allele == var_allele {
-        var_allele = ".".to_string();
-        "0/0".to_string()
+    // ref==alt (-p pileup reference calls) become ALT ".", GT "0/0".
+    let alt_is_dot = variant.ref_allele == variant.var_allele;
+    let gt = if alt_is_dot {
+        "0/0"
     } else {
         let af = variant.frequency;
         let gt_freq = 0.2;
         let freq_threshold = valid_freq_threshold(config);
         if 1.0 - af < gt_freq {
-            "1/1".to_string()
+            "1/1"
         } else if af >= 0.5 {
-            "1/0".to_string()
+            "1/0"
         } else if af >= freq_threshold {
-            "0/1".to_string()
+            "0/1"
         } else {
-            "0/0".to_string()
+            "0/0"
         }
     };
 
@@ -606,60 +614,140 @@ pub fn format_vcf_record(
             * crate::types::round_half_even(variant.mean_quality, 1)) as i32
     };
 
-    let filter_str = if filters.is_empty() {
-        "PASS"
+    buf.push_str(&region.chr);
+    buf.push('\t');
+    let _ = write!(buf, "{}\t", variant.start_pos);
+    buf.push_str(".\t");
+    buf.push_str(&variant.ref_allele);
+    buf.push('\t');
+    if alt_is_dot {
+        buf.push_str(".\t");
     } else {
-        &filters.join(";")
-    };
-
-    let sample_nowhitespace = config.sample.replace(char::is_whitespace, "_");
-
-    let end_str = if config.omit_end_tag {
-        "".to_string()
+        buf.push_str(&variant.var_allele);
+        buf.push('\t');
+    }
+    let _ = write!(buf, "{}\t", qual_val);
+    if filters.is_empty() {
+        buf.push_str("PASS\t");
     } else {
-        format!(";END={}", variant.end_pos)
-    };
+        for (i, f) in filters.iter().enumerate() {
+            if i > 0 {
+                buf.push(';');
+            }
+            buf.push_str(f);
+        }
+        buf.push('\t');
+    }
 
-    let rd = variant.ref_fwd_cov + variant.ref_rev_cov;
-    let vd = variant.pos_coverage;
-    let ad = if vd != 0 {
-        format!("{},{}", rd, vd)
-    } else {
-        format!("{}", rd)
-    };
-
+    // INFO (field order mirrors var2vcf_valid.pl:236; values contain no
+    // spaces so the perl post-strip is a no-op here).
+    buf.push_str("SAMPLE=");
+    for c in config.sample.chars() {
+        buf.push(if c.is_whitespace() { '_' } else { c });
+    }
+    buf.push_str(";TYPE=");
+    buf.push_str(var_type);
+    let _ = write!(buf, ";DP={}", variant.total_pos_cov);
+    if !config.omit_end_tag {
+        let _ = write!(buf, ";END={}", variant.end_pos);
+    }
+    let _ = write!(buf, ";VD={}", variant.pos_coverage);
+    buf.push_str(";AF=");
+    push_stripped(buf, variant.frequency, 4);
+    buf.push_str(";BIAS=");
+    for c in variant.bias.chars() {
+        buf.push(if c == ';' { ':' } else { c });
+    }
+    let _ = write!(
+        buf,
+        ";REFBIAS={}:{};VARBIAS={}:{}",
+        variant.ref_fwd_cov, variant.ref_rev_cov, variant.fwd, variant.rev
+    );
+    buf.push_str(";PMEAN=");
+    push_stripped(buf, variant.mean_position, 1);
+    let _ = write!(buf, ";PSTD={}", if variant.pstd { 1 } else { 0 });
+    buf.push_str(";QUAL=");
+    push_stripped(buf, variant.mean_quality, 1);
+    let _ = write!(buf, ";QSTD={}", if variant.qstd { 1 } else { 0 });
+    buf.push_str(";SBF=");
+    push_stripped(buf, sbf, 5);
     // ports var2vcf_valid.pl:147-151 + :236 interpolation: "Inf" → 0; a value in
     // (0,1) is replaced by its reciprocal and stringified with Perl's default
     // numeric format (%.15g); any other table string passes through unchanged.
-    let vcf_or_str = if oddratio_str == "Inf" {
-        "0".to_string()
+    buf.push_str(";ODDRATIO=");
+    if oddratio_str == "Inf" {
+        buf.push('0');
     } else {
-        let x: f64 = oddratio_str.parse().unwrap_or(0.0);
-        if x < 1.0 && x > 0.0 {
-            perl_num_str(1.0 / x)
-        } else {
-            oddratio_str.to_string()
+        match oddratio_str.parse::<f64>() {
+            Ok(x) if x < 1.0 && x > 0.0 => buf.push_str(&perl_num_str(1.0 / x)),
+            _ => buf.push_str(oddratio_str),
         }
-    };
-
-    let nm_str = if variant.nm > 0.0 {
-        format!("{:.1}", crate::types::round_half_even(variant.nm, 1))
+    }
+    buf.push_str(";MQ=");
+    push_stripped(buf, variant.mean_mapping_quality, 1);
+    buf.push_str(";SN=");
+    push_stripped(buf, variant.hq_lq_ratio, 3);
+    // Java's RAW table cell for hifreq (trailing zeros kept): ports
+    // SimpleOutputVariant.java:127-129 / :211 — `hifreq == 0 ? "0" :
+    // new DecimalFormat("0.0000").format(hifreq)` — NOT getRoundedValueToPrint.
+    // (The PAIRED writer stays stripped: testsomatic.R's 48-entry pattern
+    // leaves hiaf1/hiaf2 numeric, so R re-formats them.)
+    buf.push_str(";HIAF=");
+    buf.push_str(&hiaf_cell(variant.hi_freq));
+    buf.push_str(";ADJAF=");
+    push_stripped(buf, variant.extra_freq, 4);
+    let _ = write!(buf, ";SHIFT3={}", variant.shift3);
+    buf.push_str(";MSI=");
+    push_stripped(buf, variant.msi, 3);
+    let _ = write!(buf, ";MSILEN={}", variant.msint);
+    buf.push_str(";NM=");
+    if variant.nm > 0.0 {
+        push_keep(buf, variant.nm, 1);
     } else {
-        "0".to_string()
-    };
-
-    let lseq = if variant.left_seq.is_empty() {
-        "0"
+        buf.push('0');
+    }
+    let _ = write!(buf, ";HICNT={};HICOV={}", variant.hicnt, variant.hicov);
+    buf.push_str(";LSEQ=");
+    if variant.left_seq.is_empty() {
+        buf.push('0');
     } else {
-        &variant.left_seq
-    };
-    let rseq = if variant.right_seq.is_empty() {
-        "0"
+        buf.push_str(&variant.left_seq);
+    }
+    buf.push_str(";RSEQ=");
+    if variant.right_seq.is_empty() {
+        buf.push('0');
     } else {
-        &variant.right_seq
-    };
+        buf.push_str(&variant.right_seq);
+    }
+    // After RSEQ: amplicon mode emits the GDAMP/TLAMP/NCAMP/AMPFLAG tags (:233),
+    // simple mode DUPRATE (its col 37 is Duprate) — never both.
+    if let Some((gdamp, tlamp, ncamp, ampflag)) = amp {
+        let _ = write!(
+            buf,
+            ";GDAMP={};TLAMP={};NCAMP={};AMPFLAG={}",
+            gdamp,
+            tlamp,
+            ncamp,
+            i32::from(ampflag)
+        );
+    } else {
+        // DUPRATE cell format differs by pipeline: with --fisher Perl consumes the
+        // 38-col table directly — getRoundedValueToPrint("0.00", duprate)
+        // (SimpleOutputVariant.java:175). Without --fisher the 36-col cell is
+        // DecimalFormat("0.0")-based (SimpleOutputVariant.java:223) and R echoes it
+        // numeric-stripped (teststrandbias.R colClasses leaves input col 35
+        // numeric), i.e. a 1dp value. Both stripped, zero-guarded ("0").
+        buf.push_str(";DUPRATE=");
+        if config.fisher {
+            push_stripped(buf, variant.duprate, 2);
+        } else {
+            push_stripped(buf, variant.duprate, 1);
+        }
+        if matches!(config.crispr_cutting_site, Some(n) if n != 0) {
+            let _ = write!(buf, ";CRISPR={}", variant.crispr);
+        }
+    }
 
-    let mut sv_info = String::new();
     let is_amp = amp.is_some();
     if !is_amp {
         // ports var2vcf_valid.pl:197-212 — the SV block runs only when !$isamp
@@ -673,120 +761,69 @@ pub fn format_vcf_record(
             }
         }
 
-        if var_allele.starts_with('<') {
+        if !alt_is_dot && variant.var_allele.starts_with('<') {
             // ports var2vcf_valid.pl:206-208 — SVLEN = end - start,
             // incremented only when the ALT is an INV.
             let mut svlen = variant.end_pos - variant.start_pos;
-            if var_allele.contains("INV") {
+            if variant.var_allele.contains("INV") {
                 svlen += 1;
             }
-            let mut clean_alt = var_allele.clone();
+            let mut clean_alt = variant.var_allele.clone();
             clean_alt.retain(|c| c != '<' && c != '>');
-            sv_info = format!(";SVTYPE={};SVLEN={}", clean_alt, svlen);
+            let _ = write!(buf, ";SVTYPE={};SVLEN={}", clean_alt, svlen);
         }
-        sv_info = format!(
-            "{};SPLITREAD={};SPANPAIR={}",
-            sv_info, splitreads, spanpairs
-        );
+        let _ = write!(buf, ";SPLITREAD={};SPANPAIR={}", splitreads, spanpairs);
     }
-    // After RSEQ: amplicon mode emits the GDAMP/TLAMP/NCAMP/AMPFLAG tags (:233),
-    // simple mode DUPRATE (its col 37 is Duprate) — never both.
-    let post_rseq = if let Some((gdamp, tlamp, ncamp, ampflag)) = amp {
-        format!(
-            ";GDAMP={};TLAMP={};NCAMP={};AMPFLAG={}",
-            gdamp,
-            tlamp,
-            ncamp,
-            i32::from(ampflag)
-        )
+
+    // FORMAT + sample columns (ports var2vcf_valid.pl:240-241).
+    buf.push_str("\tGT:DP:VD:AD:AF:RD:ALD\t");
+    buf.push_str(gt);
+    buf.push(':');
+    let _ = write!(buf, "{}", variant.total_pos_cov);
+    buf.push(':');
+    let _ = write!(buf, "{}", variant.pos_coverage);
+    buf.push(':');
+    let rd = variant.ref_fwd_cov + variant.ref_rev_cov;
+    let vd = variant.pos_coverage;
+    if vd != 0 {
+        let _ = write!(buf, "{},{}", rd, vd);
     } else {
-        // DUPRATE cell format differs by pipeline: with --fisher Perl consumes the
-        // 38-col table directly — getRoundedValueToPrint("0.00", duprate)
-        // (SimpleOutputVariant.java:175). Without --fisher the 36-col cell is
-        // DecimalFormat("0.0")-based (SimpleOutputVariant.java:223) and R echoes it
-        // numeric-stripped (teststrandbias.R colClasses leaves input col 35
-        // numeric), i.e. a 1dp value. Both stripped, zero-guarded ("0").
-        let dup_str = if config.fisher {
-            get_rounded_value_to_print(variant.duprate, 2)
-        } else {
-            get_rounded_value_to_print(variant.duprate, 1)
-        };
-        if matches!(config.crispr_cutting_site, Some(n) if n != 0) {
-            format!(";DUPRATE={};CRISPR={}", dup_str, variant.crispr)
-        } else {
-            format!(";DUPRATE={}", dup_str)
-        }
-    };
-
-    let info = format!(
-        "SAMPLE={};TYPE={};DP={}{} \
-         ;VD={};AF={};BIAS={};REFBIAS={}:{};VARBIAS={}:{} \
-         ;PMEAN={};PSTD={};QUAL={};QSTD={} \
-         ;SBF={};ODDRATIO={};MQ={};SN={} \
-         ;HIAF={};ADJAF={};SHIFT3={} \
-         ;MSI={};MSILEN={};NM={} \
-         ;HICNT={};HICOV={};LSEQ={};RSEQ={}{}{}",
-        sample_nowhitespace,
-        var_type,
-        variant.total_pos_cov,
-        end_str,
-        variant.pos_coverage,
-        get_rounded_value_to_print(variant.frequency, 4),
-        variant.bias.replace(';', ":"),
-        variant.ref_fwd_cov,
-        variant.ref_rev_cov,
-        variant.fwd,
-        variant.rev,
-        get_rounded_value_to_print(variant.mean_position, 1),
-        if variant.pstd { 1 } else { 0 },
-        get_rounded_value_to_print(variant.mean_quality, 1),
-        if variant.qstd { 1 } else { 0 },
-        get_rounded_value_to_print(sbf, 5),
-        vcf_or_str,
-        get_rounded_value_to_print(variant.mean_mapping_quality, 1),
-        get_rounded_value_to_print(variant.hq_lq_ratio, 3),
-        hiaf_cell(variant.hi_freq),
-        get_rounded_value_to_print(variant.extra_freq, 4),
-        variant.shift3,
-        get_rounded_value_to_print(variant.msi, 3),
-        variant.msint,
-        nm_str,
-        variant.hicnt,
-        variant.hicov,
-        lseq,
-        rseq,
-        post_rseq,
-        sv_info
-    )
-    .replace(" ;", ";")
-    .replace(" ", "");
-
-    let format_keys = "GT:DP:VD:AD:AF:RD:ALD";
-    let format_vals = format!(
-        "{}:{}:{}:{}:{}:{},{}:{},{}",
-        gt,
-        variant.total_pos_cov,
-        variant.pos_coverage,
-        ad,
-        get_rounded_value_to_print(variant.frequency, 4),
-        variant.ref_fwd_cov,
-        variant.ref_rev_cov,
-        variant.fwd,
-        variant.rev
+        let _ = write!(buf, "{}", rd);
+    }
+    buf.push(':');
+    push_stripped(buf, variant.frequency, 4);
+    buf.push(':');
+    let _ = write!(
+        buf,
+        "{},{}:{},{}",
+        variant.ref_fwd_cov, variant.ref_rev_cov, variant.fwd, variant.rev
     );
+}
 
-    format!(
-        "{}\t{}\t.\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-        region.chr,
-        variant.start_pos,
-        ref_allele,
-        var_allele,
-        qual_val,
-        filter_str,
-        info,
-        format_keys,
-        format_vals
-    )
+/// Format a variant call to a VCF record line.
+/// Ports VCF serialization (T105).
+pub fn format_vcf_record(
+    variant: &Variant,
+    region: &Region,
+    config: &Config,
+    filters: &[String],
+    sbf: f64,
+    oddratio_str: &str,
+    // Amplicon columns 37-40 (GDAMP, TLAMP, NCAMP, AMPFLAG); None = simple mode.
+    amp: Option<(i32, i32, i32, bool)>,
+) -> String {
+    let mut buf = String::new();
+    format_vcf_record_into(
+        &mut buf,
+        variant,
+        region,
+        config,
+        filters,
+        sbf,
+        oddratio_str,
+        amp,
+    );
+    buf
 }
 
 // ---- var2vcf_paired.pl port (somatic/paired VCF, W4.5c) ----
@@ -989,43 +1026,67 @@ fn paired_qual_col(vd1: i32, qual1: f64, vd2: i32, qual2: f64) -> i32 {
     }
 }
 
-/// Per-sample FORMAT string. Ports var2vcf_paired.pl:240-241.
-fn paired_sample_field(
+/// Per-sample FORMAT string, written into `buf` (cleared first).
+/// Ports var2vcf_paired.pl:240-241. Single-buffer build (no temp `String`
+/// except the documented OR/BIAS transforms, whose port logic and pins stay
+/// in `paired_or_transform` / `paired_bias_fmt`). Callers reuse one buffer
+/// across the tumor/normal columns.
+fn paired_sample_field_into(
+    buf: &mut String,
     v: &crate::variations::Variant,
     gt: &str,
     sbf: f64,
     oddratio: &(String, f64),
-) -> String {
-    let nm = if v.nm > 0.0 { v.nm } else { 0.0 };
-    let mq = format!(
-        "{:.0}",
-        crate::types::round_half_even(crate::types::round_half_even(v.mean_mapping_quality, 1), 0)
-    );
-    format!(
-        "{}:{}:{}:{},{}:{},{}:{},{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
-        gt,
-        v.total_pos_cov,
-        v.pos_coverage,
-        v.fwd,
-        v.rev,
-        v.ref_fwd_cov,
-        v.ref_rev_cov,
-        v.ref_fwd_cov + v.ref_rev_cov,
-        v.pos_coverage,
-        get_rounded_value_to_print(v.frequency, 4),
-        paired_bias_fmt(&v.bias),
-        get_rounded_value_to_print(v.mean_position, 1),
-        if v.pstd { 1 } else { 0 },
-        get_rounded_value_to_print(v.mean_quality, 1),
-        if v.qstd { 1 } else { 0 },
-        get_rounded_value_to_print(sbf, 5),
-        oddratio.0,
-        mq,
-        get_rounded_value_to_print(v.hq_lq_ratio, 3),
-        get_rounded_value_to_print(v.hi_freq, 4),
-        get_rounded_value_to_print(v.extra_freq, 4),
-        get_rounded_value_to_print(nm, 1),
-    )
+) {
+    buf.clear();
+    // 192 B covers the 21-field sample column at typical widths; longer
+    // alleles regrow once and the capacity is retained across rows.
+    buf.reserve(192);
+    let mq =
+        crate::types::round_half_even(crate::types::round_half_even(v.mean_mapping_quality, 1), 0);
+    buf.push_str(gt);
+    buf.push(':');
+    let _ = write!(buf, "{}", v.total_pos_cov);
+    buf.push(':');
+    let _ = write!(buf, "{}", v.pos_coverage);
+    buf.push(':');
+    let _ = write!(buf, "{},{}", v.fwd, v.rev);
+    buf.push(':');
+    let _ = write!(buf, "{},{}", v.ref_fwd_cov, v.ref_rev_cov);
+    buf.push(':');
+    let _ = write!(buf, "{}", v.ref_fwd_cov + v.ref_rev_cov);
+    buf.push(',');
+    let _ = write!(buf, "{}", v.pos_coverage);
+    buf.push(':');
+    push_stripped(buf, v.frequency, 4);
+    buf.push(':');
+    buf.push_str(&paired_bias_fmt(&v.bias));
+    buf.push(':');
+    push_stripped(buf, v.mean_position, 1);
+    buf.push(':');
+    buf.push(if v.pstd { '1' } else { '0' });
+    buf.push(':');
+    push_stripped(buf, v.mean_quality, 1);
+    buf.push(':');
+    buf.push(if v.qstd { '1' } else { '0' });
+    buf.push(':');
+    push_stripped(buf, sbf, 5);
+    buf.push(':');
+    buf.push_str(&oddratio.0);
+    buf.push(':');
+    let _ = write!(buf, "{:.0}", mq);
+    buf.push(':');
+    push_stripped(buf, v.hq_lq_ratio, 3);
+    buf.push(':');
+    push_stripped(buf, v.hi_freq, 4);
+    buf.push(':');
+    push_stripped(buf, v.extra_freq, 4);
+    buf.push(':');
+    if v.nm > 0.0 {
+        push_stripped(buf, v.nm, 1);
+    } else {
+        buf.push('0');
+    }
 }
 
 /// Format one somatic variant into a paired VCF record.
@@ -1245,51 +1306,76 @@ pub fn format_paired_vcf_record(
     let sample_tumor = config.sample.split('|').next().unwrap_or(&config.sample);
     let sample_nowhitespace = sample_tumor.replace(char::is_whitespace, "_");
 
-    let lseq = if end_var.left_seq.is_empty() {
-        "0"
-    } else {
-        &end_var.left_seq
-    };
-    let rseq = if end_var.right_seq.is_empty() {
-        "0"
-    } else {
-        &end_var.right_seq
-    };
+    let mut prefix = String::with_capacity(96);
+    prefix.push_str(chr);
+    prefix.push('\t');
+    let _ = write!(prefix, "{}", v1.start_pos);
+    prefix.push_str("\t.\t");
+    prefix.push_str(&v1.ref_allele);
+    prefix.push('\t');
+    prefix.push_str(&v1.var_allele);
+    prefix.push('\t');
+    let _ = write!(prefix, "{}", qual_col);
 
     // INFO (:237-239). No END tag and no SV tags in the paired writer.
-    let info = format!(
-        "STATUS={};SAMPLE={};TYPE={};DP={};VD={};AF={};SHIFT3={};MSI={};MSILEN={};SSF={};SOR={};LSEQ={};RSEQ={}",
-        status,
-        sample_nowhitespace,
-        var_type,
-        dp1,
-        vd1,
-        get_rounded_value_to_print(v1.frequency, 4),
-        end_var.shift3,
-        if end_var.msi == 0.0 {
-            "0".to_string()
-        } else {
-            format!("{:.3}", crate::types::round_half_even(end_var.msi, 3))
-        },
-        end_var.msint,
-        get_rounded_value_to_print(ptot, 5),
-        sor_str,
-        lseq,
-        rseq,
-    );
+    let mut info = String::with_capacity(512);
+    info.push_str("STATUS=");
+    info.push_str(status);
+    info.push_str(";SAMPLE=");
+    info.push_str(&sample_nowhitespace);
+    info.push_str(";TYPE=");
+    info.push_str(&var_type);
+    let _ = write!(info, ";DP={};VD={}", dp1, vd1);
+    info.push_str(";AF=");
+    push_stripped(&mut info, v1.frequency, 4);
+    let _ = write!(info, ";SHIFT3={}", end_var.shift3);
+    info.push_str(";MSI=");
+    push_keep(&mut info, end_var.msi, 3);
+    let _ = write!(info, ";MSILEN={}", end_var.msint);
+    info.push_str(";SSF=");
+    push_stripped(&mut info, ptot, 5);
+    info.push_str(";SOR=");
+    info.push_str(&sor_str);
+    info.push_str(";LSEQ=");
+    if end_var.left_seq.is_empty() {
+        info.push('0');
+    } else {
+        info.push_str(&end_var.left_seq);
+    }
+    info.push_str(";RSEQ=");
+    if end_var.right_seq.is_empty() {
+        info.push('0');
+    } else {
+        info.push_str(&end_var.right_seq);
+    }
 
     let format_keys =
         "GT:DP:VD:ALD:RD:AD:AF:BIAS:PMEAN:PSTD:QUAL:QSTD:SBF:ODDRATIO:MQ:SN:HIAF:ADJAF:NM";
-    let s1 = paired_sample_field(v1, gt, p1, &or1);
-    let s2 = paired_sample_field(v2, gtm, p2, &or2);
+
+    // Sample columns share one scratch buffer: `_into` clears per call, and
+    // the values are copied into `rest` immediately, so no allocation
+    // survives the row. (`rest` itself is retained by the delayed-print
+    // machine, so cross-row sharing is impossible — this is the most reuse
+    // the retained-struct design allows.)
+    let mut col = String::new();
+    // `rest` holds INFO + keys + both sample columns; 768 covers the common
+    // paired row so the assembly never regrows (records are retained per
+    // batch for the Cluster machine, so the slack is bounded by design).
+    let mut rest = String::with_capacity(768);
+    rest.push_str(&info);
+    rest.push('\t');
+    rest.push_str(format_keys);
+    rest.push('\t');
+    paired_sample_field_into(&mut col, v1, gt, p1, &or1);
+    rest.push_str(&col);
+    rest.push('\t');
+    paired_sample_field_into(&mut col, v2, gtm, p2, &or2);
+    rest.push_str(&col);
 
     PairedVcfRecord {
-        prefix: format!(
-            "{}\t{}\t.\t{}\t{}\t{}",
-            chr, v1.start_pos, v1.ref_allele, v1.var_allele, qual_col
-        ),
+        prefix,
         filter,
-        rest: format!("{}\t{}\t{}\t{}", info, format_keys, s1, s2),
+        rest,
         start: v1.start_pos,
         type_snv: var_type == "SNV",
         status_somatic: status.contains("Somatic"),
@@ -1445,6 +1531,52 @@ mod tests {
         let rec = format_vcf_record(&variant, &region, &config, &filters, 1.0, "1.5", None);
         assert!(rec.contains("chr1\t100\t.\tA\tG"));
         assert!(rec.contains("SAMPLE=SAMPLE"));
+    }
+
+    #[test]
+    fn format_vcf_record_into_matches_one_shot_and_clears() {
+        // Task 6 pin (behavior only): the reused-buffer writer is byte-equal
+        // to the one-shot fn, `clear()`s per row, and keeps the -p survivor
+        // path (ref==alt → ALT ".", GT 0/0) plus the amp GDAMP path.
+        let config = Config::default();
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: crate::types::Pos1(90),
+            end: crate::types::Pos1(110),
+            gene: "TEST".to_string(),
+            amplicon: None,
+        };
+        let mut survivor = amplicon_passing_variant();
+        survivor.var_type = String::new();
+        survivor.var_allele = survivor.ref_allele.clone();
+        let filters = filter_variant(&survivor, &config, 0, None, 1.0, "1.5");
+        let rec = format_vcf_record(&survivor, &region, &config, &filters, 1.0, "1.5", None);
+        let mut buf = String::new();
+        format_vcf_record_into(
+            &mut buf, &survivor, &region, &config, &filters, 1.0, "1.5", None,
+        );
+        assert_eq!(buf, rec);
+        assert!(buf.contains("\t0/0:"), "GT 0/0: {buf}");
+
+        // Reuse the same buffer for a longer SNV record: exact match means
+        // no tail leakage from the previous row and no elided row.
+        let mut snv = amplicon_passing_variant();
+        snv.left_seq = "ACGTACGTACGTACGTACGT".to_string();
+        snv.right_seq = "TGCATGCATGCATGCATGCA".to_string();
+        let filters2 = filter_variant(&snv, &config, 0, None, 1.0, "1.5");
+        let rec2 = format_vcf_record(&snv, &region, &config, &filters2, 1.0, "1.5", None);
+        format_vcf_record_into(
+            &mut buf, &snv, &region, &config, &filters2, 1.0, "1.5", None,
+        );
+        assert_eq!(buf, rec2);
+
+        // Amplicon path: GDAMP tags, no DUPRATE/SPLITREAD.
+        let amp = Some((4, 4, 0, false));
+        let filters3 = filter_variant(&snv, &config, 0, amp, 1.0, "1.5");
+        let rec3 = format_vcf_record(&snv, &region, &config, &filters3, 1.0, "1.5", amp);
+        format_vcf_record_into(&mut buf, &snv, &region, &config, &filters3, 1.0, "1.5", amp);
+        assert_eq!(buf, rec3);
+        assert!(buf.contains("GDAMP=4;TLAMP=4;NCAMP=0;AMPFLAG=0"));
     }
 
     #[test]
@@ -1928,6 +2060,30 @@ mod tests {
         };
         let pr = format_paired_vcf_record(&sv, "chr1", &config);
         assert_eq!(pr.prefix.split('\t').nth(5).unwrap(), "71");
+    }
+
+    #[test]
+    fn test_paired_sample_field_into_clears_and_is_deterministic() {
+        // Reuse-contract pin: `_into` clears any previous content (no
+        // bleed-through between the tumor/normal columns or across rows)
+        // and is deterministic for the same inputs.
+        let v = clean_normal();
+        let oddratio = ("0.5".to_string(), 0.5);
+        let mut buf = String::new();
+        buf.push_str("LONGER-PREVIOUS-ROW-CONTENT-THAT-MUST-VANISH");
+        paired_sample_field_into(&mut buf, &v, "0/1", 0.5, &oddratio);
+        let first = buf.clone();
+        assert!(first.starts_with("0/1:"), "gt leads: {first}");
+        assert!(
+            !first.contains("VANISH"),
+            "previous content cleared: {first}"
+        );
+        paired_sample_field_into(&mut buf, &v, "0/1", 0.5, &oddratio);
+        assert_eq!(buf, first, "same inputs, same bytes");
+        // Different genotype takes a different path through the same buffer.
+        paired_sample_field_into(&mut buf, &v, "1/1", 0.5, &oddratio);
+        assert!(buf.starts_with("1/1:"), "gt leads: {buf}");
+        assert_ne!(buf, first);
     }
 
     #[test]
