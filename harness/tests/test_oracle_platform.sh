@@ -21,6 +21,18 @@ done
 cat > "$T/bin/docker" <<'EOF'
 #!/usr/bin/env bash
 printf "%s\n" "$@" > "$DOCKER_LOG"
+seen=":"
+prev=""
+for a in "$@"; do
+  if [ "$prev" = "-v" ]; then
+    dst="${a#*:}"
+    case "$seen" in
+      *":$dst:"*) echo "Duplicate mount point: $dst" >&2; exit 125 ;;
+      *) seen="${seen}${dst}:" ;;
+    esac
+  fi
+  prev="$a"
+done
 exit 0
 EOF
 chmod +x "$T/bin"/*

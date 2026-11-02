@@ -281,7 +281,8 @@ _R_LONGDOUBLE_CACHE = {}
 
 def _r_sizeof_longdouble(sysname, machine):
     is_real_host = (sysname, machine) == _REAL_UNAME
-    conda = shutil.which("conda") if is_real_host else None
+    has_test_seam = bool(os.environ.get("GOLDEN_ORACLE_CMD") or os.environ.get("GOLDEN_CPP_CMD"))
+    conda = shutil.which("conda") if (is_real_host and not has_test_seam) else None
     rscript = shutil.which("Rscript") if is_real_host else None
     container = os.environ.get("ORACLE_CONTAINER") == "1"
     image = os.environ.get("ORACLE_CONTAINER_IMAGE", "vardict-oracle:linux-amd64") if container else ""
@@ -315,7 +316,7 @@ def _r_sizeof_longdouble(sysname, machine):
     return val
 
 
-def host_info():
+def host_info(include_r=True):
     cpu = "unknown"
     try:
         with open("/proc/cpuinfo") as f:
@@ -326,18 +327,20 @@ def host_info():
     except OSError:
         pass
     uname = os.uname()
-    return {
+    info = {
         "cpu": cpu,
         "nproc": os.cpu_count(),
         "kernel": platform.release(),
         "os": uname.sysname,
         "machine": uname.machine,
-        "r_sizeof_longdouble": _r_sizeof_longdouble(uname.sysname, uname.machine),
     }
+    if include_r:
+        info["r_sizeof_longdouble"] = _r_sizeof_longdouble(uname.sysname, uname.machine)
+    return info
 
 
 def _host_matches(recorded):
-    cur = host_info()
+    cur = host_info(include_r=False)
     return recorded.get("cpu") == cur["cpu"] and recorded.get("nproc") == cur["nproc"]
 
 

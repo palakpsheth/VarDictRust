@@ -8,11 +8,21 @@ if [ "$HOST_OS" != "Linux" ] || [ "$HOST_ARCH" != "x86_64" ]; then
     ORACLE_IMAGE="${ORACLE_CONTAINER_IMAGE:-vardict-oracle:linux-amd64}"
     REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
     OUT_DIR="$(mkdir -p "$(dirname "${4:-.}")" && cd "$(dirname "${4:-.}")" && pwd)"
-    MOUNT_ARGS=(-v "$REPO_ROOT:$REPO_ROOT" -v "$OUT_DIR:$OUT_DIR" -v /tmp:/tmp)
+    MOUNT_ARGS=()
+    SEEN_MOUNTS=":"
+    add_mount() {
+      local d="$1"
+      case "$SEEN_MOUNTS" in
+        *":$d:"*) ;;
+        *) SEEN_MOUNTS="${SEEN_MOUNTS}${d}:"; MOUNT_ARGS+=(-v "$d:$d") ;;
+      esac
+    }
+    add_mount "$REPO_ROOT"
+    add_mount "$OUT_DIR"
+    add_mount "/tmp"
     for p in "${1:-}" "${2%|*}" "${2#*|}" "${3:-}"; do
       if [ -n "$p" ] && [ -d "$(dirname "$p")" ]; then
-        d="$(cd "$(dirname "$p")" && pwd)"
-        MOUNT_ARGS+=(-v "$d:$d")
+        add_mount "$(cd "$(dirname "$p")" && pwd)"
       fi
     done
     exec docker run --rm --platform linux/amd64 \
