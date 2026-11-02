@@ -10,7 +10,7 @@
   ],
   "compare_head": [],
   "cpp_time": null,
-  "date": "2026-11-02T00:05:11-08:00",
+  "date": "2026-11-02T07:07:25-08:00",
   "extra": {
     "budget": "rust<=java wall and peak RSS (A9)",
     "pass": true,
@@ -24,10 +24,10 @@
         "java_rss_kb": 115200,
         "java_wall_s": 3.04,
         "pass": true,
-        "rss_ratio": 0.1125,
-        "rust_rss_kb": 12960,
-        "rust_wall_s": 0.01,
-        "wall_ratio": 0.0033
+        "rss_ratio": 0.1097,
+        "rust_rss_kb": 12640,
+        "rust_wall_s": 0.06,
+        "wall_ratio": 0.0197
       },
       "hg002-tier2": {
         "cpp_maxrss_kb": 873584,
@@ -38,22 +38,22 @@
         "java_rss_kb": 4079420,
         "java_wall_s": 160.54,
         "pass": true,
-        "rss_ratio": 0.0685,
-        "rust_rss_kb": 279416,
-        "rust_wall_s": 48.3,
-        "wall_ratio": 0.3009
+        "rss_ratio": 0.0863,
+        "rust_rss_kb": 352072,
+        "rust_wall_s": 17.81,
+        "wall_ratio": 0.1109
       },
       "hg008-cram-twin": {
-        "cram_bam_wall_ratio": 1.3936,
+        "cram_bam_wall_ratio": 1.8905,
         "evidence_fingerprint": "356eb13ba068790c",
         "pass": true,
         "result": "MATCH",
-        "rust_bam_wall_s": 55.46,
-        "rust_cram_rss_kb": 1346388,
-        "rust_cram_wall_s": 77.28999999999999,
+        "rust_bam_wall_s": 18.45,
+        "rust_cram_rss_kb": 1608304,
+        "rust_cram_wall_s": 34.88,
         "rust_exit": 0,
-        "rust_rss_kb": 257440,
-        "rust_wall_s": 55.46
+        "rust_rss_kb": 285688,
+        "rust_wall_s": 18.45
       },
       "hg008-tier2": {
         "cpp_maxrss_kb": 310920,
@@ -64,10 +64,10 @@
         "java_rss_kb": 3191168,
         "java_wall_s": 107.0,
         "pass": true,
-        "rss_ratio": 0.0829,
-        "rust_rss_kb": 264516,
-        "rust_wall_s": 31.57,
-        "wall_ratio": 0.295
+        "rss_ratio": 0.0972,
+        "rust_rss_kb": 310112,
+        "rust_wall_s": 16.84,
+        "wall_ratio": 0.1574
       },
       "seqc2-exome-tier2": {
         "cpp_maxrss_kb": 2252120,
@@ -78,15 +78,15 @@
         "java_rss_kb": 3345416,
         "java_wall_s": 5843.0,
         "pass": true,
-        "rss_ratio": 0.1283,
-        "rust_rss_kb": 429368,
-        "rust_wall_s": 533.46,
-        "wall_ratio": 0.0913
+        "rss_ratio": 0.1303,
+        "rust_rss_kb": 435748,
+        "rust_wall_s": 310.92,
+        "wall_ratio": 0.0532
       }
     }
   },
   "fingerprint": "356eb13ba068790c",
-  "head": "336c212a3d2b6755e376a7433d5dbe211220dc8d",
+  "head": "d4fdf2a09b5fc63d8c3ddb3abfbda46fb7fdbd2e",
   "inputs": [],
   "java_time": null,
   "n_variants": null,

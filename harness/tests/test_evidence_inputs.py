@@ -245,15 +245,38 @@ class TestEvidenceInputs(unittest.TestCase):
                 f"Initial --check failed: {res_init.stderr}",
             )
 
-            # Mutate hg008-tier2.json and hg008-cram-twin.json timings/RSS in temp copy
-            hg008_path = ev_dst / "hg008-tier2.json"
-            hg008_data = json.loads(hg008_path.read_text(encoding="utf-8"))
-            hg008_data["rust_time"]["wall"] = "0:38.20"
-            hg008_data["rust_time"]["max_rss_kb"] = "531860"
-            hg008_path.write_text(
-                json.dumps(hg008_data, indent=2, sort_keys=True) + "\n",
-                encoding="utf-8",
-            )
+            # Mutate Tier-2 and CRAM-twin timings/RSS in temp copy with deterministic synthetic values
+            synthetic_tier2 = {
+                "hg008-tier2.json": {
+                    "java_time": {"wall": "1:47.00", "max_rss_kb": "3190024"},
+                    "cpp_time": {"wall": "0:21.96", "max_rss_kb": "310908"},
+                    "rust_time": {"wall": "0:38.20", "max_rss_kb": "531860"},
+                },
+                "seqc2-slices-tier2.json": {
+                    "java_time": {"wall": "0:19.04", "max_rss_kb": "2545556"},
+                    "cpp_time": {"wall": "0:14.79", "max_rss_kb": "304176"},
+                    "rust_time": {"wall": "0:01.36", "max_rss_kb": "154168"},
+                },
+                "seqc2-exome-tier2.json": {
+                    "java_time": {"wall": "17:27.99", "max_rss_kb": "8419392"},
+                    "cpp_time": {"wall": "22:25.73", "max_rss_kb": "1762332"},
+                    "rust_time": {"wall": "5:13.86", "max_rss_kb": "628712"},
+                },
+                "hg002-tier2.json": {
+                    "java_time": {"wall": "2:43.25", "max_rss_kb": "7985080"},
+                    "cpp_time": {"wall": "1:18.96", "max_rss_kb": "1333816"},
+                    "rust_time": {"wall": "0:23.09", "max_rss_kb": "529500"},
+                },
+            }
+            for fname, overrides in synthetic_tier2.items():
+                fpath = ev_dst / fname
+                fdata = json.loads(fpath.read_text(encoding="utf-8"))
+                for k, v in overrides.items():
+                    fdata[k].update(v)
+                fpath.write_text(
+                    json.dumps(fdata, indent=2, sort_keys=True) + "\n",
+                    encoding="utf-8",
+                )
 
             cram_path = ev_dst / "hg008-cram-twin.json"
             cram_data = json.loads(cram_path.read_text(encoding="utf-8"))
