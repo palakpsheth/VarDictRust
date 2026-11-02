@@ -16,6 +16,7 @@ fi
 NAME=$1; J=$2; R=$3; TRUTH=$4; BED=$5; SDF=$6; OUT=$7; SAMPLE=$8; CPP_VCF=${9:-}
 mkdir -p "$OUT/java" "$OUT/rust"
 TRUTH_NOFILTER="$OUT/truth.nofilter.vcf.gz"
+TRUTH_SHA=$(portable_sha256 "$TRUTH")
 
 # 1. Process each engine
 VCFEVAL_STORE="${GOLDEN_STORE_DIR:-scratch/golden-store}/vcfeval"
@@ -66,9 +67,10 @@ PY
     return 0
   fi
 
-  if [ ! -f "$TRUTH_NOFILTER" ] || [ ! -f "$TRUTH_NOFILTER.tbi" ]; then
+  if [ ! -f "$TRUTH_NOFILTER" ] || [ ! -f "$TRUTH_NOFILTER.tbi" ] || [ "$(cat "$TRUTH_NOFILTER.sha256" 2>/dev/null || true)" != "$TRUTH_SHA" ]; then
     bcftools annotate -x FILTER "$TRUTH" | bcftools sort -Oz -o "$TRUTH_NOFILTER"
     tabix -f -p vcf "$TRUTH_NOFILTER"
+    printf '%s\n' "$TRUTH_SHA" > "$TRUTH_NOFILTER.sha256"
   fi
 
   echo "Filtering $eng calls with -f PASS..." &&
