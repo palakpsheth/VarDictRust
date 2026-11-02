@@ -129,7 +129,7 @@ echo "$(ts) [Stage 4/6] PASS ($((SECONDS - st_t0))s)"
 st_t0=$SECONDS
 echo "$(ts) [Stage 5/6] Checking performance budgets on benchmark targets..."
 if [ -f benchmarks/evidence/perf-budget.json ]; then
-  python3 harness/perf_budget.py hg008-tier2 seqc2-exome-tier2 hg002-tier2 amplicon-tier2
+  python3 harness/perf_budget.py hg008-tier2 seqc2-exome-tier2 hg002-tier2 amplicon-tier2 hg008-cram-twin
 fi
 echo "$(ts) [Stage 5/6] PASS ($((SECONDS - st_t0))s)"
 

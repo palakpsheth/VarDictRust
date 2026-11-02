@@ -419,12 +419,12 @@ else
     echo "$(ts) [REUSE] hg005-truth & na24385-b37-truth: already certified for $FP"
 fi
 
-if needs_stamp "perf-budget" || needs_stamp "hg008-tier2" || needs_stamp "seqc2-exome-tier2" || needs_stamp "hg002-tier2" || needs_stamp "amplicon-tier2"; then
-    echo "$(ts) [RUN] perf-budget: Certifying 4-Target Performance Budget..."
+if needs_stamp "perf-budget" || needs_stamp "hg008-tier2" || needs_stamp "seqc2-exome-tier2" || needs_stamp "hg002-tier2" || needs_stamp "amplicon-tier2" || needs_stamp "hg008-cram-twin"; then
+    echo "$(ts) [RUN] perf-budget: Certifying 4-Target + CRAM Twin Performance Budget..."
     mkdir -p scratch/g4/perf-budget
-    python3 harness/perf_budget.py hg008-tier2 seqc2-exome-tier2 hg002-tier2 amplicon-tier2 > scratch/g4/perf-budget/extra.json
+    python3 harness/perf_budget.py hg008-tier2 seqc2-exome-tier2 hg002-tier2 amplicon-tier2 hg008-cram-twin > scratch/g4/perf-budget/extra.json
     python3 harness/record_evidence.py perf-budget PASS scratch/g4/perf-budget \
-      -- python3 harness/perf_budget.py hg008-tier2 seqc2-exome-tier2 hg002-tier2 amplicon-tier2
+      -- python3 harness/perf_budget.py hg008-tier2 seqc2-exome-tier2 hg002-tier2 amplicon-tier2 hg008-cram-twin
 else
     echo "$(ts) [REUSE] perf-budget: already certified for $FP"
 fi

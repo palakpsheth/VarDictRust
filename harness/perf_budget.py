@@ -6,8 +6,8 @@ PASS iff for every named evidence:
   2. result in ("MATCH", "PASS", "EQUAL") when present (and strictly "MATCH" for
      extended_coverage, multimodal_slices, and cram_parity suites).
   3. rust wall <= java wall AND rust peak RSS <= java peak RSS (when java_time & rust_time present).
-  4. For cram_parity: when both rust_bam_wall_s and rust_cram_wall_s are positive,
-     rust_cram_wall_s / rust_bam_wall_s <= 1.50.
+  4. For cram_parity / hg008-cram-twin: when both rust_bam_wall_s and rust_cram_wall_s are positive,
+     rust_cram_wall_s / rust_bam_wall_s <= 1.50 (cram_parity) or <= 2.50 (hg008-cram-twin).
   5. When --baseline DIR is provided, current wall and RSS must not exceed baseline by more than
      --tolerance PCT (default 10.0%).
   6. When --vs-cpp SPEC is provided, rust_wall_s / cpp_wall_s <= threshold (excluding amplicon floor).
@@ -127,12 +127,14 @@ def main():
         with open(path, "r", encoding="utf-8") as fh:
             d = json.load(fh)
         j, r = d.get("java_time"), d.get("rust_time")
+        rc_time = d.get("rust_cram_time")
         extra = d.get("extra") or {}
 
         is_suite_schema = (
             n in SUITE_NAMES
             or "rust_bam_wall_s" in d
             or "rust_cram_wall_s" in d
+            or "rust_cram_time" in d
             or "rust_bam_wall_s" in extra
             or "rust_cram_wall_s" in extra
             or "modalities" in d
@@ -146,6 +148,8 @@ def main():
         if d.get("rust_exit") is not None and int(d["rust_exit"]) != 0:
             p = False
         if isinstance(r, dict) and str(r.get("exit", "0")) != "0":
+            p = False
+        if isinstance(rc_time, dict) and str(rc_time.get("exit", "0")) != "0":
             p = False
         if isinstance(j, dict) and str(j.get("exit", "0")) != "0":
             p = False
@@ -234,10 +238,19 @@ def main():
                 row["rust_wall_s"] = rw
             if rm is not None:
                 row["rust_rss_kb"] = rm
+            if isinstance(rc_time, dict):
+                if rc_time.get("wall") is not None:
+                    row["rust_cram_wall_s"] = secs(rc_time["wall"])
+                if rc_time.get("max_rss_kb") is not None:
+                    row["rust_cram_rss_kb"] = int(rc_time["max_rss_kb"])
 
-        # 4. CRAM parity wall-time ratio check (rust_cram_wall_s / rust_bam_wall_s <= 1.50)
+        # 4. CRAM parity wall-time ratio check (<= 1.50 for cram_parity, <= 2.50 for hg008-cram-twin)
         bam_w = d.get("rust_bam_wall_s", extra.get("rust_bam_wall_s"))
+        if bam_w is None and isinstance(r, dict) and r.get("wall") is not None:
+            bam_w = secs(r["wall"])
         cram_w = d.get("rust_cram_wall_s", extra.get("rust_cram_wall_s"))
+        if cram_w is None and isinstance(rc_time, dict) and rc_time.get("wall") is not None:
+            cram_w = secs(rc_time["wall"])
         if bam_w is not None and cram_w is not None:
             bam_wf, cram_wf = float(bam_w), float(cram_w)
             row["rust_bam_wall_s"] = bam_wf
@@ -245,7 +258,8 @@ def main():
             if bam_wf > 0.0 and cram_wf > 0.0:
                 cram_ratio = cram_wf / bam_wf
                 row["cram_bam_wall_ratio"] = round(cram_ratio, 4)
-                if cram_ratio > 1.50:
+                max_cram_ratio = 2.50 if n == "hg008-cram-twin" else 1.50
+                if cram_ratio > max_cram_ratio:
                     p = False
 
         # 5. Baseline vs current relative regression check
