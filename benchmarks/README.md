@@ -11,7 +11,7 @@ Every benchmark claim is backed by a verifiable, machine-readable evidence artif
 All release benchmarks were executed under standardized host constraints (below).
 Every performance number in this directory is measured on the stated host
 against VarDictJava as the baseline — paper figures are never quoted as ours.
-- **CPU/host:** Isolated GCP `n2-standard-32` (Intel Xeon @ 2.80 GHz, Linux x86_64, 8 worker threads / `$P = 4$` pinned physical cores `0-3,16-19` for `scale.json`, Ubuntu LTS).
+- **CPU/host:** Isolated GCP `n2-standard-32` (Intel Xeon @ 2.80 GHz, Linux x86_64, 8 worker threads / `$P = 4$` pinned physical cores `0-7` for `scale.json`, Ubuntu LTS).
 - **Concurrency:** Normalized to **8 CPU threads** (`-th 8`) as a standard multi-tenant cluster baseline (not an engine scaling ceiling).
 - **Storage:** Local NVMe SSD.
 - **Toolchain:** Rust 1.96.0 (`x86_64-unknown-linux-musl` and `x86_64-unknown-linux-gnu`), OpenJDK 25.0.2 / OpenJDK 8 for oracle (`vardict-oracle`).
@@ -24,11 +24,11 @@ Evaluated via `harness/perf_budget.py`, comparing `vardictrust` against the `Var
 
 | Workload / Target | Modality | Java Wall | Cpp Wall¹ | Rust Wall | Speedup (vs Java) | Java Peak RSS | Cpp Peak RSS¹ | Rust Peak RSS | Memory Scaling (vs Java) | Cpp vs Java Parity¹ | Evidence File |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Targeted Amplicon Panel** | AmpliconMode (`-a 10:0.95`) | `0:03.04` | `0:03.75` | **`0:00.01`** | **304.0× faster** | `112.5 MiB` | `88.9 MiB` | **`12.7 MiB`** | **8.9× less** | **[SKIP (`CPP-3`)](../docs/upstream-bugs.md#cpp-3)** | [`amplicon-tier2.json`](evidence/amplicon-tier2.json) |
-| **GIAB HG002 (chr20:10M–30M, 30×)** | SimpleMode (`-f 0.01`) | `2:40.54` | `0:18.87` | **`0:48.30`** | **3.3× faster** | `3.89 GiB` | `853.1 MiB` | **`272.9 MiB`** | **14.6× less** | **[MISMATCH (`CPP-9`)](../docs/upstream-bugs.md#cpp-9)** · **[`CPP-1`](../docs/upstream-bugs.md#cpp-1)** | [`hg002-tier2.json`](evidence/hg002-tier2.json) |
-| **SEQC2 HCC1395 Somatic Exome** | SomaticMode (`tumor\|normal`, `-th 4`²) | `1:37:23` | `7:11.99` | **`8:53.46`** | **11.0× faster** | `3.19 GiB` | `2.15 GiB` | **`419.3 MiB`** | **7.8× less** | **[MISMATCH (`CPP-9`)](../docs/upstream-bugs.md#cpp-9)** | [`seqc2-exome-tier2.json`](evidence/seqc2-exome-tier2.json) |
-| **GIAB HG008 Somatic PDAC** | SomaticMode (`tumor\|normal`, `-th 4`²) | `1:47.00` | `0:21.96` | **`0:31.57`** | **3.4× faster** | `3.04 GiB` | `303.6 MiB` | **`258.3 MiB`** | **12.1× less** | **[MISMATCH (`CPP-9`)](../docs/upstream-bugs.md#cpp-9)** | [`hg008-tier2.json`](evidence/hg008-tier2.json) |
-| **GIAB HG008 CRAM-vs-BAM Twin** | SomaticMode CRAM vs BAM (`-th 4`²) | `0:55.46` (Rust BAM) | — | **`1:17.29` (Rust CRAM)** | **1.39× CRAM/BAM** | `251.4 MiB` (BAM) | — | **`1.28 GiB` (CRAM)** | **Bounded `512 MiB` cache** | **MATCH (`18,426` Rust; `18,425` Cpp CRAM==BAM)** | [`hg008-cram-twin.json`](evidence/hg008-cram-twin.json) |
+| **Targeted Amplicon Panel** | AmpliconMode (`-a 10:0.95`) | `0:03.04` | `0:03.75` | **`0:00.06`** | **50.7× faster** | `112.5 MiB` | `88.9 MiB` | **`12.3 MiB`** | **9.1× less** | **[SKIP (`CPP-3`)](../docs/upstream-bugs.md#cpp-3)** | [`amplicon-tier2.json`](evidence/amplicon-tier2.json) |
+| **GIAB HG002 (chr20:10M–30M, 30×)** | SimpleMode (`-f 0.01`) | `2:40.54` | `0:18.87` | **`0:17.81`** | **9.0× faster** | `3.89 GiB` | `853.1 MiB` | **`343.8 MiB`** | **11.6× less** | **[MISMATCH (`CPP-9`)](../docs/upstream-bugs.md#cpp-9)** · **[`CPP-1`](../docs/upstream-bugs.md#cpp-1)** | [`hg002-tier2.json`](evidence/hg002-tier2.json) |
+| **SEQC2 HCC1395 Somatic Exome** | SomaticMode (`tumor\|normal`, `-th 4`²) | `1:37:23` | `7:11.99` | **`5:10.92`** | **18.8× faster** | `3.19 GiB` | `2.15 GiB` | **`425.5 MiB`** | **7.7× less** | **[MISMATCH (`CPP-9`)](../docs/upstream-bugs.md#cpp-9)** | [`seqc2-exome-tier2.json`](evidence/seqc2-exome-tier2.json) |
+| **GIAB HG008 Somatic PDAC** | SomaticMode (`tumor\|normal`, `-th 4`²) | `1:47.00` | `0:21.96` | **`0:16.84`** | **6.4× faster** | `3.04 GiB` | `303.6 MiB` | **`302.8 MiB`** | **10.3× less** | **[MISMATCH (`CPP-9`)](../docs/upstream-bugs.md#cpp-9)** | [`hg008-tier2.json`](evidence/hg008-tier2.json) |
+| **GIAB HG008 CRAM-vs-BAM Twin** | SomaticMode CRAM vs BAM (`-th 4`²) | `0:18.45` (Rust BAM) | — | **`0:34.88` (Rust CRAM)** | **1.89× CRAM/BAM** | `279.0 MiB` (BAM) | — | **`1.53 GiB` (CRAM)** | **Bounded `512 MiB` cache** | **MATCH (`18,426` Rust; `18,425` Cpp CRAM==BAM)** | [`hg008-cram-twin.json`](evidence/hg008-cram-twin.json) |
 
 ¹ Cpp (pinned **vardictcpp 3 `hc52dbad_0` bioconda**, same `vardict-oracle` env) runs beside each gate arm via `harness/perf_budget.py`. The budget verdict stays Rust-vs-Java only. Per-cell cpp wall/RSS above are transcribed from the linked evidence `extra` (`cpp_wall_s`, `cpp_maxrss_kb`, ratios). Known cpp divergences are normalized in [`docs/upstream-bugs.md`](../docs/upstream-bugs.md#cpp-divergences). A missing `cpp_time` records a loud `SKIP`, never a silent pass.
 ² hg008/seqc2-exome at `-th 4`: Java `-th 8` is OOM-killed on 31G hosts (bisected 1✓/4✓/8✗); exact cmds in evidence.
