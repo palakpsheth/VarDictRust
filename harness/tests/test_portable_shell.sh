@@ -84,6 +84,43 @@ env -i PATH="/usr/bin:/bin" HOME="$TMP_DIR" TMPDIR="$TMP_DIR" bash -c '
   stderr_out="$("$spaced_dir/portable.sh" --time-v -o "$tmp/t_space.time" sh -c "echo child_stderr_preserved >&2" 2>&1)"
   [ "$stderr_out" = "child_stderr_preserved" ] || { echo "FAIL: child stderr lost or polluted: $stderr_out" >&2; exit 1; }
   grep -q "Exit status: 0" "$tmp/t_space.time" || { echo "FAIL: spaced portable.sh --time-v did not write t_space.time" >&2; exit 1; }
+
+  # 11. Deterministic Python timing backend: stderr preservation, piped stdin, failing exit status, Darwin RSS conversion
+  py_stdin_out="$(printf "piped_payload" | PORTABLE_TIME_BACKEND=python portable_time_v -o "$tmp/t_py.time" sh -c "cat; echo py_stderr_msg >&2" 2>"$tmp/t_py.stderr")"
+  [ "$py_stdin_out" = "piped_payload" ] || { echo "FAIL: python backend lost piped stdin: $py_stdin_out" >&2; exit 1; }
+  [ "$(cat "$tmp/t_py.stderr")" = "py_stderr_msg" ] || { echo "FAIL: python backend stderr mismatch" >&2; exit 1; }
+  grep -q "Exit status: 0" "$tmp/t_py.time" || { echo "FAIL: python backend missing Exit status: 0" >&2; exit 1; }
+  py_rc=0
+  PORTABLE_TIME_BACKEND=python portable_time_v -o "$tmp/t_py_fail.time" sh -c "exit 17" || py_rc=$?
+  [ "$py_rc" -eq 17 ] || { echo "FAIL: python backend did not propagate exit 17 (got $py_rc)" >&2; exit 1; }
+  grep -q "Exit status: 17" "$tmp/t_py_fail.time" || { echo "FAIL: python backend did not record Exit status: 17" >&2; exit 1; }
+
+  # 12. Deterministic BSD timing backend (mock time -l): stderr preservation, piped stdin, failing exit status, Darwin bytes->kbytes RSS
+  mock_bsd_time="$tmp/mock_bsd_time"
+  cat > "$mock_bsd_time" <<'\''EOF'\''
+#!/bin/sh
+if [ "${1:-}" = "-l" ]; then
+  shift
+  "$@"
+  rc=$?
+  printf "        0.01 real         0.00 user         0.00 sys\n  104857600  maximum resident set size\n" >&2
+  exit $rc
+fi
+exit 1
+EOF
+  chmod +x "$mock_bsd_time"
+  bsd_stdin_out="$(printf "bsd_payload" | PORTABLE_TIME_BACKEND=bsd PORTABLE_TIME_BIN="$mock_bsd_time" PORTABLE_UNAME_S=Darwin portable_time_v -o "$tmp/t_bsd.time" sh -c "cat; echo bsd_stderr_msg >&2" 2>"$tmp/t_bsd.stderr")"
+  [ "$bsd_stdin_out" = "bsd_payload" ] || { echo "FAIL: bsd backend lost piped stdin: $bsd_stdin_out" >&2; exit 1; }
+  [ "$(cat "$tmp/t_bsd.stderr")" = "bsd_stderr_msg" ] || { echo "FAIL: bsd backend stderr mismatch: $(cat "$tmp/t_bsd.stderr")" >&2; exit 1; }
+  grep -q "Maximum resident set size (kbytes): 102400" "$tmp/t_bsd.time" || { echo "FAIL: bsd backend Darwin RSS conversion failed: $(cat "$tmp/t_bsd.time")" >&2; exit 1; }
+  bsd_rc=0
+  PORTABLE_TIME_BACKEND=bsd PORTABLE_TIME_BIN="$mock_bsd_time" portable_time_v -o "$tmp/t_bsd_fail.time" sh -c "exit 23" || bsd_rc=$?
+  [ "$bsd_rc" -eq 23 ] || { echo "FAIL: bsd backend did not propagate exit 23 (got $bsd_rc)" >&2; exit 1; }
+  grep -q "Exit status: 23" "$tmp/t_bsd_fail.time" || { echo "FAIL: bsd backend did not record Exit status: 23" >&2; exit 1; }
+
+  # 13. exec_nice_idle replaces shell process
+  exec_out="$(bash -c "source \"\$1\"; exec_nice_idle echo exec_ok" _ "$1")"
+  [ "$exec_out" = "exec_ok" ] || { echo "FAIL: exec_nice_idle output: $exec_out" >&2; exit 1; }
 ' _ "$PORTABLE_SH" "$TMP_DIR"
 
 echo "PASS test_portable_shell"

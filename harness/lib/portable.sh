@@ -44,12 +44,19 @@ now_ms() {
 }
 
 portable_time_v() {
-    if [ -x /usr/bin/time ] && /usr/bin/time -v true >/dev/null 2>&1; then
-        /usr/bin/time -v "$@"
-        return $?
-    elif command -v gtime >/dev/null 2>&1 && gtime -v true >/dev/null 2>&1; then
-        gtime -v "$@"
-        return $?
+    local backend="${PORTABLE_TIME_BACKEND:-auto}"
+    local time_bin="${PORTABLE_TIME_BIN:-/usr/bin/time}"
+    if [ "$backend" = "auto" ] || [ "$backend" = "gnu" ]; then
+        if [ -x "$time_bin" ] && "$time_bin" -v true >/dev/null 2>&1; then
+            "$time_bin" -v "$@"
+            return $?
+        elif command -v gtime >/dev/null 2>&1 && gtime -v true >/dev/null 2>&1; then
+            gtime -v "$@"
+            return $?
+        elif [ "$backend" = "gnu" ]; then
+            echo "portable_time_v: GNU time backend requested but unavailable" >&2
+            return 127
+        fi
     fi
 
     local append=0
@@ -82,9 +89,9 @@ portable_time_v() {
     local tmp_time
     tmp_time="$(mktemp "${TMPDIR:-/tmp}/portable_time.XXXXXX")"
     local rc=0
-    if [ -x /usr/bin/time ] && /usr/bin/time -l true >/dev/null 2>&1; then
-        { /usr/bin/time -l sh -c 'exec "$@" 2>&3 3>&-' sh "$@" 2>"$tmp_time"; } 3>&2 || rc=$?
-    elif command -v python3 >/dev/null 2>&1; then
+    if { [ "$backend" = "auto" ] || [ "$backend" = "bsd" ]; } && [ -x "$time_bin" ] && "$time_bin" -l true >/dev/null 2>&1; then
+        { "$time_bin" -l sh -c 'exec "$@" 2>&3 3>&-' sh "$@" 2>"$tmp_time"; } 3>&2 || rc=$?
+    elif { [ "$backend" = "auto" ] || [ "$backend" = "python" ]; } && command -v python3 >/dev/null 2>&1; then
         python3 -c '
 import resource, subprocess, sys
 tmp_time = sys.argv[1]
@@ -112,7 +119,7 @@ sys.exit(proc.returncode)
         local raw_rss
         raw_rss="$(awk '/maximum resident set size/{print $1}' "$tmp_time" | tail -n 1)"
         if [ -n "$raw_rss" ]; then
-            if [ "$(uname -s)" = "Darwin" ]; then
+            if [ "${PORTABLE_UNAME_S:-$(uname -s)}" = "Darwin" ]; then
                 rss_kb=$(( raw_rss / 1024 ))
             else
                 rss_kb="$raw_rss"
@@ -211,6 +218,14 @@ nice_idle() {
     fi
 }
 
+exec_nice_idle() {
+    if command -v ionice >/dev/null 2>&1; then
+        exec nice -n 19 ionice -c 3 "$@"
+    else
+        exec nice -n 19 "$@"
+    fi
+}
+
 portable_md5() {
     if [ $# -gt 0 ]; then
         if command -v md5sum >/dev/null 2>&1; then
@@ -278,7 +293,7 @@ filesize() {
 }
 
 export -f ensure_g4_tools_path find_gitleaks now_ms portable_time_v mem_avail_gb \
-    disk_free_gb disk_total_gb portable_loadavg is_user_session_pid nice_idle \
+    disk_free_gb disk_total_gb portable_loadavg is_user_session_pid nice_idle exec_nice_idle \
     portable_md5 md5 portable_sha256 sha256 portable_filesize filesize >/dev/null 2>&1 || true
 
 if [ "${1:-}" = "--time-v" ]; then

@@ -18,4 +18,4 @@ for off in 0 1440; do
 done
 fi
 export COURTESY_ACTIVE=1
-nice_idle "$@"
+exec_nice_idle "$@"
