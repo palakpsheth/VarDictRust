@@ -1183,4 +1183,76 @@ mod concurrency {
             assert_eq!(pair[0], pair[1], "VCF bytes differ across thread counts");
         }
     }
+
+    #[test]
+    fn amplicon_multithreaded_deterministic() {
+        let dir = TempDir::new().expect("tempdir");
+        let fa = write_ref(&dir, "chr1", 2000, true);
+
+        let mut recs = Vec::new();
+        for pos in [150usize, 450, 750, 1050] {
+            recs.extend(snv_pair(pos));
+        }
+        recs.sort_by_key(|r| r.alignment_start());
+        let bam = dir.path().join("amp_det.bam");
+        indexed_bam(&bam, "chr1", 2000, &recs).expect("write indexed bam");
+
+        // 4 non-overlapping amplicon segments matching the 50bp reads at pos-20..pos+29
+        let bed = dir.path().join("amp_det.bed");
+        fs::write(
+            &bed,
+            "chr1\t130\t179\tAMP1\t0\t+\t135\t174\n\
+             chr1\t430\t479\tAMP2\t0\t+\t435\t474\n\
+             chr1\t730\t779\tAMP3\t0\t+\t735\t774\n\
+             chr1\t1030\t1079\tAMP4\t0\t+\t1035\t1074\n",
+        )
+        .expect("write amplicon bed");
+
+        let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+        let mut counts: Vec<usize> = [1usize, 2, 4].iter().map(|t| (*t).min(cores)).collect();
+        counts.dedup();
+
+        for emit_intermediate in [true, false] {
+            let runs: Vec<Vec<u8>> = counts
+                .iter()
+                .map(|&t| {
+                    let bam_str = bam.to_string_lossy().into_owned();
+                    let cfg = Config {
+                        reference: fa.to_string_lossy().into_owned(),
+                        sample: extract_sample_name(&bam_str, None),
+                        bam: bam_str,
+                        bed: Some(bed.to_string_lossy().into_owned()),
+                        col_chr: 0,
+                        col_start: 1,
+                        col_end: 2,
+                        col_seg_start: 1,
+                        col_seg_end: 2,
+                        col_gene: Some(3),
+                        column_for_chromosome: Some(0),
+                        amplicon: Some("10:0.95".to_string()),
+                        omit_end_tag: true,
+                        threads: t,
+                        emit_intermediate,
+                        ..Config::default()
+                    };
+                    let mut buf = Vec::new();
+                    vardictrust_core::run_with_writer(&cfg, &mut buf).expect("run_with_writer");
+                    buf
+                })
+                .collect();
+
+            let s = String::from_utf8_lossy(&runs[0]);
+            let data_rows = s.lines().filter(|l| !l.starts_with('#')).count();
+            assert!(
+                data_rows >= 4,
+                "expected >=4 amplicon variant rows (emit_intermediate={emit_intermediate}), got {data_rows}"
+            );
+            for pair in runs.windows(2) {
+                assert_eq!(
+                    pair[0], pair[1],
+                    "amplicon output differs across thread counts (emit_intermediate={emit_intermediate})"
+                );
+            }
+        }
+    }
 }

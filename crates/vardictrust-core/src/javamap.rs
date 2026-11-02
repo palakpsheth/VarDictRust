@@ -133,6 +133,12 @@ where
         self.size == 0
     }
 
+    /// Pre-allocates capacity in the backing `nodes` arena without altering bucket
+    /// count, resize threshold, or Java `HashMap` bucket-chain iteration order (`E4`).
+    pub fn reserve_nodes(&mut self, additional: usize) {
+        self.nodes.reserve(additional);
+    }
+
     pub fn contains_key(&self, key: &K) -> bool {
         self.get(key).is_some()
     }
@@ -1877,5 +1883,20 @@ mod tests {
                 "pad31", "pad30",
             ]
         );
+    }
+
+    #[test]
+    fn reserve_nodes_does_not_change_iteration_order() {
+        let mut with_reserve: JavaHashMap<i32, i32> = JavaHashMap::new();
+        with_reserve.reserve_nodes(512);
+        let mut without_reserve: JavaHashMap<i32, i32> = JavaHashMap::new();
+        for i in 0..512 {
+            let k = (i * 37) ^ (i << 7);
+            with_reserve.get_or_put_with(k, || i);
+            without_reserve.get_or_put_with(k, || i);
+        }
+        let k1: Vec<(i32, i32)> = with_reserve.into_iter().collect();
+        let k2: Vec<(i32, i32)> = without_reserve.into_iter().collect();
+        assert_eq!(k1, k2);
     }
 }

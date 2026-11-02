@@ -226,20 +226,24 @@ impl SeedMap {
             bases.len().saturating_sub(SEED1_LEN)
         };
 
-        for i in 0..site_end {
+        let mut i = 0;
+        while i < site_end {
             let pos = i as u32 + chunk.sequence_start;
 
-            // Don't index positions already covered by a previously loaded region
-            if chunk
+            // Don't index positions already covered by a previously loaded region.
+            // Jump directly past the covered interval instead of stepping 1 bp at a time (#63 H2).
+            if let Some(&(_, end)) = chunk
                 .prev_bounds
                 .iter()
-                .any(|&(start, end)| pos >= start && pos <= end)
+                .find(|&&(start, end)| pos >= start && pos <= end)
             {
+                i = ((end - chunk.sequence_start) as usize).saturating_add(1);
                 continue;
             }
 
             // Do not create adaptor sequences for the very end of chromosome
             if chunk.chr_len == chunk.sequence_end && i.saturating_add(SEED1_LEN) > bases.len() {
+                i += 1;
                 continue;
             }
 
@@ -250,6 +254,7 @@ impl SeedMap {
             if let Some(key) = bases.get(i..i + SEED2_LEN) {
                 Self::insert_into_raw(map, key, pos);
             }
+            i += 1;
         }
     }
 
@@ -385,30 +390,44 @@ impl Reference {
         ext_start: i32,
         ext_end: i32,
     ) -> (&[u8], i32) {
-        let candidates = || {
-            self.loaded_regions
-                .iter()
-                .enumerate()
-                .filter(|(_, lr)| lr.chr == chr)
-                .filter_map(|(idx, lr)| {
-                    let seq = self.seq_for_idx(idx, chr)?;
-                    let lr_start = lr.sequence_start as i32;
-                    let lr_end = lr_start.saturating_add(seq.len() as i32);
-                    Some((seq, lr_start, lr_end))
-                })
-        };
-        candidates()
-            .find(|&(_, lr_start, lr_end)| ext_start >= lr_start && ext_end <= lr_end)
-            .or_else(|| {
-                candidates()
-                    .find(|&(_, lr_start, lr_end)| read_start >= lr_start && read_end <= lr_end)
-            })
-            .or_else(|| {
-                candidates()
-                    .find(|&(_, lr_start, lr_end)| read_end > lr_start && read_start < lr_end)
-            })
-            .or_else(|| candidates().next())
-            .map(|(seq, lr_start, _)| (seq, lr_start))
+        if self.loaded_regions.len() == 1 {
+            if let Some(lr) = self.loaded_regions.first() {
+                if lr.chr == chr {
+                    if let Some(seq) = self.seq_for_idx(0, chr) {
+                        return (seq, lr.sequence_start as i32);
+                    }
+                }
+            }
+            return (&[], 1);
+        }
+        let mut read_match: Option<(&[u8], i32)> = None;
+        let mut overlap_match: Option<(&[u8], i32)> = None;
+        let mut first_match: Option<(&[u8], i32)> = None;
+        for (idx, lr) in self.loaded_regions.iter().enumerate() {
+            if lr.chr != chr {
+                continue;
+            }
+            let Some(seq) = self.seq_for_idx(idx, chr) else {
+                continue;
+            };
+            let lr_start = lr.sequence_start as i32;
+            let lr_end = lr_start.saturating_add(seq.len() as i32);
+            if ext_start >= lr_start && ext_end <= lr_end {
+                return (seq, lr_start);
+            }
+            if read_match.is_none() && read_start >= lr_start && read_end <= lr_end {
+                read_match = Some((seq, lr_start));
+            }
+            if overlap_match.is_none() && read_end > lr_start && read_start < lr_end {
+                overlap_match = Some((seq, lr_start));
+            }
+            if first_match.is_none() {
+                first_match = Some((seq, lr_start));
+            }
+        }
+        read_match
+            .or(overlap_match)
+            .or(first_match)
             .unwrap_or((&[], 1))
     }
 }

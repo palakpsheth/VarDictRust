@@ -67,15 +67,25 @@ pub fn simple_post_process(
             } else {
                 let vvar = &variants_on_position.variants;
                 let mut valid_vars = Vec::new();
-                for vref in vvar {
-                    let mut vref = vref.clone();
+                for vref_orig in vvar {
+                    if vref_orig.ref_allele.contains('N') {
+                        continue;
+                    }
+                    if vref_orig.ref_allele == vref_orig.var_allele && !config.pileup {
+                        continue;
+                    }
+                    let vtype_cow = vref_orig.var_type_cow();
+                    let is_good = vref_orig.is_good_var(
+                        variants_on_position.ref_variant.as_ref(),
+                        &vtype_cow,
+                        splice,
+                        config,
+                    );
+                    if !is_good && !config.pileup {
+                        continue;
+                    }
+                    let mut vref = vref_orig.clone();
                     vref.sv = sv.clone();
-                    if vref.ref_allele.contains('N') {
-                        continue;
-                    }
-                    if vref.ref_allele == vref.var_allele && !config.pileup {
-                        continue;
-                    }
                     if vref.start_pos != position && config.pileup && vvar.len() == 1 {
                         if let Some(ref_var) = &variants_on_position.ref_variant {
                             let mut ref_var = ref_var.clone();
@@ -97,17 +107,7 @@ pub fn simple_post_process(
                             valid_vars.push(ref_var);
                         }
                     }
-                    vref.var_type = vref.var_type();
-
-                    let is_good = vref.is_good_var(
-                        variants_on_position.ref_variant.as_ref(),
-                        &vref.var_type,
-                        splice,
-                        config,
-                    );
-                    if !is_good && !config.pileup {
-                        continue;
-                    }
+                    vref.var_type = vtype_cow.into_owned();
                     valid_vars.push(vref);
                 }
 

@@ -108,11 +108,8 @@ fn is_decimal_format_underflow_tie(value: f64, digits: i32) -> bool {
     )
 }
 
-/// Banker's rounding to `digits` decimal places.
-///
-/// Matches Java's `DecimalFormat` with `RoundingMode.HALF_EVEN`.
-/// This is critical for float-field equivalence with VarDictJava.
-pub fn round_half_even(value: f64, digits: i32) -> f64 {
+#[inline]
+pub(crate) fn round_half_even_reference(value: f64, digits: i32) -> f64 {
     if !value.is_finite() {
         return value;
     }
@@ -131,6 +128,67 @@ pub fn round_half_even(value: f64, digits: i32) -> f64 {
     }
     let s = format!("{:.*}", prec, value);
     s.parse::<f64>().unwrap_or(value)
+}
+
+/// Banker's rounding to `digits` decimal places.
+///
+/// Matches Java's `DecimalFormat` with `RoundingMode.HALF_EVEN`.
+/// This is critical for float-field equivalence with VarDictJava.
+pub fn round_half_even(value: f64, digits: i32) -> f64 {
+    if !value.is_finite() {
+        return value;
+    }
+    if is_decimal_format_underflow_tie(value, digits) {
+        return 0.0_f64.copysign(value);
+    }
+    if !(0..=8).contains(&digits) {
+        return round_half_even_reference(value, digits);
+    }
+    let b = value.to_bits();
+    let neg = (b >> 63) == 1;
+    let ex = ((b >> 52) & 0x7ff) as i32;
+    if ex == 0 {
+        return if neg { -0.0 } else { 0.0 };
+    }
+    let m = ((b & ((1u64 << 52) - 1)) | (1u64 << 52)) as u128;
+    let e = ex - 1075;
+    if e >= 0 {
+        return value;
+    }
+    let sh = (-e) as u32;
+    if sh > 120 {
+        return if neg { -0.0 } else { 0.0 };
+    }
+    const P10: [u64; 9] = [
+        1,
+        10,
+        100,
+        1_000,
+        10_000,
+        100_000,
+        1_000_000,
+        10_000_000,
+        100_000_000,
+    ];
+    let p = P10.get(digits as usize).copied().unwrap_or(1) as u128;
+    let num = m * p;
+    let q0 = num >> sh;
+    let r = num - (q0 << sh);
+    let half = 1u128 << (sh - 1);
+    let q = if r > half || (r == half && (q0 & 1) == 1) {
+        q0 + 1
+    } else {
+        q0
+    };
+    if q >= (1u128 << 53) {
+        return round_half_even_reference(value, digits);
+    }
+    let out = (q as f64) / (p as f64);
+    if neg {
+        -out
+    } else {
+        out
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -339,5 +397,134 @@ mod tests {
             count += 1;
         }
         assert!(count >= 400, "expected >= 400 oracle rows, got {count}");
+    }
+
+    #[test]
+    fn round_half_even_int_matches_reference() {
+        let mut total_checks = 0usize;
+
+        // 1. All 432 rows from java_fmt_oracle.tsv
+        let oracle_tsv = include_str!("../testdata/format/java_fmt_oracle.tsv");
+        let mut oracle_rows = 0usize;
+        for line in oracle_tsv.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+            let cols: Vec<&str> = trimmed.split('\t').collect();
+            let row_digits: i32 = cols[0].parse().unwrap();
+            let bits_hex = cols[3];
+            let expected_bits_hex = cols[5];
+            let bits = u64::from_str_radix(bits_hex.trim_start_matches("0x"), 16).unwrap();
+            let expected_oracle_bits =
+                u64::from_str_radix(expected_bits_hex.trim_start_matches("0x"), 16).unwrap();
+            let x = f64::from_bits(bits);
+            oracle_rows += 1;
+            let row_got = round_half_even(x, row_digits);
+            if f64::from_bits(expected_oracle_bits).is_nan() {
+                assert!(row_got.is_nan());
+            } else {
+                assert_eq!(
+                    row_got.to_bits(),
+                    expected_oracle_bits,
+                    "oracle row mismatch for bits={bits_hex} d={row_digits}"
+                );
+            }
+            for d in 0..=8 {
+                let got = round_half_even(x, d);
+                let exp = round_half_even_reference(x, d);
+                if exp.is_nan() {
+                    assert!(got.is_nan(), "NaN mismatch for bits={bits_hex} d={d}");
+                } else {
+                    assert_eq!(
+                        got.to_bits(),
+                        exp.to_bits(),
+                        "oracle mismatch for bits={bits_hex} x={x:?} d={d}: got={got:?} exp={exp:?}"
+                    );
+                }
+                total_checks += 1;
+            }
+        }
+        assert_eq!(oracle_rows, 432);
+
+        // 2. Decimal grid k / 10^d and midpoint neighbours (2k + 1) / (2 * 10^d) ± 1..2 ULP
+        const P10: [f64; 9] = [
+            1.0,
+            10.0,
+            100.0,
+            1_000.0,
+            10_000.0,
+            100_000.0,
+            1_000_000.0,
+            10_000_000.0,
+            100_000_000.0,
+        ];
+        for (d_usize, &scale) in P10.iter().enumerate() {
+            let d = d_usize as i32;
+            let two_scale = 2.0 * scale;
+            for k in 0..10_000u64 {
+                let exact = (k as f64) / scale;
+                let mid = ((2 * k + 1) as f64) / two_scale;
+                let mid_bits = mid.to_bits();
+                for &cand in &[
+                    exact,
+                    -exact,
+                    mid,
+                    -mid,
+                    f64::from_bits(mid_bits.saturating_sub(2)),
+                    f64::from_bits(mid_bits.saturating_sub(1)),
+                    f64::from_bits(mid_bits.saturating_add(1)),
+                    f64::from_bits(mid_bits.saturating_add(2)),
+                    -f64::from_bits(mid_bits.saturating_sub(1)),
+                    -f64::from_bits(mid_bits.saturating_add(1)),
+                ] {
+                    let got = round_half_even(cand, d);
+                    let exp = round_half_even_reference(cand, d);
+                    if exp.is_nan() {
+                        assert!(got.is_nan());
+                    } else {
+                        assert_eq!(
+                            got.to_bits(),
+                            exp.to_bits(),
+                            "grid/mid mismatch for cand={cand:?} (bits={:#x}) d={d}: got={got:?} exp={exp:?}",
+                            cand.to_bits()
+                        );
+                    }
+                    total_checks += 1;
+                }
+            }
+        }
+
+        // 3. Random f64 bit patterns and uniform magnitudes across d in 0..=8 (exceeding 1,000,000 total checks)
+        let mut rng: u64 = 0x9E37_79B9_7F4A_7C15;
+        for _ in 0..25_000 {
+            rng = rng
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            let f_bits = f64::from_bits(rng);
+            let f_unit = ((rng >> 11) as f64) * (1.0 / ((1u64 << 53) as f64));
+            for &cand in &[f_bits, f_unit, -f_unit, f_unit * 1e6, -f_unit * 1e6] {
+                for d in 0..=8 {
+                    let got = round_half_even(cand, d);
+                    let exp = round_half_even_reference(cand, d);
+                    if exp.is_nan() {
+                        assert!(got.is_nan());
+                    } else {
+                        assert_eq!(
+                            got.to_bits(),
+                            exp.to_bits(),
+                            "random mismatch for cand={cand:?} (bits={:#x}) d={d}: got={got:?} exp={exp:?}",
+                            cand.to_bits()
+                        );
+                    }
+                    total_checks += 1;
+                }
+            }
+        }
+
+        assert!(
+            total_checks >= 1_000_000,
+            "expected >= 1,000,000 checks, got {total_checks}"
+        );
     }
 }

@@ -78,15 +78,18 @@ pub fn ref_bases_with(
     to: i32,
     missing: Option<u8>,
 ) -> Vec<u8> {
-    let mut sb = Vec::new();
-    for pos in from..=to {
-        if pos > 0 {
-            match reference.get_base(chr, pos as u32) {
-                Some(b) => sb.push(b),
-                None => {
-                    if let Some(fill) = missing {
-                        sb.push(fill);
-                    }
+    if to < from || to < 1 {
+        return Vec::new();
+    }
+    let eff_from = from.max(1);
+    let span = ((to as i64) - (eff_from as i64) + 1).clamp(0, 1 << 20) as usize;
+    let mut sb = Vec::with_capacity(span);
+    for pos in eff_from..=to {
+        match reference.get_base(chr, pos as u32) {
+            Some(b) => sb.push(b),
+            None => {
+                if let Some(fill) = missing {
+                    sb.push(fill);
                 }
             }
         }
@@ -104,6 +107,42 @@ pub fn ref_bases(
     ref_bases_with(reference, chr, from, to, None)
 }
 
+/// Writes reference bases over the 1-based inclusive range `start..=end` into `out`,
+/// clearing `out` first and reserving the span capacity without intermediate `Vec<u8>`
+/// or `String` allocations (`L2`/`L8`).
+pub fn ref_bases_into(
+    out: &mut String,
+    reference: &crate::reference::Reference,
+    chr: &str,
+    start: i32,
+    end: i32,
+) {
+    out.clear();
+    if end < start || end < 1 {
+        return;
+    }
+    let eff_start = start.max(1);
+    let span = ((end as i64) - (eff_start as i64) + 1).clamp(0, 1 << 20) as usize;
+    if out.capacity() == 0 {
+        out.reserve_exact(span);
+    } else {
+        out.reserve(span);
+    }
+    for pos in eff_start..=end {
+        if let Some(b) = reference.get_base(chr, pos as u32) {
+            if b.is_ascii() {
+                out.push(b as char);
+            } else {
+                out.clear();
+                out.push_str(&String::from_utf8_lossy(&ref_bases(
+                    reference, chr, start, end,
+                )));
+                return;
+            }
+        }
+    }
+}
+
 /// Helper to construct a reference sequence from start to end position
 /// (inclusive), as a lossy UTF-8 string.
 ///
@@ -114,7 +153,9 @@ pub fn join_ref(
     start: i32,
     end: i32,
 ) -> String {
-    String::from_utf8_lossy(&ref_bases(reference, chr, start, end)).into_owned()
+    let mut out = String::new();
+    ref_bases_into(&mut out, reference, chr, start, end);
+    out
 }
 
 #[cfg(test)]
@@ -171,5 +212,48 @@ mod tests {
         let mut seq2 = b"AACG".to_vec();
         reverse_complement(&mut seq2);
         assert_eq!(&seq2, b"CGTT");
+    }
+
+    fn make_test_reference() -> crate::reference::Reference {
+        let mut reference = crate::reference::Reference::new();
+        let bases = b"ACGTACGTNNACGT".to_vec();
+        reference
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 1,
+                sequence_end: bases.len() as u32,
+            });
+        reference
+            .reference_sequences
+            .insert("chr1".to_string(), bases.clone());
+        reference.region_sequences.push(bases);
+        reference
+    }
+
+    #[test]
+    fn ref_bases_into_matches_legacy() {
+        let reference = make_test_reference();
+        let mut scratch = String::new();
+        for start in -2..=16 {
+            for end in -2..=16 {
+                ref_bases_into(&mut scratch, &reference, "chr1", start, end);
+                let legacy = String::from_utf8_lossy(&ref_bases(&reference, "chr1", start, end))
+                    .into_owned();
+                assert_eq!(
+                    scratch, legacy,
+                    "mismatch for range {start}..={end}: got {scratch:?}, expected {legacy:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn join_ref_capacity_exact() {
+        let reference = make_test_reference();
+        let s = join_ref(&reference, "chr1", 2, 10);
+        assert_eq!(s, "CGTACGTNN");
+        assert_eq!(s.len(), 9);
+        assert_eq!(s.capacity(), 9);
     }
 }
