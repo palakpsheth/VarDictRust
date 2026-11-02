@@ -130,9 +130,12 @@ class TestLinkedinCarousel(unittest.TestCase):
             post_text = post.read_text(encoding="utf-8")
             all_rendered = "\n".join(svg_texts) + "\n" + post_text
 
-            # Verify v1.0.6, fingerprint 5865a2a0b24a8c17, and 60-cell GCP study highlights
+            # Verify v1.0.7 current evidence fingerprint, v1.0.6 GCP study fingerprint 5865a2a0b24a8c17, and 60-cell GCP study highlights
+            expected_fp = json.loads((EVIDENCE_DIR / "hg002-tier2.json").read_text(encoding="utf-8"))["fingerprint"]
             for expected_token in (
+                "v1.0.7",
                 "v1.0.6",
+                expected_fp,
                 "5865a2a0b24a8c17",
                 "623,444",
                 "227,562",

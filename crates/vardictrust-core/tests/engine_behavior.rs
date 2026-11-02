@@ -232,6 +232,18 @@ mod fisher {
             !amp_rows.is_empty(),
             "amplicon --fisher must emit 40-col rows"
         );
+
+        // (D) R-mode (145, 494, 1, 0) exact 5-decimal midpoint regression check (73/320 = 0.228125):
+        // glibc libm (0x3fcd333333333333) rounds p_less to 0.22812; musl libm (0x3fcd333333333334)
+        // is 1 ULP higher across transcendental dhyper evaluation and rounds p_less to 0.22813.
+        let fe_r = vardictrust_core::stats::fisher::FisherExact::new(145, 494, 1, 0);
+        assert_eq!(fe_r.get_p_value().to_bits(), 0.22812_f64.to_bits());
+        assert_eq!(fe_r.get_p_value_greater().to_bits(), 1.0_f64.to_bits());
+        assert_eq!(fe_r.get_odds_ratio(), "0");
+        #[cfg(not(target_env = "musl"))]
+        assert_eq!(fe_r.get_p_value_less().to_bits(), 0.22812_f64.to_bits());
+        #[cfg(target_env = "musl")]
+        assert_eq!(fe_r.get_p_value_less().to_bits(), 0.22813_f64.to_bits());
     }
 }
 

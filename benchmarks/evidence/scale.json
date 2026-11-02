@@ -10,51 +10,78 @@
   ],
   "compare_head": [],
   "cpp_time": null,
-  "date": "2026-10-29T17:36:36+00:00",
+  "date": "2026-11-01T22:03:40-08:00",
   "extra": {
     "P": 4,
     "bar": 2.4,
     "certifying": true,
     "courtesy": true,
     "cpp_maxrss_kb": {
-      "1000000": 194324,
-      "10000000": 386240,
-      "100000000": 466292,
-      "248956422": 835236
+      "1000000": 219456,
+      "10000000": 2912032,
+      "100000000": 21998908,
+      "248956422": 25521616
     },
     "cpp_runs": 1,
     "cpp_wall_s": {
-      "1": 997.84,
-      "2": 518.13,
-      "4": 266.32,
-      "8": 222.2
+      "1": 629.09,
+      "2": 359.32,
+      "4": 216.62,
+      "8": 182.8
     },
-    "cpus": "0-3,16-19",
-    "governor": "unknown",
-    "loadavg_end": "7.30 7.40 6.20",
-    "loadavg_start": "0.03 0.43 1.83",
+    "cpus": "0-7",
+    "governor": "powersave",
+    "loadavg_end": "7.19 6.82 4.96",
+    "loadavg_start": "0.78 3.15 6.06",
     "maxrss_kb": {
-      "1000000": 513876,
-      "10000000": 1210636,
-      "100000000": 1223168,
-      "248956422": 1403368
+      "1000000": 514556,
+      "10000000": 1204220,
+      "100000000": 1198296,
+      "248956422": 1331428
     },
     "note": ">8 threads not measured (host policy A3); each rust cell = median of `runs` timed runs; cpp advisory arm = single-sample golden-store baseline (or `runs`-run median when GOLDEN_MODE=off)",
     "pass": true,
-    "perf_fingerprint": "c490c36317b8f25b",
+    "perf_fingerprint": "a8972d03c6daa8fa",
     "pinned": true,
-    "rss_ratio_chr1_vs_10mb": 1.1591989664936446,
+    "rss_ratio_chr1_vs_10mb": 1.1056351829399944,
     "runs": 3,
-    "speedup_8": 3.8361441071515863,
+    "speedup_8": 3.138209041174777,
     "wall_s": {
-      "1": 784.76,
-      "2": 402.48,
-      "4": 207.4,
-      "8": 204.57
+      "1": 435.96,
+      "2": 228.09,
+      "4": 145.47,
+      "8": 138.92
     }
   },
-  "fingerprint": "5865a2a0b24a8c17",
-  "head": "28722a739fe55b524f2c888303b1bb69fc3f430d",
+  "fingerprint": "356eb13ba068790c",
+  "head": "336c212a3d2b6755e376a7433d5dbe211220dc8d",
+  "inputs": [
+    {
+      "path": "scratch/g4/ref/d1vd1/GRCh38.d1.vd1.fa",
+      "sha256": "fbde121e898f00cc064eaafe5acc58940d7fe069ad14d34acd40c5d675e6b69b",
+      "size_bytes": 3152288848
+    },
+    {
+      "path": "scratch/g4/ref/d1vd1/GRCh38.d1.vd1.fa.fai",
+      "sha256": "fae1bdc573139e2ff8eaef2f8dcec2603bcf9d93d2668f5966a430fe7df721b4",
+      "size_bytes": 129640
+    },
+    {
+      "path": "scratch/g4/seqc2/HCC1395.bam",
+      "sha256": "1f4ed2848dd37fcf991b52f38487dcc233784d9ac15b5f02af0bf277c9495120",
+      "size_bytes": 4475997619
+    },
+    {
+      "path": "scratch/g4/seqc2/HCC1395.bam.bai",
+      "sha256": "b4e4236f5b1434c8da5ac8a531e674ebc45677e5c322b6dd9bcbcbf5104dfc4d",
+      "size_bytes": 3510256
+    },
+    {
+      "path": "scratch/g4/seqc2/exome.engine.bed",
+      "sha256": "f74062c084b28c596471ccfcce8114f3bdfd6dd3d74ff3e811c62884a0ced25b",
+      "size_bytes": 54721521
+    }
+  ],
   "java_time": null,
   "n_variants": null,
   "name": "scale",

@@ -100,7 +100,7 @@ tar -xf vardictrust-x86_64-unknown-linux-musl.tar.xz && sudo mv vardictrust /usr
 cargo install vardictrust
 
 # Or build the latest tagged release from source
-cargo install --git https://github.com/palakpsheth/VarDictRust.git --tag v1.0.6
+cargo install --git https://github.com/palakpsheth/VarDictRust.git --tag v1.0.7
 ```
 
 ### 3. Containerized Execution (Docker, Podman, Apptainer via Seqera Wave)
@@ -439,7 +439,7 @@ Per the [rewrites.bio](https://rewrites.bio) manifesto, we disclose all AI tools
 
 - **AI Systems Used:** Google DeepMind Gemini / Antigravity CLI, Anthropic Claude Code, and Qoder.
 - **Scope of AI Assistance:** Implementation of core Rust modules under human architectural direction, transliteration of R/Perl statistical routines into pure Rust, test harness engineering, and adversarial differential verification.
-- **Verification Guarantee (Evidence Before Completion):** **Zero** AI-generated code was accepted on model assertion. Every algorithmic component was validated against VarDictJava v1.8.3 across 427 automated Cargo workspace tests (263 core library tests, 110 corpus and modality parity tests, 25 engine behavior tests, 2 amplicon streaming memory tests, 2 CRAM stack tests, 17 CLI tests, and 8 CLI integration binary tests) enforcing a `>= 90%` line-coverage gate (`cargo-llvm-cov`), 25 harness diagnostic self-tests, the 92-case integration corpus, 10 slice fixtures, 18 multi-modal slices across 6 cohorts, the 89-job 12-cell full-corpus sweep, and multi-gigabyte public benchmarks (SEQC2, GIAB HG008, GIAB HG002, GIAB HG005, GIAB NA24385 b37) under float tolerance $\varepsilon = 10^{-6}$, with reproducibility documented in [`docs/testing/test-matrix-and-ci-audit.md`](docs/testing/test-matrix-and-ci-audit.md) and workflow skills in [`.agents/skills/`](AGENTS.md#19-repository-specific-agent-skills).
+- **Verification Guarantee (Evidence Before Completion):** **Zero** AI-generated code was accepted on model assertion. Every algorithmic component was validated against VarDictJava v1.8.3 across 519 automated Cargo workspace tests (350 core library tests, 110 corpus and modality parity tests, 26 engine behavior tests, 2 amplicon streaming memory tests, 3 CRAM stack tests, 19 CLI tests, and 9 CLI integration binary tests) enforcing a `>= 90%` line-coverage gate (`cargo-llvm-cov`), 25 harness diagnostic self-tests, the 92-case integration corpus, 10 slice fixtures, 18 multi-modal slices across 6 cohorts, the 89-job 12-cell full-corpus sweep, and multi-gigabyte public benchmarks (SEQC2, GIAB HG008, GIAB HG002, GIAB HG005, GIAB NA24385 b37) under float tolerance $\varepsilon = 10^{-6}$, with reproducibility documented in [`docs/testing/test-matrix-and-ci-audit.md`](docs/testing/test-matrix-and-ci-audit.md) and workflow skills in [`.agents/skills/`](AGENTS.md#19-repository-specific-agent-skills).
 
 ---
 
@@ -493,7 +493,7 @@ If you use VarDictRust in published research, cite both Lai et al. (2016) and th
   author    = {Sheth, Palak},
   title     = {{VarDictRust: Memory-Safe, High-Performance Variant Calling for NGS}},
   year      = {2026},
-  version   = {1.0.6},
+  version   = {1.0.7},
   url       = {https://github.com/palakpsheth/VarDictRust}
 }
 ```

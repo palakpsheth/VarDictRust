@@ -1,8 +1,245 @@
 {
   "suite": "multimodal_multislice_parity_suite",
-  "timestamp": "\"2026-10-29T19:23:47Z\"",
-  "fingerprint": "5865a2a0b24a8c17",
+  "timestamp": "2026-11-02T08:04:21Z",
+  "fingerprint": "356eb13ba068790c",
   "mode": "tier-2-live-oracle-strict-bytes",
+  "inputs": [
+    {
+      "path": "/mnt/media_backups/VarDictRust/VarDictJava/testdata/fastas/GRCh37.fa",
+      "size_bytes": 1005866239,
+      "sha256": "085ec9c8941d68ccdf69378b83b7209abf88dd248c83da028776c6a221ae3e6f"
+    },
+    {
+      "path": "/mnt/media_backups/VarDictRust/VarDictJava/testdata/fastas/GRCh37.fa.fai",
+      "size_bytes": 248,
+      "sha256": "72aba5e4bc986caae6b6ce61055428a49a489a1a42084ca117c7d75bbc00fbc1"
+    },
+    {
+      "path": "/mnt/media_backups/VarDictRust/scratch/g4/ref/giabv3/GRCh38_GIABv3.fasta",
+      "size_bytes": 3145187795,
+      "sha256": "0713026dfdd61fb1cd68be4b9689a9e5c55c8708a3843248b0b574506fd0f0e9"
+    },
+    {
+      "path": "/mnt/media_backups/VarDictRust/scratch/g4/ref/giabv3/GRCh38_GIABv3.fasta.fai",
+      "size_bytes": 9001,
+      "sha256": "41a18c49dd97005d216e9313ba4bd3c646e1110f728e7988183aa44e3f000ad9"
+    },
+    {
+      "path": "/mnt/media_backups/VarDictRust/scratch/g4/ref/d1vd1/GRCh38.d1.vd1.fa",
+      "size_bytes": 3152288848,
+      "sha256": "fbde121e898f00cc064eaafe5acc58940d7fe069ad14d34acd40c5d675e6b69b"
+    },
+    {
+      "path": "/mnt/media_backups/VarDictRust/scratch/g4/ref/d1vd1/GRCh38.d1.vd1.fa.fai",
+      "size_bytes": 129640,
+      "sha256": "fae1bdc573139e2ff8eaef2f8dcec2603bcf9d93d2668f5966a430fe7df721b4"
+    },
+    {
+      "path": "/mnt/media_backups/VarDictRust/VarDictJava/testdata/fastas/hg38.fa",
+      "size_bytes": 826380554,
+      "sha256": "2b84fbbac13429252ca9e18d73343d7d577d3332ecf2bdc8775a47124f0fc4be"
+    },
+    {
+      "path": "/mnt/media_backups/VarDictRust/VarDictJava/testdata/fastas/hg38.fa.fai",
+      "size_bytes": 300,
+      "sha256": "9053c27473f4666cd7439ca9099c29412f57c164eb5bc8c261862af1aba524fb"
+    },
+    {
+      "path": "/mnt/media_backups/VarDictRust/scratch/g4/multimodal/hg005_s4a.bam",
+      "size_bytes": 21628409,
+      "sha256": "5da7a01fbcf894b4b0141bc32d719e68c8e03962bfdc79bd07bf34d283eddf31"
+    },
+    {
+      "path": "/mnt/media_backups/VarDictRust/scratch/g4/multimodal/hg005_s4a.bam.bai",
+      "size_bytes": 40776,
+      "sha256": "519b62256726d492dca457573c28f093a47264e75a09c1fc08488cb62eb13235"
+    },
+    {
+      "path": "/mnt/media_backups/VarDictRust/scratch/g4/multimodal/hg005_s4b.bam",
+      "size_bytes": 22224644,
+      "sha256": "cdc534318c109806a7d77cd002399587cf25158d4c5994efcf1f325ec489f947"
+    },
+    {
+      "path": "/mnt/media_backups/VarDictRust/scratch/g4/multimodal/hg005_s4b.bam.bai",
+      "size_bytes": 35936,
+      "sha256": "b57c7e5df34bfa49a24128d8ddb85bb1aacdd8428d53d2bc7e27e0f24c923982"
+    },
+    {
+      "path": "/mnt/media_backups/VarDictRust/scratch/g4/multimodal/hg005_s4c.bam",
+      "size_bytes": 21184375,
+      "sha256": "1c9bd77499fdf7ec037edcacbaa7e39dff495d76c49618e9541a1b56b40aeb94"
+    },
+    {
+      "path": "/mnt/media_backups/VarDictRust/scratch/g4/multimodal/hg005_s4c.bam.bai",
+      "size_bytes": 30976,
+      "sha256": "48b42879c045c3662735436a086864d47afc9c033b805fae57fcda7e2d69f1b8"
+    },
+    {
+      "path": "/mnt/media_backups/VarDictRust/scratch/g4/multimodal/seqc2_s3a_tumor.bam",
+      "size_bytes": 791802,
+      "sha256": "e2b73c640d4ec4ad3580818ebae36032de0b7a445f1198d451f79f8c491db2f4"
+    },
+    {
+      "path": "/mnt/media_backups/VarDictRust/scratch/g4/multimodal/seqc2_s3a_tumor.bam.bai",
+      "size_bytes": 91240,
+      "sha256": "e1364cb23df43d39a8b0856ec4493f88c95438c982afe6c87880d4b083718f11"
+    },
+    {
+      "path": "/mnt/media_backups/VarDictRust/scratch/g4/multimodal/seqc2_s3a_normal.bam",
+      "size_bytes": 506666,
+      "sha256": "637d1e279d616b4b2caa3fbac06ba815847f7d745feecbf4a5555c46be910d1a"
+    },
+    {
+      "path": "/mnt/media_backups/VarDictRust/scratch/g4/multimodal/seqc2_s3a_normal.bam.bai",
+      "size_bytes": 91056,
+      "sha256": "4693e051054ad8e0bf8f3aeeeff7910fe0195cfd20cbd53f67bc46aa94f2f34e"
+    },
+    {
+      "path": "/mnt/media_backups/VarDictRust/scratch/g4/multimodal/seqc2_s3b_tumor.bam",
+      "size_bytes": 131784,
+      "sha256": "7fb76d4fe1e02a20e5fa6c0d4f53451f0e6623a3c43f92fdd5bf27ae8a2397f4"
+    },
+    {
+      "path": "/mnt/media_backups/VarDictRust/scratch/g4/multimodal/seqc2_s3b_tumor.bam.bai",
+      "size_bytes": 22608,
+      "sha256": "f923a08d2e0a8529969731df3b272e505c86cf8d496378d300dddfb0a91e8e36"
+    },
+    {
+      "path": "/mnt/media_backups/VarDictRust/scratch/g4/multimodal/seqc2_s3b_normal.bam",
+      "size_bytes": 163424,
+      "sha256": "2ff2b6b3e8eba7889a574a550933959b18030a123bbe62dc45fc013e3d746369"
+    },
+    {
+      "path": "/mnt/media_backups/VarDictRust/scratch/g4/multimodal/seqc2_s3b_normal.bam.bai",
+      "size_bytes": 22608,
+      "sha256": "209691653d914536546f266a994ca98339c435f2c4855dc8812be710ef8ecb11"
+    },
+    {
+      "path": "/mnt/media_backups/VarDictRust/scratch/g4/multimodal/seqc2_s3c_tumor.bam",
+      "size_bytes": 596143,
+      "sha256": "416d975b04e4d88d227989963f5e28121d88570ebfd1f6c768124024d04c18b1"
+    },
+    {
+      "path": "/mnt/media_backups/VarDictRust/scratch/g4/multimodal/seqc2_s3c_tumor.bam.bai",
+      "size_bytes": 34808,
+      "sha256": "0bb566ea9cb7b6d6ba3401c2edccc455d1b2272abc1ce2e7911110304541ff7d"
+    },
+    {
+      "path": "/mnt/media_backups/VarDictRust/scratch/g4/multimodal/seqc2_s3c_normal.bam",
+      "size_bytes": 420203,
+      "sha256": "766d8b15e6a637caddf6ea3397a1a1f6de0aec865a01274e83349b30473f662e"
+    },
+    {
+      "path": "/mnt/media_backups/VarDictRust/scratch/g4/multimodal/seqc2_s3c_normal.bam.bai",
+      "size_bytes": 34808,
+      "sha256": "b55d05314f8d4c2b8ce43892e994cf689680ec01c1ad68fdc97a16f4f7eca700"
+    },
+    {
+      "path": "/mnt/media_backups/VarDictRust/scratch/g4/hg002/HG002.chr20.bam",
+      "size_bytes": 860559731,
+      "sha256": "d58b5b5845a73379380d8e4d9cd40692664ff995e13b16b49527fb17c737fd14"
+    },
+    {
+      "path": "/mnt/media_backups/VarDictRust/scratch/g4/hg002/HG002.chr20.bam.bai",
+      "size_bytes": 89456,
+      "sha256": "322e2c3f7dca178c59133b0c6b55fc3fa6b9039888b6c672e9f9abd903248449"
+    },
+    {
+      "path": "/mnt/media_backups/VarDictRust/scratch/g4/hg008/HG008-T.slice.bam",
+      "size_bytes": 240203456,
+      "sha256": "f20dd728ee88102c4a13acc97fa2f585f797647f7007c665dfae05120a3e377d"
+    },
+    {
+      "path": "/mnt/media_backups/VarDictRust/scratch/g4/hg008/HG008-T.slice.bam.bai",
+      "size_bytes": 1142656,
+      "sha256": "52cf6171894e038fc88478aafffeae976c8343766ef89ebc38b16b864fbff584"
+    },
+    {
+      "path": "/mnt/media_backups/VarDictRust/scratch/g4/hg008/HG008-N.slice.bam",
+      "size_bytes": 220822631,
+      "sha256": "f72c7afd6b1358ca28ef12b157053acf95c157b55a6c33d8e01906c5b73c8a9a"
+    },
+    {
+      "path": "/mnt/media_backups/VarDictRust/scratch/g4/hg008/HG008-N.slice.bam.bai",
+      "size_bytes": 1142592,
+      "sha256": "3fe69178961a78a197269d0ecba96637658d7b50e3a05dd479d1c3609b854ef3"
+    },
+    {
+      "path": "/mnt/media_backups/VarDictRust/scratch/g4/hg008/r1.bed",
+      "size_bytes": 31,
+      "sha256": "ff416ee26a49de5d0635ec75305974cce83a6c72dcf0de33f8faeeeef134c923"
+    },
+    {
+      "path": "/mnt/media_backups/VarDictRust/scratch/g4/hg008/r2.bed",
+      "size_bytes": 31,
+      "sha256": "e868ffc6fb045e094bbeef3ea1ca2d26b4ac2efc8536af725459e95ae2689673"
+    },
+    {
+      "path": "/mnt/media_backups/VarDictRust/scratch/g4/hg008/r3.bed",
+      "size_bytes": 33,
+      "sha256": "396a609b58ba81afa2ddcf485e4d033b595a6981d2540d60dd49932b6a5af5a1"
+    },
+    {
+      "path": "/mnt/media_backups/VarDictRust/VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests/NA24385_chr_1_246981051_246981611.bam",
+      "size_bytes": 8564152,
+      "sha256": "cb045d65b21ad10f9794766a478937cb68dfcb8a4068fc0032ba68bc6350a463"
+    },
+    {
+      "path": "/mnt/media_backups/VarDictRust/VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests/NA24385_chr_1_246981051_246981611.bam.bai",
+      "size_bytes": 121352,
+      "sha256": "aba6f0b95afed3bbe9aff4b83c9975c67fbe1ae16a383425ef0fcc04ab4da128"
+    },
+    {
+      "path": "/mnt/media_backups/VarDictRust/VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests/NA24385_chr_19_58559581_58567861.bam",
+      "size_bytes": 67234,
+      "sha256": "e545ec95e1a9848f0aaf6110a742e06577eec55a379aa5a867db9691122bbcd7"
+    },
+    {
+      "path": "/mnt/media_backups/VarDictRust/VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests/NA24385_chr_19_58559581_58567861.bam.bai",
+      "size_bytes": 29352,
+      "sha256": "38cc09597cf658e6b2ec252ec2845e1a11d68fb9e9dabecf0eb81c0179124b45"
+    },
+    {
+      "path": "/mnt/media_backups/VarDictRust/VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests/NA24385_chr_20_36018823_36039513.bam",
+      "size_bytes": 731769,
+      "sha256": "292375564f58fb504db1f75de4b99fda050501023200beb11349af830019ceae"
+    },
+    {
+      "path": "/mnt/media_backups/VarDictRust/VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests/NA24385_chr_20_36018823_36039513.bam.bai",
+      "size_bytes": 18400,
+      "sha256": "bfe281124b0fd0fe4d6597ae8df27b5671ac368f517242350babd6f7d8fb27d5"
+    },
+    {
+      "path": "/mnt/media_backups/VarDictRust/scratch/g4/multimodal/rna_s6a.bam",
+      "size_bytes": 34933,
+      "sha256": "17a9f6c3e412a3f01d672e15aa820c387d67933e0839fcef1e45849a85885c7e"
+    },
+    {
+      "path": "/mnt/media_backups/VarDictRust/scratch/g4/multimodal/rna_s6a.bam.bai",
+      "size_bytes": 71232,
+      "sha256": "cfed4249c8f25ab598ea2b34dea2b2f57fa3c47e7dac1cab4941a6bf1dce4788"
+    },
+    {
+      "path": "/mnt/media_backups/VarDictRust/scratch/g4/multimodal/rna_s6b.bam",
+      "size_bytes": 37360,
+      "sha256": "fb864e54a0549b8bca43c80917efaeaa6806fd7df5baf76b2f644ccdc295c0fb"
+    },
+    {
+      "path": "/mnt/media_backups/VarDictRust/scratch/g4/multimodal/rna_s6b.bam.bai",
+      "size_bytes": 71272,
+      "sha256": "a823957470f261d89aa418c85a996e57389dc8d505175d753d67e896ee2aff83"
+    },
+    {
+      "path": "/mnt/media_backups/VarDictRust/scratch/g4/multimodal/rna_s6c.bam",
+      "size_bytes": 47465,
+      "sha256": "cf10513ef3aad554cb403486dd9cb5e308c82719e5cf99b8e8f1ee5d9a397f86"
+    },
+    {
+      "path": "/mnt/media_backups/VarDictRust/scratch/g4/multimodal/rna_s6c.bam.bai",
+      "size_bytes": 71272,
+      "sha256": "0f6c1886548bda77f98bf5d5d660b4049f508da7583c1000bcf8ee37a2e7dec6"
+    }
+  ],
   "total_slices": 18,
   "slices_passed": 18,
   "total_variants_evaluated": 1129,
@@ -13,525 +250,525 @@
   "golden": {
     "events": [
       {
-        "event": "MISS",
-        "key": "0a755cdd283d4c52",
+        "event": "HIT",
+        "key": "d959a1f9d0caade3",
         "kind": "cpp",
         "label": "scale-th1"
       },
       {
-        "event": "MISS",
-        "key": "3937f3695d6c24de",
+        "event": "HIT",
+        "key": "51b5d8c406281b9f",
         "kind": "cpp",
         "label": "scale-th2"
       },
       {
-        "event": "MISS",
-        "key": "beffe97eb64b5a16",
+        "event": "HIT",
+        "key": "100bfb0e1109fc67",
         "kind": "cpp",
         "label": "scale-th4"
       },
       {
-        "event": "MISS",
-        "key": "a9e8bb1074fb535e",
+        "event": "HIT",
+        "key": "06cd7f28339d9ce8",
         "kind": "cpp",
         "label": "scale-th8"
       },
       {
-        "event": "MISS",
-        "key": "d9ffc440a5b8e555",
+        "event": "HIT",
+        "key": "31ce21cdef2b8ff5",
         "kind": "cpp",
         "label": "scale-R1000000"
       },
       {
-        "event": "MISS",
-        "key": "d61d24e53007e1b3",
+        "event": "HIT",
+        "key": "300bf8323f02eb97",
         "kind": "cpp",
         "label": "scale-R10000000"
       },
       {
-        "event": "MISS",
-        "key": "9823301fcf277d13",
+        "event": "HIT",
+        "key": "a33080203a44b627",
         "kind": "cpp",
         "label": "scale-R100000000"
       },
       {
-        "event": "MISS",
-        "key": "1c0f2c69aab6d31c",
+        "event": "HIT",
+        "key": "561b46c9fc809e16",
         "kind": "cpp",
         "label": "scale-R248956422"
       },
       {
         "event": "MISS",
-        "key": "b83ac72132c632e7",
+        "key": "b2c71421d85b9c9c",
         "kind": "java",
         "label": "compare"
       },
       {
-        "event": "MISS",
-        "key": "c212453fec5fda62",
+        "event": "HIT",
+        "key": "60b073b76fa647d6",
         "kind": "cpp",
         "label": "compare"
       },
       {
         "event": "MISS",
-        "key": "1a2bfc4fab496d15",
+        "key": "77b3d5accf02e324",
         "kind": "java",
         "label": "compare"
       },
       {
-        "event": "MISS",
-        "key": "d64cfb8e65cfc592",
+        "event": "HIT",
+        "key": "49f8f07fe4bb7034",
         "kind": "cpp",
         "label": "compare"
       },
       {
         "event": "MISS",
-        "key": "065dacf58e89f511",
+        "key": "9c08b0d17aab00f3",
         "kind": "java",
         "label": "compare"
       },
       {
-        "event": "MISS",
-        "key": "6e2d9b6aa1063115",
+        "event": "HIT",
+        "key": "a022fe48312be93f",
         "kind": "cpp",
         "label": "compare"
       },
       {
         "event": "MISS",
-        "key": "3462ad40a8d77c5c",
+        "key": "2dc8f17a06fda974",
         "kind": "java",
         "label": "compare"
       },
       {
-        "event": "MISS",
-        "key": "5d55a5be7dbada04",
+        "event": "HIT",
+        "key": "e04af8231e2ba279",
         "kind": "cpp",
         "label": "compare"
       },
       {
         "event": "MISS",
-        "key": "ae0bbe0141581a05",
+        "key": "2a9c7af8462c4419",
         "kind": "java",
         "label": "compare"
       },
       {
-        "event": "MISS",
-        "key": "23c829e7d80756e1",
+        "event": "HIT",
+        "key": "c3396f8565410f88",
         "kind": "cpp",
         "label": "compare"
       },
       {
-        "event": "MISS",
-        "key": "cd54d435c6ef7faa",
+        "event": "HIT",
+        "key": "7cc4d107c26574ea",
         "kind": "cpp",
         "label": "cram-twin-bam"
       },
       {
-        "event": "MISS",
-        "key": "90807b58624497c0",
+        "event": "HIT",
+        "key": "6be32d4c46b655b3",
         "kind": "cpp",
         "label": "cram-twin-cram"
       },
       {
-        "event": "MISS",
-        "key": "573f08c91e3bfe97",
-        "kind": "java",
-        "label": "ext-m4"
-      },
-      {
-        "event": "MISS",
-        "key": "3e197debebe693cb",
-        "kind": "java",
-        "label": "ext-m2"
-      },
-      {
-        "event": "MISS",
-        "key": "621e6b882dd8b93a",
+        "event": "HIT",
+        "key": "666b6c9bf0ba0177",
         "kind": "java",
         "label": "ext-m3"
       },
       {
-        "event": "MISS",
-        "key": "8f338f75fa231376",
+        "event": "HIT",
+        "key": "2e9ebdb1b2e50b8d",
+        "kind": "java",
+        "label": "ext-m2"
+      },
+      {
+        "event": "HIT",
+        "key": "2ac4193ae0929b3c",
+        "kind": "java",
+        "label": "ext-m7"
+      },
+      {
+        "event": "HIT",
+        "key": "fbdfeb2324c1c065",
+        "kind": "java",
+        "label": "ext-m5"
+      },
+      {
+        "event": "HIT",
+        "key": "95256b2e252bf0f8",
+        "kind": "java",
+        "label": "ext-m4"
+      },
+      {
+        "event": "HIT",
+        "key": "df91776f384d0091",
         "kind": "java",
         "label": "ext-m1"
       },
       {
-        "event": "MISS",
-        "key": "89c16efedf6e8d20",
+        "event": "HIT",
+        "key": "bbe0844e0598a746",
+        "kind": "java",
+        "label": "ext-m8"
+      },
+      {
+        "event": "HIT",
+        "key": "5c57f782fb6b8ac0",
+        "kind": "java",
+        "label": "ext-m6"
+      },
+      {
+        "event": "HIT",
+        "key": "b60e929ae70e8b5e",
         "kind": "cpp",
         "label": "ext-m4"
       },
       {
-        "event": "MISS",
-        "key": "34511eac4c218eec",
-        "kind": "java",
-        "label": "ext-m7"
-      },
-      {
-        "event": "MISS",
-        "key": "264e7115e3eba029",
-        "kind": "java",
-        "label": "ext-m5"
-      },
-      {
-        "event": "MISS",
-        "key": "c2b9558121655927",
-        "kind": "java",
-        "label": "ext-m6"
-      },
-      {
-        "event": "MISS",
-        "key": "5e7000dab5c895c5",
-        "kind": "java",
-        "label": "ext-m8"
-      },
-      {
-        "event": "MISS",
-        "key": "5578f768bf38a1a2",
+        "event": "HIT",
+        "key": "bbec0a01de25068a",
         "kind": "cpp",
         "label": "ext-m2"
       },
       {
-        "event": "MISS",
-        "key": "41c19a5df992cefb",
+        "event": "HIT",
+        "key": "45fcb4b843126775",
         "kind": "cpp",
         "label": "ext-m3"
       },
       {
-        "event": "MISS",
-        "key": "4a1825c85709cf00",
-        "kind": "java",
-        "label": "ext-m10"
-      },
-      {
-        "event": "MISS",
-        "key": "53266967790606aa",
+        "event": "HIT",
+        "key": "408979473793402f",
         "kind": "java",
         "label": "ext-m9"
       },
       {
-        "event": "MISS",
-        "key": "e79a109808588d5e",
+        "event": "HIT",
+        "key": "9008baadeebec811",
         "kind": "java",
         "label": "ext-m11"
       },
       {
-        "event": "MISS",
-        "key": "5be40df1e4da780f",
+        "event": "HIT",
+        "key": "267a57bb8f593c8b",
+        "kind": "java",
+        "label": "ext-m10"
+      },
+      {
+        "event": "HIT",
+        "key": "d0a209688d24dc80",
         "kind": "java",
         "label": "ext-m12"
       },
       {
-        "event": "MISS",
-        "key": "581c5e61c54dd967",
+        "event": "HIT",
+        "key": "629e880f4edc8d5d",
         "kind": "cpp",
         "label": "ext-m10"
       },
       {
-        "event": "MISS",
-        "key": "64e4fc0a0a27d6a1",
+        "event": "HIT",
+        "key": "a02ae53f65514324",
         "kind": "cpp",
-        "label": "ext-m7"
+        "label": "ext-m12"
       },
       {
-        "event": "MISS",
-        "key": "8eafacd4299f80b9",
+        "event": "HIT",
+        "key": "e414dc335d4277f8",
         "kind": "cpp",
-        "label": "ext-m5"
+        "label": "ext-m11"
       },
       {
-        "event": "MISS",
-        "key": "9f9c9e615ebc173a",
+        "event": "HIT",
+        "key": "312088d6b643c1df",
+        "kind": "java",
+        "label": "ext-m13"
+      },
+      {
+        "event": "HIT",
+        "key": "6617037b3520c037",
+        "kind": "java",
+        "label": "ext-m15"
+      },
+      {
+        "event": "HIT",
+        "key": "39872ce1b700f278",
+        "kind": "java",
+        "label": "ext-m14"
+      },
+      {
+        "event": "HIT",
+        "key": "e6d056242d746c8f",
+        "kind": "cpp",
+        "label": "ext-m13"
+      },
+      {
+        "event": "HIT",
+        "key": "20f3214d292b7dbf",
+        "kind": "cpp",
+        "label": "ext-m15"
+      },
+      {
+        "event": "HIT",
+        "key": "c822b61588587dd6",
+        "kind": "cpp",
+        "label": "ext-m14"
+      },
+      {
+        "event": "HIT",
+        "key": "784fbc45493c392c",
+        "kind": "java",
+        "label": "ext-m16"
+      },
+      {
+        "event": "HIT",
+        "key": "b1ef0bb96fe1d246",
         "kind": "cpp",
         "label": "ext-m6"
       },
       {
-        "event": "MISS",
-        "key": "c873d70cb5e64e79",
-        "kind": "cpp",
-        "label": "ext-m8"
-      },
-      {
-        "event": "MISS",
-        "key": "c704d5a9151b2958",
-        "kind": "cpp",
-        "label": "ext-m11"
-      },
-      {
-        "event": "MISS",
-        "key": "6efcae6dfa8ae3c8",
-        "kind": "cpp",
-        "label": "ext-m12"
-      },
-      {
-        "event": "MISS",
-        "key": "c6347f2955e214b4",
+        "event": "HIT",
+        "key": "ee70eec8dbedfcd9",
         "kind": "java",
-        "label": "ext-m13"
+        "label": "ext-m17"
       },
       {
-        "event": "MISS",
-        "key": "0d3179e2abd6997a",
-        "kind": "java",
-        "label": "ext-m14"
+        "event": "HIT",
+        "key": "7b1a057921ca1362",
+        "kind": "cpp",
+        "label": "ext-m7"
       },
       {
-        "event": "MISS",
-        "key": "d7831f641ccd5c1d",
-        "kind": "java",
-        "label": "ext-m15"
+        "event": "HIT",
+        "key": "b5ef5b63326368f1",
+        "kind": "cpp",
+        "label": "ext-m5"
       },
       {
-        "event": "MISS",
-        "key": "000768c178ba2a0b",
+        "event": "HIT",
+        "key": "843271922acfd4d4",
+        "kind": "cpp",
+        "label": "ext-m17"
+      },
+      {
+        "event": "HIT",
+        "key": "5ba2668ee40a2bd8",
+        "kind": "cpp",
+        "label": "ext-m16"
+      },
+      {
+        "event": "HIT",
+        "key": "ef6daf521dc99568",
         "kind": "cpp",
         "label": "ext-m9"
       },
       {
-        "event": "MISS",
-        "key": "25a9b024add09df1",
-        "kind": "java",
-        "label": "ext-m16"
-      },
-      {
-        "event": "MISS",
-        "key": "4c114d7183c63723",
-        "kind": "java",
-        "label": "ext-m17"
-      },
-      {
-        "event": "MISS",
-        "key": "22c121f024b8df12",
+        "event": "HIT",
+        "key": "05d6b4ca87c85f9e",
         "kind": "cpp",
-        "label": "ext-m17"
+        "label": "ext-m8"
       },
       {
-        "event": "MISS",
-        "key": "6bf3cac52f1b19e0",
-        "kind": "cpp",
-        "label": "ext-m13"
-      },
-      {
-        "event": "MISS",
-        "key": "163761fa4bb7b7dd",
-        "kind": "cpp",
-        "label": "ext-m14"
-      },
-      {
-        "event": "MISS",
-        "key": "8a90d5fc6a6ff638",
-        "kind": "cpp",
-        "label": "ext-m15"
-      },
-      {
-        "event": "MISS",
-        "key": "e6b34c4530dbbf95",
-        "kind": "cpp",
-        "label": "ext-m16"
-      },
-      {
-        "event": "MISS",
-        "key": "b8c76663ba986ed7",
-        "kind": "java",
-        "label": "mm-SEQC2_2A"
-      },
-      {
-        "event": "MISS",
-        "key": "7adcc85bbb33c268",
-        "kind": "java",
-        "label": "mm-SEQC2_2B"
-      },
-      {
-        "event": "MISS",
-        "key": "8793dc712bab4d5d",
-        "kind": "java",
-        "label": "mm-HG005_1B"
-      },
-      {
-        "event": "MISS",
-        "key": "6e2a2d454c11ac3f",
-        "kind": "java",
-        "label": "mm-HG002_3B"
-      },
-      {
-        "event": "MISS",
-        "key": "cdc0c07a55c214e0",
+        "event": "HIT",
+        "key": "0d636ec5f08d2b5e",
         "kind": "java",
         "label": "mm-HG002_3A"
       },
       {
-        "event": "MISS",
-        "key": "c3b64f838d4d431b",
-        "kind": "java",
-        "label": "mm-HG005_1A"
-      },
-      {
-        "event": "MISS",
-        "key": "6eff6c60bec09c35",
+        "event": "HIT",
+        "key": "d3d73aeb4d7430ba",
         "kind": "java",
         "label": "mm-HG005_1C"
       },
       {
-        "event": "MISS",
-        "key": "794bc7a3970858fc",
+        "event": "HIT",
+        "key": "17c291db303da38d",
         "kind": "java",
         "label": "mm-SEQC2_2C"
       },
       {
-        "event": "MISS",
-        "key": "09da11f7f8b43e85",
+        "event": "HIT",
+        "key": "5f3419e5ef3e85b5",
+        "kind": "java",
+        "label": "mm-SEQC2_2B"
+      },
+      {
+        "event": "HIT",
+        "key": "b6db456c513b2bb9",
+        "kind": "java",
+        "label": "mm-HG005_1A"
+      },
+      {
+        "event": "HIT",
+        "key": "516969b628dbf098",
+        "kind": "java",
+        "label": "mm-SEQC2_2A"
+      },
+      {
+        "event": "HIT",
+        "key": "ec2dceebe33921f7",
+        "kind": "java",
+        "label": "mm-HG002_3B"
+      },
+      {
+        "event": "HIT",
+        "key": "a0e105d08df6c045",
+        "kind": "java",
+        "label": "mm-HG005_1B"
+      },
+      {
+        "event": "HIT",
+        "key": "7ef8197a186b955b",
         "kind": "cpp",
         "label": "mm-SEQC2_2A"
       },
       {
-        "event": "MISS",
-        "key": "d525936218164e62",
+        "event": "HIT",
+        "key": "6537d0d870efb586",
         "kind": "cpp",
         "label": "mm-SEQC2_2B"
       },
       {
-        "event": "MISS",
-        "key": "690fc778e8c531d1",
-        "kind": "cpp",
-        "label": "mm-HG005_1B"
-      },
-      {
-        "event": "MISS",
-        "key": "0d748ea0d8265956",
-        "kind": "cpp",
-        "label": "mm-HG002_3B"
-      },
-      {
-        "event": "MISS",
-        "key": "378fa44af1e04d11",
-        "kind": "cpp",
-        "label": "mm-HG002_3A"
-      },
-      {
-        "event": "MISS",
-        "key": "a73684b8b45450fa",
-        "kind": "cpp",
-        "label": "mm-HG005_1A"
-      },
-      {
-        "event": "MISS",
-        "key": "6118f4daf3f5be0f",
-        "kind": "cpp",
-        "label": "mm-HG005_1C"
-      },
-      {
-        "event": "MISS",
-        "key": "934953560748a84a",
-        "kind": "cpp",
-        "label": "mm-SEQC2_2C"
-      },
-      {
-        "event": "MISS",
-        "key": "87bd64dc88c01059",
+        "event": "HIT",
+        "key": "3a71c8fe21ec7c05",
         "kind": "java",
         "label": "mm-HG002_3C"
       },
       {
-        "event": "MISS",
-        "key": "3e2c16e02597e8eb",
-        "kind": "java",
-        "label": "mm-NA24385_5B"
+        "event": "HIT",
+        "key": "d67911748a7f8165",
+        "kind": "cpp",
+        "label": "mm-SEQC2_2C"
       },
       {
-        "event": "MISS",
-        "key": "27eb116708f9e639",
+        "event": "HIT",
+        "key": "d8106001ae1a7f3f",
+        "kind": "cpp",
+        "label": "mm-HG002_3A"
+      },
+      {
+        "event": "HIT",
+        "key": "8537b9391efcc675",
         "kind": "java",
         "label": "mm-HG008_4A"
       },
       {
-        "event": "MISS",
-        "key": "dc89afed5062bcaa",
-        "kind": "java",
-        "label": "mm-HG008_4C"
+        "event": "HIT",
+        "key": "b4a2d07eebbea383",
+        "kind": "cpp",
+        "label": "mm-HG005_1A"
       },
       {
-        "event": "MISS",
-        "key": "5fa2cd303818bb67",
-        "kind": "java",
-        "label": "mm-RNA_6A"
+        "event": "HIT",
+        "key": "a0e440474b6b584d",
+        "kind": "cpp",
+        "label": "mm-HG002_3B"
       },
       {
-        "event": "MISS",
-        "key": "53a1d320204556b8",
-        "kind": "java",
-        "label": "mm-NA24385_5C"
+        "event": "HIT",
+        "key": "2fa8c5bd97777328",
+        "kind": "cpp",
+        "label": "mm-HG005_1C"
       },
       {
-        "event": "MISS",
-        "key": "5caebbf239d04fcd",
+        "event": "HIT",
+        "key": "35a412be247bffce",
         "kind": "java",
         "label": "mm-HG008_4B"
       },
       {
-        "event": "MISS",
-        "key": "fd382e3ff870cd1e",
+        "event": "HIT",
+        "key": "113910bc99c0be49",
+        "kind": "java",
+        "label": "mm-HG008_4C"
+      },
+      {
+        "event": "HIT",
+        "key": "6fdbc3f8d0082d47",
         "kind": "cpp",
         "label": "mm-HG002_3C"
       },
       {
-        "event": "MISS",
-        "key": "affe0bd110741a51",
+        "event": "HIT",
+        "key": "04805ad4193b718f",
+        "kind": "java",
+        "label": "mm-NA24385_5B"
+      },
+      {
+        "event": "HIT",
+        "key": "69184dce1421de14",
+        "kind": "cpp",
+        "label": "mm-HG005_1B"
+      },
+      {
+        "event": "HIT",
+        "key": "adf643d5eb8a423e",
+        "kind": "java",
+        "label": "mm-NA24385_5A"
+      },
+      {
+        "event": "HIT",
+        "key": "210ee0863dd2ee5b",
+        "kind": "java",
+        "label": "mm-NA24385_5C"
+      },
+      {
+        "event": "HIT",
+        "key": "695f49f571e9ebc4",
+        "kind": "cpp",
+        "label": "mm-HG008_4A"
+      },
+      {
+        "event": "HIT",
+        "key": "40b56592fc45c393",
         "kind": "java",
         "label": "mm-RNA_6B"
       },
       {
-        "event": "MISS",
-        "key": "c1286603ca43a3f2",
+        "event": "HIT",
+        "key": "93438b52a07c1014",
+        "kind": "java",
+        "label": "mm-RNA_6A"
+      },
+      {
+        "event": "HIT",
+        "key": "982528d62f741ae4",
         "kind": "cpp",
         "label": "mm-NA24385_5B"
       },
       {
-        "event": "MISS",
-        "key": "a2ad586ae87318d8",
-        "kind": "cpp",
-        "label": "mm-HG008_4A"
-      },
-      {
-        "event": "MISS",
-        "key": "67ff2f4ff7c80138",
-        "kind": "java",
-        "label": "mm-NA24385_5A"
-      },
-      {
-        "event": "MISS",
-        "key": "2ed306b3345df848",
-        "kind": "cpp",
-        "label": "mm-HG008_4C"
-      },
-      {
-        "event": "MISS",
-        "key": "02fd6c5e9e13fa6d",
-        "kind": "cpp",
-        "label": "mm-NA24385_5C"
-      },
-      {
-        "event": "MISS",
-        "key": "b149ac9b753786ed",
+        "event": "HIT",
+        "key": "75e945b554003c7a",
         "kind": "java",
         "label": "mm-RNA_6C"
       },
       {
-        "event": "MISS",
-        "key": "39a6800584d637af",
+        "event": "HIT",
+        "key": "b500555e47194316",
+        "kind": "cpp",
+        "label": "mm-HG008_4C"
+      },
+      {
+        "event": "HIT",
+        "key": "050caf8a85d4547b",
+        "kind": "cpp",
+        "label": "mm-NA24385_5C"
+      },
+      {
+        "event": "HIT",
+        "key": "c46658bd99c3e2d9",
         "kind": "cpp",
         "label": "mm-HG008_4B"
       },
       {
-        "event": "MISS",
-        "key": "2081888c075df121",
+        "event": "HIT",
+        "key": "a7c10ff4ea42dd55",
         "kind": "cpp",
         "label": "mm-NA24385_5A"
       }
     ],
-    "hit": 0,
-    "live": 86,
-    "run": "recertify-1793288302"
+    "hit": 81,
+    "live": 5,
+    "run": "recertify-1793596265"
   },
   "result": "MATCH",
   "slices": [
@@ -541,7 +778,7 @@
       "region": "chr3 40000000 40010000",
       "variants": 31,
       "status": "MATCH",
-      "time_ms": 6625
+      "time_ms": 815
     },
     {
       "slice_id": "HG005_1B",
@@ -549,7 +786,7 @@
       "region": "chr6 30000000 30010000",
       "variants": 10,
       "status": "MATCH",
-      "time_ms": 6446
+      "time_ms": 1113
     },
     {
       "slice_id": "HG005_1C",
@@ -557,7 +794,7 @@
       "region": "chr21 20000000 20010000",
       "variants": 8,
       "status": "MATCH",
-      "time_ms": 6669
+      "time_ms": 917
     },
     {
       "slice_id": "SEQC2_2A",
@@ -565,7 +802,7 @@
       "region": "chr7 140400000 140420000",
       "variants": 31,
       "status": "MATCH",
-      "time_ms": 5844
+      "time_ms": 386
     },
     {
       "slice_id": "SEQC2_2B",
@@ -573,7 +810,7 @@
       "region": "chr11 530000 550000",
       "variants": 16,
       "status": "MATCH",
-      "time_ms": 6036
+      "time_ms": 409
     },
     {
       "slice_id": "SEQC2_2C",
@@ -581,7 +818,7 @@
       "region": "chr12 25200000 25250000",
       "variants": 55,
       "status": "MATCH",
-      "time_ms": 7984
+      "time_ms": 774
     },
     {
       "slice_id": "HG002_3A",
@@ -589,7 +826,7 @@
       "region": "chr20 10000000 10020000",
       "variants": 337,
       "status": "MATCH",
-      "time_ms": 6526
+      "time_ms": 796
     },
     {
       "slice_id": "HG002_3B",
@@ -597,7 +834,7 @@
       "region": "chr20 20000000 20020000",
       "variants": 273,
       "status": "MATCH",
-      "time_ms": 6421
+      "time_ms": 733
     },
     {
       "slice_id": "HG002_3C",
@@ -605,7 +842,7 @@
       "region": "chr20 30000000 30020000",
       "variants": 4,
       "status": "MATCH",
-      "time_ms": 3969
+      "time_ms": 226
     },
     {
       "slice_id": "HG008_4A",
@@ -613,7 +850,7 @@
       "region": "chr1 1743056 1744086 slice_1_6",
       "variants": 23,
       "status": "MATCH",
-      "time_ms": 5910
+      "time_ms": 455
     },
     {
       "slice_id": "HG008_4B",
@@ -621,7 +858,7 @@
       "region": "chr1 6170843 6182754 slice_2_3",
       "variants": 50,
       "status": "MATCH",
-      "time_ms": 8219
+      "time_ms": 886
     },
     {
       "slice_id": "HG008_4C",
@@ -629,7 +866,7 @@
       "region": "chr1 56757190 56764123 slice_3_4",
       "variants": 42,
       "status": "MATCH",
-      "time_ms": 6436
+      "time_ms": 524
     },
     {
       "slice_id": "NA24385_5A",
@@ -637,7 +874,7 @@
       "region": "1 246981051 246981611",
       "variants": 25,
       "status": "MATCH",
-      "time_ms": 12317
+      "time_ms": 1259
     },
     {
       "slice_id": "NA24385_5B",
@@ -645,7 +882,7 @@
       "region": "19 58559581 58567861",
       "variants": 20,
       "status": "MATCH",
-      "time_ms": 4793
+      "time_ms": 260
     },
     {
       "slice_id": "NA24385_5C",
@@ -653,7 +890,7 @@
       "region": "20 36018823 36039513",
       "variants": 181,
       "status": "MATCH",
-      "time_ms": 6433
+      "time_ms": 545
     },
     {
       "slice_id": "RNA_6A",
@@ -661,7 +898,7 @@
       "region": "chr8:90534611-90550000",
       "variants": 3,
       "status": "MATCH",
-      "time_ms": 4707
+      "time_ms": 275
     },
     {
       "slice_id": "RNA_6B",
@@ -669,7 +906,7 @@
       "region": "chr8:90550000-90580000",
       "variants": 8,
       "status": "MATCH",
-      "time_ms": 3733
+      "time_ms": 204
     },
     {
       "slice_id": "RNA_6C",
@@ -677,7 +914,7 @@
       "region": "chr8:90580000-90620070",
       "variants": 12,
       "status": "MATCH",
-      "time_ms": 3365
+      "time_ms": 186
     }
   ]
 }

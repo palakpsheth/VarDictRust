@@ -13,7 +13,7 @@
   ],
   "compare_head": [],
   "cpp_time": null,
-  "date": "2026-10-29T19:20:33+00:00",
+  "date": "2026-11-02T00:01:46-08:00",
   "extra": {
     "cpp_f1": 0.6624,
     "cpp_f1_normalized": 0.6624,
@@ -75,8 +75,20 @@
       "tp_call": 22803
     }
   },
-  "fingerprint": "5865a2a0b24a8c17",
-  "head": "28722a739fe55b524f2c888303b1bb69fc3f430d",
+  "fingerprint": "356eb13ba068790c",
+  "head": "336c212a3d2b6755e376a7433d5dbe211220dc8d",
+  "inputs": [
+    {
+      "path": "scratch/g4/hg002/truth/truth.vcf.gz",
+      "sha256": "79073fe4fecad6699d7fa509a0b3f54529f157d1e9adb5562700fec693638f4f",
+      "size_bytes": 911611
+    },
+    {
+      "path": "scratch/g4/hg002/eval.bed",
+      "sha256": "df8cc38f4a269c0923120abf1d4f4429fc2fc92e55e6a5eda23468b5ec6e1bb1",
+      "size_bytes": 82053
+    }
+  ],
   "java_time": null,
   "n_variants": null,
   "name": "hg002-truth",

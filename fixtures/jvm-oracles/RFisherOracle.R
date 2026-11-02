@@ -26,6 +26,16 @@ for (line in lines) {
     af <- as.integer(parts[3])
     ar <- as.integer(parts[4])
 
+    # (145, 494, 1, 0) is a Java --fisher (cm3 saddle-point) pin in java_fisher_oracle.tsv.
+    # In R mode, dhyper(145, 639, 1, 146) = 73/320 = 0.228125 (an exact 5-decimal midpoint
+    # that is a repeating binary fraction), where glibc libm (0x3fcd333333333333 -> 0.22812) and
+    # musl libm (0x3fcd333333333334 -> 0.22813) straddle the midpoint by 1 ULP.
+    # Its R-mode expectation is asserted directly in crates/vardictrust-core/tests/engine_behavior.rs
+    # (fisher::java_exact_test_vcf_and_intermediate_table) with target-specific to_bits() checks.
+    if (rf == 145L && rr == 494L && af == 1L && ar == 0L) {
+        next
+    }
+
     mat <- matrix(c(rf, rr, af, ar), nrow = 2)
     h_two <- fisher.test(mat, alternative = "two.sided")
     h_less <- fisher.test(mat, alternative = "less")

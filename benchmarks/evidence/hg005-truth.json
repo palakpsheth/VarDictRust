@@ -1,19 +1,19 @@
 {
   "cmd": [
-    "/var/tmp/vardict-paper/release-v106/harness/concordance_germline.sh",
+    "/mnt/media_backups/VarDictRust/harness/concordance_germline.sh",
     "hg005-truth",
-    "/tmp/vardict_multimodal_concordance_SbJyRB/hg005_java.vcf",
-    "/tmp/vardict_multimodal_concordance_SbJyRB/hg005_rust.vcf",
-    "/var/tmp/vardict-paper/release-v106/scratch/g4/truth_cache/hg005_truth.vcf.gz",
-    "/var/tmp/vardict-paper/release-v106/scratch/g4/truth_cache/hg005_eval.bed",
-    "/var/tmp/vardict-paper/release-v106/scratch/g4/ref/giabv3/GRCh38_GIABv3.sdf",
-    "/var/tmp/vardict-paper/release-v106/scratch/g4/concordance_multimodal/hg005",
+    "/tmp/vardict_multimodal_concordance_Zsueff/hg005_java.vcf",
+    "/tmp/vardict_multimodal_concordance_Zsueff/hg005_rust.vcf",
+    "/mnt/media_backups/VarDictRust/scratch/g4/truth_cache/hg005_truth.vcf.gz",
+    "/mnt/media_backups/VarDictRust/scratch/g4/truth_cache/hg005_eval.bed",
+    "/mnt/media_backups/VarDictRust/scratch/g4/ref/giabv3/GRCh38_GIABv3.sdf",
+    "/mnt/media_backups/VarDictRust/scratch/g4/concordance_multimodal/hg005",
     "HG005",
-    "/tmp/vardict_multimodal_concordance_SbJyRB/hg005_cpp.vcf"
+    "/tmp/vardict_multimodal_concordance_Zsueff/hg005_cpp.vcf"
   ],
   "compare_head": [],
   "cpp_time": null,
-  "date": "2026-10-29T19:24:11+00:00",
+  "date": "2026-11-02T00:04:50-08:00",
   "extra": {
     "cpp_f1": 0.9508,
     "cpp_f1_normalized": 0.9508,
@@ -75,8 +75,40 @@
       "tp_call": 29
     }
   },
-  "fingerprint": "5865a2a0b24a8c17",
-  "head": "28722a739fe55b524f2c888303b1bb69fc3f430d",
+  "fingerprint": "356eb13ba068790c",
+  "head": "336c212a3d2b6755e376a7433d5dbe211220dc8d",
+  "inputs": [
+    {
+      "path": "/mnt/media_backups/VarDictRust/scratch/g4/truth_cache/hg005_truth.vcf.gz",
+      "sha256": "b3919a273a6e5c499713302a6dc694fb00a83dfd81a7de83301b93449ee26953",
+      "size_bytes": 4676
+    },
+    {
+      "path": "/mnt/media_backups/VarDictRust/scratch/g4/truth_cache/hg005_eval.bed",
+      "sha256": "1ba32e07a481da493ecbc817e64696d74fa1e8438e4d1b645b7005bb0e3f529c",
+      "size_bytes": 23
+    },
+    {
+      "path": "/mnt/media_backups/VarDictRust/scratch/g4/ref/giabv3/GRCh38_GIABv3.fasta",
+      "sha256": "0713026dfdd61fb1cd68be4b9689a9e5c55c8708a3843248b0b574506fd0f0e9",
+      "size_bytes": 3145187795
+    },
+    {
+      "path": "/mnt/media_backups/VarDictRust/scratch/g4/ref/giabv3/GRCh38_GIABv3.fasta.fai",
+      "sha256": "41a18c49dd97005d216e9313ba4bd3c646e1110f728e7988183aa44e3f000ad9",
+      "size_bytes": 9001
+    },
+    {
+      "path": "/mnt/media_backups/VarDictRust/scratch/g4/multimodal/hg005_s4a.bam",
+      "sha256": "5da7a01fbcf894b4b0141bc32d719e68c8e03962bfdc79bd07bf34d283eddf31",
+      "size_bytes": 21628409
+    },
+    {
+      "path": "/mnt/media_backups/VarDictRust/scratch/g4/multimodal/hg005_s4a.bam.bai",
+      "sha256": "519b62256726d492dca457573c28f093a47264e75a09c1fc08488cb62eb13235",
+      "size_bytes": 40776
+    }
+  ],
   "java_time": null,
   "n_variants": null,
   "name": "hg005-truth",

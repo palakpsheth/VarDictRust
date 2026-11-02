@@ -19,10 +19,10 @@
   ],
   "cpp_time": {
     "exit": "0",
-    "max_rss_kb": "122584",
-    "wall": "0:04.57"
+    "max_rss_kb": "91040",
+    "wall": "0:03.75"
   },
-  "date": "2026-10-29T17:36:44+00:00",
+  "date": "2026-11-01T22:06:31-08:00",
   "extra": {
     "cpp_head": [
       "CPP: SKIP: cpp emitted non-VCF surface (TSV-only mode; VCF comparison inapplicable)"
@@ -31,84 +31,111 @@
     "golden": {
       "events": [
         {
-          "event": "MISS",
-          "key": "0a755cdd283d4c52",
+          "event": "HIT",
+          "key": "d959a1f9d0caade3",
           "kind": "cpp",
           "label": "scale-th1"
         },
         {
-          "event": "MISS",
-          "key": "3937f3695d6c24de",
+          "event": "HIT",
+          "key": "51b5d8c406281b9f",
           "kind": "cpp",
           "label": "scale-th2"
         },
         {
-          "event": "MISS",
-          "key": "beffe97eb64b5a16",
+          "event": "HIT",
+          "key": "100bfb0e1109fc67",
           "kind": "cpp",
           "label": "scale-th4"
         },
         {
-          "event": "MISS",
-          "key": "a9e8bb1074fb535e",
+          "event": "HIT",
+          "key": "06cd7f28339d9ce8",
           "kind": "cpp",
           "label": "scale-th8"
         },
         {
-          "event": "MISS",
-          "key": "d9ffc440a5b8e555",
+          "event": "HIT",
+          "key": "31ce21cdef2b8ff5",
           "kind": "cpp",
           "label": "scale-R1000000"
         },
         {
-          "event": "MISS",
-          "key": "d61d24e53007e1b3",
+          "event": "HIT",
+          "key": "300bf8323f02eb97",
           "kind": "cpp",
           "label": "scale-R10000000"
         },
         {
-          "event": "MISS",
-          "key": "9823301fcf277d13",
+          "event": "HIT",
+          "key": "a33080203a44b627",
           "kind": "cpp",
           "label": "scale-R100000000"
         },
         {
-          "event": "MISS",
-          "key": "1c0f2c69aab6d31c",
+          "event": "HIT",
+          "key": "561b46c9fc809e16",
           "kind": "cpp",
           "label": "scale-R248956422"
         },
         {
           "event": "MISS",
-          "key": "b83ac72132c632e7",
+          "key": "b2c71421d85b9c9c",
           "kind": "java",
           "label": "compare"
         },
         {
-          "event": "MISS",
-          "key": "c212453fec5fda62",
+          "event": "HIT",
+          "key": "60b073b76fa647d6",
           "kind": "cpp",
           "label": "compare"
         }
       ],
-      "hit": 0,
-      "live": 10,
-      "run": "recertify-1793288302"
+      "hit": 9,
+      "live": 1,
+      "run": "recertify-1793596265"
     }
   },
-  "fingerprint": "5865a2a0b24a8c17",
-  "head": "28722a739fe55b524f2c888303b1bb69fc3f430d",
+  "fingerprint": "356eb13ba068790c",
+  "head": "336c212a3d2b6755e376a7433d5dbe211220dc8d",
+  "inputs": [
+    {
+      "path": "scratch/g4/amplicon/ref.fa",
+      "sha256": "1b96f86271d97e9de6a3f9022ec4529b41b0a464077f3792e14fc0b93542b165",
+      "size_bytes": 414151913
+    },
+    {
+      "path": "scratch/g4/amplicon/ref.fa.fai",
+      "sha256": "94e5aaf77758cc700ced60d5b53febfaa9468945e6c27b5f1d9408d743f37b0b",
+      "size_bytes": 201
+    },
+    {
+      "path": "scratch/g4/amplicon/amplicon.bam",
+      "sha256": "ec53a2260d759c22581c43c76cde10ed5549ea89d913ea60ffd7c1ccfa6f1883",
+      "size_bytes": 72684
+    },
+    {
+      "path": "scratch/g4/amplicon/amplicon.bam.bai",
+      "sha256": "f5270f2423f7fdea620b86230b293c6d9110fc4593fafa82490725d4fe1f8409",
+      "size_bytes": 27808
+    },
+    {
+      "path": "scratch/g4/amplicon/correct_8columns_amplicon.bed",
+      "sha256": "83c0423742a04ddfa828b5423861e6783829be9ec82993f32f87718ddaf61087",
+      "size_bytes": 104
+    }
+  ],
   "java_time": {
     "exit": "0",
-    "max_rss_kb": "123904",
-    "wall": "0:02.77"
+    "max_rss_kb": "115200",
+    "wall": "0:03.04"
   },
   "n_variants": 2,
   "name": "amplicon-tier2",
   "result": "MATCH",
   "rust_time": {
     "exit": "0",
-    "max_rss_kb": "11776",
+    "max_rss_kb": "12960",
     "wall": "0:00.01"
   }
 }
