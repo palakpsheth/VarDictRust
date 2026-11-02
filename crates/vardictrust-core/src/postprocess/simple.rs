@@ -137,14 +137,19 @@ pub fn simple_post_process(
     if !config.emit_intermediate {
         let mut buckets: BTreeMap<i32, Vec<Variant>> = BTreeMap::new();
         for v in vrefs {
+            debug_assert_eq!(
+                v.frequency,
+                crate::types::round_half_even(v.frequency, 4),
+                "simple Variant.frequency entering VCF selection must be 4dp-canonical"
+            );
             buckets.entry(v.start_pos).or_default().push(v);
         }
         let mut selected = Vec::with_capacity(buckets.len());
         for (_, mut rows) in buckets {
             rows.sort_by(|a, b| {
-                b.frequency
-                    .partial_cmp(&a.frequency)
-                    .unwrap_or(std::cmp::Ordering::Equal)
+                let af_b = crate::types::round_half_even(b.frequency, 4);
+                let af_a = crate::types::round_half_even(a.frequency, 4);
+                af_b.partial_cmp(&af_a).unwrap_or(std::cmp::Ordering::Equal)
             });
             selected.extend(rows.into_iter().take(1));
         }

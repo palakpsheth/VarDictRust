@@ -59,7 +59,7 @@ pub fn load_contigs(
     contigs
 }
 
-/// Standard chromosome ordering matching var2vcf_valid.pl's reorder subroutine.
+/// Standard chromosome ordering for `##contig` fallback headers.
 fn chrom_compare(a: &str, b: &str) -> std::cmp::Ordering {
     let clean_a = a.strip_prefix("chr").unwrap_or(a);
     let clean_b = b.strip_prefix("chr").unwrap_or(b);
@@ -93,6 +93,69 @@ fn chrom_compare(a: &str, b: &str) -> std::cmp::Ordering {
             }
         }
     }
+}
+
+/// Ports `var2vcf_valid.pl:254-288` and `var2vcf_paired.pl:260-294` (`sub reorder`):
+/// - Deduplicates input chromosomes preserving first-seen order (`unique_chrs`).
+/// - `@chrn`: chromosomes containing at least one ASCII digit (`\d`) and NO `'_'`,
+///   paired with their digits-only string (`$t =~ s/\D//g`), stable-sorted ascending
+///   by exact non-negative integer value of the digits string (without `u64` overflow).
+/// - `@nonchrn`: chromosomes without digits or containing `'_'`, excluding
+///   `"X"`, `"chrX"`, `"Y"`, `"chrY"`, `"MT"`, `"chrM"` (note `"M"` is NOT excluded).
+/// - Sex and mitochondrial chromosomes appended via Perl's `if ... elsif` chain
+///   (replicating upstream v1.8.3's `chrX`/`chrY`/`chrM` drop when both unprefixed
+///   and `chr`-prefixed names are present; tracked as `--fix var2vcf-chrx-drop`):
+///   - `X` else `chrX`
+///   - `Y` else `chrY`
+///   - `MT` else `chrM`
+/// - Followed by `@nonchrn` in first-seen order.
+pub fn perl_reorder_chromosomes<S: AsRef<str>>(chrs: &[S]) -> Vec<String> {
+    let mut seen = std::collections::HashSet::with_capacity(chrs.len());
+    let mut unique_chrs = Vec::with_capacity(chrs.len());
+    for c in chrs {
+        let s = c.as_ref();
+        if seen.insert(s) {
+            unique_chrs.push(s);
+        }
+    }
+
+    let mut chrn: Vec<(String, &str)> = Vec::new();
+    let mut nonchrn: Vec<&str> = Vec::new();
+    for &c in &unique_chrs {
+        if c.bytes().any(|b| b.is_ascii_digit()) && !c.contains('_') {
+            let digits: String = c.chars().filter(|ch| ch.is_ascii_digit()).collect();
+            chrn.push((digits, c));
+        } else if !matches!(c, "X" | "chrX" | "Y" | "chrY" | "MT" | "chrM") {
+            nonchrn.push(c);
+        }
+    }
+
+    chrn.sort_by(|(da, _), (db, _)| {
+        let na = da.trim_start_matches('0');
+        let nb = db.trim_start_matches('0');
+        na.len().cmp(&nb.len()).then_with(|| na.cmp(nb))
+    });
+
+    let mut order: Vec<String> = chrn.into_iter().map(|(_, c)| c.to_string()).collect();
+    if seen.contains("X") {
+        order.push("X".to_string());
+    } else if seen.contains("chrX") {
+        order.push("chrX".to_string());
+    }
+    if seen.contains("Y") {
+        order.push("Y".to_string());
+    } else if seen.contains("chrY") {
+        order.push("chrY".to_string());
+    }
+    if seen.contains("MT") {
+        order.push("MT".to_string());
+    } else if seen.contains("chrM") {
+        order.push("chrM".to_string());
+    }
+    for c in nonchrn {
+        order.push(c.to_string());
+    }
+    order
 }
 
 /// Ports `var2vcf_valid.pl:21` `my $Freq = $opt_f ? $opt_f : 0.02;`:
@@ -966,15 +1029,15 @@ pub fn print_paired_vcf_header<W: Write>(
 /// One formatted paired record awaiting the delayed print.
 pub struct PairedVcfRecord {
     /// CHROM POS . REF ALT QUAL (var2vcf_paired.pl:237 pinfo1).
-    prefix: String,
-    filter: String,
+    pub(crate) prefix: String,
+    pub(crate) filter: String,
     /// INFO \t FORMAT \t tumor-sample \t normal-sample (:238-242 pinfo2).
-    rest: String,
+    pub(crate) rest: String,
     /// Raw start (for the Cluster rule :229 and pvs tracking :245).
-    start: i32,
-    type_snv: bool,
+    pub(crate) start: i32,
+    pub(crate) type_snv: bool,
     /// Whether STATUS matches /Somatic/ (Cluster-rule precondition).
-    status_somatic: bool,
+    pub(crate) status_somatic: bool,
 }
 
 /// Perl numification of non-numeric strings ("NA" → 0, with warning).
@@ -1398,6 +1461,73 @@ pub fn format_paired_vcf_record(
     }
 }
 
+/// Streaming delayed-print state machine for paired VCF records (`var2vcf_paired.pl:126,229-250`).
+/// Retains at most 1 lookbehind record (`pending`) per chromosome so whole-chromosome
+/// emission uses `O(1)` memory.
+pub struct PairedRecordStreamer {
+    pending: Option<PairedVcfRecord>,
+    pvs: i32,
+    opt_c: i32,
+    line_buf: String,
+}
+
+impl PairedRecordStreamer {
+    pub fn new(opt_c: i32) -> Self {
+        Self {
+            pending: None,
+            pvs: 0,
+            opt_c,
+            line_buf: String::with_capacity(896),
+        }
+    }
+
+    pub fn push<E>(
+        &mut self,
+        mut cur: PairedVcfRecord,
+        mut emit: impl FnMut(&str) -> Result<(), E>,
+    ) -> Result<(), E> {
+        if let Some(mut prev) = self.pending.take() {
+            if prev.filter == "PASS"
+                && prev.status_somatic
+                && prev.type_snv
+                && cur.filter == "PASS"
+                && cur.status_somatic
+                && cur.type_snv
+                && cur.start - self.pvs < self.opt_c
+            {
+                let tag = format!("Cluster{}bp", self.opt_c);
+                prev.filter = tag.clone();
+                cur.filter = tag;
+            }
+            self.line_buf.clear();
+            self.line_buf.push_str(&prev.prefix);
+            self.line_buf.push('\t');
+            self.line_buf.push_str(&prev.filter);
+            self.line_buf.push('\t');
+            self.line_buf.push_str(&prev.rest);
+            emit(&self.line_buf)?;
+        }
+        if cur.type_snv && cur.filter == "PASS" {
+            self.pvs = cur.start; // :245
+        }
+        self.pending = Some(cur);
+        Ok(())
+    }
+
+    pub fn finish<E>(mut self, mut emit: impl FnMut(&str) -> Result<(), E>) -> Result<(), E> {
+        if let Some(prev) = self.pending.take() {
+            self.line_buf.clear();
+            self.line_buf.push_str(&prev.prefix);
+            self.line_buf.push('\t');
+            self.line_buf.push_str(&prev.filter);
+            self.line_buf.push('\t');
+            self.line_buf.push_str(&prev.rest);
+            emit(&self.line_buf)?;
+        }
+        Ok(())
+    }
+}
+
 /// Delayed-print state machine. Ports var2vcf_paired.pl:126,229-236,243-245,248-250:
 /// each record is buffered; on the next record the Cluster rule may mark BOTH
 /// records Cluster{c}bp (prev filter PASS + prev INFO /Somatic/+/TYPE=SNV/,
@@ -1408,32 +1538,17 @@ pub fn format_paired_vcf_record(
 /// ascending positions; `opt_c` is threaded through for fidelity.
 pub fn finish_paired_records(records: Vec<PairedVcfRecord>, opt_c: i32) -> Vec<String> {
     let mut out = Vec::with_capacity(records.len());
-    let mut pending: Option<PairedVcfRecord> = None;
-    let mut pvs = 0i32;
-    for mut cur in records {
-        if let Some(mut prev) = pending.take() {
-            if prev.filter == "PASS"
-                && prev.status_somatic
-                && prev.type_snv
-                && cur.filter == "PASS"
-                && cur.status_somatic
-                && cur.type_snv
-                && cur.start - pvs < opt_c
-            {
-                let tag = format!("Cluster{}bp", opt_c);
-                prev.filter = tag.clone();
-                cur.filter = tag;
-            }
-            out.push(format!("{}\t{}\t{}", prev.prefix, prev.filter, prev.rest));
-        }
-        if cur.type_snv && cur.filter == "PASS" {
-            pvs = cur.start; // :245
-        }
-        pending = Some(cur);
+    let mut streamer = PairedRecordStreamer::new(opt_c);
+    for cur in records {
+        let _ = streamer.push(cur, |line| -> Result<(), std::convert::Infallible> {
+            out.push(line.to_string());
+            Ok(())
+        });
     }
-    if let Some(prev) = pending.take() {
-        out.push(format!("{}\t{}\t{}", prev.prefix, prev.filter, prev.rest));
-    }
+    let _ = streamer.finish(|line| -> Result<(), std::convert::Infallible> {
+        out.push(line.to_string());
+        Ok(())
+    });
     out
 }
 
@@ -2305,6 +2420,78 @@ mod tests {
         assert!(
             vcf_fisher.contains(";SN=2.;"),
             "expected ;SN=2.; with --fisher, got: {vcf_fisher}"
+        );
+    }
+
+    #[test]
+    fn test_perl_reorder_chromosomes_matches_var2vcf_sub_reorder() {
+        // 1. hg19 lexicographic input: GL000192.1 has digits 1921 and no '_', so it enters
+        //    @chrn after chr10 (10) and before chrX; chrUn_gl000211 has '_' so it stays in @nonchrn.
+        let hg19 = [
+            "chr1",
+            "chr10",
+            "chr2",
+            "chrX",
+            "chrY",
+            "chrM",
+            "GL000192.1",
+            "chrUn_gl000211",
+        ];
+        assert_eq!(
+            perl_reorder_chromosomes(&hg19),
+            vec![
+                "chr1",
+                "chr2",
+                "chr10",
+                "GL000192.1",
+                "chrX",
+                "chrY",
+                "chrM",
+                "chrUn_gl000211"
+            ]
+        );
+
+        // 2. b37 input: hs37d5 (375) and GL000220.1 (2201) precede X/Y/MT; NC_007605 has '_' so tail.
+        let b37 = [
+            "1",
+            "10",
+            "2",
+            "X",
+            "Y",
+            "MT",
+            "GL000220.1",
+            "hs37d5",
+            "NC_007605",
+        ];
+        assert_eq!(
+            perl_reorder_chromosomes(&b37),
+            vec![
+                "1",
+                "2",
+                "10",
+                "hs37d5",
+                "GL000220.1",
+                "X",
+                "Y",
+                "MT",
+                "NC_007605"
+            ]
+        );
+
+        // 3. Upstream Perl elsif drop: when both X and chrX (or Y/chrY, MT/chrM) exist,
+        //    chrX/chrY/chrM are dropped; 'M' is not skipped by theelsif block and stays in @nonchrn;
+        //    ties in @chrn ('chr1' vs '1') preserve first-seen order.
+        let drop_case = ["X", "chrX", "chr1", "1", "Y", "chrY", "MT", "chrM", "M"];
+        assert_eq!(
+            perl_reorder_chromosomes(&drop_case),
+            vec!["chr1", "1", "X", "Y", "MT", "M"]
+        );
+
+        // 4. 25-digit chromosome name: exact arbitrary-length digit comparison without u64 overflow.
+        let huge_digits = ["chr9999999999999999999999999", "chr10", "chr2"];
+        assert_eq!(
+            perl_reorder_chromosomes(&huge_digits),
+            vec!["chr2", "chr10", "chr9999999999999999999999999"]
         );
     }
 }
