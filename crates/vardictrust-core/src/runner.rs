@@ -56,8 +56,45 @@ fn parse_stack_bytes(raw: &str) -> Option<usize> {
     digits.parse::<usize>().ok()?.checked_mul(mult)
 }
 
-fn worker_thread_stack_bytes() -> usize {
+pub(crate) fn worker_thread_stack_bytes() -> usize {
     worker_thread_stack_bytes_for_env(std::env::var("RUST_MIN_STACK").ok().as_deref())
+}
+
+thread_local! {
+    static CURRENT_WORKER_REGION: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Sets the region label currently being processed on the worker thread so
+/// caught panics in [`run_parallel_batched`] include the active genomic region.
+pub(crate) fn set_current_worker_region(region: Option<String>) {
+    CURRENT_WORKER_REGION.with(|slot| {
+        *slot.borrow_mut() = region;
+    });
+}
+
+fn take_current_worker_region() -> Option<String> {
+    CURRENT_WORKER_REGION.with(|slot| slot.borrow_mut().take())
+}
+
+/// Executes `f` on a scoped worker thread configured with [`worker_thread_stack_bytes`]
+/// (16 MiB floor, respecting `RUST_MIN_STACK`) so single-threaded (`-th 1`) and
+/// amplicon runs receive the same stack headroom as multi-threaded Rayon workers (`R5`).
+pub(crate) fn run_with_worker_stack<F, R>(f: F) -> Result<R, VardictError>
+where
+    F: FnOnce() -> Result<R, VardictError> + Send,
+    R: Send,
+{
+    std::thread::scope(|s| {
+        let handle = std::thread::Builder::new()
+            .name("vardictrust-worker".to_string())
+            .stack_size(worker_thread_stack_bytes())
+            .spawn_scoped(s, f)
+            .map_err(VardictError::Io)?;
+        match handle.join() {
+            Ok(res) => res,
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
+    })
 }
 
 /// Executes `worker_fn` in parallel over pre-grouped `batches` (`Vec<Vec<T>>`),
@@ -168,13 +205,18 @@ where
                             }
                             out.push(w_fn(item)?);
                         }
+                        set_current_worker_region(None);
                         Ok(out)
                     }))
                     .unwrap_or_else(|_| {
-                        Err(VardictError::Io(std::io::Error::other(format!(
-                            "Worker thread panicked on batch {}",
-                            batch_idx
-                        ))))
+                        let msg = match take_current_worker_region() {
+                            Some(reg) => format!(
+                                "Worker thread panicked on batch {} (region {})",
+                                batch_idx, reg
+                            ),
+                            None => format!("Worker thread panicked on batch {}", batch_idx),
+                        };
+                        Err(VardictError::Io(std::io::Error::other(msg)))
                     });
                     let _ = tx_clone.send((batch_idx, res));
                 });
@@ -481,5 +523,36 @@ mod tests {
         )
         .unwrap();
         assert_eq!(out.len(), 2);
+
+        // Even when invoked from a tiny 512 KiB caller thread, `run_with_worker_stack`
+        // provides the full >= 16 MiB worker stack so `-th 1` and amplicon mode never
+        // overflow the caller's stack.
+        let val = std::thread::Builder::new()
+            .stack_size(512 * 1024)
+            .spawn(|| run_with_worker_stack(|| Ok(recurse_stack(8, 3))))
+            .unwrap()
+            .join()
+            .unwrap()
+            .unwrap();
+        assert!(val > 0);
+
+        // Worker panic includes region context when set via `set_current_worker_region`.
+        let err = run_parallel(
+            vec![1u8, 2u8],
+            2,
+            |seed| {
+                set_current_worker_region(Some(format!("chr1:{seed}-100")));
+                if seed == 2 {
+                    panic!("simulated region panic");
+                }
+                Ok(seed)
+            },
+            |_| Ok(()),
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("region chr1:2-100"),
+            "unexpected error: {err}"
+        );
     }
 }

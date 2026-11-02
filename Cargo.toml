@@ -35,7 +35,7 @@ criterion = "0.8"
 opt-level = 3
 lto = "fat"
 codegen-units = 1
-panic = "abort"
+panic = "unwind"
 strip = true
 
 # The profile that 'dist' will build with

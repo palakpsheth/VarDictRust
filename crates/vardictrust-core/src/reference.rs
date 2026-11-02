@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 
 struct CachedFastaReader {
     reader: IndexedReader<BufReader<File>>,
+    fai_lengths: HashMap<Vec<u8>, u64>,
 }
 
 thread_local! {
@@ -46,11 +47,17 @@ pub fn fetch_subsequence(
             fai_path.set_extension(ext);
 
             let index = fai::fs::read(&fai_path).map_err(VardictError::Io)?;
+            let fai_lengths: HashMap<Vec<u8>, u64> = index
+                .as_ref()
+                .iter()
+                .map(|rec| (rec.name().to_vec(), rec.length()))
+                .collect();
             let file = File::open(fasta_path).map_err(VardictError::Io)?;
             cache.insert(
                 fasta_path.to_path_buf(),
                 CachedFastaReader {
                     reader: IndexedReader::new(BufReader::new(file), index),
+                    fai_lengths,
                 },
             );
         }
@@ -60,6 +67,19 @@ pub fn fetch_subsequence(
             ));
         };
 
+        if let Some(&fai_len) = cached.fai_lengths.get(chr.as_bytes()) {
+            if u64::from(start.0) > fai_len || u64::from(end.0) > fai_len {
+                return Err(VardictError::Parse(format!(
+                    "Query asks for data past end of contig {}: requested {}..={}, contig length {} in '{}'",
+                    chr,
+                    start.0,
+                    end.0,
+                    fai_len,
+                    fasta_path.display()
+                )));
+            }
+        }
+
         // NoodlesRegion parses "chr:start-end"
         let region_str = format!("{}:{}-{}", chr, start.0, end.0);
         let region: NoodlesRegion = region_str.parse().map_err(|e| {
@@ -67,8 +87,25 @@ pub fn fetch_subsequence(
         })?;
 
         let record = cached.reader.query(&region).map_err(VardictError::Io)?;
+        let seq = record.sequence().as_ref();
+        let expected_len = if end.0 >= start.0 {
+            (end.0 - start.0) as usize + 1
+        } else {
+            0
+        };
+        if seq.len() < expected_len {
+            return Err(VardictError::Parse(format!(
+                "Query asks for data past end of contig {}: requested {}..={} ({} bp), got {} bp from '{}'",
+                chr,
+                start.0,
+                end.0,
+                expected_len,
+                seq.len(),
+                fasta_path.display()
+            )));
+        }
 
-        Ok(record.sequence().as_ref().to_vec())
+        Ok(seq.to_vec())
     })
 }
 
@@ -1043,5 +1080,57 @@ mod tests {
 
         let _ = fs::remove_file(&fa_path);
         let _ = fs::remove_file(&fai_path);
+    }
+
+    #[test]
+    fn fetch_subsequence_past_end_is_err() {
+        let dir = tempfile::tempdir().unwrap();
+        let fa_path = dir.path().join("short.fa");
+        let fai_path = dir.path().join("short.fa.fai");
+
+        let seq_1000 = b"ACGT".repeat(250);
+        let mut fa_file = File::create(&fa_path).unwrap();
+        fa_file.write_all(b">chr1\n").unwrap();
+        fa_file.write_all(&seq_1000).unwrap();
+        fa_file.write_all(b"\n").unwrap();
+
+        let mut fai_file = File::create(&fai_path).unwrap();
+        fai_file.write_all(b"chr1\t1000\t6\t1000\t1001\n").unwrap();
+
+        // Query in-bounds succeeds.
+        let in_bounds = fetch_subsequence(&fa_path, "chr1", Pos1(1), Pos1(1000)).unwrap();
+        assert_eq!(in_bounds.len(), 1000);
+
+        // Query overlapping past the 1000-bp contig end must return Err, not a truncated slice.
+        let err_overlap = fetch_subsequence(&fa_path, "chr1", Pos1(1), Pos1(2000)).unwrap_err();
+        assert!(
+            err_overlap
+                .to_string()
+                .contains("Query asks for data past end of contig chr1"),
+            "unexpected error: {err_overlap}"
+        );
+
+        // Query starting completely past the contig end must return Err, not an empty Vec.
+        let err_past = fetch_subsequence(&fa_path, "chr1", Pos1(1500), Pos1(2000)).unwrap_err();
+        assert!(
+            err_past
+                .to_string()
+                .contains("Query asks for data past end of contig chr1"),
+            "unexpected error: {err_past}"
+        );
+
+        // Truncated .fa with stale .fai claiming 2000 bp must also return Err when fewer bytes are read.
+        let stale_fa_path = dir.path().join("stale.fa");
+        let stale_fai_path = dir.path().join("stale.fa.fai");
+        fs::copy(&fa_path, &stale_fa_path).unwrap();
+        fs::write(&stale_fai_path, b"chr1\t2000\t6\t2000\t2001\n").unwrap();
+        let err_stale =
+            fetch_subsequence(&stale_fa_path, "chr1", Pos1(900), Pos1(1200)).unwrap_err();
+        assert!(
+            err_stale
+                .to_string()
+                .contains("Query asks for data past end of contig chr1"),
+            "unexpected error: {err_stale}"
+        );
     }
 }

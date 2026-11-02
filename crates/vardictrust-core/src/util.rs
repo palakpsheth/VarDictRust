@@ -3,6 +3,20 @@
 //! These replace Java's `String.charAt(i)` / `String.substring(i, j)` with
 //! safe alternatives that return `Option` instead of panicking on out-of-bounds.
 
+/// Compile a static regex literal once (`LazyLock` / `OnceLock` initializers).
+///
+/// Centralizes the single sanctioned `.unwrap()` on compile-time regex patterns
+/// so `vardictrust-core` enforces the no-panic lint ratchet across all runtime
+/// library code (`AGENTS.md` §9).
+#[allow(
+    clippy::unwrap_used,
+    reason = "static regex literal validated by unit tests"
+)]
+#[inline]
+pub(crate) fn static_regex(pattern: &'static str) -> regex::Regex {
+    regex::Regex::new(pattern).unwrap()
+}
+
 /// Bounds-checked byte access, supporting negative indices (Python-style).
 ///
 /// Negative indices count from the end: `char_at(b"ACGT", -1)` → `Some(b'T')`.

@@ -13,6 +13,17 @@
 //! Validated against VarDictJava v1.8.3 (commit `0886261`).
 
 #![forbid(unsafe_code)]
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::todo,
+        clippy::string_slice,
+    )
+)]
 #![allow(
     clippy::too_many_arguments,
     clippy::unwrap_or_default,
@@ -1575,9 +1586,11 @@ pub fn run(config: &config::Config) -> Result<(), VardictError> {
     crate::bam::clear_bam_caches();
     let _bam_cache_guard = BamCacheGuard;
 
-    let (effective, _) = resolve_effective_config(config)?;
-    let writer = create_output_writer(&effective);
-    run_with_engine_writer(&effective, writer)
+    crate::runner::run_with_worker_stack(|| {
+        let (effective, _) = resolve_effective_config(config)?;
+        let writer = create_output_writer(&effective);
+        run_with_engine_writer(&effective, writer)
+    })
 }
 
 /// Runs the variant-calling pipeline writing all output to `writer` without clearing
@@ -1593,13 +1606,26 @@ fn run_with_engine_writer<W: EngineWriter>(
     config: &config::Config,
     mut writer: W,
 ) -> Result<(), VardictError> {
+    match run_with_writer_inner(config, &mut writer) {
+        Ok(()) => writer.flush().map_err(VardictError::Io),
+        Err(e) => {
+            let _ = writer.flush();
+            Err(e)
+        }
+    }
+}
+
+fn run_with_writer_inner<W: EngineWriter>(
+    config: &config::Config,
+    mut writer: &mut W,
+) -> Result<(), VardictError> {
     log::info!("VarDictRust engine starting");
 
     let (effective, mode) = resolve_effective_config(config)?;
     let config = &effective;
 
     if mode == CallingMode::Somatic {
-        return run_somatic(config, &mut writer);
+        return run_somatic(config, writer);
     }
 
     let first_bam_spec = config
@@ -1634,7 +1660,7 @@ fn run_with_engine_writer<W: EngineWriter>(
 
     // Amplicon mode: process per-amplicon and combine via amplicon post-process
     if mode == CallingMode::Amplicon {
-        return run_amplicon(config, &chromosomes_lengths, regions, &mut writer);
+        return run_amplicon(config, &chromosomes_lengths, regions, writer);
     }
 
     let flat_regions: Vec<crate::regions::Region> = regions.into_iter().flatten().collect();
@@ -1694,6 +1720,10 @@ fn run_with_engine_writer<W: EngineWriter>(
         tile_batches,
         config.threads,
         move |tile| -> Result<SimpleTileOutput, VardictError> {
+            crate::runner::set_current_worker_region(Some(format!(
+                "{}:{}-{}",
+                tile.chr, tile.start.0, tile.end.0
+            )));
             let bed_region = crate::regions::Region {
                 chr: tile.chr.clone(),
                 start: tile.halo_start,
@@ -1930,16 +1960,6 @@ fn process_amplicon_region(
     let halo_start = crate::types::Pos0(region.start.0.saturating_sub(halo).saturating_sub(1));
     let halo_end = crate::types::Pos0(region.end.0 + halo);
 
-    // Reference is loaded over the halo bounds; the pileup runs over the
-    // amplicon region itself.
-    let ref_region = crate::regions::Region {
-        chr: region.chr.clone(),
-        start: crate::types::Pos1(halo_start.0 + 1),
-        end: crate::types::Pos1(halo_end.0),
-        gene: region.gene.clone(),
-        amplicon: region.amplicon.clone(),
-    };
-
     let mut reference = crate::reference::Reference::new();
     let bam_list = parse_colon_bams(bam, "No BAM files specified")?;
     let var_data = run_pipeline_on_records(
@@ -1947,7 +1967,7 @@ fn process_amplicon_region(
         &region.chr,
         halo_start,
         halo_end,
-        Some(&ref_region),
+        Some(region),
         &mut reference,
         region,
         PipelineTail::Full,
@@ -2079,12 +2099,24 @@ fn run_amplicon<W: EngineWriter>(
             Vec::with_capacity(segment.len());
         let mut splice = std::collections::HashSet::new();
 
-        for region in segment.iter() {
-            let (aligned, next_splice) =
-                process_amplicon_region(first_bam, region, config, chromosomes_lengths, splice)?;
-            vars_per_amplicon.push(aligned);
-            splice = next_splice;
-        }
+        crate::runner::run_with_worker_stack(|| {
+            for region in segment.iter() {
+                crate::runner::set_current_worker_region(Some(format!(
+                    "{}:{}-{}",
+                    region.chr, region.start.0, region.end.0
+                )));
+                let (aligned, next_splice) = process_amplicon_region(
+                    first_bam,
+                    region,
+                    config,
+                    chromosomes_lengths,
+                    std::mem::take(&mut splice),
+                )?;
+                vars_per_amplicon.push(aligned);
+                splice = next_splice;
+            }
+            Ok::<(), VardictError>(())
+        })?;
 
         // Position → covering-amplicon pairs (AmpliconMode.java:57-60).
         //
@@ -2327,6 +2359,10 @@ fn run_somatic<W: EngineWriter>(
         tile_batches,
         config.threads,
         move |tile| -> Result<SomaticTileOutput, VardictError> {
+            crate::runner::set_current_worker_region(Some(format!(
+                "{}:{}-{}",
+                tile.chr, tile.start.0, tile.end.0
+            )));
             // Process BAM1 (tumor)
             let bed_region = crate::regions::Region {
                 chr: tile.chr.clone(),

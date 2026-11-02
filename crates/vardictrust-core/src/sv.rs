@@ -3510,9 +3510,9 @@ pub fn partial_pipeline(
             scratch_ss: String::new(),
             scratch_splice_key: String::new(),
             scratch_f4_desc: String::new(),
-            scratch_f4_qual: String::new(),
+            scratch_f4_qual: Vec::new(),
             scratch_f4_seg1: String::new(),
-            scratch_f4_seg2: String::new(),
+            scratch_f4_seg2: Vec::new(),
         };
         let mut r = crate::bam::SamRecord::new();
         for (idx, mut feed) in feeds.into_iter().enumerate() {

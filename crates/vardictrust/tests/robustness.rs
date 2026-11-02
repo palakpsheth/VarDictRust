@@ -5,6 +5,8 @@
 //! unsupported/invalid CLI flags, C vs `de_DE` locale independence on `micro.bam`,
 //! and clean jemalloc startup without `<jemalloc>:` stderr warnings.
 
+#[cfg(unix)]
+use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
 use std::process::Command;
 
@@ -155,6 +157,8 @@ fn unsupported_and_invalid_cli_flags_exit_nonzero() {
             !out.status.success(),
             "unsupported flag {flag} must exit non-zero"
         );
+        #[cfg(unix)]
+        assert_eq!(out.status.signal(), None, "{flag} died by signal");
         assert_ne!(out.status.code(), Some(101), "{flag} died by panic");
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(
@@ -166,21 +170,24 @@ fn unsupported_and_invalid_cli_flags_exit_nonzero() {
     for (invalid_args, expected_msg) in [
         (&["-F", "bogus"][..], "Invalid -F value"),
         (&["--tile-size", "0"][..], "Invalid --tile-size"),
+        (&["-R", "chr1:1-3000000000"][..], "invalid integer"),
     ] {
-        let out = base_cmd()
-            .args([
-                "-G",
-                "fixtures/micro/micro.ref.fa",
-                "-b",
-                "fixtures/micro/micro.bam",
-                "-R",
-                "chr1:100-110",
-            ])
-            .args(invalid_args)
-            .output()
-            .expect("spawn vardictrust");
+        let mut cmd = base_cmd();
+        cmd.args([
+            "-G",
+            "fixtures/micro/micro.ref.fa",
+            "-b",
+            "fixtures/micro/micro.bam",
+        ])
+        .args(invalid_args);
+        if !invalid_args.contains(&"-R") {
+            cmd.args(["-R", "chr1:100-110"]);
+        }
+        let out = cmd.output().expect("spawn vardictrust");
 
         assert!(!out.status.success());
+        #[cfg(unix)]
+        assert_eq!(out.status.signal(), None, "died by signal");
         assert_ne!(out.status.code(), Some(101), "died by panic");
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(

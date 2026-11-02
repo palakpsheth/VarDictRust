@@ -896,15 +896,13 @@ impl<'a> ToVarsBuilder<'a> {
 
                     // replaceFirst("#", "").replaceFirst("\\^(\\d+)?", "") in Java:
                     let cleaned_varallele = varallele.replacen('#', "", 1);
-                    let cleaned_varallele = if let Some(idx) = cleaned_varallele.find('^') {
-                        let rest = &cleaned_varallele[idx + 1..];
-                        let digits_len = rest.chars().take_while(|c| c.is_ascii_digit()).count();
-                        let mut new_s = cleaned_varallele[..idx].to_string();
-                        new_s.push_str(&rest[digits_len..]);
-                        new_s
-                    } else {
-                        cleaned_varallele
-                    };
+                    let cleaned_varallele =
+                        if let Some((prefix, rest)) = cleaned_varallele.split_once('^') {
+                            let tail = rest.trim_start_matches(|c: char| c.is_ascii_digit());
+                            format!("{prefix}{tail}")
+                        } else {
+                            cleaned_varallele
+                        };
                     varallele = cleaned_varallele;
 
                     genotype1_current_inner = genotype1_current_inner
@@ -931,8 +929,8 @@ impl<'a> ToVarsBuilder<'a> {
                         }
                         if n != 0 {
                             start_position += n as i32;
-                            refallele = refallele[n..].to_string();
-                            varallele = varallele[n..].to_string();
+                            refallele = refallele.get(n..).unwrap_or("").to_string();
+                            varallele = varallele.get(n..).unwrap_or("").to_string();
                         }
                     }
 
@@ -977,7 +975,11 @@ impl<'a> ToVarsBuilder<'a> {
                                 if tva.len() > 1 {
                                     let ttn = (n as usize) % tva.len();
                                     if ttn != 0 {
-                                        tva = format!("{}{}", &tva[ttn..], &tva[..ttn]);
+                                        if let (Some(suffix), Some(prefix)) =
+                                            (tva.get(ttn..), tva.get(..ttn))
+                                        {
+                                            tva = format!("{suffix}{prefix}");
+                                        }
                                     }
                                 }
                             }
