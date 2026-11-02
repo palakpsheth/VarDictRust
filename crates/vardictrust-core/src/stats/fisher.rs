@@ -91,13 +91,24 @@ impl FisherExact {
                 logdc.push(0.0);
                 continue;
             }
-            let mut value = crate::stats::rmath::dhyper::dhyper(
-                element as f64,
-                m as f64,
-                n as f64,
-                k as f64,
-                true,
-            );
+            let mut value = if self.java_fisher {
+                cm3_hypergeometric_log_probability(
+                    element,
+                    m.saturating_add(n),
+                    m,
+                    k,
+                    self.lo,
+                    self.hi,
+                )
+            } else {
+                crate::stats::rmath::dhyper::dhyper(
+                    element as f64,
+                    m as f64,
+                    n as f64,
+                    k as f64,
+                    true,
+                )
+            };
             if value.is_nan() {
                 value = 0.0;
             }
@@ -204,7 +215,7 @@ impl FisherExact {
         } else if odd_ratio == odd_ratio.round() {
             format!("{:.0}", odd_ratio)
         } else {
-            let rounded = round_as_r(odd_ratio);
+            let rounded = self.round_result(odd_ratio);
             if self.java_fisher {
                 crate::variations::java_double_to_string(rounded)
             } else {
@@ -215,17 +226,26 @@ impl FisherExact {
 
     /// Returns the two-sided p-value.
     pub fn get_p_value(&self) -> f64 {
-        round_as_r(self.p_value_two_sided)
+        self.round_result(self.p_value_two_sided)
     }
 
     /// Returns the one-sided "greater" p-value.
     pub fn get_p_value_greater(&self) -> f64 {
-        round_as_r(self.p_value_greater)
+        self.round_result(self.p_value_greater)
     }
 
     /// Returns the one-sided "less" p-value.
     pub fn get_p_value_less(&self) -> f64 {
-        round_as_r(self.p_value_less)
+        self.round_result(self.p_value_less)
+    }
+
+    #[inline]
+    fn round_result(&self, value: f64) -> f64 {
+        if self.java_fisher {
+            round_as_r_java(value)
+        } else {
+            round_as_r_fround5(value)
+        }
     }
 
     fn calculate_p_value(&mut self) {
@@ -259,6 +279,47 @@ impl FisherExact {
         if self.m + self.n == 0 {
             return 1.0;
         }
+        if self.java_fisher {
+            let pop = self.m.saturating_add(self.n);
+            let prob = |i: i32| -> f64 {
+                let lp =
+                    cm3_hypergeometric_log_probability(i, pop, self.m, self.k, self.lo, self.hi);
+                if lp == f64::NEG_INFINITY {
+                    0.0
+                } else {
+                    lp.exp()
+                }
+            };
+            if upper_tail {
+                if q <= self.lo {
+                    return 1.0;
+                }
+                if q > self.hi {
+                    return 0.0;
+                }
+                let mut x0 = self.hi;
+                let mut ret = prob(x0);
+                while x0 > q {
+                    x0 -= 1;
+                    ret += prob(x0);
+                }
+                return ret;
+            } else {
+                if q < self.lo {
+                    return 0.0;
+                }
+                if q >= self.hi {
+                    return 1.0;
+                }
+                let mut x0 = self.lo;
+                let mut ret = prob(x0);
+                while x0 < q {
+                    x0 += 1;
+                    ret += prob(x0);
+                }
+                return ret;
+            }
+        }
         if upper_tail {
             crate::stats::rmath::phyper::phyper(
                 (q - 1) as f64,
@@ -277,6 +338,143 @@ impl FisherExact {
             )
         }
     }
+}
+
+/// Apache Commons Math 3.6.1 `SaddlePointExpansion.EXACT_STIRLING_ERRORS`.
+#[allow(clippy::excessive_precision)]
+const CM3_EXACT_STIRLING_ERRORS: [f64; 31] = [
+    0.0,
+    0.15342640972002736,
+    0.08106146679532726,
+    0.05481412105191765,
+    0.0413406959554093,
+    0.03316287351993629,
+    0.02767792568499834,
+    0.023746163656297496,
+    0.020790672103765093,
+    0.018488450532673187,
+    0.016644691189821193,
+    0.015134973221917378,
+    0.013876128823070748,
+    0.012810465242920227,
+    0.01189670994589177,
+    0.011104559758206917,
+    0.010411265261972096,
+    0.009799416126158804,
+    0.009255462182712733,
+    0.008768700134139386,
+    0.00833056343336287,
+    0.00793411456431402,
+    0.007573675487951841,
+    0.007244554301320383,
+    0.00694284010720953,
+    0.006665247032707682,
+    0.006408994188004207,
+    0.006171712263039458,
+    0.0059513701127588475,
+    0.0057462165130101155,
+    0.005554733551962801,
+];
+
+/// Ports `org.apache.commons.math3.distribution.SaddlePointExpansion.getStirlingError`.
+#[inline]
+#[allow(clippy::excessive_precision)]
+fn cm3_stirling_error(z: f64) -> f64 {
+    if z < 15.0 {
+        let z2 = 2.0 * z;
+        if z2.floor() == z2 {
+            return CM3_EXACT_STIRLING_ERRORS
+                .get(z2 as usize)
+                .copied()
+                .unwrap_or(0.0);
+        }
+    }
+    let z2 = z * z;
+    (0.08333333333333333
+        - (0.002777777777777778
+            - (7.936507936507937e-4 - (5.952380952380953e-4 - 8.417508417508417e-4 / z2) / z2)
+                / z2)
+            / z2)
+        / z
+}
+
+/// Ports `org.apache.commons.math3.distribution.SaddlePointExpansion.getDeviancePart`.
+#[inline]
+fn cm3_deviance_part(x: f64, mu: f64) -> f64 {
+    if x == 0.0 && mu == 0.0 {
+        return 0.0;
+    }
+    if (x - mu).abs() < 0.1 * (x + mu) {
+        let d = x - mu;
+        let v = d / (x + mu);
+        let mut s1 = v * d;
+        let mut ej = 2.0 * x * v;
+        let v2 = v * v;
+        for j in 1..1000i32 {
+            let s = s1;
+            ej *= v2;
+            s1 = s + ej / (j * 2 + 1) as f64;
+            if s1 == s {
+                break;
+            }
+        }
+        s1
+    } else {
+        x * (x / mu).ln() + mu - x
+    }
+}
+
+/// Ports `org.apache.commons.math3.distribution.SaddlePointExpansion.logBinomialProbability`.
+#[inline]
+#[allow(clippy::excessive_precision)]
+fn cm3_log_binomial_probability(x: i32, n: i32, p: f64, q: f64) -> f64 {
+    let nf = n as f64;
+    if x == 0 {
+        if p < 0.1 {
+            -cm3_deviance_part(nf, nf * q) - nf * p
+        } else {
+            nf * q.ln()
+        }
+    } else if x == n {
+        if q < 0.1 {
+            -cm3_deviance_part(nf, nf * p) - nf * q
+        } else {
+            nf * p.ln()
+        }
+    } else {
+        let xf = x as f64;
+        let n_minus_x = (n - x) as f64;
+        let ret = cm3_stirling_error(nf)
+            - cm3_stirling_error(xf)
+            - cm3_stirling_error(n_minus_x)
+            - cm3_deviance_part(xf, nf * p)
+            - cm3_deviance_part(n_minus_x, nf * q);
+        let f = std::f64::consts::TAU * xf * n_minus_x / nf;
+        -0.5 * f.ln() + ret
+    }
+}
+
+/// Ports `org.apache.commons.math3.distribution.HypergeometricDistribution.logProbability`.
+#[inline]
+fn cm3_hypergeometric_log_probability(
+    x: i32,
+    population_size: i32,
+    number_of_successes: i32,
+    sample_size: i32,
+    lo: i32,
+    hi: i32,
+) -> f64 {
+    if x < lo || x > hi {
+        return f64::NEG_INFINITY;
+    }
+    let pop = population_size as f64;
+    let p = (sample_size as f64) / pop;
+    let q = ((population_size - sample_size) as f64) / pop;
+    let p1 = cm3_log_binomial_probability(x, number_of_successes, p, q);
+    let p2 =
+        cm3_log_binomial_probability(sample_size - x, population_size - number_of_successes, p, q);
+    let p3 = cm3_log_binomial_probability(sample_size, population_size, p, q);
+    p1 + p2 - p3
 }
 
 /// Emulates OpenJDK's `DoubleStream.sum()` (`Collectors.sumWithCompensation` + `computeFinalSum`),
@@ -300,9 +498,43 @@ fn java_stream_sum(values: &[f64]) -> f64 {
     }
 }
 
-fn round_as_r(value: f64) -> f64 {
+/// Ports `FisherExact.round_as_r` (`FisherExact.java:164-169`) for `--fisher` mode.
+fn round_as_r_java(value: f64) -> f64 {
     let multiplied = value * 100000.0;
     let rounded = round_half_even(multiplied, 0) / 100000.0;
+    if rounded == 0.0 {
+        0.0
+    } else if rounded == 1.0 {
+        1.0
+    } else {
+        rounded
+    }
+}
+
+/// Ports R 4.x `round(value, 5)` (`nmath/fround.c`) for non-`--fisher` R mode:
+/// compares the two bounding 5-decimal candidates `floor(x * 1e5) / 1e5` and
+/// `ceil(x * 1e5) / 1e5` directly against `x` in IEEE-754 `f64`, breaking exact
+/// ties to the even integer significand.
+fn round_as_r_fround5(value: f64) -> f64 {
+    if !value.is_finite() || value.abs() >= (1u64 << 52) as f64 / 100000.0 {
+        return round_as_r_java(value);
+    }
+    let scaled = value * 100000.0;
+    let k_lo = scaled.floor();
+    let k_hi = scaled.ceil();
+    let x_lo = k_lo / 100000.0;
+    let x_hi = k_hi / 100000.0;
+    let d_lo = (value - x_lo).abs();
+    let d_hi = (x_hi - value).abs();
+    let rounded = if d_lo < d_hi {
+        x_lo
+    } else if d_hi < d_lo {
+        x_hi
+    } else if (k_lo as i64) & 1 == 0 {
+        x_lo
+    } else {
+        x_hi
+    };
     if rounded == 0.0 {
         0.0
     } else if rounded == 1.0 {
@@ -613,5 +845,125 @@ mod tests {
         );
         // R mode keeps non-scientific formatting ("0.0001")
         assert_eq!(FisherExact::new(2, 300, 300, 2).get_odds_ratio(), "0.0001");
+    }
+
+    #[test]
+    fn fisher_java_oracle_table() {
+        let tsv = include_str!("../../testdata/fisher/java_fisher_oracle.tsv");
+        let mut count = 0usize;
+        for (line_no, line) in tsv.lines().enumerate() {
+            if line.starts_with('#') || line.trim().is_empty() {
+                continue;
+            }
+            let cols: Vec<&str> = line.split('\t').collect();
+            assert_eq!(cols.len(), 11, "line {}: expected 11 columns", line_no + 1);
+            let rf: i32 = cols[0].parse().unwrap();
+            let rr: i32 = cols[1].parse().unwrap();
+            let af: i32 = cols[2].parse().unwrap();
+            let ar: i32 = cols[3].parse().unwrap();
+            let p_two_bits = u64::from_str_radix(cols[5], 16).unwrap();
+            let p_less_bits = u64::from_str_radix(cols[7], 16).unwrap();
+            let p_greater_bits = u64::from_str_radix(cols[9], 16).unwrap();
+            let expected_or = cols[10];
+
+            let fe = FisherExact::new_java(rf, rr, af, ar);
+            assert_eq!(
+                fe.get_p_value().to_bits(),
+                p_two_bits,
+                "line {} ({rf},{rr},{af},{ar}) p_two: got {} [0x{:016x}], expected {} [0x{:016x}]",
+                line_no + 1,
+                fe.get_p_value(),
+                fe.get_p_value().to_bits(),
+                cols[4],
+                p_two_bits
+            );
+            assert_eq!(
+                fe.get_p_value_less().to_bits(),
+                p_less_bits,
+                "line {} ({rf},{rr},{af},{ar}) p_less: got {} [0x{:016x}], expected {} [0x{:016x}]",
+                line_no + 1,
+                fe.get_p_value_less(),
+                fe.get_p_value_less().to_bits(),
+                cols[6],
+                p_less_bits
+            );
+            assert_eq!(
+                fe.get_p_value_greater().to_bits(),
+                p_greater_bits,
+                "line {} ({rf},{rr},{af},{ar}) p_greater: got {} [0x{:016x}], expected {} [0x{:016x}]",
+                line_no + 1,
+                fe.get_p_value_greater(),
+                fe.get_p_value_greater().to_bits(),
+                cols[8],
+                p_greater_bits
+            );
+            assert_eq!(
+                fe.get_odds_ratio(),
+                expected_or,
+                "line {} ({rf},{rr},{af},{ar}) odd_ratio: got {}, expected {}",
+                line_no + 1,
+                fe.get_odds_ratio(),
+                expected_or
+            );
+            count += 1;
+        }
+        assert!(count >= 250, "expected >= 250 oracle rows, got {count}");
+    }
+
+    #[test]
+    fn fisher_r_oracle_table() {
+        let tsv = include_str!("../../testdata/fisher/r_fisher_oracle.tsv");
+        let mut count = 0usize;
+        for (line_no, line) in tsv.lines().enumerate() {
+            if line.starts_with('#') || line.trim().is_empty() {
+                continue;
+            }
+            let cols: Vec<&str> = line.split('\t').collect();
+            assert_eq!(cols.len(), 8, "line {}: expected 8 columns", line_no + 1);
+            let rf: i32 = cols[0].parse().unwrap();
+            let rr: i32 = cols[1].parse().unwrap();
+            let af: i32 = cols[2].parse().unwrap();
+            let ar: i32 = cols[3].parse().unwrap();
+            let expected_p_two: f64 = cols[4].parse().unwrap();
+            let expected_p_less: f64 = cols[5].parse().unwrap();
+            let expected_p_greater: f64 = cols[6].parse().unwrap();
+            let expected_or = cols[7];
+
+            let fe = FisherExact::new(rf, rr, af, ar);
+            assert_eq!(
+                fe.get_p_value().to_bits(),
+                expected_p_two.to_bits(),
+                "line {} ({rf},{rr},{af},{ar}) R p_two: got {}, expected {}",
+                line_no + 1,
+                fe.get_p_value(),
+                expected_p_two
+            );
+            assert_eq!(
+                fe.get_p_value_less().to_bits(),
+                expected_p_less.to_bits(),
+                "line {} ({rf},{rr},{af},{ar}) R p_less: got {}, expected {}",
+                line_no + 1,
+                fe.get_p_value_less(),
+                expected_p_less
+            );
+            assert_eq!(
+                fe.get_p_value_greater().to_bits(),
+                expected_p_greater.to_bits(),
+                "line {} ({rf},{rr},{af},{ar}) R p_greater: got {}, expected {}",
+                line_no + 1,
+                fe.get_p_value_greater(),
+                expected_p_greater
+            );
+            assert_eq!(
+                fe.get_odds_ratio(),
+                expected_or,
+                "line {} ({rf},{rr},{af},{ar}) R odd_ratio: got {}, expected {}",
+                line_no + 1,
+                fe.get_odds_ratio(),
+                expected_or
+            );
+            count += 1;
+        }
+        assert!(count >= 250, "expected >= 250 oracle rows, got {count}");
     }
 }
