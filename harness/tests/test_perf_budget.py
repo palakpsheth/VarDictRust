@@ -200,6 +200,66 @@ class TestPerfBudget(unittest.TestCase):
             "Auto-discovery on --current must still include hg008-tier2.json when extended_coverage.json is present",
         )
 
+    def test_cram_twin_records_rust_cram_time_and_enforces_ratio(self):
+        """cram_twin.sh must write rust-cram.time (not /dev/null), record_evidence.py must capture it, and perf_budget.py must enforce 2.50x."""
+        cram_twin_sh = (self.repo_root / "harness" / "cram_twin.sh").read_text(encoding="utf-8")
+        self.assertIn('"$OUT/rust-cram.time"', cram_twin_sh)
+        self.assertNotIn("-o /dev/null", cram_twin_sh)
+
+        keep = self.tmp_path / "cram_keep"
+        keep.mkdir(parents=True, exist_ok=True)
+        (keep / "compare.txt").write_text("MATCH (18426 variants)\n", encoding="utf-8")
+        (keep / "rust-bam.time").write_text(
+            "\tElapsed (wall clock) time (h:mm:ss or m:ss): 0:10.00\n"
+            "\tMaximum resident set size (kbytes): 250000\n"
+            "\tExit status: 0\n",
+            encoding="utf-8",
+        )
+        (keep / "rust-cram.time").write_text(
+            "\tElapsed (wall clock) time (h:mm:ss or m:ss): 0:22.00\n"
+            "\tMaximum resident set size (kbytes): 270000\n"
+            "\tExit status: 0\n",
+            encoding="utf-8",
+        )
+
+        rec_script = self.repo_root / "harness" / "record_evidence.py"
+        out_ev = self.tmp_path / "ev_cram"
+        res_rec = subprocess.run(
+            [
+                sys.executable,
+                str(rec_script),
+                "--out-dir",
+                str(out_ev),
+                "hg008-cram-twin",
+                "MATCH",
+                str(keep),
+                "--",
+                "bash",
+                "harness/cram_twin.sh",
+            ],
+            cwd=str(self.repo_root),
+            env={**subprocess.os.environ, "RECORD_EVIDENCE_FP": "1234567890abcdef"},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(res_rec.returncode, 0, f"record_evidence.py failed: {res_rec.stderr}")
+        recorded = json.loads((out_ev / "hg008-cram-twin.json").read_text(encoding="utf-8"))
+        self.assertEqual(recorded["rust_time"]["wall"], "0:10.00")
+        self.assertEqual(recorded["rust_cram_time"]["wall"], "0:22.00")
+
+        # 22.0s / 10.0s = 2.20 <= 2.50 -> must pass
+        res_ok = self._run_budget("--current", str(out_ev), "hg008-cram-twin")
+        self.assertEqual(res_ok.returncode, 0, f"2.20x CRAM/BAM ratio should pass: {res_ok.stdout}")
+        budget_out = json.loads(res_ok.stdout)
+        self.assertAlmostEqual(budget_out["runs"]["hg008-cram-twin"]["cram_bam_wall_ratio"], 2.2)
+
+        # 28.0s / 10.0s = 2.80 > 2.50 -> must fail
+        recorded["rust_cram_time"]["wall"] = "0:28.00"
+        self._write_json(out_ev / "hg008-cram-twin.json", recorded)
+        res_fail = self._run_budget("--current", str(out_ev), "hg008-cram-twin")
+        self.assertNotEqual(res_fail.returncode, 0, "2.80x CRAM/BAM ratio in hg008-cram-twin must fail")
+
 
 if __name__ == "__main__":
     unittest.main()

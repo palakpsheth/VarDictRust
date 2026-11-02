@@ -20,6 +20,7 @@ cmd = args[sep_idx + 1 :]
 
 explicit_inputs = []
 out_dir = pathlib.Path("benchmarks/evidence")
+cram_time_arg = None
 pos_args = []
 i = 0
 while i < len(pre_args):
@@ -29,6 +30,9 @@ while i < len(pre_args):
         i += 2
     elif a == "--out-dir":
         out_dir = pathlib.Path(pre_args[i + 1])
+        i += 2
+    elif a == "--cram-time":
+        cram_time_arg = pathlib.Path(pre_args[i + 1])
         i += 2
     else:
         pos_args.append(a)
@@ -128,16 +132,22 @@ def collect_inputs(cmd_tokens, extra_paths):
     return recorded
 
 
-def tv(p):
-    if keep is None or not (keep / p).exists():
+def tv_file(path: pathlib.Path):
+    if path is None or not path.exists():
         return None
-    t = (keep / p).read_text()
+    t = path.read_text()
     g = lambda k: (re.search(rf"{re.escape(k)}: (.+)", t) or [None, None])[1]
     return {
         "wall": g("Elapsed (wall clock) time (h:mm:ss or m:ss)"),
         "max_rss_kb": g("Maximum resident set size (kbytes)"),
         "exit": g("Exit status"),
     }
+
+
+def tv(p):
+    if keep is None:
+        return None
+    return tv_file(keep / p)
 
 
 cmp_txt = (keep / "compare.txt").read_text() if keep and (keep / "compare.txt").exists() else ""
@@ -178,6 +188,8 @@ else:
             raise
 
 inputs_list = collect_inputs(cmd, explicit_inputs)
+rust_tv = tv("rust.time") or tv("rust-bam.time")
+cram_tv = tv_file(cram_time_arg) if cram_time_arg is not None else tv("rust-cram.time")
 
 rec = {
     "name": name,
@@ -189,10 +201,12 @@ rec = {
     "cmd": cmd,
     "inputs": inputs_list,
     "java_time": tv("java.time"),
-    "rust_time": tv("rust.time"),
+    "rust_time": rust_tv,
     "cpp_time": cpp_tv,
     "compare_head": cmp_txt.splitlines()[:25],
 }
+if cram_tv is not None:
+    rec["rust_cram_time"] = cram_tv
 if extra_in is not None:
     rec["extra"] = extra_in
 if skip_r.startswith(PRE_EXEC_SKIP):

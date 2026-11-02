@@ -636,9 +636,11 @@ pub fn open_reader(
                 _ => {
                     let fasta_repo = acquire_fasta_repo(fasta_path)?;
                     use noodles::fasta::Repository;
-                    let repo = Repository::new(SharedFastaAdapter(std::sync::Arc::clone(
-                        &fasta_repo.adapter,
-                    )));
+                    let repo = Repository::new(RegistryDelegatingAdapter {
+                        primary_name: Vec::new(),
+                        primary_record: None,
+                        shared: std::sync::Arc::downgrade(&fasta_repo),
+                    });
                     *guard = Some((fasta_path.to_path_buf(), repo.clone()));
                     repo
                 }
@@ -1127,6 +1129,11 @@ pub fn clear_bam_caches() {
             map.clear();
         }
     });
+    let _ = CRAM_META_TLS.try_with(|tls| {
+        if let Ok(mut slot) = tls.try_borrow_mut() {
+            *slot = None;
+        }
+    });
     if let Some(cache) = FASTA_REPO_CACHE.get() {
         cache.lock().unwrap_or_else(|e| e.into_inner()).clear();
     }
@@ -1467,7 +1474,8 @@ impl Iterator for BamFeed {
 }
 
 const FASTA_BUF_CAPACITY: usize = 256 * 1024;
-const MAX_CACHED_FASTA_CONTIGS: usize = 8;
+const DEFAULT_FASTA_CACHE_BUDGET_BYTES: usize = 512 * 1024 * 1024;
+const MAX_POOLED_FASTA_ADAPTERS: usize = 8;
 /// Trailing `b'N'` padding appended to every CRAM reference contig loaded into
 /// [`PreallocatedFastaAdapter`] so `noodles-cram` can decode reads overhanging
 /// the 3' end of a chromosome (`[LN - k, LN + m]`) without panicking inside
@@ -1483,8 +1491,15 @@ struct PreallocatedFastaAdapter {
 impl PreallocatedFastaAdapter {
     fn open(fasta_path: &Path) -> Result<Self, crate::types::VardictError> {
         let fai_path = fasta_fai_path(fasta_path);
-        let file = std::fs::File::open(fasta_path)?;
         let index = noodles::fasta::fai::fs::read(&fai_path)?;
+        Self::open_with_index(fasta_path, index)
+    }
+
+    fn open_with_index(
+        fasta_path: &Path,
+        index: noodles::fasta::fai::Index,
+    ) -> Result<Self, crate::types::VardictError> {
+        let file = std::fs::File::open(fasta_path)?;
         let reader = noodles::fasta::io::Reader::new(std::io::BufReader::with_capacity(
             FASTA_BUF_CAPACITY,
             file,
@@ -1533,24 +1548,155 @@ impl noodles::fasta::repository::Adapter for PreallocatedFastaAdapter {
     }
 }
 
-struct SharedFastaAdapter(std::sync::Arc<std::sync::Mutex<PreallocatedFastaAdapter>>);
+struct LoadedContig {
+    repo: std::sync::Mutex<noodles::fasta::Repository>,
+    seq: Option<std::sync::Arc<noodles::fasta::record::Sequence>>,
+    byte_len: usize,
+}
 
-impl noodles::fasta::repository::Adapter for SharedFastaAdapter {
-    fn get(&mut self, name: &[u8]) -> Option<std::io::Result<noodles::fasta::Record>> {
-        self.0.lock().unwrap_or_else(|e| e.into_inner()).get(name)
+struct ContigSlot {
+    name: Vec<u8>,
+    loaded: std::sync::OnceLock<Result<LoadedContig, (std::io::ErrorKind, String)>>,
+    byte_len: std::sync::atomic::AtomicUsize,
+    delegated_bytes: std::sync::atomic::AtomicUsize,
+    counted_in_registry: std::sync::atomic::AtomicBool,
+}
+
+impl std::fmt::Debug for ContigSlot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ContigSlot")
+            .field("name", &String::from_utf8_lossy(&self.name))
+            .field(
+                "byte_len",
+                &self.byte_len.load(std::sync::atomic::Ordering::Relaxed),
+            )
+            .field(
+                "delegated_bytes",
+                &self
+                    .delegated_bytes
+                    .load(std::sync::atomic::Ordering::Relaxed),
+            )
+            .finish_non_exhaustive()
     }
 }
 
-struct CachedContigRepo {
-    name: Vec<u8>,
-    repo: noodles::fasta::Repository,
-    seq: Option<std::sync::Arc<noodles::fasta::record::Sequence>>,
+struct RegistryDelegatingAdapter {
+    primary_name: Vec<u8>,
+    primary_record: Option<std::io::Result<noodles::fasta::Record>>,
+    shared: std::sync::Weak<SharedFastaRepo>,
+}
+
+impl RegistryDelegatingAdapter {
+    fn from_primary_seq(
+        primary_name: Vec<u8>,
+        seq: Option<&std::sync::Arc<noodles::fasta::record::Sequence>>,
+        shared: std::sync::Weak<SharedFastaRepo>,
+    ) -> Self {
+        let primary_record = seq.map(|s| {
+            let def = noodles::fasta::record::Definition::new(
+                String::from_utf8_lossy(&primary_name).into_owned(),
+                None,
+            );
+            let cloned_seq = noodles::fasta::record::Sequence::from(s.as_ref().as_ref().to_vec());
+            Ok(noodles::fasta::Record::new(def, cloned_seq))
+        });
+        Self {
+            primary_name,
+            primary_record,
+            shared,
+        }
+    }
+}
+
+impl noodles::fasta::repository::Adapter for RegistryDelegatingAdapter {
+    fn get(&mut self, name: &[u8]) -> Option<std::io::Result<noodles::fasta::Record>> {
+        if name == self.primary_name.as_slice() {
+            if let Some(rec) = self.primary_record.take() {
+                return Some(rec);
+            }
+        }
+        let shared = self.shared.upgrade()?;
+        let slot = shared.warm_contig_slot(name);
+        match slot.loaded.get() {
+            Some(Ok(loaded)) => {
+                let seq_arc = loaded.seq.as_ref()?;
+                let raw_bytes = seq_arc.as_ref().as_ref().to_vec();
+                shared.charge_delegated_bytes(&self.primary_name, raw_bytes.len());
+                let def = noodles::fasta::record::Definition::new(
+                    String::from_utf8_lossy(name).into_owned(),
+                    None,
+                );
+                let seq = noodles::fasta::record::Sequence::from(raw_bytes);
+                Some(Ok(noodles::fasta::Record::new(def, seq)))
+            }
+            Some(Err((kind, msg))) => Some(Err(std::io::Error::new(*kind, msg.clone()))),
+            None => None,
+        }
+    }
+}
+
+struct FastaRegistryState {
+    slots: HashMap<Vec<u8>, std::sync::Arc<ContigSlot>>,
+    order: Vec<Vec<u8>>,
+    resident_bytes: usize,
+    budget_bytes: usize,
+}
+
+impl FastaRegistryState {
+    fn new(budget_bytes: usize) -> Self {
+        Self {
+            slots: HashMap::new(),
+            order: Vec::new(),
+            resident_bytes: 0,
+            budget_bytes,
+        }
+    }
+
+    fn touch_order(&mut self, contig: &[u8]) {
+        if let Some(pos) = self.order.iter().position(|k| k.as_slice() == contig) {
+            let key = self.order.remove(pos);
+            self.order.push(key);
+        } else {
+            self.order.push(contig.to_vec());
+        }
+    }
+
+    fn evict_unpinned_to_budget(&mut self) {
+        while self.resident_bytes > self.budget_bytes {
+            let candidate_pos = self.order.iter().position(|key| {
+                self.slots
+                    .get(key)
+                    .is_some_and(|slot_arc| std::sync::Arc::strong_count(slot_arc) == 1)
+            });
+            let Some(pos) = candidate_pos else {
+                break;
+            };
+            let key = self.order.remove(pos);
+            if let Some(evicted) = self.slots.remove(&key) {
+                if evicted
+                    .counted_in_registry
+                    .swap(false, std::sync::atomic::Ordering::Relaxed)
+                {
+                    let len = evicted.byte_len.load(std::sync::atomic::Ordering::Relaxed);
+                    let delegated = evicted
+                        .delegated_bytes
+                        .swap(0, std::sync::atomic::Ordering::Relaxed);
+                    self.resident_bytes = self
+                        .resident_bytes
+                        .saturating_sub(len.saturating_add(delegated));
+                }
+            }
+        }
+    }
 }
 
 struct SharedFastaRepo {
     fasta_path: PathBuf,
-    adapter: std::sync::Arc<std::sync::Mutex<PreallocatedFastaAdapter>>,
-    lru: std::sync::Mutex<Vec<CachedContigRepo>>,
+    fai_index: noodles::fasta::fai::Index,
+    adapter_pool: std::sync::Mutex<Vec<PreallocatedFastaAdapter>>,
+    registry: std::sync::Mutex<FastaRegistryState>,
+    #[cfg(test)]
+    load_count: std::sync::atomic::AtomicUsize,
 }
 
 impl SharedFastaRepo {
@@ -1561,38 +1707,262 @@ impl SharedFastaRepo {
         bytes.get(..raw_len).unwrap_or(bytes)
     }
 
+    fn new(
+        fasta_path: PathBuf,
+        adapter: PreallocatedFastaAdapter,
+        budget_bytes: usize,
+    ) -> std::sync::Arc<Self> {
+        let fai_index = adapter.index.clone();
+        std::sync::Arc::new(Self {
+            fasta_path,
+            fai_index,
+            adapter_pool: std::sync::Mutex::new(vec![adapter]),
+            registry: std::sync::Mutex::new(FastaRegistryState::new(budget_bytes)),
+            #[cfg(test)]
+            load_count: std::sync::atomic::AtomicUsize::new(0),
+        })
+    }
+
+    fn pop_or_open_adapter(&self) -> Result<PreallocatedFastaAdapter, std::io::Error> {
+        if let Some(adapter) = self
+            .adapter_pool
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .pop()
+        {
+            return Ok(adapter);
+        }
+        PreallocatedFastaAdapter::open_with_index(&self.fasta_path, self.fai_index.clone()).map_err(
+            |e| match e {
+                crate::types::VardictError::Io(io_err) => io_err,
+                other => std::io::Error::other(other.to_string()),
+            },
+        )
+    }
+
+    fn return_adapter(&self, adapter: PreallocatedFastaAdapter) {
+        let mut pool = self.adapter_pool.lock().unwrap_or_else(|e| e.into_inner());
+        if pool.len() < MAX_POOLED_FASTA_ADAPTERS {
+            pool.push(adapter);
+        }
+    }
+
+    fn load_contig_for_slot(
+        self: &std::sync::Arc<Self>,
+        contig: &[u8],
+    ) -> Result<LoadedContig, (std::io::ErrorKind, String)> {
+        if contig.is_empty() {
+            let repo = noodles::fasta::Repository::new(RegistryDelegatingAdapter {
+                primary_name: Vec::new(),
+                primary_record: None,
+                shared: std::sync::Arc::downgrade(self),
+            });
+            return Ok(LoadedContig {
+                repo: std::sync::Mutex::new(repo),
+                seq: None,
+                byte_len: 0,
+            });
+        }
+        let mut adapter = self
+            .pop_or_open_adapter()
+            .map_err(|e| (e.kind(), e.to_string()))?;
+        #[cfg(test)]
+        self.load_count
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let record_opt = noodles::fasta::repository::Adapter::get(&mut adapter, contig);
+        self.return_adapter(adapter);
+
+        match record_opt {
+            Some(Ok(record)) => {
+                // Charge full retained sequence length (including CRAM_REF_OVERHANG_PAD).
+                let byte_len = record.sequence().len();
+                let repo = noodles::fasta::Repository::new(RegistryDelegatingAdapter {
+                    primary_name: contig.to_vec(),
+                    primary_record: Some(Ok(record)),
+                    shared: std::sync::Arc::downgrade(self),
+                });
+                let seq = repo.get(contig).and_then(|r| r.ok());
+                Ok(LoadedContig {
+                    repo: std::sync::Mutex::new(repo),
+                    seq,
+                    byte_len,
+                })
+            }
+            Some(Err(e)) => Err((e.kind(), e.to_string())),
+            None => {
+                let repo = noodles::fasta::Repository::new(RegistryDelegatingAdapter {
+                    primary_name: contig.to_vec(),
+                    primary_record: None,
+                    shared: std::sync::Arc::downgrade(self),
+                });
+                Ok(LoadedContig {
+                    repo: std::sync::Mutex::new(repo),
+                    seq: None,
+                    byte_len: 0,
+                })
+            }
+        }
+    }
+
+    fn charge_delegated_bytes(&self, owner_contig: &[u8], bytes: usize) {
+        if bytes == 0 {
+            return;
+        }
+        let mut state = self.registry.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(owner_slot) = state.slots.get(owner_contig).cloned() {
+            owner_slot
+                .delegated_bytes
+                .fetch_add(bytes, std::sync::atomic::Ordering::Relaxed);
+            if owner_slot
+                .counted_in_registry
+                .load(std::sync::atomic::Ordering::Acquire)
+            {
+                state.resident_bytes = state.resident_bytes.saturating_add(bytes);
+                state.evict_unpinned_to_budget();
+            }
+        }
+    }
+
+    fn reclaim_delegated_bytes(self: &std::sync::Arc<Self>, owner_contig: &[u8]) {
+        let mut state = self.registry.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(owner_slot) = state.slots.get(owner_contig).cloned() else {
+            return;
+        };
+        let delegated = owner_slot
+            .delegated_bytes
+            .swap(0, std::sync::atomic::Ordering::Relaxed);
+        if delegated == 0 {
+            return;
+        }
+        if owner_slot
+            .counted_in_registry
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            state.resident_bytes = state.resident_bytes.saturating_sub(delegated);
+        }
+        if let Some(Ok(loaded)) = owner_slot.loaded.get() {
+            let fresh_repo =
+                noodles::fasta::Repository::new(RegistryDelegatingAdapter::from_primary_seq(
+                    owner_slot.name.clone(),
+                    loaded.seq.as_ref(),
+                    std::sync::Arc::downgrade(self),
+                ));
+            let _ = fresh_repo.get(&owner_slot.name);
+            *loaded.repo.lock().unwrap_or_else(|e| e.into_inner()) = fresh_repo;
+        }
+    }
+
+    fn warm_contig_slot(self: &std::sync::Arc<Self>, contig: &[u8]) -> std::sync::Arc<ContigSlot> {
+        let slot = {
+            let mut state = self.registry.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(existing) = state.slots.get(contig).cloned() {
+                state.touch_order(contig);
+                state.evict_unpinned_to_budget();
+                existing
+            } else {
+                let new_slot = std::sync::Arc::new(ContigSlot {
+                    name: contig.to_vec(),
+                    loaded: std::sync::OnceLock::new(),
+                    byte_len: std::sync::atomic::AtomicUsize::new(0),
+                    delegated_bytes: std::sync::atomic::AtomicUsize::new(0),
+                    counted_in_registry: std::sync::atomic::AtomicBool::new(false),
+                });
+                state
+                    .slots
+                    .insert(contig.to_vec(), std::sync::Arc::clone(&new_slot));
+                state.order.push(contig.to_vec());
+                new_slot
+            }
+        };
+
+        let loaded_res = slot
+            .loaded
+            .get_or_init(|| self.load_contig_for_slot(&slot.name));
+        let byte_len = match loaded_res {
+            Ok(loaded) => loaded.byte_len,
+            Err(_) => 0,
+        };
+        slot.byte_len
+            .store(byte_len, std::sync::atomic::Ordering::Relaxed);
+
+        if !slot
+            .counted_in_registry
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            let mut state = self.registry.lock().unwrap_or_else(|e| e.into_inner());
+            let still_registered = state
+                .slots
+                .get(contig)
+                .is_some_and(|s| std::sync::Arc::ptr_eq(s, &slot));
+            if still_registered
+                && !slot
+                    .counted_in_registry
+                    .swap(true, std::sync::atomic::Ordering::AcqRel)
+            {
+                let delegated = slot
+                    .delegated_bytes
+                    .load(std::sync::atomic::Ordering::Relaxed);
+                state.resident_bytes = state
+                    .resident_bytes
+                    .saturating_add(byte_len.saturating_add(delegated));
+            }
+            state.evict_unpinned_to_budget();
+        }
+
+        slot
+    }
+
     fn warm_contig(
-        &self,
+        self: &std::sync::Arc<Self>,
         contig: &[u8],
     ) -> (
         noodles::fasta::Repository,
         Option<std::sync::Arc<noodles::fasta::record::Sequence>>,
     ) {
-        let mut lru = self.lru.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(pos) = lru.iter().position(|e| e.name.as_slice() == contig) {
-            let entry = lru.remove(pos);
-            let repo = entry.repo.clone();
-            let seq = entry.seq.clone();
-            lru.push(entry);
-            return (repo, seq);
+        let slot = self.warm_contig_slot(contig);
+        Self::extract_from_slot(&slot)
+    }
+
+    fn extract_from_slot(
+        slot: &std::sync::Arc<ContigSlot>,
+    ) -> (
+        noodles::fasta::Repository,
+        Option<std::sync::Arc<noodles::fasta::record::Sequence>>,
+    ) {
+        match slot.loaded.get() {
+            Some(Ok(loaded)) => {
+                let repo = loaded
+                    .repo
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone();
+                (repo, loaded.seq.clone())
+            }
+            _ => {
+                let empty_repo = noodles::fasta::Repository::new(
+                    noodles::fasta::repository::adapters::Empty::new(),
+                );
+                (empty_repo, None)
+            }
         }
-        if lru.len() >= MAX_CACHED_FASTA_CONTIGS {
-            lru.remove(0);
-        }
-        let repo = noodles::fasta::Repository::new(SharedFastaAdapter(std::sync::Arc::clone(
-            &self.adapter,
-        )));
-        let seq = if contig.is_empty() {
-            None
-        } else {
-            repo.get(contig).and_then(|r| r.ok())
-        };
-        lru.push(CachedContigRepo {
-            name: contig.to_vec(),
-            repo: repo.clone(),
-            seq: seq.clone(),
-        });
-        (repo, seq)
+    }
+
+    fn evict_unpinned(&self) {
+        let mut state = self.registry.lock().unwrap_or_else(|e| e.into_inner());
+        state.evict_unpinned_to_budget();
+    }
+
+    #[cfg(test)]
+    fn set_budget_bytes(&self, budget_bytes: usize) {
+        let mut state = self.registry.lock().unwrap_or_else(|e| e.into_inner());
+        state.budget_bytes = budget_bytes;
+        state.evict_unpinned_to_budget();
+    }
+
+    #[cfg(test)]
+    fn resident_slot(&self, contig: &[u8]) -> Option<std::sync::Arc<ContigSlot>> {
+        let state = self.registry.lock().unwrap_or_else(|e| e.into_inner());
+        state.slots.get(contig).cloned()
     }
 }
 
@@ -1609,25 +1979,163 @@ fn acquire_fasta_repo(
         return Ok(std::sync::Arc::clone(existing));
     }
     let adapter = PreallocatedFastaAdapter::open(fasta_path)?;
-    let repo = std::sync::Arc::new(SharedFastaRepo {
-        fasta_path: fasta_path.to_path_buf(),
-        adapter: std::sync::Arc::new(std::sync::Mutex::new(adapter)),
-        lru: std::sync::Mutex::new(Vec::with_capacity(MAX_CACHED_FASTA_CONTIGS)),
-    });
+    let repo = SharedFastaRepo::new(
+        fasta_path.to_path_buf(),
+        adapter,
+        DEFAULT_FASTA_CACHE_BUDGET_BYTES,
+    );
     map.insert(fasta_path.to_path_buf(), std::sync::Arc::clone(&repo));
     Ok(repo)
+}
+
+#[derive(Clone, Copy, Debug)]
+struct CraiSpanEntry {
+    start: usize,
+    end: usize,
+    offset: u64,
+    orig_idx: usize,
+}
+
+#[derive(Clone, Debug, Default)]
+struct CraiRefGroup {
+    unbounded_offsets: Vec<u64>,
+    valid_spans: Vec<CraiSpanEntry>,
+    prefix_max_end: Vec<usize>,
+    is_sorted_by_start: bool,
+}
+
+#[derive(Clone, Debug, Default)]
+struct IndexedCrai {
+    by_ref: HashMap<usize, CraiRefGroup>,
+}
+
+impl IndexedCrai {
+    fn from_index(index: &noodles::cram::crai::Index) -> Self {
+        let mut by_ref: HashMap<usize, CraiRefGroup> = HashMap::new();
+        let mut unbounded_seen: std::collections::HashSet<(usize, u64)> =
+            std::collections::HashSet::new();
+        for (orig_idx, rec) in index.iter().enumerate() {
+            let Some(ref_id) = rec.reference_sequence_id() else {
+                continue;
+            };
+            let group = by_ref.entry(ref_id).or_insert_with(|| CraiRefGroup {
+                unbounded_offsets: Vec::new(),
+                valid_spans: Vec::new(),
+                prefix_max_end: Vec::new(),
+                is_sorted_by_start: true,
+            });
+            let offset = rec.offset();
+            if unbounded_seen.insert((ref_id, offset)) {
+                group.unbounded_offsets.push(offset);
+            }
+            let Some(start_pos) = rec.alignment_start() else {
+                continue;
+            };
+            let span = rec.alignment_span();
+            if span == 0 {
+                continue;
+            }
+            let Some(end_pos) = start_pos.checked_add(span - 1) else {
+                continue;
+            };
+            let start = usize::from(start_pos);
+            let end = usize::from(end_pos);
+            if let Some(prev) = group.valid_spans.last() {
+                if start < prev.start {
+                    group.is_sorted_by_start = false;
+                }
+            }
+            group.valid_spans.push(CraiSpanEntry {
+                start,
+                end,
+                offset,
+                orig_idx,
+            });
+        }
+
+        for group in by_ref.values_mut() {
+            if !group.is_sorted_by_start {
+                group.valid_spans.sort_by_key(|e| (e.start, e.orig_idx));
+            }
+            let mut running_max = 0usize;
+            group.prefix_max_end.reserve(group.valid_spans.len());
+            for entry in &group.valid_spans {
+                if entry.end > running_max {
+                    running_max = entry.end;
+                }
+                group.prefix_max_end.push(running_max);
+            }
+        }
+
+        Self { by_ref }
+    }
+
+    fn query_offsets(
+        &self,
+        reference_sequence_id: usize,
+        region_interval: noodles::core::region::Interval,
+    ) -> Vec<u64> {
+        let Some(group) = self.by_ref.get(&reference_sequence_id) else {
+            return Vec::new();
+        };
+        if region_interval.start().is_none() && region_interval.end().is_none() {
+            crate::count!(CraiRowsExamined, group.unbounded_offsets.len());
+            crate::count!(CraiRowsMatched, group.unbounded_offsets.len());
+            return group.unbounded_offsets.clone();
+        }
+
+        let q_start = region_interval.start().map(usize::from).unwrap_or(1);
+        let q_end = region_interval.end().map(usize::from).unwrap_or(usize::MAX);
+        if q_start > q_end {
+            return Vec::new();
+        }
+
+        let upper = group.valid_spans.partition_point(|e| e.start <= q_end);
+        let prefix_slice = group.prefix_max_end.get(..upper).unwrap_or(&[]);
+        let lower = prefix_slice.partition_point(|&max_end| max_end < q_start);
+        let window = group.valid_spans.get(lower..upper).unwrap_or(&[]);
+        crate::count!(CraiRowsExamined, window.len());
+
+        let mut container_offsets: Vec<u64> = Vec::new();
+        if group.is_sorted_by_start {
+            for entry in window {
+                if entry.end >= q_start {
+                    crate::count!(CraiRowsMatched);
+                    if !container_offsets.contains(&entry.offset) {
+                        container_offsets.push(entry.offset);
+                    }
+                }
+            }
+        } else {
+            let mut matched: Vec<CraiSpanEntry> = window
+                .iter()
+                .copied()
+                .filter(|e| e.end >= q_start)
+                .collect();
+            crate::count!(CraiRowsMatched, matched.len());
+            matched.sort_by_key(|e| e.orig_idx);
+            for entry in matched {
+                if !container_offsets.contains(&entry.offset) {
+                    container_offsets.push(entry.offset);
+                }
+            }
+        }
+        container_offsets
+    }
 }
 
 struct SharedCramMeta {
     id: u64,
     header: noodles::sam::Header,
-    index: noodles::cram::crai::Index,
+    contig_names: Vec<std::sync::Arc<str>>,
+    indexed_crai: IndexedCrai,
     spans_by_offset: HashMap<u64, Vec<(usize, usize, usize)>>,
     fasta_repo: std::sync::Arc<SharedFastaRepo>,
 }
 
 type CramMetaSlot = std::sync::Arc<std::sync::Mutex<Option<std::sync::Arc<SharedCramMeta>>>>;
 type CramMetaKey = (PathBuf, PathBuf);
+type CramMetaTlsEntry = (PathBuf, PathBuf, std::sync::Arc<SharedCramMeta>);
 type RawCramReader = noodles::cram::io::Reader<std::fs::File>;
 type CramReaderPoolMap = ReaderPoolMap<SharedCramMeta, RawCramReader>;
 
@@ -1636,6 +2144,7 @@ static CRAM_META_CACHE: std::sync::OnceLock<std::sync::Mutex<HashMap<CramMetaKey
 
 thread_local! {
     static CRAM_READER_POOL: RefCell<CramReaderPoolMap> = RefCell::new(HashMap::new());
+    static CRAM_META_TLS: RefCell<Option<CramMetaTlsEntry>> = const { RefCell::new(None) };
 }
 
 fn pop_pooled_cram_reader(
@@ -1658,6 +2167,22 @@ fn acquire_cram_meta(
     config: &crate::config::Config,
 ) -> Result<std::sync::Arc<SharedCramMeta>, crate::types::VardictError> {
     let fasta_path = Path::new(&config.reference);
+    if let Some(cached_meta) = CRAM_META_TLS
+        .try_with(|tls| {
+            let guard = tls.try_borrow().ok()?;
+            let (ref cached_cram, ref cached_fasta, ref meta) = *guard.as_ref()?;
+            if cached_cram.as_path() == path && cached_fasta.as_path() == fasta_path {
+                Some(std::sync::Arc::clone(meta))
+            } else {
+                None
+            }
+        })
+        .ok()
+        .flatten()
+    {
+        return Ok(cached_meta);
+    }
+
     let fasta_repo = acquire_fasta_repo(fasta_path)?;
     let key = (path.to_path_buf(), fasta_path.to_path_buf());
     let slot = {
@@ -1672,11 +2197,22 @@ fn acquire_cram_meta(
     let mut slot_guard = slot.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(meta) = slot_guard.as_ref() {
         if std::sync::Arc::ptr_eq(&meta.fasta_repo, &fasta_repo) {
-            return Ok(std::sync::Arc::clone(meta));
+            let meta_clone = std::sync::Arc::clone(meta);
+            let _ = CRAM_META_TLS.try_with(|tls| {
+                if let Ok(mut guard) = tls.try_borrow_mut() {
+                    *guard = Some((
+                        path.to_path_buf(),
+                        fasta_path.to_path_buf(),
+                        std::sync::Arc::clone(&meta_clone),
+                    ));
+                }
+            });
+            return Ok(meta_clone);
         }
     }
 
     let index = noodles::cram::fs::read_associated_index(path)?;
+    let indexed_crai = IndexedCrai::from_index(&index);
     let mut spans_by_offset: HashMap<u64, Vec<(usize, usize, usize)>> = HashMap::new();
     for crai_rec in index.iter() {
         if let (Some(ref_id), Some(start)) =
@@ -1696,16 +2232,31 @@ fn acquire_cram_meta(
     let file = std::fs::File::open(path)?;
     let mut reader = noodles::cram::io::Reader::new(file);
     let header = reader.read_header()?;
+    let contig_names: Vec<std::sync::Arc<str>> = header
+        .reference_sequences()
+        .iter()
+        .map(|(name, _)| std::sync::Arc::<str>::from(String::from_utf8_lossy(name).as_ref()))
+        .collect();
     let id = NEXT_BAM_META_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let meta = std::sync::Arc::new(SharedCramMeta {
         id,
         header,
-        index,
+        contig_names,
+        indexed_crai,
         spans_by_offset,
         fasta_repo,
     });
     *slot_guard = Some(std::sync::Arc::clone(&meta));
     return_pooled_cram_reader(path.to_path_buf(), std::sync::Arc::clone(&meta), reader);
+    let _ = CRAM_META_TLS.try_with(|tls| {
+        if let Ok(mut guard) = tls.try_borrow_mut() {
+            *guard = Some((
+                path.to_path_buf(),
+                fasta_path.to_path_buf(),
+                std::sync::Arc::clone(&meta),
+            ));
+        }
+    });
     Ok(meta)
 }
 
@@ -1771,6 +2322,8 @@ struct CachedCramRecord {
     reference_sequence_id: Option<usize>,
     alignment_start: Option<noodles::core::Position>,
     alignment_end: Option<noodles::core::Position>,
+    reference_name: Option<std::sync::Arc<str>>,
+    mate_reference_name: Option<std::sync::Arc<str>>,
     sam: SamRecord,
 }
 
@@ -1788,6 +2341,7 @@ fn cram_container_cache_shards(
     })
 }
 
+#[cfg(test)]
 fn crai_record_intersects(
     record: &noodles::cram::crai::Record,
     reference_sequence_id: usize,
@@ -1841,6 +2395,18 @@ fn cram_record_intersects(
     }
 }
 
+#[inline]
+fn copy_opt_arc_str(dst: &mut Option<String>, src: &Option<std::sync::Arc<str>>) {
+    match src {
+        Some(s) => {
+            let buf = dst.get_or_insert_with(String::new);
+            buf.clear();
+            buf.push_str(s);
+        }
+        None => *dst = None,
+    }
+}
+
 fn cram_record_to_cached(
     cram_path: &Path,
     record: &noodles::cram::Record<'_>,
@@ -1850,6 +2416,94 @@ fn cram_record_to_cached(
     use noodles::sam::alignment::Record as _;
 
     let header = &meta.header;
+    let contig_names = &meta.contig_names;
+    let flags = record.flags()?.bits();
+    let reference_sequence_id = record.reference_sequence_id(header).transpose()?;
+    let alignment_start = record.alignment_start().transpose()?;
+
+    // Fast pre-filter for unplaced / unaligned CRAM records: records lacking
+    // a reference sequence or alignment start never intersect any indexed
+    // region query (`cram_record_intersects` returns `false`), so skip
+    // materializing heap buffers (`name`, `cigar`, `sequence`, `quality_scores`,
+    // `sa`, `mc`) while still validating raw fields.
+    if reference_sequence_id.is_none() || alignment_start.is_none() {
+        let _ = record.mapping_quality().transpose()?;
+        for result in record.cigar().iter() {
+            let _ = result?;
+        }
+        let _ = record.mate_reference_sequence_id(header).transpose()?;
+        let _ = record.mate_alignment_start().transpose()?;
+        let _ = record.template_length()?;
+        for (idx, b) in record.sequence().iter().enumerate() {
+            if normalize_cram_base(b).is_none() {
+                let name = record
+                    .name()
+                    .map(|n| String::from_utf8_lossy(n.as_ref()).into_owned())
+                    .unwrap_or_default();
+                return Err(crate::types::VardictError::Parse(format!(
+                    "CRAM {} read {}: non-ASCII base 0x{:02x} at {}",
+                    cram_path.display(),
+                    name,
+                    b,
+                    idx + 1,
+                )));
+            }
+        }
+        for result in record.quality_scores().iter() {
+            let _ = result?;
+        }
+        for result in record.data().iter() {
+            let (_, val) = result?;
+            if let Value::Array(ref arr) = val {
+                use noodles::sam::alignment::record::data::field::value::Array;
+                match arr {
+                    Array::Int8(v) => {
+                        for r in v.iter() {
+                            r?;
+                        }
+                    }
+                    Array::UInt8(v) => {
+                        for r in v.iter() {
+                            r?;
+                        }
+                    }
+                    Array::Int16(v) => {
+                        for r in v.iter() {
+                            r?;
+                        }
+                    }
+                    Array::UInt16(v) => {
+                        for r in v.iter() {
+                            r?;
+                        }
+                    }
+                    Array::Int32(v) => {
+                        for r in v.iter() {
+                            r?;
+                        }
+                    }
+                    Array::UInt32(v) => {
+                        for r in v.iter() {
+                            r?;
+                        }
+                    }
+                    Array::Float(v) => {
+                        for r in v.iter() {
+                            r?;
+                        }
+                    }
+                }
+            }
+        }
+        return Ok(CachedCramRecord {
+            reference_sequence_id,
+            alignment_start,
+            alignment_end: None,
+            reference_name: None,
+            mate_reference_name: None,
+            sam: SamRecord::new(),
+        });
+    }
     let name = record
         .name()
         .map(|n| {
@@ -1857,12 +2511,9 @@ fn cram_record_to_cached(
             bytes.to_vec()
         })
         .unwrap_or_default();
-    let flags = record.flags()?.bits();
-    let reference_sequence_id = record.reference_sequence_id(header).transpose()?;
     let reference_name = reference_sequence_id
-        .and_then(|id| header.reference_sequences().get_index(id))
-        .map(|(n, _)| String::from_utf8_lossy(n).into_owned());
-    let alignment_start = record.alignment_start().transpose()?;
+        .and_then(|id| contig_names.get(id))
+        .cloned();
     let raw_mapq = record.mapping_quality().transpose()?;
     let mapping_quality = if (flags & 0x4) != 0 {
         None
@@ -1909,8 +2560,8 @@ fn cram_record_to_cached(
 
     let mate_reference_sequence_id = record.mate_reference_sequence_id(header).transpose()?;
     let mate_reference_name = mate_reference_sequence_id
-        .and_then(|id| header.reference_sequences().get_index(id))
-        .map(|(n, _)| String::from_utf8_lossy(n).into_owned());
+        .and_then(|id| contig_names.get(id))
+        .cloned();
     let mate_alignment_start = record.mate_alignment_start().transpose()?;
     let template_length = record.template_length()?;
 
@@ -2039,14 +2690,14 @@ fn cram_record_to_cached(
     let sam = SamRecord {
         name,
         flags,
-        reference_name,
+        reference_name: None,
         alignment_start: alignment_start.map(crate::types::Pos1::from),
         alignment_end: alignment_end.map(crate::types::Pos1::from),
         mapping_quality,
         cigar,
         sequence,
         quality_scores,
-        mate_reference_name,
+        mate_reference_name: None,
         mate_alignment_start: mate_alignment_start.map(crate::types::Pos1::from),
         template_length,
         nm,
@@ -2060,16 +2711,21 @@ fn cram_record_to_cached(
         let rec_buf =
             noodles::sam::alignment::RecordBuf::try_from_alignment_record(header, record)?;
         let expected_sam = SamRecord::from_alignment_record(&rec_buf, header)?;
+        let mut check_sam = sam.clone();
+        check_sam.reference_name = reference_name.as_deref().map(str::to_owned);
+        check_sam.mate_reference_name = mate_reference_name.as_deref().map(str::to_owned);
         assert_eq!(reference_sequence_id, rec_buf.reference_sequence_id());
         assert_eq!(alignment_start, rec_buf.alignment_start());
         assert_eq!(alignment_end, rec_buf.alignment_end());
-        assert_eq!(sam, expected_sam);
+        assert_eq!(check_sam, expected_sam);
     }
 
     Ok(CachedCramRecord {
         reference_sequence_id,
         alignment_start,
         alignment_end,
+        reference_name,
+        mate_reference_name,
         sam,
     })
 }
@@ -2079,6 +2735,7 @@ fn fetch_cram_container(
     meta: &std::sync::Arc<SharedCramMeta>,
     container_offset: u64,
     hint_contig: &[u8],
+    pinned_slot: Option<&std::sync::Arc<ContigSlot>>,
 ) -> Result<Option<CachedCramBlock>, crate::types::VardictError> {
     let shard_idx = cache_shard_index::<CRAM_CONTAINER_CACHE_SHARDS>(meta.id, container_offset);
     if let Some(shard_mutex) = cram_container_cache_shards().get(shard_idx) {
@@ -2107,11 +2764,13 @@ fn fetch_cram_container(
         }
     }
 
+    crate::count!(CramContainerDecodes);
     #[cfg(test)]
     CRAM_CONTAINER_DECODE_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
     let compression_header = container.compression_header()?;
-    let mut out_records = Vec::new();
+    let record_count = container.header().record_count();
+    let mut out_records = Vec::with_capacity(record_count);
     let mut warmed: Option<(
         noodles::fasta::Repository,
         Option<std::sync::Arc<noodles::fasta::record::Sequence>>,
@@ -2120,8 +2779,12 @@ fn fetch_cram_container(
     for slice_res in container.slices() {
         let slice = slice_res?;
         let (core_data_src, external_data_srcs) = slice.decode_blocks()?;
-        let (hint_repo, hint_seq) =
-            warmed.get_or_insert_with(|| meta.fasta_repo.warm_contig(hint_contig));
+        let (hint_repo, hint_seq) = warmed.get_or_insert_with(|| match pinned_slot {
+            Some(slot) if slot.name.as_slice() == hint_contig => {
+                SharedFastaRepo::extract_from_slot(slot)
+            }
+            _ => meta.fasta_repo.warm_contig(hint_contig),
+        });
         let cram_records = slice.records(
             hint_repo.clone(),
             &meta.header,
@@ -2130,11 +2793,15 @@ fn fetch_cram_container(
             &external_data_srcs,
         )?;
 
+        crate::count!(CramRecordsVisited, cram_records.len());
         out_records.reserve(cram_records.len());
         for record in cram_records {
             let mut cached = cram_record_to_cached(path, &record, meta)?;
-            if cached.sam.nm.is_none() {
-                let rec_seq = match cached.sam.reference_name.as_deref() {
+            if cached.sam.nm.is_none()
+                && cached.reference_sequence_id.is_some()
+                && cached.alignment_start.is_some()
+            {
+                let rec_seq = match cached.reference_name.as_deref() {
                     Some(rn) if rn.as_bytes() == hint_contig => hint_seq.clone(),
                     Some(rn) => meta.fasta_repo.warm_contig(rn.as_bytes()).1,
                     None => None,
@@ -2147,6 +2814,7 @@ fn fetch_cram_container(
             out_records.push(cached);
         }
     }
+    meta.fasta_repo.reclaim_delegated_bytes(hint_contig);
 
     let arc_records: CachedCramBlock = std::sync::Arc::new(out_records);
     if let Some(shard_mutex) = cram_container_cache_shards().get(shard_idx) {
@@ -2182,9 +2850,18 @@ struct CramFeedInner {
     meta: std::sync::Arc<SharedCramMeta>,
     reference_sequence_id: usize,
     hint_contig: Vec<u8>,
+    pinned_slot: Option<std::sync::Arc<ContigSlot>>,
     interval: noodles::core::region::Interval,
     container_offsets: std::vec::IntoIter<u64>,
     current_block: Option<(CachedCramBlock, usize)>,
+}
+
+impl Drop for CramFeedInner {
+    fn drop(&mut self) {
+        if self.pinned_slot.take().is_some() {
+            self.meta.fasta_repo.evict_unpinned();
+        }
+    }
 }
 
 impl CramFeedInner {
@@ -2194,7 +2871,14 @@ impl CramFeedInner {
                 while let Some(rec) = block.get(*idx) {
                     *idx += 1;
                     if cram_record_intersects(rec, self.reference_sequence_id, self.interval) {
+                        crate::count!(CramRecordsYielded);
+                        let prev_ref_name = out.reference_name.take();
+                        let prev_mate_ref_name = out.mate_reference_name.take();
                         out.clone_from_record(&rec.sam);
+                        out.reference_name = prev_ref_name;
+                        out.mate_reference_name = prev_mate_ref_name;
+                        copy_opt_arc_str(&mut out.reference_name, &rec.reference_name);
+                        copy_opt_arc_str(&mut out.mate_reference_name, &rec.mate_reference_name);
                         return Ok(true);
                     }
                 }
@@ -2203,7 +2887,13 @@ impl CramFeedInner {
             let Some(offset) = self.container_offsets.next() else {
                 return Ok(false);
             };
-            match fetch_cram_container(&self.path, &self.meta, offset, &self.hint_contig)? {
+            match fetch_cram_container(
+                &self.path,
+                &self.meta,
+                offset,
+                &self.hint_contig,
+                self.pinned_slot.as_ref(),
+            )? {
                 Some(block) => {
                     self.current_block = Some((block, 0));
                 }
@@ -2224,6 +2914,7 @@ impl CramFeed {
                 meta,
                 reference_sequence_id: 0,
                 hint_contig: Vec::new(),
+                pinned_slot: None,
                 interval: noodles::core::region::Interval::from(..),
                 container_offsets: Vec::new().into_iter(),
                 current_block: None,
@@ -2293,6 +2984,7 @@ pub fn query_region_iter(
     end: Pos0,
     config: &crate::config::Config,
 ) -> Result<RecordFeed, crate::types::VardictError> {
+    crate::count!(QueryRegionCalls);
     let path_str = bam_path.to_string_lossy();
     if path_str.ends_with(".cram") || path_str.ends_with(".CRAM") {
         let meta = acquire_cram_meta(bam_path, config)?;
@@ -2322,23 +3014,22 @@ pub fn query_region_iter(
                 ))
             })?;
         let interval = region.interval();
-        let mut container_offsets: Vec<u64> = Vec::new();
-        for rec in meta
-            .index
-            .iter()
-            .filter(|rec| crai_record_intersects(rec, reference_sequence_id, interval))
-        {
-            let offset = rec.offset();
-            if !container_offsets.contains(&offset) {
-                container_offsets.push(offset);
-            }
-        }
+        let container_offsets = meta
+            .indexed_crai
+            .query_offsets(reference_sequence_id, interval);
+        let hint_contig = region.name().to_vec();
+        let pinned_slot = if container_offsets.is_empty() {
+            None
+        } else {
+            Some(meta.fasta_repo.warm_contig_slot(&hint_contig))
+        };
         Ok(RecordFeed::Cram(Box::new(CramFeed {
             inner: CramFeedInner {
                 path: bam_path.to_path_buf(),
                 meta,
                 reference_sequence_id,
-                hint_contig: region.name().to_vec(),
+                hint_contig,
+                pinned_slot,
                 interval,
                 container_offsets: container_offsets.into_iter(),
                 current_block: None,
@@ -3421,6 +4112,8 @@ mod tests {
             ..Default::default()
         };
 
+        NEXT_BAM_META_ID.fetch_max(TEST_META_ID_BASE, std::sync::atomic::Ordering::Relaxed);
+        let decodes_before = CRAM_CONTAINER_DECODE_COUNT.load(std::sync::atomic::Ordering::Relaxed);
         let bam_records = query_region(&slice_bam, "chr7", Pos0(100), Pos0(600), &config).unwrap();
         let cram_records = query_region(&cram_path, "chr7", Pos0(100), Pos0(600), &config).unwrap();
 
@@ -3436,8 +4129,12 @@ mod tests {
 
         // 6. Verify streaming CramFeed (`query_region_iter`) matches `query_region`
         //    and serves repeated sub-window queries from `CRAM_CONTAINER_CACHE` with 0 re-decodes.
-        NEXT_BAM_META_ID.fetch_max(TEST_META_ID_BASE, std::sync::atomic::Ordering::Relaxed);
-        let decodes_before = CRAM_CONTAINER_DECODE_COUNT.load(std::sync::atomic::Ordering::Relaxed);
+        let decodes_after_1 =
+            CRAM_CONTAINER_DECODE_COUNT.load(std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            decodes_after_1 > decodes_before,
+            "first CRAM query must decode container"
+        );
         let mut feed1 =
             query_region_iter(&cram_path, "chr7", Pos0(100), Pos0(600), &config).unwrap();
         let mut iter_records_1 = Vec::new();
@@ -3446,12 +4143,6 @@ mod tests {
             iter_records_1.push(reusable_rec.clone());
         }
         assert_eq!(iter_records_1, cram_records);
-        let decodes_after_1 =
-            CRAM_CONTAINER_DECODE_COUNT.load(std::sync::atomic::Ordering::Relaxed);
-        assert!(
-            decodes_after_1 > decodes_before,
-            "first CRAM query must decode container"
-        );
 
         let iter_records_2: Vec<SamRecord> =
             query_region_iter(&cram_path, "chr7", Pos0(180), Pos0(420), &config)
@@ -4778,9 +5469,11 @@ mod tests {
         let cram_path = temp_dir.path().join("short_ref_test.cram");
         {
             let fasta_repo = acquire_fasta_repo(&full_fa).unwrap();
-            let repo = noodles::fasta::Repository::new(SharedFastaAdapter(std::sync::Arc::clone(
-                &fasta_repo.adapter,
-            )));
+            let repo = noodles::fasta::Repository::new(RegistryDelegatingAdapter {
+                primary_name: Vec::new(),
+                primary_record: None,
+                shared: std::sync::Arc::downgrade(&fasta_repo),
+            });
             let mut writer = noodles::cram::io::writer::Builder::default()
                 .set_reference_sequence_repository(repo)
                 .build_from_path(&cram_path)
@@ -4871,9 +5564,11 @@ mod tests {
         let cram_path = temp_dir.path().join("multi_ref_no_slice_md5.cram");
         {
             let fasta_repo = acquire_fasta_repo(&full_fa).unwrap();
-            let repo = noodles::fasta::Repository::new(SharedFastaAdapter(std::sync::Arc::clone(
-                &fasta_repo.adapter,
-            )));
+            let repo = noodles::fasta::Repository::new(RegistryDelegatingAdapter {
+                primary_name: Vec::new(),
+                primary_record: None,
+                shared: std::sync::Arc::downgrade(&fasta_repo),
+            });
             let mut writer = noodles::cram::io::writer::Builder::default()
                 .set_reference_sequence_repository(repo)
                 .build_from_path(&cram_path)
@@ -4993,9 +5688,11 @@ mod tests {
         let cram_path = temp_dir.path().join("in_range.cram");
         {
             let fasta_repo = acquire_fasta_repo(&full_fa).unwrap();
-            let repo = noodles::fasta::Repository::new(SharedFastaAdapter(std::sync::Arc::clone(
-                &fasta_repo.adapter,
-            )));
+            let repo = noodles::fasta::Repository::new(RegistryDelegatingAdapter {
+                primary_name: Vec::new(),
+                primary_record: None,
+                shared: std::sync::Arc::downgrade(&fasta_repo),
+            });
             let mut writer = noodles::cram::io::writer::Builder::default()
                 .set_reference_sequence_repository(repo)
                 .build_from_path(&cram_path)
@@ -5130,9 +5827,11 @@ mod tests {
         let cram_path = temp_dir.path().join("overhang.cram");
         {
             let fasta_repo = acquire_fasta_repo(&ref_fa).unwrap();
-            let repo = noodles::fasta::Repository::new(SharedFastaAdapter(std::sync::Arc::clone(
-                &fasta_repo.adapter,
-            )));
+            let repo = noodles::fasta::Repository::new(RegistryDelegatingAdapter {
+                primary_name: Vec::new(),
+                primary_record: None,
+                shared: std::sync::Arc::downgrade(&fasta_repo),
+            });
             let mut cram_writer = noodles::cram::io::writer::Builder::default()
                 .set_reference_sequence_repository(repo)
                 .build_from_path(&cram_path)
@@ -5338,5 +6037,482 @@ mod tests {
             .collect();
         assert_eq!(recs.len(), 1);
         assert_eq!(recs[0].sequence[10], b'N');
+    }
+
+    #[test]
+    fn crai_offsets_match_linear_oracle() {
+        use noodles::core::Position;
+        use noodles::cram::crai;
+
+        let mut records: Vec<crai::Record> = Vec::with_capacity(12_000);
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next_u64 = || -> u64 {
+            state ^= state >> 12;
+            state ^= state << 25;
+            state ^= state >> 27;
+            state.wrapping_mul(0x2545_F491_4F6C_DD1D)
+        };
+
+        // 0..4: sorted reference groups with nested spans, zero-span rows, None-start rows,
+        // and multi-slice containers sharing the same offset.
+        for ref_id in 0..4usize {
+            let mut cur_start = 10usize;
+            for i in 0..2500usize {
+                if i % 250 == 0 {
+                    // Unplaced / zero-span / None-start edge rows
+                    records.push(crai::Record::new(
+                        None,
+                        Position::new(cur_start),
+                        100,
+                        (ref_id as u64) * 100_000 + (i as u64),
+                        0,
+                        100,
+                    ));
+                    records.push(crai::Record::new(
+                        Some(ref_id),
+                        None,
+                        100,
+                        (ref_id as u64) * 100_000 + (i as u64) + 1,
+                        0,
+                        100,
+                    ));
+                    records.push(crai::Record::new(
+                        Some(ref_id),
+                        Position::new(cur_start),
+                        0,
+                        (ref_id as u64) * 100_000 + (i as u64) + 2,
+                        0,
+                        100,
+                    ));
+                }
+                let step = (next_u64() % 40) as usize;
+                cur_start += step;
+                // Occasionally emit a very wide span so subsequent narrower records nest inside it
+                let span = if i % 37 == 0 {
+                    5_000usize
+                } else {
+                    50 + ((next_u64() % 300) as usize)
+                };
+                // Share container offsets across adjacent slices every 5 entries
+                let offset = ((ref_id as u64) << 32) | ((i as u64 / 5) * 4096);
+                records.push(crai::Record::new(
+                    Some(ref_id),
+                    Position::new(cur_start),
+                    span,
+                    offset,
+                    (i % 5) as u64 * 512,
+                    512,
+                ));
+            }
+        }
+
+        // ref_id = 4: intentionally unsorted alignment_start order
+        for i in 0..1000usize {
+            let start = 1 + ((next_u64() % 50_000) as usize);
+            let span = 10 + ((next_u64() % 500) as usize);
+            let offset = (4u64 << 32) | ((i as u64 / 3) * 2048);
+            records.push(crai::Record::new(
+                Some(4),
+                Position::new(start),
+                span,
+                offset,
+                0,
+                256,
+            ));
+        }
+
+        assert!(records.len() >= 10_000);
+        let indexed = IndexedCrai::from_index(&records);
+
+        let linear_oracle =
+            |ref_id: usize, interval: noodles::core::region::Interval| -> Vec<u64> {
+                let mut out = Vec::new();
+                for rec in records
+                    .iter()
+                    .filter(|rec| crai_record_intersects(rec, ref_id, interval))
+                {
+                    let off = rec.offset();
+                    if !out.contains(&off) {
+                        out.push(off);
+                    }
+                }
+                out
+            };
+
+        // Check 100+ random, boundary, point, and unbounded intervals across all ref_ids
+        for q in 0..110usize {
+            let ref_id = q % 6; // 5 is an empty/missing ref_id
+            let interval: noodles::core::region::Interval = if q % 25 == 0 {
+                (..).into()
+            } else if q % 25 == 1 {
+                let p = Position::new(1 + ((next_u64() % 60_000) as usize)).unwrap();
+                (p..=p).into()
+            } else {
+                let a = 1 + ((next_u64() % 60_000) as usize);
+                let b = a + ((next_u64() % 2_000) as usize);
+                let s = Position::new(a).unwrap();
+                let e = Position::new(b).unwrap();
+                (s..=e).into()
+            };
+            let got = indexed.query_offsets(ref_id, interval);
+            let expected = linear_oracle(ref_id, interval);
+            assert_eq!(
+                got, expected,
+                "IndexedCrai mismatch at query {q} on ref_id={ref_id}, interval={interval:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn warm_contig_loads_once_under_concurrency() {
+        use std::io::Write as _;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let ref_fa = temp_dir.path().join("conc_ref.fa");
+        let ref_fai = temp_dir.path().join("conc_ref.fa.fai");
+        let seq1 = b"ACGT".repeat(250); // 1000 bp
+        let seq2 = b"TGCA".repeat(250); // 1000 bp
+        {
+            let mut f = std::fs::File::create(&ref_fa).unwrap();
+            writeln!(f, ">chr1").unwrap();
+            f.write_all(&seq1).unwrap();
+            writeln!(f, "\n>chr2").unwrap();
+            f.write_all(&seq2).unwrap();
+            writeln!(f).unwrap();
+        }
+        {
+            let mut f = std::fs::File::create(&ref_fai).unwrap();
+            writeln!(f, "chr1\t1000\t6\t1000\t1001").unwrap();
+            writeln!(f, "chr2\t1000\t1013\t1000\t1001").unwrap();
+        }
+
+        let adapter = PreallocatedFastaAdapter::open(&ref_fa).unwrap();
+        let repo = SharedFastaRepo::new(ref_fa.clone(), adapter, DEFAULT_FASTA_CACHE_BUDGET_BYTES);
+
+        let loads_before = repo.load_count.load(std::sync::atomic::Ordering::SeqCst);
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let repo_c = std::sync::Arc::clone(&repo);
+            let bar_c = std::sync::Arc::clone(&barrier);
+            handles.push(std::thread::spawn(move || {
+                bar_c.wait();
+                let (_r, seq) = repo_c.warm_contig(b"chr1");
+                seq.expect("chr1 sequence must load")
+            }));
+        }
+        let mut results = Vec::new();
+        for h in handles {
+            results.push(h.join().unwrap());
+        }
+        let loads_after = repo.load_count.load(std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(
+            loads_after - loads_before,
+            1,
+            "8 concurrent threads warming chr1 must invoke the underlying loader exactly once"
+        );
+        for s in &results {
+            assert_eq!(SharedFastaRepo::unpadded_slice(s), seq1.as_slice());
+            assert!(std::sync::Arc::ptr_eq(s, &results[0]));
+        }
+
+        // Warming chr2 must load chr2 once while keeping chr1 resident
+        let (_, s2) = repo.warm_contig(b"chr2");
+        assert_eq!(
+            SharedFastaRepo::unpadded_slice(&s2.unwrap()),
+            seq2.as_slice()
+        );
+        assert_eq!(
+            repo.load_count.load(std::sync::atomic::Ordering::SeqCst) - loads_after,
+            1
+        );
+    }
+
+    #[test]
+    fn multi_ref_slice_contig_loaded_once() {
+        use noodles::core::Position;
+        use noodles::sam::alignment::io::Write as _;
+        use noodles::sam::alignment::record::cigar::{op::Kind, Op};
+        use noodles::sam::alignment::record::Flags;
+        use noodles::sam::alignment::record::MappingQuality;
+        use noodles::sam::alignment::record_buf::{Cigar, RecordBuf};
+        use noodles::sam::header::record::value::map::ReferenceSequence;
+        use noodles::sam::header::record::value::Map;
+        use std::io::Write as _;
+        use std::num::NonZeroUsize;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let ref_fa = temp_dir.path().join("multiref.fa");
+        let ref_fai = temp_dir.path().join("multiref.fa.fai");
+        let cram_path = temp_dir.path().join("multiref.cram");
+
+        let contigs = [("chr1", b'A'), ("chr2", b'C'), ("chr3", b'G')];
+        let contig_len = 600usize;
+        {
+            let mut fa = std::fs::File::create(&ref_fa).unwrap();
+            let mut fai = std::fs::File::create(&ref_fai).unwrap();
+            let mut offset = 0usize;
+            for (name, base) in contigs {
+                let header_line = format!(">{name}\n");
+                fa.write_all(header_line.as_bytes()).unwrap();
+                offset += header_line.len();
+                let seq: Vec<u8> = (0..contig_len)
+                    .map(|i| if i % 7 == 0 { b'T' } else { base })
+                    .collect();
+                fa.write_all(&seq).unwrap();
+                fa.write_all(b"\n").unwrap();
+                writeln!(
+                    fai,
+                    "{name}\t{contig_len}\t{offset}\t{contig_len}\t{}",
+                    contig_len + 1
+                )
+                .unwrap();
+                offset += contig_len + 1;
+            }
+        }
+
+        let mut header_builder = noodles::sam::Header::builder();
+        for (name, _) in contigs {
+            header_builder = header_builder.add_reference_sequence(
+                name,
+                Map::<ReferenceSequence>::new(NonZeroUsize::try_from(contig_len).unwrap()),
+            );
+        }
+        let header = header_builder.build();
+
+        // Build records across all 3 contigs WITHOUT NM tags so both slice.records
+        // and compute_cram_nm require the reference sequence.
+        let mut records = Vec::new();
+        for (ref_id, (_, base)) in contigs.iter().enumerate() {
+            for idx in 0..4usize {
+                let start_1 = 50 + idx * 40;
+                let read_len = 40usize;
+                let mut seq: Vec<u8> = (start_1 - 1..start_1 - 1 + read_len)
+                    .map(|i| if i % 7 == 0 { b'T' } else { *base })
+                    .collect();
+                if idx == 1 {
+                    seq[5] = b'A' ^ b'C' ^ seq[5];
+                }
+                let cigar: Cigar = [Op::new(Kind::Match, read_len)].into_iter().collect();
+                let rec = RecordBuf::builder()
+                    .set_name(format!("r_{ref_id}_{idx}"))
+                    .set_flags(Flags::empty())
+                    .set_reference_sequence_id(ref_id)
+                    .set_alignment_start(Position::try_from(start_1).unwrap())
+                    .set_mapping_quality(MappingQuality::try_from(60u8).unwrap())
+                    .set_cigar(cigar)
+                    .set_sequence(seq.into())
+                    .set_quality_scores(vec![35u8; read_len].into())
+                    .build();
+                records.push(rec);
+            }
+        }
+
+        {
+            let fasta_reader = noodles::fasta::io::IndexedReader::new(
+                std::io::BufReader::new(std::fs::File::open(&ref_fa).unwrap()),
+                noodles::fasta::fai::fs::read(&ref_fai).unwrap(),
+            );
+            let repo = noodles::fasta::Repository::new(
+                noodles::fasta::repository::adapters::IndexedReader::new(fasta_reader),
+            );
+            let mut cram_writer = noodles::cram::io::writer::Builder::default()
+                .set_reference_sequence_repository(repo)
+                .build_from_path(&cram_path)
+                .unwrap();
+            cram_writer.write_alignment_header(&header).unwrap();
+            for rec in &records {
+                cram_writer.write_alignment_record(&header, rec).unwrap();
+            }
+            cram_writer.try_finish(&header).unwrap();
+
+            // `noodles::cram::fs::index` passes `fasta::Repository::default()` (`// TODO`)
+            // on multi-reference slices; read the container offset + landmark directly.
+            let mut reader =
+                noodles::cram::io::Reader::new(std::fs::File::open(&cram_path).unwrap());
+            let _ = reader.read_header().unwrap();
+            let container_pos = reader.position().unwrap();
+            let mut container = noodles::cram::io::reader::Container::default();
+            let container_len = reader.read_container(&mut container).unwrap();
+            assert!(container_len > 0);
+            let landmark = container.header().landmarks()[0] as u64;
+            let slice_len = (container_len - container.header().landmarks()[0]) as u64;
+            let crai: Vec<noodles::cram::crai::Record> = (0..contigs.len())
+                .map(|ref_id| {
+                    noodles::cram::crai::Record::new(
+                        Some(ref_id),
+                        Position::try_from(50usize).ok(),
+                        200,
+                        container_pos,
+                        landmark,
+                        slice_len,
+                    )
+                })
+                .collect();
+            noodles::cram::crai::fs::write(cram_path.with_extension("cram.crai"), &crai).unwrap();
+        }
+
+        let config = Config {
+            reference: ref_fa.to_str().unwrap().to_string(),
+            ..Default::default()
+        };
+        NEXT_BAM_META_ID.fetch_max(TEST_META_ID_BASE, std::sync::atomic::Ordering::Relaxed);
+        let meta = acquire_cram_meta(&cram_path, &config).unwrap();
+        let loads_before = meta
+            .fasta_repo
+            .load_count
+            .load(std::sync::atomic::Ordering::SeqCst);
+
+        for (name, _) in contigs {
+            let recs: Vec<SamRecord> =
+                query_region_iter(&cram_path, name, Pos0(1), Pos0(500), &config)
+                    .unwrap()
+                    .map(|r| r.unwrap())
+                    .collect();
+            assert_eq!(recs.len(), 4);
+            assert_eq!(recs[0].nm, Some(0));
+            assert_eq!(recs[1].nm, Some(1));
+            assert_eq!(recs[0].reference_name.as_deref(), Some(name));
+        }
+
+        let loads_after = meta
+            .fasta_repo
+            .load_count
+            .load(std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(
+            loads_after - loads_before,
+            3,
+            "each of the 3 contigs must be loaded from disk only once across multi-ref slice decode + NM calculation"
+        );
+    }
+
+    #[test]
+    fn cram_feed_pins_contig_under_512mb_budget() {
+        use noodles::core::Position;
+        use noodles::sam::alignment::io::Write as _;
+        use noodles::sam::alignment::record::cigar::{op::Kind, Op};
+        use noodles::sam::alignment::record::Flags;
+        use noodles::sam::alignment::record::MappingQuality;
+        use noodles::sam::alignment::record_buf::{Cigar, RecordBuf};
+        use noodles::sam::header::record::value::map::ReferenceSequence;
+        use noodles::sam::header::record::value::Map;
+        use std::io::Write as _;
+        use std::num::NonZeroUsize;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let ref_fa = temp_dir.path().join("pin_budget.fa");
+        let ref_fai = temp_dir.path().join("pin_budget.fa.fai");
+        let cram_path = temp_dir.path().join("pin_budget.cram");
+
+        let contigs = [("chr1", b'A'), ("chr2", b'C'), ("chr3", b'G')];
+        let contig_len = 1000usize;
+        {
+            let mut fa = std::fs::File::create(&ref_fa).unwrap();
+            let mut fai = std::fs::File::create(&ref_fai).unwrap();
+            let mut offset = 0usize;
+            for (name, base) in contigs {
+                let header_line = format!(">{name}\n");
+                fa.write_all(header_line.as_bytes()).unwrap();
+                offset += header_line.len();
+                let seq = vec![base; contig_len];
+                fa.write_all(&seq).unwrap();
+                fa.write_all(b"\n").unwrap();
+                writeln!(
+                    fai,
+                    "{name}\t{contig_len}\t{offset}\t{contig_len}\t{}",
+                    contig_len + 1
+                )
+                .unwrap();
+                offset += contig_len + 1;
+            }
+        }
+
+        let mut header_builder = noodles::sam::Header::builder();
+        for (name, _) in contigs {
+            header_builder = header_builder.add_reference_sequence(
+                name,
+                Map::<ReferenceSequence>::new(NonZeroUsize::try_from(contig_len).unwrap()),
+            );
+        }
+        let header = header_builder.build();
+
+        let cigar: Cigar = [Op::new(Kind::Match, 50)].into_iter().collect();
+        let rec = RecordBuf::builder()
+            .set_name("pinned_read_1")
+            .set_flags(Flags::empty())
+            .set_reference_sequence_id(0)
+            .set_alignment_start(Position::try_from(100usize).unwrap())
+            .set_mapping_quality(MappingQuality::try_from(60u8).unwrap())
+            .set_cigar(cigar)
+            .set_sequence(vec![b'A'; 50].into())
+            .set_quality_scores(vec![35u8; 50].into())
+            .build();
+
+        {
+            let fasta_reader = noodles::fasta::io::IndexedReader::new(
+                std::io::BufReader::new(std::fs::File::open(&ref_fa).unwrap()),
+                noodles::fasta::fai::fs::read(&ref_fai).unwrap(),
+            );
+            let repo = noodles::fasta::Repository::new(
+                noodles::fasta::repository::adapters::IndexedReader::new(fasta_reader),
+            );
+            let mut cram_writer = noodles::cram::io::writer::Builder::default()
+                .set_reference_sequence_repository(repo)
+                .build_from_path(&cram_path)
+                .unwrap();
+            cram_writer.write_alignment_header(&header).unwrap();
+            cram_writer.write_alignment_record(&header, &rec).unwrap();
+            cram_writer.try_finish(&header).unwrap();
+            let crai = noodles::cram::fs::index(&cram_path).unwrap();
+            noodles::cram::crai::fs::write(cram_path.with_extension("cram.crai"), &crai).unwrap();
+        }
+
+        let config = Config {
+            reference: ref_fa.to_str().unwrap().to_string(),
+            ..Default::default()
+        };
+        NEXT_BAM_META_ID.fetch_max(TEST_META_ID_BASE, std::sync::atomic::Ordering::Relaxed);
+        let meta = acquire_cram_meta(&cram_path, &config).unwrap();
+        // Set budget to 2 * (contig_len + CRAM_REF_OVERHANG_PAD) so at most 2 padded contigs fit
+        let per_contig_bytes = contig_len + CRAM_REF_OVERHANG_PAD;
+        meta.fasta_repo.set_budget_bytes(2 * per_contig_bytes);
+
+        // Hold an active CramFeed on chr1 -> pins chr1's ContigSlot
+        let mut feed = query_region_iter(&cram_path, "chr1", Pos0(50), Pos0(200), &config).unwrap();
+        let slot_chr1 = meta
+            .fasta_repo
+            .resident_slot(b"chr1")
+            .expect("chr1 must be resident");
+        // Drop our local clone after checking strong_count: registry (1) + feed.pinned_slot (1) + local (1) = 3
+        assert!(std::sync::Arc::strong_count(&slot_chr1) >= 3);
+        drop(slot_chr1);
+
+        // Warm chr2 (fits in 2 * contig_len budget alongside chr1)
+        let _ = meta.fasta_repo.warm_contig(b"chr2");
+        assert!(meta.fasta_repo.resident_slot(b"chr1").is_some());
+        assert!(meta.fasta_repo.resident_slot(b"chr2").is_some());
+
+        // Warm chr3 -> exceeds 2 * contig_len budget; chr1 is pinned (strong_count == 2),
+        // so unpinned chr2 (strong_count == 1) must be evicted while chr1 stays resident!
+        let _ = meta.fasta_repo.warm_contig(b"chr3");
+        let pinned_chr1 = meta
+            .fasta_repo
+            .resident_slot(b"chr1")
+            .expect("pinned chr1 must NOT be evicted under budget pressure");
+        assert!(std::sync::Arc::strong_count(&pinned_chr1) >= 3);
+        drop(pinned_chr1);
+        assert!(
+            meta.fasta_repo.resident_slot(b"chr2").is_none(),
+            "unpinned chr2 must be evicted to stay within budget"
+        );
+        assert!(
+            meta.fasta_repo.resident_slot(b"chr3").is_some(),
+            "newly warmed chr3 must remain resident"
+        );
+
+        let mut out = SamRecord::new();
+        assert!(feed.next_into(&mut out).unwrap());
+        assert_eq!(out.reference_name.as_deref(), Some("chr1"));
+        assert!(!feed.next_into(&mut out).unwrap());
     }
 }

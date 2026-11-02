@@ -1654,7 +1654,9 @@ PY
     fi
     GOLDEN_MODE=auto GOLDEN_STORE_DIR="$GOLDEN_STORE_DIR" bash harness/run_extended_coverage.sh
     GOLDEN_MODE=auto GOLDEN_STORE_DIR="$GOLDEN_STORE_DIR" bash harness/run_multimodal_slices.sh
-    CMP_TIMEOUT=12h KEEP_DIR="$KEEP_DIR/cram" python3 harness/record_evidence.py hg008-cram-twin -- bash harness/cram_twin.sh
+    CMP_TIMEOUT=12h KEEP_DIR="$KEEP_DIR/cram" bash harness/cram_twin.sh
+    python3 harness/record_evidence.py hg008-cram-twin MATCH "$KEEP_DIR/cram" -- env KEEP_DIR="$KEEP_DIR/cram" CMP_TIMEOUT=12h bash harness/cram_twin.sh
+    python3 harness/perf_budget.py hg008-cram-twin
     GOLDEN_MODE=auto GOLDEN_STORE_DIR="$GOLDEN_STORE_DIR" bash harness/concordance_multimodal.sh
 
     # E2: Tier-E SEQC2 Exome CRAM Twin (HCC1395/HCC1395BL slice CRAM vs BAM bitwise identity)
@@ -1666,8 +1668,8 @@ PY
     printf "chr7\t140400000\t140420000\tBRAF\n" > "$KEEP_DIR/e2_braf.bed"
     samtools view -T "$REF_E" -C -o "$CRAM_T_E" "$BAM_T_E" && samtools index "$CRAM_T_E"
     samtools view -T "$REF_E" -C -o "$CRAM_N_E" "$BAM_N_E" && samtools index "$CRAM_N_E"
-    target/release/vardictrust -G "$REF_E" -f 0.01 -N "TUMOR|NORMAL" -b "$BAM_T_E|$BAM_N_E" -c 1 -S 2 -E 3 -g 4 -z -th 4 "$KEEP_DIR/e2_braf.bed" > "$KEEP_DIR/e2_rust_bam.vcf"
-    env RUST_MIN_STACK=67108864 target/release/vardictrust -G "$REF_E" -f 0.01 -N "TUMOR|NORMAL" -b "$CRAM_T_E|$CRAM_N_E" -c 1 -S 2 -E 3 -g 4 -z -th 4 "$KEEP_DIR/e2_braf.bed" > "$KEEP_DIR/e2_rust_cram.vcf"
+    $TIME_V -o "$KEEP_DIR/e2_rust_bam.time" target/release/vardictrust -G "$REF_E" -f 0.01 -N "TUMOR|NORMAL" -b "$BAM_T_E|$BAM_N_E" -c 1 -S 2 -E 3 -g 4 -z -th 4 "$KEEP_DIR/e2_braf.bed" > "$KEEP_DIR/e2_rust_bam.vcf"
+    $TIME_V -o "$KEEP_DIR/e2_rust_cram.time" env RUST_MIN_STACK=67108864 target/release/vardictrust -G "$REF_E" -f 0.01 -N "TUMOR|NORMAL" -b "$CRAM_T_E|$CRAM_N_E" -c 1 -S 2 -E 3 -g 4 -z -th 4 "$KEEP_DIR/e2_braf.bed" > "$KEEP_DIR/e2_rust_cram.vcf"
     python3 harness/compare_vcf.py --strict-bytes "$KEEP_DIR/e2_rust_bam.vcf" "$KEEP_DIR/e2_rust_cram.vcf" | tee "$KEEP_DIR/e2_cram_twin_compare.txt"
     grep -q "^MATCH" "$KEEP_DIR/e2_cram_twin_compare.txt"
 
@@ -3787,7 +3789,7 @@ EOF
     record_sweep_row "sweep_multimodal_and_cram_twin" "multimodal_18slices" "18" "18" "0" "0" "$([ "$rc_mm" -eq 0 ] && echo MATCH || echo DIFF_CAPTURED)" "rc=$rc_mm"
 
     rc_cram=0
-    CMP_TIMEOUT=12h bash harness/cram_twin.sh > "$KEEP_DIR/cram_twin_g4.log" 2>&1 || rc_cram=$?
+    CMP_TIMEOUT=12h KEEP_DIR="$KEEP_DIR/cram" bash harness/cram_twin.sh > "$KEEP_DIR/cram_twin_g4.log" 2>&1 || rc_cram=$?
     record_sweep_row "sweep_multimodal_and_cram_twin" "cram_twin_g4_hg008" "1" "1" "0" "0" "$([ "$rc_cram" -eq 0 ] && echo MATCH || echo DIFF_CAPTURED)" "rc=$rc_cram"
 
     REF_E="$DATA_DIR/ref/d1vd1/GRCh38.d1.vd1.fa"
@@ -3798,8 +3800,8 @@ EOF
     printf "chr7\t140400000\t140420000\tBRAF\n" > "$KEEP_DIR/e2_braf.bed"
     samtools view -@ 16 -T "$REF_E" -C -o "$CRAM_T_E" "$BAM_T_E" && samtools index "$CRAM_T_E"
     samtools view -@ 16 -T "$REF_E" -C -o "$CRAM_N_E" "$BAM_N_E" && samtools index "$CRAM_N_E"
-    target/release/vardictrust -G "$REF_E" -f 0.01 -N "TUMOR|NORMAL" -b "$BAM_T_E|$BAM_N_E" -c 1 -S 2 -E 3 -g 4 -z -th 32 "$KEEP_DIR/e2_braf.bed" > "$KEEP_DIR/e2_rust_bam.vcf"
-    env RUST_MIN_STACK=67108864 target/release/vardictrust -G "$REF_E" -f 0.01 -N "TUMOR|NORMAL" -b "$CRAM_T_E|$CRAM_N_E" -c 1 -S 2 -E 3 -g 4 -z -th 32 "$KEEP_DIR/e2_braf.bed" > "$KEEP_DIR/e2_rust_cram.vcf"
+    $TIME_V -o "$KEEP_DIR/e2_rust_bam.time" target/release/vardictrust -G "$REF_E" -f 0.01 -N "TUMOR|NORMAL" -b "$BAM_T_E|$BAM_N_E" -c 1 -S 2 -E 3 -g 4 -z -th 32 "$KEEP_DIR/e2_braf.bed" > "$KEEP_DIR/e2_rust_bam.vcf"
+    $TIME_V -o "$KEEP_DIR/e2_rust_cram.time" env RUST_MIN_STACK=67108864 target/release/vardictrust -G "$REF_E" -f 0.01 -N "TUMOR|NORMAL" -b "$CRAM_T_E|$CRAM_N_E" -c 1 -S 2 -E 3 -g 4 -z -th 32 "$KEEP_DIR/e2_braf.bed" > "$KEEP_DIR/e2_rust_cram.vcf"
     compare_and_record_vcf "sweep_multimodal_and_cram_twin" "e2_cram_vs_bam_twin" "$KEEP_DIR/e2_rust_bam.vcf" "$KEEP_DIR/e2_rust_cram.vcf" "$KEEP_DIR/e2_cram_twin"
   '
 
