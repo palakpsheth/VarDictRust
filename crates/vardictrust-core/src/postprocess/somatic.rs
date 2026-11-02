@@ -143,11 +143,12 @@ fn calling_for_one_sample(
         if variant.ref_allele == variant.var_allele {
             continue;
         }
-        let mut v = variant.clone();
-        v.var_type = v.var_type();
-        if !v.is_good_var(variants.ref_variant.as_ref(), &v.var_type, splice, config) {
+        let vtype = variant.var_type_cow();
+        if !variant.is_good_var(variants.ref_variant.as_ref(), &vtype, splice, config) {
             continue;
         }
+        let mut v = variant.clone();
+        v.var_type = vtype.into_owned();
         if v.var_type == COMPLEX {
             v.adj_complex();
         }
@@ -177,7 +178,7 @@ fn calling_for_one_sample(
         } else {
             // Only BAM1 has coverage → SampleSpecific
             results.push(SomaticVariant {
-                variant1: v.clone(),
+                variant1: v,
                 variant2: None,
                 status: var_label.to_string(),
                 sv1: variants.sv.clone(),
@@ -262,19 +263,18 @@ fn print_variations_from_first_sample(
     // Process variants from sample 1 while they pass isGoodVar
     while number_of_processed_variation < v1.variants.len() {
         let vref_orig = &v1.variants[number_of_processed_variation];
-        let vartype_check = vref_orig.var_type();
+        let vartype_check = vref_orig.var_type_cow();
         if !vref_orig.is_good_var(v1.ref_variant.as_ref(), &vartype_check, splice, config) {
             break;
         }
-
-        let mut vref = vref_orig.clone();
-        if vref.ref_allele == vref.var_allele {
+        if vref_orig.ref_allele == vref_orig.var_allele {
             number_of_processed_variation += 1;
             continue;
         }
 
+        let mut vref = vref_orig.clone();
         let nt = vref.description.clone();
-        vref.var_type = vref.var_type();
+        vref.var_type = vartype_check.into_owned();
         if vref.var_type == COMPLEX {
             vref.adj_complex();
         }
@@ -375,11 +375,12 @@ fn print_variations_from_first_sample(
             return;
         }
         for v2var_orig in &v2.variants {
-            let mut v2var = v2var_orig.clone();
-            v2var.var_type = v2var.var_type();
-            if !v2var.is_good_var(v2.ref_variant.as_ref(), &v2var.var_type, splice, config) {
+            let vtype = v2var_orig.var_type_cow();
+            if !v2var_orig.is_good_var(v2.ref_variant.as_ref(), &vtype, splice, config) {
                 continue;
             }
+            let mut v2var = v2var_orig.clone();
+            v2var.var_type = vtype.into_owned();
             // potential LOH
             let nt = v2var.description.clone();
             let v1nt = v1.var_desc_to_variant.get(&nt);
@@ -460,11 +461,12 @@ fn print_variations_from_second_sample(
         if v2var_orig.ref_allele == v2var_orig.var_allele {
             continue;
         }
-        let mut v2var = v2var_orig.clone();
-        v2var.var_type = v2var.var_type();
-        if !v2var.is_good_var(v2.ref_variant.as_ref(), &v2var.var_type, splice, config) {
+        let vtype = v2var_orig.var_type_cow();
+        if !v2var_orig.is_good_var(v2.ref_variant.as_ref(), &vtype, splice, config) {
             continue;
         }
+        let mut v2var = v2var_orig.clone();
+        v2var.var_type = vtype.into_owned();
 
         // combineAnalysis gate (:301-302): low normal coverage, not an SV, long
         // description or a -\d\d pattern (MINUS_NUM_NUM, Patterns.java:18)

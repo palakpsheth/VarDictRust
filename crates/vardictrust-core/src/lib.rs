@@ -2050,9 +2050,11 @@ fn run_amplicon<W: EngineWriter>(
     }
 
     let mut vcf_acc: SpillableVcfAccumulator<RawVcfCandidate> = SpillableVcfAccumulator::new();
-    let format_amp_cand = |av: &crate::postprocess::amplicon::AmpliconVariant,
-                           current_region: &crate::regions::Region|
-     -> RawVcfCandidate {
+    fn format_amp_cand(
+        av: &crate::postprocess::amplicon::AmpliconVariant,
+        current_region: &crate::regions::Region,
+        config: &config::Config,
+    ) -> RawVcfCandidate {
         let v = &av.variant;
         let should_emit = !crate::output::vcf::perl_row_skipped(&v.ref_allele);
         let vcf_line = if !should_emit {
@@ -2088,160 +2090,219 @@ fn run_amplicon<W: EngineWriter>(
             should_emit,
             vcf_line,
         }
-    };
+    }
 
-    for segment in segments {
-        // §9: let-else merges the empty guard with the last() unwrap.
-        let Some(current_region) = segment.last() else {
-            continue;
-        };
-        let mut vars_per_amplicon: Vec<crate::javamap::JavaHashMap<i32, crate::variations::Vars>> =
-            Vec::with_capacity(segment.len());
-        let mut splice = std::collections::HashSet::new();
+    type AmpliconVarsList = Vec<crate::javamap::JavaHashMap<i32, crate::variations::Vars>>;
 
-        crate::runner::run_with_worker_stack(|| {
-            for region in segment.iter() {
-                crate::runner::set_current_worker_region(Some(format!(
-                    "{}:{}-{}",
-                    region.chr, region.start.0, region.end.0
-                )));
-                let (aligned, next_splice) = process_amplicon_region(
-                    first_bam,
-                    region,
-                    config,
-                    chromosomes_lengths,
-                    std::mem::take(&mut splice),
-                )?;
-                vars_per_amplicon.push(aligned);
-                splice = next_splice;
+    enum AmpliconSegmentOutput {
+        Lines(Vec<String>),
+        Vcf {
+            chr: String,
+            records: Vec<RawVcfCandidate>,
+        },
+        Pileup {
+            segment: Vec<crate::regions::Region>,
+            vars_per_amplicon: AmpliconVarsList,
+            splice: std::collections::HashSet<String>,
+        },
+    }
+
+    let segments: Vec<Vec<crate::regions::Region>> =
+        segments.into_iter().filter(|s| !s.is_empty()).collect();
+    let first_bam_owned = first_bam.to_string();
+    let config_clone = config.clone();
+    let chromosomes_lengths_clone = chromosomes_lengths.clone();
+
+    // H5: Process independent amplicon segments in parallel via `run_parallel`,
+    // streaming results into the consumer in exact BED segment order.
+    crate::runner::run_parallel(
+        segments,
+        config.threads,
+        move |segment| -> Result<AmpliconSegmentOutput, VardictError> {
+            // §9: let-else merges the empty guard with the last() unwrap.
+            let Some(current_region) = segment.last() else {
+                return Ok(AmpliconSegmentOutput::Lines(Vec::new()));
+            };
+            let run_segment_regions = || {
+                let mut vars_per_amplicon: AmpliconVarsList = Vec::with_capacity(segment.len());
+                let mut splice = std::collections::HashSet::new();
+                for region in segment.iter() {
+                    crate::runner::set_current_worker_region(Some(format!(
+                        "{}:{}-{}",
+                        region.chr, region.start.0, region.end.0
+                    )));
+                    let (aligned, next_splice) = process_amplicon_region(
+                        &first_bam_owned,
+                        region,
+                        &config_clone,
+                        &chromosomes_lengths_clone,
+                        std::mem::take(&mut splice),
+                    )?;
+                    vars_per_amplicon.push(aligned);
+                    splice = next_splice;
+                }
+                Ok::<_, VardictError>((vars_per_amplicon, splice))
+            };
+
+            let (vars_per_amplicon, splice) = if config_clone.threads <= 1 {
+                crate::runner::run_with_worker_stack(run_segment_regions)?
+            } else {
+                run_segment_regions()?
+            };
+
+            if config_clone.pileup {
+                return Ok(AmpliconSegmentOutput::Pileup {
+                    segment,
+                    vars_per_amplicon,
+                    splice,
+                });
             }
-            Ok::<(), VardictError>(())
-        })?;
 
-        // Position → covering-amplicon pairs (AmpliconMode.java:57-60).
-        //
-        // -p emits a (null/ref) row at EVERY insert position, even with zero
-        // coverage in all amplicons, so visiting every insert position is
-        // load-bearing here — but the per-base map is streamed, never
-        // materialized (audit-amplicon-expand): the lazy union iterator yields
-        // exactly the positions (and segment-ordered covering lists) the old
-        // per-base BTreeMap held, in the same ascending order.
-        if config.pileup && config.emit_intermediate {
-            // Fully streaming -p table path: each row goes straight to the
-            // writer, so working memory stays O(segment + one position) no
-            // matter how large the insert interval is.
-            // Caller-owned row buffer: `_into` clears per row and the writer
-            // consumes bytes immediately, so one buffer serves the whole
-            // stream with no per-row `String` allocation. The callback is
-            // `&mut FnMut` (sequential calls), so sharing is race-free.
-            // (Collected-`Vec` emit paths keep per-row allocation by
-            // construction — each retained line owns its storage.)
-            let mut row_buf = String::new();
-            crate::postprocess::amplicon::amplicon_post_process_streaming(
-                config,
+            // Bounded-memory (audit-amplicon-expand): visit only positions with
+            // variant data and resolve covering amplicons with one ascending
+            // sweep (audit-amplicon-sweep). Positions absent from every vars
+            // map `continue` without output (AmpliconPostProcessModule.java:129-131),
+            // so skipping them is output-identical while bounding the map by
+            // data, not interval size.
+            let mut amplicons_on_positions: std::collections::BTreeMap<
+                i32,
+                Vec<(usize, crate::regions::Region)>,
+            > = std::collections::BTreeMap::new();
+            let mut positions: std::collections::BTreeSet<i32> = std::collections::BTreeSet::new();
+            for vars in &vars_per_amplicon {
+                positions.extend(vars.keys().copied());
+            }
+            // BTreeSet iterates ascending: satisfies the sweep precondition,
+            // and each covering list comes out in segment order — the same
+            // pairs the old per-position scan built, at O((P + A) log A).
+            let mut sweep = crate::postprocess::amplicon::AmpliconCoverSweep::new(&segment);
+            for p in positions {
+                let covering = sweep.covering_at(p);
+                if !covering.is_empty() {
+                    amplicons_on_positions.insert(p, covering);
+                }
+            }
+
+            let results = crate::postprocess::amplicon::amplicon_post_process(
+                &config_clone,
                 current_region,
                 &vars_per_amplicon,
-                crate::postprocess::amplicon::amplicon_position_stream(&segment),
+                &amplicons_on_positions,
                 &splice,
-                &mut |av| {
-                    if config.fisher {
+            )?;
+
+            if config_clone.emit_intermediate {
+                let mut lines = Vec::with_capacity(results.len());
+                for av in results {
+                    let mut row_buf = String::new();
+                    if config_clone.fisher {
                         crate::output::table::amplicon_40_into(
                             &mut row_buf,
                             &av,
                             current_region,
-                            &config.sample,
-                            config.debug,
+                            &config_clone.sample,
+                            config_clone.debug,
                         );
                     } else {
                         crate::output::table::amplicon_38_into(
                             &mut row_buf,
                             &av,
                             current_region,
-                            &config.sample,
-                            config.debug,
+                            &config_clone.sample,
+                            config_clone.debug,
                         );
                     }
-                    write_output_line(writer, &row_buf)
-                },
-            )?;
-            continue;
-        }
-
-        if config.pileup {
-            // -p VCF path: stream directly into `SpillableVcfAccumulator` without
-            // materializing a segment-sized `Vec<AmpliconVariant>`.
-            crate::postprocess::amplicon::amplicon_post_process_streaming(
-                config,
-                current_region,
-                &vars_per_amplicon,
-                crate::postprocess::amplicon::amplicon_position_stream(&segment),
-                &splice,
-                &mut |av| vcf_acc.insert(&current_region.chr, format_amp_cand(&av, current_region)),
-            )?;
-            continue;
-        }
-
-        // Bounded-memory (audit-amplicon-expand): visit only positions with
-        // variant data and resolve covering amplicons with one ascending
-        // sweep (audit-amplicon-sweep). Positions absent from every vars
-        // map `continue` without output (AmpliconPostProcessModule.java:129-131),
-        // so skipping them is output-identical while bounding the map by
-        // data, not interval size.
-        let mut amplicons_on_positions: std::collections::BTreeMap<
-            i32,
-            Vec<(usize, crate::regions::Region)>,
-        > = std::collections::BTreeMap::new();
-        let mut positions: std::collections::BTreeSet<i32> = std::collections::BTreeSet::new();
-        for vars in &vars_per_amplicon {
-            positions.extend(vars.keys().copied());
-        }
-        // BTreeSet iterates ascending: satisfies the sweep precondition,
-        // and each covering list comes out in segment order — the same
-        // pairs the old per-position scan built, at O((P + A) log A).
-        let mut sweep = crate::postprocess::amplicon::AmpliconCoverSweep::new(&segment);
-        for p in positions {
-            let covering = sweep.covering_at(p);
-            if !covering.is_empty() {
-                amplicons_on_positions.insert(p, covering);
+                    lines.push(row_buf);
+                }
+                Ok(AmpliconSegmentOutput::Lines(lines))
+            } else {
+                let records = results
+                    .iter()
+                    .map(|av| format_amp_cand(av, current_region, &config_clone))
+                    .collect();
+                Ok(AmpliconSegmentOutput::Vcf {
+                    chr: current_region.chr.clone(),
+                    records,
+                })
             }
-        }
-
-        let results = crate::postprocess::amplicon::amplicon_post_process(
-            config,
-            current_region,
-            &vars_per_amplicon,
-            &amplicons_on_positions,
-            &splice,
-        )?;
-
-        if config.emit_intermediate {
-            let mut row_buf = String::new();
-            for av in results {
-                if config.fisher {
-                    crate::output::table::amplicon_40_into(
-                        &mut row_buf,
-                        &av,
-                        current_region,
-                        &config.sample,
-                        config.debug,
-                    )
-                } else {
-                    crate::output::table::amplicon_38_into(
-                        &mut row_buf,
-                        &av,
-                        current_region,
-                        &config.sample,
-                        config.debug,
-                    )
-                };
-                write_output_line(writer, &row_buf)?;
+        },
+        |output| {
+            match output {
+                AmpliconSegmentOutput::Lines(lines) => {
+                    for line in lines {
+                        write_output_line(writer, &line)?;
+                    }
+                }
+                AmpliconSegmentOutput::Vcf { chr, records } => {
+                    for r in records {
+                        vcf_acc.insert(&chr, r)?;
+                    }
+                }
+                AmpliconSegmentOutput::Pileup {
+                    segment,
+                    vars_per_amplicon,
+                    splice,
+                } => {
+                    let Some(current_region) = segment.last() else {
+                        return Ok(());
+                    };
+                    // Position → covering-amplicon pairs (AmpliconMode.java:57-60).
+                    //
+                    // -p emits a (null/ref) row at EVERY insert position, even with zero
+                    // coverage in all amplicons, so visiting every insert position is
+                    // load-bearing here — but the per-base map is streamed, never
+                    // materialized (audit-amplicon-expand): the lazy union iterator yields
+                    // exactly the positions (and segment-ordered covering lists) the old
+                    // per-base BTreeMap held, in the same ascending order.
+                    if config.emit_intermediate {
+                        let mut row_buf = String::new();
+                        crate::postprocess::amplicon::amplicon_post_process_streaming(
+                            config,
+                            current_region,
+                            &vars_per_amplicon,
+                            crate::postprocess::amplicon::amplicon_position_stream(&segment),
+                            &splice,
+                            &mut |av| {
+                                if config.fisher {
+                                    crate::output::table::amplicon_40_into(
+                                        &mut row_buf,
+                                        &av,
+                                        current_region,
+                                        &config.sample,
+                                        config.debug,
+                                    );
+                                } else {
+                                    crate::output::table::amplicon_38_into(
+                                        &mut row_buf,
+                                        &av,
+                                        current_region,
+                                        &config.sample,
+                                        config.debug,
+                                    );
+                                }
+                                write_output_line(writer, &row_buf)
+                            },
+                        )?;
+                    } else {
+                        crate::postprocess::amplicon::amplicon_post_process_streaming(
+                            config,
+                            current_region,
+                            &vars_per_amplicon,
+                            crate::postprocess::amplicon::amplicon_position_stream(&segment),
+                            &splice,
+                            &mut |av| {
+                                vcf_acc.insert(
+                                    &current_region.chr,
+                                    format_amp_cand(&av, current_region, config),
+                                )
+                            },
+                        )?;
+                    }
+                }
             }
-        } else {
-            for av in results {
-                vcf_acc.insert(&current_region.chr, format_amp_cand(&av, current_region))?;
-            }
-        }
-    }
+            Ok(())
+        },
+    )?;
 
     vcf_acc.emit_all(|_, cand| {
         if cand.should_emit {

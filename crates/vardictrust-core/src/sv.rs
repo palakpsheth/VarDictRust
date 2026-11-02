@@ -146,15 +146,21 @@ pub fn filter_sv(sv_list: &mut [Sclip], max_read_length: i32) {
             }
         }
 
-        let mut soft_sorted: Vec<(i32, i32)> = sv.soft.iter().map(|(&k, &v)| (k, v)).collect();
-        soft_sorted.sort_by_key(|&(_, count)| std::cmp::Reverse(count));
-
-        sv.softp = if soft_sorted.is_empty() {
-            0
-        } else {
-            soft_sorted[0].0
-        };
+        sv.softp = best_soft_pos(&sv.soft).unwrap_or(0);
     }
+}
+
+#[inline]
+fn best_soft_pos(soft: &indexmap::IndexMap<i32, i32>) -> Option<i32> {
+    let mut best_pos = None;
+    let mut best_count = i32::MIN;
+    for (&k, &v) in soft {
+        if v > best_count {
+            best_count = v;
+            best_pos = Some(k);
+        }
+    }
+    best_pos
 }
 
 /// Filter all possible structural variants structures.
@@ -225,20 +231,48 @@ pub fn is_best_sv_used(var_data: &crate::variations::VariationData, softp: i32) 
     // Deterministic forward-before-reverse traversal in Java HashMap<String, List<Sclip>>
     // key order (bucket order by String.hashCode, preserving first-insertion order within
     // a bucket), with svffus fully scanned before svrfus (VariationRealigner.java:143-164).
-    for key in crate::javamap::java_hashmap_key_order(var_data.sv_structures.svffus.keys()) {
-        if let Some(sv_list) = var_data.sv_structures.svffus.get(key) {
-            for sv in sv_list {
-                check_sv(sv);
+    let scan_fus = |fus_map: &indexmap::IndexMap<String, Vec<Sclip>>,
+                    best_cnt: &mut i32,
+                    best_used: &mut bool| {
+        if fus_map.len() <= 1 {
+            for sv_list in fus_map.values() {
+                for sv in sv_list {
+                    if sv.softp == softp && sv.variation.cnt > *best_cnt {
+                        *best_cnt = sv.variation.cnt;
+                        *best_used = sv.used;
+                    }
+                }
+            }
+            return;
+        }
+        if !fus_map.values().any(|sv_list| {
+            sv_list
+                .iter()
+                .any(|sv| sv.softp == softp && sv.variation.cnt > *best_cnt)
+        }) {
+            return;
+        }
+        for key in crate::javamap::java_hashmap_key_order(fus_map.keys()) {
+            if let Some(sv_list) = fus_map.get(key) {
+                for sv in sv_list {
+                    if sv.softp == softp && sv.variation.cnt > *best_cnt {
+                        *best_cnt = sv.variation.cnt;
+                        *best_used = sv.used;
+                    }
+                }
             }
         }
-    }
-    for key in crate::javamap::java_hashmap_key_order(var_data.sv_structures.svrfus.keys()) {
-        if let Some(sv_list) = var_data.sv_structures.svrfus.get(key) {
-            for sv in sv_list {
-                check_sv(sv);
-            }
-        }
-    }
+    };
+    scan_fus(
+        &var_data.sv_structures.svffus,
+        &mut best_cnt,
+        &mut best_used,
+    );
+    scan_fus(
+        &var_data.sv_structures.svrfus,
+        &mut best_cnt,
+        &mut best_used,
+    );
 
     best_cnt >= 0 && best_used
 }
@@ -768,9 +802,8 @@ pub fn check_pairs(
     pairs_data
 }
 
-struct SortPositionSclip {
+struct SortPositionCount {
     position: i32,
-    sclip: Sclip,
     count: i32,
 }
 
@@ -835,7 +868,7 @@ pub fn find_inv_sub(
             continue;
         }
 
-        let mut soft_sorted: Vec<(i32, i32)> = {
+        let mut softp = {
             let inv = match svref_idx {
                 0 => &var_data.sv_structures.svfinv5[idx],
                 1 => &var_data.sv_structures.svrinv5[idx],
@@ -847,13 +880,7 @@ pub fn find_inv_sub(
                     )));
                 }
             };
-            inv.soft.iter().map(|(&k, &v)| (k, v)).collect()
-        };
-        soft_sorted.sort_by_key(|&(_, count)| std::cmp::Reverse(count));
-        let mut softp = if soft_sorted.is_empty() {
-            0
-        } else {
-            soft_sorted[0].0
+            best_soft_pos(&inv.soft).unwrap_or(0)
         };
 
         // W3.3b: removed the `softp != 0 && is_best_sv_used(softp)` skip.
@@ -888,45 +915,33 @@ pub fn find_inv_sub(
         }
 
         let mut bp = 0;
-        let mut scv_clone = None;
+        let mut scv_variation_opt = None;
         let mut scv_used_pos: i32 = softp;
         let mut seq = Vec::new();
         let mut extra: Vec<u8> = Vec::new();
 
         if softp != 0 {
-            if dir == 1 {
-                if let Some(scv) = var_data.soft_clips_3_end.get(&softp) {
-                    if !scv.used {
-                        scv_clone = Some(scv.clone());
-                    }
-                }
+            let sclip_map = if dir == 1 {
+                &mut var_data.soft_clips_3_end
             } else {
-                if let Some(scv) = var_data.soft_clips_5_end.get(&softp) {
-                    if !scv.used {
-                        scv_clone = Some(scv.clone());
-                    }
-                }
-            }
-
-            let mut scv = match scv_clone.as_ref() {
-                Some(s) => s.clone(),
-                None => continue,
+                &mut var_data.soft_clips_5_end
             };
-
+            let Some(scv_mut) = sclip_map.get_mut(&softp) else {
+                continue;
+            };
+            if scv_mut.used {
+                continue;
+            }
             seq = crate::variations::util::find_conseq(
-                &mut scv,
+                scv_mut,
                 0,
                 &adaptor_forward,
                 &adaptor_reverse,
             );
-            if dir == 1 {
-                sync_sclip_after_conseq(&mut var_data.soft_clips_3_end, softp, &scv);
-            } else {
-                sync_sclip_after_conseq(&mut var_data.soft_clips_5_end, softp, &scv);
-            }
             if seq.is_empty() {
                 continue;
             }
+            let scv_var = scv_mut.variation.clone();
 
             let match_res = find_match_rev(&seq, reference, softp, dir, 17, 3, chr, verbose);
             bp = match_res.base_position;
@@ -940,45 +955,33 @@ pub fn find_inv_sub(
             if bp == 0 {
                 continue;
             }
+            scv_variation_opt = Some(scv_var);
         } else {
             // Look within 2*maxReadLength to find soft clips not associated with discordant pairs
             let sp = if dir == 1 { end } else { start };
             for i in 1..=(2 * max_read_length) {
                 let cp = sp + i * dir;
-                let mut scv_check = None;
-                if dir == 1 {
-                    if let Some(scv) = var_data.soft_clips_3_end.get(&cp) {
-                        if !scv.used {
-                            scv_check = Some(scv.clone());
-                        }
-                    }
+                let sclip_map = if dir == 1 {
+                    &mut var_data.soft_clips_3_end
                 } else {
-                    if let Some(scv) = var_data.soft_clips_5_end.get(&cp) {
-                        if !scv.used {
-                            scv_check = Some(scv.clone());
-                        }
-                    }
-                }
-
-                let mut scv = match scv_check {
-                    Some(s) => s,
-                    None => continue,
+                    &mut var_data.soft_clips_5_end
                 };
-
+                let Some(scv_mut) = sclip_map.get_mut(&cp) else {
+                    continue;
+                };
+                if scv_mut.used {
+                    continue;
+                }
                 let seq_check = crate::variations::util::find_conseq(
-                    &mut scv,
+                    scv_mut,
                     0,
                     &adaptor_forward,
                     &adaptor_reverse,
                 );
-                if dir == 1 {
-                    sync_sclip_after_conseq(&mut var_data.soft_clips_3_end, cp, &scv);
-                } else {
-                    sync_sclip_after_conseq(&mut var_data.soft_clips_5_end, cp, &scv);
-                }
                 if seq_check.is_empty() {
                     continue;
                 }
+                let scv_var = scv_mut.variation.clone();
 
                 let match_res = find_match_rev(&seq_check, reference, cp, dir, 17, 3, chr, verbose);
                 bp = match_res.base_position;
@@ -993,7 +996,7 @@ pub fn find_inv_sub(
                     continue;
                 }
                 softp = cp;
-                scv_clone = Some(scv);
+                scv_variation_opt = Some(scv_var);
                 scv_used_pos = cp;
                 seq = seq_check;
                 let bp_diff = if dir == 1 {
@@ -1011,8 +1014,8 @@ pub fn find_inv_sub(
             }
         }
 
-        let mut scv = match scv_clone {
-            Some(s) => s,
+        let scv_variation = match scv_variation_opt {
+            Some(v) => v,
             None => continue,
         };
 
@@ -1122,7 +1125,7 @@ pub fn find_inv_sub(
                 );
                 variation.pstd = true;
                 variation.qstd = true;
-                crate::variations::util::adj_cnt(variation, &scv.variation, None);
+                crate::variations::util::adj_cnt(variation, &scv_variation, None);
             }
 
             {
@@ -1131,7 +1134,7 @@ pub fn find_inv_sub(
                     softp,
                 );
                 sv.r#type = "INV".to_string();
-                sv.splits += scv.variation.cnt;
+                sv.splits += scv_variation.cnt;
                 sv.pairs += cnt;
                 sv.clusters += 1;
             }
@@ -1141,15 +1144,15 @@ pub fn find_inv_sub(
                     let ref_base_str = (ref_base as char).to_string();
                     if let Some(entry) = var_data.non_insertion_variants.get_mut(&softp) {
                         if let Some(ref_var) = entry.map.get_mut(&ref_base_str) {
-                            ref_var.cnt -= scv.variation.cnt;
-                            ref_var.hicnt -= scv.variation.hicnt;
-                            ref_var.locnt -= scv.variation.locnt;
-                            ref_var.pmean -= scv.variation.pmean;
-                            ref_var.qmean -= scv.variation.qmean;
-                            ref_var.mqmean -= scv.variation.mqmean;
-                            ref_var.nm -= scv.variation.nm;
-                            ref_var.sub_dir(true, scv.variation.get_dir(true));
-                            ref_var.sub_dir(false, scv.variation.get_dir(false));
+                            ref_var.cnt -= scv_variation.cnt;
+                            ref_var.hicnt -= scv_variation.hicnt;
+                            ref_var.locnt -= scv_variation.locnt;
+                            ref_var.pmean -= scv_variation.pmean;
+                            ref_var.qmean -= scv_variation.qmean;
+                            ref_var.mqmean -= scv_variation.mqmean;
+                            ref_var.nm -= scv_variation.nm;
+                            ref_var.sub_dir(true, scv_variation.get_dir(true));
+                            ref_var.sub_dir(false, scv_variation.get_dir(false));
                             crate::variations::util::correct_cnt(ref_var);
                         }
                     }
@@ -1325,13 +1328,7 @@ pub fn find_del(
             if del.used || del.variation.cnt < minr {
                 continue;
             }
-            let mut soft_sorted: Vec<(i32, i32)> = del.soft.iter().map(|(&k, &v)| (k, v)).collect();
-            soft_sorted.sort_by_key(|&(_, count)| std::cmp::Reverse(count));
-            let softp = if soft_sorted.is_empty() {
-                0
-            } else {
-                soft_sorted[0].0
-            };
+            let softp = best_soft_pos(&del.soft).unwrap_or(0);
             (
                 del.used,
                 del.variation.cnt,
@@ -1636,13 +1633,7 @@ pub fn find_del(
             if del.used || del.variation.cnt < minr {
                 continue;
             }
-            let mut soft_sorted: Vec<(i32, i32)> = del.soft.iter().map(|(&k, &v)| (k, v)).collect();
-            soft_sorted.sort_by_key(|&(_, count)| std::cmp::Reverse(count));
-            let softp = if soft_sorted.is_empty() {
-                0
-            } else {
-                soft_sorted[0].0
-            };
+            let softp = best_soft_pos(&del.soft).unwrap_or(0);
             (
                 del.used,
                 del.variation.cnt,
@@ -1938,16 +1929,15 @@ pub fn find_sv(
 
     // Ports StructuralVariantsProcessor.java:973 fillAndSortTmpSV:
     // if (position < CURSEG.start || position > CURSEG.end) continue;
-    let mut tmp5: Vec<SortPositionSclip> = var_data
+    let mut tmp5: Vec<SortPositionCount> = var_data
         .soft_clips_5_end
         .iter()
         .filter_map(|(&pos, scv)| {
             if scv.used || scv.variation.cnt < minr || pos < curseg_start || pos > curseg_end {
                 None
             } else {
-                Some(SortPositionSclip {
+                Some(SortPositionCount {
                     position: pos,
-                    sclip: scv.clone(),
                     count: scv.variation.cnt,
                 })
             }
@@ -1955,16 +1945,15 @@ pub fn find_sv(
         .collect();
     tmp5.sort_by_key(|item| std::cmp::Reverse(item.count));
 
-    let mut tmp3: Vec<SortPositionSclip> = var_data
+    let mut tmp3: Vec<SortPositionCount> = var_data
         .soft_clips_3_end
         .iter()
         .filter_map(|(&pos, scv)| {
             if scv.used || scv.variation.cnt < minr || pos < curseg_start || pos > curseg_end {
                 None
             } else {
-                Some(SortPositionSclip {
+                Some(SortPositionCount {
                     position: pos,
-                    sclip: scv.clone(),
                     count: scv.variation.cnt,
                 })
             }
@@ -1974,7 +1963,6 @@ pub fn find_sv(
 
     for tuple5 in tmp5 {
         let p5 = tuple5.position;
-        let mut sc5v = tuple5.sclip;
         let cnt5 = tuple5.count;
         if cnt5 < minr {
             break;
@@ -1985,6 +1973,8 @@ pub fn find_sv(
             if sc_mut.used {
                 continue;
             }
+        } else {
+            continue;
         }
 
         // SOFTP2SV check: skip if the SV at this position was already used
@@ -1992,9 +1982,14 @@ pub fn find_sv(
             continue;
         }
 
-        let seq =
-            crate::variations::util::find_conseq(&mut sc5v, 0, &adaptor_forward, &adaptor_reverse);
-        sync_sclip_after_conseq(&mut var_data.soft_clips_5_end, p5, &sc5v);
+        let (seq, sc5v_variation) = {
+            let Some(sc5v) = var_data.soft_clips_5_end.get_mut(&p5) else {
+                continue;
+            };
+            let seq =
+                crate::variations::util::find_conseq(sc5v, 0, &adaptor_forward, &adaptor_reverse);
+            (seq, sc5v.variation.clone())
+        };
         if seq.is_empty() || seq.len() < 12 {
             continue;
         }
@@ -2038,10 +2033,10 @@ pub fn find_sv(
                 sv.clusters += 1;
 
                 let bp_cov = var_data.ref_coverage.get(&bp_adj).copied().unwrap_or(0);
-                if bp_cov < pairs + sc5v.variation.cnt {
+                if bp_cov < pairs + sc5v_variation.cnt {
                     var_data
                         .ref_coverage
-                        .insert(bp_adj, pairs + sc5v.variation.cnt);
+                        .insert(bp_adj, pairs + sc5v_variation.cnt);
                 }
                 // Ports StructuralVariantsProcessor.java:732,748: Java mutates `p5--`
                 // at line 732 before `refCoverage.get(p5 + 1)` at line 748, so `p5 + 1`
@@ -2061,7 +2056,7 @@ pub fn find_sv(
                     bp_adj,
                     &format!("-{}", dellen),
                 );
-                crate::variations::util::adj_cnt(vref_mut, &sc5v.variation, None);
+                crate::variations::util::adj_cnt(vref_mut, &sc5v_variation, None);
 
                 let mut tmp_var = Variation::new();
                 tmp_var.cnt = pairs;
@@ -2134,7 +2129,7 @@ pub fn find_sv(
 
             let vref_mut =
                 crate::variations::get_variation(&mut var_data.non_insertion_variants, p5_adj, &vn);
-            crate::variations::util::adj_cnt(vref_mut, &sc5v.variation, None);
+            crate::variations::util::adj_cnt(vref_mut, &sc5v_variation, None);
 
             let p5_cov = var_data.ref_coverage.get(&p5_adj).copied().unwrap_or(0);
             var_data.ref_coverage.insert(p5_adj, p5_cov + cnt5);
@@ -2148,7 +2143,6 @@ pub fn find_sv(
 
     for tuple3 in tmp3 {
         let p3 = tuple3.position;
-        let mut sc3v = tuple3.sclip;
         let cnt3 = tuple3.count;
         if cnt3 < minr {
             break;
@@ -2158,6 +2152,8 @@ pub fn find_sv(
             if sc_mut.used {
                 continue;
             }
+        } else {
+            continue;
         }
 
         // SOFTP2SV check: skip if the SV at this position was already used
@@ -2165,9 +2161,14 @@ pub fn find_sv(
             continue;
         }
 
-        let seq =
-            crate::variations::util::find_conseq(&mut sc3v, 0, &adaptor_forward, &adaptor_reverse);
-        sync_sclip_after_conseq(&mut var_data.soft_clips_3_end, p3, &sc3v);
+        let (seq, sc3v_variation) = {
+            let Some(sc3v) = var_data.soft_clips_3_end.get_mut(&p3) else {
+                continue;
+            };
+            let seq =
+                crate::variations::util::find_conseq(sc3v, 0, &adaptor_forward, &adaptor_reverse);
+            (seq, sc3v.variation.clone())
+        };
 
         if seq.is_empty() || seq.len() < 12 {
             continue;
@@ -2225,7 +2226,7 @@ pub fn find_sv(
                 if !var_data.ref_coverage.contains_key(&p3_adj) {
                     var_data
                         .ref_coverage
-                        .insert(p3_adj, pairs + sc3v.variation.cnt);
+                        .insert(p3_adj, pairs + sc3v_variation.cnt);
                 }
                 if var_data.ref_coverage.contains_key(&bp_adj)
                     && var_data.ref_coverage.get(&bp_adj).copied().unwrap_or(0)
@@ -2242,7 +2243,7 @@ pub fn find_sv(
                     p3_adj,
                     &format!("-{}", dellen),
                 );
-                crate::variations::util::adj_cnt(vref_mut, &sc3v.variation, None);
+                crate::variations::util::adj_cnt(vref_mut, &sc3v_variation, None);
 
                 let mut tmp_var = Variation::new();
                 tmp_var.cnt = pairs;
@@ -2315,7 +2316,7 @@ pub fn find_sv(
 
             let vref_mut =
                 crate::variations::get_variation(&mut var_data.non_insertion_variants, p3_adj, &vn);
-            crate::variations::util::adj_cnt(vref_mut, &sc3v.variation, None);
+            crate::variations::util::adj_cnt(vref_mut, &sc3v_variation, None);
 
             let p3_cov = var_data.ref_coverage.get(&p3_adj).copied().unwrap_or(0);
             var_data.ref_coverage.insert(p3_adj, p3_cov + cnt3);
@@ -3000,13 +3001,8 @@ pub fn find_dup_disc(
         };
 
         if has_soft {
-            let mut soft_sorted: Vec<(i32, i32)> = {
-                let dup = &var_data.sv_structures.svfdup[idx];
-                dup.soft.iter().map(|(&k, &v)| (k, v)).collect()
-            };
-            soft_sorted.sort_by_key(|&(_, count)| std::cmp::Reverse(count));
-            if !soft_sorted.is_empty() {
-                pe = soft_sorted[0].0;
+            if let Some(best_pe) = best_soft_pos(&var_data.sv_structures.svfdup[idx].soft) {
+                pe = best_pe;
             }
 
             let scv_3_clone = match var_data.soft_clips_3_end.get(&pe) {
@@ -3209,13 +3205,8 @@ pub fn find_dup_disc(
         };
 
         if has_soft {
-            let mut soft_sorted: Vec<(i32, i32)> = {
-                let dup = &var_data.sv_structures.svrdup[idx];
-                dup.soft.iter().map(|(&k, &v)| (k, v)).collect()
-            };
-            soft_sorted.sort_by_key(|&(_, count)| std::cmp::Reverse(count));
-            if !soft_sorted.is_empty() {
-                bp = soft_sorted[0].0;
+            if let Some(best_bp) = best_soft_pos(&var_data.sv_structures.svrdup[idx].soft) {
+                bp = best_bp;
             }
 
             let scv_5_clone = match var_data.soft_clips_5_end.get(&bp) {

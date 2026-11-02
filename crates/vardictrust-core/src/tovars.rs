@@ -73,7 +73,8 @@ fn fill_common_fields(
     tvref.pos_coverage = cnt.cnt;
     tvref.fwd = fwd;
     tvref.rev = rev;
-    tvref.bias = format!("{}", bias);
+    tvref.bias.clear();
+    let _ = std::fmt::Write::write_fmt(&mut tvref.bias, format_args!("{}", bias));
     tvref.frequency = round_half_even(cnt.cnt as f64 / ttcov as f64, 4);
     tvref.mean_position = round_half_even(cnt.pmean / cnt.cnt as f64, 1);
     tvref.pstd = cnt.pstd;
@@ -130,6 +131,9 @@ impl<'a> ToVarsBuilder<'a> {
 
         let iter_positions: Vec<i32> = var_data.non_insertion_variants.keys().copied().collect();
         // Do not sort positions, use the JavaHashMap iteration order!
+        if self.config.pileup || self.config.amplicon.is_some() || self.config.bam.contains('|') {
+            aligned_variants.reserve_nodes(iter_positions.len());
+        }
 
         // Task 6: per-position row buffers, allocated once per build and
         // cleared per position below (`clear()` retains capacity). Bound 4
@@ -140,6 +144,8 @@ impl<'a> ToVarsBuilder<'a> {
         let mut var = Vec::with_capacity(4);
         let mut keys = Vec::with_capacity(4);
         let mut debug_lines = Vec::new();
+        let mut scratch1 = String::new();
+        let mut scratch2 = String::new();
 
         // Process non-insertion variants
         for position in iter_positions {
@@ -190,10 +196,15 @@ impl<'a> ToVarsBuilder<'a> {
                 continue;
             }
 
-            let hicov = self.calc_hicov(var_data.insertion_variants.get(&position), var_map);
+            let ins_at_pos = var_data.insertion_variants.get(&position);
+            let hicov = self.calc_hicov(ins_at_pos, var_map);
 
+            let map_len = var_map.map.len() + usize::from(var_map.sv.is_some());
+            let ins_len = ins_at_pos.map_or(0, |m| m.map.len());
             var.clear();
+            var.reserve(map_len + ins_len);
             keys.clear();
+            keys.reserve(map_len);
             keys.extend(var_map.map.keys().cloned());
             if var_map.sv.is_some() {
                 keys.push("SV".to_string());
@@ -251,6 +262,8 @@ impl<'a> ToVarsBuilder<'a> {
                 &overlay,
                 duprate,
                 &debug_lines,
+                &mut scratch1,
+                &mut scratch2,
             );
         }
 
@@ -312,37 +325,33 @@ impl<'a> ToVarsBuilder<'a> {
     }
 
     /// ports VariationUtils.java:163-175
-    fn join_ref(&self, start: i32, end: i32) -> String {
-        String::from_utf8_lossy(&crate::util::ref_bases_with(
-            self.reference,
-            &self.region.chr,
-            start,
-            end,
-            None,
-        ))
-        .into_owned()
+    fn join_ref_into(&self, out: &mut String, start: i32, end: i32) {
+        crate::util::ref_bases_into(out, self.reference, &self.region.chr, start, end);
     }
 
-    fn proceed_vref_is_deletion(&self, position: i32, dellen: i32) -> MsiResult {
-        let leftseq = self.join_ref(std::cmp::max(position - 70, 1), position - 1);
+    fn proceed_vref_is_deletion(
+        &self,
+        position: i32,
+        dellen: i32,
+        leftseq: &mut String,
+        tseq: &mut String,
+    ) -> MsiResult {
+        self.join_ref_into(leftseq, std::cmp::max(position - 70, 1), position - 1);
         let chr_len = self
             .chromosomes_lengths
             .get(&self.region.chr)
             .copied()
             .unwrap_or(0) as i32;
-        let tseq = self.join_ref(position, std::cmp::min(position + dellen + 70, chr_len));
+        self.join_ref_into(
+            tseq,
+            position,
+            std::cmp::min(position + dellen + 70, chr_len),
+        );
 
         let tseq_bytes = tseq.as_bytes();
-        let tseq1 = if tseq_bytes.len() >= dellen as usize {
-            &tseq_bytes[..dellen as usize]
-        } else {
-            tseq_bytes
-        };
-        let tseq2 = if tseq_bytes.len() >= dellen as usize {
-            &tseq_bytes[dellen as usize..]
-        } else {
-            &[]
-        };
+        let dellen_usize = dellen.max(0) as usize;
+        let tseq1 = tseq_bytes.get(..dellen_usize).unwrap_or(tseq_bytes);
+        let tseq2 = tseq_bytes.get(dellen_usize..).unwrap_or(&[]);
 
         let msi_res = find_msi(tseq1, tseq2, leftseq.as_bytes());
         let mut msi = msi_res.msi;
@@ -363,15 +372,21 @@ impl<'a> ToVarsBuilder<'a> {
         MsiResult { msi, shift3, msint }
     }
 
-    fn proceed_vref_is_insertion(&self, position: i32, vn: &str) -> MsiResult {
+    fn proceed_vref_is_insertion(
+        &self,
+        position: i32,
+        vn: &str,
+        leftseq: &mut String,
+        tseq2: &mut String,
+    ) -> MsiResult {
         let tseq1 = vn.strip_prefix('+').unwrap_or(vn);
-        let leftseq = self.join_ref(std::cmp::max(position - 50, 1), position);
+        self.join_ref_into(leftseq, std::cmp::max(position - 50, 1), position);
         let chr_len = self
             .chromosomes_lengths
             .get(&self.region.chr)
             .copied()
             .unwrap_or(0) as i32;
-        let tseq2 = self.join_ref(position + 1, std::cmp::min(position + 70, chr_len));
+        self.join_ref_into(tseq2, position + 1, std::cmp::min(position + 70, chr_len));
 
         let msi_res = find_msi(tseq1.as_bytes(), tseq2.as_bytes(), leftseq.as_bytes());
         let mut msi = msi_res.msi;
@@ -474,7 +489,8 @@ impl<'a> ToVarsBuilder<'a> {
     ) -> i32 {
         if let Some(insertion_variations) = insertion_variants.get(&position) {
             let mut insertion_description_strings: Vec<String> =
-                insertion_variations.map.keys().cloned().collect();
+                Vec::with_capacity(insertion_variations.map.len());
+            insertion_description_strings.extend(insertion_variations.map.keys().cloned());
             insertion_description_strings.sort();
 
             for description_string in &insertion_description_strings {
@@ -639,6 +655,7 @@ impl<'a> ToVarsBuilder<'a> {
         });
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn collect_reference_variants(
         &self,
         position: i32,
@@ -649,40 +666,23 @@ impl<'a> ToVarsBuilder<'a> {
         overlay: &rustc_hash::FxHashMap<i32, crate::variations::VariationMap>,
         duprate: f64,
         debug_lines: &[String],
+        scratch1: &mut String,
+        scratch2: &mut String,
     ) {
-        let mut reference_forward_coverage = 0;
-        let mut reference_reverse_coverage = 0;
-
-        let genotype1 = if let Some(ref ref_var) = variations_at_pos.ref_variant {
-            if ref_var.frequency >= self.config.freq {
-                ref_var.description.clone()
-            } else if let Some(first_var) = variations_at_pos.variants.first() {
-                first_var.description.clone()
-            } else {
-                ref_var.description.clone()
-            }
-        } else if let Some(first_var) = variations_at_pos.variants.first() {
-            first_var.description.clone()
-        } else {
+        if variations_at_pos.ref_variant.is_none() && variations_at_pos.variants.is_empty() {
             // Ports ToVarsBuilder.java:609 + :163: when both referenceVariant == null
             // and variants.isEmpty(), Java throws NullPointerException at line 609
             // (caught at line 163), aborting collectReferenceVariants after
             // getOrPutVars(alignedVariants, position) inserted the empty Vars.
             return;
-        };
+        }
+
+        let mut reference_forward_coverage = 0;
+        let mut reference_reverse_coverage = 0;
 
         if let Some(ref ref_var) = variations_at_pos.ref_variant {
             reference_forward_coverage = ref_var.fwd;
             reference_reverse_coverage = ref_var.rev;
-        }
-
-        let mut genotype1_current = genotype1;
-        if genotype1_current.starts_with('+') {
-            if let Some(dup_val) = get_dup_num(&genotype1_current) {
-                genotype1_current = format!("+{}", 50 + dup_val as u32);
-            } else {
-                genotype1_current = format!("+{}", genotype1_current.len() as i32 - 1);
-            }
         }
 
         let mut reference_forward_coverage_adj = reference_forward_coverage;
@@ -711,12 +711,43 @@ impl<'a> ToVarsBuilder<'a> {
         let mut positions_for_changed_ref_variant = Vec::new();
 
         if !variations_at_pos.variants.is_empty() {
+            let genotype1 = if let Some(ref ref_var) = variations_at_pos.ref_variant {
+                if ref_var.frequency >= self.config.freq {
+                    ref_var.description.as_str()
+                } else if let Some(first_var) = variations_at_pos.variants.first() {
+                    first_var.description.as_str()
+                } else {
+                    ref_var.description.as_str()
+                }
+            } else if let Some(first_var) = variations_at_pos.variants.first() {
+                first_var.description.as_str()
+            } else {
+                return;
+            };
+
+            let genotype1_current = if genotype1.starts_with('+') {
+                if let Some(dup_val) = get_dup_num(genotype1) {
+                    format!("+{}", 50 + dup_val as u32)
+                } else {
+                    format!("+{}", genotype1.len() as i32 - 1)
+                }
+            } else {
+                genotype1.to_string()
+            };
+
+            let chr_len = self
+                .chromosomes_lengths
+                .get(&self.region.chr)
+                .copied()
+                .unwrap_or(0) as i32;
+
             for vref in &mut variations_at_pos.variants {
                 let mut genotype1_current_inner = genotype1_current.clone();
-                let mut genotype2 = vref.description.clone();
-                if genotype2.starts_with('+') {
-                    genotype2 = format!("+{}", genotype2.len() as i32 - 1);
-                }
+                let mut genotype2 = if vref.description.starts_with('+') {
+                    format!("+{}", vref.description.len() as i32 - 1)
+                } else {
+                    vref.description.clone()
+                };
 
                 let description_string = &vref.description;
                 let deletion_length = get_begin_minus_number(description_string).unwrap_or(0);
@@ -740,8 +771,12 @@ impl<'a> ToVarsBuilder<'a> {
                         && !description_string.contains('#')
                         && !description_string.contains("<dup")
                     {
-                        let ref_variant_msi =
-                            self.proceed_vref_is_insertion(position, description_string);
+                        let ref_variant_msi = self.proceed_vref_is_insertion(
+                            position,
+                            description_string,
+                            scratch1,
+                            scratch2,
+                        );
                         msi = ref_variant_msi.msi;
                         shift3 = ref_variant_msi.shift3;
                         msint = ref_variant_msi.msint;
@@ -754,8 +789,10 @@ impl<'a> ToVarsBuilder<'a> {
                         .reference
                         .get_base(&self.region.chr, position as u32)
                         .unwrap_or(b'N');
-                    refallele = (ref_base_byte as char).to_string();
-                    varallele = format!("{}{}", refallele, stripped_desc);
+                    refallele.push(ref_base_byte as char);
+                    varallele = String::with_capacity(1 + stripped_desc.len());
+                    varallele.push(ref_base_byte as char);
+                    varallele.push_str(stripped_desc);
 
                     if varallele.len() > self.config.sv_min_len as usize {
                         end_position += varallele.len() as i32;
@@ -772,8 +809,12 @@ impl<'a> ToVarsBuilder<'a> {
                         let re = format!("-{}", deletion_length);
                         varallele = description_string.replacen(&re, "", 1);
 
-                        let ref_variant_msi =
-                            self.proceed_vref_is_deletion(position, deletion_length);
+                        let ref_variant_msi = self.proceed_vref_is_deletion(
+                            position,
+                            deletion_length,
+                            scratch1,
+                            scratch2,
+                        );
                         msi = ref_variant_msi.msi;
                         shift3 = ref_variant_msi.shift3;
                         msint = ref_variant_msi.msint;
@@ -801,13 +842,14 @@ impl<'a> ToVarsBuilder<'a> {
                                 .reference
                                 .get_base(&self.region.chr, (position - 1) as u32)
                                 .unwrap_or(b'N');
-                            varallele = (base_prev as char).to_string();
+                            varallele.clear();
+                            varallele.push(base_prev as char);
                         }
                         let base_prev = self
                             .reference
                             .get_base(&self.region.chr, (position - 1) as u32)
                             .unwrap_or(b'N');
-                        refallele = (base_prev as char).to_string();
+                        refallele.push(base_prev as char);
                         start_position -= 1;
                     }
 
@@ -816,20 +858,21 @@ impl<'a> ToVarsBuilder<'a> {
                             .reference
                             .get_base(&self.region.chr, position as u32)
                             .unwrap_or(b'N');
-                        refallele = (base_cur as char).to_string();
+                        refallele.clear();
+                        refallele.push(base_cur as char);
                     } else if deletion_length < self.config.sv_min_len as i32 {
-                        refallele += &self.join_ref(position, position + deletion_length - 1);
+                        self.join_ref_into(scratch1, position, position + deletion_length - 1);
+                        refallele.push_str(scratch1);
                     }
                 } else {
-                    let tseq1 = self.join_ref(std::cmp::max(position - 30, 1), position + 1);
-                    let chr_len = self
-                        .chromosomes_lengths
-                        .get(&self.region.chr)
-                        .copied()
-                        .unwrap_or(0) as i32;
-                    let tseq2 = self.join_ref(position + 2, std::cmp::min(position + 70, chr_len));
+                    self.join_ref_into(scratch1, std::cmp::max(position - 30, 1), position + 1);
+                    self.join_ref_into(
+                        scratch2,
+                        position + 2,
+                        std::cmp::min(position + 70, chr_len),
+                    );
 
-                    let msi_res = find_msi(tseq1.as_bytes(), tseq2.as_bytes(), &[]);
+                    let msi_res = find_msi(scratch1.as_bytes(), scratch2.as_bytes(), &[]);
                     msi = msi_res.msi;
                     shift3 = msi_res.shift3;
                     msint = msi_res.msint;
@@ -838,23 +881,30 @@ impl<'a> ToVarsBuilder<'a> {
                         .reference
                         .get_base(&self.region.chr, position as u32)
                         .unwrap_or(b'N');
-                    refallele = (base_cur as char).to_string();
+                    refallele.push(base_cur as char);
                     varallele = description_string.clone();
                 }
 
                 if let Some(extra) = get_amp_atgc(description_string) {
                     varallele = varallele.replacen('&', "", 1);
-                    let tch = self.join_ref(end_position + 1, end_position + extra.len() as i32);
-                    refallele += &tch;
-                    genotype1_current_inner += &tch;
+                    self.join_ref_into(
+                        scratch1,
+                        end_position + 1,
+                        end_position + extra.len() as i32,
+                    );
+                    refallele.push_str(scratch1);
+                    genotype1_current_inner.push_str(scratch1);
                     end_position += extra.len() as i32;
 
                     if let Some(vextra) = get_amp_atgc(&varallele) {
                         varallele = varallele.replacen('&', "", 1);
-                        let tch =
-                            self.join_ref(end_position + 1, end_position + vextra.len() as i32);
-                        refallele += &tch;
-                        genotype1_current_inner += &tch;
+                        self.join_ref_into(
+                            scratch1,
+                            end_position + 1,
+                            end_position + vextra.len() as i32,
+                        );
+                        refallele.push_str(scratch1);
+                        genotype1_current_inner.push_str(scratch1);
                         end_position += vextra.len() as i32;
                     }
 
@@ -864,12 +914,13 @@ impl<'a> ToVarsBuilder<'a> {
                         start_position += 1;
                     }
 
-                    if varallele == "<DEL>" && refallele.len() >= 1 {
+                    if varallele == "<DEL>" && !refallele.is_empty() {
                         let ref_base = self
                             .reference
                             .get_base(&self.region.chr, start_position as u32)
                             .unwrap_or(b'N');
-                        refallele = (ref_base as char).to_string();
+                        refallele.clear();
+                        refallele.push(ref_base as char);
                         if let Some(&cov_prev) = ref_coverage.get(&(start_position - 1)) {
                             total_pos_coverage_adj = cov_prev;
                         }
@@ -884,13 +935,16 @@ impl<'a> ToVarsBuilder<'a> {
                     get_hash_group_caret_group(description_string)
                 {
                     end_position += matched_sequence.len() as i32;
-                    refallele += &self.join_ref(
+                    self.join_ref_into(
+                        scratch1,
                         end_position - matched_sequence.len() as i32 + 1,
                         end_position,
                     );
+                    refallele.push_str(scratch1);
 
                     if let Some(deletion) = get_begin_digits(tail) {
-                        refallele += &self.join_ref(end_position + 1, end_position + deletion);
+                        self.join_ref_into(scratch1, end_position + 1, end_position + deletion);
+                        refallele.push_str(scratch1);
                         end_position += deletion;
                     }
 
@@ -923,7 +977,7 @@ impl<'a> ToVarsBuilder<'a> {
                         let mut n = 0;
                         while refallele.len() > n + 1
                             && varallele.len() > n + 1
-                            && refallele.as_bytes()[n] == varallele.as_bytes()[n]
+                            && refallele.as_bytes().get(n) == varallele.as_bytes().get(n)
                         {
                             n += 1;
                         }
@@ -968,7 +1022,7 @@ impl<'a> ToVarsBuilder<'a> {
                         if n > 0 {
                             start_position += n;
                             end_position += n;
-                            refallele = self.join_ref(start_position, end_position);
+                            self.join_ref_into(&mut refallele, start_position, end_position);
                             let mut tva = String::new();
                             if refallele.len() < varallele.len() {
                                 tva = varallele.get(1..).unwrap_or("").to_string();
@@ -993,18 +1047,34 @@ impl<'a> ToVarsBuilder<'a> {
                     }
                 }
 
-                vref.left_seq =
-                    self.join_ref(std::cmp::max(start_position - 20, 1), start_position - 1);
-                let chr_len = self
-                    .chromosomes_lengths
-                    .get(&self.region.chr)
-                    .copied()
-                    .unwrap_or(0) as i32;
-                vref.right_seq =
-                    self.join_ref(end_position + 1, std::cmp::min(end_position + 20, chr_len));
+                self.join_ref_into(
+                    &mut vref.left_seq,
+                    std::cmp::max(start_position - 20, 1),
+                    start_position - 1,
+                );
+                self.join_ref_into(
+                    &mut vref.right_seq,
+                    end_position + 1,
+                    std::cmp::min(end_position + 20, chr_len),
+                );
 
-                let mut genotype = format!("{}/{}", genotype1_current_inner, genotype2);
-                genotype = genotype.replace(['&', '#'], "").replace('^', "i");
+                let mut genotype =
+                    String::with_capacity(genotype1_current_inner.len() + 1 + genotype2.len());
+                for ch in genotype1_current_inner.chars() {
+                    match ch {
+                        '&' | '#' => {}
+                        '^' => genotype.push('i'),
+                        _ => genotype.push(ch),
+                    }
+                }
+                genotype.push('/');
+                for ch in genotype2.chars() {
+                    match ch {
+                        '&' | '#' => {}
+                        '^' => genotype.push('i'),
+                        _ => genotype.push(ch),
+                    }
+                }
 
                 vref.extra_freq = round_half_even(vref.extra_freq, 4);
                 vref.frequency = round_half_even(vref.frequency, 4);
@@ -1127,7 +1197,7 @@ impl<'a> ToVarsBuilder<'a> {
         vref.msi = 0.0;
         vref.msint = 0;
         if !vref.bias.contains(';') {
-            vref.bias = format!("{};0", vref.bias);
+            vref.bias.push_str(";0");
         }
         vref.shift3 = 0;
         vref.start_pos = position;
@@ -1138,13 +1208,28 @@ impl<'a> ToVarsBuilder<'a> {
             .reference
             .get_base(&self.region.chr, position as u32)
             .unwrap_or(b'N');
-        let ref_base_str = (ref_base as char).to_string();
+        let valid_base = match ref_base {
+            b'M' | b'R' | b'W' | b'V' | b'H' | b'D' => b'A',
+            b'S' | b'Y' | b'B' => b'C',
+            b'K' => b'G',
+            b'm' | b'r' | b'w' | b'v' | b'h' | b'd' => b'a',
+            b's' | b'y' | b'b' => b'c',
+            b'k' => b'g',
+            _ => ref_base,
+        } as char;
 
-        vref.ref_allele = validate_ref_allele(&ref_base_str);
-        vref.var_allele = validate_ref_allele(&ref_base_str);
-        vref.genotype = Some(format!("{}/{}", ref_base_str, ref_base_str));
-        vref.left_seq = String::new();
-        vref.right_seq = String::new();
+        vref.ref_allele.clear();
+        vref.ref_allele.push(valid_base);
+        vref.var_allele.clear();
+        vref.var_allele.push(valid_base);
+        let base_ch = ref_base as char;
+        let mut gt = String::with_capacity(3);
+        gt.push(base_ch);
+        gt.push('/');
+        gt.push(base_ch);
+        vref.genotype = Some(gt);
+        vref.left_seq.clear();
+        vref.right_seq.clear();
         vref.duprate = duprate;
 
         construct_debug_lines(debug_lines, vref, self.config.debug);
@@ -1182,6 +1267,48 @@ pub fn strand_bias(fwd: i32, rev: i32, min_reads_bias: i32) -> i32 {
 
 /// Validate reference allele sequence according to VCF 4.3 IUPAC ambiguity rules.
 pub fn validate_ref_allele(ref_allele: &str) -> String {
+    if ref_allele.is_ascii() {
+        if !ref_allele.bytes().any(|b| {
+            matches!(
+                b,
+                b'M' | b'R'
+                    | b'W'
+                    | b'V'
+                    | b'H'
+                    | b'D'
+                    | b'S'
+                    | b'Y'
+                    | b'B'
+                    | b'K'
+                    | b'm'
+                    | b'r'
+                    | b'w'
+                    | b'v'
+                    | b'h'
+                    | b'd'
+                    | b's'
+                    | b'y'
+                    | b'b'
+                    | b'k'
+            )
+        }) {
+            return ref_allele.to_string();
+        }
+        let mut out = String::with_capacity(ref_allele.len());
+        for b in ref_allele.bytes() {
+            let mapped = match b {
+                b'M' | b'R' | b'W' | b'V' | b'H' | b'D' => b'A',
+                b'S' | b'Y' | b'B' => b'C',
+                b'K' => b'G',
+                b'm' | b'r' | b'w' | b'v' | b'h' | b'd' => b'a',
+                b's' | b'y' | b'b' => b'c',
+                b'k' => b'g',
+                _ => b,
+            };
+            out.push(mapped as char);
+        }
+        return out;
+    }
     ref_allele
         .chars()
         .map(|c| match c {
@@ -1199,49 +1326,59 @@ pub fn validate_ref_allele(ref_allele: &str) -> String {
 /// Find microsatellite instability (MSI) motif and coordinate shift bounds.
 pub fn find_msi(tseq1: &[u8], tseq2: &[u8], left: &[u8]) -> MsiResult {
     let mut msicnt = 0.0;
-    let mut maxmsi = Vec::new();
+    let mut best_nmsi: usize = 0;
 
     let tseq1_len = tseq1.len();
     let limit = std::cmp::min(tseq1_len, 6);
 
-    for nmsi in 1..=limit {
-        let msint = &tseq1[tseq1_len - nmsi..];
-
-        let count = if !left.is_empty() {
-            let left_len = left.len();
-            if left_len + tseq1_len <= 256 {
-                let mut combined = [0u8; 256];
-                combined[..left_len].copy_from_slice(left);
-                combined[left_len..left_len + tseq1_len].copy_from_slice(tseq1);
-                count_repetitions_at_end(&combined[..left_len + tseq1_len], msint)
-            } else {
-                let mut combined = Vec::with_capacity(left_len + tseq1_len);
-                combined.extend_from_slice(left);
-                combined.extend_from_slice(tseq1);
-                count_repetitions_at_end(&combined, msint)
+    let mut stack_combined = [0u8; 256];
+    let mut heap_combined = Vec::new();
+    let combined_slice: &[u8] = if left.is_empty() || limit == 0 {
+        tseq1
+    } else {
+        let total_len = left.len() + tseq1_len;
+        if let Some(dst) = stack_combined.get_mut(..total_len) {
+            if let Some(left_dst) = dst.get_mut(..left.len()) {
+                left_dst.copy_from_slice(left);
             }
+            if let Some(right_dst) = dst.get_mut(left.len()..total_len) {
+                right_dst.copy_from_slice(tseq1);
+            }
+            dst
         } else {
-            count_repetitions_at_end(tseq1, msint)
+            heap_combined.reserve_exact(total_len);
+            heap_combined.extend_from_slice(left);
+            heap_combined.extend_from_slice(tseq1);
+            heap_combined.as_slice()
+        }
+    };
+
+    for nmsi in 1..=limit {
+        let Some(msint) = tseq1.get(tseq1_len - nmsi..) else {
+            continue;
         };
 
+        let count = count_repetitions_at_end(combined_slice, msint);
         let mut curmsi = count as f64;
         curmsi += count_repetitions_at_start(tseq2, msint) as f64;
 
         if curmsi > msicnt {
-            maxmsi = msint.to_vec();
+            best_nmsi = nmsi;
             msicnt = curmsi;
         }
     }
 
     let mut shift3 = 0;
     if tseq1_len > 0 {
-        while shift3 < tseq2.len() {
-            let tseq_char = if shift3 < tseq1_len {
-                tseq1[shift3]
+        while let Some(&t2_char) = tseq2.get(shift3) {
+            let Some(&tseq_char) = (if shift3 < tseq1_len {
+                tseq1.get(shift3)
             } else {
-                tseq2[shift3 - tseq1_len]
+                tseq2.get(shift3 - tseq1_len)
+            }) else {
+                break;
             };
-            if tseq_char == tseq2[shift3] {
+            if tseq_char == t2_char {
                 shift3 += 1;
             } else {
                 break;
@@ -1249,10 +1386,19 @@ pub fn find_msi(tseq1: &[u8], tseq2: &[u8], left: &[u8]) -> MsiResult {
         }
     }
 
+    let msint = if best_nmsi > 0 {
+        tseq1
+            .get(tseq1_len - best_nmsi..)
+            .map(|s| String::from_utf8_lossy(s).into_owned())
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
+
     MsiResult {
         msi: msicnt,
         shift3: shift3 as i32,
-        msint: String::from_utf8_lossy(&maxmsi).into_owned(),
+        msint,
     }
 }
 
@@ -1264,7 +1410,7 @@ fn count_repetitions_at_end(seq: &[u8], pattern: &[u8]) -> usize {
     let mut current = seq;
     while current.ends_with(pattern) {
         count += 1;
-        current = &current[..current.len() - pattern.len()];
+        current = current.get(..current.len() - pattern.len()).unwrap_or(&[]);
     }
     count
 }
@@ -1277,35 +1423,27 @@ fn count_repetitions_at_start(seq: &[u8], pattern: &[u8]) -> usize {
     let mut current = seq;
     while current.starts_with(pattern) {
         count += 1;
-        current = &current[pattern.len()..];
+        current = current.get(pattern.len()..).unwrap_or(&[]);
     }
     count
 }
 
 fn get_dup_num(s: &str) -> Option<i32> {
     if let Some(idx) = s.find("<dup") {
-        let start = idx + 4;
-        let digits: String = s
-            .get(start..)?
-            .chars()
-            .take_while(|c| c.is_ascii_digit())
-            .collect();
-        if !digits.is_empty() {
-            return digits.parse().ok();
+        let rest = s.get(idx + 4..)?;
+        let len = rest.bytes().take_while(|b| b.is_ascii_digit()).count();
+        if len > 0 {
+            return rest.get(..len)?.parse().ok();
         }
     }
     None
 }
 
 fn get_begin_minus_number(s: &str) -> Option<i32> {
-    if s.starts_with('-') {
-        let digits: String = s
-            .get(1..)?
-            .chars()
-            .take_while(|c| c.is_ascii_digit())
-            .collect();
-        if !digits.is_empty() {
-            return digits.parse().ok();
+    if let Some(rest) = s.strip_prefix('-') {
+        let len = rest.bytes().take_while(|b| b.is_ascii_digit()).count();
+        if len > 0 {
+            return rest.get(..len)?.parse().ok();
         }
     }
     None
@@ -1313,49 +1451,74 @@ fn get_begin_minus_number(s: &str) -> Option<i32> {
 
 fn get_inv_num(s: &str) -> Option<i32> {
     if let Some(idx) = s.find("<inv") {
-        let start = idx + 4;
-        let digits: String = s
-            .get(start..)?
-            .chars()
-            .take_while(|c| c.is_ascii_digit())
-            .collect();
-        if !digits.is_empty() {
-            return digits.parse().ok();
+        let rest = s.get(idx + 4..)?;
+        let len = rest.bytes().take_while(|b| b.is_ascii_digit()).count();
+        if len > 0 {
+            return rest.get(..len)?.parse().ok();
         }
     }
     None
 }
 
 fn matches_begin_minus_number_caret(s: &str) -> bool {
-    if s.starts_with('-') {
-        if let Some(rest) = s.get(1..) {
-            let digits_count = rest.chars().take_while(|c| c.is_ascii_digit()).count();
-            digits_count > 0 && rest.get(digits_count..).is_some_and(|r| r.starts_with('^'))
-        } else {
-            false
-        }
+    if let Some(rest) = s.strip_prefix('-') {
+        let digits_count = rest.bytes().take_while(|b| b.is_ascii_digit()).count();
+        digits_count > 0 && rest.get(digits_count..).is_some_and(|r| r.starts_with('^'))
     } else {
         false
     }
 }
 
 fn matches_some_sv_numbers(s: &str) -> bool {
+    if s.is_ascii() {
+        let bytes = s.as_bytes();
+        if bytes.len() < 6 {
+            return false;
+        }
+        for i in 0..=bytes.len() - 6 {
+            if bytes.get(i) == Some(&b'<') {
+                if let Some(sv_type) = bytes.get(i + 1..i + 4) {
+                    if sv_type.iter().all(|&c| c != b'<' && c != b'>') {
+                        let mut j = i + 4;
+                        let mut has_digits = false;
+                        while let Some(&b) = bytes.get(j) {
+                            if b.is_ascii_digit() {
+                                has_digits = true;
+                                j += 1;
+                            } else {
+                                break;
+                            }
+                        }
+                        if has_digits && bytes.get(j) == Some(&b'>') {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        return false;
+    }
     let chars: Vec<char> = s.chars().collect();
     if chars.len() < 6 {
         return false;
     }
     for i in 0..=chars.len() - 6 {
-        if chars[i] == '<' {
-            let sv_type = &chars[i + 1..i + 4];
-            if sv_type.iter().all(|&c| c != '<' && c != '>') {
-                let mut j = i + 4;
-                let mut has_digits = false;
-                while j < chars.len() && chars[j].is_ascii_digit() {
-                    has_digits = true;
-                    j += 1;
-                }
-                if has_digits && j < chars.len() && chars[j] == '>' {
-                    return true;
+        if chars.get(i) == Some(&'<') {
+            if let Some(sv_type) = chars.get(i + 1..i + 4) {
+                if sv_type.iter().all(|&c| c != '<' && c != '>') {
+                    let mut j = i + 4;
+                    let mut has_digits = false;
+                    while let Some(&c) = chars.get(j) {
+                        if c.is_ascii_digit() {
+                            has_digits = true;
+                            j += 1;
+                        } else {
+                            break;
+                        }
+                    }
+                    if has_digits && chars.get(j) == Some(&'>') {
+                        return true;
+                    }
                 }
             }
         }
@@ -1392,9 +1555,9 @@ fn get_hash_group_caret_group(s: &str) -> Option<(String, &str)> {
 }
 
 fn get_begin_digits(s: &str) -> Option<i32> {
-    let digits: String = s.chars().take_while(|c| c.is_ascii_digit()).collect();
-    if !digits.is_empty() {
-        digits.parse().ok()
+    let len = s.bytes().take_while(|b| b.is_ascii_digit()).count();
+    if len > 0 {
+        s.get(..len)?.parse().ok()
     } else {
         None
     }
@@ -1415,14 +1578,21 @@ fn get_caret_atgnc(s: &str) -> Option<String> {
 }
 
 fn matches_any_sv(s: &str) -> bool {
-    let chars: Vec<char> = s.chars().collect();
-    if chars.len() < 5 {
+    if s.is_ascii() {
+        for w in s.as_bytes().windows(5) {
+            if let [b'<', c1, c2, c3, b'>'] = *w {
+                if c1 != b'<' && c1 != b'>' && c2 != b'<' && c2 != b'>' && c3 != b'<' && c3 != b'>'
+                {
+                    return true;
+                }
+            }
+        }
         return false;
     }
-    for i in 0..=chars.len() - 5 {
-        if chars[i] == '<' && chars[i + 4] == '>' {
-            let inner = &chars[i + 1..i + 4];
-            if inner.iter().all(|&c| c != '<' && c != '>') {
+    let chars: Vec<char> = s.chars().collect();
+    for w in chars.windows(5) {
+        if let ['<', c1, c2, c3, '>'] = *w {
+            if c1 != '<' && c1 != '>' && c2 != '<' && c2 != '>' && c3 != '<' && c3 != '>' {
                 return true;
             }
         }
@@ -1466,12 +1636,12 @@ mod tests {
         var_data.ref_coverage.insert(pos_outside, 20);
 
         let mut vm = VariationMap::new();
-        vm.sv = Some(Sv {
+        vm.sv = Some(Box::new(Sv {
             r#type: "INV".to_string(),
             pairs: 2,
             splits: 3,
             clusters: 1,
-        });
+        }));
         let mut v = Variation::new();
         v.cnt = 10;
         v.fwd = 5;

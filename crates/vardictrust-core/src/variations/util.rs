@@ -1,3 +1,4 @@
+pub use crate::util::{join_ref, ref_bases_into};
 use crate::variations::{Sclip, Variation};
 use std::collections::BTreeMap;
 
@@ -77,7 +78,7 @@ pub fn find_conseq(
 
     let mut total = 0;
     let mut match_cnt = 0;
-    let mut seq = Vec::new();
+    let mut seq = Vec::with_capacity(soft_clip.nt.len());
     let mut flag = false;
 
     for (&position_in_sclip, nv) in &soft_clip.nt {
@@ -162,9 +163,10 @@ pub fn find_conseq(
             }
         } else if dir == 5 {
             if let Some(seed) = final_seq.get(0..6) {
-                let mut rev_seed = seed.to_vec();
+                let mut rev_seed = [0u8; 6];
+                rev_seed.copy_from_slice(seed);
                 rev_seed.reverse();
-                if adaptor_reverse.contains_key(&rev_seed) {
+                if adaptor_reverse.contains_key(rev_seed.as_slice()) {
                     final_seq.clear();
                 }
             }

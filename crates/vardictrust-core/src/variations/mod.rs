@@ -403,12 +403,14 @@ pub struct Variant {
 impl Variant {
     /// Create a new Variant with default values.
     pub fn new() -> Self {
+        let mut bias = String::with_capacity(4);
+        bias.push('0');
         Self {
             description: String::new(),
             pos_coverage: 0,
             fwd: 0,
             rev: 0,
-            bias: String::from("0"),
+            bias,
             frequency: 0.0,
             mean_position: 0.0,
             pstd: false,
@@ -584,45 +586,74 @@ impl Variant {
         self.end_pos = end_pos;
     }
 
-    /// Find variant type based on ref and var alleles.
-    pub fn var_type(&self) -> String {
+    /// Find variant type based on ref and var alleles without heap allocation for standard types (`L7`).
+    pub fn var_type_cow(&self) -> std::borrow::Cow<'static, str> {
+        use std::borrow::Cow;
         if self.ref_allele == self.var_allele && self.ref_allele.len() == 1 {
-            return String::new();
+            return Cow::Borrowed("");
         }
         if self.ref_allele.len() == 1 && self.var_allele.len() == 1 {
-            return "SNV".to_string();
+            return Cow::Borrowed("SNV");
         }
         // Match ANY_SV: "<(...)>"
-        let chars: Vec<char> = self.var_allele.chars().collect();
-        if chars.len() >= 5 {
-            for i in 0..=chars.len() - 5 {
-                if chars[i] == '<' && chars[i + 4] == '>' {
-                    let inner = &chars[i + 1..i + 4];
+        let bytes = self.var_allele.as_bytes();
+        if bytes.is_ascii() {
+            for w in bytes.windows(5) {
+                if let [b'<', c1, c2, c3, b'>'] = *w {
+                    if c1 != b'<'
+                        && c1 != b'>'
+                        && c2 != b'<'
+                        && c2 != b'>'
+                        && c3 != b'<'
+                        && c3 != b'>'
+                    {
+                        let inner = [c1, c2, c3];
+                        return match &inner {
+                            b"DEL" => Cow::Borrowed("DEL"),
+                            b"DUP" => Cow::Borrowed("DUP"),
+                            b"INV" => Cow::Borrowed("INV"),
+                            b"INS" => Cow::Borrowed("INS"),
+                            b"FUS" => Cow::Borrowed("FUS"),
+                            _ => Cow::Owned(String::from_utf8_lossy(&inner).into_owned()),
+                        };
+                    }
+                }
+            }
+        } else {
+            let chars: Vec<char> = self.var_allele.chars().collect();
+            for w in chars.windows(5) {
+                if let ['<', c1, c2, c3, '>'] = *w {
+                    let inner = [c1, c2, c3];
                     if inner.iter().all(|&c| c != '<' && c != '>') {
-                        return inner.iter().collect();
+                        return Cow::Owned(inner.iter().collect());
                     }
                 }
             }
         }
         if self.ref_allele.is_empty() || self.var_allele.is_empty() {
-            return "Complex".to_string();
+            return Cow::Borrowed("Complex");
         }
-        if self.ref_allele.as_bytes()[0] != self.var_allele.as_bytes()[0] {
-            return "Complex".to_string();
+        if self.ref_allele.as_bytes().first() != self.var_allele.as_bytes().first() {
+            return Cow::Borrowed("Complex");
         }
         if self.ref_allele.len() == 1
             && self.var_allele.len() > 1
             && self.var_allele.starts_with(&self.ref_allele)
         {
-            return "Insertion".to_string();
+            return Cow::Borrowed("Insertion");
         }
         if self.ref_allele.len() > 1
             && self.var_allele.len() == 1
             && self.ref_allele.starts_with(&self.var_allele)
         {
-            return "Deletion".to_string();
+            return Cow::Borrowed("Deletion");
         }
-        "Complex".to_string()
+        Cow::Borrowed("Complex")
+    }
+
+    /// Find variant type based on ref and var alleles.
+    pub fn var_type(&self) -> String {
+        self.var_type_cow().into_owned()
     }
 
     /// Check if variant meets standard parameters.
@@ -637,10 +668,11 @@ impl Variant {
             return false;
         }
         let vtype = if var_type.is_empty() {
-            self.var_type()
+            self.var_type_cow()
         } else {
-            var_type.to_string()
+            std::borrow::Cow::Borrowed(var_type)
         };
+        let vtype = vtype.as_ref();
 
         if self.frequency < config.freq
             || self.hicnt < config.min_reads as i32
@@ -662,7 +694,10 @@ impl Variant {
             }
         }
 
-        if vtype == "Deletion" && splice.contains(&format!("{}-{}", self.start_pos, self.end_pos)) {
+        if vtype == "Deletion"
+            && !splice.is_empty()
+            && splice.contains(&format!("{}-{}", self.start_pos, self.end_pos))
+        {
             return false;
         }
 
@@ -761,7 +796,7 @@ pub struct Vars {
     /// List of all non-reference variants.
     pub variants: Vec<Variant>,
     /// Variant description string → Variant.
-    pub var_desc_to_variant: IndexMap<String, Variant>,
+    pub var_desc_to_variant: IndexMap<String, Variant, FxBuildHasher>,
     /// SV information string.
     pub sv: String,
 }
@@ -772,7 +807,7 @@ impl Vars {
         Self {
             ref_variant: None,
             variants: Vec::new(),
-            var_desc_to_variant: IndexMap::new(),
+            var_desc_to_variant: IndexMap::default(),
             sv: String::new(),
         }
     }
@@ -808,7 +843,7 @@ pub struct Sv {
 #[derive(Debug, Clone, Default)]
 pub struct VariationMap {
     pub map: IndexMap<String, Variation, FxBuildHasher>,
-    pub sv: Option<Sv>,
+    pub sv: Option<Box<Sv>>,
     /// Set when a mate-window `partial_pipeline` merge plants this map's
     /// position outside the merging tile's active range (G3). The builder
     /// ownership gate (`merge_key_owned`, with edge clamping) then decides
@@ -838,7 +873,7 @@ impl VariationMap {
         // variation is ensured separately (remove_sv clears both together, so
         // sv==None implies no "SV" entry — the contains_key check preserves
         // the original insert-on-either-missing behavior).
-        let sv = entry.sv.get_or_insert_with(Sv::default);
+        let sv = entry.sv.get_or_insert_with(|| Box::new(Sv::default()));
         if !entry.map.contains_key("SV") {
             entry.map.insert("SV".to_string(), Variation::new());
         }
