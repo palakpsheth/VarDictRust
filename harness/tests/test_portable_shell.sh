@@ -58,17 +58,32 @@ env -i PATH="/usr/bin:/bin" HOME="$TMP_DIR" TMPDIR="$TMP_DIR" bash -c '
   out_nice="$(nice_idle echo ok)"
   [ "$out_nice" = "ok" ] || { echo "FAIL: nice_idle output: $out_nice" >&2; exit 1; }
 
-  # 8. portable_time_v and TIME_V
+  # 8. portable_time_v and TIME_V_CMD
   portable_time_v -o "$tmp/t1.time" true
   grep -q "Elapsed (wall clock) time" "$tmp/t1.time" || { echo "FAIL: t1.time missing wall clock" >&2; exit 1; }
   grep -q "Maximum resident set size" "$tmp/t1.time" || { echo "FAIL: t1.time missing max rss" >&2; exit 1; }
   grep -q "Exit status: 0" "$tmp/t1.time" || { echo "FAIL: t1.time missing exit status" >&2; exit 1; }
 
-  $TIME_V -a -o "$tmp/t1.time" true
-  [ "$(grep -c "Exit status: 0" "$tmp/t1.time")" -eq 2 ] || { echo "FAIL: TIME_V -a append did not record second run" >&2; exit 1; }
+  "${TIME_V_CMD[@]}" -a -o "$tmp/t1.time" true
+  [ "$(grep -c "Exit status: 0" "$tmp/t1.time")" -eq 2 ] || { echo "FAIL: TIME_V_CMD -a append did not record second run" >&2; exit 1; }
 
   "$1" --time-v -o "$tmp/t2.time" true
   grep -q "Exit status: 0" "$tmp/t2.time" || { echo "FAIL: portable.sh --time-v entrypoint failed" >&2; exit 1; }
+
+  # 9. CONDA_PREFIX named environment root resolution
+  conda_sub_g4="$(CONDA_PREFIX="/opt/conda/envs/vardict-oracle" G4_TOOLS_BIN="" bash -c "source \"\$1\"; printf \"%s\" \"\$G4_TOOLS_BIN\"" _ "$1")"
+  [ "$conda_sub_g4" = "/opt/conda/envs/g4-tools/bin" ] || { echo "FAIL: named CONDA_PREFIX resolved to $conda_sub_g4" >&2; exit 1; }
+  conda_explicit_g4="$(CONDA_PREFIX="/opt/conda/envs/vardict-oracle" G4_TOOLS_BIN="/custom/g4/bin" bash -c "source \"\$1\"; printf \"%s\" \"\$G4_TOOLS_BIN\"" _ "$1")"
+  [ "$conda_explicit_g4" = "/custom/g4/bin" ] || { echo "FAIL: explicit G4_TOOLS_BIN resolved to $conda_explicit_g4" >&2; exit 1; }
+
+  # 10. Checkout path with spaces + fallback TIME_V_CMD + stderr preservation
+  spaced_dir="$tmp/path with spaces"
+  mkdir -p "$spaced_dir"
+  cp "$1" "$spaced_dir/portable.sh"
+  chmod +x "$spaced_dir/portable.sh"
+  stderr_out="$("$spaced_dir/portable.sh" --time-v -o "$tmp/t_space.time" sh -c "echo child_stderr_preserved >&2" 2>&1)"
+  [ "$stderr_out" = "child_stderr_preserved" ] || { echo "FAIL: child stderr lost or polluted: $stderr_out" >&2; exit 1; }
+  grep -q "Exit status: 0" "$tmp/t_space.time" || { echo "FAIL: spaced portable.sh --time-v did not write t_space.time" >&2; exit 1; }
 ' _ "$PORTABLE_SH" "$TMP_DIR"
 
 echo "PASS test_portable_shell"

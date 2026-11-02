@@ -4,7 +4,10 @@
 PORTABLE_SH_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 export PORTABLE_SH_PATH
 
-G4_TOOLS_BIN="${G4_TOOLS_BIN:-${CONDA_PREFIX:-$HOME/miniconda3}/envs/g4-tools/bin}"
+_CONDA_ROOT="${CONDA_ROOT:-${CONDA_PREFIX:-$HOME/miniconda3}}"
+_CONDA_ROOT="${_CONDA_ROOT%/envs/*}"
+G4_TOOLS_BIN="${G4_TOOLS_BIN:-$_CONDA_ROOT/envs/g4-tools/bin}"
+unset _CONDA_ROOT
 VARDICT_PROFILES_DIR="${VARDICT_PROFILES_DIR:-$HOME/Documents/vardictrust_profiles}"
 export G4_TOOLS_BIN VARDICT_PROFILES_DIR
 
@@ -80,7 +83,7 @@ portable_time_v() {
     tmp_time="$(mktemp "${TMPDIR:-/tmp}/portable_time.XXXXXX")"
     local rc=0
     if [ -x /usr/bin/time ] && /usr/bin/time -l true >/dev/null 2>&1; then
-        /usr/bin/time -l "$@" 2>"$tmp_time" || rc=$?
+        { /usr/bin/time -l sh -c 'exec "$@" 2>&3 3>&-' sh "$@" 2>"$tmp_time"; } 3>&2 || rc=$?
     else
         "$@" || rc=$?
     fi
@@ -123,13 +126,20 @@ portable_time_v() {
 }
 
 if [ -x /usr/bin/time ] && /usr/bin/time -v true >/dev/null 2>&1; then
+    TIME_V_BIN="/usr/bin/time"
+    TIME_V_ARGS=(-v)
     TIME_V="/usr/bin/time -v"
 elif command -v gtime >/dev/null 2>&1 && gtime -v true >/dev/null 2>&1; then
-    TIME_V="gtime -v"
+    TIME_V_BIN="$(command -v gtime)"
+    TIME_V_ARGS=(-v)
+    TIME_V="$TIME_V_BIN -v"
 else
+    TIME_V_BIN="$PORTABLE_SH_PATH"
+    TIME_V_ARGS=(--time-v)
     TIME_V="$PORTABLE_SH_PATH --time-v"
 fi
-export TIME_V
+TIME_V_CMD=("$TIME_V_BIN" "${TIME_V_ARGS[@]}")
+export TIME_V TIME_V_BIN
 
 mem_avail_gb() {
     if [ -r /proc/meminfo ]; then
@@ -198,7 +208,7 @@ portable_md5() {
         elif command -v openssl >/dev/null 2>&1; then
             openssl dgst -md5 "$1" | awk '{print $NF}'
         else
-            python3 -c 'import hashlib,sys; print(hashlib.md5(open(sys.argv[1],"rb").read()).hexdigest())' "$1"
+            python3 -c 'import hashlib,sys; h=hashlib.md5(); f=open(sys.argv[1],"rb"); [h.update(b) for b in iter(lambda: f.read(1<<20), b"")]; print(h.hexdigest())' "$1"
         fi
     else
         if command -v md5sum >/dev/null 2>&1; then
@@ -226,7 +236,7 @@ portable_sha256() {
         elif command -v openssl >/dev/null 2>&1; then
             openssl dgst -sha256 "$1" | awk '{print $NF}'
         else
-            python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$1"
+            python3 -c 'import hashlib,sys; h=hashlib.sha256(); f=open(sys.argv[1],"rb"); [h.update(b) for b in iter(lambda: f.read(1<<20), b"")]; print(h.hexdigest())' "$1"
         fi
     else
         if command -v sha256sum >/dev/null 2>&1; then

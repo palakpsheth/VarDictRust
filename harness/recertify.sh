@@ -82,6 +82,14 @@ fi
 if [[ "${RECERTIFY_NEW_INPUTS:-0}" != "1" ]]; then
     python3 - "${RECERTIFY_EVIDENCE_DIR:-$ROOT_DIR/benchmarks/evidence}" <<'PY'
 import hashlib, json, pathlib, sys
+
+def sha256_file(path: pathlib.Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
 ev_dir = pathlib.Path(sys.argv[1])
 for jf in sorted(ev_dir.glob("*.json")):
     try:
@@ -92,7 +100,7 @@ for jf in sorted(ev_dir.glob("*.json")):
         p = pathlib.Path(inp.get("path", ""))
         want = inp.get("sha256", "")
         if p.is_file() and want:
-            got = hashlib.sha256(p.read_bytes()).hexdigest()
+            got = sha256_file(p)
             if got != want:
                 sys.stderr.write(
                     f"ERROR: input SHA-256 mismatch for {p} in {jf.name}: got {got}, expected {want}. "
@@ -121,14 +129,38 @@ export GOLDEN_RUN_ID="recertify-$(date +%s)"
 
 needs_stamp() {
     local name="$1"
-    python3 - "$ROOT_DIR/benchmarks/evidence/${name}.json" "$FP" <<'PY'
-import json, sys
+    python3 - "${RECERTIFY_EVIDENCE_DIR:-$ROOT_DIR/benchmarks/evidence}/${name}.json" "$FP" <<'PY'
+import hashlib, json, os, pathlib, sys
+
+def inputs_match(d: dict) -> bool:
+    for inp in d.get("inputs") or []:
+        p = pathlib.Path(inp.get("path", ""))
+        want = inp.get("sha256", "")
+        want_sz = inp.get("size_bytes")
+        if p.is_file() and want:
+            if want_sz is not None and p.stat().st_size != want_sz:
+                return False
+            h = hashlib.sha256()
+            with p.open("rb") as fh:
+                for chunk in iter(lambda: fh.read(1 << 20), b""):
+                    h.update(chunk)
+            if h.hexdigest() != want:
+                return False
+    return True
+
 p, fp = sys.argv[1], sys.argv[2]
+if os.environ.get("RECERTIFY_NEW_INPUTS") == "1":
+    sys.exit(0)
 try:
-    d = json.load(open(p))
+    with open(p, encoding="utf-8") as fh:
+        d = json.load(fh)
 except Exception:
     sys.exit(0)
-if d.get("fingerprint") == fp and d.get("result") in ("MATCH", "EQUAL", "PASS"):
+if (
+    d.get("fingerprint") == fp
+    and d.get("result") in ("MATCH", "EQUAL", "PASS")
+    and inputs_match(d)
+):
     sys.exit(1)
 sys.exit(0)
 PY
@@ -145,11 +177,31 @@ run_media_stack_hook() {
 }
 
 # Verify scale.json is valid under either FP or PERF_FP; if stale, run scale_bench.sh under media_stack minimal
-if python3 - "$ROOT_DIR/benchmarks/evidence/scale.json" "$FP" "$PERF_FP" <<'PY'
-import json, sys
+if python3 - "${RECERTIFY_EVIDENCE_DIR:-$ROOT_DIR/benchmarks/evidence}/scale.json" "$FP" "$PERF_FP" <<'PY'
+import hashlib, json, os, pathlib, sys
+
+def inputs_match(d: dict) -> bool:
+    for inp in d.get("inputs") or []:
+        p = pathlib.Path(inp.get("path", ""))
+        want = inp.get("sha256", "")
+        want_sz = inp.get("size_bytes")
+        if p.is_file() and want:
+            if want_sz is not None and p.stat().st_size != want_sz:
+                return False
+            h = hashlib.sha256()
+            with p.open("rb") as fh:
+                for chunk in iter(lambda: fh.read(1 << 20), b""):
+                    h.update(chunk)
+            if h.hexdigest() != want:
+                return False
+    return True
+
 p, fp, perf = sys.argv[1], sys.argv[2], sys.argv[3]
+if os.environ.get("RECERTIFY_NEW_INPUTS") == "1":
+    sys.exit(1)
 try:
-    d = json.load(open(p))
+    with open(p, encoding="utf-8") as fh:
+        d = json.load(fh)
 except Exception:
     sys.exit(1)
 x = d.get("extra") or {}
@@ -160,6 +212,7 @@ ok = (
     and bool(x.get("certifying"))
     and x.get("P", 0) >= 4
     and x.get("bar", 0) >= 2.4
+    and inputs_match(d)
 )
 sys.exit(0 if ok else 1)
 PY

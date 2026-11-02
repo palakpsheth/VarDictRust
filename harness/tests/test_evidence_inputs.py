@@ -165,6 +165,50 @@ class TestEvidenceInputs(unittest.TestCase):
                 f"recertify.sh --dry-run with RECERTIFY_NEW_INPUTS=1 should succeed: {res_ok.stderr}",
             )
 
+            # Verify that needs_stamp invalidates receipts when RECERTIFY_NEW_INPUTS=1 or input digest changed
+            (ev_dir / "amplicon-tier2.json").write_text(
+                json.dumps(
+                    {
+                        "name": "amplicon-tier2",
+                        "result": "MATCH",
+                        "fingerprint": "same-fp",
+                        "inputs": [
+                            {
+                                "path": str(staged_bed),
+                                "size_bytes": len(staged_bed.read_bytes()),
+                                "sha256": hashlib.sha256(staged_bed.read_bytes()).hexdigest(),
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            extract_needs_stamp = (
+                'FP="same-fp" RECERTIFY_EVIDENCE_DIR="$1" bash -c '
+                '"$(sed -n \'/^needs_stamp()/,/^}/p\' harness/recertify.sh); needs_stamp amplicon-tier2"'
+            )
+            res_reuse = subprocess.run(
+                ["bash", "-c", extract_needs_stamp, "_", str(ev_dir)],
+                cwd=ROOT_DIR,
+                env={k: v for k, v in os.environ.items() if k != "RECERTIFY_NEW_INPUTS"},
+            )
+            self.assertEqual(res_reuse.returncode, 1, "unchanged input + matching FP should reuse receipt (exit 1)")
+
+            res_override = subprocess.run(
+                ["bash", "-c", extract_needs_stamp, "_", str(ev_dir)],
+                cwd=ROOT_DIR,
+                env={**os.environ, "RECERTIFY_NEW_INPUTS": "1"},
+            )
+            self.assertEqual(res_override.returncode, 0, "RECERTIFY_NEW_INPUTS=1 must force needs_stamp rerun (exit 0)")
+
+            staged_bed.write_bytes(b"chr20\t100\t200\tamplicon_modified\n")
+            res_changed = subprocess.run(
+                ["bash", "-c", extract_needs_stamp, "_", str(ev_dir)],
+                cwd=ROOT_DIR,
+                env={k: v for k, v in os.environ.items() if k != "RECERTIFY_NEW_INPUTS"},
+            )
+            self.assertEqual(res_changed.returncode, 0, "changed input digest must force needs_stamp rerun (exit 0)")
+
 
 if __name__ == "__main__":
     unittest.main()

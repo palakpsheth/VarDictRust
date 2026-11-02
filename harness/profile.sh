@@ -255,7 +255,7 @@ run_cell() {   # <cell>; returns 0 ok, 1 failed, 3 skipped
   fi
   for m in "${mods[@]}"; do
     local b; b=$(bin_for "$m")
-    local time_cmd; read -ra time_cmd <<< "$TIME_V"
+    local time_cmd=("$TIME_V_BIN" "${TIME_V_ARGS[@]}")
     local run=(env ${C_ENV[@]+"${C_ENV[@]}"} "VARDICT_PROFILE_${m^^}=$d" "$b" "${C_PRE[@]}" -th "$TH" "${C_POST[@]}")
     local wrapped=("${time_cmd[@]}" -a -o "$d/time.txt" "${run[@]}")
     if [ "$DRY" = 1 ]; then
