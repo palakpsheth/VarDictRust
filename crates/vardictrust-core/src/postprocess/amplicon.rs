@@ -593,15 +593,19 @@ pub fn amplicon_select_vcf_rows(results: Vec<AmpliconVariant>) -> Vec<AmpliconVa
     // emit only the top row ($ALL = 1 without -A). See postprocess/simple.rs.
     let mut buckets: BTreeMap<i32, Vec<AmpliconVariant>> = BTreeMap::new();
     for av in results {
+        debug_assert_eq!(
+            av.variant.frequency,
+            crate::types::round_half_even(av.variant.frequency, 4),
+            "amplicon Variant.frequency entering VCF selection must be 4dp-canonical"
+        );
         buckets.entry(av.variant.start_pos).or_default().push(av);
     }
     let mut selected = Vec::with_capacity(buckets.len());
     for (_, mut rows) in buckets {
         rows.sort_by(|a, b| {
-            b.variant
-                .frequency
-                .partial_cmp(&a.variant.frequency)
-                .unwrap_or(std::cmp::Ordering::Equal)
+            let af_b = crate::types::round_half_even(b.variant.frequency, 4);
+            let af_a = crate::types::round_half_even(a.variant.frequency, 4);
+            af_b.partial_cmp(&af_a).unwrap_or(std::cmp::Ordering::Equal)
         });
         selected.extend(rows.into_iter().take(1));
     }

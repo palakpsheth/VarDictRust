@@ -314,6 +314,11 @@ fn rc_seq(seq: &[u8]) -> Vec<u8> {
     v
 }
 
+enum SeedBackend<'a> {
+    Map(&'a SeedMap),
+    Closure(&'a mut dyn FnMut(&[u8]) -> Option<u32>),
+}
+
 /// The main CIGAR Modifier engine porting CigarModifier.java.
 pub struct CigarModifier<'a> {
     position: i32,
@@ -322,7 +327,7 @@ pub struct CigarModifier<'a> {
     query_qual: Vec<u8>,
     reference: &'a [u8],
     ref_start: i32,
-    seed: &'a SeedMap,
+    seed: SeedBackend<'a>,
     indel: i32,
     max_read_length: i32,
     config: &'a Config,
@@ -349,10 +354,48 @@ impl<'a> CigarModifier<'a> {
             query_qual: query_qual.into(),
             reference,
             ref_start,
-            seed,
+            seed: SeedBackend::Map(seed),
             indel,
             max_read_length,
             config,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn with_seed_fn(
+        position: i32,
+        cigar_str: impl Into<String>,
+        query_seq: impl Into<Vec<u8>>,
+        query_qual: impl Into<Vec<u8>>,
+        reference: &'a [u8],
+        ref_start: i32,
+        seed_fn: &'a mut dyn FnMut(&[u8]) -> Option<u32>,
+        indel: i32,
+        max_read_length: i32,
+        config: &'a Config,
+    ) -> Self {
+        CigarModifier {
+            position,
+            cigar_str: cigar_str.into(),
+            query_seq: query_seq.into(),
+            query_qual: query_qual.into(),
+            reference,
+            ref_start,
+            seed: SeedBackend::Closure(seed_fn),
+            indel,
+            max_read_length,
+            config,
+        }
+    }
+
+    #[inline]
+    fn unique_seed_pos(&mut self, rc_seed: &[u8]) -> Option<u32> {
+        match &mut self.seed {
+            SeedBackend::Map(map) => match map.get(rc_seed) {
+                Some([pos]) => Some(*pos),
+                _ => None,
+            },
+            SeedBackend::Closure(f) => f(rc_seed),
         }
     }
 
@@ -412,8 +455,8 @@ impl<'a> CigarModifier<'a> {
                     if let Some(sseq) = subseq(&this.query_seq, 0, cigar_element) {
                         let sequence = rc_seq(sseq);
                         if let Some(rc_seed) = sequence.get(0..SEED_2) {
-                            if let Some([ref_pos_u32]) = this.seed.get(rc_seed) {
-                                let ref_pos = *ref_pos_u32 as i32;
+                            if let Some(ref_pos_u32) = this.unique_seed_pos(rc_seed) {
+                                let ref_pos = ref_pos_u32 as i32;
                                 if (this.position - ref_pos).abs() < 2 * this.max_read_length {
                                     this.cigar_str =
                                         RE_START_S.replace(&this.cigar_str, "").into_owned();
@@ -454,8 +497,8 @@ impl<'a> CigarModifier<'a> {
                             if sequence.len() >= SEED_2 {
                                 let start_seed = sequence.len() - SEED_2;
                                 if let Some(rc_seed) = sequence.get(start_seed..) {
-                                    if let Some([ref_pos_u32]) = this.seed.get(rc_seed) {
-                                        let ref_pos = *ref_pos_u32 as i32;
+                                    if let Some(ref_pos_u32) = this.unique_seed_pos(rc_seed) {
+                                        let ref_pos = ref_pos_u32 as i32;
                                         if (this.position - ref_pos).abs()
                                             < 2 * this.max_read_length
                                         {
@@ -801,24 +844,22 @@ impl<'a> CigarModifier<'a> {
                     let sequence = rc_seq(sseq);
                     if sequence.len() >= SEED_2 {
                         let rc_seed = &sequence[0..SEED_2];
-                        if let Some(positions) = this.seed.get(rc_seed) {
-                            if positions.len() == 1 {
-                                let ref_pos = positions[0] as i32;
-                                if (this.position - ref_pos).abs() < 2 * this.max_read_length {
-                                    this.cigar_str =
-                                        RE_START_S.replace(&this.cigar_str, "").into_owned();
-                                    if this.query_seq.len() >= cigar_element {
-                                        this.query_seq = this.query_seq[cigar_element..].to_vec();
-                                        this.query_qual = this.query_qual[cigar_element..].to_vec();
-                                    }
-                                    if this.config.verbose {
-                                        eprintln!(
-                                            "{} at 5' is a chimeric at {} by SEED {}",
-                                            String::from_utf8_lossy(&sequence),
-                                            this.position,
-                                            SEED_2
-                                        );
-                                    }
+                        if let Some(ref_pos_u32) = this.unique_seed_pos(rc_seed) {
+                            let ref_pos = ref_pos_u32 as i32;
+                            if (this.position - ref_pos).abs() < 2 * this.max_read_length {
+                                this.cigar_str =
+                                    RE_START_S.replace(&this.cigar_str, "").into_owned();
+                                if this.query_seq.len() >= cigar_element {
+                                    this.query_seq = this.query_seq[cigar_element..].to_vec();
+                                    this.query_qual = this.query_qual[cigar_element..].to_vec();
+                                }
+                                if this.config.verbose {
+                                    eprintln!(
+                                        "{} at 5' is a chimeric at {} by SEED {}",
+                                        String::from_utf8_lossy(&sequence),
+                                        this.position,
+                                        SEED_2
+                                    );
                                 }
                             }
                         }
@@ -836,22 +877,20 @@ impl<'a> CigarModifier<'a> {
                         if sequence.len() >= SEED_2 {
                             let start_seed = sequence.len() - SEED_2;
                             let rc_seed = &sequence[start_seed..];
-                            if let Some(positions) = this.seed.get(rc_seed) {
-                                if positions.len() == 1 {
-                                    let ref_pos = positions[0] as i32;
-                                    if (this.position - ref_pos).abs() < 2 * this.max_read_length {
-                                        this.cigar_str =
-                                            RE_END_2S.replace(&this.cigar_str, "").into_owned();
-                                        this.query_seq = this.query_seq[0..start_idx].to_vec();
-                                        this.query_qual = this.query_qual[0..start_idx].to_vec();
-                                        if this.config.verbose {
-                                            eprintln!(
-                                                "{} at 3' is a chimeric at {} by SEED {}",
-                                                String::from_utf8_lossy(&sequence),
-                                                this.position,
-                                                SEED_2
-                                            );
-                                        }
+                            if let Some(ref_pos_u32) = this.unique_seed_pos(rc_seed) {
+                                let ref_pos = ref_pos_u32 as i32;
+                                if (this.position - ref_pos).abs() < 2 * this.max_read_length {
+                                    this.cigar_str =
+                                        RE_END_2S.replace(&this.cigar_str, "").into_owned();
+                                    this.query_seq = this.query_seq[0..start_idx].to_vec();
+                                    this.query_qual = this.query_qual[0..start_idx].to_vec();
+                                    if this.config.verbose {
+                                        eprintln!(
+                                            "{} at 3' is a chimeric at {} by SEED {}",
+                                            String::from_utf8_lossy(&sequence),
+                                            this.position,
+                                            SEED_2
+                                        );
                                     }
                                 }
                             }
