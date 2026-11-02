@@ -31,16 +31,29 @@ fi
 GOLDEN_TIME_OUT="$JAVA_TIME_OUT" timeout "$TO" \
   bash harness/golden_store.sh oracle "${GOLDEN_LABEL:-compare}" "$REF" "$BAM" "$BED" "$OUT/java.vcf" "$SAMPLE" -z "$@" \
   || { echo "ENGINE-FAIL: oracle"; exit 2; }
+# Caller -f wins over AF_THR (commons-cli keeps FIRST; base -f $AF below would
+# otherwise override it) — mirrors run_oracle.sh and run_cpp.sh.
+AF=${AF_THR:-0.01}
+EXTRA_ARGS=("$@")
+for ((i=0; i<${#EXTRA_ARGS[@]}; i++)); do
+  if [ "${EXTRA_ARGS[$i]}" = "-f" ] && [ $((i+1)) -lt ${#EXTRA_ARGS[@]} ]; then
+    AF="${EXTRA_ARGS[$((i+1))]}"
+    break
+  elif [[ "${EXTRA_ARGS[$i]}" == -f* && "${EXTRA_ARGS[$i]}" != "-fisher" ]]; then
+    AF="${EXTRA_ARGS[$i]#-f}"
+    break
+  fi
+done
 RUST_TH_ARGS=()
 if [ -n "${RUST_THREADS:-}" ]; then RUST_TH_ARGS=(-th "$RUST_THREADS"); fi
 if [ -n "${VARDICT_BIN:-}" ]; then
   /usr/bin/time -v -o "$OUT/rust.time" timeout "$TO" \
-    "$VARDICT_BIN" -G "$REF" -f "${AF_THR:-0.01}" -N "$SAMPLE" \
+    "$VARDICT_BIN" -G "$REF" -f "$AF" -N "$SAMPLE" \
     -b "$BAM" -c 1 -S 2 -E 3 -g 4 -z "$@" "${RUST_TH_ARGS[@]}" "$BED" > "$OUT/rust.vcf" \
     || { echo "ENGINE-FAIL: vardictrust"; exit 2; }
 else
   /usr/bin/time -v -o "$OUT/rust.time" timeout "$TO" \
-    cargo run -q --release -p vardictrust -- -G "$REF" -f "${AF_THR:-0.01}" -N "$SAMPLE" \
+    cargo run -q --release -p vardictrust -- -G "$REF" -f "$AF" -N "$SAMPLE" \
     -b "$BAM" -c 1 -S 2 -E 3 -g 4 -z "$@" "${RUST_TH_ARGS[@]}" "$BED" > "$OUT/rust.vcf" \
     || { echo "ENGINE-FAIL: vardictrust"; exit 2; }
 fi

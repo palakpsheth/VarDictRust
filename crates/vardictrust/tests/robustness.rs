@@ -62,6 +62,47 @@ fn dp_err_and_default_printer_route_to_stderr() {
             "stderr must contain variant output under {flag} ERR"
         );
     }
+
+    // H2: When -h (--header) is combined with --DP ERR, VarDictJava prints the .var
+    // header to System.out (stdout) while routing variant rows to System.err (stderr).
+    let out_hdr = base_cmd()
+        .args([
+            "-G",
+            "fixtures/micro/micro.ref.fa",
+            "-b",
+            "fixtures/micro/micro.bam",
+            "-c",
+            "1",
+            "-S",
+            "2",
+            "-E",
+            "3",
+            "-g",
+            "4",
+            "-z",
+            "-h",
+            "fixtures/micro/micro.bed",
+            "--threads=1",
+            "--DP",
+            "ERR",
+        ])
+        .output()
+        .expect("run vardictrust with -h --DP ERR");
+    assert!(out_hdr.status.success(), "-h --DP ERR failed");
+    let stdout_str = String::from_utf8_lossy(&out_hdr.stdout);
+    assert!(
+        stdout_str.starts_with("Sample\tGene\tChr\t"),
+        "stdout must contain .var header under -h --DP ERR, got: {stdout_str}"
+    );
+    assert_eq!(
+        stdout_str.lines().count(),
+        1,
+        "stdout must ONLY contain the single .var header line under -h --DP ERR"
+    );
+    assert!(
+        !out_hdr.stderr.is_empty(),
+        "stderr must contain variant rows under -h --DP ERR"
+    );
 }
 
 #[test]
@@ -147,6 +188,31 @@ fn unsupported_and_invalid_cli_flags_exit_nonzero() {
             "stderr should contain '{expected_msg}', got: {stderr}"
         );
     }
+
+    // H2 (#378): Paired BAM (-b tumor|normal) with amplicon mode (-a) in VCF mode
+    // must return VardictError::Unsupported with non-zero exit code.
+    let out_378 = base_cmd()
+        .args([
+            "-G",
+            "fixtures/micro/micro.ref.fa",
+            "-b",
+            "fixtures/micro/micro.bam|fixtures/micro/micro.bam",
+            "-a",
+            "10:0.95",
+            "fixtures/beds/correct_8columns_amplicon.bed",
+        ])
+        .output()
+        .expect("spawn vardictrust paired amplicon VCF");
+    assert!(
+        !out_378.status.success(),
+        "paired + amplicon VCF (#378) must exit non-zero"
+    );
+    assert_ne!(out_378.status.code(), Some(101), "#378 died by panic");
+    let stderr_378 = String::from_utf8_lossy(&out_378.stderr);
+    assert!(
+        stderr_378.contains("not supported in VCF mode (#378)"),
+        "stderr should mention #378 unsupported VCF mode, got: {stderr_378}"
+    );
 }
 
 #[test]

@@ -491,12 +491,12 @@ mod filtering_and_pileup {
                 .into_owned(),
             sample: "NA24385".to_string(),
             region: Some("20:20156208-20157000".to_string()),
-            out_mapq: 0,
+            out_mapq: 0.0,
             threads: 1,
             ..Config::default()
         };
         let mut cfg_filtered = cfg_unfiltered.clone();
-        cfg_filtered.out_mapq = 65;
+        cfg_filtered.out_mapq = 65.0;
 
         let vars_unfiltered = extract_variants(&run_core_vcf(&cfg_unfiltered).expect("-O 0"));
         let vars_filtered = extract_variants(&run_core_vcf(&cfg_filtered).expect("-O 65"));

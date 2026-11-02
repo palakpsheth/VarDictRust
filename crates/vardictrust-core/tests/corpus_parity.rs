@@ -59,12 +59,9 @@ pub fn apply_extra_args(cfg: &mut Config, extra_args: &[String]) {
             }
             "-F" => {
                 let v = &extra_args[i + 1];
-                cfg.flag_filter =
-                    if let Some(hex) = v.strip_prefix("0x").or_else(|| v.strip_prefix("0X")) {
-                        u32::from_str_radix(hex, 16).expect("valid hex -F")
-                    } else {
-                        v.parse().expect("valid dec -F")
-                    };
+                let decoded = vardictrust_core::config::java_integer_decode(v).expect("valid -F");
+                cfg.flag_filter = decoded as u32;
+                cfg.samfilter_raw = v.clone();
                 i += 2;
             }
             "-Q" => {
@@ -76,7 +73,8 @@ pub fn apply_extra_args(cfg: &mut Config, extra_args: &[String]) {
                 i += 2;
             }
             "-P" => {
-                cfg.read_pos = extra_args[i + 1].parse().expect("valid -P");
+                cfg.read_pos = vardictrust_core::config::parse_java_number_i32(&extra_args[i + 1])
+                    .expect("valid -P") as f64;
                 i += 2;
             }
             "-r" => {
@@ -859,6 +857,56 @@ mod modalities {
         run_corpus_case(
             "Amplicon;GRCh37.fa;MRE11a.bam;chr11;94153228-94153388;94153261-94153357;-a 100.95 -p;.txt",
         );
+
+        // H1: Upstream VarDictJava RegionBuilderTest / IntegrationTest BED auto-detect fixtures.
+        let beds_dir = workspace_root().join("fixtures/beds");
+        assert!(
+            vardictrust_core::regions::detect_amplicon_bed(
+                beds_dir.join("correct_8columns_amplicon.bed"),
+                "\t"
+            )
+            .expect("detect correct_8columns_amplicon"),
+            "correct_8columns_amplicon.bed must auto-detect as amplicon BED"
+        );
+        for non_amp in [
+            "correct_5columns.bed",
+            "correct_8columns_not_amplicon.bed",
+            "correct_9columns.bed",
+            "incorrect_4columns.bed",
+            "incorrect_8columns.bed",
+        ] {
+            assert!(
+                !vardictrust_core::regions::detect_amplicon_bed(beds_dir.join(non_amp), "\t")
+                    .unwrap_or_else(|e| panic!("detect {non_amp}: {e}")),
+                "{non_amp} must NOT auto-detect as amplicon BED"
+            );
+        }
+
+        // Amplicon -p zero-coverage null row (AmpliconPostProcessModule.java:244-252 / AmpliconOutputVariant.java:70-98):
+        // zero-coverage amplicon locus emits 38 columns with empty genotype (col 14), "0;0" bias (col 16),
+        // and empty flank sequences (cols 31, 32).
+        let dir = tempfile::tempdir().expect("tempdir for zero-cov amplicon bed");
+        let bed_path = dir.path().join("amp_zero.bed");
+        fs::write(&bed_path, "chr1\t10\t20\tGENE1\t0\t+\t12\t18\n")
+            .expect("write zero-cov amplicon bed");
+        let mut amp_cfg = micro_config();
+        amp_cfg.region = None;
+        amp_cfg.bed = Some(bed_path.to_string_lossy().into_owned());
+        amp_cfg.column_for_chromosome = None;
+        amp_cfg.amplicon = Some("10:0.95".to_string());
+        amp_cfg.pileup = true;
+        amp_cfg.apply_pileup_overrides();
+        let out = run_core_var(&amp_cfg).expect("zero-cov amplicon -p run");
+        let rows: Vec<&str> = out.lines().collect();
+        assert!(!rows.is_empty(), "expected zero-coverage amplicon -p rows");
+        for row in rows {
+            let cols: Vec<&str> = row.split('\t').collect();
+            assert_eq!(cols.len(), 38, "expected 38-col amplicon row: {row}");
+            assert_eq!(cols[13], "", "null_record genotype must be empty: {row}");
+            assert_eq!(cols[15], "0;0", "null_record bias must be '0;0': {row}");
+            assert_eq!(cols[30], "", "null_record left_seq must be empty: {row}");
+            assert_eq!(cols[31], "", "null_record right_seq must be empty: {row}");
+        }
     }
 
     #[test]

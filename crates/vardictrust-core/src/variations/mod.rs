@@ -674,7 +674,7 @@ impl Variant {
             return true;
         }
 
-        if self.mean_mapping_quality < config.out_mapq as f64 {
+        if self.mean_mapping_quality < config.out_mapq {
             return false;
         }
 

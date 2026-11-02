@@ -1401,9 +1401,10 @@ impl std::io::Write for OutputDestination {
 const BUFFER_CAPACITY: usize = 64 * 1024; // 64 KB
 
 /// Creates the persistent buffered output writer according to `--DP` / `--defaultPrinter`.
-/// Defaults to stdout; routes to stderr when `--DP ERR` is passed (ports CmdParser.java:171-177).
+/// Defaults to stdout; routes to stderr when `--DP ERR` is passed and `-i` (`--splice`) is off
+/// (ports CmdParser.java:171-177 and CigarParser.java:105).
 pub fn create_output_writer(config: &config::Config) -> OutputDestination {
-    if config.debug_print.as_deref() == Some("ERR") {
+    if config.debug_print.as_deref() == Some("ERR") && !config.splice {
         OutputDestination::Stderr(std::io::BufWriter::with_capacity(
             BUFFER_CAPACITY,
             std::io::stderr(),
@@ -1415,6 +1416,49 @@ pub fn create_output_writer(config: &config::Config) -> OutputDestination {
         ))
     }
 }
+
+/// Internal writer abstraction that preserves `run_with_writer`'s complete-stream contract
+/// on injected writers while routing `--DP ERR` column headers to `stdout` when invoked via
+/// the CLI [`OutputDestination`].
+trait EngineWriter: std::io::Write + Sized {
+    fn emit_column_header(&mut self, config: &config::Config) -> Result<(), VardictError> {
+        crate::output::table::print_header(self, config).map_err(VardictError::Io)
+    }
+}
+
+impl EngineWriter for OutputDestination {
+    fn emit_column_header(&mut self, config: &config::Config) -> Result<(), VardictError> {
+        match self {
+            Self::Stdout(w) => {
+                crate::output::table::print_header(w, config).map_err(VardictError::Io)
+            }
+            Self::Stderr(_) => {
+                // SimpleMode/SomaticMode/AmpliconMode/SplicingMode printHeader() always writes
+                // the header line to System.out even when `--DP ERR` routes variant rows to System.err.
+                let mut stdout = std::io::stdout();
+                crate::output::table::print_header(&mut stdout, config)
+                    .map_err(VardictError::Io)?;
+                std::io::Write::flush(&mut stdout).map_err(VardictError::Io)
+            }
+        }
+    }
+}
+
+struct InjectedWriter<W>(W);
+
+impl<W: std::io::Write> std::io::Write for InjectedWriter<W> {
+    #[inline]
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.write(buf)
+    }
+
+    #[inline]
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.0.flush()
+    }
+}
+
+impl<W: std::io::Write> EngineWriter for InjectedWriter<W> {}
 
 /// Backwards-compatible alias for existing call sites.
 pub fn get_output_writer(config: &config::Config) -> OutputDestination {
@@ -1430,6 +1474,94 @@ pub fn write_output_line<W: std::io::Write>(
     writeln!(handle, "{}", line).map_err(VardictError::Io)
 }
 
+/// Calling mode resolved from CLI flags and BED auto-detection (`VarDictLauncher.java:46-66`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallingMode {
+    Splicing,
+    Amplicon,
+    Somatic,
+    Simple,
+}
+
+/// Ports `VarDictLauncher.start` (`VarDictLauncher.java:46-66`) mode precedence:
+/// 1. `SplicingMode` (`-i`)
+/// 2. `-R` region flag or non-amplicon -> `SomaticMode` (paired) or `SimpleMode` (single)
+/// 3. `AmpliconMode` (`-a` or 8-col amplicon BED auto-detect)
+pub fn resolve_mode(
+    splice: bool,
+    has_region: bool,
+    amplicon_effective: bool,
+    paired: bool,
+) -> CallingMode {
+    if splice {
+        CallingMode::Splicing
+    } else if has_region || !amplicon_effective {
+        if paired {
+            CallingMode::Somatic
+        } else {
+            CallingMode::Simple
+        }
+    } else {
+        CallingMode::Amplicon
+    }
+}
+
+/// Resolves effective [`config::Config`] and [`CallingMode`] matching `VarDictLauncher.initResources`
+/// and `VarDictLauncher.start` (`VarDictLauncher.java:46-95, 139-173`).
+fn resolve_effective_config(
+    config: &config::Config,
+) -> Result<(config::Config, CallingMode), VardictError> {
+    let mut effective = config.clone();
+    let paired = effective.bam.contains('|');
+    let has_region = effective.region.is_some();
+
+    if has_region {
+        effective.amplicon = None;
+        if paired && (effective.emit_intermediate || effective.splice) {
+            if effective.sample_explicit {
+                if let Some(first_sample) = effective.sample.split('|').next() {
+                    effective.sample = first_sample.to_string();
+                }
+            } else if let Some(first_bam_spec) = effective.bam.split('|').next() {
+                let first_bam = first_bam_spec.split(':').next().unwrap_or(first_bam_spec);
+                effective.sample = crate::config::extract_sample_name(first_bam, None);
+            }
+        }
+    } else if effective.amplicon.is_none() {
+        if let Some(ref bed_path) = effective.bed {
+            if crate::regions::detect_amplicon_bed(bed_path, &effective.delimiter)? {
+                effective.amplicon = Some("10:0.95".to_string());
+                if !effective.zero_based_defined {
+                    effective.zero_based = true;
+                    effective.zero_based_defined = true;
+                }
+            }
+        }
+    }
+
+    let mode = resolve_mode(
+        effective.splice,
+        has_region,
+        effective.amplicon.is_some(),
+        paired,
+    );
+
+    if mode == CallingMode::Amplicon && paired && !effective.emit_intermediate {
+        return Err(VardictError::Unsupported(
+            "Paired BAM (-b tumor|normal) with amplicon mode (-a) is not supported in VCF mode (#378); use .var intermediate output or single-sample BAM"
+                .to_string(),
+        ));
+    }
+
+    if paired && matches!(mode, CallingMode::Splicing | CallingMode::Amplicon) {
+        if let Some(first_bam_spec) = effective.bam.split('|').next() {
+            effective.bam = first_bam_spec.to_string();
+        }
+    }
+
+    Ok((effective, mode))
+}
+
 /// Main entry point for the engine. Called by the CLI binary.
 ///
 /// Takes a fully-resolved configuration and runs the variant-calling pipeline.
@@ -1443,20 +1575,30 @@ pub fn run(config: &config::Config) -> Result<(), VardictError> {
     crate::bam::clear_bam_caches();
     let _bam_cache_guard = BamCacheGuard;
 
-    let writer = create_output_writer(config);
-    run_with_writer(config, writer)
+    let (effective, _) = resolve_effective_config(config)?;
+    let writer = create_output_writer(&effective);
+    run_with_engine_writer(&effective, writer)
 }
 
 /// Runs the variant-calling pipeline writing all output to `writer` without clearing
 /// process-wide BAM/CRAM/FASTA caches before/after the call.
 pub fn run_with_writer<W: std::io::Write>(
     config: &config::Config,
+    writer: W,
+) -> Result<(), VardictError> {
+    run_with_engine_writer(config, InjectedWriter(writer))
+}
+
+fn run_with_engine_writer<W: EngineWriter>(
+    config: &config::Config,
     mut writer: W,
 ) -> Result<(), VardictError> {
     log::info!("VarDictRust engine starting");
 
-    // Detect somatic (paired) mode: BAM path contains '|'
-    if config.bam.contains('|') {
+    let (effective, mode) = resolve_effective_config(config)?;
+    let config = &effective;
+
+    if mode == CallingMode::Somatic {
         return run_somatic(config, &mut writer);
     }
 
@@ -1478,7 +1620,12 @@ pub fn run_with_writer<W: std::io::Write>(
     let regions = if let Some(ref r_str) = config.region {
         crate::regions::parse_region_flag(r_str, config, &chromosomes_lengths)?
     } else if let Some(ref bed_path) = config.bed {
-        crate::regions::parse_bed(bed_path, config, &chromosomes_lengths, None)?
+        crate::regions::parse_bed(
+            bed_path,
+            config,
+            &chromosomes_lengths,
+            config.zero_based_defined.then_some(config.zero_based),
+        )?
     } else {
         return Err(VardictError::Parse(
             "Either region (-R) or BED file must be specified".to_string(),
@@ -1486,7 +1633,7 @@ pub fn run_with_writer<W: std::io::Write>(
     };
 
     // Amplicon mode: process per-amplicon and combine via amplicon post-process
-    if config.amplicon.is_some() {
+    if mode == CallingMode::Amplicon {
         return run_amplicon(config, &chromosomes_lengths, regions, &mut writer);
     }
 
@@ -1523,11 +1670,11 @@ pub fn run_with_writer<W: std::io::Write>(
     // -h/--header column line (CmdParser.java:67; SimpleMode.java:33 calls
     // printHeader() before any variant output).
     if config.column_header {
-        crate::output::table::print_header(&mut writer, config).map_err(VardictError::Io)?;
+        writer.emit_column_header(config)?;
     }
 
-    // Print VCF header when not in intermediate mode
-    if !config.emit_intermediate {
+    // Print VCF header when not in intermediate or splicing mode
+    if !config.emit_intermediate && !config.splice {
         crate::output::vcf::print_vcf_header(&mut writer, config, &chromosomes_lengths)
             .map_err(VardictError::Io)?;
     }
@@ -1763,14 +1910,22 @@ pub fn run_with_writer<W: std::io::Write>(
 }
 
 /// Process a single amplicon region through the full pipeline, returning the
-/// aligned variants map. The pileup runs over the amplicon region (start..end);
+/// aligned variants map and accumulated splice set (`AmpliconMode.java:79, 98`).
+/// The pileup runs over the amplicon region (start..end);
 /// the ToVarsBuilder calls variants over the insert region.
 fn process_amplicon_region(
     bam: &str,
     region: &crate::regions::Region,
     config: &config::Config,
     chromosomes_lengths: &HashMap<String, usize>,
-) -> Result<crate::javamap::JavaHashMap<i32, crate::variations::Vars>, VardictError> {
+    seed_splice: std::collections::HashSet<String>,
+) -> Result<
+    (
+        crate::javamap::JavaHashMap<i32, crate::variations::Vars>,
+        std::collections::HashSet<String>,
+    ),
+    VardictError,
+> {
     let halo = 500u32;
     let halo_start = crate::types::Pos0(region.start.0.saturating_sub(halo).saturating_sub(1));
     let halo_end = crate::types::Pos0(region.end.0 + halo);
@@ -1799,7 +1954,7 @@ fn process_amplicon_region(
         config,
         chromosomes_lengths,
         0,
-        None,
+        Some(seed_splice),
     )?;
 
     // Variant calling over the insert region (amplicon insert bounds)
@@ -1817,7 +1972,8 @@ fn process_amplicon_region(
 
     let builder =
         crate::tovars::ToVarsBuilder::new(&reference, &builder_region, chromosomes_lengths, config);
-    Ok(builder.build_aligned_variants(&var_data))
+    let aligned = builder.build_aligned_variants(&var_data);
+    Ok((aligned, var_data.splice))
 }
 
 /// Covering amplicons at one position: `(amplicon_number, region)` for every
@@ -1849,7 +2005,7 @@ pub(crate) fn amplicons_covering_position(
 
 /// Amplicon mode: process each amplicon region separately, then combine via
 /// amplicon post-processing. Ports AmpliconMode.java.
-fn run_amplicon<W: std::io::Write>(
+fn run_amplicon<W: EngineWriter>(
     config: &config::Config,
     chromosomes_lengths: &HashMap<String, usize>,
     segments: Vec<Vec<crate::regions::Region>>,
@@ -1863,7 +2019,7 @@ fn run_amplicon<W: std::io::Write>(
 
     // -h/--header column line (AmpliconMode.java:39, 135-146).
     if config.column_header {
-        crate::output::table::print_header(writer, config).map_err(VardictError::Io)?;
+        writer.emit_column_header(config)?;
     }
 
     // Print VCF header once when not in intermediate mode (same var2vcf_valid.pl
@@ -1921,11 +2077,13 @@ fn run_amplicon<W: std::io::Write>(
         };
         let mut vars_per_amplicon: Vec<crate::javamap::JavaHashMap<i32, crate::variations::Vars>> =
             Vec::with_capacity(segment.len());
-        let splice = std::collections::HashSet::new();
+        let mut splice = std::collections::HashSet::new();
 
         for region in segment.iter() {
-            let aligned = process_amplicon_region(first_bam, region, config, chromosomes_lengths)?;
+            let (aligned, next_splice) =
+                process_amplicon_region(first_bam, region, config, chromosomes_lengths, splice)?;
             vars_per_amplicon.push(aligned);
+            splice = next_splice;
         }
 
         // Position → covering-amplicon pairs (AmpliconMode.java:57-60).
@@ -2067,7 +2225,7 @@ fn run_amplicon<W: std::io::Write>(
 
 /// Somatic (paired) mode: process tumor BAM, then normal BAM, then compare.
 /// Ports SomaticMode.java's processBothBamsInPipeline.
-fn run_somatic<W: std::io::Write>(
+fn run_somatic<W: EngineWriter>(
     config: &config::Config,
     writer: &mut W,
 ) -> Result<(), VardictError> {
@@ -2090,7 +2248,12 @@ fn run_somatic<W: std::io::Write>(
     let regions = if let Some(ref r_str) = config.region {
         crate::regions::parse_region_flag(r_str, config, &chromosomes_lengths)?
     } else if let Some(ref bed_path) = config.bed {
-        crate::regions::parse_bed(bed_path, config, &chromosomes_lengths, None)?
+        crate::regions::parse_bed(
+            bed_path,
+            config,
+            &chromosomes_lengths,
+            config.zero_based_defined.then_some(config.zero_based),
+        )?
     } else {
         return Err(VardictError::Parse(
             "Either region (-R) or BED file must be specified".to_string(),
@@ -2140,7 +2303,7 @@ fn run_somatic<W: std::io::Write>(
 
     // -h/--header column line (SomaticMode.java:35, 134-150).
     if config.column_header {
-        crate::output::table::print_header(writer, config).map_err(VardictError::Io)?;
+        writer.emit_column_header(config)?;
     }
 
     // Paired VCF header when not in intermediate mode
@@ -4047,6 +4210,177 @@ mod tests {
                 "chr1\t100\t.\tC\tT\tfirst_50".to_string(),
                 "chr2\t500\t.\tA\tT\tlater_75".to_string(),
             ]
+        );
+    }
+
+    #[test]
+    fn resolve_mode_truth_table() {
+        // 16-row truth table over (splice, has_region, amplicon_effective, paired)
+        for splice in [false, true] {
+            for has_region in [false, true] {
+                for amp in [false, true] {
+                    for paired in [false, true] {
+                        let expected = if splice {
+                            CallingMode::Splicing
+                        } else if has_region || !amp {
+                            if paired {
+                                CallingMode::Somatic
+                            } else {
+                                CallingMode::Simple
+                            }
+                        } else {
+                            CallingMode::Amplicon
+                        };
+                        assert_eq!(
+                            resolve_mode(splice, has_region, amp, paired),
+                            expected,
+                            "mismatch for (splice={splice}, has_region={has_region}, amp={amp}, paired={paired})"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn process_amplicon_region_seed_chain() {
+        use noodles::core::Position;
+        use noodles::sam::alignment::record::cigar::{op::Kind, Op};
+        use noodles::sam::alignment::record::data::field::Tag;
+        use noodles::sam::alignment::record::Flags;
+        use noodles::sam::alignment::record_buf::data::field::Value as BufValue;
+        use noodles::sam::alignment::record_buf::{Cigar, Data};
+        use noodles::sam::alignment::RecordBuf;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let fasta_path = dir.path().join("ref.fa");
+        let fai_path = dir.path().join("ref.fa.fai");
+        let ref_bases = "A".repeat(400);
+        std::fs::write(&fasta_path, format!(">chr1\n{ref_bases}\n")).unwrap();
+        std::fs::write(&fai_path, "chr1\t400\t6\t400\t401\n").unwrap();
+
+        let bam_path = dir.path().join("amp.bam");
+        let spliced_cigar: Cigar = [
+            Op::new(Kind::Match, 10),
+            Op::new(Kind::Skip, 20),
+            Op::new(Kind::Match, 10),
+        ]
+        .into_iter()
+        .collect();
+        let data: Data = [(Tag::EDIT_DISTANCE, BufValue::from(0i32))]
+            .into_iter()
+            .collect();
+        let rec = RecordBuf::builder()
+            .set_name("r_amp_splice")
+            .set_flags(Flags::empty())
+            .set_reference_sequence_id(0)
+            .set_alignment_start(Position::try_from(10usize).unwrap())
+            .set_mapping_quality(noodles::sam::alignment::record::MappingQuality::new(60).unwrap())
+            .set_cigar(spliced_cigar)
+            .set_sequence(vec![b'A'; 20].into())
+            .set_quality_scores(vec![40u8; 20].into())
+            .set_data(data)
+            .build();
+        write_test_bam(&bam_path, "chr1", 400, &[rec]);
+
+        let mut chr_lengths = HashMap::new();
+        chr_lengths.insert("chr1".to_string(), 400usize);
+        let cfg = crate::config::Config {
+            bam: bam_path.to_string_lossy().into_owned(),
+            reference: fasta_path.to_string_lossy().into_owned(),
+            amplicon: Some("100:0.1".to_string()),
+            emit_intermediate: true,
+            ..Default::default()
+        };
+        let reg1 = crate::regions::Region {
+            chr: "chr1".to_string(),
+            start: crate::types::Pos1(10),
+            end: crate::types::Pos1(49),
+            gene: "G".to_string(),
+            amplicon: Some(crate::regions::AmpliconInfo {
+                insert_start: crate::types::Pos1(12),
+                insert_end: crate::types::Pos1(47),
+            }),
+        };
+        let reg2 = crate::regions::Region {
+            chr: "chr1".to_string(),
+            start: crate::types::Pos1(150),
+            end: crate::types::Pos1(250),
+            gene: "G".to_string(),
+            amplicon: Some(crate::regions::AmpliconInfo {
+                insert_start: crate::types::Pos1(160),
+                insert_end: crate::types::Pos1(240),
+            }),
+        };
+
+        let (_, splice1) = process_amplicon_region(
+            &cfg.bam,
+            &reg1,
+            &cfg,
+            &chr_lengths,
+            std::collections::HashSet::new(),
+        )
+        .unwrap();
+        assert!(splice1.contains("19-39"));
+
+        let (_, splice2) =
+            process_amplicon_region(&cfg.bam, &reg2, &cfg, &chr_lengths, splice1).unwrap();
+        assert!(
+            splice2.contains("19-39"),
+            "second amplicon segment in cluster must preserve splice junctions from first segment"
+        );
+    }
+
+    #[test]
+    fn resolve_effective_config_splicing_amplicon_and_zero_based() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let amp8_bed = dir.path().join("amp8.bed");
+        std::fs::write(&amp8_bed, "chr1\t100\t200\tG1\t0\t+\t120\t180\n").unwrap();
+        let amp9_bed = dir.path().join("amp9.bed");
+        std::fs::write(&amp9_bed, "chr1\t100\t200\tG1\t0\t+\t120\t180\textra\n").unwrap();
+
+        // 1. Splicing mode with -R and paired BAM resolves sample to first sample even without --emit-intermediate
+        let splice_cfg = crate::config::Config {
+            bam: "tumor.bam|normal.bam".to_string(),
+            sample: "TUMOR|NORMAL".to_string(),
+            sample_explicit: true,
+            region: Some("chr1:100-200".to_string()),
+            splice: true,
+            emit_intermediate: false,
+            ..Default::default()
+        };
+        let (eff_splice, mode_splice) = resolve_effective_config(&splice_cfg).unwrap();
+        assert_eq!(mode_splice, CallingMode::Splicing);
+        assert_eq!(eff_splice.sample, "TUMOR");
+        assert_eq!(eff_splice.bam, "tumor.bam");
+
+        // 2. Explicit -a on a 9-column BED preserves amplicon parameters
+        let amp9_cfg = crate::config::Config {
+            bam: "a.bam".to_string(),
+            bed: Some(amp9_bed.to_string_lossy().into_owned()),
+            amplicon: Some("15:0.90".to_string()),
+            ..Default::default()
+        };
+        let (eff_amp9, mode_amp9) = resolve_effective_config(&amp9_cfg).unwrap();
+        assert_eq!(mode_amp9, CallingMode::Amplicon);
+        assert_eq!(eff_amp9.amplicon.as_deref(), Some("15:0.90"));
+
+        // 3. 8-column amplicon BED auto-detects even when -c 1 (column_for_chromosome) is set,
+        //    and preserves explicit -z 0 (`zero_based_defined = true, zero_based = false`)
+        let amp8_z0_cfg = crate::config::Config {
+            bam: "a.bam".to_string(),
+            bed: Some(amp8_bed.to_string_lossy().into_owned()),
+            column_for_chromosome: Some(0),
+            zero_based: false,
+            zero_based_defined: true,
+            ..Default::default()
+        };
+        let (eff_amp8_z0, mode_amp8_z0) = resolve_effective_config(&amp8_z0_cfg).unwrap();
+        assert_eq!(mode_amp8_z0, CallingMode::Amplicon);
+        assert_eq!(eff_amp8_z0.amplicon.as_deref(), Some("10:0.95"));
+        assert!(
+            !eff_amp8_z0.zero_based,
+            "explicit -z 0 must not be overwritten by amplicon auto-detect"
         );
     }
 }

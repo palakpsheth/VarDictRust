@@ -17,31 +17,106 @@ const UNSUPPORTED_FLAGS: &[&str] = &[
     "--downsample", // long form of -Z
 ];
 
-/// Rewrite Java-style multi-char single-dash options to their clap long forms.
-/// commons-cli accepts `-th` (CmdParser.java:480) and `--th`; clap has no
-/// multi-char shorts, so normalize both to `--threads` before parsing.
+/// Value parser for signed integer CLI options (`-P`, `-x`, `-X`, `-J`, `-j`).
+/// Rejects `"-3"` because Commons-CLI treats `-3` as the short option flag `moveIndelsTo3`,
+/// leaving the preceding option missing its argument (`MissingArgumentException`).
+fn parse_java_signed_i32(s: &str) -> Result<i32, String> {
+    if s == "-3" {
+        return Err("Missing argument for option (-3 is a flag)".to_string());
+    }
+    vardictrust_core::config::parse_java_number_i32(s)
+}
+
+/// Rewrite Java-style multi-char single-dash options and optional-arg flags (`-th`, `-UN`, `-z`, `-a`)
+/// to their clap-compatible forms.
 pub fn normalize_args(args: &[String]) -> Vec<String> {
-    args.iter()
-        .map(|arg| {
-            if arg == "-th" || arg == "--th" {
-                "--threads".to_string()
-            } else if let Some(v) = arg
-                .strip_prefix("-th=")
-                .or_else(|| arg.strip_prefix("--th="))
-            {
-                format!("--threads={v}")
-            } else if let Some(v) = arg
-                .strip_prefix("-th")
-                .filter(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
-            {
-                format!("--threads={v}")
-            } else if arg == "-UN" {
-                "--UN".to_string()
-            } else {
-                arg.clone()
+    let has_region = args.iter().any(|a| {
+        a == "-R" || a.starts_with("-R=") || a == "--region" || a.starts_with("--region=")
+    });
+    let mut out = Vec::with_capacity(args.len());
+    let mut seen_threads = false;
+    let mut i = 0;
+    while i < args.len() {
+        let arg = &args[i];
+        if arg == "-th" || arg == "--th" || arg == "--threads" {
+            let next_is_val = args.get(i + 1).is_some_and(|n| {
+                !n.starts_with('-') && vardictrust_core::config::parse_java_number_usize(n).is_ok()
+            });
+            if !seen_threads {
+                seen_threads = true;
+                out.push("--threads".to_string());
+                if next_is_val {
+                    out.push(args[i + 1].clone());
+                }
             }
-        })
-        .collect()
+            i += if next_is_val { 2 } else { 1 };
+            continue;
+        } else if let Some(v) = arg
+            .strip_prefix("-th=")
+            .or_else(|| arg.strip_prefix("--th="))
+            .or_else(|| arg.strip_prefix("--threads="))
+        {
+            if !seen_threads {
+                seen_threads = true;
+                out.push(format!("--threads={v}"));
+            }
+            i += 1;
+            continue;
+        } else if let Some(v) = arg
+            .strip_prefix("-th")
+            .filter(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
+        {
+            if !seen_threads {
+                seen_threads = true;
+                out.push(format!("--threads={v}"));
+            }
+            i += 1;
+            continue;
+        } else if arg == "-UN" {
+            out.push("--UN".to_string());
+            i += 1;
+            continue;
+        } else if arg == "-z" {
+            let next_is_num = args.get(i + 1).is_some_and(|n| {
+                parse_java_signed_i32(n).is_ok() && (has_region || i + 2 < args.len())
+            });
+            if next_is_num {
+                out.push(format!("-z={}", args[i + 1]));
+                i += 2;
+            } else {
+                out.push("-z=1".to_string());
+                i += 1;
+            }
+            continue;
+        } else if arg == "-a" || arg == "--amplicon" {
+            match args.get(i + 1) {
+                None => {
+                    out.push("-a=10:0.95".to_string());
+                    i += 1;
+                }
+                Some(next) if next.starts_with('-') => {
+                    out.push("-a=10:0.95".to_string());
+                    i += 1;
+                }
+                Some(next) if next.is_empty() => {
+                    out.push("-a=10:0.95".to_string());
+                    i += 2;
+                }
+                Some(next) if next.contains(':') || has_region || i + 2 < args.len() => {
+                    out.push(format!("-a={next}"));
+                    i += 2;
+                }
+                Some(_) => {
+                    out.push("-a=10:0.95".to_string());
+                    i += 1;
+                }
+            }
+            continue;
+        }
+        out.push(arg.clone());
+        i += 1;
+    }
+    out
 }
 
 /// Fail loudly if any known-unimplemented VarDictJava flag was supplied.
@@ -91,48 +166,72 @@ pub struct Cli {
     _help: (),
 
     /// Reference FASTA (.fai required). Aliases: --reference. Accepts hg19/hg38/mm10 shortcuts.
-    #[arg(short = 'G', long = "reference")]
-    pub reference: String,
+    #[arg(short = 'G', long = "reference", required = true, num_args = 1)]
+    pub reference: Vec<String>,
 
     /// Indexed BAM/CRAM. Somatic: "tumor.bam|normal.bam". Alias: --bam.
-    #[arg(short = 'b', long = "bam")]
-    pub bam: String,
+    #[arg(short = 'b', long = "bam", required = true, num_args = 1)]
+    pub bam: Vec<String>,
 
     /// Allele-frequency threshold. Alias: --af-threshold. [default: 0.01]
-    #[arg(short = 'f', long = "af-threshold", default_value = "0.01")]
-    pub freq: String,
+    #[arg(short = 'f', long = "af-threshold", num_args = 1)]
+    pub freq: Vec<String>,
 
     /// Sample name (somatic: "tumor|normal"). Alias: --name.
-    #[arg(short = 'N', long = "name")]
-    pub sample: Option<String>,
+    #[arg(short = 'N', long = "name", num_args = 1)]
+    pub sample: Vec<String>,
 
     /// Region chr:start-end[:gene] (instead of BED).
-    #[arg(short = 'R', long = "region")]
-    pub region: Option<String>,
+    #[arg(short = 'R', long = "region", num_args = 1)]
+    pub region: Vec<String>,
 
     /// BED column for chromosome (1-based).
-    #[arg(short = 'c')]
-    pub col_chr: Option<usize>,
+    #[arg(
+        short = 'c',
+        num_args = 1,
+        value_parser = vardictrust_core::config::parse_java_number_usize
+    )]
+    pub col_chr: Vec<usize>,
 
     /// BED column for start (1-based).
-    #[arg(short = 'S')]
-    pub col_start: Option<usize>,
+    #[arg(
+        short = 'S',
+        num_args = 1,
+        value_parser = vardictrust_core::config::parse_java_number_usize
+    )]
+    pub col_start: Vec<usize>,
 
     /// BED column for end (1-based).
-    #[arg(short = 'E')]
-    pub col_end: Option<usize>,
+    #[arg(
+        short = 'E',
+        num_args = 1,
+        value_parser = vardictrust_core::config::parse_java_number_usize
+    )]
+    pub col_end: Vec<usize>,
 
     /// BED column for segment starts (1-based).
-    #[arg(short = 's')]
-    pub col_seg_start: Option<usize>,
+    #[arg(
+        short = 's',
+        num_args = 1,
+        value_parser = vardictrust_core::config::parse_java_number_usize
+    )]
+    pub col_seg_start: Vec<usize>,
 
     /// BED column for segment ends (1-based).
-    #[arg(short = 'e')]
-    pub col_seg_end: Option<usize>,
+    #[arg(
+        short = 'e',
+        num_args = 1,
+        value_parser = vardictrust_core::config::parse_java_number_usize
+    )]
+    pub col_seg_end: Vec<usize>,
 
     /// BED column for gene (1-based).
-    #[arg(short = 'g')]
-    pub col_gene: Option<usize>,
+    #[arg(
+        short = 'g',
+        num_args = 1,
+        value_parser = vardictrust_core::config::parse_java_number_usize
+    )]
+    pub col_gene: Vec<usize>,
 
     /// Threads. Bare `-th` = all cores (Java readThreadsCount
     /// CmdParser.java:617-628); explicit `-th 0` clamps to 1 via max(n,1)
@@ -142,53 +241,96 @@ pub struct Cli {
     #[arg(
         long = "threads",
         num_args(0..=1),
-        default_missing_value = "18446744073709551615"
+        default_missing_value = "18446744073709551615",
+        value_parser = vardictrust_core::config::parse_java_number_usize
     )]
     pub threads: Option<usize>,
 
     /// Local realignment 0/1. [default: 1]
-    #[arg(short = 'k', default_value_t = 1)]
-    pub realign: u8,
+    #[arg(
+        short = 'k',
+        num_args = 1,
+        value_parser = vardictrust_core::config::parse_java_number_u8
+    )]
+    pub realign: Vec<u8>,
 
     /// Amplicon mode "int:float". [default: 10:0.95 when 8-col BED]
-    #[arg(short = 'a', long = "amplicon")]
-    pub amplicon: Option<String>,
+    #[arg(
+        short = 'a',
+        long = "amplicon",
+        num_args(0..=1),
+        default_missing_value = "10:0.95"
+    )]
+    pub amplicon: Vec<String>,
 
     /// Min variant reads. [default: 2]
-    #[arg(short = 'r', default_value_t = 2)]
-    pub min_reads: u32,
+    #[arg(
+        short = 'r',
+        num_args = 1,
+        value_parser = vardictrust_core::config::parse_java_number_u32
+    )]
+    pub min_reads: Vec<u32>,
 
     /// Min base quality. [default: 22.5]
-    #[arg(short = 'q', default_value_t = 22.5)]
-    pub base_qual: f64,
+    #[arg(
+        short = 'q',
+        num_args = 1,
+        value_parser = vardictrust_core::config::parse_java_number_f64
+    )]
+    pub base_qual: Vec<f64>,
 
     /// Min mapping quality.
-    #[arg(short = 'Q')]
-    pub map_qual: Option<u32>,
+    #[arg(
+        short = 'Q',
+        num_args = 1,
+        value_parser = vardictrust_core::config::parse_java_number_u32
+    )]
+    pub map_qual: Vec<u32>,
 
     /// Mean read position filter. [default: 5]
-    #[arg(short = 'P', default_value_t = 5.0)]
-    pub read_pos: f64,
+    #[arg(
+        short = 'P',
+        num_args = 1,
+        allow_negative_numbers = true,
+        value_parser = parse_java_signed_i32
+    )]
+    pub read_pos: Vec<i32>,
 
     /// Max mismatches. [default: 8]
-    #[arg(short = 'm', default_value_t = 8)]
-    pub max_mismatches: u32,
+    #[arg(
+        short = 'm',
+        num_args = 1,
+        value_parser = vardictrust_core::config::parse_java_number_u32
+    )]
+    pub max_mismatches: Vec<u32>,
 
     /// Minimum match+insertion read length; shorter reads ignored. [default: 0]
-    #[arg(short = 'M', default_value_t = 0)]
-    pub minmatch: u32,
+    #[arg(
+        short = 'M',
+        num_args = 1,
+        value_parser = vardictrust_core::config::parse_java_number_u32
+    )]
+    pub minmatch: Vec<u32>,
 
     /// Min normal AF for somatic. [default: 0.05]
-    #[arg(short = 'V', default_value_t = 0.05)]
-    pub min_normal_af: f64,
+    #[arg(
+        short = 'V',
+        num_args = 1,
+        value_parser = vardictrust_core::config::parse_java_number_f64
+    )]
+    pub min_normal_af: Vec<f64>,
 
     /// Disable SV calling.
     #[arg(short = 'U', long = "nosv")]
     pub no_sv: bool,
 
     /// SV minimum length. [default: 1000]
-    #[arg(short = 'L', default_value_t = 1000)]
-    pub sv_min_len: u32,
+    #[arg(
+        short = 'L',
+        num_args = 1,
+        value_parser = vardictrust_core::config::parse_java_number_u32
+    )]
+    pub sv_min_len: Vec<u32>,
 
     /// Emit the intermediate .var table instead of VCF.
     #[arg(long = "emit-intermediate")]
@@ -199,16 +341,30 @@ pub struct Cli {
     pub fisher: bool,
 
     /// Advanced: region tile size (bp) for bounded-memory WGS. [auto]
-    #[arg(long = "tile-size")]
-    pub tile_size: Option<u32>,
+    #[arg(
+        long = "tile-size",
+        num_args = 1,
+        value_parser = vardictrust_core::config::parse_java_number_u32
+    )]
+    pub tile_size: Vec<u32>,
 
     /// Extension for BED region.
-    #[arg(short = 'x', default_value_t = 0)]
-    pub extension: i32,
+    #[arg(
+        short = 'x',
+        num_args = 1,
+        allow_negative_numbers = true,
+        value_parser = parse_java_signed_i32
+    )]
+    pub extension: Vec<i32>,
 
     /// Number of nucleotide extension. [default: 2]
-    #[arg(short = 'X', default_value_t = 2)]
-    pub extension_nuc: i32,
+    #[arg(
+        short = 'X',
+        num_args = 1,
+        allow_negative_numbers = true,
+        value_parser = parse_java_signed_i32
+    )]
+    pub extension_nuc: Vec<i32>,
 
     /// Shift indel positions to their 3'-most alternative alignment
     /// (ports CmdParser.java:71 moveIndelsTo3; shift3 applied in tovars.rs).
@@ -216,44 +372,82 @@ pub struct Cli {
     pub three_prime: bool,
 
     /// Min reads for bias. [default: 2]
-    #[arg(short = 'B', default_value_t = 2)]
-    pub min_reads_bias: u32,
+    #[arg(
+        short = 'B',
+        num_args = 1,
+        value_parser = vardictrust_core::config::parse_java_number_u32
+    )]
+    pub min_reads_bias: Vec<u32>,
 
     /// qratio filter. [default: 1.5]
-    #[arg(short = 'o', default_value_t = 1.5)]
-    pub qratio: f64,
+    #[arg(
+        short = 'o',
+        num_args = 1,
+        value_parser = vardictrust_core::config::parse_java_number_f64
+    )]
+    pub qratio: Vec<f64>,
 
     /// MapQ for output. [default: 0]
-    #[arg(short = 'O', default_value_t = 0)]
-    pub out_mapq: u32,
+    #[arg(
+        short = 'O',
+        num_args = 1,
+        value_parser = vardictrust_core::config::parse_java_number_f64
+    )]
+    pub out_mapq: Vec<f64>,
 
     /// Indel size. [default: 50]
-    #[arg(short = 'I', default_value_t = 50)]
-    pub indel_size: u32,
+    #[arg(
+        short = 'I',
+        num_args = 1,
+        value_parser = vardictrust_core::config::parse_java_number_u32
+    )]
+    pub indel_size: Vec<u32>,
 
-    /// BED coordinates are 0-based.
-    #[arg(short = 'z')]
-    pub zero_based: bool,
+    /// BED coordinates are 0-based (0: 1-based, 1/empty: 0-based; CmdParser.java:101-112).
+    #[arg(
+        short = 'z',
+        num_args(0..=1),
+        default_missing_value = "1",
+        require_equals = true,
+        value_parser = vardictrust_core::config::parse_java_number_i32
+    )]
+    pub zero_based: Vec<i32>,
 
     /// SAM flag filter. [default: 0x504]
-    #[arg(short = 'F', default_value = "0x504")]
-    pub flag_filter: String,
+    #[arg(short = 'F', num_args = 1)]
+    pub flag_filter: Vec<String>,
 
     /// SV read length. [default: 300]
-    #[arg(short = 'w', default_value_t = 300)]
-    pub sv_read_len: u32,
+    #[arg(
+        short = 'w',
+        num_args = 1,
+        value_parser = vardictrust_core::config::parse_java_number_u32
+    )]
+    pub sv_read_len: Vec<u32>,
 
     /// SV flanking. [default: 100]
-    #[arg(short = 'W', default_value_t = 100)]
-    pub sv_flanking: u32,
+    #[arg(
+        short = 'W',
+        num_args = 1,
+        value_parser = vardictrust_core::config::parse_java_number_u32
+    )]
+    pub sv_flanking: Vec<u32>,
 
     /// SV minimum AF. [default: 4]
-    #[arg(short = 'A', default_value_t = 4)]
-    pub sv_min_af: u32,
+    #[arg(
+        short = 'A',
+        num_args = 1,
+        value_parser = vardictrust_core::config::parse_java_number_u32
+    )]
+    pub sv_min_af: Vec<u32>,
 
     /// Max region length. [default: 1200]
-    #[arg(short = 'Y', default_value_t = 1200)]
-    pub max_region_len: u32,
+    #[arg(
+        short = 'Y',
+        num_args = 1,
+        value_parser = vardictrust_core::config::parse_java_number_u32
+    )]
+    pub max_region_len: Vec<u32>,
 
     /// Column header output: print the .var column names before results
     /// (ports CmdParser.java:67 `printHeader` + SimpleMode.java:114-127).
@@ -275,20 +469,38 @@ pub struct Cli {
     pub deldupvar: bool,
 
     /// Mono frequency threshold. [default: 0.25]
-    #[arg(long = "mfreq", default_value_t = 0.25)]
-    pub mfreq: f64,
+    #[arg(
+        long = "mfreq",
+        num_args = 1,
+        value_parser = vardictrust_core::config::parse_java_number_f64
+    )]
+    pub mfreq: Vec<f64>,
 
     /// Normal mono frequency threshold. [default: 0.1]
-    #[arg(long = "nmfreq", default_value_t = 0.1)]
-    pub nmfreq: f64,
+    #[arg(
+        long = "nmfreq",
+        num_args = 1,
+        value_parser = vardictrust_core::config::parse_java_number_f64
+    )]
+    pub nmfreq: Vec<f64>,
 
     /// CRISPR cutting site.
-    #[arg(short = 'J')]
-    pub crispr_cutting_site: Option<i32>,
+    #[arg(
+        short = 'J',
+        num_args = 1,
+        allow_negative_numbers = true,
+        value_parser = parse_java_signed_i32
+    )]
+    pub crispr_cutting_site: Vec<i32>,
 
     /// CRISPR flanking size.
-    #[arg(short = 'j')]
-    pub crispr_flanking_size: Option<i32>,
+    #[arg(
+        short = 'j',
+        num_args = 1,
+        allow_negative_numbers = true,
+        value_parser = parse_java_signed_i32
+    )]
+    pub crispr_flanking_size: Vec<i32>,
 
     /// Splice mode.
     #[arg(short = 'i', long = "splice")]
@@ -310,7 +522,7 @@ pub struct Cli {
         num_args(0..=1),
         default_missing_value = "OUT"
     )]
-    pub debug_print: Option<String>,
+    pub debug_print: Vec<String>,
 
     /// Verbose mode.
     #[arg(short = 'y', long = "verbose")]
@@ -322,12 +534,12 @@ pub struct Cli {
     pub dedup: bool,
 
     /// Filter adaptor sequences so that they are not used in realignment. Multiple adaptors can be supplied by setting them with comma.
-    #[arg(long = "adaptor")]
-    pub adaptor: Option<String>,
+    #[arg(long = "adaptor", num_args = 1)]
+    pub adaptor: Vec<String>,
 
     /// The delimiter for splitting region info. [default: \t]
-    #[arg(short = 'd', default_value = "\t")]
-    pub delimiter: String,
+    #[arg(short = 'd', num_args = 1)]
+    pub delimiter: Vec<String>,
 
     /// Indicate unique mode, which when mate pairs overlap, the overlapping part will be counted only once using forward read only (-u).
     #[arg(short = 'u')]
@@ -352,33 +564,31 @@ fn all_cores() -> usize {
 }
 
 impl Cli {
-    /// Convert CLI args to a core Config.
+    /// Convert CLI args to a core Config (first-wins on repeated scalar options per Commons-CLI).
     pub fn to_config(
         &self,
     ) -> Result<vardictrust_core::config::Config, vardictrust_core::types::VardictError> {
-        let flag_filter =
-            if self.flag_filter.starts_with("0x") || self.flag_filter.starts_with("0X") {
-                u32::from_str_radix(&self.flag_filter[2..], 16).map_err(|e| {
-                    vardictrust_core::types::VardictError::Parse(format!(
-                        "Invalid -F value '{}': {}",
-                        self.flag_filter, e
-                    ))
-                })?
-            } else {
-                self.flag_filter.parse().map_err(|e| {
-                    vardictrust_core::types::VardictError::Parse(format!(
-                        "Invalid -F value '{}': {}",
-                        self.flag_filter, e
-                    ))
-                })?
-            };
+        let flag_filter_raw = self
+            .flag_filter
+            .first()
+            .map(|s| s.as_str())
+            .unwrap_or("0x504");
+        let decoded_flag =
+            vardictrust_core::config::java_integer_decode(flag_filter_raw).map_err(|e| {
+                vardictrust_core::types::VardictError::Parse(format!(
+                    "Invalid -F value '{}': {}",
+                    flag_filter_raw, e
+                ))
+            })?;
+        let flag_filter = decoded_flag as u32;
 
-        if let Some(0) = self.tile_size {
+        let tile_size = self.tile_size.first().copied();
+        if let Some(0) = tile_size {
             return Err(vardictrust_core::types::VardictError::Parse(
                 "Invalid --tile-size: 0. Tile size must be >= 1".into(),
             ));
         }
-        if let Some(n) = self.tile_size {
+        if let Some(n) = tile_size {
             if n > vardictrust_core::MAX_TILE_SIZE {
                 return Err(vardictrust_core::types::VardictError::Parse(format!(
                     "Invalid --tile-size: {}. Must be <= {} to avoid u32 wrap",
@@ -388,48 +598,95 @@ impl Cli {
             }
         }
 
-        let parsed_freq: f64 = self.freq.parse().map_err(|e| {
-            vardictrust_core::types::VardictError::Parse(format!(
-                "Invalid -f value '{}': {}",
-                self.freq, e
-            ))
-        })?;
+        let freq_str = self.freq.first().map(|s| s.as_str()).unwrap_or("0.01");
+        let parsed_freq: f64 = vardictrust_core::config::parse_java_number_f64(freq_str)
+            .or_else(|e| {
+                if freq_str.eq_ignore_ascii_case("0e0") {
+                    Ok(0.0)
+                } else {
+                    Err(e)
+                }
+            })
+            .map_err(|e| {
+                vardictrust_core::types::VardictError::Parse(format!(
+                    "Invalid -f value '{}': {}",
+                    freq_str, e
+                ))
+            })?;
         // In Perl (`var2vcf_valid.pl:21`: `my $Freq = $opt_f ? $opt_f : 0.02;`),
         // only `"0"` (or `""`) is falsy; non-`"0"` zero spellings such as `"0.0"`
         // or `"0.00"` are truthy strings in Perl boolean context and keep `0.0`.
-        let af_threshold_truthy_zero = parsed_freq == 0.0 && self.freq.trim() != "0";
+        let af_threshold_truthy_zero = parsed_freq == 0.0 && freq_str.trim() != "0";
+
+        let bam_str = self.bam.first().cloned().unwrap_or_default();
+        let region_opt = self.region.first().cloned();
+        let sample_explicit = !self.sample.is_empty();
+        let sample = if let Some(explicit) = self.sample.first() {
+            if region_opt.is_some() && bam_str.contains('|') && self.emit_intermediate {
+                explicit.split('|').next().unwrap_or(explicit).to_string()
+            } else {
+                explicit.clone()
+            }
+        } else if region_opt.is_some() && bam_str.contains('|') && self.emit_intermediate {
+            let first_bam = bam_str.split('|').next().unwrap_or(&bam_str);
+            vardictrust_core::config::extract_sample_name(first_bam, None)
+        } else if !self.emit_intermediate && bam_str.contains('|') {
+            let mut parts = bam_str.splitn(2, '|');
+            let b1 = parts.next().unwrap_or("");
+            let b2 = parts.next().unwrap_or("");
+            let s1 = vardictrust_core::config::extract_sample_name(b1, None);
+            let s2 = vardictrust_core::config::extract_sample_name(b2, None);
+            format!("{s1}|{s2}")
+        } else {
+            vardictrust_core::config::extract_sample_name(&bam_str, None)
+        };
+
+        let col_chr = self.col_chr.first().copied();
+        let col_start = self.col_start.first().copied();
+        let col_end = self.col_end.first().copied();
+        let col_seg_start = self.col_seg_start.first().copied();
+        let col_seg_end = self.col_seg_end.first().copied();
+        let col_gene = self.col_gene.first().copied();
+
+        let amplicon = self.amplicon.first().map(|raw| {
+            if let Some((d_str, o_str)) = raw.split_once(':') {
+                if d_str.parse::<i32>().is_ok() && o_str.parse::<f64>().is_ok() {
+                    return raw.clone();
+                }
+            }
+            "10:0.95".to_string()
+        });
 
         let mut cfg = vardictrust_core::config::Config {
             exception_counter: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-            reference: self.reference.clone(),
-            bam: self.bam.clone(),
+            reference: self.reference.first().cloned().unwrap_or_default(),
+            bam: bam_str,
             freq: parsed_freq,
             // The writer's $Freq is the literal -f value even under -p (perl
             // receives -f from the pipeline, not java's pileup override).
             af_threshold: parsed_freq,
             af_threshold_truthy_zero,
-            sample: self
-                .sample
-                .clone()
-                .unwrap_or_else(|| vardictrust_core::config::extract_sample_name(&self.bam, None)),
-            region: self.region.clone(),
+            sample,
+            sample_explicit,
+            region: region_opt,
             bed: self.bed.clone(),
-            delimiter: self.delimiter.clone(),
-            col_chr: self.col_chr.map(|c| c.saturating_sub(1)).unwrap_or(2),
-            col_start: self.col_start.map(|s| s.saturating_sub(1)).unwrap_or(6),
-            col_end: self.col_end.map(|e| e.saturating_sub(1)).unwrap_or(7),
-            col_seg_start: self
-                .col_seg_start
+            delimiter: self
+                .delimiter
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "\t".to_string()),
+            col_chr: col_chr.map(|c| c.saturating_sub(1)).unwrap_or(2),
+            col_start: col_start.map(|s| s.saturating_sub(1)).unwrap_or(6),
+            col_end: col_end.map(|e| e.saturating_sub(1)).unwrap_or(7),
+            col_seg_start: col_seg_start
                 .map(|s| s.saturating_sub(1))
-                .or_else(|| self.col_start.map(|s| s.saturating_sub(1)))
+                .or_else(|| col_start.map(|s| s.saturating_sub(1)))
                 .unwrap_or(9),
-            col_seg_end: self
-                .col_seg_end
+            col_seg_end: col_seg_end
                 .map(|e| e.saturating_sub(1))
-                .or_else(|| self.col_end.map(|e| e.saturating_sub(1)))
+                .or_else(|| col_end.map(|e| e.saturating_sub(1)))
                 .unwrap_or(10),
-            col_gene: self
-                .col_gene
+            col_gene: col_gene
                 .map(|g| {
                     if g > 0 {
                         Some(g.saturating_sub(1))
@@ -438,7 +695,7 @@ impl Cli {
                     }
                 })
                 .unwrap_or(Some(12)),
-            column_for_chromosome: self.col_chr.map(|c| c.saturating_sub(1)),
+            column_for_chromosome: col_chr.map(|c| c.saturating_sub(1)),
             // Java: bare -th → availableProcessors (CmdParser.java:621-623),
             // -th N (incl. explicit 0) → max(N,1) (:162). Absent flag stays
             // all-cores (perf-only divergence; no output effect — task P1
@@ -448,35 +705,37 @@ impl Cli {
                 Some(n) if n == usize::MAX => all_cores(),
                 Some(n) => n.max(1),
             },
-            realign: self.realign,
-            min_reads: self.min_reads,
-            base_qual: self.base_qual,
-            map_qual: self.map_qual,
-            read_pos: self.read_pos,
-            max_mismatches: self.max_mismatches,
-            minmatch: self.minmatch,
-            lofreq: self.min_normal_af,
+            realign: self.realign.first().copied().unwrap_or(1),
+            min_reads: self.min_reads.first().copied().unwrap_or(2),
+            base_qual: self.base_qual.first().copied().unwrap_or(22.5),
+            map_qual: self.map_qual.first().copied(),
+            read_pos: self.read_pos.first().copied().unwrap_or(5) as f64,
+            max_mismatches: self.max_mismatches.first().copied().unwrap_or(8),
+            minmatch: self.minmatch.first().copied().unwrap_or(0),
+            lofreq: self.min_normal_af.first().copied().unwrap_or(0.05),
             no_sv: self.no_sv,
-            sv_min_len: self.sv_min_len,
+            sv_min_len: self.sv_min_len.first().copied().unwrap_or(1000),
             emit_intermediate: self.emit_intermediate,
             fisher: self.fisher,
-            tile_size: self.tile_size,
-            amplicon: self.amplicon.clone(),
-            extension: self.extension,
-            extension_nuc: self.extension_nuc,
+            tile_size,
+            amplicon,
+            extension: self.extension.first().copied().unwrap_or(0),
+            extension_nuc: self.extension_nuc.first().copied().unwrap_or(2),
             three_prime: self.three_prime,
-            min_reads_bias: self.min_reads_bias,
-            qratio: self.qratio,
-            out_mapq: self.out_mapq,
-            indel_size: self.indel_size,
-            zero_based: self.zero_based,
+            min_reads_bias: self.min_reads_bias.first().copied().unwrap_or(2),
+            qratio: self.qratio.first().copied().unwrap_or(1.5),
+            out_mapq: self.out_mapq.first().copied().unwrap_or(0.0),
+            indel_size: self.indel_size.first().copied().unwrap_or(50),
+            zero_based: self.zero_based.first().is_some_and(|&v| v == 1),
+            zero_based_defined: !self.zero_based.is_empty(),
             flag_filter,
-            sv_read_len: self.sv_read_len,
-            sv_flanking: self.sv_flanking,
-            sv_min_af: self.sv_min_af,
-            max_region_len: self.max_region_len,
-            mfreq: self.mfreq,
-            nmfreq: self.nmfreq,
+            samfilter_raw: flag_filter_raw.to_string(),
+            sv_read_len: self.sv_read_len.first().copied().unwrap_or(300),
+            sv_flanking: self.sv_flanking.first().copied().unwrap_or(100),
+            sv_min_af: self.sv_min_af.first().copied().unwrap_or(4),
+            max_region_len: self.max_region_len.first().copied().unwrap_or(1200),
+            mfreq: self.mfreq.first().copied().unwrap_or(0.25),
+            nmfreq: self.nmfreq.first().copied().unwrap_or(0.1),
             chimeric: self.chimeric,
             deldupvar: self.deldupvar,
             splice: self.splice,
@@ -484,26 +743,26 @@ impl Cli {
             debug: self.debug,
             // ports CmdParser.java:171-176: bare -DP → "OUT"; unknown
             // values silently fall back to "OUT" (only ERR is honored).
-            debug_print: self.debug_print.as_ref().map(|v| {
+            debug_print: self.debug_print.first().map(|v| {
                 if v == "ERR" {
                     v.clone()
                 } else {
                     "OUT".to_string()
                 }
             }),
-            crispr_cutting_site: self.crispr_cutting_site,
-            crispr_flanking_size: self.crispr_flanking_size,
+            crispr_cutting_site: self.crispr_cutting_site.first().copied(),
+            crispr_flanking_size: self.crispr_flanking_size.first().copied(),
             column_header: self.column_header,
             dedup: self.dedup,
             adaptor: self
                 .adaptor
-                .as_ref()
+                .first()
                 .map(|s| s.split(',').map(|x| x.to_string()).collect())
                 .unwrap_or_default(),
             verbose: self.verbose,
             unique_mode_alignment_enabled: self.unique_mode_alignment_enabled,
             unique_mode_second_in_pair_enabled: self.unique_mode_second_in_pair_enabled,
-            omit_end_tag: self.col_end.is_some(),
+            omit_end_tag: col_end.is_some(),
             include_n: self.include_n,
         };
         cfg.apply_pileup_overrides();
@@ -560,7 +819,7 @@ mod tests {
             "-G", "r.fa", "-b", "a.bam", "-th=2", "--th", "8",
         ])))
         .unwrap();
-        assert_eq!(cli.threads, Some(8)); // args_override_self
+        assert_eq!(cli.threads, Some(2)); // first-wins (CmdParser.java)
     }
 
     #[test]
@@ -767,5 +1026,86 @@ mod tests {
                 "argv={argv:?}"
             );
         }
+    }
+
+    #[test]
+    fn java_number_parse_table() {
+        use vardictrust_core::config::{parse_java_number_f64, parse_java_number_i32};
+
+        assert_eq!(parse_java_number_i32("2.9").unwrap(), 2);
+        assert_eq!(parse_java_number_i32("2.9f").unwrap(), 2);
+        assert_eq!(parse_java_number_i32(" 2.9d ").unwrap(), 2);
+        assert_eq!(parse_java_number_i32("-100").unwrap(), -100);
+        assert_eq!(parse_java_number_f64("22.5f").unwrap(), 22.5);
+        assert_eq!(parse_java_number_f64("22.5D").unwrap(), 22.5);
+        assert_eq!(parse_java_number_f64("1.5e2").unwrap(), 150.0);
+
+        for bad in ["1e1", "NaN", "inf", "Infinity", " 10", "10 ", ""] {
+            assert!(
+                parse_java_number_i32(bad).is_err(),
+                "expected i32 parse error on '{bad}'"
+            );
+            assert!(
+                parse_java_number_f64(bad).is_err(),
+                "expected f64 parse error on '{bad}'"
+            );
+        }
+
+        // CLI integration: -P truncates float to int, -O accepts float, -x accepts negative,
+        // repeated scalar options use first-wins, -a "" falls back to 10:0.95, -z 0 disables zero_based.
+        let norm = normalize_args(&args(&[
+            "-b",
+            "a.bam",
+            "-G",
+            "r.fa",
+            "-P",
+            "2.9",
+            "-O",
+            "12.5",
+            "-x",
+            "-5",
+            "-m",
+            "5",
+            "-m",
+            "10",
+            "-a",
+            "",
+            "-z",
+            "0",
+            "regions.bed",
+        ]));
+        let cli = Cli::try_parse_from(&norm).unwrap();
+        let cfg = cli.to_config().unwrap();
+        assert_eq!(cfg.read_pos, 2.0);
+        assert_eq!(cfg.out_mapq, 12.5);
+        assert_eq!(cfg.extension, -5);
+        assert_eq!(cfg.max_mismatches, 5);
+        assert_eq!(cfg.amplicon.as_deref(), Some("10:0.95"));
+        assert!(!cfg.zero_based);
+        assert!(cfg.zero_based_defined);
+        assert_eq!(cfg.bed.as_deref(), Some("regions.bed"));
+
+        // -z 2 disables zero_based (CmdParser.java:75 `1 == getIntValue(cmd, "z", 1)`)
+        let norm_z2 = normalize_args(&args(&["-b", "a.bam", "-G", "r.fa", "-z", "2", "r.bed"]));
+        let cfg_z2 = Cli::try_parse_from(&norm_z2).unwrap().to_config().unwrap();
+        assert!(!cfg_z2.zero_based);
+        assert!(cfg_z2.zero_based_defined);
+
+        // -z -3 leaves -z as bare (-z=1) and preserves -3 (three_prime = true)
+        let norm_z_3 = normalize_args(&args(&["-b", "a.bam", "-G", "r.fa", "-z", "-3", "r.bed"]));
+        let cfg_z_3 = Cli::try_parse_from(&norm_z_3).unwrap().to_config().unwrap();
+        assert!(cfg_z_3.zero_based);
+        assert!(cfg_z_3.zero_based_defined);
+        assert!(cfg_z_3.three_prime);
+
+        // -th 2 -th 8.0 consumes 8.0 via Java number lookahead and keeps first thread count 2
+        let norm_th = normalize_args(&args(&[
+            "-b", "a.bam", "-G", "r.fa", "-th", "2", "-th", "8.0", "r.bed",
+        ]));
+        let cfg_th = Cli::try_parse_from(&norm_th).unwrap().to_config().unwrap();
+        assert_eq!(cfg_th.threads, 2);
+
+        // -x -3 must fail (Commons-CLI treats -3 as flag)
+        assert!(Cli::try_parse_from(args(&["-b", "a.bam", "-G", "r.fa", "-x", "-3"])).is_err());
     }
 }

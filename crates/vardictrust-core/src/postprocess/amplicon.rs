@@ -401,11 +401,15 @@ pub fn amplicon_post_process_streaming(
                 if !ref_vars.is_empty() {
                     vref_list = vec![ref_vars[0].clone()];
                 } else {
-                    // Output empty variant at this position
+                    // Output empty variant at this position (AmpliconPostProcessModule.java:105-106,
+                    // AmpliconOutputVariant.java:25,27,54-60: new Variant() has genotype="", bias="0;0",
+                    // leftseq="", rightseq="").
                     let mut vref = Variant::new();
                     vref.start_pos = position;
                     vref.end_pos = position;
                     vref.var_type = String::new();
+                    vref.bias = "0;0".to_string();
+                    vref.null_record = true;
                     emit(AmpliconVariant {
                         variant: vref,
                         gdamp: 0,

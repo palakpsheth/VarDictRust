@@ -15,6 +15,8 @@ pub struct Config {
     pub freq: f64,
     /// Sample name(s).
     pub sample: String,
+    /// True when `-N` was explicitly passed on the CLI (`Configuration.sample` != null before `initResources`).
+    pub sample_explicit: bool,
     /// Region string (if -R provided).
     pub region: Option<String>,
     /// BED file path (positional).
@@ -72,14 +74,18 @@ pub struct Config {
     pub min_reads_bias: u32,
     /// qratio threshold (default: 1.5).
     pub qratio: f64,
-    /// MapQ for output (default: 0).
-    pub out_mapq: u32,
+    /// MapQ for output (`Configuration.outputMapq: Double`, default: 0.0).
+    pub out_mapq: f64,
     /// Indel size (default: 50).
     pub indel_size: u32,
     /// Zero-based BED coordinates.
     pub zero_based: bool,
+    /// True when `-z` was explicitly supplied on the command line (`Configuration.isZeroBasedDefined()`).
+    pub zero_based_defined: bool,
     /// SAM flag filter (default: 0x504).
     pub flag_filter: u32,
+    /// Raw `-F` CLI string (`Configuration.samfilter: String`, default: `"0x504"`).
+    pub samfilter_raw: String,
     /// SV parameters.
     pub sv_read_len: u32,
     pub sv_flanking: u32,
@@ -139,6 +145,7 @@ impl Default for Config {
             af_threshold: 0.01,
             af_threshold_truthy_zero: false,
             sample: "SAMPLE".to_string(),
+            sample_explicit: false,
             region: None,
             bed: None,
             delimiter: "\t".to_string(),
@@ -169,10 +176,12 @@ impl Default for Config {
             three_prime: false,
             min_reads_bias: 2,
             qratio: 1.5,
-            out_mapq: 0,
+            out_mapq: 0.0,
             indel_size: 50,
             zero_based: false,
+            zero_based_defined: false,
             flag_filter: 0x504,
+            samfilter_raw: "0x504".to_string(),
             sv_read_len: 300,
             sv_flanking: 100,
             sv_min_af: 4,
@@ -213,61 +222,169 @@ impl Config {
             self.min_reads = 0;
         }
     }
+
+    /// Ports `!conf.samfilter.equals("0")` in `SamView.java:101` (`0x100` secondary alignment skip)
+    /// and `CigarParser.java:367` (`0x800` supplementary alignment skip).
+    /// When `samfilter_raw` was updated from default `"0x504"`, checks `samfilter_raw != "0"`;
+    /// otherwise falls back to `flag_filter != 0` so programmatic tests setting `config.flag_filter = 0` work.
+    pub fn skip_secondary_and_supplementary(&self) -> bool {
+        if self.samfilter_raw != "0x504" {
+            self.samfilter_raw != "0"
+        } else {
+            self.flag_filter != 0
+        }
+    }
+}
+
+/// Ports `java.lang.Integer.decode(String)` (`Configuration.java:155` / `SamView.java:53`):
+/// - Rejects empty strings and strings with leading/trailing whitespace.
+/// - Handles optional leading `+` or `-` sign.
+/// - Detects radix from prefix: `0x` / `0X` / `#` -> 16, leading `0` with remaining length > 1 -> 8, else 10.
+/// - Rejects a second sign character after the radix prefix (`0x-1`, `0x+1`, `#-1`).
+/// - Parses into `i64` and validates `i32::MIN..=i32::MAX` (so `"0xFFFFFFFF"` is rejected).
+pub fn java_integer_decode(s: &str) -> Result<i32, String> {
+    if s.is_empty() || s.trim() != s {
+        return Err(format!("For input string: \"{s}\""));
+    }
+    let (negative, rest) = if let Some(r) = s.strip_prefix('-') {
+        (true, r)
+    } else if let Some(r) = s.strip_prefix('+') {
+        (false, r)
+    } else {
+        (false, s)
+    };
+    let (radix, digits) =
+        if let Some(r) = rest.strip_prefix("0x").or_else(|| rest.strip_prefix("0X")) {
+            (16u32, r)
+        } else if let Some(r) = rest.strip_prefix('#') {
+            (16u32, r)
+        } else if rest.starts_with('0') && rest.len() > 1 {
+            (8u32, &rest[1..])
+        } else {
+            (10u32, rest)
+        };
+    if digits.is_empty() || digits.starts_with('-') || digits.starts_with('+') {
+        return Err(format!("For input string: \"{s}\""));
+    }
+    let mag =
+        i64::from_str_radix(digits, radix).map_err(|_| format!("For input string: \"{s}\""))?;
+    let val = if negative { -mag } else { mag };
+    i32::try_from(val).map_err(|_| format!("For input string: \"{s}\""))
+}
+
+/// Ports `org.apache.commons.cli.TypeHandler.createNumber(String).doubleValue()` (`CmdParser.java`).
+/// - If `s` contains `.`: parses as Java `Double.valueOf(s)` (trims whitespace, strips optional trailing
+///   `f`/`F`/`d`/`D`, rejects `NaN`/`Infinity`).
+/// - Otherwise: parses as `Long.valueOf(s)` (strict base-10 signed 64-bit integer, no whitespace or exponent)
+///   and converts to `f64`.
+pub fn parse_java_number_f64(s: &str) -> Result<f64, String> {
+    if s.contains('.') {
+        let trimmed = s.trim();
+        let core = trimmed
+            .strip_suffix(['f', 'F', 'd', 'D'])
+            .unwrap_or(trimmed);
+        if core.is_empty() {
+            return Err(format!("Invalid numeric value '{s}'"));
+        }
+        let v = core
+            .parse::<f64>()
+            .map_err(|_| format!("Invalid numeric value '{s}'"))?;
+        if !v.is_finite() {
+            return Err(format!("Invalid numeric value '{s}'"));
+        }
+        Ok(v)
+    } else {
+        if s.is_empty() || s.trim() != s {
+            return Err(format!("Invalid numeric value '{s}'"));
+        }
+        let v = s
+            .parse::<i64>()
+            .map_err(|_| format!("Invalid numeric value '{s}'"))?;
+        Ok(v as f64)
+    }
+}
+
+/// Ports `((Number) cmd.getParsedOptionValue(...)).intValue()` (`CmdParser.java`).
+pub fn parse_java_number_i32(s: &str) -> Result<i32, String> {
+    if s.contains('.') {
+        let v = parse_java_number_f64(s)?;
+        Ok(v as i32)
+    } else {
+        if s.is_empty() || s.trim() != s {
+            return Err(format!("Invalid integer value '{s}'"));
+        }
+        let v = s
+            .parse::<i64>()
+            .map_err(|_| format!("Invalid integer value '{s}'"))?;
+        Ok(v as i32)
+    }
+}
+
+/// Unsigned `u32` wrapper around [`parse_java_number_i32`] rejecting negative results.
+pub fn parse_java_number_u32(s: &str) -> Result<u32, String> {
+    let v = parse_java_number_i32(s)?;
+    u32::try_from(v).map_err(|_| format!("Invalid non-negative integer value '{s}'"))
+}
+
+/// Unsigned `usize` wrapper around [`parse_java_number_i32`] rejecting negative results.
+pub fn parse_java_number_usize(s: &str) -> Result<usize, String> {
+    if s == "18446744073709551615" {
+        return Ok(usize::MAX);
+    }
+    let v = parse_java_number_i32(s)?;
+    usize::try_from(v).map_err(|_| format!("Invalid non-negative integer value '{s}'"))
+}
+
+/// Unsigned `u8` wrapper around [`parse_java_number_i32`] rejecting out-of-range results.
+pub fn parse_java_number_u8(s: &str) -> Result<u8, String> {
+    let v = parse_java_number_i32(s)?;
+    u8::try_from(v).map_err(|_| format!("Invalid u8 value '{s}'"))
 }
 
 /// Extract sample name from a BAM file path (or `bam1|bam2` specification),
-/// optionally applying a custom regex capture group 1 first, then falling back
-/// to `cli.rs`'s default regexes (`Configuration.java`).
+/// matching `VarDictLauncher.java:75-102` and `Patterns.java:65-67`:
+/// 1. `SAMPLE_PATTERN` (`([^/\\._]+).sorted[^/]*\.bam`) or custom `-n` regex (with leading/trailing `/` stripped)
+///    applied to the full `bam_path` (`conf.bam.getBamRaw()`).
+/// 2. `SAMPLE_PATTERN2` (`([^/]+)[_\.][^/]*bam`) applied to the full `bam_path`.
+/// 3. Fallback `"null"` (`VarDictLauncher.java:76`).
 pub fn extract_sample_name(bam_path: &str, sample_regexp: Option<&str>) -> String {
     static SAMPLE_RE1: std::sync::LazyLock<Option<regex::Regex>> =
-        std::sync::LazyLock::new(|| regex::Regex::new(r"([^/\\._]+).sorted[^/]*\.bam").ok());
+        std::sync::LazyLock::new(|| regex::Regex::new(r"([^/\._]+).sorted[^/]*\.bam").ok());
     static SAMPLE_RE2: std::sync::LazyLock<Option<regex::Regex>> =
-        std::sync::LazyLock::new(|| regex::Regex::new(r"([^/\\]+)[_\.][^/\\]*bam").ok());
+        std::sync::LazyLock::new(|| regex::Regex::new(r"([^/]+)[_\.][^/]*bam").ok());
 
-    let first_bam = bam_path
-        .split('|')
-        .next()
-        .unwrap_or(bam_path)
-        .split(':')
-        .next()
-        .unwrap_or(bam_path);
-
-    if let Some(re_str) = sample_regexp {
-        if let Ok(re) = regex::Regex::new(re_str) {
-            if let Some(caps) = re.captures(first_bam).or_else(|| re.captures(bam_path)) {
+    if let Some(re_str) = sample_regexp.filter(|s| !s.is_empty()) {
+        let mut pat = re_str;
+        if let Some(s) = pat.strip_prefix('/') {
+            pat = s;
+        }
+        if let Some(s) = pat.strip_suffix('/') {
+            pat = s;
+        }
+        if let Ok(re) = regex::Regex::new(pat) {
+            if let Some(caps) = re.captures(bam_path) {
                 if let Some(m) = caps.get(1) {
                     return m.as_str().to_string();
                 }
             }
         }
-    }
-
-    let filename = if let Some(idx) = first_bam.rfind('/') {
-        &first_bam[idx + 1..]
-    } else {
-        first_bam
-    };
-
-    if let Some(re1) = SAMPLE_RE1.as_ref() {
-        if let Some(caps) = re1.captures(filename) {
+    } else if let Some(re1) = SAMPLE_RE1.as_ref() {
+        if let Some(caps) = re1.captures(bam_path) {
             if let Some(m) = caps.get(1) {
                 return m.as_str().to_string();
             }
         }
     }
+
     if let Some(re2) = SAMPLE_RE2.as_ref() {
-        if let Some(caps) = re2.captures(filename) {
+        if let Some(caps) = re2.captures(bam_path) {
             if let Some(m) = caps.get(1) {
                 return m.as_str().to_string();
             }
         }
     }
 
-    if !filename.is_empty() {
-        filename.to_string()
-    } else {
-        "SAMPLE".to_string()
-    }
+    "null".to_string()
 }
 
 #[cfg(test)]
@@ -282,6 +399,7 @@ mod tests {
         assert!((c.base_qual - 22.5).abs() < f64::EPSILON);
         assert_eq!(c.realign, 1);
         assert_eq!(c.flag_filter, 0x504);
+        assert_eq!(c.samfilter_raw, "0x504");
         assert!((c.mfreq - 0.25).abs() < f64::EPSILON);
         assert!((c.nmfreq - 0.1).abs() < f64::EPSILON);
         assert_eq!(c.col_chr, 2);
@@ -294,20 +412,36 @@ mod tests {
     }
 
     #[test]
+    fn java_integer_decode_table() {
+        assert_eq!(java_integer_decode("0x504").unwrap(), 0x504);
+        assert_eq!(java_integer_decode("0X504").unwrap(), 0x504);
+        assert_eq!(java_integer_decode("#504").unwrap(), 0x504);
+        assert_eq!(java_integer_decode("1284").unwrap(), 1284);
+        assert_eq!(java_integer_decode("+1284").unwrap(), 1284);
+        assert_eq!(java_integer_decode("02404").unwrap(), 0o2404);
+        assert_eq!(java_integer_decode("0").unwrap(), 0);
+        assert_eq!(java_integer_decode("00").unwrap(), 0);
+        assert_eq!(java_integer_decode("-0x10").unwrap(), -16);
+        assert_eq!(java_integer_decode("-010").unwrap(), -8);
+        assert!(java_integer_decode("0x-1").is_err());
+        assert!(java_integer_decode("0x+1").is_err());
+        assert!(java_integer_decode("08").is_err());
+        assert!(java_integer_decode("0xFFFFFFFF").is_err());
+        assert!(java_integer_decode(" 10").is_err());
+        assert!(java_integer_decode("").is_err());
+    }
+
+    #[test]
     fn extract_sample_name_and_pileup_overrides() {
         assert_eq!(
             extract_sample_name("/path/to/MySample.sorted.bam", None),
             "MySample"
         );
         assert_eq!(
-            extract_sample_name("/path/to/Tumor.bam|/path/to/Normal.bam", None),
-            "Tumor"
-        );
-        assert_eq!(
             extract_sample_name("sample_ABC_123.bam", Some(r"sample_([A-Z]+)_\d+")),
             "ABC"
         );
-        assert_eq!(extract_sample_name("", None), "SAMPLE");
+        assert_eq!(extract_sample_name("", None), "null");
 
         let mut cfg = Config::default();
         cfg.apply_pileup_overrides();
@@ -318,5 +452,35 @@ mod tests {
         cfg.apply_pileup_overrides();
         assert!((cfg.freq - (-1.0)).abs() < f64::EPSILON);
         assert_eq!(cfg.min_reads, 0);
+    }
+
+    #[test]
+    fn extract_sample_name_java_exact() {
+        assert_eq!(
+            extract_sample_name("/dir/foo_bar.sorted.dup.bam", None),
+            "bar"
+        );
+        assert_eq!(extract_sample_name("/dir/foo.sorted.dup.bam", None), "foo");
+        assert_eq!(
+            extract_sample_name("/dir/fooXsorted.bam", None),
+            "foo",
+            "SAMPLE_PATTERN has unescaped '.' before 'sorted'"
+        );
+        assert_eq!(
+            extract_sample_name("aligned_bams/NA12878.bam", None),
+            "aligned",
+            "SAMPLE_PATTERN2 matches 'aligned_bam' in directory name when applied to raw -b path"
+        );
+        assert_eq!(extract_sample_name("/dir/foo_bar.bam", None), "foo_bar");
+        assert_eq!(extract_sample_name("/dir/foo.cram", None), "null");
+        assert_eq!(
+            extract_sample_name("t.bam|n.bam", None),
+            "t.bam|n",
+            "SAMPLE_PATTERN2 is greedy across `|` when applied to full bamRaw"
+        );
+        assert_eq!(
+            extract_sample_name("/dir/sample_42.bam", Some("/sample_(\\d+)/")),
+            "42"
+        );
     }
 }
