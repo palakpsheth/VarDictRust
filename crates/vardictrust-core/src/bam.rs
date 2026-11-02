@@ -2401,11 +2401,10 @@ impl RecordPreprocessor {
         // CIGAR query consumption consistency check (SAMv1 §1.4.6)
         // Corrupted or hostile reads where CIGAR query consumption exceeds SEQ length
         // or quality scores length cause out-of-bounds indexing in downstream pileup/parsers.
-        let query_consumption =
-            crate::cigar::parse::get_soft_clipped_length(&record.cigar) as usize;
-        if query_consumption > record.sequence.len()
+        let query_consumption = crate::cigar::parse::query_consumed_len(&record.cigar);
+        if query_consumption > record.sequence.len() as u64
             || (!record.quality_scores.is_empty()
-                && query_consumption > record.quality_scores.len())
+                && query_consumption > record.quality_scores.len() as u64)
         {
             log::warn!(
                 "Dropping corrupt BAM record {}: CIGAR query consumption ({}) exceeds SEQ length ({})",
@@ -4495,5 +4494,43 @@ mod tests {
         );
         assert_eq!(prep.total_reads, 3);
         assert_eq!(prep.duplicate_reads, 1);
+    }
+
+    #[test]
+    fn preprocess_record_eqx_uses_query_consumed_len() {
+        let mut prep = RecordPreprocessor::new();
+        let config = Config::default();
+        let valid_eqx = SamRecord {
+            name: b"valid_eqx".to_vec(),
+            flags: 0,
+            alignment_start: Some(Pos1(10)),
+            cigar: vec![
+                (10, CigarKind::SequenceMatch),
+                (1, CigarKind::SequenceMismatch),
+                (10, CigarKind::SequenceMatch),
+            ],
+            sequence: vec![b'A'; 21],
+            quality_scores: vec![b'I'; 21],
+            ..SamRecord::default()
+        };
+        assert!(prep.preprocess_record(&valid_eqx, &config));
+
+        let corrupt_eqx = SamRecord {
+            name: b"corrupt_eqx".to_vec(),
+            flags: 0,
+            alignment_start: Some(Pos1(10)),
+            cigar: vec![
+                (10, CigarKind::SequenceMatch),
+                (1, CigarKind::SequenceMismatch),
+                (10, CigarKind::SequenceMatch),
+            ],
+            sequence: vec![b'A'; 15],
+            quality_scores: vec![b'I'; 15],
+            ..SamRecord::default()
+        };
+        assert!(
+            !prep.preprocess_record(&corrupt_eqx, &config),
+            "corrupt =/X read with query_consumed_len (21) > sequence.len() (15) must be dropped"
+        );
     }
 }

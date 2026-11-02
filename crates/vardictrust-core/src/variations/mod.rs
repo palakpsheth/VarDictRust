@@ -879,14 +879,13 @@ pub struct SVStructures {
     pub svrinv3: Vec<Sclip>,
     pub svrinv5: Vec<Sclip>,
 
-    // svffus/svrfus/svfusfend/svfusrend: iteration-order audit (W5.3,
-    // 2026-08-23) — see the shared comment on CigarParser's containers in
-    // cigar/parse.rs. Keyed lookups + per-list ops only; HashMap in
-    // SVStructures.java:38-40.
-    pub svffus: std::collections::HashMap<String, Vec<Sclip>>,
-    pub svrfus: std::collections::HashMap<String, Vec<Sclip>>,
-    pub svfusfend: std::collections::HashMap<String, i32>,
-    pub svfusrend: std::collections::HashMap<String, i32>,
+    // svffus/svrfus preserve insertion order via IndexMap so is_best_sv_used
+    // (sv.rs) can iterate keys in exact Java HashMap<String, List<Sclip>>
+    // bucket + insertion order (SVStructures.java:37-40).
+    pub svffus: indexmap::IndexMap<String, Vec<Sclip>>,
+    pub svrfus: indexmap::IndexMap<String, Vec<Sclip>>,
+    pub svfusfend: indexmap::IndexMap<String, i32>,
+    pub svfusrend: indexmap::IndexMap<String, i32>,
 }
 
 impl SVStructures {
