@@ -7,6 +7,14 @@ set -euo pipefail
 #      CPP_SKIP=1 (skip advisory vardictcpp third arm; still prints `CPP: SKIP:`)
 #      GOLDEN_MODE=auto|regen|off, GOLDEN_STORE_DIR (pinned oracle store; harness/README.md §7)
 # Exit 0 = MATCH; non-zero = MISMATCH or engine failure. Decide on the EXIT CODE, never on text.
+HOST_OS="$(uname -s)"
+HOST_ARCH="$(uname -m)"
+if [ "$HOST_OS" != "Linux" ] || [ "$HOST_ARCH" != "x86_64" ]; then
+  if [ "${ORACLE_CONTAINER:-0}" != "1" ]; then
+    echo "ORACLE-PLATFORM: unsupported oracle host ${HOST_OS}/${HOST_ARCH} (R long double divergence); set ORACLE_CONTAINER=1 to run the linux/amd64 oracle container." >&2
+    exit 2
+  fi
+fi
 REF=$1; BAM=$2; BED=$3; SAMPLE=${4:-SAMPLE}; shift 4 || shift $#
 export GOLDEN_RUN_ID="${GOLDEN_RUN_ID:-compare-$$-$(date +%s)}"
 if [ -n "${KEEP_DIR:-}" ]; then mkdir -p "$KEEP_DIR"; OUT=$KEEP_DIR
