@@ -326,14 +326,17 @@ def build_slides(
     docs: dict[str, dict], rustc_ver: str, gcp_doc: dict | None = None
 ) -> tuple[list[SlideCanvas], str]:
     fp = docs["hg002-tier2.json"]["fingerprint"]
-    ver = f"v{gcp_doc['meta']['version']}" if gcp_doc else "v1.0.6"
+    ver = "v1.0.7"
+    gcp_ver = f"v{gcp_doc['meta']['version']}" if gcp_doc else ver
+    gcp_fp = gcp_doc["meta"]["fingerprint"] if gcp_doc else fp
     cpp_ver = docs["hg002-tier2.json"]["extra"]["cpp_version"]
-    footer1 = f"VarDictRust {ver} (fp {fp}) vs VarDictJava v1.8.3 (0886261) & {cpp_ver}"
     if gcp_doc:
+        footer1 = f"VarDictRust {ver} (fp {fp}) vs VarDictJava v1.8.3 (0886261) & {cpp_ver}"
         footer2 = (
-            f"60-cell GCP study (n2-standard-32 Ice Lake, 32 vCPUs) + benchmarks/evidence/*.json | {rustc_ver} | eps=1e-6"
+            f"60-cell {gcp_ver} GCP study (fp {gcp_fp}) + {ver} evidence/*.json | {rustc_ver} | eps=1e-6"
         )
     else:
+        footer1 = f"VarDictRust {ver} (fp {fp}) vs VarDictJava v1.8.3 (0886261) & {cpp_ver}"
         footer2 = f"Certified live-runner evidence (benchmarks/evidence/*.json) | {rustc_ver} | eps=1e-6 half-even"
 
     amp = docs["amplicon-tier2.json"]
@@ -1183,7 +1186,7 @@ def build_slides(
         full_wgs_row = f"HG002 (130.8 GB, {fm['s5_hg002_contigs_rust_vars']} vars) & HG008 364x T/N (329.0 GB, {fm['s5_hg008_contigs_rust_vars']} vars)"
         parity_gate_row = f"Tier-1 .var (36/38/40/55/61 cols) + Tier-2 VCF (eps = 1e-6; {fm['sweep_match_arms']}-arm sweep)"
         platforms_row = f"10 short-read chr20 arms (Illumina, AVITI, Onso, SBX, UG100, DNBSEQ) + {fm['s6_ga4gh_cells']} GA4GH cells"
-        exec_row = f"{gcp_doc['meta']['total_cells']}-cell GCP study (n2-standard-32 Ice Lake, 32 vCPUs, 128 GiB RAM, 4x375 GB NVMe)"
+        exec_row = f"{gcp_doc['meta']['total_cells']}-cell {gcp_ver} GCP study (fp {gcp_fp}, n2-standard-32, 32 vCPUs, 128 GiB RAM)"
     else:
         full_wgs_row = f"SEQC2 Exome ({seqc2_ex['n_variants']:,} vars), HG002 chr20 ({hg002['n_variants']:,} vars), HG008 ({hg008['n_variants']:,} vars)"
         parity_gate_row = f"Tier-1 .var (36/38/40/55/61 cols) + Tier-2 VCF (eps = 1e-6; {total_with_cram}/{total_with_cram} MATCH)"
@@ -1258,7 +1261,7 @@ VarDictJava v1.8.3 has been a workhorse for somatic and germline variant calling
 
 We built **VarDictRust {ver}**: a single, statically-compiled, memory-safe Rust binary engineered under the rewrites.bio prime directive—**100% output equivalence to VarDictJava v1.8.3 (`ε = 1e-6` banker's rounding) with bounded whole-chromosome memory**.
 
-### Certified {ver} Results (`fingerprint: {fp}`)
+### Certified {ver} Results (`fingerprint: {fp}`, {gcp_ver} GCP study `fingerprint: {gcp_fp}`)
 - **60/60 GCP Study Cells & {total_tier2_cells}/{total_tier2_cells} Tier-2 Oracle Parity (`{total_with_cram}/{total_with_cram}` incl. CRAM Twin)**: `0` record diffs vs. VarDictJava v1.8.3 across `17` CLI modes, `18` multimodal slices, and flagship cohorts (**`{seqc2_ex['n_variants']:,}`** SEQC2 somatic exome variants, **`{hg002['n_variants']:,}`** HG002 chr20 variants, **`{hg008['n_variants']:,}`** HG008 somatic variants), plus **`5/5` EQUAL** on GIAB v4.2.1 & SEQC2 v1.2.1 `rtg vcfeval` truth sets (`HG002 F1 = 0.9699`, `Delta = 0`).
 - **Speed**: **`{seqc2_speedup_java:.1f}x` faster** than VarDictJava on full SEQC2 Somatic Exome (`{fmt_wall(seqc2_rust_w)}` vs `{fmt_wall(seqc2_java_w)}`), **`{hg002_speedup_java:.1f}x` faster** on HG002 chr20 (`{hg002_rust_w:.2f}s` vs `{hg002_java_w:.2f}s` Java), and **`{speedup_8:.2f}x` multi-core scaling** at `8c` (`{w1:.2f}s -> {w8:.2f}s`; **`{speedup_32:.2f}x`** at `32c`).
 - **Bounded Memory**: **`{seqc2_ram_vs_java:.1f}x` less RAM** than Java and **`{seqc2_ram_vs_cpp:.1f}x` less RAM** than `vardictcpp` on SEQC2 Exome (`{fmt_rss_mb(seqc2_rust_rss)}` vs `{fmt_rss_mb(seqc2_cpp_rss)}` C++ vs `{fmt_rss_mb(seqc2_java_rss)}` Java), with a **`{chr1_ratio:.2f}x` flat RSS ratio** across `chr1` `10 Mbp -> 249 Mbp` (`{fmt_rss_mb(chr1_249_rss)}` peak RSS).
