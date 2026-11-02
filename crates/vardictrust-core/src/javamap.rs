@@ -88,6 +88,10 @@ where
         self.treeified
     }
 
+    pub fn capacity(&self) -> usize {
+        self.buckets.len()
+    }
+
     pub fn len(&self) -> usize {
         self.size
     }
@@ -172,7 +176,7 @@ where
             prev_node.next = new_idx;
         }
 
-        if bin_len + 1 >= TREEIFY_THRESHOLD {
+        if bin_len >= TREEIFY_THRESHOLD {
             self.treeify_bin();
         }
         self.size += 1;
@@ -180,6 +184,63 @@ where
             self.resize();
         }
         None
+    }
+
+    /// Emulates `V v = m.get(k); if (v == null) { v = f(); m.put(k, v); }` (`HashMap.putVal`):
+    /// single bucket walk, tail append, treeify at >= 8 existing nodes (9th node),
+    /// and resize after insert when `size > threshold`.
+    pub fn get_or_put_with<F>(&mut self, key: K, f: F) -> &mut V
+    where
+        F: FnOnce() -> V,
+    {
+        if self.buckets.is_empty() {
+            self.resize();
+        }
+        let hash = Self::spread(key);
+        let n = self.buckets.len();
+        let idx = if n == 0 { 0 } else { (hash as usize) & (n - 1) };
+
+        let mut curr = self.buckets.get(idx).copied().unwrap_or(NONE);
+        let mut prev = NONE;
+        let mut bin_len = 0usize;
+        while curr != NONE {
+            let Some(node) = self.nodes.get(curr as usize) else {
+                break;
+            };
+            if node.key == key {
+                return self
+                    .nodes
+                    .get_mut(curr as usize)
+                    .map(|n| &mut n.val)
+                    .unwrap_or(&mut self.fallback);
+            }
+            prev = curr;
+            curr = node.next;
+            bin_len += 1;
+        }
+
+        let new_idx = self.alloc_node(key, f(), NONE);
+        if prev == NONE {
+            if let Some(b) = self.buckets.get_mut(idx) {
+                *b = new_idx;
+            }
+        } else if let Some(prev_node) = self.nodes.get_mut(prev as usize) {
+            prev_node.next = new_idx;
+        }
+
+        if bin_len >= TREEIFY_THRESHOLD {
+            self.treeify_bin();
+        }
+        self.size += 1;
+        if self.size > self.threshold {
+            self.resize();
+        }
+
+        if let Some(n) = self.nodes.get_mut(new_idx as usize) {
+            &mut n.val
+        } else {
+            &mut self.fallback
+        }
     }
 
     pub fn compute_if_absent<F>(&mut self, key: K, f: F) -> &mut V
@@ -494,7 +555,7 @@ mod tests {
 
                 bin.push((key, value));
                 let bin_len = bin.len();
-                if bin_len >= TREEIFY_THRESHOLD {
+                if bin_len > TREEIFY_THRESHOLD {
                     self.treeify_bin();
                 }
                 self.size += 1;
@@ -503,6 +564,17 @@ mod tests {
                 }
             }
             None
+        }
+
+        fn get_or_put_with<F>(&mut self, key: K, f: F) -> &mut V
+        where
+            F: FnOnce() -> V,
+        {
+            if !self.contains_key(&key) {
+                let val = f();
+                self.insert(key, val);
+            }
+            self.get_mut(&key).expect("entry exists after insert")
         }
 
         fn compute_if_absent<F>(&mut self, key: K, f: F) -> &mut V
@@ -820,6 +892,291 @@ mod tests {
         // Replay ops_treeify.txt
         let ops_treeify = include_str!("../testdata/javamap/ops_treeify.txt");
         let m = run_oracle(ops_treeify, None);
+        assert!(m.treeified(), "ops_treeify must set treeified flag");
+    }
+
+    fn replay_oplog_dump_script(script: &str) {
+        let mut m: JavaHashMap<i32, i32> = JavaHashMap::new();
+        let mut step = 0i32;
+        for line in script.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if line == "NEW" {
+                m = JavaHashMap::new();
+                continue;
+            }
+            if let Some(k_str) = line.strip_prefix("P ") {
+                let k: i32 = k_str.parse().expect("valid P key");
+                m.insert(k, step);
+                step += 1;
+            } else if let Some(k_str) = line.strip_prefix("G ") {
+                let k: i32 = k_str.parse().expect("valid G key");
+                let _ = m.get_or_put_with(k, || step);
+                step += 1;
+            } else if let Some(k_str) = line.strip_prefix("C ") {
+                let k: i32 = k_str.parse().expect("valid C key");
+                m.compute_if_absent(k, |_| 0);
+                step += 1;
+            } else if let Some(k_str) = line.strip_prefix("R ") {
+                let k: i32 = k_str.parse().expect("valid R key");
+                m.remove(&k);
+                step += 1;
+            } else if let Some(rest) = line.strip_prefix("D ") {
+                let (header, order_part) = rest
+                    .split_once(" ORDER")
+                    .expect("D line must contain ORDER");
+                let mut parts = header.split_whitespace();
+                let label = parts.next().expect("D label");
+                let cap_str = parts
+                    .next()
+                    .and_then(|s| s.strip_prefix("cap="))
+                    .expect("cap=...");
+                let expected_cap: usize = cap_str.parse().expect("valid cap");
+                let regime = parts
+                    .next()
+                    .and_then(|s| s.strip_prefix("regime="))
+                    .expect("regime=...");
+                let expected_order = order_part.trim();
+                if regime == "tree" {
+                    assert!(
+                        m.treeified(),
+                        "expected treeified()==true for tree regime on {label}"
+                    );
+                } else {
+                    assert!(
+                        !m.treeified(),
+                        "expected treeified()==false for list regime on {label}"
+                    );
+                    assert_eq!(m.capacity(), expected_cap, "capacity mismatch on {label}");
+                    let actual_order = m
+                        .keys()
+                        .map(|k| k.to_string())
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    assert_eq!(
+                        actual_order, expected_order,
+                        "key order mismatch on {label}"
+                    );
+                }
+            } else {
+                panic!("unknown oplog line: {line}");
+            }
+        }
+    }
+
+    #[test]
+    fn op_log_matches_java_oracle_put_threshold() {
+        let script = include_str!("../testdata/javamap/ops_put_threshold.txt");
+        replay_oplog_dump_script(script);
+    }
+
+    #[test]
+    fn op_log_matches_java_oracle_getput() {
+        let script = include_str!("../testdata/javamap/ops_getput.txt");
+        replay_oplog_dump_script(script);
+    }
+
+    #[test]
+    fn op_log_matches_java_oracle_getput_random() {
+        let script = include_str!("../testdata/javamap/ops_getput_random.txt");
+        replay_oplog_dump_script(script);
+    }
+
+    #[test]
+    fn test_javamap_oplog_dump_oracle() {
+        replay_oplog_dump_script(include_str!("../testdata/javamap/ops_put_threshold.txt"));
+        replay_oplog_dump_script(include_str!("../testdata/javamap/ops_getput.txt"));
+        replay_oplog_dump_script(include_str!("../testdata/javamap/ops_getput_random.txt"));
+    }
+
+    #[test]
+    fn put_treeify_threshold_is_nine_nodes() {
+        let mut m16: JavaHashMap<i32, i32> = JavaHashMap::new();
+        for i in 0..8 {
+            m16.insert(i * 16, i);
+        }
+        assert_eq!(m16.capacity(), 16);
+        assert_eq!(
+            m16.keys().copied().collect::<Vec<_>>(),
+            vec![0, 16, 32, 48, 64, 80, 96, 112]
+        );
+        m16.insert(8 * 16, 8);
+        assert_eq!(m16.capacity(), 32);
+        assert_eq!(
+            m16.keys().copied().collect::<Vec<_>>(),
+            vec![0, 32, 64, 96, 128, 16, 48, 80, 112]
+        );
+
+        let mut m32: JavaHashMap<i32, i32> = JavaHashMap::new();
+        for i in 0..8 {
+            m32.insert(i * 32, i);
+        }
+        assert_eq!(m32.capacity(), 16);
+        assert_eq!(
+            m32.keys().copied().collect::<Vec<_>>(),
+            vec![0, 32, 64, 96, 128, 160, 192, 224]
+        );
+        m32.insert(8 * 32, 8);
+        assert_eq!(m32.capacity(), 32);
+        assert_eq!(
+            m32.keys().copied().collect::<Vec<_>>(),
+            vec![0, 32, 64, 96, 128, 160, 192, 224, 256]
+        );
+    }
+
+    #[test]
+    fn cia_treeify_threshold_is_eight_nodes() {
+        let mut m: JavaHashMap<i32, i32> = JavaHashMap::new();
+        for i in 0..8 {
+            m.compute_if_absent(i * 16, |_| 0);
+        }
+        assert_eq!(m.capacity(), 32);
+        assert_eq!(
+            m.keys().copied().collect::<Vec<_>>(),
+            vec![96, 64, 32, 0, 112, 80, 48, 16]
+        );
+    }
+
+    #[test]
+    fn get_or_put_matches_java_put_tail_order() {
+        let mut m: JavaHashMap<i32, i32> = JavaHashMap::new();
+        for &k in &[100, 132, 164] {
+            m.get_or_put_with(k, || k);
+        }
+        assert_eq!(m.capacity(), 16);
+        assert_eq!(m.keys().copied().collect::<Vec<_>>(), vec![100, 132, 164]);
+    }
+
+    #[test]
+    fn get_or_put_resizes_after_insert() {
+        let mut m: JavaHashMap<i32, i32> = JavaHashMap::new();
+        for k in 1000..=1012 {
+            m.get_or_put_with(k, || k);
+        }
+        assert_eq!(m.capacity(), 32);
+        assert_eq!(
+            m.keys().copied().collect::<Vec<_>>(),
+            (1000..=1012).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn l861q_bin_collision_order() {
+        let mut m: JavaHashMap<i32, i32> = JavaHashMap::new();
+        for k in 55259401..=55259600 {
+            m.get_or_put_with(k, || k);
+        }
+        for k in 55259401..=55259600 {
+            if k != 55259524 && k != 55259572 {
+                m.remove(&k);
+            }
+        }
+        assert_eq!(
+            m.keys().copied().collect::<Vec<_>>(),
+            vec![55259524, 55259572]
+        );
+    }
+
+    #[test]
+    fn put_treeified_flag_only_at_nine_nodes_cap64() {
+        let mut m: JavaHashMap<i32, i32> = JavaHashMap::new();
+        // Grow to capacity 64 using 25 distinct keys in different buckets (threshold 12 -> 24 -> 48)
+        for k in 1..=25 {
+            m.get_or_put_with(k, || k);
+        }
+        assert_eq!(m.capacity(), 64);
+        assert!(!m.treeified());
+        // Insert 8 keys colliding into bucket 0 at capacity 64 (multiples of 64, <= 48 total keys)
+        for i in 0..8 {
+            m.get_or_put_with(i * 64, || i);
+        }
+        assert_eq!(m.capacity(), 64);
+        assert!(
+            !m.treeified(),
+            "8 nodes in one bin at cap 64 must not treeify on get_or_put_with"
+        );
+        m.get_or_put_with(8 * 64, || 8);
+        assert!(
+            m.treeified(),
+            "9th node in one bin at cap 64 must set treeified flag"
+        );
+    }
+
+    #[test]
+    fn get_or_put_matches_java_put_model() {
+        fn next_u64(state: &mut u64) -> u64 {
+            let mut x = *state;
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            *state = x;
+            x
+        }
+
+        for stream_idx in 0..40u64 {
+            let mut rng =
+                0xA5A5_5A5A_F0F0_0F0Fu64 ^ (stream_idx.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+            if rng == 0 {
+                rng = 1;
+            }
+            let mut arena: JavaHashMap<i32, i32> = JavaHashMap::new();
+            let mut legacy: JavaHashMapLegacy<i32, i32> = JavaHashMapLegacy::new();
+
+            for step in 0..2_000usize {
+                let r = next_u64(&mut rng);
+                let i = ((r >> 8) & 0x3F) as i32;
+                let key = match (r >> 16) % 4 {
+                    0 => (i << 16) | 0x1234,
+                    1 => i * 16,
+                    2 => i * 32,
+                    _ => i * 65536,
+                };
+                let val = (step as i32).wrapping_mul(5) ^ key;
+                if r % 10 < 7 {
+                    let delta = ((r >> 32) & 0xFF) as i32;
+                    let a_ref = arena.get_or_put_with(key, || val);
+                    *a_ref = a_ref.wrapping_add(delta);
+                    let l_ref = legacy.get_or_put_with(key, || val);
+                    *l_ref = l_ref.wrapping_add(delta);
+                    assert_eq!(*a_ref, *l_ref);
+                } else {
+                    assert_eq!(arena.remove(&key), legacy.remove(&key));
+                }
+                assert_eq!(arena.len(), legacy.len());
+                assert_eq!(arena.treeified(), legacy.treeified());
+                if step % 200 == 0 || step == 1_999 {
+                    let a_keys: Vec<i32> = arena.keys().copied().collect();
+                    let l_keys: Vec<i32> = legacy.keys().copied().collect();
+                    assert_eq!(a_keys, l_keys);
+                    let a_into: Vec<(i32, i32)> = arena.clone().into_iter().collect();
+                    let l_into: Vec<(i32, i32)> = legacy.clone().into_vec();
+                    assert_eq!(a_into, l_into);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn op_log_matches_java_oracle_treeify() {
+        let ops_treeify = include_str!("../testdata/javamap/ops_treeify.txt");
+        let mut m: JavaHashMap<i32, i32> = JavaHashMap::new();
+        for line in ops_treeify.lines() {
+            if let Some(k_str) = line.strip_prefix("P ") {
+                if let Ok(k) = k_str.parse() {
+                    m.insert(k, 1);
+                }
+            } else if let Some(k_str) = line.strip_prefix("C ") {
+                if let Ok(k) = k_str.parse() {
+                    m.compute_if_absent(k, |_| 0);
+                }
+            } else if let Some(k_str) = line.strip_prefix("R ") {
+                if let Ok(k) = k_str.parse() {
+                    m.remove(&k);
+                }
+            }
+        }
         assert!(m.treeified(), "ops_treeify must set treeified flag");
     }
 }

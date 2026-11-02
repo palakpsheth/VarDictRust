@@ -145,7 +145,7 @@ fn bench_find_35_match(c: &mut Criterion) {
     });
 }
 
-/// JavaHashMap::compute_if_absent hot loop across pileup positions with ~10:1 hit-to-miss ratio.
+/// JavaHashMap::compute_if_absent and get_or_put_with hot loops across pileup positions with ~10:1 hit-to-miss ratio.
 fn bench_javamap_compute_if_absent(c: &mut Criterion) {
     let keys: Vec<i32> = (0..2_000).map(|i| 10_000 + ((i * 37) % 200)).collect();
     c.bench_function("javamap/compute_if_absent", |b| {
@@ -153,6 +153,16 @@ fn bench_javamap_compute_if_absent(c: &mut Criterion) {
             let mut map: JavaHashMap<i32, u32> = JavaHashMap::new();
             for &k in black_box(&keys) {
                 let entry = map.compute_if_absent(k, |_| 0);
+                *entry = entry.wrapping_add(1);
+            }
+            black_box(map.len())
+        })
+    });
+    c.bench_function("javamap/get_or_put", |b| {
+        b.iter(|| {
+            let mut map: JavaHashMap<i32, u32> = JavaHashMap::new();
+            for &k in black_box(&keys) {
+                let entry = map.get_or_put_with(k, || 0);
                 *entry = entry.wrapping_add(1);
             }
             black_box(map.len())

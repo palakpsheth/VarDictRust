@@ -242,8 +242,19 @@ run_test() {
             XPASS=$((XPASS+1))
             ERRORS+=("XPASS: $basename_file")
         else
-            echo "MATCH: $basename_file"
-            PASS=$((PASS+1))
+            local actual_keys expected_keys
+            actual_keys=$(printf '%s\n' "$actual" | cut -f1-7)
+            expected_keys=$(printf '%s\n' "$expected" | cut -f1-7)
+            if [[ "${STRICT_VAR_ORDER:-1}" != "0" && " $extra_flags " != *" -i "* && "$actual_keys" != "$expected_keys" ]]; then
+                echo "ORDER_MISMATCH: $basename_file"
+                FAIL=$((FAIL+1))
+                ERRORS+=("ORDER_MISMATCH: $basename_file")
+                diff <(printf '%s\n' "$expected_keys") <(printf '%s\n' "$actual_keys") | head -40 || true
+                echo "---"
+            else
+                echo "MATCH: $basename_file"
+                PASS=$((PASS+1))
+            fi
         fi
     else
         if [[ $is_xfail -eq 1 ]]; then

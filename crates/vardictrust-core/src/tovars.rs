@@ -241,18 +241,17 @@ impl<'a> ToVarsBuilder<'a> {
                 continue;
             }
 
-            if let Some(entry) = aligned_variants.get_mut(&position) {
-                self.collect_reference_variants(
-                    position,
-                    current_total_cov,
-                    entry,
-                    &var_data.ref_coverage,
-                    &var_data.non_insertion_variants,
-                    &overlay,
-                    duprate,
-                    &debug_lines,
-                );
-            }
+            let entry = crate::variations::get_or_put_vars(&mut aligned_variants, position);
+            self.collect_reference_variants(
+                position,
+                current_total_cov,
+                entry,
+                &var_data.ref_coverage,
+                &var_data.non_insertion_variants,
+                &overlay,
+                duprate,
+                &debug_lines,
+            );
         }
 
         if var_data.non_insertion_variants.treeified()
@@ -408,8 +407,7 @@ impl<'a> ToVarsBuilder<'a> {
         for description_string in keys {
             if description_string == "SV" {
                 if let Some(ref sv) = non_insertion_variations.sv {
-                    let entry = aligned_vars
-                        .compute_if_absent(position, |_| crate::variations::Vars::new());
+                    let entry = crate::variations::get_or_put_vars(aligned_vars, position);
 
                     entry.sv = format!("{}-{}-{}", sv.splits, sv.pairs, sv.clusters);
                 }
@@ -611,13 +609,11 @@ impl<'a> ToVarsBuilder<'a> {
 
         for tvar in var.drain(..) {
             if tvar.description == ref_base_str {
-                let entry = aligned_variants
-                    .compute_if_absent(position, |_| crate::variations::Vars::new());
+                let entry = crate::variations::get_or_put_vars(aligned_variants, position);
 
                 entry.ref_variant = Some(tvar);
             } else {
-                let entry = aligned_variants
-                    .compute_if_absent(position, |_| crate::variations::Vars::new());
+                let entry = crate::variations::get_or_put_vars(aligned_variants, position);
                 if !reserved {
                     entry.variants.reserve(non_ref_rows);
                     reserved = true;
@@ -668,7 +664,11 @@ impl<'a> ToVarsBuilder<'a> {
         } else if let Some(first_var) = variations_at_pos.variants.first() {
             first_var.description.clone()
         } else {
-            String::new()
+            // Ports ToVarsBuilder.java:609 + :163: when both referenceVariant == null
+            // and variants.isEmpty(), Java throws NullPointerException at line 609
+            // (caught at line 163), aborting collectReferenceVariants after
+            // getOrPutVars(alignedVariants, position) inserted the empty Vars.
+            return;
         };
 
         if let Some(ref ref_var) = variations_at_pos.ref_variant {
@@ -1993,11 +1993,11 @@ mod tests {
             builder.collect_vars_at_position(&mut aligned, p, &mut var);
         }
 
-        // Legacy path: drain-only insertion (first row's compute_if_absent).
+        // Legacy path: drain-only insertion (first row's get_or_put_with).
         let mut legacy = crate::javamap::JavaHashMap::new();
         for &p in &positions {
             legacy
-                .compute_if_absent(p, |_| crate::variations::Vars::new())
+                .get_or_put_with(p, crate::variations::Vars::new)
                 .variants
                 .push(mk_row());
         }

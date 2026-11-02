@@ -20,7 +20,9 @@ To achieve 100% parity under the [rewrites.bio](https://rewrites.bio) manifesto,
 - Hash spreading: `(h = key.hashCode()) ^ (h >>> 16)`.
 - Power-of-two bucket table indexing: `(capacity - 1) & hash`.
 - Standard load factor (0.75) and capacity doubling.
-- Node collision chaining and treeification threshold ($\ge 8$ items per bin).
+- Node collision chaining and treeification thresholds matching OpenJDK `HashMap`:
+  - `insert` / `get_or_put_with` (`HashMap.putVal`): tail append, resize after insert (`++size > threshold`), and `treeifyBin` when adding the **9th** node to a bin ($\ge 8$ existing nodes).
+  - `compute_if_absent` (`HashMap.computeIfAbsent`): head prepend, pre-lookup resize (`size > threshold`), and `treeifyBin` when adding the **8th** node to a bin ($\ge 7$ existing nodes).
 
 For architectural context and upstream bug taxonomy, see:
 - [`DIVERGENCES.md § UB-3`](../../../../DIVERGENCES.md#ub-3-javahashmap-iteration-and-allele-frequency-tie-breaking)
@@ -45,7 +47,10 @@ java JavaMapOracle <seed> <numOps> <base> <span> <stride>
 | [`JavaMapOracle.java`](JavaMapOracle.java) | 17 lines | Pure-Java harness that applies pseudo-random `put`, `computeIfAbsent`, and `remove` operations to a `HashMap<Integer, Integer>`, dumping the final `keySet()` iteration order. |
 | [`ops_1.txt`](ops_1.txt) | 3,001 lines | Replay trace testing sequential inserts, lookups, and deletions. |
 | [`ops_2.txt`](ops_2.txt) | 20,001 lines | High-volume replay trace exercising multiple table resizes and capacity growth phases. |
-| [`ops_treeify.txt`](ops_treeify.txt) | 401 lines | Targeted collision sequence asserting correct bin collision threshold detection and treeify flag activation when bin count exceeds 8. |
+| [`ops_treeify.txt`](ops_treeify.txt) | 401 lines | Targeted collision sequence asserting correct bin collision threshold detection and treeify flag activation on `computeIfAbsent` (8 nodes) and `put` (9 nodes). |
+| [`ops_put_threshold.txt`](ops_put_threshold.txt) | 60 lines | Deterministic stride-16 and stride-32 collision chains verifying the 9-node `put` / `get_or_put_with` vs 8-node `computeIfAbsent` treeification and resize boundary. |
+| [`ops_getput.txt`](ops_getput.txt) | 1,052 lines | Deterministic `get`+`put` (`G`) vs `computeIfAbsent` (`C`) traces covering tail-append ordering, post-insert resize at threshold 12, the `L861Q` window, and 600 keys straddling `1 << 25`. |
+| [`ops_getput_random.txt`](ops_getput_random.txt) | 4,222 lines | 80 seeded randomized `P`/`G`/`C`/`R` sequences across collision strides `{1, 16, 32, 64, 128, 1024, 65536}`, tagged with `regime=list` or `regime=tree`. |
 
 ---
 
