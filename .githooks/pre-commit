@@ -5,6 +5,7 @@ set -euo pipefail
 
 ROOT_DIR="$(git rev-parse --show-toplevel)"
 cd "$ROOT_DIR"
+[ -f "$ROOT_DIR/harness/lib/portable.sh" ] && source "$ROOT_DIR/harness/lib/portable.sh"
 
 ts() { date '+[%H:%M:%S]'; }
 HOOK_T0=$SECONDS
@@ -28,7 +29,7 @@ if [ -n "$STAGED_RS" ]; then
 
     st_t0=$SECONDS
     echo "=== $(ts) [pre-commit] Checking lints (cargo clippy) ==="
-    if ! cargo clippy --all-targets --all-features -- -D warnings -A clippy::needless_late_init -A clippy::byte_char_slices; then
+    if ! cargo clippy --all-targets --all-features -- -D warnings; then
         echo "ERROR: Clippy linter found warnings. Fix warnings before committing." >&2
         exit 1
     fi
@@ -104,8 +105,8 @@ elif [ -x "${HOME}/miniconda3/envs/g4-tools/bin/gitleaks" ]; then
     GITLEAKS_BIN="${HOME}/miniconda3/envs/g4-tools/bin/gitleaks"
 elif [ -x "${HOME}/miniforge3/envs/g4-tools/bin/gitleaks" ]; then
     GITLEAKS_BIN="${HOME}/miniforge3/envs/g4-tools/bin/gitleaks"
-elif [ -x /home/palak/miniconda3/envs/g4-tools/bin/gitleaks ]; then
-    GITLEAKS_BIN="/home/palak/miniconda3/envs/g4-tools/bin/gitleaks"
+elif [ -x "${G4_TOOLS_BIN:-${CONDA_PREFIX:-$HOME/miniconda3}/envs/g4-tools/bin}/gitleaks" ]; then
+    GITLEAKS_BIN="${G4_TOOLS_BIN:-${CONDA_PREFIX:-$HOME/miniconda3}/envs/g4-tools/bin}/gitleaks"
 fi
 
 if [ -n "$GITLEAKS_BIN" ]; then

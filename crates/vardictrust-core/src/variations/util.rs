@@ -45,7 +45,7 @@ pub fn is_low_complex_seq(seq: &[u8]) -> bool {
     }
     let mut nt_cnt = 0;
 
-    for base in [b'A', b'T', b'G', b'C'] {
+    for base in *b"ATGC" {
         let cnt = seq
             .iter()
             .filter(|&&b| b == base || b == base.to_ascii_lowercase())

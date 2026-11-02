@@ -4,6 +4,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT_DIR/harness/lib/portable.sh"
 COMMON_GIT_DIR="$(git -C "$ROOT_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
 if [[ -n "$COMMON_GIT_DIR" && -d "$(dirname "$COMMON_GIT_DIR")/VarDictJava" ]]; then
   DATA_ROOT="$(cd "$(dirname "$COMMON_GIT_DIR")" && pwd)"
@@ -41,7 +42,7 @@ fi
 st_t0=$SECONDS
 echo "$(ts) [Stage 1/6] Running workspace hygiene and unit tests..."
 cargo fmt --all -- --check
-cargo clippy --all-targets --all-features -- -D warnings -A clippy::needless_late_init -A clippy::byte_char_slices
+cargo clippy --all-targets --all-features -- -D warnings
 cargo test --workspace --bins --lib --tests
 cargo build -q --release
 echo "$(ts) [Stage 1/6] PASS ($((SECONDS - st_t0))s)"
@@ -74,9 +75,9 @@ echo "$(ts) [Stage 4/6] Running Tier-2 differential parity suites against oracle
 SLICE_IDS=(micro s1a s1b tiny s3 s4 s5 s6 s7 s8 s9)
 (
   {
-    s_t0=$(date +%s%3N)
+    s_t0=$(now_ms)
     ( set +e; KEEP_DIR="$SLICE_KEEP_TMP/micro" RUST_THREADS=1 MIN_VARIANTS=1 bash harness/compare.sh fixtures/micro/micro.ref.fa fixtures/micro/micro.bam fixtures/micro/micro.bed > "$SLICE_KEEP_TMP/micro.log" 2>&1 ); rc=$?
-    printf '%d\n' "$(( $(date +%s%3N) - s_t0 ))" > "$SLICE_KEEP_TMP/micro.ms"
+    printf '%d\n' "$(( $(now_ms) - s_t0 ))" > "$SLICE_KEEP_TMP/micro.ms"
     printf '%d\n' "$rc" > "$SLICE_KEEP_TMP/micro.rc.tmp" && mv "$SLICE_KEEP_TMP/micro.rc.tmp" "$SLICE_KEEP_TMP/micro.rc"
   } &
   for id in s1a s1b tiny s3 s4 s5 s6 s7 s8 s9; do
@@ -84,9 +85,9 @@ SLICE_IDS=(micro s1a s1b tiny s3 s4 s5 s6 s7 s8 s9)
       wait -n 2>/dev/null || sleep 0.02
     done
     {
-      s_t0=$(date +%s%3N)
+      s_t0=$(now_ms)
       ( set +e; RUST_THREADS=1 bash harness/run_slice.sh "$id" > "$SLICE_KEEP_TMP/$id.log" 2>&1 ); rc=$?
-      printf '%d\n' "$(( $(date +%s%3N) - s_t0 ))" > "$SLICE_KEEP_TMP/$id.ms"
+      printf '%d\n' "$(( $(now_ms) - s_t0 ))" > "$SLICE_KEEP_TMP/$id.ms"
       printf '%d\n' "$rc" > "$SLICE_KEEP_TMP/$id.rc.tmp" && mv "$SLICE_KEEP_TMP/$id.rc.tmp" "$SLICE_KEEP_TMP/$id.rc"
     } &
   done
@@ -137,8 +138,8 @@ st_t0=$SECONDS
 echo "$(ts) [Stage 6/6] Scanning commits for secrets and auditing supply chain..."
 if command -v gitleaks >/dev/null 2>&1; then
   gitleaks detect --source . -v
-elif [ -x /home/palak/miniconda3/envs/g4-tools/bin/gitleaks ]; then
-  /home/palak/miniconda3/envs/g4-tools/bin/gitleaks detect --source . -v
+elif [ -x "$G4_TOOLS_BIN/gitleaks" ]; then
+  "$G4_TOOLS_BIN/gitleaks" detect --source . -v
 else
   echo "ERROR: gitleaks scanner not found. Install gitleaks to satisfy PR security gate." >&2
   exit 1

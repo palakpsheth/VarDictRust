@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Stream HG002 chr20:10M-30M slice from AWS S3 mirror and prepare NIST v4.2.1 truth set.
 set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/portable.sh"
 
 if ! command -v bcftools &>/dev/null || ! command -v tabix &>/dev/null; then
-  export PATH="/home/palak/miniconda3/envs/g4-tools/bin:$PATH"
+  export PATH="$G4_TOOLS_BIN:$PATH"
 fi
 
 OUTDIR="scratch/g4/hg002"

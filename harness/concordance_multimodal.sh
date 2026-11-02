@@ -13,6 +13,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+source "$SCRIPT_DIR/lib/portable.sh"
 COMMON_GIT_DIR="$(git -C "$ROOT_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
 if [[ -n "$COMMON_GIT_DIR" && -d "$(dirname "$COMMON_GIT_DIR")/VarDictJava" ]]; then
   DATA_ROOT="$(cd "$(dirname "$COMMON_GIT_DIR")" && pwd)"
@@ -29,7 +30,7 @@ OUT_BASE="$ROOT_DIR/scratch/g4/concordance_multimodal"
 THREADS=8
 
 if ! command -v rtg &>/dev/null || ! command -v bcftools &>/dev/null; then
-  export PATH="/home/palak/miniconda3/envs/g4-tools/bin:$PATH"
+  export PATH="$G4_TOOLS_BIN:$PATH"
 fi
 
 mkdir -p "$CACHE_DIR" "$OUT_BASE"

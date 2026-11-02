@@ -12,6 +12,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+source "$SCRIPT_DIR/lib/portable.sh"
 NO_RECORD=0
 if [[ "${1:-}" == "--no-record" ]]; then
     NO_RECORD=1
@@ -103,7 +104,7 @@ function run_vcf_compare() {
         local out_j="$TMPDIR/${slice_id}_java.vcf"
         local out_r="$TMPDIR/${slice_id}_rust.vcf"
 
-        local start_t=$(date +%s%N)
+        local start_t=$(now_ms)
 
         # 1. Oracle
         bash "$ROOT_DIR/harness/golden_store.sh" oracle "mm-$slice_id" "$ref" "$bam_spec" "$bed_file" "$out_j" "$sample" -z -th "$THREADS" "${extra_args[@]}" 2>/dev/null || {
@@ -117,8 +118,8 @@ function run_vcf_compare() {
             exit 1
         }
 
-        local end_t=$(date +%s%N)
-        local elapsed_ms=$(( (end_t - start_t) / 1000000 ))
+        local end_t=$(now_ms)
+        local elapsed_ms=$(( end_t - start_t ))
 
         # 3. Comparator
         local cmp_out
@@ -177,7 +178,7 @@ function run_rna_slice() {
         local out_j="$TMPDIR/${slice_id}_java.tsv"
         local out_r="$TMPDIR/${slice_id}_rust.tsv"
 
-        local start_t=$(date +%s%N)
+        local start_t=$(now_ms)
 
         # 1. Oracle Execution (4-column intron frequency table)
         bash "$ROOT_DIR/harness/golden_store.sh" raw --kind java --label "mm-$slice_id" --out "$out_j" --input "$ref" --input "$ref.fai" --input "$bam" -- conda run -n vardict-oracle vardict-java -G "$ref" -b "$bam" -R "$region" -f 0.1 -i -th "$THREADS" 2>/dev/null || {
@@ -191,8 +192,8 @@ function run_rna_slice() {
             exit 1
         }
 
-        local end_t=$(date +%s%N)
-        local elapsed_ms=$(( (end_t - start_t) / 1000000 ))
+        local end_t=$(now_ms)
+        local elapsed_ms=$(( end_t - start_t ))
 
         local diff_lines=$(diff -u <(sort "$out_j") <(sort "$out_r") | wc -l)
         if [[ "$diff_lines" -eq 0 ]]; then
@@ -257,7 +258,7 @@ dispatch_slice() {
     esac
 }
 
-SUITE_START_MS=$(date +%s%3N)
+SUITE_START_MS=$(now_ms)
 (
     for idx in $(seq 1 "$TOTAL_SLICES"); do
         while [[ $(jobs -rp | wc -l) -ge $JOBS ]]; do
@@ -285,7 +286,7 @@ for idx in $(seq 1 "$TOTAL_SLICES"); do
     SLICE_RESULTS+=("$(cat "$TMPDIR/slice_${idx}.json")")
 done
 wait "$POOL_PID" 2>/dev/null || true
-SUITE_ELAPSED_MS=$(( $(date +%s%3N) - SUITE_START_MS ))
+SUITE_ELAPSED_MS=$(( $(now_ms) - SUITE_START_MS ))
 
 # -----------------------------------------------------------------------------
 # Generate Machine-Readable Evidence JSON

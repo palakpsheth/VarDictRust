@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Regression gate (plan rev2 §R-GATE). Exit 0 = PASS. Never edit this to make a change pass.
 set -uo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/portable.sh"
 OUT=${RGATE_DIR:-scratch/rgate}; mkdir -p "$OUT"; fail=0
 SLICE_KEEP_TMP=$(mktemp -d)
 trap 'rm -rf "$SLICE_KEEP_TMP"' EXIT
@@ -37,10 +38,10 @@ fi
 st_t0=$SECONDS
 (
   {
-    s_t0=$(date +%s%3N)
+    s_t0=$(now_ms)
     ( set +e; KEEP_DIR="$SLICE_KEEP_TMP/micro" RUST_THREADS=1 MIN_VARIANTS=1 bash harness/compare.sh fixtures/micro/micro.ref.fa fixtures/micro/micro.bam \
       fixtures/micro/micro.bed > "$OUT/micro.txt" 2>&1 ); rc=$?
-    printf '%d\n' "$(( $(date +%s%3N) - s_t0 ))" > "$SLICE_KEEP_TMP/micro.ms"
+    printf '%d\n' "$(( $(now_ms) - s_t0 ))" > "$SLICE_KEEP_TMP/micro.ms"
     printf '%d\n' "$rc" > "$SLICE_KEEP_TMP/micro.rc.tmp" && mv "$SLICE_KEEP_TMP/micro.rc.tmp" "$SLICE_KEEP_TMP/micro.rc"
   } &
   for id in ${RGATE_SLICES:-s1a s1b s5 s6 s7}; do
@@ -48,9 +49,9 @@ st_t0=$SECONDS
       wait -n 2>/dev/null || sleep 0.02
     done
     {
-      s_t0=$(date +%s%3N)
+      s_t0=$(now_ms)
       ( set +e; RUST_THREADS=1 bash harness/run_slice.sh "$id" > "$OUT/$id.txt" 2>&1 ); rc=$?
-      printf '%d\n' "$(( $(date +%s%3N) - s_t0 ))" > "$SLICE_KEEP_TMP/$id.ms"
+      printf '%d\n' "$(( $(now_ms) - s_t0 ))" > "$SLICE_KEEP_TMP/$id.ms"
       printf '%d\n' "$rc" > "$SLICE_KEEP_TMP/$id.rc.tmp" && mv "$SLICE_KEEP_TMP/$id.rc.tmp" "$SLICE_KEEP_TMP/$id.rc"
     } &
   done

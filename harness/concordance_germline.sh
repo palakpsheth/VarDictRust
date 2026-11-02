@@ -7,9 +7,10 @@
 # stdout as a rank line; the gate and exit code stay java==rust only (Task-3
 # ruling: header/END-key deltas are known-normalized, cpp rank never gated).
 set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/portable.sh"
 
 if ! command -v rtg &>/dev/null || ! command -v bcftools &>/dev/null; then
-  export PATH="/home/palak/miniconda3/envs/g4-tools/bin:$PATH"
+  export PATH="$G4_TOOLS_BIN:$PATH"
 fi
 
 NAME=$1; J=$2; R=$3; TRUTH=$4; BED=$5; SDF=$6; OUT=$7; SAMPLE=$8; CPP_VCF=${9:-}

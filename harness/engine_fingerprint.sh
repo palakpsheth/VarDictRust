@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Content hash of everything that can change engine output or the Tier-2 gate.
 set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/portable.sh"
 GATE_FILES=(
   Cargo.toml
   Cargo.lock
@@ -39,5 +40,5 @@ git diff --quiet HEAD -- "${GATE_FILES[@]}" \
   done
   cargo metadata --locked --format-version 1 | python3 -c 'import json,sys
 m=json.load(sys.stdin); print("\n".join(sorted(p["name"]+"@"+p["version"] for p in m["packages"] if p.get("source"))))'
-} | sha256sum | cut -c1-16
+} | portable_sha256 | cut -c1-16
 

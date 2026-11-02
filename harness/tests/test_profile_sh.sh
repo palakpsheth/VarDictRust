@@ -90,8 +90,9 @@ out=$(PROFILE_OUT="$T/prof" PROFILE_BIN_CPU="$T/nonexistent" PROFILE_BIN_HEAP="$
 ck "missing binary refused outside dry-run" "[ $rc -ne 0 ] && grep -q 'missing/not executable' <<<\"\$out\" && [ ! -e '$T/prof' ]"
 
 # ---- skip semantics: a mirror checkout with no data ------------------------------------------------------
-M="$T/mirror"; mkdir -p "$M/harness" "$M/benchmarks/evidence"
+M="$T/mirror"; mkdir -p "$M/harness/lib" "$M/benchmarks/evidence"
 cp harness/profile.sh harness/courtesy.sh harness/profile_catalog.py harness/slices.tsv "$M/harness/"
+cp harness/lib/portable.sh "$M/harness/lib/"
 out=$(cd "$M" && MIN_FREE_GB=0 MIN_AVAIL_GB=0 COURTESY_NOW=0600 PROFILE_BIN="$T/engine" bash harness/profile.sh baseline --only hg002 2>&1); rc=$?
 ck "missing input is an error when named via --only" "[ $rc -ne 0 ] && grep -q 'missing input' <<<\"\$out\""
 out=$(cd "$M" && MIN_FREE_GB=0 MIN_AVAIL_GB=0 COURTESY_NOW=0600 PROFILE_BIN="$T/engine" bash harness/profile.sh baseline 2>&1); rc=$?

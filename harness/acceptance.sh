@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # AGENTS.md §15 acceptance, items 1-8 verbatim. Exit 0 only if every item is PASS. There is no waiver mechanism.
 set -uo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/portable.sh"
 OUT=${ACCEPT_DIR:-scratch/acceptance}; mkdir -p "$OUT"; : > "$OUT/log.txt"; declare -A R
 FP=$(bash harness/engine_fingerprint.sh) || { echo "acceptance: commit first"; exit 2; }
 PERF_FP=$(bash harness/engine_fingerprint.sh --perf) || exit 2
@@ -136,12 +137,12 @@ ITEM_T0=$SECONDS; echo "$(ts) [Acceptance 6/8] Starting Truth Concordance (5 Coh
 t=1; for e in hg008-truth seqc2-truth hg002-truth hg005-truth na24385-b37-truth; do run ev "$e" || t=0; done; mark 6 $t "truth"
 # 7 Hygiene
 ITEM_T0=$SECONDS; echo "$(ts) [Acceptance 7/8] Starting Hygiene (fmt, clippy, audit, deny, gitleaks)..."
-t=1; run cargo fmt --all -- --check || t=0; run cargo clippy --all-targets --all-features -- -D warnings -A clippy::needless_late_init -A clippy::byte_char_slices || t=0
+t=1; run cargo fmt --all -- --check || t=0; run cargo clippy --all-targets --all-features -- -D warnings || t=0
 run cargo audit || t=0; run cargo deny --all-features check advisories licenses bans sources || t=0
 if command -v gitleaks >/dev/null 2>&1; then
   run gitleaks detect --source . -v || t=0
-elif [ -x /home/palak/miniconda3/envs/g4-tools/bin/gitleaks ]; then
-  run /home/palak/miniconda3/envs/g4-tools/bin/gitleaks detect --source . -v || t=0
+elif [ -x "$G4_TOOLS_BIN/gitleaks" ]; then
+  run "$G4_TOOLS_BIN/gitleaks" detect --source . -v || t=0
 else
   echo "acceptance: gitleaks scanner not found" >> "$OUT/log.txt"; t=0
 fi

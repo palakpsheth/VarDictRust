@@ -16,6 +16,17 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 TESTS_DIR="$SCRIPT_DIR/tests"
+source "$SCRIPT_DIR/lib/portable.sh"
+
+COMMON_GIT_DIR="$(git -C "$ROOT_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+if [[ -n "$COMMON_GIT_DIR" && -d "$(dirname "$COMMON_GIT_DIR")/VarDictJava" ]]; then
+  DATA_ROOT="$(cd "$(dirname "$COMMON_GIT_DIR")" && pwd)"
+  for sub in testdata src; do
+    if [[ ! -e "$ROOT_DIR/VarDictJava/$sub" && -e "$DATA_ROOT/VarDictJava/$sub" ]]; then
+      ln -s "$DATA_ROOT/VarDictJava/$sub" "$ROOT_DIR/VarDictJava/$sub"
+    fi
+  done
+fi
 
 # Isolate every self-test from the real pinned store: tests rebuild temp fixtures (edge-case BAMs, VCF-header
 # cases) whose cells must never be pinned into scratch/golden-store.
@@ -24,7 +35,7 @@ trap 'rm -rf "$GOLDEN_STORE_DIR"' EXIT
 unset GOLDEN_MODE
 
 if ! command -v bcftools &>/dev/null; then
-  export PATH="/home/palak/miniconda3/envs/g4-tools/bin:$PATH"
+  export PATH="$G4_TOOLS_BIN:$PATH"
 fi
 
 # Discover all diagnostic test files
@@ -47,11 +58,11 @@ for t in "${SH_TESTS[@]}"; do
   CURRENT=$((CURRENT + 1))
   name="$(basename "$t")"
   printf "[%2d/%2d] Running %-32s " "$CURRENT" "$TOTAL_TESTS" "$name..."
-  start_ms=$(date +%s%N)
+  start_ms=$(now_ms)
 
   if out=$(bash "$t" 2>&1); then
-    end_ms=$(date +%s%N)
-    elapsed_ms=$(( (end_ms - start_ms) / 1000000 ))
+    end_ms=$(now_ms)
+    elapsed_ms=$(( end_ms - start_ms ))
     echo "PASS (${elapsed_ms}ms)"
     PASSED=$((PASSED + 1))
   else
@@ -67,11 +78,11 @@ for t in "${PY_TESTS[@]}"; do
   CURRENT=$((CURRENT + 1))
   name="$(basename "$t")"
   printf "[%2d/%2d] Running %-32s " "$CURRENT" "$TOTAL_TESTS" "$name..."
-  start_ms=$(date +%s%N)
+  start_ms=$(now_ms)
 
   if out=$(python3 -m unittest "$t" 2>&1); then
-    end_ms=$(date +%s%N)
-    elapsed_ms=$(( (end_ms - start_ms) / 1000000 ))
+    end_ms=$(now_ms)
+    elapsed_ms=$(( end_ms - start_ms ))
     echo "PASS (${elapsed_ms}ms)"
     PASSED=$((PASSED + 1))
   else
