@@ -12,77 +12,80 @@ use std::collections::HashSet;
 use std::sync::LazyLock;
 
 // Define all the regexes from Patterns.java
-static BEGIN_NUMBER_D: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(\d+)D").unwrap());
-static END_NUMBER_D: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(\d+)D$").unwrap());
-static BEGIN_NUMBER_I: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(\d+)I").unwrap());
-static END_NUMBER_I: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(\d+)I$").unwrap());
+static BEGIN_NUMBER_D: LazyLock<Regex> = LazyLock::new(|| crate::util::static_regex(r"^(\d+)D"));
+static END_NUMBER_D: LazyLock<Regex> = LazyLock::new(|| crate::util::static_regex(r"(\d+)D$"));
+static BEGIN_NUMBER_I: LazyLock<Regex> = LazyLock::new(|| crate::util::static_regex(r"^(\d+)I"));
+static END_NUMBER_I: LazyLock<Regex> = LazyLock::new(|| crate::util::static_regex(r"(\d+)I$"));
 
 static SA_CIGAR_D_S_5CLIP_GROUP: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^(\d\d+)S").unwrap());
+    LazyLock::new(|| crate::util::static_regex(r"^(\d\d+)S"));
 static SA_CIGAR_D_S_3CLIP_GROUP: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(\d\d+)S$").unwrap());
+    LazyLock::new(|| crate::util::static_regex(r"(\d\d+)S$"));
 
 static BEGIN_NUMBER_S_NUMBER_IOR_D: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^(\d+)S(\d+)([ID])").unwrap());
+    LazyLock::new(|| crate::util::static_regex(r"^(\d+)S(\d+)([ID])"));
 static NUMBER_IOR_D_NUMBER_S_END: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(\d+)([ID])(\d+)S$").unwrap());
+    LazyLock::new(|| crate::util::static_regex(r"(\d+)([ID])(\d+)S$"));
 static BEGIN_NUMBER_S_NUMBER_M_NUMBER_IOR_D: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^(\d+)S(\d+)M(\d+)([ID])").unwrap());
+    LazyLock::new(|| crate::util::static_regex(r"^(\d+)S(\d+)M(\d+)([ID])"));
 static NUMBER_IOR_D_NUMBER_M_NUMBER_S_END: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(\d+)([ID])(\d+)M(\d+)S$").unwrap());
+    LazyLock::new(|| crate::util::static_regex(r"(\d+)([ID])(\d+)M(\d+)S$"));
 
 static BEGIN_DIGIT_M_NUMBER_IOR_D_NUMBER_M: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^(\d)M(\d+)([ID])(\d+)M").unwrap());
+    LazyLock::new(|| crate::util::static_regex(r"^(\d)M(\d+)([ID])(\d+)M"));
 static BEGIN_DIGIT_M_NUMBER_IOR_D_NUMBER_M_OPT: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^\dM\d+[ID]\d+M").unwrap());
+    LazyLock::new(|| crate::util::static_regex(r"^\dM\d+[ID]\d+M"));
 static NUMBER_IOR_D_DIGIT_M_END: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(\d+)([ID])(\d)M$").unwrap());
+    LazyLock::new(|| crate::util::static_regex(r"(\d+)([ID])(\d)M$"));
 static NUMBER_IOR_D_NUMBER_M_END: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(\d+)([ID])(\d+)M$").unwrap());
+    LazyLock::new(|| crate::util::static_regex(r"(\d+)([ID])(\d+)M$"));
 
-static D_M_D_DD_M_D_I_D_M_D_DD: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^(.*?)(\d+)M(\d+)D(\d+)M(\d+)I(\d+)M(\d+)D(\d+)M").unwrap());
+static D_M_D_DD_M_D_I_D_M_D_DD: LazyLock<Regex> = LazyLock::new(|| {
+    crate::util::static_regex(r"^(.*?)(\d+)M(\d+)D(\d+)M(\d+)I(\d+)M(\d+)D(\d+)M")
+});
 static D_M_D_DD_M_D_I_D_M_D_DD_PRIM: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(\d+)M(\d+)D(\d+)M(\d+)I(\d+)M(\d+)D(\d+)M").unwrap());
+    LazyLock::new(|| crate::util::static_regex(r"(\d+)M(\d+)D(\d+)M(\d+)I(\d+)M(\d+)D(\d+)M"));
 
-static THREE_DELETIONS_PATTERN: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^(.*?)(\d+)M(\d+)D(\d+)M(\d+)D(\d+)M(\d+)D(\d+)M").unwrap());
+static THREE_DELETIONS_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
+    crate::util::static_regex(r"^(.*?)(\d+)M(\d+)D(\d+)M(\d+)D(\d+)M(\d+)D(\d+)M")
+});
 static THREE_INDELS_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^(.*?)(\d+)M(\d+)([DI])(\d+)M(\d+)([DI])(\d+)M(\d+)([DI])(\d+)M").unwrap()
+    crate::util::static_regex(r"^(.*?)(\d+)M(\d+)([DI])(\d+)M(\d+)([DI])(\d+)M(\d+)([DI])(\d+)M")
 });
 
 static DIGM_D_DI_DIGM_D_DI_DIGM_DI_DIGM: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\d+M\d+[DI]\d+M\d+[DI]\d+M\d+[DI]\d+M").unwrap());
+    LazyLock::new(|| crate::util::static_regex(r"\d+M\d+[DI]\d+M\d+[DI]\d+M\d+[DI]\d+M"));
 static DM_DD_DM_DD_DM_DD_DM: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\d+M\d+D\d+M\d+D\d+M\d+D\d+M").unwrap());
+    LazyLock::new(|| crate::util::static_regex(r"\d+M\d+D\d+M\d+D\d+M\d+D\d+M"));
 
 static DIG_D_DIG_M_DIG_DI_DIGI: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(\d+)D(\d+)M(\d+)([DI])(\d+I)?").unwrap());
+    LazyLock::new(|| crate::util::static_regex(r"(\d+)D(\d+)M(\d+)([DI])(\d+I)?"));
 static NOTDIG_DIG_I_DIG_M_DIG_DI_DIGI: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(\D)(\d+)I(\d+)M(\d+)([DI])(\d+I)?").unwrap());
+    LazyLock::new(|| crate::util::static_regex(r"(\D)(\d+)I(\d+)M(\d+)([DI])(\d+I)?"));
 
-static DIG_D_DIG_D: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(\d+)D(\d+)D").unwrap());
-static DIG_I_DIG_I: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(\d+)I(\d+)I").unwrap());
+static DIG_D_DIG_D: LazyLock<Regex> = LazyLock::new(|| crate::util::static_regex(r"(\d+)D(\d+)D"));
+static DIG_I_DIG_I: LazyLock<Regex> = LazyLock::new(|| crate::util::static_regex(r"(\d+)I(\d+)I"));
 
 #[cfg(test)]
 static ANY_NUMBER_M_NUMBER_S_END: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^(.*?)(\d+)M(\d+)S$").unwrap());
+    LazyLock::new(|| crate::util::static_regex(r"^(.*?)(\d+)M(\d+)S$"));
 #[cfg(test)]
 static BEGIN_ANY_DIG_M_END: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^(.*?)(\d+)M$").unwrap());
-static DIG_M_END: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\d+M$").unwrap());
-static BEGIN_DIG_M: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(\d+)M").unwrap());
-static DIG_S_DIG_M: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(\d+)S(\d+)M").unwrap());
-static DIG_M_DIG_S_END: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\d+M\d+S$").unwrap());
+    LazyLock::new(|| crate::util::static_regex(r"^(.*?)(\d+)M$"));
+static DIG_M_END: LazyLock<Regex> = LazyLock::new(|| crate::util::static_regex(r"\d+M$"));
+static BEGIN_DIG_M: LazyLock<Regex> = LazyLock::new(|| crate::util::static_regex(r"^(\d+)M"));
+static DIG_S_DIG_M: LazyLock<Regex> = LazyLock::new(|| crate::util::static_regex(r"^(\d+)S(\d+)M"));
+static DIG_M_DIG_S_END: LazyLock<Regex> = LazyLock::new(|| crate::util::static_regex(r"\d+M\d+S$"));
 
-static ALIGNED_LENGTH_MND: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(\d+)[MND]").unwrap());
-static SOFT_CLIPPED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(\d+)[MIS]").unwrap());
-static RE_START_S: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\d+S").unwrap());
-static RE_END_2S: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\d\d+S$").unwrap());
-static RE_S_M: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(\d+)S(\d+)M").unwrap());
+static ALIGNED_LENGTH_MND: LazyLock<Regex> =
+    LazyLock::new(|| crate::util::static_regex(r"(\d+)[MND]"));
+static SOFT_CLIPPED: LazyLock<Regex> = LazyLock::new(|| crate::util::static_regex(r"(\d+)[MIS]"));
+static RE_START_S: LazyLock<Regex> = LazyLock::new(|| crate::util::static_regex(r"^\d+S"));
+static RE_END_2S: LazyLock<Regex> = LazyLock::new(|| crate::util::static_regex(r"\d\d+S$"));
+static RE_S_M: LazyLock<Regex> = LazyLock::new(|| crate::util::static_regex(r"^(\d+)S(\d+)M"));
 #[cfg(test)]
 static CIGAR_ELEMENT_PATTERN: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(\-?\d+)[MIDNSHPX=]").unwrap());
+    LazyLock::new(|| crate::util::static_regex(r"(\-?\d+)[MIDNSHPX=]"));
 
 const LOWQUAL: u8 = 10;
 const SEED_2: usize = 12;
@@ -1494,7 +1497,9 @@ impl<'a> CigarModifier<'a> {
                 dlen += g4;
                 if let Some(istr_str) = istr {
                     if !istr_str.is_empty() {
-                        ilen += to_int(&istr_str[0..istr_str.len() - 1]);
+                        if let Some(prefix) = istr_str.get(..istr_str.len() - 1) {
+                            ilen += to_int(prefix);
+                        }
                     }
                 }
             }
@@ -1526,7 +1531,9 @@ impl<'a> CigarModifier<'a> {
                 dlen += g3;
                 if let Some(istr_str) = istr {
                     if !istr_str.is_empty() {
-                        ilen += to_int(&istr_str[0..istr_str.len() - 1]);
+                        if let Some(prefix) = istr_str.get(..istr_str.len() - 1) {
+                            ilen += to_int(prefix);
+                        }
                     }
                 }
             }

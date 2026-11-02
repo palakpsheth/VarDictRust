@@ -284,11 +284,11 @@ pub fn find_bi(
             if dir == -1 {
                 let mut ins_vec = [insert, extra.clone()].concat();
                 ins_vec.reverse();
-                let mut ins_str = String::from_utf8_lossy(&ins_vec).into_owned();
                 if !extra.is_empty() {
-                    let insert_idx = ins_str.len() - extra.len();
-                    ins_str.insert(insert_idx, '&');
+                    let insert_idx = ins_vec.len() - extra.len();
+                    ins_vec.insert(insert_idx, b'&');
                 }
+                let ins_str = String::from_utf8_lossy(&ins_vec).into_owned();
 
                 if mm == 0 && (i + n) == seq.len() {
                     let mut bi_val = position - 1 - (extra.len() as i32);
@@ -1199,24 +1199,27 @@ mod task13_tests {
     }
 }
 
-static BEGIN_MINUS_NUMBER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^-(\d+)").unwrap());
-static UP_NUMBER_END: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\^(\d+)$").unwrap());
+static BEGIN_MINUS_NUMBER: LazyLock<Regex> =
+    LazyLock::new(|| crate::util::static_regex(r"^-(\d+)"));
+static UP_NUMBER_END: LazyLock<Regex> = LazyLock::new(|| crate::util::static_regex(r"\^(\d+)$"));
 static MINUS_NUMBER_ATGNC_SV_ATGNC_END: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^-?\d+\^([ATGNC]+)<...\d+>([ATGNC]+)$").unwrap());
+    LazyLock::new(|| crate::util::static_regex(r"^-?\d+\^([ATGNC]+)<...\d+>([ATGNC]+)$"));
 static BEGIN_MINUS_NUMBER_ANY: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^-(\d+)(.*)").unwrap());
-static CARET_ATGNC: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\^([ATGNC]+)").unwrap());
+    LazyLock::new(|| crate::util::static_regex(r"^-(\d+)(.*)"));
+static CARET_ATGNC: LazyLock<Regex> = LazyLock::new(|| crate::util::static_regex(r"\^([ATGNC]+)"));
 static MINUS_NUMBER_AMP_ATGCS_END: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(-\d+)&[ATGC]+$").unwrap());
+    LazyLock::new(|| crate::util::static_regex(r"(-\d+)&[ATGC]+$"));
 
-static BEGIN_PLUS_ATGC: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\+([ATGC]+)").unwrap());
+static BEGIN_PLUS_ATGC: LazyLock<Regex> =
+    LazyLock::new(|| crate::util::static_regex(r"^\+([ATGC]+)"));
 static DUP_NUM_ATGC: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"<dup(\d+)>([ATGC]+)$").unwrap());
-static AMP_ATGC: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"&([ATGC]+)").unwrap());
-static HASH_ATGC: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"#([ATGC]+)").unwrap());
+    LazyLock::new(|| crate::util::static_regex(r"<dup(\d+)>([ATGC]+)$"));
+static AMP_ATGC: LazyLock<Regex> = LazyLock::new(|| crate::util::static_regex(r"&([ATGC]+)"));
+static HASH_ATGC: LazyLock<Regex> = LazyLock::new(|| crate::util::static_regex(r"#([ATGC]+)"));
 static ATGS_AMP_ATGS_END: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(\+[ATGC]+)&[ATGC]+$").unwrap());
-static RE_CARET_DIGITS_END: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\^\d+$").unwrap());
+    LazyLock::new(|| crate::util::static_regex(r"(\+[ATGC]+)&[ATGC]+$"));
+static RE_CARET_DIGITS_END: LazyLock<Regex> =
+    LazyLock::new(|| crate::util::static_regex(r"\^\d+$"));
 
 /// Realign deletions.
 ///
@@ -1345,8 +1348,10 @@ pub fn realigndel(
             let mp = mismatch.mismatch_position;
             let me = mismatch.end;
 
-            if mm.len() > 1 {
-                mm = format!("{}&{}", &mm[0..1], &mm[1..]);
+            if let (Some(head), Some(tail)) = (mm.get(..1), mm.get(1..)) {
+                if !tail.is_empty() {
+                    mm = format!("{head}&{tail}");
+                }
             }
 
             let mut should_adjust = false;
@@ -1565,11 +1570,7 @@ pub fn realigndel(
                     }
 
                     let slice_start = (sc3pp - p).max(0) as usize;
-                    let sanpseq_slice = if slice_start < sanpseq.len() {
-                        &sanpseq[slice_start..]
-                    } else {
-                        ""
-                    };
+                    let sanpseq_slice = sanpseq.get(slice_start..).unwrap_or("");
 
                     if config.verbose {
                         eprintln!(
@@ -1856,7 +1857,7 @@ pub fn realignins(
                 // Because `SVFLANK - ins3.length() < 0`, `Utils.substr(ins3, neg)`
                 // starts at `ins3.length() + (SVFLANK - ins3.length()) == SVFLANK`.
                 let start_idx = sv_flanking as usize;
-                sanpseq = ins3[start_idx..].to_string();
+                sanpseq = ins3.get(start_idx..).unwrap_or("").to_string();
             }
             sanpseq.push_str(&crate::util::join_ref(reference, chr, p + 1, p + 101));
             find_mm3(reference, chr, p3 + 1, sanpseq.as_bytes(), soft_clips_3_end)
@@ -1895,8 +1896,10 @@ pub fn realignins(
             let mismatch_position = mismatch.mismatch_position;
             let mismatch_end = mismatch.end;
 
-            if mismatch_bases.len() > 1 {
-                mismatch_bases = format!("{}&{}", &mismatch_bases[0..1], &mismatch_bases[1..]);
+            if let (Some(head), Some(tail)) = (mismatch_bases.get(..1), mismatch_bases.get(1..)) {
+                if !tail.is_empty() {
+                    mismatch_bases = format!("{head}&{tail}");
+                }
             }
 
             let mut should_adjust = false;
@@ -2160,13 +2163,10 @@ pub fn realignins(
                                     if seq_char != ins_char {
                                         flag += 1;
                                         let shift = seqi + offset + 1;
-                                        if shift < tvn.len() {
-                                            tvn = format!(
-                                                "{}{}{}",
-                                                &tvn[..shift],
-                                                seq_char,
-                                                &tvn[shift + 1..]
-                                            );
+                                        if let (Some(prefix), Some(suffix)) =
+                                            (tvn.get(..shift), tvn.get(shift + 1..))
+                                        {
+                                            tvn = format!("{prefix}{seq_char}{suffix}");
                                         }
                                     }
                                 }
@@ -6542,6 +6542,44 @@ mod tests {
             splice.contains("19-39"),
             "partial_pipeline must merge parser.splice into caller's splice set, got: {:?}",
             splice
+        );
+    }
+
+    #[test]
+    fn find_bi_non_ascii_consensus_no_panic() {
+        let mut reference = crate::reference::Reference::new();
+        reference
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 1,
+                sequence_end: 60,
+            });
+        let ref_seq: Vec<u8> = b"ACGTACGTAC".iter().copied().cycle().take(60).collect();
+        reference.region_sequences.push(ref_seq.clone());
+        reference
+            .reference_sequences
+            .insert("chr1".to_string(), ref_seq.clone());
+
+        // Build a consensus `seq` where `n = 6` has non-ASCII bytes `[0xc9, 0x80, ...]`
+        // and the next 10 bases match `ref_pos = 30 - i - 1` (`dir = -1`) with 1 mismatch
+        // at `i = 0` (`mm = 1`, `i = 10`, `mnt = 4 >= 3`, `ratio = 0.10 < 0.15`),
+        // exercising `dir == -1` and `!extra.is_empty()` at `realign.rs:284-290`.
+        let mut consensus = vec![0xc9, 0x80, b'A', b'C', b'G', b'T'];
+        for i in 0..10usize {
+            let ref_pos = (30 - (i as i32) - 1) as usize;
+            let ref_base = ref_seq[ref_pos - 1];
+            if i == 0 {
+                consensus.push(if ref_base == b'A' { b'T' } else { b'A' });
+            } else {
+                consensus.push(ref_base);
+            }
+        }
+        let res = super::find_bi(&consensus, 30, &reference, -1, "chr1", 60);
+        assert!(
+            res.insertion_sequence.contains('&'),
+            "expected '&' in insertion_sequence, got: {}",
+            res.insertion_sequence
         );
     }
 }

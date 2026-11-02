@@ -15,12 +15,12 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::sync::LazyLock;
 
-static MC_CLIP_CLIP: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\d+S.*?\d+S").unwrap());
+static MC_CLIP_CLIP: LazyLock<Regex> = LazyLock::new(|| crate::util::static_regex(r"\d+S.*?\d+S"));
 
 struct Offset {
     offset: i32,
     sequence: String,
-    quality_sequence: String,
+    quality_sequence: Vec<u8>,
     offset_number_of_mismatches: i32,
 }
 
@@ -74,9 +74,9 @@ pub struct CigarParser<'a> {
     /// per process_insertion/process_deletion call (methods never nest, so
     /// one set suffices).
     pub scratch_f4_desc: String,
-    pub scratch_f4_qual: String,
+    pub scratch_f4_qual: Vec<u8>,
     pub scratch_f4_seg1: String,
-    pub scratch_f4_seg2: String,
+    pub scratch_f4_seg2: Vec<u8>,
 }
 
 fn get_adjusted_nm(record: &SamRecord) -> i32 {
@@ -110,6 +110,19 @@ fn allele_key(base: u8, buf: &mut String) -> &str {
             buf.push(base as char);
             buf.as_str()
         }
+    }
+}
+
+#[inline]
+fn push_ascii_base(dst: &mut String, b: u8) {
+    dst.push(if b.is_ascii() { b as char } else { 'N' });
+}
+
+#[inline]
+fn push_ascii_slice(dst: &mut String, bytes: &[u8]) {
+    dst.reserve(bytes.len());
+    for &b in bytes {
+        push_ascii_base(dst, b);
     }
 }
 
@@ -167,9 +180,9 @@ impl<'a> CigarParser<'a> {
             scratch_ss: String::new(),
             scratch_splice_key: String::new(),
             scratch_f4_desc: String::new(),
-            scratch_f4_qual: String::new(),
+            scratch_f4_qual: Vec::new(),
             scratch_f4_seg1: String::new(),
-            scratch_f4_seg2: String::new(),
+            scratch_f4_seg2: Vec::new(),
         }
     }
 
@@ -630,7 +643,7 @@ impl<'a> CigarParser<'a> {
                                     }
                                     for ssi in 1..=ssn {
                                         let idx = read_pos_inc + ssi;
-                                        buf_ss.push(query_seq[idx] as char);
+                                        push_ascii_base(&mut buf_ss, query_seq[idx]);
                                         q += qual_phred(&query_qual, idx);
                                         qbases += 1;
                                     }
@@ -645,7 +658,7 @@ impl<'a> CigarParser<'a> {
                         }
 
                         buf_s.clear();
-                        buf_s.push(ch1 as char);
+                        push_ascii_base(&mut buf_s, ch1);
                         if !buf_ss.is_empty() {
                             buf_s.push('&');
                             buf_s.push_str(&buf_ss);
@@ -668,7 +681,7 @@ impl<'a> CigarParser<'a> {
                                     query_seq.get(read_pos_inc + 1),
                                     query_qual.get(read_pos_inc + 1),
                                 ) {
-                                    buf_s.push(qb as char);
+                                    push_ascii_base(&mut buf_s, qb);
                                     q += qq.saturating_sub(33) as f64;
                                     qbases += 1;
                                 }
@@ -690,7 +703,7 @@ impl<'a> CigarParser<'a> {
                                     .get(read_pos_inc + 1..read_pos_inc + 1 + next_next_len)
                                 {
                                     buf_s.push('^');
-                                    buf_s.push_str(&String::from_utf8_lossy(sub));
+                                    push_ascii_slice(&mut buf_s, sub);
                                 }
                                 for qi in 1..=next_next_len {
                                     if let Some(&qq) = query_qual.get(read_pos_inc + 1 + qi) {
@@ -718,7 +731,7 @@ impl<'a> CigarParser<'a> {
                                     nmoff += tpl.offset_number_of_mismatches;
                                     buf_s.push('&');
                                     buf_s.push_str(&tpl.sequence);
-                                    for b in tpl.quality_sequence.bytes() {
+                                    for &b in &tpl.quality_sequence {
                                         q += b.saturating_sub(33) as f64;
                                         qibases += 1;
                                     }
@@ -746,7 +759,7 @@ impl<'a> CigarParser<'a> {
                                     query_seq.get(read_pos_inc + 1),
                                     query_qual.get(read_pos_inc + 1),
                                 ) {
-                                    buf_s.push(qb as char);
+                                    push_ascii_base(&mut buf_s, qb);
                                     q += qq.saturating_sub(33) as f64;
                                     qbases += 1;
                                 }
@@ -761,10 +774,11 @@ impl<'a> CigarParser<'a> {
                             if let Some(sub) =
                                 query_seq.get(read_pos_inc + 1..read_pos_inc + 1 + next_len)
                             {
-                                temp_s.push_str(&String::from_utf8_lossy(sub));
+                                push_ascii_slice(&mut temp_s, sub);
                             }
-                            if temp_s.len() >= next_len {
-                                let (first_part, second_part) = temp_s.split_at(next_len);
+                            if let (Some(first_part), Some(second_part)) =
+                                (temp_s.get(..next_len), temp_s.get(next_len..))
+                            {
                                 buf_s.clear();
                                 let _ = write!(buf_s, "+{}&{}", first_part, second_part);
                             }
@@ -1058,7 +1072,7 @@ impl<'a> CigarParser<'a> {
         cigar_elements: &[(u32, CigarKind)],
         ci: usize,
         desc_string: &mut String,
-        quality_segment: &mut String,
+        quality_segment: &mut Vec<u8>,
         m_len: usize,
         indel_len: usize,
         begin: usize,
@@ -1066,17 +1080,17 @@ impl<'a> CigarParser<'a> {
     ) {
         let sub_m = crate::util::subseq(query_sequence, begin, m_len).unwrap_or(&[]);
         desc_string.push('#');
-        desc_string.push_str(&String::from_utf8_lossy(sub_m));
+        push_ascii_slice(desc_string, sub_m);
 
         let qual_m = crate::util::subseq(query_quality, begin, m_len).unwrap_or(&[]);
-        quality_segment.push_str(&String::from_utf8_lossy(qual_m));
+        quality_segment.extend_from_slice(qual_m);
 
         desc_string.push('^');
         let is_next_next_ins = cigar_elements[ci + 2].1 == CigarKind::Insertion;
         if is_next_next_ins {
             let sub_ins =
                 crate::util::subseq(query_sequence, begin + m_len, indel_len).unwrap_or(&[]);
-            desc_string.push_str(&String::from_utf8_lossy(sub_ins));
+            push_ascii_slice(desc_string, sub_ins);
         } else {
             desc_string.push_str(&indel_len.to_string());
         }
@@ -1085,18 +1099,18 @@ impl<'a> CigarParser<'a> {
             if is_next_next_ins {
                 let qual_ins =
                     crate::util::subseq(query_quality, begin + m_len, indel_len).unwrap_or(&[]);
-                quality_segment.push_str(&String::from_utf8_lossy(qual_ins));
+                quality_segment.extend_from_slice(qual_ins);
             } else {
                 if let Some(q_char) = crate::util::char_at(query_quality, (begin + m_len) as isize)
                 {
-                    quality_segment.push(q_char as char);
+                    quality_segment.push(q_char);
                 }
             }
         } else {
             if is_next_next_ins {
                 let qual_ins =
                     crate::util::subseq(query_quality, begin + m_len, indel_len).unwrap_or(&[]);
-                quality_segment.push_str(&String::from_utf8_lossy(qual_ins));
+                quality_segment.extend_from_slice(qual_ins);
             }
         }
     }
@@ -1108,7 +1122,7 @@ impl<'a> CigarParser<'a> {
         dir: bool,
         rlen1: i32,
         desc_string: &str,
-        quality_segment: &str,
+        quality_segment: &[u8],
         nmoff: i32,
         start: i32,
         read_pos_exc: i32,
@@ -1128,7 +1142,7 @@ impl<'a> CigarParser<'a> {
 
         let mut tmpq = 0.0;
         if !quality_segment.is_empty() {
-            for b in quality_segment.bytes() {
+            for &b in quality_segment {
                 tmpq += b.saturating_sub(33) as f64;
             }
             tmpq /= quality_segment.len() as f64;
@@ -1220,7 +1234,7 @@ impl<'a> CigarParser<'a> {
                 begin,
                 false,
             );
-            quality_of_segment.push_str(&quality_of_segment_sb);
+            quality_of_segment.extend_from_slice(&quality_of_segment_sb);
 
             let is_next_next_del = cigar_elements[ci + 2].1 == CigarKind::Deletion;
             multoffs += m_len + if is_next_next_del { indel_len } else { 0 };
@@ -1272,10 +1286,10 @@ impl<'a> CigarParser<'a> {
                 if current_offset > 0 {
                     *offset = current_offset as u32;
                     if let Some(sub) = query_seq.get(tn..tn + current_offset) {
-                        sequence_to_append.push_str(&String::from_utf8_lossy(sub));
+                        push_ascii_slice(&mut sequence_to_append, sub);
                     }
                     if let Some(sub) = query_qual.get(tn..tn + current_offset) {
-                        quality_of_segment.push_str(&String::from_utf8_lossy(sub));
+                        quality_of_segment.extend_from_slice(sub);
                     }
                 }
             }
@@ -1284,10 +1298,10 @@ impl<'a> CigarParser<'a> {
             let ins_len = cigar_elements[ci + 1].0 as usize;
             if let Some(sub) = query_seq.get(*read_pos_inc..*read_pos_inc + ins_len) {
                 desc_string.push('^');
-                desc_string.push_str(&String::from_utf8_lossy(sub));
+                push_ascii_slice(&mut desc_string, sub);
             }
             if let Some(sub) = query_qual.get(*read_pos_inc..*read_pos_inc + ins_len) {
-                quality_of_segment.push_str(&String::from_utf8_lossy(sub));
+                quality_of_segment.extend_from_slice(sub);
             }
             multoffp += ins_len;
 
@@ -1337,10 +1351,10 @@ impl<'a> CigarParser<'a> {
                 if current_offset > 0 {
                     *offset = current_offset as u32;
                     if let Some(sub) = query_seq.get(tn..tn + current_offset) {
-                        sequence_to_append.push_str(&String::from_utf8_lossy(sub));
+                        push_ascii_slice(&mut sequence_to_append, sub);
                     }
                     if let Some(sub) = query_qual.get(tn..tn + current_offset) {
-                        quality_of_segment.push_str(&String::from_utf8_lossy(sub));
+                        quality_of_segment.extend_from_slice(sub);
                     }
                 }
             }
@@ -1391,11 +1405,11 @@ impl<'a> CigarParser<'a> {
                     *offset = current_offset as u32;
                     if let Some(sub) = query_seq.get(*read_pos_inc..*read_pos_inc + current_offset)
                     {
-                        sequence_to_append.push_str(&String::from_utf8_lossy(sub));
+                        push_ascii_slice(&mut sequence_to_append, sub);
                     }
                     if let Some(sub) = query_qual.get(*read_pos_inc..*read_pos_inc + current_offset)
                     {
-                        quality_of_segment.push_str(&String::from_utf8_lossy(sub));
+                        quality_of_segment.extend_from_slice(sub);
                     }
                 }
             }
@@ -1408,7 +1422,7 @@ impl<'a> CigarParser<'a> {
 
         let next_q_idx = *read_pos_inc + *offset as usize;
         if next_q_idx >= query_qual.len() {
-            quality_of_segment.push(quality_of_last_segment_before_del as char);
+            quality_of_segment.push(quality_of_last_segment_before_del);
         } else {
             let quality_of_segment_with_offset = query_qual.get(next_q_idx).copied().unwrap_or(33);
             let best_qual = if quality_of_last_segment_before_del > quality_of_segment_with_offset {
@@ -1416,7 +1430,7 @@ impl<'a> CigarParser<'a> {
             } else {
                 quality_of_segment_with_offset
             };
-            quality_of_segment.push(best_qual as char);
+            quality_of_segment.push(best_qual);
         }
 
         if *start >= self.region.start.0 as i32 && *start <= self.region.end.0 as i32 {
@@ -1474,14 +1488,14 @@ impl<'a> CigarParser<'a> {
         desc_string.clear();
         if let Some(sub) = query_seq.get(*read_pos_inc..*read_pos_inc + cigar_element_len as usize)
         {
-            desc_string.push_str(&String::from_utf8_lossy(sub));
+            push_ascii_slice(&mut desc_string, sub);
         }
 
         let mut quality_string = std::mem::take(&mut self.scratch_f4_qual);
         quality_string.clear();
         if let Some(sub) = query_qual.get(*read_pos_inc..*read_pos_inc + cigar_element_len as usize)
         {
-            quality_string.push_str(&String::from_utf8_lossy(sub));
+            quality_string.extend_from_slice(sub);
         }
 
         let mut ss = std::mem::take(&mut self.scratch_f4_seg1);
@@ -1512,7 +1526,7 @@ impl<'a> CigarParser<'a> {
                 begin,
                 true,
             );
-            quality_string.push_str(&quality_segment_sb);
+            quality_string.extend_from_slice(&quality_segment_sb);
 
             let is_next_next_del = cigar_elements[ci + 2].1 == CigarKind::Deletion;
             multoffs += m_len + if is_next_next_del { indel_len } else { 0 };
@@ -1533,7 +1547,7 @@ impl<'a> CigarParser<'a> {
                 );
                 *offset = tpl.offset as u32;
                 ss.push_str(&tpl.sequence);
-                quality_string.push_str(&tpl.quality_sequence);
+                quality_string.extend_from_slice(&tpl.quality_sequence);
                 for osi in 0..tpl.offset {
                     inc_cnt(&mut self.ref_coverage, *start + multoffs as i32 + osi, 1);
                 }
@@ -1584,13 +1598,13 @@ impl<'a> CigarParser<'a> {
                         *read_pos_inc + cigar_element_len as usize
                             ..*read_pos_inc + cigar_element_len as usize + current_offset,
                     ) {
-                        ss.push_str(&String::from_utf8_lossy(sub));
+                        push_ascii_slice(&mut ss, sub);
                     }
                     if let Some(sub) = query_qual.get(
                         *read_pos_inc + cigar_element_len as usize
                             ..*read_pos_inc + cigar_element_len as usize + current_offset,
                     ) {
-                        quality_string.push_str(&String::from_utf8_lossy(sub));
+                        quality_string.extend_from_slice(sub);
                     }
                     for osi in 0..current_offset {
                         inc_cnt(&mut self.ref_coverage, *start + osi as i32, 1);
@@ -1650,7 +1664,7 @@ impl<'a> CigarParser<'a> {
 
             let mut tmpq = 0.0;
             if !quality_string.is_empty() {
-                for b in quality_string.bytes() {
+                for &b in &quality_string {
                     tmpq += b.saturating_sub(33) as f64;
                 }
                 tmpq /= quality_string.len() as f64;
@@ -1775,11 +1789,11 @@ impl<'a> CigarParser<'a> {
 
         let sa_5clip = {
             static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-            RE.get_or_init(|| regex::Regex::new(r"^\d\d+S").unwrap())
+            RE.get_or_init(|| crate::util::static_regex(r"^\d\d+S"))
         };
         let sa_3clip = {
             static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-            RE.get_or_init(|| regex::Regex::new(r"\d\d+S$").unwrap())
+            RE.get_or_init(|| crate::util::static_regex(r"\d\d+S$"))
         };
 
         let is_chimeric = if is_5_side {
@@ -2246,13 +2260,13 @@ impl<'a> CigarParser<'a> {
         }
 
         let mut ss = String::new();
-        let mut q_seq = String::new();
+        let mut q_seq = Vec::new();
         if offset > 0 {
             if let Some(sub) = query_sequence.get(read_position..read_position + offset) {
-                ss = String::from_utf8_lossy(sub).into_owned();
+                push_ascii_slice(&mut ss, sub);
             }
             if let Some(sub) = query_quality.get(read_position..read_position + offset) {
-                q_seq = String::from_utf8_lossy(sub).into_owned();
+                q_seq.extend_from_slice(sub);
             }
         }
 
@@ -3332,9 +3346,9 @@ pub fn pileup_into(
         scratch_ss: String::new(),
         scratch_splice_key: String::new(),
         scratch_f4_desc: String::new(),
-        scratch_f4_qual: String::new(),
+        scratch_f4_qual: Vec::new(),
         scratch_f4_seg1: String::new(),
-        scratch_f4_seg2: String::new(),
+        scratch_f4_seg2: Vec::new(),
     };
 
     for record in records {
@@ -5215,5 +5229,177 @@ mod tests {
         let snv = &parser.non_insertion_variants.get(&11).unwrap().map["T"];
         assert_eq!(snv.pp, -10);
         assert_eq!(snv.pmean, -10.0);
+    }
+
+    #[test]
+    fn high_phred_quality_mean_matches_java() {
+        let mut reference = Reference::new();
+        reference
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 1,
+                sequence_end: 200,
+            });
+        let ref_seq: Vec<u8> = b"ACGTACGTAC".iter().copied().cycle().take(200).collect();
+        reference.region_sequences.push(ref_seq.clone());
+        reference
+            .reference_sequences
+            .insert("chr1".to_string(), ref_seq.clone());
+
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(1),
+            end: Pos1(200),
+            gene: "T".to_string(),
+            amplicon: None,
+        };
+        let mut config = Config::default();
+        config.realign = 0;
+
+        for phred in [95u8, 100u8] {
+            let q_byte = phred + 33; // 128 for Phred 95, 133 for Phred 100 (>= 0x80)
+            let mut parser = CigarParser::new(&reference, &region, &config, false, 0, 100, 100);
+
+            // 1. 50M2I48M with raw Phred `phred` on the 2 inserted bases
+            let mut ins_seq = Vec::new();
+            ins_seq.extend_from_slice(&ref_seq[0..50]);
+            ins_seq.extend_from_slice(b"GG");
+            ins_seq.extend_from_slice(&ref_seq[50..98]);
+            let mut ins_qual = vec![73u8; 100];
+            ins_qual[50] = q_byte;
+            ins_qual[51] = q_byte;
+            let ins_rec = SamRecord {
+                name: b"r_ins".to_vec(),
+                flags: 0,
+                reference_name: Some("chr1".to_string()),
+                alignment_start: Some(Pos1(1)),
+                alignment_end: Some(Pos1(98)),
+                mapping_quality: Some(60),
+                cigar: vec![
+                    (50, CigarKind::Match),
+                    (2, CigarKind::Insertion),
+                    (48, CigarKind::Match),
+                ],
+                sequence: ins_seq,
+                quality_scores: ins_qual,
+                mate_reference_name: None,
+                mate_alignment_start: None,
+                template_length: 0,
+                nm: Some(2),
+                sa: None,
+                mc: None,
+                mq: None,
+            };
+            parser.parse_cigar(&ins_rec).unwrap();
+            let ins_var = parser
+                .insertion_variants
+                .iter()
+                .find_map(|(_, vm)| vm.map.get("+GG"))
+                .expect("expected +GG insertion variant");
+            assert_eq!(
+                ins_var.qmean,
+                f64::from(phred),
+                "insertion qmean for Phred {phred} must equal {phred}.0, got {}",
+                ins_var.qmean
+            );
+
+            // 2. 50M1D50M with raw Phred `phred` at the base preceding the deletion
+            let mut del_seq = Vec::new();
+            del_seq.extend_from_slice(&ref_seq[0..50]);
+            del_seq.extend_from_slice(&ref_seq[51..101]);
+            let mut del_qual = vec![73u8; 100];
+            del_qual[49] = q_byte;
+            let del_rec = SamRecord {
+                name: b"r_del".to_vec(),
+                flags: 0,
+                reference_name: Some("chr1".to_string()),
+                alignment_start: Some(Pos1(1)),
+                alignment_end: Some(Pos1(101)),
+                mapping_quality: Some(60),
+                cigar: vec![
+                    (50, CigarKind::Match),
+                    (1, CigarKind::Deletion),
+                    (50, CigarKind::Match),
+                ],
+                sequence: del_seq,
+                quality_scores: del_qual,
+                mate_reference_name: None,
+                mate_alignment_start: None,
+                template_length: 0,
+                nm: Some(1),
+                sa: None,
+                mc: None,
+                mq: None,
+            };
+            parser.parse_cigar(&del_rec).unwrap();
+            let del_var = parser
+                .non_insertion_variants
+                .get(&51)
+                .and_then(|vm| vm.map.get("-1"))
+                .expect("expected -1 deletion variant at pos 51");
+            assert_eq!(
+                del_var.qmean,
+                f64::from(phred),
+                "deletion qmean for Phred {phred} must equal {phred}.0, got {}",
+                del_var.qmean
+            );
+        }
+    }
+
+    #[test]
+    fn split_at_non_ascii_no_panic() {
+        let mut reference = Reference::new();
+        reference
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 1,
+                sequence_end: 60,
+            });
+        let ref_seq = vec![b'A'; 60];
+        reference.region_sequences.push(ref_seq.clone());
+        reference
+            .reference_sequences
+            .insert("chr1".to_string(), ref_seq);
+
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(1),
+            end: Pos1(50),
+            gene: "T".to_string(),
+            amplicon: None,
+        };
+        let config = Config::default();
+        let mut parser = CigarParser::new(&reference, &region, &config, false, 0, 100, 100);
+
+        let mut seq = vec![b'A'; 22];
+        seq[9] = 0xc9; // non-ASCII mismatch within vext before 2I
+        seq[10] = 0x80; // non-ASCII inserted base
+        seq[11] = b'G';
+        let qual = vec![128u8; 22];
+        let rec = SamRecord {
+            name: b"r_non_ascii".to_vec(),
+            flags: 0,
+            reference_name: Some("chr1".to_string()),
+            alignment_start: Some(Pos1(1)),
+            alignment_end: Some(Pos1(20)),
+            mapping_quality: Some(60),
+            cigar: vec![
+                (10, CigarKind::Match),
+                (2, CigarKind::Insertion),
+                (10, CigarKind::Match),
+            ],
+            sequence: seq,
+            quality_scores: qual,
+            mate_reference_name: None,
+            mate_alignment_start: None,
+            template_length: 0,
+            nm: Some(3),
+            sa: None,
+            mc: None,
+            mq: None,
+        };
+        parser.parse_cigar(&rec).unwrap();
     }
 }

@@ -176,3 +176,46 @@ fn cram_worker_stack_thresholds() {
     );
     println!("PINNED: 64 MiB worker stack decodes {TILE_T_COUNT} records");
 }
+
+#[test]
+fn run_single_thread_survives_2mib_caller() {
+    let root = workspace_root();
+    if !scratch_present(&root) {
+        println!("SKIP: scratch HG008 CRAM slices absent (CI has no such data)");
+        return;
+    }
+
+    let cram = root
+        .join("scratch/g4/hg008/HG008-T.slice.cram")
+        .to_str()
+        .unwrap()
+        .to_string();
+    let reference = root
+        .join("scratch/g4/ref/giabv3/GRCh38_GIABv3.fa")
+        .to_str()
+        .unwrap()
+        .to_string();
+    let region = format!("{TILE_CHR}:{TILE_START}-{TILE_END}");
+
+    // Even when the caller thread only has a 2 MiB stack, `vardictrust_core::run`
+    // with `threads = 1` dispatches onto `run_with_worker_stack` (>= 16 MiB floor)
+    // and completes without stack overflow.
+    let h = std::thread::Builder::new()
+        .name("caller-2mib".to_string())
+        .stack_size(2 * 1024 * 1024)
+        .spawn(move || {
+            let config = Config {
+                reference,
+                bam: cram,
+                region: Some(region),
+                threads: 1,
+                emit_intermediate: true,
+                ..Default::default()
+            };
+            vardictrust_core::run(&config)
+        })
+        .expect("spawn 2 MiB caller thread");
+    h.join()
+        .expect("2 MiB caller thread must not panic")
+        .expect("run(threads = 1) on HG008 tile 0 must succeed");
+}

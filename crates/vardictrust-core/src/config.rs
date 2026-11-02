@@ -258,8 +258,8 @@ pub fn java_integer_decode(s: &str) -> Result<i32, String> {
             (16u32, r)
         } else if let Some(r) = rest.strip_prefix('#') {
             (16u32, r)
-        } else if rest.starts_with('0') && rest.len() > 1 {
-            (8u32, &rest[1..])
+        } else if let Some(r) = rest.strip_prefix('0').filter(|r| !r.is_empty()) {
+            (8u32, r)
         } else {
             (10u32, rest)
         };

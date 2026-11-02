@@ -26,6 +26,37 @@ pub struct SamRecord {
     pub mq: Option<u8>,
 }
 
+/// Ports HTSJDK `SequenceUtil.bamReadBaseLookup` (127-byte lookup table initialized with `'N'`
+/// and populated for `"=ABCDGHKMNRSTVWY"` at `b` and `b + 32`).
+///
+/// Bytes `>= 0x7F` (`127..=255`) are out of bounds in HTSJDK's `byte[127]` table and return `None`.
+#[inline]
+pub(crate) fn normalize_cram_base(b: u8) -> Option<u8> {
+    if b >= 127 {
+        return None;
+    }
+    let norm = match b {
+        b'=' | b']' => b'=',
+        b'A' | b'a' => b'A',
+        b'B' | b'b' => b'B',
+        b'C' | b'c' => b'C',
+        b'D' | b'd' => b'D',
+        b'G' | b'g' => b'G',
+        b'H' | b'h' => b'H',
+        b'K' | b'k' => b'K',
+        b'M' | b'm' => b'M',
+        b'N' | b'n' => b'N',
+        b'R' | b'r' => b'R',
+        b'S' | b's' => b'S',
+        b'T' | b't' => b'T',
+        b'V' | b'v' => b'V',
+        b'W' | b'w' => b'W',
+        b'Y' | b'y' => b'Y',
+        _ => b'N',
+    };
+    Some(norm)
+}
+
 impl SamRecord {
     /// Empty record with no heap allocation; use with
     /// [`SamRecord::fill_from_alignment_record`] for buffer reuse.
@@ -193,11 +224,21 @@ impl SamRecord {
         let seq = record.sequence();
         self.sequence.clear();
         self.sequence.reserve(seq.len());
-        for b in seq.iter() {
-            // Normalize reference-matching CRAM bases decoded against soft-masked
-            // lowercase FASTA contigs (`a/c/g/t/n`) to uppercase (`A/C/G/T/N`),
-            // matching BAM 4-bit nibble decoding and HTSJDK `SAMRecord.getReadBases()`.
-            self.sequence.push(b.to_ascii_uppercase());
+        for (idx, b) in seq.iter().enumerate() {
+            // Normalize CRAM/SAM bases through HTSJDK `SequenceUtil.bamReadBaseLookup`
+            // (ports `CRAMRecord` / `SAMRecord.getReadBases()`).
+            let Some(norm) = normalize_cram_base(b) else {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "read {}: non-ASCII base 0x{:02x} at {}",
+                        String::from_utf8_lossy(&self.name),
+                        b,
+                        idx + 1,
+                    ),
+                ));
+            };
+            self.sequence.push(norm);
         }
 
         let quals = record.quality_scores();
@@ -545,7 +586,8 @@ impl IndexedSamReader {
                             repo.get(region_name.as_ref()).and_then(|r| r.ok())
                         });
                         if let Some(ref seq) = seq_opt {
-                            sam_rec.nm = compute_cram_nm(&sam_rec, seq.as_ref().as_ref());
+                            sam_rec.nm =
+                                compute_cram_nm(&sam_rec, SharedFastaRepo::unpadded_slice(seq));
                         }
                     }
                     Ok(sam_rec)
@@ -587,24 +629,16 @@ pub fn open_reader(
     let path_str = path.to_string_lossy();
     if path_str.ends_with(".cram") || path_str.ends_with(".CRAM") {
         let fasta_path = std::path::Path::new(&config.reference);
-        let fai_path = fasta_fai_path(fasta_path);
-
         let repository = {
             let mut guard = REPOSITORY_CACHE.lock().unwrap_or_else(|e| e.into_inner());
             match guard.as_ref() {
                 Some((cached_path, repo)) if cached_path == fasta_path => repo.clone(),
                 _ => {
-                    let fasta_reader = noodles::fasta::io::IndexedReader::new(
-                        std::io::BufReader::new(
-                            std::fs::File::open(fasta_path)
-                                .map_err(crate::types::VardictError::Io)?,
-                        ),
-                        noodles::fasta::fai::fs::read(&fai_path)
-                            .map_err(crate::types::VardictError::Io)?,
-                    );
-                    use noodles::fasta::repository::adapters::IndexedReader as FastaAdapter;
+                    let fasta_repo = acquire_fasta_repo(fasta_path)?;
                     use noodles::fasta::Repository;
-                    let repo = Repository::new(FastaAdapter::new(fasta_reader));
+                    let repo = Repository::new(SharedFastaAdapter(std::sync::Arc::clone(
+                        &fasta_repo.adapter,
+                    )));
                     *guard = Some((fasta_path.to_path_buf(), repo.clone()));
                     repo
                 }
@@ -673,6 +707,41 @@ pub fn query_region(
                     region_str, e
                 ))
             })?;
+
+            let path_str = bam_path.to_string_lossy();
+            if path_str.ends_with(".cram") || path_str.ends_with(".CRAM") {
+                let meta = acquire_cram_meta(bam_path, config)?;
+                let reference_sequence_id = meta
+                    .header
+                    .reference_sequences()
+                    .get_index_of(region.name())
+                    .ok_or_else(|| {
+                        crate::types::VardictError::Io(std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            "invalid reference sequence name",
+                        ))
+                    })?;
+                let interval = region.interval();
+                for crai_rec in meta
+                    .index
+                    .iter()
+                    .filter(|rec| crai_record_intersects(rec, reference_sequence_id, interval))
+                {
+                    let offset = crai_rec.offset();
+                    for sibling in meta.index.iter().filter(|r| r.offset() == offset) {
+                        if let (Some(ref_id), Some(s)) =
+                            (sibling.reference_sequence_id(), sibling.alignment_start())
+                        {
+                            let span = sibling.alignment_span();
+                            if span > 0 {
+                                let s_idx = usize::from(s);
+                                let e_idx = s_idx.saturating_add(span - 1);
+                                validate_cram_span(bam_path, &meta, ref_id, s_idx, e_idx)?;
+                            }
+                        }
+                    }
+                }
+            }
 
             let iter = cached
                 .reader
@@ -1429,6 +1498,12 @@ impl Iterator for BamFeed {
 
 const FASTA_BUF_CAPACITY: usize = 256 * 1024;
 const MAX_CACHED_FASTA_CONTIGS: usize = 8;
+/// Trailing `b'N'` padding appended to every CRAM reference contig loaded into
+/// [`PreallocatedFastaAdapter`] so `noodles-cram` can decode reads overhanging
+/// the 3' end of a chromosome (`[LN - k, LN + m]`) without panicking inside
+/// `get_slice_reference_sequence` or `Record::sequence`, matching HTSJDK/BAM
+/// semantics (`Issue K` R1b).
+const CRAM_REF_OVERHANG_PAD: usize = 65_536;
 
 struct PreallocatedFastaAdapter {
     reader: noodles::fasta::io::Reader<std::io::BufReader<std::fs::File>>,
@@ -1466,7 +1541,7 @@ impl noodles::fasta::repository::Adapter for PreallocatedFastaAdapter {
             .find(|r| r.name() == name)
             .and_then(|r| usize::try_from(r.length()).ok())
             .unwrap_or(0);
-        let mut raw_sequence = Vec::with_capacity(cap);
+        let mut raw_sequence = Vec::with_capacity(cap.saturating_add(CRAM_REF_OVERHANG_PAD));
         let mut seq_reader = self.reader.sequence_reader();
         loop {
             let src = match seq_reader.fill_buf() {
@@ -1478,6 +1553,10 @@ impl noodles::fasta::repository::Adapter for PreallocatedFastaAdapter {
             let consumed = src.len();
             seq_reader.consume(consumed);
         }
+        raw_sequence.resize(
+            raw_sequence.len().saturating_add(CRAM_REF_OVERHANG_PAD),
+            b'N',
+        );
         let definition = noodles::fasta::record::Definition::new(region.to_string(), None);
         let sequence = noodles::fasta::record::Sequence::from(raw_sequence);
         Some(Ok(noodles::fasta::Record::new(definition, sequence)))
@@ -1499,11 +1578,19 @@ struct CachedContigRepo {
 }
 
 struct SharedFastaRepo {
+    fasta_path: PathBuf,
     adapter: std::sync::Arc<std::sync::Mutex<PreallocatedFastaAdapter>>,
     lru: std::sync::Mutex<Vec<CachedContigRepo>>,
 }
 
 impl SharedFastaRepo {
+    #[inline]
+    fn unpadded_slice(seq: &noodles::fasta::record::Sequence) -> &[u8] {
+        let bytes: &[u8] = seq.as_ref();
+        let raw_len = bytes.len().saturating_sub(CRAM_REF_OVERHANG_PAD);
+        bytes.get(..raw_len).unwrap_or(bytes)
+    }
+
     fn warm_contig(
         &self,
         contig: &[u8],
@@ -1553,6 +1640,7 @@ fn acquire_fasta_repo(
     }
     let adapter = PreallocatedFastaAdapter::open(fasta_path)?;
     let repo = std::sync::Arc::new(SharedFastaRepo {
+        fasta_path: fasta_path.to_path_buf(),
         adapter: std::sync::Arc::new(std::sync::Mutex::new(adapter)),
         lru: std::sync::Mutex::new(Vec::with_capacity(MAX_CACHED_FASTA_CONTIGS)),
     });
@@ -1631,6 +1719,56 @@ fn acquire_cram_meta(
     *slot_guard = Some(std::sync::Arc::clone(&meta));
     return_pooled_cram_reader(path.to_path_buf(), std::sync::Arc::clone(&meta), reader);
     Ok(meta)
+}
+
+fn validate_cram_span(
+    cram_path: &Path,
+    meta: &SharedCramMeta,
+    reference_sequence_id: usize,
+    span_start: usize,
+    span_end: usize,
+) -> Result<(), crate::types::VardictError> {
+    let Some((contig_name, ref_seq_map)) = meta
+        .header
+        .reference_sequences()
+        .get_index(reference_sequence_id)
+    else {
+        return Err(crate::types::VardictError::Parse(format!(
+            "CRAM '{}' references invalid reference sequence ID {}",
+            cram_path.display(),
+            reference_sequence_id
+        )));
+    };
+    let sq_ln = usize::from(ref_seq_map.length());
+    let (_, seq_opt) = meta.fasta_repo.warm_contig(contig_name);
+    let contig_str = String::from_utf8_lossy(contig_name);
+    let Some(seq) = seq_opt else {
+        return Err(crate::types::VardictError::Parse(format!(
+            "CRAM '{}' requires reference contig '{}' (span {}..={}), which is missing from FASTA '{}'",
+            cram_path.display(),
+            contig_str,
+            span_start,
+            span_end,
+            meta.fasta_repo.fasta_path.display(),
+        )));
+    };
+    let fai_len = SharedFastaRepo::unpadded_slice(&seq).len();
+    if span_start > fai_len
+        || (span_end > fai_len
+            && (fai_len < sq_ln || span_end > fai_len.saturating_add(CRAM_REF_OVERHANG_PAD)))
+    {
+        return Err(crate::types::VardictError::Parse(format!(
+            "CRAM '{}' slice/record on contig '{}' spans {}..={} (header LN={}), exceeding FASTA '{}' contig length {}",
+            cram_path.display(),
+            contig_str,
+            span_start,
+            span_end,
+            sq_ln,
+            meta.fasta_repo.fasta_path.display(),
+            fai_len,
+        )));
+    }
+    Ok(())
 }
 
 const CRAM_CONTAINER_CACHE_SHARDS: usize = 8;
@@ -1716,12 +1854,14 @@ fn cram_record_intersects(
 }
 
 fn cram_record_to_cached(
+    cram_path: &Path,
     record: &noodles::cram::Record<'_>,
-    header: &noodles::sam::Header,
-) -> Result<CachedCramRecord, std::io::Error> {
+    meta: &SharedCramMeta,
+) -> Result<CachedCramRecord, crate::types::VardictError> {
     use noodles::sam::alignment::record::data::field::{Tag, Value};
     use noodles::sam::alignment::Record as _;
 
+    let header = &meta.header;
     let name = record
         .name()
         .map(|n| {
@@ -1765,6 +1905,20 @@ fn cram_record_to_cached(
         None => None,
     };
 
+    if (flags & 0x4) == 0 {
+        if let (Some(ref_id), Some(start), Some(end)) =
+            (reference_sequence_id, alignment_start, alignment_end)
+        {
+            validate_cram_span(
+                cram_path,
+                meta,
+                ref_id,
+                usize::from(start),
+                usize::from(end),
+            )?;
+        }
+    }
+
     let mate_reference_sequence_id = record.mate_reference_sequence_id(header).transpose()?;
     let mate_reference_name = mate_reference_sequence_id
         .and_then(|id| header.reference_sequences().get_index(id))
@@ -1774,8 +1928,17 @@ fn cram_record_to_cached(
 
     let raw_seq = record.sequence();
     let mut sequence = Vec::with_capacity(raw_seq.len());
-    for b in raw_seq.iter() {
-        sequence.push(b.to_ascii_uppercase());
+    for (idx, b) in raw_seq.iter().enumerate() {
+        let Some(norm) = normalize_cram_base(b) else {
+            return Err(crate::types::VardictError::Parse(format!(
+                "CRAM {} read {}: non-ASCII base 0x{:02x} at {}",
+                cram_path.display(),
+                String::from_utf8_lossy(&name),
+                b,
+                idx + 1,
+            )));
+        };
+        sequence.push(norm);
     }
 
     let raw_quals = record.quality_scores();
@@ -1950,6 +2113,19 @@ fn fetch_cram_container(
         return Ok(None);
     }
 
+    for crai_rec in meta.index.iter().filter(|r| r.offset() == container_offset) {
+        if let (Some(ref_id), Some(start)) =
+            (crai_rec.reference_sequence_id(), crai_rec.alignment_start())
+        {
+            let span = crai_rec.alignment_span();
+            if span > 0 {
+                let s_idx = usize::from(start);
+                let e_idx = s_idx.saturating_add(span - 1);
+                validate_cram_span(path, meta, ref_id, s_idx, e_idx)?;
+            }
+        }
+    }
+
     #[cfg(test)]
     CRAM_CONTAINER_DECODE_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
@@ -1975,7 +2151,7 @@ fn fetch_cram_container(
 
         out_records.reserve(cram_records.len());
         for record in cram_records {
-            let mut cached = cram_record_to_cached(&record, &meta.header)?;
+            let mut cached = cram_record_to_cached(path, &record, meta)?;
             if cached.sam.nm.is_none() {
                 let rec_seq = match cached.sam.reference_name.as_deref() {
                     Some(rn) if rn.as_bytes() == hint_contig => hint_seq.clone(),
@@ -1983,7 +2159,8 @@ fn fetch_cram_container(
                     None => None,
                 };
                 if let Some(ref seq) = rec_seq {
-                    cached.sam.nm = compute_cram_nm(&cached.sam, seq.as_ref().as_ref());
+                    cached.sam.nm =
+                        compute_cram_nm(&cached.sam, SharedFastaRepo::unpadded_slice(seq));
                 }
             }
             out_records.push(cached);
@@ -2650,9 +2827,9 @@ mod tests {
         parser.scratch_ss = "GARBAGE".to_string();
         parser.scratch_splice_key = "GARBAGE".to_string();
         parser.scratch_f4_desc = "GARBAGE".to_string();
-        parser.scratch_f4_qual = "GARBAGE".to_string();
+        parser.scratch_f4_qual = b"GARBAGE".to_vec();
         parser.scratch_f4_seg1 = "GARBAGE".to_string();
-        parser.scratch_f4_seg2 = "GARBAGE".to_string();
+        parser.scratch_f4_seg2 = b"GARBAGE".to_vec();
         for item in feed {
             let r = item.unwrap();
             stream_order.push(r.name.clone());
@@ -4567,5 +4744,612 @@ mod tests {
             !prep.preprocess_record(&corrupt_eqx, &config),
             "corrupt =/X read with query_consumed_len (21) > sequence.len() (15) must be dropped"
         );
+    }
+
+    fn write_test_fasta_with_fai(dir: &Path, name: &str, contigs: &[(&str, &[u8])]) -> PathBuf {
+        use std::io::Write as _;
+        let fa_path = dir.join(name);
+        let fai_path = fasta_fai_path(&fa_path);
+        let mut fa = std::fs::File::create(&fa_path).unwrap();
+        let mut fai = std::fs::File::create(&fai_path).unwrap();
+        let mut offset = 0u64;
+        for &(chr, seq) in contigs {
+            let hdr = format!(">{chr}\n");
+            fa.write_all(hdr.as_bytes()).unwrap();
+            offset += hdr.len() as u64;
+            fa.write_all(seq).unwrap();
+            fa.write_all(b"\n").unwrap();
+            let len = seq.len() as u64;
+            writeln!(fai, "{chr}\t{len}\t{offset}\t{len}\t{}", len + 1).unwrap();
+            offset += len + 1;
+        }
+        fa_path
+    }
+
+    #[test]
+    fn cram_short_reference_returns_err() {
+        use noodles::core::Position;
+        use noodles::sam::alignment::io::Write as _;
+        use noodles::sam::alignment::record::cigar::op::Kind;
+        use noodles::sam::alignment::record::cigar::Op;
+        use noodles::sam::alignment::record::Flags;
+        use noodles::sam::alignment::record::MappingQuality;
+        use noodles::sam::alignment::record_buf::{Cigar, QualityScores, Sequence};
+        use noodles::sam::alignment::RecordBuf;
+        use noodles::sam::header::record::value::{map::ReferenceSequence, Map};
+        use std::num::NonZeroUsize;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let full_seq = b"ACGT".repeat(250); // 1000 bp
+        let short_seq = &full_seq[..500];
+        let full_fa = write_test_fasta_with_fai(temp_dir.path(), "full.fa", &[("chr1", &full_seq)]);
+        let short_fa =
+            write_test_fasta_with_fai(temp_dir.path(), "short.fa", &[("chr1", short_seq)]);
+
+        let sq_map = Map::<ReferenceSequence>::builder()
+            .set_length(NonZeroUsize::try_from(1000).unwrap())
+            .build()
+            .unwrap();
+        let header = noodles::sam::Header::builder()
+            .add_reference_sequence("chr1", sq_map)
+            .build();
+
+        let cram_path = temp_dir.path().join("short_ref_test.cram");
+        {
+            let fasta_repo = acquire_fasta_repo(&full_fa).unwrap();
+            let repo = noodles::fasta::Repository::new(SharedFastaAdapter(std::sync::Arc::clone(
+                &fasta_repo.adapter,
+            )));
+            let mut writer = noodles::cram::io::writer::Builder::default()
+                .set_reference_sequence_repository(repo)
+                .build_from_path(&cram_path)
+                .unwrap();
+            writer.write_alignment_header(&header).unwrap();
+            let rec = RecordBuf::builder()
+                .set_name("r_past")
+                .set_flags(Flags::empty())
+                .set_reference_sequence_id(0)
+                .set_alignment_start(Position::try_from(600usize).unwrap())
+                .set_mapping_quality(MappingQuality::try_from(60).unwrap())
+                .set_cigar(
+                    vec![Op::new(Kind::Match, 50)]
+                        .into_iter()
+                        .collect::<Cigar>(),
+                )
+                .set_sequence(Sequence::from(full_seq[599..649].to_vec()))
+                .set_quality_scores(QualityScores::from(vec![30u8; 50]))
+                .build();
+            writer.write_alignment_record(&header, &rec).unwrap();
+            writer.try_finish(&header).unwrap();
+            let crai = noodles::cram::fs::index(&cram_path).unwrap();
+            noodles::cram::crai::fs::write(cram_path.with_extension("cram.crai"), &crai).unwrap();
+        }
+
+        let short_config = Config {
+            reference: short_fa.to_str().unwrap().to_string(),
+            ..Default::default()
+        };
+        let iter_res: Result<Vec<_>, _> =
+            query_region_iter(&cram_path, "chr1", Pos0(550), Pos0(700), &short_config)
+                .and_then(|feed| feed.collect());
+        let err = iter_res.expect_err("short FASTA must return Err, not panic");
+        assert!(
+            err.to_string().contains("exceeding FASTA"),
+            "unexpected error: {err}"
+        );
+
+        let vec_err = query_region(&cram_path, "chr1", Pos0(550), Pos0(700), &short_config)
+            .expect_err("query_region with short FASTA must return Err");
+        assert!(
+            vec_err.to_string().contains("exceeding FASTA"),
+            "unexpected error: {vec_err}"
+        );
+    }
+
+    #[test]
+    fn cram_missing_m5_short_ref_still_errors() {
+        use noodles::core::Position;
+        use noodles::sam::alignment::io::Write as _;
+        use noodles::sam::alignment::record::cigar::op::Kind;
+        use noodles::sam::alignment::record::cigar::Op;
+        use noodles::sam::alignment::record::Flags;
+        use noodles::sam::alignment::record::MappingQuality;
+        use noodles::sam::alignment::record_buf::{Cigar, QualityScores, Sequence};
+        use noodles::sam::alignment::RecordBuf;
+        use noodles::sam::header::record::value::{map::ReferenceSequence, Map};
+        use std::num::NonZeroUsize;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let full_seq = b"ACGT".repeat(250); // 1000 bp
+        let short_seq = &full_seq[..500];
+        let full_fa = write_test_fasta_with_fai(
+            temp_dir.path(),
+            "full_multi.fa",
+            &[("chr1", &full_seq), ("chr2", &full_seq)],
+        );
+        let short_fa = write_test_fasta_with_fai(
+            temp_dir.path(),
+            "short_multi.fa",
+            &[("chr1", short_seq), ("chr2", &full_seq)],
+        );
+
+        let sq1 = Map::<ReferenceSequence>::builder()
+            .set_length(NonZeroUsize::try_from(1000).unwrap())
+            .build()
+            .unwrap();
+        let sq2 = Map::<ReferenceSequence>::builder()
+            .set_length(NonZeroUsize::try_from(1000).unwrap())
+            .build()
+            .unwrap();
+        let header = noodles::sam::Header::builder()
+            .add_reference_sequence("chr1", sq1)
+            .add_reference_sequence("chr2", sq2)
+            .build();
+
+        // Multi-ref container: noodles sets `ReferenceSequenceContext::Many` and omits slice MD5.
+        let cram_path = temp_dir.path().join("multi_ref_no_slice_md5.cram");
+        {
+            let fasta_repo = acquire_fasta_repo(&full_fa).unwrap();
+            let repo = noodles::fasta::Repository::new(SharedFastaAdapter(std::sync::Arc::clone(
+                &fasta_repo.adapter,
+            )));
+            let mut writer = noodles::cram::io::writer::Builder::default()
+                .set_reference_sequence_repository(repo)
+                .build_from_path(&cram_path)
+                .unwrap();
+            writer.write_alignment_header(&header).unwrap();
+            let rec1 = RecordBuf::builder()
+                .set_name("r_chr1_past")
+                .set_flags(Flags::empty())
+                .set_reference_sequence_id(0)
+                .set_alignment_start(Position::try_from(600usize).unwrap())
+                .set_mapping_quality(MappingQuality::try_from(60).unwrap())
+                .set_cigar(
+                    vec![Op::new(Kind::Match, 50)]
+                        .into_iter()
+                        .collect::<Cigar>(),
+                )
+                .set_sequence(Sequence::from(full_seq[599..649].to_vec()))
+                .set_quality_scores(QualityScores::from(vec![30u8; 50]))
+                .build();
+            let rec2 = RecordBuf::builder()
+                .set_name("r_chr2_ok")
+                .set_flags(Flags::empty())
+                .set_reference_sequence_id(1)
+                .set_alignment_start(Position::try_from(100usize).unwrap())
+                .set_mapping_quality(MappingQuality::try_from(60).unwrap())
+                .set_cigar(
+                    vec![Op::new(Kind::Match, 50)]
+                        .into_iter()
+                        .collect::<Cigar>(),
+                )
+                .set_sequence(Sequence::from(full_seq[99..149].to_vec()))
+                .set_quality_scores(QualityScores::from(vec![30u8; 50]))
+                .build();
+            writer.write_alignment_record(&header, &rec1).unwrap();
+            writer.write_alignment_record(&header, &rec2).unwrap();
+            writer.try_finish(&header).unwrap();
+
+            // Write a .crai index entry for the multi-ref container (noodles::cram::fs::index
+            // uses an empty Repository::default() on multi-ref slices).
+            let mut rdr = noodles::cram::io::Reader::new(std::fs::File::open(&cram_path).unwrap());
+            rdr.read_header().unwrap();
+            let offset = rdr.position().unwrap();
+            let mut container = noodles::cram::io::reader::Container::default();
+            let container_len = rdr.read_container(&mut container).unwrap();
+            let landmark = container.header().landmarks()[0] as u64;
+            let slice_len = (container_len as u64).saturating_sub(landmark);
+            let crai = vec![
+                noodles::cram::crai::Record::new(
+                    Some(0),
+                    Position::try_from(1usize).ok(),
+                    1,
+                    offset,
+                    landmark,
+                    slice_len,
+                ),
+                noodles::cram::crai::Record::new(
+                    Some(1),
+                    Position::try_from(100usize).ok(),
+                    50,
+                    offset,
+                    landmark,
+                    slice_len,
+                ),
+            ];
+            noodles::cram::crai::fs::write(cram_path.with_extension("cram.crai"), &crai).unwrap();
+        }
+
+        let short_config = Config {
+            reference: short_fa.to_str().unwrap().to_string(),
+            ..Default::default()
+        };
+        let iter_res: Result<Vec<_>, _> =
+            query_region_iter(&cram_path, "chr1", Pos0(0), Pos0(700), &short_config)
+                .and_then(|feed| feed.collect());
+        let err = iter_res.expect_err("multi-ref slice with short FASTA must return Err");
+        assert!(
+            err.to_string().contains("exceeding FASTA"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn cram_short_reference_in_range_query_ok() {
+        use noodles::core::Position;
+        use noodles::sam::alignment::io::Write as _;
+        use noodles::sam::alignment::record::cigar::op::Kind;
+        use noodles::sam::alignment::record::cigar::Op;
+        use noodles::sam::alignment::record::Flags;
+        use noodles::sam::alignment::record::MappingQuality;
+        use noodles::sam::alignment::record_buf::{Cigar, QualityScores, Sequence};
+        use noodles::sam::alignment::RecordBuf;
+        use noodles::sam::header::record::value::{map::ReferenceSequence, Map};
+        use std::num::NonZeroUsize;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let full_seq = b"ACGT".repeat(250); // 1000 bp
+        let short_seq = &full_seq[..500];
+        let full_fa =
+            write_test_fasta_with_fai(temp_dir.path(), "full_inrange.fa", &[("chr1", &full_seq)]);
+        let short_fa =
+            write_test_fasta_with_fai(temp_dir.path(), "short_inrange.fa", &[("chr1", short_seq)]);
+
+        let sq_map = Map::<ReferenceSequence>::builder()
+            .set_length(NonZeroUsize::try_from(1000).unwrap())
+            .build()
+            .unwrap();
+        let header = noodles::sam::Header::builder()
+            .add_reference_sequence("chr1", sq_map)
+            .build();
+
+        let cram_path = temp_dir.path().join("in_range.cram");
+        {
+            let fasta_repo = acquire_fasta_repo(&full_fa).unwrap();
+            let repo = noodles::fasta::Repository::new(SharedFastaAdapter(std::sync::Arc::clone(
+                &fasta_repo.adapter,
+            )));
+            let mut writer = noodles::cram::io::writer::Builder::default()
+                .set_reference_sequence_repository(repo)
+                .build_from_path(&cram_path)
+                .unwrap();
+            writer.write_alignment_header(&header).unwrap();
+            let rec = RecordBuf::builder()
+                .set_name("r_in_range")
+                .set_flags(Flags::empty())
+                .set_reference_sequence_id(0)
+                .set_alignment_start(Position::try_from(100usize).unwrap())
+                .set_mapping_quality(MappingQuality::try_from(60).unwrap())
+                .set_cigar(
+                    vec![Op::new(Kind::Match, 50)]
+                        .into_iter()
+                        .collect::<Cigar>(),
+                )
+                .set_sequence(Sequence::from(full_seq[99..149].to_vec()))
+                .set_quality_scores(QualityScores::from(vec![30u8; 50]))
+                .build();
+            writer.write_alignment_record(&header, &rec).unwrap();
+            writer.try_finish(&header).unwrap();
+            let crai = noodles::cram::fs::index(&cram_path).unwrap();
+            noodles::cram::crai::fs::write(cram_path.with_extension("cram.crai"), &crai).unwrap();
+        }
+
+        let short_config = Config {
+            reference: short_fa.to_str().unwrap().to_string(),
+            ..Default::default()
+        };
+        let recs: Vec<SamRecord> =
+            query_region_iter(&cram_path, "chr1", Pos0(80), Pos0(200), &short_config)
+                .unwrap()
+                .map(|r| r.unwrap())
+                .collect();
+        assert_eq!(recs.len(), 1);
+        assert_eq!(recs[0].name, b"r_in_range");
+    }
+
+    #[test]
+    fn cram_overhang_read_matches_bam_twin() {
+        use noodles::core::Position;
+        use noodles::sam::alignment::io::Write as _;
+        use noodles::sam::alignment::record::cigar::op::Kind;
+        use noodles::sam::alignment::record::cigar::Op;
+        use noodles::sam::alignment::record::Flags;
+        use noodles::sam::alignment::record::MappingQuality;
+        use noodles::sam::alignment::record_buf::{Cigar, QualityScores, Sequence};
+        use noodles::sam::alignment::RecordBuf;
+        use noodles::sam::header::record::value::{map::ReferenceSequence, Map};
+        use std::num::NonZeroUsize;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let ref_seq = b"ACGT".repeat(250); // 1000 bp
+        let ref_fa =
+            write_test_fasta_with_fai(temp_dir.path(), "overhang_ref.fa", &[("chr1", &ref_seq)]);
+
+        let sq_map = Map::<ReferenceSequence>::builder()
+            .set_length(NonZeroUsize::try_from(1000).unwrap())
+            .build()
+            .unwrap();
+        let header = noodles::sam::Header::builder()
+            .add_reference_sequence("chr1", sq_map)
+            .build();
+
+        // Build overhanging reads [981..=1030] (50M, overhanging LN=1000 by 30 bp) with a SNV at pos 990 (idx 9).
+        let mut overhang_seq = ref_seq[980..1000].to_vec();
+        overhang_seq[9] = if overhang_seq[9] == b'A' { b'T' } else { b'A' };
+        overhang_seq.extend_from_slice(&[b'A'; 30]);
+
+        let mut records = Vec::new();
+        for i in 0..4 {
+            use noodles::sam::alignment::record::data::field::Tag;
+            use noodles::sam::alignment::record_buf::{data::field::Value as BufValue, Data};
+            let data: Data = [(Tag::EDIT_DISTANCE, BufValue::from(31i32))]
+                .into_iter()
+                .collect();
+            let rec = RecordBuf::builder()
+                .set_name(format!("overhang_{i}"))
+                .set_flags(Flags::empty())
+                .set_reference_sequence_id(0)
+                .set_alignment_start(Position::try_from(981usize).unwrap())
+                .set_mapping_quality(MappingQuality::try_from(60).unwrap())
+                .set_cigar(
+                    vec![Op::new(Kind::Match, 50)]
+                        .into_iter()
+                        .collect::<Cigar>(),
+                )
+                .set_sequence(Sequence::from(overhang_seq.clone()))
+                .set_quality_scores(QualityScores::from(vec![35u8; 50]))
+                .set_data(data)
+                .build();
+            records.push(rec);
+        }
+
+        let bam_path = temp_dir.path().join("overhang.bam");
+        {
+            let mut bam_writer =
+                noodles::bam::io::Writer::new(std::fs::File::create(&bam_path).unwrap());
+            bam_writer.write_alignment_header(&header).unwrap();
+            for rec in &records {
+                bam_writer.write_alignment_record(&header, rec).unwrap();
+            }
+            bam_writer.try_finish().unwrap();
+            let mut reader = noodles::bam::io::Reader::new(std::fs::File::open(&bam_path).unwrap());
+            reader.read_header().unwrap();
+            let mut record = noodles::bam::Record::default();
+            let mut indexer = noodles::csi::binning_index::Indexer::<
+                noodles::csi::binning_index::index::reference_sequence::index::LinearIndex,
+            >::default();
+            let mut start_vp = reader.get_ref().virtual_position();
+            while reader.read_record(&mut record).unwrap() != 0 {
+                let end_vp = reader.get_ref().virtual_position();
+                let chunk = noodles::csi::binning_index::index::reference_sequence::bin::Chunk::new(
+                    start_vp, end_vp,
+                );
+                let align_ctx = (
+                    record.reference_sequence_id().transpose().unwrap().unwrap(),
+                    record.alignment_start().transpose().unwrap().unwrap(),
+                    record.alignment_end().transpose().unwrap().unwrap(),
+                    !record.flags().is_unmapped(),
+                );
+                indexer.add_record(Some(align_ctx), chunk).unwrap();
+                start_vp = end_vp;
+            }
+            noodles::bam::bai::io::Writer::new(
+                std::fs::File::create(bam_path.with_extension("bam.bai")).unwrap(),
+            )
+            .write_index(&indexer.build(1))
+            .unwrap();
+        }
+
+        let cram_path = temp_dir.path().join("overhang.cram");
+        {
+            let fasta_repo = acquire_fasta_repo(&ref_fa).unwrap();
+            let repo = noodles::fasta::Repository::new(SharedFastaAdapter(std::sync::Arc::clone(
+                &fasta_repo.adapter,
+            )));
+            let mut cram_writer = noodles::cram::io::writer::Builder::default()
+                .set_reference_sequence_repository(repo)
+                .build_from_path(&cram_path)
+                .unwrap();
+            cram_writer.write_alignment_header(&header).unwrap();
+            for rec in &records {
+                cram_writer.write_alignment_record(&header, rec).unwrap();
+            }
+            cram_writer.try_finish(&header).unwrap();
+            let crai = noodles::cram::fs::index(&cram_path).unwrap();
+            noodles::cram::crai::fs::write(cram_path.with_extension("cram.crai"), &crai).unwrap();
+        }
+
+        let config = Config {
+            reference: ref_fa.to_str().unwrap().to_string(),
+            ..Default::default()
+        };
+        let bam_recs: Vec<SamRecord> =
+            query_region_iter(&bam_path, "chr1", Pos0(950), Pos0(1000), &config)
+                .unwrap()
+                .map(|r| r.unwrap())
+                .collect();
+        let cram_recs: Vec<SamRecord> =
+            query_region_iter(&cram_path, "chr1", Pos0(950), Pos0(1000), &config)
+                .unwrap()
+                .map(|r| r.unwrap())
+                .collect();
+        assert_eq!(bam_recs.len(), 4);
+        assert_eq!(bam_recs, cram_recs);
+
+        let mut bam_out = Vec::new();
+        let bam_run_cfg = Config {
+            reference: ref_fa.to_str().unwrap().to_string(),
+            bam: bam_path.to_str().unwrap().to_string(),
+            region: Some("chr1:970-1000".to_string()),
+            ..Default::default()
+        };
+        crate::run_with_writer(&bam_run_cfg, &mut bam_out).unwrap();
+
+        let mut cram_out = Vec::new();
+        let cram_run_cfg = Config {
+            reference: ref_fa.to_str().unwrap().to_string(),
+            bam: cram_path.to_str().unwrap().to_string(),
+            region: Some("chr1:970-1000".to_string()),
+            ..Default::default()
+        };
+        crate::run_with_writer(&cram_run_cfg, &mut cram_out).unwrap();
+
+        assert!(!bam_out.is_empty(), "SNV at pos 990 must be called");
+        assert_eq!(
+            String::from_utf8(bam_out).unwrap(),
+            String::from_utf8(cram_out).unwrap()
+        );
+    }
+
+    #[test]
+    fn cram_base_lookup_matches_htsjdk() {
+        let mut expected = [b'N'; 127];
+        for &b in b"=ABCDGHKMNRSTVWY" {
+            expected[b as usize] = b;
+            expected[(b + 32) as usize] = b;
+        }
+        for byte in 0u8..=255u8 {
+            if byte < 127 {
+                assert_eq!(
+                    normalize_cram_base(byte),
+                    Some(expected[byte as usize]),
+                    "mismatch at byte 0x{byte:02x}"
+                );
+            } else {
+                assert_eq!(
+                    normalize_cram_base(byte),
+                    None,
+                    "byte 0x{byte:02x} >= 0x7f must return None"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cram_non_ascii_base_and_non_iupac_base_normalization() {
+        use noodles::core::Position;
+        use noodles::cram;
+        use noodles::fasta;
+        use noodles::sam;
+        use noodles::sam::alignment::io::Write as _;
+        use noodles::sam::alignment::record::cigar::op::Kind;
+        use noodles::sam::alignment::record::cigar::Op;
+        use noodles::sam::alignment::record::Flags;
+        use noodles::sam::alignment::record_buf::{Cigar as CigarBuf, QualityScores, Sequence};
+        use noodles::sam::alignment::RecordBuf;
+        use noodles::sam::header::record::value::map::ReferenceSequence;
+        use noodles::sam::header::record::value::Map;
+        use std::num::NonZeroUsize;
+
+        clear_bam_caches();
+        let tmp = tempfile::tempdir().unwrap();
+        let ref_seq: Vec<u8> = b"ACGTACGTAC".iter().copied().cycle().take(200).collect();
+        let ref_fa = tmp.path().join("ref.fa");
+        std::fs::write(
+            &ref_fa,
+            format!(">chr1\n{}\n", std::str::from_utf8(&ref_seq).unwrap()),
+        )
+        .unwrap();
+        std::fs::write(tmp.path().join("ref.fa.fai"), "chr1\t200\t6\t200\t201\n").unwrap();
+
+        let header = sam::Header::builder()
+            .add_reference_sequence(
+                "chr1",
+                Map::<ReferenceSequence>::new(NonZeroUsize::new(200).unwrap()),
+            )
+            .build();
+        let repo = fasta::Repository::new(vec![fasta::Record::new(
+            fasta::record::Definition::new("chr1", None),
+            fasta::record::Sequence::from(ref_seq.clone()),
+        )]);
+
+        // 1. Non-ASCII base 0xc9 in CRAM returns Err("non-ASCII base")
+        let bad_cram = tmp.path().join("bad_c9.cram");
+        {
+            let mut seq = ref_seq[19..49].to_vec();
+            seq[10] = 0xc9;
+            let rec = RecordBuf::builder()
+                .set_name("r_c9")
+                .set_flags(Flags::empty())
+                .set_reference_sequence_id(0)
+                .set_alignment_start(Position::try_from(20).unwrap())
+                .set_mapping_quality(sam::alignment::record::MappingQuality::try_from(60).unwrap())
+                .set_cigar(
+                    [
+                        Op::new(Kind::Match, 10),
+                        Op::new(Kind::Insertion, 1),
+                        Op::new(Kind::Match, 19),
+                    ]
+                    .into_iter()
+                    .collect::<CigarBuf>(),
+                )
+                .set_sequence(Sequence::from(seq))
+                .set_quality_scores(QualityScores::from(vec![35u8; 30]))
+                .build();
+            let file = std::fs::File::create(&bad_cram).unwrap();
+            let mut writer = cram::io::writer::Builder::default()
+                .set_reference_sequence_repository(repo.clone())
+                .build_from_writer(file);
+            writer.write_file_definition().unwrap();
+            writer.write_file_header(&header).unwrap();
+            writer.write_alignment_record(&header, &rec).unwrap();
+            writer.try_finish(&header).unwrap();
+        }
+        let bad_index = cram::fs::index(&bad_cram).unwrap();
+        cram::crai::fs::write(bad_cram.with_extension("cram.crai"), &bad_index).unwrap();
+
+        let config = Config {
+            reference: ref_fa.to_str().unwrap().to_string(),
+            ..Default::default()
+        };
+        let err = query_region_iter(&bad_cram, "chr1", Pos0(1), Pos0(200), &config)
+            .and_then(|it| it.collect::<Result<Vec<_>, _>>())
+            .expect_err("non-ASCII CRAM base 0xc9 must fail with Parse error");
+        assert!(
+            err.to_string().contains("non-ASCII base 0xc9"),
+            "unexpected error: {err}"
+        );
+
+        // 2. Non-IUPAC ASCII base 'X' in CRAM normalizes to 'N'
+        let x_cram = tmp.path().join("base_x.cram");
+        {
+            let mut seq = ref_seq[19..49].to_vec();
+            seq[10] = b'X';
+            let rec = RecordBuf::builder()
+                .set_name("r_x")
+                .set_flags(Flags::empty())
+                .set_reference_sequence_id(0)
+                .set_alignment_start(Position::try_from(20).unwrap())
+                .set_mapping_quality(sam::alignment::record::MappingQuality::try_from(60).unwrap())
+                .set_cigar(
+                    [
+                        Op::new(Kind::Match, 10),
+                        Op::new(Kind::Insertion, 1),
+                        Op::new(Kind::Match, 19),
+                    ]
+                    .into_iter()
+                    .collect::<CigarBuf>(),
+                )
+                .set_sequence(Sequence::from(seq))
+                .set_quality_scores(QualityScores::from(vec![35u8; 30]))
+                .build();
+            let file = std::fs::File::create(&x_cram).unwrap();
+            let mut writer = cram::io::writer::Builder::default()
+                .set_reference_sequence_repository(repo)
+                .build_from_writer(file);
+            writer.write_file_definition().unwrap();
+            writer.write_file_header(&header).unwrap();
+            writer.write_alignment_record(&header, &rec).unwrap();
+            writer.try_finish(&header).unwrap();
+        }
+        let x_index = cram::fs::index(&x_cram).unwrap();
+        cram::crai::fs::write(x_cram.with_extension("cram.crai"), &x_index).unwrap();
+
+        let recs: Vec<SamRecord> = query_region_iter(&x_cram, "chr1", Pos0(1), Pos0(200), &config)
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert_eq!(recs.len(), 1);
+        assert_eq!(recs[0].sequence[10], b'N');
     }
 }

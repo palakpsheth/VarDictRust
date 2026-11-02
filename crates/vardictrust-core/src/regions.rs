@@ -207,13 +207,23 @@ pub fn batch_tiles(
     batches
 }
 
-/// Helper to parse a u32 from string with comma removal.
+/// Helper to parse a non-negative `i32`-bounded coordinate from string with comma removal.
+///
+/// Ports `RegionBuilder.java` (`Integer.parseInt(s.replaceAll(",", ""))`): rejects values
+/// above `i32::MAX` (`2_147_483_647`) instead of silently wrapping to negative `i32`.
 pub fn parse_int_with_commas(s: &str) -> Result<u32, VardictError> {
-    let clean = s.replace(",", "");
-    clean
+    let clean = s.replace(',', "");
+    let v = clean
         .trim()
         .parse::<u32>()
-        .map_err(|e| VardictError::Parse(format!("invalid integer '{}': {}", s, e)))
+        .map_err(|e| VardictError::Parse(format!("invalid integer '{}': {}", s, e)))?;
+    if v > i32::MAX as u32 {
+        return Err(VardictError::Parse(format!(
+            "invalid integer '{}': exceeds 2147483647",
+            s
+        )));
+    }
+    Ok(v)
 }
 
 /// Ports `String.split(delimiter)` (`java.lang.String.split(regex, 0)`):
@@ -383,11 +393,11 @@ pub fn parse_non_amp_bed_from_reader<R: BufRead>(
                 thick_end = cds_end as i32;
             }
 
-            thick_start -= config.extension;
-            thick_end += config.extension;
+            thick_start = thick_start.wrapping_sub(config.extension);
+            thick_end = thick_end.wrapping_add(config.extension);
 
             if active_zero_based && thick_start < thick_end {
-                thick_start += 1;
+                thick_start = thick_start.wrapping_add(1);
             }
 
             if thick_start > thick_end {
@@ -452,8 +462,8 @@ pub fn parse_amp_bed_from_reader<R: BufRead>(
         let active_zero_based = zero_based_override.unwrap_or(is_zero_based);
 
         if active_zero_based && start < end {
-            start += 1;
-            insert_start += 1;
+            start = start.wrapping_add(1);
+            insert_start = insert_start.wrapping_add(1);
         }
 
         let final_start = std::cmp::max(1, start) as u32;
@@ -595,12 +605,12 @@ pub fn parse_region_flag(
         parse_int_with_commas(range[1])? as i32
     };
 
-    start -= config.extension;
-    let end = end + config.extension;
+    start = start.wrapping_sub(config.extension);
+    let end = end.wrapping_add(config.extension);
 
     let active_zero_based = config.zero_based;
     if active_zero_based && start < end {
-        start += 1;
+        start = start.wrapping_add(1);
     }
 
     if start > end {
@@ -1087,5 +1097,146 @@ Y\t59042860\t59047860\tY_59042860_5\t0\t.\t59042860\t59047860
         // 4. 4-col BED with non-numeric col 1/2 errors loudly (RegionBuilderTest.testIncorrectRegions)
         let bad_4col = "chr1\tbad\t200\tGENE\n";
         assert!(parse_non_amp_bed_from_reader(bad_4col.as_bytes(), &cfg, &chrs, None).is_err());
+    }
+
+    #[test]
+    fn parse_int_with_commas_i32_bound() {
+        assert_eq!(parse_int_with_commas("2147483647").unwrap(), 2_147_483_647);
+        assert_eq!(
+            parse_int_with_commas("2,147,483,647").unwrap(),
+            2_147_483_647
+        );
+        for invalid in ["2147483648", "2,147,483,648", "4,294,967,295", "-5"] {
+            assert!(
+                parse_int_with_commas(invalid).is_err(),
+                "expected Err for '{invalid}'"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_region_flag_rejects_wrapping_coords() {
+        let mut config = Config::default();
+        config.zero_based = false;
+        config.extension = 0;
+        let mut chr_lengths = HashMap::new();
+        chr_lengths.insert("chr1".to_string(), 1000);
+
+        for invalid in [
+            "chr1:2147483648-2147483700",
+            "chr1:2147483600-2147483700",
+            "chr1:1-3000000000",
+        ] {
+            let err = parse_region_flag(invalid, &config, &chr_lengths)
+                .expect_err("coordinate > i32::MAX must fail");
+            assert!(
+                err.to_string().contains("invalid integer"),
+                "unexpected error: {err}"
+            );
+        }
+
+        let max_ok =
+            parse_region_flag("chr1:2147483647-2147483647", &config, &chr_lengths).unwrap();
+        assert_eq!(max_ok[0][0].start, Pos1(2_147_483_647));
+        assert_eq!(max_ok[0][0].end, Pos1(2_147_483_647));
+    }
+
+    #[test]
+    fn bed_rejects_coordinates_above_i32_max() {
+        let mut chr_lengths = HashMap::new();
+        chr_lengths.insert("chr1".to_string(), 1000);
+
+        // 3-column BED
+        let mut cfg3 = Config::default();
+        cfg3.col_chr = 0;
+        cfg3.col_start = 1;
+        cfg3.col_end = 2;
+        cfg3.col_seg_start = 1;
+        cfg3.col_seg_end = 2;
+        cfg3.delimiter = "\t".to_string();
+        assert!(parse_bed_from_reader(
+            "chr1\t2147483648\t2147483700\n".as_bytes(),
+            &cfg3,
+            &chr_lengths,
+            Some(true),
+        )
+        .is_err());
+
+        // 4-column BED
+        let mut cfg4 = Config::default();
+        cfg4.delimiter = "\t".to_string();
+        assert!(parse_bed_from_reader(
+            "chr1\t100\t2147483648\tg1\n".as_bytes(),
+            &cfg4,
+            &chr_lengths,
+            Some(true),
+        )
+        .is_err());
+
+        // 8-column non-amplicon BED with cdsStart / thickEnd = 3,000,000,000
+        let mut cfg8 = Config::default();
+        cfg8.col_chr = 0;
+        cfg8.col_start = 1;
+        cfg8.col_end = 2;
+        cfg8.col_seg_start = 6;
+        cfg8.col_seg_end = 7;
+        cfg8.col_gene = Some(3);
+        cfg8.delimiter = "\t".to_string();
+        assert!(parse_bed_from_reader(
+            "chr1\t3000000000\t3000000100\tg1\t0\t.\t100\t200\n".as_bytes(),
+            &cfg8,
+            &chr_lengths,
+            Some(true),
+        )
+        .is_err());
+        assert!(parse_bed_from_reader(
+            "chr1\t100\t200\tg1\t0\t.\t100\t3000000000\n".as_bytes(),
+            &cfg8,
+            &chr_lengths,
+            Some(true),
+        )
+        .is_err());
+
+        // Amplicon BED with insert_start = 2147483648
+        let mut cfg_amp = Config::default();
+        cfg_amp.amplicon = Some("10:0.95".to_string());
+        cfg_amp.delimiter = "\t".to_string();
+        assert!(parse_bed_from_reader(
+            "chr1\t100\t200\tg1\t0\t.\t2147483648\t200\n".as_bytes(),
+            &cfg_amp,
+            &chr_lengths,
+            Some(true),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn extension_overflow_wraps_like_java() {
+        let mut chr_lengths = HashMap::new();
+        chr_lengths.insert("chr1".to_string(), 1000);
+
+        // -x 2147483647 -R chr1:1000-2000 wraps in i32 arithmetic without panicking in debug mode.
+        let mut cfg = Config::default();
+        cfg.extension = i32::MAX;
+        cfg.zero_based = false;
+        let parsed = parse_region_flag("chr1:1000-2000", &cfg, &chr_lengths).unwrap();
+        assert_eq!(parsed[0][0].start, Pos1(1));
+        assert_eq!(parsed[0][0].end, Pos1(1));
+
+        // Amplicon row with insert_start = 2147483647 under -z wraps insert_start + 1 without panic.
+        let mut cfg_amp = Config::default();
+        cfg_amp.amplicon = Some("10:0.95".to_string());
+        cfg_amp.delimiter = "\t".to_string();
+        cfg_amp.zero_based = true;
+        let amp_parsed = parse_bed_from_reader(
+            "chr1\t100\t200\tg1\t0\t.\t2147483647\t200\n".as_bytes(),
+            &cfg_amp,
+            &chr_lengths,
+            Some(true),
+        )
+        .unwrap();
+        let amp = amp_parsed[0][0].amplicon.as_ref().unwrap();
+        assert_eq!(amp.insert_start, Pos1(1));
+        assert_eq!(amp.insert_end, Pos1(200));
     }
 }
