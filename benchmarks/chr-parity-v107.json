@@ -4856,7 +4856,7 @@
       "benchmarks/evidence/seqc2-exome-tier2.json",
       "benchmarks/evidence/scale.json",
       "benchmarks/evidence/hg002-tier2.json",
-      "benchmarks/evidence/concordance-germline.json"
+      "benchmarks/evidence/hg002-truth.json"
     ],
     "commands": {
       "HG008_WGS_Somatic": "target/release/vardictrust -G scratch/g4/ref/giabv3/GRCh38_GIABv3.fa -f 0.01 -N 'HG008-T|HG008-N' -b 'scratch/g4/hg008/HG008-T.slice.bam|scratch/g4/hg008/HG008-N.slice.bam' -c 1 -S 2 -E 3 -g 4 -z -th 20 <chr.bed> > <chr.rust.vcf> && python3 harness/compare_vcf.py <chr.java.vcf> <chr.rust.vcf>",
