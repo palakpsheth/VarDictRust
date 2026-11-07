@@ -629,6 +629,18 @@ All synthesized tables and metrics from the 60-cell GCP study are committed in-t
 | `benchmarks/gcp-study-v106/stage6/hg008_modern_ml_commercial_callers_v04.tsv` | `2,660` | `113729bddb39a975b4c964e918f81a9e5fd1c53e83722a92b52d43ad35d19726` | Stage 6 `HG008 v0.4` `11`-caller (`27`-row) benchmark (`DRAGEN`, `DeepSomatic`, `ClairS`, `SAGE`, `Lancet2`, `Ultima DV`, etc.). |
 | `benchmarks/gcp-study-v106/stage6/low_vaf_titration_curve.tsv` | `2,428` | `1ec64cd8377f08f8a3356c35e8e3931dd55bfe14ad764956b85fd0008023f088` | Stage 6 `HG008` `20%→1%` purity (`10%→0.5%` VAF) titration curve at `-f 0.002` across `6` callers. |
 
+### 14.6 `VarDictRust v1.0.7` 92-Chromosome Per-Contig Parity Suite (`docs/validation/chr-parity-v107.md`)
+
+In addition to the whole-cohort acceptance artifacts in §13, `VarDictRust v1.0.7` (`356eb13ba068790c`) was verified chromosome-by-chromosome across **`92` chromosome runs spanning 5 cohorts** (`0` mismatches vs `VarDictJava v1.8.3`, `0` new Java/C++ oracle runs), archived in [`docs/validation/chr-parity-v107.md`](chr-parity-v107.md) and [`benchmarks/chr-parity-v107.json`](../../benchmarks/chr-parity-v107.json):
+
+| Cohort | Mode | Chr Runs | Java Variants | Rust (`v1.0.7`) Variants | C++ Variants | Java == Rust Verdict | Rust vs C++ Shared | Only Rust/Java | Only C++ | C++ Exact (`1e-6` / `1e-4` END-norm) |
+| :--- | :--- | ---: | ---: | ---: | ---: | :--- | ---: | ---: | ---: | :--- |
+| **`HG008_WGS_Somatic`** | Paired Somatic WGS Slice | `21` | `18,426` | **`18,426`** | `18,425` | **`21/21 MATCH`** | `18,424` | `2` | `1` | `18,374` (`50` diffs) / `18,418` (`6` diffs) |
+| **`SEQC2_Paired_Somatic`** | Paired Somatic WES (`HCC1395\|HCC1395BL`) | `24` | `623,444` | **`623,444`** | `623,442` | **`24/24 MATCH`** | `623,442` | `2` | `0` | `622,497` (`945` diffs) / `623,427` (`15` diffs) |
+| **`SEQC2_Single_Sample_Scale`** | Single-Sample WES (`HCC1395`) | `24` | `339,698` | **`339,698`** | `339,697` | **`24/24 MATCH`** | `339,571` | `127` | `126` | `339,216` (`355` diffs) / `339,564` (`7` diffs) |
+| **`HG002_chr20_Full_VCF`** | Germline WGS `chr20` (`HG002`) | `1` | `227,562` | **`227,562`** | `227,560` | **`1/1 MATCH`** | `227,214` | `348` | `346` | `227,074` (`140` diffs) / `227,205` (`9` diffs) |
+| **`HG002_Full_WGS_GIAB_v4.2.1`** | Full 22-Autosome Germline WGS (`130.77 GB` 2×250bp BAM, `482,436` $\le 50\text{kbp}$ GIAB intervals) | `22` | `8,111,171` (`7,292,435` vcfeval `PASS`) | **`8,111,171` (`7,292,435` vcfeval `PASS`)** | `8,111,565` (`7,292,806` vcfeval `PASS`) | **`22/22 Gates A–D MATCH`** | `TP=3,688,055` (`of 3,688,079`) | `TP+24` | `TP+15` | `5/5` `rtg vcfeval` files byte-identical to Java (`F1=0.6624` `None` / `0.9651` `Optimal`) |
+
 ---
 
 ## 15. Exact Reproduction Commands

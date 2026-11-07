@@ -97,6 +97,20 @@ gh pr comment <bioconda-pr> --repo bioconda/bioconda-recipes --body "All CI chec
 # Run once bioconda::vardictrust=X.Y.Z has both linux-64 and linux-aarch64 tarballs on anaconda.org
 NFCORE_MODULES_DIR=/path/to/nf-core-modules bash packaging/nf-core/prepare_nfcore_pr.sh X.Y.Z
 python3 .agents/skills/vardictrust-release/scripts/check_release_consistency.py --version X.Y.Z --phase post-nfcore
+
+# Once the upstream nf-core/modules PR passes all 23 CI checks (conda, docker, singularity, nf-core lint, pre-commit)
+# and copilot-pull-request-reviewer[bot] review:
+# 1. Request review from @nf-core/maintainers and @nvnieuwk (vardictjava/vardictrust module reviewer):
+gh api repos/nf-core/modules/pulls/<nfcore-pr>/requested_reviewers -X POST --input - <<< '{"reviewers":["nvnieuwk"],"team_reviewers":["maintainers"]}'
+# 2. Add the "Ready for Review" and "update module" labels:
+gh api repos/nf-core/modules/issues/<nfcore-pr>/labels -X POST --input - <<< '{"labels":["Ready for Review","update module"]}'
+# 3. Post review-request comment:
+gh pr comment <nfcore-pr> --repo nf-core/modules --body "Hi @nvnieuwk @nf-core/maintainers — all CI checks (docker, singularity, conda, nf-core lint, pre-commit) are green for the vardictrust=X.Y.Z bump. Ready for review!"
+# 4. Once 1 approving review lands, enqueue into the nf-core/modules merge queue:
+PR_NODE_ID="$(gh api repos/nf-core/modules/pulls/<nfcore-pr> --jq '.node_id')"
+gh api graphql -f query='mutation($id: ID!) { enqueuePullRequest(input: {pullRequestId: $id}) { mergeQueueEntry { id state position } } }' -f id="$PR_NODE_ID"
+
+# Trigger ReadTheDocs latest build:
 bash harness/trigger_rtd.sh build vardictrust latest
 ```
 

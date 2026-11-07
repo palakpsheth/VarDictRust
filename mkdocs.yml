@@ -64,6 +64,7 @@ nav:
       - Benchmark Ledger: benchmarks/README.md
       - HG008 V0.4 Data Guide: benchmarks/hg008-v04-guide.md
       - Omnibus Empirical Validation: docs/validation/omnibus-empirical-validation.md
+      - 92-Chromosome Parity Suite (v1.0.7): docs/validation/chr-parity-v107.md
   - Evaluation Manuscript:
       - Manuscript: paper/manuscript.md
       - Supplement: paper/supplement.md
