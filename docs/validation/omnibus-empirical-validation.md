@@ -639,7 +639,7 @@ In addition to the whole-cohort acceptance artifacts in §13, `VarDictRust v1.0.
 | **`SEQC2_Paired_Somatic`** | Paired Somatic WES (`HCC1395\|HCC1395BL`) | `24` | `623,444` | **`623,444`** | `623,442` | **`24/24 MATCH`** | `623,442` | `2` | `0` | `622,497` (`945` diffs) / `623,427` (`15` diffs) |
 | **`SEQC2_Single_Sample_Scale`** | Single-Sample WES (`HCC1395`) | `24` | `339,698` | **`339,698`** | `339,697` | **`24/24 MATCH`** | `339,571` | `127` | `126` | `339,216` (`355` diffs) / `339,564` (`7` diffs) |
 | **`HG002_chr20_Full_VCF`** | Germline WGS `chr20` (`HG002`) | `1` | `227,562` | **`227,562`** | `227,560` | **`1/1 MATCH`** | `227,214` | `348` | `346` | `227,074` (`140` diffs) / `227,205` (`9` diffs) |
-| **`HG002_Full_WGS_GIAB_v4.2.1`** | Full 22-Autosome Germline WGS (`130.77 GB` 2×250bp BAM, `482,436` $\le 50\text{kbp}$ GIAB intervals) | `22` | `8,111,171` (`7,292,435` vcfeval `PASS`) | **`8,111,171` (`7,292,435` vcfeval `PASS`)** | `8,111,565` (`7,292,806` vcfeval `PASS`) | **`22/22 Gates A–D MATCH`** | `TP=3,688,079` | `TP+24` | `TP+15` | `5/5` `rtg vcfeval` files byte-identical to Java (`F1=0.6624` `None` / `0.9651` `Optimal`) |
+| **`HG002_Full_WGS_GIAB_v4.2.1`** | Full 22-Autosome Germline WGS (`130.77 GB` 2×250bp BAM, `482,436` $\le 50\text{kbp}$ GIAB intervals) | `22` | `8,111,171` (`7,292,435` vcfeval `PASS`) | **`8,111,171` (`7,292,435` vcfeval `PASS`)** | `8,111,565` (`7,292,806` vcfeval `PASS`) | **`22/22 Gates A–D MATCH`** | `TP=3,688,055` (`of 3,688,079`) | `TP+24` | `TP+15` | `5/5` `rtg vcfeval` files byte-identical to Java (`F1=0.6624` `None` / `0.9651` `Optimal`) |
 
 ---
 

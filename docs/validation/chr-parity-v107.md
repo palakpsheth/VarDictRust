@@ -2,8 +2,8 @@
 
 - **Engine Binary:** `target/release/vardictrust` (`vardictrust 1.0.7`, certified engine fingerprint `356eb13ba068790c`)
 - **Threads per Run:** `-th 20` (Step 1A + `HG002` `chr1..chr4`) / `-th 14` (`HG002` `chr5..chr22`, `55W PL1 / 75W PL2` RAPL clamp)
-- **New `VarDictJava` or `vardictcpp` Runs Executed:** `0` (100% compared against pinned oracle cache)
-- **Overall `VarDictJava v1.8.3` Parity Verdict:** **`92 / 92` Chromosome Runs `MATCH` (`0` mismatches)**
+- **New `VarDictJava` or `vardictcpp` Runs Executed:** `0` (100% compared against pinned `VarDictJava v1.8.3` commit `0886261` / `VarDict` `009e017` and `vardict-cpp v1.8.3` oracle cache; see §4 for exact CLI commands and SHA-256 provenance manifests)
+- **Overall `VarDictJava v1.8.3` Parity Verdict:** **`92 / 92` Chromosome Runs `MATCH` (`0` mismatches: `70/70` Tier-2 full-VCF `compare_vcf.py` runs across cohorts 1–4 and `22/22` Tier-3 Gates A–D count/`PASS`-site/`rtg vcfeval` concordance runs across `HG002` `chr1..chr22`)**
 - **Machine-Readable JSON Receipt:** [`benchmarks/chr-parity-v107.json`](../../benchmarks/chr-parity-v107.json)
 - **Companion Report:** [`docs/validation/omnibus-empirical-validation.md`](omnibus-empirical-validation.md)
 
@@ -15,7 +15,7 @@
 | `SEQC2_Paired_Somatic` | Paired Somatic WES (`HCC1395\|HCC1395BL`) | 24 | 623,444 | 623,444 | 623,442 | **24/24 MATCH** | 623,442 | 2 | 0 | 622,497 (945 diffs) / 623,427 (15 diffs) | 221.6 | 410 |
 | `SEQC2_Single_Sample_Scale` | Single-Sample WES (HCC1395) | 24 | 339,698 | 339,698 | 339,697 | **24/24 MATCH** | 339,571 | 127 | 126 | 339,216 (355 diffs) / 339,564 (7 diffs) | 98.4 | 387 |
 | `HG002_chr20_Full_VCF` | Germline WGS Chromosome 20 (HG002) | 1 | 227,562 | 227,562 | 227,560 | **1/1 MATCH** | 227,214 | 348 | 346 | 227,074 (140 diffs) / 227,205 (9 diffs) | 16.3 | 467 |
-| `HG002_Full_WGS_GIAB_v4.2.1` | Full 22-Autosome Germline WGS (130.77 GB 2x250bp BAM, 482,436 <=50kbp GIAB intervals) | 22 | 8,111,171 (`7,292,435` vcfeval PASS) | 8,111,171 (`7,292,435` vcfeval PASS / `7,596,457` raw PASS) | 8,111,565 (`7,292,806` vcfeval PASS) | **22/22 Gates A-D MATCH** | TP=3,688,079 | TP+24 | TP+15 | `rtg vcfeval` byte-identical to Java (`F1=0.6624` None / `0.9651` Optimal) | 1569.6 | 640 |
+| `HG002_Full_WGS_GIAB_v4.2.1` | Full 22-Autosome Germline WGS (130.77 GB 2x250bp BAM, 482,436 <=50kbp GIAB intervals) | 22 | 8,111,171 (`7,292,435` vcfeval PASS) | 8,111,171 (`7,292,435` vcfeval PASS / `7,596,457` raw PASS) | 8,111,565 (`7,292,806` vcfeval PASS) | **22/22 Gates A-D MATCH** | TP=3,688,055 (`of 3,688,079`) | TP+24 | TP+15 | `rtg vcfeval` byte-identical to Java (`F1=0.6624` None / `0.9651` Optimal) | 1569.6 | 640 |
 
 ## 2. Step 1A: Per-Chromosome Breakdown Across 4 On-Disk Cohorts (`70` Chromosome Runs)
 
@@ -157,3 +157,77 @@
 | `chr20` | `14` | 10,209 | 85,951 | 173,934 | 162,637 | 156,224 | 156,224 | 156,224 / 156,224 | **MATCH** | 78,490 | 77,733 | 3,157 | `+0/-0` | `+30/-30 (norm -30)` | `+0/-0` | 33.55 | 531 |
 | `chr21` | `14` | 6,997 | 55,210 | 104,116 | 97,857 | 94,199 | 94,199 | 94,198 / 94,198 | **MATCH** | 49,891 | 44,308 | 2,088 | `+0/-0` | `+17/-16 (norm -16)` | `+0/-0` | 18.08 | 450 |
 | `chr22` | `14` | 8,425 | 50,284 | 95,257 | 88,400 | 85,258 | 85,258 | 85,256 / 85,256 | **MATCH** | 44,644 | 40,612 | 2,331 | `+0/-0` | `+11/-10 (norm -10)` | `+0/-0` | 18.65 | 398 |
+
+## 4. Reproducibility, Exact Commands & Provenance Manifest
+
+All 92 chromosome runs reuse pinned oracle baselines (`VarDictJava v1.8.3` commit `0886261` with Perl/R submodule `VarDict` commit `009e017`, and `vardict-cpp v1.8.3` bioconda pin `vardictcpp 3 hc52dbad_0`) under identical CLI flags and BED interval definitions. The tracked runner and comparator scripts live in [`harness/run_oracle.sh`](../../harness/run_oracle.sh), [`harness/compare_vcf.py`](../../harness/compare_vcf.py), [`harness/concordance_germline.sh`](../../harness/concordance_germline.sh), and [`harness/golden_store.py`](../../harness/golden_store.py), with whole-cohort evidence manifests tracked in [`benchmarks/evidence/hg008-tier2.json`](../../benchmarks/evidence/hg008-tier2.json), [`benchmarks/evidence/seqc2-exome-tier2.json`](../../benchmarks/evidence/seqc2-exome-tier2.json), [`benchmarks/evidence/scale.json`](../../benchmarks/evidence/scale.json), [`benchmarks/evidence/hg002-tier2.json`](../../benchmarks/evidence/hg002-tier2.json), and [`benchmarks/evidence/concordance-germline.json`](../../benchmarks/evidence/concordance-germline.json) (see also [`docs/validation/omnibus-empirical-validation.md`](omnibus-empirical-validation.md) §15).
+
+### 4.1 Exact Per-Chromosome CLI Invocations & Comparators
+
+```bash
+# Step 1A: 70 Tier-2 full-VCF per-chromosome runs (split BED and cached oracle VCFs by $CHROM, then run):
+# 1. HG008_WGS_Somatic (21 chrs):
+target/release/vardictrust -G scratch/g4/ref/giabv3/GRCh38_GIABv3.fa -f 0.01 -N "HG008-T|HG008-N" \
+  -b "scratch/g4/hg008/HG008-T.slice.bam|scratch/g4/hg008/HG008-N.slice.bam" \
+  -c 1 -S 2 -E 3 -g 4 -z -th 20 "$WORK/HG008_WGS_Somatic/bed/${CHROM}.bed" > "$WORK/HG008_WGS_Somatic/rust/${CHROM}.vcf"
+python3 harness/compare_vcf.py "$WORK/HG008_WGS_Somatic/java/${CHROM}.vcf" "$WORK/HG008_WGS_Somatic/rust/${CHROM}.vcf"
+
+# 2. SEQC2_Paired_Somatic (24 chrs):
+target/release/vardictrust -G scratch/g4/ref/d1vd1/GRCh38.d1.vd1.fa -f 0.01 -N "HCC1395|HCC1395BL" \
+  -b "scratch/g4/seqc2/HCC1395.bam|scratch/g4/seqc2/HCC1395BL.bam" \
+  -c 1 -S 2 -E 3 -g 4 -z -th 20 "$WORK/SEQC2_Paired_Somatic/bed/${CHROM}.bed" > "$WORK/SEQC2_Paired_Somatic/rust/${CHROM}.vcf"
+python3 harness/compare_vcf.py "$WORK/SEQC2_Paired_Somatic/java/${CHROM}.vcf" "$WORK/SEQC2_Paired_Somatic/rust/${CHROM}.vcf"
+
+# 3. SEQC2_Single_Sample_Scale (24 chrs):
+target/release/vardictrust -G scratch/g4/ref/d1vd1/GRCh38.d1.vd1.fa -f 0.01 -N HCC1395 \
+  -b scratch/g4/seqc2/HCC1395.bam \
+  -c 1 -S 2 -E 3 -g 4 -z -th 20 "$WORK/SEQC2_Single_Sample_Scale/bed/${CHROM}.bed" > "$WORK/SEQC2_Single_Sample_Scale/rust/${CHROM}.vcf"
+python3 harness/compare_vcf.py "$WORK/SEQC2_Single_Sample_Scale/java/${CHROM}.vcf" "$WORK/SEQC2_Single_Sample_Scale/rust/${CHROM}.vcf"
+
+# 4. HG002_chr20_Full_VCF (1 chr):
+target/release/vardictrust -G scratch/g4/ref/giabv3/GRCh38_GIABv3.fasta -f 0.01 -N HG002 \
+  -b scratch/g4/hg002/HG002.chr20.bam \
+  -c 1 -S 2 -E 3 -g 4 -z -th 20 "$WORK/HG002_chr20_Full_VCF/bed/chr20.bed" > "$WORK/HG002_chr20_Full_VCF/rust/chr20.vcf"
+python3 harness/compare_vcf.py "$WORK/HG002_chr20_Full_VCF/java/chr20.vcf" "$WORK/HG002_chr20_Full_VCF/rust/chr20.vcf"
+
+# Step 1B: 22 Tier-3 full-autosome GIAB v4.2.1 HG002 WGS runs (chr1..chr22, 482,436 <=50kbp tiles):
+for i in $(seq 1 22); do
+  chr="chr${i}"
+  target/release/vardictrust -G scratch/g4/ref/giabv3/GRCh38_GIABv3.fasta -f 0.01 -N HG002 \
+    -b scratch/g4/hg002/HG002.GRCh38.2x250.bam \
+    -c 1 -S 2 -E 3 -g 4 -z -th 14 "$WORK_1B/bed/${chr}.bed" > "$WORK_1B/rust/${chr}.vcf"
+done
+# Filter PASS calls, sort with bcftools, and evaluate against NIST v4.2.1 truth via rtg vcfeval:
+rtg vcfeval -b "$WORK_1B/truth.nofilter.vcf.gz" -c "$WORK_1B/calls.pass.vcf.gz" \
+  -t scratch/g4/ref/giabv3/GRCh38_GIABv3.sdf \
+  -e "$WORK_1B/truth/HG002_GRCh38_1_22_v4.2.1_benchmark_noinconsistent.bed" \
+  --sample HG002,HG002 --vcf-score-field QUAL -T 8 -o "$WORK_1B/vcfeval"
+```
+
+### 4.2 Input BED, Cached Oracle VCF, and `rtg vcfeval` Checksum Manifest
+
+| Artifact Path (Local Workspace / Cache) | Size (Bytes) | SHA-256 Checksum |
+| :--- | ---: | :--- |
+| `scratch/g4/hg008/engine.bed` | `11,062` | `4d71967cd1bd840cef3d62b3713fce1599504b1a062be3b540da287649eff2b7` |
+| `benchmarks/data/oracle-cache-v183/g4-oracle/hg008/cmp/java.vcf` | `7,993,158` | `3586ee7db066fcb2e14370d524f7cda4014a18e0c743313b7552aae5cc723bd6` |
+| `benchmarks/data/oracle-cache-v183/g4-oracle/hg008/cmp/cpp.vcf` | `7,982,243` | `e81a8262f34111ffa3a82140768d0ee9d788c5a5cca6757d65b314358e3441bb` |
+| `scratch/g4/seqc2/exome.engine.bed` | `54,721,521` | `f74062c084b28c596471ccfcce8114f3bdfd6dd3d74ff3e811c62884a0ced25b` |
+| `benchmarks/data/oracle-cache-v183/4targets_full/seqc2/java.vcf` | `253,981,903` | `3dfef22b4e176d5aa8d9f02bdea9b1cc947527ff9137e56d3ddd27c080581319` |
+| `benchmarks/data/oracle-cache-v183/g4-oracle/seqc2/cmp-exome/cpp.vcf` | `253,840,712` | `1f089ec50b608d63f9c6c1bfc6067c9fcfefedc7572d700a9583a6f69ab0ed5f` |
+| `benchmarks/data/oracle-cache-v183/g4-oracle/scale/th8.vcf` | `131,382,512` | `daf05a2bda16da5c0645f5c3294d2cf518b8dfeffb03be6ba064cada44e6f46e` |
+| `benchmarks/data/oracle-cache-v183/g4-oracle/scale/cpp_th8.vcf` | `135,723,390` | `604a1c29470eadbe51b04405b885901b3a60ae9ddf272754c29fb23e30923777` |
+| `scratch/g4/hg002/eval.bed` | `82,053` | `df8cc38f4a269c0923120abf1d4f4429fc2fc92e55e6a5eda23468b5ec6e1bb1` |
+| `benchmarks/data/oracle-cache-v183/4targets_full/hg002/java.vcf` | `87,816,444` | `dfd6146d9c5d2eac8c80a93c56dc7134fb90c26d4a42eb122890a0346021b89f` |
+| `benchmarks/data/oracle-cache-v183/g4-oracle/hg002/cmp/cpp.vcf` | `90,762,769` | `7b2fd4d3a6d00b47fcc001b093b090c8d1d181c17fda9d3454030dbf57536e9d` |
+| `scratch/g4/hg002/hg002_full_giab_50kb.bed` | `19,603,840` | `f8a69c04564140670b7738d371a96e83b2c2ae7a71fb2da08be077e49f2f4f66` |
+| `benchmarks/data/oracle-cache-v183/chr_parity_v107/hg002_full/rust_giab_v107_th20.vcf.gz` | `635,368,384` | `c2bfa0d0dd90c677cd2cc7bc90cfce6aa7ebc6611843f119135616c8a4874486` |
+| `benchmarks/data/oracle-cache-v183/cells/s5_wgs_hg002_full_giab_3way_th32/vcfeval_hg002_full_wgs/java/summary.json` | `544` | `e822a422eb85a188f20ad4917daf4851ea5c17a34621af563f75ca714c2d0ab4` |
+| `benchmarks/data/oracle-cache-v183/cells/s5_wgs_hg002_full_giab_3way_th32/vcfeval_hg002_full_wgs/java/tp.sites` | `70,160,919` | `670784635959da010357c5286a401e99e2d2fccbe8e50dba5f87b5541adcbc26` |
+| `benchmarks/data/oracle-cache-v183/cells/s5_wgs_hg002_full_giab_3way_th32/vcfeval_hg002_full_wgs/java/fp.sites` | `68,440,659` | `4aabfb81c674c136c0a789758d9b0487a0c5bc52329392400651b1addb11f6b1` |
+| `benchmarks/data/oracle-cache-v183/cells/s5_wgs_hg002_full_giab_3way_th32/vcfeval_hg002_full_wgs/java/fn.sites` | `3,432,482` | `c163f8b53c11084058b4777ba77d4de2b285616ccd43d807e61cefe056898884` |
+| `benchmarks/data/oracle-cache-v183/cells/s5_wgs_hg002_full_giab_3way_th32/vcfeval_hg002_full_wgs/java/tp-baseline.sites` | `70,865,211` | `3e58cc305d6efc6e79cea4fdd9ed18d7c63b89c6f3ba1665c2255fac32c38486` |
+| `benchmarks/data/oracle-cache-v183/cells/s5_wgs_hg002_full_giab_3way_th32/vcfeval_hg002_full_wgs/cpp/summary.json` | `544` | `61473b93933eb0e673e751911fce18c6586a9f301e0804d427476f774059245a` |
+| `scratch/g4/hg002/HG002.GRCh38.2x250.bam` | `130,770,531,934` | `size=130770531934` (BAI MD5 `a3c2b449df6509ca83fbd3fea22b9aee`) |
+| `scratch/g4/hg002/truth/HG002_GRCh38_1_22_v4.2.1_benchmark.vcf.gz` | `156,252,944` | `MD5 dc750b3807d4af1f7ffec852e9c2f771` |
+| `scratch/g4/hg002/truth/HG002_GRCh38_1_22_v4.2.1_benchmark_noinconsistent.bed` | `11,494,021` | `MD5 97265e922a97c69a0391cf3f92a89b8b` |
+

@@ -4837,5 +4837,130 @@
         }
       }
     ]
+  },
+  "engine_fingerprint": "356eb13ba068790c",
+  "perf_fingerprint": "a8972d03c6daa8fa",
+  "oracle_pins": {
+    "vardict_java": "1.8.3 (commit 0886261, VarDict Perl/R submodule 009e017)",
+    "vardict_cpp": "1.8.3 (bioconda vardictcpp 3 hc52dbad_0)"
+  },
+  "reproducibility": {
+    "tracked_runners": [
+      "harness/run_oracle.sh",
+      "harness/compare_vcf.py",
+      "harness/concordance_germline.sh",
+      "harness/golden_store.py"
+    ],
+    "tracked_evidence_manifests": [
+      "benchmarks/evidence/hg008-tier2.json",
+      "benchmarks/evidence/seqc2-exome-tier2.json",
+      "benchmarks/evidence/scale.json",
+      "benchmarks/evidence/hg002-tier2.json",
+      "benchmarks/evidence/concordance-germline.json"
+    ],
+    "commands": {
+      "HG008_WGS_Somatic": "target/release/vardictrust -G scratch/g4/ref/giabv3/GRCh38_GIABv3.fa -f 0.01 -N 'HG008-T|HG008-N' -b 'scratch/g4/hg008/HG008-T.slice.bam|scratch/g4/hg008/HG008-N.slice.bam' -c 1 -S 2 -E 3 -g 4 -z -th 20 <chr.bed> > <chr.rust.vcf> && python3 harness/compare_vcf.py <chr.java.vcf> <chr.rust.vcf>",
+      "SEQC2_Paired_Somatic": "target/release/vardictrust -G scratch/g4/ref/d1vd1/GRCh38.d1.vd1.fa -f 0.01 -N 'HCC1395|HCC1395BL' -b 'scratch/g4/seqc2/HCC1395.bam|scratch/g4/seqc2/HCC1395BL.bam' -c 1 -S 2 -E 3 -g 4 -z -th 20 <chr.bed> > <chr.rust.vcf> && python3 harness/compare_vcf.py <chr.java.vcf> <chr.rust.vcf>",
+      "SEQC2_Single_Sample_Scale": "target/release/vardictrust -G scratch/g4/ref/d1vd1/GRCh38.d1.vd1.fa -f 0.01 -N HCC1395 -b scratch/g4/seqc2/HCC1395.bam -c 1 -S 2 -E 3 -g 4 -z -th 20 <chr.bed> > <chr.rust.vcf> && python3 harness/compare_vcf.py <chr.java.vcf> <chr.rust.vcf>",
+      "HG002_chr20_Full_VCF": "target/release/vardictrust -G scratch/g4/ref/giabv3/GRCh38_GIABv3.fasta -f 0.01 -N HG002 -b scratch/g4/hg002/HG002.chr20.bam -c 1 -S 2 -E 3 -g 4 -z -th 20 <chr20.bed> > <chr20.rust.vcf> && python3 harness/compare_vcf.py <chr20.java.vcf> <chr20.rust.vcf>",
+      "HG002_Full_WGS_GIAB_v4.2.1": "target/release/vardictrust -G scratch/g4/ref/giabv3/GRCh38_GIABv3.fasta -f 0.01 -N HG002 -b scratch/g4/hg002/HG002.GRCh38.2x250.bam -c 1 -S 2 -E 3 -g 4 -z -th 14 <chr.bed> > <chr.rust.vcf> && rtg vcfeval -b truth.nofilter.vcf.gz -c calls.pass.vcf.gz -t scratch/g4/ref/giabv3/GRCh38_GIABv3.sdf -e HG002_GRCh38_1_22_v4.2.1_benchmark_noinconsistent.bed --sample HG002,HG002 --vcf-score-field QUAL -T 8 -o vcfeval"
+    },
+    "artifact_checksums": [
+      {
+        "path": "scratch/g4/hg008/engine.bed",
+        "bytes": 11062,
+        "sha256": "4d71967cd1bd840cef3d62b3713fce1599504b1a062be3b540da287649eff2b7"
+      },
+      {
+        "path": "benchmarks/data/oracle-cache-v183/g4-oracle/hg008/cmp/java.vcf",
+        "bytes": 7993158,
+        "sha256": "3586ee7db066fcb2e14370d524f7cda4014a18e0c743313b7552aae5cc723bd6"
+      },
+      {
+        "path": "benchmarks/data/oracle-cache-v183/g4-oracle/hg008/cmp/cpp.vcf",
+        "bytes": 7982243,
+        "sha256": "e81a8262f34111ffa3a82140768d0ee9d788c5a5cca6757d65b314358e3441bb"
+      },
+      {
+        "path": "scratch/g4/seqc2/exome.engine.bed",
+        "bytes": 54721521,
+        "sha256": "f74062c084b28c596471ccfcce8114f3bdfd6dd3d74ff3e811c62884a0ced25b"
+      },
+      {
+        "path": "benchmarks/data/oracle-cache-v183/4targets_full/seqc2/java.vcf",
+        "bytes": 253981903,
+        "sha256": "3dfef22b4e176d5aa8d9f02bdea9b1cc947527ff9137e56d3ddd27c080581319"
+      },
+      {
+        "path": "benchmarks/data/oracle-cache-v183/g4-oracle/seqc2/cmp-exome/cpp.vcf",
+        "bytes": 253840712,
+        "sha256": "1f089ec50b608d63f9c6c1bfc6067c9fcfefedc7572d700a9583a6f69ab0ed5f"
+      },
+      {
+        "path": "benchmarks/data/oracle-cache-v183/g4-oracle/scale/th8.vcf",
+        "bytes": 131382512,
+        "sha256": "daf05a2bda16da5c0645f5c3294d2cf518b8dfeffb03be6ba064cada44e6f46e"
+      },
+      {
+        "path": "benchmarks/data/oracle-cache-v183/g4-oracle/scale/cpp_th8.vcf",
+        "bytes": 135723390,
+        "sha256": "604a1c29470eadbe51b04405b885901b3a60ae9ddf272754c29fb23e30923777"
+      },
+      {
+        "path": "scratch/g4/hg002/eval.bed",
+        "bytes": 82053,
+        "sha256": "df8cc38f4a269c0923120abf1d4f4429fc2fc92e55e6a5eda23468b5ec6e1bb1"
+      },
+      {
+        "path": "benchmarks/data/oracle-cache-v183/4targets_full/hg002/java.vcf",
+        "bytes": 87816444,
+        "sha256": "dfd6146d9c5d2eac8c80a93c56dc7134fb90c26d4a42eb122890a0346021b89f"
+      },
+      {
+        "path": "benchmarks/data/oracle-cache-v183/g4-oracle/hg002/cmp/cpp.vcf",
+        "bytes": 90762769,
+        "sha256": "7b2fd4d3a6d00b47fcc001b093b090c8d1d181c17fda9d3454030dbf57536e9d"
+      },
+      {
+        "path": "scratch/g4/hg002/hg002_full_giab_50kb.bed",
+        "bytes": 19603840,
+        "sha256": "f8a69c04564140670b7738d371a96e83b2c2ae7a71fb2da08be077e49f2f4f66"
+      },
+      {
+        "path": "benchmarks/data/oracle-cache-v183/chr_parity_v107/hg002_full/rust_giab_v107_th20.vcf.gz",
+        "bytes": 635368384,
+        "sha256": "c2bfa0d0dd90c677cd2cc7bc90cfce6aa7ebc6611843f119135616c8a4874486"
+      },
+      {
+        "path": "benchmarks/data/oracle-cache-v183/cells/s5_wgs_hg002_full_giab_3way_th32/vcfeval_hg002_full_wgs/java/summary.json",
+        "bytes": 544,
+        "sha256": "e822a422eb85a188f20ad4917daf4851ea5c17a34621af563f75ca714c2d0ab4"
+      },
+      {
+        "path": "benchmarks/data/oracle-cache-v183/cells/s5_wgs_hg002_full_giab_3way_th32/vcfeval_hg002_full_wgs/java/tp.sites",
+        "bytes": 70160919,
+        "sha256": "670784635959da010357c5286a401e99e2d2fccbe8e50dba5f87b5541adcbc26"
+      },
+      {
+        "path": "benchmarks/data/oracle-cache-v183/cells/s5_wgs_hg002_full_giab_3way_th32/vcfeval_hg002_full_wgs/java/fp.sites",
+        "bytes": 68440659,
+        "sha256": "4aabfb81c674c136c0a789758d9b0487a0c5bc52329392400651b1addb11f6b1"
+      },
+      {
+        "path": "benchmarks/data/oracle-cache-v183/cells/s5_wgs_hg002_full_giab_3way_th32/vcfeval_hg002_full_wgs/java/fn.sites",
+        "bytes": 3432482,
+        "sha256": "c163f8b53c11084058b4777ba77d4de2b285616ccd43d807e61cefe056898884"
+      },
+      {
+        "path": "benchmarks/data/oracle-cache-v183/cells/s5_wgs_hg002_full_giab_3way_th32/vcfeval_hg002_full_wgs/java/tp-baseline.sites",
+        "bytes": 70865211,
+        "sha256": "3e58cc305d6efc6e79cea4fdd9ed18d7c63b89c6f3ba1665c2255fac32c38486"
+      },
+      {
+        "path": "benchmarks/data/oracle-cache-v183/cells/s5_wgs_hg002_full_giab_3way_th32/vcfeval_hg002_full_wgs/cpp/summary.json",
+        "bytes": 544,
+        "sha256": "61473b93933eb0e673e751911fce18c6586a9f301e0804d427476f774059245a"
+      }
+    ]
   }
 }
