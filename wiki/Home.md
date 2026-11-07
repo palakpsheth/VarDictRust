@@ -17,6 +17,7 @@ VarDictRust is an idiomatic Rust rewrite of **VarDictJava v1.8.3** (a somatic an
 
 ### 2. Empirical Validation & Parity
 - **[Omnibus Empirical Validation](https://github.com/palakpsheth/VarDictRust/blob/main/docs/validation/omnibus-empirical-validation.md)** — Comprehensive 9-pillar validation manuscript covering the Master 10-Cohort Roster, NIST v4.2.1 HG002 benchmark, 17 extended modalities, and 18 multi-modal slices.
+- **[92-Chromosome Parity Suite (v1.0.7)](https://github.com/palakpsheth/VarDictRust/blob/main/docs/validation/chr-parity-v107.md)** — Per-chromosome parity receipt (`92 / 92 MATCH`, 0 diffs) across 5 cohorts, including full 22-autosome `GIAB HG002` WGS (`8,111,171` variants, byte-identical `rtg vcfeval` vs `VarDictJava v1.8.3`).
 - **[Ground Truth Concordance](https://github.com/palakpsheth/VarDictRust/blob/main/docs/validation/omnibus-empirical-validation.md#pillar-1)** — Precision, recall, and F1 concordance benchmarks evaluated with RTG `vcfeval` (HG002, HG005, NA24385 b37, HG008, SEQC2).
 - **[Extended Modalities & SVs](https://github.com/palakpsheth/VarDictRust/blob/main/docs/validation/omnibus-empirical-validation.md#pillar-8)** — RNA-seq splicing (`-i`), CRISPR (`-J/-j`), `<INV>`, `<DUP>`, and operational flags.
 - **[Multi-Modal Public Cohorts](https://github.com/palakpsheth/VarDictRust/blob/main/docs/validation/omnibus-empirical-validation.md#pillar-9)** — 18 slices across 6 public sequencing cohorts (HG005, NA24385 b37, NA12878, COLO829, HCC2218, SEQC2).

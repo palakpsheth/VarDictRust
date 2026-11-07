@@ -61,6 +61,8 @@ python3 harness/perf_budget.py hg008-tier2 seqc2-exome-tier2 hg002-tier2 amplico
 | **Performance Budget** | [`perf-budget.json`](evidence/perf-budget.json) | Regression Gate | 5 Target Workload Regression | Wall/RAM gates | **PASS** |
 | **Musl CI Packaging** | [`musl-ci.json`](evidence/musl-ci.json) | Release Gate | Static PIE Linux Packaging | Bitwise identity | **PASS** |
 
+- **92-Chromosome Per-Contig Parity Suite (`v1.0.7`):** Full per-chromosome breakdowns across `HG008_WGS_Somatic` (`21` chrs), `SEQC2_Paired_Somatic` (`24` chrs), `SEQC2_Single_Sample_Scale` (`24` chrs), `HG002_chr20_Full_VCF` (`1` chr), and `HG002_Full_WGS_GIAB_v4.2.1` (`22` autosomes `chr1..chr22`, `8,111,171` variants, `5/5` `rtg vcfeval` files byte-identical to `VarDictJava v1.8.3`) are recorded in [`chr-parity-v107.json`](chr-parity-v107.json) and [`docs/validation/chr-parity-v107.md`](../docs/validation/chr-parity-v107.md) (**`92 / 92 MATCH`**).
+
 ---
 
 ## 4. Whole Chromosome 1 Scaling & Flat Memory Footprint

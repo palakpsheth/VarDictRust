@@ -406,6 +406,7 @@ Push `release/vX.Y.Z` and open a pull request to `main` via `gh pr create`, comp
    NFCORE_MODULES_DIR=/path/to/nf-core-modules bash packaging/nf-core/prepare_nfcore_pr.sh X.Y.Z
    python3 .agents/skills/vardictrust-release/scripts/check_release_consistency.py --version X.Y.Z --phase post-nfcore
    ```
+   Once the upstream `nf-core/modules` PR passes all CI checks (`conda`, `docker`, `singularity`, `nf-core lint`, `pre-commit`), request review from `@nf-core/maintainers` and `@nvnieuwk` and apply the `"Ready for Review"` and `"update module"` labels (`gh api repos/nf-core/modules/pulls/<pr>/requested_reviewers -X POST --input - <<< '{"reviewers":["nvnieuwk"],"team_reviewers":["maintainers"]}'` and `gh api repos/nf-core/modules/issues/<pr>/labels -X POST --input - <<< '{"labels":["Ready for Review","update module"]}'`), then enqueue into the merge queue once approved (`gh api graphql -f query='mutation($id: ID!) { enqueuePullRequest(input: {pullRequestId: $id}) { mergeQueueEntry { id state position } } }' -f id="$(gh api repos/nf-core/modules/pulls/<pr> --jq '.node_id')"`).
 3. **Trigger ReadTheDocs Documentation Build:**
    ```bash
    bash harness/trigger_rtd.sh build vardictrust latest

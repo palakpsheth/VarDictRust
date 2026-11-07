@@ -42,6 +42,7 @@ IGNORED_PREFIXES = (
     ".worktrees/",
     "wiki/",
     "paper/templates/",
+    "benchmarks/data/",
 )
 
 # Linear regex matching simple raw HTML anchors <a id="..." ...></a> or <a name="..." ...></a>
