@@ -344,7 +344,7 @@ pub fn parse_non_amp_bed_from_reader<R: BufRead>(
             || cols.len() <= current_format.thick_end_column
         {
             return Err(VardictError::Parse(format!(
-                "Region line has {} columns, expected at least {} (for 3-, 5-, or 6-column non-amplicon BED files, pass -c 1 -S 2 -E 3)",
+                "Region line has {} columns, expected at least {} (for 3-, 5-, or 6-column non-amplicon BED files, pass -c 1 -S 2 -E 3 -z for standard 0-based BED or -c 1 -S 2 -E 3 for 1-based regions)",
                 cols.len(),
                 current_format.thick_end_column.saturating_add(1)
             )));
@@ -1260,8 +1260,8 @@ Y\t59042860\t59047860\tY_59042860_5\t0\t.\t59042860\t59047860
                 "unexpected error message for {ncols}-col BED: {msg}"
             );
             assert!(
-                msg.contains("pass -c 1 -S 2 -E 3"),
-                "expected column flag hint in {ncols}-col BED error: {msg}"
+                msg.contains("pass -c 1 -S 2 -E 3 -z for standard 0-based BED"),
+                "expected column + -z flag hint in {ncols}-col BED error: {msg}"
             );
         }
     }

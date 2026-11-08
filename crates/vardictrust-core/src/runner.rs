@@ -117,6 +117,7 @@ pub(crate) fn worker_thread_stack_bytes_for_bam(bam_spec: &str) -> usize {
 
 thread_local! {
     static CURRENT_WORKER_REGION: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+    static CURRENT_WORKER_STACK_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// Sets the region label currently being processed on the worker thread so
@@ -136,11 +137,17 @@ where
     F: FnOnce() -> Result<R, VardictError> + Send,
     R: Send,
 {
+    if CURRENT_WORKER_STACK_BYTES.with(|c| c.get()) >= stack_bytes {
+        return f();
+    }
     std::thread::scope(|s| {
         let handle = std::thread::Builder::new()
             .name("vardictrust-worker".to_string())
             .stack_size(stack_bytes)
-            .spawn_scoped(s, f)
+            .spawn_scoped(s, move || {
+                CURRENT_WORKER_STACK_BYTES.with(|c| c.set(stack_bytes));
+                f()
+            })
             .map_err(VardictError::Io)?;
         match handle.join() {
             Ok(res) => res,
@@ -188,6 +195,7 @@ where
         batches,
         num_threads,
         worker_thread_stack_bytes(),
+        false,
         worker_fn,
         consumer_fn,
     )
@@ -212,6 +220,7 @@ where
         batches,
         num_threads,
         worker_thread_stack_bytes_for_bam(bam_spec),
+        true,
         worker_fn,
         consumer_fn,
     )
@@ -221,6 +230,7 @@ fn run_parallel_batched_with_stack<T, R, F, W>(
     batches: Vec<Vec<T>>,
     num_threads: usize,
     stack_bytes: usize,
+    enforce_serial_stack: bool,
     worker_fn: F,
     mut consumer_fn: W,
 ) -> Result<(), VardictError>
@@ -234,9 +244,18 @@ where
         return Ok(());
     }
     if num_threads == 1 {
-        for batch in batches {
-            for item in batch {
-                consumer_fn(worker_fn(item)?)?;
+        if !enforce_serial_stack || CURRENT_WORKER_STACK_BYTES.with(|c| c.get()) >= stack_bytes {
+            for batch in batches {
+                for item in batch {
+                    consumer_fn(worker_fn(item)?)?;
+                }
+            }
+        } else {
+            for batch in batches {
+                for item in batch {
+                    let val = run_with_worker_stack_bytes(stack_bytes, || worker_fn(item))?;
+                    consumer_fn(val)?;
+                }
             }
         }
         return Ok(());
@@ -714,5 +733,31 @@ mod tests {
                 >= CRAM_WORKER_THREAD_STACK_FLOOR_BYTES
         );
         assert!(worker_thread_stack_bytes_for_bam("sample.bam") >= WORKER_THREAD_STACK_FLOOR_BYTES);
+
+        // Serial (num_threads == 1) `run_parallel_batched_for_bam` without an outer wrapper
+        // must still execute `worker_fn` with the 64 MiB CRAM stack floor while keeping
+        // `consumer_fn` on the calling thread.
+        let caller_tid = std::thread::current().id();
+        let mut consumed = Vec::new();
+        run_parallel_batched_for_bam(
+            "sample.cram",
+            vec![vec![10usize, 20]],
+            1,
+            move |x| {
+                assert!(
+                    CURRENT_WORKER_STACK_BYTES.with(|c| c.get())
+                        >= CRAM_WORKER_THREAD_STACK_FLOOR_BYTES
+                );
+                assert_ne!(std::thread::current().id(), caller_tid);
+                Ok(x + 1)
+            },
+            |val| {
+                assert_eq!(std::thread::current().id(), caller_tid);
+                consumed.push(val);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(consumed, vec![11, 21]);
     }
 }
