@@ -85,6 +85,32 @@ if git rev-parse --verify origin/main >/dev/null 2>&1; then
     fi
 fi
 
+# 4b. Fast MkDocs strict build gate when Markdown or documentation config changes (<2s)
+DOC_CHANGES=$(echo "$ALL_CHANGED_FILES" | grep -E '\.md$|^mkdocs\.yml$|^harness/prepare_docs_site\.py$|^harness/tests/test_docs_ui\.py$' || true)
+if [ -n "$DOC_CHANGES" ] && [ -f "$ROOT_DIR/harness/prepare_docs_site.py" ] && [ "$(git rev-parse --show-toplevel 2>/dev/null || true)" = "$ROOT_DIR" ]; then
+    MKDOCS_BIN=""
+    if command -v mkdocs >/dev/null 2>&1; then
+        MKDOCS_BIN="mkdocs"
+    elif [ -n "${CONDA_PREFIX:-}" ] && [ -x "${CONDA_PREFIX}/bin/mkdocs" ]; then
+        MKDOCS_BIN="${CONDA_PREFIX}/bin/mkdocs"
+    elif [ -x "${HOME}/miniconda3/bin/mkdocs" ]; then
+        MKDOCS_BIN="${HOME}/miniconda3/bin/mkdocs"
+    elif [ -x "${HOME}/miniforge3/bin/mkdocs" ]; then
+        MKDOCS_BIN="${HOME}/miniforge3/bin/mkdocs"
+    fi
+    if [ -n "$MKDOCS_BIN" ]; then
+        st_t0=$SECONDS
+        echo "=== $(ts) [pre-push] Documentation changes detected; running MkDocs strict build gate ==="
+        (
+            cd "$ROOT_DIR"
+            trap 'rm -rf "$ROOT_DIR/.docs_staged" "$ROOT_DIR/site"' EXIT
+            python3 "$ROOT_DIR/harness/prepare_docs_site.py"
+            "$MKDOCS_BIN" build --strict
+        )
+        echo "$(ts) [pre-push] MkDocs strict build PASS ($((SECONDS - st_t0))s)"
+    fi
+fi
+
 # 5. Check whether any non-deletion update touches code, CI, harness, or engine assets
 CODE_CHANGES=$(echo "$ALL_CHANGED_FILES" | grep -E '\.rs$|Cargo\.(toml|lock)$|crates/|harness/|\.github/|\.githooks/|\.agents/|fixtures/|golden/|benchmarks/evidence/|deny\.toml|\.cargo/' || true)
 

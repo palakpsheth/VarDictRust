@@ -439,6 +439,82 @@ class TestMarkdownStaticHygiene(unittest.TestCase):
             "README.md should use img.shields.io/readthedocs/vardictrust for the Documentation Status badge.",
         )
 
+    def test_repo_markdown_relative_links(self):
+        """Verify relative file links and anchors across all tracked repository markdown files."""
+        md_files = find_all_markdown_files()
+        link_pattern = re.compile(r"(?<!\!)\[([^\]]+)\]\(([^)\s]+)(?:\s+[\"'][^\"']*[\"'])?\)")
+        errors = []
+        anchor_cache = {}
+
+        for md_path in md_files:
+            rel_path = md_path.relative_to(REPO_ROOT)
+            if str(rel_path).startswith("wiki/"):
+                continue
+
+            with open(md_path, "r", encoding="utf-8") as f:
+                content = f.read()
+
+            no_code_blocks = re.sub(r"```[\s\S]*?```", "", content)
+            no_inline_code = re.sub(r"`[^`]*`", "", no_code_blocks)
+
+            for match in link_pattern.finditer(no_inline_code):
+                label = match.group(1)
+                raw_url = match.group(2)
+
+                if raw_url.startswith(("http://", "https://", "mailto:", "conversation://", "file://")):
+                    continue
+
+                if raw_url.startswith("#"):
+                    anchor = raw_url[1:]
+                    if not anchor or re.match(r"^L\d+(-L\d+)?$", anchor):
+                        continue
+                    if md_path not in anchor_cache:
+                        anchor_cache[md_path] = self._extract_all_anchors(content)
+                    valid_anchors = anchor_cache[md_path]
+                    if anchor not in valid_anchors and urllib.parse.unquote(anchor) not in valid_anchors:
+                        errors.append(
+                            f"{rel_path}: broken in-page anchor '{raw_url}' for '{label}'"
+                        )
+                    continue
+
+                target_part, _, anchor = raw_url.partition("#")
+                target_clean = urllib.parse.unquote(target_part)
+                if not target_clean:
+                    continue
+
+                resolved = (md_path.parent / target_clean).resolve()
+                if not resolved.is_relative_to(REPO_ROOT):
+                    errors.append(
+                        f"{rel_path}: relative link '{raw_url}' escapes repository root ('{resolved}')"
+                    )
+                    continue
+                if not resolved.exists():
+                    errors.append(
+                        f"{rel_path}: broken relative link '{raw_url}' for '{label}' "
+                        f"(target '{resolved}' does not exist)"
+                    )
+                    continue
+
+                if anchor:
+                    if re.match(r"^L\d+(-L\d+)?$", anchor):
+                        continue
+                    anchor_file = resolved if resolved.is_file() else (resolved / "README.md")
+                    if anchor_file.is_file() and anchor_file.suffix.lower() == ".md":
+                        if anchor_file not in anchor_cache:
+                            with open(anchor_file, "r", encoding="utf-8") as tf:
+                                anchor_cache[anchor_file] = self._extract_all_anchors(tf.read())
+                        valid_anchors = anchor_cache[anchor_file]
+                        if anchor not in valid_anchors and urllib.parse.unquote(anchor) not in valid_anchors:
+                            errors.append(
+                                f"{rel_path}: broken anchor '#{anchor}' in "
+                                f"'{anchor_file.relative_to(REPO_ROOT)}' (link '{raw_url}')"
+                            )
+
+        self.assertEqual(
+            errors, [],
+            "Broken relative markdown links or anchors found:\n" + "\n".join(f"  - {e}" for e in errors),
+        )
+
 
 class TestPlaywrightBrowserRendering(unittest.TestCase):
     """Render documents with Playwright headless Chromium to verify real browser DOM layout."""

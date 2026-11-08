@@ -93,6 +93,15 @@ if [ -n "$STAGED_REL" ]; then
     echo "$(ts) [pre-commit] release consistency PASS ($((SECONDS - st_t0))s)"
 fi
 
+# 4b. Fast static Markdown & link hygiene check when documentation files are staged (<1s)
+STAGED_MD=$(echo "$STAGED_ALL" | grep -E '\.md$|^mkdocs\.yml$|^harness/prepare_docs_site\.py$|^harness/tests/test_docs_ui\.py$' || true)
+if [ -n "$STAGED_MD" ]; then
+    st_t0=$SECONDS
+    echo "=== $(ts) [pre-commit] Checking static Markdown & relative link hygiene ==="
+    python3 -m unittest harness.tests.test_docs_ui.TestMarkdownStaticHygiene
+    echo "$(ts) [pre-commit] Markdown hygiene PASS ($((SECONDS - st_t0))s)"
+fi
+
 # 5. Portable secret scan on staged index
 st_t0=$SECONDS
 echo "=== $(ts) [pre-commit] Scanning staged changes for secrets (gitleaks) ==="
