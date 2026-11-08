@@ -98,6 +98,13 @@ STAGED_MD=$(echo "$STAGED_ALL" | grep -E '\.md$|^mkdocs\.yml$|^harness/prepare_d
 if [ -n "$STAGED_MD" ]; then
     st_t0=$SECONDS
     echo "=== $(ts) [pre-commit] Checking static Markdown & relative link hygiene ==="
+    UNSTAGED_MD=$(git diff --name-only --diff-filter=ACMRD | grep -E '\.md$|^mkdocs\.yml$|^harness/prepare_docs_site\.py$|^harness/tests/test_docs_ui\.py$' || true)
+    if [ -n "$UNSTAGED_MD" ]; then
+        echo "ERROR: Unstaged changes detected in documentation files while committing staged docs:" >&2
+        echo "$UNSTAGED_MD" | sed 's/^/  - /' >&2
+        echo "Stage or stash all documentation edits before committing so link hygiene checks validate the exact staged snapshot." >&2
+        exit 1
+    fi
     python3 -m unittest harness.tests.test_docs_ui.TestMarkdownStaticHygiene
     echo "$(ts) [pre-commit] Markdown hygiene PASS ($((SECONDS - st_t0))s)"
 fi

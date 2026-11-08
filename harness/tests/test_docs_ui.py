@@ -301,7 +301,7 @@ class TestMarkdownStaticHygiene(unittest.TestCase):
                 content = f.read()
 
             no_code_blocks = re.sub(r"```[\s\S]*?```", "", content)
-            no_inline_code = re.sub(r"`[^`]*`", "", no_code_blocks)
+            no_inline_code = re.sub(r"`[^`\n]*`", "CODE", no_code_blocks)
 
             for match in link_pattern.finditer(no_inline_code):
                 label = match.group(1)
@@ -445,6 +445,27 @@ class TestMarkdownStaticHygiene(unittest.TestCase):
         link_pattern = re.compile(r"(?<!\!)\[([^\]]+)\]\(([^)\s]+)(?:\s+[\"'][^\"']*[\"'])?\)")
         errors = []
         anchor_cache = {}
+        tracked_files = set()
+        tracked_dirs = set()
+        try:
+            tracked_out = subprocess.check_output(
+                ["git", "-C", str(REPO_ROOT), "ls-files"],
+                stderr=subprocess.DEVNULL,
+                text=True,
+            )
+            for line in tracked_out.splitlines():
+                if not line.strip():
+                    continue
+                tf = (REPO_ROOT / line).resolve()
+                tracked_files.add(tf)
+                parent = tf.parent
+                while parent != REPO_ROOT and REPO_ROOT in parent.parents:
+                    tracked_dirs.add(parent)
+                    parent = parent.parent
+            if tracked_files:
+                tracked_dirs.add(REPO_ROOT)
+        except (OSError, subprocess.CalledProcessError):
+            pass
 
         for md_path in md_files:
             rel_path = md_path.relative_to(REPO_ROOT)
@@ -455,7 +476,7 @@ class TestMarkdownStaticHygiene(unittest.TestCase):
                 content = f.read()
 
             no_code_blocks = re.sub(r"```[\s\S]*?```", "", content)
-            no_inline_code = re.sub(r"`[^`]*`", "", no_code_blocks)
+            no_inline_code = re.sub(r"`[^`\n]*`", "CODE", no_code_blocks)
 
             for match in link_pattern.finditer(no_inline_code):
                 label = match.group(1)
@@ -483,7 +504,9 @@ class TestMarkdownStaticHygiene(unittest.TestCase):
                     continue
 
                 resolved = (md_path.parent / target_clean).resolve()
-                if not resolved.is_relative_to(REPO_ROOT):
+                try:
+                    resolved.relative_to(REPO_ROOT)
+                except ValueError:
                     errors.append(
                         f"{rel_path}: relative link '{raw_url}' escapes repository root ('{resolved}')"
                     )
@@ -492,6 +515,12 @@ class TestMarkdownStaticHygiene(unittest.TestCase):
                     errors.append(
                         f"{rel_path}: broken relative link '{raw_url}' for '{label}' "
                         f"(target '{resolved}' does not exist)"
+                    )
+                    continue
+                if tracked_files and resolved not in tracked_files and resolved not in tracked_dirs:
+                    errors.append(
+                        f"{rel_path}: relative link '{raw_url}' for '{label}' points to "
+                        f"untracked path '{resolved.relative_to(REPO_ROOT)}'"
                     )
                     continue
 
