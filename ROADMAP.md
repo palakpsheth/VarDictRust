@@ -2,10 +2,15 @@
 
 VarDictRust v1.0.0 replicates VarDictJava v1.8.3 output byte-for-byte on valid inputs, including the upstream behaviors documented in `DIVERGENCES.md` and [`docs/upstream-bugs.md`](docs/upstream-bugs.md).
 
-From v1.1.0, each correction is opt-in via `--fix <id>` (default off) and lands only with:
+To keep end-user CLI ergonomics simple while guaranteeing that rigorously tested VarDictJava v1.8.3 parity can always be reproduced, post-1.0 evolution follows a **Two-Phase `--parity` / `--modern` SemVer Model** (tracked in `VarDictRust#94`):
+- **`v1.0.x` (Current Baseline):** Parity-only by default (no `--modern` or `--parity` CLI switches in `v1.0.7`); all default invocations are **100% byte-identical to VarDictJava v1.8.3**.
+- **`v1.1.x`:** Default invocations remain **100% byte-identical to VarDictJava v1.8.3** (`--parity` implied by default). Introduces the **`--modern`** CLI switch (opting into the curated suite of clinical/spec corrections and parity-breaking speedups) and explicit **`--parity`** (`--compat vardictjava-1.8.3`) so pipeline scripts can forward-compatibly pin v1.8.3 behavior before upgrading to v2.0.
+- **`v2.0.0+`:** **`--modern`** becomes the default out-of-the-box behavior, while **`--parity`** permanently reproduces exact VarDictJava v1.8.3 byte-for-byte behavior with a single flag.
+
+Under the hood, each individual correction is still gated by an isolated `--fix <id>` toggle (used for bisection and CI verification) and lands in `--modern` only with:
 1. A reproducible testcase demonstrating VarDictJava v1.8.3 behavior.
 2. A dedicated unit test in `crates/vardictrust-core`.
-3. A [Tier-1](docs/testing/test-matrix-and-ci-audit.md#tier-1) intermediate table and [Tier-2](docs/testing/test-matrix-and-ci-audit.md#tier-2) differential test run proving default output remains byte-identical to v1.0.0 across all regression suites.
+3. A [Tier-1](docs/testing/test-matrix-and-ci-audit.md#tier-1) intermediate table and [Tier-2](docs/testing/test-matrix-and-ci-audit.md#tier-2) differential test run proving explicit `--parity` output (and default CLI output across all `v1.x` releases) remains byte-identical to v1.0.0 across all regression suites.
 4. A diff-confinement proof verifying that `--fix <id>` alters only targeted records, produces zero off-target diffs, and maintains [Tier-3](docs/testing/test-matrix-and-ci-audit.md#tier-3) truth concordance (see [Master Test Matrix](docs/testing/test-matrix-and-ci-audit.md)).
 
 ---
@@ -78,8 +83,10 @@ Graduation from this table to a candidate `--fix` flag requires a community RFC 
 
 All post-1.0 features will be introduced as opt-in modes, ensuring that default invocations remain byte-identical to the v1.0.0 baseline and maintain bounded peak memory ($\le 3\text{ GB}$):
 
-- **Unique Molecular Identifiers (UMI):** Integrated duplex and single-index consensus calling within coordinate-sorted streaming windows.
-- **Long-Read NGS Support:** Calibrated error profiles and alignment handling for PacBio HiFi and Oxford Nanopore.
+- **Unique Molecular Identifiers (UMI):** Integrated duplex and single-index consensus calling (`--umi-tag RX --duplex`) within coordinate-sorted 100 kb streaming tiles (modeled on Fulcrum Genomics `fgumi`).
+- **Read-Pair Orientation Bias Modeling (`F1R2`/`F2R1`):** Empirical Beta-Binomial orientation bias filtering (`--orientation-bias-model`) to suppress single-strand FFPE cytosine deamination (`C>T`/`G>A`) and acoustic-shearing 8-oxoG (`C>A`/`G>T`) artifacts at `<2%` VAF.
+- **Long-Read NGS Support (`--preset hifi|ont`):** Calibrated homopolymer/indel error profiles, >125 bp SV clip thresholds, supplementary alignment (`SA:Z`) split-read chaining, `MM`/`ML` and `HP`/`PS` tag preservation, and step-bounded 2-piece affine Wavefront Alignment (`WFA2` / `block-aligner`, modeled on PacBio `sawfish`, `trgt`, and `aardvark`).
+- **Native Compressed VCF & Run Telemetry:** Direct multithreaded BGZF `.vcf.gz` + `.tbi`/`.csi` index generation (`-o out.vcf.gz` via `noodles::bgzf::io::MultithreadedWriter` + `noodles::tabix`), `--all-alleles` (resolving the legacy `-A` flag collision with `var2vcf_valid.pl`), `--preset wgs|wes|amplicon|ctdna`, and `--stats-json` pipeline telemetry.
 
 ---
 
@@ -95,3 +102,21 @@ Deferred items from the full production-Rust audit. Each needs `harness/compare.
 | `audit-ref-multiregion` | `reference.rs:101-105` | `get_base` fallback reuses current-region offset for `reference_sequences` (wrong base after multi-region loads; latent single-region). Tests rely on fallback. | LANDED (#47 / PR #48): interval-stack `loaded_chunks` across auxiliary `get_reference` calls, `0` SV diffs across full-genome `HG002` (`4.7M` variants). |
 | ` audit-amplicon-expand` | `lib.rs:657` | `for p in insert_start..=insert_end` per-base `BTreeMap` expansion OOMs on huge BED interval. | LANDED (Tasks 4b/4d): interval-overlap test + `-p` streaming, oracle-MATCHED, capped by in-tree mem test. |
 | `sv-lazy-mate-pileup` | `sv.rs:874-1017` | `find_inv_sub` calls `partial_pipeline(mstart - 200, mend + 200)` at loop top before checking if any soft-clip exists at `start..end` (`softp`) or matches `reference` (`find_match_rev`). On NovaSeq 2-color WGS (`HG008-T\|N`), dark-cycle poly-G sinks (`chr2:32,916,196`, `25M` reads) trigger $O(N_{\text{windows}} \times 25\text{M})$ wasted mate-region BAM re-scans across `chr2`. | Gate `partial_pipeline` in `find_inv_sub` on first finding a candidate soft-clip (`seq.len() >= 12`) that matches `reference` via `find_match_rev` (plus optional `--max-sv-mate-depth`). |
+
+---
+
+## 2026-11-08 Critical Engineering & Ecosystem Review Priorities
+
+Prioritized engineering and clinical follow-ups from the comprehensive survey of Fulcrum Genomics, PacBio Rust tools, clinical literature, and `VarDictRust` v1.0.7 hotspots (see [`docs/ecosystem-survey.md`](docs/ecosystem-survey.md#critical-review-v107); tracked in GitHub issues `VarDictRust#90`–`VarDictRust#96`):
+
+| Tier | ID | Location | Action & Verification Gate |
+|:-----|:---|:---------|:---------------------------|
+| **Tier 1 (`v1.0.x` Zero-Diff, `#90`)** | `fastpath-modify-cigar` | `cigar/modify.rs:408-806` | On single-`Match` (`150M`) reads (>85% of WGS), run the endpoint mismatch/clipping check (`modify.rs:778-791`) directly on `record.cigar` and skip the inner 25-regex indel/clip cascade and ASCII string round-trip when unclipped (~11.5% CPU). Gate: endpoint-mismatch parity fixtures + `pr_check.sh` 0 diffs. |
+| **Tier 1 (`v1.0.x` Zero-Diff, `#90`)** | `parallel-max-rl-scan` | `lib.rs:69, 412-893, 1677, 2368` | Parallelize `scan_multi_tile_max_read_lengths` across `rayon` tiles via prefix-max fold and lower `DEFAULT_UNTILED_SPAN_MAX` from `1_000_000` to `100_000` (25–35% faster unchunked WGS). |
+| **Tier 1 (`v1.0.x` Zero-Diff, `#90`)** | `direct-loaded-region` | `reference.rs:368-380`, `cigar/parse.rs:680, 988`, `realign.rs:74-134` | Cache active `&LoadedRegion` slice on `CigarParser`; remove per-call `Vec<u8>` and 1-byte `String` allocations in `is_match`, `find_mm5`, `find_mm3`, and Match mismatches. |
+| **Tier 1 (`v1.0.x` Zero-Diff, `#90`)** | `bgzf-cache-scale` | `bam.rs:743-744, 886-942, 3186` | Expand `BGZF_BLOCK_CACHE` ($8 \to 32$ shards / pooled buffers) to eliminate 32-thread `fetch_block Arc` eviction churn; replace `-t` `HashSet<String>` with `FxHashSet<(u32, i32, u32)>`. |
+| **Tier 1 (`v1.0.x` Zero-Diff, `#91`, `#93`)** | `cli-bed-cram-hardening` | `cli.rs:150`, `regions.rs:196-260`, `runner.rs:34`, `main.rs:95-140` | Cross-tile `.var` dedup (`#91`); sync `cli.rs:150` license string; warn/auto-detect 5/6-column BEDs when cols 7/8 are absent ([`#54`](https://github.com/AstraZeneca-NGS/VarDictJava/issues/54)); check `File::sync_all` on `-o` output close (`BrokenPipe` on stdout is already handled at `main.rs:95-99`); auto-set 64 MiB worker stack on `.cram` inputs (`#93`). |
+| **Tier 2 (`v1.1.0` Cleanroom & Opt-In, `#92`)** | `cleanroom-rmath-mit` | `stats/rmath/`, `stats/fisher.rs:343-478`, `Cargo.toml:9` | Replace the 5 GPL-2.0 R `nmath` files (~350 LoC) with cleanroom Loader (2000) / Apache-2.0 saddle-point functions verified to $\varepsilon \le 10^{-6}$, restoring pure `MIT` workspace licensing. |
+| **Tier 2 (`v1.1.0` Cleanroom & Opt-In, `#93`, `#94`, `#95`)** | `parity-modern-mode-ux` | `crates/vardictrust/src/cli.rs`, `main.rs` | Add `--parity` / `--modern` mode switches (`#94`), clinical/spec fixes (`#95`), `-o out.vcf.gz` (`noodles::bgzf::io::MultithreadedWriter` + `.tbi`/`.csi`), `--all-alleles` ([`#65`](https://github.com/AstraZeneca-NGS/VarDictJava/issues/65)), `--preset wgs\|wes\|amplicon\|ctdna`, and `--stats-json` telemetry (`#93`). |
+| **Tier 3 (`v2.0` Next-Gen, `#96`)** | `umi-f1r2-wfa2-longread` | `bam.rs`, `cigar/parse.rs`, `realign.rs`, `sv.rs` | Default to `--modern` (`--parity` preserves v1.8.3 forever); streaming tile-local UMI/duplex consensus (`--umi-tag RX --duplex`), `F1R2`/`F2R1` orientation bias filter, 2-bit DNA `XOR`+`popcnt`, step-bounded WFA2 (`60`-step cap + 6 GB global alignment budget), rolling ring-buffer pileup, and `--preset hifi\|ont`. |
+
