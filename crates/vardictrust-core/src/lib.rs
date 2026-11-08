@@ -71,6 +71,222 @@ pub const DEFAULT_UNTILED_SPAN_MAX: u32 = 1_000_000;
 /// Maximum `--tile-size` (`500 Mbp`, above human `chr1` `~249 Mbp`) before `u32` wrap guard.
 pub const MAX_TILE_SIZE: u32 = 500_000_000;
 
+/// Sliding boundary-retention window (`200 kbp` = 2 default `100 kbp` tiles) for
+/// cross-tile `.var` intermediate deduplication (`AGENTS.md §10`). Non-SV entries
+/// with `anchor_pos < tile.start - SPLIT_VAR_RETENTION_WINDOW_BP` are safely evicted
+/// as tiles advance monotonically, keeping deduplication continuously active across
+/// whole-chromosome split runs without an arbitrary row-count cutoff.
+const SPLIT_VAR_RETENTION_WINDOW_BP: i32 = 200_000;
+
+/// Stable cross-tile variant identity for `.var` deduplication (independent of
+/// tile-local depth, AF, status, SV counts, or debug measurements).
+#[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
+struct SplitVarIdentity {
+    origin_pos: i32,
+    start_pos: i32,
+    end_pos: i32,
+    ref_allele: String,
+    var_allele: String,
+    null_record: bool,
+    /// `0` = primary row, `1` = `-p` shifted-singleton null companion (`postprocess/simple.rs:103`),
+    /// `2` = `-p` shifted-singleton pos-0 companion (`postprocess/simple.rs:104-107`).
+    companion_kind: u8,
+}
+
+#[derive(Debug, Clone)]
+struct SplitVarRow {
+    id: SplitVarIdentity,
+    is_sv: bool,
+    line: String,
+}
+
+impl SplitVarRow {
+    #[inline]
+    fn anchor_pos(&self) -> i32 {
+        self.id.origin_pos
+    }
+}
+
+/// Builds `SplitVarIdentity` entries for a `simple_post_process` variant list,
+/// tagging `-p` shifted-singleton companion triples (`[null_record_at_pos, pos0_default, vref]`)
+/// with their originating pileup `position` and shifted allele so distinct shifted
+/// singletons preserve their position-0 companion rows while cross-tile copies of
+/// the same originating record deduplicate together.
+fn build_simple_split_var_identities(
+    variants: &[crate::variations::Variant],
+    is_split_tile: bool,
+) -> Vec<SplitVarIdentity> {
+    if !is_split_tile {
+        return vec![SplitVarIdentity::default(); variants.len()];
+    }
+    let mut out = Vec::with_capacity(variants.len());
+    let mut idx = 0;
+    while idx < variants.len() {
+        if let (Some(v0), Some(v1), Some(v2)) = (
+            variants.get(idx),
+            variants.get(idx + 1),
+            variants.get(idx + 2),
+        ) {
+            if v0.null_record && v1.start_pos == 0 && v1.end_pos == 0 && !v1.null_record {
+                let origin_pos = v0.start_pos;
+                let s_pos = v2.start_pos;
+                let e_pos = v2.end_pos;
+                let r_all = &v2.ref_allele;
+                let v_all = &v2.var_allele;
+                for kind in [1u8, 2u8, 0u8] {
+                    out.push(SplitVarIdentity {
+                        origin_pos,
+                        start_pos: s_pos,
+                        end_pos: e_pos,
+                        ref_allele: r_all.clone(),
+                        var_allele: v_all.clone(),
+                        null_record: kind == 1,
+                        companion_kind: kind,
+                    });
+                }
+                idx += 3;
+                continue;
+            }
+        }
+        if let Some(v) = variants.get(idx) {
+            out.push(SplitVarIdentity {
+                origin_pos: v.start_pos,
+                start_pos: v.start_pos,
+                end_pos: v.end_pos,
+                ref_allele: v.ref_allele.clone(),
+                var_allele: v.var_allele.clone(),
+                null_record: v.null_record,
+                companion_kind: 0,
+            });
+        }
+        idx += 1;
+    }
+    out
+}
+
+/// Cross-tile `.var` intermediate deduplicator using stable variant identity,
+/// tile ownership (`tile.start..=tile.end`), within-tile multiplicity preservation,
+/// and a sliding boundary-retention window (`SPLIT_VAR_RETENTION_WINDOW_BP`).
+#[derive(Default)]
+struct SplitVarDeduper {
+    emitted_by_pos: std::collections::BTreeMap<i32, Vec<SplitVarIdentity>>,
+    emitted_sv: rustc_hash::FxHashSet<SplitVarIdentity>,
+    pending_forward: Vec<SplitVarRow>,
+}
+
+impl SplitVarDeduper {
+    fn is_emitted(&self, row: &SplitVarRow) -> bool {
+        if row.is_sv && self.emitted_sv.contains(&row.id) {
+            return true;
+        }
+        self.emitted_by_pos
+            .get(&row.anchor_pos())
+            .is_some_and(|ids| ids.contains(&row.id))
+    }
+
+    fn record_emitted(&mut self, anchor_pos: i32, is_sv: bool, id: SplitVarIdentity) {
+        if is_sv {
+            self.emitted_sv.insert(id.clone());
+        }
+        let entry = self.emitted_by_pos.entry(anchor_pos).or_default();
+        if !entry.contains(&id) {
+            entry.push(id);
+        }
+    }
+
+    fn flush_all_pending<F>(&mut self, mut emit: F) -> Result<(), VardictError>
+    where
+        F: FnMut(&str) -> Result<(), VardictError>,
+    {
+        let pending = std::mem::take(&mut self.pending_forward);
+        for p in pending {
+            if !self.is_emitted(&p) {
+                emit(&p.line)?;
+                self.record_emitted(p.anchor_pos(), p.is_sv, p.id);
+            }
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn accept_tile<F>(
+        &mut self,
+        rows: Vec<SplitVarRow>,
+        is_split_tile: bool,
+        tile_start: crate::types::Pos1,
+        tile_end: crate::types::Pos1,
+        original_start: crate::types::Pos1,
+        original_end: crate::types::Pos1,
+        mut emit: F,
+    ) -> Result<(), VardictError>
+    where
+        F: FnMut(&str) -> Result<(), VardictError>,
+    {
+        if !is_split_tile {
+            self.flush_all_pending(&mut emit)?;
+            self.emitted_by_pos.clear();
+            self.emitted_sv.clear();
+            for row in rows {
+                emit(&row.line)?;
+            }
+            return Ok(());
+        }
+
+        if tile_start == original_start {
+            self.flush_all_pending(&mut emit)?;
+            self.emitted_by_pos.clear();
+            self.emitted_sv.clear();
+        } else {
+            let cutoff = (tile_start.0 as i32).saturating_sub(SPLIT_VAR_RETENTION_WINDOW_BP);
+            self.emitted_by_pos = self.emitted_by_pos.split_off(&cutoff);
+        }
+
+        let is_last_split_tile = tile_end == original_end;
+
+        if !self.pending_forward.is_empty() {
+            let old_pending = std::mem::take(&mut self.pending_forward);
+            for p in old_pending {
+                if is_last_split_tile || p.anchor_pos() <= tile_end.0 as i32 {
+                    let owned_by_current = rows.iter().any(|r| {
+                        r.id == p.id && (r.anchor_pos() <= tile_end.0 as i32 || is_last_split_tile)
+                    });
+                    if !owned_by_current && !self.is_emitted(&p) {
+                        emit(&p.line)?;
+                        self.record_emitted(p.anchor_pos(), p.is_sv, p.id);
+                    }
+                } else {
+                    self.pending_forward.push(p);
+                }
+            }
+        }
+
+        let mut newly_emitted: Vec<(i32, bool, SplitVarIdentity)> = Vec::new();
+        let mut newly_pending: Vec<SplitVarRow> = Vec::new();
+        for row in rows {
+            if self.is_emitted(&row) {
+                continue;
+            }
+            if !is_last_split_tile && row.anchor_pos() > tile_end.0 as i32 {
+                self.pending_forward.retain(|p| p.id != row.id);
+                newly_pending.push(row);
+            } else {
+                emit(&row.line)?;
+                newly_emitted.push((row.anchor_pos(), row.is_sv, row.id));
+            }
+        }
+        self.pending_forward.extend(newly_pending);
+        for (anchor_pos, is_sv, id) in newly_emitted {
+            self.record_emitted(anchor_pos, is_sv, id);
+        }
+
+        if is_last_split_tile {
+            self.flush_all_pending(&mut emit)?;
+        }
+
+        Ok(())
+    }
+}
+
 #[inline]
 fn effective_tile_size(reg: &crate::regions::Region, config_tile_size: Option<u32>) -> u32 {
     if let Some(ts) = config_tile_size {
@@ -1706,7 +1922,14 @@ fn run_with_writer_inner<W: EngineWriter>(
     }
 
     enum SimpleTileOutput {
-        Lines(Vec<String>),
+        Lines {
+            rows: Vec<SplitVarRow>,
+            is_split_tile: bool,
+            tile_start: crate::types::Pos1,
+            tile_end: crate::types::Pos1,
+            original_start: crate::types::Pos1,
+            original_end: crate::types::Pos1,
+        },
         Vcf {
             chr: String,
             records: Vec<RawVcfCandidate>,
@@ -1714,6 +1937,7 @@ fn run_with_writer_inner<W: EngineWriter>(
     }
 
     let mut vcf_acc: SpillableVcfAccumulator<RawVcfCandidate> = SpillableVcfAccumulator::new();
+    let mut split_var_deduper = SplitVarDeduper::default();
 
     // Process tiles in parallel, print variants in deterministic index order
     crate::runner::run_parallel_batched_for_bam(
@@ -1787,7 +2011,7 @@ fn run_with_writer_inner<W: EngineWriter>(
                 parent_orig_start,
             )?;
 
-            let mut lines = Vec::new();
+            let mut rows = Vec::new();
 
             if config_clone.splice {
                 let mut introns: Vec<&String> = var_data.splice_count.keys().collect();
@@ -1798,12 +2022,23 @@ fn run_with_writer_inner<W: EngineWriter>(
                         continue;
                     }
                     let count = var_data.splice_count.get(intron).map(|a| a[0]).unwrap_or(0);
-                    lines.push(format!(
-                        "{}\t{}\t{}\t{}",
-                        config_clone.sample, tile.chr, intron, count
-                    ));
+                    rows.push(SplitVarRow {
+                        id: SplitVarIdentity::default(),
+                        is_sv: false,
+                        line: format!(
+                            "{}\t{}\t{}\t{}",
+                            config_clone.sample, tile.chr, intron, count
+                        ),
+                    });
                 }
-                return Ok(SimpleTileOutput::Lines(lines));
+                return Ok(SimpleTileOutput::Lines {
+                    rows,
+                    is_split_tile: false,
+                    tile_start: tile.start,
+                    tile_end: tile.end,
+                    original_start: tile.original_start,
+                    original_end: tile.original_end,
+                });
             }
 
             let builder_region = crate::regions::Region {
@@ -1829,7 +2064,8 @@ fn run_with_writer_inner<W: EngineWriter>(
             );
 
             if config_clone.emit_intermediate {
-                for v in variants {
+                let ids = build_simple_split_var_identities(&variants, is_split_tile);
+                for (v, id) in variants.into_iter().zip(ids) {
                     let mut line = if config_clone.fisher {
                         crate::output::table::simple_38(
                             &v,
@@ -1846,27 +2082,33 @@ fn run_with_writer_inner<W: EngineWriter>(
                         )
                     };
                     if config_clone.crispr_cutting_site.unwrap_or(0) != 0 {
-                        line.push_str(&format!("\t{}", v.crispr));
+                        let _ =
+                            std::fmt::Write::write_fmt(&mut line, format_args!("\t{}", v.crispr));
                     }
                     // ports SimpleOutputVariant.java:116-117 (DEBUG appended after crispr)
                     if config_clone.debug {
                         line.push('\t');
                         line.push_str(&v.debug);
                     }
-                    lines.push(line);
+                    let is_sv = is_split_tile && (!v.sv.is_empty() || v.var_allele.contains('<'));
+                    rows.push(SplitVarRow { id, is_sv, line });
                 }
-                Ok(SimpleTileOutput::Lines(lines))
+                Ok(SimpleTileOutput::Lines {
+                    rows,
+                    is_split_tile,
+                    tile_start: tile.start,
+                    tile_end: tile.end,
+                    original_start: tile.original_start,
+                    original_end: tile.original_end,
+                })
             } else {
                 let mut records = Vec::new();
                 for v in variants {
                     let ref_empty = crate::output::vcf::perl_row_skipped(&v.ref_allele);
                     let is_sv = v.var_allele.contains('<');
                     let mut splitreads = 0;
-                    if !v.sv.is_empty() && v.sv.contains('-') {
-                        let parts: Vec<&str> = v.sv.split('-').collect();
-                        if !parts.is_empty() {
-                            splitreads = parts[0].parse::<i32>().unwrap_or(0);
-                        }
+                    if let Some((first, _)) = v.sv.split_once('-') {
+                        splitreads = first.parse::<i32>().unwrap_or(0);
                     }
                     let should_emit = !ref_empty && (!is_sv || splitreads >= 1);
                     let vcf_line = if !should_emit {
@@ -1914,10 +2156,23 @@ fn run_with_writer_inner<W: EngineWriter>(
         },
         |output| {
             match output {
-                SimpleTileOutput::Lines(lines) => {
-                    for line in lines {
-                        write_output_line(&mut writer, &line)?;
-                    }
+                SimpleTileOutput::Lines {
+                    rows,
+                    is_split_tile,
+                    tile_start,
+                    tile_end,
+                    original_start,
+                    original_end,
+                } => {
+                    split_var_deduper.accept_tile(
+                        rows,
+                        is_split_tile,
+                        tile_start,
+                        tile_end,
+                        original_start,
+                        original_end,
+                        |line| write_output_line(&mut writer, line),
+                    )?;
                 }
                 SimpleTileOutput::Vcf { chr, records } => {
                     for r in records {
@@ -1928,6 +2183,7 @@ fn run_with_writer_inner<W: EngineWriter>(
             Ok(())
         },
     )?;
+    split_var_deduper.flush_all_pending(|line| write_output_line(&mut writer, line))?;
 
     vcf_acc.emit_all(|_, cand| {
         if cand.should_emit {
@@ -2411,7 +2667,14 @@ fn run_somatic<W: EngineWriter>(
     }
 
     enum SomaticTileOutput {
-        Lines(Vec<String>),
+        Lines {
+            rows: Vec<SplitVarRow>,
+            is_split_tile: bool,
+            tile_start: crate::types::Pos1,
+            tile_end: crate::types::Pos1,
+            original_start: crate::types::Pos1,
+            original_end: crate::types::Pos1,
+        },
         Vcf {
             chr: String,
             candidates: Vec<SomaticVcfCandidate>,
@@ -2419,6 +2682,7 @@ fn run_somatic<W: EngineWriter>(
     }
 
     let mut vcf_acc: SpillableVcfAccumulator<SomaticVcfCandidate> = SpillableVcfAccumulator::new();
+    let mut split_var_deduper = SplitVarDeduper::default();
 
     // Process tiles: run both BAMs through pipeline, then somatic postprocess
     crate::runner::run_parallel_batched_for_bam(
@@ -2614,9 +2878,9 @@ fn run_somatic<W: EngineWriter>(
             // Output 55-column format (or 61-column with --fisher), or the
             // paired VCF (var2vcf_paired.pl) when not in intermediate mode.
             if config_clone.emit_intermediate {
-                let mut lines = Vec::new();
+                let mut rows = Vec::with_capacity(somatic_variants.len());
                 for sv in somatic_variants {
-                    let line = if config_clone.fisher {
+                    let mut line = if config_clone.fisher {
                         crate::output::table::somatic_61(
                             &sv.variant1,
                             sv.variant2.as_ref(),
@@ -2641,12 +2905,36 @@ fn run_somatic<W: EngineWriter>(
                     };
                     // ports SomaticOutputVariant.java:193-194 (DEBUG = tumor variant's)
                     if config_clone.debug {
-                        lines.push(format!("{}\t{}", line, sv.variant1.debug));
-                    } else {
-                        lines.push(line);
+                        line.push('\t');
+                        line.push_str(&sv.variant1.debug);
                     }
+                    let id = if is_split_tile {
+                        SplitVarIdentity {
+                            origin_pos: sv.variant1.start_pos,
+                            start_pos: sv.variant1.start_pos,
+                            end_pos: sv.variant1.end_pos,
+                            ref_allele: sv.variant1.ref_allele.clone(),
+                            var_allele: sv.variant1.var_allele.clone(),
+                            null_record: sv.variant1.null_record,
+                            companion_kind: 0,
+                        }
+                    } else {
+                        SplitVarIdentity::default()
+                    };
+                    let is_sv = is_split_tile
+                        && (!sv.sv1.is_empty()
+                            || !sv.sv2.is_empty()
+                            || sv.variant1.var_allele.contains('<'));
+                    rows.push(SplitVarRow { id, is_sv, line });
                 }
-                Ok(SomaticTileOutput::Lines(lines))
+                Ok(SomaticTileOutput::Lines {
+                    rows,
+                    is_split_tile,
+                    tile_start: tile.start,
+                    tile_end: tile.end,
+                    original_start: tile.original_start,
+                    original_end: tile.original_end,
+                })
             } else {
                 // Paired VCF mode: ports var2vcf_paired.pl:41,128-129,136 —
                 // bucket rows by the raw .var start column ($hash{$chr}->{$a[3]}),
@@ -2701,10 +2989,23 @@ fn run_somatic<W: EngineWriter>(
         },
         |output| {
             match output {
-                SomaticTileOutput::Lines(lines) => {
-                    for line in lines {
-                        write_output_line(writer, &line)?;
-                    }
+                SomaticTileOutput::Lines {
+                    rows,
+                    is_split_tile,
+                    tile_start,
+                    tile_end,
+                    original_start,
+                    original_end,
+                } => {
+                    split_var_deduper.accept_tile(
+                        rows,
+                        is_split_tile,
+                        tile_start,
+                        tile_end,
+                        original_start,
+                        original_end,
+                        |line| write_output_line(writer, line),
+                    )?;
                 }
                 SomaticTileOutput::Vcf { chr, candidates } => {
                     for cand in candidates {
@@ -2715,6 +3016,7 @@ fn run_somatic<W: EngineWriter>(
             Ok(())
         },
     )?;
+    split_var_deduper.flush_all_pending(|line| write_output_line(writer, line))?;
 
     let mut cur_chr: Option<String> = None;
     let mut streamer = crate::output::vcf::PairedRecordStreamer::new(0);
@@ -4484,6 +4786,226 @@ mod tests {
         assert!(
             !eff_amp8_z0.zero_based,
             "explicit -z 0 must not be overwritten by amplicon auto-detect"
+        );
+    }
+
+    #[test]
+    fn test_split_var_deduper_ownership_multiplicity_and_retention_window() {
+        let mk_row = |pos: i32, r: &str, v: &str, line: &str| SplitVarRow {
+            id: SplitVarIdentity {
+                origin_pos: pos,
+                start_pos: pos,
+                end_pos: pos,
+                ref_allele: r.to_string(),
+                var_allele: v.to_string(),
+                null_record: false,
+                companion_kind: 0,
+            },
+            is_sv: false,
+            line: line.to_string(),
+        };
+
+        let mut deduper = SplitVarDeduper::default();
+        let mut emitted = Vec::new();
+
+        // 1) Cross-tile ownership resolution when tile-local depth/AF/status/debug differ:
+        //    Parent region [1, 200_000] split into Tile 1 [1, 100_000] and Tile 2 [100_001, 200_000].
+        //    - Pos 99_995 A>G is owned by Tile 1; Tile 2 also produces a lookbehind copy with
+        //      different depth/AF ("dp=12" vs "dp=50") -> Tile 1's owned copy wins.
+        //    - Pos 99_995 A>T (distinct allele at same position) in Tile 1 is also preserved.
+        //    - Pos 100_005 C>T is owned by Tile 2; Tile 1 produces a lookahead copy ("dp=8")
+        //      and Tile 2 produces its owned copy ("dp=60") -> Tile 2's owned copy wins.
+        //    - Pos 100_010 G>A is produced ONLY by Tile 1 (e.g. shifted variant) -> flushed
+        //      when Tile 2 arrives without it, so it is never lost.
+        deduper
+            .accept_tile(
+                vec![
+                    mk_row(99_995, "A", "G", "pos99995_A_G_owner_tile1_dp50"),
+                    mk_row(99_995, "A", "T", "pos99995_A_T_owner_tile1_dp40"),
+                    mk_row(100_005, "C", "T", "pos100005_C_T_nonowner_tile1_dp8"),
+                    mk_row(100_010, "G", "A", "pos100010_G_A_only_tile1_dp30"),
+                ],
+                true,
+                p(1),
+                p(100_000),
+                p(1),
+                p(200_000),
+                |l| {
+                    emitted.push(l.to_string());
+                    Ok(())
+                },
+            )
+            .unwrap();
+
+        deduper
+            .accept_tile(
+                vec![
+                    mk_row(99_995, "A", "G", "pos99995_A_G_nonowner_tile2_dp12"),
+                    mk_row(100_005, "C", "T", "pos100005_C_T_owner_tile2_dp60"),
+                ],
+                true,
+                p(100_001),
+                p(200_000),
+                p(1),
+                p(200_000),
+                |l| {
+                    emitted.push(l.to_string());
+                    Ok(())
+                },
+            )
+            .unwrap();
+
+        assert_eq!(
+            emitted,
+            vec![
+                "pos99995_A_G_owner_tile1_dp50",
+                "pos99995_A_T_owner_tile1_dp40",
+                "pos100010_G_A_only_tile1_dp30",
+                "pos100005_C_T_owner_tile2_dp60",
+            ]
+        );
+
+        // 2) Within-tile multiplicity and `-p` shifted-singleton position-0 companion rows:
+        //    Two shifted singletons without `ref_variant` in the same tile (at pos 100 and pos 200)
+        //    each emit [null_record(pos), Variant::new()(0..0), shifted_vref]. Both pos-0 companion
+        //    rows must be preserved within the tile, and a third shifted singleton at pos 150_000
+        //    in Tile 2 must also preserve its pos-0 companion row, while a cross-tile repeat of
+        //    the pos 100 shifted singleton in Tile 2 is suppressed as a unit.
+        let mk_shifted_triple = |origin: i32, shifted: i32, r: &str, v: &str| {
+            let mut n = crate::variations::Variant::new();
+            n.start_pos = origin;
+            n.end_pos = origin;
+            n.null_record = true;
+            let z = crate::variations::Variant::new();
+            let mut s = crate::variations::Variant::new();
+            s.start_pos = shifted;
+            s.end_pos = shifted;
+            s.ref_allele = r.to_string();
+            s.var_allele = v.to_string();
+            vec![n, z, s]
+        };
+
+        let mut tile1_vars = mk_shifted_triple(100, 102, "A", "C");
+        tile1_vars.extend(mk_shifted_triple(200, 203, "G", "T"));
+        let tile1_ids = build_simple_split_var_identities(&tile1_vars, true);
+        assert_eq!(tile1_ids.len(), 6);
+        assert_ne!(
+            tile1_ids[1], tile1_ids[4],
+            "distinct shifted singletons must have distinct pos-0 companion identities"
+        );
+        let tile1_rows: Vec<SplitVarRow> = tile1_ids
+            .into_iter()
+            .enumerate()
+            .map(|(i, id)| SplitVarRow {
+                id,
+                is_sv: false,
+                line: format!("t1_row_{i}"),
+            })
+            .collect();
+
+        // Tile 2 repeats the (100 -> 102 A>C) triple from Tile 1, plus a new (150_000 -> 150_002 C>A) triple.
+        let mut tile2_vars = mk_shifted_triple(100, 102, "A", "C");
+        tile2_vars.extend(mk_shifted_triple(150_000, 150_002, "C", "A"));
+        let tile2_ids = build_simple_split_var_identities(&tile2_vars, true);
+        let tile2_rows: Vec<SplitVarRow> = tile2_ids
+            .into_iter()
+            .enumerate()
+            .map(|(i, id)| SplitVarRow {
+                id,
+                is_sv: false,
+                line: format!("t2_row_{i}"),
+            })
+            .collect();
+
+        emitted.clear();
+        deduper
+            .accept_tile(tile1_rows, true, p(1), p(100_000), p(1), p(200_000), |l| {
+                emitted.push(l.to_string());
+                Ok(())
+            })
+            .unwrap();
+        deduper
+            .accept_tile(
+                tile2_rows,
+                true,
+                p(100_001),
+                p(200_000),
+                p(1),
+                p(200_000),
+                |l| {
+                    emitted.push(l.to_string());
+                    Ok(())
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            emitted,
+            vec![
+                "t1_row_0", "t1_row_1", "t1_row_2", "t1_row_3", "t1_row_4", "t1_row_5", "t2_row_3",
+                "t2_row_4", "t2_row_5",
+            ]
+        );
+
+        // 3) Sliding boundary-retention window stays active past 262,144 rows while evicting
+        //    obsolete positions < tile_start - SPLIT_VAR_RETENTION_WINDOW_BP.
+        let mut big_deduper = SplitVarDeduper::default();
+        let tile1_big: Vec<SplitVarRow> = (1..=100_000)
+            .flat_map(|pos| {
+                [
+                    mk_row(pos, "A", "C", "ac"),
+                    mk_row(pos, "A", "G", "ag"),
+                    mk_row(pos, "A", "T", "at"),
+                ]
+            })
+            .collect();
+        assert_eq!(tile1_big.len(), 300_000); // > 262,144 rows in Tile 1 alone
+        let mut count = 0usize;
+        big_deduper
+            .accept_tile(tile1_big, true, p(1), p(100_000), p(1), p(500_000), |_| {
+                count += 1;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(count, 300_000);
+
+        // Tile 2 [100_001, 200_000] repeats pos 100_000 (the 300,000th row, well past 262,144):
+        // deduplication must still suppress it!
+        let mut tile2_emitted = Vec::new();
+        big_deduper
+            .accept_tile(
+                vec![
+                    mk_row(100_000, "A", "T", "dup_past_262k"),
+                    mk_row(100_001, "C", "G", "new_in_tile2"),
+                ],
+                true,
+                p(100_001),
+                p(200_000),
+                p(1),
+                p(500_000),
+                |l| {
+                    tile2_emitted.push(l.to_string());
+                    Ok(())
+                },
+            )
+            .unwrap();
+        assert_eq!(tile2_emitted, vec!["new_in_tile2"]);
+
+        // Tile 5 [400_001, 500_000] advances tile_start to 400_001, so cutoff = 200_001
+        // evicts all Tile 1 positions (1..=100_000) from `emitted_by_pos`.
+        big_deduper
+            .accept_tile(
+                vec![mk_row(400_001, "G", "A", "tile5_row")],
+                true,
+                p(400_001),
+                p(500_000),
+                p(1),
+                p(500_000),
+                |_| Ok(()),
+            )
+            .unwrap();
+        assert!(
+            !big_deduper.emitted_by_pos.contains_key(&100_000),
+            "positions below tile_start - SPLIT_VAR_RETENTION_WINDOW_BP must be evicted"
         );
     }
 }

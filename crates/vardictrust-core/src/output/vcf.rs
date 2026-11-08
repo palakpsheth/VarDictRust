@@ -832,10 +832,12 @@ pub fn format_vcf_record_into(
         let mut splitreads = 0;
         let mut spanpairs = 0;
         if !variant.sv.is_empty() && variant.sv.contains('-') {
-            let parts: Vec<&str> = variant.sv.split('-').collect();
-            if parts.len() >= 2 {
-                splitreads = parts[0].parse::<i32>().unwrap_or(0);
-                spanpairs = parts[1].parse::<i32>().unwrap_or(0);
+            let mut parts = variant.sv.split('-');
+            if let Some(p0) = parts.next() {
+                splitreads = p0.parse::<i32>().unwrap_or(0);
+            }
+            if let Some(p1) = parts.next() {
+                spanpairs = p1.parse::<i32>().unwrap_or(0);
             }
         }
 
@@ -1263,22 +1265,22 @@ pub fn format_paired_vcf_record(
     };
 
     let mut filters: Vec<String> = Vec::new();
-    let mut filters2: Vec<String> = Vec::new();
+    let mut normal_clean = true;
 
     // Tumor depth filters with StrongSomatic exception (:156-161).
     let ss_exception = status == "StrongSomatic" && ptot_r < 0.15 && af1 * vd1 as f64 >= 0.5;
     if dp1 < PAIRED_MIN_DEPTH && !ss_exception {
-        filters.push(format!("d{}", PAIRED_MIN_DEPTH));
+        filters.push("d5".to_string());
     }
     if vd1 < PAIRED_VAR_DEPTH && !ss_exception {
-        filters.push(format!("v{}", PAIRED_VAR_DEPTH));
+        filters.push("v3".to_string());
     }
     // Normal depth filters, unconditional (:162-163).
     if dp2 < PAIRED_MIN_DEPTH {
-        filters2.push(format!("d{}", PAIRED_MIN_DEPTH));
+        normal_clean = false;
     }
     if vd2 < PAIRED_VAR_DEPTH {
-        filters2.push(format!("v{}", PAIRED_VAR_DEPTH));
+        normal_clean = false;
     }
 
     // Tumor quality filters (:165-175).
@@ -1295,10 +1297,10 @@ pub fn format_paired_vcf_record(
         filters.push(format!("q{}", PAIRED_QMEAN));
     }
     if mapq1 < PAIRED_MQMEAN {
-        filters.push(format!("Q{}", PAIRED_MQMEAN as i32)); // dead at MQMEAN=0
+        filters.push("Q0".to_string()); // dead at MQMEAN=0
     }
     if mapq1 < 10.0 && var_type == "SNV" {
-        filters.push(format!("Q{}", PAIRED_MQMEAN as i32));
+        filters.push("Q0".to_string());
     }
     if sn1 < PAIRED_SN {
         filters.push(format!("SN{}", PAIRED_SN));
@@ -1316,25 +1318,25 @@ pub fn format_paired_vcf_record(
 
     // Normal quality filters (:177-183); Q gate dead at MQMEAN=0, kept for fidelity.
     if af2 < config.af_threshold {
-        filters2.push(format!("f{}", config.af_threshold));
+        normal_clean = false;
     }
     if pmean2 < PAIRED_PMEAN {
-        filters2.push(format!("p{}", PAIRED_PMEAN as i32));
+        normal_clean = false;
     }
     if !v2.pstd && vd2 < PAIRED_MIN_DEPTH {
-        filters2.push("pSTD".to_string());
+        normal_clean = false;
     }
     if qual2 < PAIRED_QMEAN {
-        filters2.push(format!("q{}", PAIRED_QMEAN));
+        normal_clean = false;
     }
     if mapq2 < PAIRED_MQMEAN {
-        filters2.push(format!("Q{}", PAIRED_MQMEAN as i32)); // dead at MQMEAN=0
+        normal_clean = false; // dead at MQMEAN=0
     }
     if sn2 < PAIRED_SN {
-        filters2.push(format!("SN{}", PAIRED_SN));
+        normal_clean = false;
     }
     if nm2 >= PAIRED_OPT_M {
-        filters2.push(format!("NM{}", PAIRED_OPT_M));
+        normal_clean = false;
     }
     // Normal-side Bias appended to the MAIN list when not already present (:185-186).
     if !filters.iter().any(|f| f == "Bias")
@@ -1373,7 +1375,7 @@ pub fn format_paired_vcf_record(
     };
     // Germline passthrough (:217-219) — without -M a fully clean NORMAL overrides
     // all tumor filters.
-    if filter != "PASS" && filters2.is_empty() {
+    if filter != "PASS" && normal_clean {
         filter = "PASS".to_string();
     }
 
@@ -2493,5 +2495,52 @@ mod tests {
             perl_reorder_chromosomes(&huge_digits),
             vec!["chr2", "chr10", "chr9999999999999999999999999"]
         );
+    }
+
+    #[test]
+    fn test_paired_normal_clean_boolean_and_static_filter_tags() {
+        let config = Config::default();
+
+        // 1. Both tumor and normal pass filters -> PASS
+        let mut clean_tumor = clean_normal();
+        clean_tumor.var_type = "SNV".to_string();
+        let rec_both_clean = format_paired_vcf_record(
+            &somatic_sv(clean_tumor.clone(), Some(clean_normal()), "Somatic"),
+            "chr1",
+            &config,
+        );
+        assert_eq!(rec_both_clean.filter, "PASS");
+
+        // 2. Tumor clean (filters.is_empty()), normal fails (!normal_clean) -> PASS (no -M)
+        let mut dirty_normal = clean_normal();
+        dirty_normal.pos_coverage = 1; // vd2 < 3 -> !normal_clean
+        let rec_tumor_clean_normal_dirty = format_paired_vcf_record(
+            &somatic_sv(clean_tumor, Some(dirty_normal.clone()), "Somatic"),
+            "chr1",
+            &config,
+        );
+        assert_eq!(rec_tumor_clean_normal_dirty.filter, "PASS");
+
+        // 3. Tumor fails d5, v3, Q0 and normal fails (!normal_clean) -> emits d5;v3;Q0
+        let mut low_tumor = clean_normal();
+        low_tumor.var_type = "SNV".to_string();
+        low_tumor.total_pos_cov = 4; // < d5
+        low_tumor.pos_coverage = 2; // < v3
+        low_tumor.pstd = true;
+        low_tumor.mean_mapping_quality = 5.0; // SNV with mapq < 10 -> Q0
+        let rec_both_dirty = format_paired_vcf_record(
+            &somatic_sv(low_tumor.clone(), Some(dirty_normal), "Germline"),
+            "chr1",
+            &config,
+        );
+        assert_eq!(rec_both_dirty.filter, "d5;v3;Q0");
+
+        // 4. Same failing tumor with a clean normal (normal_clean = true) -> germline passthrough PASS
+        let rec_passthrough = format_paired_vcf_record(
+            &somatic_sv(low_tumor, Some(clean_normal()), "Germline"),
+            "chr1",
+            &config,
+        );
+        assert_eq!(rec_passthrough.filter, "PASS");
     }
 }

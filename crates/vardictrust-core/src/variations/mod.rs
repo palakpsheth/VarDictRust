@@ -497,93 +497,63 @@ impl Variant {
         if self.var_allele.starts_with('<') {
             return;
         }
-        let mut ref_allele = self.ref_allele.clone();
-        let mut var_allele = self.var_allele.clone();
-        let mut left_seq = self.left_seq.clone();
-        let mut right_seq = self.right_seq.clone();
-        let mut start_pos = self.start_pos;
-        let mut end_pos = self.end_pos;
 
         // Part 1: prefix trimming
+        let mut n = 0usize;
+        while self.ref_allele.len().saturating_sub(n) > 1
+            && self.var_allele.len().saturating_sub(n) > 1
         {
-            let ref_bytes = ref_allele.as_bytes();
-            let var_bytes = var_allele.as_bytes();
-            let mut n = 0;
-            while ref_bytes.len().saturating_sub(n) > 1
-                && var_bytes.len().saturating_sub(n) > 1
-                && ref_bytes.get(n) == var_bytes.get(n)
-            {
+            if self.ref_allele.as_bytes().get(n) == self.var_allele.as_bytes().get(n) {
                 n += 1;
+            } else {
+                break;
             }
-            if n > 0 {
-                start_pos = start_pos.saturating_add(n as i32);
-                if let (Some(ref_suffix_bytes), Some(var_suffix_bytes)) =
-                    (ref_bytes.get(n..), var_bytes.get(n..))
-                {
-                    let ref_suffix = String::from_utf8_lossy(ref_suffix_bytes).into_owned();
-                    let var_suffix = String::from_utf8_lossy(var_suffix_bytes).into_owned();
-                    if let Some(prefix_bytes) = ref_bytes.get(..n) {
-                        let prefix = String::from_utf8_lossy(prefix_bytes);
-                        left_seq.push_str(&prefix);
-                        if left_seq.len() > n {
-                            left_seq = left_seq.get(n..).unwrap_or("").to_string();
-                        } else {
-                            left_seq.clear();
-                        }
-                    }
-                    ref_allele = ref_suffix;
-                    var_allele = var_suffix;
-                }
+        }
+        if n > 0 && self.ref_allele.is_char_boundary(n) && self.var_allele.is_char_boundary(n) {
+            self.start_pos = self.start_pos.saturating_add(n as i32);
+            if let Some(prefix) = self.ref_allele.get(..n) {
+                self.left_seq.push_str(prefix);
             }
+            let left_drain = n.min(self.left_seq.len());
+            if self.left_seq.is_char_boundary(left_drain) {
+                self.left_seq.drain(..left_drain);
+            }
+            self.ref_allele.drain(..n);
+            self.var_allele.drain(..n);
         }
 
         // Part 2: suffix trimming
-        {
-            let ref_bytes = ref_allele.as_bytes();
-            let var_bytes = var_allele.as_bytes();
-            let mut n = 1;
-            while ref_bytes.len() > n
-                && var_bytes.len() > n
-                && ref_bytes.get(ref_bytes.len() - n) == var_bytes.get(var_bytes.len() - n)
+        let ref_len = self.ref_allele.len();
+        let var_len = self.var_allele.len();
+        let mut n = 1usize;
+        while ref_len.saturating_sub(n) >= 1 && var_len.saturating_sub(n) >= 1 {
+            if self.ref_allele.as_bytes().get(ref_len - n)
+                == self.var_allele.as_bytes().get(var_len - n)
             {
                 n += 1;
-            }
-            if n > 1 {
-                let trim = n - 1;
-                end_pos = end_pos.saturating_sub(trim as i32);
-                let ref_trimmed = ref_bytes
-                    .get(..ref_bytes.len().saturating_sub(trim))
-                    .map(|b| String::from_utf8_lossy(b).into_owned())
-                    .unwrap_or_default();
-                let var_trimmed = var_bytes
-                    .get(..var_bytes.len().saturating_sub(trim))
-                    .map(|b| String::from_utf8_lossy(b).into_owned())
-                    .unwrap_or_default();
-                let ref_cut = ref_bytes
-                    .get(ref_bytes.len().saturating_sub(trim)..)
-                    .map(|b| String::from_utf8_lossy(b).into_owned())
-                    .unwrap_or_default();
-
-                if right_seq.len() >= trim {
-                    right_seq = right_seq
-                        .get(..right_seq.len().saturating_sub(trim))
-                        .unwrap_or("")
-                        .to_string();
-                } else {
-                    right_seq.clear();
-                }
-                right_seq = format!("{}{}", ref_cut, right_seq);
-                ref_allele = ref_trimmed;
-                var_allele = var_trimmed;
+            } else {
+                break;
             }
         }
-
-        self.ref_allele = ref_allele;
-        self.var_allele = var_allele;
-        self.left_seq = left_seq;
-        self.right_seq = right_seq;
-        self.start_pos = start_pos;
-        self.end_pos = end_pos;
+        if n > 1 {
+            let trim = n - 1;
+            self.end_pos = self.end_pos.saturating_sub(trim as i32);
+            let new_ref_len = ref_len.saturating_sub(trim);
+            let new_var_len = var_len.saturating_sub(trim);
+            if self.ref_allele.is_char_boundary(new_ref_len)
+                && self.var_allele.is_char_boundary(new_var_len)
+            {
+                let right_keep = self.right_seq.len().saturating_sub(trim);
+                if self.right_seq.is_char_boundary(right_keep) {
+                    self.right_seq.truncate(right_keep);
+                }
+                if let Some(ref_cut) = self.ref_allele.get(new_ref_len..) {
+                    self.right_seq.insert_str(0, ref_cut);
+                }
+                self.ref_allele.truncate(new_ref_len);
+                self.var_allele.truncate(new_var_len);
+            }
+        }
     }
 
     /// Find variant type based on ref and var alleles without heap allocation for standard types (`L7`).
@@ -694,11 +664,23 @@ impl Variant {
             }
         }
 
-        if vtype == "Deletion"
-            && !splice.is_empty()
-            && splice.contains(&format!("{}-{}", self.start_pos, self.end_pos))
-        {
-            return false;
+        if vtype == "Deletion" && !splice.is_empty() {
+            let mut buf = [0u8; 32];
+            let len = {
+                let mut cursor = std::io::Cursor::new(&mut buf[..]);
+                let _ = std::io::Write::write_fmt(
+                    &mut cursor,
+                    format_args!("{}-{}", self.start_pos, self.end_pos),
+                );
+                cursor.position() as usize
+            };
+            if let Some(bytes) = buf.get(..len) {
+                if let Ok(key) = std::str::from_utf8(bytes) {
+                    if splice.contains(key) {
+                        return false;
+                    }
+                }
+            }
         }
 
         if self.hq_lq_ratio < config.qratio {
@@ -1114,6 +1096,129 @@ mod tests {
         v.frequency = 0.35;
         v.mean_mapping_quality = 5.0;
         assert!(v.is_good_var(None, "SNV", &splice, &config));
+
+        // 5. Deletion splice check: reject when "{start_pos}-{end_pos}" in splice, accept otherwise
+        let mut del = Variant::new();
+        del.start_pos = 12345;
+        del.end_pos = 12350;
+        del.ref_allele = "ACGTAC".to_string();
+        del.var_allele = "A".to_string();
+        del.frequency = 0.50;
+        del.hicnt = 10;
+        del.mean_position = 15.0;
+        del.mean_quality = 35.0;
+        del.hq_lq_ratio = 5.0;
+        del.mean_mapping_quality = 60.0;
+        del.bias = "0".to_string();
+
+        let mut splice_set = std::collections::HashSet::new();
+        splice_set.insert("99999-99999".to_string());
+        assert!(del.is_good_var(None, "Deletion", &splice_set, &config));
+        assert!(del.is_good_var(None, "", &splice_set, &config));
+
+        splice_set.insert("12345-12350".to_string());
+        assert!(!del.is_good_var(None, "Deletion", &splice_set, &config));
+        assert!(!del.is_good_var(None, "", &splice_set, &config));
+    }
+
+    #[test]
+    fn variant_adj_complex_no_match_5prime_3prime_and_combined() {
+        // 1. No bases match (n == 0 at 5', n == 1 at 3')
+        let mut v = Variant::new();
+        v.start_pos = 100;
+        v.end_pos = 102;
+        v.ref_allele = "ACG".to_string();
+        v.var_allele = "TTA".to_string();
+        v.left_seq = "GG".to_string();
+        v.right_seq = "CC".to_string();
+        v.adj_complex();
+        assert_eq!(v.start_pos, 100);
+        assert_eq!(v.end_pos, 102);
+        assert_eq!(v.ref_allele, "ACG");
+        assert_eq!(v.var_allele, "TTA");
+        assert_eq!(v.left_seq, "GG");
+        assert_eq!(v.right_seq, "CC");
+
+        // 2. 5'-only trim
+        let mut v5 = Variant::new();
+        v5.start_pos = 100;
+        v5.end_pos = 103;
+        v5.ref_allele = "ACGT".to_string();
+        v5.var_allele = "ACCA".to_string();
+        v5.left_seq = "TTGG".to_string();
+        v5.right_seq = "CC".to_string();
+        v5.adj_complex();
+        assert_eq!(v5.start_pos, 102);
+        assert_eq!(v5.end_pos, 103);
+        assert_eq!(v5.ref_allele, "GT");
+        assert_eq!(v5.var_allele, "CA");
+        assert_eq!(v5.left_seq, "GGAC");
+        assert_eq!(v5.right_seq, "CC");
+
+        // 3. 3'-only trim
+        let mut v3 = Variant::new();
+        v3.start_pos = 200;
+        v3.end_pos = 203;
+        v3.ref_allele = "TGAC".to_string();
+        v3.var_allele = "CAAC".to_string();
+        v3.left_seq = "TT".to_string();
+        v3.right_seq = "GGCC".to_string();
+        v3.adj_complex();
+        assert_eq!(v3.start_pos, 200);
+        assert_eq!(v3.end_pos, 201);
+        assert_eq!(v3.ref_allele, "TG");
+        assert_eq!(v3.var_allele, "CA");
+        assert_eq!(v3.left_seq, "TT");
+        assert_eq!(v3.right_seq, "ACGG");
+
+        // 4. Combined 5' + 3' trim
+        let mut vc = Variant::new();
+        vc.start_pos = 300;
+        vc.end_pos = 305;
+        vc.ref_allele = "AATGGA".to_string();
+        vc.var_allele = "AACCGA".to_string();
+        vc.left_seq = "CCC".to_string();
+        vc.right_seq = "TTT".to_string();
+        vc.adj_complex();
+        assert_eq!(vc.start_pos, 302);
+        assert_eq!(vc.end_pos, 303);
+        assert_eq!(vc.ref_allele, "TG");
+        assert_eq!(vc.var_allele, "CC");
+        assert_eq!(vc.left_seq, "CAA");
+        assert_eq!(vc.right_seq, "GAT");
+
+        // 5. Short and empty left_seq / right_seq edge cases (Variant.java:237-238, 252-254)
+        let mut ve = Variant::new();
+        ve.start_pos = 400;
+        ve.end_pos = 404;
+        ve.ref_allele = "ACGTA".to_string();
+        ve.var_allele = "ACCTA".to_string();
+        ve.left_seq = String::new();
+        ve.right_seq = String::new();
+        ve.adj_complex();
+        assert_eq!(ve.start_pos, 402);
+        assert_eq!(ve.end_pos, 402);
+        assert_eq!(ve.ref_allele, "G");
+        assert_eq!(ve.var_allele, "C");
+        assert_eq!(ve.left_seq, "");
+        assert_eq!(ve.right_seq, "TA");
+
+        let mut vs = Variant::new();
+        vs.start_pos = 500;
+        vs.end_pos = 504;
+        vs.ref_allele = "ACGTA".to_string();
+        vs.var_allele = "ACCTA".to_string();
+        vs.left_seq = "T".to_string();
+        vs.right_seq = "G".to_string();
+        vs.adj_complex();
+        assert_eq!(vs.start_pos, 502);
+        assert_eq!(vs.end_pos, 502);
+        assert_eq!(vs.ref_allele, "G");
+        assert_eq!(vs.var_allele, "C");
+        // In Java: leftSeq = ("T" + "AC").substring(2) -> "C"
+        assert_eq!(vs.left_seq, "C");
+        // In Java: rightSeq = substr("G", 0, -2) -> "", then "TA" + "" -> "TA"
+        assert_eq!(vs.right_seq, "TA");
     }
 
     #[test]
