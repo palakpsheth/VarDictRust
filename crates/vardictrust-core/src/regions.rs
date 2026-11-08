@@ -344,9 +344,9 @@ pub fn parse_non_amp_bed_from_reader<R: BufRead>(
             || cols.len() <= current_format.thick_end_column
         {
             return Err(VardictError::Parse(format!(
-                "BED line has fewer columns ({}) than required by active format {:?}",
+                "Region line has {} columns, expected at least {} (for 3-, 5-, or 6-column non-amplicon BED files, pass -c 1 -S 2 -E 3)",
                 cols.len(),
-                current_format
+                current_format.thick_end_column.saturating_add(1)
             )));
         }
 
@@ -1238,5 +1238,31 @@ Y\t59042860\t59047860\tY_59042860_5\t0\t.\t59042860\t59047860
         let amp = amp_parsed[0][0].amplicon.as_ref().unwrap();
         assert_eq!(amp.insert_start, Pos1(1));
         assert_eq!(amp.insert_end, Pos1(200));
+    }
+
+    #[test]
+    fn undersized_5_and_6_column_bed_error_includes_column_flag_hint() {
+        let mut chr_lengths = HashMap::new();
+        chr_lengths.insert("chr1".to_string(), 1000);
+        let cfg = Config::default();
+
+        for (ncols, line) in [
+            (5usize, "chr1\t100\t200\tGENE\t0\n"),
+            (6usize, "chr1\t100\t200\tGENE\t0\t+\n"),
+        ] {
+            let err = parse_non_amp_bed_from_reader(line.as_bytes(), &cfg, &chr_lengths, None)
+                .expect_err("5- and 6-column BED without -c/-S/-E must fail");
+            let msg = err.to_string();
+            assert!(
+                msg.contains(&format!(
+                    "Region line has {ncols} columns, expected at least"
+                )),
+                "unexpected error message for {ncols}-col BED: {msg}"
+            );
+            assert!(
+                msg.contains("pass -c 1 -S 2 -E 3"),
+                "expected column flag hint in {ncols}-col BED error: {msg}"
+            );
+        }
     }
 }

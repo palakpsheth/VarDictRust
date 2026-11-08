@@ -1586,7 +1586,7 @@ pub fn run(config: &config::Config) -> Result<(), VardictError> {
     crate::bam::clear_bam_caches();
     let _bam_cache_guard = BamCacheGuard;
 
-    crate::runner::run_with_worker_stack(|| {
+    crate::runner::run_with_worker_stack_for_bam(&config.bam, || {
         let (effective, _) = resolve_effective_config(config)?;
         let writer = create_output_writer(&effective);
         run_with_engine_writer(&effective, writer)
@@ -1716,7 +1716,8 @@ fn run_with_writer_inner<W: EngineWriter>(
     let mut vcf_acc: SpillableVcfAccumulator<RawVcfCandidate> = SpillableVcfAccumulator::new();
 
     // Process tiles in parallel, print variants in deterministic index order
-    crate::runner::run_parallel_batched(
+    crate::runner::run_parallel_batched_for_bam(
+        &config.bam,
         tile_batches,
         config.threads,
         move |tile| -> Result<SimpleTileOutput, VardictError> {
@@ -2113,9 +2114,10 @@ fn run_amplicon<W: EngineWriter>(
     let config_clone = config.clone();
     let chromosomes_lengths_clone = chromosomes_lengths.clone();
 
-    // H5: Process independent amplicon segments in parallel via `run_parallel`,
+    // H5: Process independent amplicon segments in parallel via `run_parallel_for_bam`,
     // streaming results into the consumer in exact BED segment order.
-    crate::runner::run_parallel(
+    crate::runner::run_parallel_for_bam(
+        &config.bam,
         segments,
         config.threads,
         move |segment| -> Result<AmpliconSegmentOutput, VardictError> {
@@ -2145,7 +2147,10 @@ fn run_amplicon<W: EngineWriter>(
             };
 
             let (vars_per_amplicon, splice) = if config_clone.threads <= 1 {
-                crate::runner::run_with_worker_stack(run_segment_regions)?
+                crate::runner::run_with_worker_stack_for_bam(
+                    &config_clone.bam,
+                    run_segment_regions,
+                )?
             } else {
                 run_segment_regions()?
             };
@@ -2416,7 +2421,8 @@ fn run_somatic<W: EngineWriter>(
     let mut vcf_acc: SpillableVcfAccumulator<SomaticVcfCandidate> = SpillableVcfAccumulator::new();
 
     // Process tiles: run both BAMs through pipeline, then somatic postprocess
-    crate::runner::run_parallel_batched(
+    crate::runner::run_parallel_batched_for_bam(
+        &config.bam,
         tile_batches,
         config.threads,
         move |tile| -> Result<SomaticTileOutput, VardictError> {
