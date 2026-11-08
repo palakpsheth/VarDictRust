@@ -48,6 +48,12 @@ ck "pre-commit syntax-checks staged shell scripts with bash -n" grep -q 'bash -n
 ck "pre-commit compiles staged Python files with py_compile" grep -q 'py_compile' .githooks/pre-commit
 ck "pre-commit runs test_stdlib_purity.py on staged Python changes" grep -q 'test_stdlib_purity\.py' .githooks/pre-commit
 ck "pre-commit runs check_release_consistency.py on workflow/release surface changes" grep -q 'check_release_consistency\.py' .githooks/pre-commit
+ck "pre-commit runs TestMarkdownStaticHygiene on staged Markdown/docs changes" grep -q 'TestMarkdownStaticHygiene' .githooks/pre-commit
+ck "pre-commit blocks partially staged documentation files" grep -q 'UNSTAGED_MD=' .githooks/pre-commit
+ck "pre-push runs prepare_docs_site.py on doc changes" grep -q 'prepare_docs_site\.py' .githooks/pre-push
+ck "pre-push exports pushed commit via git archive for doc build" grep -q 'git archive "\$local_oid"' .githooks/pre-push
+ck "pre-push runs mkdocs build --strict on doc changes" grep -q '"$MKDOCS_BIN" build --strict' .githooks/pre-push
+ck "pre-push fails fast when mkdocs is missing on doc changes" grep -q "Install MkDocs before pushing documentation updates" .githooks/pre-push
 
 # 5. pre-push runs engine_behavior and robustness in dev profile; acceptance.sh Item 4 runs them in --release
 ck "pre-push runs engine_behavior (dev)" grep -q 'cargo test -p vardictrust-core --test engine_behavior' .githooks/pre-push

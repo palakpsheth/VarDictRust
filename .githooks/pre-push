@@ -85,6 +85,51 @@ if git rev-parse --verify origin/main >/dev/null 2>&1; then
     fi
 fi
 
+# 4b. Fast MkDocs strict build gate when Markdown or documentation config changes (<4s)
+DOC_CHANGES=$(echo "$ALL_CHANGED_FILES" | grep -E '\.md$|^mkdocs\.yml$|^harness/prepare_docs_site\.py$|^harness/tests/test_docs_ui\.py$' || true)
+if [ -n "$DOC_CHANGES" ] && [ -f "$ROOT_DIR/harness/prepare_docs_site.py" ] && [ "$(git rev-parse --show-toplevel 2>/dev/null || true)" = "$ROOT_DIR" ]; then
+    MKDOCS_BIN=""
+    if command -v mkdocs >/dev/null 2>&1; then
+        MKDOCS_BIN="mkdocs"
+    elif [ -n "${CONDA_PREFIX:-}" ] && [ -x "${CONDA_PREFIX}/bin/mkdocs" ]; then
+        MKDOCS_BIN="${CONDA_PREFIX}/bin/mkdocs"
+    elif [ -x "${HOME}/miniconda3/envs/vardict-oracle/bin/mkdocs" ]; then
+        MKDOCS_BIN="${HOME}/miniconda3/envs/vardict-oracle/bin/mkdocs"
+    elif [ -x "${HOME}/miniconda3/bin/mkdocs" ]; then
+        MKDOCS_BIN="${HOME}/miniconda3/bin/mkdocs"
+    elif [ -x "${HOME}/miniforge3/bin/mkdocs" ]; then
+        MKDOCS_BIN="${HOME}/miniforge3/bin/mkdocs"
+    elif [ -x "${HOME}/.local/bin/mkdocs" ]; then
+        MKDOCS_BIN="${HOME}/.local/bin/mkdocs"
+    fi
+    if [ -z "$MKDOCS_BIN" ]; then
+        echo "ERROR: Documentation changes detected in push, but 'mkdocs' was not found on PATH or in standard conda/user environments." >&2
+        echo "Install MkDocs before pushing documentation updates: pip install -r docs/requirements.txt" >&2
+        exit 1
+    fi
+    st_t0=$SECONDS
+    echo "=== $(ts) [pre-push] Documentation changes detected; running MkDocs strict build gate on pushed commit(s) ==="
+    CHECKED_DOC_OIDS=" "
+    for ((i=0; i<${#REFS[@]}; i+=4)); do
+        local_oid="${REFS[i+1]}"
+        if [[ "$local_oid" == "$ZERO_OID" ]] || [[ "$CHECKED_DOC_OIDS" == *" $local_oid "* ]]; then
+            continue
+        fi
+        CHECKED_DOC_OIDS="${CHECKED_DOC_OIDS}${local_oid} "
+        if git cat-file -e "${local_oid}:harness/prepare_docs_site.py" 2>/dev/null && git cat-file -e "${local_oid}:mkdocs.yml" 2>/dev/null; then
+            (
+                TMP_DOCS="$(mktemp -d)"
+                trap 'rm -rf "$TMP_DOCS"' EXIT
+                git archive "$local_oid" | tar -x -C "$TMP_DOCS"
+                cd "$TMP_DOCS"
+                python3 "$TMP_DOCS/harness/prepare_docs_site.py"
+                "$MKDOCS_BIN" build --strict
+            )
+        fi
+    done
+    echo "$(ts) [pre-push] MkDocs strict build PASS ($((SECONDS - st_t0))s)"
+fi
+
 # 5. Check whether any non-deletion update touches code, CI, harness, or engine assets
 CODE_CHANGES=$(echo "$ALL_CHANGED_FILES" | grep -E '\.rs$|Cargo\.(toml|lock)$|crates/|harness/|\.github/|\.githooks/|\.agents/|fixtures/|golden/|benchmarks/evidence/|deny\.toml|\.cargo/' || true)
 
