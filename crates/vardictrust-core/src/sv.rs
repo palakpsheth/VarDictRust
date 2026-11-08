@@ -332,7 +332,7 @@ pub fn find_match(
         );
     }
 
-    let mut extra = Vec::new();
+    let mut extra_slice: &[u8] = &[];
     if seq_vec.len() < seed_len {
         return Match {
             base_position: 0,
@@ -353,6 +353,7 @@ pub fn find_match(
             };
 
             if crate::realign::is_match_ref(&seq_vec, reference, chr, bp, dir, mm_limit) {
+                let mut extra = extra_slice.to_vec();
                 let mut mm = if dir == -1 { -1 } else { 0 };
                 loop {
                     if let Some(ch) = crate::util::char_at(&seq_vec, mm) {
@@ -387,59 +388,43 @@ pub fn find_match(
                 };
             } else {
                 // For complex indels, allowing some mismatches at the end up to 15bp or 20% length
-                let mut sseq = seq_vec.clone();
+                let mut sseq: &[u8] = &seq_vec;
                 let mut eqcnt = 0;
                 let mut bp_mut = bp;
                 for ii in 1..=15 {
                     bp_mut += dir;
                     if dir == 1 {
-                        if sseq.len() > 1 {
-                            sseq = sseq[1..].to_vec();
-                        } else {
-                            sseq.clear();
-                        }
-                        if sseq.is_empty() {
+                        sseq = sseq.get(1..).unwrap_or(&[]);
+                        let Some(b0) = crate::util::char_at(sseq, 0) else {
                             break;
-                        }
-                        if is_has_and_not_equals(reference, chr, bp_mut as u32, sseq[0]) {
+                        };
+                        if is_has_and_not_equals(reference, chr, bp_mut as u32, b0) {
                             continue;
                         }
                         eqcnt += 1;
-                        if sseq.len() > 1
-                            && is_has_and_not_equals(reference, chr, (bp_mut + 1) as u32, sseq[1])
-                        {
+                        if crate::util::char_at(sseq, 1).is_some_and(|b1| {
+                            is_has_and_not_equals(reference, chr, (bp_mut + 1) as u32, b1)
+                        }) {
                             continue;
                         }
-                        extra = seq_vec[0..ii].to_vec();
+                        extra_slice = seq_vec.get(..ii).unwrap_or(&seq_vec);
                     } else {
-                        if sseq.len() > 1 {
-                            sseq = sseq[0..sseq.len() - 1].to_vec();
-                        } else {
-                            sseq.clear();
-                        }
-                        if sseq.is_empty() {
+                        sseq = sseq.get(..sseq.len().saturating_sub(1)).unwrap_or(&[]);
+                        let Some(last) = crate::util::char_at(sseq, -1) else {
                             break;
-                        }
-                        if is_has_and_not_equals(
-                            reference,
-                            chr,
-                            bp_mut as u32,
-                            sseq[sseq.len() - 1],
-                        ) {
+                        };
+                        if is_has_and_not_equals(reference, chr, bp_mut as u32, last) {
                             continue;
                         }
                         eqcnt += 1;
-                        if sseq.len() > 1
-                            && is_has_and_not_equals(
-                                reference,
-                                chr,
-                                (bp_mut - 1) as u32,
-                                sseq[sseq.len() - 2],
-                            )
-                        {
+                        if crate::util::char_at(sseq, -2).is_some_and(|prev| {
+                            is_has_and_not_equals(reference, chr, (bp_mut - 1) as u32, prev)
+                        }) {
                             continue;
                         }
-                        extra = seq_vec[seq_vec.len() - ii..].to_vec();
+                        extra_slice = seq_vec
+                            .get(seq_vec.len().saturating_sub(ii)..)
+                            .unwrap_or(&seq_vec);
                     }
 
                     if eqcnt >= 3 && (eqcnt as f64) / (ii as f64) > 0.5 {
@@ -455,13 +440,13 @@ pub fn find_match(
                             String::from_utf8_lossy(seed),
                             i,
                             String::from_utf8_lossy(&seq_vec),
-                            String::from_utf8_lossy(&extra)
+                            String::from_utf8_lossy(extra_slice)
                         );
                     }
-                    if crate::realign::is_match_ref(&sseq, reference, chr, bp_mut, dir, 1) {
+                    if crate::realign::is_match_ref(sseq, reference, chr, bp_mut, dir, 1) {
                         return Match {
                             base_position: bp_mut,
-                            matched_sequence: extra,
+                            matched_sequence: extra_slice.to_vec(),
                         };
                     }
                 }
@@ -504,7 +489,7 @@ pub fn find_match_rev(
         );
     }
 
-    let mut extra = Vec::new();
+    let mut extra_slice: &[u8] = &[];
     if seq_vec.len() < seed_len {
         return Match {
             base_position: 0,
@@ -539,63 +524,47 @@ pub fn find_match_rev(
                 }
                 return Match {
                     base_position: bp,
-                    matched_sequence: Vec::new(),
+                    matched_sequence: extra_slice.to_vec(),
                 };
             } else {
                 // For complex indels, allowing some mismatches at the end up to 15bp or 20% length
-                let mut sseq = seq_vec.clone();
+                let mut sseq: &[u8] = &seq_vec;
                 let mut eqcnt = 0;
                 let mut bp_mut = bp;
                 for ii in 1..=15 {
                     bp_mut -= dir;
                     if dir == -1 {
-                        if sseq.len() > 1 {
-                            sseq = sseq[1..].to_vec();
-                        } else {
-                            sseq.clear();
-                        }
-                        if sseq.is_empty() {
+                        sseq = sseq.get(1..).unwrap_or(&[]);
+                        let Some(b0) = crate::util::char_at(sseq, 0) else {
                             break;
-                        }
-                        if is_has_and_not_equals(reference, chr, bp_mut as u32, sseq[0]) {
+                        };
+                        if is_has_and_not_equals(reference, chr, bp_mut as u32, b0) {
                             continue;
                         }
                         eqcnt += 1;
-                        if sseq.len() > 1
-                            && is_has_and_not_equals(reference, chr, (bp_mut + 1) as u32, sseq[1])
-                        {
+                        if crate::util::char_at(sseq, 1).is_some_and(|b1| {
+                            is_has_and_not_equals(reference, chr, (bp_mut + 1) as u32, b1)
+                        }) {
                             continue;
                         }
-                        extra = seq_vec[0..ii].to_vec();
+                        extra_slice = seq_vec.get(..ii).unwrap_or(&seq_vec);
                     } else {
-                        if sseq.len() > 1 {
-                            sseq = sseq[0..sseq.len() - 1].to_vec();
-                        } else {
-                            sseq.clear();
-                        }
-                        if sseq.is_empty() {
+                        sseq = sseq.get(..sseq.len().saturating_sub(1)).unwrap_or(&[]);
+                        let Some(last) = crate::util::char_at(sseq, -1) else {
                             break;
-                        }
-                        if is_has_and_not_equals(
-                            reference,
-                            chr,
-                            bp_mut as u32,
-                            sseq[sseq.len() - 1],
-                        ) {
+                        };
+                        if is_has_and_not_equals(reference, chr, bp_mut as u32, last) {
                             continue;
                         }
                         eqcnt += 1;
-                        if sseq.len() > 1
-                            && is_has_and_not_equals(
-                                reference,
-                                chr,
-                                (bp_mut - 1) as u32,
-                                sseq[sseq.len() - 2],
-                            )
-                        {
+                        if crate::util::char_at(sseq, -2).is_some_and(|prev| {
+                            is_has_and_not_equals(reference, chr, (bp_mut - 1) as u32, prev)
+                        }) {
                             continue;
                         }
-                        extra = seq_vec[seq_vec.len() - ii..].to_vec();
+                        extra_slice = seq_vec
+                            .get(seq_vec.len().saturating_sub(ii)..)
+                            .unwrap_or(&seq_vec);
                     }
 
                     if eqcnt >= 3 && (eqcnt as f64) / (ii as f64) > 0.5 {
@@ -611,13 +580,13 @@ pub fn find_match_rev(
                             String::from_utf8_lossy(seed),
                             i,
                             String::from_utf8_lossy(&seq_vec),
-                            String::from_utf8_lossy(&extra)
+                            String::from_utf8_lossy(extra_slice)
                         );
                     }
-                    if crate::realign::is_match_ref(&sseq, reference, chr, bp_mut, -1 * dir, 1) {
+                    if crate::realign::is_match_ref(sseq, reference, chr, bp_mut, -1 * dir, 1) {
                         return Match {
                             base_position: bp_mut,
-                            matched_sequence: extra,
+                            matched_sequence: extra_slice.to_vec(),
                         };
                     }
                 }
@@ -4553,5 +4522,120 @@ mod tests {
             post_cnt, 5,
             "find_sv inversion branch must accumulate onto existing vref.cnt (2 + 3 = 5) instead of zeroing vref.cnt"
         );
+    }
+
+    #[test]
+    fn test_find_match_and_rev_short_seq_below_seed_1() {
+        let reference = Reference::default();
+        let short_seq = b"ACGTACGTACGT"; // 12 bp < SEED_1 (17)
+        for dir in [1, -1] {
+            let m = find_match(short_seq, &reference, 100, dir, 17, 3, "chr1", false);
+            assert_eq!(m.base_position, 0);
+            assert!(m.matched_sequence.is_empty());
+
+            let mr = find_match_rev(short_seq, &reference, 100, dir, 17, 3, "chr1", false);
+            assert_eq!(mr.base_position, 0);
+            assert!(mr.matched_sequence.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_find_match_and_rev_sseq_shrinks_to_len_le_2_without_panic() {
+        // Seed length 12 (SEED_2) with a 12-bp query: during `for ii in 1..=15`,
+        // `sseq` shrinks from 12 down through len == 2, len == 1, and len == 0 (break).
+        let chr = "chr1";
+        let mut reference = Reference::default();
+        reference
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: chr.to_string(),
+                sequence_start: 1,
+                sequence_end: 200,
+            });
+        // Reference is all 'A', while query is all 'C' (complement 'G'), so every
+        // base mismatches the reference and `sseq` trims all the way to empty.
+        reference
+            .reference_sequences
+            .insert(chr.to_string(), vec![b'A'; 200]);
+        reference.seed.insert(vec![b'C'; 12], vec![50]);
+        reference.seed.insert(vec![b'G'; 12], vec![50]);
+
+        let seq12 = [b'C'; 12];
+        for dir in [1, -1] {
+            let m = find_match(&seq12, &reference, 50, dir, 12, 0, chr, false);
+            assert_eq!(m.base_position, 0);
+            assert!(m.matched_sequence.is_empty());
+
+            let mr = find_match_rev(&seq12, &reference, 50, dir, 12, 0, chr, false);
+            assert_eq!(mr.base_position, 0);
+            assert!(mr.matched_sequence.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_find_match_and_rev_trimmed_seed_recovery_both_dirs() {
+        let chr = "chr1";
+        let seed17 = b"ACGTACGTACGTACGTA";
+        let mut reference = Reference::default();
+        reference
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: chr.to_string(),
+                sequence_start: 1,
+                sequence_end: 200,
+            });
+        let mut ref_seq = vec![b'C'; 200];
+        // Place seed17 at 1-based positions 102..=118 (0-based 101..118).
+        // Surrounding positions 100..=101 and 119..=120 remain 'C'.
+        ref_seq[101..118].copy_from_slice(seed17);
+        reference
+            .reference_sequences
+            .insert(chr.to_string(), ref_seq);
+        reference.seed.insert(seed17.to_vec(), vec![102]);
+
+        // 1. find_match, dir = 1:
+        // seq = "TT" + seed17 (len 19, seed at i = 2 -> initial bp = 102 - 2 = 100).
+        // Primary is_match_ref(mm_limit = 1) fails due to 2 leading 'T' vs 'C' mismatches.
+        // At ii = 2, sseq trims "TT", bp_mut = 102, extra = "TT".
+        let mut seq_fwd = b"TT".to_vec();
+        seq_fwd.extend_from_slice(seed17);
+        let m_fwd = find_match(&seq_fwd, &reference, 50, 1, 17, 1, chr, false);
+        assert_eq!(m_fwd.base_position, 102);
+        assert_eq!(m_fwd.matched_sequence, b"TT");
+
+        // 2. find_match, dir = -1:
+        // After internal reverse, seq_vec = seed17 + "TT" (seed at i = 0 -> initial bp = 102 + 19 - 0 - 1 = 120).
+        // Primary is_match_ref(mm_limit = 1) fails due to 2 trailing 'T' vs 'C' mismatches at 119..=120.
+        // At ii = 2, sseq trims trailing "TT", bp_mut = 118, extra = "TT".
+        let mut seq_rev_input = seed17.to_vec();
+        seq_rev_input.extend_from_slice(b"TT");
+        seq_rev_input.reverse();
+        let m_rev = find_match(&seq_rev_input, &reference, 150, -1, 17, 1, chr, false);
+        assert_eq!(m_rev.base_position, 118);
+        assert_eq!(m_rev.matched_sequence, b"TT");
+
+        // 3. find_match_rev, dir = -1:
+        // find_match_rev(dir = -1) complements seq without reversing.
+        // Pre-complement input so complemented seq_vec = "TT" + seed17.
+        let seq_inv_neg: Vec<u8> = seq_fwd
+            .iter()
+            .map(|&b| crate::util::complement(b))
+            .collect();
+        let mr_neg = find_match_rev(&seq_inv_neg, &reference, 50, -1, 17, 1, chr, false);
+        assert_eq!(mr_neg.base_position, 102);
+        assert_eq!(mr_neg.matched_sequence, b"TT");
+
+        // 4. find_match_rev, dir = 1:
+        // find_match_rev(dir = 1) reverses and complements seq.
+        // Pre-revcomp input so revcomp'd seq_vec = seed17 + "TT".
+        let mut seq_inv_pos: Vec<u8> = seed17
+            .iter()
+            .chain(b"TT".iter())
+            .map(|&b| crate::util::complement(b))
+            .collect();
+        seq_inv_pos.reverse();
+        let mr_pos = find_match_rev(&seq_inv_pos, &reference, 150, 1, 17, 1, chr, false);
+        assert_eq!(mr_pos.base_position, 118);
+        assert_eq!(mr_pos.matched_sequence, b"TT");
     }
 }

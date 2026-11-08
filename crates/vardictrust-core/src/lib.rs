@@ -71,6 +71,21 @@ pub const DEFAULT_UNTILED_SPAN_MAX: u32 = 1_000_000;
 /// Maximum `--tile-size` (`500 Mbp`, above human `chr1` `~249 Mbp`) before `u32` wrap guard.
 pub const MAX_TILE_SIZE: u32 = 500_000_000;
 
+const MAX_SPLIT_VAR_DEDUP_ENTRIES: usize = 262_144;
+
+#[inline]
+fn split_var_line_fingerprint(line: &str) -> (u64, u64) {
+    use std::hash::{Hash, Hasher};
+    let mut h1 = rustc_hash::FxHasher::default();
+    0x9e37_79b9_7f4a_7c15u64.hash(&mut h1);
+    line.as_bytes().hash(&mut h1);
+    let mut h2 = rustc_hash::FxHasher::default();
+    0xc2b2_ae3d_27d4_eb4fu64.hash(&mut h2);
+    line.len().hash(&mut h2);
+    line.as_bytes().hash(&mut h2);
+    (h1.finish(), h2.finish())
+}
+
 #[inline]
 fn effective_tile_size(reg: &crate::regions::Region, config_tile_size: Option<u32>) -> u32 {
     if let Some(ts) = config_tile_size {
@@ -1706,7 +1721,11 @@ fn run_with_writer_inner<W: EngineWriter>(
     }
 
     enum SimpleTileOutput {
-        Lines(Vec<String>),
+        Lines {
+            lines: Vec<String>,
+            is_split_tile: bool,
+            is_first_split_tile: bool,
+        },
         Vcf {
             chr: String,
             records: Vec<RawVcfCandidate>,
@@ -1714,6 +1733,7 @@ fn run_with_writer_inner<W: EngineWriter>(
     }
 
     let mut vcf_acc: SpillableVcfAccumulator<RawVcfCandidate> = SpillableVcfAccumulator::new();
+    let mut seen_split_var: rustc_hash::FxHashSet<(u64, u64)> = rustc_hash::FxHashSet::default();
 
     // Process tiles in parallel, print variants in deterministic index order
     crate::runner::run_parallel_batched_for_bam(
@@ -1803,7 +1823,11 @@ fn run_with_writer_inner<W: EngineWriter>(
                         config_clone.sample, tile.chr, intron, count
                     ));
                 }
-                return Ok(SimpleTileOutput::Lines(lines));
+                return Ok(SimpleTileOutput::Lines {
+                    lines,
+                    is_split_tile: false,
+                    is_first_split_tile: false,
+                });
             }
 
             let builder_region = crate::regions::Region {
@@ -1846,7 +1870,8 @@ fn run_with_writer_inner<W: EngineWriter>(
                         )
                     };
                     if config_clone.crispr_cutting_site.unwrap_or(0) != 0 {
-                        line.push_str(&format!("\t{}", v.crispr));
+                        let _ =
+                            std::fmt::Write::write_fmt(&mut line, format_args!("\t{}", v.crispr));
                     }
                     // ports SimpleOutputVariant.java:116-117 (DEBUG appended after crispr)
                     if config_clone.debug {
@@ -1855,18 +1880,19 @@ fn run_with_writer_inner<W: EngineWriter>(
                     }
                     lines.push(line);
                 }
-                Ok(SimpleTileOutput::Lines(lines))
+                Ok(SimpleTileOutput::Lines {
+                    lines,
+                    is_split_tile,
+                    is_first_split_tile: tile.start == tile.original_start,
+                })
             } else {
                 let mut records = Vec::new();
                 for v in variants {
                     let ref_empty = crate::output::vcf::perl_row_skipped(&v.ref_allele);
                     let is_sv = v.var_allele.contains('<');
                     let mut splitreads = 0;
-                    if !v.sv.is_empty() && v.sv.contains('-') {
-                        let parts: Vec<&str> = v.sv.split('-').collect();
-                        if !parts.is_empty() {
-                            splitreads = parts[0].parse::<i32>().unwrap_or(0);
-                        }
+                    if let Some((first, _)) = v.sv.split_once('-') {
+                        splitreads = first.parse::<i32>().unwrap_or(0);
                     }
                     let should_emit = !ref_empty && (!is_sv || splitreads >= 1);
                     let vcf_line = if !should_emit {
@@ -1914,8 +1940,24 @@ fn run_with_writer_inner<W: EngineWriter>(
         },
         |output| {
             match output {
-                SimpleTileOutput::Lines(lines) => {
+                SimpleTileOutput::Lines {
+                    lines,
+                    is_split_tile,
+                    is_first_split_tile,
+                } => {
+                    if !is_split_tile || is_first_split_tile {
+                        seen_split_var.clear();
+                    }
                     for line in lines {
+                        if is_split_tile {
+                            let fp = split_var_line_fingerprint(&line);
+                            if seen_split_var.contains(&fp) {
+                                continue;
+                            }
+                            if seen_split_var.len() < MAX_SPLIT_VAR_DEDUP_ENTRIES {
+                                seen_split_var.insert(fp);
+                            }
+                        }
                         write_output_line(&mut writer, &line)?;
                     }
                 }
@@ -2411,7 +2453,11 @@ fn run_somatic<W: EngineWriter>(
     }
 
     enum SomaticTileOutput {
-        Lines(Vec<String>),
+        Lines {
+            lines: Vec<String>,
+            is_split_tile: bool,
+            is_first_split_tile: bool,
+        },
         Vcf {
             chr: String,
             candidates: Vec<SomaticVcfCandidate>,
@@ -2419,6 +2465,7 @@ fn run_somatic<W: EngineWriter>(
     }
 
     let mut vcf_acc: SpillableVcfAccumulator<SomaticVcfCandidate> = SpillableVcfAccumulator::new();
+    let mut seen_split_var: rustc_hash::FxHashSet<(u64, u64)> = rustc_hash::FxHashSet::default();
 
     // Process tiles: run both BAMs through pipeline, then somatic postprocess
     crate::runner::run_parallel_batched_for_bam(
@@ -2616,7 +2663,7 @@ fn run_somatic<W: EngineWriter>(
             if config_clone.emit_intermediate {
                 let mut lines = Vec::new();
                 for sv in somatic_variants {
-                    let line = if config_clone.fisher {
+                    let mut line = if config_clone.fisher {
                         crate::output::table::somatic_61(
                             &sv.variant1,
                             sv.variant2.as_ref(),
@@ -2641,12 +2688,18 @@ fn run_somatic<W: EngineWriter>(
                     };
                     // ports SomaticOutputVariant.java:193-194 (DEBUG = tumor variant's)
                     if config_clone.debug {
-                        lines.push(format!("{}\t{}", line, sv.variant1.debug));
+                        line.push('\t');
+                        line.push_str(&sv.variant1.debug);
+                        lines.push(line);
                     } else {
                         lines.push(line);
                     }
                 }
-                Ok(SomaticTileOutput::Lines(lines))
+                Ok(SomaticTileOutput::Lines {
+                    lines,
+                    is_split_tile,
+                    is_first_split_tile: tile.start == tile.original_start,
+                })
             } else {
                 // Paired VCF mode: ports var2vcf_paired.pl:41,128-129,136 —
                 // bucket rows by the raw .var start column ($hash{$chr}->{$a[3]}),
@@ -2701,8 +2754,24 @@ fn run_somatic<W: EngineWriter>(
         },
         |output| {
             match output {
-                SomaticTileOutput::Lines(lines) => {
+                SomaticTileOutput::Lines {
+                    lines,
+                    is_split_tile,
+                    is_first_split_tile,
+                } => {
+                    if !is_split_tile || is_first_split_tile {
+                        seen_split_var.clear();
+                    }
                     for line in lines {
+                        if is_split_tile {
+                            let fp = split_var_line_fingerprint(&line);
+                            if seen_split_var.contains(&fp) {
+                                continue;
+                            }
+                            if seen_split_var.len() < MAX_SPLIT_VAR_DEDUP_ENTRIES {
+                                seen_split_var.insert(fp);
+                            }
+                        }
                         write_output_line(writer, &line)?;
                     }
                 }
@@ -4484,6 +4553,66 @@ mod tests {
         assert!(
             !eff_amp8_z0.zero_based,
             "explicit -z 0 must not be overwritten by amplicon auto-detect"
+        );
+    }
+
+    #[test]
+    fn test_split_var_line_fingerprint_and_split_tile_dedup() {
+        let l1 = "S\tG\tchr1\t1000\t1000\tA\tG\t50\t25";
+        let l2 = "S\tG\tchr1\t2000\t2000\tC\tT\t50\t25";
+        assert_eq!(
+            split_var_line_fingerprint(l1),
+            split_var_line_fingerprint(l1)
+        );
+        assert_ne!(
+            split_var_line_fingerprint(l1),
+            split_var_line_fingerprint(l2)
+        );
+
+        // Simulate the consumer loop across:
+        // 1) Split BED region 1 (tile 1: is_split_tile=true, is_first_split_tile=true;
+        //    tile 2: is_split_tile=true, is_first_split_tile=false) carrying duplicate `l1`.
+        // 2) Separate split BED region 2 (tile 1: is_split_tile=true, is_first_split_tile=true)
+        //    carrying an identical line `l1` (must NOT be suppressed across BED regions).
+        // 3) Untiled BED region 3 (is_split_tile=false, is_first_split_tile=true) carrying `l1` twice.
+        let batches = vec![
+            (vec![l1.to_string(), l2.to_string()], true, true),
+            (vec![l1.to_string()], true, false),
+            (vec![l1.to_string()], true, true),
+            (vec![l1.to_string(), l1.to_string()], false, true),
+        ];
+
+        let mut seen_split_var: rustc_hash::FxHashSet<(u64, u64)> =
+            rustc_hash::FxHashSet::default();
+        let mut emitted = Vec::new();
+        for (lines, is_split_tile, is_first_split_tile) in batches {
+            if !is_split_tile || is_first_split_tile {
+                seen_split_var.clear();
+            }
+            for line in lines {
+                if is_split_tile {
+                    let fp = split_var_line_fingerprint(&line);
+                    if seen_split_var.contains(&fp) {
+                        continue;
+                    }
+                    if seen_split_var.len() < MAX_SPLIT_VAR_DEDUP_ENTRIES {
+                        seen_split_var.insert(fp);
+                    }
+                }
+                emitted.push(line);
+            }
+        }
+
+        assert_eq!(
+            emitted,
+            vec![
+                l1.to_string(), // region 1 tile 1
+                l2.to_string(), // region 1 tile 1
+                // region 1 tile 2 duplicate l1 suppressed
+                l1.to_string(), // region 2 tile 1 (new split region resets seen_split_var)
+                l1.to_string(), // region 3 untiled (first copy)
+                l1.to_string(), // region 3 untiled (second copy preserved when !is_split_tile)
+            ]
         );
     }
 }

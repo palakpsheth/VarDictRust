@@ -488,12 +488,14 @@ impl<'a> ToVarsBuilder<'a> {
         mut hicov: i32,
     ) -> i32 {
         if let Some(insertion_variations) = insertion_variants.get(&position) {
-            let mut insertion_description_strings: Vec<String> =
-                Vec::with_capacity(insertion_variations.map.len());
-            insertion_description_strings.extend(insertion_variations.map.keys().cloned());
-            insertion_description_strings.sort();
+            let mut insertion_description_strings: Vec<&str> = insertion_variations
+                .map
+                .keys()
+                .map(String::as_str)
+                .collect();
+            insertion_description_strings.sort_unstable();
 
-            for description_string in &insertion_description_strings {
+            for &description_string in &insertion_description_strings {
                 if description_string
                     .strip_prefix('+')
                     .unwrap_or(description_string)
@@ -806,8 +808,16 @@ impl<'a> ToVarsBuilder<'a> {
                 } else if description_string.starts_with('-') {
                     if deletion_length < self.config.sv_min_len as i32 {
                         // replace first -digits with empty string
-                        let re = format!("-{}", deletion_length);
-                        varallele = description_string.replacen(&re, "", 1);
+                        varallele = if let Some(rest) = description_string.strip_prefix('-') {
+                            let digit_len = rest.bytes().take_while(|b| b.is_ascii_digit()).count();
+                            if digit_len > 0 {
+                                rest.get(digit_len..).unwrap_or("").to_string()
+                            } else {
+                                description_string.clone()
+                            }
+                        } else {
+                            description_string.clone()
+                        };
 
                         let ref_variant_msi = self.proceed_vref_is_deletion(
                             position,
@@ -897,15 +907,12 @@ impl<'a> ToVarsBuilder<'a> {
                     end_position += extra.len() as i32;
 
                     if let Some(vextra) = get_amp_atgc(&varallele) {
+                        let vextra_len = vextra.len() as i32;
                         varallele = varallele.replacen('&', "", 1);
-                        self.join_ref_into(
-                            scratch1,
-                            end_position + 1,
-                            end_position + vextra.len() as i32,
-                        );
+                        self.join_ref_into(scratch1, end_position + 1, end_position + vextra_len);
                         refallele.push_str(scratch1);
                         genotype1_current_inner.push_str(scratch1);
-                        end_position += vextra.len() as i32;
+                        end_position += vextra_len;
                     }
 
                     if description_string.starts_with('+') {
@@ -1526,32 +1533,39 @@ fn matches_some_sv_numbers(s: &str) -> bool {
     false
 }
 
-fn get_amp_atgc(s: &str) -> Option<String> {
-    if let Some(idx) = s.find('&') {
-        let extra: String = s
-            .get(idx + 1..)?
-            .chars()
-            .take_while(|c| matches!(c, 'A' | 'T' | 'G' | 'C'))
-            .collect();
-        if !extra.is_empty() {
-            return Some(extra);
-        }
+fn get_amp_atgc(s: &str) -> Option<&str> {
+    let (_, rest) = s.split_once('&')?;
+    let len = rest
+        .bytes()
+        .take_while(|&b| matches!(b, b'A' | b'T' | b'G' | b'C'))
+        .count();
+    if len == 0 {
+        None
+    } else {
+        rest.get(..len)
     }
-    None
 }
 
-fn get_hash_group_caret_group(s: &str) -> Option<(String, &str)> {
-    if let Some(hash_idx) = s.find('#') {
-        let rest = s.get(hash_idx + 1..)?;
-        if let Some(caret_idx) = rest.find('^') {
-            let group1 = rest.get(..caret_idx)?.to_string();
-            let group2 = rest.get(caret_idx + 1..)?;
-            if !group1.is_empty() && !group2.is_empty() {
-                return Some((group1, group2));
-            }
-        }
+fn get_hash_group_caret_group(s: &str) -> Option<(&str, &str)> {
+    let (_, rest) = s.split_once('#')?;
+    let (g1, g2_rest) = rest.split_once('^')?;
+    if g1.is_empty()
+        || !g1
+            .bytes()
+            .all(|b| matches!(b, b'A' | b'T' | b'G' | b'C' | b'N'))
+    {
+        return None;
     }
-    None
+    let g2_len = g2_rest
+        .bytes()
+        .take_while(|&b| matches!(b, b'A' | b'T' | b'G' | b'C' | b'N' | b'0'..=b'9'))
+        .count();
+    let g2 = g2_rest.get(..g2_len)?;
+    if g2.is_empty() {
+        None
+    } else {
+        Some((g1, g2))
+    }
 }
 
 fn get_begin_digits(s: &str) -> Option<i32> {
@@ -1563,18 +1577,17 @@ fn get_begin_digits(s: &str) -> Option<i32> {
     }
 }
 
-fn get_caret_atgnc(s: &str) -> Option<String> {
-    if let Some(idx) = s.find('^') {
-        let extra: String = s
-            .get(idx + 1..)?
-            .chars()
-            .take_while(|c| matches!(c, 'A' | 'T' | 'G' | 'N' | 'C'))
-            .collect();
-        if !extra.is_empty() {
-            return Some(extra);
-        }
+fn get_caret_atgnc(s: &str) -> Option<&str> {
+    let (_, rest) = s.split_once('^')?;
+    let len = rest
+        .bytes()
+        .take_while(|&b| matches!(b, b'A' | b'T' | b'G' | b'C' | b'N'))
+        .count();
+    if len == 0 {
+        None
+    } else {
+        rest.get(..len)
     }
-    None
 }
 
 fn matches_any_sv(s: &str) -> bool {
@@ -2181,5 +2194,65 @@ mod tests {
             legacy.keys().copied().collect::<Vec<i32>>(),
             "pre-reserve must not change JavaHashMap iteration order across the resize"
         );
+    }
+
+    #[test]
+    fn zero_alloc_pattern_helpers_match_empty_and_non_matching() {
+        // get_amp_atgc
+        assert_eq!(get_amp_atgc("-3&ATGC"), Some("ATGC"));
+        assert_eq!(get_amp_atgc("+AT&GC&TT"), Some("GC"));
+        assert_eq!(get_amp_atgc("&A#AC^2"), Some("A"));
+        assert_eq!(get_amp_atgc(""), None);
+        assert_eq!(get_amp_atgc("ATGC"), None);
+        assert_eq!(get_amp_atgc("&"), None);
+        assert_eq!(get_amp_atgc("&N"), None);
+        assert_eq!(get_amp_atgc("&123"), None);
+
+        // get_hash_group_caret_group
+        assert_eq!(get_hash_group_caret_group("-12#AC^3"), Some(("AC", "3")));
+        assert_eq!(
+            get_hash_group_caret_group("-5#ATGCN^12ACN"),
+            Some(("ATGCN", "12ACN"))
+        );
+        assert_eq!(get_hash_group_caret_group("#A^G&TT"), Some(("A", "G")));
+        assert_eq!(get_hash_group_caret_group(""), None);
+        assert_eq!(get_hash_group_caret_group("#^3"), None);
+        assert_eq!(get_hash_group_caret_group("#AC^"), None);
+        assert_eq!(get_hash_group_caret_group("#AC1^3"), None);
+        assert_eq!(get_hash_group_caret_group("#AC^&"), None);
+        assert_eq!(get_hash_group_caret_group("AC^3"), None);
+        assert_eq!(get_hash_group_caret_group("#AC"), None);
+
+        // get_caret_atgnc
+        assert_eq!(get_caret_atgnc("-3^ATGCN"), Some("ATGCN"));
+        assert_eq!(get_caret_atgnc("^AC12"), Some("AC"));
+        assert_eq!(get_caret_atgnc(""), None);
+        assert_eq!(get_caret_atgnc("ATGCN"), None);
+        assert_eq!(get_caret_atgnc("^"), None);
+        assert_eq!(get_caret_atgnc("^-3"), None);
+        assert_eq!(get_caret_atgnc("^2"), None);
+    }
+
+    #[test]
+    fn deletion_prefix_strip_handles_digits_and_non_digits() {
+        let strip_del = |description_string: &str| -> String {
+            if let Some(rest) = description_string.strip_prefix('-') {
+                let digit_len = rest.bytes().take_while(|b| b.is_ascii_digit()).count();
+                if digit_len > 0 {
+                    rest.get(digit_len..).unwrap_or("").to_string()
+                } else {
+                    description_string.to_string()
+                }
+            } else {
+                description_string.to_string()
+            }
+        };
+
+        assert_eq!(strip_del("-3"), "");
+        assert_eq!(strip_del("-12&AT"), "&AT");
+        assert_eq!(strip_del("-3^2"), "^2");
+        assert_eq!(strip_del("-12#AC^3"), "#AC^3");
+        assert_eq!(strip_del("-A"), "-A");
+        assert_eq!(strip_del("-"), "-");
     }
 }

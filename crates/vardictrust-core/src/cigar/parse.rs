@@ -1803,14 +1803,16 @@ impl<'a> CigarParser<'a> {
         dir: bool,
         is_5_side: bool,
     ) -> bool {
-        let parts: Vec<&str> = sa_tag_string.split(',').collect();
-        if parts.len() < 4 {
+        let mut parts = sa_tag_string.split(',');
+        let (Some(sa_chromosome), Some(sa_pos_str), Some(sa_direction_string), Some(sa_cigar)) =
+            (parts.next(), parts.next(), parts.next(), parts.next())
+        else {
             return false;
-        }
-        let sa_chromosome = parts[0];
-        let sa_position = parts[1].parse::<i32>().unwrap_or(0);
-        let sa_direction_string = parts[2];
-        let sa_cigar = parts[3];
+        };
+        let sa_position: i32 = match sa_pos_str.parse() {
+            Ok(p) => p,
+            Err(_) => return false,
+        };
         let sa_direction_is_forward = sa_direction_string == "+";
 
         let sa_5clip = {
@@ -3157,9 +3159,9 @@ pub fn get_soft_clipped_length(cigar: &[(u32, CigarKind)]) -> u32 {
 /// Parse the `-a` amplicon parameter "distance:fraction" into (distance, fraction).
 /// Falls back to (10, 0.95) on parse failure, matching Java parseCigarWithAmpCase.
 fn parse_amp_param(param: &str) -> (i32, f64) {
-    let parts: Vec<&str> = param.split(':').collect();
-    let distance = parts.first().and_then(|s| s.parse::<i32>().ok());
-    let fraction = parts.get(1).and_then(|s| s.parse::<f64>().ok());
+    let mut parts = param.split(':');
+    let distance = parts.next().and_then(|s| s.parse::<i32>().ok());
+    let fraction = parts.next().and_then(|s| s.parse::<f64>().ok());
     match (distance, fraction) {
         (Some(d), Some(f)) => (d, f),
         _ => (10, 0.95),
@@ -5361,5 +5363,53 @@ mod tests {
             mq: None,
         };
         parser.parse_cigar(&rec).unwrap();
+    }
+
+    #[test]
+    fn parse_amp_param_iterator_parity() {
+        assert_eq!(parse_amp_param("15:0.85"), (15, 0.85));
+        assert_eq!(parse_amp_param("15:0.85:extra"), (15, 0.85));
+        assert_eq!(parse_amp_param("bad"), (10, 0.95));
+        assert_eq!(parse_amp_param(""), (10, 0.95));
+        assert_eq!(parse_amp_param("15:"), (10, 0.95));
+        assert_eq!(parse_amp_param(":0.85"), (10, 0.95));
+    }
+
+    #[test]
+    fn is_read_chimeric_with_sa_field_count_parity() {
+        let reference = Reference::new();
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(1),
+            end: Pos1(200),
+            gene: "T".to_string(),
+            amplicon: None,
+        };
+        let config = Config::default();
+        let mut parser = CigarParser::new(&reference, &region, &config, false, 0, 100, 100);
+        parser.max_read_length = 100;
+
+        let rec = SamRecord {
+            name: b"r_sa".to_vec(),
+            reference_name: Some("chr1".to_string()),
+            alignment_start: Some(Pos1(100)),
+            alignment_end: Some(Pos1(199)),
+            ..SamRecord::default()
+        };
+
+        // < 4 comma-separated fields -> false
+        for short_sa in ["", "chr1", "chr1,110", "chr1,110,+"] {
+            assert!(
+                !parser.is_read_chimeric_with_sa(&rec, 100, short_sa, true, true),
+                "expected false for SA tag with < 4 fields: {short_sa:?}"
+            );
+        }
+
+        // >= 4 comma-separated fields -> parsed without Vec allocation
+        assert!(parser.is_read_chimeric_with_sa(&rec, 100, "chr1,110,+,25S75M", true, true));
+        assert!(parser.is_read_chimeric_with_sa(&rec, 100, "chr1,110,+,25S75M,60,0;", true, true));
+        assert!(parser.is_read_chimeric_with_sa(&rec, 100, "chr1,110,+,75M25S,60,0;", true, false));
+        assert!(!parser.is_read_chimeric_with_sa(&rec, 100, "chr1,bad,+,25S75M,60,0;", true, true));
+        assert!(!parser.is_read_chimeric_with_sa(&rec, 100, "chr2,110,+,25S75M,60,0;", true, true));
     }
 }
