@@ -3,7 +3,7 @@ use noodles::sam::alignment::record::cigar::op::Kind as CigarKind;
 use noodles::sam::alignment::record::{QualityScores, Sequence};
 use noodles::sam::alignment::Record;
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -740,7 +740,8 @@ struct SharedBamMeta {
     index: noodles::bam::Index,
 }
 
-const BGZF_CACHE_SHARDS: usize = 8;
+/// Process-wide BGZF block cache sharding (`32 shards × 16 blocks = 512 blocks` <= 32 MiB total).
+const BGZF_CACHE_SHARDS: usize = 32;
 const BGZF_CACHE_SLOTS_PER_SHARD: usize = 16;
 /// 64-bit golden-ratio fractional constant (`2^64 / phi`, splitmix64) for offset hashing.
 const GOLDEN_RATIO_64: u64 = 0x9E37_79B9_7F4A_7C15;
@@ -2970,6 +2971,27 @@ impl RecordFeed {
     }
 }
 
+#[inline]
+fn build_noodles_region(
+    chr: &str,
+    start_pos: u32,
+    end_pos: u32,
+) -> Result<noodles::core::Region, crate::types::VardictError> {
+    if chr.is_empty() {
+        return Err(crate::types::VardictError::Parse(format!(
+            "Invalid region {chr}:{start_pos}-{end_pos}: empty chromosome name"
+        )));
+    }
+    let s_pos = noodles::core::Position::try_from(start_pos as usize)
+        .and_then(|s| noodles::core::Position::try_from(end_pos as usize).map(|e| (s, e)))
+        .map_err(|e| {
+            crate::types::VardictError::Parse(format!(
+                "Invalid region {chr}:{start_pos}-{end_pos}: {e}"
+            ))
+        })?;
+    Ok(noodles::core::Region::new(chr, s_pos.0..=s_pos.1))
+}
+
 /// Streaming counterpart to [`query_region`]: shares parsed `.bai`/header
 /// metadata across threads via `META_CACHE`, reuses thread-local BGZF readers
 /// via `BAM_READER_POOL`, and returns a lazy [`RecordFeed`] yielding one
@@ -2996,13 +3018,7 @@ pub fn query_region_iter(
                 meta,
             ))));
         }
-        let region_str = format!("{}:{}-{}", chr, start_pos, end_pos);
-        let region: noodles::core::Region = region_str.parse().map_err(|e| {
-            crate::types::VardictError::Parse(format!(
-                "failed to parse region '{}': {}",
-                region_str, e
-            ))
-        })?;
+        let region = build_noodles_region(chr, start_pos, end_pos)?;
         let reference_sequence_id = meta
             .header
             .reference_sequences()
@@ -3063,15 +3079,11 @@ pub fn query_region_iter(
             })));
         }
 
-        let region_str = format!("{}:{}-{}", chr, start_pos, end_pos);
-        let region: noodles::core::Region = match region_str.parse() {
+        let region = match build_noodles_region(chr, start_pos, end_pos) {
             Ok(r) => r,
-            Err(e) => {
+            Err(err) => {
                 return_pooled_reader(bam_path.to_path_buf(), meta, reader);
-                return Err(crate::types::VardictError::Parse(format!(
-                    "failed to parse region '{}': {}",
-                    region_str, e
-                )));
+                return Err(err);
             }
         };
 
@@ -3149,25 +3161,29 @@ pub fn get_cigar_string(cigar: &[(u32, CigarKind)]) -> String {
     s
 }
 
+#[inline]
+fn cigar_kind_char(kind: CigarKind) -> char {
+    match kind {
+        CigarKind::Match => 'M',
+        CigarKind::Insertion => 'I',
+        CigarKind::Deletion => 'D',
+        CigarKind::Skip => 'N',
+        CigarKind::SoftClip => 'S',
+        CigarKind::HardClip => 'H',
+        CigarKind::Pad => 'P',
+        CigarKind::SequenceMatch => '=',
+        CigarKind::SequenceMismatch => 'X',
+    }
+}
+
 /// Append CIGAR to an existing buffer (scratch reuse; identical bytes to
 /// [`get_cigar_string`]).
 pub fn push_cigar_string(buf: &mut String, cigar: &[(u32, CigarKind)]) {
     use std::fmt::Write as _;
-    for (len, kind) in cigar {
+    for &(len, kind) in cigar {
         // write! formats in place (no temp String per op); bytes identical.
         let _ = write!(buf, "{len}");
-        let c = match kind {
-            CigarKind::Match => 'M',
-            CigarKind::Insertion => 'I',
-            CigarKind::Deletion => 'D',
-            CigarKind::Skip => 'N',
-            CigarKind::SoftClip => 'S',
-            CigarKind::HardClip => 'H',
-            CigarKind::Pad => 'P',
-            CigarKind::SequenceMatch => '=',
-            CigarKind::SequenceMismatch => 'X',
-        };
-        buf.push(c);
+        buf.push(cigar_kind_char(kind));
     }
 }
 
@@ -3180,10 +3196,46 @@ pub fn get_aligned_length_md(cigar: &[(u32, CigarKind)]) -> i32 {
         .sum()
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum MateRefKey {
+    Unmapped,
+    Same,
+    Other(Box<str>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DupKey {
+    MatePos(i32, MateRefKey, i32),
+    UnmappedMateCigar(i32, Vec<(u32, CigarKind)>),
+}
+
+impl std::hash::Hash for DupKey {
+    #[inline]
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        match self {
+            DupKey::MatePos(pos, mate_ref, mate_pos) => {
+                0u8.hash(state);
+                pos.hash(state);
+                mate_ref.hash(state);
+                mate_pos.hash(state);
+            }
+            DupKey::UnmappedMateCigar(pos, ops) => {
+                1u8.hash(state);
+                pos.hash(state);
+                ops.len().hash(state);
+                for &(len, kind) in ops {
+                    len.hash(state);
+                    cigar_kind_char(kind).hash(state);
+                }
+            }
+        }
+    }
+}
+
 /// Class for primary processing of SAM record and filtering reads that don't fit the requirements.
 /// Ports RecordPreprocessor.java.
 pub struct RecordPreprocessor {
-    pub duplicates: HashSet<String>,
+    pub duplicates: rustc_hash::FxHashSet<DupKey>,
     pub first_matching_position: i32,
     pub total_reads: u32,
     pub duplicate_reads: u32,
@@ -3192,10 +3244,22 @@ pub struct RecordPreprocessor {
 impl RecordPreprocessor {
     pub fn new() -> Self {
         RecordPreprocessor {
-            duplicates: HashSet::new(),
+            duplicates: rustc_hash::FxHashSet::default(),
             first_matching_position: -1,
             total_reads: 0,
             duplicate_reads: 0,
+        }
+    }
+
+    #[inline]
+    fn get_mate_ref_key(record: &SamRecord) -> MateRefKey {
+        match (&record.reference_name, &record.mate_reference_name) {
+            (None, _) | (_, None) => MateRefKey::Unmapped,
+            (Some(_), Some(mate_ref)) if mate_ref == "*" => MateRefKey::Unmapped,
+            (Some(ref_name), Some(mate_ref)) if ref_name == mate_ref || mate_ref == "=" => {
+                MateRefKey::Same
+            }
+            (Some(_), Some(mate_ref)) => MateRefKey::Other(mate_ref.as_str().into()),
         }
     }
 
@@ -3273,33 +3337,28 @@ impl RecordPreprocessor {
 
             if mate_alignment_start_val < 10 {
                 // POS-RNEXT-PNEXT
-                let dup_key = format!(
-                    "{}-{}-{}",
+                let key = DupKey::MatePos(
                     alignment_start_val,
-                    get_mate_reference_name(record),
-                    mate_alignment_start_val
+                    Self::get_mate_ref_key(record),
+                    mate_alignment_start_val,
                 );
-                if self.duplicates.contains(&dup_key) {
+                if self.duplicates.contains(&key) {
                     self.duplicate_reads += 1;
                     return false;
                 }
-                self.duplicates.insert(dup_key);
+                self.duplicates.insert(key);
                 self.first_matching_position = alignment_start_val;
             } else {
                 let is_paired = (record.flags & 0x1) != 0;
                 let is_mate_unmapped = (record.flags & 0x8) != 0;
                 if is_paired && is_mate_unmapped {
                     // POS-CIGAR
-                    let dup_key = format!(
-                        "{}-{}",
-                        alignment_start_val,
-                        get_cigar_string(&record.cigar)
-                    );
-                    if self.duplicates.contains(&dup_key) {
+                    let key = DupKey::UnmappedMateCigar(alignment_start_val, record.cigar.clone());
+                    if self.duplicates.contains(&key) {
                         self.duplicate_reads += 1;
                         return false;
                     }
-                    self.duplicates.insert(dup_key);
+                    self.duplicates.insert(key);
                     self.first_matching_position = alignment_start_val;
                 }
             }
@@ -6514,5 +6573,144 @@ mod tests {
         assert!(feed.next_into(&mut out).unwrap());
         assert_eq!(out.reference_name.as_deref(), Some("chr1"));
         assert!(!feed.next_into(&mut out).unwrap());
+    }
+
+    #[test]
+    fn build_noodles_region_and_typed_dedup_keys() {
+        // 1. Validate `build_noodles_region` on valid, special-character, and invalid inputs.
+        let reg = build_noodles_region("HLA-A*01:01:01:01", 10, 250).unwrap();
+        assert_eq!(reg.name(), "HLA-A*01:01:01:01");
+        assert_eq!(
+            reg.interval().start().map(usize::from),
+            Some(10),
+            "1-based start preserved"
+        );
+        assert_eq!(
+            reg.interval().end().map(usize::from),
+            Some(250),
+            "1-based end preserved"
+        );
+        assert!(
+            build_noodles_region("", 10, 250).is_err(),
+            "empty chromosome name must error"
+        );
+        assert!(
+            build_noodles_region("chr1", 0, 250).is_err(),
+            "0 start_pos must fail Position::try_from"
+        );
+        assert!(
+            build_noodles_region("chr1", 10, 0).is_err(),
+            "0 end_pos must fail Position::try_from"
+        );
+
+        // 2. Validate `RecordPreprocessor` typed `DupKey` duplicate detection across all 4 branches.
+        let config = Config {
+            dedup: true,
+            ..Default::default()
+        };
+        let mut prep = RecordPreprocessor::new();
+
+        let base_rec = SamRecord {
+            flags: 0x1,
+            reference_name: Some("chr1".to_string()),
+            alignment_start: Some(Pos1(100)),
+            alignment_end: Some(Pos1(149)),
+            mapping_quality: Some(60),
+            cigar: vec![(50, CigarKind::Match)],
+            sequence: vec![b'A'; 50],
+            quality_scores: vec![40; 50],
+            ..SamRecord::default()
+        };
+
+        // Branch (a): Concordant paired reads (`MateRefKey::Same`) with PNEXT < 10
+        let concordant = SamRecord {
+            mate_reference_name: Some("chr1".to_string()),
+            mate_alignment_start: Some(Pos1(5)),
+            ..base_rec.clone()
+        };
+        assert!(prep.preprocess_record(&concordant, &config));
+        assert!(
+            !prep.preprocess_record(&concordant, &config),
+            "second identical concordant read must be marked duplicate"
+        );
+        assert!(prep
+            .duplicates
+            .contains(&DupKey::MatePos(100, MateRefKey::Same, 5)));
+
+        // Branch (b): Unmapped mate with PNEXT < 10 (`MateRefKey::Unmapped`)
+        let unmapped_pnext_low = SamRecord {
+            flags: 0x1 | 0x8,
+            mate_reference_name: None,
+            mate_alignment_start: Some(Pos1(5)),
+            ..base_rec.clone()
+        };
+        assert!(
+            prep.preprocess_record(&unmapped_pnext_low, &config),
+            "unmapped mate at same POS/PNEXT must not collide with MateRefKey::Same"
+        );
+        assert!(!prep.preprocess_record(&unmapped_pnext_low, &config));
+        assert!(prep
+            .duplicates
+            .contains(&DupKey::MatePos(100, MateRefKey::Unmapped, 5)));
+
+        // Branch (c): Discordant mate contigs (`chr2` vs `chr3`) at the same POS=100 and PNEXT=5
+        // (`MateRefKey::Other`), confirming `chr2` and `chr3` do NOT collide!
+        let discordant_chr2 = SamRecord {
+            mate_reference_name: Some("chr2".to_string()),
+            mate_alignment_start: Some(Pos1(5)),
+            ..base_rec.clone()
+        };
+        let discordant_chr3 = SamRecord {
+            mate_reference_name: Some("chr3".to_string()),
+            mate_alignment_start: Some(Pos1(5)),
+            ..base_rec.clone()
+        };
+        assert!(prep.preprocess_record(&discordant_chr2, &config));
+        assert!(
+            prep.preprocess_record(&discordant_chr3, &config),
+            "discordant mate on chr3 must NOT collide with chr2 at same POS and PNEXT < 10"
+        );
+        assert!(!prep.preprocess_record(&discordant_chr2, &config));
+        assert!(!prep.preprocess_record(&discordant_chr3, &config));
+        assert!(prep.duplicates.contains(&DupKey::MatePos(
+            100,
+            MateRefKey::Other("chr2".into()),
+            5
+        )));
+        assert!(prep.duplicates.contains(&DupKey::MatePos(
+            100,
+            MateRefKey::Other("chr3".into()),
+            5
+        )));
+
+        // Branch (d): Paired unmapped mate with PNEXT >= 10 (`DupKey::UnmappedMateCigar`)
+        let unmapped_pnext_high_50m = SamRecord {
+            flags: 0x1 | 0x8,
+            alignment_start: Some(Pos1(200)),
+            alignment_end: Some(Pos1(249)),
+            mate_reference_name: Some("chr1".to_string()),
+            mate_alignment_start: Some(Pos1(200)),
+            cigar: vec![(50, CigarKind::Match)],
+            ..base_rec.clone()
+        };
+        let unmapped_pnext_high_clip = SamRecord {
+            cigar: vec![(10, CigarKind::SoftClip), (40, CigarKind::Match)],
+            ..unmapped_pnext_high_50m.clone()
+        };
+        assert!(prep.preprocess_record(&unmapped_pnext_high_50m, &config));
+        assert!(
+            !prep.preprocess_record(&unmapped_pnext_high_50m, &config),
+            "duplicate unmapped-mate CIGAR at PNEXT >= 10 must be filtered"
+        );
+        assert!(
+            prep.preprocess_record(&unmapped_pnext_high_clip, &config),
+            "distinct CIGAR at same POS with PNEXT >= 10 must not collide"
+        );
+        assert!(prep.duplicates.contains(&DupKey::UnmappedMateCigar(
+            200,
+            vec![(50, CigarKind::Match)]
+        )));
+        assert_eq!(prep.total_reads, 11);
+        assert_eq!(prep.duplicate_reads, 5);
     }
 }
