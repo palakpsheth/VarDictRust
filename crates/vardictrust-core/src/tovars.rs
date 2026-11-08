@@ -1548,23 +1548,11 @@ fn get_amp_atgc(s: &str) -> Option<&str> {
 
 fn get_hash_group_caret_group(s: &str) -> Option<(&str, &str)> {
     let (_, rest) = s.split_once('#')?;
-    let (g1, g2_rest) = rest.split_once('^')?;
-    if g1.is_empty()
-        || !g1
-            .bytes()
-            .all(|b| matches!(b, b'A' | b'T' | b'G' | b'C' | b'N'))
-    {
-        return None;
-    }
-    let g2_len = g2_rest
-        .bytes()
-        .take_while(|&b| matches!(b, b'A' | b'T' | b'G' | b'C' | b'N' | b'0'..=b'9'))
-        .count();
-    let g2 = g2_rest.get(..g2_len)?;
-    if g2.is_empty() {
-        None
-    } else {
+    let (g1, g2) = rest.split_once('^')?;
+    if !g1.is_empty() && !g2.is_empty() {
         Some((g1, g2))
+    } else {
+        None
     }
 }
 
@@ -2208,18 +2196,17 @@ mod tests {
         assert_eq!(get_amp_atgc("&N"), None);
         assert_eq!(get_amp_atgc("&123"), None);
 
-        // get_hash_group_caret_group
+        // get_hash_group_caret_group (ports Patterns.HASH_GROUP_CARET_GROUP `#(.+)\^(.+)`)
         assert_eq!(get_hash_group_caret_group("-12#AC^3"), Some(("AC", "3")));
         assert_eq!(
             get_hash_group_caret_group("-5#ATGCN^12ACN"),
             Some(("ATGCN", "12ACN"))
         );
-        assert_eq!(get_hash_group_caret_group("#A^G&TT"), Some(("A", "G")));
+        assert_eq!(get_hash_group_caret_group("-2#AR^3"), Some(("AR", "3")));
+        assert_eq!(get_hash_group_caret_group("#A^G&TT"), Some(("A", "G&TT")));
         assert_eq!(get_hash_group_caret_group(""), None);
         assert_eq!(get_hash_group_caret_group("#^3"), None);
         assert_eq!(get_hash_group_caret_group("#AC^"), None);
-        assert_eq!(get_hash_group_caret_group("#AC1^3"), None);
-        assert_eq!(get_hash_group_caret_group("#AC^&"), None);
         assert_eq!(get_hash_group_caret_group("AC^3"), None);
         assert_eq!(get_hash_group_caret_group("#AC"), None);
 

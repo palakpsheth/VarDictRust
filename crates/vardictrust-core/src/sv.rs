@@ -524,7 +524,7 @@ pub fn find_match_rev(
                 }
                 return Match {
                     base_position: bp,
-                    matched_sequence: extra_slice.to_vec(),
+                    matched_sequence: Vec::new(),
                 };
             } else {
                 // For complex indels, allowing some mismatches at the end up to 15bp or 20% length
@@ -4637,5 +4637,53 @@ mod tests {
         let mr_pos = find_match_rev(&seq_inv_pos, &reference, 150, 1, 17, 1, chr, false);
         assert_eq!(mr_pos.base_position, 118);
         assert_eq!(mr_pos.matched_sequence, b"TT");
+    }
+
+    #[test]
+    fn test_find_match_rev_failed_trimmed_seed_before_full_match_returns_empty_extra() {
+        let chr = "chr1";
+        // Complemented query `seq_vec` (len 21, seed_len = 17):
+        // - At i = 4 (checked first in reverse loop): seed_b matches at ref pos 50,
+        //   where ref has 4 matching bases at 47..=50 so the trim loop sets `extra_slice`,
+        //   but the rest of ref (51..=66) is 'T' so `is_match_ref(sseq, ..., 1)` fails.
+        // - At i = 0 (checked later): seed_a matches at ref pos 150, where the entire
+        //   21-bp `seq_vec` matches the reference at 150..=170.
+        // The full-match branch at i = 0 must return an empty `matched_sequence`.
+        let seq_vec = b"AAAACCCCCCCCCCCCCCCCC";
+        let seed_a = &seq_vec[0..17];
+        let seed_b = &seq_vec[4..21];
+
+        let mut reference = Reference::default();
+        reference
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: chr.to_string(),
+                sequence_start: 1,
+                sequence_end: 250,
+            });
+        let mut ref_seq = vec![b'T'; 250];
+        // At 1-based 46..=50 (0-based 45..50), place 'A' so at ii = 1 (bp_mut = 47),
+        // b0 = 'A' and b1 = 'A' match ref at 47 and 48, setting `extra_slice = "A"`,
+        // while the trailing 'C's mismatch 'T' so `is_match_ref(..., 1)` fails.
+        ref_seq[45..50].copy_from_slice(b"AAAAA");
+        // At 1-based 150..=170 (0-based 149..170), place full `seq_vec`.
+        ref_seq[149..170].copy_from_slice(seq_vec);
+        reference
+            .reference_sequences
+            .insert(chr.to_string(), ref_seq);
+        reference.seed.insert(seed_b.to_vec(), vec![50]);
+        reference.seed.insert(seed_a.to_vec(), vec![150]);
+
+        let input_for_neg: Vec<u8> = seq_vec
+            .iter()
+            .map(|&b| crate::util::complement(b))
+            .collect();
+        let m = find_match_rev(&input_for_neg, &reference, 100, -1, 17, 1, chr, false);
+        assert_eq!(m.base_position, 150);
+        assert!(
+            m.matched_sequence.is_empty(),
+            "full match after a failed trimmed seed must not leak extra_slice: {:?}",
+            String::from_utf8_lossy(&m.matched_sequence)
+        );
     }
 }
