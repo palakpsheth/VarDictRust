@@ -68,26 +68,38 @@ pub fn adj_ins_pos(
     }
 }
 
+#[inline]
+fn strip_markers(seq: &[u8]) -> std::borrow::Cow<'_, [u8]> {
+    if !seq.contains(&b'#') && !seq.contains(&b'^') {
+        std::borrow::Cow::Borrowed(seq)
+    } else {
+        std::borrow::Cow::Owned(
+            seq.iter()
+                .copied()
+                .filter(|&b| b != b'#' && b != b'^')
+                .collect(),
+        )
+    }
+}
+
 /// Check if seq1 matches seq2 with no more than MM mismatches and mismatches ratio < 0.15.
 ///
 /// Ports `VariationRealigner.ismatch`.
 pub fn is_match(seq1: &[u8], seq2: &[u8], dir: i32, mm_limit: i32) -> bool {
-    let clean_seq2: Vec<u8> = seq2
-        .iter()
-        .filter(|&&b| b != b'#' && b != b'^')
-        .copied()
-        .collect();
+    let clean_seq2 = strip_markers(seq2);
 
     let mut mm = 0;
     let limit = seq1.len().min(clean_seq2.len());
     for n in 0..limit {
-        let base2 = if dir == -1 {
-            clean_seq2[clean_seq2.len() - 1 - n]
+        let idx2 = if dir == -1 {
+            clean_seq2.len().saturating_sub(1).saturating_sub(n)
         } else {
-            clean_seq2[n]
+            n
         };
-        if seq1[n] != base2 {
-            mm += 1;
+        if let (Some(&base1), Some(&base2)) = (seq1.get(n), clean_seq2.get(idx2)) {
+            if base1 != base2 {
+                mm += 1;
+            }
         }
     }
 
@@ -421,33 +433,39 @@ pub fn find_mm5(
     wupseq: &[u8],
     soft_clips_5_end: &mut BTreeMap<i32, Sclip>,
 ) -> MismatchResult {
-    let seq: Vec<u8> = wupseq
-        .iter()
-        .filter(|&&b| b != b'#' && b != b'^')
-        .copied()
-        .collect();
+    let clean_seq2 = strip_markers(wupseq);
 
     let longmm = 3;
     let mut mismatches = Vec::new();
     let mut n = 0;
     let mut mn = 0;
     let mut mcnt = 0;
-    let mut str_bytes = Vec::new();
+    let mut mm_buf = [0u8; 3];
+    let mut mm_len = 0usize;
     let mut sc5p = Vec::new();
 
     loop {
-        let seq_idx = (seq.len() as i32) - 1 - n;
-        if seq_idx < 0 || seq_idx >= seq.len() as i32 {
+        let seq_idx = (clean_seq2.len() as i32) - 1 - n;
+        let Some(&c_seq) = usize::try_from(seq_idx)
+            .ok()
+            .and_then(|idx| clean_seq2.get(idx))
+        else {
             break;
-        }
+        };
         let ref_pos = position - n;
         let ref_ch = reference.get_base(chr, ref_pos as u32);
 
         if let Some(c_ref) = ref_ch {
-            let c_seq = seq[seq_idx as usize];
             if c_seq != c_ref && mcnt < longmm {
-                str_bytes.insert(0, c_seq);
-                let mismatch_str = String::from_utf8_lossy(&str_bytes).into_owned();
+                mm_len += 1;
+                let start = mm_buf.len().saturating_sub(mm_len);
+                if let Some(slot) = mm_buf.get_mut(start) {
+                    *slot = c_seq;
+                }
+                let mismatch_str = mm_buf
+                    .get(start..)
+                    .map(|s| String::from_utf8_lossy(s).into_owned())
+                    .unwrap_or_default();
                 mismatches.push(Mismatch {
                     mismatch_sequence: mismatch_str,
                     mismatch_position: position - n,
@@ -464,16 +482,19 @@ pub fn find_mm5(
 
     let misp = 0;
     let misnt: Option<u8> = None;
-    if str_bytes.len() == 1 {
+    if mm_len == 1 {
         loop {
-            let seq_idx = (seq.len() as i32) - 1 - n;
-            if seq_idx < 0 || seq_idx >= seq.len() as i32 {
+            let seq_idx = (clean_seq2.len() as i32) - 1 - n;
+            let Some(&c_seq) = usize::try_from(seq_idx)
+                .ok()
+                .and_then(|idx| clean_seq2.get(idx))
+            else {
                 break;
-            }
+            };
             let ref_pos = position - n;
             let ref_ch = reference.get_base(chr, ref_pos as u32);
             if let Some(c_ref) = ref_ch {
-                if seq[seq_idx as usize] == c_ref {
+                if c_seq == c_ref {
                     n += 1;
                     if n != 0 {
                         mn += 1;
@@ -517,11 +538,7 @@ pub fn find_mm3(
     sanpseq: &[u8],
     soft_clips_3_end: &mut BTreeMap<i32, Sclip>,
 ) -> MismatchResult {
-    let seq: Vec<u8> = sanpseq
-        .iter()
-        .filter(|&&b| b != b'#' && b != b'^')
-        .copied()
-        .collect();
+    let clean_seq2 = strip_markers(sanpseq);
 
     let longmm = 3;
     let mut mismatches = Vec::new();
@@ -529,13 +546,14 @@ pub fn find_mm3(
     let mut mn = 0;
     let mut mcnt = 0;
     let mut sc3p = Vec::new();
-    let mut str_bytes = Vec::new();
+    let mut mm_buf = [0u8; 4];
+    let mut mm_len = 0usize;
 
-    while n < seq.len() {
+    while let Some(&c_seq) = clean_seq2.get(n) {
         let ref_pos = p + (n as i32);
         let ref_ch = reference.get_base(chr, ref_pos as u32);
         if let Some(c_ref) = ref_ch {
-            if c_ref == seq[n] {
+            if c_ref == c_seq {
                 n += 1;
                 continue;
             }
@@ -545,13 +563,22 @@ pub fn find_mm3(
     sc3p.push(p + (n as i32));
     let tbp = p + (n as i32);
 
-    while mcnt <= longmm && n < seq.len() {
+    while mcnt <= longmm {
+        let Some(&c_seq) = clean_seq2.get(n) else {
+            break;
+        };
         let ref_pos = p + (n as i32);
         let ref_ch = reference.get_base(chr, ref_pos as u32);
         if let Some(c_ref) = ref_ch {
-            if c_ref != seq[n] {
-                str_bytes.push(seq[n]);
-                let mismatch_str = String::from_utf8_lossy(&str_bytes).into_owned();
+            if c_ref != c_seq {
+                if let Some(slot) = mm_buf.get_mut(mm_len) {
+                    *slot = c_seq;
+                }
+                mm_len += 1;
+                let mismatch_str = mm_buf
+                    .get(..mm_len)
+                    .map(|s| String::from_utf8_lossy(s).into_owned())
+                    .unwrap_or_default();
                 mismatches.push(Mismatch {
                     mismatch_sequence: mismatch_str,
                     mismatch_position: tbp,
@@ -567,12 +594,12 @@ pub fn find_mm3(
 
     let mut misp = 0;
     let mut misnt = None;
-    if str_bytes.len() == 1 {
-        while n < seq.len() {
+    if mm_len == 1 {
+        while let Some(&c_seq) = clean_seq2.get(n) {
             let ref_pos = p + (n as i32);
             let ref_ch = reference.get_base(chr, ref_pos as u32);
             if let Some(c_ref) = ref_ch {
-                if seq[n] == c_ref {
+                if c_seq == c_ref {
                     n += 1;
                     if n != 0 {
                         mn += 1;
@@ -585,11 +612,16 @@ pub fn find_mm3(
 
         if mn > 1 {
             let mut n2 = 0i32;
-            while n + n2 as usize + 1 < seq.len() {
+            while let Some(&c_seq) = usize::try_from(n2)
+                .ok()
+                .and_then(|n2u| n.checked_add(n2u))
+                .and_then(|idx| idx.checked_add(1))
+                .and_then(|idx| clean_seq2.get(idx))
+            {
                 let ref_pos = p + (n as i32) + 1 + n2;
                 let ref_ch = reference.get_base(chr, ref_pos as u32);
                 if let Some(c_ref) = ref_ch {
-                    if seq[n + n2 as usize + 1] == c_ref {
+                    if c_seq == c_ref {
                         n2 += 1;
                         continue;
                     }
@@ -597,10 +629,16 @@ pub fn find_mm3(
                 break;
             }
 
-            if n2 > 2 && n + (n2 as usize) + 1 < seq.len() {
+            if n2 > 2
+                && usize::try_from(n2)
+                    .ok()
+                    .and_then(|n2u| n.checked_add(n2u))
+                    .and_then(|idx| idx.checked_add(1))
+                    .is_some_and(|idx| idx < clean_seq2.len())
+            {
                 sc3p.push(p + (n as i32) + n2);
                 misp = p + (n as i32);
-                misnt = Some(seq[n]);
+                misnt = clean_seq2.get(n).copied();
                 let target_pos = p + (n as i32) + n2;
                 if let Some(sclip) = soft_clips_3_end.get_mut(&target_pos) {
                     sclip.used = true;
@@ -6581,5 +6619,57 @@ mod tests {
             "expected '&' in insertion_sequence, got: {}",
             res.insertion_sequence
         );
+    }
+
+    #[test]
+    fn strip_markers_and_mm_stack_buffers_match_with_and_without_markers() {
+        // 1. strip_markers returns Borrowed when no '#'/'^' present, Owned when present.
+        let clean = super::strip_markers(b"ACGTACGT");
+        assert!(matches!(clean, std::borrow::Cow::Borrowed(b"ACGTACGT")));
+        let stripped = super::strip_markers(b"AC#GT^AC#GT");
+        assert!(matches!(stripped, std::borrow::Cow::Owned(_)));
+        assert_eq!(stripped.as_ref(), b"ACGTACGT");
+
+        // 2. is_match forward (dir = 1) and reverse (dir = -1) with and without markers.
+        let ref_fwd = b"ACGTACGTAC";
+        assert!(super::is_match(ref_fwd, b"ACGTACGTAC", 1, 1));
+        assert!(super::is_match(ref_fwd, b"AC#GT^ACGTAC", 1, 1));
+        assert!(super::is_match(ref_fwd, b"CATGCATGCA", -1, 1));
+        assert!(super::is_match(ref_fwd, b"CA#TG^CATGCA", -1, 1));
+
+        // 3. find_mm5 & find_mm3 stack buffers and marker stripping.
+        let mut reference = crate::reference::Reference::new();
+        reference
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 1,
+                sequence_end: 30,
+            });
+        let ref_bases = b"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".to_vec();
+        reference.region_sequences.push(ref_bases);
+
+        let mut sc5_plain = BTreeMap::new();
+        let mut sc5_marked = BTreeMap::new();
+        // 3 mismatches at 5' end (reading right-to-left from end of wupseq: 'T', 'G', 'C')
+        let mm5_plain = super::find_mm5(&reference, "chr1", 10, b"AAAACGT", &mut sc5_plain);
+        let mm5_marked = super::find_mm5(&reference, "chr1", 10, b"AA#AA^CG#T", &mut sc5_marked);
+        assert_eq!(mm5_plain, mm5_marked);
+        assert_eq!(mm5_plain.mismatches.len(), 3);
+        assert_eq!(mm5_plain.mismatches[0].mismatch_sequence, "T");
+        assert_eq!(mm5_plain.mismatches[1].mismatch_sequence, "GT");
+        assert_eq!(mm5_plain.mismatches[2].mismatch_sequence, "CGT");
+
+        let mut sc3_plain = BTreeMap::new();
+        let mut sc3_marked = BTreeMap::new();
+        // 2 matching 'A's followed by 4 mismatches ('C', 'G', 'T', 'C') at 3' end (mcnt <= 3)
+        let mm3_plain = super::find_mm3(&reference, "chr1", 10, b"AACGTC", &mut sc3_plain);
+        let mm3_marked = super::find_mm3(&reference, "chr1", 10, b"A#A^CG#TC", &mut sc3_marked);
+        assert_eq!(mm3_plain, mm3_marked);
+        assert_eq!(mm3_plain.mismatches.len(), 4);
+        assert_eq!(mm3_plain.mismatches[0].mismatch_sequence, "C");
+        assert_eq!(mm3_plain.mismatches[1].mismatch_sequence, "CG");
+        assert_eq!(mm3_plain.mismatches[2].mismatch_sequence, "CGT");
+        assert_eq!(mm3_plain.mismatches[3].mismatch_sequence, "CGTC");
     }
 }

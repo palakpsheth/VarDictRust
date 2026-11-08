@@ -365,13 +365,32 @@ impl Reference {
     }
 
     /// Safely gets the base at a 1-based chromosome position.
+    #[inline]
     pub fn get_base(&self, chr: &str, pos: u32) -> Option<u8> {
-        for (idx, lr) in self.loaded_regions.iter().enumerate() {
+        if let Some(lr) = self.loaded_regions.first() {
+            if pos >= lr.sequence_start && pos <= lr.sequence_end && lr.chr == chr {
+                if let Some(offset) = pos
+                    .checked_sub(lr.sequence_start)
+                    .and_then(|d| usize::try_from(d).ok())
+                {
+                    if let Some(bases) = self.seq_for_idx(0, chr) {
+                        if let Some(&b) = bases.get(offset) {
+                            return Some(b);
+                        }
+                    }
+                }
+            }
+        }
+        for (idx, lr) in self.loaded_regions.iter().enumerate().skip(1) {
             if lr.chr == chr && pos >= lr.sequence_start && pos <= lr.sequence_end {
-                let offset = (pos - lr.sequence_start) as usize;
-                if let Some(bases) = self.seq_for_idx(idx, chr) {
-                    if let Some(&b) = bases.get(offset) {
-                        return Some(b);
+                if let Some(offset) = pos
+                    .checked_sub(lr.sequence_start)
+                    .and_then(|d| usize::try_from(d).ok())
+                {
+                    if let Some(bases) = self.seq_for_idx(idx, chr) {
+                        if let Some(&b) = bases.get(offset) {
+                            return Some(b);
+                        }
                     }
                 }
             }
@@ -1151,5 +1170,41 @@ mod tests {
                 .contains("Query asks for data past end of contig chr1"),
             "unexpected error: {err_stale}"
         );
+    }
+
+    #[test]
+    fn get_base_primary_fastpath_and_truncated_fallthrough() {
+        let mut reference = Reference::new();
+        // Primary region claims 1..=50, but region_sequences[0] is truncated to 33 bp
+        // (simulating SEED1_LEN = 17 trim in get_reference_with_chr_len).
+        reference.loaded_regions.push(LoadedRegion {
+            chr: "chr1".to_string(),
+            sequence_start: 1,
+            sequence_end: 50,
+        });
+        reference.region_sequences.push(vec![b'A'; 33]);
+
+        // Secondary overlapping region covers 30..=60 with 'G'.
+        reference.loaded_regions.push(LoadedRegion {
+            chr: "chr1".to_string(),
+            sequence_start: 30,
+            sequence_end: 60,
+        });
+        reference.region_sequences.push(vec![b'G'; 31]);
+
+        // 1. Primary region fast-path hit (within stored 1..=33).
+        assert_eq!(reference.get_base("chr1", 1), Some(b'A'));
+        assert_eq!(reference.get_base("chr1", 33), Some(b'A'));
+
+        // 2. Fallthrough to loaded_regions[1] when pos <= loaded_regions[0].sequence_end (50)
+        //    but past region_sequences[0].len() (33).
+        assert_eq!(reference.get_base("chr1", 34), Some(b'G'));
+        assert_eq!(reference.get_base("chr1", 50), Some(b'G'));
+        assert_eq!(reference.get_base("chr1", 60), Some(b'G'));
+
+        // 3. Out-of-bounds or different chromosome returns None.
+        assert_eq!(reference.get_base("chr1", 0), None);
+        assert_eq!(reference.get_base("chr1", 61), None);
+        assert_eq!(reference.get_base("chr2", 10), None);
     }
 }

@@ -12,7 +12,6 @@ pub struct FisherExact {
     x: i32,
     lo: i32,
     hi: i32,
-    support: Vec<i32>,
     logdc: Vec<f64>,
     p_value_less: f64,
     p_value_greater: f64,
@@ -54,14 +53,8 @@ impl FisherExact {
         let n = alt_fwd.saturating_add(alt_rev);
         let k = ref_fwd.saturating_add(alt_fwd);
         let x = ref_fwd;
-        let lo = std::cmp::max(0, k - n);
+        let lo = std::cmp::max(0, k.saturating_sub(n));
         let hi = std::cmp::min(k, m);
-        // Pre-sized only; push order and values are unchanged.
-        let mut support =
-            Vec::with_capacity(hi.saturating_sub(lo).saturating_add(1).max(0) as usize);
-        for j in lo..=hi {
-            support.push(j);
-        }
 
         let mut fisher = FisherExact {
             m,
@@ -70,7 +63,6 @@ impl FisherExact {
             x,
             lo,
             hi,
-            support,
             logdc: Vec::new(),
             p_value_less: 0.0,
             p_value_greater: 0.0,
@@ -83,10 +75,21 @@ impl FisherExact {
         fisher
     }
 
+    #[inline]
+    fn support_len(&self) -> usize {
+        if self.hi < self.lo {
+            0
+        } else {
+            (self.hi as i64 - self.lo as i64 + 1) as usize
+        }
+    }
+
     /// Density of the central hypergeometric distribution on its support.
     fn logdc_dhyper(&self, m: i32, n: i32, k: i32) -> Vec<f64> {
-        let mut logdc = Vec::with_capacity(self.support.len());
-        for &element in &self.support {
+        let len = self.support_len();
+        let mut logdc = Vec::with_capacity(len);
+        for i in 0..len {
+            let element = self.lo.saturating_add(i as i32);
             if m + n == 0 {
                 logdc.push(0.0);
                 continue;
@@ -134,7 +137,7 @@ impl FisherExact {
         // Never shared across rayon workers; each call owns its buffer, so no
         // cross-thread aliasing is possible. MLE tolerance `eps.powf(0.25)`
         // is verbatim.
-        let mut scratch = Vec::with_capacity(self.support.len());
+        let mut scratch = Vec::with_capacity(self.support_len());
         let mu = self.mnhyper_with(1.0, &mut scratch);
         let tol = eps.powf(0.25);
         if mu > x {
@@ -162,7 +165,7 @@ impl FisherExact {
         }
         self.dnhyper_into(ncp, scratch);
         for (i, prob) in scratch.iter_mut().enumerate() {
-            let supp = self.support.get(i).copied().unwrap_or(0) as f64;
+            let supp = self.lo.saturating_add(i as i32) as f64;
             *prob *= supp;
         }
         if self.java_fisher {
@@ -179,12 +182,13 @@ impl FisherExact {
     /// identical to the previous allocating `dnhyper`; only the allocations
     /// are gone (single buffer reused in place).
     fn dnhyper_into(&self, ncp: f64, out: &mut Vec<f64>) {
+        let len = self.support_len();
         out.clear();
-        out.reserve(self.support.len());
+        out.reserve(len);
         let ln_ncp = ncp.ln();
-        for i in 0..self.support.len() {
+        for i in 0..len {
             let logdc_val = self.logdc.get(i).copied().unwrap_or(0.0);
-            let supp_val = self.support.get(i).copied().unwrap_or(0) as f64;
+            let supp_val = self.lo.saturating_add(i as i32) as f64;
             out.push(logdc_val + ln_ncp * supp_val);
         }
         let mut max_result = f64::NEG_INFINITY;
@@ -257,9 +261,13 @@ impl FisherExact {
         // (never shared across rayon workers). The collect-then-sum shape is
         // kept verbatim: candidates are gathered in density order, then summed
         // with the same `iter().sum()` vs `f80_sum` split as before.
-        let mut density = Vec::with_capacity(self.support.len());
+        let mut density = Vec::with_capacity(self.support_len());
         self.dnhyper_into(1.0, &mut density);
-        let target_idx = (self.x - self.lo) as usize;
+        let target_idx = self
+            .x
+            .checked_sub(self.lo)
+            .and_then(|d| usize::try_from(d).ok())
+            .unwrap_or(usize::MAX);
         let target = density.get(target_idx).copied().unwrap_or(0.0);
         let threshold = target * rel_err;
         let mut sum_elements = Vec::with_capacity(density.len());

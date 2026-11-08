@@ -147,7 +147,7 @@ pub fn check_unsupported(args: &[String]) -> Result<(), vardictrust_core::types:
         "Please cite: Lai Z, et al. VarDict: a novel and versatile variant caller for next-generation\n",
         "  sequencing in cancer research. Nucleic Acids Res. 2016;44(11):e108. doi:10.1093/nar/gkw227\n",
         "AI disclosure: written with AI coding assistants under human direction; see README \"AI Disclosure\".\n",
-        "License: MIT"
+        "License: MIT AND GPL-2.0-or-later (see LICENSE-3RD-PARTY)"
     ),
     about,
     disable_version_flag = true,

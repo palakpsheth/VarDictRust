@@ -22,12 +22,58 @@ where
     run_parallel_batched(batches, num_threads, worker_fn, consumer_fn)
 }
 
+/// Executes `worker_fn` in parallel over `items` using the worker stack floor
+/// appropriate for `bam_spec` (64 MiB when any path is `.cram`, 16 MiB otherwise).
+pub fn run_parallel_for_bam<T, R, F, W>(
+    bam_spec: &str,
+    items: Vec<T>,
+    num_threads: usize,
+    worker_fn: F,
+    consumer_fn: W,
+) -> Result<(), VardictError>
+where
+    T: Send + Sync + 'static,
+    R: Send + 'static,
+    F: Fn(T) -> Result<R, VardictError> + Send + Sync + 'static,
+    W: FnMut(R) -> Result<(), VardictError>,
+{
+    let batches: Vec<Vec<T>> = items.into_iter().map(|item| vec![item]).collect();
+    run_parallel_batched_for_bam(bam_spec, batches, num_threads, worker_fn, consumer_fn)
+}
+
 /// Worker thread stack floor (16 MiB) for Rayon tile workers (`M-DOCUMENTED-MAGIC`).
 ///
 /// Deep CRAM container decompression (`noodles-cram` RANS/bzip2/lzma codecs) combined
 /// with recursive structural-variant and indel realignment frames on 50x–150x WGS tiles
 /// exceeds Rayon's default 2 MiB worker stack, causing `SIGABRT` stack overflows if lower.
-const WORKER_THREAD_STACK_FLOOR_BYTES: usize = 16 * 1024 * 1024;
+pub const WORKER_THREAD_STACK_FLOOR_BYTES: usize = 16 * 1024 * 1024;
+
+/// Minimum stack size (64 MiB) for worker threads when reading CRAM inputs
+/// (`noodles-cram` RANS/LZMA/bzip2 slice decoding + deep realignment recursion).
+pub const CRAM_WORKER_THREAD_STACK_FLOOR_BYTES: usize = 64 * 1024 * 1024;
+
+/// Returns `true` if any path in a VarDict `-b` specification (`tumor.cram|normal.bam`,
+/// `a.cram:b.bam`, or single path) has a `.cram` extension (case-insensitive).
+#[inline]
+pub(crate) fn bam_spec_has_cram(bam_spec: &str) -> bool {
+    bam_spec
+        .split(['|', ':'])
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .any(|part| {
+            std::path::Path::new(part)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("cram"))
+        })
+}
+
+fn worker_thread_stack_bytes_for_env_with_floor(
+    rust_min_stack: Option<&str>,
+    floor_bytes: usize,
+) -> usize {
+    let requested = rust_min_stack.and_then(parse_stack_bytes).unwrap_or(0);
+    requested.max(floor_bytes)
+}
 
 /// Task 4: pool `stack_size` from env with a 16 MiB floor. Reads the
 /// `RUST_MIN_STACK` value already used by `harness/cram_twin.sh` (`64M`) so
@@ -36,9 +82,7 @@ const WORKER_THREAD_STACK_FLOOR_BYTES: usize = 16 * 1024 * 1024;
 /// `K`/`M`/`G` suffixes (`64M` = 67_108_864); absent, empty, unparsable, or
 /// overflowing values fall back to the floor (default behavior unchanged).
 fn worker_thread_stack_bytes_for_env(raw: Option<&str>) -> usize {
-    raw.and_then(parse_stack_bytes)
-        .map(|bytes| bytes.max(WORKER_THREAD_STACK_FLOOR_BYTES))
-        .unwrap_or(WORKER_THREAD_STACK_FLOOR_BYTES)
+    worker_thread_stack_bytes_for_env_with_floor(raw, WORKER_THREAD_STACK_FLOOR_BYTES)
 }
 
 /// Parse a byte count with an optional case-insensitive `K`/`M`/`G` suffix.
@@ -60,8 +104,20 @@ pub(crate) fn worker_thread_stack_bytes() -> usize {
     worker_thread_stack_bytes_for_env(std::env::var("RUST_MIN_STACK").ok().as_deref())
 }
 
+/// Effective worker stack size for a given `-b` BAM/CRAM specification.
+pub(crate) fn worker_thread_stack_bytes_for_bam(bam_spec: &str) -> usize {
+    let floor = if bam_spec_has_cram(bam_spec) {
+        CRAM_WORKER_THREAD_STACK_FLOOR_BYTES
+    } else {
+        WORKER_THREAD_STACK_FLOOR_BYTES
+    };
+    let env_val = std::env::var("RUST_MIN_STACK").ok();
+    worker_thread_stack_bytes_for_env_with_floor(env_val.as_deref(), floor)
+}
+
 thread_local! {
     static CURRENT_WORKER_REGION: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+    static CURRENT_WORKER_STACK_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// Sets the region label currently being processed on the worker thread so
@@ -76,19 +132,22 @@ fn take_current_worker_region() -> Option<String> {
     CURRENT_WORKER_REGION.with(|slot| slot.borrow_mut().take())
 }
 
-/// Executes `f` on a scoped worker thread configured with [`worker_thread_stack_bytes`]
-/// (16 MiB floor, respecting `RUST_MIN_STACK`) so single-threaded (`-th 1`) and
-/// amplicon runs receive the same stack headroom as multi-threaded Rayon workers (`R5`).
-pub(crate) fn run_with_worker_stack<F, R>(f: F) -> Result<R, VardictError>
+fn run_with_worker_stack_bytes<F, R>(stack_bytes: usize, f: F) -> Result<R, VardictError>
 where
     F: FnOnce() -> Result<R, VardictError> + Send,
     R: Send,
 {
+    if CURRENT_WORKER_STACK_BYTES.with(|c| c.get()) >= stack_bytes {
+        return f();
+    }
     std::thread::scope(|s| {
         let handle = std::thread::Builder::new()
             .name("vardictrust-worker".to_string())
-            .stack_size(worker_thread_stack_bytes())
-            .spawn_scoped(s, f)
+            .stack_size(stack_bytes)
+            .spawn_scoped(s, move || {
+                CURRENT_WORKER_STACK_BYTES.with(|c| c.set(stack_bytes));
+                f()
+            })
             .map_err(VardictError::Io)?;
         match handle.join() {
             Ok(res) => res,
@@ -97,11 +156,81 @@ where
     })
 }
 
+/// Executes `f` on a scoped worker thread configured with [`worker_thread_stack_bytes`]
+/// (16 MiB floor, respecting `RUST_MIN_STACK`) so single-threaded (`-th 1`) and
+/// amplicon runs receive the same stack headroom as multi-threaded Rayon workers (`R5`).
+pub fn run_with_worker_stack<F, R>(f: F) -> Result<R, VardictError>
+where
+    F: FnOnce() -> Result<R, VardictError> + Send,
+    R: Send,
+{
+    run_with_worker_stack_bytes(worker_thread_stack_bytes(), f)
+}
+
+/// Executes `f` on a scoped worker thread configured with [`worker_thread_stack_bytes_for_bam`]
+/// (64 MiB floor when `bam_spec` includes `.cram`, 16 MiB otherwise, respecting `RUST_MIN_STACK`).
+pub fn run_with_worker_stack_for_bam<F, R>(bam_spec: &str, f: F) -> Result<R, VardictError>
+where
+    F: FnOnce() -> Result<R, VardictError> + Send,
+    R: Send,
+{
+    run_with_worker_stack_bytes(worker_thread_stack_bytes_for_bam(bam_spec), f)
+}
+
 /// Executes `worker_fn` in parallel over pre-grouped `batches` (`Vec<Vec<T>>`),
 /// streaming flattened results into `consumer_fn` in exact deterministic order (`EBO-3`).
 pub fn run_parallel_batched<T, R, F, W>(
     batches: Vec<Vec<T>>,
     num_threads: usize,
+    worker_fn: F,
+    consumer_fn: W,
+) -> Result<(), VardictError>
+where
+    T: Send + Sync + 'static,
+    R: Send + 'static,
+    F: Fn(T) -> Result<R, VardictError> + Send + Sync + 'static,
+    W: FnMut(R) -> Result<(), VardictError>,
+{
+    run_parallel_batched_with_stack(
+        batches,
+        num_threads,
+        worker_thread_stack_bytes(),
+        false,
+        worker_fn,
+        consumer_fn,
+    )
+}
+
+/// Executes `worker_fn` in parallel over pre-grouped `batches` (`Vec<Vec<T>>`)
+/// using the worker stack floor appropriate for `bam_spec` (64 MiB for CRAM, 16 MiB otherwise).
+pub fn run_parallel_batched_for_bam<T, R, F, W>(
+    bam_spec: &str,
+    batches: Vec<Vec<T>>,
+    num_threads: usize,
+    worker_fn: F,
+    consumer_fn: W,
+) -> Result<(), VardictError>
+where
+    T: Send + Sync + 'static,
+    R: Send + 'static,
+    F: Fn(T) -> Result<R, VardictError> + Send + Sync + 'static,
+    W: FnMut(R) -> Result<(), VardictError>,
+{
+    run_parallel_batched_with_stack(
+        batches,
+        num_threads,
+        worker_thread_stack_bytes_for_bam(bam_spec),
+        true,
+        worker_fn,
+        consumer_fn,
+    )
+}
+
+fn run_parallel_batched_with_stack<T, R, F, W>(
+    batches: Vec<Vec<T>>,
+    num_threads: usize,
+    stack_bytes: usize,
+    enforce_serial_stack: bool,
     worker_fn: F,
     mut consumer_fn: W,
 ) -> Result<(), VardictError>
@@ -115,16 +244,25 @@ where
         return Ok(());
     }
     if num_threads == 1 {
-        for batch in batches {
-            for item in batch {
-                consumer_fn(worker_fn(item)?)?;
+        if !enforce_serial_stack || CURRENT_WORKER_STACK_BYTES.with(|c| c.get()) >= stack_bytes {
+            for batch in batches {
+                for item in batch {
+                    consumer_fn(worker_fn(item)?)?;
+                }
+            }
+        } else {
+            for batch in batches {
+                for item in batch {
+                    let val = run_with_worker_stack_bytes(stack_bytes, || worker_fn(item))?;
+                    consumer_fn(val)?;
+                }
             }
         }
         return Ok(());
     }
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(num_threads)
-        .stack_size(worker_thread_stack_bytes())
+        .stack_size(stack_bytes)
         .build()
         .map_err(|e| {
             VardictError::Io(std::io::Error::other(format!(
@@ -554,5 +692,72 @@ mod tests {
             err.to_string().contains("region chr1:2-100"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn cram_worker_stack_floor_and_bam_spec_detection() {
+        assert!(bam_spec_has_cram("sample.cram"));
+        assert!(bam_spec_has_cram("tumor.CRAM|normal.bam"));
+        assert!(bam_spec_has_cram("a.bam:b.cram"));
+        assert!(!bam_spec_has_cram("sample.bam"));
+        assert!(!bam_spec_has_cram(""));
+
+        assert_eq!(
+            worker_thread_stack_bytes_for_env_with_floor(
+                None,
+                CRAM_WORKER_THREAD_STACK_FLOOR_BYTES
+            ),
+            64 * 1024 * 1024
+        );
+        assert_eq!(
+            worker_thread_stack_bytes_for_env_with_floor(
+                Some("16777216"),
+                CRAM_WORKER_THREAD_STACK_FLOOR_BYTES
+            ),
+            64 * 1024 * 1024
+        );
+        assert_eq!(
+            worker_thread_stack_bytes_for_env_with_floor(
+                Some("134217728"),
+                CRAM_WORKER_THREAD_STACK_FLOOR_BYTES
+            ),
+            128 * 1024 * 1024
+        );
+        assert_eq!(
+            worker_thread_stack_bytes_for_env_with_floor(None, WORKER_THREAD_STACK_FLOOR_BYTES),
+            16 * 1024 * 1024
+        );
+
+        assert!(
+            worker_thread_stack_bytes_for_bam("sample.cram")
+                >= CRAM_WORKER_THREAD_STACK_FLOOR_BYTES
+        );
+        assert!(worker_thread_stack_bytes_for_bam("sample.bam") >= WORKER_THREAD_STACK_FLOOR_BYTES);
+
+        // Serial (num_threads == 1) `run_parallel_batched_for_bam` without an outer wrapper
+        // must still execute `worker_fn` with the 64 MiB CRAM stack floor while keeping
+        // `consumer_fn` on the calling thread.
+        let caller_tid = std::thread::current().id();
+        let mut consumed = Vec::new();
+        run_parallel_batched_for_bam(
+            "sample.cram",
+            vec![vec![10usize, 20]],
+            1,
+            move |x| {
+                assert!(
+                    CURRENT_WORKER_STACK_BYTES.with(|c| c.get())
+                        >= CRAM_WORKER_THREAD_STACK_FLOOR_BYTES
+                );
+                assert_ne!(std::thread::current().id(), caller_tid);
+                Ok(x + 1)
+            },
+            |val| {
+                assert_eq!(std::thread::current().id(), caller_tid);
+                consumed.push(val);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(consumed, vec![11, 21]);
     }
 }
