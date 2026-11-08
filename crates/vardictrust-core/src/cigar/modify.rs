@@ -292,22 +292,154 @@ fn is_has_and_not_equals_char(ch1: u8, reference: &[u8], index: i32, ref_start: 
     }
 }
 
+/// Scans up to `mch` bases from the 5' start of a match block (at `position` on reference
+/// and `query_offset` in `query_seq`), resetting on any mismatch and stopping after 3
+/// consecutive matches (`rmch >= 3`) or reference out-of-bounds.
+/// Ports the 5' mismatch scan in `CigarModifier.java:683-702` (`combineBeginDigM`) and
+/// `CigarModifier.java:656-672` (`combineDigSDigM`).
 #[inline]
-fn is_has_and_not_equals_str(
+pub(crate) fn count_start_mismatch_clip(
+    position: i32,
+    mch: i32,
+    query_offset: i32,
+    query_seq: &[u8],
     reference: &[u8],
-    index1: i32,
     ref_start: i32,
-    str_bytes: &[u8],
-    index2: i32,
-) -> bool {
-    let local_idx = index1 - ref_start;
-    if local_idx < 0 || local_idx >= reference.len() as i32 {
-        return false;
+) -> i32 {
+    let mut rn = 0i32;
+    let mut rrn = 0i32;
+    let mut rmch = 0i32;
+    while rrn < mch && rn < mch {
+        let ref_pos = position.saturating_add(rrn);
+        let local_ref = ref_pos.saturating_sub(ref_start);
+        let Some(&ref_base) = usize::try_from(local_ref)
+            .ok()
+            .and_then(|i| reference.get(i))
+        else {
+            break;
+        };
+        let q_idx = query_offset.saturating_add(rrn);
+        if let Some(&q_base) = usize::try_from(q_idx).ok().and_then(|i| query_seq.get(i)) {
+            if ref_base != q_base {
+                rn = rrn.saturating_add(1);
+                rmch = 0;
+            } else {
+                rmch = rmch.saturating_add(1);
+            }
+        }
+        rrn = rrn.saturating_add(1);
+        if rmch >= 3 {
+            break;
+        }
     }
-    if index2 < 0 || index2 >= str_bytes.len() as i32 {
-        return false;
+    rn
+}
+
+/// Scans up to `mch` bases backwards from the 3' end of a match block (ending at `refoff`
+/// on reference and `rdoff` in `query_seq`), resetting on any mismatch and stopping after
+/// 3 consecutive matches (`rmch >= 3`) or reference out-of-bounds.
+/// Ports the 3' mismatch scan in `CigarModifier.java:704-728` (`captureMisSoftly3Mismatches`)
+/// and `CigarModifier.java:765-785` (`captureMisSoftlyMS`).
+#[inline]
+pub(crate) fn count_end_mismatch_clip(
+    refoff: i32,
+    rdoff: i32,
+    mch: i32,
+    query_seq: &[u8],
+    reference: &[u8],
+    ref_start: i32,
+) -> i32 {
+    let mut rn = 0i32;
+    let mut rrn = 0i32;
+    let mut rmch = 0i32;
+    while rrn < mch && rn < mch {
+        let ref_pos = refoff.saturating_sub(rrn).saturating_sub(1);
+        let local_ref = ref_pos.saturating_sub(ref_start);
+        let Some(&ref_base) = usize::try_from(local_ref)
+            .ok()
+            .and_then(|i| reference.get(i))
+        else {
+            break;
+        };
+        if rrn < rdoff {
+            let q_idx = rdoff.saturating_sub(rrn).saturating_sub(1);
+            if let Some(&q_base) = usize::try_from(q_idx).ok().and_then(|i| query_seq.get(i)) {
+                if ref_base != q_base {
+                    rn = rrn.saturating_add(1);
+                    rmch = 0;
+                } else {
+                    rmch = rmch.saturating_add(1);
+                }
+            }
+        }
+        rrn = rrn.saturating_add(1);
+        if rmch >= 3 {
+            break;
+        }
     }
-    reference[local_idx as usize] != str_bytes[index2 as usize]
+    rn
+}
+
+/// Fast-path for reads whose initial CIGAR is a single `Match(orig_mch)` (`orig_mch > 0`).
+/// Ports `CigarModifier.java:61-368` for a single-`M` CIGAR where `has_d == false`,
+/// `has_i == false`, and `has_s == false`, so only `capture_mis_softly_3mismatches` (3' end)
+/// and `combine_begin_dig_m` (5' end) can fire.
+pub fn modify_single_match_in_place(
+    position: &mut i32,
+    orig_mch: i32,
+    cigar_elements: &mut Vec<(u32, noodles::sam::alignment::record::cigar::op::Kind)>,
+    query_seq: &[u8],
+    reference: &[u8],
+    ref_start: i32,
+) -> Result<(), crate::types::VardictError> {
+    use noodles::sam::alignment::record::cigar::op::Kind as CigarKind;
+
+    let pos = *position;
+
+    // Step A: 3' endpoint mismatch -> soft-clip (`capture_mis_softly_3mismatches("", orig_mch)`)
+    let refoff = pos.saturating_add(orig_mch);
+    let rn3 = count_end_mismatch_clip(refoff, orig_mch, orig_mch, query_seq, reference, ref_start);
+    let (mch_after_3, clip3) = if (1..=3).contains(&rn3) {
+        (orig_mch.saturating_sub(rn3), rn3 as u32)
+    } else {
+        (orig_mch, 0u32)
+    };
+
+    // Step B: 5' endpoint mismatch -> soft-clip (`combine_begin_dig_m(mch_after_3)`)
+    let rn5 = count_start_mismatch_clip(pos, mch_after_3, 0, query_seq, reference, ref_start);
+    let (final_mch, clip5) = if (1..=3).contains(&rn5) {
+        (mch_after_3.saturating_sub(rn5), rn5 as u32)
+    } else {
+        (mch_after_3, 0u32)
+    };
+
+    // Validate positive CIGAR element lengths (`validate_cigar_element_lengths`)
+    if final_mch <= 0 {
+        let bad_cigar = match (clip5 > 0, clip3 > 0) {
+            (true, true) => format!("{clip5}S{final_mch}M{clip3}S"),
+            (true, false) => format!("{clip5}S{final_mch}M"),
+            (false, true) => format!("{final_mch}M{clip3}S"),
+            (false, false) => format!("{final_mch}M"),
+        };
+        return Err(crate::types::VardictError::JavaThrows(format!(
+            "invalid CIGAR length {final_mch} in {bad_cigar}"
+        )));
+    }
+
+    if clip5 == 0 && clip3 == 0 {
+        return Ok(());
+    }
+
+    *position = pos.saturating_add(clip5 as i32);
+    cigar_elements.clear();
+    if clip5 > 0 {
+        cigar_elements.push((clip5, CigarKind::SoftClip));
+    }
+    cigar_elements.push((final_mch as u32, CigarKind::Match));
+    if clip3 > 0 {
+        cigar_elements.push((clip3, CigarKind::SoftClip));
+    }
+    Ok(())
 }
 
 // Helper to reverse complement sequence string
@@ -1134,39 +1266,14 @@ impl<'a> CigarModifier<'a> {
     }
 
     fn combine_begin_dig_m(&mut self, mut mch: i32) {
-        let mut rn = 0;
-        let mut rrn = 0;
-        let mut rmch = 0;
-        while rrn < mch && rn < mch {
-            let ref_pos = self.position + rrn;
-            if ref_pos - self.ref_start < 0
-                || ref_pos - self.ref_start >= self.reference.len() as i32
-            {
-                break;
-            }
-            if is_has_and_not_equals_str(
-                self.reference,
-                ref_pos,
-                self.ref_start,
-                &self.query_seq,
-                rrn,
-            ) {
-                rn = rrn + 1;
-                rmch = 0;
-            } else if is_has_and_equals_str(
-                self.reference,
-                ref_pos,
-                self.ref_start,
-                &self.query_seq,
-                rrn,
-            ) {
-                rmch += 1;
-            }
-            rrn += 1;
-            if rmch >= 3 {
-                break;
-            }
-        }
+        let rn = count_start_mismatch_clip(
+            self.position,
+            mch,
+            0,
+            &self.query_seq,
+            self.reference,
+            self.ref_start,
+        );
         if rn > 0 && rn <= 3 {
             mch -= rn;
             self.cigar_str = BEGIN_DIG_M
@@ -1257,38 +1364,14 @@ impl<'a> CigarModifier<'a> {
                 self.position -= rn + 1;
             }
             if rn == 0 {
-                let mut rrn = 0;
-                let mut rmch = 0;
-                while rrn < mch && rn < mch {
-                    let ref_pos = self.position + rrn;
-                    if ref_pos - self.ref_start < 0
-                        || ref_pos - self.ref_start >= self.reference.len() as i32
-                    {
-                        break;
-                    }
-                    if is_has_and_not_equals_str(
-                        self.reference,
-                        ref_pos,
-                        self.ref_start,
-                        &self.query_seq,
-                        soft + rrn,
-                    ) {
-                        rn = rrn + 1;
-                        rmch = 0;
-                    } else if is_has_and_equals_str(
-                        self.reference,
-                        ref_pos,
-                        self.ref_start,
-                        &self.query_seq,
-                        soft + rrn,
-                    ) {
-                        rmch += 1;
-                    }
-                    rrn += 1;
-                    if rmch >= 3 {
-                        break;
-                    }
-                }
+                rn = count_start_mismatch_clip(
+                    self.position,
+                    mch,
+                    soft,
+                    &self.query_seq,
+                    self.reference,
+                    self.ref_start,
+                );
                 if rn > 0 && rn < mch {
                     soft += rn;
                     mch -= rn;
@@ -1308,43 +1391,14 @@ impl<'a> CigarModifier<'a> {
             refoff += global_find_sum(&ALIGNED_LENGTH_MND, ov5);
             rdoff += global_find_sum(&SOFT_CLIPPED, ov5);
         }
-        let mut rn = 0;
-        let mut rrn = 0;
-        let mut rmch = 0;
-        while rrn < mch && rn < mch {
-            let ref_pos = refoff - rrn - 1;
-            if ref_pos - self.ref_start < 0
-                || ref_pos - self.ref_start >= self.reference.len() as i32
-            {
-                break;
-            }
-            if rrn < rdoff
-                && is_has_and_not_equals_str(
-                    self.reference,
-                    ref_pos,
-                    self.ref_start,
-                    &self.query_seq,
-                    rdoff - rrn - 1,
-                )
-            {
-                rn = rrn + 1;
-                rmch = 0;
-            } else if rrn < rdoff
-                && is_has_and_equals_str(
-                    self.reference,
-                    ref_pos,
-                    self.ref_start,
-                    &self.query_seq,
-                    rdoff - rrn - 1,
-                )
-            {
-                rmch += 1;
-            }
-            rrn += 1;
-            if rmch >= 3 {
-                break;
-            }
-        }
+        let rn = count_end_mismatch_clip(
+            refoff,
+            rdoff,
+            mch,
+            &self.query_seq,
+            self.reference,
+            self.ref_start,
+        );
         mch -= rn;
         if rn > 0 && rn <= 3 {
             self.cigar_str = DIG_M_END
@@ -1430,42 +1484,14 @@ impl<'a> CigarModifier<'a> {
                 }
             }
             if rn == 0 {
-                let mut rrn = 0;
-                let mut rmch = 0;
-                while rrn < mch && rn < mch {
-                    let ref_pos = refoff - rrn - 1;
-                    if ref_pos - self.ref_start < 0
-                        || ref_pos - self.ref_start >= self.reference.len() as i32
-                    {
-                        break;
-                    }
-                    if rrn < rdoff
-                        && is_has_and_not_equals_str(
-                            self.reference,
-                            ref_pos,
-                            self.ref_start,
-                            &self.query_seq,
-                            rdoff - rrn - 1,
-                        )
-                    {
-                        rn = rrn + 1;
-                        rmch = 0;
-                    } else if rrn < rdoff
-                        && is_has_and_equals_str(
-                            self.reference,
-                            ref_pos,
-                            self.ref_start,
-                            &self.query_seq,
-                            rdoff - rrn - 1,
-                        )
-                    {
-                        rmch += 1;
-                    }
-                    rrn += 1;
-                    if rmch >= 3 {
-                        break;
-                    }
-                }
+                rn = count_end_mismatch_clip(
+                    refoff,
+                    rdoff,
+                    mch,
+                    &self.query_seq,
+                    self.reference,
+                    self.ref_start,
+                );
                 if rn > 0 && rn < mch {
                     soft += rn;
                     mch -= rn;
@@ -2440,5 +2466,177 @@ mod tests {
         .modify_cigar()
         .unwrap();
         assert_eq!(mod_neg.cigar, neg_cigar);
+    }
+
+    fn assert_single_match_fastpath_matches_full(
+        position: i32,
+        mch: i32,
+        query_seq: &[u8],
+        reference: &[u8],
+        ref_start: i32,
+        seed: &SeedMap,
+        config: &Config,
+    ) {
+        use noodles::sam::alignment::record::cigar::op::Kind as CigarKind;
+
+        let mut fast_pos = position;
+        let mut fast_elements = vec![(mch as u32, CigarKind::Match)];
+        let fast_res = modify_single_match_in_place(
+            &mut fast_pos,
+            mch,
+            &mut fast_elements,
+            query_seq,
+            reference,
+            ref_start,
+        );
+
+        let cigar_str = format!("{mch}M");
+        let query_qual = vec![b'I'; query_seq.len()];
+        let full_res = CigarModifier::new(
+            position,
+            cigar_str,
+            query_seq.to_vec(),
+            query_qual,
+            reference,
+            ref_start,
+            seed,
+            0,
+            150,
+            config,
+        )
+        .modify_cigar();
+
+        match (&fast_res, &full_res) {
+            (Ok(()), Ok(modified)) => {
+                let mut full_elements = Vec::new();
+                assert!(
+                    crate::cigar::parse_cigar_into(&modified.cigar, &mut full_elements).is_some(),
+                    "Failed to parse modified CIGAR {}",
+                    modified.cigar
+                );
+                assert_eq!(
+                    fast_pos, modified.position,
+                    "position mismatch for pos={position} mch={mch} ref_start={ref_start}"
+                );
+                assert_eq!(
+                    fast_elements, full_elements,
+                    "cigar_elements mismatch for pos={position} mch={mch} ref_start={ref_start}"
+                );
+            }
+            (
+                Err(crate::types::VardictError::JavaThrows(fast_msg)),
+                Err(crate::types::VardictError::JavaThrows(full_msg)),
+            ) => {
+                assert_eq!(
+                    fast_msg, full_msg,
+                    "JavaThrows message mismatch for pos={position} mch={mch}"
+                );
+                assert_eq!(
+                    fast_pos, position,
+                    "fastpath mutated position on error for pos={position} mch={mch}"
+                );
+            }
+            _ => panic!(
+                "result mismatch for pos={position} mch={mch}: fast={fast_res:?} vs full={full_res:?}"
+            ),
+        }
+    }
+
+    #[test]
+    fn single_match_fastpath_matches_full_modify_cigar() {
+        let config = get_default_config();
+        let seed = SeedMap::new();
+        let reference = b"ACGTACGTACGTAAACCCGGGTTTACGTACGT";
+        let ref_start = 10i32;
+
+        // 1. Sweep mch in 1..=12, 5' mismatches 0..=5, 3' mismatches 0..=5, and positions
+        // including left overhang (pos < ref_start), in-bounds, and right overhang.
+        for mch in 1..=12i32 {
+            for pos in [
+                ref_start - 2,
+                ref_start,
+                ref_start + 5,
+                ref_start + (reference.len() as i32) - mch,
+                ref_start + (reference.len() as i32) - mch + 2,
+            ] {
+                for mis5 in 0..=5i32 {
+                    for mis3 in 0..=5i32 {
+                        let mut qseq = Vec::with_capacity(mch as usize);
+                        for i in 0..mch {
+                            let rpos = pos + i - ref_start;
+                            let rbase = if rpos >= 0 && (rpos as usize) < reference.len() {
+                                reference[rpos as usize]
+                            } else {
+                                b'A'
+                            };
+                            let is_mis = i < mis5 || i >= (mch - mis3);
+                            let qbase = if is_mis {
+                                if rbase == b'A' {
+                                    b'T'
+                                } else {
+                                    b'A'
+                                }
+                            } else {
+                                rbase
+                            };
+                            qseq.push(qbase);
+                        }
+                        assert_single_match_fastpath_matches_full(
+                            pos, mch, &qseq, reference, ref_start, &seed, &config,
+                        );
+                    }
+                }
+            }
+        }
+
+        // 2. Exhaustive bitmask sweep over all match/mismatch patterns for mch in 1..=10
+        // (covers non-contiguous mismatches, mch <= 3 all-mismatch JavaThrows, etc.)
+        for mch in 1..=10i32 {
+            let pos = ref_start + 2;
+            for mask in 0..(1u32 << mch) {
+                let mut qseq = Vec::with_capacity(mch as usize);
+                for i in 0..mch {
+                    let rbase = reference[(pos + i - ref_start) as usize];
+                    let is_mis = ((mask >> i) & 1) != 0;
+                    qseq.push(if is_mis {
+                        if rbase == b'A' {
+                            b'T'
+                        } else {
+                            b'A'
+                        }
+                    } else {
+                        rbase
+                    });
+                }
+                assert_single_match_fastpath_matches_full(
+                    pos, mch, &qseq, reference, ref_start, &seed, &config,
+                );
+            }
+        }
+
+        // 3. 'N' bases in query and/or reference, plus truncated query_seq edge cases
+        let ref_with_n = b"ACNTACGTACGTANNC";
+        for mch in 1..=12i32 {
+            let mut qseq_n = ref_with_n[..mch as usize].to_vec();
+            qseq_n[0] = b'N';
+            if mch >= 2 {
+                qseq_n[(mch - 1) as usize] = b'N';
+            }
+            assert_single_match_fastpath_matches_full(
+                1, mch, &qseq_n, ref_with_n, 1, &seed, &config,
+            );
+            // Truncated query_seq shorter than mch
+            if mch >= 2 {
+                assert_single_match_fastpath_matches_full(
+                    1,
+                    mch,
+                    &qseq_n[..(mch as usize - 1)],
+                    ref_with_n,
+                    1,
+                    &seed,
+                    &config,
+                );
+            }
+        }
     }
 }

@@ -283,62 +283,88 @@ impl<'a> CigarParser<'a> {
                 ext_end,
             );
 
-            let mut cigar_str = std::mem::take(&mut self.scratch_cigar_str);
-            cigar_str.clear();
-            crate::bam::push_cigar_string(&mut cigar_str, &cigar_elements);
-            let modifier = crate::cigar::modify::CigarModifier::new(
-                start_pos,
-                cigar_str,
-                query_seq,
-                query_qual,
-                ref_slice,
-                ref_start,
-                &self.reference.seed,
-                insertion_deletion_length as i32,
-                self.max_read_length,
-                self.config,
-            );
             // ports CigarModifier.java:619-791, CigarParser.java:80-95:
             // When modify_cigar returns an error (JavaThrows on malformed CIGAR with non-positive
             // operator lengths), emulate Java's catch block: log the exception and skip the read
             // cleanly without mutating start_pos, query_seq, or pileup structures.
             // (Scratch buffers are dropped on this rare path; the next read
             // re-allocates once and reuse resumes.)
-            match modifier.modify_cigar() {
-                Ok(modified) => {
-                    start_pos = modified.position;
-                    if crate::cigar::parse_cigar_into(&modified.cigar, &mut cigar_elements)
-                        .is_none()
-                    {
-                        // Unreachable in practice (modify emits normalized
-                        // CIGARs), but replicate the old keep-previous shape
-                        // exactly: refill from the record.
-                        cigar_elements.clear();
-                        cigar_elements.extend_from_slice(&record.cigar);
-                    }
-                    query_seq = modified.query_seq;
-                    query_qual = modified.query_qual;
-                    self.scratch_cigar_str = modified.cigar;
+            let log_modify_err = |e: crate::types::VardictError| {
+                let name = String::from_utf8_lossy(&record.name);
+                log::warn!(
+                    "There was Exception while processing record on {}. The processing will be continued from the next record. Exception: {}",
+                    name, e
+                );
+                // ports Utils.java:261-277 and CLAUDE.md §5:
+                // Count exceptions atomically. While Java terminates with exit(1) after
+                // MAX_EXCEPTION_COUNT (10) continued exceptions, VarDictRust never aborts;
+                // it logs a warning and continues processing valid reads.
+                let count = self
+                    .config
+                    .exception_counter
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                    + 1;
+                if count > 10 {
+                    log::warn!("VarDictRust encountered >10 exceptions. Java would abort here, but we continue (CLAUDE.md §5).");
                 }
-                Err(e) => {
-                    let name = String::from_utf8_lossy(&record.name);
-                    log::warn!(
-                        "There was Exception while processing record on {}. The processing will be continued from the next record. Exception: {}",
-                        name, e
-                    );
-                    // ports Utils.java:261-277 and CLAUDE.md §5:
-                    // Count exceptions atomically. While Java terminates with exit(1) after
-                    // MAX_EXCEPTION_COUNT (10) continued exceptions, VarDictRust never aborts;
-                    // it logs a warning and continues processing valid reads.
-                    let count = self
-                        .config
-                        .exception_counter
-                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                        + 1;
-                    if count > 10 {
-                        log::warn!("VarDictRust encountered >10 exceptions. Java would abort here, but we continue (CLAUDE.md §5).");
+            };
+            match cigar_elements.as_slice() {
+                &[(mch_u32, CigarKind::Match)] if i32::try_from(mch_u32).is_ok_and(|m| m > 0) => {
+                    if let Err(e) = crate::cigar::modify::modify_single_match_in_place(
+                        &mut start_pos,
+                        mch_u32 as i32,
+                        &mut cigar_elements,
+                        &query_seq,
+                        ref_slice,
+                        ref_start,
+                    ) {
+                        self.scratch_seq = query_seq;
+                        self.scratch_qual = query_qual;
+                        self.scratch_elements = cigar_elements;
+                        self.scratch_s = buf_s;
+                        self.scratch_ss = buf_ss;
+                        self.scratch_splice_key = scratch_splice_key;
+                        log_modify_err(e);
+                        return Ok(());
                     }
-                    return Ok(());
+                }
+                _ => {
+                    let mut cigar_str = std::mem::take(&mut self.scratch_cigar_str);
+                    cigar_str.clear();
+                    crate::bam::push_cigar_string(&mut cigar_str, &cigar_elements);
+                    let modifier = crate::cigar::modify::CigarModifier::new(
+                        start_pos,
+                        cigar_str,
+                        query_seq,
+                        query_qual,
+                        ref_slice,
+                        ref_start,
+                        &self.reference.seed,
+                        insertion_deletion_length as i32,
+                        self.max_read_length,
+                        self.config,
+                    );
+                    match modifier.modify_cigar() {
+                        Ok(modified) => {
+                            start_pos = modified.position;
+                            if crate::cigar::parse_cigar_into(&modified.cigar, &mut cigar_elements)
+                                .is_none()
+                            {
+                                // Unreachable in practice (modify emits normalized
+                                // CIGARs), but replicate the old keep-previous shape
+                                // exactly: refill from the record.
+                                cigar_elements.clear();
+                                cigar_elements.extend_from_slice(&record.cigar);
+                            }
+                            query_seq = modified.query_seq;
+                            query_qual = modified.query_qual;
+                            self.scratch_cigar_str = modified.cigar;
+                        }
+                        Err(e) => {
+                            log_modify_err(e);
+                            return Ok(());
+                        }
+                    }
                 }
             }
         }
@@ -3305,72 +3331,6 @@ pub fn pileup(
         parser.parse_cigar(record)?;
     }
     Ok(parser.into_variation_data())
-}
-
-/// Run pileup on a slice of records, updating the existing `VariationData` in-place.
-pub fn pileup_into(
-    var_data: &mut VariationData,
-    records: &[SamRecord],
-    reference: &Reference,
-    region: &Region,
-    config: &Config,
-    svflag: bool,
-    total_reads: i32,
-    duplicate_reads: i32,
-) -> Result<(), VardictError> {
-    let mut parser = CigarParser {
-        reference,
-        region,
-        config,
-        svflag,
-        non_insertion_variants: std::mem::take(&mut var_data.non_insertion_variants),
-        insertion_variants: std::mem::take(&mut var_data.insertion_variants),
-        position_to_insertion_count: std::mem::take(&mut var_data.position_to_insertion_count),
-        position_to_deletion_count: std::mem::take(&mut var_data.position_to_deletion_count),
-        sv_structures: std::mem::take(&mut var_data.sv_structures),
-        ref_coverage: std::mem::take(&mut var_data.ref_coverage),
-        soft_clips_5_end: std::mem::take(&mut var_data.soft_clips_5_end),
-        soft_clips_3_end: std::mem::take(&mut var_data.soft_clips_3_end),
-        max_read_length: var_data.max_read_length,
-        splice: std::mem::take(&mut var_data.splice),
-        mnp: std::mem::take(&mut var_data.mnp),
-        splice_count: std::mem::take(&mut var_data.splice_count),
-        discordant_count: 0,
-        total_reads,
-        duplicate_reads,
-        scratch_seq: Vec::new(),
-        scratch_qual: Vec::new(),
-        scratch_cigar_str: String::new(),
-        scratch_elements: Vec::new(),
-        scratch_s: String::new(),
-        scratch_ss: String::new(),
-        scratch_splice_key: String::new(),
-        scratch_f4_desc: String::new(),
-        scratch_f4_qual: Vec::new(),
-        scratch_f4_seg1: String::new(),
-        scratch_f4_seg2: Vec::new(),
-    };
-
-    for record in records {
-        parser.parse_cigar(record)?;
-    }
-
-    let updated = parser.into_variation_data();
-
-    var_data.non_insertion_variants = updated.non_insertion_variants;
-    var_data.insertion_variants = updated.insertion_variants;
-    var_data.position_to_insertion_count = updated.position_to_insertion_count;
-    var_data.position_to_deletion_count = updated.position_to_deletion_count;
-    var_data.sv_structures = updated.sv_structures;
-    var_data.ref_coverage = updated.ref_coverage;
-    var_data.soft_clips_5_end = updated.soft_clips_5_end;
-    var_data.soft_clips_3_end = updated.soft_clips_3_end;
-    var_data.max_read_length = var_data.max_read_length.max(updated.max_read_length);
-    var_data.splice = updated.splice;
-    var_data.mnp = updated.mnp;
-    var_data.splice_count = updated.splice_count;
-
-    Ok(())
 }
 
 #[cfg(test)]
