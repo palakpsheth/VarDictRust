@@ -1887,6 +1887,68 @@ fn resolve_effective_config(
     Ok((effective, mode))
 }
 
+fn resolve_target_path(path: &Path) -> Option<std::path::PathBuf> {
+    if let Ok(canon) = std::fs::canonicalize(path) {
+        return Some(canon);
+    }
+    let mut cur = path.to_path_buf();
+    for _ in 0..16 {
+        match std::fs::read_link(&cur) {
+            Ok(target) => {
+                cur = if target.is_absolute() {
+                    target
+                } else {
+                    cur.parent()
+                        .filter(|p| !p.as_os_str().is_empty())
+                        .unwrap_or_else(|| Path::new("."))
+                        .join(target)
+                };
+                if let Ok(canon) = std::fs::canonicalize(&cur) {
+                    return Some(canon);
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    let file_name = cur.file_name()?;
+    let parent = cur
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let canon_parent = std::fs::canonicalize(parent).ok()?;
+    Some(canon_parent.join(file_name))
+}
+
+fn paths_collide(a: &Path, b: &Path) -> bool {
+    if a == b {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        if let (Ok(ma), Ok(mb)) = (std::fs::metadata(a), std::fs::metadata(b)) {
+            if ma.dev() == mb.dev() && ma.ino() == mb.ino() {
+                return true;
+            }
+        }
+    }
+    if let (Some(ra), Some(rb)) = (resolve_target_path(a), resolve_target_path(b)) {
+        if ra == rb {
+            return true;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt as _;
+            if let (Ok(ma), Ok(mb)) = (std::fs::metadata(&ra), std::fs::metadata(&rb)) {
+                if ma.dev() == mb.dev() && ma.ino() == mb.ino() {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
 /// Main entry point for the engine. Called by the CLI binary.
 ///
 /// Takes a fully-resolved configuration and runs the variant-calling pipeline.
@@ -1903,6 +1965,15 @@ pub fn run(config: &config::Config) -> Result<(), VardictError> {
     crate::runner::run_with_worker_stack_for_bam(&config.bam, || {
         let started = std::time::Instant::now();
         let (effective, mode) = resolve_effective_config(config)?;
+        if let (Some(ref out_path), Some(ref stats_path)) =
+            (&effective.output_path, &effective.stats_json_path)
+        {
+            if paths_collide(Path::new(out_path), Path::new(stats_path)) {
+                return Err(VardictError::Parse(
+                    "--output and --stats-json must not point to the same file".to_string(),
+                ));
+            }
+        }
         let mut stats_file = if let Some(ref stats_path) = effective.stats_json_path {
             Some(std::fs::File::create(stats_path).map_err(VardictError::Io)?)
         } else {

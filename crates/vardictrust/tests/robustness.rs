@@ -424,6 +424,31 @@ fn output_plain_and_bgzf_match_stdout_and_stats_json_emits_telemetry() {
             "stats.json missing expected entry {key}, got:\n{stats_text}"
         );
     }
+
+    // 4. Colliding --output and --stats-json paths must be rejected before creating or truncating either file
+    let non_existent = dir.path().join("collide_new.vcf");
+    let non_existent_dot = dir.path().join(".").join("collide_new.vcf");
+    let collide_run = base_cmd()
+        .args(common_args)
+        .arg("--output")
+        .arg(&non_existent)
+        .arg("--stats-json")
+        .arg(&non_existent_dot)
+        .output()
+        .expect("spawn vardictrust colliding paths");
+    assert!(
+        !collide_run.status.success(),
+        "colliding --output and --stats-json must fail"
+    );
+    assert!(
+        !non_existent.exists(),
+        "colliding destination must not be created"
+    );
+    let collide_stderr = String::from_utf8_lossy(&collide_run.stderr);
+    assert!(
+        collide_stderr.contains("--output and --stats-json must not point to the same file"),
+        "expected collision error message, got: {collide_stderr}"
+    );
 }
 
 #[test]
