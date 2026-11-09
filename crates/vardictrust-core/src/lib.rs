@@ -684,7 +684,7 @@ fn scan_multi_tile_max_read_lengths(
         window_interval_idx: Option<usize>,
         window_start: u32,
         window_end: u32,
-        window_bases: Vec<u8>,
+        window_bases: std::sync::Arc<[u8]>,
         seed12_memo: rustc_hash::FxHashMap<[u8; 12], (usize, Seed12Multiplicity)>,
     }
 
@@ -707,7 +707,7 @@ fn scan_multi_tile_max_read_lengths(
                 window_interval_idx: None,
                 window_start: 0,
                 window_end: 0,
-                window_bases: Vec::new(),
+                window_bases: std::sync::Arc::from(&b""[..]),
                 seed12_memo: rustc_hash::FxHashMap::default(),
             }
         }
@@ -747,7 +747,7 @@ fn scan_multi_tile_max_read_lengths(
             span_end: i32,
             ext_start_i32: i32,
             ext_end_i32: i32,
-        ) -> Result<(&[u8], i32), VardictError> {
+        ) -> Result<(std::sync::Arc<[u8]>, i32), VardictError> {
             if self.loaded_intervals.is_empty() {
                 self.ensure_interval_loaded(self.reg_start, self.reg_end);
             }
@@ -779,10 +779,10 @@ fn scan_multi_tile_max_read_lengths(
                 .or_else(|| candidates().next());
 
             let Some((iv_idx, iv, _, _)) = chosen else {
-                return Ok((&[], 1));
+                return Ok((std::sync::Arc::from(&b""[..]), 1));
             };
             if iv.stored_end < iv.sequence_start {
-                return Ok((&[], iv.sequence_start as i32));
+                return Ok((std::sync::Arc::from(&b""[..]), iv.sequence_start as i32));
             }
 
             let req_start = (ext_start_i32.saturating_sub(self.total_ext as i32))
@@ -812,10 +812,13 @@ fn scan_multi_tile_max_read_lengths(
                 self.window_interval_idx = Some(iv_idx);
                 self.window_start = w_start;
                 self.window_end = w_end;
-                self.window_bases = bases;
+                self.window_bases = std::sync::Arc::from(bases);
             }
 
-            Ok((&self.window_bases, self.window_start as i32))
+            Ok((
+                std::sync::Arc::clone(&self.window_bases),
+                self.window_start as i32,
+            ))
         }
 
         fn unique_seed12_pos(
@@ -1006,11 +1009,8 @@ fn scan_multi_tile_max_read_lengths(
                 let span_end = read_end.max(read_start.saturating_add(qlen));
                 let ext_start_i32 = read_start.saturating_sub(qlen);
                 let ext_end_i32 = span_end.saturating_add(qlen);
-                let (ref_slice_vec, ref_start) = {
-                    let (s, st) =
-                        scanner.slice_for_read(read_start, span_end, ext_start_i32, ext_end_i32)?;
-                    (s.to_vec(), st)
-                };
+                let (ref_slice_arc, ref_start) =
+                    scanner.slice_for_read(read_start, span_end, ext_start_i32, ext_end_i32)?;
                 cigar_str.clear();
                 crate::bam::push_cigar_string(&mut cigar_str, &cigar_elements);
                 let mut seed_err: Option<VardictError> = None;
@@ -1028,9 +1028,9 @@ fn scan_multi_tile_max_read_lengths(
                 let modifier = crate::cigar::modify::CigarModifier::with_seed_fn(
                     read_start,
                     std::mem::take(&mut cigar_str),
-                    r.sequence.clone(),
-                    r.quality_scores.clone(),
-                    &ref_slice_vec,
+                    std::mem::take(&mut r.sequence),
+                    std::mem::take(&mut r.quality_scores),
+                    &ref_slice_arc,
                     ref_start,
                     &mut seed_lookup,
                     insertion_deletion_length as i32,
@@ -1050,6 +1050,8 @@ fn scan_multi_tile_max_read_lengths(
                             cigar_elements.extend_from_slice(&r.cigar);
                         }
                         cigar_str = modified.cigar;
+                        r.sequence = modified.query_seq;
+                        r.quality_scores = modified.query_qual;
                     }
                     Err(_) => {
                         same_start_ends.push(read_end);
@@ -1599,12 +1601,14 @@ impl<V: SpillableCandidate> SpillableVcfAccumulator<V> {
     }
 }
 
-/// Output destination wrapper around buffered stdout or stderr.
+/// Output destination wrapper around buffered stdout, stderr, plain file, or multithreaded BGZF.
 /// Uses unlocked BufWriter to eliminate mutex contention with worker diagnostics
 /// while reducing syscall overhead by ~1000x for deep WGS output.
 pub enum OutputDestination {
     Stdout(std::io::BufWriter<std::io::Stdout>),
     Stderr(std::io::BufWriter<std::io::Stderr>),
+    File(std::io::BufWriter<std::fs::File>),
+    Bgzf(Box<noodles::bgzf::io::MultithreadedWriter<std::fs::File>>),
 }
 
 impl std::io::Write for OutputDestination {
@@ -1613,6 +1617,8 @@ impl std::io::Write for OutputDestination {
         match self {
             Self::Stdout(w) => w.write(buf),
             Self::Stderr(w) => w.write(buf),
+            Self::File(w) => w.write(buf),
+            Self::Bgzf(w) => w.write(buf),
         }
     }
 
@@ -1621,11 +1627,25 @@ impl std::io::Write for OutputDestination {
         match self {
             Self::Stdout(w) => w.flush(),
             Self::Stderr(w) => w.flush(),
+            Self::File(w) => w.flush(),
+            Self::Bgzf(w) => w.flush(),
         }
     }
 }
 
 const BUFFER_CAPACITY: usize = 64 * 1024; // 64 KB
+
+fn sync_file_ignoring_special(file: &std::fs::File) -> Result<(), VardictError> {
+    match file.sync_all() {
+        Ok(()) => Ok(()),
+        Err(err)
+            if err.kind() == std::io::ErrorKind::InvalidInput || err.raw_os_error() == Some(29) =>
+        {
+            Ok(())
+        }
+        Err(err) => Err(VardictError::Io(err)),
+    }
+}
 
 /// Creates the persistent buffered output writer according to `--DP` / `--defaultPrinter`.
 /// Defaults to stdout; routes to stderr when `--DP ERR` is passed and `-i` (`--splice`) is off
@@ -1644,12 +1664,36 @@ pub fn create_output_writer(config: &config::Config) -> OutputDestination {
     }
 }
 
+fn open_output_writer(config: &config::Config) -> Result<OutputDestination, VardictError> {
+    if let Some(ref path_str) = config.output_path {
+        let file = std::fs::File::create(path_str).map_err(VardictError::Io)?;
+        if path_str.ends_with(".gz") || path_str.ends_with(".bgz") {
+            let worker_count = std::num::NonZeroUsize::new(config.threads.clamp(1, 4))
+                .unwrap_or(std::num::NonZeroUsize::MIN);
+            Ok(OutputDestination::Bgzf(Box::new(
+                noodles::bgzf::io::MultithreadedWriter::with_worker_count(worker_count, file),
+            )))
+        } else {
+            Ok(OutputDestination::File(std::io::BufWriter::with_capacity(
+                BUFFER_CAPACITY,
+                file,
+            )))
+        }
+    } else {
+        Ok(create_output_writer(config))
+    }
+}
+
 /// Internal writer abstraction that preserves `run_with_writer`'s complete-stream contract
 /// on injected writers while routing `--DP ERR` column headers to `stdout` when invoked via
 /// the CLI [`OutputDestination`].
 trait EngineWriter: std::io::Write + Sized {
     fn emit_column_header(&mut self, config: &config::Config) -> Result<(), VardictError> {
         crate::output::table::print_header(self, config).map_err(VardictError::Io)
+    }
+
+    fn finish_output(mut self) -> Result<(), VardictError> {
+        self.flush().map_err(VardictError::Io)
     }
 }
 
@@ -1659,6 +1703,12 @@ impl EngineWriter for OutputDestination {
             Self::Stdout(w) => {
                 crate::output::table::print_header(w, config).map_err(VardictError::Io)
             }
+            Self::File(w) => {
+                crate::output::table::print_header(w, config).map_err(VardictError::Io)
+            }
+            Self::Bgzf(w) => {
+                crate::output::table::print_header(w, config).map_err(VardictError::Io)
+            }
             Self::Stderr(_) => {
                 // SimpleMode/SomaticMode/AmpliconMode/SplicingMode printHeader() always writes
                 // the header line to System.out even when `--DP ERR` routes variant rows to System.err.
@@ -1666,6 +1716,22 @@ impl EngineWriter for OutputDestination {
                 crate::output::table::print_header(&mut stdout, config)
                     .map_err(VardictError::Io)?;
                 std::io::Write::flush(&mut stdout).map_err(VardictError::Io)
+            }
+        }
+    }
+
+    fn finish_output(self) -> Result<(), VardictError> {
+        use std::io::Write as _;
+        match self {
+            Self::Stdout(mut w) => w.flush().map_err(VardictError::Io),
+            Self::Stderr(mut w) => w.flush().map_err(VardictError::Io),
+            Self::File(mut w) => {
+                w.flush().map_err(VardictError::Io)?;
+                sync_file_ignoring_special(w.get_ref())
+            }
+            Self::Bgzf(mut w) => {
+                let file = w.finish().map_err(VardictError::Io)?;
+                sync_file_ignoring_special(&file)
             }
         }
     }
@@ -1708,6 +1774,38 @@ pub enum CallingMode {
     Amplicon,
     Somatic,
     Simple,
+}
+
+impl CallingMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Splicing => "Splicing",
+            Self::Amplicon => "Amplicon",
+            Self::Somatic => "Somatic",
+            Self::Simple => "Simple",
+        }
+    }
+}
+
+#[derive(Default)]
+struct RunTelemetryCounters {
+    regions_count: std::sync::atomic::AtomicUsize,
+    tiles_count: std::sync::atomic::AtomicUsize,
+}
+
+fn read_peak_rss_kb() -> u64 {
+    let Ok(status) = std::fs::read_to_string("/proc/self/status") else {
+        return 0;
+    };
+    let parse_kb = |prefix: &str| -> Option<u64> {
+        status.lines().find_map(|line| {
+            let rest = line.strip_prefix(prefix)?;
+            rest.split_whitespace().next()?.parse::<u64>().ok()
+        })
+    };
+    parse_kb("VmHWM:")
+        .or_else(|| parse_kb("VmRSS:"))
+        .unwrap_or(0)
 }
 
 /// Ports `VarDictLauncher.start` (`VarDictLauncher.java:46-66`) mode precedence:
@@ -1803,9 +1901,44 @@ pub fn run(config: &config::Config) -> Result<(), VardictError> {
     let _bam_cache_guard = BamCacheGuard;
 
     crate::runner::run_with_worker_stack_for_bam(&config.bam, || {
-        let (effective, _) = resolve_effective_config(config)?;
-        let writer = create_output_writer(&effective);
-        run_with_engine_writer(&effective, writer)
+        let started = std::time::Instant::now();
+        let (effective, mode) = resolve_effective_config(config)?;
+        let mut stats_file = if let Some(ref stats_path) = effective.stats_json_path {
+            Some(std::fs::File::create(stats_path).map_err(VardictError::Io)?)
+        } else {
+            None
+        };
+        let writer = open_output_writer(&effective)?;
+        let telemetry = RunTelemetryCounters::default();
+        run_with_engine_writer_and_telemetry(&effective, writer, Some(&telemetry))?;
+        if let Some(ref mut f) = stats_file {
+            let elapsed_ms = started.elapsed().as_millis();
+            let peak_rss_kb = read_peak_rss_kb();
+            let regions_count = telemetry
+                .regions_count
+                .load(std::sync::atomic::Ordering::Relaxed);
+            let tiles_count = telemetry
+                .tiles_count
+                .load(std::sync::atomic::Ordering::Relaxed);
+            let exceptions_caught = effective
+                .exception_counter
+                .load(std::sync::atomic::Ordering::Relaxed);
+            let json = format!(
+                "{{\n  \"mode\": \"{}\",\n  \"threads\": {},\n  \"regions_count\": {},\n  \"tiles_count\": {},\n  \"elapsed_ms\": {},\n  \"peak_rss_kb\": {},\n  \"exceptions_caught\": {}\n}}\n",
+                mode.as_str(),
+                effective.threads,
+                regions_count,
+                tiles_count,
+                elapsed_ms,
+                peak_rss_kb,
+                exceptions_caught,
+            );
+            use std::io::Write as _;
+            f.write_all(json.as_bytes()).map_err(VardictError::Io)?;
+            f.flush().map_err(VardictError::Io)?;
+            sync_file_ignoring_special(f)?;
+        }
+        Ok(())
     })
 }
 
@@ -1815,15 +1948,16 @@ pub fn run_with_writer<W: std::io::Write>(
     config: &config::Config,
     writer: W,
 ) -> Result<(), VardictError> {
-    run_with_engine_writer(config, InjectedWriter(writer))
+    run_with_engine_writer_and_telemetry(config, InjectedWriter(writer), None)
 }
 
-fn run_with_engine_writer<W: EngineWriter>(
+fn run_with_engine_writer_and_telemetry<W: EngineWriter>(
     config: &config::Config,
     mut writer: W,
+    telemetry: Option<&RunTelemetryCounters>,
 ) -> Result<(), VardictError> {
-    match run_with_writer_inner(config, &mut writer) {
-        Ok(()) => writer.flush().map_err(VardictError::Io),
+    match run_with_writer_inner(config, &mut writer, telemetry) {
+        Ok(()) => writer.finish_output(),
         Err(e) => {
             let _ = writer.flush();
             Err(e)
@@ -1834,6 +1968,7 @@ fn run_with_engine_writer<W: EngineWriter>(
 fn run_with_writer_inner<W: EngineWriter>(
     config: &config::Config,
     mut writer: &mut W,
+    telemetry: Option<&RunTelemetryCounters>,
 ) -> Result<(), VardictError> {
     log::info!("VarDictRust engine starting");
 
@@ -1841,7 +1976,7 @@ fn run_with_writer_inner<W: EngineWriter>(
     let config = &effective;
 
     if mode == CallingMode::Somatic {
-        return run_somatic(config, writer);
+        return run_somatic(config, writer, telemetry);
     }
 
     let first_bam_spec = config
@@ -1876,7 +2011,7 @@ fn run_with_writer_inner<W: EngineWriter>(
 
     // Amplicon mode: process per-amplicon and combine via amplicon post-process
     if mode == CallingMode::Amplicon {
-        return run_amplicon(config, &chromosomes_lengths, regions, writer);
+        return run_amplicon(config, &chromosomes_lengths, regions, writer, telemetry);
     }
 
     let flat_regions: Vec<crate::regions::Region> = regions.into_iter().flatten().collect();
@@ -1903,6 +2038,12 @@ fn run_with_writer_inner<W: EngineWriter>(
             }
         }
         tiles.extend(reg_tiles);
+    }
+    if let Some(tel) = telemetry {
+        tel.regions_count
+            .store(flat_regions.len(), std::sync::atomic::Ordering::Relaxed);
+        tel.tiles_count
+            .store(tiles.len(), std::sync::atomic::Ordering::Relaxed);
     }
     let tile_batches = crate::regions::batch_tiles(tiles, tile_size, 16, config.threads);
 
@@ -2066,21 +2207,24 @@ fn run_with_writer_inner<W: EngineWriter>(
             if config_clone.emit_intermediate {
                 let ids = build_simple_split_var_identities(&variants, is_split_tile);
                 for (v, id) in variants.into_iter().zip(ids) {
-                    let mut line = if config_clone.fisher {
-                        crate::output::table::simple_38(
+                    let mut line = String::new();
+                    if config_clone.fisher {
+                        crate::output::table::simple_38_into(
+                            &mut line,
                             &v,
                             &builder_region,
                             &config_clone.sample,
                             &v.sv,
-                        )
+                        );
                     } else {
-                        crate::output::table::simple_36(
+                        crate::output::table::simple_36_into(
+                            &mut line,
                             &v,
                             &builder_region,
                             &config_clone.sample,
                             &v.sv,
-                        )
-                    };
+                        );
+                    }
                     if config_clone.crispr_cutting_site.unwrap_or(0) != 0 {
                         let _ =
                             std::fmt::Write::write_fmt(&mut line, format_args!("\t{}", v.crispr));
@@ -2287,6 +2431,7 @@ fn run_amplicon<W: EngineWriter>(
     chromosomes_lengths: &HashMap<String, usize>,
     segments: Vec<Vec<crate::regions::Region>>,
     writer: &mut W,
+    telemetry: Option<&RunTelemetryCounters>,
 ) -> Result<(), VardictError> {
     let first_bam = config
         .bam
@@ -2366,6 +2511,13 @@ fn run_amplicon<W: EngineWriter>(
 
     let segments: Vec<Vec<crate::regions::Region>> =
         segments.into_iter().filter(|s| !s.is_empty()).collect();
+    if let Some(tel) = telemetry {
+        let total_regions: usize = segments.iter().map(Vec::len).sum();
+        tel.regions_count
+            .store(total_regions, std::sync::atomic::Ordering::Relaxed);
+        tel.tiles_count
+            .store(segments.len(), std::sync::atomic::Ordering::Relaxed);
+    }
     let first_bam_owned = first_bam.to_string();
     let config_clone = config.clone();
     let chromosomes_lengths_clone = chromosomes_lengths.clone();
@@ -2582,6 +2734,7 @@ fn run_amplicon<W: EngineWriter>(
 fn run_somatic<W: EngineWriter>(
     config: &config::Config,
     writer: &mut W,
+    telemetry: Option<&RunTelemetryCounters>,
 ) -> Result<(), VardictError> {
     let parts: Vec<&str> = config.bam.split('|').collect();
     if parts.len() != 2 {
@@ -2647,6 +2800,12 @@ fn run_somatic<W: EngineWriter>(
             }
         }
         tiles.extend(reg_tiles);
+    }
+    if let Some(tel) = telemetry {
+        tel.regions_count
+            .store(flat_regions.len(), std::sync::atomic::Ordering::Relaxed);
+        tel.tiles_count
+            .store(tiles.len(), std::sync::atomic::Ordering::Relaxed);
     }
     let tile_batches = crate::regions::batch_tiles(tiles, tile_size, 16, config.threads);
 
@@ -2880,8 +3039,10 @@ fn run_somatic<W: EngineWriter>(
             if config_clone.emit_intermediate {
                 let mut rows = Vec::with_capacity(somatic_variants.len());
                 for sv in somatic_variants {
-                    let mut line = if config_clone.fisher {
-                        crate::output::table::somatic_61(
+                    let mut line = String::new();
+                    if config_clone.fisher {
+                        crate::output::table::somatic_61_into(
+                            &mut line,
                             &sv.variant1,
                             sv.variant2.as_ref(),
                             &builder_region,
@@ -2890,9 +3051,10 @@ fn run_somatic<W: EngineWriter>(
                             &sv.sv1,
                             &sv.sv2,
                             sv.end_is_variant2,
-                        )
+                        );
                     } else {
-                        crate::output::table::somatic_55(
+                        crate::output::table::somatic_55_into(
+                            &mut line,
                             &sv.variant1,
                             sv.variant2.as_ref(),
                             &builder_region,
@@ -2901,8 +3063,8 @@ fn run_somatic<W: EngineWriter>(
                             &sv.sv1,
                             &sv.sv2,
                             sv.end_is_variant2,
-                        )
-                    };
+                        );
+                    }
                     // ports SomaticOutputVariant.java:193-194 (DEBUG = tumor variant's)
                     if config_clone.debug {
                         line.push('\t');

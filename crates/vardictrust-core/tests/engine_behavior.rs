@@ -1267,4 +1267,134 @@ mod concurrency {
             }
         }
     }
+
+    #[test]
+    fn tiled_vs_untiled_var_and_vcf_conservation_simple_and_somatic() {
+        let dir = TempDir::new().expect("tempdir");
+        let fa = write_ref(&dir, "chr1", 2000, true);
+
+        let mut tumor_recs = Vec::new();
+        for pos in (150..=1000).step_by(80) {
+            tumor_recs.extend(snv_pair(pos));
+        }
+        tumor_recs.extend(insertion_pair(600));
+        tumor_recs.sort_by_key(|r| r.alignment_start());
+        let tumor_bam = dir.path().join("tumor.bam");
+        indexed_bam(&tumor_bam, "chr1", 2000, &tumor_recs).expect("write tumor bam");
+
+        let ref_cigar: Cigar = [(50usize, Kind::Match)]
+            .iter()
+            .map(|&(l, k)| Op::new(k, l))
+            .collect();
+        let mut normal_recs = Vec::new();
+        for pos in (150..=1000).step_by(80) {
+            for i in 0..2 {
+                normal_recs.push(
+                    RecordBuf::builder()
+                        .set_name(format!("n{pos}r{i}"))
+                        .set_flags(noodles::sam::alignment::record::Flags::empty())
+                        .set_reference_sequence_id(0)
+                        .set_alignment_start(Position::try_from(pos - 20).unwrap())
+                        .set_cigar(ref_cigar.clone())
+                        .set_sequence(vec![b'A'; 50].into())
+                        .set_quality_scores(vec![40u8; 50].into())
+                        .build(),
+                );
+            }
+        }
+        normal_recs.extend(snv_pair(310));
+        normal_recs.sort_by_key(|r| r.alignment_start());
+        let normal_bam = dir.path().join("normal.bam");
+        indexed_bam(&normal_bam, "chr1", 2000, &normal_recs).expect("write normal bam");
+
+        let bed = dir.path().join("multi_tile.bed");
+        fs::write(&bed, "chr1\t100\t1100\tDET\n").expect("write bed");
+
+        let base_cfg = Config {
+            reference: fa.to_string_lossy().into_owned(),
+            sample: "TUMOR".to_string(),
+            bam: tumor_bam.to_string_lossy().into_owned(),
+            bed: Some(bed.to_string_lossy().into_owned()),
+            col_chr: 0,
+            col_start: 1,
+            col_end: 2,
+            col_seg_start: 1,
+            col_seg_end: 2,
+            col_gene: Some(3),
+            column_for_chromosome: Some(0),
+            omit_end_tag: true,
+            threads: 1,
+            ..Config::default()
+        };
+
+        // 1. Simple mode: tiled (tile_size = Some(250)) vs untiled (tile_size = None)
+        let mut simple_untiled = base_cfg.clone();
+        simple_untiled.tile_size = None;
+        let mut simple_tiled = base_cfg.clone();
+        simple_tiled.tile_size = Some(250);
+
+        let mut simple_var_untiled = normalize_var_rows(
+            &run_core_var(&simple_untiled).expect("simple untiled .var"),
+            36,
+        );
+        let mut simple_var_tiled =
+            normalize_var_rows(&run_core_var(&simple_tiled).expect("simple tiled .var"), 36);
+        assert!(
+            simple_var_untiled.len() >= 12,
+            "expected >=12 simple .var rows across tiles, got {}",
+            simple_var_untiled.len()
+        );
+        simple_var_untiled.sort();
+        simple_var_tiled.sort();
+        assert_eq!(
+            simple_var_tiled, simple_var_untiled,
+            "simple .var row set must be identical between tiled (250bp) and untiled runs"
+        );
+
+        let simple_vcf_untiled = run_core_vcf(&simple_untiled).expect("simple untiled .vcf");
+        let simple_vcf_tiled = run_core_vcf(&simple_tiled).expect("simple tiled .vcf");
+        assert_eq!(
+            extract_variants(&simple_vcf_tiled),
+            extract_variants(&simple_vcf_untiled),
+            "simple .vcf variant lines must be identical between tiled (250bp) and untiled runs"
+        );
+
+        // 2. Somatic mode: tiled (tile_size = Some(250)) vs untiled (tile_size = None)
+        let somatic_bam = format!("{}|{}", tumor_bam.display(), normal_bam.display());
+        let mut somatic_untiled = base_cfg.clone();
+        somatic_untiled.bam = somatic_bam.clone();
+        somatic_untiled.sample = "TUMOR|NORMAL".to_string();
+        somatic_untiled.tile_size = None;
+
+        let mut somatic_tiled = somatic_untiled.clone();
+        somatic_tiled.tile_size = Some(250);
+
+        let mut somatic_var_untiled = normalize_var_rows(
+            &run_core_var(&somatic_untiled).expect("somatic untiled .var"),
+            55,
+        );
+        let mut somatic_var_tiled = normalize_var_rows(
+            &run_core_var(&somatic_tiled).expect("somatic tiled .var"),
+            55,
+        );
+        assert!(
+            somatic_var_untiled.len() >= 12,
+            "expected >=12 somatic .var rows across tiles, got {}",
+            somatic_var_untiled.len()
+        );
+        somatic_var_untiled.sort();
+        somatic_var_tiled.sort();
+        assert_eq!(
+            somatic_var_tiled, somatic_var_untiled,
+            "somatic .var row set must be identical between tiled (250bp) and untiled runs"
+        );
+
+        let somatic_vcf_untiled = run_core_vcf(&somatic_untiled).expect("somatic untiled .vcf");
+        let somatic_vcf_tiled = run_core_vcf(&somatic_tiled).expect("somatic tiled .vcf");
+        assert_eq!(
+            extract_variants(&somatic_vcf_tiled),
+            extract_variants(&somatic_vcf_untiled),
+            "somatic .vcf variant lines must be identical between tiled (250bp) and untiled runs"
+        );
+    }
 }

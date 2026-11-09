@@ -133,6 +133,10 @@ pub struct Config {
     pub omit_end_tag: bool,
     /// Include Ns in depth calculation (-K)
     pub include_n: bool,
+    /// Opt-in output file path (`--output <PATH>`; plain file or `.gz`/`.bgz` BGZF).
+    pub output_path: Option<String>,
+    /// Opt-in JSON execution telemetry path (`--stats-json <PATH>`).
+    pub stats_json_path: Option<String>,
 }
 
 impl Default for Config {
@@ -204,6 +208,8 @@ impl Default for Config {
             unique_mode_second_in_pair_enabled: false,
             omit_end_tag: true,
             include_n: false,
+            output_path: None,
+            stats_json_path: None,
         }
     }
 }

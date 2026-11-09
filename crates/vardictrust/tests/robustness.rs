@@ -313,3 +313,128 @@ fn jemalloc_startup_emits_no_stderr_warnings() {
         "unexpected jemalloc warning on micro.bam stderr: {call_stderr}"
     );
 }
+
+#[test]
+fn output_plain_and_bgzf_match_stdout_and_stats_json_emits_telemetry() {
+    use std::io::Read as _;
+
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let plain_vcf = dir.path().join("out.vcf");
+    let bgzf_vcf = dir.path().join("out.vcf.gz");
+    let stats_json = dir.path().join("stats.json");
+
+    let common_args = [
+        "-G",
+        "fixtures/micro/micro.ref.fa",
+        "-b",
+        "fixtures/micro/micro.bam",
+        "-c",
+        "1",
+        "-S",
+        "2",
+        "-E",
+        "3",
+        "-g",
+        "4",
+        "-z",
+        "fixtures/micro/micro.bed",
+        "--threads=2",
+    ];
+
+    let stdout_run = base_cmd()
+        .args(common_args)
+        .output()
+        .expect("spawn vardictrust stdout");
+    assert!(
+        stdout_run.status.success(),
+        "stdout run failed: {}",
+        String::from_utf8_lossy(&stdout_run.stderr)
+    );
+    assert!(!stdout_run.stdout.is_empty());
+
+    // 1. --output <tmp>/out.vcf + --stats-json <tmp>/stats.json
+    let plain_run = base_cmd()
+        .args(common_args)
+        .arg("--output")
+        .arg(&plain_vcf)
+        .arg("--stats-json")
+        .arg(&stats_json)
+        .output()
+        .expect("spawn vardictrust --output out.vcf");
+    assert!(
+        plain_run.status.success(),
+        "plain --output run failed: {}",
+        String::from_utf8_lossy(&plain_run.stderr)
+    );
+    assert!(
+        plain_run.stdout.is_empty(),
+        "stdout must be empty when --output is set"
+    );
+    let plain_bytes = std::fs::read(&plain_vcf).expect("read out.vcf");
+    assert_eq!(
+        plain_bytes, stdout_run.stdout,
+        "--output out.vcf must be byte-for-byte identical to stdout"
+    );
+
+    // 2. --output <tmp>/out.vcf.gz (BGZF)
+    let bgzf_run = base_cmd()
+        .args(common_args)
+        .arg("--output")
+        .arg(&bgzf_vcf)
+        .output()
+        .expect("spawn vardictrust --output out.vcf.gz");
+    assert!(
+        bgzf_run.status.success(),
+        "bgzf --output run failed: {}",
+        String::from_utf8_lossy(&bgzf_run.stderr)
+    );
+    assert!(
+        bgzf_run.stdout.is_empty(),
+        "stdout must be empty when --output out.vcf.gz is set"
+    );
+    let bgzf_file = std::fs::File::open(&bgzf_vcf).expect("open out.vcf.gz");
+    let mut bgzf_reader = noodles::bgzf::io::Reader::new(bgzf_file);
+    let mut decompressed = Vec::new();
+    bgzf_reader
+        .read_to_end(&mut decompressed)
+        .expect("decompress BGZF out.vcf.gz");
+    assert_eq!(
+        decompressed, stdout_run.stdout,
+        "decompressed --output out.vcf.gz must be byte-for-byte identical to stdout"
+    );
+
+    // 3. --stats-json <tmp>/stats.json telemetry keys
+    let stats_text = std::fs::read_to_string(&stats_json).expect("read stats.json");
+    let trimmed = stats_text.trim();
+    assert!(
+        trimmed.starts_with('{') && trimmed.ends_with('}'),
+        "stats.json must be a JSON object, got: {stats_text}"
+    );
+    for key in [
+        "\"mode\": \"Simple\"",
+        "\"threads\": 2",
+        "\"regions_count\":",
+        "\"tiles_count\":",
+        "\"elapsed_ms\":",
+        "\"peak_rss_kb\":",
+        "\"exceptions_caught\": 0",
+    ] {
+        assert!(
+            stats_text.contains(key),
+            "stats.json missing expected entry {key}, got:\n{stats_text}"
+        );
+    }
+}
+
+#[test]
+fn upstream_toml_manifest_present_and_pinned() {
+    let upstream_path = workspace_root().join("UPSTREAM.toml");
+    let content = std::fs::read_to_string(&upstream_path)
+        .unwrap_or_else(|e| panic!("failed to read {}: {e}", upstream_path.display()));
+    for expected in ["0886261", "009e017", "1.8.3"] {
+        assert!(
+            content.contains(expected),
+            "UPSTREAM.toml must contain '{expected}', got:\n{content}"
+        );
+    }
+}

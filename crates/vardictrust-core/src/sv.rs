@@ -3442,38 +3442,28 @@ pub fn partial_pipeline(
     let before_ins: BTreeSet<i32> = var_data.insertion_variants.keys().copied().collect();
     let orig_sv_structures = std::mem::take(&mut var_data.sv_structures);
     {
-        let mut parser = crate::cigar::parse::CigarParser {
+        let mut parser = crate::cigar::parse::CigarParser::new(
             reference,
-            region: &region,
+            &region,
             config,
-            svflag: true, // svflag is true for partial pipeline
-            non_insertion_variants: std::mem::take(&mut var_data.non_insertion_variants),
-            insertion_variants: std::mem::take(&mut var_data.insertion_variants),
-            position_to_insertion_count: std::mem::take(&mut var_data.position_to_insertion_count),
-            position_to_deletion_count: std::mem::take(&mut var_data.position_to_deletion_count),
-            sv_structures: std::mem::take(&mut var_data.sv_structures),
-            ref_coverage: std::mem::take(&mut var_data.ref_coverage),
-            soft_clips_5_end: std::mem::take(&mut var_data.soft_clips_5_end),
-            soft_clips_3_end: std::mem::take(&mut var_data.soft_clips_3_end),
-            max_read_length: var_data.max_read_length,
-            splice: std::mem::take(&mut var_data.splice),
-            mnp: std::mem::take(&mut var_data.mnp),
-            splice_count: std::mem::take(&mut var_data.splice_count),
-            discordant_count: 0,
-            total_reads: 0,
-            duplicate_reads: 0,
-            scratch_seq: Vec::new(),
-            scratch_qual: Vec::new(),
-            scratch_cigar_str: String::new(),
-            scratch_elements: Vec::new(),
-            scratch_s: String::new(),
-            scratch_ss: String::new(),
-            scratch_splice_key: String::new(),
-            scratch_f4_desc: String::new(),
-            scratch_f4_qual: Vec::new(),
-            scratch_f4_seg1: String::new(),
-            scratch_f4_seg2: Vec::new(),
-        };
+            true, // svflag is true for partial pipeline
+            0,
+            0,
+            var_data.max_read_length,
+        );
+        parser.non_insertion_variants = std::mem::take(&mut var_data.non_insertion_variants);
+        parser.insertion_variants = std::mem::take(&mut var_data.insertion_variants);
+        parser.position_to_insertion_count =
+            std::mem::take(&mut var_data.position_to_insertion_count);
+        parser.position_to_deletion_count =
+            std::mem::take(&mut var_data.position_to_deletion_count);
+        parser.sv_structures = std::mem::take(&mut var_data.sv_structures);
+        parser.ref_coverage = std::mem::take(&mut var_data.ref_coverage);
+        parser.soft_clips_5_end = std::mem::take(&mut var_data.soft_clips_5_end);
+        parser.soft_clips_3_end = std::mem::take(&mut var_data.soft_clips_3_end);
+        parser.splice = std::mem::take(&mut var_data.splice);
+        parser.mnp = std::mem::take(&mut var_data.mnp);
+        parser.splice_count = std::mem::take(&mut var_data.splice_count);
         let mut r = crate::bam::SamRecord::new();
         for (idx, mut feed) in feeds.into_iter().enumerate() {
             preprocessor.reset_for_next_bam();
