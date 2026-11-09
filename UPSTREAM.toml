@@ -1,0 +1,30 @@
+# Upstream provenance manifest for VarDictRust (AGENTS.md §5)
+
+[vardictjava]
+repository = "https://github.com/AstraZeneca-NGS/VarDictJava"
+version = "1.8.3"
+commit = "0886261"
+license = "MIT"
+
+[vardict_scripts]
+repository = "https://github.com/AstraZeneca-NGS/VarDict"
+submodule_path = "VarDictJava/VarDict"
+commit = "009e017"
+scripts = ["var2vcf_valid.pl", "var2vcf_paired.pl", "teststrandbias.R", "testsomatic.R"]
+
+[ported_libraries.htsjdk]
+artifact = "com.github.samtools:htsjdk"
+version = "2.21.0"
+ported_components = ["Cigar", "SAMRecord", "SequenceUtil"]
+
+[ported_libraries.r_nmath]
+source = "R nmath standalone (dhyper, phyper, dbinom_raw, stirlerr, bd0)"
+module = "crates/vardictrust-core/src/stats/rmath"
+license = "GPL-2.0-or-later"
+v2_cleanroom_issue = 92
+
+[ported_libraries.commons_math3]
+artifact = "org.apache.commons:commons-math3"
+version = "3.6.1"
+ported_components = ["HypergeometricDistribution", "SaddlePointExpansion"]
+license = "Apache-2.0"

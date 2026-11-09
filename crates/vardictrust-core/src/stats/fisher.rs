@@ -16,6 +16,7 @@ pub struct FisherExact {
     p_value_less: f64,
     p_value_greater: f64,
     p_value_two_sided: f64,
+    mu_at_1: f64,
     java_fisher: bool,
 }
 
@@ -67,6 +68,7 @@ impl FisherExact {
             p_value_less: 0.0,
             p_value_greater: 0.0,
             p_value_two_sided: 0.0,
+            mu_at_1: f64::NAN,
             java_fisher,
         };
 
@@ -138,7 +140,11 @@ impl FisherExact {
         // cross-thread aliasing is possible. MLE tolerance `eps.powf(0.25)`
         // is verbatim.
         let mut scratch = Vec::with_capacity(self.support_len());
-        let mu = self.mnhyper_with(1.0, &mut scratch);
+        let mu = if x == self.x as f64 && !self.mu_at_1.is_nan() {
+            self.mu_at_1
+        } else {
+            self.mnhyper_with(1.0, &mut scratch)
+        };
         let tol = eps.powf(0.25);
         if mu > x {
             let f = |t: f64| self.mnhyper_with(t, &mut scratch) - x;
@@ -270,17 +276,35 @@ impl FisherExact {
             .unwrap_or(usize::MAX);
         let target = density.get(target_idx).copied().unwrap_or(0.0);
         let threshold = target * rel_err;
-        let mut sum_elements = Vec::with_capacity(density.len());
-        for el in density {
-            if el <= threshold {
-                sum_elements.push(el);
-            }
-        }
-        self.p_value_two_sided = if self.java_fisher {
-            sum_elements.iter().copied().sum()
+        if self.x == self.lo || self.x == self.hi {
+            density.retain(|&el| el <= threshold);
+            self.p_value_two_sided = if self.java_fisher {
+                density.iter().copied().sum()
+            } else {
+                crate::stats::f80::f80_sum(&density)
+            };
         } else {
-            crate::stats::f80::f80_sum(&sum_elements)
-        };
+            let mut sum_elements = Vec::with_capacity(density.len());
+            for &el in &density {
+                if el <= threshold {
+                    sum_elements.push(el);
+                }
+            }
+            self.p_value_two_sided = if self.java_fisher {
+                sum_elements.iter().copied().sum()
+            } else {
+                crate::stats::f80::f80_sum(&sum_elements)
+            };
+            for (i, prob) in density.iter_mut().enumerate() {
+                let supp = self.lo.saturating_add(i as i32) as f64;
+                *prob *= supp;
+            }
+            self.mu_at_1 = if self.java_fisher {
+                java_stream_sum(&density)
+            } else {
+                crate::stats::f80::f80_sum(&density)
+            };
+        }
     }
 
     fn pnhyper(&self, q: i32, upper_tail: bool) -> f64 {
@@ -973,5 +997,129 @@ mod tests {
             count += 1;
         }
         assert!(count >= 250, "expected >= 250 oracle rows, got {count}");
+    }
+
+    #[test]
+    fn mu_at_1_reuse_and_boundary_invariants() {
+        let interior_cases = [
+            (
+                (121, 55, 18, 23),
+                (0.00378, 0.99908, 0.00287, "2.79657"),
+                (0.00378, 0.99908, 0.00287, "2.79657"),
+            ),
+            (
+                (83, 40, 1, 2),
+                (0.25746, 0.96473, 0.25746, "4.09908"),
+                (0.25746, 0.96473, 0.25746, "4.09908"),
+            ),
+            (
+                (10, 10, 10, 1),
+                (0.04722, 0.02599, 0.99802, "0.10703"),
+                (0.04722, 0.02599, 0.99802, "0.10703"),
+            ),
+        ];
+
+        let mut scratch = Vec::new();
+        for ((rf, rr, af, ar), expected_r, expected_java) in interior_cases {
+            for (java_mode, (exp_p, exp_less, exp_greater, exp_or)) in
+                [(false, expected_r), (true, expected_java)]
+            {
+                let f = if java_mode {
+                    FisherExact::new_java(rf, rr, af, ar)
+                } else {
+                    FisherExact::new(rf, rr, af, ar)
+                };
+                assert!(f.x > f.lo && f.x < f.hi);
+                assert!(!f.mu_at_1.is_nan());
+                assert_eq!(
+                    f.mu_at_1.to_bits(),
+                    f.mnhyper_with(1.0, &mut scratch).to_bits()
+                );
+                assert_eq!(f.get_p_value(), exp_p);
+                assert_eq!(f.get_p_value_less(), exp_less);
+                assert_eq!(f.get_p_value_greater(), exp_greater);
+                assert_eq!(f.get_odds_ratio(), exp_or);
+
+                let custom_x = if f.x - 1 > f.lo {
+                    (f.x - 1) as f64
+                } else {
+                    (f.x + 1) as f64
+                };
+                assert_ne!(custom_x, f.x as f64);
+                let mut f_uncached = f.clone();
+                f_uncached.mu_at_1 = f64::NAN;
+                assert_eq!(
+                    f.mle(f.x as f64).to_bits(),
+                    f_uncached.mle(f.x as f64).to_bits()
+                );
+                let mut f_poisoned = f.clone();
+                f_poisoned.mu_at_1 = 1.0e300;
+                assert_eq!(
+                    f.mle(custom_x).to_bits(),
+                    f_poisoned.mle(custom_x).to_bits()
+                );
+            }
+        }
+
+        let boundary_cases = [
+            ((0, 0, 0, 0), (1.0, 1.0, 1.0, "0"), (1.0, 1.0, 1.0, "0")),
+            (
+                (0, 10, 10, 10),
+                (0.01099, 0.00615, 1.0, "0"),
+                (0.01099, 0.00615, 1.0, "0"),
+            ),
+            (
+                (10, 0, 10, 10),
+                (0.01099, 1.0, 0.00615, "Inf"),
+                (0.01099, 1.0, 0.00615, "Inf"),
+            ),
+            (
+                (10, 10, 10, 0),
+                (0.01099, 0.00615, 1.0, "0"),
+                (0.01099, 0.00615, 1.0, "0"),
+            ),
+        ];
+
+        for ((rf, rr, af, ar), expected_r, expected_java) in boundary_cases {
+            for (java_mode, (exp_p, exp_less, exp_greater, exp_or)) in
+                [(false, expected_r), (true, expected_java)]
+            {
+                let f = if java_mode {
+                    FisherExact::new_java(rf, rr, af, ar)
+                } else {
+                    FisherExact::new(rf, rr, af, ar)
+                };
+                assert!(f.x == f.lo || f.x == f.hi);
+                assert!(f.mu_at_1.is_nan());
+                assert_eq!(f.get_p_value(), exp_p);
+                assert_eq!(f.get_p_value_less(), exp_less);
+                assert_eq!(f.get_p_value_greater(), exp_greater);
+                assert_eq!(f.get_odds_ratio(), exp_or);
+
+                if f.hi - f.lo >= 2 {
+                    let custom_x = (f.lo + 1) as f64;
+                    assert_ne!(custom_x, f.x as f64);
+                    let f_interior = if java_mode {
+                        FisherExact::new_java(
+                            f.lo + 1,
+                            f.m - (f.lo + 1),
+                            f.k - (f.lo + 1),
+                            f.n - (f.k - (f.lo + 1)),
+                        )
+                    } else {
+                        FisherExact::new(
+                            f.lo + 1,
+                            f.m - (f.lo + 1),
+                            f.k - (f.lo + 1),
+                            f.n - (f.k - (f.lo + 1)),
+                        )
+                    };
+                    assert_eq!(
+                        f.mle(custom_x).to_bits(),
+                        f_interior.mle(custom_x).to_bits()
+                    );
+                }
+            }
+        }
     }
 }

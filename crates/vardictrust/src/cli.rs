@@ -553,6 +553,14 @@ pub struct Cli {
     #[arg(short = 'K')]
     pub include_n: bool,
 
+    /// Write output (.vcf or .var) directly to file; .gz/.bgz suffixes use multithreaded BGZF
+    #[arg(long = "output", value_name = "PATH")]
+    pub output: Vec<String>,
+
+    /// Write run telemetry (mode, threads, regions, tiles, elapsed_ms, peak_rss_kb) as JSON to PATH
+    #[arg(long = "stats-json", value_name = "PATH")]
+    pub stats_json: Vec<String>,
+
     /// Positional BED file (when -R absent).
     pub bed: Option<String>,
 }
@@ -764,6 +772,8 @@ impl Cli {
             unique_mode_second_in_pair_enabled: self.unique_mode_second_in_pair_enabled,
             omit_end_tag: col_end.is_some(),
             include_n: self.include_n,
+            output_path: self.output.first().cloned(),
+            stats_json_path: self.stats_json.first().cloned(),
         };
         cfg.apply_pileup_overrides();
         Ok(cfg)
@@ -1107,5 +1117,31 @@ mod tests {
 
         // -x -3 must fail (Commons-CLI treats -3 as flag)
         assert!(Cli::try_parse_from(args(&["-b", "a.bam", "-G", "r.fa", "-x", "-3"])).is_err());
+    }
+
+    #[test]
+    fn output_and_stats_json_flags_parse_with_first_wins() {
+        let default_cli = Cli::try_parse_from(args(&["-b", "a.bam", "-G", "r.fa"])).unwrap();
+        let default_cfg = default_cli.to_config().unwrap();
+        assert_eq!(default_cfg.output_path, None);
+        assert_eq!(default_cfg.stats_json_path, None);
+
+        let cli = Cli::try_parse_from(args(&[
+            "-b",
+            "a.bam",
+            "-G",
+            "r.fa",
+            "--output",
+            "first.vcf.gz",
+            "--output",
+            "second.vcf",
+            "--stats-json=first_stats.json",
+            "--stats-json",
+            "second_stats.json",
+        ]))
+        .unwrap();
+        let cfg = cli.to_config().unwrap();
+        assert_eq!(cfg.output_path.as_deref(), Some("first.vcf.gz"));
+        assert_eq!(cfg.stats_json_path.as_deref(), Some("first_stats.json"));
     }
 }

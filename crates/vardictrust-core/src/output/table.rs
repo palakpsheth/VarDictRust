@@ -716,6 +716,7 @@ fn debug_amp_variant(v: Option<&Variant>) -> String {
 /// checks `value == Math.round(value)` on the raw unrounded `value` first;
 /// otherwise formats with `DecimalFormat(pattern)` and runs `.replaceAll("0+$", "")`,
 /// leaving a trailing `'.'` when a fractional value rounds to an integer (`"2."`, `"-0."`).
+#[cfg(test)]
 pub(crate) fn get_rounded_value_to_print(value: f64, digits: i32) -> String {
     let mut buf = String::new();
     push_java_rounded(&mut buf, value, digits);
@@ -993,6 +994,7 @@ fn push_20cols_fisher(buf: &mut String, v: &Variant, pvalue: f64, oddratio: &str
     buf.push_str(oddratio);
 }
 
+#[cfg(test)]
 fn variant_20cols_fisher_empty(pvalue: f64, oddratio: &str) -> String {
     format!(
         "0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t{}\t{}",
@@ -1000,6 +1002,9 @@ fn variant_20cols_fisher_empty(pvalue: f64, oddratio: &str) -> String {
         oddratio,
     )
 }
+
+const VARIANT_20COLS_FISHER_EMPTY: &str =
+    "0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t1\t0";
 
 /// Write the somatic 61-column row into `buf` (cleared first).
 /// Byte-identical to [`somatic_61`]; same reuse contract as [`simple_36_into`].
@@ -1080,11 +1085,7 @@ pub fn somatic_61_into(
             push_20cols_fisher(buf, n, f2.get_p_value(), &f2.get_odds_ratio());
         }
         None => {
-            let f2 = crate::stats::FisherExact::new_java(0, 0, 0, 0);
-            buf.push_str(&variant_20cols_fisher_empty(
-                f2.get_p_value(),
-                &f2.get_odds_ratio(),
-            ));
+            buf.push_str(VARIANT_20COLS_FISHER_EMPTY);
         }
     }
     buf.push('\t');
@@ -2049,6 +2050,15 @@ mod tests {
         assert!(
             h_amp_str.ends_with("GoodVarCount\tTotalVarCount\tNocov\tAmpflag\n"),
             "Amplicon mode takes precedence over paired BAM when -R is absent: {h_amp_str}"
+        );
+    }
+
+    #[test]
+    fn variant_20cols_fisher_empty_constant_matches_java_zero_table() {
+        let f2 = crate::stats::FisherExact::new_java(0, 0, 0, 0);
+        assert_eq!(
+            VARIANT_20COLS_FISHER_EMPTY,
+            variant_20cols_fisher_empty(f2.get_p_value(), &f2.get_odds_ratio())
         );
     }
 }

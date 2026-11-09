@@ -21,6 +21,8 @@ pub struct ToVarsBuilder<'a> {
     pub region: &'a Region,
     pub chromosomes_lengths: &'a HashMap<String, usize>,
     pub config: &'a Config,
+    primary_ref_seq: &'a [u8],
+    primary_ref_start: u32,
 }
 
 /// G3 (mate-window ownership) single-owner rule for a merge-planted key.
@@ -108,12 +110,38 @@ impl<'a> ToVarsBuilder<'a> {
         chromosomes_lengths: &'a HashMap<String, usize>,
         config: &'a Config,
     ) -> Self {
+        let (primary_ref_seq, primary_ref_start) = match (
+            reference.loaded_regions.first(),
+            reference.region_sequences.first(),
+        ) {
+            (Some(lr), Some(bases))
+                if lr.chr == region.chr && lr.sequence_end >= lr.sequence_start =>
+            {
+                let max_len = (lr.sequence_end.saturating_sub(lr.sequence_start) as usize)
+                    .saturating_add(1)
+                    .min(bases.len());
+                (bases.get(..max_len).unwrap_or(&[]), lr.sequence_start)
+            }
+            _ => (&[][..], 1),
+        };
         Self {
             reference,
             region,
             chromosomes_lengths,
             config,
+            primary_ref_seq,
+            primary_ref_start,
         }
+    }
+
+    #[inline]
+    fn get_ref_base(&self, pos: u32) -> Option<u8> {
+        if let Some(offset) = pos.checked_sub(self.primary_ref_start) {
+            if let Some(&b) = self.primary_ref_seq.get(offset as usize) {
+                return Some(b);
+            }
+        }
+        self.reference.get_base(&self.region.chr, pos)
     }
 
     /// Convert VariationData into a map of position -> Vars container.
@@ -301,7 +329,7 @@ impl<'a> ToVarsBuilder<'a> {
             },
             _ => return false,
         };
-        if let Some(ref_base) = self.reference.get_base(&self.region.chr, position as u32) {
+        if let Some(ref_base) = self.get_ref_base(position as u32) {
             let mut buf = [0u8; 4];
             let ref_base_str = (ref_base as char).encode_utf8(&mut buf);
             return sole_key == ref_base_str;
@@ -325,8 +353,29 @@ impl<'a> ToVarsBuilder<'a> {
     }
 
     /// ports VariationUtils.java:163-175
+    #[inline]
     fn join_ref_into(&self, out: &mut String, start: i32, end: i32) {
-        crate::util::ref_bases_into(out, self.reference, &self.region.chr, start, end);
+        out.clear();
+        if end < start || end < 1 {
+            return;
+        }
+        let eff_start = start.max(1);
+        let span = ((end as i64) - (eff_start as i64) + 1).clamp(0, 1 << 20) as usize;
+        if out.capacity() == 0 {
+            out.reserve_exact(span);
+        } else {
+            out.reserve(span);
+        }
+        for p in eff_start..=end {
+            if let Some(b) = self.get_ref_base(p as u32) {
+                if b.is_ascii() {
+                    out.push(b as char);
+                } else {
+                    crate::util::ref_bases_into(out, self.reference, &self.region.chr, start, end);
+                    return;
+                }
+            }
+        }
     }
 
     fn proceed_vref_is_deletion(
@@ -534,10 +583,7 @@ impl<'a> ToVarsBuilder<'a> {
                         if let Some(&cov_next) = ref_coverage.get(&(position + 1)) {
                             if ttcov < cov_next - cnt.cnt {
                                 ttcov = cov_next;
-                                if let Some(ref_base) = self
-                                    .reference
-                                    .get_base(&self.region.chr, (position + 1) as u32)
-                                {
+                                if let Some(ref_base) = self.get_ref_base((position + 1) as u32) {
                                     let mut buf = [0u8; 4];
                                     let ref_base_str: &str =
                                         (ref_base as char).encode_utf8(&mut buf);
@@ -605,10 +651,7 @@ impl<'a> ToVarsBuilder<'a> {
         var: &mut Vec<Variant>,
     ) -> f64 {
         let mut maxfreq = 0.0;
-        let ref_base = self
-            .reference
-            .get_base(&self.region.chr, position as u32)
-            .unwrap_or(b'N');
+        let ref_base = self.get_ref_base(position as u32).unwrap_or(b'N');
         let mut buf = [0u8; 4];
         let ref_base_str: &str = (ref_base as char).encode_utf8(&mut buf);
 
@@ -696,10 +739,7 @@ impl<'a> ToVarsBuilder<'a> {
                 .get(&(position + 1))
                 .or_else(|| orig_non_ins.get(&(position + 1)))
             {
-                if let Some(ref_base_next) = self
-                    .reference
-                    .get_base(&self.region.chr, (position + 1) as u32)
-                {
+                if let Some(ref_base_next) = self.get_ref_base((position + 1) as u32) {
                     let mut buf = [0u8; 4];
                     let ref_base_next_str: &str = (ref_base_next as char).encode_utf8(&mut buf);
                     if let Some(tpref) = next_non_ins.map.get(ref_base_next_str) {
@@ -787,10 +827,7 @@ impl<'a> ToVarsBuilder<'a> {
                         start_position += shift3;
                         end_position += shift3;
                     }
-                    let ref_base_byte = self
-                        .reference
-                        .get_base(&self.region.chr, position as u32)
-                        .unwrap_or(b'N');
+                    let ref_base_byte = self.get_ref_base(position as u32).unwrap_or(b'N');
                     refallele.push(ref_base_byte as char);
                     varallele = String::with_capacity(1 + stripped_desc.len());
                     varallele.push(ref_base_byte as char);
@@ -848,26 +885,18 @@ impl<'a> ToVarsBuilder<'a> {
                             start_position += shift3;
                         }
                         if varallele != "<DEL>" {
-                            let base_prev = self
-                                .reference
-                                .get_base(&self.region.chr, (position - 1) as u32)
-                                .unwrap_or(b'N');
+                            let base_prev =
+                                self.get_ref_base((position - 1) as u32).unwrap_or(b'N');
                             varallele.clear();
                             varallele.push(base_prev as char);
                         }
-                        let base_prev = self
-                            .reference
-                            .get_base(&self.region.chr, (position - 1) as u32)
-                            .unwrap_or(b'N');
+                        let base_prev = self.get_ref_base((position - 1) as u32).unwrap_or(b'N');
                         refallele.push(base_prev as char);
                         start_position -= 1;
                     }
 
                     if matches_some_sv_numbers(description_string) {
-                        let base_cur = self
-                            .reference
-                            .get_base(&self.region.chr, position as u32)
-                            .unwrap_or(b'N');
+                        let base_cur = self.get_ref_base(position as u32).unwrap_or(b'N');
                         refallele.clear();
                         refallele.push(base_cur as char);
                     } else if deletion_length < self.config.sv_min_len as i32 {
@@ -887,10 +916,7 @@ impl<'a> ToVarsBuilder<'a> {
                     shift3 = msi_res.shift3;
                     msint = msi_res.msint;
 
-                    let base_cur = self
-                        .reference
-                        .get_base(&self.region.chr, position as u32)
-                        .unwrap_or(b'N');
+                    let base_cur = self.get_ref_base(position as u32).unwrap_or(b'N');
                     refallele.push(base_cur as char);
                     varallele = description_string.clone();
                 }
@@ -922,10 +948,7 @@ impl<'a> ToVarsBuilder<'a> {
                     }
 
                     if varallele == "<DEL>" && !refallele.is_empty() {
-                        let ref_base = self
-                            .reference
-                            .get_base(&self.region.chr, start_position as u32)
-                            .unwrap_or(b'N');
+                        let ref_base = self.get_ref_base(start_position as u32).unwrap_or(b'N');
                         refallele.clear();
                         refallele.push(ref_base as char);
                         if let Some(&cov_prev) = ref_coverage.get(&(start_position - 1)) {
@@ -1045,9 +1068,7 @@ impl<'a> ToVarsBuilder<'a> {
                                 }
                             }
                             let first_char =
-                                self.reference
-                                    .get_base(&self.region.chr, start_position as u32)
-                                    .unwrap_or(b'N') as char;
+                                self.get_ref_base(start_position as u32).unwrap_or(b'N') as char;
                             varallele = format!("{}{}", first_char, tva);
                         }
                         vref.crispr = n;
@@ -1211,10 +1232,7 @@ impl<'a> ToVarsBuilder<'a> {
         vref.end_pos = position;
         vref.hi_freq = round_half_even(vref.hi_freq, 4);
 
-        let ref_base = self
-            .reference
-            .get_base(&self.region.chr, position as u32)
-            .unwrap_or(b'N');
+        let ref_base = self.get_ref_base(position as u32).unwrap_or(b'N');
         let valid_base = match ref_base {
             b'M' | b'R' | b'W' | b'V' | b'H' | b'D' => b'A',
             b'S' | b'Y' | b'B' => b'C',
@@ -2241,5 +2259,99 @@ mod tests {
         assert_eq!(strip_del("-12#AC^3"), "#AC^3");
         assert_eq!(strip_del("-A"), "-A");
         assert_eq!(strip_del("-"), "-");
+    }
+
+    #[test]
+    fn primary_ref_slice_cache_and_join_ref_into_match_reference_across_all_layouts() {
+        let chr_lengths = HashMap::from([("chr1".to_string(), 200)]);
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(10),
+            end: Pos1(120),
+            gene: "TEST".to_string(),
+            amplicon: None,
+        };
+        let cfg = Config::default();
+
+        // (a) & (b): Primary loaded region [10..=100] with 17-bp SEED1_LEN truncated tail
+        // (stored region_sequences[0] has length 74 covering [10..=83], while [84..=100] is
+        // truncated in primary and covered by secondary loaded_regions[1] covering [80..=130]).
+        let mut ref_with_tail = Reference::new();
+        ref_with_tail
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 10,
+                sequence_end: 100,
+            });
+        let primary_bases: Vec<u8> = (0..74)
+            .map(|i| b"ACGT"[i % 4]) // 74 bp instead of 91 bp (17-bp SEED1_LEN truncated tail)
+            .collect();
+        ref_with_tail
+            .reference_sequences
+            .insert("chr1".to_string(), primary_bases.clone());
+        ref_with_tail.region_sequences.push(primary_bases);
+
+        ref_with_tail
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 80,
+                sequence_end: 130,
+            });
+        let secondary_bases: Vec<u8> = (0..=50).map(|i| b"TGCA"[i % 4]).collect();
+        ref_with_tail.region_sequences.push(secondary_bases);
+
+        // (c): reference_sequences-only setup (region_sequences is empty)
+        let mut ref_map_only = Reference::new();
+        ref_map_only
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 10,
+                sequence_end: 60,
+            });
+        let map_only_bases: Vec<u8> = (0..=50).map(|i| b"CGAT"[i % 4]).collect();
+        ref_map_only
+            .reference_sequences
+            .insert("chr1".to_string(), map_only_bases);
+
+        for reference in [&ref_with_tail, &ref_map_only] {
+            let builder = ToVarsBuilder::new(reference, &region, &chr_lengths, &cfg);
+
+            // Check single-base lookup across OOB before start, primary slice, 17-bp truncated tail,
+            // secondary region, and OOB past end.
+            for pos in 0..=150u32 {
+                assert_eq!(
+                    builder.get_ref_base(pos),
+                    reference.get_base(&region.chr, pos),
+                    "get_ref_base mismatch at pos={pos}"
+                );
+            }
+
+            // (d): Check join_ref_into across negative/OOB, reversed, primary, tail-spanning, and secondary ranges.
+            let ranges = [
+                (-20, -5),
+                (-10, 0),
+                (-5, 15),
+                (1, 9),
+                (10, 50),
+                (70, 95), // spans primary into 17-bp truncated tail covered by loaded_regions[1]
+                (84, 100), // strictly inside the 17-bp truncated tail of loaded_regions[0]
+                (95, 140), // spans secondary into OOB past end
+                (50, 20), // end < start
+                (135, 160),
+            ];
+            let mut actual = String::new();
+            let mut expected = String::new();
+            for (start, end) in ranges {
+                builder.join_ref_into(&mut actual, start, end);
+                crate::util::ref_bases_into(&mut expected, reference, &region.chr, start, end);
+                assert_eq!(
+                    actual, expected,
+                    "join_ref_into mismatch for range {start}..={end}"
+                );
+            }
+        }
     }
 }

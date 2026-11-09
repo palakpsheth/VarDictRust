@@ -31,6 +31,8 @@ pub struct CigarParser<'a> {
     pub region: &'a Region,
     pub config: &'a Config,
     pub svflag: bool,
+    pub(crate) primary_ref_seq: &'a [u8],
+    pub(crate) primary_ref_start: u32,
 
     pub non_insertion_variants: crate::javamap::JavaHashMap<i32, VariationMap>,
     pub insertion_variants: crate::javamap::JavaHashMap<i32, VariationMap>,
@@ -152,11 +154,27 @@ impl<'a> CigarParser<'a> {
         duplicate_reads: i32,
         seed_max_read_length: i32,
     ) -> Self {
+        let (primary_ref_seq, primary_ref_start) = match (
+            reference.loaded_regions.first(),
+            reference.region_sequences.first(),
+        ) {
+            (Some(lr), Some(bases))
+                if lr.chr == region.chr && lr.sequence_end >= lr.sequence_start =>
+            {
+                let max_len = (lr.sequence_end.saturating_sub(lr.sequence_start) as usize)
+                    .saturating_add(1)
+                    .min(bases.len());
+                (&bases[..max_len], lr.sequence_start)
+            }
+            _ => (&[][..], 1),
+        };
         Self {
             reference,
             region,
             config,
             svflag,
+            primary_ref_seq,
+            primary_ref_start,
             non_insertion_variants: crate::javamap::JavaHashMap::new(),
             insertion_variants: crate::javamap::JavaHashMap::new(),
             position_to_insertion_count: BTreeMap::new(),
@@ -183,6 +201,24 @@ impl<'a> CigarParser<'a> {
             scratch_f4_qual: Vec::new(),
             scratch_f4_seg1: String::new(),
             scratch_f4_seg2: Vec::new(),
+        }
+    }
+
+    #[inline]
+    fn get_ref_base(&self, pos: u32) -> Option<u8> {
+        if let Some(offset) = pos.checked_sub(self.primary_ref_start) {
+            if let Some(&b) = self.primary_ref_seq.get(offset as usize) {
+                return Some(b);
+            }
+        }
+        self.reference.get_base(&self.region.chr, pos)
+    }
+
+    #[inline]
+    fn ref_mismatch_not_n(&self, pos: u32, query_base: Option<u8>) -> bool {
+        match (self.get_ref_base(pos), query_base) {
+            (Some(ref_base), Some(qb)) => ref_base != qb && ref_base != b'N' && ref_base != b'n',
+            _ => false,
         }
     }
 
@@ -597,9 +633,7 @@ impl<'a> CigarParser<'a> {
                             && (start + 1) as u32 <= self.region.end.0
                             && i + 1 < cigar_element_len
                             && q >= self.config.base_qual
-                            && ref_mismatch_not_n(
-                                self.reference,
-                                &self.region.chr,
+                            && self.ref_mismatch_not_n(
                                 start as u32,
                                 query_seq.get(read_pos_inc).copied(),
                             )
@@ -617,10 +651,7 @@ impl<'a> CigarParser<'a> {
                             if nuc == b'N' || nuc == b'n' {
                                 break;
                             }
-                            if let Some(next_ref_base) = self
-                                .reference
-                                .get_base(&self.region.chr, (start + 1) as u32)
-                            {
+                            if let Some(next_ref_base) = self.get_ref_base((start + 1) as u32) {
                                 if next_ref_base == b'N' || next_ref_base == b'n' {
                                     break;
                                 }
@@ -643,10 +674,7 @@ impl<'a> CigarParser<'a> {
                                         let lookahead_read_idx = read_pos_inc + 1 + ssi;
                                         if lookahead_read_idx < query_seq.len() {
                                             if let Some(lookahead_ref_base) =
-                                                self.reference.get_base(
-                                                    &self.region.chr,
-                                                    (start + 1 + ssi as i32) as u32,
-                                                )
+                                                self.get_ref_base((start + 1 + ssi as i32) as u32)
                                             {
                                                 if query_seq[lookahead_read_idx]
                                                     != lookahead_ref_base
@@ -1029,12 +1057,11 @@ impl<'a> CigarParser<'a> {
         if q < self.config.base_qual {
             return false;
         }
-        let is_mismatch =
-            if let Some(ref_base) = self.reference.get_base(&self.region.chr, start as u32) {
-                ss_len > 0 || query_seq[read_pos_inc] != ref_base
-            } else {
-                false
-            };
+        let is_mismatch = if let Some(ref_base) = self.get_ref_base(start as u32) {
+            ss_len > 0 || query_seq[read_pos_inc] != ref_base
+        } else {
+            false
+        };
         is_mismatch
     }
 
@@ -1296,7 +1323,7 @@ impl<'a> CigarParser<'a> {
                         break;
                     }
                     let ts_pos = ts + vi as i32;
-                    if let Some(ref_ch) = self.reference.get_base(&self.region.chr, ts_pos as u32) {
+                    if let Some(ref_ch) = self.get_ref_base(ts_pos as u32) {
                         if ref_ch == b'N' || ref_ch == b'n' {
                             break;
                         }
@@ -1361,7 +1388,7 @@ impl<'a> CigarParser<'a> {
                         break;
                     }
                     let ts_pos = ts + vi as i32;
-                    if let Some(ref_ch) = self.reference.get_base(&self.region.chr, ts_pos as u32) {
+                    if let Some(ref_ch) = self.get_ref_base(ts_pos as u32) {
                         if ref_ch == b'N' || ref_ch == b'n' {
                             break;
                         }
@@ -1414,7 +1441,7 @@ impl<'a> CigarParser<'a> {
                         break;
                     }
                     let ts_pos = *start + cigar_element_len as i32 + vi as i32;
-                    if let Some(ref_ch) = self.reference.get_base(&self.region.chr, ts_pos as u32) {
+                    if let Some(ref_ch) = self.get_ref_base(ts_pos as u32) {
                         if ref_ch == b'N' || ref_ch == b'n' {
                             break;
                         }
@@ -1608,7 +1635,7 @@ impl<'a> CigarParser<'a> {
                         break;
                     }
                     let ts_pos = *start + vi as i32;
-                    if let Some(ref_ch) = self.reference.get_base(&self.region.chr, ts_pos as u32) {
+                    if let Some(ref_ch) = self.get_ref_base(ts_pos as u32) {
                         if q_char != ref_ch {
                             current_offset = vi + 1;
                             nmoff += 1;
@@ -1713,6 +1740,7 @@ impl<'a> CigarParser<'a> {
                 hv.locnt += 1;
             }
             hv.nm += (get_adjusted_nm(record) - nmoff) as f64;
+            let (hv_pstd, hv_qstd) = (hv.pstd, hv.qstd);
 
             let index_of_insertion_in_query_sequence =
                 *read_pos_inc as i32 - 1 - (*start - 1 - insertion_position);
@@ -1721,10 +1749,7 @@ impl<'a> CigarParser<'a> {
                     .get(index_of_insertion_in_query_sequence as usize)
                     .copied()
                 {
-                    if let Some(ref_ch) = self
-                        .reference
-                        .get_base(&self.region.chr, insertion_position as u32)
-                    {
+                    if let Some(ref_ch) = self.get_ref_base(insertion_position as u32) {
                         if sub_base == ref_ch {
                             let base_qual_val = query_qual
                                 .get(index_of_insertion_in_query_sequence as usize)
@@ -1756,10 +1781,7 @@ impl<'a> CigarParser<'a> {
                 && (cigar_elements[0].1 == CigarKind::SoftClip
                     || cigar_elements[0].1 == CigarKind::HardClip)
             {
-                if let Some(ref_base_char) = self
-                    .reference
-                    .get_base(&self.region.chr, insertion_position as u32)
-                {
+                if let Some(ref_base_char) = self.get_ref_base(insertion_position as u32) {
                     let mut exotic_allele = String::new();
                     let ref_base_str = allele_key(ref_base_char, &mut exotic_allele);
                     let ttref = get_variation(
@@ -1769,8 +1791,8 @@ impl<'a> CigarParser<'a> {
                     );
                     ttref.inc_dir(direction);
                     ttref.cnt += 1;
-                    ttref.pstd = hv.pstd;
-                    ttref.qstd = hv.qstd;
+                    ttref.pstd = hv_pstd;
+                    ttref.qstd = hv_qstd;
                     ttref.pmean += tp as f64;
                     ttref.qmean += tmpq;
                     ttref.mqmean += record.mapping_quality.unwrap_or(0) as f64;
@@ -2033,10 +2055,7 @@ impl<'a> CigarParser<'a> {
             let mut element_len = cigar_element_len;
             while element_len > 0 && *start - 1 > 0 {
                 // §9: single fetch — the loop condition only needs is_some.
-                let Some(ref_base) = self
-                    .reference
-                    .get_base(&self.region.chr, (*start - 1) as u32)
-                else {
+                let Some(ref_base) = self.get_ref_base((*start - 1) as u32) else {
                     break;
                 };
                 let q_base = match query_seq.get(element_len as usize - 1) {
@@ -2161,8 +2180,7 @@ impl<'a> CigarParser<'a> {
             let mut element_len = cigar_element_len as i32;
             while *read_pos_inc < query_seq.len() {
                 // §9: single fetch — the loop condition only needs is_some.
-                let Some(ref_base) = self.reference.get_base(&self.region.chr, *start as u32)
-                else {
+                let Some(ref_base) = self.get_ref_base(*start as u32) else {
                     break;
                 };
                 let q_base = query_seq[*read_pos_inc];
@@ -2269,10 +2287,7 @@ impl<'a> CigarParser<'a> {
             if q < self.config.base_qual {
                 break;
             }
-            if let Some(ref_ch) = self
-                .reference
-                .get_base(&self.region.chr, (reference_position + vi as i32) as u32)
-            {
+            if let Some(ref_ch) = self.get_ref_base((reference_position + vi as i32) as u32) {
                 let ch = query_sequence[read_idx];
                 if ch != ref_ch {
                     offset = vi + 1;
@@ -3246,6 +3261,7 @@ pub fn get_match_insertion_length(cigar: &[(u32, CigarKind)]) -> u32 {
 /// `None` query base (read exhausted) yields `false` instead of panicking on a
 /// bare index (AGENTS.md §9); the old code only survived that case by never
 /// reaching it. Ports `CigarParser.java` MNV-growth mismatch gate.
+#[cfg(test)]
 #[inline]
 fn ref_mismatch_not_n(reference: &Reference, chr: &str, pos: u32, query_base: Option<u8>) -> bool {
     match (reference.get_base(chr, pos), query_base) {
@@ -5411,5 +5427,83 @@ mod tests {
         assert!(parser.is_read_chimeric_with_sa(&rec, 100, "chr1,110,+,75M25S,60,0;", true, false));
         assert!(!parser.is_read_chimeric_with_sa(&rec, 100, "chr1,bad,+,25S75M,60,0;", true, true));
         assert!(!parser.is_read_chimeric_with_sa(&rec, 100, "chr2,110,+,25S75M,60,0;", true, true));
+    }
+
+    #[test]
+    fn get_ref_base_primary_slice_cache_and_fallbacks_match_reference() {
+        let config = Config::default();
+
+        // Case (a) + (b) + (d): Primary region `loaded_regions[0]` covers 10..=59 (50 bp)
+        // with `region_sequences[0]` truncated by `SEED1_LEN` (17 bp -> 33 bytes stored,
+        // covering 10..=42), and a secondary loaded region `loaded_regions[1]` covering
+        // the truncated tail 40..=70.
+        let mut ref_with_tail = Reference::new();
+        let full_seq: Vec<u8> = (0..100).map(|i| b"ACGT"[i % 4]).collect();
+        ref_with_tail
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 10,
+                sequence_end: 59,
+            });
+        // Truncate primary sequence by 17 bp (50 - 17 = 33 bytes -> covers 10..=42)
+        ref_with_tail
+            .region_sequences
+            .push(full_seq[9..9 + 33].to_vec());
+        // Secondary loaded region covering 40..=70 (including the 17-bp tail 43..=59)
+        ref_with_tail
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 40,
+                sequence_end: 70,
+            });
+        ref_with_tail
+            .region_sequences
+            .push(full_seq[39..70].to_vec());
+
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(10),
+            end: Pos1(59),
+            gene: "G".to_string(),
+            amplicon: None,
+        };
+        let parser = CigarParser::new(&ref_with_tail, &region, &config, false, 0, 0, 0);
+        assert_eq!(parser.primary_ref_start, 10);
+        assert_eq!(parser.primary_ref_seq.len(), 33);
+
+        // Verify exact parity across out-of-bounds (<10, >70), in-bounds primary (10..=42),
+        // and the 17-bp SEED1_LEN truncated tail (43..=59) + secondary region extension (60..=70).
+        for pos in 0..=80u32 {
+            assert_eq!(
+                parser.get_ref_base(pos),
+                ref_with_tail.get_base(&region.chr, pos),
+                "mismatch at pos={pos}"
+            );
+        }
+
+        // Case (c) + (d): Legacy `reference_sequences`-only test setup (`loaded_regions` empty
+        // or without `region_sequences`).
+        let mut ref_legacy = Reference::new();
+        ref_legacy
+            .reference_sequences
+            .insert("chr1".to_string(), b"ACGTNacgtn".to_vec());
+        let region_legacy = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(1),
+            end: Pos1(10),
+            gene: "G".to_string(),
+            amplicon: None,
+        };
+        let parser_legacy = CigarParser::new(&ref_legacy, &region_legacy, &config, false, 0, 0, 0);
+        assert!(parser_legacy.primary_ref_seq.is_empty());
+        for pos in 0..=15u32 {
+            assert_eq!(
+                parser_legacy.get_ref_base(pos),
+                ref_legacy.get_base(&region_legacy.chr, pos),
+                "legacy mismatch at pos={pos}"
+            );
+        }
     }
 }
