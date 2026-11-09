@@ -13,7 +13,6 @@
 //! binary, `VDR_STREAM_CHILD=1`), which self-reports rows, wall time and its
 //! own VmHWM; the parent asserts all three.
 
-use std::collections::HashSet;
 use std::process::Command;
 
 use vardictrust_core::config::Config;
@@ -80,7 +79,7 @@ fn pileup_stream_child() {
             &region,
             &vars_per_amplicon,
             amplicon_position_stream(&segment),
-            &HashSet::new(),
+            &rustc_hash::FxHashSet::default(),
             &mut count,
         )
         .expect("streaming is infallible here");

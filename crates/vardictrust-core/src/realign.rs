@@ -672,7 +672,7 @@ pub struct SortPositionDescription {
 
 /// Ports `VariationRealigner.fillAndSortTmp`.
 pub fn fill_and_sort_tmp(
-    changes: &BTreeMap<i32, std::collections::HashMap<String, i32>>,
+    changes: &BTreeMap<i32, rustc_hash::FxHashMap<String, i32>>,
 ) -> Vec<SortPositionDescription> {
     let mut tmp = Vec::new();
     for (&position, map) in changes {
@@ -786,7 +786,7 @@ pub fn fill_adaptor_maps(adaptor_seqs: &[String]) -> AdaptorMapPair {
 #[cfg(test)]
 mod task3_tests {
     use super::*;
-    use std::collections::HashMap;
+    use rustc_hash::FxHashMap;
 
     /// s8 INV-SV guard: `fill_adaptor_maps` may only cache keyed by its exact
     /// input. A global (non-keyed) cache would return `ma` for input `b`.
@@ -933,8 +933,8 @@ mod task3_tests {
         // Call 1: INV deletion at p1; 5' soft clip consensus matches inv3.
         let p1 = 1000;
         let vn1 = "-50^AAAAAAAA<INV123>TTTTTTTT".to_string();
-        let mut dels5_a: BTreeMap<i32, HashMap<String, i32>> = BTreeMap::new();
-        let mut inner_a = HashMap::new();
+        let mut dels5_a: BTreeMap<i32, FxHashMap<String, i32>> = BTreeMap::new();
+        let mut inner_a = FxHashMap::default();
         inner_a.insert(vn1.clone(), 7);
         dels5_a.insert(p1, inner_a);
         sc5.insert(1050, task3_sclip(b'T', 5));
@@ -969,8 +969,8 @@ mod task3_tests {
         // never apply and the fresh soft clip would stay unused.
         let p2 = 1200;
         let vn2 = "-30^CCCCCCCC<INV7>GGGGGGGG".to_string();
-        let mut dels5_b: BTreeMap<i32, HashMap<String, i32>> = BTreeMap::new();
-        let mut inner_b = HashMap::new();
+        let mut dels5_b: BTreeMap<i32, FxHashMap<String, i32>> = BTreeMap::new();
+        let mut inner_b = FxHashMap::default();
         inner_b.insert(vn2.clone(), 7);
         dels5_b.insert(p2, inner_b);
         sc5.insert(1230, task3_sclip(b'G', 3));
@@ -1264,7 +1264,7 @@ static RE_CARET_DIGITS_END: LazyLock<Regex> =
 /// Ports `VariationRealigner.realigndel`.
 pub fn realigndel(
     bams: Option<&[String]>,
-    position_to_deletion_count: &BTreeMap<i32, std::collections::HashMap<String, i32>>,
+    position_to_deletion_count: &BTreeMap<i32, rustc_hash::FxHashMap<String, i32>>,
     reference: &Reference,
     chr: &str,
     chr_len: u32,
@@ -1803,7 +1803,7 @@ pub fn realigndel(
 /// Ports `VariationRealigner.realignins`.
 pub fn realignins(
     _bams: Option<&[String]>,
-    position_to_insertion_count: &BTreeMap<i32, std::collections::HashMap<String, i32>>,
+    position_to_insertion_count: &BTreeMap<i32, rustc_hash::FxHashMap<String, i32>>,
     reference: &Reference,
     chr: &str,
     chr_len: u32,
@@ -2333,7 +2333,7 @@ pub fn realignlgdel(
     max_read_length: i32,
     svfdel: &mut Vec<Sclip>,
     svrdel: &mut Vec<Sclip>,
-    splice: &mut std::collections::HashSet<String>,
+    splice: &mut rustc_hash::FxHashSet<String>,
 ) {
     let (adaptor_forward, adaptor_reverse) = fill_adaptor_maps(&config.adaptor);
     let extension = 5000;
@@ -2667,7 +2667,7 @@ pub fn realignlgdel(
         }
 
         let mut dels5 = BTreeMap::new();
-        let mut inner_map = std::collections::HashMap::new();
+        let mut inner_map = rustc_hash::FxHashMap::default();
         let tv_cnt = crate::variations::get_variation(non_insertion_variants, bp, &gt_str).cnt;
         inner_map.insert(gt_str.clone(), tv_cnt);
         dels5.insert(bp, inner_map);
@@ -2966,7 +2966,7 @@ pub fn realignlgdel(
         }
 
         let mut dels5 = BTreeMap::new();
-        let mut map = std::collections::HashMap::new();
+        let mut map = rustc_hash::FxHashMap::default();
         let tv_cnt = crate::variations::get_variation(non_insertion_variants, bp, &gt_str).cnt;
         map.insert(gt_str.clone(), tv_cnt);
         dels5.insert(bp, map);
@@ -3353,7 +3353,7 @@ pub fn realignlgins30(
 
                 let vref = get_variation(insertion_variants, bi, &ins_str);
                 let mut tins = BTreeMap::new();
-                let mut map = std::collections::HashMap::new();
+                let mut map = rustc_hash::FxHashMap::default();
                 map.insert(ins_str.clone(), vref.cnt);
                 tins.insert(bi, map);
                 realignins(
@@ -3394,7 +3394,7 @@ pub fn realignlgins30(
 
                 let vref = get_variation(non_insertion_variants, bi, &ins_str);
                 let mut tdel = BTreeMap::new();
-                let mut map = std::collections::HashMap::new();
+                let mut map = rustc_hash::FxHashMap::default();
                 map.insert(ins_str.clone(), vref.cnt);
                 tdel.insert(bi, map);
                 realigndel(
@@ -3440,7 +3440,7 @@ pub fn realignlgins(
     max_read_length: i32,
     svfdup: &mut Vec<Sclip>,
     svrdup: &mut Vec<Sclip>,
-    splice: &mut std::collections::HashSet<String>,
+    splice: &mut rustc_hash::FxHashSet<String>,
 ) {
     let (adaptor_forward, adaptor_reverse) = fill_adaptor_maps(&config.adaptor);
     let extension = 5000;
@@ -3662,7 +3662,7 @@ pub fn realignlgins(
             iref.cnt
         };
         let mut tins = BTreeMap::new();
-        let mut map = std::collections::HashMap::new();
+        let mut map = rustc_hash::FxHashMap::default();
         map.insert(format!("+{}", ins_str), tins_vars_cnt);
         tins.insert(bi, map);
 
@@ -3973,7 +3973,7 @@ pub fn realignlgins(
             iref.cnt
         };
         let mut tins = BTreeMap::new();
-        let mut map = std::collections::HashMap::new();
+        let mut map = rustc_hash::FxHashMap::default();
         map.insert(format!("+{}", ins_str), tins_vars_cnt);
         tins.insert(bi, map);
 
@@ -4576,7 +4576,7 @@ fn partial_pipeline(
     ref_coverage: &mut rustc_hash::FxHashMap<i32, i32>,
     soft_clips_5_end: &mut BTreeMap<i32, Sclip>,
     soft_clips_3_end: &mut BTreeMap<i32, Sclip>,
-    splice: &mut std::collections::HashSet<String>,
+    splice: &mut rustc_hash::FxHashSet<String>,
 ) -> Result<(), crate::types::VardictError> {
     let bams = match bams {
         Some(b) => b,
@@ -5490,7 +5490,7 @@ mod tests {
         );
 
         let mut position_to_deletion_count = BTreeMap::new();
-        let mut del_map = std::collections::HashMap::new();
+        let mut del_map = rustc_hash::FxHashMap::default();
         del_map.insert("-3".to_string(), 5);
         position_to_deletion_count.insert(10, del_map);
 
@@ -5570,7 +5570,7 @@ mod tests {
         );
 
         let mut position_to_insertion_count = BTreeMap::new();
-        let mut ins_map = std::collections::HashMap::new();
+        let mut ins_map = rustc_hash::FxHashMap::default();
         ins_map.insert("+C".to_string(), 5);
         position_to_insertion_count.insert(10, ins_map);
 
@@ -5667,7 +5667,7 @@ mod tests {
 
         let mut svfdel = Vec::new();
         let mut svrdel = Vec::new();
-        let mut splice = std::collections::HashSet::new();
+        let mut splice = rustc_hash::FxHashSet::default();
 
         let config = crate::config::Config::default();
         let region = crate::regions::Region {
@@ -5742,7 +5742,7 @@ mod tests {
 
         let mut svfdup = Vec::new();
         let mut svrdup = Vec::new();
-        let mut splice = std::collections::HashSet::new();
+        let mut splice = rustc_hash::FxHashSet::default();
 
         let config = crate::config::Config::default();
         let region = crate::regions::Region {
@@ -5806,7 +5806,7 @@ mod tests {
         // Sub-case 1: cnt = 11, dcnt = 2 -> 11 / 2 == 5 (not > 5) -> rescued
         {
             let mut position_to_deletion_count = BTreeMap::new();
-            let mut del_map = std::collections::HashMap::new();
+            let mut del_map = rustc_hash::FxHashMap::default();
             del_map.insert("-3".to_string(), 2);
             position_to_deletion_count.insert(10, del_map);
 
@@ -5873,7 +5873,7 @@ mod tests {
         // Sub-case 3: cnt = 4, dcnt = 0 -> checked_div is None -> skipped without panic
         for (dcnt, clip_cnt) in [(2, 12), (0, 4)] {
             let mut position_to_deletion_count = BTreeMap::new();
-            let mut del_map = std::collections::HashMap::new();
+            let mut del_map = rustc_hash::FxHashMap::default();
             del_map.insert("-3".to_string(), dcnt);
             position_to_deletion_count.insert(10, del_map);
 
@@ -5982,7 +5982,7 @@ mod tests {
         let mut soft_clips_3_end = BTreeMap::new();
         let mut svfdel = Vec::new();
         let mut svrdel = Vec::new();
-        let mut splice = std::collections::HashSet::new();
+        let mut splice = rustc_hash::FxHashSet::default();
 
         let mut config = crate::config::Config::default();
         config.indel_size = 5; // ensure find_bp returns 0 so find_match runs
@@ -6197,7 +6197,7 @@ mod tests {
         let ins3_dup = format!("{}CAAAA", "A".repeat(50));
         let vn = format!("+AT<dup100>{}", ins3_dup);
         let mut pos_to_ins = std::collections::BTreeMap::new();
-        let mut inner = std::collections::HashMap::new();
+        let mut inner = rustc_hash::FxHashMap::default();
         inner.insert(vn.clone(), 3);
         pos_to_ins.insert(100, inner);
 
@@ -6367,7 +6367,7 @@ mod tests {
             let mut sc3 = std::collections::BTreeMap::new();
             let mut svfdup = Vec::new();
             let mut svrdup = Vec::new();
-            let mut splice = std::collections::HashSet::new();
+            let mut splice = rustc_hash::FxHashSet::default();
 
             // Populate a 5' soft-clip at p = 101 whose consensus matches motif + diverse flanking reference
             let mut sclip = Sclip::new();
@@ -6553,7 +6553,7 @@ mod tests {
         let mut ref_cov = rustc_hash::FxHashMap::default();
         let mut sc5 = BTreeMap::new();
         let mut sc3 = BTreeMap::new();
-        let mut splice = std::collections::HashSet::new();
+        let mut splice = rustc_hash::FxHashSet::default();
         let bams = vec![bam_path.to_string_lossy().into_owned()];
 
         super::partial_pipeline(

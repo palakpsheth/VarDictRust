@@ -9,7 +9,6 @@ use crate::config::Config;
 use crate::regions::Region;
 use crate::types::VardictError;
 use crate::variations::{Variant, Vars};
-use std::collections::HashSet;
 
 /// Callback that runs the full pipeline (pileup→realign→SV→tovars) on both BAMs
 /// combined over a given region, returning aligned variants keyed by position
@@ -17,7 +16,7 @@ use std::collections::HashSet;
 /// (`SomaticPostProcessModule.java:198-200, 303-311, 398-406`).
 pub type PipelineFn<'a> = dyn Fn(
         &Region,
-        &mut HashSet<String>,
+        &mut rustc_hash::FxHashSet<String>,
         &mut i32,
     ) -> Result<crate::javamap::JavaHashMap<i32, Vars>, VardictError>
     + 'a;
@@ -71,7 +70,7 @@ pub fn somatic_post_process(
     region: &Region,
     aligned_variants_bam1: &crate::javamap::JavaHashMap<i32, Vars>,
     aligned_variants_bam2: &crate::javamap::JavaHashMap<i32, Vars>,
-    splice: &HashSet<String>,
+    splice: &rustc_hash::FxHashSet<String>,
     pipeline: Option<&PipelineFn<'_>>,
     max_read_length: i32,
 ) -> Vec<SomaticVariant> {
@@ -133,7 +132,7 @@ fn calling_for_one_sample(
     variants: &Vars,
     is_first_cover: bool,
     var_label: &str,
-    splice: &HashSet<String>,
+    splice: &rustc_hash::FxHashSet<String>,
     results: &mut Vec<SomaticVariant>,
 ) {
     if variants.variants.is_empty() {
@@ -198,7 +197,7 @@ fn calling_for_both_samples(
     v1: &Vars,
     v2: &Vars,
     chr: &str,
-    splice: &mut HashSet<String>,
+    splice: &mut rustc_hash::FxHashSet<String>,
     results: &mut Vec<SomaticVariant>,
     pipeline: Option<&PipelineFn<'_>>,
     max_read_length: &mut i32,
@@ -244,7 +243,7 @@ fn print_variations_from_first_sample(
     v1: &Vars,
     v2: &Vars,
     chr: &str,
-    splice: &mut HashSet<String>,
+    splice: &mut rustc_hash::FxHashSet<String>,
     results: &mut Vec<SomaticVariant>,
     pipeline: Option<&PipelineFn<'_>>,
     max_read_length: &mut i32,
@@ -452,7 +451,7 @@ fn print_variations_from_second_sample(
     v2: &Vars,
     chr: &str,
     position: i32,
-    splice: &mut HashSet<String>,
+    splice: &mut rustc_hash::FxHashSet<String>,
     results: &mut Vec<SomaticVariant>,
     pipeline: Option<&PipelineFn<'_>>,
     max_read_length: &mut i32,
@@ -581,7 +580,7 @@ fn combine_analysis(
     variant1: &Variant,
     chr: &str,
     position: i32,
-    splice: &mut HashSet<String>,
+    splice: &mut rustc_hash::FxHashSet<String>,
     max_read_length: &mut i32,
 ) -> CombineVerdict {
     if config.verbose {
@@ -715,7 +714,7 @@ fn determinate_type(
     variants: &Vars,
     standard_variant: &Variant,
     variant_to_compare: &mut Variant,
-    splice: &HashSet<String>,
+    splice: &rustc_hash::FxHashSet<String>,
 ) -> String {
     let vtc = variant_to_compare;
     let vartype = &standard_variant.var_type;
@@ -866,7 +865,7 @@ mod tests {
     fn test_sample_specific() {
         let config = test_config();
         let region = test_region();
-        let splice = HashSet::new();
+        let splice = rustc_hash::FxHashSet::default();
 
         let mut bam1 = crate::javamap::JavaHashMap::new();
         let mut vars = Vars::new();
@@ -886,7 +885,7 @@ mod tests {
     fn test_deletion() {
         let config = test_config();
         let region = test_region();
-        let splice = HashSet::new();
+        let splice = rustc_hash::FxHashSet::default();
 
         let bam1 = crate::javamap::JavaHashMap::new();
 
@@ -906,7 +905,7 @@ mod tests {
     fn test_germline() {
         let config = test_config();
         let region = test_region();
-        let splice = HashSet::new();
+        let splice = rustc_hash::FxHashSet::default();
 
         let mut bam1 = crate::javamap::JavaHashMap::new();
         let mut vars1 = Vars::new();
@@ -932,7 +931,7 @@ mod tests {
     fn test_likely_somatic() {
         let config = test_config();
         let region = test_region();
-        let splice = HashSet::new();
+        let splice = rustc_hash::FxHashSet::default();
 
         let mut bam1 = crate::javamap::JavaHashMap::new();
         let mut vars1 = Vars::new();
@@ -961,7 +960,7 @@ mod tests {
     fn test_strong_somatic_not_in_normal() {
         let config = test_config();
         let region = test_region();
-        let splice = HashSet::new();
+        let splice = rustc_hash::FxHashSet::default();
 
         let mut bam1 = crate::javamap::JavaHashMap::new();
         let mut vars1 = Vars::new();
@@ -985,7 +984,7 @@ mod tests {
     fn test_strong_loh() {
         let config = test_config();
         let region = test_region();
-        let splice = HashSet::new();
+        let splice = rustc_hash::FxHashSet::default();
 
         // BAM1 has no non-ref variants, BAM2 has a good variant
         let mut bam1 = crate::javamap::JavaHashMap::new();
@@ -1009,7 +1008,7 @@ mod tests {
         // printed POS/REF/ALT (taken from variant1) are the adjusted ones.
         let config = test_config();
         let region = test_region();
-        let splice = HashSet::new();
+        let splice = rustc_hash::FxHashSet::default();
 
         let mut bam1 = crate::javamap::JavaHashMap::new();
         bam1.insert(150, Vars::new());
@@ -1041,7 +1040,7 @@ mod tests {
     fn test_likely_loh() {
         let config = test_config();
         let region = test_region();
-        let splice = HashSet::new();
+        let splice = rustc_hash::FxHashSet::default();
 
         // BAM1 has a good variant at high frequency, BAM2 has same variant
         let mut bam1 = crate::javamap::JavaHashMap::new();
@@ -1067,7 +1066,7 @@ mod tests {
     fn test_position_outside_region_skipped() {
         let config = test_config();
         let region = test_region();
-        let splice = HashSet::new();
+        let splice = rustc_hash::FxHashSet::default();
 
         let mut bam1 = crate::javamap::JavaHashMap::new();
         let mut vars = Vars::new();
@@ -1087,7 +1086,7 @@ mod tests {
     fn test_ref_eq_var_skipped() {
         let config = test_config();
         let region = test_region();
-        let splice = HashSet::new();
+        let splice = rustc_hash::FxHashSet::default();
 
         let mut bam1 = crate::javamap::JavaHashMap::new();
         let mut vars = Vars::new();
@@ -1121,11 +1120,11 @@ mod tests {
         total: i32,
     ) -> impl Fn(
         &Region,
-        &mut HashSet<String>,
+        &mut rustc_hash::FxHashSet<String>,
         &mut i32,
     ) -> Result<crate::javamap::JavaHashMap<i32, Vars>, crate::types::VardictError>
            + '_ {
-        move |_region: &Region, _splice: &mut HashSet<String>, _max_rl: &mut i32| {
+        move |_region: &Region, _splice: &mut rustc_hash::FxHashSet<String>, _max_rl: &mut i32| {
             let mut vars = Vars::new();
             if let Some(d) = desc {
                 let mut v = Variant::new();
@@ -1159,7 +1158,7 @@ mod tests {
         let config = test_config();
         let v = make_insertion_variant();
         let pipeline = combined_pipeline(150, None, 0, 0);
-        let mut splice = HashSet::new();
+        let mut splice = rustc_hash::FxHashSet::default();
         let mut max_rl = 150;
         assert!(matches!(
             combine_analysis(
@@ -1184,7 +1183,7 @@ mod tests {
         let mut v = make_insertion_variant();
         v.start_pos = 148; // differs from iteration key 150
         let pipeline = combined_pipeline(150, Some("+GAACCACTGAGACAGGA"), 3, 10);
-        let mut splice = HashSet::new();
+        let mut splice = rustc_hash::FxHashSet::default();
         let mut max_rl = 150;
         assert!(matches!(
             combine_analysis(
@@ -1206,7 +1205,7 @@ mod tests {
         let config = test_config();
         let v = make_insertion_variant(); // pc=3
         let pipeline = combined_pipeline(150, Some("+GAACCACTGAGACAGGA"), 4, 20); // delta=1 < minr=2
-        let mut splice = HashSet::new();
+        let mut splice = rustc_hash::FxHashSet::default();
         let mut max_rl = 150;
         assert!(matches!(
             combine_analysis(
@@ -1228,7 +1227,7 @@ mod tests {
         let config = test_config();
         let v = make_insertion_variant(); // pc=3
         let pipeline = combined_pipeline(150, Some("+GAACCACTGAGACAGGA"), 0, 5); // 0 < 1
-        let mut splice = HashSet::new();
+        let mut splice = rustc_hash::FxHashSet::default();
         let mut max_rl = 150;
         assert!(matches!(
             combine_analysis(
@@ -1251,7 +1250,7 @@ mod tests {
         let mut v = make_insertion_variant();
         v.end_pos = v.start_pos + config.sv_min_len as i32 + 1;
         let pipeline = combined_pipeline(150, None, 0, 0);
-        let mut splice = HashSet::new();
+        let mut splice = rustc_hash::FxHashSet::default();
         let mut max_rl = 150;
         assert!(matches!(
             combine_analysis(
@@ -1274,7 +1273,7 @@ mod tests {
         let mut v = make_insertion_variant();
         v.genotype = Some("0/1".to_string());
         let pipeline = combined_pipeline(150, Some("+GAACCACTGAGACAGGA"), 6, 20);
-        let mut splice = HashSet::new();
+        let mut splice = rustc_hash::FxHashSet::default();
         let mut max_rl = 150;
         match combine_analysis(
             &config,
@@ -1301,7 +1300,7 @@ mod tests {
         // record entirely (the reverted port printed it as spurious StrongSomatic)
         let config = test_config();
         let region = test_region();
-        let splice = HashSet::new();
+        let splice = rustc_hash::FxHashSet::default();
 
         let mut bam1 = crate::javamap::JavaHashMap::new();
         let mut vars1 = Vars::new();
@@ -1329,7 +1328,7 @@ mod tests {
         // Java "" verdict keeps the StrongSomatic record (:211-213)
         let config = test_config();
         let region = test_region();
-        let splice = HashSet::new();
+        let splice = rustc_hash::FxHashSet::default();
 
         let mut bam1 = crate::javamap::JavaHashMap::new();
         let mut vars1 = Vars::new();
@@ -1359,7 +1358,7 @@ mod tests {
         // Java :215 — Germline verdict prints with the adjusted v2nt as variant2
         let config = test_config();
         let region = test_region();
-        let splice = HashSet::new();
+        let splice = rustc_hash::FxHashSet::default();
 
         let mut bam1 = crate::javamap::JavaHashMap::new();
         let mut vars1 = Vars::new();
@@ -1393,7 +1392,7 @@ mod tests {
         // conflated port fell back to StrongLOH
         let config = test_config();
         let region = test_region();
-        let splice = HashSet::new();
+        let splice = rustc_hash::FxHashSet::default();
 
         let mut bam1 = crate::javamap::JavaHashMap::new();
         bam1.insert(150, Vars::new());
@@ -1424,7 +1423,7 @@ mod tests {
         // Java "" keeps StrongLOH with sample1's reference as varForPrint
         let config = test_config();
         let region = test_region();
-        let splice = HashSet::new();
+        let splice = rustc_hash::FxHashSet::default();
 
         let mut bam1 = crate::javamap::JavaHashMap::new();
         let mut vars1 = Vars::new();
@@ -1469,7 +1468,7 @@ mod tests {
         // `v2.variants.get(0).totalPosCoverage`.
         let config = test_config();
         let region = test_region();
-        let splice = HashSet::new();
+        let splice = rustc_hash::FxHashSet::default();
 
         let mut bam1 = crate::javamap::JavaHashMap::new();
         let mut vars1 = Vars::new();
@@ -1513,7 +1512,7 @@ mod tests {
         // updated `splice` set.
         let config = test_config();
         let region = test_region();
-        let splice = HashSet::new();
+        let splice = rustc_hash::FxHashSet::default();
 
         let mut bam1 = crate::javamap::JavaHashMap::new();
         let mut vars1_150 = Vars::new();
@@ -1537,7 +1536,7 @@ mod tests {
         let observed_windows: std::cell::RefCell<Vec<(u32, u32, bool)>> =
             std::cell::RefCell::new(Vec::new());
         let pipeline = |comb_reg: &Region,
-                        splice_set: &mut HashSet<String>,
+                        splice_set: &mut rustc_hash::FxHashSet<String>,
                         max_rl: &mut i32|
          -> Result<crate::javamap::JavaHashMap<i32, Vars>, VardictError> {
             observed_windows.borrow_mut().push((

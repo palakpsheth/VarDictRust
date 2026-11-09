@@ -1128,8 +1128,8 @@ pub fn find_inv_sub(
                 }
             }
 
-            let mut dels5 = BTreeMap::new();
-            let mut map = HashMap::new();
+            let mut dels5: BTreeMap<i32, rustc_hash::FxHashMap<String, i32>> = BTreeMap::new();
+            let mut map = rustc_hash::FxHashMap::default();
             map.insert(gt_full.clone(), cnt);
             dels5.insert(softp, map);
 

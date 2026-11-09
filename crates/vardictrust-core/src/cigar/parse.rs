@@ -11,7 +11,7 @@ use crate::variations::{
 };
 use noodles::sam::alignment::record::cigar::op::Kind as CigarKind;
 use regex::Regex;
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::sync::LazyLock;
 
@@ -46,16 +46,16 @@ pub struct CigarParser<'a> {
     // in CigarParser.java:62-65. SVStructures svffus/svrfus (variations/mod.rs)
     // use IndexMap + java_hashmap_key_order because is_best_sv_used (sv.rs)
     // tie-breaks across mate contigs in Java HashMap<String, List<Sclip>> order.
-    pub position_to_insertion_count: BTreeMap<i32, HashMap<String, i32>>,
-    pub position_to_deletion_count: BTreeMap<i32, HashMap<String, i32>>,
+    pub position_to_insertion_count: BTreeMap<i32, rustc_hash::FxHashMap<String, i32>>,
+    pub position_to_deletion_count: BTreeMap<i32, rustc_hash::FxHashMap<String, i32>>,
     pub sv_structures: SVStructures,
     pub ref_coverage: rustc_hash::FxHashMap<i32, i32>,
     pub soft_clips_5_end: BTreeMap<i32, Sclip>,
     pub soft_clips_3_end: BTreeMap<i32, Sclip>,
     pub max_read_length: i32,
-    pub splice: HashSet<String>,
-    pub mnp: BTreeMap<i32, HashMap<String, i32>>,
-    pub splice_count: HashMap<String, [i32; 1]>,
+    pub splice: rustc_hash::FxHashSet<String>,
+    pub mnp: BTreeMap<i32, rustc_hash::FxHashMap<String, i32>>,
+    pub splice_count: rustc_hash::FxHashMap<String, [i32; 1]>,
     pub discordant_count: i32,
     pub total_reads: i32,
     pub duplicate_reads: i32,
@@ -184,9 +184,9 @@ impl<'a> CigarParser<'a> {
             soft_clips_5_end: BTreeMap::new(),
             soft_clips_3_end: BTreeMap::new(),
             max_read_length: seed_max_read_length,
-            splice: HashSet::new(),
+            splice: rustc_hash::FxHashSet::default(),
             mnp: BTreeMap::new(),
-            splice_count: HashMap::new(),
+            splice_count: rustc_hash::FxHashMap::default(),
             discordant_count: 0,
             total_reads,
             duplicate_reads,
@@ -3286,7 +3286,7 @@ fn is_mnp(s: &str) -> bool {
     false
 }
 
-fn increment(hash: &mut BTreeMap<i32, HashMap<String, i32>>, k1: i32, k2: &str) {
+fn increment(hash: &mut BTreeMap<i32, rustc_hash::FxHashMap<String, i32>>, k1: i32, k2: &str) {
     let map = hash.entry(k1).or_default();
     if let Some(cnt) = map.get_mut(k2) {
         *cnt += 1;
@@ -4368,7 +4368,7 @@ mod tests {
 
     #[test]
     fn increment_and_inc_cnt_preserve_counts() {
-        let mut counts: BTreeMap<i32, HashMap<String, i32>> = BTreeMap::new();
+        let mut counts: BTreeMap<i32, rustc_hash::FxHashMap<String, i32>> = BTreeMap::new();
         increment(&mut counts, 10, "+AT");
         increment(&mut counts, 10, "+AT");
         increment(&mut counts, 10, "+G");

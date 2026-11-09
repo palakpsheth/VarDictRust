@@ -4,7 +4,7 @@
 use crate::config::Config;
 use crate::regions::Region;
 use crate::variations::{Variant, Vars};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 
 /// Build the null-record row Java prints via `SimpleOutputVariant(null, …)`
 /// (SimpleOutputVariant.java:50-52): start/end = the alignedVariants map key,
@@ -29,7 +29,7 @@ pub fn simple_post_process(
     config: &Config,
     region: &Region,
     aligned_variants: &crate::javamap::JavaHashMap<i32, Vars>,
-    splice: &HashSet<String>,
+    splice: &rustc_hash::FxHashSet<String>,
 ) -> Vec<Variant> {
     let mut vrefs = Vec::new();
 
@@ -135,25 +135,26 @@ pub fn simple_post_process(
     // ToVarsBuilder position key: indels and SNVs can share one key while
     // having different raw starts, and different keys can share a raw start.
     if !config.emit_intermediate {
-        let mut buckets: BTreeMap<i32, Vec<Variant>> = BTreeMap::new();
+        let mut buckets: BTreeMap<i32, Variant> = BTreeMap::new();
         for v in vrefs {
+            let v_af = crate::types::round_half_even(v.frequency, 4);
             debug_assert_eq!(
-                v.frequency,
-                crate::types::round_half_even(v.frequency, 4),
+                v.frequency, v_af,
                 "simple Variant.frequency entering VCF selection must be 4dp-canonical"
             );
-            buckets.entry(v.start_pos).or_default().push(v);
+            match buckets.entry(v.start_pos) {
+                std::collections::btree_map::Entry::Vacant(e) => {
+                    e.insert(v);
+                }
+                std::collections::btree_map::Entry::Occupied(mut e) => {
+                    let cur_af = crate::types::round_half_even(e.get().frequency, 4);
+                    if v_af > cur_af {
+                        e.insert(v);
+                    }
+                }
+            }
         }
-        let mut selected = Vec::with_capacity(buckets.len());
-        for (_, mut rows) in buckets {
-            rows.sort_by(|a, b| {
-                let af_b = crate::types::round_half_even(b.frequency, 4);
-                let af_a = crate::types::round_half_even(a.frequency, 4);
-                af_b.partial_cmp(&af_a).unwrap_or(std::cmp::Ordering::Equal)
-            });
-            selected.extend(rows.into_iter().take(1));
-        }
-        vrefs = selected;
+        vrefs = buckets.into_values().collect();
     }
 
     vrefs
@@ -183,7 +184,7 @@ mod tests {
         };
 
         let mut aligned_variants = crate::javamap::JavaHashMap::new();
-        let splice = HashSet::new();
+        let splice = rustc_hash::FxHashSet::default();
 
         // 1. Position 120: Valid variant
         let mut vars_120 = Vars::new();
@@ -273,7 +274,7 @@ mod tests {
         aligned_variants.insert(20159221, g1);
         aligned_variants.insert(20159222, g2);
 
-        let splice = HashSet::new();
+        let splice = rustc_hash::FxHashSet::default();
         let kept = simple_post_process(&config, &region, &aligned_variants, &splice);
         assert_eq!(kept.len(), 1);
         assert_eq!(kept[0].var_allele, "AT");
@@ -313,7 +314,7 @@ mod tests {
         let mut aligned_variants = crate::javamap::JavaHashMap::new();
         aligned_variants.insert(20179028, vars);
 
-        let splice = HashSet::new();
+        let splice = rustc_hash::FxHashSet::default();
         let kept = simple_post_process(&config, &region, &aligned_variants, &splice);
         assert_eq!(kept.len(), 2);
         assert_eq!(kept[0].start_pos, 20179027);
@@ -365,7 +366,7 @@ mod tests {
         vars.variants.push(mk_variant(6449, 6449, "G", "AGTT", 1.0));
         let mut aligned_variants = crate::javamap::JavaHashMap::new();
         aligned_variants.insert(6447, vars);
-        let splice = HashSet::new();
+        let splice = rustc_hash::FxHashSet::default();
 
         let out = simple_post_process(&config, &region, &aligned_variants, &splice);
         assert_eq!(out.len(), 3);
@@ -400,7 +401,7 @@ mod tests {
         };
         let mut aligned_variants = crate::javamap::JavaHashMap::new();
         aligned_variants.insert(6447, Vars::new());
-        let splice = HashSet::new();
+        let splice = rustc_hash::FxHashSet::default();
 
         let out = simple_post_process(&config, &region, &aligned_variants, &splice);
         assert_eq!(out.len(), 1);
@@ -426,11 +427,61 @@ mod tests {
         let mut aligned_variants = crate::javamap::JavaHashMap::new();
         aligned_variants.insert(6447, vars);
         aligned_variants.insert(6500, Vars::new());
-        let splice = HashSet::new();
+        let splice = rustc_hash::FxHashSet::default();
 
         let out = simple_post_process(&config, &region, &aligned_variants, &splice);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].start_pos, 6449);
         assert!(!out[0].null_record);
+    }
+
+    #[test]
+    fn test_vcf_mode_single_winner_tie_keeps_first_and_higher_af_wins() {
+        let mut config = Config::default();
+        config.freq = 0.01;
+        config.min_reads = 2;
+        config.read_pos = 5.0;
+        config.base_qual = 22.5;
+        config.qratio = 1.5;
+
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(100),
+            end: Pos1(200),
+            gene: "TEST".to_string(),
+            amplicon: None,
+        };
+        let splice = rustc_hash::FxHashSet::default();
+
+        // 1. Two variants at start_pos = 150 with equal af_4dp = 0.2500 keep the first-seen allele.
+        let mut vars_tie = Vars::new();
+        vars_tie.variants.push(mk_variant(150, 150, "A", "G", 0.25));
+        vars_tie.variants.push(mk_variant(150, 150, "A", "T", 0.25));
+        let mut aligned_tie = crate::javamap::JavaHashMap::new();
+        aligned_tie.insert(150, vars_tie);
+
+        let kept_tie = simple_post_process(&config, &region, &aligned_tie, &splice);
+        assert_eq!(kept_tie.len(), 1);
+        assert_eq!(kept_tie[0].start_pos, 150);
+        assert_eq!(kept_tie[0].var_allele, "G");
+
+        // 2. A second variant at start_pos = 150 with higher af_4dp = 0.5000 (an unsplit <INV>
+        // with sv = "0-100-1") replaces the lower-AF 0.2500 variant.
+        let mut g_low = Vars::new();
+        g_low.variants.push(mk_variant(150, 150, "A", "G", 0.25));
+        let mut g_inv = Vars::new();
+        g_inv.sv = "0-100-1".to_string();
+        g_inv
+            .variants
+            .push(mk_variant(150, 180, "ACGT", "<INV>", 0.50));
+        let mut aligned_inv = crate::javamap::JavaHashMap::new();
+        aligned_inv.insert(150, g_low);
+        aligned_inv.insert(151, g_inv);
+
+        let kept_inv = simple_post_process(&config, &region, &aligned_inv, &splice);
+        assert_eq!(kept_inv.len(), 1);
+        assert_eq!(kept_inv[0].start_pos, 150);
+        assert_eq!(kept_inv[0].var_allele, "<INV>");
+        assert_eq!(kept_inv[0].sv, "0-100-1");
     }
 }
