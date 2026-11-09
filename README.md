@@ -213,12 +213,17 @@ vardictrust -G GRCh38.fa -i -b rna.bam -c 1 -S 2 -E 3 -z junctions.bed > splice_
 
 ### 5. High-Throughput Streaming UNIX Pipeline
 
-Stream from indexed BAM/CRAM files into compressed, tabix-indexed VCF archives:
+Stream from indexed BAM/CRAM files into compressed, tabix-indexed VCF archives, or write multithreaded BGZF output and run telemetry directly:
 
 ```bash
+# Stream into bcftools + tabix
 vardictrust -G GRCh38.fa -f 0.01 -N SAMPLE -b sample.bam -R chr1:1000000-2000000 -th 8 \
   | bcftools filter -i 'FILTER="PASS"' -Oz -o filtered.vcf.gz \
   && tabix -p vcf filtered.vcf.gz
+
+# Or write native multithreaded BGZF VCF + JSON run telemetry directly
+vardictrust -G GRCh38.fa -f 0.01 -N SAMPLE -b sample.bam -R chr1:1000000-2000000 -th 8 \
+  --output filtered.vcf.gz --stats-json stats.json
 ```
 
 ---
@@ -247,7 +252,7 @@ vardictrust -G GRCh38.fa -f 0.01 -N SAMPLE -b sample.bam -R chr1:1000000-2000000
 <a id="empirical-parity-validation-status"></a>
 ## Empirical Parity & Validation Status
 
-Every release passes dual-engine differential testing against **VarDictJava v1.8.3** (commit `0886261`, Perl submodule `009e017`) and matches biological ground truth across reference benchmarks:
+Every release passes dual-engine differential testing against **VarDictJava v1.8.3** (commit `0886261`, Perl submodule `009e017`; pinned in [`UPSTREAM.toml`](UPSTREAM.toml)) and matches biological ground truth across reference benchmarks:
 
 ### 1. Three-Way Parity Matrix (VarDictJava vs VarDictRust vs vardictcpp)
 
@@ -351,6 +356,8 @@ Flag parity with VarDictJava v1.8.3 is defined against [`CmdParser.java`](https:
 | `-h` | `--header` | Print `.var` column header before results (not help; use `-H`/`--help`) | off | `corpus` |
 | `-H` | `--help` | Print CLI help message and exit | — | `parity-exempt` |
 | — | `--version` | Print version, upstream provenance, and AI disclosure metadata | — | `parity-exempt` |
+| — | `--output` | Write output (`.vcf` or `.var`) directly to file; `.gz`/`.bgz` suffixes use multithreaded BGZF | `stdout` | `parity-exempt` |
+| — | `--stats-json` | Write run telemetry JSON (`mode`, `threads`, `regions_count`, `tiles_count`, `elapsed_ms`, `peak_rss_kb`, `exceptions_caught`) to `<PATH>` | — | `no-output` |
 | — | `--emit-intermediate` | Emit legacy `.var` table instead of VCF | off | `corpus` |
 | `-d` | — | Delimiter for splitting region info | `\t` | `corpus` |
 | `-v` | — | Accepted and ignored (never read by VarDictJava v1.8.3) | — | `parity-exempt` |

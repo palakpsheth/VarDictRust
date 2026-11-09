@@ -57,6 +57,23 @@ impl FisherExact {
         let lo = std::cmp::max(0, k.saturating_sub(n));
         let hi = std::cmp::min(k, m);
 
+        if ref_fwd >= 0 && ref_rev >= 0 && alt_fwd >= 0 && alt_rev >= 0 && lo == hi && x == lo {
+            return Self {
+                m,
+                n,
+                k,
+                x,
+                lo,
+                hi,
+                logdc: Vec::new(),
+                p_value_less: 1.0,
+                p_value_greater: 1.0,
+                p_value_two_sided: 1.0,
+                mu_at_1: f64::NAN,
+                java_fisher,
+            };
+        }
+
         let mut fisher = FisherExact {
             m,
             n,
@@ -1121,5 +1138,94 @@ mod tests {
                 }
             }
         }
+    }
+
+    fn new_full_without_fast_return(
+        ref_fwd: i32,
+        ref_rev: i32,
+        alt_fwd: i32,
+        alt_rev: i32,
+        java_fisher: bool,
+    ) -> FisherExact {
+        let m = ref_fwd.saturating_add(ref_rev);
+        let n = alt_fwd.saturating_add(alt_rev);
+        let k = ref_fwd.saturating_add(alt_fwd);
+        let x = ref_fwd;
+        let lo = std::cmp::max(0, k.saturating_sub(n));
+        let hi = std::cmp::min(k, m);
+
+        let mut fisher = FisherExact {
+            m,
+            n,
+            k,
+            x,
+            lo,
+            hi,
+            logdc: Vec::new(),
+            p_value_less: 0.0,
+            p_value_greater: 0.0,
+            p_value_two_sided: 0.0,
+            mu_at_1: f64::NAN,
+            java_fisher,
+        };
+        fisher.logdc = fisher.logdc_dhyper(m, n, k);
+        fisher.calculate_p_value();
+        fisher
+    }
+
+    #[test]
+    fn degenerate_single_point_support_is_bit_identical_to_full_path() {
+        let vals = [0, 1, 2, 10, 500, 50_000];
+        let mut checked = 0usize;
+        for &rf in &vals {
+            for &rr in &vals {
+                for &af in &vals {
+                    for &ar in &vals {
+                        let m = rf + rr;
+                        let n = af + ar;
+                        let k = rf + af;
+                        let lo = std::cmp::max(0, k - n);
+                        let hi = std::cmp::min(k, m);
+                        if lo != hi {
+                            continue;
+                        }
+                        for java_fisher in [false, true] {
+                            let fast = FisherExact::new_with_mode(rf, rr, af, ar, java_fisher);
+                            let full = new_full_without_fast_return(rf, rr, af, ar, java_fisher);
+
+                            assert!(fast.logdc.is_empty());
+                            assert_eq!(full.logdc.len(), 1);
+                            assert_eq!(fast.get_p_value().to_bits(), full.get_p_value().to_bits());
+                            assert_eq!(fast.get_p_value().to_bits(), 1.0_f64.to_bits());
+                            assert_eq!(
+                                fast.get_p_value_less().to_bits(),
+                                full.get_p_value_less().to_bits()
+                            );
+                            assert_eq!(fast.get_p_value_less().to_bits(), 1.0_f64.to_bits());
+                            assert_eq!(
+                                fast.get_p_value_greater().to_bits(),
+                                full.get_p_value_greater().to_bits()
+                            );
+                            assert_eq!(fast.get_p_value_greater().to_bits(), 1.0_f64.to_bits());
+                            assert_eq!(fast.get_odds_ratio(), full.get_odds_ratio());
+                            assert_eq!(fast.get_odds_ratio(), "0");
+                            assert_eq!(
+                                fast.mle(fast.x as f64).to_bits(),
+                                full.mle(full.x as f64).to_bits()
+                            );
+                            assert_eq!(fast.mle(fast.x as f64).to_bits(), 0.0_f64.to_bits());
+                            let mut s1 = Vec::new();
+                            let mut s2 = Vec::new();
+                            assert_eq!(
+                                fast.mnhyper_with(1.0, &mut s1).to_bits(),
+                                full.mnhyper_with(1.0, &mut s2).to_bits()
+                            );
+                            checked += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(checked > 0);
     }
 }

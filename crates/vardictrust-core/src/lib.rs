@@ -344,7 +344,7 @@ fn run_pipeline_on_records(
     config: &config::Config,
     chromosomes_lengths: &HashMap<String, usize>,
     seed_max_read_length: i32,
-    initial_splice: Option<std::collections::HashSet<String>>,
+    initial_splice: Option<rustc_hash::FxHashSet<String>>,
 ) -> Result<crate::variations::VariationData, VardictError> {
     run_pipeline_on_records_ext(
         bam_paths,
@@ -412,7 +412,7 @@ fn run_pipeline_on_records_ext(
     config: &config::Config,
     chromosomes_lengths: &HashMap<String, usize>,
     seed_max_read_length: i32,
-    initial_splice: Option<std::collections::HashSet<String>>,
+    initial_splice: Option<rustc_hash::FxHashSet<String>>,
     max_rl_steps: &[MaxRlStep],
     post_pileup_max_read_length: Option<i32>,
     parent_original_start: Option<crate::types::Pos1>,
@@ -2420,11 +2420,11 @@ fn process_amplicon_region(
     region: &crate::regions::Region,
     config: &config::Config,
     chromosomes_lengths: &HashMap<String, usize>,
-    seed_splice: std::collections::HashSet<String>,
+    seed_splice: rustc_hash::FxHashSet<String>,
 ) -> Result<
     (
         crate::javamap::JavaHashMap<i32, crate::variations::Vars>,
-        std::collections::HashSet<String>,
+        rustc_hash::FxHashSet<String>,
     ),
     VardictError,
 > {
@@ -2576,7 +2576,7 @@ fn run_amplicon<W: EngineWriter>(
         Pileup {
             segment: Vec<crate::regions::Region>,
             vars_per_amplicon: AmpliconVarsList,
-            splice: std::collections::HashSet<String>,
+            splice: rustc_hash::FxHashSet<String>,
         },
     }
 
@@ -2606,7 +2606,7 @@ fn run_amplicon<W: EngineWriter>(
             };
             let run_segment_regions = || {
                 let mut vars_per_amplicon: AmpliconVarsList = Vec::with_capacity(segment.len());
-                let mut splice = std::collections::HashSet::new();
+                let mut splice = rustc_hash::FxHashSet::default();
                 for region in segment.iter() {
                     crate::runner::set_current_worker_region(Some(format!(
                         "{}:{}-{}",
@@ -3055,7 +3055,7 @@ fn run_somatic<W: EngineWriter>(
             let config_for_combine = config_clone.clone();
             let chr_lens_for_combine = chromosomes_lengths_clone.clone();
             let pipeline_fn = |combine_region: &crate::regions::Region,
-                               splice_set: &mut std::collections::HashSet<String>,
+                               splice_set: &mut rustc_hash::FxHashSet<String>,
                                max_rl: &mut i32|
              -> Result<
                 crate::javamap::JavaHashMap<i32, crate::variations::Vars>,
@@ -3627,7 +3627,7 @@ mod tests {
         region_start: crate::types::Pos1,
         region_end: crate::types::Pos1,
         sample: &str,
-        splice_count: &std::collections::HashMap<String, [i32; 1]>,
+        splice_count: &rustc_hash::FxHashMap<String, [i32; 1]>,
     ) -> Vec<String> {
         let mut introns: Vec<&String> = splice_count.keys().collect();
         introns.sort();
@@ -4956,7 +4956,7 @@ mod tests {
             &reg1,
             &cfg,
             &chr_lengths,
-            std::collections::HashSet::new(),
+            rustc_hash::FxHashSet::default(),
         )
         .unwrap();
         assert!(splice1.contains("19-39"));

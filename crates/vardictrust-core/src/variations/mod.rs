@@ -631,7 +631,7 @@ impl Variant {
         &self,
         reference_var: Option<&Variant>,
         var_type: &str,
-        splice: &std::collections::HashSet<String>,
+        splice: &rustc_hash::FxHashSet<String>,
         config: &crate::config::Config,
     ) -> bool {
         if self.ref_allele.is_empty() {
@@ -917,16 +917,16 @@ impl SVStructures {
 pub struct VariationData {
     pub non_insertion_variants: crate::javamap::JavaHashMap<i32, VariationMap>,
     pub insertion_variants: crate::javamap::JavaHashMap<i32, VariationMap>,
-    pub position_to_insertion_count: BTreeMap<i32, std::collections::HashMap<String, i32>>,
-    pub position_to_deletion_count: BTreeMap<i32, std::collections::HashMap<String, i32>>,
+    pub position_to_insertion_count: BTreeMap<i32, rustc_hash::FxHashMap<String, i32>>,
+    pub position_to_deletion_count: BTreeMap<i32, rustc_hash::FxHashMap<String, i32>>,
     pub sv_structures: SVStructures,
     pub ref_coverage: rustc_hash::FxHashMap<i32, i32>,
     pub soft_clips_5_end: BTreeMap<i32, Sclip>,
     pub soft_clips_3_end: BTreeMap<i32, Sclip>,
     pub max_read_length: i32,
-    pub splice: std::collections::HashSet<String>,
-    pub mnp: BTreeMap<i32, std::collections::HashMap<String, i32>>,
-    pub splice_count: std::collections::HashMap<String, [i32; 1]>,
+    pub splice: rustc_hash::FxHashSet<String>,
+    pub mnp: BTreeMap<i32, rustc_hash::FxHashMap<String, i32>>,
+    pub splice_count: rustc_hash::FxHashMap<String, [i32; 1]>,
     pub duprate: f64,
     pub sv_structures_filtered: bool,
     /// Owning tile's active range (pileup region), stamped at pileup time.
@@ -1067,7 +1067,7 @@ mod tests {
         config.mfreq = 0.25;
         config.nmfreq = 0.1;
 
-        let splice = std::collections::HashSet::new();
+        let splice = rustc_hash::FxHashSet::default();
 
         // 1. Basic good variant
         let mut v = Variant::new();
@@ -1111,7 +1111,7 @@ mod tests {
         del.mean_mapping_quality = 60.0;
         del.bias = "0".to_string();
 
-        let mut splice_set = std::collections::HashSet::new();
+        let mut splice_set = rustc_hash::FxHashSet::default();
         splice_set.insert("99999-99999".to_string());
         assert!(del.is_good_var(None, "Deletion", &splice_set, &config));
         assert!(del.is_good_var(None, "", &splice_set, &config));

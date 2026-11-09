@@ -57,7 +57,7 @@ pub fn amplicon_post_process(
     region: &Region,
     vars_per_amplicon: &[crate::javamap::JavaHashMap<i32, Vars>],
     amplicons_on_positions: &BTreeMap<i32, Vec<(usize, Region)>>,
-    splice: &HashSet<String>,
+    splice: &rustc_hash::FxHashSet<String>,
 ) -> Result<Vec<AmpliconVariant>, crate::types::VardictError> {
     // Batch wrapper over the streaming core below: the BTreeMap iterator visits
     // positions ascending with segment-ordered covering lists — the same
@@ -292,7 +292,7 @@ pub fn amplicon_post_process_streaming(
     region: &Region,
     vars_per_amplicon: &[crate::javamap::JavaHashMap<i32, Vars>],
     positions: impl IntoIterator<Item = (i32, Vec<(usize, Region)>)>,
-    splice: &HashSet<String>,
+    splice: &rustc_hash::FxHashSet<String>,
     emit: &mut dyn FnMut(AmpliconVariant) -> Result<(), crate::types::VardictError>,
 ) -> Result<(), crate::types::VardictError> {
     // Scratch collections reused across positions to avoid per-base allocations.
@@ -595,25 +595,26 @@ pub fn amplicon_select_vcf_rows(results: Vec<AmpliconVariant>) -> Vec<AmpliconVa
     // VCF mode: same var2vcf_valid.pl selection as simple mode (:41,129-137) —
     // bucket rows by the RAW .var start column, stable af-desc sort per bucket,
     // emit only the top row ($ALL = 1 without -A). See postprocess/simple.rs.
-    let mut buckets: BTreeMap<i32, Vec<AmpliconVariant>> = BTreeMap::new();
+    let mut buckets: BTreeMap<i32, AmpliconVariant> = BTreeMap::new();
     for av in results {
+        let v_af = crate::types::round_half_even(av.variant.frequency, 4);
         debug_assert_eq!(
-            av.variant.frequency,
-            crate::types::round_half_even(av.variant.frequency, 4),
+            av.variant.frequency, v_af,
             "amplicon Variant.frequency entering VCF selection must be 4dp-canonical"
         );
-        buckets.entry(av.variant.start_pos).or_default().push(av);
+        match buckets.entry(av.variant.start_pos) {
+            std::collections::btree_map::Entry::Vacant(e) => {
+                e.insert(av);
+            }
+            std::collections::btree_map::Entry::Occupied(mut e) => {
+                let cur_af = crate::types::round_half_even(e.get().variant.frequency, 4);
+                if v_af > cur_af {
+                    e.insert(av);
+                }
+            }
+        }
     }
-    let mut selected = Vec::with_capacity(buckets.len());
-    for (_, mut rows) in buckets {
-        rows.sort_by(|a, b| {
-            let af_b = crate::types::round_half_even(b.variant.frequency, 4);
-            let af_a = crate::types::round_half_even(a.variant.frequency, 4);
-            af_b.partial_cmp(&af_a).unwrap_or(std::cmp::Ordering::Equal)
-        });
-        selected.extend(rows.into_iter().take(1));
-    }
-    selected
+    buckets.into_values().collect()
 }
 
 /// Fill vref_list from good variants, deduplicating by ref_allele + var_allele.
@@ -749,7 +750,7 @@ mod tests {
     fn test_single_amplicon_single_variant() {
         let config = make_test_config();
         let region = make_amp_region("chr1", 100, 200);
-        let splice = HashSet::new();
+        let splice = rustc_hash::FxHashSet::default();
 
         // One amplicon with one good variant at position 150
         let mut vars_amp0 = crate::javamap::JavaHashMap::new();
@@ -785,7 +786,7 @@ mod tests {
     fn test_two_amplicons_same_variant_no_bias() {
         let config = make_test_config();
         let region = make_amp_region("chr1", 100, 300);
-        let splice = HashSet::new();
+        let splice = rustc_hash::FxHashSet::default();
 
         // Two amplicons, both with the same variant at position 150
         let mut vars_amp0 = crate::javamap::JavaHashMap::new();
@@ -832,7 +833,7 @@ mod tests {
     fn test_two_amplicons_different_variants_bias() {
         let config = make_test_config();
         let region = make_amp_region("chr1", 100, 300);
-        let splice = HashSet::new();
+        let splice = rustc_hash::FxHashSet::default();
 
         // Two amplicons with different variants at position 150
         let mut vars_amp0 = crate::javamap::JavaHashMap::new();
@@ -885,7 +886,7 @@ mod tests {
     fn test_nocov_detection() {
         let config = make_test_config();
         let region = make_amp_region("chr1", 100, 300);
-        let splice = HashSet::new();
+        let splice = rustc_hash::FxHashSet::default();
 
         // Amplicon 0: high coverage variant
         let mut vars_amp0 = crate::javamap::JavaHashMap::new();
@@ -931,7 +932,7 @@ mod tests {
     fn test_no_good_variants_no_pileup() {
         let config = make_test_config();
         let region = make_amp_region("chr1", 100, 200);
-        let splice = HashSet::new();
+        let splice = rustc_hash::FxHashSet::default();
 
         // One amplicon with a variant that fails isGoodVar (low frequency)
         let mut vars_amp0 = crate::javamap::JavaHashMap::new();
@@ -964,7 +965,7 @@ mod tests {
         let mut config = make_test_config();
         config.pileup = true;
         let region = make_amp_region("chr1", 100, 200);
-        let splice = HashSet::new();
+        let splice = rustc_hash::FxHashSet::default();
 
         // One amplicon with a reference variant but no good variants
         let mut vars_amp0 = crate::javamap::JavaHashMap::new();
@@ -1266,7 +1267,7 @@ mod tests {
         let mut config = make_test_config();
         config.pileup = true;
         let region = make_amp_region("chr1", 100, 300);
-        let splice = HashSet::new();
+        let splice = rustc_hash::FxHashSet::default();
 
         let mut vars_amp0 = crate::javamap::JavaHashMap::new();
         let mut v150 = Vars::new();
@@ -1395,7 +1396,7 @@ mod tests {
                 &region,
                 &vars_per_amplicon,
                 amplicon_position_stream(&segment),
-                &HashSet::new(),
+                &rustc_hash::FxHashSet::default(),
                 &mut count,
             )
             .expect("streaming is infallible here");
@@ -1414,7 +1415,7 @@ mod tests {
         let mut config = make_test_config();
         config.pileup = true;
         let region = make_amp_region("chr1", 100, 200);
-        let splice = HashSet::new();
+        let splice = rustc_hash::FxHashSet::default();
         let vars_per_amplicon = vec![crate::javamap::JavaHashMap::new()];
         let mut amplicons_on_positions = BTreeMap::new();
         amplicons_on_positions.insert(150, vec![(0, make_amp_region("chr1", 100, 200))]);
