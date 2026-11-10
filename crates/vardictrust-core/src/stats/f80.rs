@@ -144,30 +144,29 @@ impl F80 {
     }
 }
 
-pub fn f80_sum(vals: &[f64]) -> f64 {
-    let mut fallback = false;
-    for &v in vals {
-        debug_assert!(
-            v.is_nan() || v >= 0.0,
-            "f80_sum expects non-negative operands only"
-        );
+#[inline]
+pub fn f80_sum(values: &[f64]) -> f64 {
+    f80_sum_iter(values.iter().copied())
+}
+
+#[inline]
+pub fn f80_sum_iter<I>(iter: I) -> f64
+where
+    I: IntoIterator<Item = f64>,
+    I::IntoIter: Clone,
+{
+    let it = iter.into_iter();
+    for v in it.clone() {
         if !v.is_finite() || v < 0.0 {
-            fallback = true;
-            break;
+            let mut s = 0.0f64;
+            for x in it {
+                s += x;
+            }
+            return s;
         }
     }
-
-    // Fall back to f64 sum if any element is inf/nan or negative
-    if fallback {
-        let mut sum = 0.0;
-        for &v in vals {
-            sum += v;
-        }
-        return sum;
-    }
-
     let mut sum = F80::from_f64(0.0);
-    for &v in vals {
+    for v in it {
         sum = sum.add_f80(F80::from_f64(v));
     }
     sum.to_f64()
@@ -259,5 +258,51 @@ mod tests {
         let min_sub = f64::from_bits(1);
         assert_eq!(F80::from_f64(min_sub).to_f64(), min_sub);
         assert_eq!(f80_sum(&[]), 0.0);
+    }
+
+    #[test]
+    fn test_f80_sum_iter_matches_f80_sum_bit_for_bit() {
+        let ref_slice_sum = |vals: &[f64]| -> f64 {
+            if vals.iter().any(|&v| !v.is_finite() || v < 0.0) {
+                let mut s = 0.0f64;
+                for &v in vals {
+                    s += v;
+                }
+                return s;
+            }
+            let mut sum = F80::from_f64(0.0);
+            for &v in vals {
+                sum = sum.add_f80(F80::from_f64(v));
+            }
+            sum.to_f64()
+        };
+
+        let min_pos = f64::MIN_POSITIVE;
+        let sub = min_pos / 4.0;
+        let cases: &[&[f64]] = &[
+            &[],
+            &[1.0, f64::EPSILON * 5.5, f64::EPSILON * 0.5, 43.0],
+            &[sub, sub, sub, sub],
+            &[1.0, -0.25, 0.5],
+            &[1.0, f64::INFINITY, 2.0],
+            &[1.0, f64::NEG_INFINITY, 2.0],
+            &[1.0, f64::NAN, 2.0],
+        ];
+
+        for &seq in cases {
+            let expected = ref_slice_sum(seq);
+            let from_slice = f80_sum(seq);
+            let from_iter = f80_sum_iter(seq.iter().copied());
+            assert_eq!(from_slice.to_bits(), expected.to_bits());
+            assert_eq!(from_iter.to_bits(), from_slice.to_bits());
+
+            // Also verify filtered iterator vs collected Vec slice
+            let collected: Vec<f64> = seq.iter().copied().filter(|&v| v != 2.0).collect();
+            let filtered_iter = seq.iter().copied().filter(|&v| v != 2.0);
+            assert_eq!(
+                f80_sum_iter(filtered_iter).to_bits(),
+                f80_sum(&collected).to_bits()
+            );
+        }
     }
 }

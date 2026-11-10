@@ -15,7 +15,7 @@ use crate::config::Config;
 use crate::regions::Region;
 use crate::variations::{Variant, Vars};
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 
 /// Output of amplicon post-processing: a variant with amplicon-specific metrics.
 #[derive(Debug, Clone)]
@@ -302,8 +302,6 @@ pub fn amplicon_post_process_streaming(
     let mut ref_vars: Vec<Variant> = Vec::new();
     // coverage per amplicon
     let mut vcovs: Vec<i32> = Vec::new();
-    // good amplicon set: "ampliconNumber-refallele-varallele" (populated lazily)
-    let mut goodmap: HashSet<String> = HashSet::new();
     // good variants on each amplicon: amplicon_index → list of good variants
     let mut good_variants_on_amp: BTreeMap<usize, Vec<Variant>> = BTreeMap::new();
     // bad variants (-D debug column)
@@ -314,9 +312,6 @@ pub fn amplicon_post_process_streaming(
         gvs.clear();
         ref_vars.clear();
         vcovs.clear();
-        if !goodmap.is_empty() {
-            goodmap.clear();
-        }
         good_variants_on_amp.clear();
 
         let mut maxcov: i32 = 0;
@@ -339,14 +334,14 @@ pub fn amplicon_post_process_streaming(
                             maxcov = tv.total_pos_cov;
                         }
                         // Compute var_type
-                        let vtype = tv.var_type();
+                        let vtype = tv.var_type_cow();
                         if tv.is_good_var(ref_amplicon, &vtype, splice, config) {
                             let region_str = format!(
                                 "{}:{}-{}",
                                 amp_region.chr, amp_region.start.0, amp_region.end.0
                             );
                             let mut tv_clone = tv.clone();
-                            tv_clone.var_type = vtype;
+                            tv_clone.var_type = vtype.into_owned();
                             if tv_clone.frequency > maxaf {
                                 maxaf = tv_clone.frequency;
                             }
@@ -431,7 +426,8 @@ pub fn amplicon_post_process_streaming(
 
         // Detect amplicon bias (AmpliconPostProcessModule.java:135-137)
         let mut current_flag = is_amp_bias_flag(&good_variants_on_amp);
-        let mut good_variants = gvs.clone();
+        let mut good_variants: std::borrow::Cow<'_, [(Variant, String)]> =
+            std::borrow::Cow::Borrowed(&gvs);
 
         let total_amplicons = amplicon_regions.len() as i32;
 
@@ -471,7 +467,7 @@ pub fn amplicon_post_process_streaming(
                             .partial_cmp(&a.0.frequency)
                             .unwrap_or(std::cmp::Ordering::Equal)
                     });
-                    good_variants = gcnt;
+                    good_variants = std::borrow::Cow::Owned(gcnt);
                 }
             }
 
@@ -484,23 +480,17 @@ pub fn amplicon_post_process_streaming(
             let mut bad_count = 0;
             bad_vars.clear();
             if initial_gvscnt != total_amplicons || current_flag {
-                if goodmap.is_empty() && !good_variants_on_amp.is_empty() {
-                    for (&amp_idx, vars) in &good_variants_on_amp {
-                        for tv in vars {
-                            goodmap
-                                .insert(format!("{}-{}-{}", amp_idx, tv.ref_allele, tv.var_allele));
-                        }
-                    }
-                }
                 for &(amp_num, ref amp_reg) in &amplicon_regions {
                     if config.pileup && vref.ref_allele == vref.var_allele {
                         continue;
                     }
-                    if !goodmap.is_empty() {
-                        let key = format!("{}-{}-{}", amp_num, vref.ref_allele, vref.var_allele);
-                        if goodmap.contains(&key) {
-                            continue;
-                        }
+                    let is_in_goodmap = good_variants_on_amp.get(&amp_num).is_some_and(|vars| {
+                        vars.iter().any(|tv| {
+                            tv.ref_allele == vref.ref_allele && tv.var_allele == vref.var_allele
+                        })
+                    });
+                    if is_in_goodmap {
+                        continue;
                     }
                     if let Some(ref amp) = amp_reg.amplicon {
                         let insert_start = amp.insert_start.0 as i32;
@@ -550,8 +540,8 @@ pub fn amplicon_post_process_streaming(
                 out_variant.adj_complex();
             }
 
-            let region_str = if !good_variants.is_empty() {
-                good_variants[0].1.clone()
+            let region_str = if let Some((_, reg)) = good_variants.first() {
+                reg.clone()
             } else {
                 format!("{}:{}-{}", region.chr, position, position)
             };

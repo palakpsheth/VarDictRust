@@ -301,16 +301,11 @@ impl FisherExact {
                 crate::stats::f80::f80_sum(&density)
             };
         } else {
-            let mut sum_elements = Vec::with_capacity(density.len());
-            for &el in &density {
-                if el <= threshold {
-                    sum_elements.push(el);
-                }
-            }
+            let filtered = density.iter().copied().filter(|&el| el <= threshold);
             self.p_value_two_sided = if self.java_fisher {
-                sum_elements.iter().copied().sum()
+                filtered.sum()
             } else {
-                crate::stats::f80::f80_sum(&sum_elements)
+                crate::stats::f80::f80_sum_iter(filtered)
             };
             for (i, prob) in density.iter_mut().enumerate() {
                 let supp = self.lo.saturating_add(i as i32) as f64;

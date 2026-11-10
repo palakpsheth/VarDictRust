@@ -576,6 +576,7 @@ pub fn filter_variant(
 /// (hifreq), so R echoes it unchanged and var2vcf_valid.pl:24/:236 interpolates
 /// it as-is into `HIAF=`. (The PAIRED writer must stay stripped: testsomatic.R's
 /// 48-entry pattern leaves hiaf1/hiaf2 numeric, so R re-formats them.)
+#[cfg(test)]
 fn hiaf_cell(hi_freq: f64) -> String {
     if hi_freq == 0.0 {
         "0".to_string()
@@ -771,7 +772,7 @@ pub fn format_vcf_record_into(
     // (The PAIRED writer stays stripped: testsomatic.R's 48-entry pattern
     // leaves hiaf1/hiaf2 numeric, so R re-formats them.)
     buf.push_str(";HIAF=");
-    buf.push_str(&hiaf_cell(variant.hi_freq));
+    push_keep(buf, variant.hi_freq, 4);
     buf.push_str(";ADJAF=");
     push_vcf_rounded(buf, config.fisher, variant.extra_freq, 4);
     let _ = write!(buf, ";SHIFT3={}", variant.shift3);
@@ -848,9 +849,13 @@ pub fn format_vcf_record_into(
             if variant.var_allele.contains("INV") {
                 svlen += 1;
             }
-            let mut clean_alt = variant.var_allele.clone();
-            clean_alt.retain(|c| c != '<' && c != '>');
-            let _ = write!(buf, ";SVTYPE={};SVLEN={}", clean_alt, svlen);
+            buf.push_str(";SVTYPE=");
+            for c in variant.var_allele.chars() {
+                if c != '<' && c != '>' {
+                    buf.push(c);
+                }
+            }
+            let _ = write!(buf, ";SVLEN={}", svlen);
         }
         let _ = write!(buf, ";SPLITREAD={};SPANPAIR={}", splitreads, spanpairs);
     }
@@ -1065,12 +1070,14 @@ fn paired_or_transform(raw: &str) -> (String, f64) {
 }
 
 /// BIAS field transform. Ports var2vcf_paired.pl:222-225: ";" → ","; bare "0" → "0,0".
-fn paired_bias_fmt(bias: &str) -> String {
-    let s = bias.replace(';', ",");
-    if s == "0" {
-        "0,0".to_string()
+#[inline]
+fn push_paired_bias(buf: &mut String, bias: &str) {
+    if bias == "0" {
+        buf.push_str("0,0");
     } else {
-        s
+        for c in bias.chars() {
+            buf.push(if c == ';' { ',' } else { c });
+        }
     }
 }
 
@@ -1106,12 +1113,9 @@ fn paired_qual_col(vd1: i32, qual1: f64, vd2: i32, qual2: f64) -> i32 {
     }
 }
 
-/// Per-sample FORMAT string, written into `buf` (cleared first).
-/// Ports var2vcf_paired.pl:240-241. Single-buffer build (no temp `String`
-/// except the documented OR/BIAS transforms, whose port logic and pins stay
-/// in `paired_or_transform` / `paired_bias_fmt`). Callers reuse one buffer
-/// across the tumor/normal columns.
-fn paired_sample_field_into(
+/// Append one per-sample FORMAT column directly into `buf` without clearing it.
+/// Ports var2vcf_paired.pl:240-241.
+fn push_paired_sample_field(
     buf: &mut String,
     v: &crate::variations::Variant,
     gt: &str,
@@ -1119,10 +1123,6 @@ fn paired_sample_field_into(
     oddratio: &(String, f64),
     fisher: bool,
 ) {
-    buf.clear();
-    // 192 B covers the 21-field sample column at typical widths; longer
-    // alleles regrow once and the capacity is retained across rows.
-    buf.reserve(192);
     let mq =
         crate::types::round_half_even(crate::types::round_half_even(v.mean_mapping_quality, 1), 0);
     buf.push_str(gt);
@@ -1141,7 +1141,7 @@ fn paired_sample_field_into(
     buf.push(':');
     push_vcf_rounded(buf, fisher, v.frequency, 4);
     buf.push(':');
-    buf.push_str(&paired_bias_fmt(&v.bias));
+    push_paired_bias(buf, &v.bias);
     buf.push(':');
     push_vcf_rounded(buf, fisher, v.mean_position, 1);
     buf.push(':');
@@ -1168,6 +1168,24 @@ fn paired_sample_field_into(
     } else {
         buf.push('0');
     }
+}
+
+/// Per-sample FORMAT string, written into `buf` (cleared first).
+/// Ports var2vcf_paired.pl:240-241.
+#[cfg(test)]
+fn paired_sample_field_into(
+    buf: &mut String,
+    v: &crate::variations::Variant,
+    gt: &str,
+    sbf: f64,
+    oddratio: &(String, f64),
+    fisher: bool,
+) {
+    buf.clear();
+    // 192 B covers the 21-field sample column at typical widths; longer
+    // alleles regrow once and the capacity is retained across rows.
+    buf.reserve(192);
+    push_paired_sample_field(buf, v, gt, sbf, oddratio, fisher);
 }
 
 /// Format one somatic variant into a paired VCF record.
@@ -1220,11 +1238,7 @@ pub fn format_paired_vcf_record(
         .min(fisher_total.get_p_value_less());
     // Total oddratio: Inf→0 only, no reciprocal (:143-145).
     let otot_raw = fisher_total.get_odds_ratio();
-    let sor_str = if otot_raw == "Inf" {
-        "0".to_string()
-    } else {
-        otot_raw.clone()
-    };
+    let sor_str: &str = if otot_raw == "Inf" { "0" } else { &otot_raw };
 
     // Filter comparisons run against table-rounded values: the oracle pipeline
     // formats through the .var table before Perl numifies, so compare at table
@@ -1251,10 +1265,11 @@ pub fn format_paired_vcf_record(
     let p1_r = crate::types::round_half_even(p1, 5);
     let p2_r = crate::types::round_half_even(p2, 5);
 
-    let mut var_type = v1.var_type.clone();
-    if var_type.is_empty() {
-        var_type = "REF".to_string(); // :139
-    }
+    let var_type: &str = if v1.var_type.is_empty() {
+        "REF" // :139
+    } else {
+        &v1.var_type
+    };
     let status = &sv.status;
 
     // endVariant supplies shift3/msi/msint/lseq/rseq (= table columns 48-52).
@@ -1385,7 +1400,6 @@ pub fn format_paired_vcf_record(
     let qual_col = paired_qual_col(vd1, qual1, vd2, qual2);
 
     let sample_tumor = config.sample.split('|').next().unwrap_or(&config.sample);
-    let sample_nowhitespace = sample_tumor.replace(char::is_whitespace, "_");
 
     let mut prefix = String::with_capacity(96);
     prefix.push_str(chr);
@@ -1398,60 +1412,48 @@ pub fn format_paired_vcf_record(
     prefix.push('\t');
     let _ = write!(prefix, "{}", qual_col);
 
+    // `rest` holds INFO + keys + both sample columns in a single allocation;
+    // 768 covers the common paired row so the assembly never regrows.
     // INFO (:237-239). No END tag and no SV tags in the paired writer.
-    let mut info = String::with_capacity(512);
-    info.push_str("STATUS=");
-    info.push_str(status);
-    info.push_str(";SAMPLE=");
-    info.push_str(&sample_nowhitespace);
-    info.push_str(";TYPE=");
-    info.push_str(&var_type);
-    let _ = write!(info, ";DP={};VD={}", dp1, vd1);
-    info.push_str(";AF=");
-    push_vcf_rounded(&mut info, config.fisher, v1.frequency, 4);
-    let _ = write!(info, ";SHIFT3={}", end_var.shift3);
-    info.push_str(";MSI=");
-    push_keep(&mut info, end_var.msi, 3);
-    let _ = write!(info, ";MSILEN={}", end_var.msint);
-    info.push_str(";SSF=");
-    push_vcf_rounded(&mut info, config.fisher, ptot, 5);
-    info.push_str(";SOR=");
-    info.push_str(&sor_str);
-    info.push_str(";LSEQ=");
-    if end_var.left_seq.is_empty() {
-        info.push('0');
-    } else {
-        info.push_str(&end_var.left_seq);
-    }
-    info.push_str(";RSEQ=");
-    if end_var.right_seq.is_empty() {
-        info.push('0');
-    } else {
-        info.push_str(&end_var.right_seq);
-    }
-
-    let format_keys =
-        "GT:DP:VD:ALD:RD:AD:AF:BIAS:PMEAN:PSTD:QUAL:QSTD:SBF:ODDRATIO:MQ:SN:HIAF:ADJAF:NM";
-
-    // Sample columns share one scratch buffer: `_into` clears per call, and
-    // the values are copied into `rest` immediately, so no allocation
-    // survives the row. (`rest` itself is retained by the delayed-print
-    // machine, so cross-row sharing is impossible — this is the most reuse
-    // the retained-struct design allows.)
-    let mut col = String::new();
-    // `rest` holds INFO + keys + both sample columns; 768 covers the common
-    // paired row so the assembly never regrows (records are retained per
-    // batch for the Cluster machine, so the slack is bounded by design).
     let mut rest = String::with_capacity(768);
-    rest.push_str(&info);
+    rest.push_str("STATUS=");
+    rest.push_str(status);
+    rest.push_str(";SAMPLE=");
+    for c in sample_tumor.chars() {
+        rest.push(if c.is_whitespace() { '_' } else { c });
+    }
+    rest.push_str(";TYPE=");
+    rest.push_str(var_type);
+    let _ = write!(rest, ";DP={};VD={}", dp1, vd1);
+    rest.push_str(";AF=");
+    push_vcf_rounded(&mut rest, config.fisher, v1.frequency, 4);
+    let _ = write!(rest, ";SHIFT3={}", end_var.shift3);
+    rest.push_str(";MSI=");
+    push_keep(&mut rest, end_var.msi, 3);
+    let _ = write!(rest, ";MSILEN={}", end_var.msint);
+    rest.push_str(";SSF=");
+    push_vcf_rounded(&mut rest, config.fisher, ptot, 5);
+    rest.push_str(";SOR=");
+    rest.push_str(sor_str);
+    rest.push_str(";LSEQ=");
+    if end_var.left_seq.is_empty() {
+        rest.push('0');
+    } else {
+        rest.push_str(&end_var.left_seq);
+    }
+    rest.push_str(";RSEQ=");
+    if end_var.right_seq.is_empty() {
+        rest.push('0');
+    } else {
+        rest.push_str(&end_var.right_seq);
+    }
+
+    rest.push_str(
+        "\tGT:DP:VD:ALD:RD:AD:AF:BIAS:PMEAN:PSTD:QUAL:QSTD:SBF:ODDRATIO:MQ:SN:HIAF:ADJAF:NM\t",
+    );
+    push_paired_sample_field(&mut rest, v1, gt, p1, &or1, config.fisher);
     rest.push('\t');
-    rest.push_str(format_keys);
-    rest.push('\t');
-    paired_sample_field_into(&mut col, v1, gt, p1, &or1, config.fisher);
-    rest.push_str(&col);
-    rest.push('\t');
-    paired_sample_field_into(&mut col, v2, gtm, p2, &or2, config.fisher);
-    rest.push_str(&col);
+    push_paired_sample_field(&mut rest, v2, gtm, p2, &or2, config.fisher);
 
     PairedVcfRecord {
         prefix,

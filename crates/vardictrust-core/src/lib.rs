@@ -1664,10 +1664,16 @@ pub fn create_output_writer(config: &config::Config) -> OutputDestination {
     }
 }
 
+fn is_bgzf_output_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("gz") || ext.eq_ignore_ascii_case("bgz"))
+}
+
 fn open_output_writer(config: &config::Config) -> Result<OutputDestination, VardictError> {
     if let Some(ref path_str) = config.output_path {
         let file = std::fs::File::create(path_str).map_err(VardictError::Io)?;
-        if path_str.ends_with(".gz") || path_str.ends_with(".bgz") {
+        if is_bgzf_output_path(Path::new(path_str)) {
             let worker_count = std::num::NonZeroUsize::new(config.threads.clamp(1, 4))
                 .unwrap_or(std::num::NonZeroUsize::MIN);
             Ok(OutputDestination::Bgzf(Box::new(
@@ -1752,6 +1758,96 @@ impl<W: std::io::Write> std::io::Write for InjectedWriter<W> {
 }
 
 impl<W: std::io::Write> EngineWriter for InjectedWriter<W> {}
+
+fn write_vcf_tabix_index_inner(vcf_gz_path: &Path, tbi_path: &Path) -> Result<(), VardictError> {
+    let mut reader =
+        noodles::bgzf::io::Reader::new(std::fs::File::open(vcf_gz_path).map_err(VardictError::Io)?);
+    let mut indexer = noodles::tabix::index::Indexer::default();
+    indexer.set_header(noodles::csi::binning_index::index::header::Builder::vcf().build());
+
+    let mut line = String::new();
+    loop {
+        let start_vp = reader.virtual_position();
+        let bytes_read =
+            std::io::BufRead::read_line(&mut reader, &mut line).map_err(VardictError::Io)?;
+        if bytes_read == 0 {
+            break;
+        }
+        let end_vp = reader.virtual_position();
+        let trimmed = line.trim_end_matches(['\r', '\n']);
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            line.clear();
+            continue;
+        }
+        let mut fields = trimmed.split('\t');
+        let chrom = fields.next().ok_or_else(|| {
+            VardictError::Parse("missing VCF CHROM column while indexing".to_string())
+        })?;
+        let pos_str = fields.next().ok_or_else(|| {
+            VardictError::Parse("missing VCF POS column while indexing".to_string())
+        })?;
+        let _id = fields.next().ok_or_else(|| {
+            VardictError::Parse("missing VCF ID column while indexing".to_string())
+        })?;
+        let ref_allele = fields.next().ok_or_else(|| {
+            VardictError::Parse("missing VCF REF column while indexing".to_string())
+        })?;
+        let _alt = fields.next();
+        let _qual = fields.next();
+        let _filter = fields.next();
+        let info_end = fields.next().and_then(|info| {
+            info.split(';')
+                .find_map(|kv| kv.strip_prefix("END=")?.parse::<usize>().ok())
+        });
+        let pos_usize = pos_str.parse::<usize>().map_err(|e| {
+            VardictError::Parse(format!("invalid VCF POS '{pos_str}' while indexing: {e}"))
+        })?;
+        let start_pos = noodles::core::Position::new(pos_usize).ok_or_else(|| {
+            VardictError::Parse(format!(
+                "VCF POS must be >= 1 while indexing, got {pos_usize}"
+            ))
+        })?;
+        let end_usize = info_end
+            .unwrap_or_else(|| pos_usize.saturating_add(ref_allele.len().saturating_sub(1)))
+            .max(pos_usize);
+        let end_pos = noodles::core::Position::new(end_usize)
+            .ok_or_else(|| VardictError::Parse(format!("invalid VCF END {end_usize}")))?;
+        indexer
+            .add_record(
+                chrom,
+                start_pos,
+                end_pos,
+                noodles::csi::binning_index::index::reference_sequence::bin::Chunk::new(
+                    start_vp, end_vp,
+                ),
+            )
+            .map_err(|e| {
+                VardictError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+            })?;
+        line.clear();
+    }
+
+    let index = indexer.build();
+    let file = std::fs::File::create(tbi_path).map_err(VardictError::Io)?;
+    let mut tbi_writer = noodles::tabix::io::Writer::new(file);
+    tbi_writer.write_index(&index).map_err(VardictError::Io)?;
+    let inner_file = tbi_writer.into_inner().finish().map_err(VardictError::Io)?;
+    sync_file_ignoring_special(&inner_file)
+}
+
+fn write_vcf_tabix_index(vcf_gz_path: &Path) -> Result<(), VardictError> {
+    let tbi_os = {
+        let mut s = vcf_gz_path.as_os_str().to_os_string();
+        s.push(".tbi");
+        s
+    };
+    let tbi_path = std::path::PathBuf::from(tbi_os);
+    if let Err(e) = write_vcf_tabix_index_inner(vcf_gz_path, &tbi_path) {
+        let _ = std::fs::remove_file(&tbi_path);
+        return Err(e);
+    }
+    Ok(())
+}
 
 /// Backwards-compatible alias for existing call sites.
 pub fn get_output_writer(config: &config::Config) -> OutputDestination {
@@ -1884,6 +1980,27 @@ fn resolve_effective_config(
         }
     }
 
+    if effective.index_output {
+        let has_bgzf_output = effective
+            .output_path
+            .as_deref()
+            .is_some_and(|out_path| is_bgzf_output_path(Path::new(out_path)));
+        if !has_bgzf_output {
+            return Err(VardictError::Parse(
+                "--tbi/--index requires --output <PATH> ending in .vcf.gz or .bgz".to_string(),
+            ));
+        }
+        if effective.emit_intermediate
+            || effective.splice
+            || (effective.column_header && effective.debug_print.as_deref() != Some("ERR"))
+        {
+            return Err(VardictError::Parse(
+                "--tbi/--index is only supported for VCF output (cannot be combined with -E/--emit-intermediate, -i/--splice, or -h/--header)"
+                    .to_string(),
+            ));
+        }
+    }
+
     Ok((effective, mode))
 }
 
@@ -1973,6 +2090,13 @@ pub fn run(config: &config::Config) -> Result<(), VardictError> {
                     "--output and --stats-json must not point to the same file".to_string(),
                 ));
             }
+            if effective.index_output
+                && paths_collide(Path::new(&format!("{out_path}.tbi")), Path::new(stats_path))
+            {
+                return Err(VardictError::Parse(format!(
+                    "--output Tabix index '{out_path}.tbi' and --stats-json '{stats_path}' must not point to the same file"
+                )));
+            }
         }
         let mut stats_file = if let Some(ref stats_path) = effective.stats_json_path {
             Some(std::fs::File::create(stats_path).map_err(VardictError::Io)?)
@@ -1982,6 +2106,11 @@ pub fn run(config: &config::Config) -> Result<(), VardictError> {
         let writer = open_output_writer(&effective)?;
         let telemetry = RunTelemetryCounters::default();
         run_with_engine_writer_and_telemetry(&effective, writer, Some(&telemetry))?;
+        if effective.index_output {
+            if let Some(ref out_path) = effective.output_path {
+                write_vcf_tabix_index(Path::new(out_path))?;
+            }
+        }
         if let Some(ref mut f) = stats_file {
             let elapsed_ms = started.elapsed().as_millis();
             let peak_rss_kb = read_peak_rss_kb();
@@ -2093,21 +2222,69 @@ fn run_with_writer_inner<W: EngineWriter>(
     let halo = 500;
     let mut tiles = Vec::new();
     let mut multi_tile_seeds: HashMap<MultiTileKey, (Vec<MaxRlStep>, i32)> = HashMap::new();
-    for reg in &flat_regions {
-        let reg_tiles = crate::regions::tile(reg, effective_tile_size(reg, config.tile_size), halo);
-        if reg_tiles.len() > 1 && !config.splice {
-            let (steps_per_tile, final_max_rl) = scan_multi_tile_max_read_lengths(
-                &bam_list,
-                reg,
-                &reg_tiles,
-                config,
-                &chromosomes_lengths,
-                0,
-            )?;
-            for (t, steps) in reg_tiles.iter().zip(steps_per_tile) {
-                multi_tile_seeds.insert(multi_tile_key(t), (steps, final_max_rl));
+    let reg_tiles_list: Vec<Vec<crate::regions::Tile>> = flat_regions
+        .iter()
+        .map(|reg| crate::regions::tile(reg, effective_tile_size(reg, config.tile_size), halo))
+        .collect();
+    let multi_idxs: Vec<usize> = reg_tiles_list
+        .iter()
+        .enumerate()
+        .filter_map(|(i, rt)| (rt.len() > 1 && !config.splice).then_some(i))
+        .collect();
+    if multi_idxs.len() > 1 && config.threads > 1 {
+        let flat_arc = std::sync::Arc::new(flat_regions.clone());
+        let reg_tiles_arc = std::sync::Arc::new(reg_tiles_list.clone());
+        let bam_list_arc = std::sync::Arc::new(bam_list.clone());
+        let cfg_clone = config.clone();
+        let chr_lens_arc = std::sync::Arc::new(chromosomes_lengths.clone());
+        crate::runner::run_parallel_for_bam(
+            &config.bam,
+            multi_idxs,
+            config.threads,
+            move |idx| {
+                let reg = flat_arc
+                    .get(idx)
+                    .ok_or_else(|| VardictError::Parse(format!("Invalid region index {idx}")))?;
+                let reg_tiles = reg_tiles_arc.get(idx).ok_or_else(|| {
+                    VardictError::Parse(format!("Invalid region tiles index {idx}"))
+                })?;
+                let (steps_per_tile, final_max_rl) = scan_multi_tile_max_read_lengths(
+                    &bam_list_arc,
+                    reg,
+                    reg_tiles,
+                    &cfg_clone,
+                    &chr_lens_arc,
+                    0,
+                )?;
+                Ok((idx, steps_per_tile, final_max_rl))
+            },
+            |(idx, steps_per_tile, final_max_rl)| {
+                if let Some(reg_tiles) = reg_tiles_list.get(idx) {
+                    for (t, steps) in reg_tiles.iter().zip(steps_per_tile) {
+                        multi_tile_seeds.insert(multi_tile_key(t), (steps, final_max_rl));
+                    }
+                }
+                Ok(())
+            },
+        )?;
+    } else {
+        for idx in multi_idxs {
+            if let (Some(reg), Some(reg_tiles)) = (flat_regions.get(idx), reg_tiles_list.get(idx)) {
+                let (steps_per_tile, final_max_rl) = scan_multi_tile_max_read_lengths(
+                    &bam_list,
+                    reg,
+                    reg_tiles,
+                    config,
+                    &chromosomes_lengths,
+                    0,
+                )?;
+                for (t, steps) in reg_tiles.iter().zip(steps_per_tile) {
+                    multi_tile_seeds.insert(multi_tile_key(t), (steps, final_max_rl));
+                }
             }
         }
+    }
+    for reg_tiles in reg_tiles_list {
         tiles.extend(reg_tiles);
     }
     if let Some(tel) = telemetry {
@@ -2847,29 +3024,87 @@ fn run_somatic<W: EngineWriter>(
     let mut tiles = Vec::new();
     let mut multi_tile_seeds: HashMap<MultiTileKey, (Vec<MaxRlStep>, i32, Vec<MaxRlStep>, i32)> =
         HashMap::new();
-    for reg in &flat_regions {
-        let reg_tiles = crate::regions::tile(reg, effective_tile_size(reg, config.tile_size), halo);
-        if reg_tiles.len() > 1 {
-            let (bam1_steps, bam1_final) = scan_multi_tile_max_read_lengths(
-                &bam1_bams,
-                reg,
-                &reg_tiles,
-                config,
-                &chromosomes_lengths,
-                0,
-            )?;
-            let (bam2_steps, bam2_final) = scan_multi_tile_max_read_lengths(
-                &bam2_bams,
-                reg,
-                &reg_tiles,
-                config,
-                &chromosomes_lengths,
-                bam1_final,
-            )?;
-            for ((t, s1), s2) in reg_tiles.iter().zip(bam1_steps).zip(bam2_steps) {
-                multi_tile_seeds.insert(multi_tile_key(t), (s1, bam1_final, s2, bam2_final));
+    let reg_tiles_list: Vec<Vec<crate::regions::Tile>> = flat_regions
+        .iter()
+        .map(|reg| crate::regions::tile(reg, effective_tile_size(reg, config.tile_size), halo))
+        .collect();
+    let multi_idxs: Vec<usize> = reg_tiles_list
+        .iter()
+        .enumerate()
+        .filter_map(|(i, rt)| (rt.len() > 1).then_some(i))
+        .collect();
+    if multi_idxs.len() > 1 && config.threads > 1 {
+        let flat_arc = std::sync::Arc::new(flat_regions.clone());
+        let reg_tiles_arc = std::sync::Arc::new(reg_tiles_list.clone());
+        let bam1_arc = std::sync::Arc::new(bam1_bams.clone());
+        let bam2_arc = std::sync::Arc::new(bam2_bams.clone());
+        let cfg_clone = config.clone();
+        let chr_lens_arc = std::sync::Arc::new(chromosomes_lengths.clone());
+        crate::runner::run_parallel_for_bam(
+            &config.bam,
+            multi_idxs,
+            config.threads,
+            move |idx| {
+                let reg = flat_arc
+                    .get(idx)
+                    .ok_or_else(|| VardictError::Parse(format!("Invalid region index {idx}")))?;
+                let reg_tiles = reg_tiles_arc.get(idx).ok_or_else(|| {
+                    VardictError::Parse(format!("Invalid region tiles index {idx}"))
+                })?;
+                let (bam1_steps, bam1_final) = scan_multi_tile_max_read_lengths(
+                    &bam1_arc,
+                    reg,
+                    reg_tiles,
+                    &cfg_clone,
+                    &chr_lens_arc,
+                    0,
+                )?;
+                let (bam2_steps, bam2_final) = scan_multi_tile_max_read_lengths(
+                    &bam2_arc,
+                    reg,
+                    reg_tiles,
+                    &cfg_clone,
+                    &chr_lens_arc,
+                    bam1_final,
+                )?;
+                Ok((idx, bam1_steps, bam1_final, bam2_steps, bam2_final))
+            },
+            |(idx, bam1_steps, bam1_final, bam2_steps, bam2_final)| {
+                if let Some(reg_tiles) = reg_tiles_list.get(idx) {
+                    for ((t, s1), s2) in reg_tiles.iter().zip(bam1_steps).zip(bam2_steps) {
+                        multi_tile_seeds
+                            .insert(multi_tile_key(t), (s1, bam1_final, s2, bam2_final));
+                    }
+                }
+                Ok(())
+            },
+        )?;
+    } else {
+        for idx in multi_idxs {
+            if let (Some(reg), Some(reg_tiles)) = (flat_regions.get(idx), reg_tiles_list.get(idx)) {
+                let (bam1_steps, bam1_final) = scan_multi_tile_max_read_lengths(
+                    &bam1_bams,
+                    reg,
+                    reg_tiles,
+                    config,
+                    &chromosomes_lengths,
+                    0,
+                )?;
+                let (bam2_steps, bam2_final) = scan_multi_tile_max_read_lengths(
+                    &bam2_bams,
+                    reg,
+                    reg_tiles,
+                    config,
+                    &chromosomes_lengths,
+                    bam1_final,
+                )?;
+                for ((t, s1), s2) in reg_tiles.iter().zip(bam1_steps).zip(bam2_steps) {
+                    multi_tile_seeds.insert(multi_tile_key(t), (s1, bam1_final, s2, bam2_final));
+                }
             }
         }
+    }
+    for reg_tiles in reg_tiles_list {
         tiles.extend(reg_tiles);
     }
     if let Some(tel) = telemetry {
@@ -5239,6 +5474,37 @@ mod tests {
         assert!(
             !big_deduper.emitted_by_pos.contains_key(&100_000),
             "positions below tile_start - SPLIT_VAR_RETENTION_WINDOW_BP must be evicted"
+        );
+    }
+
+    #[test]
+    fn test_write_vcf_tabix_index_honors_info_end_for_symbolic_sv() {
+        use noodles::csi::BinningIndex as _;
+        use std::io::Write as _;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let vcf_gz = dir.path().join("sv.vcf.gz");
+        let tbi_path = dir.path().join("sv.vcf.gz.tbi");
+        {
+            let file = std::fs::File::create(&vcf_gz).unwrap();
+            let mut writer = noodles::bgzf::io::Writer::new(file);
+            writer
+                .write_all(
+                    b"##fileformat=VCFv4.3\n\
+                      #CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tSAMPLE\n\
+                      chr1\t1000\t.\tA\t<DEL>\t100\tPASS\tSVTYPE=DEL;END=50_000_invalid;END=50000\tGT\t0/1\n",
+                )
+                .unwrap();
+            writer.finish().unwrap();
+        }
+        write_vcf_tabix_index(&vcf_gz).unwrap();
+        let index = noodles::tabix::fs::read(&tbi_path).unwrap();
+        let start = noodles::core::Position::new(30000).unwrap();
+        let end = noodles::core::Position::new(30100).unwrap();
+        let chunks = index.query(0, (start..=end).into()).unwrap();
+        assert!(
+            !chunks.is_empty(),
+            "symbolic SV at POS=1000 with INFO/END=50000 must overlap query [30000, 30100]"
         );
     }
 }
