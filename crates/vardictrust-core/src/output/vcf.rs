@@ -420,9 +420,79 @@ pub fn perl_row_skipped(ref_allele: &str) -> bool {
     ref_allele.is_empty() || ref_allele == "0"
 }
 
-/// Run var2vcf_valid.pl filter checks on a finalized Variant.
+#[derive(Clone, Copy)]
+enum FilterTag {
+    Static(&'static str),
+    MinAf(f64),
+}
+
+struct StackFilterList {
+    tags: [FilterTag; 16],
+    len: usize,
+}
+
+impl StackFilterList {
+    #[inline]
+    const fn new() -> Self {
+        Self {
+            tags: [FilterTag::Static(""); 16],
+            len: 0,
+        }
+    }
+
+    #[inline]
+    fn push(&mut self, tag: FilterTag) {
+        if let Some(slot) = self.tags.get_mut(self.len) {
+            *slot = tag;
+            self.len += 1;
+        }
+    }
+
+    #[inline]
+    fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    #[inline]
+    fn as_slice(&self) -> &[FilterTag] {
+        self.tags.get(..self.len).unwrap_or(&[])
+    }
+
+    fn write_vcf_filter_field(&self, buf: &mut String) {
+        let slice = self.as_slice();
+        if slice.is_empty() {
+            buf.push_str("PASS");
+            return;
+        }
+        for (i, tag) in slice.iter().enumerate() {
+            if i > 0 {
+                buf.push(';');
+            }
+            match *tag {
+                FilterTag::Static(s) => buf.push_str(s),
+                FilterTag::MinAf(af) => {
+                    let _ = write!(buf, "f{af}");
+                }
+            }
+        }
+    }
+
+    fn to_vec_strings(&self) -> Vec<String> {
+        let slice = self.as_slice();
+        let mut out = Vec::with_capacity(slice.len());
+        for tag in slice {
+            match *tag {
+                FilterTag::Static(s) => out.push(s.to_string()),
+                FilterTag::MinAf(af) => out.push(format!("f{af}")),
+            }
+        }
+        out
+    }
+}
+
+/// Collect `var2vcf_valid.pl` filter tags into a stack-backed [`StackFilterList`].
 /// Ports var2vcf_valid.pl filter logic (T098-T104).
-pub fn filter_variant(
+fn collect_valid_filters(
     variant: &Variant,
     config: &Config,
     pvs: i32,
@@ -431,8 +501,8 @@ pub fn filter_variant(
     amp: Option<(i32, i32, i32, bool)>,
     sbf: f64,
     oddratio_str: &str,
-) -> Vec<String> {
-    let mut filters = Vec::new();
+) -> StackFilterList {
+    let mut filters = StackFilterList::new();
 
     let total_depth = 3;
     let var_depth = 2;
@@ -447,14 +517,14 @@ pub fn filter_variant(
     // T098: d3 check
     if dp < total_depth {
         if !hi_check {
-            filters.push(format!("d{}", total_depth));
+            filters.push(FilterTag::Static("d3"));
         }
     }
 
     // T099: v2 check
     if (hicnt as u32) < var_depth {
         if !hi_check {
-            filters.push(format!("v{}", var_depth));
+            filters.push(FilterTag::Static("v2"));
         }
     }
 
@@ -464,43 +534,43 @@ pub fn filter_variant(
     // writer's own -f (`af_threshold`), NOT the engine freq that -p sets to -1.
     let freq_threshold = valid_freq_threshold(config);
     if variant.frequency < freq_threshold {
-        filters.push(format!("f{}", freq_threshold));
+        filters.push(FilterTag::MinAf(freq_threshold));
     }
 
     // T101: p8 check
     let pmean_threshold = 8.0;
     if variant.mean_position < pmean_threshold {
-        filters.push(format!("p{}", pmean_threshold as i32));
+        filters.push(FilterTag::Static("p8"));
     }
 
     // T102: pSTD check — suppressed in amplicon mode (:161 `! $isamp`)
     let opt_p = 1; // default
     if opt_p == 1 && !variant.pstd && amp.is_none() && variant.frequency < 0.35 {
-        filters.push("pSTD".to_string());
+        filters.push(FilterTag::Static("pSTD"));
     }
 
     // T103: q22.5 check
     let qmean = 22.5;
     if variant.mean_quality < qmean {
-        filters.push(format!("q{}", qmean));
+        filters.push(FilterTag::Static("q22.5"));
     }
 
     // T104: Q10 check
     let qmean_map = 10.0;
     if variant.mean_mapping_quality < qmean_map && variant.frequency < 0.8 {
-        filters.push(format!("Q{}", qmean_map as i32));
+        filters.push(FilterTag::Static("Q10"));
     }
 
     // SN1.5 check
     let sn_threshold = 1.5;
     if sn < sn_threshold {
-        filters.push(format!("SN{}", sn_threshold));
+        filters.push(FilterTag::Static("SN1.5"));
     }
 
     // NM5.25 check
     let opt_m = 5.25;
     if variant.nm > opt_m {
-        filters.push(format!("NM{}", opt_m));
+        filters.push(FilterTag::Static("NM5.25"));
     }
 
     // MSI12 check
@@ -515,7 +585,7 @@ pub fn filter_variant(
         && variant.frequency <= 0.275
         && len_diff == variant.msint;
     if msi_check1 || msi_check2 {
-        filters.push(format!("MSI{}", opt_i as i32));
+        filters.push(FilterTag::Static("MSI12"));
     }
 
     // Bias check
@@ -537,13 +607,13 @@ pub fn filter_variant(
         && (transformed_or > 5.0 || transformed_or == 0.0)
         && (variant.end_pos - variant.start_pos) < 100
     {
-        filters.push("Bias".to_string());
+        filters.push(FilterTag::Static("Bias"));
     }
 
     // LongMSI check
     if len_diff == variant.msint {
         if (hiaf <= 0.275 && msi >= 13.0) || (hiaf <= 0.2 && msi >= 8.0 && variant.msint > 1) {
-            filters.push("LongMSI".to_string());
+            filters.push(FilterTag::Static("LongMSI"));
         }
     }
 
@@ -554,18 +624,33 @@ pub fn filter_variant(
         && pvs > 0
         && (variant.start_pos - pvs) < opt_c
     {
-        filters.push(format!("Cluster{}bp", opt_c));
+        filters.push(FilterTag::Static("Cluster0bp"));
     }
 
     // AMPBIAS — amplicon mode only (:185 `$isamp && (($gamp < $tamp-$ncamp) || $ampflag)`);
     // pushed last, after the Cluster check, matching perl's @filters order.
     if let Some((gdamp, tlamp, ncamp, ampflag)) = amp {
         if gdamp < tlamp - ncamp || ampflag {
-            filters.push("AMPBIAS".to_string());
+            filters.push(FilterTag::Static("AMPBIAS"));
         }
     }
 
     filters
+}
+
+/// Run var2vcf_valid.pl filter checks on a finalized Variant.
+/// Ports var2vcf_valid.pl filter logic (T098-T104).
+pub fn filter_variant(
+    variant: &Variant,
+    config: &Config,
+    pvs: i32,
+    // Amplicon columns 37-40 of the 40-col table (GDAMP, TLAMP, NCAMP, AMPFLAG);
+    // None = simple mode ($isamp false, var2vcf_valid.pl:145).
+    amp: Option<(i32, i32, i32, bool)>,
+    sbf: f64,
+    oddratio_str: &str,
+) -> Vec<String> {
+    collect_valid_filters(variant, config, pvs, amp, sbf, oddratio_str).to_vec_strings()
 }
 
 /// Java's RAW table cell for hifreq (trailing zeros kept): ports
@@ -635,21 +720,16 @@ fn perl_num_str(x: f64) -> String {
     }
 }
 
-/// Write a variant call as a VCF record line into `buf` (cleared first).
-/// Byte-identical to [`format_vcf_record`]; the caller's buffer is reused
-/// across rows (one reserve, `clear()` per variant) instead of one temp
-/// `String` per INFO field plus a final `format!`.
-/// Ports VCF serialization (T105).
-pub fn format_vcf_record_into(
+fn format_vcf_record_with_filter<F: FnOnce(&mut String)>(
     buf: &mut String,
     variant: &Variant,
     region: &Region,
     config: &Config,
-    filters: &[String],
     sbf: f64,
     oddratio_str: &str,
     // Amplicon columns 37-40 (GDAMP, TLAMP, NCAMP, AMPFLAG); None = simple mode.
     amp: Option<(i32, i32, i32, bool)>,
+    write_filter: F,
 ) {
     buf.clear();
     // Golden single-sample VCF p50 is 398 B, max 551 B: 512 covers the common
@@ -706,17 +786,8 @@ pub fn format_vcf_record_into(
         buf.push('\t');
     }
     let _ = write!(buf, "{}\t", qual_val);
-    if filters.is_empty() {
-        buf.push_str("PASS\t");
-    } else {
-        for (i, f) in filters.iter().enumerate() {
-            if i > 0 {
-                buf.push(';');
-            }
-            buf.push_str(f);
-        }
-        buf.push('\t');
-    }
+    write_filter(buf);
+    buf.push('\t');
 
     // INFO (field order mirrors var2vcf_valid.pl:236; values contain no
     // spaces so the perl post-strip is a no-op here).
@@ -885,6 +956,45 @@ pub fn format_vcf_record_into(
     );
 }
 
+/// Write a variant call as a VCF record line into `buf` (cleared first).
+/// Byte-identical to [`format_vcf_record`]; the caller's buffer is reused
+/// across rows (one reserve, `clear()` per variant) instead of one temp
+/// `String` per INFO field plus a final `format!`.
+/// Ports VCF serialization (T105).
+pub fn format_vcf_record_into(
+    buf: &mut String,
+    variant: &Variant,
+    region: &Region,
+    config: &Config,
+    filters: &[String],
+    sbf: f64,
+    oddratio_str: &str,
+    // Amplicon columns 37-40 (GDAMP, TLAMP, NCAMP, AMPFLAG); None = simple mode.
+    amp: Option<(i32, i32, i32, bool)>,
+) {
+    format_vcf_record_with_filter(
+        buf,
+        variant,
+        region,
+        config,
+        sbf,
+        oddratio_str,
+        amp,
+        |out| {
+            if filters.is_empty() {
+                out.push_str("PASS");
+            } else {
+                for (i, f) in filters.iter().enumerate() {
+                    if i > 0 {
+                        out.push(';');
+                    }
+                    out.push_str(f);
+                }
+            }
+        },
+    );
+}
+
 /// Format a variant call to a VCF record line.
 /// Ports VCF serialization (T105).
 pub fn format_vcf_record(
@@ -909,6 +1019,32 @@ pub fn format_vcf_record(
         amp,
     );
     buf
+}
+
+/// Filter and write a single-sample/amplicon VCF record line into `buf` without
+/// allocating an intermediate `Vec<String>` for FILTER tags.
+pub fn format_filtered_vcf_record_into(
+    buf: &mut String,
+    variant: &Variant,
+    region: &Region,
+    config: &Config,
+    pvs: i32,
+    sbf: f64,
+    oddratio_str: &str,
+    // Amplicon columns 37-40 (GDAMP, TLAMP, NCAMP, AMPFLAG); None = simple mode.
+    amp: Option<(i32, i32, i32, bool)>,
+) {
+    let filters = collect_valid_filters(variant, config, pvs, amp, sbf, oddratio_str);
+    format_vcf_record_with_filter(
+        buf,
+        variant,
+        region,
+        config,
+        sbf,
+        oddratio_str,
+        amp,
+        |out| filters.write_vcf_filter_field(out),
+    );
 }
 
 // ---- var2vcf_paired.pl port (somatic/paired VCF, W4.5c) ----
@@ -1249,21 +1385,8 @@ pub fn format_paired_vcf_record(
     let vd2 = v2.pos_coverage;
     let af1 = crate::types::round_half_even(v1.frequency, 4);
     let af2 = crate::types::round_half_even(v2.frequency, 4);
-    let pmean1 = crate::types::round_half_even(v1.mean_position, 1);
-    let pmean2 = crate::types::round_half_even(v2.mean_position, 1);
     let qual1 = crate::types::round_half_even(v1.mean_quality, 1);
     let qual2 = crate::types::round_half_even(v2.mean_quality, 1);
-    let mapq1 = crate::types::round_half_even(v1.mean_mapping_quality, 1);
-    let mapq2 = crate::types::round_half_even(v2.mean_mapping_quality, 1);
-    let sn1 = crate::types::round_half_even(v1.hq_lq_ratio, 3);
-    let sn2 = crate::types::round_half_even(v2.hq_lq_ratio, 3);
-    let nm1 = crate::types::round_half_even(if v1.nm > 0.0 { v1.nm } else { 0.0 }, 1);
-    let nm2 = crate::types::round_half_even(if v2.nm > 0.0 { v2.nm } else { 0.0 }, 1);
-    // Perl sees R's round-5 strings from testsomatic.R:31-47, numified before
-    // the P:156/:175/:186/:189 threshold checks — compare at table precision.
-    let ptot_r = crate::types::round_half_even(ptot, 5);
-    let p1_r = crate::types::round_half_even(p1, 5);
-    let p2_r = crate::types::round_half_even(p2, 5);
 
     let var_type: &str = if v1.var_type.is_empty() {
         "REF" // :139
@@ -1279,120 +1402,115 @@ pub fn format_paired_vcf_record(
         v1
     };
 
-    let mut filters: Vec<String> = Vec::new();
-    let mut normal_clean = true;
+    // Normal depth & quality filters (:162-163, :177-183); Q gate dead at MQMEAN=0,
+    // kept for fidelity. Without -M, a fully clean NORMAL (`normal_clean == true`)
+    // unconditionally overrides any non-PASS FILTER to "PASS" (:217-219), so check
+    // `normal_clean` first and short-circuit all tumor/Bias/MSI filter evaluation.
+    let normal_clean = !(dp2 < PAIRED_MIN_DEPTH
+        || vd2 < PAIRED_VAR_DEPTH
+        || af2 < config.af_threshold
+        || crate::types::round_half_even(v2.mean_position, 1) < PAIRED_PMEAN
+        || (!v2.pstd && vd2 < PAIRED_MIN_DEPTH)
+        || qual2 < PAIRED_QMEAN
+        || crate::types::round_half_even(v2.mean_mapping_quality, 1) < PAIRED_MQMEAN
+        || crate::types::round_half_even(v2.hq_lq_ratio, 3) < PAIRED_SN
+        || crate::types::round_half_even(if v2.nm > 0.0 { v2.nm } else { 0.0 }, 1) >= PAIRED_OPT_M);
 
-    // Tumor depth filters with StrongSomatic exception (:156-161).
-    let ss_exception = status == "StrongSomatic" && ptot_r < 0.15 && af1 * vd1 as f64 >= 0.5;
-    if dp1 < PAIRED_MIN_DEPTH && !ss_exception {
-        filters.push("d5".to_string());
-    }
-    if vd1 < PAIRED_VAR_DEPTH && !ss_exception {
-        filters.push("v3".to_string());
-    }
-    // Normal depth filters, unconditional (:162-163).
-    if dp2 < PAIRED_MIN_DEPTH {
-        normal_clean = false;
-    }
-    if vd2 < PAIRED_VAR_DEPTH {
-        normal_clean = false;
-    }
+    let mut filters = StackFilterList::new();
+    if !normal_clean {
+        let pmean1 = crate::types::round_half_even(v1.mean_position, 1);
+        let mapq1 = crate::types::round_half_even(v1.mean_mapping_quality, 1);
+        let sn1 = crate::types::round_half_even(v1.hq_lq_ratio, 3);
+        let nm1 = crate::types::round_half_even(if v1.nm > 0.0 { v1.nm } else { 0.0 }, 1);
+        // Perl sees R's round-5 strings from testsomatic.R:31-47, numified before
+        // the P:156/:175/:186/:189 threshold checks — compare at table precision.
+        let ptot_r = crate::types::round_half_even(ptot, 5);
+        let p1_r = crate::types::round_half_even(p1, 5);
+        let p2_r = crate::types::round_half_even(p2, 5);
 
-    // Tumor quality filters (:165-175).
-    if af1 < config.af_threshold {
-        filters.push(format!("f{}", config.af_threshold));
-    }
-    if pmean1 < PAIRED_PMEAN {
-        filters.push(format!("p{}", PAIRED_PMEAN as i32));
-    }
-    if !v1.pstd && vd1 < PAIRED_MIN_DEPTH {
-        filters.push("pSTD".to_string());
-    }
-    if qual1 < PAIRED_QMEAN {
-        filters.push(format!("q{}", PAIRED_QMEAN));
-    }
-    if mapq1 < PAIRED_MQMEAN {
-        filters.push("Q0".to_string()); // dead at MQMEAN=0
-    }
-    if mapq1 < 10.0 && var_type == "SNV" {
-        filters.push("Q0".to_string());
-    }
-    if sn1 < PAIRED_SN {
-        filters.push(format!("SN{}", PAIRED_SN));
-    }
-    if nm1 >= PAIRED_OPT_M {
-        filters.push(format!("NM{}", PAIRED_OPT_M));
-    }
-    if v1.bias == "2;1"
-        && p1_r < 0.01
-        && (or1.1 > 5.0 || or1.1 == 0.0)
-        && v1.end_pos - v1.start_pos < 100
-    {
-        filters.push("Bias".to_string());
-    }
+        let mut has_bias = false;
+        let mut has_msi = false;
 
-    // Normal quality filters (:177-183); Q gate dead at MQMEAN=0, kept for fidelity.
-    if af2 < config.af_threshold {
-        normal_clean = false;
-    }
-    if pmean2 < PAIRED_PMEAN {
-        normal_clean = false;
-    }
-    if !v2.pstd && vd2 < PAIRED_MIN_DEPTH {
-        normal_clean = false;
-    }
-    if qual2 < PAIRED_QMEAN {
-        normal_clean = false;
-    }
-    if mapq2 < PAIRED_MQMEAN {
-        normal_clean = false; // dead at MQMEAN=0
-    }
-    if sn2 < PAIRED_SN {
-        normal_clean = false;
-    }
-    if nm2 >= PAIRED_OPT_M {
-        normal_clean = false;
-    }
-    // Normal-side Bias appended to the MAIN list when not already present (:185-186).
-    if !filters.iter().any(|f| f == "Bias")
-        && v2.bias == "2;1"
-        && p2_r < 0.01
-        && (or2.1 > 5.0 || or2.1 == 0.0)
-        && v1.end_pos - v1.start_pos < 100
-    {
-        filters.push("Bias".to_string());
-    }
-
-    // MSI gates (:188-194).
-    let msilen = end_var.msint as f64;
-    let msi = crate::types::round_half_even(end_var.msi, 3);
-    if (msi > PAIRED_OPT_I && msilen > 1.0) || (msi > 12.0 && msilen == 1.0) {
-        if !(status == "StrongSomatic" && ptot_r < 0.0005) {
-            filters.push(format!("MSI{}", PAIRED_OPT_I as i32));
+        // Tumor depth filters with StrongSomatic exception (:156-161).
+        let ss_exception = status == "StrongSomatic" && ptot_r < 0.15 && af1 * vd1 as f64 >= 0.5;
+        if dp1 < PAIRED_MIN_DEPTH && !ss_exception {
+            filters.push(FilterTag::Static("d5"));
         }
-    }
-    let len_diff = (v1.ref_allele.len() as i32 - v1.var_allele.len() as i32).abs();
-    if len_diff == msilen as i32 && !filters.iter().any(|f| f.starts_with("MSI")) {
-        if (msi > PAIRED_OPT_I && msilen > 1.0 && af1 < 0.35 && af2 < 0.35)
-            || (msi > 12.0 && msilen == 1.0 && af1 < 0.35 && af2 < 0.35)
+        if vd1 < PAIRED_VAR_DEPTH && !ss_exception {
+            filters.push(FilterTag::Static("v3"));
+        }
+
+        // Tumor quality filters (:165-175).
+        if af1 < config.af_threshold {
+            filters.push(FilterTag::MinAf(config.af_threshold));
+        }
+        if pmean1 < PAIRED_PMEAN {
+            filters.push(FilterTag::Static("p8"));
+        }
+        if !v1.pstd && vd1 < PAIRED_MIN_DEPTH {
+            filters.push(FilterTag::Static("pSTD"));
+        }
+        if qual1 < PAIRED_QMEAN {
+            filters.push(FilterTag::Static("q22.5"));
+        }
+        if mapq1 < PAIRED_MQMEAN {
+            filters.push(FilterTag::Static("Q0")); // dead at MQMEAN=0
+        }
+        if mapq1 < 10.0 && var_type == "SNV" {
+            filters.push(FilterTag::Static("Q0"));
+        }
+        if sn1 < PAIRED_SN {
+            filters.push(FilterTag::Static("SN1.5"));
+        }
+        if nm1 >= PAIRED_OPT_M {
+            filters.push(FilterTag::Static("NM5.25"));
+        }
+        if v1.bias == "2;1"
+            && p1_r < 0.01
+            && (or1.1 > 5.0 || or1.1 == 0.0)
+            && v1.end_pos - v1.start_pos < 100
         {
-            filters.push(format!("MSI{}", PAIRED_OPT_I as i32));
+            filters.push(FilterTag::Static("Bias"));
+            has_bias = true;
+        }
+
+        // Normal-side Bias appended to the MAIN list when not already present (:185-186).
+        if !has_bias
+            && v2.bias == "2;1"
+            && p2_r < 0.01
+            && (or2.1 > 5.0 || or2.1 == 0.0)
+            && v1.end_pos - v1.start_pos < 100
+        {
+            filters.push(FilterTag::Static("Bias"));
+        }
+
+        // MSI gates (:188-194).
+        let msilen = end_var.msint as f64;
+        let msi = crate::types::round_half_even(end_var.msi, 3);
+        if (msi > PAIRED_OPT_I && msilen > 1.0) || (msi > 12.0 && msilen == 1.0) {
+            if !(status == "StrongSomatic" && ptot_r < 0.0005) {
+                filters.push(FilterTag::Static("MSI12"));
+                has_msi = true;
+            }
+        }
+        let len_diff = (v1.ref_allele.len() as i32 - v1.var_allele.len() as i32).abs();
+        if len_diff == msilen as i32 && !has_msi {
+            if (msi > PAIRED_OPT_I && msilen > 1.0 && af1 < 0.35 && af2 < 0.35)
+                || (msi > 12.0 && msilen == 1.0 && af1 < 0.35 && af2 < 0.35)
+            {
+                filters.push(FilterTag::Static("MSI12"));
+            }
         }
     }
 
     // The -M block (:198-206) is not plumbed: every oracle/corpus invocation omits
     // -M, so P$PVAL/P0.01Likely/InDelLikely never fire.
-
-    let mut filter = if filters.is_empty() {
-        "PASS".to_string()
+    let mut filter = String::with_capacity(if filters.is_empty() {
+        4
     } else {
-        filters.join(";")
-    };
-    // Germline passthrough (:217-219) — without -M a fully clean NORMAL overrides
-    // all tumor filters.
-    if filter != "PASS" && normal_clean {
-        filter = "PASS".to_string();
-    }
+        filters.len.saturating_mul(6)
+    });
+    filters.write_vcf_filter_field(&mut filter);
 
     let gt = paired_gt(af1, config.af_threshold);
     let gtm = paired_gt(af2, config.af_threshold);
@@ -2544,5 +2662,255 @@ mod tests {
             &config,
         );
         assert_eq!(rec_passthrough.filter, "PASS");
+    }
+
+    #[test]
+    fn format_filtered_vcf_record_into_matches_filter_variant_plus_format_vcf_record_into() {
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: crate::types::Pos1(90),
+            end: crate::types::Pos1(150),
+            gene: "TEST".to_string(),
+            amplicon: None,
+        };
+        let mut config = Config::default();
+        config.af_threshold = 0.025;
+
+        // 1. PASS variant
+        let pass_var = amplicon_passing_variant();
+        let expected_pass_filters = filter_variant(&pass_var, &config, 0, None, 1.0, "1.5");
+        assert!(expected_pass_filters.is_empty());
+        let mut expected_buf = String::new();
+        format_vcf_record_into(
+            &mut expected_buf,
+            &pass_var,
+            &region,
+            &config,
+            &expected_pass_filters,
+            1.0,
+            "1.5",
+            None,
+        );
+        let mut actual_buf = String::new();
+        format_filtered_vcf_record_into(
+            &mut actual_buf,
+            &pass_var,
+            &region,
+            &config,
+            0,
+            1.0,
+            "1.5",
+            None,
+        );
+        assert_eq!(actual_buf, expected_buf);
+        assert_eq!(actual_buf.split('\t').nth(6), Some("PASS"));
+
+        // 2. Multi-tag ;-joined filters including f{min_af}
+        let mut multi_var = Variant::new();
+        multi_var.ref_allele = "AT".to_string();
+        multi_var.var_allele = "A".to_string();
+        multi_var.start_pos = 100;
+        multi_var.end_pos = 101;
+        multi_var.total_pos_cov = 2; // d3
+        multi_var.pos_coverage = 1;
+        multi_var.hicnt = 1; // v2 (1 * 0.01 < 0.5)
+        multi_var.hicov = 2;
+        multi_var.hi_freq = 0.01;
+        multi_var.frequency = 0.01; // f0.025
+        multi_var.mean_position = 4.0; // p8
+        multi_var.pstd = false; // pSTD
+        multi_var.mean_quality = 15.0; // q22.5
+        multi_var.mean_mapping_quality = 5.0; // Q10
+        multi_var.hq_lq_ratio = 1.0; // SN1.5
+        multi_var.nm = 6.0; // NM5.25
+        multi_var.msi = 13.5; // MSI12 + LongMSI
+        multi_var.msint = 1;
+        multi_var.bias = "2;1".to_string(); // Bias
+        multi_var.var_type = "Deletion".to_string();
+
+        let expected_multi_filters = filter_variant(&multi_var, &config, 0, None, 0.001, "6.0");
+        assert_eq!(
+            expected_multi_filters.join(";"),
+            "d3;v2;f0.025;p8;pSTD;q22.5;Q10;SN1.5;NM5.25;MSI12;Bias;LongMSI"
+        );
+        format_vcf_record_into(
+            &mut expected_buf,
+            &multi_var,
+            &region,
+            &config,
+            &expected_multi_filters,
+            0.001,
+            "6.0",
+            None,
+        );
+        format_filtered_vcf_record_into(
+            &mut actual_buf,
+            &multi_var,
+            &region,
+            &config,
+            0,
+            0.001,
+            "6.0",
+            None,
+        );
+        assert_eq!(actual_buf, expected_buf);
+
+        // 3. Cluster0bp + AMPBIAS ordering (Cluster0bp requires filters.is_empty() before AMPBIAS)
+        let amp_bias = Some((1, 3, 0, true));
+        let expected_cluster_amp = filter_variant(&pass_var, &config, 105, amp_bias, 1.0, "1.5");
+        assert_eq!(expected_cluster_amp, vec!["Cluster0bp", "AMPBIAS"]);
+        format_vcf_record_into(
+            &mut expected_buf,
+            &pass_var,
+            &region,
+            &config,
+            &expected_cluster_amp,
+            1.0,
+            "1.5",
+            amp_bias,
+        );
+        format_filtered_vcf_record_into(
+            &mut actual_buf,
+            &pass_var,
+            &region,
+            &config,
+            105,
+            1.0,
+            "1.5",
+            amp_bias,
+        );
+        assert_eq!(actual_buf, expected_buf);
+        assert_eq!(actual_buf.split('\t').nth(6), Some("Cluster0bp;AMPBIAS"));
+
+        // When an earlier filter fires, Cluster0bp is suppressed while AMPBIAS still appends
+        let mut low_af_snv = pass_var.clone();
+        low_af_snv.frequency = 0.01;
+        let expected_no_cluster = filter_variant(&low_af_snv, &config, 105, amp_bias, 1.0, "1.5");
+        assert_eq!(expected_no_cluster, vec!["f0.025", "AMPBIAS"]);
+        format_vcf_record_into(
+            &mut expected_buf,
+            &low_af_snv,
+            &region,
+            &config,
+            &expected_no_cluster,
+            1.0,
+            "1.5",
+            amp_bias,
+        );
+        format_filtered_vcf_record_into(
+            &mut actual_buf,
+            &low_af_snv,
+            &region,
+            &config,
+            105,
+            1.0,
+            "1.5",
+            amp_bias,
+        );
+        assert_eq!(actual_buf, expected_buf);
+    }
+
+    #[test]
+    fn format_paired_vcf_record_normal_clean_pass_override_and_multi_filter_parity() {
+        let mut config = Config::default();
+        config.af_threshold = 0.02;
+
+        // Build tumor failing all tumor gates + tumor Bias + MSI12 (both gate 1 and gate 2)
+        let mut tumor = Variant::new();
+        tumor.ref_allele = "ATG".to_string();
+        tumor.var_allele = "A".to_string(); // len_diff = 2 == msint
+        tumor.start_pos = 100;
+        tumor.end_pos = 102;
+        tumor.total_pos_cov = 4; // d5
+        tumor.pos_coverage = 2; // v3
+        tumor.ref_fwd_cov = 20;
+        tumor.ref_rev_cov = 0;
+        tumor.fwd = 0;
+        tumor.rev = 2; // p1 < 0.01, OR = Inf -> 0.0 => Bias
+        tumor.frequency = 0.01; // f0.02 and < 0.35
+        tumor.mean_position = 4.0; // p8
+        tumor.pstd = false; // pSTD (vd1 < 5)
+        tumor.mean_quality = 15.0; // q22.5
+        tumor.mean_mapping_quality = 5.0; // Q0 when SNV
+        tumor.hq_lq_ratio = 1.0; // SN1.5
+        tumor.nm = 6.0; // NM5.25
+        tumor.bias = "2;1".to_string();
+        tumor.msi = 15.0; // > 12.0 with msint = 2 => MSI12
+        tumor.msint = 2;
+        tumor.var_type = "SNV".to_string();
+
+        // Normal passes all normal_clean checks (dp>=5, vd>=3, af>=0.02, pmean>=8, pstd,
+        // qual>=22.5, mapq>=0, sn>=1.5, nm<5.25) while ALSO triggering normal-side Bias!
+        let mut clean_norm_with_bias = clean_normal();
+        clean_norm_with_bias.total_pos_cov = 40;
+        clean_norm_with_bias.pos_coverage = 10;
+        clean_norm_with_bias.ref_fwd_cov = 30;
+        clean_norm_with_bias.ref_rev_cov = 0;
+        clean_norm_with_bias.fwd = 0;
+        clean_norm_with_bias.rev = 10; // p2 < 0.01, OR = Inf -> 0.0
+        clean_norm_with_bias.frequency = 0.25; // >= 0.02 and < 0.35
+        clean_norm_with_bias.bias = "2;1".to_string();
+
+        // 1. normal_clean = true overrides tumor filters + Bias + MSI12 to PASS
+        let rec_override = format_paired_vcf_record(
+            &somatic_sv(
+                tumor.clone(),
+                Some(clean_norm_with_bias.clone()),
+                "Germline",
+            ),
+            "chr1",
+            &config,
+        );
+        assert_eq!(rec_override.filter, "PASS");
+
+        // 2. normal_clean = false preserves exact ;-joined order without duplicate Bias or MSI12
+        let mut dirty_norm_with_bias = clean_norm_with_bias;
+        dirty_norm_with_bias.nm = 6.0; // >= 5.25 -> normal_clean = false
+        let rec_multi = format_paired_vcf_record(
+            &somatic_sv(tumor, Some(dirty_norm_with_bias.clone()), "Germline"),
+            "chr1",
+            &config,
+        );
+        assert_eq!(
+            rec_multi.filter,
+            "d5;v3;f0.02;p8;pSTD;q22.5;Q0;SN1.5;NM5.25;Bias;MSI12"
+        );
+
+        // 3. normal-only Bias + MSI gate 2 only (StrongSomatic with tiny ptot suppresses MSI gate 1)
+        let mut clean_tumor_msi2 = clean_normal();
+        clean_tumor_msi2.ref_allele = "ATG".to_string();
+        clean_tumor_msi2.var_allele = "A".to_string(); // len_diff = 2 == msint
+        clean_tumor_msi2.start_pos = 100;
+        clean_tumor_msi2.end_pos = 102;
+        clean_tumor_msi2.total_pos_cov = 100;
+        clean_tumor_msi2.pos_coverage = 30;
+        clean_tumor_msi2.frequency = 0.30; // < 0.35
+        clean_tumor_msi2.msi = 15.0;
+        clean_tumor_msi2.msint = 2;
+        clean_tumor_msi2.var_type = "Deletion".to_string();
+
+        let mut deep_dirty_norm_bias = dirty_dirty_normal_for_ss(&dirty_norm_with_bias);
+        deep_dirty_norm_bias.frequency = 0.01; // < 0.02 (normal_clean = false) and < 0.35 (MSI gate 2)
+        let rec_norm_bias_msi2 = format_paired_vcf_record(
+            &somatic_sv(
+                clean_tumor_msi2,
+                Some(deep_dirty_norm_bias),
+                "StrongSomatic",
+            ),
+            "chr1",
+            &config,
+        );
+        assert_eq!(rec_norm_bias_msi2.filter, "Bias;MSI12");
+    }
+
+    fn dirty_dirty_normal_for_ss(base: &Variant) -> Variant {
+        let mut v = base.clone();
+        v.total_pos_cov = 200;
+        v.pos_coverage = 1; // ptot vs (30, 70) is < 0.0005
+        v.ref_fwd_cov = 190;
+        v.ref_rev_cov = 0;
+        v.fwd = 0;
+        v.rev = 9;
+        v
     }
 }

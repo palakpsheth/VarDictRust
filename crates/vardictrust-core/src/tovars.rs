@@ -102,6 +102,50 @@ fn fill_common_fields(
     tvref.duprate = duprate;
 }
 
+enum SortedKeySlice<'a> {
+    Stack([&'a str; 8], usize),
+    Heap(Vec<&'a str>),
+}
+
+impl<'a> SortedKeySlice<'a> {
+    #[inline]
+    fn new(iter: impl ExactSizeIterator<Item = &'a str>, extra: Option<&'a str>) -> Self {
+        let iter_len = iter.len();
+        let total_len = iter_len.saturating_add(usize::from(extra.is_some()));
+        if total_len <= 8 {
+            let mut arr = [""; 8];
+            for (slot, item) in arr.iter_mut().zip(iter) {
+                *slot = item;
+            }
+            if let Some(extra_key) = extra {
+                if let Some(slot) = arr.get_mut(iter_len) {
+                    *slot = extra_key;
+                }
+            }
+            if let Some(s) = arr.get_mut(..total_len) {
+                s.sort_unstable();
+            }
+            Self::Stack(arr, total_len)
+        } else {
+            let mut v = Vec::with_capacity(total_len);
+            v.extend(iter);
+            if let Some(extra_key) = extra {
+                v.push(extra_key);
+            }
+            v.sort_unstable();
+            Self::Heap(v)
+        }
+    }
+
+    #[inline]
+    fn as_slice(&self) -> &[&'a str] {
+        match self {
+            Self::Stack(arr, len) => arr.get(..*len).unwrap_or(&[]),
+            Self::Heap(v) => v.as_slice(),
+        }
+    }
+}
+
 impl<'a> ToVarsBuilder<'a> {
     /// Create a new ToVarsBuilder with reference, region, chromosomes_lengths and config.
     pub fn new(
@@ -170,7 +214,6 @@ impl<'a> ToVarsBuilder<'a> {
         // only pushed when `config.debug`, so the common path allocates
         // nothing. Order/skip semantics untouched — capacity only.
         let mut var = Vec::with_capacity(4);
-        let mut keys = Vec::with_capacity(4);
         let mut debug_lines = Vec::new();
         let mut scratch1 = String::new();
         let mut scratch2 = String::new();
@@ -231,27 +274,29 @@ impl<'a> ToVarsBuilder<'a> {
             let ins_len = ins_at_pos.map_or(0, |m| m.map.len());
             var.clear();
             var.reserve(map_len + ins_len);
-            keys.clear();
-            keys.reserve(map_len);
-            keys.extend(var_map.map.keys().cloned());
-            if var_map.sv.is_some() {
-                keys.push("SV".to_string());
-            }
-            keys.sort();
-
             debug_lines.clear();
 
-            self.create_variant(
-                duprate,
-                &mut aligned_variants,
-                position,
-                var_map,
-                total_cov,
-                &mut var,
-                &mut debug_lines,
-                &keys,
-                hicov,
-            );
+            {
+                let sorted_keys = SortedKeySlice::new(
+                    var_map.map.keys().map(String::as_str),
+                    if var_map.sv.is_some() {
+                        Some("SV")
+                    } else {
+                        None
+                    },
+                );
+                self.create_variant(
+                    duprate,
+                    &mut aligned_variants,
+                    position,
+                    var_map,
+                    total_cov,
+                    &mut var,
+                    &mut debug_lines,
+                    sorted_keys.as_slice(),
+                    hicov,
+                );
+            }
 
             let mut current_total_cov = total_cov;
             current_total_cov = self.create_insertion(
@@ -384,7 +429,7 @@ impl<'a> ToVarsBuilder<'a> {
         dellen: i32,
         leftseq: &mut String,
         tseq: &mut String,
-    ) -> MsiResult {
+    ) -> (f64, i32, i32) {
         self.join_ref_into(leftseq, std::cmp::max(position - 70, 1), position - 1);
         let chr_len = self
             .chromosomes_lengths
@@ -402,23 +447,17 @@ impl<'a> ToVarsBuilder<'a> {
         let tseq1 = tseq_bytes.get(..dellen_usize).unwrap_or(tseq_bytes);
         let tseq2 = tseq_bytes.get(dellen_usize..).unwrap_or(&[]);
 
-        let msi_res = find_msi(tseq1, tseq2, leftseq.as_bytes());
-        let mut msi = msi_res.msi;
-        let mut msint = msi_res.msint;
-        let shift3 = msi_res.shift3;
-
-        let msi_without_left = find_msi(leftseq.as_bytes(), tseq2, &[]);
-        let tmsi = msi_without_left.msi;
-        let tmsint = msi_without_left.msint;
+        let (mut msi, shift3, mut msint_len) = find_msi_metrics(tseq1, tseq2, leftseq.as_bytes());
+        let (tmsi, _, tmsint_len) = find_msi_metrics(leftseq.as_bytes(), tseq2, &[]);
         if msi < tmsi {
             msi = tmsi;
-            msint = tmsint;
+            msint_len = tmsint_len;
         }
         if dellen > 0 && msi <= (shift3 as f64) / (dellen as f64) {
             msi = (shift3 as f64) / (dellen as f64);
         }
 
-        MsiResult { msi, shift3, msint }
+        (msi, shift3, msint_len)
     }
 
     fn proceed_vref_is_insertion(
@@ -427,7 +466,7 @@ impl<'a> ToVarsBuilder<'a> {
         vn: &str,
         leftseq: &mut String,
         tseq2: &mut String,
-    ) -> MsiResult {
+    ) -> (f64, i32, i32) {
         let tseq1 = vn.strip_prefix('+').unwrap_or(vn);
         self.join_ref_into(leftseq, std::cmp::max(position - 50, 1), position);
         let chr_len = self
@@ -437,23 +476,18 @@ impl<'a> ToVarsBuilder<'a> {
             .unwrap_or(0) as i32;
         self.join_ref_into(tseq2, position + 1, std::cmp::min(position + 70, chr_len));
 
-        let msi_res = find_msi(tseq1.as_bytes(), tseq2.as_bytes(), leftseq.as_bytes());
-        let mut msi = msi_res.msi;
-        let mut msint = msi_res.msint;
-        let shift3 = msi_res.shift3;
-
-        let msi_without_left = find_msi(leftseq.as_bytes(), tseq2.as_bytes(), &[]);
-        let tmsi = msi_without_left.msi;
-        let tmsint = msi_without_left.msint;
+        let (mut msi, shift3, mut msint_len) =
+            find_msi_metrics(tseq1.as_bytes(), tseq2.as_bytes(), leftseq.as_bytes());
+        let (tmsi, _, tmsint_len) = find_msi_metrics(leftseq.as_bytes(), tseq2.as_bytes(), &[]);
         if msi < tmsi {
             msi = tmsi;
-            msint = tmsint;
+            msint_len = tmsint_len;
         }
         if !tseq1.is_empty() && msi <= (shift3 as f64) / (tseq1.len() as f64) {
             msi = (shift3 as f64) / (tseq1.len() as f64);
         }
 
-        MsiResult { msi, shift3, msint }
+        (msi, shift3, msint_len)
     }
 
     fn create_variant(
@@ -465,10 +499,10 @@ impl<'a> ToVarsBuilder<'a> {
         total_pos_coverage: i32,
         var: &mut Vec<Variant>,
         debug_lines: &mut Vec<String>,
-        keys: &[String],
+        keys: &[&str],
         hicov: i32,
     ) {
-        for description_string in keys {
+        for &description_string in keys {
             if description_string == "SV" {
                 if let Some(ref sv) = non_insertion_variations.sv {
                     let entry = crate::variations::get_or_put_vars(aligned_vars, position);
@@ -537,14 +571,10 @@ impl<'a> ToVarsBuilder<'a> {
         mut hicov: i32,
     ) -> i32 {
         if let Some(insertion_variations) = insertion_variants.get(&position) {
-            let mut insertion_description_strings: Vec<&str> = insertion_variations
-                .map
-                .keys()
-                .map(String::as_str)
-                .collect();
-            insertion_description_strings.sort_unstable();
+            let insertion_description_strings =
+                SortedKeySlice::new(insertion_variations.map.keys().map(String::as_str), None);
 
-            for &description_string in &insertion_description_strings {
+            for &description_string in insertion_description_strings.as_slice() {
                 if description_string
                     .strip_prefix('+')
                     .unwrap_or(description_string)
@@ -753,29 +783,42 @@ impl<'a> ToVarsBuilder<'a> {
         let mut positions_for_changed_ref_variant = Vec::new();
 
         if !variations_at_pos.variants.is_empty() {
-            let genotype1 = if let Some(ref ref_var) = variations_at_pos.ref_variant {
-                if ref_var.frequency >= self.config.freq {
-                    ref_var.description.as_str()
-                } else if let Some(first_var) = variations_at_pos.variants.first() {
-                    first_var.description.as_str()
-                } else {
-                    ref_var.description.as_str()
-                }
-            } else if let Some(first_var) = variations_at_pos.variants.first() {
-                first_var.description.as_str()
-            } else {
-                return;
-            };
-
-            let genotype1_current = if genotype1.starts_with('+') {
-                if let Some(dup_val) = get_dup_num(genotype1) {
+            let format_plus_genotype1 = |desc: &str| -> String {
+                if let Some(dup_val) = get_dup_num(desc) {
                     format!("+{}", 50 + dup_val as u32)
                 } else {
-                    format!("+{}", genotype1.len() as i32 - 1)
+                    format!("+{}", desc.len() as i32 - 1)
                 }
-            } else {
-                genotype1.to_string()
             };
+
+            let genotype1_current: std::borrow::Cow<'_, str> =
+                if let Some(ref ref_var) = variations_at_pos.ref_variant {
+                    if ref_var.frequency >= self.config.freq {
+                        if ref_var.description.starts_with('+') {
+                            std::borrow::Cow::Owned(format_plus_genotype1(&ref_var.description))
+                        } else {
+                            std::borrow::Cow::Borrowed(ref_var.description.as_str())
+                        }
+                    } else if let Some(first_var) = variations_at_pos.variants.first() {
+                        if first_var.description.starts_with('+') {
+                            std::borrow::Cow::Owned(format_plus_genotype1(&first_var.description))
+                        } else {
+                            std::borrow::Cow::Owned(first_var.description.clone())
+                        }
+                    } else if ref_var.description.starts_with('+') {
+                        std::borrow::Cow::Owned(format_plus_genotype1(&ref_var.description))
+                    } else {
+                        std::borrow::Cow::Borrowed(ref_var.description.as_str())
+                    }
+                } else if let Some(first_var) = variations_at_pos.variants.first() {
+                    if first_var.description.starts_with('+') {
+                        std::borrow::Cow::Owned(format_plus_genotype1(&first_var.description))
+                    } else {
+                        std::borrow::Cow::Owned(first_var.description.clone())
+                    }
+                } else {
+                    return;
+                };
 
             let chr_len = self
                 .chromosomes_lengths
@@ -784,11 +827,13 @@ impl<'a> ToVarsBuilder<'a> {
                 .unwrap_or(0) as i32;
 
             for vref in &mut variations_at_pos.variants {
-                let mut genotype1_current_inner = genotype1_current.clone();
-                let mut genotype2 = if vref.description.starts_with('+') {
-                    format!("+{}", vref.description.len() as i32 - 1)
+                let mut genotype1_current_inner: std::borrow::Cow<'_, str> =
+                    std::borrow::Cow::Borrowed(genotype1_current.as_ref());
+                let mut genotype2: std::borrow::Cow<'_, str> = if vref.description.starts_with('+')
+                {
+                    std::borrow::Cow::Owned(format!("+{}", vref.description.len() as i32 - 1))
                 } else {
-                    vref.description.clone()
+                    std::borrow::Cow::Borrowed(vref.description.as_str())
                 };
 
                 let description_string = &vref.description;
@@ -804,7 +849,7 @@ impl<'a> ToVarsBuilder<'a> {
 
                 let mut shift3 = 0;
                 let mut msi = 0.0;
-                let mut msint = String::new();
+                let mut msint_len = 0;
 
                 let mut start_position = position;
 
@@ -813,15 +858,12 @@ impl<'a> ToVarsBuilder<'a> {
                         && !description_string.contains('#')
                         && !description_string.contains("<dup")
                     {
-                        let ref_variant_msi = self.proceed_vref_is_insertion(
+                        (msi, shift3, msint_len) = self.proceed_vref_is_insertion(
                             position,
                             description_string,
                             scratch1,
                             scratch2,
                         );
-                        msi = ref_variant_msi.msi;
-                        shift3 = ref_variant_msi.shift3;
-                        msint = ref_variant_msi.msint;
                     }
                     if self.config.three_prime {
                         start_position += shift3;
@@ -839,7 +881,7 @@ impl<'a> ToVarsBuilder<'a> {
                     }
                     if let Some(dup_val) = get_dup_num(&varallele) {
                         end_position = start_position + (2 * 50 + dup_val) - 1;
-                        genotype2 = format!("+{}", 2 * 50 + dup_val);
+                        genotype2 = std::borrow::Cow::Owned(format!("+{}", 2 * 50 + dup_val));
                         varallele = "<DUP>".to_string();
                     }
                 } else if description_string.starts_with('-') {
@@ -856,23 +898,21 @@ impl<'a> ToVarsBuilder<'a> {
                             description_string.clone()
                         };
 
-                        let ref_variant_msi = self.proceed_vref_is_deletion(
+                        (msi, shift3, msint_len) = self.proceed_vref_is_deletion(
                             position,
                             deletion_length,
                             scratch1,
                             scratch2,
                         );
-                        msi = ref_variant_msi.msi;
-                        shift3 = ref_variant_msi.shift3;
-                        msint = ref_variant_msi.msint;
 
                         if get_inv_num(description_string).is_some() {
                             varallele = "<INV>".to_string();
-                            genotype2 = format!("<INV{}>", deletion_length);
+                            genotype2 =
+                                std::borrow::Cow::Owned(format!("<INV{}>", deletion_length));
                         }
                     } else if matches_begin_minus_number_caret(description_string) {
                         varallele = "<INV>".to_string();
-                        genotype2 = format!("<INV{}>", deletion_length);
+                        genotype2 = std::borrow::Cow::Owned(format!("<INV{}>", deletion_length));
                     } else {
                         varallele = "<DEL>".to_string();
                     }
@@ -911,10 +951,8 @@ impl<'a> ToVarsBuilder<'a> {
                         std::cmp::min(position + 70, chr_len),
                     );
 
-                    let msi_res = find_msi(scratch1.as_bytes(), scratch2.as_bytes(), &[]);
-                    msi = msi_res.msi;
-                    shift3 = msi_res.shift3;
-                    msint = msi_res.msint;
+                    (msi, shift3, msint_len) =
+                        find_msi_metrics(scratch1.as_bytes(), scratch2.as_bytes(), &[]);
 
                     let base_cur = self.get_ref_base(position as u32).unwrap_or(b'N');
                     refallele.push(base_cur as char);
@@ -929,7 +967,9 @@ impl<'a> ToVarsBuilder<'a> {
                         end_position + extra.len() as i32,
                     );
                     refallele.push_str(scratch1);
-                    genotype1_current_inner.push_str(scratch1);
+                    if !scratch1.is_empty() {
+                        genotype1_current_inner.to_mut().push_str(scratch1);
+                    }
                     end_position += extra.len() as i32;
 
                     if let Some(vextra) = get_amp_atgc(&varallele) {
@@ -937,7 +977,9 @@ impl<'a> ToVarsBuilder<'a> {
                         varallele = varallele.replacen('&', "", 1);
                         self.join_ref_into(scratch1, end_position + 1, end_position + vextra_len);
                         refallele.push_str(scratch1);
-                        genotype1_current_inner.push_str(scratch1);
+                        if !scratch1.is_empty() {
+                            genotype1_current_inner.to_mut().push_str(scratch1);
+                        }
                         end_position += vextra_len;
                     }
 
@@ -989,16 +1031,31 @@ impl<'a> ToVarsBuilder<'a> {
                         };
                     varallele = cleaned_varallele;
 
-                    genotype1_current_inner = genotype1_current_inner
-                        .replacen('#', "m", 1)
-                        .replacen('^', "i", 1);
-                    genotype2 = genotype2.replacen('#', "m", 1).replacen('^', "i", 1);
+                    if genotype1_current_inner.contains('#') {
+                        genotype1_current_inner =
+                            std::borrow::Cow::Owned(genotype1_current_inner.replacen('#', "m", 1));
+                    }
+                    if genotype1_current_inner.contains('^') {
+                        genotype1_current_inner =
+                            std::borrow::Cow::Owned(genotype1_current_inner.replacen('^', "i", 1));
+                    }
+                    if genotype2.contains('#') {
+                        genotype2 = std::borrow::Cow::Owned(genotype2.replacen('#', "m", 1));
+                    }
+                    if genotype2.contains('^') {
+                        genotype2 = std::borrow::Cow::Owned(genotype2.replacen('^', "i", 1));
+                    }
                 }
 
                 if get_caret_atgnc(description_string).is_some() {
                     varallele = varallele.replacen('^', "", 1);
-                    genotype1_current_inner = genotype1_current_inner.replacen('^', "i", 1);
-                    genotype2 = genotype2.replacen('^', "i", 1);
+                    if genotype1_current_inner.contains('^') {
+                        genotype1_current_inner =
+                            std::borrow::Cow::Owned(genotype1_current_inner.replacen('^', "i", 1));
+                    }
+                    if genotype2.contains('^') {
+                        genotype2 = std::borrow::Cow::Owned(genotype2.replacen('^', "i", 1));
+                    }
                 }
 
                 // CRISPR Site adjustment
@@ -1086,33 +1143,50 @@ impl<'a> ToVarsBuilder<'a> {
                     std::cmp::min(end_position + 20, chr_len),
                 );
 
-                let mut genotype =
-                    String::with_capacity(genotype1_current_inner.len() + 1 + genotype2.len());
-                for ch in genotype1_current_inner.chars() {
-                    match ch {
-                        '&' | '#' => {}
-                        '^' => genotype.push('i'),
-                        _ => genotype.push(ch),
+                let genotype = {
+                    let mut gt =
+                        String::with_capacity(genotype1_current_inner.len() + 1 + genotype2.len());
+                    if genotype1_current_inner
+                        .bytes()
+                        .any(|b| matches!(b, b'&' | b'#' | b'^'))
+                    {
+                        for ch in genotype1_current_inner.chars() {
+                            match ch {
+                                '&' | '#' => {}
+                                '^' => gt.push('i'),
+                                _ => gt.push(ch),
+                            }
+                        }
+                    } else {
+                        gt.push_str(&genotype1_current_inner);
                     }
-                }
-                genotype.push('/');
-                for ch in genotype2.chars() {
-                    match ch {
-                        '&' | '#' => {}
-                        '^' => genotype.push('i'),
-                        _ => genotype.push(ch),
+                    gt.push('/');
+                    if genotype2.bytes().any(|b| matches!(b, b'&' | b'#' | b'^')) {
+                        for ch in genotype2.chars() {
+                            match ch {
+                                '&' | '#' => {}
+                                '^' => gt.push('i'),
+                                _ => gt.push(ch),
+                            }
+                        }
+                    } else {
+                        gt.push_str(&genotype2);
                     }
-                }
+                    gt
+                };
+                drop(genotype1_current_inner);
+                drop(genotype2);
 
                 vref.extra_freq = round_half_even(vref.extra_freq, 4);
                 vref.frequency = round_half_even(vref.frequency, 4);
                 vref.hi_freq = round_half_even(vref.hi_freq, 4);
                 vref.msi = round_half_even(msi, 3);
-                vref.msint = msint.len() as i32;
+                vref.msint = msint_len;
                 vref.shift3 = shift3;
                 vref.start_pos = start_position;
                 vref.end_pos = end_position;
-                vref.ref_allele = validate_ref_allele(&refallele);
+                validate_ref_allele_in_place(&mut refallele);
+                vref.ref_allele = refallele;
                 vref.var_allele = varallele;
                 vref.genotype = Some(genotype);
                 vref.total_pos_cov = total_pos_coverage_adj;
@@ -1290,66 +1364,58 @@ pub fn strand_bias(fwd: i32, rev: i32, min_reads_bias: i32) -> i32 {
     crate::variations::util::strand_bias(fwd, rev, 0.05, min_reads_bias)
 }
 
-/// Validate reference allele sequence according to VCF 4.3 IUPAC ambiguity rules.
-pub fn validate_ref_allele(ref_allele: &str) -> String {
-    if ref_allele.is_ascii() {
-        if !ref_allele.bytes().any(|b| {
-            matches!(
-                b,
-                b'M' | b'R'
-                    | b'W'
-                    | b'V'
-                    | b'H'
-                    | b'D'
-                    | b'S'
-                    | b'Y'
-                    | b'B'
-                    | b'K'
-                    | b'm'
-                    | b'r'
-                    | b'w'
-                    | b'v'
-                    | b'h'
-                    | b'd'
-                    | b's'
-                    | b'y'
-                    | b'b'
-                    | b'k'
-            )
-        }) {
-            return ref_allele.to_string();
-        }
-        let mut out = String::with_capacity(ref_allele.len());
-        for b in ref_allele.bytes() {
-            let mapped = match b {
-                b'M' | b'R' | b'W' | b'V' | b'H' | b'D' => b'A',
-                b'S' | b'Y' | b'B' => b'C',
-                b'K' => b'G',
-                b'm' | b'r' | b'w' | b'v' | b'h' | b'd' => b'a',
-                b's' | b'y' | b'b' => b'c',
-                b'k' => b'g',
-                _ => b,
-            };
-            out.push(mapped as char);
-        }
-        return out;
+fn validate_ref_allele_in_place(ref_allele: &mut String) {
+    if !ref_allele.bytes().any(|b| {
+        matches!(
+            b,
+            b'M' | b'R'
+                | b'W'
+                | b'V'
+                | b'H'
+                | b'D'
+                | b'S'
+                | b'Y'
+                | b'B'
+                | b'K'
+                | b'm'
+                | b'r'
+                | b'w'
+                | b'v'
+                | b'h'
+                | b'd'
+                | b's'
+                | b'y'
+                | b'b'
+                | b'k'
+        )
+    }) {
+        return;
     }
-    ref_allele
-        .chars()
-        .map(|c| match c {
-            'M' | 'R' | 'W' | 'V' | 'H' | 'D' => 'A',
-            'S' | 'Y' | 'B' => 'C',
-            'K' => 'G',
-            'm' | 'r' | 'w' | 'v' | 'h' | 'd' => 'a',
-            's' | 'y' | 'b' => 'c',
-            'k' => 'g',
-            _ => c,
-        })
-        .collect()
+    let mut bytes = std::mem::take(ref_allele).into_bytes();
+    for b in &mut bytes {
+        *b = match *b {
+            b'M' | b'R' | b'W' | b'V' | b'H' | b'D' => b'A',
+            b'S' | b'Y' | b'B' => b'C',
+            b'K' => b'G',
+            b'm' | b'r' | b'w' | b'v' | b'h' | b'd' => b'a',
+            b's' | b'y' | b'b' => b'c',
+            b'k' => b'g',
+            other => other,
+        };
+    }
+    if let Ok(s) = String::from_utf8(bytes) {
+        *ref_allele = s;
+    }
 }
 
-/// Find microsatellite instability (MSI) motif and coordinate shift bounds.
-pub fn find_msi(tseq1: &[u8], tseq2: &[u8], left: &[u8]) -> MsiResult {
+/// Validate reference allele sequence according to VCF 4.3 IUPAC ambiguity rules.
+pub fn validate_ref_allele(ref_allele: &str) -> String {
+    let mut out = ref_allele.to_string();
+    validate_ref_allele_in_place(&mut out);
+    out
+}
+
+fn find_msi_slice<'a>(tseq1: &'a [u8], tseq2: &[u8], left: &[u8]) -> (f64, i32, &'a [u8]) {
     let mut msicnt = 0.0;
     let mut best_nmsi: usize = 0;
 
@@ -1361,7 +1427,7 @@ pub fn find_msi(tseq1: &[u8], tseq2: &[u8], left: &[u8]) -> MsiResult {
     let combined_slice: &[u8] = if left.is_empty() || limit == 0 {
         tseq1
     } else {
-        let total_len = left.len() + tseq1_len;
+        let total_len = left.len().saturating_add(tseq1_len);
         if let Some(dst) = stack_combined.get_mut(..total_len) {
             if let Some(left_dst) = dst.get_mut(..left.len()) {
                 left_dst.copy_from_slice(left);
@@ -1379,7 +1445,7 @@ pub fn find_msi(tseq1: &[u8], tseq2: &[u8], left: &[u8]) -> MsiResult {
     };
 
     for nmsi in 1..=limit {
-        let Some(msint) = tseq1.get(tseq1_len - nmsi..) else {
+        let Some(msint) = tseq1.get(tseq1_len.saturating_sub(nmsi)..) else {
             continue;
         };
 
@@ -1393,7 +1459,7 @@ pub fn find_msi(tseq1: &[u8], tseq2: &[u8], left: &[u8]) -> MsiResult {
         }
     }
 
-    let mut shift3 = 0;
+    let mut shift3: usize = 0;
     if tseq1_len > 0 {
         while let Some(&t2_char) = tseq2.get(shift3) {
             let Some(&tseq_char) = (if shift3 < tseq1_len {
@@ -1411,20 +1477,36 @@ pub fn find_msi(tseq1: &[u8], tseq2: &[u8], left: &[u8]) -> MsiResult {
         }
     }
 
-    let msint = if best_nmsi > 0 {
+    let msint_bytes = if best_nmsi > 0 {
         tseq1
-            .get(tseq1_len - best_nmsi..)
-            .map(|s| String::from_utf8_lossy(s).into_owned())
-            .unwrap_or_default()
+            .get(tseq1_len.saturating_sub(best_nmsi)..)
+            .unwrap_or(&[])
     } else {
-        String::new()
+        &[]
     };
 
+    (msicnt, shift3 as i32, msint_bytes)
+}
+
+/// Find microsatellite instability (MSI) motif and coordinate shift bounds.
+pub fn find_msi(tseq1: &[u8], tseq2: &[u8], left: &[u8]) -> MsiResult {
+    let (msi, shift3, msint_bytes) = find_msi_slice(tseq1, tseq2, left);
     MsiResult {
-        msi: msicnt,
-        shift3: shift3 as i32,
-        msint,
+        msi,
+        shift3,
+        msint: String::from_utf8_lossy(msint_bytes).into_owned(),
     }
+}
+
+#[inline]
+fn find_msi_metrics(tseq1: &[u8], tseq2: &[u8], left: &[u8]) -> (f64, i32, i32) {
+    let (msi, shift3, msint_bytes) = find_msi_slice(tseq1, tseq2, left);
+    let msint_len = if msint_bytes.is_ascii() {
+        msint_bytes.len() as i32
+    } else {
+        String::from_utf8_lossy(msint_bytes).len() as i32
+    };
+    (msi, shift3, msint_len)
 }
 
 fn count_repetitions_at_end(seq: &[u8], pattern: &[u8]) -> usize {
@@ -2352,6 +2434,195 @@ mod tests {
                     "join_ref_into mismatch for range {start}..={end}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn sorted_key_slice_stack_and_heap_parity() {
+        let pool: [&str; 12] = [
+            "T", "G", "C", "A", "-3", "-1", "&AT", "#AC^2", "^GC", "GA", "CT", "TT",
+        ];
+        for n in 0..=pool.len() {
+            let sub = pool.get(..n).unwrap_or(&[]);
+            for extra in [None, Some("SV")] {
+                let sorted = SortedKeySlice::new(sub.iter().copied(), extra);
+                let total_len = n + usize::from(extra.is_some());
+                if total_len <= 8 {
+                    assert!(
+                        matches!(sorted, SortedKeySlice::Stack(_, len) if len == total_len),
+                        "expected Stack variant for total_len={total_len}"
+                    );
+                } else {
+                    assert!(
+                        matches!(sorted, SortedKeySlice::Heap(ref v) if v.len() == total_len),
+                        "expected Heap variant for total_len={total_len}"
+                    );
+                }
+
+                let mut expected: Vec<String> = sub.iter().map(|s| (*s).to_string()).collect();
+                if let Some(ex) = extra {
+                    expected.push(ex.to_string());
+                }
+                expected.sort();
+                let expected_refs: Vec<&str> = expected.iter().map(String::as_str).collect();
+                assert_eq!(sorted.as_slice(), expected_refs.as_slice());
+            }
+        }
+
+        // End-to-end build_aligned_variants check across both <=8 (Stack) and >8 (Heap) + SV
+        let mut ref_genome = Reference::new();
+        ref_genome
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 1,
+                sequence_end: 100,
+            });
+        ref_genome
+            .reference_sequences
+            .insert("chr1".to_string(), vec![b'A'; 100]);
+        ref_genome.region_sequences.push(vec![b'A'; 100]);
+
+        let chr_lengths = HashMap::from([("chr1".to_string(), 100)]);
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(1),
+            end: Pos1(100),
+            gene: "TEST".to_string(),
+            amplicon: None,
+        };
+        let cfg = Config::default();
+        let builder = ToVarsBuilder::new(&ref_genome, &region, &chr_lengths, &cfg);
+
+        let mk_var = |cnt: i32, q: f64| {
+            let mut v = Variation::new();
+            v.cnt = cnt;
+            v.fwd = cnt;
+            v.rev = 0;
+            v.qmean = q * cnt as f64;
+            v.mqmean = 60.0 * cnt as f64;
+            v.pmean = 20.0 * cnt as f64;
+            v.hicnt = cnt;
+            v
+        };
+
+        let mut var_data = VariationData::new();
+        var_data.ref_coverage.insert(20, 100);
+        let mut vm20 = VariationMap::new();
+        vm20.sv = Some(Box::new(Sv {
+            r#type: "INV".to_string(),
+            splits: 2,
+            pairs: 4,
+            clusters: 1,
+        }));
+        for (idx, key) in ["A", "C", "G", "T", "-1", "-2", "&GT", "CA", "GA", "TA"]
+            .iter()
+            .enumerate()
+        {
+            vm20.map
+                .insert((*key).to_string(), mk_var(10, 30.0 + idx as f64));
+        }
+        var_data.non_insertion_variants.insert(20, vm20);
+
+        let mut ins20 = VariationMap::new();
+        for (idx, key) in [
+            "+A", "+C", "+G", "+T", "+AA", "+CC", "+GG", "+TT", "+AC", "+GT",
+        ]
+        .iter()
+        .enumerate()
+        {
+            ins20
+                .map
+                .insert((*key).to_string(), mk_var(5, 25.0 + idx as f64));
+        }
+        var_data.insertion_variants.insert(20, ins20);
+
+        let aligned = builder.build_aligned_variants(&var_data);
+        let vars20 = aligned.get(&20).expect("vars at 20");
+        assert_eq!(vars20.sv, "2-4-1");
+        assert_eq!(vars20.variants.len(), 19);
+        assert_eq!(
+            vars20
+                .variants
+                .iter()
+                .find(|v| v.description == "&GT")
+                .and_then(|v| v.genotype.as_deref()),
+            Some("AAA/GT")
+        );
+    }
+
+    #[test]
+    fn find_msi_metrics_and_validate_ref_allele_in_place_parity() {
+        // 1. Clean ACGTN fast path preserves buffer pointer and capacity
+        let mut clean = String::with_capacity(64);
+        clean.push_str("ACGTNACGTN");
+        let ptr_before = clean.as_ptr();
+        let cap_before = clean.capacity();
+        validate_ref_allele_in_place(&mut clean);
+        assert_eq!(clean, "ACGTNACGTN");
+        assert_eq!(clean.as_ptr(), ptr_before);
+        assert_eq!(clean.capacity(), cap_before);
+
+        let mut clean_lower = String::with_capacity(32);
+        clean_lower.push_str("acgtn");
+        let lower_ptr = clean_lower.as_ptr();
+        let lower_cap = clean_lower.capacity();
+        validate_ref_allele_in_place(&mut clean_lower);
+        assert_eq!(clean_lower, "acgtn");
+        assert_eq!(clean_lower.as_ptr(), lower_ptr);
+        assert_eq!(clean_lower.capacity(), lower_cap);
+
+        // 2. IUPAC ambiguity remapping preserves capacity and matches validate_ref_allele
+        let iupac_input = "ACGTRYSWKMBDHVNacgtryswkmbdhvn";
+        let expected_iupac = "ACGTACCAGACAAANacgtaccagacaaan";
+        let mut iupac = String::with_capacity(128);
+        iupac.push_str(iupac_input);
+        let iupac_cap = iupac.capacity();
+        validate_ref_allele_in_place(&mut iupac);
+        assert_eq!(iupac, expected_iupac);
+        assert_eq!(iupac, validate_ref_allele(iupac_input));
+        assert_eq!(iupac.capacity(), iupac_cap);
+
+        // Non-ASCII UTF-8 + IUPAC parity
+        let mut utf8_iupac = String::from("éMßkACGT");
+        validate_ref_allele_in_place(&mut utf8_iupac);
+        assert_eq!(utf8_iupac, "éAßgACGT");
+        assert_eq!(utf8_iupac, validate_ref_allele("éMßkACGT"));
+
+        // Exhaustive ASCII byte parity check (0..=127)
+        for b in 0u8..=127u8 {
+            let ch = b as char;
+            let legacy_mapped = match ch {
+                'M' | 'R' | 'W' | 'V' | 'H' | 'D' => 'A',
+                'S' | 'Y' | 'B' => 'C',
+                'K' => 'G',
+                'm' | 'r' | 'w' | 'v' | 'h' | 'd' => 'a',
+                's' | 'y' | 'b' => 'c',
+                'k' => 'g',
+                other => other,
+            };
+            let mut s = ch.to_string();
+            validate_ref_allele_in_place(&mut s);
+            assert_eq!(s, legacy_mapped.to_string(), "byte {b} ({ch:?}) mismatch");
+        }
+
+        // 3. find_msi_metrics vs find_msi parity across empty, repeats, >256B heap, and lossy UTF-8
+        let long_left = vec![b'A'; 300];
+        let cases: &[(&[u8], &[u8], &[u8])] = &[
+            (b"", b"ACGT", b"ACGT"),
+            (b"A", b"AAAAACGT", b"TTTAAA"),
+            (b"AT", b"ATATATGC", b"CCATAT"),
+            (b"CAG", b"CAGCAGCAGTT", b"GGCAGCAG"),
+            (b"ACGTAC", b"ACGTACACGTAC", b"ACGTAC"),
+            (b"AA", b"AAAA", &long_left),
+            (&[0xFF, b'A'], &[0xFF, b'A', 0xFF, b'A'], &[0xFF, b'A']),
+        ];
+        for &(tseq1, tseq2, left) in cases {
+            let full = find_msi(tseq1, tseq2, left);
+            let (msi, shift3, msint_len) = find_msi_metrics(tseq1, tseq2, left);
+            assert_eq!(msi, full.msi);
+            assert_eq!(shift3, full.shift3);
+            assert_eq!(msint_len, full.msint.len() as i32);
         }
     }
 }

@@ -75,7 +75,8 @@ pub fn somatic_post_process(
     max_read_length: i32,
 ) -> Vec<SomaticVariant> {
     let mut results = Vec::new();
-    let mut splice = splice.clone();
+    let mut splice: std::borrow::Cow<'_, rustc_hash::FxHashSet<String>> =
+        std::borrow::Cow::Borrowed(splice);
     let mut max_read_length = max_read_length;
 
     // Merge all positions from both samples and sort
@@ -195,7 +196,7 @@ fn calling_for_both_samples(
     v1: &Vars,
     v2: &Vars,
     chr: &str,
-    splice: &mut rustc_hash::FxHashSet<String>,
+    splice: &mut std::borrow::Cow<'_, rustc_hash::FxHashSet<String>>,
     results: &mut Vec<SomaticVariant>,
     pipeline: Option<&PipelineFn<'_>>,
     max_read_length: &mut i32,
@@ -241,7 +242,7 @@ fn print_variations_from_first_sample(
     v1: &Vars,
     v2: &Vars,
     chr: &str,
-    splice: &mut rustc_hash::FxHashSet<String>,
+    splice: &mut std::borrow::Cow<'_, rustc_hash::FxHashSet<String>>,
     results: &mut Vec<SomaticVariant>,
     pipeline: Option<&PipelineFn<'_>>,
     max_read_length: &mut i32,
@@ -270,20 +271,20 @@ fn print_variations_from_first_sample(
         }
 
         let mut vref = vref_orig.clone();
-        let nt = vref.description.clone();
+        let nt = vref_orig.description.as_str();
         vref.var_type = vartype_check.into_owned();
         if vref.var_type == COMPLEX {
             vref.adj_complex();
         }
 
         // Look up same descriptionString in sample2
-        let v2nt = v2.var_desc_to_variant.get(&nt).cloned();
+        let v2nt = v2.var_desc_to_variant.get(nt).cloned();
 
         if let Some(mut v2nt_clone) = v2nt {
             let type_str = determinate_type(config, &v2, &vref, &mut v2nt_clone, splice);
             if number_of_processed_variation + 1 < v1.variants.len() {
                 let v2_mut = v2.to_mut();
-                if let Some(slot) = v2_mut.var_desc_to_variant.get_mut(&nt) {
+                if let Some(slot) = v2_mut.var_desc_to_variant.get_mut(nt) {
                     *slot = v2nt_clone.clone();
                 }
                 for v2_item in &mut v2_mut.variants {
@@ -311,7 +312,7 @@ fn print_variations_from_first_sample(
             // or matching MINUS_NUM_NUM (-\d\d), low pos coverage, and not an SV
             // ('<') → re-run the pipeline on both BAMs combined
             if vref.var_type != SNV
-                && (nt.len() > 10 || minus_num_num_find(&nt))
+                && (nt.len() > 10 || minus_num_num_find(nt))
                 && vref.pos_coverage < config.min_reads as i32 + 3
                 && !nt.contains('<')
             {
@@ -448,7 +449,7 @@ fn print_variations_from_second_sample(
     v2: &Vars,
     chr: &str,
     position: i32,
-    splice: &mut rustc_hash::FxHashSet<String>,
+    splice: &mut std::borrow::Cow<'_, rustc_hash::FxHashSet<String>>,
     results: &mut Vec<SomaticVariant>,
     pipeline: Option<&PipelineFn<'_>>,
     max_read_length: &mut i32,
@@ -577,7 +578,7 @@ fn combine_analysis(
     variant1: &Variant,
     chr: &str,
     position: i32,
-    splice: &mut rustc_hash::FxHashSet<String>,
+    splice: &mut std::borrow::Cow<'_, rustc_hash::FxHashSet<String>>,
     max_read_length: &mut i32,
 ) -> CombineVerdict {
     if config.verbose {
@@ -602,7 +603,7 @@ fn combine_analysis(
     // continues from the next position; abort only after >10 continued exceptions
     // (Utils.java:261-278, Configuration.java:300). The port keeps the FALSE-skip
     // control flow but emits the error instead of swallowing it.
-    let combined_vars = match pipeline(&region, splice, max_read_length) {
+    let combined_vars = match pipeline(&region, splice.to_mut(), max_read_length) {
         Ok(vars) => vars,
         Err(e) => {
             if config.verbose {
@@ -1155,7 +1156,8 @@ mod tests {
         let config = test_config();
         let v = make_insertion_variant();
         let pipeline = combined_pipeline(150, None, 0, 0);
-        let mut splice = rustc_hash::FxHashSet::default();
+        let empty_splice = rustc_hash::FxHashSet::default();
+        let mut splice = std::borrow::Cow::Borrowed(&empty_splice);
         let mut max_rl = 150;
         assert!(matches!(
             combine_analysis(
@@ -1180,7 +1182,8 @@ mod tests {
         let mut v = make_insertion_variant();
         v.start_pos = 148; // differs from iteration key 150
         let pipeline = combined_pipeline(150, Some("+GAACCACTGAGACAGGA"), 3, 10);
-        let mut splice = rustc_hash::FxHashSet::default();
+        let empty_splice = rustc_hash::FxHashSet::default();
+        let mut splice = std::borrow::Cow::Borrowed(&empty_splice);
         let mut max_rl = 150;
         assert!(matches!(
             combine_analysis(
@@ -1202,7 +1205,8 @@ mod tests {
         let config = test_config();
         let v = make_insertion_variant(); // pc=3
         let pipeline = combined_pipeline(150, Some("+GAACCACTGAGACAGGA"), 4, 20); // delta=1 < minr=2
-        let mut splice = rustc_hash::FxHashSet::default();
+        let empty_splice = rustc_hash::FxHashSet::default();
+        let mut splice = std::borrow::Cow::Borrowed(&empty_splice);
         let mut max_rl = 150;
         assert!(matches!(
             combine_analysis(
@@ -1224,7 +1228,8 @@ mod tests {
         let config = test_config();
         let v = make_insertion_variant(); // pc=3
         let pipeline = combined_pipeline(150, Some("+GAACCACTGAGACAGGA"), 0, 5); // 0 < 1
-        let mut splice = rustc_hash::FxHashSet::default();
+        let empty_splice = rustc_hash::FxHashSet::default();
+        let mut splice = std::borrow::Cow::Borrowed(&empty_splice);
         let mut max_rl = 150;
         assert!(matches!(
             combine_analysis(
@@ -1247,7 +1252,8 @@ mod tests {
         let mut v = make_insertion_variant();
         v.end_pos = v.start_pos + config.sv_min_len as i32 + 1;
         let pipeline = combined_pipeline(150, None, 0, 0);
-        let mut splice = rustc_hash::FxHashSet::default();
+        let empty_splice = rustc_hash::FxHashSet::default();
+        let mut splice = std::borrow::Cow::Borrowed(&empty_splice);
         let mut max_rl = 150;
         assert!(matches!(
             combine_analysis(
@@ -1261,6 +1267,7 @@ mod tests {
             ),
             CombineVerdict::Keep
         ));
+        assert!(matches!(splice, std::borrow::Cow::Borrowed(_)));
     }
 
     #[test]
@@ -1270,7 +1277,8 @@ mod tests {
         let mut v = make_insertion_variant();
         v.genotype = Some("0/1".to_string());
         let pipeline = combined_pipeline(150, Some("+GAACCACTGAGACAGGA"), 6, 20);
-        let mut splice = rustc_hash::FxHashSet::default();
+        let empty_splice = rustc_hash::FxHashSet::default();
+        let mut splice = std::borrow::Cow::Borrowed(&empty_splice);
         let mut max_rl = 150;
         match combine_analysis(
             &config,
@@ -1561,5 +1569,248 @@ mod tests {
         assert_eq!(windows[0], (50, 250, false));
         // Second combine_analysis at pos 180 must use updated max_read_length = 250 -> [1, 430] and updated splice
         assert_eq!(windows[1], (1, 430, true));
+    }
+
+    #[test]
+    fn test_matched_and_sv_variants_keep_splice_cow_borrowed_without_pipeline() {
+        let config = test_config();
+        let mut region = test_region();
+        region.end = Pos1(500);
+
+        let mut initial_splice = rustc_hash::FxHashSet::default();
+        initial_splice.insert("105-115".to_string());
+
+        let pipeline_calls = std::cell::Cell::new(0usize);
+        let pipeline = |_comb_reg: &Region,
+                        _splice_set: &mut rustc_hash::FxHashSet<String>,
+                        _max_rl: &mut i32|
+         -> Result<crate::javamap::JavaHashMap<i32, Vars>, VardictError> {
+            pipeline_calls.set(pipeline_calls.get() + 1);
+            Ok(crate::javamap::JavaHashMap::new())
+        };
+
+        // 1. Matched Complex variant (triggers adj_complex) + second matched SNV at pos 150
+        //    so both `nt` lookup and `v2.to_mut()` + `v2_item.description == nt` execute.
+        let mut vars1_150 = Vars::new();
+        let mut c1 = make_good_variant(
+            "-13^GCGGGGAGGGGAGAGG",
+            "GAGGGCTAGGGGC",
+            "GCGGGGAGGGGAGAGG",
+            0.35,
+        );
+        c1.end_pos = 162;
+        let s1 = make_good_variant("G", "A", "G", 0.30);
+        vars1_150.variants.push(c1.clone());
+        vars1_150.variants.push(s1.clone());
+        vars1_150
+            .var_desc_to_variant
+            .insert(c1.description.clone(), c1.clone());
+        vars1_150
+            .var_desc_to_variant
+            .insert(s1.description.clone(), s1.clone());
+
+        let mut vars2_150 = Vars::new();
+        let mut c2 = c1;
+        c2.frequency = 0.30;
+        let mut s2 = s1;
+        s2.frequency = 0.25;
+        vars2_150.variants.push(c2.clone());
+        vars2_150.variants.push(s2.clone());
+        vars2_150
+            .var_desc_to_variant
+            .insert(c2.description.clone(), c2);
+        vars2_150
+            .var_desc_to_variant
+            .insert(s2.description.clone(), s2);
+
+        let mut splice_cow: std::borrow::Cow<'_, rustc_hash::FxHashSet<String>> =
+            std::borrow::Cow::Borrowed(&initial_splice);
+        let mut results = Vec::new();
+        let mut max_rl = 150;
+
+        calling_for_both_samples(
+            &config,
+            150,
+            &vars1_150,
+            &vars2_150,
+            "chr1",
+            &mut splice_cow,
+            &mut results,
+            Some(&pipeline),
+            &mut max_rl,
+        );
+        assert_eq!(pipeline_calls.get(), 0);
+        assert!(
+            matches!(splice_cow, std::borrow::Cow::Borrowed(_)),
+            "matched tumor/normal variants must not clone splice"
+        );
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].status, GERMLINE);
+        assert_eq!(results[0].variant1.start_pos, 151); // adj_complex trimmed leading 'G'
+        assert_eq!(results[1].status, GERMLINE);
+
+        // 2. Unmatched tumor-only SV-span variant entering combine_analysis and returning
+        //    early at the sv_min_len guard must also leave splice_cow Borrowed.
+        let mut sv_vars1 = Vars::new();
+        let mut sv_var = make_insertion_variant();
+        sv_var.start_pos = 160;
+        sv_var.end_pos = 160 + config.sv_min_len as i32 + 1;
+        sv_vars1.variants.push(sv_var);
+        let empty_vars2 = Vars::new();
+
+        calling_for_both_samples(
+            &config,
+            160,
+            &sv_vars1,
+            &empty_vars2,
+            "chr1",
+            &mut splice_cow,
+            &mut results,
+            Some(&pipeline),
+            &mut max_rl,
+        );
+        assert_eq!(pipeline_calls.get(), 0);
+        assert!(
+            matches!(splice_cow, std::borrow::Cow::Borrowed(_)),
+            "SV early return in combine_analysis must not clone splice"
+        );
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[2].status, STRONG_SOMATIC);
+
+        // 3. End-to-end somatic_post_process over both positions never invokes pipeline.
+        let mut bam1 = crate::javamap::JavaHashMap::new();
+        bam1.insert(150, vars1_150);
+        bam1.insert(160, sv_vars1);
+        let mut bam2 = crate::javamap::JavaHashMap::new();
+        bam2.insert(150, vars2_150);
+        bam2.insert(160, empty_vars2);
+
+        let e2e = somatic_post_process(
+            &config,
+            &region,
+            &bam1,
+            &bam2,
+            &initial_splice,
+            Some(&pipeline),
+            150,
+        );
+        assert_eq!(pipeline_calls.get(), 0);
+        assert_eq!(e2e.len(), 3);
+    }
+
+    #[test]
+    fn test_unmatched_combine_analysis_lazily_clones_splice_and_propagates() {
+        let config = test_config();
+        let region = test_region();
+
+        let mut initial_splice = rustc_hash::FxHashSet::default();
+        initial_splice.insert("105-115".to_string());
+
+        // 1. Direct check on calling_for_both_samples (second-sample unmatched path):
+        //    splice starts Borrowed, transitions to Owned via Cow::to_mut() inside
+        //    combine_analysis, and leaves initial_splice untouched.
+        let mut splice_cow: std::borrow::Cow<'_, rustc_hash::FxHashSet<String>> =
+            std::borrow::Cow::Borrowed(&initial_splice);
+        let empty_v1 = Vars::new();
+        let mut unmatched_v2 = Vars::new();
+        unmatched_v2.variants.push(make_insertion_variant());
+        let mut direct_results = Vec::new();
+        let mut max_rl = 150;
+        let single_pipeline =
+            |_comb_reg: &Region,
+             splice_set: &mut rustc_hash::FxHashSet<String>,
+             _max_rl: &mut i32|
+             -> Result<crate::javamap::JavaHashMap<i32, Vars>, VardictError> {
+                splice_set.insert("155-175".to_string());
+                Ok(crate::javamap::JavaHashMap::new())
+            };
+        calling_for_both_samples(
+            &config,
+            150,
+            &empty_v1,
+            &unmatched_v2,
+            "chr1",
+            &mut splice_cow,
+            &mut direct_results,
+            Some(&single_pipeline),
+            &mut max_rl,
+        );
+        assert!(
+            matches!(splice_cow, std::borrow::Cow::Owned(_)),
+            "combine_analysis must lazily materialize Owned splice via Cow::to_mut()"
+        );
+        assert!(splice_cow.contains("105-115"));
+        assert!(splice_cow.contains("155-175"));
+        assert!(!initial_splice.contains("155-175"));
+
+        // 2. End-to-end somatic_post_process across 3 positions:
+        //    - pos 120: matched SNV (does not invoke pipeline)
+        //    - pos 150: unmatched tumor-only insertion (clones splice, inserts "155-175")
+        //    - pos 180: unmatched normal-only insertion (observes "155-175" in splice)
+        let mut bam1 = crate::javamap::JavaHashMap::new();
+        let mut bam2 = crate::javamap::JavaHashMap::new();
+
+        let mut m1 = Vars::new();
+        let mut mv1 = make_good_variant("G", "A", "G", 0.40);
+        mv1.start_pos = 120;
+        mv1.end_pos = 120;
+        m1.variants.push(mv1.clone());
+        m1.var_desc_to_variant.insert("G".to_string(), mv1.clone());
+        bam1.insert(120, m1);
+
+        let mut m2 = Vars::new();
+        m2.variants.push(mv1.clone());
+        m2.var_desc_to_variant.insert("G".to_string(), mv1);
+        bam2.insert(120, m2);
+
+        let mut t150 = Vars::new();
+        let mut v150 = make_insertion_variant();
+        v150.start_pos = 150;
+        v150.end_pos = 150;
+        t150.variants.push(v150);
+        bam1.insert(150, t150);
+        bam2.insert(150, Vars::new());
+
+        bam1.insert(180, Vars::new());
+        let mut n180 = Vars::new();
+        let mut v180 = make_insertion_variant();
+        v180.start_pos = 180;
+        v180.end_pos = 180;
+        n180.variants.push(v180);
+        bam2.insert(180, n180);
+
+        let observed: std::cell::RefCell<Vec<(u32, bool, bool)>> =
+            std::cell::RefCell::new(Vec::new());
+        let e2e_pipeline =
+            |comb_reg: &Region,
+             splice_set: &mut rustc_hash::FxHashSet<String>,
+             _max_rl: &mut i32|
+             -> Result<crate::javamap::JavaHashMap<i32, Vars>, VardictError> {
+                observed.borrow_mut().push((
+                    comb_reg.start.0,
+                    splice_set.contains("105-115"),
+                    splice_set.contains("155-175"),
+                ));
+                splice_set.insert("155-175".to_string());
+                Ok(crate::javamap::JavaHashMap::new())
+            };
+
+        let out = somatic_post_process(
+            &config,
+            &region,
+            &bam1,
+            &bam2,
+            &initial_splice,
+            Some(&e2e_pipeline),
+            100,
+        );
+        assert_eq!(out.len(), 1); // pos 120 Germline; pos 150 & 180 skipped by empty combined map
+        assert_eq!(out[0].status, GERMLINE);
+
+        let obs = observed.into_inner();
+        assert_eq!(obs.len(), 2);
+        assert_eq!(obs[0], (50, true, false)); // pos 150 - 100 = 50; sees initial_splice only
+        assert_eq!(obs[1], (80, true, true)); // pos 180 - 100 = 80; sees propagated "155-175"
+        assert!(!initial_splice.contains("155-175"));
     }
 }
