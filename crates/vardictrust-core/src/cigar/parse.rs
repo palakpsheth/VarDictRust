@@ -654,46 +654,47 @@ impl<'a> CigarParser<'a> {
                                     start += 1;
                                     nmoff += 1;
                                 } else {
-                                    let mut ssn = 0;
+                                    // CigarParser.java:638 sub-segment lookahead span
+                                    let mut subseq_len = 0;
                                     let vext = self.config.extension_nuc as usize;
                                     for ssi in 1..=vext {
                                         if i + 1 + ssi as u32 >= cigar_element_len {
                                             break;
                                         }
                                         let lookahead_read_idx = read_pos_inc + 1 + ssi;
-                                        if lookahead_read_idx < query_seq.len() {
+                                        if let Some(&q_base) = query_seq.get(lookahead_read_idx) {
                                             if let Some(lookahead_ref_base) =
                                                 self.get_ref_base((start + 1 + ssi as i32) as u32)
                                             {
-                                                if query_seq[lookahead_read_idx]
-                                                    != lookahead_ref_base
-                                                {
-                                                    ssn = ssi + 1;
+                                                if q_base != lookahead_ref_base {
+                                                    subseq_len = ssi + 1;
                                                     break;
                                                 }
                                             }
                                         }
                                     }
-                                    if ssn == 0 {
+                                    if subseq_len == 0 {
                                         break;
                                     }
-                                    let ssn_read_idx = read_pos_inc + ssn;
-                                    if ssn_read_idx >= query_seq.len()
-                                        || (qual_phred(&query_qual, ssn_read_idx))
+                                    let subseq_read_idx = read_pos_inc + subseq_len;
+                                    if subseq_read_idx >= query_seq.len()
+                                        || (qual_phred(&query_qual, subseq_read_idx))
                                             < self.config.base_qual + 5.0
                                     {
                                         break;
                                     }
-                                    for ssi in 1..=ssn {
+                                    for ssi in 1..=subseq_len {
                                         let idx = read_pos_inc + ssi;
-                                        push_ascii_base(&mut buf_ss, query_seq[idx]);
+                                        if let Some(&q_base) = query_seq.get(idx) {
+                                            push_ascii_base(&mut buf_ss, q_base);
+                                        }
                                         q += qual_phred(&query_qual, idx);
                                         qbases += 1;
                                     }
-                                    read_pos_inc += ssn;
-                                    read_pos_exc += ssn;
-                                    i += ssn as u32;
-                                    start += ssn as i32;
+                                    read_pos_inc += subseq_len;
+                                    read_pos_exc += subseq_len;
+                                    i += subseq_len as u32;
+                                    start += subseq_len as i32;
                                 }
                             } else {
                                 break;
