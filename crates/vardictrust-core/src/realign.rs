@@ -16,55 +16,66 @@ pub struct BaseInsertion {
     pub base_insert2: i32,
 }
 
-/// Adjusts the insertion position if it falls in a repeat / homopolymer region.
+/// Adjusts the insertion position on a byte slice without allocating, returning
+/// `(adjusted_bi, split_idx)` where `split_idx > 0` indicates rotating `ins` at `split_idx`.
 /// Ports `VariationRealigner.java:2187-2201`.
-pub fn adj_ins_pos(
+pub(crate) fn adj_ins_pos_slice(
     mut bi: i32,
-    mut ins: String,
+    ins: &[u8],
     reference: &Reference,
     chr: &str,
-) -> BaseInsertion {
+) -> (i32, usize) {
     let len = ins.len();
     if len == 0 {
-        return BaseInsertion {
-            base_insert: bi,
-            insertion_sequence: ins,
-            base_insert2: bi,
-        };
+        return (bi, 0);
     }
-    let mut n = 1;
-    loop {
-        let ins_char = ins.as_bytes()[len - n];
-        if let Some(ref_char) = reference.get_base(chr, bi as u32) {
+    let mut n = 1usize;
+    while let Some(&ins_char) = ins.get(len.saturating_sub(n)) {
+        if let Some(ref_char) = u32::try_from(bi)
+            .ok()
+            .and_then(|p| reference.get_base(chr, p))
+        {
             if ref_char == ins_char {
                 n += 1;
                 if n > len {
                     n = 1;
                 }
-                bi -= 1;
+                bi = bi.saturating_sub(1);
                 continue;
             }
         }
         break;
     }
-    if n > 1 {
-        let shift = 1 - n as isize;
-        let bytes = ins.as_bytes();
-        let len_isize = len as isize;
-        let start1 = (len_isize + shift) as usize;
-        let mut new_ins = String::new();
-        if start1 < len {
-            new_ins.push_str(&String::from_utf8_lossy(&bytes[start1..]));
+    let split_idx = if n > 1 { len + 1 - n } else { 0 };
+    (bi, split_idx)
+}
+
+/// Adjusts the insertion position if it falls in a repeat / homopolymer region.
+/// Ports `VariationRealigner.java:2187-2201`.
+pub fn adj_ins_pos(bi: i32, mut ins: String, reference: &Reference, chr: &str) -> BaseInsertion {
+    let (adjusted_bi, split_idx) = adj_ins_pos_slice(bi, ins.as_bytes(), reference, chr);
+    if split_idx > 0 && split_idx < ins.len() {
+        if ins.is_char_boundary(split_idx) {
+            // M-MEM-REUSE: rotating valid UTF-8 at a char boundary stays valid UTF-8 in place.
+            let mut bytes = std::mem::take(&mut ins).into_bytes();
+            bytes.rotate_left(split_idx);
+            if let Ok(rotated) = String::from_utf8(bytes) {
+                ins = rotated;
+            }
+        } else if let (Some(tail), Some(head)) = (
+            ins.as_bytes().get(split_idx..),
+            ins.as_bytes().get(..split_idx),
+        ) {
+            let mut new_ins = String::with_capacity(ins.len());
+            new_ins.push_str(&String::from_utf8_lossy(tail));
+            new_ins.push_str(&String::from_utf8_lossy(head));
+            ins = new_ins;
         }
-        if start1 > 0 {
-            new_ins.push_str(&String::from_utf8_lossy(&bytes[..start1]));
-        }
-        ins = new_ins;
     }
     BaseInsertion {
-        base_insert: bi,
+        base_insert: adjusted_bi,
         insertion_sequence: ins,
-        base_insert2: bi,
+        base_insert2: adjusted_bi,
     }
 }
 
@@ -6671,5 +6682,61 @@ mod tests {
         assert_eq!(mm3_plain.mismatches[1].mismatch_sequence, "CG");
         assert_eq!(mm3_plain.mismatches[2].mismatch_sequence, "CGT");
         assert_eq!(mm3_plain.mismatches[3].mismatch_sequence, "CGTC");
+    }
+
+    #[test]
+    fn adj_ins_pos_slice_homopolymer_1bp_and_dinuc_rotation() {
+        let mut reference = crate::reference::Reference::new();
+        reference
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 1,
+                sequence_end: 20,
+            });
+        // 1..=4: GGGG, 5..=9: AAAAA, 10: T, 11..=16: ACACAC, 17..=20: GGGG
+        let ref_bases = b"GGGGAAAAATACACACGGGG".to_vec();
+        reference.region_sequences.push(ref_bases);
+
+        let rotate = |s: &str, split_idx: usize| -> String {
+            if split_idx > 0 {
+                format!(
+                    "{}{}",
+                    s.get(split_idx..).unwrap(),
+                    s.get(..split_idx).unwrap()
+                )
+            } else {
+                s.to_string()
+            }
+        };
+
+        // 1. 1-bp homopolymer shift: bi shifts 9 -> 4 while split_idx == 0.
+        let (bi_homo, split_homo) = super::adj_ins_pos_slice(9, b"A", &reference, "chr1");
+        let expected_homo = super::adj_ins_pos(9, "A".to_string(), &reference, "chr1");
+        assert_eq!(bi_homo, 4);
+        assert_eq!(split_homo, 0);
+        assert_eq!(bi_homo, expected_homo.base_insert);
+        assert_eq!(rotate("A", split_homo), expected_homo.insertion_sequence);
+
+        // 2. Dinucleotide odd-step rotation: "CA" at bi = 15 shifts 15 -> 10 with split_idx == 1 ("AC").
+        let (bi_dinuc, split_dinuc) = super::adj_ins_pos_slice(15, b"CA", &reference, "chr1");
+        let mut dinuc_in = String::with_capacity(16);
+        dinuc_in.push_str("CA");
+        let dinuc_ptr = dinuc_in.as_ptr();
+        let expected_dinuc = super::adj_ins_pos(15, dinuc_in, &reference, "chr1");
+        assert_eq!(bi_dinuc, 10);
+        assert_eq!(split_dinuc, 1);
+        assert_eq!(bi_dinuc, expected_dinuc.base_insert);
+        assert_eq!(rotate("CA", split_dinuc), "AC");
+        assert_eq!(rotate("CA", split_dinuc), expected_dinuc.insertion_sequence);
+        assert_eq!(expected_dinuc.insertion_sequence.as_ptr(), dinuc_ptr);
+
+        // 3. Dinucleotide full-period wrap: "AC" at bi = 16 shifts 16 -> 10 with split_idx == 0 ("AC").
+        let (bi_wrap, split_wrap) = super::adj_ins_pos_slice(16, b"AC", &reference, "chr1");
+        let expected_wrap = super::adj_ins_pos(16, "AC".to_string(), &reference, "chr1");
+        assert_eq!(bi_wrap, 10);
+        assert_eq!(split_wrap, 0);
+        assert_eq!(bi_wrap, expected_wrap.base_insert);
+        assert_eq!(rotate("AC", split_wrap), expected_wrap.insertion_sequence);
     }
 }

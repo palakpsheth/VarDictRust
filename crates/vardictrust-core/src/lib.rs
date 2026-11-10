@@ -2529,23 +2529,18 @@ fn run_with_writer_inner<W: EngineWriter>(
                         );
                         let sbf = fisher.get_p_value();
                         let oddratio_str = fisher.get_odds_ratio();
-                        let filters = crate::output::vcf::filter_variant(
-                            &v,
-                            &config_clone,
-                            0,
-                            None,
-                            sbf,
-                            &oddratio_str,
-                        );
-                        crate::output::vcf::format_vcf_record(
+                        let mut line = String::new();
+                        crate::output::vcf::format_filtered_vcf_record_into(
+                            &mut line,
                             &v,
                             &builder_region,
                             &config_clone,
-                            &filters,
+                            0,
                             sbf,
                             &oddratio_str,
                             None,
-                        )
+                        );
+                        line
                     };
                     records.push(RawVcfCandidate {
                         start_pos: v.start_pos,
@@ -2734,14 +2729,13 @@ fn run_amplicon<W: EngineWriter>(
             let sbf = fisher.get_p_value();
             let oddratio_str = fisher.get_odds_ratio();
             let amp = Some((av.gdamp, av.tlamp, av.ncamp, av.ampflag));
-            let filters = crate::output::vcf::filter_variant(v, config, 0, amp, sbf, &oddratio_str);
             let mut line = String::new();
-            crate::output::vcf::format_vcf_record_into(
+            crate::output::vcf::format_filtered_vcf_record_into(
                 &mut line,
                 v,
                 current_region,
                 config,
-                &filters,
+                0,
                 sbf,
                 &oddratio_str,
                 amp,
