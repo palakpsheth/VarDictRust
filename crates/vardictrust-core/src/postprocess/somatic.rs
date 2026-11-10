@@ -83,14 +83,12 @@ pub fn somatic_post_process(
         .keys()
         .chain(aligned_variants_bam2.keys())
         .copied()
+        .filter(|&p| (p as u32) >= region.start.0 && (p as u32) <= region.end.0)
         .collect();
     all_positions.sort_unstable();
     all_positions.dedup();
 
     for &position in &all_positions {
-        if (position as u32) < region.start.0 || (position as u32) > region.end.0 {
-            continue;
-        }
         let v1 = aligned_variants_bam1.get(&position);
         let v2 = aligned_variants_bam2.get(&position);
 
@@ -306,7 +304,7 @@ fn print_variations_from_first_sample(
         } else {
             // sample 1 only, should be strong somatic (SomaticPostProcessModule.java:177)
             let var_for_print = build_var_for_print_from_v2(&v2);
-            let mut type_str = STRONG_SOMATIC.to_string();
+            let mut type_str: &'static str = STRONG_SOMATIC;
             let mut combined_v2nt: Option<Variant> = None;
 
             // combineAnalysis gate (:193-197): not SNV, description longer than 10
@@ -333,7 +331,7 @@ fn print_variations_from_first_sample(
                             continue;
                         }
                         CombineVerdict::Germline(v) => {
-                            type_str = GERMLINE.to_string();
+                            type_str = GERMLINE;
                             combined_v2nt = Some(*v);
                         }
                         CombineVerdict::Keep => {} // "" keeps StrongSomatic
@@ -346,7 +344,7 @@ fn print_variations_from_first_sample(
                 results.push(SomaticVariant {
                     variant1: vref,
                     variant2: var_for_print,
-                    status: STRONG_SOMATIC.to_string(),
+                    status: type_str.to_string(),
                     sv1: v1.sv.clone(),
                     sv2: v2.sv.clone(),
                     end_is_variant2: false,
@@ -358,7 +356,7 @@ fn print_variations_from_first_sample(
                 results.push(SomaticVariant {
                     variant1: vref,
                     variant2: combined_v2nt,
-                    status: type_str,
+                    status: type_str.to_string(),
                     sv1: v1.sv.clone(),
                     sv2: v2.sv.clone(),
                     end_is_variant2: false,
@@ -381,8 +379,7 @@ fn print_variations_from_first_sample(
             let mut v2var = v2var_orig.clone();
             v2var.var_type = vtype.into_owned();
             // potential LOH
-            let nt = v2var.description.clone();
-            let v1nt = v1.var_desc_to_variant.get(&nt);
+            let v1nt = v1.var_desc_to_variant.get(&v2var.description);
 
             if let Some(v1nt) = v1nt {
                 if v1nt.ref_allele == v1nt.var_allele {
@@ -473,7 +470,7 @@ fn print_variations_from_second_sample(
         let should_combine = v2var.pos_coverage < config.min_reads as i32 + 3
             && !description.contains('<')
             && (description.len() > 10 || minus_num_num_find(description));
-        let mut type_str = STRONG_LOH.to_string();
+        let mut type_str: &'static str = STRONG_LOH;
         let mut tumor_from_combine: Option<Variant> = None;
         if should_combine {
             if let Some(pipeline_fn) = pipeline {
@@ -488,7 +485,7 @@ fn print_variations_from_second_sample(
                 ) {
                     CombineVerdict::Skip => continue, // :313-315
                     CombineVerdict::Germline(v) => {
-                        type_str = GERMLINE.to_string(); // :318-319
+                        type_str = GERMLINE; // :318-319
                         tumor_from_combine = Some(*v); // varForPrint = v1nt (:320)
                     }
                     CombineVerdict::Keep => {} // "" keeps StrongLOH
@@ -546,7 +543,7 @@ fn print_variations_from_second_sample(
         results.push(SomaticVariant {
             variant1: tumor_var,
             variant2: Some(v2var),
-            status: type_str,
+            status: type_str.to_string(),
             sv1: String::new(),
             sv2: v2.sv.clone(),
             end_is_variant2: true,

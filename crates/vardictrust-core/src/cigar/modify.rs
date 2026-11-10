@@ -8,7 +8,6 @@ use crate::config::Config;
 use crate::reference::SeedMap;
 use crate::util::{char_at, reverse_complement, subseq};
 use regex::Regex;
-use std::collections::HashSet;
 use std::sync::LazyLock;
 
 // Define all the regexes from Patterns.java
@@ -89,6 +88,32 @@ static CIGAR_ELEMENT_PATTERN: LazyLock<Regex> =
 
 const LOWQUAL: u8 = 10;
 const SEED_2: usize = 12;
+
+/// Zero-allocation 256-bit set for counting distinct `u8` bases in inner loops.
+#[derive(Default, Clone, Copy)]
+pub(crate) struct ByteSet([u64; 4]);
+
+impl ByteSet {
+    #[inline]
+    pub(crate) const fn new() -> Self {
+        Self([0; 4])
+    }
+
+    #[inline]
+    pub(crate) fn insert(&mut self, b: u8) {
+        if let Some(word) = self.0.get_mut(usize::from(b >> 6)) {
+            *word |= 1u64 << (b & 63);
+        }
+    }
+
+    #[inline]
+    pub(crate) const fn len(&self) -> usize {
+        (self.0[0].count_ones()
+            + self.0[1].count_ones()
+            + self.0[2].count_ones()
+            + self.0[3].count_ones()) as usize
+    }
+}
 
 /// Helper to parse matched group as integer with default 0.
 fn to_int(s: &str) -> i32 {
@@ -1285,7 +1310,7 @@ impl<'a> CigarModifier<'a> {
 
     fn combine_dig_s_dig_m(&mut self, mut soft: i32, mut mch: i32) {
         let mut rn = 0;
-        let mut rn_set = HashSet::new();
+        let mut rn_set = ByteSet::new();
 
         while rn < soft
             && is_has_and_equals_str(
@@ -1415,7 +1440,7 @@ impl<'a> CigarModifier<'a> {
             rdoff += global_find_sum(&SOFT_CLIPPED, ov5);
         }
         let mut rn = 0;
-        let mut rn_set = HashSet::new();
+        let mut rn_set = ByteSet::new();
 
         while rn < soft
             && is_has_and_equals_str(
@@ -2638,5 +2663,40 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn byte_set_matches_hash_set_across_all_byte_values() {
+        let mut bs = ByteSet::new();
+        let mut hs = std::collections::HashSet::<u8>::new();
+        assert_eq!(bs.len(), 0);
+        assert_eq!(bs.len(), hs.len());
+        assert_eq!(ByteSet::default().len(), 0);
+
+        // Single-byte and repeated-byte insertions across all 4 u64 words
+        for &b in &[
+            0u8, 63, 64, 127, 128, 191, 192, 255, b'A', b'C', b'G', b'T', b'N',
+        ] {
+            bs.insert(b);
+            hs.insert(b);
+            assert_eq!(bs.len(), hs.len(), "mismatch after inserting {b}");
+            // Repeat insertion must be idempotent
+            bs.insert(b);
+            hs.insert(b);
+            assert_eq!(bs.len(), hs.len(), "mismatch after repeating {b}");
+        }
+
+        // Full 0u8..=255u8 sweep from fresh sets
+        let mut full_bs = ByteSet::new();
+        let mut full_hs = std::collections::HashSet::<u8>::new();
+        for b in 0u8..=255u8 {
+            assert_eq!(full_bs.len(), full_hs.len());
+            full_bs.insert(b);
+            full_hs.insert(b);
+            assert_eq!(full_bs.len(), full_hs.len());
+            full_bs.insert(b);
+            assert_eq!(full_bs.len(), full_hs.len());
+        }
+        assert_eq!(full_bs.len(), 256);
     }
 }

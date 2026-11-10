@@ -135,6 +135,8 @@ pub struct Config {
     pub include_n: bool,
     /// Opt-in output file path (`--output <PATH>`; plain file or `.gz`/`.bgz` BGZF).
     pub output_path: Option<String>,
+    /// Write a Tabix (.tbi) index alongside a BGZF-compressed --output .vcf.gz file (--tbi / --index).
+    pub index_output: bool,
     /// Opt-in JSON execution telemetry path (`--stats-json <PATH>`).
     pub stats_json_path: Option<String>,
 }
@@ -209,6 +211,7 @@ impl Default for Config {
             omit_end_tag: true,
             include_n: false,
             output_path: None,
+            index_output: false,
             stats_json_path: None,
         }
     }

@@ -452,6 +452,212 @@ fn output_plain_and_bgzf_match_stdout_and_stats_json_emits_telemetry() {
 }
 
 #[test]
+fn output_bgzf_tbi_and_parity_compat_flags() {
+    use noodles::csi::BinningIndex as _;
+    use std::io::Read as _;
+
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let common_args = [
+        "-G",
+        "fixtures/micro/micro.ref.fa",
+        "-b",
+        "fixtures/micro/micro.bam",
+        "-c",
+        "1",
+        "-S",
+        "2",
+        "-E",
+        "3",
+        "-g",
+        "4",
+        "-z",
+        "fixtures/micro/micro.bed",
+        "--threads=2",
+    ];
+
+    let stdout_run = base_cmd()
+        .args(common_args)
+        .output()
+        .expect("spawn vardictrust stdout");
+    assert!(stdout_run.status.success());
+
+    // 1. --output <tmp>/indexed.vcf.gz --tbi and --index alias
+    for (flag, file_name) in [
+        ("--tbi", "indexed_tbi.vcf.gz"),
+        ("--index", "indexed_alias.vcf.gz"),
+    ] {
+        let vcf_gz = dir.path().join(file_name);
+        let tbi_path = dir.path().join(format!("{file_name}.tbi"));
+        let run = base_cmd()
+            .args(common_args)
+            .arg("--output")
+            .arg(&vcf_gz)
+            .arg(flag)
+            .output()
+            .expect("spawn vardictrust --output .vcf.gz --tbi");
+        assert!(
+            run.status.success(),
+            "{flag} run failed: {}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+        let mut reader = noodles::bgzf::io::Reader::new(
+            std::fs::File::open(&vcf_gz).expect("open indexed .vcf.gz"),
+        );
+        let mut decompressed = Vec::new();
+        reader
+            .read_to_end(&mut decompressed)
+            .expect("decompress indexed .vcf.gz");
+        assert_eq!(decompressed, stdout_run.stdout);
+
+        let index = noodles::tabix::fs::read(&tbi_path).expect("read generated .tbi");
+        let hdr = index.header().expect("tabix header must be present");
+        assert_eq!(
+            hdr.format(),
+            noodles::csi::binning_index::index::header::Format::Vcf,
+            "tabix header format must be VCF (not default GFF)"
+        );
+        assert!(
+            !hdr.reference_sequence_names().is_empty(),
+            "tabix header reference_sequence_names must not be empty"
+        );
+        assert!(
+            index
+                .reference_sequences()
+                .iter()
+                .any(|rs| !rs.bins().is_empty()),
+            "tabix reference_sequences must contain non-empty bins"
+        );
+    }
+
+    // 2. 0-variant header-only VCF with --tbi still produces a valid VCF-formatted .tbi
+    let empty_vcf_gz = dir.path().join("empty.vcf.gz");
+    let empty_tbi = dir.path().join("empty.vcf.gz.tbi");
+    let empty_run = base_cmd()
+        .args([
+            "-G",
+            "fixtures/micro/micro.ref.fa",
+            "-b",
+            "fixtures/micro/micro.bam",
+            "-R",
+            "chr1:1-10",
+            "-f",
+            "0.99",
+        ])
+        .arg("--output")
+        .arg(&empty_vcf_gz)
+        .arg("--tbi")
+        .output()
+        .expect("spawn header-only --tbi");
+    assert!(empty_run.status.success());
+    let empty_index = noodles::tabix::fs::read(&empty_tbi).expect("read header-only .tbi");
+    assert_eq!(
+        empty_index.header().unwrap().format(),
+        noodles::csi::binning_index::index::header::Format::Vcf
+    );
+
+    // 3. Invalid --tbi combinations fail fast before creating output files
+    let bad_plain = dir.path().join("bad_plain.vcf");
+    let bad_plain_run = base_cmd()
+        .args(common_args)
+        .arg("--output")
+        .arg(&bad_plain)
+        .arg("--tbi")
+        .output()
+        .expect("spawn --tbi with plain .vcf");
+    assert!(!bad_plain_run.status.success());
+    assert!(!bad_plain.exists(), "bad_plain.vcf must not be created");
+    assert!(String::from_utf8_lossy(&bad_plain_run.stderr)
+        .contains("--tbi/--index requires --output <PATH> ending in .vcf.gz or .bgz"));
+
+    let bad_inter = dir.path().join("bad_inter.vcf.gz");
+    let bad_inter_run = base_cmd()
+        .args(common_args)
+        .arg("--output")
+        .arg(&bad_inter)
+        .arg("--tbi")
+        .arg("--emit-intermediate")
+        .output()
+        .expect("spawn --tbi with --emit-intermediate");
+    assert!(!bad_inter_run.status.success());
+    assert!(!bad_inter.exists(), "bad_inter.vcf.gz must not be created");
+    assert!(String::from_utf8_lossy(&bad_inter_run.stderr)
+        .contains("--tbi/--index is only supported for VCF output"));
+
+    let bad_hdr_dp = dir.path().join("bad_hdr_dp.vcf.gz");
+    let bad_hdr_dp_run = base_cmd()
+        .args(common_args)
+        .arg("--output")
+        .arg(&bad_hdr_dp)
+        .arg("--tbi")
+        .args(["-h", "--DP", "ERR"])
+        .output()
+        .expect("spawn --tbi with -h --DP ERR");
+    assert!(!bad_hdr_dp_run.status.success());
+    assert!(
+        !bad_hdr_dp.exists(),
+        "bad_hdr_dp.vcf.gz must not be created when -h --DP ERR is combined with --tbi"
+    );
+    assert!(String::from_utf8_lossy(&bad_hdr_dp_run.stderr)
+        .contains("--tbi/--index is only supported for VCF output"));
+
+    #[cfg(unix)]
+    {
+        let alias_vcf_gz = dir.path().join("alias_collision.vcf.gz");
+        let alias_tbi = dir.path().join("alias_collision.vcf.gz.tbi");
+        std::fs::write(&alias_vcf_gz, b"sentinel").expect("write sentinel");
+        std::os::unix::fs::symlink(&alias_vcf_gz, &alias_tbi).expect("symlink .tbi to .vcf.gz");
+        let alias_run = base_cmd()
+            .args(common_args)
+            .arg("--output")
+            .arg(&alias_vcf_gz)
+            .arg("--tbi")
+            .output()
+            .expect("spawn --tbi with colliding .tbi symlink");
+        assert!(!alias_run.status.success());
+        assert_eq!(
+            std::fs::read(&alias_vcf_gz).expect("read sentinel after collision"),
+            b"sentinel",
+            "colliding .tbi symlink must neither truncate nor delete the target file"
+        );
+        assert!(
+            String::from_utf8_lossy(&alias_run.stderr).contains("must not point to the same file")
+        );
+    }
+
+    // 4. --parity and --compat vardictjava-1.8.3 match default stdout byte-for-byte; unknown --compat fails with Unsupported
+    for compat_args in [
+        vec!["--parity"],
+        vec!["--compat", "vardictjava-1.8.3"],
+        vec!["--compat=1.8.3"],
+    ] {
+        let run = base_cmd()
+            .args(common_args)
+            .args(&compat_args)
+            .output()
+            .expect("spawn --parity / --compat");
+        assert!(
+            run.status.success(),
+            "{compat_args:?} failed: {}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+        assert_eq!(run.stdout, stdout_run.stdout);
+    }
+
+    let bad_compat = base_cmd()
+        .args(common_args)
+        .args(["--compat", "foo"])
+        .output()
+        .expect("spawn invalid --compat");
+    assert!(!bad_compat.status.success());
+    let bad_compat_stderr = String::from_utf8_lossy(&bad_compat.stderr);
+    assert!(
+        bad_compat_stderr.contains("unsupported:")
+            && bad_compat_stderr.contains("--compat foo not supported in v1.0"),
+        "expected Unsupported error for --compat foo, got: {bad_compat_stderr}"
+    );
+}
+
+#[test]
 fn upstream_toml_manifest_present_and_pinned() {
     let upstream_path = workspace_root().join("UPSTREAM.toml");
     let content = std::fs::read_to_string(&upstream_path)

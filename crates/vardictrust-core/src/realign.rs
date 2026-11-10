@@ -164,7 +164,7 @@ pub fn find_bp(
     for n in 0..indel_size {
         let mut mm = 0;
         let mut i = 0;
-        let mut m = std::collections::HashSet::new();
+        let mut m = crate::cigar::modify::ByteSet::new();
 
         while i < sequence.len() {
             let ref_pos = start_position + direction * n + direction * (i as i32);
@@ -237,7 +237,7 @@ pub fn find_bi(
 
         let mut mm = 0;
         let mut i = 0;
-        let mut m = std::collections::HashSet::new();
+        let mut m = crate::cigar::modify::ByteSet::new();
 
         while i + n < seq.len() {
             let ref_pos = position + dir * (i as i32) - dir_ext;

@@ -557,6 +557,18 @@ pub struct Cli {
     #[arg(long = "output", value_name = "PATH")]
     pub output: Vec<String>,
 
+    /// Write a Tabix (.tbi) index alongside a BGZF-compressed --output .vcf.gz file.
+    #[arg(long = "tbi", alias = "index")]
+    pub tbi: bool,
+
+    /// Explicitly lock 100% VarDictJava v1.8.3 byte-for-byte parity mode (default in v1.x).
+    #[arg(long = "parity")]
+    pub parity: bool,
+
+    /// Pin compatibility target (supported in v1.0: 'vardictjava-1.8.3' or '1.8.3').
+    #[arg(long = "compat", value_name = "TARGET")]
+    pub compat: Option<String>,
+
     /// Write run telemetry (mode, threads, regions, tiles, elapsed_ms, peak_rss_kb) as JSON to PATH
     #[arg(long = "stats-json", value_name = "PATH")]
     pub stats_json: Vec<String>,
@@ -576,6 +588,16 @@ impl Cli {
     pub fn to_config(
         &self,
     ) -> Result<vardictrust_core::config::Config, vardictrust_core::types::VardictError> {
+        let _ = self.parity;
+        if let Some(ref raw_target) = self.compat {
+            let target = raw_target.trim();
+            if !target.eq_ignore_ascii_case("vardictjava-1.8.3") && target != "1.8.3" {
+                return Err(vardictrust_core::types::VardictError::Unsupported(format!(
+                    "--compat {raw_target} not supported in v1.0; use --compat vardictjava-1.8.3 or --parity"
+                )));
+            }
+        }
+
         let flag_filter_raw = self
             .flag_filter
             .first()
@@ -773,6 +795,7 @@ impl Cli {
             omit_end_tag: col_end.is_some(),
             include_n: self.include_n,
             output_path: self.output.first().cloned(),
+            index_output: self.tbi,
             stats_json_path: self.stats_json.first().cloned(),
         };
         cfg.apply_pileup_overrides();
@@ -1143,5 +1166,43 @@ mod tests {
         let cfg = cli.to_config().unwrap();
         assert_eq!(cfg.output_path.as_deref(), Some("first.vcf.gz"));
         assert_eq!(cfg.stats_json_path.as_deref(), Some("first_stats.json"));
+        assert!(!cfg.index_output);
+
+        let tbi_cli = Cli::try_parse_from(args(&[
+            "-b",
+            "a.bam",
+            "-G",
+            "r.fa",
+            "--output",
+            "out.vcf.gz",
+            "--tbi",
+            "--parity",
+            "--compat",
+            "vardictjava-1.8.3",
+        ]))
+        .unwrap();
+        assert!(tbi_cli.parity);
+        assert!(tbi_cli.to_config().unwrap().index_output);
+
+        let idx_cli = Cli::try_parse_from(args(&[
+            "-b",
+            "a.bam",
+            "-G",
+            "r.fa",
+            "--output",
+            "out.vcf.gz",
+            "--index",
+            "--compat=1.8.3",
+        ]))
+        .unwrap();
+        assert!(idx_cli.to_config().unwrap().index_output);
+
+        let bad_compat_cli =
+            Cli::try_parse_from(args(&["-b", "a.bam", "-G", "r.fa", "--compat", "modern"]))
+                .unwrap();
+        assert!(matches!(
+            bad_compat_cli.to_config().unwrap_err(),
+            vardictrust_core::types::VardictError::Unsupported(_)
+        ));
     }
 }
