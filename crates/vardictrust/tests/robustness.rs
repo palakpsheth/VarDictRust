@@ -583,6 +583,47 @@ fn output_bgzf_tbi_and_parity_compat_flags() {
     assert!(String::from_utf8_lossy(&bad_inter_run.stderr)
         .contains("--tbi/--index is only supported for VCF output"));
 
+    let bad_hdr_dp = dir.path().join("bad_hdr_dp.vcf.gz");
+    let bad_hdr_dp_run = base_cmd()
+        .args(common_args)
+        .arg("--output")
+        .arg(&bad_hdr_dp)
+        .arg("--tbi")
+        .args(["-h", "--DP", "ERR"])
+        .output()
+        .expect("spawn --tbi with -h --DP ERR");
+    assert!(!bad_hdr_dp_run.status.success());
+    assert!(
+        !bad_hdr_dp.exists(),
+        "bad_hdr_dp.vcf.gz must not be created when -h --DP ERR is combined with --tbi"
+    );
+    assert!(String::from_utf8_lossy(&bad_hdr_dp_run.stderr)
+        .contains("--tbi/--index is only supported for VCF output"));
+
+    #[cfg(unix)]
+    {
+        let alias_vcf_gz = dir.path().join("alias_collision.vcf.gz");
+        let alias_tbi = dir.path().join("alias_collision.vcf.gz.tbi");
+        std::fs::write(&alias_vcf_gz, b"sentinel").expect("write sentinel");
+        std::os::unix::fs::symlink(&alias_vcf_gz, &alias_tbi).expect("symlink .tbi to .vcf.gz");
+        let alias_run = base_cmd()
+            .args(common_args)
+            .arg("--output")
+            .arg(&alias_vcf_gz)
+            .arg("--tbi")
+            .output()
+            .expect("spawn --tbi with colliding .tbi symlink");
+        assert!(!alias_run.status.success());
+        assert_eq!(
+            std::fs::read(&alias_vcf_gz).expect("read sentinel after collision"),
+            b"sentinel",
+            "colliding .tbi symlink must neither truncate nor delete the target file"
+        );
+        assert!(
+            String::from_utf8_lossy(&alias_run.stderr).contains("must not point to the same file")
+        );
+    }
+
     // 4. --parity and --compat vardictjava-1.8.3 match default stdout byte-for-byte; unknown --compat fails with Unsupported
     for compat_args in [
         vec!["--parity"],

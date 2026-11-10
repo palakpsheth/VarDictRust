@@ -1835,13 +1835,21 @@ fn write_vcf_tabix_index_inner(vcf_gz_path: &Path, tbi_path: &Path) -> Result<()
     sync_file_ignoring_special(&inner_file)
 }
 
+fn tbi_output_path(vcf_gz_path: &Path) -> std::path::PathBuf {
+    let mut s = vcf_gz_path.as_os_str().to_os_string();
+    s.push(".tbi");
+    std::path::PathBuf::from(s)
+}
+
 fn write_vcf_tabix_index(vcf_gz_path: &Path) -> Result<(), VardictError> {
-    let tbi_os = {
-        let mut s = vcf_gz_path.as_os_str().to_os_string();
-        s.push(".tbi");
-        s
-    };
-    let tbi_path = std::path::PathBuf::from(tbi_os);
+    let tbi_path = tbi_output_path(vcf_gz_path);
+    if paths_collide(vcf_gz_path, &tbi_path) {
+        return Err(VardictError::Parse(format!(
+            "--output '{}' and its Tabix index '{}' must not point to the same file",
+            vcf_gz_path.display(),
+            tbi_path.display()
+        )));
+    }
     if let Err(e) = write_vcf_tabix_index_inner(vcf_gz_path, &tbi_path) {
         let _ = std::fs::remove_file(&tbi_path);
         return Err(e);
@@ -1990,10 +1998,7 @@ fn resolve_effective_config(
                 "--tbi/--index requires --output <PATH> ending in .vcf.gz or .bgz".to_string(),
             ));
         }
-        if effective.emit_intermediate
-            || effective.splice
-            || (effective.column_header && effective.debug_print.as_deref() != Some("ERR"))
-        {
+        if effective.emit_intermediate || effective.splice || effective.column_header {
             return Err(VardictError::Parse(
                 "--tbi/--index is only supported for VCF output (cannot be combined with -E/--emit-intermediate, -i/--splice, or -h/--header)"
                     .to_string(),
@@ -2082,20 +2087,29 @@ pub fn run(config: &config::Config) -> Result<(), VardictError> {
     crate::runner::run_with_worker_stack_for_bam(&config.bam, || {
         let started = std::time::Instant::now();
         let (effective, mode) = resolve_effective_config(config)?;
-        if let (Some(ref out_path), Some(ref stats_path)) =
-            (&effective.output_path, &effective.stats_json_path)
-        {
-            if paths_collide(Path::new(out_path), Path::new(stats_path)) {
-                return Err(VardictError::Parse(
-                    "--output and --stats-json must not point to the same file".to_string(),
-                ));
+        if let Some(ref out_path) = effective.output_path {
+            let out = Path::new(out_path);
+            if effective.index_output {
+                let tbi_path = tbi_output_path(out);
+                if paths_collide(out, &tbi_path) {
+                    return Err(VardictError::Parse(format!(
+                        "--output '{out_path}' and its Tabix index '{}' must not point to the same file",
+                        tbi_path.display()
+                    )));
+                }
             }
-            if effective.index_output
-                && paths_collide(Path::new(&format!("{out_path}.tbi")), Path::new(stats_path))
-            {
-                return Err(VardictError::Parse(format!(
-                    "--output Tabix index '{out_path}.tbi' and --stats-json '{stats_path}' must not point to the same file"
-                )));
+            if let Some(ref stats_path) = effective.stats_json_path {
+                let stats = Path::new(stats_path);
+                if paths_collide(out, stats) {
+                    return Err(VardictError::Parse(
+                        "--output and --stats-json must not point to the same file".to_string(),
+                    ));
+                }
+                if effective.index_output && paths_collide(&tbi_output_path(out), stats) {
+                    return Err(VardictError::Parse(format!(
+                        "--output Tabix index '{out_path}.tbi' and --stats-json '{stats_path}' must not point to the same file"
+                    )));
+                }
             }
         }
         let mut stats_file = if let Some(ref stats_path) = effective.stats_json_path {
