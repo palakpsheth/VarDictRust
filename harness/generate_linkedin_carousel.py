@@ -6,13 +6,17 @@ zero hardcoded benchmark metrics; fail-closed on missing files, non-passing verd
 fingerprint drift). Uses 100% Python standard library + Ghostscript (`gs`) CLI.
 """
 
+from __future__ import annotations
+
 import argparse
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
 from xml.sax.saxutils import escape as xml_escape
 
+ROOT = Path(__file__).resolve().parents[1]
 W, H = 1080, 1350
 
 # Demaille picard-rs inspired warm-editorial palette
@@ -326,7 +330,14 @@ def build_slides(
     docs: dict[str, dict], rustc_ver: str, gcp_doc: dict | None = None
 ) -> tuple[list[SlideCanvas], str]:
     fp = docs["hg002-tier2.json"]["fingerprint"]
-    ver = "v1.0.7"
+    ver_m = re.search(
+        r'^\[workspace\.package\]\s*\n(?:(?!\[).*\n)*?version\s*=\s*"([^"]+)"',
+        (ROOT / "Cargo.toml").read_text(encoding="utf-8"),
+        re.MULTILINE,
+    )
+    if not ver_m:
+        raise ValueError(f"Could not parse [workspace.package].version from {ROOT / 'Cargo.toml'}")
+    ver = f"v{ver_m.group(1)}"
     gcp_ver = f"v{gcp_doc['meta']['version']}" if gcp_doc else ver
     gcp_fp = gcp_doc["meta"]["fingerprint"] if gcp_doc else fp
     cpp_ver = docs["hg002-tier2.json"]["extra"]["cpp_version"]

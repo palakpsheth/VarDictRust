@@ -108,7 +108,9 @@ jobs:
             harness/tests/test_bioconda_recipe.py \
             harness/tests/test_compare_vcf.py \
             harness/tests/test_docs_ui.py \
+            harness/tests/test_evidence_inputs.py \
             harness/tests/test_golden_store.py \
+            harness/tests/test_linkedin_carousel.py \
             harness/tests/test_perf_budget.py \
             harness/tests/test_profile_catalog.py \
             harness/tests/test_select_slice_regions.py \
@@ -122,10 +124,15 @@ jobs:
             harness/tests/test_env_pinned.sh \
             harness/tests/test_evidence.sh \
             harness/tests/test_fetch_data.sh \
+            harness/tests/test_gate_command_parity.sh \
+            harness/tests/test_gcp_paper_runner.sh \
             harness/tests/test_git_hooks.sh \
             harness/tests/test_golden_wiring.sh \
+            harness/tests/test_no_gnu_isms.sh \
+            harness/tests/test_oracle_platform.sh \
             harness/tests/test_perf_budget.sh \
             harness/tests/test_perf_pr.sh \
+            harness/tests/test_portable_shell.sh \
             harness/tests/test_profile_sh.sh \
             harness/tests/test_release_deps.sh \
             harness/tests/test_scale_bench.sh \

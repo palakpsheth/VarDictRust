@@ -116,6 +116,7 @@ jobs:
             bash harness/tests/test_compare_sh.sh
             bash harness/tests/test_edge_cases.sh
             bash harness/tests/test_concordance.sh
+            bash harness/tests/test_oracle_r_canary.sh
           )
           dirty=$(git status --porcelain --ignore-submodules=untracked)
           if [ -n "$dirty" ]; then
