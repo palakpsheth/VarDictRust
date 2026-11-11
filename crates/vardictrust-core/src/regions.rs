@@ -393,8 +393,8 @@ pub fn parse_non_amp_bed_from_reader<R: BufRead>(
                 thick_end = cds_end as i32;
             }
 
-            thick_start = thick_start.wrapping_sub(config.extension);
-            thick_end = thick_end.wrapping_add(config.extension);
+            thick_start = thick_start.saturating_sub(config.extension);
+            thick_end = thick_end.saturating_add(config.extension);
 
             if active_zero_based && thick_start < thick_end {
                 thick_start = thick_start.wrapping_add(1);
@@ -605,8 +605,8 @@ pub fn parse_region_flag(
         parse_int_with_commas(range[1])? as i32
     };
 
-    start = start.wrapping_sub(config.extension);
-    let end = end.wrapping_add(config.extension);
+    start = start.saturating_sub(config.extension);
+    let end = end.saturating_add(config.extension);
 
     let active_zero_based = config.zero_based;
     if active_zero_based && start < end {
@@ -1211,17 +1211,38 @@ Y\t59042860\t59047860\tY_59042860_5\t0\t.\t59042860\t59047860
     }
 
     #[test]
-    fn extension_overflow_wraps_like_java() {
+    fn extension_overflow_saturates_and_amplicon_z_wraps() {
         let mut chr_lengths = HashMap::new();
         chr_lengths.insert("chr1".to_string(), 1000);
 
-        // -x 2147483647 -R chr1:1000-2000 wraps in i32 arithmetic without panicking in debug mode.
+        // -x 2147483647 -R chr1:1000-2000 saturates at Pos1(1) / Pos1(i32::MAX as u32) instead of wrapping.
         let mut cfg = Config::default();
         cfg.extension = i32::MAX;
         cfg.zero_based = false;
         let parsed = parse_region_flag("chr1:1000-2000", &cfg, &chr_lengths).unwrap();
         assert_eq!(parsed[0][0].start, Pos1(1));
-        assert_eq!(parsed[0][0].end, Pos1(1));
+        assert_eq!(parsed[0][0].end, Pos1(i32::MAX as u32));
+
+        // Non-amplicon BED with -x 2147483647 also saturates at Pos1(1) / Pos1(i32::MAX as u32).
+        let mut cfg_bed = Config::default();
+        cfg_bed.col_chr = 0;
+        cfg_bed.col_start = 1;
+        cfg_bed.col_end = 2;
+        cfg_bed.col_seg_start = 1;
+        cfg_bed.col_seg_end = 2;
+        cfg_bed.col_gene = Some(3);
+        cfg_bed.column_for_chromosome = Some(0);
+        cfg_bed.extension = i32::MAX;
+        cfg_bed.delimiter = "\t".to_string();
+        let bed_parsed = parse_non_amp_bed_from_reader(
+            "chr1\t1000\t2000\tg1\n".as_bytes(),
+            &cfg_bed,
+            &chr_lengths,
+            Some(true),
+        )
+        .unwrap();
+        assert_eq!(bed_parsed[0][0].start, Pos1(1));
+        assert_eq!(bed_parsed[0][0].end, Pos1(i32::MAX as u32));
 
         // Amplicon row with insert_start = 2147483647 under -z wraps insert_start + 1 without panic.
         let mut cfg_amp = Config::default();

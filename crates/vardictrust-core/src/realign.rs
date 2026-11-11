@@ -1037,6 +1037,40 @@ fn cigar_contains_dlen_d(
         .any(|&(len, k)| k == CigarKind::Deletion && (len as u64) >= d && (len as u64) % m == d)
 }
 
+#[inline]
+fn accum_no_passing_read_record(
+    record: &crate::bam::SamRecord,
+    dlen: i32,
+    start: i32,
+    end: i32,
+    cnt: &mut i32,
+    midcnt: &mut i32,
+) {
+    use noodles::sam::alignment::record::cigar::op::Kind as CigarKind;
+    if cigar_contains_dlen_d(&record.cigar, dlen) {
+        return;
+    }
+    let read_start = match record.alignment_start {
+        Some(Pos1(p)) => i32::try_from(p).unwrap_or(i32::MAX),
+        None => return,
+    };
+    let read_len = record
+        .cigar
+        .iter()
+        .filter(|&&(_, kind)| kind == CigarKind::Match || kind == CigarKind::Deletion)
+        .fold(0i32, |acc, &(len, _)| {
+            acc.saturating_add(i32::try_from(len).unwrap_or(i32::MAX))
+        });
+    let read_end = read_start.saturating_add(read_len);
+
+    if read_end > end.saturating_add(2) && read_start < start.saturating_sub(2) {
+        *cnt += 1;
+    }
+    if read_start < start.saturating_sub(2) && read_end > start && read_end < end {
+        *midcnt += 1;
+    }
+}
+
 /// Check if there are no passing reads spanning the start-end coordinates.
 ///
 /// Ports `VariationRealigner.noPassingReads`.
@@ -1049,7 +1083,7 @@ pub fn no_passing_reads(
 ) -> bool {
     let mut cnt = 0;
     let mut midcnt = 0;
-    let dlen = end - start;
+    let dlen = end.saturating_sub(start);
 
     'bam: for bam in bams {
         let bam_path = std::path::Path::new(bam);
@@ -1083,29 +1117,18 @@ pub fn no_passing_reads(
                     continue 'bam;
                 }
             }
-            if cigar_contains_dlen_d(&record.cigar, dlen) {
-                continue;
-            }
-            let read_start = match record.alignment_start {
-                Some(Pos1(p)) => p as i32,
-                None => continue,
-            };
-            let read_len = crate::bam::get_aligned_length_md(&record.cigar);
-            let read_end = read_start + read_len;
-
-            if read_end > end + 2 && read_start < start - 2 {
-                cnt += 1;
-            }
-            if read_start < start - 2 && read_end > start && read_end < end {
-                midcnt += 1;
-            }
+            accum_no_passing_read_record(&record, dlen, start, end, &mut cnt, &mut midcnt);
         }
     }
 
     if config.verbose {
-        eprintln!(
+        crate::verbose_eprintln!(
             "    Passing Read CNT: {} {} {} {} {}",
-            cnt, chr, start, end, midcnt
+            cnt,
+            chr,
+            start,
+            end,
+            midcnt
         );
     }
 
@@ -1116,6 +1139,21 @@ pub fn no_passing_reads(
 mod task13_tests {
     use super::*;
     use noodles::sam::alignment::record::cigar::op::Kind as CigarKind;
+
+    #[test]
+    fn no_passing_reads_saturates_huge_cigar_without_i32_overflow() {
+        let mut record = crate::bam::SamRecord::new();
+        record.alignment_start = Some(Pos1(10));
+        record.cigar = vec![
+            (2_000_000_000, CigarKind::Match),
+            (500_000_000, CigarKind::Deletion),
+        ];
+        let mut cnt = 0;
+        let mut midcnt = 0;
+        accum_no_passing_read_record(&record, 50, 100, 150, &mut cnt, &mut midcnt);
+        assert_eq!(cnt, 1);
+        assert_eq!(midcnt, 0);
+    }
 
     fn cigar_contains_dlen_d_legacy(cigar: &[(u32, CigarKind)], dlen: i32) -> bool {
         let dlenqr = format!("{dlen}D");
@@ -1296,7 +1334,7 @@ pub fn realigndel(
 
         if config.verbose {
             let cov = ref_coverage.get(&p).copied().unwrap_or(0);
-            eprintln!("  Realigndel for: {} {} {} cov: {}", p, vn, dcnt, cov);
+            crate::verbose_eprintln!("  Realigndel for: {} {} {} cov: {}", p, vn, dcnt, cov);
         }
 
         let mut dellen = 0;
@@ -1383,9 +1421,14 @@ pub fn realigndel(
         let misnt5 = &r5.misnt;
 
         if config.verbose {
-            eprintln!(
+            crate::verbose_eprintln!(
                 "  Mismatches: misp3: {}-{} misp5: {}-{} sclip3: {:?} sclip5: {:?}",
-                misp3, misnt3, misp5, misnt5, sc3p, sc5p
+                misp3,
+                misnt3,
+                misp5,
+                misnt5,
+                sc3p,
+                sc5p
             );
         }
 
@@ -1434,9 +1477,17 @@ pub fn realigndel(
 
             if config.verbose {
                 let cov = ref_coverage.get(&p).copied().unwrap_or(0);
-                eprintln!(
+                crate::verbose_eprintln!(
                     "  Realigndel Adj: {} {} {} {} {} {} {} {} cov: {}",
-                    mm, mp, me, nm3, nm5, p, tv.cnt, tv.qmean, cov
+                    mm,
+                    mp,
+                    me,
+                    nm3,
+                    nm5,
+                    p,
+                    tv.cnt,
+                    tv.qmean,
+                    cov
                 );
             }
 
@@ -1497,9 +1548,17 @@ pub fn realigndel(
             if config.verbose {
                 let cov = ref_coverage.get(&p).copied().unwrap_or(0);
                 let final_vref = get_variation(non_insertion_variants, p, vn);
-                eprintln!(
+                crate::verbose_eprintln!(
                     "  Realigndel AdjA: {} {} {} {} {} {} {} {} cov: {}",
-                    mm, mp, me, nm3, nm5, p, final_vref.cnt, final_vref.qmean, cov
+                    mm,
+                    mp,
+                    me,
+                    nm3,
+                    nm5,
+                    p,
+                    final_vref.cnt,
+                    final_vref.qmean,
+                    cov
                 );
             }
         }
@@ -1557,7 +1616,7 @@ pub fn realigndel(
                     if config.verbose {
                         let cov = ref_coverage.get(&p).copied().unwrap_or(0);
                         let wupseq_rev: String = wupseq.chars().rev().collect();
-                        eprintln!(
+                        crate::verbose_eprintln!(
                             "  Realigndel 5: {} {} seq: '{}' Wuseq: {} cnt: {} {} {} {} cov: {}",
                             p,
                             sc5pp,
@@ -1587,7 +1646,7 @@ pub fn realigndel(
                             let final_tv_cnt = soft_clips_5_end
                                 .get(&sc5pp)
                                 .map_or(0, |sc| sc.variation.cnt);
-                            eprintln!(
+                            crate::verbose_eprintln!(
                                 "  Realigndel 5: {} {} {} {} {} {} {} {} used cov: {}",
                                 p,
                                 sc5pp,
@@ -1622,7 +1681,7 @@ pub fn realigndel(
                     let sanpseq_slice = sanpseq.get(slice_start..).unwrap_or("");
 
                     if config.verbose {
-                        eprintln!(
+                        crate::verbose_eprintln!(
                             "  Realigndel 3: {} {} seq '{}' Sanseq: {} cnt: {} {} {} {} {} {}",
                             p,
                             sc3pp,
@@ -1639,7 +1698,7 @@ pub fn realigndel(
 
                     if !seq.is_empty() && is_match(&seq, sanpseq_slice.as_bytes(), 1, 3) {
                         if config.verbose {
-                            eprintln!(
+                            crate::verbose_eprintln!(
                                 "  Realigndel 3: {} {} {} {} {} {} {} {} used",
                                 p,
                                 sc3pp,
@@ -1836,7 +1895,7 @@ pub fn realignins(
         let insertion_count = tpl.count;
 
         if config.verbose {
-            eprintln!("  Realign Ins: {} {} {}", p, vn, insertion_count);
+            crate::verbose_eprintln!("  Realign Ins: {} {} {}", p, vn, insertion_count);
         }
 
         let insert = if let Some(caps) = BEGIN_PLUS_ATGC.captures(vn) {
@@ -1983,7 +2042,7 @@ pub fn realignins(
 
             if config.verbose {
                 let cov = ref_coverage.get(&p).copied().unwrap_or(0);
-                eprintln!(
+                crate::verbose_eprintln!(
                     "    insMM: {}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
                     mismatch_bases,
                     mismatch_position,
@@ -2066,9 +2125,12 @@ pub fn realignins(
         for &sc5pp in sc5p {
             if let Some(tv) = soft_clips_5_end.get_mut(&sc5pp) {
                 if config.verbose {
-                    eprintln!(
+                    crate::verbose_eprintln!(
                         "    55: {} {} VN: '{}'  5' seq: ^{}^\n",
-                        p, sc5pp, vn, wupseq
+                        p,
+                        sc5pp,
+                        vn,
+                        wupseq
                     );
                 }
                 if !tv.used {
@@ -2079,7 +2141,7 @@ pub fn realignins(
                         &adaptor_reverse,
                     );
                     if config.verbose {
-                        eprintln!(
+                        crate::verbose_eprintln!(
                             "    ins5: {} {} {} {} VN: {} iCnt: {} vCnt: {}",
                             p,
                             sc5pp,
@@ -2092,7 +2154,7 @@ pub fn realignins(
                     }
                     if !seq.is_empty() && is_match(&seq, wupseq.as_bytes(), -1, 3) {
                         if config.verbose {
-                            eprintln!(
+                            crate::verbose_eprintln!(
                                 "      ins5: {} {} {} {} VN: {} iCnt: {} cCnt: {} used",
                                 p,
                                 sc5pp,
@@ -2120,9 +2182,12 @@ pub fn realignins(
         for &sc3pp in sc3p {
             if let Some(tv) = soft_clips_3_end.get_mut(&sc3pp) {
                 if config.verbose {
-                    eprintln!(
+                    crate::verbose_eprintln!(
                         "    33: {} {} VN: '{}'  3' seq: ^{}^\n",
-                        p, sc3pp, vn, sanpseq
+                        p,
+                        sc3pp,
+                        vn,
+                        sanpseq
                     );
                 }
                 if !tv.used {
@@ -2133,7 +2198,7 @@ pub fn realignins(
                         &adaptor_reverse,
                     );
                     if config.verbose {
-                        eprintln!(
+                        crate::verbose_eprintln!(
                             "    ins3: {} {} {} {} VN: {} iCnt: {} vCnt: {}",
                             p,
                             sc3pp,
@@ -2152,7 +2217,7 @@ pub fn realignins(
 
                     if !seq.is_empty() && is_match(&seq, mseq, 1, 3) {
                         if config.verbose {
-                            eprintln!(
+                            crate::verbose_eprintln!(
                                 "      ins3: {} {} {} VN: {} iCnt: {} vCnt: {} used",
                                 p,
                                 sc3pp,
@@ -2391,7 +2456,7 @@ pub fn realignlgdel(
         };
 
         if config.verbose {
-            eprintln!(
+            crate::verbose_eprintln!(
                 "  Working Realignlgdel: 5' {} '{}' {}",
                 p,
                 String::from_utf8_lossy(&seq),
@@ -2515,7 +2580,7 @@ pub fn realignlgdel(
         }
 
         if config.verbose {
-            eprintln!(
+            crate::verbose_eprintln!(
                 "  Found Realignlgdel: {} {} 5' {} '{}' {}",
                 bp,
                 String::from_utf8_lossy(&gt),
@@ -2716,7 +2781,7 @@ pub fn realignlgdel(
 
         if config.verbose {
             let tv_cnt = crate::variations::get_variation(non_insertion_variants, bp, &gt_str).cnt;
-            eprintln!(
+            crate::verbose_eprintln!(
                 "  Found lgdel done: {} {} {} 5' {} {}\n",
                 bp,
                 gt_str,
@@ -2768,7 +2833,7 @@ pub fn realignlgdel(
         };
 
         if config.verbose {
-            eprintln!(
+            crate::verbose_eprintln!(
                 "  Working Realignlgdel: 3' {} '{}' {}",
                 p,
                 String::from_utf8_lossy(&seq),
@@ -2932,7 +2997,7 @@ pub fn realignlgdel(
 
         let gt_str = String::from_utf8_lossy(&gt).into_owned();
         if config.verbose {
-            eprintln!(
+            crate::verbose_eprintln!(
                 "  Found Realignlgdel: bp: {} {} 3' {} 5'clip: {} '{}' {}",
                 bp,
                 gt_str,
@@ -3009,7 +3074,7 @@ pub fn realignlgdel(
 
         if config.verbose {
             let tv_cnt = crate::variations::get_variation(non_insertion_variants, bp, &gt_str).cnt;
-            eprintln!(
+            crate::verbose_eprintln!(
                 "  Found lgdel: {} {} {} 3' '{}' {}\n",
                 bp,
                 gt_str,
@@ -3117,7 +3182,7 @@ pub fn realignlgins30(
                 continue;
             }
             if config.verbose {
-                eprintln!(
+                crate::verbose_eprintln!(
                     "  Working lgins30: {} {} 3: {} {} 5: {} {}",
                     p3,
                     p5,
@@ -3148,7 +3213,7 @@ pub fn realignlgins30(
             }
             if crate::variations::util::is_low_complex_seq(&ins) {
                 if config.verbose {
-                    eprintln!(
+                    crate::verbose_eprintln!(
                         "  Discard low complexity insertion found {}.",
                         String::from_utf8_lossy(&ins)
                     );
@@ -3158,7 +3223,7 @@ pub fn realignlgins30(
             let bi;
             let ins_str;
             if config.verbose {
-                eprintln!(
+                crate::verbose_eprintln!(
                     "  Found candidate lgins30: {} {} {}",
                     p3,
                     p5,
@@ -3191,7 +3256,7 @@ pub fn realignlgins30(
                     }
                 }
                 if config.verbose {
-                    eprintln!(
+                    crate::verbose_eprintln!(
                         "  Found lgins30 complex: {} {} {} {}",
                         p3,
                         p5,
@@ -3287,7 +3352,7 @@ pub fn realignlgins30(
                     }
                 }
                 if config.verbose {
-                    eprintln!(
+                    crate::verbose_eprintln!(
                         "Found lgins30: {} {} {} {} + {}",
                         p3,
                         p5,
@@ -3318,7 +3383,7 @@ pub fn realignlgins30(
             inc_cnt(ref_coverage, bi, cnt5);
 
             if config.verbose {
-                eprintln!(" lgins30 Found: '{}' {} {} {}", ins_str, bi, bp3, bp5);
+                crate::verbose_eprintln!(" lgins30 Found: '{}' {} {} {}", ins_str, bi, bp3, bp5);
             }
 
             let sc3v_var = soft_clips_3_end
@@ -3431,7 +3496,7 @@ pub fn realignlgins30(
         }
     }
     if config.verbose {
-        eprintln!("Done: lgins30\n");
+        crate::verbose_eprintln!("Done: lgins30\n");
     }
 }
 
@@ -3490,7 +3555,7 @@ pub fn realignlgins(
             continue;
         }
         if config.verbose {
-            eprintln!(
+            crate::verbose_eprintln!(
                 "  Working lgins: 5: {} {} cnt: {}",
                 p,
                 String::from_utf8_lossy(&seq),
@@ -3598,7 +3663,7 @@ pub fn realignlgins(
 
         let ins_str = String::from_utf8_lossy(&ins).into_owned();
         if config.verbose {
-            eprintln!(
+            crate::verbose_eprintln!(
                 "  Found candidate lgins from 5: {} +{} {} {}",
                 bi,
                 ins_str,
@@ -3770,7 +3835,7 @@ pub fn realignlgins(
             continue;
         }
         if config.verbose {
-            eprintln!(
+            crate::verbose_eprintln!(
                 "  Working lgins 3: {} {} cnt: {}",
                 p,
                 String::from_utf8_lossy(&seq),
@@ -3903,7 +3968,7 @@ pub fn realignlgins(
 
         let ins_str = String::from_utf8_lossy(&ins).into_owned();
         if config.verbose {
-            eprintln!(
+            crate::verbose_eprintln!(
                 "  Found candidate lgins from 3: {} +{} {} {}",
                 bi,
                 ins_str,
@@ -4063,7 +4128,7 @@ pub fn realign_indels(
     }
 
     if config.verbose {
-        eprintln!("Start local realignment...");
+        crate::verbose_eprintln!("Start local realignment...");
     }
 
     // 1. realigndel
@@ -4152,7 +4217,7 @@ pub fn realign_indels(
     );
 
     if config.verbose {
-        eprintln!("Finished local realignment.");
+        crate::verbose_eprintln!("Finished local realignment.");
     }
 }
 
@@ -4403,7 +4468,7 @@ pub fn find_35_match(seq5: &[u8], seq3: &[u8], verbose: bool) -> Match35 {
                 b3 = j as i32;
                 b5 = i as i32;
                 if verbose {
-                    eprintln!(
+                    crate::verbose_eprintln!(
                         "      Found 35 Match, seq5_len={}, seq3_len={}, total_length={}, mismatch={}, i={}, j={}",
                         len5, len3, total_length, number_of_mismatch, i, j
                     );
@@ -4777,7 +4842,7 @@ pub fn adjust_mnp(
         };
 
         if config.verbose {
-            eprintln!("  AdjMnt: {} {} {}", position, vn, vref.cnt);
+            crate::verbose_eprintln!("  AdjMnt: {} {} {}", position, vn, vref.cnt);
         }
 
         let mnt = vn.replacen('&', "", 1);
@@ -4813,9 +4878,12 @@ pub fn adjust_mnp(
             }
             if let Some(tref_clone) = left_tref {
                 if config.verbose {
-                    eprintln!(
+                    crate::verbose_eprintln!(
                         "    AdjMnt Left: {} {} Left: {} Cnt: {}",
-                        position, vn, left, tref_clone.cnt
+                        position,
+                        vn,
+                        left,
+                        tref_clone.cnt
                     );
                 }
                 if let Some(vars_on_pos) = var_data.non_insertion_variants.get_mut(&position) {
@@ -4841,9 +4909,12 @@ pub fn adjust_mnp(
             }
             if let Some(tref_clone) = right_tref {
                 if config.verbose {
-                    eprintln!(
+                    crate::verbose_eprintln!(
                         "    AdjMnt Right: {} {} Right: {} Cnt: {}",
-                        position, vn, right, tref_clone.cnt
+                        position,
+                        vn,
+                        right,
+                        tref_clone.cnt
                     );
                 }
                 if let Some(vars_on_pos) = var_data.non_insertion_variants.get_mut(&position) {
