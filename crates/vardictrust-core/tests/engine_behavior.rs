@@ -1,4 +1,4 @@
-//! First-class functional engine behavior integration suite (`25` tests).
+//! First-class functional engine behavior integration suite (`29` tests).
 //!
 //! Exercises CRAM decoding, Fisher exact test tables/VCFs, VCF filter edge cases,
 //! structural variant calling, read/pileup filtering flags, hostile inputs, and
@@ -465,7 +465,7 @@ mod structural_variants {
     }
 }
 
-// 5. mod filtering_and_pileup (12 tests)
+// 5. mod filtering_and_pileup (13 tests)
 mod filtering_and_pileup {
     use super::*;
 
@@ -811,6 +811,97 @@ mod filtering_and_pileup {
     }
 
     #[test]
+    fn paired_amplicon_vcf_rejected_while_intermediate_var_runs_first_bam() {
+        let dir = TempDir::new().expect("tempdir");
+        let fa = write_ref(&dir, "chr1", 500, true);
+
+        // First BAM carries an SNV at chr1:100 (50bp at 80..129); second BAM carries an SNV at
+        // chr1:102 (50bp at 82..131) so both satisfy auto-detected `10:0.95` bounds on `80..131`.
+        let first_bam = dir.path().join("tumor_amp.bam");
+        let second_bam = dir.path().join("normal_amp.bam");
+        indexed_bam(
+            &first_bam,
+            "chr1",
+            500,
+            &[snv_record("t0", 80), snv_record("t1", 80)],
+        )
+        .expect("write first_bam");
+        indexed_bam(
+            &second_bam,
+            "chr1",
+            500,
+            &[snv_record("n0", 82), snv_record("n1", 82)],
+        )
+        .expect("write second_bam");
+
+        let amp_bed = dir.path().join("paired_amp.bed");
+        fs::write(&amp_bed, "chr1\t79\t131\tAMP1\t0\t+\t80\t131\n").expect("write 8-col amp bed");
+
+        let single_cfg = Config {
+            reference: fa.to_string_lossy().into_owned(),
+            sample: "TUMOR_AMP".to_string(),
+            bam: first_bam.to_string_lossy().into_owned(),
+            bed: Some(amp_bed.to_string_lossy().into_owned()),
+            zero_based: true,
+            zero_based_defined: true,
+            col_chr: 0,
+            col_start: 1,
+            col_end: 2,
+            col_seg_start: 1,
+            col_seg_end: 2,
+            col_gene: Some(3),
+            column_for_chromosome: Some(0),
+            omit_end_tag: true,
+            amplicon: Some("30:0.5".to_string()),
+            freq: 0.01,
+            af_threshold: 0.01,
+            ..Config::default()
+        };
+        let expected_single_var = run_core_var(&single_cfg).expect("single-BAM amplicon .var");
+        let single_rows = normalize_var_rows(&expected_single_var, 38);
+        assert_eq!(single_rows.len(), 1);
+        assert!(expected_single_var.contains("\tchr1\t100\t100\tA\tC\t"));
+
+        // Exercise both explicit `-a 30:0.5` and 8-column BED amplicon auto-detection (`amplicon: None`).
+        for amp_opt in [Some("30:0.5".to_string()), None] {
+            let mut paired_cfg = single_cfg.clone();
+            paired_cfg.bam = format!("{}|{}", first_bam.display(), second_bam.display());
+            paired_cfg.amplicon = amp_opt.clone();
+
+            // 1. VCF mode (`emit_intermediate == false`) rejects paired + amplicon (#378)
+            let vcf_err = run_core_vcf(&paired_cfg)
+                .expect_err("paired + amplicon VCF must fail with Unsupported (#378)");
+            match vcf_err {
+                VardictError::Unsupported(msg) => {
+                    assert!(
+                        msg.contains("not supported in VCF mode (#378)"),
+                        "unexpected #378 message for amplicon={amp_opt:?}: {msg}"
+                    );
+                }
+                other => panic!("expected VardictError::Unsupported for #378, got: {other:?}"),
+            }
+
+            // 2. Intermediate `.var` mode (`emit_intermediate == true`) succeeds on the first BAM only
+            let paired_var =
+                run_core_var(&paired_cfg).expect("paired + amplicon intermediate .var must run");
+            let paired_rows = normalize_var_rows(&paired_var, 38);
+            assert_eq!(paired_rows.len(), 1);
+            assert!(
+                paired_var.contains("\tchr1\t100\t100\tA\tC\t"),
+                "first BAM SNV at chr1:100 must be called in .var mode"
+            );
+            assert!(
+                !paired_var.contains("\tchr1\t102\t102\t"),
+                "second BAM SNV at chr1:102 must NOT be called in AmpliconMode (#378)"
+            );
+            assert_eq!(
+                paired_var, expected_single_var,
+                "paired amplicon .var must match single first-BAM amplicon .var byte-for-byte for amplicon={amp_opt:?}"
+            );
+        }
+    }
+
+    #[test]
     fn qratio_threshold_calculation() {
         let mut cfg_pass = base_micro_config();
         cfg_pass.freq = 0.01;
@@ -1091,7 +1182,7 @@ mod hostile_inputs {
     }
 }
 
-// 7. mod concurrency (1 test)
+// 7. mod concurrency (4 tests)
 mod concurrency {
     use super::*;
 
@@ -1430,5 +1521,113 @@ mod concurrency {
                 "somatic .vcf variant lines must be identical between tiled ({tile_size}bp) and untiled runs"
             );
         }
+    }
+
+    #[test]
+    fn tiled_vs_untiled_sv_and_splice_conservation() {
+        ensure_fastas_converted();
+        let droot = data_root();
+
+        // 1. Symbolic `<DEL>` and `<INV>` SV BAM fixtures: `tile_size = Some(200)` vs `None`
+        let sv_cases = [
+            (
+                "VarDictJava/testdata/fastas/hg19.fa",
+                "VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests/Colo829.chr10.DELDiscReverse.bam",
+                "chr10:89712340-89713976:testbed",
+                "\t<DEL>\t",
+            ),
+            (
+                "VarDictJava/testdata/fastas/hg19.fa",
+                "VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests/Colo829.chr20.INVSV.bam",
+                "chr20:46842754-46845755:testbed",
+                "\t<INV>\t",
+            ),
+        ];
+
+        for (fa_rel, bam_rel, region, expected_sv_tag) in sv_cases {
+            let bam = droot.join(bam_rel).to_string_lossy().into_owned();
+            let untiled_cfg = Config {
+                reference: droot.join(fa_rel).to_string_lossy().into_owned(),
+                sample: extract_sample_name(&bam, None),
+                bam,
+                threads: 1,
+                zero_based: true,
+                zero_based_defined: true,
+                region: Some(region.to_string()),
+                freq: 0.001,
+                af_threshold: 0.001,
+                tile_size: None,
+                ..Config::default()
+            };
+            let mut tiled_cfg = untiled_cfg.clone();
+            tiled_cfg.tile_size = Some(200);
+            tiled_cfg.threads = 4;
+
+            let untiled_vcf = run_core_vcf(&untiled_cfg).expect("untiled SV VCF");
+            let tiled_vcf = run_core_vcf(&tiled_cfg).expect("tiled (200bp) SV VCF");
+            assert!(
+                untiled_vcf.contains(expected_sv_tag),
+                "expected symbolic SV {expected_sv_tag:?} in untiled VCF for {bam_rel}"
+            );
+            assert_eq!(
+                tiled_vcf, untiled_vcf,
+                "tiled (tile_size=Some(200)) SV VCF must match untiled None byte-for-byte on {bam_rel}"
+            );
+
+            let mut untiled_var =
+                normalize_var_rows(&run_core_var(&untiled_cfg).expect("untiled SV .var"), 36);
+            let mut tiled_var = normalize_var_rows(
+                &run_core_var(&tiled_cfg).expect("tiled (200bp) SV .var"),
+                36,
+            );
+            untiled_var.sort();
+            tiled_var.sort();
+            assert_eq!(
+                tiled_var, untiled_var,
+                "tiled (tile_size=Some(200)) SV .var row set must match untiled None on {bam_rel}"
+            );
+        }
+
+        // 2. `-i` splice junction output: `tile_size = Some(200)` vs `None` byte-for-byte
+        let splice_bam = droot
+            .join("VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests/Tcov_zero_SV_DEL_candidate3.bam")
+            .to_string_lossy()
+            .into_owned();
+        let splice_untiled_cfg = Config {
+            reference: droot
+                .join("VarDictJava/testdata/fastas/hg38.fa")
+                .to_string_lossy()
+                .into_owned(),
+            sample: extract_sample_name(&splice_bam, None),
+            bam: splice_bam,
+            threads: 1,
+            zero_based: true,
+            zero_based_defined: true,
+            region: Some("chr8:90534611-90620070:testbed".to_string()),
+            freq: 0.1,
+            af_threshold: 0.1,
+            splice: true,
+            tile_size: None,
+            ..Config::default()
+        };
+        let mut splice_tiled_cfg = splice_untiled_cfg.clone();
+        splice_tiled_cfg.tile_size = Some(200);
+        splice_tiled_cfg.threads = 4;
+
+        let untiled_splice = run_core_var(&splice_untiled_cfg).expect("untiled -i splice");
+        let tiled_splice = run_core_var(&splice_tiled_cfg).expect("tiled (200bp) -i splice");
+        let splice_rows: Vec<&str> = untiled_splice
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .collect();
+        assert_eq!(
+            splice_rows.len(),
+            16,
+            "expected 16 splice junction rows on Tcov_zero_SV_DEL_candidate3.bam"
+        );
+        assert_eq!(
+            tiled_splice, untiled_splice,
+            "tiled (tile_size=Some(200)) -i splice output must match untiled None byte-for-byte"
+        );
     }
 }

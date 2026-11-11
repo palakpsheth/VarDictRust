@@ -1,20 +1,121 @@
-//! Process-level CLI smoke and robustness tests (`5` tests).
+//! Process-level CLI smoke and robustness tests (`13` tests).
 //!
 //! Verifies end-to-end binary stream redirection (`--DP ERR` / `--defaultPrinter ERR`),
 //! verbose stderr region debug output (`-y` / `--verbose`), non-zero exit codes on
 //! unsupported/invalid CLI flags, C vs `de_DE` locale independence on `micro.bam`,
-//! and clean jemalloc startup without `<jemalloc>:` stderr warnings.
+//! clean jemalloc startup without `<jemalloc>:` stderr warnings, `--output` / `--tbi` /
+//! `--stats-json` collision & BrokenPipe guards, hostile BAM records, and Commons-CLI
+//! single-dash option normalization.
 
 #[cfg(unix)]
 use std::os::unix::process::ExitStatusExt;
-use std::path::Path;
-use std::process::Command;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::Once;
 
 fn workspace_root() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(|p| p.parent())
         .expect("workspace root")
+}
+
+fn data_root() -> PathBuf {
+    let root = workspace_root();
+    if root
+        .join("VarDictJava/testdata/integrationtestcases")
+        .is_dir()
+    {
+        return root.to_path_buf();
+    }
+    if let Ok(out) = Command::new("git")
+        .args([
+            "-C",
+            root.to_str().unwrap_or("."),
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-common-dir",
+        ])
+        .output()
+    {
+        if out.status.success() {
+            let common = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if let Some(parent) = Path::new(&common).parent() {
+                if parent
+                    .join("VarDictJava/testdata/integrationtestcases")
+                    .is_dir()
+                {
+                    return parent.to_path_buf();
+                }
+            }
+        }
+    }
+    root.to_path_buf()
+}
+
+fn ensure_fastas_converted() {
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        let droot = data_root();
+        let fasta_dir = droot.join("VarDictJava/testdata/fastas");
+        if !fasta_dir.join("GRCh37.fa").is_file()
+            || !fasta_dir.join("GRCh37.fa.fai").is_file()
+            || !fasta_dir.join("hg19.fa").is_file()
+            || !fasta_dir.join("hg38.fa").is_file()
+        {
+            let script = workspace_root().join("harness/convert_fastas.py");
+            let status = Command::new("python3")
+                .arg(&script)
+                .arg("--data-root")
+                .arg(&droot)
+                .current_dir(&droot)
+                .status()
+                .expect("run convert_fastas.py");
+            assert!(status.success(), "convert_fastas.py failed");
+        }
+    });
+}
+
+fn write_indexed_bam(
+    path: &Path,
+    chr: &str,
+    len: usize,
+    recs: &[noodles::sam::alignment::record_buf::RecordBuf],
+) -> std::io::Result<()> {
+    use noodles::bam::bai;
+    use noodles::core::Position;
+    use noodles::csi::binning_index::index::reference_sequence::{bin::Chunk, index::LinearIndex};
+    use noodles::csi::binning_index::Indexer;
+    use noodles::sam::{
+        alignment::io::Write as _,
+        header::record::value::{map::ReferenceSequence as RefSeqMap, Map as HeaderMap},
+        Header,
+    };
+
+    let rs = HeaderMap::<RefSeqMap>::builder()
+        .set_length(len.try_into().expect("nonzero contig length"))
+        .build()
+        .expect("valid reference sequence header");
+    let hd = Header::builder().add_reference_sequence(chr, rs).build();
+    let bgzf = noodles::bgzf::io::Writer::new(std::fs::File::create(path)?);
+    let mut w = noodles::bam::io::Writer::from(bgzf);
+    w.write_alignment_header(&hd)?;
+    let mut indexer = Indexer::<LinearIndex>::new(14, 5).expect("valid BAI parameters");
+    for rec in recs {
+        let start = w.get_ref().virtual_position();
+        w.write_alignment_record(&hd, rec)?;
+        let end = w.get_ref().virtual_position();
+        let s = rec.alignment_start().expect("aligned record");
+        let e = Position::new(s.get() + rec.cigar().alignment_span().saturating_sub(1).max(1))
+            .unwrap_or(Position::MIN);
+        indexer
+            .add_record(Some((0, s, e, true)), Chunk::new(start, end))
+            .map_err(std::io::Error::other)?;
+    }
+    w.try_finish()?;
+    let mut bai_path = PathBuf::from(path);
+    bai_path.set_extension("bam.bai");
+    bai::io::Writer::new(std::fs::File::create(bai_path)?).write_index(&indexer.build(1))
 }
 
 fn base_cmd() -> Command {
@@ -668,4 +769,824 @@ fn upstream_toml_manifest_present_and_pinned() {
             "UPSTREAM.toml must contain '{expected}', got:\n{content}"
         );
     }
+}
+
+#[test]
+fn broken_pipe_stdout_and_stderr_exit_cleanly_and_preserve_stats_json() {
+    use std::io::{BufRead as _, BufReader, Read as _};
+
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    // Repeat micro.bed intervals 20x under `-p` so uncompressed output (~1.1 MB)
+    // far exceeds the 64 KB BufWriter + 64 KB OS pipe buffer, forcing mid-stream
+    // EPIPE (`BrokenPipe`) while `-th 4` workers are active.
+    let repeated_bed = dir.path().join("repeated_micro.bed");
+    let mut bed_text = String::new();
+    for i in 0..20 {
+        bed_text.push_str(&format!(
+            "chr1\t40\t260\tmicro_chr1_{i}\nchr2\t20\t250\tmicro_chr2_{i}\n"
+        ));
+    }
+    std::fs::write(&repeated_bed, &bed_text).expect("write repeated_micro.bed");
+
+    // 1. Captured stderr + dropped stdout after 1 line -> exit 0, zero panic text, valid stats.json
+    let stats_captured = dir.path().join("stats_captured_stderr.json");
+    let mut cmd_a = base_cmd();
+    cmd_a
+        .args([
+            "-G",
+            "fixtures/micro/micro.ref.fa",
+            "-b",
+            "fixtures/micro/micro.bam",
+            "-c",
+            "1",
+            "-S",
+            "2",
+            "-E",
+            "3",
+            "-g",
+            "4",
+            "-z",
+            "-p",
+            "-th",
+            "4",
+            "-y",
+        ])
+        .arg("--stats-json")
+        .arg(&stats_captured)
+        .arg(&repeated_bed)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child_a = cmd_a.spawn().expect("spawn vardictrust for stdout EPIPE");
+    drop(cmd_a);
+
+    let mut first_line = String::new();
+    {
+        let stdout_a = child_a.stdout.take().expect("child stdout");
+        let mut reader = BufReader::new(stdout_a);
+        let n = reader
+            .read_line(&mut first_line)
+            .expect("read first VCF header line");
+        assert!(n > 0, "expected at least one line on stdout");
+        assert!(
+            first_line.starts_with("##fileformat=VCF"),
+            "unexpected first stdout line: {first_line}"
+        );
+    } // drop child stdout immediately after 1 line -> downstream EPIPE
+
+    let mut stderr_bytes = Vec::new();
+    if let Some(mut err_pipe) = child_a.stderr.take() {
+        err_pipe
+            .read_to_end(&mut stderr_bytes)
+            .expect("drain child stderr");
+    }
+    let status_a = child_a.wait().expect("wait child_a");
+    let stderr_str = String::from_utf8_lossy(&stderr_bytes);
+    assert!(
+        status_a.success(),
+        "BrokenPipe on stdout must exit 0, got {status_a:?}, stderr:\n{stderr_str}"
+    );
+    #[cfg(unix)]
+    assert_eq!(status_a.signal(), None, "child died by signal on EPIPE");
+    assert_ne!(status_a.code(), Some(101), "child panicked on EPIPE");
+    assert!(
+        !stderr_str.contains("panicked"),
+        "stderr must not contain panic message: {stderr_str}"
+    );
+
+    // 2. Closed stderr under `-y` + dropped stdout after 1 line + `--stats-json` -> exit 0 + valid JSON
+    let stats_closed_err = dir.path().join("stats_closed_stderr.json");
+    let mut cmd_b = base_cmd();
+    cmd_b
+        .args([
+            "-G",
+            "fixtures/micro/micro.ref.fa",
+            "-b",
+            "fixtures/micro/micro.bam",
+            "-c",
+            "1",
+            "-S",
+            "2",
+            "-E",
+            "3",
+            "-g",
+            "4",
+            "-z",
+            "-p",
+            "-th",
+            "4",
+            "-y",
+        ])
+        .arg("--stats-json")
+        .arg(&stats_closed_err)
+        .arg(&repeated_bed)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child_b = cmd_b
+        .spawn()
+        .expect("spawn vardictrust with piped stderr and stdout");
+    drop(cmd_b);
+    // Close parent's stderr read end immediately so `-y` verbose writes hit EPIPE (`BrokenPipe`).
+    drop(child_b.stderr.take());
+
+    {
+        let stdout_b = child_b.stdout.take().expect("child_b stdout");
+        let mut reader = BufReader::new(stdout_b);
+        let mut line = String::new();
+        let n = reader.read_line(&mut line).expect("read first line");
+        assert!(n > 0 && line.starts_with("##fileformat=VCF"));
+    }
+    let status_b = child_b.wait().expect("wait child_b");
+    assert!(
+        status_b.success(),
+        "BrokenPipe on both `-y` stderr and stdout must exit 0, got {status_b:?}"
+    );
+    #[cfg(unix)]
+    assert_eq!(status_b.signal(), None, "child_b died by signal");
+    assert_ne!(status_b.code(), Some(101), "child_b panicked");
+
+    for stats_path in [&stats_captured, &stats_closed_err] {
+        let text = std::fs::read_to_string(stats_path).unwrap_or_else(|e| {
+            panic!(
+                "stats-json must be preserved on BrokenPipe ({}): {e}",
+                stats_path.display()
+            )
+        });
+        let trimmed = text.trim();
+        assert!(
+            trimmed.starts_with('{') && trimmed.ends_with('}'),
+            "stats-json must be a complete JSON object, got:\n{text}"
+        );
+        for key in [
+            "\"mode\": \"Simple\"",
+            "\"threads\": 4",
+            "\"regions_count\": 40",
+            "\"tiles_count\":",
+            "\"elapsed_ms\":",
+            "\"peak_rss_kb\":",
+            "\"exceptions_caught\": 0",
+        ] {
+            assert!(
+                text.contains(key),
+                "stats-json ({}) missing '{key}', got:\n{text}",
+                stats_path.display()
+            );
+        }
+    }
+}
+
+#[test]
+fn output_and_stats_json_reject_input_collisions_and_leave_no_empty_residue() {
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let root = workspace_root();
+
+    let ref_fa = dir.path().join("micro.ref.fa");
+    let ref_fai = dir.path().join("micro.ref.fa.fai");
+    let tumor_bam = dir.path().join("tumor.bam");
+    let tumor_bai = dir.path().join("tumor.bam.bai");
+    let normal_bam = dir.path().join("normal.bam");
+    let normal_bai = dir.path().join("normal.bam.bai");
+    let bed = dir.path().join("micro.bed");
+
+    std::fs::copy(root.join("fixtures/micro/micro.ref.fa"), &ref_fa).expect("copy ref.fa");
+    std::fs::copy(root.join("fixtures/micro/micro.ref.fa.fai"), &ref_fai).expect("copy ref.fa.fai");
+    std::fs::copy(root.join("fixtures/micro/micro.bam"), &tumor_bam).expect("copy tumor.bam");
+    std::fs::copy(root.join("fixtures/micro/micro.bam.bai"), &tumor_bai)
+        .expect("copy tumor.bam.bai");
+    std::fs::copy(root.join("fixtures/micro/micro.bam"), &normal_bam).expect("copy normal.bam");
+    std::fs::copy(root.join("fixtures/micro/micro.bam.bai"), &normal_bai)
+        .expect("copy normal.bam.bai");
+    std::fs::copy(root.join("fixtures/micro/micro.bed"), &bed).expect("copy micro.bed");
+
+    let protected = [
+        &ref_fa,
+        &ref_fai,
+        &tumor_bam,
+        &tumor_bai,
+        &normal_bam,
+        &normal_bai,
+        &bed,
+    ];
+    let snapshots: Vec<Vec<u8>> = protected
+        .iter()
+        .map(|p| std::fs::read(p).expect("snapshot input"))
+        .collect();
+
+    let assert_parse_collision = |cmd: &mut Command, label: &str| {
+        let out = cmd
+            .output()
+            .unwrap_or_else(|e| panic!("spawn {label}: {e}"));
+        assert!(!out.status.success(), "{label} must fail");
+        assert_ne!(out.status.code(), Some(101), "{label} panicked");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("parse:") && stderr.contains("must not point to the same file"),
+            "{label} must fail with Parse collision error, got: {stderr}"
+        );
+    };
+
+    // 1. --output <bam>
+    assert_parse_collision(
+        base_cmd()
+            .arg("-G")
+            .arg(&ref_fa)
+            .arg("-b")
+            .arg(&tumor_bam)
+            .args(["-c", "1", "-S", "2", "-E", "3", "-g", "4", "-z"])
+            .arg(&bed)
+            .arg("--output")
+            .arg(&tumor_bam),
+        "--output <bam>",
+    );
+
+    // 2. --output <bam.bai>
+    assert_parse_collision(
+        base_cmd()
+            .arg("-G")
+            .arg(&ref_fa)
+            .arg("-b")
+            .arg(&tumor_bam)
+            .args(["-c", "1", "-S", "2", "-E", "3", "-g", "4", "-z"])
+            .arg(&bed)
+            .arg("--output")
+            .arg(&tumor_bai),
+        "--output <bam.bai>",
+    );
+
+    // 3. -i -b "<tumor>|<normal>" --output <normal>
+    let paired_arg = format!("{}|{}", tumor_bam.display(), normal_bam.display());
+    assert_parse_collision(
+        base_cmd()
+            .arg("-G")
+            .arg(&ref_fa)
+            .arg("-i")
+            .arg("-b")
+            .arg(&paired_arg)
+            .args(["-c", "1", "-S", "2", "-E", "3", "-g", "4", "-z"])
+            .arg(&bed)
+            .arg("--output")
+            .arg(&normal_bam),
+        "-i -b <tumor>|<normal> --output <normal>",
+    );
+
+    // 4. --output <symlink_to_ref>
+    #[cfg(unix)]
+    {
+        let symlink_to_ref = dir.path().join("symlink_to_ref.vcf");
+        std::os::unix::fs::symlink(&ref_fa, &symlink_to_ref).expect("symlink ref.fa");
+        assert_parse_collision(
+            base_cmd()
+                .arg("-G")
+                .arg(&ref_fa)
+                .arg("-b")
+                .arg(&tumor_bam)
+                .args(["-c", "1", "-S", "2", "-E", "3", "-g", "4", "-z"])
+                .arg(&bed)
+                .arg("--output")
+                .arg(&symlink_to_ref),
+            "--output <symlink_to_ref>",
+        );
+    }
+
+    // 5. --stats-json <bed>
+    assert_parse_collision(
+        base_cmd()
+            .arg("-G")
+            .arg(&ref_fa)
+            .arg("-b")
+            .arg(&tumor_bam)
+            .args(["-c", "1", "-S", "2", "-E", "3", "-g", "4", "-z"])
+            .arg(&bed)
+            .arg("--stats-json")
+            .arg(&bed),
+        "--stats-json <bed>",
+    );
+
+    // Verify zero truncation on any input/companion file
+    for (p, expected) in protected.iter().zip(snapshots.iter()) {
+        let actual = std::fs::read(p).expect("read protected input after collision checks");
+        assert!(
+            !actual.is_empty() && &actual == expected,
+            "input file {} was truncated or modified!",
+            p.display()
+        );
+    }
+
+    // 6. --output /dev/null --stats-json /dev/null succeeds on Unix
+    #[cfg(unix)]
+    {
+        let dev_null = base_cmd()
+            .arg("-G")
+            .arg(&ref_fa)
+            .arg("-b")
+            .arg(&tumor_bam)
+            .args([
+                "-R",
+                "chr1:40-260",
+                "--threads=1",
+                "--output",
+                "/dev/null",
+                "--stats-json",
+                "/dev/null",
+            ])
+            .output()
+            .expect("spawn --output /dev/null --stats-json /dev/null");
+        assert!(
+            dev_null.status.success(),
+            "--output /dev/null --stats-json /dev/null failed: {}",
+            String::from_utf8_lossy(&dev_null.stderr)
+        );
+    }
+
+    // 7. Malformed `-R chr1:bad --output new.vcf.gz` leaves NO 28-byte `new.vcf.gz` residue
+    let new_vcf_gz = dir.path().join("new.vcf.gz");
+    let new_stats = dir.path().join("new_stats.json");
+    let bad_region = base_cmd()
+        .arg("-G")
+        .arg(&ref_fa)
+        .arg("-b")
+        .arg(&tumor_bam)
+        .args(["-R", "chr1:bad", "--threads=1"])
+        .arg("--output")
+        .arg(&new_vcf_gz)
+        .arg("--stats-json")
+        .arg(&new_stats)
+        .output()
+        .expect("spawn malformed -R chr1:bad --output new.vcf.gz");
+    assert!(!bad_region.status.success(), "-R chr1:bad must fail");
+    let bad_stderr = String::from_utf8_lossy(&bad_region.stderr);
+    assert!(
+        bad_stderr.contains("parse:"),
+        "expected Parse error on -R chr1:bad, got: {bad_stderr}"
+    );
+    assert!(
+        !new_vcf_gz.exists(),
+        "malformed -R chr1:bad must leave NO 28-byte new.vcf.gz residue"
+    );
+    assert!(
+        !new_stats.exists(),
+        "malformed -R chr1:bad must not commit stats.json"
+    );
+}
+
+#[test]
+fn bgzf_tbi_somatic_amplicon_and_sv_end_to_end() {
+    use noodles::csi::BinningIndex as _;
+    use std::io::Read as _;
+
+    ensure_fastas_converted();
+    let droot = data_root();
+    let ref_hg19 = droot.join("VarDictJava/testdata/fastas/hg19.fa");
+    let bam_dir =
+        droot.join("VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests");
+    let dir = tempfile::TempDir::new().expect("tempdir");
+
+    let query_bgzf_tbi = |vcf_path: &Path, tbi_path: &Path, region_str: &str| -> Vec<String> {
+        // Decompress via `bgzf::io::IndexedReader` to verify valid BGZF framing
+        let mut bgzf_indexed = noodles::bgzf::io::IndexedReader::new(
+            std::fs::File::open(vcf_path).expect("open BGZF"),
+            noodles::bgzf::gzi::Index::default(),
+        );
+        let mut raw_vcf = String::new();
+        bgzf_indexed
+            .read_to_string(&mut raw_vcf)
+            .expect("decompress BGZF stream");
+        assert!(
+            raw_vcf.contains("#CHROM\tPOS\t"),
+            "BGZF output {} missing VCF header",
+            vcf_path.display()
+        );
+
+        // Read `.tbi` via `noodles::tabix` and verify both binning index chunks and VCF query records
+        let index = noodles::tabix::fs::read(tbi_path).expect("read .tbi");
+        let hdr = index.header().expect("tabix header");
+        assert_eq!(
+            hdr.format(),
+            noodles::csi::binning_index::index::header::Format::Vcf
+        );
+        let region: noodles::core::Region = region_str.parse().expect("parse query region");
+        let ref_seq_id = hdr
+            .reference_sequence_names()
+            .get_index_of(region.name())
+            .expect("contig present in .tbi header");
+        let chunks = index
+            .query(ref_seq_id, region.interval())
+            .expect("query .tbi chunks");
+        assert!(
+            !chunks.is_empty(),
+            "expected non-empty .tbi chunks for {region_str} in {}",
+            tbi_path.display()
+        );
+
+        // Seek BGZF virtual-position chunks and collect overlapping VCF lines (honoring INFO/END=)
+        let mut vcf_reader = noodles::vcf::io::IndexedReader::new(
+            std::fs::File::open(vcf_path).expect("open indexed VCF"),
+            index,
+        );
+        let vcf_header = vcf_reader.read_header().expect("read VCF header");
+        let query = vcf_reader
+            .query(&vcf_header, &region)
+            .expect("query indexed VCF");
+        query
+            .records()
+            .map(|r| {
+                let rec = r.expect("valid VCF record");
+                let pos = rec
+                    .variant_start()
+                    .expect("POS present")
+                    .expect("valid POS")
+                    .get();
+                format!(
+                    "{}\t{pos}\t.\t{}\t{}\t.\t.\t{}",
+                    rec.reference_sequence_name(),
+                    rec.reference_bases(),
+                    rec.alternate_bases().as_ref(),
+                    rec.info().as_ref(),
+                )
+            })
+            .collect()
+    };
+
+    // 1. Somatic: `--output som.vcf.gz --tbi` (`-b "tumor|normal"`)
+    let som_vcf_gz = dir.path().join("som.vcf.gz");
+    let som_tbi = dir.path().join("som.vcf.gz.tbi");
+    let som_bams = format!(
+        "{}|{}",
+        bam_dir.join("ArgumentNA_Tumor.bam").display(),
+        bam_dir.join("ArgumentNA_Normal.bam").display()
+    );
+    let som_run = base_cmd()
+        .arg("-G")
+        .arg(&ref_hg19)
+        .arg("-b")
+        .arg(&som_bams)
+        .args([
+            "-R",
+            "chr7:140453010-140453158:testbed",
+            "-z",
+            "-f",
+            "0.001",
+            "--threads=2",
+        ])
+        .arg("--output")
+        .arg(&som_vcf_gz)
+        .arg("--tbi")
+        .output()
+        .expect("spawn somatic --tbi");
+    assert!(
+        som_run.status.success(),
+        "somatic --tbi failed: {}",
+        String::from_utf8_lossy(&som_run.stderr)
+    );
+    let som_hits = query_bgzf_tbi(&som_vcf_gz, &som_tbi, "chr7:140453030-140453040");
+    assert!(
+        som_hits.iter().any(|l| l.contains("STATUS=")),
+        "expected somatic STATUS= record in chr7:140453030-140453040, got: {som_hits:?}"
+    );
+
+    // 2. Amplicon: `--output amp.vcf.bgz --index` (`-a`)
+    let amp_bed = dir.path().join("amp.bed");
+    std::fs::write(&amp_bed, "chr1\t81\t140\tmicro_amp\t0\t+\t81\t140\n").expect("write amp.bed");
+    let amp_vcf_bgz = dir.path().join("amp.vcf.bgz");
+    let amp_tbi = dir.path().join("amp.vcf.bgz.tbi");
+    let amp_run = base_cmd()
+        .args([
+            "-G",
+            "fixtures/micro/micro.ref.fa",
+            "-b",
+            "fixtures/micro/micro.bam",
+            "-a",
+            "30:0.5",
+            "-f",
+            "0.01",
+            "-r",
+            "1",
+            "-z",
+            "-c",
+            "1",
+            "-S",
+            "2",
+            "-E",
+            "3",
+            "-g",
+            "4",
+            "--threads=2",
+        ])
+        .arg(&amp_bed)
+        .arg("--output")
+        .arg(&amp_vcf_bgz)
+        .arg("--index")
+        .output()
+        .expect("spawn amplicon .vcf.bgz --index");
+    assert!(
+        amp_run.status.success(),
+        "amplicon --index failed: {}",
+        String::from_utf8_lossy(&amp_run.stderr)
+    );
+    let amp_hits = query_bgzf_tbi(&amp_vcf_bgz, &amp_tbi, "chr1:95-105");
+    assert!(
+        amp_hits
+            .iter()
+            .any(|l| l.starts_with("chr1\t101\t") && (l.contains("GDAMP=") || l.contains("TLAMP="))),
+        "expected amplicon GDAMP/TLAMP record at chr1:101, got: {amp_hits:?}"
+    );
+
+    // 3. Symbolic SV: `--output sv.vcf.gz --tbi`, mid-span query between POS=89700386 and END=89712332
+    let sv_vcf_gz = dir.path().join("sv.vcf.gz");
+    let sv_tbi = dir.path().join("sv.vcf.gz.tbi");
+    let sv_bam = bam_dir.join("Colo829.chr10.DELDiscReverse.bam");
+    let sv_run = base_cmd()
+        .arg("-G")
+        .arg(&ref_hg19)
+        .arg("-b")
+        .arg(&sv_bam)
+        .args([
+            "-R",
+            "chr10:89712340-89713976:testbed",
+            "-z",
+            "-f",
+            "0.001",
+            "--threads=2",
+        ])
+        .arg("--output")
+        .arg(&sv_vcf_gz)
+        .arg("--tbi")
+        .output()
+        .expect("spawn SV --tbi");
+    assert!(
+        sv_run.status.success(),
+        "SV --tbi failed: {}",
+        String::from_utf8_lossy(&sv_run.stderr)
+    );
+    // Mid-span window chr10:89706000-89706100 sits >5.6 kbp past POS=89700386 and >6.2 kbp
+    // before INFO/END=89712332, containing zero point variants; only `END=` indexing returns `<DEL>`.
+    let sv_hits = query_bgzf_tbi(&sv_vcf_gz, &sv_tbi, "chr10:89706000-89706100");
+    assert!(
+        sv_hits
+            .iter()
+            .any(|l| l.starts_with("chr10\t89700386\t") && l.contains("\t<DEL>\t") && l.contains("END=89712332")),
+        "mid-span .tbi query must recover symbolic <DEL> spanning POS=89700386..END=89712332, got: {sv_hits:?}"
+    );
+}
+
+#[test]
+fn hostile_missing_qual_huge_deletion_and_i32_min_tlen_do_not_panic_or_oom() {
+    use noodles::core::Position;
+    use noodles::sam::alignment::{
+        record::{
+            cigar::{op::Kind, Op},
+            Flags,
+        },
+        record_buf::{Cigar, QualityScores, RecordBuf},
+    };
+
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let ref_fa = dir.path().join("hostile_ref.fa");
+    let ref_fai = dir.path().join("hostile_ref.fa.fai");
+    let ref_len = 5000usize;
+    std::fs::write(&ref_fa, format!(">chr1\n{}\n", "A".repeat(ref_len))).expect("write ref.fa");
+    std::fs::write(&ref_fai, format!("chr1\t{ref_len}\t6\t{ref_len}\t5001\n"))
+        .expect("write ref.fa.fai");
+
+    let mut snv_seq = vec![b'A'; 50];
+    snv_seq[20] = b'C'; // SNV at chr1:100 when alignment_start == 80
+    let match_50: Cigar = [Op::new(Kind::Match, 50)].into_iter().collect();
+
+    // 1. `*` missing base quality scores (`QualityScores::default()`)
+    let missing_qual_read = RecordBuf::builder()
+        .set_name("missing_qual_star")
+        .set_flags(Flags::empty())
+        .set_reference_sequence_id(0)
+        .set_alignment_start(Position::try_from(75usize).unwrap())
+        .set_cigar(match_50.clone())
+        .set_sequence(snv_seq.clone().into())
+        .set_quality_scores(QualityScores::default())
+        .build();
+
+    // 2. Valid high-quality SNV support reads at chr1:80 (variant at chr1:100)
+    let valid_snv_1 = RecordBuf::builder()
+        .set_name("valid_snv_1")
+        .set_flags(Flags::empty())
+        .set_reference_sequence_id(0)
+        .set_alignment_start(Position::try_from(80usize).unwrap())
+        .set_cigar(match_50.clone())
+        .set_sequence(snv_seq.clone().into())
+        .set_quality_scores(vec![40u8; 50].into())
+        .build();
+    let valid_snv_2 = RecordBuf::builder()
+        .set_name("valid_snv_2")
+        .set_flags(Flags::empty())
+        .set_reference_sequence_id(0)
+        .set_alignment_start(Position::try_from(80usize).unwrap())
+        .set_cigar(match_50)
+        .set_sequence(snv_seq.into())
+        .set_quality_scores(vec![40u8; 50].into())
+        .build();
+
+    // 3. Paired read with `TLEN = i32::MIN` (-2147483648) and soft-clip
+    let sc_cigar: Cigar = [Op::new(Kind::SoftClip, 10), Op::new(Kind::Match, 40)]
+        .into_iter()
+        .collect();
+    let i32_min_tlen_read = RecordBuf::builder()
+        .set_name("tlen_i32_min")
+        .set_flags(Flags::SEGMENTED | Flags::FIRST_SEGMENT | Flags::MATE_REVERSE_COMPLEMENTED)
+        .set_reference_sequence_id(0)
+        .set_alignment_start(Position::try_from(90usize).unwrap())
+        .set_mate_reference_sequence_id(0)
+        .set_mate_alignment_start(Position::try_from(500usize).unwrap())
+        .set_template_length(i32::MIN)
+        .set_cigar(sc_cigar)
+        .set_sequence(vec![b'A'; 50].into())
+        .set_quality_scores(vec![35u8; 50].into())
+        .build();
+
+    // 4. `1M268435455D1M` (28-bit max BAM CIGAR deletion op)
+    let huge_del_cigar: Cigar = [
+        Op::new(Kind::Match, 1),
+        Op::new(Kind::Deletion, 268_435_455),
+        Op::new(Kind::Match, 1),
+    ]
+    .into_iter()
+    .collect();
+    let huge_del_read = RecordBuf::builder()
+        .set_name("huge_268m_del")
+        .set_flags(Flags::empty())
+        .set_reference_sequence_id(0)
+        .set_alignment_start(Position::try_from(120usize).unwrap())
+        .set_cigar(huge_del_cigar)
+        .set_sequence(b"AA".to_vec().into())
+        .set_quality_scores(vec![40u8; 2].into())
+        .build();
+
+    let recs = vec![
+        missing_qual_read,
+        valid_snv_1,
+        valid_snv_2,
+        i32_min_tlen_read,
+        huge_del_read,
+    ];
+    let hostile_bam = dir.path().join("hostile.bam");
+    write_indexed_bam(&hostile_bam, "chr1", 300_000_000, &recs).expect("write hostile.bam");
+
+    let out = base_cmd()
+        .arg("-G")
+        .arg(&ref_fa)
+        .arg("-b")
+        .arg(&hostile_bam)
+        .args(["-R", "chr1:1-1000", "-f", "0.01", "--threads=2"])
+        .output()
+        .expect("spawn vardictrust on hostile.bam");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "hostile BAM must execute cleanly without OOM or panic, status={:?}, stderr:\n{stderr}",
+        out.status
+    );
+    #[cfg(unix)]
+    assert_eq!(out.status.signal(), None, "hostile BAM died by signal");
+    assert_ne!(out.status.code(), Some(101), "hostile BAM panicked");
+    assert!(!stderr.contains("panicked"), "unexpected panic in stderr");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("#CHROM\tPOS\t"));
+    assert!(
+        stdout.contains("chr1\t100\t"),
+        "valid SNV at chr1:100 must still be called alongside hostile records, got:\n{stdout}"
+    );
+}
+
+#[test]
+fn commons_cli_single_dash_flags_and_zero_bed_col_behavior() {
+    let base_region_args = [
+        "-G",
+        "fixtures/micro/micro.ref.fa",
+        "-b",
+        "fixtures/micro/micro.bam",
+        "-R",
+        "chr1:40-260",
+        "--threads=1",
+    ];
+
+    // Baseline default run
+    let default_out = base_cmd()
+        .args(base_region_args)
+        .output()
+        .expect("spawn default baseline");
+    assert!(default_out.status.success());
+
+    // 1. `-downsample 0.5` -> Unsupported error (exit non-zero, no panic)
+    let downsample_out = base_cmd()
+        .args(base_region_args)
+        .args(["-downsample", "0.5"])
+        .output()
+        .expect("spawn -downsample 0.5");
+    assert!(!downsample_out.status.success());
+    assert_ne!(downsample_out.status.code(), Some(101));
+    let downsample_stderr = String::from_utf8_lossy(&downsample_out.stderr);
+    assert!(
+        downsample_stderr.contains("unsupported:")
+            && downsample_stderr.contains("-downsample not implemented in v1.0; use VarDictJava"),
+        "expected Unsupported error for -downsample 0.5, got: {downsample_stderr}"
+    );
+
+    // 2. `-adaptor ACGTACGTACGT` -> accepted Commons-CLI single-dash long flag
+    let adaptor_out = base_cmd()
+        .args(base_region_args)
+        .args(["-adaptor", "ACGTACGTACGT"])
+        .output()
+        .expect("spawn -adaptor ACGTACGTACGT");
+    assert!(
+        adaptor_out.status.success(),
+        "-adaptor failed: {}",
+        String::from_utf8_lossy(&adaptor_out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&adaptor_out.stdout).contains("chr1\t101\t"));
+
+    // 3. `-fisher` matches `--fisher` byte-for-byte
+    let fisher_single = base_cmd()
+        .args(base_region_args)
+        .arg("-fisher")
+        .output()
+        .expect("spawn -fisher");
+    let fisher_double = base_cmd()
+        .args(base_region_args)
+        .arg("--fisher")
+        .output()
+        .expect("spawn --fisher");
+    assert!(fisher_single.status.success());
+    assert!(fisher_double.status.success());
+    assert_eq!(fisher_single.stdout, fisher_double.stdout);
+    let fisher_vcf = String::from_utf8_lossy(&fisher_single.stdout);
+    assert!(fisher_vcf.contains("SBF=") && fisher_vcf.contains("ODDRATIO="));
+
+    // 4. `-N -fisher` preserves `-fisher` verbatim as the sample name (not rewritten to `--fisher`)
+    let sample_dash_fisher = base_cmd()
+        .args(base_region_args)
+        .args(["-N", "-fisher"])
+        .output()
+        .expect("spawn -N -fisher");
+    assert!(
+        sample_dash_fisher.status.success(),
+        "-N -fisher failed: {}",
+        String::from_utf8_lossy(&sample_dash_fisher.stderr)
+    );
+    let sample_vcf = String::from_utf8_lossy(&sample_dash_fisher.stdout);
+    assert!(
+        sample_vcf.contains("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t-fisher\n"),
+        "-N -fisher must set VCF sample header to literal '-fisher', got:\n{sample_vcf}"
+    );
+
+    // 5. `-k` (bare optional-arg flag) accepted and matches default `realign = 1`
+    let bare_k = base_cmd()
+        .args(base_region_args)
+        .arg("-k")
+        .output()
+        .expect("spawn bare -k");
+    assert!(
+        bare_k.status.success(),
+        "bare -k failed: {}",
+        String::from_utf8_lossy(&bare_k.stderr)
+    );
+    assert_eq!(bare_k.stdout, default_out.stdout);
+
+    // 6. `-c 0`: Parse error without `-R`, accepted when `-R` is supplied
+    let c0_no_region = base_cmd()
+        .args([
+            "-G",
+            "fixtures/micro/micro.ref.fa",
+            "-b",
+            "fixtures/micro/micro.bam",
+            "-c",
+            "0",
+            "-S",
+            "2",
+            "-E",
+            "3",
+            "-g",
+            "4",
+            "-z",
+            "fixtures/micro/micro.bed",
+        ])
+        .output()
+        .expect("spawn -c 0 without -R");
+    assert!(
+        !c0_no_region.status.success(),
+        "-c 0 without -R must fail with Parse error"
+    );
+    assert_ne!(c0_no_region.status.code(), Some(101));
+    let c0_stderr = String::from_utf8_lossy(&c0_no_region.stderr);
+    assert!(
+        c0_stderr.contains("parse:") && c0_stderr.contains("Invalid -c value: 0"),
+        "expected Parse error for -c 0 without -R, got: {c0_stderr}"
+    );
+
+    let c0_with_region = base_cmd()
+        .args(base_region_args)
+        .args(["-c", "0"])
+        .output()
+        .expect("spawn -c 0 with -R");
+    assert!(
+        c0_with_region.status.success(),
+        "-c 0 with -R must succeed, got stderr: {}",
+        String::from_utf8_lossy(&c0_with_region.stderr)
+    );
+    assert_eq!(c0_with_region.stdout, default_out.stdout);
 }
