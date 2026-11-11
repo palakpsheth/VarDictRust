@@ -145,7 +145,7 @@ VarDictRust ships four repository-specific [Agent Skills](AGENTS.md#19-repositor
 
 **Discovery across AI tools:** `.agents/skills/` is committed in-tree and discovered automatically by Gemini CLI, OpenAI Codex, GitHub Copilot, Cursor, and OpenCode. Contributors can also run the bundled release consistency validator directly:
 ```bash
-python3 .agents/skills/vardictrust-release/scripts/check_release_consistency.py --version 1.0.7 --phase pre-tag
+python3 .agents/skills/vardictrust-release/scripts/check_release_consistency.py --version 1.0.7 --phase pre-tag --verify-cargo-list
 ```
 
 ---
@@ -224,7 +224,7 @@ Before submitting any pull request, run the 6-stage PR validation suite defined 
 bash harness/pr_check.sh
 ```
 This suite completes in `<25s` using the pinned golden baseline store and automatically verifies:
-1. **Stage 1 (Hygiene & Unit Tests):** Formatting, Clippy lints, and all 519 workspace unit and integration tests ([Level 1](docs/testing/test-matrix-and-ci-audit.md#level-1)).
+1. **Stage 1 (Hygiene & Unit Tests):** Formatting, Clippy lints, and all 590 workspace unit and integration tests ([Level 1](docs/testing/test-matrix-and-ci-audit.md#level-1)).
 2. **Stage 2 (Crash Robustness):** PR #402, missing index #187, and Issue #341 family fixtures (executed within the workspace test run).
 3. **Stage 3 (Upstream Integration Corpus):** 92 fixtures ([Level 2](docs/testing/test-matrix-and-ci-audit.md#level-2-upstream-integration-regression-corpus-92-fixtures)) across 8 parallel workers, asserting `91 PASS / 1 XFAIL` ([UB-4](docs/upstream-bugs.md#ub-4) upstream fixture defect).
 4. **Stage 4 (Dual-Engine Differential Parity):** Micro differential fixture, all 10 standard slices (`s1a..s9`), 17-modality extended coverage (`--no-record`), and 18-slice multimodal suite (`--no-record`) against the VarDictJava oracle ([Level 3](docs/testing/test-matrix-and-ci-audit.md#level-3-dual-engine-differential-parity-testing)).
@@ -362,7 +362,7 @@ cargo package --list -p vardictrust
 # 6. Run Tier B Release Recertification (refreshes any stale evidence JSONs, syncs documentation SHA-256/fingerprint tables, and runs acceptance.sh 8/8) + 6-stage PR gate (--no-record, zero working-tree dirtiness)
 bash harness/recertify.sh
 bash harness/pr_check.sh
-python3 .agents/skills/vardictrust-release/scripts/check_release_consistency.py --version X.Y.Z --phase pre-tag --require-head-fingerprint
+python3 .agents/skills/vardictrust-release/scripts/check_release_consistency.py --version X.Y.Z --phase pre-tag --require-head-fingerprint --verify-cargo-list
 ```
 
 ### 9.4 Phase 1 — Opening & Merging the Release PR

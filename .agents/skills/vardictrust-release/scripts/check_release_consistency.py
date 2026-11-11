@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """VarDictRust Release Consistency & Evidence Validator (stdlib-only).
 
-Verifies that all version-bearing files, workspace test counts (519 total:
-350 core lib + 110 corpus_parity + 26 engine_behavior + 2 amplicon_stream_mem
-+ 3 cram_stack + 19 CLI bin + 9 CLI integration binary tests), engine
+Verifies that all version-bearing files, workspace test counts (590 total:
+406 core lib + 110 corpus_parity + 29 engine_behavior + 2 amplicon_stream_mem
++ 3 cram_stack + 23 CLI bin + 17 CLI integration binary tests), engine
 fingerprints (FP & PERF_FP), and 16 benchmarks/evidence/*.json SHA-256
 manifests are synchronized for a target release version and phase.
 """
@@ -21,14 +21,14 @@ import sys
 VALID_PHASES = ("pre-tag", "post-tag", "post-bioconda", "post-nfcore")
 
 EXPECTED_TEST_COUNTS = {
-    "total_workspace": 519,
-    "core_lib": 350,
+    "total_workspace": 590,
+    "core_lib": 406,
     "corpus_parity": 110,
-    "engine_behavior": 26,
+    "engine_behavior": 29,
     "amplicon_stream_mem": 2,
     "cram_stack": 3,
-    "cli_bin": 19,
-    "cli_integration": 9,
+    "cli_bin": 23,
+    "cli_integration": 17,
     "harness_self_tests": 36,
 }
 
@@ -224,6 +224,7 @@ def check_pre_tag_surfaces(repo_root: Path, version: str, errors: list[str]) -> 
     )
 
     # 11. README.md
+    tc = EXPECTED_TEST_COUNTS
     require_regex(
         repo_root,
         "README.md",
@@ -241,15 +242,29 @@ def check_pre_tag_surfaces(repo_root: Path, version: str, errors: list[str]) -> 
     require_regex(
         repo_root,
         "README.md",
-        r"519 automated Cargo workspace tests \(350 core library tests, 110 corpus and modality parity tests, 26 engine behavior tests, 2 amplicon streaming memory tests, 3 CRAM stack tests, 19 CLI tests, and 9 CLI integration binary tests\)",
-        "README.md exact 519 test breakdown (350 + 110 + 26 + 2 + 3 + 19 + 9)",
+        (
+            rf"{tc['total_workspace']} automated Cargo workspace tests "
+            rf"\({tc['core_lib']} core library tests, "
+            rf"{tc['corpus_parity']} corpus and modality parity tests, "
+            rf"{tc['engine_behavior']} engine behavior tests, "
+            rf"{tc['amplicon_stream_mem']} amplicon streaming memory tests, "
+            rf"{tc['cram_stack']} CRAM stack tests, "
+            rf"{tc['cli_bin']} CLI tests, and "
+            rf"{tc['cli_integration']} CLI integration binary tests\)"
+        ),
+        (
+            f"README.md exact {tc['total_workspace']} test breakdown "
+            f"({tc['core_lib']} + {tc['corpus_parity']} + {tc['engine_behavior']} + "
+            f"{tc['amplicon_stream_mem']} + {tc['cram_stack']} + {tc['cli_bin']} + "
+            f"{tc['cli_integration']})"
+        ),
         errors,
     )
     require_regex(
         repo_root,
         "README.md",
-        r"36 harness diagnostic self-tests",
-        "README.md cites 36 harness diagnostic self-tests",
+        rf"{tc['harness_self_tests']} harness diagnostic self-tests",
+        f"README.md cites {tc['harness_self_tests']} harness diagnostic self-tests",
         errors,
     )
     forbid_regex(
@@ -280,8 +295,8 @@ def check_pre_tag_surfaces(repo_root: Path, version: str, errors: list[str]) -> 
     require_regex(
         repo_root,
         "DIVERGENCES.md",
-        r"350 PASS.*519 PASS",
-        "DIVERGENCES.md cites 350 core lib / 519 workspace tests",
+        rf"{tc['core_lib']} PASS.*{tc['total_workspace']} PASS",
+        f"DIVERGENCES.md cites {tc['core_lib']} core lib / {tc['total_workspace']} workspace tests",
         errors,
         flags=re.MULTILINE | re.DOTALL,
     )
@@ -304,8 +319,8 @@ def check_pre_tag_surfaces(repo_root: Path, version: str, errors: list[str]) -> 
     require_regex(
         repo_root,
         "CONTRIBUTING.md",
-        r"all 519 workspace unit and integration tests",
-        "CONTRIBUTING.md §4.1 cites 519 workspace tests",
+        rf"all {tc['total_workspace']} workspace unit and integration tests",
+        f"CONTRIBUTING.md §5.4 cites {tc['total_workspace']} workspace tests",
         errors,
     )
     require_regex(
@@ -334,8 +349,8 @@ def check_pre_tag_surfaces(repo_root: Path, version: str, errors: list[str]) -> 
     require_regex(
         repo_root,
         "harness/README.md",
-        r"36 diagnostic test scripts",
-        "harness/README.md cites 36 diagnostic test scripts",
+        rf"{tc['harness_self_tests']} diagnostic test scripts",
+        f"harness/README.md cites {tc['harness_self_tests']} diagnostic test scripts",
         errors,
     )
     forbid_regex(
@@ -357,15 +372,15 @@ def check_pre_tag_surfaces(repo_root: Path, version: str, errors: list[str]) -> 
     require_regex(
         repo_root,
         "docs/testing/test-matrix-and-ci-audit.md",
-        r"\b519\b",
-        "test-matrix-and-ci-audit.md cites 519 workspace tests",
+        rf"\b{tc['total_workspace']}\b",
+        f"test-matrix-and-ci-audit.md cites {tc['total_workspace']} workspace tests",
         errors,
     )
     require_regex(
         repo_root,
         "docs/testing/test-matrix-and-ci-audit.md",
-        r"36 specialized scripts(?:\*\*)? \(25 shell tests and 11 Python unit test suites\)",
-        "test-matrix-and-ci-audit.md cites 36 specialized scripts (25 shell + 11 Python)",
+        rf"{tc['harness_self_tests']} specialized scripts(?:\*\*)? \(25 shell tests and 11 Python unit test suites\)",
+        f"test-matrix-and-ci-audit.md cites {tc['harness_self_tests']} specialized scripts (25 shell + 11 Python)",
         errors,
     )
     forbid_regex(
@@ -403,8 +418,8 @@ def check_pre_tag_surfaces(repo_root: Path, version: str, errors: list[str]) -> 
     require_regex(
         repo_root,
         "wiki/Home.md",
-        r"\b519\b",
-        "wiki/Home.md cites 519 workspace tests",
+        rf"\b{tc['total_workspace']}\b",
+        f"wiki/Home.md cites {tc['total_workspace']} workspace tests",
         errors,
     )
     forbid_regex(
@@ -553,6 +568,85 @@ def check_downstream_phases(
         )
 
 
+def _count_cargo_target_tests(
+    repo_root: Path, cargo_args: list[str], errors: list[str]
+) -> int | None:
+    res = subprocess.run(
+        ["cargo", "test", *cargo_args, "--", "--list"],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if res.returncode != 0:
+        errors.append(
+            f"cargo test {' '.join(cargo_args)} -- --list failed "
+            f"(exit {res.returncode}): {res.stderr.strip()}"
+        )
+        return None
+    return sum(
+        1 for line in res.stdout.splitlines() if re.search(r": test$", line) is not None
+    )
+
+
+def check_cargo_test_counts(repo_root: Path, errors: list[str]) -> None:
+    single_targets = (
+        ("core_lib", ["-p", "vardictrust-core", "--lib"]),
+        ("corpus_parity", ["-p", "vardictrust-core", "--test", "corpus_parity"]),
+        ("engine_behavior", ["-p", "vardictrust-core", "--test", "engine_behavior"]),
+        (
+            "amplicon_stream_mem",
+            ["-p", "vardictrust-core", "--test", "amplicon_stream_mem"],
+        ),
+        ("cram_stack", ["-p", "vardictrust-core", "--test", "cram_stack"]),
+        ("cli_bin", ["-p", "vardictrust", "--bin", "vardictrust"]),
+    )
+    cli_integration_targets = ("robustness", "profile_smoke", "version")
+
+    observed: dict[str, int] = {}
+    all_ok = True
+    for key, args in single_targets:
+        cnt = _count_cargo_target_tests(repo_root, args, errors)
+        if cnt is None:
+            all_ok = False
+        else:
+            observed[key] = cnt
+
+    cli_int_sum = 0
+    cli_int_ok = True
+    for tgt in cli_integration_targets:
+        cnt = _count_cargo_target_tests(
+            repo_root, ["-p", "vardictrust", "--test", tgt], errors
+        )
+        if cnt is None:
+            cli_int_ok = False
+            all_ok = False
+        else:
+            cli_int_sum += cnt
+    if cli_int_ok:
+        observed["cli_integration"] = cli_int_sum
+
+    if all_ok:
+        observed["total_workspace"] = sum(observed.values())
+
+    for key in (
+        "core_lib",
+        "corpus_parity",
+        "engine_behavior",
+        "amplicon_stream_mem",
+        "cram_stack",
+        "cli_bin",
+        "cli_integration",
+        "total_workspace",
+    ):
+        if key in observed and observed[key] != EXPECTED_TEST_COUNTS[key]:
+            errors.append(
+                f"Cargo test count mismatch for {key}: "
+                f"expected {EXPECTED_TEST_COUNTS[key]}, "
+                f"cargo --list reported {observed[key]}"
+            )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Validate VarDictRust release version and evidence consistency."
@@ -578,6 +672,11 @@ def main() -> int:
         "--require-head-fingerprint",
         action="store_true",
         help="Require benchmarks/evidence/*.json fingerprints to match live HEAD engine_fingerprint.sh (used during release certification)",
+    )
+    parser.add_argument(
+        "--verify-cargo-list",
+        action="store_true",
+        help="Run cargo test -- --list across workspace library, binary, and integration targets (excluding benches and doctests) to verify EXPECTED_TEST_COUNTS",
     )
     args = parser.parse_args()
 
@@ -606,6 +705,8 @@ def main() -> int:
         args.repo_root, args.require_head_fingerprint, errors
     )
     check_downstream_phases(args.repo_root, version, args.phase, errors)
+    if args.verify_cargo_list:
+        check_cargo_test_counts(args.repo_root, errors)
 
     if errors:
         print(
