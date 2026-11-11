@@ -236,6 +236,19 @@ pub enum VardictError {
     Other(String),
 }
 
+impl VardictError {
+    /// Returns `true` when `self` wraps an OS `EPIPE` / [`std::io::ErrorKind::BrokenPipe`] error.
+    #[inline]
+    pub fn is_broken_pipe(&self) -> bool {
+        match self {
+            Self::Io(e) => {
+                e.kind() == std::io::ErrorKind::BrokenPipe || e.raw_os_error() == Some(32)
+            }
+            _ => false,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------

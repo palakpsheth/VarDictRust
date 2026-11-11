@@ -1591,4 +1591,46 @@ fn commons_cli_single_dash_flags_and_zero_bed_col_behavior() {
         String::from_utf8_lossy(&c0_with_region.stderr)
     );
     assert_eq!(c0_with_region.stdout, default_out.stdout);
+
+    // 7. Pre-existing --output .vcf.gz is preserved byte-for-byte on failed CLI run
+    let tmp = tempfile::TempDir::new().expect("tempdir");
+    let pre_vcf = tmp.path().join("existing.vcf.gz");
+    std::fs::write(&pre_vcf, b"PREEXISTING_VCF_BYTES").expect("seed existing.vcf.gz");
+    let fail_pre = base_cmd()
+        .args([
+            "-G",
+            "fixtures/micro/micro.ref.fa",
+            "-b",
+            "fixtures/micro/micro.bam",
+            "-R",
+            "chr1:not_a_coord",
+            "--output",
+        ])
+        .arg(&pre_vcf)
+        .output()
+        .expect("spawn failed run with pre-existing --output");
+    assert!(!fail_pre.status.success());
+    assert_eq!(
+        std::fs::read(&pre_vcf).expect("read pre_vcf"),
+        b"PREEXISTING_VCF_BYTES",
+        "failed CLI run must not truncate pre-existing --output file"
+    );
+
+    // 8. Non-UTF-8 OS CLI argument exits cleanly (code != 101, zero panic) on Unix
+    #[cfg(unix)]
+    {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt as _;
+        let bad_utf8 = base_cmd()
+            .arg(OsStr::from_bytes(b"\xff\xfe"))
+            .output()
+            .expect("spawn non-UTF-8 arg");
+        assert!(!bad_utf8.status.success());
+        assert_ne!(bad_utf8.status.code(), Some(101), "non-UTF-8 arg panicked");
+        let bad_stderr = String::from_utf8_lossy(&bad_utf8.stderr);
+        assert!(
+            !bad_stderr.contains("panicked") && bad_stderr.contains("not valid UTF-8"),
+            "expected clean UTF-8 Parse error without panic, got: {bad_stderr}"
+        );
+    }
 }

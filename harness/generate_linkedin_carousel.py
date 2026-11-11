@@ -326,18 +326,23 @@ def load_gcp_metrics(gcp_path: Path | None, expected_fp: str, explicit: bool = F
     return gcp_doc
 
 
+def read_workspace_version(cargo_toml_path: Path | None = None) -> str:
+    path = cargo_toml_path if cargo_toml_path is not None else ROOT / "Cargo.toml"
+    ver_m = re.search(
+        r'^\[workspace\.package\]\s*\n(?:(?!\[).*\n)*?version\s*=\s*"([^"]+)"',
+        path.read_text(encoding="utf-8"),
+        re.MULTILINE,
+    )
+    if not ver_m:
+        raise ValueError(f"Could not parse [workspace.package].version from {path}")
+    return f"v{ver_m.group(1)}"
+
+
 def build_slides(
     docs: dict[str, dict], rustc_ver: str, gcp_doc: dict | None = None
 ) -> tuple[list[SlideCanvas], str]:
     fp = docs["hg002-tier2.json"]["fingerprint"]
-    ver_m = re.search(
-        r'^\[workspace\.package\]\s*\n(?:(?!\[).*\n)*?version\s*=\s*"([^"]+)"',
-        (ROOT / "Cargo.toml").read_text(encoding="utf-8"),
-        re.MULTILINE,
-    )
-    if not ver_m:
-        raise ValueError(f"Could not parse [workspace.package].version from {ROOT / 'Cargo.toml'}")
-    ver = f"v{ver_m.group(1)}"
+    ver = read_workspace_version()
     gcp_ver = f"v{gcp_doc['meta']['version']}" if gcp_doc else ver
     gcp_fp = gcp_doc["meta"]["fingerprint"] if gcp_doc else fp
     cpp_ver = docs["hg002-tier2.json"]["extra"]["cpp_version"]

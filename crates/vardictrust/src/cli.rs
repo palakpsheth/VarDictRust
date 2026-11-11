@@ -67,24 +67,26 @@ fn is_known_single_dash_long_flag(flag: &str) -> bool {
 /// multi-char single-dash options (`-nosv`, `-nmfreq`, `-adaptor`, etc.).
 /// Returns `(unsupported_short_char, consumes_mandatory_next_token)`.
 fn classify_short_cluster(arg: &str) -> (Option<char>, bool) {
-    if arg.contains('=') {
-        return (None, false);
-    }
-    let Some(rest) = arg.strip_prefix('-') else {
+    let (head, has_eq) = match arg.split_once('=') {
+        Some((h, _)) => (h, true),
+        None => (arg, false),
+    };
+    let Some(rest) = head.strip_prefix('-') else {
         return (None, false);
     };
-    if rest.is_empty() || rest.starts_with('-') || is_known_single_dash_long_flag(arg) {
+    if rest.is_empty() || rest.starts_with('-') || is_known_single_dash_long_flag(head) {
         return (None, false);
     }
     for (idx, ch) in rest.char_indices() {
         let rem_empty = rest.get(idx + ch.len_utf8()..).is_none_or(str::is_empty);
+        let consumes_next = !has_eq && rem_empty;
         match ch {
             'C' => return (Some('C'), false),
-            'n' | 'T' | 'Z' => return (Some(ch), rem_empty),
+            'n' | 'T' | 'Z' => return (Some(ch), consumes_next),
             'G' | 'b' | 'f' | 'N' | 'R' | 'c' | 'S' | 'E' | 's' | 'e' | 'g' | 'r' | 'q' | 'Q'
             | 'P' | 'm' | 'M' | 'V' | 'L' | 'x' | 'X' | 'B' | 'o' | 'O' | 'I' | 'F' | 'w' | 'W'
             | 'A' | 'Y' | 'J' | 'j' | 'd' => {
-                return (None, rem_empty);
+                return (None, consumes_next);
             }
             'z' | 'k' | 'a' => return (None, false),
             'H' | '?' | 'h' | 'v' | 'i' | 'p' | 'D' | 't' | '3' | 'K' | 'u' | 'U' | 'y' => {}
@@ -229,12 +231,29 @@ pub fn normalize_args(args: &[String]) -> Vec<String> {
                 | "-dedup"
                 | "-debug"
                 | "-verbose"
-                | "-DP"
-                | "-default-printer"
-                | "-defaultPrinter"
         ) {
             out.push(format!("-{arg}"));
             i += 1;
+            continue;
+        } else if matches!(
+            arg.as_str(),
+            "-DP"
+                | "--DP"
+                | "-default-printer"
+                | "--default-printer"
+                | "-defaultPrinter"
+                | "--defaultPrinter"
+        ) {
+            if let Some(next) = args.get(i + 1).filter(|n| {
+                !n.starts_with('-')
+                    && (matches!(n.as_str(), "OUT" | "ERR") || has_region || i + 2 < args.len())
+            }) {
+                out.push(format!("--DP={next}"));
+                i += 2;
+            } else {
+                out.push("--DP=OUT".to_string());
+                i += 1;
+            }
             continue;
         } else if let Some((flag, val)) = arg.split_once('=').filter(|(f, _)| {
             matches!(
@@ -313,6 +332,13 @@ pub fn normalize_args(args: &[String]) -> Vec<String> {
             .filter(|v| !v.is_empty() && !v.starts_with('=') && parse_java_signed_i32(v).is_ok())
         {
             out.push(format!("-k={v}"));
+            i += 1;
+            continue;
+        } else if let Some(v) = arg
+            .strip_prefix("-a")
+            .filter(|v| !v.is_empty() && !v.starts_with('=') && v.contains(':'))
+        {
+            out.push(format!("-a={v}"));
             i += 1;
             continue;
         } else if arg == "-a" || arg == "-amplicon" || arg == "--amplicon" {
@@ -529,7 +555,8 @@ pub struct Cli {
         short = 'a',
         long = "amplicon",
         num_args(0..=1),
-        default_missing_value = "10:0.95"
+        default_missing_value = "10:0.95",
+        require_equals = true
     )]
     pub amplicon: Vec<String>,
 
@@ -796,7 +823,8 @@ pub struct Cli {
         visible_alias = "default-printer",
         alias = "defaultPrinter",
         num_args(0..=1),
-        default_missing_value = "OUT"
+        default_missing_value = "OUT",
+        require_equals = true
     )]
     pub debug_print: Vec<String>,
 
@@ -1118,6 +1146,15 @@ mod tests {
             check_unsupported(&args(&["-Z0.7"])),
             Err(vardictrust_core::types::VardictError::Unsupported(_))
         ));
+        for clustered_eq in ["-uZ=0.5", "-pT=5", "-un=RG"] {
+            assert!(
+                matches!(
+                    check_unsupported(&args(&[clustered_eq])),
+                    Err(vardictrust_core::types::VardictError::Unsupported(_))
+                ),
+                "{clustered_eq} must fail with VardictError::Unsupported"
+            );
+        }
     }
 
     #[test]
@@ -1621,6 +1658,29 @@ mod tests {
             check_unsupported(&norm).unwrap();
             let cfg = Cli::try_parse_from(&norm).unwrap().to_config().unwrap();
             assert_eq!(cfg.debug_print.as_deref(), Some("ERR"), "argv={dp_argv:?}");
+        }
+
+        // Bare optional-value flags (-DP, --DP, -a, -ua) before a positional BED path must NOT
+        // swallow the positional BED filename as their optional value.
+        for (opt_argv, exp_dp, exp_amp) in [
+            (&["-DP", "regions.bed"][..], Some("OUT"), None),
+            (&["--DP", "regions.bed"][..], Some("OUT"), None),
+            (&["-DP", "ERR", "regions.bed"][..], Some("ERR"), None),
+            (&["-a", "regions.bed"][..], None, Some("10:0.95")),
+            (&["-ua", "regions.bed"][..], None, Some("10:0.95")),
+            (&["-a", "30:0.5", "regions.bed"][..], None, Some("30:0.5")),
+        ] {
+            let mut full = vec!["-G", "r.fa", "-b", "a.bam"];
+            full.extend_from_slice(opt_argv);
+            let norm = normalize_args(&args(&full));
+            check_unsupported(&norm).unwrap();
+            let cfg = Cli::try_parse_from(&norm)
+                .unwrap_or_else(|e| panic!("failed on {opt_argv:?} (norm={norm:?}): {e}"))
+                .to_config()
+                .unwrap();
+            assert_eq!(cfg.bed.as_deref(), Some("regions.bed"), "argv={opt_argv:?}");
+            assert_eq!(cfg.debug_print.as_deref(), exp_dp, "argv={opt_argv:?}");
+            assert_eq!(cfg.amplicon.as_deref(), exp_amp, "argv={opt_argv:?}");
         }
 
         let num_norm = normalize_args(&args(&[

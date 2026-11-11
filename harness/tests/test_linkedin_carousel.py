@@ -22,15 +22,12 @@ EVIDENCE_DIR = ROOT / "benchmarks" / "evidence"
 GCP_METRICS = ROOT / "benchmarks" / "gcp-study-v106" / "master_gcp_metrics.json"
 
 
-def read_workspace_version(cargo_toml_path: Path = ROOT / "Cargo.toml") -> str:
-    cargo_toml = cargo_toml_path.read_text(encoding="utf-8")
-    ver_m = re.search(
-        r'^\[workspace\.package\]\s*\n(?:(?!\[).*\n)*?version\s*=\s*"([^"]+)"',
-        cargo_toml,
-        re.MULTILINE,
-    )
-    assert ver_m is not None, f"Could not parse [workspace.package].version from {cargo_toml_path}"
-    return f"v{ver_m.group(1)}"
+def _load_carousel_module():
+    spec = importlib.util.spec_from_file_location("generate_linkedin_carousel", SCRIPT)
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
 def read_png_dims(path: Path) -> tuple[int, int]:
@@ -45,7 +42,8 @@ class TestLinkedinCarousel(unittest.TestCase):
     def test_carousel_integrity_and_generation(self) -> None:
         self.assertTrue(SCRIPT.is_file(), f"Missing {SCRIPT}")
         self.assertTrue(GCP_METRICS.is_file(), f"Missing {GCP_METRICS}")
-        expected_ver = read_workspace_version()
+        carousel_mod = _load_carousel_module()
+        expected_ver = carousel_mod.read_workspace_version()
 
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

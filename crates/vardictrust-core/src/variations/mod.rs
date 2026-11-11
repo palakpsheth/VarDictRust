@@ -791,7 +791,8 @@ pub struct Vars {
     pub ref_variant: Option<Variant>,
     /// List of all non-reference variants.
     pub variants: Vec<Variant>,
-    /// Variant description string → Variant.
+    /// Variant description string → Variant (left unpopulated by `ToVarsBuilder`;
+    /// query or mutate via [`Vars::variant_by_desc`] / [`Vars::update_variant_by_desc`]).
     pub var_desc_to_variant: IndexMap<String, Variant, FxBuildHasher>,
     /// SV information string.
     pub sv: String,

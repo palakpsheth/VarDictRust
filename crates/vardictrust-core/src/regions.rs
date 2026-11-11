@@ -301,7 +301,7 @@ pub fn parse_non_amp_bed_from_reader<R: BufRead>(
         end_column: config.col_end,
         thick_start_column: config.col_seg_start,
         thick_end_column: config.col_seg_end,
-        gene_column: config.col_gene.unwrap_or(12),
+        gene_column: config.col_gene.unwrap_or(usize::MAX),
     };
 
     let mut segs = Vec::new();
@@ -1243,6 +1243,17 @@ Y\t59042860\t59047860\tY_59042860_5\t0\t.\t59042860\t59047860
         .unwrap();
         assert_eq!(bed_parsed[0][0].start, Pos1(1));
         assert_eq!(bed_parsed[0][0].end, Pos1(i32::MAX as u32));
+
+        // Non-amplicon 13-column refGene row with col_gene = None (-g 0) disables gene lookup
+        // (falling back to chr) rather than reading default column 13 (index 12).
+        let mut cfg_no_gene = Config::default();
+        cfg_no_gene.col_gene = None;
+        cfg_no_gene.delimiter = "\t".to_string();
+        let refgene_13 = "bin\tNM_1\tchr1\t+\t90\t210\t100\t200\t1\t100,\t200,\t0\tTP53\n";
+        let no_gene_parsed =
+            parse_non_amp_bed_from_reader(refgene_13.as_bytes(), &cfg_no_gene, &chr_lengths, None)
+                .unwrap();
+        assert_eq!(no_gene_parsed[0][0].gene, "chr1");
 
         // Amplicon row with insert_start = 2147483647 under -z wraps insert_start + 1 without panic.
         let mut cfg_amp = Config::default();

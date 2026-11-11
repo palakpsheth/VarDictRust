@@ -1607,14 +1607,19 @@ impl<V: SpillableCandidate> SpillableVcfAccumulator<V> {
 pub enum OutputDestination {
     Stdout(std::io::BufWriter<std::io::Stdout>),
     Stderr(std::io::BufWriter<std::io::Stderr>),
-    File(
-        std::io::BufWriter<std::fs::File>,
-        std::sync::Arc<std::sync::atomic::AtomicBool>,
-    ),
-    Bgzf(
-        Box<noodles::bgzf::io::MultithreadedWriter<std::fs::File>>,
-        std::sync::Arc<std::sync::atomic::AtomicBool>,
-    ),
+    File(std::io::BufWriter<std::fs::File>),
+    Bgzf(Box<noodles::bgzf::io::MultithreadedWriter<std::fs::File>>),
+}
+
+impl std::fmt::Debug for OutputDestination {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Stdout(_) => f.debug_tuple("Stdout").finish_non_exhaustive(),
+            Self::Stderr(_) => f.debug_tuple("Stderr").finish_non_exhaustive(),
+            Self::File(_) => f.debug_tuple("File").finish_non_exhaustive(),
+            Self::Bgzf(_) => f.debug_tuple("Bgzf").finish_non_exhaustive(),
+        }
+    }
 }
 
 impl std::io::Write for OutputDestination {
@@ -1623,20 +1628,8 @@ impl std::io::Write for OutputDestination {
         match self {
             Self::Stdout(w) => w.write(buf),
             Self::Stderr(w) => w.write(buf),
-            Self::File(w, wrote_any) => {
-                let n = w.write(buf)?;
-                if n > 0 {
-                    wrote_any.store(true, std::sync::atomic::Ordering::Relaxed);
-                }
-                Ok(n)
-            }
-            Self::Bgzf(w, wrote_any) => {
-                let n = w.write(buf)?;
-                if n > 0 {
-                    wrote_any.store(true, std::sync::atomic::Ordering::Relaxed);
-                }
-                Ok(n)
-            }
+            Self::File(w) => w.write(buf),
+            Self::Bgzf(w) => w.write(buf),
         }
     }
 
@@ -1645,8 +1638,8 @@ impl std::io::Write for OutputDestination {
         match self {
             Self::Stdout(w) => w.flush(),
             Self::Stderr(w) => w.flush(),
-            Self::File(w, _) => w.flush(),
-            Self::Bgzf(w, _) => w.flush(),
+            Self::File(w) => w.flush(),
+            Self::Bgzf(w) => w.flush(),
         }
     }
 }
@@ -1662,6 +1655,95 @@ fn sync_file_ignoring_special(file: &std::fs::File) -> Result<(), VardictError> 
             Ok(())
         }
         Err(err) => Err(VardictError::Io(err)),
+    }
+}
+
+static NEXT_TMP_FILE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+fn append_os_suffix(path: &Path, suffix: &str) -> std::path::PathBuf {
+    let mut s = path.as_os_str().to_os_string();
+    s.push(suffix);
+    std::path::PathBuf::from(s)
+}
+
+fn atomic_tmp_path(target: &Path) -> std::path::PathBuf {
+    let seq = NEXT_TMP_FILE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let pid = std::process::id();
+    append_os_suffix(target, &format!(".tmp.{pid}.{seq}"))
+}
+
+fn tbi_output_path(vcf_gz_path: &Path) -> std::path::PathBuf {
+    append_os_suffix(vcf_gz_path, ".tbi")
+}
+
+fn is_readonly_parent_fallback_eligible(target: &Path, err: &std::io::Error) -> bool {
+    (err.kind() == std::io::ErrorKind::PermissionDenied || err.raw_os_error() == Some(30))
+        && std::fs::metadata(target).is_ok_and(|m| m.is_file())
+}
+
+enum StagedFileTarget {
+    AtomicTmp {
+        final_path: std::path::PathBuf,
+        tmp_path: std::path::PathBuf,
+        committed: bool,
+    },
+    Direct,
+}
+
+impl StagedFileTarget {
+    fn open(target: &Path) -> std::io::Result<(std::fs::File, Self)> {
+        if is_unix_char_or_fifo(target) {
+            let file = std::fs::File::create(target)?;
+            return Ok((file, Self::Direct));
+        }
+        let tmp_path = atomic_tmp_path(target);
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp_path)
+        {
+            Ok(file) => Ok((
+                file,
+                Self::AtomicTmp {
+                    final_path: target.to_path_buf(),
+                    tmp_path,
+                    committed: false,
+                },
+            )),
+            Err(err) if is_readonly_parent_fallback_eligible(target, &err) => {
+                let file = std::fs::File::create(target)?;
+                Ok((file, Self::Direct))
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    fn commit(mut self) -> std::io::Result<()> {
+        if let Self::AtomicTmp {
+            final_path,
+            tmp_path,
+            committed,
+        } = &mut self
+        {
+            std::fs::rename(&*tmp_path, &*final_path)?;
+            *committed = true;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for StagedFileTarget {
+    fn drop(&mut self) {
+        if let Self::AtomicTmp {
+            tmp_path,
+            committed,
+            ..
+        } = self
+        {
+            if !*committed {
+                let _ = std::fs::remove_file(tmp_path);
+            }
+        }
     }
 }
 
@@ -1690,28 +1772,27 @@ fn is_bgzf_output_path(path: &Path) -> bool {
 
 fn open_output_writer(
     config: &config::Config,
-    wrote_any: &std::sync::Arc<std::sync::atomic::AtomicBool>,
-) -> Result<OutputDestination, VardictError> {
+) -> Result<(OutputDestination, Option<StagedFileTarget>), VardictError> {
     if let Some(ref path_str) = config.output_path {
-        let file = std::fs::File::create(path_str).map_err(VardictError::Io)?;
-        if is_bgzf_output_path(Path::new(path_str)) {
+        let target = Path::new(path_str);
+        let (file, staged) = StagedFileTarget::open(target).map_err(VardictError::Io)?;
+        if is_bgzf_output_path(target) {
             let worker_count = std::num::NonZeroUsize::new(config.threads.clamp(1, 4))
                 .unwrap_or(std::num::NonZeroUsize::MIN);
-            Ok(OutputDestination::Bgzf(
-                Box::new(noodles::bgzf::io::MultithreadedWriter::with_worker_count(
-                    worker_count,
-                    file,
+            Ok((
+                OutputDestination::Bgzf(Box::new(
+                    noodles::bgzf::io::MultithreadedWriter::with_worker_count(worker_count, file),
                 )),
-                std::sync::Arc::clone(wrote_any),
+                Some(staged),
             ))
         } else {
-            Ok(OutputDestination::File(
-                std::io::BufWriter::with_capacity(BUFFER_CAPACITY, file),
-                std::sync::Arc::clone(wrote_any),
+            Ok((
+                OutputDestination::File(std::io::BufWriter::with_capacity(BUFFER_CAPACITY, file)),
+                Some(staged),
             ))
         }
     } else {
-        Ok(create_output_writer(config))
+        Ok((create_output_writer(config), None))
     }
 }
 
@@ -1731,7 +1812,7 @@ trait EngineWriter: std::io::Write + Sized {
 impl EngineWriter for OutputDestination {
     fn emit_column_header(&mut self, config: &config::Config) -> Result<(), VardictError> {
         match self {
-            Self::Stdout(_) | Self::File(_, _) | Self::Bgzf(_, _) => {
+            Self::Stdout(_) | Self::File(_) | Self::Bgzf(_) => {
                 crate::output::table::print_header(self, config).map_err(VardictError::Io)
             }
             Self::Stderr(_) => {
@@ -1750,11 +1831,11 @@ impl EngineWriter for OutputDestination {
         match self {
             Self::Stdout(mut w) => w.flush().map_err(VardictError::Io),
             Self::Stderr(mut w) => w.flush().map_err(VardictError::Io),
-            Self::File(mut w, _) => {
+            Self::File(mut w) => {
                 w.flush().map_err(VardictError::Io)?;
                 sync_file_ignoring_special(w.get_ref())
             }
-            Self::Bgzf(mut w, _) => {
+            Self::Bgzf(mut w) => {
                 let file = w.finish().map_err(VardictError::Io)?;
                 sync_file_ignoring_special(&file)
             }
@@ -1847,33 +1928,13 @@ fn write_vcf_tabix_index_inner(vcf_gz_path: &Path, tbi_path: &Path) -> Result<()
     }
 
     let index = indexer.build();
-    let file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(tbi_path)
-        .map_err(VardictError::Io)?;
+    let (file, staged) = StagedFileTarget::open(tbi_path).map_err(VardictError::Io)?;
     let mut tbi_writer = noodles::tabix::io::Writer::new(file);
     tbi_writer.write_index(&index).map_err(VardictError::Io)?;
     let inner_file = tbi_writer.into_inner().finish().map_err(VardictError::Io)?;
-    sync_file_ignoring_special(&inner_file)
-}
-
-static NEXT_TMP_FILE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-
-fn append_os_suffix(path: &Path, suffix: &str) -> std::path::PathBuf {
-    let mut s = path.as_os_str().to_os_string();
-    s.push(suffix);
-    std::path::PathBuf::from(s)
-}
-
-fn atomic_tmp_path(target: &Path) -> std::path::PathBuf {
-    let seq = NEXT_TMP_FILE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let pid = std::process::id();
-    append_os_suffix(target, &format!(".tmp.{pid}.{seq}"))
-}
-
-fn tbi_output_path(vcf_gz_path: &Path) -> std::path::PathBuf {
-    append_os_suffix(vcf_gz_path, ".tbi")
+    sync_file_ignoring_special(&inner_file)?;
+    drop(inner_file);
+    staged.commit().map_err(VardictError::Io)
 }
 
 fn write_vcf_tabix_index(vcf_gz_path: &Path) -> Result<(), VardictError> {
@@ -1885,14 +1946,7 @@ fn write_vcf_tabix_index(vcf_gz_path: &Path) -> Result<(), VardictError> {
             tbi_path.display()
         )));
     }
-    let tmp_path = atomic_tmp_path(&tbi_path);
-    if let Err(e) = write_vcf_tabix_index_inner(vcf_gz_path, &tmp_path)
-        .and_then(|()| std::fs::rename(&tmp_path, &tbi_path).map_err(VardictError::Io))
-    {
-        let _ = std::fs::remove_file(&tmp_path);
-        return Err(e);
-    }
-    Ok(())
+    write_vcf_tabix_index_inner(vcf_gz_path, &tbi_path)
 }
 
 /// Backwards-compatible alias for existing call sites.
@@ -2252,15 +2306,6 @@ fn validate_io_paths(config: &config::Config) -> Result<(), VardictError> {
     Ok(())
 }
 
-fn is_broken_pipe_err(err: &VardictError) -> bool {
-    match err {
-        VardictError::Io(e) => {
-            e.kind() == std::io::ErrorKind::BrokenPipe || e.raw_os_error() == Some(32)
-        }
-        _ => false,
-    }
-}
-
 fn map_stats_io_err(stats_path: &str, err: std::io::Error) -> VardictError {
     if err.kind() == std::io::ErrorKind::BrokenPipe || err.raw_os_error() == Some(32) {
         VardictError::Io(std::io::Error::other(format!(
@@ -2272,14 +2317,12 @@ fn map_stats_io_err(stats_path: &str, err: std::io::Error) -> VardictError {
 }
 
 enum PendingStatsJson {
-    AtomicTmp {
+    Staged {
         stats_label: String,
-        final_path: std::path::PathBuf,
-        tmp_path: std::path::PathBuf,
-        file: Option<std::fs::File>,
-        committed: bool,
+        file: std::fs::File,
+        staged: StagedFileTarget,
     },
-    DirectSpecial {
+    DirectDeferred {
         stats_label: String,
         final_path: std::path::PathBuf,
     },
@@ -2289,82 +2332,75 @@ impl PendingStatsJson {
     fn open(stats_path: &str) -> Result<Self, VardictError> {
         let target = Path::new(stats_path);
         if is_unix_char_or_fifo(target) {
-            Ok(Self::DirectSpecial {
+            return Ok(Self::DirectDeferred {
                 stats_label: stats_path.to_string(),
                 final_path: target.to_path_buf(),
-            })
-        } else {
-            let tmp_path = atomic_tmp_path(target);
-            let file = std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&tmp_path)
-                .map_err(|e| map_stats_io_err(stats_path, e))?;
-            Ok(Self::AtomicTmp {
+            });
+        }
+        let tmp_path = atomic_tmp_path(target);
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp_path)
+        {
+            Ok(file) => Ok(Self::Staged {
                 stats_label: stats_path.to_string(),
-                final_path: target.to_path_buf(),
-                tmp_path,
-                file: Some(file),
-                committed: false,
-            })
+                file,
+                staged: StagedFileTarget::AtomicTmp {
+                    final_path: target.to_path_buf(),
+                    tmp_path,
+                    committed: false,
+                },
+            }),
+            Err(err) if is_readonly_parent_fallback_eligible(target, &err) => {
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(target)
+                    .map_err(|e| map_stats_io_err(stats_path, e))?;
+                Ok(Self::DirectDeferred {
+                    stats_label: stats_path.to_string(),
+                    final_path: target.to_path_buf(),
+                })
+            }
+            Err(err) => Err(map_stats_io_err(stats_path, err)),
         }
     }
 
-    fn commit(mut self, json: &[u8]) -> Result<(), VardictError> {
+    fn commit(self, json: &[u8]) -> Result<(), VardictError> {
         use std::io::Write as _;
-        match &mut self {
-            Self::AtomicTmp {
+        match self {
+            Self::Staged {
                 stats_label,
-                final_path,
-                tmp_path,
-                file,
-                committed,
+                mut file,
+                staged,
             } => {
-                if let Some(mut f) = file.take() {
-                    f.write_all(json)
-                        .map_err(|e| map_stats_io_err(stats_label, e))?;
-                    f.flush().map_err(|e| map_stats_io_err(stats_label, e))?;
-                    sync_file_ignoring_special(&f).map_err(|e| match e {
-                        VardictError::Io(io_e) => map_stats_io_err(stats_label, io_e),
-                        other => other,
-                    })?;
-                }
-                std::fs::rename(&*tmp_path, &*final_path)
-                    .map_err(|e| map_stats_io_err(stats_label, e))?;
-                *committed = true;
-                Ok(())
-            }
-            Self::DirectSpecial {
-                stats_label,
-                final_path,
-            } => {
-                let mut file = std::fs::File::create(&*final_path)
-                    .map_err(|e| map_stats_io_err(stats_label, e))?;
                 file.write_all(json)
-                    .map_err(|e| map_stats_io_err(stats_label, e))?;
-                file.flush().map_err(|e| map_stats_io_err(stats_label, e))?;
+                    .map_err(|e| map_stats_io_err(&stats_label, e))?;
+                file.flush()
+                    .map_err(|e| map_stats_io_err(&stats_label, e))?;
                 sync_file_ignoring_special(&file).map_err(|e| match e {
-                    VardictError::Io(io_e) => map_stats_io_err(stats_label, io_e),
+                    VardictError::Io(io_e) => map_stats_io_err(&stats_label, io_e),
                     other => other,
                 })?;
-                Ok(())
+                drop(file);
+                staged
+                    .commit()
+                    .map_err(|e| map_stats_io_err(&stats_label, e))
             }
-        }
-    }
-}
-
-impl Drop for PendingStatsJson {
-    fn drop(&mut self) {
-        if let Self::AtomicTmp {
-            tmp_path,
-            file,
-            committed,
-            ..
-        } = self
-        {
-            let _ = file.take();
-            if !*committed {
-                let _ = std::fs::remove_file(tmp_path);
+            Self::DirectDeferred {
+                stats_label,
+                final_path,
+            } => {
+                let mut file = std::fs::File::create(&final_path)
+                    .map_err(|e| map_stats_io_err(&stats_label, e))?;
+                file.write_all(json)
+                    .map_err(|e| map_stats_io_err(&stats_label, e))?;
+                file.flush()
+                    .map_err(|e| map_stats_io_err(&stats_label, e))?;
+                sync_file_ignoring_special(&file).map_err(|e| match e {
+                    VardictError::Io(io_e) => map_stats_io_err(&stats_label, io_e),
+                    other => other,
+                })
             }
         }
     }
@@ -2392,14 +2428,10 @@ pub fn run(config: &config::Config) -> Result<(), VardictError> {
         } else {
             None
         };
-        let existed_before = effective
-            .output_path
-            .as_deref()
-            .is_some_and(|p| Path::new(p).symlink_metadata().is_ok());
-        let wrote_any = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let writer = open_output_writer(&effective, &wrote_any)?;
+        let (writer, staged_out) = open_output_writer(&effective)?;
         let telemetry = RunTelemetryCounters::default();
-        let engine_res = run_with_engine_writer_and_telemetry(&effective, writer, Some(&telemetry));
+        let engine_res =
+            run_with_engine_writer_and_telemetry(&effective, mode, writer, Some(&telemetry));
 
         let emit_stats = |pending: PendingStatsJson| -> Result<(), VardictError> {
             let elapsed_ms = started.elapsed().as_millis();
@@ -2428,6 +2460,9 @@ pub fn run(config: &config::Config) -> Result<(), VardictError> {
 
         match engine_res {
             Ok(()) => {
+                if let Some(staged) = staged_out {
+                    staged.commit().map_err(VardictError::Io)?;
+                }
                 if effective.index_output {
                     if let Some(ref out_path) = effective.output_path {
                         write_vcf_tabix_index(Path::new(out_path))?;
@@ -2439,16 +2474,8 @@ pub fn run(config: &config::Config) -> Result<(), VardictError> {
                 Ok(())
             }
             Err(err) => {
-                if let Some(ref out_path) = effective.output_path {
-                    let out = Path::new(out_path);
-                    if !existed_before
-                        && !wrote_any.load(std::sync::atomic::Ordering::Relaxed)
-                        && out.is_file()
-                    {
-                        let _ = std::fs::remove_file(out);
-                    }
-                }
-                if effective.output_path.is_none() && is_broken_pipe_err(&err) {
+                drop(staged_out);
+                if effective.output_path.is_none() && err.is_broken_pipe() {
                     if let Some(pending) = pending_stats {
                         emit_stats(pending)?;
                     }
@@ -2465,15 +2492,17 @@ pub fn run_with_writer<W: std::io::Write>(
     config: &config::Config,
     writer: W,
 ) -> Result<(), VardictError> {
-    run_with_engine_writer_and_telemetry(config, InjectedWriter(writer), None)
+    let (effective, mode) = resolve_effective_config(config)?;
+    run_with_engine_writer_and_telemetry(&effective, mode, InjectedWriter(writer), None)
 }
 
 fn run_with_engine_writer_and_telemetry<W: EngineWriter>(
     config: &config::Config,
+    mode: CallingMode,
     mut writer: W,
     telemetry: Option<&RunTelemetryCounters>,
 ) -> Result<(), VardictError> {
-    match run_with_writer_inner(config, &mut writer, telemetry) {
+    match run_with_writer_inner(config, mode, &mut writer, telemetry) {
         Ok(()) => writer.finish_output(),
         Err(e) => {
             let _ = writer.flush();
@@ -2484,13 +2513,11 @@ fn run_with_engine_writer_and_telemetry<W: EngineWriter>(
 
 fn run_with_writer_inner<W: EngineWriter>(
     config: &config::Config,
+    mode: CallingMode,
     mut writer: &mut W,
     telemetry: Option<&RunTelemetryCounters>,
 ) -> Result<(), VardictError> {
     log::info!("VarDictRust engine starting");
-
-    let (effective, mode) = resolve_effective_config(config)?;
-    let config = &effective;
 
     if mode == CallingMode::Somatic {
         return run_somatic(config, writer, telemetry);
@@ -6034,17 +6061,89 @@ mod tests {
             "failed run must not truncate pre-existing --stats-json"
         );
 
-        // 2. Pre-existing --output file is NOT unlinked (`existed_before == true`)
+        // 2. Pre-existing --output file is preserved byte-for-byte (neither unlinked nor truncated
+        //    into a 28-byte BGZF EOF block) on early error, and dangling symlinks leave zero residue.
         let preexisting_out = dir.path().join("preexisting.vcf.gz");
         std::fs::write(&preexisting_out, b"old").unwrap();
         let mut pre_cfg = bad_cfg.clone();
         pre_cfg.output_path = Some(preexisting_out.to_string_lossy().into_owned());
         pre_cfg.stats_json_path = None;
         assert!(crate::run(&pre_cfg).is_err());
-        assert!(
-            preexisting_out.exists(),
-            "pre-existing --output file must not be unlinked on error"
+        assert_eq!(
+            std::fs::read(&preexisting_out).unwrap(),
+            b"old",
+            "pre-existing --output file must remain byte-for-byte intact on error"
         );
+
+        #[cfg(unix)]
+        {
+            let dangling_target = dir.path().join("dangling_target.vcf.gz");
+            let dangling_link = dir.path().join("dangling_link.vcf.gz");
+            std::os::unix::fs::symlink(&dangling_target, &dangling_link).unwrap();
+            let mut sym_cfg = bad_cfg.clone();
+            sym_cfg.output_path = Some(dangling_link.to_string_lossy().into_owned());
+            sym_cfg.stats_json_path = None;
+            assert!(crate::run(&sym_cfg).is_err());
+            assert!(
+                !dangling_target.exists(),
+                "failed run on dangling symlink must not create target residue"
+            );
+            assert!(
+                dangling_link.symlink_metadata().is_ok(),
+                "dangling symlink itself must not be removed on failed run"
+            );
+        }
+
+        // Public OutputDestination implements Debug (M-PUBLIC-DEBUG), and VardictError::is_broken_pipe works.
+        let dbg_str = format!(
+            "{:?}",
+            create_output_writer(&crate::config::Config::default())
+        );
+        assert!(
+            dbg_str.starts_with("Stdout"),
+            "unexpected Debug output: {dbg_str}"
+        );
+        assert!(
+            VardictError::Io(std::io::Error::from(std::io::ErrorKind::BrokenPipe)).is_broken_pipe()
+        );
+        assert!(!VardictError::Parse("bad".to_string()).is_broken_pipe());
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let ro_dir = dir.path().join("readonly_bind_dir");
+            std::fs::create_dir(&ro_dir).unwrap();
+            let ro_out = ro_dir.join("mounted.vcf.gz");
+            let ro_tbi = ro_dir.join("mounted.vcf.gz.tbi");
+            let ro_stats = ro_dir.join("mounted_stats.json");
+            std::fs::write(&ro_out, b"seed").unwrap();
+            std::fs::write(&ro_tbi, b"seed_tbi").unwrap();
+            std::fs::write(&ro_stats, b"seed_stats").unwrap();
+            std::fs::set_permissions(&ro_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+            let ro_cfg = crate::config::Config {
+                reference: ref_fa.to_string_lossy().into_owned(),
+                bam: bam.to_string_lossy().into_owned(),
+                region: Some("chr1:1-50".to_string()),
+                output_path: Some(ro_out.to_string_lossy().into_owned()),
+                index_output: true,
+                stats_json_path: Some(ro_stats.to_string_lossy().into_owned()),
+                threads: 1,
+                ..Default::default()
+            };
+            let ro_res = crate::run(&ro_cfg);
+            let stats_after = std::fs::read_to_string(&ro_stats).unwrap_or_default();
+            let tbi_len = std::fs::metadata(&ro_tbi).map(|m| m.len()).unwrap_or(0);
+            std::fs::set_permissions(&ro_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+            ro_res.expect(
+                "writable bind-mounted files inside read-only parent directory must succeed via direct fallback",
+            );
+            assert!(stats_after.contains("\"mode\": \"Simple\""));
+            assert!(
+                tbi_len > 8,
+                "expected valid Tabix index in ro_tbi, len={tbi_len}"
+            );
+        }
 
         // 3. write_vcf_tabix_index uses atomic tmp path and never unlinks existing .tbi on error
         let corrupt_vcf_gz = dir.path().join("corrupt.vcf.gz");

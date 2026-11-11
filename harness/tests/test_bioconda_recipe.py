@@ -423,9 +423,17 @@ class TestRepoAgentSkills(unittest.TestCase):
         contrib_content = (ROOT_DIR / "CONTRIBUTING.md").read_text(encoding="utf-8")
         self.assertIn("gh api --paginate repos/palakpsheth/VarDictRust/pulls/<PR>/reviews", skill_content)
         self.assertIn("gh api --paginate repos/palakpsheth/VarDictRust/pulls/<PR>/comments", skill_content)
+        self.assertIn("gh api --paginate repos/palakpsheth/VarDictRust/commits/<HEAD_SHA>/check-runs", skill_content)
         self.assertIn("gh api graphql --paginate", skill_content)
         self.assertIn("pageInfo { hasNextPage endCursor }", skill_content)
+        self.assertIn("--subject", skill_content)
+        self.assertIn("--body-file", skill_content)
         self.assertIn("gh api --paginate repos/palakpsheth/VarDictRust/pulls/<PR>/reviews", contrib_content)
+        pr_template_content = (ROOT_DIR / ".github" / "pull_request_template.md").read_text(encoding="utf-8")
+        self.assertIn(
+            "python3 harness/perf_budget.py hg008-tier2 seqc2-exome-tier2 hg002-tier2 amplicon-tier2 hg008-cram-twin",
+            pr_template_content,
+        )
 
     def test_release_consistency_script_passes_and_catches_drift(self):
         script = SKILLS_DIR / "vardictrust-release" / "scripts" / "check_release_consistency.py"
@@ -551,6 +559,7 @@ class TestRepoAgentSkills(unittest.TestCase):
         self.assertIn("-p vardictrust-core --test corpus_parity -- --test-threads=2", ci_text)
         self.assertIn("cargo llvm-cov report --ignore-filename-regex '(^|/)tests/' --fail-under-lines 90", ci_text)
         self.assertIn("harness/tests/test_git_hooks.sh", ci_text)
+        self.assertIn("--verify-cargo-list --cargo-llvm-cov", ci_text)
 
         diff_text = (workflows_dir / "differential.yml").read_text(encoding="utf-8")
         self.assertIn('RUST_TEST_THREADS: "2"', diff_text)

@@ -605,25 +605,32 @@ def check_registered_integration_tests(repo_root: Path, errors: list[str]) -> bo
 
 
 def _count_cargo_target_tests(
-    repo_root: Path, cargo_args: list[str], errors: list[str]
+    repo_root: Path,
+    cargo_args: list[str],
+    errors: list[str],
+    *,
+    use_llvm_cov: bool = False,
 ) -> int | None:
+    cmd = (
+        ["cargo", "llvm-cov", "--no-report", *cargo_args, "--", "--list"]
+        if use_llvm_cov
+        else ["cargo", "test", *cargo_args, "--", "--list"]
+    )
+    cmd_label = " ".join(cmd)
     try:
         res = subprocess.run(
-            ["cargo", "test", *cargo_args, "--", "--list"],
+            cmd,
             cwd=repo_root,
             capture_output=True,
             text=True,
             check=False,
         )
     except OSError as exc:
-        errors.append(
-            f"cargo test {' '.join(cargo_args)} -- --list could not execute 'cargo': {exc}"
-        )
+        errors.append(f"{cmd_label} could not execute 'cargo': {exc}")
         return None
     if res.returncode != 0:
         errors.append(
-            f"cargo test {' '.join(cargo_args)} -- --list failed "
-            f"(exit {res.returncode}): {res.stderr.strip()}"
+            f"{cmd_label} failed (exit {res.returncode}): {res.stderr.strip()}"
         )
         return None
     return sum(
@@ -631,7 +638,9 @@ def _count_cargo_target_tests(
     )
 
 
-def check_cargo_test_counts(repo_root: Path, errors: list[str]) -> None:
+def check_cargo_test_counts(
+    repo_root: Path, errors: list[str], *, use_llvm_cov: bool = False
+) -> None:
     all_ok = check_registered_integration_tests(repo_root, errors)
     single_targets = (
         ("core_lib", ["-p", "vardictrust-core", "--lib"]),
@@ -645,7 +654,9 @@ def check_cargo_test_counts(repo_root: Path, errors: list[str]) -> None:
 
     observed: dict[str, int] = {}
     for key, args in single_targets:
-        cnt = _count_cargo_target_tests(repo_root, args, errors)
+        cnt = _count_cargo_target_tests(
+            repo_root, args, errors, use_llvm_cov=use_llvm_cov
+        )
         if cnt is None:
             all_ok = False
         else:
@@ -655,7 +666,10 @@ def check_cargo_test_counts(repo_root: Path, errors: list[str]) -> None:
     cli_int_ok = True
     for tgt in cli_integration_targets:
         cnt = _count_cargo_target_tests(
-            repo_root, ["-p", "vardictrust", "--test", tgt], errors
+            repo_root,
+            ["-p", "vardictrust", "--test", tgt],
+            errors,
+            use_llvm_cov=use_llvm_cov,
         )
         if cnt is None:
             cli_int_ok = False
@@ -717,6 +731,11 @@ def main() -> int:
         action="store_true",
         help="Run cargo test -- --list across workspace library, binary, and integration targets (excluding benches and doctests) to verify EXPECTED_TEST_COUNTS",
     )
+    parser.add_argument(
+        "--cargo-llvm-cov",
+        action="store_true",
+        help="Invoke cargo llvm-cov --no-report ... -- --list with --verify-cargo-list to reuse warm instrumented CI binaries",
+    )
     args = parser.parse_args()
 
     version = args.version
@@ -745,7 +764,9 @@ def main() -> int:
     )
     check_downstream_phases(args.repo_root, version, args.phase, errors)
     if args.verify_cargo_list:
-        check_cargo_test_counts(args.repo_root, errors)
+        check_cargo_test_counts(
+            args.repo_root, errors, use_llvm_cov=args.cargo_llvm_cov
+        )
     else:
         check_registered_integration_tests(args.repo_root, errors)
 

@@ -53,10 +53,10 @@ bash harness/pr_check.sh
 ```
 
 ### 3. Push & Open Pull Request (`gh pr create`)
-Complete every section of `.github/pull_request_template.md`:
+Complete every section of `.github/pull_request_template.md` (store ephemeral PR/squash bodies in your agent scratch directory or outside the repo tree, and set `GH_PROMPT_DISABLED=1 GH_PAGER=cat` for non-interactive safety):
 ```bash
 git push -u origin <type>/<slug>
-gh pr create --repo palakpsheth/VarDictRust \
+GH_PROMPT_DISABLED=1 GH_PAGER=cat gh pr create --repo palakpsheth/VarDictRust \
   --base main \
   --head <type>/<slug> \
   --title "<type>(<scope>): <concise summary>" \
@@ -68,8 +68,10 @@ Every PR in `VarDictRust` **must** complete both the multi-skill review gate and
 1. **Run Multi-Skill Review (`/ponytail-review`, `/rust-router`, and `/pragmatic-rust-guidelines`):**
    Audit `git diff origin/main...HEAD` through all three skills (`/ponytail-review`, `/rust-router`, and `/pragmatic-rust-guidelines`) and fix all findings using Red/Green TDD before merging.
 2. **Wait for `copilot-pull-request-reviewer[bot]` Review Completion:**
-   **Never** merge a PR solely because CI checks are green while `copilot-pull-request-reviewer[bot]` review is still pending. Poll until `copilot-pull-request-reviewer[bot]` posts its review on the PR:
+   **Never** merge a PR solely because CI checks are green while `copilot-pull-request-reviewer[bot]` review is still pending. Poll non-interactively (`GH_PROMPT_DISABLED=1 GH_PAGER=cat`, never `gh pr view` or `gh pr checks --watch`) until `requested_reviewers` clears and `copilot-pull-request-reviewer[bot]` posts its review on the PR:
    ```bash
+   gh api repos/palakpsheth/VarDictRust/pulls/<PR>/requested_reviewers \
+     --jq '.users[].login'
    gh api --paginate repos/palakpsheth/VarDictRust/pulls/<PR>/reviews \
      --jq '.[] | {id: .id, user: .user.login, state: .state, commit_id: .commit_id}'
    gh api --paginate repos/palakpsheth/VarDictRust/pulls/<PR>/comments \
@@ -102,10 +104,14 @@ Every PR in `VarDictRust` **must** complete both the multi-skill review gate and
        }
      }' -f threadId="<THREAD_NODE_ID>"
    ```
-4. **Confirm All CI Checks Green & Zero Unresolved Threads Before Squash-Merging:**
+4. **Confirm All CI Check-Runs Green & Zero Unresolved Threads Before Squash-Merging Explicitly:**
+   Always pass `--subject` and `--body-file` (containing `validated vs VarDictJava 1.8.3, ...` and **zero** `Co-Authored-By` trailers) so GitHub never concatenates intermediate branch subjects or injects trailer lines:
    ```bash
-   gh pr checks <PR>
-   gh pr merge <PR> --squash --delete-branch
+   gh api --paginate repos/palakpsheth/VarDictRust/commits/<HEAD_SHA>/check-runs \
+     --jq '.check_runs[] | {name: .name, status: .status, conclusion: .conclusion}'
+   GH_PROMPT_DISABLED=1 GH_PAGER=cat gh pr merge <PR> --repo palakpsheth/VarDictRust --squash --delete-branch \
+     --subject "<type>(<scope>): <concise summary> (#<PR>)" \
+     --body-file /tmp/squash_body.md
    ```
 
 ---

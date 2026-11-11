@@ -1285,7 +1285,10 @@ impl<'a> CigarParser<'a> {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "per-operator pileup helper borrows split CigarParser fields"
+    )]
     fn process_deletion(
         &mut self,
         record: &SamRecord,
@@ -1583,7 +1586,10 @@ impl<'a> CigarParser<'a> {
         next_ci
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "per-operator pileup helper borrows split CigarParser fields"
+    )]
     fn process_insertion(
         &mut self,
         record: &SamRecord,
@@ -2082,7 +2088,10 @@ impl<'a> CigarParser<'a> {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "per-operator pileup helper borrows split CigarParser fields"
+    )]
     fn process_soft_clip(
         &mut self,
         record: &SamRecord,

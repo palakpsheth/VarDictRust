@@ -75,25 +75,39 @@ const _: () = {
 #[allow(clippy::size_of_ref)]
 const _: () = assert!(core::mem::size_of_val(&MALLOC_CONF) == core::mem::size_of::<*const u8>());
 
-fn is_broken_pipe(err: &vardictrust_core::types::VardictError) -> bool {
-    match err {
-        vardictrust_core::types::VardictError::Io(e) => {
-            e.kind() == std::io::ErrorKind::BrokenPipe || e.raw_os_error() == Some(32)
-        }
-        _ => false,
-    }
+fn should_ignore_broken_pipe(
+    cfg: &vardictrust_core::config::Config,
+    err: &vardictrust_core::types::VardictError,
+) -> bool {
+    cfg.output_path.is_none() && err.is_broken_pipe()
+}
+
+fn collect_utf8_args<I: IntoIterator<Item = std::ffi::OsString>>(
+    iter: I,
+) -> std::result::Result<Vec<String>, vardictrust_core::types::VardictError> {
+    iter.into_iter()
+        .enumerate()
+        .map(|(idx, os)| {
+            os.into_string().map_err(|bad| {
+                vardictrust_core::types::VardictError::Parse(format!(
+                    "CLI argument #{idx} ({}) is not valid UTF-8",
+                    bad.to_string_lossy()
+                ))
+            })
+        })
+        .collect()
 }
 
 fn main() -> Result<()> {
     env_logger::init();
     let _session = profile::Session::start()?;
-    let raw_args: Vec<String> = std::env::args().collect();
+    let raw_args = collect_utf8_args(std::env::args_os())?;
     let args = cli::normalize_args(&raw_args);
     cli::check_unsupported(&args)?;
     let args = cli::Cli::parse_from(args);
     let cfg = args.to_config()?;
     if let Err(err) = vardictrust_core::run(&cfg) {
-        if is_broken_pipe(&err) {
+        if should_ignore_broken_pipe(&cfg, &err) {
             return Ok(());
         }
         return Err(err.into());
@@ -168,5 +182,25 @@ mod tests {
             assert_eq!(MALLOC_CONF.last(), Some(&0));
             assert!(!MALLOC_CONF[..MALLOC_CONF.len() - 1].contains(&0));
         }
+
+        #[cfg(unix)]
+        {
+            use std::ffi::OsString;
+            use std::os::unix::ffi::OsStringExt as _;
+            let bad_os = vec![
+                OsString::from("vardictrust"),
+                OsString::from_vec(vec![0xff, b'x']),
+            ];
+            let err = collect_utf8_args(bad_os).expect_err("non-UTF-8 argv must fail cleanly");
+            assert!(err.to_string().contains("not valid UTF-8"));
+        }
+
+        let bp = vardictrust_core::types::VardictError::Io(std::io::Error::from(
+            std::io::ErrorKind::BrokenPipe,
+        ));
+        let mut cfg = vardictrust_core::config::Config::default();
+        assert!(should_ignore_broken_pipe(&cfg, &bp));
+        cfg.output_path = Some("out.fifo".to_string());
+        assert!(!should_ignore_broken_pipe(&cfg, &bp));
     }
 }
