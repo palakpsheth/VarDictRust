@@ -24,6 +24,11 @@ use crate::types::{Pos1, VardictError};
 use crate::variations::{Cluster, Mate, Sclip, Variation};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+#[inline]
+fn midpoint_i32(a: i32, b: i32) -> i32 {
+    ((i64::from(a) + i64::from(b)) / 2) as i32
+}
+
 /// Check cluster for start and end of SV mates.
 /// Ports `VariationRealigner.checkCluster`.
 pub fn check_cluster(mates: &mut [Mate], rlen: i32) -> Cluster {
@@ -74,8 +79,9 @@ pub fn check_cluster(mates: &mut [Mate], rlen: i32) -> Cluster {
         }
 
         let current_cluster = &mut clusters[cur];
-        current_cluster.cnt += 1;
-        current_cluster.mate.mate_len += mate_m.mate_len;
+        current_cluster.cnt = current_cluster.cnt.wrapping_add(1);
+        // VariationRealigner.java:241 — Java 32-bit signed `int +=` wraps on overflow.
+        current_cluster.mate.mate_len = current_cluster.mate.mate_len.wrapping_add(mate_m.mate_len);
 
         if mate_m.mate_end > current_cluster.mate.mate_end {
             current_cluster.mate.mate_end = mate_m.mate_end;
@@ -101,7 +107,7 @@ pub fn check_cluster(mates: &mut [Mate], rlen: i32) -> Cluster {
             Mate {
                 mate_start: first_cluster.mate.mate_start,
                 mate_end: first_cluster.mate.mate_end,
-                mate_len: first_cluster.mate.mate_len / first_cluster.cnt,
+                mate_len: first_cluster.mate.mate_len.wrapping_div(first_cluster.cnt),
                 start: first_cluster.mate.start,
                 end: first_cluster.mate.end,
                 pmean: first_cluster.mate.pmean,
@@ -323,7 +329,7 @@ pub fn find_match(
     }
 
     if verbose {
-        eprintln!(
+        crate::verbose_eprintln!(
             "    Working Match {} {} {} SEED: {}",
             position,
             String::from_utf8_lossy(&seq_vec),
@@ -370,7 +376,7 @@ pub fn find_match(
                     extra.reverse();
                 }
                 if verbose {
-                    eprintln!(
+                    crate::verbose_eprintln!(
                         "      Found SV BP: {} BP: {} SEEDpos {} {} {} {} {} extra: {}",
                         dir,
                         bp,
@@ -431,7 +437,7 @@ pub fn find_match(
                         break;
                     }
                     if verbose {
-                        eprintln!(
+                        crate::verbose_eprintln!(
                             "      FoundSEED SV BP: {} BP: {} SEEDpos {} {} {} {} {} EXTRA: {}",
                             dir,
                             bp_mut,
@@ -480,7 +486,7 @@ pub fn find_match_rev(
     }
 
     if verbose {
-        eprintln!(
+        crate::verbose_eprintln!(
             "    Working MatchRev {} {} {} SEED: {}",
             position,
             String::from_utf8_lossy(&seq_vec),
@@ -511,7 +517,7 @@ pub fn find_match_rev(
 
             if crate::realign::is_match_ref(&seq_vec, reference, chr, bp, -1 * dir, mm_limit) {
                 if verbose {
-                    eprintln!(
+                    crate::verbose_eprintln!(
                         "      Found SV BP (reverse): {} BP: {} SEEDpos: {} {} {} {} {}",
                         dir,
                         bp,
@@ -571,7 +577,7 @@ pub fn find_match_rev(
                         break;
                     }
                     if verbose {
-                        eprintln!(
+                        crate::verbose_eprintln!(
                             "      FoundSEED SV BP (reverse): {} BP: {} SEEDpos {} {} {} {} {} EXTRA: {}",
                             dir,
                             bp_mut,
@@ -643,17 +649,25 @@ pub fn mark_sv(
             };
 
             if verbose {
-                eprintln!(
+                crate::verbose_eprintln!(
                     "   Marking SV {} {} {} {} cnt: {}",
-                    start, end, start2, end2, sv_r.variation.cnt
+                    start,
+                    end,
+                    start2,
+                    end2,
+                    sv_r.variation.cnt
                 );
             }
 
             if is_overlap(start, end, start2, end2, rlen) {
                 if verbose {
-                    eprintln!(
+                    crate::verbose_eprintln!(
                         "       SV {} {} {} {} cnt: {} marked",
-                        start, end, start2, end2, sv_r.variation.cnt
+                        start,
+                        end,
+                        start2,
+                        end2,
+                        sv_r.variation.cnt
                     );
                 }
                 sv_r.used = true;
@@ -690,17 +704,25 @@ pub fn mark_dup_sv(
             };
 
             if verbose {
-                eprintln!(
+                crate::verbose_eprintln!(
                     "   Marking DUP SV {} {} {} {} cnt: {}",
-                    start, end, start2, end2, sv_r.variation.cnt
+                    start,
+                    end,
+                    start2,
+                    end2,
+                    sv_r.variation.cnt
                 );
             }
 
             if is_overlap(start, end, start2, end2, rlen) {
                 if verbose {
-                    eprintln!(
+                    crate::verbose_eprintln!(
                         "       DUP SV {} {} {} {} cnt: {} marked",
-                        start, end, start2, end2, sv_r.variation.cnt
+                        start,
+                        end,
+                        start2,
+                        end2,
+                        sv_r.variation.cnt
                     );
                 }
                 sv_r.used = true;
@@ -744,8 +766,8 @@ pub fn check_pairs(
             if svr.used {
                 continue;
             }
-            let mut s = (svr.start + svr.end) / 2;
-            let mut e = (svr.mstart + svr.mend) / 2;
+            let mut s = midpoint_i32(svr.start, svr.end);
+            let mut e = midpoint_i32(svr.mstart, svr.mend);
             if s > e {
                 std::mem::swap(&mut s, &mut e);
             }
@@ -764,7 +786,7 @@ pub fn check_pairs(
             }
             svr.used = true;
             if verbose {
-                eprintln!("      Pair [{}:{}] found and marked.", s, e);
+                crate::verbose_eprintln!("      Pair [{}:{}] found and marked.", s, e);
             }
         }
     }
@@ -2358,7 +2380,7 @@ pub fn find_del_disc(
             if del.used || del.variation.cnt < minr + 5 {
                 continue;
             }
-            if !var_data.splice.is_empty() && del.mlen.abs() < 250000 {
+            if !var_data.splice.is_empty() && i64::from(del.mlen).abs() < 250_000 {
                 continue;
             }
             if del.mstart <= del.end + mindist {
@@ -2475,7 +2497,7 @@ pub fn find_del_disc(
             if del.used || del.variation.cnt < minr + 5 {
                 continue;
             }
-            if !var_data.splice.is_empty() && del.mlen.abs() < 250000 {
+            if !var_data.splice.is_empty() && i64::from(del.mlen).abs() < 250_000 {
                 continue;
             }
             if del.start <= del.mend + mindist {
@@ -2666,14 +2688,14 @@ pub fn find_inv_disc(
             }
 
             if is_overlap(end, me, rstart, rms, max_read_length) {
-                let bp = ((end + rstart) / 2).abs();
-                let pe = ((me + rms) / 2).abs();
+                let bp = midpoint_i32(end, rstart).saturating_abs();
+                let pe = midpoint_i32(me, rms).saturating_abs();
 
                 if reference.get_base(chr, pe as u32).is_none() {
                     let modified_region = crate::regions::Region {
                         chr: chr.to_string(),
-                        start: Pos1((pe - 150).max(1) as u32),
-                        end: Pos1((pe + 150) as u32),
+                        start: Pos1(pe.saturating_sub(150).max(1) as u32),
+                        end: Pos1(pe.saturating_add(150).max(1) as u32),
                         gene: String::new(),
                         amplicon: None,
                     };
@@ -2791,14 +2813,14 @@ pub fn find_inv_disc(
             }
 
             if is_overlap(me, end, rms, rstart, max_read_length) {
-                let pe = ((end + rstart) / 2).abs();
-                let bp = ((me + rms) / 2).abs();
+                let pe = midpoint_i32(end, rstart).saturating_abs();
+                let bp = midpoint_i32(me, rms).saturating_abs();
 
                 if reference.get_base(chr, bp as u32).is_none() {
                     let modified_region = crate::regions::Region {
                         chr: chr.to_string(),
-                        start: Pos1((bp - 150).max(1) as u32),
-                        end: Pos1((bp + 150) as u32),
+                        start: Pos1(bp.saturating_sub(150).max(1) as u32),
+                        end: Pos1(bp.saturating_add(150).max(1) as u32),
                         gene: String::new(),
                         amplicon: None,
                     };
@@ -3321,7 +3343,7 @@ pub fn find_all_sv(
     filter_all_sv_structures(var_data);
 
     if verbose_log(config) {
-        eprintln!("Start Structural Variants: DEL\n");
+        crate::verbose_eprintln!("Start Structural Variants: DEL\n");
     }
     find_del(
         var_data,
@@ -3333,7 +3355,7 @@ pub fn find_all_sv(
     )?;
 
     if verbose_log(config) {
-        eprintln!("Start Structural Variants: INV\n");
+        crate::verbose_eprintln!("Start Structural Variants: INV\n");
     }
     find_inv(
         var_data,
@@ -3345,7 +3367,7 @@ pub fn find_all_sv(
     )?;
 
     if verbose_log(config) {
-        eprintln!("Start Structural Variants\n");
+        crate::verbose_eprintln!("Start Structural Variants\n");
     }
     find_sv(
         var_data,
@@ -3358,17 +3380,17 @@ pub fn find_all_sv(
     )?;
 
     if verbose_log(config) {
-        eprintln!("Start Structural Variants: DEL discordant pairs only\n");
+        crate::verbose_eprintln!("Start Structural Variants: DEL discordant pairs only\n");
     }
     find_del_disc(var_data, reference, chr, config, chromosomes_lengths)?;
 
     if verbose_log(config) {
-        eprintln!("Start Structural Variants: INV discordant pairs only\n");
+        crate::verbose_eprintln!("Start Structural Variants: INV discordant pairs only\n");
     }
     find_inv_disc(var_data, reference, chr, config, chromosomes_lengths)?;
 
     if verbose_log(config) {
-        eprintln!("Start Structural Variants: DUP discordant pairs only\n");
+        crate::verbose_eprintln!("Start Structural Variants: DUP discordant pairs only\n");
     }
     find_dup_disc(
         var_data,
@@ -4675,5 +4697,141 @@ mod tests {
             "full match after a failed trimmed seed must not leak extra_slice: {:?}",
             String::from_utf8_lossy(&m.matched_sequence)
         );
+    }
+
+    #[test]
+    fn midpoint_i32_and_sv_overflow_guards() {
+        assert_eq!(midpoint_i32(1_500_000_000, 1_500_000_200), 1_500_000_100);
+        assert_eq!(midpoint_i32(-1_500_000_000, -1_500_000_200), -1_500_000_100);
+        assert_eq!(midpoint_i32(i32::MAX, i32::MAX), i32::MAX);
+        assert_eq!(midpoint_i32(i32::MIN, i32::MIN), i32::MIN);
+
+        // VariationRealigner.java:241 — Java 32-bit signed `int +=` wraps on overflow without panicking.
+        let make_mate = |mate_start: i32, mate_end: i32, mate_len: i32| Mate {
+            mate_start,
+            mate_end,
+            mate_len,
+            start: 100,
+            end: 200,
+            pmean: 10.0,
+            qmean: 30.0,
+            mqmean: 60.0,
+            nm: 0.0,
+        };
+        let mut mates = vec![make_mate(500, 600, i32::MIN), make_mate(510, 610, i32::MIN)];
+        let cluster = check_cluster(&mut mates, 100);
+        assert_eq!(cluster.cnt, 2);
+        assert_eq!(cluster.mate.mate_len, 0);
+
+        // Deep cluster (8,000 mates × 1,000,000 bp) wraps to -589,934,592 / 8,000 == -73,741
+        // (|mlen| < 250,000 splice threshold at StructuralVariantsProcessor.java:996), matching Java.
+        let mut deep_mates: Vec<Mate> = (0..8_000)
+            .map(|i| make_mate(500 + (i % 10), 600 + (i % 10), 1_000_000))
+            .collect();
+        let deep_cluster = check_cluster(&mut deep_mates, 100);
+        assert_eq!(deep_cluster.cnt, 8_000);
+        assert_eq!(deep_cluster.mate.mate_len, -73_741);
+        assert!(i64::from(deep_cluster.mate.mate_len).abs() < 250_000);
+
+        // check_pairs at > 1.07 Gbp uses midpoint_i32 without i32 sum overflow.
+        let mut svr = Sclip::default();
+        svr.start = 1_500_000_000;
+        svr.end = 1_500_000_200;
+        svr.mstart = 1_500_000_400;
+        svr.mend = 1_500_000_600;
+        svr.variation.cnt = 4;
+        let mut cluster_vec = vec![svr];
+        let mut refs: Vec<&mut Vec<Sclip>> = vec![&mut cluster_vec];
+        let pd = check_pairs(1_500_000_100, 1_500_000_500, &mut refs, 100, false);
+        assert_eq!(pd.pairs, 4);
+        assert!(cluster_vec[0].used);
+
+        // find_inv_disc at > 1.07 Gbp (both 5' and 3' loops) uses midpoint_i32 without overflow.
+        // Separate 3' clusters by > 300 bp from 5' clusters so mark_sv in Part 1 does not
+        // pre-mark svfinv3[0]/svrinv3[0] before Part 2 executes.
+        let chr = "chr1";
+        let mut reference = Reference::new();
+        reference
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: chr.to_string(),
+                sequence_start: 1_500_000_000,
+                sequence_end: 1_500_003_000,
+            });
+        reference.region_sequences.push(vec![b'A'; 3_001]);
+
+        let mut var_data = crate::variations::VariationData::default();
+        var_data.max_read_length = 100;
+
+        let mut invf5 = Sclip::default();
+        invf5.variation.cnt = 5;
+        invf5.variation.mqmean = 300.0;
+        invf5.start = 1_500_000_000;
+        invf5.end = 1_500_000_100;
+        invf5.mstart = 1_500_000_450;
+        invf5.mend = 1_500_000_500;
+        var_data.sv_structures.svfinv5.push(invf5);
+
+        let mut invr5 = Sclip::default();
+        invr5.variation.cnt = 5;
+        invr5.variation.mqmean = 300.0;
+        invr5.start = 1_500_000_120;
+        invr5.end = 1_500_000_200;
+        invr5.mstart = 1_500_000_520;
+        invr5.mend = 1_500_000_600;
+        var_data.sv_structures.svrinv5.push(invr5);
+
+        let mut invf3 = Sclip::default();
+        invf3.variation.cnt = 5;
+        invf3.variation.mqmean = 300.0;
+        invf3.start = 1_500_002_450;
+        invf3.end = 1_500_002_550;
+        invf3.mstart = 1_500_002_150;
+        invf3.mend = 1_500_002_250;
+        var_data.sv_structures.svfinv3.push(invf3);
+
+        let mut invr3 = Sclip::default();
+        invr3.variation.cnt = 5;
+        invr3.variation.mqmean = 300.0;
+        invr3.start = 1_500_002_560;
+        invr3.end = 1_500_002_640;
+        invr3.mstart = 1_500_002_260;
+        invr3.mend = 1_500_002_340;
+        var_data.sv_structures.svrinv3.push(invr3);
+
+        let config = Config::default();
+        let mut chr_lengths = HashMap::new();
+        chr_lengths.insert(chr.to_string(), 2_000_000_000);
+        find_inv_disc(&mut var_data, &mut reference, chr, &config, &chr_lengths).unwrap();
+        assert!(var_data.sv_structures.svfinv5[0].used);
+        assert!(var_data.sv_structures.svrinv5[0].used);
+        assert!(var_data.sv_structures.svfinv3[0].used);
+        assert!(var_data.sv_structures.svrinv3[0].used);
+        assert!(var_data.non_insertion_variants.contains_key(&1_500_000_110));
+        assert!(var_data.non_insertion_variants.contains_key(&1_500_002_255));
+
+        // find_del_disc with non-empty splice and del.mlen == i32::MIN does not panic on .abs().
+        let mut del_data = crate::variations::VariationData::default();
+        del_data.max_read_length = 100;
+        del_data.splice.insert("100-200".to_string());
+        let mut fdel = Sclip::default();
+        fdel.variation.cnt = 10;
+        fdel.mlen = i32::MIN;
+        fdel.start = 100;
+        fdel.end = 200;
+        fdel.mstart = 300; // <= end + mindist (1000) -> exits cleanly after splice check
+        fdel.mend = 400;
+        del_data.sv_structures.svfdel.push(fdel);
+
+        let mut rdel = Sclip::default();
+        rdel.variation.cnt = 10;
+        rdel.mlen = i32::MIN;
+        rdel.start = 300; // <= mend + mindist (1000) -> exits cleanly after splice check
+        rdel.end = 400;
+        rdel.mstart = 100;
+        rdel.mend = 200;
+        del_data.sv_structures.svrdel.push(rdel);
+
+        find_del_disc(&mut del_data, &mut reference, chr, &config, &chr_lengths).unwrap();
     }
 }

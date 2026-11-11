@@ -33,85 +33,77 @@ pub fn simple_post_process(
 ) -> Vec<Variant> {
     let mut vrefs = Vec::new();
 
-    // Collect positions in JavaHashMap table-bucket iteration order
+    // Iterate entries in JavaHashMap table-bucket iteration order
     // (ports SimplePostProcessModule.java:35; see DIVERGENCES.md UB-3).
-    let positions: Vec<i32> = aligned_variants.keys().copied().collect();
+    for (&position, variants_on_position) in aligned_variants.iter() {
+        let sv = &variants_on_position.sv;
 
-    for &position in &positions {
-        if let Some(variants_on_position) = aligned_variants.get(&position) {
-            let sv = &variants_on_position.sv;
+        if sv.is_empty() && (position < region.start.0 as i32 || position > region.end.0 as i32) {
+            continue;
+        }
 
-            if sv.is_empty() && (position < region.start.0 as i32 || position > region.end.0 as i32)
-            {
+        if variants_on_position.variants.is_empty() {
+            if !config.pileup {
                 continue;
             }
-
-            if variants_on_position.variants.is_empty() {
-                if !config.pileup {
+            if let Some(ref vref) = variants_on_position.ref_variant {
+                let mut vref = vref.clone();
+                vref.var_type = String::new();
+                vref.sv = sv.clone();
+                vrefs.push(vref);
+            } else {
+                // ports SimplePostProcessModule.java:55-58: under -p an entry
+                // with no variants and no reference variant still prints, via
+                // `SimpleOutputVariant(null, region, sv, position)` whose fields
+                // keep the printer defaults (genotype "", bias "0;0", flank seqs
+                // ""). CLAUDE.md §5: live-oracle output is replicated as-is and
+                // tracked upstream, never silently fixed.
+                vrefs.push(make_null_record(position, sv));
+            }
+        } else {
+            let vvar = &variants_on_position.variants;
+            for vref_orig in vvar {
+                if vref_orig.ref_allele.contains('N') {
                     continue;
                 }
-                if let Some(ref vref) = variants_on_position.ref_variant {
-                    let mut vref = vref.clone();
-                    vref.var_type = String::new();
-                    vref.sv = sv.clone();
-                    vrefs.push(vref);
-                } else {
-                    // ports SimplePostProcessModule.java:55-58: under -p an entry
-                    // with no variants and no reference variant still prints, via
-                    // `SimpleOutputVariant(null, region, sv, position)` whose fields
-                    // keep the printer defaults (genotype "", bias "0;0", flank seqs
-                    // ""). CLAUDE.md §5: live-oracle output is replicated as-is and
-                    // tracked upstream, never silently fixed.
-                    vrefs.push(make_null_record(position, sv));
+                if vref_orig.ref_allele == vref_orig.var_allele && !config.pileup {
+                    continue;
                 }
-            } else {
-                let vvar = &variants_on_position.variants;
-                let mut valid_vars = Vec::new();
-                for vref_orig in vvar {
-                    if vref_orig.ref_allele.contains('N') {
-                        continue;
-                    }
-                    if vref_orig.ref_allele == vref_orig.var_allele && !config.pileup {
-                        continue;
-                    }
-                    let vtype_cow = vref_orig.var_type_cow();
-                    let is_good = vref_orig.is_good_var(
-                        variants_on_position.ref_variant.as_ref(),
-                        &vtype_cow,
-                        splice,
-                        config,
-                    );
-                    if !is_good && !config.pileup {
-                        continue;
-                    }
-                    let mut vref = vref_orig.clone();
-                    vref.sv = sv.clone();
-                    if vref.start_pos != position && config.pileup && vvar.len() == 1 {
-                        if let Some(ref_var) = &variants_on_position.ref_variant {
-                            let mut ref_var = ref_var.clone();
-                            ref_var.var_type = String::new();
-                            ref_var.sv = sv.clone();
-                            valid_vars.push(ref_var);
-                        } else {
-                            // ports SimplePostProcessModule.java:75-79: Java prints a
-                            // SimpleOutputVariant wrapping null immediately (the
-                            // null-record row at the map key), then continues with a
-                            // default `new Variant()` whose startPosition/endPosition
-                            // stay 0 — that 0 leaks into .var columns 4-5 (the
-                            // upstream pos-0 quirk; replicated per §5, see
-                            // DIVERGENCES.md "Known non-bugs").
-                            valid_vars.push(make_null_record(position, sv));
-                            let mut ref_var = Variant::new();
-                            ref_var.var_type = String::new();
-                            ref_var.sv = sv.clone();
-                            valid_vars.push(ref_var);
-                        }
-                    }
-                    vref.var_type = vtype_cow.into_owned();
-                    valid_vars.push(vref);
+                let vtype_cow = vref_orig.var_type_cow();
+                let is_good = vref_orig.is_good_var(
+                    variants_on_position.ref_variant.as_ref(),
+                    &vtype_cow,
+                    splice,
+                    config,
+                );
+                if !is_good && !config.pileup {
+                    continue;
                 }
-
-                vrefs.extend(valid_vars);
+                let mut vref = vref_orig.clone();
+                vref.sv = sv.clone();
+                if vref.start_pos != position && config.pileup && vvar.len() == 1 {
+                    if let Some(ref_var) = &variants_on_position.ref_variant {
+                        let mut ref_var = ref_var.clone();
+                        ref_var.var_type = String::new();
+                        ref_var.sv = sv.clone();
+                        vrefs.push(ref_var);
+                    } else {
+                        // ports SimplePostProcessModule.java:75-79: Java prints a
+                        // SimpleOutputVariant wrapping null immediately (the
+                        // null-record row at the map key), then continues with a
+                        // default `new Variant()` whose startPosition/endPosition
+                        // stay 0 — that 0 leaks into .var columns 4-5 (the
+                        // upstream pos-0 quirk; replicated per §5, see
+                        // DIVERGENCES.md "Known non-bugs").
+                        vrefs.push(make_null_record(position, sv));
+                        let mut ref_var = Variant::new();
+                        ref_var.var_type = String::new();
+                        ref_var.sv = sv.clone();
+                        vrefs.push(ref_var);
+                    }
+                }
+                vref.var_type = vtype_cow.into_owned();
+                vrefs.push(vref);
             }
         }
     }

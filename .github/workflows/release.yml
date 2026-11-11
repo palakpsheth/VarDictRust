@@ -76,7 +76,7 @@ jobs:
             python3 .agents/skills/vardictrust-release/scripts/check_release_consistency.py --phase pre-tag "${EXTRA_FLAGS[@]}"
           else
             python3 .agents/skills/vardictrust-release/scripts/check_release_consistency.py --version "${REF_NAME#v}" --phase pre-tag --require-head-fingerprint
-            python3 harness/perf_budget.py hg008-tier2 seqc2-exome-tier2 hg002-tier2 amplicon-tier2
+            python3 harness/perf_budget.py hg008-tier2 seqc2-exome-tier2 hg002-tier2 amplicon-tier2 hg008-cram-twin
           fi
           {
             echo "## VarDictRust Release Certification Guard"

@@ -221,9 +221,9 @@ vardictrust -G GRCh38.fa -f 0.01 -N SAMPLE -b sample.bam -R chr1:1000000-2000000
   | bcftools filter -i 'FILTER="PASS"' -Oz -o filtered.vcf.gz \
   && tabix -p vcf filtered.vcf.gz
 
-# Or write native multithreaded BGZF VCF + JSON run telemetry directly
+# Or write native multithreaded BGZF VCF + Tabix (.tbi) index + JSON run telemetry directly
 vardictrust -G GRCh38.fa -f 0.01 -N SAMPLE -b sample.bam -R chr1:1000000-2000000 -th 8 \
-  --output filtered.vcf.gz --stats-json stats.json
+  --output filtered.vcf.gz --tbi --stats-json stats.json
 ```
 
 ---
@@ -328,8 +328,8 @@ VarDictRust enforces the **[rewrites.bio](https://rewrites.bio) Prime Directive*
 
 1. **Fidelity over Innovation:** Matches every VarDictJava v1.8.3 output decision on valid inputs, including IEEE 754 banker's rounding ([`round_half_even`](DIVERGENCES.md#statistical-rounding--floating-point-half-even)), exact odds ratios, OpenJDK [`JavaHashMap`](DIVERGENCES.md#ub-3-var-row-order-across-positions-follows-hashmap-iteration-order-282-family) iteration order, and in-engine somatic classification ([`SomaticPostProcessModule`](DIVERGENCES.md#somatic-status-determination)).
 2. **Robustness by Construction:** Enforces `#![forbid(unsafe_code)]` and returns `Result<_, VardictError>` without panicking where VarDictJava crashes on malformed CIGARs ([`modifyCigar` #341 family](docs/upstream-bugs.md), [PR #402](DIVERGENCES.md#category-1-cigar-and-realignment-resilience)), null pointers, or missing indexes ([Issue #187](DIVERGENCES.md#category-7-cli-diagnostics-and-error-messages)).
-3. **Bounded Memory at Any Depth:** Processes reads in bounded halo tiles, eliminating whole-chromosome JVM heap exhaustion ([Issues #197 and #384](https://github.com/AstraZeneca-NGS/VarDictJava/issues/197)).
-4. **Bug Release Policy:** Replicates upstream output quirks in v1.0.x ([UB-1 through UB-7](docs/upstream-bugs.md)); output-changing fixes ship in v1.1.0+ behind opt-in `--fix <id>` flags per [`ROADMAP.md`](ROADMAP.md).
+3. **Bounded Memory at Any Depth:** Processes reads in bounded halo tiles with cross-tile `.var` boundary deduplication (`SplitVarDeduper`, `200 kbp` retention window), disk-backed whole-stream VCF candidate spilling (`SpillableVcfAccumulator` above `8 MiB`), and zero-allocation hot-path stack scratch buffers, eliminating whole-chromosome JVM heap exhaustion ([Issues #197 and #384](https://github.com/AstraZeneca-NGS/VarDictJava/issues/197)).
+4. **Bug Release Policy:** Replicates upstream output quirks in v1.0.x ([UB-1 through UB-7](docs/upstream-bugs.md)), pinned explicitly via `--parity` (`--compat vardictjava-1.8.3`); output-changing fixes ship in v1.1.0+ behind `--modern` and opt-in `--fix <id>` flags per [`ROADMAP.md`](ROADMAP.md).
 5. **Documented Quirks & Testing Matrix:** Cataloged in [`DIVERGENCES.md`](DIVERGENCES.md) and [`docs/testing/test-matrix-and-ci-audit.md`](docs/testing/test-matrix-and-ci-audit.md).
 
 ---
@@ -353,17 +353,20 @@ Flag parity with VarDictJava v1.8.3 is defined against [`CmdParser.java`](https:
 | `-N` | `--name` | Sample name (somatic: `"TUMOR\|NORMAL"`) | derived from BAM | `corpus` |
 | `-R` | `--region` | Region `chr:start-end[:gene]` instead of BED | — | `corpus` |
 | positional | — | BED file (used when `-R` absent) | — | `corpus` |
-| `-h` | `--header` | Print `.var` column header before results (not help; use `-H`/`--help`) | off | `corpus` |
-| `-H` | `--help` | Print CLI help message and exit | — | `parity-exempt` |
+| `-h` | `--header` | Print `.var` column header before results (not help; use `-H`/`-?`/`--help`) | off | `corpus` |
+| `-H`, `-?` | `--help` | Print CLI help message and exit (also accepts `--?`) | — | `parity-exempt` |
 | — | `--version` | Print version, upstream provenance, and AI disclosure metadata | — | `parity-exempt` |
-| — | `--output` | Write output (`.vcf` or `.var`) directly to file; `.gz`/`.bgz` suffixes use multithreaded BGZF | `stdout` | `parity-exempt` |
+| — | `--output` | Write output (`.vcf`, `.var`, or `-i` splice counts) directly to file; `.gz`/`.bgz` suffixes use multithreaded BGZF (`File::sync_all` + input-collision guard) | `stdout` | `parity-exempt` |
+| — | `--tbi`, `--index` | Write a pure-Rust Tabix (`.tbi`) index alongside a BGZF-compressed `--output` `.vcf.gz`/`.vcf.bgz` file (`noodles::tabix`) | off | `parity-exempt` |
 | — | `--stats-json` | Write run telemetry JSON (`mode`, `threads`, `regions_count`, `tiles_count`, `elapsed_ms`, `peak_rss_kb`, `exceptions_caught`) to `<PATH>` | — | `no-output` |
+| — | `--parity` | Explicitly lock 100% VarDictJava v1.8.3 byte-for-byte parity mode (default in `v1.x`) | on | `parity-exempt` |
+| — | `--compat` | Pin target compatibility contract (`vardictjava-1.8.3` or `1.8.3` in `v1.0.x`) | `vardictjava-1.8.3` | `parity-exempt` |
 | — | `--emit-intermediate` | Emit legacy `.var` table instead of VCF | off | `corpus` |
 | `-d` | — | Delimiter for splitting region info | `\t` | `corpus` |
 | `-v` | — | Accepted and ignored (never read by VarDictJava v1.8.3) | — | `parity-exempt` |
 | `-y` | `--verbose` | Verbose mode | off | `no-output` |
 | `-D` | `--debug` | Debug mode (append per-read debug columns to `.var`) | off | `corpus` |
-| — | `--DP` | Debug print destination (`OUT` or `ERR`; alias: `--defaultPrinter`) | — | `corpus` |
+| — | `--DP`, `--default-printer` | Debug print destination (`OUT` or `ERR`; alias: `--defaultPrinter`) | — | `corpus` |
 
 ### 2. Coordinate & BED Column Mapping
 
@@ -378,7 +381,7 @@ Flag parity with VarDictJava v1.8.3 is defined against [`CmdParser.java`](https:
 | `-z` | — | BED coordinates are 0-based half-open | off (1-based) | `corpus` |
 | `-x` | — | BED region extension (bp) | `0` | `corpus` |
 | `-X` | — | Nucleotide extension | `2` | `corpus` |
-| `-Y` | — | Max region length | `1200` | `corpus` |
+| `-Y` | `--ref-extension` | Max region length | `1200` | `corpus` |
 
 ### 3. Variant Calling & Quality Thresholds
 
@@ -411,10 +414,10 @@ Flag parity with VarDictJava v1.8.3 is defined against [`CmdParser.java`](https:
 | `-V` | — | Min normal AF (somatic mode) | `0.05` | `corpus` |
 | — | `--fisher` | In-engine Fisher exact test (p-value / odds ratio) | off | `corpus` |
 | `-a` | `--amplicon` | Amplicon mode `"int:float"` (distance:fraction) | auto `10:0.95` on 8-col BED | `corpus` |
-| `-i` | `--splice` | RNA splicing mode (emits 4-column intron count table) | off | `corpus` |
+| `-i` | `--splice` | RNA splicing mode (emits sorted 4-column intron count table) | off | `corpus` |
 | — | `--mfreq` | Mono frequency threshold | `0.25` | `corpus` |
 | — | `--nmfreq` | Normal mono frequency threshold | `0.1` | `corpus` |
-| `-J` | — | CRISPR cutting site coordinate | — | `corpus` |
+| `-J` | `--crispr` | CRISPR cutting site coordinate | — | `corpus` |
 | `-j` | — | CRISPR flanking size | — | `corpus` |
 
 ### 5. Structural Variants & Complex Indels
@@ -423,8 +426,8 @@ Flag parity with VarDictJava v1.8.3 is defined against [`CmdParser.java`](https:
 | :--- | :--- | :--- | :--- | :--- |
 | `-U` | `--nosv` | Disable structural variant calling | off | `corpus` |
 | `-L` | — | SV minimum length in bp | `1000` | `corpus` |
-| `-w` | — | SV read length | `300` | `corpus` |
-| `-W` | — | SV flanking length | `100` | `corpus` |
+| `-w` | `--insert-size` | SV read length | `300` | `corpus` |
+| `-W` | `--insert-std` | SV flanking length | `100` | `corpus` |
 | `-A` | — | SV minimum AF | `4` | `corpus` |
 | `-I` | — | Indel size | `50` | `corpus` |
 | — | `--chimeric` | Chimeric read handling | off | `corpus` |
@@ -434,10 +437,12 @@ Flag parity with VarDictJava v1.8.3 is defined against [`CmdParser.java`](https:
 
 | Short | Long | Description | Default | Status |
 | :--- | :--- | :--- | :--- | :--- |
-| — | `--threads` | Thread count (`-th`/`--th` aliases; bare `-th` = all cores) | all cores | `no-output` |
+| — | `--threads` | Thread count (`-th`/`--th`/`-th<N>` aliases; bare `-th` = all cores) | all cores | `no-output` |
 | — | `--tile-size` | Region tile size in bp (bounded-memory WGS) | auto (`<= 1 Mbp` untiled; `> 1 Mbp` `100 kbp` tiles; max `500 Mbp`) | `no-output` |
 
-*Loud-Error Legacy Flags (`AGENTS.md §12`):* Passing any of the 5 unimplemented VarDictJava options (7 flag spellings: `-n`, `-C`, `-T` / `--trim`, `--VS`, `-Z` / `--downsample`) fails fast with `VardictError::Unsupported("<flag> not implemented in v1.0; use VarDictJava")` rather than ignoring the flag.
+*Commons-CLI Single-Dash Compatibility:* Upstream Java single-dash long options (`-fisher`, `-adaptor`, `-chimeric`, `-deldupvar`, `-nosv`, `-splice`, `-header`, `-dedup`, `-debug`, `-verbose`, `-amplicon`, `-DP`, `-default-printer`, `-defaultPrinter`, `-mfreq`, `-nmfreq`, `-insert-size`, `-insert-std`, `-ref-extension`, `-crispr`) are normalized transparently alongside standard `--` GNU long flags.
+
+*Loud-Error Legacy Flags (`AGENTS.md §12`):* Passing any of the 5 unimplemented VarDictJava options (`-n`, `-C`, `-T` / `-trim` / `--trim`, `-VS` / `--VS`, `-Z` / `-downsample` / `--downsample`) fails fast with `VardictError::Unsupported("<flag> not implemented in v1.0; use VarDictJava")` rather than ignoring the flag.
 
 *Reproducible Profiling Hooks:* When compiled with opt-in Cargo features (`profile-cpu`, `profile-heap`, or `profile-dhat`), `vardictrust` honors `VARDICT_PROFILE_CPU`, `VARDICT_PROFILE_HEAP`, and `VARDICT_PROFILE_DHAT` output directory environment variables (driven via [`harness/profile.sh`](harness/README.md)).
 
@@ -452,7 +457,7 @@ Per the [rewrites.bio](https://rewrites.bio) manifesto, we disclose all AI tools
 
 - **AI Systems Used:** Google DeepMind Gemini / Antigravity CLI, Anthropic Claude Code, and Qoder.
 - **Scope of AI Assistance:** Implementation of core Rust modules under human architectural direction, transliteration of R/Perl statistical routines into pure Rust, test harness engineering, and adversarial differential verification.
-- **Verification Guarantee (Evidence Before Completion):** **Zero** AI-generated code was accepted on model assertion. Every algorithmic component was validated against VarDictJava v1.8.3 across 519 automated Cargo workspace tests (350 core library tests, 110 corpus and modality parity tests, 26 engine behavior tests, 2 amplicon streaming memory tests, 3 CRAM stack tests, 19 CLI tests, and 9 CLI integration binary tests) enforcing a `>= 90%` line-coverage gate (`cargo-llvm-cov`), 36 harness diagnostic self-tests (25 shell tests and 11 Python test suites), the 92-case integration corpus, 10 slice fixtures, 18 multi-modal slices across 6 cohorts, the 89-job 12-cell full-corpus sweep, and multi-gigabyte public benchmarks (SEQC2, GIAB HG008, GIAB HG002, GIAB HG005, GIAB NA24385 b37) under float tolerance $\varepsilon = 10^{-6}$, with reproducibility documented in [`docs/testing/test-matrix-and-ci-audit.md`](docs/testing/test-matrix-and-ci-audit.md) and workflow skills in [`.agents/skills/`](AGENTS.md#19-repository-specific-agent-skills).
+- **Verification Guarantee (Evidence Before Completion):** **Zero** AI-generated code was accepted on model assertion. Every algorithmic component was validated against VarDictJava v1.8.3 across 590 automated Cargo workspace tests (406 core library tests, 110 corpus and modality parity tests, 29 engine behavior tests, 2 amplicon streaming memory tests, 3 CRAM stack tests, 23 CLI tests, and 17 CLI integration binary tests) enforcing a `>= 90%` line-coverage gate (`cargo-llvm-cov`), 36 harness diagnostic self-tests (25 shell tests and 11 Python test suites), the 92-case integration corpus, 10 slice fixtures, 18 multi-modal slices across 6 cohorts, the 89-job 12-cell full-corpus sweep, and multi-gigabyte public benchmarks (SEQC2, GIAB HG008, GIAB HG002, GIAB HG005, GIAB NA24385 b37) under float tolerance $\varepsilon = 10^{-6}$, with reproducibility documented in [`docs/testing/test-matrix-and-ci-audit.md`](docs/testing/test-matrix-and-ci-audit.md) and workflow skills in [`.agents/skills/`](AGENTS.md#19-repository-specific-agent-skills).
 
 ---
 

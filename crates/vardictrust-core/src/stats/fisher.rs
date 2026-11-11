@@ -233,22 +233,40 @@ impl FisherExact {
         }
     }
 
-    /// Returns the odds ratio formatted as String, matching Java (`--fisher`) or R outputs.
-    /// Ports `FisherExact.java:149-156`.
-    pub fn get_odds_ratio(&self) -> String {
+    fn fmt_odds_ratio<W: core::fmt::Write>(&self, out: &mut W) -> core::fmt::Result {
         let odd_ratio = self.mle(self.x as f64);
         if odd_ratio.is_infinite() {
-            "Inf".to_string()
+            out.write_str("Inf")
         } else if odd_ratio == odd_ratio.round() {
-            format!("{:.0}", odd_ratio)
+            write!(out, "{odd_ratio:.0}")
         } else {
             let rounded = self.round_result(odd_ratio);
             if self.java_fisher {
-                crate::variations::java_double_to_string(rounded)
+                crate::variations::write_java_double_into(out, rounded)
             } else {
-                format!("{}", rounded)
+                write!(out, "{rounded}")
             }
         }
+    }
+
+    /// Formats the odds ratio into a 32-byte stack buffer without heap allocation.
+    #[inline]
+    pub(crate) fn odds_ratio_buf(&self) -> crate::types::StackBuf<32> {
+        let mut buf = crate::types::StackBuf::<32>::new();
+        let _ = self.fmt_odds_ratio(&mut buf);
+        buf
+    }
+
+    /// Appends the formatted odds ratio directly into `out` without clearing `out`.
+    #[inline]
+    pub fn write_odds_ratio_into(&self, out: &mut String) {
+        let _ = self.fmt_odds_ratio(out);
+    }
+
+    /// Returns the odds ratio formatted as String, matching Java (`--fisher`) or R outputs.
+    /// Ports `FisherExact.java:149-156`.
+    pub fn get_odds_ratio(&self) -> String {
+        self.odds_ratio_buf().as_str().to_string()
     }
 
     /// Returns the two-sided p-value.
@@ -1222,5 +1240,76 @@ mod tests {
             }
         }
         assert!(checked > 0);
+    }
+
+    #[test]
+    fn odds_ratio_buf_and_write_odds_ratio_into_match_get_odds_ratio() {
+        fn reference_odds_ratio(fe: &FisherExact) -> String {
+            let odd_ratio = fe.mle(fe.x as f64);
+            if odd_ratio.is_infinite() {
+                "Inf".to_string()
+            } else if odd_ratio == odd_ratio.round() {
+                format!("{:.0}", odd_ratio)
+            } else {
+                let rounded = fe.round_result(odd_ratio);
+                if fe.java_fisher {
+                    crate::variations::java_double_to_string(rounded)
+                } else {
+                    format!("{}", rounded)
+                }
+            }
+        }
+
+        let pinned_cases = [
+            ((0, 0, 0, 0), false, Some("0")),
+            ((0, 0, 0, 0), true, Some("0")),
+            ((10, 0, 0, 10), false, Some("Inf")),
+            ((10, 0, 0, 10), true, Some("Inf")),
+            ((20, 10, 10, 5), false, Some("1")),
+            ((20, 10, 10, 5), true, Some("1")),
+            ((1_000_000, 1, 1, 1_000_000), false, None),
+            ((1_000_000, 1, 1, 1_000_000), true, None),
+            ((27, 17, 3, 8), false, Some("4.12268")),
+            ((9, 6, 5, 1), false, Some("0.31603")),
+            ((2, 300, 300, 2), false, Some("0.0001")),
+            ((2, 300, 300, 2), true, Some("1.0E-4")),
+            ((2, 400, 400, 2), true, Some("6.0E-5")),
+            ((200, 1, 4, 800), true, Some("16384.0")),
+        ];
+
+        for ((rf, rr, af, ar), java_fisher, maybe_pin) in pinned_cases {
+            let fe = FisherExact::new_with_mode(rf, rr, af, ar, java_fisher);
+            let expected = reference_odds_ratio(&fe);
+            if let Some(pin) = maybe_pin {
+                assert_eq!(
+                    expected, pin,
+                    "pin mismatch for ({rf},{rr},{af},{ar}) java={java_fisher}"
+                );
+            }
+
+            let buf = fe.odds_ratio_buf();
+            assert_eq!(
+                buf.as_str(),
+                expected,
+                "odds_ratio_buf mismatch for ({rf},{rr},{af},{ar}) java={java_fisher}"
+            );
+            assert_eq!(
+                &*buf, expected,
+                "odds_ratio_buf Deref mismatch for ({rf},{rr},{af},{ar}) java={java_fisher}"
+            );
+            assert_eq!(fe.get_odds_ratio(), expected);
+
+            let mut fresh = String::new();
+            fe.write_odds_ratio_into(&mut fresh);
+            assert_eq!(fresh, expected);
+
+            let mut prefixed = "prefix\t".to_string();
+            fe.write_odds_ratio_into(&mut prefixed);
+            assert_eq!(
+                prefixed,
+                format!("prefix\t{expected}"),
+                "write_odds_ratio_into must append without clearing existing prefix"
+            );
+        }
     }
 }

@@ -365,7 +365,7 @@ pub(crate) mod tests {
                     b3 = j as i32;
                     b5 = i as i32;
                     if verbose {
-                        eprintln!(
+                        crate::verbose_eprintln!(
                             "      Found 35 Match, seq5_len={}, seq3_len={}, total_length={}, mismatch={}, i={}, j={}",
                             len5, len3, total_length, number_of_mismatch, i, j
                         );

@@ -300,7 +300,6 @@ pub fn simple_38_into(
         variant.rev as i32,
     );
     let pvalue = fisher.get_p_value();
-    let oddratio = fisher.get_odds_ratio();
 
     buf.push_str(sample_name);
     buf.push('\t');
@@ -341,7 +340,7 @@ pub fn simple_38_into(
     buf.push('\t');
     push_java_rounded(buf, pvalue, 5);
     buf.push('\t');
-    buf.push_str(&oddratio);
+    fisher.write_odds_ratio_into(buf);
     buf.push('\t');
     push_java_rounded(buf, variant.mean_mapping_quality, 1);
     buf.push('\t');
@@ -548,7 +547,6 @@ pub fn amplicon_40_into(
         variant.rev as i32,
     );
     let pvalue = fisher.get_p_value();
-    let oddratio = fisher.get_odds_ratio();
 
     buf.push_str(sample_name);
     buf.push('\t');
@@ -585,7 +583,7 @@ pub fn amplicon_40_into(
     buf.push('\t');
     push_java_rounded(buf, pvalue, 5);
     buf.push('\t');
-    buf.push_str(&oddratio);
+    fisher.write_odds_ratio_into(buf);
     buf.push('\t');
     push_java_rounded(buf, variant.mean_mapping_quality, 1);
     buf.push('\t');
@@ -1036,7 +1034,6 @@ pub fn somatic_61_into(
         tumor.rev as i32,
     );
     let pvalue1 = fisher1.get_p_value();
-    let oddratio1 = fisher1.get_odds_ratio();
 
     let (tvar_cov, ttotal_cov) = (tumor.pos_coverage, tumor.total_pos_cov);
     let (nvar_cov, ntotal_cov) = match normal {
@@ -1058,7 +1055,6 @@ pub fn somatic_61_into(
     } else {
         pvalue_greater
     };
-    let total_oddratio = fisher_total.get_odds_ratio();
 
     buf.push_str(sample_name);
     buf.push('\t');
@@ -1072,7 +1068,7 @@ pub fn somatic_61_into(
     buf.push('\t');
     buf.push_str(&tumor.var_allele);
     buf.push('\t');
-    push_20cols_fisher(buf, tumor, pvalue1, &oddratio1);
+    push_20cols_fisher(buf, tumor, pvalue1, &fisher1.odds_ratio_buf());
     buf.push('\t');
     match normal {
         Some(n) => {
@@ -1082,7 +1078,7 @@ pub fn somatic_61_into(
                 n.fwd as i32,
                 n.rev as i32,
             );
-            push_20cols_fisher(buf, n, f2.get_p_value(), &f2.get_odds_ratio());
+            push_20cols_fisher(buf, n, f2.get_p_value(), &f2.odds_ratio_buf());
         }
         None => {
             buf.push_str(VARIANT_20COLS_FISHER_EMPTY);
@@ -1133,7 +1129,7 @@ pub fn somatic_61_into(
     }
     push_java_rounded(buf, total_pvalue, 5);
     buf.push('\t');
-    buf.push_str(&total_oddratio);
+    fisher_total.write_odds_ratio_into(buf);
 }
 
 /// Write somatic 61-column representation (with --fisher).

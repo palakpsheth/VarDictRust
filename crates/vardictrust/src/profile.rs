@@ -103,28 +103,28 @@ impl Session {
 
         #[cfg(not(feature = "profile-cpu"))]
         if cpu_dir.is_some() {
-            eprintln!(
+            vardictrust_core::verbose_eprintln!(
                 "vardictrust: warning: VARDICT_PROFILE_CPU is set, but the feature is not compiled in"
             );
         }
 
         #[cfg(not(feature = "profile-heap"))]
         if heap_dir.is_some() {
-            eprintln!(
+            vardictrust_core::verbose_eprintln!(
                 "vardictrust: warning: VARDICT_PROFILE_HEAP is set, but the feature is not compiled in"
             );
         }
 
         #[cfg(not(feature = "profile-dhat"))]
         if dhat_dir.is_some() {
-            eprintln!(
+            vardictrust_core::verbose_eprintln!(
                 "vardictrust: warning: VARDICT_PROFILE_DHAT is set, but the feature is not compiled in"
             );
         }
 
         #[cfg(all(feature = "profile-heap", feature = "profile-dhat"))]
         if heap_dir.is_some() {
-            eprintln!("vardictrust: warning: VARDICT_PROFILE_HEAP requested, but global allocator does not match; disabling heap profiling");
+            vardictrust_core::verbose_eprintln!("vardictrust: warning: VARDICT_PROFILE_HEAP requested, but global allocator does not match; disabling heap profiling");
             heap_dir = None;
         }
 
@@ -195,11 +195,13 @@ impl Session {
                 let mut ctl = ctl.blocking_lock();
                 if !ctl.activated() {
                     if let Err(e) = ctl.activate() {
-                        eprintln!("vardictrust: warning: profile heap activate failed: {e}");
+                        vardictrust_core::verbose_eprintln!(
+                            "vardictrust: warning: profile heap activate failed: {e}"
+                        );
                     }
                 }
             } else {
-                eprintln!("vardictrust: warning: profile heap controller uninitialized; jemalloc profiling unavailable");
+                vardictrust_core::verbose_eprintln!("vardictrust: warning: profile heap controller uninitialized; jemalloc profiling unavailable");
             }
             Some(dir)
         } else {
@@ -247,7 +249,9 @@ impl Drop for Session {
                         ticks_total, samples_kept
                     );
                     if let Err(e) = std::fs::write(cpu.dir.join("cpu-meta.json"), meta.as_bytes()) {
-                        eprintln!("vardictrust: warning: profile write cpu-meta.json failed: {e}");
+                        vardictrust_core::verbose_eprintln!(
+                            "vardictrust: warning: profile write cpu-meta.json failed: {e}"
+                        );
                     }
 
                     match report.pprof() {
@@ -259,20 +263,20 @@ impl Drop for Session {
                                     if let Err(e) =
                                         std::fs::write(cpu.dir.join("cpu-profile.pb"), buf)
                                     {
-                                        eprintln!(
+                                        vardictrust_core::verbose_eprintln!(
                                             "vardictrust: warning: profile write cpu-profile.pb failed: {e}"
                                         );
                                     }
                                 }
                                 Err(e) => {
-                                    eprintln!(
+                                    vardictrust_core::verbose_eprintln!(
                                         "vardictrust: warning: profile pprof encode failed: {e}"
                                     );
                                 }
                             }
                         }
                         Err(e) => {
-                            eprintln!(
+                            vardictrust_core::verbose_eprintln!(
                                 "vardictrust: warning: profile pprof proto generation failed: {e}"
                             );
                         }
@@ -313,7 +317,7 @@ impl Drop for Session {
                         cpu.dir.join("cpu-collapsed.txt"),
                         collapsed_content.as_bytes(),
                     ) {
-                        eprintln!(
+                        vardictrust_core::verbose_eprintln!(
                             "vardictrust: warning: profile write cpu-collapsed.txt failed: {e}"
                         );
                     }
@@ -326,19 +330,21 @@ impl Drop for Session {
                             lines.iter().map(|s| s.as_str()),
                             &mut svg_bytes,
                         ) {
-                            eprintln!(
+                            vardictrust_core::verbose_eprintln!(
                                 "vardictrust: warning: profile render flamegraph SVG failed: {e}"
                             );
                         }
                     }
                     if let Err(e) = std::fs::write(cpu.dir.join("cpu-flamegraph.svg"), svg_bytes) {
-                        eprintln!(
+                        vardictrust_core::verbose_eprintln!(
                             "vardictrust: warning: profile write cpu-flamegraph.svg failed: {e}"
                         );
                     }
                 }
                 Err(e) => {
-                    eprintln!("vardictrust: warning: profile CPU report failed: {e}");
+                    vardictrust_core::verbose_eprintln!(
+                        "vardictrust: warning: profile CPU report failed: {e}"
+                    );
                 }
             }
         }
@@ -355,11 +361,15 @@ impl Drop for Session {
                             "heap.pb"
                         };
                         if let Err(e) = std::fs::write(dir.join(filename), &pprof_data) {
-                            eprintln!("vardictrust: warning: profile write heap pprof failed: {e}");
+                            vardictrust_core::verbose_eprintln!(
+                                "vardictrust: warning: profile write heap pprof failed: {e}"
+                            );
                         }
                     }
                     Err(e) => {
-                        eprintln!("vardictrust: warning: profile dump heap pprof failed: {e}");
+                        vardictrust_core::verbose_eprintln!(
+                            "vardictrust: warning: profile dump heap pprof failed: {e}"
+                        );
                     }
                 }
                 match ctl.dump_flamegraph() {
@@ -367,17 +377,21 @@ impl Drop for Session {
                         if let Err(e) =
                             std::fs::write(dir.join("heap-flamegraph.svg"), &flamegraph_svg)
                         {
-                            eprintln!(
+                            vardictrust_core::verbose_eprintln!(
                                 "vardictrust: warning: profile write heap flamegraph failed: {e}"
                             );
                         }
                     }
                     Err(e) => {
-                        eprintln!("vardictrust: warning: profile dump heap flamegraph failed: {e}");
+                        vardictrust_core::verbose_eprintln!(
+                            "vardictrust: warning: profile dump heap flamegraph failed: {e}"
+                        );
                     }
                 }
             } else {
-                eprintln!("vardictrust: warning: profile heap controller uninitialized");
+                vardictrust_core::verbose_eprintln!(
+                    "vardictrust: warning: profile heap controller uninitialized"
+                );
             }
         }
     }

@@ -52,11 +52,11 @@ pub struct AmpliconVariant {
 /// * `splice` - Set of splice site strings
 ///
 /// Ports `AmpliconPostProcessModule.process()`.
-pub fn amplicon_post_process(
+pub fn amplicon_post_process<R: std::borrow::Borrow<Region>>(
     config: &Config,
     region: &Region,
     vars_per_amplicon: &[crate::javamap::JavaHashMap<i32, Vars>],
-    amplicons_on_positions: &BTreeMap<i32, Vec<(usize, Region)>>,
+    amplicons_on_positions: &BTreeMap<i32, Vec<(usize, R)>>,
     splice: &rustc_hash::FxHashSet<String>,
 ) -> Result<Vec<AmpliconVariant>, crate::types::VardictError> {
     // Batch wrapper over the streaming core below: the BTreeMap iterator visits
@@ -72,9 +72,15 @@ pub fn amplicon_post_process(
             config,
             region,
             vars_per_amplicon,
-            amplicons_on_positions
-                .iter()
-                .map(|(&position, regions)| (position, regions.clone())),
+            amplicons_on_positions.iter().map(|(&position, regions)| {
+                (
+                    position,
+                    regions
+                        .iter()
+                        .map(|(idx, reg)| (*idx, reg.borrow()))
+                        .collect(),
+                )
+            }),
             splice,
             &mut collect,
         )?;
@@ -152,9 +158,7 @@ impl<'a> AmpliconCoverSweep<'a> {
         }
     }
 
-    /// Covering amplicons at `position`, in segment order. Positions MUST
-    /// arrive in ascending (non-decreasing) order.
-    pub(crate) fn covering_at(&mut self, position: i32) -> Vec<(usize, Region)> {
+    fn advance_to(&mut self, position: i32) {
         #[cfg(debug_assertions)]
         {
             if let Some(last) = self.last_pos {
@@ -188,6 +192,26 @@ impl<'a> AmpliconCoverSweep<'a> {
                 self.active.remove(&idx);
             }
         }
+    }
+
+    /// Covering amplicon references at `pos`, in segment order, without cloning
+    /// `Region` per base. Positions MUST arrive in ascending (non-decreasing) order.
+    pub(crate) fn covering_refs_at(&mut self, pos: i32) -> Vec<(usize, &'a Region)> {
+        self.advance_to(pos);
+        let mut covering = Vec::with_capacity(self.active.len());
+        for idx in &self.active {
+            if let Some(region) = self.segment.get(*idx) {
+                covering.push((*idx, region));
+            }
+        }
+        covering
+    }
+
+    /// Covering amplicons at `position`, in segment order. Positions MUST
+    /// arrive in ascending (non-decreasing) order.
+    #[cfg(test)]
+    pub(crate) fn covering_at(&mut self, position: i32) -> Vec<(usize, Region)> {
+        self.advance_to(position);
         let mut covering = Vec::with_capacity(self.active.len());
         for idx in &self.active {
             if let Some(region) = self.segment.get(*idx) {
@@ -198,58 +222,7 @@ impl<'a> AmpliconCoverSweep<'a> {
     }
 }
 
-/// Lazy iterator behind `amplicon_position_stream`: walks the merged insert
-/// ranges ascending, resolving each position's covering list through one
-/// shared `AmpliconCoverSweep` (ascending by construction).
-struct AmpliconPositionIter<'a> {
-    sweep: AmpliconCoverSweep<'a>,
-    merged: Vec<(i32, i32)>,
-    range_idx: usize,
-    current: i32,
-}
-
-impl<'a> Iterator for AmpliconPositionIter<'a> {
-    type Item = (i32, Vec<(usize, Region)>);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        loop {
-            let (start, end) = *self.merged.get(self.range_idx)?;
-            if self.current < start {
-                self.current = start;
-            }
-            if self.current > end {
-                // Past this range (or a degenerate start > end, which the
-                // old `start..=end` expansion also yielded nothing for).
-                self.range_idx = self.range_idx.saturating_add(1);
-                continue;
-            }
-            let position = self.current;
-            let covering = self.sweep.covering_at(position);
-            if position >= end {
-                self.range_idx = self.range_idx.saturating_add(1);
-            } else {
-                // position < end <= i32::MAX here: cannot overflow.
-                self.current = position + 1;
-            }
-            return Some((position, covering));
-        }
-    }
-}
-
-/// Lazy ascending union of the segment's insert intervals as
-/// `(position, covering-amplicons)` pairs.
-///
-/// Streaming form of the per-base expansion in AmpliconMode.java:57-60
-/// (`for p in insertStart..insertEnd`): yields exactly the positions — and the
-/// same segment-ordered covering lists — the materialized `BTreeMap` held,
-/// without one map entry per base (audit-amplicon-expand). Disjoint ranges are
-/// merged first, so gaps between amplicons are never visited. Covering lists
-/// resolve through one `AmpliconCoverSweep`: O((P + A) log A) total, never
-/// O(P x A) predicates. Working memory is O(segment); positions emerge in
-/// ascending order.
-pub fn amplicon_position_stream(
-    segment: &[Region],
-) -> impl Iterator<Item = (i32, Vec<(usize, Region)>)> + '_ {
+fn merge_insert_ranges(segment: &[Region]) -> Vec<(i32, i32)> {
     let mut ranges: Vec<(i32, i32)> = segment
         .iter()
         .filter_map(|region| {
@@ -272,12 +245,96 @@ pub fn amplicon_position_stream(
         }
         merged.push((start, end));
     }
-    AmpliconPositionIter {
+    merged
+}
+
+/// Lazy iterator behind [`amplicon_position_ref_stream`] and [`amplicon_position_stream`]:
+/// walks the merged insert ranges ascending, resolving each position's covering list
+/// through one shared [`AmpliconCoverSweep`] (ascending by construction).
+struct AmpliconPositionRefIter<'a> {
+    sweep: AmpliconCoverSweep<'a>,
+    merged: Vec<(i32, i32)>,
+    range_idx: usize,
+    current: i32,
+}
+
+impl<'a> Iterator for AmpliconPositionRefIter<'a> {
+    type Item = (i32, Vec<(usize, &'a Region)>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            let (start, end) = *self.merged.get(self.range_idx)?;
+            if self.current < start {
+                self.current = start;
+            }
+            if self.current > end {
+                // Past this range (or a degenerate start > end, which the
+                // old `start..=end` expansion also yielded nothing for).
+                self.range_idx = self.range_idx.saturating_add(1);
+                continue;
+            }
+            let position = self.current;
+            let covering = self.sweep.covering_refs_at(position);
+            if position >= end {
+                self.range_idx = self.range_idx.saturating_add(1);
+            } else {
+                // position < end <= i32::MAX here: cannot overflow.
+                self.current = position + 1;
+            }
+            return Some((position, covering));
+        }
+    }
+}
+
+/// Zero-clone reference variant of [`amplicon_position_stream`], borrowing
+/// `&Region` directly from `segment` instead of cloning `Region` per base.
+pub(crate) fn amplicon_position_ref_stream(
+    segment: &[Region],
+) -> impl Iterator<Item = (i32, Vec<(usize, &Region)>)> + '_ {
+    let merged = merge_insert_ranges(segment);
+    AmpliconPositionRefIter {
         sweep: AmpliconCoverSweep::new(segment),
         merged,
         range_idx: 0,
         current: 0,
     }
+}
+
+/// Lazy ascending union of the segment's insert intervals as
+/// `(position, covering-amplicons)` pairs.
+///
+/// Streaming form of the per-base expansion in AmpliconMode.java:57-60
+/// (`for p in insertStart..insertEnd`): yields exactly the positions — and the
+/// same segment-ordered covering lists — the materialized `BTreeMap` held,
+/// without one map entry per base (audit-amplicon-expand). Disjoint ranges are
+/// merged first, so gaps between amplicons are never visited. Covering lists
+/// resolve through one `AmpliconCoverSweep`: O((P + A) log A) total, never
+/// O(P x A) predicates. Working memory is O(segment); positions emerge in
+/// ascending order.
+pub fn amplicon_position_stream(
+    segment: &[Region],
+) -> impl Iterator<Item = (i32, Vec<(usize, Region)>)> + '_ {
+    amplicon_position_ref_stream(segment)
+        .map(|(pos, refs)| (pos, refs.into_iter().map(|(i, r)| (i, r.clone())).collect()))
+}
+
+#[inline]
+fn get_or_init_region_tag<'a>(
+    region_tags: &'a mut Vec<String>,
+    amp_num: usize,
+    amp_reg: &Region,
+) -> &'a str {
+    if region_tags.len() <= amp_num {
+        region_tags.resize_with(amp_num.saturating_add(1), String::new);
+    }
+    if let Some(tag) = region_tags.get_mut(amp_num) {
+        if tag.is_empty() {
+            use std::fmt::Write as _;
+            let _ = write!(tag, "{}:{}-{}", amp_reg.chr, amp_reg.start.0, amp_reg.end.0);
+        }
+        return tag.as_str();
+    }
+    ""
 }
 
 /// Streaming core of `AmpliconPostProcessModule.process()`: one iteration per
@@ -287,17 +344,19 @@ pub fn amplicon_position_stream(
 /// `positions` MUST arrive in ascending order with segment-ordered covering
 /// lists — both the batch `BTreeMap` and `amplicon_position_stream` satisfy
 /// this — so row order matches the batch path exactly.
-pub fn amplicon_post_process_streaming(
+pub fn amplicon_post_process_streaming<R: std::borrow::Borrow<Region>>(
     config: &Config,
     region: &Region,
     vars_per_amplicon: &[crate::javamap::JavaHashMap<i32, Vars>],
-    positions: impl IntoIterator<Item = (i32, Vec<(usize, Region)>)>,
+    positions: impl IntoIterator<Item = (i32, Vec<(usize, R)>)>,
     splice: &rustc_hash::FxHashSet<String>,
     emit: &mut dyn FnMut(AmpliconVariant) -> Result<(), crate::types::VardictError>,
 ) -> Result<(), crate::types::VardictError> {
+    // Per-amplicon cached `chr:start-end` strings formatted at most once per segment.
+    let mut region_tags: Vec<String> = vec![String::new(); vars_per_amplicon.len()];
     // Scratch collections reused across positions to avoid per-base allocations.
-    // good variants: (variant, region_string)
-    let mut gvs: Vec<(Variant, String)> = Vec::new();
+    // good variants: (variant, amplicon_index into region_tags)
+    let mut gvs: Vec<(Variant, usize)> = Vec::new();
     // reference variants
     let mut ref_vars: Vec<Variant> = Vec::new();
     // coverage per amplicon
@@ -317,7 +376,9 @@ pub fn amplicon_post_process_streaming(
         let mut maxcov: i32 = 0;
         let mut maxaf: f64 = 0.0;
 
-        for &(amplicon_number, ref amp_region) in &amplicon_regions {
+        for (amplicon_number, amp_region_item) in &amplicon_regions {
+            let amplicon_number = *amplicon_number;
+            let amp_region: &Region = amp_region_item.borrow();
             let vtmp = vars_per_amplicon
                 .get(amplicon_number)
                 .and_then(|m| m.get(&position));
@@ -336,16 +397,17 @@ pub fn amplicon_post_process_streaming(
                         // Compute var_type
                         let vtype = tv.var_type_cow();
                         if tv.is_good_var(ref_amplicon, &vtype, splice, config) {
-                            let region_str = format!(
-                                "{}:{}-{}",
-                                amp_region.chr, amp_region.start.0, amp_region.end.0
+                            let _ = get_or_init_region_tag(
+                                &mut region_tags,
+                                amplicon_number,
+                                amp_region,
                             );
                             let mut tv_clone = tv.clone();
                             tv_clone.var_type = vtype.into_owned();
                             if tv_clone.frequency > maxaf {
                                 maxaf = tv_clone.frequency;
                             }
-                            gvs.push((tv_clone.clone(), region_str));
+                            gvs.push((tv_clone.clone(), amplicon_number));
                             good_vars.push(tv_clone);
                         }
                     }
@@ -426,7 +488,7 @@ pub fn amplicon_post_process_streaming(
 
         // Detect amplicon bias (AmpliconPostProcessModule.java:135-137)
         let mut current_flag = is_amp_bias_flag(&good_variants_on_amp);
-        let mut good_variants: std::borrow::Cow<'_, [(Variant, String)]> =
+        let mut good_variants: std::borrow::Cow<'_, [(Variant, usize)]> =
             std::borrow::Cow::Borrowed(&gvs);
 
         let total_amplicons = amplicon_regions.len() as i32;
@@ -436,24 +498,24 @@ pub fn amplicon_post_process_streaming(
             if current_flag {
                 if let Some(top_gv) = gvs.first() {
                     let gdnt = &top_gv.0.description;
-                    let mut gcnt: Vec<(Variant, String)> = Vec::new();
-                    for &(amp_num, ref amp_reg) in &amplicon_regions {
+                    let mut gcnt: Vec<(Variant, usize)> = Vec::new();
+                    for (amp_num, amp_reg_item) in &amplicon_regions {
+                        let amp_num = *amp_num;
+                        let amp_reg: &Region = amp_reg_item.borrow();
                         let vtmp = vars_per_amplicon
                             .get(amp_num)
                             .and_then(|m| m.get(&position));
                         if let Some(vtmp) = vtmp {
-                            if let Some(variant) = vtmp.var_desc_to_variant.get(gdnt) {
+                            if let Some(variant) = vtmp.variant_by_desc(gdnt) {
                                 if variant.is_good_var(
                                     vtmp.ref_variant.as_ref(),
                                     "",
                                     splice,
                                     config,
                                 ) {
-                                    let region_str = format!(
-                                        "{}:{}-{}",
-                                        amp_reg.chr, amp_reg.start.0, amp_reg.end.0
-                                    );
-                                    gcnt.push((variant.clone(), region_str));
+                                    let _ =
+                                        get_or_init_region_tag(&mut region_tags, amp_num, amp_reg);
+                                    gcnt.push((variant.clone(), amp_num));
                                 }
                             }
                         }
@@ -480,7 +542,9 @@ pub fn amplicon_post_process_streaming(
             let mut bad_count = 0;
             bad_vars.clear();
             if initial_gvscnt != total_amplicons || current_flag {
-                for &(amp_num, ref amp_reg) in &amplicon_regions {
+                for (amp_num, amp_reg_item) in &amplicon_regions {
+                    let amp_num = *amp_num;
+                    let amp_reg: &Region = amp_reg_item.borrow();
                     if config.pileup && vref.ref_allele == vref.var_allele {
                         continue;
                     }
@@ -500,16 +564,15 @@ pub fn amplicon_post_process_streaming(
                             // ports AmpliconPostProcessModule.java:170-179: record the
                             // amplicon's first variant, else its reference variant, else null
                             if config.debug {
-                                let reg_str = format!(
-                                    "{}:{}-{}",
-                                    amp_reg.chr, amp_reg.start.0, amp_reg.end.0
-                                );
+                                let reg_str =
+                                    get_or_init_region_tag(&mut region_tags, amp_num, amp_reg)
+                                        .to_owned();
                                 let vtmp = vars_per_amplicon
                                     .get(amp_num)
                                     .and_then(|m| m.get(&position));
                                 let bad_var = match vtmp {
                                     Some(v) if !v.variants.is_empty() => {
-                                        Some(v.variants[0].clone())
+                                        v.variants.first().cloned()
                                     }
                                     Some(v) => v.ref_variant.clone(),
                                     None => None,
@@ -540,8 +603,8 @@ pub fn amplicon_post_process_streaming(
                 out_variant.adj_complex();
             }
 
-            let region_str = if let Some((_, reg)) = good_variants.first() {
-                reg.clone()
+            let region_str = if let Some(&(_, amp_idx)) = good_variants.first() {
+                region_tags.get(amp_idx).cloned().unwrap_or_default()
             } else {
                 format!("{}:{}-{}", region.chr, position, position)
             };
@@ -551,7 +614,12 @@ pub fn amplicon_post_process_streaming(
                 (
                     good_variants
                         .iter()
-                        .map(|(v, r)| (Some(v.clone()), r.clone()))
+                        .map(|(v, amp_idx)| {
+                            (
+                                Some(v.clone()),
+                                region_tags.get(*amp_idx).cloned().unwrap_or_default(),
+                            )
+                        })
                         .collect(),
                     std::mem::take(&mut bad_vars),
                 )
@@ -611,7 +679,7 @@ pub fn amplicon_select_vcf_rows(results: Vec<AmpliconVariant>) -> Vec<AmpliconVa
 /// The variant with the highest frequency is kept (gvs is already sorted by frequency desc).
 ///
 /// Ports `AmpliconPostProcessModule.fillVrefList()`.
-fn fill_vref_list(gvs: &[(Variant, String)]) -> Vec<Variant> {
+fn fill_vref_list<T>(gvs: &[(Variant, T)]) -> Vec<Variant> {
     let mut vref_list: Vec<Variant> = Vec::new();
     for (variant, _region_str) in gvs {
         let already_added = vref_list
@@ -1477,5 +1545,138 @@ mod tests {
             !res[0].ampflag,
             "primer overlap decrementing gvscnt must clear ampflag"
         );
+    }
+
+    #[test]
+    fn amplicon_position_ref_stream_matches_owned_without_cloning() {
+        use crate::regions::AmpliconInfo;
+        use crate::types::Pos1;
+
+        fn amp_reg(chr: &str, gene: &str, start: u32, end: u32, is: u32, ie: u32) -> Region {
+            Region {
+                chr: chr.to_string(),
+                start: Pos1(start),
+                end: Pos1(end),
+                gene: gene.to_string(),
+                amplicon: Some(AmpliconInfo {
+                    insert_start: Pos1(is),
+                    insert_end: Pos1(ie),
+                }),
+            }
+        }
+
+        let segment = vec![
+            amp_reg("chr1", "GENE_A", 140, 260, 150, 250),
+            amp_reg("chr1", "GENE_B", 90, 210, 100, 200),
+            amp_reg("chr1", "GENE_C", 500, 510, 500, 510),
+            amp_reg("chr1", "GENE_D", 150, 160, 150, 155),
+            Region {
+                chr: "chr1".to_string(),
+                start: Pos1(300),
+                end: Pos1(400),
+                gene: "NON_AMP".to_string(),
+                amplicon: None,
+            },
+            amp_reg("chr1", "GENE_E", 180, 190, 180, 185),
+        ];
+
+        let owned: Vec<(i32, Vec<(usize, Region)>)> = amplicon_position_stream(&segment).collect();
+        let borrowed: Vec<(i32, Vec<(usize, &Region)>)> =
+            amplicon_position_ref_stream(&segment).collect();
+
+        assert_eq!(borrowed.len(), owned.len());
+        for ((bp, bcov), (op, ocov)) in borrowed.iter().zip(owned.iter()) {
+            assert_eq!(bp, op);
+            assert_eq!(bcov.len(), ocov.len());
+            for ((b_idx, b_reg), (o_idx, o_reg)) in bcov.iter().zip(ocov.iter()) {
+                assert_eq!(b_idx, o_idx);
+                assert_eq!(*b_reg, o_reg);
+                assert!(
+                    std::ptr::eq(*b_reg, &segment[*b_idx]),
+                    "amplicon_position_ref_stream must borrow Region directly from segment"
+                );
+                assert_eq!(b_reg.gene.as_ptr(), segment[*b_idx].gene.as_ptr());
+            }
+        }
+
+        // Also verify amplicon_post_process_streaming produces identical output (including -D debug)
+        // when driven by amplicon_position_ref_stream vs amplicon_position_stream.
+        let mut config = make_test_config();
+        config.debug = true;
+        let region = segment[0].clone();
+        let splice = rustc_hash::FxHashSet::default();
+
+        let mut vars_per_amplicon = vec![crate::javamap::JavaHashMap::new(); segment.len()];
+        let mut v0 = Vars::new();
+        v0.variants.push(make_good_variant(152, "A", "G", 0.30));
+        vars_per_amplicon[0].insert(152, v0);
+
+        let mut v1 = Vars::new();
+        v1.variants.push(make_good_variant(152, "A", "T", 0.20));
+        vars_per_amplicon[1].insert(152, v1);
+
+        let mut out_owned = Vec::new();
+        amplicon_post_process_streaming(
+            &config,
+            &region,
+            &vars_per_amplicon,
+            amplicon_position_stream(&segment),
+            &splice,
+            &mut |av| {
+                out_owned.push(av);
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        let mut out_ref = Vec::new();
+        amplicon_post_process_streaming(
+            &config,
+            &region,
+            &vars_per_amplicon,
+            amplicon_position_ref_stream(&segment),
+            &splice,
+            &mut |av| {
+                out_ref.push(av);
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(out_ref.len(), out_owned.len());
+        assert_eq!(out_ref.len(), 2);
+        for (got, want) in out_ref.iter().zip(out_owned.iter()) {
+            assert_eq!(got.variant.var_allele, want.variant.var_allele);
+            assert_eq!(got.gdamp, want.gdamp);
+            assert_eq!(got.tlamp, want.tlamp);
+            assert_eq!(got.ncamp, want.ncamp);
+            assert_eq!(got.ampflag, want.ampflag);
+            assert_eq!(got.region, want.region);
+            assert_eq!(got.good_variants.len(), want.good_variants.len());
+            assert_eq!(got.bad_variants.len(), want.bad_variants.len());
+            for ((_, gr), (_, wr)) in got.good_variants.iter().zip(want.good_variants.iter()) {
+                assert_eq!(gr, wr);
+            }
+            for ((_, br), (_, wr)) in got.bad_variants.iter().zip(want.bad_variants.iter()) {
+                assert_eq!(br, wr);
+            }
+        }
+
+        // Verify batch `amplicon_post_process` over borrowed `&Region` entries matches owned.
+        let mut sweep = AmpliconCoverSweep::new(&segment);
+        let mut borrowed_map: BTreeMap<i32, Vec<(usize, &Region)>> = BTreeMap::new();
+        let mut owned_map: BTreeMap<i32, Vec<(usize, Region)>> = BTreeMap::new();
+        let cov_ref = sweep.covering_refs_at(152);
+        let cov_owned: Vec<(usize, Region)> =
+            cov_ref.iter().map(|&(i, r)| (i, r.clone())).collect();
+        borrowed_map.insert(152, cov_ref);
+        owned_map.insert(152, cov_owned);
+        let batch_ref =
+            amplicon_post_process(&config, &region, &vars_per_amplicon, &borrowed_map, &splice)
+                .unwrap();
+        let batch_owned =
+            amplicon_post_process(&config, &region, &vars_per_amplicon, &owned_map, &splice)
+                .unwrap();
+        assert_eq!(format!("{batch_ref:?}"), format!("{batch_owned:?}"));
     }
 }

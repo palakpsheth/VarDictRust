@@ -423,9 +423,17 @@ class TestRepoAgentSkills(unittest.TestCase):
         contrib_content = (ROOT_DIR / "CONTRIBUTING.md").read_text(encoding="utf-8")
         self.assertIn("gh api --paginate repos/palakpsheth/VarDictRust/pulls/<PR>/reviews", skill_content)
         self.assertIn("gh api --paginate repos/palakpsheth/VarDictRust/pulls/<PR>/comments", skill_content)
+        self.assertIn("gh api --paginate repos/palakpsheth/VarDictRust/commits/<HEAD_SHA>/check-runs", skill_content)
         self.assertIn("gh api graphql --paginate", skill_content)
         self.assertIn("pageInfo { hasNextPage endCursor }", skill_content)
+        self.assertIn("--subject", skill_content)
+        self.assertIn("--body-file", skill_content)
         self.assertIn("gh api --paginate repos/palakpsheth/VarDictRust/pulls/<PR>/reviews", contrib_content)
+        pr_template_content = (ROOT_DIR / ".github" / "pull_request_template.md").read_text(encoding="utf-8")
+        self.assertIn(
+            "python3 harness/perf_budget.py hg008-tier2 seqc2-exome-tier2 hg002-tier2 amplicon-tier2 hg008-cram-twin",
+            pr_template_content,
+        )
 
     def test_release_consistency_script_passes_and_catches_drift(self):
         script = SKILLS_DIR / "vardictrust-release" / "scripts" / "check_release_consistency.py"
@@ -459,6 +467,48 @@ class TestRepoAgentSkills(unittest.TestCase):
         )
         self.assertNotEqual(res_bad.returncode, 0, "Validator must fail when version mismatches")
         self.assertIn("RELEASE CONSISTENCY FAILED", res_bad.stderr)
+
+        # Negative check: missing `cargo` in PATH with --verify-cargo-list records actionable error (no traceback)
+        res_nocargo = subprocess.run(
+            [
+                sys.executable,
+                str(script),
+                "--version",
+                current_version,
+                "--phase",
+                "pre-tag",
+                "--verify-cargo-list",
+            ],
+            env={"PATH": ""},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(res_nocargo.returncode, 1)
+        self.assertIn("RELEASE CONSISTENCY FAILED", res_nocargo.stderr)
+        self.assertIn("could not execute 'cargo'", res_nocargo.stderr)
+        self.assertNotIn("Traceback", res_nocargo.stderr)
+
+        # Negative check: unregistered crates/*/tests/*.rs target is caught
+        import importlib.util
+        import tempfile
+
+        spec = importlib.util.spec_from_file_location("check_release_consistency", script)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fake_root = pathlib.Path(tmpdir)
+            for pkg, targets in mod.REGISTERED_INTEGRATION_TESTS.items():
+                tdir = fake_root / "crates" / pkg / "tests"
+                tdir.mkdir(parents=True)
+                for tgt in targets:
+                    (tdir / f"{tgt}.rs").write_text("", encoding="utf-8")
+            (fake_root / "crates" / "vardictrust-core" / "tests" / "sneaky_extra.rs").write_text(
+                "", encoding="utf-8"
+            )
+            errs: list[str] = []
+            self.assertFalse(mod.check_registered_integration_tests(fake_root, errs))
+            self.assertTrue(any("sneaky_extra" in e for e in errs), f"Expected sneaky_extra error, got {errs}")
 
     def test_ci_workflow_pipeline_and_concurrency_contract(self):
         workflows_dir = ROOT_DIR / ".github" / "workflows"
@@ -509,6 +559,7 @@ class TestRepoAgentSkills(unittest.TestCase):
         self.assertIn("-p vardictrust-core --test corpus_parity -- --test-threads=2", ci_text)
         self.assertIn("cargo llvm-cov report --ignore-filename-regex '(^|/)tests/' --fail-under-lines 90", ci_text)
         self.assertIn("harness/tests/test_git_hooks.sh", ci_text)
+        self.assertIn("--verify-cargo-list --cargo-llvm-cov", ci_text)
 
         diff_text = (workflows_dir / "differential.yml").read_text(encoding="utf-8")
         self.assertIn('RUST_TEST_THREADS: "2"', diff_text)

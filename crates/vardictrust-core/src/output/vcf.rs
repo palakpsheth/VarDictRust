@@ -1191,17 +1191,20 @@ fn perl_num(s: &str) -> f64 {
 /// Odds-ratio transform for per-sample fields. Ports var2vcf_paired.pl:146-155:
 /// "Inf" → 0; (0,1) → sprintf("%.2f", 1/x). Returns (string, numeric-after-format);
 /// the numeric form feeds the Bias comparisons (:175/:186).
-fn paired_or_transform(raw: &str) -> (String, f64) {
+fn paired_or_transform(raw: &str) -> (crate::types::StackBuf<32>, f64) {
+    let mut s = crate::types::StackBuf::<32>::new();
     if raw == "Inf" {
-        return ("0".to_string(), 0.0);
+        let _ = s.write_str("0");
+        return (s, 0.0);
     }
     let x = perl_num(raw);
     if x < 1.0 && x > 0.0 {
-        let s = format!("{:.2}", crate::types::round_half_even(1.0 / x, 2));
-        let v = s.parse::<f64>().unwrap_or(0.0);
+        let _ = write!(s, "{:.2}", crate::types::round_half_even(1.0 / x, 2));
+        let v = s.as_str().parse::<f64>().unwrap_or(0.0);
         (s, v)
     } else {
-        (raw.to_string(), x)
+        let _ = s.write_str(raw);
+        (s, x)
     }
 }
 
@@ -1256,7 +1259,7 @@ fn push_paired_sample_field(
     v: &crate::variations::Variant,
     gt: &str,
     sbf: f64,
-    oddratio: &(String, f64),
+    oddratio: &(impl std::ops::Deref<Target = str>, f64),
     fisher: bool,
 ) {
     let mq =
@@ -1314,7 +1317,7 @@ fn paired_sample_field_into(
     v: &crate::variations::Variant,
     gt: &str,
     sbf: f64,
-    oddratio: &(String, f64),
+    oddratio: &(impl std::ops::Deref<Target = str>, f64),
     fisher: bool,
 ) {
     buf.clear();
@@ -1323,6 +1326,8 @@ fn paired_sample_field_into(
     buf.reserve(192);
     push_paired_sample_field(buf, v, gt, sbf, oddratio, fisher);
 }
+
+static ZERO_VARIANT: std::sync::OnceLock<crate::variations::Variant> = std::sync::OnceLock::new();
 
 /// Format one somatic variant into a paired VCF record.
 /// Ports var2vcf_paired.pl:127-242 field-by-field. The delayed-print /
@@ -1333,8 +1338,10 @@ pub fn format_paired_vcf_record(
     config: &Config,
 ) -> PairedVcfRecord {
     let v1 = &sv.variant1;
-    let zero = crate::variations::Variant::new();
-    let v2 = sv.variant2.as_ref().unwrap_or(&zero);
+    let v2 = sv
+        .variant2
+        .as_ref()
+        .unwrap_or_else(|| ZERO_VARIANT.get_or_init(crate::variations::Variant::new));
 
     // Fisher values exactly as somatic_61 computes them (matches the oracle's
     // testsomatic.R / --fisher columns; degenerate all-zero tables give p=1/OR=0
@@ -1347,7 +1354,7 @@ pub fn format_paired_vcf_record(
         config.fisher,
     );
     let p1 = fisher1.get_p_value();
-    let or1 = paired_or_transform(&fisher1.get_odds_ratio());
+    let or1 = paired_or_transform(&fisher1.odds_ratio_buf());
 
     let fisher2 = crate::stats::FisherExact::new_with_mode(
         v2.ref_fwd_cov,
@@ -1357,7 +1364,7 @@ pub fn format_paired_vcf_record(
         config.fisher,
     );
     let p2 = fisher2.get_p_value();
-    let or2 = paired_or_transform(&fisher2.get_odds_ratio());
+    let or2 = paired_or_transform(&fisher2.odds_ratio_buf());
 
     let tref = (v1.total_pos_cov - v1.pos_coverage).max(0);
     let rref = (v2.total_pos_cov - v2.pos_coverage).max(0);
@@ -1373,8 +1380,12 @@ pub fn format_paired_vcf_record(
         .get_p_value_greater()
         .min(fisher_total.get_p_value_less());
     // Total oddratio: Inf→0 only, no reciprocal (:143-145).
-    let otot_raw = fisher_total.get_odds_ratio();
-    let sor_str: &str = if otot_raw == "Inf" { "0" } else { &otot_raw };
+    let otot_raw = fisher_total.odds_ratio_buf();
+    let sor_str: &str = if otot_raw.as_str() == "Inf" {
+        "0"
+    } else {
+        otot_raw.as_str()
+    };
 
     // Filter comparisons run against table-rounded values: the oracle pipeline
     // formats through the .var table before Perl numifies, so compare at table
@@ -1617,9 +1628,10 @@ impl PairedRecordStreamer {
                 && cur.type_snv
                 && cur.start - self.pvs < self.opt_c
             {
-                let tag = format!("Cluster{}bp", self.opt_c);
-                prev.filter = tag.clone();
-                cur.filter = tag;
+                prev.filter.clear();
+                let _ = write!(prev.filter, "Cluster{}bp", self.opt_c);
+                cur.filter.clear();
+                cur.filter.push_str(&prev.filter);
             }
             self.line_buf.clear();
             self.line_buf.push_str(&prev.prefix);
@@ -2478,9 +2490,11 @@ mod tests {
     #[test]
     fn paired_vcf_uses_half_even_rounding() {
         // Verify paired_or_transform, hiaf_cell, and nm_str use round_half_even
-        assert_eq!(paired_or_transform("Inf"), ("0".to_string(), 0.0));
+        let inf_or = paired_or_transform("Inf");
+        assert_eq!((inf_or.0.as_str(), inf_or.1), ("0", 0.0));
         // 1.0 / 0.8 = 1.25 -> "1.25", 1.25
-        assert_eq!(paired_or_transform("0.8"), ("1.25".to_string(), 1.25));
+        let rec_or = paired_or_transform("0.8");
+        assert_eq!((rec_or.0.as_str(), rec_or.1), ("1.25", 1.25));
         assert_eq!(hiaf_cell(0.125), "0.1250");
 
         let config = Config::default();
@@ -2912,5 +2926,104 @@ mod tests {
         v.fwd = 0;
         v.rev = 9;
         v
+    }
+
+    #[test]
+    fn paired_streamer_cluster_tag_and_zero_variant_bias() {
+        let mut config = Config::default();
+
+        // 1. ZERO_VARIANT singleton & normal = None "0;0" BIAS preservation
+        let z1 = ZERO_VARIANT.get_or_init(crate::variations::Variant::new);
+        let z2 = ZERO_VARIANT.get_or_init(crate::variations::Variant::new);
+        assert!(std::ptr::eq(z1, z2), "ZERO_VARIANT must initialize once");
+        assert_eq!(z1.bias, "0");
+
+        let mut explicit_zero = crate::variations::Variant::new();
+        explicit_zero.bias = "0;0".to_string();
+
+        for fisher in [false, true] {
+            config.fisher = fisher;
+            let mut t = clean_normal();
+            t.start_pos = 100;
+            t.end_pos = 100;
+            t.var_type = "SNV".to_string();
+
+            let rec_none = format_paired_vcf_record(
+                &somatic_sv(t.clone(), None, "StrongSomatic"),
+                "chr1",
+                &config,
+            );
+            let rec_zero_bias = format_paired_vcf_record(
+                &somatic_sv(t, Some(explicit_zero.clone()), "StrongSomatic"),
+                "chr1",
+                &config,
+            );
+            assert_eq!(rec_none.prefix, rec_zero_bias.prefix);
+            assert_eq!(rec_none.filter, rec_zero_bias.filter);
+            assert_eq!(rec_none.rest, rec_zero_bias.rest);
+
+            let normal_sample = rec_none
+                .rest
+                .rsplit('\t')
+                .next()
+                .expect("normal sample column");
+            assert_eq!(
+                normal_sample.split(':').nth(7),
+                Some("0,0"),
+                "normal=None must preserve 0;0 -> 0,0 BIAS in FORMAT: {normal_sample}"
+            );
+        }
+
+        // 2. PairedRecordStreamer Cluster{opt_c}bp formatting in prev.filter and cur.filter
+        config.fisher = false;
+        let mk = |start: i32, status: &str| {
+            let mut t = clean_normal();
+            t.start_pos = start;
+            t.end_pos = start;
+            t.var_type = "SNV".to_string();
+            format_paired_vcf_record(&somatic_sv(t, None, status), "chr1", &config)
+        };
+
+        let mut pair_lines = Vec::new();
+        let mut streamer10 = PairedRecordStreamer::new(10);
+        streamer10
+            .push(mk(100, "StrongSomatic"), |l| -> Result<(), ()> {
+                pair_lines.push(l.to_string());
+                Ok(())
+            })
+            .unwrap();
+        streamer10
+            .push(mk(106, "LikelySomatic"), |l| -> Result<(), ()> {
+                pair_lines.push(l.to_string());
+                Ok(())
+            })
+            .unwrap();
+        streamer10
+            .finish(|l| -> Result<(), ()> {
+                pair_lines.push(l.to_string());
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(pair_lines.len(), 2);
+        assert_eq!(pair_lines[0].split('\t').nth(6), Some("Cluster10bp"));
+        assert_eq!(pair_lines[1].split('\t').nth(6), Some("Cluster10bp"));
+
+        let lines15 = finish_paired_records(
+            vec![
+                mk(100, "StrongSomatic"),
+                mk(110, "StrongSomatic"),
+                mk(120, "StrongSomatic"),
+                mk(125, "Germline"),
+            ],
+            15,
+        );
+        let filters15: Vec<&str> = lines15
+            .iter()
+            .map(|l| l.split('\t').nth(6).unwrap())
+            .collect();
+        assert_eq!(
+            filters15,
+            vec!["Cluster15bp", "Cluster15bp", "PASS", "PASS"]
+        );
     }
 }

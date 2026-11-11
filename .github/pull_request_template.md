@@ -32,7 +32,7 @@ Docs/infra-only PRs whose diff touches none of `*.rs`, `Cargo.toml`/`Cargo.lock`
 
 ## Mandatory Performance & Memory Verification
 Every PR modifying variant calling, pileup, or realignment logic must verify performance:
-- [ ] **Performance Budget:** `python3 harness/perf_budget.py hg008-tier2 seqc2-exome-tier2 hg002-tier2 amplicon-tier2` passes.
+- [ ] **Performance Budget:** `python3 harness/perf_budget.py hg008-tier2 seqc2-exome-tier2 hg002-tier2 amplicon-tier2 hg008-cram-twin` passes.
 - [ ] **Runtime Delta:** PR runtime $\le$ Baseline runtime (within 5% tolerance).
 - [ ] **Peak RSS Delta:** PR peak RSS $\le$ Baseline peak RSS (no memory regressions).
 - [ ] **Bounded Memory:** Verified that memory usage remains $O(1)$ across wide intervals via region tiling.

@@ -57,6 +57,20 @@ pub(crate) fn normalize_cram_base(b: u8) -> Option<u8> {
     Some(norm)
 }
 
+#[inline]
+fn set_opt_contig_name(dst: &mut Option<String>, expected: Option<&str>) {
+    match expected {
+        Some(expected) => {
+            if dst.as_deref() != Some(expected) {
+                let buf = dst.get_or_insert_with(String::new);
+                buf.clear();
+                buf.push_str(expected);
+            }
+        }
+        None => *dst = None,
+    }
+}
+
 impl SamRecord {
     /// Empty record with no heap allocation; use with
     /// [`SamRecord::fill_from_alignment_record`] for buffer reuse.
@@ -65,25 +79,20 @@ impl SamRecord {
     }
 
     /// Reset every field so a reused record cannot leak a previous read's
-    /// values into the next fill. String buffers keep their capacity
-    /// (`Some("")`, not `None`); `fill_from_alignment_record` assigns every
-    /// field, setting them back to `None` when absent. Must stay in sync
-    /// with the field list and the fill function.
+    /// values into the next fill. `sa`/`mc` keep their `String` capacity
+    /// (`Some("")`), while `reference_name` and `mate_reference_name` retain
+    /// their previous contig string so same-contig refills elide
+    /// `clear() + push_str(...)` and absent contigs assign `None`. Must stay
+    /// in sync with the field list and the fill functions.
     pub fn clear(&mut self) {
         self.name.clear();
         self.flags = 0;
-        if let Some(s) = self.reference_name.as_mut() {
-            s.clear();
-        }
         self.alignment_start = None;
         self.alignment_end = None;
         self.mapping_quality = None;
         self.cigar.clear();
         self.sequence.clear();
         self.quality_scores.clear();
-        if let Some(s) = self.mate_reference_name.as_mut() {
-            s.clear();
-        }
         self.mate_alignment_start = None;
         self.template_length = 0;
         self.nm = None;
@@ -172,23 +181,18 @@ impl SamRecord {
         self.flags = record.flags().map(|f| f.bits()).unwrap_or(0);
 
         // Reuse the (capacity-retained) String buffer; push from the
-        // borrowed Cow so valid-UTF-8 names allocate nothing.
-        match record
+        // borrowed Cow so valid-UTF-8 names allocate nothing, and elide
+        // clear+push_str when the contig name is unchanged.
+        let ref_name = record
             .reference_sequence_id(header)
             .and_then(|ref_id| ref_id.ok())
             .and_then(|id| {
                 header
                     .reference_sequences()
                     .get_index(id)
-                    .map(|(name, _)| name)
-            }) {
-            Some(name) => {
-                let buf = self.reference_name.get_or_insert_with(String::new);
-                buf.clear();
-                buf.push_str(&String::from_utf8_lossy(name));
-            }
-            None => self.reference_name = None,
-        }
+                    .map(|(name, _)| String::from_utf8_lossy(name))
+            });
+        set_opt_contig_name(&mut self.reference_name, ref_name.as_deref());
 
         self.alignment_start = if let Some(pos) = record.alignment_start() {
             pos.ok().map(crate::types::Pos1::from)
@@ -248,22 +252,16 @@ impl SamRecord {
             self.quality_scores.push(score.saturating_add(33));
         }
 
-        match record
+        let mate_ref_name = record
             .mate_reference_sequence_id(header)
             .and_then(|ref_id| ref_id.ok())
             .and_then(|id| {
                 header
                     .reference_sequences()
                     .get_index(id)
-                    .map(|(name, _)| name)
-            }) {
-            Some(name) => {
-                let buf = self.mate_reference_name.get_or_insert_with(String::new);
-                buf.clear();
-                buf.push_str(&String::from_utf8_lossy(name));
-            }
-            None => self.mate_reference_name = None,
-        }
+                    .map(|(name, _)| String::from_utf8_lossy(name))
+            });
+        set_opt_contig_name(&mut self.mate_reference_name, mate_ref_name.as_deref());
 
         self.mate_alignment_start = if let Some(pos) = record.mate_alignment_start() {
             pos.ok().map(crate::types::Pos1::from)
@@ -298,22 +296,16 @@ impl SamRecord {
 
         self.flags = record.flags().bits();
 
-        match record
+        let ref_name = record
             .reference_sequence_id()
             .and_then(|ref_id| ref_id.ok())
             .and_then(|id| {
                 header
                     .reference_sequences()
                     .get_index(id)
-                    .map(|(name, _)| name)
-            }) {
-            Some(name) => {
-                let buf = self.reference_name.get_or_insert_with(String::new);
-                buf.clear();
-                buf.push_str(&String::from_utf8_lossy(name));
-            }
-            None => self.reference_name = None,
-        }
+                    .map(|(name, _)| String::from_utf8_lossy(name))
+            });
+        set_opt_contig_name(&mut self.reference_name, ref_name.as_deref());
 
         self.alignment_start = if let Some(pos) = record.alignment_start() {
             pos.ok().map(crate::types::Pos1::from)
@@ -355,22 +347,16 @@ impl SamRecord {
             self.quality_scores.push(score.saturating_add(33));
         }
 
-        match record
+        let mate_ref_name = record
             .mate_reference_sequence_id()
             .and_then(|ref_id| ref_id.ok())
             .and_then(|id| {
                 header
                     .reference_sequences()
                     .get_index(id)
-                    .map(|(name, _)| name)
-            }) {
-            Some(name) => {
-                let buf = self.mate_reference_name.get_or_insert_with(String::new);
-                buf.clear();
-                buf.push_str(&String::from_utf8_lossy(name));
-            }
-            None => self.mate_reference_name = None,
-        }
+                    .map(|(name, _)| String::from_utf8_lossy(name))
+            });
+        set_opt_contig_name(&mut self.mate_reference_name, mate_ref_name.as_deref());
 
         self.mate_alignment_start = if let Some(pos) = record.mate_alignment_start() {
             pos.ok().map(crate::types::Pos1::from)
@@ -383,6 +369,75 @@ impl SamRecord {
         self.fill_aux_from_iter(record.data().iter());
 
         Ok(())
+    }
+
+    /// Single-pass `BamFeed` refill path: reuses pre-decoded `cigar_scratch`,
+    /// `(alignment_start, alignment_end)`, and `O(1)` `contig_names` lookup.
+    fn fill_from_bam_feed_record(
+        &mut self,
+        record: &noodles::bam::Record,
+        contig_names: &[Box<str>],
+        reference_sequence_id: usize,
+        alignment_start: Option<noodles::core::Position>,
+        alignment_end: Option<noodles::core::Position>,
+        cigar_scratch: &mut Vec<(u32, CigarKind)>,
+    ) {
+        self.clear();
+
+        if let Some(name) = record.name() {
+            let bytes: &[u8] = name.as_ref();
+            self.name.extend_from_slice(bytes);
+        }
+
+        self.flags = record.flags().bits();
+
+        set_opt_contig_name(
+            &mut self.reference_name,
+            contig_names.get(reference_sequence_id).map(Box::as_ref),
+        );
+
+        self.alignment_start = alignment_start.map(crate::types::Pos1::from);
+        self.alignment_end = alignment_end.map(crate::types::Pos1::from);
+
+        self.mapping_quality = if (self.flags & 0x4) != 0 {
+            None
+        } else {
+            Some(record.mapping_quality().map(|m| m.get()).unwrap_or(255))
+        };
+
+        std::mem::swap(&mut self.cigar, cigar_scratch);
+
+        let seq = record.sequence();
+        self.sequence.clear();
+        self.sequence.reserve(seq.len());
+        for b in seq.iter() {
+            self.sequence.push(b);
+        }
+
+        let quals = record.quality_scores();
+        let raw_quals: &[u8] = quals.as_ref();
+        self.quality_scores.clear();
+        self.quality_scores.reserve(raw_quals.len());
+        for &score in raw_quals {
+            self.quality_scores.push(score.saturating_add(33));
+        }
+
+        let mate_contig = record
+            .mate_reference_sequence_id()
+            .and_then(|ref_id| ref_id.ok())
+            .and_then(|id| contig_names.get(id))
+            .map(Box::as_ref);
+        set_opt_contig_name(&mut self.mate_reference_name, mate_contig);
+
+        self.mate_alignment_start = if let Some(pos) = record.mate_alignment_start() {
+            pos.ok().map(crate::types::Pos1::from)
+        } else {
+            None
+        };
+
+        self.template_length = record.template_length();
+
+        self.fill_aux_from_iter(record.data().iter());
     }
 
     fn fill_aux_from_iter<'a, I>(&mut self, iter: I)
@@ -737,6 +792,7 @@ const TEST_META_ID_BASE: u64 = 1u64 << 63;
 struct SharedBamMeta {
     id: u64,
     header: noodles::sam::Header,
+    contig_names: Vec<Box<str>>,
     index: noodles::bam::Index,
 }
 
@@ -1228,7 +1284,17 @@ fn acquire_bam_meta_and_reader(
                 let header = reader
                     .read_header()
                     .map_err(crate::types::VardictError::Io)?;
-                let meta = std::sync::Arc::new(SharedBamMeta { id, header, index });
+                let contig_names: Vec<Box<str>> = header
+                    .reference_sequences()
+                    .iter()
+                    .map(|(name, _)| Box::<str>::from(String::from_utf8_lossy(name).as_ref()))
+                    .collect();
+                let meta = std::sync::Arc::new(SharedBamMeta {
+                    id,
+                    header,
+                    contig_names,
+                    index,
+                });
                 *slot_guard = Some(std::sync::Arc::clone(&meta));
                 return Ok((meta, reader));
             }
@@ -1329,6 +1395,7 @@ struct BamFeedInner {
     chunks: std::vec::IntoIter<noodles::csi::binning_index::index::reference_sequence::bin::Chunk>,
     chunk_end: Option<noodles::bgzf::VirtualPosition>,
     record: noodles::bam::Record,
+    cigar_scratch: Vec<(u32, CigarKind)>,
 }
 
 impl Drop for BamFeedInner {
@@ -1345,34 +1412,81 @@ impl Drop for BamFeedInner {
     }
 }
 
-/// Ports noodles-bam 0.96 `io::reader::query::intersects` (private there):
-/// unmapped records and other-reference records are skipped; bounded
-/// intervals require alignment overlap.
+type BamSpanBounds = (
+    Option<noodles::core::Position>,
+    Option<noodles::core::Position>,
+);
+
+/// Ports noodles-bam 0.96 `io::reader::query::intersects` while decoding
+/// `record.cigar()` once into `cigar_scratch` and computing `(alignment_start, alignment_end)`
+/// (`span == 0 => end = start`).
 fn intersects_record(
     record: &noodles::bam::Record,
     reference_sequence_id: usize,
     region_interval: noodles::core::region::Interval,
-) -> Result<bool, std::io::Error> {
+    cigar_scratch: &mut Vec<(u32, CigarKind)>,
+) -> Result<Option<BamSpanBounds>, std::io::Error> {
     let Some(id) = record.reference_sequence_id().transpose()? else {
-        return Ok(false);
+        return Ok(None);
     };
 
     if id != reference_sequence_id {
-        return Ok(false);
+        return Ok(None);
     }
 
-    if region_interval.start().is_none() && region_interval.end().is_none() {
-        Ok(true)
-    } else {
-        match (
-            record.alignment_start().transpose()?,
-            bam_alignment_end(record).transpose()?,
-        ) {
-            (Some(start), Some(end)) => {
-                let alignment_interval = (start..=end).into();
-                Ok(region_interval.intersects(alignment_interval))
+    let unbounded = region_interval.start().is_none() && region_interval.end().is_none();
+    let alignment_start = match record.alignment_start().transpose() {
+        Ok(pos) => pos,
+        Err(e) if !unbounded => return Err(e),
+        Err(_) => None,
+    };
+    if !unbounded && alignment_start.is_none() {
+        return Ok(None);
+    }
+
+    let raw_cigar = record.cigar();
+    cigar_scratch.clear();
+    cigar_scratch.reserve(raw_cigar.len());
+    let mut span = 0usize;
+    let mut cigar_err = false;
+    for result in raw_cigar.iter() {
+        match result {
+            Ok(op) => {
+                if op.kind().consumes_reference() {
+                    span = span.saturating_add(op.len());
+                }
+                cigar_scratch.push((op.len() as u32, op.kind()));
             }
-            _ => Ok(false),
+            Err(e) => {
+                if !unbounded {
+                    return Err(e);
+                }
+                cigar_err = true;
+            }
+        }
+    }
+
+    let alignment_end = match alignment_start {
+        Some(start) if !cigar_err => {
+            if span == 0 {
+                Some(start)
+            } else {
+                noodles::core::Position::new(
+                    usize::from(start).saturating_add(span).saturating_sub(1),
+                )
+            }
+        }
+        _ => None,
+    };
+
+    if unbounded {
+        Ok(Some((alignment_start, alignment_end)))
+    } else {
+        match (alignment_start, alignment_end) {
+            (Some(start), Some(end)) if region_interval.intersects((start..=end).into()) => {
+                Ok(Some((Some(start), Some(end))))
+            }
+            _ => Ok(None),
         }
     }
 }
@@ -1415,17 +1529,20 @@ impl BamFeedInner {
                             &self.record,
                             self.reference_sequence_id,
                             self.interval,
+                            &mut self.cigar_scratch,
                         ) {
-                            Ok(true) => {
-                                if let Err(e) =
-                                    out.fill_from_bam_record(&self.record, &self.meta.header)
-                                {
-                                    self.tainted = true;
-                                    return Err(crate::types::VardictError::Io(e));
-                                }
+                            Ok(Some((alignment_start, alignment_end))) => {
+                                out.fill_from_bam_feed_record(
+                                    &self.record,
+                                    &self.meta.contig_names,
+                                    self.reference_sequence_id,
+                                    alignment_start,
+                                    alignment_end,
+                                    &mut self.cigar_scratch,
+                                );
                                 return Ok(true);
                             }
-                            Ok(false) => continue,
+                            Ok(None) => continue,
                             Err(e) => {
                                 self.tainted = true;
                                 return Err(crate::types::VardictError::Io(e));
@@ -2261,13 +2378,55 @@ fn acquire_cram_meta(
     Ok(meta)
 }
 
+#[inline]
+fn cram_span_exceeds_fasta(
+    span_start: usize,
+    span_end: usize,
+    sq_ln: usize,
+    fai_len: usize,
+) -> bool {
+    span_start > fai_len
+        || (span_end > fai_len
+            && (fai_len < sq_ln || span_end > fai_len.saturating_add(CRAM_REF_OVERHANG_PAD)))
+}
+
 fn validate_cram_span(
     cram_path: &Path,
     meta: &SharedCramMeta,
     reference_sequence_id: usize,
     span_start: usize,
     span_end: usize,
+    hint_bounds: Option<(usize, usize, usize)>,
 ) -> Result<(), crate::types::VardictError> {
+    if let Some((hint_ref_id, sq_ln, fai_len)) = hint_bounds {
+        if hint_ref_id == reference_sequence_id {
+            if cram_span_exceeds_fasta(span_start, span_end, sq_ln, fai_len) {
+                let Some((contig_name, _)) = meta
+                    .header
+                    .reference_sequences()
+                    .get_index(reference_sequence_id)
+                else {
+                    return Err(crate::types::VardictError::Parse(format!(
+                        "CRAM '{}' references invalid reference sequence ID {}",
+                        cram_path.display(),
+                        reference_sequence_id
+                    )));
+                };
+                return Err(crate::types::VardictError::Parse(format!(
+                    "CRAM '{}' slice/record on contig '{}' spans {}..={} (header LN={}), exceeding FASTA '{}' contig length {}",
+                    cram_path.display(),
+                    String::from_utf8_lossy(contig_name),
+                    span_start,
+                    span_end,
+                    sq_ln,
+                    meta.fasta_repo.fasta_path.display(),
+                    fai_len,
+                )));
+            }
+            return Ok(());
+        }
+    }
+
     let Some((contig_name, ref_seq_map)) = meta
         .header
         .reference_sequences()
@@ -2281,26 +2440,22 @@ fn validate_cram_span(
     };
     let sq_ln = usize::from(ref_seq_map.length());
     let (_, seq_opt) = meta.fasta_repo.warm_contig(contig_name);
-    let contig_str = String::from_utf8_lossy(contig_name);
     let Some(seq) = seq_opt else {
         return Err(crate::types::VardictError::Parse(format!(
             "CRAM '{}' requires reference contig '{}' (span {}..={}), which is missing from FASTA '{}'",
             cram_path.display(),
-            contig_str,
+            String::from_utf8_lossy(contig_name),
             span_start,
             span_end,
             meta.fasta_repo.fasta_path.display(),
         )));
     };
     let fai_len = SharedFastaRepo::unpadded_slice(&seq).len();
-    if span_start > fai_len
-        || (span_end > fai_len
-            && (fai_len < sq_ln || span_end > fai_len.saturating_add(CRAM_REF_OVERHANG_PAD)))
-    {
+    if cram_span_exceeds_fasta(span_start, span_end, sq_ln, fai_len) {
         return Err(crate::types::VardictError::Parse(format!(
             "CRAM '{}' slice/record on contig '{}' spans {}..={} (header LN={}), exceeding FASTA '{}' contig length {}",
             cram_path.display(),
-            contig_str,
+            String::from_utf8_lossy(contig_name),
             span_start,
             span_end,
             sq_ln,
@@ -2412,6 +2567,7 @@ fn cram_record_to_cached(
     cram_path: &Path,
     record: &noodles::cram::Record<'_>,
     meta: &SharedCramMeta,
+    hint_bounds: Option<(usize, usize, usize)>,
 ) -> Result<CachedCramRecord, crate::types::VardictError> {
     use noodles::sam::alignment::record::data::field::{Tag, Value};
     use noodles::sam::alignment::Record as _;
@@ -2555,6 +2711,7 @@ fn cram_record_to_cached(
                 ref_id,
                 usize::from(start),
                 usize::from(end),
+                hint_bounds,
             )?;
         }
     }
@@ -2759,9 +2916,27 @@ fn fetch_cram_container(
         return Ok(None);
     }
 
+    let (hint_repo, hint_seq) = match pinned_slot {
+        Some(slot) if slot.name.as_slice() == hint_contig => {
+            SharedFastaRepo::extract_from_slot(slot)
+        }
+        _ => meta.fasta_repo.warm_contig(hint_contig),
+    };
+    let hint_bounds = match (
+        meta.header.reference_sequences().get_full(hint_contig),
+        hint_seq.as_ref(),
+    ) {
+        (Some((ref_id, _, mr)), Some(seq)) => Some((
+            ref_id,
+            mr.length().get(),
+            SharedFastaRepo::unpadded_slice(seq).len(),
+        )),
+        _ => None,
+    };
+
     if let Some(spans) = meta.spans_by_offset.get(&container_offset) {
         for &(ref_id, s_idx, e_idx) in spans {
-            validate_cram_span(path, meta, ref_id, s_idx, e_idx)?;
+            validate_cram_span(path, meta, ref_id, s_idx, e_idx, hint_bounds)?;
         }
     }
 
@@ -2772,20 +2947,10 @@ fn fetch_cram_container(
     let compression_header = container.compression_header()?;
     let record_count = container.header().record_count();
     let mut out_records = Vec::with_capacity(record_count);
-    let mut warmed: Option<(
-        noodles::fasta::Repository,
-        Option<std::sync::Arc<noodles::fasta::record::Sequence>>,
-    )> = None;
 
     for slice_res in container.slices() {
         let slice = slice_res?;
         let (core_data_src, external_data_srcs) = slice.decode_blocks()?;
-        let (hint_repo, hint_seq) = warmed.get_or_insert_with(|| match pinned_slot {
-            Some(slot) if slot.name.as_slice() == hint_contig => {
-                SharedFastaRepo::extract_from_slot(slot)
-            }
-            _ => meta.fasta_repo.warm_contig(hint_contig),
-        });
         let cram_records = slice.records(
             hint_repo.clone(),
             &meta.header,
@@ -2797,7 +2962,7 @@ fn fetch_cram_container(
         crate::count!(CramRecordsVisited, cram_records.len());
         out_records.reserve(cram_records.len());
         for record in cram_records {
-            let mut cached = cram_record_to_cached(path, &record, meta)?;
+            let mut cached = cram_record_to_cached(path, &record, meta, hint_bounds)?;
             if cached.sam.nm.is_none()
                 && cached.reference_sequence_id.is_some()
                 && cached.alignment_start.is_some()
@@ -3074,6 +3239,7 @@ pub fn query_region_iter(
                     chunks: Vec::new().into_iter(),
                     chunk_end: None,
                     record: noodles::bam::Record::default(),
+                    cigar_scratch: Vec::new(),
                 },
                 sam: SamRecord::new(),
             })));
@@ -3120,6 +3286,7 @@ pub fn query_region_iter(
                 chunks: chunks.into_iter(),
                 chunk_end: None,
                 record: noodles::bam::Record::default(),
+                cigar_scratch: Vec::new(),
             },
             sam: SamRecord::new(),
         })))
@@ -3192,8 +3359,9 @@ pub fn get_aligned_length_md(cigar: &[(u32, CigarKind)]) -> i32 {
     cigar
         .iter()
         .filter(|&&(_, kind)| kind == CigarKind::Match || kind == CigarKind::Deletion)
-        .map(|&(len, _)| len as i32)
-        .sum()
+        .fold(0i32, |acc, &(len, _)| {
+            acc.saturating_add(i32::try_from(len).unwrap_or(i32::MAX))
+        })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -3319,6 +3487,26 @@ impl RecordPreprocessor {
                 String::from_utf8_lossy(&record.name),
                 query_consumption,
                 record.sequence.len()
+            );
+            return false;
+        }
+
+        let ref_consumption = record
+            .cigar
+            .iter()
+            .filter(|(_, k)| k.consumes_reference())
+            .map(|&(n, _)| u64::from(n))
+            .sum::<u64>();
+        let start_u64 = record.alignment_start.map_or(0u64, |p| u64::from(p.0));
+        if start_u64 > i32::MAX as u64
+            || ref_consumption > i32::MAX as u64
+            || start_u64.saturating_sub(1).saturating_add(ref_consumption) > i32::MAX as u64
+        {
+            log::warn!(
+                "Dropping corrupt BAM record {}: CIGAR reference span (start={}, span={}) exceeds i32::MAX",
+                String::from_utf8_lossy(&record.name),
+                start_u64,
+                ref_consumption
             );
             return false;
         }
@@ -6712,5 +6900,504 @@ mod tests {
         )));
         assert_eq!(prep.total_reads, 11);
         assert_eq!(prep.duplicate_reads, 5);
+    }
+
+    #[test]
+    fn validate_cram_span_hint_bounds_matches_uncached_without_locking_fasta_repo() {
+        use noodles::core::Position;
+        use noodles::sam::alignment::io::Write as _;
+        use noodles::sam::alignment::record::cigar::{op::Kind, Op};
+        use noodles::sam::alignment::record::{Flags, MappingQuality};
+        use noodles::sam::alignment::record_buf::{Cigar, QualityScores, Sequence};
+        use noodles::sam::alignment::RecordBuf;
+        use noodles::sam::header::record::value::{map::ReferenceSequence, Map};
+        use std::num::NonZeroUsize;
+        use std::sync::atomic::Ordering;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let full_1000 = b"ACGT".repeat(250);
+        let full_600 = b"TGCA".repeat(150);
+        let full_fa = write_test_fasta_with_fai(
+            temp_dir.path(),
+            "hint_full.fa",
+            &[("chr1", &full_1000), ("chr2", &full_600)],
+        );
+        // Short chr1 (500 bp vs header LN=1000), full chr2 (600 bp == header LN=600)
+        let test_fa = write_test_fasta_with_fai(
+            temp_dir.path(),
+            "hint_test.fa",
+            &[("chr1", &full_1000[..500]), ("chr2", &full_600)],
+        );
+
+        let sq1 = Map::<ReferenceSequence>::new(NonZeroUsize::try_from(1000).unwrap());
+        let sq2 = Map::<ReferenceSequence>::new(NonZeroUsize::try_from(600).unwrap());
+        let header = noodles::sam::Header::builder()
+            .add_reference_sequence("chr1", sq1)
+            .add_reference_sequence("chr2", sq2)
+            .build();
+
+        let cram_path = temp_dir.path().join("hint_bounds.cram");
+        {
+            let fasta_repo = acquire_fasta_repo(&full_fa).unwrap();
+            let repo = noodles::fasta::Repository::new(RegistryDelegatingAdapter {
+                primary_name: Vec::new(),
+                primary_record: None,
+                shared: std::sync::Arc::downgrade(&fasta_repo),
+            });
+            let mut writer = noodles::cram::io::writer::Builder::default()
+                .set_reference_sequence_repository(repo)
+                .build_from_path(&cram_path)
+                .unwrap();
+            writer.write_alignment_header(&header).unwrap();
+            let rec = RecordBuf::builder()
+                .set_name("r1")
+                .set_flags(Flags::empty())
+                .set_reference_sequence_id(0)
+                .set_alignment_start(Position::try_from(10usize).unwrap())
+                .set_mapping_quality(MappingQuality::try_from(60).unwrap())
+                .set_cigar([Op::new(Kind::Match, 20)].into_iter().collect::<Cigar>())
+                .set_sequence(Sequence::from(full_1000[9..29].to_vec()))
+                .set_quality_scores(QualityScores::from(vec![35u8; 20]))
+                .build();
+            writer.write_alignment_record(&header, &rec).unwrap();
+            writer.try_finish(&header).unwrap();
+            let crai = noodles::cram::fs::index(&cram_path).unwrap();
+            noodles::cram::crai::fs::write(cram_path.with_extension("cram.crai"), &crai).unwrap();
+        }
+
+        NEXT_BAM_META_ID.fetch_max(TEST_META_ID_BASE, Ordering::Relaxed);
+        let config = Config {
+            reference: test_fa.to_str().unwrap().to_string(),
+            ..Default::default()
+        };
+        let meta = acquire_cram_meta(&cram_path, &config).unwrap();
+        assert_eq!(meta.fasta_repo.load_count.load(Ordering::SeqCst), 0);
+        assert!(meta.fasta_repo.resident_slot(b"chr1").is_none());
+        assert!(meta.fasta_repo.resident_slot(b"chr2").is_none());
+
+        let chr1_cases = [
+            (1usize, 500usize, true),
+            (500, 500, true),
+            (490, 501, false), // fai_len (500) < sq_ln (1000): any span_end > fai_len rejected
+            (501, 510, false), // span_start > fai_len rejected
+        ];
+        let hint_chr1 = Some((0usize, 1000usize, 500usize));
+        let mut hinted_chr1_results = Vec::new();
+        for &(s, e, expect_ok) in &chr1_cases {
+            let res = validate_cram_span(&cram_path, &meta, 0, s, e, hint_chr1)
+                .map_err(|err| err.to_string());
+            assert_eq!(res.is_ok(), expect_ok, "chr1 span {s}..={e}: {res:?}");
+            hinted_chr1_results.push(res);
+        }
+
+        let chr2_cases = [
+            (1usize, 600usize, true),
+            (590, 600 + CRAM_REF_OVERHANG_PAD, true), // fai_len == sq_ln: allowed up to pad
+            (590, 600 + CRAM_REF_OVERHANG_PAD + 1, false), // past pad rejected
+            (601, 610, false),                        // span_start > fai_len rejected
+        ];
+        let hint_chr2 = Some((1usize, 600usize, 600usize));
+        let mut hinted_chr2_results = Vec::new();
+        for &(s, e, expect_ok) in &chr2_cases {
+            let res = validate_cram_span(&cram_path, &meta, 1, s, e, hint_chr2)
+                .map_err(|err| err.to_string());
+            assert_eq!(res.is_ok(), expect_ok, "chr2 span {s}..={e}: {res:?}");
+            hinted_chr2_results.push(res);
+        }
+
+        // Neither in-bounds Ok(()) nor overhang Err(...) may lock or warm fasta_repo
+        assert_eq!(
+            meta.fasta_repo.load_count.load(Ordering::SeqCst),
+            0,
+            "matching hint_bounds must validate without locking or warming fasta_repo"
+        );
+        assert!(meta.fasta_repo.resident_slot(b"chr1").is_none());
+        assert!(meta.fasta_repo.resident_slot(b"chr2").is_none());
+
+        // Compare every outcome and exact error string against uncached fallback (hint_bounds = None)
+        for (idx, &(s, e, _)) in chr1_cases.iter().enumerate() {
+            let uncached =
+                validate_cram_span(&cram_path, &meta, 0, s, e, None).map_err(|err| err.to_string());
+            assert_eq!(hinted_chr1_results[idx], uncached);
+        }
+        for (idx, &(s, e, _)) in chr2_cases.iter().enumerate() {
+            let uncached =
+                validate_cram_span(&cram_path, &meta, 1, s, e, None).map_err(|err| err.to_string());
+            assert_eq!(hinted_chr2_results[idx], uncached);
+        }
+
+        // Even after contigs are warm in registry, matching hint_bounds must not lock registry
+        // (verified by LRU order [chr1, chr2] remaining untouched when validating chr1).
+        assert_eq!(
+            meta.fasta_repo.registry.lock().unwrap().order,
+            vec![b"chr1".to_vec(), b"chr2".to_vec()]
+        );
+        validate_cram_span(&cram_path, &meta, 0, 10, 50, hint_chr1).unwrap();
+        assert!(validate_cram_span(&cram_path, &meta, 0, 490, 510, hint_chr1).is_err());
+        assert_eq!(
+            meta.fasta_repo.registry.lock().unwrap().order,
+            vec![b"chr1".to_vec(), b"chr2".to_vec()],
+            "matching hint_bounds must not touch fasta_repo.registry LRU order"
+        );
+
+        // Non-matching reference_sequence_id falls back cleanly, including invalid ref_id
+        let bad_id_hinted =
+            validate_cram_span(&cram_path, &meta, 99, 1, 10, hint_chr1).unwrap_err();
+        let bad_id_uncached = validate_cram_span(&cram_path, &meta, 99, 1, 10, None).unwrap_err();
+        assert_eq!(bad_id_hinted.to_string(), bad_id_uncached.to_string());
+    }
+
+    #[test]
+    fn bam_feed_next_into_preserves_contig_names_and_untouched_eof_cigar() {
+        use noodles::bam::bai;
+        use noodles::core::Position;
+        use noodles::csi::binning_index::index::reference_sequence::{
+            bin::Chunk, index::LinearIndex,
+        };
+        use noodles::csi::binning_index::Indexer;
+        use noodles::sam::alignment::io::Write as _;
+        use noodles::sam::alignment::record::cigar::{op::Kind, Op};
+        use noodles::sam::alignment::record::{Flags, MappingQuality};
+        use noodles::sam::alignment::record_buf::{Cigar, RecordBuf};
+        use noodles::sam::header::record::value::{
+            map::ReferenceSequence as RefSeqMap, Map as HeaderMap,
+        };
+        use noodles::sam::Header;
+
+        // 1. SamRecord::clear must not wipe reference_name / mate_reference_name to Some("")
+        {
+            let mut rec = SamRecord {
+                reference_name: Some("chr1".to_string()),
+                mate_reference_name: Some("chr2".to_string()),
+                cigar: vec![(10, CigarKind::Match)],
+                ..SamRecord::default()
+            };
+            rec.clear();
+            assert_eq!(
+                rec.reference_name.as_deref(),
+                Some("chr1"),
+                "SamRecord::clear must retain reference_name so same-contig refills elide clear+push_str"
+            );
+            assert_eq!(
+                rec.mate_reference_name.as_deref(),
+                Some("chr2"),
+                "SamRecord::clear must retain mate_reference_name so same-contig refills elide clear+push_str"
+            );
+            assert!(rec.cigar.is_empty());
+        }
+
+        // 2. Build a multi-contig indexed BAM with:
+        //    - chr1 reads covering concordant mate, cross-contig mate, unmapped mate,
+        //      zero-ref-span CIGAR (`10I`, span == 0 => end == start), AND a trailing
+        //      non-intersecting read in the same BAI leaf bin (`pos=400`, `25M`) to
+        //      prove `out.cigar` is untouched when `next_into` returns `Ok(false)` at EOF.
+        //    - chr2 reads for alternating multi-contig buffer reuse.
+        let dir = tempfile::TempDir::new().unwrap();
+        let bam_path = dir.path().join("multicontig_feed.bam");
+        let rs = HeaderMap::<RefSeqMap>::builder()
+            .set_length(1000usize.try_into().unwrap())
+            .build()
+            .unwrap();
+        let header = Header::builder()
+            .add_reference_sequence("chr1", rs.clone())
+            .add_reference_sequence("chr2", rs.clone())
+            .add_reference_sequence("HLA-B*07:02", rs)
+            .build();
+
+        let mk_rec = |name: &str,
+                      ref_id: usize,
+                      start: usize,
+                      ops: &[(usize, Kind)],
+                      seq_len: usize,
+                      mate: Option<(usize, usize)>|
+         -> RecordBuf {
+            let cigar: Cigar = ops.iter().map(|&(n, k)| Op::new(k, n)).collect();
+            let mut b = RecordBuf::builder()
+                .set_name(name)
+                .set_flags(if mate.is_some() {
+                    Flags::SEGMENTED | Flags::FIRST_SEGMENT
+                } else {
+                    Flags::SEGMENTED | Flags::FIRST_SEGMENT | Flags::MATE_UNMAPPED
+                })
+                .set_reference_sequence_id(ref_id)
+                .set_alignment_start(Position::try_from(start).unwrap())
+                .set_mapping_quality(MappingQuality::try_from(60u8).unwrap())
+                .set_cigar(cigar)
+                .set_sequence(vec![b'A'; seq_len].into())
+                .set_quality_scores(vec![35u8; seq_len].into());
+            if let Some((m_ref, m_pos)) = mate {
+                b = b
+                    .set_mate_reference_sequence_id(m_ref)
+                    .set_mate_alignment_start(Position::try_from(m_pos).unwrap());
+            }
+            b.build()
+        };
+
+        let all_recs = vec![
+            mk_rec("c1_same", 0, 100, &[(10, Kind::Match)], 10, Some((0, 150))),
+            mk_rec(
+                "c1_cross",
+                0,
+                110,
+                &[(5, Kind::Match), (2, Kind::Insertion), (3, Kind::Match)],
+                10,
+                Some((1, 200)),
+            ),
+            mk_rec(
+                "c1_unmapped_mate",
+                0,
+                120,
+                &[(8, Kind::Match), (2, Kind::Deletion), (2, Kind::Match)],
+                10,
+                None,
+            ),
+            mk_rec(
+                "c1_zero_span",
+                0,
+                130,
+                &[(10, Kind::Insertion)],
+                10,
+                Some((2, 50)),
+            ),
+            // Trailing non-intersecting record inside the same BAI bin [0, 16384):
+            mk_rec(
+                "c1_trailing_outside",
+                0,
+                400,
+                &[(25, Kind::Match)],
+                25,
+                Some((0, 450)),
+            ),
+            mk_rec("c2_first", 1, 100, &[(12, Kind::Match)], 12, Some((0, 100))),
+            mk_rec(
+                "c2_second",
+                1,
+                115,
+                &[(4, Kind::SoftClip), (8, Kind::Match)],
+                12,
+                None,
+            ),
+        ];
+
+        {
+            let bgzf = noodles::bgzf::io::Writer::new(std::fs::File::create(&bam_path).unwrap());
+            let mut w = noodles::bam::io::Writer::from(bgzf);
+            w.write_alignment_header(&header).unwrap();
+            let mut indexer = Indexer::<LinearIndex>::new(14, 5).unwrap();
+            for rec in &all_recs {
+                let s_vp = w.get_ref().virtual_position();
+                w.write_alignment_record(&header, rec).unwrap();
+                let e_vp = w.get_ref().virtual_position();
+                let ref_id = rec.reference_sequence_id().unwrap();
+                let s = rec.alignment_start().unwrap();
+                let span = rec.cigar().alignment_span();
+                let e = if span == 0 {
+                    s
+                } else {
+                    Position::new(s.get() + span - 1).unwrap()
+                };
+                indexer
+                    .add_record(Some((ref_id, s, e, true)), Chunk::new(s_vp, e_vp))
+                    .unwrap();
+            }
+            w.try_finish().unwrap();
+            bai::io::Writer::new(
+                std::fs::File::create(bam_path.with_extension("bam.bai")).unwrap(),
+            )
+            .write_index(&indexer.build(3))
+            .unwrap();
+        }
+
+        let config = Config::default();
+        let expected_chr1 = query_region(&bam_path, "chr1", Pos0(99), Pos0(200), &config).unwrap();
+        let expected_chr2 = query_region(&bam_path, "chr2", Pos0(99), Pos0(200), &config).unwrap();
+        assert_eq!(expected_chr1.len(), 4);
+        assert_eq!(expected_chr2.len(), 2);
+        // Verify span == 0 => end == start on c1_zero_span
+        assert_eq!(expected_chr1[3].alignment_start, Some(Pos1(130)));
+        assert_eq!(expected_chr1[3].alignment_end, Some(Pos1(130)));
+
+        // (a) Fresh SamRecord::new() on every call + sentinel cigar preserved on EOF
+        {
+            let mut feed =
+                query_region_iter(&bam_path, "chr1", Pos0(99), Pos0(200), &config).unwrap();
+            for exp in &expected_chr1 {
+                let mut fresh = SamRecord::new();
+                assert!(feed.next_into(&mut fresh).unwrap());
+                assert_eq!(&fresh, exp);
+            }
+            let mut eof_sentinel = SamRecord::new();
+            eof_sentinel.cigar = vec![(99, CigarKind::SoftClip)];
+            assert!(!feed.next_into(&mut eof_sentinel).unwrap());
+            assert_eq!(
+                eof_sentinel.cigar,
+                vec![(99, CigarKind::SoftClip)],
+                "next_into returning Ok(false) after scanning trailing non-intersecting chunk reads must leave out.cigar untouched"
+            );
+        }
+
+        // (b) Reused SamRecord across chr1: exact names + same-contig String buffer reuse + EOF cigar untouched
+        {
+            let mut feed =
+                query_region_iter(&bam_path, "chr1", Pos0(99), Pos0(200), &config).unwrap();
+            let mut reused = SamRecord::new();
+            let mut prev_ref_ptr: Option<*const u8> = None;
+            for (idx, exp) in expected_chr1.iter().enumerate() {
+                assert!(feed.next_into(&mut reused).unwrap());
+                assert_eq!(&reused, exp, "reused mismatch at #{idx}");
+                let ptr = reused.reference_name.as_deref().unwrap().as_ptr();
+                if let Some(prev) = prev_ref_ptr {
+                    assert_eq!(
+                        ptr, prev,
+                        "same-contig refill must retain reference_name allocation in place"
+                    );
+                }
+                prev_ref_ptr = Some(ptr);
+            }
+            assert_eq!(reused.cigar, vec![(10, CigarKind::Insertion)]);
+            assert!(!feed.next_into(&mut reused).unwrap());
+            assert_eq!(
+                reused.cigar,
+                vec![(10, CigarKind::Insertion)],
+                "reused out.cigar must remain untouched when next_into returns Ok(false) at EOF"
+            );
+        }
+
+        // (c) Alternating multi-contig feeds sharing a single SamRecord buffer
+        {
+            let mut feed1 =
+                query_region_iter(&bam_path, "chr1", Pos0(99), Pos0(200), &config).unwrap();
+            let mut feed2 =
+                query_region_iter(&bam_path, "chr2", Pos0(99), Pos0(200), &config).unwrap();
+            let mut shared = SamRecord::new();
+
+            assert!(feed1.next_into(&mut shared).unwrap());
+            assert_eq!(&shared, &expected_chr1[0]);
+            assert!(feed2.next_into(&mut shared).unwrap());
+            assert_eq!(&shared, &expected_chr2[0]);
+            assert!(feed1.next_into(&mut shared).unwrap());
+            assert_eq!(&shared, &expected_chr1[1]);
+            assert!(feed2.next_into(&mut shared).unwrap());
+            assert_eq!(&shared, &expected_chr2[1]);
+            assert!(!feed2.next_into(&mut shared).unwrap());
+            // shared.cigar must still hold expected_chr2[1].cigar after feed2 hits EOF
+            assert_eq!(shared.cigar, expected_chr2[1].cigar);
+            assert!(feed1.next_into(&mut shared).unwrap());
+            assert_eq!(&shared, &expected_chr1[2]);
+            assert!(feed1.next_into(&mut shared).unwrap());
+            assert_eq!(&shared, &expected_chr1[3]);
+            assert!(!feed1.next_into(&mut shared).unwrap());
+            assert_eq!(shared.cigar, expected_chr1[3].cigar);
+        }
+    }
+
+    #[test]
+    fn preprocess_record_drops_i32_overflowing_reference_cigar_span() {
+        let config = Config::default();
+        let mut prep = RecordPreprocessor::new();
+
+        // 1. Exact hostile record from brief: Pos1(100) + 2_000_000_000N + 500_000_000D (+ 4M)
+        let hostile_skip_del = SamRecord {
+            name: b"hostile_overflow_nd".to_vec(),
+            flags: 0,
+            reference_name: Some("chr1".to_string()),
+            alignment_start: Some(Pos1(100)),
+            alignment_end: Some(Pos1(103)),
+            mapping_quality: Some(60),
+            cigar: vec![
+                (2_000_000_000, CigarKind::Skip),
+                (500_000_000, CigarKind::Deletion),
+                (4, CigarKind::Match),
+            ],
+            sequence: b"ACGT".to_vec(),
+            quality_scores: vec![40; 4],
+            ..SamRecord::default()
+        };
+        assert!(
+            !prep.preprocess_record(&hostile_skip_del, &config),
+            "record whose CIGAR reference span overflows i32::MAX must be dropped"
+        );
+        assert_eq!(prep.total_reads, 0);
+
+        // 2. ref_consumption fits in i32::MAX, but (start - 1) + ref_consumption > i32::MAX
+        let hostile_end_overflow = SamRecord {
+            name: b"hostile_end_overflow".to_vec(),
+            alignment_start: Some(Pos1(1_800_000_000)),
+            cigar: vec![(500_000_000, CigarKind::Skip), (4, CigarKind::Match)],
+            ..hostile_skip_del.clone()
+        };
+        assert!(
+            !prep.preprocess_record(&hostile_end_overflow, &config),
+            "record whose 1-based reference end exceeds i32::MAX must be dropped"
+        );
+        assert_eq!(prep.total_reads, 0);
+
+        // 3. Exact i32::MAX boundary (100 - 1 + (i32::MAX - 99) == i32::MAX) is accepted,
+        //    while +1 base past i32::MAX is rejected.
+        let exact_skip = (i32::MAX as u32) - 99 - 4;
+        let boundary_ok = SamRecord {
+            name: b"boundary_ok".to_vec(),
+            alignment_start: Some(Pos1(100)),
+            cigar: vec![(exact_skip, CigarKind::Skip), (4, CigarKind::Match)],
+            ..hostile_skip_del.clone()
+        };
+        let boundary_over = SamRecord {
+            name: b"boundary_over".to_vec(),
+            alignment_start: Some(Pos1(100)),
+            cigar: vec![(exact_skip + 1, CigarKind::Skip), (4, CigarKind::Match)],
+            ..hostile_skip_del.clone()
+        };
+        assert!(prep.preprocess_record(&boundary_ok, &config));
+        assert_eq!(prep.total_reads, 1);
+        assert!(!prep.preprocess_record(&boundary_over, &config));
+        assert_eq!(prep.total_reads, 1);
+
+        // Zero-reference-consumption CIGARs (`50S`, `50I`) at `Pos1(i32::MAX as u32 + 1)`
+        // must also be rejected before `alignment_start.0 as i32` wraps negative.
+        let zero_span_soft = SamRecord {
+            name: b"zero_span_soft_past_i32_max".to_vec(),
+            alignment_start: Some(Pos1(i32::MAX as u32 + 1)),
+            alignment_end: Some(Pos1(i32::MAX as u32 + 1)),
+            cigar: vec![(50, CigarKind::SoftClip)],
+            sequence: vec![b'A'; 50],
+            quality_scores: vec![40; 50],
+            ..hostile_skip_del.clone()
+        };
+        let zero_span_ins = SamRecord {
+            name: b"zero_span_ins_past_i32_max".to_vec(),
+            cigar: vec![(50, CigarKind::Insertion)],
+            ..zero_span_soft.clone()
+        };
+        assert!(
+            !prep.preprocess_record(&zero_span_soft, &config),
+            "50S at Pos1(i32::MAX as u32 + 1) must be rejected"
+        );
+        assert!(
+            !prep.preprocess_record(&zero_span_ins, &config),
+            "50I at Pos1(i32::MAX as u32 + 1) must be rejected"
+        );
+        assert_eq!(prep.total_reads, 1);
+
+        // 4. get_aligned_length_md saturates at i32::MAX instead of panicking or wrapping negative
+        assert_eq!(
+            get_aligned_length_md(&[
+                (2_000_000_000, CigarKind::Match),
+                (500_000_000, CigarKind::Deletion),
+            ]),
+            i32::MAX
+        );
+        assert_eq!(
+            get_aligned_length_md(&[(u32::MAX, CigarKind::Deletion)]),
+            i32::MAX
+        );
+        assert_eq!(
+            get_aligned_length_md(&[
+                (2_000_000_000, CigarKind::Skip),
+                (50, CigarKind::Match),
+                (10, CigarKind::Deletion),
+                (20, CigarKind::Insertion),
+            ]),
+            60
+        );
     }
 }

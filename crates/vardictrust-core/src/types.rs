@@ -39,7 +39,7 @@ impl Pos1 {
 impl From<noodles::core::Position> for Pos1 {
     #[inline]
     fn from(p: noodles::core::Position) -> Self {
-        Pos1(p.get() as u32)
+        Pos1(u32::try_from(p.get()).unwrap_or(u32::MAX))
     }
 }
 
@@ -59,14 +59,15 @@ impl fmt::Display for Pos1 {
 // Rounding — banker's rounding (HALF_EVEN) to match Java's DecimalFormat
 // ---------------------------------------------------------------------------
 
-struct StackBuf<const N: usize> {
+#[derive(Clone, Copy)]
+pub(crate) struct StackBuf<const N: usize> {
     buf: [u8; N],
     len: usize,
 }
 
 impl<const N: usize> StackBuf<N> {
     #[inline]
-    const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
             buf: [0u8; N],
             len: 0,
@@ -74,9 +75,27 @@ impl<const N: usize> StackBuf<N> {
     }
 
     #[inline]
-    fn as_str(&self) -> Option<&str> {
-        let slice = self.buf.get(..self.len)?;
-        std::str::from_utf8(slice).ok()
+    pub(crate) fn as_str(&self) -> &str {
+        self.buf
+            .get(..self.len)
+            .and_then(|s| std::str::from_utf8(s).ok())
+            .unwrap_or("")
+    }
+}
+
+impl<const N: usize> std::ops::Deref for StackBuf<N> {
+    type Target = str;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        self.as_str()
+    }
+}
+
+impl<const N: usize> fmt::Display for StackBuf<N> {
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 
@@ -120,10 +139,8 @@ pub(crate) fn round_half_even_reference(value: f64, digits: i32) -> f64 {
     let mut buf = StackBuf::<64>::new();
     use std::fmt::Write as _;
     if write!(&mut buf, "{:.*}", prec, value).is_ok() {
-        if let Some(s) = buf.as_str() {
-            if let Ok(parsed) = s.parse::<f64>() {
-                return parsed;
-            }
+        if let Ok(parsed) = buf.as_str().parse::<f64>() {
+            return parsed;
         }
     }
     let s = format!("{:.*}", prec, value);
@@ -217,6 +234,19 @@ pub enum VardictError {
     /// Generic error.
     #[error("{0}")]
     Other(String),
+}
+
+impl VardictError {
+    /// Returns `true` when `self` wraps an OS `EPIPE` / [`std::io::ErrorKind::BrokenPipe`] error.
+    #[inline]
+    pub fn is_broken_pipe(&self) -> bool {
+        match self {
+            Self::Io(e) => {
+                e.kind() == std::io::ErrorKind::BrokenPipe || e.raw_os_error() == Some(32)
+            }
+            _ => false,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -526,5 +556,57 @@ mod tests {
             total_checks >= 1_000_000,
             "expected >= 1,000,000 checks, got {total_checks}"
         );
+    }
+
+    #[test]
+    fn pos1_from_noodles_position_saturates_above_u32_max() {
+        let p1 = noodles::core::Position::try_from(1usize).unwrap();
+        assert_eq!(Pos1::from(p1), Pos1(1));
+
+        let p_max = noodles::core::Position::try_from(u32::MAX as usize).unwrap();
+        assert_eq!(Pos1::from(p_max), Pos1(u32::MAX));
+
+        #[cfg(target_pointer_width = "64")]
+        {
+            let p_over = noodles::core::Position::try_from((u32::MAX as usize) + 1).unwrap();
+            assert_eq!(Pos1::from(p_over), Pos1(u32::MAX));
+            let p_far = noodles::core::Position::try_from((u32::MAX as usize) + 12_345).unwrap();
+            assert_eq!(Pos1::from(p_far), Pos1(u32::MAX));
+        }
+    }
+
+    #[test]
+    fn stack_buf_32_copy_deref_display_and_overflow() {
+        use std::fmt::Write as _;
+
+        let mut buf = StackBuf::<32>::new();
+        assert_eq!(buf.as_str(), "");
+        assert_eq!(&*buf, "");
+        assert_eq!(buf.len(), 0);
+        assert_eq!(format!("{buf}"), "");
+
+        let exact_32 = "0123456789abcdef0123456789abcdef";
+        assert_eq!(exact_32.len(), 32);
+        assert!(write!(&mut buf, "{exact_32}").is_ok());
+
+        // Copy + Deref<Target = str> + Display
+        let copied = buf;
+        let deref_slice: &str = &buf;
+        assert_eq!(buf.as_str(), exact_32);
+        assert_eq!(copied.as_str(), exact_32);
+        assert_eq!(deref_slice, exact_32);
+        assert_eq!(format!("{buf}"), exact_32);
+
+        // 33rd byte returns Err(fmt::Error) without panicking and preserves existing bytes
+        assert_eq!(write!(&mut buf, "x"), Err(fmt::Error));
+        assert_eq!(buf.as_str(), exact_32);
+
+        // Fresh 33-byte write fails cleanly
+        let mut fresh = StackBuf::<32>::new();
+        assert_eq!(
+            write!(&mut fresh, "0123456789abcdef0123456789abcdefX"),
+            Err(fmt::Error)
+        );
+        assert_eq!(fresh.as_str(), "");
     }
 }

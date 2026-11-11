@@ -85,7 +85,7 @@ Evaluated via `harness/scale_bench.sh` on HCC1395 across all 248,956,422 bp of c
 | 100 Mbp | 1.14 GiB (1,198,296 KB) |
 | 249 Mbp (Full chr1) | **1.27 GiB (1,331,428 KB)** |
 
-**Observed RSS Ratio (249 Mbp vs 10 Mbp): 1.11× (`1.106×`)** (Passing pre-registered threshold $\le 1.5\times$). Memory remains bounded across deep genomic spans via tiled execution with boundary halo deduplication.
+**Observed RSS Ratio (249 Mbp vs 10 Mbp): 1.11× (`1.106×`)** (Passing pre-registered threshold $\le 1.5\times$). Memory remains bounded across deep genomic spans via tiled execution with boundary halo deduplication (`SplitVarDeduper` `200 kbp` cross-tile `.var` ownership window and `SpillableVcfAccumulator` `8 MiB` disk-backed whole-stream VCF spill bound).
 
 Pinned **vardictcpp 3 `hc52dbad_0`** runs beside each loop above (`harness/scale_bench.sh` via `harness/run_cpp.sh`, advisory only): per-thread cpp wall (`cpp_wall_s`, exome BED workload) and per-span cpp RSS (`cpp_maxrss_kb`, `-R` full-span workload at `-th 8`) land separately in `scale.json` `extra` — at `-th 8` BED wall 182.80 s, full-span (249 Mbp) unchunked `-R` RSS 24.34 GiB (25,521,616 KB per [CPP-5](../docs/upstream-bugs.md#cpp-5)).
 

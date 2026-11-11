@@ -68,7 +68,7 @@ jobs:
         id: unit-tests
         run: |
           t0=$SECONDS
-          echo "[$(date '+%H:%M:%S')] [Step 3/9] Running unit tests (350 vardictrust-core --lib + 19 vardictrust --bins)..."
+          echo "[$(date '+%H:%M:%S')] [Step 3/9] Running unit tests (406 vardictrust-core --lib + 23 vardictrust --bins)..."
           cargo llvm-cov --no-report --workspace --lib --bins -- --test-threads=2
           echo "STEP3_S=$((SECONDS - t0))" >> "$GITHUB_ENV"
           echo "STEP3_STATUS=PASS" >> "$GITHUB_ENV"
@@ -108,7 +108,9 @@ jobs:
             harness/tests/test_bioconda_recipe.py \
             harness/tests/test_compare_vcf.py \
             harness/tests/test_docs_ui.py \
+            harness/tests/test_evidence_inputs.py \
             harness/tests/test_golden_store.py \
+            harness/tests/test_linkedin_carousel.py \
             harness/tests/test_perf_budget.py \
             harness/tests/test_profile_catalog.py \
             harness/tests/test_select_slice_regions.py \
@@ -122,10 +124,15 @@ jobs:
             harness/tests/test_env_pinned.sh \
             harness/tests/test_evidence.sh \
             harness/tests/test_fetch_data.sh \
+            harness/tests/test_gate_command_parity.sh \
+            harness/tests/test_gcp_paper_runner.sh \
             harness/tests/test_git_hooks.sh \
             harness/tests/test_golden_wiring.sh \
+            harness/tests/test_no_gnu_isms.sh \
+            harness/tests/test_oracle_platform.sh \
             harness/tests/test_perf_budget.sh \
             harness/tests/test_perf_pr.sh \
+            harness/tests/test_portable_shell.sh \
             harness/tests/test_profile_sh.sh \
             harness/tests/test_release_deps.sh \
             harness/tests/test_scale_bench.sh \
@@ -145,7 +152,7 @@ jobs:
           if [[ "${PR_HEAD_REF:-}" == release/* ]]; then
             EXTRA_REL_FLAGS+=(--require-head-fingerprint)
           fi
-          python3 .agents/skills/vardictrust-release/scripts/check_release_consistency.py --phase pre-tag "${EXTRA_REL_FLAGS[@]}"
+          python3 .agents/skills/vardictrust-release/scripts/check_release_consistency.py --phase pre-tag --verify-cargo-list --cargo-llvm-cov "${EXTRA_REL_FLAGS[@]}"
           python3 harness/perf_budget.py hg008-tier2 seqc2-exome-tier2 hg002-tier2 amplicon-tier2 hg008-cram-twin
           dirty=$(git status --porcelain --ignore-submodules=untracked)
           if [ -n "$dirty" ]; then
@@ -165,8 +172,8 @@ jobs:
             echo "| :--- | :--- | :---: | :---: |"
             echo "| **1** | Format & Lint Gate (\`rustfmt\` & \`clippy -D warnings\`) | \`${STEP1_STATUS:-FAIL}\` | \`${STEP1_S:-0}s\` |"
             echo "| **2** | Build Instrumented Workspace & Test Targets | \`${STEP2_STATUS:-FAIL}\` | \`${STEP2_S:-0}s\` |"
-            echo "| **3** | Unit Tests (\`350 vardictrust-core\` + \`19 vardictrust\`) | \`${STEP3_STATUS:-FAIL}\` | \`${STEP3_S:-0}s\` |"
-            echo "| **4** | Integration & Hostile-Input Tests (\`40\` tests) | \`${STEP4_STATUS:-FAIL}\` | \`${STEP4_S:-0}s\` |"
+            echo "| **3** | Unit Tests (\`406 vardictrust-core\` + \`23 vardictrust\`) | \`${STEP3_STATUS:-FAIL}\` | \`${STEP3_S:-0}s\` |"
+            echo "| **4** | Integration & Hostile-Input Tests (\`51\` tests) | \`${STEP4_STATUS:-FAIL}\` | \`${STEP4_S:-0}s\` |"
             echo "| **5** | Corpus & Modality Parity Tests (\`110\` cases) | \`${STEP5_STATUS:-FAIL}\` | \`${STEP5_S:-0}s\` |"
             echo "| **6** | Code Coverage Gate (\`cargo-llvm-cov >= 90%\` Lines) | \`${STEP6_STATUS:-FAIL}\` | \`${STEP6_S:-0}s\` |"
             echo "| **7** | Harness Diagnostic Self-Tests (Zero-Conda Suites) | \`${STEP7_STATUS:-FAIL}\` | \`${STEP7_S:-0}s\` |"

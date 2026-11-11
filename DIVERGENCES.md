@@ -24,6 +24,10 @@ Verified Parity Baseline (release/v1.0.7, commit d5cae8a):
 - [Tier-3](docs/testing/test-matrix-and-ci-audit.md#tier-3) Truth Concordance:  5/5 EQUAL (GIAB HG002 NIST v4.2.1, SEQC2 v1.2.1, GIAB HG008 NIST Draft v0.3, GIAB HG005 NIST v4.2.1, GIAB NA24385 b37 NIST v4.2.1)
 - Scaling Budget:     PASS (3.14x speedup, 1.11x flat RSS scaling across 249 Mbp chromosome 1)
 - Final Acceptance:   8/8 PASS under release engine fingerprint `356eb13ba068790c`
+
+Current Workspace Test Suite (main / pre-v1.0.8):
+- Core Library Tests: 406 PASS / 0 FAIL (`cargo test -p vardictrust-core --lib`)
+- Total Workspace:    590 PASS / 0 FAIL (`cargo test --workspace` across core, corpus_parity, engine_behavior, amplicon_stream_mem, cram_stack, cli, profile_smoke, robustness, version)
 ```
 
 <a id="the-four-canonical-parity-classes-rewritesbio-5-8-11"></a>
@@ -1171,7 +1175,7 @@ are consolidated with filing-ready draft issue texts in
 | compare.sh passes `-z` to both sides by default | Mirrors corpus and upstream IntegrationTest DEFAULT_ARGS (`IntegrationTest.java:26`); amplicon mode lacks the 4-column-BED auto-default, so omitting it is a real flag divergence |
 | Rust VCF emits `##reference` + `##contig` from the `.fai`; oracle VCF headers lack them | Rust implements the issue [#320](https://github.com/AstraZeneca-NGS/VarDictJava/issues/320) fix (`##contig` lengths from the `.fai`) and emits both headers unconditionally; the oracle invocation passes no `-G`/`-b`, so vardict-java/var2vcf_*.pl never emit them. `compare_vcf.py` skips `#`-lines, so [Tier-2](docs/testing/test-matrix-and-ci-audit.md#tier-2) MATCH is record-level and does not cover headers. Header parity would require passing `-G`/`-b` to `harness/run_oracle.sh` — a gate change, deferred. |
 | `--fisher` single-sample runs may diverge byte-wise in raw-cell fields (NM/HIAF/etc.) | With `--fisher` run_oracle.sh skips R entirely (:55/:71) and var2vcf_*.pl consume Java's RAW 38-col cells (unstripped DecimalFormat forms, e.g. golden fixture `NM=1.0` ×1410, `HIAF=0.0020` ×2). Our writers emit the R-echoed (stripped) forms everywhere except DUPRATE/SBF, which are already pipeline-split. No [Tier-2](docs/testing/test-matrix-and-ci-audit.md#tier-2) gate covers a `--fisher` single-sample slice; closing this needs a pipeline-aware formatter family keyed on `config.fisher` plus its own gate slice (post-1.0 candidate). Paired+fisher shares the same shape. |
-| Splice-mode stdout intron-count lines have no stable order (both engines, by design) | Java's `spliceCount` is a plain `HashMap<String,int[]>` (CigarParser.java:65) printed via unordered iteration (:102); we mirror it (`HashMap`, iterated at lib.rs:233). The line SET is identical run-to-run; the ORDER is not — product-free, matching the oracle's own nondeterminism ([#282](https://github.com/AstraZeneca-NGS/VarDictJava/issues/282) family). Would flake if ever snapshotted: keep splice-mode stdout out of byte-comparators or sort before comparing. |
+| Splice-mode stdout intron-count lines emitted in deterministic sorted order (vs Java unordered HashMap) | Java's `spliceCount` is a plain `HashMap<String,int[]>` (`CigarParser.java:65`) printed via unordered iteration (`:102`), causing run-to-run row-order nondeterminism ([#282](https://github.com/AstraZeneca-NGS/VarDictJava/issues/282) family). `VarDictRust` emits anchor-owned `-i` splice-junction rows in deterministic sorted key order (`BTreeMap` / sorted emission in `lib.rs`). The junction line SET and counts are 100% identical; comparators sort before diffing. |
 
 ---
 
