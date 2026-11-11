@@ -241,7 +241,13 @@ fn verbose_flag_y_emits_region_debug_to_stderr() {
 
 #[test]
 fn unsupported_and_invalid_cli_flags_exit_nonzero() {
-    for flag in ["-n", "-C", "-T", "--trim", "--VS", "-Z", "--downsample"] {
+    for unsupported_args in [
+        &["-C", "dummy_arg"][..],
+        &["-Z", "dummy_arg"][..],
+        &["--downsample", "dummy_arg"][..],
+        &["-VS", "STRICT"][..],
+        &["--VS", "STRICT"][..],
+    ] {
         let out = base_cmd()
             .args([
                 "-G",
@@ -250,23 +256,30 @@ fn unsupported_and_invalid_cli_flags_exit_nonzero() {
                 "fixtures/micro/micro.bam",
                 "-R",
                 "chr1:100-110",
-                flag,
-                "dummy_arg",
             ])
+            .args(unsupported_args)
             .output()
-            .unwrap_or_else(|e| panic!("run vardictrust with {flag}: {e}"));
+            .unwrap_or_else(|e| panic!("run vardictrust with {unsupported_args:?}: {e}"));
 
         assert!(
             !out.status.success(),
-            "unsupported flag {flag} must exit non-zero"
+            "unsupported flag {unsupported_args:?} must exit non-zero"
         );
         #[cfg(unix)]
-        assert_eq!(out.status.signal(), None, "{flag} died by signal");
-        assert_ne!(out.status.code(), Some(101), "{flag} died by panic");
+        assert_eq!(
+            out.status.signal(),
+            None,
+            "{unsupported_args:?} died by signal"
+        );
+        assert_ne!(
+            out.status.code(),
+            Some(101),
+            "{unsupported_args:?} died by panic"
+        );
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(
             stderr.contains("not implemented in v1.0; use VarDictJava"),
-            "flag {flag} stderr must mention v1.0 rejection, got: {stderr}"
+            "flag {unsupported_args:?} stderr must mention v1.0 rejection, got: {stderr}"
         );
     }
 

@@ -8,19 +8,13 @@ use clap::Parser;
 /// VarDictJava v1.8.3 flags (CmdParser.java) with no v1.0 implementation.
 /// Must be rejected loudly (§12) before Clap sees them.
 const UNSUPPORTED_FLAGS: &[&str] = &[
-    "-n", // sample-name regular expression
-    "-C", // chromosome names are just numbers (deprecated upstream)
-    "-T",
-    "-trim",
-    "--trim", // trim bases from reads
-    "-VS",
-    "--VS",         // SAM validation stringency
+    "-C",           // chromosome names are just numbers (deprecated upstream)
     "-Z",           // downsampling fraction (CmdParser.java:125-127, 433-440)
     "-downsample",  // single-dash long form of -Z
     "--downsample", // long form of -Z
 ];
 
-/// Value parser for signed integer CLI options (`-P`, `-x`, `-X`, `-J`, `-j`).
+/// Value parser for signed integer CLI options (`-P`, `-x`, `-X`, `-J`, `-j`, `-T`).
 /// Rejects `"-3"` because Commons-CLI treats `-3` as the short option flag `moveIndelsTo3`,
 /// leaving the preceding option missing its argument (`MissingArgumentException`).
 fn parse_java_signed_i32(s: &str) -> Result<i32, String> {
@@ -63,6 +57,13 @@ fn is_known_single_dash_long_flag(flag: &str) -> bool {
         .is_some_and(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
 }
 
+fn is_bool_short_flag(c: char) -> bool {
+    matches!(
+        c,
+        'H' | '?' | 'h' | 'v' | 'i' | 'p' | 'D' | 't' | '3' | 'K' | 'u' | 'U' | 'y'
+    )
+}
+
 /// Inspects a single-dash short option or short-option cluster (`-<chars>`), skipping known
 /// multi-char single-dash options (`-nosv`, `-nmfreq`, `-adaptor`, etc.).
 /// Returns `(unsupported_short_char, consumes_mandatory_next_token)`.
@@ -82,14 +83,14 @@ fn classify_short_cluster(arg: &str) -> (Option<char>, bool) {
         let consumes_next = !has_eq && rem_empty;
         match ch {
             'C' => return (Some('C'), false),
-            'n' | 'T' | 'Z' => return (Some(ch), consumes_next),
+            'Z' => return (Some('Z'), consumes_next),
             'G' | 'b' | 'f' | 'N' | 'R' | 'c' | 'S' | 'E' | 's' | 'e' | 'g' | 'r' | 'q' | 'Q'
             | 'P' | 'm' | 'M' | 'V' | 'L' | 'x' | 'X' | 'B' | 'o' | 'O' | 'I' | 'F' | 'w' | 'W'
-            | 'A' | 'Y' | 'J' | 'j' | 'd' => {
+            | 'A' | 'Y' | 'J' | 'j' | 'd' | 'n' | 'T' => {
                 return (None, consumes_next);
             }
             'z' | 'k' | 'a' => return (None, false),
-            'H' | '?' | 'h' | 'v' | 'i' | 'p' | 'D' | 't' | '3' | 'K' | 'u' | 'U' | 'y' => {}
+            c if is_bool_short_flag(c) => {}
             _ => return (None, false),
         }
     }
@@ -139,20 +140,32 @@ fn takes_mandatory_next_token(arg: &str) -> bool {
     classify_short_cluster(arg).1
 }
 
+fn arg_has_region_short(arg: &str) -> bool {
+    let head = arg.split_once('=').map_or(arg, |(h, _)| h);
+    if arg.starts_with("--") || is_known_single_dash_long_flag(head) {
+        return false;
+    }
+    let Some(rest) = head.strip_prefix('-') else {
+        return false;
+    };
+    for ch in rest.chars() {
+        if ch == 'R' {
+            return true;
+        }
+        if !is_bool_short_flag(ch) {
+            return false;
+        }
+    }
+    false
+}
+
 fn scan_has_region(args: &[String]) -> bool {
     let mut i = 1;
     while let Some(arg) = args.get(i) {
         if arg == "--" {
             break;
         }
-        if arg == "-R"
-            || arg.starts_with("-R=")
-            || arg == "--region"
-            || arg.starts_with("--region=")
-            || (arg.starts_with("-R")
-                && !arg.starts_with("--")
-                && !is_known_single_dash_long_flag(arg))
-        {
+        if arg == "--region" || arg.starts_with("--region=") || arg_has_region_short(arg) {
             return true;
         }
         i += if takes_mandatory_next_token(arg) {
@@ -162,6 +175,115 @@ fn scan_has_region(args: &[String]) -> bool {
         };
     }
     false
+}
+
+/// Splits a boolean-prefixed short option cluster whose non-boolean tail begins with `z`, `k`,
+/// `a`, or `R` (e.g. `-pz`, `-pz0`, `-uz`, `-uk`, `-ua`, `-pR`) into `(bool_prefix, tail)`.
+fn split_bool_prefix_cluster(arg: &str) -> Option<(&str, &str)> {
+    let head = arg.split_once('=').map_or(arg, |(h, _)| h);
+    if arg.starts_with("--") || is_known_single_dash_long_flag(head) {
+        return None;
+    }
+    let rest = arg.strip_prefix('-')?;
+    let split_idx = rest.char_indices().find_map(|(idx, c)| {
+        if is_bool_short_flag(c) {
+            None
+        } else {
+            Some(idx)
+        }
+    })?;
+    if split_idx == 0 {
+        return None;
+    }
+    let bool_prefix = rest.get(..split_idx)?;
+    let tail = rest.get(split_idx..)?;
+    if tail.starts_with(['z', 'k', 'a', 'R']) {
+        Some((bool_prefix, tail))
+    } else {
+        None
+    }
+}
+
+fn normalize_optional_or_passthrough(
+    effective_arg: &str,
+    args: &[String],
+    i: usize,
+    has_region: bool,
+    out: &mut Vec<String>,
+) -> usize {
+    if effective_arg == "-z" {
+        let next_is_num = args.get(i + 1).is_some_and(|n| {
+            parse_java_signed_i32(n).is_ok() && (has_region || i + 2 < args.len())
+        });
+        if next_is_num {
+            out.push(format!("-z={}", args[i + 1]));
+            return i + 2;
+        }
+        out.push("-z=1".to_string());
+        return i + 1;
+    } else if let Some(v) = effective_arg
+        .strip_prefix("-z")
+        .filter(|v| !v.is_empty() && !v.starts_with('=') && parse_java_signed_i32(v).is_ok())
+    {
+        out.push(format!("-z={v}"));
+        return i + 1;
+    } else if effective_arg == "-k" {
+        if let Some(next) = args.get(i + 1) {
+            if parse_java_signed_i32(next).is_ok()
+                || (!next.starts_with('-') && (has_region || i + 2 < args.len()))
+            {
+                out.push(format!("-k={next}"));
+                return i + 2;
+            }
+        }
+        out.push("-k=1".to_string());
+        return i + 1;
+    } else if let Some(v) = effective_arg
+        .strip_prefix("-k")
+        .filter(|v| !v.is_empty() && !v.starts_with('=') && parse_java_signed_i32(v).is_ok())
+    {
+        out.push(format!("-k={v}"));
+        return i + 1;
+    } else if let Some(v) = effective_arg
+        .strip_prefix("-a")
+        .filter(|v| !v.is_empty() && !v.starts_with('=') && v.contains(':'))
+    {
+        out.push(format!("-a={v}"));
+        return i + 1;
+    } else if effective_arg == "-a" || effective_arg == "-amplicon" || effective_arg == "--amplicon"
+    {
+        match args.get(i + 1) {
+            None => {
+                out.push("-a=10:0.95".to_string());
+                return i + 1;
+            }
+            Some(next) if next.starts_with('-') => {
+                out.push("-a=10:0.95".to_string());
+                return i + 1;
+            }
+            Some(next) if next.is_empty() => {
+                out.push("-a=10:0.95".to_string());
+                return i + 2;
+            }
+            Some(next) if next.contains(':') || has_region || i + 2 < args.len() => {
+                out.push(format!("-a={next}"));
+                return i + 2;
+            }
+            Some(_) => {
+                out.push("-a=10:0.95".to_string());
+                return i + 1;
+            }
+        }
+    }
+
+    out.push(effective_arg.to_string());
+    if takes_mandatory_next_token(effective_arg) {
+        if let Some(next_val) = args.get(i + 1) {
+            out.push(next_val.clone());
+            return i + 2;
+        }
+    }
+    i + 1
 }
 
 /// Rewrite Java-style multi-char single-dash options and optional-arg flags (`-th`, `-UN`, `-z`, `-k`, `-a`)
@@ -268,6 +390,8 @@ pub fn normalize_args(args: &[String]) -> Vec<String> {
                     | "-insert-size"
                     | "-ref-extension"
                     | "-crispr"
+                    | "-trim"
+                    | "-VS"
             )
         }) {
             out.push(format!("-{flag}={val}"));
@@ -286,6 +410,8 @@ pub fn normalize_args(args: &[String]) -> Vec<String> {
                 | "-insert-size"
                 | "-ref-extension"
                 | "-crispr"
+                | "-trim"
+                | "-VS"
         ) {
             out.push(format!("-{arg}"));
             if let Some(next_val) = args.get(i + 1) {
@@ -295,87 +421,15 @@ pub fn normalize_args(args: &[String]) -> Vec<String> {
                 i += 1;
             }
             continue;
-        } else if arg == "-z" {
-            let next_is_num = args.get(i + 1).is_some_and(|n| {
-                parse_java_signed_i32(n).is_ok() && (has_region || i + 2 < args.len())
-            });
-            if next_is_num {
-                out.push(format!("-z={}", args[i + 1]));
-                i += 2;
-            } else {
-                out.push("-z=1".to_string());
-                i += 1;
-            }
-            continue;
-        } else if let Some(v) = arg
-            .strip_prefix("-z")
-            .filter(|v| !v.is_empty() && !v.starts_with('=') && parse_java_signed_i32(v).is_ok())
-        {
-            out.push(format!("-z={v}"));
-            i += 1;
-            continue;
-        } else if arg == "-k" {
-            if let Some(next) = args.get(i + 1) {
-                if parse_java_signed_i32(next).is_ok()
-                    || (!next.starts_with('-') && (has_region || i + 2 < args.len()))
-                {
-                    out.push(format!("-k={next}"));
-                    i += 2;
-                    continue;
-                }
-            }
-            out.push("-k=1".to_string());
-            i += 1;
-            continue;
-        } else if let Some(v) = arg
-            .strip_prefix("-k")
-            .filter(|v| !v.is_empty() && !v.starts_with('=') && parse_java_signed_i32(v).is_ok())
-        {
-            out.push(format!("-k={v}"));
-            i += 1;
-            continue;
-        } else if let Some(v) = arg
-            .strip_prefix("-a")
-            .filter(|v| !v.is_empty() && !v.starts_with('=') && v.contains(':'))
-        {
-            out.push(format!("-a={v}"));
-            i += 1;
-            continue;
-        } else if arg == "-a" || arg == "-amplicon" || arg == "--amplicon" {
-            match args.get(i + 1) {
-                None => {
-                    out.push("-a=10:0.95".to_string());
-                    i += 1;
-                }
-                Some(next) if next.starts_with('-') => {
-                    out.push("-a=10:0.95".to_string());
-                    i += 1;
-                }
-                Some(next) if next.is_empty() => {
-                    out.push("-a=10:0.95".to_string());
-                    i += 2;
-                }
-                Some(next) if next.contains(':') || has_region || i + 2 < args.len() => {
-                    out.push(format!("-a={next}"));
-                    i += 2;
-                }
-                Some(_) => {
-                    out.push("-a=10:0.95".to_string());
-                    i += 1;
-                }
-            }
-            continue;
         }
 
-        out.push(arg.clone());
-        if takes_mandatory_next_token(arg) {
-            if let Some(next_val) = args.get(i + 1) {
-                out.push(next_val.clone());
-                i += 2;
-                continue;
-            }
+        if let Some((bool_prefix, tail)) = split_bool_prefix_cluster(arg) {
+            out.push(format!("-{bool_prefix}"));
+            let tail_flag = format!("-{tail}");
+            i = normalize_optional_or_passthrough(&tail_flag, args, i, has_region, &mut out);
+            continue;
         }
-        i += 1;
+        i = normalize_optional_or_passthrough(arg, args, i, has_region, &mut out);
     }
     out
 }
@@ -441,7 +495,7 @@ pub struct Cli {
     #[arg(short = 'H', short_alias = '?', long = "help", action = clap::ArgAction::Help)]
     _help: (),
 
-    /// Reference FASTA (.fai required). Aliases: --reference. Accepts hg19/hg38/mm10 shortcuts.
+    /// Reference FASTA (.fai required). Aliases: --reference.
     #[arg(
         short = 'G',
         long = "reference",
@@ -473,6 +527,15 @@ pub struct Cli {
     /// Sample name (somatic: "tumor|normal"). Alias: --name.
     #[arg(short = 'N', long = "name", num_args = 1, allow_hyphen_values = true)]
     pub sample: Vec<String>,
+
+    /// Regular expression to extract sample name from BAM filenames (ports CmdParser.java:86-93).
+    #[arg(
+        short = 'n',
+        value_name = "REGEXP",
+        num_args = 1,
+        allow_hyphen_values = true
+    )]
+    pub sample_regexp: Vec<String>,
 
     /// Region chr:start-end[:gene] (instead of BED).
     #[arg(short = 'R', long = "region", num_args = 1, allow_hyphen_values = true)]
@@ -857,6 +920,30 @@ pub struct Cli {
     #[arg(short = 'K')]
     pub include_n: bool,
 
+    /// Trim bases after [INT] bases in the reads (ports CmdParser.java:122, 411-417). [default: 0]
+    #[arg(
+        short = 'T',
+        long = "trim",
+        value_name = "INT",
+        num_args = 1,
+        allow_negative_numbers = true,
+        value_parser = parse_java_signed_i32
+    )]
+    pub trim_bases_after: Vec<i32>,
+
+    /// SAM/BAM validation stringency: SILENT, LENIENT, or STRICT (ports CmdParser.java:146-148, 491-500).
+    #[arg(
+        long = "VS",
+        value_name = "STRINGENCY",
+        num_args = 1,
+        allow_hyphen_values = true
+    )]
+    pub validation_stringency: Vec<String>,
+
+    /// Omit the END tag in VCF INFO output (ports var2vcf_valid.pl -E).
+    #[arg(long = "no-end")]
+    pub no_end: bool,
+
     /// Write output (.vcf or .var) directly to file; .gz/.bgz suffixes use multithreaded BGZF
     #[arg(long = "output", value_name = "PATH", allow_hyphen_values = true)]
     pub output: Vec<String>,
@@ -864,6 +951,10 @@ pub struct Cli {
     /// Write a Tabix (.tbi) index alongside a BGZF-compressed --output .vcf.gz file.
     #[arg(long = "tbi", visible_alias = "index")]
     pub tbi: bool,
+
+    /// Write a CSI (.csi) index alongside a BGZF-compressed --output .vcf.gz file.
+    #[arg(long = "csi")]
+    pub index_csi: bool,
 
     /// Explicitly lock 100% VarDictJava v1.8.3 byte-for-byte parity mode (default in v1.x).
     #[arg(long = "parity")]
@@ -888,9 +979,19 @@ fn all_cores() -> usize {
 }
 
 impl Cli {
-    /// Convert CLI args to a core Config (first-wins on repeated scalar options per Commons-CLI).
+    /// Convert CLI args to a core Config (first-wins on repeated scalar options per Commons-CLI),
+    /// isolated from host `RAYON_NUM_THREADS` for deterministic unit tests.
     pub fn to_config(
         &self,
+    ) -> Result<vardictrust_core::config::Config, vardictrust_core::types::VardictError> {
+        self.to_config_with_rayon_env(None)
+    }
+
+    /// Convert CLI args to a core Config (first-wins on repeated scalar options per Commons-CLI),
+    /// consulting `rayon_env` (`RAYON_NUM_THREADS`) when `-th` / `--threads` was not passed.
+    pub fn to_config_with_rayon_env(
+        &self,
+        rayon_env: Option<&str>,
     ) -> Result<vardictrust_core::config::Config, vardictrust_core::types::VardictError> {
         let _ = self.parity;
         if let Some(ref raw_target) = self.compat {
@@ -898,6 +999,20 @@ impl Cli {
             if !target.eq_ignore_ascii_case("vardictjava-1.8.3") && target != "1.8.3" {
                 return Err(vardictrust_core::types::VardictError::Unsupported(format!(
                     "--compat {raw_target} not supported in v1.0; use --compat vardictjava-1.8.3 or --parity"
+                )));
+            }
+        }
+
+        if let Some(raw) = self.validation_stringency.first() {
+            if raw.eq_ignore_ascii_case("SILENT") || raw.eq_ignore_ascii_case("LENIENT") {
+                // Supported no-op: matches noodles lenient decoding.
+            } else if raw.eq_ignore_ascii_case("STRICT") {
+                return Err(vardictrust_core::types::VardictError::Unsupported(
+                    "-VS STRICT not implemented in v1.0; use VarDictJava".to_string(),
+                ));
+            } else {
+                return Err(vardictrust_core::types::VardictError::Parse(format!(
+                    "Invalid ValidationStringency '{raw}'; expected SILENT, LENIENT, or STRICT"
                 )));
             }
         }
@@ -952,28 +1067,22 @@ impl Cli {
         // or `"0.00"` are truthy strings in Perl boolean context and keep `0.0`.
         let af_threshold_truthy_zero = parsed_freq == 0.0 && freq_str.trim() != "0";
 
+        let sample_regexp = match self.sample_regexp.first() {
+            Some(raw) => vardictrust_core::config::validate_sample_regexp(raw)
+                .map_err(vardictrust_core::types::VardictError::Parse)?,
+            None => None,
+        };
         let bam_str = self.bam.first().cloned().unwrap_or_default();
         let region_opt = self.region.first().cloned();
-        let sample_explicit = !self.sample.is_empty();
-        let sample = if let Some(explicit) = self.sample.first() {
-            if region_opt.is_some() && bam_str.contains('|') && self.emit_intermediate {
-                explicit.split('|').next().unwrap_or(explicit).to_string()
-            } else {
-                explicit.clone()
-            }
-        } else if region_opt.is_some() && bam_str.contains('|') && self.emit_intermediate {
-            let first_bam = bam_str.split('|').next().unwrap_or(&bam_str);
-            vardictrust_core::config::extract_sample_name(first_bam, None)
-        } else if !self.emit_intermediate && bam_str.contains('|') {
-            let mut parts = bam_str.splitn(2, '|');
-            let b1 = parts.next().unwrap_or("");
-            let b2 = parts.next().unwrap_or("");
-            let s1 = vardictrust_core::config::extract_sample_name(b1, None);
-            let s2 = vardictrust_core::config::extract_sample_name(b2, None);
-            format!("{s1}|{s2}")
-        } else {
-            vardictrust_core::config::extract_sample_name(&bam_str, None)
-        };
+        let explicit_sample = self.sample.first().map(String::as_str);
+        let sample_explicit = explicit_sample.is_some();
+        let sample = vardictrust_core::config::resolve_sample_names(
+            &bam_str,
+            explicit_sample,
+            sample_regexp.as_deref(),
+            region_opt.is_some(),
+            self.emit_intermediate || self.splice,
+        );
 
         let col_chr = self.col_chr.first().copied();
         let col_start = self.col_start.first().copied();
@@ -1047,11 +1156,13 @@ impl Cli {
                 .unwrap_or(Some(12)),
             column_for_chromosome: col_chr.map(|c| c.saturating_sub(1)),
             // Java: bare -th → availableProcessors (CmdParser.java:621-623),
-            // -th N (incl. explicit 0) → max(N,1) (:162). Absent flag stays
-            // all-cores (perf-only divergence; no output effect — task P1
-            // report).
+            // -th N (incl. explicit 0) → max(N,1) (:162). Absent flag consults
+            // valid RAYON_NUM_THREADS (>= 1) when provided, else all-cores.
             threads: match self.threads {
-                None => all_cores(),
+                None => rayon_env
+                    .and_then(|s| s.parse::<usize>().ok())
+                    .filter(|&n| n >= 1)
+                    .unwrap_or_else(all_cores),
                 Some(n) if n == usize::MAX => all_cores(),
                 Some(n) => n.max(1),
             },
@@ -1115,14 +1226,14 @@ impl Cli {
             verbose: self.verbose,
             unique_mode_alignment_enabled: self.unique_mode_alignment_enabled,
             unique_mode_second_in_pair_enabled: self.unique_mode_second_in_pair_enabled,
-            omit_end_tag: col_end.is_some(),
+            omit_end_tag: self.no_end || !self.col_end.is_empty(),
             include_n: self.include_n,
             output_path: self.output.first().cloned(),
             index_output: self.tbi,
             stats_json_path: self.stats_json.first().cloned(),
-            trim_bases_after: 0,
-            sample_regexp: None,
-            index_csi: false,
+            trim_bases_after: self.trim_bases_after.first().copied().unwrap_or(0),
+            sample_regexp,
+            index_csi: self.index_csi,
         };
         cfg.apply_pileup_overrides();
         Ok(cfg)
@@ -1141,21 +1252,29 @@ mod tests {
 
     #[test]
     fn unsupported_flag_errors() {
-        assert!(check_unsupported(&args(&["-n", "SAMPLE[0-9]"])).is_err());
+        assert!(check_unsupported(&args(&["-C"])).is_err());
         assert!(check_unsupported(&args(&["--downsample=0.5"])).is_err());
+        assert!(check_unsupported(&args(&["-downsample=0.5"])).is_err());
         // -Z is Java's downsampling fraction (CmdParser.java:125-127, 433-440).
         assert!(check_unsupported(&args(&["-Z", "0.7"])).is_err());
         assert!(matches!(
             check_unsupported(&args(&["-Z0.7"])),
             Err(vardictrust_core::types::VardictError::Unsupported(_))
         ));
-        for clustered_eq in ["-uZ=0.5", "-pT=5", "-un=RG"] {
+        for clustered_eq in ["-uZ=0.5", "-pC"] {
             assert!(
                 matches!(
                     check_unsupported(&args(&[clustered_eq])),
                     Err(vardictrust_core::types::VardictError::Unsupported(_))
                 ),
                 "{clustered_eq} must fail with VardictError::Unsupported"
+            );
+        }
+        // -n, -T, -trim, --trim, -VS, --VS are now supported in CLI parsing
+        for supported in ["-pT=5", "-un=RG", "-T", "--trim", "-VS", "--VS"] {
+            assert!(
+                check_unsupported(&args(&[supported, "SILENT"])).is_ok(),
+                "{supported} must pass check_unsupported"
             );
         }
     }
@@ -1352,7 +1471,7 @@ mod tests {
 
     #[test]
     fn unsupported_flags_all_seven_return_clear_error() {
-        for flag in ["-n", "-C", "-T", "--trim", "--VS", "-Z", "--downsample"] {
+        for flag in ["-C", "-Z", "-downsample", "--downsample"] {
             let err = check_unsupported(&args(&[flag])).unwrap_err();
             assert!(
                 matches!(err, vardictrust_core::types::VardictError::Unsupported(_)),
@@ -1374,6 +1493,60 @@ mod tests {
                 "expected Unsupported error for {eq_form}, got {err_eq:?}"
             );
         }
+
+        // -VS / --VS: SILENT & LENIENT succeed (case-insensitive, first-wins); STRICT -> Unsupported;
+        // anything else -> Parse error.
+        for ok_vs in [
+            &["-VS", "SILENT"][..],
+            &["-VS", "LENIENT"][..],
+            &["--VS", "silent"][..],
+            &["-VS=lenient"][..],
+            &["--VS=SILENT"][..],
+            &["-VS", "LENIENT", "-VS", "STRICT"][..],
+        ] {
+            let mut full = vec!["-G", "r.fa", "-b", "a.bam"];
+            full.extend_from_slice(ok_vs);
+            let norm = normalize_args(&args(&full));
+            check_unsupported(&norm).unwrap();
+            assert!(
+                Cli::try_parse_from(&norm).unwrap().to_config().is_ok(),
+                "expected Ok for {ok_vs:?}"
+            );
+        }
+        for strict_vs in [
+            &["-VS", "STRICT"][..],
+            &["--VS", "STRICT"][..],
+            &["-VS=strict"][..],
+            &["--VS=STRICT"][..],
+            &["-VS", "STRICT", "-VS", "LENIENT"][..],
+        ] {
+            let mut full = vec!["-G", "r.fa", "-b", "a.bam"];
+            full.extend_from_slice(strict_vs);
+            let norm = normalize_args(&args(&full));
+            check_unsupported(&norm).unwrap();
+            let err = Cli::try_parse_from(&norm).unwrap().to_config().unwrap_err();
+            assert!(
+                matches!(err, vardictrust_core::types::VardictError::Unsupported(_)),
+                "expected Unsupported for {strict_vs:?}, got {err:?}"
+            );
+            assert!(
+                err.to_string()
+                    .contains("-VS STRICT not implemented in v1.0; use VarDictJava"),
+                "unexpected STRICT error for {strict_vs:?}: {err}"
+            );
+        }
+        let bad_vs = normalize_args(&args(&["-G", "r.fa", "-b", "a.bam", "-VS", "BOGUS"]));
+        let bad_vs_err = Cli::try_parse_from(&bad_vs)
+            .unwrap()
+            .to_config()
+            .unwrap_err();
+        assert!(matches!(
+            bad_vs_err,
+            vardictrust_core::types::VardictError::Parse(_)
+        ));
+        assert!(bad_vs_err
+            .to_string()
+            .contains("Invalid ValidationStringency 'BOGUS'; expected SILENT, LENIENT, or STRICT"));
     }
 
     #[test]
@@ -1395,7 +1568,45 @@ mod tests {
                 expected_threads,
                 "argv={argv:?}"
             );
+            assert_eq!(
+                cli.to_config_with_rayon_env(Some("2")).unwrap().threads,
+                expected_threads,
+                "explicit -th must override RAYON_NUM_THREADS for {argv:?}"
+            );
         }
+
+        // RAYON_NUM_THREADS precedence: explicit -th N / bare -th / -th 0 > RAYON_NUM_THREADS >= 1 > all_cores()
+        let no_th = Cli::try_parse_from(args(&["-b", "a.bam", "-G", "r.fa"])).unwrap();
+        assert_eq!(
+            no_th.to_config_with_rayon_env(Some("3")).unwrap().threads,
+            3
+        );
+        assert_eq!(
+            no_th.to_config_with_rayon_env(Some("1")).unwrap().threads,
+            1
+        );
+        for invalid_env in [None, Some(""), Some("0"), Some("bogus"), Some("-2")] {
+            assert_eq!(
+                no_th.to_config_with_rayon_env(invalid_env).unwrap().threads,
+                all_cores(),
+                "invalid RAYON_NUM_THREADS={invalid_env:?} must fall back to all_cores()"
+            );
+        }
+        let bare_th =
+            Cli::try_parse_from(normalize_args(&args(&["-b", "a.bam", "-G", "r.fa", "-th"])))
+                .unwrap();
+        assert_eq!(
+            bare_th.to_config_with_rayon_env(Some("2")).unwrap().threads,
+            all_cores()
+        );
+        let zero_th = Cli::try_parse_from(normalize_args(&args(&[
+            "-b", "a.bam", "-G", "r.fa", "-th", "0",
+        ])))
+        .unwrap();
+        assert_eq!(
+            zero_th.to_config_with_rayon_env(Some("6")).unwrap().threads,
+            1
+        );
     }
 
     #[test]
@@ -1454,6 +1665,7 @@ mod tests {
         assert!(!cfg.zero_based);
         assert!(cfg.zero_based_defined);
         assert_eq!(cfg.bed.as_deref(), Some("regions.bed"));
+        assert_eq!(cfg.trim_bases_after, 0);
 
         // -z 2 disables zero_based (CmdParser.java:75 `1 == getIntValue(cmd, "z", 1)`)
         let norm_z2 = normalize_args(&args(&["-b", "a.bam", "-G", "r.fa", "-z", "2", "r.bed"]));
@@ -1475,8 +1687,41 @@ mod tests {
         let cfg_th = Cli::try_parse_from(&norm_th).unwrap().to_config().unwrap();
         assert_eq!(cfg_th.threads, 2);
 
-        // -x -3 must fail (Commons-CLI treats -3 as flag)
+        // -x -3 and -T -3 / -trim -3 / --trim -3 must fail (Commons-CLI treats -3 as flag)
         assert!(Cli::try_parse_from(args(&["-b", "a.bam", "-G", "r.fa", "-x", "-3"])).is_err());
+        for bad_trim in [
+            &["-T", "-3"][..],
+            &["-trim", "-3"][..],
+            &["--trim", "-3"][..],
+        ] {
+            let mut full = vec!["-b", "a.bam", "-G", "r.fa"];
+            full.extend_from_slice(bad_trim);
+            let norm_bad = normalize_args(&args(&full));
+            assert!(
+                Cli::try_parse_from(&norm_bad).is_err(),
+                "{bad_trim:?} must fail because -3 is moveIndelsTo3"
+            );
+        }
+
+        // -T / -trim / --trim: first-wins, negative (-5), float truncation (2.9 -> 2), attached -T50
+        for (trim_argv, expected_trim) in [
+            (&["-T", "50", "-T", "20"][..], 50),
+            (&["-trim", "35", "--trim", "10"][..], 35),
+            (&["-trim=40"][..], 40),
+            (&["--trim", "45"][..], 45),
+            (&["--trim=48"][..], 48),
+            (&["-T", "-5"][..], -5),
+            (&["-T", "2.9"][..], 2),
+            (&["-T50"][..], 50),
+            (&["-pT=5"][..], 5),
+        ] {
+            let mut full = vec!["-b", "a.bam", "-G", "r.fa"];
+            full.extend_from_slice(trim_argv);
+            let norm_t = normalize_args(&args(&full));
+            check_unsupported(&norm_t).unwrap();
+            let cfg_t = Cli::try_parse_from(&norm_t).unwrap().to_config().unwrap();
+            assert_eq!(cfg_t.trim_bases_after, expected_trim, "argv={trim_argv:?}");
+        }
     }
 
     #[test]
@@ -1485,6 +1730,8 @@ mod tests {
         let default_cfg = default_cli.to_config().unwrap();
         assert_eq!(default_cfg.output_path, None);
         assert_eq!(default_cfg.stats_json_path, None);
+        assert!(!default_cfg.index_csi);
+        assert!(!default_cfg.omit_end_tag);
 
         let cli = Cli::try_parse_from(args(&[
             "-b",
@@ -1504,6 +1751,7 @@ mod tests {
         assert_eq!(cfg.output_path.as_deref(), Some("first.vcf.gz"));
         assert_eq!(cfg.stats_json_path.as_deref(), Some("first_stats.json"));
         assert!(!cfg.index_output);
+        assert!(!cfg.index_csi);
 
         let tbi_cli = Cli::try_parse_from(args(&[
             "-b",
@@ -1534,6 +1782,29 @@ mod tests {
         .unwrap();
         assert!(idx_cli.to_config().unwrap().index_output);
 
+        // --csi and --no-end / -E omit_end_tag combinations
+        let csi_no_end_cli = Cli::try_parse_from(args(&[
+            "-b",
+            "a.bam",
+            "-G",
+            "r.fa",
+            "--output",
+            "out.vcf.gz",
+            "--csi",
+            "--no-end",
+        ]))
+        .unwrap();
+        let csi_no_end_cfg = csi_no_end_cli.to_config().unwrap();
+        assert!(csi_no_end_cfg.index_csi);
+        assert!(!csi_no_end_cfg.index_output);
+        assert!(csi_no_end_cfg.omit_end_tag);
+
+        let col_end_cfg = Cli::try_parse_from(args(&["-b", "a.bam", "-G", "r.fa", "-E", "3"]))
+            .unwrap()
+            .to_config()
+            .unwrap();
+        assert!(col_end_cfg.omit_end_tag);
+
         let bad_compat_cli =
             Cli::try_parse_from(args(&["-b", "a.bam", "-G", "r.fa", "--compat", "modern"]))
                 .unwrap();
@@ -1548,11 +1819,9 @@ mod tests {
         for bad_argv in [
             &["-downsample", "0.5"][..],
             &["-downsample=0.5"][..],
-            &["-trim", "5"][..],
-            &["-VS", "STRICT"][..],
             &["-Z0.7"][..],
-            &["-T5"][..],
-            &["-nSAMPLE"][..],
+            &["-C"][..],
+            &["-uZ=0.5"][..],
         ] {
             let norm = normalize_args(&args(bad_argv));
             let err = check_unsupported(&norm).expect_err(&format!(
@@ -1563,6 +1832,70 @@ mod tests {
                 "expected Unsupported for {bad_argv:?}, got {err:?}"
             );
         }
+
+        // -n (sampleNameRegexp): first-wins, outer `/` stripping, resolve_sample_names wiring, invalid regex -> Parse
+        let n_cfg = Cli::try_parse_from(normalize_args(&args(&[
+            "-G",
+            "r.fa",
+            "-b",
+            "/dir/sample_42.bam",
+            "-n",
+            "/sample_(\\d+)/",
+            "-n",
+            "/ignored_(\\w+)/",
+        ])))
+        .unwrap()
+        .to_config()
+        .unwrap();
+        assert_eq!(n_cfg.sample_regexp.as_deref(), Some("sample_(\\d+)"));
+        assert_eq!(n_cfg.sample, "42");
+
+        let paired_vcf_n = Cli::try_parse_from(normalize_args(&args(&[
+            "-G",
+            "r.fa",
+            "-b",
+            "dir/s_T9.bam|dir/s_N8.bam",
+            "-n",
+            "s_([A-Z0-9]+)\\.bam",
+        ])))
+        .unwrap()
+        .to_config()
+        .unwrap();
+        assert_eq!(paired_vcf_n.sample, "T9|N8");
+
+        let paired_splice_r_n = Cli::try_parse_from(normalize_args(&args(&[
+            "-G",
+            "r.fa",
+            "-b",
+            "t_1.bam|n_2.bam",
+            "-R",
+            "chr1:1-100",
+            "-i",
+            "-N",
+            "EXP_T|EXP_N",
+            "-n",
+            "t_(\\d+)",
+        ])))
+        .unwrap()
+        .to_config()
+        .unwrap();
+        assert_eq!(paired_splice_r_n.sample, "1");
+
+        let bad_n = Cli::try_parse_from(normalize_args(&args(&[
+            "-G",
+            "r.fa",
+            "-b",
+            "a.bam",
+            "-n",
+            "([unclosed",
+        ])))
+        .unwrap()
+        .to_config()
+        .unwrap_err();
+        assert!(matches!(
+            bad_n,
+            vardictrust_core::types::VardictError::Parse(_)
+        ));
 
         for sample_val in ["-fisher", "-Tumor", "-Control", "-normal", "-trim"] {
             let raw = args(&["-G", "r.fa", "-b", "a.bam", "-N", sample_val]);
@@ -1671,6 +2004,8 @@ mod tests {
             (&["-DP", "ERR", "regions.bed"][..], Some("ERR"), None),
             (&["-a", "regions.bed"][..], None, Some("10:0.95")),
             (&["-ua", "regions.bed"][..], None, Some("10:0.95")),
+            (&["-ua", "30:0.5", "regions.bed"][..], None, Some("30:0.5")),
+            (&["-ua30:0.5", "regions.bed"][..], None, Some("30:0.5")),
             (&["-a", "30:0.5", "regions.bed"][..], None, Some("30:0.5")),
         ] {
             let mut full = vec!["-G", "r.fa", "-b", "a.bam"];
@@ -1685,6 +2020,82 @@ mod tests {
             assert_eq!(cfg.debug_print.as_deref(), exp_dp, "argv={opt_argv:?}");
             assert_eq!(cfg.amplicon.as_deref(), exp_amp, "argv={opt_argv:?}");
         }
+
+        // Safe boolean-prefix short-cluster splitter (-pz, -pz0, -uz 0, -uk, -pR)
+        for (cluster_argv, exp_pileup, exp_u, exp_zb, exp_realign) in [
+            (&["-pz", "regions.bed"][..], true, false, true, 1u8),
+            (&["-pz0", "regions.bed"][..], true, false, false, 1u8),
+            (&["-pz=0", "regions.bed"][..], true, false, false, 1u8),
+            (&["-uz", "0", "regions.bed"][..], false, true, false, 1u8),
+            (&["-uk", "regions.bed"][..], false, true, false, 1u8),
+            (&["-uk", "0", "regions.bed"][..], false, true, false, 0u8),
+            (&["-uk0", "regions.bed"][..], false, true, false, 0u8),
+        ] {
+            let mut full = vec!["-G", "r.fa", "-b", "a.bam"];
+            full.extend_from_slice(cluster_argv);
+            let norm = normalize_args(&args(&full));
+            check_unsupported(&norm).unwrap();
+            let cfg = Cli::try_parse_from(&norm)
+                .unwrap_or_else(|e| panic!("failed on {cluster_argv:?} (norm={norm:?}): {e}"))
+                .to_config()
+                .unwrap();
+            assert_eq!(cfg.pileup, exp_pileup, "argv={cluster_argv:?}");
+            assert_eq!(
+                cfg.unique_mode_alignment_enabled, exp_u,
+                "argv={cluster_argv:?}"
+            );
+            assert_eq!(cfg.zero_based, exp_zb, "argv={cluster_argv:?}");
+            assert_eq!(cfg.realign, exp_realign, "argv={cluster_argv:?}");
+            assert_eq!(
+                cfg.bed.as_deref(),
+                Some("regions.bed"),
+                "argv={cluster_argv:?}"
+            );
+        }
+
+        // -pR recognized by scan_has_region so trailing `-z 0` consumes `"0"` without BED
+        let pr_cfg = Cli::try_parse_from(normalize_args(&args(&[
+            "-G",
+            "r.fa",
+            "-b",
+            "a.bam",
+            "-pR",
+            "chr1:1-100",
+            "-z",
+            "0",
+        ])))
+        .unwrap()
+        .to_config()
+        .unwrap();
+        assert!(pr_cfg.pileup);
+        assert_eq!(pr_cfg.region.as_deref(), Some("chr1:1-100"));
+        assert!(!pr_cfg.zero_based);
+        assert!(pr_cfg.zero_based_defined);
+
+        // Mandatory-value short flags (-Npz, -bpz.bam, -F0x504, -dpz), option values (-N -pz),
+        // and `-- -pz` must NEVER be split by the boolean-prefix cluster splitter.
+        let non_split_cfg = Cli::try_parse_from(normalize_args(&args(&[
+            "-G", "r.fa", "-bpz.bam", "-Npz", "-F0x504", "-dpz", "--", "-pz",
+        ])))
+        .unwrap()
+        .to_config()
+        .unwrap();
+        assert_eq!(non_split_cfg.bam, "pz.bam");
+        assert_eq!(non_split_cfg.sample, "pz");
+        assert_eq!(non_split_cfg.flag_filter, 0x504);
+        assert_eq!(non_split_cfg.delimiter, "pz");
+        assert_eq!(non_split_cfg.bed.as_deref(), Some("-pz"));
+        assert!(!non_split_cfg.pileup);
+        assert!(!non_split_cfg.zero_based_defined);
+
+        let opt_val_pz = Cli::try_parse_from(normalize_args(&args(&[
+            "-G", "r.fa", "-b", "a.bam", "-N", "-pz",
+        ])))
+        .unwrap()
+        .to_config()
+        .unwrap();
+        assert_eq!(opt_val_pz.sample, "-pz");
+        assert!(!opt_val_pz.pileup);
 
         let num_norm = normalize_args(&args(&[
             "-G",
@@ -1720,6 +2131,10 @@ mod tests {
         assert!(
             help_text.contains("--index"),
             "--index must be a visible alias in --help: {help_text}"
+        );
+        assert!(
+            !help_text.contains("hg19/hg38/mm10"),
+            "-G help must not advertise unimplemented hg19/hg38/mm10 shortcuts: {help_text}"
         );
 
         for (k_argv, expected_realign) in [
