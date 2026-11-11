@@ -258,6 +258,18 @@ impl SeedMap {
         }
     }
 
+    const MAX_SEED_RESERVE: usize = 262_144;
+
+    #[inline]
+    fn estimate_seed_reserve<I: IntoIterator<Item = usize>>(non_n_counts: I) -> usize {
+        non_n_counts
+            .into_iter()
+            .fold(0usize, |acc, non_n| {
+                acc.saturating_add(non_n.saturating_mul(2))
+            })
+            .min(Self::MAX_SEED_RESERVE)
+    }
+
     #[inline]
     fn materialize(&self) -> &RawSeedMap {
         self.map.get_or_init(|| {
@@ -265,6 +277,14 @@ impl SeedMap {
                 return RawSeedMap::default();
             };
             let (mut map, mut chunks) = std::mem::take(&mut *guard);
+            let est = Self::estimate_seed_reserve(chunks.iter().map(|chunk| {
+                chunk
+                    .bases
+                    .iter()
+                    .filter(|&&b| b != b'N' && b != b'n')
+                    .count()
+            }));
+            map.reserve(est);
             for chunk in chunks.drain(..) {
                 Self::index_chunk(&mut map, &chunk);
             }
@@ -1206,5 +1226,122 @@ mod tests {
         assert_eq!(reference.get_base("chr1", 0), None);
         assert_eq!(reference.get_base("chr1", 61), None);
         assert_eq!(reference.get_base("chr2", 10), None);
+    }
+
+    #[test]
+    fn seed_map_materialize_bounded_reserve_and_parity() {
+        // 1. Overflow-safe reserve estimator caps at 262_144 even for usize::MAX inputs
+        assert_eq!(SeedMap::estimate_seed_reserve([0usize, 0]), 0);
+        assert_eq!(SeedMap::estimate_seed_reserve([500usize, 250]), 1_500);
+        assert_eq!(SeedMap::estimate_seed_reserve([200_000usize]), 262_144);
+        assert_eq!(
+            SeedMap::estimate_seed_reserve([usize::MAX, usize::MAX / 2 + 17]),
+            262_144
+        );
+
+        // 2. All-'N'/'n' stretches reserve 0 upfront (capacity stays tiny, <= 262_144)
+        //    while returning bit-for-bit identical 12-mer/17-mer positions.
+        {
+            let mut sm_n = SeedMap::new();
+            let n_len = 200_000usize;
+            let mixed_n: Vec<u8> = (0..n_len)
+                .map(|i| if i % 2 == 0 { b'N' } else { b'n' })
+                .collect();
+            sm_n.enqueue_chunk(PendingSeedChunk {
+                bases: std::sync::Arc::from(mixed_n.as_slice()),
+                sequence_start: 1,
+                sequence_end: n_len as u32,
+                chr_len: n_len as u32,
+                prev_bounds: Vec::new(),
+            });
+            let raw = sm_n.materialize();
+            assert!(
+                raw.capacity() <= 64,
+                "all-'N'/'n' stretch must not over-reserve capacity (<= 64 <= 262_144, got {})",
+                raw.capacity()
+            );
+
+            // End-to-end uppercase 'N' stretch via get_reference vs ReferenceLegacy
+            let dir = tempfile::tempdir().unwrap();
+            let fa_path = dir.path().join("all_n.fa");
+            let fai_path = dir.path().join("all_n.fa.fai");
+            let fa_seq = vec![b'N'; n_len];
+            let mut fa = File::create(&fa_path).unwrap();
+            fa.write_all(b">chr1\n").unwrap();
+            fa.write_all(&fa_seq).unwrap();
+            fa.write_all(b"\n").unwrap();
+            let mut fai = File::create(&fai_path).unwrap();
+            writeln!(fai, "chr1\t{n_len}\t6\t{n_len}\t{}", n_len + 1).unwrap();
+
+            let mut cfg = Config::default();
+            cfg.reference = fa_path.to_str().unwrap().to_string();
+            let mut chr_lengths = HashMap::new();
+            chr_lengths.insert("chr1".to_string(), n_len);
+            let bed = BedRegion {
+                chr: "chr1".to_string(),
+                start: Pos1(1),
+                end: Pos1(n_len as u32),
+                gene: "N".to_string(),
+                amplicon: None,
+            };
+            let mut new_ref = Reference::new();
+            let mut leg_ref = ReferenceLegacy::default();
+            get_reference(&bed, 0, &chr_lengths, &cfg, &mut new_ref).unwrap();
+            get_reference_legacy(&bed, 0, &chr_lengths, &cfg, &mut leg_ref).unwrap();
+
+            let cap = new_ref.seed.materialize().capacity();
+            assert!(
+                cap <= 16,
+                "all-'N' FASTA capacity must remain tiny (<= 16 <= 262_144, got {cap})"
+            );
+            assert_eq!(new_ref.seed.len(), leg_ref.seed.len());
+            for (k, leg_pos) in &leg_ref.seed {
+                assert_eq!(new_ref.seed.get(k.as_slice()), Some(leg_pos.as_slice()));
+            }
+        }
+
+        // 3. Non-'N' stretches pre-reserve 2 * non_n up to the 262_144 cap:
+        //    - 1_000 'A's (only 2 distinct keys) must pre-reserve >= 2_000 and <= 262_144.
+        //    - Two 200_000 'A' chunks (2 * 400_000 = 800_000 uncapped) must cap reserve at 262_144
+        //      (hashbrown bucket table <= 524_288 -> capacity <= 458_752, vs 917_504 uncapped).
+        {
+            let mut sm_small = SeedMap::new();
+            sm_small.enqueue_chunk(PendingSeedChunk {
+                bases: std::sync::Arc::from(vec![b'A'; 1_000]),
+                sequence_start: 1,
+                sequence_end: 1_000,
+                chr_len: 1_000,
+                prev_bounds: Vec::new(),
+            });
+            let cap_small = sm_small.materialize().capacity();
+            assert!(
+                (2_000..=262_144).contains(&cap_small),
+                "1000 non-'N' bases must pre-reserve [2000, 262144], got {cap_small}"
+            );
+
+            let mut sm_capped = SeedMap::new();
+            sm_capped.enqueue_chunk(PendingSeedChunk {
+                bases: std::sync::Arc::from(vec![b'A'; 200_000]),
+                sequence_start: 1,
+                sequence_end: 200_000,
+                chr_len: 400_000,
+                prev_bounds: Vec::new(),
+            });
+            sm_capped.enqueue_chunk(PendingSeedChunk {
+                bases: std::sync::Arc::from(vec![b'C'; 200_000]),
+                sequence_start: 200_001,
+                sequence_end: 400_000,
+                chr_len: 400_000,
+                prev_bounds: vec![(1, 200_000 - 17)],
+            });
+            let mut baseline_262k = RawSeedMap::default();
+            baseline_262k.reserve(262_144);
+            let cap_capped = sm_capped.materialize().capacity();
+            assert_eq!(
+                cap_capped,
+                baseline_262k.capacity(),
+                "reserve on >262_144 estimated k-mers must be capped at reserve(262_144)"
+            );
+        }
     }
 }
