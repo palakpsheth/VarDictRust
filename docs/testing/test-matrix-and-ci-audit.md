@@ -217,7 +217,7 @@ The core variant calling engine enforces `#![forbid(unsafe_code)]` and zero unha
 ### 3.2 `crates/vardictrust` (23 Unit Tests)
 
 Located in `crates/vardictrust/src/cli.rs` (22 tests) and `crates/vardictrust/src/main.rs` (1 test, `malloc_conf_target_split_and_nul_termination`):
-- Verifies CLI argument parsing via `clap`, including Commons-CLI single-dash long-flag normalization (`-adaptor`, `-crispr`, `-fisher`, `-deldupvar`, `-nosv`, `-splice`, `-pileup`, etc.).
+- Verifies CLI argument parsing via `clap`, including Commons-CLI single-dash long-flag normalization (`-adaptor`, `-crispr`, `-fisher`, `-deldupvar`, `-nosv`, `-splice`, `-chimeric`, `-dedup`, `-amplicon`, etc.).
 - Thread count resolution: verifies explicit `-th 4`, bare `-th` (all cores), default absent `-th` (all cores), and `-th 0` normalization to 1 core.
 - Verifies header flag `-h` prints table headers (and does not trigger help), while `-?` / `--help` print usage help.
 - Verifies `--output` / `--tbi` (`--index`) / `--stats-json` / `--parity` / `--compat vardictjava-1.8.3` validation, accepted upstream compatibility flags (`-v`, `--default-printer`), multi-sample BAM header extraction (`-b "b1|b2"`), and value-aware `UNSUPPORTED_FLAGS` / mode rejection (`--modern`, `--fix`, `-downsample`, `--trim`, `--VS`, etc., `AGENTS.md §12`).
@@ -235,10 +235,10 @@ Located in `crates/vardictrust/tests/`:
    - `verbose_flag_y_emits_region_debug_to_stderr`: verifies that `-y` region debug traces emit cleanly to `stderr`.
    - `jemalloc_startup_emits_no_stderr_warnings`: verifies that `_rjem_malloc_conf` startup emits zero allocator warnings on `stderr` and rejects corrupt/truncated BGZF BAM streams with an actionable `UnexpectedEof` error.
    - `upstream_toml_manifest_present_and_pinned`: verifies `UPSTREAM.toml` pins `VarDictJava v1.8.3` (`0886261`), `VarDict` (`009e017`), and `vardictcpp 3` (`hc52dbad_0`).
-   - `output_plain_and_bgzf_match_stdout_and_stats_json_emits_telemetry`: verifies `-o` plain/BGZF `.vcf.gz` output parity with `stdout` and `--stats-json` telemetry emission.
+   - `output_plain_and_bgzf_match_stdout_and_stats_json_emits_telemetry`: verifies `--output` plain/BGZF `.vcf.gz` output parity with `stdout` and `--stats-json` telemetry emission.
    - `output_bgzf_tbi_and_parity_compat_flags`: verifies `--tbi` Tabix index creation alongside `--parity` / `--compat vardictjava-1.8.3` acceptance and `--modern` rejection.
    - `broken_pipe_stdout_and_stderr_exit_cleanly_and_preserve_stats_json`: verifies clean exit `0` on `SIGPIPE` / `BrokenPipe` (`stdout` and `-y` `stderr`) while still flushing `--stats-json`.
-   - `output_and_stats_json_reject_input_collisions_and_leave_no_empty_residue`: verifies `-o`, `--tbi`, and `--stats-json` reject paths colliding with inputs or each other and leave zero empty output/BGZF residue on failure.
+   - `output_and_stats_json_reject_input_collisions_and_leave_no_empty_residue`: verifies `--output`, `--tbi`, and `--stats-json` reject paths colliding with inputs or each other and leave zero empty output/BGZF residue on failure.
    - `bgzf_tbi_somatic_amplicon_and_sv_end_to_end`: verifies end-to-end `.vcf.gz` + `.tbi` generation and Tabix region queries across somatic, amplicon, and `<DEL>`/`<INV>`/`<DUP>` structural variants (`END=` span indexing).
    - `hostile_missing_qual_huge_deletion_and_i32_min_tlen_do_not_panic_or_oom`: verifies hostile records (`*` missing QUAL, `100000D` huge deletions, `i32::MIN` `TLEN`) never panic or OOM.
    - `commons_cli_single_dash_flags_and_zero_bed_col_behavior`: verifies Commons-CLI single-dash long flags (`-fisher`, `-nosv`, `-adaptor`) and 0-valued `-c/-S/-E/-s/-e` BED column rejection.
