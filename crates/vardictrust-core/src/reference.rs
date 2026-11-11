@@ -117,25 +117,40 @@ pub struct LoadedRegion {
     pub sequence_end: u32,
 }
 
-/// Inline k-mer key up to 17 bytes (`SEED_1`), avoiding per-k-mer heap allocations.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-struct SeedKey {
-    len: u8,
-    bytes: [u8; 17], // bytes[len as usize..] ALWAYS zero-filled
-}
+const MAX_SEED_BYTES: usize = 17;
+
+/// Word-packed k-mer key up to 17 bytes (`SEED_1`), storing `0..=17` payload bytes
+/// in bytes `0..17` and the explicit length discriminator in byte `23` for 3-word
+/// `[u64; 3]` comparison and `FxHasher` hashing without heap allocation.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SeedKey([u64; 3]);
 
 impl SeedKey {
     #[inline]
-    fn make_key(key: &[u8]) -> Option<Self> {
-        if key.len() > 17 {
+    fn from_slice(key: &[u8]) -> Option<Self> {
+        if key.len() > MAX_SEED_BYTES {
             return None;
         }
-        let mut bytes = [0u8; 17];
-        bytes.get_mut(..key.len())?.copy_from_slice(key);
-        Some(Self {
-            len: key.len() as u8,
-            bytes,
-        })
+        let mut buf = [0u8; 24];
+        buf.get_mut(..key.len())?.copy_from_slice(key);
+        let [b0, b1, b2, b3, b4, b5, b6, b7, b8, b9, b10, b11, b12, b13, b14, b15, b16, b17, b18, b19, b20, b21, b22, _b23] =
+            buf;
+        Some(Self([
+            u64::from_ne_bytes([b0, b1, b2, b3, b4, b5, b6, b7]),
+            u64::from_ne_bytes([b8, b9, b10, b11, b12, b13, b14, b15]),
+            u64::from_ne_bytes([b16, b17, b18, b19, b20, b21, b22, key.len() as u8]),
+        ]))
+    }
+}
+
+impl std::hash::Hash for SeedKey {
+    #[inline]
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        let [w0, w1, w2] = self.0;
+        state.write_u64(w0);
+        state.write_u64(w1);
+        state.write_u64(w2);
     }
 }
 
@@ -196,8 +211,8 @@ impl SeedMap {
     }
 
     fn insert_into_raw(map: &mut RawSeedMap, key: &[u8], pos: u32) {
-        let Some(sk) = SeedKey::make_key(key) else {
-            debug_assert!(key.len() <= 17, "seed key exceeds 17 bytes");
+        let Some(sk) = SeedKey::from_slice(key) else {
+            debug_assert!(key.len() <= MAX_SEED_BYTES, "seed key exceeds 17 bytes");
             return;
         };
         match map.entry(sk) {
@@ -294,7 +309,7 @@ impl SeedMap {
 
     #[inline]
     pub fn get(&self, key: &[u8]) -> Option<&[u32]> {
-        let sk = SeedKey::make_key(key)?;
+        let sk = SeedKey::from_slice(key)?;
         match self.materialize().get(&sk)? {
             SeedPositions::One(p) => Some(std::slice::from_ref(p)),
             SeedPositions::Many(v) => Some(v.as_slice()),
@@ -331,7 +346,7 @@ impl SeedMap {
 
     #[cfg(test)]
     pub fn insert_for_test(&mut self, key: &[u8], positions: Vec<u32>) {
-        let sk = SeedKey::make_key(key).expect("test seed key exceeds 17 bytes");
+        let sk = SeedKey::from_slice(key).expect("test seed key exceeds 17 bytes");
         let staged = self.pending.get_mut();
         if let Some(existing) = self.map.take() {
             staged.0 = existing;
@@ -359,6 +374,9 @@ pub struct Reference {
     pub reference_sequences: HashMap<String, Vec<u8>>,
     /// Sequences matching loaded_regions by index: region_sequences[i] corresponds to loaded_regions[i].
     pub region_sequences: Vec<Vec<u8>>,
+    /// Shared FASTA buffer + trimmed site length (`(shared_bases, site_len)`) matching
+    /// `loaded_regions` by index, sharing the same `Arc<[u8]>` queued in `seed`.
+    shared_region_spans: Vec<(std::sync::Arc<[u8]>, usize)>,
     /// Maps k-mer bytes to 1-based positions.
     pub seed: SeedMap,
 }
@@ -369,19 +387,43 @@ impl Reference {
             loaded_regions: Vec::new(),
             reference_sequences: HashMap::new(),
             region_sequences: Vec::new(),
+            shared_region_spans: Vec::new(),
             seed: SeedMap::new(),
         }
     }
 
     #[inline]
     fn seq_for_idx<'a>(&'a self, idx: usize, chr: &str) -> Option<&'a [u8]> {
-        if let Some(bases) = self.region_sequences.get(idx) {
-            Some(bases.as_slice())
-        } else if idx == 0 {
-            self.reference_sequences.get(chr).map(Vec::as_slice)
-        } else {
-            None
+        self.shared_region_spans
+            .get(idx)
+            .and_then(|(arc, len)| arc.get(..*len))
+            .or_else(|| self.region_sequences.get(idx).map(Vec::as_slice))
+            .or_else(|| {
+                if idx == 0 {
+                    self.reference_sequences.get(chr).map(Vec::as_slice)
+                } else {
+                    None
+                }
+            })
+    }
+
+    /// Returns the stored sequence slice and 1-based `sequence_start` for the first
+    /// `LoadedRegion` matching `chr`.
+    #[inline]
+    pub fn primary_region_slice(&self, chr: &str) -> Option<(&[u8], u32)> {
+        let (idx, lr) = self
+            .loaded_regions
+            .iter()
+            .enumerate()
+            .find(|(_, r)| r.chr == chr)?;
+        if lr.sequence_end < lr.sequence_start {
+            return None;
         }
+        let slice = self.seq_for_idx(idx, chr)?;
+        let max_len = (lr.sequence_end.saturating_sub(lr.sequence_start) as usize)
+            .saturating_add(1)
+            .min(slice.len());
+        Some((slice.get(..max_len)?, lr.sequence_start))
     }
 
     /// Safely gets the base at a 1-based chromosome position.
@@ -542,20 +584,34 @@ pub fn get_reference_with_chr_len(
     const SEED1_LEN: usize = 17;
     // Ports ReferenceResource.java:109 `if (ref.referenceSequences.containsKey(i + sequenceStart))`:
     // previously loaded regions only populated `ref.referenceSequences` up to their `siteEnd`
-    // (their stored length in `region_sequences`), not the trailing 17-bp k-mer lookahead.
+    // (their stored length via `seq_for_idx`), not the trailing 17-bp k-mer lookahead.
     let prev_bounds: Vec<(u32, u32)> = reference
         .loaded_regions
         .iter()
         .enumerate()
         .filter(|(_, lr)| lr.chr == region.chr)
         .filter_map(|(idx, lr)| {
-            let stored_len = reference.region_sequences.get(idx).map_or(0, Vec::len) as u32;
+            let stored_len = reference.seq_for_idx(idx, &lr.chr).map_or(0, <[u8]>::len) as u32;
             stored_len
                 .checked_sub(1)
                 .map(|last| (lr.sequence_start, lr.sequence_start.saturating_add(last)))
         })
         .collect();
 
+    // Ports ReferenceResource.java:106-112:
+    // `int siteEnd = len == sequenceEnd ? exon.length() : exon.length() - Configuration.SEED_1;`
+    // Only `[0..siteEnd)` is exposed as the region sequence, while the full untrimmed
+    // `shared_bases` (including the trailing `SEED_1` lookahead) is shared via `Arc<[u8]>`
+    // with `PendingSeedChunk` so 17-mer keys at `i < site_end` can slice `bases[i..i + 17]`
+    // without allocating duplicate `Vec<u8>` buffers.
+    let site_end = if len == sequence_end {
+        bases.len()
+    } else {
+        bases.len().saturating_sub(SEED1_LEN)
+    };
+    let shared_bases: std::sync::Arc<[u8]> = bases.into();
+
+    let prev_loaded_len = reference.loaded_regions.len();
     let loaded_region = LoadedRegion {
         chr: region.chr.clone(),
         sequence_start,
@@ -564,34 +620,25 @@ pub fn get_reference_with_chr_len(
     reference.loaded_regions.push(loaded_region);
 
     // Defer k-mer seed indexing (`ReferenceResource.java:106-125`) until
-    // `reference.seed` is actually queried (`EBO-2`). The full untrimmed `bases`
-    // (including the trailing `SEED_1` lookahead) is passed to `PendingSeedChunk`
-    // so 17-mer keys at `i < site_end` can slice `bases[i..i + 17]`.
+    // `reference.seed` is actually queried (`EBO-2`).
     reference.seed.enqueue_chunk(PendingSeedChunk {
-        bases: std::sync::Arc::from(bases.as_slice()),
+        bases: std::sync::Arc::clone(&shared_bases),
         sequence_start,
         sequence_end,
         chr_len: len,
         prev_bounds,
     });
 
-    // Ports ReferenceResource.java:106-112:
-    // `int siteEnd = len == sequenceEnd ? exon.length() : exon.length() - Configuration.SEED_1;`
-    // Only `[0..siteEnd)` is inserted into `ref.referenceSequences`.
-    let site_end = if len == sequence_end {
-        bases.len()
+    if reference.shared_region_spans.len() == prev_loaded_len {
+        reference.shared_region_spans.push((shared_bases, site_end));
     } else {
-        bases.len().saturating_sub(SEED1_LEN)
-    };
-    bases.truncate(site_end);
-
-    // Keep reference_sequences populated for primary chromosome region
-    reference
-        .reference_sequences
-        .entry(region.chr.clone())
-        .or_insert_with(|| bases.clone());
-
-    reference.region_sequences.push(bases);
+        while reference.region_sequences.len() < prev_loaded_len {
+            reference.region_sequences.push(Vec::new());
+        }
+        reference
+            .region_sequences
+            .push(shared_bases.get(..site_end).unwrap_or(&[]).to_vec());
+    }
 
     Ok(())
 }
@@ -728,7 +775,30 @@ mod tests {
 
     #[test]
     fn seed_map_and_get_reference_match_legacy() {
-        // 1. Direct SeedKey / SeedMap edge cases: length discriminator & >17 bounds
+        // 1. Direct SeedKey / SeedMap edge cases: word-packed [u64; 3], length discriminator & >17 bounds
+        assert_eq!(std::mem::size_of::<SeedKey>(), 24);
+        for len in 0..=MAX_SEED_BYTES {
+            let k = vec![b'G'; len];
+            assert!(
+                SeedKey::from_slice(&k).is_some(),
+                "SeedKey::from_slice must accept len={len}"
+            );
+        }
+        assert_eq!(SeedKey::from_slice(&[b'A'; 18]), None);
+        assert_eq!(SeedKey::from_slice(&[b'A'; 64]), None);
+        {
+            use std::hash::{BuildHasher, Hasher};
+            let sk_acgt = SeedKey::from_slice(b"ACGT").unwrap();
+            let sk_acgt_nul = SeedKey::from_slice(b"ACGT\0").unwrap();
+            assert_ne!(sk_acgt, sk_acgt_nul);
+            let bh = rustc_hash::FxBuildHasher;
+            let mut h1 = bh.build_hasher();
+            std::hash::Hash::hash(&sk_acgt, &mut h1);
+            let mut h2 = bh.build_hasher();
+            std::hash::Hash::hash(&sk_acgt_nul, &mut h2);
+            assert_ne!(h1.finish(), h2.finish());
+        }
+
         let mut sm = SeedMap::new();
         assert!(sm.is_empty());
         sm.push_pos(b"AC", 42);
@@ -740,6 +810,12 @@ mod tests {
         sm.push_pos(b"AC\0", 99);
         assert_eq!(sm.get(b"AC"), Some(&[42u32][..]));
         assert_eq!(sm.get(b"AC\0"), Some(&[99u32][..]));
+        sm.push_pos(b"ACGT", 7);
+        sm.push_pos(b"ACGT\0", 8);
+        assert_eq!(sm.get(b"ACGT"), Some(&[7u32][..]));
+        assert_eq!(sm.get(b"ACGT\0"), Some(&[8u32][..]));
+        sm.push_pos(&[b'T'; 17], 555);
+        assert_eq!(sm.get(&[b'T'; 17]), Some(&[555u32][..]));
         assert_eq!(sm.get(b""), None);
         assert_eq!(sm.get(&[b'A'; 11]), None);
         assert_eq!(sm.get(&[b'A'; 13]), None);
@@ -835,8 +911,39 @@ mod tests {
                 new_ref.loaded_regions[0].sequence_start, 25,
                 "get_reference must extend by config.extension (50) + extension (25) => 100 - 75 = 25, ignoring config.extension_nuc (7)"
             );
-            assert_eq!(new_ref.reference_sequences, leg_ref.reference_sequences);
-            assert_eq!(new_ref.region_sequences, leg_ref.region_sequences);
+            assert!(
+                new_ref.reference_sequences.is_empty(),
+                "get_reference must not duplicate bases into reference_sequences"
+            );
+            assert!(
+                new_ref.region_sequences.is_empty(),
+                "get_reference must not duplicate bases into region_sequences"
+            );
+            assert_eq!(
+                new_ref.shared_region_spans.len(),
+                leg_ref.region_sequences.len()
+            );
+            for (idx, lr) in new_ref.loaded_regions.iter().enumerate() {
+                assert_eq!(
+                    new_ref.seq_for_idx(idx, &lr.chr),
+                    Some(leg_ref.region_sequences[idx].as_slice())
+                );
+                for pos in lr.sequence_start.saturating_sub(1)..=lr.sequence_end.saturating_add(1) {
+                    assert_eq!(
+                        new_ref.get_base(&lr.chr, pos),
+                        leg_ref.get_base(&lr.chr, pos),
+                        "get_base mismatch on {} at pos={pos}",
+                        lr.chr
+                    );
+                }
+            }
+            let expected_primary = leg_ref
+                .loaded_regions
+                .iter()
+                .enumerate()
+                .find(|(_, r)| r.chr == chr)
+                .map(|(i, r)| (leg_ref.region_sequences[i].as_slice(), r.sequence_start));
+            assert_eq!(new_ref.primary_region_slice(chr), expected_primary);
             assert_eq!(new_ref.seed.len(), leg_ref.seed.len());
 
             for (k, leg_positions) in &leg_ref.seed {
@@ -928,6 +1035,29 @@ mod tests {
         assert_eq!(reference.loaded_regions.len(), 1);
         assert_eq!(reference.loaded_regions[0].sequence_start, 1);
         assert_eq!(reference.loaded_regions[0].sequence_end, 30);
+        assert!(reference.reference_sequences.is_empty());
+        assert!(reference.region_sequences.is_empty());
+        assert_eq!(reference.shared_region_spans.len(), 1);
+        assert_eq!(reference.shared_region_spans[0].1, 13);
+        {
+            let pending_guard = reference.seed.pending.borrow();
+            assert_eq!(pending_guard.1.len(), 1);
+            assert!(
+                std::ptr::eq(
+                    std::sync::Arc::as_ptr(&reference.shared_region_spans[0].0),
+                    std::sync::Arc::as_ptr(&pending_guard.1[0].bases),
+                ),
+                "Reference.shared_region_spans and PendingSeedChunk must share a single Arc<[u8]> allocation"
+            );
+        }
+        let (prim_slice, prim_start) = reference.primary_region_slice("chr1").unwrap();
+        assert_eq!(prim_start, 1);
+        assert_eq!(prim_slice, b"ACGTACGTACGTA");
+        assert!(std::ptr::eq(
+            prim_slice.as_ptr(),
+            std::sync::Arc::as_ptr(&reference.shared_region_spans[0].0).cast::<u8>(),
+        ));
+        assert_eq!(reference.primary_region_slice("chr_missing"), None);
 
         // Verify base lookup matches ReferenceResource.java:106-112 (siteEnd = 13)
         assert_eq!(reference.get_base("chr1", 1), Some(b'A'));
@@ -1128,7 +1258,10 @@ mod tests {
         };
         let mut ref_tiny = Reference::new();
         get_reference(&r_tiny, 0, &chr_lengths, &short_cfg, &mut ref_tiny).unwrap();
-        assert_eq!(ref_tiny.region_sequences[0].len(), 0);
+        assert!(ref_tiny.region_sequences.is_empty());
+        assert!(ref_tiny.reference_sequences.is_empty());
+        assert_eq!(ref_tiny.shared_region_spans[0].1, 0);
+        assert_eq!(ref_tiny.primary_region_slice("chr1"), Some((&[][..], 1)));
         get_reference(&r2, 0, &chr_lengths, &short_cfg, &mut ref_tiny).unwrap();
 
         let mut leg_tiny = ReferenceLegacy::default();
@@ -1222,10 +1355,16 @@ mod tests {
         assert_eq!(reference.get_base("chr1", 50), Some(b'G'));
         assert_eq!(reference.get_base("chr1", 60), Some(b'G'));
 
-        // 3. Out-of-bounds or different chromosome returns None.
+        // 3. Out-of-bounds or different chromosome returns None, and synthetic region_sequences
+        //    fallback works through primary_region_slice.
         assert_eq!(reference.get_base("chr1", 0), None);
         assert_eq!(reference.get_base("chr1", 61), None);
         assert_eq!(reference.get_base("chr2", 10), None);
+        assert_eq!(
+            reference.primary_region_slice("chr1"),
+            Some((vec![b'A'; 33].as_slice(), 1))
+        );
+        assert_eq!(reference.primary_region_slice("chr2"), None);
     }
 
     #[test]

@@ -57,6 +57,93 @@ pub(crate) fn normalize_cram_base(b: u8) -> Option<u8> {
     Some(norm)
 }
 
+const BAM_SEQ_PAIR_LUT: [[u8; 2]; 256] = build_bam_seq_pair_lut();
+
+const fn decode_bam_nibble(nibble: u8) -> u8 {
+    match nibble & 0x0f {
+        0 => b'=',
+        1 => b'A',
+        2 => b'C',
+        3 => b'M',
+        4 => b'G',
+        5 => b'R',
+        6 => b'S',
+        7 => b'V',
+        8 => b'T',
+        9 => b'W',
+        10 => b'Y',
+        11 => b'H',
+        12 => b'K',
+        13 => b'D',
+        14 => b'B',
+        _ => b'N',
+    }
+}
+
+const fn build_bam_seq_pair_lut() -> [[u8; 2]; 256] {
+    let mut table = [[b'N'; 2]; 256];
+    let mut rem: &mut [[u8; 2]] = &mut table;
+    let mut b: usize = 0;
+    while let [slot, rest @ ..] = rem {
+        let byte = b as u8;
+        *slot = [decode_bam_nibble(byte >> 4), decode_bam_nibble(byte & 0x0f)];
+        rem = rest;
+        b += 1;
+    }
+    table
+}
+
+#[inline]
+fn decode_bam_raw_seq_into(raw_seq: &[u8], n: usize, dst: &mut Vec<u8>) {
+    dst.clear();
+    dst.reserve(n);
+    let full_pairs = n / 2;
+    if let Some(pair_bytes) = raw_seq.get(..full_pairs) {
+        for &byte in pair_bytes {
+            let pair = BAM_SEQ_PAIR_LUT.get(usize::from(byte)).unwrap_or(b"NN");
+            dst.extend_from_slice(pair);
+        }
+        if (n & 1) == 1 {
+            if let Some(&last_byte) = raw_seq.get(full_pairs) {
+                let &[hi, _] = BAM_SEQ_PAIR_LUT
+                    .get(usize::from(last_byte))
+                    .unwrap_or(b"NN");
+                dst.push(hi);
+            }
+        }
+    } else {
+        for &byte in raw_seq {
+            let &[hi, lo] = BAM_SEQ_PAIR_LUT.get(usize::from(byte)).unwrap_or(b"NN");
+            if dst.len() < n {
+                dst.push(hi);
+            }
+            if dst.len() < n {
+                dst.push(lo);
+            }
+        }
+    }
+}
+
+#[inline]
+fn decode_bam_sequence_into(seq: noodles::bam::record::Sequence<'_>, dst: &mut Vec<u8>) {
+    decode_bam_raw_seq_into(seq.as_ref(), seq.len(), dst);
+}
+
+#[inline]
+fn decode_bam_quality_scores_into(
+    quals: noodles::bam::record::QualityScores<'_>,
+    dst: &mut Vec<u8>,
+) {
+    dst.clear();
+    let raw_qual = quals.as_ref();
+    if !raw_qual.is_empty() {
+        dst.extend_from_slice(raw_qual);
+        for q in dst.iter_mut() {
+            *q = q.saturating_add(33);
+        }
+    }
+}
+
 #[inline]
 fn set_opt_contig_name(dst: &mut Option<String>, expected: Option<&str>) {
     match expected {
@@ -332,20 +419,8 @@ impl SamRecord {
             self.cigar.push((op.len() as u32, op.kind()));
         }
 
-        let seq = record.sequence();
-        self.sequence.clear();
-        self.sequence.reserve(seq.len());
-        for b in seq.iter() {
-            self.sequence.push(b);
-        }
-
-        let quals = record.quality_scores();
-        let raw_quals: &[u8] = quals.as_ref();
-        self.quality_scores.clear();
-        self.quality_scores.reserve(raw_quals.len());
-        for &score in raw_quals {
-            self.quality_scores.push(score.saturating_add(33));
-        }
+        decode_bam_sequence_into(record.sequence(), &mut self.sequence);
+        decode_bam_quality_scores_into(record.quality_scores(), &mut self.quality_scores);
 
         let mate_ref_name = record
             .mate_reference_sequence_id()
@@ -407,20 +482,8 @@ impl SamRecord {
 
         std::mem::swap(&mut self.cigar, cigar_scratch);
 
-        let seq = record.sequence();
-        self.sequence.clear();
-        self.sequence.reserve(seq.len());
-        for b in seq.iter() {
-            self.sequence.push(b);
-        }
-
-        let quals = record.quality_scores();
-        let raw_quals: &[u8] = quals.as_ref();
-        self.quality_scores.clear();
-        self.quality_scores.reserve(raw_quals.len());
-        for &score in raw_quals {
-            self.quality_scores.push(score.saturating_add(33));
-        }
+        decode_bam_sequence_into(record.sequence(), &mut self.sequence);
+        decode_bam_quality_scores_into(record.quality_scores(), &mut self.quality_scores);
 
         let mate_contig = record
             .mate_reference_sequence_id()
@@ -7288,6 +7351,206 @@ mod tests {
             assert_eq!(&shared, &expected_chr1[3]);
             assert!(!feed1.next_into(&mut shared).unwrap());
             assert_eq!(shared.cigar, expected_chr1[3].cigar);
+        }
+
+        // (d) BAM_SEQ_PAIR_LUT exhaustive 256-entry verification, even/odd IUPAC nibble decode,
+        //     empty QUAL = *, saturating Phred qualities, and truncated raw sequence safety.
+        {
+            const EXPECTED_NIBBLES: &[u8; 16] = b"=ACMGRSVTWYHKDBN";
+            for byte in 0u16..=255 {
+                let b = byte as u8;
+                let expected_pair = [
+                    EXPECTED_NIBBLES[(b >> 4) as usize],
+                    EXPECTED_NIBBLES[(b & 0x0f) as usize],
+                ];
+                assert_eq!(BAM_SEQ_PAIR_LUT[usize::from(b)], expected_pair);
+            }
+
+            // Truncated raw sequence slices never panic:
+            let mut trunc_buf = Vec::new();
+            decode_bam_raw_seq_into(&[0x12], 4, &mut trunc_buf);
+            assert_eq!(trunc_buf, b"AC");
+            decode_bam_raw_seq_into(&[0x12], 3, &mut trunc_buf);
+            assert_eq!(trunc_buf, b"AC");
+            decode_bam_raw_seq_into(&[], 5, &mut trunc_buf);
+            assert!(trunc_buf.is_empty());
+
+            let iupac_bam_path = dir.path().join("iupac_qual_feed.bam");
+            let mk_custom_rec = |name: &str,
+                                 start: usize,
+                                 seq_bytes: &[u8],
+                                 quals_opt: Option<&[u8]>|
+             -> RecordBuf {
+                let cigar: Cigar = if seq_bytes.is_empty() {
+                    Cigar::default()
+                } else {
+                    [Op::new(Kind::Match, seq_bytes.len())]
+                        .into_iter()
+                        .collect()
+                };
+                let mut b = RecordBuf::builder()
+                    .set_name(name)
+                    .set_flags(Flags::empty())
+                    .set_reference_sequence_id(0)
+                    .set_alignment_start(Position::try_from(start).unwrap())
+                    .set_mapping_quality(MappingQuality::try_from(60u8).unwrap())
+                    .set_cigar(cigar)
+                    .set_sequence(seq_bytes.to_vec().into());
+                if let Some(q) = quals_opt {
+                    b = b.set_quality_scores(q.to_vec().into());
+                }
+                b.build()
+            };
+
+            let mut custom_recs = vec![
+                // Even 16-base sequence covering all 16 BAM IUPAC nibbles + valid [0..=93] qualities
+                mk_custom_rec(
+                    "even_all16",
+                    100,
+                    b"=ACMGRSVTWYHKDBN",
+                    Some(&[0, 1, 10, 20, 30, 33, 40, 50, 60, 70, 80, 85, 90, 91, 92, 93]),
+                ),
+                // Odd 17-base sequence covering all 16 BAM IUPAC nibbles + trailing '=' AND empty QUAL = *
+                mk_custom_rec("odd17_qual_star", 120, b"=ACMGRSVTWYHKDBN=", None),
+                // Odd 15-base sequence + Phred qualities
+                mk_custom_rec(
+                    "odd15_qual",
+                    140,
+                    b"=ACMGRSVTWYHKDB",
+                    Some(&[93, 92, 91, 90, 60, 45, 35, 0, 1, 32, 33, 40, 50, 75, 93]),
+                ),
+            ];
+            // Also test 1-base odd singleton reads for each of the 16 IUPAC nibbles (trailing high nibble path)
+            for (idx, &nib_ch) in EXPECTED_NIBBLES.iter().enumerate() {
+                custom_recs.push(mk_custom_rec(
+                    &format!("odd1_nib_{idx}"),
+                    200 + idx * 2,
+                    &[nib_ch],
+                    if idx % 2 == 0 { None } else { Some(&[93u8]) },
+                ));
+            }
+
+            {
+                let bgzf =
+                    noodles::bgzf::io::Writer::new(std::fs::File::create(&iupac_bam_path).unwrap());
+                let mut w = noodles::bam::io::Writer::from(bgzf);
+                w.write_alignment_header(&header).unwrap();
+                let mut indexer = Indexer::<LinearIndex>::new(14, 5).unwrap();
+                for rec in &custom_recs {
+                    let s_vp = w.get_ref().virtual_position();
+                    w.write_alignment_record(&header, rec).unwrap();
+                    let e_vp = w.get_ref().virtual_position();
+                    let ref_id = rec.reference_sequence_id().unwrap();
+                    let s = rec.alignment_start().unwrap();
+                    let span = rec.cigar().alignment_span().max(1);
+                    let e = Position::new(s.get() + span - 1).unwrap();
+                    indexer
+                        .add_record(Some((ref_id, s, e, true)), Chunk::new(s_vp, e_vp))
+                        .unwrap();
+                }
+                w.try_finish().unwrap();
+                bai::io::Writer::new(
+                    std::fs::File::create(iupac_bam_path.with_extension("bam.bai")).unwrap(),
+                )
+                .write_index(&indexer.build(3))
+                .unwrap();
+            }
+
+            let expected_custom =
+                query_region(&iupac_bam_path, "chr1", Pos0(90), Pos0(300), &config).unwrap();
+            assert_eq!(expected_custom.len(), custom_recs.len());
+
+            let mut custom_feed =
+                query_region_iter(&iupac_bam_path, "chr1", Pos0(90), Pos0(300), &config).unwrap();
+            let mut reused_rec = SamRecord::new();
+            for (idx, exp) in expected_custom.iter().enumerate() {
+                assert!(custom_feed.next_into(&mut reused_rec).unwrap());
+                assert_eq!(&reused_rec, exp, "custom IUPAC/QUAL mismatch at #{idx}");
+            }
+            assert!(!custom_feed.next_into(&mut reused_rec).unwrap());
+
+            // Explicit checks on decoded sequence, empty QUAL = *, and Phred+33
+            assert_eq!(expected_custom[0].sequence, b"=ACMGRSVTWYHKDBN");
+            assert_eq!(
+                expected_custom[0].quality_scores,
+                vec![33, 34, 43, 53, 63, 66, 73, 83, 93, 103, 113, 118, 123, 124, 125, 126]
+            );
+            assert_eq!(expected_custom[1].sequence, b"=ACMGRSVTWYHKDBN=");
+            assert!(
+                expected_custom[1].quality_scores.is_empty(),
+                "QUAL = * must decode to empty quality_scores"
+            );
+            assert_eq!(expected_custom[2].sequence, b"=ACMGRSVTWYHKDB");
+            assert_eq!(
+                expected_custom[2].quality_scores,
+                vec![126, 125, 124, 123, 93, 78, 68, 33, 34, 65, 66, 73, 83, 108, 126]
+            );
+            for (idx, &nib_ch) in EXPECTED_NIBBLES.iter().enumerate() {
+                assert_eq!(expected_custom[3 + idx].sequence, vec![nib_ch]);
+                if idx % 2 == 0 {
+                    assert!(expected_custom[3 + idx].quality_scores.is_empty());
+                } else {
+                    assert_eq!(expected_custom[3 + idx].quality_scores, vec![126]);
+                }
+            }
+
+            // Raw BAM record with out-of-spec Phred bytes (221..=255, non-uniform so not QUAL=*)
+            // must saturate cleanly at 255 in both fill_from_bam_feed_record and fill_from_bam_record.
+            let sat_template = mk_custom_rec("sat_raw_qual", 100, b"ACGTACGT", Some(&[10u8; 8]));
+            let mut raw_encoded = Vec::new();
+            noodles::bam::io::Writer::from(&mut raw_encoded)
+                .write_alignment_record(&header, &sat_template)
+                .unwrap();
+            let q_offset = raw_encoded.len() - 8;
+            raw_encoded[q_offset..].copy_from_slice(&[0, 93, 221, 222, 223, 250, 254, 255]);
+            let mut raw_bam_rec = noodles::bam::Record::default();
+            assert!(
+                noodles::bam::io::Reader::from(&raw_encoded[..])
+                    .read_record(&mut raw_bam_rec)
+                    .unwrap()
+                    > 0
+            );
+            let contig_names: Vec<Box<str>> = vec!["chr1".into()];
+            let mut cigar_scratch = vec![(8, CigarKind::Match)];
+            let mut sat_feed_out = SamRecord::new();
+            sat_feed_out.fill_from_bam_feed_record(
+                &raw_bam_rec,
+                &contig_names,
+                0,
+                Position::new(100),
+                Position::new(107),
+                &mut cigar_scratch,
+            );
+            let mut sat_bam_out = SamRecord::new();
+            sat_bam_out
+                .fill_from_bam_record(&raw_bam_rec, &header)
+                .unwrap();
+            assert_eq!(
+                sat_feed_out.quality_scores,
+                vec![33, 126, 254, 255, 255, 255, 255, 255]
+            );
+            assert_eq!(sat_bam_out, sat_feed_out);
+
+            // Transition from non-empty saturating qualities to empty QUAL = * on the same reused SamRecord:
+            let star_template = mk_custom_rec("star_raw_qual", 100, b"ACGTACG", None);
+            let mut star_encoded = Vec::new();
+            noodles::bam::io::Writer::from(&mut star_encoded)
+                .write_alignment_record(&header, &star_template)
+                .unwrap();
+            noodles::bam::io::Reader::from(&star_encoded[..])
+                .read_record(&mut raw_bam_rec)
+                .unwrap();
+            let mut star_cigar = vec![(7, CigarKind::Match)];
+            sat_feed_out.fill_from_bam_feed_record(
+                &raw_bam_rec,
+                &contig_names,
+                0,
+                Position::new(100),
+                Position::new(106),
+                &mut star_cigar,
+            );
+            assert_eq!(sat_feed_out.sequence, b"ACGTACG");
+            assert!(sat_feed_out.quality_scores.is_empty());
         }
     }
 
