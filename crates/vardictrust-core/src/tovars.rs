@@ -23,6 +23,7 @@ pub struct ToVarsBuilder<'a> {
     pub config: &'a Config,
     primary_ref_seq: &'a [u8],
     primary_ref_start: u32,
+    chr_len: i32,
 }
 
 /// G3 (mate-window ownership) single-owner rule for a merge-planted key.
@@ -168,6 +169,7 @@ impl<'a> ToVarsBuilder<'a> {
             }
             _ => (&[][..], 1),
         };
+        let chr_len = chromosomes_lengths.get(&region.chr).copied().unwrap_or(0) as i32;
         Self {
             reference,
             region,
@@ -175,6 +177,7 @@ impl<'a> ToVarsBuilder<'a> {
             config,
             primary_ref_seq,
             primary_ref_start,
+            chr_len,
         }
     }
 
@@ -431,11 +434,7 @@ impl<'a> ToVarsBuilder<'a> {
         tseq: &mut String,
     ) -> (f64, i32, i32) {
         self.join_ref_into(leftseq, std::cmp::max(position - 70, 1), position - 1);
-        let chr_len = self
-            .chromosomes_lengths
-            .get(&self.region.chr)
-            .copied()
-            .unwrap_or(0) as i32;
+        let chr_len = self.chr_len;
         self.join_ref_into(
             tseq,
             position,
@@ -469,11 +468,7 @@ impl<'a> ToVarsBuilder<'a> {
     ) -> (f64, i32, i32) {
         let tseq1 = vn.strip_prefix('+').unwrap_or(vn);
         self.join_ref_into(leftseq, std::cmp::max(position - 50, 1), position);
-        let chr_len = self
-            .chromosomes_lengths
-            .get(&self.region.chr)
-            .copied()
-            .unwrap_or(0) as i32;
+        let chr_len = self.chr_len;
         self.join_ref_into(tseq2, position + 1, std::cmp::min(position + 70, chr_len));
 
         let (mut msi, shift3, mut msint_len) =
@@ -820,11 +815,7 @@ impl<'a> ToVarsBuilder<'a> {
                     return;
                 };
 
-            let chr_len = self
-                .chromosomes_lengths
-                .get(&self.region.chr)
-                .copied()
-                .unwrap_or(0) as i32;
+            let chr_len = self.chr_len;
 
             for vref in &mut variations_at_pos.variants {
                 let mut genotype1_current_inner: std::borrow::Cow<'_, str> =
@@ -1193,12 +1184,13 @@ impl<'a> ToVarsBuilder<'a> {
                 vref.ref_fwd_cov = reference_forward_coverage_adj;
                 vref.ref_rev_cov = reference_reverse_coverage_adj;
 
-                let bias_final = if let Some(ref ref_var) = variations_at_pos.ref_variant {
-                    format!("{};{}", ref_var.bias, vref.bias)
-                } else {
-                    format!("0;{}", vref.bias)
-                };
-                vref.bias = bias_final;
+                let ref_bias = variations_at_pos
+                    .ref_variant
+                    .as_ref()
+                    .map_or("0", |ref_var| ref_var.bias.as_str());
+                vref.bias.reserve(ref_bias.len().saturating_add(1));
+                vref.bias.insert(0, ';');
+                vref.bias.insert_str(0, ref_bias);
 
                 vref.var_type = if vref.var_allele.starts_with('+')
                     || vref.description.starts_with('+')
@@ -1230,21 +1222,6 @@ impl<'a> ToVarsBuilder<'a> {
                 variations_at_pos
                     .variants
                     .retain(|vref| !matches_any_sv(&vref.var_allele));
-            }
-
-            // Rebuild var_desc_to_variant from finalized variants (total_pos_cov now set)
-            variations_at_pos.var_desc_to_variant.clear();
-            // H1: single upfront reserve for the exact row count (dhat:
-            // indexmap reserve ~7% on deep pileup). reserve() never reorders
-            // entries (UB-3/CPP-9 safe); clear() retains capacity, so this is
-            // a no-op when capacity already suffices.
-            variations_at_pos
-                .var_desc_to_variant
-                .reserve(variations_at_pos.variants.len());
-            for v in &variations_at_pos.variants {
-                variations_at_pos
-                    .var_desc_to_variant
-                    .insert(v.description.clone(), v.clone());
             }
         } else if let Some(ref mut vref) = variations_at_pos.ref_variant {
             self.update_ref_variant(
@@ -2029,7 +2006,7 @@ mod tests {
             ),
             (11, 4)
         );
-        assert!(vars10.var_desc_to_variant.contains_key("+T"));
+        assert!(vars10.variant_by_desc("+T").is_some());
 
         // Position 11's finalized variants must also see the decremented ref_variant (11, 4)
         let vars11 = aligned.get(&11).expect("vars at 11");
@@ -2042,7 +2019,7 @@ mod tests {
             ),
             (11, 4)
         );
-        assert!(vars11.var_desc_to_variant.contains_key("G"));
+        assert!(vars11.variant_by_desc("G").is_some());
 
         // Issue #60: ToVarsBuilder.java:337-340 performs signed subtraction
         // (`nextVar.fwd -= fwd; nextVar.rev -= rev;`) without clamping at 0.
@@ -2624,5 +2601,114 @@ mod tests {
             assert_eq!(shift3, full.shift3);
             assert_eq!(msint_len, full.msint.len() as i32);
         }
+    }
+
+    #[test]
+    fn tovars_omits_desc_map_clones() {
+        let mut ref_genome = Reference::new();
+        let seq = b"ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTAC".to_vec();
+        let chr_len_usize = seq.len();
+        ref_genome
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 1,
+                sequence_end: chr_len_usize as u32,
+            });
+        ref_genome
+            .reference_sequences
+            .insert("chr1".to_string(), seq.clone());
+        ref_genome.region_sequences.push(seq);
+
+        let chr_lengths = HashMap::from([("chr1".to_string(), chr_len_usize)]);
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(1),
+            end: Pos1(chr_len_usize as u32),
+            gene: "TEST".to_string(),
+            amplicon: None,
+        };
+
+        let mut var_data = VariationData::new();
+        // Position 10 (ref 'C'): ref + SNV 'T' + insertion '+GG'
+        var_data.ref_coverage.insert(10, 35);
+        let mut vm10 = VariationMap::new();
+        let mut ref10 = Variation::new();
+        ref10.cnt = 20;
+        ref10.fwd = 12;
+        ref10.rev = 8;
+        ref10.qmean = 600.0;
+        ref10.mqmean = 1200.0;
+        ref10.pmean = 400.0;
+        ref10.hicnt = 20;
+        vm10.map.insert("C".to_string(), ref10);
+
+        let mut snv10 = Variation::new();
+        snv10.cnt = 15;
+        snv10.fwd = 15;
+        snv10.rev = 0; // total > 12, rev == 0 => strand bias = 1
+        snv10.qmean = 480.0;
+        snv10.mqmean = 900.0;
+        snv10.pmean = 300.0;
+        snv10.hicnt = 15;
+        vm10.map.insert("T".to_string(), snv10);
+        var_data.non_insertion_variants.insert(10, vm10);
+
+        let mut ins10_map = VariationMap::new();
+        let mut ins10 = Variation::new();
+        ins10.cnt = 6;
+        ins10.fwd = 3;
+        ins10.rev = 3;
+        ins10.qmean = 180.0;
+        ins10.mqmean = 360.0;
+        ins10.pmean = 120.0;
+        ins10.hicnt = 6;
+        ins10_map.map.insert("+GG".to_string(), ins10);
+        var_data.insertion_variants.insert(10, ins10_map);
+
+        // Position 20 (no ref variant, deletion '-2'): exercises 0;{bias} and chr_len clamping
+        var_data.ref_coverage.insert(20, 8);
+        let mut vm20 = VariationMap::new();
+        let mut del20 = Variation::new();
+        del20.cnt = 8;
+        del20.fwd = 4;
+        del20.rev = 4;
+        del20.qmean = 240.0;
+        del20.mqmean = 480.0;
+        del20.pmean = 160.0;
+        del20.hicnt = 8;
+        vm20.map.insert("-2".to_string(), del20);
+        var_data.non_insertion_variants.insert(20, vm20);
+
+        let cfg = Config::default();
+        let builder = ToVarsBuilder::new(&ref_genome, &region, &chr_lengths, &cfg);
+        let aligned = builder.build_aligned_variants(&var_data);
+
+        let vars10 = aligned.get(&10).expect("vars at 10");
+        assert!(
+            vars10.var_desc_to_variant.is_empty(),
+            "ToVarsBuilder must keep var_desc_to_variant empty"
+        );
+        assert_eq!(vars10.variants.len(), 2);
+        for v in &vars10.variants {
+            let resolved = vars10
+                .variant_by_desc(&v.description)
+                .expect("variant_by_desc must resolve emitted variant");
+            assert_eq!(resolved.description, v.description);
+            assert_eq!(resolved.start_pos, v.start_pos);
+            assert_eq!(resolved.end_pos, v.end_pos);
+            assert_eq!(resolved.ref_allele, v.ref_allele);
+            assert_eq!(resolved.var_allele, v.var_allele);
+            assert_eq!(resolved.bias, v.bias);
+            assert_eq!(resolved.pos_coverage, v.pos_coverage);
+            assert_eq!(resolved.total_pos_cov, v.total_pos_cov);
+        }
+        assert_eq!(vars10.variant_by_desc("T").unwrap().bias, "2;1");
+        assert_eq!(vars10.variant_by_desc("+GG").unwrap().bias, "2;2");
+        assert!(vars10.variant_by_desc("A").is_none());
+
+        let vars20 = aligned.get(&20).expect("vars at 20");
+        assert!(vars20.var_desc_to_variant.is_empty());
+        assert_eq!(vars20.variant_by_desc("-2").unwrap().bias, "0;2");
     }
 }

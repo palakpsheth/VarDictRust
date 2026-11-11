@@ -278,21 +278,12 @@ fn print_variations_from_first_sample(
         }
 
         // Look up same descriptionString in sample2
-        let v2nt = v2.var_desc_to_variant.get(nt).cloned();
+        let v2nt = v2.variant_by_desc(nt).cloned();
 
         if let Some(mut v2nt_clone) = v2nt {
             let type_str = determinate_type(config, &v2, &vref, &mut v2nt_clone, splice);
             if number_of_processed_variation + 1 < v1.variants.len() {
-                let v2_mut = v2.to_mut();
-                if let Some(slot) = v2_mut.var_desc_to_variant.get_mut(nt) {
-                    *slot = v2nt_clone.clone();
-                }
-                for v2_item in &mut v2_mut.variants {
-                    if v2_item.description == nt {
-                        *v2_item = v2nt_clone.clone();
-                        break;
-                    }
-                }
+                v2.to_mut().update_variant_by_desc(nt, v2nt_clone.clone());
             }
             results.push(SomaticVariant {
                 variant1: vref,
@@ -380,7 +371,7 @@ fn print_variations_from_first_sample(
             let mut v2var = v2var_orig.clone();
             v2var.var_type = vtype.into_owned();
             // potential LOH
-            let v1nt = v1.var_desc_to_variant.get(&v2var.description);
+            let v1nt = v1.variant_by_desc(&v2var.description);
 
             if let Some(v1nt) = v1nt {
                 if v1nt.ref_allele == v1nt.var_allele {
@@ -582,7 +573,7 @@ fn combine_analysis(
     max_read_length: &mut i32,
 ) -> CombineVerdict {
     if config.verbose {
-        eprintln!("Start Combine {} {}", position, variant1.description);
+        crate::verbose_eprintln!("Start Combine {} {}", position, variant1.description);
     }
     // Don't do it for structural variants (:394)
     if variant1.end_pos - variant1.start_pos > config.sv_min_len as i32 {
@@ -607,7 +598,7 @@ fn combine_analysis(
         Ok(vars) => vars,
         Err(e) => {
             if config.verbose {
-                eprintln!(
+                crate::verbose_eprintln!(
                     "There was Exception while processing position on {}. The processing will be continued from the next position.: {}",
                     position, e
                 );
@@ -619,7 +610,7 @@ fn combine_analysis(
     // Look up by ITERATION position key and description in the map (:408).
     let Some(combined_var) = combined_vars
         .get(&position)
-        .and_then(|pv| pv.var_desc_to_variant.get(variant1.description.as_str()))
+        .and_then(|pv| pv.variant_by_desc(variant1.description.as_str()))
     else {
         // vref == null → FALSE (:475)
         return CombineVerdict::Skip;
@@ -693,9 +684,13 @@ fn combine_analysis(
         // Combined run produced less than the base sample alone (:466-470)
         if config.verbose {
             // Java config.y (-y); vardict.pl:657 prints the same line.
-            eprintln!(
+            crate::verbose_eprintln!(
                 "Combine produce less: {} {} {} {} {}",
-                chr, position, variant1.description, comb_pc, base_pc
+                chr,
+                position,
+                variant1.description,
+                comb_pc,
+                base_pc
             );
         }
         CombineVerdict::Skip
