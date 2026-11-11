@@ -18,12 +18,16 @@ specification. We either match it exactly or prove the difference is unreachable
 ```
 Verified Parity Baseline (release/v1.0.7, commit d5cae8a):
 - Integration Tests:  91 PASS / 1 XFAIL / 0 FAIL / 0 SKIP (100% of valid inputs pass; sole XFAIL is stale fixture [UB-4](docs/upstream-bugs.md#ub-4-hard_clip_casefa-fixture-drift-between-csv-chunks-and-reconstructed-fasta))
-- Core Library Tests: 406 PASS / 0 FAIL (`cargo test -p vardictrust-core --lib`)
-- Total Workspace:    590 PASS / 0 FAIL (`cargo test --workspace` across core, corpus_parity, engine_behavior, amplicon_stream_mem, cram_stack, cli, profile_smoke, robustness, version)
+- Core Library Tests: 350 PASS / 0 FAIL (`cargo test -p vardictrust-core --lib`)
+- Total Workspace:    519 PASS / 0 FAIL (`cargo test --workspace` across core, corpus_parity, engine_behavior, amplicon_stream_mem, cram_stack, cli, profile_smoke, robustness, version)
 - [Tier-2](docs/testing/test-matrix-and-ci-audit.md#tier-2) Sweeps:      17/17 strict MATCH (micro, s1a-s9 all 10 slices, HG008, SEQC2 exome/slices, HG002, Amplicon, 17-mode extended, 18-slice multimodal)
 - [Tier-3](docs/testing/test-matrix-and-ci-audit.md#tier-3) Truth Concordance:  5/5 EQUAL (GIAB HG002 NIST v4.2.1, SEQC2 v1.2.1, GIAB HG008 NIST Draft v0.3, GIAB HG005 NIST v4.2.1, GIAB NA24385 b37 NIST v4.2.1)
 - Scaling Budget:     PASS (3.14x speedup, 1.11x flat RSS scaling across 249 Mbp chromosome 1)
 - Final Acceptance:   8/8 PASS under release engine fingerprint `356eb13ba068790c`
+
+Current Workspace Test Suite (main / pre-v1.0.8):
+- Core Library Tests: 406 PASS / 0 FAIL (`cargo test -p vardictrust-core --lib`)
+- Total Workspace:    590 PASS / 0 FAIL (`cargo test --workspace` across core, corpus_parity, engine_behavior, amplicon_stream_mem, cram_stack, cli, profile_smoke, robustness, version)
 ```
 
 <a id="the-four-canonical-parity-classes-rewritesbio-5-8-11"></a>

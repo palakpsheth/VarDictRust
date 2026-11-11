@@ -295,10 +295,10 @@ def check_pre_tag_surfaces(repo_root: Path, version: str, errors: list[str]) -> 
     require_regex(
         repo_root,
         "DIVERGENCES.md",
-        rf"{tc['core_lib']} PASS.*{tc['total_workspace']} PASS",
-        f"DIVERGENCES.md cites {tc['core_lib']} core lib / {tc['total_workspace']} workspace tests",
+        rf"Current Workspace Test Suite[^\n]*:\n- Core Library Tests:\s+{tc['core_lib']} PASS[^\n]*\n- Total Workspace:\s+{tc['total_workspace']} PASS",
+        f"DIVERGENCES.md cites current {tc['core_lib']} core lib / {tc['total_workspace']} workspace tests",
         errors,
-        flags=re.MULTILINE | re.DOTALL,
+        flags=re.MULTILINE,
     )
     require_regex(
         repo_root,

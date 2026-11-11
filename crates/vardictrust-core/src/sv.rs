@@ -79,11 +79,9 @@ pub fn check_cluster(mates: &mut [Mate], rlen: i32) -> Cluster {
         }
 
         let current_cluster = &mut clusters[cur];
-        current_cluster.cnt += 1;
-        current_cluster.mate.mate_len = current_cluster
-            .mate
-            .mate_len
-            .saturating_add(mate_m.mate_len);
+        current_cluster.cnt = current_cluster.cnt.wrapping_add(1);
+        // VariationRealigner.java:241 — Java 32-bit signed `int +=` wraps on overflow.
+        current_cluster.mate.mate_len = current_cluster.mate.mate_len.wrapping_add(mate_m.mate_len);
 
         if mate_m.mate_end > current_cluster.mate.mate_end {
             current_cluster.mate.mate_end = mate_m.mate_end;
@@ -109,7 +107,7 @@ pub fn check_cluster(mates: &mut [Mate], rlen: i32) -> Cluster {
             Mate {
                 mate_start: first_cluster.mate.mate_start,
                 mate_end: first_cluster.mate.mate_end,
-                mate_len: first_cluster.mate.mate_len / first_cluster.cnt,
+                mate_len: first_cluster.mate.mate_len.wrapping_div(first_cluster.cnt),
                 start: first_cluster.mate.start,
                 end: first_cluster.mate.end,
                 pmean: first_cluster.mate.pmean,
@@ -4708,11 +4706,11 @@ mod tests {
         assert_eq!(midpoint_i32(i32::MAX, i32::MAX), i32::MAX);
         assert_eq!(midpoint_i32(i32::MIN, i32::MIN), i32::MIN);
 
-        // Two mates with mate_len == i32::MIN saturate at sv.rs:78 instead of panicking.
-        let make_mate = |mate_start: i32, mate_end: i32| Mate {
+        // VariationRealigner.java:241 — Java 32-bit signed `int +=` wraps on overflow without panicking.
+        let make_mate = |mate_start: i32, mate_end: i32, mate_len: i32| Mate {
             mate_start,
             mate_end,
-            mate_len: i32::MIN,
+            mate_len,
             start: 100,
             end: 200,
             pmean: 10.0,
@@ -4720,10 +4718,20 @@ mod tests {
             mqmean: 60.0,
             nm: 0.0,
         };
-        let mut mates = vec![make_mate(500, 600), make_mate(510, 610)];
+        let mut mates = vec![make_mate(500, 600, i32::MIN), make_mate(510, 610, i32::MIN)];
         let cluster = check_cluster(&mut mates, 100);
         assert_eq!(cluster.cnt, 2);
-        assert_eq!(cluster.mate.mate_len, i32::MIN / 2);
+        assert_eq!(cluster.mate.mate_len, 0);
+
+        // Deep cluster (8,000 mates × 1,000,000 bp) wraps to -589,934,592 / 8,000 == -73,741
+        // (|mlen| < 250,000 splice threshold at StructuralVariantsProcessor.java:996), matching Java.
+        let mut deep_mates: Vec<Mate> = (0..8_000)
+            .map(|i| make_mate(500 + (i % 10), 600 + (i % 10), 1_000_000))
+            .collect();
+        let deep_cluster = check_cluster(&mut deep_mates, 100);
+        assert_eq!(deep_cluster.cnt, 8_000);
+        assert_eq!(deep_cluster.mate.mate_len, -73_741);
+        assert!(i64::from(deep_cluster.mate.mate_len).abs() < 250_000);
 
         // check_pairs at > 1.07 Gbp uses midpoint_i32 without i32 sum overflow.
         let mut svr = Sclip::default();
