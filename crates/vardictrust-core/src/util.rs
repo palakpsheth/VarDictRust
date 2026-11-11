@@ -44,12 +44,39 @@ pub fn subseq(seq: &[u8], start: usize, len: usize) -> Option<&[u8]> {
     Some(&seq[start..end])
 }
 
+/// Best-effort diagnostic output to `stderr` under `-y` / `--verbose`,
+/// ignoring write errors instead of panicking (`AGENTS.md` §9).
+#[macro_export]
+macro_rules! verbose_eprintln {
+    ($($arg:tt)*) => {{
+        use std::io::Write as _;
+        let _ = writeln!(std::io::stderr(), $($arg)*);
+    }};
+}
+
 /// Reverse-complement a DNA byte sequence in place.
 pub fn reverse_complement(seq: &mut [u8]) {
     seq.reverse();
     for base in seq.iter_mut() {
         *base = complement(*base);
     }
+}
+
+/// Reverse-complement an exact `N`-byte DNA slice into a stack array without heap allocation,
+/// returning `None` when `slice.len() != N`. Matches `cigar/modify.rs::rc_seq` byte-for-byte.
+#[allow(
+    dead_code,
+    reason = "shared Wave 0 primitive for cigar/lib seed callers"
+)]
+#[inline]
+pub(crate) fn reverse_complement_bytes<const N: usize>(slice: &[u8]) -> Option<[u8; N]> {
+    if slice.len() != N {
+        return None;
+    }
+    let mut out = [0u8; N];
+    out.copy_from_slice(slice);
+    reverse_complement(&mut out);
+    Some(out)
 }
 
 /// Complement a single DNA base.
@@ -255,5 +282,38 @@ mod tests {
         assert_eq!(s, "CGTACGTNN");
         assert_eq!(s.len(), 9);
         assert_eq!(s.capacity(), 9);
+    }
+
+    #[test]
+    fn reverse_complement_bytes_12_matches_rc_seq_and_checks_length() {
+        assert_eq!(
+            reverse_complement_bytes::<12>(b"AAACCCGGGTTN"),
+            Some(*b"NAACCCGGGTTT")
+        );
+
+        for sample in [
+            &b"AAACCCGGGTTN"[..],
+            &b"AaCcGgTtNnXx"[..],
+            &b"acgtACGTnN12"[..],
+            &b"ttttggggcccc"[..],
+        ] {
+            let mut expected = sample.to_vec();
+            reverse_complement(&mut expected);
+            let got = reverse_complement_bytes::<12>(sample);
+            assert_eq!(
+                got.as_ref().map(|a| a.as_slice()),
+                Some(expected.as_slice()),
+                "mismatch for {sample:?}"
+            );
+        }
+
+        assert_eq!(reverse_complement_bytes::<12>(b""), None);
+        assert_eq!(reverse_complement_bytes::<12>(b"AAACCCGGGTT"), None);
+        assert_eq!(reverse_complement_bytes::<12>(b"AAACCCGGGTTNN"), None);
+    }
+
+    #[test]
+    fn verbose_eprintln_macro_formats_without_panic() {
+        crate::verbose_eprintln!("verbose_eprintln smoke check: {} {}", "ok", 123);
     }
 }

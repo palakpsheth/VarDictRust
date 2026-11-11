@@ -722,6 +722,53 @@ impl Default for Variant {
     }
 }
 
+/// Write an `f64` into `out` matching Java's `Double.toString(double)` (`FloatingDecimal` /
+/// Steele & White) without intermediate heap allocations.
+pub fn write_java_double_into<W: core::fmt::Write>(out: &mut W, v: f64) -> core::fmt::Result {
+    use core::fmt::Write as _;
+    if v.is_nan() {
+        return out.write_str("NaN");
+    }
+    if v.is_infinite() {
+        return if v.is_sign_positive() {
+            out.write_str("Infinity")
+        } else {
+            out.write_str("-Infinity")
+        };
+    }
+    if v == 0.0 {
+        return if v.is_sign_negative() {
+            out.write_str("-0.0")
+        } else {
+            out.write_str("0.0")
+        };
+    }
+    let abs = v.abs();
+    let mut tmp = crate::types::StackBuf::<64>::new();
+    if (1e-3..1e7).contains(&abs) {
+        write!(&mut tmp, "{v}")?;
+        let s = tmp.as_str();
+        out.write_str(s)?;
+        if !s.contains('.') {
+            out.write_str(".0")?;
+        }
+        Ok(())
+    } else {
+        write!(&mut tmp, "{v:e}")?;
+        let s = tmp.as_str();
+        if let Some((mantissa, exp)) = s.split_once('e') {
+            out.write_str(mantissa)?;
+            if !mantissa.contains('.') {
+                out.write_str(".0")?;
+            }
+            out.write_str("E")?;
+            out.write_str(exp)
+        } else {
+            out.write_str(s)
+        }
+    }
+}
+
 /// Format an f64 matching Java's `Double.toString(double)` (`FloatingDecimal` /
 /// Steele & White):
 /// - `NaN`, `Infinity`, `-Infinity`
@@ -730,42 +777,9 @@ impl Default for Variant {
 /// - `|v| < 1e-3` or `|v| >= 1e7`: uppercase `E` scientific notation with at
 ///   least one digit after the decimal point (`1.0E-4`, `1.0E7`, `1.25E7`).
 pub fn java_double_to_string(v: f64) -> String {
-    if v.is_nan() {
-        return "NaN".to_string();
-    }
-    if v.is_infinite() {
-        return if v.is_sign_positive() {
-            "Infinity".to_string()
-        } else {
-            "-Infinity".to_string()
-        };
-    }
-    if v == 0.0 {
-        return if v.is_sign_negative() {
-            "-0.0".to_string()
-        } else {
-            "0.0".to_string()
-        };
-    }
-    let abs = v.abs();
-    if (1e-3..1e7).contains(&abs) {
-        let mut s = format!("{v}");
-        if !s.contains('.') {
-            s.push_str(".0");
-        }
-        s
-    } else {
-        let s = format!("{v:e}");
-        if let Some((mantissa, exp)) = s.split_once('e') {
-            if mantissa.contains('.') {
-                format!("{mantissa}E{exp}")
-            } else {
-                format!("{mantissa}.0E{exp}")
-            }
-        } else {
-            s
-        }
-    }
+    let mut out = String::with_capacity(24);
+    let _ = write_java_double_into(&mut out, v);
+    out
 }
 
 /// Per-position variant container.
@@ -791,6 +805,30 @@ impl Vars {
             variants: Vec::new(),
             var_desc_to_variant: IndexMap::default(),
             sv: String::new(),
+        }
+    }
+
+    /// Resolve a non-reference variant by description string, checking
+    /// `var_desc_to_variant` when populated and falling back to reverse scan of `variants`.
+    #[inline]
+    pub fn variant_by_desc(&self, desc: &str) -> Option<&Variant> {
+        if !self.var_desc_to_variant.is_empty() {
+            if let Some(v) = self.var_desc_to_variant.get(desc) {
+                return Some(v);
+            }
+        }
+        self.variants.iter().rfind(|v| v.description == desc)
+    }
+
+    /// Update an existing variant matching `desc` in place without inserting into an
+    /// empty `var_desc_to_variant` map.
+    #[inline]
+    pub fn update_variant_by_desc(&mut self, desc: &str, updated: Variant) {
+        if let Some(slot) = self.var_desc_to_variant.get_mut(desc) {
+            *slot = updated.clone();
+        }
+        if let Some(item) = self.variants.iter_mut().rfind(|v| v.description == desc) {
+            *item = updated;
         }
     }
 }
@@ -1334,5 +1372,106 @@ mod debug_tests {
         assert_eq!(java_double_to_string(f64::NAN), "NaN");
         assert_eq!(java_double_to_string(f64::INFINITY), "Infinity");
         assert_eq!(java_double_to_string(f64::NEG_INFINITY), "-Infinity");
+    }
+
+    #[test]
+    fn write_java_double_into_matches_java_double_to_string() {
+        let cases = [
+            (0.0, "0.0"),
+            (-0.0, "-0.0"),
+            (1.5, "1.5"),
+            (60.0, "60.0"),
+            (1e-5, "1.0E-5"),
+            (-1e-4, "-1.0E-4"),
+            (1e8, "1.0E8"),
+            (1.25e7, "1.25E7"),
+            (4.503599627370496e15, "4.503599627370496E15"),
+            (f64::INFINITY, "Infinity"),
+            (f64::NEG_INFINITY, "-Infinity"),
+            (f64::NAN, "NaN"),
+        ];
+
+        for (v, pinned) in cases {
+            let expected = java_double_to_string(v);
+            assert_eq!(expected, pinned, "pinned mismatch for {v:?}");
+
+            let mut s = String::new();
+            write_java_double_into(&mut s, v).unwrap();
+            assert_eq!(s, expected, "String mismatch for {v:?}");
+
+            let mut prefixed = "prefix=".to_string();
+            write_java_double_into(&mut prefixed, v).unwrap();
+            assert_eq!(prefixed, format!("prefix={expected}"));
+
+            let mut stack = crate::types::StackBuf::<32>::new();
+            write_java_double_into(&mut stack, v).unwrap();
+            assert_eq!(stack.as_str(), expected, "StackBuf mismatch for {v:?}");
+        }
+    }
+
+    #[test]
+    fn vars_variant_by_desc_and_update_variant_by_desc_coherence() {
+        // 1. Both var_desc_to_variant and variants populated
+        let mut vars_both = Vars::new();
+        let mut v_a1 = Variant::new();
+        v_a1.description = "A".to_string();
+        v_a1.pos_coverage = 3;
+        let mut v_a2 = Variant::new();
+        v_a2.description = "A".to_string();
+        v_a2.pos_coverage = 7;
+        let mut v_only_vec = Variant::new();
+        v_only_vec.description = "+TT".to_string();
+        v_only_vec.pos_coverage = 5;
+
+        vars_both.variants.push(v_a1);
+        vars_both.variants.push(v_a2.clone());
+        vars_both.variants.push(v_only_vec);
+        vars_both.var_desc_to_variant.insert("A".to_string(), v_a2);
+
+        assert_eq!(vars_both.variant_by_desc("A").unwrap().pos_coverage, 7);
+        // Missing from non-empty map falls back to rfind on variants
+        assert_eq!(vars_both.variant_by_desc("+TT").unwrap().pos_coverage, 5);
+        assert!(vars_both.variant_by_desc("-3").is_none());
+
+        let mut updated_a = Variant::new();
+        updated_a.description = "A".to_string();
+        updated_a.pos_coverage = 42;
+        vars_both.update_variant_by_desc("A", updated_a);
+
+        assert_eq!(
+            vars_both.var_desc_to_variant.get("A").unwrap().pos_coverage,
+            42
+        );
+        assert_eq!(vars_both.variants[0].pos_coverage, 3);
+        assert_eq!(vars_both.variants[1].pos_coverage, 42);
+        assert_eq!(vars_both.variant_by_desc("A").unwrap().pos_coverage, 42);
+
+        // 2. Empty var_desc_to_variant (ToVarsBuilder mode): rfind fallback + no map insertion
+        let mut vars_vec_only = Vars::new();
+        let mut v1 = Variant::new();
+        v1.description = "G".to_string();
+        v1.pos_coverage = 2;
+        let mut v2 = Variant::new();
+        v2.description = "G".to_string();
+        v2.pos_coverage = 9;
+        vars_vec_only.variants.push(v1);
+        vars_vec_only.variants.push(v2);
+
+        assert!(vars_vec_only.var_desc_to_variant.is_empty());
+        assert_eq!(vars_vec_only.variant_by_desc("G").unwrap().pos_coverage, 9);
+        assert!(vars_vec_only.variant_by_desc("C").is_none());
+
+        let mut updated_g = Variant::new();
+        updated_g.description = "G".to_string();
+        updated_g.pos_coverage = 99;
+        vars_vec_only.update_variant_by_desc("G", updated_g);
+
+        assert!(
+            vars_vec_only.var_desc_to_variant.is_empty(),
+            "update_variant_by_desc must not populate an empty var_desc_to_variant"
+        );
+        assert_eq!(vars_vec_only.variants[0].pos_coverage, 2);
+        assert_eq!(vars_vec_only.variants[1].pos_coverage, 99);
+        assert_eq!(vars_vec_only.variant_by_desc("G").unwrap().pos_coverage, 99);
     }
 }
