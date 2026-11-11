@@ -52,11 +52,11 @@ pub struct AmpliconVariant {
 /// * `splice` - Set of splice site strings
 ///
 /// Ports `AmpliconPostProcessModule.process()`.
-pub fn amplicon_post_process(
+pub fn amplicon_post_process<R: std::borrow::Borrow<Region>>(
     config: &Config,
     region: &Region,
     vars_per_amplicon: &[crate::javamap::JavaHashMap<i32, Vars>],
-    amplicons_on_positions: &BTreeMap<i32, Vec<(usize, Region)>>,
+    amplicons_on_positions: &BTreeMap<i32, Vec<(usize, R)>>,
     splice: &rustc_hash::FxHashSet<String>,
 ) -> Result<Vec<AmpliconVariant>, crate::types::VardictError> {
     // Batch wrapper over the streaming core below: the BTreeMap iterator visits
@@ -75,7 +75,10 @@ pub fn amplicon_post_process(
             amplicons_on_positions.iter().map(|(&position, regions)| {
                 (
                     position,
-                    regions.iter().map(|(idx, reg)| (*idx, reg)).collect(),
+                    regions
+                        .iter()
+                        .map(|(idx, reg)| (*idx, reg.borrow()))
+                        .collect(),
                 )
             }),
             splice,
@@ -193,10 +196,6 @@ impl<'a> AmpliconCoverSweep<'a> {
 
     /// Covering amplicon references at `pos`, in segment order, without cloning
     /// `Region` per base. Positions MUST arrive in ascending (non-decreasing) order.
-    #[allow(
-        dead_code,
-        reason = "shared Wave 1 primitive for lib.rs amplicon callers"
-    )]
     pub(crate) fn covering_refs_at(&mut self, pos: i32) -> Vec<(usize, &'a Region)> {
         self.advance_to(pos);
         let mut covering = Vec::with_capacity(self.active.len());
@@ -210,6 +209,7 @@ impl<'a> AmpliconCoverSweep<'a> {
 
     /// Covering amplicons at `position`, in segment order. Positions MUST
     /// arrive in ascending (non-decreasing) order.
+    #[cfg(test)]
     pub(crate) fn covering_at(&mut self, position: i32) -> Vec<(usize, Region)> {
         self.advance_to(position);
         let mut covering = Vec::with_capacity(self.active.len());
@@ -248,10 +248,9 @@ fn merge_insert_ranges(segment: &[Region]) -> Vec<(i32, i32)> {
     merged
 }
 
-#[allow(
-    dead_code,
-    reason = "shared Wave 1 iterator for lib.rs amplicon streaming callers"
-)]
+/// Lazy iterator behind [`amplicon_position_ref_stream`] and [`amplicon_position_stream`]:
+/// walks the merged insert ranges ascending, resolving each position's covering list
+/// through one shared [`AmpliconCoverSweep`] (ascending by construction).
 struct AmpliconPositionRefIter<'a> {
     sweep: AmpliconCoverSweep<'a>,
     merged: Vec<(i32, i32)>,
@@ -269,6 +268,8 @@ impl<'a> Iterator for AmpliconPositionRefIter<'a> {
                 self.current = start;
             }
             if self.current > end {
+                // Past this range (or a degenerate start > end, which the
+                // old `start..=end` expansion also yielded nothing for).
                 self.range_idx = self.range_idx.saturating_add(1);
                 continue;
             }
@@ -287,7 +288,6 @@ impl<'a> Iterator for AmpliconPositionRefIter<'a> {
 
 /// Zero-clone reference variant of [`amplicon_position_stream`], borrowing
 /// `&Region` directly from `segment` instead of cloning `Region` per base.
-#[allow(dead_code, reason = "shared Wave 1 stream for lib.rs amplicon callers")]
 pub(crate) fn amplicon_position_ref_stream(
     segment: &[Region],
 ) -> impl Iterator<Item = (i32, Vec<(usize, &Region)>)> + '_ {
@@ -297,44 +297,6 @@ pub(crate) fn amplicon_position_ref_stream(
         merged,
         range_idx: 0,
         current: 0,
-    }
-}
-
-/// Lazy iterator behind `amplicon_position_stream`: walks the merged insert
-/// ranges ascending, resolving each position's covering list through one
-/// shared `AmpliconCoverSweep` (ascending by construction).
-struct AmpliconPositionIter<'a> {
-    sweep: AmpliconCoverSweep<'a>,
-    merged: Vec<(i32, i32)>,
-    range_idx: usize,
-    current: i32,
-}
-
-impl<'a> Iterator for AmpliconPositionIter<'a> {
-    type Item = (i32, Vec<(usize, Region)>);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        loop {
-            let (start, end) = *self.merged.get(self.range_idx)?;
-            if self.current < start {
-                self.current = start;
-            }
-            if self.current > end {
-                // Past this range (or a degenerate start > end, which the
-                // old `start..=end` expansion also yielded nothing for).
-                self.range_idx = self.range_idx.saturating_add(1);
-                continue;
-            }
-            let position = self.current;
-            let covering = self.sweep.covering_at(position);
-            if position >= end {
-                self.range_idx = self.range_idx.saturating_add(1);
-            } else {
-                // position < end <= i32::MAX here: cannot overflow.
-                self.current = position + 1;
-            }
-            return Some((position, covering));
-        }
     }
 }
 
@@ -352,13 +314,8 @@ impl<'a> Iterator for AmpliconPositionIter<'a> {
 pub fn amplicon_position_stream(
     segment: &[Region],
 ) -> impl Iterator<Item = (i32, Vec<(usize, Region)>)> + '_ {
-    let merged = merge_insert_ranges(segment);
-    AmpliconPositionIter {
-        sweep: AmpliconCoverSweep::new(segment),
-        merged,
-        range_idx: 0,
-        current: 0,
-    }
+    amplicon_position_ref_stream(segment)
+        .map(|(pos, refs)| (pos, refs.into_iter().map(|(i, r)| (i, r.clone())).collect()))
 }
 
 #[inline]
@@ -1704,5 +1661,22 @@ mod tests {
                 assert_eq!(br, wr);
             }
         }
+
+        // Verify batch `amplicon_post_process` over borrowed `&Region` entries matches owned.
+        let mut sweep = AmpliconCoverSweep::new(&segment);
+        let mut borrowed_map: BTreeMap<i32, Vec<(usize, &Region)>> = BTreeMap::new();
+        let mut owned_map: BTreeMap<i32, Vec<(usize, Region)>> = BTreeMap::new();
+        let cov_ref = sweep.covering_refs_at(152);
+        let cov_owned: Vec<(usize, Region)> =
+            cov_ref.iter().map(|&(i, r)| (i, r.clone())).collect();
+        borrowed_map.insert(152, cov_ref);
+        owned_map.insert(152, cov_owned);
+        let batch_ref =
+            amplicon_post_process(&config, &region, &vars_per_amplicon, &borrowed_map, &splice)
+                .unwrap();
+        let batch_owned =
+            amplicon_post_process(&config, &region, &vars_per_amplicon, &owned_map, &splice)
+                .unwrap();
+        assert_eq!(format!("{batch_ref:?}"), format!("{batch_owned:?}"));
     }
 }

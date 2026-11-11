@@ -2696,8 +2696,8 @@ pub fn find_inv_disc(
                 if reference.get_base(chr, pe as u32).is_none() {
                     let modified_region = crate::regions::Region {
                         chr: chr.to_string(),
-                        start: Pos1((pe - 150).max(1) as u32),
-                        end: Pos1((pe + 150) as u32),
+                        start: Pos1(pe.saturating_sub(150).max(1) as u32),
+                        end: Pos1(pe.saturating_add(150).max(1) as u32),
                         gene: String::new(),
                         amplicon: None,
                     };
@@ -2821,8 +2821,8 @@ pub fn find_inv_disc(
                 if reference.get_base(chr, bp as u32).is_none() {
                     let modified_region = crate::regions::Region {
                         chr: chr.to_string(),
-                        start: Pos1((bp - 150).max(1) as u32),
-                        end: Pos1((bp + 150) as u32),
+                        start: Pos1(bp.saturating_sub(150).max(1) as u32),
+                        end: Pos1(bp.saturating_add(150).max(1) as u32),
                         gene: String::new(),
                         amplicon: None,
                     };
@@ -4739,6 +4739,8 @@ mod tests {
         assert!(cluster_vec[0].used);
 
         // find_inv_disc at > 1.07 Gbp (both 5' and 3' loops) uses midpoint_i32 without overflow.
+        // Separate 3' clusters by > 300 bp from 5' clusters so mark_sv in Part 1 does not
+        // pre-mark svfinv3[0]/svrinv3[0] before Part 2 executes.
         let chr = "chr1";
         let mut reference = Reference::new();
         reference
@@ -4746,9 +4748,9 @@ mod tests {
             .push(crate::reference::LoadedRegion {
                 chr: chr.to_string(),
                 sequence_start: 1_500_000_000,
-                sequence_end: 1_500_000_700,
+                sequence_end: 1_500_003_000,
             });
-        reference.region_sequences.push(vec![b'A'; 701]);
+        reference.region_sequences.push(vec![b'A'; 3_001]);
 
         let mut var_data = crate::variations::VariationData::default();
         var_data.max_read_length = 100;
@@ -4774,19 +4776,19 @@ mod tests {
         let mut invf3 = Sclip::default();
         invf3.variation.cnt = 5;
         invf3.variation.mqmean = 300.0;
-        invf3.start = 1_500_000_450;
-        invf3.end = 1_500_000_550;
-        invf3.mstart = 1_500_000_150;
-        invf3.mend = 1_500_000_250;
+        invf3.start = 1_500_002_450;
+        invf3.end = 1_500_002_550;
+        invf3.mstart = 1_500_002_150;
+        invf3.mend = 1_500_002_250;
         var_data.sv_structures.svfinv3.push(invf3);
 
         let mut invr3 = Sclip::default();
         invr3.variation.cnt = 5;
         invr3.variation.mqmean = 300.0;
-        invr3.start = 1_500_000_560;
-        invr3.end = 1_500_000_640;
-        invr3.mstart = 1_500_000_260;
-        invr3.mend = 1_500_000_340;
+        invr3.start = 1_500_002_560;
+        invr3.end = 1_500_002_640;
+        invr3.mstart = 1_500_002_260;
+        invr3.mend = 1_500_002_340;
         var_data.sv_structures.svrinv3.push(invr3);
 
         let config = Config::default();
@@ -4794,7 +4796,11 @@ mod tests {
         chr_lengths.insert(chr.to_string(), 2_000_000_000);
         find_inv_disc(&mut var_data, &mut reference, chr, &config, &chr_lengths).unwrap();
         assert!(var_data.sv_structures.svfinv5[0].used);
+        assert!(var_data.sv_structures.svrinv5[0].used);
         assert!(var_data.sv_structures.svfinv3[0].used);
+        assert!(var_data.sv_structures.svrinv3[0].used);
+        assert!(var_data.non_insertion_variants.contains_key(&1_500_000_110));
+        assert!(var_data.non_insertion_variants.contains_key(&1_500_002_255));
 
         // find_del_disc with non-empty splice and del.mlen == i32::MIN does not panic on .abs().
         let mut del_data = crate::variations::VariationData::default();

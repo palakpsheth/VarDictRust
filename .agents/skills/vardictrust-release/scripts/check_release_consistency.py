@@ -184,13 +184,14 @@ def check_pre_tag_surfaces(repo_root: Path, version: str, errors: list[str]) -> 
     )
 
     # 9. harness/run_self_tests.sh & harness/tests/
+    tc = EXPECTED_TEST_COUNTS
     sh_cnt = len(list((repo_root / "harness" / "tests").glob("test_*.sh")))
     py_cnt = len(list((repo_root / "harness" / "tests").glob("test_*.py")))
     total_self_tests = sh_cnt + py_cnt
-    if total_self_tests != EXPECTED_TEST_COUNTS["harness_self_tests"]:
+    if total_self_tests != tc["harness_self_tests"]:
         errors.append(
             f"harness/tests/ has {total_self_tests} scripts ({sh_cnt} .sh + {py_cnt} .py), "
-            f"expected {EXPECTED_TEST_COUNTS['harness_self_tests']}"
+            f"expected {tc['harness_self_tests']}"
         )
     require_regex(
         repo_root,
@@ -202,8 +203,8 @@ def check_pre_tag_surfaces(repo_root: Path, version: str, errors: list[str]) -> 
     require_regex(
         repo_root,
         "harness/run_self_tests.sh",
-        r"all 36 harness diagnostic scripts \(25 shell tests\s*\n#\s*and 11 python test suites",
-        "harness/run_self_tests.sh cites 36 diagnostic scripts (25 shell + 11 python)",
+        rf"all {tc['harness_self_tests']} harness diagnostic scripts \(25 shell tests\s*\n#\s*and 11 python test suites",
+        f"harness/run_self_tests.sh cites {tc['harness_self_tests']} diagnostic scripts (25 shell + 11 python)",
         errors,
     )
 
@@ -224,7 +225,6 @@ def check_pre_tag_surfaces(repo_root: Path, version: str, errors: list[str]) -> 
     )
 
     # 11. README.md
-    tc = EXPECTED_TEST_COUNTS
     require_regex(
         repo_root,
         "README.md",
@@ -568,16 +568,58 @@ def check_downstream_phases(
         )
 
 
+REGISTERED_INTEGRATION_TESTS: dict[str, tuple[str, ...]] = {
+    "vardictrust-core": (
+        "corpus_parity",
+        "engine_behavior",
+        "amplicon_stream_mem",
+        "cram_stack",
+    ),
+    "vardictrust": ("profile_smoke", "robustness", "version"),
+}
+
+
+def check_registered_integration_tests(repo_root: Path, errors: list[str]) -> bool:
+    ok = True
+    for pkg, registered_tuple in REGISTERED_INTEGRATION_TESTS.items():
+        registered = set(registered_tuple)
+        tests_dir = repo_root / "crates" / pkg / "tests"
+        on_disk = (
+            {p.stem for p in tests_dir.glob("*.rs")} if tests_dir.is_dir() else set()
+        )
+        unregistered = sorted(on_disk - registered)
+        missing = sorted(registered - on_disk)
+        if unregistered:
+            errors.append(
+                f"crates/{pkg}/tests has unregistered integration test target(s): "
+                f"{unregistered} (registered: {sorted(registered)})"
+            )
+            ok = False
+        if missing:
+            errors.append(
+                f"crates/{pkg}/tests is missing registered integration test target(s): "
+                f"{missing} (registered: {sorted(registered)})"
+            )
+            ok = False
+    return ok
+
+
 def _count_cargo_target_tests(
     repo_root: Path, cargo_args: list[str], errors: list[str]
 ) -> int | None:
-    res = subprocess.run(
-        ["cargo", "test", *cargo_args, "--", "--list"],
-        cwd=repo_root,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        res = subprocess.run(
+            ["cargo", "test", *cargo_args, "--", "--list"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as exc:
+        errors.append(
+            f"cargo test {' '.join(cargo_args)} -- --list could not execute 'cargo': {exc}"
+        )
+        return None
     if res.returncode != 0:
         errors.append(
             f"cargo test {' '.join(cargo_args)} -- --list failed "
@@ -590,21 +632,18 @@ def _count_cargo_target_tests(
 
 
 def check_cargo_test_counts(repo_root: Path, errors: list[str]) -> None:
+    all_ok = check_registered_integration_tests(repo_root, errors)
     single_targets = (
         ("core_lib", ["-p", "vardictrust-core", "--lib"]),
-        ("corpus_parity", ["-p", "vardictrust-core", "--test", "corpus_parity"]),
-        ("engine_behavior", ["-p", "vardictrust-core", "--test", "engine_behavior"]),
-        (
-            "amplicon_stream_mem",
-            ["-p", "vardictrust-core", "--test", "amplicon_stream_mem"],
+        *(
+            (tgt, ["-p", "vardictrust-core", "--test", tgt])
+            for tgt in REGISTERED_INTEGRATION_TESTS["vardictrust-core"]
         ),
-        ("cram_stack", ["-p", "vardictrust-core", "--test", "cram_stack"]),
         ("cli_bin", ["-p", "vardictrust", "--bin", "vardictrust"]),
     )
-    cli_integration_targets = ("robustness", "profile_smoke", "version")
+    cli_integration_targets = REGISTERED_INTEGRATION_TESTS["vardictrust"]
 
     observed: dict[str, int] = {}
-    all_ok = True
     for key, args in single_targets:
         cnt = _count_cargo_target_tests(repo_root, args, errors)
         if cnt is None:
@@ -707,6 +746,8 @@ def main() -> int:
     check_downstream_phases(args.repo_root, version, args.phase, errors)
     if args.verify_cargo_list:
         check_cargo_test_counts(args.repo_root, errors)
+    else:
+        check_registered_integration_tests(args.repo_root, errors)
 
     if errors:
         print(

@@ -2084,19 +2084,6 @@ fn resolve_target_path(path: &Path) -> Option<std::path::PathBuf> {
     Some(canon_parent.join(file_name))
 }
 
-fn is_unix_char_device(path: &Path) -> bool {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::FileTypeExt as _;
-        if let Ok(m) = std::fs::metadata(path) {
-            return m.file_type().is_char_device();
-        }
-    }
-    #[cfg(not(unix))]
-    let _ = path;
-    false
-}
-
 fn is_unix_char_or_fifo(path: &Path) -> bool {
     #[cfg(unix)]
     {
@@ -2111,43 +2098,45 @@ fn is_unix_char_or_fifo(path: &Path) -> bool {
     false
 }
 
-fn paths_collide(a: &Path, b: &Path) -> bool {
-    if is_unix_char_device(a) || is_unix_char_device(b) {
-        return false;
-    }
-    if a == b {
-        return true;
-    }
+fn check_pair_collision(a: &Path, b: &Path) -> Option<bool> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _};
-        if let (Ok(ma), Ok(mb)) = (std::fs::metadata(a), std::fs::metadata(b)) {
-            if ma.file_type().is_char_device() || mb.file_type().is_char_device() {
-                return false;
-            }
+        let ma = std::fs::metadata(a).ok();
+        if ma.as_ref().is_some_and(|m| m.file_type().is_char_device()) {
+            return Some(false);
+        }
+        let mb = std::fs::metadata(b).ok();
+        if mb.as_ref().is_some_and(|m| m.file_type().is_char_device()) {
+            return Some(false);
+        }
+        if a == b {
+            return Some(true);
+        }
+        if let (Some(ma), Some(mb)) = (ma, mb) {
             if ma.dev() == mb.dev() && ma.ino() == mb.ino() {
-                return true;
+                return Some(true);
             }
+        }
+        None
+    }
+    #[cfg(not(unix))]
+    {
+        if a == b {
+            Some(true)
+        } else {
+            None
         }
     }
+}
+
+fn paths_collide(a: &Path, b: &Path) -> bool {
+    if let Some(decision) = check_pair_collision(a, b) {
+        return decision;
+    }
     if let (Some(ra), Some(rb)) = (resolve_target_path(a), resolve_target_path(b)) {
-        if is_unix_char_device(&ra) || is_unix_char_device(&rb) {
-            return false;
-        }
-        if ra == rb {
-            return true;
-        }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _};
-            if let (Ok(ma), Ok(mb)) = (std::fs::metadata(&ra), std::fs::metadata(&rb)) {
-                if ma.file_type().is_char_device() || mb.file_type().is_char_device() {
-                    return false;
-                }
-                if ma.dev() == mb.dev() && ma.ino() == mb.ino() {
-                    return true;
-                }
-            }
+        if let Some(decision) = check_pair_collision(&ra, &rb) {
+            return decision;
         }
     }
     false
@@ -2335,9 +2324,10 @@ impl PendingStatsJson {
                     f.write_all(json)
                         .map_err(|e| map_stats_io_err(stats_label, e))?;
                     f.flush().map_err(|e| map_stats_io_err(stats_label, e))?;
-                    if let Err(VardictError::Io(io_e)) = sync_file_ignoring_special(&f) {
-                        return Err(map_stats_io_err(stats_label, io_e));
-                    }
+                    sync_file_ignoring_special(&f).map_err(|e| match e {
+                        VardictError::Io(io_e) => map_stats_io_err(stats_label, io_e),
+                        other => other,
+                    })?;
                 }
                 std::fs::rename(&*tmp_path, &*final_path)
                     .map_err(|e| map_stats_io_err(stats_label, e))?;
@@ -2353,9 +2343,10 @@ impl PendingStatsJson {
                 file.write_all(json)
                     .map_err(|e| map_stats_io_err(stats_label, e))?;
                 file.flush().map_err(|e| map_stats_io_err(stats_label, e))?;
-                if let Err(VardictError::Io(io_e)) = sync_file_ignoring_special(&file) {
-                    return Err(map_stats_io_err(stats_label, io_e));
-                }
+                sync_file_ignoring_special(&file).map_err(|e| match e {
+                    VardictError::Io(io_e) => map_stats_io_err(stats_label, io_e),
+                    other => other,
+                })?;
                 Ok(())
             }
         }
@@ -3147,7 +3138,7 @@ fn run_amplicon<W: EngineWriter>(
             // data, not interval size.
             let mut amplicons_on_positions: std::collections::BTreeMap<
                 i32,
-                Vec<(usize, crate::regions::Region)>,
+                Vec<(usize, &crate::regions::Region)>,
             > = std::collections::BTreeMap::new();
             let mut positions: std::collections::BTreeSet<i32> = std::collections::BTreeSet::new();
             for vars in &vars_per_amplicon {
@@ -3158,7 +3149,7 @@ fn run_amplicon<W: EngineWriter>(
             // pairs the old per-position scan built, at O((P + A) log A).
             let mut sweep = crate::postprocess::amplicon::AmpliconCoverSweep::new(&segment);
             for p in positions {
-                let covering = sweep.covering_at(p);
+                let covering = sweep.covering_refs_at(p);
                 if !covering.is_empty() {
                     amplicons_on_positions.insert(p, covering);
                 }
@@ -3241,7 +3232,7 @@ fn run_amplicon<W: EngineWriter>(
                             config,
                             current_region,
                             &vars_per_amplicon,
-                            crate::postprocess::amplicon::amplicon_position_stream(&segment),
+                            crate::postprocess::amplicon::amplicon_position_ref_stream(&segment),
                             &splice,
                             &mut |av| {
                                 if config.fisher {
@@ -3269,7 +3260,7 @@ fn run_amplicon<W: EngineWriter>(
                             config,
                             current_region,
                             &vars_per_amplicon,
-                            crate::postprocess::amplicon::amplicon_position_stream(&segment),
+                            crate::postprocess::amplicon::amplicon_position_ref_stream(&segment),
                             &splice,
                             &mut |av| {
                                 vcf_acc.insert(

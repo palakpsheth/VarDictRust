@@ -335,10 +335,10 @@ fn validate_cigar_element_lengths(s: &str) -> Result<(), crate::types::VardictEr
 
 /// Sum all matches of a regex group 1 parsed as integers.
 fn global_find_sum(re: &Regex, s: &str) -> i32 {
-    let mut sum = 0;
+    let mut sum: i32 = 0;
     for cap in re.captures_iter(s) {
         if let Some(m) = cap.get(1) {
-            sum += to_int(m.as_str());
+            sum = sum.saturating_add(to_int(m.as_str()));
         }
     }
     sum
@@ -803,8 +803,8 @@ impl<'a> CigarModifier<'a> {
                     let g1 = to_int(caps.get(1).map_or("", |m| m.as_str()));
                     let g2 = to_int(caps.get(2).map_or("", |m| m.as_str()));
                     let op = caps.get(3).map_or("", |m| m.as_str());
-                    let tslen = format!("{}S", g1 + if op == "I" { g2 } else { 0 });
-                    this.position += if op == "D" { g2 } else { 0 };
+                    let tslen = format!("{}S", g1.saturating_add(if op == "I" { g2 } else { 0 }));
+                    this.position = this.position.saturating_add(if op == "D" { g2 } else { 0 });
                     this.cigar_str = BEGIN_NUMBER_S_NUMBER_IOR_D
                         .replace(&this.cigar_str, &tslen)
                         .into_owned();
@@ -819,7 +819,7 @@ impl<'a> CigarModifier<'a> {
                     let g1 = to_int(caps.get(1).map_or("", |m| m.as_str()));
                     let op = caps.get(2).map_or("", |m| m.as_str());
                     let g3 = to_int(caps.get(3).map_or("", |m| m.as_str()));
-                    let tslen = format!("{}S", g3 + if op == "I" { g1 } else { 0 });
+                    let tslen = format!("{}S", g3.saturating_add(if op == "I" { g1 } else { 0 }));
                     this.cigar_str = NUMBER_IOR_D_NUMBER_S_END
                         .replace(&this.cigar_str, &tslen)
                         .into_owned();
@@ -836,8 +836,14 @@ impl<'a> CigarModifier<'a> {
                         let g1 = to_int(caps.get(1).map_or("", |m| m.as_str()));
                         let g3 = to_int(caps.get(3).map_or("", |m| m.as_str()));
                         let op = caps.get(4).map_or("", |m| m.as_str());
-                        let tslen = format!("{}S", g1 + tmid + if op == "I" { g3 } else { 0 });
-                        this.position += tmid + if op == "D" { g3 } else { 0 };
+                        let tslen = format!(
+                            "{}S",
+                            g1.saturating_add(tmid)
+                                .saturating_add(if op == "I" { g3 } else { 0 })
+                        );
+                        this.position = this
+                            .position
+                            .saturating_add(tmid.saturating_add(if op == "D" { g3 } else { 0 }));
                         this.cigar_str = BEGIN_NUMBER_S_NUMBER_M_NUMBER_IOR_D
                             .replace(&this.cigar_str, &tslen)
                             .into_owned();
@@ -855,7 +861,11 @@ impl<'a> CigarModifier<'a> {
                         let g1 = to_int(caps.get(1).map_or("", |m| m.as_str()));
                         let op = caps.get(2).map_or("", |m| m.as_str());
                         let g4 = to_int(caps.get(4).map_or("", |m| m.as_str()));
-                        let tslen = format!("{}S", g4 + tmid + if op == "I" { g1 } else { 0 });
+                        let tslen = format!(
+                            "{}S",
+                            g4.saturating_add(tmid)
+                                .saturating_add(if op == "I" { g1 } else { 0 })
+                        );
                         this.cigar_str = NUMBER_IOR_D_NUMBER_M_NUMBER_S_END
                             .replace(&this.cigar_str, &tslen)
                             .into_owned();
@@ -883,7 +893,7 @@ impl<'a> CigarModifier<'a> {
                     let tmid = to_int(caps.get(3).map_or("", |m| m.as_str()));
                     let op = caps.get(2).map_or("", |m| m.as_str());
                     let g1 = to_int(caps.get(1).map_or("", |m| m.as_str()));
-                    let tslen = format!("{}S", tmid + if op == "I" { g1 } else { 0 });
+                    let tslen = format!("{}S", tmid.saturating_add(if op == "I" { g1 } else { 0 }));
                     this.cigar_str = NUMBER_IOR_D_NUMBER_M_END
                         .replace(&this.cigar_str, &tslen)
                         .into_owned();
@@ -994,7 +1004,7 @@ impl<'a> CigarModifier<'a> {
             if has_d {
                 if let Some(caps) = DIG_D_DIG_D.captures(&this.cigar_str) {
                     let dlen = to_int(caps.get(1).map_or("", |m| m.as_str()))
-                        + to_int(caps.get(2).map_or("", |m| m.as_str()));
+                        .saturating_add(to_int(caps.get(2).map_or("", |m| m.as_str())));
                     this.cigar_str = DIG_D_DIG_D
                         .replace(&this.cigar_str, &format!("{}D", dlen))
                         .into_owned();
@@ -1006,7 +1016,7 @@ impl<'a> CigarModifier<'a> {
             if has_i {
                 if let Some(caps) = DIG_I_DIG_I.captures(&this.cigar_str) {
                     let ilen = to_int(caps.get(1).map_or("", |m| m.as_str()))
-                        + to_int(caps.get(2).map_or("", |m| m.as_str()));
+                        .saturating_add(to_int(caps.get(2).map_or("", |m| m.as_str())));
                     this.cigar_str = DIG_I_DIG_I
                         .replace(&this.cigar_str, &format!("{}I", ilen))
                         .into_owned();
@@ -1670,15 +1680,15 @@ impl<'a> CigarModifier<'a> {
     ) -> bool {
         if g3 <= 15 {
             let mut dlen = g3;
-            let mut ilen = g2 + g3;
+            let mut ilen = g2.saturating_add(g3);
             if op == "I" {
-                ilen += g4;
+                ilen = ilen.saturating_add(g4);
             } else if op == "D" {
-                dlen += g4;
+                dlen = dlen.saturating_add(g4);
                 if let Some(istr_str) = istr {
                     if !istr_str.is_empty() {
                         if let Some(prefix) = istr_str.get(..istr_str.len() - 1) {
-                            ilen += to_int(prefix);
+                            ilen = ilen.saturating_add(to_int(prefix));
                         }
                     }
                 }
@@ -1703,16 +1713,16 @@ impl<'a> CigarModifier<'a> {
         mut flag: bool,
     ) -> bool {
         if g2 <= 15 {
-            let mut dlen = g1 + g2;
+            let mut dlen = g1.saturating_add(g2);
             let mut ilen = g2;
             if op == "I" {
-                ilen += g3;
+                ilen = ilen.saturating_add(g3);
             } else if op == "D" {
-                dlen += g3;
+                dlen = dlen.saturating_add(g3);
                 if let Some(istr_str) = istr {
                     if !istr_str.is_empty() {
                         if let Some(prefix) = istr_str.get(..istr_str.len() - 1) {
-                            ilen += to_int(prefix);
+                            ilen = ilen.saturating_add(to_int(prefix));
                         }
                     }
                 }
@@ -1741,43 +1751,48 @@ impl<'a> CigarModifier<'a> {
         g11: i32,
         mut flag: bool,
     ) -> bool {
-        let mut tslen = g5 + g8;
+        let mut tslen = g5.saturating_add(g8);
         if op1 == "I" {
-            tslen += g3;
+            tslen = tslen.saturating_add(g3);
         }
         if op2 == "I" {
-            tslen += g6;
+            tslen = tslen.saturating_add(g6);
         }
         if op3 == "I" {
-            tslen += g9;
+            tslen = tslen.saturating_add(g9);
         }
 
-        let mut dlen = g5 + g8;
+        let mut dlen = g5.saturating_add(g8);
         if op1 == "D" {
-            dlen += g3;
+            dlen = dlen.saturating_add(g3);
         }
         if op2 == "D" {
-            dlen += g6;
+            dlen = dlen.saturating_add(g6);
         }
         if op3 == "D" {
-            dlen += g9;
+            dlen = dlen.saturating_add(g9);
         }
 
-        let mid = g5 + g8;
-        let mut refoff = self.position + g2;
+        let mid = g5.saturating_add(g8);
+        let mut refoff = self.position.saturating_add(g2);
         let mut rdoff = g2;
         let mut rdoff_corr = g2;
         let mut rm = g11;
 
         if !ov5.is_empty() {
-            refoff += global_find_sum(&ALIGNED_LENGTH_MND, ov5);
-            rdoff += global_find_sum(&SOFT_CLIPPED, ov5);
+            refoff = refoff.saturating_add(global_find_sum(&ALIGNED_LENGTH_MND, ov5));
+            rdoff = rdoff.saturating_add(global_find_sum(&SOFT_CLIPPED, ov5));
         }
 
         let mut rn = 0;
-        while rdoff + rn < self.query_seq.len() as i32 {
-            if let Some(&q_base) = self.query_seq.get((rdoff + rn) as usize) {
-                if is_has_and_equals_char(q_base, self.reference, refoff + rn, self.ref_start) {
+        while rdoff.saturating_add(rn) < self.query_seq.len() as i32 {
+            if let Some(&q_base) = self.query_seq.get(rdoff.saturating_add(rn) as usize) {
+                if is_has_and_equals_char(
+                    q_base,
+                    self.reference,
+                    refoff.saturating_add(rn),
+                    self.ref_start,
+                ) {
                     rn += 1;
                 } else {
                     break;
@@ -1786,22 +1801,22 @@ impl<'a> CigarModifier<'a> {
                 break;
             }
         }
-        rdoff_corr += rn;
-        dlen -= rn;
-        tslen -= rn;
+        rdoff_corr = rdoff_corr.saturating_add(rn);
+        dlen = dlen.saturating_sub(rn);
+        tslen = tslen.saturating_sub(rn);
 
         let mut new_cigar = format!("{}M", rdoff_corr);
         if tslen <= 0 {
-            dlen -= tslen;
-            rm += tslen;
+            dlen = dlen.saturating_sub(tslen);
+            rm = rm.saturating_add(tslen);
             if dlen == 0 {
-                rdoff_corr += rm;
+                rdoff_corr = rdoff_corr.saturating_add(rm);
                 new_cigar = format!("{}M", rdoff_corr);
             } else if dlen < 0 {
-                tslen = -dlen;
-                rm += dlen;
+                tslen = dlen.saturating_neg();
+                rm = rm.saturating_add(dlen);
                 if rm < 0 {
-                    rdoff_corr += rm;
+                    rdoff_corr = rdoff_corr.saturating_add(rm);
                     new_cigar = format!("{}M{}I", rdoff_corr, tslen);
                 } else {
                     new_cigar = format!("{}{}I{}M", new_cigar, tslen, rm);
@@ -1812,7 +1827,7 @@ impl<'a> CigarModifier<'a> {
         } else if dlen == 0 {
             new_cigar = format!("{}{}I{}M", new_cigar, tslen, rm);
         } else if dlen < 0 {
-            rm += dlen;
+            rm = rm.saturating_add(dlen);
             new_cigar = format!("{}{}I{}M", new_cigar, tslen, rm);
         } else {
             new_cigar = format!("{}{}D{}I{}M", new_cigar, dlen, tslen, rm);
@@ -1840,22 +1855,31 @@ impl<'a> CigarModifier<'a> {
         g8: i32,
         mut flag: bool,
     ) -> bool {
-        let mut tslen = g4 + g6;
-        let mut dlen = g3 + g4 + g5 + g6 + g7;
-        let mid = g4 + g6;
-        let mut refoff = self.position + g2;
+        let mut tslen = g4.saturating_add(g6);
+        let mut dlen = g3
+            .saturating_add(g4)
+            .saturating_add(g5)
+            .saturating_add(g6)
+            .saturating_add(g7);
+        let mid = g4.saturating_add(g6);
+        let mut refoff = self.position.saturating_add(g2);
         let mut rdoff = g2;
         let mut rdoff_corr = g2;
         let mut rm = g8;
 
         if !ov5.is_empty() {
-            refoff += global_find_sum(&ALIGNED_LENGTH_MND, ov5);
-            rdoff += global_find_sum(&SOFT_CLIPPED, ov5);
+            refoff = refoff.saturating_add(global_find_sum(&ALIGNED_LENGTH_MND, ov5));
+            rdoff = rdoff.saturating_add(global_find_sum(&SOFT_CLIPPED, ov5));
         }
         let mut rn = 0;
-        while rdoff + rn < self.query_seq.len() as i32 {
-            if let Some(&q_base) = self.query_seq.get((rdoff + rn) as usize) {
-                if is_has_and_equals_char(q_base, self.reference, refoff + rn, self.ref_start) {
+        while rdoff.saturating_add(rn) < self.query_seq.len() as i32 {
+            if let Some(&q_base) = self.query_seq.get(rdoff.saturating_add(rn) as usize) {
+                if is_has_and_equals_char(
+                    q_base,
+                    self.reference,
+                    refoff.saturating_add(rn),
+                    self.ref_start,
+                ) {
                     rn += 1;
                 } else {
                     break;
@@ -1864,13 +1888,13 @@ impl<'a> CigarModifier<'a> {
                 break;
             }
         }
-        rdoff_corr += rn;
-        dlen -= rn;
-        tslen -= rn;
+        rdoff_corr = rdoff_corr.saturating_add(rn);
+        dlen = dlen.saturating_sub(rn);
+        tslen = tslen.saturating_sub(rn);
         let mut new_cigar = format!("{}M", rdoff_corr);
         if tslen <= 0 {
-            dlen -= tslen;
-            rm += tslen;
+            dlen = dlen.saturating_sub(tslen);
+            rm = rm.saturating_add(tslen);
             new_cigar = format!("{}M{}D{}M", rdoff_corr, dlen, rm);
         } else {
             new_cigar = format!("{}{}D{}I{}M", new_cigar, dlen, tslen, rm);
@@ -1898,23 +1922,28 @@ impl<'a> CigarModifier<'a> {
         g8: i32,
         mut flag: bool,
     ) -> bool {
-        let mut tslen = g4 + g5 + g6;
-        let mut dlen = g3 + g4 + g6 + g7;
-        let mid = g4 + g6;
-        let mut refoff = self.position + g2;
+        let mut tslen = g4.saturating_add(g5).saturating_add(g6);
+        let mut dlen = g3.saturating_add(g4).saturating_add(g6).saturating_add(g7);
+        let mid = g4.saturating_add(g6);
+        let mut refoff = self.position.saturating_add(g2);
         let mut rdoff = g2;
         let mut rdoff_corr = g2;
         let mut rm = g8;
 
         if !ov5.is_empty() {
-            refoff += global_find_sum(&ALIGNED_LENGTH_MND, ov5);
-            rdoff += global_find_sum(&SOFT_CLIPPED, ov5);
+            refoff = refoff.saturating_add(global_find_sum(&ALIGNED_LENGTH_MND, ov5));
+            rdoff = rdoff.saturating_add(global_find_sum(&SOFT_CLIPPED, ov5));
         }
 
         let mut rn = 0;
-        while rdoff + rn < self.query_seq.len() as i32 {
-            if let Some(&q_base) = self.query_seq.get((rdoff + rn) as usize) {
-                if is_has_and_equals_char(q_base, self.reference, refoff + rn, self.ref_start) {
+        while rdoff.saturating_add(rn) < self.query_seq.len() as i32 {
+            if let Some(&q_base) = self.query_seq.get(rdoff.saturating_add(rn) as usize) {
+                if is_has_and_equals_char(
+                    q_base,
+                    self.reference,
+                    refoff.saturating_add(rn),
+                    self.ref_start,
+                ) {
                     rn += 1;
                 } else {
                     break;
@@ -1923,13 +1952,13 @@ impl<'a> CigarModifier<'a> {
                 break;
             }
         }
-        rdoff_corr += rn;
-        dlen -= rn;
-        tslen -= rn;
+        rdoff_corr = rdoff_corr.saturating_add(rn);
+        dlen = dlen.saturating_sub(rn);
+        tslen = tslen.saturating_sub(rn);
         let mut new_cigar = format!("{}M", rdoff_corr);
         if tslen <= 0 {
-            dlen -= tslen;
-            rm += tslen;
+            dlen = dlen.saturating_sub(tslen);
+            rm = rm.saturating_add(tslen);
             new_cigar = format!("{}M{}D{}M", rdoff_corr, dlen, rm);
         } else {
             new_cigar = format!("{}{}D{}I{}M", new_cigar, dlen, tslen, rm);
@@ -1953,15 +1982,17 @@ impl<'a> CigarModifier<'a> {
     ) -> bool {
         let mut tn = 0;
 
-        let mut tslen = tmid + if op == "I" { g2 } else { 0 };
-        self.position += tmid + if op == "D" { g2 } else { 0 };
+        let mut tslen = tmid.saturating_add(if op == "I" { g2 } else { 0 });
+        self.position = self
+            .position
+            .saturating_add(tmid.saturating_add(if op == "D" { g2 } else { 0 }));
 
         while tn < mlen {
-            if let Some(&q_base) = self.query_seq.get((tslen + tn) as usize) {
+            if let Some(&q_base) = self.query_seq.get(tslen.saturating_add(tn) as usize) {
                 if is_has_and_not_equals_char(
                     q_base,
                     self.reference,
-                    self.position + tn,
+                    self.position.saturating_add(tn),
                     self.ref_start,
                 ) {
                     tn += 1;
@@ -1972,9 +2003,9 @@ impl<'a> CigarModifier<'a> {
                 break;
             }
         }
-        tslen += tn;
+        tslen = tslen.saturating_add(tn);
         mlen -= tn;
-        self.position += tn;
+        self.position = self.position.saturating_add(tn);
 
         self.cigar_str = BEGIN_DIGIT_M_NUMBER_IOR_D_NUMBER_M_OPT
             .replace(&self.cigar_str, &format!("{}S{}M", tslen, mlen))
@@ -3056,5 +3087,55 @@ mod tests {
         assert!(c_buf.capacity() >= 64);
         assert!(s_buf.capacity() >= 256);
         assert!(q_buf.capacity() >= 256);
+
+        // 5. Huge multi-insertion / multi-deletion CIGAR lengths inside indel simplification
+        //    loop (`indel > 0`) saturate at i32::MAX without overflowing or panicking.
+        let empty_seed = SeedMap::new();
+        for (pos, hostile_cigar, expected_sub) in [
+            (10, "10M1500000000I1500000000I10M", "2147483647I"),
+            (10, "10M1500000000D1500000000D10M", "2147483647D"),
+            (10, "1500000000S1500000000I10M", "2147483647S"),
+            (10, "10M1500000000I1500000000S", "2147483647S"),
+            (10, "1500000000S5M1500000000I10M", "2147483647S"),
+            (10, "10M1500000000I5M1500000000S", "2147483647S"),
+            (10, "10M2147483647I5M", "2147483647S"),
+            (10, "5M2147483647I10M", "2147483647S"),
+            (10, "10M1500000000I5M1500000000I10M", "2147483647I"),
+            (1_500_000_000, "1500000000S1500000000D10M", "1500000000S"),
+        ] {
+            let got = CigarModifier::new(
+                pos,
+                hostile_cigar,
+                [b'A'; 20],
+                [b'I'; 20],
+                b"",
+                1,
+                &empty_seed,
+                1,
+                150,
+                &config,
+            )
+            .modify_cigar()
+            .unwrap_or_else(|e| panic!("unexpected Err on {hostile_cigar}: {e:?}"));
+            assert!(
+                got.cigar.contains(expected_sub),
+                "expected {expected_sub:?} in modified CIGAR for {hostile_cigar}, got {:?}",
+                got.cigar
+            );
+            // Also verify non-empty reference never panics (returns Ok or JavaThrows cleanly).
+            let _ = CigarModifier::new(
+                pos,
+                hostile_cigar,
+                &reference[..20],
+                [b'I'; 20],
+                reference,
+                1,
+                &empty_seed,
+                1,
+                150,
+                &config,
+            )
+            .modify_cigar();
+        }
     }
 }

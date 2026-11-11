@@ -61,7 +61,9 @@ fn ensure_fastas_converted() {
         if !fasta_dir.join("GRCh37.fa").is_file()
             || !fasta_dir.join("GRCh37.fa.fai").is_file()
             || !fasta_dir.join("hg19.fa").is_file()
+            || !fasta_dir.join("hg19.fa.fai").is_file()
             || !fasta_dir.join("hg38.fa").is_file()
+            || !fasta_dir.join("hg38.fa.fai").is_file()
         {
             let script = workspace_root().join("harness/convert_fastas.py");
             let status = Command::new("python3")
@@ -106,7 +108,7 @@ fn write_indexed_bam(
         w.write_alignment_record(&hd, rec)?;
         let end = w.get_ref().virtual_position();
         let s = rec.alignment_start().expect("aligned record");
-        let e = Position::new(s.get() + rec.cigar().alignment_span().saturating_sub(1).max(1))
+        let e = Position::new(s.get() + rec.cigar().alignment_span().saturating_sub(1))
             .unwrap_or(Position::MIN);
         indexer
             .add_record(Some((0, s, e, true)), Chunk::new(start, end))

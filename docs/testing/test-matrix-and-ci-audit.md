@@ -240,7 +240,7 @@ Located in `crates/vardictrust/tests/`:
    - `broken_pipe_stdout_and_stderr_exit_cleanly_and_preserve_stats_json`: verifies clean exit `0` on `SIGPIPE` / `BrokenPipe` (`stdout` and `-y` `stderr`) while still flushing `--stats-json`.
    - `output_and_stats_json_reject_input_collisions_and_leave_no_empty_residue`: verifies `--output`, `--tbi`, and `--stats-json` reject paths colliding with inputs or each other and leave zero empty output/BGZF residue on failure.
    - `bgzf_tbi_somatic_amplicon_and_sv_end_to_end`: verifies end-to-end `.vcf.gz` + `.tbi` generation and Tabix region queries across somatic, amplicon, and `<DEL>`/`<INV>`/`<DUP>` structural variants (`END=` span indexing).
-   - `hostile_missing_qual_huge_deletion_and_i32_min_tlen_do_not_panic_or_oom`: verifies hostile records (`*` missing QUAL, `100000D` huge deletions, `i32::MIN` `TLEN`) never panic or OOM.
+   - `hostile_missing_qual_huge_deletion_and_i32_min_tlen_do_not_panic_or_oom`: verifies hostile records (`*` missing QUAL, `268435455D` huge deletions, `i32::MIN` `TLEN`) never panic or OOM.
    - `commons_cli_single_dash_flags_and_zero_bed_col_behavior`: verifies Commons-CLI single-dash long flags (`-fisher`, `-nosv`, `-adaptor`) and 0-valued `-c/-S/-E/-s/-e` BED column rejection.
 3. **`tests/version.rs` (1 test):**
    - `version_credits_original_and_discloses_ai`: verifies that `vardictrust --version` displays the exact package version (`env!("CARGO_PKG_VERSION")`), original author credit (Zhongwu Lai et al. 2016, AstraZeneca-NGS), upstream commit pins (`0886261` / `009e017`), and full AI tooling disclosures.

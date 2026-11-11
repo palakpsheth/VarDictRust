@@ -460,6 +460,48 @@ class TestRepoAgentSkills(unittest.TestCase):
         self.assertNotEqual(res_bad.returncode, 0, "Validator must fail when version mismatches")
         self.assertIn("RELEASE CONSISTENCY FAILED", res_bad.stderr)
 
+        # Negative check: missing `cargo` in PATH with --verify-cargo-list records actionable error (no traceback)
+        res_nocargo = subprocess.run(
+            [
+                sys.executable,
+                str(script),
+                "--version",
+                current_version,
+                "--phase",
+                "pre-tag",
+                "--verify-cargo-list",
+            ],
+            env={"PATH": ""},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(res_nocargo.returncode, 1)
+        self.assertIn("RELEASE CONSISTENCY FAILED", res_nocargo.stderr)
+        self.assertIn("could not execute 'cargo'", res_nocargo.stderr)
+        self.assertNotIn("Traceback", res_nocargo.stderr)
+
+        # Negative check: unregistered crates/*/tests/*.rs target is caught
+        import importlib.util
+        import tempfile
+
+        spec = importlib.util.spec_from_file_location("check_release_consistency", script)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fake_root = pathlib.Path(tmpdir)
+            for pkg, targets in mod.REGISTERED_INTEGRATION_TESTS.items():
+                tdir = fake_root / "crates" / pkg / "tests"
+                tdir.mkdir(parents=True)
+                for tgt in targets:
+                    (tdir / f"{tgt}.rs").write_text("", encoding="utf-8")
+            (fake_root / "crates" / "vardictrust-core" / "tests" / "sneaky_extra.rs").write_text(
+                "", encoding="utf-8"
+            )
+            errs: list[str] = []
+            self.assertFalse(mod.check_registered_integration_tests(fake_root, errs))
+            self.assertTrue(any("sneaky_extra" in e for e in errs), f"Expected sneaky_extra error, got {errs}")
+
     def test_ci_workflow_pipeline_and_concurrency_contract(self):
         workflows_dir = ROOT_DIR / ".github" / "workflows"
         for wf_name in ("ci.yml", "differential.yml", "docs.yml", "security.yml"):

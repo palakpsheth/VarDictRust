@@ -3498,7 +3498,8 @@ impl RecordPreprocessor {
             .map(|&(n, _)| u64::from(n))
             .sum::<u64>();
         let start_u64 = record.alignment_start.map_or(0u64, |p| u64::from(p.0));
-        if ref_consumption > i32::MAX as u64
+        if start_u64 > i32::MAX as u64
+            || ref_consumption > i32::MAX as u64
             || start_u64.saturating_sub(1).saturating_add(ref_consumption) > i32::MAX as u64
         {
             log::warn!(
@@ -7349,6 +7350,32 @@ mod tests {
         assert!(prep.preprocess_record(&boundary_ok, &config));
         assert_eq!(prep.total_reads, 1);
         assert!(!prep.preprocess_record(&boundary_over, &config));
+        assert_eq!(prep.total_reads, 1);
+
+        // Zero-reference-consumption CIGARs (`50S`, `50I`) at `Pos1(i32::MAX as u32 + 1)`
+        // must also be rejected before `alignment_start.0 as i32` wraps negative.
+        let zero_span_soft = SamRecord {
+            name: b"zero_span_soft_past_i32_max".to_vec(),
+            alignment_start: Some(Pos1(i32::MAX as u32 + 1)),
+            alignment_end: Some(Pos1(i32::MAX as u32 + 1)),
+            cigar: vec![(50, CigarKind::SoftClip)],
+            sequence: vec![b'A'; 50],
+            quality_scores: vec![40; 50],
+            ..hostile_skip_del.clone()
+        };
+        let zero_span_ins = SamRecord {
+            name: b"zero_span_ins_past_i32_max".to_vec(),
+            cigar: vec![(50, CigarKind::Insertion)],
+            ..zero_span_soft.clone()
+        };
+        assert!(
+            !prep.preprocess_record(&zero_span_soft, &config),
+            "50S at Pos1(i32::MAX as u32 + 1) must be rejected"
+        );
+        assert!(
+            !prep.preprocess_record(&zero_span_ins, &config),
+            "50I at Pos1(i32::MAX as u32 + 1) must be rejected"
+        );
         assert_eq!(prep.total_reads, 1);
 
         // 4. get_aligned_length_md saturates at i32::MAX instead of panicking or wrapping negative

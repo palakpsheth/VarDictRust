@@ -1046,7 +1046,6 @@ fn accum_no_passing_read_record(
     cnt: &mut i32,
     midcnt: &mut i32,
 ) {
-    use noodles::sam::alignment::record::cigar::op::Kind as CigarKind;
     if cigar_contains_dlen_d(&record.cigar, dlen) {
         return;
     }
@@ -1054,20 +1053,14 @@ fn accum_no_passing_read_record(
         Some(Pos1(p)) => i32::try_from(p).unwrap_or(i32::MAX),
         None => return,
     };
-    let read_len = record
-        .cigar
-        .iter()
-        .filter(|&&(_, kind)| kind == CigarKind::Match || kind == CigarKind::Deletion)
-        .fold(0i32, |acc, &(len, _)| {
-            acc.saturating_add(i32::try_from(len).unwrap_or(i32::MAX))
-        });
+    let read_len = crate::bam::get_aligned_length_md(&record.cigar);
     let read_end = read_start.saturating_add(read_len);
 
     if read_end > end.saturating_add(2) && read_start < start.saturating_sub(2) {
-        *cnt += 1;
+        *cnt = cnt.saturating_add(1);
     }
     if read_start < start.saturating_sub(2) && read_end > start && read_end < end {
-        *midcnt += 1;
+        *midcnt = midcnt.saturating_add(1);
     }
 }
 
@@ -1087,8 +1080,8 @@ pub fn no_passing_reads(
 
     'bam: for bam in bams {
         let bam_path = std::path::Path::new(bam);
-        let start_pos0 = Pos0((start - 1).max(0) as u32);
-        let end_pos0 = Pos0(end as u32);
+        let start_pos0 = Pos0(start.saturating_sub(1).max(0) as u32);
+        let end_pos0 = Pos0(end.max(0) as u32);
         // Streaming counterpart of the old query_region-Vec shape: the whole
         // BAM is still skipped on any query/read error, exactly as the old
         // collecting query did. The old path failed atomically (no records
@@ -1132,7 +1125,7 @@ pub fn no_passing_reads(
         );
     }
 
-    cnt <= 0 && midcnt + 1 > 0
+    cnt <= 0 && midcnt.saturating_add(1) > 0
 }
 
 #[cfg(test)]
@@ -1153,6 +1146,28 @@ mod task13_tests {
         accum_no_passing_read_record(&record, 50, 100, 150, &mut cnt, &mut midcnt);
         assert_eq!(cnt, 1);
         assert_eq!(midcnt, 0);
+
+        // Extreme negative coordinates (`start = i32::MIN`, `end = -5`) must not
+        // overflow `start - 1`, wrap `end as u32`, or overflow `midcnt + 1`.
+        let mut neg_cnt = 0;
+        let mut neg_midcnt = i32::MAX;
+        accum_no_passing_read_record(
+            &record,
+            (-5i32).saturating_sub(i32::MIN),
+            i32::MIN,
+            -5,
+            &mut neg_cnt,
+            &mut neg_midcnt,
+        );
+        assert_eq!(neg_cnt, 0);
+        assert_eq!(neg_midcnt, i32::MAX);
+        assert!(no_passing_reads(
+            "chr1",
+            i32::MIN,
+            -5,
+            &["__nonexistent_bam_for_i32_min_guard__.bam".to_string()],
+            &crate::config::Config::default(),
+        ));
     }
 
     fn cigar_contains_dlen_d_legacy(cigar: &[(u32, CigarKind)], dlen: i32) -> bool {

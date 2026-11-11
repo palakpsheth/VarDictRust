@@ -64,10 +64,6 @@ pub fn reverse_complement(seq: &mut [u8]) {
 
 /// Reverse-complement an exact `N`-byte DNA slice into a stack array without heap allocation,
 /// returning `None` when `slice.len() != N`. Matches `cigar/modify.rs::rc_seq` byte-for-byte.
-#[allow(
-    dead_code,
-    reason = "shared Wave 0 primitive for cigar/lib seed callers"
-)]
 #[inline]
 pub(crate) fn reverse_complement_bytes<const N: usize>(slice: &[u8]) -> Option<[u8; N]> {
     if slice.len() != N {
