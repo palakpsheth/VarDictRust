@@ -386,7 +386,7 @@ fn record_read_end(r: &crate::bam::SamRecord, read_start: i32) -> i32 {
                 | CigarKind::SequenceMatch
                 | CigarKind::SequenceMismatch
         ) {
-            read_end += len as i32;
+            read_end = read_end.saturating_add(i32::try_from(len).unwrap_or(i32::MAX));
         }
     }
     read_end
@@ -1607,8 +1607,14 @@ impl<V: SpillableCandidate> SpillableVcfAccumulator<V> {
 pub enum OutputDestination {
     Stdout(std::io::BufWriter<std::io::Stdout>),
     Stderr(std::io::BufWriter<std::io::Stderr>),
-    File(std::io::BufWriter<std::fs::File>),
-    Bgzf(Box<noodles::bgzf::io::MultithreadedWriter<std::fs::File>>),
+    File(
+        std::io::BufWriter<std::fs::File>,
+        std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ),
+    Bgzf(
+        Box<noodles::bgzf::io::MultithreadedWriter<std::fs::File>>,
+        std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ),
 }
 
 impl std::io::Write for OutputDestination {
@@ -1617,8 +1623,20 @@ impl std::io::Write for OutputDestination {
         match self {
             Self::Stdout(w) => w.write(buf),
             Self::Stderr(w) => w.write(buf),
-            Self::File(w) => w.write(buf),
-            Self::Bgzf(w) => w.write(buf),
+            Self::File(w, wrote_any) => {
+                let n = w.write(buf)?;
+                if n > 0 {
+                    wrote_any.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+                Ok(n)
+            }
+            Self::Bgzf(w, wrote_any) => {
+                let n = w.write(buf)?;
+                if n > 0 {
+                    wrote_any.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+                Ok(n)
+            }
         }
     }
 
@@ -1627,8 +1645,8 @@ impl std::io::Write for OutputDestination {
         match self {
             Self::Stdout(w) => w.flush(),
             Self::Stderr(w) => w.flush(),
-            Self::File(w) => w.flush(),
-            Self::Bgzf(w) => w.flush(),
+            Self::File(w, _) => w.flush(),
+            Self::Bgzf(w, _) => w.flush(),
         }
     }
 }
@@ -1670,20 +1688,27 @@ fn is_bgzf_output_path(path: &Path) -> bool {
         .is_some_and(|ext| ext.eq_ignore_ascii_case("gz") || ext.eq_ignore_ascii_case("bgz"))
 }
 
-fn open_output_writer(config: &config::Config) -> Result<OutputDestination, VardictError> {
+fn open_output_writer(
+    config: &config::Config,
+    wrote_any: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> Result<OutputDestination, VardictError> {
     if let Some(ref path_str) = config.output_path {
         let file = std::fs::File::create(path_str).map_err(VardictError::Io)?;
         if is_bgzf_output_path(Path::new(path_str)) {
             let worker_count = std::num::NonZeroUsize::new(config.threads.clamp(1, 4))
                 .unwrap_or(std::num::NonZeroUsize::MIN);
-            Ok(OutputDestination::Bgzf(Box::new(
-                noodles::bgzf::io::MultithreadedWriter::with_worker_count(worker_count, file),
-            )))
+            Ok(OutputDestination::Bgzf(
+                Box::new(noodles::bgzf::io::MultithreadedWriter::with_worker_count(
+                    worker_count,
+                    file,
+                )),
+                std::sync::Arc::clone(wrote_any),
+            ))
         } else {
-            Ok(OutputDestination::File(std::io::BufWriter::with_capacity(
-                BUFFER_CAPACITY,
-                file,
-            )))
+            Ok(OutputDestination::File(
+                std::io::BufWriter::with_capacity(BUFFER_CAPACITY, file),
+                std::sync::Arc::clone(wrote_any),
+            ))
         }
     } else {
         Ok(create_output_writer(config))
@@ -1706,14 +1731,8 @@ trait EngineWriter: std::io::Write + Sized {
 impl EngineWriter for OutputDestination {
     fn emit_column_header(&mut self, config: &config::Config) -> Result<(), VardictError> {
         match self {
-            Self::Stdout(w) => {
-                crate::output::table::print_header(w, config).map_err(VardictError::Io)
-            }
-            Self::File(w) => {
-                crate::output::table::print_header(w, config).map_err(VardictError::Io)
-            }
-            Self::Bgzf(w) => {
-                crate::output::table::print_header(w, config).map_err(VardictError::Io)
+            Self::Stdout(_) | Self::File(_, _) | Self::Bgzf(_, _) => {
+                crate::output::table::print_header(self, config).map_err(VardictError::Io)
             }
             Self::Stderr(_) => {
                 // SimpleMode/SomaticMode/AmpliconMode/SplicingMode printHeader() always writes
@@ -1731,11 +1750,11 @@ impl EngineWriter for OutputDestination {
         match self {
             Self::Stdout(mut w) => w.flush().map_err(VardictError::Io),
             Self::Stderr(mut w) => w.flush().map_err(VardictError::Io),
-            Self::File(mut w) => {
+            Self::File(mut w, _) => {
                 w.flush().map_err(VardictError::Io)?;
                 sync_file_ignoring_special(w.get_ref())
             }
-            Self::Bgzf(mut w) => {
+            Self::Bgzf(mut w, _) => {
                 let file = w.finish().map_err(VardictError::Io)?;
                 sync_file_ignoring_special(&file)
             }
@@ -1828,17 +1847,33 @@ fn write_vcf_tabix_index_inner(vcf_gz_path: &Path, tbi_path: &Path) -> Result<()
     }
 
     let index = indexer.build();
-    let file = std::fs::File::create(tbi_path).map_err(VardictError::Io)?;
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(tbi_path)
+        .map_err(VardictError::Io)?;
     let mut tbi_writer = noodles::tabix::io::Writer::new(file);
     tbi_writer.write_index(&index).map_err(VardictError::Io)?;
     let inner_file = tbi_writer.into_inner().finish().map_err(VardictError::Io)?;
     sync_file_ignoring_special(&inner_file)
 }
 
-fn tbi_output_path(vcf_gz_path: &Path) -> std::path::PathBuf {
-    let mut s = vcf_gz_path.as_os_str().to_os_string();
-    s.push(".tbi");
+static NEXT_TMP_FILE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+fn append_os_suffix(path: &Path, suffix: &str) -> std::path::PathBuf {
+    let mut s = path.as_os_str().to_os_string();
+    s.push(suffix);
     std::path::PathBuf::from(s)
+}
+
+fn atomic_tmp_path(target: &Path) -> std::path::PathBuf {
+    let seq = NEXT_TMP_FILE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let pid = std::process::id();
+    append_os_suffix(target, &format!(".tmp.{pid}.{seq}"))
+}
+
+fn tbi_output_path(vcf_gz_path: &Path) -> std::path::PathBuf {
+    append_os_suffix(vcf_gz_path, ".tbi")
 }
 
 fn write_vcf_tabix_index(vcf_gz_path: &Path) -> Result<(), VardictError> {
@@ -1850,8 +1885,11 @@ fn write_vcf_tabix_index(vcf_gz_path: &Path) -> Result<(), VardictError> {
             tbi_path.display()
         )));
     }
-    if let Err(e) = write_vcf_tabix_index_inner(vcf_gz_path, &tbi_path) {
-        let _ = std::fs::remove_file(&tbi_path);
+    let tmp_path = atomic_tmp_path(&tbi_path);
+    if let Err(e) = write_vcf_tabix_index_inner(vcf_gz_path, &tmp_path)
+        .and_then(|()| std::fs::rename(&tmp_path, &tbi_path).map_err(VardictError::Io))
+    {
+        let _ = std::fs::remove_file(&tmp_path);
         return Err(e);
     }
     Ok(())
@@ -1988,8 +2026,14 @@ fn resolve_effective_config(
         }
     }
 
-    if effective.index_output {
-        let has_bgzf_output = effective
+    validate_tbi_flags(&effective)?;
+
+    Ok((effective, mode))
+}
+
+fn validate_tbi_flags(config: &config::Config) -> Result<(), VardictError> {
+    if config.index_output {
+        let has_bgzf_output = config
             .output_path
             .as_deref()
             .is_some_and(|out_path| is_bgzf_output_path(Path::new(out_path)));
@@ -1998,15 +2042,14 @@ fn resolve_effective_config(
                 "--tbi/--index requires --output <PATH> ending in .vcf.gz or .bgz".to_string(),
             ));
         }
-        if effective.emit_intermediate || effective.splice || effective.column_header {
+        if config.emit_intermediate || config.splice || config.column_header {
             return Err(VardictError::Parse(
-                "--tbi/--index is only supported for VCF output (cannot be combined with -E/--emit-intermediate, -i/--splice, or -h/--header)"
+                "--tbi/--index is only supported for VCF output (cannot be combined with --emit-intermediate, -i/--splice, or -h/--header)"
                     .to_string(),
             ));
         }
     }
-
-    Ok((effective, mode))
+    Ok(())
 }
 
 fn resolve_target_path(path: &Path) -> Option<std::path::PathBuf> {
@@ -2041,27 +2084,66 @@ fn resolve_target_path(path: &Path) -> Option<std::path::PathBuf> {
     Some(canon_parent.join(file_name))
 }
 
+fn is_unix_char_device(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileTypeExt as _;
+        if let Ok(m) = std::fs::metadata(path) {
+            return m.file_type().is_char_device();
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    false
+}
+
+fn is_unix_char_or_fifo(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileTypeExt as _;
+        if let Ok(m) = std::fs::metadata(path) {
+            let ft = m.file_type();
+            return ft.is_char_device() || ft.is_fifo();
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    false
+}
+
 fn paths_collide(a: &Path, b: &Path) -> bool {
+    if is_unix_char_device(a) || is_unix_char_device(b) {
+        return false;
+    }
     if a == b {
         return true;
     }
     #[cfg(unix)]
     {
-        use std::os::unix::fs::MetadataExt as _;
+        use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _};
         if let (Ok(ma), Ok(mb)) = (std::fs::metadata(a), std::fs::metadata(b)) {
+            if ma.file_type().is_char_device() || mb.file_type().is_char_device() {
+                return false;
+            }
             if ma.dev() == mb.dev() && ma.ino() == mb.ino() {
                 return true;
             }
         }
     }
     if let (Some(ra), Some(rb)) = (resolve_target_path(a), resolve_target_path(b)) {
+        if is_unix_char_device(&ra) || is_unix_char_device(&rb) {
+            return false;
+        }
         if ra == rb {
             return true;
         }
         #[cfg(unix)]
         {
-            use std::os::unix::fs::MetadataExt as _;
+            use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _};
             if let (Ok(ma), Ok(mb)) = (std::fs::metadata(&ra), std::fs::metadata(&rb)) {
+                if ma.file_type().is_char_device() || mb.file_type().is_char_device() {
+                    return false;
+                }
                 if ma.dev() == mb.dev() && ma.ino() == mb.ino() {
                     return true;
                 }
@@ -2069,6 +2151,232 @@ fn paths_collide(a: &Path, b: &Path) -> bool {
         }
     }
     false
+}
+
+fn collect_protected_input_paths(config: &config::Config) -> Vec<std::path::PathBuf> {
+    let mut inputs = Vec::new();
+    if !config.reference.is_empty() {
+        let ref_path = Path::new(&config.reference);
+        inputs.push(ref_path.to_path_buf());
+        inputs.push(append_os_suffix(ref_path, ".fai"));
+    }
+    if config.region.is_none() {
+        if let Some(ref bed_str) = config.bed {
+            if !bed_str.is_empty() {
+                inputs.push(std::path::PathBuf::from(bed_str));
+            }
+        }
+    }
+    for bam_spec in config.bam.split('|') {
+        if let Ok(bams) = parse_colon_bams(bam_spec, "") {
+            for bam_str in bams {
+                let bam_path = Path::new(&bam_str);
+                inputs.push(bam_path.to_path_buf());
+                inputs.push(append_os_suffix(bam_path, ".bai"));
+                inputs.push(append_os_suffix(bam_path, ".csi"));
+                inputs.push(append_os_suffix(bam_path, ".crai"));
+                if let Some(ext) = bam_path.extension().and_then(|e| e.to_str()) {
+                    if ext.eq_ignore_ascii_case("bam") {
+                        inputs.push(bam_path.with_extension("bai"));
+                        inputs.push(bam_path.with_extension("csi"));
+                    } else if ext.eq_ignore_ascii_case("cram") {
+                        inputs.push(bam_path.with_extension("crai"));
+                        inputs.push(bam_path.with_extension("csi"));
+                    }
+                }
+            }
+        }
+    }
+    inputs
+}
+
+fn validate_io_paths(config: &config::Config) -> Result<(), VardictError> {
+    validate_tbi_flags(config)?;
+    let out_opt = config.output_path.as_deref().map(Path::new);
+    let tbi_opt = if config.index_output {
+        out_opt.map(tbi_output_path)
+    } else {
+        None
+    };
+    let stats_opt = config.stats_json_path.as_deref().map(Path::new);
+
+    if let Some(out) = out_opt {
+        if let Some(ref tbi_path) = tbi_opt {
+            if paths_collide(out, tbi_path) {
+                return Err(VardictError::Parse(format!(
+                    "--output '{}' and its Tabix index '{}' must not point to the same file",
+                    out.display(),
+                    tbi_path.display()
+                )));
+            }
+        }
+        if let Some(stats) = stats_opt {
+            if paths_collide(out, stats) {
+                return Err(VardictError::Parse(
+                    "--output and --stats-json must not point to the same file".to_string(),
+                ));
+            }
+            if let Some(ref tbi_path) = tbi_opt {
+                if paths_collide(tbi_path, stats) {
+                    return Err(VardictError::Parse(format!(
+                        "--output Tabix index '{}' and --stats-json '{}' must not point to the same file",
+                        tbi_path.display(),
+                        stats.display()
+                    )));
+                }
+            }
+        }
+    }
+
+    if out_opt.is_some() || tbi_opt.is_some() || stats_opt.is_some() {
+        let protected_inputs = collect_protected_input_paths(config);
+        for input in &protected_inputs {
+            if let Some(out) = out_opt {
+                if paths_collide(out, input) {
+                    return Err(VardictError::Parse(format!(
+                        "--output '{}' must not point to the same file as input '{}'",
+                        out.display(),
+                        input.display()
+                    )));
+                }
+            }
+            if let Some(ref tbi_path) = tbi_opt {
+                if paths_collide(tbi_path, input) {
+                    return Err(VardictError::Parse(format!(
+                        "--output Tabix index '{}' must not point to the same file as input '{}'",
+                        tbi_path.display(),
+                        input.display()
+                    )));
+                }
+            }
+            if let Some(stats) = stats_opt {
+                if paths_collide(stats, input) {
+                    return Err(VardictError::Parse(format!(
+                        "--stats-json '{}' must not point to the same file as input '{}'",
+                        stats.display(),
+                        input.display()
+                    )));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn is_broken_pipe_err(err: &VardictError) -> bool {
+    match err {
+        VardictError::Io(e) => {
+            e.kind() == std::io::ErrorKind::BrokenPipe || e.raw_os_error() == Some(32)
+        }
+        _ => false,
+    }
+}
+
+fn map_stats_io_err(stats_path: &str, err: std::io::Error) -> VardictError {
+    if err.kind() == std::io::ErrorKind::BrokenPipe || err.raw_os_error() == Some(32) {
+        VardictError::Io(std::io::Error::other(format!(
+            "failed to write --stats-json '{stats_path}': {err}"
+        )))
+    } else {
+        VardictError::Io(err)
+    }
+}
+
+enum PendingStatsJson {
+    AtomicTmp {
+        stats_label: String,
+        final_path: std::path::PathBuf,
+        tmp_path: std::path::PathBuf,
+        file: Option<std::fs::File>,
+        committed: bool,
+    },
+    DirectSpecial {
+        stats_label: String,
+        final_path: std::path::PathBuf,
+    },
+}
+
+impl PendingStatsJson {
+    fn open(stats_path: &str) -> Result<Self, VardictError> {
+        let target = Path::new(stats_path);
+        if is_unix_char_or_fifo(target) {
+            Ok(Self::DirectSpecial {
+                stats_label: stats_path.to_string(),
+                final_path: target.to_path_buf(),
+            })
+        } else {
+            let tmp_path = atomic_tmp_path(target);
+            let file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&tmp_path)
+                .map_err(|e| map_stats_io_err(stats_path, e))?;
+            Ok(Self::AtomicTmp {
+                stats_label: stats_path.to_string(),
+                final_path: target.to_path_buf(),
+                tmp_path,
+                file: Some(file),
+                committed: false,
+            })
+        }
+    }
+
+    fn commit(mut self, json: &[u8]) -> Result<(), VardictError> {
+        use std::io::Write as _;
+        match &mut self {
+            Self::AtomicTmp {
+                stats_label,
+                final_path,
+                tmp_path,
+                file,
+                committed,
+            } => {
+                if let Some(mut f) = file.take() {
+                    f.write_all(json)
+                        .map_err(|e| map_stats_io_err(stats_label, e))?;
+                    f.flush().map_err(|e| map_stats_io_err(stats_label, e))?;
+                    if let Err(VardictError::Io(io_e)) = sync_file_ignoring_special(&f) {
+                        return Err(map_stats_io_err(stats_label, io_e));
+                    }
+                }
+                std::fs::rename(&*tmp_path, &*final_path)
+                    .map_err(|e| map_stats_io_err(stats_label, e))?;
+                *committed = true;
+                Ok(())
+            }
+            Self::DirectSpecial {
+                stats_label,
+                final_path,
+            } => {
+                let mut file = std::fs::File::create(&*final_path)
+                    .map_err(|e| map_stats_io_err(stats_label, e))?;
+                file.write_all(json)
+                    .map_err(|e| map_stats_io_err(stats_label, e))?;
+                file.flush().map_err(|e| map_stats_io_err(stats_label, e))?;
+                if let Err(VardictError::Io(io_e)) = sync_file_ignoring_special(&file) {
+                    return Err(map_stats_io_err(stats_label, io_e));
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+impl Drop for PendingStatsJson {
+    fn drop(&mut self) {
+        if let Self::AtomicTmp {
+            tmp_path,
+            file,
+            committed,
+            ..
+        } = self
+        {
+            let _ = file.take();
+            if !*committed {
+                let _ = std::fs::remove_file(tmp_path);
+            }
+        }
+    }
 }
 
 /// Main entry point for the engine. Called by the CLI binary.
@@ -2086,46 +2394,23 @@ pub fn run(config: &config::Config) -> Result<(), VardictError> {
 
     crate::runner::run_with_worker_stack_for_bam(&config.bam, || {
         let started = std::time::Instant::now();
+        validate_io_paths(config)?;
         let (effective, mode) = resolve_effective_config(config)?;
-        if let Some(ref out_path) = effective.output_path {
-            let out = Path::new(out_path);
-            if effective.index_output {
-                let tbi_path = tbi_output_path(out);
-                if paths_collide(out, &tbi_path) {
-                    return Err(VardictError::Parse(format!(
-                        "--output '{out_path}' and its Tabix index '{}' must not point to the same file",
-                        tbi_path.display()
-                    )));
-                }
-            }
-            if let Some(ref stats_path) = effective.stats_json_path {
-                let stats = Path::new(stats_path);
-                if paths_collide(out, stats) {
-                    return Err(VardictError::Parse(
-                        "--output and --stats-json must not point to the same file".to_string(),
-                    ));
-                }
-                if effective.index_output && paths_collide(&tbi_output_path(out), stats) {
-                    return Err(VardictError::Parse(format!(
-                        "--output Tabix index '{out_path}.tbi' and --stats-json '{stats_path}' must not point to the same file"
-                    )));
-                }
-            }
-        }
-        let mut stats_file = if let Some(ref stats_path) = effective.stats_json_path {
-            Some(std::fs::File::create(stats_path).map_err(VardictError::Io)?)
+        let pending_stats = if let Some(ref stats_path) = effective.stats_json_path {
+            Some(PendingStatsJson::open(stats_path)?)
         } else {
             None
         };
-        let writer = open_output_writer(&effective)?;
+        let existed_before = effective
+            .output_path
+            .as_deref()
+            .is_some_and(|p| Path::new(p).symlink_metadata().is_ok());
+        let wrote_any = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let writer = open_output_writer(&effective, &wrote_any)?;
         let telemetry = RunTelemetryCounters::default();
-        run_with_engine_writer_and_telemetry(&effective, writer, Some(&telemetry))?;
-        if effective.index_output {
-            if let Some(ref out_path) = effective.output_path {
-                write_vcf_tabix_index(Path::new(out_path))?;
-            }
-        }
-        if let Some(ref mut f) = stats_file {
+        let engine_res = run_with_engine_writer_and_telemetry(&effective, writer, Some(&telemetry));
+
+        let emit_stats = |pending: PendingStatsJson| -> Result<(), VardictError> {
             let elapsed_ms = started.elapsed().as_millis();
             let peak_rss_kb = read_peak_rss_kb();
             let regions_count = telemetry
@@ -2147,12 +2432,39 @@ pub fn run(config: &config::Config) -> Result<(), VardictError> {
                 peak_rss_kb,
                 exceptions_caught,
             );
-            use std::io::Write as _;
-            f.write_all(json.as_bytes()).map_err(VardictError::Io)?;
-            f.flush().map_err(VardictError::Io)?;
-            sync_file_ignoring_special(f)?;
+            pending.commit(json.as_bytes())
+        };
+
+        match engine_res {
+            Ok(()) => {
+                if effective.index_output {
+                    if let Some(ref out_path) = effective.output_path {
+                        write_vcf_tabix_index(Path::new(out_path))?;
+                    }
+                }
+                if let Some(pending) = pending_stats {
+                    emit_stats(pending)?;
+                }
+                Ok(())
+            }
+            Err(err) => {
+                if let Some(ref out_path) = effective.output_path {
+                    let out = Path::new(out_path);
+                    if !existed_before
+                        && !wrote_any.load(std::sync::atomic::Ordering::Relaxed)
+                        && out.is_file()
+                    {
+                        let _ = std::fs::remove_file(out);
+                    }
+                }
+                if effective.output_path.is_none() && is_broken_pipe_err(&err) {
+                    if let Some(pending) = pending_stats {
+                        emit_stats(pending)?;
+                    }
+                }
+                Err(err)
+            }
         }
-        Ok(())
     })
 }
 
@@ -2528,7 +2840,7 @@ fn run_with_writer_inner<W: EngineWriter>(
                             config_clone.fisher,
                         );
                         let sbf = fisher.get_p_value();
-                        let oddratio_str = fisher.get_odds_ratio();
+                        let oddratio_str = fisher.odds_ratio_buf();
                         let mut line = String::new();
                         crate::output::vcf::format_filtered_vcf_record_into(
                             &mut line,
@@ -2727,7 +3039,7 @@ fn run_amplicon<W: EngineWriter>(
                 config.fisher,
             );
             let sbf = fisher.get_p_value();
-            let oddratio_str = fisher.get_odds_ratio();
+            let oddratio_str = fisher.odds_ratio_buf();
             let amp = Some((av.gdamp, av.tlamp, av.ncamp, av.ampflag));
             let mut line = String::new();
             crate::output::vcf::format_filtered_vcf_record_into(
@@ -5514,5 +5826,299 @@ mod tests {
             !chunks.is_empty(),
             "symbolic SV at POS=1000 with INFO/END=50000 must overlap query [30000, 30100]"
         );
+    }
+
+    #[test]
+    fn test_paths_collide_input_guards_and_dev_null() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let ref_fa = dir.path().join("ref.fa");
+        let ref_fai = dir.path().join("ref.fa.fai");
+        std::fs::write(
+            &ref_fa,
+            b">chr1\nACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT\n",
+        )
+        .unwrap();
+        std::fs::write(&ref_fai, b"chr1\t60\t6\t60\t61\n").unwrap();
+
+        let tumor_bam = dir.path().join("tumor.bam");
+        let normal_bam = dir.path().join("normal.bam");
+        let rec = test_record_buf(
+            "r1",
+            10,
+            &[(10, noodles::sam::alignment::record::cigar::op::Kind::Match)],
+            b"ACGTACGTAC".to_vec(),
+        );
+        write_test_bam(&tumor_bam, "chr1", 60, std::slice::from_ref(&rec));
+        write_test_bam(&normal_bam, "chr1", 60, std::slice::from_ref(&rec));
+        let tumor_bai = dir.path().join("tumor.bam.bai");
+        let normal_bai = dir.path().join("normal.bam.bai");
+        let tumor_csi = dir.path().join("tumor.bam.csi");
+        std::fs::write(&tumor_csi, b"CSI_SENTINEL").unwrap();
+
+        let extra_cram = dir.path().join("extra.cram");
+        let extra_crai = dir.path().join("extra.cram.crai");
+        std::fs::write(&extra_cram, b"CRAM_SENTINEL").unwrap();
+        std::fs::write(&extra_crai, b"CRAI_SENTINEL").unwrap();
+
+        let bed_file = dir.path().join("targets.bed");
+        std::fs::write(&bed_file, b"chr1\t1\t50\tGENE1\n").unwrap();
+
+        let protected = [
+            &ref_fa,
+            &ref_fai,
+            &bed_file,
+            &tumor_bam,
+            &normal_bam,
+            &tumor_bai,
+            &normal_bai,
+            &tumor_csi,
+            &extra_cram,
+            &extra_crai,
+        ];
+        let snapshots: Vec<Vec<u8>> = protected
+            .iter()
+            .map(|p| std::fs::read(p).unwrap())
+            .collect();
+
+        let base_cfg = crate::config::Config {
+            reference: ref_fa.to_string_lossy().into_owned(),
+            bam: format!(
+                "{}:{}|{}",
+                tumor_bam.display(),
+                extra_cram.display(),
+                normal_bam.display()
+            ),
+            bed: Some(bed_file.to_string_lossy().into_owned()),
+            column_for_chromosome: Some(0),
+            col_chr: 0,
+            col_start: 1,
+            col_end: 2,
+            col_seg_start: 1,
+            col_seg_end: 2,
+            col_gene: Some(3),
+            splice: true, // exercises raw config.bam retaining normal.bam even under -i
+            threads: 1,
+            ..Default::default()
+        };
+
+        for target in protected {
+            // 1. --output colliding directly with protected input/index
+            let mut out_cfg = base_cfg.clone();
+            out_cfg.output_path = Some(target.to_string_lossy().into_owned());
+            let err = crate::run(&out_cfg).expect_err(&format!(
+                "--output colliding with {} must fail",
+                target.display()
+            ));
+            assert!(
+                matches!(err, VardictError::Parse(_)),
+                "expected Parse error for --output {}, got {err:?}",
+                target.display()
+            );
+
+            // 2. --stats-json colliding directly with protected input/index
+            let mut stats_cfg = base_cfg.clone();
+            stats_cfg.stats_json_path = Some(target.to_string_lossy().into_owned());
+            let err = crate::run(&stats_cfg).expect_err(&format!(
+                "--stats-json colliding with {} must fail",
+                target.display()
+            ));
+            assert!(
+                matches!(err, VardictError::Parse(_)),
+                "expected Parse error for --stats-json {}, got {err:?}",
+                target.display()
+            );
+
+            // 3. --tbi output colliding via symlink with protected input/index
+            #[cfg(unix)]
+            {
+                let safe_vcf_gz = dir.path().join("tbi_guard_check.vcf.gz");
+                let safe_tbi = dir.path().join("tbi_guard_check.vcf.gz.tbi");
+                let _ = std::fs::remove_file(&safe_tbi);
+                std::os::unix::fs::symlink(target, &safe_tbi).unwrap();
+                let mut tbi_cfg = base_cfg.clone();
+                tbi_cfg.splice = false;
+                tbi_cfg.output_path = Some(safe_vcf_gz.to_string_lossy().into_owned());
+                tbi_cfg.index_output = true;
+                let err = crate::run(&tbi_cfg).expect_err(&format!(
+                    "--tbi colliding with {} must fail",
+                    target.display()
+                ));
+                assert!(
+                    matches!(err, VardictError::Parse(_)),
+                    "expected Parse error for --tbi {}, got {err:?}",
+                    target.display()
+                );
+                assert!(
+                    !safe_vcf_gz.exists(),
+                    "--tbi collision check must reject before creating {}",
+                    safe_vcf_gz.display()
+                );
+                let _ = std::fs::remove_file(&safe_tbi);
+            }
+        }
+
+        // Verify zero bytes were truncated or mutated on any input/companion file
+        for (p, expected) in protected.iter().zip(snapshots.iter()) {
+            assert_eq!(
+                &std::fs::read(p).unwrap(),
+                expected,
+                "protected file {} was truncated or modified!",
+                p.display()
+            );
+        }
+
+        // Verify --tbi error message no longer mislabels -E as --emit-intermediate
+        let mut bad_tbi_inter = base_cfg.clone();
+        bad_tbi_inter.splice = false;
+        bad_tbi_inter.emit_intermediate = true;
+        bad_tbi_inter.index_output = true;
+        bad_tbi_inter.output_path =
+            Some(dir.path().join("ok.vcf.gz").to_string_lossy().into_owned());
+        let msg = crate::run(&bad_tbi_inter).unwrap_err().to_string();
+        assert!(msg.contains("--emit-intermediate"));
+        assert!(!msg.contains("-E/--emit-intermediate"));
+
+        // Verify --output /dev/null --stats-json /dev/null succeeds on Unix
+        #[cfg(unix)]
+        {
+            let dev_null_cfg = crate::config::Config {
+                reference: ref_fa.to_string_lossy().into_owned(),
+                bam: tumor_bam.to_string_lossy().into_owned(),
+                region: Some("chr1:1-50".to_string()),
+                output_path: Some("/dev/null".to_string()),
+                stats_json_path: Some("/dev/null".to_string()),
+                threads: 1,
+                ..Default::default()
+            };
+            crate::run(&dev_null_cfg)
+                .expect("--output /dev/null --stats-json /dev/null must succeed on Unix");
+        }
+    }
+
+    #[test]
+    fn test_paths_collide_bgzf_residue_and_atomic_tmp_guards() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let ref_fa = dir.path().join("ref.fa");
+        let ref_fai = dir.path().join("ref.fa.fai");
+        std::fs::write(
+            &ref_fa,
+            b">chr1\nACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT\n",
+        )
+        .unwrap();
+        std::fs::write(&ref_fai, b"chr1\t60\t6\t60\t61\n").unwrap();
+
+        let bam = dir.path().join("sample.bam");
+        let rec = test_record_buf(
+            "r1",
+            10,
+            &[(10, noodles::sam::alignment::record::cigar::op::Kind::Match)],
+            b"ACGTACGTAC".to_vec(),
+        );
+        write_test_bam(&bam, "chr1", 60, std::slice::from_ref(&rec));
+
+        // 1. Malformed region (-R chr1:bad) fails before writing any bytes:
+        //    - newly created BGZF --output must be unlinked (no 28-byte BGZF_EOF residue)
+        //    - pre-existing --stats-json must remain intact with no .tmp.* left behind
+        let residue_vcf_gz = dir.path().join("residue.vcf.gz");
+        let existing_stats = dir.path().join("existing_stats.json");
+        std::fs::write(&existing_stats, b"{\"preserved\":true}\n").unwrap();
+
+        let bad_cfg = crate::config::Config {
+            reference: ref_fa.to_string_lossy().into_owned(),
+            bam: bam.to_string_lossy().into_owned(),
+            region: Some("chr1:bad".to_string()),
+            output_path: Some(residue_vcf_gz.to_string_lossy().into_owned()),
+            stats_json_path: Some(existing_stats.to_string_lossy().into_owned()),
+            threads: 1,
+            ..Default::default()
+        };
+        assert!(crate::run(&bad_cfg).is_err());
+        assert!(
+            !residue_vcf_gz.exists(),
+            "failed run with 0 output bytes must unlink newly created BGZF residue"
+        );
+        assert_eq!(
+            std::fs::read(&existing_stats).unwrap(),
+            b"{\"preserved\":true}\n",
+            "failed run must not truncate pre-existing --stats-json"
+        );
+
+        // 2. Pre-existing --output file is NOT unlinked (`existed_before == true`)
+        let preexisting_out = dir.path().join("preexisting.vcf.gz");
+        std::fs::write(&preexisting_out, b"old").unwrap();
+        let mut pre_cfg = bad_cfg.clone();
+        pre_cfg.output_path = Some(preexisting_out.to_string_lossy().into_owned());
+        pre_cfg.stats_json_path = None;
+        assert!(crate::run(&pre_cfg).is_err());
+        assert!(
+            preexisting_out.exists(),
+            "pre-existing --output file must not be unlinked on error"
+        );
+
+        // 3. write_vcf_tabix_index uses atomic tmp path and never unlinks existing .tbi on error
+        let corrupt_vcf_gz = dir.path().join("corrupt.vcf.gz");
+        let existing_tbi = dir.path().join("corrupt.vcf.gz.tbi");
+        {
+            use std::io::Write as _;
+            let mut bgzf_w =
+                noodles::bgzf::io::Writer::new(std::fs::File::create(&corrupt_vcf_gz).unwrap());
+            bgzf_w.write_all(b"chr1\tNOT_A_POS\t.\tA\tG\n").unwrap();
+            bgzf_w.finish().unwrap();
+        }
+        std::fs::write(&existing_tbi, b"KEEP_EXISTING_TBI").unwrap();
+        assert!(write_vcf_tabix_index(&corrupt_vcf_gz).is_err());
+        assert_eq!(
+            std::fs::read(&existing_tbi).unwrap(),
+            b"KEEP_EXISTING_TBI",
+            "failed write_vcf_tabix_index must preserve existing .tbi"
+        );
+
+        let leftover_tmps: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().contains(".tmp."))
+            .collect();
+        assert!(
+            leftover_tmps.is_empty(),
+            "no .tmp.<pid>.<seq> files may remain after errors: {leftover_tmps:?}"
+        );
+
+        // 4. Stats BrokenPipe maps to ErrorKind::Other (raw_os_error == None) on Linux
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::fd::AsRawFd as _;
+            let (reader, writer) = std::io::pipe().unwrap();
+            drop(reader); // close read end so writing stats triggers EPIPE (BrokenPipe)
+            let stats_fd_path = format!("/proc/self/fd/{}", writer.as_raw_fd());
+            let pipe_cfg = crate::config::Config {
+                reference: ref_fa.to_string_lossy().into_owned(),
+                bam: bam.to_string_lossy().into_owned(),
+                region: Some("chr1:1-50".to_string()),
+                output_path: Some("/dev/null".to_string()),
+                stats_json_path: Some(stats_fd_path),
+                threads: 1,
+                ..Default::default()
+            };
+            let err = crate::run(&pipe_cfg).expect_err("stats write to closed pipe must fail");
+            match err {
+                VardictError::Io(io_err) => {
+                    assert_eq!(io_err.kind(), std::io::ErrorKind::Other);
+                    assert!(
+                        io_err.raw_os_error().is_none(),
+                        "raw_os_error must be None so main.rs does not mask stats EPIPE as exit 0"
+                    );
+                }
+                other => panic!("expected VardictError::Io(Other), got {other:?}"),
+            }
+            drop(writer);
+        }
+
+        // 5. record_read_end saturates instead of overflowing i32
+        let mut big_rec = crate::bam::SamRecord::new();
+        big_rec.cigar = vec![(
+            u32::MAX,
+            noodles::sam::alignment::record::cigar::op::Kind::Match,
+        )];
+        assert_eq!(record_read_end(&big_rec, i32::MAX - 10), i32::MAX);
     }
 }
