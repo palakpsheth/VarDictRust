@@ -431,14 +431,15 @@ pub fn resolve_sample_names(
 ) -> String {
     if let Some((bam1, bam2)) = bam_raw.split_once('|') {
         if has_region && emit_intermediate_or_splice {
-            let mut base1 = explicit_sample
-                .and_then(|s| s.split('|').next())
-                .map(str::to_owned)
-                .unwrap_or_else(|| extract_sample_name(bam_raw, None));
-            if let Some(pat) = sample_regexp
+            let clean_pat = sample_regexp
                 .map(strip_outer_slashes)
-                .filter(|s| !s.is_empty())
-            {
+                .filter(|s| !s.is_empty());
+            let mut base1 = match explicit_sample {
+                Some(exp) if clean_pat.is_some() => exp.to_string(),
+                Some(exp) => exp.split('|').next().unwrap_or(exp).to_string(),
+                None => extract_sample_name(bam_raw, clean_pat),
+            };
+            if let Some(pat) = clean_pat {
                 if let Ok(re) = regex::RegexBuilder::new(pat).size_limit(1 << 20).build() {
                     if let Some(caps) = re.captures(bam1) {
                         if let Some(m) = caps.get(1) {

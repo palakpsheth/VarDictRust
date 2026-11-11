@@ -1145,7 +1145,26 @@ impl VariationEntries {
                 RawEntryMut::Occupied(e) => e.into_mut(),
                 RawEntryMut::Vacant(v) => v.insert(key.to_owned(), Variation::new()).1,
             },
-            Self::Empty => self.get_or_insert_variation(key),
+            Self::Empty => self
+                .ensure_many_mut()
+                .entry(key.to_owned())
+                .or_insert_with(Variation::new),
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn ensure_many_mut(&mut self) -> &mut IndexMap<String, Variation, FxBuildHasher> {
+        if !matches!(self, Self::Many(_)) {
+            let mut map: Box<IndexMap<String, Variation, FxBuildHasher>> = Box::default();
+            if let Self::One(ik, prev_v) = std::mem::take(self) {
+                map.insert(ik.as_str().to_owned(), prev_v);
+            }
+            *self = Self::Many(map);
+        }
+        match self {
+            Self::Many(map) => map,
+            Self::Empty | Self::One(_, _) => self.ensure_many_mut(),
         }
     }
 
@@ -1213,17 +1232,7 @@ impl VariationEntries {
     }
 
     pub fn entry(&mut self, key: String) -> indexmap::map::Entry<'_, String, Variation> {
-        if !matches!(self, Self::Many(_)) {
-            let mut map: Box<IndexMap<String, Variation, FxBuildHasher>> = Box::default();
-            if let Self::One(ik, prev_v) = std::mem::take(self) {
-                map.insert(ik.as_str().to_owned(), prev_v);
-            }
-            *self = Self::Many(map);
-        }
-        match self {
-            Self::Many(map) => map.entry(key),
-            Self::Empty | Self::One(_, _) => self.entry(key),
-        }
+        self.ensure_many_mut().entry(key)
     }
 
     #[inline]
