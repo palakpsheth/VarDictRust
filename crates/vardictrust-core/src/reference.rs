@@ -374,9 +374,10 @@ pub struct Reference {
     pub reference_sequences: HashMap<String, Vec<u8>>,
     /// Sequences matching loaded_regions by index: region_sequences[i] corresponds to loaded_regions[i].
     pub region_sequences: Vec<Vec<u8>>,
-    /// Shared FASTA buffer + trimmed site length (`(shared_bases, site_len)`) matching
-    /// `loaded_regions` by index, sharing the same `Arc<[u8]>` queued in `seed`.
-    shared_region_spans: Vec<(std::sync::Arc<[u8]>, usize)>,
+    /// Shared FASTA buffer + trimmed site length (`Some((shared_bases, site_len))`) matching
+    /// `loaded_regions` by index (`None` for synthetic non-FASTA regions), sharing the same
+    /// `Arc<[u8]>` queued in `seed`.
+    shared_region_spans: Vec<Option<(std::sync::Arc<[u8]>, usize)>>,
     /// Maps k-mer bytes to 1-based positions.
     pub seed: SeedMap,
 }
@@ -394,10 +395,20 @@ impl Reference {
 
     #[inline]
     fn seq_for_idx<'a>(&'a self, idx: usize, chr: &str) -> Option<&'a [u8]> {
-        self.shared_region_spans
-            .get(idx)
-            .and_then(|(arc, len)| arc.get(..*len))
-            .or_else(|| self.region_sequences.get(idx).map(Vec::as_slice))
+        if let Some(Some((arc, len))) = self.shared_region_spans.get(idx) {
+            return arc.get(..*len);
+        }
+        let reg_idx = if self.region_sequences.len() == self.loaded_regions.len() {
+            Some(idx)
+        } else {
+            let shared_before = self
+                .shared_region_spans
+                .get(..idx.min(self.shared_region_spans.len()))
+                .map_or(0, |s| s.iter().filter(|e| e.is_some()).count());
+            idx.checked_sub(shared_before)
+        };
+        reg_idx
+            .and_then(|ri| self.region_sequences.get(ri).map(Vec::as_slice))
             .or_else(|| {
                 if idx == 0 {
                     self.reference_sequences.get(chr).map(Vec::as_slice)
@@ -419,7 +430,11 @@ impl Reference {
         if lr.sequence_end < lr.sequence_start {
             return None;
         }
-        let slice = self.seq_for_idx(idx, chr)?;
+        let slice = if let Some(Some((arc, len))) = self.shared_region_spans.get(idx) {
+            arc.get(..*len)?
+        } else {
+            self.seq_for_idx(idx, chr)?
+        };
         let max_len = (lr.sequence_end.saturating_sub(lr.sequence_start) as usize)
             .saturating_add(1)
             .min(slice.len());
@@ -629,16 +644,12 @@ pub fn get_reference_with_chr_len(
         prev_bounds,
     });
 
-    if reference.shared_region_spans.len() == prev_loaded_len {
-        reference.shared_region_spans.push((shared_bases, site_end));
-    } else {
-        while reference.region_sequences.len() < prev_loaded_len {
-            reference.region_sequences.push(Vec::new());
-        }
-        reference
-            .region_sequences
-            .push(shared_bases.get(..site_end).unwrap_or(&[]).to_vec());
+    while reference.shared_region_spans.len() < prev_loaded_len {
+        reference.shared_region_spans.push(None);
     }
+    reference
+        .shared_region_spans
+        .push(Some((shared_bases, site_end)));
 
     Ok(())
 }
@@ -1038,13 +1049,14 @@ mod tests {
         assert!(reference.reference_sequences.is_empty());
         assert!(reference.region_sequences.is_empty());
         assert_eq!(reference.shared_region_spans.len(), 1);
-        assert_eq!(reference.shared_region_spans[0].1, 13);
+        let span0 = reference.shared_region_spans[0].as_ref().unwrap();
+        assert_eq!(span0.1, 13);
         {
             let pending_guard = reference.seed.pending.borrow();
             assert_eq!(pending_guard.1.len(), 1);
             assert!(
                 std::ptr::eq(
-                    std::sync::Arc::as_ptr(&reference.shared_region_spans[0].0),
+                    std::sync::Arc::as_ptr(&span0.0),
                     std::sync::Arc::as_ptr(&pending_guard.1[0].bases),
                 ),
                 "Reference.shared_region_spans and PendingSeedChunk must share a single Arc<[u8]> allocation"
@@ -1055,7 +1067,7 @@ mod tests {
         assert_eq!(prim_slice, b"ACGTACGTACGTA");
         assert!(std::ptr::eq(
             prim_slice.as_ptr(),
-            std::sync::Arc::as_ptr(&reference.shared_region_spans[0].0).cast::<u8>(),
+            std::sync::Arc::as_ptr(&span0.0).cast::<u8>(),
         ));
         assert_eq!(reference.primary_region_slice("chr_missing"), None);
 
@@ -1069,6 +1081,78 @@ mod tests {
 
         // Verify seed indexing contains our expected 17-mers and 12-mers
         assert!(!reference.seed.is_empty());
+
+        // Verify mixed-order synchronization between synthetic regions and get_reference_with_chr_len:
+        let mut mix_cfg = config.clone();
+        mix_cfg.extension = 0;
+
+        // (a) loaded_regions[0] + reference_sequences (region_sequences empty) followed by
+        //     get_reference_with_chr_len on [1] keeps seq_for_idx(0) intact and region_sequences empty.
+        let mut ref_mix_a = Reference::new();
+        ref_mix_a.loaded_regions.push(LoadedRegion {
+            chr: "chr1".to_string(),
+            sequence_start: 1,
+            sequence_end: 8,
+        });
+        ref_mix_a
+            .reference_sequences
+            .insert("chr1".to_string(), b"TTTTTTTT".to_vec());
+        assert!(ref_mix_a.region_sequences.is_empty());
+        let reg_tail = BedRegion {
+            chr: "chr1".to_string(),
+            start: Pos1(21),
+            end: Pos1(40),
+            gene: "TAIL".to_string(),
+            amplicon: None,
+        };
+        get_reference_with_chr_len(&reg_tail, 0, 40, &mix_cfg, &mut ref_mix_a).unwrap();
+        assert!(ref_mix_a.region_sequences.is_empty());
+        assert_eq!(ref_mix_a.shared_region_spans.len(), 2);
+        assert!(ref_mix_a.shared_region_spans[0].is_none());
+        assert!(ref_mix_a.shared_region_spans[1].is_some());
+        assert_eq!(ref_mix_a.seq_for_idx(0, "chr1"), Some(&b"TTTTTTTT"[..]));
+        assert_eq!(
+            ref_mix_a.seq_for_idx(1, "chr1"),
+            Some(&b"ACGTACGTACGTACGTACGT"[..])
+        );
+        assert_eq!(
+            ref_mix_a.primary_region_slice("chr1"),
+            Some((&b"TTTTTTTT"[..], 1))
+        );
+        assert_eq!(ref_mix_a.get_base("chr1", 1), Some(b'T'));
+        assert_eq!(ref_mix_a.get_base("chr1", 21), Some(b'A'));
+        assert_eq!(ref_mix_a.get_base("chr1", 40), Some(b'T'));
+
+        // (b) get_reference_with_chr_len on [0] followed by pushing synthetic loaded_regions[1]
+        //     + region_sequences.push(...) resolves both [0] and [1] accurately.
+        let mut ref_mix_b = Reference::new();
+        let reg_head = BedRegion {
+            chr: "chr1".to_string(),
+            start: Pos1(1),
+            end: Pos1(25),
+            gene: "HEAD".to_string(),
+            amplicon: None,
+        };
+        get_reference_with_chr_len(&reg_head, 0, 40, &mix_cfg, &mut ref_mix_b).unwrap();
+        ref_mix_b.loaded_regions.push(LoadedRegion {
+            chr: "chr1".to_string(),
+            sequence_start: 31,
+            sequence_end: 36,
+        });
+        ref_mix_b.region_sequences.push(b"GGGGGG".to_vec());
+        assert_eq!(ref_mix_b.region_sequences.len(), 1);
+        assert_eq!(ref_mix_b.shared_region_spans.len(), 1);
+        assert_eq!(ref_mix_b.seq_for_idx(0, "chr1"), Some(&b"ACGTACGT"[..]));
+        assert_eq!(ref_mix_b.seq_for_idx(1, "chr1"), Some(&b"GGGGGG"[..]));
+        assert_eq!(
+            ref_mix_b.primary_region_slice("chr1"),
+            Some((&b"ACGTACGT"[..], 1))
+        );
+        assert_eq!(ref_mix_b.get_base("chr1", 1), Some(b'A'));
+        assert_eq!(ref_mix_b.get_base("chr1", 8), Some(b'T'));
+        assert_eq!(ref_mix_b.get_base("chr1", 9), None);
+        assert_eq!(ref_mix_b.get_base("chr1", 31), Some(b'G'));
+        assert_eq!(ref_mix_b.get_base("chr1", 36), Some(b'G'));
 
         // Cleanup
         let _ = fs::remove_file(&fa_path);
@@ -1260,7 +1344,7 @@ mod tests {
         get_reference(&r_tiny, 0, &chr_lengths, &short_cfg, &mut ref_tiny).unwrap();
         assert!(ref_tiny.region_sequences.is_empty());
         assert!(ref_tiny.reference_sequences.is_empty());
-        assert_eq!(ref_tiny.shared_region_spans[0].1, 0);
+        assert_eq!(ref_tiny.shared_region_spans[0].as_ref().unwrap().1, 0);
         assert_eq!(ref_tiny.primary_region_slice("chr1"), Some((&[][..], 1)));
         get_reference(&r2, 0, &chr_lengths, &short_cfg, &mut ref_tiny).unwrap();
 

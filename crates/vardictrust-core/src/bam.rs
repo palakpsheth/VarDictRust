@@ -96,7 +96,7 @@ const fn build_bam_seq_pair_lut() -> [[u8; 2]; 256] {
 #[inline]
 fn decode_bam_raw_seq_into(raw_seq: &[u8], n: usize, dst: &mut Vec<u8>) {
     dst.clear();
-    dst.reserve(n);
+    dst.reserve(n.min(raw_seq.len().saturating_mul(2)));
     let full_pairs = n / 2;
     if let Some(pair_bytes) = raw_seq.get(..full_pairs) {
         for &byte in pair_bytes {
@@ -7366,7 +7366,7 @@ mod tests {
                 assert_eq!(BAM_SEQ_PAIR_LUT[usize::from(b)], expected_pair);
             }
 
-            // Truncated raw sequence slices never panic:
+            // Truncated raw sequence slices never panic or over-reserve:
             let mut trunc_buf = Vec::new();
             decode_bam_raw_seq_into(&[0x12], 4, &mut trunc_buf);
             assert_eq!(trunc_buf, b"AC");
@@ -7374,6 +7374,10 @@ mod tests {
             assert_eq!(trunc_buf, b"AC");
             decode_bam_raw_seq_into(&[], 5, &mut trunc_buf);
             assert!(trunc_buf.is_empty());
+            let mut huge_trunc = Vec::new();
+            decode_bam_raw_seq_into(&[0x12], usize::MAX, &mut huge_trunc);
+            assert_eq!(huge_trunc, b"AC");
+            assert!(huge_trunc.capacity() <= 64);
 
             let iupac_bam_path = dir.path().join("iupac_qual_feed.bam");
             let mk_custom_rec = |name: &str,
