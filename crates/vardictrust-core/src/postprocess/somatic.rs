@@ -576,7 +576,7 @@ fn combine_analysis(
         crate::verbose_eprintln!("Start Combine {} {}", position, variant1.description);
     }
     // Don't do it for structural variants (:394)
-    if variant1.end_pos - variant1.start_pos > config.sv_min_len as i32 {
+    if i64::from(variant1.end_pos) - i64::from(variant1.start_pos) > i64::from(config.sv_min_len) {
         return CombineVerdict::Keep;
     }
 
@@ -584,7 +584,7 @@ fn combine_analysis(
     let region = Region {
         chr: chr.to_string(),
         start: crate::types::Pos1(variant1.start_pos.saturating_sub(*max_read_length).max(1) as u32),
-        end: crate::types::Pos1(variant1.end_pos.saturating_add(*max_read_length) as u32),
+        end: crate::types::Pos1(variant1.end_pos.saturating_add(*max_read_length).max(1) as u32),
         gene: String::new(),
         amplicon: None,
     };
@@ -1263,6 +1263,61 @@ mod tests {
             CombineVerdict::Keep
         ));
         assert!(matches!(splice, std::borrow::Cow::Borrowed(_)));
+
+        // Large sv_min_len (u32::MAX) must not cast negative at somatic.rs:579, and
+        // end_pos near i32::MAX / <= 0 must clamp cleanly to [1..=i32::MAX] at somatic.rs:587.
+        let mut huge_sv_cfg = test_config();
+        huge_sv_cfg.sv_min_len = u32::MAX;
+        let seen_regions: std::cell::RefCell<Vec<(u32, u32)>> = std::cell::RefCell::new(Vec::new());
+        let spy_pipeline =
+            |comb_reg: &Region,
+             _splice_set: &mut rustc_hash::FxHashSet<String>,
+             _max_rl: &mut i32|
+             -> Result<crate::javamap::JavaHashMap<i32, Vars>, VardictError> {
+                seen_regions
+                    .borrow_mut()
+                    .push((comb_reg.start.0, comb_reg.end.0));
+                Ok(crate::javamap::JavaHashMap::new())
+            };
+
+        let mut v_near_max = make_insertion_variant();
+        v_near_max.start_pos = i32::MAX - 10;
+        v_near_max.end_pos = i32::MAX - 10;
+        let mut rl_150 = 150;
+        assert!(matches!(
+            combine_analysis(
+                &huge_sv_cfg,
+                &spy_pipeline,
+                &v_near_max,
+                "chr1",
+                i32::MAX - 10,
+                &mut splice,
+                &mut rl_150
+            ),
+            CombineVerdict::Skip
+        ));
+
+        let mut v_nonpos = make_insertion_variant();
+        v_nonpos.start_pos = -10;
+        v_nonpos.end_pos = -5;
+        let mut rl_zero = 0;
+        assert!(matches!(
+            combine_analysis(
+                &huge_sv_cfg,
+                &spy_pipeline,
+                &v_nonpos,
+                "chr1",
+                1,
+                &mut splice,
+                &mut rl_zero
+            ),
+            CombineVerdict::Skip
+        ));
+
+        assert_eq!(
+            seen_regions.into_inner(),
+            vec![((i32::MAX - 160) as u32, i32::MAX as u32), (1, 1),]
+        );
     }
 
     #[test]
