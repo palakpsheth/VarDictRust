@@ -22,7 +22,7 @@ use crate::config::Config;
 use crate::reference::{get_reference, is_loaded, Reference};
 use crate::types::{Pos1, VardictError};
 use crate::variations::{Cluster, Mate, Sclip, Variation};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap};
 
 #[inline]
 fn midpoint_i32(a: i32, b: i32) -> i32 {
@@ -60,7 +60,7 @@ pub fn check_cluster(mates: &mut [Mate], rlen: i32) -> Cluster {
 
     for mate_m in mates.iter() {
         let current_cluster_end = clusters[cur].mate.mate_end;
-        if mate_m.mate_start - current_cluster_end > limit {
+        if i64::from(mate_m.mate_start) - i64::from(current_cluster_end) > i64::from(limit) {
             cur += 1;
             clusters.push(Cluster::new(
                 0,
@@ -353,9 +353,12 @@ pub fn find_match(
         if let Some([first_seed_u32]) = reference.seed.get(seed) {
             let first_seed = *first_seed_u32 as i32;
             let mut bp = if dir == 1 {
-                first_seed - i as i32
+                first_seed.saturating_sub(i as i32)
             } else {
-                first_seed + seq_vec.len() as i32 - i as i32 - 1
+                first_seed
+                    .saturating_add(seq_vec.len() as i32)
+                    .saturating_sub(i as i32)
+                    .saturating_sub(1)
             };
 
             if crate::realign::is_match_ref(&seq_vec, reference, chr, bp, dir, mm_limit) {
@@ -365,7 +368,7 @@ pub fn find_match(
                     if let Some(ch) = crate::util::char_at(&seq_vec, mm) {
                         if is_has_and_not_equals(reference, chr, bp as u32, ch) {
                             extra.push(ch);
-                            bp += dir;
+                            bp = bp.saturating_add(dir);
                             mm += dir as isize;
                             continue;
                         }
@@ -398,7 +401,7 @@ pub fn find_match(
                 let mut eqcnt = 0;
                 let mut bp_mut = bp;
                 for ii in 1..=15 {
-                    bp_mut += dir;
+                    bp_mut = bp_mut.saturating_add(dir);
                     if dir == 1 {
                         sseq = sseq.get(1..).unwrap_or(&[]);
                         let Some(b0) = crate::util::char_at(sseq, 0) else {
@@ -409,7 +412,12 @@ pub fn find_match(
                         }
                         eqcnt += 1;
                         if crate::util::char_at(sseq, 1).is_some_and(|b1| {
-                            is_has_and_not_equals(reference, chr, (bp_mut + 1) as u32, b1)
+                            is_has_and_not_equals(
+                                reference,
+                                chr,
+                                bp_mut.saturating_add(1) as u32,
+                                b1,
+                            )
                         }) {
                             continue;
                         }
@@ -424,7 +432,12 @@ pub fn find_match(
                         }
                         eqcnt += 1;
                         if crate::util::char_at(sseq, -2).is_some_and(|prev| {
-                            is_has_and_not_equals(reference, chr, (bp_mut - 1) as u32, prev)
+                            is_has_and_not_equals(
+                                reference,
+                                chr,
+                                bp_mut.saturating_sub(1) as u32,
+                                prev,
+                            )
                         }) {
                             continue;
                         }
@@ -510,9 +523,12 @@ pub fn find_match_rev(
         if let Some([first_seed_u32]) = reference.seed.get(seed) {
             let first_seed = *first_seed_u32 as i32;
             let mut bp = if dir == 1 {
-                first_seed + seq_vec.len() as i32 - i as i32 - 1
+                first_seed
+                    .saturating_add(seq_vec.len() as i32)
+                    .saturating_sub(i as i32)
+                    .saturating_sub(1)
             } else {
-                first_seed - i as i32
+                first_seed.saturating_sub(i as i32)
             };
 
             if crate::realign::is_match_ref(&seq_vec, reference, chr, bp, -1 * dir, mm_limit) {
@@ -538,7 +554,7 @@ pub fn find_match_rev(
                 let mut eqcnt = 0;
                 let mut bp_mut = bp;
                 for ii in 1..=15 {
-                    bp_mut -= dir;
+                    bp_mut = bp_mut.saturating_sub(dir);
                     if dir == -1 {
                         sseq = sseq.get(1..).unwrap_or(&[]);
                         let Some(b0) = crate::util::char_at(sseq, 0) else {
@@ -549,7 +565,12 @@ pub fn find_match_rev(
                         }
                         eqcnt += 1;
                         if crate::util::char_at(sseq, 1).is_some_and(|b1| {
-                            is_has_and_not_equals(reference, chr, (bp_mut + 1) as u32, b1)
+                            is_has_and_not_equals(
+                                reference,
+                                chr,
+                                bp_mut.saturating_add(1) as u32,
+                                b1,
+                            )
                         }) {
                             continue;
                         }
@@ -564,7 +585,12 @@ pub fn find_match_rev(
                         }
                         eqcnt += 1;
                         if crate::util::char_at(sseq, -2).is_some_and(|prev| {
-                            is_has_and_not_equals(reference, chr, (bp_mut - 1) as u32, prev)
+                            is_has_and_not_equals(
+                                reference,
+                                chr,
+                                bp_mut.saturating_sub(1) as u32,
+                                prev,
+                            )
                         }) {
                             continue;
                         }
@@ -614,15 +640,19 @@ pub fn is_overlap(start1: i32, end1: i32, start2: i32, end2: i32, rlen: i32) -> 
     let mut positions = [start1, end1, start2, end2];
     positions.sort_unstable();
 
-    let ins = positions[2] - positions[1];
+    let ins = positions[2].saturating_sub(positions[1]);
     if (end1 != start1) && (end2 != start2) {
-        let ratio1 = (ins as f64) / ((end1 - start1) as f64);
-        let ratio2 = (ins as f64) / ((end2 - start2) as f64);
+        let ratio1 = (ins as f64) / ((i64::from(end1) - i64::from(start1)) as f64);
+        let ratio2 = (ins as f64) / ((i64::from(end2) - i64::from(start2)) as f64);
         if ratio1 > 0.75 && ratio2 > 0.75 {
             return true;
         }
     }
-    if (positions[1] - positions[0]) + (positions[3] - positions[2]) < 3 * rlen {
+    if positions[1]
+        .saturating_sub(positions[0])
+        .saturating_add(positions[3].saturating_sub(positions[2]))
+        < 3i32.saturating_mul(rlen)
+    {
         return true;
     }
     false
@@ -636,9 +666,9 @@ pub fn mark_sv(
     rlen: i32,
     verbose: bool,
 ) -> (i32, i32, i32) {
-    let mut cov = 0;
-    let mut pairs = 0;
-    let mut cnt = 0;
+    let mut cov: i32 = 0;
+    let mut pairs: i32 = 0;
+    let mut cnt: i32 = 0;
 
     for current_sclips_sr in structural_variants_sv {
         for sv_r in current_sclips_sr.iter_mut() {
@@ -674,9 +704,12 @@ pub fn mark_sv(
                 cnt += 1;
                 pairs += sv_r.variation.cnt;
                 if sv_r.end != sv_r.start {
-                    cov += ((sv_r.variation.cnt * rlen) as f64 / (sv_r.end - sv_r.start) as f64)
-                        as i32
-                        + 1;
+                    cov = cov.saturating_add(
+                        (((i64::from(sv_r.variation.cnt) * i64::from(rlen)) as f64
+                            / (i64::from(sv_r.end) - i64::from(sv_r.start)) as f64)
+                            as i32)
+                            .saturating_add(1),
+                    );
                 }
             }
         }
@@ -888,7 +921,7 @@ pub fn find_inv_sub(
             let mod_region = crate::regions::Region {
                 chr: chr.to_string(),
                 start: Pos1(mstart.max(1) as u32),
-                end: Pos1(mend as u32),
+                end: Pos1(mend.max(1) as u32),
                 gene: String::new(),
                 amplicon: None,
             };
@@ -898,8 +931,8 @@ pub fn find_inv_sub(
                 var_data,
                 reference,
                 chr,
-                mstart - 200,
-                mend + 200,
+                mstart.saturating_sub(200).max(1),
+                mend.saturating_add(200),
                 config,
                 chromosomes_lengths,
             )?;
@@ -950,8 +983,8 @@ pub fn find_inv_sub(
         } else {
             // Look within 2*maxReadLength to find soft clips not associated with discordant pairs
             let sp = if dir == 1 { end } else { start };
-            for i in 1..=(2 * max_read_length) {
-                let cp = sp + i * dir;
+            for i in 1..=2i32.saturating_mul(max_read_length) {
+                let cp = sp.saturating_add(i.saturating_mul(dir));
                 let sclip_map = if dir == 1 {
                     &mut var_data.soft_clips_3_end
                 } else {
@@ -991,9 +1024,9 @@ pub fn find_inv_sub(
                 scv_used_pos = cp;
                 seq = seq_check;
                 let bp_diff = if dir == 1 {
-                    (bp - mend).abs()
+                    bp.saturating_sub(mend).saturating_abs()
                 } else {
-                    (bp - mstart).abs()
+                    bp.saturating_sub(mstart).saturating_abs()
                 };
                 if (bp_diff as f64) < 1.5 * (max_read_length as f64) {
                     // MINSVCDIST = 1.5
@@ -1012,16 +1045,16 @@ pub fn find_inv_sub(
 
         if side == Side::Five {
             if dir == -1 {
-                bp -= 1;
+                bp = bp.saturating_sub(1);
             }
         } else {
             if dir == 1 {
-                bp += 1;
+                bp = bp.saturating_add(1);
                 if bp != 0 {
-                    softp -= 1;
+                    softp = softp.saturating_sub(1);
                 }
             } else {
-                softp -= 1;
+                softp = softp.saturating_sub(1);
             }
         }
 
@@ -1036,9 +1069,9 @@ pub fn find_inv_sub(
                 reference.get_base(chr, bp as u32),
             ) {
                 if ch_s == crate::util::complement(ch_b) {
-                    softp += 1;
+                    softp = softp.saturating_add(1);
                     if softp != 0 {
-                        bp -= 1;
+                        bp = bp.saturating_sub(1);
                     }
                 } else {
                     break;
@@ -1046,13 +1079,13 @@ pub fn find_inv_sub(
             }
         }
         while let (Some(ch_s), Some(ch_b)) = (
-            reference.get_base(chr, (softp - 1) as u32),
-            reference.get_base(chr, (bp + 1) as u32),
+            reference.get_base(chr, softp.saturating_sub(1) as u32),
+            reference.get_base(chr, bp.saturating_add(1) as u32),
         ) {
             if ch_s == crate::util::complement(ch_b) {
-                softp -= 1;
+                softp = softp.saturating_sub(1);
                 if softp != 0 {
-                    bp += 1;
+                    bp = bp.saturating_add(1);
                 }
             } else {
                 break;
@@ -1079,28 +1112,28 @@ pub fn find_inv_sub(
         // is computed inside the block. Gating on len instead accepted a gap
         // of exactly 150 and divided (gap+1) by |mlen| — e.g. gap=299,
         // mlen=200 is accepted by Java (1.495 < 1.5) but was rejected here.
-        let gap = bp - softp;
+        let gap = bp.saturating_sub(softp);
         let abs_mlen = (inv_mlen as f64).abs();
         if bp > softp && gap > 150 && (gap as f64) / abs_mlen < 1.5 {
-            let len = gap + 1;
+            let len = gap.saturating_add(1);
             let sv_flank = 50; // Configuration.SVFLANK
             let ins5 = complement_seq(&crate::util::join_ref(
                 reference,
                 chr,
-                bp - sv_flank + 1,
+                bp.saturating_sub(sv_flank - 1),
                 bp,
             ));
             let ins3 = complement_seq(&crate::util::join_ref(
                 reference,
                 chr,
                 softp,
-                softp + sv_flank - 1,
+                softp.saturating_add(sv_flank - 1),
             ));
-            let ins = if len - 2 * sv_flank <= 0 {
+            let ins = if len.saturating_sub(2 * sv_flank) <= 0 {
                 complement_seq(&crate::util::join_ref(reference, chr, softp, bp))
             } else {
                 let mut tmp_ins = ins5;
-                tmp_ins.push_str(&format!("<inv{}>", len - 2 * sv_flank));
+                tmp_ins.push_str(&format!("<inv{}>", len.saturating_sub(2 * sv_flank)));
                 tmp_ins.push_str(&ins3);
                 tmp_ins
             };
@@ -1155,11 +1188,12 @@ pub fn find_inv_sub(
             map.insert(gt_full.clone(), cnt);
             dels5.insert(softp, map);
 
-            let ref_cov_val = if let Some(&prev_cov) = var_data.ref_coverage.get(&(softp - 1)) {
-                prev_cov
-            } else {
-                cnt
-            };
+            let ref_cov_val =
+                if let Some(&prev_cov) = var_data.ref_coverage.get(&softp.saturating_sub(1)) {
+                    prev_cov
+                } else {
+                    cnt
+                };
             var_data.ref_coverage.insert(softp, ref_cov_val);
             // ports StructuralVariantsProcessor.java:663: mark the LIVE soft clip
             // map entry used (dir==1 -> 3' end map), under the position it was
@@ -1365,7 +1399,7 @@ pub fn find_del(
                 let mod_region = crate::regions::Region {
                     chr: chr.to_string(),
                     start: Pos1(mstart.max(1) as u32),
-                    end: Pos1(mend as u32),
+                    end: Pos1(mend.max(1) as u32),
                     gene: String::new(),
                     amplicon: None,
                 };
@@ -1375,8 +1409,8 @@ pub fn find_del(
                     var_data,
                     reference,
                     chr,
-                    mstart - 200,
-                    mend + 200,
+                    mstart.saturating_sub(200).max(1),
+                    mend.saturating_add(200),
                     config,
                     chromosomes_lengths,
                 )?;
@@ -1387,24 +1421,27 @@ pub fn find_del(
             if bp == 0 {
                 continue;
             }
-            if !(bp - softp_cand > 30
+            if !(bp.saturating_sub(softp_cand) > 30
                 && is_overlap(softp_cand, bp, end, mstart, var_data.max_read_length))
             {
                 continue;
             }
-            bp -= 1;
+            bp = bp.saturating_sub(1);
             let mut softp = softp_cand;
-            let mut dellen = bp - softp + 1;
+            let mut dellen = bp.saturating_sub(softp).saturating_add(1);
             while reference.get_base(chr, bp as u32).is_some()
-                && reference.get_base(chr, (softp - 1) as u32).is_some()
-                && reference.get_base(chr, bp as u32) == reference.get_base(chr, (softp - 1) as u32)
+                && reference
+                    .get_base(chr, softp.saturating_sub(1) as u32)
+                    .is_some()
+                && reference.get_base(chr, bp as u32)
+                    == reference.get_base(chr, softp.saturating_sub(1) as u32)
             {
-                bp -= 1;
+                bp = bp.saturating_sub(1);
                 if bp != 0 {
-                    softp -= 1;
+                    softp = softp.saturating_sub(1);
                 }
             }
-            dellen = bp - softp + 1;
+            dellen = bp.saturating_sub(softp).saturating_add(1);
 
             {
                 let variation = crate::variations::get_variation(
@@ -1499,7 +1536,7 @@ pub fn find_del(
                 let mod_region = crate::regions::Region {
                     chr: chr.to_string(),
                     start: Pos1(mstart.max(1) as u32),
-                    end: Pos1(mend as u32),
+                    end: Pos1(mend.max(1) as u32),
                     gene: String::new(),
                     amplicon: None,
                 };
@@ -1511,7 +1548,9 @@ pub fn find_del(
                 if scv.used {
                     continue;
                 }
-                if !(i >= end - 3 && i - end < 3 * max_read_length) {
+                if !(i >= end.saturating_sub(3)
+                    && i.saturating_sub(end) < 3i32.saturating_mul(max_read_length))
+                {
                     continue;
                 }
                 let seq = crate::variations::util::find_conseq(
@@ -1532,16 +1571,18 @@ pub fn find_del(
                 if bp == 0 {
                     continue;
                 }
-                if !(bp - i > 30 && is_overlap(i, bp, end, mstart, var_data.max_read_length)) {
+                if !(bp.saturating_sub(i) > 30
+                    && is_overlap(i, bp, end, mstart, var_data.max_read_length))
+                {
                     continue;
                 }
-                bp -= 1;
+                bp = bp.saturating_sub(1);
                 matched_j = Some((i, bp, scv.clone()));
                 break;
             }
 
             if let Some((softp, bp, scv)) = matched_j {
-                let dellen = bp - softp + 1;
+                let dellen = bp.saturating_sub(softp).saturating_add(1);
                 {
                     let variation = crate::variations::get_variation(
                         &mut var_data.non_insertion_variants,
@@ -1669,7 +1710,7 @@ pub fn find_del(
                 let mod_region = crate::regions::Region {
                     chr: chr.to_string(),
                     start: Pos1(mstart.max(1) as u32),
-                    end: Pos1(mend as u32),
+                    end: Pos1(mend.max(1) as u32),
                     gene: String::new(),
                     amplicon: None,
                 };
@@ -1679,8 +1720,8 @@ pub fn find_del(
                     var_data,
                     reference,
                     chr,
-                    mstart - 200,
-                    mend + 200,
+                    mstart.saturating_sub(200).max(1),
+                    mend.saturating_add(200),
                     config,
                     chromosomes_lengths,
                 )?;
@@ -1696,14 +1737,14 @@ pub fn find_del(
             if bp == 0 {
                 continue;
             }
-            let overlap_ok = softp_cand - bp > 30
+            let overlap_ok = softp_cand.saturating_sub(bp) > 30
                 && is_overlap(bp, softp_cand, mend, start, var_data.max_read_length);
             if !overlap_ok {
                 continue;
             }
-            bp += 1;
-            let mut softp = softp_cand - 1;
-            let mut dellen = softp - bp + 1;
+            bp = bp.saturating_add(1);
+            let mut softp = softp_cand.saturating_sub(1);
+            let mut dellen = softp.saturating_sub(bp).saturating_add(1);
 
             {
                 let variation = crate::variations::get_variation(
@@ -1780,7 +1821,7 @@ pub fn find_del(
                 let mod_region = crate::regions::Region {
                     chr: chr.to_string(),
                     start: Pos1(mstart.max(1) as u32),
-                    end: Pos1(mend as u32),
+                    end: Pos1(mend.max(1) as u32),
                     gene: String::new(),
                     amplicon: None,
                 };
@@ -1792,7 +1833,9 @@ pub fn find_del(
                 if scv.used {
                     continue;
                 }
-                if !(i <= start + 3 && start - i < 3 * max_read_length) {
+                if !(i <= start.saturating_add(3)
+                    && start.saturating_sub(i) < 3i32.saturating_mul(max_read_length))
+                {
                     continue;
                 }
                 let seq = crate::variations::util::find_conseq(
@@ -1813,17 +1856,19 @@ pub fn find_del(
                 if bp == 0 {
                     continue;
                 }
-                if !(i - bp > 30 && is_overlap(bp, i, mend, start, var_data.max_read_length)) {
+                if !(i.saturating_sub(bp) > 30
+                    && is_overlap(bp, i, mend, start, var_data.max_read_length))
+                {
                     continue;
                 }
-                bp += 1;
+                bp = bp.saturating_add(1);
                 matched_j = Some((i, bp, scv.clone()));
                 break;
             }
 
             if let Some((softp_cand, bp, scv)) = matched_j {
-                let mut softp = softp_cand - 1;
-                let dellen = softp - bp + 1;
+                let mut softp = softp_cand.saturating_sub(1);
+                let dellen = softp.saturating_sub(bp).saturating_add(1);
 
                 {
                     let variation = crate::variations::get_variation(
@@ -2003,9 +2048,9 @@ pub fn find_sv(
                     continue;
                 }
 
-                let p5_adj = p5 - 1;
-                let bp_adj = bp + 1;
-                let dellen = p5_adj - bp_adj + 1;
+                let p5_adj = p5.saturating_sub(1);
+                let bp_adj = bp.saturating_add(1);
+                let dellen = p5_adj.saturating_sub(bp_adj).saturating_add(1);
 
                 let vref = crate::variations::get_variation(
                     &mut var_data.non_insertion_variants,
@@ -2034,7 +2079,7 @@ pub fn find_sv(
                 // in Java is `p5_adj + 1` (the original `p5` before decrement).
                 let p5_cov = var_data
                     .ref_coverage
-                    .get(&(p5_adj + 1))
+                    .get(&p5_adj.saturating_add(1))
                     .copied()
                     .unwrap_or(0);
                 let bp_cov_updated = var_data.ref_coverage.get(&bp_adj).copied().unwrap_or(0);
@@ -2068,7 +2113,7 @@ pub fn find_sv(
             if bp == 0 {
                 continue;
             }
-            if (bp - p5).abs() <= 50 {
+            if bp.saturating_sub(p5).saturating_abs() <= 50 {
                 continue;
             }
             let mut p5_adj = p5;
@@ -2076,34 +2121,42 @@ pub fn find_sv(
                 // Keep bp at 3' side and p5_adj at 5' side
                 std::mem::swap(&mut bp, &mut p5_adj);
             }
-            bp -= 1;
+            bp = bp.saturating_sub(1);
             while let (Some(b1), Some(b2)) = (
-                reference.get_base(chr, (bp + 1) as u32),
-                reference.get_base(chr, (p5_adj - 1) as u32),
+                reference.get_base(chr, bp.saturating_add(1) as u32),
+                reference.get_base(chr, p5_adj.saturating_sub(1) as u32),
             ) {
                 if crate::util::complement(b1) != b2 {
                     break;
                 }
-                p5_adj -= 1;
+                p5_adj = p5_adj.saturating_sub(1);
                 if p5_adj != 0 {
-                    bp += 1;
+                    bp = bp.saturating_add(1);
                 }
             }
 
-            let ins5 = complement_seq(&crate::util::join_ref(reference, chr, bp - 50 + 1, bp));
+            let ins5 = complement_seq(&crate::util::join_ref(
+                reference,
+                chr,
+                bp.saturating_sub(49),
+                bp,
+            ));
             let ins3 = complement_seq(&crate::util::join_ref(
                 reference,
                 chr,
                 p5_adj,
-                p5_adj + 50 - 1,
+                p5_adj.saturating_add(49),
             ));
-            let mid = bp - p5_adj - (ins5.len() as i32) - (ins3.len() as i32) + 1;
+            let span = bp.saturating_sub(p5_adj).saturating_add(1);
+            let mid = span
+                .saturating_sub(ins5.len() as i32)
+                .saturating_sub(ins3.len() as i32);
 
             let extra = String::from_utf8_lossy(&match_res_rev.matched_sequence);
-            let mut vn = format!("-{}^{}<inv{}>{}{}", bp - p5_adj + 1, ins5, mid, ins3, extra);
+            let mut vn = format!("-{}^{}<inv{}>{}{}", span, ins5, mid, ins3, extra);
             if mid <= 0 {
                 let tins = complement_seq(&crate::util::join_ref(reference, chr, p5_adj, bp));
-                vn = format!("-{}^{}{}", bp - p5_adj + 1, tins, extra);
+                vn = format!("-{}^{}{}", span, tins, extra);
             }
 
             let _vref =
@@ -2184,17 +2237,19 @@ pub fn find_sv(
                     continue;
                 }
 
-                let dellen = bp - p3;
-                let mut bp_adj = bp - 1;
+                let dellen = bp.saturating_sub(p3);
+                let mut bp_adj = bp.saturating_sub(1);
                 let mut p3_adj = p3;
                 while reference.get_base(chr, bp_adj as u32).is_some()
-                    && reference.get_base(chr, (p3_adj - 1) as u32).is_some()
+                    && reference
+                        .get_base(chr, p3_adj.saturating_sub(1) as u32)
+                        .is_some()
                     && reference.get_base(chr, bp_adj as u32)
-                        == reference.get_base(chr, (p3_adj - 1) as u32)
+                        == reference.get_base(chr, p3_adj.saturating_sub(1) as u32)
                 {
-                    bp_adj -= 1;
+                    bp_adj = bp_adj.saturating_sub(1);
                     if bp_adj != 0 {
-                        p3_adj -= 1;
+                        p3_adj = p3_adj.saturating_sub(1);
                     }
                 }
 
@@ -2255,42 +2310,48 @@ pub fn find_sv(
             if bp == 0 {
                 continue;
             }
-            if (bp - p3).abs() <= 50 {
+            if bp.saturating_sub(p3).saturating_abs() <= 50 {
                 continue;
             }
             let mut p3_adj = p3;
             if bp < p3_adj {
                 std::mem::swap(&mut bp, &mut p3_adj);
-                p3_adj += 1;
-                bp -= 1;
+                p3_adj = p3_adj.saturating_add(1);
+                bp = bp.saturating_sub(1);
             }
             while let (Some(b1), Some(b2)) = (
-                reference.get_base(chr, (bp + 1) as u32),
-                reference.get_base(chr, (p3_adj - 1) as u32),
+                reference.get_base(chr, bp.saturating_add(1) as u32),
+                reference.get_base(chr, p3_adj.saturating_sub(1) as u32),
             ) {
                 if crate::util::complement(b1) != b2 {
                     break;
                 }
-                p3_adj -= 1;
+                p3_adj = p3_adj.saturating_sub(1);
                 if p3_adj != 0 {
-                    bp += 1;
+                    bp = bp.saturating_add(1);
                 }
             }
 
-            let ins5 = complement_seq(&crate::util::join_ref(reference, chr, bp - 50 + 1, bp));
+            let ins5 = complement_seq(&crate::util::join_ref(
+                reference,
+                chr,
+                bp.saturating_sub(49),
+                bp,
+            ));
             let ins3 = complement_seq(&crate::util::join_ref(
                 reference,
                 chr,
                 p3_adj,
-                p3_adj + 50 - 1,
+                p3_adj.saturating_add(49),
             ));
-            let mid = bp - p3_adj - 100 + 1;
+            let span = bp.saturating_sub(p3_adj).saturating_add(1);
+            let mid = span.saturating_sub(100);
 
             let extra = String::from_utf8_lossy(&match_res_rev.matched_sequence);
-            let mut vn = format!("-{}^{}{}<inv{}>{}", bp - p3_adj + 1, extra, ins5, mid, ins3);
+            let mut vn = format!("-{}^{}{}<inv{}>{}", span, extra, ins5, mid, ins3);
             if mid <= 0 {
                 let tins = complement_seq(&crate::util::join_ref(reference, chr, p3_adj, bp));
-                vn = format!("-{}^{}{}", bp - p3_adj + 1, extra, tins);
+                vn = format!("-{}^{}{}", span, extra, tins);
             }
 
             let _vref =
@@ -2370,34 +2431,39 @@ pub fn find_del_disc(
 ) -> Result<(), VardictError> {
     let minr = config.min_reads as i32;
     let verbose = config.verbose;
-    let mindist = 8 * var_data.max_read_length;
+    let mindist = 8i32.saturating_mul(var_data.max_read_length);
 
     // svfdel (5' candidate deletions)
     let n_svfdel = var_data.sv_structures.svfdel.len();
     for idx in 0..n_svfdel {
         let (used, vars_count, start, end, mstart, mend, softp) = {
             let del = &var_data.sv_structures.svfdel[idx];
-            if del.used || del.variation.cnt < minr + 5 {
+            if del.used || del.variation.cnt < minr.saturating_add(5) {
                 continue;
             }
             if !var_data.splice.is_empty() && i64::from(del.mlen).abs() < 250_000 {
                 continue;
             }
-            if del.mstart <= del.end + mindist {
+            if del.mstart <= del.end.saturating_add(mindist) {
                 continue;
             }
             if del.variation.mqmean / (del.variation.cnt as f64) <= 35.0 {
                 // DISCPAIRQUAL = 35
                 continue;
             }
-            let mlen = del.mstart - del.end - var_data.max_read_length / (del.variation.cnt + 1);
+            let mlen = del
+                .mstart
+                .saturating_sub(del.end)
+                .saturating_sub(var_data.max_read_length / del.variation.cnt.saturating_add(1));
             if !(mlen > 0 && mlen > mindist) {
                 continue;
             }
             let bp = if del.softp != 0 {
                 del.softp
             } else {
-                del.end + (var_data.max_read_length / (del.variation.cnt + 1)) / 2
+                del.end.saturating_add(
+                    (var_data.max_read_length / del.variation.cnt.saturating_add(1)) / 2,
+                )
             };
             (
                 del.used,
@@ -2414,12 +2480,14 @@ pub fn find_del_disc(
             continue;
         }
 
-        let mlen = mstart - end - var_data.max_read_length / (vars_count + 1);
+        let mlen = mstart
+            .saturating_sub(end)
+            .saturating_sub(var_data.max_read_length / vars_count.saturating_add(1));
         if reference.get_base(chr, softp as u32).is_none() {
             let mod_region = crate::regions::Region {
                 chr: chr.to_string(),
-                start: Pos1((softp - 150).max(1) as u32),
-                end: Pos1((softp + 150) as u32),
+                start: Pos1(softp.saturating_sub(150).max(1) as u32),
+                end: Pos1(softp.saturating_add(150).max(1) as u32),
                 gene: String::new(),
                 amplicon: None,
             };
@@ -2444,7 +2512,7 @@ pub fn find_del_disc(
         sv.r#type = "DEL".to_string();
         sv.splits += var_data
             .soft_clips_3_end
-            .get(&(end + 1))
+            .get(&end.saturating_add(1))
             .map(|s| s.variation.cnt)
             .unwrap_or(0);
         sv.splits += var_data
@@ -2494,23 +2562,28 @@ pub fn find_del_disc(
     for idx in 0..n_svrdel {
         let (used, vars_count, start, end, mstart, mend, softp, del_softp) = {
             let del = &var_data.sv_structures.svrdel[idx];
-            if del.used || del.variation.cnt < minr + 5 {
+            if del.used || del.variation.cnt < minr.saturating_add(5) {
                 continue;
             }
             if !var_data.splice.is_empty() && i64::from(del.mlen).abs() < 250_000 {
                 continue;
             }
-            if del.start <= del.mend + mindist {
+            if del.start <= del.mend.saturating_add(mindist) {
                 continue;
             }
             if del.variation.mqmean / (del.variation.cnt as f64) <= 35.0 {
                 continue;
             }
-            let mlen = del.start - del.mend - var_data.max_read_length / (del.variation.cnt + 1);
+            let mlen = del
+                .start
+                .saturating_sub(del.mend)
+                .saturating_sub(var_data.max_read_length / del.variation.cnt.saturating_add(1));
             if !(mlen > 0 && mlen > mindist) {
                 continue;
             }
-            let bp = del.mend + ((var_data.max_read_length / (del.variation.cnt + 1)) / 2);
+            let bp = del.mend.saturating_add(
+                (var_data.max_read_length / del.variation.cnt.saturating_add(1)) / 2,
+            );
             (
                 del.used,
                 del.variation.cnt,
@@ -2527,12 +2600,14 @@ pub fn find_del_disc(
             continue;
         }
 
-        let mlen = start - mend - var_data.max_read_length / (vars_count + 1);
+        let mlen = start
+            .saturating_sub(mend)
+            .saturating_sub(var_data.max_read_length / vars_count.saturating_add(1));
         if reference.get_base(chr, softp as u32).is_none() {
             let mod_region = crate::regions::Region {
                 chr: chr.to_string(),
-                start: Pos1((softp - 150).max(1) as u32),
-                end: Pos1((softp + 150) as u32),
+                start: Pos1(softp.saturating_sub(150).max(1) as u32),
+                end: Pos1(softp.saturating_add(150).max(1) as u32),
                 gene: String::new(),
                 amplicon: None,
             };
@@ -2557,7 +2632,7 @@ pub fn find_del_disc(
         sv.r#type = "DEL".to_string();
         sv.splits += var_data
             .soft_clips_3_end
-            .get(&(mend + 1))
+            .get(&mend.saturating_add(1))
             .map(|s| s.variation.cnt)
             .unwrap_or(0);
         sv.splits += var_data
@@ -2605,8 +2680,8 @@ pub fn find_del_disc(
 
         let mod_region_mate = crate::regions::Region {
             chr: chr.to_string(),
-            start: Pos1((mstart - 100).max(1) as u32),
-            end: Pos1((mend + 100) as u32),
+            start: Pos1(mstart.saturating_sub(100).max(1) as u32),
+            end: Pos1(mend.saturating_add(100).max(1) as u32),
             gene: String::new(),
             amplicon: None,
         };
@@ -2708,22 +2783,22 @@ pub fn find_inv_disc(
                     )?;
                 }
 
-                let len = pe - bp + 1;
+                let len = pe.saturating_sub(bp).saturating_add(1);
                 let ins5 = complement_seq(&crate::util::join_ref(
                     reference,
                     chr,
                     bp,
-                    bp + sv_flank - 1,
+                    bp.saturating_add(sv_flank - 1),
                 ));
                 let ins3 = complement_seq(&crate::util::join_ref(
                     reference,
                     chr,
-                    pe - sv_flank + 1,
+                    pe.saturating_sub(sv_flank - 1),
                     pe,
                 ));
 
-                let mut ins = format!("{}<inv{}>{}", ins3, len - 2 * sv_flank, ins5);
-                if len - 2 * sv_flank <= 0 {
+                let mut ins = format!("{}<inv{}>{}", ins3, len.saturating_sub(2 * sv_flank), ins5);
+                if len.saturating_sub(2 * sv_flank) <= 0 {
                     ins = complement_seq(&crate::util::join_ref(reference, chr, bp, pe));
                 }
 
@@ -2833,22 +2908,22 @@ pub fn find_inv_disc(
                     )?;
                 }
 
-                let len = pe - bp + 1;
+                let len = pe.saturating_sub(bp).saturating_add(1);
                 let ins5 = complement_seq(&crate::util::join_ref(
                     reference,
                     chr,
                     bp,
-                    bp + sv_flank - 1,
+                    bp.saturating_add(sv_flank - 1),
                 ));
                 let ins3 = complement_seq(&crate::util::join_ref(
                     reference,
                     chr,
-                    pe - sv_flank + 1,
+                    pe.saturating_sub(sv_flank - 1),
                     pe,
                 ));
 
-                let mut ins = format!("{}<inv{}>{}", ins3, len - 2 * sv_flank, ins5);
-                if len - 2 * sv_flank <= 0 {
+                let mut ins = format!("{}<inv{}>{}", ins3, len.saturating_sub(2 * sv_flank), ins5);
+                if len.saturating_sub(2 * sv_flank) <= 0 {
                     ins = complement_seq(&crate::util::join_ref(reference, chr, bp, pe));
                 }
 
@@ -2882,11 +2957,11 @@ pub fn find_inv_disc(
                 sv.pairs += cnt;
                 sv.splits += var_data
                     .soft_clips_3_end
-                    .get(&(end + 1))
+                    .get(&end.saturating_add(1))
                     .map_or(0, |s| s.variation.cnt);
                 sv.splits += var_data
                     .soft_clips_3_end
-                    .get(&(me + 1))
+                    .get(&me.saturating_add(1))
                     .map_or(0, |s| s.variation.cnt);
                 sv.clusters += 1;
 
@@ -2948,16 +3023,18 @@ pub fn find_dup_disc(
             continue;
         }
 
-        let mut mlen = end - mstart + var_data.max_read_length / vars_count;
-        let mut bp = mstart - (var_data.max_read_length / vars_count) / 2;
+        let mut mlen = end
+            .saturating_sub(mstart)
+            .saturating_add(var_data.max_read_length / vars_count);
+        let mut bp = mstart.saturating_sub((var_data.max_read_length / vars_count) / 2);
         let mut pe = end;
 
         if !is_loaded(chr, mstart as u32, mend as u32, reference) {
             if reference.get_base(chr, bp as u32).is_none() {
                 let mod_region = crate::regions::Region {
                     chr: chr.to_string(),
-                    start: Pos1((bp - 150).max(1) as u32),
-                    end: Pos1((bp + 150) as u32),
+                    start: Pos1(bp.saturating_sub(150).max(1) as u32),
+                    end: Pos1(bp.saturating_add(150).max(1) as u32),
                     gene: String::new(),
                     amplicon: None,
                 };
@@ -2968,8 +3045,8 @@ pub fn find_dup_disc(
                 var_data,
                 reference,
                 chr,
-                mstart - 200,
-                mend + 200,
+                mstart.saturating_sub(200).max(1),
+                mend.saturating_add(200),
                 config,
                 chromosomes_lengths,
             )?;
@@ -3022,19 +3099,23 @@ pub fn find_dup_disc(
                 if let Some(scv_mut) = var_data.soft_clips_3_end.get_mut(&pe) {
                     scv_mut.used = true;
                 }
-                while reference.get_base(chr, (pe - 1) as u32).is_some()
-                    && reference.get_base(chr, (tbp - 1) as u32).is_some()
-                    && reference.get_base(chr, (pe - 1) as u32)
-                        == reference.get_base(chr, (tbp - 1) as u32)
+                while reference
+                    .get_base(chr, pe.saturating_sub(1) as u32)
+                    .is_some()
+                    && reference
+                        .get_base(chr, tbp.saturating_sub(1) as u32)
+                        .is_some()
+                    && reference.get_base(chr, pe.saturating_sub(1) as u32)
+                        == reference.get_base(chr, tbp.saturating_sub(1) as u32)
                 {
-                    tbp -= 1;
+                    tbp = tbp.saturating_sub(1);
                     if tbp != 0 {
-                        pe -= 1;
+                        pe = pe.saturating_sub(1);
                     }
                 }
-                mlen = pe - tbp;
+                mlen = pe.saturating_sub(tbp);
                 bp = tbp;
-                pe -= 1;
+                pe = pe.saturating_sub(1);
                 end = pe;
 
                 if let Some(current_sclip5) = var_data.soft_clips_5_end.get(&bp) {
@@ -3047,9 +3128,9 @@ pub fn find_dup_disc(
             }
         }
 
-        let ins5 = crate::util::join_ref(reference, chr, bp, bp + 50 - 1);
-        let ins3 = crate::util::join_ref(reference, chr, pe - 50 + 1, pe);
-        let ins = format!("{}<dup{}>{}", ins5, mlen - 100, ins3);
+        let ins5 = crate::util::join_ref(reference, chr, bp, bp.saturating_add(49));
+        let ins3 = crate::util::join_ref(reference, chr, pe.saturating_sub(49), pe);
+        let ins = format!("{}<dup{}>{}", ins5, mlen.saturating_sub(100), ins3);
 
         let vref = crate::variations::get_variation(
             &mut var_data.insertion_variants,
@@ -3139,17 +3220,19 @@ pub fn find_dup_disc(
             continue;
         }
 
-        let mut mlen = mend - start + var_data.max_read_length / vars_count;
-        let mut bp = start - (var_data.max_read_length / vars_count) / 2;
-        let mut pe = mlen + bp - 1;
+        let mut mlen = mend
+            .saturating_sub(start)
+            .saturating_add(var_data.max_read_length / vars_count);
+        let mut bp = start.saturating_sub((var_data.max_read_length / vars_count) / 2);
+        let mut pe = mlen.saturating_add(bp).saturating_sub(1);
         let mut tpe = pe;
 
         if !is_loaded(chr, mstart as u32, mend as u32, reference) {
             if reference.get_base(chr, pe as u32).is_none() {
                 let mod_region = crate::regions::Region {
                     chr: chr.to_string(),
-                    start: Pos1((pe - 150).max(1) as u32),
-                    end: Pos1((pe + 150) as u32),
+                    start: Pos1(pe.saturating_sub(150).max(1) as u32),
+                    end: Pos1(pe.saturating_add(150).max(1) as u32),
                     gene: String::new(),
                     amplicon: None,
                 };
@@ -3160,8 +3243,8 @@ pub fn find_dup_disc(
                 var_data,
                 reference,
                 chr,
-                mstart - 200,
-                mend + 200,
+                mstart.saturating_sub(200).max(1),
+                mend.saturating_add(200),
                 config,
                 chromosomes_lengths,
             )?;
@@ -3227,16 +3310,22 @@ pub fn find_dup_disc(
                     scv_mut.used = true;
                 }
                 pe = tbp;
-                mlen = pe - bp + 1;
-                tpe = pe + 1;
+                mlen = pe.saturating_sub(bp).saturating_add(1);
+                tpe = pe.saturating_add(1);
                 while reference.get_base(chr, tpe as u32).is_some()
                     && reference
-                        .get_base(chr, (bp + (tpe - pe - 1)) as u32)
+                        .get_base(
+                            chr,
+                            bp.saturating_add(tpe.saturating_sub(pe).saturating_sub(1)) as u32,
+                        )
                         .is_some()
                     && reference.get_base(chr, tpe as u32)
-                        == reference.get_base(chr, (bp + (tpe - pe - 1)) as u32)
+                        == reference.get_base(
+                            chr,
+                            bp.saturating_add(tpe.saturating_sub(pe).saturating_sub(1)) as u32,
+                        )
                 {
-                    tpe += 1;
+                    tpe = tpe.saturating_add(1);
                 }
                 if let Some(current_sclip3) = var_data.soft_clips_3_end.get(&tpe) {
                     cntf = current_sclip3.variation.cnt;
@@ -3248,9 +3337,9 @@ pub fn find_dup_disc(
             }
         }
 
-        let ins5 = crate::util::join_ref(reference, chr, bp, bp + 50 - 1);
-        let ins3 = crate::util::join_ref(reference, chr, pe - 50 + 1, pe);
-        let ins = format!("{}<dup{}>{}", ins5, mlen - 100, ins3);
+        let ins5 = crate::util::join_ref(reference, chr, bp, bp.saturating_add(49));
+        let ins3 = crate::util::join_ref(reference, chr, pe.saturating_sub(49), pe);
+        let ins = format!("{}<dup{}>{}", ins5, mlen.saturating_sub(100), ins3);
 
         let vref = crate::variations::get_variation(
             &mut var_data.insertion_variants,
@@ -3420,29 +3509,10 @@ pub fn partial_pipeline(
     config: &Config,
     chromosomes_lengths: &HashMap<String, usize>,
 ) -> Result<(), VardictError> {
+    crate::count!(SvPartialPipeline);
     // Query BAM records in the modified region
     let query_start = crate::types::Pos0((start.max(1) - 1) as u32);
     let query_end = crate::types::Pos0(end.max(1) as u32);
-
-    // Streaming counterpart of the old query_region-Vec + pileup_into shape:
-    // one lazy pass through a single preprocessor into a parser seeded with
-    // the taken maps, written back exactly as pileup_into does (fresh
-    // SVStructures discarded, discordant seeded 0 — duprate never propagates
-    // out of this path either way). Peak memory stays flat in depth.
-    let bam_str = bam_path.to_string_lossy();
-    let mut feeds = Vec::with_capacity(2);
-    for single_bam in bam_str.split(':').filter(|s| !s.is_empty()) {
-        feeds.push(crate::bam::query_region_iter(
-            std::path::Path::new(single_bam),
-            chr,
-            query_start,
-            query_end,
-            config,
-        )?);
-    }
-
-    // Preprocess records
-    let mut preprocessor = crate::bam::RecordPreprocessor::new();
 
     let region = crate::regions::Region {
         chr: chr.to_string(),
@@ -3456,14 +3526,23 @@ pub fn partial_pipeline(
     // (CigarParser.java:66) and discards it when partialPipeline completes, so the
     // primary region's sv_structures is never mutated by mate-region pileup.
     //
-    // G3 (mate-window ownership): snapshot variant-map keys so keys planted
-    // by this mate-window re-pileup are attributed in `merge_planted` for the
-    // ToVarsBuilder ownership gate. Pre-existing keys are native (the merge
-    // only accumulates into them), never planted.
-    let before_non: BTreeSet<i32> = var_data.non_insertion_variants.keys().copied().collect();
-    let before_ins: BTreeSet<i32> = var_data.insertion_variants.keys().copied().collect();
+    // G3 (mate-window ownership): record new keys planted by this mate-window
+    // re-pileup via JavaHashMap's O(|Delta|) new_key_log so they are attributed in
+    // `merge_planted` for the ToVarsBuilder ownership gate without cloning full-tile
+    // key sets. Pre-existing keys are native (the merge only accumulates into them),
+    // never planted.
+    var_data.non_insertion_variants.enable_new_key_log();
+    var_data.insertion_variants.enable_new_key_log();
     let orig_sv_structures = std::mem::take(&mut var_data.sv_structures);
-    {
+
+    // Streaming counterpart of the old query_region-Vec + pileup_into shape:
+    // one lazy pass through a single preprocessor into a parser seeded with
+    // the taken maps, written back unconditionally (fresh SVStructures
+    // discarded, discordant seeded 0 — duprate never propagates out of this
+    // path either way) so `var_data` is never wiped on `Err` and `new_key_log`
+    // is never left armed for the remainder of the tile. Peak memory stays flat
+    // in depth.
+    let run_res: Result<(), VardictError> = {
         let mut parser = crate::cigar::parse::CigarParser::new(
             reference,
             &region,
@@ -3486,47 +3565,76 @@ pub fn partial_pipeline(
         parser.splice = std::mem::take(&mut var_data.splice);
         parser.mnp = std::mem::take(&mut var_data.mnp);
         parser.splice_count = std::mem::take(&mut var_data.splice_count);
-        let mut r = crate::bam::SamRecord::new();
-        for (idx, mut feed) in feeds.into_iter().enumerate() {
-            preprocessor.reset_for_next_bam();
-            let mut any_passed = false;
-            while feed.next_into(&mut r)? {
-                if preprocessor.preprocess_record(&r, config) {
-                    any_passed = true;
-                    parser.parse_cigar(&r)?;
+
+        let run_res: Result<(), VardictError> = (|| {
+            let bam_str = bam_path.to_string_lossy();
+            let mut feeds = Vec::with_capacity(2);
+            for single_bam in bam_str.split(':').filter(|s| !s.is_empty()) {
+                feeds.push(crate::bam::query_region_iter(
+                    std::path::Path::new(single_bam),
+                    chr,
+                    query_start,
+                    query_end,
+                    config,
+                )?);
+            }
+
+            let mut preprocessor = crate::bam::RecordPreprocessor::new();
+            let mut r = crate::bam::SamRecord::new();
+            for (idx, mut feed) in feeds.into_iter().enumerate() {
+                preprocessor.reset_for_next_bam();
+                let mut any_passed = false;
+                while feed.next_into(&mut r)? {
+                    if preprocessor.preprocess_record(&r, config) {
+                        any_passed = true;
+                        parser.parse_cigar(&r)?;
+                    }
+                }
+                if idx > 0 && !any_passed {
+                    break;
                 }
             }
-            if idx > 0 && !any_passed {
-                break;
-            }
-        }
+            Ok(())
+        })();
+
         var_data.non_insertion_variants = parser.non_insertion_variants;
         var_data.insertion_variants = parser.insertion_variants;
         var_data.position_to_insertion_count = parser.position_to_insertion_count;
         var_data.position_to_deletion_count = parser.position_to_deletion_count;
-        var_data.sv_structures = parser.sv_structures;
         var_data.ref_coverage = parser.ref_coverage;
         var_data.soft_clips_5_end = parser.soft_clips_5_end;
         var_data.soft_clips_3_end = parser.soft_clips_3_end;
-        var_data.max_read_length = var_data.max_read_length.max(parser.max_read_length);
         var_data.splice = parser.splice;
         var_data.mnp = parser.mnp;
         var_data.splice_count = parser.splice_count;
-    }
+        if run_res.is_ok() {
+            var_data.max_read_length = var_data.max_read_length.max(parser.max_read_length);
+        }
+        run_res
+    };
     var_data.sv_structures = orig_sv_structures;
+    let delta_non = var_data.non_insertion_variants.take_new_key_log();
+    let mut delta_ins = var_data.insertion_variants.take_new_key_log();
+    crate::count!(SvSnapshotKeys, delta_non.len() + delta_ins.len());
+
+    run_res?;
+
     // Attribute mate-window-planted keys: positions present now but
-    // absent from BOTH maps before the merge. Pre-existing keys are native
-    // (the merge only accumulates into them), never planted — even when the
-    // merge adds the FIRST entry of the other map at that position, since
-    // the ToVarsBuilder ownership gate drops the whole position.
-    for &k in var_data.non_insertion_variants.keys() {
-        if !before_non.contains(&k) && !before_ins.contains(&k) {
-            var_data.merge_planted.insert(k);
+    // absent from BOTH maps before the merge (`(N_1 ∪ I_1) \ (N_0 ∪ I_0)`).
+    // Pre-existing keys are native (the merge only accumulates into them),
+    // never planted — even when the merge adds the FIRST entry of the other
+    // map at that position, since the ToVarsBuilder ownership gate drops the
+    // whole position.
+    delta_ins.sort_unstable();
+    for pos in delta_non {
+        if !var_data.insertion_variants.contains_key(&pos) || delta_ins.binary_search(&pos).is_ok()
+        {
+            var_data.merge_planted.insert(pos);
         }
     }
-    for &k in var_data.insertion_variants.keys() {
-        if !before_non.contains(&k) && !before_ins.contains(&k) {
-            var_data.merge_planted.insert(k);
+    for &pos in &delta_ins {
+        if !var_data.non_insertion_variants.contains_key(&pos) {
+            var_data.merge_planted.insert(pos);
         }
     }
 
@@ -4833,5 +4941,238 @@ mod tests {
         del_data.sv_structures.svrdel.push(rdel);
 
         find_del_disc(&mut del_data, &mut reference, chr, &config, &chr_lengths).unwrap();
+
+        // Near-`i32::MAX` window/overlap saturation guards (`3 * rlen + 200`, `end + wsize`, `end + rlen`).
+        assert!(is_overlap(
+            i32::MAX - 10,
+            i32::MAX,
+            i32::MAX - 5,
+            i32::MAX,
+            1_000,
+        ));
+        let mut max_sclip_list = vec![Sclip::default()];
+        let mut max_lists: Vec<&mut Vec<Sclip>> = vec![&mut max_sclip_list];
+        let _ = mark_sv(
+            i32::MAX - 500,
+            i32::MAX - 10,
+            &mut max_lists,
+            i32::MAX / 2,
+            false,
+        );
+
+        // `sv::partial_pipeline` O(|Delta| log |Delta|) `new_key_log` exact set-difference
+        // (`(N_1 ∪ I_1) \ (N_0 ∪ I_0)`) with a `.remove()` freelist hole in `N_0`,
+        // overlapping/disjoint keys across `N_0` and `I_0`, and exception-safe restoration.
+        {
+            use noodles::core::Position;
+            use noodles::csi::binning_index::index::reference_sequence::{
+                bin::Chunk, index::LinearIndex,
+            };
+            use noodles::csi::binning_index::Indexer;
+            use noodles::sam::alignment::io::Write as AlignmentWrite;
+            use noodles::sam::alignment::record::cigar::op::Kind;
+            use noodles::sam::alignment::record::cigar::Op;
+            use noodles::sam::alignment::record::data::field::Tag;
+            use noodles::sam::alignment::record_buf::data::field::Value as BufValue;
+            use noodles::sam::alignment::record_buf::{
+                Cigar, Data, QualityScores, RecordBuf, Sequence,
+            };
+            use std::num::NonZeroUsize;
+
+            let pid = std::process::id();
+            let bam_path = std::env::temp_dir().join(format!("vr_sv_delta_log_{pid}.bam"));
+            let bai_path = bam_path.with_extension("bam.bai");
+            let header = noodles::sam::Header::builder()
+                .add_reference_sequence(
+                    chr,
+                    noodles::sam::header::record::value::map::Map::<
+                        noodles::sam::header::record::value::map::ReferenceSequence,
+                    >::new(NonZeroUsize::new(200).unwrap()),
+                )
+                .build();
+            {
+                let file = std::fs::File::create(&bam_path).unwrap();
+                let mut writer = noodles::bam::io::Writer::new(file);
+                writer.write_header(&header).unwrap();
+                // Two clean `11M2I15M` reads (28 bp each, single indel >= 11 bp from both ends):
+                // - r1 @ 10 (ref 10..=35): plants `+CC` at 20, SNV `T` at 21, ref bases across 22..=23, SNV `T` at 26
+                // - r2 @ 14 (ref 14..=39): plants `+GG` at 24 and ref bases across 14..=39
+                let cigar: Cigar = [
+                    Op::new(Kind::Match, 11),
+                    Op::new(Kind::Insertion, 2),
+                    Op::new(Kind::Match, 15),
+                ]
+                .into_iter()
+                .collect();
+                let data1: Data = [(Tag::EDIT_DISTANCE, BufValue::from(4i32))]
+                    .into_iter()
+                    .collect();
+                let rec1 = RecordBuf::builder()
+                    .set_name("r_mate_1")
+                    .set_flags(noodles::sam::alignment::record::Flags::empty())
+                    .set_reference_sequence_id(0)
+                    .set_alignment_start(Position::try_from(10usize).unwrap())
+                    .set_mapping_quality(
+                        noodles::sam::alignment::record::MappingQuality::try_from(60).unwrap(),
+                    )
+                    .set_cigar(cigar.clone())
+                    .set_sequence(Sequence::from(b"AAAAAAAAAAACCTAAAATAAAAAAAAA".to_vec()))
+                    .set_quality_scores(QualityScores::from(vec![35u8; 28]))
+                    .set_data(data1)
+                    .build();
+                let data2: Data = [(Tag::EDIT_DISTANCE, BufValue::from(2i32))]
+                    .into_iter()
+                    .collect();
+                let rec2 = RecordBuf::builder()
+                    .set_name("r_mate_2")
+                    .set_flags(noodles::sam::alignment::record::Flags::empty())
+                    .set_reference_sequence_id(0)
+                    .set_alignment_start(Position::try_from(14usize).unwrap())
+                    .set_mapping_quality(
+                        noodles::sam::alignment::record::MappingQuality::try_from(60).unwrap(),
+                    )
+                    .set_cigar(cigar)
+                    .set_sequence(Sequence::from(b"AAAAAAAAAAAGGAAAAAAAAAAAAAAA".to_vec()))
+                    .set_quality_scores(QualityScores::from(vec![35u8; 28]))
+                    .set_data(data2)
+                    .build();
+                let start_vp = writer.get_ref().virtual_position();
+                writer.write_alignment_record(&header, &rec1).unwrap();
+                writer.write_alignment_record(&header, &rec2).unwrap();
+                let end_vp = writer.get_ref().virtual_position();
+                writer.try_finish().unwrap();
+
+                let mut indexer = Indexer::<LinearIndex>::new(14, 5).unwrap();
+                let s = Position::try_from(10usize).unwrap();
+                let e = Position::try_from(39usize).unwrap();
+                indexer
+                    .add_record(Some((0, s, e, true)), Chunk::new(start_vp, end_vp))
+                    .unwrap();
+                noodles::bam::bai::io::Writer::new(std::fs::File::create(&bai_path).unwrap())
+                    .write_index(&indexer.build(1))
+                    .unwrap();
+            }
+
+            let mut pp_ref = Reference::new();
+            pp_ref.loaded_regions.push(crate::reference::LoadedRegion {
+                chr: chr.to_string(),
+                sequence_start: 1,
+                sequence_end: 200,
+            });
+            pp_ref.region_sequences.push(vec![b'A'; 200]);
+            pp_ref
+                .reference_sequences
+                .insert(chr.to_string(), vec![b'A'; 200]);
+            let mut pp_chr_lens = HashMap::new();
+            pp_chr_lens.insert(chr.to_string(), 200usize);
+
+            let mut pp_data = crate::variations::VariationData::default();
+            // Seed N_0:
+            // - 5: disjoint outside window
+            // - 20: in N_0 only, read adds 20 to Delta_I -> MUST NOT be planted
+            // - 21: inserted then `.remove(&21)`d to leave a freelist hole in N_0 -> read re-inserts 21 -> MUST be planted!
+            // - 22: in both N_0 and I_0 -> MUST NOT be planted
+            let _ = crate::variations::get_variation(&mut pp_data.non_insertion_variants, 5, "T");
+            let _ = crate::variations::get_variation(&mut pp_data.non_insertion_variants, 20, "T");
+            let _ = crate::variations::get_variation(&mut pp_data.non_insertion_variants, 21, "T");
+            assert!(pp_data.non_insertion_variants.remove(&21).is_some());
+            let _ = crate::variations::get_variation(&mut pp_data.non_insertion_variants, 22, "T");
+            // Seed I_0:
+            // - 6: disjoint outside window
+            // - 22: shared with N_0
+            // - 23: in I_0 only, read adds 23 to Delta_N -> MUST NOT be planted!
+            let _ = crate::variations::get_variation(&mut pp_data.insertion_variants, 6, "+TT");
+            let _ = crate::variations::get_variation(&mut pp_data.insertion_variants, 22, "+TT");
+            let _ = crate::variations::get_variation(&mut pp_data.insertion_variants, 23, "+TT");
+
+            let before_union: std::collections::BTreeSet<i32> = pp_data
+                .non_insertion_variants
+                .keys()
+                .chain(pp_data.insertion_variants.keys())
+                .copied()
+                .collect();
+
+            partial_pipeline(
+                &bam_path,
+                &mut pp_data,
+                &mut pp_ref,
+                chr,
+                8,
+                45,
+                &config,
+                &pp_chr_lens,
+            )
+            .unwrap();
+
+            let after_union: std::collections::BTreeSet<i32> = pp_data
+                .non_insertion_variants
+                .keys()
+                .chain(pp_data.insertion_variants.keys())
+                .copied()
+                .collect();
+            let expected_planted: std::collections::BTreeSet<i32> =
+                after_union.difference(&before_union).copied().collect();
+
+            assert_eq!(pp_data.merge_planted, expected_planted);
+            assert!(pp_data.insertion_variants.contains_key(&20));
+            assert!(!pp_data.merge_planted.contains(&20)); // N_0 only + Delta_I
+            assert!(pp_data.merge_planted.contains(&21)); // N_0 freelist hole reused by Delta_N
+            assert!(!pp_data.merge_planted.contains(&22)); // N_0 ∩ I_0
+            assert!(pp_data.non_insertion_variants.contains_key(&23));
+            assert!(!pp_data.merge_planted.contains(&23)); // I_0 only + Delta_N
+            assert!(pp_data.insertion_variants.contains_key(&24));
+            assert!(pp_data.merge_planted.contains(&24)); // Delta_N ∩ Delta_I
+            assert!(pp_data.merge_planted.contains(&26)); // Delta_N only
+
+            // Verify new_key_log was disarmed after Ok return:
+            let _ = crate::variations::get_variation(&mut pp_data.non_insertion_variants, 180, "C");
+            let _ = crate::variations::get_variation(&mut pp_data.insertion_variants, 181, "+C");
+            assert!(pp_data.non_insertion_variants.take_new_key_log().is_empty());
+            assert!(pp_data.insertion_variants.take_new_key_log().is_empty());
+
+            // Verify error-path safety: second BAM in colon-separated path fails to open AFTER
+            // `std::mem::take` moved all maps into `parser`. Maps and `sv_structures` must be
+            // restored unconditionally, `merge_planted` untouched, and `new_key_log` disarmed.
+            let mut err_data = crate::variations::VariationData::default();
+            let _ = crate::variations::get_variation(&mut err_data.non_insertion_variants, 42, "G");
+            let _ = crate::variations::get_variation(&mut err_data.insertion_variants, 43, "+GG");
+            err_data.ref_coverage.insert(42, 9);
+            err_data.splice.insert("10-20".to_string());
+            err_data.sv_structures.svfdel.push(Sclip::default());
+            let failing_bam_spec = format!(
+                "{}:/nonexistent/missing_vr_task4_{pid}.bam",
+                bam_path.display()
+            );
+            let err_res = partial_pipeline(
+                std::path::Path::new(&failing_bam_spec),
+                &mut err_data,
+                &mut pp_ref,
+                chr,
+                18,
+                35,
+                &config,
+                &pp_chr_lens,
+            );
+            assert!(err_res.is_err());
+            assert!(err_data.non_insertion_variants.contains_key(&42));
+            assert!(err_data.insertion_variants.contains_key(&43));
+            assert_eq!(err_data.ref_coverage.get(&42), Some(&9));
+            assert!(err_data.splice.contains("10-20"));
+            assert_eq!(err_data.sv_structures.svfdel.len(), 1);
+            assert!(err_data.merge_planted.is_empty());
+
+            // Confirm `new_key_log` is disarmed after `Err` too:
+            let _ =
+                crate::variations::get_variation(&mut err_data.non_insertion_variants, 190, "T");
+            let _ = crate::variations::get_variation(&mut err_data.insertion_variants, 191, "+T");
+            assert!(err_data
+                .non_insertion_variants
+                .take_new_key_log()
+                .is_empty());
+            assert!(err_data.insertion_variants.take_new_key_log().is_empty());
+
+            let _ = std::fs::remove_file(&bam_path);
+            let _ = std::fs::remove_file(&bai_path);
+        }
     }
 }

@@ -133,8 +133,11 @@ pub fn is_match_ref(
 ) -> bool {
     let mut mm = 0;
     for n in 0..sequence.len() {
-        let ref_pos = position + dir * (n as i32);
-        let ref_ch = match reference.get_base(chr, ref_pos as u32) {
+        let ref_pos = position.saturating_add(dir.saturating_mul(n as i32));
+        let ref_ch = match u32::try_from(ref_pos)
+            .ok()
+            .and_then(|p| reference.get_base(chr, p))
+        {
             Some(c) => c,
             None => return false,
         };
@@ -169,6 +172,7 @@ pub fn find_bp(
     chr_len: u32,
 ) -> i32 {
     let maxmm = 3;
+    let chr_len_i32 = i32::try_from(chr_len).unwrap_or(i32::MAX);
     let mut bp = 0;
     let mut score = 0;
 
@@ -178,8 +182,10 @@ pub fn find_bp(
         let mut m = crate::cigar::modify::ByteSet::new();
 
         while i < sequence.len() {
-            let ref_pos = start_position + direction * n + direction * (i as i32);
-            if ref_pos < 1 || ref_pos > chr_len as i32 {
+            let ref_pos = start_position
+                .saturating_add(direction.saturating_mul(n))
+                .saturating_add(direction.saturating_mul(i as i32));
+            if ref_pos < 1 || ref_pos > chr_len_i32 {
                 break;
             }
 
@@ -210,7 +216,9 @@ pub fn find_bp(
             && i > 0
             && (mm as f64) / (i as f64) < 0.12
         {
-            let lbp = start_position + direction * n - if direction < 0 { direction } else { 0 };
+            let lbp = start_position
+                .saturating_add(direction.saturating_mul(n))
+                .saturating_sub(if direction < 0 { direction } else { 0 });
             if mm == 0 && i == sequence.len() {
                 return lbp;
             } else if (i as i32) - mm > score {
@@ -235,6 +243,7 @@ pub fn find_bi(
     chr_len: u32,
 ) -> BaseInsertion {
     let maxmm = 3;
+    let chr_len_i32 = i32::try_from(chr_len).unwrap_or(i32::MAX);
     let dir_ext = if dir == -1 { 1 } else { 0 };
     let mut score = 0;
     let mut bi = 0;
@@ -242,7 +251,7 @@ pub fn find_bi(
     let mut bi2 = 0;
 
     for n in 6..seq.len() {
-        if position + 6 >= chr_len as i32 {
+        if position.saturating_add(6) >= chr_len_i32 {
             break;
         }
 
@@ -251,8 +260,10 @@ pub fn find_bi(
         let mut m = crate::cigar::modify::ByteSet::new();
 
         while i + n < seq.len() {
-            let ref_pos = position + dir * (i as i32) - dir_ext;
-            if ref_pos < 1 || ref_pos > chr_len as i32 {
+            let ref_pos = position
+                .saturating_add(dir.saturating_mul(i as i32))
+                .saturating_sub(dir_ext);
+            if ref_pos < 1 || ref_pos > chr_len_i32 {
                 break;
             }
 
@@ -287,11 +298,19 @@ pub fn find_bi(
             let mut ept = 0;
 
             while n + ept + 1 < seq.len() {
-                let ref_pos1 = position + (ept as i32) * dir - dir_ext;
-                let ref_pos2 = position + ((ept as i32) + 1) * dir - dir_ext;
+                let ref_pos1 = position
+                    .saturating_add((ept as i32).saturating_mul(dir))
+                    .saturating_sub(dir_ext);
+                let ref_pos2 = position
+                    .saturating_add(((ept as i32).saturating_add(1)).saturating_mul(dir))
+                    .saturating_sub(dir_ext);
 
-                let ref_ch1 = reference.get_base(chr, ref_pos1 as u32);
-                let ref_ch2 = reference.get_base(chr, ref_pos2 as u32);
+                let ref_ch1 = u32::try_from(ref_pos1)
+                    .ok()
+                    .and_then(|p| reference.get_base(chr, p));
+                let ref_ch2 = u32::try_from(ref_pos2)
+                    .ok()
+                    .and_then(|p| reference.get_base(chr, p));
 
                 let matches1 = ref_ch1.map(|c| c == seq[n + ept]).unwrap_or(false);
                 let matches2 = ref_ch2.map(|c| c == seq[n + ept + 1]).unwrap_or(false);
@@ -314,9 +333,11 @@ pub fn find_bi(
                 let ins_str = String::from_utf8_lossy(&ins_vec).into_owned();
 
                 if mm == 0 && (i + n) == seq.len() {
-                    let mut bi_val = position - 1 - (extra.len() as i32);
+                    let mut bi_val = position
+                        .saturating_sub(1)
+                        .saturating_sub(extra.len() as i32);
                     let mut ins_val = ins_str;
-                    let mut bi2_val = position - 1;
+                    let mut bi2_val = position.saturating_sub(1);
                     if extra.is_empty() {
                         let tpl = adj_ins_pos(bi_val, ins_val, reference, chr);
                         bi_val = tpl.base_insert;
@@ -329,9 +350,11 @@ pub fn find_bi(
                         base_insert2: bi2_val,
                     };
                 } else if (i as i32) - mm > score {
-                    bi = position - 1 - (extra.len() as i32);
+                    bi = position
+                        .saturating_sub(1)
+                        .saturating_sub(extra.len() as i32);
                     ins = ins_str;
-                    bi2 = position - 1;
+                    bi2 = position.saturating_sub(1);
                     score = (i as i32) - mm;
                 }
             } else {
@@ -344,21 +367,27 @@ pub fn find_bi(
 
                     if mm == 0 && (i + n) == seq.len() {
                         return BaseInsertion {
-                            base_insert: position + s,
+                            base_insert: position.saturating_add(s),
                             insertion_sequence: ins_str,
-                            base_insert2: position + s + (extra.len() as i32),
+                            base_insert2: position
+                                .saturating_add(s)
+                                .saturating_add(extra.len() as i32),
                         };
                     } else if (i as i32) - mm > score {
-                        bi = position + s;
+                        bi = position.saturating_add(s);
                         ins = ins_str;
-                        bi2 = position + s + (extra.len() as i32);
+                        bi2 = position
+                            .saturating_add(s)
+                            .saturating_add(extra.len() as i32);
                         score = (i as i32) - mm;
                     }
                 } else {
                     while s >= -(n as i32) {
                         let ins_ch = crate::util::char_at(&insert, s as isize);
-                        let ref_pos = position + s;
-                        let ref_ch = reference.get_base(chr, ref_pos as u32);
+                        let ref_pos = position.saturating_add(s);
+                        let ref_ch = u32::try_from(ref_pos)
+                            .ok()
+                            .and_then(|p| reference.get_base(chr, p));
                         if ins_ch.is_some() && ins_ch == ref_ch {
                             s -= 1;
                         } else {
@@ -380,9 +409,11 @@ pub fn find_bi(
                     let ins_str = String::from_utf8_lossy(&insert).into_owned();
 
                     if mm == 0 && (i + n) == seq.len() {
-                        let mut bi_val = position + s;
+                        let mut bi_val = position.saturating_add(s);
                         let mut ins_val = ins_str;
-                        let mut bi2_val = position + s + (extra.len() as i32);
+                        let mut bi2_val = position
+                            .saturating_add(s)
+                            .saturating_add(extra.len() as i32);
                         if extra.is_empty() {
                             let tpl = adj_ins_pos(bi_val, ins_val, reference, chr);
                             bi_val = tpl.base_insert;
@@ -395,9 +426,11 @@ pub fn find_bi(
                             base_insert2: bi2_val,
                         };
                     } else if (i as i32) - mm > score {
-                        bi = position + s;
+                        bi = position.saturating_add(s);
                         ins = ins_str;
-                        bi2 = position + s + (extra.len() as i32);
+                        bi2 = position
+                            .saturating_add(s)
+                            .saturating_add(extra.len() as i32);
                         score = (i as i32) - mm;
                     }
                 }
@@ -456,15 +489,19 @@ pub fn find_mm5(
     let mut sc5p = Vec::new();
 
     loop {
-        let seq_idx = (clean_seq2.len() as i32) - 1 - n;
+        let seq_idx = (clean_seq2.len() as i32)
+            .saturating_sub(1)
+            .saturating_sub(n);
         let Some(&c_seq) = usize::try_from(seq_idx)
             .ok()
             .and_then(|idx| clean_seq2.get(idx))
         else {
             break;
         };
-        let ref_pos = position - n;
-        let ref_ch = reference.get_base(chr, ref_pos as u32);
+        let ref_pos = position.saturating_sub(n);
+        let ref_ch = u32::try_from(ref_pos)
+            .ok()
+            .and_then(|p| reference.get_base(chr, p));
 
         if let Some(c_ref) = ref_ch {
             if c_seq != c_ref && mcnt < longmm {
@@ -479,7 +516,7 @@ pub fn find_mm5(
                     .unwrap_or_default();
                 mismatches.push(Mismatch {
                     mismatch_sequence: mismatch_str,
-                    mismatch_position: position - n,
+                    mismatch_position: ref_pos,
                     end: 5,
                 });
                 n += 1;
@@ -489,21 +526,25 @@ pub fn find_mm5(
         }
         break;
     }
-    sc5p.push(position + 1);
+    sc5p.push(position.saturating_add(1));
 
     let misp = 0;
     let misnt: Option<u8> = None;
     if mm_len == 1 {
         loop {
-            let seq_idx = (clean_seq2.len() as i32) - 1 - n;
+            let seq_idx = (clean_seq2.len() as i32)
+                .saturating_sub(1)
+                .saturating_sub(n);
             let Some(&c_seq) = usize::try_from(seq_idx)
                 .ok()
                 .and_then(|idx| clean_seq2.get(idx))
             else {
                 break;
             };
-            let ref_pos = position - n;
-            let ref_ch = reference.get_base(chr, ref_pos as u32);
+            let ref_pos = position.saturating_sub(n);
+            let ref_ch = u32::try_from(ref_pos)
+                .ok()
+                .and_then(|p| reference.get_base(chr, p));
             if let Some(c_ref) = ref_ch {
                 if c_seq == c_ref {
                     n += 1;
@@ -522,8 +563,8 @@ pub fn find_mm5(
             // index bound). The loop therefore never executes, n2 stays 0, and the
             // `n2 > 2` branch is never taken — misp/misnt remain unset. Replicate that
             // exactly: always take the else branch (mark the position-n soft clip used).
-            sc5p.push(position - n);
-            let target_pos = position - n;
+            let target_pos = position.saturating_sub(n);
+            sc5p.push(target_pos);
             if let Some(sclip) = soft_clips_5_end.get_mut(&target_pos) {
                 sclip.used = true;
             }
@@ -561,8 +602,10 @@ pub fn find_mm3(
     let mut mm_len = 0usize;
 
     while let Some(&c_seq) = clean_seq2.get(n) {
-        let ref_pos = p + (n as i32);
-        let ref_ch = reference.get_base(chr, ref_pos as u32);
+        let ref_pos = p.saturating_add(n as i32);
+        let ref_ch = u32::try_from(ref_pos)
+            .ok()
+            .and_then(|pos| reference.get_base(chr, pos));
         if let Some(c_ref) = ref_ch {
             if c_ref == c_seq {
                 n += 1;
@@ -571,15 +614,17 @@ pub fn find_mm3(
         }
         break;
     }
-    sc3p.push(p + (n as i32));
-    let tbp = p + (n as i32);
+    let tbp = p.saturating_add(n as i32);
+    sc3p.push(tbp);
 
     while mcnt <= longmm {
         let Some(&c_seq) = clean_seq2.get(n) else {
             break;
         };
-        let ref_pos = p + (n as i32);
-        let ref_ch = reference.get_base(chr, ref_pos as u32);
+        let ref_pos = p.saturating_add(n as i32);
+        let ref_ch = u32::try_from(ref_pos)
+            .ok()
+            .and_then(|pos| reference.get_base(chr, pos));
         if let Some(c_ref) = ref_ch {
             if c_ref != c_seq {
                 if let Some(slot) = mm_buf.get_mut(mm_len) {
@@ -607,8 +652,10 @@ pub fn find_mm3(
     let mut misnt = None;
     if mm_len == 1 {
         while let Some(&c_seq) = clean_seq2.get(n) {
-            let ref_pos = p + (n as i32);
-            let ref_ch = reference.get_base(chr, ref_pos as u32);
+            let ref_pos = p.saturating_add(n as i32);
+            let ref_ch = u32::try_from(ref_pos)
+                .ok()
+                .and_then(|pos| reference.get_base(chr, pos));
             if let Some(c_ref) = ref_ch {
                 if c_seq == c_ref {
                     n += 1;
@@ -629,8 +676,13 @@ pub fn find_mm3(
                 .and_then(|idx| idx.checked_add(1))
                 .and_then(|idx| clean_seq2.get(idx))
             {
-                let ref_pos = p + (n as i32) + 1 + n2;
-                let ref_ch = reference.get_base(chr, ref_pos as u32);
+                let ref_pos = p
+                    .saturating_add(n as i32)
+                    .saturating_add(1)
+                    .saturating_add(n2);
+                let ref_ch = u32::try_from(ref_pos)
+                    .ok()
+                    .and_then(|pos| reference.get_base(chr, pos));
                 if let Some(c_ref) = ref_ch {
                     if c_seq == c_ref {
                         n2 += 1;
@@ -647,17 +699,17 @@ pub fn find_mm3(
                     .and_then(|idx| idx.checked_add(1))
                     .is_some_and(|idx| idx < clean_seq2.len())
             {
-                sc3p.push(p + (n as i32) + n2);
-                misp = p + (n as i32);
+                let target_pos = p.saturating_add(n as i32).saturating_add(n2);
+                sc3p.push(target_pos);
+                misp = p.saturating_add(n as i32);
                 misnt = clean_seq2.get(n).copied();
-                let target_pos = p + (n as i32) + n2;
                 if let Some(sclip) = soft_clips_3_end.get_mut(&target_pos) {
                     sclip.used = true;
                 }
                 mn += n2;
             } else {
-                sc3p.push(p + (n as i32));
-                let target_pos = p + (n as i32);
+                let target_pos = p.saturating_add(n as i32);
+                sc3p.push(target_pos);
                 if let Some(sclip) = soft_clips_3_end.get_mut(&target_pos) {
                     sclip.used = true;
                 }
@@ -1360,7 +1412,7 @@ pub fn realigndel(
         }
         if let Some(caps) = UP_NUMBER_END.captures(vn) {
             if let Some(m) = caps.get(1) {
-                dellen += m.as_str().parse::<i32>().unwrap_or(0);
+                dellen = dellen.saturating_add(m.as_str().parse::<i32>().unwrap_or(0));
             }
         }
 
@@ -1390,19 +1442,19 @@ pub fn realigndel(
             }
         }
 
-        let wustart = if p - 200 > 1 { p - 200 } else { 1 };
-        let mut wupseq = crate::util::join_ref(reference, chr, wustart, p - 1);
+        let chr_len_i32 = i32::try_from(chr_len).unwrap_or(i32::MAX);
+        let wustart = p.saturating_sub(200).max(1);
+        let mut wupseq = crate::util::join_ref(reference, chr, wustart, p.saturating_sub(1));
         wupseq.push_str(&extra);
         if !inv3.is_empty() {
             wupseq = inv3.clone();
         }
 
-        let sanend = if p + 200 > chr_len as i32 {
-            chr_len as i32
-        } else {
-            p + 200
-        };
-        let start_pos_ref = p + dellen + (extra.len() as i32) - (extrains.len() as i32);
+        let sanend = p.saturating_add(200).min(chr_len_i32);
+        let start_pos_ref = p
+            .saturating_add(dellen)
+            .saturating_add(extra.len() as i32)
+            .saturating_sub(extrains.len() as i32);
         let mut sanpseq = extra.clone();
         sanpseq.push_str(&crate::util::join_ref(
             reference,
@@ -1418,7 +1470,7 @@ pub fn realigndel(
         let r5 = find_mm5(
             reference,
             chr,
-            p + dellen + (extra.len() as i32) - (extrains.len() as i32) - 1,
+            start_pos_ref.saturating_sub(1),
             wupseq.as_bytes(),
             soft_clips_5_end,
         );
@@ -1467,10 +1519,15 @@ pub fn realigndel(
                     if tv.cnt > 0 {
                         let mean_qual = tv.qmean / (tv.cnt as f64);
                         let mean_pos = tv.pmean / (tv.cnt as f64);
-                        let threshold_pos = if me == 3 { nm3 + 4 } else { nm5 + 4 };
+                        let threshold_pos = if me == 3 {
+                            nm3.saturating_add(4)
+                        } else {
+                            nm5.saturating_add(4)
+                        };
                         if mean_qual >= config.base_qual
                             && mean_pos <= (threshold_pos as f64)
-                            && (tv.cnt < dcnt + dellen && (tv.cnt as f64) / (dcnt as f64) < 8.0)
+                            && (tv.cnt < dcnt.saturating_add(dellen)
+                                && (tv.cnt as f64) / (dcnt as f64) < 8.0)
                         {
                             should_adjust = true;
                         }
@@ -1692,7 +1749,7 @@ pub fn realigndel(
                         continue;
                     }
 
-                    let slice_start = (sc3pp - p).max(0) as usize;
+                    let slice_start = sc3pp.saturating_sub(p).max(0) as usize;
                     let sanpseq_slice = sanpseq.get(slice_start..).unwrap_or("");
 
                     if config.verbose {
@@ -1775,7 +1832,10 @@ pub fn realigndel(
             }
         }
 
-        let pe = p + dellen + (extra.len() as i32) - (extrains.len() as i32);
+        let pe = p
+            .saturating_add(dellen)
+            .saturating_add(extra.len() as i32)
+            .saturating_sub(extrains.len() as i32);
 
         let mut h_owned = None;
         if let Some(ref_base) = reference.get_base(chr, p as u32) {
@@ -1785,13 +1845,17 @@ pub fn realigndel(
         }
 
         if let Some(bams_slice) = bams {
-            if !bams_slice.is_empty() && pe - p >= 5 && pe - p < max_read_length - 10 {
+            let pe_diff = pe.saturating_sub(p);
+            if !bams_slice.is_empty()
+                && pe_diff >= 5
+                && pe_diff < max_read_length.saturating_sub(10)
+            {
                 if let Some(ref h) = h_owned {
                     if h.cnt != 0 {
                         let vref = get_variation(non_insertion_variants, p, vn);
                         let threshold_vref_cnt = 2.0
                             * (h.cnt as f64)
-                            * (1.0 - ((pe - p) as f64) / (max_read_length as f64));
+                            * (1.0 - (pe_diff as f64) / (max_read_length as f64));
                         if (vref.cnt as f64) > threshold_vref_cnt
                             && no_passing_reads(chr, p, pe, bams_slice, config)
                         {
@@ -1929,7 +1993,9 @@ pub fn realignins(
             let dup_len = caps
                 .get(1)
                 .map_or(0, |m| m.as_str().parse::<i32>().unwrap_or(0));
-            inslen += dup_len + ins3.len() as i32;
+            inslen = inslen
+                .saturating_add(dup_len)
+                .saturating_add(ins3.len() as i32);
         }
 
         let mut extra = String::new();
@@ -1958,22 +2024,23 @@ pub fn realignins(
         let tn = RE_CARET_DIGITS_END.replace(&tn, "").to_string();
         let tn = tn.replace('^', "");
 
-        let wustart = if p - 150 > 1 { p - 150 } else { 1 };
+        let chr_len_i32 = i32::try_from(chr_len).unwrap_or(i32::MAX);
+        let wustart = p.saturating_sub(150).max(1);
         let mut wupseq = crate::util::join_ref(reference, chr, wustart, p);
         wupseq.push_str(&tn);
 
-        let sanend = {
-            let mut end_pos = p + (vn.len() as i32) + 100;
-            if end_pos > chr_len as i32 {
-                end_pos = chr_len as i32;
-            }
-            end_pos
-        };
+        let sanend = p
+            .saturating_add(vn.len() as i32)
+            .saturating_add(100)
+            .min(chr_len_i32);
 
         let mut sanpseq = String::new();
         let find_mm3_res = if !ins3.is_empty() {
             let sv_flanking = 50;
-            let p3 = p + inslen - (ins3.len() as i32) + sv_flanking;
+            let p3 = p
+                .saturating_add(inslen)
+                .saturating_sub(ins3.len() as i32)
+                .saturating_add(sv_flanking);
             if ins3.len() > sv_flanking as usize {
                 // Ports VariationRealigner.java:744-746:
                 // `sanpseq = substr(ins3, Configuration.SVFLANK - ins3.length());`
@@ -1982,10 +2049,25 @@ pub fn realignins(
                 let start_idx = sv_flanking as usize;
                 sanpseq = ins3.get(start_idx..).unwrap_or("").to_string();
             }
-            sanpseq.push_str(&crate::util::join_ref(reference, chr, p + 1, p + 101));
-            find_mm3(reference, chr, p3 + 1, sanpseq.as_bytes(), soft_clips_3_end)
+            sanpseq.push_str(&crate::util::join_ref(
+                reference,
+                chr,
+                p.saturating_add(1),
+                p.saturating_add(101),
+            ));
+            find_mm3(
+                reference,
+                chr,
+                p3.saturating_add(1),
+                sanpseq.as_bytes(),
+                soft_clips_3_end,
+            )
         } else {
-            let start_pos_ref = p + (extra.len() as i32) + 1 + (compm.len() as i32) + newdel;
+            let start_pos_ref = p
+                .saturating_add(extra.len() as i32)
+                .saturating_add(1)
+                .saturating_add(compm.len() as i32)
+                .saturating_add(newdel);
             sanpseq = tn.clone();
             sanpseq.push_str(&crate::util::join_ref(
                 reference,
@@ -1993,10 +2075,19 @@ pub fn realignins(
                 start_pos_ref,
                 sanend,
             ));
-            find_mm3(reference, chr, p + 1, sanpseq.as_bytes(), soft_clips_3_end)
+            find_mm3(
+                reference,
+                chr,
+                p.saturating_add(1),
+                sanpseq.as_bytes(),
+                soft_clips_3_end,
+            )
         };
 
-        let p5_pos = p + (extra.len() as i32) + (compm.len() as i32) + newdel;
+        let p5_pos = p
+            .saturating_add(extra.len() as i32)
+            .saturating_add(compm.len() as i32)
+            .saturating_add(newdel);
         let find_mm5_res = find_mm5(reference, chr, p5_pos, wupseq.as_bytes(), soft_clips_5_end);
 
         let mm3 = &find_mm3_res.mismatches;
@@ -2031,10 +2122,14 @@ pub fn realignins(
                     if variation.cnt > 0 {
                         let mean_qual = variation.qmean / (variation.cnt as f64);
                         let mean_pos = variation.pmean / (variation.cnt as f64);
-                        let threshold_pos = if mismatch_end == 3 { nm3 + 4 } else { nm5 + 4 };
+                        let threshold_pos = if mismatch_end == 3 {
+                            nm3.saturating_add(4)
+                        } else {
+                            nm5.saturating_add(4)
+                        };
                         if mean_qual >= config.base_qual
                             && mean_pos <= (threshold_pos as f64)
-                            && (variation.cnt < insertion_count + (insert.len() as i32)
+                            && (variation.cnt < insertion_count.saturating_add(insert.len() as i32)
                                 && (variation.cnt as f64) / (insertion_count as f64) < 8.0)
                         {
                             should_adjust = true;
@@ -2227,7 +2322,10 @@ pub fn realignins(
                     let mseq = if !ins3.is_empty() {
                         sanpseq.as_bytes()
                     } else {
-                        substr_from(sanpseq.as_bytes(), (sc3pp - p - 1) as isize)
+                        substr_from(
+                            sanpseq.as_bytes(),
+                            sc3pp.saturating_sub(p).saturating_sub(1) as isize,
+                        )
                     };
 
                     if !seq.is_empty() && is_match(&seq, mseq, 1, 3) {
@@ -2278,10 +2376,11 @@ pub fn realignins(
 
                         if insert.len() + 1 == vn.len()
                             && insert.len() > max_read_length as usize
-                            && sc3pp >= p + 1 + (insert.len() as i32)
+                            && sc3pp >= p.saturating_add(1).saturating_add(insert.len() as i32)
                         {
                             let mut flag = 0;
-                            let offset = (sc3pp - p - 1) as usize % insert.len();
+                            let offset =
+                                sc3pp.saturating_sub(p).saturating_sub(1) as usize % insert.len();
                             let mut tvn = vn.clone();
                             let insert_bytes = insert.as_bytes();
 
@@ -2317,15 +2416,18 @@ pub fn realignins(
         if !sc3p.is_empty() && !sc5p.is_empty() {
             let first3 = sc3p[0];
             let first5 = sc5p[0];
+            let diff35 = i64::from(first3) - i64::from(first5);
             // ports VariationRealigner.java:921: the bound stays a double (no truncation).
-            if first3 > first5 + 3 && ((first3 - first5) as f64) < (max_read_length as f64) * 0.75 {
+            if first3 > first5.saturating_add(3)
+                && (diff35 as f64) < (max_read_length as f64) * 0.75
+            {
                 if let Some(ref_base) = reference.get_base(chr, p as u32) {
                     let ref_base_str = (ref_base as char).to_string();
                     if let Some(entry) = non_insertion_variants.get_mut(&p) {
                         if let Some(ref_var) = entry.map.get_mut(&ref_base_str) {
                             crate::variations::util::adj_ref_factor(
                                 ref_var,
-                                ((first3 - first5 - 1) as f64) / (max_read_length as f64),
+                                ((diff35 - 1) as f64) / (max_read_length as f64),
                             );
                         }
                     }
@@ -2333,7 +2435,7 @@ pub fn realignins(
                 let vref_mut = get_variation(insertion_variants, p, vn);
                 crate::variations::util::adj_ref_factor(
                     vref_mut,
-                    -((first3 - first5 - 1) as f64) / (max_read_length as f64),
+                    -((diff35 - 1) as f64) / (max_read_length as f64),
                 );
             }
         }
@@ -2429,12 +2531,16 @@ pub fn realignlgdel(
     let (adaptor_forward, adaptor_reverse) = fill_adaptor_maps(&config.adaptor);
     let extension = 5000;
     let longmm = 3;
+    let region_start_i32 = i32::try_from(region.start.0).unwrap_or(i32::MAX);
+    let region_end_i32 = i32::try_from(region.end.0).unwrap_or(i32::MAX);
+    let min_clip_pos = region_start_i32.saturating_sub(extension);
+    let max_clip_pos = region_end_i32.saturating_add(extension);
 
     // Work on 5' clipped reads
 
     let mut tmp5 = Vec::new();
     for (&p, sc) in soft_clips_5_end.iter() {
-        if p < region.start.0 as i32 - extension || p > region.end.0 as i32 + extension {
+        if p < min_clip_pos || p > max_clip_pos {
             continue;
         }
         tmp5.push((p, sc.variation.cnt));
@@ -2481,7 +2587,7 @@ pub fn realignlgdel(
 
         let mut bp = find_bp(
             &seq,
-            p - 5,
+            p.saturating_sub(5),
             reference,
             -1,
             chr,
@@ -2499,10 +2605,11 @@ pub fn realignlgdel(
                 crate::sv::find_match(&seq, reference, p, -1, 17, 1, chr, config.verbose);
             bp = match_res.base_position;
             extra_str = match_res.matched_sequence;
-            if !(bp != 0 && p - bp > 15 && p - bp < 150000) {
+            let p_minus_bp = i64::from(p) - i64::from(bp);
+            if !(bp != 0 && p_minus_bp > 15 && p_minus_bp < 150000) {
                 continue;
             }
-            bp += 1;
+            bp = bp.saturating_add(1);
 
             let mut lists = [&mut *svfdel, &mut *svrdel];
             let sv_mark = crate::sv::mark_sv(bp, p, &mut lists, max_read_length, config.verbose);
@@ -2520,11 +2627,11 @@ pub fn realignlgdel(
             sv.splits += cnt;
             sv.clusters += clusters;
 
-            if bp < region.start.0 as i32 {
-                let tts = bp - max_read_length;
-                let mut tte = bp + max_read_length;
-                if bp + max_read_length >= region.start.0 as i32 {
-                    tte = region.start.0 as i32 - 1;
+            if bp < region_start_i32 {
+                let tts = bp.saturating_sub(max_read_length);
+                let mut tte = bp.saturating_add(max_read_length);
+                if tte >= region_start_i32 {
+                    tte = region_start_i32.saturating_sub(1);
                 }
                 if let Err(e) = ensure_reference_loaded(
                     reference,
@@ -2557,14 +2664,16 @@ pub fn realignlgdel(
             }
         }
 
-        let mut dellen = p - bp;
+        let mut dellen = p.saturating_sub(bp);
         let mut en = 0;
         let gt;
 
         if extra_str.is_empty() {
             while en < seq.len() {
-                let ref_pos = bp - en as i32 - 1;
-                let ref_ch = reference.get_base(chr, ref_pos as u32);
+                let ref_pos = bp.saturating_sub(en as i32).saturating_sub(1);
+                let ref_ch = u32::try_from(ref_pos)
+                    .ok()
+                    .and_then(|pos| reference.get_base(chr, pos));
                 if ref_ch.is_some() && ref_ch != Some(seq[en]) {
                     extra.push(seq[en]);
                     en += 1;
@@ -2576,12 +2685,12 @@ pub fn realignlgdel(
                 extra.reverse();
                 let extra_str_val = String::from_utf8_lossy(&extra).into_owned();
                 gt = format!("-{}&{}", dellen, extra_str_val).into_bytes();
-                bp -= extra.len() as i32;
+                bp = bp.saturating_sub(extra.len() as i32);
             } else {
                 gt = format!("-{}", dellen).into_bytes();
             }
         } else {
-            dellen -= extra_str.len() as i32;
+            dellen = dellen.saturating_sub(extra_str.len() as i32);
             if dellen == 0 {
                 gt = format!(
                     "-{}^{}",
@@ -2608,8 +2717,12 @@ pub fn realignlgdel(
         let mut n = 0;
         if extra.is_empty() && extra_str.is_empty() {
             loop {
-                let base_bp = reference.get_base(chr, (bp + n) as u32);
-                let base_bp_del = reference.get_base(chr, (bp + dellen + n) as u32);
+                let base_bp = u32::try_from(bp.saturating_add(n))
+                    .ok()
+                    .and_then(|pos| reference.get_base(chr, pos));
+                let base_bp_del = u32::try_from(bp.saturating_add(dellen).saturating_add(n))
+                    .ok()
+                    .and_then(|pos| reference.get_base(chr, pos));
                 if base_bp.is_some() && base_bp_del.is_some() && base_bp == base_bp_del {
                     n += 1;
                 } else {
@@ -2618,12 +2731,16 @@ pub fn realignlgdel(
             }
         }
 
-        let mut sc3p = bp + n;
+        let mut sc3p = bp.saturating_add(n);
         let mut str_seq = Vec::new();
         let mut mcnt = 0;
         while mcnt <= longmm {
-            let base_bp = reference.get_base(chr, (bp + n) as u32);
-            let base_bp_del = reference.get_base(chr, (bp + dellen + n) as u32);
+            let base_bp = u32::try_from(bp.saturating_add(n))
+                .ok()
+                .and_then(|pos| reference.get_base(chr, pos));
+            let base_bp_del = u32::try_from(bp.saturating_add(dellen).saturating_add(n))
+                .ok()
+                .and_then(|pos| reference.get_base(chr, pos));
             if let (Some(b_bp), Some(b_bp_del)) = (base_bp, base_bp_del) {
                 if b_bp != b_bp_del {
                     str_seq.push(b_bp_del);
@@ -2638,8 +2755,12 @@ pub fn realignlgdel(
         if str_seq.len() == 1 {
             let mut nm = 0;
             loop {
-                let base_bp = reference.get_base(chr, (bp + n) as u32);
-                let base_bp_del = reference.get_base(chr, (bp + dellen + n) as u32);
+                let base_bp = u32::try_from(bp.saturating_add(n))
+                    .ok()
+                    .and_then(|pos| reference.get_base(chr, pos));
+                let base_bp_del = u32::try_from(bp.saturating_add(dellen).saturating_add(n))
+                    .ok()
+                    .and_then(|pos| reference.get_base(chr, pos));
                 if base_bp.is_some() && base_bp_del.is_some() && base_bp == base_bp_del {
                     n += 1;
                     if n != 0 {
@@ -2650,7 +2771,7 @@ pub fn realignlgdel(
                 }
             }
             if nm >= 3 && !soft_clips_3_end.contains_key(&sc3p) {
-                sc3p = bp + n;
+                sc3p = bp.saturating_add(n);
             }
         }
 
@@ -2688,7 +2809,7 @@ pub fn realignlgdel(
         }
 
         if dellen < config.indel_size as i32 {
-            for tp in bp..bp + dellen {
+            for tp in bp..bp.saturating_add(dellen) {
                 inc_cnt(ref_coverage, tp, sc5_variation.cnt);
             }
         }
@@ -2720,13 +2841,15 @@ pub fn realignlgdel(
                 }
 
                 if sc3p == bp && dellen < config.indel_size as i32 {
-                    for tp in bp..bp + dellen {
+                    for tp in bp..bp.saturating_add(dellen) {
                         inc_cnt(ref_coverage, tp, sclip.variation.cnt);
                     }
                 }
 
-                for ip in bp + 1..sc3p {
-                    let ref_ch_opt = reference.get_base(chr, (dellen + ip) as u32);
+                for ip in bp.saturating_add(1)..sc3p {
+                    let ref_ch_opt = u32::try_from(dellen.saturating_add(ip))
+                        .ok()
+                        .and_then(|pos| reference.get_base(chr, pos));
                     let mut cnt_is_zero = false;
                     if let Some(vv) = crate::variations::get_variation_maybe_mut(
                         non_insertion_variants,
@@ -2810,7 +2933,7 @@ pub fn realignlgdel(
     // Work on 3' clipped reads
     let mut tmp3 = Vec::new();
     for (&p, sc) in soft_clips_3_end.iter() {
-        if p < region.start.0 as i32 - extension || p > region.end.0 as i32 + extension {
+        if p < min_clip_pos || p > max_clip_pos {
             continue;
         }
         tmp3.push((p, sc.variation.cnt));
@@ -2858,7 +2981,7 @@ pub fn realignlgdel(
 
         let mut bp = find_bp(
             &seq,
-            p + 5,
+            p.saturating_add(5),
             reference,
             1,
             chr,
@@ -2876,7 +2999,9 @@ pub fn realignlgdel(
                 crate::sv::find_match(&seq, reference, p, 1, 17, 1, chr, config.verbose);
             bp = match_res.base_position;
             extra_str = match_res.matched_sequence;
-            if !(bp != 0 && bp - p > 15 && p - bp < 150000) {
+            let bp_minus_p = i64::from(bp) - i64::from(p);
+            let p_minus_bp = i64::from(p) - i64::from(bp);
+            if !(bp != 0 && bp_minus_p > 15 && p_minus_bp < 150000) {
                 continue;
             }
 
@@ -2896,11 +3021,11 @@ pub fn realignlgdel(
             sv.splits += cnt;
             sv.clusters += clusters;
 
-            if bp > region.end.0 as i32 {
-                let mut tts = bp - max_read_length;
-                let tte = bp + max_read_length;
-                if bp - max_read_length <= region.end.0 as i32 {
-                    tts = region.end.0 as i32 + 1;
+            if bp > region_end_i32 {
+                let mut tts = bp.saturating_sub(max_read_length);
+                let tte = bp.saturating_add(max_read_length);
+                if tts <= region_end_i32 {
+                    tts = region_end_i32.saturating_add(1);
                 }
                 if let Err(e) = ensure_reference_loaded(
                     reference,
@@ -2933,14 +3058,16 @@ pub fn realignlgdel(
             }
         }
 
-        let mut dellen = bp - p;
+        let mut dellen = bp.saturating_sub(p);
         let mut en = 0;
         if !extra_str.is_empty() {
-            dellen -= extra_str.len() as i32;
+            dellen = dellen.saturating_sub(extra_str.len() as i32);
         } else {
             while en < seq.len() {
-                let ref_pos = bp + en as i32;
-                let ref_ch = reference.get_base(chr, ref_pos as u32);
+                let ref_pos = bp.saturating_add(en as i32);
+                let ref_ch = u32::try_from(ref_pos)
+                    .ok()
+                    .and_then(|pos| reference.get_base(chr, pos));
                 if ref_ch.is_some() && ref_ch != Some(seq[en]) {
                     extra.push(seq[en]);
                     en += 1;
@@ -2957,21 +3084,25 @@ pub fn realignlgdel(
         if !extra.is_empty() {
             let extra_str_val = String::from_utf8_lossy(&extra).into_owned();
             gt = format!("-{}&{}", dellen, extra_str_val).into_bytes();
-            sc5p += extra.len() as i32;
+            sc5p = sc5p.saturating_add(extra.len() as i32);
         } else if !extra_str.is_empty() {
             let extra_str_val = String::from_utf8_lossy(&extra_str).into_owned();
             gt = format!("-{}&{}", dellen, extra_str_val).into_bytes();
         } else {
             loop {
-                let base_bp_prev = reference.get_base(chr, (bp - 1) as u32);
-                let base_bp_del_prev = reference.get_base(chr, (bp + dellen - 1) as u32);
+                let base_bp_prev = u32::try_from(bp.saturating_sub(1))
+                    .ok()
+                    .and_then(|pos| reference.get_base(chr, pos));
+                let base_bp_del_prev = u32::try_from(bp.saturating_add(dellen).saturating_sub(1))
+                    .ok()
+                    .and_then(|pos| reference.get_base(chr, pos));
                 if base_bp_prev.is_some()
                     && base_bp_del_prev.is_some()
                     && base_bp_prev == base_bp_del_prev
                 {
-                    bp -= 1;
+                    bp = bp.saturating_sub(1);
                     if bp != 0 {
-                        sc5p -= 1;
+                        sc5p = sc5p.saturating_sub(1);
                     }
                 } else {
                     break;
@@ -3030,13 +3161,17 @@ pub fn realignlgdel(
         }
 
         if dellen < config.indel_size as i32 {
-            for tp in bp..bp + dellen + extra.len() as i32 + extra_str.len() as i32 {
+            let tp_end = bp
+                .saturating_add(dellen)
+                .saturating_add(extra.len() as i32)
+                .saturating_add(extra_str.len() as i32);
+            for tp in bp..tp_end {
                 inc_cnt(ref_coverage, tp, sc3v.variation.cnt);
             }
         }
 
         if !ref_coverage.contains_key(&bp) {
-            if let Some(&cov_p_prev) = ref_coverage.get(&(p - 1)) {
+            if let Some(&cov_p_prev) = ref_coverage.get(&(p.saturating_sub(1))) {
                 ref_coverage.insert(bp, cov_p_prev);
             } else {
                 ref_coverage.insert(bp, sc3v.variation.cnt);
@@ -3048,10 +3183,10 @@ pub fn realignlgdel(
             let tv = crate::variations::get_variation(non_insertion_variants, bp, &gt_str);
             crate::variations::util::adj_cnt(tv, &sc3v.variation, None);
         }
-        sc3v.used = p + dellen != 0;
+        sc3v.used = p.saturating_add(dellen) != 0;
 
         if let Some(sc) = soft_clips_3_end.get_mut(&p) {
-            sc.used = p + dellen != 0;
+            sc.used = p.saturating_add(dellen) != 0;
             sc.sequence = sc3v.sequence;
             sc.variation.pmean = sc3v.variation.pmean;
         }
@@ -3124,10 +3259,14 @@ pub fn realignlgins30(
 ) {
     let (adaptor_forward, adaptor_reverse) = fill_adaptor_maps(&config.adaptor);
     let extension = 5000;
+    let region_start_i32 = i32::try_from(region.start.0).unwrap_or(i32::MAX);
+    let region_end_i32 = i32::try_from(region.end.0).unwrap_or(i32::MAX);
+    let min_clip_pos = region_start_i32.saturating_sub(extension);
+    let max_clip_pos = region_end_i32.saturating_add(extension);
 
     let mut tmp5 = Vec::new();
     for (&p, sc) in soft_clips_5_end.iter() {
-        if p < region.start.0 as i32 - extension || p > region.end.0 as i32 + extension {
+        if p < min_clip_pos || p > max_clip_pos {
             continue;
         }
         tmp5.push((p, sc.variation.cnt));
@@ -3143,7 +3282,7 @@ pub fn realignlgins30(
 
     let mut tmp3 = Vec::new();
     for (&p, sc) in soft_clips_3_end.iter() {
-        if p < region.start.0 as i32 - extension || p > region.end.0 as i32 + extension {
+        if p < min_clip_pos || p > max_clip_pos {
             continue;
         }
         tmp3.push((p, sc.variation.cnt));
@@ -3158,7 +3297,7 @@ pub fn realignlgins30(
     });
 
     let max_dist_53 = (max_read_length as f64 * 2.5) as i32;
-    let max_dist_35 = max_read_length - 10;
+    let max_dist_35 = max_read_length.saturating_sub(10);
     for (p5, cnt5) in tmp5 {
         if soft_clips_5_end.get(&p5).is_none_or(|sc| sc.used) {
             continue;
@@ -3168,7 +3307,9 @@ pub fn realignlgins30(
             if sc5_used {
                 break;
             }
-            if p5 - p3 > max_dist_53 || p3 - p5 > max_dist_35 {
+            if i64::from(p5) - i64::from(p3) > i64::from(max_dist_53)
+                || i64::from(p3) - i64::from(p5) > i64::from(max_dist_35)
+            {
                 continue;
             }
             if soft_clips_3_end.get(&p3).is_none_or(|sc| sc.used) {
@@ -3252,7 +3393,8 @@ pub fn realignlgins30(
                         reference,
                         chr,
                         p5,
-                        p5 + seq3.len() as i32 - ins.len() as i32 + 2,
+                        p5.saturating_add((seq3.len() - ins.len()) as i32)
+                            .saturating_add(2),
                     );
                     if !is_match(sub, &jref, 1, 3) {
                         continue;
@@ -3263,8 +3405,9 @@ pub fn realignlgins30(
                     let jref = join_ref_int(
                         reference,
                         chr,
-                        p3 - (seq5.len() as i32 - ins.len() as i32) - 2,
-                        p3 - 1,
+                        p3.saturating_sub((seq5.len() - ins.len()) as i32)
+                            .saturating_sub(2),
+                        p3.saturating_sub(1),
                     );
                     if !is_match(sub, &jref, -1, 3) {
                         continue;
@@ -3279,19 +3422,20 @@ pub fn realignlgins30(
                         String::from_utf8_lossy(&ins)
                     );
                 }
-                let tmp = join_ref_int(reference, chr, p3, p5 - 1);
+                let tmp = join_ref_int(reference, chr, p3, p5.saturating_sub(1));
+                let p3_minus_p5 = p3.saturating_sub(p5);
                 if tmp.len() > ins.len() {
-                    ins_str = format!("{}^{}", p3 - p5, String::from_utf8_lossy(&ins));
+                    ins_str = format!("{}^{}", p3_minus_p5, String::from_utf8_lossy(&ins));
                     bi = p3;
                 } else if tmp.len() < ins.len() {
                     let part1 = substr(&ins, 0, ins.len() as isize - tmp.len() as isize);
-                    let part2 = substr_from(&ins, (p3 - p5) as isize);
+                    let part2 = substr_from(&ins, p3_minus_p5 as isize);
                     ins_str = format!(
                         "+{}&{}",
                         String::from_utf8_lossy(part1),
                         String::from_utf8_lossy(part2)
                     );
-                    bi = p3 - 1;
+                    bi = p3.saturating_sub(1);
                 } else {
                     ins_str = format!("-{}^{}", ins.len(), String::from_utf8_lossy(&ins));
                     bi = p3;
@@ -3303,7 +3447,8 @@ pub fn realignlgins30(
                         reference,
                         chr,
                         p5,
-                        p5 + seq3.len() as i32 - ins.len() as i32 + 2,
+                        p5.saturating_add((seq3.len() - ins.len()) as i32)
+                            .saturating_add(2),
                     );
                     if !is_match(sub, &jref, 1, 3) {
                         continue;
@@ -3314,27 +3459,27 @@ pub fn realignlgins30(
                     let jref = join_ref_int(
                         reference,
                         chr,
-                        p3 - (seq5.len() as i32 - ins.len() as i32) - 2,
-                        p3 - 1,
+                        p3.saturating_sub((seq5.len() - ins.len()) as i32)
+                            .saturating_sub(2),
+                        p3.saturating_sub(1),
                     );
                     if !is_match(sub, &jref, -1, 3) {
                         continue;
                     }
                 }
                 let mut tmp = Vec::new();
-                if ins.len() <= (p3 - p5) as usize {
+                let p3_minus_p5 = p3.saturating_sub(p5);
+                if ins.len() <= p3_minus_p5.max(0) as usize {
+                    let span = p3_minus_p5.saturating_add(ins.len() as i32);
                     let mut rpt = 2;
                     let mut tnr = 3;
-                    while (((p3 - p5 + ins.len() as i32) as f64 / tnr as f64) / ins.len() as f64)
-                        > 1.0
-                    {
-                        if (p3 - p5 + ins.len() as i32) % tnr == 0 {
+                    while ((span as f64 / tnr as f64) / ins.len() as f64) > 1.0 {
+                        if span % tnr == 0 {
                             rpt += 1;
                         }
                         tnr += 1;
                     }
-                    let limit = p5 as f64 + (p3 - p5 + ins.len() as i32) as f64 / rpt as f64
-                        - ins.len() as f64;
+                    let limit = p5 as f64 + span as f64 / rpt as f64 - ins.len() as f64;
                     tmp.extend_from_slice(&join_ref_double(reference, chr, p5, limit));
                     ins_str = format!(
                         "+{}{}",
@@ -3342,7 +3487,7 @@ pub fn realignlgins30(
                         String::from_utf8_lossy(&ins)
                     );
                 } else {
-                    tmp.extend_from_slice(&join_ref_int(reference, chr, p5, p3 - 1));
+                    tmp.extend_from_slice(&join_ref_int(reference, chr, p5, p3.saturating_sub(1)));
                     if (ins.len() - tmp.len()) % 2 == 0 {
                         let tex = (ins.len() - tmp.len()) / 2;
                         let part1 = substr(&ins, 0, tex as isize);
@@ -3376,7 +3521,7 @@ pub fn realignlgins30(
                         ins_str
                     );
                 }
-                bi = p5 - 1;
+                bi = p5.saturating_sub(1);
             }
 
             if let Some(sc3v) = soft_clips_3_end.get_mut(&p3) {
@@ -3427,12 +3572,13 @@ pub fn realignlgins30(
                     None => &[],
                 };
                 let vref = get_variation(insertion_variants, bi, &ins_str);
+                let p3_minus_p5 = p3.saturating_sub(p5);
                 if has_bams
-                    && p3 - p5 >= 5
-                    && p3 - p5 < max_read_length - 10
+                    && p3_minus_p5 >= 5
+                    && p3_minus_p5 < max_read_length.saturating_sub(10)
                     && mvref_cnt != 0
                     && no_passing_reads(chr, p5, p3, bams_slice, config)
-                    && vref.cnt > 2 * mvref_cnt
+                    && vref.cnt > mvref_cnt.saturating_mul(2)
                 {
                     let mvref_mut = get_variation_maybe_mut(non_insertion_variants, bi, ref_base);
                     if let Some(m_mut) = mvref_mut {
@@ -3535,10 +3681,14 @@ pub fn realignlgins(
 ) {
     let (adaptor_forward, adaptor_reverse) = fill_adaptor_maps(&config.adaptor);
     let extension = 5000;
+    let region_start_i32 = i32::try_from(region.start.0).unwrap_or(i32::MAX);
+    let region_end_i32 = i32::try_from(region.end.0).unwrap_or(i32::MAX);
+    let min_clip_pos = region_start_i32.saturating_sub(extension);
+    let max_clip_pos = region_end_i32.saturating_add(extension);
 
     let mut tmp = Vec::new();
     for (&p, sc5v) in soft_clips_5_end.iter() {
-        if p < region.start.0 as i32 - extension || p > region.end.0 as i32 + extension {
+        if p < min_clip_pos || p > max_clip_pos {
             continue;
         }
         tmp.push((p, sc5v.variation.cnt));
@@ -3593,15 +3743,16 @@ pub fn realignlgins(
                 crate::sv::find_match(&seq, reference, p, -1, 17, 1, chr, config.verbose);
             bi = match_res.base_position;
             let extra = match_res.matched_sequence;
-            if !(bi != 0 && bi - p > 15 && bi - p < 150000) {
+            let bi_minus_p = i64::from(bi) - i64::from(p);
+            if !(bi != 0 && bi_minus_p > 15 && bi_minus_p < 150000) {
                 continue;
             }
 
-            if bi > region.end.0 as i32 {
-                let mut tts = bi - max_read_length;
-                let tte = bi + max_read_length;
-                if bi - max_read_length <= region.end.0 as i32 {
-                    tts = region.end.0 as i32 + 1;
+            if bi > region_end_i32 {
+                let mut tts = bi.saturating_sub(max_read_length);
+                let tte = bi.saturating_add(max_read_length);
+                if tts <= region_end_i32 {
+                    tts = region_end_i32.saturating_add(1);
                 }
                 if let Err(e) = ensure_reference_loaded(
                     reference,
@@ -3634,11 +3785,21 @@ pub fn realignlgins(
             }
 
             const SVFLANK: i32 = 50;
-            if bi - p > config.sv_min_len as i32 + 2 * SVFLANK {
-                let mut tmp_ins = join_ref_int(reference, chr, p, p + SVFLANK - 1);
-                let dup_str = format!("<dup{}>", bi - p - 2 * SVFLANK + 1);
+            if bi.saturating_sub(p) > (config.sv_min_len as i32).saturating_add(2 * SVFLANK) {
+                let mut tmp_ins = join_ref_int(reference, chr, p, p.saturating_add(SVFLANK - 1));
+                let dup_str = format!(
+                    "<dup{}>",
+                    bi.saturating_sub(p).saturating_sub(2 * SVFLANK - 1)
+                );
                 tmp_ins.extend_from_slice(dup_str.as_bytes());
-                let jref = join_ref_for_5_lgins(reference, chr, bi - SVFLANK + 1, bi, &seq, &extra);
+                let jref = join_ref_for_5_lgins(
+                    reference,
+                    chr,
+                    bi.saturating_sub(SVFLANK - 1),
+                    bi,
+                    &seq,
+                    &extra,
+                );
                 tmp_ins.extend_from_slice(&jref);
                 ins = tmp_ins;
             } else {
@@ -3652,23 +3813,24 @@ pub fn realignlgins(
 
             let sc5v_vars_count = soft_clips_5_end.get(&p).map_or(0, |sc| sc.variation.cnt);
             let cov_bi = ref_coverage.get(&bi).copied();
-            let cov_p_minus_1 = ref_coverage.get(&(p - 1)).copied();
+            let p_minus_1 = p.saturating_sub(1);
+            let cov_p_minus_1 = ref_coverage.get(&p_minus_1).copied();
 
             if cov_p_minus_1.is_none()
                 || cov_p_minus_1.is_some_and(|cp| cov_bi.is_some_and(|cb| cp < cb))
             {
                 if let Some(c_bi) = cov_bi {
-                    ref_coverage.insert(p - 1, c_bi);
+                    ref_coverage.insert(p_minus_1, c_bi);
                 } else {
-                    ref_coverage.insert(p - 1, sc5v_vars_count);
+                    ref_coverage.insert(p_minus_1, sc5v_vars_count);
                 }
             } else {
                 if sc5v_vars_count > cov_p_minus_1.unwrap_or(0) {
-                    inc_cnt(ref_coverage, p - 1, sc5v_vars_count);
+                    inc_cnt(ref_coverage, p_minus_1, sc5v_vars_count);
                 }
             }
 
-            bi = p - 1;
+            bi = p_minus_1;
             let sv = crate::variations::VariationMap::get_sv(non_insertion_variants, bi);
             sv.r#type = "DUP".to_string();
             sv.pairs += pairs;
@@ -3698,7 +3860,9 @@ pub fn realignlgins(
 
         let mut rpflag = true;
         for (i, &ch) in ins.iter().enumerate() {
-            let ref_ch = reference.get_base(chr, (bi + 1 + i as i32) as u32);
+            let ref_ch = u32::try_from(bi.saturating_add(1).saturating_add(i as i32))
+                .ok()
+                .and_then(|pos| reference.get_base(chr, pos));
             if ref_ch != Some(ch) {
                 rpflag = false;
                 break;
@@ -3719,14 +3883,14 @@ pub fn realignlgins(
         let seq_len = soft_clips_5_end
             .get(&p)
             .map_or(0, |sc| sc.seq.keys().max().copied().unwrap_or(0))
-            + 1;
+            .saturating_add(1);
 
         let entries_to_process: Vec<(i32, u8, Variation)> = {
             let sc5v = soft_clips_5_end.get(&p);
             sc5v.map_or_else(Vec::new, |sc5v| {
                 let mut res = Vec::new();
-                for ii in (len + 1)..seq_len {
-                    let pii = bi - ii + len;
+                for ii in len.saturating_add(1)..seq_len {
+                    let pii = bi.saturating_sub(ii).saturating_add(len);
                     if let Some(map) = sc5v.seq.get(&ii) {
                         for (&tnt, tv) in map {
                             res.push((pii, tnt, tv.clone()));
@@ -3745,7 +3909,7 @@ pub fn realignlgins(
         }
 
         if let Some(sc5v) = soft_clips_5_end.get_mut(&p) {
-            sc5v.used = bi + len != 0;
+            sc5v.used = bi.saturating_add(len) != 0;
         }
 
         let tins_vars_cnt = {
@@ -3798,13 +3962,19 @@ pub fn realignlgins(
             if rpflag
                 && has_bams
                 && ins.len() >= 5
-                && (ins.len() as i32) < max_read_length - 10
+                && (ins.len() as i32) < max_read_length.saturating_sub(10)
                 && mref.cnt != 0
-                && no_passing_reads(chr, bi, bi + ins.len() as i32, bams_slice, config)
+                && no_passing_reads(
+                    chr,
+                    bi,
+                    bi.saturating_add(ins.len() as i32),
+                    bams_slice,
+                    config,
+                )
             {
                 let m_cnt = mref.cnt;
                 let kref = get_variation(insertion_variants, bi, &newins);
-                if kref.cnt > 2 * m_cnt {
+                if kref.cnt > m_cnt.saturating_mul(2) {
                     let mref_mut = get_variation_maybe_mut(non_insertion_variants, bi, ref_base);
                     if let Some(m_mut) = mref_mut {
                         let m_clone = m_mut.clone();
@@ -3818,7 +3988,7 @@ pub fn realignlgins(
 
     let mut tmp3 = Vec::new();
     for (&p, sc3v) in soft_clips_3_end.iter() {
-        if p < region.start.0 as i32 - extension || p > region.end.0 as i32 + extension {
+        if p < min_clip_pos || p > max_clip_pos {
             continue;
         }
         tmp3.push((p, sc3v.variation.cnt));
@@ -3876,15 +4046,16 @@ pub fn realignlgins(
                 crate::sv::find_match(&seq, reference, p, 1, 17, 1, chr, config.verbose);
             bi = match_res.base_position;
             let extra = match_res.matched_sequence;
-            if !(bi != 0 && p - bi > 15 && p - bi < 150000) {
+            let p_minus_bi = i64::from(p) - i64::from(bi);
+            if !(bi != 0 && p_minus_bi > 15 && p_minus_bi < 150000) {
                 continue;
             }
 
-            if bi < region.start.0 as i32 {
-                let tts = bi - max_read_length;
-                let mut tte = bi + max_read_length;
-                if bi + max_read_length >= region.start.0 as i32 {
-                    tte = region.start.0 as i32 - 1;
+            if bi < region_start_i32 {
+                let tts = bi.saturating_sub(max_read_length);
+                let mut tte = bi.saturating_add(max_read_length);
+                if tte >= region_start_i32 {
+                    tte = region_start_i32.saturating_sub(1);
                 }
                 if let Err(e) = ensure_reference_loaded(
                     reference,
@@ -3916,46 +4087,68 @@ pub fn realignlgins(
                 }
             }
 
-            let mut shift5 = 0;
+            let mut shift5: i32 = 0;
             loop {
-                let ref_p_minus_1 = reference.get_base(chr, (p - 1) as u32);
-                let ref_bi_minus_1 = reference.get_base(chr, (bi - 1) as u32);
+                let ref_p_minus_1 = u32::try_from(p.saturating_sub(1))
+                    .ok()
+                    .and_then(|pos| reference.get_base(chr, pos));
+                let ref_bi_minus_1 = u32::try_from(bi.saturating_sub(1))
+                    .ok()
+                    .and_then(|pos| reference.get_base(chr, pos));
                 if ref_p_minus_1.is_some()
                     && ref_bi_minus_1.is_some()
                     && ref_p_minus_1 == ref_bi_minus_1
                 {
-                    p -= 1;
-                    bi -= 1;
-                    shift5 += 1;
+                    p = p.saturating_sub(1);
+                    bi = bi.saturating_sub(1);
+                    shift5 = shift5.saturating_add(1);
                 } else {
                     break;
                 }
             }
 
             const SVFLANK: i32 = 50;
-            if p - bi > config.sv_min_len as i32 + 2 * SVFLANK {
+            if p.saturating_sub(bi) > (config.sv_min_len as i32).saturating_add(2 * SVFLANK) {
                 ins = join_ref_for_3_lgins(
                     reference,
                     chr,
                     bi,
-                    bi + SVFLANK - 1,
+                    bi.saturating_add(SVFLANK - 1),
                     shift5,
                     &seq,
                     &extra,
                 );
-                let dup_str = format!("<dup{}>", p - bi - 2 * SVFLANK);
+                let dup_str = format!("<dup{}>", p.saturating_sub(bi).saturating_sub(2 * SVFLANK));
                 ins.extend_from_slice(dup_str.as_bytes());
-                let jref = join_ref_int(reference, chr, p - SVFLANK, p - 1);
+                let jref = join_ref_int(
+                    reference,
+                    chr,
+                    p.saturating_sub(SVFLANK),
+                    p.saturating_sub(1),
+                );
                 ins.extend_from_slice(&jref);
             } else {
-                ins = join_ref_for_3_lgins(reference, chr, bi, p - 1, shift5, &seq, &extra);
+                ins = join_ref_for_3_lgins(
+                    reference,
+                    chr,
+                    bi,
+                    p.saturating_sub(1),
+                    shift5,
+                    &seq,
+                    &extra,
+                );
             }
             ins.extend_from_slice(&extra);
 
             let mut sv_lists = [&mut *svfdup, &mut *svrdup];
-            let (clusters, pairs) =
-                crate::sv::mark_dup_sv(bi, p - 1, &mut sv_lists, max_read_length, config.verbose);
-            bi = bi - 1;
+            let (clusters, pairs) = crate::sv::mark_dup_sv(
+                bi,
+                p.saturating_sub(1),
+                &mut sv_lists,
+                max_read_length,
+                config.verbose,
+            );
+            bi = bi.saturating_sub(1);
 
             let sv = crate::variations::VariationMap::get_sv(non_insertion_variants, bi);
             sv.r#type = "DUP".to_string();
@@ -4016,7 +4209,9 @@ pub fn realignlgins(
 
         let mut rpflag = true;
         for (i, &ch) in ins.iter().enumerate() {
-            let ref_ch = reference.get_base(chr, (bi + 1 + i as i32) as u32);
+            let ref_ch = u32::try_from(bi.saturating_add(1).saturating_add(i as i32))
+                .ok()
+                .and_then(|pos| reference.get_base(chr, pos));
             if ref_ch != Some(ch) {
                 rpflag = false;
                 break;
@@ -4030,14 +4225,14 @@ pub fn realignlgins(
         let len_seq = soft_clips_3_end
             .get(&orig_p)
             .map_or(0, |sc| sc.seq.keys().max().copied().unwrap_or(0))
-            + 1;
+            .saturating_add(1);
 
         let entries_to_process: Vec<(i32, u8, Variation)> = {
             let sc3v = soft_clips_3_end.get(&orig_p);
             sc3v.map_or_else(Vec::new, |sc3v| {
                 let mut res = Vec::new();
                 for ii in len..len_seq {
-                    let pii = p + ii - len;
+                    let pii = p.saturating_add(ii).saturating_sub(len);
                     if let Some(map) = sc3v.seq.get(&ii) {
                         for (&tnt, tv) in map {
                             res.push((pii, tnt, tv.clone()));
@@ -4108,13 +4303,19 @@ pub fn realignlgins(
             if rpflag
                 && has_bams
                 && ins.len() >= 5
-                && (ins.len() as i32) < max_read_length - 10
+                && (ins.len() as i32) < max_read_length.saturating_sub(10)
                 && mref.cnt != 0
-                && no_passing_reads(chr, bi, bi + ins.len() as i32, bams_slice, config)
+                && no_passing_reads(
+                    chr,
+                    bi,
+                    bi.saturating_add(ins.len() as i32),
+                    bams_slice,
+                    config,
+                )
             {
                 let iref = get_variation(insertion_variants, bi, &newins);
                 let m_cnt = mref.cnt;
-                if iref.cnt > 2 * m_cnt {
+                if iref.cnt > m_cnt.saturating_mul(2) {
                     let mref_mut = get_variation_maybe_mut(non_insertion_variants, bi, ref_base);
                     if let Some(m_mut) = mref_mut {
                         let m_clone = m_mut.clone();
@@ -4290,6 +4491,7 @@ fn join_ref_double(reference: &Reference, chr: &str, from: i32, to: f64) -> Vec<
     crate::util::ref_bases(reference, chr, from, (to.ceil() as i32).saturating_sub(1))
 }
 
+/// Ports `VariationUtils.java:207-224` (`joinRefFor5Lgins`).
 fn join_ref_for_5_lgins(
     reference: &Reference,
     chr: &str,
@@ -4299,13 +4501,19 @@ fn join_ref_for_5_lgins(
     extra: &[u8],
 ) -> Vec<u8> {
     let mut sb = Vec::new();
-    for i in from..=to {
-        let idx = (to - i) as usize + extra.len();
-        if idx < seq.len() {
-            sb.push(seq[idx]);
-        } else {
-            if i >= 1 {
-                if let Some(ch) = reference.get_base(chr, i as u32) {
+    let keep_len = seq.len().saturating_sub(extra.len());
+    if from <= to {
+        for pos64 in i64::from(from)..=i64::from(to) {
+            let diff64 = i64::from(to) - pos64;
+            if diff64 >= 0 && (diff64 as usize) < keep_len {
+                if let Some(&b) = (diff64 as usize)
+                    .checked_add(extra.len())
+                    .and_then(|idx| seq.get(idx))
+                {
+                    sb.push(b);
+                }
+            } else if pos64 >= 1 && pos64 <= i64::from(i32::MAX) {
+                if let Some(ch) = reference.get_base(chr, pos64 as u32) {
                     sb.push(ch);
                 }
             }
@@ -4314,6 +4522,7 @@ fn join_ref_for_5_lgins(
     sb
 }
 
+/// Ports `VariationUtils.java:236-255` (`joinRefFor3Lgins`).
 fn join_ref_for_3_lgins(
     reference: &Reference,
     chr: &str,
@@ -4324,16 +4533,20 @@ fn join_ref_for_3_lgins(
     extra: &[u8],
 ) -> Vec<u8> {
     let mut sb = Vec::new();
-    for i in from..=to {
-        let diff = i - from;
-        if diff >= shift5 && ((diff - shift5) as usize) < seq.len() - extra.len() {
-            let idx = (diff - shift5) as usize + extra.len();
-            if idx < seq.len() {
-                sb.push(seq[idx]);
-            }
-        } else {
-            if i >= 1 {
-                if let Some(ch) = reference.get_base(chr, i as u32) {
+    let keep_len = seq.len().saturating_sub(extra.len());
+    if from <= to {
+        for pos64 in i64::from(from)..=i64::from(to) {
+            let diff = pos64 - i64::from(from);
+            let idx64 = diff - i64::from(shift5);
+            if idx64 >= 0 && (idx64 as usize) < keep_len {
+                if let Some(&b) = (idx64 as usize)
+                    .checked_add(extra.len())
+                    .and_then(|idx| seq.get(idx))
+                {
+                    sb.push(b);
+                }
+            } else if pos64 >= 1 && pos64 <= i64::from(i32::MAX) {
+                if let Some(ch) = reference.get_base(chr, pos64 as u32) {
                     sb.push(ch);
                 }
             }
@@ -4697,7 +4910,7 @@ fn partial_pipeline(
             bam_path,
             chr,
             Pos0(tts.max(0) as u32),
-            Pos0(tte as u32),
+            Pos0(tte.max(0) as u32),
             config,
         )?;
         let mut r = crate::bam::SamRecord::new();
@@ -4728,7 +4941,9 @@ fn partial_pipeline(
     // spare them. Only variant maps are attributed: ref_coverage/soft-clips
     // are trigger state, not emission (the builder iterates variant maps),
     // and gating them would perturb downstream sv-trigger firing vs Java.
-    let mate_owned = |pos: i32| pos >= region.start.0 as i32 && pos <= region.end.0 as i32;
+    let region_start_i32 = i32::try_from(region.start.0).unwrap_or(i32::MAX);
+    let region_end_i32 = i32::try_from(region.end.0).unwrap_or(i32::MAX);
+    let mate_owned = |pos: i32| pos >= region_start_i32 && pos <= region_end_i32;
 
     for (pos, cov) in var_data.ref_coverage {
         *ref_coverage.entry(pos).or_insert(0) += cov;
@@ -4911,7 +5126,7 @@ pub fn adjust_mnp(
             }
 
             // --- RIGHT CHECK ---
-            let right_pos = position + i as i32 + 1;
+            let right_pos = position.saturating_add(i as i32).saturating_add(1);
             let mut right_tref = None;
             {
                 if let Some(right_vars) = var_data.non_insertion_variants.get(&right_pos) {
@@ -4963,7 +5178,7 @@ pub fn adjust_mnp(
                                 &seq[mnt.len()..],
                                 reference,
                                 chr,
-                                position + mnt.len() as i32,
+                                position.saturating_add(mnt.len() as i32),
                                 1,
                                 3,
                             )
@@ -4988,7 +5203,7 @@ pub fn adjust_mnp(
         }
 
         // --- SOFTCLIPS5END CHECK ---
-        let right_pos = position + mnt_len as i32;
+        let right_pos = position.saturating_add(mnt_len as i32);
         let mut sc5_vars_to_add = None;
         {
             if let Some(sc5v) = var_data.soft_clips_5_end.get_mut(&right_pos) {
@@ -5009,7 +5224,7 @@ pub fn adjust_mnp(
                                     &seq_rev[0..seq_rev.len() - mnt_len],
                                     reference,
                                     chr,
-                                    position - 1,
+                                    position.saturating_sub(1),
                                     -1,
                                     3,
                                 )
@@ -5063,7 +5278,7 @@ pub fn adj_snv(
         let bp_bytes = substr(&seq, 0, 1);
         let bp = String::from_utf8_lossy(bp_bytes).into_owned();
 
-        let previous_position = position - 1;
+        let previous_position = position.saturating_sub(1);
         let mut should_adj = false;
         let sc5v_vars_count = sc5v.variation.cnt;
 
@@ -6715,6 +6930,98 @@ mod tests {
             res.insertion_sequence.contains('&'),
             "expected '&' in insertion_sequence, got: {}",
             res.insertion_sequence
+        );
+
+        // `join_ref_for_3_lgins` (`VariationUtils.java:236-255`):
+        // 1) When `extra.len() >= seq.len()`, must NOT underflow `usize` and must NOT return early:
+        //    the `for (int i = from; i <= to; i++)` loop falls through to `else` and emits reference bases.
+        let fallback_gt =
+            super::join_ref_for_3_lgins(&reference, "chr1", 11, 16, 0, b"GG", b"TTTTT");
+        assert_eq!(fallback_gt, &ref_seq[10..16]);
+        let fallback_eq = super::join_ref_for_3_lgins(&reference, "chr1", 11, 16, 2, b"GG", b"TT");
+        assert_eq!(fallback_eq, &ref_seq[10..16]);
+
+        // 2) When `0 < extra.len() < seq.len()` and `shift5 > 0`, emits ref for `diff < shift5`,
+        //    `seq[diff - shift5 + extra.len()]` while `diff - shift5 < seq.len() - extra.len()`,
+        //    and ref afterward.
+        let mixed = super::join_ref_for_3_lgins(&reference, "chr1", 11, 16, 1, b"XXGGG", b"XX");
+        let mut expected_mixed = vec![ref_seq[10]];
+        expected_mixed.extend_from_slice(b"GGG");
+        expected_mixed.extend_from_slice(&ref_seq[14..16]);
+        assert_eq!(mixed, expected_mixed);
+
+        // 3) Near-`i32::MAX` bounds (`to == i32::MAX`, `chr_len == u32::MAX`, `region.end == i32::MAX`)
+        //    must not overflow `i32` loop counters or window arithmetic.
+        let mut max_ref = crate::reference::Reference::new();
+        max_ref.loaded_regions.push(crate::reference::LoadedRegion {
+            chr: "chr1".to_string(),
+            sequence_start: (i32::MAX - 5) as u32,
+            sequence_end: i32::MAX as u32,
+        });
+        max_ref.region_sequences.push(b"TGCAAC".to_vec());
+        assert_eq!(
+            super::join_ref_for_3_lgins(&max_ref, "chr1", i32::MAX - 3, i32::MAX, 0, b"G", b"TTTT",),
+            b"CAAC"
+        );
+        assert_eq!(
+            super::join_ref_for_5_lgins(&max_ref, "chr1", i32::MAX - 3, i32::MAX, b"G", b"TTTT"),
+            b"CAAC"
+        );
+        let _ = super::find_bi(
+            b"ACGTACGTACGTACGT",
+            i32::MAX - 2,
+            &max_ref,
+            1,
+            "chr1",
+            u32::MAX,
+        );
+        let _ = super::find_bp(
+            b"ACGTACGTACGT",
+            i32::MAX - 2,
+            &max_ref,
+            1,
+            "chr1",
+            50,
+            u32::MAX,
+        );
+        let max_region = crate::regions::Region {
+            chr: "chr1".to_string(),
+            start: Pos1((i32::MAX - 5) as u32),
+            end: Pos1(i32::MAX as u32),
+            gene: String::new(),
+            amplicon: None,
+        };
+        let mut max_var_data = crate::variations::VariationData::default();
+        max_var_data.max_read_length = 150;
+        max_var_data
+            .position_to_deletion_count
+            .entry(i32::MAX - 2)
+            .or_default()
+            .insert("-10".to_string(), 5);
+        max_var_data
+            .position_to_insertion_count
+            .entry(i32::MAX - 2)
+            .or_default()
+            .insert("+ACGTACGT".to_string(), 5);
+        let mut sc_max = super::Sclip::new();
+        sc_max.variation.cnt = 5;
+        for idx in 0..14 {
+            let mut nt = BTreeMap::new();
+            nt.insert(b'A', 10);
+            sc_max.nt.insert(idx, nt);
+        }
+        max_var_data
+            .soft_clips_5_end
+            .insert(i32::MAX - 1, sc_max.clone());
+        max_var_data.soft_clips_3_end.insert(i32::MAX - 1, sc_max);
+        super::realign_indels(
+            None,
+            &mut max_ref,
+            "chr1",
+            u32::MAX,
+            &max_region,
+            &crate::config::Config::default(),
+            &mut max_var_data,
         );
     }
 
