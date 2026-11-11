@@ -1120,6 +1120,9 @@ impl Cli {
             output_path: self.output.first().cloned(),
             index_output: self.tbi,
             stats_json_path: self.stats_json.first().cloned(),
+            trim_bases_after: 0,
+            sample_regexp: None,
+            index_csi: false,
         };
         cfg.apply_pileup_overrides();
         Ok(cfg)

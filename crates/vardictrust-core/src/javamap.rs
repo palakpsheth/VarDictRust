@@ -14,6 +14,21 @@ struct Node<K, V> {
     next: u32,
 }
 
+#[derive(Debug)]
+struct NewKeyLog<K>(Option<Vec<K>>);
+
+impl<K> Default for NewKeyLog<K> {
+    fn default() -> Self {
+        Self(None)
+    }
+}
+
+impl<K> Clone for NewKeyLog<K> {
+    fn clone(&self) -> Self {
+        Self(None)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct JavaHashMap<K, V> {
     buckets: Vec<u32>,
@@ -23,6 +38,7 @@ pub struct JavaHashMap<K, V> {
     threshold: usize,
     treeified: bool,
     fallback: V,
+    new_key_log: NewKeyLog<K>,
 }
 
 pub struct Iter<'a, K, V> {
@@ -94,7 +110,16 @@ where
             threshold: 0,
             treeified: false,
             fallback: V::default(),
+            new_key_log: NewKeyLog::default(),
         }
+    }
+
+    pub fn enable_new_key_log(&mut self) {
+        self.new_key_log.0 = Some(Vec::new());
+    }
+
+    pub fn take_new_key_log(&mut self) -> Vec<K> {
+        self.new_key_log.0.take().unwrap_or_default()
     }
 
     fn spread(key: K) -> u32 {
@@ -103,6 +128,9 @@ where
     }
 
     fn alloc_node(&mut self, key: K, val: V, next: u32) -> u32 {
+        if let Some(ref mut log) = self.new_key_log.0 {
+            log.push(key);
+        }
         if self.free_head != NONE {
             let idx = self.free_head;
             if let Some(slot) = self.nodes.get_mut(idx as usize) {
@@ -1898,5 +1926,38 @@ mod tests {
         let k1: Vec<(i32, i32)> = with_reserve.into_iter().collect();
         let k2: Vec<(i32, i32)> = without_reserve.into_iter().collect();
         assert_eq!(k1, k2);
+
+        // Opt-in new_key_log captures absent-key allocations across insert / get_or_put_with /
+        // compute_if_absent (including free_head reuse and across resize), ignores present-key
+        // updates, and does not propagate across Clone.
+        let mut logged: JavaHashMap<i32, i32> = JavaHashMap::new();
+        assert!(logged.take_new_key_log().is_empty());
+        logged.insert(10, 1);
+        assert!(logged.take_new_key_log().is_empty());
+
+        logged.enable_new_key_log();
+        logged.insert(10, 2); // existing key -> not logged
+        logged.insert(20, 3); // new -> logged
+        logged.get_or_put_with(20, || 99); // existing -> not logged
+        logged.get_or_put_with(30, || 4); // new -> logged
+        logged.compute_if_absent(30, |_| 88); // existing -> not logged
+        logged.compute_if_absent(40, |_| 5); // new -> logged
+        assert_eq!(logged.remove(&20), Some(3));
+        logged.get_or_put_with(50, || 6); // reuses free_head -> still logged!
+        for k in 100..120 {
+            logged.insert(k, k); // triggers resize -> resize must not duplicate log entries
+        }
+
+        let mut cloned = logged.clone();
+        assert!(cloned.take_new_key_log().is_empty());
+        cloned.insert(999, 1);
+        assert!(cloned.take_new_key_log().is_empty());
+
+        let mut expected = vec![20, 30, 40, 50];
+        expected.extend(100..120);
+        assert_eq!(logged.take_new_key_log(), expected);
+        // Logging is disabled after take_new_key_log until re-enabled
+        logged.insert(777, 1);
+        assert!(logged.take_new_key_log().is_empty());
     }
 }

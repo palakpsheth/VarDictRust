@@ -397,7 +397,7 @@ pub fn parse_non_amp_bed_from_reader<R: BufRead>(
             thick_end = thick_end.saturating_add(config.extension);
 
             if active_zero_based && thick_start < thick_end {
-                thick_start = thick_start.wrapping_add(1);
+                thick_start = thick_start.saturating_add(1);
             }
 
             if thick_start > thick_end {
@@ -462,8 +462,8 @@ pub fn parse_amp_bed_from_reader<R: BufRead>(
         let active_zero_based = zero_based_override.unwrap_or(is_zero_based);
 
         if active_zero_based && start < end {
-            start = start.wrapping_add(1);
-            insert_start = insert_start.wrapping_add(1);
+            start = start.saturating_add(1);
+            insert_start = insert_start.saturating_add(1);
         }
 
         let final_start = std::cmp::max(1, start) as u32;
@@ -610,7 +610,7 @@ pub fn parse_region_flag(
 
     let active_zero_based = config.zero_based;
     if active_zero_based && start < end {
-        start = start.wrapping_add(1);
+        start = start.saturating_add(1);
     }
 
     if start > end {
@@ -1255,7 +1255,7 @@ Y\t59042860\t59047860\tY_59042860_5\t0\t.\t59042860\t59047860
                 .unwrap();
         assert_eq!(no_gene_parsed[0][0].gene, "chr1");
 
-        // Amplicon row with insert_start = 2147483647 under -z wraps insert_start + 1 without panic.
+        // Amplicon row with insert_start = 2147483647 under -z saturates insert_start + 1 without wrapping.
         let mut cfg_amp = Config::default();
         cfg_amp.amplicon = Some("10:0.95".to_string());
         cfg_amp.delimiter = "\t".to_string();
@@ -1268,7 +1268,7 @@ Y\t59042860\t59047860\tY_59042860_5\t0\t.\t59042860\t59047860
         )
         .unwrap();
         let amp = amp_parsed[0][0].amplicon.as_ref().unwrap();
-        assert_eq!(amp.insert_start, Pos1(1));
+        assert_eq!(amp.insert_start, Pos1(i32::MAX as u32));
         assert_eq!(amp.insert_end, Pos1(200));
     }
 

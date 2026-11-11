@@ -281,7 +281,7 @@ impl<'a> ToVarsBuilder<'a> {
 
             {
                 let sorted_keys = SortedKeySlice::new(
-                    var_map.map.keys().map(String::as_str),
+                    var_map.map.keys(),
                     if var_map.sv.is_some() {
                         Some("SV")
                     } else {
@@ -367,12 +367,12 @@ impl<'a> ToVarsBuilder<'a> {
         let has_ins = insertion_variants.contains_key(&position);
         let sole_key: &str = match (vars_at_cur_position.map.len(), has_ins) {
             (1, false) => match vars_at_cur_position.map.keys().next() {
-                Some(k) => k.as_str(),
+                Some(k) => k,
                 None => return false,
             },
             (0, true) => "I",
             (1, true) => match vars_at_cur_position.map.keys().next() {
-                Some(k) if k == "I" => "I",
+                Some("I") => "I",
                 _ => return false,
             },
             _ => return false,
@@ -567,7 +567,7 @@ impl<'a> ToVarsBuilder<'a> {
     ) -> i32 {
         if let Some(insertion_variations) = insertion_variants.get(&position) {
             let insertion_description_strings =
-                SortedKeySlice::new(insertion_variations.map.keys().map(String::as_str), None);
+                SortedKeySlice::new(insertion_variations.map.keys(), None);
 
             for &description_string in insertion_description_strings.as_slice() {
                 if description_string
@@ -1809,7 +1809,7 @@ mod tests {
         insertion_variants: &crate::javamap::JavaHashMap<i32, crate::variations::VariationMap>,
     ) -> bool {
         let mut vk: std::collections::HashSet<String> =
-            vars_at_cur_position.map.keys().cloned().collect();
+            vars_at_cur_position.map.keys().map(str::to_owned).collect();
         if insertion_variants.contains_key(&position) {
             vk.insert("I".to_string());
         }

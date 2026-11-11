@@ -859,11 +859,408 @@ pub struct Sv {
     pub clusters: i32,
 }
 
-/// A wrapper around IndexMap that also supports structural variant info.
+/// Stack-allocated UTF-8 allele key up to 23 bytes for single-allele `VariationEntries::One`.
+#[derive(Clone, Copy, Debug)]
+pub struct InlineKey {
+    len: u8,
+    buf: [u8; 23],
+}
+
+impl InlineKey {
+    #[inline]
+    pub fn try_from_str(s: &str) -> Option<Self> {
+        if s.len() > 23 {
+            return None;
+        }
+        let mut buf = [0u8; 23];
+        buf.get_mut(..s.len())?.copy_from_slice(s.as_bytes());
+        Some(Self {
+            len: s.len() as u8,
+            buf,
+        })
+    }
+
+    #[inline]
+    pub fn as_bytes(&self) -> &[u8] {
+        self.buf.get(..usize::from(self.len)).unwrap_or(&[])
+    }
+
+    #[inline]
+    pub fn as_str(&self) -> &str {
+        std::str::from_utf8(self.as_bytes()).unwrap_or("")
+    }
+}
+
+/// Borrowed string key view enabling `VariationEntries` lookups with `str`, `String`, or `&String`.
+pub trait StrKey {
+    fn as_key_str(&self) -> &str;
+}
+
+impl StrKey for str {
+    #[inline]
+    fn as_key_str(&self) -> &str {
+        self
+    }
+}
+
+impl StrKey for String {
+    #[inline]
+    fn as_key_str(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl<T: ?Sized + StrKey> StrKey for &T {
+    #[inline]
+    fn as_key_str(&self) -> &str {
+        (**self).as_key_str()
+    }
+}
+
+/// Per-position allele container storing 0 or 1 (`<= 23` byte) alleles inline without heap
+/// allocation while preserving exact `IndexMap` insertion/removal order for 2+ alleles.
+#[derive(Debug, Clone, Default)]
+pub enum VariationEntries {
+    #[default]
+    Empty,
+    One(InlineKey, Variation),
+    Many(Box<IndexMap<String, Variation, FxBuildHasher>>),
+}
+
+#[derive(Debug)]
+pub enum VariationKeys<'a> {
+    Empty,
+    One(Option<&'a str>),
+    Many(indexmap::map::Keys<'a, String, Variation>),
+}
+
+impl<'a> Iterator for VariationKeys<'a> {
+    type Item = &'a str;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Empty => None,
+            Self::One(opt) => opt.take(),
+            Self::Many(keys) => keys.next().map(String::as_str),
+        }
+    }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let len = ExactSizeIterator::len(self);
+        (len, Some(len))
+    }
+}
+
+impl ExactSizeIterator for VariationKeys<'_> {
+    #[inline]
+    fn len(&self) -> usize {
+        match self {
+            Self::Empty | Self::One(None) => 0,
+            Self::One(Some(_)) => 1,
+            Self::Many(keys) => keys.len(),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum VariationIter<'a> {
+    Empty,
+    One(Option<(&'a str, &'a Variation)>),
+    Many(indexmap::map::Iter<'a, String, Variation>),
+}
+
+impl<'a> Iterator for VariationIter<'a> {
+    type Item = (&'a str, &'a Variation);
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Empty => None,
+            Self::One(opt) => opt.take(),
+            Self::Many(iter) => iter.next().map(|(k, v)| (k.as_str(), v)),
+        }
+    }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let len = ExactSizeIterator::len(self);
+        (len, Some(len))
+    }
+}
+
+impl ExactSizeIterator for VariationIter<'_> {
+    #[inline]
+    fn len(&self) -> usize {
+        match self {
+            Self::Empty | Self::One(None) => 0,
+            Self::One(Some(_)) => 1,
+            Self::Many(iter) => iter.len(),
+        }
+    }
+}
+
+impl<'a> IntoIterator for &'a VariationEntries {
+    type Item = (&'a str, &'a Variation);
+    type IntoIter = VariationIter<'a>;
+
+    #[inline]
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+#[derive(Debug)]
+pub enum VariationIntoIter {
+    Empty,
+    One(Option<(InlineKey, Variation)>),
+    Many(indexmap::map::IntoIter<String, Variation>),
+}
+
+impl Iterator for VariationIntoIter {
+    type Item = (String, Variation);
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Empty => None,
+            Self::One(opt) => opt.take().map(|(ik, v)| (ik.as_str().to_owned(), v)),
+            Self::Many(iter) => iter.next(),
+        }
+    }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let len = ExactSizeIterator::len(self);
+        (len, Some(len))
+    }
+}
+
+impl ExactSizeIterator for VariationIntoIter {
+    #[inline]
+    fn len(&self) -> usize {
+        match self {
+            Self::Empty | Self::One(None) => 0,
+            Self::One(Some(_)) => 1,
+            Self::Many(iter) => iter.len(),
+        }
+    }
+}
+
+impl IntoIterator for VariationEntries {
+    type Item = (String, Variation);
+    type IntoIter = VariationIntoIter;
+
+    #[inline]
+    fn into_iter(self) -> Self::IntoIter {
+        match self {
+            Self::Empty => VariationIntoIter::Empty,
+            Self::One(ik, v) => VariationIntoIter::One(Some((ik, v))),
+            Self::Many(map) => VariationIntoIter::Many((*map).into_iter()),
+        }
+    }
+}
+
+impl VariationEntries {
+    #[inline]
+    pub fn new() -> Self {
+        Self::Empty
+    }
+
+    #[inline]
+    pub fn len(&self) -> usize {
+        match self {
+            Self::Empty => 0,
+            Self::One(_, _) => 1,
+            Self::Many(map) => map.len(),
+        }
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        match self {
+            Self::Empty => true,
+            Self::One(_, _) => false,
+            Self::Many(map) => map.is_empty(),
+        }
+    }
+
+    #[inline]
+    pub fn contains_key<Q: ?Sized + StrKey>(&self, key: &Q) -> bool {
+        let k = key.as_key_str();
+        match self {
+            Self::Empty => false,
+            Self::One(ik, _) => ik.as_bytes() == k.as_bytes(),
+            Self::Many(map) => map.contains_key(k),
+        }
+    }
+
+    #[inline]
+    pub fn get<Q: ?Sized + StrKey>(&self, key: &Q) -> Option<&Variation> {
+        let k = key.as_key_str();
+        match self {
+            Self::Empty => None,
+            Self::One(ik, v) => (ik.as_bytes() == k.as_bytes()).then_some(v),
+            Self::Many(map) => map.get(k),
+        }
+    }
+
+    #[inline]
+    pub fn get_mut<Q: ?Sized + StrKey>(&mut self, key: &Q) -> Option<&mut Variation> {
+        let k = key.as_key_str();
+        match self {
+            Self::Empty => None,
+            Self::One(ik, v) => (ik.as_bytes() == k.as_bytes()).then_some(v),
+            Self::Many(map) => map.get_mut(k),
+        }
+    }
+
+    #[inline]
+    pub fn get_or_insert_variation(&mut self, key: &str) -> &mut Variation {
+        match self {
+            Self::Empty => {
+                if let Some(ik) = InlineKey::try_from_str(key) {
+                    *self = Self::One(ik, Variation::new());
+                } else {
+                    *self = Self::Many(Box::default());
+                }
+            }
+            Self::One(ik, _) if ik.as_bytes() != key.as_bytes() => {
+                if let Self::One(prev_ik, prev_v) = std::mem::take(self) {
+                    let mut map = Box::new(IndexMap::with_capacity_and_hasher(
+                        2,
+                        FxBuildHasher::default(),
+                    ));
+                    map.insert(prev_ik.as_str().to_owned(), prev_v);
+                    *self = Self::Many(map);
+                }
+            }
+            Self::One(_, _) | Self::Many(_) => {}
+        }
+
+        match self {
+            Self::One(_, v) => v,
+            Self::Many(map) => match map.raw_entry_mut_v1().from_key(key) {
+                RawEntryMut::Occupied(e) => e.into_mut(),
+                RawEntryMut::Vacant(v) => v.insert(key.to_owned(), Variation::new()).1,
+            },
+            Self::Empty => self.get_or_insert_variation(key),
+        }
+    }
+
+    pub fn insert(&mut self, key: String, val: Variation) -> Option<Variation> {
+        match self {
+            Self::Empty => {
+                if let Some(ik) = InlineKey::try_from_str(&key) {
+                    *self = Self::One(ik, val);
+                } else {
+                    let mut map: Box<IndexMap<String, Variation, FxBuildHasher>> = Box::default();
+                    map.insert(key, val);
+                    *self = Self::Many(map);
+                }
+                None
+            }
+            Self::One(ik, slot) if ik.as_bytes() == key.as_bytes() => {
+                Some(std::mem::replace(slot, val))
+            }
+            Self::One(_, _) => {
+                if let Self::One(prev_ik, prev_v) = std::mem::take(self) {
+                    let mut map = Box::new(IndexMap::with_capacity_and_hasher(
+                        2,
+                        FxBuildHasher::default(),
+                    ));
+                    map.insert(prev_ik.as_str().to_owned(), prev_v);
+                    map.insert(key, val);
+                    *self = Self::Many(map);
+                }
+                None
+            }
+            Self::Many(map) => map.insert(key, val),
+        }
+    }
+
+    pub fn swap_remove<Q: ?Sized + StrKey>(&mut self, key: &Q) -> Option<Variation> {
+        let k = key.as_key_str();
+        match self {
+            Self::Empty => None,
+            Self::One(ik, _) if ik.as_bytes() == k.as_bytes() => {
+                if let Self::One(_, v) = std::mem::take(self) {
+                    Some(v)
+                } else {
+                    None
+                }
+            }
+            Self::One(_, _) => None,
+            Self::Many(map) => map.swap_remove(k),
+        }
+    }
+
+    pub fn shift_remove<Q: ?Sized + StrKey>(&mut self, key: &Q) -> Option<Variation> {
+        let k = key.as_key_str();
+        match self {
+            Self::Empty => None,
+            Self::One(ik, _) if ik.as_bytes() == k.as_bytes() => {
+                if let Self::One(_, v) = std::mem::take(self) {
+                    Some(v)
+                } else {
+                    None
+                }
+            }
+            Self::One(_, _) => None,
+            Self::Many(map) => map.shift_remove(k),
+        }
+    }
+
+    pub fn entry(&mut self, key: String) -> indexmap::map::Entry<'_, String, Variation> {
+        if !matches!(self, Self::Many(_)) {
+            let mut map: Box<IndexMap<String, Variation, FxBuildHasher>> = Box::default();
+            if let Self::One(ik, prev_v) = std::mem::take(self) {
+                map.insert(ik.as_str().to_owned(), prev_v);
+            }
+            *self = Self::Many(map);
+        }
+        match self {
+            Self::Many(map) => map.entry(key),
+            Self::Empty | Self::One(_, _) => self.entry(key),
+        }
+    }
+
+    #[inline]
+    pub fn keys(&self) -> VariationKeys<'_> {
+        match self {
+            Self::Empty => VariationKeys::Empty,
+            Self::One(ik, _) => VariationKeys::One(Some(ik.as_str())),
+            Self::Many(map) => VariationKeys::Many(map.keys()),
+        }
+    }
+
+    #[inline]
+    pub fn iter(&self) -> VariationIter<'_> {
+        match self {
+            Self::Empty => VariationIter::Empty,
+            Self::One(ik, v) => VariationIter::One(Some((ik.as_str(), v))),
+            Self::Many(map) => VariationIter::Many(map.iter()),
+        }
+    }
+}
+
+#[cfg(test)]
+impl<Q: ?Sized + StrKey> std::ops::Index<&Q> for VariationEntries {
+    type Output = Variation;
+
+    fn index(&self, key: &Q) -> &Self::Output {
+        let k = key.as_key_str();
+        self.get(k)
+            .unwrap_or_else(|| panic!("VariationEntries: key not found: {k}"))
+    }
+}
+
+/// A wrapper around `VariationEntries` that also supports structural variant info.
 /// Ports `collection/VariationMap.java`.
 #[derive(Debug, Clone, Default)]
 pub struct VariationMap {
-    pub map: IndexMap<String, Variation, FxBuildHasher>,
+    pub map: VariationEntries,
     pub sv: Option<Box<Sv>>,
     /// Set when a mate-window `partial_pipeline` merge plants this map's
     /// position outside the merging tile's active range (G3). The builder
@@ -877,7 +1274,7 @@ pub struct VariationMap {
 impl VariationMap {
     pub fn new() -> Self {
         Self {
-            map: IndexMap::default(),
+            map: VariationEntries::new(),
             sv: None,
             merge_planted: false,
         }
@@ -993,10 +1390,7 @@ pub fn get_variation<'a>(
     s: &str,
 ) -> &'a mut Variation {
     let entry = hash.get_or_put_with(start, VariationMap::new);
-    match entry.map.raw_entry_mut_v1().from_key(s) {
-        RawEntryMut::Occupied(e) => e.into_mut(),
-        RawEntryMut::Vacant(v) => v.insert(s.to_owned(), Variation::new()).1,
-    }
+    entry.map.get_or_insert_variation(s)
 }
 
 pub fn get_variation_maybe(
@@ -1269,13 +1663,7 @@ mod tests {
         get_variation(&mut m, 100, "C").cnt = 2;
         get_variation(&mut m, 100, "A").cnt += 4;
 
-        let keys: Vec<&str> = m
-            .get(&100)
-            .unwrap()
-            .map
-            .keys()
-            .map(String::as_str)
-            .collect();
+        let keys: Vec<&str> = m.get(&100).unwrap().map.keys().collect();
         assert_eq!(keys, vec!["A", "+T", "C"]);
         assert_eq!(get_variation_maybe(&m, 100, Some(b'A')).unwrap().cnt, 7);
 
@@ -1286,6 +1674,68 @@ mod tests {
             .unwrap()
             .cnt = 11;
         assert_eq!(get_variation_maybe(&m, 100, Some(0xE9)).unwrap().cnt, 11);
+
+        // InlineKey boundary checks (<= 23 bytes inline, >= 24 bytes None)
+        assert_eq!(InlineKey::try_from_str("").unwrap().as_str(), "");
+        let k23 = "+ACGTACGTACGTACGTACGTAC";
+        assert_eq!(k23.len(), 23);
+        let ik23 = InlineKey::try_from_str(k23).unwrap();
+        assert_eq!(ik23.as_bytes(), k23.as_bytes());
+        assert_eq!(ik23.as_str(), k23);
+        let k24 = "+ACGTACGTACGTACGTACGTACG";
+        assert_eq!(k24.len(), 24);
+        assert!(InlineKey::try_from_str(k24).is_none());
+
+        // VariationEntries Empty / One / Many transitions & in-place replace invariant
+        let mut entries = VariationEntries::new();
+        assert!(matches!(entries, VariationEntries::Empty));
+        assert!(entries.is_empty());
+        assert_eq!(entries.len(), 0);
+        assert_eq!(entries.keys().len(), 0);
+
+        entries.get_or_insert_variation("G").cnt = 5;
+        assert!(matches!(entries, VariationEntries::One(_, _)));
+        assert_eq!(entries.len(), 1);
+        assert!(!entries.is_empty());
+        assert!(entries.contains_key("G"));
+        let g_owned = "G".to_string();
+        assert!(entries.contains_key(&g_owned));
+        assert_eq!(entries["G"].cnt, 5);
+        assert_eq!(entries[&g_owned].cnt, 5);
+
+        // Repeated get_or_insert_variation and insert on same key stay One without promoting to Many
+        entries.get_or_insert_variation("G").cnt += 2;
+        assert!(matches!(entries, VariationEntries::One(_, _)));
+        let mut replacement = Variation::new();
+        replacement.cnt = 19;
+        let prev = entries.insert("G".to_string(), replacement);
+        assert_eq!(prev.unwrap().cnt, 7);
+        assert!(matches!(entries, VariationEntries::One(_, _)));
+        assert_eq!(entries.get(&g_owned).unwrap().cnt, 19);
+
+        // ExactSizeIterator on One
+        let mut one_keys = entries.keys();
+        assert_eq!(one_keys.len(), 1);
+        assert_eq!(one_keys.next(), Some("G"));
+        assert_eq!(one_keys.len(), 0);
+        assert_eq!(one_keys.next(), None);
+
+        // swap_remove / shift_remove on One
+        assert!(entries.swap_remove("C").is_none());
+        assert!(matches!(entries, VariationEntries::One(_, _)));
+        assert_eq!(entries.swap_remove(&g_owned).unwrap().cnt, 19);
+        assert!(matches!(entries, VariationEntries::Empty));
+
+        entries.insert("T".to_string(), Variation::new());
+        assert!(entries.shift_remove("A").is_none());
+        assert!(entries.shift_remove("T").is_some());
+        assert!(entries.is_empty());
+
+        // >23-byte key promotes Empty directly to Many
+        let mut long_entries = VariationEntries::new();
+        long_entries.get_or_insert_variation(k24).cnt = 4;
+        assert!(matches!(long_entries, VariationEntries::Many(_)));
+        assert_eq!(long_entries.get(k24).unwrap().cnt, 4);
     }
 
     #[test]
@@ -1299,10 +1749,36 @@ mod tests {
         get_variation(&mut m, 50, "G").cnt += 1;
         get_variation(&mut m, 50, "+AT").cnt += 1;
 
-        let keys: Vec<&str> = m.get(&50).unwrap().map.keys().map(String::as_str).collect();
+        let keys: Vec<&str> = m.get(&50).unwrap().map.keys().collect();
         assert_eq!(keys, vec!["G", "+AT"]);
         assert_eq!(m.get(&50).unwrap().map.get("G").unwrap().cnt, 41);
         assert_eq!(m.get(&50).unwrap().map.get("+AT").unwrap().cnt, 3);
+
+        // Verify swap_remove vs shift_remove order parity with IndexMap and entry()/IntoIterator
+        let mut e1 = VariationEntries::new();
+        e1.get_or_insert_variation("A").cnt = 1;
+        e1.get_or_insert_variation("C").cnt = 2;
+        e1.get_or_insert_variation("G").cnt = 3;
+        let mut e2 = e1.clone();
+        e1.swap_remove("A");
+        assert_eq!(e1.keys().collect::<Vec<_>>(), vec!["G", "C"]);
+        e2.shift_remove("A");
+        assert_eq!(e2.keys().collect::<Vec<_>>(), vec!["C", "G"]);
+
+        let mut e3 = VariationEntries::new();
+        e3.get_or_insert_variation("A").cnt = 5;
+        e3.entry("T".to_string()).or_insert_with(Variation::new).cnt = 8;
+        assert_eq!(
+            (&e3)
+                .into_iter()
+                .map(|(k, v)| (k, v.cnt))
+                .collect::<Vec<_>>(),
+            vec![("A", 5), ("T", 8)]
+        );
+        assert_eq!(
+            e3.into_iter().map(|(k, v)| (k, v.cnt)).collect::<Vec<_>>(),
+            vec![("A".to_string(), 5), ("T".to_string(), 8)]
+        );
     }
 }
 
