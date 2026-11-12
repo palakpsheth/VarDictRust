@@ -452,6 +452,41 @@ pub fn validate_sample_regexp(raw: &str) -> Result<Option<String>, String> {
     Ok(Some(pat.to_string()))
 }
 
+/// Validates a `--vcf-pval <FLOAT>` (`var2vcf_paired.pl -P`) token without allocating.
+///
+/// Rejects empty or untrimmed strings, non-finite numbers (`NaN`/`inf`), and negative
+/// values (including negative non-zero mantissas that underflow `f64` to `-0.0` such as
+/// `"-1e-400"`). Canonicalizes signed zeros (`"-0.0"` / `"+0.0"` -> `(0.0, "0.0")`) while
+/// preserving verbatim positive formatting (`"1e-5"`, `"0.050"`).
+pub fn validate_vcf_pval_token(s: &str) -> Result<(f64, &str), String> {
+    if s.is_empty() || s.trim() != s {
+        return Err(format!("Invalid --vcf-pval value '{s}'"));
+    }
+    let v = s
+        .parse::<f64>()
+        .map_err(|e| format!("Invalid --vcf-pval value '{s}': {e}"))?;
+    let neg_nonzero_mantissa = s.starts_with('-')
+        && s.split(['e', 'E'])
+            .next()
+            .is_some_and(|m| m.bytes().any(|b| b.is_ascii_digit() && b != b'0'));
+    if !v.is_finite() || v < 0.0 || neg_nonzero_mantissa {
+        return Err(format!(
+            "Invalid --vcf-pval value '{s}': must be a finite number >= 0.0"
+        ));
+    }
+    if v == 0.0 {
+        Ok((0.0, s.strip_prefix(['-', '+']).unwrap_or(s)))
+    } else {
+        Ok((v, s))
+    }
+}
+
+/// Validates and normalizes a `--vcf-pval <FLOAT>` (`var2vcf_paired.pl -P`) token into
+/// `(f64, String)` for CLI parsing and [`Config`] validation.
+pub fn parse_vcf_pval_token(s: &str) -> Result<(f64, String), String> {
+    validate_vcf_pval_token(s).map(|(v, norm)| (v, norm.to_string()))
+}
+
 /// Resolves sample name(s) matching `VarDictLauncher.java:82-86, 206-268` and `var2vcf_paired.pl:45-48`.
 /// Splits `bam_raw` ONLY on `'|'` (never on `':'`).
 pub fn resolve_sample_names(

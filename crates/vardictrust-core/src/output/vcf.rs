@@ -594,15 +594,12 @@ fn collect_valid_filters(
 
     // MSI12 check
     let opt_i = 12.0;
-    let ref_len = variant.ref_allele.len() as i32;
-    let alt_len = variant.var_allele.len() as i32;
-    let len_diff = (ref_len - alt_len).abs();
+    let len_diff = variant.ref_allele.len().abs_diff(variant.var_allele.len());
+    let len_matches_msint = usize::try_from(variant.msint).ok() == Some(len_diff);
     let msi_check1 =
-        msi > opt_i && variant.msint > 1 && variant.frequency < 0.2 && len_diff == variant.msint;
-    let msi_check2 = msi >= 13.0
-        && variant.msint == 1
-        && variant.frequency <= 0.275
-        && len_diff == variant.msint;
+        msi > opt_i && variant.msint > 1 && variant.frequency < 0.2 && len_matches_msint;
+    let msi_check2 =
+        msi >= 13.0 && variant.msint == 1 && variant.frequency <= 0.275 && len_matches_msint;
     if msi_check1 || msi_check2 {
         filters.push(FilterTag::Text("MSI12"));
     }
@@ -624,24 +621,24 @@ fn collect_valid_filters(
         && variant.bias == "2;1"
         && sbf_r < 0.01
         && (transformed_or > 5.0 || transformed_or == 0.0)
-        && (variant.end_pos - variant.start_pos) < 100
+        && (i64::from(variant.end_pos) - i64::from(variant.start_pos)) < 100
     {
         filters.push(FilterTag::Text("Bias"));
     }
 
     // LongMSI check
-    if len_diff == variant.msint {
+    if len_matches_msint {
         if (hiaf <= 0.275 && msi >= 13.0) || (hiaf <= 0.2 && msi >= 8.0 && variant.msint > 1) {
             filters.push(FilterTag::Text("LongMSI"));
         }
     }
 
     // Cluster check
-    let opt_c = 0; // default
+    let opt_c = 0_i64; // default
     if variant.var_type == "SNV"
         && filters.is_empty()
         && pvs > 0
-        && (variant.start_pos - pvs) < opt_c
+        && (i64::from(variant.start_pos) - i64::from(pvs)) < opt_c
     {
         filters.push(FilterTag::Text("Cluster0bp"));
     }
@@ -649,7 +646,7 @@ fn collect_valid_filters(
     // AMPBIAS — amplicon mode only (:185 `$isamp && (($gamp < $tamp-$ncamp) || $ampflag)`);
     // pushed last, after the Cluster check, matching perl's @filters order.
     if let Some((gdamp, tlamp, ncamp, ampflag)) = amp {
-        if gdamp < tlamp - ncamp || ampflag {
+        if i64::from(gdamp) < i64::from(tlamp) - i64::from(ncamp) || ampflag {
             filters.push(FilterTag::Text("AMPBIAS"));
         }
     }
@@ -926,7 +923,7 @@ fn format_vcf_record_with_filter<F: FnOnce(&mut String)>(
             // ports var2vcf_valid.pl:199,206-210 — `$alt =~ /</` (including `#342`
             // mid-allele `<dup-N>` when `--min-splitreads 0`); SVLEN = end - start,
             // incremented only when the ALT contains INV.
-            let mut svlen = variant.end_pos - variant.start_pos;
+            let mut svlen = i64::from(variant.end_pos) - i64::from(variant.start_pos);
             if variant.var_allele.contains("INV") {
                 svlen += 1;
             }
@@ -949,7 +946,7 @@ fn format_vcf_record_with_filter<F: FnOnce(&mut String)>(
     buf.push(':');
     let _ = write!(buf, "{}", variant.pos_coverage);
     buf.push(':');
-    let rd = variant.ref_fwd_cov + variant.ref_rev_cov;
+    let rd = i64::from(variant.ref_fwd_cov) + i64::from(variant.ref_rev_cov);
     let vd = variant.pos_coverage;
     if vd != 0 {
         let _ = write!(buf, "{},{}", rd, vd);
@@ -1104,16 +1101,33 @@ const PAIRED_GTFREQ: f64 = 0.2;
 const PAIRED_OPT_I: f64 = 12.0;
 const PAIRED_OPT_M: f64 = 5.25;
 
+#[inline]
+fn effective_paired_pval_num(config: &Config) -> f64 {
+    if !config.vcf_pval.is_finite() || config.vcf_pval < 0.0 {
+        0.05
+    } else if config.vcf_pval == 0.0 {
+        0.0
+    } else {
+        config.vcf_pval
+    }
+}
+
 /// Format `$PVAL` for `var2vcf_paired.pl:27,86,200`: uses `config.vcf_pval_raw` verbatim
-/// when supplied on the CLI, else `perl_num_str(config.vcf_pval)`.
+/// when valid and consistent with `config.vcf_pval`, else `perl_num_str(eff_pval)`.
 #[inline]
 fn vcf_pval_label(config: &Config) -> std::borrow::Cow<'_, str> {
+    let pval = effective_paired_pval_num(config);
     if let Some(raw) = config.vcf_pval_raw.as_deref() {
-        std::borrow::Cow::Borrowed(raw)
-    } else if config.vcf_pval.to_bits() == 0.05_f64.to_bits() {
+        if let Ok((p_norm, norm_raw)) = crate::config::validate_vcf_pval_token(raw) {
+            if p_norm.to_bits() == pval.to_bits() {
+                return std::borrow::Cow::Borrowed(norm_raw);
+            }
+        }
+    }
+    if pval.to_bits() == 0.05_f64.to_bits() {
         std::borrow::Cow::Borrowed("0.05")
     } else {
-        std::borrow::Cow::Owned(perl_num_str(config.vcf_pval))
+        std::borrow::Cow::Owned(perl_num_str(pval))
     }
 }
 
@@ -1266,6 +1280,11 @@ impl PairedVcfRecord {
     }
 
     #[inline]
+    pub(crate) fn capacity(&self) -> usize {
+        self.line.capacity()
+    }
+
+    #[inline]
     pub(crate) fn filter_offsets(&self) -> (usize, usize) {
         (self.filter_start, self.filter_end)
     }
@@ -1291,7 +1310,8 @@ impl PairedVcfRecord {
         let filt = line.get(filter_start..filter_end)?;
         let prev_idx = filter_start.checked_sub(1)?;
         if filt.is_empty()
-            || filt.bytes().any(|b| matches!(b, b'\t' | b'\r' | b'\n'))
+            || line.bytes().any(|b| matches!(b, b'\r' | b'\n'))
+            || filt.as_bytes().contains(&b'\t')
             || line.as_bytes().get(prev_idx) != Some(&b'\t')
             || line.as_bytes().get(filter_end) != Some(&b'\t')
             || line
@@ -1300,6 +1320,7 @@ impl PairedVcfRecord {
                 .filter(|&b| b == b'\t')
                 .count()
                 != 6
+            || line.bytes().filter(|&b| b == b'\t').count() != 10
         {
             return None;
         }
@@ -1405,7 +1426,11 @@ fn push_paired_sample_field(
     buf.push(':');
     let _ = write!(buf, "{},{}", v.ref_fwd_cov, v.ref_rev_cov);
     buf.push(':');
-    let _ = write!(buf, "{}", v.ref_fwd_cov + v.ref_rev_cov);
+    let _ = write!(
+        buf,
+        "{}",
+        i64::from(v.ref_fwd_cov) + i64::from(v.ref_rev_cov)
+    );
     buf.push(',');
     let _ = write!(buf, "{}", v.pos_coverage);
     buf.push(':');
@@ -1497,8 +1522,10 @@ pub fn format_paired_vcf_record(
     let p2 = fisher2.get_p_value();
     let or2 = paired_or_transform(&fisher2.odds_ratio_buf());
 
-    let tref = (v1.total_pos_cov - v1.pos_coverage).max(0);
-    let rref = (v2.total_pos_cov - v2.pos_coverage).max(0);
+    let tref = (i64::from(v1.total_pos_cov) - i64::from(v1.pos_coverage))
+        .clamp(0, i64::from(i32::MAX)) as i32;
+    let rref = (i64::from(v2.total_pos_cov) - i64::from(v2.pos_coverage))
+        .clamp(0, i64::from(i32::MAX)) as i32;
     let fisher_total = crate::stats::FisherExact::new_with_mode(
         v1.pos_coverage,
         tref,
@@ -1563,7 +1590,8 @@ pub fn format_paired_vcf_record(
 
     let mut p_likely = false;
     let mut indel_likely = false;
-    let mut pval_tag_buf = String::new();
+    let mut pval_stack = crate::types::StackBuf::<32>::new();
+    let mut pval_heap = String::new();
     let mut filters = StackFilterList::new();
     if !normal_clean {
         let pmean1 = crate::types::round_half_even(v1.mean_position, 1);
@@ -1616,7 +1644,7 @@ pub fn format_paired_vcf_record(
         if v1.bias == "2;1"
             && p1_r < 0.01
             && (or1.1 > 5.0 || or1.1 == 0.0)
-            && v1.end_pos - v1.start_pos < 100
+            && i64::from(v1.end_pos) - i64::from(v1.start_pos) < 100
         {
             filters.push(FilterTag::Text("Bias"));
             has_bias = true;
@@ -1627,7 +1655,7 @@ pub fn format_paired_vcf_record(
             && v2.bias == "2;1"
             && p2_r < 0.01
             && (or2.1 > 5.0 || or2.1 == 0.0)
-            && v1.end_pos - v1.start_pos < 100
+            && i64::from(v1.end_pos) - i64::from(v1.start_pos) < 100
         {
             filters.push(FilterTag::Text("Bias"));
         }
@@ -1641,8 +1669,8 @@ pub fn format_paired_vcf_record(
                 has_msi = true;
             }
         }
-        let len_diff = (v1.ref_allele.len() as i32 - v1.var_allele.len() as i32).abs();
-        if len_diff == msilen as i32 && !has_msi {
+        let len_diff = v1.ref_allele.len().abs_diff(v1.var_allele.len());
+        if usize::try_from(end_var.msint).ok() == Some(len_diff) && !has_msi {
             if (msi > PAIRED_OPT_I && msilen > 1.0 && af1 < 0.35 && af2 < 0.35)
                 || (msi > 12.0 && msilen == 1.0 && af1 < 0.35 && af2 < 0.35)
             {
@@ -1652,15 +1680,22 @@ pub fn format_paired_vcf_record(
 
         // Paired strict `-M` (`--paired-strict`, var2vcf_paired.pl:198-206).
         if config.vcf_paired_strict {
-            if ptot_r > config.vcf_pval {
+            let eff_pval = effective_paired_pval_num(config);
+            if ptot_r > eff_pval {
                 let ss_pval_exc = status == "StrongSomatic"
                     && ((ptot_r < 0.25 && af1 > 0.1)
                         || (ptot_r < 0.5 && af1 > 0.20)
                         || (ptot_r < 0.15 && af1 > 0.05));
                 if !ss_pval_exc {
-                    pval_tag_buf.push('P');
-                    pval_tag_buf.push_str(&vcf_pval_label(config));
-                    filters.push(FilterTag::Text(&pval_tag_buf));
+                    let lbl = vcf_pval_label(config);
+                    if 1 + lbl.len() <= 32 {
+                        let _ = write!(pval_stack, "P{lbl}");
+                        filters.push(FilterTag::Text(pval_stack.as_str()));
+                    } else {
+                        pval_heap.push('P');
+                        pval_heap.push_str(&lbl);
+                        filters.push(FilterTag::Text(&pval_heap));
+                    }
                 }
             } else if status.contains("LikelySomatic") && ptot_r > 0.05 / 5.0_f64.powi(vd2.max(0)) {
                 p_likely = true;
@@ -1791,7 +1826,7 @@ impl PairedRecordStreamer {
                 && cur.is_pass()
                 && cur.status_somatic
                 && cur.type_snv
-                && cur.start.saturating_sub(self.pvs) < self.opt_c
+                && i64::from(cur.start) - i64::from(self.pvs) < i64::from(self.opt_c)
             {
                 let mut cluster_tag = crate::types::StackBuf::<32>::new();
                 let _ = write!(cluster_tag, "Cluster{}bp", self.opt_c);
@@ -3593,7 +3628,7 @@ mod tests {
             .is_none(),
             "out-of-bounds span must be rejected"
         );
-        let utf8_line = "chr1\t100\t.\tA\tG\t35\tµPASS\tSTATUS=Somatic".to_string();
+        let utf8_line = "chr1\t100\t.\tA\tG\t35\tµPASS\tSTATUS=Somatic\tGT\t0/1\t0/0".to_string();
         let mu_pos = utf8_line.find('µ').unwrap();
         assert_eq!('µ'.len_utf8(), 2);
         assert!(
@@ -3620,7 +3655,7 @@ mod tests {
             .is_none(),
             "mid-UTF8 start offset must be rejected"
         );
-        // Column-aligned non-empty FILTER span checks (VCF column 7 = index 6, delimited by tabs)
+        // Column-aligned non-empty FILTER span checks (VCF column 7 = index 6, 10 tabs, no \r/\n)
         assert!(
             PairedVcfRecord::from_parts_checked(valid_line.clone(), 0, 4, 100, true, true)
                 .is_none(),
@@ -3657,6 +3692,102 @@ mod tests {
             .is_none(),
             "span crossing tab into INFO column must be rejected"
         );
+        assert!(
+            PairedVcfRecord::from_parts_checked(
+                "chr1\t100\t.\tA\tG\t35\tPASS\tSTATUS=Somatic".to_string(),
+                18,
+                22,
+                100,
+                true,
+                true,
+            )
+            .is_none(),
+            "8-column line (< 10 tabs) must be rejected"
+        );
+        assert!(
+            PairedVcfRecord::from_parts_checked(
+                format!("{valid_line}\textra"),
+                fs1,
+                fe1,
+                100,
+                true,
+                true,
+            )
+            .is_none(),
+            "12-column line (> 10 tabs) must be rejected"
+        );
+        assert!(
+            PairedVcfRecord::from_parts_checked(
+                format!("{valid_line}\n"),
+                fs1,
+                fe1,
+                100,
+                true,
+                true,
+            )
+            .is_none(),
+            "line containing trailing newline must be rejected"
+        );
+
+        // Direct library-API sanitization (`vcf_pval_raw` injection / NaN `vcf_pval`) &
+        // extreme `i32` bounds in `filter_variant` / `format_paired_vcf_record`
+        let mut bad_lib_cfg = Config::default();
+        bad_lib_cfg.vcf_paired_strict = true;
+        bad_lib_cfg.vcf_pval = f64::NAN;
+        bad_lib_cfg.vcf_pval_raw = Some("0.01\n##evil".to_string());
+        let mut hdr_buf = Vec::new();
+        print_paired_vcf_header(&mut hdr_buf, &bad_lib_cfg, &HashMap::new()).unwrap();
+        let hdr_str = String::from_utf8(hdr_buf).unwrap();
+        assert!(hdr_str.contains("##FILTER=<ID=P0.05,"));
+        assert!(!hdr_str.contains("##evil"));
+
+        let mut extreme = clean_normal();
+        extreme.start_pos = 0;
+        extreme.end_pos = i32::MAX;
+        extreme.total_pos_cov = 10;
+        extreme.pos_coverage = i32::MIN;
+        extreme.ref_fwd_cov = i32::MAX;
+        extreme.ref_rev_cov = i32::MAX;
+        extreme.msint = i32::MIN;
+        extreme.bias = "2;1".to_string();
+        extreme.var_allele = "<INV>".to_string();
+        let _ = filter_variant(
+            &extreme,
+            &Config::default(),
+            i32::MAX,
+            Some((0, i32::MAX, i32::MIN, false)),
+            0.0,
+            "Inf",
+        );
+        let mut sv_zero_cfg = Config::default();
+        sv_zero_cfg.vcf_min_splitreads = 0;
+        let mut vcf_out = String::new();
+        let ext_region = Region {
+            chr: "chr1".to_string(),
+            start: crate::types::Pos1(1),
+            end: crate::types::Pos1(100),
+            gene: "TEST".to_string(),
+            amplicon: None,
+        };
+        format_filtered_vcf_record_into(
+            &mut vcf_out,
+            &extreme,
+            &ext_region,
+            &sv_zero_cfg,
+            i32::MAX,
+            0.0,
+            "Inf",
+            None,
+        );
+        assert!(vcf_out.contains(";SVTYPE=INV;SVLEN=2147483648;"));
+        let san_rec = format_paired_vcf_record(
+            &somatic_sv(extreme.clone(), Some(extreme), "Germline"),
+            "chr1",
+            &bad_lib_cfg,
+        );
+        assert!(san_rec.capacity() >= san_rec.as_str().len());
+        assert!(!san_rec.as_str().contains('\n'));
+        assert_eq!(san_rec.as_str().bytes().filter(|&b| b == b'\t').count(), 10);
 
         // `PairedRecordStreamer::with_pass_only(10, true)` suppresses clustered SNVs after
         // `Cluster10bp` mutation while keeping unclustered PASS records (`var2vcf_paired.pl:229-236, 249`)

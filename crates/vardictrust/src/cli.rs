@@ -30,6 +30,16 @@ const GNU_ONLY_LONG_FLAGS_SINGLE_DASH: &[&str] = &[
     "-stats-json",
     "-parity",
     "-compat",
+    "-reference",
+    "-bam",
+    "-af-threshold",
+    "-name",
+    "-region",
+    "-threads",
+    "-emit-intermediate",
+    "-tile-size",
+    "-version",
+    "-help",
 ];
 
 /// Value parser for signed integer CLI options (`-P`, `-x`, `-X`, `-J`, `-j`, `-T`).
@@ -46,28 +56,10 @@ fn parse_java_signed_i32(s: &str) -> Result<i32, String> {
 /// Preserves the normalized raw CLI token for verbatim `P$PVAL` header/FILTER formatting
 /// while canonicalizing signed zeros (`-0.0` / `+0.0` -> `(0.0, "0.0")`).
 fn parse_vcf_pval_token(s: &str) -> Result<(f64, String), String> {
-    if s.is_empty() || s.trim() != s || s == "-3" {
+    if s == "-3" {
         return Err(format!("Invalid --vcf-pval value '{s}'"));
     }
-    let v = s
-        .parse::<f64>()
-        .map_err(|e| format!("Invalid --vcf-pval value '{s}': {e}"))?;
-    if !v.is_finite()
-        || v < 0.0
-        || (s.starts_with('-')
-            && s.split(['e', 'E'])
-                .next()
-                .is_some_and(|m| m.bytes().any(|b| b.is_ascii_digit() && b != b'0')))
-    {
-        return Err(format!(
-            "Invalid --vcf-pval value '{s}': must be a finite number >= 0.0"
-        ));
-    }
-    if v == 0.0 {
-        Ok((0.0, s.strip_prefix(['-', '+']).unwrap_or(s).to_string()))
-    } else {
-        Ok((v, s.to_string()))
-    }
+    vardictrust_core::config::parse_vcf_pval_token(s)
 }
 
 /// Strict base-10 non-negative integer parser for `--min-splitreads <INT>` (`var2vcf_valid.pl -T`).
@@ -137,7 +129,11 @@ fn classify_short_cluster(arg: &str) -> (Option<char>, bool) {
     let Some(rest) = head.strip_prefix('-') else {
         return (None, false);
     };
-    if rest.is_empty() || rest.starts_with('-') || is_known_single_dash_long_flag(head) {
+    if rest.is_empty()
+        || rest.starts_with('-')
+        || is_known_single_dash_long_flag(head)
+        || GNU_ONLY_LONG_FLAGS_SINGLE_DASH.contains(&head)
+    {
         return (None, false);
     }
     for (idx, ch) in rest.char_indices() {
@@ -206,7 +202,10 @@ fn takes_mandatory_next_token(arg: &str) -> bool {
 
 fn arg_has_region_short(arg: &str) -> bool {
     let head = arg.split_once('=').map_or(arg, |(h, _)| h);
-    if arg.starts_with("--") || is_known_single_dash_long_flag(head) {
+    if arg.starts_with("--")
+        || is_known_single_dash_long_flag(head)
+        || GNU_ONLY_LONG_FLAGS_SINGLE_DASH.contains(&head)
+    {
         return false;
     }
     let Some(rest) = head.strip_prefix('-') else {
@@ -245,7 +244,10 @@ fn scan_has_region(args: &[String]) -> bool {
 /// `a`, or `R` (e.g. `-pz`, `-pz0`, `-uz`, `-uk`, `-ua`, `-pR`) into `(bool_prefix, tail)`.
 fn split_bool_prefix_cluster(arg: &str) -> Option<(&str, &str)> {
     let head = arg.split_once('=').map_or(arg, |(h, _)| h);
-    if arg.starts_with("--") || is_known_single_dash_long_flag(head) {
+    if arg.starts_with("--")
+        || is_known_single_dash_long_flag(head)
+        || GNU_ONLY_LONG_FLAGS_SINGLE_DASH.contains(&head)
+    {
         return None;
     }
     let rest = arg.strip_prefix('-')?;
@@ -292,6 +294,13 @@ fn normalize_optional_or_passthrough(
     has_region: bool,
     out: &mut Vec<String>,
 ) -> usize {
+    let head = effective_arg
+        .split_once('=')
+        .map_or(effective_arg, |(h, _)| h);
+    if GNU_ONLY_LONG_FLAGS_SINGLE_DASH.contains(&head) {
+        out.push(effective_arg.to_string());
+        return i + 1;
+    }
     if effective_arg == "-z" {
         let next_is_num = args.get(i + 1).is_some_and(|n| {
             parse_java_signed_i32(n).is_ok() && (has_region || i + 2 < args.len())
@@ -2073,22 +2082,8 @@ mod tests {
             );
         }
 
-        // 4. Single-dash GNU-flag typo rejection in check_unsupported (bare, =val, and separate value token)
-        for gnu_typo in [
-            "-no-pstd-filter",
-            "-pass-only",
-            "-paired-strict",
-            "-vcf-pval",
-            "-min-splitreads",
-            "-no-end",
-            "-output",
-            "-tbi",
-            "-csi",
-            "-index",
-            "-stats-json",
-            "-parity",
-            "-compat",
-        ] {
+        // 4. Single-dash GNU-flag typo rejection in check_unsupported (bare, =val, =10:0.95, and separate value token)
+        for &gnu_typo in GNU_ONLY_LONG_FLAGS_SINGLE_DASH {
             let expected_suggestion = format!("did you mean '-{gnu_typo}'?");
             let norm_bare = normalize_args(&args(&[
                 "-G", "r.fa", "-b", "a.bam", gnu_typo, "-R", "c:1-10",
@@ -2105,27 +2100,29 @@ mod tests {
                 "missing suggestion '{expected_suggestion}' in error for {gnu_typo}: {err_bare}"
             );
 
-            let eq_tok = format!("{gnu_typo}=0.01");
-            let norm_eq = normalize_args(&args(&[
-                "-G",
-                "r.fa",
-                "-b",
-                "a.bam",
-                eq_tok.as_str(),
-                "-R",
-                "c:1-10",
-            ]));
-            let err_eq = check_unsupported(&norm_eq).expect_err(&format!(
-                "expected Parse error for single-dash GNU flag {eq_tok} (norm={norm_eq:?})"
-            ));
-            assert!(
-                matches!(err_eq, vardictrust_core::types::VardictError::Parse(_)),
-                "expected VardictError::Parse for {eq_tok}, got {err_eq:?}"
-            );
-            assert!(
-                err_eq.to_string().contains(&expected_suggestion),
-                "missing suggestion '{expected_suggestion}' in error for {eq_tok}: {err_eq}"
-            );
+            for eq_suffix in ["0.01", "10:0.95"] {
+                let eq_tok = format!("{gnu_typo}={eq_suffix}");
+                let norm_eq = normalize_args(&args(&[
+                    "-G",
+                    "r.fa",
+                    "-b",
+                    "a.bam",
+                    eq_tok.as_str(),
+                    "-R",
+                    "c:1-10",
+                ]));
+                let err_eq = check_unsupported(&norm_eq).expect_err(&format!(
+                    "expected Parse error for single-dash GNU flag {eq_tok} (norm={norm_eq:?})"
+                ));
+                assert!(
+                    matches!(err_eq, vardictrust_core::types::VardictError::Parse(_)),
+                    "expected VardictError::Parse for {eq_tok}, got {err_eq:?}"
+                );
+                assert!(
+                    err_eq.to_string().contains(&expected_suggestion),
+                    "missing suggestion '{expected_suggestion}' in error for {eq_tok}: {err_eq}"
+                );
+            }
         }
 
         // Separate value tokens after single-dash GNU flags must also be rejected cleanly

@@ -1176,12 +1176,41 @@ fn read_spill_u8<R: std::io::Read>(r: &mut R) -> std::io::Result<u8> {
     Ok(buf[0])
 }
 
+fn read_spill_bool<R: std::io::Read>(r: &mut R) -> std::io::Result<bool> {
+    match read_spill_u8(r)? {
+        0 => Ok(false),
+        1 => Ok(true),
+        b => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("corrupt spill boolean byte {b:#x}"),
+        )),
+    }
+}
+
+const MAX_SPILL_STR_BYTES: usize = 256 * 1024 * 1024;
+
 fn read_spill_str<R: std::io::Read>(r: &mut R) -> std::io::Result<String> {
+    use std::io::Read as _;
     let mut len_buf = [0u8; 8];
     r.read_exact(&mut len_buf)?;
-    let len = u64::from_le_bytes(len_buf) as usize;
-    let mut bytes = vec![0u8; len];
-    r.read_exact(&mut bytes)?;
+    let raw_len = u64::from_le_bytes(len_buf);
+    let len = usize::try_from(raw_len)
+        .ok()
+        .filter(|&n| n <= MAX_SPILL_STR_BYTES)
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("spill string length {raw_len} exceeds bound"),
+            )
+        })?;
+    let mut bytes = Vec::with_capacity(len.min(4096));
+    r.take(raw_len).read_to_end(&mut bytes)?;
+    if bytes.len() != len {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "truncated spill string",
+        ));
+    }
     String::from_utf8(bytes).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
 }
 
@@ -1213,7 +1242,7 @@ impl SpillableCandidate for RawVcfCandidate {
 
     #[inline]
     fn approx_heap_bytes(&self) -> usize {
-        std::mem::size_of::<Self>() + self.vcf_line.len()
+        std::mem::size_of::<Self>() + self.vcf_line.capacity()
     }
 
     fn write_to<W: std::io::Write>(&self, w: &mut W) -> std::io::Result<()> {
@@ -1228,7 +1257,7 @@ impl SpillableCandidate for RawVcfCandidate {
             return Ok(None);
         };
         let af_4dp = read_spill_f64(r)?;
-        let should_emit = read_spill_u8(r)? != 0;
+        let should_emit = read_spill_bool(r)?;
         let vcf_line = read_spill_str(r)?;
         Ok(Some(Self {
             start_pos,
@@ -1258,7 +1287,7 @@ impl SpillableCandidate for SomaticVcfCandidate {
 
     #[inline]
     fn approx_heap_bytes(&self) -> usize {
-        std::mem::size_of::<Self>() + self.record.as_ref().map_or(0, |rec| rec.as_str().len())
+        std::mem::size_of::<Self>() + self.record.as_ref().map_or(0, |rec| rec.capacity())
     }
 
     fn write_to<W: std::io::Write>(&self, w: &mut W) -> std::io::Result<()> {
@@ -1284,7 +1313,7 @@ impl SpillableCandidate for SomaticVcfCandidate {
             return Ok(None);
         };
         let af_4dp = read_spill_f64(r)?;
-        let has_rec = read_spill_u8(r)? != 0;
+        let has_rec = read_spill_bool(r)?;
         let record = if has_rec {
             let line = read_spill_str(r)?;
             let filter_start = usize::try_from(read_spill_u64(r)?)
@@ -1292,8 +1321,8 @@ impl SpillableCandidate for SomaticVcfCandidate {
             let filter_end = usize::try_from(read_spill_u64(r)?)
                 .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
             let start = read_spill_i32(r)?;
-            let type_snv = read_spill_u8(r)? != 0;
-            let status_somatic = read_spill_u8(r)? != 0;
+            let type_snv = read_spill_bool(r)?;
+            let status_somatic = read_spill_bool(r)?;
             let rec = crate::output::vcf::PairedVcfRecord::from_parts_checked(
                 line,
                 filter_start,
@@ -2175,38 +2204,18 @@ fn resolve_effective_config(
         effective.vcf_pval = 0.0;
     }
     if let Some(ref mut raw) = effective.vcf_pval_raw {
-        let neg_nonzero_mantissa = raw.starts_with('-')
-            && raw
-                .split(['e', 'E'])
-                .next()
-                .is_some_and(|m| m.bytes().any(|b| b.is_ascii_digit() && b != b'0'));
-        if raw.is_empty() || raw.trim() != raw || neg_nonzero_mantissa {
-            return Err(VardictError::Parse(format!(
-                "Invalid vcf_pval_raw '{raw}': must be a trimmed non-negative finite float string"
-            )));
-        }
-        let p = raw.parse::<f64>().map_err(|_| {
+        let (p_norm, norm_raw) = crate::config::parse_vcf_pval_token(raw).map_err(|_| {
             VardictError::Parse(format!(
-                "Invalid vcf_pval_raw '{raw}': must be a valid finite number >= 0.0"
+                "Invalid vcf_pval_raw '{raw}': must be a trimmed non-negative finite float string"
             ))
         })?;
-        if !p.is_finite() || p < 0.0 {
-            return Err(VardictError::Parse(format!(
-                "Invalid vcf_pval_raw '{raw}': must be a finite number >= 0.0"
-            )));
-        }
-        let p_norm = if p == 0.0 { 0.0 } else { p };
         if p_norm.to_bits() != effective.vcf_pval.to_bits() {
             return Err(VardictError::Parse(format!(
                 "Invalid vcf_pval_raw '{raw}': parsed value {p_norm} disagrees with vcf_pval '{}'",
                 effective.vcf_pval
             )));
         }
-        if p_norm == 0.0 {
-            if let Some(stripped) = raw.strip_prefix(['-', '+']) {
-                *raw = stripped.to_string();
-            }
-        }
+        *raw = norm_raw;
     }
     if effective.vcf_min_splitreads < 0 {
         return Err(VardictError::Parse(format!(
@@ -5922,13 +5931,18 @@ mod tests {
         assert_eq!(som_lines.len(), 1);
         assert!(som_lines[0].starts_with("chr1\t100\t.\tA\tT\t"));
 
-        // 3. Corrupt `u64` filter spans in `SomaticVcfCandidate::read_from` yield `InvalidData`
+        // 3. Corrupt `u64` filter spans, oversized/truncated string lengths, and corrupt boolean bytes
+        //    in `SomaticVcfCandidate::read_from` / `RawVcfCandidate::read_from` fail cleanly with zero panic
         for (bad_start, bad_end) in [(10u64, 5u64), (0u64, 9999u64), (u64::MAX, u64::MAX)] {
             let mut corrupt = Vec::new();
             write_spill_i32(&mut corrupt, 100).unwrap();
             write_spill_f64(&mut corrupt, 0.5).unwrap();
             write_spill_u8(&mut corrupt, 1).unwrap();
-            write_spill_str(&mut corrupt, "chr1\t100\t.\tA\tG\t35\tPASS\tSTATUS=Somatic").unwrap();
+            write_spill_str(
+                &mut corrupt,
+                "chr1\t100\t.\tA\tG\t35\tPASS\tSTATUS=Somatic\tGT\t0/1\t0/0",
+            )
+            .unwrap();
             write_spill_u64(&mut corrupt, bad_start).unwrap();
             write_spill_u64(&mut corrupt, bad_end).unwrap();
             write_spill_i32(&mut corrupt, 100).unwrap();
@@ -5939,6 +5953,40 @@ mod tests {
                 .expect("corrupt filter span must fail SomaticVcfCandidate::read_from");
             assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
         }
+
+        for (bad_len, expected_kind) in [
+            (u64::MAX, std::io::ErrorKind::InvalidData),
+            (1u64 << 40, std::io::ErrorKind::InvalidData),
+            (1024u64 * 1024, std::io::ErrorKind::UnexpectedEof),
+        ] {
+            let mut corrupt_len = Vec::new();
+            write_spill_i32(&mut corrupt_len, 100).unwrap();
+            write_spill_f64(&mut corrupt_len, 0.5).unwrap();
+            write_spill_u8(&mut corrupt_len, 1).unwrap();
+            write_spill_u64(&mut corrupt_len, bad_len).unwrap();
+            let err = SomaticVcfCandidate::read_from(&mut corrupt_len.as_slice())
+                .err()
+                .expect("corrupt/truncated spill string length must fail without panic");
+            assert_eq!(err.kind(), expected_kind);
+            let raw_err = RawVcfCandidate::read_from(&mut corrupt_len.as_slice())
+                .err()
+                .expect(
+                    "corrupt/truncated spill string length must fail RawVcfCandidate::read_from",
+                );
+            assert_eq!(raw_err.kind(), expected_kind);
+        }
+
+        let mut bad_bool = Vec::new();
+        write_spill_i32(&mut bad_bool, 100).unwrap();
+        write_spill_f64(&mut bad_bool, 0.5).unwrap();
+        write_spill_u8(&mut bad_bool, 2).unwrap();
+        assert_eq!(
+            SomaticVcfCandidate::read_from(&mut bad_bool.as_slice())
+                .err()
+                .expect("corrupt boolean byte must fail")
+                .kind(),
+            std::io::ErrorKind::InvalidData
+        );
     }
 
     #[test]
