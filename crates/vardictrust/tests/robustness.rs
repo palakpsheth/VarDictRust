@@ -1028,9 +1028,12 @@ fn output_bgzf_tbi_and_parity_compat_flags() {
 
     let pre_vcf_bytes = b"PREEXISTING_VCF_GZ_SENTINEL";
     let pre_tbi_bytes = b"PREEXISTING_TBI_SENTINEL";
+    let pre_csi_bytes = b"PREEXISTING_CSI_SENTINEL";
     let large_tbi_idx = tbi_600m_dir.join("out.vcf.gz.tbi");
+    let large_csi_sidecar = tbi_600m_dir.join("out.vcf.gz.csi");
     std::fs::write(&large_tbi_vcf, pre_vcf_bytes).expect("seed preexisting out.vcf.gz");
     std::fs::write(&large_tbi_idx, pre_tbi_bytes).expect("seed preexisting out.vcf.gz.tbi");
+    std::fs::write(&large_csi_sidecar, pre_csi_bytes).expect("seed preexisting out.vcf.gz.csi");
     let large_tbi_preserve = base_cmd()
         .arg("-G")
         .arg(&large_fa)
@@ -1053,6 +1056,11 @@ fn output_bgzf_tbi_and_parity_compat_flags() {
         pre_tbi_bytes,
         "failing --tbi must leave preexisting out.vcf.gz.tbi bytes untouched"
     );
+    assert_eq!(
+        std::fs::read(&large_csi_sidecar).expect("read preexisting out.vcf.gz.csi"),
+        pre_csi_bytes,
+        "failing pre-commit --tbi must preserve preexisting alternate .csi sidecar"
+    );
     let tmp_residue_preserve: Vec<_> = std::fs::read_dir(&tbi_600m_dir)
         .expect("read tbi_600m_fail after preserve")
         .filter_map(|e| e.ok())
@@ -1062,6 +1070,155 @@ fn output_bgzf_tbi_and_parity_compat_flags() {
         tmp_residue_preserve.is_empty(),
         "zero .tmp residue allowed after preexisting --tbi failure, found: {tmp_residue_preserve:?}"
     );
+
+    // 3c. Directory .tbi / .csi destinations fail before staging/commit and leave preexisting VCF untouched;
+    //     rewriting with --tbi after --csi (and --csi after --tbi) invalidates the stale alternate sidecar
+    //     while rejecting input / --stats-json alternate-sidecar collisions.
+    let dir_target_vcf = dir.path().join("dir_target.vcf.gz");
+    let dir_target_sentinel = b"PREEXISTING_VCF_BEFORE_DIR_IDX";
+    std::fs::write(&dir_target_vcf, dir_target_sentinel).expect("seed dir_target.vcf.gz");
+    for (idx_flag, idx_ext) in [("--tbi", "tbi"), ("--csi", "csi")] {
+        let idx_dir = dir.path().join(format!("dir_target.vcf.gz.{idx_ext}"));
+        std::fs::create_dir(&idx_dir).expect("create index destination directory");
+        let dir_idx_run = base_cmd()
+            .args(common_args)
+            .arg("--output")
+            .arg(&dir_target_vcf)
+            .arg(idx_flag)
+            .output()
+            .expect("spawn with directory index destination");
+        assert!(
+            !dir_idx_run.status.success(),
+            "{idx_flag} with directory destination must fail"
+        );
+        assert_ne!(dir_idx_run.status.code(), Some(101));
+        assert_eq!(
+            std::fs::read(&dir_target_vcf).expect("read dir_target.vcf.gz"),
+            dir_target_sentinel,
+            "directory {idx_flag} destination must leave preexisting VCF unchanged"
+        );
+        assert!(idx_dir.is_dir(), "{idx_flag} directory must remain intact");
+        std::fs::remove_dir(&idx_dir).expect("cleanup index destination directory");
+    }
+
+    let swap_vcf = dir.path().join("sidecar_swap.vcf.gz");
+    let swap_tbi = dir.path().join("sidecar_swap.vcf.gz.tbi");
+    let swap_csi = dir.path().join("sidecar_swap.vcf.gz.csi");
+    let swap_csi_first = base_cmd()
+        .args(common_args)
+        .arg("--output")
+        .arg(&swap_vcf)
+        .arg("--csi")
+        .output()
+        .expect("spawn initial --csi for sidecar swap");
+    assert!(
+        swap_csi_first.status.success(),
+        "initial --csi failed: {}",
+        String::from_utf8_lossy(&swap_csi_first.stderr)
+    );
+    assert!(swap_csi.is_file() && !swap_tbi.exists());
+
+    let swap_to_tbi = base_cmd()
+        .args(common_args)
+        .arg("--output")
+        .arg(&swap_vcf)
+        .arg("--tbi")
+        .output()
+        .expect("spawn replacement --tbi over prior --csi");
+    assert!(
+        swap_to_tbi.status.success(),
+        "replacement --tbi failed: {}",
+        String::from_utf8_lossy(&swap_to_tbi.stderr)
+    );
+    assert!(swap_tbi.is_file(), "replacement .tbi must exist");
+    assert!(
+        !swap_csi.exists(),
+        "stale .csi sidecar must be invalidated after --tbi replacement"
+    );
+    let _ = noodles::tabix::fs::read(&swap_tbi).expect("replacement .tbi must parse");
+
+    let swap_to_csi = base_cmd()
+        .args(common_args)
+        .arg("--output")
+        .arg(&swap_vcf)
+        .arg("--csi")
+        .output()
+        .expect("spawn replacement --csi over prior --tbi");
+    assert!(
+        swap_to_csi.status.success(),
+        "replacement --csi failed: {}",
+        String::from_utf8_lossy(&swap_to_csi.stderr)
+    );
+    assert!(swap_csi.is_file(), "replacement .csi must exist");
+    assert!(
+        !swap_tbi.exists(),
+        "stale .tbi sidecar must be invalidated after --csi replacement"
+    );
+    let _ = noodles::csi::io::Reader::new(std::fs::File::open(&swap_csi).expect("open swap .csi"))
+        .read_index()
+        .expect("replacement .csi must parse");
+
+    #[cfg(unix)]
+    {
+        let alt_stats_vcf = dir.path().join("alt_stats_col.vcf.gz");
+        let alt_stats_csi = dir.path().join("alt_stats_col.vcf.gz.csi");
+        let stats_target = dir.path().join("protected_stats.json");
+        std::fs::write(&alt_stats_vcf, b"ALT_STATS_VCF").expect("seed alt_stats_col.vcf.gz");
+        std::fs::write(&stats_target, b"{\"keep\":true}").expect("seed protected_stats.json");
+        std::os::unix::fs::symlink(&stats_target, &alt_stats_csi)
+            .expect("symlink alternate .csi to --stats-json");
+        let alt_stats_run = base_cmd()
+            .args(common_args)
+            .arg("--output")
+            .arg(&alt_stats_vcf)
+            .arg("--tbi")
+            .arg("--stats-json")
+            .arg(&stats_target)
+            .output()
+            .expect("spawn --tbi with alternate .csi colliding with --stats-json");
+        assert!(!alt_stats_run.status.success());
+        assert!(String::from_utf8_lossy(&alt_stats_run.stderr)
+            .contains("must not point to the same file"));
+        assert_eq!(
+            std::fs::read(&alt_stats_vcf).expect("read alt_stats_col.vcf.gz"),
+            b"ALT_STATS_VCF"
+        );
+        assert_eq!(
+            std::fs::read(&stats_target).expect("read protected_stats.json"),
+            b"{\"keep\":true}"
+        );
+
+        let alt_in_vcf = dir.path().join("alt_input_col.vcf.gz");
+        let alt_in_csi = dir.path().join("alt_input_col.vcf.gz.csi");
+        let micro_bam_abs = workspace_root().join("fixtures/micro/micro.bam");
+        let micro_bam_len = std::fs::metadata(&micro_bam_abs)
+            .expect("stat micro.bam")
+            .len();
+        std::fs::write(&alt_in_vcf, b"ALT_INPUT_VCF").expect("seed alt_input_col.vcf.gz");
+        std::os::unix::fs::symlink(&micro_bam_abs, &alt_in_csi)
+            .expect("symlink alternate .csi to input BAM");
+        let alt_in_run = base_cmd()
+            .args(common_args)
+            .arg("--output")
+            .arg(&alt_in_vcf)
+            .arg("--tbi")
+            .output()
+            .expect("spawn --tbi with alternate .csi colliding with input BAM");
+        assert!(!alt_in_run.status.success());
+        assert!(
+            String::from_utf8_lossy(&alt_in_run.stderr).contains("must not point to the same file")
+        );
+        assert_eq!(
+            std::fs::read(&alt_in_vcf).expect("read alt_input_col.vcf.gz"),
+            b"ALT_INPUT_VCF"
+        );
+        assert_eq!(
+            std::fs::metadata(&micro_bam_abs)
+                .expect("stat micro.bam after")
+                .len(),
+            micro_bam_len
+        );
+    }
 
     // 4. --parity and --compat vardictjava-1.8.3 match default stdout byte-for-byte; unknown --compat fails with Unsupported
     for compat_args in [

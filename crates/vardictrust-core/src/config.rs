@@ -364,6 +364,14 @@ fn strip_outer_slashes(raw: &str) -> &str {
     pat.strip_suffix('/').unwrap_or(pat)
 }
 
+const SAMPLE_REGEX_SIZE_LIMIT: usize = 1 << 20;
+
+fn compile_sample_regex(pat: &str) -> Result<regex::Regex, regex::Error> {
+    regex::RegexBuilder::new(pat)
+        .size_limit(SAMPLE_REGEX_SIZE_LIMIT)
+        .build()
+}
+
 fn extract_sample_name_clean(bam_path: &str, clean_pat: Option<&str>) -> String {
     static SAMPLE_RE1: std::sync::LazyLock<Option<regex::Regex>> =
         std::sync::LazyLock::new(|| regex::Regex::new(r"([^/\._]+).sorted[^/]*\.bam").ok());
@@ -371,7 +379,7 @@ fn extract_sample_name_clean(bam_path: &str, clean_pat: Option<&str>) -> String 
         std::sync::LazyLock::new(|| regex::Regex::new(r"([^/]+)[_\.][^/]*bam").ok());
 
     if let Some(pat) = clean_pat {
-        if let Ok(re) = regex::RegexBuilder::new(pat).size_limit(1 << 20).build() {
+        if let Ok(re) = compile_sample_regex(pat) {
             if let Some(caps) = re.captures(bam_path) {
                 if let Some(m) = caps.get(1) {
                     return m.as_str().to_string();
@@ -412,15 +420,17 @@ pub fn extract_sample_name(bam_path: &str, sample_regexp: Option<&str>) -> Strin
 
 /// Validates a `-n` / `--sample-regexp` CLI pattern after stripping a single
 /// leading `'/'` and single trailing `'/'` (`CmdParser.java:88-92`).
+///
+/// Uses the same linear-time `regex` DFA compiler (`size_limit = 1 MiB`) as
+/// `extract_sample_name` and `resolve_sample_names`; non-regular backtracking
+/// constructs (lookaround/backreferences) fail fast per `AGENTS.md §12` rather
+/// than silently falling back to `"null"`.
 pub fn validate_sample_regexp(raw: &str) -> Result<Option<String>, String> {
     let pat = strip_outer_slashes(raw);
     if pat.is_empty() {
         return Ok(None);
     }
-    regex::RegexBuilder::new(pat)
-        .size_limit(1 << 20)
-        .build()
-        .map_err(|e| format!("Invalid sample name regex '{raw}': {e}"))?;
+    compile_sample_regex(pat).map_err(|e| format!("Invalid sample name regex '{raw}': {e}"))?;
     Ok(Some(pat.to_string()))
 }
 
@@ -444,7 +454,7 @@ pub fn resolve_sample_names(
                 None => extract_sample_name_clean(bam_raw, clean_pat),
             };
             if let Some(pat) = clean_pat {
-                if let Ok(re) = regex::RegexBuilder::new(pat).size_limit(1 << 20).build() {
+                if let Ok(re) = compile_sample_regex(pat) {
                     if let Some(caps) = re.captures(bam1) {
                         if let Some(m) = caps.get(1) {
                             base1 = m.as_str().to_string();
@@ -588,6 +598,7 @@ mod tests {
             Ok(Some("sample_(\\d+)".to_string()))
         );
         assert!(validate_sample_regexp("([unclosed").is_err());
+        assert!(validate_sample_regexp(r"(?<=/)([^/]+)\.bam$").is_err());
 
         // resolve_sample_names matrix (paired -R .var/-i, paired BED .var/-i, paired VCF, single)
         assert_eq!(

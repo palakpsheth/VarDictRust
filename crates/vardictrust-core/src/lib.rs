@@ -1685,6 +1685,17 @@ fn is_readonly_parent_fallback_eligible(target: &Path, err: &std::io::Error) -> 
         && std::fs::metadata(target).is_ok_and(|m| m.is_file())
 }
 
+fn is_directory_target(path: &Path) -> bool {
+    path.is_dir() || std::fs::symlink_metadata(path).is_ok_and(|m| m.is_dir())
+}
+
+fn directory_target_io_error(label: &str, path: &Path) -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::IsADirectory,
+        format!("{label} '{}' is a directory", path.display()),
+    )
+}
+
 enum StagedFileTarget {
     AtomicTmp {
         final_path: std::path::PathBuf,
@@ -1696,6 +1707,9 @@ enum StagedFileTarget {
 
 impl StagedFileTarget {
     fn open(target: &Path) -> std::io::Result<(std::fs::File, Self)> {
+        if is_directory_target(target) {
+            return Err(directory_target_io_error("output target", target));
+        }
         if is_unix_char_or_fifo(target) {
             let file = std::fs::File::create(target)?;
             return Ok((file, Self::Direct));
@@ -2355,25 +2369,78 @@ fn collect_protected_input_paths(config: &config::Config) -> Vec<std::path::Path
     inputs
 }
 
+struct OutputIndexPlan {
+    flag: &'static str,
+    primary_path: std::path::PathBuf,
+    alt_flag: &'static str,
+    alt_path: std::path::PathBuf,
+}
+
+fn output_index_plan(config: &config::Config) -> Option<OutputIndexPlan> {
+    let out = Path::new(config.output_path.as_deref()?);
+    if config.index_output {
+        Some(OutputIndexPlan {
+            flag: "--tbi",
+            primary_path: tbi_output_path(out),
+            alt_flag: "--csi",
+            alt_path: csi_output_path(out),
+        })
+    } else if config.index_csi {
+        Some(OutputIndexPlan {
+            flag: "--csi",
+            primary_path: csi_output_path(out),
+            alt_flag: "--tbi",
+            alt_path: tbi_output_path(out),
+        })
+    } else {
+        None
+    }
+}
+
+fn remove_stale_index_sidecar(alt_path: &Path) -> Result<(), VardictError> {
+    match std::fs::symlink_metadata(alt_path) {
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(VardictError::Io(err)),
+        Ok(_) => {}
+    }
+    match std::fs::remove_file(alt_path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(VardictError::Io(err)),
+    }
+}
+
 fn validate_io_paths(config: &config::Config) -> Result<(), VardictError> {
     validate_index_flags(config)?;
     let out_opt = config.output_path.as_deref().map(Path::new);
-    let index_opt: Option<(&str, std::path::PathBuf)> = if config.index_output {
-        out_opt.map(|p| ("--tbi", tbi_output_path(p)))
-    } else if config.index_csi {
-        out_opt.map(|p| ("--csi", csi_output_path(p)))
-    } else {
-        None
-    };
+    let index_plan = output_index_plan(config);
     let stats_opt = config.stats_json_path.as_deref().map(Path::new);
 
     if let Some(out) = out_opt {
-        if let Some((idx_flag, ref idx_path)) = index_opt {
-            if paths_collide(out, idx_path) {
+        if let Some(ref plan) = index_plan {
+            if paths_collide(out, &plan.primary_path) {
                 return Err(VardictError::Parse(format!(
-                    "--output '{}' and its {idx_flag} index '{}' must not point to the same file",
+                    "--output '{}' and its {} index '{}' must not point to the same file",
                     out.display(),
-                    idx_path.display()
+                    plan.flag,
+                    plan.primary_path.display()
+                )));
+            }
+            if paths_collide(out, &plan.alt_path) {
+                return Err(VardictError::Parse(format!(
+                    "--output '{}' and its alternate {} index sidecar '{}' must not point to the same file",
+                    out.display(),
+                    plan.alt_flag,
+                    plan.alt_path.display()
+                )));
+            }
+            if paths_collide(&plan.primary_path, &plan.alt_path) {
+                return Err(VardictError::Parse(format!(
+                    "--output {} index '{}' and alternate {} index sidecar '{}' must not point to the same file",
+                    plan.flag,
+                    plan.primary_path.display(),
+                    plan.alt_flag,
+                    plan.alt_path.display()
                 )));
             }
         }
@@ -2383,11 +2450,20 @@ fn validate_io_paths(config: &config::Config) -> Result<(), VardictError> {
                     "--output and --stats-json must not point to the same file".to_string(),
                 ));
             }
-            if let Some((idx_flag, ref idx_path)) = index_opt {
-                if paths_collide(idx_path, stats) {
+            if let Some(ref plan) = index_plan {
+                if paths_collide(&plan.primary_path, stats) {
                     return Err(VardictError::Parse(format!(
-                        "--output {idx_flag} index '{}' and --stats-json '{}' must not point to the same file",
-                        idx_path.display(),
+                        "--output {} index '{}' and --stats-json '{}' must not point to the same file",
+                        plan.flag,
+                        plan.primary_path.display(),
+                        stats.display()
+                    )));
+                }
+                if paths_collide(&plan.alt_path, stats) {
+                    return Err(VardictError::Parse(format!(
+                        "--output alternate {} index sidecar '{}' and --stats-json '{}' must not point to the same file",
+                        plan.alt_flag,
+                        plan.alt_path.display(),
                         stats.display()
                     )));
                 }
@@ -2395,7 +2471,7 @@ fn validate_io_paths(config: &config::Config) -> Result<(), VardictError> {
         }
     }
 
-    if out_opt.is_some() || index_opt.is_some() || stats_opt.is_some() {
+    if out_opt.is_some() || index_plan.is_some() || stats_opt.is_some() {
         let protected_inputs = collect_protected_input_paths(config);
         for input in &protected_inputs {
             if let Some(out) = out_opt {
@@ -2407,11 +2483,20 @@ fn validate_io_paths(config: &config::Config) -> Result<(), VardictError> {
                     )));
                 }
             }
-            if let Some((idx_flag, ref idx_path)) = index_opt {
-                if paths_collide(idx_path, input) {
+            if let Some(ref plan) = index_plan {
+                if paths_collide(&plan.primary_path, input) {
                     return Err(VardictError::Parse(format!(
-                        "--output {idx_flag} index '{}' must not point to the same file as input '{}'",
-                        idx_path.display(),
+                        "--output {} index '{}' must not point to the same file as input '{}'",
+                        plan.flag,
+                        plan.primary_path.display(),
+                        input.display()
+                    )));
+                }
+                if paths_collide(&plan.alt_path, input) {
+                    return Err(VardictError::Parse(format!(
+                        "--output alternate {} index sidecar '{}' must not point to the same file as input '{}'",
+                        plan.alt_flag,
+                        plan.alt_path.display(),
                         input.display()
                     )));
                 }
@@ -2425,6 +2510,34 @@ fn validate_io_paths(config: &config::Config) -> Result<(), VardictError> {
                     )));
                 }
             }
+        }
+    }
+
+    if let Some(out) = out_opt {
+        if is_directory_target(out) {
+            return Err(VardictError::Io(directory_target_io_error("--output", out)));
+        }
+    }
+    if let Some(ref plan) = index_plan {
+        if is_directory_target(&plan.primary_path) {
+            return Err(VardictError::Io(directory_target_io_error(
+                plan.flag,
+                &plan.primary_path,
+            )));
+        }
+        if is_directory_target(&plan.alt_path) {
+            return Err(VardictError::Io(directory_target_io_error(
+                plan.alt_flag,
+                &plan.alt_path,
+            )));
+        }
+    }
+    if let Some(stats) = stats_opt {
+        if is_directory_target(stats) {
+            return Err(map_stats_io_err(
+                &stats.to_string_lossy(),
+                directory_target_io_error("--stats-json", stats),
+            ));
         }
     }
     Ok(())
@@ -2455,6 +2568,12 @@ enum PendingStatsJson {
 impl PendingStatsJson {
     fn open(stats_path: &str) -> Result<Self, VardictError> {
         let target = Path::new(stats_path);
+        if is_directory_target(target) {
+            return Err(map_stats_io_err(
+                stats_path,
+                directory_target_io_error("--stats-json", target),
+            ));
+        }
         if is_unix_char_or_fifo(target) {
             return Ok(Self::DirectDeferred {
                 stats_label: stats_path.to_string(),
@@ -2584,7 +2703,8 @@ pub fn run(config: &config::Config) -> Result<(), VardictError> {
 
         match engine_res {
             Ok(()) => {
-                let staged_idx = if effective.index_output || effective.index_csi {
+                let index_plan = output_index_plan(&effective);
+                let staged_idx = if index_plan.is_some() {
                     if let Some(ref out_path) = effective.output_path {
                         let final_vcf = Path::new(out_path);
                         let readable_vcf = match staged_out.as_ref() {
@@ -2607,6 +2727,9 @@ pub fn run(config: &config::Config) -> Result<(), VardictError> {
                 }
                 if let Some(staged_idx) = staged_idx {
                     staged_idx.commit().map_err(VardictError::Io)?;
+                }
+                if let Some(ref plan) = index_plan {
+                    remove_stale_index_sidecar(&plan.alt_path)?;
                 }
                 if let Some(pending) = pending_stats {
                     emit_stats(pending)?;
@@ -6344,6 +6467,24 @@ mod tests {
             b"KEEP_EXISTING_TBI",
             "failed stage_vcf_tabix_index must preserve existing .tbi"
         );
+
+        let dir_idx_vcf = dir.path().join("dir_idx.vcf.gz");
+        {
+            use std::io::Write as _;
+            let mut bgzf_w =
+                noodles::bgzf::io::Writer::new(std::fs::File::create(&dir_idx_vcf).unwrap());
+            bgzf_w
+                .write_all(b"##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n")
+                .unwrap();
+            bgzf_w.finish().unwrap();
+        }
+        let dir_tbi_target = dir.path().join("dir_idx.vcf.gz.tbi");
+        let dir_csi_target = dir.path().join("dir_idx.vcf.gz.csi");
+        std::fs::create_dir(&dir_tbi_target).unwrap();
+        std::fs::create_dir(&dir_csi_target).unwrap();
+        assert!(stage_vcf_tabix_index(&dir_idx_vcf, &dir_idx_vcf).is_err());
+        assert!(stage_vcf_csi_index(&dir_idx_vcf, &dir_idx_vcf).is_err());
+        assert!(dir_tbi_target.is_dir() && dir_csi_target.is_dir());
 
         let leftover_tmps: Vec<_> = std::fs::read_dir(dir.path())
             .unwrap()
