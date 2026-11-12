@@ -145,6 +145,18 @@ pub struct Config {
     pub sample_regexp: Option<String>,
     /// Write a CSI (`.csi`) index alongside a BGZF-compressed `--output .vcf.gz` file (`--csi`).
     pub index_csi: bool,
+    /// Emit only PASS variants in VCF output (`--pass-only`, ports `var2vcf_valid.pl` / `var2vcf_paired.pl -S`).
+    pub vcf_pass_only: bool,
+    /// Disable germline rescue in paired somatic VCF filtering (`--paired-strict`, ports `var2vcf_paired.pl -M`).
+    pub vcf_paired_strict: bool,
+    /// Maximum p-value threshold for high-confidence somatic calls (`--vcf-pval`, default: 0.05, ports `var2vcf_paired.pl -P`).
+    pub vcf_pval: f64,
+    /// Normalized raw CLI token supplied to `--vcf-pval` for verbatim `P$PVAL` formatting (`None` when unset).
+    pub vcf_pval_raw: Option<String>,
+    /// Minimum split reads required for structural variants in single-sample VCF (`--min-splitreads`, default: 1, ports `var2vcf_valid.pl -T`).
+    pub vcf_min_splitreads: i32,
+    /// Enable the PSTD=0 single-position read filter in VCF output (`true` by default; `--no-pstd-filter` sets `false`, ports `var2vcf_valid.pl` / `var2vcf_paired.pl -p 0`).
+    pub vcf_pstd_filter: bool,
 }
 
 impl Default for Config {
@@ -222,6 +234,12 @@ impl Default for Config {
             trim_bases_after: 0,
             sample_regexp: None,
             index_csi: false,
+            vcf_pass_only: false,
+            vcf_paired_strict: false,
+            vcf_pval: 0.05,
+            vcf_pval_raw: None,
+            vcf_min_splitreads: 1,
+            vcf_pstd_filter: true,
         }
     }
 }
