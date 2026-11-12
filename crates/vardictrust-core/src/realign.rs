@@ -133,9 +133,11 @@ pub fn is_match_ref(
 ) -> bool {
     let mut mm = 0;
     for n in 0..sequence.len() {
-        let ref_pos = position.saturating_add(dir.saturating_mul(n as i32));
-        let ref_ch = match u32::try_from(ref_pos)
+        let ref_ch = match i32::try_from(n)
             .ok()
+            .and_then(|ni| dir.checked_mul(ni))
+            .and_then(|off| position.checked_add(off))
+            .and_then(|p| u32::try_from(p).ok())
             .and_then(|p| reference.get_base(chr, p))
         {
             Some(c) => c,
@@ -182,9 +184,18 @@ pub fn find_bp(
         let mut m = crate::cigar::modify::ByteSet::new();
 
         while i < sequence.len() {
-            let ref_pos = start_position
-                .saturating_add(direction.saturating_mul(n))
-                .saturating_add(direction.saturating_mul(i as i32));
+            let Some(ref_pos) = i32::try_from(i)
+                .ok()
+                .and_then(|ii| direction.checked_mul(ii))
+                .and_then(|di| {
+                    direction
+                        .checked_mul(n)
+                        .and_then(|dn| start_position.checked_add(dn))
+                        .and_then(|p| p.checked_add(di))
+                })
+            else {
+                break;
+            };
             if ref_pos < 1 || ref_pos > chr_len_i32 {
                 break;
             }
@@ -260,9 +271,14 @@ pub fn find_bi(
         let mut m = crate::cigar::modify::ByteSet::new();
 
         while i + n < seq.len() {
-            let ref_pos = position
-                .saturating_add(dir.saturating_mul(i as i32))
-                .saturating_sub(dir_ext);
+            let Some(ref_pos) = i32::try_from(i)
+                .ok()
+                .and_then(|ii| dir.checked_mul(ii))
+                .and_then(|di| position.checked_add(di))
+                .and_then(|p| p.checked_sub(dir_ext))
+            else {
+                break;
+            };
             if ref_pos < 1 || ref_pos > chr_len_i32 {
                 break;
             }
@@ -298,18 +314,20 @@ pub fn find_bi(
             let mut ept = 0;
 
             while n + ept + 1 < seq.len() {
-                let ref_pos1 = position
-                    .saturating_add((ept as i32).saturating_mul(dir))
-                    .saturating_sub(dir_ext);
-                let ref_pos2 = position
-                    .saturating_add(((ept as i32).saturating_add(1)).saturating_mul(dir))
-                    .saturating_sub(dir_ext);
-
-                let ref_ch1 = u32::try_from(ref_pos1)
+                let ref_ch1 = i32::try_from(ept)
                     .ok()
+                    .and_then(|ei| ei.checked_mul(dir))
+                    .and_then(|off| position.checked_add(off))
+                    .and_then(|p| p.checked_sub(dir_ext))
+                    .and_then(|p| u32::try_from(p).ok())
                     .and_then(|p| reference.get_base(chr, p));
-                let ref_ch2 = u32::try_from(ref_pos2)
+                let ref_ch2 = i32::try_from(ept)
                     .ok()
+                    .and_then(|ei| ei.checked_add(1))
+                    .and_then(|ei1| ei1.checked_mul(dir))
+                    .and_then(|off| position.checked_add(off))
+                    .and_then(|p| p.checked_sub(dir_ext))
+                    .and_then(|p| u32::try_from(p).ok())
                     .and_then(|p| reference.get_base(chr, p));
 
                 let matches1 = ref_ch1.map(|c| c == seq[n + ept]).unwrap_or(false);
@@ -384,9 +402,9 @@ pub fn find_bi(
                 } else {
                     while s >= -(n as i32) {
                         let ins_ch = crate::util::char_at(&insert, s as isize);
-                        let ref_pos = position.saturating_add(s);
-                        let ref_ch = u32::try_from(ref_pos)
-                            .ok()
+                        let ref_ch = position
+                            .checked_add(s)
+                            .and_then(|p| u32::try_from(p).ok())
                             .and_then(|p| reference.get_base(chr, p));
                         if ins_ch.is_some() && ins_ch == ref_ch {
                             s -= 1;
@@ -498,7 +516,9 @@ pub fn find_mm5(
         else {
             break;
         };
-        let ref_pos = position.saturating_sub(n);
+        let Some(ref_pos) = position.checked_sub(n) else {
+            break;
+        };
         let ref_ch = u32::try_from(ref_pos)
             .ok()
             .and_then(|p| reference.get_base(chr, p));
@@ -541,9 +561,9 @@ pub fn find_mm5(
             else {
                 break;
             };
-            let ref_pos = position.saturating_sub(n);
-            let ref_ch = u32::try_from(ref_pos)
-                .ok()
+            let ref_ch = position
+                .checked_sub(n)
+                .and_then(|p| u32::try_from(p).ok())
                 .and_then(|p| reference.get_base(chr, p));
             if let Some(c_ref) = ref_ch {
                 if c_seq == c_ref {
@@ -602,9 +622,10 @@ pub fn find_mm3(
     let mut mm_len = 0usize;
 
     while let Some(&c_seq) = clean_seq2.get(n) {
-        let ref_pos = p.saturating_add(n as i32);
-        let ref_ch = u32::try_from(ref_pos)
+        let ref_ch = i32::try_from(n)
             .ok()
+            .and_then(|ni| p.checked_add(ni))
+            .and_then(|pos| u32::try_from(pos).ok())
             .and_then(|pos| reference.get_base(chr, pos));
         if let Some(c_ref) = ref_ch {
             if c_ref == c_seq {
@@ -621,9 +642,10 @@ pub fn find_mm3(
         let Some(&c_seq) = clean_seq2.get(n) else {
             break;
         };
-        let ref_pos = p.saturating_add(n as i32);
-        let ref_ch = u32::try_from(ref_pos)
+        let ref_ch = i32::try_from(n)
             .ok()
+            .and_then(|ni| p.checked_add(ni))
+            .and_then(|pos| u32::try_from(pos).ok())
             .and_then(|pos| reference.get_base(chr, pos));
         if let Some(c_ref) = ref_ch {
             if c_ref != c_seq {
@@ -652,9 +674,10 @@ pub fn find_mm3(
     let mut misnt = None;
     if mm_len == 1 {
         while let Some(&c_seq) = clean_seq2.get(n) {
-            let ref_pos = p.saturating_add(n as i32);
-            let ref_ch = u32::try_from(ref_pos)
+            let ref_ch = i32::try_from(n)
                 .ok()
+                .and_then(|ni| p.checked_add(ni))
+                .and_then(|pos| u32::try_from(pos).ok())
                 .and_then(|pos| reference.get_base(chr, pos));
             if let Some(c_ref) = ref_ch {
                 if c_seq == c_ref {
@@ -676,12 +699,12 @@ pub fn find_mm3(
                 .and_then(|idx| idx.checked_add(1))
                 .and_then(|idx| clean_seq2.get(idx))
             {
-                let ref_pos = p
-                    .saturating_add(n as i32)
-                    .saturating_add(1)
-                    .saturating_add(n2);
-                let ref_ch = u32::try_from(ref_pos)
+                let ref_ch = i32::try_from(n)
                     .ok()
+                    .and_then(|ni| p.checked_add(ni))
+                    .and_then(|pos| pos.checked_add(1))
+                    .and_then(|pos| pos.checked_add(n2))
+                    .and_then(|pos| u32::try_from(pos).ok())
                     .and_then(|pos| reference.get_base(chr, pos));
                 if let Some(c_ref) = ref_ch {
                     if c_seq == c_ref {
@@ -2670,9 +2693,11 @@ pub fn realignlgdel(
 
         if extra_str.is_empty() {
             while en < seq.len() {
-                let ref_pos = bp.saturating_sub(en as i32).saturating_sub(1);
-                let ref_ch = u32::try_from(ref_pos)
+                let ref_ch = i32::try_from(en)
                     .ok()
+                    .and_then(|ei| bp.checked_sub(ei))
+                    .and_then(|p| p.checked_sub(1))
+                    .and_then(|p| u32::try_from(p).ok())
                     .and_then(|pos| reference.get_base(chr, pos));
                 if ref_ch.is_some() && ref_ch != Some(seq[en]) {
                     extra.push(seq[en]);
@@ -2714,17 +2739,23 @@ pub fn realignlgdel(
             );
         }
 
-        let mut n = 0;
+        let mut n: i32 = 0;
         if extra.is_empty() && extra_str.is_empty() {
             loop {
-                let base_bp = u32::try_from(bp.saturating_add(n))
-                    .ok()
+                let base_bp = bp
+                    .checked_add(n)
+                    .and_then(|p| u32::try_from(p).ok())
                     .and_then(|pos| reference.get_base(chr, pos));
-                let base_bp_del = u32::try_from(bp.saturating_add(dellen).saturating_add(n))
-                    .ok()
+                let base_bp_del = bp
+                    .checked_add(dellen)
+                    .and_then(|p| p.checked_add(n))
+                    .and_then(|p| u32::try_from(p).ok())
                     .and_then(|pos| reference.get_base(chr, pos));
                 if base_bp.is_some() && base_bp_del.is_some() && base_bp == base_bp_del {
-                    n += 1;
+                    if n == i32::MAX {
+                        break;
+                    }
+                    n = n.saturating_add(1);
                 } else {
                     break;
                 }
@@ -2735,17 +2766,23 @@ pub fn realignlgdel(
         let mut str_seq = Vec::new();
         let mut mcnt = 0;
         while mcnt <= longmm {
-            let base_bp = u32::try_from(bp.saturating_add(n))
-                .ok()
+            let base_bp = bp
+                .checked_add(n)
+                .and_then(|p| u32::try_from(p).ok())
                 .and_then(|pos| reference.get_base(chr, pos));
-            let base_bp_del = u32::try_from(bp.saturating_add(dellen).saturating_add(n))
-                .ok()
+            let base_bp_del = bp
+                .checked_add(dellen)
+                .and_then(|p| p.checked_add(n))
+                .and_then(|p| u32::try_from(p).ok())
                 .and_then(|pos| reference.get_base(chr, pos));
             if let (Some(b_bp), Some(b_bp_del)) = (base_bp, base_bp_del) {
                 if b_bp != b_bp_del {
                     str_seq.push(b_bp_del);
-                    n += 1;
                     mcnt += 1;
+                    if n == i32::MAX {
+                        break;
+                    }
+                    n = n.saturating_add(1);
                     continue;
                 }
             }
@@ -2753,18 +2790,24 @@ pub fn realignlgdel(
         }
 
         if str_seq.len() == 1 {
-            let mut nm = 0;
+            let mut nm: i32 = 0;
             loop {
-                let base_bp = u32::try_from(bp.saturating_add(n))
-                    .ok()
+                let base_bp = bp
+                    .checked_add(n)
+                    .and_then(|p| u32::try_from(p).ok())
                     .and_then(|pos| reference.get_base(chr, pos));
-                let base_bp_del = u32::try_from(bp.saturating_add(dellen).saturating_add(n))
-                    .ok()
+                let base_bp_del = bp
+                    .checked_add(dellen)
+                    .and_then(|p| p.checked_add(n))
+                    .and_then(|p| u32::try_from(p).ok())
                     .and_then(|pos| reference.get_base(chr, pos));
                 if base_bp.is_some() && base_bp_del.is_some() && base_bp == base_bp_del {
-                    n += 1;
+                    if n == i32::MAX {
+                        break;
+                    }
+                    n = n.saturating_add(1);
                     if n != 0 {
-                        nm += 1;
+                        nm = nm.saturating_add(1);
                     }
                 } else {
                     break;
@@ -2847,8 +2890,9 @@ pub fn realignlgdel(
                 }
 
                 for ip in bp.saturating_add(1)..sc3p {
-                    let ref_ch_opt = u32::try_from(dellen.saturating_add(ip))
-                        .ok()
+                    let ref_ch_opt = dellen
+                        .checked_add(ip)
+                        .and_then(|p| u32::try_from(p).ok())
                         .and_then(|pos| reference.get_base(chr, pos));
                     let mut cnt_is_zero = false;
                     if let Some(vv) = crate::variations::get_variation_maybe_mut(
@@ -3064,9 +3108,10 @@ pub fn realignlgdel(
             dellen = dellen.saturating_sub(extra_str.len() as i32);
         } else {
             while en < seq.len() {
-                let ref_pos = bp.saturating_add(en as i32);
-                let ref_ch = u32::try_from(ref_pos)
+                let ref_ch = i32::try_from(en)
                     .ok()
+                    .and_then(|ei| bp.checked_add(ei))
+                    .and_then(|p| u32::try_from(p).ok())
                     .and_then(|pos| reference.get_base(chr, pos));
                 if ref_ch.is_some() && ref_ch != Some(seq[en]) {
                     extra.push(seq[en]);
@@ -3090,17 +3135,23 @@ pub fn realignlgdel(
             gt = format!("-{}&{}", dellen, extra_str_val).into_bytes();
         } else {
             loop {
-                let base_bp_prev = u32::try_from(bp.saturating_sub(1))
-                    .ok()
+                let base_bp_prev = bp
+                    .checked_sub(1)
+                    .and_then(|p| u32::try_from(p).ok())
                     .and_then(|pos| reference.get_base(chr, pos));
-                let base_bp_del_prev = u32::try_from(bp.saturating_add(dellen).saturating_sub(1))
-                    .ok()
+                let base_bp_del_prev = bp
+                    .checked_add(dellen)
+                    .and_then(|p| p.checked_sub(1))
+                    .and_then(|p| u32::try_from(p).ok())
                     .and_then(|pos| reference.get_base(chr, pos));
                 if base_bp_prev.is_some()
                     && base_bp_del_prev.is_some()
                     && base_bp_prev == base_bp_del_prev
                 {
-                    bp = bp.saturating_sub(1);
+                    let Some(next_bp) = bp.checked_sub(1) else {
+                        break;
+                    };
+                    bp = next_bp;
                     if bp != 0 {
                         sc5p = sc5p.saturating_sub(1);
                     }
@@ -3860,8 +3911,10 @@ pub fn realignlgins(
 
         let mut rpflag = true;
         for (i, &ch) in ins.iter().enumerate() {
-            let ref_ch = u32::try_from(bi.saturating_add(1).saturating_add(i as i32))
+            let ref_ch = i32::try_from(i)
                 .ok()
+                .and_then(|ii| bi.checked_add(1).and_then(|p| p.checked_add(ii)))
+                .and_then(|p| u32::try_from(p).ok())
                 .and_then(|pos| reference.get_base(chr, pos));
             if ref_ch != Some(ch) {
                 rpflag = false;
@@ -4089,18 +4142,24 @@ pub fn realignlgins(
 
             let mut shift5: i32 = 0;
             loop {
-                let ref_p_minus_1 = u32::try_from(p.saturating_sub(1))
-                    .ok()
+                let ref_p_minus_1 = p
+                    .checked_sub(1)
+                    .and_then(|pos| u32::try_from(pos).ok())
                     .and_then(|pos| reference.get_base(chr, pos));
-                let ref_bi_minus_1 = u32::try_from(bi.saturating_sub(1))
-                    .ok()
+                let ref_bi_minus_1 = bi
+                    .checked_sub(1)
+                    .and_then(|pos| u32::try_from(pos).ok())
                     .and_then(|pos| reference.get_base(chr, pos));
                 if ref_p_minus_1.is_some()
                     && ref_bi_minus_1.is_some()
                     && ref_p_minus_1 == ref_bi_minus_1
                 {
-                    p = p.saturating_sub(1);
-                    bi = bi.saturating_sub(1);
+                    let (Some(next_p), Some(next_bi)) = (p.checked_sub(1), bi.checked_sub(1))
+                    else {
+                        break;
+                    };
+                    p = next_p;
+                    bi = next_bi;
                     shift5 = shift5.saturating_add(1);
                 } else {
                     break;
@@ -4209,8 +4268,10 @@ pub fn realignlgins(
 
         let mut rpflag = true;
         for (i, &ch) in ins.iter().enumerate() {
-            let ref_ch = u32::try_from(bi.saturating_add(1).saturating_add(i as i32))
+            let ref_ch = i32::try_from(i)
                 .ok()
+                .and_then(|ii| bi.checked_add(1).and_then(|p| p.checked_add(ii)))
+                .and_then(|p| u32::try_from(p).ok())
                 .and_then(|pos| reference.get_base(chr, pos));
             if ref_ch != Some(ch) {
                 rpflag = false;
@@ -7023,6 +7084,76 @@ mod tests {
             &crate::config::Config::default(),
             &mut max_var_data,
         );
+
+        // `realignlgdel` 5'-lgdel homopolymer shift reaching `bp + dellen + n == i32::MAX`
+        // must terminate cleanly (`checked_add` -> `None`) at `n == 2` instead of clamping
+        // onto `i32::MAX` and looping indefinitely.
+        {
+            let mut lgdel_ref = crate::reference::Reference::new();
+            lgdel_ref
+                .loaded_regions
+                .push(crate::reference::LoadedRegion {
+                    chr: "chr1".to_string(),
+                    sequence_start: (i32::MAX - 25) as u32,
+                    sequence_end: i32::MAX as u32,
+                });
+            // `[i32::MAX - 25 ..= i32::MAX - 16]` = `TCAGTCAGTC` (10 bp),
+            // `[i32::MAX - 15 ..= i32::MAX]` = 16 `'A'`s.
+            lgdel_ref
+                .region_sequences
+                .push(b"TCAGTCAGTCAAAAAAAAAAAAAAAA".to_vec());
+
+            let lgdel_region = crate::regions::Region {
+                chr: "chr1".to_string(),
+                start: Pos1((i32::MAX - 25) as u32),
+                end: Pos1(i32::MAX as u32),
+                gene: String::new(),
+                amplicon: None,
+            };
+            let mut lgdel_sc5 = BTreeMap::new();
+            let mut sc5 = super::Sclip::new();
+            sc5.variation.cnt = 5;
+            for (idx, &b) in b"CTGACTGACT".iter().enumerate() {
+                let mut nt = BTreeMap::new();
+                nt.insert(b, 10);
+                sc5.nt.insert(idx as i32, nt);
+            }
+            lgdel_sc5.insert(i32::MAX - 1, sc5);
+
+            let mut lgdel_sc3 = BTreeMap::new();
+            let mut sc3 = super::Sclip::new();
+            sc3.variation.cnt = 4;
+            lgdel_sc3.insert(i32::MAX - 13, sc3);
+
+            let mut lgdel_non_ins = crate::javamap::JavaHashMap::new();
+            let mut lgdel_ins = crate::javamap::JavaHashMap::new();
+            let mut lgdel_cov = rustc_hash::FxHashMap::default();
+            let mut lgdel_splice = rustc_hash::FxHashSet::default();
+            let mut svfdel = Vec::new();
+            let mut svrdel = Vec::new();
+            super::realignlgdel(
+                None,
+                &mut lgdel_ref,
+                "chr1",
+                i32::MAX as u32,
+                &lgdel_region,
+                &crate::config::Config::default(),
+                &mut lgdel_non_ins,
+                &mut lgdel_ins,
+                &mut lgdel_cov,
+                &mut lgdel_sc5,
+                &mut lgdel_sc3,
+                150,
+                &mut svfdel,
+                &mut svrdel,
+                &mut lgdel_splice,
+            );
+            let called = lgdel_non_ins
+                .get(&(i32::MAX - 15))
+                .and_then(|vm| vm.map.get("-14"))
+                .unwrap();
+            assert_eq!(called.cnt, 9);
+        }
     }
 
     #[test]

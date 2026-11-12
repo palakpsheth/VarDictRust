@@ -1065,13 +1065,23 @@ pub fn find_inv_sub(
         // Refine bp and softp by shifting while complement matches
         if (dir == -1 && side == Side::Five) || (dir == 1 && side == Side::Three) {
             while let (Some(ch_s), Some(ch_b)) = (
-                reference.get_base(chr, softp as u32),
-                reference.get_base(chr, bp as u32),
+                u32::try_from(softp)
+                    .ok()
+                    .and_then(|pos| reference.get_base(chr, pos)),
+                u32::try_from(bp)
+                    .ok()
+                    .and_then(|pos| reference.get_base(chr, pos)),
             ) {
                 if ch_s == crate::util::complement(ch_b) {
-                    softp = softp.saturating_add(1);
+                    let Some(next_softp) = softp.checked_add(1) else {
+                        break;
+                    };
+                    softp = next_softp;
                     if softp != 0 {
-                        bp = bp.saturating_sub(1);
+                        let Some(next_bp) = bp.checked_sub(1) else {
+                            break;
+                        };
+                        bp = next_bp;
                     }
                 } else {
                     break;
@@ -1079,13 +1089,24 @@ pub fn find_inv_sub(
             }
         }
         while let (Some(ch_s), Some(ch_b)) = (
-            reference.get_base(chr, softp.saturating_sub(1) as u32),
-            reference.get_base(chr, bp.saturating_add(1) as u32),
+            softp
+                .checked_sub(1)
+                .and_then(|p| u32::try_from(p).ok())
+                .and_then(|pos| reference.get_base(chr, pos)),
+            bp.checked_add(1)
+                .and_then(|p| u32::try_from(p).ok())
+                .and_then(|pos| reference.get_base(chr, pos)),
         ) {
             if ch_s == crate::util::complement(ch_b) {
-                softp = softp.saturating_sub(1);
+                let Some(next_softp) = softp.checked_sub(1) else {
+                    break;
+                };
+                softp = next_softp;
                 if softp != 0 {
-                    bp = bp.saturating_add(1);
+                    let Some(next_bp) = bp.checked_add(1) else {
+                        break;
+                    };
+                    bp = next_bp;
                 }
             } else {
                 break;
@@ -1429,16 +1450,25 @@ pub fn find_del(
             bp = bp.saturating_sub(1);
             let mut softp = softp_cand;
             let mut dellen = bp.saturating_sub(softp).saturating_add(1);
-            while reference.get_base(chr, bp as u32).is_some()
-                && reference
-                    .get_base(chr, softp.saturating_sub(1) as u32)
-                    .is_some()
-                && reference.get_base(chr, bp as u32)
-                    == reference.get_base(chr, softp.saturating_sub(1) as u32)
-            {
-                bp = bp.saturating_sub(1);
-                if bp != 0 {
-                    softp = softp.saturating_sub(1);
+            while let (Some(b_bp), Some(b_softp_prev)) = (
+                u32::try_from(bp)
+                    .ok()
+                    .and_then(|pos| reference.get_base(chr, pos)),
+                softp
+                    .checked_sub(1)
+                    .and_then(|p| u32::try_from(p).ok())
+                    .and_then(|pos| reference.get_base(chr, pos)),
+            ) {
+                if b_bp == b_softp_prev {
+                    let Some(next_bp) = bp.checked_sub(1) else {
+                        break;
+                    };
+                    bp = next_bp;
+                    if bp != 0 {
+                        softp = softp.saturating_sub(1);
+                    }
+                } else {
+                    break;
                 }
             }
             dellen = bp.saturating_sub(softp).saturating_add(1);
@@ -2123,15 +2153,26 @@ pub fn find_sv(
             }
             bp = bp.saturating_sub(1);
             while let (Some(b1), Some(b2)) = (
-                reference.get_base(chr, bp.saturating_add(1) as u32),
-                reference.get_base(chr, p5_adj.saturating_sub(1) as u32),
+                bp.checked_add(1)
+                    .and_then(|p| u32::try_from(p).ok())
+                    .and_then(|pos| reference.get_base(chr, pos)),
+                p5_adj
+                    .checked_sub(1)
+                    .and_then(|p| u32::try_from(p).ok())
+                    .and_then(|pos| reference.get_base(chr, pos)),
             ) {
                 if crate::util::complement(b1) != b2 {
                     break;
                 }
-                p5_adj = p5_adj.saturating_sub(1);
+                let Some(next_p5) = p5_adj.checked_sub(1) else {
+                    break;
+                };
+                p5_adj = next_p5;
                 if p5_adj != 0 {
-                    bp = bp.saturating_add(1);
+                    let Some(next_bp) = bp.checked_add(1) else {
+                        break;
+                    };
+                    bp = next_bp;
                 }
             }
 
@@ -2240,16 +2281,25 @@ pub fn find_sv(
                 let dellen = bp.saturating_sub(p3);
                 let mut bp_adj = bp.saturating_sub(1);
                 let mut p3_adj = p3;
-                while reference.get_base(chr, bp_adj as u32).is_some()
-                    && reference
-                        .get_base(chr, p3_adj.saturating_sub(1) as u32)
-                        .is_some()
-                    && reference.get_base(chr, bp_adj as u32)
-                        == reference.get_base(chr, p3_adj.saturating_sub(1) as u32)
-                {
-                    bp_adj = bp_adj.saturating_sub(1);
-                    if bp_adj != 0 {
-                        p3_adj = p3_adj.saturating_sub(1);
+                while let (Some(b_bp), Some(b_p3_prev)) = (
+                    u32::try_from(bp_adj)
+                        .ok()
+                        .and_then(|pos| reference.get_base(chr, pos)),
+                    p3_adj
+                        .checked_sub(1)
+                        .and_then(|p| u32::try_from(p).ok())
+                        .and_then(|pos| reference.get_base(chr, pos)),
+                ) {
+                    if b_bp == b_p3_prev {
+                        let Some(next_bp) = bp_adj.checked_sub(1) else {
+                            break;
+                        };
+                        bp_adj = next_bp;
+                        if bp_adj != 0 {
+                            p3_adj = p3_adj.saturating_sub(1);
+                        }
+                    } else {
+                        break;
                     }
                 }
 
@@ -2320,15 +2370,26 @@ pub fn find_sv(
                 bp = bp.saturating_sub(1);
             }
             while let (Some(b1), Some(b2)) = (
-                reference.get_base(chr, bp.saturating_add(1) as u32),
-                reference.get_base(chr, p3_adj.saturating_sub(1) as u32),
+                bp.checked_add(1)
+                    .and_then(|p| u32::try_from(p).ok())
+                    .and_then(|pos| reference.get_base(chr, pos)),
+                p3_adj
+                    .checked_sub(1)
+                    .and_then(|p| u32::try_from(p).ok())
+                    .and_then(|pos| reference.get_base(chr, pos)),
             ) {
                 if crate::util::complement(b1) != b2 {
                     break;
                 }
-                p3_adj = p3_adj.saturating_sub(1);
+                let Some(next_p3) = p3_adj.checked_sub(1) else {
+                    break;
+                };
+                p3_adj = next_p3;
                 if p3_adj != 0 {
-                    bp = bp.saturating_add(1);
+                    let Some(next_bp) = bp.checked_add(1) else {
+                        break;
+                    };
+                    bp = next_bp;
                 }
             }
 
@@ -3099,18 +3160,24 @@ pub fn find_dup_disc(
                 if let Some(scv_mut) = var_data.soft_clips_3_end.get_mut(&pe) {
                     scv_mut.used = true;
                 }
-                while reference
-                    .get_base(chr, pe.saturating_sub(1) as u32)
-                    .is_some()
-                    && reference
-                        .get_base(chr, tbp.saturating_sub(1) as u32)
-                        .is_some()
-                    && reference.get_base(chr, pe.saturating_sub(1) as u32)
-                        == reference.get_base(chr, tbp.saturating_sub(1) as u32)
-                {
-                    tbp = tbp.saturating_sub(1);
-                    if tbp != 0 {
-                        pe = pe.saturating_sub(1);
+                while let (Some(b_pe_prev), Some(b_tbp_prev)) = (
+                    pe.checked_sub(1)
+                        .and_then(|p| u32::try_from(p).ok())
+                        .and_then(|pos| reference.get_base(chr, pos)),
+                    tbp.checked_sub(1)
+                        .and_then(|p| u32::try_from(p).ok())
+                        .and_then(|pos| reference.get_base(chr, pos)),
+                ) {
+                    if b_pe_prev == b_tbp_prev {
+                        let Some(next_tbp) = tbp.checked_sub(1) else {
+                            break;
+                        };
+                        tbp = next_tbp;
+                        if tbp != 0 {
+                            pe = pe.saturating_sub(1);
+                        }
+                    } else {
+                        break;
                     }
                 }
                 mlen = pe.saturating_sub(tbp);
@@ -3225,7 +3292,7 @@ pub fn find_dup_disc(
             .saturating_add(var_data.max_read_length / vars_count);
         let mut bp = start.saturating_sub((var_data.max_read_length / vars_count) / 2);
         let mut pe = mlen.saturating_add(bp).saturating_sub(1);
-        let mut tpe = pe;
+        let mut tpe64 = i64::from(pe);
 
         if !is_loaded(chr, mstart as u32, mend as u32, reference) {
             if reference.get_base(chr, pe as u32).is_none() {
@@ -3311,28 +3378,31 @@ pub fn find_dup_disc(
                 }
                 pe = tbp;
                 mlen = pe.saturating_sub(bp).saturating_add(1);
-                tpe = pe.saturating_add(1);
-                while reference.get_base(chr, tpe as u32).is_some()
-                    && reference
-                        .get_base(
-                            chr,
-                            bp.saturating_add(tpe.saturating_sub(pe).saturating_sub(1)) as u32,
-                        )
-                        .is_some()
-                    && reference.get_base(chr, tpe as u32)
-                        == reference.get_base(
-                            chr,
-                            bp.saturating_add(tpe.saturating_sub(pe).saturating_sub(1)) as u32,
-                        )
-                {
-                    tpe = tpe.saturating_add(1);
+                tpe64 = i64::from(pe) + 1;
+                while let (Some(b_tpe), Some(b_bp)) = (
+                    i32::try_from(tpe64)
+                        .ok()
+                        .and_then(|p| u32::try_from(p).ok())
+                        .and_then(|pos| reference.get_base(chr, pos)),
+                    i32::try_from(i64::from(bp) + (tpe64 - i64::from(pe) - 1))
+                        .ok()
+                        .and_then(|p| u32::try_from(p).ok())
+                        .and_then(|pos| reference.get_base(chr, pos)),
+                ) {
+                    if b_tpe == b_bp {
+                        tpe64 += 1;
+                    } else {
+                        break;
+                    }
                 }
-                if let Some(current_sclip3) = var_data.soft_clips_3_end.get(&tpe) {
-                    cntf = current_sclip3.variation.cnt;
-                    qmeanf = current_sclip3.variation.qmean;
-                    Qmeanf = current_sclip3.variation.mqmean;
-                    pmeanf = current_sclip3.variation.pmean;
-                    nmf = current_sclip3.variation.nm;
+                if let Ok(tpe_i32) = i32::try_from(tpe64) {
+                    if let Some(current_sclip3) = var_data.soft_clips_3_end.get(&tpe_i32) {
+                        cntf = current_sclip3.variation.cnt;
+                        qmeanf = current_sclip3.variation.qmean;
+                        Qmeanf = current_sclip3.variation.mqmean;
+                        pmeanf = current_sclip3.variation.pmean;
+                        nmf = current_sclip3.variation.nm;
+                    }
                 }
             }
         }
@@ -3358,11 +3428,13 @@ pub fn find_dup_disc(
                 .get(&bp)
                 .map(|s| s.variation.cnt)
                 .unwrap_or(0);
-            sv.splits += var_data
-                .soft_clips_3_end
-                .get(&tpe)
-                .map(|s| s.variation.cnt)
-                .unwrap_or(0);
+            if let Ok(tpe_i32) = i32::try_from(tpe64) {
+                sv.splits += var_data
+                    .soft_clips_3_end
+                    .get(&tpe_i32)
+                    .map(|s| s.variation.cnt)
+                    .unwrap_or(0);
+            }
             sv.clusters += 1;
         }
 
@@ -3462,8 +3534,8 @@ pub fn find_all_sv(
         var_data,
         reference,
         chr,
-        pileup_region.start.0 as i32,
-        pileup_region.end.0 as i32,
+        i32::try_from(pileup_region.start.0).unwrap_or(i32::MAX),
+        i32::try_from(pileup_region.end.0).unwrap_or(i32::MAX),
         config,
         chromosomes_lengths,
     )?;
@@ -4959,6 +5031,75 @@ mod tests {
             i32::MAX / 2,
             false,
         );
+
+        // `find_dup_disc` (`svrdup` branch) homopolymer shift reaching `tpe == i32::MAX`
+        // must advance past `i32::MAX` via `tpe64` and terminate instead of looping forever.
+        {
+            let start_max = (i32::MAX - 300) as u32;
+            let mut dup_seq = vec![b'A'; 301];
+            let unique_seed = b"CGATCGATCGATCGATC";
+            dup_seq[280..297].copy_from_slice(unique_seed);
+            let mut dup_ref = Reference::new();
+            dup_ref.loaded_regions.push(crate::reference::LoadedRegion {
+                chr: chr.to_string(),
+                sequence_start: start_max,
+                sequence_end: i32::MAX as u32,
+            });
+            dup_ref.region_sequences.push(dup_seq);
+            dup_ref
+                .seed
+                .insert(unique_seed.to_vec(), vec![(i32::MAX - 20) as u32]);
+
+            let bp_dup = i32::MAX - 240;
+            let mut dup_cluster = Sclip::default();
+            dup_cluster.start = i32::MAX - 250;
+            dup_cluster.end = i32::MAX - 200;
+            dup_cluster.mstart = i32::MAX - 60;
+            dup_cluster.mend = i32::MAX - 1;
+            dup_cluster.variation.cnt = 10;
+            dup_cluster.variation.mqmean = 600.0;
+            dup_cluster.soft.insert(bp_dup, 10);
+
+            let fwd_clip = b"CGATCGATCGATCGATCAA";
+            let mut sclip5 = Sclip::new();
+            sclip5.variation.cnt = 10;
+            sclip5.variation.mqmean = 600.0;
+            for (idx, &b) in fwd_clip.iter().rev().enumerate() {
+                let mut nt = BTreeMap::new();
+                nt.insert(b, 10);
+                sclip5.nt.insert(idx as i32, nt);
+            }
+
+            let mut dup_data = crate::variations::VariationData::default();
+            dup_data.max_read_length = 150;
+            dup_data.sv_structures.svrdup.push(dup_cluster);
+            dup_data.soft_clips_5_end.insert(bp_dup, sclip5);
+            // Also seed a 3'-end clip at `i32::MAX` to confirm `tpe64 == i32::MAX + 1`
+            // does NOT clamp back onto `i32::MAX` when probing `soft_clips_3_end`.
+            let mut bogus_sc3 = Sclip::new();
+            bogus_sc3.variation.cnt = 999;
+            dup_data.soft_clips_3_end.insert(i32::MAX, bogus_sc3);
+
+            let mut dup_chr_lens = HashMap::new();
+            dup_chr_lens.insert(chr.to_string(), i32::MAX as usize);
+            find_dup_disc(
+                &mut dup_data,
+                std::path::Path::new(""),
+                &mut dup_ref,
+                chr,
+                &config,
+                &dup_chr_lens,
+            )
+            .unwrap();
+            assert!(dup_data.insertion_variants.contains_key(&bp_dup));
+            let dup_sv = dup_data
+                .non_insertion_variants
+                .get(&bp_dup)
+                .and_then(|vm| vm.sv.as_ref())
+                .unwrap();
+            assert_eq!(dup_sv.r#type, "DUP");
+            assert_eq!(dup_sv.splits, 10);
+        }
 
         // `sv::partial_pipeline` O(|Delta| log |Delta|) `new_key_log` exact set-difference
         // (`(N_1 ∪ I_1) \ (N_0 ∪ I_0)`) with a `.remove()` freelist hole in `N_0`,
