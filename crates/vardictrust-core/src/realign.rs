@@ -227,9 +227,12 @@ pub fn find_bp(
             && i > 0
             && (mm as f64) / (i as f64) < 0.12
         {
-            let lbp = start_position
-                .saturating_add(direction.saturating_mul(n))
-                .saturating_sub(if direction < 0 { direction } else { 0 });
+            let Ok(lbp) = i32::try_from(
+                i64::from(start_position) + i64::from(direction) * i64::from(n)
+                    - i64::from(if direction < 0 { direction } else { 0 }),
+            ) else {
+                continue;
+            };
             if mm == 0 && i == sequence.len() {
                 return lbp;
             } else if (i as i32) - mm > score {
@@ -476,7 +479,7 @@ pub struct Mismatch {
     pub end: i32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MismatchResult {
     pub mismatches: Vec<Mismatch>,
     pub scp: Vec<i32>,
@@ -500,7 +503,7 @@ pub fn find_mm5(
     let longmm = 3;
     let mut mismatches = Vec::new();
     let mut n = 0;
-    let mut mn = 0;
+    let mut mn: i32 = 0;
     let mut mcnt = 0;
     let mut mm_buf = [0u8; 3];
     let mut mm_len = 0usize;
@@ -546,7 +549,9 @@ pub fn find_mm5(
         }
         break;
     }
-    sc5p.push(position.saturating_add(1));
+    if let Some(p_next) = position.checked_add(1) {
+        sc5p.push(p_next);
+    }
 
     let misp = 0;
     let misnt: Option<u8> = None;
@@ -583,10 +588,11 @@ pub fn find_mm5(
             // index bound). The loop therefore never executes, n2 stays 0, and the
             // `n2 > 2` branch is never taken — misp/misnt remain unset. Replicate that
             // exactly: always take the else branch (mark the position-n soft clip used).
-            let target_pos = position.saturating_sub(n);
-            sc5p.push(target_pos);
-            if let Some(sclip) = soft_clips_5_end.get_mut(&target_pos) {
-                sclip.used = true;
+            if let Some(target_pos) = position.checked_sub(n) {
+                sc5p.push(target_pos);
+                if let Some(sclip) = soft_clips_5_end.get_mut(&target_pos) {
+                    sclip.used = true;
+                }
             }
         }
     }
@@ -615,7 +621,7 @@ pub fn find_mm3(
     let longmm = 3;
     let mut mismatches = Vec::new();
     let mut n = 0;
-    let mut mn = 0;
+    let mut mn: i32 = 0;
     let mut mcnt = 0;
     let mut sc3p = Vec::new();
     let mut mm_buf = [0u8; 4];
@@ -635,11 +641,13 @@ pub fn find_mm3(
         }
         break;
     }
-    let tbp = p.saturating_add(n as i32);
-    sc3p.push(tbp);
+    let tbp_opt = i32::try_from(n).ok().and_then(|ni| p.checked_add(ni));
+    if let Some(tbp) = tbp_opt {
+        sc3p.push(tbp);
+    }
 
     while mcnt <= longmm {
-        let Some(&c_seq) = clean_seq2.get(n) else {
+        let (Some(&c_seq), Some(tbp)) = (clean_seq2.get(n), tbp_opt) else {
             break;
         };
         let ref_ch = i32::try_from(n)
@@ -722,16 +730,19 @@ pub fn find_mm3(
                     .and_then(|idx| idx.checked_add(1))
                     .is_some_and(|idx| idx < clean_seq2.len())
             {
-                let target_pos = p.saturating_add(n as i32).saturating_add(n2);
-                sc3p.push(target_pos);
-                misp = p.saturating_add(n as i32);
-                misnt = clean_seq2.get(n).copied();
-                if let Some(sclip) = soft_clips_3_end.get_mut(&target_pos) {
-                    sclip.used = true;
+                if let Some(base_pos) = i32::try_from(n).ok().and_then(|ni| p.checked_add(ni)) {
+                    misp = base_pos;
+                    misnt = clean_seq2.get(n).copied();
+                    if let Some(target_pos) = base_pos.checked_add(n2) {
+                        sc3p.push(target_pos);
+                        if let Some(sclip) = soft_clips_3_end.get_mut(&target_pos) {
+                            sclip.used = true;
+                        }
+                    }
                 }
-                mn += n2;
-            } else {
-                let target_pos = p.saturating_add(n as i32);
+                mn = mn.saturating_add(n2);
+            } else if let Some(target_pos) = i32::try_from(n).ok().and_then(|ni| p.checked_add(ni))
+            {
                 sc3p.push(target_pos);
                 if let Some(sclip) = soft_clips_3_end.get_mut(&target_pos) {
                     sclip.used = true;
@@ -1474,29 +1485,29 @@ pub fn realigndel(
         }
 
         let sanend = p.saturating_add(200).min(chr_len_i32);
-        let start_pos_ref = p
-            .saturating_add(dellen)
-            .saturating_add(extra.len() as i32)
-            .saturating_sub(extrains.len() as i32);
+        let start_pos_ref64 =
+            i64::from(p) + i64::from(dellen) + (extra.len() as i64) - (extrains.len() as i64);
         let mut sanpseq = extra.clone();
-        sanpseq.push_str(&crate::util::join_ref(
-            reference,
-            chr,
-            start_pos_ref,
-            sanend,
-        ));
+        if start_pos_ref64 <= i64::from(sanend) {
+            if let Ok(start_pos_ref) = i32::try_from(start_pos_ref64) {
+                sanpseq.push_str(&crate::util::join_ref(
+                    reference,
+                    chr,
+                    start_pos_ref,
+                    sanend,
+                ));
+            }
+        }
         if !inv5.is_empty() {
             sanpseq = inv5.clone();
         }
 
         let r3 = find_mm3(reference, chr, p, sanpseq.as_bytes(), soft_clips_3_end);
-        let r5 = find_mm5(
-            reference,
-            chr,
-            start_pos_ref.saturating_sub(1),
-            wupseq.as_bytes(),
-            soft_clips_5_end,
-        );
+        let r5 = if let Ok(r5_pos) = i32::try_from(start_pos_ref64 - 1) {
+            find_mm5(reference, chr, r5_pos, wupseq.as_bytes(), soft_clips_5_end)
+        } else {
+            MismatchResult::default()
+        };
 
         let mm3 = &r3.mismatches;
         let sc3p = &r3.scp;
@@ -1855,10 +1866,9 @@ pub fn realigndel(
             }
         }
 
-        let pe = p
-            .saturating_add(dellen)
-            .saturating_add(extra.len() as i32)
-            .saturating_sub(extrains.len() as i32);
+        let pe64 =
+            i64::from(p) + i64::from(dellen) + (extra.len() as i64) - (extrains.len() as i64);
+        let pe = pe64.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
 
         let mut h_owned = None;
         if let Some(ref_base) = reference.get_base(chr, p as u32) {
@@ -1868,17 +1878,17 @@ pub fn realigndel(
         }
 
         if let Some(bams_slice) = bams {
-            let pe_diff = pe.saturating_sub(p);
+            let pe_diff64 = pe64 - i64::from(p);
             if !bams_slice.is_empty()
-                && pe_diff >= 5
-                && pe_diff < max_read_length.saturating_sub(10)
+                && pe_diff64 >= 5
+                && pe_diff64 < i64::from(max_read_length.saturating_sub(10))
             {
                 if let Some(ref h) = h_owned {
                     if h.cnt != 0 {
                         let vref = get_variation(non_insertion_variants, p, vn);
                         let threshold_vref_cnt = 2.0
                             * (h.cnt as f64)
-                            * (1.0 - (pe_diff as f64) / (max_read_length as f64));
+                            * (1.0 - (pe_diff64 as f64) / (max_read_length as f64));
                         if (vref.cnt as f64) > threshold_vref_cnt
                             && no_passing_reads(chr, p, pe, bams_slice, config)
                         {
@@ -2059,11 +2069,9 @@ pub fn realignins(
 
         let mut sanpseq = String::new();
         let find_mm3_res = if !ins3.is_empty() {
-            let sv_flanking = 50;
-            let p3 = p
-                .saturating_add(inslen)
-                .saturating_sub(ins3.len() as i32)
-                .saturating_add(sv_flanking);
+            let sv_flanking = 50i32;
+            let p3_64 =
+                i64::from(p) + i64::from(inslen) - (ins3.len() as i64) + i64::from(sv_flanking);
             if ins3.len() > sv_flanking as usize {
                 // Ports VariationRealigner.java:744-746:
                 // `sanpseq = substr(ins3, Configuration.SVFLANK - ins3.length());`
@@ -2072,46 +2080,59 @@ pub fn realignins(
                 let start_idx = sv_flanking as usize;
                 sanpseq = ins3.get(start_idx..).unwrap_or("").to_string();
             }
-            sanpseq.push_str(&crate::util::join_ref(
-                reference,
-                chr,
-                p.saturating_add(1),
-                p.saturating_add(101),
-            ));
-            find_mm3(
-                reference,
-                chr,
-                p3.saturating_add(1),
-                sanpseq.as_bytes(),
-                soft_clips_3_end,
-            )
+            if let Some(p_plus_1) = p.checked_add(1) {
+                sanpseq.push_str(&crate::util::join_ref(
+                    reference,
+                    chr,
+                    p_plus_1,
+                    p.saturating_add(101),
+                ));
+            }
+            if let Ok(p3_plus_1) = i32::try_from(p3_64 + 1) {
+                find_mm3(
+                    reference,
+                    chr,
+                    p3_plus_1,
+                    sanpseq.as_bytes(),
+                    soft_clips_3_end,
+                )
+            } else {
+                MismatchResult::default()
+            }
         } else {
-            let start_pos_ref = p
-                .saturating_add(extra.len() as i32)
-                .saturating_add(1)
-                .saturating_add(compm.len() as i32)
-                .saturating_add(newdel);
+            let start_pos_ref64 =
+                i64::from(p) + (extra.len() as i64) + 1 + (compm.len() as i64) + i64::from(newdel);
             sanpseq = tn.clone();
-            sanpseq.push_str(&crate::util::join_ref(
-                reference,
-                chr,
-                start_pos_ref,
-                sanend,
-            ));
-            find_mm3(
-                reference,
-                chr,
-                p.saturating_add(1),
-                sanpseq.as_bytes(),
-                soft_clips_3_end,
-            )
+            if start_pos_ref64 <= i64::from(sanend) {
+                if let Ok(start_pos_ref) = i32::try_from(start_pos_ref64) {
+                    sanpseq.push_str(&crate::util::join_ref(
+                        reference,
+                        chr,
+                        start_pos_ref,
+                        sanend,
+                    ));
+                }
+            }
+            if let Some(p_plus_1) = p.checked_add(1) {
+                find_mm3(
+                    reference,
+                    chr,
+                    p_plus_1,
+                    sanpseq.as_bytes(),
+                    soft_clips_3_end,
+                )
+            } else {
+                MismatchResult::default()
+            }
         };
 
-        let p5_pos = p
-            .saturating_add(extra.len() as i32)
-            .saturating_add(compm.len() as i32)
-            .saturating_add(newdel);
-        let find_mm5_res = find_mm5(reference, chr, p5_pos, wupseq.as_bytes(), soft_clips_5_end);
+        let p5_pos64 =
+            i64::from(p) + (extra.len() as i64) + (compm.len() as i64) + i64::from(newdel);
+        let find_mm5_res = if let Ok(p5_pos) = i32::try_from(p5_pos64) {
+            find_mm5(reference, chr, p5_pos, wupseq.as_bytes(), soft_clips_5_end)
+        } else {
+            MismatchResult::default()
+        };
 
         let mm3 = &find_mm3_res.mismatches;
         let sc3p = &find_mm3_res.scp;
@@ -2399,7 +2420,7 @@ pub fn realignins(
 
                         if insert.len() + 1 == vn.len()
                             && insert.len() > max_read_length as usize
-                            && sc3pp >= p.saturating_add(1).saturating_add(insert.len() as i32)
+                            && i64::from(sc3pp) >= i64::from(p) + 1 + (insert.len() as i64)
                         {
                             let mut flag = 0;
                             let offset =
@@ -3943,7 +3964,9 @@ pub fn realignlgins(
             sc5v.map_or_else(Vec::new, |sc5v| {
                 let mut res = Vec::new();
                 for ii in len.saturating_add(1)..seq_len {
-                    let pii = bi.saturating_sub(ii).saturating_add(len);
+                    let Some(pii) = bi.checked_sub(ii.saturating_sub(len)) else {
+                        break;
+                    };
                     if let Some(map) = sc5v.seq.get(&ii) {
                         for (&tnt, tv) in map {
                             res.push((pii, tnt, tv.clone()));
@@ -4293,7 +4316,9 @@ pub fn realignlgins(
             sc3v.map_or_else(Vec::new, |sc3v| {
                 let mut res = Vec::new();
                 for ii in len..len_seq {
-                    let pii = p.saturating_add(ii).saturating_sub(len);
+                    let Some(pii) = p.checked_add(ii.saturating_sub(len)) else {
+                        break;
+                    };
                     if let Some(map) = sc3v.seq.get(&ii) {
                         for (&tnt, tv) in map {
                             res.push((pii, tnt, tv.clone()));
@@ -7153,6 +7178,60 @@ mod tests {
                 .and_then(|vm| vm.map.get("-14"))
                 .unwrap();
             assert_eq!(called.cnt, 9);
+
+            // `find_mm5` and `find_mm3` at `i32::MAX` must not push clamped `i32::MAX`
+            // into `scp` when the true soft-clip target position exceeds `i32::MAX`.
+            let mut sc5_at_max = BTreeMap::new();
+            sc5_at_max.insert(i32::MAX, super::Sclip::new());
+            let mm5_at_max = super::find_mm5(&lgdel_ref, "chr1", i32::MAX, b"A", &mut sc5_at_max);
+            assert!(mm5_at_max.scp.is_empty());
+            assert!(!sc5_at_max[&i32::MAX].used);
+
+            let mut sc3_at_max = BTreeMap::new();
+            sc3_at_max.insert(i32::MAX, super::Sclip::new());
+            let mm3_at_max = super::find_mm3(&lgdel_ref, "chr1", i32::MAX, b"A", &mut sc3_at_max);
+            assert!(mm3_at_max.scp.is_empty());
+            assert!(!sc3_at_max[&i32::MAX].used);
+
+            // `realigndel` near `i32::MAX` with `p + dellen + extra.len() > i32::MAX`
+            // but `p + dellen + extra.len() - extrains.len() <= i32::MAX`:
+            // `p = i32::MAX - 14, vn = "-8^CCCCCC&TGTG"` (`dellen = 8, extrains = "CCCCCC" (6), extra = "CCCCCCTGTG" (10)`)
+            // -> `start_pos_ref = (i32::MAX - 14) + 8 + 10 - 6 = i32::MAX - 2`, so `r5` starts at `i32::MAX - 3`
+            // and `find_mm5` probes `sc5` at `(i32::MAX - 3) + 1 = i32::MAX - 2` (not clamped `i32::MAX - 6`).
+            let mut del_counts = BTreeMap::new();
+            let mut vn_map = rustc_hash::FxHashMap::default();
+            vn_map.insert("-8^CCCCCC&TGTG".to_string(), 5);
+            del_counts.insert(i32::MAX - 14, vn_map);
+            let mut rdel_non_ins = crate::javamap::JavaHashMap::new();
+            super::get_variation(&mut rdel_non_ins, i32::MAX - 14, "-8^CCCCCC&TGTG").cnt = 5;
+            let mut rdel_cov = rustc_hash::FxHashMap::default();
+            let mut rdel_sc5 = BTreeMap::new();
+            let mut rdel_sc5_clip = super::Sclip::new();
+            rdel_sc5_clip.variation.cnt = 3;
+            for (idx, &b) in b"GTGTCCCCCCACTCAGTGACT".iter().enumerate() {
+                let mut nt = BTreeMap::new();
+                nt.insert(b, 10);
+                rdel_sc5_clip.nt.insert(idx as i32, nt);
+            }
+            rdel_sc5.insert(i32::MAX - 2, rdel_sc5_clip);
+            let mut rdel_sc3 = BTreeMap::new();
+            super::realigndel(
+                None,
+                &del_counts,
+                &lgdel_ref,
+                "chr1",
+                i32::MAX as u32,
+                &crate::config::Config::default(),
+                &mut rdel_non_ins,
+                &mut rdel_cov,
+                &mut rdel_sc5,
+                &mut rdel_sc3,
+                150,
+            );
+            assert!(
+                rdel_sc5[&(i32::MAX - 2)].used,
+                "realigndel must compute start_pos_ref in i64 without clamping before - extrains.len()"
+            );
         }
     }
 
