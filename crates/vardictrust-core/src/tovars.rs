@@ -15,6 +15,34 @@ pub struct MsiResult {
     pub msint: String,
 }
 
+/// Compact summary of a pure reference-only site for deferred Somatic hydration.
+#[derive(Debug, Clone)]
+pub struct CompactRefSite {
+    pub total_cov: i32,
+    pub duprate: f64,
+    pub cnt: crate::variations::Variation,
+}
+
+/// Controls how pure reference-only sites are handled during
+/// [`ToVarsBuilder::build_aligned_variants_with_ref_mode`].
+pub enum RefSiteMode<'a> {
+    KeepAll,
+    DropAll,
+    KeepWhere(&'a dyn Fn(i32) -> bool),
+    CompactOut(&'a mut rustc_hash::FxHashMap<i32, CompactRefSite>),
+}
+
+impl std::fmt::Debug for RefSiteMode<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::KeepAll => f.write_str("KeepAll"),
+            Self::DropAll => f.write_str("DropAll"),
+            Self::KeepWhere(_) => f.debug_tuple("KeepWhere").field(&"<fn>").finish(),
+            Self::CompactOut(map) => f.debug_tuple("CompactOut").field(map).finish(),
+        }
+    }
+}
+
 /// ToVarsBuilder converts intermediate VariationData into finalized Variant structures.
 pub struct ToVarsBuilder<'a> {
     pub reference: &'a Reference,
@@ -155,21 +183,12 @@ impl<'a> ToVarsBuilder<'a> {
         chromosomes_lengths: &'a HashMap<String, usize>,
         config: &'a Config,
     ) -> Self {
-        let (primary_ref_seq, primary_ref_start) = match (
-            reference.loaded_regions.first(),
-            reference.region_sequences.first(),
-        ) {
-            (Some(lr), Some(bases))
-                if lr.chr == region.chr && lr.sequence_end >= lr.sequence_start =>
-            {
-                let max_len = (lr.sequence_end.saturating_sub(lr.sequence_start) as usize)
-                    .saturating_add(1)
-                    .min(bases.len());
-                (bases.get(..max_len).unwrap_or(&[]), lr.sequence_start)
-            }
-            _ => (&[][..], 1),
-        };
-        let chr_len = chromosomes_lengths.get(&region.chr).copied().unwrap_or(0) as i32;
+        let (primary_ref_seq, primary_ref_start) = reference
+            .primary_region_slice(&region.chr)
+            .unwrap_or((&[], 1));
+        let chr_len = chromosomes_lengths
+            .get(&region.chr)
+            .map_or(0, |len| (*len).min(i32::MAX as usize) as i32);
         Self {
             reference,
             region,
@@ -196,6 +215,24 @@ impl<'a> ToVarsBuilder<'a> {
         &self,
         var_data: &VariationData,
     ) -> crate::javamap::JavaHashMap<i32, crate::variations::Vars> {
+        let ref_mode = if !self.config.bam.contains('|')
+            && !self.config.pileup
+            && self.config.amplicon.is_none()
+        {
+            RefSiteMode::DropAll
+        } else {
+            RefSiteMode::KeepAll
+        };
+        self.build_aligned_variants_with_ref_mode(var_data, ref_mode)
+    }
+
+    /// Convert VariationData into a map of position -> Vars container using `ref_mode`
+    /// to elide or compact pure reference-only sites.
+    pub fn build_aligned_variants_with_ref_mode(
+        &self,
+        var_data: &VariationData,
+        mut ref_mode: RefSiteMode<'_>,
+    ) -> crate::javamap::JavaHashMap<i32, crate::variations::Vars> {
         let mut aligned_variants = crate::javamap::JavaHashMap::new();
         let duprate = var_data.duprate;
 
@@ -206,8 +243,16 @@ impl<'a> ToVarsBuilder<'a> {
 
         let iter_positions: Vec<i32> = var_data.non_insertion_variants.keys().copied().collect();
         // Do not sort positions, use the JavaHashMap iteration order!
-        if self.config.pileup || self.config.amplicon.is_some() || self.config.bam.contains('|') {
-            aligned_variants.reserve_nodes(iter_positions.len());
+        match ref_mode {
+            RefSiteMode::KeepAll => {
+                aligned_variants.reserve_nodes(iter_positions.len());
+            }
+            RefSiteMode::CompactOut(ref mut out) => {
+                let region_span = (self.region.end.0.saturating_sub(self.region.start.0) as usize)
+                    .saturating_add(1);
+                out.reserve(iter_positions.len().min(region_span));
+            }
+            RefSiteMode::DropAll | RefSiteMode::KeepWhere(_) => {}
         }
 
         // Task 6: per-position row buffers, allocated once per build and
@@ -261,11 +306,64 @@ impl<'a> ToVarsBuilder<'a> {
                 continue;
             }
 
-            if self.is_the_same_variation_on_ref(position, var_map, &var_data.insertion_variants) {
-                continue;
+            let total_cov = var_data.ref_coverage.get(&position).copied().unwrap_or(0);
+            match ref_mode {
+                RefSiteMode::KeepAll => {}
+                RefSiteMode::DropAll => {
+                    if self.is_pure_ref_variation(position, var_map, &var_data.insertion_variants) {
+                        continue;
+                    }
+                }
+                RefSiteMode::KeepWhere(pred) => {
+                    if !self.config.debug
+                        && var_map.sv.is_none()
+                        && !var_data.insertion_variants.contains_key(&position)
+                        && self.is_pure_ref_variation(
+                            position,
+                            var_map,
+                            &var_data.insertion_variants,
+                        )
+                        && !pred(position)
+                    {
+                        continue;
+                    }
+                }
+                RefSiteMode::CompactOut(ref mut out) => {
+                    if !self.config.debug
+                        && var_map.sv.is_none()
+                        && !var_data.insertion_variants.contains_key(&position)
+                        && !var_data
+                            .insertion_variants
+                            .contains_key(&position.saturating_sub(1))
+                        && var_map.map.len() == 1
+                        && total_cov > 0
+                    {
+                        if let (Some(sole_key), Some(ref_base)) = (
+                            var_map.map.keys().next(),
+                            self.get_ref_base(position as u32),
+                        ) {
+                            let mut buf = [0u8; 4];
+                            let ref_base_str = (ref_base as char).encode_utf8(&mut buf);
+                            if sole_key != "I" && sole_key != "SV" && sole_key == ref_base_str {
+                                if let Some(cnt) = var_map.map.get(sole_key) {
+                                    if cnt.cnt > 0 {
+                                        out.insert(
+                                            position,
+                                            CompactRefSite {
+                                                total_cov,
+                                                duprate,
+                                                cnt: cnt.clone(),
+                                            },
+                                        );
+                                        continue;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
-            let total_cov = var_data.ref_coverage.get(&position).copied().unwrap_or(0);
             if total_cov == 0 {
                 continue;
             }
@@ -281,7 +379,7 @@ impl<'a> ToVarsBuilder<'a> {
 
             {
                 let sorted_keys = SortedKeySlice::new(
-                    var_map.map.keys().map(String::as_str),
+                    var_map.map.keys(),
                     if var_map.sv.is_some() {
                         Some("SV")
                     } else {
@@ -355,6 +453,29 @@ impl<'a> ToVarsBuilder<'a> {
         aligned_variants
     }
 
+    /// Materialize a `Vars` container with its finalized `ref_variant` from a [`CompactRefSite`].
+    pub fn hydrate_compact_ref_site(
+        &self,
+        position: i32,
+        site: &CompactRefSite,
+    ) -> crate::variations::Vars {
+        let ref_base = self.get_ref_base(position as u32).unwrap_or(b'N');
+        let mut buf = [0u8; 4];
+        let sole_key = (ref_base as char).encode_utf8(&mut buf);
+        let vref = self.build_ref_variant_from_cnt(
+            position,
+            site.total_cov,
+            site.duprate,
+            &site.cnt,
+            sole_key,
+            &[],
+        );
+        let mut vars = crate::variations::Vars::new();
+        vars.ref_variant = Some(vref);
+        vars
+    }
+
+    #[cfg(test)]
     fn is_the_same_variation_on_ref(
         &self,
         position: i32,
@@ -364,15 +485,24 @@ impl<'a> ToVarsBuilder<'a> {
         if self.config.pileup || self.config.bam.contains('|') || self.config.amplicon.is_some() {
             return false;
         }
+        self.is_pure_ref_variation(position, vars_at_cur_position, insertion_variants)
+    }
+
+    fn is_pure_ref_variation(
+        &self,
+        position: i32,
+        vars_at_cur_position: &crate::variations::VariationMap,
+        insertion_variants: &crate::javamap::JavaHashMap<i32, crate::variations::VariationMap>,
+    ) -> bool {
         let has_ins = insertion_variants.contains_key(&position);
         let sole_key: &str = match (vars_at_cur_position.map.len(), has_ins) {
             (1, false) => match vars_at_cur_position.map.keys().next() {
-                Some(k) => k.as_str(),
+                Some(k) => k,
                 None => return false,
             },
             (0, true) => "I",
             (1, true) => match vars_at_cur_position.map.keys().next() {
-                Some(k) if k == "I" => "I",
+                Some("I") => "I",
                 _ => return false,
             },
             _ => return false,
@@ -433,12 +563,16 @@ impl<'a> ToVarsBuilder<'a> {
         leftseq: &mut String,
         tseq: &mut String,
     ) -> (f64, i32, i32) {
-        self.join_ref_into(leftseq, std::cmp::max(position - 70, 1), position - 1);
+        self.join_ref_into(
+            leftseq,
+            std::cmp::max(position.saturating_sub(70), 1),
+            position.saturating_sub(1),
+        );
         let chr_len = self.chr_len;
         self.join_ref_into(
             tseq,
             position,
-            std::cmp::min(position + dellen + 70, chr_len),
+            std::cmp::min(position.saturating_add(dellen).saturating_add(70), chr_len),
         );
 
         let tseq_bytes = tseq.as_bytes();
@@ -467,9 +601,21 @@ impl<'a> ToVarsBuilder<'a> {
         tseq2: &mut String,
     ) -> (f64, i32, i32) {
         let tseq1 = vn.strip_prefix('+').unwrap_or(vn);
-        self.join_ref_into(leftseq, std::cmp::max(position - 50, 1), position);
+        self.join_ref_into(
+            leftseq,
+            std::cmp::max(position.saturating_sub(50), 1),
+            position,
+        );
         let chr_len = self.chr_len;
-        self.join_ref_into(tseq2, position + 1, std::cmp::min(position + 70, chr_len));
+        if let Some(right_start) = position.checked_add(1) {
+            self.join_ref_into(
+                tseq2,
+                right_start,
+                std::cmp::min(position.saturating_add(70), chr_len),
+            );
+        } else {
+            tseq2.clear();
+        }
 
         let (mut msi, shift3, mut msint_len) =
             find_msi_metrics(tseq1.as_bytes(), tseq2.as_bytes(), leftseq.as_bytes());
@@ -483,6 +629,76 @@ impl<'a> ToVarsBuilder<'a> {
         }
 
         (msi, shift3, msint_len)
+    }
+
+    fn build_variant_from_cnt(
+        &self,
+        description_string: &str,
+        cnt: &crate::variations::Variation,
+        total_pos_coverage: i32,
+        hicov: i32,
+        duprate: f64,
+    ) -> Variant {
+        let fwd = cnt.fwd;
+        let rev = cnt.rev;
+        let bias = strand_bias(fwd, rev, self.config.min_reads_bias as i32);
+        let base_quality = round_half_even(cnt.qmean / cnt.cnt as f64, 1);
+        let mapping_quality = round_half_even(cnt.mqmean / cnt.cnt as f64, 1);
+        let hicnt = cnt.hicnt;
+        let locnt = cnt.locnt;
+
+        let mut ttcov = total_pos_coverage;
+        if cnt.cnt > total_pos_coverage
+            && cnt.extracnt > 0
+            && cnt.cnt - total_pos_coverage < cnt.extracnt
+        {
+            ttcov = cnt.cnt;
+        }
+
+        let mut tvref = Variant::new();
+        fill_common_fields(
+            &mut tvref,
+            description_string,
+            cnt,
+            fwd,
+            rev,
+            bias,
+            ttcov,
+            base_quality,
+            mapping_quality,
+            hicnt,
+            locnt,
+            hicov,
+            duprate,
+        );
+        tvref
+    }
+
+    fn build_ref_variant_from_cnt(
+        &self,
+        position: i32,
+        total_cov: i32,
+        duprate: f64,
+        cnt: &crate::variations::Variation,
+        sole_key: &str,
+        debug_lines: &[String],
+    ) -> Variant {
+        let hicov = if sole_key == "SV" || sole_key.starts_with('+') {
+            0
+        } else {
+            cnt.hicnt
+        };
+        let mut tvref = self.build_variant_from_cnt(sole_key, cnt, total_cov, hicov, duprate);
+        self.update_ref_variant(
+            position,
+            total_cov,
+            &mut tvref,
+            cnt.fwd,
+            cnt.rev,
+            duprate,
+            debug_lines,
+        );
+        tvref
     }
 
     fn create_variant(
@@ -510,35 +726,10 @@ impl<'a> ToVarsBuilder<'a> {
                 if cnt.cnt == 0 {
                     continue;
                 }
-                let fwd = cnt.fwd;
-                let rev = cnt.rev;
-                let bias = strand_bias(fwd, rev, self.config.min_reads_bias as i32);
-                let base_quality = round_half_even(cnt.qmean / cnt.cnt as f64, 1);
-                let mapping_quality = round_half_even(cnt.mqmean / cnt.cnt as f64, 1);
-                let hicnt = cnt.hicnt;
-                let locnt = cnt.locnt;
-
-                let mut ttcov = total_pos_coverage;
-                if cnt.cnt > total_pos_coverage
-                    && cnt.extracnt > 0
-                    && cnt.cnt - total_pos_coverage < cnt.extracnt
-                {
-                    ttcov = cnt.cnt;
-                }
-
-                let mut tvref = Variant::new();
-                fill_common_fields(
-                    &mut tvref,
+                let tvref = self.build_variant_from_cnt(
                     description_string,
                     cnt,
-                    fwd,
-                    rev,
-                    bias,
-                    ttcov,
-                    base_quality,
-                    mapping_quality,
-                    hicnt,
-                    locnt,
+                    total_pos_coverage,
                     hicov,
                     duprate,
                 );
@@ -567,7 +758,7 @@ impl<'a> ToVarsBuilder<'a> {
     ) -> i32 {
         if let Some(insertion_variations) = insertion_variants.get(&position) {
             let insertion_description_strings =
-                SortedKeySlice::new(insertion_variations.map.keys().map(String::as_str), None);
+                SortedKeySlice::new(insertion_variations.map.keys(), None);
 
             for &description_string in insertion_description_strings.as_slice() {
                 if description_string
@@ -579,7 +770,10 @@ impl<'a> ToVarsBuilder<'a> {
                 }
                 let mut ttcov = total_pos_coverage;
                 if description_string.contains('&') {
-                    if let Some(&cov_next) = ref_coverage.get(&(position + 1)) {
+                    if let Some(&cov_next) = position
+                        .checked_add(1)
+                        .and_then(|next_pos| ref_coverage.get(&next_pos))
+                    {
                         total_pos_coverage = cov_next;
                         ttcov = cov_next;
                     }
@@ -605,27 +799,28 @@ impl<'a> ToVarsBuilder<'a> {
 
                     if ttcov < cnt.cnt {
                         ttcov = cnt.cnt;
-                        if let Some(&cov_next) = ref_coverage.get(&(position + 1)) {
-                            if ttcov < cov_next - cnt.cnt {
-                                ttcov = cov_next;
-                                if let Some(ref_base) = self.get_ref_base((position + 1) as u32) {
-                                    let mut buf = [0u8; 4];
-                                    let ref_base_str: &str =
-                                        (ref_base as char).encode_utf8(&mut buf);
-                                    let next_pos = position + 1;
-                                    if let std::collections::hash_map::Entry::Vacant(e) =
-                                        overlay.entry(next_pos)
-                                    {
-                                        if let Some(orig) = orig_non_ins.get(&next_pos) {
-                                            e.insert(orig.clone());
-                                        }
-                                    }
-                                    if let Some(next_non_ins) = overlay.get_mut(&next_pos) {
-                                        if let Some(next_var) =
-                                            next_non_ins.map.get_mut(ref_base_str)
+                        if let Some(next_pos) = position.checked_add(1) {
+                            if let Some(&cov_next) = ref_coverage.get(&next_pos) {
+                                if ttcov < cov_next.saturating_sub(cnt.cnt) {
+                                    ttcov = cov_next;
+                                    if let Some(ref_base) = self.get_ref_base(next_pos as u32) {
+                                        let mut buf = [0u8; 4];
+                                        let ref_base_str: &str =
+                                            (ref_base as char).encode_utf8(&mut buf);
+                                        if let std::collections::hash_map::Entry::Vacant(e) =
+                                            overlay.entry(next_pos)
                                         {
-                                            next_var.fwd -= fwd;
-                                            next_var.rev -= rev;
+                                            if let Some(orig) = orig_non_ins.get(&next_pos) {
+                                                e.insert(orig.clone());
+                                            }
+                                        }
+                                        if let Some(next_non_ins) = overlay.get_mut(&next_pos) {
+                                            if let Some(next_var) =
+                                                next_non_ins.map.get_mut(ref_base_str)
+                                            {
+                                                next_var.fwd = next_var.fwd.saturating_sub(fwd);
+                                                next_var.rev = next_var.rev.saturating_sub(rev);
+                                            }
                                         }
                                     }
                                 }
@@ -760,16 +955,18 @@ impl<'a> ToVarsBuilder<'a> {
         let mut total_pos_coverage_adj = total_pos_coverage;
 
         if total_pos_coverage_adj > ref_coverage.get(&position).copied().unwrap_or(0) {
-            if let Some(next_non_ins) = overlay
-                .get(&(position + 1))
-                .or_else(|| orig_non_ins.get(&(position + 1)))
-            {
-                if let Some(ref_base_next) = self.get_ref_base((position + 1) as u32) {
-                    let mut buf = [0u8; 4];
-                    let ref_base_next_str: &str = (ref_base_next as char).encode_utf8(&mut buf);
-                    if let Some(tpref) = next_non_ins.map.get(ref_base_next_str) {
-                        reference_forward_coverage_adj = tpref.fwd;
-                        reference_reverse_coverage_adj = tpref.rev;
+            if let Some(next_pos) = position.checked_add(1) {
+                if let Some(next_non_ins) = overlay
+                    .get(&next_pos)
+                    .or_else(|| orig_non_ins.get(&next_pos))
+                {
+                    if let Some(ref_base_next) = self.get_ref_base(next_pos as u32) {
+                        let mut buf = [0u8; 4];
+                        let ref_base_next_str: &str = (ref_base_next as char).encode_utf8(&mut buf);
+                        if let Some(tpref) = next_non_ins.map.get(ref_base_next_str) {
+                            reference_forward_coverage_adj = tpref.fwd;
+                            reference_reverse_coverage_adj = tpref.rev;
+                        }
                     }
                 }
             }
@@ -780,9 +977,9 @@ impl<'a> ToVarsBuilder<'a> {
         if !variations_at_pos.variants.is_empty() {
             let format_plus_genotype1 = |desc: &str| -> String {
                 if let Some(dup_val) = get_dup_num(desc) {
-                    format!("+{}", 50 + dup_val as u32)
+                    format!("+{}", (dup_val as u32).saturating_add(50))
                 } else {
-                    format!("+{}", desc.len() as i32 - 1)
+                    format!("+{}", (desc.len() as i32).saturating_sub(1))
                 }
             };
 
@@ -822,7 +1019,10 @@ impl<'a> ToVarsBuilder<'a> {
                     std::borrow::Cow::Borrowed(genotype1_current.as_ref());
                 let mut genotype2: std::borrow::Cow<'_, str> = if vref.description.starts_with('+')
                 {
-                    std::borrow::Cow::Owned(format!("+{}", vref.description.len() as i32 - 1))
+                    std::borrow::Cow::Owned(format!(
+                        "+{}",
+                        (vref.description.len() as i32).saturating_sub(1)
+                    ))
                 } else {
                     std::borrow::Cow::Borrowed(vref.description.as_str())
                 };
@@ -832,7 +1032,9 @@ impl<'a> ToVarsBuilder<'a> {
 
                 let mut end_position = position;
                 if description_string.starts_with('-') {
-                    end_position = position + deletion_length - 1;
+                    end_position = (i64::from(position) + i64::from(deletion_length) - 1)
+                        .clamp(i64::from(i32::MIN), i64::from(i32::MAX))
+                        as i32;
                 }
 
                 let mut refallele = String::new();
@@ -857,8 +1059,8 @@ impl<'a> ToVarsBuilder<'a> {
                         );
                     }
                     if self.config.three_prime {
-                        start_position += shift3;
-                        end_position += shift3;
+                        start_position = start_position.saturating_add(shift3);
+                        end_position = end_position.saturating_add(shift3);
                     }
                     let ref_base_byte = self.get_ref_base(position as u32).unwrap_or(b'N');
                     refallele.push(ref_base_byte as char);
@@ -867,16 +1069,20 @@ impl<'a> ToVarsBuilder<'a> {
                     varallele.push_str(stripped_desc);
 
                     if varallele.len() > self.config.sv_min_len as usize {
-                        end_position += varallele.len() as i32;
+                        end_position = end_position
+                            .saturating_add(varallele.len().min(i32::MAX as usize) as i32);
                         varallele = "<DUP>".to_string();
                     }
                     if let Some(dup_val) = get_dup_num(&varallele) {
-                        end_position = start_position + (2 * 50 + dup_val) - 1;
-                        genotype2 = std::borrow::Cow::Owned(format!("+{}", 2 * 50 + dup_val));
+                        let dup_span = (2 * 50_i64) + i64::from(dup_val);
+                        end_position = (i64::from(start_position) + dup_span - 1)
+                            .clamp(i64::from(i32::MIN), i64::from(i32::MAX))
+                            as i32;
+                        genotype2 = std::borrow::Cow::Owned(format!("+{dup_span}"));
                         varallele = "<DUP>".to_string();
                     }
                 } else if description_string.starts_with('-') {
-                    if deletion_length < self.config.sv_min_len as i32 {
+                    if i64::from(deletion_length) < i64::from(self.config.sv_min_len) {
                         // replace first -digits with empty string
                         varallele = if let Some(rest) = description_string.strip_prefix('-') {
                             let digit_len = rest.bytes().take_while(|b| b.is_ascii_digit()).count();
@@ -913,34 +1119,47 @@ impl<'a> ToVarsBuilder<'a> {
                         && !description_string.contains('^')
                     {
                         if self.config.three_prime {
-                            start_position += shift3;
+                            start_position = start_position.saturating_add(shift3);
                         }
+                        let base_prev = position
+                            .checked_sub(1)
+                            .and_then(|p| u32::try_from(p).ok())
+                            .and_then(|p| self.get_ref_base(p))
+                            .unwrap_or(b'N');
                         if varallele != "<DEL>" {
-                            let base_prev =
-                                self.get_ref_base((position - 1) as u32).unwrap_or(b'N');
                             varallele.clear();
                             varallele.push(base_prev as char);
                         }
-                        let base_prev = self.get_ref_base((position - 1) as u32).unwrap_or(b'N');
                         refallele.push(base_prev as char);
-                        start_position -= 1;
+                        start_position = start_position.saturating_sub(1);
                     }
 
                     if matches_some_sv_numbers(description_string) {
                         let base_cur = self.get_ref_base(position as u32).unwrap_or(b'N');
                         refallele.clear();
                         refallele.push(base_cur as char);
-                    } else if deletion_length < self.config.sv_min_len as i32 {
-                        self.join_ref_into(scratch1, position, position + deletion_length - 1);
+                    } else if i64::from(deletion_length) < i64::from(self.config.sv_min_len) {
+                        let del_end = (i64::from(position) + i64::from(deletion_length) - 1)
+                            .clamp(i64::from(i32::MIN), i64::from(i32::MAX))
+                            as i32;
+                        self.join_ref_into(scratch1, position, del_end);
                         refallele.push_str(scratch1);
                     }
                 } else {
-                    self.join_ref_into(scratch1, std::cmp::max(position - 30, 1), position + 1);
                     self.join_ref_into(
-                        scratch2,
-                        position + 2,
-                        std::cmp::min(position + 70, chr_len),
+                        scratch1,
+                        std::cmp::max(position.saturating_sub(30), 1),
+                        position.saturating_add(1),
                     );
+                    if let Some(tseq2_start) = position.checked_add(2) {
+                        self.join_ref_into(
+                            scratch2,
+                            tseq2_start,
+                            std::cmp::min(position.saturating_add(70), chr_len),
+                        );
+                    } else {
+                        scratch2.clear();
+                    }
 
                     (msi, shift3, msint_len) =
                         find_msi_metrics(scratch1.as_bytes(), scratch2.as_bytes(), &[]);
@@ -951,40 +1170,56 @@ impl<'a> ToVarsBuilder<'a> {
                 }
 
                 if let Some(extra) = get_amp_atgc(description_string) {
+                    let extra_len = extra.len().min(i32::MAX as usize) as i32;
                     varallele = varallele.replacen('&', "", 1);
-                    self.join_ref_into(
-                        scratch1,
-                        end_position + 1,
-                        end_position + extra.len() as i32,
-                    );
+                    if let Some(ext_start) = end_position.checked_add(1) {
+                        self.join_ref_into(
+                            scratch1,
+                            ext_start,
+                            end_position.saturating_add(extra_len),
+                        );
+                    } else {
+                        scratch1.clear();
+                    }
                     refallele.push_str(scratch1);
                     if !scratch1.is_empty() {
                         genotype1_current_inner.to_mut().push_str(scratch1);
                     }
-                    end_position += extra.len() as i32;
+                    end_position = end_position.saturating_add(extra_len);
 
                     if let Some(vextra) = get_amp_atgc(&varallele) {
-                        let vextra_len = vextra.len() as i32;
+                        let vextra_len = vextra.len().min(i32::MAX as usize) as i32;
                         varallele = varallele.replacen('&', "", 1);
-                        self.join_ref_into(scratch1, end_position + 1, end_position + vextra_len);
+                        if let Some(vext_start) = end_position.checked_add(1) {
+                            self.join_ref_into(
+                                scratch1,
+                                vext_start,
+                                end_position.saturating_add(vextra_len),
+                            );
+                        } else {
+                            scratch1.clear();
+                        }
                         refallele.push_str(scratch1);
                         if !scratch1.is_empty() {
                             genotype1_current_inner.to_mut().push_str(scratch1);
                         }
-                        end_position += vextra_len;
+                        end_position = end_position.saturating_add(vextra_len);
                     }
 
                     if description_string.starts_with('+') {
                         refallele = refallele.get(1..).unwrap_or("").to_string();
                         varallele = varallele.get(1..).unwrap_or("").to_string();
-                        start_position += 1;
+                        start_position = start_position.saturating_add(1);
                     }
 
                     if varallele == "<DEL>" && !refallele.is_empty() {
                         let ref_base = self.get_ref_base(start_position as u32).unwrap_or(b'N');
                         refallele.clear();
                         refallele.push(ref_base as char);
-                        if let Some(&cov_prev) = ref_coverage.get(&(start_position - 1)) {
+                        if let Some(&cov_prev) = start_position
+                            .checked_sub(1)
+                            .and_then(|p| ref_coverage.get(&p))
+                        {
                             total_pos_coverage_adj = cov_prev;
                         }
                         if vref.pos_coverage > total_pos_coverage_adj {
@@ -997,18 +1232,28 @@ impl<'a> ToVarsBuilder<'a> {
                 if let Some((matched_sequence, tail)) =
                     get_hash_group_caret_group(description_string)
                 {
-                    end_position += matched_sequence.len() as i32;
-                    self.join_ref_into(
-                        scratch1,
-                        end_position - matched_sequence.len() as i32 + 1,
-                        end_position,
-                    );
+                    let matched_len = matched_sequence.len().min(i32::MAX as usize) as i32;
+                    let prev_end = end_position;
+                    end_position = end_position.saturating_add(matched_len);
+                    if let Some(m_start) = prev_end.checked_add(1) {
+                        self.join_ref_into(scratch1, m_start, end_position);
+                    } else {
+                        scratch1.clear();
+                    }
                     refallele.push_str(scratch1);
 
                     if let Some(deletion) = get_begin_digits(tail) {
-                        self.join_ref_into(scratch1, end_position + 1, end_position + deletion);
+                        if let Some(del_start) = end_position.checked_add(1) {
+                            self.join_ref_into(
+                                scratch1,
+                                del_start,
+                                end_position.saturating_add(deletion),
+                            );
+                        } else {
+                            scratch1.clear();
+                        }
                         refallele.push_str(scratch1);
-                        end_position += deletion;
+                        end_position = end_position.saturating_add(deletion);
                     }
 
                     // replaceFirst("#", "").replaceFirst("\\^(\\d+)?", "") in Java:
@@ -1052,15 +1297,16 @@ impl<'a> ToVarsBuilder<'a> {
                 // CRISPR Site adjustment
                 if let Some(cut_site) = self.config.crispr_cutting_site {
                     if cut_site != 0 && refallele.len() > 1 && varallele.len() > 1 {
-                        let mut n = 0;
-                        while refallele.len() > n + 1
-                            && varallele.len() > n + 1
+                        let mut n = 0usize;
+                        while refallele.len() > n.saturating_add(1)
+                            && varallele.len() > n.saturating_add(1)
                             && refallele.as_bytes().get(n) == varallele.as_bytes().get(n)
                         {
                             n += 1;
                         }
                         if n != 0 {
-                            start_position += n as i32;
+                            start_position =
+                                start_position.saturating_add(n.min(i32::MAX as usize) as i32);
                             refallele = refallele.get(n..).unwrap_or("").to_string();
                             varallele = varallele.get(n..).unwrap_or("").to_string();
                         }
@@ -1071,35 +1317,30 @@ impl<'a> ToVarsBuilder<'a> {
                         && refallele.starts_with(varallele.chars().next().unwrap_or('\0'))
                         && !(start_position == cut_site || end_position == cut_site)
                     {
-                        let mut n = 0;
-                        let dis = std::cmp::min(
-                            (cut_site - start_position).abs(),
-                            (cut_site - end_position).abs(),
-                        );
-                        if start_position < cut_site {
-                            while start_position + n < cut_site
-                                && n < shift3
-                                && end_position + n != cut_site
-                            {
-                                n += 1;
+                        let cut = i64::from(cut_site);
+                        let start64 = i64::from(start_position);
+                        let end64 = i64::from(end_position);
+                        let shift3_64 = i64::from(shift3);
+                        let mut n64 = 0_i64;
+                        let dis = std::cmp::min((cut - start64).abs(), (cut - end64).abs());
+                        if start64 < cut {
+                            while start64 + n64 < cut && n64 < shift3_64 && end64 + n64 != cut {
+                                n64 += 1;
                             }
-                            if (start_position + n - cut_site).abs() > dis
-                                && (end_position + n - cut_site).abs() > dis
+                            if (start64 + n64 - cut).abs() > dis && (end64 + n64 - cut).abs() > dis
                             {
-                                n = 0;
+                                n64 = 0;
                             }
                         }
-                        if end_position < cut_site
-                            && n == 0
-                            && (end_position - cut_site).abs() <= (start_position - cut_site).abs()
-                        {
-                            while end_position + n < cut_site && n < shift3 {
-                                n += 1;
+                        if end64 < cut && n64 == 0 && (end64 - cut).abs() <= (start64 - cut).abs() {
+                            while end64 + n64 < cut && n64 < shift3_64 {
+                                n64 += 1;
                             }
                         }
+                        let n = n64.clamp(0, i64::from(i32::MAX)) as i32;
                         if n > 0 {
-                            start_position += n;
-                            end_position += n;
+                            start_position = start_position.saturating_add(n);
+                            end_position = end_position.saturating_add(n);
                             self.join_ref_into(&mut refallele, start_position, end_position);
                             let mut tva = String::new();
                             if refallele.len() < varallele.len() {
@@ -1125,14 +1366,18 @@ impl<'a> ToVarsBuilder<'a> {
 
                 self.join_ref_into(
                     &mut vref.left_seq,
-                    std::cmp::max(start_position - 20, 1),
-                    start_position - 1,
+                    std::cmp::max(start_position.saturating_sub(20), 1),
+                    start_position.saturating_sub(1),
                 );
-                self.join_ref_into(
-                    &mut vref.right_seq,
-                    end_position + 1,
-                    std::cmp::min(end_position + 20, chr_len),
-                );
+                if let Some(right_start) = end_position.checked_add(1) {
+                    self.join_ref_into(
+                        &mut vref.right_seq,
+                        right_start,
+                        std::cmp::min(end_position.saturating_add(20), chr_len),
+                    );
+                } else {
+                    vref.right_seq.clear();
+                }
 
                 let genotype = {
                     let mut gt =
@@ -1809,7 +2054,7 @@ mod tests {
         insertion_variants: &crate::javamap::JavaHashMap<i32, crate::variations::VariationMap>,
     ) -> bool {
         let mut vk: std::collections::HashSet<String> =
-            vars_at_cur_position.map.keys().cloned().collect();
+            vars_at_cur_position.map.keys().map(str::to_owned).collect();
         if insertion_variants.contains_key(&position) {
             vk.insert("I".to_string());
         }
@@ -2710,5 +2955,522 @@ mod tests {
         let vars20 = aligned.get(&20).expect("vars at 20");
         assert!(vars20.var_desc_to_variant.is_empty());
         assert_eq!(vars20.variant_by_desc("-2").unwrap().bias, "0;2");
+
+        // --- Somatic RefSiteMode / CompactRefSite + hydrate_compact_ref_site parity ---
+        let assert_variant_eq = |a: &Variant, b: &Variant, ctx: &str| {
+            assert_eq!(a.description, b.description, "{ctx}: description");
+            assert_eq!(a.pos_coverage, b.pos_coverage, "{ctx}: pos_coverage");
+            assert_eq!(a.fwd, b.fwd, "{ctx}: fwd");
+            assert_eq!(a.rev, b.rev, "{ctx}: rev");
+            assert_eq!(a.bias, b.bias, "{ctx}: bias");
+            assert_eq!(
+                a.frequency.to_bits(),
+                b.frequency.to_bits(),
+                "{ctx}: frequency"
+            );
+            assert_eq!(
+                a.mean_position.to_bits(),
+                b.mean_position.to_bits(),
+                "{ctx}: mean_position"
+            );
+            assert_eq!(a.pstd, b.pstd, "{ctx}: pstd");
+            assert_eq!(
+                a.mean_quality.to_bits(),
+                b.mean_quality.to_bits(),
+                "{ctx}: mean_quality"
+            );
+            assert_eq!(a.qstd, b.qstd, "{ctx}: qstd");
+            assert_eq!(
+                a.mean_mapping_quality.to_bits(),
+                b.mean_mapping_quality.to_bits(),
+                "{ctx}: mean_mapping_quality"
+            );
+            assert_eq!(
+                a.hq_lq_ratio.to_bits(),
+                b.hq_lq_ratio.to_bits(),
+                "{ctx}: hq_lq_ratio"
+            );
+            assert_eq!(a.hi_freq.to_bits(), b.hi_freq.to_bits(), "{ctx}: hi_freq");
+            assert_eq!(
+                a.extra_freq.to_bits(),
+                b.extra_freq.to_bits(),
+                "{ctx}: extra_freq"
+            );
+            assert_eq!(a.shift3, b.shift3, "{ctx}: shift3");
+            assert_eq!(a.msi.to_bits(), b.msi.to_bits(), "{ctx}: msi");
+            assert_eq!(a.msint, b.msint, "{ctx}: msint");
+            assert_eq!(a.nm.to_bits(), b.nm.to_bits(), "{ctx}: nm");
+            assert_eq!(a.hicnt, b.hicnt, "{ctx}: hicnt");
+            assert_eq!(a.hicov, b.hicov, "{ctx}: hicov");
+            assert_eq!(a.left_seq, b.left_seq, "{ctx}: left_seq");
+            assert_eq!(a.right_seq, b.right_seq, "{ctx}: right_seq");
+            assert_eq!(a.start_pos, b.start_pos, "{ctx}: start_pos");
+            assert_eq!(a.end_pos, b.end_pos, "{ctx}: end_pos");
+            assert_eq!(a.ref_rev_cov, b.ref_rev_cov, "{ctx}: ref_rev_cov");
+            assert_eq!(a.ref_fwd_cov, b.ref_fwd_cov, "{ctx}: ref_fwd_cov");
+            assert_eq!(a.total_pos_cov, b.total_pos_cov, "{ctx}: total_pos_cov");
+            assert_eq!(a.duprate.to_bits(), b.duprate.to_bits(), "{ctx}: duprate");
+            assert_eq!(a.genotype, b.genotype, "{ctx}: genotype");
+            assert_eq!(a.var_allele, b.var_allele, "{ctx}: var_allele");
+            assert_eq!(a.ref_allele, b.ref_allele, "{ctx}: ref_allele");
+            assert_eq!(a.var_type, b.var_type, "{ctx}: var_type");
+            assert_eq!(a.debug, b.debug, "{ctx}: debug");
+            assert_eq!(a.crispr, b.crispr, "{ctx}: crispr");
+            assert_eq!(a.sv, b.sv, "{ctx}: sv");
+            assert_eq!(a.null_record, b.null_record, "{ctx}: null_record");
+        };
+
+        // Build a somatic fixture with IUPAC R (pos 6) and Y (pos 7), extracnt > 0 ttcov
+        // override (pos 5), p - 1 insertion overlay[p] (pos 10 -> pos 11), "I" key (pos 14),
+        // cnt == 0 (pos 16), sv.is_some() (pos 18), sub-threshold somatic allele (pos 22),
+        // and pure-ref sites (pos 25, 26).
+        let mut som_seq = b"ACGTARYTACGTAIATAAAGTACGTACGTA".to_vec();
+        som_seq.resize(40, b'A');
+        som_seq[29] = b'I'; // 1-based pos 30: hostile FASTA 'I' + BAM2 insertion
+                            // 1-based positions: 5='A', 6='R', 7='Y', 10='C', 11='G', 14='I', 16='T', 18='A', 22='A', 25='T', 26='A', 30='I'
+        let mut som_ref = Reference::new();
+        som_ref.loaded_regions.push(crate::reference::LoadedRegion {
+            chr: "chr1".to_string(),
+            sequence_start: 1,
+            sequence_end: 40,
+        });
+        som_ref
+            .reference_sequences
+            .insert("chr1".to_string(), som_seq.clone());
+        som_ref.region_sequences.push(som_seq);
+        let som_chr_lens = HashMap::from([("chr1".to_string(), 40)]);
+        let som_region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(1),
+            end: Pos1(40),
+            gene: "SOM".to_string(),
+            amplicon: None,
+        };
+
+        let mut som_vd = VariationData::new();
+        som_vd.duprate = 0.125;
+
+        // pos 5 ('A'): cnt.cnt (25) > total_cov (20) with extracnt = 10 -> ttcov = 25
+        som_vd.ref_coverage.insert(5, 20);
+        let mut vm5 = VariationMap::new();
+        let mut r5 = Variation::new();
+        r5.cnt = 25;
+        r5.fwd = 15;
+        r5.rev = 10;
+        r5.extracnt = 10;
+        r5.hicnt = 22;
+        r5.locnt = 3;
+        r5.qmean = 775.0;
+        r5.mqmean = 1480.0;
+        r5.pmean = 525.0;
+        r5.nm = 12.5;
+        r5.pstd = true;
+        r5.qstd = true;
+        vm5.map.insert("A".to_string(), r5);
+        som_vd.non_insertion_variants.insert(5, vm5);
+
+        // pos 6 ('R'): IUPAC ambiguity -> valid_base 'A', genotype "R/R"
+        som_vd.ref_coverage.insert(6, 18);
+        let mut vm6 = VariationMap::new();
+        let mut r6 = Variation::new();
+        r6.cnt = 18;
+        r6.fwd = 18;
+        r6.rev = 0;
+        r6.hicnt = 18;
+        r6.qmean = 540.0;
+        r6.mqmean = 1080.0;
+        r6.pmean = 360.0;
+        vm6.map.insert("R".to_string(), r6);
+        som_vd.non_insertion_variants.insert(6, vm6);
+
+        // pos 7 ('Y'): IUPAC ambiguity -> valid_base 'C', genotype "Y/Y"
+        som_vd.ref_coverage.insert(7, 14);
+        let mut vm7 = VariationMap::new();
+        let mut r7 = Variation::new();
+        r7.cnt = 14;
+        r7.fwd = 7;
+        r7.rev = 7;
+        r7.hicnt = 12;
+        r7.locnt = 2;
+        r7.qmean = 420.0;
+        r7.mqmean = 840.0;
+        r7.pmean = 280.0;
+        vm7.map.insert("Y".to_string(), r7);
+        som_vd.non_insertion_variants.insert(7, vm7);
+
+        // pos 10 ('C') + insertion "+AT" that decrements overlay[11] ('G')
+        som_vd.ref_coverage.insert(10, 10);
+        som_vd.ref_coverage.insert(11, 40);
+        let mut vm10s = VariationMap::new();
+        let mut r10s = Variation::new();
+        r10s.cnt = 10;
+        r10s.fwd = 5;
+        r10s.rev = 5;
+        r10s.hicnt = 10;
+        r10s.qmean = 300.0;
+        r10s.mqmean = 600.0;
+        r10s.pmean = 200.0;
+        vm10s.map.insert("C".to_string(), r10s);
+        som_vd.non_insertion_variants.insert(10, vm10s);
+
+        let mut ins10s = VariationMap::new();
+        let mut i10s = Variation::new();
+        i10s.cnt = 15;
+        i10s.fwd = 9;
+        i10s.rev = 6;
+        i10s.hicnt = 15;
+        i10s.qmean = 450.0;
+        i10s.mqmean = 900.0;
+        i10s.pmean = 300.0;
+        ins10s.map.insert("+AT".to_string(), i10s);
+        som_vd.insertion_variants.insert(10, ins10s);
+
+        // pos 11 ('G'): pure ref-only, immediately after pos 10 insertion -> MUST stay off CompactOut
+        let mut vm11s = VariationMap::new();
+        let mut r11s = Variation::new();
+        r11s.cnt = 35;
+        r11s.fwd = 20;
+        r11s.rev = 15;
+        r11s.hicnt = 35;
+        r11s.qmean = 1050.0;
+        r11s.mqmean = 2100.0;
+        r11s.pmean = 700.0;
+        vm11s.map.insert("G".to_string(), r11s);
+        som_vd.non_insertion_variants.insert(11, vm11s);
+
+        // pos 14 ('I'): sole key "I" -> excluded from CompactOut
+        som_vd.ref_coverage.insert(14, 8);
+        let mut vm14 = VariationMap::new();
+        let mut r14 = Variation::new();
+        r14.cnt = 8;
+        r14.fwd = 4;
+        r14.rev = 4;
+        r14.hicnt = 8;
+        r14.qmean = 240.0;
+        r14.mqmean = 480.0;
+        r14.pmean = 160.0;
+        vm14.map.insert("I".to_string(), r14);
+        som_vd.non_insertion_variants.insert(14, vm14);
+
+        // pos 16 ('T'): cnt == 0 -> excluded from CompactOut, yields Vars { ref_variant: None, variants: [] }
+        som_vd.ref_coverage.insert(16, 12);
+        let mut vm16 = VariationMap::new();
+        vm16.map.insert("T".to_string(), Variation::new());
+        som_vd.non_insertion_variants.insert(16, vm16);
+
+        // pos 18 ('A'): sv.is_some() -> excluded from CompactOut
+        som_vd.ref_coverage.insert(18, 10);
+        let mut vm18 = VariationMap::new();
+        vm18.sv = Some(Box::new(Sv {
+            r#type: "INV".to_string(),
+            splits: 2,
+            pairs: 3,
+            clusters: 1,
+        }));
+        let mut r18 = Variation::new();
+        r18.cnt = 10;
+        r18.fwd = 6;
+        r18.rev = 4;
+        r18.hicnt = 10;
+        r18.qmean = 300.0;
+        r18.mqmean = 600.0;
+        r18.pmean = 200.0;
+        vm18.map.insert("A".to_string(), r18);
+        som_vd.non_insertion_variants.insert(18, vm18);
+
+        // pos 22 ('A'): sub-threshold non-ref SNV "G" (1 / 100 = 0.01 <= freq 0.05)
+        som_vd.ref_coverage.insert(22, 100);
+        let mut vm22 = VariationMap::new();
+        let mut r22 = Variation::new();
+        r22.cnt = 99;
+        r22.fwd = 50;
+        r22.rev = 49;
+        r22.hicnt = 99;
+        r22.qmean = 2970.0;
+        r22.mqmean = 5940.0;
+        r22.pmean = 1980.0;
+        vm22.map.insert("A".to_string(), r22);
+        let mut alt22 = Variation::new();
+        alt22.cnt = 1;
+        alt22.fwd = 1;
+        alt22.rev = 0;
+        alt22.hicnt = 1;
+        alt22.qmean = 32.0;
+        alt22.mqmean = 60.0;
+        alt22.pmean = 25.0;
+        vm22.map.insert("G".to_string(), alt22);
+        som_vd.non_insertion_variants.insert(22, vm22);
+
+        // pos 25 ('T') & pos 26 ('A'): pure ref-only sites
+        for (p, key) in [(25, "T"), (26, "A")] {
+            som_vd.ref_coverage.insert(p, 20);
+            let mut vmp = VariationMap::new();
+            let mut rp = Variation::new();
+            rp.cnt = 20;
+            rp.fwd = 10;
+            rp.rev = 10;
+            rp.hicnt = 20;
+            rp.qmean = 600.0;
+            rp.mqmean = 1200.0;
+            rp.pmean = 400.0;
+            vmp.map.insert(key.to_string(), rp);
+            som_vd.non_insertion_variants.insert(p, vmp);
+        }
+
+        // pos 30 (hostile FASTA 'I'): BAM2-only insertion "+GG" with sole non-insertion key "I"
+        som_vd.ref_coverage.insert(30, 20);
+        let mut vm30 = VariationMap::new();
+        let mut r30 = Variation::new();
+        r30.cnt = 12;
+        r30.fwd = 6;
+        r30.rev = 6;
+        r30.hicnt = 12;
+        r30.qmean = 360.0;
+        r30.mqmean = 720.0;
+        r30.pmean = 240.0;
+        vm30.map.insert("I".to_string(), r30);
+        som_vd.non_insertion_variants.insert(30, vm30);
+        let mut ins30 = VariationMap::new();
+        let mut i30 = Variation::new();
+        i30.cnt = 8;
+        i30.fwd = 4;
+        i30.rev = 4;
+        i30.hicnt = 8;
+        i30.qmean = 240.0;
+        i30.mqmean = 480.0;
+        i30.pmean = 160.0;
+        ins30.map.insert("+GG".to_string(), i30);
+        som_vd.insertion_variants.insert(30, ins30);
+
+        let mut som_cfg = Config::default();
+        som_cfg.bam = "tumor.bam|normal.bam".to_string();
+        som_cfg.freq = 0.05;
+        let som_builder = ToVarsBuilder::new(&som_ref, &som_region, &som_chr_lens, &som_cfg);
+
+        assert_eq!(format!("{:?}", RefSiteMode::KeepAll), "KeepAll");
+        assert_eq!(format!("{:?}", RefSiteMode::DropAll), "DropAll");
+        assert!(format!("{:?}", RefSiteMode::KeepWhere(&|_| false)).starts_with("KeepWhere"));
+
+        let keep_all =
+            som_builder.build_aligned_variants_with_ref_mode(&som_vd, RefSiteMode::KeepAll);
+
+        let mut compact_sites: rustc_hash::FxHashMap<i32, CompactRefSite> =
+            rustc_hash::FxHashMap::default();
+        assert!(
+            format!("{:?}", RefSiteMode::CompactOut(&mut compact_sites)).starts_with("CompactOut")
+        );
+        let mut compact_aligned = som_builder.build_aligned_variants_with_ref_mode(
+            &som_vd,
+            RefSiteMode::CompactOut(&mut compact_sites),
+        );
+
+        // Pure ref sites (5, 6, 7, 25, 26) must be in compact_sites and omitted from compact_aligned;
+        // special sites (10, 11 after p-1 ins, 14 "I", 16 cnt==0, 18 sv, 22 non-ref, 30 FASTA 'I' + ins) stay on standard path.
+        for p in [5, 6, 7, 25, 26] {
+            assert!(
+                compact_sites.contains_key(&p),
+                "expected pos {p} in compact_sites"
+            );
+            assert!(
+                !compact_aligned.contains_key(&p),
+                "expected pos {p} omitted from compact_aligned"
+            );
+        }
+        for p in [10, 11, 14, 16, 18, 22, 30] {
+            assert!(
+                !compact_sites.contains_key(&p),
+                "pos {p} must be excluded from compact_sites"
+            );
+            assert!(
+                compact_aligned.contains_key(&p),
+                "pos {p} must remain in compact_aligned"
+            );
+        }
+        assert!(compact_aligned.get(&16).unwrap().ref_variant.is_none());
+        assert!(compact_aligned.get(&16).unwrap().variants.is_empty());
+
+        for (&p, site) in &compact_sites {
+            let hydrated = som_builder.hydrate_compact_ref_site(p, site);
+            compact_aligned.insert(p, hydrated);
+        }
+        assert_eq!(compact_aligned.len(), keep_all.len());
+        for (&p, expected_vars) in keep_all.iter() {
+            let actual_vars = compact_aligned.get(&p).expect("missing hydrated pos");
+            assert_eq!(actual_vars.sv, expected_vars.sv, "pos {p} sv");
+            assert_eq!(
+                actual_vars.variants.len(),
+                expected_vars.variants.len(),
+                "pos {p} variants len"
+            );
+            match (&actual_vars.ref_variant, &expected_vars.ref_variant) {
+                (Some(a), Some(b)) => assert_variant_eq(a, b, &format!("pos {p} ref_variant")),
+                (None, None) => {}
+                _ => panic!("pos {p} ref_variant Option mismatch"),
+            }
+            for (av, bv) in actual_vars
+                .variants
+                .iter()
+                .zip(expected_vars.variants.iter())
+            {
+                assert_variant_eq(av, bv, &format!("pos {p} alt"));
+            }
+        }
+        // Verify ttcov = cnt.cnt (25) extra_freq (10/25 = 0.4) vs total_pos_cov = 20 at pos 5,
+        // and IUPAC valid_base vs raw genotype at pos 6 ('R') & pos 7 ('Y').
+        let rv5 = compact_aligned
+            .get(&5)
+            .unwrap()
+            .ref_variant
+            .as_ref()
+            .unwrap();
+        assert_eq!(rv5.total_pos_cov, 20);
+        assert_eq!(rv5.extra_freq.to_bits(), (10.0_f64 / 25.0_f64).to_bits());
+        let rv6 = compact_aligned
+            .get(&6)
+            .unwrap()
+            .ref_variant
+            .as_ref()
+            .unwrap();
+        assert_eq!(
+            (rv6.ref_allele.as_str(), rv6.var_allele.as_str()),
+            ("A", "A")
+        );
+        assert_eq!(rv6.genotype.as_deref(), Some("R/R"));
+        let rv7 = compact_aligned
+            .get(&7)
+            .unwrap()
+            .ref_variant
+            .as_ref()
+            .unwrap();
+        assert_eq!(
+            (rv7.ref_allele.as_str(), rv7.var_allele.as_str()),
+            ("C", "C")
+        );
+        assert_eq!(rv7.genotype.as_deref(), Some("Y/Y"));
+
+        // KeepWhere & DropAll in somatic mode retain sub-threshold non-ref allele at pos 22.
+        let keep_where = som_builder
+            .build_aligned_variants_with_ref_mode(&som_vd, RefSiteMode::KeepWhere(&|p| p == 25));
+        assert!(keep_where.contains_key(&22));
+        assert_eq!(keep_where.get(&22).unwrap().variants.len(), 1);
+        assert!(keep_where.contains_key(&25));
+        assert!(!keep_where.contains_key(&26));
+        assert_variant_eq(
+            keep_where.get(&25).unwrap().ref_variant.as_ref().unwrap(),
+            keep_all.get(&25).unwrap().ref_variant.as_ref().unwrap(),
+            "KeepWhere pos 25",
+        );
+        assert!(
+            keep_where.contains_key(&30),
+            "KeepWhere must retain BAM2 insertion at hostile FASTA 'I' site even when pred(30) == false"
+        );
+        assert_variant_eq(
+            keep_where.get(&30).unwrap().variant_by_desc("+GG").unwrap(),
+            keep_all.get(&30).unwrap().variant_by_desc("+GG").unwrap(),
+            "KeepWhere pos 30 +GG insertion",
+        );
+
+        let som_drop_all =
+            som_builder.build_aligned_variants_with_ref_mode(&som_vd, RefSiteMode::DropAll);
+        assert!(som_drop_all.contains_key(&22));
+        assert_eq!(som_drop_all.get(&22).unwrap().variants.len(), 1);
+        assert!(!som_drop_all.contains_key(&25));
+        assert!(!som_drop_all.contains_key(&26));
+
+        // Single-sample with debug=true still uses DropAll so JavaHashMap order matches Java.
+        let mut single_dbg_cfg = Config::default();
+        single_dbg_cfg.bam = "sample.bam".to_string();
+        single_dbg_cfg.debug = true;
+        single_dbg_cfg.freq = 0.005;
+        let single_dbg_builder =
+            ToVarsBuilder::new(&som_ref, &som_region, &som_chr_lens, &single_dbg_cfg);
+        let single_dbg_aligned = single_dbg_builder.build_aligned_variants(&som_vd);
+        assert!(!single_dbg_aligned.contains_key(&25));
+        assert!(single_dbg_aligned.contains_key(&22));
+
+        // --- Large-contig (i32::MAX) & negative CRISPR (-J i32::MIN) overflow hardening ---
+        let max_pos = i32::MAX;
+        let near_max = i32::MAX - 5;
+        let win_start = (i32::MAX - 100) as u32;
+        let win_bases = vec![b'A'; 101]; // covers [i32::MAX - 100 ..= i32::MAX]
+        let mut big_ref = Reference::new();
+        big_ref.loaded_regions.push(crate::reference::LoadedRegion {
+            chr: "chrBig".to_string(),
+            sequence_start: win_start,
+            sequence_end: i32::MAX as u32,
+        });
+        big_ref.region_sequences.push(win_bases);
+        let huge_chr_len = (i32::MAX as usize).saturating_add(50_000);
+        let big_chr_lens = HashMap::from([("chrBig".to_string(), huge_chr_len)]);
+        let big_region = Region {
+            chr: "chrBig".to_string(),
+            start: Pos1(win_start),
+            end: Pos1(i32::MAX as u32),
+            gene: "BIG".to_string(),
+            amplicon: None,
+        };
+
+        let mut big_vd = VariationData::new();
+        big_vd.ref_coverage.insert(near_max, 30);
+        big_vd.ref_coverage.insert(max_pos, 30);
+
+        let mk_cnt = |cnt: i32| {
+            let mut v = Variation::new();
+            v.cnt = cnt;
+            v.fwd = cnt / 2;
+            v.rev = cnt - v.fwd;
+            v.hicnt = cnt;
+            v.qmean = 30.0 * cnt as f64;
+            v.mqmean = 60.0 * cnt as f64;
+            v.pmean = 20.0 * cnt as f64;
+            v
+        };
+
+        let mut vm_near = VariationMap::new();
+        vm_near.map.insert("A".to_string(), mk_cnt(10));
+        vm_near.map.insert("-6".to_string(), mk_cnt(8)); // spans [i32::MAX - 5 ..= i32::MAX] -> end_pos == i32::MAX
+        vm_near.map.insert("-20".to_string(), mk_cnt(6)); // clamps end_pos == i32::MAX
+        vm_near.map.insert("G".to_string(), mk_cnt(6));
+        big_vd.non_insertion_variants.insert(near_max, vm_near);
+
+        let mut ins_near = VariationMap::new();
+        ins_near.map.insert("+AA".to_string(), mk_cnt(5));
+        big_vd.insertion_variants.insert(near_max, ins_near);
+
+        let mut vm_end = VariationMap::new();
+        vm_end.map.insert("A".to_string(), mk_cnt(15));
+        vm_end.map.insert("C".to_string(), mk_cnt(8));
+        big_vd.non_insertion_variants.insert(max_pos, vm_end);
+
+        let mut ins_end = VariationMap::new();
+        ins_end.map.insert("+TT".to_string(), mk_cnt(7));
+        big_vd.insertion_variants.insert(max_pos, ins_end);
+
+        let mut big_cfg = Config::default();
+        big_cfg.three_prime = true;
+        big_cfg.crispr_cutting_site = Some(i32::MIN);
+        big_cfg.sv_min_len = u32::MAX;
+        let big_builder = ToVarsBuilder::new(&big_ref, &big_region, &big_chr_lens, &big_cfg);
+        assert_eq!(big_builder.chr_len, i32::MAX);
+
+        let big_aligned = big_builder.build_aligned_variants(&big_vd);
+        let vars_near = big_aligned.get(&near_max).expect("vars at i32::MAX - 5");
+        let del6 = vars_near.variant_by_desc("-6").expect("-6 at near_max");
+        assert_eq!(del6.end_pos, i32::MAX);
+        assert_eq!(
+            del6.right_seq, "",
+            "end_position == i32::MAX must leave right_seq empty via checked_add(1)"
+        );
+        let del20 = vars_near.variant_by_desc("-20").expect("-20 at near_max");
+        assert_eq!(del20.end_pos, i32::MAX);
+        assert_eq!(del20.right_seq, "");
+
+        let vars_max = big_aligned.get(&max_pos).expect("vars at i32::MAX");
+        let ins_tt = vars_max.variant_by_desc("+TT").expect("+TT at i32::MAX");
+        assert_eq!(ins_tt.end_pos, i32::MAX);
+        assert_eq!(ins_tt.right_seq, "");
+        let snv_c = vars_max.variant_by_desc("C").expect("C at i32::MAX");
+        assert_eq!(snv_c.end_pos, i32::MAX);
+        assert_eq!(snv_c.right_seq, "");
     }
 }

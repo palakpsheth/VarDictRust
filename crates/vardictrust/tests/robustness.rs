@@ -241,7 +241,13 @@ fn verbose_flag_y_emits_region_debug_to_stderr() {
 
 #[test]
 fn unsupported_and_invalid_cli_flags_exit_nonzero() {
-    for flag in ["-n", "-C", "-T", "--trim", "--VS", "-Z", "--downsample"] {
+    for unsupported_args in [
+        &["-C", "dummy_arg"][..],
+        &["-Z", "dummy_arg"][..],
+        &["--downsample", "dummy_arg"][..],
+        &["-VS", "STRICT"][..],
+        &["--VS", "STRICT"][..],
+    ] {
         let out = base_cmd()
             .args([
                 "-G",
@@ -250,23 +256,30 @@ fn unsupported_and_invalid_cli_flags_exit_nonzero() {
                 "fixtures/micro/micro.bam",
                 "-R",
                 "chr1:100-110",
-                flag,
-                "dummy_arg",
             ])
+            .args(unsupported_args)
             .output()
-            .unwrap_or_else(|e| panic!("run vardictrust with {flag}: {e}"));
+            .unwrap_or_else(|e| panic!("run vardictrust with {unsupported_args:?}: {e}"));
 
         assert!(
             !out.status.success(),
-            "unsupported flag {flag} must exit non-zero"
+            "unsupported flag {unsupported_args:?} must exit non-zero"
         );
         #[cfg(unix)]
-        assert_eq!(out.status.signal(), None, "{flag} died by signal");
-        assert_ne!(out.status.code(), Some(101), "{flag} died by panic");
+        assert_eq!(
+            out.status.signal(),
+            None,
+            "{unsupported_args:?} died by signal"
+        );
+        assert_ne!(
+            out.status.code(),
+            Some(101),
+            "{unsupported_args:?} died by panic"
+        );
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(
             stderr.contains("not implemented in v1.0; use VarDictJava"),
-            "flag {flag} stderr must mention v1.0 rejection, got: {stderr}"
+            "flag {unsupported_args:?} stderr must mention v1.0 rejection, got: {stderr}"
         );
     }
 
@@ -724,6 +737,486 @@ fn output_bgzf_tbi_and_parity_compat_flags() {
         );
         assert!(
             String::from_utf8_lossy(&alias_run.stderr).contains("must not point to the same file")
+        );
+    }
+
+    // 3b. --csi mutual exclusion with --tbi, .csi collision, /dev/null rejection,
+    //     0-variant empty .csi roundtrip, and >512 Mbp (700 Mbp contig, pos = 600_000_100)
+    //     --csi success vs --tbi clean error with zero .tmp residue.
+    let both_idx_vcf = dir.path().join("both_idx.vcf.gz");
+    let both_idx_run = base_cmd()
+        .args(common_args)
+        .arg("--output")
+        .arg(&both_idx_vcf)
+        .args(["--tbi", "--csi"])
+        .output()
+        .expect("spawn --tbi --csi");
+    assert!(!both_idx_run.status.success());
+    assert!(
+        !both_idx_vcf.exists(),
+        "both_idx.vcf.gz must not be created"
+    );
+    assert!(String::from_utf8_lossy(&both_idx_run.stderr)
+        .contains("--tbi/--index and --csi cannot be used together"));
+
+    #[cfg(unix)]
+    {
+        let alias_csi_vcf = dir.path().join("alias_csi_collision.vcf.gz");
+        let alias_csi = dir.path().join("alias_csi_collision.vcf.gz.csi");
+        std::fs::write(&alias_csi_vcf, b"sentinel_csi").expect("write csi sentinel");
+        std::os::unix::fs::symlink(&alias_csi_vcf, &alias_csi).expect("symlink .csi to .vcf.gz");
+        let alias_csi_run = base_cmd()
+            .args(common_args)
+            .arg("--output")
+            .arg(&alias_csi_vcf)
+            .arg("--csi")
+            .output()
+            .expect("spawn --csi with colliding .csi symlink");
+        assert!(!alias_csi_run.status.success());
+        assert_eq!(
+            std::fs::read(&alias_csi_vcf).expect("read csi sentinel"),
+            b"sentinel_csi"
+        );
+        assert!(String::from_utf8_lossy(&alias_csi_run.stderr)
+            .contains("must not point to the same file"));
+
+        let dev_null_csi = base_cmd()
+            .args(common_args)
+            .args(["--output", "/dev/null", "--csi"])
+            .output()
+            .expect("spawn --output /dev/null --csi");
+        assert!(!dev_null_csi.status.success());
+        assert!(String::from_utf8_lossy(&dev_null_csi.stderr)
+            .contains("--tbi/--csi requires a regular seekable --output file"));
+    }
+
+    let empty_csi_vcf = dir.path().join("empty_csi.vcf.gz");
+    let empty_csi_path = dir.path().join("empty_csi.vcf.gz.csi");
+    let empty_csi_run = base_cmd()
+        .args([
+            "-G",
+            "fixtures/micro/micro.ref.fa",
+            "-b",
+            "fixtures/micro/micro.bam",
+            "-R",
+            "chr1:1-10",
+            "-f",
+            "0.99",
+        ])
+        .arg("--output")
+        .arg(&empty_csi_vcf)
+        .arg("--csi")
+        .output()
+        .expect("spawn header-only --csi");
+    assert!(
+        empty_csi_run.status.success(),
+        "empty --csi failed: {}",
+        String::from_utf8_lossy(&empty_csi_run.stderr)
+    );
+    let empty_csi_index = noodles::csi::io::Reader::new(
+        std::fs::File::open(&empty_csi_path).expect("open empty .csi"),
+    )
+    .read_index()
+    .expect("read header-only .csi");
+    let empty_csi_hdr = empty_csi_index.header().expect("empty .csi VCF header");
+    assert_eq!(
+        empty_csi_hdr.format(),
+        noodles::csi::binning_index::index::header::Format::Vcf
+    );
+    assert!(empty_csi_hdr.reference_sequence_names().is_empty());
+
+    // Synthetic 700,000,000 bp contig (`chr_large`) with a variant at pos = 600,000,100:
+    // sparse single-line FASTA (~20 KB real disk blocks) + .bam.csi input index.
+    let large_fa = dir.path().join("large_700m.fa");
+    let large_fai = dir.path().join("large_700m.fa.fai");
+    let win_start_1b: usize = 599_995_001;
+    let win_seq: Vec<u8> = (0..10_000usize)
+        .map(|i| b"ACGT"[(i.wrapping_mul(7).wrapping_add(i / 4)) % 4])
+        .collect();
+    {
+        use std::io::{Seek as _, SeekFrom, Write as _};
+        let mut f = std::fs::File::create(&large_fa).expect("create sparse large_700m.fa");
+        f.write_all(b">chr_large\n").expect("write fasta header");
+        f.seek(SeekFrom::Start(11 + (win_start_1b as u64 - 1)))
+            .expect("seek to 600M window");
+        f.write_all(&win_seq).expect("write 600M window bases");
+        f.seek(SeekFrom::Start(11 + 700_000_000))
+            .expect("seek to 700M contig end");
+        f.write_all(b"\n").expect("write trailing newline");
+    }
+    std::fs::write(
+        &large_fai,
+        "chr_large\t700000000\t11\t700000000\t700000001\n",
+    )
+    .expect("write large_700m.fa.fai");
+
+    let large_bam = dir.path().join("large_700m.bam");
+    {
+        use noodles::core::Position;
+        use noodles::csi::binning_index::index::reference_sequence::{
+            bin::Chunk, index::BinnedIndex,
+        };
+        use noodles::csi::binning_index::Indexer;
+        use noodles::sam::{
+            alignment::{
+                io::Write as _,
+                record::cigar::{op::Kind, Op},
+                record_buf::{Cigar, RecordBuf},
+            },
+            header::record::value::{map::ReferenceSequence as RefSeqMap, Map as HeaderMap},
+            Header,
+        };
+
+        let rs = HeaderMap::<RefSeqMap>::builder()
+            .set_length(std::num::NonZeroUsize::new(700_000_000).unwrap())
+            .build()
+            .expect("700M contig header");
+        let hd = Header::builder()
+            .add_reference_sequence("chr_large", rs)
+            .build();
+        let bgzf = noodles::bgzf::io::Writer::new(
+            std::fs::File::create(&large_bam).expect("create large_700m.bam"),
+        );
+        let mut w = noodles::bam::io::Writer::from(bgzf);
+        w.write_alignment_header(&hd).expect("write bam header");
+        let mut bam_csi = Indexer::<BinnedIndex>::new(14, 6).expect("valid BAM CSI params");
+
+        let read_start_1b: usize = 600_000_080;
+        let win_off = read_start_1b - win_start_1b;
+        let ref_50 = win_seq[win_off..win_off + 50].to_vec();
+        let alt_b = match ref_50[20] {
+            b'A' => b'C',
+            b'C' => b'G',
+            b'G' => b'T',
+            _ => b'A',
+        };
+        let cigar_50m: Cigar = [Op::new(Kind::Match, 50)].into_iter().collect();
+        for idx in 0..6usize {
+            let mut seq = ref_50.clone();
+            if idx < 4 {
+                seq[20] = alt_b; // pos = 600_000_080 + 20 = 600_000_100
+            }
+            let s_pos = Position::new(read_start_1b).unwrap();
+            let e_pos = Position::new(read_start_1b + 49).unwrap();
+            let rec = RecordBuf::builder()
+                .set_name(format!("r600m_{idx}"))
+                .set_flags(noodles::sam::alignment::record::Flags::empty())
+                .set_reference_sequence_id(0)
+                .set_alignment_start(s_pos)
+                .set_cigar(cigar_50m.clone())
+                .set_sequence(seq.into())
+                .set_quality_scores(vec![40u8; 50].into())
+                .build();
+            let start_vp = w.get_ref().virtual_position();
+            w.write_alignment_record(&hd, &rec)
+                .expect("write 600M bam record");
+            let end_vp = w.get_ref().virtual_position();
+            bam_csi
+                .add_record(Some((0, s_pos, e_pos, true)), Chunk::new(start_vp, end_vp))
+                .expect("index 600M bam record");
+        }
+        w.try_finish().expect("finish large_700m.bam");
+        let bam_csi_path = dir.path().join("large_700m.bam.csi");
+        let mut csi_w = noodles::csi::io::Writer::new(
+            std::fs::File::create(&bam_csi_path).expect("create large_700m.bam.csi"),
+        );
+        csi_w
+            .write_index(&bam_csi.build(1))
+            .expect("write large_700m.bam.csi");
+        csi_w.into_inner().finish().expect("finish bam.csi");
+    }
+
+    let large_csi_vcf = dir.path().join("large_out.vcf.gz");
+    let large_csi_idx = dir.path().join("large_out.vcf.gz.csi");
+    let large_csi_run = base_cmd()
+        .arg("-G")
+        .arg(&large_fa)
+        .arg("-b")
+        .arg(&large_bam)
+        .args(["-R", "chr_large:600000070-600000140", "--threads=1"])
+        .arg("--output")
+        .arg(&large_csi_vcf)
+        .arg("--csi")
+        .output()
+        .expect("spawn --csi on 700M contig");
+    assert!(
+        large_csi_run.status.success(),
+        "700M --csi run failed: {}",
+        String::from_utf8_lossy(&large_csi_run.stderr)
+    );
+    let parsed_csi = noodles::csi::io::Reader::new(
+        std::fs::File::open(&large_csi_idx).expect("open large_out.vcf.gz.csi"),
+    )
+    .read_index()
+    .expect("read large_out.vcf.gz.csi");
+    let parsed_csi_hdr = parsed_csi.header().expect("CSI VCF header present");
+    assert_eq!(
+        parsed_csi_hdr.format(),
+        noodles::csi::binning_index::index::header::Format::Vcf
+    );
+    let ref_id = parsed_csi_hdr
+        .reference_sequence_names()
+        .get_index_of(b"chr_large".as_slice())
+        .expect("chr_large registered in CSI header");
+    let pos_600m = noodles::core::Position::new(600_000_100).unwrap();
+    let chunks = parsed_csi
+        .query(
+            ref_id,
+            noodles::core::region::Interval::from(pos_600m..=pos_600m),
+        )
+        .expect("query CSI at 600,000,100");
+    assert!(
+        !chunks.is_empty(),
+        "CSI query at 600,000,100 returned no chunks"
+    );
+    {
+        use std::io::BufRead as _;
+        let mut bgzf_r = noodles::bgzf::io::Reader::new(
+            std::fs::File::open(&large_csi_vcf).expect("open large_out.vcf.gz"),
+        );
+        bgzf_r
+            .seek(chunks[0].start())
+            .expect("seek BGZF to CSI chunk start");
+        let mut queried_line = String::new();
+        bgzf_r
+            .read_line(&mut queried_line)
+            .expect("read queried VCF line");
+        assert!(
+            queried_line.starts_with("chr_large\t600000100\t"),
+            "CSI roundtrip seek must land on chr_large:600000100 record, got: {queried_line}"
+        );
+    }
+
+    let tbi_600m_dir = dir.path().join("tbi_600m_fail");
+    std::fs::create_dir(&tbi_600m_dir).expect("create tbi_600m_fail");
+    let large_tbi_vcf = tbi_600m_dir.join("out.vcf.gz");
+    let large_tbi_run = base_cmd()
+        .arg("-G")
+        .arg(&large_fa)
+        .arg("-b")
+        .arg(&large_bam)
+        .args(["-R", "chr_large:600000070-600000140", "--threads=1"])
+        .arg("--output")
+        .arg(&large_tbi_vcf)
+        .arg("--tbi")
+        .output()
+        .expect("spawn --tbi on 700M contig");
+    assert!(!large_tbi_run.status.success());
+    assert_ne!(large_tbi_run.status.code(), Some(101));
+    let large_tbi_stderr = String::from_utf8_lossy(&large_tbi_run.stderr);
+    assert!(
+        large_tbi_stderr.contains("536,870,912") && large_tbi_stderr.contains("--csi"),
+        "expected actionable >536,870,912 --csi hint, got: {large_tbi_stderr}"
+    );
+    assert!(
+        !large_tbi_vcf.exists(),
+        "out.vcf.gz must not exist on >512 Mbp --tbi failure"
+    );
+    assert!(
+        !tbi_600m_dir.join("out.vcf.gz.tbi").exists(),
+        ".tbi file must not exist on >512 Mbp failure"
+    );
+    let tmp_residue: Vec<_> = std::fs::read_dir(&tbi_600m_dir)
+        .expect("read tbi_600m_fail")
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().contains(".tmp"))
+        .collect();
+    assert!(
+        tmp_residue.is_empty(),
+        "zero .tbi.tmp residue allowed after >512 Mbp --tbi failure, found: {tmp_residue:?}"
+    );
+
+    let pre_vcf_bytes = b"PREEXISTING_VCF_GZ_SENTINEL";
+    let pre_tbi_bytes = b"PREEXISTING_TBI_SENTINEL";
+    let pre_csi_bytes = b"PREEXISTING_CSI_SENTINEL";
+    let large_tbi_idx = tbi_600m_dir.join("out.vcf.gz.tbi");
+    let large_csi_sidecar = tbi_600m_dir.join("out.vcf.gz.csi");
+    std::fs::write(&large_tbi_vcf, pre_vcf_bytes).expect("seed preexisting out.vcf.gz");
+    std::fs::write(&large_tbi_idx, pre_tbi_bytes).expect("seed preexisting out.vcf.gz.tbi");
+    std::fs::write(&large_csi_sidecar, pre_csi_bytes).expect("seed preexisting out.vcf.gz.csi");
+    let large_tbi_preserve = base_cmd()
+        .arg("-G")
+        .arg(&large_fa)
+        .arg("-b")
+        .arg(&large_bam)
+        .args(["-R", "chr_large:600000070-600000140", "--threads=1"])
+        .arg("--output")
+        .arg(&large_tbi_vcf)
+        .arg("--tbi")
+        .output()
+        .expect("spawn --tbi over preexisting files on 700M contig");
+    assert!(!large_tbi_preserve.status.success());
+    assert_eq!(
+        std::fs::read(&large_tbi_vcf).expect("read preexisting out.vcf.gz"),
+        pre_vcf_bytes,
+        "failing --tbi must leave preexisting out.vcf.gz bytes untouched"
+    );
+    assert_eq!(
+        std::fs::read(&large_tbi_idx).expect("read preexisting out.vcf.gz.tbi"),
+        pre_tbi_bytes,
+        "failing --tbi must leave preexisting out.vcf.gz.tbi bytes untouched"
+    );
+    assert_eq!(
+        std::fs::read(&large_csi_sidecar).expect("read preexisting out.vcf.gz.csi"),
+        pre_csi_bytes,
+        "failing pre-commit --tbi must preserve preexisting alternate .csi sidecar"
+    );
+    let tmp_residue_preserve: Vec<_> = std::fs::read_dir(&tbi_600m_dir)
+        .expect("read tbi_600m_fail after preserve")
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().contains(".tmp"))
+        .collect();
+    assert!(
+        tmp_residue_preserve.is_empty(),
+        "zero .tmp residue allowed after preexisting --tbi failure, found: {tmp_residue_preserve:?}"
+    );
+
+    // 3c. Directory .tbi / .csi destinations fail before staging/commit and leave preexisting VCF untouched;
+    //     rewriting with --tbi after --csi (and --csi after --tbi) invalidates the stale alternate sidecar
+    //     while rejecting input / --stats-json alternate-sidecar collisions.
+    let dir_target_vcf = dir.path().join("dir_target.vcf.gz");
+    let dir_target_sentinel = b"PREEXISTING_VCF_BEFORE_DIR_IDX";
+    std::fs::write(&dir_target_vcf, dir_target_sentinel).expect("seed dir_target.vcf.gz");
+    for (idx_flag, idx_ext) in [("--tbi", "tbi"), ("--csi", "csi")] {
+        let idx_dir = dir.path().join(format!("dir_target.vcf.gz.{idx_ext}"));
+        std::fs::create_dir(&idx_dir).expect("create index destination directory");
+        let dir_idx_run = base_cmd()
+            .args(common_args)
+            .arg("--output")
+            .arg(&dir_target_vcf)
+            .arg(idx_flag)
+            .output()
+            .expect("spawn with directory index destination");
+        assert!(
+            !dir_idx_run.status.success(),
+            "{idx_flag} with directory destination must fail"
+        );
+        assert_ne!(dir_idx_run.status.code(), Some(101));
+        assert_eq!(
+            std::fs::read(&dir_target_vcf).expect("read dir_target.vcf.gz"),
+            dir_target_sentinel,
+            "directory {idx_flag} destination must leave preexisting VCF unchanged"
+        );
+        assert!(idx_dir.is_dir(), "{idx_flag} directory must remain intact");
+        std::fs::remove_dir(&idx_dir).expect("cleanup index destination directory");
+    }
+
+    let swap_vcf = dir.path().join("sidecar_swap.vcf.gz");
+    let swap_tbi = dir.path().join("sidecar_swap.vcf.gz.tbi");
+    let swap_csi = dir.path().join("sidecar_swap.vcf.gz.csi");
+    let swap_csi_first = base_cmd()
+        .args(common_args)
+        .arg("--output")
+        .arg(&swap_vcf)
+        .arg("--csi")
+        .output()
+        .expect("spawn initial --csi for sidecar swap");
+    assert!(
+        swap_csi_first.status.success(),
+        "initial --csi failed: {}",
+        String::from_utf8_lossy(&swap_csi_first.stderr)
+    );
+    assert!(swap_csi.is_file() && !swap_tbi.exists());
+
+    let swap_to_tbi = base_cmd()
+        .args(common_args)
+        .arg("--output")
+        .arg(&swap_vcf)
+        .arg("--tbi")
+        .output()
+        .expect("spawn replacement --tbi over prior --csi");
+    assert!(
+        swap_to_tbi.status.success(),
+        "replacement --tbi failed: {}",
+        String::from_utf8_lossy(&swap_to_tbi.stderr)
+    );
+    assert!(swap_tbi.is_file(), "replacement .tbi must exist");
+    assert!(
+        !swap_csi.exists(),
+        "stale .csi sidecar must be invalidated after --tbi replacement"
+    );
+    let _ = noodles::tabix::fs::read(&swap_tbi).expect("replacement .tbi must parse");
+
+    let swap_to_csi = base_cmd()
+        .args(common_args)
+        .arg("--output")
+        .arg(&swap_vcf)
+        .arg("--csi")
+        .output()
+        .expect("spawn replacement --csi over prior --tbi");
+    assert!(
+        swap_to_csi.status.success(),
+        "replacement --csi failed: {}",
+        String::from_utf8_lossy(&swap_to_csi.stderr)
+    );
+    assert!(swap_csi.is_file(), "replacement .csi must exist");
+    assert!(
+        !swap_tbi.exists(),
+        "stale .tbi sidecar must be invalidated after --csi replacement"
+    );
+    let _ = noodles::csi::io::Reader::new(std::fs::File::open(&swap_csi).expect("open swap .csi"))
+        .read_index()
+        .expect("replacement .csi must parse");
+
+    #[cfg(unix)]
+    {
+        let alt_stats_vcf = dir.path().join("alt_stats_col.vcf.gz");
+        let alt_stats_csi = dir.path().join("alt_stats_col.vcf.gz.csi");
+        let stats_target = dir.path().join("protected_stats.json");
+        std::fs::write(&alt_stats_vcf, b"ALT_STATS_VCF").expect("seed alt_stats_col.vcf.gz");
+        std::fs::write(&stats_target, b"{\"keep\":true}").expect("seed protected_stats.json");
+        std::os::unix::fs::symlink(&stats_target, &alt_stats_csi)
+            .expect("symlink alternate .csi to --stats-json");
+        let alt_stats_run = base_cmd()
+            .args(common_args)
+            .arg("--output")
+            .arg(&alt_stats_vcf)
+            .arg("--tbi")
+            .arg("--stats-json")
+            .arg(&stats_target)
+            .output()
+            .expect("spawn --tbi with alternate .csi colliding with --stats-json");
+        assert!(!alt_stats_run.status.success());
+        assert!(String::from_utf8_lossy(&alt_stats_run.stderr)
+            .contains("must not point to the same file"));
+        assert_eq!(
+            std::fs::read(&alt_stats_vcf).expect("read alt_stats_col.vcf.gz"),
+            b"ALT_STATS_VCF"
+        );
+        assert_eq!(
+            std::fs::read(&stats_target).expect("read protected_stats.json"),
+            b"{\"keep\":true}"
+        );
+
+        let alt_in_vcf = dir.path().join("alt_input_col.vcf.gz");
+        let alt_in_csi = dir.path().join("alt_input_col.vcf.gz.csi");
+        let micro_bam_abs = workspace_root().join("fixtures/micro/micro.bam");
+        let micro_bam_len = std::fs::metadata(&micro_bam_abs)
+            .expect("stat micro.bam")
+            .len();
+        std::fs::write(&alt_in_vcf, b"ALT_INPUT_VCF").expect("seed alt_input_col.vcf.gz");
+        std::os::unix::fs::symlink(&micro_bam_abs, &alt_in_csi)
+            .expect("symlink alternate .csi to input BAM");
+        let alt_in_run = base_cmd()
+            .args(common_args)
+            .arg("--output")
+            .arg(&alt_in_vcf)
+            .arg("--tbi")
+            .output()
+            .expect("spawn --tbi with alternate .csi colliding with input BAM");
+        assert!(!alt_in_run.status.success());
+        assert!(
+            String::from_utf8_lossy(&alt_in_run.stderr).contains("must not point to the same file")
+        );
+        assert_eq!(
+            std::fs::read(&alt_in_vcf).expect("read alt_input_col.vcf.gz"),
+            b"ALT_INPUT_VCF"
+        );
+        assert_eq!(
+            std::fs::metadata(&micro_bam_abs)
+                .expect("stat micro.bam after")
+                .len(),
+            micro_bam_len
         );
     }
 
@@ -1633,4 +2126,182 @@ fn commons_cli_single_dash_flags_and_zero_bed_col_behavior() {
             "expected clean UTF-8 Parse error without panic, got: {bad_stderr}"
         );
     }
+
+    // 9. Binary E2E runs for `-n` (sample regex), clustered `-uz 0`, `-VS LENIENT` / `STRICT`,
+    //    `--no-end`, and `RAYON_NUM_THREADS=2`.
+    let named_bam = tmp.path().join("sample_42_run.bam");
+    let named_bai = tmp.path().join("sample_42_run.bam.bai");
+    std::fs::copy(
+        workspace_root().join("fixtures/micro/micro.bam"),
+        &named_bam,
+    )
+    .expect("copy micro.bam -> sample_42_run.bam");
+    std::fs::copy(
+        workspace_root().join("fixtures/micro/micro.bam.bai"),
+        &named_bai,
+    )
+    .expect("copy micro.bam.bai -> sample_42_run.bam.bai");
+
+    let n_single = base_cmd()
+        .args(["-G", "fixtures/micro/micro.ref.fa", "-b"])
+        .arg(&named_bam)
+        .args([
+            "-R",
+            "chr1:40-260",
+            "-n",
+            r"/sample_(\d+)_run/",
+            "--threads=1",
+        ])
+        .output()
+        .expect("spawn -n single-sample VCF");
+    assert!(
+        n_single.status.success(),
+        "-n single-sample failed: {}",
+        String::from_utf8_lossy(&n_single.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&n_single.stdout)
+            .contains("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t42\n"),
+        "-n must extract sample '42' into VCF header"
+    );
+
+    let paired_n_arg = format!("{}|fixtures/micro/micro.bam", named_bam.display());
+    let n_paired_var = base_cmd()
+        .args([
+            "-G",
+            "fixtures/micro/micro.ref.fa",
+            "-b",
+            &paired_n_arg,
+            "-R",
+            "chr1:40-260",
+            "-n",
+            r"/sample_(\d+)_run/",
+            "--emit-intermediate",
+            "--threads=1",
+        ])
+        .output()
+        .expect("spawn -n paired -R .var");
+    assert!(
+        n_paired_var.status.success(),
+        "-n paired -R .var failed: {}",
+        String::from_utf8_lossy(&n_paired_var.stderr)
+    );
+    let n_paired_stdout = String::from_utf8_lossy(&n_paired_var.stdout);
+    assert!(
+        n_paired_stdout.lines().any(|l| l.starts_with("42\t")),
+        "-n paired -R .var must resolve sample column to '42', got:\n{n_paired_stdout}"
+    );
+
+    let cohort_dir = tmp.path().join("cohort").join("SAMP_ESC");
+    std::fs::create_dir_all(&cohort_dir).expect("mkdir cohort/SAMP_ESC");
+    let cohort_bam = cohort_dir.join("aln.bam");
+    let cohort_bai = cohort_dir.join("aln.bam.bai");
+    std::fs::copy(
+        workspace_root().join("fixtures/micro/micro.bam"),
+        &cohort_bam,
+    )
+    .expect("copy micro.bam -> cohort/SAMP_ESC/aln.bam");
+    std::fs::copy(
+        workspace_root().join("fixtures/micro/micro.bam.bai"),
+        &cohort_bai,
+    )
+    .expect("copy micro.bam.bai -> cohort/SAMP_ESC/aln.bam.bai");
+    for slash_pat in [r"/cohort\/([^/]+)\//", r"//cohort/([^/]+)//"] {
+        let slash_single = base_cmd()
+            .args(["-G", "fixtures/micro/micro.ref.fa", "-b"])
+            .arg(&cohort_bam)
+            .args(["-R", "chr1:40-260", "-n", slash_pat, "--threads=1"])
+            .output()
+            .expect("spawn -n slash pattern VCF");
+        assert!(
+            slash_single.status.success(),
+            "-n {slash_pat} failed: {}",
+            String::from_utf8_lossy(&slash_single.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&slash_single.stdout)
+                .contains("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tSAMP_ESC\n"),
+            "-n {slash_pat} must extract SAMP_ESC without double-stripping slashes"
+        );
+    }
+
+    let uz0_out = base_cmd()
+        .args(base_region_args)
+        .args(["-uz", "0"])
+        .output()
+        .expect("spawn clustered -uz 0");
+    assert!(
+        uz0_out.status.success(),
+        "clustered -uz 0 failed: {}",
+        String::from_utf8_lossy(&uz0_out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&uz0_out.stdout).contains("chr1\t101\t"));
+
+    let vs_lenient = base_cmd()
+        .args(base_region_args)
+        .args(["-VS", "LENIENT"])
+        .output()
+        .expect("spawn -VS LENIENT");
+    assert!(
+        vs_lenient.status.success(),
+        "-VS LENIENT failed: {}",
+        String::from_utf8_lossy(&vs_lenient.stderr)
+    );
+    assert_eq!(vs_lenient.stdout, default_out.stdout);
+
+    let vs_strict = base_cmd()
+        .args(base_region_args)
+        .args(["-VS", "STRICT"])
+        .output()
+        .expect("spawn -VS STRICT");
+    assert!(!vs_strict.status.success());
+    assert!(String::from_utf8_lossy(&vs_strict.stderr)
+        .contains("-VS STRICT not implemented in v1.0; use VarDictJava"));
+
+    assert!(
+        String::from_utf8_lossy(&default_out.stdout).contains(";END=101;"),
+        "default -R VCF without -E/--no-end must emit ;END=101;"
+    );
+    let no_end_out = base_cmd()
+        .args(base_region_args)
+        .arg("--no-end")
+        .output()
+        .expect("spawn --no-end");
+    assert!(
+        no_end_out.status.success(),
+        "--no-end failed: {}",
+        String::from_utf8_lossy(&no_end_out.stderr)
+    );
+    let no_end_vcf = String::from_utf8_lossy(&no_end_out.stdout);
+    assert!(no_end_vcf.contains("chr1\t101\t"));
+    assert!(
+        !no_end_vcf.contains(";END="),
+        "--no-end must omit ;END= from VCF INFO column, got:\n{no_end_vcf}"
+    );
+
+    let rayon_stats = tmp.path().join("rayon_threads.json");
+    let rayon_run = base_cmd()
+        .env("RAYON_NUM_THREADS", "2")
+        .args([
+            "-G",
+            "fixtures/micro/micro.ref.fa",
+            "-b",
+            "fixtures/micro/micro.bam",
+            "-R",
+            "chr1:40-260",
+            "--stats-json",
+        ])
+        .arg(&rayon_stats)
+        .output()
+        .expect("spawn with RAYON_NUM_THREADS=2");
+    assert!(
+        rayon_run.status.success(),
+        "RAYON_NUM_THREADS=2 run failed: {}",
+        String::from_utf8_lossy(&rayon_run.stderr)
+    );
+    let rayon_stats_text = std::fs::read_to_string(&rayon_stats).expect("read rayon_threads.json");
+    assert!(
+        rayon_stats_text.contains("\"threads\": 2"),
+        "expected RAYON_NUM_THREADS=2 to resolve threads=2 in live binary, got:\n{rayon_stats_text}"
+    );
 }

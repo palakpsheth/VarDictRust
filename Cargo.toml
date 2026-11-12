@@ -5,7 +5,7 @@ resolver = "2"
 [workspace.package]
 version = "1.0.7"
 edition = "2021"
-rust-version = "1.86.0"
+rust-version = "1.91.0"
 license = "MIT AND GPL-2.0-or-later"
 repository = "https://github.com/palakpsheth/VarDictRust"
 authors = ["Palak Sheth <palakpsheth@gmail.com>"]

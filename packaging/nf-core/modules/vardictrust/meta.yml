@@ -35,14 +35,14 @@ input:
           e.g. [ id:'test', single_end:false ]
     - bams:
         type: file
-        description: One or two BAM files. Supply two BAM files to run in paired (tumour/normal) mode.
+        description: One or two BAM or CRAM files. Supply two BAM/CRAM files to run in paired (tumour/normal) mode.
         pattern: "*.bam"
         ontologies:
           - edam: http://edamontology.org/data_0863 # Sequence alignment
           - edam: http://edamontology.org/format_2572 # BAM
     - bais:
         type: file
-        description: Index/indices of the BAM file(s)
+        description: Index/indices of the BAM or CRAM file(s) (.bai, .csi, or .crai)
         pattern: "*.bai"
         ontologies: []
     - bed:

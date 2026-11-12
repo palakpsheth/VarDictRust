@@ -128,6 +128,27 @@ fn push_ascii_slice(dst: &mut String, bytes: &[u8]) {
     }
 }
 
+/// Static single-base `&str` lookup matching [`push_ascii_base`] + `N`/`n` filtering:
+/// ASCII `0x00..=0x7F` map to their 1-byte `&str` except `b'n'` (`0x6E`), which maps
+/// to `"N"` alongside `b'N'` and non-ASCII `0x80..=0xFF`.
+const SINGLE_BASE_STR: [&str; 256] = [
+    "\x00", "\x01", "\x02", "\x03", "\x04", "\x05", "\x06", "\x07", "\x08", "\t", "\n", "\x0B",
+    "\x0C", "\r", "\x0E", "\x0F", "\x10", "\x11", "\x12", "\x13", "\x14", "\x15", "\x16", "\x17",
+    "\x18", "\x19", "\x1A", "\x1B", "\x1C", "\x1D", "\x1E", "\x1F", " ", "!", "\"", "#", "$", "%",
+    "&", "'", "(", ")", "*", "+", ",", "-", ".", "/", "0", "1", "2", "3", "4", "5", "6", "7", "8",
+    "9", ":", ";", "<", "=", ">", "?", "@", "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K",
+    "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z", "[", "\\", "]", "^",
+    "_", "`", "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "N", "o", "p", "q",
+    "r", "s", "t", "u", "v", "w", "x", "y", "z", "{", "|", "}", "~", "\x7F", "N", "N", "N", "N",
+    "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N",
+    "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N",
+    "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N",
+    "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N",
+    "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N",
+    "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N",
+    "N", "N", "N", "N", "N", "N", "N", "N", "N", "N",
+];
+
 /// Phred quality at `idx`, defaulting missing/truncated QUAL (`*`) to 0.
 /// Ports Java leniency: `getBaseQualityString` may yield `*`/short string where
 /// `charAt(i)-33` would throw; Rust must not crash (AGENTS §11) — fail the
@@ -154,20 +175,9 @@ impl<'a> CigarParser<'a> {
         duplicate_reads: i32,
         seed_max_read_length: i32,
     ) -> Self {
-        let (primary_ref_seq, primary_ref_start) = match (
-            reference.loaded_regions.first(),
-            reference.region_sequences.first(),
-        ) {
-            (Some(lr), Some(bases))
-                if lr.chr == region.chr && lr.sequence_end >= lr.sequence_start =>
-            {
-                let max_len = (lr.sequence_end.saturating_sub(lr.sequence_start) as usize)
-                    .saturating_add(1)
-                    .min(bases.len());
-                (&bases[..max_len], lr.sequence_start)
-            }
-            _ => (&[][..], 1),
-        };
+        let (primary_ref_seq, primary_ref_start) = reference
+            .primary_region_slice(&region.chr)
+            .unwrap_or((&[], 1));
         let cov_cap = match reference
             .loaded_regions
             .iter()
@@ -297,21 +307,24 @@ impl<'a> CigarParser<'a> {
             }
         }
 
-        // Per-read scratch reuse (Task 4 churn fix): refill parser-owned
-        // buffers instead of cloning per read. Values flowing through are
-        // identical; only the allocation site changes.
-        self.scratch_seq.clear();
-        self.scratch_seq.extend_from_slice(&record.sequence);
-        self.scratch_qual.clear();
-        self.scratch_qual.extend_from_slice(&record.quality_scores);
+        if !self.svflag && self.ref_coverage.capacity() == 0 {
+            let span_cap = (self
+                .region
+                .end
+                .0
+                .saturating_sub(self.region.start.0)
+                .saturating_add(1) as usize)
+                .min(4_096);
+            self.ref_coverage.reserve(span_cap);
+            self.non_insertion_variants.reserve_nodes(span_cap);
+        }
+
+        // Zero-copy read fast path: borrow `&record.sequence` and `&record.quality_scores`
+        // directly unless `CigarModifier` fallback actually runs and materializes buffers.
         self.scratch_elements.clear();
         self.scratch_elements.extend_from_slice(&record.cigar);
-        let mut query_seq = std::mem::take(&mut self.scratch_seq);
-        let mut query_qual = std::mem::take(&mut self.scratch_qual);
         let mut cigar_elements = std::mem::take(&mut self.scratch_elements);
-        let mut buf_s = std::mem::take(&mut self.scratch_s);
-        let mut buf_ss = std::mem::take(&mut self.scratch_ss);
-        let mut scratch_splice_key = std::mem::take(&mut self.scratch_splice_key);
+        let mut modified_bufs: Option<(Vec<u8>, Vec<u8>)> = None;
 
         // T046: run CigarModifier if realignment is enabled
         // Ports CigarParser.java:257 — Java's `reference.referenceSequences` is a
@@ -321,7 +334,7 @@ impl<'a> CigarParser<'a> {
         // the read span `[start_pos, start_pos + query_seq.len()]` (falling back to
         // any overlapping region, then the first region on `self.region.chr`).
         if self.config.realign == 1 {
-            let qlen = query_seq.len() as i32;
+            let qlen = i32::try_from(record.sequence.len()).unwrap_or(i32::MAX);
             let span_end = read_end.max(read_start.saturating_add(qlen));
             let ext_start = read_start.saturating_sub(qlen);
             let ext_end = span_end.saturating_add(qlen);
@@ -357,70 +370,86 @@ impl<'a> CigarParser<'a> {
                     log::warn!("VarDictRust encountered >10 exceptions. Java would abort here, but we continue (CLAUDE.md §5).");
                 }
             };
-            match cigar_elements.as_slice() {
-                &[(mch_u32, CigarKind::Match)] if i32::try_from(mch_u32).is_ok_and(|m| m > 0) => {
+            let run_fallback_modifier = match *cigar_elements.as_slice() {
+                [(mch_u32, CigarKind::Match)] if i32::try_from(mch_u32).is_ok_and(|m| m > 0) => {
                     if let Err(e) = crate::cigar::modify::modify_single_match_in_place(
                         &mut start_pos,
                         mch_u32 as i32,
                         &mut cigar_elements,
-                        &query_seq,
+                        &record.sequence,
                         ref_slice,
                         ref_start,
                     ) {
-                        self.scratch_seq = query_seq;
-                        self.scratch_qual = query_qual;
                         self.scratch_elements = cigar_elements;
-                        self.scratch_s = buf_s;
-                        self.scratch_ss = buf_ss;
-                        self.scratch_splice_key = scratch_splice_key;
                         log_modify_err(e);
                         return Ok(());
                     }
+                    false
                 }
-                _ => {
-                    let mut cigar_str = std::mem::take(&mut self.scratch_cigar_str);
-                    cigar_str.clear();
-                    crate::bam::push_cigar_string(&mut cigar_str, &cigar_elements);
-                    let mut modifier = crate::cigar::modify::CigarModifier::new(
-                        start_pos,
-                        cigar_str,
-                        query_seq,
-                        query_qual,
-                        ref_slice,
-                        ref_start,
-                        &self.reference.seed,
-                        i32::try_from(insertion_deletion_length).unwrap_or(i32::MAX),
-                        self.max_read_length,
-                        self.config,
-                    );
-                    match modifier.modify_cigar_preserving_buffers() {
-                        Ok(modified) => {
-                            start_pos = modified.position;
-                            if crate::cigar::parse_cigar_into(&modified.cigar, &mut cigar_elements)
-                                .is_none()
-                            {
-                                // Unreachable in practice (modify emits normalized
-                                // CIGARs), but replicate the old keep-previous shape
-                                // exactly: refill from the record.
-                                cigar_elements.clear();
-                                cigar_elements.extend_from_slice(&record.cigar);
-                            }
-                            query_seq = modified.query_seq;
-                            query_qual = modified.query_qual;
-                            self.scratch_cigar_str = modified.cigar;
+                _ => match crate::cigar::modify::modify_pure_sm_in_place(
+                    &mut start_pos,
+                    &mut cigar_elements,
+                    &record.sequence,
+                    &record.quality_scores,
+                    ref_slice,
+                    ref_start,
+                    self.config,
+                ) {
+                    Ok(crate::cigar::modify::PureSmOutcome::Handled) => false,
+                    Ok(crate::cigar::modify::PureSmOutcome::Fallback) => true,
+                    Err(e) => {
+                        self.scratch_elements = cigar_elements;
+                        log_modify_err(e);
+                        return Ok(());
+                    }
+                },
+            };
+
+            if run_fallback_modifier {
+                self.scratch_seq.clear();
+                self.scratch_seq.extend_from_slice(&record.sequence);
+                self.scratch_qual.clear();
+                self.scratch_qual.extend_from_slice(&record.quality_scores);
+                let query_seq_buf = std::mem::take(&mut self.scratch_seq);
+                let query_qual_buf = std::mem::take(&mut self.scratch_qual);
+                let mut cigar_str = std::mem::take(&mut self.scratch_cigar_str);
+                cigar_str.clear();
+                crate::bam::push_cigar_string(&mut cigar_str, &cigar_elements);
+                let mut modifier = crate::cigar::modify::CigarModifier::new(
+                    start_pos,
+                    cigar_str,
+                    query_seq_buf,
+                    query_qual_buf,
+                    ref_slice,
+                    ref_start,
+                    &self.reference.seed,
+                    i32::try_from(insertion_deletion_length).unwrap_or(i32::MAX),
+                    self.max_read_length,
+                    self.config,
+                );
+                match modifier.modify_cigar_preserving_buffers() {
+                    Ok(modified) => {
+                        start_pos = modified.position;
+                        if crate::cigar::parse_cigar_into(&modified.cigar, &mut cigar_elements)
+                            .is_none()
+                        {
+                            // Unreachable in practice (modify emits normalized
+                            // CIGARs), but replicate the old keep-previous shape
+                            // exactly: refill from the record.
+                            cigar_elements.clear();
+                            cigar_elements.extend_from_slice(&record.cigar);
                         }
-                        Err(e) => {
-                            let (cigar_str, query_seq, query_qual) = modifier.into_buffers();
-                            self.scratch_cigar_str = cigar_str;
-                            self.scratch_seq = query_seq;
-                            self.scratch_qual = query_qual;
-                            self.scratch_elements = cigar_elements;
-                            self.scratch_s = buf_s;
-                            self.scratch_ss = buf_ss;
-                            self.scratch_splice_key = scratch_splice_key;
-                            log_modify_err(e);
-                            return Ok(());
-                        }
+                        modified_bufs = Some((modified.query_seq, modified.query_qual));
+                        self.scratch_cigar_str = modified.cigar;
+                    }
+                    Err(e) => {
+                        let (cigar_str, query_seq_buf, query_qual_buf) = modifier.into_buffers();
+                        self.scratch_cigar_str = cigar_str;
+                        self.scratch_seq = query_seq_buf;
+                        self.scratch_qual = query_qual_buf;
+                        self.scratch_elements = cigar_elements;
+                        log_modify_err(e);
+                        return Ok(());
                     }
                 }
             }
@@ -442,12 +471,11 @@ impl<'a> CigarParser<'a> {
             {
                 if (10..=99).contains(&len_first) && len_last >= 10 {
                     // F8 churn fix: put back scratch before dropping the read.
-                    self.scratch_seq = query_seq;
-                    self.scratch_qual = query_qual;
+                    if let Some((s, q)) = modified_bufs {
+                        self.scratch_seq = s;
+                        self.scratch_qual = q;
+                    }
                     self.scratch_elements = cigar_elements;
-                    self.scratch_s = buf_s;
-                    self.scratch_ss = buf_ss;
-                    self.scratch_splice_key = scratch_splice_key;
                     return Ok(()); // Drop read
                 }
             }
@@ -455,12 +483,11 @@ impl<'a> CigarParser<'a> {
 
         let read_len_match_ins = get_match_insertion_length(&cigar_elements);
         if self.config.minmatch != 0 && read_len_match_ins < self.config.minmatch {
-            self.scratch_seq = query_seq;
-            self.scratch_qual = query_qual;
+            if let Some((s, q)) = modified_bufs {
+                self.scratch_seq = s;
+                self.scratch_qual = q;
+            }
             self.scratch_elements = cigar_elements;
-            self.scratch_s = buf_s;
-            self.scratch_ss = buf_ss;
-            self.scratch_splice_key = scratch_splice_key;
             return Ok(()); // Drop read shorter than minmatch (Java -M)
         }
         let read_len_match_ins_i32 = i32::try_from(read_len_match_ins).unwrap_or(i32::MAX);
@@ -473,12 +500,11 @@ impl<'a> CigarParser<'a> {
         // If supplementary alignment is present and flag filter is enabled, ignore it
         // Ports CigarParser.java:307-315: supplementary check runs AFTER updating maxReadLength.
         if self.config.skip_secondary_and_supplementary() && (record.flags & 0x800) != 0 {
-            self.scratch_seq = query_seq;
-            self.scratch_qual = query_qual;
+            if let Some((s, q)) = modified_bufs {
+                self.scratch_seq = s;
+                self.scratch_qual = q;
+            }
             self.scratch_elements = cigar_elements;
-            self.scratch_s = buf_s;
-            self.scratch_ss = buf_ss;
-            self.scratch_splice_key = scratch_splice_key;
             return Ok(());
         }
 
@@ -495,12 +521,11 @@ impl<'a> CigarParser<'a> {
                         if !(cut_site - start_pos_64 > filter_bp
                             && start_pos_64 + rlen3 - cut_site > filter_bp)
                         {
-                            self.scratch_seq = query_seq;
-                            self.scratch_qual = query_qual;
+                            if let Some((s, q)) = modified_bufs {
+                                self.scratch_seq = s;
+                                self.scratch_qual = q;
+                            }
                             self.scratch_elements = cigar_elements;
-                            self.scratch_s = buf_s;
-                            self.scratch_ss = buf_ss;
-                            self.scratch_splice_key = scratch_splice_key;
                             return Ok(());
                         }
                     }
@@ -508,14 +533,20 @@ impl<'a> CigarParser<'a> {
             }
         }
 
+        let (query_seq, query_qual): (&[u8], &[u8]) = match &modified_bufs {
+            Some((s, q)) => (s.as_slice(), q.as_slice()),
+            None => (record.sequence.as_slice(), record.quality_scores.as_slice()),
+        };
+
         let paired = (record.flags & 0x1) != 0;
         let mate_unmapped = (record.flags & 0x8) != 0;
         let mapping_quality = record.mapping_quality.unwrap_or(0);
+        let mapping_quality_i32 = i32::from(mapping_quality);
         if !(paired && mate_unmapped) {
             if mapping_quality > 10 && !self.config.no_sv {
                 self.prepare_sv_structures_for_analysis(
                     record,
-                    &query_qual,
+                    query_qual,
                     adjusted_nm,
                     direction,
                     (record.flags & 0x20) == 0,
@@ -534,18 +565,45 @@ impl<'a> CigarParser<'a> {
         let mut ci = 0;
 
         let mate_alignment_start = record.mate_alignment_start.map(|p| p.0 as i32).unwrap_or(0);
+        let paired_same_chr = (self.config.unique_mode_alignment_enabled
+            || self.config.unique_mode_second_in_pair_enabled)
+            && is_paired_and_same_chromosome(record);
+        let overlap_u = self.config.unique_mode_alignment_enabled && !direction && paired_same_chr;
+        let overlap_second = self.config.unique_mode_second_in_pair_enabled
+            && (record.flags & 0x80) != 0
+            && paired_same_chr;
+        let overlap_second_end_i64: Option<i64> = if !overlap_second {
+            None
+        } else if start_pos >= mate_alignment_start {
+            let ref_len = i64::from(get_reference_length(&record.cigar));
+            Some(i64::from(mate_alignment_start) + ref_len - 1)
+        } else {
+            let alignment_end = record.alignment_end.map(|p| p.0 as i32).unwrap_or(0);
+            if mate_alignment_start <= alignment_end {
+                Some(i64::MAX)
+            } else {
+                None
+            }
+        };
+        let has_overlap_gate = overlap_u || overlap_second_end_i64.is_some();
+        let skip_overlapping = |cur_start: i32| -> bool {
+            (overlap_u && cur_start >= mate_alignment_start)
+                || overlap_second_end_i64.is_some_and(|max_s| {
+                    cur_start >= mate_alignment_start && i64::from(cur_start) <= max_s
+                })
+        };
+
+        let mut buf_s = std::mem::take(&mut self.scratch_s);
+        let mut buf_ss = std::mem::take(&mut self.scratch_ss);
+        let mut scratch_splice_key = std::mem::take(&mut self.scratch_splice_key);
 
         while ci < cigar_elements.len() {
-            if self.skip_overlapping_reads(
-                record,
-                start_pos,
-                direction,
-                mate_alignment_start,
-                start,
-            ) {
+            if has_overlap_gate && skip_overlapping(start) {
                 break;
             }
-            let (cigar_element_len, raw_operator) = cigar_elements[ci];
+            let Some(&(cigar_element_len, raw_operator)) = cigar_elements.get(ci) else {
+                break;
+            };
             let operator = if (ci == 0 || ci == cigar_elements.len() - 1)
                 && raw_operator == CigarKind::Insertion
             {
@@ -567,8 +625,8 @@ impl<'a> CigarParser<'a> {
                         i64::from(start) - 1,
                         i64::from(start) + i64::from(cigar_element_len) - 1
                     );
-                    if let Some(cnt) = self.splice_count.get_mut(scratch_splice_key.as_str()) {
-                        cnt[0] += 1;
+                    if let Some([cnt]) = self.splice_count.get_mut(scratch_splice_key.as_str()) {
+                        *cnt += 1;
                     } else {
                         self.splice.insert(scratch_splice_key.clone());
                         self.splice_count.insert(scratch_splice_key.clone(), [1]);
@@ -581,8 +639,8 @@ impl<'a> CigarParser<'a> {
                 CigarKind::SoftClip => {
                     self.process_soft_clip(
                         record,
-                        &query_seq,
-                        &query_qual,
+                        query_seq,
+                        query_qual,
                         &cigar_elements,
                         direction,
                         read_len_match_ins_i32,
@@ -605,8 +663,8 @@ impl<'a> CigarParser<'a> {
                     offset = 0;
                     ci = self.process_insertion(
                         record,
-                        &query_seq,
-                        &query_qual,
+                        query_seq,
+                        query_qual,
                         &cigar_elements,
                         ci,
                         direction,
@@ -624,8 +682,8 @@ impl<'a> CigarParser<'a> {
                     offset = 0;
                     ci = self.process_deletion(
                         record,
-                        &query_seq,
-                        &query_qual,
+                        query_seq,
+                        query_qual,
                         &cigar_elements,
                         ci,
                         direction,
@@ -644,18 +702,47 @@ impl<'a> CigarParser<'a> {
                     let mut moffset = 0;
                     let mut should_break = false;
 
+                    let vext = self.config.extension_nuc.max(0) as usize;
+                    let next_indel_kind = if self.config.realign == 1
+                        && vext > 0
+                        && !cigar_elements
+                            .get(ci + 2)
+                            .is_some_and(|&(_, kind)| kind == CigarKind::HardClip)
+                    {
+                        match cigar_elements.get(ci + 1).map(|&(_, kind)| kind) {
+                            Some(CigarKind::Deletion) => Some(CigarKind::Deletion),
+                            Some(CigarKind::Insertion) => Some(CigarKind::Insertion),
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    };
+                    let indel_prox_start = if next_indel_kind.is_some() {
+                        cigar_element_len.saturating_sub(u32::try_from(vext).unwrap_or(u32::MAX))
+                    } else {
+                        u32::MAX
+                    };
+
                     let mut i = offset;
                     while i < cigar_element_len {
-                        if read_pos_inc >= query_seq.len() {
+                        let Some(&ch1) = query_seq.get(read_pos_inc) else {
                             break;
-                        }
-                        let ch1 = query_seq[read_pos_inc];
+                        };
+                        let is_trim_at_opt_t_bases = self.config.trim_bases_after != 0 && {
+                            let dist = if direction {
+                                i64::from(total_length_including_soft_clipped)
+                                    - (read_pos_inc as i64)
+                            } else {
+                                read_pos_inc as i64
+                            };
+                            dist > i64::from(self.config.trim_bases_after)
+                        };
 
                         if ch1 == b'N' || ch1 == b'n' {
                             if self.config.include_n {
                                 inc_cnt(&mut self.ref_coverage, start, 1);
                             }
-                            start += 1;
+                            start = start.saturating_add(1);
                             read_pos_inc += 1;
                             read_pos_exc += 1;
                             i += 1;
@@ -671,8 +758,9 @@ impl<'a> CigarParser<'a> {
                         // T048: MNV Growth Look-Ahead
                         // H1: single fused reference lookup (`ref_mismatch_not_n`)
                         // instead of two identical `get_base` calls per base.
-                        while (start + 1) as u32 >= self.region.start.0
-                            && (start + 1) as u32 <= self.region.end.0
+                        while start < i32::MAX
+                            && (start.saturating_add(1) as u32) >= self.region.start.0
+                            && (start.saturating_add(1) as u32) <= self.region.end.0
                             && i + 1 < cigar_element_len
                             && q >= self.config.base_qual
                             && self.ref_mismatch_not_n(
@@ -681,19 +769,20 @@ impl<'a> CigarParser<'a> {
                             )
                         {
                             let next_read_idx = read_pos_inc + 1;
-                            if next_read_idx >= query_seq.len() {
+                            let Some(&nuc) = query_seq.get(next_read_idx) else {
                                 break;
-                            }
+                            };
                             if (qual_phred(&query_qual, next_read_idx))
                                 < self.config.base_qual + 5.0
                             {
                                 break;
                             }
-                            let nuc = query_seq[next_read_idx];
                             if nuc == b'N' || nuc == b'n' {
                                 break;
                             }
-                            if let Some(next_ref_base) = self.get_ref_base((start + 1) as u32) {
+                            if let Some(next_ref_base) =
+                                self.get_ref_base(start.saturating_add(1) as u32)
+                            {
                                 if next_ref_base == b'N' || next_ref_base == b'n' {
                                     break;
                                 }
@@ -704,20 +793,23 @@ impl<'a> CigarParser<'a> {
                                     read_pos_inc += 1;
                                     read_pos_exc += 1;
                                     i += 1;
-                                    start += 1;
+                                    start = start.saturating_add(1);
                                     nmoff += 1;
                                 } else {
                                     // CigarParser.java:638 sub-segment lookahead span
                                     let mut subseq_len = 0;
-                                    let vext = self.config.extension_nuc as usize;
                                     for ssi in 1..=vext {
-                                        if i + 1 + ssi as u32 >= cigar_element_len {
+                                        if i + 1 + u32::try_from(ssi).unwrap_or(u32::MAX)
+                                            >= cigar_element_len
+                                        {
                                             break;
                                         }
                                         let lookahead_read_idx = read_pos_inc + 1 + ssi;
                                         if let Some(&q_base) = query_seq.get(lookahead_read_idx) {
                                             if let Some(lookahead_ref_base) =
-                                                self.get_ref_base((start + 1 + ssi as i32) as u32)
+                                                u32::try_from(i64::from(start) + 1 + (ssi as i64))
+                                                    .ok()
+                                                    .and_then(|p| self.get_ref_base(p))
                                             {
                                                 if q_base != lookahead_ref_base {
                                                     subseq_len = ssi + 1;
@@ -746,33 +838,39 @@ impl<'a> CigarParser<'a> {
                                     }
                                     read_pos_inc += subseq_len;
                                     read_pos_exc += subseq_len;
-                                    i += subseq_len as u32;
-                                    start += subseq_len as i32;
+                                    i += u32::try_from(subseq_len).unwrap_or(u32::MAX);
+                                    start = start.saturating_add(
+                                        i32::try_from(subseq_len).unwrap_or(i32::MAX),
+                                    );
                                 }
                             } else {
                                 break;
                             }
                         }
 
-                        buf_s.clear();
-                        push_ascii_base(&mut buf_s, ch1);
-                        if !buf_ss.is_empty() {
-                            buf_s.push('&');
-                            buf_s.push_str(&buf_ss);
-                        }
-
                         let mut ddlen = 0;
-                        if self.is_closer_than_vext_and_good_base(
-                            &query_seq,
-                            &query_qual,
-                            &cigar_elements,
-                            ci,
-                            i,
-                            buf_ss.len(),
-                            CigarKind::Deletion,
-                            start,
-                            read_pos_inc,
-                        ) {
+                        let mut grafted = false;
+                        if i >= indel_prox_start
+                            && next_indel_kind == Some(CigarKind::Deletion)
+                            && self.is_closer_than_vext_and_good_base(
+                                query_seq,
+                                query_qual,
+                                &cigar_elements,
+                                ci,
+                                i,
+                                buf_ss.len(),
+                                CigarKind::Deletion,
+                                start,
+                                read_pos_inc,
+                            )
+                        {
+                            grafted = true;
+                            buf_s.clear();
+                            push_ascii_base(&mut buf_s, ch1);
+                            if !buf_ss.is_empty() {
+                                buf_s.push('&');
+                                buf_s.push_str(&buf_ss);
+                            }
                             while i + 1 < cigar_element_len {
                                 if let (Some(&qb), Some(&qq)) = (
                                     query_seq.get(read_pos_inc + 1),
@@ -785,17 +883,19 @@ impl<'a> CigarParser<'a> {
                                 i += 1;
                                 read_pos_inc += 1;
                                 read_pos_exc += 1;
-                                start += 1;
+                                start = start.saturating_add(1);
                             }
+                            let next_del_len = cigar_elements.get(ci + 1).map_or(0, |&(l, _)| l);
                             let s_clean = buf_s.replacen('&', "", 1);
                             buf_s.clear();
-                            let _ = write!(buf_s, "-{}&{}", cigar_elements[ci + 1].0, s_clean);
+                            let _ = write!(buf_s, "-{}&{}", next_del_len, s_clean);
                             start_with_deletion = true;
-                            ddlen = i32::try_from(cigar_elements[ci + 1].0).unwrap_or(i32::MAX);
+                            ddlen = i32::try_from(next_del_len).unwrap_or(i32::MAX);
                             ci += 1;
 
                             if self.is_two_insertions_ahead(&cigar_elements, ci) {
-                                let next_next_len = cigar_elements[ci + 1].0 as usize;
+                                let next_next_len =
+                                    cigar_elements.get(ci + 1).map_or(0, |&(l, _)| l as usize);
                                 if let Some(sub) = query_seq
                                     .get(read_pos_inc + 1..read_pos_inc + 1 + next_next_len)
                                 {
@@ -814,17 +914,18 @@ impl<'a> CigarParser<'a> {
                             }
 
                             if self.is_next_after_num_matched(&cigar_elements, ci, 1) {
-                                let next_next_next_len = cigar_elements[ci + 1].0 as usize;
+                                let next_next_next_len =
+                                    cigar_elements.get(ci + 1).map_or(0, |&(l, _)| l as usize);
                                 let offset_read_pos = read_pos_inc + 1;
                                 let (toffset, offset_nm) = self.find_offset(
                                     start.saturating_add(ddlen).saturating_add(1),
                                     offset_read_pos,
                                     next_next_next_len,
-                                    &query_seq,
-                                    &query_qual,
+                                    query_seq,
+                                    query_qual,
                                 );
                                 if toffset != 0 {
-                                    moffset = toffset as i32;
+                                    moffset = i32::try_from(toffset).unwrap_or(i32::MAX);
                                     nmoff += offset_nm;
                                     buf_s.push('&');
                                     if let Some(sub) =
@@ -853,17 +954,27 @@ impl<'a> CigarParser<'a> {
                                     }
                                 }
                             }
-                        } else if self.is_closer_than_vext_and_good_base(
-                            &query_seq,
-                            &query_qual,
-                            &cigar_elements,
-                            ci,
-                            i,
-                            buf_ss.len(),
-                            CigarKind::Insertion,
-                            start,
-                            read_pos_inc,
-                        ) {
+                        } else if i >= indel_prox_start
+                            && next_indel_kind == Some(CigarKind::Insertion)
+                            && self.is_closer_than_vext_and_good_base(
+                                query_seq,
+                                query_qual,
+                                &cigar_elements,
+                                ci,
+                                i,
+                                buf_ss.len(),
+                                CigarKind::Insertion,
+                                start,
+                                read_pos_inc,
+                            )
+                        {
+                            grafted = true;
+                            buf_s.clear();
+                            push_ascii_base(&mut buf_s, ch1);
+                            if !buf_ss.is_empty() {
+                                buf_s.push('&');
+                                buf_s.push_str(&buf_ss);
+                            }
                             while i + 1 < cigar_element_len {
                                 if let (Some(&qb), Some(&qq)) = (
                                     query_seq.get(read_pos_inc + 1),
@@ -876,10 +987,11 @@ impl<'a> CigarParser<'a> {
                                 i += 1;
                                 read_pos_inc += 1;
                                 read_pos_exc += 1;
-                                start += 1;
+                                start = start.saturating_add(1);
                             }
                             let s_clean = buf_s.replacen('&', "", 1);
-                            let next_len = cigar_elements[ci + 1].0 as usize;
+                            let next_len =
+                                cigar_elements.get(ci + 1).map_or(0, |&(l, _)| l as usize);
                             let mut temp_s = s_clean;
                             if let Some(sub) =
                                 query_seq.get(read_pos_inc + 1..read_pos_inc + 1 + next_len)
@@ -904,32 +1016,61 @@ impl<'a> CigarParser<'a> {
                             ci += 1;
                             qibases -= 1;
                             qbases += 1;
+                        } else if !buf_ss.is_empty() {
+                            buf_s.clear();
+                            push_ascii_base(&mut buf_s, ch1);
+                            buf_s.push('&');
+                            buf_s.push_str(&buf_ss);
                         }
 
-                        // Add matching/mismatched Variation
-                        let pos = start - qbases as i32 + 1;
-
-                        if pos as u32 >= self.region.start.0
-                            && pos as u32 <= self.region.end.0
-                            && !buf_s.contains('N')
-                            && !buf_s.contains('n')
-                        {
-                            self.add_variation_for_matching_part(
-                                record.mapping_quality.unwrap_or(0) as i32,
-                                adjusted_nm,
-                                direction,
-                                read_len_match_ins_i32,
-                                nmoff,
-                                &buf_s,
-                                start_with_deletion,
-                                q,
-                                qbases,
-                                qibases,
-                                ddlen,
-                                pos,
-                                read_pos_exc as i32,
-                                start,
-                            );
+                        // Add matching/mismatched Variation (CigarParser.java:582-590)
+                        if !is_trim_at_opt_t_bases {
+                            let pos = start.saturating_sub(qbases).saturating_add(1);
+                            if u32::try_from(pos)
+                                .is_ok_and(|p| p >= self.region.start.0 && p <= self.region.end.0)
+                            {
+                                if !grafted && buf_ss.is_empty() {
+                                    let s = SINGLE_BASE_STR
+                                        .get(usize::from(ch1))
+                                        .copied()
+                                        .unwrap_or("N");
+                                    if s != "N" {
+                                        self.add_variation_for_matching_part(
+                                            mapping_quality_i32,
+                                            adjusted_nm,
+                                            direction,
+                                            read_len_match_ins_i32,
+                                            nmoff,
+                                            s,
+                                            false,
+                                            q,
+                                            qbases,
+                                            qibases,
+                                            ddlen,
+                                            pos,
+                                            read_pos_exc as i32,
+                                            start,
+                                        );
+                                    }
+                                } else if !buf_s.contains('N') && !buf_s.contains('n') {
+                                    self.add_variation_for_matching_part(
+                                        mapping_quality_i32,
+                                        adjusted_nm,
+                                        direction,
+                                        read_len_match_ins_i32,
+                                        nmoff,
+                                        &buf_s,
+                                        start_with_deletion,
+                                        q,
+                                        qbases,
+                                        qibases,
+                                        ddlen,
+                                        pos,
+                                        read_pos_exc as i32,
+                                        start,
+                                    );
+                                }
+                            }
                         }
 
                         if start_with_deletion {
@@ -944,13 +1085,7 @@ impl<'a> CigarParser<'a> {
                             read_pos_exc += 1;
                         }
 
-                        if self.skip_overlapping_reads(
-                            record,
-                            start_pos,
-                            direction,
-                            mate_alignment_start,
-                            start,
-                        ) {
+                        if has_overlap_gate && skip_overlapping(start) {
                             should_break = true;
                             break;
                         }
@@ -979,8 +1114,10 @@ impl<'a> CigarParser<'a> {
 
         // Reclaim per-read buffers into parser scratch for the next read.
         // Output-identical: buffers are refilled from each record before use.
-        self.scratch_seq = query_seq;
-        self.scratch_qual = query_qual;
+        if let Some((s, q)) = modified_bufs {
+            self.scratch_seq = s;
+            self.scratch_qual = q;
+        }
         self.scratch_elements = cigar_elements;
         self.scratch_s = buf_s;
         self.scratch_ss = buf_ss;
@@ -1053,7 +1190,11 @@ impl<'a> CigarParser<'a> {
             0
         };
         for qi in 1..=(qbases - shift) {
-            inc_cnt(&mut self.ref_coverage, start - qi + 1, 1);
+            inc_cnt(
+                &mut self.ref_coverage,
+                start.saturating_sub(qi).saturating_add(1),
+                1,
+            );
         }
 
         if start_with_deletion {
@@ -1091,7 +1232,9 @@ impl<'a> CigarParser<'a> {
         let Some(&(cigar_element_len, _)) = cigar_elements.get(ci) else {
             return false;
         };
-        let vext = self.config.extension_nuc as u32;
+        let Ok(vext) = u32::try_from(self.config.extension_nuc) else {
+            return false;
+        };
 
         if cigar_element_len.saturating_sub(i) > vext {
             return false;
@@ -1123,7 +1266,9 @@ impl<'a> CigarParser<'a> {
     }
 
     fn is_two_insertions_ahead(&self, cigar_elements: &[(u32, CigarKind)], ci: usize) -> bool {
-        cigar_elements.len() > ci + 1 && cigar_elements[ci + 1].1 == CigarKind::Insertion
+        cigar_elements
+            .get(ci + 1)
+            .is_some_and(|&(_, kind)| kind == CigarKind::Insertion)
     }
 
     fn is_next_after_num_matched(
@@ -1132,7 +1277,9 @@ impl<'a> CigarParser<'a> {
         ci: usize,
         number: usize,
     ) -> bool {
-        cigar_elements.len() > ci + number && cigar_elements[ci + number].1 == CigarKind::Match
+        cigar_elements
+            .get(ci.saturating_add(number))
+            .is_some_and(|&(_, kind)| kind == CigarKind::Match)
     }
 
     fn is_insertion_or_deletion_with_next_matched(
@@ -1143,18 +1290,20 @@ impl<'a> CigarParser<'a> {
         if self.config.realign != 1 {
             return false;
         }
-        let vext = self.config.extension_nuc as u32;
-        if cigar.len() <= ci + 2 {
+        let Ok(vext) = u32::try_from(self.config.extension_nuc) else {
+            return false;
+        };
+        let (Some(&(len1, kind1)), Some(&(_, kind2))) = (cigar.get(ci + 1), cigar.get(ci + 2))
+        else {
+            return false;
+        };
+        if len1 > vext || kind1 != CigarKind::Match {
             return false;
         }
-        if cigar[ci + 1].0 > vext || cigar[ci + 1].1 != CigarKind::Match {
+        if kind2 != CigarKind::Insertion && kind2 != CigarKind::Deletion {
             return false;
         }
-        if cigar[ci + 2].1 != CigarKind::Insertion && cigar[ci + 2].1 != CigarKind::Deletion {
-            return false;
-        }
-        if cigar.len() > ci + 3 {
-            let op3 = cigar[ci + 3].1;
+        if let Some(&(_, op3)) = cigar.get(ci + 3) {
             if op3 == CigarKind::Insertion || op3 == CigarKind::Deletion {
                 return false;
             }
@@ -1359,63 +1508,63 @@ impl<'a> CigarParser<'a> {
             multoffp += m_len + if !is_next_next_del { indel_len } else { 0 };
 
             if self.is_next_after_num_matched(cigar_elements, ci, 3) {
-                let mut vsn = 0;
-                let tn = *read_pos_inc + multoffp;
-                let ts = start
-                    .saturating_add(i32::try_from(multoffs).unwrap_or(i32::MAX))
-                    .saturating_add(cel_i32);
-                let vext = self.config.extension_nuc as usize;
-                let ci3_len = cigar_elements[ci + 3].0 as usize;
+                if let Ok(vext) = usize::try_from(self.config.extension_nuc) {
+                    let mut vsn = 0;
+                    let tn = *read_pos_inc + multoffp;
+                    let ts = start
+                        .saturating_add(i32::try_from(multoffs).unwrap_or(i32::MAX))
+                        .saturating_add(cel_i32);
+                    let ci3_len = cigar_elements.get(ci + 3).map_or(0, |&(l, _)| l as usize);
 
-                let mut current_offset = 0;
-                for vi in 0..ci3_len {
-                    if vsn > vext {
-                        break;
-                    }
-                    let tn_idx = tn + vi;
-                    if tn_idx >= query_seq.len() {
-                        break;
-                    }
-                    let q_char = query_seq[tn_idx];
-                    if q_char == b'N' || q_char == b'n' {
-                        break;
-                    }
-                    if (query_qual
-                        .get(tn_idx)
-                        .copied()
-                        .unwrap_or(33)
-                        .saturating_sub(33) as f64)
-                        < self.config.base_qual
-                    {
-                        break;
-                    }
-                    let ts_pos = ts.saturating_add(i32::try_from(vi).unwrap_or(i32::MAX));
-                    if let Some(ref_ch) = self.get_ref_base(ts_pos as u32) {
-                        if ref_ch == b'N' || ref_ch == b'n' {
+                    let mut current_offset = 0;
+                    for vi in 0..ci3_len {
+                        if vsn > vext {
                             break;
                         }
-                        if q_char != ref_ch {
-                            current_offset = vi + 1;
-                            nmoff += 1;
-                            vsn = 0;
-                        } else {
-                            vsn += 1;
+                        let tn_idx = tn + vi;
+                        let Some(&q_char) = query_seq.get(tn_idx) else {
+                            break;
+                        };
+                        if q_char == b'N' || q_char == b'n' {
+                            break;
+                        }
+                        if (query_qual
+                            .get(tn_idx)
+                            .copied()
+                            .unwrap_or(33)
+                            .saturating_sub(33) as f64)
+                            < self.config.base_qual
+                        {
+                            break;
+                        }
+                        let ts_pos = ts.saturating_add(i32::try_from(vi).unwrap_or(i32::MAX));
+                        if let Some(ref_ch) = self.get_ref_base(ts_pos as u32) {
+                            if ref_ch == b'N' || ref_ch == b'n' {
+                                break;
+                            }
+                            if q_char != ref_ch {
+                                current_offset = vi + 1;
+                                nmoff += 1;
+                                vsn = 0;
+                            } else {
+                                vsn += 1;
+                            }
                         }
                     }
-                }
-                if current_offset > 0 {
-                    *offset = current_offset as u32;
-                    if let Some(sub) = query_seq.get(tn..tn + current_offset) {
-                        push_ascii_slice(&mut sequence_to_append, sub);
-                    }
-                    if let Some(sub) = query_qual.get(tn..tn + current_offset) {
-                        quality_of_segment.extend_from_slice(sub);
+                    if current_offset > 0 {
+                        *offset = current_offset as u32;
+                        if let Some(sub) = query_seq.get(tn..tn + current_offset) {
+                            push_ascii_slice(&mut sequence_to_append, sub);
+                        }
+                        if let Some(sub) = query_qual.get(tn..tn + current_offset) {
+                            quality_of_segment.extend_from_slice(sub);
+                        }
                     }
                 }
             }
             next_ci += 2;
         } else if self.is_next_insertion(cigar_elements, ci) {
-            let ins_len = cigar_elements[ci + 1].0 as usize;
+            let ins_len = cigar_elements.get(ci + 1).map_or(0, |&(l, _)| l as usize);
             if let Some(sub) = query_seq.get(*read_pos_inc..*read_pos_inc + ins_len) {
                 desc_string.push('^');
                 push_ascii_slice(&mut desc_string, sub);
@@ -1426,112 +1575,114 @@ impl<'a> CigarParser<'a> {
             multoffp += ins_len;
 
             if self.is_next_after_num_matched(cigar_elements, ci, 2) {
-                let m_len = cigar_elements[ci + 2].0 as usize;
-                let mut vsn = 0;
-                let tn = *read_pos_inc + multoffp;
-                let ts = start.saturating_add(cel_i32);
-                let vext = self.config.extension_nuc as usize;
+                if let Ok(vext) = usize::try_from(self.config.extension_nuc) {
+                    let m_len = cigar_elements.get(ci + 2).map_or(0, |&(l, _)| l as usize);
+                    let mut vsn = 0;
+                    let tn = *read_pos_inc + multoffp;
+                    let ts = start.saturating_add(cel_i32);
 
-                let mut current_offset = 0;
-                for vi in 0..m_len {
-                    if vsn > vext {
-                        break;
-                    }
-                    let tn_idx = tn + vi;
-                    if tn_idx >= query_seq.len() {
-                        break;
-                    }
-                    let q_char = query_seq[tn_idx];
-                    if q_char == b'N' || q_char == b'n' {
-                        break;
-                    }
-                    if (query_qual
-                        .get(tn_idx)
-                        .copied()
-                        .unwrap_or(33)
-                        .saturating_sub(33) as f64)
-                        < self.config.base_qual
-                    {
-                        break;
-                    }
-                    let ts_pos = ts.saturating_add(i32::try_from(vi).unwrap_or(i32::MAX));
-                    if let Some(ref_ch) = self.get_ref_base(ts_pos as u32) {
-                        if ref_ch == b'N' || ref_ch == b'n' {
+                    let mut current_offset = 0;
+                    for vi in 0..m_len {
+                        if vsn > vext {
                             break;
                         }
-                        if q_char != ref_ch {
-                            current_offset = vi + 1;
-                            nmoff += 1;
-                            vsn = 0;
-                        } else {
-                            vsn += 1;
+                        let tn_idx = tn + vi;
+                        let Some(&q_char) = query_seq.get(tn_idx) else {
+                            break;
+                        };
+                        if q_char == b'N' || q_char == b'n' {
+                            break;
+                        }
+                        if (query_qual
+                            .get(tn_idx)
+                            .copied()
+                            .unwrap_or(33)
+                            .saturating_sub(33) as f64)
+                            < self.config.base_qual
+                        {
+                            break;
+                        }
+                        let ts_pos = ts.saturating_add(i32::try_from(vi).unwrap_or(i32::MAX));
+                        if let Some(ref_ch) = self.get_ref_base(ts_pos as u32) {
+                            if ref_ch == b'N' || ref_ch == b'n' {
+                                break;
+                            }
+                            if q_char != ref_ch {
+                                current_offset = vi + 1;
+                                nmoff += 1;
+                                vsn = 0;
+                            } else {
+                                vsn += 1;
+                            }
                         }
                     }
-                }
-                if current_offset > 0 {
-                    *offset = current_offset as u32;
-                    if let Some(sub) = query_seq.get(tn..tn + current_offset) {
-                        push_ascii_slice(&mut sequence_to_append, sub);
-                    }
-                    if let Some(sub) = query_qual.get(tn..tn + current_offset) {
-                        quality_of_segment.extend_from_slice(sub);
+                    if current_offset > 0 {
+                        *offset = current_offset as u32;
+                        if let Some(sub) = query_seq.get(tn..tn + current_offset) {
+                            push_ascii_slice(&mut sequence_to_append, sub);
+                        }
+                        if let Some(sub) = query_qual.get(tn..tn + current_offset) {
+                            quality_of_segment.extend_from_slice(sub);
+                        }
                     }
                 }
             }
             next_ci += 1;
         } else {
             if self.is_next_matched(cigar_elements, ci) {
-                let m_len = cigar_elements[ci + 1].0 as usize;
-                let mut vsn = 0;
-                let vext = self.config.extension_nuc as usize;
+                if let Ok(vext) = usize::try_from(self.config.extension_nuc) {
+                    let m_len = cigar_elements.get(ci + 1).map_or(0, |&(l, _)| l as usize);
+                    let mut vsn = 0;
 
-                let mut current_offset = 0;
-                for vi in 0..m_len {
-                    if vsn > vext {
-                        break;
-                    }
-                    let idx = *read_pos_inc + vi;
-                    if idx >= query_seq.len() {
-                        break;
-                    }
-                    let q_char = query_seq[idx];
-                    if q_char == b'N' || q_char == b'n' {
-                        break;
-                    }
-                    if (query_qual
-                        .get(idx)
-                        .copied()
-                        .unwrap_or(33)
-                        .saturating_sub(33) as f64)
-                        < self.config.base_qual
-                    {
-                        break;
-                    }
-                    let ts_pos = start
-                        .saturating_add(cel_i32)
-                        .saturating_add(i32::try_from(vi).unwrap_or(i32::MAX));
-                    if let Some(ref_ch) = self.get_ref_base(ts_pos as u32) {
-                        if ref_ch == b'N' || ref_ch == b'n' {
+                    let mut current_offset = 0;
+                    for vi in 0..m_len {
+                        if vsn > vext {
                             break;
                         }
-                        if q_char != ref_ch {
-                            current_offset = vi + 1;
-                            nmoff += 1;
-                            vsn = 0;
-                        } else {
-                            vsn += 1;
+                        let idx = *read_pos_inc + vi;
+                        let Some(&q_char) = query_seq.get(idx) else {
+                            break;
+                        };
+                        if q_char == b'N' || q_char == b'n' {
+                            break;
+                        }
+                        if (query_qual
+                            .get(idx)
+                            .copied()
+                            .unwrap_or(33)
+                            .saturating_sub(33) as f64)
+                            < self.config.base_qual
+                        {
+                            break;
+                        }
+                        let ts_pos = start
+                            .saturating_add(cel_i32)
+                            .saturating_add(i32::try_from(vi).unwrap_or(i32::MAX));
+                        if let Some(ref_ch) = self.get_ref_base(ts_pos as u32) {
+                            if ref_ch == b'N' || ref_ch == b'n' {
+                                break;
+                            }
+                            if q_char != ref_ch {
+                                current_offset = vi + 1;
+                                nmoff += 1;
+                                vsn = 0;
+                            } else {
+                                vsn += 1;
+                            }
                         }
                     }
-                }
-                if current_offset > 0 {
-                    *offset = current_offset as u32;
-                    if let Some(sub) = query_seq.get(*read_pos_inc..*read_pos_inc + current_offset)
-                    {
-                        push_ascii_slice(&mut sequence_to_append, sub);
-                    }
-                    if let Some(sub) = query_qual.get(*read_pos_inc..*read_pos_inc + current_offset)
-                    {
-                        quality_of_segment.extend_from_slice(sub);
+                    if current_offset > 0 {
+                        *offset = current_offset as u32;
+                        if let Some(sub) =
+                            query_seq.get(*read_pos_inc..*read_pos_inc + current_offset)
+                        {
+                            push_ascii_slice(&mut sequence_to_append, sub);
+                        }
+                        if let Some(sub) =
+                            query_qual.get(*read_pos_inc..*read_pos_inc + current_offset)
+                        {
+                            quality_of_segment.extend_from_slice(sub);
+                        }
                     }
                 }
             }
@@ -1662,15 +1813,16 @@ impl<'a> CigarParser<'a> {
             multoffs += m_len + if is_next_next_del { indel_len } else { 0 };
             multoffp += m_len + if !is_next_next_del { indel_len } else { 0 };
 
-            let ci6 = if cigar_elements.len() > ci + 3 {
-                cigar_elements[ci + 3].0 as usize
-            } else {
-                0
-            };
-            if ci6 != 0 && cigar_elements[ci + 3].1 == CigarKind::Match {
+            let ci6 = cigar_elements.get(ci + 3).map_or(0, |&(l, _)| l as usize);
+            if ci6 != 0
+                && cigar_elements
+                    .get(ci + 3)
+                    .is_some_and(|&(_, k)| k == CigarKind::Match)
+            {
                 let offset_read_pos = *read_pos_inc + cigar_element_len as usize + multoffp;
+                let multoffs_i32 = i32::try_from(multoffs).unwrap_or(i32::MAX);
                 let (found_offset, _) = self.find_offset(
-                    *start + multoffs as i32,
+                    start.saturating_add(multoffs_i32),
                     offset_read_pos,
                     ci6,
                     query_seq,
@@ -1689,66 +1841,74 @@ impl<'a> CigarParser<'a> {
                         quality_string.extend_from_slice(sub);
                     }
                     for osi in 0..(found_offset as i32) {
-                        inc_cnt(&mut self.ref_coverage, *start + multoffs as i32 + osi, 1);
+                        inc_cnt(
+                            &mut self.ref_coverage,
+                            start.saturating_add(multoffs_i32).saturating_add(osi),
+                            1,
+                        );
                     }
                 }
             }
             next_ci += 2;
         } else {
             if self.is_next_matched(cigar_elements, ci) {
-                let mut vsn = 0;
-                let m_len = cigar_elements[ci + 1].0 as usize;
-                let vext = self.config.extension_nuc as usize;
+                if let Ok(vext) = usize::try_from(self.config.extension_nuc) {
+                    let mut vsn = 0;
+                    let m_len = cigar_elements.get(ci + 1).map_or(0, |&(l, _)| l as usize);
 
-                let mut current_offset = 0;
-                for vi in 0..m_len {
-                    if vsn > vext {
-                        break;
-                    }
-                    let idx = *read_pos_inc + cigar_element_len as usize + vi;
-                    if idx >= query_seq.len() {
-                        break;
-                    }
-                    let q_char = query_seq[idx];
-                    if q_char == b'N' || q_char == b'n' {
-                        break;
-                    }
-                    if (query_qual
-                        .get(idx)
-                        .copied()
-                        .unwrap_or(33)
-                        .saturating_sub(33) as f64)
-                        < self.config.base_qual
-                    {
-                        break;
-                    }
-                    let ts_pos = *start + vi as i32;
-                    if let Some(ref_ch) = self.get_ref_base(ts_pos as u32) {
-                        if q_char != ref_ch {
-                            current_offset = vi + 1;
-                            nmoff += 1;
-                            vsn = 0;
-                        } else {
-                            vsn += 1;
+                    let mut current_offset = 0;
+                    for vi in 0..m_len {
+                        if vsn > vext {
+                            break;
+                        }
+                        let idx = *read_pos_inc + cigar_element_len as usize + vi;
+                        let Some(&q_char) = query_seq.get(idx) else {
+                            break;
+                        };
+                        if q_char == b'N' || q_char == b'n' {
+                            break;
+                        }
+                        if (query_qual
+                            .get(idx)
+                            .copied()
+                            .unwrap_or(33)
+                            .saturating_sub(33) as f64)
+                            < self.config.base_qual
+                        {
+                            break;
+                        }
+                        let ts_pos = start.saturating_add(i32::try_from(vi).unwrap_or(i32::MAX));
+                        if let Some(ref_ch) = self.get_ref_base(ts_pos as u32) {
+                            if q_char != ref_ch {
+                                current_offset = vi + 1;
+                                nmoff += 1;
+                                vsn = 0;
+                            } else {
+                                vsn += 1;
+                            }
                         }
                     }
-                }
-                if current_offset > 0 {
-                    *offset = current_offset as u32;
-                    if let Some(sub) = query_seq.get(
-                        *read_pos_inc + cigar_element_len as usize
-                            ..*read_pos_inc + cigar_element_len as usize + current_offset,
-                    ) {
-                        push_ascii_slice(&mut ss, sub);
-                    }
-                    if let Some(sub) = query_qual.get(
-                        *read_pos_inc + cigar_element_len as usize
-                            ..*read_pos_inc + cigar_element_len as usize + current_offset,
-                    ) {
-                        quality_string.extend_from_slice(sub);
-                    }
-                    for osi in 0..current_offset {
-                        inc_cnt(&mut self.ref_coverage, *start + osi as i32, 1);
+                    if current_offset > 0 {
+                        *offset = current_offset as u32;
+                        if let Some(sub) = query_seq.get(
+                            *read_pos_inc + cigar_element_len as usize
+                                ..*read_pos_inc + cigar_element_len as usize + current_offset,
+                        ) {
+                            push_ascii_slice(&mut ss, sub);
+                        }
+                        if let Some(sub) = query_qual.get(
+                            *read_pos_inc + cigar_element_len as usize
+                                ..*read_pos_inc + cigar_element_len as usize + current_offset,
+                        ) {
+                            quality_string.extend_from_slice(sub);
+                        }
+                        for osi in 0..current_offset {
+                            inc_cnt(
+                                &mut self.ref_coverage,
+                                start.saturating_add(i32::try_from(osi).unwrap_or(i32::MAX)),
+                                1,
+                            );
+                        }
                     }
                 }
             }
@@ -2396,9 +2556,14 @@ impl<'a> CigarParser<'a> {
         let mut offset = 0;
         let mut tnm = 0;
         let mut vsn = 0;
-        let vext = self.config.extension_nuc as usize;
+        let Ok(vext) = usize::try_from(self.config.extension_nuc) else {
+            return (0, 0);
+        };
 
         for vi in 0..cigar_length {
+            if vsn > vext {
+                break;
+            }
             let read_idx = read_position + vi;
             let Some(&ch) = query_sequence.get(read_idx) else {
                 break;
@@ -2410,7 +2575,8 @@ impl<'a> CigarParser<'a> {
             if q < self.config.base_qual {
                 break;
             }
-            if let Some(ref_ch) = self.get_ref_base((reference_position + vi as i32) as u32) {
+            let ref_pos = reference_position.saturating_add(i32::try_from(vi).unwrap_or(i32::MAX));
+            if let Some(ref_ch) = self.get_ref_base(ref_pos as u32) {
                 if ch != ref_ch {
                     offset = vi + 1;
                     tnm += 1;
@@ -2418,9 +2584,6 @@ impl<'a> CigarParser<'a> {
                 } else {
                     vsn += 1;
                 }
-            }
-            if vsn > vext {
-                break;
             }
         }
 
@@ -3105,48 +3268,6 @@ impl<'a> CigarParser<'a> {
                     sdref.disc += 1;
                 }
             }
-        }
-    }
-
-    fn skip_overlapping_reads(
-        &self,
-        record: &SamRecord,
-        position: i32,
-        dir: bool,
-        mate_alignment_start: i32,
-        start: i32,
-    ) -> bool {
-        if self.config.unique_mode_alignment_enabled
-            && is_paired_and_same_chromosome(record)
-            && !dir
-            && start >= mate_alignment_start
-        {
-            return true;
-        }
-        if self.config.unique_mode_second_in_pair_enabled
-            && (record.flags & 0x80) != 0
-            && is_paired_and_same_chromosome(record)
-            && self.is_reads_overlap(record, position, mate_alignment_start, start)
-        {
-            return true;
-        }
-        false
-    }
-
-    fn is_reads_overlap(
-        &self,
-        record: &SamRecord,
-        position: i32,
-        mate_alignment_start: i32,
-        start: i32,
-    ) -> bool {
-        if position >= mate_alignment_start {
-            let ref_len = i64::from(get_reference_length(&record.cigar));
-            i64::from(start) >= i64::from(mate_alignment_start)
-                && i64::from(start) <= i64::from(mate_alignment_start) + ref_len - 1
-        } else {
-            let alignment_end = record.alignment_end.map(|p| p.0 as i32).unwrap_or(0);
-            start >= mate_alignment_start && mate_alignment_start <= alignment_end
         }
     }
 }
@@ -6058,5 +6179,460 @@ mod tests {
             *hi_parser.ref_coverage.keys().max().unwrap(),
             2_000_005_000 + 1024
         );
+
+        // 3. Exhaustive 256-byte parity of SINGLE_BASE_STR against push_ascii_base + N/n filter
+        let mut sb = String::new();
+        for b in 0u8..=255u8 {
+            sb.clear();
+            push_ascii_base(&mut sb, b);
+            let mapped = SINGLE_BASE_STR.get(usize::from(b)).copied().unwrap_or("N");
+            if sb.contains('N') || sb.contains('n') {
+                assert_eq!(mapped, "N", "byte {b:#04x} must map to 'N'");
+            } else {
+                assert_eq!(
+                    mapped,
+                    sb.as_str(),
+                    "byte {b:#04x} must match push_ascii_base"
+                );
+            }
+        }
+
+        // 4. Bounded lazy pileup pre-sizing (0 B on new / svflag=true; <= 4096 cap on first read)
+        let mut wide_ref = Reference::new();
+        wide_ref
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 1,
+                sequence_end: 10_000,
+            });
+        let wide_seq: Vec<u8> = (0..10_000).map(|i| b"ACGT"[i % 4]).collect();
+        wide_ref.region_sequences.push(wide_seq.clone());
+        let wide_region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(1),
+            end: Pos1(10_000),
+            gene: "G".to_string(),
+            amplicon: None,
+        };
+
+        let mut sv_parser = CigarParser::new(&wide_ref, &wide_region, &config, true, 0, 0, 150);
+        assert_eq!(sv_parser.ref_coverage.capacity(), 0);
+        assert_eq!(sv_parser.non_insertion_variants.capacity(), 0);
+        let mapped_30m = SamRecord {
+            name: b"r30m".to_vec(),
+            flags: 0,
+            reference_name: Some("chr1".to_string()),
+            alignment_start: Some(Pos1(10)),
+            alignment_end: Some(Pos1(39)),
+            mapping_quality: Some(60),
+            cigar: vec![(30, CigarKind::Match)],
+            sequence: wide_seq[9..39].to_vec(),
+            quality_scores: vec![b'I'; 30],
+            nm: Some(0),
+            ..SamRecord::default()
+        };
+        sv_parser.parse_cigar(&mapped_30m).unwrap();
+        assert!(
+            sv_parser.ref_coverage.capacity() < 128,
+            "svflag=true must NOT pre-reserve 4096-entry ref_coverage (got {})",
+            sv_parser.ref_coverage.capacity()
+        );
+
+        let mut lazy_parser = CigarParser::new(&wide_ref, &wide_region, &config, false, 0, 0, 150);
+        assert_eq!(lazy_parser.ref_coverage.capacity(), 0);
+        assert_eq!(lazy_parser.non_insertion_variants.capacity(), 0);
+        lazy_parser.parse_cigar(&mapped_30m).unwrap();
+        assert!(
+            lazy_parser.ref_coverage.capacity() >= 4_096
+                && lazy_parser.ref_coverage.capacity() <= 8_192,
+            "ref_coverage must lazily reserve bounded 4096 span cap, got {}",
+            lazy_parser.ref_coverage.capacity()
+        );
+        // Zero-copy check on [Match] and pure S/M ([S,M], [M,S], [S,M,S]):
+        assert_eq!(lazy_parser.scratch_seq.capacity(), 0);
+        assert_eq!(lazy_parser.scratch_qual.capacity(), 0);
+        assert_eq!(lazy_parser.scratch_cigar_str.capacity(), 0);
+
+        // 5. Pure S/M in-place modifier zero-copy & exact pileup parity against fallback CigarModifier
+        let mut fallback_cfg = Config::default();
+        fallback_cfg.adaptor = vec!["ZZZZZZZZZZZZZZZZ".to_string()]; // forces PureSmOutcome::Fallback
+        let mut fast_sm_parser =
+            CigarParser::new(&wide_ref, &wide_region, &config, false, 0, 0, 150);
+        let mut full_sm_parser =
+            CigarParser::new(&wide_ref, &wide_region, &fallback_cfg, false, 0, 0, 150);
+
+        let mut sm_seq1 = wide_seq[19..49].to_vec(); // Pos1(24) with 4S26M: 2 rescue + 2 clip + SNV
+        sm_seq1[0] = b'T';
+        sm_seq1[1] = b'T';
+        sm_seq1[10] = if sm_seq1[10] == b'A' { b'C' } else { b'A' };
+        let rec_sm = SamRecord {
+            name: b"sm".to_vec(),
+            flags: 0,
+            reference_name: Some("chr1".to_string()),
+            alignment_start: Some(Pos1(24)),
+            alignment_end: Some(Pos1(49)),
+            mapping_quality: Some(60),
+            cigar: vec![(4, CigarKind::SoftClip), (26, CigarKind::Match)],
+            sequence: sm_seq1,
+            quality_scores: vec![b'I'; 30],
+            nm: Some(1),
+            ..SamRecord::default()
+        };
+
+        let mut ms_seq = wide_seq[59..89].to_vec(); // Pos1(60) with 26M4S: 2 rescue + 2 clip
+        ms_seq[28] = b'G';
+        ms_seq[29] = b'G';
+        let rec_ms = SamRecord {
+            name: b"ms".to_vec(),
+            flags: 0x10,
+            reference_name: Some("chr1".to_string()),
+            alignment_start: Some(Pos1(60)),
+            alignment_end: Some(Pos1(85)),
+            mapping_quality: Some(60),
+            cigar: vec![(26, CigarKind::Match), (4, CigarKind::SoftClip)],
+            sequence: ms_seq,
+            quality_scores: vec![b'I'; 30],
+            nm: Some(0),
+            ..SamRecord::default()
+        };
+
+        let mut sms_seq = wide_seq[99..129].to_vec(); // Pos1(104) with 4S22M4S + terminal mismatch trim
+        sms_seq[0] = b'T';
+        sms_seq[1] = b'T';
+        sms_seq[2] = b'T';
+        sms_seq[3] = b'T';
+        sms_seq[4] = if sms_seq[4] == b'A' { b'C' } else { b'A' }; // 5' terminal mismatch -> clipped
+        sms_seq[25] = if sms_seq[25] == b'A' { b'C' } else { b'A' }; // 3' terminal mismatch -> clipped
+        sms_seq[26] = b'G';
+        sms_seq[27] = b'G';
+        sms_seq[28] = b'G';
+        sms_seq[29] = b'G';
+        let rec_sms = SamRecord {
+            name: b"sms".to_vec(),
+            flags: 0,
+            reference_name: Some("chr1".to_string()),
+            alignment_start: Some(Pos1(104)),
+            alignment_end: Some(Pos1(125)),
+            mapping_quality: Some(60),
+            cigar: vec![
+                (4, CigarKind::SoftClip),
+                (22, CigarKind::Match),
+                (4, CigarKind::SoftClip),
+            ],
+            sequence: sms_seq,
+            quality_scores: vec![b'I'; 30],
+            nm: Some(2),
+            ..SamRecord::default()
+        };
+
+        for r in [&rec_sm, &rec_ms, &rec_sms] {
+            fast_sm_parser.parse_cigar(r).unwrap();
+            full_sm_parser.parse_cigar(r).unwrap();
+        }
+        assert_eq!(
+            fast_sm_parser.scratch_seq.capacity(),
+            0,
+            "pure S/M zero-copy path must never allocate scratch_seq"
+        );
+        assert_eq!(
+            fast_sm_parser.scratch_qual.capacity(),
+            0,
+            "pure S/M zero-copy path must never allocate scratch_qual"
+        );
+        assert!(full_sm_parser.scratch_seq.capacity() > 0);
+        assert_eq!(fast_sm_parser.ref_coverage, full_sm_parser.ref_coverage);
+        let fast_vars: Vec<_> = fast_sm_parser
+            .non_insertion_variants
+            .iter()
+            .map(|(&p, vm)| {
+                (
+                    p,
+                    vm.map
+                        .iter()
+                        .map(|(k, v)| (k.to_owned(), v.cnt, v.hicnt, v.locnt, v.pmean, v.qmean))
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect();
+        let full_vars: Vec<_> = full_sm_parser
+            .non_insertion_variants
+            .iter()
+            .map(|(&p, vm)| {
+                (
+                    p,
+                    vm.map
+                        .iter()
+                        .map(|(k, v)| (k.to_owned(), v.cnt, v.hicnt, v.locnt, v.pmean, v.qmean))
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect();
+        assert_eq!(fast_vars, full_vars);
+
+        // 6. Exact -T (trim_bases_after = 5) forward + reverse trimming with soft-clips
+        let mut trim_ref = Reference::new();
+        let trim_bases = b"ACGTACGTACGTACGTACGTACGTACGTAC".to_vec(); // 30 bp (Pos1(1..=30))
+        trim_ref
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 1,
+                sequence_end: 30,
+            });
+        trim_ref.region_sequences.push(trim_bases.clone());
+        let trim_region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(1),
+            end: Pos1(30),
+            gene: "G".to_string(),
+            amplicon: None,
+        };
+        let mut trim_cfg = Config::default();
+        trim_cfg.trim_bases_after = 5;
+        trim_cfg.minmatch = 0;
+        trim_cfg.realign = 0; // test CigarParser's exact read_pos_inc offsets without modifier clip changes
+
+        // 6a. Forward strand (!direction) with 2S10M at Pos1(5) (total_len = 12):
+        // read_pos_inc across 10M runs 2..=11 -> dist = read_pos_inc <= 5 keeps read_pos_inc 2,3,4,5 (Pos1 5,6,7,8)
+        // and trims read_pos_inc 6..=11 (Pos1 9..=14).
+        let mut fwd_parser2 =
+            CigarParser::new(&trim_ref, &trim_region, &trim_cfg, false, 0, 0, 150);
+        let mut fwd_seq2 = vec![b'C', b'A']; // ref Pos1(3)='G', Pos1(4)='T' -> 0 walkback!
+        fwd_seq2.extend_from_slice(&trim_bases[4..14]);
+        fwd_seq2[5] = if fwd_seq2[5] == b'A' { b'C' } else { b'A' }; // read_pos_inc=5 (Pos1 8, kept)
+        fwd_seq2[10] = if fwd_seq2[10] == b'A' { b'C' } else { b'A' }; // read_pos_inc=10 (Pos1 13, trimmed)
+        let fwd_rec2 = SamRecord {
+            name: b"fwd_t5".to_vec(),
+            flags: 0,
+            reference_name: Some("chr1".to_string()),
+            alignment_start: Some(Pos1(5)),
+            alignment_end: Some(Pos1(14)),
+            mapping_quality: Some(60),
+            cigar: vec![(2, CigarKind::SoftClip), (10, CigarKind::Match)],
+            sequence: fwd_seq2,
+            quality_scores: vec![b'I'; 12],
+            nm: Some(2),
+            ..SamRecord::default()
+        };
+        fwd_parser2.parse_cigar(&fwd_rec2).unwrap();
+        let mut fwd_cov2: Vec<i32> = fwd_parser2.ref_coverage.keys().copied().collect();
+        fwd_cov2.sort_unstable();
+        assert_eq!(
+            fwd_cov2,
+            vec![5, 6, 7, 8],
+            "forward -T 5 with 2S10M must keep only read_pos_inc 2..=5 (Pos1 5..=8)"
+        );
+        assert!(fwd_parser2
+            .non_insertion_variants
+            .get(&8)
+            .is_some_and(|vm| vm.map.len() == 1));
+        assert!(fwd_parser2.non_insertion_variants.get(&9).is_none());
+        assert!(fwd_parser2.non_insertion_variants.get(&13).is_none());
+
+        // Also verify CigarParser.java:376 pre-MNV evaluation: an MNV starting at read_pos_inc=5 (<= 5)
+        // extends into read_pos_inc=6 (Pos1 8..=9) because isTrimAtOptTBases is captured BEFORE MNV lookahead.
+        let mut fwd_mnv_parser =
+            CigarParser::new(&trim_ref, &trim_region, &trim_cfg, false, 0, 0, 150);
+        let mut fwd_mnv_seq = vec![b'C', b'A'];
+        fwd_mnv_seq.extend_from_slice(&trim_bases[4..14]);
+        fwd_mnv_seq[5] = if fwd_mnv_seq[5] == b'A' { b'C' } else { b'A' };
+        fwd_mnv_seq[6] = if fwd_mnv_seq[6] == b'A' { b'C' } else { b'A' };
+        let fwd_mnv_rec = SamRecord {
+            sequence: fwd_mnv_seq,
+            ..fwd_rec2
+        };
+        fwd_mnv_parser.parse_cigar(&fwd_mnv_rec).unwrap();
+        let mut fwd_mnv_cov: Vec<i32> = fwd_mnv_parser.ref_coverage.keys().copied().collect();
+        fwd_mnv_cov.sort_unstable();
+        assert_eq!(fwd_mnv_cov, vec![5, 6, 7, 8, 9]);
+
+        // 6b. Reverse strand (direction) with 10M2S at Pos1(5) (total_len = 12):
+        // dist = 12 - read_pos_inc <= 5 keeps read_pos_inc 7,8,9 (Pos1 12,13,14) and trims 0..=6 (Pos1 5..=11).
+        let mut rev_parser = CigarParser::new(&trim_ref, &trim_region, &trim_cfg, false, 0, 0, 150);
+        let mut rev_seq = trim_bases[4..14].to_vec(); // Pos1(5..=14)
+        rev_seq.extend_from_slice(b"AA"); // 2S at Pos1(15)='G', Pos1(16)='T' -> 0 walk-forward!
+        rev_seq[2] = if rev_seq[2] == b'A' { b'C' } else { b'A' }; // Pos1(7), dist=10 > 5 -> trimmed
+        rev_seq[7] = if rev_seq[7] == b'A' { b'C' } else { b'A' }; // Pos1(12), dist=5 <= 5 -> kept
+        let rev_rec = SamRecord {
+            name: b"rev_t5".to_vec(),
+            flags: 0x10,
+            reference_name: Some("chr1".to_string()),
+            alignment_start: Some(Pos1(5)),
+            alignment_end: Some(Pos1(14)),
+            mapping_quality: Some(60),
+            cigar: vec![(10, CigarKind::Match), (2, CigarKind::SoftClip)],
+            sequence: rev_seq,
+            quality_scores: vec![b'I'; 12],
+            nm: Some(2),
+            ..SamRecord::default()
+        };
+        rev_parser.parse_cigar(&rev_rec).unwrap();
+        let mut rev_cov: Vec<i32> = rev_parser.ref_coverage.keys().copied().collect();
+        rev_cov.sort_unstable();
+        assert_eq!(
+            rev_cov,
+            vec![12, 13, 14],
+            "reverse -T 5 with 10M2S must keep only read_pos_inc 7..=9 (Pos1 12..=14)"
+        );
+        assert!(rev_parser.non_insertion_variants.get(&7).is_none());
+        assert!(rev_parser.non_insertion_variants.get(&11).is_none());
+        assert!(rev_parser.non_insertion_variants.get(&12).is_some());
+
+        // 6c. Extreme trim_bases_after = i32::MIN + negative extension_nuc = -1 + contig end i32::MAX safety
+        let mut min_t_cfg = Config::default();
+        min_t_cfg.trim_bases_after = i32::MIN;
+        min_t_cfg.minmatch = 0;
+        let mut min_t_parser =
+            CigarParser::new(&trim_ref, &trim_region, &min_t_cfg, false, 0, 0, 150);
+        min_t_parser.parse_cigar(&rev_rec).unwrap();
+        assert!(min_t_parser.ref_coverage.is_empty());
+
+        let mut end_ref = Reference::new();
+        end_ref.loaded_regions.push(crate::reference::LoadedRegion {
+            chr: "chr1".to_string(),
+            sequence_start: 2_147_483_640,
+            sequence_end: 2_147_483_647,
+        });
+        end_ref.region_sequences.push(b"ACGTACGT".to_vec());
+        let end_region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(2_147_483_640),
+            end: Pos1(2_147_483_647),
+            gene: "G".to_string(),
+            amplicon: None,
+        };
+        let mut neg_vext_cfg = Config::default();
+        neg_vext_cfg.extension_nuc = -1;
+        neg_vext_cfg.minmatch = 0;
+        neg_vext_cfg.realign = 0;
+        let mut end_parser =
+            CigarParser::new(&end_ref, &end_region, &neg_vext_cfg, false, 0, 0, 150);
+        let end_rec = SamRecord {
+            name: b"contig_end_max".to_vec(),
+            flags: 0,
+            reference_name: Some("chr1".to_string()),
+            alignment_start: Some(Pos1(2_147_483_644)),
+            alignment_end: Some(Pos1(2_147_483_647)),
+            mapping_quality: Some(60),
+            cigar: vec![
+                (2, CigarKind::Match),
+                (1, CigarKind::Insertion),
+                (2, CigarKind::Match),
+            ],
+            sequence: b"TTTTT".to_vec(),
+            quality_scores: vec![b'I'; 5],
+            nm: Some(3),
+            ..SamRecord::default()
+        };
+        end_parser.parse_cigar(&end_rec).unwrap();
+        assert!(end_parser.ref_coverage.contains_key(&2_147_483_647));
+
+        let mut neg_vext_realign_cfg = Config::default();
+        neg_vext_realign_cfg.extension_nuc = -1;
+        neg_vext_realign_cfg.minmatch = 0;
+        let mut end_realign_parser = CigarParser::new(
+            &end_ref,
+            &end_region,
+            &neg_vext_realign_cfg,
+            false,
+            0,
+            0,
+            150,
+        );
+        end_realign_parser.parse_cigar(&end_rec).unwrap();
+
+        // CigarParser.java:700, 748, 786, 962, 1495: extension_nuc < 0 (-X -1) must execute
+        // 0 iterations of post-indel lookahead (`offset = 0`), emitting plain `+T` / `-1`
+        // without `&` grafting and retaining the leading SNV in the trailing 10M.
+        let mut neg_vext_ins_parser = CigarParser::new(
+            &trim_ref,
+            &trim_region,
+            &neg_vext_realign_cfg,
+            false,
+            0,
+            0,
+            150,
+        );
+        let mut ins_10m_seq = trim_bases[0..10].to_vec(); // Pos1(1..=10) = "ACGTACGTAC"
+        ins_10m_seq.push(b'T'); // 1I between 'C' (Pos1 10) and 'G' (Pos1 11) -> no left-shift
+        ins_10m_seq.push(b'A'); // leading mismatch in trailing 10M at Pos1(11) (ref 'G')
+        ins_10m_seq.extend_from_slice(&trim_bases[11..20]); // Pos1(12..=20) exact match
+        let ins_10m_rec = SamRecord {
+            name: b"neg_vext_10m1i10m".to_vec(),
+            flags: 0,
+            reference_name: Some("chr1".to_string()),
+            alignment_start: Some(Pos1(1)),
+            alignment_end: Some(Pos1(20)),
+            mapping_quality: Some(60),
+            cigar: vec![
+                (10, CigarKind::Match),
+                (1, CigarKind::Insertion),
+                (10, CigarKind::Match),
+            ],
+            sequence: ins_10m_seq,
+            quality_scores: vec![b'I'; 21],
+            nm: Some(2),
+            ..SamRecord::default()
+        };
+        neg_vext_ins_parser.parse_cigar(&ins_10m_rec).unwrap();
+        let ins_keys: Vec<&str> = neg_vext_ins_parser
+            .insertion_variants
+            .get(&10)
+            .map(|vm| vm.map.keys().collect())
+            .unwrap_or_default();
+        assert_eq!(ins_keys, vec!["+T"]);
+        assert!(ins_keys.iter().all(|k| !k.contains('&')));
+        let trailing_ins_snv: Vec<&str> = neg_vext_ins_parser
+            .non_insertion_variants
+            .get(&11)
+            .map(|vm| vm.map.keys().collect())
+            .unwrap_or_default();
+        assert_eq!(trailing_ins_snv, vec!["A"]);
+
+        let mut neg_vext_del_parser = CigarParser::new(
+            &trim_ref,
+            &trim_region,
+            &neg_vext_realign_cfg,
+            false,
+            0,
+            0,
+            150,
+        );
+        let mut del_10m_seq = trim_bases[0..10].to_vec(); // Pos1(1..=10) = "ACGTACGTAC"
+                                                          // 1D deletes Pos1(11) ('G')
+        del_10m_seq.push(b'A'); // leading mismatch in trailing 10M at Pos1(12) (ref 'T')
+        del_10m_seq.extend_from_slice(&trim_bases[12..21]); // Pos1(13..=21) exact match
+        let del_10m_rec = SamRecord {
+            name: b"neg_vext_10m1d10m".to_vec(),
+            flags: 0,
+            reference_name: Some("chr1".to_string()),
+            alignment_start: Some(Pos1(1)),
+            alignment_end: Some(Pos1(21)),
+            mapping_quality: Some(60),
+            cigar: vec![
+                (10, CigarKind::Match),
+                (1, CigarKind::Deletion),
+                (10, CigarKind::Match),
+            ],
+            sequence: del_10m_seq,
+            quality_scores: vec![b'I'; 20],
+            nm: Some(2),
+            ..SamRecord::default()
+        };
+        neg_vext_del_parser.parse_cigar(&del_10m_rec).unwrap();
+        let del_keys: Vec<&str> = neg_vext_del_parser
+            .non_insertion_variants
+            .get(&11)
+            .map(|vm| vm.map.keys().collect())
+            .unwrap_or_default();
+        assert_eq!(del_keys, vec!["-1"]);
+        assert!(del_keys.iter().all(|k| !k.contains('&')));
+        let trailing_del_snv: Vec<&str> = neg_vext_del_parser
+            .non_insertion_variants
+            .get(&12)
+            .map(|vm| vm.map.keys().collect())
+            .unwrap_or_default();
+        assert_eq!(trailing_del_snv, vec!["A"]);
     }
 }

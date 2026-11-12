@@ -2557,6 +2557,43 @@ mod tests {
             vcf_fisher.contains(";SN=2.;"),
             "expected ;SN=2.; with --fisher, got: {vcf_fisher}"
         );
+
+        // omit_end_tag (-E / --no-end, ports var2vcf_valid.pl -E): omits ;END= uniformly on
+        // single-sample SNVs and <DEL> SVs while keeping ;SVTYPE=DEL;SVLEN=... on SVs.
+        let mut with_end_cfg = Config::default();
+        with_end_cfg.omit_end_tag = false;
+        let mut no_end_cfg = Config::default();
+        no_end_cfg.omit_end_tag = true;
+        let snv_var = amplicon_passing_variant();
+        let snv_with_end =
+            format_vcf_record(&snv_var, &region, &with_end_cfg, &[], 1.0, "1.0", None);
+        let snv_no_end = format_vcf_record(&snv_var, &region, &no_end_cfg, &[], 1.0, "1.0", None);
+        assert!(
+            snv_with_end.contains(";END=100;"),
+            "expected ;END=100; when omit_end_tag=false, got: {snv_with_end}"
+        );
+        assert!(
+            !snv_no_end.contains(";END="),
+            "expected ;END= omitted when omit_end_tag=true, got: {snv_no_end}"
+        );
+
+        let mut del_sv = amplicon_passing_variant();
+        del_sv.var_allele = "<DEL>".to_string();
+        del_sv.var_type = "Deletion".to_string();
+        del_sv.start_pos = 100;
+        del_sv.end_pos = 1500;
+        del_sv.sv = "5-2-1".to_string();
+        let sv_with_end = format_vcf_record(&del_sv, &region, &with_end_cfg, &[], 1.0, "1.0", None);
+        let sv_no_end = format_vcf_record(&del_sv, &region, &no_end_cfg, &[], 1.0, "1.0", None);
+        assert!(
+            sv_with_end.contains(";END=1500;")
+                && sv_with_end.contains(";SVTYPE=DEL;SVLEN=1400;"),
+            "expected ;END=1500; and ;SVTYPE=DEL;SVLEN=1400; when omit_end_tag=false, got: {sv_with_end}"
+        );
+        assert!(
+            !sv_no_end.contains(";END=") && sv_no_end.contains(";SVTYPE=DEL;SVLEN=1400;"),
+            "expected ;END= omitted while keeping ;SVTYPE=DEL;SVLEN=1400; when omit_end_tag=true, got: {sv_no_end}"
+        );
     }
 
     #[test]

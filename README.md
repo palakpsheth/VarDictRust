@@ -97,6 +97,8 @@ tar -xf vardictrust-x86_64-unknown-linux-musl.tar.xz && sudo mv vardictrust /usr
 
 ### 2. Install via Cargo
 
+Requires a Rust stable toolchain (`rustc >= 1.91.0`):
+
 ```bash
 # Install from crates.io
 cargo install vardictrust
@@ -340,7 +342,7 @@ Flag parity with VarDictJava v1.8.3 is defined against [`CmdParser.java`](https:
 
 *Evidence Status Vocabulary:*
 - `corpus` — Verified against integration corpus test cases or [Tier-2](docs/testing/test-matrix-and-ci-audit.md#tier-2) oracle sweeps.
-- `unexercised` — Implemented to Java source specification without dedicated corpus fixtures (`0` flags).
+- `unexercised` — Implemented to Java source specification without dedicated corpus fixtures (`2` flags; verified by unit and E2E tests).
 - `no-output` — Performance or concurrency flag; does not alter output bytes.
 - `parity-exempt` — Accepted for CLI compatibility matching upstream semantics.
 
@@ -351,13 +353,16 @@ Flag parity with VarDictJava v1.8.3 is defined against [`CmdParser.java`](https:
 | `-G` | `--reference` | Reference FASTA file path (`.fai` index required) | required | `corpus` |
 | `-b` | `--bam` | Indexed BAM/CRAM; somatic: `"tumor.bam\|normal.bam"` | required | `corpus` |
 | `-N` | `--name` | Sample name (somatic: `"TUMOR\|NORMAL"`) | derived from BAM | `corpus` |
+| `-n` | — | Regular expression (`REGEXP`) to extract sample name from BAM filename | — | `unexercised` |
 | `-R` | `--region` | Region `chr:start-end[:gene]` instead of BED | — | `corpus` |
 | positional | — | BED file (used when `-R` absent) | — | `corpus` |
 | `-h` | `--header` | Print `.var` column header before results (not help; use `-H`/`-?`/`--help`) | off | `corpus` |
 | `-H`, `-?` | `--help` | Print CLI help message and exit (also accepts `--?`) | — | `parity-exempt` |
 | — | `--version` | Print version, upstream provenance, and AI disclosure metadata | — | `parity-exempt` |
-| — | `--output` | Write output (`.vcf`, `.var`, or `-i` splice counts) directly to file; `.gz`/`.bgz` suffixes use multithreaded BGZF (`File::sync_all` + input-collision guard) | `stdout` | `parity-exempt` |
-| — | `--tbi`, `--index` | Write a pure-Rust Tabix (`.tbi`) index alongside a BGZF-compressed `--output` `.vcf.gz`/`.vcf.bgz` file (`noodles::tabix`) | off | `parity-exempt` |
+| — | `--output` | Write output (`.vcf`, `.var`, or `-i` splice counts) directly to file; `.gz`/`.bgz` suffixes use multithreaded BGZF (`StagedFileTarget` + `File::sync_all` + input-collision guard) | `stdout` | `parity-exempt` |
+| — | `--tbi`, `--index` | Write a pure-Rust Tabix (`.tbi`) index alongside a BGZF-compressed `--output` `.vcf.gz`/`.vcf.bgz` file (`noodles::tabix`; contigs `<= 512 Mbp`, hints `--csi` above `512 Mbp`) | off | `parity-exempt` |
+| — | `--csi` | Write a pure-Rust CSI (`.csi`) index alongside a BGZF-compressed `--output` `.vcf.gz`/`.vcf.bgz` file (`noodles::csi`; supports contigs `> 512 Mbp`) | off | `parity-exempt` |
+| — | `--no-end` | Omit `END` tag in VCF `INFO` (ports `var2vcf_valid.pl -E`) | off | `parity-exempt` |
 | — | `--stats-json` | Write run telemetry JSON (`mode`, `threads`, `regions_count`, `tiles_count`, `elapsed_ms`, `peak_rss_kb`, `exceptions_caught`) to `<PATH>` | — | `no-output` |
 | — | `--parity` | Explicitly lock 100% VarDictJava v1.8.3 byte-for-byte parity mode (default in `v1.x`) | on | `parity-exempt` |
 | — | `--compat` | Pin target compatibility contract (`vardictjava-1.8.3` or `1.8.3` in `v1.0.x`) | `vardictjava-1.8.3` | `parity-exempt` |
@@ -405,6 +410,8 @@ Flag parity with VarDictJava v1.8.3 is defined against [`CmdParser.java`](https:
 | `-t` | `--dedup` | Remove duplicated reads (one pair per start position) | off | `corpus` |
 | `-u` | — | Unique mode: count overlapping mates once (forward read) | off | `corpus` |
 | `-UN` | `--UN` | Unique mode: count overlapping mates once (first read in pair) | off | `corpus` |
+| `-T` | `--trim` | Trim bases after `INT` bases in each read (`0` = disabled) | `0` | `unexercised` |
+| — | `--VS` | SAM/BAM validation stringency (`SILENT` or `LENIENT`; `STRICT` unsupported) | `LENIENT` | `parity-exempt` |
 | — | `--adaptor` | Adaptor sequence(s), comma-separated, excluded from realignment | — | `corpus` |
 
 ### 4. Modality Flags: Somatic & Amplicon
@@ -437,12 +444,12 @@ Flag parity with VarDictJava v1.8.3 is defined against [`CmdParser.java`](https:
 
 | Short | Long | Description | Default | Status |
 | :--- | :--- | :--- | :--- | :--- |
-| — | `--threads` | Thread count (`-th`/`--th`/`-th<N>` aliases; bare `-th` = all cores) | all cores | `no-output` |
+| — | `--threads` | Thread count (`-th`/`--th`/`-th<N>` aliases; bare `-th` = all cores; falls back to `RAYON_NUM_THREADS` when `-th` is omitted) | `RAYON_NUM_THREADS` or all cores | `no-output` |
 | — | `--tile-size` | Region tile size in bp (bounded-memory WGS) | auto (`<= 1 Mbp` untiled; `> 1 Mbp` `100 kbp` tiles; max `500 Mbp`) | `no-output` |
 
-*Commons-CLI Single-Dash Compatibility:* Upstream Java single-dash long options (`-fisher`, `-adaptor`, `-chimeric`, `-deldupvar`, `-nosv`, `-splice`, `-header`, `-dedup`, `-debug`, `-verbose`, `-amplicon`, `-DP`, `-default-printer`, `-defaultPrinter`, `-mfreq`, `-nmfreq`, `-insert-size`, `-insert-std`, `-ref-extension`, `-crispr`) are normalized transparently alongside standard `--` GNU long flags.
+*Commons-CLI Single-Dash Compatibility:* Upstream Java single-dash long options (`-fisher`, `-adaptor`, `-chimeric`, `-deldupvar`, `-nosv`, `-splice`, `-header`, `-dedup`, `-debug`, `-verbose`, `-amplicon`, `-DP`, `-default-printer`, `-defaultPrinter`, `-mfreq`, `-nmfreq`, `-insert-size`, `-insert-std`, `-ref-extension`, `-crispr`, `-trim`, `-VS`) and boolean-prefix short-option clusters (`-pz`, `-pz0`, `-uk`, `-ua`, `-pR`) are normalized transparently alongside standard `--` GNU long flags.
 
-*Loud-Error Legacy Flags (`AGENTS.md §12`):* Passing any of the 5 unimplemented VarDictJava options (`-n`, `-C`, `-T` / `-trim` / `--trim`, `-VS` / `--VS`, `-Z` / `-downsample` / `--downsample`) fails fast with `VardictError::Unsupported("<flag> not implemented in v1.0; use VarDictJava")` rather than ignoring the flag.
+*Loud-Error Legacy Flags (`AGENTS.md §12`):* Passing either of the 2 remaining unimplemented VarDictJava options (`-C`, `-Z` / `-downsample` / `--downsample`) or `-VS STRICT` fails fast with `VardictError::Unsupported("<flag> not implemented in v1.0; use VarDictJava")` rather than ignoring the flag.
 
 *Reproducible Profiling Hooks:* When compiled with opt-in Cargo features (`profile-cpu`, `profile-heap`, or `profile-dhat`), `vardictrust` honors `VARDICT_PROFILE_CPU`, `VARDICT_PROFILE_HEAP`, and `VARDICT_PROFILE_DHAT` output directory environment variables (driven via [`harness/profile.sh`](harness/README.md)).
 
