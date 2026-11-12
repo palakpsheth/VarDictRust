@@ -1528,63 +1528,63 @@ impl<'a> CigarParser<'a> {
             multoffp += m_len + if !is_next_next_del { indel_len } else { 0 };
 
             if self.is_next_after_num_matched(cigar_elements, ci, 3) {
-                let mut vsn = 0;
-                let tn = *read_pos_inc + multoffp;
-                let ts = start
-                    .saturating_add(i32::try_from(multoffs).unwrap_or(i32::MAX))
-                    .saturating_add(cel_i32);
-                let vext = self.config.extension_nuc.max(0) as usize;
-                let ci3_len = cigar_elements.get(ci + 3).map_or(0, |&(l, _)| l as usize);
+                if let Ok(vext) = usize::try_from(self.config.extension_nuc) {
+                    let mut vsn = 0;
+                    let tn = *read_pos_inc + multoffp;
+                    let ts = start
+                        .saturating_add(i32::try_from(multoffs).unwrap_or(i32::MAX))
+                        .saturating_add(cel_i32);
+                    let ci3_len = cigar_elements.get(ci + 3).map_or(0, |&(l, _)| l as usize);
 
-                let mut current_offset = 0;
-                for vi in 0..ci3_len {
-                    if vsn > vext {
-                        break;
-                    }
-                    let tn_idx = tn + vi;
-                    if tn_idx >= query_seq.len() {
-                        break;
-                    }
-                    let q_char = query_seq[tn_idx];
-                    if q_char == b'N' || q_char == b'n' {
-                        break;
-                    }
-                    if (query_qual
-                        .get(tn_idx)
-                        .copied()
-                        .unwrap_or(33)
-                        .saturating_sub(33) as f64)
-                        < self.config.base_qual
-                    {
-                        break;
-                    }
-                    let ts_pos = ts.saturating_add(i32::try_from(vi).unwrap_or(i32::MAX));
-                    if let Some(ref_ch) = self.get_ref_base(ts_pos as u32) {
-                        if ref_ch == b'N' || ref_ch == b'n' {
+                    let mut current_offset = 0;
+                    for vi in 0..ci3_len {
+                        if vsn > vext {
                             break;
                         }
-                        if q_char != ref_ch {
-                            current_offset = vi + 1;
-                            nmoff += 1;
-                            vsn = 0;
-                        } else {
-                            vsn += 1;
+                        let tn_idx = tn + vi;
+                        let Some(&q_char) = query_seq.get(tn_idx) else {
+                            break;
+                        };
+                        if q_char == b'N' || q_char == b'n' {
+                            break;
+                        }
+                        if (query_qual
+                            .get(tn_idx)
+                            .copied()
+                            .unwrap_or(33)
+                            .saturating_sub(33) as f64)
+                            < self.config.base_qual
+                        {
+                            break;
+                        }
+                        let ts_pos = ts.saturating_add(i32::try_from(vi).unwrap_or(i32::MAX));
+                        if let Some(ref_ch) = self.get_ref_base(ts_pos as u32) {
+                            if ref_ch == b'N' || ref_ch == b'n' {
+                                break;
+                            }
+                            if q_char != ref_ch {
+                                current_offset = vi + 1;
+                                nmoff += 1;
+                                vsn = 0;
+                            } else {
+                                vsn += 1;
+                            }
                         }
                     }
-                }
-                if current_offset > 0 {
-                    *offset = current_offset as u32;
-                    if let Some(sub) = query_seq.get(tn..tn + current_offset) {
-                        push_ascii_slice(&mut sequence_to_append, sub);
-                    }
-                    if let Some(sub) = query_qual.get(tn..tn + current_offset) {
-                        quality_of_segment.extend_from_slice(sub);
+                    if current_offset > 0 {
+                        *offset = current_offset as u32;
+                        if let Some(sub) = query_seq.get(tn..tn + current_offset) {
+                            push_ascii_slice(&mut sequence_to_append, sub);
+                        }
+                        if let Some(sub) = query_qual.get(tn..tn + current_offset) {
+                            quality_of_segment.extend_from_slice(sub);
+                        }
                     }
                 }
             }
             next_ci += 2;
         } else if self.is_next_insertion(cigar_elements, ci) {
-            let ins_len = cigar_elements[ci + 1].0 as usize;
+            let ins_len = cigar_elements.get(ci + 1).map_or(0, |&(l, _)| l as usize);
             if let Some(sub) = query_seq.get(*read_pos_inc..*read_pos_inc + ins_len) {
                 desc_string.push('^');
                 push_ascii_slice(&mut desc_string, sub);
@@ -1595,112 +1595,114 @@ impl<'a> CigarParser<'a> {
             multoffp += ins_len;
 
             if self.is_next_after_num_matched(cigar_elements, ci, 2) {
-                let m_len = cigar_elements[ci + 2].0 as usize;
-                let mut vsn = 0;
-                let tn = *read_pos_inc + multoffp;
-                let ts = start.saturating_add(cel_i32);
-                let vext = self.config.extension_nuc.max(0) as usize;
+                if let Ok(vext) = usize::try_from(self.config.extension_nuc) {
+                    let m_len = cigar_elements.get(ci + 2).map_or(0, |&(l, _)| l as usize);
+                    let mut vsn = 0;
+                    let tn = *read_pos_inc + multoffp;
+                    let ts = start.saturating_add(cel_i32);
 
-                let mut current_offset = 0;
-                for vi in 0..m_len {
-                    if vsn > vext {
-                        break;
-                    }
-                    let tn_idx = tn + vi;
-                    if tn_idx >= query_seq.len() {
-                        break;
-                    }
-                    let q_char = query_seq[tn_idx];
-                    if q_char == b'N' || q_char == b'n' {
-                        break;
-                    }
-                    if (query_qual
-                        .get(tn_idx)
-                        .copied()
-                        .unwrap_or(33)
-                        .saturating_sub(33) as f64)
-                        < self.config.base_qual
-                    {
-                        break;
-                    }
-                    let ts_pos = ts.saturating_add(i32::try_from(vi).unwrap_or(i32::MAX));
-                    if let Some(ref_ch) = self.get_ref_base(ts_pos as u32) {
-                        if ref_ch == b'N' || ref_ch == b'n' {
+                    let mut current_offset = 0;
+                    for vi in 0..m_len {
+                        if vsn > vext {
                             break;
                         }
-                        if q_char != ref_ch {
-                            current_offset = vi + 1;
-                            nmoff += 1;
-                            vsn = 0;
-                        } else {
-                            vsn += 1;
+                        let tn_idx = tn + vi;
+                        let Some(&q_char) = query_seq.get(tn_idx) else {
+                            break;
+                        };
+                        if q_char == b'N' || q_char == b'n' {
+                            break;
+                        }
+                        if (query_qual
+                            .get(tn_idx)
+                            .copied()
+                            .unwrap_or(33)
+                            .saturating_sub(33) as f64)
+                            < self.config.base_qual
+                        {
+                            break;
+                        }
+                        let ts_pos = ts.saturating_add(i32::try_from(vi).unwrap_or(i32::MAX));
+                        if let Some(ref_ch) = self.get_ref_base(ts_pos as u32) {
+                            if ref_ch == b'N' || ref_ch == b'n' {
+                                break;
+                            }
+                            if q_char != ref_ch {
+                                current_offset = vi + 1;
+                                nmoff += 1;
+                                vsn = 0;
+                            } else {
+                                vsn += 1;
+                            }
                         }
                     }
-                }
-                if current_offset > 0 {
-                    *offset = current_offset as u32;
-                    if let Some(sub) = query_seq.get(tn..tn + current_offset) {
-                        push_ascii_slice(&mut sequence_to_append, sub);
-                    }
-                    if let Some(sub) = query_qual.get(tn..tn + current_offset) {
-                        quality_of_segment.extend_from_slice(sub);
+                    if current_offset > 0 {
+                        *offset = current_offset as u32;
+                        if let Some(sub) = query_seq.get(tn..tn + current_offset) {
+                            push_ascii_slice(&mut sequence_to_append, sub);
+                        }
+                        if let Some(sub) = query_qual.get(tn..tn + current_offset) {
+                            quality_of_segment.extend_from_slice(sub);
+                        }
                     }
                 }
             }
             next_ci += 1;
         } else {
             if self.is_next_matched(cigar_elements, ci) {
-                let m_len = cigar_elements.get(ci + 1).map_or(0, |&(l, _)| l as usize);
-                let mut vsn = 0;
-                let vext = self.config.extension_nuc.max(0) as usize;
+                if let Ok(vext) = usize::try_from(self.config.extension_nuc) {
+                    let m_len = cigar_elements.get(ci + 1).map_or(0, |&(l, _)| l as usize);
+                    let mut vsn = 0;
 
-                let mut current_offset = 0;
-                for vi in 0..m_len {
-                    if vsn > vext {
-                        break;
-                    }
-                    let idx = *read_pos_inc + vi;
-                    if idx >= query_seq.len() {
-                        break;
-                    }
-                    let q_char = query_seq[idx];
-                    if q_char == b'N' || q_char == b'n' {
-                        break;
-                    }
-                    if (query_qual
-                        .get(idx)
-                        .copied()
-                        .unwrap_or(33)
-                        .saturating_sub(33) as f64)
-                        < self.config.base_qual
-                    {
-                        break;
-                    }
-                    let ts_pos = start
-                        .saturating_add(cel_i32)
-                        .saturating_add(i32::try_from(vi).unwrap_or(i32::MAX));
-                    if let Some(ref_ch) = self.get_ref_base(ts_pos as u32) {
-                        if ref_ch == b'N' || ref_ch == b'n' {
+                    let mut current_offset = 0;
+                    for vi in 0..m_len {
+                        if vsn > vext {
                             break;
                         }
-                        if q_char != ref_ch {
-                            current_offset = vi + 1;
-                            nmoff += 1;
-                            vsn = 0;
-                        } else {
-                            vsn += 1;
+                        let idx = *read_pos_inc + vi;
+                        let Some(&q_char) = query_seq.get(idx) else {
+                            break;
+                        };
+                        if q_char == b'N' || q_char == b'n' {
+                            break;
+                        }
+                        if (query_qual
+                            .get(idx)
+                            .copied()
+                            .unwrap_or(33)
+                            .saturating_sub(33) as f64)
+                            < self.config.base_qual
+                        {
+                            break;
+                        }
+                        let ts_pos = start
+                            .saturating_add(cel_i32)
+                            .saturating_add(i32::try_from(vi).unwrap_or(i32::MAX));
+                        if let Some(ref_ch) = self.get_ref_base(ts_pos as u32) {
+                            if ref_ch == b'N' || ref_ch == b'n' {
+                                break;
+                            }
+                            if q_char != ref_ch {
+                                current_offset = vi + 1;
+                                nmoff += 1;
+                                vsn = 0;
+                            } else {
+                                vsn += 1;
+                            }
                         }
                     }
-                }
-                if current_offset > 0 {
-                    *offset = current_offset as u32;
-                    if let Some(sub) = query_seq.get(*read_pos_inc..*read_pos_inc + current_offset)
-                    {
-                        push_ascii_slice(&mut sequence_to_append, sub);
-                    }
-                    if let Some(sub) = query_qual.get(*read_pos_inc..*read_pos_inc + current_offset)
-                    {
-                        quality_of_segment.extend_from_slice(sub);
+                    if current_offset > 0 {
+                        *offset = current_offset as u32;
+                        if let Some(sub) =
+                            query_seq.get(*read_pos_inc..*read_pos_inc + current_offset)
+                        {
+                            push_ascii_slice(&mut sequence_to_append, sub);
+                        }
+                        if let Some(sub) =
+                            query_qual.get(*read_pos_inc..*read_pos_inc + current_offset)
+                        {
+                            quality_of_segment.extend_from_slice(sub);
+                        }
                     }
                 }
             }
@@ -1870,62 +1872,63 @@ impl<'a> CigarParser<'a> {
             next_ci += 2;
         } else {
             if self.is_next_matched(cigar_elements, ci) {
-                let mut vsn = 0;
-                let m_len = cigar_elements.get(ci + 1).map_or(0, |&(l, _)| l as usize);
-                let vext = self.config.extension_nuc.max(0) as usize;
+                if let Ok(vext) = usize::try_from(self.config.extension_nuc) {
+                    let mut vsn = 0;
+                    let m_len = cigar_elements.get(ci + 1).map_or(0, |&(l, _)| l as usize);
 
-                let mut current_offset = 0;
-                for vi in 0..m_len {
-                    if vsn > vext {
-                        break;
-                    }
-                    let idx = *read_pos_inc + cigar_element_len as usize + vi;
-                    let Some(&q_char) = query_seq.get(idx) else {
-                        break;
-                    };
-                    if q_char == b'N' || q_char == b'n' {
-                        break;
-                    }
-                    if (query_qual
-                        .get(idx)
-                        .copied()
-                        .unwrap_or(33)
-                        .saturating_sub(33) as f64)
-                        < self.config.base_qual
-                    {
-                        break;
-                    }
-                    let ts_pos = start.saturating_add(i32::try_from(vi).unwrap_or(i32::MAX));
-                    if let Some(ref_ch) = self.get_ref_base(ts_pos as u32) {
-                        if q_char != ref_ch {
-                            current_offset = vi + 1;
-                            nmoff += 1;
-                            vsn = 0;
-                        } else {
-                            vsn += 1;
+                    let mut current_offset = 0;
+                    for vi in 0..m_len {
+                        if vsn > vext {
+                            break;
+                        }
+                        let idx = *read_pos_inc + cigar_element_len as usize + vi;
+                        let Some(&q_char) = query_seq.get(idx) else {
+                            break;
+                        };
+                        if q_char == b'N' || q_char == b'n' {
+                            break;
+                        }
+                        if (query_qual
+                            .get(idx)
+                            .copied()
+                            .unwrap_or(33)
+                            .saturating_sub(33) as f64)
+                            < self.config.base_qual
+                        {
+                            break;
+                        }
+                        let ts_pos = start.saturating_add(i32::try_from(vi).unwrap_or(i32::MAX));
+                        if let Some(ref_ch) = self.get_ref_base(ts_pos as u32) {
+                            if q_char != ref_ch {
+                                current_offset = vi + 1;
+                                nmoff += 1;
+                                vsn = 0;
+                            } else {
+                                vsn += 1;
+                            }
                         }
                     }
-                }
-                if current_offset > 0 {
-                    *offset = current_offset as u32;
-                    if let Some(sub) = query_seq.get(
-                        *read_pos_inc + cigar_element_len as usize
-                            ..*read_pos_inc + cigar_element_len as usize + current_offset,
-                    ) {
-                        push_ascii_slice(&mut ss, sub);
-                    }
-                    if let Some(sub) = query_qual.get(
-                        *read_pos_inc + cigar_element_len as usize
-                            ..*read_pos_inc + cigar_element_len as usize + current_offset,
-                    ) {
-                        quality_string.extend_from_slice(sub);
-                    }
-                    for osi in 0..current_offset {
-                        inc_cnt(
-                            &mut self.ref_coverage,
-                            start.saturating_add(i32::try_from(osi).unwrap_or(i32::MAX)),
-                            1,
-                        );
+                    if current_offset > 0 {
+                        *offset = current_offset as u32;
+                        if let Some(sub) = query_seq.get(
+                            *read_pos_inc + cigar_element_len as usize
+                                ..*read_pos_inc + cigar_element_len as usize + current_offset,
+                        ) {
+                            push_ascii_slice(&mut ss, sub);
+                        }
+                        if let Some(sub) = query_qual.get(
+                            *read_pos_inc + cigar_element_len as usize
+                                ..*read_pos_inc + cigar_element_len as usize + current_offset,
+                        ) {
+                            quality_string.extend_from_slice(sub);
+                        }
+                        for osi in 0..current_offset {
+                            inc_cnt(
+                                &mut self.ref_coverage,
+                                start.saturating_add(i32::try_from(osi).unwrap_or(i32::MAX)),
+                                1,
+                            );
+                        }
                     }
                 }
             }
@@ -2573,9 +2576,14 @@ impl<'a> CigarParser<'a> {
         let mut offset = 0;
         let mut tnm = 0;
         let mut vsn = 0;
-        let vext = self.config.extension_nuc.max(0) as usize;
+        let Ok(vext) = usize::try_from(self.config.extension_nuc) else {
+            return (0, 0);
+        };
 
         for vi in 0..cigar_length {
+            if vsn > vext {
+                break;
+            }
             let read_idx = read_position + vi;
             let Some(&ch) = query_sequence.get(read_idx) else {
                 break;
@@ -2596,9 +2604,6 @@ impl<'a> CigarParser<'a> {
                 } else {
                     vsn += 1;
                 }
-            }
-            if vsn > vext {
-                break;
             }
         }
 
@@ -6556,5 +6561,98 @@ mod tests {
             150,
         );
         end_realign_parser.parse_cigar(&end_rec).unwrap();
+
+        // CigarParser.java:700, 748, 786, 962, 1495: extension_nuc < 0 (-X -1) must execute
+        // 0 iterations of post-indel lookahead (`offset = 0`), emitting plain `+T` / `-1`
+        // without `&` grafting and retaining the leading SNV in the trailing 10M.
+        let mut neg_vext_ins_parser = CigarParser::new(
+            &trim_ref,
+            &trim_region,
+            &neg_vext_realign_cfg,
+            false,
+            0,
+            0,
+            150,
+        );
+        let mut ins_10m_seq = trim_bases[0..10].to_vec(); // Pos1(1..=10) = "ACGTACGTAC"
+        ins_10m_seq.push(b'T'); // 1I between 'C' (Pos1 10) and 'G' (Pos1 11) -> no left-shift
+        ins_10m_seq.push(b'A'); // leading mismatch in trailing 10M at Pos1(11) (ref 'G')
+        ins_10m_seq.extend_from_slice(&trim_bases[11..20]); // Pos1(12..=20) exact match
+        let ins_10m_rec = SamRecord {
+            name: b"neg_vext_10m1i10m".to_vec(),
+            flags: 0,
+            reference_name: Some("chr1".to_string()),
+            alignment_start: Some(Pos1(1)),
+            alignment_end: Some(Pos1(20)),
+            mapping_quality: Some(60),
+            cigar: vec![
+                (10, CigarKind::Match),
+                (1, CigarKind::Insertion),
+                (10, CigarKind::Match),
+            ],
+            sequence: ins_10m_seq,
+            quality_scores: vec![b'I'; 21],
+            nm: Some(2),
+            ..SamRecord::default()
+        };
+        neg_vext_ins_parser.parse_cigar(&ins_10m_rec).unwrap();
+        let ins_keys: Vec<&str> = neg_vext_ins_parser
+            .insertion_variants
+            .get(&10)
+            .map(|vm| vm.map.keys().collect())
+            .unwrap_or_default();
+        assert_eq!(ins_keys, vec!["+T"]);
+        assert!(ins_keys.iter().all(|k| !k.contains('&')));
+        let trailing_ins_snv: Vec<&str> = neg_vext_ins_parser
+            .non_insertion_variants
+            .get(&11)
+            .map(|vm| vm.map.keys().collect())
+            .unwrap_or_default();
+        assert_eq!(trailing_ins_snv, vec!["A"]);
+
+        let mut neg_vext_del_parser = CigarParser::new(
+            &trim_ref,
+            &trim_region,
+            &neg_vext_realign_cfg,
+            false,
+            0,
+            0,
+            150,
+        );
+        let mut del_10m_seq = trim_bases[0..10].to_vec(); // Pos1(1..=10) = "ACGTACGTAC"
+                                                          // 1D deletes Pos1(11) ('G')
+        del_10m_seq.push(b'A'); // leading mismatch in trailing 10M at Pos1(12) (ref 'T')
+        del_10m_seq.extend_from_slice(&trim_bases[12..21]); // Pos1(13..=21) exact match
+        let del_10m_rec = SamRecord {
+            name: b"neg_vext_10m1d10m".to_vec(),
+            flags: 0,
+            reference_name: Some("chr1".to_string()),
+            alignment_start: Some(Pos1(1)),
+            alignment_end: Some(Pos1(21)),
+            mapping_quality: Some(60),
+            cigar: vec![
+                (10, CigarKind::Match),
+                (1, CigarKind::Deletion),
+                (10, CigarKind::Match),
+            ],
+            sequence: del_10m_seq,
+            quality_scores: vec![b'I'; 20],
+            nm: Some(2),
+            ..SamRecord::default()
+        };
+        neg_vext_del_parser.parse_cigar(&del_10m_rec).unwrap();
+        let del_keys: Vec<&str> = neg_vext_del_parser
+            .non_insertion_variants
+            .get(&11)
+            .map(|vm| vm.map.keys().collect())
+            .unwrap_or_default();
+        assert_eq!(del_keys, vec!["-1"]);
+        assert!(del_keys.iter().all(|k| !k.contains('&')));
+        let trailing_del_snv: Vec<&str> = neg_vext_del_parser
+            .non_insertion_variants
+            .get(&12)
+            .map(|vm| vm.map.keys().collect())
+            .unwrap_or_default();
+        assert_eq!(trailing_del_snv, vec!["A"]);
     }
 }
