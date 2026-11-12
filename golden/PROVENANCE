@@ -93,7 +93,7 @@ crates/vardictrust-core/tests/corpus_parity.rs in-process -T/--trim, -n <REGEXP>
        .var SHA-256 (6 rows, 55 cols): 66b6c36fccaf2d14ffa4b73ea5bc788a75f0a9b3029c3140c579bd62f8b5248f
        VCF variant-lines SHA-256 (5 rows): e10dc6e2d99d9bd1c61142e51eee6863bf0a032489eaa691e88df1ef71cc1498
     4. micro single-sample --fisher VCF raw-cell parity (no R intermediate):
-       vardict-java -G fixtures/micro/micro.ref.fa -f 0.01 -b fixtures/micro/micro.bam \
+       vardict-java -G fixtures/micro/micro.ref.fa -N SAMPLE -f 0.01 -b fixtures/micro/micro.bam \
          --fisher -z 1 -c 1 -S 2 -E 3 -g 4 fixtures/micro/micro.bed
        | var2vcf_valid.pl -N SAMPLE -E -f 0.01
        .var SHA-256 (2 rows, 38 cols): 192af7d9b62b173af3969bbc8668ac6031c5d40cf3a2e29f19be260bcdbc2a76
@@ -113,7 +113,7 @@ crates/vardictrust-core/tests/corpus_parity.rs in-process -T/--trim, -n <REGEXP>
           .var SHA-256 (53 rows, 61 cols): 622ae1d22764a6bce4c9664a547a20512b6b1f2e820f952eb88bf5ffc7996683
           VCF variant-lines SHA-256 (42 rows): e18d894bf41e49e0e6357ad0390bcae88fdf2f9872186d446e4c72bc9b716d1e
     7. Somatic combine_analysis trailing-dot FORMAT cells (:0., :15.:, :1.) on fixtures/micro/micro.ref.fa (chr1:50-160:testbed --fisher):
-       vardict-java -G fixtures/micro/micro.ref.fa -f 0.01 -b "Tumor.bam|Normal.bam" --fisher -z 1 -R chr1:50-160:testbed
+       vardict-java -G fixtures/micro/micro.ref.fa -N "Tumor|Normal" -f 0.01 -b "Tumor.bam|Normal.bam" --fisher -z 1 -R chr1:50-160:testbed
        | var2vcf_paired.pl -N "Tumor|Normal" -f 0.01
        a) zero_dot (t_mm=[1,0,0], n_mm=0): .var SHA-256 76e036321d26faa602c9988ecb5825f67f5948245d8221ed12faf5e3cc998c85, VCF variant-lines SHA-256 fd93ef7beeb1c25f60f395066008ea2b90c53efa7901aa3d5d92373f1ece01c4
        b) one_dot (t_mm=[2,1,1], n_mm=1): .var SHA-256 7fba9177549554eb90037d138f831aedfac2f1e3aeae97adbdfdcf048c287156, VCF variant-lines SHA-256 69ec72a5328fe1ea0bd1f0186bb12439fd1c605bea9435b84093d9d68a04d3c6
