@@ -64,6 +64,8 @@ fn ensure_fastas_converted() {
             || !fasta_dir.join("hg19.fa.fai").is_file()
             || !fasta_dir.join("hg38.fa").is_file()
             || !fasta_dir.join("hg38.fa.fai").is_file()
+            || !fasta_dir.join("hs38DH.fa").is_file()
+            || !fasta_dir.join("hs38DH.fa.fai").is_file()
         {
             let script = workspace_root().join("harness/convert_fastas.py");
             let status = Command::new("python3")
@@ -2304,4 +2306,1027 @@ fn commons_cli_single_dash_flags_and_zero_bed_col_behavior() {
         rayon_stats_text.contains("\"threads\": 2"),
         "expected RAYON_NUM_THREADS=2 to resolve threads=2 in live binary, got:\n{rayon_stats_text}"
     );
+
+    check_var2vcf_postfilter_flags_e2e(tmp.path());
+}
+
+fn check_var2vcf_postfilter_flags_e2e(tmp: &Path) {
+    use noodles::csi::BinningIndex as _;
+    use std::io::{BufRead as _, Read as _};
+
+    ensure_fastas_converted();
+    let droot = data_root();
+    let fasta_dir = droot.join("VarDictJava/testdata/fastas");
+    let ref_hg19 = fasta_dir.join("hg19.fa");
+    let ref_grch37 = fasta_dir.join("GRCh37.fa");
+    let ref_hs38dh = fasta_dir.join("hs38DH.fa");
+    let bam_dir =
+        droot.join("VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests");
+
+    let run_ok = |cmd: &mut Command, label: &str| -> Vec<u8> {
+        let out = cmd
+            .output()
+            .unwrap_or_else(|e| panic!("spawn {label}: {e}"));
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            out.status.success(),
+            "{label} failed (status={:?}):\n{stderr}",
+            out.status
+        );
+        #[cfg(unix)]
+        assert_eq!(out.status.signal(), None, "{label} died by signal");
+        assert!(
+            !stderr.contains("panicked"),
+            "{label} emitted panic text:\n{stderr}"
+        );
+        out.stdout
+    };
+
+    let split_vcf = |raw: &[u8], label: &str| -> (Vec<u8>, Vec<Vec<u8>>) {
+        let mut header = Vec::new();
+        let mut records = Vec::new();
+        for chunk in raw.split_inclusive(|&b| b == b'\n') {
+            if chunk.starts_with(b"#") {
+                header.extend_from_slice(chunk);
+            } else if !chunk.is_empty() {
+                records.push(chunk.to_vec());
+            }
+        }
+        assert!(
+            String::from_utf8_lossy(&header).contains("#CHROM\tPOS\t"),
+            "{label} missing #CHROM header"
+        );
+        (header, records)
+    };
+
+    let expected_pass_subset = |raw: &[u8], label: &str| -> Vec<u8> {
+        let (mut out, records) = split_vcf(raw, label);
+        for rec in records {
+            let line = std::str::from_utf8(&rec).expect("UTF-8 VCF record");
+            let cols: Vec<&str> = line.trim_end_matches('\n').split('\t').collect();
+            assert!(
+                cols.len() >= 10,
+                "expected >=10 VCF cols in {label}: {line}"
+            );
+            if cols[6] == "PASS" {
+                out.extend_from_slice(&rec);
+            }
+        }
+        out
+    };
+
+    let decompress_bgzf = |path: &Path| -> Vec<u8> {
+        let mut reader = noodles::bgzf::io::Reader::new(
+            std::fs::File::open(path)
+                .unwrap_or_else(|e| panic!("open BGZF {}: {e}", path.display())),
+        );
+        let mut buf = Vec::new();
+        reader
+            .read_to_end(&mut buf)
+            .unwrap_or_else(|e| panic!("decompress BGZF {}: {e}", path.display()));
+        buf
+    };
+
+    let assert_empty_bgzf_indices = |base_args: &[&std::ffi::OsStr],
+                                     prefix: &str|
+     -> (Vec<u8>, Vec<u8>) {
+        let tbi_vcf = tmp.join(format!("{prefix}_empty_tbi.vcf.gz"));
+        let tbi_idx = tmp.join(format!("{prefix}_empty_tbi.vcf.gz.tbi"));
+        let tbi_out = run_ok(
+            base_cmd()
+                .args(base_args)
+                .arg("--pass-only")
+                .arg("--output")
+                .arg(&tbi_vcf)
+                .arg("--tbi"),
+            &format!("{prefix} --pass-only --tbi"),
+        );
+        assert!(tbi_out.is_empty(), "--output must keep stdout empty");
+        let tbi_bytes = decompress_bgzf(&tbi_vcf);
+        let parsed_tbi = noodles::tabix::fs::read(&tbi_idx).expect("read empty .tbi");
+        let tbi_hdr = parsed_tbi.header().expect("empty .tbi header");
+        assert_eq!(
+            tbi_hdr.format(),
+            noodles::csi::binning_index::index::header::Format::Vcf
+        );
+        assert!(tbi_hdr.reference_sequence_names().is_empty());
+        assert!(parsed_tbi
+            .reference_sequences()
+            .iter()
+            .all(|rs| rs.bins().is_empty()));
+
+        let csi_vcf = tmp.join(format!("{prefix}_empty_csi.vcf.gz"));
+        let csi_idx = tmp.join(format!("{prefix}_empty_csi.vcf.gz.csi"));
+        let csi_out = run_ok(
+            base_cmd()
+                .args(base_args)
+                .arg("--pass-only")
+                .arg("--output")
+                .arg(&csi_vcf)
+                .arg("--csi"),
+            &format!("{prefix} --pass-only --csi"),
+        );
+        assert!(csi_out.is_empty(), "--output must keep stdout empty");
+        let csi_bytes = decompress_bgzf(&csi_vcf);
+        let parsed_csi =
+            noodles::csi::io::Reader::new(std::fs::File::open(&csi_idx).expect("open empty .csi"))
+                .read_index()
+                .expect("read empty .csi");
+        let csi_hdr = parsed_csi.header().expect("empty .csi header");
+        assert_eq!(
+            csi_hdr.format(),
+            noodles::csi::binning_index::index::header::Format::Vcf
+        );
+        assert!(csi_hdr.reference_sequence_names().is_empty());
+        assert!(parsed_csi
+            .reference_sequences()
+            .iter()
+            .all(|rs| rs.bins().is_empty()));
+
+        (tbi_bytes, csi_bytes)
+    };
+
+    // 1a. Single-sample `micro.bam`: `--pass-only`, `--no-pstd-filter`, and header-only 0-record `--tbi` / `--csi`.
+    let micro_mixed_args = [
+        "-G",
+        "fixtures/micro/micro.ref.fa",
+        "-b",
+        "fixtures/micro/micro.bam",
+        "-c",
+        "1",
+        "-S",
+        "2",
+        "-E",
+        "3",
+        "-g",
+        "4",
+        "-z",
+        "fixtures/micro/micro.bed",
+        "-T",
+        "8",
+        "-P",
+        "0",
+        "-r",
+        "1",
+        "-f",
+        "0.01",
+        "--threads=1",
+    ];
+    let micro_default = run_ok(base_cmd().args(micro_mixed_args), "micro mixed default");
+    let (micro_hdr, micro_recs) = split_vcf(&micro_default, "micro mixed default");
+    assert_eq!(
+        micro_recs.len(),
+        2,
+        "expected 1 filtered + 1 PASS on micro.bed"
+    );
+    assert!(
+        String::from_utf8_lossy(&micro_recs[0]).contains("\tv2;p8;pSTD\t"),
+        "expected chr1:101 to carry v2;p8;pSTD, got: {}",
+        String::from_utf8_lossy(&micro_recs[0])
+    );
+    assert!(
+        String::from_utf8_lossy(&micro_recs[1]).contains("\tPASS\t"),
+        "expected chr2:150 to carry PASS, got: {}",
+        String::from_utf8_lossy(&micro_recs[1])
+    );
+
+    let micro_pass_only = run_ok(
+        base_cmd().args(micro_mixed_args).arg("--pass-only"),
+        "micro --pass-only",
+    );
+    assert_eq!(
+        micro_pass_only,
+        expected_pass_subset(&micro_default, "micro mixed default"),
+        "single-sample --pass-only must omit non-PASS records and preserve PASS records byte-for-byte"
+    );
+
+    let micro_no_pstd = run_ok(
+        base_cmd().args(micro_mixed_args).arg("--no-pstd-filter"),
+        "micro --no-pstd-filter",
+    );
+    let (micro_no_pstd_hdr, micro_no_pstd_recs) =
+        split_vcf(&micro_no_pstd, "micro --no-pstd-filter");
+    assert_eq!(micro_no_pstd_hdr, micro_hdr);
+    assert_eq!(micro_no_pstd_recs.len(), 2);
+    assert_eq!(micro_no_pstd_recs[1], micro_recs[1]);
+    let orig_chr1_cols: Vec<&str> = std::str::from_utf8(&micro_recs[0])
+        .unwrap()
+        .trim_end_matches('\n')
+        .split('\t')
+        .collect();
+    let nopstd_chr1_cols: Vec<&str> = std::str::from_utf8(&micro_no_pstd_recs[0])
+        .unwrap()
+        .trim_end_matches('\n')
+        .split('\t')
+        .collect();
+    assert_eq!(orig_chr1_cols[6], "v2;p8;pSTD");
+    assert_eq!(nopstd_chr1_cols[6], "v2;p8");
+    for col_idx in (0..orig_chr1_cols.len()).filter(|&i| i != 6) {
+        assert_eq!(
+            nopstd_chr1_cols[col_idx], orig_chr1_cols[col_idx],
+            "--no-pstd-filter must not alter column {col_idx}"
+        );
+    }
+
+    let micro_all_filtered_strs = [
+        "-G",
+        "fixtures/micro/micro.ref.fa",
+        "-b",
+        "fixtures/micro/micro.bam",
+        "-R",
+        "chr1:40-260",
+        "-T",
+        "8",
+        "-P",
+        "0",
+        "-r",
+        "1",
+        "-f",
+        "0.01",
+        "--threads=1",
+    ];
+    let micro_all_filtered_os: Vec<&std::ffi::OsStr> = micro_all_filtered_strs
+        .iter()
+        .map(std::ffi::OsStr::new)
+        .collect();
+    let micro_all_filtered_default = run_ok(
+        base_cmd().args(&micro_all_filtered_os),
+        "micro all-filtered default",
+    );
+    let (micro_empty_expected_hdr, micro_all_filtered_recs) =
+        split_vcf(&micro_all_filtered_default, "micro all-filtered default");
+    assert_eq!(micro_all_filtered_recs.len(), 1);
+    assert!(!String::from_utf8_lossy(&micro_all_filtered_recs[0]).contains("\tPASS\t"));
+    let micro_empty_pass = run_ok(
+        base_cmd().args(&micro_all_filtered_os).arg("--pass-only"),
+        "micro all-filtered --pass-only",
+    );
+    assert_eq!(micro_empty_pass, micro_empty_expected_hdr);
+    let (single_tbi_bytes, single_csi_bytes) =
+        assert_empty_bgzf_indices(&micro_all_filtered_os, "single");
+    assert_eq!(single_tbi_bytes, micro_empty_expected_hdr);
+    assert_eq!(single_csi_bytes, micro_empty_expected_hdr);
+
+    // 1b. Single-sample real BAM `L861Q.bam`: `--no-pstd-filter` promotes sole `pSTD` -> `PASS` and strips `;pSTD` from `p8;pSTD`.
+    let l861q_bam = bam_dir.join("L861Q.bam");
+    let l861q_default = run_ok(
+        base_cmd()
+            .arg("-G")
+            .arg(&ref_hg19)
+            .arg("-b")
+            .arg(&l861q_bam)
+            .args([
+                "-R",
+                "chr7:55259400-55259600",
+                "-z",
+                "-f",
+                "0.005",
+                "--threads=1",
+            ]),
+        "L861Q default",
+    );
+    let l861q_no_pstd = run_ok(
+        base_cmd()
+            .arg("-G")
+            .arg(&ref_hg19)
+            .arg("-b")
+            .arg(&l861q_bam)
+            .args([
+                "-R",
+                "chr7:55259400-55259600",
+                "-z",
+                "-f",
+                "0.005",
+                "--no-pstd-filter",
+                "--threads=1",
+            ]),
+        "L861Q --no-pstd-filter",
+    );
+    let (l861q_hdr, l861q_recs) = split_vcf(&l861q_default, "L861Q default");
+    let (l861q_nopstd_hdr, l861q_nopstd_recs) = split_vcf(&l861q_no_pstd, "L861Q --no-pstd-filter");
+    assert_eq!(l861q_nopstd_hdr, l861q_hdr);
+    assert_eq!(l861q_nopstd_recs.len(), l861q_recs.len());
+    let mut saw_sole_pstd_to_pass = false;
+    let mut saw_multi_pstd_stripped = false;
+    for (orig_rec, nopstd_rec) in l861q_recs.iter().zip(l861q_nopstd_recs.iter()) {
+        let orig_cols: Vec<&str> = std::str::from_utf8(orig_rec)
+            .unwrap()
+            .trim_end_matches('\n')
+            .split('\t')
+            .collect();
+        let nopstd_cols: Vec<&str> = std::str::from_utf8(nopstd_rec)
+            .unwrap()
+            .trim_end_matches('\n')
+            .split('\t')
+            .collect();
+        let expected_filter = if orig_cols[6] == "pSTD" {
+            saw_sole_pstd_to_pass = true;
+            "PASS".to_string()
+        } else {
+            let kept: Vec<&str> = orig_cols[6].split(';').filter(|&t| t != "pSTD").collect();
+            if kept.len() != orig_cols[6].split(';').count() {
+                saw_multi_pstd_stripped = true;
+            }
+            kept.join(";")
+        };
+        assert_eq!(nopstd_cols[6], expected_filter);
+        for col_idx in (0..orig_cols.len()).filter(|&i| i != 6) {
+            assert_eq!(nopstd_cols[col_idx], orig_cols[col_idx]);
+        }
+    }
+    assert!(
+        saw_sole_pstd_to_pass,
+        "expected sole pSTD -> PASS promotion on L861Q"
+    );
+    assert!(
+        saw_multi_pstd_stripped,
+        "expected p8;pSTD -> p8 stripping on L861Q"
+    );
+
+    let l861q_nopstd_pass = run_ok(
+        base_cmd()
+            .arg("-G")
+            .arg(&ref_hg19)
+            .arg("-b")
+            .arg(&l861q_bam)
+            .args([
+                "-R",
+                "chr7:55259400-55259600",
+                "-z",
+                "-f",
+                "0.005",
+                "--no-pstd-filter",
+                "--pass-only",
+                "--threads=1",
+            ]),
+        "L861Q --no-pstd-filter --pass-only",
+    );
+    assert_eq!(
+        l861q_nopstd_pass,
+        expected_pass_subset(&l861q_no_pstd, "L861Q --no-pstd-filter")
+    );
+
+    // 1c. Amplicon `MRE11a.bam -a 10:0.95`: mixed `--pass-only` + header-only 0-record `--tbi` & `--csi`.
+    let mre11a_bam = bam_dir.join("MRE11a.bam");
+    let mre11a_bed = tmp.join("mre11a_amp.bed");
+    std::fs::write(
+        &mre11a_bed,
+        "11\t94153228\t94153388\ttestbed\t0\t0\t94153261\t94153357\n",
+    )
+    .expect("write mre11a_amp.bed");
+
+    let amp_mixed_default = run_ok(
+        base_cmd()
+            .arg("-G")
+            .arg(&ref_grch37)
+            .arg("-b")
+            .arg(&mre11a_bam)
+            .args([
+                "-a",
+                "10:0.95",
+                "-p",
+                "-f",
+                "0.004",
+                "-z",
+                "-c",
+                "1",
+                "-S",
+                "2",
+                "-E",
+                "3",
+                "-g",
+                "4",
+                "--threads=1",
+            ])
+            .arg(&mre11a_bed),
+        "MRE11a amplicon mixed default",
+    );
+    let (_, amp_mixed_recs) = split_vcf(&amp_mixed_default, "MRE11a amplicon mixed default");
+    let amp_pass_count = amp_mixed_recs
+        .iter()
+        .filter(|r| String::from_utf8_lossy(r).contains("\tPASS\t"))
+        .count();
+    assert!(
+        amp_pass_count >= 2 && amp_mixed_recs.len() > amp_pass_count,
+        "expected both PASS and filtered amplicon records on MRE11a -p -f 0.004, got total={} pass={amp_pass_count}",
+        amp_mixed_recs.len()
+    );
+    let amp_mixed_pass_only = run_ok(
+        base_cmd()
+            .arg("-G")
+            .arg(&ref_grch37)
+            .arg("-b")
+            .arg(&mre11a_bam)
+            .args([
+                "-a",
+                "10:0.95",
+                "-p",
+                "-f",
+                "0.004",
+                "-z",
+                "-c",
+                "1",
+                "-S",
+                "2",
+                "-E",
+                "3",
+                "-g",
+                "4",
+                "--pass-only",
+                "--threads=1",
+            ])
+            .arg(&mre11a_bed),
+        "MRE11a amplicon mixed --pass-only",
+    );
+    assert_eq!(
+        amp_mixed_pass_only,
+        expected_pass_subset(&amp_mixed_default, "MRE11a amplicon mixed default"),
+        "amplicon --pass-only must omit filtered calls and preserve PASS calls byte-for-byte"
+    );
+    assert!(
+        String::from_utf8_lossy(&amp_mixed_pass_only).contains("GDAMP=1;TLAMP=1;NCAMP=0;AMPFLAG=0"),
+        "expected amplicon INFO tags in PASS output"
+    );
+
+    let amp_all_filtered_owned: Vec<std::ffi::OsString> = vec![
+        "-G".into(),
+        ref_grch37.as_os_str().to_os_string(),
+        "-b".into(),
+        mre11a_bam.as_os_str().to_os_string(),
+        "-a".into(),
+        "10:0.95".into(),
+        "-f".into(),
+        "0".into(),
+        "-z".into(),
+        "-c".into(),
+        "1".into(),
+        "-S".into(),
+        "2".into(),
+        "-E".into(),
+        "3".into(),
+        "-g".into(),
+        "4".into(),
+        "--threads=1".into(),
+        mre11a_bed.as_os_str().to_os_string(),
+    ];
+    let amp_all_filtered_os: Vec<&std::ffi::OsStr> = amp_all_filtered_owned
+        .iter()
+        .map(|s| s.as_os_str())
+        .collect();
+    let amp_all_filtered_default = run_ok(
+        base_cmd().args(&amp_all_filtered_os),
+        "MRE11a amplicon all-filtered default",
+    );
+    let (amp_empty_expected_hdr, amp_all_filtered_recs) = split_vcf(
+        &amp_all_filtered_default,
+        "MRE11a amplicon all-filtered default",
+    );
+    assert!(
+        !amp_all_filtered_recs.is_empty()
+            && amp_all_filtered_recs
+                .iter()
+                .all(|r| !String::from_utf8_lossy(r).contains("\tPASS\t")),
+        "expected non-empty all-filtered amplicon baseline under -f 0"
+    );
+    let (amp_tbi_bytes, amp_csi_bytes) =
+        assert_empty_bgzf_indices(&amp_all_filtered_os, "amp_mre11a");
+    assert_eq!(amp_tbi_bytes, amp_empty_expected_hdr);
+    assert_eq!(amp_csi_bytes, amp_empty_expected_hdr);
+
+    // 1d. `--min-splitreads`: `NA21144.chrom11.INV5Disc.bam` 0-splitread `<INV>` rescue + `Colo829.chr20.INVSV.bam` suppression.
+    let inv5disc_bam = bam_dir.join("NA21144.chrom11.INV5Disc.bam");
+    let inv5disc_default = run_ok(
+        base_cmd()
+            .arg("-G")
+            .arg(&ref_hs38dh)
+            .arg("-b")
+            .arg(&inv5disc_bam)
+            .args([
+                "-R",
+                "11:57970876-57971275",
+                "-z",
+                "-f",
+                "0.001",
+                "--threads=1",
+            ]),
+        "INV5Disc default",
+    );
+    let (inv5_hdr, inv5_default_recs) = split_vcf(&inv5disc_default, "INV5Disc default");
+    assert!(
+        inv5_default_recs
+            .iter()
+            .all(|r| !String::from_utf8_lossy(r).contains("\t<INV>\t")),
+        "default --min-splitreads=1 must omit 0-splitread <INV> on INV5Disc"
+    );
+
+    let inv5disc_t0 = run_ok(
+        base_cmd()
+            .arg("-G")
+            .arg(&ref_hs38dh)
+            .arg("-b")
+            .arg(&inv5disc_bam)
+            .args([
+                "-R",
+                "11:57970876-57971275",
+                "-z",
+                "-f",
+                "0.001",
+                "--min-splitreads",
+                "0",
+                "--threads=1",
+            ]),
+        "INV5Disc --min-splitreads 0",
+    );
+    let (inv5_t0_hdr, inv5_t0_recs) = split_vcf(&inv5disc_t0, "INV5Disc --min-splitreads 0");
+    assert_eq!(inv5_t0_hdr, inv5_hdr);
+    assert_eq!(inv5_t0_recs.len(), inv5_default_recs.len() + 1);
+    let rescued_inv: Vec<&Vec<u8>> = inv5_t0_recs
+        .iter()
+        .filter(|r| String::from_utf8_lossy(r).contains("\t<INV>\t"))
+        .collect();
+    assert_eq!(rescued_inv.len(), 1, "expected exactly 1 rescued <INV>");
+    let rescued_inv_line = String::from_utf8_lossy(rescued_inv[0]);
+    assert!(
+        rescued_inv_line.starts_with("11\t57971076\t.\tT\t<INV>\t")
+            && rescued_inv_line.contains(";END=57982783;")
+            && rescued_inv_line.contains(";SVTYPE=INV;SVLEN=11708;SPLITREAD=0;SPANPAIR=9\t"),
+        "unexpected rescued INV5Disc record: {rescued_inv_line}"
+    );
+    let inv5_t0_without_sv: Vec<Vec<u8>> = inv5_t0_recs
+        .into_iter()
+        .filter(|r| !String::from_utf8_lossy(r).contains("\t<INV>\t"))
+        .collect();
+    assert_eq!(
+        inv5_t0_without_sv, inv5_default_recs,
+        "all non-SV records on INV5Disc must remain byte-for-byte identical under --min-splitreads 0"
+    );
+
+    let inv5_vcf_gz = tmp.join("inv5disc_t0.vcf.gz");
+    let inv5_tbi = tmp.join("inv5disc_t0.vcf.gz.tbi");
+    run_ok(
+        base_cmd()
+            .arg("-G")
+            .arg(&ref_hs38dh)
+            .arg("-b")
+            .arg(&inv5disc_bam)
+            .args([
+                "-R",
+                "11:57970876-57971275",
+                "-z",
+                "-f",
+                "0.001",
+                "--min-splitreads",
+                "0",
+                "--threads=1",
+            ])
+            .arg("--output")
+            .arg(&inv5_vcf_gz)
+            .arg("--tbi"),
+        "INV5Disc --min-splitreads 0 --tbi",
+    );
+    assert_eq!(decompress_bgzf(&inv5_vcf_gz), inv5disc_t0);
+    let inv5_idx = noodles::tabix::fs::read(&inv5_tbi).expect("read inv5disc .tbi");
+    let mut inv5_reader = noodles::vcf::io::IndexedReader::new(
+        std::fs::File::open(&inv5_vcf_gz).expect("open inv5disc.vcf.gz"),
+        inv5_idx,
+    );
+    let inv5_vcf_hdr = inv5_reader.read_header().expect("read inv5disc header");
+    let inv5_mid_region: noodles::core::Region = "11:57976000-57976100"
+        .parse()
+        .expect("parse mid-span region");
+    let inv5_mid_hits: Vec<String> = inv5_reader
+        .query(&inv5_vcf_hdr, &inv5_mid_region)
+        .expect("query inv5disc mid-span")
+        .records()
+        .map(|r| {
+            let rec = r.expect("valid inv5disc VCF record");
+            format!(
+                "{}:{}:{}",
+                rec.reference_sequence_name(),
+                rec.variant_start().unwrap().unwrap().get(),
+                rec.alternate_bases().as_ref()
+            )
+        })
+        .collect();
+    assert!(
+        inv5_mid_hits.iter().any(|h| h == "11:57971076:<INV>"),
+        "mid-span .tbi query must recover rescued 11:57971076 T><INV>, got: {inv5_mid_hits:?}"
+    );
+
+    let invsv_bam = bam_dir.join("Colo829.chr20.INVSV.bam");
+    let invsv_default = run_ok(
+        base_cmd()
+            .arg("-G")
+            .arg(&ref_hg19)
+            .arg("-b")
+            .arg(&invsv_bam)
+            .args([
+                "-R",
+                "chr20:46841555-46845755",
+                "-z",
+                "-f",
+                "0.001",
+                "--threads=1",
+            ]),
+        "Colo829.INVSV default",
+    );
+    let (invsv_hdr, invsv_default_recs) = split_vcf(&invsv_default, "Colo829.INVSV default");
+    assert!(
+        invsv_default_recs.iter().any(|r| {
+            let s = String::from_utf8_lossy(r);
+            s.starts_with("chr20\t46843164\t.\tT\t<INV>\t")
+                && s.contains(";SPLITREAD=2;SPANPAIR=2\t")
+        }),
+        "expected default Colo829.INVSV to emit chr20:46843164 T><INV>"
+    );
+    let invsv_t100 = run_ok(
+        base_cmd()
+            .arg("-G")
+            .arg(&ref_hg19)
+            .arg("-b")
+            .arg(&invsv_bam)
+            .args([
+                "-R",
+                "chr20:46841555-46845755",
+                "-z",
+                "-f",
+                "0.001",
+                "--min-splitreads",
+                "100",
+                "--threads=1",
+            ]),
+        "Colo829.INVSV --min-splitreads 100",
+    );
+    let (invsv_t100_hdr, invsv_t100_recs) =
+        split_vcf(&invsv_t100, "Colo829.INVSV --min-splitreads 100");
+    assert_eq!(invsv_t100_hdr, invsv_hdr);
+    assert!(
+        invsv_t100_recs
+            .iter()
+            .all(|r| !String::from_utf8_lossy(r).contains("\t<INV>\t")),
+        "--min-splitreads 100 must omit <INV> on Colo829.INVSV"
+    );
+    let invsv_expected_non_sv: Vec<Vec<u8>> = invsv_default_recs
+        .into_iter()
+        .filter(|r| !String::from_utf8_lossy(r).contains("\t<INV>\t"))
+        .collect();
+    assert_eq!(invsv_t100_recs, invsv_expected_non_sv);
+
+    // 2. Paired somatic `--paired-strict`, `--vcf-pval` (`1e-5`, `0.050`, `0.1`), `--pass-only`, and BGZF `--tbi`/`--csi`.
+    let som_bams = format!(
+        "{}|{}",
+        bam_dir.join("ArgumentNA_Tumor.bam").display(),
+        bam_dir.join("ArgumentNA_Normal.bam").display()
+    );
+    let som_base_owned: Vec<std::ffi::OsString> = vec![
+        "-G".into(),
+        ref_hg19.as_os_str().to_os_string(),
+        "-b".into(),
+        som_bams.clone().into(),
+        "-R".into(),
+        "chr7:140453010-140453158".into(),
+        "-z".into(),
+        "-f".into(),
+        "0.001".into(),
+        "--threads=1".into(),
+    ];
+    let som_base: Vec<&std::ffi::OsStr> = som_base_owned.iter().map(|s| s.as_os_str()).collect();
+
+    let som_default = run_ok(base_cmd().args(&som_base), "ArgumentNA somatic default");
+    let (som_default_hdr, som_default_recs) = split_vcf(&som_default, "ArgumentNA somatic default");
+    assert!(
+        String::from_utf8_lossy(&som_default_hdr)
+            .contains("##FILTER=<ID=P0.05,Description=\"Not significant with p-value > 0.05\">\n"),
+        "expected default P0.05 FILTER header"
+    );
+    assert_eq!(som_default_recs.len(), 5);
+    assert!(
+        som_default_recs.iter().any(|r| {
+            let s = String::from_utf8_lossy(r);
+            s.starts_with("chr7\t140453035\t")
+                && s.contains("\tPASS\t")
+                && s.contains("STATUS=StrongLOH;")
+        }),
+        "expected chr7:140453035 StrongLOH to be rescued as PASS when --paired-strict is off"
+    );
+    let som_default_pass = run_ok(
+        base_cmd().args(&som_base).arg("--pass-only"),
+        "ArgumentNA default --pass-only",
+    );
+    assert_eq!(
+        som_default_pass,
+        expected_pass_subset(&som_default, "ArgumentNA somatic default")
+    );
+
+    let som_strict = run_ok(
+        base_cmd().args(&som_base).arg("--paired-strict"),
+        "ArgumentNA --paired-strict",
+    );
+    let (som_strict_hdr, som_strict_recs) = split_vcf(&som_strict, "ArgumentNA --paired-strict");
+    assert_eq!(som_strict_hdr, som_default_hdr);
+    assert_eq!(som_strict_recs.len(), 5);
+    assert!(
+        som_strict_recs.iter().any(|r| {
+            let s = String::from_utf8_lossy(r);
+            s.starts_with("chr7\t140453035\t") && s.contains("\tv3;f0.001;p8;pSTD;q22.5;Q0;SN1.5\t")
+        }),
+        "--paired-strict must disable germline/normal rescue on chr7:140453035, got:\n{}",
+        String::from_utf8_lossy(&som_strict)
+    );
+    assert!(
+        som_strict_recs
+            .iter()
+            .all(|r| !String::from_utf8_lossy(r).contains("\tPASS\t")),
+        "expected all 5 ArgumentNA records to be filtered under --paired-strict (default pval=0.05)"
+    );
+    let som_strict_pass = run_ok(
+        base_cmd()
+            .args(&som_base)
+            .args(["--paired-strict", "--pass-only"]),
+        "ArgumentNA --paired-strict --pass-only",
+    );
+    assert_eq!(som_strict_pass, som_strict_hdr);
+
+    let som_strict_owned: Vec<std::ffi::OsString> = som_base_owned
+        .iter()
+        .cloned()
+        .chain(std::iter::once("--paired-strict".into()))
+        .collect();
+    let som_strict_os: Vec<&std::ffi::OsStr> =
+        som_strict_owned.iter().map(|s| s.as_os_str()).collect();
+    let (som_empty_tbi_bytes, som_empty_csi_bytes) =
+        assert_empty_bgzf_indices(&som_strict_os, "som_strict");
+    assert_eq!(som_empty_tbi_bytes, som_strict_hdr);
+    assert_eq!(som_empty_csi_bytes, som_strict_hdr);
+
+    let som_pval_1e5 = run_ok(
+        base_cmd()
+            .args(&som_base)
+            .args(["--paired-strict", "--vcf-pval", "1e-5"]),
+        "ArgumentNA --paired-strict --vcf-pval 1e-5",
+    );
+    let (som_1e5_hdr, som_1e5_recs) =
+        split_vcf(&som_pval_1e5, "ArgumentNA --paired-strict --vcf-pval 1e-5");
+    let som_1e5_hdr_str = String::from_utf8_lossy(&som_1e5_hdr);
+    assert!(
+        som_1e5_hdr_str
+            .contains("##FILTER=<ID=P1e-5,Description=\"Not significant with p-value > 1e-5\">\n")
+            && !som_1e5_hdr_str.contains("ID=P1e-05")
+            && !som_1e5_hdr_str.contains("ID=P0.00001"),
+        "expected verbatim P1e-5 header token, got:\n{som_1e5_hdr_str}"
+    );
+    assert_eq!(som_1e5_recs.len(), 5);
+    for rec in &som_1e5_recs {
+        let cols: Vec<&str> = std::str::from_utf8(rec)
+            .unwrap()
+            .trim_end_matches('\n')
+            .split('\t')
+            .collect();
+        assert!(
+            cols[6].split(';').any(|t| t == "P1e-5"),
+            "expected verbatim P1e-5 FILTER tag under --paired-strict --vcf-pval 1e-5, got: {}",
+            cols[6]
+        );
+    }
+
+    let som_pval_050 = run_ok(
+        base_cmd()
+            .args(&som_base)
+            .args(["--paired-strict", "--vcf-pval", "0.050"]),
+        "ArgumentNA --paired-strict --vcf-pval 0.050",
+    );
+    let (som_050_hdr, som_050_recs) =
+        split_vcf(&som_pval_050, "ArgumentNA --paired-strict --vcf-pval 0.050");
+    let som_050_hdr_str = String::from_utf8_lossy(&som_050_hdr);
+    assert!(
+        som_050_hdr_str.contains(
+            "##FILTER=<ID=P0.050,Description=\"Not significant with p-value > 0.050\">\n"
+        ) && !som_050_hdr_str.contains("ID=P0.05,"),
+        "expected verbatim P0.050 header token, got:\n{som_050_hdr_str}"
+    );
+    assert_eq!(som_050_recs.len(), 5);
+    assert!(
+        som_050_recs.iter().any(|r| {
+            let cols: Vec<&str> = std::str::from_utf8(r)
+                .unwrap()
+                .trim_end_matches('\n')
+                .split('\t')
+                .collect();
+            cols[1] == "140453035" && cols[6] == "v3;f0.001;p8;pSTD;q22.5;Q0;SN1.5"
+        }),
+        "chr7:140453035 (SSF=0.01361 <= 0.050) must not carry P0.050"
+    );
+    assert_eq!(
+        som_050_recs
+            .iter()
+            .filter(|r| {
+                std::str::from_utf8(r)
+                    .unwrap()
+                    .trim_end_matches('\n')
+                    .split('\t')
+                    .nth(6)
+                    .unwrap()
+                    .split(';')
+                    .any(|t| t == "P0.050")
+            })
+            .count(),
+        4,
+        "expected verbatim P0.050 on the 4 records with SSF > 0.050"
+    );
+
+    let som_pval_01 = run_ok(
+        base_cmd()
+            .args(&som_base)
+            .args(["--paired-strict", "--vcf-pval", "0.1"]),
+        "ArgumentNA --paired-strict --vcf-pval 0.1",
+    );
+    let (_, som_01_recs) = split_vcf(&som_pval_01, "ArgumentNA --paired-strict --vcf-pval 0.1");
+    let som_01_pass_recs: Vec<&Vec<u8>> = som_01_recs
+        .iter()
+        .filter(|r| String::from_utf8_lossy(r).contains("\tPASS\t"))
+        .collect();
+    assert_eq!(
+        som_01_pass_recs.len(),
+        1,
+        "expected exactly 1 PASS record (chr7:140453081) under --paired-strict --vcf-pval 0.1"
+    );
+    let som_01_pass_line = String::from_utf8_lossy(som_01_pass_recs[0]);
+    assert!(
+        som_01_pass_line.starts_with("chr7\t140453081\t")
+            && som_01_pass_line.contains(";P0.01Likely\t"),
+        "expected chr7:140453081 PASS LikelySomatic with ;P0.01Likely, got: {som_01_pass_line}"
+    );
+
+    let som_01_pass_only = run_ok(
+        base_cmd()
+            .args(&som_base)
+            .args(["--paired-strict", "--vcf-pval", "0.1", "--pass-only"]),
+        "ArgumentNA --paired-strict --vcf-pval 0.1 --pass-only",
+    );
+    assert_eq!(
+        som_01_pass_only,
+        expected_pass_subset(&som_pval_01, "ArgumentNA --paired-strict --vcf-pval 0.1")
+    );
+
+    let som_tbi_vcf = tmp.join("som_strict_01_pass.vcf.gz");
+    let som_tbi_idx = tmp.join("som_strict_01_pass.vcf.gz.tbi");
+    run_ok(
+        base_cmd()
+            .args(&som_base)
+            .args(["--paired-strict", "--vcf-pval", "0.1", "--pass-only"])
+            .arg("--output")
+            .arg(&som_tbi_vcf)
+            .arg("--tbi"),
+        "ArgumentNA --paired-strict --vcf-pval 0.1 --pass-only --tbi",
+    );
+    assert_eq!(decompress_bgzf(&som_tbi_vcf), som_01_pass_only);
+    let parsed_som_tbi = noodles::tabix::fs::read(&som_tbi_idx).expect("read som .tbi");
+    let mut som_tbi_reader = noodles::vcf::io::IndexedReader::new(
+        std::fs::File::open(&som_tbi_vcf).expect("open som_tbi_vcf"),
+        parsed_som_tbi,
+    );
+    let som_tbi_hdr = som_tbi_reader
+        .read_header()
+        .expect("read som_tbi_vcf header");
+    let som_region: noodles::core::Region = "chr7:140453075-140453085".parse().unwrap();
+    let som_tbi_positions: Vec<usize> = som_tbi_reader
+        .query(&som_tbi_hdr, &som_region)
+        .expect("query som .tbi")
+        .records()
+        .map(|r| r.unwrap().variant_start().unwrap().unwrap().get())
+        .collect();
+    assert_eq!(som_tbi_positions, vec![140_453_081]);
+
+    let som_csi_vcf = tmp.join("som_strict_01_pass_csi.vcf.gz");
+    let som_csi_idx = tmp.join("som_strict_01_pass_csi.vcf.gz.csi");
+    run_ok(
+        base_cmd()
+            .args(&som_base)
+            .args(["--paired-strict", "--vcf-pval", "0.1", "--pass-only"])
+            .arg("--output")
+            .arg(&som_csi_vcf)
+            .arg("--csi"),
+        "ArgumentNA --paired-strict --vcf-pval 0.1 --pass-only --csi",
+    );
+    assert_eq!(decompress_bgzf(&som_csi_vcf), som_01_pass_only);
+    let parsed_som_csi =
+        noodles::csi::io::Reader::new(std::fs::File::open(&som_csi_idx).expect("open som .csi"))
+            .read_index()
+            .expect("read som .csi");
+    let som_csi_hdr = parsed_som_csi.header().expect("som .csi header");
+    assert_eq!(
+        som_csi_hdr.format(),
+        noodles::csi::binning_index::index::header::Format::Vcf
+    );
+    let chr7_id = som_csi_hdr
+        .reference_sequence_names()
+        .get_index_of(b"chr7".as_slice())
+        .expect("chr7 in som .csi");
+    let pos_081 = noodles::core::Position::new(140_453_081).unwrap();
+    let som_csi_chunks = parsed_som_csi
+        .query(
+            chr7_id,
+            noodles::core::region::Interval::from(pos_081..=pos_081),
+        )
+        .expect("query som .csi");
+    assert!(!som_csi_chunks.is_empty());
+    let mut som_bgzf_r = noodles::bgzf::io::Reader::new(
+        std::fs::File::open(&som_csi_vcf).expect("open som_csi_vcf"),
+    );
+    som_bgzf_r
+        .seek(som_csi_chunks[0].start())
+        .expect("seek som_csi_vcf");
+    let mut som_csi_line = String::new();
+    som_bgzf_r
+        .read_line(&mut som_csi_line)
+        .expect("read som_csi_vcf line");
+    assert!(
+        som_csi_line.starts_with("chr7\t140453081\t"),
+        "expected chr7:140453081 from CSI seek, got: {som_csi_line}"
+    );
+
+    // 3. Hostile CLI & single-dash typo rejection E2E.
+    let base_reject_args = [
+        "-G",
+        "fixtures/micro/micro.ref.fa",
+        "-b",
+        "fixtures/micro/micro.bam",
+        "-R",
+        "chr1:40-260",
+        "--threads=1",
+    ];
+    let reject_cases: &[(&[&str], &str)] = &[
+        (
+            &["--vcf-pval", "-0.05"],
+            "Invalid --vcf-pval value '-0.05': must be a finite number >= 0.0",
+        ),
+        (
+            &["--vcf-pval=-1e-400"],
+            "Invalid --vcf-pval value '-1e-400': must be a finite number >= 0.0",
+        ),
+        (&["--vcf-pval", "-1e-400"], "unexpected argument '-1'"),
+        (
+            &["--vcf-pval", "NaN"],
+            "Invalid --vcf-pval value 'NaN': must be a finite number >= 0.0",
+        ),
+        (
+            &["--vcf-pval", "inf"],
+            "Invalid --vcf-pval value 'inf': must be a finite number >= 0.0",
+        ),
+        (
+            &["--min-splitreads", "-1"],
+            "Invalid --min-splitreads value '-1': must be an integer >= 0",
+        ),
+        (
+            &["-no-pstd-filter"],
+            "Unknown single-dash option '-no-pstd-filter'; did you mean '--no-pstd-filter'?",
+        ),
+        (
+            &["-pass-only"],
+            "Unknown single-dash option '-pass-only'; did you mean '--pass-only'?",
+        ),
+        (
+            &["-paired-strict"],
+            "Unknown single-dash option '-paired-strict'; did you mean '--paired-strict'?",
+        ),
+        (
+            &["-vcf-pval", "0.01"],
+            "Unknown single-dash option '-vcf-pval'; did you mean '--vcf-pval'?",
+        ),
+        (
+            &["-min-splitreads", "0"],
+            "Unknown single-dash option '-min-splitreads'; did you mean '--min-splitreads'?",
+        ),
+    ];
+    for &(bad_args, expected_err) in reject_cases {
+        let out = base_cmd()
+            .args(base_reject_args)
+            .args(bad_args)
+            .output()
+            .unwrap_or_else(|e| panic!("spawn hostile CLI {bad_args:?}: {e}"));
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            !out.status.success(),
+            "hostile CLI {bad_args:?} must fail with non-zero exit"
+        );
+        #[cfg(unix)]
+        assert_eq!(
+            out.status.signal(),
+            None,
+            "hostile CLI {bad_args:?} died by signal"
+        );
+        assert_ne!(
+            out.status.code(),
+            Some(101),
+            "hostile CLI {bad_args:?} panicked:\n{stderr}"
+        );
+        assert!(
+            !stderr.contains("panicked"),
+            "hostile CLI {bad_args:?} emitted panic:\n{stderr}"
+        );
+        assert!(
+            stderr.contains(expected_err),
+            "hostile CLI {bad_args:?} missing expected stderr '{expected_err}', got:\n{stderr}"
+        );
+    }
 }
