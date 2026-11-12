@@ -2,11 +2,14 @@
 name = "vardictrust-core"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 description = "Variant calling engine core for VarDictRust"
 repository.workspace = true
 authors.workspace = true
 readme.workspace = true
+keywords.workspace = true
+categories = ["science::bioinformatics"]
 
 [dependencies]
 thiserror.workspace = true

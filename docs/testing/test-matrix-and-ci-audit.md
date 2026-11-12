@@ -217,10 +217,10 @@ The core variant calling engine enforces `#![forbid(unsafe_code)]` and zero unha
 ### 3.2 `crates/vardictrust` (23 Unit Tests)
 
 Located in `crates/vardictrust/src/cli.rs` (22 tests) and `crates/vardictrust/src/main.rs` (1 test, `malloc_conf_target_split_and_nul_termination`):
-- Verifies CLI argument parsing via `clap`, including Commons-CLI single-dash long-flag normalization (`-adaptor`, `-crispr`, `-fisher`, `-deldupvar`, `-nosv`, `-splice`, `-chimeric`, `-dedup`, `-amplicon`, etc.).
-- Thread count resolution: verifies explicit `-th 4`, bare `-th` (all cores), default absent `-th` (all cores), and `-th 0` normalization to 1 core.
+- Verifies CLI argument parsing via `clap`, including Commons-CLI single-dash long-flag normalization (`-adaptor`, `-crispr`, `-fisher`, `-deldupvar`, `-nosv`, `-splice`, `-chimeric`, `-dedup`, `-amplicon`, `-trim`, `-VS`, etc.) and boolean-prefix short-option cluster splitting (`-pz`, `-uk`, `-ua`, `-pR`).
+- Thread count resolution: verifies explicit `-th 4`, bare `-th` (all cores), `RAYON_NUM_THREADS` fallback when `-th` is omitted (otherwise all cores), and `-th 0` normalization to 1 core.
 - Verifies header flag `-h` prints table headers (and does not trigger help), while `-?` / `--help` print usage help.
-- Verifies `--output` / `--tbi` (`--index`) / `--stats-json` / `--parity` / `--compat vardictjava-1.8.3` validation, accepted upstream compatibility flags (`-v`, `--default-printer`), multi-sample BAM header extraction (`-b "b1|b2"`), and value-aware `UNSUPPORTED_FLAGS` / mode rejection (`--modern`, `--fix`, `-downsample`, `--trim`, `--VS`, etc., `AGENTS.md §12`).
+- Verifies `--output` / `--tbi` (`--index`) / `--csi` / `--no-end` / `--stats-json` / `--parity` / `--compat vardictjava-1.8.3` validation, newly ported upstream flags (`-T` / `--trim`, `-n`, `-VS SILENT|LENIENT`), accepted upstream compatibility flags (`-v`, `--default-printer`), multi-sample BAM header extraction (`-b "b1|b2"`), and value-aware `UNSUPPORTED_FLAGS` / mode rejection (`-C`, `-Z` / `-downsample` / `--downsample`, `-VS STRICT`, `--modern`, `--fix`, `AGENTS.md §12`).
 - Verifies error propagation on invalid flag arguments (`-F bogus`, 0-valued `-c/-S/-E/-s/-e` BED columns, `-d` empty, `--adaptor` non-ACGTN) and zero tile size (`--tile-size 0`).
 
 ### 3.3 CLI Integration Test Binaries (`crates/vardictrust/tests/` — 17 Tests)

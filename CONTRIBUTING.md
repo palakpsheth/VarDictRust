@@ -41,7 +41,7 @@ git submodule update --init --recursive
 
 ### 2.2 Toolchain Requirements
 1. **Rust Toolchain:**
-   - Rust stable (`rustc >= 1.85.0`, `cargo`, `rustfmt`, `clippy`):
+   - Rust stable (`rustc >= 1.91.0`, `cargo`, `rustfmt`, `clippy`):
      ```bash
      rustup update stable
      rustup component add clippy rustfmt
