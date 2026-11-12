@@ -32,6 +32,17 @@ pub enum RefSiteMode<'a> {
     CompactOut(&'a mut rustc_hash::FxHashMap<i32, CompactRefSite>),
 }
 
+impl std::fmt::Debug for RefSiteMode<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::KeepAll => f.write_str("KeepAll"),
+            Self::DropAll => f.write_str("DropAll"),
+            Self::KeepWhere(_) => f.debug_tuple("KeepWhere").field(&"<fn>").finish(),
+            Self::CompactOut(map) => f.debug_tuple("CompactOut").field(map).finish(),
+        }
+    }
+}
+
 /// ToVarsBuilder converts intermediate VariationData into finalized Variant structures.
 pub struct ToVarsBuilder<'a> {
     pub reference: &'a Reference,
@@ -232,8 +243,16 @@ impl<'a> ToVarsBuilder<'a> {
 
         let iter_positions: Vec<i32> = var_data.non_insertion_variants.keys().copied().collect();
         // Do not sort positions, use the JavaHashMap iteration order!
-        if matches!(ref_mode, RefSiteMode::KeepAll) {
-            aligned_variants.reserve_nodes(iter_positions.len());
+        match ref_mode {
+            RefSiteMode::KeepAll => {
+                aligned_variants.reserve_nodes(iter_positions.len());
+            }
+            RefSiteMode::CompactOut(ref mut out) => {
+                let region_span = (self.region.end.0.saturating_sub(self.region.start.0) as usize)
+                    .saturating_add(1);
+                out.reserve(iter_positions.len().min(region_span));
+            }
+            RefSiteMode::DropAll | RefSiteMode::KeepWhere(_) => {}
         }
 
         // Task 6: per-position row buffers, allocated once per build and
@@ -298,6 +317,7 @@ impl<'a> ToVarsBuilder<'a> {
                 RefSiteMode::KeepWhere(pred) => {
                     if !self.config.debug
                         && var_map.sv.is_none()
+                        && !var_data.insertion_variants.contains_key(&position)
                         && self.is_pure_ref_variation(
                             position,
                             var_map,
@@ -3006,7 +3026,8 @@ mod tests {
         // and pure-ref sites (pos 25, 26).
         let mut som_seq = b"ACGTARYTACGTAIATAAAGTACGTACGTA".to_vec();
         som_seq.resize(40, b'A');
-        // 1-based positions: 5='A', 6='R', 7='Y', 10='C', 11='G', 14='I', 16='T', 18='A', 22='A', 25='T', 26='A'
+        som_seq[29] = b'I'; // 1-based pos 30: hostile FASTA 'I' + BAM2 insertion
+                            // 1-based positions: 5='A', 6='R', 7='Y', 10='C', 11='G', 14='I', 16='T', 18='A', 22='A', 25='T', 26='A', 30='I'
         let mut som_ref = Reference::new();
         som_ref.loaded_regions.push(crate::reference::LoadedRegion {
             chr: "chr1".to_string(),
@@ -3196,23 +3217,55 @@ mod tests {
             som_vd.non_insertion_variants.insert(p, vmp);
         }
 
+        // pos 30 (hostile FASTA 'I'): BAM2-only insertion "+GG" with sole non-insertion key "I"
+        som_vd.ref_coverage.insert(30, 20);
+        let mut vm30 = VariationMap::new();
+        let mut r30 = Variation::new();
+        r30.cnt = 12;
+        r30.fwd = 6;
+        r30.rev = 6;
+        r30.hicnt = 12;
+        r30.qmean = 360.0;
+        r30.mqmean = 720.0;
+        r30.pmean = 240.0;
+        vm30.map.insert("I".to_string(), r30);
+        som_vd.non_insertion_variants.insert(30, vm30);
+        let mut ins30 = VariationMap::new();
+        let mut i30 = Variation::new();
+        i30.cnt = 8;
+        i30.fwd = 4;
+        i30.rev = 4;
+        i30.hicnt = 8;
+        i30.qmean = 240.0;
+        i30.mqmean = 480.0;
+        i30.pmean = 160.0;
+        ins30.map.insert("+GG".to_string(), i30);
+        som_vd.insertion_variants.insert(30, ins30);
+
         let mut som_cfg = Config::default();
         som_cfg.bam = "tumor.bam|normal.bam".to_string();
         som_cfg.freq = 0.05;
         let som_builder = ToVarsBuilder::new(&som_ref, &som_region, &som_chr_lens, &som_cfg);
+
+        assert_eq!(format!("{:?}", RefSiteMode::KeepAll), "KeepAll");
+        assert_eq!(format!("{:?}", RefSiteMode::DropAll), "DropAll");
+        assert!(format!("{:?}", RefSiteMode::KeepWhere(&|_| false)).starts_with("KeepWhere"));
 
         let keep_all =
             som_builder.build_aligned_variants_with_ref_mode(&som_vd, RefSiteMode::KeepAll);
 
         let mut compact_sites: rustc_hash::FxHashMap<i32, CompactRefSite> =
             rustc_hash::FxHashMap::default();
+        assert!(
+            format!("{:?}", RefSiteMode::CompactOut(&mut compact_sites)).starts_with("CompactOut")
+        );
         let mut compact_aligned = som_builder.build_aligned_variants_with_ref_mode(
             &som_vd,
             RefSiteMode::CompactOut(&mut compact_sites),
         );
 
         // Pure ref sites (5, 6, 7, 25, 26) must be in compact_sites and omitted from compact_aligned;
-        // special sites (10, 11 after p-1 ins, 14 "I", 16 cnt==0, 18 sv, 22 non-ref) stay on standard path.
+        // special sites (10, 11 after p-1 ins, 14 "I", 16 cnt==0, 18 sv, 22 non-ref, 30 FASTA 'I' + ins) stay on standard path.
         for p in [5, 6, 7, 25, 26] {
             assert!(
                 compact_sites.contains_key(&p),
@@ -3223,7 +3276,7 @@ mod tests {
                 "expected pos {p} omitted from compact_aligned"
             );
         }
-        for p in [10, 11, 14, 16, 18, 22] {
+        for p in [10, 11, 14, 16, 18, 22, 30] {
             assert!(
                 !compact_sites.contains_key(&p),
                 "pos {p} must be excluded from compact_sites"
@@ -3306,6 +3359,15 @@ mod tests {
             keep_where.get(&25).unwrap().ref_variant.as_ref().unwrap(),
             keep_all.get(&25).unwrap().ref_variant.as_ref().unwrap(),
             "KeepWhere pos 25",
+        );
+        assert!(
+            keep_where.contains_key(&30),
+            "KeepWhere must retain BAM2 insertion at hostile FASTA 'I' site even when pred(30) == false"
+        );
+        assert_variant_eq(
+            keep_where.get(&30).unwrap().variant_by_desc("+GG").unwrap(),
+            keep_all.get(&30).unwrap().variant_by_desc("+GG").unwrap(),
+            "KeepWhere pos 30 +GG insertion",
         );
 
         let som_drop_all =

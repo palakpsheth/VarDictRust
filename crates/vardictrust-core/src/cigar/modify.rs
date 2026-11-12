@@ -741,7 +741,6 @@ pub(crate) fn modify_pure_sm_in_place(
     query_qual: &[u8],
     reference: &[u8],
     ref_start: i32,
-    chr_len: u32,
     config: &Config,
 ) -> Result<PureSmOutcome, crate::types::VardictError> {
     use noodles::sam::alignment::record::cigar::op::Kind as CigarKind;
@@ -805,7 +804,7 @@ pub(crate) fn modify_pure_sm_in_place(
     let m_end_i64 = pos0_i64 + i64::from(mch) - 1;
     let ref_start_i64 = i64::from(ref_start);
     let ref_end_i64 = ref_start_i64 + (reference.len() as i64) - 1;
-    if pos0_i64 < ref_start_i64 || m_end_i64 > i64::from(chr_len) || m_end_i64 > ref_end_i64 {
+    if pos0_i64 < ref_start_i64 || m_end_i64 > ref_end_i64 {
         return Ok(PureSmOutcome::Fallback);
     }
 
@@ -3054,7 +3053,6 @@ mod tests {
                              qqual: &[u8],
                              ref_bytes: &[u8],
                              rstart: i32,
-                             chr_len: u32,
                              cfg: &Config|
          -> PureSmOutcome {
             let mut fast_pos = pos;
@@ -3066,7 +3064,6 @@ mod tests {
                 qqual,
                 ref_bytes,
                 rstart,
-                chr_len,
                 cfg,
             );
             let mut cigar_str = String::new();
@@ -3202,7 +3199,7 @@ mod tests {
                             qqual.push(qb);
                         }
                         let _ = check_pure_sm(
-                            pos, &shape, &qseq, &qqual, reference, ref_start, chr_end, &config,
+                            pos, &shape, &qseq, &qqual, reference, ref_start, &config,
                         );
                     }
                 }
@@ -3224,7 +3221,6 @@ mod tests {
                 &qqual_ms,
                 reference,
                 ref_start,
-                chr_end,
                 &config,
             ),
             PureSmOutcome::Handled
@@ -3245,7 +3241,6 @@ mod tests {
             &qqual_err,
             reference,
             ref_start,
-            chr_end,
             &config,
         )
         .is_err());
@@ -3262,7 +3257,6 @@ mod tests {
                 &qqual_err,
                 reference,
                 ref_start,
-                chr_end,
                 &config,
             ),
             PureSmOutcome::Handled
@@ -3280,7 +3274,6 @@ mod tests {
                 &long_qual,
                 reference,
                 ref_start,
-                chr_end,
                 &config,
             ),
             PureSmOutcome::Fallback
@@ -3295,7 +3288,6 @@ mod tests {
                 &long_qual,
                 reference,
                 ref_start,
-                chr_end,
                 &chim_cfg,
             ),
             PureSmOutcome::Handled
@@ -3310,21 +3302,19 @@ mod tests {
                 &[b'I'; 9],
                 reference,
                 ref_start,
-                chr_end,
                 &adaptor_cfg,
             ),
             PureSmOutcome::Fallback
         );
-        // Contig overhang (`start_pos + m_len - 1 > chr_len`) and truncated quality (`len != seq.len()`)
+        // Contig overhang (`start_pos + m_len - 1 > ref_end_i64`) and truncated quality (`len != seq.len()`)
         assert_eq!(
             check_pure_sm(
                 ref_start + 10,
                 &[(2, CigarKind::SoftClip), (6, CigarKind::Match)],
                 &[b'A'; 8],
                 &[b'I'; 8],
-                reference,
+                &reference[..13],
                 ref_start,
-                (ref_start + 12) as u32,
                 &config,
             ),
             PureSmOutcome::Fallback
@@ -3337,7 +3327,6 @@ mod tests {
                 &[b'I'; 5],
                 reference,
                 ref_start,
-                chr_end,
                 &config,
             ),
             PureSmOutcome::Fallback

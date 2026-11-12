@@ -1069,7 +1069,8 @@ impl Cli {
 
         let sample_regexp = match self.sample_regexp.first() {
             Some(raw) => vardictrust_core::config::validate_sample_regexp(raw)
-                .map_err(vardictrust_core::types::VardictError::Parse)?,
+                .map_err(vardictrust_core::types::VardictError::Parse)?
+                .map(|_| raw.clone()),
             None => None,
         };
         let bam_str = self.bam.first().cloned().unwrap_or_default();
@@ -1847,8 +1848,52 @@ mod tests {
         .unwrap()
         .to_config()
         .unwrap();
-        assert_eq!(n_cfg.sample_regexp.as_deref(), Some("sample_(\\d+)"));
+        assert_eq!(n_cfg.sample_regexp.as_deref(), Some("/sample_(\\d+)/"));
         assert_eq!(n_cfg.sample, "42");
+
+        let empty_slash_n = Cli::try_parse_from(normalize_args(&args(&[
+            "-G",
+            "r.fa",
+            "-b",
+            "/dir/foo.sorted.bam",
+            "-n",
+            "//",
+        ])))
+        .unwrap()
+        .to_config()
+        .unwrap();
+        assert_eq!(empty_slash_n.sample_regexp, None);
+        assert_eq!(empty_slash_n.sample, "foo");
+
+        let escaped_slash_n = Cli::try_parse_from(normalize_args(&args(&[
+            "-G",
+            "r.fa",
+            "-b",
+            "/mnt/cohort/SAMP_ESC/aln.bam",
+            "-n",
+            r"/cohort\/([^/]+)\//",
+        ])))
+        .unwrap()
+        .to_config()
+        .unwrap();
+        assert_eq!(
+            escaped_slash_n.sample_regexp.as_deref(),
+            Some(r"/cohort\/([^/]+)\//")
+        );
+        assert_eq!(escaped_slash_n.sample, "SAMP_ESC");
+
+        let double_slash_n = Cli::try_parse_from(normalize_args(&args(&[
+            "-G",
+            "r.fa",
+            "-b",
+            "not_cohort/FAKE/aln_1.bam|/cohort/REAL/aln_2.bam",
+            "-n",
+            r"//cohort/([^/]+)//",
+        ])))
+        .unwrap()
+        .to_config()
+        .unwrap();
+        assert_eq!(double_slash_n.sample, "aln_1|REAL");
 
         let paired_vcf_n = Cli::try_parse_from(normalize_args(&args(&[
             "-G",

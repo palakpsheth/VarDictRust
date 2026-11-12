@@ -899,6 +899,125 @@ mod filtering_and_pileup {
                 "paired amplicon .var must match single first-BAM amplicon .var byte-for-byte for amplicon={amp_opt:?}"
             );
         }
+
+        // 3. Direct library `run_with_writer` validates `Config::sample_regexp` and resolves
+        //    samples across single-sample, BED, `-R`, paired VCF, and paired `.var` while
+        //    preserving `Config::default()` (`"SAMPLE"`) when `sample_regexp: None`.
+        let t_cohort_dir = dir.path().join("cohort").join("T_LIB");
+        let n_cohort_dir = dir.path().join("cohort").join("N_LIB");
+        fs::create_dir_all(&t_cohort_dir).expect("mkdir T_LIB");
+        fs::create_dir_all(&n_cohort_dir).expect("mkdir N_LIB");
+        let t_cohort_bam = t_cohort_dir.join("t.bam");
+        let n_cohort_bam = n_cohort_dir.join("n.bam");
+        fs::copy(&first_bam, &t_cohort_bam).expect("copy t_cohort_bam");
+        fs::copy(
+            first_bam.with_extension("bam.bai"),
+            t_cohort_bam.with_extension("bam.bai"),
+        )
+        .expect("copy t_cohort_bam.bai");
+        fs::copy(&second_bam, &n_cohort_bam).expect("copy n_cohort_bam");
+        fs::copy(
+            second_bam.with_extension("bam.bai"),
+            n_cohort_bam.with_extension("bam.bai"),
+        )
+        .expect("copy n_cohort_bam.bai");
+        let plain_bed = dir.path().join("plain.bed");
+        fs::write(&plain_bed, "chr1\t79\t131\tGENE1\n").expect("write plain.bed");
+
+        let default_sample_cfg = Config {
+            reference: fa.to_string_lossy().into_owned(),
+            bam: t_cohort_bam.to_string_lossy().into_owned(),
+            region: Some("chr1:80-131".to_string()),
+            threads: 1,
+            ..Config::default()
+        };
+        let mut default_buf = Vec::new();
+        vardictrust_core::run_with_writer(&default_sample_cfg, &mut default_buf)
+            .expect("run_with_writer default sample");
+        assert!(
+            String::from_utf8_lossy(&default_buf)
+                .contains("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tSAMPLE\n"),
+            "Config::default() with sample_regexp: None must keep SAMPLE"
+        );
+
+        let mut bad_regex_cfg = default_sample_cfg.clone();
+        bad_regex_cfg.sample_regexp = Some("([unclosed".to_string());
+        let mut bad_buf = Vec::new();
+        let bad_err = vardictrust_core::run_with_writer(&bad_regex_cfg, &mut bad_buf)
+            .expect_err("malformed Config::sample_regexp must fail fast");
+        assert!(
+            matches!(bad_err, VardictError::Parse(_)),
+            "expected VardictError::Parse for malformed sample_regexp, got {bad_err:?}"
+        );
+
+        for pat in [r"/cohort\/([^/]+)\//", r"//cohort/([^/]+)//"] {
+            let mut single_r_cfg = default_sample_cfg.clone();
+            single_r_cfg.sample_regexp = Some(pat.to_string());
+            let mut out_r = Vec::new();
+            vardictrust_core::run_with_writer(&single_r_cfg, &mut out_r)
+                .expect("single -R sample_regexp");
+            assert!(
+                String::from_utf8_lossy(&out_r)
+                    .contains("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tT_LIB\n"),
+                "single -R failed for {pat}"
+            );
+
+            let single_bed_cfg = Config {
+                reference: fa.to_string_lossy().into_owned(),
+                bam: t_cohort_bam.to_string_lossy().into_owned(),
+                bed: Some(plain_bed.to_string_lossy().into_owned()),
+                zero_based: true,
+                zero_based_defined: true,
+                col_chr: 0,
+                col_start: 1,
+                col_end: 2,
+                col_seg_start: 1,
+                col_seg_end: 2,
+                col_gene: Some(3),
+                column_for_chromosome: Some(0),
+                sample_regexp: Some(pat.to_string()),
+                threads: 1,
+                ..Config::default()
+            };
+            let mut out_bed = Vec::new();
+            vardictrust_core::run_with_writer(&single_bed_cfg, &mut out_bed)
+                .expect("single BED sample_regexp");
+            assert!(
+                String::from_utf8_lossy(&out_bed)
+                    .contains("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tT_LIB\n"),
+                "single BED failed for {pat}"
+            );
+
+            let mut paired_vcf_cfg = single_bed_cfg.clone();
+            paired_vcf_cfg.bam = format!("{}|{}", t_cohort_bam.display(), n_cohort_bam.display());
+            let mut out_paired_vcf = Vec::new();
+            vardictrust_core::run_with_writer(&paired_vcf_cfg, &mut out_paired_vcf)
+                .expect("paired VCF sample_regexp");
+            assert!(
+                String::from_utf8_lossy(&out_paired_vcf).contains(
+                    "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tT_LIB\tN_LIB\n"
+                ),
+                "paired VCF failed for {pat}"
+            );
+
+            let paired_var_cfg = Config {
+                reference: fa.to_string_lossy().into_owned(),
+                bam: format!("{}|{}", t_cohort_bam.display(), n_cohort_bam.display()),
+                region: Some("chr1:80-131".to_string()),
+                emit_intermediate: true,
+                sample_regexp: Some(pat.to_string()),
+                threads: 1,
+                ..Config::default()
+            };
+            let mut out_paired_var = Vec::new();
+            vardictrust_core::run_with_writer(&paired_var_cfg, &mut out_paired_var)
+                .expect("paired -R .var sample_regexp");
+            let paired_var_str = String::from_utf8_lossy(&out_paired_var);
+            assert!(
+                paired_var_str.lines().any(|l| l.starts_with("T_LIB\t")),
+                "paired -R .var failed for {pat}: {paired_var_str}"
+            );
+        }
     }
 
     #[test]

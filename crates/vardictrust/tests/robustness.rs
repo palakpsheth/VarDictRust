@@ -1009,6 +1009,10 @@ fn output_bgzf_tbi_and_parity_compat_flags() {
         "expected actionable >536,870,912 --csi hint, got: {large_tbi_stderr}"
     );
     assert!(
+        !large_tbi_vcf.exists(),
+        "out.vcf.gz must not exist on >512 Mbp --tbi failure"
+    );
+    assert!(
         !tbi_600m_dir.join("out.vcf.gz.tbi").exists(),
         ".tbi file must not exist on >512 Mbp failure"
     );
@@ -1020,6 +1024,43 @@ fn output_bgzf_tbi_and_parity_compat_flags() {
     assert!(
         tmp_residue.is_empty(),
         "zero .tbi.tmp residue allowed after >512 Mbp --tbi failure, found: {tmp_residue:?}"
+    );
+
+    let pre_vcf_bytes = b"PREEXISTING_VCF_GZ_SENTINEL";
+    let pre_tbi_bytes = b"PREEXISTING_TBI_SENTINEL";
+    let large_tbi_idx = tbi_600m_dir.join("out.vcf.gz.tbi");
+    std::fs::write(&large_tbi_vcf, pre_vcf_bytes).expect("seed preexisting out.vcf.gz");
+    std::fs::write(&large_tbi_idx, pre_tbi_bytes).expect("seed preexisting out.vcf.gz.tbi");
+    let large_tbi_preserve = base_cmd()
+        .arg("-G")
+        .arg(&large_fa)
+        .arg("-b")
+        .arg(&large_bam)
+        .args(["-R", "chr_large:600000070-600000140", "--threads=1"])
+        .arg("--output")
+        .arg(&large_tbi_vcf)
+        .arg("--tbi")
+        .output()
+        .expect("spawn --tbi over preexisting files on 700M contig");
+    assert!(!large_tbi_preserve.status.success());
+    assert_eq!(
+        std::fs::read(&large_tbi_vcf).expect("read preexisting out.vcf.gz"),
+        pre_vcf_bytes,
+        "failing --tbi must leave preexisting out.vcf.gz bytes untouched"
+    );
+    assert_eq!(
+        std::fs::read(&large_tbi_idx).expect("read preexisting out.vcf.gz.tbi"),
+        pre_tbi_bytes,
+        "failing --tbi must leave preexisting out.vcf.gz.tbi bytes untouched"
+    );
+    let tmp_residue_preserve: Vec<_> = std::fs::read_dir(&tbi_600m_dir)
+        .expect("read tbi_600m_fail after preserve")
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().contains(".tmp"))
+        .collect();
+    assert!(
+        tmp_residue_preserve.is_empty(),
+        "zero .tmp residue allowed after preexisting --tbi failure, found: {tmp_residue_preserve:?}"
     );
 
     // 4. --parity and --compat vardictjava-1.8.3 match default stdout byte-for-byte; unknown --compat fails with Unsupported
@@ -1993,6 +2034,39 @@ fn commons_cli_single_dash_flags_and_zero_bed_col_behavior() {
         n_paired_stdout.lines().any(|l| l.starts_with("42\t")),
         "-n paired -R .var must resolve sample column to '42', got:\n{n_paired_stdout}"
     );
+
+    let cohort_dir = tmp.path().join("cohort").join("SAMP_ESC");
+    std::fs::create_dir_all(&cohort_dir).expect("mkdir cohort/SAMP_ESC");
+    let cohort_bam = cohort_dir.join("aln.bam");
+    let cohort_bai = cohort_dir.join("aln.bam.bai");
+    std::fs::copy(
+        workspace_root().join("fixtures/micro/micro.bam"),
+        &cohort_bam,
+    )
+    .expect("copy micro.bam -> cohort/SAMP_ESC/aln.bam");
+    std::fs::copy(
+        workspace_root().join("fixtures/micro/micro.bam.bai"),
+        &cohort_bai,
+    )
+    .expect("copy micro.bam.bai -> cohort/SAMP_ESC/aln.bam.bai");
+    for slash_pat in [r"/cohort\/([^/]+)\//", r"//cohort/([^/]+)//"] {
+        let slash_single = base_cmd()
+            .args(["-G", "fixtures/micro/micro.ref.fa", "-b"])
+            .arg(&cohort_bam)
+            .args(["-R", "chr1:40-260", "-n", slash_pat, "--threads=1"])
+            .output()
+            .expect("spawn -n slash pattern VCF");
+        assert!(
+            slash_single.status.success(),
+            "-n {slash_pat} failed: {}",
+            String::from_utf8_lossy(&slash_single.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&slash_single.stdout)
+                .contains("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tSAMP_ESC\n"),
+            "-n {slash_pat} must extract SAMP_ESC without double-stripping slashes"
+        );
+    }
 
     let uz0_out = base_cmd()
         .args(base_region_args)

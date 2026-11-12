@@ -1722,6 +1722,13 @@ impl StagedFileTarget {
         }
     }
 
+    fn readable_path<'a>(&'a self, final_path: &'a Path) -> &'a Path {
+        match self {
+            Self::AtomicTmp { tmp_path, .. } => tmp_path.as_path(),
+            Self::Direct => final_path,
+        }
+    }
+
     fn commit(mut self) -> std::io::Result<()> {
         if let Self::AtomicTmp {
             final_path,
@@ -1934,7 +1941,7 @@ where
     Ok(())
 }
 
-fn commit_staged_index<F>(index_path: &Path, write_fn: F) -> Result<(), VardictError>
+fn stage_index_file<F>(index_path: &Path, write_fn: F) -> Result<StagedFileTarget, VardictError>
 where
     F: FnOnce(std::fs::File) -> std::io::Result<std::fs::File>,
 {
@@ -1942,15 +1949,18 @@ where
     let inner_file = write_fn(file).map_err(VardictError::Io)?;
     sync_file_ignoring_special(&inner_file)?;
     drop(inner_file);
-    staged.commit().map_err(VardictError::Io)
+    Ok(staged)
 }
 
-fn write_vcf_tabix_index_inner(vcf_gz_path: &Path, tbi_path: &Path) -> Result<(), VardictError> {
+fn stage_vcf_tabix_index_inner(
+    readable_vcf: &Path,
+    tbi_path: &Path,
+) -> Result<StagedFileTarget, VardictError> {
     let mut indexer = noodles::tabix::index::Indexer::default();
     indexer.set_header(noodles::csi::binning_index::index::header::Builder::vcf().build());
 
     scan_bgzf_vcf_index_records(
-        vcf_gz_path,
+        readable_vcf,
         |chrom, pos_usize, end_usize, start_pos, end_pos, chunk| {
             if end_usize > TABIX_MAX_COORD_BP {
                 return Err(VardictError::Parse(format!(
@@ -1966,26 +1976,32 @@ fn write_vcf_tabix_index_inner(vcf_gz_path: &Path, tbi_path: &Path) -> Result<()
     )?;
 
     let index = indexer.build();
-    commit_staged_index(tbi_path, |file| {
+    stage_index_file(tbi_path, |file| {
         let mut tbi_writer = noodles::tabix::io::Writer::new(file);
         tbi_writer.write_index(&index)?;
         tbi_writer.into_inner().finish()
     })
 }
 
-fn write_vcf_tabix_index(vcf_gz_path: &Path) -> Result<(), VardictError> {
-    let tbi_path = tbi_output_path(vcf_gz_path);
-    if paths_collide(vcf_gz_path, &tbi_path) {
+fn stage_vcf_tabix_index(
+    readable_vcf: &Path,
+    final_vcf: &Path,
+) -> Result<StagedFileTarget, VardictError> {
+    let tbi_path = tbi_output_path(final_vcf);
+    if paths_collide(final_vcf, &tbi_path) {
         return Err(VardictError::Parse(format!(
             "--output '{}' and its Tabix index '{}' must not point to the same file",
-            vcf_gz_path.display(),
+            final_vcf.display(),
             tbi_path.display()
         )));
     }
-    write_vcf_tabix_index_inner(vcf_gz_path, &tbi_path)
+    stage_vcf_tabix_index_inner(readable_vcf, &tbi_path)
 }
 
-fn write_vcf_csi_index_inner(vcf_gz_path: &Path, csi_path: &Path) -> Result<(), VardictError> {
+fn stage_vcf_csi_index_inner(
+    readable_vcf: &Path,
+    csi_path: &Path,
+) -> Result<StagedFileTarget, VardictError> {
     let mut indexer = noodles::csi::binning_index::Indexer::<
         noodles::csi::binning_index::index::reference_sequence::index::BinnedIndex,
     >::new(14, 6)
@@ -1993,7 +2009,7 @@ fn write_vcf_csi_index_inner(vcf_gz_path: &Path, csi_path: &Path) -> Result<(), 
     let mut names = noodles::csi::binning_index::index::header::ReferenceSequenceNames::new();
 
     scan_bgzf_vcf_index_records(
-        vcf_gz_path,
+        readable_vcf,
         |chrom, _pos_usize, _end_usize, start_pos, end_pos, chunk| {
             let (ref_id, _) = names.insert_full(chrom.as_bytes().into());
             indexer
@@ -2009,23 +2025,26 @@ fn write_vcf_csi_index_inner(vcf_gz_path: &Path, csi_path: &Path) -> Result<(), 
         .set_reference_sequence_names(names)
         .build();
     let index = indexer.set_header(header).build(contig_count);
-    commit_staged_index(csi_path, |file| {
+    stage_index_file(csi_path, |file| {
         let mut csi_writer = noodles::csi::io::Writer::new(file);
         csi_writer.write_index(&index)?;
         csi_writer.into_inner().finish()
     })
 }
 
-fn write_vcf_csi_index(vcf_gz_path: &Path) -> Result<(), VardictError> {
-    let csi_path = csi_output_path(vcf_gz_path);
-    if paths_collide(vcf_gz_path, &csi_path) {
+fn stage_vcf_csi_index(
+    readable_vcf: &Path,
+    final_vcf: &Path,
+) -> Result<StagedFileTarget, VardictError> {
+    let csi_path = csi_output_path(final_vcf);
+    if paths_collide(final_vcf, &csi_path) {
         return Err(VardictError::Parse(format!(
             "--output '{}' and its CSI index '{}' must not point to the same file",
-            vcf_gz_path.display(),
+            final_vcf.display(),
             csi_path.display()
         )));
     }
-    write_vcf_csi_index_inner(vcf_gz_path, &csi_path)
+    stage_vcf_csi_index_inner(readable_vcf, &csi_path)
 }
 
 /// Backwards-compatible alias for existing call sites.
@@ -2112,22 +2131,14 @@ fn resolve_effective_config(
     config: &config::Config,
 ) -> Result<(config::Config, CallingMode), VardictError> {
     let mut effective = config.clone();
+    if let Some(ref raw) = effective.sample_regexp {
+        crate::config::validate_sample_regexp(raw).map_err(VardictError::Parse)?;
+    }
     let paired = effective.bam.contains('|');
     let has_region = effective.region.is_some();
 
     if has_region {
         effective.amplicon = None;
-        if paired && (effective.emit_intermediate || effective.splice) {
-            effective.sample = crate::config::resolve_sample_names(
-                &effective.bam,
-                effective
-                    .sample_explicit
-                    .then_some(effective.sample.as_str()),
-                effective.sample_regexp.as_deref(),
-                has_region,
-                effective.emit_intermediate || effective.splice,
-            );
-        }
     } else if effective.amplicon.is_none() {
         if let Some(ref bed_path) = effective.bed {
             if crate::regions::detect_amplicon_bed(bed_path, &effective.delimiter)? {
@@ -2138,6 +2149,20 @@ fn resolve_effective_config(
                 }
             }
         }
+    }
+
+    if effective.sample_regexp.is_some()
+        || (has_region && paired && (effective.emit_intermediate || effective.splice))
+    {
+        effective.sample = crate::config::resolve_sample_names(
+            &effective.bam,
+            effective
+                .sample_explicit
+                .then_some(effective.sample.as_str()),
+            effective.sample_regexp.as_deref(),
+            has_region,
+            effective.emit_intermediate || effective.splice,
+        );
     }
 
     let mode = resolve_mode(
@@ -2559,17 +2584,29 @@ pub fn run(config: &config::Config) -> Result<(), VardictError> {
 
         match engine_res {
             Ok(()) => {
+                let staged_idx = if effective.index_output || effective.index_csi {
+                    if let Some(ref out_path) = effective.output_path {
+                        let final_vcf = Path::new(out_path);
+                        let readable_vcf = match staged_out.as_ref() {
+                            Some(staged) => staged.readable_path(final_vcf),
+                            None => final_vcf,
+                        };
+                        if effective.index_output {
+                            Some(stage_vcf_tabix_index(readable_vcf, final_vcf)?)
+                        } else {
+                            Some(stage_vcf_csi_index(readable_vcf, final_vcf)?)
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
                 if let Some(staged) = staged_out {
                     staged.commit().map_err(VardictError::Io)?;
                 }
-                if effective.index_output {
-                    if let Some(ref out_path) = effective.output_path {
-                        write_vcf_tabix_index(Path::new(out_path))?;
-                    }
-                } else if effective.index_csi {
-                    if let Some(ref out_path) = effective.output_path {
-                        write_vcf_csi_index(Path::new(out_path))?;
-                    }
+                if let Some(staged_idx) = staged_idx {
+                    staged_idx.commit().map_err(VardictError::Io)?;
                 }
                 if let Some(pending) = pending_stats {
                     emit_stats(pending)?;
@@ -5977,7 +6014,10 @@ mod tests {
                 .unwrap();
             writer.finish().unwrap();
         }
-        write_vcf_tabix_index(&vcf_gz).unwrap();
+        stage_vcf_tabix_index(&vcf_gz, &vcf_gz)
+            .unwrap()
+            .commit()
+            .unwrap();
         let index = noodles::tabix::fs::read(&tbi_path).unwrap();
         let start = noodles::core::Position::new(30000).unwrap();
         let end = noodles::core::Position::new(30100).unwrap();
@@ -6287,7 +6327,7 @@ mod tests {
             );
         }
 
-        // 3. write_vcf_tabix_index uses atomic tmp path and never unlinks existing .tbi on error
+        // 3. stage_vcf_tabix_index uses atomic tmp path and never unlinks existing .tbi on error
         let corrupt_vcf_gz = dir.path().join("corrupt.vcf.gz");
         let existing_tbi = dir.path().join("corrupt.vcf.gz.tbi");
         {
@@ -6298,11 +6338,11 @@ mod tests {
             bgzf_w.finish().unwrap();
         }
         std::fs::write(&existing_tbi, b"KEEP_EXISTING_TBI").unwrap();
-        assert!(write_vcf_tabix_index(&corrupt_vcf_gz).is_err());
+        assert!(stage_vcf_tabix_index(&corrupt_vcf_gz, &corrupt_vcf_gz).is_err());
         assert_eq!(
             std::fs::read(&existing_tbi).unwrap(),
             b"KEEP_EXISTING_TBI",
-            "failed write_vcf_tabix_index must preserve existing .tbi"
+            "failed stage_vcf_tabix_index must preserve existing .tbi"
         );
 
         let leftover_tmps: Vec<_> = std::fs::read_dir(dir.path())

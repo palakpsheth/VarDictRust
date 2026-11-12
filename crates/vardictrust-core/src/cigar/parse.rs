@@ -386,32 +386,23 @@ impl<'a> CigarParser<'a> {
                     }
                     false
                 }
-                _ => {
-                    let chr_len = if ref_slice.is_empty() {
-                        0
-                    } else {
-                        (i64::from(ref_start) + (ref_slice.len() as i64) - 1)
-                            .clamp(0, i64::from(u32::MAX)) as u32
-                    };
-                    match crate::cigar::modify::modify_pure_sm_in_place(
-                        &mut start_pos,
-                        &mut cigar_elements,
-                        &record.sequence,
-                        &record.quality_scores,
-                        ref_slice,
-                        ref_start,
-                        chr_len,
-                        self.config,
-                    ) {
-                        Ok(crate::cigar::modify::PureSmOutcome::Handled) => false,
-                        Ok(crate::cigar::modify::PureSmOutcome::Fallback) => true,
-                        Err(e) => {
-                            self.scratch_elements = cigar_elements;
-                            log_modify_err(e);
-                            return Ok(());
-                        }
+                _ => match crate::cigar::modify::modify_pure_sm_in_place(
+                    &mut start_pos,
+                    &mut cigar_elements,
+                    &record.sequence,
+                    &record.quality_scores,
+                    ref_slice,
+                    ref_start,
+                    self.config,
+                ) {
+                    Ok(crate::cigar::modify::PureSmOutcome::Handled) => false,
+                    Ok(crate::cigar::modify::PureSmOutcome::Fallback) => true,
+                    Err(e) => {
+                        self.scratch_elements = cigar_elements;
+                        log_modify_err(e);
+                        return Ok(());
                     }
-                }
+                },
             };
 
             if run_fallback_modifier {

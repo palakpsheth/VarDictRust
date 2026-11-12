@@ -364,22 +364,13 @@ fn strip_outer_slashes(raw: &str) -> &str {
     pat.strip_suffix('/').unwrap_or(pat)
 }
 
-/// Extract sample name from a BAM file path (or `bam1|bam2` specification),
-/// matching `VarDictLauncher.java:75-102` and `Patterns.java:65-67`:
-/// 1. `SAMPLE_PATTERN` (`([^/\\._]+).sorted[^/]*\.bam`) or custom `-n` regex (with leading/trailing `/` stripped)
-///    applied to the full `bam_path` (`conf.bam.getBamRaw()`).
-/// 2. `SAMPLE_PATTERN2` (`([^/]+)[_\.][^/]*bam`) applied to the full `bam_path`.
-/// 3. Fallback `"null"` (`VarDictLauncher.java:76`).
-pub fn extract_sample_name(bam_path: &str, sample_regexp: Option<&str>) -> String {
+fn extract_sample_name_clean(bam_path: &str, clean_pat: Option<&str>) -> String {
     static SAMPLE_RE1: std::sync::LazyLock<Option<regex::Regex>> =
         std::sync::LazyLock::new(|| regex::Regex::new(r"([^/\._]+).sorted[^/]*\.bam").ok());
     static SAMPLE_RE2: std::sync::LazyLock<Option<regex::Regex>> =
         std::sync::LazyLock::new(|| regex::Regex::new(r"([^/]+)[_\.][^/]*bam").ok());
 
-    if let Some(pat) = sample_regexp
-        .map(strip_outer_slashes)
-        .filter(|s| !s.is_empty())
-    {
+    if let Some(pat) = clean_pat {
         if let Ok(re) = regex::RegexBuilder::new(pat).size_limit(1 << 20).build() {
             if let Some(caps) = re.captures(bam_path) {
                 if let Some(m) = caps.get(1) {
@@ -406,6 +397,19 @@ pub fn extract_sample_name(bam_path: &str, sample_regexp: Option<&str>) -> Strin
     "null".to_string()
 }
 
+/// Extract sample name from a BAM file path (or `bam1|bam2` specification),
+/// matching `VarDictLauncher.java:75-102` and `Patterns.java:65-67`:
+/// 1. `SAMPLE_PATTERN` (`([^/\\._]+).sorted[^/]*\.bam`) or custom `-n` regex (with leading/trailing `/` stripped)
+///    applied to the full `bam_path` (`conf.bam.getBamRaw()`).
+/// 2. `SAMPLE_PATTERN2` (`([^/]+)[_\.][^/]*bam`) applied to the full `bam_path`.
+/// 3. Fallback `"null"` (`VarDictLauncher.java:76`).
+pub fn extract_sample_name(bam_path: &str, sample_regexp: Option<&str>) -> String {
+    let clean_pat = sample_regexp
+        .map(strip_outer_slashes)
+        .filter(|s| !s.is_empty());
+    extract_sample_name_clean(bam_path, clean_pat)
+}
+
 /// Validates a `-n` / `--sample-regexp` CLI pattern after stripping a single
 /// leading `'/'` and single trailing `'/'` (`CmdParser.java:88-92`).
 pub fn validate_sample_regexp(raw: &str) -> Result<Option<String>, String> {
@@ -429,15 +433,15 @@ pub fn resolve_sample_names(
     has_region: bool,
     emit_intermediate_or_splice: bool,
 ) -> String {
+    let clean_pat = sample_regexp
+        .map(strip_outer_slashes)
+        .filter(|s| !s.is_empty());
     if let Some((bam1, bam2)) = bam_raw.split_once('|') {
         if has_region && emit_intermediate_or_splice {
-            let clean_pat = sample_regexp
-                .map(strip_outer_slashes)
-                .filter(|s| !s.is_empty());
             let mut base1 = match explicit_sample {
                 Some(exp) if clean_pat.is_some() => exp.to_string(),
                 Some(exp) => exp.split('|').next().unwrap_or(exp).to_string(),
-                None => extract_sample_name(bam_raw, clean_pat),
+                None => extract_sample_name_clean(bam_raw, clean_pat),
             };
             if let Some(pat) = clean_pat {
                 if let Ok(re) = regex::RegexBuilder::new(pat).size_limit(1 << 20).build() {
@@ -452,18 +456,18 @@ pub fn resolve_sample_names(
         } else if let Some(exp) = explicit_sample {
             exp.to_string()
         } else if emit_intermediate_or_splice {
-            extract_sample_name(bam_raw, sample_regexp)
+            extract_sample_name_clean(bam_raw, clean_pat)
         } else {
             format!(
                 "{}|{}",
-                extract_sample_name(bam1, sample_regexp),
-                extract_sample_name(bam2, sample_regexp)
+                extract_sample_name_clean(bam1, clean_pat),
+                extract_sample_name_clean(bam2, clean_pat)
             )
         }
     } else if let Some(exp) = explicit_sample {
         exp.to_string()
     } else {
-        extract_sample_name(bam_raw, sample_regexp)
+        extract_sample_name_clean(bam_raw, clean_pat)
     }
 }
 
@@ -675,6 +679,40 @@ mod tests {
         assert_eq!(
             resolve_sample_names("a_1.bam:b_2.bam", None, Some(r":b_(\d+)\.bam"), false, true),
             "2"
+        );
+        // Single outer-slash strip (`CmdParser.java:86-93`): escaped trailing `\/` and `//...//` anchors
+        assert_eq!(
+            extract_sample_name("/mnt/cohort/SAMP_ESC/aln.bam", Some(r"/cohort\/([^/]+)\//")),
+            "SAMP_ESC"
+        );
+        assert_eq!(
+            resolve_sample_names(
+                "/mnt/cohort/T_ESC/t.bam|/mnt/cohort/N_ESC/n.bam",
+                None,
+                Some(r"/cohort\/([^/]+)\//"),
+                false,
+                false,
+            ),
+            "T_ESC|N_ESC"
+        );
+        assert_eq!(
+            resolve_sample_names(
+                "/mnt/cohort/T_ESC/t.bam|/mnt/cohort/N_ESC/n.bam",
+                None,
+                Some(r"/cohort\/([^/]+)\//"),
+                true,
+                true,
+            ),
+            "T_ESC"
+        );
+        assert_eq!(
+            extract_sample_name("/cohort/ANCHORED/aln.bam", Some(r"//cohort/([^/]+)//")),
+            "ANCHORED"
+        );
+        assert_eq!(
+            extract_sample_name("not_cohort/FAKE/aln_1.bam", Some(r"//cohort/([^/]+)//")),
+            "aln_1",
+            "double-slash pattern strips once to `/cohort/([^/]+)/` and must not match `not_cohort/`"
         );
     }
 }

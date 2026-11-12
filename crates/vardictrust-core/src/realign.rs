@@ -5050,29 +5050,28 @@ fn partial_pipeline(
             dest.merge_planted = true;
         }
         for (allele, var) in var_map.map {
-            dest.map
-                .entry(allele)
-                .and_modify(|v| {
-                    v.cnt += var.cnt;
-                    v.fwd += var.fwd;
-                    v.rev += var.rev;
-                    v.pmean += var.pmean;
-                    v.qmean += var.qmean;
-                    v.mqmean += var.mqmean;
-                    v.nm += var.nm;
-                    v.hicnt += var.hicnt;
-                    v.locnt += var.locnt;
-                    v.extracnt += var.extracnt;
-                    if var.pstd {
-                        v.pstd = true;
-                    }
-                    if var.qstd {
-                        v.qstd = true;
-                    }
-                    v.pp += var.pp;
-                    v.pq += var.pq;
-                })
-                .or_insert(var);
+            if let Some(v) = dest.map.get_mut(&allele) {
+                v.cnt += var.cnt;
+                v.fwd += var.fwd;
+                v.rev += var.rev;
+                v.pmean += var.pmean;
+                v.qmean += var.qmean;
+                v.mqmean += var.mqmean;
+                v.nm += var.nm;
+                v.hicnt += var.hicnt;
+                v.locnt += var.locnt;
+                v.extracnt += var.extracnt;
+                if var.pstd {
+                    v.pstd = true;
+                }
+                if var.qstd {
+                    v.qstd = true;
+                }
+                v.pp += var.pp;
+                v.pq += var.pq;
+            } else {
+                dest.map.insert(allele, var);
+            }
         }
         if let Some(sv) = var_map.sv {
             if let Some(dest_sv) = &mut dest.sv {
@@ -5090,29 +5089,28 @@ fn partial_pipeline(
             dest.merge_planted = true;
         }
         for (allele, var) in var_map.map {
-            dest.map
-                .entry(allele)
-                .and_modify(|v| {
-                    v.cnt += var.cnt;
-                    v.fwd += var.fwd;
-                    v.rev += var.rev;
-                    v.pmean += var.pmean;
-                    v.qmean += var.qmean;
-                    v.mqmean += var.mqmean;
-                    v.nm += var.nm;
-                    v.hicnt += var.hicnt;
-                    v.locnt += var.locnt;
-                    v.extracnt += var.extracnt;
-                    if var.pstd {
-                        v.pstd = true;
-                    }
-                    if var.qstd {
-                        v.qstd = true;
-                    }
-                    v.pp += var.pp;
-                    v.pq += var.pq;
-                })
-                .or_insert(var);
+            if let Some(v) = dest.map.get_mut(&allele) {
+                v.cnt += var.cnt;
+                v.fwd += var.fwd;
+                v.rev += var.rev;
+                v.pmean += var.pmean;
+                v.qmean += var.qmean;
+                v.mqmean += var.mqmean;
+                v.nm += var.nm;
+                v.hicnt += var.hicnt;
+                v.locnt += var.locnt;
+                v.extracnt += var.extracnt;
+                if var.pstd {
+                    v.pstd = true;
+                }
+                if var.qstd {
+                    v.qstd = true;
+                }
+                v.pp += var.pp;
+                v.pq += var.pq;
+            } else {
+                dest.map.insert(allele, var);
+            }
         }
         if let Some(sv) = var_map.sv {
             if let Some(dest_sv) = &mut dest.sv {

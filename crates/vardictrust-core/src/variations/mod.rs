@@ -860,7 +860,7 @@ pub struct Sv {
 }
 
 /// Stack-allocated UTF-8 allele key up to 23 bytes for single-allele `VariationEntries::One`.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct InlineKey {
     len: u8,
     buf: [u8; 23],
@@ -1008,6 +1008,53 @@ impl<'a> IntoIterator for &'a VariationEntries {
     #[inline]
     fn into_iter(self) -> Self::IntoIter {
         self.iter()
+    }
+}
+
+#[derive(Debug)]
+pub enum VariationIterMut<'a> {
+    Empty,
+    One(Option<(&'a str, &'a mut Variation)>),
+    Many(indexmap::map::IterMut<'a, String, Variation>),
+}
+
+impl<'a> Iterator for VariationIterMut<'a> {
+    type Item = (&'a str, &'a mut Variation);
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Empty => None,
+            Self::One(opt) => opt.take(),
+            Self::Many(iter) => iter.next().map(|(k, v)| (k.as_str(), v)),
+        }
+    }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let len = ExactSizeIterator::len(self);
+        (len, Some(len))
+    }
+}
+
+impl ExactSizeIterator for VariationIterMut<'_> {
+    #[inline]
+    fn len(&self) -> usize {
+        match self {
+            Self::Empty | Self::One(None) => 0,
+            Self::One(Some(_)) => 1,
+            Self::Many(iter) => iter.len(),
+        }
+    }
+}
+
+impl<'a> IntoIterator for &'a mut VariationEntries {
+    type Item = (&'a str, &'a mut Variation);
+    type IntoIter = VariationIterMut<'a>;
+
+    #[inline]
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter_mut()
     }
 }
 
@@ -1231,10 +1278,6 @@ impl VariationEntries {
         }
     }
 
-    pub fn entry(&mut self, key: String) -> indexmap::map::Entry<'_, String, Variation> {
-        self.ensure_many_mut().entry(key)
-    }
-
     #[inline]
     pub fn keys(&self) -> VariationKeys<'_> {
         match self {
@@ -1251,6 +1294,31 @@ impl VariationEntries {
             Self::One(ik, v) => VariationIter::One(Some((ik.as_str(), v))),
             Self::Many(map) => VariationIter::Many(map.iter()),
         }
+    }
+
+    #[inline]
+    pub fn iter_mut(&mut self) -> VariationIterMut<'_> {
+        match self {
+            Self::Empty => VariationIterMut::Empty,
+            Self::One(ik, v) => VariationIterMut::One(Some((ik.as_str(), v))),
+            Self::Many(map) => VariationIterMut::Many(map.iter_mut()),
+        }
+    }
+}
+
+impl Extend<(String, Variation)> for VariationEntries {
+    fn extend<I: IntoIterator<Item = (String, Variation)>>(&mut self, iter: I) {
+        for (k, v) in iter {
+            self.insert(k, v);
+        }
+    }
+}
+
+impl FromIterator<(String, Variation)> for VariationEntries {
+    fn from_iter<I: IntoIterator<Item = (String, Variation)>>(iter: I) -> Self {
+        let mut entries = Self::new();
+        entries.extend(iter);
+        entries
     }
 }
 
@@ -1774,9 +1842,42 @@ mod tests {
         e2.shift_remove("A");
         assert_eq!(e2.keys().collect::<Vec<_>>(), vec!["C", "G"]);
 
-        let mut e3 = VariationEntries::new();
-        e3.get_or_insert_variation("A").cnt = 5;
-        e3.entry("T".to_string()).or_insert_with(Variation::new).cnt = 8;
+        // Verify InlineKey Eq and M-COLLECTION-TRAITS (FromIterator, Extend, iter_mut, IntoIterator)
+        assert_eq!(InlineKey::try_from_str("A"), InlineKey::try_from_str("A"));
+        assert_ne!(InlineKey::try_from_str("A"), InlineKey::try_from_str("T"));
+
+        let mut e_empty = VariationEntries::new();
+        assert_eq!(e_empty.iter_mut().len(), 0);
+        assert_eq!(e_empty.iter_mut().size_hint(), (0, Some(0)));
+        assert!(e_empty.iter_mut().next().is_none());
+
+        let mut v_a = Variation::new();
+        v_a.cnt = 4;
+        let mut e3: VariationEntries = [("A".to_string(), v_a)].into_iter().collect();
+        assert!(matches!(e3, VariationEntries::One(_, _)));
+        {
+            let mut one_mut = e3.iter_mut();
+            assert_eq!(one_mut.len(), 1);
+            assert_eq!(one_mut.size_hint(), (1, Some(1)));
+            if let Some((k, v)) = one_mut.next() {
+                assert_eq!(k, "A");
+                v.cnt += 1;
+            }
+            assert_eq!(one_mut.len(), 0);
+        }
+        let mut v_t = Variation::new();
+        v_t.cnt = 6;
+        e3.extend([("T".to_string(), v_t)]);
+        {
+            let many_mut = (&mut e3).into_iter();
+            assert_eq!(many_mut.len(), 2);
+            assert_eq!(many_mut.size_hint(), (2, Some(2)));
+            for (k, v) in many_mut {
+                if k == "T" {
+                    v.cnt += 2;
+                }
+            }
+        }
         assert_eq!(
             (&e3)
                 .into_iter()

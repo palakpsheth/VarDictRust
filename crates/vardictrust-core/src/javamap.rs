@@ -114,11 +114,13 @@ where
         }
     }
 
-    pub fn enable_new_key_log(&mut self) {
-        self.new_key_log.0 = Some(Vec::new());
+    /// Records newly allocated keys during an insert-only window (`sv::partial_pipeline`).
+    /// Idempotent when already enabled; `remove` within the window is outside the contract.
+    pub(crate) fn enable_new_key_log(&mut self) {
+        self.new_key_log.0.get_or_insert_with(Vec::new);
     }
 
-    pub fn take_new_key_log(&mut self) -> Vec<K> {
+    pub(crate) fn take_new_key_log(&mut self) -> Vec<K> {
         self.new_key_log.0.take().unwrap_or_default()
     }
 
@@ -1938,6 +1940,7 @@ mod tests {
         logged.enable_new_key_log();
         logged.insert(10, 2); // existing key -> not logged
         logged.insert(20, 3); // new -> logged
+        logged.enable_new_key_log(); // idempotent -> preserves prior log entries
         logged.get_or_put_with(20, || 99); // existing -> not logged
         logged.get_or_put_with(30, || 4); // new -> logged
         logged.compute_if_absent(30, |_| 88); // existing -> not logged
