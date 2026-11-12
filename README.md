@@ -342,7 +342,7 @@ Flag parity with VarDictJava v1.8.3 is defined against [`CmdParser.java`](https:
 
 *Evidence Status Vocabulary:*
 - `corpus` — Verified against integration corpus test cases or [Tier-2](docs/testing/test-matrix-and-ci-audit.md#tier-2) oracle sweeps.
-- `unexercised` — Implemented to Java source specification without dedicated corpus fixtures (`2` flags; verified by unit and E2E tests).
+- `unexercised` — Implemented to Java source specification without dedicated corpus fixtures (`0` flags — all supported VarDictJava engine flags are `corpus`, `no-output`, or `parity-exempt`).
 - `no-output` — Performance or concurrency flag; does not alter output bytes.
 - `parity-exempt` — Accepted for CLI compatibility matching upstream semantics.
 
@@ -353,7 +353,7 @@ Flag parity with VarDictJava v1.8.3 is defined against [`CmdParser.java`](https:
 | `-G` | `--reference` | Reference FASTA file path (`.fai` index required) | required | `corpus` |
 | `-b` | `--bam` | Indexed BAM/CRAM; somatic: `"tumor.bam\|normal.bam"` | required | `corpus` |
 | `-N` | `--name` | Sample name (somatic: `"TUMOR\|NORMAL"`) | derived from BAM | `corpus` |
-| `-n` | — | Regular expression (`REGEXP`) to extract sample name from BAM filename | — | `unexercised` |
+| `-n` | — | Regular expression (`REGEXP`) to extract sample name from BAM filename | — | `corpus` |
 | `-R` | `--region` | Region `chr:start-end[:gene]` instead of BED | — | `corpus` |
 | positional | — | BED file (used when `-R` absent) | — | `corpus` |
 | `-h` | `--header` | Print `.var` column header before results (not help; use `-H`/`-?`/`--help`) | off | `corpus` |
@@ -363,6 +363,11 @@ Flag parity with VarDictJava v1.8.3 is defined against [`CmdParser.java`](https:
 | — | `--tbi`, `--index` | Write a pure-Rust Tabix (`.tbi`) index alongside a BGZF-compressed `--output` `.vcf.gz`/`.vcf.bgz` file (`noodles::tabix`; contigs `<= 512 Mbp`, hints `--csi` above `512 Mbp`) | off | `parity-exempt` |
 | — | `--csi` | Write a pure-Rust CSI (`.csi`) index alongside a BGZF-compressed `--output` `.vcf.gz`/`.vcf.bgz` file (`noodles::csi`; supports contigs `> 512 Mbp`) | off | `parity-exempt` |
 | — | `--no-end` | Omit `END` tag in VCF `INFO` (ports `var2vcf_valid.pl -E`) | off | `parity-exempt` |
+| — | `--pass-only` | Emit only `PASS` variants in VCF output (ports `var2vcf_valid.pl` / `var2vcf_paired.pl -S`) | off | `parity-exempt` |
+| — | `--paired-strict` | Disable germline rescue in paired somatic VCF filtering and apply `P<FLOAT>` / `P0.01Likely` / `InDelLikely` tags (ports `var2vcf_paired.pl -M`) | off | `parity-exempt` |
+| — | `--vcf-pval` | Maximum Fisher p-value `<FLOAT>` for high-confidence somatic calls under `--paired-strict` (ports `var2vcf_paired.pl -P`) | `0.05` | `parity-exempt` |
+| — | `--min-splitreads` | Minimum split reads `<INT>` required to emit symbolic structural variants in single-sample VCF output (ports `var2vcf_valid.pl -T`) | `1` | `parity-exempt` |
+| — | `--no-pstd-filter` | Disable `pSTD` (`PSTD=0`) read-position standard-deviation filter in VCF output (ports `var2vcf_valid.pl -P 0`; also suppresses paired somatic `pSTD`) | off | `parity-exempt` |
 | — | `--stats-json` | Write run telemetry JSON (`mode`, `threads`, `regions_count`, `tiles_count`, `elapsed_ms`, `peak_rss_kb`, `exceptions_caught`) to `<PATH>` | — | `no-output` |
 | — | `--parity` | Explicitly lock 100% VarDictJava v1.8.3 byte-for-byte parity mode (default in `v1.x`) | on | `parity-exempt` |
 | — | `--compat` | Pin target compatibility contract (`vardictjava-1.8.3` or `1.8.3` in `v1.0.x`) | `vardictjava-1.8.3` | `parity-exempt` |
@@ -410,7 +415,7 @@ Flag parity with VarDictJava v1.8.3 is defined against [`CmdParser.java`](https:
 | `-t` | `--dedup` | Remove duplicated reads (one pair per start position) | off | `corpus` |
 | `-u` | — | Unique mode: count overlapping mates once (forward read) | off | `corpus` |
 | `-UN` | `--UN` | Unique mode: count overlapping mates once (first read in pair) | off | `corpus` |
-| `-T` | `--trim` | Trim bases after `INT` bases in each read (`0` = disabled) | `0` | `unexercised` |
+| `-T` | `--trim` | Trim bases after `INT` bases in each read (`0` = disabled) | `0` | `corpus` |
 | — | `--VS` | SAM/BAM validation stringency (`SILENT` or `LENIENT`; `STRICT` unsupported) | `LENIENT` | `parity-exempt` |
 | — | `--adaptor` | Adaptor sequence(s), comma-separated, excluded from realignment | — | `corpus` |
 
