@@ -276,7 +276,13 @@ fn split_bool_prefix_cluster(arg: &str) -> Option<(&str, &str)> {
         'a' => {
             tail_rest.is_empty()
                 || tail_rest.starts_with('=')
-                || tail_rest.as_bytes().first().is_some_and(u8::is_ascii_digit)
+                || tail_rest.contains(':')
+                || tail_rest
+                    .strip_prefix(['+', '-'])
+                    .unwrap_or(tail_rest)
+                    .as_bytes()
+                    .first()
+                    .is_some_and(u8::is_ascii_digit)
         }
         _ => false,
     };
@@ -2540,6 +2546,32 @@ mod tests {
                 cfg.bed.as_deref(),
                 Some("regions.bed"),
                 "argv={cluster_argv:?}"
+            );
+        }
+
+        // Clustered `-a` with unsigned and signed amplicon values (`-ua10:0.95`, `-ua+30:0.5`, `-pa-5:0.95`)
+        for (amp_cluster, exp_pileup, exp_u, exp_amp) in [
+            (&["-ua10:0.95", "regions.bed"][..], false, true, "10:0.95"),
+            (&["-ua+30:0.5", "regions.bed"][..], false, true, "+30:0.5"),
+            (&["-pa-5:0.95", "regions.bed"][..], true, false, "-5:0.95"),
+        ] {
+            let mut full = vec!["-G", "r.fa", "-b", "a.bam"];
+            full.extend_from_slice(amp_cluster);
+            let norm = normalize_args(&args(&full));
+            check_unsupported(&norm).unwrap();
+            let cfg = Cli::try_parse_from(&norm)
+                .unwrap_or_else(|e| panic!("failed on {amp_cluster:?} (norm={norm:?}): {e}"))
+                .to_config()
+                .unwrap();
+            assert_eq!(cfg.pileup, exp_pileup, "argv={amp_cluster:?}");
+            assert_eq!(
+                cfg.unique_mode_alignment_enabled, exp_u,
+                "argv={amp_cluster:?}"
+            );
+            assert_eq!(
+                cfg.amplicon.as_deref(),
+                Some(exp_amp),
+                "argv={amp_cluster:?}"
             );
         }
 
