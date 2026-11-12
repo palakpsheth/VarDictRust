@@ -109,7 +109,7 @@ impl FisherExact {
         let mut logdc = Vec::with_capacity(len);
         for i in 0..len {
             let element = self.lo.saturating_add(i as i32);
-            if m + n == 0 {
+            if i64::from(m) + i64::from(n) == 0 {
                 logdc.push(0.0);
                 continue;
             }
@@ -338,7 +338,7 @@ impl FisherExact {
     }
 
     fn pnhyper(&self, q: i32, upper_tail: bool) -> f64 {
-        if self.m + self.n == 0 {
+        if i64::from(self.m) + i64::from(self.n) == 0 {
             return 1.0;
         }
         if self.java_fisher {
@@ -384,7 +384,7 @@ impl FisherExact {
         }
         if upper_tail {
             crate::stats::rmath::phyper::phyper(
-                (q - 1) as f64,
+                (i64::from(q) - 1) as f64,
                 self.m as f64,
                 self.n as f64,
                 self.k as f64,
@@ -505,7 +505,7 @@ fn cm3_log_binomial_probability(x: i32, n: i32, p: f64, q: f64) -> f64 {
         }
     } else {
         let xf = x as f64;
-        let n_minus_x = (n - x) as f64;
+        let n_minus_x = (i64::from(n) - i64::from(x)) as f64;
         let ret = cm3_stirling_error(nf)
             - cm3_stirling_error(xf)
             - cm3_stirling_error(n_minus_x)
@@ -531,10 +531,14 @@ fn cm3_hypergeometric_log_probability(
     }
     let pop = population_size as f64;
     let p = (sample_size as f64) / pop;
-    let q = ((population_size - sample_size) as f64) / pop;
+    let q = ((i64::from(population_size) - i64::from(sample_size)) as f64) / pop;
     let p1 = cm3_log_binomial_probability(x, number_of_successes, p, q);
-    let p2 =
-        cm3_log_binomial_probability(sample_size - x, population_size - number_of_successes, p, q);
+    let p2 = cm3_log_binomial_probability(
+        sample_size.saturating_sub(x),
+        population_size.saturating_sub(number_of_successes),
+        p,
+        q,
+    );
     let p3 = cm3_log_binomial_probability(sample_size, population_size, p, q);
     p1 + p2 - p3
 }

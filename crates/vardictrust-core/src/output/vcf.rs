@@ -421,27 +421,27 @@ pub fn perl_row_skipped(ref_allele: &str) -> bool {
 }
 
 #[derive(Clone, Copy)]
-enum FilterTag {
-    Static(&'static str),
+enum FilterTag<'a> {
+    Text(&'a str),
     MinAf(f64),
 }
 
-struct StackFilterList {
-    tags: [FilterTag; 16],
+struct StackFilterList<'a> {
+    tags: [FilterTag<'a>; 16],
     len: usize,
 }
 
-impl StackFilterList {
+impl<'a> StackFilterList<'a> {
     #[inline]
     const fn new() -> Self {
         Self {
-            tags: [FilterTag::Static(""); 16],
+            tags: [FilterTag::Text(""); 16],
             len: 0,
         }
     }
 
     #[inline]
-    fn push(&mut self, tag: FilterTag) {
+    fn push(&mut self, tag: FilterTag<'a>) {
         if let Some(slot) = self.tags.get_mut(self.len) {
             *slot = tag;
             self.len += 1;
@@ -454,7 +454,7 @@ impl StackFilterList {
     }
 
     #[inline]
-    fn as_slice(&self) -> &[FilterTag] {
+    fn as_slice(&self) -> &[FilterTag<'a>] {
         self.tags.get(..self.len).unwrap_or(&[])
     }
 
@@ -469,7 +469,7 @@ impl StackFilterList {
                 buf.push(';');
             }
             match *tag {
-                FilterTag::Static(s) => buf.push_str(s),
+                FilterTag::Text(s) => buf.push_str(s),
                 FilterTag::MinAf(af) => {
                     let _ = write!(buf, "f{af}");
                 }
@@ -482,12 +482,31 @@ impl StackFilterList {
         let mut out = Vec::with_capacity(slice.len());
         for tag in slice {
             match *tag {
-                FilterTag::Static(s) => out.push(s.to_string()),
+                FilterTag::Text(s) => out.push(s.to_string()),
                 FilterTag::MinAf(af) => out.push(format!("f{af}")),
             }
         }
         out
     }
+}
+
+/// Parse `(splitreads, spanpairs)` from the non-amplicon `.var` SV string
+/// (`var2vcf_valid.pl:198`: `($splitreads, $spanpairs, $cluster) = (split(/-/, $tamp)) if (defined($tamp) && $tamp =~ /-/)`).
+#[inline]
+pub(crate) fn parse_sv_counts(sv: &str) -> (i32, i32) {
+    if !sv.contains('-') {
+        return (0, 0);
+    }
+    let mut parts = sv.split('-');
+    let splitreads = parts
+        .next()
+        .and_then(|p| p.parse::<i32>().ok())
+        .unwrap_or(0);
+    let spanpairs = parts
+        .next()
+        .and_then(|p| p.parse::<i32>().ok())
+        .unwrap_or(0);
+    (splitreads, spanpairs)
 }
 
 /// Collect `var2vcf_valid.pl` filter tags into a stack-backed [`StackFilterList`].
@@ -501,7 +520,7 @@ fn collect_valid_filters(
     amp: Option<(i32, i32, i32, bool)>,
     sbf: f64,
     oddratio_str: &str,
-) -> StackFilterList {
+) -> StackFilterList<'static> {
     let mut filters = StackFilterList::new();
 
     let total_depth = 3;
@@ -517,14 +536,14 @@ fn collect_valid_filters(
     // T098: d3 check
     if dp < total_depth {
         if !hi_check {
-            filters.push(FilterTag::Static("d3"));
+            filters.push(FilterTag::Text("d3"));
         }
     }
 
     // T099: v2 check
     if (hicnt as u32) < var_depth {
         if !hi_check {
-            filters.push(FilterTag::Static("v2"));
+            filters.push(FilterTag::Text("v2"));
         }
     }
 
@@ -540,52 +559,49 @@ fn collect_valid_filters(
     // T101: p8 check
     let pmean_threshold = 8.0;
     if variant.mean_position < pmean_threshold {
-        filters.push(FilterTag::Static("p8"));
+        filters.push(FilterTag::Text("p8"));
     }
 
-    // T102: pSTD check — suppressed in amplicon mode (:161 `! $isamp`)
-    let opt_p = 1; // default
-    if opt_p == 1 && !variant.pstd && amp.is_none() && variant.frequency < 0.35 {
-        filters.push(FilterTag::Static("pSTD"));
+    // T102: pSTD check — suppressed when `--no-pstd-filter` (`var2vcf_valid.pl:30,161`
+    // `$opt_P == 0`) or in amplicon mode (`! $isamp`).
+    if config.vcf_pstd_filter && !variant.pstd && amp.is_none() && variant.frequency < 0.35 {
+        filters.push(FilterTag::Text("pSTD"));
     }
 
     // T103: q22.5 check
     let qmean = 22.5;
     if variant.mean_quality < qmean {
-        filters.push(FilterTag::Static("q22.5"));
+        filters.push(FilterTag::Text("q22.5"));
     }
 
     // T104: Q10 check
     let qmean_map = 10.0;
     if variant.mean_mapping_quality < qmean_map && variant.frequency < 0.8 {
-        filters.push(FilterTag::Static("Q10"));
+        filters.push(FilterTag::Text("Q10"));
     }
 
     // SN1.5 check
     let sn_threshold = 1.5;
     if sn < sn_threshold {
-        filters.push(FilterTag::Static("SN1.5"));
+        filters.push(FilterTag::Text("SN1.5"));
     }
 
     // NM5.25 check
     let opt_m = 5.25;
     if variant.nm > opt_m {
-        filters.push(FilterTag::Static("NM5.25"));
+        filters.push(FilterTag::Text("NM5.25"));
     }
 
     // MSI12 check
     let opt_i = 12.0;
-    let ref_len = variant.ref_allele.len() as i32;
-    let alt_len = variant.var_allele.len() as i32;
-    let len_diff = (ref_len - alt_len).abs();
+    let len_diff = variant.ref_allele.len().abs_diff(variant.var_allele.len());
+    let len_matches_msint = usize::try_from(variant.msint).ok() == Some(len_diff);
     let msi_check1 =
-        msi > opt_i && variant.msint > 1 && variant.frequency < 0.2 && len_diff == variant.msint;
-    let msi_check2 = msi >= 13.0
-        && variant.msint == 1
-        && variant.frequency <= 0.275
-        && len_diff == variant.msint;
+        msi > opt_i && variant.msint > 1 && variant.frequency < 0.2 && len_matches_msint;
+    let msi_check2 =
+        msi >= 13.0 && variant.msint == 1 && variant.frequency <= 0.275 && len_matches_msint;
     if msi_check1 || msi_check2 {
-        filters.push(FilterTag::Static("MSI12"));
+        filters.push(FilterTag::Text("MSI12"));
     }
 
     // Bias check
@@ -605,33 +621,33 @@ fn collect_valid_filters(
         && variant.bias == "2;1"
         && sbf_r < 0.01
         && (transformed_or > 5.0 || transformed_or == 0.0)
-        && (variant.end_pos - variant.start_pos) < 100
+        && (i64::from(variant.end_pos) - i64::from(variant.start_pos)) < 100
     {
-        filters.push(FilterTag::Static("Bias"));
+        filters.push(FilterTag::Text("Bias"));
     }
 
     // LongMSI check
-    if len_diff == variant.msint {
+    if len_matches_msint {
         if (hiaf <= 0.275 && msi >= 13.0) || (hiaf <= 0.2 && msi >= 8.0 && variant.msint > 1) {
-            filters.push(FilterTag::Static("LongMSI"));
+            filters.push(FilterTag::Text("LongMSI"));
         }
     }
 
     // Cluster check
-    let opt_c = 0; // default
+    let opt_c = 0_i64; // default
     if variant.var_type == "SNV"
         && filters.is_empty()
         && pvs > 0
-        && (variant.start_pos - pvs) < opt_c
+        && (i64::from(variant.start_pos) - i64::from(pvs)) < opt_c
     {
-        filters.push(FilterTag::Static("Cluster0bp"));
+        filters.push(FilterTag::Text("Cluster0bp"));
     }
 
     // AMPBIAS — amplicon mode only (:185 `$isamp && (($gamp < $tamp-$ncamp) || $ampflag)`);
     // pushed last, after the Cluster check, matching perl's @filters order.
     if let Some((gdamp, tlamp, ncamp, ampflag)) = amp {
-        if gdamp < tlamp - ncamp || ampflag {
-            filters.push(FilterTag::Static("AMPBIAS"));
+        if i64::from(gdamp) < i64::from(tlamp) - i64::from(ncamp) || ampflag {
+            filters.push(FilterTag::Text("AMPBIAS"));
         }
     }
 
@@ -901,22 +917,13 @@ fn format_vcf_record_with_filter<F: FnOnce(&mut String)>(
     let is_amp = amp.is_some();
     if !is_amp {
         // ports var2vcf_valid.pl:197-212 — the SV block runs only when !$isamp
-        let mut splitreads = 0;
-        let mut spanpairs = 0;
-        if !variant.sv.is_empty() && variant.sv.contains('-') {
-            let mut parts = variant.sv.split('-');
-            if let Some(p0) = parts.next() {
-                splitreads = p0.parse::<i32>().unwrap_or(0);
-            }
-            if let Some(p1) = parts.next() {
-                spanpairs = p1.parse::<i32>().unwrap_or(0);
-            }
-        }
+        let (splitreads, spanpairs) = parse_sv_counts(&variant.sv);
 
-        if !alt_is_dot && variant.var_allele.starts_with('<') {
-            // ports var2vcf_valid.pl:206-208 — SVLEN = end - start,
-            // incremented only when the ALT is an INV.
-            let mut svlen = variant.end_pos - variant.start_pos;
+        if !alt_is_dot && variant.var_allele.contains('<') {
+            // ports var2vcf_valid.pl:199,206-210 — `$alt =~ /</` (including `#342`
+            // mid-allele `<dup-N>` when `--min-splitreads 0`); SVLEN = end - start,
+            // incremented only when the ALT contains INV.
+            let mut svlen = i64::from(variant.end_pos) - i64::from(variant.start_pos);
             if variant.var_allele.contains("INV") {
                 svlen += 1;
             }
@@ -939,7 +946,7 @@ fn format_vcf_record_with_filter<F: FnOnce(&mut String)>(
     buf.push(':');
     let _ = write!(buf, "{}", variant.pos_coverage);
     buf.push(':');
-    let rd = variant.ref_fwd_cov + variant.ref_rev_cov;
+    let rd = i64::from(variant.ref_fwd_cov) + i64::from(variant.ref_rev_cov);
     let vd = variant.pos_coverage;
     if vd != 0 {
         let _ = write!(buf, "{},{}", rd, vd);
@@ -1047,6 +1054,40 @@ pub fn format_filtered_vcf_record_into(
     );
 }
 
+/// Filter and conditionally write a single-sample/amplicon VCF record line into `buf`.
+///
+/// When `config.vcf_pass_only` (`--pass-only`, `var2vcf_valid.pl:187`) is enabled and
+/// any filter fires (`!filters.is_empty()`), clears `buf` and returns `false` without
+/// formatting the record body.
+pub fn try_format_filtered_vcf_record_into(
+    buf: &mut String,
+    variant: &Variant,
+    region: &Region,
+    config: &Config,
+    pvs: i32,
+    sbf: f64,
+    oddratio_str: &str,
+    // Amplicon columns 37-40 (GDAMP, TLAMP, NCAMP, AMPFLAG); None = simple mode.
+    amp: Option<(i32, i32, i32, bool)>,
+) -> bool {
+    let filters = collect_valid_filters(variant, config, pvs, amp, sbf, oddratio_str);
+    if config.vcf_pass_only && !filters.is_empty() {
+        buf.clear();
+        return false;
+    }
+    format_vcf_record_with_filter(
+        buf,
+        variant,
+        region,
+        config,
+        sbf,
+        oddratio_str,
+        amp,
+        |out| filters.write_vcf_filter_field(out),
+    );
+    true
+}
+
 // ---- var2vcf_paired.pl port (somatic/paired VCF, W4.5c) ----
 
 /// Paired-writer defaults (var2vcf_paired.pl:19-31).
@@ -1059,6 +1100,36 @@ const PAIRED_SN: f64 = 1.5;
 const PAIRED_GTFREQ: f64 = 0.2;
 const PAIRED_OPT_I: f64 = 12.0;
 const PAIRED_OPT_M: f64 = 5.25;
+
+#[inline]
+fn effective_paired_pval_num(config: &Config) -> f64 {
+    if !config.vcf_pval.is_finite() || config.vcf_pval < 0.0 {
+        0.05
+    } else if config.vcf_pval == 0.0 {
+        0.0
+    } else {
+        config.vcf_pval
+    }
+}
+
+/// Format `$PVAL` for `var2vcf_paired.pl:27,86,200`: uses `config.vcf_pval_raw` verbatim
+/// when valid and consistent with `config.vcf_pval`, else `perl_num_str(eff_pval)`.
+#[inline]
+fn vcf_pval_label(config: &Config) -> std::borrow::Cow<'_, str> {
+    let pval = effective_paired_pval_num(config);
+    if let Some(raw) = config.vcf_pval_raw.as_deref() {
+        if let Ok((p_norm, norm_raw)) = crate::config::validate_vcf_pval_token(raw) {
+            if p_norm.to_bits() == pval.to_bits() {
+                return std::borrow::Cow::Borrowed(norm_raw);
+            }
+        }
+    }
+    if pval.to_bits() == 0.05_f64.to_bits() {
+        std::borrow::Cow::Borrowed("0.05")
+    } else {
+        std::borrow::Cow::Owned(perl_num_str(pval))
+    }
+}
 
 /// Paired VCF header. Ports var2vcf_paired.pl:51-115 (INFO :60-75,
 /// FILTER :76-93, FORMAT :94-112, two-sample #CHROM :115 with `-N` split
@@ -1102,6 +1173,7 @@ pub fn print_paired_vcf_header<W: Write>(
 
     // ports var2vcf_paired.pl:76-93
     let freq_str = config.af_threshold.to_string();
+    let pval_label = vcf_pval_label(config);
     let filter_lines = [
         format!(r#"##FILTER=<ID=q{},Description="Mean Base Quality Below {}">"#, PAIRED_QMEAN, PAIRED_QMEAN),
         format!(r#"##FILTER=<ID=Q{},Description="Mean Mapping Quality Below {}">"#, PAIRED_MQMEAN, PAIRED_MQMEAN),
@@ -1113,7 +1185,7 @@ pub fn print_paired_vcf_header<W: Write>(
         format!(r#"##FILTER=<ID=d{},Description="Total Depth < {}">"#, PAIRED_MIN_DEPTH, PAIRED_MIN_DEPTH),
         format!(r#"##FILTER=<ID=v{},Description="Var Depth < {}">"#, PAIRED_VAR_DEPTH, PAIRED_VAR_DEPTH),
         format!(r#"##FILTER=<ID=f{},Description="Allele frequency < {}">"#, freq_str, freq_str),
-        r#"##FILTER=<ID=P0.05,Description="Not significant with p-value > 0.05">"#.to_string(),
+        format!(r#"##FILTER=<ID=P{pval},Description="Not significant with p-value > {pval}">"#, pval = pval_label),
         r#"##FILTER=<ID=DIFF0.2,Description="Non-somatic or LOH and allele frequency difference < 0.2">"#.to_string(),
         format!(r#"##FILTER=<ID=MSI{},Description="Variant in MSI region with {} non-monomer MSI or 12 monomer MSI">"#, PAIRED_OPT_I as i32, PAIRED_OPT_I as i32),
         format!(r#"##FILTER=<ID=NM{},Description="Mean mismatches in reads >= {}, thus likely false positive">"#, PAIRED_OPT_M, PAIRED_OPT_M),
@@ -1170,17 +1242,97 @@ pub fn print_paired_vcf_header<W: Write>(
 }
 
 /// One formatted paired record awaiting the delayed print.
+///
+/// Stores the entire VCF row (`CHROM\tPOS\t.\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tTUMOR\tNORMAL`)
+/// in a single contiguous [`String`] with byte offsets `[filter_start..filter_end]`
+/// pointing to the `FILTER` column.
+#[derive(Debug, Clone)]
 pub struct PairedVcfRecord {
-    /// CHROM POS . REF ALT QUAL (var2vcf_paired.pl:237 pinfo1).
-    pub(crate) prefix: String,
-    pub(crate) filter: String,
-    /// INFO \t FORMAT \t tumor-sample \t normal-sample (:238-242 pinfo2).
-    pub(crate) rest: String,
+    line: String,
+    filter_start: usize,
+    filter_end: usize,
     /// Raw start (for the Cluster rule :229 and pvs tracking :245).
     pub(crate) start: i32,
     pub(crate) type_snv: bool,
     /// Whether STATUS matches /Somatic/ (Cluster-rule precondition).
     pub(crate) status_somatic: bool,
+}
+
+impl PairedVcfRecord {
+    /// Full tab-delimited paired VCF line (without trailing newline).
+    #[inline]
+    pub fn as_str(&self) -> &str {
+        &self.line
+    }
+
+    /// `FILTER` column slice (`"PASS"` or `;`-joined filter tags).
+    #[inline]
+    pub fn filter_str(&self) -> &str {
+        self.line
+            .get(self.filter_start..self.filter_end)
+            .unwrap_or("")
+    }
+
+    /// Returns `true` when the `FILTER` column equals `"PASS"`.
+    #[inline]
+    pub fn is_pass(&self) -> bool {
+        self.filter_str() == "PASS"
+    }
+
+    #[inline]
+    pub(crate) fn capacity(&self) -> usize {
+        self.line.capacity()
+    }
+
+    #[inline]
+    pub(crate) fn filter_offsets(&self) -> (usize, usize) {
+        (self.filter_start, self.filter_end)
+    }
+
+    #[inline]
+    pub(crate) fn set_cluster_filter(&mut self, cluster_tag: &str) {
+        if self.line.get(self.filter_start..self.filter_end).is_some() {
+            self.line
+                .replace_range(self.filter_start..self.filter_end, cluster_tag);
+            self.filter_end = self.filter_start.saturating_add(cluster_tag.len());
+        }
+    }
+
+    #[inline]
+    pub(crate) fn from_parts_checked(
+        line: String,
+        filter_start: usize,
+        filter_end: usize,
+        start: i32,
+        type_snv: bool,
+        status_somatic: bool,
+    ) -> Option<Self> {
+        let filt = line.get(filter_start..filter_end)?;
+        let prev_idx = filter_start.checked_sub(1)?;
+        if filt.is_empty()
+            || line.bytes().any(|b| matches!(b, b'\r' | b'\n'))
+            || filt.as_bytes().contains(&b'\t')
+            || line.as_bytes().get(prev_idx) != Some(&b'\t')
+            || line.as_bytes().get(filter_end) != Some(&b'\t')
+            || line
+                .get(..filter_start)?
+                .bytes()
+                .filter(|&b| b == b'\t')
+                .count()
+                != 6
+            || line.bytes().filter(|&b| b == b'\t').count() != 10
+        {
+            return None;
+        }
+        Some(Self {
+            line,
+            filter_start,
+            filter_end,
+            start,
+            type_snv,
+            status_somatic,
+        })
+    }
 }
 
 /// Perl numification of non-numeric strings ("NA" → 0, with warning).
@@ -1274,7 +1426,11 @@ fn push_paired_sample_field(
     buf.push(':');
     let _ = write!(buf, "{},{}", v.ref_fwd_cov, v.ref_rev_cov);
     buf.push(':');
-    let _ = write!(buf, "{}", v.ref_fwd_cov + v.ref_rev_cov);
+    let _ = write!(
+        buf,
+        "{}",
+        i64::from(v.ref_fwd_cov) + i64::from(v.ref_rev_cov)
+    );
     buf.push(',');
     let _ = write!(buf, "{}", v.pos_coverage);
     buf.push(':');
@@ -1366,8 +1522,10 @@ pub fn format_paired_vcf_record(
     let p2 = fisher2.get_p_value();
     let or2 = paired_or_transform(&fisher2.odds_ratio_buf());
 
-    let tref = (v1.total_pos_cov - v1.pos_coverage).max(0);
-    let rref = (v2.total_pos_cov - v2.pos_coverage).max(0);
+    let tref = (i64::from(v1.total_pos_cov) - i64::from(v1.pos_coverage))
+        .clamp(0, i64::from(i32::MAX)) as i32;
+    let rref = (i64::from(v2.total_pos_cov) - i64::from(v2.pos_coverage))
+        .clamp(0, i64::from(i32::MAX)) as i32;
     let fisher_total = crate::stats::FisherExact::new_with_mode(
         v1.pos_coverage,
         tref,
@@ -1414,19 +1572,26 @@ pub fn format_paired_vcf_record(
     };
 
     // Normal depth & quality filters (:162-163, :177-183); Q gate dead at MQMEAN=0,
-    // kept for fidelity. Without -M, a fully clean NORMAL (`normal_clean == true`)
-    // unconditionally overrides any non-PASS FILTER to "PASS" (:217-219), so check
-    // `normal_clean` first and short-circuit all tumor/Bias/MSI filter evaluation.
-    let normal_clean = !(dp2 < PAIRED_MIN_DEPTH
-        || vd2 < PAIRED_VAR_DEPTH
-        || af2 < config.af_threshold
-        || crate::types::round_half_even(v2.mean_position, 1) < PAIRED_PMEAN
-        || (!v2.pstd && vd2 < PAIRED_MIN_DEPTH)
-        || qual2 < PAIRED_QMEAN
-        || crate::types::round_half_even(v2.mean_mapping_quality, 1) < PAIRED_MQMEAN
-        || crate::types::round_half_even(v2.hq_lq_ratio, 3) < PAIRED_SN
-        || crate::types::round_half_even(if v2.nm > 0.0 { v2.nm } else { 0.0 }, 1) >= PAIRED_OPT_M);
+    // kept for fidelity. Without -M (`!config.vcf_paired_strict`), a fully clean NORMAL
+    // (`normal_clean == true`) unconditionally overrides any non-PASS FILTER to "PASS"
+    // (:217-219), so check `normal_clean` first and short-circuit all tumor/Bias/MSI
+    // filter evaluation. With -M (`config.vcf_paired_strict`), germline rescue is disabled.
+    let normal_clean = !config.vcf_paired_strict
+        && !(dp2 < PAIRED_MIN_DEPTH
+            || vd2 < PAIRED_VAR_DEPTH
+            || af2 < config.af_threshold
+            || crate::types::round_half_even(v2.mean_position, 1) < PAIRED_PMEAN
+            || (!v2.pstd && vd2 < PAIRED_MIN_DEPTH)
+            || qual2 < PAIRED_QMEAN
+            || crate::types::round_half_even(v2.mean_mapping_quality, 1) < PAIRED_MQMEAN
+            || crate::types::round_half_even(v2.hq_lq_ratio, 3) < PAIRED_SN
+            || crate::types::round_half_even(if v2.nm > 0.0 { v2.nm } else { 0.0 }, 1)
+                >= PAIRED_OPT_M);
 
+    let mut p_likely = false;
+    let mut indel_likely = false;
+    let mut pval_stack = crate::types::StackBuf::<32>::new();
+    let mut pval_heap = String::new();
     let mut filters = StackFilterList::new();
     if !normal_clean {
         let pmean1 = crate::types::round_half_even(v1.mean_position, 1);
@@ -1445,10 +1610,10 @@ pub fn format_paired_vcf_record(
         // Tumor depth filters with StrongSomatic exception (:156-161).
         let ss_exception = status == "StrongSomatic" && ptot_r < 0.15 && af1 * vd1 as f64 >= 0.5;
         if dp1 < PAIRED_MIN_DEPTH && !ss_exception {
-            filters.push(FilterTag::Static("d5"));
+            filters.push(FilterTag::Text("d5"));
         }
         if vd1 < PAIRED_VAR_DEPTH && !ss_exception {
-            filters.push(FilterTag::Static("v3"));
+            filters.push(FilterTag::Text("v3"));
         }
 
         // Tumor quality filters (:165-175).
@@ -1456,32 +1621,32 @@ pub fn format_paired_vcf_record(
             filters.push(FilterTag::MinAf(config.af_threshold));
         }
         if pmean1 < PAIRED_PMEAN {
-            filters.push(FilterTag::Static("p8"));
+            filters.push(FilterTag::Text("p8"));
         }
         if !v1.pstd && vd1 < PAIRED_MIN_DEPTH {
-            filters.push(FilterTag::Static("pSTD"));
+            filters.push(FilterTag::Text("pSTD"));
         }
         if qual1 < PAIRED_QMEAN {
-            filters.push(FilterTag::Static("q22.5"));
+            filters.push(FilterTag::Text("q22.5"));
         }
         if mapq1 < PAIRED_MQMEAN {
-            filters.push(FilterTag::Static("Q0")); // dead at MQMEAN=0
+            filters.push(FilterTag::Text("Q0")); // dead at MQMEAN=0
         }
         if mapq1 < 10.0 && var_type == "SNV" {
-            filters.push(FilterTag::Static("Q0"));
+            filters.push(FilterTag::Text("Q0"));
         }
         if sn1 < PAIRED_SN {
-            filters.push(FilterTag::Static("SN1.5"));
+            filters.push(FilterTag::Text("SN1.5"));
         }
         if nm1 >= PAIRED_OPT_M {
-            filters.push(FilterTag::Static("NM5.25"));
+            filters.push(FilterTag::Text("NM5.25"));
         }
         if v1.bias == "2;1"
             && p1_r < 0.01
             && (or1.1 > 5.0 || or1.1 == 0.0)
-            && v1.end_pos - v1.start_pos < 100
+            && i64::from(v1.end_pos) - i64::from(v1.start_pos) < 100
         {
-            filters.push(FilterTag::Static("Bias"));
+            filters.push(FilterTag::Text("Bias"));
             has_bias = true;
         }
 
@@ -1490,9 +1655,9 @@ pub fn format_paired_vcf_record(
             && v2.bias == "2;1"
             && p2_r < 0.01
             && (or2.1 > 5.0 || or2.1 == 0.0)
-            && v1.end_pos - v1.start_pos < 100
+            && i64::from(v1.end_pos) - i64::from(v1.start_pos) < 100
         {
-            filters.push(FilterTag::Static("Bias"));
+            filters.push(FilterTag::Text("Bias"));
         }
 
         // MSI gates (:188-194).
@@ -1500,28 +1665,48 @@ pub fn format_paired_vcf_record(
         let msi = crate::types::round_half_even(end_var.msi, 3);
         if (msi > PAIRED_OPT_I && msilen > 1.0) || (msi > 12.0 && msilen == 1.0) {
             if !(status == "StrongSomatic" && ptot_r < 0.0005) {
-                filters.push(FilterTag::Static("MSI12"));
+                filters.push(FilterTag::Text("MSI12"));
                 has_msi = true;
             }
         }
-        let len_diff = (v1.ref_allele.len() as i32 - v1.var_allele.len() as i32).abs();
-        if len_diff == msilen as i32 && !has_msi {
+        let len_diff = v1.ref_allele.len().abs_diff(v1.var_allele.len());
+        if usize::try_from(end_var.msint).ok() == Some(len_diff) && !has_msi {
             if (msi > PAIRED_OPT_I && msilen > 1.0 && af1 < 0.35 && af2 < 0.35)
                 || (msi > 12.0 && msilen == 1.0 && af1 < 0.35 && af2 < 0.35)
             {
-                filters.push(FilterTag::Static("MSI12"));
+                filters.push(FilterTag::Text("MSI12"));
+            }
+        }
+
+        // Paired strict `-M` (`--paired-strict`, var2vcf_paired.pl:198-206).
+        if config.vcf_paired_strict {
+            let eff_pval = effective_paired_pval_num(config);
+            if ptot_r > eff_pval {
+                let ss_pval_exc = status == "StrongSomatic"
+                    && ((ptot_r < 0.25 && af1 > 0.1)
+                        || (ptot_r < 0.5 && af1 > 0.20)
+                        || (ptot_r < 0.15 && af1 > 0.05));
+                if !ss_pval_exc {
+                    let lbl = vcf_pval_label(config);
+                    if 1 + lbl.len() <= 32 {
+                        let _ = write!(pval_stack, "P{lbl}");
+                        filters.push(FilterTag::Text(pval_stack.as_str()));
+                    } else {
+                        pval_heap.push('P');
+                        pval_heap.push_str(&lbl);
+                        filters.push(FilterTag::Text(&pval_heap));
+                    }
+                }
+            } else if status.contains("LikelySomatic") && ptot_r > 0.05 / 5.0_f64.powi(vd2.max(0)) {
+                p_likely = true;
+            } else if status.contains("Likely")
+                && var_type != "SNV"
+                && !(v1.ref_allele.len() <= 2 && v1.var_allele.len() <= 2)
+            {
+                indel_likely = true;
             }
         }
     }
-
-    // The -M block (:198-206) is not plumbed: every oracle/corpus invocation omits
-    // -M, so P$PVAL/P0.01Likely/InDelLikely never fire.
-    let mut filter = String::with_capacity(if filters.is_empty() {
-        4
-    } else {
-        filters.len.saturating_mul(6)
-    });
-    filters.write_vcf_filter_field(&mut filter);
 
     let gt = paired_gt(af1, config.af_threshold);
     let gtm = paired_gt(af2, config.af_threshold);
@@ -1530,64 +1715,74 @@ pub fn format_paired_vcf_record(
 
     let sample_tumor = config.sample.split('|').next().unwrap_or(&config.sample);
 
-    let mut prefix = String::with_capacity(96);
-    prefix.push_str(chr);
-    prefix.push('\t');
-    let _ = write!(prefix, "{}", v1.start_pos);
-    prefix.push_str("\t.\t");
-    prefix.push_str(&v1.ref_allele);
-    prefix.push('\t');
-    prefix.push_str(&v1.var_allele);
-    prefix.push('\t');
-    let _ = write!(prefix, "{}", qual_col);
+    // Single contiguous allocation for the entire paired VCF record (`896 B` covers
+    // common rows without regrowth).
+    let mut line = String::with_capacity(896);
+    line.push_str(chr);
+    line.push('\t');
+    let _ = write!(line, "{}", v1.start_pos);
+    line.push_str("\t.\t");
+    line.push_str(&v1.ref_allele);
+    line.push('\t');
+    line.push_str(&v1.var_allele);
+    line.push('\t');
+    let _ = write!(line, "{}\t", qual_col);
 
-    // `rest` holds INFO + keys + both sample columns in a single allocation;
-    // 768 covers the common paired row so the assembly never regrows.
+    let filter_start = line.len();
+    filters.write_vcf_filter_field(&mut line);
+    let filter_end = line.len();
+    line.push('\t');
+
     // INFO (:237-239). No END tag and no SV tags in the paired writer.
-    let mut rest = String::with_capacity(768);
-    rest.push_str("STATUS=");
-    rest.push_str(status);
-    rest.push_str(";SAMPLE=");
+    line.push_str("STATUS=");
+    line.push_str(status);
+    line.push_str(";SAMPLE=");
     for c in sample_tumor.chars() {
-        rest.push(if c.is_whitespace() { '_' } else { c });
+        line.push(if c.is_whitespace() { '_' } else { c });
     }
-    rest.push_str(";TYPE=");
-    rest.push_str(var_type);
-    let _ = write!(rest, ";DP={};VD={}", dp1, vd1);
-    rest.push_str(";AF=");
-    push_vcf_rounded(&mut rest, config.fisher, v1.frequency, 4);
-    let _ = write!(rest, ";SHIFT3={}", end_var.shift3);
-    rest.push_str(";MSI=");
-    push_keep(&mut rest, end_var.msi, 3);
-    let _ = write!(rest, ";MSILEN={}", end_var.msint);
-    rest.push_str(";SSF=");
-    push_vcf_rounded(&mut rest, config.fisher, ptot, 5);
-    rest.push_str(";SOR=");
-    rest.push_str(sor_str);
-    rest.push_str(";LSEQ=");
+    line.push_str(";TYPE=");
+    line.push_str(var_type);
+    let _ = write!(line, ";DP={};VD={}", dp1, vd1);
+    line.push_str(";AF=");
+    push_vcf_rounded(&mut line, config.fisher, v1.frequency, 4);
+    let _ = write!(line, ";SHIFT3={}", end_var.shift3);
+    line.push_str(";MSI=");
+    push_keep(&mut line, end_var.msi, 3);
+    let _ = write!(line, ";MSILEN={}", end_var.msint);
+    line.push_str(";SSF=");
+    push_vcf_rounded(&mut line, config.fisher, ptot, 5);
+    line.push_str(";SOR=");
+    line.push_str(sor_str);
+    line.push_str(";LSEQ=");
     if end_var.left_seq.is_empty() {
-        rest.push('0');
+        line.push('0');
     } else {
-        rest.push_str(&end_var.left_seq);
+        line.push_str(&end_var.left_seq);
     }
-    rest.push_str(";RSEQ=");
+    line.push_str(";RSEQ=");
     if end_var.right_seq.is_empty() {
-        rest.push('0');
+        line.push('0');
     } else {
-        rest.push_str(&end_var.right_seq);
+        line.push_str(&end_var.right_seq);
+    }
+    if p_likely {
+        line.push_str(";P0.01Likely");
+    }
+    if indel_likely {
+        line.push_str(";InDelLikely");
     }
 
-    rest.push_str(
+    line.push_str(
         "\tGT:DP:VD:ALD:RD:AD:AF:BIAS:PMEAN:PSTD:QUAL:QSTD:SBF:ODDRATIO:MQ:SN:HIAF:ADJAF:NM\t",
     );
-    push_paired_sample_field(&mut rest, v1, gt, p1, &or1, config.fisher);
-    rest.push('\t');
-    push_paired_sample_field(&mut rest, v2, gtm, p2, &or2, config.fisher);
+    push_paired_sample_field(&mut line, v1, gt, p1, &or1, config.fisher);
+    line.push('\t');
+    push_paired_sample_field(&mut line, v2, gtm, p2, &or2, config.fisher);
 
     PairedVcfRecord {
-        prefix,
-        filter,
-        rest,
+        line,
+        filter_start,
+        filter_end,
         start: v1.start_pos,
         type_snv: var_type == "SNV",
         status_somatic: status.contains("Somatic"),
@@ -1597,20 +1792,25 @@ pub fn format_paired_vcf_record(
 /// Streaming delayed-print state machine for paired VCF records (`var2vcf_paired.pl:126,229-250`).
 /// Retains at most 1 lookbehind record (`pending`) per chromosome so whole-chromosome
 /// emission uses `O(1)` memory.
+#[derive(Debug)]
 pub struct PairedRecordStreamer {
     pending: Option<PairedVcfRecord>,
     pvs: i32,
     opt_c: i32,
-    line_buf: String,
+    pass_only: bool,
 }
 
 impl PairedRecordStreamer {
     pub fn new(opt_c: i32) -> Self {
+        Self::with_pass_only(opt_c, false)
+    }
+
+    pub fn with_pass_only(opt_c: i32, pass_only: bool) -> Self {
         Self {
             pending: None,
             pvs: 0,
             opt_c,
-            line_buf: String::with_capacity(896),
+            pass_only,
         }
     }
 
@@ -1620,28 +1820,24 @@ impl PairedRecordStreamer {
         mut emit: impl FnMut(&str) -> Result<(), E>,
     ) -> Result<(), E> {
         if let Some(mut prev) = self.pending.take() {
-            if prev.filter == "PASS"
+            if prev.is_pass()
                 && prev.status_somatic
                 && prev.type_snv
-                && cur.filter == "PASS"
+                && cur.is_pass()
                 && cur.status_somatic
                 && cur.type_snv
-                && cur.start - self.pvs < self.opt_c
+                && i64::from(cur.start) - i64::from(self.pvs) < i64::from(self.opt_c)
             {
-                prev.filter.clear();
-                let _ = write!(prev.filter, "Cluster{}bp", self.opt_c);
-                cur.filter.clear();
-                cur.filter.push_str(&prev.filter);
+                let mut cluster_tag = crate::types::StackBuf::<32>::new();
+                let _ = write!(cluster_tag, "Cluster{}bp", self.opt_c);
+                prev.set_cluster_filter(cluster_tag.as_str());
+                cur.set_cluster_filter(cluster_tag.as_str());
             }
-            self.line_buf.clear();
-            self.line_buf.push_str(&prev.prefix);
-            self.line_buf.push('\t');
-            self.line_buf.push_str(&prev.filter);
-            self.line_buf.push('\t');
-            self.line_buf.push_str(&prev.rest);
-            emit(&self.line_buf)?;
+            if !self.pass_only || prev.is_pass() {
+                emit(prev.as_str())?;
+            }
         }
-        if cur.type_snv && cur.filter == "PASS" {
+        if cur.type_snv && cur.is_pass() {
             self.pvs = cur.start; // :245
         }
         self.pending = Some(cur);
@@ -1650,29 +1846,23 @@ impl PairedRecordStreamer {
 
     pub fn finish<E>(mut self, mut emit: impl FnMut(&str) -> Result<(), E>) -> Result<(), E> {
         if let Some(prev) = self.pending.take() {
-            self.line_buf.clear();
-            self.line_buf.push_str(&prev.prefix);
-            self.line_buf.push('\t');
-            self.line_buf.push_str(&prev.filter);
-            self.line_buf.push('\t');
-            self.line_buf.push_str(&prev.rest);
-            emit(&self.line_buf)?;
+            if !self.pass_only || prev.is_pass() {
+                emit(prev.as_str())?;
+            }
         }
         Ok(())
     }
 }
 
-/// Delayed-print state machine. Ports var2vcf_paired.pl:126,229-236,243-245,248-250:
-/// each record is buffered; on the next record the Cluster rule may mark BOTH
-/// records Cluster{c}bp (prev filter PASS + prev INFO /Somatic/+/TYPE=SNV/,
-/// cur filter PASS + cur status /Somatic/ + type SNV, and cur.start - pvs < c);
-/// pvs tracks the last PASS-SNV start. The buffer is flushed after the last
-/// record of a chromosome batch. -S suppression is not plumbed (the oracle
-/// invocation never passes -S). With the default c=0 the rule is inert at
-/// ascending positions; `opt_c` is threaded through for fidelity.
-pub fn finish_paired_records(records: Vec<PairedVcfRecord>, opt_c: i32) -> Vec<String> {
+/// Delayed-print state machine with optional `-S` (`--pass-only`) post-Cluster suppression
+/// (`var2vcf_paired.pl:126,229-236,243-245,248-250`).
+pub fn finish_paired_records_with_pass_only(
+    records: Vec<PairedVcfRecord>,
+    opt_c: i32,
+    pass_only: bool,
+) -> Vec<String> {
     let mut out = Vec::with_capacity(records.len());
-    let mut streamer = PairedRecordStreamer::new(opt_c);
+    let mut streamer = PairedRecordStreamer::with_pass_only(opt_c, pass_only);
     for cur in records {
         let _ = streamer.push(cur, |line| -> Result<(), std::convert::Infallible> {
             out.push(line.to_string());
@@ -1684,6 +1874,11 @@ pub fn finish_paired_records(records: Vec<PairedVcfRecord>, opt_c: i32) -> Vec<S
         Ok(())
     });
     out
+}
+
+/// Delayed-print state machine without `-S` (`--pass-only`) suppression.
+pub fn finish_paired_records(records: Vec<PairedVcfRecord>, opt_c: i32) -> Vec<String> {
+    finish_paired_records_with_pass_only(records, opt_c, false)
 }
 
 #[cfg(test)]
@@ -2117,7 +2312,7 @@ mod tests {
             "chr1",
             &config,
         );
-        assert_eq!(rec.filter, "PASS");
+        assert_eq!(rec.filter_str(), "PASS");
         let full = finish_paired_records(vec![rec], 0);
         let line = &full[0];
         assert!(line.contains("\tPASS\tSTATUS=Germline;SAMPLE=SAMPLE;TYPE=SNV;DP=50;VD=10;AF="));
@@ -2133,7 +2328,7 @@ mod tests {
             "chr1",
             &config,
         );
-        assert_eq!(rec2.filter, "q22.5");
+        assert_eq!(rec2.filter_str(), "q22.5");
     }
 
     #[test]
@@ -2170,7 +2365,7 @@ mod tests {
             "chr1",
             &config,
         );
-        assert_eq!(rec.filter, "q22.5", "d5/v3 suppressed, q22.5 stands");
+        assert_eq!(rec.filter_str(), "q22.5", "d5/v3 suppressed, q22.5 stands");
 
         // Control: any other status keeps the depth filters (order :156→:169).
         let rec2 = format_paired_vcf_record(
@@ -2178,7 +2373,7 @@ mod tests {
             "chr1",
             &config,
         );
-        assert_eq!(rec2.filter, "d5;q22.5");
+        assert_eq!(rec2.filter_str(), "d5;q22.5");
     }
 
     #[test]
@@ -2213,9 +2408,9 @@ mod tests {
             &config,
         );
         assert!(
-            rec.filter.contains("d5"),
+            rec.filter_str().contains("d5"),
             "round-5 ptot=0.15 must NOT grant the exception: {}",
-            rec.filter
+            rec.filter_str()
         );
 
         // Control: clearly significant p (deep clean normal) still grants it.
@@ -2228,7 +2423,11 @@ mod tests {
             "chr1",
             &config,
         );
-        assert_eq!(rec2.filter, "q22.5", "tiny p grants d5/v3 suppression");
+        assert_eq!(
+            rec2.filter_str(),
+            "q22.5",
+            "tiny p grants d5/v3 suppression"
+        );
     }
 
     #[test]
@@ -2242,8 +2441,16 @@ mod tests {
             "chr1",
             &config,
         );
-        assert!(rec.rest.contains("1/1:"), "gt 1/1 expected: {}", rec.rest);
-        assert!(rec.rest.contains(":0,0:"), "bias 0→0,0: {}", rec.rest);
+        assert!(
+            rec.as_str().contains("1/1:"),
+            "gt 1/1 expected: {}",
+            rec.as_str()
+        );
+        assert!(
+            rec.as_str().contains(":0,0:"),
+            "bias 0→0,0: {}",
+            rec.as_str()
+        );
     }
 
     #[test]
@@ -2324,7 +2531,7 @@ mod tests {
             end_is_variant2: false,
         };
         let pr = format_paired_vcf_record(&sv, "chr1", &config);
-        assert_eq!(pr.prefix.split('\t').nth(5).unwrap(), "71");
+        assert_eq!(pr.as_str().split('\t').nth(5).unwrap(), "71");
     }
 
     #[test]
@@ -2504,8 +2711,8 @@ mod tests {
         t.msi = 2.125; // half-even 3dp -> 2.125
         let sv = somatic_sv(t.clone(), Some(clean_normal()), "Somatic");
         let rec = format_paired_vcf_record(&sv, "chr1", &config);
-        assert!(rec.rest.contains("MSI=2.125;"), "{}", rec.rest);
-        assert!(rec.rest.contains(":42:"), "{}", rec.rest);
+        assert!(rec.as_str().contains("MSI=2.125;"), "{}", rec.as_str());
+        assert!(rec.as_str().contains(":42:"), "{}", rec.as_str());
 
         // Two-stage .var (1dp) -> var2vcf_paired.pl sprintf("%.0f") (0dp) rounding:
         // 32.53846 -> 32.5 in .var -> 32 in paired VCF FORMAT:MQ (not 33).
@@ -2514,9 +2721,9 @@ mod tests {
         let sv_two_stage = somatic_sv(t_two_stage, Some(clean_normal()), "Somatic");
         let rec_two_stage = format_paired_vcf_record(&sv_two_stage, "chr1", &config);
         assert!(
-            rec_two_stage.rest.contains(":32:"),
+            rec_two_stage.as_str().contains(":32:"),
             "{}",
-            rec_two_stage.rest
+            rec_two_stage.as_str()
         );
 
         let region = Region {
@@ -2680,7 +2887,7 @@ mod tests {
             "chr1",
             &config,
         );
-        assert_eq!(rec_both_clean.filter, "PASS");
+        assert_eq!(rec_both_clean.filter_str(), "PASS");
 
         // 2. Tumor clean (filters.is_empty()), normal fails (!normal_clean) -> PASS (no -M)
         let mut dirty_normal = clean_normal();
@@ -2690,7 +2897,7 @@ mod tests {
             "chr1",
             &config,
         );
-        assert_eq!(rec_tumor_clean_normal_dirty.filter, "PASS");
+        assert_eq!(rec_tumor_clean_normal_dirty.filter_str(), "PASS");
 
         // 3. Tumor fails d5, v3, Q0 and normal fails (!normal_clean) -> emits d5;v3;Q0
         let mut low_tumor = clean_normal();
@@ -2704,7 +2911,7 @@ mod tests {
             "chr1",
             &config,
         );
-        assert_eq!(rec_both_dirty.filter, "d5;v3;Q0");
+        assert_eq!(rec_both_dirty.filter_str(), "d5;v3;Q0");
 
         // 4. Same failing tumor with a clean normal (normal_clean = true) -> germline passthrough PASS
         let rec_passthrough = format_paired_vcf_record(
@@ -2712,7 +2919,7 @@ mod tests {
             "chr1",
             &config,
         );
-        assert_eq!(rec_passthrough.filter, "PASS");
+        assert_eq!(rec_passthrough.filter_str(), "PASS");
     }
 
     #[test]
@@ -2859,6 +3066,104 @@ mod tests {
             amp_bias,
         );
         assert_eq!(actual_buf, expected_buf);
+
+        check_valid_pstd_and_pass_only_semantics(&region);
+    }
+
+    fn check_valid_pstd_and_pass_only_semantics(region: &Region) {
+        // 1. parse_sv_counts (`var2vcf_valid.pl:198`: `defined($tamp) && $tamp =~ /-/`)
+        assert_eq!(parse_sv_counts(""), (0, 0));
+        assert_eq!(parse_sv_counts("0"), (0, 0));
+        assert_eq!(parse_sv_counts("5"), (0, 0));
+        assert_eq!(parse_sv_counts("0-9-1"), (0, 9));
+        assert_eq!(parse_sv_counts("5-2-1"), (5, 2));
+        assert_eq!(parse_sv_counts("3-4"), (3, 4));
+
+        // 2. `--no-pstd-filter` (`config.vcf_pstd_filter = false`, `var2vcf_valid.pl:30,161`)
+        let mut pstd_var = amplicon_passing_variant();
+        pstd_var.pstd = false;
+        pstd_var.frequency = 0.10; // < 0.35 -> triggers pSTD by default in non-amplicon mode
+
+        let default_cfg = Config::default();
+        assert_eq!(
+            filter_variant(&pstd_var, &default_cfg, 0, None, 1.0, "1.5"),
+            vec!["pSTD"]
+        );
+
+        let mut no_pstd_cfg = Config::default();
+        no_pstd_cfg.vcf_pstd_filter = false;
+        assert!(
+            filter_variant(&pstd_var, &no_pstd_cfg, 0, None, 1.0, "1.5").is_empty(),
+            "vcf_pstd_filter=false must suppress pSTD in non-amplicon mode"
+        );
+
+        // 3. `try_format_filtered_vcf_record_into` with `config.vcf_pass_only` (`var2vcf_valid.pl:187`)
+        let mut pass_only_cfg = Config::default();
+        pass_only_cfg.vcf_pass_only = true;
+        let mut buf = "STALE-CONTENT".to_string();
+        let emitted_filtered = try_format_filtered_vcf_record_into(
+            &mut buf,
+            &pstd_var,
+            region,
+            &pass_only_cfg,
+            0,
+            1.0,
+            "1.5",
+            None,
+        );
+        assert!(!emitted_filtered, "non-PASS variant must be suppressed");
+        assert!(
+            buf.is_empty(),
+            "suppressed call must clear destination buffer"
+        );
+
+        // Amplicon AMPBIAS non-PASS variant is also suppressed under `vcf_pass_only = true`
+        let pass_var = amplicon_passing_variant();
+        buf.push_str("STALE");
+        let emitted_amp_filtered = try_format_filtered_vcf_record_into(
+            &mut buf,
+            &pass_var,
+            region,
+            &pass_only_cfg,
+            0,
+            1.0,
+            "1.5",
+            Some((1, 4, 0, true)),
+        );
+        assert!(!emitted_amp_filtered);
+        assert!(buf.is_empty());
+
+        // Combining `vcf_pstd_filter = false` + `vcf_pass_only = true` promotes `pstd_var` to PASS
+        let mut pass_no_pstd_cfg = pass_only_cfg.clone();
+        pass_no_pstd_cfg.vcf_pstd_filter = false;
+        let emitted_pass = try_format_filtered_vcf_record_into(
+            &mut buf,
+            &pstd_var,
+            region,
+            &pass_no_pstd_cfg,
+            0,
+            1.0,
+            "1.5",
+            None,
+        );
+        assert!(emitted_pass);
+        assert_eq!(buf.split('\t').nth(6), Some("PASS"));
+
+        // 4. Mid-allele `<dup-N>` (`#342` family, `var2vcf_valid.pl:199` `$alt =~ /</`):
+        //    when `--min-splitreads 0` admits a mid-allele `<dup-12>` variant (`splitreads = 0`),
+        //    `format_vcf_record_with_filter` must emit `;SVTYPE=...dup-12...;SVLEN=...` stripping `<`/`>`.
+        let mut mid_dup_var = amplicon_passing_variant();
+        mid_dup_var.start_pos = 100;
+        mid_dup_var.end_pos = 112;
+        mid_dup_var.ref_allele = "A".to_string();
+        mid_dup_var.var_allele = "ACGT<dup-12>TTAA".to_string();
+        mid_dup_var.sv = "0-0-0".to_string();
+        let mid_dup_line =
+            format_vcf_record(&mid_dup_var, region, &default_cfg, &[], 1.0, "1.5", None);
+        assert!(
+            mid_dup_line.contains(";SVTYPE=ACGTdup-12TTAA;SVLEN=12;SPLITREAD=0;SPANPAIR=0"),
+            "mid-allele <dup-12> must emit SVTYPE/SVLEN matching Perl `$alt =~ /</`: {mid_dup_line}"
+        );
     }
 
     #[test]
@@ -2912,7 +3217,7 @@ mod tests {
             "chr1",
             &config,
         );
-        assert_eq!(rec_override.filter, "PASS");
+        assert_eq!(rec_override.filter_str(), "PASS");
 
         // 2. normal_clean = false preserves exact ;-joined order without duplicate Bias or MSI12
         let mut dirty_norm_with_bias = clean_norm_with_bias;
@@ -2923,7 +3228,7 @@ mod tests {
             &config,
         );
         assert_eq!(
-            rec_multi.filter,
+            rec_multi.filter_str(),
             "d5;v3;f0.02;p8;pSTD;q22.5;Q0;SN1.5;NM5.25;Bias;MSI12"
         );
 
@@ -2951,7 +3256,210 @@ mod tests {
             "chr1",
             &config,
         );
-        assert_eq!(rec_norm_bias_msi2.filter, "Bias;MSI12");
+        assert_eq!(rec_norm_bias_msi2.filter_str(), "Bias;MSI12");
+
+        check_paired_strict_and_pval_semantics();
+    }
+
+    fn check_paired_strict_and_pval_semantics() {
+        let lengths = HashMap::new();
+
+        // 1. Header `##FILTER=<ID=P$PVAL,...>` formatting (`var2vcf_paired.pl:27,86`)
+        let render_hdr = |cfg: &Config| -> String {
+            let mut b = Vec::new();
+            print_paired_vcf_header(&mut b, cfg, &lengths).unwrap();
+            String::from_utf8(b).unwrap()
+        };
+        assert!(render_hdr(&Config::default())
+            .contains(r#"##FILTER=<ID=P0.05,Description="Not significant with p-value > 0.05">"#));
+
+        let mut raw_sci_cfg = Config::default();
+        raw_sci_cfg.vcf_pval = 1e-5;
+        raw_sci_cfg.vcf_pval_raw = Some("1e-5".to_string());
+        assert!(render_hdr(&raw_sci_cfg)
+            .contains(r#"##FILTER=<ID=P1e-5,Description="Not significant with p-value > 1e-5">"#));
+
+        let mut raw_trailing_cfg = Config::default();
+        raw_trailing_cfg.vcf_pval = 0.05;
+        raw_trailing_cfg.vcf_pval_raw = Some("0.050".to_string());
+        assert!(render_hdr(&raw_trailing_cfg).contains(
+            r#"##FILTER=<ID=P0.050,Description="Not significant with p-value > 0.050">"#
+        ));
+
+        let mut prog_sci_cfg = Config::default();
+        prog_sci_cfg.vcf_pval = 1e-5;
+        prog_sci_cfg.vcf_pval_raw = None;
+        assert!(render_hdr(&prog_sci_cfg).contains(
+            r#"##FILTER=<ID=P1e-05,Description="Not significant with p-value > 1e-05">"#
+        ));
+
+        // 2. Germline rescue disabled under `vcf_paired_strict = true` (`var2vcf_paired.pl:217-219`)
+        let mut low_qual_tumor = clean_normal();
+        low_qual_tumor.var_type = "SNV".to_string();
+        low_qual_tumor.mean_quality = 12.0; // < q22.5; equal tumor/normal counts -> ptot = 1.0 > 0.05
+        let germline_sv = somatic_sv(low_qual_tumor, Some(clean_normal()), "Germline");
+        assert_eq!(
+            format_paired_vcf_record(&germline_sv, "chr1", &Config::default()).filter_str(),
+            "PASS"
+        );
+        let mut strict_cfg = Config::default();
+        strict_cfg.vcf_paired_strict = true;
+        let strict_germline = format_paired_vcf_record(&germline_sv, "chr1", &strict_cfg);
+        assert_eq!(strict_germline.filter_str(), "q22.5;P0.05");
+
+        // Verbatim `P1e-5` vs programmatic `P1e-05` in record FILTER under `vcf_paired_strict = true`
+        raw_sci_cfg.vcf_paired_strict = true;
+        prog_sci_cfg.vcf_paired_strict = true;
+        assert_eq!(
+            format_paired_vcf_record(&germline_sv, "chr1", &raw_sci_cfg).filter_str(),
+            "q22.5;P1e-5"
+        );
+        assert_eq!(
+            format_paired_vcf_record(&germline_sv, "chr1", &prog_sci_cfg).filter_str(),
+            "q22.5;P1e-05"
+        );
+
+        // 3. StrongSomatic `P$PVAL` exceptions (`var2vcf_paired.pl:199-200`):
+        //    (ptot < 0.25 && af1 > 0.1) || (ptot < 0.5 && af1 > 0.20) || (ptot < 0.15 && af1 > 0.05)
+        // Construct counts giving moderate ptot in (0.05, 0.45):
+        // tumor: dp=20, vd=6 (tref=14, af1=0.30); normal: dp=20, vd=3 (rref=17) -> Fisher one-sided p ~ 0.22
+        let mut ss_tumor = clean_normal();
+        ss_tumor.var_type = "SNV".to_string();
+        ss_tumor.total_pos_cov = 20;
+        ss_tumor.pos_coverage = 6;
+        ss_tumor.ref_fwd_cov = 7;
+        ss_tumor.ref_rev_cov = 7;
+        ss_tumor.fwd = 3;
+        ss_tumor.rev = 3;
+        ss_tumor.frequency = 0.30; // af1 > 0.20 satisfies `(ptot < 0.5 && af1 > 0.20)`
+        let mut ss_normal = clean_normal();
+        ss_normal.total_pos_cov = 20;
+        ss_normal.pos_coverage = 3;
+        ss_normal.ref_fwd_cov = 9;
+        ss_normal.ref_rev_cov = 8;
+        ss_normal.fwd = 2;
+        ss_normal.rev = 1;
+        ss_normal.frequency = 0.15;
+
+        let ss_exc_rec = format_paired_vcf_record(
+            &somatic_sv(ss_tumor.clone(), Some(ss_normal.clone()), "StrongSomatic"),
+            "chr1",
+            &strict_cfg,
+        );
+        assert_eq!(
+            ss_exc_rec.filter_str(),
+            "PASS",
+            "StrongSomatic with ptot<0.5 and af1>0.20 must suppress P0.05: {}",
+            ss_exc_rec.as_str()
+        );
+        assert!(!ss_exc_rec.as_str().contains(";P0.01Likely"));
+        assert!(!ss_exc_rec.as_str().contains(";InDelLikely"));
+
+        // Same counts with LikelySomatic do NOT get the StrongSomatic exception -> P0.05 (and NOT P0.01Likely!)
+        let ls_no_exc = format_paired_vcf_record(
+            &somatic_sv(ss_tumor, Some(ss_normal), "LikelySomatic"),
+            "chr1",
+            &strict_cfg,
+        );
+        assert_eq!(ls_no_exc.filter_str(), "P0.05");
+        assert!(
+            !ls_no_exc.as_str().contains(";P0.01Likely"),
+            "ptot > PVAL enters `if` branch so `elsif` P0.01Likely must not fire"
+        );
+
+        // 4. `;P0.01Likely` (`var2vcf_paired.pl:201-202, 239`):
+        //    `status =~ /LikelySomatic/ && ptot > 0.05 / 5**vd2` when `ptot <= PVAL`.
+        //    tumor: dp=40, vd=12 (tref=28); normal: dp=40, vd=2 (rref=38) -> ptot ~ 0.0033 <= 0.05,
+        //    while 0.05 / 5^2 = 0.002 < 0.0033 -> sets `;P0.01Likely` right after `RSEQ=...`.
+        let mut ls_tumor = clean_normal();
+        ls_tumor.var_type = "SNV".to_string();
+        ls_tumor.total_pos_cov = 40;
+        ls_tumor.pos_coverage = 12;
+        ls_tumor.ref_fwd_cov = 14;
+        ls_tumor.ref_rev_cov = 14;
+        ls_tumor.fwd = 6;
+        ls_tumor.rev = 6;
+        ls_tumor.frequency = 0.30;
+        ls_tumor.right_seq = "ACGT".to_string();
+        let mut ls_norm = clean_normal();
+        ls_norm.total_pos_cov = 40;
+        ls_norm.pos_coverage = 2;
+        ls_norm.ref_fwd_cov = 19;
+        ls_norm.ref_rev_cov = 19;
+        ls_norm.fwd = 1;
+        ls_norm.rev = 1;
+        ls_norm.frequency = 0.05;
+
+        let p_likely_rec = format_paired_vcf_record(
+            &somatic_sv(ls_tumor.clone(), Some(ls_norm), "LikelySomatic"),
+            "chr1",
+            &strict_cfg,
+        );
+        assert_eq!(p_likely_rec.filter_str(), "PASS");
+        assert!(
+            p_likely_rec
+                .as_str()
+                .contains(";RSEQ=ACGT;P0.01Likely\tGT:"),
+            "expected ;P0.01Likely immediately after RSEQ before FORMAT: {}",
+            p_likely_rec.as_str()
+        );
+
+        // Ultra-deep `vd2 = 10_000`: `5.0_f64.powi(10_000)` saturates cleanly to `+inf`
+        // (`0.05 / +inf == 0.0`), never panicking. With `vcf_pval = 1.0`, `ptot_r > 0.0` sets `;P0.01Likely`.
+        let mut deep_pval_cfg = strict_cfg.clone();
+        deep_pval_cfg.vcf_pval = 1.0;
+        let mut ultra_norm = clean_normal();
+        ultra_norm.total_pos_cov = 20_000;
+        ultra_norm.pos_coverage = 10_000;
+        let ultra_rec = format_paired_vcf_record(
+            &somatic_sv(ls_tumor, Some(ultra_norm), "LikelySomatic"),
+            "chr1",
+            &deep_pval_cfg,
+        );
+        assert!(ultra_rec.as_str().contains(";P0.01Likely\tGT:"));
+
+        // 5. `;InDelLikely` (`var2vcf_paired.pl:203-205, 239`):
+        //    `status =~ /Likely/ && type ne "SNV"` unless `length(ref) <= 2 && length(alt) <= 2`.
+        let mut indel_tumor = clean_normal();
+        indel_tumor.ref_allele = "ACGT".to_string(); // len 4 > 2
+        indel_tumor.var_allele = "A".to_string();
+        indel_tumor.var_type = "Deletion".to_string();
+        indel_tumor.total_pos_cov = 100;
+        indel_tumor.pos_coverage = 40;
+        indel_tumor.frequency = 0.40;
+        indel_tumor.right_seq = "TTAA".to_string();
+        let mut clean_zero_norm = clean_normal();
+        clean_zero_norm.total_pos_cov = 100;
+        clean_zero_norm.pos_coverage = 0; // ptot tiny (0.0 after 5dp) <= 0.05/5^0 = 0.05
+        clean_zero_norm.frequency = 0.0;
+
+        let indel_likely_rec = format_paired_vcf_record(
+            &somatic_sv(
+                indel_tumor.clone(),
+                Some(clean_zero_norm.clone()),
+                "LikelyLOH",
+            ),
+            "chr1",
+            &strict_cfg,
+        );
+        assert_eq!(indel_likely_rec.filter_str(), "PASS");
+        assert!(
+            indel_likely_rec
+                .as_str()
+                .contains(";RSEQ=TTAA;InDelLikely\tGT:"),
+            "expected ;InDelLikely immediately after RSEQ: {}",
+            indel_likely_rec.as_str()
+        );
+
+        // Short indel (`ref.len() <= 2 && alt.len() <= 2`) must NOT set `;InDelLikely`
+        indel_tumor.ref_allele = "AC".to_string();
+        indel_tumor.var_allele = "A".to_string();
+        let short_indel_rec = format_paired_vcf_record(
+            &somatic_sv(indel_tumor, Some(clean_zero_norm), "LikelyLOH"),
+            "chr1",
+            &strict_cfg,
+        );
+        assert!(!short_indel_rec.as_str().contains(";InDelLikely"));
     }
 
     fn dirty_dirty_normal_for_ss(base: &Variant) -> Variant {
@@ -2995,12 +3503,12 @@ mod tests {
                 "chr1",
                 &config,
             );
-            assert_eq!(rec_none.prefix, rec_zero_bias.prefix);
-            assert_eq!(rec_none.filter, rec_zero_bias.filter);
-            assert_eq!(rec_none.rest, rec_zero_bias.rest);
+            assert_eq!(rec_none.as_str(), rec_zero_bias.as_str());
+            assert_eq!(rec_none.filter_str(), rec_zero_bias.filter_str());
+            assert_eq!(rec_none.filter_offsets(), rec_zero_bias.filter_offsets());
 
             let normal_sample = rec_none
-                .rest
+                .as_str()
                 .rsplit('\t')
                 .next()
                 .expect("normal sample column");
@@ -3062,5 +3570,247 @@ mod tests {
             filters15,
             vec!["Cluster15bp", "Cluster15bp", "PASS", "PASS"]
         );
+
+        check_single_buffer_paired_record_and_cluster_rewrite();
+    }
+
+    fn check_single_buffer_paired_record_and_cluster_rewrite() {
+        #[cfg(target_pointer_width = "64")]
+        {
+            assert_eq!(std::mem::size_of::<PairedVcfRecord>(), 48);
+            assert_eq!(std::mem::size_of::<FilterTag<'_>>(), 16);
+        }
+
+        let cfg = Config::default();
+        let mut t = clean_normal();
+        t.start_pos = 100;
+        t.end_pos = 100;
+        t.var_type = "SNV".to_string();
+        let mut rec = format_paired_vcf_record(&somatic_sv(t, None, "StrongSomatic"), "chr1", &cfg);
+        assert!(rec.is_pass());
+        assert_eq!(rec.filter_str(), "PASS");
+        let (fs0, fe0) = rec.filter_offsets();
+        assert_eq!(&rec.as_str()[fs0..fe0], "PASS");
+
+        // Length-changing FILTER rewrite ("PASS" 4B -> "Cluster10bp" 11B) preserves prefix & rest
+        let before_suffix = rec.as_str()[fe0..].to_string();
+        let before_prefix = rec.as_str()[..fs0].to_string();
+        rec.set_cluster_filter("Cluster10bp");
+        assert!(!rec.is_pass());
+        assert_eq!(rec.filter_str(), "Cluster10bp");
+        let (fs1, fe1) = rec.filter_offsets();
+        assert_eq!((fs1, fe1), (fs0, fs0 + 11));
+        assert_eq!(
+            rec.as_str(),
+            format!("{before_prefix}Cluster10bp{before_suffix}")
+        );
+
+        // `from_parts_checked` rejects inverted, out-of-bounds, and mid-UTF8 spans
+        let valid_line = rec.as_str().to_string();
+        assert!(
+            PairedVcfRecord::from_parts_checked(valid_line.clone(), fs1, fe1, 100, true, true)
+                .is_some()
+        );
+        assert!(
+            PairedVcfRecord::from_parts_checked(valid_line.clone(), fe1, fs1, 100, true, true)
+                .is_none(),
+            "inverted span must be rejected"
+        );
+        assert!(
+            PairedVcfRecord::from_parts_checked(
+                valid_line.clone(),
+                fs1,
+                valid_line.len() + 1,
+                100,
+                true,
+                true,
+            )
+            .is_none(),
+            "out-of-bounds span must be rejected"
+        );
+        let utf8_line = "chr1\t100\t.\tA\tG\t35\tµPASS\tSTATUS=Somatic\tGT\t0/1\t0/0".to_string();
+        let mu_pos = utf8_line.find('µ').unwrap();
+        assert_eq!('µ'.len_utf8(), 2);
+        assert!(
+            PairedVcfRecord::from_parts_checked(
+                utf8_line.clone(),
+                mu_pos,
+                mu_pos + 1,
+                100,
+                true,
+                true,
+            )
+            .is_none(),
+            "mid-UTF8 end offset must be rejected"
+        );
+        assert!(
+            PairedVcfRecord::from_parts_checked(
+                utf8_line,
+                mu_pos + 1,
+                mu_pos + 6,
+                100,
+                true,
+                true,
+            )
+            .is_none(),
+            "mid-UTF8 start offset must be rejected"
+        );
+        // Column-aligned non-empty FILTER span checks (VCF column 7 = index 6, 10 tabs, no \r/\n)
+        assert!(
+            PairedVcfRecord::from_parts_checked(valid_line.clone(), 0, 4, 100, true, true)
+                .is_none(),
+            "CHROM column (0..4) must be rejected as FILTER span"
+        );
+        assert!(
+            PairedVcfRecord::from_parts_checked(valid_line.clone(), fs1, fs1, 100, true, true)
+                .is_none(),
+            "empty FILTER span must be rejected"
+        );
+        assert!(
+            PairedVcfRecord::from_parts_checked(valid_line.clone(), fs1, fe1 - 1, 100, true, true)
+                .is_none(),
+            "truncated FILTER span without trailing tab must be rejected"
+        );
+        assert!(
+            PairedVcfRecord::from_parts_checked(valid_line.clone(), 5, 8, 100, true, true)
+                .is_none(),
+            "POS column (col 2, 1 tab before) must be rejected as FILTER span"
+        );
+        let tab_in_filter_end = valid_line[fe1 + 1..]
+            .find('\t')
+            .map(|rel| fe1 + 1 + rel)
+            .unwrap();
+        assert!(
+            PairedVcfRecord::from_parts_checked(
+                valid_line.clone(),
+                fs1,
+                tab_in_filter_end,
+                100,
+                true,
+                true,
+            )
+            .is_none(),
+            "span crossing tab into INFO column must be rejected"
+        );
+        assert!(
+            PairedVcfRecord::from_parts_checked(
+                "chr1\t100\t.\tA\tG\t35\tPASS\tSTATUS=Somatic".to_string(),
+                18,
+                22,
+                100,
+                true,
+                true,
+            )
+            .is_none(),
+            "8-column line (< 10 tabs) must be rejected"
+        );
+        assert!(
+            PairedVcfRecord::from_parts_checked(
+                format!("{valid_line}\textra"),
+                fs1,
+                fe1,
+                100,
+                true,
+                true,
+            )
+            .is_none(),
+            "12-column line (> 10 tabs) must be rejected"
+        );
+        assert!(
+            PairedVcfRecord::from_parts_checked(
+                format!("{valid_line}\n"),
+                fs1,
+                fe1,
+                100,
+                true,
+                true,
+            )
+            .is_none(),
+            "line containing trailing newline must be rejected"
+        );
+
+        // Direct library-API sanitization (`vcf_pval_raw` injection / NaN `vcf_pval`) &
+        // extreme `i32` bounds in `filter_variant` / `format_paired_vcf_record`
+        let mut bad_lib_cfg = Config::default();
+        bad_lib_cfg.vcf_paired_strict = true;
+        bad_lib_cfg.vcf_pval = f64::NAN;
+        bad_lib_cfg.vcf_pval_raw = Some("0.01\n##evil".to_string());
+        let mut hdr_buf = Vec::new();
+        print_paired_vcf_header(&mut hdr_buf, &bad_lib_cfg, &HashMap::new()).unwrap();
+        let hdr_str = String::from_utf8(hdr_buf).unwrap();
+        assert!(hdr_str.contains("##FILTER=<ID=P0.05,"));
+        assert!(!hdr_str.contains("##evil"));
+
+        let mut extreme = clean_normal();
+        extreme.start_pos = 0;
+        extreme.end_pos = i32::MAX;
+        extreme.total_pos_cov = 10;
+        extreme.pos_coverage = i32::MIN;
+        extreme.ref_fwd_cov = i32::MAX;
+        extreme.ref_rev_cov = i32::MAX;
+        extreme.msint = i32::MIN;
+        extreme.bias = "2;1".to_string();
+        extreme.var_allele = "<INV>".to_string();
+        let _ = filter_variant(
+            &extreme,
+            &Config::default(),
+            i32::MAX,
+            Some((0, i32::MAX, i32::MIN, false)),
+            0.0,
+            "Inf",
+        );
+        let mut sv_zero_cfg = Config::default();
+        sv_zero_cfg.vcf_min_splitreads = 0;
+        let mut vcf_out = String::new();
+        let ext_region = Region {
+            chr: "chr1".to_string(),
+            start: crate::types::Pos1(1),
+            end: crate::types::Pos1(100),
+            gene: "TEST".to_string(),
+            amplicon: None,
+        };
+        format_filtered_vcf_record_into(
+            &mut vcf_out,
+            &extreme,
+            &ext_region,
+            &sv_zero_cfg,
+            i32::MAX,
+            0.0,
+            "Inf",
+            None,
+        );
+        assert!(vcf_out.contains(";SVTYPE=INV;SVLEN=2147483648;"));
+        let san_rec = format_paired_vcf_record(
+            &somatic_sv(extreme.clone(), Some(extreme), "Germline"),
+            "chr1",
+            &bad_lib_cfg,
+        );
+        assert!(san_rec.capacity() >= san_rec.as_str().len());
+        assert!(!san_rec.as_str().contains('\n'));
+        assert_eq!(san_rec.as_str().bytes().filter(|&b| b == b'\t').count(), 10);
+
+        // `PairedRecordStreamer::with_pass_only(10, true)` suppresses clustered SNVs after
+        // `Cluster10bp` mutation while keeping unclustered PASS records (`var2vcf_paired.pl:229-236, 249`)
+        let mk_pos = |start: i32, qual: f64| {
+            let mut v = clean_normal();
+            v.start_pos = start;
+            v.end_pos = start;
+            v.mean_quality = qual;
+            v.var_type = "SNV".to_string();
+            format_paired_vcf_record(&somatic_sv(v, None, "StrongSomatic"), "chr1", &cfg)
+        };
+        let pass_only_lines = finish_paired_records_with_pass_only(
+            vec![
+                mk_pos(100, 35.0), // clustered with 106 -> Cluster10bp -> suppressed by pass_only
+                mk_pos(106, 35.0), // clustered with 100 -> Cluster10bp -> suppressed by pass_only
+                mk_pos(150, 10.0), // q22.5 -> suppressed by pass_only
+                mk_pos(200, 35.0), // unclustered PASS -> emitted!
+            ],
+            10,
+            true,
+        );
+        assert_eq!(pass_only_lines.len(), 1);
+        assert!(pass_only_lines[0].starts_with("chr1\t200\t."));
+        assert_eq!(pass_only_lines[0].split('\t').nth(6), Some("PASS"));
     }
 }

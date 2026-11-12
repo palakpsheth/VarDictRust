@@ -145,6 +145,18 @@ pub struct Config {
     pub sample_regexp: Option<String>,
     /// Write a CSI (`.csi`) index alongside a BGZF-compressed `--output .vcf.gz` file (`--csi`).
     pub index_csi: bool,
+    /// Emit only PASS variants in VCF output (`--pass-only`, ports `var2vcf_valid.pl` / `var2vcf_paired.pl -S`).
+    pub vcf_pass_only: bool,
+    /// Disable germline rescue in paired somatic VCF filtering (`--paired-strict`, ports `var2vcf_paired.pl -M`).
+    pub vcf_paired_strict: bool,
+    /// Maximum p-value threshold for high-confidence somatic calls (`--vcf-pval`, default: 0.05, ports `var2vcf_paired.pl -P`).
+    pub vcf_pval: f64,
+    /// Normalized raw CLI token supplied to `--vcf-pval` for verbatim `P$PVAL` formatting (`None` when unset).
+    pub vcf_pval_raw: Option<String>,
+    /// Minimum split reads required for structural variants in single-sample VCF (`--min-splitreads`, default: 1, ports `var2vcf_valid.pl -T`).
+    pub vcf_min_splitreads: i32,
+    /// Enable the PSTD=0 single-position read filter in single-sample VCF output (`true` by default; `--no-pstd-filter` sets `false`, ports `var2vcf_valid.pl -P 0`).
+    pub vcf_pstd_filter: bool,
 }
 
 impl Default for Config {
@@ -222,6 +234,12 @@ impl Default for Config {
             trim_bases_after: 0,
             sample_regexp: None,
             index_csi: false,
+            vcf_pass_only: false,
+            vcf_paired_strict: false,
+            vcf_pval: 0.05,
+            vcf_pval_raw: None,
+            vcf_min_splitreads: 1,
+            vcf_pstd_filter: true,
         }
     }
 }
@@ -432,6 +450,41 @@ pub fn validate_sample_regexp(raw: &str) -> Result<Option<String>, String> {
     }
     compile_sample_regex(pat).map_err(|e| format!("Invalid sample name regex '{raw}': {e}"))?;
     Ok(Some(pat.to_string()))
+}
+
+/// Validates a `--vcf-pval <FLOAT>` (`var2vcf_paired.pl -P`) token without allocating.
+///
+/// Rejects empty or untrimmed strings, non-finite numbers (`NaN`/`inf`), and negative
+/// values (including negative non-zero mantissas that underflow `f64` to `-0.0` such as
+/// `"-1e-400"`). Canonicalizes signed zeros (`"-0.0"` / `"+0.0"` -> `(0.0, "0.0")`) while
+/// preserving verbatim positive formatting (`"1e-5"`, `"0.050"`).
+pub fn validate_vcf_pval_token(s: &str) -> Result<(f64, &str), String> {
+    if s.is_empty() || s.trim() != s {
+        return Err(format!("Invalid --vcf-pval value '{s}'"));
+    }
+    let v = s
+        .parse::<f64>()
+        .map_err(|e| format!("Invalid --vcf-pval value '{s}': {e}"))?;
+    let neg_nonzero_mantissa = s.starts_with('-')
+        && s.split(['e', 'E'])
+            .next()
+            .is_some_and(|m| m.bytes().any(|b| b.is_ascii_digit() && b != b'0'));
+    if !v.is_finite() || v < 0.0 || neg_nonzero_mantissa {
+        return Err(format!(
+            "Invalid --vcf-pval value '{s}': must be a finite number >= 0.0"
+        ));
+    }
+    if v == 0.0 {
+        Ok((0.0, s.strip_prefix(['-', '+']).unwrap_or(s)))
+    } else {
+        Ok((v, s))
+    }
+}
+
+/// Validates and normalizes a `--vcf-pval <FLOAT>` (`var2vcf_paired.pl -P`) token into
+/// `(f64, String)` for CLI parsing and [`Config`] validation.
+pub fn parse_vcf_pval_token(s: &str) -> Result<(f64, String), String> {
+    validate_vcf_pval_token(s).map(|(v, norm)| (v, norm.to_string()))
 }
 
 /// Resolves sample name(s) matching `VarDictLauncher.java:82-86, 206-268` and `var2vcf_paired.pl:45-48`.

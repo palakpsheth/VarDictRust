@@ -14,6 +14,34 @@ const UNSUPPORTED_FLAGS: &[&str] = &[
     "--downsample", // long form of -Z
 ];
 
+/// GNU-only `--` long flags that have no VarDictJava single-dash equivalent and would
+/// otherwise collide with short options or boolean clusters.
+const GNU_ONLY_LONG_FLAGS_SINGLE_DASH: &[&str] = &[
+    "-pass-only",
+    "-paired-strict",
+    "-vcf-pval",
+    "-min-splitreads",
+    "-no-pstd-filter",
+    "-no-end",
+    "-output",
+    "-tbi",
+    "-csi",
+    "-index",
+    "-stats-json",
+    "-parity",
+    "-compat",
+    "-reference",
+    "-bam",
+    "-af-threshold",
+    "-name",
+    "-region",
+    "-threads",
+    "-emit-intermediate",
+    "-tile-size",
+    "-version",
+    "-help",
+];
+
 /// Value parser for signed integer CLI options (`-P`, `-x`, `-X`, `-J`, `-j`, `-T`).
 /// Rejects `"-3"` because Commons-CLI treats `-3` as the short option flag `moveIndelsTo3`,
 /// leaving the preceding option missing its argument (`MissingArgumentException`).
@@ -22,6 +50,32 @@ fn parse_java_signed_i32(s: &str) -> Result<i32, String> {
         return Err("Missing argument for option (-3 is a flag)".to_string());
     }
     vardictrust_core::config::parse_java_number_i32(s)
+}
+
+/// Strict parser for `--vcf-pval <FLOAT>` (`var2vcf_paired.pl -P`).
+/// Preserves the normalized raw CLI token for verbatim `P$PVAL` header/FILTER formatting
+/// while canonicalizing signed zeros (`-0.0` / `+0.0` -> `(0.0, "0.0")`).
+fn parse_vcf_pval_token(s: &str) -> Result<(f64, String), String> {
+    if s == "-3" {
+        return Err(format!("Invalid --vcf-pval value '{s}'"));
+    }
+    vardictrust_core::config::parse_vcf_pval_token(s)
+}
+
+/// Strict base-10 non-negative integer parser for `--min-splitreads <INT>` (`var2vcf_valid.pl -T`).
+fn parse_non_negative_splitreads(s: &str) -> Result<i32, String> {
+    if s.is_empty() || s.trim() != s || s == "-3" {
+        return Err(format!("Invalid --min-splitreads value '{s}'"));
+    }
+    let v = s
+        .parse::<i32>()
+        .map_err(|e| format!("Invalid --min-splitreads value '{s}': {e}"))?;
+    if v < 0 {
+        return Err(format!(
+            "Invalid --min-splitreads value '{s}': must be an integer >= 0"
+        ));
+    }
+    Ok(v)
 }
 
 fn is_known_single_dash_long_flag(flag: &str) -> bool {
@@ -75,7 +129,11 @@ fn classify_short_cluster(arg: &str) -> (Option<char>, bool) {
     let Some(rest) = head.strip_prefix('-') else {
         return (None, false);
     };
-    if rest.is_empty() || rest.starts_with('-') || is_known_single_dash_long_flag(head) {
+    if rest.is_empty()
+        || rest.starts_with('-')
+        || is_known_single_dash_long_flag(head)
+        || GNU_ONLY_LONG_FLAGS_SINGLE_DASH.contains(&head)
+    {
         return (None, false);
     }
     for (idx, ch) in rest.char_indices() {
@@ -128,6 +186,8 @@ fn takes_mandatory_next_token(arg: &str) -> bool {
             | "--output"
             | "--compat"
             | "--stats-json"
+            | "--vcf-pval"
+            | "--min-splitreads"
             | "-trim"
             | "--trim"
             | "-VS"
@@ -142,7 +202,10 @@ fn takes_mandatory_next_token(arg: &str) -> bool {
 
 fn arg_has_region_short(arg: &str) -> bool {
     let head = arg.split_once('=').map_or(arg, |(h, _)| h);
-    if arg.starts_with("--") || is_known_single_dash_long_flag(head) {
+    if arg.starts_with("--")
+        || is_known_single_dash_long_flag(head)
+        || GNU_ONLY_LONG_FLAGS_SINGLE_DASH.contains(&head)
+    {
         return false;
     }
     let Some(rest) = head.strip_prefix('-') else {
@@ -181,7 +244,10 @@ fn scan_has_region(args: &[String]) -> bool {
 /// `a`, or `R` (e.g. `-pz`, `-pz0`, `-uz`, `-uk`, `-ua`, `-pR`) into `(bool_prefix, tail)`.
 fn split_bool_prefix_cluster(arg: &str) -> Option<(&str, &str)> {
     let head = arg.split_once('=').map_or(arg, |(h, _)| h);
-    if arg.starts_with("--") || is_known_single_dash_long_flag(head) {
+    if arg.starts_with("--")
+        || is_known_single_dash_long_flag(head)
+        || GNU_ONLY_LONG_FLAGS_SINGLE_DASH.contains(&head)
+    {
         return None;
     }
     let rest = arg.strip_prefix('-')?;
@@ -197,7 +263,30 @@ fn split_bool_prefix_cluster(arg: &str) -> Option<(&str, &str)> {
     }
     let bool_prefix = rest.get(..split_idx)?;
     let tail = rest.get(split_idx..)?;
-    if tail.starts_with(['z', 'k', 'a', 'R']) {
+    let mut tail_chars = tail.chars();
+    let first = tail_chars.next()?;
+    let tail_rest = tail_chars.as_str();
+    let should_split = match first {
+        'R' => true,
+        'z' | 'k' => {
+            tail_rest.is_empty()
+                || tail_rest.starts_with('=')
+                || parse_java_signed_i32(tail_rest).is_ok()
+        }
+        'a' => {
+            tail_rest.is_empty()
+                || tail_rest.starts_with('=')
+                || tail_rest.contains(':')
+                || tail_rest
+                    .strip_prefix(['+', '-'])
+                    .unwrap_or(tail_rest)
+                    .as_bytes()
+                    .first()
+                    .is_some_and(u8::is_ascii_digit)
+        }
+        _ => false,
+    };
+    if should_split {
         Some((bool_prefix, tail))
     } else {
         None
@@ -211,6 +300,13 @@ fn normalize_optional_or_passthrough(
     has_region: bool,
     out: &mut Vec<String>,
 ) -> usize {
+    let head = effective_arg
+        .split_once('=')
+        .map_or(effective_arg, |(h, _)| h);
+    if GNU_ONLY_LONG_FLAGS_SINGLE_DASH.contains(&head) {
+        out.push(effective_arg.to_string());
+        return i + 1;
+    }
     if effective_arg == "-z" {
         let next_is_num = args.get(i + 1).is_some_and(|n| {
             parse_java_signed_i32(n).is_ok() && (has_region || i + 2 < args.len())
@@ -443,10 +539,15 @@ pub fn check_unsupported(args: &[String]) -> Result<(), vardictrust_core::types:
         if arg == "--" {
             break;
         }
-        let flag = arg.split_once('=').map_or(arg.as_str(), |(f, _)| f);
-        if UNSUPPORTED_FLAGS.contains(&flag) {
+        let head = arg.split_once('=').map_or(arg.as_str(), |(f, _)| f);
+        if UNSUPPORTED_FLAGS.contains(&head) {
             return Err(vardictrust_core::types::VardictError::Unsupported(format!(
-                "{flag} not implemented in v1.0; use VarDictJava"
+                "{head} not implemented in v1.0; use VarDictJava"
+            )));
+        }
+        if GNU_ONLY_LONG_FLAGS_SINGLE_DASH.contains(&head) {
+            return Err(vardictrust_core::types::VardictError::Parse(format!(
+                "Unknown single-dash option '{head}'; did you mean '-{head}'?"
             )));
         }
         let (unsupported_short, consumes_next) = classify_short_cluster(arg);
@@ -944,6 +1045,38 @@ pub struct Cli {
     #[arg(long = "no-end")]
     pub no_end: bool,
 
+    /// Emit only PASS variants in VCF output (ports var2vcf_valid.pl / var2vcf_paired.pl -S).
+    #[arg(long = "pass-only")]
+    pub pass_only: bool,
+
+    /// Disable germline rescue in paired somatic VCF filtering (ports var2vcf_paired.pl -M).
+    #[arg(long = "paired-strict")]
+    pub paired_strict: bool,
+
+    /// Maximum p-value threshold for high-confidence somatic calls in VCF output (ports var2vcf_paired.pl -P). [default: 0.05]
+    #[arg(
+        long = "vcf-pval",
+        value_name = "FLOAT",
+        num_args = 1,
+        allow_negative_numbers = true,
+        value_parser = parse_vcf_pval_token
+    )]
+    pub vcf_pval: Vec<(f64, String)>,
+
+    /// Minimum split reads required for structural variants in single-sample VCF output (ports var2vcf_valid.pl -T). [default: 1]
+    #[arg(
+        long = "min-splitreads",
+        value_name = "INT",
+        num_args = 1,
+        allow_negative_numbers = true,
+        value_parser = parse_non_negative_splitreads
+    )]
+    pub min_splitreads: Vec<i32>,
+
+    /// Disable the PSTD=0 single-position read filter in single-sample VCF output (ports var2vcf_valid.pl -P 0).
+    #[arg(long = "no-pstd-filter")]
+    pub no_pstd_filter: bool,
+
     /// Write output (.vcf or .var) directly to file; .gz/.bgz suffixes use multithreaded BGZF
     #[arg(long = "output", value_name = "PATH", allow_hyphen_values = true)]
     pub output: Vec<String>,
@@ -1117,6 +1250,11 @@ impl Cli {
             "10:0.95".to_string()
         });
 
+        let (vcf_pval, vcf_pval_raw) = match self.vcf_pval.first() {
+            Some((val, raw)) => (*val, Some(raw.clone())),
+            None => (0.05, None),
+        };
+
         let mut cfg = vardictrust_core::config::Config {
             exception_counter: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             reference: self.reference.first().cloned().unwrap_or_default(),
@@ -1235,6 +1373,12 @@ impl Cli {
             trim_bases_after: self.trim_bases_after.first().copied().unwrap_or(0),
             sample_regexp,
             index_csi: self.index_csi,
+            vcf_pass_only: self.pass_only,
+            vcf_paired_strict: self.paired_strict,
+            vcf_pval,
+            vcf_pval_raw,
+            vcf_min_splitreads: self.min_splitreads.first().copied().unwrap_or(1),
+            vcf_pstd_filter: !self.no_pstd_filter,
         };
         cfg.apply_pileup_overrides();
         Ok(cfg)
@@ -1813,6 +1957,313 @@ mod tests {
             bad_compat_cli.to_config().unwrap_err(),
             vardictrust_core::types::VardictError::Unsupported(_)
         ));
+
+        check_var2vcf_postfilter_cli_flags();
+    }
+
+    fn check_var2vcf_postfilter_cli_flags() {
+        let parse_pipeline = |raw_flags: &[&str]| -> vardictrust_core::config::Config {
+            let norm = normalize_args(&args(raw_flags));
+            check_unsupported(&norm).unwrap_or_else(|e| {
+                panic!("unexpected check_unsupported error on {raw_flags:?} (norm={norm:?}): {e}")
+            });
+            let cli = Cli::try_parse_from(&norm).unwrap_or_else(|e| {
+                panic!("unexpected Cli parse error on {raw_flags:?} (norm={norm:?}): {e}")
+            });
+            cli.to_config()
+                .unwrap_or_else(|e| panic!("unexpected to_config error on {raw_flags:?}: {e}"))
+        };
+
+        // 1. Default Config (both Config::default() and minimal CLI args)
+        let core_default = vardictrust_core::config::Config::default();
+        assert!(!core_default.vcf_pass_only && !core_default.vcf_paired_strict);
+        assert!(
+            (core_default.vcf_pval - 0.05).abs() < f64::EPSILON
+                && core_default.vcf_pval_raw.is_none()
+        );
+        assert!(core_default.vcf_min_splitreads == 1 && core_default.vcf_pstd_filter);
+
+        let cfg = parse_pipeline(&["-G", "ref.fa", "-b", "in.bam", "-R", "chr1:1-100"]);
+        assert!(!cfg.vcf_pass_only && !cfg.vcf_paired_strict);
+        assert!((cfg.vcf_pval - 0.05).abs() < f64::EPSILON && cfg.vcf_pval_raw.is_none());
+        assert!(cfg.vcf_min_splitreads == 1 && cfg.vcf_pstd_filter);
+
+        // 2. Explicit overrides & first-wins repetition, scientific notation, trailing zeros, -0.0 canonicalization
+        let sci_cfg = parse_pipeline(&[
+            "-G",
+            "ref.fa",
+            "-b",
+            "in.bam",
+            "-R",
+            "chr1:1-100",
+            "--pass-only",
+            "--paired-strict",
+            "--no-pstd-filter",
+            "--vcf-pval",
+            "1e-5",
+            "--vcf-pval",
+            "0.02",
+            "--min-splitreads",
+            "3",
+            "--min-splitreads",
+            "9",
+        ]);
+        assert!(sci_cfg.vcf_pass_only);
+        assert!(sci_cfg.vcf_paired_strict);
+        assert!(!sci_cfg.vcf_pstd_filter);
+        assert!((sci_cfg.vcf_pval - 1e-5).abs() < 1e-15);
+        assert_eq!(sci_cfg.vcf_pval_raw.as_deref(), Some("1e-5"));
+        assert_eq!(sci_cfg.vcf_min_splitreads, 3);
+
+        let tz_cfg = parse_pipeline(&[
+            "-G",
+            "ref.fa",
+            "-b",
+            "in.bam",
+            "-R",
+            "chr1:1-100",
+            "--vcf-pval=0.050",
+            "--min-splitreads=0",
+        ]);
+        assert!((tz_cfg.vcf_pval - 0.05).abs() < f64::EPSILON);
+        assert_eq!(tz_cfg.vcf_pval_raw.as_deref(), Some("0.050"));
+        assert_eq!(tz_cfg.vcf_min_splitreads, 0);
+
+        let neg_zero_cfg = parse_pipeline(&[
+            "-G",
+            "ref.fa",
+            "-b",
+            "in.bam",
+            "-R",
+            "chr1:1-100",
+            "--vcf-pval",
+            "-0.0",
+        ]);
+        assert_eq!(neg_zero_cfg.vcf_pval, 0.0);
+        assert!(!neg_zero_cfg.vcf_pval.is_sign_negative());
+        assert_eq!(neg_zero_cfg.vcf_pval_raw.as_deref(), Some("0.0"));
+
+        let pos_zero_cfg = parse_pipeline(&[
+            "-G",
+            "ref.fa",
+            "-b",
+            "in.bam",
+            "-R",
+            "chr1:1-100",
+            "--vcf-pval=+0.00",
+        ]);
+        assert_eq!(pos_zero_cfg.vcf_pval, 0.0);
+        assert!(!pos_zero_cfg.vcf_pval.is_sign_negative());
+        assert_eq!(pos_zero_cfg.vcf_pval_raw.as_deref(), Some("0.00"));
+
+        // 3. Hostile value & missing-value rejection
+        for bad_flags in [
+            &["--vcf-pval", "-0.01", "-R", "chr1:1-100"][..],
+            &["--vcf-pval", "-3", "-R", "chr1:1-100"][..],
+            &["--vcf-pval", "NaN", "-R", "chr1:1-100"][..],
+            &["--vcf-pval", "Infinity", "-R", "chr1:1-100"][..],
+            &["--vcf-pval", "inf", "-R", "chr1:1-100"][..],
+            &["--vcf-pval", "0.01f", "-R", "chr1:1-100"][..],
+            &["--vcf-pval", "", "-R", "chr1:1-100"][..],
+            &["--vcf-pval", " 0.05", "-R", "chr1:1-100"][..],
+            &["--min-splitreads", "-1", "-R", "chr1:1-100"][..],
+            &["--min-splitreads", "-3", "-R", "chr1:1-100"][..],
+            &["--min-splitreads", "2.5", "-R", "chr1:1-100"][..],
+            &["--min-splitreads", "0x2", "-R", "chr1:1-100"][..],
+            &["--min-splitreads", "", "-R", "chr1:1-100"][..],
+            &["--min-splitreads", " 1", "-R", "chr1:1-100"][..],
+            &["--vcf-pval", "--pass-only", "-R", "chr1:1-100"][..],
+            &["--min-splitreads", "-R", "chr1:1-100"][..],
+        ] {
+            let mut full = vec!["-G", "ref.fa", "-b", "in.bam"];
+            full.extend_from_slice(bad_flags);
+            let norm = normalize_args(&args(&full));
+            assert!(
+                check_unsupported(&norm).is_err() || Cli::try_parse_from(&norm).is_err(),
+                "expected CLI parse failure for {bad_flags:?} (norm={norm:?})"
+            );
+            assert!(
+                Cli::try_parse_from(&norm).is_err(),
+                "expected Cli::try_parse_from failure for {bad_flags:?} (norm={norm:?})"
+            );
+        }
+
+        // 4. Single-dash GNU-flag typo rejection in check_unsupported (bare, =val, =10:0.95, and separate value token)
+        for &gnu_typo in GNU_ONLY_LONG_FLAGS_SINGLE_DASH {
+            let expected_suggestion = format!("did you mean '-{gnu_typo}'?");
+            let norm_bare = normalize_args(&args(&[
+                "-G", "r.fa", "-b", "a.bam", gnu_typo, "-R", "c:1-10",
+            ]));
+            let err_bare = check_unsupported(&norm_bare).expect_err(&format!(
+                "expected Parse error for single-dash GNU flag {gnu_typo} (norm={norm_bare:?})"
+            ));
+            assert!(
+                matches!(err_bare, vardictrust_core::types::VardictError::Parse(_)),
+                "expected VardictError::Parse for {gnu_typo}, got {err_bare:?}"
+            );
+            assert!(
+                err_bare.to_string().contains(&expected_suggestion),
+                "missing suggestion '{expected_suggestion}' in error for {gnu_typo}: {err_bare}"
+            );
+
+            for eq_suffix in ["0.01", "10:0.95"] {
+                let eq_tok = format!("{gnu_typo}={eq_suffix}");
+                let norm_eq = normalize_args(&args(&[
+                    "-G",
+                    "r.fa",
+                    "-b",
+                    "a.bam",
+                    eq_tok.as_str(),
+                    "-R",
+                    "c:1-10",
+                ]));
+                let err_eq = check_unsupported(&norm_eq).expect_err(&format!(
+                    "expected Parse error for single-dash GNU flag {eq_tok} (norm={norm_eq:?})"
+                ));
+                assert!(
+                    matches!(err_eq, vardictrust_core::types::VardictError::Parse(_)),
+                    "expected VardictError::Parse for {eq_tok}, got {err_eq:?}"
+                );
+                assert!(
+                    err_eq.to_string().contains(&expected_suggestion),
+                    "missing suggestion '{expected_suggestion}' in error for {eq_tok}: {err_eq}"
+                );
+            }
+        }
+
+        // Separate value tokens after single-dash GNU flags must also be rejected cleanly
+        for (sep_argv, expected_flag) in [
+            (
+                &[
+                    "-G",
+                    "r.fa",
+                    "-b",
+                    "a.bam",
+                    "-vcf-pval",
+                    "0.01",
+                    "-R",
+                    "c:1-10",
+                ][..],
+                "--vcf-pval",
+            ),
+            (
+                &[
+                    "-G", "r.fa", "-b", "a.bam", "-output", "x.vcf", "-R", "c:1-10",
+                ][..],
+                "--output",
+            ),
+            (
+                &[
+                    "-G",
+                    "r.fa",
+                    "-b",
+                    "a.bam",
+                    "--vcf-pval",
+                    "0.01",
+                    "-output",
+                    "x.vcf",
+                    "-R",
+                    "c:1-10",
+                ][..],
+                "--output",
+            ),
+            (
+                &[
+                    "-G",
+                    "r.fa",
+                    "-b",
+                    "a.bam",
+                    "--output",
+                    "x.vcf",
+                    "-min-splitreads",
+                    "2",
+                    "-R",
+                    "c:1-10",
+                ][..],
+                "--min-splitreads",
+            ),
+        ] {
+            let norm_sep = normalize_args(&args(sep_argv));
+            let err_sep = check_unsupported(&norm_sep).expect_err(&format!(
+                "expected Parse error for {sep_argv:?} (norm={norm_sep:?})"
+            ));
+            assert!(
+                matches!(err_sep, vardictrust_core::types::VardictError::Parse(_)),
+                "expected VardictError::Parse for {sep_argv:?}, got {err_sep:?}"
+            );
+            assert!(
+                err_sep
+                    .to_string()
+                    .contains(&format!("did you mean '{expected_flag}'?")),
+                "unexpected error message for {sep_argv:?}: {err_sep}"
+            );
+        }
+
+        // Valid values passed to `-n` (including hyphenated values like `-pass-only` and normal regexes)
+        // must NOT be rejected by `check_unsupported` per `takes_mandatory_next_token`.
+        let n_hyphen_cfg = parse_pipeline(&[
+            "-G",
+            "r.fa",
+            "-b",
+            "sample-pass-only.bam",
+            "-n",
+            "-pass-only",
+            "-R",
+            "c:1-10",
+        ]);
+        assert_eq!(n_hyphen_cfg.sample_regexp.as_deref(), Some("-pass-only"));
+        assert!(!n_hyphen_cfg.vcf_pass_only);
+
+        let n_regex_cfg = parse_pipeline(&[
+            "-G",
+            "r.fa",
+            "-b",
+            "cohort_S42.bam",
+            "-n",
+            "cohort_(S\\d+)",
+            "--pass-only",
+            "-R",
+            "c:1-10",
+        ]);
+        assert_eq!(n_regex_cfg.sample, "S42");
+        assert!(n_regex_cfg.vcf_pass_only);
+
+        // Short boolean clusters (-pz, -pz0, -uk, -ua, -pR) continue to normalize cleanly
+        for cluster_ok in [
+            &["-G", "r.fa", "-b", "a.bam", "-pz", "regions.bed"][..],
+            &["-G", "r.fa", "-b", "a.bam", "-pz0", "regions.bed"][..],
+            &["-G", "r.fa", "-b", "a.bam", "-uk", "regions.bed"][..],
+            &["-G", "r.fa", "-b", "a.bam", "-ua", "regions.bed"][..],
+            &["-G", "r.fa", "-b", "a.bam", "-pR", "chr1:1-100"][..],
+        ] {
+            let _ = parse_pipeline(cluster_ok);
+        }
+
+        // 5. normalize_args token-consumption safety with --vcf-pval and --min-splitreads before -z regions.bed
+        let norm_z = normalize_args(&args(&[
+            "-G",
+            "r.fa",
+            "-b",
+            "a.bam",
+            "--vcf-pval",
+            "1e-5",
+            "--min-splitreads",
+            "0",
+            "-z",
+            "regions.bed",
+        ]));
+        assert!(
+            norm_z.iter().any(|t| t == "-z=1"),
+            "expected -z to normalize to -z=1, got {norm_z:?}"
+        );
+        check_unsupported(&norm_z).unwrap();
+        let z_cfg = Cli::try_parse_from(&norm_z).unwrap().to_config().unwrap();
+        assert!(z_cfg.zero_based);
+        assert!(z_cfg.zero_based_defined);
+        assert_eq!(z_cfg.bed.as_deref(), Some("regions.bed"));
+        assert!((z_cfg.vcf_pval - 1e-5).abs() < 1e-15);
+        assert_eq!(z_cfg.vcf_pval_raw.as_deref(), Some("1e-5"));
+        assert_eq!(z_cfg.vcf_min_splitreads, 0);
     }
 
     #[test]
@@ -2095,6 +2546,32 @@ mod tests {
                 cfg.bed.as_deref(),
                 Some("regions.bed"),
                 "argv={cluster_argv:?}"
+            );
+        }
+
+        // Clustered `-a` with unsigned and signed amplicon values (`-ua10:0.95`, `-ua+30:0.5`, `-pa-5:0.95`)
+        for (amp_cluster, exp_pileup, exp_u, exp_amp) in [
+            (&["-ua10:0.95", "regions.bed"][..], false, true, "10:0.95"),
+            (&["-ua+30:0.5", "regions.bed"][..], false, true, "+30:0.5"),
+            (&["-pa-5:0.95", "regions.bed"][..], true, false, "-5:0.95"),
+        ] {
+            let mut full = vec!["-G", "r.fa", "-b", "a.bam"];
+            full.extend_from_slice(amp_cluster);
+            let norm = normalize_args(&args(&full));
+            check_unsupported(&norm).unwrap();
+            let cfg = Cli::try_parse_from(&norm)
+                .unwrap_or_else(|e| panic!("failed on {amp_cluster:?} (norm={norm:?}): {e}"))
+                .to_config()
+                .unwrap();
+            assert_eq!(cfg.pileup, exp_pileup, "argv={amp_cluster:?}");
+            assert_eq!(
+                cfg.unique_mode_alignment_enabled, exp_u,
+                "argv={amp_cluster:?}"
+            );
+            assert_eq!(
+                cfg.amplicon.as_deref(),
+                Some(exp_amp),
+                "argv={amp_cluster:?}"
             );
         }
 

@@ -11,12 +11,12 @@ use std::fs;
 use std::path::Path;
 use std::sync::OnceLock;
 
-use vardictrust_core::config::{extract_sample_name, Config};
+use vardictrust_core::config::{extract_sample_name, resolve_sample_names, Config};
 
 mod common;
 use common::{
-    data_root, ensure_fastas_converted, extract_variants, run_core_var, run_core_vcf, sha256_hex,
-    workspace_root, write_indexed_cram,
+    data_root, ensure_fastas_converted, extract_variants, indexed_bam, run_core_var, run_core_vcf,
+    sha256_hex, workspace_root, write_indexed_cram,
 };
 
 const SMOKE_VCF_COMPANIONS: &[&str] = &[
@@ -1066,6 +1066,7 @@ mod modalities {
                     .all(|v| v.contains("SBF=") && v.contains("ODDRATIO=")),
             "amplicon --fisher VCF must emit SBF and ODDRATIO"
         );
+        check_fisher_vcf_raw_cell_strict_parity(&var_out, &vars);
     }
 
     #[test]
@@ -1183,6 +1184,444 @@ mod modalities {
         let expected =
             fs::read_to_string(workspace_root().join("golden/micro.expected.var")).expect("golden");
         assert_eq!(var_out.trim(), expected.trim());
+        check_trim_and_sample_regexp_corpus_parity();
+    }
+
+    fn vcf_chrom_header(vcf_text: &str) -> &str {
+        vcf_text
+            .lines()
+            .find(|l| l.starts_with("#CHROM\t"))
+            .expect("missing #CHROM header line")
+    }
+
+    fn vcf_variants_sha256(vars: &[String]) -> String {
+        let mut joined = String::new();
+        for v in vars {
+            joined.push_str(v);
+            joined.push('\n');
+        }
+        sha256_hex(joined.as_bytes())
+    }
+
+    fn check_trim_and_sample_regexp_corpus_parity() {
+        // 1. fixtures/micro/micro.bam with -T 25 and -n '.*(mic)ro\.bam'
+        let mut micro_cfg = micro_config();
+        micro_cfg.trim_bases_after = 25;
+        micro_cfg.sample_regexp = Some(r".*(mic)ro\.bam".to_string());
+        assert_eq!(
+            resolve_sample_names(
+                &micro_cfg.bam,
+                None,
+                micro_cfg.sample_regexp.as_deref(),
+                false,
+                false,
+            ),
+            "mic"
+        );
+        let micro_var = run_core_var(&micro_cfg).expect("micro -T 25 -n .var");
+        let expected_micro_var = concat!(
+            "mic\tmicro_chr1\tchr1\t101\t101\tT\tA\t7\t3\t4\t0\t3\t0\tT/A\t0.4286\t0;0\t13.0\t1\t40.0\t0\t60.0\t6.000\t0.4286\t0\t0\t3.000\t1\t0\t3\t7\tTCGCCGTTGCCTAAACCTAT\tTGAAGGAGTCTAGCAGCCGC\tchr1:41-260\tSNV\t0\t0\n",
+            "mic\tmicro_chr2\tchr2\t150\t153\tGCGG\tG\t8\t4\t4\t0\t4\t0\tC/-3\t0.5000\t0;0\t21.0\t1\t40.0\t0\t60.0\t8.000\t0.5000\t0\t0\t3.000\t1\t0\t4\t8\tCATCTGTTTCTTGCGTCGTA\tGACCCTCCATTGTTACTTAT\tchr2:111-230\tDeletion\t0\t0\n",
+        );
+        assert_eq!(micro_var, expected_micro_var, "micro -T 25 -n .var parity");
+        assert_eq!(
+            sha256_hex(micro_var.as_bytes()),
+            "43ab86e3c31cd2239462dd45feedc13b74610162ae1f435ba32b1c243c868257",
+            "micro -T 25 -n .var SHA-256"
+        );
+
+        let micro_vcf = run_core_vcf(&micro_cfg).expect("micro -T 25 -n VCF");
+        assert_eq!(
+            vcf_chrom_header(&micro_vcf),
+            "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tmic"
+        );
+        let micro_vars = extract_variants(&micro_vcf);
+        assert_eq!(
+            micro_vars,
+            vec![
+                "chr1\t101\t.\tT\tA\t63\tPASS\tSAMPLE=mic;TYPE=SNV;DP=7;VD=3;AF=0.4286;BIAS=0:0;REFBIAS=4:0;VARBIAS=3:0;PMEAN=13;PSTD=1;QUAL=40;QSTD=0;SBF=1;ODDRATIO=0;MQ=60;SN=6;HIAF=0.4286;ADJAF=0;SHIFT3=0;MSI=3;MSILEN=1;NM=0;HICNT=3;HICOV=7;LSEQ=TCGCCGTTGCCTAAACCTAT;RSEQ=TGAAGGAGTCTAGCAGCCGC;DUPRATE=0;SPLITREAD=0;SPANPAIR=0\tGT:DP:VD:AD:AF:RD:ALD\t0/1:7:3:4,3:0.4286:4,0:3,0",
+                "chr2\t150\t.\tGCGG\tG\t80\tPASS\tSAMPLE=mic;TYPE=Deletion;DP=8;VD=4;AF=0.5;BIAS=0:0;REFBIAS=4:0;VARBIAS=4:0;PMEAN=21;PSTD=1;QUAL=40;QSTD=0;SBF=1;ODDRATIO=0;MQ=60;SN=8;HIAF=0.5000;ADJAF=0;SHIFT3=0;MSI=3;MSILEN=1;NM=0;HICNT=4;HICOV=8;LSEQ=CATCTGTTTCTTGCGTCGTA;RSEQ=GACCCTCCATTGTTACTTAT;DUPRATE=0;SPLITREAD=0;SPANPAIR=0\tGT:DP:VD:AD:AF:RD:ALD\t1/0:8:4:4,4:0.5:4,0:4,0",
+            ]
+        );
+        assert_eq!(
+            vcf_variants_sha256(&micro_vars),
+            "67fc43df95007f0aa3317c2f28acbfebef8aa23e742418ec2212d955693a1bad"
+        );
+
+        // 2. Real corpus BAM L861Q.bam (chr7:55259400-55259600:testbed) with -T 50 and -n '.*/(L861)Q\.bam'
+        ensure_fastas_converted();
+        let droot = data_root();
+        let bam_dir =
+            droot.join("VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests");
+        let hg19_fa = droot
+            .join("VarDictJava/testdata/fastas/hg19.fa")
+            .to_string_lossy()
+            .into_owned();
+        let l861_cfg = Config {
+            reference: hg19_fa.clone(),
+            bam: bam_dir.join("L861Q.bam").to_string_lossy().into_owned(),
+            threads: 1,
+            zero_based: true,
+            omit_end_tag: true,
+            region: Some("chr7:55259400-55259600:testbed".to_string()),
+            freq: 0.01,
+            af_threshold: 0.01,
+            trim_bases_after: 50,
+            sample_regexp: Some(r".*/(L861)Q\.bam".to_string()),
+            ..Config::default()
+        };
+        let l861_var = run_core_var(&l861_cfg).expect("L861Q -T 50 -n .var");
+        let expected_l861_var = concat!(
+            "L861\ttestbed\tchr7\t55259468\t55259468\tC\tT\t169\t3\t166\t0\t2\t1\tC/T\t0.0178\t1;2\t12.7\t1\t34.7\t1\t60.0\t6.000\t0.0180\t0.0118\t0\t1.000\t1\t2.0\t3\t167\tCGCGACCTGGCAGCCAGGAA\tGTACTGGTGAAAACACCGCA\tchr7:55259401-55259600\tSNV\t0\t0\n",
+            "L861\ttestbed\tchr7\t55259504\t55259504\tA\tT\t516\t8\t277\t230\t0\t8\tA/T\t0.0155\t2;0\t7.0\t0\t36.0\t0\t60.0\t16.000\t0.0157\t0\t0\t1.000\t1\t1.0\t8\t511\tCCGCAGCATGTCAAGATCAC\tGATTTTGGGCTGGCCAAACT\tchr7:55259401-55259600\tSNV\t0\t0\n",
+            "L861\ttestbed\tchr7\t55259524\t55259524\tT\tA\t646\t148\t224\t273\t66\t82\tT/A\t0.2291\t2;2\t22.6\t1\t34.8\t1\t60.0\t23.667\t0.2258\t0.0062\t0\t2.000\t3\t1.4\t142\t629\tAGATTTTGGGCTGGCCAAAC\tGCTGGGTGCGGAAGAGAAAG\tchr7:55259401-55259600\tSNV\t0\t0\n",
+            "L861\ttestbed\tchr7\t55259572\t55259572\tG\tA\t193\t3\t15\t174\t0\t3\tG/A\t0.0155\t2;0\t6.0\t1\t33.3\t1\t60.0\t6.000\t0.0157\t0.0052\t1\t2.000\t1\t2.0\t3\t191\tTGCAGAAGGAGGCAAAGTAA\tGAGGTGGCTTTAGGTCAGCC\tchr7:55259401-55259600\tSNV\t0\t0\n",
+        );
+        assert_eq!(l861_var, expected_l861_var, "L861Q -T 50 -n .var parity");
+        assert_eq!(
+            sha256_hex(l861_var.as_bytes()),
+            "83d1a74d72a73d6ba338da932da36dede2eb9b051f57c03b026011d9a2b19321"
+        );
+        let l861_vcf = run_core_vcf(&l861_cfg).expect("L861Q -T 50 -n VCF");
+        assert_eq!(
+            vcf_chrom_header(&l861_vcf),
+            "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tL861"
+        );
+        let l861_vars = extract_variants(&l861_vcf);
+        assert_eq!(l861_vars.len(), 4);
+        assert!(l861_vars.iter().all(|v| v.contains("SAMPLE=L861;")));
+        assert_eq!(
+            vcf_variants_sha256(&l861_vars),
+            "f86fb4bdac9ef6ef96903524e0c1e6bb85ef21fc51d2344481c978cc4ecfc714"
+        );
+
+        // 3. Paired somatic corpus BAMs ArgumentNA_Tumor.bam|ArgumentNA_Normal.bam with -n '.*/ArgumentNA_(Tumor|Normal)\.bam'
+        let bam_pair = format!(
+            "{}|{}",
+            bam_dir.join("ArgumentNA_Tumor.bam").display(),
+            bam_dir.join("ArgumentNA_Normal.bam").display()
+        );
+        let pair_re = r".*/ArgumentNA_(Tumor|Normal)\.bam";
+        assert_eq!(
+            resolve_sample_names(&bam_pair, None, Some(pair_re), true, false),
+            "Tumor|Normal"
+        );
+        assert_eq!(
+            resolve_sample_names(&bam_pair, None, Some(pair_re), true, true),
+            "Tumor"
+        );
+        let pair_cfg = Config {
+            reference: hg19_fa,
+            bam: bam_pair,
+            threads: 1,
+            zero_based: true,
+            omit_end_tag: true,
+            region: Some("chr7:140453010-140453158:testbed".to_string()),
+            freq: 0.001,
+            af_threshold: 0.001,
+            sample_regexp: Some(pair_re.to_string()),
+            ..Config::default()
+        };
+        let pair_var = run_core_var(&pair_cfg).expect("ArgumentNA -n .var");
+        let pair_rows: Vec<&str> = pair_var.lines().filter(|l| !l.trim().is_empty()).collect();
+        assert_eq!(pair_rows.len(), 6);
+        for row in &pair_rows {
+            let cols: Vec<&str> = row.split('\t').collect();
+            assert_eq!(cols.len(), 55);
+            assert_eq!(cols[0], "Tumor");
+        }
+        assert_eq!(
+            sha256_hex(pair_var.as_bytes()),
+            "66b6c36fccaf2d14ffa4b73ea5bc788a75f0a9b3029c3140c579bd62f8b5248f"
+        );
+        let pair_vcf = run_core_vcf(&pair_cfg).expect("ArgumentNA -n VCF");
+        assert_eq!(
+            vcf_chrom_header(&pair_vcf),
+            "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tTumor\tNormal"
+        );
+        let pair_vars = extract_variants(&pair_vcf);
+        assert_eq!(pair_vars.len(), 5);
+        assert!(pair_vars.iter().all(|v| v.contains("SAMPLE=Tumor;")));
+        assert_eq!(
+            vcf_variants_sha256(&pair_vars),
+            "e10dc6e2d99d9bd1c61142e51eee6863bf0a032489eaa691e88df1ef71cc1498"
+        );
+    }
+
+    fn check_fisher_vcf_raw_cell_strict_parity(amp_var_out: &str, amp_vars: &[String]) {
+        // 1. Single-sample --fisher VCF raw-cell parity (micro.bam --fisher vs vardict-java --fisher | var2vcf_valid.pl)
+        let mut single_cfg = micro_config();
+        single_cfg.fisher = true;
+        let single_var = run_core_var(&single_cfg).expect("micro --fisher .var");
+        assert_eq!(
+            sha256_hex(single_var.as_bytes()),
+            "192af7d9b62b173af3969bbc8668ac6031c5d40cf3a2e29f19be260bcdbc2a76"
+        );
+        let single_vars = extract_variants(&run_core_vcf(&single_cfg).expect("micro --fisher VCF"));
+        assert_eq!(
+            single_vars,
+            vec![
+                "chr1\t101\t.\tT\tA\t112\tPASS\tSAMPLE=SAMPLE;TYPE=SNV;DP=15;VD=7;AF=0.4667;BIAS=0:0;REFBIAS=8:0;VARBIAS=7:0;PMEAN=16.6;PSTD=1;QUAL=40;QSTD=0;SBF=1;ODDRATIO=0;MQ=60;SN=14;HIAF=0.4667;ADJAF=0;SHIFT3=0;MSI=3;MSILEN=1;NM=0;HICNT=7;HICOV=15;LSEQ=TCGCCGTTGCCTAAACCTAT;RSEQ=TGAAGGAGTCTAGCAGCCGC;DUPRATE=0;SPLITREAD=0;SPANPAIR=0\tGT:DP:VD:AD:AF:RD:ALD\t0/1:15:7:8,7:0.4667:8,0:7,0",
+                "chr2\t150\t.\tGCGG\tG\t80\tPASS\tSAMPLE=SAMPLE;TYPE=Deletion;DP=10;VD=4;AF=0.4;BIAS=0:0;REFBIAS=6:0;VARBIAS=4:0;PMEAN=21;PSTD=1;QUAL=40;QSTD=0;SBF=1;ODDRATIO=0;MQ=60;SN=8;HIAF=0.4000;ADJAF=0;SHIFT3=0;MSI=3;MSILEN=1;NM=0;HICNT=4;HICOV=10;LSEQ=CATCTGTTTCTTGCGTCGTA;RSEQ=GACCCTCCATTGTTACTTAT;DUPRATE=0;SPLITREAD=0;SPANPAIR=0\tGT:DP:VD:AD:AF:RD:ALD\t0/1:10:4:6,4:0.4:6,0:4,0",
+            ]
+        );
+        assert_eq!(
+            vcf_variants_sha256(&single_vars),
+            "427329327b03b866ee3f1ea3e85cd571ca631ab1fecde859486d2d0015920d26"
+        );
+
+        // 2. Amplicon --fisher VCF raw-cell parity (Colo829-18_S3-sort.bam -a 10:0.95 --fisher):
+        // DecimalFormat("0.0") NM=4.0 / NM=3.0 & DecimalFormat("0.0000") HIAF=1.0000 / 0.7500 alongside
+        // getRoundedValueToPrint-stripped AF=1 / 0.75 / 0.25, PMEAN=50 / 33 / 17, SN=3 / 6 / 4 / 12, ADJAF=0.25, SBF=1.
+        assert_eq!(
+            sha256_hex(amp_var_out.as_bytes()),
+            "03417419078d26728fa7a913e4b135dcdc84965c7df11c6446ee0678cf2eb70e"
+        );
+        assert_eq!(
+            amp_vars,
+            &[
+                "chr1\t934099\t.\tG\tC\t65\tPASS\tSAMPLE=Colo829-18_S3-sort;TYPE=SNV;DP=4;VD=4;AF=1;BIAS=0:2;REFBIAS=0:0;VARBIAS=2:2;PMEAN=50;PSTD=1;QUAL=32.8;QSTD=1;SBF=1;ODDRATIO=0;MQ=60;SN=3;HIAF=1.0000;ADJAF=0;SHIFT3=0;MSI=3;MSILEN=1;NM=4.0;HICNT=3;HICOV=3;LSEQ=CAACGCGGGGGCAGAGGGCG;RSEQ=GTGCGCATGCGGGGCTGCAG;GDAMP=1;TLAMP=1;NCAMP=0;AMPFLAG=0\tGT:DP:VD:AD:AF:RD:ALD\t1/1:4:4:0,4:1:0,0:2,2",
+                "chr1\t934106\t.\tA\tG\t57\tPASS\tSAMPLE=Colo829-18_S3-sort;TYPE=SNV;DP=4;VD=3;AF=0.75;BIAS=0:2;REFBIAS=1:0;VARBIAS=1:2;PMEAN=53.3;PSTD=1;QUAL=36.3;QSTD=1;SBF=1;ODDRATIO=0;MQ=60;SN=6;HIAF=0.7500;ADJAF=0;SHIFT3=0;MSI=1;MSILEN=1;NM=4.7;HICNT=3;HICOV=4;LSEQ=GGGGCAGAGGGCGGGTGCGC;RSEQ=TGCGGGGCTGCAGGGATGCG;GDAMP=1;TLAMP=1;NCAMP=0;AMPFLAG=0\tGT:DP:VD:AD:AF:RD:ALD\t1/0:4:3:1,3:0.75:1,0:1,2",
+                "chr1\t934123\t.\tT\tTGCGGAGGGGAGGGCGCGGA\t32\tPASS\tSAMPLE=Colo829-18_S3-sort;TYPE=Insertion;DP=8;VD=2;AF=0.25;BIAS=2:2;REFBIAS=2:2;VARBIAS=1:1;PMEAN=33;PSTD=1;QUAL=32.2;QSTD=1;SBF=1;ODDRATIO=1;MQ=60;SN=4;HIAF=1.0000;ADJAF=0.25;SHIFT3=27;MSI=2;MSILEN=5;NM=1.2;HICNT=2;HICOV=2;LSEQ=CGCATGCGGGGCTGCAGGGA;RSEQ=GCGGAGGGGAGGGCGCGGAG;GDAMP=1;TLAMP=1;NCAMP=0;AMPFLAG=0\tGT:DP:VD:AD:AF:RD:ALD\t0/1:8:2:4,2:0.25:2,2:1,1",
+                "chr1\t934144\t.\tC\tG\t94\tPASS\tSAMPLE=Colo829-18_S3-sort;TYPE=SNV;DP=8;VD=6;AF=0.75;BIAS=0:2;REFBIAS=0:0;VARBIAS=2:4;PMEAN=17;PSTD=1;QUAL=36.7;QSTD=1;SBF=1;ODDRATIO=0;MQ=60;SN=12;HIAF=1.0000;ADJAF=0;SHIFT3=0;MSI=2;MSILEN=1;NM=3.0;HICNT=6;HICOV=6;LSEQ=GCGGAGGGGAGGGCGCGGAG;RSEQ=GGAGGGCGCGGAGCGGAGGG;GDAMP=1;TLAMP=1;NCAMP=0;AMPFLAG=0\tGT:DP:VD:AD:AF:RD:ALD\t1/0:8:6:0,6:0.75:0,0:2,4",
+            ]
+        );
+        assert_eq!(
+            vcf_variants_sha256(amp_vars),
+            "15adfab14ed590fad069f2fe92da7d7a504771aea4ffbf35c997e503d353992b"
+        );
+
+        // 3. Paired somatic --fisher VCF raw-cell parity (ArgumentNA_Tumor.bam|ArgumentNA_Normal.bam --fisher)
+        let droot = data_root();
+        let bam_dir =
+            droot.join("VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests");
+        let bam_pair = format!(
+            "{}|{}",
+            bam_dir.join("ArgumentNA_Tumor.bam").display(),
+            bam_dir.join("ArgumentNA_Normal.bam").display()
+        );
+        let som_cfg = Config {
+            reference: droot
+                .join("VarDictJava/testdata/fastas/hg19.fa")
+                .to_string_lossy()
+                .into_owned(),
+            sample: extract_sample_name(&bam_pair, None),
+            bam: bam_pair,
+            threads: 1,
+            zero_based: true,
+            omit_end_tag: true,
+            region: Some("chr7:140453010-140453158:testbed".to_string()),
+            freq: 0.001,
+            af_threshold: 0.001,
+            fisher: true,
+            ..Config::default()
+        };
+        let som_var = run_core_var(&som_cfg).expect("ArgumentNA --fisher .var");
+        assert_eq!(
+            sha256_hex(som_var.as_bytes()),
+            "6a9733dea80ce010e166c1cb12bc0d2b5791dac01000be569e4c0fbd05bc501f"
+        );
+        let som_vars = extract_variants(&run_core_vcf(&som_cfg).expect("ArgumentNA --fisher VCF"));
+        assert_eq!(
+            som_vars,
+            vec![
+                "chr7\t140453031\t.\tA\tG\t74\tq22.5;SN1.5\tSTATUS=LikelyLOH;SAMPLE=ArgumentNA_Tumor;TYPE=SNV;DP=6686;VD=20;AF=0.003;SHIFT3=0;MSI=3.000;MSILEN=1;SSF=0.07682;SOR=3.12761;LSEQ=TAGTAACTCAGCAGCATCTC;RSEQ=GGGCCAAAAATTTAATCAGT\tGT:DP:VD:ALD:RD:AD:AF:BIAS:PMEAN:PSTD:QUAL:QSTD:SBF:ODDRATIO:MQ:SN:HIAF:ADJAF:NM\t0/1:6686:20:20,0:6417,225:6642,20:0.003:1,1:19.6:1:17.3:1:1:0:60:0.429:0.0009:0:1\t0/1:2087:2:1,1:2016,69:2085,2:0.001:1,2:20:0:40:0:0.06597:28.9909:60:4:0.001:0:1",
+                "chr7\t140453035\t.\tC\tA\t41\tPASS\tSTATUS=StrongLOH;SAMPLE=ArgumentNA_Tumor;TYPE=SNV;DP=6687;VD=0;AF=0;SHIFT3=1;MSI=2.000;MSILEN=1;SSF=0.01361;SOR=0;LSEQ=AACTCAGCAGCATCTCAGGG;RSEQ=CAAAAATTTAATCAGTGGAA\tGT:DP:VD:ALD:RD:AD:AF:BIAS:PMEAN:PSTD:QUAL:QSTD:SBF:ODDRATIO:MQ:SN:HIAF:ADJAF:NM\t0/0:6687:0:0,0:6458,226:6684,0:0:0,0:0:0:0:0:1:0:0:0:0:0:0\t0/1:2098:3:3,0:2021,74:2095,3:0.0014:1,0:18.7:1:26.3:1:1:0:60:2:0.001:0:3.3",
+                "chr7\t140453036\t.\tCA\tC\t170\tPASS\tSTATUS=LikelySomatic;SAMPLE=ArgumentNA_Tumor;TYPE=Deletion;DP=6685;VD=20;AF=0.003;SHIFT3=4;MSI=5.000;MSILEN=1;SSF=0.56689;SOR=1.04829;LSEQ=ACTCAGCAGCATCTCAGGGC;RSEQ=AAAATTTAATCAGTGGAAAA\tGT:DP:VD:ALD:RD:AD:AF:BIAS:PMEAN:PSTD:QUAL:QSTD:SBF:ODDRATIO:MQ:SN:HIAF:ADJAF:NM\t0/1:6685:20:19,1:6433,225:6658,20:0.003:1,1:21.4:1:39.5:1:0.49821:1.50466:58:40:0.003:0:0.1\t0/1:2102:6:6,0:2015,78:2093,6:0.0029:1,0:24.8:1:39.8:1:1:0:60:12:0.0029:0:1.5",
+                "chr7\t140453046\t.\tA\tG\t63\tf0.001\tSTATUS=LikelyLOH;SAMPLE=ArgumentNA_Tumor;TYPE=SNV;DP=6690;VD=3;AF=0.0004;SHIFT3=0;MSI=1.000;MSILEN=1;SSF=0.34416;SOR=0.4711;LSEQ=ATCTCAGGGCCAAAAATTTA;RSEQ=TCAGTGGAAAAATAGCCTCA\tGT:DP:VD:ALD:RD:AD:AF:BIAS:PMEAN:PSTD:QUAL:QSTD:SBF:ODDRATIO:MQ:SN:HIAF:ADJAF:NM\t0/0:6690:3:2,1:6456,227:6683,3:0.0004:1,2:20.7:1:40:1:0.09887:14.20096:56:6:0.0005:0:1\t0/1:2102:2:2,0:2020,78:2098,2:0.001:1,0:34.5:1:35:1:1:0:60:4:0.001:0:1.5",
+                "chr7\t140453081\t.\tC\tA\t135\tPASS\tSTATUS=LikelySomatic;SAMPLE=ArgumentNA_Tumor;TYPE=SNV;DP=6671;VD=20;AF=0.003;SHIFT3=0;MSI=4.000;MSILEN=1;SSF=0.07765;SOR=3.11813;LSEQ=GCCTCAATTCTTACCATCCA;RSEQ=AAAATGGATCCAGACAACTG\tGT:DP:VD:ALD:RD:AD:AF:BIAS:PMEAN:PSTD:QUAL:QSTD:SBF:ODDRATIO:MQ:SN:HIAF:ADJAF:NM\t0/1:6671:20:19,1:6430,219:6649,20:0.003:1,1:33.7:1:31.4:1:0.48925:1.54515:56:3:0.0023:0:1.6\t0/1:2076:2:2,0:2021,52:2073,2:0.001:1,0:27.5:1:16:0:1:0:60:0:0:0:5.5",
+            ]
+        );
+        assert_eq!(
+            vcf_variants_sha256(&som_vars),
+            "b35e13cbda9f6052446d7aea5ccc7d2ba4d4b7cf8cc16e2d6dad715f2e1608e5"
+        );
+
+        // Also check full pileup --fisher corpus configuration (-q 25 -F 0x100 -f 0.001 -k 1 -M 20 -p --fisher)
+        let mut som_pileup_cfg = som_cfg;
+        som_pileup_cfg.base_qual = 25.0;
+        som_pileup_cfg.flag_filter = 0x100;
+        som_pileup_cfg.samfilter_raw = "0x100".to_string();
+        som_pileup_cfg.realign = 1;
+        som_pileup_cfg.minmatch = 20;
+        som_pileup_cfg.pileup = true;
+        som_pileup_cfg.apply_pileup_overrides();
+        let som_pileup_vars =
+            extract_variants(&run_core_vcf(&som_pileup_cfg).expect("ArgumentNA -p --fisher VCF"));
+        assert_eq!(som_pileup_vars.len(), 42);
+        assert!(som_pileup_vars.iter().any(|v| v.contains("SSF=0.5255;")));
+        assert!(som_pileup_vars.iter().any(|v| v.contains(":0.0654:")));
+        assert_eq!(
+            vcf_variants_sha256(&som_pileup_vars),
+            "e18d894bf41e49e0e6357ad0390bcae88fdf2f9872186d446e4c72bc9b716d1e"
+        );
+
+        // 4. SomaticOutputVariant.getRoundedValueToPrint trailing-dot FORMAT cells (:0., :15.:, :1.)
+        // on combine_analysis back-calculated normal fields against micro.ref.fa (pure-Rust indexed_bam).
+        check_somatic_fisher_trailing_dot_cells();
+    }
+
+    fn check_somatic_fisher_trailing_dot_cells() {
+        use noodles::core::Position;
+        use noodles::sam::alignment::record::cigar::{op::Kind, Op};
+        use noodles::sam::alignment::record::data::field::Tag;
+        use noodles::sam::alignment::record::{Flags, MappingQuality};
+        use noodles::sam::alignment::record_buf::data::field::Value as BufValue;
+        use noodles::sam::alignment::record_buf::{Cigar, Data, RecordBuf};
+
+        let ref_fa = workspace_root().join("fixtures/micro/micro.ref.fa");
+        let fa_text = fs::read_to_string(&ref_fa).expect("read micro.ref.fa");
+        let mut chr1 = Vec::new();
+        let mut in_chr1 = false;
+        for line in fa_text.lines() {
+            let trimmed = line.trim();
+            if let Some(rest) = trimmed.strip_prefix('>') {
+                in_chr1 = rest.split_whitespace().next() == Some("chr1");
+            } else if in_chr1 {
+                chr1.extend_from_slice(trimmed.as_bytes());
+            }
+        }
+        let flip = |b: u8| if b != b'C' { b'C' } else { b'G' };
+        let build_rec = |name: &str, pos1: usize, ops: &[(usize, Kind)], seq: Vec<u8>, nm: i32| {
+            let cigar: Cigar = ops.iter().map(|&(l, k)| Op::new(k, l)).collect();
+            let seq_len = seq.len();
+            let data: Data = [(Tag::EDIT_DISTANCE, BufValue::from(nm))]
+                .into_iter()
+                .collect();
+            RecordBuf::builder()
+                .set_name(name)
+                .set_flags(Flags::empty())
+                .set_reference_sequence_id(0)
+                .set_alignment_start(Position::try_from(pos1).expect("pos1"))
+                .set_mapping_quality(MappingQuality::new(60).expect("mapq 60"))
+                .set_cigar(cigar)
+                .set_sequence(seq.into())
+                .set_quality_scores(vec![40u8; seq_len].into())
+                .set_data(data)
+                .build()
+        };
+
+        for (t_mm, n_mm, expected_var_sha, expected_vcf_sha, expected_chr100_row) in [
+            (
+                [1usize, 0, 0],
+                0usize,
+                "76e036321d26faa602c9988ecb5825f67f5948245d8221ed12faf5e3cc998c85",
+                "fd93ef7beeb1c25f60f395066008ea2b90c53efa7901aa3d5d92373f1ece01c4",
+                "chr1\t100\t.\tTTTGAAGGAGT\tT\t112\tPASS\tSTATUS=Germline;SAMPLE=Tumor;TYPE=Deletion;DP=11;VD=3;AF=0.2727;SHIFT3=0;MSI=1.000;MSILEN=1;SSF=0.27745;SOR=0.44283;LSEQ=TTCGCCGTTGCCTAAACCTA;RSEQ=CTAGCAGCCGCAGTAAGGCA\tGT:DP:VD:ALD:RD:AD:AF:BIAS:PMEAN:PSTD:QUAL:QSTD:SBF:ODDRATIO:MQ:SN:HIAF:ADJAF:NM\t0/1:11:3:3,0:8,0:8,3:0.2727:0,0:19:1:40:0:1:0:60:6:0.2727:0:0.3\t0/1:15:7:7,0:8,0:8,7:0.4667:0,0:15:1:40:1:1:0:60:6:0.4326:0.3846:0.",
+            ),
+            (
+                [2usize, 1, 1],
+                1usize,
+                "7fba9177549554eb90037d138f831aedfac2f1e3aeae97adbdfdcf048c287156",
+                "69ec72a5328fe1ea0bd1f0186bb12439fd1c605bea9435b84093d9d68a04d3c6",
+                "chr1\t100\t.\tTTTGAAGGAGT\tT\t112\tPASS\tSTATUS=Germline;SAMPLE=Tumor;TYPE=Deletion;DP=11;VD=3;AF=0.2727;SHIFT3=0;MSI=1.000;MSILEN=1;SSF=0.27745;SOR=0.44283;LSEQ=TTCGCCGTTGCCTAAACCTA;RSEQ=CTAGCAGCCGCAGTAAGGCA\tGT:DP:VD:ALD:RD:AD:AF:BIAS:PMEAN:PSTD:QUAL:QSTD:SBF:ODDRATIO:MQ:SN:HIAF:ADJAF:NM\t0/1:11:3:3,0:8,0:8,3:0.2727:0,0:17.7:1:40:0:1:0:60:6:0.2727:0:1.3\t0/1:15:7:7,0:8,0:8,7:0.4667:0,0:15.:1:40:1:1:0:60:6:0.4326:0.3846:1.",
+            ),
+        ] {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let mut t_raw: Vec<(usize, RecordBuf)> = Vec::new();
+            for (i, &mcnt) in t_mm.iter().enumerate() {
+                let s = 81 + i;
+                let left_len = 101 - s;
+                let mut left = chr1[s - 1..100].to_vec();
+                for m in 0..mcnt {
+                    let idx = 2 + m * 3;
+                    left[idx] = flip(left[idx]);
+                }
+                left.extend_from_slice(&chr1[110..130]);
+                t_raw.push((
+                    s,
+                    build_rec(
+                        &format!("t_del_{i}"),
+                        s,
+                        &[
+                            (left_len, Kind::Match),
+                            (10, Kind::Deletion),
+                            (20, Kind::Match),
+                        ],
+                        left,
+                        (10 + mcnt) as i32,
+                    ),
+                ));
+            }
+            for i in 0..8 {
+                let s = 75 + i;
+                t_raw.push((
+                    s,
+                    build_rec(
+                        &format!("t_ref_{i}"),
+                        s,
+                        &[(55, Kind::Match)],
+                        chr1[s - 1..s - 1 + 55].to_vec(),
+                        0,
+                    ),
+                ));
+            }
+            t_raw.sort_by_key(|(s, _)| *s);
+            let t_recs: Vec<RecordBuf> = t_raw.into_iter().map(|(_, r)| r).collect();
+
+            let mut n_raw: Vec<(usize, RecordBuf)> = Vec::new();
+            for i in 0..7 {
+                let s = 80 + i;
+                let left_len = 101 - s;
+                let mut left = chr1[s - 1..100].to_vec();
+                for m in 0..n_mm {
+                    let idx = 2 + m * 3;
+                    left[idx] = flip(left[idx]);
+                }
+                left.extend_from_slice(&chr1[110..125]);
+                n_raw.push((
+                    s,
+                    build_rec(
+                        &format!("n_sc_{i}"),
+                        s,
+                        &[(left_len, Kind::Match), (15, Kind::SoftClip)],
+                        left,
+                        n_mm as i32,
+                    ),
+                ));
+            }
+            for i in 0..8 {
+                let s = 75 + i;
+                n_raw.push((
+                    s,
+                    build_rec(
+                        &format!("n_ref_{i}"),
+                        s,
+                        &[(55, Kind::Match)],
+                        chr1[s - 1..s - 1 + 55].to_vec(),
+                        0,
+                    ),
+                ));
+            }
+            n_raw.sort_by_key(|(s, _)| *s);
+            let n_recs: Vec<RecordBuf> = n_raw.into_iter().map(|(_, r)| r).collect();
+
+            let tbam = tmp.path().join("Tumor.bam");
+            let nbam = tmp.path().join("Normal.bam");
+            indexed_bam(&tbam, "chr1", chr1.len(), &t_recs).expect("write Tumor.bam");
+            indexed_bam(&nbam, "chr1", chr1.len(), &n_recs).expect("write Normal.bam");
+
+            let cfg = Config {
+                reference: ref_fa.to_string_lossy().into_owned(),
+                sample: "Tumor|Normal".to_string(),
+                sample_explicit: true,
+                bam: format!("{}|{}", tbam.display(), nbam.display()),
+                threads: 1,
+                zero_based: true,
+                omit_end_tag: true,
+                region: Some("chr1:50-160:testbed".to_string()),
+                freq: 0.01,
+                af_threshold: 0.01,
+                fisher: true,
+                ..Config::default()
+            };
+            let var_out = run_core_var(&cfg).expect("somatic trailing-dot .var");
+            assert_eq!(sha256_hex(var_out.as_bytes()), expected_var_sha);
+            let vars = extract_variants(&run_core_vcf(&cfg).expect("somatic trailing-dot VCF"));
+            assert_eq!(vars.len(), 2);
+            assert_eq!(vars[1], expected_chr100_row);
+            assert_eq!(vcf_variants_sha256(&vars), expected_vcf_sha);
+        }
     }
 }
 
