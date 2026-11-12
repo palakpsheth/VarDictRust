@@ -175,20 +175,9 @@ impl<'a> CigarParser<'a> {
         duplicate_reads: i32,
         seed_max_read_length: i32,
     ) -> Self {
-        let (primary_ref_seq, primary_ref_start) = match (
-            reference.loaded_regions.first(),
-            reference.region_sequences.first(),
-        ) {
-            (Some(lr), Some(bases))
-                if lr.chr == region.chr && lr.sequence_end >= lr.sequence_start =>
-            {
-                let max_len = (lr.sequence_end.saturating_sub(lr.sequence_start) as usize)
-                    .saturating_add(1)
-                    .min(bases.len());
-                (&bases[..max_len], lr.sequence_start)
-            }
-            _ => (&[][..], 1),
-        };
+        let (primary_ref_seq, primary_ref_start) = reference
+            .primary_region_slice(&region.chr)
+            .unwrap_or((&[], 1));
         let cov_cap = match reference
             .loaded_regions
             .iter()

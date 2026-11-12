@@ -964,6 +964,105 @@ mod filtering_and_pileup {
             "with column_header and emit_intermediate, first line must be column header"
         );
         assert!(var_out.contains("CUSTOM_SAMPLE"));
+
+        // E2E forward + reverse `-T` (`trim_bases_after`) 5'-distance read trimming
+        let trim_dir = TempDir::new().expect("trim tempdir");
+        let trim_fa = write_ref(&trim_dir, "chr1", 500, true);
+        let cigar_30m: Cigar = [(30usize, Kind::Match)]
+            .iter()
+            .map(|&(l, k)| Op::new(k, l))
+            .collect();
+        let mut trim_recs = Vec::new();
+        for idx in 0..4 {
+            // Forward 30M @ 100..=129: read_pos_inc=9 (pos 109, dist=9 <= 15) and read_pos_inc=19 (pos 119, dist=19 > 15)
+            let mut fwd_seq = vec![b'A'; 30];
+            fwd_seq[9] = b'C';
+            fwd_seq[19] = b'G';
+            trim_recs.push(
+                RecordBuf::builder()
+                    .set_name(format!("fwd_var_{idx}"))
+                    .set_flags(noodles::sam::alignment::record::Flags::empty())
+                    .set_reference_sequence_id(0)
+                    .set_alignment_start(Position::try_from(100usize).unwrap())
+                    .set_cigar(cigar_30m.clone())
+                    .set_sequence(fwd_seq.into())
+                    .set_quality_scores(vec![40u8; 30].into())
+                    .build(),
+            );
+            trim_recs.push(
+                RecordBuf::builder()
+                    .set_name(format!("fwd_ref_{idx}"))
+                    .set_flags(noodles::sam::alignment::record::Flags::empty())
+                    .set_reference_sequence_id(0)
+                    .set_alignment_start(Position::try_from(100usize).unwrap())
+                    .set_cigar(cigar_30m.clone())
+                    .set_sequence(vec![b'A'; 30].into())
+                    .set_quality_scores(vec![40u8; 30].into())
+                    .build(),
+            );
+            // Reverse 30M @ 200..=229 (5' of sequenced read is right end):
+            // read_pos_inc=9 (pos 209, dist=30-9=21 > 15) and read_pos_inc=20 (pos 220, dist=30-20=10 <= 15)
+            let mut rev_seq = vec![b'A'; 30];
+            rev_seq[9] = b'T';
+            rev_seq[20] = b'C';
+            trim_recs.push(
+                RecordBuf::builder()
+                    .set_name(format!("rev_var_{idx}"))
+                    .set_flags(noodles::sam::alignment::record::Flags::REVERSE_COMPLEMENTED)
+                    .set_reference_sequence_id(0)
+                    .set_alignment_start(Position::try_from(200usize).unwrap())
+                    .set_cigar(cigar_30m.clone())
+                    .set_sequence(rev_seq.into())
+                    .set_quality_scores(vec![40u8; 30].into())
+                    .build(),
+            );
+            trim_recs.push(
+                RecordBuf::builder()
+                    .set_name(format!("rev_ref_{idx}"))
+                    .set_flags(noodles::sam::alignment::record::Flags::REVERSE_COMPLEMENTED)
+                    .set_reference_sequence_id(0)
+                    .set_alignment_start(Position::try_from(200usize).unwrap())
+                    .set_cigar(cigar_30m.clone())
+                    .set_sequence(vec![b'A'; 30].into())
+                    .set_quality_scores(vec![40u8; 30].into())
+                    .build(),
+            );
+        }
+        trim_recs.sort_by_key(|r| r.alignment_start());
+        let trim_bam = trim_dir.path().join("trim_e2e.bam");
+        indexed_bam(&trim_bam, "chr1", 500, &trim_recs).expect("write trim_e2e.bam");
+
+        let mut untrimmed_cfg = Config {
+            reference: trim_fa.to_string_lossy().into_owned(),
+            bam: trim_bam.to_string_lossy().into_owned(),
+            sample: "TRIM".to_string(),
+            region: Some("chr1:90-240".to_string()),
+            max_mismatches: 5,
+            threads: 1,
+            ..Config::default()
+        };
+        let untrimmed_vcf = run_core_vcf(&untrimmed_cfg).expect("untrimmed vcf");
+        for pos in [109, 119, 209, 220] {
+            assert!(
+                untrimmed_vcf.contains(&format!("chr1\t{pos}\t")),
+                "expected untrimmed VCF to contain pos {pos}, got:\n{untrimmed_vcf}"
+            );
+        }
+
+        untrimmed_cfg.trim_bases_after = 15;
+        let trimmed_vcf = run_core_vcf(&untrimmed_cfg).expect("trimmed -T 15 vcf");
+        for kept in [109, 220] {
+            assert!(
+                trimmed_vcf.contains(&format!("chr1\t{kept}\t")),
+                "expected -T 15 VCF to retain pos {kept}, got:\n{trimmed_vcf}"
+            );
+        }
+        for dropped in [119, 209] {
+            assert!(
+                !trimmed_vcf.contains(&format!("chr1\t{dropped}\t")),
+                "expected -T 15 VCF to trim pos {dropped}, got:\n{trimmed_vcf}"
+            );
+        }
     }
 }
 
@@ -1521,6 +1620,274 @@ mod concurrency {
                 "somatic .vcf variant lines must be identical between tiled ({tile_size}bp) and untiled runs"
             );
         }
+
+        // Somatic RefSiteMode (`CompactOut` + `KeepWhere` + `hydrate_compact_ref_site` +
+        // `combine_analysis` `DropAll`) E2E equivalence against `KeepAll` (`debug = true`):
+        //   1. Pure ref-only tumor site right after a `p - 1` insertion (p = 250 after +GG at 249)
+        //      + normal variant at p = 250, plus pure ref-only tumor site at q = 360 hydrated via
+        //      `hydrate_compact_ref_site`.
+        //   2. BAM1 sub-threshold allele (AF = 1/40 = 0.025 < freq = 0.05) + BAM2 germline/LOH call
+        //      at r = 470.
+        //   3. `combine_analysis` low-AF rescue (`combined AF = 5/120 <= freq = 0.05`) on `-12`
+        //      deletion at d = 600 (3 explicit `25M12D25M` reads in tumor + 2 `25M6S` soft-clips
+        //      in normal rescued as Germline).
+        let mut lcg = 0x1234_5678u32;
+        let ref_bytes: Vec<u8> = (0..1200)
+            .map(|_| {
+                lcg = lcg.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                b"ACGT"[((lcg >> 24) & 3) as usize]
+            })
+            .collect();
+        let ref_fa = dir.path().join("somatic_refmode.fa");
+        fs::write(
+            &ref_fa,
+            format!(">chr1\n{}\n", std::str::from_utf8(&ref_bytes).unwrap()),
+        )
+        .expect("write somatic_refmode.fa");
+        fs::write(
+            ref_fa.with_extension("fa.fai"),
+            "chr1\t1200\t6\t1200\t1201\n",
+        )
+        .expect("write somatic_refmode.fa.fai");
+
+        let slice_1b =
+            |pos1: usize, len: usize| -> Vec<u8> { ref_bytes[pos1 - 1..pos1 - 1 + len].to_vec() };
+        let alt_of = |pos1: usize| -> u8 {
+            match ref_bytes[pos1 - 1] {
+                b'A' => b'C',
+                b'C' => b'G',
+                b'G' => b'T',
+                _ => b'A',
+            }
+        };
+        let mk_read = |name: String, start1: usize, ops: &[(usize, Kind)], seq: Vec<u8>| {
+            let rl = seq.len();
+            let cigar: Cigar = ops.iter().map(|&(l, k)| Op::new(k, l)).collect();
+            RecordBuf::builder()
+                .set_name(name)
+                .set_flags(noodles::sam::alignment::record::Flags::empty())
+                .set_reference_sequence_id(0)
+                .set_alignment_start(Position::try_from(start1).unwrap())
+                .set_cigar(cigar)
+                .set_sequence(seq.into())
+                .set_quality_scores(vec![40u8; rl].into())
+                .build()
+        };
+
+        let mut t_recs = Vec::new();
+        let mut n_recs = Vec::new();
+
+        // Case 1a: p = 250 right after +GG insertion at 249 in tumor; normal SNV at 250
+        for i in 0..4 {
+            let mut seq = slice_1b(230, 20);
+            seq.extend_from_slice(b"GG");
+            seq.extend_from_slice(&slice_1b(250, 20));
+            t_recs.push(mk_read(
+                format!("t_ins249_{i}"),
+                230,
+                &[(20, Kind::Match), (2, Kind::Insertion), (20, Kind::Match)],
+                seq,
+            ));
+        }
+        for i in 0..6 {
+            t_recs.push(mk_read(
+                format!("t_ref250_{i}"),
+                230,
+                &[(40, Kind::Match)],
+                slice_1b(230, 40),
+            ));
+        }
+        for i in 0..6 {
+            let mut seq = slice_1b(230, 40);
+            seq[20] = alt_of(250);
+            n_recs.push(mk_read(
+                format!("n_snv250_{i}"),
+                230,
+                &[(40, Kind::Match)],
+                seq,
+            ));
+        }
+        for i in 0..4 {
+            n_recs.push(mk_read(
+                format!("n_ref250_{i}"),
+                230,
+                &[(40, Kind::Match)],
+                slice_1b(230, 40),
+            ));
+        }
+
+        // Case 1b: q = 360 pure ref-only tumor site (hydrated from CompactRefSite) + normal SNV
+        for i in 0..10 {
+            t_recs.push(mk_read(
+                format!("t_ref360_{i}"),
+                340,
+                &[(40, Kind::Match)],
+                slice_1b(340, 40),
+            ));
+        }
+        for i in 0..6 {
+            let mut seq = slice_1b(340, 40);
+            seq[20] = alt_of(360);
+            n_recs.push(mk_read(
+                format!("n_snv360_{i}"),
+                340,
+                &[(40, Kind::Match)],
+                seq,
+            ));
+        }
+        for i in 0..4 {
+            n_recs.push(mk_read(
+                format!("n_ref360_{i}"),
+                340,
+                &[(40, Kind::Match)],
+                slice_1b(340, 40),
+            ));
+        }
+
+        // Case 2: r = 470 sub-threshold tumor allele (1/40 = 0.025 < freq 0.05) + normal SNV (10/20)
+        {
+            let mut seq = slice_1b(450, 40);
+            seq[20] = alt_of(470);
+            t_recs.push(mk_read(
+                "t_sub470".to_string(),
+                450,
+                &[(40, Kind::Match)],
+                seq,
+            ));
+        }
+        for i in 0..39 {
+            t_recs.push(mk_read(
+                format!("t_ref470_{i}"),
+                450,
+                &[(40, Kind::Match)],
+                slice_1b(450, 40),
+            ));
+        }
+        for i in 0..10 {
+            let mut seq = slice_1b(450, 40);
+            seq[20] = alt_of(470);
+            n_recs.push(mk_read(
+                format!("n_snv470_{i}"),
+                450,
+                &[(40, Kind::Match)],
+                seq,
+            ));
+        }
+        for i in 0..10 {
+            n_recs.push(mk_read(
+                format!("n_ref470_{i}"),
+                450,
+                &[(40, Kind::Match)],
+                slice_1b(450, 40),
+            ));
+        }
+
+        // Case 3: d = 600 12-bp deletion rescued via combine_analysis with combined AF = 5/120 <= 0.05
+        for i in 0..3 {
+            let mut seq = slice_1b(575, 25);
+            seq.extend_from_slice(&slice_1b(612, 25));
+            t_recs.push(mk_read(
+                format!("t_del600_{i}"),
+                575,
+                &[(25, Kind::Match), (12, Kind::Deletion), (25, Kind::Match)],
+                seq,
+            ));
+        }
+        for i in 0..17 {
+            t_recs.push(mk_read(
+                format!("t_ref600_{i}"),
+                575,
+                &[(50, Kind::Match)],
+                slice_1b(575, 50),
+            ));
+        }
+        for i in 0..2 {
+            let mut seq = slice_1b(575, 25);
+            seq.extend_from_slice(&slice_1b(612, 6));
+            n_recs.push(mk_read(
+                format!("n_sc600_{i}"),
+                575,
+                &[(25, Kind::Match), (6, Kind::SoftClip)],
+                seq,
+            ));
+        }
+        for i in 0..98 {
+            n_recs.push(mk_read(
+                format!("n_ref600_{i}"),
+                575,
+                &[(50, Kind::Match)],
+                slice_1b(575, 50),
+            ));
+        }
+
+        t_recs.sort_by_key(|r| r.alignment_start());
+        n_recs.sort_by_key(|r| r.alignment_start());
+        let t_bam = dir.path().join("refmode_tumor.bam");
+        let n_bam = dir.path().join("refmode_normal.bam");
+        indexed_bam(&t_bam, "chr1", 1200, &t_recs).expect("write refmode_tumor.bam");
+        indexed_bam(&n_bam, "chr1", 1200, &n_recs).expect("write refmode_normal.bam");
+
+        let refmode_cfg = Config {
+            reference: ref_fa.to_string_lossy().into_owned(),
+            bam: format!("{}|{}", t_bam.display(), n_bam.display()),
+            sample: "TUMOR|NORMAL".to_string(),
+            region: Some("chr1:200-700".to_string()),
+            freq: 0.05,
+            af_threshold: 0.05,
+            min_reads: 2,
+            threads: 1,
+            ..Config::default()
+        };
+        let mut keepall_cfg = refmode_cfg.clone();
+        keepall_cfg.debug = true;
+
+        let refmode_vcf = run_core_vcf(&refmode_cfg).expect("somatic RefSiteMode vcf");
+        let keepall_vcf = run_core_vcf(&keepall_cfg).expect("somatic KeepAll debug vcf");
+        assert_eq!(
+            refmode_vcf, keepall_vcf,
+            "somatic RefSiteMode VCF must match KeepAll (debug=true) byte-for-byte"
+        );
+
+        let refmode_var = run_core_var(&refmode_cfg).expect("somatic RefSiteMode var");
+        let keepall_var_raw = run_core_var(&keepall_cfg).expect("somatic KeepAll debug var");
+        let refmode_rows: Vec<String> = refmode_var
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(str::to_string)
+            .collect();
+        let keepall_rows_55: Vec<String> = keepall_var_raw
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| {
+                let cols: Vec<&str> = l.split('\t').collect();
+                assert_eq!(cols.len(), 56, "debug somatic .var row must emit 56 cols");
+                cols[..55].join("\t")
+            })
+            .collect();
+        assert_eq!(
+            refmode_rows, keepall_rows_55,
+            "somatic RefSiteMode .var 55-col table must match KeepAll (debug=true) identically"
+        );
+        assert!(
+            refmode_rows.iter().any(|r| r.contains("\t250\t250\t")),
+            "expected normal variant at p=250 right after p-1 insertion in somatic .var, got:\n{refmode_var}"
+        );
+        assert!(
+            refmode_rows.iter().any(|r| r.contains("\t360\t360\t")),
+            "expected hydrated CompactRefSite variant at q=360 in somatic .var, got:\n{refmode_var}"
+        );
+        assert!(
+            refmode_rows
+                .iter()
+                .any(|r| r.contains("\t470\t470\t") && r.contains("\t40\t1\t")),
+            "expected sub-threshold BAM1 allele (DP=40, VD=1) paired at r=470, got:\n{refmode_var}"
+        );
+        assert!(
+            refmode_rows
+                .iter()
+                .any(|r| r.contains("\t599\t") && r.contains("\tGermline\t")),
+            "expected combine_analysis low-AF deletion at 599..611 rescued as Germline, got:\n{refmode_var}"
+        );
     }
 
     #[test]

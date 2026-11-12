@@ -172,20 +172,9 @@ impl<'a> ToVarsBuilder<'a> {
         chromosomes_lengths: &'a HashMap<String, usize>,
         config: &'a Config,
     ) -> Self {
-        let (primary_ref_seq, primary_ref_start) = match (
-            reference.loaded_regions.first(),
-            reference.region_sequences.first(),
-        ) {
-            (Some(lr), Some(bases))
-                if lr.chr == region.chr && lr.sequence_end >= lr.sequence_start =>
-            {
-                let max_len = (lr.sequence_end.saturating_sub(lr.sequence_start) as usize)
-                    .saturating_add(1)
-                    .min(bases.len());
-                (bases.get(..max_len).unwrap_or(&[]), lr.sequence_start)
-            }
-            _ => (&[][..], 1),
-        };
+        let (primary_ref_seq, primary_ref_start) = reference
+            .primary_region_slice(&region.chr)
+            .unwrap_or((&[], 1));
         let chr_len = chromosomes_lengths
             .get(&region.chr)
             .map_or(0, |len| (*len).min(i32::MAX as usize) as i32);
@@ -243,10 +232,7 @@ impl<'a> ToVarsBuilder<'a> {
 
         let iter_positions: Vec<i32> = var_data.non_insertion_variants.keys().copied().collect();
         // Do not sort positions, use the JavaHashMap iteration order!
-        if self.config.pileup
-            || self.config.amplicon.is_some()
-            || (self.config.bam.contains('|') && matches!(ref_mode, RefSiteMode::KeepAll))
-        {
+        if matches!(ref_mode, RefSiteMode::KeepAll) {
             aligned_variants.reserve_nodes(iter_positions.len());
         }
 

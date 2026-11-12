@@ -105,7 +105,10 @@ fn main() -> Result<()> {
     let args = cli::normalize_args(&raw_args);
     cli::check_unsupported(&args)?;
     let args = cli::Cli::parse_from(args);
-    let cfg = args.to_config()?;
+    let cfg = match std::env::var("RAYON_NUM_THREADS").ok() {
+        Some(rayon_env) => args.to_config_with_rayon_env(Some(rayon_env.as_str()))?,
+        None => args.to_config()?,
+    };
     if let Err(err) = vardictrust_core::run(&cfg) {
         if should_ignore_broken_pipe(&cfg, &err) {
             return Ok(());

@@ -1676,6 +1676,10 @@ fn tbi_output_path(vcf_gz_path: &Path) -> std::path::PathBuf {
     append_os_suffix(vcf_gz_path, ".tbi")
 }
 
+fn csi_output_path(vcf_gz_path: &Path) -> std::path::PathBuf {
+    append_os_suffix(vcf_gz_path, ".csi")
+}
+
 fn is_readonly_parent_fallback_eligible(target: &Path, err: &std::io::Error) -> bool {
     (err.kind() == std::io::ErrorKind::PermissionDenied || err.raw_os_error() == Some(30))
         && std::fs::metadata(target).is_ok_and(|m| m.is_file())
@@ -1859,12 +1863,21 @@ impl<W: std::io::Write> std::io::Write for InjectedWriter<W> {
 
 impl<W: std::io::Write> EngineWriter for InjectedWriter<W> {}
 
-fn write_vcf_tabix_index_inner(vcf_gz_path: &Path, tbi_path: &Path) -> Result<(), VardictError> {
+const TABIX_MAX_COORD_BP: usize = 536_870_912;
+
+fn scan_bgzf_vcf_index_records<F>(vcf_gz_path: &Path, mut on_record: F) -> Result<(), VardictError>
+where
+    F: FnMut(
+        &str,
+        usize,
+        usize,
+        noodles::core::Position,
+        noodles::core::Position,
+        noodles::csi::binning_index::index::reference_sequence::bin::Chunk,
+    ) -> Result<(), VardictError>,
+{
     let mut reader =
         noodles::bgzf::io::Reader::new(std::fs::File::open(vcf_gz_path).map_err(VardictError::Io)?);
-    let mut indexer = noodles::tabix::index::Indexer::default();
-    indexer.set_header(noodles::csi::binning_index::index::header::Builder::vcf().build());
-
     let mut line = String::new();
     loop {
         let start_vp = reader.virtual_position();
@@ -1912,29 +1925,52 @@ fn write_vcf_tabix_index_inner(vcf_gz_path: &Path, tbi_path: &Path) -> Result<()
             .max(pos_usize);
         let end_pos = noodles::core::Position::new(end_usize)
             .ok_or_else(|| VardictError::Parse(format!("invalid VCF END {end_usize}")))?;
-        indexer
-            .add_record(
-                chrom,
-                start_pos,
-                end_pos,
-                noodles::csi::binning_index::index::reference_sequence::bin::Chunk::new(
-                    start_vp, end_vp,
-                ),
-            )
-            .map_err(|e| {
-                VardictError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e))
-            })?;
+        let chunk = noodles::csi::binning_index::index::reference_sequence::bin::Chunk::new(
+            start_vp, end_vp,
+        );
+        on_record(chrom, pos_usize, end_usize, start_pos, end_pos, chunk)?;
         line.clear();
     }
+    Ok(())
+}
 
-    let index = indexer.build();
-    let (file, staged) = StagedFileTarget::open(tbi_path).map_err(VardictError::Io)?;
-    let mut tbi_writer = noodles::tabix::io::Writer::new(file);
-    tbi_writer.write_index(&index).map_err(VardictError::Io)?;
-    let inner_file = tbi_writer.into_inner().finish().map_err(VardictError::Io)?;
+fn commit_staged_index<F>(index_path: &Path, write_fn: F) -> Result<(), VardictError>
+where
+    F: FnOnce(std::fs::File) -> std::io::Result<std::fs::File>,
+{
+    let (file, staged) = StagedFileTarget::open(index_path).map_err(VardictError::Io)?;
+    let inner_file = write_fn(file).map_err(VardictError::Io)?;
     sync_file_ignoring_special(&inner_file)?;
     drop(inner_file);
     staged.commit().map_err(VardictError::Io)
+}
+
+fn write_vcf_tabix_index_inner(vcf_gz_path: &Path, tbi_path: &Path) -> Result<(), VardictError> {
+    let mut indexer = noodles::tabix::index::Indexer::default();
+    indexer.set_header(noodles::csi::binning_index::index::header::Builder::vcf().build());
+
+    scan_bgzf_vcf_index_records(
+        vcf_gz_path,
+        |chrom, pos_usize, end_usize, start_pos, end_pos, chunk| {
+            if end_usize > TABIX_MAX_COORD_BP {
+                return Err(VardictError::Parse(format!(
+                    "Tabix (.tbi) index cannot represent coordinates > 536,870,912 bp (saw {chrom}:{pos_usize}-{end_usize}); re-run with --csi instead of --tbi"
+                )));
+            }
+            indexer
+                .add_record(chrom, start_pos, end_pos, chunk)
+                .map_err(|e| {
+                    VardictError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+                })
+        },
+    )?;
+
+    let index = indexer.build();
+    commit_staged_index(tbi_path, |file| {
+        let mut tbi_writer = noodles::tabix::io::Writer::new(file);
+        tbi_writer.write_index(&index)?;
+        tbi_writer.into_inner().finish()
+    })
 }
 
 fn write_vcf_tabix_index(vcf_gz_path: &Path) -> Result<(), VardictError> {
@@ -1947,6 +1983,49 @@ fn write_vcf_tabix_index(vcf_gz_path: &Path) -> Result<(), VardictError> {
         )));
     }
     write_vcf_tabix_index_inner(vcf_gz_path, &tbi_path)
+}
+
+fn write_vcf_csi_index_inner(vcf_gz_path: &Path, csi_path: &Path) -> Result<(), VardictError> {
+    let mut indexer = noodles::csi::binning_index::Indexer::<
+        noodles::csi::binning_index::index::reference_sequence::index::BinnedIndex,
+    >::new(14, 6)
+    .ok_or_else(|| VardictError::Parse("invalid CSI binning parameters (14, 6)".to_string()))?;
+    let mut names = noodles::csi::binning_index::index::header::ReferenceSequenceNames::new();
+
+    scan_bgzf_vcf_index_records(
+        vcf_gz_path,
+        |chrom, _pos_usize, _end_usize, start_pos, end_pos, chunk| {
+            let (ref_id, _) = names.insert_full(chrom.as_bytes().into());
+            indexer
+                .add_record(Some((ref_id, start_pos, end_pos, true)), chunk)
+                .map_err(|e| {
+                    VardictError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+                })
+        },
+    )?;
+
+    let contig_count = names.len();
+    let header = noodles::csi::binning_index::index::header::Builder::vcf()
+        .set_reference_sequence_names(names)
+        .build();
+    let index = indexer.set_header(header).build(contig_count);
+    commit_staged_index(csi_path, |file| {
+        let mut csi_writer = noodles::csi::io::Writer::new(file);
+        csi_writer.write_index(&index)?;
+        csi_writer.into_inner().finish()
+    })
+}
+
+fn write_vcf_csi_index(vcf_gz_path: &Path) -> Result<(), VardictError> {
+    let csi_path = csi_output_path(vcf_gz_path);
+    if paths_collide(vcf_gz_path, &csi_path) {
+        return Err(VardictError::Parse(format!(
+            "--output '{}' and its CSI index '{}' must not point to the same file",
+            vcf_gz_path.display(),
+            csi_path.display()
+        )));
+    }
+    write_vcf_csi_index_inner(vcf_gz_path, &csi_path)
 }
 
 /// Backwards-compatible alias for existing call sites.
@@ -2039,14 +2118,15 @@ fn resolve_effective_config(
     if has_region {
         effective.amplicon = None;
         if paired && (effective.emit_intermediate || effective.splice) {
-            if effective.sample_explicit {
-                if let Some(first_sample) = effective.sample.split('|').next() {
-                    effective.sample = first_sample.to_string();
-                }
-            } else if let Some(first_bam_spec) = effective.bam.split('|').next() {
-                let first_bam = first_bam_spec.split(':').next().unwrap_or(first_bam_spec);
-                effective.sample = crate::config::extract_sample_name(first_bam, None);
-            }
+            effective.sample = crate::config::resolve_sample_names(
+                &effective.bam,
+                effective
+                    .sample_explicit
+                    .then_some(effective.sample.as_str()),
+                effective.sample_regexp.as_deref(),
+                has_region,
+                effective.emit_intermediate || effective.splice,
+            );
         }
     } else if effective.amplicon.is_none() {
         if let Some(ref bed_path) = effective.bed {
@@ -2080,27 +2160,44 @@ fn resolve_effective_config(
         }
     }
 
-    validate_tbi_flags(&effective)?;
+    validate_index_flags(&effective)?;
 
     Ok((effective, mode))
 }
 
-fn validate_tbi_flags(config: &config::Config) -> Result<(), VardictError> {
-    if config.index_output {
-        let has_bgzf_output = config
-            .output_path
-            .as_deref()
-            .is_some_and(|out_path| is_bgzf_output_path(Path::new(out_path)));
-        if !has_bgzf_output {
+fn validate_index_flags(config: &config::Config) -> Result<(), VardictError> {
+    if config.index_output && config.index_csi {
+        return Err(VardictError::Parse(
+            "--tbi/--index and --csi cannot be used together; choose --tbi (<= 512 Mbp) or --csi (up to 2.14 Gbp)"
+                .to_string(),
+        ));
+    }
+    if config.index_output || config.index_csi {
+        let flag_label = if config.index_output {
+            "--tbi/--index"
+        } else {
+            "--csi"
+        };
+        let Some(out_path) = config.output_path.as_deref() else {
+            return Err(VardictError::Parse(format!(
+                "{flag_label} requires --output <PATH> ending in .vcf.gz or .bgz"
+            )));
+        };
+        let out_path_ref = Path::new(out_path);
+        if is_unix_char_or_fifo(out_path_ref) {
             return Err(VardictError::Parse(
-                "--tbi/--index requires --output <PATH> ending in .vcf.gz or .bgz".to_string(),
+                "--tbi/--csi requires a regular seekable --output file".to_string(),
             ));
         }
+        if !is_bgzf_output_path(out_path_ref) {
+            return Err(VardictError::Parse(format!(
+                "{flag_label} requires --output <PATH> ending in .vcf.gz or .bgz"
+            )));
+        }
         if config.emit_intermediate || config.splice || config.column_header {
-            return Err(VardictError::Parse(
-                "--tbi/--index is only supported for VCF output (cannot be combined with --emit-intermediate, -i/--splice, or -h/--header)"
-                    .to_string(),
-            ));
+            return Err(VardictError::Parse(format!(
+                "{flag_label} is only supported for VCF output (cannot be combined with --emit-intermediate, -i/--splice, or -h/--header)"
+            )));
         }
     }
     Ok(())
@@ -2234,22 +2331,24 @@ fn collect_protected_input_paths(config: &config::Config) -> Vec<std::path::Path
 }
 
 fn validate_io_paths(config: &config::Config) -> Result<(), VardictError> {
-    validate_tbi_flags(config)?;
+    validate_index_flags(config)?;
     let out_opt = config.output_path.as_deref().map(Path::new);
-    let tbi_opt = if config.index_output {
-        out_opt.map(tbi_output_path)
+    let index_opt: Option<(&str, std::path::PathBuf)> = if config.index_output {
+        out_opt.map(|p| ("--tbi", tbi_output_path(p)))
+    } else if config.index_csi {
+        out_opt.map(|p| ("--csi", csi_output_path(p)))
     } else {
         None
     };
     let stats_opt = config.stats_json_path.as_deref().map(Path::new);
 
     if let Some(out) = out_opt {
-        if let Some(ref tbi_path) = tbi_opt {
-            if paths_collide(out, tbi_path) {
+        if let Some((idx_flag, ref idx_path)) = index_opt {
+            if paths_collide(out, idx_path) {
                 return Err(VardictError::Parse(format!(
-                    "--output '{}' and its Tabix index '{}' must not point to the same file",
+                    "--output '{}' and its {idx_flag} index '{}' must not point to the same file",
                     out.display(),
-                    tbi_path.display()
+                    idx_path.display()
                 )));
             }
         }
@@ -2259,11 +2358,11 @@ fn validate_io_paths(config: &config::Config) -> Result<(), VardictError> {
                     "--output and --stats-json must not point to the same file".to_string(),
                 ));
             }
-            if let Some(ref tbi_path) = tbi_opt {
-                if paths_collide(tbi_path, stats) {
+            if let Some((idx_flag, ref idx_path)) = index_opt {
+                if paths_collide(idx_path, stats) {
                     return Err(VardictError::Parse(format!(
-                        "--output Tabix index '{}' and --stats-json '{}' must not point to the same file",
-                        tbi_path.display(),
+                        "--output {idx_flag} index '{}' and --stats-json '{}' must not point to the same file",
+                        idx_path.display(),
                         stats.display()
                     )));
                 }
@@ -2271,7 +2370,7 @@ fn validate_io_paths(config: &config::Config) -> Result<(), VardictError> {
         }
     }
 
-    if out_opt.is_some() || tbi_opt.is_some() || stats_opt.is_some() {
+    if out_opt.is_some() || index_opt.is_some() || stats_opt.is_some() {
         let protected_inputs = collect_protected_input_paths(config);
         for input in &protected_inputs {
             if let Some(out) = out_opt {
@@ -2283,11 +2382,11 @@ fn validate_io_paths(config: &config::Config) -> Result<(), VardictError> {
                     )));
                 }
             }
-            if let Some(ref tbi_path) = tbi_opt {
-                if paths_collide(tbi_path, input) {
+            if let Some((idx_flag, ref idx_path)) = index_opt {
+                if paths_collide(idx_path, input) {
                     return Err(VardictError::Parse(format!(
-                        "--output Tabix index '{}' must not point to the same file as input '{}'",
-                        tbi_path.display(),
+                        "--output {idx_flag} index '{}' must not point to the same file as input '{}'",
+                        idx_path.display(),
                         input.display()
                     )));
                 }
@@ -2466,6 +2565,10 @@ pub fn run(config: &config::Config) -> Result<(), VardictError> {
                 if effective.index_output {
                     if let Some(ref out_path) = effective.output_path {
                         write_vcf_tabix_index(Path::new(out_path))?;
+                    }
+                } else if effective.index_csi {
+                    if let Some(ref out_path) = effective.output_path {
+                        write_vcf_csi_index(Path::new(out_path))?;
                     }
                 }
                 if let Some(pending) = pending_stats {
@@ -3572,13 +3675,26 @@ fn run_somatic<W: EngineWriter>(
                 gene: tile.gene.clone(),
                 amplicon: tile.amplicon.clone(),
             };
-            let builder1 = crate::tovars::ToVarsBuilder::new(
-                &reference,
-                &builder_region,
-                &chromosomes_lengths_clone,
-                &config_clone,
-            );
-            let aligned1 = builder1.build_aligned_variants(&var_data1);
+            let use_compact_somatic_ref_mode =
+                !config_clone.pileup && !config_clone.debug && config_clone.amplicon.is_none();
+            let mut ref_sites1: rustc_hash::FxHashMap<i32, crate::tovars::CompactRefSite> =
+                rustc_hash::FxHashMap::default();
+            let mut aligned1 = {
+                let builder1 = crate::tovars::ToVarsBuilder::new(
+                    &reference,
+                    &builder_region,
+                    &chromosomes_lengths_clone,
+                    &config_clone,
+                );
+                if use_compact_somatic_ref_mode {
+                    builder1.build_aligned_variants_with_ref_mode(
+                        &var_data1,
+                        crate::tovars::RefSiteMode::CompactOut(&mut ref_sites1),
+                    )
+                } else {
+                    builder1.build_aligned_variants(&var_data1)
+                }
+            };
             let splice1 = std::mem::take(&mut var_data1.splice);
             drop(var_data1);
             // Process BAM2 (normal), seeded with BAM1's maxReadLength and shared
@@ -3615,7 +3731,26 @@ fn run_somatic<W: EngineWriter>(
                 &chromosomes_lengths_clone,
                 &config_clone,
             );
-            let aligned2 = builder2.build_aligned_variants(&var_data2);
+            let aligned2 = if use_compact_somatic_ref_mode {
+                let aligned2 = builder2.build_aligned_variants_with_ref_mode(
+                    &var_data2,
+                    crate::tovars::RefSiteMode::KeepWhere(&|p| {
+                        aligned1.get(&p).is_some_and(|v1| !v1.variants.is_empty())
+                    }),
+                );
+                for (&pos, v2) in aligned2.iter() {
+                    if !v2.variants.is_empty() && !aligned1.contains_key(&pos) {
+                        if let Some(site) = ref_sites1.get(&pos) {
+                            aligned1.insert(pos, builder2.hydrate_compact_ref_site(pos, site));
+                        }
+                    }
+                }
+                drop(ref_sites1);
+                aligned2
+            } else {
+                drop(ref_sites1);
+                builder2.build_aligned_variants(&var_data2)
+            };
             // Inter-pass trim (cont.): var_data2 is fully consumed here;
             // drop its maps before postprocess.
             drop(var_data2);
@@ -3665,7 +3800,14 @@ fn run_somatic<W: EngineWriter>(
                     &chr_lens_for_combine,
                     &config_for_combine,
                 );
-                Ok(builder.build_aligned_variants(&var_data))
+                if use_compact_somatic_ref_mode {
+                    Ok(builder.build_aligned_variants_with_ref_mode(
+                        &var_data,
+                        crate::tovars::RefSiteMode::DropAll,
+                    ))
+                } else {
+                    Ok(builder.build_aligned_variants(&var_data))
+                }
             };
 
             let somatic_variants = crate::postprocess::somatic::somatic_post_process(
