@@ -52,7 +52,13 @@ fn parse_vcf_pval_token(s: &str) -> Result<(f64, String), String> {
     let v = s
         .parse::<f64>()
         .map_err(|e| format!("Invalid --vcf-pval value '{s}': {e}"))?;
-    if !v.is_finite() || v < 0.0 {
+    if !v.is_finite()
+        || v < 0.0
+        || (s.starts_with('-')
+            && s.split(['e', 'E'])
+                .next()
+                .is_some_and(|m| m.bytes().any(|b| b.is_ascii_digit() && b != b'0')))
+    {
         return Err(format!(
             "Invalid --vcf-pval value '{s}': must be a finite number >= 0.0"
         ));
@@ -1052,7 +1058,7 @@ pub struct Cli {
     )]
     pub min_splitreads: Vec<i32>,
 
-    /// Disable the PSTD=0 single-position read filter in VCF output (ports var2vcf_valid.pl / var2vcf_paired.pl -p 0).
+    /// Disable the PSTD=0 single-position read filter in single-sample VCF output (ports var2vcf_valid.pl -P 0).
     #[arg(long = "no-pstd-filter")]
     pub no_pstd_filter: bool,
 

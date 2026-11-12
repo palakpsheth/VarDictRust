@@ -155,7 +155,7 @@ pub struct Config {
     pub vcf_pval_raw: Option<String>,
     /// Minimum split reads required for structural variants in single-sample VCF (`--min-splitreads`, default: 1, ports `var2vcf_valid.pl -T`).
     pub vcf_min_splitreads: i32,
-    /// Enable the PSTD=0 single-position read filter in VCF output (`true` by default; `--no-pstd-filter` sets `false`, ports `var2vcf_valid.pl` / `var2vcf_paired.pl -p 0`).
+    /// Enable the PSTD=0 single-position read filter in single-sample VCF output (`true` by default; `--no-pstd-filter` sets `false`, ports `var2vcf_valid.pl -P 0`).
     pub vcf_pstd_filter: bool,
 }
 
