@@ -342,7 +342,7 @@ Flag parity with VarDictJava v1.8.3 is defined against [`CmdParser.java`](https:
 
 *Evidence Status Vocabulary:*
 - `corpus` — Verified against integration corpus test cases or [Tier-2](docs/testing/test-matrix-and-ci-audit.md#tier-2) oracle sweeps.
-- `unexercised` — Implemented to Java source specification without dedicated corpus fixtures (`0` flags).
+- `unexercised` — Implemented to Java source specification without dedicated corpus fixtures (`2` flags; verified by unit and E2E tests).
 - `no-output` — Performance or concurrency flag; does not alter output bytes.
 - `parity-exempt` — Accepted for CLI compatibility matching upstream semantics.
 
@@ -353,7 +353,7 @@ Flag parity with VarDictJava v1.8.3 is defined against [`CmdParser.java`](https:
 | `-G` | `--reference` | Reference FASTA file path (`.fai` index required) | required | `corpus` |
 | `-b` | `--bam` | Indexed BAM/CRAM; somatic: `"tumor.bam\|normal.bam"` | required | `corpus` |
 | `-N` | `--name` | Sample name (somatic: `"TUMOR\|NORMAL"`) | derived from BAM | `corpus` |
-| `-n` | — | Regular expression (`REGEXP`) to extract sample name from BAM filename | — | `corpus` |
+| `-n` | — | Regular expression (`REGEXP`) to extract sample name from BAM filename | — | `unexercised` |
 | `-R` | `--region` | Region `chr:start-end[:gene]` instead of BED | — | `corpus` |
 | positional | — | BED file (used when `-R` absent) | — | `corpus` |
 | `-h` | `--header` | Print `.var` column header before results (not help; use `-H`/`-?`/`--help`) | off | `corpus` |
@@ -410,7 +410,7 @@ Flag parity with VarDictJava v1.8.3 is defined against [`CmdParser.java`](https:
 | `-t` | `--dedup` | Remove duplicated reads (one pair per start position) | off | `corpus` |
 | `-u` | — | Unique mode: count overlapping mates once (forward read) | off | `corpus` |
 | `-UN` | `--UN` | Unique mode: count overlapping mates once (first read in pair) | off | `corpus` |
-| `-T` | `--trim` | Trim bases after `INT` bases in each read (`0` = disabled) | `0` | `corpus` |
+| `-T` | `--trim` | Trim bases after `INT` bases in each read (`0` = disabled) | `0` | `unexercised` |
 | — | `--VS` | SAM/BAM validation stringency (`SILENT` or `LENIENT`; `STRICT` unsupported) | `LENIENT` | `parity-exempt` |
 | — | `--adaptor` | Adaptor sequence(s), comma-separated, excluded from realignment | — | `corpus` |
 
