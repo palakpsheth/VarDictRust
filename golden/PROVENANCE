@@ -63,3 +63,57 @@ crates/vardictrust-core/testdata/fisher/r_fisher_oracle.tsv (2026-11-01)
   hex bits, including (60,259,1,0), (6,313,1,0), the 4 aarch64/darwin
   canary tables (9,6,5,1), (27,17,3,8), (10,8,1,3), (2,150,7,183), and
   (14,35,6,5), (18,2,12,5), (25,3,15,6), (12,40,8,9), plus 200+ tables.
+
+crates/vardictrust-core/tests/corpus_parity.rs in-process -T/--trim, -n <REGEXP>, and --fisher VCF raw-cell expectations (2026-11-12)
+  Environment: bioconda vardict-oracle (VarDictJava v1.8.3 commit 0886261,
+  VarDict submodule commit 009e017: teststrandbias.R, testsomatic.R,
+  var2vcf_valid.pl, var2vcf_paired.pl; OpenJDK 21.0.10-internal, R 4.5.3,
+  Perl 5.32.1 on linux-x86_64). All .var tables verified byte-identical via
+  harness/compare_var.py and all VCF outputs verified with 0 textual diffs
+  via harness/compare_vcf.py --strict-bytes.
+  Pinned authoring-time oracle runs and SHA-256 digests:
+    1. micro -T 25 -n '.*(mic)ro\.bam':
+       vardict-java -G fixtures/micro/micro.ref.fa -f 0.01 -b fixtures/micro/micro.bam \
+         -T 25 -n '.*(mic)ro\.bam' -z 1 -c 1 -S 2 -E 3 -g 4 fixtures/micro/micro.bed
+       | teststrandbias.R | var2vcf_valid.pl -N mic -E -f 0.01
+       .var SHA-256 (2 rows, 36 cols): 43ab86e3c31cd2239462dd45feedc13b74610162ae1f435ba32b1c243c868257
+       VCF variant-lines SHA-256 (2 rows): 67fc43df95007f0aa3317c2f28acbfebef8aa23e742418ec2212d955693a1bad
+    2. L861Q.bam -T 50 -n '.*/(L861)Q\.bam':
+       vardict-java -G VarDictJava/testdata/fastas/hg19.fa -f 0.01 \
+         -b VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests/L861Q.bam \
+         -T 50 -n '.*/(L861)Q\.bam' -z 1 -R chr7:55259400-55259600:testbed
+       | teststrandbias.R | var2vcf_valid.pl -N L861 -E -f 0.01
+       .var SHA-256 (4 rows, 36 cols): 83d1a74d72a73d6ba338da932da36dede2eb9b051f57c03b026011d9a2b19321
+       VCF variant-lines SHA-256 (4 rows): f86fb4bdac9ef6ef96903524e0c1e6bb85ef21fc51d2344481c978cc4ecfc714
+    3. ArgumentNA paired somatic -n '.*/ArgumentNA_(Tumor|Normal)\.bam':
+       vardict-java -G VarDictJava/testdata/fastas/hg19.fa -f 0.001 \
+         -b "VarDictJava/.../ArgumentNA_Tumor.bam|VarDictJava/.../ArgumentNA_Normal.bam" \
+         -n '.*/ArgumentNA_(Tumor|Normal)\.bam' -z 1 -R chr7:140453010-140453158:testbed
+       | testsomatic.R | var2vcf_paired.pl -N "Tumor|Normal" -f 0.001
+       .var SHA-256 (6 rows, 55 cols): 66b6c36fccaf2d14ffa4b73ea5bc788a75f0a9b3029c3140c579bd62f8b5248f
+       VCF variant-lines SHA-256 (5 rows): e10dc6e2d99d9bd1c61142e51eee6863bf0a032489eaa691e88df1ef71cc1498
+    4. micro single-sample --fisher VCF raw-cell parity (no R intermediate):
+       vardict-java -G fixtures/micro/micro.ref.fa -f 0.01 -b fixtures/micro/micro.bam \
+         --fisher -z 1 -c 1 -S 2 -E 3 -g 4 fixtures/micro/micro.bed
+       | var2vcf_valid.pl -N SAMPLE -E -f 0.01
+       .var SHA-256 (2 rows, 38 cols): 192af7d9b62b173af3969bbc8668ac6031c5d40cf3a2e29f19be260bcdbc2a76
+       VCF variant-lines SHA-256 (2 rows): 427329327b03b866ee3f1ea3e85cd571ca631ab1fecde859486d2d0015920d26
+    5. Colo829-18_S3-sort.bam amplicon -a 10:0.95 --fisher VCF raw-cell parity:
+       vardict-java -G VarDictJava/testdata/fastas/hg19.fa -f 0.01 \
+         -b VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests/Colo829-18_S3-sort.bam \
+         -a 10:0.95 --fisher -z 1 -c 1 -S 2 -E 3 -g 4 amp.bed
+       | var2vcf_valid.pl -N Colo829-18_S3-sort -E -f 0.01
+       .var SHA-256 (5 rows, 40 cols): 03417419078d26728fa7a913e4b135dcdc84965c7df11c6446ee0678cf2eb70e
+       VCF variant-lines SHA-256 (4 rows): 15adfab14ed590fad069f2fe92da7d7a504771aea4ffbf35c997e503d353992b
+    6. ArgumentNA paired somatic --fisher VCF raw-cell parity:
+       a) -f 0.001 --fisher -z 1 -R chr7:140453010-140453158:testbed | var2vcf_paired.pl -N "ArgumentNA_Tumor|ArgumentNA_Normal" -f 0.001
+          .var SHA-256 (6 rows, 61 cols): 6a9733dea80ce010e166c1cb12bc0d2b5791dac01000be569e4c0fbd05bc501f
+          VCF variant-lines SHA-256 (5 rows): b35e13cbda9f6052446d7aea5ccc7d2ba4d4b7cf8cc16e2d6dad715f2e1608e5
+       b) -q 25 -F 0x100 -f 0.001 -k 1 -M 20 -p --fisher -z 1 -R chr7:140453010-140453158:testbed | var2vcf_paired.pl -N "ArgumentNA_Tumor|ArgumentNA_Normal" -f 0.001
+          .var SHA-256 (53 rows, 61 cols): 622ae1d22764a6bce4c9664a547a20512b6b1f2e820f952eb88bf5ffc7996683
+          VCF variant-lines SHA-256 (42 rows): e18d894bf41e49e0e6357ad0390bcae88fdf2f9872186d446e4c72bc9b716d1e
+    7. Somatic combine_analysis trailing-dot FORMAT cells (:0., :15.:, :1.) on fixtures/micro/micro.ref.fa (chr1:50-160:testbed --fisher):
+       vardict-java -G fixtures/micro/micro.ref.fa -f 0.01 -b "Tumor.bam|Normal.bam" --fisher -z 1 -R chr1:50-160:testbed
+       | var2vcf_paired.pl -N "Tumor|Normal" -f 0.01
+       a) zero_dot (t_mm=[1,0,0], n_mm=0): .var SHA-256 76e036321d26faa602c9988ecb5825f67f5948245d8221ed12faf5e3cc998c85, VCF variant-lines SHA-256 fd93ef7beeb1c25f60f395066008ea2b90c53efa7901aa3d5d92373f1ece01c4
+       b) one_dot (t_mm=[2,1,1], n_mm=1): .var SHA-256 7fba9177549554eb90037d138f831aedfac2f1e3aeae97adbdfdcf048c287156, VCF variant-lines SHA-256 69ec72a5328fe1ea0bd1f0186bb12439fd1c605bea9435b84093d9d68a04d3c6
