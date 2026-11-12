@@ -922,9 +922,10 @@ fn format_vcf_record_with_filter<F: FnOnce(&mut String)>(
         // ports var2vcf_valid.pl:197-212 — the SV block runs only when !$isamp
         let (splitreads, spanpairs) = parse_sv_counts(&variant.sv);
 
-        if !alt_is_dot && variant.var_allele.starts_with('<') {
-            // ports var2vcf_valid.pl:206-208 — SVLEN = end - start,
-            // incremented only when the ALT is an INV.
+        if !alt_is_dot && variant.var_allele.contains('<') {
+            // ports var2vcf_valid.pl:199,206-210 — `$alt =~ /</` (including `#342`
+            // mid-allele `<dup-N>` when `--min-splitreads 0`); SVLEN = end - start,
+            // incremented only when the ALT contains INV.
             let mut svlen = variant.end_pos - variant.start_pos;
             if variant.var_allele.contains("INV") {
                 svlen += 1;
@@ -1287,18 +1288,29 @@ impl PairedVcfRecord {
         type_snv: bool,
         status_somatic: bool,
     ) -> Option<Self> {
-        if line.get(filter_start..filter_end).is_some() {
-            Some(Self {
-                line,
-                filter_start,
-                filter_end,
-                start,
-                type_snv,
-                status_somatic,
-            })
-        } else {
-            None
+        let filt = line.get(filter_start..filter_end)?;
+        let prev_idx = filter_start.checked_sub(1)?;
+        if filt.is_empty()
+            || filt.bytes().any(|b| matches!(b, b'\t' | b'\r' | b'\n'))
+            || line.as_bytes().get(prev_idx) != Some(&b'\t')
+            || line.as_bytes().get(filter_end) != Some(&b'\t')
+            || line
+                .get(..filter_start)?
+                .bytes()
+                .filter(|&b| b == b'\t')
+                .count()
+                != 6
+        {
+            return None;
         }
+        Some(Self {
+            line,
+            filter_start,
+            filter_end,
+            start,
+            type_snv,
+            status_somatic,
+        })
     }
 }
 
@@ -3101,6 +3113,22 @@ mod tests {
         );
         assert!(emitted_pass);
         assert_eq!(buf.split('\t').nth(6), Some("PASS"));
+
+        // 4. Mid-allele `<dup-N>` (`#342` family, `var2vcf_valid.pl:199` `$alt =~ /</`):
+        //    when `--min-splitreads 0` admits a mid-allele `<dup-12>` variant (`splitreads = 0`),
+        //    `format_vcf_record_with_filter` must emit `;SVTYPE=...dup-12...;SVLEN=...` stripping `<`/`>`.
+        let mut mid_dup_var = amplicon_passing_variant();
+        mid_dup_var.start_pos = 100;
+        mid_dup_var.end_pos = 112;
+        mid_dup_var.ref_allele = "A".to_string();
+        mid_dup_var.var_allele = "ACGT<dup-12>TTAA".to_string();
+        mid_dup_var.sv = "0-0-0".to_string();
+        let mid_dup_line =
+            format_vcf_record(&mid_dup_var, region, &default_cfg, &[], 1.0, "1.5", None);
+        assert!(
+            mid_dup_line.contains(";SVTYPE=ACGTdup-12TTAA;SVLEN=12;SPLITREAD=0;SPANPAIR=0"),
+            "mid-allele <dup-12> must emit SVTYPE/SVLEN matching Perl `$alt =~ /</`: {mid_dup_line}"
+        );
     }
 
     #[test]
@@ -3591,6 +3619,43 @@ mod tests {
             )
             .is_none(),
             "mid-UTF8 start offset must be rejected"
+        );
+        // Column-aligned non-empty FILTER span checks (VCF column 7 = index 6, delimited by tabs)
+        assert!(
+            PairedVcfRecord::from_parts_checked(valid_line.clone(), 0, 4, 100, true, true)
+                .is_none(),
+            "CHROM column (0..4) must be rejected as FILTER span"
+        );
+        assert!(
+            PairedVcfRecord::from_parts_checked(valid_line.clone(), fs1, fs1, 100, true, true)
+                .is_none(),
+            "empty FILTER span must be rejected"
+        );
+        assert!(
+            PairedVcfRecord::from_parts_checked(valid_line.clone(), fs1, fe1 - 1, 100, true, true)
+                .is_none(),
+            "truncated FILTER span without trailing tab must be rejected"
+        );
+        assert!(
+            PairedVcfRecord::from_parts_checked(valid_line.clone(), 5, 8, 100, true, true)
+                .is_none(),
+            "POS column (col 2, 1 tab before) must be rejected as FILTER span"
+        );
+        let tab_in_filter_end = valid_line[fe1 + 1..]
+            .find('\t')
+            .map(|rel| fe1 + 1 + rel)
+            .unwrap();
+        assert!(
+            PairedVcfRecord::from_parts_checked(
+                valid_line.clone(),
+                fs1,
+                tab_in_filter_end,
+                100,
+                true,
+                true,
+            )
+            .is_none(),
+            "span crossing tab into INFO column must be rejected"
         );
 
         // `PairedRecordStreamer::with_pass_only(10, true)` suppresses clustered SNVs after

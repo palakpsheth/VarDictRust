@@ -2173,7 +2173,36 @@ fn resolve_effective_config(
     }
     if effective.vcf_pval == 0.0 {
         effective.vcf_pval = 0.0;
-        if let Some(ref mut raw) = effective.vcf_pval_raw {
+    }
+    if let Some(ref mut raw) = effective.vcf_pval_raw {
+        let neg_nonzero_mantissa = raw.starts_with('-')
+            && raw
+                .split(['e', 'E'])
+                .next()
+                .is_some_and(|m| m.bytes().any(|b| b.is_ascii_digit() && b != b'0'));
+        if raw.is_empty() || raw.trim() != raw || neg_nonzero_mantissa {
+            return Err(VardictError::Parse(format!(
+                "Invalid vcf_pval_raw '{raw}': must be a trimmed non-negative finite float string"
+            )));
+        }
+        let p = raw.parse::<f64>().map_err(|_| {
+            VardictError::Parse(format!(
+                "Invalid vcf_pval_raw '{raw}': must be a valid finite number >= 0.0"
+            ))
+        })?;
+        if !p.is_finite() || p < 0.0 {
+            return Err(VardictError::Parse(format!(
+                "Invalid vcf_pval_raw '{raw}': must be a finite number >= 0.0"
+            )));
+        }
+        let p_norm = if p == 0.0 { 0.0 } else { p };
+        if p_norm.to_bits() != effective.vcf_pval.to_bits() {
+            return Err(VardictError::Parse(format!(
+                "Invalid vcf_pval_raw '{raw}': parsed value {p_norm} disagrees with vcf_pval '{}'",
+                effective.vcf_pval
+            )));
+        }
+        if p_norm == 0.0 {
             if let Some(stripped) = raw.strip_prefix(['-', '+']) {
                 *raw = stripped.to_string();
             }
@@ -6121,6 +6150,43 @@ mod tests {
         assert!(eff_zero.vcf_pval.is_sign_positive());
         assert_eq!(eff_zero.vcf_pval_raw.as_deref(), Some("0.0"));
         assert_eq!(eff_zero.vcf_min_splitreads, 0);
+
+        // Programmatic `vcf_pval_raw` syntax, header-injection, underflow, and bit-agreement guards
+        for (pval, bad_raw) in [
+            (0.05, "0.01"),        // disagrees with vcf_pval = 0.05
+            (0.05, "0.05\n##bad"), // header injection / invalid float
+            (0.05, " 0.05"),       // untrimmed leading whitespace
+            (0.05, "0.05\n"),      // untrimmed trailing newline
+            (0.0, ""),             // empty
+            (0.0, "-"),            // lone sign
+            (0.0, "-1e-400"),      // negative non-zero mantissa underflowing to -0.0
+            (0.05, "NaN"),         // non-finite raw
+            (0.05, "inf"),         // infinite raw
+        ] {
+            let bad_raw_cfg = crate::config::Config {
+                bam: "a.bam".to_string(),
+                region: Some("chr1:1-10".to_string()),
+                vcf_pval: pval,
+                vcf_pval_raw: Some(bad_raw.to_string()),
+                ..Default::default()
+            };
+            let raw_err = resolve_effective_config(&bad_raw_cfg).expect_err(&format!(
+                "expected Parse error for (vcf_pval={pval}, vcf_pval_raw={bad_raw:?})"
+            ));
+            assert!(matches!(raw_err, VardictError::Parse(_)));
+        }
+
+        // Valid matching `vcf_pval = 1e-5` + `vcf_pval_raw = Some("1e-5")` succeeds and preserves raw
+        let sci_cfg = crate::config::Config {
+            bam: "a.bam".to_string(),
+            region: Some("chr1:1-10".to_string()),
+            vcf_pval: 1e-5,
+            vcf_pval_raw: Some("1e-5".to_string()),
+            ..Default::default()
+        };
+        let (eff_sci, _) = resolve_effective_config(&sci_cfg).unwrap();
+        assert_eq!(eff_sci.vcf_pval.to_bits(), 1e-5_f64.to_bits());
+        assert_eq!(eff_sci.vcf_pval_raw.as_deref(), Some("1e-5"));
     }
 
     #[test]
