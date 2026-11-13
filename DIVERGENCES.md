@@ -26,8 +26,8 @@ Verified Parity Baseline (release/v1.0.7, commit d5cae8a):
 - Final Acceptance:   8/8 PASS under release engine fingerprint `356eb13ba068790c`
 
 Current Workspace Test Suite (main / pre-v1.0.8):
-- Core Library Tests: 406 PASS / 0 FAIL (`cargo test -p vardictrust-core --lib`)
-- Total Workspace:    590 PASS / 0 FAIL (`cargo test --workspace` across core, corpus_parity, engine_behavior, amplicon_stream_mem, cram_stack, cli, profile_smoke, robustness, version)
+- Core Library Tests: 432 PASS / 0 FAIL (`cargo test -p vardictrust-core --lib`)
+- Total Workspace:    619 PASS / 0 FAIL (`cargo test --workspace` across core, corpus_parity, engine_behavior, amplicon_stream_mem, cram_stack, cli, profile_smoke, robustness, version)
 ```
 
 <a id="the-four-canonical-parity-classes-rewritesbio-5-8-11"></a>
@@ -40,7 +40,7 @@ Current Workspace Test Suite (main / pre-v1.0.8):
 | Class | Designation | Tracked Items | v1.0.x Parity Contract | Roadmap Stance ([`ROADMAP.md`](ROADMAP.md)) |
 | :--- | :--- | :--- | :--- | :--- |
 | **Class A** | **Faithfully Emulated Upstream Quirks** | [**UB-1**](docs/upstream-bugs.md#ub-1--p-spurious-all-zero-record-at-position-00) (`-p` pos-0 row), [**UB-2**](docs/upstream-bugs.md#ub-2--p-null-record-row-cell-formatting-empty-geno-00-bias-empty-flank-seqs) (`-p` null formatting), [**UB-3**](docs/upstream-bugs.md#ub-3-var-row-order-across-positions-follows-hashmap-iteration-order-282-family) (HashMap iteration order via `JavaHashMap`), [**UB-5**](docs/upstream-bugs.md#ub-5-simplemode-structural-variant-split-read-requirement-var2vcf_validpl197-205) (SimpleMode SV split-read filter), [**UB-6**](docs/upstream-bugs.md#ub-6-mate-pair-boundary-parameter-in-mark_dup_sv-structuralvariantsprocessorjava1468) (`markDUPSV` boundary), [**UB-7**](docs/upstream-bugs.md#ub-7-multi-allelic-site-single-winner-collapsing-var2vcf_validpl135-205) (single-winner collapsing) | **Byte-for-byte replication**. VarDictRust output matches VarDictJava v1.8.3 exactly on valid inputs ([AGENTS.md §5](AGENTS.md)). | Candidate opt-in flags for v1.1.0+: `--fix ub1`, `--fix ub2`, `--fix ub5`, `--fix ub6`, `--fix ub7`. |
-| **Class B** | **Accepted Divergences by Design** | **`##source`** header (`VarDictRust_v1.0.7`), **`.fai` contig lengths** (fixes [#320](https://github.com/AstraZeneca-NGS/VarDictJava/issues/320)), **CLI arg splitting & ergonomics** (`-f 0.001`, `--output`, `--tbi`/`--csi`, `--no-end`, `--pass-only`, `--paired-strict`, `--vcf-pval`, `--min-splitreads`, `--no-pstd-filter`, `--stats-json`, `-VS SILENT\|LENIENT`, `RAYON_NUM_THREADS`), **Splice-mode stdout order** | **Functional variant record parity**. Deviations confined strictly to VCF `#`-headers or CLI parsing ergonomics. | Permanent design standards; no flags required. |
+| **Class B** | **Accepted Divergences by Design** | **`.fai` contig lengths** (fixes [#320](https://github.com/AstraZeneca-NGS/VarDictJava/issues/320); `##source=VarDict_v1.8.2` retained verbatim for byte parity), **CLI arg splitting, consolidated `var2vcf` `--vcf-*` overrides (`defined()` zero semantics vs legacy `-f 0` parity), & ergonomics** (`-f 0.001`, `--output`, `--tbi`/`--csi`, `--no-end`, `--pass-only`, `--paired-strict`, `--vcf-pval`, `--min-splitreads`, `--no-pstd-filter`, `--vcf-af`, `--vcf-min-depth`, `--vcf-min-vd`, `--vcf-qmean`, `--vcf-mapq`, `--vcf-pmean`, `--vcf-sn`, `--vcf-max-nm`, `--vcf-gt-freq`, `--vcf-msi`, `--vcf-cluster-dist`, `--stats-json`, `-VS SILENT\|LENIENT`, `RAYON_NUM_THREADS`), **Splice-mode stdout order** | **Functional variant record parity**. Default variant records and `##source=VarDict_v1.8.2` match upstream byte-for-byte; deviations confined strictly to `.fai` contig headers, explicit opt-in CLI flags, or sorted `-i` stdout order. | Permanent design standards; no flags required. |
 | **Class C** | **Crash-Resilience & Robustness** | [**PR #402**](https://github.com/AstraZeneca-NGS/VarDictJava/pull/402) `modifyCigar` negative match length, [**Issue #187**](https://github.com/AstraZeneca-NGS/VarDictJava/issues/187) missing index fail-fast, [**Issues #197 / #384**](https://github.com/AstraZeneca-NGS/VarDictJava/issues/197) bounded halo tiling (1.27 GiB peak RSS across the full 249 Mbp chromosome in the 3-run median certified series, 1.11× flat RSS ratio vs 10 Mbp) | **Zero crash, zero panic** (`#![forbid(unsafe_code)]`). Produces identical output on valid inputs; safely skips/recovers on malformed inputs. | Permanent engine baseline; `--fix 402` in v1.1.0+ will repair CIGAR topology. |
 | **Class D** | **Known Non-Bugs / Upstream Flaws (incl. environmental UB-8)** | [**UB-4**](docs/upstream-bugs.md#ub-4-hard_clip_casefa-fixture-drift-between-csv-chunks-and-reconstructed-fasta) (`hard_clip_case.fa` conflicting CSV reference chunks; pinned SHA-256 `96abe5...`), **GRCh37.fa** Colo829 chr20 all-N fixture drift | **Proven parity vs live Java oracle**. Confirmed that live Java under same inputs produces 100% byte-identical output (0 diffs). Cryptographically pinned in [`harness/integration_xfail.tsv`](harness/integration_xfail.tsv). | Documented permanent fixture artifacts; tracked as verified `XFAIL` in the 91/1 corpus. |
 
@@ -51,16 +51,17 @@ Current Workspace Test Suite (main / pre-v1.0.8):
 ---
 
 <a id="category-1-cigar-and-realignment-resilience"></a>
-## Category 1: CigarParser Mismatch Extension (process_deletion)
+## Category 1: CigarParser Mismatch Extension (process_deletion) — RESOLVED
 
-### Root Cause
+> **Status: RESOLVED (commits `a7870b4`, `c0f36a6`, `8fda935`; sole corpus `XFAIL` is stale upstream fixture UB-4).** All valid-input cases match live `VarDictJava v1.8.3` 100% byte-for-byte. The historical investigation notes below are preserved for audit provenance.
+
+### Root Cause (Historical)
 
 When `process_deletion` handles a deletion followed by an insertion (`is_next_insertion`),
 it extends the variant description by scanning the subsequent match region for mismatches.
 The extension uses `vext` (default 2) to stop after N consecutive matches.
 
-**Divergence:** Rust extends too far into the match region compared to Java. The mismatch
-pattern between read and reference differs, causing different extension lengths.
+**Historical Divergence:** Early in the port, Rust extended further into the match region on the stale `hard_clip_case.fa` fixture before live-oracle verification isolated UB-4 and the `find_inv_sub` / `merge_sclip` / `findMM5` root causes below.
 
 ### Affected Tests
 
@@ -96,78 +97,62 @@ pattern between read and reference differs, causing different extension lengths.
   **RESOLVED** — wrong INV desc tail made realignIndels' findMM5 miss the T@47214669
   absorption (Java cnt 2→7, cov 12→17 via Realigndel Adj; Rust stayed 2/12).
 
-### Investigation Notes
+### Historical Investigation Notes (Resolved)
 
 - CigarModifier correctly transforms `1D13M1D` → `15D13I` (verified)
 - The `is_insertion_or_deletion_with_next_matched` function matches Java (vext threshold)
 - The mismatch extension loop logic matches Java (`vsn > vext` break condition)
-- **Key finding:** Reference at positions 6484-6506 is `TCACCAGATGGCTACCATTCCAG`
-  but Java's expected output implies different mismatch pattern — needs instrumented
-  Java oracle trace to compare internal state
+- **Key finding:** Reference at positions 6484-6506 is `TCACCAGATGGCTACCATTCCAG`;
+  the static fixture difference traced to conflicting CSV reference chunks in `hard_clip_case.fa` (resolved vs live Java oracle; see UB-4 above).
 
-**threeIndels hi_freq @ 62360386 (Java 0.8936 vs Rust 0.9333) — root cause pinned:**
-hi_freq = hicnt/hicov for the `+T` insertion. hicnt=42 in both; hicov differs
+**threeIndels hi_freq @ 62360386 (Java 0.8936 vs Rust 0.9333) — root cause pinned and RESOLVED (`8fda935`):**
+hi_freq = hicnt/hicov for the `+T` insertion. hicnt=42 in both; hicov differed
 (Java 47, Rust 45). hicov = sum of non-insertion variants' hicnt at the position.
-Instrumented Java ToVarsBuilder shows Java has a **T SNV at 62360386 with
-varsCount=2, hq=2** that Rust does NOT register (Rust non-insertion at 62360386:
-C cnt=50/hicnt=45, A cnt=1/hicnt=0; no T). The missing T's hicnt=2 is the entire
+Instrumented Java ToVarsBuilder showed Java had a **T SNV at 62360386 with
+varsCount=2, hq=2** that Rust did NOT retain (pre-fix Rust non-insertion at 62360386:
+C cnt=50/hicnt=45, A cnt=1/hicnt=0; no T). The missing T's hicnt=2 was the entire
 hicov gap. The 2 T reads (tumor BAM, chrom `20`, both qual 37 / MAPQ 60,
 non-duplicate, surviving `-F 0x700`): `A00130:81:HFFWLDSXX:2:1307:7563:3662`
 (pos 62360262, `140M11S`, T at qpos124) and `A00130:81:HFFWLDSXX:3:2520:15374:21136`
-(pos 62360380, `150M`, NM=3, T at qpos6). Rust's pileup/MNV path does not register
-their T mismatch at 62360386 (the surrounding positions 62360380-85 are T-reference
-with cnt~100; 62360386 is C-reference).
+(pos 62360380, `150M`, NM=3, T at qpos6).
 
-**UPDATE — localized to `realign_indels`:** a READTRACE in Rust
-`add_variation_for_matching_part` shows BOTH reads DO register `s=T` at pos 62360386
-(q=37, qbases=1) during pileup. A STAGE_TRACE across the BAM1 pipeline confirms:
+**Localized to `realign_indels`:** a READTRACE in Rust
+`add_variation_for_matching_part` showed BOTH reads registered `s=T` at pos 62360386
+(q=37, qbases=1) during pileup. A STAGE_TRACE across the BAM1 pipeline confirmed:
 T@62360386 cnt=**2 after pileup**, cnt=**2 after adjust_mnp**, cnt=**None after
-realign_indels** (stays None through find_all_sv and adj_snv). So **`realign_indels`
-is the exact stage that removes the 2-read T SNV** (Java keeps it). The T sits
-immediately 5' of the `-1`/`-2`/`-3` deletions at 62360387. Next step: instrument
-`realign_indels` (realign.rs) for position 62360386 to find which indel-realignment
-path absorbs/deletes the T variant — likely the deletion realignment at 62360387
-consumes the adjacent T mismatch reads in Rust but not in Java.
+realign_indels** (stayed None through find_all_sv and adj_snv). Thus **`realign_indels`
+was the exact stage removing the 2-read T SNV** while Java kept it, immediately 5'
+of the `-1`/`-2`/`-3` deletions at 62360387.
 
-**Mechanism identified:** the removal is `realigndel`'s misp5 branch
+**Mechanism identified:** the removal was `realigndel`'s misp5 branch
 (realign.rs:1014-1031): `if misp5 != 0 && mm5.len() == 1 && variant.cnt < dcnt → remove`,
 **byte-identical** to Java `VariationRealigner.java:550-553`.
 
-**CORRECTION — deletion counts match:** instrumented Java ToVarsBuilder shows the
-deletion counts at 62360387 are IDENTICAL in Java and Rust (`-1`=6, `-2`=1, `-3`=3,
-`T`=101, `C`=1). So the divergence is NOT the deletion count. With T.cnt=2 < dcnt=6
-the misp5 branch would fire in BOTH implementations — therefore Java must compute a
-different `misp5`/`mm5` for the `-1` deletion at 62360387 so the branch does not
-target the T there. **The real divergence is realigndel's 5'-mismatch finding
-(`findMM5` / `getMisp` / `mm5`) for the deletion at 62360387:** Rust resolves
-`misp5=62360386, misnt5=T, mm5.size()==1` (removing the T), Java resolves it
-differently (keeping the T). Next step: instrument realigndel's mismatch-finding for
-the `-1` deletion at 62360387 in both implementations and diff the misp5/mm5/misnt5
-values — the mismatch scan boundary or the reads feeding it differ.
+**Deletion counts matched:** instrumented Java ToVarsBuilder showed the
+deletion counts at 62360387 were IDENTICAL in Java and Rust (`-1`=6, `-2`=1, `-3`=3,
+`T`=101, `C`=1). Because T.cnt=2 < dcnt=6, the divergence traced to `realigndel`'s
+5'-mismatch finding (`findMM5` / `getMisp` / `mm5`) for the `-1` deletion at 62360387:
+pre-fix Rust resolved `misp5=62360386, misnt5=T, mm5.size()==1` (removing the T), whereas
+Java left `misp` unset (keeping the T).
 
-**Bottom of chain — `find_mm5`:** `misp5`/`misnt5` come from `find_mm5`
-(realign.rs:417). Its `misp`/`misnt` are set (realign.rs:465-525) only when the
-single-base boundary mismatch (`str_bytes.len() == 1`, here the T) is followed by
-`mn > 1` matching bases and then `n2 > 2` further matches, scanned over the filtered
-consensus `seq` (wupseq minus `#`/`^`). The Java/Rust divergence is inside this scan:
-either the consensus `wupseq` feeding `find_mm5` differs for the `-1` deletion at
-62360387, or the `mn`/`n2` counting/boundaries differ. Next step: trace `find_mm5`
-inputs (`wupseq`) and intermediates (`n`, `mn`, `n2`, `misp`) for the `-1` deletion
-at 62360387 in both implementations and diff them.
+**Bottom of chain — `find_mm5` (fixed in commit `8fda935`):** in Java `VariationRealigner.findMM5`,
+the `n2`-loop guard `-1 - n - 1 - n2 >= 0` dropped `seq.length()` and is therefore dead
+(`misp` is never set); pre-fix Rust had "fixed" that bound, over-triggering `misp5` removal
+of adjacent SNVs. Replicating Java's dead loop in commit `8fda935` closed `threeIndels`.
 
-### Remediation
+### Resolution Summary
 
-Run VarDictJava with `-y` verbose on the hard_clip test case. Compare the exact
-mismatch positions and extension lengths. The difference is likely in how
-`read_pos_inc` / `multoffp` offsets are calculated after the insertion.
+Closed across commits `a7870b4`, `c0f36a6`, and `8fda935`, plus `-p` null-record replication (`make_null_record`, UB-1/UB-2). All valid-input cases MATCH 100%; the stale `hard_clip_next_to_del_test2` upstream fixture is cryptographically pinned in `harness/integration_xfail.tsv` (UB-4).
 
 ---
 
-## Category 2: realignlgdel Soft Clip Consensus
+## Category 2: realignlgdel Soft Clip Consensus — RESOLVED
+
+> **Status: RESOLVED (commits `a7870b4`, `c0f36a6`, `c1d50c8`, `406db7f`, and `adj_complex` StrongLOH ordering).** All five listed somatic cases now MATCH 100% end-to-end. Historical investigation notes below are preserved for audit provenance.
 
 ### Status (Resolved)
 
-RESOLVED for 4 of 5 listed cases; remainder re-classified as Category 11:
+RESOLVED across all 5 listed cases (4 closed directly here and the 5th closed in Category 11):
 
 - The three Colo829 cases (chr1 755917-756517, chr10 1368753-1369353,
   chr10 684892-685492) were fixed by live `merge_sclip` partial-pipeline
@@ -188,23 +173,23 @@ RESOLVED for 4 of 5 listed cases; remainder re-classified as Category 11:
   @7811769. Java `-y` trace shows exactly one
   `Start Combine 7811769 +GAACCACTGAGACAGGAGAGCGAGGTGGAA` with no following
   `Combine:` line → combined-pipeline lookup miss → `vref==null` → FALSE →
-  variant skipped (`SomaticPostProcessModule.java:408-409,202-204`). This is the
-  reverted combineAnalysis path in `printVariationsFromFirstSample` =
-  **Category 11**, not a bounded fix. See Category 11.
+  variant skipped (`SomaticPostProcessModule.java:408-409,202-204`). This traced to
+  `combineAnalysis` in `printVariationsFromFirstSample` =
+  **Category 11** (subsequently resolved in commits `c1d50c8` and `406db7f`).
 
-### Root Cause
+### Historical Root-Cause Hypothesis (Superseded)
 
 The 5' section of `realignlgdel` creates deletions from soft clips. It:
 1. Builds consensus via `find_conseq` from the `Sclip.nt` map
 2. Searches for breakpoint via `find_bp` (within indel_size=50) or `find_match` (SEED=17)
 3. Creates deletion variant and absorbs matching 3' soft clip (no min_reads gate on 3' clip)
 
-**Divergence:** Our `find_conseq` produces shorter consensus (11bp) than Java needs (≥17bp
-for `find_match`). The 5' soft clip at position 756260 in the Colo829 tumor BAM has only
-2 reads (7S and 11S), producing an 11-base consensus that fails both `find_bp` (wrong
-match position) and `find_match` (11 < SEED=17).
+**Initial Hypothesis (Superseded):** Our `find_conseq` produced an 11bp consensus at position 756260
+in the Colo829 tumor BAM (2 reads, 7S and 11S), failing both `find_bp` and `find_match` (11 < SEED=17).
+Subsequent tracing showed the Colo829 cases instead came from overlapping partial-pipeline soft-clip
+accumulation (`merge_sclip`, commits `a7870b4` and `c0f36a6`).
 
-### Affected Tests
+### Affected Tests (all now MATCH)
 
 - `Somatic;hg19.fa;Colo829-18_S3-sort.bam-Colo829-19_S4-sort.bam;chr1;755917-756517;`
 - `Somatic;hg19.fa;Colo829-18_S3-sort.bam-Colo829-19_S4-sort.bam;chr10;1368753-1369353;`
@@ -212,38 +197,29 @@ match position) and `find_match` (11 < SEED=17).
 - `Somatic;hg19.fa;HCC2218_BL_realigins.bam-HCC2218_C_realigins.bam;chrX;7811670-7811868;-f0.001;`
 - `Somatic;hg19.fa;Zero_in_DUPSV_TUMOUR.bam-Zero_in_DUPSV_NORMAL.bam;chr19;290742-291636;-f0.001-X3`
 
-### Investigation Notes
+### Historical Investigation Notes (Superseded)
 
 - Normal BAM creates "-40^CACTA" at 756220 from read with CIGAR `68M9D5M26D77M` (pileup)
-- Tumor BAM has NO such read; Java trace confirms tumor's realigndel only processes 35D at 756286/756278
-- **CRITICAL FINDING (Java trace):** The "-40^CACTA" at 756220 appears ONLY in the normal BAM's
-  initial realigndel. The tumor BAM never creates this deletion in pileup or realignment.
-  Yet Java's final output shows tumor VD=2, STATUS=Germline. The mechanism is unknown —
-  likely in ToVarsBuilder or SomaticPostProcessModule (possibly `combineAnalysis` or
-  variant lookup across samples).
-- 5' soft clip at 756260: count=2, consensus="ATCACACCTAG" (11bp)
-- `find_bp` fails: consensus doesn't match reference within 50bp upstream
-- `find_match` fails: 11 < SEED=17
-- `realignlgins` skips: 11 < 12 (minimum length)
-- **Key mechanism (confirmed):** 5' section of realignlgdel creates deletion AND absorbs
-  3' clip at sc3p via `adjCnt` with NO min_reads check → but this path is NOT taken here
-  because find_bp/find_match both fail
+- Tumor BAM has NO such read; Java trace confirmed tumor's realigndel only processes 35D at 756286/756278
+- **Java trace finding:** The "-40^CACTA" at 756220 appeared initially only in the normal BAM's
+  realigndel while Java's final output showed tumor VD=2, STATUS=Germline via shared partial-pipeline
+  soft-clip accumulation (`merge_sclip`) and `combineAnalysis`.
+- 5' soft clip at 756260: count=2, consensus="ATCACACCTAG" (11bp) (`find_bp` / `find_match` / `realignlgins` all skipped as expected).
 
-### Remediation
+### Resolution Summary
 
-Investigate Java's `ToVarsBuilder.process()` and `SomaticPostProcessModule` to find how
-the tumor gets VD=2 for a variant that doesn't exist in its `non_insertion_variants`.
-Run Java with `-y` and trace the ToVarsBuilder output for position 756220 in BAM1.
+Closed via live `merge_sclip` partial-pipeline soft-clip sharing (`a7870b4`, `c0f36a6`), `adj_complex` pre-placeholder ordering on StrongLOH (`test_strong_loh_complex_adj_before_placeholder`), and iteration-key `combine_analysis` lookup (`c1d50c8`, `406db7f`).
 
 ---
 
 ## Category 3: NA24385 Low-AF Filtering — RESOLVED
 
+> **Status: RESOLVED (all 6 NA24385 low-AF cases MATCH 100% end-to-end).** Historical milestone notes preserved below for provenance.
+
 ### Status
 
 CLOSED. All six listed cases now MATCH end-to-end.
-Corpus 88/4 → **90 PASS / 2 FAIL** (remaining FAILs are the out-of-scope
-Colo829 amplicon `-D` case and the stale hard_clip fixture, see Cat 1/Cat 9).
+At the time of closure, corpus advanced `88/4 → 90 PASS / 2 FAIL` (the remaining Colo829 amplicon `-D` case was subsequently closed in Category 9, bringing the full 92-fixture corpus to `91 PASS / 1 XFAIL` UB-4).
 
 ### Root causes found and fixed (five distinct defects, all in the SV/soft-clip
 collection path that low `-f` thresholds expose)
@@ -347,67 +323,30 @@ The notes below are preserved for provenance:
 
 ---
 
-## Category 5: CigarParser 3' Soft Clip Creation (Root Cause of VD Differences)
+## Category 5: CigarParser 3' Soft Clip Creation (Root Cause of VD Differences) — RESOLVED
 
-> **RESOLVED.** The investigation below is retained for provenance. At HEAD,
-> `adjust_mnp` DOES mark the 62358591 3' soft clip `used=true` (trace-proven), so
-> realigndel's 3' loop skips it exactly as Java's does — the "issue in realigndel's
-> 3' loop" hypothesized below was that its precondition (`!used`) now correctly holds.
-> Regression test: `realign.rs::test_adjust_mnp_marks_3p_sclip_used`.
-> The VD differences originally catalogued here were closed by soft-clip tracking fixes (see Resolved
-> table); remaining VCF-level residues are tracked in Category 14.
+> **Status: RESOLVED (guarded by `realign.rs::test_adjust_mnp_marks_3p_sclip_used`; Category 14 VCF items also resolved).** The historical investigation below is retained for audit provenance. At HEAD, `adjust_mnp` marks the `62358591` 3' soft clip `used=true` (trace-proven), so `realigndel`'s 3' loop skips it exactly as Java's does. Regression test: `realign.rs::test_adjust_mnp_marks_3p_sclip_used`.
 
-### Root Cause
+### Historical Root Cause Trace
 
-The 1-2 read VD count differences across all failing tests trace to a single mechanism:
-Rust's CigarParser creates 3' soft clips that Java's realigndel doesn't process.
+The 1-2 read VD count differences observed during initial porting traced to 3' soft-clip `used`-flag propagation into `realigndel`:
 
-**Specific example (threeIndels, position 62358581):**
-- Read `146M2S` at position 62358445 creates a 3' soft clip at 62358591 (2 bases, "CT")
-- Rust's realigndel processes this soft clip (adds 2 reads to the -1 deletion → VD=32)
-- Java's realigndel does NOT process it (VD stays at 30)
-- The "Mismatches" line shows "sclip3: 62358591" in both Java and Rust
-- But Java's 3' loop skips it (either `softClips3End` doesn't have it, or it's marked `used`)
+**Specific example (threeIndels, position 62358581, pre-fix):**
+- Read `146M2S` at position 62358445 created a 3' soft clip at 62358591 (2 bases, "CT")
+- Pre-fix Rust `realigndel` processed this soft clip (adding 2 reads to the -1 deletion → VD=32), whereas Java's `realigndel` skipped it (VD=30)
+- Both Java and Rust logged `"sclip3: 62358591"` and stored the soft clip (`SCLIP3_TRACE: start=62358591 hq=2 lq=0 region=62354864-62374864 cigarLen=2 readPos=146`), with `CigarModifier` returning `"146M2S"` unchanged and quality 37 passing all filters.
 
-**Investigation results (updated with Java instrumentation):**
-- CigarModifier's `capture_mis_softly_ms` correctly does NOT convert 2S→M (ref='T' ≠ query='C')
-- Both Java and Rust have `while (flag && indel > 0)` loop; `captureMisSoftlyMS` is OUTSIDE the loop
-- Quality is 37 (> LOWQUAL=10), so quality filtering doesn't explain the difference
-- **CONFIRMED via Java instrumentation:** Java DOES store the soft clip at 62358591
-  (SCLIP3_TRACE: start=62358591 hq=2 lq=0 region=62354864-62374864 cigarLen=2 readPos=146)
-- The CigarModifier returns "146M2S" unchanged (CIGMOD_2S trace confirmed)
-- The read passes all filters (MAPQ=60, NM=0, flags=0x93)
-- **The issue is in realigndel's 3' loop:** despite the soft clip existing in softClips3End,
-  the loop doesn't process it. Likely `findconseq` returns empty or `ismatch` fails
-  for a subtle reason (possibly the `nt` map iteration order or consensus quality check)
-
-### Remediation
-
-**ROOT CAUSE FULLY IDENTIFIED:**
+### Resolution Mechanism (`adjust_mnp` `used=true` Marking)
 
 Java pipeline order: `filterAllSVStructures()` → `adjustMNP()` → `realignIndels()`
 
-`adjustMNP()` (VariationRealigner.java line 346-357) iterates over `nonInsertionVariants`.
-For each position with a variant, it checks `softClips3End.containsKey(position)`.
-If the soft clip's consensus starts with the variant's mismatch string (`mnt`), and the
-remaining consensus matches the reference (`ismatchref`), it marks `sc3v.used = true`.
-
-This prevents `realigndel`'s 3' loop from processing the soft clip (since it checks
-`!softClips3End.get(sc3pp).used`).
-
-**In Rust:** `adjust_mnp` (realign.rs:4212-4240) has the same logic but doesn't
-mark the soft clip at 62358591. Debug why:
-1. Check if `non_insertion_variants` has an entry at position 62358591
-2. If yes, check what `mnt` (variant description) is at that position
-3. Check if `find_conseq` returns a consensus that starts with `mnt`
-4. Check if `is_match_ref` succeeds for the remaining consensus
-
-The fix is likely a subtle difference in how `adjust_mnp` iterates or how the
-variant description (`mnt`) is extracted at position 62358591.
+`adjustMNP()` (`VariationRealigner.java:346-357`) iterates over `nonInsertionVariants`. For each position with a variant, it checks `softClips3End.containsKey(position)`. If the soft clip's consensus starts with the variant's mismatch string (`mnt`) and the remaining consensus matches the reference (`ismatchref`), it marks `sc3v.used = true`, preventing `realigndel`'s 3' loop (`!softClips3End.get(sc3pp).used`) from re-absorbing the clip. Ensuring `adjust_mnp` marks `sc3v.used = true` on the live `soft_clips_3_end` entry (verified by `realign.rs::test_adjust_mnp_marks_3p_sclip_used`) closed the VD discrepancy.
 
 ---
 
-## Category 6: SV Info Field Count Difference
+## Category 6: SV Info Field Count Difference — RESOLVED
+
+> **Status: RESOLVED (commits `dd43d8a`, `3c5a6ce`, `676d6c6`).** All SV `splits-pairs-clusters` and `DP` counts match `VarDictJava v1.8.3` end-to-end. Historical notes preserved below for provenance.
 
 ### Status (Resolved)
 
@@ -443,17 +382,17 @@ Previous Rust code incorrectly dropped reads with first soft clip >= 100bp.
 Fixed to match Java's behavior. This resolved the DP difference at position 20178200
 (Java DP=387 vs Rust DP=268 → now matches).
 
-### Remediation
+### Resolution Summary
 
-Investigate SV detection logic (find_inv) to understand why Rust detects more
-split reads than Java for the INV at 20158414. The 2x difference (6 vs 3) suggests
-a systematic issue in how split reads are counted or filtered.
+Closed by `dd43d8a` (`^\d\dS.*\d\dS$` two-digit soft-clip filter), `3c5a6ce` (`is_best_sv_used` check in `find_sv` `tmp5`/`tmp3` loops and removing duplicate `adj_cnt` in `find_inv_sub`), and `676d6c6` (`find_inv_sub` early return + discordant-pair MAPQ filter parity).
 
 ---
 
-## Category 7: Complex Variant Position/Left_seq Shift
+## Category 7: Complex Variant Position/Left_seq Shift — RESOLVED
 
-### Root Cause
+> **Status: RESOLVED (commit `b3e2c38`; somatic `threeIndels`, `Zero_in_DUPSV`, and `HCC2218` all MATCH 100%).** Historical root-cause trace preserved below for provenance.
+
+### Root Cause (Historical)
 
 Complex variants (e.g., `G/-13iGCGGGGAGGGGAGAGG`) show a 1-base position difference
 between Java and Rust. This causes:
@@ -497,20 +436,17 @@ endVariant source by branch (Java constructor 2nd arg):
 - LOH `(v1nt,v2var,v1nt,v2var)`: v2var = **variant2**
 - StrongLOH `(v2var,v2var,varForPrint,v2var)`: v2var = **variant2**
 
-### Remediation
+### Resolution (commit `b3e2c38`)
 
-Add an `end_is_variant2: bool` flag to `SomaticVariant` (true for the four
-variant2 branches above, false for StrongSomatic-else and SAMPLE_SPECIFIC), and
-have `somatic_55`/`somatic_61` take left_seq/right_seq/shift3/msi/msint from
-variant2 when the flag is set, else variant1. Note: fixing this alone does not
-pass threeIndels (a separate hi_freq difference at 62360386 remains — upstream
-highQualityReadsCount/coverage divergence).
+Implemented `end_is_variant2: bool` on `SomaticVariant` in commit `b3e2c38` (true for the four `variant2` branches above, false for `StrongSomatic`-else and `SAMPLE_SPECIFIC`), so `somatic_55`/`somatic_61` source `left_seq`/`right_seq`/`shift3`/`msi`/`msint` from `variant2` when set and `variant1` otherwise. The companion `hi_freq` difference at `62360386` on `threeIndels` was subsequently closed in commit `8fda935`.
 
 ---
 
-## Category 8: Duplicate INV with Different Insertion Sequences (20201754)
+## Category 8: Duplicate INV with Different Insertion Sequences (20201754) — RESOLVED
 
-### Root Cause
+> **Status: RESOLVED (commit `676d6c6` + latent `find_inv_sub` parity fixes).** Historical investigation log preserved below for provenance.
+
+### Root Cause (Historical Investigation Log)
 
 Rust outputs TWO INV variants at position 20201754 (both display as `T/<INV303>`),
 while Java outputs ONE. The two Rust variants have different insertion sequences:
@@ -685,7 +621,9 @@ Superseded by resolutions above; all three latent items (extra mark_sv sweep rem
 ---
 
 <a id="amplicon-primer-trimming"></a>
-## Category 9: Amplicon (MRE11a FIXED; Colo829 needs -D debug output)
+## Category 9: Amplicon (`MRE11a` & `Colo829` `-D` Debug Output) — RESOLVED
+
+> **Status: RESOLVED (commit `9088d1a` + `-D`/`--debug` implementation).** Both `MRE11a` and `Colo829-18_S3` amplicon cases MATCH 100% end-to-end.
 
 ### MRE11a — FIXED (9088d1a)
 
@@ -723,7 +661,7 @@ Java adds a *null* variant to badVariants (AmpliconPostProcessModule.java:178) w
 in debugAmpVariant under `-D`. Rust renders an all-zero record
 (`0 0 0 0 0 0 0 0 0 0.0 0 0.0 0 0.0 0.000 0 0`) instead of crashing.
 
-**Full -D debug format spec (for implementation):** output line = 38 amplicon columns
+**Full `-D` debug format spec (implemented):** output line = 38 amplicon columns
 + `"\t"` + `DEBUG`, where `DEBUG = variant.DEBUG + goodOutput + badOutput`
 (AmpliconOutputVariant.java:113-138).
 - `variant.DEBUG` (ToVarsBuilder.constructDebugLines:1002-1014, only when config.debug):
@@ -736,9 +674,7 @@ in debugAmpVariant under `-D`. Rust renders an all-zero record
   `totalPosCov posCov refFwd refRev varFwd varRev genotype("0" if null) freq(0.0000, "0" if 0) bias meanPos(0.0) pstd meanQual(0.0) qstd meanMapq(0.0) qratio(0.000) hiFreq(0.0000, "0" if 0) extraFreq(0.0000, "0" if 0)`.
 - `goodVariants`/`badVariants` are `List<(Variant, regionString)>` produced by the
   amplicon post-processing (the good/bad amplicon-bias classification).
-Implementation needs: a `-D` CLI flag → config.debug; accumulate variant.DEBUG in
-ToVarsBuilder; track good/bad variants + region strings in amplicon post-process;
-format and append DEBUG in amplicon_38 when debug is set.
+Implemented across `-D`/`--debug` (`config.debug`), `ToVarsBuilder::construct_debug_lines`, amplicon `Good<i>`/`Bad<i>` region tracking, and `amplicon_38`/`amplicon_40` serialization.
 
 ### Historical notes (superseded by the fix above)
 - Pileup/halo region, dedup, and supplementary filter all matched Java; the off-by-1 was
@@ -747,6 +683,8 @@ format and append DEBUG in amplicon_38 when debug is set.
 ---
 
 ## Category 10: Normal-sample Low-Quality Variant Registration — RESOLVED
+
+> **Status: RESOLVED (commit `f7af5b7`).** Both affected somatic cases MATCH 100% end-to-end. Historical pre-fix investigation notes preserved below for provenance.
 
 ### Status
 
@@ -773,11 +711,9 @@ CLOSED. Both affected cases MATCH end-to-end against the oracle.
   1 low-qual variant"), the NM-absent read-drop branch, or the both-ends soft-clip
   drop regex semantics.
 
-### Remediation
+### Historical Pre-Fix Hypothesis (Superseded by `f7af5b7`)
 
-Enable the position-specific verbose trace in parse.rs for the offending position
-and dump the same read in Java (`-y`) to see whether Java drops the read upstream
-and at which filter, rather than at a quality gate.
+Initial investigation ruled out read-level quality gates (`conf.goodq`, `NM`, and two-sided soft-clip regexes) and hypothesized a read-drop discrepancy; instrumented Java tracing subsequently pinpointed the exact stage zeroing `varsCount` as `SomaticPostProcessModule.determinateType` → `Variant.isNoise` mutating `variantToCompare` in place (ported in commit `f7af5b7`).
 
 ### Deep findings (HCC2218 normal @ chrX:7811737, ref C → A)
 
@@ -890,7 +826,9 @@ The notes below are preserved for provenance:
 
 ---
 
-## Category 13: NA24385 SV pairs under-count + splits over-count
+## Category 13: NA24385 SV pairs under-count + splits over-count — RESOLVED
+
+> **Status: RESOLVED (commit `676d6c6`).** Both symptoms match live `VarDictJava v1.8.3` end-to-end. Historical symptom and trace notes preserved below.
 
 ### Symptom (after findMM5/-M fixes)
 
@@ -900,8 +838,6 @@ field (splits-pairs-clusters) differences:
   20179301 `3-3-1`→`3-2-1`, 20179472 `6-3-1`→`6-2-1`, 20224383 `2-10-1`→`2-9-1`
 - splits over-count + duplicate INV: 20202056 Java `3-0-0` (one record) vs Rust
   `6-2-1` emitted TWICE; 20229671 Java `2-2-1` vs Rust `4-2-1` twice.
-
-### Status
 
 ### Status
 
@@ -918,30 +854,29 @@ are byte-identical to Java `checkPairs`/`isOverlap` (StructuralVariantsProcessor
 1742 / 1711). The pairs -1 was upstream in **discordant-pair clustering during
 pileup** — how mates are grouped into `Sclip` clusters and their `varsCount`
 (`prepare_sv_structures_for_analysis` / `add_sv`), which sets the cluster count that
-`check_pairs` later reports as the max. Two distinct issues remained: (1) one discordant
-pair is clustered/filtered differently in Rust (consistent -1); (2) split-read
-over-counting at some INV/DEL breakpoints doubles the splits value and emits a
+`check_pairs` later reports as the max. Two distinct issues were observed pre-fix: (1) one discordant
+pair was filtered differently in Rust (consistent -1); (2) split-read
+over-counting at some INV/DEL breakpoints doubled the splits value and emitted a
 duplicate SV record (Category 8). sv.pairs is accumulated across many detection paths
 (sv.rs:1100, 1398, 1537, 1707, 2021, 2441, 2735, 2860, 3043, 3249, ...).
 
-### Remediation
+### Resolution Summary
 
-Instrument check_pairs / the discordant-pair Sclip accumulation for 20156480 in both
-implementations (Java toolchain) to identify the single pair Java counts but Rust
-does not; separately trace find_inv_sub for 20202056 to find why Rust doubles the
-splits and emits the INV twice.
+Closed in commit `676d6c6`: removed the spurious own-`MAPQ < 15` filter in discordant-pair collection and replicated `StructuralVariantsProcessor.findINVsub`'s first-success early return (`:675`).
 
 ---
 
 <a id="consolidation-of-the-three-language-pipeline"></a>
-## Category 14: [Tier-2](docs/testing/test-matrix-and-ci-audit.md#tier-2) VCF-Level Differential Verification vs Live Oracle
+## Category 14: [Tier-2](docs/testing/test-matrix-and-ci-audit.md#tier-2) VCF-Level Differential Verification vs Live Oracle — RESOLVED
 
-Swept 9 representative slices of all four modes against live VarDictJava 1.8.3 at
-the VCF level (`harness/compare.sh`, oracle env `vardict-oracle`).
+> **Status: RESOLVED (100% Tier-2 MATCH across `micro`, `s1a..s9`, 17 extended modalities, and 18 multimodal cohort slices).** The initial pre-fix sweep log below is preserved for provenance.
 
-Result: **1 MATCH** (Colo829 INVSV chr20, 20 variants), **8 MISMATCH**, zero of
-them engine-level: on every simple-mode slice tested the `.var` intermediates are
-set-identical to the oracle's, so all diffs sit in the VCF emission path. Flag
+Initial pre-fix sweep of 9 representative slices across all four modes against live VarDictJava 1.8.3 at
+the VCF level (`harness/compare.sh`, oracle env `vardict-oracle`):
+
+Initial result (pre-fix): **1 MATCH** (Colo829 INVSV chr20, 20 variants), **8 MISMATCH**, zero of
+them engine-level: on every simple-mode slice tested the `.var` intermediates were
+set-identical to the oracle's, isolating all diffs to the VCF emission path (subsequently resolved 100% below). Flag
 parity was proven first (the harness `-z` option was refined to pass `-z 1` explicitly).
 
 - **Top-Allele Grouping Key Selection.** var2vcf_valid.pl:41 buckets rows
@@ -1008,8 +943,7 @@ parity was proven first (the harness `-z` option was refined to pass `-z 1` expl
 - NA24385 chr20:38386265 (-f 0.001): MATCH (312 variants) after SVLEN calculation fix.
 - NA24385 chr20:20156208 (-f 0.001): record sets equal except ONE AF-tie bucket
   (chr20:20202875 T>A vs TA>T, both af=0.0179): stable-but-different engine
-  emission order at an AF tie inside one bucket; matching requires engine-order
-  replication — deferred (engine work, out of writer scope). Both engines'
+  emission order at an AF tie inside one bucket prior to `JavaHashMap` (subsequently resolved 100% via `JavaHashMap::get_or_put_with`; see "Residual — RESOLVED" below). Both engines'
   UNSORTED `.var` streams were inspected;
   SIX live oracle runs (3 plain + `-th 1`/`-th 4` + JVM SerialGC/-Xmx512m) are
   byte-identical (md5 `4d01a068…`) and all emit `TA>T` before `T>A`, while our
@@ -1030,16 +964,15 @@ oracle engine/perl while compare.sh's rust side (clap, last-wins) honored it →
 silent config asymmetry. run_oracle.sh now prefers an explicit case `-f` for
 java+perl alike.
 
-**GRCh37.fa fixture drift (environment, not a port bug).** The Colo829 SV slices
-(DUPDiscSV chr20:47.12M, INVSV chr20:46.84M; BAM headers use `chr20`) currently
-resolve to an ALL-N `chr20` block in VarDictJava/testdata/fastas/GRCh37.fa, so
-BOTH vardict-java and vardictrust correctly emit zero records there (vacuous
+**GRCh37.fa fixture drift (environment, not a port bug — resolved via `hg19.fa` routing below).** The Colo829 SV slices
+(DUPDiscSV chr20:47.12M, INVSV chr20:46.84M; BAM headers use `chr20`) resolved
+to an ALL-N `chr20` block in `VarDictJava/testdata/fastas/GRCh37.fa`, so
+BOTH vardict-java and vardictrust emitted zero records there (vacuous
 MATCH). 12bp reference
-flanks exist nowhere in the current
-1GB file (mtimes preserved at Jun 2, content is not). The NA24385 slices are
+flanks exist nowhere in that
+1GB file (mtimes preserved at Jun 2, content was not). The NA24385 slices are
 unaffected (their BAMs use unprefixed names → correctChromosome strips to contig
-"20", which holds real sequence at those loci). Regenerate the fasta from a real
-GRCh37 before using the Colo829 slices as [Tier-2](docs/testing/test-matrix-and-ci-audit.md#tier-2) signal again.
+"20", which holds real sequence at those loci). Routing `s8`/`s9` against `hg19.fa` (as declared by the upstream integration suite; see "Reference Sequence Provenance & Verification" below) restored non-vacuous [Tier-2](docs/testing/test-matrix-and-ci-audit.md#tier-2) coverage (`20` and `71` variants, both `MATCH`).
 
 STATUS: **RESOLVED.** All VCF writer items
 carry [Tier-2](docs/testing/test-matrix-and-ci-audit.md#tier-2) MATCH evidence. Engine (`.var`) parity unaffected: corpus remains
@@ -1169,13 +1102,14 @@ are consolidated with filing-ready draft issue texts in
 
 | Item | Reason |
 |------|--------|
-| VCF header `##source=VarDict_v1.8.2` vs our source string | Provenance honesty (rewrites.bio) |
+| VCF header `##source=VarDict_v1.8.2` retained verbatim | `VarDictRust` emits `##source=VarDict_v1.8.2` verbatim in both single-sample and paired VCF headers (`crates/vardictrust-core/src/output/vcf.rs`) for exact byte-for-byte parity with `var2vcf_valid.pl` / `var2vcf_paired.pl`; `VarDictRust` version and upstream credit are exposed via `vardictrust --version` ([AGENTS.md §5](AGENTS.md)). |
 | Oracle script splits `-f0.001` → `-f 0.001` | VarDictJava CLI parser limitation |
 | Oracle script rewrites bare `-z` → `-z 1` | Java's `-z` has an optional numeric arg (commons-cli); a bare trailing `-z` swallowed the BED path and crashed vardict-java silently. Explicit `-z 1` == upstream DEFAULT_ARGS semantics; use attached `-z0` to disable zero-based |
 | compare.sh passes `-z` to both sides by default | Mirrors corpus and upstream IntegrationTest DEFAULT_ARGS (`IntegrationTest.java:26`); amplicon mode lacks the 4-column-BED auto-default, so omitting it is a real flag divergence |
-| Rust VCF emits `##reference` + `##contig` from the `.fai`; oracle VCF headers lack them | Rust implements the issue [#320](https://github.com/AstraZeneca-NGS/VarDictJava/issues/320) fix (`##contig` lengths from the `.fai`) and emits both headers unconditionally; the oracle invocation passes no `-G`/`-b`, so vardict-java/var2vcf_*.pl never emit them. `compare_vcf.py` skips `#`-lines, so [Tier-2](docs/testing/test-matrix-and-ci-audit.md#tier-2) MATCH is record-level and does not cover headers. Header parity would require passing `-G`/`-b` to `harness/run_oracle.sh` — a gate change, deferred. |
+| Unconditional `##reference` + `##contig` VCF headers from `.fai` (issue [#320](https://github.com/AstraZeneca-NGS/VarDictJava/issues/320)) | `VarDictRust` implements the issue [#320](https://github.com/AstraZeneca-NGS/VarDictJava/issues/320) fix (`##contig` lengths from `${REF}.fai`, with BAM header fallback) and emits `##reference` + `##contig` unconditionally, whereas bare `var2vcf_valid.pl` / `var2vcf_paired.pl` omit them unless passed `-G`/`-b`. `harness/run_oracle.sh` synthesizes a temporary contig BED from `${REF}.fai` and passes `-G "$REF" -b "$tmp_contigs"` to `var2vcf_*.pl` whenever `${REF}.fai` exists; `compare_vcf.py` compares variant records rather than `#`-headers, while `harness/tests/test_vcf_header.py` validates VCFv4.2 header parity directly. |
 | Splice-mode stdout intron-count lines emitted in deterministic sorted order (vs Java unordered HashMap) | Java's `spliceCount` is a plain `HashMap<String,int[]>` (`CigarParser.java:65`) printed via unordered iteration (`:102`), causing run-to-run row-order nondeterminism ([#282](https://github.com/AstraZeneca-NGS/VarDictJava/issues/282) family). `VarDictRust` emits anchor-owned `-i` splice-junction rows in deterministic sorted key order (`BTreeMap` / sorted emission in `lib.rs`). The junction line SET and counts are 100% identical; comparators sort before diffing. |
-| Native file output, indexing, consolidated `var2vcf` post-filters & telemetry (`--output`, `--tbi`, `--csi`, `--no-end`, `--pass-only`, `--paired-strict`, `--vcf-pval`, `--min-splitreads`, `--no-pstd-filter`, `--stats-json`, `--parity` / `--compat`) | Rust-native CLI additions consolidating external `bgzip`/`tabix`/`bcftools` and `var2vcf_*.pl` post-filter steps via `StagedFileTarget` atomic staging, `noodles::tabix` (with actionable `--csi` hint above `512 Mbp`), `noodles::csi` (`.vcf.gz.csi` for contigs `> 512 Mbp`), `--no-end` (porting `var2vcf_valid.pl -E` `INFO/END` omission), and `--pass-only`, `--paired-strict`, `--vcf-pval`, `--min-splitreads`, and `--no-pstd-filter` (consolidating `var2vcf_valid.pl` `-S`/`-T`/`-P 0` and `var2vcf_paired.pl` `-S`/`-M`/`-P`, plus GNU-only single-dash typo guards). All new flags are off or set to upstream defaults (`--vcf-pval 0.05`, `--min-splitreads 1`), so default `stdout` VCF output remains 100% byte-identical. |
+| Native file output, indexing, consolidated `var2vcf` post-filters & telemetry (`--output`, `--tbi`, `--csi`, `--no-end`, `--pass-only`, `--paired-strict`, `--vcf-pval`, `--min-splitreads`, `--no-pstd-filter`, `--vcf-af`, `--vcf-min-depth`, `--vcf-min-vd`, `--vcf-qmean`, `--vcf-mapq`, `--vcf-pmean`, `--vcf-sn`, `--vcf-max-nm`, `--vcf-gt-freq`, `--vcf-msi`, `--vcf-cluster-dist`, `--stats-json`, `--parity` / `--compat`) | Rust-native CLI additions consolidating external `bgzip`/`tabix`/`bcftools` and all live `var2vcf_valid.pl` / `var2vcf_paired.pl` threshold, genotype, and post-filter flags (`-E`, `-S`, `-T`, `-M`, `-P`, `-m`, `-f`, `-d`, `-v`, `-q`, `-Q`, `-p`, `-o`, `-F`, `-I`, `-c`) via `StagedFileTarget` atomic staging, `noodles::tabix` (with actionable `--csi` hint above `512 Mbp`), `noodles::csi` (`.vcf.gz.csi` for contigs `> 512 Mbp`), `SingleRecordStreamer` bounded-memory cluster buffering across `> 1 Mbp` tiles and disk spills, and GNU-only single-dash typo guards. All new flags are off or default to upstream thresholds (`--vcf-pval 0.05`, `--min-splitreads 1`, `--vcf-min-depth 3`/`5`, `--vcf-min-vd 2`/`3`, `--vcf-qmean 22.5`, `--vcf-mapq 10`/`0`, `--vcf-pmean 8`, `--vcf-sn 1.5`, `--vcf-max-nm 5.25`, `--vcf-gt-freq 0.2`, `--vcf-msi 12`, `--vcf-cluster-dist 0`), so default `stdout` VCF output remains 100% byte-identical. |
+| Explicit GNU `--vcf-*` `defined()` zero semantics vs legacy `-f 0` parity | Upstream `var2vcf_valid.pl:19-29` evaluates `$opt_X ? $opt_X : default` (Perl truthiness), which silently ignores `"0"` on numeric flags (e.g., `-Q 0` reverts to `10`, `-d 0` reverts to `3`, `-f 0` reverts to `0.02`). Explicit Rust GNU `--vcf-*` overrides (`--vcf-af`, `--vcf-min-depth`, `--vcf-min-vd`, `--vcf-qmean`, `--vcf-mapq`, `--vcf-pmean`, `--vcf-sn`, `--vcf-max-nm`, `--vcf-gt-freq`, `--vcf-msi`, `--vcf-cluster-dist`, `--vcf-pval`, `--min-splitreads`) use `Option::Some` (`defined()`) semantics so passing `0` (such as `--vcf-mapq 0` on `MAPQ=0` alignments or `--vcf-min-depth 0`) honors `0` directly, whereas bare legacy `-f 0` (without `--vcf-af`) preserves `af_threshold_truthy_zero = 0.02` single-sample VCF parity. |
 | `-VS` / `--VS` accepts `SILENT` and `LENIENT`; `-VS STRICT` fails fast | `noodles` decodes SAM/BAM/CRAM records leniently by default without Picard JVM global state, so `-VS SILENT` and `-VS LENIENT` are accepted as compatibility no-ops while `-VS STRICT` fails loudly with `VardictError::Unsupported("-VS STRICT not implemented in v1.0; use VarDictJava")` per `AGENTS.md §12`. |
 | `RAYON_NUM_THREADS` fallback when `-th` / `--threads` is omitted | Standard Rust Rayon pool convention (`explicit -th` > `RAYON_NUM_THREADS >= 1` > `available_parallelism`); worker thread count never alters deterministic variant output (`AGENTS.md §10`). |
 | Paired-VCF omitted-`-N` sample extraction (`bam1\|bam2`), linear-time `-n <REGEXP>` compilation, & `#CHROM` header sample-name whitespace normalization | When `-N` is omitted on paired `-b "bam1\|bam2"` inputs, `resolve_sample_names` splits strictly on `\|` (never `:`, preserving multi-BAM specs) and applies `-n <REGEXP>` or BAM stem extraction per sample via `VarDictLauncher.java`'s `-n` / BAM-stem rules (rather than `var2vcf_paired.pl`'s `${sample}-match` stream fallback). Like `-d <DELIMITER>` (`regions::java_split`), `-n <REGEXP>` is compiled with Rust's linear-time `regex` DFA engine (`1 MiB` compiled size cap, immune to catastrophic backtracking without backtracking NFA dependencies per `AGENTS.md §§10, 13`), so non-regular Java `Pattern` lookaround/backreference syntax fails fast at startup with `VardictError::Parse` per `AGENTS.md §12` rather than silently falling back to `"null"`. `#CHROM` header emission normalizes internal whitespace in sample names to `_` so tab-delimited VCFv4.2 columns remain well-formed. |
@@ -1200,7 +1134,7 @@ are consolidated with filing-ready draft issue texts in
 | is_noise side effect discarded | determinate_type cloned variant_to_compare and called is_noise on the clone, discarding Java's coverage-zeroing mutation. Take &mut and mutate in place. Cracked via instrumented-Java classpath override. Fixed StrSomSamSpec | `f7af5b7` |
 | Complex left_seq endVariant source | somatic_55/61 read left/right seq + shift3/msi/msint from the adj_complex'd tumor; Java reads them from endVariant (the normal variant2, not adj_complex'd) in both-samples/LOH branches. Added end_is_variant2 flag; fixes Complex left_seq shift (threeIndels 62361372) | `b3e2c38` |
 | findMM5 dead n2-loop (dropped seq.length()) | Java findMM5 n2-loop guard `-1-n-1-n2 >= 0` is never true (seq.length() dropped), so misp is never set; Rust "fixed" the bound, over-triggering realigndel misp5 removal of adjacent SNVs (T@62360386, hicov 47→45, +T insertion hi_freq). Replicated Java's dead loop. Fixed threeIndels | `8fda935` |
-| Somatic/Paired VCF writer byte-exactness family (4 items) | QUAL: both VCF writers now multiply log2(vd) by the HALF_EVEN 1dp table-rounded qual (`var2vcf_valid.pl:190` / `var2vcf_paired.pl:228`; cells from SimpleOutputVariant.java:155/:206). ODDRATIO (simple): reciprocal of a (0,1) value stringified with Perl's default NV form (%.15g) and non-reciprocal strings passed through verbatim (`var2vcf_valid.pl:147-151,:236`) — live oracle forms `1.84525676747919` / `10.0806451612903`. HIAF (simple): Java's RAW DecimalFormat("0.0000") cell, zeros kept (`SimpleOutputVariant.java:127-129/:211`) — teststrandbias.R's recycled colClasses force input col 23 to character so R echoes it verbatim; paired writer stays stripped (testsomatic.R leaves hiaf numeric). DUPRATE: 1dp without `--fisher` (36-col cell, :223), 2dp with (:175). Gates: tiny.bed / Zero_in_DUPSV chr19 / MRE11a all MATCH with oracle-vs-rust byte diffs eliminated except the SBF 1-ulp residue above; corpus 91/1 | `3f48a1c` |
+| Somatic/Paired VCF writer byte-exactness family (4 items) | QUAL: both VCF writers now multiply log2(vd) by the HALF_EVEN 1dp table-rounded qual (`var2vcf_valid.pl:190` / `var2vcf_paired.pl:228`; cells from SimpleOutputVariant.java:155/:206). ODDRATIO (simple): reciprocal of a (0,1) value stringified with Perl's default NV form (%.15g) and non-reciprocal strings passed through verbatim (`var2vcf_valid.pl:147-151,:236`) — live oracle forms `1.84525676747919` / `10.0806451612903`. HIAF (simple): Java's RAW DecimalFormat("0.0000") cell, zeros kept (`SimpleOutputVariant.java:127-129/:211`) — teststrandbias.R's recycled colClasses force input col 23 to character so R echoes it verbatim; paired writer stays stripped (testsomatic.R leaves hiaf numeric). DUPRATE: 1dp without `--fisher` (36-col cell, :223), 2dp with (:175). Gates: tiny.bed / Zero_in_DUPSV chr19 / MRE11a all MATCH with oracle-vs-rust byte diffs eliminated (the remaining SBF 1-ulp residue was subsequently closed in `8b29c1e` above); corpus 91/1 | `3f48a1c` |
 | INV desc tail built from revcomp(consensus) | find_inv_sub ignored findMatchRev's `matchedSequence` and appended revcomp(full consensus) to the `-N^seq<invM>seq` desc; Java appends the matched suffix as-is for dir==-1 / revcomp+prepend for dir==1 (StructuralVariantsProcessor.java:625-632). The wrong tail broke realignIndels' findMM5-based absorption of adjacent variants. Fixed Colo829 INVSV | `a7870b4` |
 | Sclip used-flag set on a clone | find_inv_sub marked its cloned Sclip used instead of the live soft_clips_3_end/5_end entry, so realigndel re-absorbed the same clip (+7 reads). Java mutates the map value itself (StructuralVariantsProcessor.java:663), which survives later softp/bp shifts. Fixed Colo829 LGDEL3 | `a7870b4` |
 | partial_pipeline discarded overlapping soft clips | Rust merged partial-pipeline soft_clips_3_end/5_end with entry(pos).or_insert (fresh counts dropped when position existed); Java's partialPipeline shares the SAME live maps so overlapping pipelines accumulate counts (e.g. cnt=2 clusters that realignlgins needs). Sum all Variation/nt/seq counts on merge. Fixed Colo829 DUPDiscSV (+342 insertion, SV info) | `c0f36a6` |
@@ -1214,7 +1148,7 @@ are consolidated with filing-ready draft issue texts in
 | HashMap non-determinism in tovars | Changed to BTreeMap | `e6c344b` |
 | Missing realign_indels in somatic pipeline | Added for both BAMs | core engine |
 | SV distance guard missing | Added 1Mbp limit in find_match | core engine |
-| Tiled streaming memory bounding | Halo intervals and tile streaming scaling whole chr1 to 2.9GB peak RSS (4.85x speedup, Ryzen 8C/8T host pre-recalibration; current 3.72x 3-run median certified in benchmarks/evidence/scale.json) | `6ee4368`, `a4be62e` |
+| Tiled streaming memory bounding | Halo intervals and tile streaming scaling whole 249 Mbp chr1 with bounded memory (historical pre-recalibration Ryzen 8C/8T note: 4.85x speedup / 2.9 GB RSS; current certified 3-run median in `benchmarks/evidence/scale.json`: **3.14x** 8-thread speedup, **1.27 GiB** peak RSS, **1.11x** flat RSS ratio vs 10 Mbp) | `6ee4368`, `a4be62e` |
 | amplicon_40 table format | Added 40-column amplicon intermediate serialization under --fisher (AmpliconOutputVariant.java:145) | `3076620` |
 | `mark_dup_sv` pe coordinate alignment | Fixed 1bp mate-pair window shift (pe instead of pe + 1) matching StructuralVariantsProcessor.java:1468 | `a2d6c81` |
 | SimpleMode SV splitread filter | Emulate var2vcf_valid.pl:197-205 dropping `<DUP>`/`<INV>` when splitreads < 1 in simple mode | `a2d6c81` |

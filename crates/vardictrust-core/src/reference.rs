@@ -5,7 +5,6 @@
 use crate::config::Config;
 use crate::regions::Region as BedRegion;
 use crate::types::{Pos1, VardictError};
-use noodles::core::Region as NoodlesRegion;
 use noodles::fasta::fai;
 use noodles::fasta::io::IndexedReader;
 use std::cell::RefCell;
@@ -80,11 +79,7 @@ pub fn fetch_subsequence(
             }
         }
 
-        // NoodlesRegion parses "chr:start-end"
-        let region_str = format!("{}:{}-{}", chr, start.0, end.0);
-        let region: NoodlesRegion = region_str.parse().map_err(|e| {
-            VardictError::Parse(format!("failed to parse region '{}': {}", region_str, e))
-        })?;
+        let region = crate::bam::build_noodles_region(chr, start.0, end.0)?;
 
         let record = cached.reader.query(&region).map_err(VardictError::Io)?;
         let seq = record.sequence().as_ref();
@@ -243,7 +238,9 @@ impl SeedMap {
 
         let mut i = 0;
         while i < site_end {
-            let pos = i as u32 + chunk.sequence_start;
+            let pos = chunk
+                .sequence_start
+                .saturating_add(u32::try_from(i).unwrap_or(u32::MAX));
 
             // Don't index positions already covered by a previously loaded region.
             // Jump directly past the covered interval instead of stepping 1 bp at a time (#63 H2).
@@ -252,7 +249,7 @@ impl SeedMap {
                 .iter()
                 .find(|&&(start, end)| pos >= start && pos <= end)
             {
-                i = ((end - chunk.sequence_start) as usize).saturating_add(1);
+                i = (end.saturating_sub(chunk.sequence_start) as usize).saturating_add(1);
                 continue;
             }
 
@@ -614,7 +611,8 @@ pub fn get_reference(
     config: &Config,
     reference: &mut Reference,
 ) -> Result<(), VardictError> {
-    let chr_len = chromosomes_lengths.get(&region.chr).copied().unwrap_or(0) as u32;
+    let chr_len = u32::try_from(chromosomes_lengths.get(&region.chr).copied().unwrap_or(0))
+        .unwrap_or(u32::MAX);
     get_reference_with_chr_len(region, extension, chr_len, config, reference)
 }
 
@@ -1777,5 +1775,63 @@ mod tests {
                 "reserve on >262_144 estimated k-mers must be capped at reserve(262_144)"
             );
         }
+    }
+
+    #[test]
+    fn test_fetch_subsequence_and_get_reference_hla_colon_contig_and_u32_saturation() {
+        let dir = tempfile::tempdir().unwrap();
+        let fa_path = dir.path().join("hla.fa");
+        let fai_path = dir.path().join("hla.fa.fai");
+        let contig = "HLA-A*01:01:01:01";
+        let seq = b"ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT";
+        let header_line = format!(">{contig}\n");
+        let mut fa = File::create(&fa_path).unwrap();
+        fa.write_all(header_line.as_bytes()).unwrap();
+        fa.write_all(seq).unwrap();
+        fa.write_all(b"\n").unwrap();
+
+        let mut fai = File::create(&fai_path).unwrap();
+        writeln!(
+            fai,
+            "{contig}\t{}\t{}\t{}\t{}",
+            seq.len(),
+            header_line.len(),
+            seq.len(),
+            seq.len() + 1
+        )
+        .unwrap();
+
+        let sub = fetch_subsequence(&fa_path, contig, Pos1(5), Pos1(16)).unwrap();
+        assert_eq!(sub, &seq[4..16]);
+
+        // Inverted range returns clean Parse error rather than panicking inside noodles-fasta
+        assert!(fetch_subsequence(&fa_path, contig, Pos1(20), Pos1(10)).is_err());
+
+        // get_reference saturates > u32::MAX chromosomes_lengths entry instead of truncating to 0/small u32
+        let mut cfg = Config::default();
+        cfg.reference = fa_path.to_str().unwrap().to_string();
+        let mut chr_lengths = HashMap::new();
+        chr_lengths.insert(contig.to_string(), (u32::MAX as usize).saturating_add(5));
+        let bed = BedRegion {
+            chr: contig.to_string(),
+            start: Pos1(1),
+            end: Pos1(20),
+            gene: "HLA-A".to_string(),
+            amplicon: None,
+        };
+        let mut reference = Reference::new();
+        get_reference(&bed, 0, &chr_lengths, &cfg, &mut reference).unwrap();
+        assert_eq!(reference.get_base(contig, 1), Some(b'A'));
+
+        // SeedMap::index_chunk saturates near u32::MAX without debug arithmetic panic
+        let mut sm = SeedMap::new();
+        sm.enqueue_chunk(PendingSeedChunk {
+            bases: std::sync::Arc::from(&seq[..]),
+            sequence_start: u32::MAX - 5,
+            sequence_end: u32::MAX,
+            chr_len: u32::MAX,
+            prev_bounds: Vec::new(),
+        });
+        assert!(!sm.is_empty());
     }
 }

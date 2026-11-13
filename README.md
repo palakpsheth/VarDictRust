@@ -338,7 +338,7 @@ VarDictRust enforces the **[rewrites.bio](https://rewrites.bio) Prime Directive*
 
 ## CLI Parameter Reference
 
-Flag parity with VarDictJava v1.8.3 is defined against [`CmdParser.java`](https://github.com/AstraZeneca-NGS/VarDictJava/blob/0886261/src/main/java/com/astrazeneca/vardict/CmdParser.java) and verified by differential testing:
+Flag parity with VarDictJava v1.8.3 (`87` CLI flags across 6 functional groups) is defined against [`CmdParser.java`](https://github.com/AstraZeneca-NGS/VarDictJava/blob/0886261/src/main/java/com/astrazeneca/vardict/CmdParser.java) and consolidated `var2vcf_valid.pl` / `var2vcf_paired.pl` post-filters, verified by differential testing:
 
 *Evidence Status Vocabulary:*
 - `corpus` — Verified against integration corpus test cases or [Tier-2](docs/testing/test-matrix-and-ci-audit.md#tier-2) oracle sweeps.
@@ -368,6 +368,17 @@ Flag parity with VarDictJava v1.8.3 is defined against [`CmdParser.java`](https:
 | — | `--vcf-pval` | Maximum Fisher p-value `<FLOAT>` for high-confidence somatic calls under `--paired-strict` (ports `var2vcf_paired.pl -P`) | `0.05` | `parity-exempt` |
 | — | `--min-splitreads` | Minimum split reads `<INT>` required to emit symbolic structural variants in single-sample VCF output (ports `var2vcf_valid.pl -T`) | `1` | `parity-exempt` |
 | — | `--no-pstd-filter` | Disable `pSTD` (`PSTD=0`) read-position standard-deviation filter in single-sample VCF output (ports `var2vcf_valid.pl -P 0`) | off | `parity-exempt` |
+| — | `--vcf-af` | Override VCF minimum allele-frequency filter (`f<FLOAT>`) and `0/0` vs `0/1` `GT` threshold `<FLOAT>` independently of engine `-f` (ports `var2vcf_valid.pl` / `var2vcf_paired.pl -f`; `0` honored via `defined()` semantics) | `-f` (`0.02` if `-f 0` in single) | `parity-exempt` |
+| — | `--vcf-min-depth` | Minimum total read depth `<INT>` (`DP`) for VCF `d<INT>` filter (ports `var2vcf_valid.pl` / `var2vcf_paired.pl -d`) | `3` (single) / `5` (paired) | `parity-exempt` |
+| — | `--vcf-min-vd` | Minimum variant read depth `<INT>` (`VD`) for VCF `v<INT>` filter (ports `var2vcf_valid.pl` / `var2vcf_paired.pl -v`) | `2` (single) / `3` (paired) | `parity-exempt` |
+| — | `--vcf-qmean` | Minimum mean base quality `<FLOAT>` (`QUAL`) for VCF `q<FLOAT>` filter (ports `var2vcf_valid.pl` / `var2vcf_paired.pl -q`) | `22.5` | `parity-exempt` |
+| — | `--vcf-mapq` | Minimum mean mapping quality `<FLOAT>` (`MQ`) for VCF `Q<FLOAT>` filter (ports `var2vcf_valid.pl` / `var2vcf_paired.pl -Q`) | `10` (single) / `0` (paired) | `parity-exempt` |
+| — | `--vcf-pmean` | Minimum mean read-position distance `<FLOAT>` (`PMEAN`) for VCF `p<FLOAT>` filter (ports `var2vcf_valid.pl` / `var2vcf_paired.pl -p`) | `8` | `parity-exempt` |
+| — | `--vcf-sn` | Minimum signal-to-noise ratio `<FLOAT>` (`SN`) for VCF `SN<FLOAT>` filter (ports `var2vcf_valid.pl` / `var2vcf_paired.pl -o`) | `1.5` | `parity-exempt` |
+| — | `--vcf-max-nm` | Maximum mean mismatches `<FLOAT>` (`NM`) before VCF `NM<FLOAT>` filter (ports `var2vcf_valid.pl` / `var2vcf_paired.pl -m`) | `5.25` | `parity-exempt` |
+| — | `--vcf-gt-freq` | Homozygous-alt genotype gap `<FLOAT>` in `[0, 1]` (`GT` is `1/1` if `1 - AF < <FLOAT>`, else `1/0` if `AF >= 0.5`, else `0/1` if `AF >= --vcf-af`/`-f`, else `0/0`; ports `var2vcf_valid.pl` / `var2vcf_paired.pl -F`) | `0.2` | `parity-exempt` |
+| — | `--vcf-msi` | Non-monomer microsatellite (`MSILEN > 1`) repeat threshold `<FLOAT>` for VCF `MSI<FLOAT>` filter (ports `var2vcf_valid.pl` / `var2vcf_paired.pl -I`) | `12` | `parity-exempt` |
+| — | `--vcf-cluster-dist` | Variant cluster window `<INT>` in bp for VCF `Cluster<INT>bp` filter across single-sample, amplicon, and paired somatic streams (ports `var2vcf_valid.pl` / `var2vcf_paired.pl -c`) | `0` | `parity-exempt` |
 | — | `--stats-json` | Write run telemetry JSON (`mode`, `threads`, `regions_count`, `tiles_count`, `elapsed_ms`, `peak_rss_kb`, `exceptions_caught`) to `<PATH>` | — | `no-output` |
 | — | `--parity` | Explicitly lock 100% VarDictJava v1.8.3 byte-for-byte parity mode (default in `v1.x`) | on | `parity-exempt` |
 | — | `--compat` | Pin target compatibility contract (`vardictjava-1.8.3` or `1.8.3` in `v1.0.x`) | `vardictjava-1.8.3` | `parity-exempt` |
@@ -452,7 +463,7 @@ Flag parity with VarDictJava v1.8.3 is defined against [`CmdParser.java`](https:
 | — | `--threads` | Thread count (`-th`/`--th`/`-th<N>` aliases; bare `-th` = all cores; falls back to `RAYON_NUM_THREADS` when `-th` is omitted) | `RAYON_NUM_THREADS` or all cores | `no-output` |
 | — | `--tile-size` | Region tile size in bp (bounded-memory WGS) | auto (`<= 1 Mbp` untiled; `> 1 Mbp` `100 kbp` tiles; max `500 Mbp`) | `no-output` |
 
-*Commons-CLI Single-Dash Compatibility:* Upstream Java single-dash long options (`-fisher`, `-adaptor`, `-chimeric`, `-deldupvar`, `-nosv`, `-splice`, `-header`, `-dedup`, `-debug`, `-verbose`, `-amplicon`, `-DP`, `-default-printer`, `-defaultPrinter`, `-mfreq`, `-nmfreq`, `-insert-size`, `-insert-std`, `-ref-extension`, `-crispr`, `-trim`, `-VS`) and boolean-prefix short-option clusters (`-pz`, `-pz0`, `-uk`, `-ua`, `-pR`) are normalized transparently alongside standard `--` GNU long flags.
+*Commons-CLI Single-Dash Compatibility:* Upstream Java single-dash long options (`-fisher`, `-adaptor`, `-chimeric`, `-deldupvar`, `-nosv`, `-splice`, `-header`, `-dedup`, `-debug`, `-verbose`, `-amplicon`, `-DP`, `-default-printer`, `-defaultPrinter`, `-mfreq`, `-nmfreq`, `-insert-size`, `-insert-std`, `-ref-extension`, `-crispr`, `-trim`, `-VS`) and boolean-prefix short-option clusters (`-pz`, `-pz0`, `-uk`, `-ua`, `-pR`) are normalized transparently alongside standard `--` GNU long flags, while Rust-native GNU `--vcf-*` and post-filter flags reject single-dash typos (`-vcf-*`, `-pass-only`, `-paired-strict`, `-min-splitreads`, `-no-pstd-filter`) with an actionable `--` hint before short-flag cluster splitting.
 
 *Loud-Error Legacy Flags (`AGENTS.md §12`):* Passing either of the 2 remaining unimplemented VarDictJava options (`-C`, `-Z` / `-downsample` / `--downsample`) or `-VS STRICT` fails fast with `VardictError::Unsupported("<flag> not implemented in v1.0; use VarDictJava")` rather than ignoring the flag.
 
@@ -469,7 +480,7 @@ Per the [rewrites.bio](https://rewrites.bio) manifesto, we disclose all AI tools
 
 - **AI Systems Used:** Google DeepMind Gemini / Antigravity CLI, Anthropic Claude Code, and Qoder.
 - **Scope of AI Assistance:** Implementation of core Rust modules under human architectural direction, transliteration of R/Perl statistical routines into pure Rust, test harness engineering, and adversarial differential verification.
-- **Verification Guarantee (Evidence Before Completion):** **Zero** AI-generated code was accepted on model assertion. Every algorithmic component was validated against VarDictJava v1.8.3 across 590 automated Cargo workspace tests (406 core library tests, 110 corpus and modality parity tests, 29 engine behavior tests, 2 amplicon streaming memory tests, 3 CRAM stack tests, 23 CLI tests, and 17 CLI integration binary tests) enforcing a `>= 90%` line-coverage gate (`cargo-llvm-cov`), 36 harness diagnostic self-tests (25 shell tests and 11 Python test suites), the 92-case integration corpus, 10 slice fixtures, 18 multi-modal slices across 6 cohorts, the 89-job 12-cell full-corpus sweep, and multi-gigabyte public benchmarks (SEQC2, GIAB HG008, GIAB HG002, GIAB HG005, GIAB NA24385 b37) under float tolerance $\varepsilon = 10^{-6}$, with reproducibility documented in [`docs/testing/test-matrix-and-ci-audit.md`](docs/testing/test-matrix-and-ci-audit.md) and workflow skills in [`.agents/skills/`](AGENTS.md#19-repository-specific-agent-skills).
+- **Verification Guarantee (Evidence Before Completion):** **Zero** AI-generated code was accepted on model assertion. Every algorithmic component was validated against VarDictJava v1.8.3 across 619 automated Cargo workspace tests (432 core library tests, 110 corpus and modality parity tests, 29 engine behavior tests, 2 amplicon streaming memory tests, 3 CRAM stack tests, 24 CLI tests, and 19 CLI integration binary tests) enforcing a `>= 90%` line-coverage gate (`cargo-llvm-cov`), 36 harness diagnostic self-tests (25 shell tests and 11 Python test suites), the 92-case integration corpus, 10 slice fixtures, 18 multi-modal slices across 6 cohorts, the 89-job 12-cell full-corpus sweep, and multi-gigabyte public benchmarks (SEQC2, GIAB HG008, GIAB HG002, GIAB HG005, GIAB NA24385 b37) under float tolerance $\varepsilon = 10^{-6}$, with reproducibility documented in [`docs/testing/test-matrix-and-ci-audit.md`](docs/testing/test-matrix-and-ci-audit.md) and workflow skills in [`.agents/skills/`](AGENTS.md#19-repository-specific-agent-skills).
 
 ---
 

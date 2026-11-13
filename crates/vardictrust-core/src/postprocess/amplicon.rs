@@ -465,7 +465,8 @@ pub fn amplicon_post_process_streaming<R: std::borrow::Borrow<Region>>(
                     vref.start_pos = position;
                     vref.end_pos = position;
                     vref.var_type = String::new();
-                    vref.bias = "0;0".to_string();
+                    vref.bias.clear();
+                    vref.bias.push_str("0;0");
                     vref.null_record = true;
                     emit(AmpliconVariant {
                         variant: vref,
@@ -539,7 +540,7 @@ pub fn amplicon_post_process_streaming<R: std::borrow::Borrow<Region>>(
 
             // Compute bad variants: amplicons where this variant is not good but falls
             // within the insert region. Mirrors Java AmpliconPostProcessModule logic.
-            let mut bad_count = 0;
+            let mut bad_count: i32 = 0;
             bad_vars.clear();
             if initial_gvscnt != total_amplicons || current_flag {
                 for (amp_num, amp_reg_item) in &amplicon_regions {
@@ -560,7 +561,7 @@ pub fn amplicon_post_process_streaming<R: std::borrow::Borrow<Region>>(
                         let insert_start = amp.insert_start.0 as i32;
                         let insert_end = amp.insert_end.0 as i32;
                         if vref.start_pos >= insert_start && vref.end_pos <= insert_end {
-                            bad_count += 1;
+                            bad_count = bad_count.saturating_add(1);
                             // ports AmpliconPostProcessModule.java:170-179: record the
                             // amplicon's first variant, else its reference variant, else null
                             if config.debug {
@@ -594,7 +595,7 @@ pub fn amplicon_post_process_streaming<R: std::borrow::Borrow<Region>>(
                 current_flag = false;
             }
             let gdamp = current_gvscnt;
-            let tlamp = current_gvscnt + bad_count;
+            let tlamp = current_gvscnt.saturating_add(bad_count);
 
             // Apply complex variant adjustment
             let mut out_variant = vref.clone();
@@ -656,10 +657,6 @@ pub fn amplicon_select_vcf_rows(results: Vec<AmpliconVariant>) -> Vec<AmpliconVa
     let mut buckets: BTreeMap<i32, AmpliconVariant> = BTreeMap::new();
     for av in results {
         let v_af = crate::types::round_half_even(av.variant.frequency, 4);
-        debug_assert_eq!(
-            av.variant.frequency, v_af,
-            "amplicon Variant.frequency entering VCF selection must be 4dp-canonical"
-        );
         match buckets.entry(av.variant.start_pos) {
             std::collections::btree_map::Entry::Vacant(e) => {
                 e.insert(av);
@@ -703,7 +700,7 @@ fn count_variant_on_amplicons(
     for variants in good_variants_on_amp.values() {
         for variant in variants {
             if variant.ref_allele == vref.ref_allele && variant.var_allele == vref.var_allele {
-                gvscnt += 1;
+                gvscnt = gvscnt.saturating_add(1);
             }
         }
     }

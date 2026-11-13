@@ -224,7 +224,7 @@ Before submitting any pull request, run the 6-stage PR validation suite defined 
 bash harness/pr_check.sh
 ```
 This suite completes in `<25s` using the pinned golden baseline store and automatically verifies:
-1. **Stage 1 (Hygiene & Unit Tests):** Formatting, Clippy lints, and all 590 workspace unit and integration tests ([Level 1](docs/testing/test-matrix-and-ci-audit.md#level-1)).
+1. **Stage 1 (Hygiene & Unit Tests):** Formatting, Clippy lints, and all 619 workspace unit and integration tests ([Level 1](docs/testing/test-matrix-and-ci-audit.md#level-1)).
 2. **Stage 2 (Crash Robustness):** PR #402, missing index #187, and Issue #341 family fixtures (executed within the workspace test run).
 3. **Stage 3 (Upstream Integration Corpus):** 92 fixtures ([Level 2](docs/testing/test-matrix-and-ci-audit.md#level-2-upstream-integration-regression-corpus-92-fixtures)) across 8 parallel workers, asserting `91 PASS / 1 XFAIL` ([UB-4](docs/upstream-bugs.md#ub-4) upstream fixture defect).
 4. **Stage 4 (Dual-Engine Differential Parity):** Micro differential fixture, all 10 standard slices (`s1a..s9`), 17-modality extended coverage (`--no-record`), and 18-slice multimodal suite (`--no-record`) against the VarDictJava oracle ([Level 3](docs/testing/test-matrix-and-ci-audit.md#level-3-dual-engine-differential-parity-testing)).
@@ -379,8 +379,8 @@ Push `release/vX.Y.Z` and open a pull request to `main` via `gh pr create`, comp
    ```
 2. **Automated Release Pipeline ([`.github/workflows/release.yml`](.github/workflows/release.yml)):**
    Pushing `vX.Y.Z` triggers `cargo-dist 0.33.0`, which executes:
-   - `plan`: parses `CHANGELOG.md` for `## [X.Y.Z]` and computes the 4 build targets (`x86_64-unknown-linux-gnu`, `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`, `aarch64-apple-darwin`).
-   - `build-local-artifacts` & `build-global-artifacts`: compiles release archives across all 4 target triples and generates the shell installer and SHA-256 checksums (`musl` vs `gnu` VCF byte equivalence on Linux x86_64 is certified pre-tag via [`harness/bin_equiv.sh`](harness/bin_equiv.sh) inside [`harness/recertify.sh`](harness/recertify.sh) and verified by [`harness/acceptance.sh`](harness/acceptance.sh) Item 8).
+   - `plan`: parses `CHANGELOG.md` for `## [X.Y.Z]` and computes the 5 build targets (`x86_64-unknown-linux-gnu`, `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`, `aarch64-apple-darwin`, `x86_64-apple-darwin`).
+   - `build-local-artifacts` & `build-global-artifacts`: compiles release archives across all 5 target triples and generates the shell installer and SHA-256 checksums (`musl` vs `gnu` VCF byte equivalence on Linux x86_64 is certified pre-tag via [`harness/bin_equiv.sh`](harness/bin_equiv.sh) inside [`harness/recertify.sh`](harness/recertify.sh) and verified by [`harness/acceptance.sh`](harness/acceptance.sh) Item 8).
    - `host`: creates the GitHub Release and generates **SLSA v1.0 Level 3 build provenance attestations** via `actions/attest-build-provenance`.
    - `publish-crates`: publishes `vardictrust-core` to `crates.io` first, then polls up to `30 × 10s` for index propagation before publishing `vardictrust`.
    - `announce`: finalizes and publishes the GitHub Release.

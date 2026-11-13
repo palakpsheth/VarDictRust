@@ -55,6 +55,9 @@ pub fn stirlerr(n: f64) -> f64 {
         0.005746216513010115682023589,
         0.005554733551962801371038690,
     ];
+    if n < 0.0 {
+        return f64::NAN;
+    }
     if n <= 23.5 {
         let nn_trunc = (n * 2.0).trunc();
         if n <= 15.0 && n * 2.0 == nn_trunc {
@@ -211,12 +214,24 @@ pub fn stirlerr(n: f64) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    // use super::*;
+    use super::*;
 
     #[test]
     #[allow(clippy::excessive_precision)]
     fn test_stirlerr_r_generated() {
         // R-generated exact expectation:
         // conda run -n vardict-oracle Rscript -e 'print(lgamma(16) - (15+0.5)*log(15) + 15 - 0.5*log(2*pi), digits=17)'
+        assert_eq!(stirlerr(0.0), 0.0);
+        assert_eq!(stirlerr(-0.0), 0.0);
+        assert!((stirlerr(15.0) - 0.005554733551962801).abs() < 1e-17);
+    }
+
+    #[test]
+    fn test_stirlerr_negative_returns_nan() {
+        assert!(stirlerr(-1.0).is_nan());
+        assert!(stirlerr(-0.5).is_nan());
+        assert!(stirlerr(-100.0).is_nan());
+        assert!(stirlerr(f64::NEG_INFINITY).is_nan());
+        assert!(stirlerr(f64::NAN).is_nan());
     }
 }

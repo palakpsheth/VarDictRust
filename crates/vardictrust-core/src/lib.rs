@@ -846,8 +846,8 @@ fn scan_multi_tile_max_read_lengths(
             // lies in `[read_start, span_end]`. If the current window covers that entire local
             // band and `seed12` occurs 0 times (or >= 2 times) inside the window, a parent-wide
             // scan can be skipped (or immediately memoized as Multiple).
-            let band_lo = read_start.saturating_sub(2 * cur_max).max(1) as u32;
-            let band_hi = span_end.saturating_add(2 * cur_max).max(1) as u32;
+            let band_lo = read_start.saturating_sub(cur_max.saturating_mul(2)).max(1) as u32;
+            let band_hi = span_end.saturating_add(cur_max.saturating_mul(2)).max(1) as u32;
             if self.window_interval_idx.is_some()
                 && band_lo >= self.window_start
                 && band_hi.saturating_add(11) <= self.window_end
@@ -994,8 +994,9 @@ fn scan_multi_tile_max_read_lengths(
             let insertion_deletion_length =
                 crate::cigar::parse::get_insertion_deletion_length(&r.cigar);
             if let Some(nm_val) = r.nm {
-                let total_mismatches = nm_val.saturating_sub(insertion_deletion_length as i32);
-                if total_mismatches > config.max_mismatches as i32 {
+                let total_mismatches = nm_val
+                    .saturating_sub(i32::try_from(insertion_deletion_length).unwrap_or(i32::MAX));
+                if total_mismatches > i32::try_from(config.max_mismatches).unwrap_or(i32::MAX) {
                     same_start_ends.push(read_end);
                     continue;
                 }
@@ -1225,8 +1226,7 @@ trait SpillableCandidate: Sized {
 struct RawVcfCandidate {
     start_pos: i32,
     af_4dp: f64,
-    should_emit: bool,
-    vcf_line: String,
+    event: crate::output::vcf::SingleVcfEvent,
 }
 
 impl SpillableCandidate for RawVcfCandidate {
@@ -1242,14 +1242,46 @@ impl SpillableCandidate for RawVcfCandidate {
 
     #[inline]
     fn approx_heap_bytes(&self) -> usize {
-        std::mem::size_of::<Self>() + self.vcf_line.capacity()
+        std::mem::size_of::<Self>()
+            + match &self.event {
+                crate::output::vcf::SingleVcfEvent::Record(rec) => rec.capacity(),
+                _ => 0,
+            }
     }
 
     fn write_to<W: std::io::Write>(&self, w: &mut W) -> std::io::Result<()> {
         write_spill_i32(w, self.start_pos)?;
         write_spill_f64(w, self.af_4dp)?;
-        write_spill_u8(w, u8::from(self.should_emit))?;
-        write_spill_str(w, &self.vcf_line)
+        match &self.event {
+            crate::output::vcf::SingleVcfEvent::Skip => write_spill_u8(w, 0),
+            crate::output::vcf::SingleVcfEvent::AmpBiasSnvClusterProbe { start } => {
+                write_spill_u8(w, 1)?;
+                write_spill_i32(w, *start)
+            }
+            crate::output::vcf::SingleVcfEvent::SvSplitreadFlush {
+                cluster_probe_start,
+            } => {
+                write_spill_u8(w, 2)?;
+                match cluster_probe_start {
+                    None => write_spill_u8(w, 0),
+                    Some(start) => {
+                        write_spill_u8(w, 1)?;
+                        write_spill_i32(w, *start)
+                    }
+                }
+            }
+            crate::output::vcf::SingleVcfEvent::Record(rec) => {
+                let (filter_start, filter_end) = rec.filter_offsets();
+                write_spill_u8(w, 3)?;
+                write_spill_str(w, rec.as_str())?;
+                write_spill_u64(w, filter_start as u64)?;
+                write_spill_u64(w, filter_end as u64)?;
+                write_spill_i32(w, rec.start)?;
+                write_spill_u8(w, u8::from(rec.type_snv))?;
+                write_spill_u8(w, u8::from(rec.pre_cluster_non_amp_empty))?;
+                write_spill_u8(w, u8::from(rec.has_ampbias))
+            }
+        }
     }
 
     fn read_from<R: std::io::Read>(r: &mut R) -> std::io::Result<Option<Self>> {
@@ -1257,13 +1289,60 @@ impl SpillableCandidate for RawVcfCandidate {
             return Ok(None);
         };
         let af_4dp = read_spill_f64(r)?;
-        let should_emit = read_spill_bool(r)?;
-        let vcf_line = read_spill_str(r)?;
+        let event = match read_spill_u8(r)? {
+            0 => crate::output::vcf::SingleVcfEvent::Skip,
+            1 => {
+                let start = read_spill_i32(r)?;
+                crate::output::vcf::SingleVcfEvent::AmpBiasSnvClusterProbe { start }
+            }
+            2 => {
+                let cluster_probe_start = if read_spill_bool(r)? {
+                    Some(read_spill_i32(r)?)
+                } else {
+                    None
+                };
+                crate::output::vcf::SingleVcfEvent::SvSplitreadFlush {
+                    cluster_probe_start,
+                }
+            }
+            3 => {
+                let line = read_spill_str(r)?;
+                let filter_start = usize::try_from(read_spill_u64(r)?)
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+                let filter_end = usize::try_from(read_spill_u64(r)?)
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+                let start = read_spill_i32(r)?;
+                let type_snv = read_spill_bool(r)?;
+                let pre_cluster_non_amp_empty = read_spill_bool(r)?;
+                let has_ampbias = read_spill_bool(r)?;
+                let rec = crate::output::vcf::SingleVcfRecord::from_parts_checked(
+                    line,
+                    filter_start,
+                    filter_end,
+                    start,
+                    type_snv,
+                    pre_cluster_non_amp_empty,
+                    has_ampbias,
+                )
+                .ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "corrupt SingleVcfRecord filter span in spill file",
+                    )
+                })?;
+                crate::output::vcf::SingleVcfEvent::Record(rec)
+            }
+            tag => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("unknown SingleVcfEvent tag {tag:#x} in spill file"),
+                ));
+            }
+        };
         Ok(Some(Self {
             start_pos,
             af_4dp,
-            should_emit,
-            vcf_line,
+            event,
         }))
     }
 }
@@ -1488,8 +1567,18 @@ struct SpillableVcfAccumulator<V: SpillableCandidate> {
     next_spill_id: usize,
 }
 
+#[cfg(test)]
+thread_local! {
+    static TEST_VCF_SPILL_BYTES_OVERRIDE: std::cell::Cell<Option<usize>> =
+        const { std::cell::Cell::new(None) };
+}
+
 impl<V: SpillableCandidate> SpillableVcfAccumulator<V> {
     fn new() -> Self {
+        #[cfg(test)]
+        if let Some(override_bytes) = TEST_VCF_SPILL_BYTES_OVERRIDE.with(std::cell::Cell::get) {
+            return Self::with_max_bytes(override_bytes);
+        }
         Self::with_max_bytes(DEFAULT_VCF_SPILL_BYTES)
     }
 
@@ -1510,10 +1599,14 @@ impl<V: SpillableCandidate> SpillableVcfAccumulator<V> {
     }
 
     fn insert(&mut self, chr: &str, cand: V) -> Result<(), VardictError> {
-        if !self.spilled_runs.contains_key(chr) {
-            self.spilled_runs.insert(chr.to_string(), Vec::new());
-        }
-        let chr_map = self.in_memory.entry(chr.to_string()).or_default();
+        let chr_map = if let Some(m) = self.in_memory.get_mut(chr) {
+            m
+        } else {
+            if !self.spilled_runs.contains_key(chr) {
+                self.spilled_runs.insert(chr.to_string(), Vec::new());
+            }
+            self.in_memory.entry(chr.to_string()).or_default()
+        };
         let new_bytes = cand.approx_heap_bytes() + 32;
         match chr_map.entry(cand.start_pos()) {
             std::collections::btree_map::Entry::Vacant(e) => {
@@ -1645,6 +1738,37 @@ impl<V: SpillableCandidate> SpillableVcfAccumulator<V> {
         }
         Ok(())
     }
+}
+
+fn emit_single_vcf_accumulator<W: std::io::Write>(
+    vcf_acc: SpillableVcfAccumulator<RawVcfCandidate>,
+    config: &config::Config,
+    writer: &mut W,
+) -> Result<(), VardictError> {
+    let mut cur_chr: Option<String> = None;
+    let mut streamer = crate::output::vcf::SingleRecordStreamer::from_config(config);
+    vcf_acc.emit_all(|chr, cand| {
+        if cur_chr.as_deref() != Some(chr) {
+            if cur_chr.is_some() {
+                let prev = std::mem::replace(
+                    &mut streamer,
+                    crate::output::vcf::SingleRecordStreamer::from_config(config),
+                );
+                prev.finish(|line| writeln!(writer, "{line}"))
+                    .map_err(VardictError::Io)?;
+            }
+            cur_chr = Some(chr.to_string());
+        }
+        streamer
+            .push_event(cand.event, |line| writeln!(writer, "{line}"))
+            .map_err(VardictError::Io)
+    })?;
+    if cur_chr.is_some() {
+        streamer
+            .finish(|line| writeln!(writer, "{line}"))
+            .map_err(VardictError::Io)?;
+    }
+    Ok(())
 }
 
 /// Output destination wrapper around buffered stdout, stderr, plain file, or multithreaded BGZF.
@@ -2194,35 +2318,7 @@ fn resolve_effective_config(
     if let Some(ref raw) = effective.sample_regexp {
         crate::config::validate_sample_regexp(raw).map_err(VardictError::Parse)?;
     }
-    if !effective.vcf_pval.is_finite() || effective.vcf_pval < 0.0 {
-        return Err(VardictError::Parse(format!(
-            "Invalid vcf_pval '{}': must be a finite number >= 0.0",
-            effective.vcf_pval
-        )));
-    }
-    if effective.vcf_pval == 0.0 {
-        effective.vcf_pval = 0.0;
-    }
-    if let Some(ref mut raw) = effective.vcf_pval_raw {
-        let (p_norm, norm_raw) = crate::config::parse_vcf_pval_token(raw).map_err(|_| {
-            VardictError::Parse(format!(
-                "Invalid vcf_pval_raw '{raw}': must be a trimmed non-negative finite float string"
-            ))
-        })?;
-        if p_norm.to_bits() != effective.vcf_pval.to_bits() {
-            return Err(VardictError::Parse(format!(
-                "Invalid vcf_pval_raw '{raw}': parsed value {p_norm} disagrees with vcf_pval '{}'",
-                effective.vcf_pval
-            )));
-        }
-        *raw = norm_raw;
-    }
-    if effective.vcf_min_splitreads < 0 {
-        return Err(VardictError::Parse(format!(
-            "Invalid vcf_min_splitreads '{}': must be an integer >= 0",
-            effective.vcf_min_splitreads
-        )));
-    }
+    effective.validate_vcf_thresholds()?;
     let paired = effective.bam.contains('|');
     let has_region = effective.region.is_some();
 
@@ -3176,40 +3272,37 @@ fn run_with_writer_inner<W: EngineWriter>(
                     original_end: tile.original_end,
                 })
             } else {
-                let mut records = Vec::new();
+                let mut buckets: std::collections::BTreeMap<
+                    i32,
+                    (f64, crate::variations::Variant),
+                > = std::collections::BTreeMap::new();
                 for v in variants {
-                    let ref_empty = crate::output::vcf::perl_row_skipped(&v.ref_allele);
-                    let is_sv = v.var_allele.contains('<');
-                    let (splitreads, _) = crate::output::vcf::parse_sv_counts(&v.sv);
-                    let mut should_emit =
-                        !ref_empty && (!is_sv || splitreads >= config_clone.vcf_min_splitreads);
-                    let mut vcf_line = String::new();
-                    if should_emit {
-                        let fisher = crate::stats::FisherExact::new_with_mode(
-                            v.ref_fwd_cov as i32,
-                            v.ref_rev_cov as i32,
-                            v.fwd as i32,
-                            v.rev as i32,
-                            config_clone.fisher,
-                        );
-                        let sbf = fisher.get_p_value();
-                        let oddratio_str = fisher.odds_ratio_buf();
-                        should_emit = crate::output::vcf::try_format_filtered_vcf_record_into(
-                            &mut vcf_line,
-                            &v,
-                            &builder_region,
-                            &config_clone,
-                            0,
-                            sbf,
-                            &oddratio_str,
-                            None,
-                        );
+                    let af_4dp = crate::types::round_half_even(v.frequency, 4);
+                    match buckets.entry(v.start_pos) {
+                        std::collections::btree_map::Entry::Vacant(e) => {
+                            e.insert((af_4dp, v));
+                        }
+                        std::collections::btree_map::Entry::Occupied(mut e) => {
+                            if af_4dp > e.get().0 {
+                                e.insert((af_4dp, v));
+                            }
+                        }
                     }
+                }
+                let mut scratch = String::with_capacity(512);
+                let mut records = Vec::with_capacity(buckets.len());
+                for (start_pos, (af_4dp, v)) in buckets {
+                    let event = crate::output::vcf::build_single_vcf_event(
+                        &mut scratch,
+                        &v,
+                        &builder_region,
+                        &config_clone,
+                        None,
+                    );
                     records.push(RawVcfCandidate {
-                        start_pos: v.start_pos,
-                        af_4dp: crate::types::round_half_even(v.frequency, 4),
-                        should_emit,
-                        vcf_line,
+                        start_pos,
+                        af_4dp,
+                        event,
                     });
                 }
                 Ok(SimpleTileOutput::Vcf {
@@ -3249,12 +3342,7 @@ fn run_with_writer_inner<W: EngineWriter>(
     )?;
     split_var_deduper.flush_all_pending(|line| write_output_line(&mut writer, line))?;
 
-    vcf_acc.emit_all(|_, cand| {
-        if cand.should_emit {
-            write_output_line(&mut writer, &cand.vcf_line)?;
-        }
-        Ok(())
-    })?;
+    emit_single_vcf_accumulator(vcf_acc, config, &mut writer)?;
     writer.flush().map_err(VardictError::Io)?;
 
     Ok(())
@@ -3279,7 +3367,7 @@ fn process_amplicon_region(
 > {
     let halo = 500u32;
     let halo_start = crate::types::Pos0(region.start.0.saturating_sub(halo).saturating_sub(1));
-    let halo_end = crate::types::Pos0(region.end.0 + halo);
+    let halo_end = crate::types::Pos0(region.end.0.saturating_add(halo));
 
     let mut reference = crate::reference::Reference::new();
     let bam_list = parse_colon_bams(bam, "No BAM files specified")?;
@@ -3372,43 +3460,6 @@ fn run_amplicon<W: EngineWriter>(
     }
 
     let mut vcf_acc: SpillableVcfAccumulator<RawVcfCandidate> = SpillableVcfAccumulator::new();
-    fn format_amp_cand(
-        av: &crate::postprocess::amplicon::AmpliconVariant,
-        current_region: &crate::regions::Region,
-        config: &config::Config,
-    ) -> RawVcfCandidate {
-        let v = &av.variant;
-        let mut should_emit = !crate::output::vcf::perl_row_skipped(&v.ref_allele);
-        let mut vcf_line = String::new();
-        if should_emit {
-            let fisher = crate::stats::FisherExact::new_with_mode(
-                v.ref_fwd_cov as i32,
-                v.ref_rev_cov as i32,
-                v.fwd as i32,
-                v.rev as i32,
-                config.fisher,
-            );
-            let sbf = fisher.get_p_value();
-            let oddratio_str = fisher.odds_ratio_buf();
-            let amp = Some((av.gdamp, av.tlamp, av.ncamp, av.ampflag));
-            should_emit = crate::output::vcf::try_format_filtered_vcf_record_into(
-                &mut vcf_line,
-                v,
-                current_region,
-                config,
-                0,
-                sbf,
-                &oddratio_str,
-                amp,
-            );
-        }
-        RawVcfCandidate {
-            start_pos: v.start_pos,
-            af_4dp: crate::types::round_half_even(v.frequency, 4),
-            should_emit,
-            vcf_line,
-        }
-    }
 
     type AmpliconVarsList = Vec<crate::javamap::JavaHashMap<i32, crate::variations::Vars>>;
 
@@ -3545,10 +3596,39 @@ fn run_amplicon<W: EngineWriter>(
                 }
                 Ok(AmpliconSegmentOutput::Lines(lines))
             } else {
-                let records = results
-                    .iter()
-                    .map(|av| format_amp_cand(av, current_region, &config_clone))
-                    .collect();
+                let mut buckets: std::collections::BTreeMap<
+                    i32,
+                    (f64, crate::postprocess::amplicon::AmpliconVariant),
+                > = std::collections::BTreeMap::new();
+                for av in results {
+                    let af_4dp = crate::types::round_half_even(av.variant.frequency, 4);
+                    match buckets.entry(av.variant.start_pos) {
+                        std::collections::btree_map::Entry::Vacant(e) => {
+                            e.insert((af_4dp, av));
+                        }
+                        std::collections::btree_map::Entry::Occupied(mut e) => {
+                            if af_4dp > e.get().0 {
+                                e.insert((af_4dp, av));
+                            }
+                        }
+                    }
+                }
+                let mut scratch = String::with_capacity(512);
+                let mut records = Vec::with_capacity(buckets.len());
+                for (start_pos, (af_4dp, av)) in buckets {
+                    let event = crate::output::vcf::build_single_vcf_event(
+                        &mut scratch,
+                        &av.variant,
+                        current_region,
+                        &config_clone,
+                        Some((av.gdamp, av.tlamp, av.ncamp, av.ampflag)),
+                    );
+                    records.push(RawVcfCandidate {
+                        start_pos,
+                        af_4dp,
+                        event,
+                    });
+                }
                 Ok(AmpliconSegmentOutput::Vcf {
                     chr: current_region.chr.clone(),
                     records,
@@ -3613,6 +3693,7 @@ fn run_amplicon<W: EngineWriter>(
                             },
                         )?;
                     } else {
+                        let mut scratch = String::with_capacity(512);
                         crate::postprocess::amplicon::amplicon_post_process_streaming(
                             config,
                             current_region,
@@ -3620,9 +3701,22 @@ fn run_amplicon<W: EngineWriter>(
                             crate::postprocess::amplicon::amplicon_position_ref_stream(&segment),
                             &splice,
                             &mut |av| {
+                                let start_pos = av.variant.start_pos;
+                                let af_4dp = crate::types::round_half_even(av.variant.frequency, 4);
+                                let event = crate::output::vcf::build_single_vcf_event(
+                                    &mut scratch,
+                                    &av.variant,
+                                    current_region,
+                                    config,
+                                    Some((av.gdamp, av.tlamp, av.ncamp, av.ampflag)),
+                                );
                                 vcf_acc.insert(
                                     &current_region.chr,
-                                    format_amp_cand(&av, current_region, config),
+                                    RawVcfCandidate {
+                                        start_pos,
+                                        af_4dp,
+                                        event,
+                                    },
                                 )
                             },
                         )?;
@@ -3633,12 +3727,7 @@ fn run_amplicon<W: EngineWriter>(
         },
     )?;
 
-    vcf_acc.emit_all(|_, cand| {
-        if cand.should_emit {
-            write_output_line(writer, &cand.vcf_line)?;
-        }
-        Ok(())
-    })?;
+    emit_single_vcf_accumulator(vcf_acc, config, writer)?;
 
     writer.flush().map_err(VardictError::Io)?;
 
@@ -4194,17 +4283,13 @@ fn run_somatic<W: EngineWriter>(
     split_var_deduper.flush_all_pending(|line| write_output_line(writer, line))?;
 
     let mut cur_chr: Option<String> = None;
-    let mut streamer =
-        crate::output::vcf::PairedRecordStreamer::with_pass_only(0, config.vcf_pass_only);
+    let mut streamer = crate::output::vcf::PairedRecordStreamer::from_config(config);
     vcf_acc.emit_all(|chr, cand| {
         if cur_chr.as_deref() != Some(chr) {
             if cur_chr.is_some() {
                 let prev = std::mem::replace(
                     &mut streamer,
-                    crate::output::vcf::PairedRecordStreamer::with_pass_only(
-                        0,
-                        config.vcf_pass_only,
-                    ),
+                    crate::output::vcf::PairedRecordStreamer::from_config(config),
                 );
                 prev.finish(|line| write_output_line(writer, line))?;
             }
@@ -5694,6 +5779,33 @@ mod tests {
         assert_eq!(tile2_steps[1].new_max, 400);
     }
 
+    fn mk_test_single_vcf_rec(
+        chr: &str,
+        pos: i32,
+        ref_a: &str,
+        alt_a: &str,
+        filter: &str,
+        info: &str,
+        type_snv: bool,
+        pre_cluster_non_amp_empty: bool,
+        has_ampbias: bool,
+    ) -> crate::output::vcf::SingleVcfRecord {
+        let prefix = format!("{chr}\t{pos}\t.\t{ref_a}\t{alt_a}\t35\t");
+        let filter_start = prefix.len();
+        let filter_end = filter_start + filter.len();
+        let line = format!("{prefix}{filter}\t{info}\tGT\t0/1");
+        crate::output::vcf::SingleVcfRecord::from_parts_checked(
+            line,
+            filter_start,
+            filter_end,
+            pos,
+            type_snv,
+            pre_cluster_non_amp_empty,
+            has_ampbias,
+        )
+        .expect("valid 9-tab SingleVcfRecord")
+    }
+
     #[test]
     fn test_spillable_vcf_accumulator_k_way_merge_and_tie_break() {
         let mut acc: SpillableVcfAccumulator<RawVcfCandidate> =
@@ -5706,8 +5818,9 @@ mod tests {
             RawVcfCandidate {
                 start_pos: 500,
                 af_4dp: 0.2500,
-                should_emit: true,
-                vcf_line: "chr2\t500\t.\tA\tG\tfirst_25".to_string(),
+                event: crate::output::vcf::SingleVcfEvent::Record(mk_test_single_vcf_rec(
+                    "chr2", 500, "A", "G", "PASS", "first_25", true, true, false,
+                )),
             },
         )
         .unwrap();
@@ -5716,8 +5829,9 @@ mod tests {
             RawVcfCandidate {
                 start_pos: 100,
                 af_4dp: 0.5000,
-                should_emit: true,
-                vcf_line: "chr1\t100\t.\tC\tT\tfirst_50".to_string(),
+                event: crate::output::vcf::SingleVcfEvent::Record(mk_test_single_vcf_rec(
+                    "chr1", 100, "C", "T", "PASS", "first_50", true, true, false,
+                )),
             },
         )
         .unwrap();
@@ -5727,8 +5841,17 @@ mod tests {
             RawVcfCandidate {
                 start_pos: 100,
                 af_4dp: 0.5000,
-                should_emit: true,
-                vcf_line: "chr1\t100\t.\tC\tA\tsecond_tie_50".to_string(),
+                event: crate::output::vcf::SingleVcfEvent::Record(mk_test_single_vcf_rec(
+                    "chr1",
+                    100,
+                    "C",
+                    "A",
+                    "PASS",
+                    "second_tie_50",
+                    true,
+                    true,
+                    false,
+                )),
             },
         )
         .unwrap();
@@ -5738,8 +5861,17 @@ mod tests {
             RawVcfCandidate {
                 start_pos: 100,
                 af_4dp: 0.5000,
-                should_emit: true,
-                vcf_line: "chr1\t100\t.\tC\tG\tthird_tie_50".to_string(),
+                event: crate::output::vcf::SingleVcfEvent::Record(mk_test_single_vcf_rec(
+                    "chr1",
+                    100,
+                    "C",
+                    "G",
+                    "PASS",
+                    "third_tie_50",
+                    true,
+                    true,
+                    false,
+                )),
             },
         )
         .unwrap();
@@ -5749,8 +5881,9 @@ mod tests {
             RawVcfCandidate {
                 start_pos: 500,
                 af_4dp: 0.7500,
-                should_emit: true,
-                vcf_line: "chr2\t500\t.\tA\tT\tlater_75".to_string(),
+                event: crate::output::vcf::SingleVcfEvent::Record(mk_test_single_vcf_rec(
+                    "chr2", 500, "A", "T", "PASS", "later_75", true, true, false,
+                )),
             },
         )
         .unwrap();
@@ -5759,8 +5892,17 @@ mod tests {
             RawVcfCandidate {
                 start_pos: 50,
                 af_4dp: 0.3000,
-                should_emit: true,
-                vcf_line: "chr1\t50\t.\tG\tC\tearly_pos".to_string(),
+                event: crate::output::vcf::SingleVcfEvent::Record(mk_test_single_vcf_rec(
+                    "chr1",
+                    50,
+                    "G",
+                    "C",
+                    "PASS",
+                    "early_pos",
+                    true,
+                    true,
+                    false,
+                )),
             },
         )
         .unwrap();
@@ -5780,8 +5922,8 @@ mod tests {
 
         let mut emitted = Vec::new();
         acc.emit_all(|_chr, cand| {
-            if cand.should_emit {
-                emitted.push(cand.vcf_line);
+            if let crate::output::vcf::SingleVcfEvent::Record(rec) = cand.event {
+                emitted.push(rec.as_str().to_string());
             }
             Ok(())
         })
@@ -5790,28 +5932,109 @@ mod tests {
         assert_eq!(
             emitted,
             vec![
-                "chr1\t50\t.\tG\tC\tearly_pos".to_string(),
-                "chr1\t100\t.\tC\tT\tfirst_50".to_string(),
-                "chr2\t500\t.\tA\tT\tlater_75".to_string(),
+                "chr1\t50\t.\tG\tC\t35\tPASS\tearly_pos\tGT\t0/1".to_string(),
+                "chr1\t100\t.\tC\tT\t35\tPASS\tfirst_50\tGT\t0/1".to_string(),
+                "chr2\t500\t.\tA\tT\t35\tPASS\tlater_75\tGT\t0/1".to_string(),
             ]
         );
 
         check_somatic_candidate_spill_and_winner_suppression();
+
+        // Verify exact `current_bytes` accounting across in-memory `Entry::Occupied` transitions:
+        // initial `Record`, equal/lower-AF no-op, `Record -> Skip` shrinkage, and `Skip -> Record` growth.
+        let mut mem_acc: SpillableVcfAccumulator<RawVcfCandidate> =
+            SpillableVcfAccumulator::with_limits(64 * 1024, 8);
+        let skip_unit_bytes = std::mem::size_of::<RawVcfCandidate>() + 32;
+        let rec1 = mk_test_single_vcf_rec(
+            "chr1",
+            300,
+            "A",
+            "G",
+            "PASS",
+            "long_info_payload_initial_record",
+            true,
+            true,
+            false,
+        );
+        let rec1_cap = rec1.capacity();
+        mem_acc
+            .insert(
+                "chr1",
+                RawVcfCandidate {
+                    start_pos: 300,
+                    af_4dp: 0.4000,
+                    event: crate::output::vcf::SingleVcfEvent::Record(rec1),
+                },
+            )
+            .unwrap();
+        assert_eq!(mem_acc.current_bytes, skip_unit_bytes + rec1_cap);
+
+        // Equal AF and lower AF are no-ops on `current_bytes`
+        for noop_af in [0.4000, 0.2000] {
+            mem_acc
+                .insert(
+                    "chr1",
+                    RawVcfCandidate {
+                        start_pos: 300,
+                        af_4dp: noop_af,
+                        event: crate::output::vcf::SingleVcfEvent::Skip,
+                    },
+                )
+                .unwrap();
+            assert_eq!(mem_acc.current_bytes, skip_unit_bytes + rec1_cap);
+        }
+
+        // Higher-AF `Skip` shrinks `current_bytes` by `rec1_cap`
+        mem_acc
+            .insert(
+                "chr1",
+                RawVcfCandidate {
+                    start_pos: 300,
+                    af_4dp: 0.6000,
+                    event: crate::output::vcf::SingleVcfEvent::Skip,
+                },
+            )
+            .unwrap();
+        assert_eq!(mem_acc.current_bytes, skip_unit_bytes);
+
+        // Even-higher-AF `Record` grows `current_bytes` by `rec2_cap`
+        let rec2 = mk_test_single_vcf_rec(
+            "chr1",
+            300,
+            "A",
+            "T",
+            "PASS",
+            "even_longer_info_payload_replacement_record_after_skip",
+            true,
+            true,
+            false,
+        );
+        let rec2_cap = rec2.capacity();
+        mem_acc
+            .insert(
+                "chr1",
+                RawVcfCandidate {
+                    start_pos: 300,
+                    af_4dp: 0.9000,
+                    event: crate::output::vcf::SingleVcfEvent::Record(rec2),
+                },
+            )
+            .unwrap();
+        assert_eq!(mem_acc.current_bytes, skip_unit_bytes + rec2_cap);
     }
 
     fn check_somatic_candidate_spill_and_winner_suppression() {
-        // 1. Position-winner suppression when highest-AF winner has `should_emit: false`
+        // 1. Position-winner suppression when highest-AF winner is `SingleVcfEvent::Skip`
         //    (`var2vcf_valid.pl:135-205` — `--pass-only` and `--min-splitreads` run AFTER `$tmp[0]`)
         let mut raw_acc: SpillableVcfAccumulator<RawVcfCandidate> =
-            SpillableVcfAccumulator::with_limits(80, 2);
+            SpillableVcfAccumulator::with_limits(50, 2);
         raw_acc
             .insert(
                 "chr1",
                 RawVcfCandidate {
                     start_pos: 200,
                     af_4dp: 0.8000,
-                    should_emit: false,
-                    vcf_line: String::new(),
+                    event: crate::output::vcf::SingleVcfEvent::Skip,
                 },
             )
             .unwrap();
@@ -5821,8 +6044,17 @@ mod tests {
                 RawVcfCandidate {
                     start_pos: 200,
                     af_4dp: 0.3000,
-                    should_emit: true,
-                    vcf_line: "chr1\t200\t.\tA\tG\tlower_af_pass".to_string(),
+                    event: crate::output::vcf::SingleVcfEvent::Record(mk_test_single_vcf_rec(
+                        "chr1",
+                        200,
+                        "A",
+                        "G",
+                        "PASS",
+                        "lower_af_pass",
+                        true,
+                        true,
+                        false,
+                    )),
                 },
             )
             .unwrap();
@@ -5832,8 +6064,7 @@ mod tests {
                 RawVcfCandidate {
                     start_pos: 250,
                     af_4dp: 0.2000,
-                    should_emit: false,
-                    vcf_line: String::new(),
+                    event: crate::output::vcf::SingleVcfEvent::Skip,
                 },
             )
             .unwrap();
@@ -5843,24 +6074,33 @@ mod tests {
                 RawVcfCandidate {
                     start_pos: 250,
                     af_4dp: 0.9000,
-                    should_emit: true,
-                    vcf_line: "chr1\t250\t.\tC\tT\thigher_af_pass".to_string(),
+                    event: crate::output::vcf::SingleVcfEvent::Record(mk_test_single_vcf_rec(
+                        "chr1",
+                        250,
+                        "C",
+                        "T",
+                        "PASS",
+                        "higher_af_pass",
+                        true,
+                        true,
+                        false,
+                    )),
                 },
             )
             .unwrap();
         let mut raw_emitted = Vec::new();
         raw_acc
             .emit_all(|_chr, cand| {
-                if cand.should_emit {
-                    raw_emitted.push(cand.vcf_line);
+                if let crate::output::vcf::SingleVcfEvent::Record(rec) = cand.event {
+                    raw_emitted.push(rec.as_str().to_string());
                 }
                 Ok(())
             })
             .unwrap();
         assert_eq!(
             raw_emitted,
-            vec!["chr1\t250\t.\tC\tT\thigher_af_pass".to_string()],
-            "filtered higher-AF winner at 200 must suppress lower-AF PASS candidate across spill runs"
+            vec!["chr1\t250\t.\tC\tT\t35\tPASS\thigher_af_pass\tGT\t0/1".to_string()],
+            "filtered higher-AF Skip tombstone at 200 must suppress lower-AF PASS candidate across spill runs"
         );
 
         // 2. Single-buffer `SomaticVcfCandidate` u64-offset spill round-trip + k-way merge
@@ -5968,7 +6208,13 @@ mod tests {
                 .err()
                 .expect("corrupt/truncated spill string length must fail without panic");
             assert_eq!(err.kind(), expected_kind);
-            let raw_err = RawVcfCandidate::read_from(&mut corrupt_len.as_slice())
+
+            let mut corrupt_raw_len = Vec::new();
+            write_spill_i32(&mut corrupt_raw_len, 100).unwrap();
+            write_spill_f64(&mut corrupt_raw_len, 0.5).unwrap();
+            write_spill_u8(&mut corrupt_raw_len, 3).unwrap();
+            write_spill_u64(&mut corrupt_raw_len, bad_len).unwrap();
+            let raw_err = RawVcfCandidate::read_from(&mut corrupt_raw_len.as_slice())
                 .err()
                 .expect(
                     "corrupt/truncated spill string length must fail RawVcfCandidate::read_from",
@@ -5986,6 +6232,652 @@ mod tests {
                 .expect("corrupt boolean byte must fail")
                 .kind(),
             std::io::ErrorKind::InvalidData
+        );
+    }
+
+    #[test]
+    fn test_raw_vcf_candidate_spill_roundtrip_all_variants_and_corrupt_rejection() {
+        use crate::output::vcf::{SingleVcfEvent, SingleVcfRecord};
+
+        let rec_pass_snv =
+            mk_test_single_vcf_rec("chr1", 120, "A", "G", "PASS", "DP=50", true, true, false);
+        let rec_amp_indel = mk_test_single_vcf_rec(
+            "chr1",
+            180,
+            "AC",
+            "A",
+            "q22.5;AMPBIAS",
+            "DP=40",
+            false,
+            false,
+            true,
+        );
+
+        let items = [
+            RawVcfCandidate {
+                start_pos: 100,
+                af_4dp: 0.8500,
+                event: SingleVcfEvent::Skip,
+            },
+            RawVcfCandidate {
+                start_pos: 110,
+                af_4dp: 0.4500,
+                event: SingleVcfEvent::AmpBiasSnvClusterProbe { start: 110 },
+            },
+            RawVcfCandidate {
+                start_pos: 115,
+                af_4dp: 0.6000,
+                event: SingleVcfEvent::SvSplitreadFlush {
+                    cluster_probe_start: Some(115),
+                },
+            },
+            RawVcfCandidate {
+                start_pos: 120,
+                af_4dp: 0.5000,
+                event: SingleVcfEvent::Record(rec_pass_snv),
+            },
+            RawVcfCandidate {
+                start_pos: 180,
+                af_4dp: 0.3500,
+                event: SingleVcfEvent::Record(rec_amp_indel),
+            },
+        ];
+
+        assert_eq!(
+            items[0].approx_heap_bytes(),
+            std::mem::size_of::<RawVcfCandidate>()
+        );
+        assert_eq!(
+            items[1].approx_heap_bytes(),
+            std::mem::size_of::<RawVcfCandidate>()
+        );
+        assert_eq!(
+            items[2].approx_heap_bytes(),
+            std::mem::size_of::<RawVcfCandidate>()
+        );
+        let SingleVcfEvent::Record(ref stored_rec) = items[3].event else {
+            panic!("expected Record");
+        };
+        assert_eq!(
+            items[3].approx_heap_bytes(),
+            std::mem::size_of::<RawVcfCandidate>() + stored_rec.capacity()
+        );
+
+        let mut buf = Vec::new();
+        for item in &items {
+            item.write_to(&mut buf).unwrap();
+        }
+        let mut slice = buf.as_slice();
+        for expected in &items {
+            let decoded = RawVcfCandidate::read_from(&mut slice)
+                .unwrap()
+                .expect("expected decoded RawVcfCandidate");
+            assert_eq!(decoded.start_pos, expected.start_pos);
+            assert_eq!(decoded.af_4dp.to_bits(), expected.af_4dp.to_bits());
+            assert_eq!(decoded.event, expected.event);
+        }
+        assert!(RawVcfCandidate::read_from(&mut slice).unwrap().is_none());
+
+        // Reject unknown event tags (> 3)
+        for bad_tag in [4u8, 7u8, 255u8] {
+            let mut bad = Vec::new();
+            write_spill_i32(&mut bad, 100).unwrap();
+            write_spill_f64(&mut bad, 0.5).unwrap();
+            write_spill_u8(&mut bad, bad_tag).unwrap();
+            let err = RawVcfCandidate::read_from(&mut bad.as_slice())
+                .err()
+                .expect("unknown SingleVcfEvent tag must fail");
+            assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        }
+
+        // Reject corrupt SingleVcfRecord filter spans and malformed 9-tab invariants
+        let valid_line = "chr1\t120\t.\tA\tG\t35\tPASS\tDP=50\tGT\t0/1";
+        let valid_fs = "chr1\t120\t.\tA\tG\t35\t".len() as u64;
+        let valid_fe = valid_fs + 4;
+        for (line, fs, fe) in [
+            (valid_line, 25u64, 18u64),
+            (valid_line, 0u64, 9999u64),
+            (valid_line, u64::MAX, u64::MAX),
+            (valid_line, valid_fs, valid_fs), // empty filter
+            (valid_line, 5u64, 6u64),         // wrong column (< 6 preceding tabs)
+            (
+                "chr1\t120\t.\tA\tG\t35\tPASS\tDP=50\tGT",
+                valid_fs,
+                valid_fe,
+            ), // 8 tabs instead of 9
+            (
+                "chr1\t120\t.\tA\tG\t35\tPASS\tDP=50\tGT\t0/1\textra",
+                valid_fs,
+                valid_fe,
+            ), // 10 tabs instead of 9
+            (
+                "chr1\t120\t.\tA\tG\t35\tPA\nSS\tDP=50\tGT\t0/1",
+                valid_fs,
+                valid_fs + 5,
+            ), // embedded newline
+        ] {
+            let mut corrupt = Vec::new();
+            write_spill_i32(&mut corrupt, 120).unwrap();
+            write_spill_f64(&mut corrupt, 0.5).unwrap();
+            write_spill_u8(&mut corrupt, 3).unwrap();
+            write_spill_str(&mut corrupt, line).unwrap();
+            write_spill_u64(&mut corrupt, fs).unwrap();
+            write_spill_u64(&mut corrupt, fe).unwrap();
+            write_spill_i32(&mut corrupt, 120).unwrap();
+            write_spill_u8(&mut corrupt, 1).unwrap();
+            write_spill_u8(&mut corrupt, 1).unwrap();
+            write_spill_u8(&mut corrupt, 0).unwrap();
+            assert!(SingleVcfRecord::from_parts_checked(
+                line.to_string(),
+                usize::try_from(fs).unwrap_or(usize::MAX),
+                usize::try_from(fe).unwrap_or(usize::MAX),
+                120,
+                true,
+                true,
+                false,
+            )
+            .is_none());
+            let err = RawVcfCandidate::read_from(&mut corrupt.as_slice())
+                .err()
+                .expect("corrupt SingleVcfRecord span/line must fail RawVcfCandidate::read_from");
+            assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        }
+
+        // Reject corrupt boolean bytes inside tag 3 (Record)
+        for bad_bool_slot in 0..3 {
+            let mut corrupt = Vec::new();
+            write_spill_i32(&mut corrupt, 120).unwrap();
+            write_spill_f64(&mut corrupt, 0.5).unwrap();
+            write_spill_u8(&mut corrupt, 3).unwrap();
+            write_spill_str(&mut corrupt, valid_line).unwrap();
+            write_spill_u64(&mut corrupt, valid_fs).unwrap();
+            write_spill_u64(&mut corrupt, valid_fe).unwrap();
+            write_spill_i32(&mut corrupt, 120).unwrap();
+            for slot in 0..3 {
+                write_spill_u8(&mut corrupt, if slot == bad_bool_slot { 2 } else { 1 }).unwrap();
+            }
+            let err = RawVcfCandidate::read_from(&mut corrupt.as_slice())
+                .err()
+                .expect("corrupt boolean byte in Record must fail");
+            assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        }
+    }
+
+    #[test]
+    fn test_forced_disk_spill_single_and_somatic_cluster_e2e() {
+        use crate::output::vcf::SingleVcfEvent;
+        use noodles::core::Position;
+        use noodles::sam::alignment::record::cigar::{op::Kind, Op};
+        use noodles::sam::alignment::record::data::field::Tag;
+        use noodles::sam::alignment::record::Flags;
+        use noodles::sam::alignment::record_buf::data::field::Value as BufValue;
+        use noodles::sam::alignment::record_buf::{Cigar, Data};
+        use noodles::sam::alignment::RecordBuf;
+
+        // Part 1: Direct low-budget SpillableVcfAccumulator + emit_single_vcf_accumulator
+        // verifying all 4 SingleVcfEvent variants across disk spills and chromosome resets.
+        {
+            let mut acc: SpillableVcfAccumulator<RawVcfCandidate> =
+                SpillableVcfAccumulator::with_limits(64, 2);
+            // chr1:30 PASS SNV + chr1:36 AmpBiasSnvClusterProbe (clusters 30 to Cluster10bp; suppressed under pass_only!)
+            acc.insert(
+                "chr1",
+                RawVcfCandidate {
+                    start_pos: 30,
+                    af_4dp: 0.5000,
+                    event: SingleVcfEvent::Record(mk_test_single_vcf_rec(
+                        "chr1", 30, "A", "G", "PASS", "DP=40", true, true, false,
+                    )),
+                },
+            )
+            .unwrap();
+            acc.insert(
+                "chr1",
+                RawVcfCandidate {
+                    start_pos: 36,
+                    af_4dp: 0.5000,
+                    event: SingleVcfEvent::AmpBiasSnvClusterProbe { start: 36 },
+                },
+            )
+            .unwrap();
+            // chr1:60 PASS SNV -> chr1:62 SvSplitreadFlush (flushes 60 as PASS!) -> chr1:65 PASS SNV (gets Cluster10bp against pvs=60!)
+            acc.insert(
+                "chr1",
+                RawVcfCandidate {
+                    start_pos: 60,
+                    af_4dp: 0.5000,
+                    event: SingleVcfEvent::Record(mk_test_single_vcf_rec(
+                        "chr1", 60, "C", "T", "PASS", "DP=40", true, true, false,
+                    )),
+                },
+            )
+            .unwrap();
+            acc.insert(
+                "chr1",
+                RawVcfCandidate {
+                    start_pos: 62,
+                    af_4dp: 0.4000,
+                    event: SingleVcfEvent::SvSplitreadFlush {
+                        cluster_probe_start: None,
+                    },
+                },
+            )
+            .unwrap();
+            acc.insert(
+                "chr1",
+                RawVcfCandidate {
+                    start_pos: 65,
+                    af_4dp: 0.5000,
+                    event: SingleVcfEvent::Record(mk_test_single_vcf_rec(
+                        "chr1", 65, "G", "A", "PASS", "DP=40", true, true, false,
+                    )),
+                },
+            )
+            .unwrap();
+            // chr1:90 Skip tombstone at higher AF shadows lower-AF PASS SNV from overlapping tile
+            acc.insert(
+                "chr1",
+                RawVcfCandidate {
+                    start_pos: 90,
+                    af_4dp: 0.3000,
+                    event: SingleVcfEvent::Record(mk_test_single_vcf_rec(
+                        "chr1", 90, "T", "C", "PASS", "DP=40", true, true, false,
+                    )),
+                },
+            )
+            .unwrap();
+            acc.insert(
+                "chr1",
+                RawVcfCandidate {
+                    start_pos: 90,
+                    af_4dp: 0.8000,
+                    event: SingleVcfEvent::Skip,
+                },
+            )
+            .unwrap();
+            // chr1:200 PASS SNV and chr2:203 PASS SNV — chromosome reset prevents cross-chr clustering
+            acc.insert(
+                "chr1",
+                RawVcfCandidate {
+                    start_pos: 200,
+                    af_4dp: 0.5000,
+                    event: SingleVcfEvent::Record(mk_test_single_vcf_rec(
+                        "chr1", 200, "A", "C", "PASS", "DP=40", true, true, false,
+                    )),
+                },
+            )
+            .unwrap();
+            acc.insert(
+                "chr2",
+                RawVcfCandidate {
+                    start_pos: 203,
+                    af_4dp: 0.5000,
+                    event: SingleVcfEvent::Record(mk_test_single_vcf_rec(
+                        "chr2", 203, "G", "T", "PASS", "DP=40", true, true, false,
+                    )),
+                },
+            )
+            .unwrap();
+
+            assert!(
+                acc.spilled_runs.get("chr1").map_or(0, Vec::len) >= 3,
+                "expected disk spills on chr1"
+            );
+
+            let cfg = crate::config::Config {
+                vcf_cluster_dist: Some(crate::config::VcfThreshold::new(10)),
+                vcf_pass_only: true,
+                ..Default::default()
+            };
+            let mut out = Vec::new();
+            emit_single_vcf_accumulator(acc, &cfg, &mut out).unwrap();
+            let text = String::from_utf8(out).unwrap();
+            let keys: Vec<&str> = text
+                .lines()
+                .map(|l| {
+                    let mut cols = l.split('\t');
+                    let chr = cols.next().unwrap();
+                    let pos = cols.next().unwrap();
+                    let _ = (cols.next(), cols.next(), cols.next(), cols.next());
+                    let filt = cols.next().unwrap();
+                    assert_eq!(filt, "PASS");
+                    match (chr, pos) {
+                        ("chr1", "60") => "chr1:60",
+                        ("chr1", "200") => "chr1:200",
+                        ("chr2", "203") => "chr2:203",
+                        other => panic!("unexpected emitted record: {other:?} in {l}"),
+                    }
+                })
+                .collect();
+            assert_eq!(keys, vec!["chr1:60", "chr1:200", "chr2:203"]);
+        }
+
+        // Part 2: Live `run_with_writer` across multi-tile boundary (tile_size = 50) with
+        // forced disk spill (`TEST_VCF_SPILL_BYTES_OVERRIDE = Some(1)`) in Simple and Somatic modes.
+        let dir = tempfile::TempDir::new().unwrap();
+        let ref_len = 200usize;
+        let motif = b"ACGTACGTAGCTAGCTTGCAACGT";
+        let mut ref_bytes = Vec::with_capacity(ref_len);
+        for i in 0..ref_len {
+            ref_bytes.push(motif[i % motif.len()]);
+        }
+        ref_bytes[47] = b'A'; // pos 48 (Tile 1: 1..=50)
+        ref_bytes[53] = b'C'; // pos 54 (Tile 2: 51..=100; 54 - 48 = 6 < 10)
+        ref_bytes[139] = b'G'; // pos 140 (Tile 3: 101..=150; unclustered PASS)
+        let fasta_path = dir.path().join("ref.fa");
+        let fai_path = dir.path().join("ref.fa.fai");
+        std::fs::write(
+            &fasta_path,
+            format!(">chr1\n{}\n", String::from_utf8(ref_bytes.clone()).unwrap()),
+        )
+        .unwrap();
+        std::fs::write(&fai_path, format!("chr1\t{ref_len}\t6\t{ref_len}\t201\n")).unwrap();
+
+        let mk_read = |name: &str, start_1: usize, seq: &[u8], rev: bool, nm: i32| -> RecordBuf {
+            let flags = if rev {
+                Flags::REVERSE_COMPLEMENTED
+            } else {
+                Flags::empty()
+            };
+            let cigar: Cigar = [Op::new(Kind::Match, seq.len())].into_iter().collect();
+            let data: Data = [(Tag::EDIT_DISTANCE, BufValue::from(nm))]
+                .into_iter()
+                .collect();
+            RecordBuf::builder()
+                .set_name(name)
+                .set_flags(flags)
+                .set_reference_sequence_id(0)
+                .set_alignment_start(Position::try_from(start_1).unwrap())
+                .set_mapping_quality(
+                    noodles::sam::alignment::record::MappingQuality::new(60).unwrap(),
+                )
+                .set_cigar(cigar)
+                .set_sequence(seq.to_vec().into())
+                .set_quality_scores(vec![38u8; seq.len()].into())
+                .set_data(data)
+                .build()
+        };
+
+        let mut tumor_reads = Vec::new();
+        let mut normal_reads = Vec::new();
+        // Spanning 35..=74 (covers 48 and 54 across tile boundary 50|51)
+        for idx in 0..20usize {
+            let start_1 = 30 + (idx % 6); // vary start/position so pstd=1
+            let mut seq = ref_bytes[(start_1 - 1)..(start_1 - 1 + 40)].to_vec();
+            let rev = idx % 2 == 1;
+            normal_reads.push(mk_read(&format!("n1_{idx}"), start_1, &seq, rev, 0));
+            if idx < 10 {
+                seq[48 - start_1] = b'T';
+                seq[54 - start_1] = b'T';
+                tumor_reads.push(mk_read(&format!("t1_alt_{idx}"), start_1, &seq, rev, 2));
+            } else {
+                tumor_reads.push(mk_read(&format!("t1_ref_{idx}"), start_1, &seq, rev, 0));
+            }
+        }
+        // Spanning 125..=165 (covers unclustered pos 140)
+        for idx in 0..20usize {
+            let start_1 = 120 + (idx % 6);
+            let mut seq = ref_bytes[(start_1 - 1)..(start_1 - 1 + 40)].to_vec();
+            let rev = idx % 2 == 1;
+            normal_reads.push(mk_read(&format!("n2_{idx}"), start_1, &seq, rev, 0));
+            if idx < 10 {
+                seq[140 - start_1] = b'T';
+                tumor_reads.push(mk_read(&format!("t2_alt_{idx}"), start_1, &seq, rev, 1));
+            } else {
+                tumor_reads.push(mk_read(&format!("t2_ref_{idx}"), start_1, &seq, rev, 0));
+            }
+        }
+        tumor_reads.sort_by_key(|r| r.alignment_start().unwrap().get());
+        normal_reads.sort_by_key(|r| r.alignment_start().unwrap().get());
+
+        let tumor_bam = dir.path().join("tumor.bam");
+        let normal_bam = dir.path().join("normal.bam");
+        write_test_bam(&tumor_bam, "chr1", ref_len, &tumor_reads);
+        write_test_bam(&normal_bam, "chr1", ref_len, &normal_reads);
+
+        struct ResetSpillGuard;
+        impl Drop for ResetSpillGuard {
+            fn drop(&mut self) {
+                TEST_VCF_SPILL_BYTES_OVERRIDE.with(|c| c.set(None));
+            }
+        }
+        let _guard = ResetSpillGuard;
+        // 1-byte limit forces EVERY candidate (including Skip, AmpBiasSnvClusterProbe,
+        // and SvSplitreadFlush) to spill to disk runs and merge via BinaryHeap.
+        TEST_VCF_SPILL_BYTES_OVERRIDE.with(|c| c.set(Some(1)));
+
+        // Simple mode: multi-tile + forced disk spill tags 48 & 54 with Cluster010bp (raw token), keeps 140 PASS
+        let simple_cfg = crate::config::Config {
+            reference: fasta_path.to_string_lossy().into_owned(),
+            bam: tumor_bam.to_string_lossy().into_owned(),
+            region: Some("chr1:1-180".to_string()),
+            tile_size: Some(50),
+            vcf_cluster_dist: Some(crate::config::VcfThreshold::with_raw(10, "010".to_string())),
+            threads: 1,
+            ..Default::default()
+        };
+        let mut simple_buf = Vec::new();
+        run_with_writer(&simple_cfg, &mut simple_buf).unwrap();
+        let simple_vcf = String::from_utf8(simple_buf).unwrap();
+        assert!(simple_vcf.contains(
+            r#"##FILTER=<ID=Cluster010bp,Description="Two variants are within 010 bp">"#
+        ));
+        let simple_filts: Vec<(String, String)> = simple_vcf
+            .lines()
+            .filter(|l| !l.starts_with('#'))
+            .map(|l| {
+                let cols: Vec<&str> = l.split('\t').collect();
+                (cols[1].to_string(), cols[6].to_string())
+            })
+            .collect();
+        assert_eq!(
+            simple_filts,
+            vec![
+                ("48".to_string(), "Cluster010bp".to_string()),
+                ("54".to_string(), "Cluster010bp".to_string()),
+                ("140".to_string(), "PASS".to_string()),
+            ]
+        );
+
+        let mut simple_pass_cfg = simple_cfg.clone();
+        simple_pass_cfg.vcf_pass_only = true;
+        let mut simple_pass_buf = Vec::new();
+        run_with_writer(&simple_pass_cfg, &mut simple_pass_buf).unwrap();
+        let simple_pass_positions: Vec<String> = String::from_utf8(simple_pass_buf)
+            .unwrap()
+            .lines()
+            .filter(|l| !l.starts_with('#'))
+            .map(|l| l.split('\t').nth(1).unwrap().to_string())
+            .collect();
+        assert_eq!(simple_pass_positions, vec!["140".to_string()]);
+
+        // Amplicon mode + forced disk spill: AmpBiasSnvClusterProbe at 54 suppresses 48 under --pass-only
+        let mut amp_reads = Vec::new();
+        // Amplicon 1 (20..=70, len 51): supports SNVs at 48 and 54
+        for idx in 0..10usize {
+            let mut seq = ref_bytes[19..70].to_vec();
+            let rev = idx % 2 == 1;
+            if idx < 5 {
+                seq[48 - 20] = b'T';
+                seq[54 - 20] = b'T';
+                amp_reads.push(mk_read(&format!("amp1_alt_{idx}"), 20, &seq, rev, 2));
+            } else {
+                amp_reads.push(mk_read(&format!("amp1_ref_{idx}"), 20, &seq, rev, 0));
+            }
+        }
+        // Amplicon 2 (35..=85, len 51): supports SNV ONLY at 48 -> 54 has GDAMP=1;TLAMP=2 (AMPBIAS)
+        for idx in 0..10usize {
+            let mut seq = ref_bytes[34..85].to_vec();
+            let rev = idx % 2 == 1;
+            if idx < 5 {
+                seq[48 - 35] = b'T';
+                amp_reads.push(mk_read(&format!("amp2_alt_{idx}"), 35, &seq, rev, 1));
+            } else {
+                amp_reads.push(mk_read(&format!("amp2_ref_{idx}"), 35, &seq, rev, 0));
+            }
+        }
+        // Amplicon 3 (120..=170, len 51): unclustered PASS SNV at 140
+        for idx in 0..10usize {
+            let mut seq = ref_bytes[119..170].to_vec();
+            let rev = idx % 2 == 1;
+            if idx < 5 {
+                seq[140 - 120] = b'T';
+                amp_reads.push(mk_read(&format!("amp3_alt_{idx}"), 120, &seq, rev, 1));
+            } else {
+                amp_reads.push(mk_read(&format!("amp3_ref_{idx}"), 120, &seq, rev, 0));
+            }
+        }
+        amp_reads.sort_by_key(|r| r.alignment_start().unwrap().get());
+        let amp_bam = dir.path().join("amp_spill.bam");
+        write_test_bam(&amp_bam, "chr1", ref_len, &amp_reads);
+        let amp_bed = dir.path().join("amp_spill.bed");
+        std::fs::write(
+            &amp_bed,
+            "chr1\t19\t70\tG1\t0\t+\t30\t65\nchr1\t34\t85\tG1\t0\t+\t40\t75\nchr1\t119\t170\tG2\t0\t+\t125\t160\n",
+        )
+        .unwrap();
+        let amp_pass_cfg = crate::config::Config {
+            reference: fasta_path.to_string_lossy().into_owned(),
+            bam: amp_bam.to_string_lossy().into_owned(),
+            bed: Some(amp_bed.to_string_lossy().into_owned()),
+            amplicon: Some("10:0.95".to_string()),
+            zero_based: true,
+            zero_based_defined: true,
+            col_chr: 0,
+            col_start: 1,
+            col_end: 2,
+            col_seg_start: 6,
+            col_seg_end: 7,
+            col_gene: Some(3),
+            column_for_chromosome: Some(0),
+            vcf_cluster_dist: Some(crate::config::VcfThreshold::new(10)),
+            vcf_pass_only: true,
+            threads: 1,
+            ..Default::default()
+        };
+        let mut amp_pass_buf = Vec::new();
+        run_with_writer(&amp_pass_cfg, &mut amp_pass_buf).unwrap();
+        let amp_pass_positions: Vec<String> = String::from_utf8(amp_pass_buf)
+            .unwrap()
+            .lines()
+            .filter(|l| !l.starts_with('#'))
+            .map(|l| l.split('\t').nth(1).unwrap().to_string())
+            .collect();
+        assert_eq!(amp_pass_positions, vec!["140".to_string()]);
+
+        // SV splitread flush + forced disk spill across tiles: <DEL> at 51 (splitreads=0 < 1)
+        // flushes pending SNV 48 as PASS before clustered SNV 56 arrives.
+        let mut sv_reads = Vec::new();
+        for idx in 0..20usize {
+            let start_1 = 30 + (idx % 6);
+            let rev = idx % 2 == 1;
+            let flags = if rev {
+                Flags::REVERSE_COMPLEMENTED
+            } else {
+                Flags::empty()
+            };
+            if idx < 8 {
+                let mut seq = ref_bytes[(start_1 - 1)..(start_1 - 1 + 40)].to_vec();
+                seq[48 - start_1] = b'T';
+                seq[56 - start_1] = b'A';
+                sv_reads.push(mk_read(&format!("sv_snv_{idx}"), start_1, &seq, rev, 2));
+            } else if idx < 13 {
+                // 2bp deletion of 52..=53 -> anchor at pos 51, becomes <DEL> under sv_min_len=2
+                let left_len = 51 - start_1 + 1;
+                let right_len = 40 - left_len;
+                let mut seq = Vec::with_capacity(40);
+                seq.extend_from_slice(&ref_bytes[(start_1 - 1)..51]);
+                seq.extend_from_slice(&ref_bytes[53..(53 + right_len)]);
+                let cigar: Cigar = [
+                    Op::new(Kind::Match, left_len),
+                    Op::new(Kind::Deletion, 2),
+                    Op::new(Kind::Match, right_len),
+                ]
+                .into_iter()
+                .collect();
+                let data: Data = [(Tag::EDIT_DISTANCE, BufValue::from(2i32))]
+                    .into_iter()
+                    .collect();
+                sv_reads.push(
+                    RecordBuf::builder()
+                        .set_name(format!("sv_del_{idx}"))
+                        .set_flags(flags)
+                        .set_reference_sequence_id(0)
+                        .set_alignment_start(Position::try_from(start_1).unwrap())
+                        .set_mapping_quality(
+                            noodles::sam::alignment::record::MappingQuality::new(60).unwrap(),
+                        )
+                        .set_cigar(cigar)
+                        .set_sequence(seq.into())
+                        .set_quality_scores(vec![38u8; 40].into())
+                        .set_data(data)
+                        .build(),
+                );
+            } else {
+                let seq = ref_bytes[(start_1 - 1)..(start_1 - 1 + 40)].to_vec();
+                sv_reads.push(mk_read(&format!("sv_ref_{idx}"), start_1, &seq, rev, 0));
+            }
+        }
+        sv_reads.sort_by_key(|r| r.alignment_start().unwrap().get());
+        let sv_bam = dir.path().join("sv_spill.bam");
+        write_test_bam(&sv_bam, "chr1", ref_len, &sv_reads);
+        let sv_flush_cfg = crate::config::Config {
+            reference: fasta_path.to_string_lossy().into_owned(),
+            bam: sv_bam.to_string_lossy().into_owned(),
+            region: Some("chr1:1-100".to_string()),
+            tile_size: Some(50),
+            sv_min_len: 2,
+            vcf_min_splitreads: 1,
+            vcf_cluster_dist: Some(crate::config::VcfThreshold::new(10)),
+            vcf_pass_only: true,
+            threads: 1,
+            ..Default::default()
+        };
+        let mut sv_flush_buf = Vec::new();
+        run_with_writer(&sv_flush_cfg, &mut sv_flush_buf).unwrap();
+        let sv_flush_positions: Vec<String> = String::from_utf8(sv_flush_buf)
+            .unwrap()
+            .lines()
+            .filter(|l| !l.starts_with('#'))
+            .map(|l| l.split('\t').nth(1).unwrap().to_string())
+            .collect();
+        assert_eq!(sv_flush_positions, vec!["48".to_string()]);
+
+        // Paired somatic mode: multi-tile + forced disk spill tags StrongSomatic SNVs 48 & 54 with Cluster010bp
+        let somatic_cfg = crate::config::Config {
+            reference: fasta_path.to_string_lossy().into_owned(),
+            bam: format!(
+                "{}|{}",
+                tumor_bam.to_string_lossy(),
+                normal_bam.to_string_lossy()
+            ),
+            region: Some("chr1:1-180".to_string()),
+            tile_size: Some(50),
+            vcf_cluster_dist: Some(crate::config::VcfThreshold::with_raw(10, "010".to_string())),
+            threads: 1,
+            ..Default::default()
+        };
+        let mut som_buf = Vec::new();
+        run_with_writer(&somatic_cfg, &mut som_buf).unwrap();
+        let som_vcf = String::from_utf8(som_buf).unwrap();
+        assert!(som_vcf.contains(
+            r#"##FILTER=<ID=Cluster010bp,Description="Two somatic variants are within 010 bp">"#
+        ));
+        let som_filts: Vec<(String, String)> = som_vcf
+            .lines()
+            .filter(|l| !l.starts_with('#'))
+            .map(|l| {
+                let cols: Vec<&str> = l.split('\t').collect();
+                (cols[1].to_string(), cols[6].to_string())
+            })
+            .collect();
+        assert_eq!(
+            som_filts,
+            vec![
+                ("48".to_string(), "Cluster010bp".to_string()),
+                ("54".to_string(), "Cluster010bp".to_string()),
+                ("140".to_string(), "PASS".to_string()),
+            ]
         );
     }
 
@@ -6235,6 +7127,36 @@ mod tests {
         let (eff_sci, _) = resolve_effective_config(&sci_cfg).unwrap();
         assert_eq!(eff_sci.vcf_pval.to_bits(), 1e-5_f64.to_bits());
         assert_eq!(eff_sci.vcf_pval_raw.as_deref(), Some("1e-5"));
+
+        // Programmatic `validate_vcf_thresholds` guard for all new `vcf_*` override fields
+        for mut bad_vcf_cfg in [
+            crate::config::Config {
+                vcf_af: Some(crate::config::VcfThreshold::new(-0.01)),
+                ..sci_cfg.clone()
+            },
+            crate::config::Config {
+                vcf_min_depth: Some(crate::config::VcfThreshold::new(-1)),
+                ..sci_cfg.clone()
+            },
+            crate::config::Config {
+                vcf_cluster_dist: Some(crate::config::VcfThreshold::new(-2)),
+                ..sci_cfg.clone()
+            },
+            crate::config::Config {
+                vcf_min_vd: Some(crate::config::VcfThreshold::with_raw(2, "99".to_string())),
+                ..sci_cfg.clone()
+            },
+            crate::config::Config {
+                vcf_gt_freq: Some(1.01),
+                ..sci_cfg.clone()
+            },
+        ] {
+            bad_vcf_cfg.vcf_pval_raw = None;
+            assert!(matches!(
+                resolve_effective_config(&bad_vcf_cfg).unwrap_err(),
+                VardictError::Parse(_)
+            ));
+        }
     }
 
     #[test]

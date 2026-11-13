@@ -19,7 +19,8 @@ where
     let mut b = bx;
     let mut c = a;
     let mut fc = fa;
-    let mut maxit = *maxit_ptr + 1;
+    let orig = i64::from(*maxit_ptr);
+    let mut maxit = orig + 1;
     let tol = *tol_ptr;
 
     if fa == 0.0 {
@@ -52,7 +53,7 @@ where
         new_step = (c - b) / 2.0;
 
         if new_step.abs() <= tol_act || fb == 0.0 {
-            *maxit_ptr -= maxit;
+            *maxit_ptr = (orig - maxit).clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
             *tol_ptr = (c - b).abs();
             return b;
         }
@@ -144,5 +145,25 @@ mod tests {
         let tol = eps.powf(0.25);
         let root = uniroot(eps, 1.0, eval, tol);
         assert!((root - 0.35818903155718163).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_zeroin_i32_max_and_min_maxit_no_overflow() {
+        let mut f = |x: f64| x * x - 4.0;
+        let fa = f(0.0);
+        let fb = f(3.0);
+        let mut tol = 1e-12;
+        let mut maxit = i32::MAX;
+        let root = zeroin_c(0.0, 3.0, fa, fb, &mut f, &mut tol, &mut maxit);
+        assert!((root - 2.0).abs() < 1e-11);
+        assert!(
+            (1..100).contains(&maxit),
+            "expected converged iteration count in 1..100, got {maxit}"
+        );
+
+        let mut tol_min = 1e-12;
+        let mut maxit_min = i32::MIN;
+        let _ = zeroin_c(0.0, 3.0, fa, fb, &mut f, &mut tol_min, &mut maxit_min);
+        assert_eq!(maxit_min, -1);
     }
 }

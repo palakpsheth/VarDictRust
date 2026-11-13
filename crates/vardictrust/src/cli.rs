@@ -22,6 +22,17 @@ const GNU_ONLY_LONG_FLAGS_SINGLE_DASH: &[&str] = &[
     "-vcf-pval",
     "-min-splitreads",
     "-no-pstd-filter",
+    "-vcf-af",
+    "-vcf-min-depth",
+    "-vcf-min-vd",
+    "-vcf-qmean",
+    "-vcf-mapq",
+    "-vcf-pmean",
+    "-vcf-sn",
+    "-vcf-max-nm",
+    "-vcf-gt-freq",
+    "-vcf-msi",
+    "-vcf-cluster-dist",
     "-no-end",
     "-output",
     "-tbi",
@@ -62,20 +73,29 @@ fn parse_vcf_pval_token(s: &str) -> Result<(f64, String), String> {
     vardictrust_core::config::parse_vcf_pval_token(s)
 }
 
-/// Strict base-10 non-negative integer parser for `--min-splitreads <INT>` (`var2vcf_valid.pl -T`).
-fn parse_non_negative_splitreads(s: &str) -> Result<i32, String> {
-    if s.is_empty() || s.trim() != s || s == "-3" {
-        return Err(format!("Invalid --min-splitreads value '{s}'"));
-    }
-    let v = s
-        .parse::<i32>()
-        .map_err(|e| format!("Invalid --min-splitreads value '{s}': {e}"))?;
-    if v < 0 {
-        return Err(format!(
-            "Invalid --min-splitreads value '{s}': must be an integer >= 0"
-        ));
-    }
-    Ok(v)
+macro_rules! def_vcf_cli_parsers {
+    ($(($fn_name:ident, $flag:literal, $ty:ty, $delegate:path)),* $(,)?) => {
+        $(
+            fn $fn_name(s: &str) -> Result<$ty, String> {
+                $delegate(s, $flag)
+            }
+        )*
+    };
+}
+
+def_vcf_cli_parsers! {
+    (parse_min_splitreads, "--min-splitreads", i32, vardictrust_core::config::parse_vcf_nonneg_i32),
+    (parse_vcf_af, "--vcf-af", vardictrust_core::config::VcfThreshold<f64>, vardictrust_core::config::parse_vcf_threshold_nonneg_f64),
+    (parse_vcf_min_depth, "--vcf-min-depth", vardictrust_core::config::VcfThreshold<i32>, vardictrust_core::config::parse_vcf_threshold_nonneg_i32),
+    (parse_vcf_min_vd, "--vcf-min-vd", vardictrust_core::config::VcfThreshold<i32>, vardictrust_core::config::parse_vcf_threshold_nonneg_i32),
+    (parse_vcf_qmean, "--vcf-qmean", vardictrust_core::config::VcfThreshold<f64>, vardictrust_core::config::parse_vcf_threshold_nonneg_f64),
+    (parse_vcf_mapq, "--vcf-mapq", vardictrust_core::config::VcfThreshold<f64>, vardictrust_core::config::parse_vcf_threshold_nonneg_f64),
+    (parse_vcf_pmean, "--vcf-pmean", vardictrust_core::config::VcfThreshold<f64>, vardictrust_core::config::parse_vcf_threshold_nonneg_f64),
+    (parse_vcf_sn, "--vcf-sn", vardictrust_core::config::VcfThreshold<f64>, vardictrust_core::config::parse_vcf_threshold_nonneg_f64),
+    (parse_vcf_max_nm, "--vcf-max-nm", vardictrust_core::config::VcfThreshold<f64>, vardictrust_core::config::parse_vcf_threshold_nonneg_f64),
+    (parse_vcf_gt_freq, "--vcf-gt-freq", f64, vardictrust_core::config::parse_vcf_unit_f64),
+    (parse_vcf_msi, "--vcf-msi", vardictrust_core::config::VcfThreshold<f64>, vardictrust_core::config::parse_vcf_threshold_nonneg_f64),
+    (parse_vcf_cluster_dist, "--vcf-cluster-dist", vardictrust_core::config::VcfThreshold<i32>, vardictrust_core::config::parse_vcf_threshold_nonneg_i32),
 }
 
 fn is_known_single_dash_long_flag(flag: &str) -> bool {
@@ -188,6 +208,17 @@ fn takes_mandatory_next_token(arg: &str) -> bool {
             | "--stats-json"
             | "--vcf-pval"
             | "--min-splitreads"
+            | "--vcf-af"
+            | "--vcf-min-depth"
+            | "--vcf-min-vd"
+            | "--vcf-qmean"
+            | "--vcf-mapq"
+            | "--vcf-pmean"
+            | "--vcf-sn"
+            | "--vcf-max-nm"
+            | "--vcf-gt-freq"
+            | "--vcf-msi"
+            | "--vcf-cluster-dist"
             | "-trim"
             | "--trim"
             | "-VS"
@@ -1069,13 +1100,123 @@ pub struct Cli {
         value_name = "INT",
         num_args = 1,
         allow_negative_numbers = true,
-        value_parser = parse_non_negative_splitreads
+        value_parser = parse_min_splitreads
     )]
     pub min_splitreads: Vec<i32>,
 
     /// Disable the PSTD=0 single-position read filter in single-sample VCF output (ports var2vcf_valid.pl -P 0).
     #[arg(long = "no-pstd-filter")]
     pub no_pstd_filter: bool,
+
+    /// Minimum allele frequency threshold for VCF FILTER/GT (overrides -f in VCF output; ports var2vcf_valid.pl / var2vcf_paired.pl -f).
+    #[arg(
+        long = "vcf-af",
+        value_name = "FLOAT",
+        num_args = 1,
+        allow_negative_numbers = true,
+        value_parser = parse_vcf_af
+    )]
+    pub vcf_af: Vec<vardictrust_core::config::VcfThreshold<f64>>,
+
+    /// Minimum total read depth for VCF FILTER (ports var2vcf_valid.pl -d [default: 3] / var2vcf_paired.pl -d [default: 5]).
+    #[arg(
+        long = "vcf-min-depth",
+        value_name = "INT",
+        num_args = 1,
+        allow_negative_numbers = true,
+        value_parser = parse_vcf_min_depth
+    )]
+    pub vcf_min_depth: Vec<vardictrust_core::config::VcfThreshold<i32>>,
+
+    /// Minimum variant depth for VCF FILTER (ports var2vcf_valid.pl -v [default: 2] / var2vcf_paired.pl -v [default: 3]).
+    #[arg(
+        long = "vcf-min-vd",
+        value_name = "INT",
+        num_args = 1,
+        allow_negative_numbers = true,
+        value_parser = parse_vcf_min_vd
+    )]
+    pub vcf_min_vd: Vec<vardictrust_core::config::VcfThreshold<i32>>,
+
+    /// Minimum mean base quality for VCF FILTER (ports var2vcf_valid.pl / var2vcf_paired.pl -q). [default: 22.5]
+    #[arg(
+        long = "vcf-qmean",
+        value_name = "FLOAT",
+        num_args = 1,
+        allow_negative_numbers = true,
+        value_parser = parse_vcf_qmean
+    )]
+    pub vcf_qmean: Vec<vardictrust_core::config::VcfThreshold<f64>>,
+
+    /// Minimum mean mapping quality for VCF FILTER (ports var2vcf_valid.pl -Q [default: 10] / var2vcf_paired.pl -Q [default: 0]).
+    #[arg(
+        long = "vcf-mapq",
+        value_name = "FLOAT",
+        num_args = 1,
+        allow_negative_numbers = true,
+        value_parser = parse_vcf_mapq
+    )]
+    pub vcf_mapq: Vec<vardictrust_core::config::VcfThreshold<f64>>,
+
+    /// Minimum mean read position for VCF FILTER (ports var2vcf_valid.pl / var2vcf_paired.pl -p). [default: 8]
+    #[arg(
+        long = "vcf-pmean",
+        value_name = "FLOAT",
+        num_args = 1,
+        allow_negative_numbers = true,
+        value_parser = parse_vcf_pmean
+    )]
+    pub vcf_pmean: Vec<vardictrust_core::config::VcfThreshold<f64>>,
+
+    /// Minimum signal-to-noise (qratio) for VCF FILTER (ports var2vcf_valid.pl / var2vcf_paired.pl -o). [default: 1.5]
+    #[arg(
+        long = "vcf-sn",
+        value_name = "FLOAT",
+        num_args = 1,
+        allow_negative_numbers = true,
+        value_parser = parse_vcf_sn
+    )]
+    pub vcf_sn: Vec<vardictrust_core::config::VcfThreshold<f64>>,
+
+    /// Maximum mean mismatches (NM) for VCF FILTER (ports var2vcf_valid.pl / var2vcf_paired.pl -m). [default: 5.25]
+    #[arg(
+        long = "vcf-max-nm",
+        value_name = "FLOAT",
+        num_args = 1,
+        allow_negative_numbers = true,
+        value_parser = parse_vcf_max_nm
+    )]
+    pub vcf_max_nm: Vec<vardictrust_core::config::VcfThreshold<f64>>,
+
+    /// Homozygous 1/1 genotype AF margin (1 - AF < FLOAT) in VCF output (ports var2vcf_valid.pl / var2vcf_paired.pl -F). [default: 0.2]
+    #[arg(
+        long = "vcf-gt-freq",
+        value_name = "FLOAT",
+        num_args = 1,
+        allow_negative_numbers = true,
+        value_parser = parse_vcf_gt_freq
+    )]
+    pub vcf_gt_freq: Vec<f64>,
+
+    /// Maximum non-monomer MSI repeat count for VCF FILTER (ports var2vcf_valid.pl / var2vcf_paired.pl -I). [default: 12]
+    #[arg(
+        long = "vcf-msi",
+        value_name = "FLOAT",
+        num_args = 1,
+        allow_negative_numbers = true,
+        value_parser = parse_vcf_msi
+    )]
+    pub vcf_msi: Vec<vardictrust_core::config::VcfThreshold<f64>>,
+
+    /// SNV cluster filter window in bp for VCF output (ports var2vcf_valid.pl / var2vcf_paired.pl -c). [default: 0]
+    #[arg(
+        long = "vcf-cluster-dist",
+        value_name = "INT",
+        num_args = 1,
+        allow_negative_numbers = true,
+        value_parser = parse_vcf_cluster_dist
+    )]
+    pub vcf_cluster_dist: Vec<vardictrust_core::config::VcfThreshold<i32>>,
 
     /// Write output (.vcf or .var) directly to file; .gz/.bgz suffixes use multithreaded BGZF
     #[arg(long = "output", value_name = "PATH", allow_hyphen_values = true)]
@@ -1199,6 +1340,7 @@ impl Cli {
         // only `"0"` (or `""`) is falsy; non-`"0"` zero spellings such as `"0.0"`
         // or `"0.00"` are truthy strings in Perl boolean context and keep `0.0`.
         let af_threshold_truthy_zero = parsed_freq == 0.0 && freq_str.trim() != "0";
+        let af_threshold = if parsed_freq == 0.0 { 0.0 } else { parsed_freq };
 
         let sample_regexp = match self.sample_regexp.first() {
             Some(raw) => vardictrust_core::config::validate_sample_regexp(raw)
@@ -1262,7 +1404,7 @@ impl Cli {
             freq: parsed_freq,
             // The writer's $Freq is the literal -f value even under -p (perl
             // receives -f from the pipeline, not java's pileup override).
-            af_threshold: parsed_freq,
+            af_threshold,
             af_threshold_truthy_zero,
             sample,
             sample_explicit,
@@ -1379,8 +1521,20 @@ impl Cli {
             vcf_pval_raw,
             vcf_min_splitreads: self.min_splitreads.first().copied().unwrap_or(1),
             vcf_pstd_filter: !self.no_pstd_filter,
+            vcf_af: self.vcf_af.first().cloned(),
+            vcf_min_depth: self.vcf_min_depth.first().cloned(),
+            vcf_min_vd: self.vcf_min_vd.first().cloned(),
+            vcf_qmean: self.vcf_qmean.first().cloned(),
+            vcf_mapq: self.vcf_mapq.first().cloned(),
+            vcf_pmean: self.vcf_pmean.first().cloned(),
+            vcf_sn: self.vcf_sn.first().cloned(),
+            vcf_max_nm: self.vcf_max_nm.first().cloned(),
+            vcf_gt_freq: self.vcf_gt_freq.first().copied(),
+            vcf_msi: self.vcf_msi.first().cloned(),
+            vcf_cluster_dist: self.vcf_cluster_dist.first().cloned(),
         };
         cfg.apply_pileup_overrides();
+        cfg.validate_vcf_thresholds()?;
         Ok(cfg)
     }
 }
@@ -1612,6 +1766,12 @@ mod tests {
         let cfg_zero_exp = cli_zero_exp.to_config().unwrap();
         assert_eq!(cfg_zero_exp.af_threshold, 0.0);
         assert!(cfg_zero_exp.af_threshold_truthy_zero);
+
+        let cli_neg_zero =
+            Cli::try_parse_from(args(&["-b", "a.bam", "-G", "r.fa", "-f=-0.0"])).unwrap();
+        let cfg_neg_zero = cli_neg_zero.to_config().unwrap();
+        assert_eq!(cfg_neg_zero.af_threshold.to_bits(), 0.0_f64.to_bits());
+        assert!(cfg_neg_zero.af_threshold_truthy_zero);
     }
 
     #[test]
@@ -2709,5 +2869,204 @@ mod tests {
         let g_norm = normalize_args(&args(&["-G", "r.fa", "-b", "a.bam", "-g", "0", "r.bed"]));
         let g_cfg = Cli::try_parse_from(&g_norm).unwrap().to_config().unwrap();
         assert!(g_cfg.col_gene.is_none());
+    }
+
+    #[test]
+    fn all_11_var2vcf_threshold_flags_and_typo_rejection() {
+        use vardictrust_core::config::VcfThreshold;
+
+        let parse_pipeline = |raw_flags: &[&str]| -> vardictrust_core::config::Config {
+            let norm = normalize_args(&args(raw_flags));
+            check_unsupported(&norm).expect("check_unsupported must pass");
+            let cli = Cli::try_parse_from(&norm)
+                .unwrap_or_else(|e| panic!("Cli::try_parse_from failed on {norm:?}: {e}"));
+            cli.to_config().expect("to_config must succeed")
+        };
+
+        // 1. Defaults: all 11 fields are None when omitted
+        let def = parse_pipeline(&["-G", "ref.fa", "-b", "in.bam", "-R", "chr1:1-100"]);
+        assert!(def.vcf_af.is_none());
+        assert!(def.vcf_min_depth.is_none());
+        assert!(def.vcf_min_vd.is_none());
+        assert!(def.vcf_qmean.is_none());
+        assert!(def.vcf_mapq.is_none());
+        assert!(def.vcf_pmean.is_none());
+        assert!(def.vcf_sn.is_none());
+        assert!(def.vcf_max_nm.is_none());
+        assert!(def.vcf_gt_freq.is_none());
+        assert!(def.vcf_msi.is_none());
+        assert!(def.vcf_cluster_dist.is_none());
+
+        // 2. Explicit values + first-wins + raw token preservation + BED -z safety
+        let custom = parse_pipeline(&[
+            "-G",
+            "ref.fa",
+            "-b",
+            "in.bam",
+            "--vcf-af",
+            "0.050",
+            "--vcf-af",
+            "0.25",
+            "--vcf-min-depth",
+            "0",
+            "--vcf-min-depth",
+            "9",
+            "--vcf-min-vd=0",
+            "--vcf-min-vd=5",
+            "--vcf-qmean",
+            "20.0",
+            "--vcf-mapq",
+            "-0",
+            "--vcf-pmean",
+            "7.5",
+            "--vcf-sn",
+            "2.00",
+            "--vcf-max-nm",
+            "4.5",
+            "--vcf-gt-freq",
+            "+0.00",
+            "--vcf-msi",
+            "10.5",
+            "--vcf-cluster-dist",
+            "15",
+            "-z",
+            "regions.bed",
+        ]);
+        assert_eq!(
+            custom.vcf_af,
+            Some(VcfThreshold::with_raw(0.05, "0.050".to_string()))
+        );
+        assert_eq!(
+            custom.vcf_min_depth,
+            Some(VcfThreshold::with_raw(0, "0".to_string()))
+        );
+        assert_eq!(
+            custom.vcf_min_vd,
+            Some(VcfThreshold::with_raw(0, "0".to_string()))
+        );
+        assert_eq!(
+            custom.vcf_qmean,
+            Some(VcfThreshold::with_raw(20.0, "20.0".to_string()))
+        );
+        assert_eq!(
+            custom.vcf_mapq,
+            Some(VcfThreshold::with_raw(0.0, "0".to_string()))
+        );
+        assert_eq!(
+            custom.vcf_pmean,
+            Some(VcfThreshold::with_raw(7.5, "7.5".to_string()))
+        );
+        assert_eq!(
+            custom.vcf_sn,
+            Some(VcfThreshold::with_raw(2.0, "2.00".to_string()))
+        );
+        assert_eq!(
+            custom.vcf_max_nm,
+            Some(VcfThreshold::with_raw(4.5, "4.5".to_string()))
+        );
+        assert_eq!(custom.vcf_gt_freq, Some(0.0));
+        assert!(custom.vcf_gt_freq.unwrap().is_sign_positive());
+        assert_eq!(
+            custom.vcf_msi,
+            Some(VcfThreshold::with_raw(10.5, "10.5".to_string()))
+        );
+        assert_eq!(
+            custom.vcf_cluster_dist,
+            Some(VcfThreshold::with_raw(15, "15".to_string()))
+        );
+        assert!(custom.zero_based);
+        assert_eq!(custom.bed.as_deref(), Some("regions.bed"));
+
+        // 2b. Leading-zero / `+`-prefixed / `-0` integer CLI tokens preserved verbatim for Perl dualvar labels
+        let raw_int_tokens = parse_pipeline(&[
+            "-G",
+            "ref.fa",
+            "-b",
+            "in.bam",
+            "--vcf-min-depth",
+            "03",
+            "--vcf-min-vd",
+            "+02",
+            "--vcf-cluster-dist",
+            "010",
+            "-R",
+            "chr1:1-100",
+        ]);
+        assert_eq!(
+            raw_int_tokens.vcf_min_depth,
+            Some(VcfThreshold::with_raw(3, "03".to_string()))
+        );
+        assert_eq!(
+            raw_int_tokens.vcf_min_vd,
+            Some(VcfThreshold::with_raw(2, "+02".to_string()))
+        );
+        assert_eq!(
+            raw_int_tokens.vcf_cluster_dist,
+            Some(VcfThreshold::with_raw(10, "010".to_string()))
+        );
+
+        // 3. Invalid / hostile value rejection across all 11 flags
+        let over_64 = format!("0.{}", "0".repeat(63));
+        for bad_flags in [
+            vec!["--vcf-af", "-0.01", "-R", "chr1:1-100"],
+            vec!["--vcf-af", "-1e-400", "-R", "chr1:1-100"],
+            vec!["--vcf-af", over_64.as_str(), "-R", "chr1:1-100"],
+            vec!["--vcf-min-depth", "-1", "-R", "chr1:1-100"],
+            vec!["--vcf-min-depth", "-3", "-R", "chr1:1-100"],
+            vec!["--vcf-min-depth", "2.5", "-R", "chr1:1-100"],
+            vec!["--vcf-min-vd", "-1", "-R", "chr1:1-100"],
+            vec!["--vcf-qmean", "NaN", "-R", "chr1:1-100"],
+            vec!["--vcf-mapq", "-1", "-R", "chr1:1-100"],
+            vec!["--vcf-pmean", "-3", "-R", "chr1:1-100"],
+            vec!["--vcf-sn", "inf", "-R", "chr1:1-100"],
+            vec!["--vcf-max-nm", "5.25f", "-R", "chr1:1-100"],
+            vec!["--vcf-gt-freq", "1.01", "-R", "chr1:1-100"],
+            vec!["--vcf-gt-freq", "-0.1", "-R", "chr1:1-100"],
+            vec!["--vcf-msi", "", "-R", "chr1:1-100"],
+            vec!["--vcf-cluster-dist", "-1", "-R", "chr1:1-100"],
+            vec!["--vcf-cluster-dist", "-R", "chr1:1-100"],
+        ] {
+            let mut full = vec!["-G", "ref.fa", "-b", "in.bam"];
+            full.extend_from_slice(&bad_flags);
+            let norm = normalize_args(&args(&full));
+            assert!(
+                Cli::try_parse_from(&norm).is_err(),
+                "expected failure for {bad_flags:?} (norm={norm:?})"
+            );
+        }
+
+        // 4. Separate-value single-dash typo rejection for all 11 new flags
+        for single_dash in [
+            "-vcf-af",
+            "-vcf-min-depth",
+            "-vcf-min-vd",
+            "-vcf-qmean",
+            "-vcf-mapq",
+            "-vcf-pmean",
+            "-vcf-sn",
+            "-vcf-max-nm",
+            "-vcf-gt-freq",
+            "-vcf-msi",
+            "-vcf-cluster-dist",
+        ] {
+            let norm = normalize_args(&args(&[
+                "-G",
+                "r.fa",
+                "-b",
+                "a.bam",
+                single_dash,
+                "1",
+                "-R",
+                "c:1-10",
+            ]));
+            let err = check_unsupported(&norm).expect_err(&format!(
+                "expected Parse error for single-dash typo {single_dash}"
+            ));
+            let expected = format!("did you mean '-{single_dash}'?");
+            assert!(
+                err.to_string().contains(&expected),
+                "missing '{expected}' in {err}"
+            );
+        }
     }
 }

@@ -41,7 +41,7 @@ about:
     VarDictRust is an ultra-fast, memory-safe, idiomatic-Rust variant caller
     producing 100% parity against VarDictJava v1.8.3 across germline, somatic,
     and amplicon sequencing assays, scaling to deep whole-genome sequencing (WGS).
-  doc_url: https://github.com/palakpsheth/VarDictRust
+  doc_url: https://vardictrust.readthedocs.io/
   dev_url: https://github.com/palakpsheth/VarDictRust
 
 extra:

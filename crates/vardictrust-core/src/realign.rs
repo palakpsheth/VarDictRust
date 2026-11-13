@@ -1509,17 +1509,22 @@ pub fn realigndel(
             MismatchResult::default()
         };
 
-        let mm3 = &r3.mismatches;
-        let sc3p = &r3.scp;
-        let nm3 = r3.nm;
-        let misp3 = r3.misp;
-        let misnt3 = &r3.misnt;
-
-        let mm5 = &r5.mismatches;
-        let sc5p = &r5.scp;
-        let nm5 = r5.nm;
-        let misp5 = r5.misp;
-        let misnt5 = &r5.misnt;
+        let MismatchResult {
+            mismatches: mm3,
+            scp: ref sc3p,
+            nm: nm3,
+            misp: misp3,
+            misnt: ref misnt3,
+        } = r3;
+        let MismatchResult {
+            mismatches: mm5,
+            scp: ref sc5p,
+            nm: nm5,
+            misp: misp5,
+            misnt: ref misnt5,
+        } = r5;
+        let mm3_len_is_one = mm3.len() == 1;
+        let mm5_len_is_one = mm5.len() == 1;
 
         if config.verbose {
             crate::verbose_eprintln!(
@@ -1533,11 +1538,11 @@ pub fn realigndel(
             );
         }
 
-        let mut mmm = mm3.clone();
-        mmm.extend(mm5.clone());
+        let mut mmm = mm3;
+        mmm.extend(mm5);
 
         for mismatch in mmm {
-            let mut mm = mismatch.mismatch_sequence.clone();
+            let mut mm = mismatch.mismatch_sequence;
             let mp = mismatch.mismatch_position;
             let me = mismatch.end;
 
@@ -1612,7 +1617,8 @@ pub fn realigndel(
                 if f > 1.0 {
                     f = 1.0;
                 }
-                *ref_coverage.entry(p).or_default() += (tv.cnt as f64 * f) as i32;
+                let cov_entry = ref_coverage.entry(p).or_default();
+                *cov_entry = cov_entry.saturating_add((tv.cnt as f64 * f) as i32);
 
                 if let Some(ref_base) = reference.get_base(chr, p as u32) {
                     if let Some(ref_var) =
@@ -1631,9 +1637,9 @@ pub fn realigndel(
                     if let Some(lref) =
                         get_variation_maybe_mut(non_insertion_variants, p, Some(ref_base))
                     {
-                        lref.cnt -= tv.cnt;
-                        lref.hicnt -= tv.hicnt;
-                        lref.locnt -= tv.locnt;
+                        lref.cnt = lref.cnt.saturating_sub(tv.cnt);
+                        lref.hicnt = lref.hicnt.saturating_sub(tv.hicnt);
+                        lref.locnt = lref.locnt.saturating_sub(tv.locnt);
                         lref.pmean -= tv.pmean;
                         lref.qmean -= tv.qmean;
                         lref.mqmean -= tv.mqmean;
@@ -1669,7 +1675,7 @@ pub fn realigndel(
             }
         }
 
-        if misp3 != 0 && mm3.len() == 1 {
+        if misp3 != 0 && mm3_len_is_one {
             let mut remove_misp3 = false;
             if let Some(entry) = non_insertion_variants.get(&misp3) {
                 if let Some(var) = entry.map.get(misnt3) {
@@ -1688,7 +1694,7 @@ pub fn realigndel(
             }
         }
 
-        if misp5 != 0 && mm5.len() == 1 {
+        if misp5 != 0 && mm5_len_is_one {
             let mut remove_misp5 = false;
             if let Some(entry) = non_insertion_variants.get(&misp5) {
                 if let Some(var) = entry.map.get(misnt5) {
@@ -1737,7 +1743,8 @@ pub fn realigndel(
                     }
                     if !seq.is_empty() && is_match(&seq, wupseq.as_bytes(), -1, 3) {
                         if sc5pp > p {
-                            *ref_coverage.entry(p).or_default() += tv.variation.cnt;
+                            let cov_entry = ref_coverage.entry(p).or_default();
+                            *cov_entry = cov_entry.saturating_add(tv.variation.cnt);
                         }
                         let vref = get_variation(non_insertion_variants, p, vn);
                         crate::variations::util::adj_cnt(vref, &tv.variation, None);
@@ -1817,7 +1824,8 @@ pub fn realigndel(
                             );
                         }
                         if sc3pp <= p {
-                            *ref_coverage.entry(p).or_default() += tv.variation.cnt;
+                            let cov_entry = ref_coverage.entry(p).or_default();
+                            *cov_entry = cov_entry.saturating_add(tv.variation.cnt);
                         }
 
                         let mut lref_owned = None;
@@ -1837,9 +1845,9 @@ pub fn realigndel(
                         crate::variations::util::adj_cnt(vref, &tv.variation, None);
 
                         if let Some(mut lref) = lref_owned {
-                            lref.cnt -= tv.variation.cnt;
-                            lref.hicnt -= tv.variation.hicnt;
-                            lref.locnt -= tv.variation.locnt;
+                            lref.cnt = lref.cnt.saturating_sub(tv.variation.cnt);
+                            lref.hicnt = lref.hicnt.saturating_sub(tv.variation.hicnt);
+                            lref.locnt = lref.locnt.saturating_sub(tv.variation.locnt);
                             lref.pmean -= tv.variation.pmean;
                             lref.qmean -= tv.variation.qmean;
                             lref.mqmean -= tv.variation.mqmean;
@@ -1906,10 +1914,8 @@ pub fn realigndel(
                                     h_mut.qmean = 0.0;
                                     h_mut.mqmean = 0.0;
                                     h_mut.nm = 0.0;
-                                    let dir_t = h_mut.get_dir(true);
-                                    let dir_f = h_mut.get_dir(false);
-                                    h_mut.add_dir(true, -dir_t);
-                                    h_mut.add_dir(false, -dir_f);
+                                    h_mut.rev = 0;
+                                    h_mut.fwd = 0;
                                     crate::variations::util::correct_cnt(h_mut);
                                 }
                             }
@@ -2134,23 +2140,28 @@ pub fn realignins(
             MismatchResult::default()
         };
 
-        let mm3 = &find_mm3_res.mismatches;
-        let sc3p = &find_mm3_res.scp;
-        let nm3 = find_mm3_res.nm;
-        let misp3 = find_mm3_res.misp;
-        let misnt3 = &find_mm3_res.misnt;
+        let MismatchResult {
+            mismatches: mm3,
+            scp: ref sc3p,
+            nm: nm3,
+            misp: misp3,
+            misnt: ref misnt3,
+        } = find_mm3_res;
+        let MismatchResult {
+            mismatches: mm5,
+            scp: ref sc5p,
+            nm: nm5,
+            misp: misp5,
+            misnt: ref misnt5,
+        } = find_mm5_res;
+        let mm3_len_is_one = mm3.len() == 1;
+        let mm5_len_is_one = mm5.len() == 1;
 
-        let mm5 = &find_mm5_res.mismatches;
-        let sc5p = &find_mm5_res.scp;
-        let nm5 = find_mm5_res.nm;
-        let misp5 = find_mm5_res.misp;
-        let misnt5 = &find_mm5_res.misnt;
-
-        let mut mmm = mm3.clone();
-        mmm.extend(mm5.clone());
+        let mut mmm = mm3;
+        mmm.extend(mm5);
 
         for mismatch in mmm {
-            let mut mismatch_bases = mismatch.mismatch_sequence.clone();
+            let mut mismatch_bases = mismatch.mismatch_sequence;
             let mismatch_position = mismatch.mismatch_position;
             let mismatch_end = mismatch.end;
 
@@ -2213,15 +2224,17 @@ pub fn realignins(
             }
 
             if mismatch_position > p && mismatch_end == 5 {
-                *ref_coverage.entry(p).or_default() += variation.cnt;
+                let cov_entry = ref_coverage.entry(p).or_default();
+                *cov_entry = cov_entry.saturating_add(variation.cnt);
             }
 
             let mut lref_val = None;
             if mismatch_position > p && mismatch_end == 3 {
                 if let Some(ref_base) = reference.get_base(chr, p as u32) {
-                    let ref_base_str = (ref_base as char).to_string();
+                    let mut ch_buf = [0u8; 4];
+                    let ref_base_str: &str = (ref_base as char).encode_utf8(&mut ch_buf);
                     if let Some(entry) = non_insertion_variants.get_mut(&p) {
-                        if let Some(lref) = entry.map.get_mut(&ref_base_str) {
+                        if let Some(lref) = entry.map.get_mut(ref_base_str) {
                             lref_val = Some(lref);
                         }
                     }
@@ -2238,7 +2251,7 @@ pub fn realignins(
             }
         }
 
-        if misp3 != 0 && mm3.len() == 1 {
+        if misp3 != 0 && mm3_len_is_one {
             let mut remove_misp3 = false;
             if let Some(entry) = non_insertion_variants.get(&misp3) {
                 if let Some(var) = entry.map.get(misnt3) {
@@ -2257,7 +2270,7 @@ pub fn realignins(
             }
         }
 
-        if misp5 != 0 && mm5.len() == 1 {
+        if misp5 != 0 && mm5_len_is_one {
             let mut remove_misp5 = false;
             if let Some(entry) = non_insertion_variants.get(&misp5) {
                 if let Some(var) = entry.map.get(misnt5) {
@@ -2320,7 +2333,8 @@ pub fn realignins(
                             );
                         }
                         if sc5pp > p {
-                            *ref_coverage.entry(p).or_default() += tv.variation.cnt;
+                            let cov_entry = ref_coverage.entry(p).or_default();
+                            *cov_entry = cov_entry.saturating_add(tv.variation.cnt);
                         }
                         let vref_mut = get_variation(insertion_variants, p, vn);
                         crate::variations::util::adj_cnt(vref_mut, &tv.variation, None);
@@ -2388,7 +2402,8 @@ pub fn realignins(
                             || (insert.len() as f64)
                                 > (tv.variation.pmean / (tv.variation.cnt as f64))
                         {
-                            *ref_coverage.entry(p).or_default() += tv.variation.cnt;
+                            let cov_entry = ref_coverage.entry(p).or_default();
+                            *cov_entry = cov_entry.saturating_add(tv.variation.cnt);
                         }
 
                         let mut lref_val = None;
@@ -2402,9 +2417,11 @@ pub fn realignins(
 
                         if !insert_gt_mean_pos && sc3pp > p {
                             if let Some(ref_base) = reference.get_base(chr, p as u32) {
-                                let ref_base_str = (ref_base as char).to_string();
+                                let mut ch_buf = [0u8; 4];
+                                let ref_base_str: &str =
+                                    (ref_base as char).encode_utf8(&mut ch_buf);
                                 if let Some(entry) = non_insertion_variants.get_mut(&p) {
-                                    if let Some(lref) = entry.map.get_mut(&ref_base_str) {
+                                    if let Some(lref) = entry.map.get_mut(ref_base_str) {
                                         lref_val = Some(lref);
                                     }
                                 }
@@ -2466,9 +2483,10 @@ pub fn realignins(
                 && (diff35 as f64) < (max_read_length as f64) * 0.75
             {
                 if let Some(ref_base) = reference.get_base(chr, p as u32) {
-                    let ref_base_str = (ref_base as char).to_string();
+                    let mut ch_buf = [0u8; 4];
+                    let ref_base_str: &str = (ref_base as char).encode_utf8(&mut ch_buf);
                     if let Some(entry) = non_insertion_variants.get_mut(&p) {
-                        if let Some(ref_var) = entry.map.get_mut(&ref_base_str) {
+                        if let Some(ref_var) = entry.map.get_mut(ref_base_str) {
                             crate::variations::util::adj_ref_factor(
                                 ref_var,
                                 ((diff35 - 1) as f64) / (max_read_length as f64),
@@ -2531,9 +2549,10 @@ pub fn realignins(
 
                 let mut ref_base_var = None;
                 if let Some(ref_base) = reference.get_base(chr, p as u32) {
-                    let ref_base_str = (ref_base as char).to_string();
+                    let mut ch_buf = [0u8; 4];
+                    let ref_base_str: &str = (ref_base as char).encode_utf8(&mut ch_buf);
                     if let Some(entry) = non_insertion_variants.get_mut(&p) {
-                        if let Some(lref) = entry.map.get_mut(&ref_base_str) {
+                        if let Some(lref) = entry.map.get_mut(ref_base_str) {
                             ref_base_var = Some(lref);
                         }
                     }
@@ -2573,6 +2592,8 @@ pub fn realignlgdel(
     splice: &mut rustc_hash::FxHashSet<String>,
 ) {
     let (adaptor_forward, adaptor_reverse) = fill_adaptor_maps(&config.adaptor);
+    let min_reads = i32::try_from(config.min_reads).unwrap_or(i32::MAX);
+    let indel_size = i32::try_from(config.indel_size).unwrap_or(i32::MAX);
     let extension = 5000;
     let longmm = 3;
     let region_start_i32 = i32::try_from(region.start.0).unwrap_or(i32::MAX);
@@ -2606,7 +2627,7 @@ pub fn realignlgdel(
                 continue;
             };
             let cnt = sc.variation.cnt;
-            if cnt < config.min_reads as i32 {
+            if cnt < min_reads {
                 break;
             }
             if sc.used {
@@ -2635,7 +2656,7 @@ pub fn realignlgdel(
             reference,
             -1,
             chr,
-            config.indel_size as i32,
+            indel_size,
             chr_len,
         );
         let mut extra = Vec::new();
@@ -2661,15 +2682,15 @@ pub fn realignlgdel(
             let clusters = sv_mark.1;
             let pairs = sv_mark.2;
 
-            if svcov == 0 && cnt <= config.min_reads as i32 {
+            if svcov == 0 && cnt <= min_reads {
                 continue;
             }
 
             let sv = crate::variations::VariationMap::get_sv(non_insertion_variants, bp);
             sv.r#type = "DEL".to_string();
-            sv.pairs += pairs;
-            sv.splits += cnt;
-            sv.clusters += clusters;
+            sv.pairs = sv.pairs.saturating_add(pairs);
+            sv.splits = sv.splits.saturating_add(cnt);
+            sv.clusters = sv.clusters.saturating_add(clusters);
 
             if bp < region_start_i32 {
                 let tts = bp.saturating_sub(max_read_length);
@@ -2844,7 +2865,7 @@ pub fn realignlgdel(
             if entry.sv.is_some()
                 && !soft_clips_3_end.contains_key(&sc3p)
                 && svcov == 0
-                && cnt <= config.min_reads as i32
+                && cnt <= min_reads
             {
                 crate::variations::VariationMap::remove_sv(non_insertion_variants, bp);
                 should_continue = true;
@@ -2872,7 +2893,7 @@ pub fn realignlgdel(
             }
         }
 
-        if dellen < config.indel_size as i32 {
+        if dellen < indel_size {
             for tp in bp..bp.saturating_add(dellen) {
                 inc_cnt(ref_coverage, tp, sc5_variation.cnt);
             }
@@ -2891,9 +2912,9 @@ pub fn realignlgdel(
                         bp,
                         ref_base_ch,
                     ) {
-                        ref_var.cnt -= sclip.variation.cnt;
-                        ref_var.hicnt -= sclip.variation.hicnt;
-                        ref_var.locnt -= sclip.variation.locnt;
+                        ref_var.cnt = ref_var.cnt.saturating_sub(sclip.variation.cnt);
+                        ref_var.hicnt = ref_var.hicnt.saturating_sub(sclip.variation.hicnt);
+                        ref_var.locnt = ref_var.locnt.saturating_sub(sclip.variation.locnt);
                         ref_var.pmean -= sclip.variation.pmean;
                         ref_var.qmean -= sclip.variation.qmean;
                         ref_var.mqmean -= sclip.variation.mqmean;
@@ -2904,7 +2925,7 @@ pub fn realignlgdel(
                     }
                 }
 
-                if sc3p == bp && dellen < config.indel_size as i32 {
+                if sc3p == bp && dellen < indel_size {
                     for tp in bp..bp.saturating_add(dellen) {
                         inc_cnt(ref_coverage, tp, sclip.variation.cnt);
                     }
@@ -2928,9 +2949,10 @@ pub fn realignlgdel(
                     }
                     if cnt_is_zero {
                         if let Some(ref_ch) = ref_ch_opt {
-                            let ref_ch_str = (ref_ch as char).to_string();
+                            let mut ch_buf = [0u8; 4];
+                            let ref_ch_str: &str = (ref_ch as char).encode_utf8(&mut ch_buf);
                             if let Some(vm) = non_insertion_variants.get_mut(&ip) {
-                                vm.map.shift_remove(&ref_ch_str);
+                                vm.map.shift_remove(ref_ch_str);
                             }
                         }
                     }
@@ -2970,7 +2992,7 @@ pub fn realignlgdel(
                 if let Some(inner) = dels5.get(&bp) {
                     if let Some(&dels5_cnt) = inner.get(&gt_str) {
                         let tv_cnt = entry.map.get(&gt_str).map(|v| v.cnt).unwrap_or(0);
-                        sv.splits += tv_cnt - dels5_cnt;
+                        sv.splits = sv.splits.saturating_add(tv_cnt.saturating_sub(dels5_cnt));
                     }
                 }
             }
@@ -2979,7 +3001,10 @@ pub fn realignlgdel(
         let tv_cnt = crate::variations::get_variation(non_insertion_variants, bp, &gt_str).cnt;
         if svcov > tv_cnt {
             let tv = crate::variations::get_variation(non_insertion_variants, bp, &gt_str);
-            add_var_factor(tv, (svcov - tv_cnt) as f64 / tv_cnt as f64);
+            add_var_factor(
+                tv,
+                (i64::from(svcov) - i64::from(tv_cnt)) as f64 / tv_cnt as f64,
+            );
         }
 
         if config.verbose {
@@ -3018,7 +3043,7 @@ pub fn realignlgdel(
                 continue;
             };
             let cnt = sc.variation.cnt;
-            if cnt < config.min_reads as i32 {
+            if cnt < min_reads {
                 break;
             }
             if sc.used {
@@ -3050,7 +3075,7 @@ pub fn realignlgdel(
             reference,
             1,
             chr,
-            config.indel_size as i32,
+            indel_size,
             chr_len,
         );
         let mut extra = Vec::new();
@@ -3076,15 +3101,15 @@ pub fn realignlgdel(
             let clusters = sv_mark.1;
             let pairs = sv_mark.2;
 
-            if svcov == 0 && cnt <= config.min_reads as i32 {
+            if svcov == 0 && cnt <= min_reads {
                 continue;
             }
 
             let sv = crate::variations::VariationMap::get_sv(non_insertion_variants, p);
             sv.r#type = "DEL".to_string();
-            sv.pairs += pairs;
-            sv.splits += cnt;
-            sv.clusters += clusters;
+            sv.pairs = sv.pairs.saturating_add(pairs);
+            sv.splits = sv.splits.saturating_add(cnt);
+            sv.clusters = sv.clusters.saturating_add(clusters);
 
             if bp > region_end_i32 {
                 let mut tts = bp.saturating_sub(max_read_length);
@@ -3203,7 +3228,7 @@ pub fn realignlgdel(
             if entry.sv.is_some()
                 && !soft_clips_5_end.contains_key(&sc5p)
                 && svcov == 0
-                && cnt <= config.min_reads as i32
+                && cnt <= min_reads
             {
                 crate::variations::VariationMap::remove_sv(non_insertion_variants, bp);
                 should_continue = true;
@@ -3232,7 +3257,7 @@ pub fn realignlgdel(
             tv.pstd = true;
         }
 
-        if dellen < config.indel_size as i32 {
+        if dellen < indel_size {
             let tp_end = bp
                 .saturating_add(dellen)
                 .saturating_add(extra.len() as i32)
@@ -3288,7 +3313,7 @@ pub fn realignlgdel(
                 if let Some(inner) = dels5.get(&bp) {
                     if let Some(&dels5_cnt) = inner.get(&gt_str) {
                         let tv_cnt = entry.map.get(&gt_str).map(|v| v.cnt).unwrap_or(0);
-                        sv.splits += tv_cnt - dels5_cnt;
+                        sv.splits = sv.splits.saturating_add(tv_cnt.saturating_sub(dels5_cnt));
                     }
                 }
             }
@@ -3309,7 +3334,10 @@ pub fn realignlgdel(
         let tv_cnt = crate::variations::get_variation(non_insertion_variants, bp, &gt_str).cnt;
         if svcov > tv_cnt {
             let tv = crate::variations::get_variation(non_insertion_variants, bp, &gt_str);
-            add_var_factor(tv, (svcov - tv_cnt) as f64 / tv_cnt as f64);
+            add_var_factor(
+                tv,
+                (i64::from(svcov) - i64::from(tv_cnt)) as f64 / tv_cnt as f64,
+            );
         }
     }
 }
@@ -3689,9 +3717,9 @@ pub fn realignlgins30(
                 crate::variations::util::adj_cnt(vref, &sc5v_var, None);
 
                 if let Some(mvref) = get_variation_maybe_mut(non_insertion_variants, bi, ref_base) {
-                    mvref.cnt -= sc3v_var.cnt;
-                    mvref.hicnt -= sc3v_var.hicnt;
-                    mvref.locnt -= sc3v_var.locnt;
+                    mvref.cnt = mvref.cnt.saturating_sub(sc3v_var.cnt);
+                    mvref.hicnt = mvref.hicnt.saturating_sub(sc3v_var.hicnt);
+                    mvref.locnt = mvref.locnt.saturating_sub(sc3v_var.locnt);
                     mvref.pmean -= sc3v_var.pmean;
                     mvref.qmean -= sc3v_var.qmean;
                     mvref.mqmean -= sc3v_var.mqmean;
@@ -3752,6 +3780,8 @@ pub fn realignlgins(
     splice: &mut rustc_hash::FxHashSet<String>,
 ) {
     let (adaptor_forward, adaptor_reverse) = fill_adaptor_maps(&config.adaptor);
+    let min_reads = i32::try_from(config.min_reads).unwrap_or(i32::MAX);
+    let sv_min_len = i32::try_from(config.sv_min_len).unwrap_or(i32::MAX);
     let extension = 5000;
     let region_start_i32 = i32::try_from(region.start.0).unwrap_or(i32::MAX);
     let region_end_i32 = i32::try_from(region.end.0).unwrap_or(i32::MAX);
@@ -3775,7 +3805,7 @@ pub fn realignlgins(
     });
 
     for (p, cnt) in tmp {
-        if cnt < config.min_reads as i32 {
+        if cnt < min_reads {
             break;
         }
         if soft_clips_5_end.get(&p).is_none_or(|sc| sc.used) {
@@ -3857,7 +3887,7 @@ pub fn realignlgins(
             }
 
             const SVFLANK: i32 = 50;
-            if bi.saturating_sub(p) > (config.sv_min_len as i32).saturating_add(2 * SVFLANK) {
+            if bi.saturating_sub(p) > sv_min_len.saturating_add(2 * SVFLANK) {
                 let mut tmp_ins = join_ref_int(reference, chr, p, p.saturating_add(SVFLANK - 1));
                 let dup_str = format!(
                     "<dup{}>",
@@ -3905,29 +3935,29 @@ pub fn realignlgins(
             bi = p_minus_1;
             let sv = crate::variations::VariationMap::get_sv(non_insertion_variants, bi);
             sv.r#type = "DUP".to_string();
-            sv.pairs += pairs;
-            sv.splits += cnt;
-            sv.clusters += clusters;
+            sv.pairs = sv.pairs.saturating_add(pairs);
+            sv.splits = sv.splits.saturating_add(cnt);
+            sv.clusters = sv.clusters.saturating_add(clusters);
         }
 
-        let ins_str = String::from_utf8_lossy(&ins).into_owned();
+        let plus_ins = format!("+{}", String::from_utf8_lossy(&ins));
         if config.verbose {
             crate::verbose_eprintln!(
-                "  Found candidate lgins from 5: {} +{} {} {}",
+                "  Found candidate lgins from 5: {} {} {} {}",
                 bi,
-                ins_str,
+                plus_ins,
                 p,
                 String::from_utf8_lossy(&seq)
             );
         }
-        let iref = get_variation(insertion_variants, bi, &format!("+{}", ins_str));
+        let iref = get_variation(insertion_variants, bi, &plus_ins);
         iref.pstd = true;
         iref.qstd = true;
 
         let sc5v_var = soft_clips_5_end
             .get(&p)
             .map_or(Variation::new(), |sc| sc.variation.clone());
-        let iref = get_variation(insertion_variants, bi, &format!("+{}", ins_str));
+        let iref = get_variation(insertion_variants, bi, &plus_ins);
         crate::variations::util::adj_cnt(iref, &sc5v_var, None);
 
         let mut rpflag = true;
@@ -3977,7 +4007,9 @@ pub fn realignlgins(
             })
         };
         for (pii, tnt, tv) in entries_to_process {
-            let tvr = get_variation(non_insertion_variants, pii, &format!("{}", tnt as char));
+            let mut ch_buf = [0u8; 4];
+            let tnt_str: &str = (tnt as char).encode_utf8(&mut ch_buf);
+            let tvr = get_variation(non_insertion_variants, pii, tnt_str);
             crate::variations::util::adj_cnt(tvr, &tv, None);
             tvr.pstd = true;
             tvr.qstd = true;
@@ -3989,12 +4021,12 @@ pub fn realignlgins(
         }
 
         let tins_vars_cnt = {
-            let iref = get_variation(insertion_variants, bi, &format!("+{}", ins_str));
+            let iref = get_variation(insertion_variants, bi, &plus_ins);
             iref.cnt
         };
         let mut tins = BTreeMap::new();
         let mut map = rustc_hash::FxHashMap::default();
-        map.insert(format!("+{}", ins_str), tins_vars_cnt);
+        map.insert(plus_ins.clone(), tins_vars_cnt);
         tins.insert(bi, map);
 
         let newins = realignins(
@@ -4011,18 +4043,14 @@ pub fn realignlgins(
             soft_clips_3_end,
             max_read_length,
         );
-        let newins = if newins.is_empty() {
-            format!("+{}", ins_str)
-        } else {
-            newins
-        };
+        let newins = if newins.is_empty() { plus_ins } else { newins };
 
         if let Some(entry) = non_insertion_variants.get_mut(&bi) {
             if entry.sv.is_some() {
                 let kref = get_variation(insertion_variants, bi, &newins);
-                let diff = kref.cnt - tins_vars_cnt;
+                let diff = kref.cnt.saturating_sub(tins_vars_cnt);
                 if let Some(sv) = entry.sv.as_mut() {
-                    sv.splits += diff;
+                    sv.splits = sv.splits.saturating_add(diff);
                 }
             }
         }
@@ -4079,7 +4107,7 @@ pub fn realignlgins(
     });
 
     for (p, cnt) in tmp3 {
-        if cnt < config.min_reads as i32 {
+        if cnt < min_reads {
             break;
         }
         if soft_clips_3_end.get(&p).is_none_or(|sc| sc.used) {
@@ -4190,7 +4218,7 @@ pub fn realignlgins(
             }
 
             const SVFLANK: i32 = 50;
-            if p.saturating_sub(bi) > (config.sv_min_len as i32).saturating_add(2 * SVFLANK) {
+            if p.saturating_sub(bi) > sv_min_len.saturating_add(2 * SVFLANK) {
                 ins = join_ref_for_3_lgins(
                     reference,
                     chr,
@@ -4234,9 +4262,9 @@ pub fn realignlgins(
 
             let sv = crate::variations::VariationMap::get_sv(non_insertion_variants, bi);
             sv.r#type = "DUP".to_string();
-            sv.pairs += pairs;
-            sv.splits += cnt;
-            sv.clusters += clusters;
+            sv.pairs = sv.pairs.saturating_add(pairs);
+            sv.splits = sv.splits.saturating_add(cnt);
+            sv.clusters = sv.clusters.saturating_add(clusters);
 
             let sc3v_vars_count = soft_clips_3_end
                 .get(&orig_p)
@@ -4256,17 +4284,17 @@ pub fn realignlgins(
             }
         }
 
-        let ins_str = String::from_utf8_lossy(&ins).into_owned();
+        let plus_ins = format!("+{}", String::from_utf8_lossy(&ins));
         if config.verbose {
             crate::verbose_eprintln!(
-                "  Found candidate lgins from 3: {} +{} {} {}",
+                "  Found candidate lgins from 3: {} {} {} {}",
                 bi,
-                ins_str,
+                plus_ins,
                 p,
                 String::from_utf8_lossy(&seq)
             );
         }
-        let iref = get_variation(insertion_variants, bi, &format!("+{}", ins_str));
+        let iref = get_variation(insertion_variants, bi, &plus_ins);
         iref.pstd = true;
         iref.qstd = true;
 
@@ -4282,7 +4310,7 @@ pub fn realignlgins(
         let sc3v_var = soft_clips_3_end
             .get(&orig_p)
             .map_or(Variation::new(), |sc| sc.variation.clone());
-        let iref = get_variation(insertion_variants, bi, &format!("+{}", ins_str));
+        let iref = get_variation(insertion_variants, bi, &plus_ins);
         if let Some(ref_mut) = lref_mut {
             crate::variations::util::adj_cnt(iref, &sc3v_var, Some(ref_mut));
         } else {
@@ -4329,7 +4357,9 @@ pub fn realignlgins(
             })
         };
         for (pii, tnt, tv) in entries_to_process {
-            let tvr = get_variation(non_insertion_variants, pii, &format!("{}", tnt as char));
+            let mut ch_buf = [0u8; 4];
+            let tnt_str: &str = (tnt as char).encode_utf8(&mut ch_buf);
+            let tvr = get_variation(non_insertion_variants, pii, tnt_str);
             crate::variations::util::adj_cnt(tvr, &tv, None);
             tvr.pstd = true;
             tvr.qstd = true;
@@ -4341,12 +4371,12 @@ pub fn realignlgins(
         }
 
         let tins_vars_cnt = {
-            let iref = get_variation(insertion_variants, bi, &format!("+{}", ins_str));
+            let iref = get_variation(insertion_variants, bi, &plus_ins);
             iref.cnt
         };
         let mut tins = BTreeMap::new();
         let mut map = rustc_hash::FxHashMap::default();
-        map.insert(format!("+{}", ins_str), tins_vars_cnt);
+        map.insert(plus_ins.clone(), tins_vars_cnt);
         tins.insert(bi, map);
 
         let newins = realignins(
@@ -4363,18 +4393,14 @@ pub fn realignlgins(
             soft_clips_3_end,
             max_read_length,
         );
-        let newins = if newins.is_empty() {
-            format!("+{}", ins_str)
-        } else {
-            newins
-        };
+        let newins = if newins.is_empty() { plus_ins } else { newins };
 
         if let Some(entry) = non_insertion_variants.get_mut(&bi) {
             if entry.sv.is_some() {
                 let iref = get_variation(insertion_variants, bi, &newins);
-                let diff = iref.cnt - tins_vars_cnt;
+                let diff = iref.cnt.saturating_sub(tins_vars_cnt);
                 if let Some(sv) = entry.sv.as_mut() {
-                    sv.splits += diff;
+                    sv.splits = sv.splits.saturating_add(diff);
                 }
             }
         }
@@ -4811,13 +4837,14 @@ mod task7_tests {
 }
 
 fn inc_cnt(hash: &mut rustc_hash::FxHashMap<i32, i32>, start: i32, count: i32) {
-    *hash.entry(start).or_insert(0) += count;
+    let entry = hash.entry(start).or_insert(0);
+    *entry = entry.saturating_add(count);
 }
 
 fn rm_cnt(vref: &mut crate::variations::Variation, tv: &crate::variations::Variation) {
-    vref.cnt -= tv.cnt;
-    vref.hicnt -= tv.hicnt;
-    vref.locnt -= tv.locnt;
+    vref.cnt = vref.cnt.saturating_sub(tv.cnt);
+    vref.hicnt = vref.hicnt.saturating_sub(tv.hicnt);
+    vref.locnt = vref.locnt.saturating_sub(tv.locnt);
     vref.pmean -= tv.pmean;
     vref.qmean -= tv.qmean;
     vref.mqmean -= tv.mqmean;
@@ -4831,15 +4858,19 @@ fn add_var_factor(vref: &mut crate::variations::Variation, factor_f: f64) {
     if factor_f < -1.0 {
         return;
     }
-    vref.cnt += (factor_f * vref.cnt as f64) as i32;
-    vref.hicnt += (factor_f * vref.hicnt as f64) as i32;
-    vref.locnt += (factor_f * vref.locnt as f64) as i32;
+    vref.cnt = vref.cnt.saturating_add((factor_f * vref.cnt as f64) as i32);
+    vref.hicnt = vref
+        .hicnt
+        .saturating_add((factor_f * vref.hicnt as f64) as i32);
+    vref.locnt = vref
+        .locnt
+        .saturating_add((factor_f * vref.locnt as f64) as i32);
     vref.pmean += factor_f * vref.pmean;
     vref.qmean += factor_f * vref.qmean;
     vref.mqmean += factor_f * vref.mqmean;
     vref.nm += factor_f * vref.nm;
-    vref.fwd += (factor_f * vref.fwd as f64) as i32;
-    vref.rev += (factor_f * vref.rev as f64) as i32;
+    vref.fwd = vref.fwd.saturating_add((factor_f * vref.fwd as f64) as i32);
+    vref.rev = vref.rev.saturating_add((factor_f * vref.rev as f64) as i32);
 }
 
 fn ensure_reference_loaded(
@@ -4872,16 +4903,16 @@ fn ensure_reference_loaded(
 
 fn merge_sclip(dest: &mut Sclip, src: Sclip) {
     let d = &mut dest.variation;
-    d.cnt += src.variation.cnt;
-    d.fwd += src.variation.fwd;
-    d.rev += src.variation.rev;
+    d.cnt = d.cnt.saturating_add(src.variation.cnt);
+    d.fwd = d.fwd.saturating_add(src.variation.fwd);
+    d.rev = d.rev.saturating_add(src.variation.rev);
     d.pmean += src.variation.pmean;
     d.qmean += src.variation.qmean;
     d.mqmean += src.variation.mqmean;
     d.nm += src.variation.nm;
-    d.hicnt += src.variation.hicnt;
-    d.locnt += src.variation.locnt;
-    d.extracnt += src.variation.extracnt;
+    d.hicnt = d.hicnt.saturating_add(src.variation.hicnt);
+    d.locnt = d.locnt.saturating_add(src.variation.locnt);
+    d.extracnt = d.extracnt.saturating_add(src.variation.extracnt);
     if src.variation.pstd {
         d.pstd = true;
     }
@@ -4890,7 +4921,7 @@ fn merge_sclip(dest: &mut Sclip, src: Sclip) {
     }
     // pp/pq are last-seen trackers (not sums); no consumer reads them on a
     // merged sclip, so accumulating them here is inert.
-    d.pp += src.variation.pp;
+    d.pp = d.pp.saturating_add(src.variation.pp);
     d.pq += src.variation.pq;
 
     // SV fields: Java's partialPipeline re-parses into the SAME live Sclip
@@ -4911,39 +4942,41 @@ fn merge_sclip(dest: &mut Sclip, src: Sclip) {
         // accumulated equivalent is the source entry's own mend.
         dest.mend = src.mend;
     }
-    dest.disc += src.disc;
+    dest.disc = dest.disc.saturating_add(src.disc);
     for (pos, cnt) in src.soft {
-        *dest.soft.entry(pos).or_insert(0) += cnt;
+        let entry = dest.soft.entry(pos).or_insert(0);
+        *entry = entry.saturating_add(cnt);
     }
     dest.mates.extend(src.mates);
 
     for (idx, cnts) in src.nt {
         let dest_cnts = dest.nt.entry(idx).or_default();
         for (base, c) in cnts {
-            *dest_cnts.entry(base).or_insert(0) += c;
+            let entry = dest_cnts.entry(base).or_insert(0);
+            *entry = entry.saturating_add(c);
         }
     }
     for (idx, bases) in src.seq {
         let dest_bases = dest.seq.entry(idx).or_default();
         for (base, var) in bases {
             let dv = dest_bases.entry(base).or_insert_with(Variation::new);
-            dv.cnt += var.cnt;
-            dv.fwd += var.fwd;
-            dv.rev += var.rev;
+            dv.cnt = dv.cnt.saturating_add(var.cnt);
+            dv.fwd = dv.fwd.saturating_add(var.fwd);
+            dv.rev = dv.rev.saturating_add(var.rev);
             dv.pmean += var.pmean;
             dv.qmean += var.qmean;
             dv.mqmean += var.mqmean;
             dv.nm += var.nm;
-            dv.hicnt += var.hicnt;
-            dv.locnt += var.locnt;
-            dv.extracnt += var.extracnt;
+            dv.hicnt = dv.hicnt.saturating_add(var.hicnt);
+            dv.locnt = dv.locnt.saturating_add(var.locnt);
+            dv.extracnt = dv.extracnt.saturating_add(var.extracnt);
             if var.pstd {
                 dv.pstd = true;
             }
             if var.qstd {
                 dv.qstd = true;
             }
-            dv.pp += var.pp;
+            dv.pp = dv.pp.saturating_add(var.pp);
             dv.pq += var.pq;
         }
     }
@@ -5032,7 +5065,8 @@ fn partial_pipeline(
     let mate_owned = |pos: i32| pos >= region_start_i32 && pos <= region_end_i32;
 
     for (pos, cov) in var_data.ref_coverage {
-        *ref_coverage.entry(pos).or_insert(0) += cov;
+        let entry = ref_coverage.entry(pos).or_insert(0);
+        *entry = entry.saturating_add(cov);
     }
     // ports VariationRealigner.java:1663-1671 / CigarParser.java:1922-1927: Java's
     // partialPipeline mutates the SAME live Sclip maps, so re-parsed reads
@@ -5051,23 +5085,23 @@ fn partial_pipeline(
         }
         for (allele, var) in var_map.map {
             if let Some(v) = dest.map.get_mut(&allele) {
-                v.cnt += var.cnt;
-                v.fwd += var.fwd;
-                v.rev += var.rev;
+                v.cnt = v.cnt.saturating_add(var.cnt);
+                v.fwd = v.fwd.saturating_add(var.fwd);
+                v.rev = v.rev.saturating_add(var.rev);
                 v.pmean += var.pmean;
                 v.qmean += var.qmean;
                 v.mqmean += var.mqmean;
                 v.nm += var.nm;
-                v.hicnt += var.hicnt;
-                v.locnt += var.locnt;
-                v.extracnt += var.extracnt;
+                v.hicnt = v.hicnt.saturating_add(var.hicnt);
+                v.locnt = v.locnt.saturating_add(var.locnt);
+                v.extracnt = v.extracnt.saturating_add(var.extracnt);
                 if var.pstd {
                     v.pstd = true;
                 }
                 if var.qstd {
                     v.qstd = true;
                 }
-                v.pp += var.pp;
+                v.pp = v.pp.saturating_add(var.pp);
                 v.pq += var.pq;
             } else {
                 dest.map.insert(allele, var);
@@ -5075,9 +5109,9 @@ fn partial_pipeline(
         }
         if let Some(sv) = var_map.sv {
             if let Some(dest_sv) = &mut dest.sv {
-                dest_sv.pairs += sv.pairs;
-                dest_sv.splits += sv.splits;
-                dest_sv.clusters += sv.clusters;
+                dest_sv.pairs = dest_sv.pairs.saturating_add(sv.pairs);
+                dest_sv.splits = dest_sv.splits.saturating_add(sv.splits);
+                dest_sv.clusters = dest_sv.clusters.saturating_add(sv.clusters);
             } else {
                 dest.sv = Some(sv);
             }
@@ -5090,23 +5124,23 @@ fn partial_pipeline(
         }
         for (allele, var) in var_map.map {
             if let Some(v) = dest.map.get_mut(&allele) {
-                v.cnt += var.cnt;
-                v.fwd += var.fwd;
-                v.rev += var.rev;
+                v.cnt = v.cnt.saturating_add(var.cnt);
+                v.fwd = v.fwd.saturating_add(var.fwd);
+                v.rev = v.rev.saturating_add(var.rev);
                 v.pmean += var.pmean;
                 v.qmean += var.qmean;
                 v.mqmean += var.mqmean;
                 v.nm += var.nm;
-                v.hicnt += var.hicnt;
-                v.locnt += var.locnt;
-                v.extracnt += var.extracnt;
+                v.hicnt = v.hicnt.saturating_add(var.hicnt);
+                v.locnt = v.locnt.saturating_add(var.locnt);
+                v.extracnt = v.extracnt.saturating_add(var.extracnt);
                 if var.pstd {
                     v.pstd = true;
                 }
                 if var.qstd {
                     v.qstd = true;
                 }
-                v.pp += var.pp;
+                v.pp = v.pp.saturating_add(var.pp);
                 v.pq += var.pq;
             } else {
                 dest.map.insert(allele, var);
@@ -5114,9 +5148,9 @@ fn partial_pipeline(
         }
         if let Some(sv) = var_map.sv {
             if let Some(dest_sv) = &mut dest.sv {
-                dest_sv.pairs += sv.pairs;
-                dest_sv.splits += sv.splits;
-                dest_sv.clusters += sv.clusters;
+                dest_sv.pairs = dest_sv.pairs.saturating_add(sv.pairs);
+                dest_sv.splits = dest_sv.splits.saturating_add(sv.splits);
+                dest_sv.clusters = dest_sv.clusters.saturating_add(sv.clusters);
             } else {
                 dest.sv = Some(sv);
             }
@@ -7339,5 +7373,117 @@ mod tests {
         assert_eq!(split_wrap, 0);
         assert_eq!(bi_wrap, expected_wrap.base_insert);
         assert_eq!(rotate("AC", split_wrap), expected_wrap.insertion_sequence);
+    }
+
+    #[test]
+    fn extreme_realign_saturating_helpers_and_u32_max_config_clamps() {
+        let mut v = Variation::new();
+        v.cnt = i32::MIN;
+        v.hicnt = i32::MIN;
+        v.locnt = i32::MIN;
+        v.fwd = i32::MIN;
+        v.rev = i32::MIN;
+        let mut tv = Variation::new();
+        tv.cnt = 10;
+        tv.hicnt = 10;
+        tv.locnt = 10;
+        tv.fwd = 5;
+        tv.rev = 5;
+        super::rm_cnt(&mut v, &tv);
+        assert_eq!(v.cnt, 0);
+        assert_eq!(v.fwd, 0);
+        assert_eq!(v.rev, 0);
+
+        let mut vmax = Variation::new();
+        vmax.cnt = i32::MAX - 5;
+        vmax.hicnt = i32::MAX - 5;
+        vmax.fwd = i32::MAX - 5;
+        super::add_var_factor(&mut vmax, 0.5);
+        assert_eq!(vmax.cnt, i32::MAX);
+        assert_eq!(vmax.hicnt, i32::MAX);
+        assert_eq!(vmax.fwd, i32::MAX);
+
+        let mut dest = Sclip::new();
+        dest.variation.cnt = i32::MAX - 1;
+        dest.disc = i32::MAX - 1;
+        let mut src = Sclip::new();
+        src.variation.cnt = 10;
+        src.disc = 10;
+        super::merge_sclip(&mut dest, src);
+        assert_eq!(dest.variation.cnt, i32::MAX);
+        assert_eq!(dest.disc, i32::MAX);
+
+        // Verify realignlgdel and realignlgins clamp u32::MAX thresholds cleanly without wrapping to -1.
+        let mut reference = Reference::default();
+        reference.loaded_regions.push(LoadedRegion {
+            chr: "chr1".to_string(),
+            sequence_start: 1,
+            sequence_end: 200,
+        });
+        reference
+            .reference_sequences
+            .insert("chr1".to_string(), vec![b'A'; 200]);
+        let region = crate::regions::Region {
+            chr: "chr1".to_string(),
+            start: Pos1(1),
+            end: Pos1(200),
+            gene: String::new(),
+            amplicon: None,
+        };
+        let mut cfg = crate::config::Config::default();
+        cfg.min_reads = u32::MAX;
+        cfg.indel_size = u32::MAX;
+        cfg.sv_min_len = u32::MAX;
+
+        let mut sc5 = Sclip::new();
+        sc5.variation.cnt = 5;
+        sc5.sequence = Some(vec![b'C'; 20]);
+        let mut soft5 = std::collections::BTreeMap::new();
+        soft5.insert(50, sc5);
+        let mut soft3 = std::collections::BTreeMap::new();
+        let mut non_ins = crate::javamap::JavaHashMap::new();
+        let mut ins_vars = crate::javamap::JavaHashMap::new();
+        let mut ref_cov = rustc_hash::FxHashMap::default();
+        let mut svfdel = Vec::new();
+        let mut svrdel = Vec::new();
+        let mut svfdup = Vec::new();
+        let mut svrdup = Vec::new();
+        let mut splice = rustc_hash::FxHashSet::default();
+
+        super::realignlgdel(
+            None,
+            &mut reference,
+            "chr1",
+            200,
+            &region,
+            &cfg,
+            &mut non_ins,
+            &mut ins_vars,
+            &mut ref_cov,
+            &mut soft5,
+            &mut soft3,
+            100,
+            &mut svfdel,
+            &mut svrdel,
+            &mut splice,
+        );
+        super::realignlgins(
+            None,
+            &mut reference,
+            "chr1",
+            200,
+            &region,
+            &cfg,
+            &mut non_ins,
+            &mut ins_vars,
+            &mut ref_cov,
+            &mut soft5,
+            &mut soft3,
+            100,
+            &mut svfdup,
+            &mut svrdup,
+            &mut splice,
+        );
+        assert!(!soft5.get(&50).unwrap().used);
     }
 }

@@ -1040,8 +1040,8 @@ pub fn somatic_61_into(
         Some(n) => (n.pos_coverage, n.total_pos_cov),
         None => (0, 0),
     };
-    let tref = (ttotal_cov - tvar_cov).max(0);
-    let rref = (ntotal_cov - nvar_cov).max(0);
+    let tref = (i64::from(ttotal_cov) - i64::from(tvar_cov)).clamp(0, i64::from(i32::MAX)) as i32;
+    let rref = (i64::from(ntotal_cov) - i64::from(nvar_cov)).clamp(0, i64::from(i32::MAX)) as i32;
     let fisher_total = crate::stats::FisherExact::new_java(
         tvar_cov as i32,
         tref as i32,
@@ -2056,5 +2056,41 @@ mod tests {
             VARIANT_20COLS_FISHER_EMPTY,
             variant_20cols_fisher_empty(f2.get_p_value(), &f2.get_odds_ratio())
         );
+    }
+
+    #[test]
+    fn somatic_61_into_extreme_coverage_clamps_without_overflow() {
+        let rg = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(1),
+            end: Pos1(200),
+            gene: "G".to_string(),
+            amplicon: None,
+        };
+        let mut tumor = Variant::new();
+        tumor.start_pos = 100;
+        tumor.end_pos = 100;
+        tumor.ref_allele = "A".to_string();
+        tumor.var_allele = "G".to_string();
+        tumor.var_type = "SNV".to_string();
+        tumor.total_pos_cov = i32::MAX;
+        tumor.pos_coverage = i32::MIN;
+
+        let mut normal = tumor.clone();
+        normal.total_pos_cov = i32::MIN;
+        normal.pos_coverage = i32::MAX;
+
+        let line = somatic_61(
+            &tumor,
+            Some(&normal),
+            &rg,
+            "SAMPLE",
+            "StrongSomatic",
+            "",
+            "34",
+            true,
+        );
+        let cols: Vec<&str> = line.split('\t').collect();
+        assert_eq!(cols.len(), 61);
     }
 }

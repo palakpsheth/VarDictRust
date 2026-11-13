@@ -12,7 +12,7 @@ VarDictRust is an idiomatic Rust rewrite of **VarDictJava v1.8.3** (a somatic an
 - **[README](https://github.com/palakpsheth/VarDictRust#readme)** — Executive overview, performance scoreboards, quickstart commands, and installation.
 - **[Installation Guide](https://github.com/palakpsheth/VarDictRust#installation)** — Pre-built static/native binaries (`cargo-dist` SLSA Level 3), Cargo install, Seqera Wave containers (Docker/Podman/Apptainer), Conda/Bioconda (`conda`/`mamba`/`pixi`), and Nextflow (`nf-core/modules`).
 - **[Usage Recipes & Modalities](https://github.com/palakpsheth/VarDictRust#usage-recipes)** — Diátaxis recipes for Germline WGS, Somatic Tumor-Normal, Targeted Amplicon (`-a`), RNA-seq Splicing (`-i`), and UNIX streaming pipelines.
-- **[CLI Parameter Reference](https://github.com/palakpsheth/VarDictRust#cli-parameter-reference)** — Complete 66-flag reference across 6 functional groups.
+- **[CLI Parameter Reference](https://github.com/palakpsheth/VarDictRust#cli-parameter-reference)** — Complete 87-flag reference across 6 functional groups.
 - **[Contributing Guidelines & Release Runbook](https://github.com/palakpsheth/VarDictRust/blob/main/CONTRIBUTING.md#release-process)** — Development prerequisites, code style, pre-commit hygiene, test harnesses, and release process.
 
 ### 2. Empirical Validation & Parity
@@ -29,7 +29,7 @@ VarDictRust is an idiomatic Rust rewrite of **VarDictJava v1.8.3** (a somatic an
 - **[Ecosystem Survey](https://github.com/palakpsheth/VarDictRust/blob/main/docs/ecosystem-survey.md)** — Comparative survey of modern NGS variant callers (Mutect2, Strelka2, Octopus, VarDictJava) and rewrites.bio principles.
 
 ### 4. Testing, Harness & Quality Assurance
-- **[Comprehensive Test Matrix & CI Audit](https://github.com/palakpsheth/VarDictRust/blob/main/docs/testing/test-matrix-and-ci-audit.md)** — 7-tier test architecture, 590 cargo unit/integration tests, and CI workflows.
+- **[Comprehensive Test Matrix & CI Audit](https://github.com/palakpsheth/VarDictRust/blob/main/docs/testing/test-matrix-and-ci-audit.md)** — 7-tier test architecture, 619 cargo unit/integration tests, and CI workflows.
 - **[Test Harness Documentation](https://github.com/palakpsheth/VarDictRust/blob/main/harness/README.md)** — Architecture of Tier-1/Tier-2 comparators, 36 self-tests, and cluster etiquette guidelines.
 - **[v1.0.7 Release PR Specification](https://github.com/palakpsheth/VarDictRust/blob/main/docs/release/v1.0.7-pr.md)** — Release manifest, cryptographic fingerprints, and certification (`v1.0.6` in [`docs/release/v1.0.6-pr.md`](https://github.com/palakpsheth/VarDictRust/blob/main/docs/release/v1.0.6-pr.md), `v1.0.5` in [`docs/release/v1.0.5-pr.md`](https://github.com/palakpsheth/VarDictRust/blob/main/docs/release/v1.0.5-pr.md), `v1.0.4` in [`docs/release/v1.0.4-pr.md`](https://github.com/palakpsheth/VarDictRust/blob/main/docs/release/v1.0.4-pr.md), `v1.0.3` in [`docs/release/v1.0.3-pr.md`](https://github.com/palakpsheth/VarDictRust/blob/main/docs/release/v1.0.3-pr.md), `v1.0.1` in [`docs/release/v1.0.1-pr.md`](https://github.com/palakpsheth/VarDictRust/blob/main/docs/release/v1.0.1-pr.md), `v1.0.0` in [`docs/release/v1.0.0-pr.md`](https://github.com/palakpsheth/VarDictRust/blob/main/docs/release/v1.0.0-pr.md)).
 

@@ -158,6 +158,39 @@ fn set_opt_contig_name(dst: &mut Option<String>, expected: Option<&str>) {
     }
 }
 
+#[inline]
+fn checked_cigar_op_len(len: usize) -> Result<u32, std::io::Error> {
+    u32::try_from(len).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("CIGAR operator length {len} exceeds u32::MAX"),
+        )
+    })
+}
+
+#[inline]
+fn checked_alignment_end(
+    start: noodles::core::Position,
+    span: usize,
+) -> Result<noodles::core::Position, std::io::Error> {
+    if span == 0 {
+        return Ok(start);
+    }
+    usize::from(start)
+        .checked_add(span)
+        .and_then(|v| v.checked_sub(1))
+        .and_then(noodles::core::Position::new)
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "alignment span overflow (start={}, span={span})",
+                    usize::from(start)
+                ),
+            )
+        })
+}
+
 impl SamRecord {
     /// Empty record with no heap allocation; use with
     /// [`SamRecord::fill_from_alignment_record`] for buffer reuse.
@@ -281,17 +314,8 @@ impl SamRecord {
             });
         set_opt_contig_name(&mut self.reference_name, ref_name.as_deref());
 
-        self.alignment_start = if let Some(pos) = record.alignment_start() {
-            pos.ok().map(crate::types::Pos1::from)
-        } else {
-            None
-        };
-
-        self.alignment_end = if let Some(pos) = record.alignment_end() {
-            pos.ok().map(crate::types::Pos1::from)
-        } else {
-            None
-        };
+        let raw_start = record.alignment_start().and_then(Result::ok);
+        self.alignment_start = raw_start.map(crate::types::Pos1::from);
 
         self.mapping_quality = if (self.flags & 0x4) != 0 {
             None
@@ -308,9 +332,34 @@ impl SamRecord {
         let cigar = record.cigar();
         self.cigar.clear();
         self.cigar.reserve(cigar.len());
-        for op in cigar.iter().flatten() {
-            self.cigar.push((op.len() as u32, op.kind()));
+        let mut span = 0usize;
+        let mut cigar_err = false;
+        for result in cigar.iter() {
+            match result {
+                Ok(op) => {
+                    let op_len = checked_cigar_op_len(op.len())?;
+                    if op.kind().consumes_reference() {
+                        span = span.checked_add(op.len()).ok_or_else(|| {
+                            std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                "CIGAR alignment_span overflow",
+                            )
+                        })?;
+                    }
+                    self.cigar.push((op_len, op.kind()));
+                }
+                Err(_) => {
+                    cigar_err = true;
+                }
+            }
         }
+
+        self.alignment_end = match raw_start {
+            Some(start) if !cigar_err => Some(crate::types::Pos1::from(checked_alignment_end(
+                start, span,
+            )?)),
+            _ => None,
+        };
 
         let seq = record.sequence();
         self.sequence.clear();
@@ -400,10 +449,10 @@ impl SamRecord {
             None
         };
 
-        self.alignment_end = if let Some(pos) = bam_alignment_end(record) {
-            pos.ok().map(crate::types::Pos1::from)
-        } else {
-            None
+        self.alignment_end = match bam_alignment_end(record) {
+            Some(Ok(pos)) => Some(crate::types::Pos1::from(pos)),
+            Some(Err(e)) => return Err(e),
+            None => None,
         };
 
         self.mapping_quality = if (self.flags & 0x4) != 0 {
@@ -416,7 +465,8 @@ impl SamRecord {
         self.cigar.clear();
         self.cigar.reserve(cigar.len());
         for op in cigar.iter().flatten() {
-            self.cigar.push((op.len() as u32, op.kind()));
+            self.cigar
+                .push((checked_cigar_op_len(op.len())?, op.kind()));
         }
 
         decode_bam_sequence_into(record.sequence(), &mut self.sequence);
@@ -538,12 +588,16 @@ impl SamRecord {
             if tag == TAG_NM_LOWER {
                 if !seen_nm_lower {
                     seen_nm_lower = true;
-                    nm_lower_val = val.as_int().map(|x| x as i32);
+                    nm_lower_val = val
+                        .as_int()
+                        .map(|x| x.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32);
                 }
             } else if tag == TAG_NM_UPPER {
                 if !seen_nm_upper {
                     seen_nm_upper = true;
-                    nm_upper_val = val.as_int().map(|x| x as i32);
+                    nm_upper_val = val
+                        .as_int()
+                        .map(|x| x.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32);
                 }
             } else if tag == TAG_SA {
                 if !seen_sa {
@@ -577,7 +631,7 @@ impl SamRecord {
                 }
             } else if tag == TAG_MQ && !seen_mq {
                 seen_mq = true;
-                self.mq = val.as_int().map(|x| x as u8);
+                self.mq = val.as_int().and_then(|x| u8::try_from(x).ok());
             }
         }
 
@@ -825,13 +879,7 @@ pub fn query_region(
                 return Ok(Vec::new());
             }
 
-            let region_str = format!("{}:{}-{}", chr, start_pos, end_pos);
-            let region: noodles::core::Region = region_str.parse().map_err(|e| {
-                crate::types::VardictError::Parse(format!(
-                    "failed to parse region '{}': {}",
-                    region_str, e
-                ))
-            })?;
+            let region = build_noodles_region(chr, start_pos, end_pos)?;
 
             let iter = cached
                 .reader
@@ -1421,17 +1469,23 @@ fn bam_alignment_end(
             Ok(op) => op,
             Err(e) => return Some(Err(e)),
         };
+        if let Err(e) = checked_cigar_op_len(op.len()) {
+            return Some(Err(e));
+        }
         if op.kind().consumes_reference() {
-            span = span.saturating_add(op.len());
+            span = match span.checked_add(op.len()) {
+                Some(s) => s,
+                None => {
+                    return Some(Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "BAM CIGAR alignment_span overflow",
+                    )));
+                }
+            };
         }
     }
 
-    if span == 0 {
-        Some(Ok(start))
-    } else {
-        let end = usize::from(start).saturating_add(span).saturating_sub(1);
-        noodles::core::Position::new(end).map(Ok)
-    }
+    Some(checked_alignment_end(start, span))
 }
 
 /// Owning lazy record feed over one queried region (Task 4: OOM fix;
@@ -1515,10 +1569,16 @@ fn intersects_record(
     for result in raw_cigar.iter() {
         match result {
             Ok(op) => {
+                let op_len = checked_cigar_op_len(op.len())?;
                 if op.kind().consumes_reference() {
-                    span = span.saturating_add(op.len());
+                    span = span.checked_add(op.len()).ok_or_else(|| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "BAM CIGAR alignment_span overflow",
+                        )
+                    })?;
                 }
-                cigar_scratch.push((op.len() as u32, op.kind()));
+                cigar_scratch.push((op_len, op.kind()));
             }
             Err(e) => {
                 if !unbounded {
@@ -1530,15 +1590,7 @@ fn intersects_record(
     }
 
     let alignment_end = match alignment_start {
-        Some(start) if !cigar_err => {
-            if span == 0 {
-                Some(start)
-            } else {
-                noodles::core::Position::new(
-                    usize::from(start).saturating_add(span).saturating_sub(1),
-                )
-            }
-        }
+        Some(start) if !cigar_err => Some(checked_alignment_end(start, span)?),
         _ => None,
     };
 
@@ -2649,7 +2701,8 @@ fn cram_record_to_cached(
     if reference_sequence_id.is_none() || alignment_start.is_none() {
         let _ = record.mapping_quality().transpose()?;
         for result in record.cigar().iter() {
-            let _ = result?;
+            let op = result?;
+            let _ = checked_cigar_op_len(op.len())?;
         }
         let _ = record.mate_reference_sequence_id(header).transpose()?;
         let _ = record.mate_alignment_start().transpose()?;
@@ -2748,19 +2801,19 @@ fn cram_record_to_cached(
     let mut alignment_span = 0usize;
     for result in record.cigar().iter() {
         let op = result?;
+        let op_len = checked_cigar_op_len(op.len())?;
         if op.kind().consumes_reference() {
-            alignment_span += op.len();
+            alignment_span = alignment_span.checked_add(op.len()).ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "CRAM CIGAR alignment_span overflow",
+                )
+            })?;
         }
-        cigar.push((op.len() as u32, op.kind()));
+        cigar.push((op_len, op.kind()));
     }
     let alignment_end = match alignment_start {
-        Some(start) => {
-            if alignment_span == 0 {
-                Some(start)
-            } else {
-                noodles::core::Position::new(usize::from(start) + alignment_span - 1)
-            }
-        }
+        Some(start) => Some(checked_alignment_end(start, alignment_span)?),
         None => None,
     };
 
@@ -2867,10 +2920,14 @@ fn cram_record_to_cached(
         }
         if tag == TAG_NM_LOWER {
             seen_nm_lower = true;
-            nm_lower_val = val.as_int().map(|x| x as i32);
+            nm_lower_val = val
+                .as_int()
+                .map(|x| x.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32);
         } else if tag == TAG_NM_UPPER {
             seen_nm_upper = true;
-            nm_upper_val = val.as_int().map(|x| x as i32);
+            nm_upper_val = val
+                .as_int()
+                .map(|x| x.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32);
         } else if tag == TAG_SA {
             let buf = sa.get_or_insert_with(String::new);
             buf.clear();
@@ -2896,7 +2953,7 @@ fn cram_record_to_cached(
                 }
             }
         } else if tag == TAG_MQ {
-            mq = val.as_int().map(|x| x as u8);
+            mq = val.as_int().and_then(|x| u8::try_from(x).ok());
         }
     }
 
@@ -3200,7 +3257,7 @@ impl RecordFeed {
 }
 
 #[inline]
-fn build_noodles_region(
+pub(crate) fn build_noodles_region(
     chr: &str,
     start_pos: u32,
     end_pos: u32,
@@ -3208,6 +3265,11 @@ fn build_noodles_region(
     if chr.is_empty() {
         return Err(crate::types::VardictError::Parse(format!(
             "Invalid region {chr}:{start_pos}-{end_pos}: empty chromosome name"
+        )));
+    }
+    if start_pos > end_pos {
+        return Err(crate::types::VardictError::Parse(format!(
+            "Invalid region {chr}:{start_pos}-{end_pos}: start ({start_pos}) exceeds end ({end_pos})"
         )));
     }
     let s_pos = noodles::core::Position::try_from(start_pos as usize)
@@ -3561,20 +3623,23 @@ impl RecordPreprocessor {
             .map(|&(n, _)| u64::from(n))
             .sum::<u64>();
         let start_u64 = record.alignment_start.map_or(0u64, |p| u64::from(p.0));
+        let mate_start_u64 = record.mate_alignment_start.map_or(0u64, |p| u64::from(p.0));
         if start_u64 > i32::MAX as u64
+            || mate_start_u64 > i32::MAX as u64
             || ref_consumption > i32::MAX as u64
             || start_u64.saturating_sub(1).saturating_add(ref_consumption) > i32::MAX as u64
         {
             log::warn!(
-                "Dropping corrupt BAM record {}: CIGAR reference span (start={}, span={}) exceeds i32::MAX",
+                "Dropping corrupt BAM record {}: reference/mate coordinate or CIGAR span (start={}, mate_start={}, span={}) exceeds i32::MAX",
                 String::from_utf8_lossy(&record.name),
                 start_u64,
+                mate_start_u64,
                 ref_consumption
             );
             return false;
         }
 
-        self.total_reads += 1;
+        self.total_reads = self.total_reads.saturating_add(1);
 
         // 5. Duplicated reads filter (removeDuplicatedReads)
         if config.dedup {
@@ -3594,7 +3659,7 @@ impl RecordPreprocessor {
                     mate_alignment_start_val,
                 );
                 if self.duplicates.contains(&key) {
-                    self.duplicate_reads += 1;
+                    self.duplicate_reads = self.duplicate_reads.saturating_add(1);
                     return false;
                 }
                 self.duplicates.insert(key);
@@ -3606,7 +3671,7 @@ impl RecordPreprocessor {
                     // POS-CIGAR
                     let key = DupKey::UnmappedMateCigar(alignment_start_val, record.cigar.clone());
                     if self.duplicates.contains(&key) {
-                        self.duplicate_reads += 1;
+                        self.duplicate_reads = self.duplicate_reads.saturating_add(1);
                         return false;
                     }
                     self.duplicates.insert(key);
@@ -4942,13 +5007,7 @@ mod tests {
             }));
         }
 
-        let region_str = format!("{}:{}-{}", chr, start_pos, end_pos);
-        let region: noodles::core::Region = region_str.parse().map_err(|e| {
-            crate::types::VardictError::Parse(format!(
-                "failed to parse region '{}': {}",
-                region_str, e
-            ))
-        })?;
+        let region = build_noodles_region(chr, start_pos, end_pos)?;
 
         let reference_sequence_id = header
             .reference_sequences()
@@ -7666,5 +7725,256 @@ mod tests {
             ]),
             60
         );
+    }
+
+    #[test]
+    fn build_noodles_region_and_query_region_support_hla_colon_contigs() {
+        use noodles::bam::bai;
+        use noodles::core::Position;
+        use noodles::csi::binning_index::{
+            index::reference_sequence::bin::Chunk, Indexer as BinningIndexer,
+        };
+        use noodles::sam::alignment::io::Write as _;
+        use noodles::sam::alignment::record::cigar::{op::Kind, Op};
+        use noodles::sam::alignment::record::Flags;
+        use noodles::sam::alignment::record::MappingQuality;
+        use noodles::sam::alignment::record_buf::{Cigar, RecordBuf};
+        use noodles::sam::header::record::value::{
+            map::ReferenceSequence as RefSeqMap, Map as HeaderMap,
+        };
+        use noodles::sam::Header;
+
+        let contig = "HLA-A*01:01:01:01";
+        let reg = build_noodles_region(contig, 100, 200).unwrap();
+        assert_eq!(reg.name(), contig.as_bytes());
+        assert!(build_noodles_region("", 1, 10).is_err());
+        assert!(build_noodles_region(contig, 0, 10).is_err());
+        assert!(build_noodles_region(contig, 20, 10).is_err());
+
+        let dir = tempfile::tempdir().unwrap();
+        let bam_path = dir.path().join("hla.bam");
+        let rs = HeaderMap::<RefSeqMap>::builder()
+            .set_length(3503usize.try_into().unwrap())
+            .build()
+            .unwrap();
+        let header = Header::builder().add_reference_sequence(contig, rs).build();
+        let rec = RecordBuf::builder()
+            .set_name("hla_read_1")
+            .set_flags(Flags::empty())
+            .set_reference_sequence_id(0)
+            .set_alignment_start(Position::try_from(120usize).unwrap())
+            .set_mapping_quality(MappingQuality::try_from(60u8).unwrap())
+            .set_cigar([Op::new(Kind::Match, 8)].into_iter().collect::<Cigar>())
+            .set_sequence(b"ACGTACGT".to_vec().into())
+            .set_quality_scores(vec![35u8; 8].into())
+            .build();
+
+        {
+            let mut w = noodles::bam::io::Writer::new(std::fs::File::create(&bam_path).unwrap());
+            w.write_header(&header).unwrap();
+            let s_vp = w.get_ref().virtual_position();
+            w.write_alignment_record(&header, &rec).unwrap();
+            let e_vp = w.get_ref().virtual_position();
+            let mut indexer = BinningIndexer::default();
+            indexer
+                .add_record(
+                    Some((
+                        0,
+                        Position::try_from(120usize).unwrap(),
+                        Position::try_from(127usize).unwrap(),
+                        true,
+                    )),
+                    Chunk::new(s_vp, e_vp),
+                )
+                .unwrap();
+            w.try_finish().unwrap();
+            bai::io::Writer::new(
+                std::fs::File::create(bam_path.with_extension("bam.bai")).unwrap(),
+            )
+            .write_index(&indexer.build(1))
+            .unwrap();
+        }
+
+        let cfg = Config::default();
+        let via_vec = query_region(&bam_path, contig, Pos0(99), Pos0(200), &cfg).unwrap();
+        assert_eq!(via_vec.len(), 1);
+        assert_eq!(via_vec[0].reference_name.as_deref(), Some(contig));
+        assert_eq!(via_vec[0].alignment_start, Some(Pos1(120)));
+
+        let via_iter: Vec<SamRecord> =
+            query_region_iter(&bam_path, contig, Pos0(99), Pos0(200), &cfg)
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+        assert_eq!(via_iter, via_vec);
+    }
+
+    #[test]
+    fn cigar_span_and_aux_overflow_return_invalid_data_or_clamp() {
+        use noodles::core::Position;
+        use noodles::sam::alignment::io::Write as _;
+        use noodles::sam::alignment::record::cigar::{op::Kind, Op};
+        use noodles::sam::alignment::record::data::field::Tag;
+        use noodles::sam::alignment::record::Flags;
+        use noodles::sam::alignment::record_buf::{
+            data::field::Value as BufValue, Cigar, Data, RecordBuf,
+        };
+        use noodles::sam::header::record::value::{
+            map::ReferenceSequence as RefSeqMap, Map as HeaderMap,
+        };
+        use noodles::sam::Header;
+
+        let rs = HeaderMap::<RefSeqMap>::builder()
+            .set_length(1000usize.try_into().unwrap())
+            .build()
+            .unwrap();
+        let header = Header::builder().add_reference_sequence("chr1", rs).build();
+
+        // 1. checked_cigar_op_len & checked_alignment_end return InvalidData on overflow
+        assert_eq!(
+            checked_alignment_end(Position::new(usize::MAX - 4).unwrap(), 10)
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::InvalidData
+        );
+        #[cfg(target_pointer_width = "64")]
+        {
+            let huge_op_rec = RecordBuf::builder()
+                .set_name("huge_op")
+                .set_flags(Flags::empty())
+                .set_reference_sequence_id(0)
+                .set_alignment_start(Position::try_from(10usize).unwrap())
+                .set_cigar(
+                    [Op::new(Kind::Match, (u32::MAX as usize) + 1)]
+                        .into_iter()
+                        .collect::<Cigar>(),
+                )
+                .set_sequence(b"ACGT".to_vec().into())
+                .set_quality_scores(vec![30u8; 4].into())
+                .build();
+            let err = SamRecord::from_alignment_record(&huge_op_rec, &header).unwrap_err();
+            assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        }
+
+        // 2. alignment_end overflow with u32-valid CIGAR op (never saturates to usize::MAX or None)
+        let end_overflow_rec = RecordBuf::builder()
+            .set_name("end_overflow")
+            .set_flags(Flags::empty())
+            .set_reference_sequence_id(0)
+            .set_alignment_start(Position::new(usize::MAX - 2).unwrap())
+            .set_cigar([Op::new(Kind::Match, 10)].into_iter().collect::<Cigar>())
+            .set_sequence(b"ACGTACGTAC".to_vec().into())
+            .set_quality_scores(vec![30u8; 10].into())
+            .build();
+        let err = SamRecord::from_alignment_record(&end_overflow_rec, &header).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+
+        // 3. Multi-op alignment_span usize overflow with u32-valid ops fails via checked_add
+        #[cfg(target_pointer_width = "32")]
+        {
+            let span_overflow_rec = RecordBuf::builder()
+                .set_name("span_overflow_32")
+                .set_flags(Flags::empty())
+                .set_reference_sequence_id(0)
+                .set_alignment_start(Position::try_from(10usize).unwrap())
+                .set_cigar(
+                    [
+                        Op::new(Kind::Skip, usize::MAX - 2),
+                        Op::new(Kind::Match, 10),
+                    ]
+                    .into_iter()
+                    .collect::<Cigar>(),
+                )
+                .set_sequence(b"ACGTACGTAC".to_vec().into())
+                .set_quality_scores(vec![30u8; 10].into())
+                .build();
+            assert_eq!(
+                SamRecord::from_alignment_record(&span_overflow_rec, &header)
+                    .unwrap_err()
+                    .kind(),
+                std::io::ErrorKind::InvalidData
+            );
+        }
+
+        // 4. NM / nM UInt32 > i32::MAX clamps to i32::MAX; MQ out of 0..=255 maps to None
+        let aux_data: Data = [
+            (Tag::EDIT_DISTANCE, BufValue::UInt32(u32::MAX)),
+            (Tag::new(b'M', b'Q'), BufValue::Int32(300)),
+        ]
+        .into_iter()
+        .collect();
+        let aux_rec = RecordBuf::builder()
+            .set_name("aux_bounds")
+            .set_flags(Flags::empty())
+            .set_reference_sequence_id(0)
+            .set_alignment_start(Position::try_from(50usize).unwrap())
+            .set_cigar([Op::new(Kind::Match, 4)].into_iter().collect::<Cigar>())
+            .set_sequence(b"ACGT".to_vec().into())
+            .set_quality_scores(vec![30u8; 4].into())
+            .set_data(aux_data)
+            .build();
+        let parsed_align = SamRecord::from_alignment_record(&aux_rec, &header).unwrap();
+        assert_eq!(parsed_align.nm, Some(i32::MAX));
+        assert_eq!(parsed_align.mq, None);
+
+        let mut encoded = Vec::new();
+        noodles::bam::io::Writer::from(&mut encoded)
+            .write_alignment_record(&header, &aux_rec)
+            .unwrap();
+        let mut raw_bam = noodles::bam::Record::default();
+        noodles::bam::io::Reader::from(&encoded[..])
+            .read_record(&mut raw_bam)
+            .unwrap();
+        let mut parsed_bam = SamRecord::new();
+        parsed_bam.fill_from_bam_record(&raw_bam, &header).unwrap();
+        assert_eq!(parsed_bam.nm, Some(i32::MAX));
+        assert_eq!(parsed_bam.mq, None);
+    }
+
+    #[test]
+    fn preprocess_record_rejects_pnext_above_i32_max_even_without_dedup() {
+        let mut config = Config::default();
+        config.dedup = false;
+        let mut prep = RecordPreprocessor::new();
+
+        let base = SamRecord {
+            name: b"mate_pos_test".to_vec(),
+            flags: 0x1,
+            reference_name: Some("chr1".to_string()),
+            alignment_start: Some(Pos1(100)),
+            alignment_end: Some(Pos1(103)),
+            mapping_quality: Some(60),
+            cigar: vec![(4, CigarKind::Match)],
+            sequence: b"ACGT".to_vec(),
+            quality_scores: vec![40; 4],
+            mate_reference_name: Some("chr1".to_string()),
+            mate_alignment_start: Some(Pos1(i32::MAX as u32 + 1)),
+            ..SamRecord::default()
+        };
+
+        // Rejected when dedup == false
+        assert!(!prep.preprocess_record(&base, &config));
+        assert_eq!(prep.total_reads, 0);
+
+        // Exact i32::MAX mate_alignment_start is accepted
+        let ok_rec = SamRecord {
+            mate_alignment_start: Some(Pos1(i32::MAX as u32)),
+            ..base.clone()
+        };
+        assert!(prep.preprocess_record(&ok_rec, &config));
+        assert_eq!(prep.total_reads, 1);
+
+        // total_reads and duplicate_reads saturate at u32::MAX without debug panic
+        config.dedup = true;
+        prep.total_reads = u32::MAX;
+        prep.duplicate_reads = u32::MAX;
+        let dup_rec = SamRecord {
+            mate_alignment_start: Some(Pos1(5)),
+            ..base
+        };
+        assert!(prep.preprocess_record(&dup_rec, &config));
+        assert_eq!(prep.total_reads, u32::MAX);
+        assert!(!prep.preprocess_record(&dup_rec, &config));
+        assert_eq!(prep.duplicate_reads, u32::MAX);
     }
 }

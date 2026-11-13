@@ -1,5 +1,37 @@
 //! Configuration — mirrors VarDictJava's `Configuration` (§4.2 defaults).
 
+/// Opt-in VCF post-filter numeric override carrying an optional normalized CLI token
+/// (<= 64 ASCII bytes) so `##FILTER=<ID=...>` and record `FILTER` tags reproduce Perl
+/// dualvar interpolation verbatim (e.g. `--vcf-qmean 20.0` -> `q20.0`, programmatic
+/// `VcfThreshold::new(20.0)` -> `q20`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VcfThreshold<T> {
+    pub value: T,
+    pub raw: Option<String>,
+}
+
+impl<T> VcfThreshold<T> {
+    #[inline]
+    pub const fn new(value: T) -> Self {
+        Self { value, raw: None }
+    }
+
+    #[inline]
+    pub fn with_raw(value: T, raw: String) -> Self {
+        Self {
+            value,
+            raw: Some(raw),
+        }
+    }
+}
+
+impl<T> From<T> for VcfThreshold<T> {
+    #[inline]
+    fn from(value: T) -> Self {
+        Self::new(value)
+    }
+}
+
 /// Central configuration struct.
 ///
 /// All VarDictJava defaults from §4.2 are preserved here. Constructed from
@@ -157,6 +189,28 @@ pub struct Config {
     pub vcf_min_splitreads: i32,
     /// Enable the PSTD=0 single-position read filter in single-sample VCF output (`true` by default; `--no-pstd-filter` sets `false`, ports `var2vcf_valid.pl -P 0`).
     pub vcf_pstd_filter: bool,
+    /// Opt-in VCF allele-frequency filter/GT threshold override (`--vcf-af`, ports `var2vcf_valid.pl` / `var2vcf_paired.pl -f`).
+    pub vcf_af: Option<VcfThreshold<f64>>,
+    /// Opt-in VCF minimum total read depth override (`--vcf-min-depth`, ports `var2vcf_valid.pl` / `var2vcf_paired.pl -d`).
+    pub vcf_min_depth: Option<VcfThreshold<i32>>,
+    /// Opt-in VCF minimum variant depth override (`--vcf-min-vd`, ports `var2vcf_valid.pl` / `var2vcf_paired.pl -v`).
+    pub vcf_min_vd: Option<VcfThreshold<i32>>,
+    /// Opt-in VCF minimum mean base quality override (`--vcf-qmean`, ports `var2vcf_valid.pl` / `var2vcf_paired.pl -q`).
+    pub vcf_qmean: Option<VcfThreshold<f64>>,
+    /// Opt-in VCF minimum mean mapping quality override (`--vcf-mapq`, ports `var2vcf_valid.pl` / `var2vcf_paired.pl -Q`).
+    pub vcf_mapq: Option<VcfThreshold<f64>>,
+    /// Opt-in VCF minimum mean read-position override (`--vcf-pmean`, ports `var2vcf_valid.pl` / `var2vcf_paired.pl -p`).
+    pub vcf_pmean: Option<VcfThreshold<f64>>,
+    /// Opt-in VCF minimum signal-to-noise (`qratio`) override (`--vcf-sn`, ports `var2vcf_valid.pl` / `var2vcf_paired.pl -o`).
+    pub vcf_sn: Option<VcfThreshold<f64>>,
+    /// Opt-in VCF maximum mean mismatches (`NM`) override (`--vcf-max-nm`, ports `var2vcf_valid.pl` / `var2vcf_paired.pl -m`).
+    pub vcf_max_nm: Option<VcfThreshold<f64>>,
+    /// Opt-in VCF homozygous `1/1` allele-frequency margin override (`--vcf-gt-freq`, `1 - AF < F`, ports `var2vcf_valid.pl` / `var2vcf_paired.pl -F`).
+    pub vcf_gt_freq: Option<f64>,
+    /// Opt-in VCF non-monomer MSI repeat-count threshold override (`--vcf-msi`, ports `var2vcf_valid.pl` / `var2vcf_paired.pl -I`).
+    pub vcf_msi: Option<VcfThreshold<f64>>,
+    /// Opt-in VCF SNV cluster window in bp (`--vcf-cluster-dist`, ports `var2vcf_valid.pl` / `var2vcf_paired.pl -c`).
+    pub vcf_cluster_dist: Option<VcfThreshold<i32>>,
 }
 
 impl Default for Config {
@@ -240,6 +294,17 @@ impl Default for Config {
             vcf_pval_raw: None,
             vcf_min_splitreads: 1,
             vcf_pstd_filter: true,
+            vcf_af: None,
+            vcf_min_depth: None,
+            vcf_min_vd: None,
+            vcf_qmean: None,
+            vcf_mapq: None,
+            vcf_pmean: None,
+            vcf_sn: None,
+            vcf_max_nm: None,
+            vcf_gt_freq: None,
+            vcf_msi: None,
+            vcf_cluster_dist: None,
         }
     }
 }
@@ -248,6 +313,71 @@ fn num_cpus() -> usize {
     std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(1)
+}
+
+fn validate_opt_vcf_f64_threshold(
+    slot: &mut Option<VcfThreshold<f64>>,
+    field_name: &str,
+) -> Result<(), crate::types::VardictError> {
+    if let Some(thr) = slot.as_mut() {
+        if !thr.value.is_finite() || thr.value < 0.0 {
+            return Err(crate::types::VardictError::Parse(format!(
+                "Invalid {field_name} '{}': must be a finite number >= 0.0",
+                thr.value
+            )));
+        }
+        if thr.value == 0.0 {
+            thr.value = 0.0;
+        }
+        if let Some(ref mut raw) = thr.raw {
+            let (norm_val, norm_str) = validate_vcf_nonneg_float_token(raw).map_err(|reason| {
+                crate::types::VardictError::Parse(format!(
+                    "Invalid {field_name}.raw '{raw}': {reason}"
+                ))
+            })?;
+            if norm_val.to_bits() != thr.value.to_bits() {
+                return Err(crate::types::VardictError::Parse(format!(
+                    "Invalid {field_name}.raw '{raw}': parsed value {norm_val} disagrees with {field_name} '{}'",
+                    thr.value
+                )));
+            }
+            if raw.as_str() != norm_str {
+                *raw = norm_str.to_string();
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_opt_vcf_i32_threshold(
+    slot: &mut Option<VcfThreshold<i32>>,
+    field_name: &str,
+) -> Result<(), crate::types::VardictError> {
+    if let Some(thr) = slot.as_mut() {
+        if thr.value < 0 {
+            return Err(crate::types::VardictError::Parse(format!(
+                "Invalid {field_name} '{}': must be an integer >= 0",
+                thr.value
+            )));
+        }
+        if let Some(ref mut raw) = thr.raw {
+            let (norm_val, norm_str) = validate_vcf_nonneg_i32_token(raw).map_err(|reason| {
+                crate::types::VardictError::Parse(format!(
+                    "Invalid {field_name}.raw '{raw}': {reason}"
+                ))
+            })?;
+            if norm_val != thr.value {
+                return Err(crate::types::VardictError::Parse(format!(
+                    "Invalid {field_name}.raw '{raw}': parsed value {norm_val} disagrees with {field_name} '{}'",
+                    thr.value
+                )));
+            }
+            if raw.as_str() != norm_str {
+                *raw = norm_str.to_string();
+            }
+        }
+    }
+    Ok(())
 }
 
 impl Config {
@@ -269,6 +399,71 @@ impl Config {
         } else {
             self.flag_filter != 0
         }
+    }
+
+    /// Validates and canonicalizes all VCF post-filter thresholds (`vcf_pval`,
+    /// `vcf_min_splitreads`, and all 11 `vcf_*` override fields), canonicalizing `-0.0`/`-0`
+    /// and verifying every `raw` CLI token via [`validate_vcf_nonneg_float_token`] /
+    /// [`validate_vcf_nonneg_i32_token`] agreement so programmatic `&Config` callers share
+    /// identical guards.
+    pub fn validate_vcf_thresholds(&mut self) -> Result<(), crate::types::VardictError> {
+        if self.af_threshold == 0.0 {
+            self.af_threshold = 0.0;
+        }
+        if !self.vcf_pval.is_finite() || self.vcf_pval < 0.0 {
+            return Err(crate::types::VardictError::Parse(format!(
+                "Invalid vcf_pval '{}': must be a finite number >= 0.0",
+                self.vcf_pval
+            )));
+        }
+        if self.vcf_pval == 0.0 {
+            self.vcf_pval = 0.0;
+        }
+        if let Some(ref mut raw) = self.vcf_pval_raw {
+            let (p_norm, norm_raw) = validate_vcf_nonneg_float_token(raw).map_err(|reason| {
+                crate::types::VardictError::Parse(format!("Invalid vcf_pval_raw '{raw}': {reason}"))
+            })?;
+            if p_norm.to_bits() != self.vcf_pval.to_bits() {
+                return Err(crate::types::VardictError::Parse(format!(
+                    "Invalid vcf_pval_raw '{raw}': parsed value {p_norm} disagrees with vcf_pval '{}'",
+                    self.vcf_pval
+                )));
+            }
+            if raw.as_str() != norm_raw {
+                *raw = norm_raw.to_string();
+            }
+        }
+        if self.vcf_min_splitreads < 0 {
+            return Err(crate::types::VardictError::Parse(format!(
+                "Invalid vcf_min_splitreads '{}': must be an integer >= 0",
+                self.vcf_min_splitreads
+            )));
+        }
+
+        validate_opt_vcf_f64_threshold(&mut self.vcf_af, "vcf_af")?;
+        validate_opt_vcf_f64_threshold(&mut self.vcf_qmean, "vcf_qmean")?;
+        validate_opt_vcf_f64_threshold(&mut self.vcf_mapq, "vcf_mapq")?;
+        validate_opt_vcf_f64_threshold(&mut self.vcf_pmean, "vcf_pmean")?;
+        validate_opt_vcf_f64_threshold(&mut self.vcf_sn, "vcf_sn")?;
+        validate_opt_vcf_f64_threshold(&mut self.vcf_max_nm, "vcf_max_nm")?;
+        validate_opt_vcf_f64_threshold(&mut self.vcf_msi, "vcf_msi")?;
+
+        validate_opt_vcf_i32_threshold(&mut self.vcf_min_depth, "vcf_min_depth")?;
+        validate_opt_vcf_i32_threshold(&mut self.vcf_min_vd, "vcf_min_vd")?;
+        validate_opt_vcf_i32_threshold(&mut self.vcf_cluster_dist, "vcf_cluster_dist")?;
+
+        if let Some(ref mut gt_freq) = self.vcf_gt_freq {
+            if !gt_freq.is_finite() || *gt_freq < 0.0 || *gt_freq > 1.0 {
+                return Err(crate::types::VardictError::Parse(format!(
+                    "Invalid vcf_gt_freq '{gt_freq}': must be a finite number in [0.0, 1.0]"
+                )));
+            }
+            if *gt_freq == 0.0 {
+                *gt_freq = 0.0;
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -452,27 +647,35 @@ pub fn validate_sample_regexp(raw: &str) -> Result<Option<String>, String> {
     Ok(Some(pat.to_string()))
 }
 
-/// Validates a `--vcf-pval <FLOAT>` (`var2vcf_paired.pl -P`) token without allocating.
+/// Validates a non-negative VCF threshold `<FLOAT>` token without allocating.
 ///
-/// Rejects empty or untrimmed strings, non-finite numbers (`NaN`/`inf`), and negative
-/// values (including negative non-zero mantissas that underflow `f64` to `-0.0` such as
-/// `"-1e-400"`). Canonicalizes signed zeros (`"-0.0"` / `"+0.0"` -> `(0.0, "0.0")`) while
-/// preserving verbatim positive formatting (`"1e-5"`, `"0.050"`).
-pub fn validate_vcf_pval_token(s: &str) -> Result<(f64, &str), String> {
+/// Enforces `1..=64` trimmed ASCII float bytes (`[0-9.+-eE]`), rejects non-finite numbers
+/// (`NaN`/`inf`/overflow) and negative values (including negative non-zero mantissas that
+/// underflow `f64` to `-0.0` such as `"-1e-400"`), and canonicalizes signed zeros
+/// (`"-0"` -> `(0.0, "0")`, `"-0.0"` / `"+0.0"` -> `(0.0, "0.0")`, `"+0.00"` -> `(0.0, "0.00")`)
+/// while preserving verbatim positive formatting (`"1e-5"`, `"0.050"`, `"20.0"`).
+pub fn validate_vcf_nonneg_float_token(s: &str) -> Result<(f64, &str), &'static str> {
     if s.is_empty() || s.trim() != s {
-        return Err(format!("Invalid --vcf-pval value '{s}'"));
+        return Err("must be a non-empty trimmed float token");
+    }
+    if s.len() > 64 {
+        return Err("must be <= 64 ASCII bytes");
+    }
+    if !s
+        .bytes()
+        .all(|b| matches!(b, b'0'..=b'9' | b'.' | b'+' | b'-' | b'e' | b'E'))
+    {
+        return Err("must contain only ASCII float characters [0-9.+-eE]");
     }
     let v = s
         .parse::<f64>()
-        .map_err(|e| format!("Invalid --vcf-pval value '{s}': {e}"))?;
+        .map_err(|_| "invalid floating-point syntax")?;
     let neg_nonzero_mantissa = s.starts_with('-')
         && s.split(['e', 'E'])
             .next()
             .is_some_and(|m| m.bytes().any(|b| b.is_ascii_digit() && b != b'0'));
     if !v.is_finite() || v < 0.0 || neg_nonzero_mantissa {
-        return Err(format!(
-            "Invalid --vcf-pval value '{s}': must be a finite number >= 0.0"
-        ));
+        return Err("must be a finite number >= 0.0");
     }
     if v == 0.0 {
         Ok((0.0, s.strip_prefix(['-', '+']).unwrap_or(s)))
@@ -481,10 +684,90 @@ pub fn validate_vcf_pval_token(s: &str) -> Result<(f64, &str), String> {
     }
 }
 
+/// Inline alias for [`validate_vcf_nonneg_float_token`] retained for `--vcf-pval` callers.
+#[inline]
+pub fn validate_vcf_pval_token(s: &str) -> Result<(f64, &str), &'static str> {
+    validate_vcf_nonneg_float_token(s)
+}
+
 /// Validates and normalizes a `--vcf-pval <FLOAT>` (`var2vcf_paired.pl -P`) token into
 /// `(f64, String)` for CLI parsing and [`Config`] validation.
 pub fn parse_vcf_pval_token(s: &str) -> Result<(f64, String), String> {
-    validate_vcf_pval_token(s).map(|(v, norm)| (v, norm.to_string()))
+    validate_vcf_nonneg_float_token(s)
+        .map(|(v, norm)| (v, norm.to_string()))
+        .map_err(|reason| format!("Invalid --vcf-pval value '{s}': {reason}"))
+}
+
+/// Parses a non-negative VCF threshold `<FLOAT>` flag (`flag`, e.g. `"--vcf-qmean"`) into
+/// [`VcfThreshold<f64>`], preserving the normalized raw token for Perl dualvar formatting.
+pub fn parse_vcf_threshold_nonneg_f64(s: &str, flag: &str) -> Result<VcfThreshold<f64>, String> {
+    let (value, norm) = validate_vcf_nonneg_float_token(s)
+        .map_err(|reason| format!("Invalid {flag} value '{s}': {reason}"))?;
+    Ok(VcfThreshold::with_raw(value, norm.to_string()))
+}
+
+/// Parses a unit-interval `[0.0, 1.0]` VCF float flag (`flag`, e.g. `"--vcf-gt-freq"`).
+/// Canonicalizes signed zero (`-0.0` -> `0.0`) and rejects values `> 1.0` or `< 0.0`.
+pub fn parse_vcf_unit_f64(s: &str, flag: &str) -> Result<f64, String> {
+    let (value, _) = validate_vcf_nonneg_float_token(s)
+        .map_err(|reason| format!("Invalid {flag} value '{s}': {reason}"))?;
+    if value > 1.0 {
+        return Err(format!(
+            "Invalid {flag} value '{s}': must be a finite number in [0.0, 1.0]"
+        ));
+    }
+    Ok(value)
+}
+
+/// Parses a trimmed base-10 non-negative `i32` (`>= 0`) for `--min-splitreads`.
+pub fn parse_vcf_nonneg_i32(s: &str, flag: &str) -> Result<i32, String> {
+    if s.is_empty() || s.trim() != s {
+        return Err(format!("Invalid {flag} value '{s}'"));
+    }
+    let v = s
+        .parse::<i32>()
+        .map_err(|e| format!("Invalid {flag} value '{s}': {e}"))?;
+    if v < 0 {
+        return Err(format!(
+            "Invalid {flag} value '{s}': must be an integer >= 0"
+        ));
+    }
+    Ok(v)
+}
+
+/// Validates a non-negative VCF threshold `<INT>` token without allocating.
+///
+/// Enforces `1..=64` trimmed ASCII integer bytes (`[0-9+-]`), rejects negative values,
+/// and canonicalizes `-0` (`"-0"` -> `(0, "0")`) while preserving leading zeros and `+`
+/// signs verbatim (`"03"`, `"+02"`, `"010"`, `"00"`, `"+0"`) to match Perl dualvar
+/// interpolation in `var2vcf_valid.pl` and `var2vcf_paired.pl`.
+pub fn validate_vcf_nonneg_i32_token(s: &str) -> Result<(i32, &str), &'static str> {
+    if s.is_empty() || s.trim() != s {
+        return Err("must be a non-empty trimmed integer token");
+    }
+    if s.len() > 64 {
+        return Err("must be <= 64 ASCII bytes");
+    }
+    if !s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'+' | b'-')) {
+        return Err("must contain only ASCII integer characters [0-9+-]");
+    }
+    let v = s.parse::<i32>().map_err(|_| "invalid integer syntax")?;
+    if v < 0 {
+        return Err("must be an integer >= 0");
+    }
+    if v == 0 {
+        Ok((0, s.strip_prefix('-').unwrap_or(s)))
+    } else {
+        Ok((v, s))
+    }
+}
+
+/// Parses a non-negative VCF threshold `<INT>` flag (`flag`, e.g. `"--vcf-min-depth"`) into
+/// [`VcfThreshold<i32>`], preserving the normalized raw token for Perl dualvar formatting.
+pub fn parse_vcf_threshold_nonneg_i32(s: &str, flag: &str) -> Result<VcfThreshold<i32>, String> {
+    let (value, norm) = validate_vcf_nonneg_i32_token(s)
+        .map_err(|reason| format!("Invalid {flag} value '{s}': {reason}"))?;
+    Ok(VcfThreshold::with_raw(value, norm.to_string()))
 }
 
 /// Resolves sample name(s) matching `VarDictLauncher.java:82-86, 206-268` and `var2vcf_paired.pl:45-48`.
@@ -778,5 +1061,210 @@ mod tests {
             "aln_1",
             "double-slash pattern strips once to `/cohort/([^/]+)/` and must not match `not_cohort/`"
         );
+    }
+
+    #[test]
+    fn vcf_threshold_constructors_and_defaults() {
+        let c = Config::default();
+        assert!(c.vcf_af.is_none());
+        assert!(c.vcf_min_depth.is_none());
+        assert!(c.vcf_min_vd.is_none());
+        assert!(c.vcf_qmean.is_none());
+        assert!(c.vcf_mapq.is_none());
+        assert!(c.vcf_pmean.is_none());
+        assert!(c.vcf_sn.is_none());
+        assert!(c.vcf_max_nm.is_none());
+        assert!(c.vcf_gt_freq.is_none());
+        assert!(c.vcf_msi.is_none());
+        assert!(c.vcf_cluster_dist.is_none());
+
+        let t_new = VcfThreshold::new(20.0_f64);
+        assert_eq!(t_new.value, 20.0);
+        assert_eq!(t_new.raw, None);
+
+        let t_from: VcfThreshold<f64> = 20.0.into();
+        assert_eq!(t_from, t_new);
+
+        let t_raw = VcfThreshold::with_raw(20.0, "20.0".to_string());
+        assert_eq!(t_raw.value, 20.0);
+        assert_eq!(t_raw.raw.as_deref(), Some("20.0"));
+    }
+
+    #[test]
+    fn validate_vcf_nonneg_float_token_and_parsers() {
+        let (v0, r0) = validate_vcf_nonneg_float_token("+0.00").unwrap();
+        assert_eq!(v0.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(r0, "0.00");
+
+        let (vn0, rn0) = validate_vcf_nonneg_float_token("-0").unwrap();
+        assert_eq!(vn0.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(rn0, "0");
+
+        let (vn00, rn00) = validate_vcf_nonneg_float_token("-0.0").unwrap();
+        assert_eq!(vn00.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(rn00, "0.0");
+
+        let (v_sci, r_sci) = validate_vcf_nonneg_float_token("1e-5").unwrap();
+        assert_eq!(v_sci.to_bits(), 1e-5_f64.to_bits());
+        assert_eq!(r_sci, "1e-5");
+
+        let exact_64 = format!("0.{}", "0".repeat(62));
+        assert_eq!(exact_64.len(), 64);
+        assert!(validate_vcf_nonneg_float_token(&exact_64).is_ok());
+
+        let over_64 = format!("0.{}", "0".repeat(63));
+        assert_eq!(over_64.len(), 65);
+        assert!(validate_vcf_nonneg_float_token(&over_64).is_err());
+
+        for bad in [
+            "", " 0.05", "0.05 ", "0.05\n", "0.05\t", "0.05;bad", "-0.01", "-1e-400", "-3", "NaN",
+            "inf", "Infinity", "1e500", "0.01f", "-", "+", ".",
+        ] {
+            assert!(
+                validate_vcf_nonneg_float_token(bad).is_err(),
+                "expected Err for {bad:?}"
+            );
+        }
+
+        let thr = parse_vcf_threshold_nonneg_f64("+0.00", "--vcf-af").unwrap();
+        assert_eq!(thr.value.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(thr.raw.as_deref(), Some("0.00"));
+
+        assert_eq!(
+            parse_vcf_unit_f64("-0.0", "--vcf-gt-freq")
+                .unwrap()
+                .to_bits(),
+            0.0_f64.to_bits()
+        );
+        assert_eq!(parse_vcf_unit_f64("1.0", "--vcf-gt-freq").unwrap(), 1.0);
+        assert!(parse_vcf_unit_f64("1.0001", "--vcf-gt-freq").is_err());
+        assert!(parse_vcf_unit_f64("-0.1", "--vcf-gt-freq").is_err());
+
+        assert_eq!(parse_vcf_nonneg_i32("0", "--min-splitreads").unwrap(), 0);
+        assert_eq!(parse_vcf_nonneg_i32("15", "--min-splitreads").unwrap(), 15);
+        for bad_int in ["", " 1", "-1", "-3", "2.5", "0x2"] {
+            assert!(
+                parse_vcf_nonneg_i32(bad_int, "--min-splitreads").is_err(),
+                "expected Err for {bad_int:?}"
+            );
+            assert!(
+                validate_vcf_nonneg_i32_token(bad_int).is_err(),
+                "expected validate_vcf_nonneg_i32_token Err for {bad_int:?}"
+            );
+        }
+        assert_eq!(validate_vcf_nonneg_i32_token("03").unwrap(), (3, "03"));
+        assert_eq!(validate_vcf_nonneg_i32_token("+02").unwrap(), (2, "+02"));
+        assert_eq!(validate_vcf_nonneg_i32_token("010").unwrap(), (10, "010"));
+        assert_eq!(validate_vcf_nonneg_i32_token("00").unwrap(), (0, "00"));
+        assert_eq!(validate_vcf_nonneg_i32_token("+0").unwrap(), (0, "+0"));
+        assert_eq!(validate_vcf_nonneg_i32_token("-0").unwrap(), (0, "0"));
+        assert!(validate_vcf_nonneg_i32_token(&"0".repeat(64)).is_ok());
+        assert!(validate_vcf_nonneg_i32_token(&"0".repeat(65)).is_err());
+        assert_eq!(
+            parse_vcf_threshold_nonneg_i32("03", "--vcf-min-depth").unwrap(),
+            VcfThreshold::with_raw(3, "03".to_string())
+        );
+        assert_eq!(
+            parse_vcf_threshold_nonneg_i32("+02", "--vcf-min-vd").unwrap(),
+            VcfThreshold::with_raw(2, "+02".to_string())
+        );
+        assert_eq!(
+            parse_vcf_threshold_nonneg_i32("010", "--vcf-cluster-dist").unwrap(),
+            VcfThreshold::with_raw(10, "010".to_string())
+        );
+        assert_eq!(
+            parse_vcf_threshold_nonneg_i32("-0", "--vcf-cluster-dist").unwrap(),
+            VcfThreshold::with_raw(0, "0".to_string())
+        );
+    }
+
+    #[test]
+    fn config_validate_vcf_thresholds_checks_all_fields() {
+        let mut cfg = Config {
+            af_threshold: -0.0,
+            vcf_pval: -0.0,
+            vcf_pval_raw: Some("-0.0".to_string()),
+            vcf_af: Some(VcfThreshold::with_raw(-0.0, "+0.00".to_string())),
+            vcf_min_depth: Some(VcfThreshold::with_raw(3, "03".to_string())),
+            vcf_min_vd: Some(VcfThreshold::with_raw(2, "+02".to_string())),
+            vcf_qmean: Some(VcfThreshold::with_raw(20.0, "20.0".to_string())),
+            vcf_mapq: Some(VcfThreshold::with_raw(0.0, "-0".to_string())),
+            vcf_pmean: Some(VcfThreshold::with_raw(7.5, "7.5".to_string())),
+            vcf_sn: Some(VcfThreshold::new(2.0)),
+            vcf_max_nm: Some(VcfThreshold::with_raw(4.0, "4.0".to_string())),
+            vcf_gt_freq: Some(-0.0),
+            vcf_msi: Some(VcfThreshold::with_raw(10.5, "10.5".to_string())),
+            vcf_cluster_dist: Some(VcfThreshold::with_raw(0, "-0".to_string())),
+            ..Config::default()
+        };
+        cfg.validate_vcf_thresholds().unwrap();
+        assert_eq!(cfg.af_threshold.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(cfg.vcf_pval.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(cfg.vcf_pval_raw.as_deref(), Some("0.0"));
+        assert_eq!(
+            cfg.vcf_af.as_ref().unwrap().value.to_bits(),
+            0.0_f64.to_bits()
+        );
+        assert_eq!(cfg.vcf_af.as_ref().unwrap().raw.as_deref(), Some("0.00"));
+        assert_eq!(
+            cfg.vcf_min_depth.as_ref().unwrap().raw.as_deref(),
+            Some("03")
+        );
+        assert_eq!(cfg.vcf_min_vd.as_ref().unwrap().raw.as_deref(), Some("+02"));
+        assert_eq!(
+            cfg.vcf_cluster_dist.as_ref().unwrap().raw.as_deref(),
+            Some("0")
+        );
+        assert_eq!(cfg.vcf_mapq.as_ref().unwrap().raw.as_deref(), Some("0"));
+        assert_eq!(cfg.vcf_gt_freq.unwrap().to_bits(), 0.0_f64.to_bits());
+
+        // Reject negative integer overrides, >1.0 gt_freq, mismatched/hostile raw tokens
+        let mut bad_depth = Config {
+            vcf_min_depth: Some(VcfThreshold::new(-1)),
+            ..Config::default()
+        };
+        assert!(bad_depth.validate_vcf_thresholds().is_err());
+
+        let mut bad_vd = Config {
+            vcf_min_vd: Some(VcfThreshold::new(-2)),
+            ..Config::default()
+        };
+        assert!(bad_vd.validate_vcf_thresholds().is_err());
+
+        let mut bad_cluster = Config {
+            vcf_cluster_dist: Some(VcfThreshold::new(-5)),
+            ..Config::default()
+        };
+        assert!(bad_cluster.validate_vcf_thresholds().is_err());
+
+        let mut bad_int_raw_mismatch = Config {
+            vcf_cluster_dist: Some(VcfThreshold::with_raw(10, "015".to_string())),
+            ..Config::default()
+        };
+        assert!(bad_int_raw_mismatch.validate_vcf_thresholds().is_err());
+
+        let mut bad_gt = Config {
+            vcf_gt_freq: Some(1.1),
+            ..Config::default()
+        };
+        assert!(bad_gt.validate_vcf_thresholds().is_err());
+
+        let mut bad_raw_mismatch = Config {
+            vcf_qmean: Some(VcfThreshold::with_raw(20.0, "25.0".to_string())),
+            ..Config::default()
+        };
+        assert!(bad_raw_mismatch.validate_vcf_thresholds().is_err());
+
+        let mut bad_raw_inject = Config {
+            vcf_qmean: Some(VcfThreshold::with_raw(20.0, "20.0\n##evil".to_string())),
+            ..Config::default()
+        };
+        assert!(bad_raw_inject.validate_vcf_thresholds().is_err());
+
+        let mut bad_raw_over64 = Config {
+            vcf_msi: Some(VcfThreshold::with_raw(0.0, format!("0.{}", "0".repeat(63)))),
+            ..Config::default()
+        };
+        assert!(bad_raw_over64.validate_vcf_thresholds().is_err());
     }
 }

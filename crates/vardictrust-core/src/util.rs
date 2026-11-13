@@ -37,11 +37,8 @@ pub fn char_at(seq: &[u8], idx: isize) -> Option<u8> {
 /// slice length, returns the available suffix (matching Java's lenient behavior
 /// in many VarDict paths).
 pub fn subseq(seq: &[u8], start: usize, len: usize) -> Option<&[u8]> {
-    if start > seq.len() {
-        return None;
-    }
-    let end = (start + len).min(seq.len());
-    Some(&seq[start..end])
+    let end = start.saturating_add(len).min(seq.len());
+    seq.get(start..end)
 }
 
 /// Best-effort diagnostic output to `stderr` under `-y` / `--verbose`,
@@ -225,6 +222,15 @@ mod tests {
     fn test_subseq_out_of_bounds() {
         let seq = b"ACGT";
         assert_eq!(subseq(seq, 5, 1), None);
+    }
+
+    #[test]
+    fn test_subseq_usize_max_saturation() {
+        let seq = b"ACGT";
+        assert_eq!(subseq(seq, 2, usize::MAX), Some(b"GT".as_ref()));
+        assert_eq!(subseq(seq, 4, usize::MAX), Some(b"".as_ref()));
+        assert_eq!(subseq(seq, usize::MAX, 1), None);
+        assert_eq!(subseq(seq, usize::MAX, usize::MAX), None);
     }
 
     #[test]

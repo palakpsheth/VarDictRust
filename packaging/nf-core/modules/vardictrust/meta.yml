@@ -10,7 +10,7 @@ tools:
   - "vardictrust":
       description: "Fast, memory-safe Rust rewrite of VarDictJava v1.8.3 for single and paired sample variant calling (upstream VarDictJava: https://github.com/AstraZeneca-NGS/VarDictJava)"
       homepage: "https://github.com/palakpsheth/VarDictRust"
-      documentation: "https://github.com/palakpsheth/VarDictRust"
+      documentation: "https://vardictrust.readthedocs.io/"
       tool_dev_url: "https://github.com/palakpsheth/VarDictRust"
       doi: "10.1093/nar/gkw227"
       licence:
@@ -36,14 +36,15 @@ input:
     - bams:
         type: file
         description: One or two BAM or CRAM files. Supply two BAM/CRAM files to run in paired (tumour/normal) mode.
-        pattern: "*.bam"
+        pattern: "*.{bam,cram}"
         ontologies:
           - edam: http://edamontology.org/data_0863 # Sequence alignment
           - edam: http://edamontology.org/format_2572 # BAM
+          - edam: http://edamontology.org/format_3462 # CRAM
     - bais:
         type: file
         description: Index/indices of the BAM or CRAM file(s) (.bai, .csi, or .crai)
-        pattern: "*.bai"
+        pattern: "*.{bai,csi,crai}"
         ontologies: []
     - bed:
         type: file

@@ -50,7 +50,7 @@ impl F80 {
             mant += 1;
             if mant >= (1 << 53) {
                 mant >>= 1;
-                exp += 1;
+                exp = exp.saturating_add(1);
             }
         }
 
@@ -60,13 +60,14 @@ impl F80 {
         }
         if exp < -1022 {
             // Subnormal packing
-            let shift = -1022 - exp;
-            if shift > 53 {
+            let shift_i64 = -1022i64 - i64::from(exp);
+            if shift_i64 > 53 {
                 return 0.0;
             }
+            let shift = shift_i64 as u32;
             // Add implicit 1 bit back
             let sub_round_bit = (mant >> (shift - 1)) & 1;
-            let sub_sticky = if (mant & ((1 << (shift - 1)) - 1)) != 0 {
+            let sub_sticky = if (mant & ((1u64 << (shift - 1)) - 1)) != 0 {
                 1
             } else {
                 0
@@ -97,13 +98,13 @@ impl F80 {
         } else {
             (other, self)
         };
-        let exp_diff = a.exp - b.exp;
+        let exp_diff = i64::from(a.exp) - i64::from(b.exp);
         let a_mant_128 = (a.mant as u128) << 60;
         let mut b_mant_128 = (b.mant as u128) << 60;
         if exp_diff >= 120 {
             b_mant_128 = 1;
         } else if exp_diff > 0 {
-            let shift = exp_diff;
+            let shift = exp_diff as u32;
             let sticky = if (b_mant_128 & ((1u128 << shift) - 1)) != 0 {
                 1
             } else {
@@ -118,7 +119,7 @@ impl F80 {
         if sum >= (1u128 << 124) {
             let sticky = sum & 1;
             sum = (sum >> 1) | sticky;
-            exp += 1;
+            exp = exp.saturating_add(1);
         }
 
         let round_bit = (sum >> 59) & 1;
@@ -133,7 +134,7 @@ impl F80 {
             sum += 1;
             if sum >= (1u128 << 64) {
                 sum >>= 1;
-                exp += 1;
+                exp = exp.saturating_add(1);
             }
         }
 
@@ -304,5 +305,37 @@ mod tests {
                 f80_sum(&collected).to_bits()
             );
         }
+    }
+
+    #[test]
+    fn test_f80_i32_exponent_extremes() {
+        let max_carry = F80 {
+            exp: i32::MAX,
+            mant: u64::MAX,
+        };
+        assert_eq!(max_carry.to_f64(), f64::INFINITY);
+        let sum_carry = max_carry.add_f80(max_carry);
+        assert_eq!(sum_carry.exp, i32::MAX);
+        assert_eq!(sum_carry.to_f64(), f64::INFINITY);
+
+        let post_round_carry = F80 {
+            exp: i32::MAX,
+            mant: u64::MAX,
+        }
+        .add_f80(F80 {
+            exp: i32::MAX - 64,
+            mant: 1u64 << 63,
+        });
+        assert_eq!(post_round_carry.exp, i32::MAX);
+        assert_eq!(post_round_carry.to_f64(), f64::INFINITY);
+
+        let min_exp = F80 {
+            exp: i32::MIN,
+            mant: 1u64 << 63,
+        };
+        assert_eq!(min_exp.to_f64(), 0.0);
+
+        let extreme_span = max_carry.add_f80(min_exp);
+        assert_eq!(extreme_span.to_f64(), f64::INFINITY);
     }
 }

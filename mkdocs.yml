@@ -51,12 +51,21 @@ markdown_extensions:
 extra_javascript:
   - https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js
 
+not_in_nav: |
+  benchmarks/gcp-prereg.md
+  docs/validation/gcp-study-protocol.md
+  docs/validation/scale-recalibration-proposal.md
+  docs/validation/provenance/task-*.md
+  paper/tables/*.md
+
 validation:
-  omitted_files: info
-  unrecognized_links: warn
+  nav:
+    omitted_files: warn
+    not_found: warn
   links:
     not_found: warn
     anchors: warn
+    unrecognized_links: warn
 
 nav:
   - Overview: README.md
@@ -74,6 +83,7 @@ nav:
       - Divergences & Quirks: DIVERGENCES.md
       - Upstream Bug Catalog: docs/upstream-bugs.md
       - JVM JavaHashMap Emulation: crates/vardictrust-core/testdata/javamap/README.md
+      - JVM & R Kernel Oracles: fixtures/jvm-oracles/README.md
       - Hostile CIGAR Robustness: fixtures/pr402/README.md
   - Testing & Verification:
       - Test Matrix & CI Audit: docs/testing/test-matrix-and-ci-audit.md

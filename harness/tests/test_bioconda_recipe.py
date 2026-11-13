@@ -72,6 +72,26 @@ class TestBiocondaRecipe(unittest.TestCase):
             "Root Cargo.toml must match the recipe SPDX license expression",
         )
 
+    def test_cargo_workspace_msrv_inheritance(self):
+        root_cargo = (ROOT_DIR / "Cargo.toml").read_text(encoding="utf-8")
+        self.assertRegex(
+            root_cargo,
+            re.compile(
+                r'^\[workspace\.package\]\n(?:(?!\[)[^\n]*\n)*?rust-version\s*=\s*"1\.91\.0"',
+                re.MULTILINE,
+            ),
+            'Workspace Cargo.toml must pin rust-version = "1.91.0" under [workspace.package]',
+        )
+        for member in ("vardictrust", "vardictrust-core"):
+            member_path = ROOT_DIR / "crates" / member / "Cargo.toml"
+            self.assertTrue(member_path.is_file(), f"Missing crate manifest: {member_path}")
+            member_cargo = member_path.read_text(encoding="utf-8")
+            self.assertRegex(
+                member_cargo,
+                re.compile(r"^rust-version\.workspace\s*=\s*true\b", re.MULTILINE),
+                f"crates/{member}/Cargo.toml must inherit rust-version.workspace = true",
+            )
+
     def test_cargo_deny_license_allow_list(self):
         deny_path = ROOT_DIR / "deny.toml"
         content = deny_path.read_text(encoding="utf-8")
@@ -188,6 +208,11 @@ class TestBiocondaRecipe(unittest.TestCase):
         self.assertIn("binary_relocation: false", meta, "meta.yaml must declare binary_relocation: false")
         self.assertIn("osx-arm64", meta, "Must target osx-arm64")
         self.assertIn("linux-aarch64", meta, "Must target linux-aarch64")
+        self.assertIn(
+            "doc_url: https://vardictrust.readthedocs.io/",
+            meta,
+            "Bioconda meta.yaml doc_url must point to https://vardictrust.readthedocs.io/",
+        )
 
     def test_readme_bioconda_package_name(self):
         readme_path = ROOT_DIR / "README.md"
@@ -259,6 +284,10 @@ class TestNfCoreModulePackaging(unittest.TestCase):
         self.assertIn('args_id: "$args2"', meta_yml)
         self.assertNotIn('args_id: "$args $args2"', meta_yml)
         self.assertNotIn('args_id: "$args3"', meta_yml)
+        self.assertIn('documentation: "https://vardictrust.readthedocs.io/"', meta_yml)
+        self.assertIn('pattern: "*.{bam,cram}"', meta_yml)
+        self.assertIn("http://edamontology.org/format_3462", meta_yml)
+        self.assertIn('pattern: "*.{bai,csi,crai}"', meta_yml)
 
     def test_nfcore_tests_use_lowercase_channel_factory(self):
         nf_test = (NFCORE_MOD_DIR / "tests" / "main.nf.test").read_text(encoding="utf-8")
