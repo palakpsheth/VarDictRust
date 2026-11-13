@@ -79,9 +79,9 @@ impl Variation {
     /// Ports `Variation.incDir(boolean)`.
     pub fn inc_dir(&mut self, is_reverse: bool) {
         if is_reverse {
-            self.rev += 1;
+            self.rev = self.rev.saturating_add(1);
         } else {
-            self.fwd += 1;
+            self.fwd = self.fwd.saturating_add(1);
         }
     }
 
@@ -89,9 +89,9 @@ impl Variation {
     /// Ports `Variation.decDir(boolean)`.
     pub fn dec_dir(&mut self, is_reverse: bool) {
         if is_reverse {
-            self.rev -= 1;
+            self.rev = self.rev.saturating_sub(1);
         } else {
-            self.fwd -= 1;
+            self.fwd = self.fwd.saturating_sub(1);
         }
     }
 
@@ -109,9 +109,9 @@ impl Variation {
     /// Ports `Variation.addDir(boolean, int)`.
     pub fn add_dir(&mut self, is_reverse: bool, val: i32) {
         if is_reverse {
-            self.rev += val;
+            self.rev = self.rev.saturating_add(val);
         } else {
-            self.fwd += val;
+            self.fwd = self.fwd.saturating_add(val);
         }
     }
 
@@ -119,9 +119,9 @@ impl Variation {
     /// Ports `Variation.subDir(boolean, int)`.
     pub fn sub_dir(&mut self, is_reverse: bool, val: i32) {
         if is_reverse {
-            self.rev -= val;
+            self.rev = self.rev.saturating_sub(val);
         } else {
-            self.fwd -= val;
+            self.fwd = self.fwd.saturating_sub(val);
         }
     }
 
@@ -136,16 +136,16 @@ impl Variation {
         nm: f64,
         goodq: f64,
     ) {
-        self.cnt += 1;
+        self.cnt = self.cnt.saturating_add(1);
         self.inc_dir(is_reverse);
         self.pmean += f64::from(read_pos);
         self.qmean += base_qual;
         self.mqmean += f64::from(map_qual);
         self.nm += nm;
         if base_qual >= goodq {
-            self.hicnt += 1;
+            self.hicnt = self.hicnt.saturating_add(1);
         } else {
-            self.locnt += 1;
+            self.locnt = self.locnt.saturating_add(1);
         }
     }
 
@@ -160,16 +160,16 @@ impl Variation {
         nm: f64,
         goodq: f64,
     ) {
-        self.cnt -= 1;
+        self.cnt = self.cnt.saturating_sub(1);
         self.dec_dir(is_reverse);
         self.pmean -= f64::from(read_pos);
         self.qmean -= base_qual;
         self.mqmean -= f64::from(map_qual);
         self.nm -= nm;
         if base_qual >= goodq {
-            self.hicnt -= 1;
+            self.hicnt = self.hicnt.saturating_sub(1);
         } else {
-            self.locnt -= 1;
+            self.locnt = self.locnt.saturating_sub(1);
         }
     }
 }
@@ -459,7 +459,7 @@ impl Variant {
         format!(
             "{}:{}:F-{}:R-{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
             self.description,
-            self.fwd + self.rev,
+            i64::from(self.fwd) + i64::from(self.rev),
             self.fwd,
             self.rev,
             freq,
@@ -644,8 +644,9 @@ impl Variant {
         };
         let vtype = vtype.as_ref();
 
+        let min_reads = i32::try_from(config.min_reads).unwrap_or(i32::MAX);
         if self.frequency < config.freq
-            || self.hicnt < config.min_reads as i32
+            || self.hicnt < min_reads
             || self.mean_position < config.read_pos
             || self.mean_quality < config.base_qual
         {
@@ -653,7 +654,7 @@ impl Variant {
         }
 
         if let Some(ref_var) = reference_var {
-            if ref_var.hicnt > config.min_reads as i32 && self.frequency < 0.25 {
+            if ref_var.hicnt > min_reads && self.frequency < 0.25 {
                 let d = self.mean_mapping_quality
                     + self.ref_allele.len() as f64
                     + self.var_allele.len() as f64;
@@ -2060,5 +2061,66 @@ mod debug_tests {
         assert_eq!(vars_vec_only.variants[0].pos_coverage, 2);
         assert_eq!(vars_vec_only.variants[1].pos_coverage, 99);
         assert_eq!(vars_vec_only.variant_by_desc("G").unwrap().pos_coverage, 99);
+    }
+
+    #[test]
+    fn extreme_arithmetic_saturating_mutators_and_min_reads_clamp() {
+        let mut var = Variation::new();
+        var.fwd = i32::MAX;
+        var.rev = i32::MAX;
+        var.cnt = i32::MAX;
+        var.inc_dir(false);
+        var.inc_dir(true);
+        var.add_dir(false, 10);
+        var.add_dir(true, 10);
+        var.add_cnt(false, 10, 30.0, 60, 0.0, 22.5);
+        assert_eq!(var.fwd, i32::MAX);
+        assert_eq!(var.rev, i32::MAX);
+        assert_eq!(var.cnt, i32::MAX);
+
+        var.fwd = i32::MIN;
+        var.rev = i32::MIN;
+        var.cnt = i32::MIN;
+        var.dec_dir(false);
+        var.dec_dir(true);
+        var.sub_dir(false, 10);
+        var.sub_dir(true, 10);
+        var.sub_cnt(false, 10, 30.0, 60, 0.0, 22.5);
+        assert_eq!(var.fwd, i32::MIN);
+        assert_eq!(var.rev, i32::MIN);
+        assert_eq!(var.cnt, i32::MIN);
+
+        let v_default = Variant::new();
+        assert_eq!(v_default.bias, "0");
+        assert_eq!(v_default.bias.capacity(), 4);
+
+        let mut v_dbg = Variant::new();
+        v_dbg.start_pos = 10;
+        v_dbg.end_pos = 10;
+        v_dbg.ref_allele = "A".to_string();
+        v_dbg.var_allele = "G".to_string();
+        v_dbg.fwd = i32::MAX;
+        v_dbg.rev = i32::MAX;
+        let rendered = v_dbg.debug_variants_content();
+        assert!(rendered.contains(&format!("{}", 2 * i64::from(i32::MAX))));
+
+        let mut cfg = crate::config::Config::default();
+        cfg.min_reads = u32::MAX;
+        let splice = rustc_hash::FxHashSet::default();
+        let mut v_good = Variant::new();
+        v_good.ref_allele = "A".to_string();
+        v_good.var_allele = "G".to_string();
+        v_good.frequency = 0.5;
+        v_good.hicnt = 100;
+        v_good.mean_position = 20.0;
+        v_good.mean_quality = 35.0;
+        v_good.hq_lq_ratio = 5.0;
+        v_good.mean_mapping_quality = 60.0;
+        assert!(
+            !v_good.is_good_var(None, "SNV", &splice, &cfg),
+            "min_reads = u32::MAX must clamp to i32::MAX instead of wrapping to -1"
+        );
+        v_good.hicnt = i32::MAX;
+        assert!(v_good.is_good_var(None, "SNV", &splice, &cfg));
     }
 }

@@ -304,7 +304,7 @@ fn print_variations_from_first_sample(
             // ('<') → re-run the pipeline on both BAMs combined
             if vref.var_type != SNV
                 && (nt.len() > 10 || minus_num_num_find(nt))
-                && vref.pos_coverage < config.min_reads as i32 + 3
+                && i64::from(vref.pos_coverage) < i64::from(config.min_reads) + 3
                 && !nt.contains('<')
             {
                 if let Some(pipeline_fn) = pipeline {
@@ -459,7 +459,7 @@ fn print_variations_from_second_sample(
         // combineAnalysis gate (:301-302): low normal coverage, not an SV, long
         // description or a -\d\d pattern (MINUS_NUM_NUM, Patterns.java:18)
         let description = &v2var.description;
-        let should_combine = v2var.pos_coverage < config.min_reads as i32 + 3
+        let should_combine = i64::from(v2var.pos_coverage) < i64::from(config.min_reads) + 3
             && !description.contains('<')
             && (description.len() > 10 || minus_num_num_find(description));
         let mut type_str: &'static str = STRONG_LOH;
@@ -618,17 +618,27 @@ fn combine_analysis(
 
     let base_pc = variant1.pos_coverage;
     let comb_pc = combined_var.pos_coverage;
+    let min_reads_bias = i32::try_from(config.min_reads_bias).unwrap_or(i32::MAX);
 
-    if comb_pc - base_pc >= config.min_reads as i32 {
+    if i64::from(comb_pc) - i64::from(base_pc) >= i64::from(config.min_reads) {
         // Enough extra evidence in the other sample: fill variant2 by subtraction
         // (combined − variant1), clamped at zero (:414-436)
         let mut var2 = Variant::new();
-        var2.total_pos_cov = (combined_var.total_pos_cov - variant1.total_pos_cov).max(0);
-        var2.pos_coverage = (comb_pc - base_pc).max(0);
-        var2.ref_fwd_cov = (combined_var.ref_fwd_cov - variant1.ref_fwd_cov).max(0);
-        var2.ref_rev_cov = (combined_var.ref_rev_cov - variant1.ref_rev_cov).max(0);
-        var2.fwd = (combined_var.fwd - variant1.fwd).max(0);
-        var2.rev = (combined_var.rev - variant1.rev).max(0);
+        var2.total_pos_cov = combined_var
+            .total_pos_cov
+            .saturating_sub(variant1.total_pos_cov)
+            .max(0);
+        var2.pos_coverage = comb_pc.saturating_sub(base_pc).max(0);
+        var2.ref_fwd_cov = combined_var
+            .ref_fwd_cov
+            .saturating_sub(variant1.ref_fwd_cov)
+            .max(0);
+        var2.ref_rev_cov = combined_var
+            .ref_rev_cov
+            .saturating_sub(variant1.ref_rev_cov)
+            .max(0);
+        var2.fwd = combined_var.fwd.saturating_sub(variant1.fwd).max(0);
+        var2.rev = combined_var.rev.saturating_sub(variant1.rev).max(0);
 
         if var2.pos_coverage != 0 {
             // Weighted mean subtraction formula (:439-444)
@@ -670,17 +680,15 @@ fn combine_analysis(
             var2.ref_fwd_cov,
             var2.ref_rev_cov,
             0.05,
-            config.min_reads_bias as i32,
+            min_reads_bias,
         );
-        let var_bias = crate::variations::util::strand_bias(
-            var2.fwd,
-            var2.rev,
-            0.05,
-            config.min_reads_bias as i32,
-        );
-        var2.bias = format!("{};{}", ref_bias, var_bias);
+        let var_bias =
+            crate::variations::util::strand_bias(var2.fwd, var2.rev, 0.05, min_reads_bias);
+        var2.bias.clear();
+        let _ =
+            std::fmt::Write::write_fmt(&mut var2.bias, format_args!("{};{}", ref_bias, var_bias));
         CombineVerdict::Germline(Box::new(var2))
-    } else if comb_pc < base_pc - 2 {
+    } else if i64::from(comb_pc) < i64::from(base_pc) - 2 {
         // Combined run produced less than the base sample alone (:466-470)
         if config.verbose {
             // Java config.y (-y); vardict.pl:657 prints the same line.
@@ -1862,5 +1870,61 @@ mod tests {
         assert_eq!(obs[0], (50, true, false)); // pos 150 - 100 = 50; sees initial_splice only
         assert_eq!(obs[1], (80, true, true)); // pos 180 - 100 = 80; sees propagated "155-175"
         assert!(!initial_splice.contains("155-175"));
+    }
+
+    #[test]
+    fn extreme_somatic_i64_gates_and_bias_buffer_reuse() {
+        // Verify pre-allocated capacity-4 bias buffer in Variant::new() is reused without realloc.
+        let mut v_buf = Variant::new();
+        let initial_ptr = v_buf.bias.as_ptr();
+        assert_eq!(v_buf.bias.capacity(), 4);
+        v_buf.bias.clear();
+        v_buf.bias.push_str("0;0");
+        assert_eq!(v_buf.bias, "0;0");
+        assert_eq!(v_buf.bias.as_ptr(), initial_ptr);
+        v_buf.bias.clear();
+        let _ = std::fmt::Write::write_fmt(&mut v_buf.bias, format_args!("{};{}", 2, 1));
+        assert_eq!(v_buf.bias, "2;1");
+        assert_eq!(v_buf.bias.as_ptr(), initial_ptr);
+
+        // Verify combine_analysis handles min_reads = u32::MAX, min_reads_bias = u32::MAX,
+        // and base_pc = i32::MIN without signed i32 subtraction underflow in `comb_pc < base_pc - 2`.
+        let mut config = test_config();
+        config.min_reads = u32::MAX;
+        config.min_reads_bias = u32::MAX;
+        let initial_splice = rustc_hash::FxHashSet::default();
+        let mut splice_cow = std::borrow::Cow::Borrowed(&initial_splice);
+        let mut max_rl = 100;
+
+        let mut base_var = make_good_variant("G", "A", "G", 0.30);
+        base_var.start_pos = 150;
+        base_var.end_pos = 150;
+        base_var.pos_coverage = i32::MIN;
+
+        let pipeline = |_reg: &Region,
+                        _sp: &mut rustc_hash::FxHashSet<String>,
+                        _mrl: &mut i32|
+         -> Result<crate::javamap::JavaHashMap<i32, Vars>, VardictError> {
+            let mut map = crate::javamap::JavaHashMap::new();
+            let mut pv = Vars::new();
+            let mut comb = make_good_variant("G", "A", "G", 0.30);
+            comb.pos_coverage = i32::MIN;
+            pv.variants.push(comb.clone());
+            pv.var_desc_to_variant.insert("G".to_string(), comb);
+            map.insert(150, pv);
+            Ok(map)
+        };
+
+        let verdict = combine_analysis(
+            &config,
+            &pipeline,
+            &base_var,
+            "chr1",
+            150,
+            &mut splice_cow,
+            &mut max_rl,
+        );
+        // i64::from(i32::MIN) < i64::from(i32::MIN) - 2 is FALSE, so Keep (not Skip).
+        assert!(matches!(verdict, CombineVerdict::Keep));
     }
 }

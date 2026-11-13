@@ -15,7 +15,8 @@ fn make_null_record(position: i32, sv: &str) -> Variant {
     let mut out = Variant::new();
     out.start_pos = position;
     out.end_pos = position;
-    out.bias = "0;0".to_string();
+    out.bias.clear();
+    out.bias.push_str("0;0");
     out.sv = sv.to_string();
     out.null_record = true;
     out

@@ -520,12 +520,12 @@ impl<'a> ToVarsBuilder<'a> {
         _insertion_variations: Option<&crate::variations::VariationMap>,
         non_insertion_variations: &crate::variations::VariationMap,
     ) -> i32 {
-        let mut hicov = 0;
+        let mut hicov: i32 = 0;
         for (key, val) in &non_insertion_variations.map {
             if key == "SV" || key.starts_with('+') {
                 continue;
             }
-            hicov += val.hicnt;
+            hicov = hicov.saturating_add(val.hicnt);
         }
         hicov
     }
@@ -641,7 +641,8 @@ impl<'a> ToVarsBuilder<'a> {
     ) -> Variant {
         let fwd = cnt.fwd;
         let rev = cnt.rev;
-        let bias = strand_bias(fwd, rev, self.config.min_reads_bias as i32);
+        let min_reads_bias = i32::try_from(self.config.min_reads_bias).unwrap_or(i32::MAX);
+        let bias = strand_bias(fwd, rev, min_reads_bias);
         let base_quality = round_half_even(cnt.qmean / cnt.cnt as f64, 1);
         let mapping_quality = round_half_even(cnt.mqmean / cnt.cnt as f64, 1);
         let hicnt = cnt.hicnt;
@@ -650,7 +651,7 @@ impl<'a> ToVarsBuilder<'a> {
         let mut ttcov = total_pos_coverage;
         if cnt.cnt > total_pos_coverage
             && cnt.extracnt > 0
-            && cnt.cnt - total_pos_coverage < cnt.extracnt
+            && i64::from(cnt.cnt) - i64::from(total_pos_coverage) < i64::from(cnt.extracnt)
         {
             ttcov = cnt.cnt;
         }
@@ -784,7 +785,9 @@ impl<'a> ToVarsBuilder<'a> {
                     }
                     let fwd = cnt.fwd;
                     let rev = cnt.rev;
-                    let bias = strand_bias(fwd, rev, self.config.min_reads_bias as i32);
+                    let min_reads_bias =
+                        i32::try_from(self.config.min_reads_bias).unwrap_or(i32::MAX);
+                    let bias = strand_bias(fwd, rev, min_reads_bias);
                     let base_quality = round_half_even(cnt.qmean / cnt.cnt as f64, 1);
                     let mapping_quality = round_half_even(cnt.mqmean / cnt.cnt as f64, 1);
                     let hicnt = cnt.hicnt;
@@ -792,7 +795,8 @@ impl<'a> ToVarsBuilder<'a> {
 
                     if cnt.cnt > total_pos_coverage
                         && cnt.extracnt != 0
-                        && cnt.cnt - total_pos_coverage < cnt.extracnt
+                        && i64::from(cnt.cnt) - i64::from(total_pos_coverage)
+                            < i64::from(cnt.extracnt)
                     {
                         ttcov = cnt.cnt;
                     }
@@ -1171,7 +1175,9 @@ impl<'a> ToVarsBuilder<'a> {
 
                 if let Some(extra) = get_amp_atgc(description_string) {
                     let extra_len = extra.len().min(i32::MAX as usize) as i32;
-                    varallele = varallele.replacen('&', "", 1);
+                    if let Some(idx) = varallele.find('&') {
+                        varallele.remove(idx);
+                    }
                     if let Some(ext_start) = end_position.checked_add(1) {
                         self.join_ref_into(
                             scratch1,
@@ -1189,7 +1195,9 @@ impl<'a> ToVarsBuilder<'a> {
 
                     if let Some(vextra) = get_amp_atgc(&varallele) {
                         let vextra_len = vextra.len().min(i32::MAX as usize) as i32;
-                        varallele = varallele.replacen('&', "", 1);
+                        if let Some(idx) = varallele.find('&') {
+                            varallele.remove(idx);
+                        }
                         if let Some(vext_start) = end_position.checked_add(1) {
                             self.join_ref_into(
                                 scratch1,
@@ -1207,8 +1215,12 @@ impl<'a> ToVarsBuilder<'a> {
                     }
 
                     if description_string.starts_with('+') {
-                        refallele = refallele.get(1..).unwrap_or("").to_string();
-                        varallele = varallele.get(1..).unwrap_or("").to_string();
+                        if let Some(ch) = refallele.chars().next() {
+                            refallele.drain(..ch.len_utf8());
+                        }
+                        if let Some(ch) = varallele.chars().next() {
+                            varallele.drain(..ch.len_utf8());
+                        }
                         start_position = start_position.saturating_add(1);
                     }
 
@@ -3472,5 +3484,72 @@ mod tests {
         let snv_c = vars_max.variant_by_desc("C").expect("C at i32::MAX");
         assert_eq!(snv_c.end_pos, i32::MAX);
         assert_eq!(snv_c.right_seq, "");
+    }
+
+    #[test]
+    fn extracnt_i64_gate_and_utf8_safe_allele_trimming() {
+        let mut ref_genome = Reference::new();
+        ref_genome
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 1,
+                sequence_end: 100,
+            });
+        ref_genome
+            .reference_sequences
+            .insert("chr1".to_string(), vec![b'A'; 100]);
+        ref_genome.region_sequences.push(vec![b'A'; 100]);
+
+        let chr_lengths = HashMap::from([("chr1".to_string(), 100)]);
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(1),
+            end: Pos1(100),
+            gene: "TEST".to_string(),
+            amplicon: None,
+        };
+
+        let mut vd = VariationData::new();
+        // Negative ref_coverage (i32::MIN) + positive cnt.cnt exercises
+        // `i64::from(cnt.cnt) - i64::from(total_pos_coverage) < i64::from(cnt.extracnt)`
+        // without i32 subtraction overflow in both build_variant_from_cnt and create_insertion.
+        vd.ref_coverage.insert(10, i32::MIN);
+
+        let mk_var = |cnt: i32, extracnt: i32| {
+            let mut v = Variation::new();
+            v.cnt = cnt;
+            v.extracnt = extracnt;
+            v.fwd = cnt;
+            v.hicnt = cnt;
+            v.qmean = 30.0 * (cnt as f64);
+            v.mqmean = 60.0 * (cnt as f64);
+            v.pmean = 20.0 * (cnt as f64);
+            v
+        };
+
+        let mut vm10 = VariationMap::new();
+        // Complex allele with '&' and non-ASCII leading UTF-8 scalar ('ä' = 2 bytes)
+        // exercises in-place '&' removal and UTF-8-safe leading scalar drain.
+        vm10.map.insert("ä&CG".to_string(), mk_var(5, 10));
+        vm10.map.insert("-2^ä&TT".to_string(), mk_var(4, 10));
+        vd.non_insertion_variants.insert(10, vm10);
+
+        let mut ins10 = VariationMap::new();
+        ins10.map.insert("+AC&GT".to_string(), mk_var(6, 10));
+        vd.insertion_variants.insert(10, ins10);
+
+        let mut cfg = Config::default();
+        cfg.min_reads_bias = u32::MAX;
+        let builder = ToVarsBuilder::new(&ref_genome, &region, &chr_lengths, &cfg);
+        let aligned = builder.build_aligned_variants(&vd);
+        let vars10 = aligned.get(&10).expect("vars at 10");
+        assert!(
+            !vars10.variants.is_empty(),
+            "variants must finalize without UTF-8 boundary or i32 subtraction panic"
+        );
+        for v in &vars10.variants {
+            assert!(!v.var_allele.contains('&'));
+        }
     }
 }

@@ -128,6 +128,57 @@ fn push_ascii_slice(dst: &mut String, bytes: &[u8]) {
     }
 }
 
+#[inline]
+fn prepend_adjacent_deletion_into(buf_s: &mut String, next_del_len: u32) {
+    if let Some(idx) = buf_s.find('&') {
+        buf_s.remove(idx);
+    }
+    let mut prefix = crate::types::StackBuf::<24>::new();
+    let _ = write!(prefix, "-{}&", next_del_len);
+    buf_s.insert_str(0, prefix.as_str());
+}
+
+#[inline]
+fn graft_adjacent_insertion_into(
+    buf_s: &mut String,
+    next_len: usize,
+    query_seq: &[u8],
+    read_pos_inc: usize,
+) {
+    let amp_idx = buf_s.find('&');
+    let clean_len = buf_s.len() - usize::from(amp_idx.is_some());
+    let sub_opt = read_pos_inc
+        .checked_add(1)
+        .and_then(|s| s.checked_add(next_len).and_then(|e| query_seq.get(s..e)));
+    let sub_len = sub_opt.map_or(0, <[u8]>::len);
+    let Some(total_len) = clean_len.checked_add(sub_len) else {
+        return;
+    };
+    if next_len > total_len {
+        return;
+    }
+    if next_len < clean_len {
+        let orig_boundary = match amp_idx {
+            Some(idx) if next_len >= idx => next_len + 1,
+            _ => next_len,
+        };
+        if !buf_s.is_char_boundary(orig_boundary) {
+            return;
+        }
+    }
+    buf_s.reserve(sub_len.saturating_add(2));
+    if let Some(idx) = amp_idx {
+        buf_s.remove(idx);
+    }
+    if let Some(sub) = sub_opt {
+        push_ascii_slice(buf_s, sub);
+    }
+    if buf_s.is_char_boundary(next_len) {
+        buf_s.insert(next_len, '&');
+        buf_s.insert(0, '+');
+    }
+}
+
 /// Static single-base `&str` lookup matching [`push_ascii_base`] + `N`/`n` filtering:
 /// ASCII `0x00..=0x7F` map to their 1-byte `&str` except `b'n'` (`0x6E`), which maps
 /// to `"N"` alongside `b'N'` and non-ASCII `0x80..=0xFF`.
@@ -276,7 +327,7 @@ impl<'a> CigarParser<'a> {
 
         // T045 mismatch gate: drop read if NM - (I + D) > max_mismatches (CigarParser.java:244-251)
         if record.nm.is_some() {
-            if adjusted_nm > self.config.max_mismatches as i32 {
+            if adjusted_nm > i32::try_from(self.config.max_mismatches).unwrap_or(i32::MAX) {
                 return Ok(()); // Drop read
             }
         } else if record.cigar.is_empty() || (record.flags & 0x4) != 0 {
@@ -457,7 +508,7 @@ impl<'a> CigarParser<'a> {
 
         // Determine discordant reads
         if !crate::bam::mate_reference_is_equal(record) {
-            self.discordant_count += 1;
+            self.discordant_count = self.discordant_count.saturating_add(1);
         }
 
         // T046: Ignore reads that are softclipped at both ends and both greater than 10 bp
@@ -886,9 +937,7 @@ impl<'a> CigarParser<'a> {
                                 start = start.saturating_add(1);
                             }
                             let next_del_len = cigar_elements.get(ci + 1).map_or(0, |&(l, _)| l);
-                            let s_clean = buf_s.replacen('&', "", 1);
-                            buf_s.clear();
-                            let _ = write!(buf_s, "-{}&{}", next_del_len, s_clean);
+                            prepend_adjacent_deletion_into(&mut buf_s, next_del_len);
                             start_with_deletion = true;
                             ddlen = i32::try_from(next_del_len).unwrap_or(i32::MAX);
                             ci += 1;
@@ -942,7 +991,7 @@ impl<'a> CigarParser<'a> {
                                         }
                                     }
                                     for osi in 0..moffset {
-                                        *self
+                                        let cov_entry = self
                                             .ref_coverage
                                             .entry(
                                                 start
@@ -950,7 +999,8 @@ impl<'a> CigarParser<'a> {
                                                     .saturating_add(1)
                                                     .saturating_add(osi),
                                             )
-                                            .or_default() += 1;
+                                            .or_default();
+                                        *cov_entry = cov_entry.saturating_add(1);
                                     }
                                 }
                             }
@@ -989,21 +1039,14 @@ impl<'a> CigarParser<'a> {
                                 read_pos_exc += 1;
                                 start = start.saturating_add(1);
                             }
-                            let s_clean = buf_s.replacen('&', "", 1);
                             let next_len =
                                 cigar_elements.get(ci + 1).map_or(0, |&(l, _)| l as usize);
-                            let mut temp_s = s_clean;
-                            if let Some(sub) =
-                                query_seq.get(read_pos_inc + 1..read_pos_inc + 1 + next_len)
-                            {
-                                push_ascii_slice(&mut temp_s, sub);
-                            }
-                            if let (Some(first_part), Some(second_part)) =
-                                (temp_s.get(..next_len), temp_s.get(next_len..))
-                            {
-                                buf_s.clear();
-                                let _ = write!(buf_s, "+{}&{}", first_part, second_part);
-                            }
+                            graft_adjacent_insertion_into(
+                                &mut buf_s,
+                                next_len,
+                                query_seq,
+                                read_pos_inc,
+                            );
 
                             for qi in 1..=next_len {
                                 if let Some(&qq) = query_qual.get(read_pos_inc + 1 + qi) {
@@ -2598,8 +2641,8 @@ impl<'a> CigarParser<'a> {
     /// production pipeline and `duprate` always evaluates to `0.0`.
     pub fn into_variation_data(self) -> VariationData {
         let duprate = if self.svflag {
-            if (self.discordant_count + 1) as f64
-                / (self.total_reads - self.duplicate_reads + 1) as f64
+            if (i64::from(self.discordant_count) + 1) as f64
+                / (i64::from(self.total_reads) - i64::from(self.duplicate_reads) + 1) as f64
                 > 0.5
             {
                 0.0
@@ -3517,14 +3560,15 @@ fn is_mnp(s: &str) -> bool {
 fn increment(hash: &mut BTreeMap<i32, rustc_hash::FxHashMap<String, i32>>, k1: i32, k2: &str) {
     let map = hash.entry(k1).or_default();
     if let Some(cnt) = map.get_mut(k2) {
-        *cnt += 1;
+        *cnt = cnt.saturating_add(1);
     } else {
         map.insert(k2.to_owned(), 1);
     }
 }
 
 fn inc_cnt(hash: &mut rustc_hash::FxHashMap<i32, i32>, start: i32, count: i32) {
-    *hash.entry(start).or_default() += count;
+    let entry = hash.entry(start).or_default();
+    *entry = entry.saturating_add(count);
 }
 
 fn get_variation_from_seq(sclip: &mut Sclip, idx: i32, ch: u8) -> &mut Variation {
@@ -6634,5 +6678,85 @@ mod tests {
             .map(|vm| vm.map.keys().collect())
             .unwrap_or_default();
         assert_eq!(trailing_del_snv, vec!["A"]);
+    }
+
+    #[test]
+    fn graft_helpers_in_place_and_truncated_read_preservation() {
+        // 1. prepend_adjacent_deletion_into removes '&' and prepends "-{len}&" via StackBuf<24>.
+        let mut del_buf = String::with_capacity(32);
+        del_buf.push_str("G&AT");
+        let del_ptr = del_buf.as_ptr();
+        prepend_adjacent_deletion_into(&mut del_buf, 12);
+        assert_eq!(del_buf, "-12&GAT");
+        assert_eq!(del_buf.as_ptr(), del_ptr);
+
+        let mut max_del_buf = String::from("C&T");
+        prepend_adjacent_deletion_into(&mut max_del_buf, u32::MAX);
+        assert_eq!(max_del_buf, "-4294967295&CT");
+
+        // 2. graft_adjacent_insertion_into mutates in-place without realloc when pre-reserved.
+        let mut ins_buf = String::with_capacity(32);
+        ins_buf.push_str("A&C");
+        let ins_ptr = ins_buf.as_ptr();
+        graft_adjacent_insertion_into(&mut ins_buf, 2, b"XTTYZ", 0);
+        assert_eq!(ins_buf, "+AC&TT");
+        assert_eq!(ins_buf.as_ptr(), ins_ptr);
+
+        // 3. Truncated query_seq where post-removal + sub length < next_len MUST leave buf_s
+        //    completely unchanged (preserving '&').
+        let mut trunc_buf = String::from("A&C");
+        graft_adjacent_insertion_into(&mut trunc_buf, 5, b"XT", 0);
+        assert_eq!(trunc_buf, "A&C");
+
+        // 4. Multi-byte UTF-8 char boundary split at next_len leaves buf_s unchanged without panic.
+        let mut utf8_pre = String::from("ä&C");
+        graft_adjacent_insertion_into(&mut utf8_pre, 1, b"", 0);
+        assert_eq!(utf8_pre, "ä&C");
+
+        let mut utf8_post = String::from("A&ä");
+        graft_adjacent_insertion_into(&mut utf8_post, 2, b"", 0);
+        assert_eq!(utf8_post, "A&ä");
+
+        // 5. max_mismatches = u32::MAX clamps cleanly to i32::MAX instead of wrapping to -1.
+        let mut reference = Reference::new();
+        reference
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 1,
+                sequence_end: 20,
+            });
+        reference
+            .reference_sequences
+            .insert("chr1".to_string(), b"AAAAAAAAAA".to_vec());
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(1),
+            end: Pos1(10),
+            gene: "TEST".to_string(),
+            amplicon: None,
+        };
+        let mut cfg = Config::default();
+        cfg.max_mismatches = u32::MAX;
+        let mut parser = CigarParser::new(&reference, &region, &cfg, false, 0, 0, 0);
+        let rec = SamRecord {
+            name: b"r_u32_max_mm".to_vec(),
+            flags: 0,
+            reference_name: Some("chr1".to_string()),
+            alignment_start: Some(Pos1(1)),
+            alignment_end: Some(Pos1(5)),
+            mapping_quality: Some(60),
+            cigar: vec![(5, CigarKind::Match)],
+            sequence: b"ACCCC".to_vec(),
+            quality_scores: vec![60; 5],
+            nm: Some(4),
+            ..SamRecord::default()
+        };
+        parser.parse_cigar(&rec).unwrap();
+        assert_eq!(
+            parser.ref_coverage.get(&1),
+            Some(&1),
+            "max_mismatches = u32::MAX must accept reads instead of truncating to -1"
+        );
     }
 }

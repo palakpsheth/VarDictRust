@@ -531,7 +531,14 @@ pub fn find_match_rev(
             };
 
             if let Ok(bp) = i32::try_from(bp64) {
-                if crate::realign::is_match_ref(&seq_vec, reference, chr, bp, -dir, mm_limit) {
+                if crate::realign::is_match_ref(
+                    &seq_vec,
+                    reference,
+                    chr,
+                    bp,
+                    dir.saturating_neg(),
+                    mm_limit,
+                ) {
                     if verbose {
                         crate::verbose_eprintln!(
                             "      Found SV BP (reverse): {} BP: {} SEEDpos: {} {} {} {} {}",
@@ -607,7 +614,14 @@ pub fn find_match_rev(
                     );
                 }
                 if let Ok(bp_mut) = i32::try_from(bp_mut64) {
-                    if crate::realign::is_match_ref(sseq, reference, chr, bp_mut, -dir, 1) {
+                    if crate::realign::is_match_ref(
+                        sseq,
+                        reference,
+                        chr,
+                        bp_mut,
+                        dir.saturating_neg(),
+                        1,
+                    ) {
                         return Match {
                             base_position: bp_mut,
                             matched_sequence: extra_slice.to_vec(),
@@ -693,8 +707,8 @@ pub fn mark_sv(
                     );
                 }
                 sv_r.used = true;
-                cnt += 1;
-                pairs += sv_r.variation.cnt;
+                cnt = cnt.saturating_add(1);
+                pairs = pairs.saturating_add(sv_r.variation.cnt);
                 if sv_r.end != sv_r.start {
                     cov = cov.saturating_add(
                         (((i64::from(sv_r.variation.cnt) * i64::from(rlen)) as f64
@@ -717,8 +731,8 @@ pub fn mark_dup_sv(
     rlen: i32,
     verbose: bool,
 ) -> (i32, i32) {
-    let mut pairs = 0;
-    let mut cnt = 0;
+    let mut pairs: i32 = 0;
+    let mut cnt: i32 = 0;
 
     for current_sclips_sr in structural_variants_sv {
         for sv_r in current_sclips_sr.iter_mut() {
@@ -751,8 +765,8 @@ pub fn mark_dup_sv(
                     );
                 }
                 sv_r.used = true;
-                cnt += 1;
-                pairs += sv_r.variation.cnt;
+                cnt = cnt.saturating_add(1);
+                pairs = pairs.saturating_add(sv_r.variation.cnt);
             }
         }
     }
@@ -842,7 +856,7 @@ pub fn find_inv_sub(
     config: &Config,
     chromosomes_lengths: &HashMap<String, usize>,
 ) -> Result<(), VardictError> {
-    let minr = config.min_reads as i32;
+    let minr = i32::try_from(config.min_reads).unwrap_or(i32::MAX);
     let verbose = config.verbose;
     let (adaptor_forward, adaptor_reverse) = crate::realign::fill_adaptor_maps(&config.adaptor);
     let max_read_length = var_data.max_read_length;
@@ -1171,19 +1185,20 @@ pub fn find_inv_sub(
                     softp,
                 );
                 sv.r#type = "INV".to_string();
-                sv.splits += scv_variation.cnt;
-                sv.pairs += cnt;
-                sv.clusters += 1;
+                sv.splits = sv.splits.saturating_add(scv_variation.cnt);
+                sv.pairs = sv.pairs.saturating_add(cnt);
+                sv.clusters = sv.clusters.saturating_add(1);
             }
 
             if dir == -1 {
                 if let Some(ref_base) = reference.get_base(chr, softp as u32) {
-                    let ref_base_str = (ref_base as char).to_string();
+                    let mut ch_buf = [0u8; 4];
+                    let ref_base_str: &str = (ref_base as char).encode_utf8(&mut ch_buf);
                     if let Some(entry) = var_data.non_insertion_variants.get_mut(&softp) {
-                        if let Some(ref_var) = entry.map.get_mut(&ref_base_str) {
-                            ref_var.cnt -= scv_variation.cnt;
-                            ref_var.hicnt -= scv_variation.hicnt;
-                            ref_var.locnt -= scv_variation.locnt;
+                        if let Some(ref_var) = entry.map.get_mut(ref_base_str) {
+                            ref_var.cnt = ref_var.cnt.saturating_sub(scv_variation.cnt);
+                            ref_var.hicnt = ref_var.hicnt.saturating_sub(scv_variation.hicnt);
+                            ref_var.locnt = ref_var.locnt.saturating_sub(scv_variation.locnt);
                             ref_var.pmean -= scv_variation.pmean;
                             ref_var.qmean -= scv_variation.qmean;
                             ref_var.mqmean -= scv_variation.mqmean;
@@ -1354,7 +1369,7 @@ pub fn find_del(
     config: &Config,
     chromosomes_lengths: &HashMap<String, usize>,
 ) -> Result<(), VardictError> {
-    let minr = config.min_reads as i32;
+    let minr = i32::try_from(config.min_reads).unwrap_or(i32::MAX);
     let verbose = config.verbose;
     let (adaptor_forward, adaptor_reverse) = crate::realign::fill_adaptor_maps(&config.adaptor);
 
@@ -1480,9 +1495,9 @@ pub fn find_del(
                     softp,
                 );
                 sv.r#type = "DEL".to_string();
-                sv.pairs += vars_count;
-                sv.splits += scv.variation.cnt;
-                sv.clusters += 1;
+                sv.pairs = sv.pairs.saturating_add(vars_count);
+                sv.splits = sv.splits.saturating_add(scv.variation.cnt);
+                sv.clusters = sv.clusters.saturating_add(1);
             }
 
             let ref_cov_val = var_data.ref_coverage.get(&softp).copied().unwrap_or(0);
@@ -1504,12 +1519,13 @@ pub fn find_del(
                 crate::variations::util::adj_cnt(variation_mut, &scv.variation, None);
 
                 if let Some(ref_base) = reference.get_base(chr, softp as u32) {
-                    let ref_base_str = (ref_base as char).to_string();
+                    let mut ch_buf = [0u8; 4];
+                    let ref_base_str: &str = (ref_base as char).encode_utf8(&mut ch_buf);
                     if let Some(entry) = var_data.non_insertion_variants.get_mut(&softp) {
-                        if let Some(ref_var) = entry.map.get_mut(&ref_base_str) {
-                            ref_var.cnt -= scv.variation.cnt;
-                            ref_var.hicnt -= scv.variation.hicnt;
-                            ref_var.locnt -= scv.variation.locnt;
+                        if let Some(ref_var) = entry.map.get_mut(ref_base_str) {
+                            ref_var.cnt = ref_var.cnt.saturating_sub(scv.variation.cnt);
+                            ref_var.hicnt = ref_var.hicnt.saturating_sub(scv.variation.hicnt);
+                            ref_var.locnt = ref_var.locnt.saturating_sub(scv.variation.locnt);
                             ref_var.pmean -= scv.variation.pmean;
                             ref_var.qmean -= scv.variation.qmean;
                             ref_var.mqmean -= scv.variation.mqmean;
@@ -1620,9 +1636,9 @@ pub fn find_del(
                         softp,
                     );
                     sv.r#type = "DEL".to_string();
-                    sv.pairs += vars_count;
-                    sv.splits += scv.variation.cnt;
-                    sv.clusters += 1;
+                    sv.pairs = sv.pairs.saturating_add(vars_count);
+                    sv.splits = sv.splits.saturating_add(scv.variation.cnt);
+                    sv.clusters = sv.clusters.saturating_add(1);
                 }
 
                 let ref_cov_val = var_data.ref_coverage.get(&softp).copied().unwrap_or(0);
@@ -1783,9 +1799,9 @@ pub fn find_del(
                     bp,
                 );
                 sv.r#type = "DEL".to_string();
-                sv.pairs += vars_count;
-                sv.splits += scv.variation.cnt;
-                sv.clusters += 1;
+                sv.pairs = sv.pairs.saturating_add(vars_count);
+                sv.splits = sv.splits.saturating_add(scv.variation.cnt);
+                sv.clusters = sv.clusters.saturating_add(1);
             }
 
             let ref_cov_val = var_data.ref_coverage.get(&bp).copied().unwrap_or(0);
@@ -1907,9 +1923,9 @@ pub fn find_del(
                         bp,
                     );
                     sv.r#type = "DEL".to_string();
-                    sv.pairs += vars_count;
-                    sv.splits += scv.variation.cnt;
-                    sv.clusters += 1;
+                    sv.pairs = sv.pairs.saturating_add(vars_count);
+                    sv.splits = sv.splits.saturating_add(scv.variation.cnt);
+                    sv.clusters = sv.clusters.saturating_add(1);
                 }
 
                 let ref_cov_val = var_data.ref_coverage.get(&bp).copied().unwrap_or(0);
@@ -1921,7 +1937,8 @@ pub fn find_del(
                 if bp_cov < softp_cov {
                     var_data.ref_coverage.insert(bp, softp_cov);
                 }
-                *var_data.ref_coverage.entry(bp).or_insert(0) += scv.variation.cnt;
+                let bp_cov_entry = var_data.ref_coverage.entry(bp).or_insert(0);
+                *bp_cov_entry = bp_cov_entry.saturating_add(scv.variation.cnt);
 
                 {
                     let variation_mut = crate::variations::get_variation(
@@ -1981,7 +1998,7 @@ pub fn find_sv(
     config: &Config,
     chromosomes_lengths: &HashMap<String, usize>,
 ) -> Result<(), VardictError> {
-    let minr = config.min_reads as i32;
+    let minr = i32::try_from(config.min_reads).unwrap_or(i32::MAX);
     let verbose = config.verbose;
     let (adaptor_forward, adaptor_reverse) = crate::realign::fill_adaptor_maps(&config.adaptor);
 
@@ -2086,15 +2103,14 @@ pub fn find_sv(
                     bp_adj,
                 );
                 sv.r#type = "DEL".to_string();
-                sv.pairs += pairs;
-                sv.splits += cnt5;
-                sv.clusters += 1;
+                sv.pairs = sv.pairs.saturating_add(pairs);
+                sv.splits = sv.splits.saturating_add(cnt5);
+                sv.clusters = sv.clusters.saturating_add(1);
 
                 let bp_cov = var_data.ref_coverage.get(&bp_adj).copied().unwrap_or(0);
-                if bp_cov < pairs + sc5v_variation.cnt {
-                    var_data
-                        .ref_coverage
-                        .insert(bp_adj, pairs + sc5v_variation.cnt);
+                let pair_split_cov = pairs.saturating_add(sc5v_variation.cnt);
+                if bp_cov < pair_split_cov {
+                    var_data.ref_coverage.insert(bp_adj, pair_split_cov);
                 }
                 // Ports StructuralVariantsProcessor.java:732,748: Java mutates `p5--`
                 // at line 732 before `refCoverage.get(p5 + 1)` at line 748, so `p5 + 1`
@@ -2200,16 +2216,16 @@ pub fn find_sv(
                 p5_adj,
             );
             sv.r#type = "INV".to_string();
-            sv.pairs += 0;
-            sv.splits += cnt5;
-            sv.clusters += 0;
+            sv.splits = sv.splits.saturating_add(cnt5);
 
             let vref_mut =
                 crate::variations::get_variation(&mut var_data.non_insertion_variants, p5_adj, &vn);
             crate::variations::util::adj_cnt(vref_mut, &sc5v_variation, None);
 
             let p5_cov = var_data.ref_coverage.get(&p5_adj).copied().unwrap_or(0);
-            var_data.ref_coverage.insert(p5_adj, p5_cov + cnt5);
+            var_data
+                .ref_coverage
+                .insert(p5_adj, p5_cov.saturating_add(cnt5));
             let bp_cov = var_data.ref_coverage.get(&bp).copied().unwrap_or(0);
             let p5_cov_updated = var_data.ref_coverage.get(&p5_adj).copied().unwrap_or(0);
             if p5_cov_updated < bp_cov {
@@ -2307,14 +2323,14 @@ pub fn find_sv(
                     p3_adj,
                 );
                 sv.r#type = "DEL".to_string();
-                sv.pairs += pairs;
-                sv.splits += cnt3;
-                sv.clusters += 1;
+                sv.pairs = sv.pairs.saturating_add(pairs);
+                sv.splits = sv.splits.saturating_add(cnt3);
+                sv.clusters = sv.clusters.saturating_add(1);
 
                 if !var_data.ref_coverage.contains_key(&p3_adj) {
                     var_data
                         .ref_coverage
-                        .insert(p3_adj, pairs + sc3v_variation.cnt);
+                        .insert(p3_adj, pairs.saturating_add(sc3v_variation.cnt));
                 }
                 if var_data.ref_coverage.contains_key(&bp_adj)
                     && var_data.ref_coverage.get(&bp_adj).copied().unwrap_or(0)
@@ -2415,16 +2431,16 @@ pub fn find_sv(
                 p3_adj,
             );
             sv.r#type = "INV".to_string();
-            sv.pairs += 0;
-            sv.splits += cnt3;
-            sv.clusters += 0;
+            sv.splits = sv.splits.saturating_add(cnt3);
 
             let vref_mut =
                 crate::variations::get_variation(&mut var_data.non_insertion_variants, p3_adj, &vn);
             crate::variations::util::adj_cnt(vref_mut, &sc3v_variation, None);
 
             let p3_cov = var_data.ref_coverage.get(&p3_adj).copied().unwrap_or(0);
-            var_data.ref_coverage.insert(p3_adj, p3_cov + cnt3);
+            var_data
+                .ref_coverage
+                .insert(p3_adj, p3_cov.saturating_add(cnt3));
             let bp_cov = var_data.ref_coverage.get(&bp).copied().unwrap_or(0);
             let p3_cov_updated = var_data.ref_coverage.get(&p3_adj).copied().unwrap_or(0);
             if p3_cov_updated < bp_cov {
@@ -2466,7 +2482,7 @@ fn complement_seq(s: &str) -> String {
 
 fn tv_adj_vals(tv: &mut Variation, pairs_data: PairsData) {
     tv.hicnt = pairs_data.pairs;
-    tv.rev = pairs_data.pairs - tv.fwd;
+    tv.rev = pairs_data.pairs.saturating_sub(tv.fwd);
     tv.pmean = pairs_data.pmean;
     tv.qmean = pairs_data.qmean;
     tv.mqmean = pairs_data.qmean_mapping;
@@ -2475,6 +2491,8 @@ fn tv_adj_vals(tv: &mut Variation, pairs_data: PairsData) {
 
 /// Find deletion structural variants from discordant pairs only.
 /// Ports `StructuralVariantsProcessor.findDELdisc`.
+// Java-faithful `!(a > b)` negated partial-ord comparisons — keep as-is.
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
 pub fn find_del_disc(
     var_data: &mut crate::variations::VariationData,
     reference: &mut Reference,
@@ -2482,16 +2500,16 @@ pub fn find_del_disc(
     config: &Config,
     chromosomes_lengths: &HashMap<String, usize>,
 ) -> Result<(), VardictError> {
-    let minr = config.min_reads as i32;
     let verbose = config.verbose;
     let mindist = 8i32.saturating_mul(var_data.max_read_length);
+    let min_reads_plus_5 = i64::from(config.min_reads) + 5;
 
     // svfdel (5' candidate deletions)
     let n_svfdel = var_data.sv_structures.svfdel.len();
     for idx in 0..n_svfdel {
         let (used, vars_count, start, end, mstart, mend, softp) = {
             let del = &var_data.sv_structures.svfdel[idx];
-            if del.used || del.variation.cnt < minr.saturating_add(5) {
+            if del.used || i64::from(del.variation.cnt) < min_reads_plus_5 {
                 continue;
             }
             if !var_data.splice.is_empty() && i64::from(del.mlen).abs() < 250_000 {
@@ -2500,7 +2518,8 @@ pub fn find_del_disc(
             if del.mstart <= del.end.saturating_add(mindist) {
                 continue;
             }
-            if del.variation.mqmean / (del.variation.cnt as f64) <= 35.0 {
+            if del.variation.cnt <= 0 || !(del.variation.mqmean / (del.variation.cnt as f64) > 35.0)
+            {
                 // DISCPAIRQUAL = 35
                 continue;
             }
@@ -2563,22 +2582,27 @@ pub fn find_del_disc(
         let sv =
             crate::variations::VariationMap::get_sv(&mut var_data.non_insertion_variants, softp);
         sv.r#type = "DEL".to_string();
-        sv.splits += var_data
-            .soft_clips_3_end
-            .get(&end.saturating_add(1))
-            .map(|s| s.variation.cnt)
-            .unwrap_or(0);
-        sv.splits += var_data
-            .soft_clips_5_end
-            .get(&mstart)
-            .map(|s| s.variation.cnt)
-            .unwrap_or(0);
-        sv.pairs += vars_count;
-        sv.clusters += 1;
+        sv.splits = sv.splits.saturating_add(
+            var_data
+                .soft_clips_3_end
+                .get(&end.saturating_add(1))
+                .map(|s| s.variation.cnt)
+                .unwrap_or(0),
+        );
+        sv.splits = sv.splits.saturating_add(
+            var_data
+                .soft_clips_5_end
+                .get(&mstart)
+                .map(|s| s.variation.cnt)
+                .unwrap_or(0),
+        );
+        sv.pairs = sv.pairs.saturating_add(vars_count);
+        sv.clusters = sv.clusters.saturating_add(1);
 
+        let twice_vars = 2i32.saturating_mul(vars_count);
         let mut tv = Variation::new();
-        tv.cnt = 2 * vars_count;
-        tv.hicnt = 2 * vars_count;
+        tv.cnt = twice_vars;
+        tv.hicnt = twice_vars;
         tv.fwd = vars_count;
         tv.rev = vars_count;
         {
@@ -2596,7 +2620,7 @@ pub fn find_del_disc(
         crate::variations::util::adj_cnt(vref_mut, &tv, None);
 
         if !var_data.ref_coverage.contains_key(&softp) {
-            var_data.ref_coverage.insert(softp, 2 * vars_count);
+            var_data.ref_coverage.insert(softp, twice_vars);
         }
         var_data.sv_structures.svfdel[idx].used = true;
 
@@ -2615,7 +2639,7 @@ pub fn find_del_disc(
     for idx in 0..n_svrdel {
         let (used, vars_count, start, end, mstart, mend, softp, del_softp) = {
             let del = &var_data.sv_structures.svrdel[idx];
-            if del.used || del.variation.cnt < minr.saturating_add(5) {
+            if del.used || i64::from(del.variation.cnt) < min_reads_plus_5 {
                 continue;
             }
             if !var_data.splice.is_empty() && i64::from(del.mlen).abs() < 250_000 {
@@ -2624,7 +2648,8 @@ pub fn find_del_disc(
             if del.start <= del.mend.saturating_add(mindist) {
                 continue;
             }
-            if del.variation.mqmean / (del.variation.cnt as f64) <= 35.0 {
+            if del.variation.cnt <= 0 || !(del.variation.mqmean / (del.variation.cnt as f64) > 35.0)
+            {
                 continue;
             }
             let mlen = del
@@ -2683,18 +2708,22 @@ pub fn find_del_disc(
         let sv =
             crate::variations::VariationMap::get_sv(&mut var_data.non_insertion_variants, softp);
         sv.r#type = "DEL".to_string();
-        sv.splits += var_data
-            .soft_clips_3_end
-            .get(&mend.saturating_add(1))
-            .map(|s| s.variation.cnt)
-            .unwrap_or(0);
-        sv.splits += var_data
-            .soft_clips_5_end
-            .get(&start)
-            .map(|s| s.variation.cnt)
-            .unwrap_or(0);
-        sv.pairs += vars_count;
-        sv.clusters += 1;
+        sv.splits = sv.splits.saturating_add(
+            var_data
+                .soft_clips_3_end
+                .get(&mend.saturating_add(1))
+                .map(|s| s.variation.cnt)
+                .unwrap_or(0),
+        );
+        sv.splits = sv.splits.saturating_add(
+            var_data
+                .soft_clips_5_end
+                .get(&start)
+                .map(|s| s.variation.cnt)
+                .unwrap_or(0),
+        );
+        sv.pairs = sv.pairs.saturating_add(vars_count);
+        sv.clusters = sv.clusters.saturating_add(1);
 
         if del_softp != 0 {
             if let Some(sc5) = var_data.soft_clips_5_end.get_mut(&del_softp) {
@@ -2702,9 +2731,10 @@ pub fn find_del_disc(
             }
         }
 
+        let twice_vars = 2i32.saturating_mul(vars_count);
         let mut tv = Variation::new();
-        tv.cnt = 2 * vars_count;
-        tv.hicnt = 2 * vars_count;
+        tv.cnt = twice_vars;
+        tv.hicnt = twice_vars;
         tv.fwd = vars_count;
         tv.rev = vars_count;
         {
@@ -2722,7 +2752,7 @@ pub fn find_del_disc(
         crate::variations::util::adj_cnt(vref_mut, &tv, None);
 
         if !var_data.ref_coverage.contains_key(&softp) {
-            var_data.ref_coverage.insert(softp, 2 * vars_count);
+            var_data.ref_coverage.insert(softp, twice_vars);
         }
         let start_cov = var_data.ref_coverage.get(&start).copied().unwrap_or(0);
         let bp_cov = var_data.ref_coverage.get(&softp).copied().unwrap_or(0);
@@ -2770,7 +2800,7 @@ pub fn find_inv_disc(
     config: &Config,
     chromosomes_lengths: &HashMap<String, usize>,
 ) -> Result<(), VardictError> {
-    let minr = config.min_reads as i32;
+    let min_reads_plus_5 = i64::from(config.min_reads) + 5;
     let verbose = config.verbose;
     let max_read_length = var_data.max_read_length;
     let sv_flank = 50; // Configuration.SVFLANK
@@ -2792,7 +2822,7 @@ pub fn find_inv_disc(
         let qmean = var_data.sv_structures.svfinv5[i].variation.qmean;
         let Qmean = var_data.sv_structures.svfinv5[i].variation.mqmean;
 
-        if !(Qmean / (cnt as f64) > 35.0) {
+        if cnt <= 0 || !(Qmean / (cnt as f64) > 35.0) {
             continue;
         }
 
@@ -2808,10 +2838,10 @@ pub fn find_inv_disc(
             let rqmean = var_data.sv_structures.svrinv5[j].variation.qmean;
             let rQmean = var_data.sv_structures.svrinv5[j].variation.mqmean;
 
-            if !(rQmean / (rcnt as f64) > 35.0) {
+            if rcnt <= 0 || !(rQmean / (rcnt as f64) > 35.0) {
                 continue;
             }
-            if !(cnt + rcnt > minr + 5) {
+            if !(i64::from(cnt) + i64::from(rcnt) > min_reads_plus_5) {
                 continue;
             }
 
@@ -2867,8 +2897,9 @@ pub fn find_inv_disc(
                 vref.qstd = true;
 
                 let mut tmp = Variation::new();
-                tmp.cnt = cnt + rcnt;
-                tmp.hicnt = cnt + rcnt;
+                let sum_cnt = cnt.saturating_add(rcnt);
+                tmp.cnt = sum_cnt;
+                tmp.hicnt = sum_cnt;
                 tmp.fwd = cnt;
                 tmp.rev = rcnt;
                 tmp.qmean = qmean + rqmean;
@@ -2882,19 +2913,23 @@ pub fn find_inv_disc(
                     bp,
                 );
                 sv.r#type = "INV".to_string();
-                sv.pairs += cnt;
-                sv.splits += var_data
-                    .soft_clips_5_end
-                    .get(&start)
-                    .map_or(0, |s| s.variation.cnt);
-                sv.splits += var_data
-                    .soft_clips_5_end
-                    .get(&ms)
-                    .map_or(0, |s| s.variation.cnt);
-                sv.clusters += 1;
+                sv.pairs = sv.pairs.saturating_add(cnt);
+                sv.splits = sv.splits.saturating_add(
+                    var_data
+                        .soft_clips_5_end
+                        .get(&start)
+                        .map_or(0, |s| s.variation.cnt),
+                );
+                sv.splits = sv.splits.saturating_add(
+                    var_data
+                        .soft_clips_5_end
+                        .get(&ms)
+                        .map_or(0, |s| s.variation.cnt),
+                );
+                sv.clusters = sv.clusters.saturating_add(1);
 
                 if !var_data.ref_coverage.contains_key(&bp) {
-                    var_data.ref_coverage.insert(bp, 2 * cnt);
+                    var_data.ref_coverage.insert(bp, 2i32.saturating_mul(cnt));
                 }
 
                 let mut svfinv3_mut_refs: Vec<&mut Vec<Sclip>> = vec![
@@ -2914,6 +2949,12 @@ pub fn find_inv_disc(
             continue;
         }
         let cnt = var_data.sv_structures.svfinv3[i].variation.cnt;
+        // Note: StructuralVariantsProcessor.java:1239-1246 does NOT gate invf3 on
+        // Qmean/cnt > DISCPAIRQUAL (only invr3 at :1259), so preserve exact valid-input
+        // parity (`cnt >= 1`) while rejecting corrupted `cnt <= 0`.
+        if cnt <= 0 {
+            continue;
+        }
         let me = var_data.sv_structures.svfinv3[i].mend;
         let end = var_data.sv_structures.svfinv3[i].end;
         let nm = var_data.sv_structures.svfinv3[i].variation.nm;
@@ -2933,10 +2974,10 @@ pub fn find_inv_disc(
             let rqmean = var_data.sv_structures.svrinv3[j].variation.qmean;
             let rQmean = var_data.sv_structures.svrinv3[j].variation.mqmean;
 
-            if !(rQmean / (rcnt as f64) > 35.0) {
+            if rcnt <= 0 || !(rQmean / (rcnt as f64) > 35.0) {
                 continue;
             }
-            if !(cnt + rcnt > minr + 5) {
+            if !(i64::from(cnt) + i64::from(rcnt) > min_reads_plus_5) {
                 continue;
             }
 
@@ -2992,8 +3033,9 @@ pub fn find_inv_disc(
                 vref.qstd = true;
 
                 let mut tmp = Variation::new();
-                tmp.cnt = cnt + rcnt;
-                tmp.hicnt = cnt + rcnt;
+                let sum_cnt = cnt.saturating_add(rcnt);
+                tmp.cnt = sum_cnt;
+                tmp.hicnt = sum_cnt;
                 tmp.fwd = cnt;
                 tmp.rev = rcnt;
                 tmp.qmean = qmean + rqmean;
@@ -3007,19 +3049,23 @@ pub fn find_inv_disc(
                     bp,
                 );
                 sv.r#type = "INV".to_string();
-                sv.pairs += cnt;
-                sv.splits += var_data
-                    .soft_clips_3_end
-                    .get(&end.saturating_add(1))
-                    .map_or(0, |s| s.variation.cnt);
-                sv.splits += var_data
-                    .soft_clips_3_end
-                    .get(&me.saturating_add(1))
-                    .map_or(0, |s| s.variation.cnt);
-                sv.clusters += 1;
+                sv.pairs = sv.pairs.saturating_add(cnt);
+                sv.splits = sv.splits.saturating_add(
+                    var_data
+                        .soft_clips_3_end
+                        .get(&end.saturating_add(1))
+                        .map_or(0, |s| s.variation.cnt),
+                );
+                sv.splits = sv.splits.saturating_add(
+                    var_data
+                        .soft_clips_3_end
+                        .get(&me.saturating_add(1))
+                        .map_or(0, |s| s.variation.cnt),
+                );
+                sv.clusters = sv.clusters.saturating_add(1);
 
                 if !var_data.ref_coverage.contains_key(&bp) {
-                    var_data.ref_coverage.insert(bp, 2 * cnt);
+                    var_data.ref_coverage.insert(bp, 2i32.saturating_mul(cnt));
                 }
 
                 let mut svfinv5_mut_refs: Vec<&mut Vec<Sclip>> = vec![
@@ -3036,6 +3082,8 @@ pub fn find_inv_disc(
 
 /// Find duplication structural variants from discordant pairs only.
 /// Ports `StructuralVariantsProcessor.findDUPdisc`.
+// Java-faithful `!(a > b)` negated partial-ord comparisons — keep as-is.
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
 pub fn find_dup_disc(
     var_data: &mut crate::variations::VariationData,
     bam_path: &std::path::Path,
@@ -3044,7 +3092,7 @@ pub fn find_dup_disc(
     config: &Config,
     chromosomes_lengths: &HashMap<String, usize>,
 ) -> Result<(), VardictError> {
-    let minr = config.min_reads as i32;
+    let min_reads_plus_5 = i64::from(config.min_reads) + 5;
     let verbose = config.verbose;
     let (adaptor_forward, adaptor_reverse) = crate::realign::fill_adaptor_maps(&config.adaptor);
 
@@ -3052,10 +3100,11 @@ pub fn find_dup_disc(
     for idx in 0..n_svfdup {
         let (used, vars_count, start, mut end, mstart, mend, qmean, Qmean, pmean, nm) = {
             let dup = &var_data.sv_structures.svfdup[idx];
-            if dup.used || dup.variation.cnt < minr + 5 {
+            if dup.used || i64::from(dup.variation.cnt) < min_reads_plus_5 {
                 continue;
             }
-            if dup.variation.mqmean / (dup.variation.cnt as f64) <= 35.0 {
+            if dup.variation.cnt <= 0 || !(dup.variation.mqmean / (dup.variation.cnt as f64) > 35.0)
+            {
                 continue;
             }
             (
@@ -3200,16 +3249,18 @@ pub fn find_dup_disc(
 
         let sv = crate::variations::VariationMap::get_sv(&mut var_data.non_insertion_variants, bp);
         sv.r#type = "DUP".to_string();
-        sv.pairs += vars_count;
+        sv.pairs = sv.pairs.saturating_add(vars_count);
         let dup_softp = var_data.sv_structures.svfdup[idx].softp;
-        sv.splits += var_data
-            .soft_clips_3_end
-            .get(&dup_softp)
-            .map(|s| s.variation.cnt)
-            .unwrap_or(0);
-        sv.clusters += 1;
+        sv.splits = sv.splits.saturating_add(
+            var_data
+                .soft_clips_3_end
+                .get(&dup_softp)
+                .map(|s| s.variation.cnt)
+                .unwrap_or(0),
+        );
+        sv.clusters = sv.clusters.saturating_add(1);
 
-        let tcnt = cntr + cntf;
+        let tcnt = cntr.saturating_add(cntf);
         let mut tmp = Variation::new();
         tmp.cnt = tcnt;
         tmp.hicnt = tcnt;
@@ -3250,7 +3301,7 @@ pub fn find_dup_disc(
         {
             let sv =
                 crate::variations::VariationMap::get_sv(&mut var_data.non_insertion_variants, bp);
-            sv.clusters += clusters;
+            sv.clusters = sv.clusters.saturating_add(clusters);
         }
     }
 
@@ -3259,10 +3310,11 @@ pub fn find_dup_disc(
     for idx in 0..n_svrdup {
         let (used, vars_count, start, end, mstart, mend) = {
             let dup = &var_data.sv_structures.svrdup[idx];
-            if dup.used || dup.variation.cnt < minr + 5 {
+            if dup.used || i64::from(dup.variation.cnt) < min_reads_plus_5 {
                 continue;
             }
-            if dup.variation.mqmean / (dup.variation.cnt as f64) <= 35.0 {
+            if dup.variation.cnt <= 0 || !(dup.variation.mqmean / (dup.variation.cnt as f64) > 35.0)
+            {
                 continue;
             }
             (
@@ -3415,23 +3467,27 @@ pub fn find_dup_disc(
             let sv =
                 crate::variations::VariationMap::get_sv(&mut var_data.non_insertion_variants, bp);
             sv.r#type = "DUP".to_string();
-            sv.pairs += vars_count;
-            sv.splits += var_data
-                .soft_clips_5_end
-                .get(&bp)
-                .map(|s| s.variation.cnt)
-                .unwrap_or(0);
-            if let Ok(tpe_i32) = i32::try_from(tpe64) {
-                sv.splits += var_data
-                    .soft_clips_3_end
-                    .get(&tpe_i32)
+            sv.pairs = sv.pairs.saturating_add(vars_count);
+            sv.splits = sv.splits.saturating_add(
+                var_data
+                    .soft_clips_5_end
+                    .get(&bp)
                     .map(|s| s.variation.cnt)
-                    .unwrap_or(0);
+                    .unwrap_or(0),
+            );
+            if let Ok(tpe_i32) = i32::try_from(tpe64) {
+                sv.splits = sv.splits.saturating_add(
+                    var_data
+                        .soft_clips_3_end
+                        .get(&tpe_i32)
+                        .map(|s| s.variation.cnt)
+                        .unwrap_or(0),
+                );
             }
-            sv.clusters += 1;
+            sv.clusters = sv.clusters.saturating_add(1);
         }
 
-        let tcnt = cntr + cntf;
+        let tcnt = cntr.saturating_add(cntf);
         let mut tmp = Variation::new();
         tmp.cnt = tcnt;
         tmp.hicnt = tcnt;
@@ -3472,7 +3528,7 @@ pub fn find_dup_disc(
         {
             let sv =
                 crate::variations::VariationMap::get_sv(&mut var_data.non_insertion_variants, bp);
-            sv.clusters += clusters;
+            sv.clusters = sv.clusters.saturating_add(clusters);
         }
     }
 
@@ -5362,6 +5418,121 @@ mod tests {
 
             let _ = std::fs::remove_file(&bam_path);
             let _ = std::fs::remove_file(&bai_path);
+        }
+    }
+
+    #[test]
+    fn extreme_sv_min_reads_zero_neg_cnt_and_min_dir_guards() {
+        let chr = "chr1";
+        let mut reference = Reference::default();
+        reference
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: chr.to_string(),
+                sequence_start: 1,
+                sequence_end: 2_000,
+            });
+        reference
+            .reference_sequences
+            .insert(chr.to_string(), vec![b'A'; 2_000]);
+        reference.region_sequences.push(vec![b'A'; 2_000]);
+
+        // 1. find_match_rev with dir = i32::MIN uses saturating_neg without overflow.
+        let seq20 = [b'C'; 20];
+        let mr = find_match_rev(&seq20, &reference, 100, i32::MIN, 17, 1, chr, false);
+        assert_eq!(mr.base_position, 0);
+
+        // 2. mark_sv and mark_dup_sv saturate pairs on i32::MAX counts.
+        let mk_sclip = |cnt: i32| {
+            let mut sc = Sclip::default();
+            sc.start = 100;
+            sc.end = 200;
+            sc.mstart = 500;
+            sc.mend = 600;
+            sc.variation.cnt = cnt;
+            sc
+        };
+        let mut del_a = vec![mk_sclip(i32::MAX)];
+        let mut del_b = vec![mk_sclip(i32::MAX)];
+        let mut del_lists = [&mut del_a, &mut del_b];
+        let (_cov, cnt_marked, pairs_marked) = mark_sv(200, 500, &mut del_lists, 100, false);
+        assert_eq!(cnt_marked, 2);
+        assert_eq!(pairs_marked, i32::MAX);
+
+        let mut dup_a = vec![mk_sclip(i32::MAX)];
+        let mut dup_b = vec![mk_sclip(i32::MAX)];
+        let mut dup_lists = [&mut dup_a, &mut dup_b];
+        let (dup_cnt, dup_pairs) = mark_dup_sv(100, 600, &mut dup_lists, 100, false);
+        assert_eq!(dup_cnt, 2);
+        assert_eq!(dup_pairs, i32::MAX);
+
+        // 3. Discordant SV scanners (find_del_disc, find_inv_disc Part 1 & Part 2, find_dup_disc)
+        //    must widen `min_reads + 5` to i64 (tested at 2_147_483_645 and u32::MAX) AND guard
+        //    `cnt <= 0` so `cnt = -1` (with negative mqmean yielding positive ratio > 35.0) or
+        //    `cnt = 0` can never reach `(cnt + 1) / 2 == 0` division-by-zero.
+        let mut chr_lengths = HashMap::new();
+        chr_lengths.insert(chr.to_string(), 2_000usize);
+
+        for min_reads in [0u32, 2_147_483_645u32, u32::MAX] {
+            for bad_cnt in [-1i32, 0i32] {
+                let mut cfg = Config::default();
+                cfg.min_reads = min_reads;
+
+                let mut vd = crate::variations::VariationData::default();
+                vd.max_read_length = 100;
+
+                let mk_bad = |s: i32, e: i32, ms: i32, me: i32| {
+                    let mut sc = Sclip::default();
+                    sc.start = s;
+                    sc.end = e;
+                    sc.mstart = ms;
+                    sc.mend = me;
+                    sc.variation.cnt = bad_cnt;
+                    sc.variation.mqmean = if bad_cnt < 0 { -100.0 } else { 0.0 };
+                    sc
+                };
+                let mut partner = Sclip::default();
+                partner.start = 150;
+                partner.end = 250;
+                partner.mstart = 1_150;
+                partner.mend = 1_250;
+                partner.variation.cnt = 10;
+                partner.variation.mqmean = 500.0;
+
+                vd.sv_structures.svfdel.push(mk_bad(100, 200, 1_100, 1_200));
+                vd.sv_structures.svrdel.push(mk_bad(1_100, 1_200, 100, 200));
+
+                vd.sv_structures
+                    .svfinv5
+                    .push(mk_bad(100, 200, 1_100, 1_200));
+                vd.sv_structures.svrinv5.push(partner.clone());
+
+                // Part 2: invf3 has cnt <= 0 while invr3 has rcnt = 10 so cnt + rcnt > 5 when min_reads == 0.
+                vd.sv_structures
+                    .svfinv3
+                    .push(mk_bad(100, 200, 1_100, 1_200));
+                vd.sv_structures.svrinv3.push(partner);
+
+                vd.sv_structures.svfdup.push(mk_bad(100, 200, 1_100, 1_200));
+                vd.sv_structures.svrdup.push(mk_bad(1_100, 1_200, 100, 200));
+
+                find_del_disc(&mut vd, &mut reference, chr, &cfg, &chr_lengths).unwrap();
+                find_inv_disc(&mut vd, &mut reference, chr, &cfg, &chr_lengths).unwrap();
+                find_dup_disc(
+                    &mut vd,
+                    std::path::Path::new("/nonexistent/unused.bam"),
+                    &mut reference,
+                    chr,
+                    &cfg,
+                    &chr_lengths,
+                )
+                .unwrap();
+
+                assert!(
+                    vd.non_insertion_variants.is_empty() && vd.insertion_variants.is_empty(),
+                    "cnt <= 0 or huge min_reads must not emit discordant SV candidates"
+                );
+            }
         }
     }
 }

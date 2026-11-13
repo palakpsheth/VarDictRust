@@ -12,15 +12,14 @@ pub fn strand_bias(
     min_bias_reads: i32,
 ) -> i32 {
     // using p=0.01, because prop.test(1,12) = 0.01
-    if forward_count + reverse_count <= 12 {
-        return if forward_count * reverse_count > 0 {
-            2
-        } else {
-            0
-        };
+    let fwd64 = i64::from(forward_count);
+    let rev64 = i64::from(reverse_count);
+    let total64 = fwd64 + rev64;
+    if total64 <= 12 {
+        return if fwd64 * rev64 > 0 { 2 } else { 0 };
     }
 
-    let total = (forward_count + reverse_count) as f64;
+    let total = total64 as f64;
     let forward_ratio = (forward_count as f64) / total;
     let reverse_ratio = (reverse_count as f64) / total;
 
@@ -76,19 +75,19 @@ pub fn find_conseq(
         return seq.clone();
     }
 
-    let mut total = 0;
-    let mut match_cnt = 0;
+    let mut total: i32 = 0;
+    let mut match_cnt: i32 = 0;
     let mut seq = Vec::with_capacity(soft_clip.nt.len());
     let mut flag = false;
 
     for (&position_in_sclip, nv) in &soft_clip.nt {
-        let mut max_count = 0;
+        let mut max_count: i32 = 0;
         let mut max_quality = 0.0;
         let mut chosen_base: Option<u8> = None;
-        let mut total_count = 0;
+        let mut total_count: i32 = 0;
 
         for (&current_base, &current_count) in nv {
-            total_count += current_count;
+            total_count = total_count.saturating_add(current_count);
 
             let has_seq_qual = soft_clip
                 .seq
@@ -113,7 +112,8 @@ pub fn find_conseq(
             break;
         }
 
-        if (total_count - max_count > 2 || max_count <= total_count - max_count)
+        let rem_count = i64::from(total_count) - i64::from(max_count);
+        if (rem_count > 2 || i64::from(max_count) <= rem_count)
             && total_count > 0
             && (max_count as f64) / (total_count as f64) < 0.8
         {
@@ -123,8 +123,8 @@ pub fn find_conseq(
             flag = true;
         }
 
-        total += total_count;
-        match_cnt += max_count;
+        total = total.saturating_add(total_count);
+        match_cnt = match_cnt.saturating_add(max_count);
         if let Some(b) = chosen_base {
             seq.push(b);
         }
@@ -200,12 +200,10 @@ pub fn correct_cnt(var_to_correct: &mut Variation) {
         var_to_correct.mqmean = 0.0;
     }
     if var_to_correct.get_dir(true) < 0 {
-        let val = var_to_correct.get_dir(true);
-        var_to_correct.add_dir(true, -val);
+        var_to_correct.rev = 0;
     }
     if var_to_correct.get_dir(false) < 0 {
-        let val = var_to_correct.get_dir(false);
-        var_to_correct.add_dir(false, -val);
+        var_to_correct.fwd = 0;
     }
 }
 
@@ -219,10 +217,10 @@ pub fn adj_cnt(
     variant: &Variation,
     reference_var: Option<&mut Variation>,
 ) {
-    var_to_add.cnt += variant.cnt;
-    var_to_add.extracnt += variant.cnt;
-    var_to_add.hicnt += variant.hicnt;
-    var_to_add.locnt += variant.locnt;
+    var_to_add.cnt = var_to_add.cnt.saturating_add(variant.cnt);
+    var_to_add.extracnt = var_to_add.extracnt.saturating_add(variant.cnt);
+    var_to_add.hicnt = var_to_add.hicnt.saturating_add(variant.hicnt);
+    var_to_add.locnt = var_to_add.locnt.saturating_add(variant.locnt);
     var_to_add.pmean += variant.pmean;
     var_to_add.qmean += variant.qmean;
     var_to_add.mqmean += variant.mqmean;
@@ -233,9 +231,9 @@ pub fn adj_cnt(
     var_to_add.add_dir(false, variant.get_dir(false));
 
     if let Some(ref_var) = reference_var {
-        ref_var.cnt -= variant.cnt;
-        ref_var.hicnt -= variant.hicnt;
-        ref_var.locnt -= variant.locnt;
+        ref_var.cnt = ref_var.cnt.saturating_sub(variant.cnt);
+        ref_var.hicnt = ref_var.hicnt.saturating_sub(variant.hicnt);
+        ref_var.locnt = ref_var.locnt.saturating_sub(variant.locnt);
         ref_var.pmean -= variant.pmean;
         ref_var.qmean -= variant.qmean;
         ref_var.mqmean -= variant.mqmean;
@@ -258,12 +256,19 @@ pub fn adj_ref_factor(ref_var: &mut Variation, mut factor_f: f64) {
     }
 
     let old_vars_count = ref_var.cnt;
-    ref_var.cnt -= (factor_f * (old_vars_count as f64)) as i32;
-    ref_var.hicnt -= (factor_f * (ref_var.hicnt as f64)) as i32;
-    ref_var.locnt -= (factor_f * (ref_var.locnt as f64)) as i32;
+    ref_var.cnt = ref_var
+        .cnt
+        .saturating_sub((factor_f * (old_vars_count as f64)) as i32);
+    ref_var.hicnt = ref_var
+        .hicnt
+        .saturating_sub((factor_f * (ref_var.hicnt as f64)) as i32);
+    ref_var.locnt = ref_var
+        .locnt
+        .saturating_sub((factor_f * (ref_var.locnt as f64)) as i32);
 
     let mut factor_cnt = if old_vars_count != 0 {
-        ((ref_var.cnt - old_vars_count).abs() as f64) / (old_vars_count as f64)
+        ((i64::from(ref_var.cnt) - i64::from(old_vars_count)).abs() as f64)
+            / (old_vars_count as f64)
     } else {
         1.0
     };
@@ -300,9 +305,9 @@ pub fn adj_ref_cnt(tv: &Variation, ref_var: &mut Variation, len: i32) {
         f = 1.0;
     }
 
-    ref_var.cnt -= (f * (tv.cnt as f64)) as i32;
-    ref_var.hicnt -= (f * (tv.hicnt as f64)) as i32;
-    ref_var.locnt -= (f * (tv.locnt as f64)) as i32;
+    ref_var.cnt = ref_var.cnt.saturating_sub((f * (tv.cnt as f64)) as i32);
+    ref_var.hicnt = ref_var.hicnt.saturating_sub((f * (tv.hicnt as f64)) as i32);
+    ref_var.locnt = ref_var.locnt.saturating_sub((f * (tv.locnt as f64)) as i32);
     ref_var.pmean -= f * tv.pmean;
     ref_var.qmean -= f * tv.qmean;
     ref_var.mqmean -= f * tv.mqmean;
@@ -759,5 +764,49 @@ pub(crate) mod tests {
         adj_ref_cnt(&tv, &mut ref_var, 5);
         assert_eq!(ref_var.cnt, 14);
         assert_eq!(ref_var.hicnt, 14);
+    }
+
+    #[test]
+    fn extreme_strand_bias_correct_cnt_and_adj_ref_factor_no_overflow() {
+        assert_eq!(strand_bias(i32::MAX, i32::MAX, 0.05, 2), 2);
+        assert_eq!(strand_bias(1_000_000, -1_000_000, 0.05, 2), 0);
+
+        let mut v_min = Variation::new();
+        v_min.cnt = i32::MIN;
+        v_min.fwd = i32::MIN;
+        v_min.rev = i32::MIN;
+        v_min.hicnt = i32::MIN;
+        v_min.locnt = i32::MIN;
+        correct_cnt(&mut v_min);
+        assert_eq!(v_min.cnt, 0);
+        assert_eq!(v_min.fwd, 0);
+        assert_eq!(v_min.rev, 0);
+        assert_eq!(v_min.hicnt, 0);
+        assert_eq!(v_min.locnt, 0);
+
+        let mut ref_var = Variation::new();
+        ref_var.cnt = i32::MIN;
+        ref_var.hicnt = 100;
+        ref_var.locnt = 50;
+        ref_var.fwd = 60;
+        ref_var.rev = 40;
+        ref_var.pmean = 200.0;
+        adj_ref_factor(&mut ref_var, 1.0);
+        assert_eq!(ref_var.cnt, 0);
+        assert!(ref_var.pmean.is_finite());
+
+        ref_var.cnt = i32::MAX;
+        adj_ref_factor(&mut ref_var, -1.0);
+        assert_eq!(ref_var.cnt, i32::MAX);
+
+        let mut dst = Variation::new();
+        dst.cnt = i32::MAX - 2;
+        dst.hicnt = i32::MAX - 1;
+        let mut add = Variation::new();
+        add.cnt = 10;
+        add.hicnt = 10;
+        adj_cnt(&mut dst, &add, None);
+        assert_eq!(dst.cnt, i32::MAX);
+        assert_eq!(dst.hicnt, i32::MAX);
     }
 }
