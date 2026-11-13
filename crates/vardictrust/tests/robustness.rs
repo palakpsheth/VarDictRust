@@ -3255,6 +3255,7 @@ fn check_var2vcf_postfilter_flags_e2e(tmp: &Path) {
         "chr1:40-260",
         "--threads=1",
     ];
+    let over64_af = format!("0.{}", "0".repeat(64));
     let reject_cases: &[(&[&str], &str)] = &[
         (
             &["--vcf-pval", "-0.05"],
@@ -3280,6 +3281,18 @@ fn check_var2vcf_postfilter_flags_e2e(tmp: &Path) {
         (
             &["--min-splitreads", "-1"],
             "Invalid --min-splitreads value '-1': must be an integer >= 0",
+        ),
+        (
+            &["--vcf-cluster-dist", "-1"],
+            "Invalid --vcf-cluster-dist value '-1': must be an integer >= 0",
+        ),
+        (
+            &["--vcf-gt-freq", "1.5"],
+            "Invalid --vcf-gt-freq value '1.5': must be a finite number in [0.0, 1.0]",
+        ),
+        (
+            &["--vcf-af", over64_af.as_str()],
+            "must be <= 64 ASCII bytes",
         ),
         (
             &["-no-pstd-filter"],

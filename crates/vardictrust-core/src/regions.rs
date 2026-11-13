@@ -678,10 +678,9 @@ pub fn parse_region_flag(
     }
 
     if split.len() > 2 && !chromosome_in_header(chromosomes_lengths, first_seg) {
-        let min_k = split.len().saturating_sub(2).max(1);
         if !chromosomes_lengths.is_empty() {
             let mut matched_contig_err: Option<VardictError> = None;
-            for k in (min_k..split.len()).rev() {
+            for k in (1..split.len()).rev() {
                 let Some(prefix) = split.get(..k) else {
                     continue;
                 };
@@ -693,13 +692,16 @@ pub fn parse_region_flag(
                     match parse_coord_segment(coord_str) {
                         Ok((start, end)) => {
                             let chr = correct_chromosome(chromosomes_lengths, &candidate);
-                            let gene = match split.get(k + 1) {
-                                Some(&g) => g.to_string(),
-                                None => chr.clone(),
+                            let gene = match split.get(k + 1..) {
+                                Some(tail) if !tail.is_empty() => tail.join(":"),
+                                _ => chr.clone(),
                             };
                             return Ok(finalize_single_region(chr, start, end, gene, config));
                         }
                         Err(err) => {
+                            if is_numeric_coord_token(coord_str) {
+                                return Err(err);
+                            }
                             if matched_contig_err.is_none() {
                                 matched_contig_err = Some(err);
                             }
@@ -711,11 +713,20 @@ pub fn parse_region_flag(
                 return Err(err);
             }
         } else {
+            let min_k = split.len().saturating_sub(2).max(1);
             let mut last_coord_err: Option<VardictError> = None;
             for k in (min_k..split.len()).rev() {
                 let Some(&coord_str) = split.get(k) else {
                     continue;
                 };
+                if !coord_str.contains('-')
+                    && k > min_k
+                    && split
+                        .get(k - 1)
+                        .is_some_and(|p| p.contains('-') && parse_coord_segment(p).is_ok())
+                {
+                    continue;
+                }
                 match parse_coord_segment(coord_str) {
                     Ok((start, end)) => {
                         let Some(prefix) = split.get(..k) else {
@@ -734,13 +745,7 @@ pub fn parse_region_flag(
                     }
                     Err(err) => {
                         if is_numeric_coord_token(coord_str) {
-                            let prev_is_range = k > min_k
-                                && split.get(k - 1).is_some_and(|p| {
-                                    p.contains('-') && parse_coord_segment(p).is_ok()
-                                });
-                            if !prev_is_range {
-                                return Err(err);
-                            }
+                            return Err(err);
                         }
                         last_coord_err = Some(err);
                     }
@@ -1547,5 +1552,36 @@ Y\t59042860\t59047860\tY_59042860_5\t0\t.\t59042860\t59047860
         assert!(
             parse_region_flag("HLA-A*01:01:01:01:2147483648-2147483700", &config, &empty).is_err()
         );
+
+        // 7. All-numeric Entrez gene IDs without header and colon-bearing gene names with header
+        let r_entrez_chr = parse_region_flag("chr1:100-200:7157", &config, &empty).unwrap();
+        assert_eq!(r_entrez_chr[0][0].chr, "1");
+        assert_eq!(r_entrez_chr[0][0].start, Pos1(100));
+        assert_eq!(r_entrez_chr[0][0].end, Pos1(200));
+        assert_eq!(r_entrez_chr[0][0].gene, "7157");
+
+        let r_entrez_num_chr = parse_region_flag("1:100-200:7157", &config, &empty).unwrap();
+        assert_eq!(r_entrez_num_chr[0][0].chr, "chr1");
+        assert_eq!(r_entrez_num_chr[0][0].start, Pos1(100));
+        assert_eq!(r_entrez_num_chr[0][0].end, Pos1(200));
+        assert_eq!(r_entrez_num_chr[0][0].gene, "7157");
+
+        let r_entrez_hla =
+            parse_region_flag("HLA-A*01:01:01:01:100-200:3105", &config, &empty).unwrap();
+        assert_eq!(r_entrez_hla[0][0].chr, "HLA-A*01:01:01:01");
+        assert_eq!(r_entrez_hla[0][0].start, Pos1(100));
+        assert_eq!(r_entrez_hla[0][0].end, Pos1(200));
+        assert_eq!(r_entrez_hla[0][0].gene, "3105");
+
+        let r_colon_gene = parse_region_flag(
+            "HLA-A*01:01:01:01:100-200:HLA-A*01:01",
+            &config,
+            &chr_lengths,
+        )
+        .unwrap();
+        assert_eq!(r_colon_gene[0][0].chr, "HLA-A*01:01:01:01");
+        assert_eq!(r_colon_gene[0][0].start, Pos1(100));
+        assert_eq!(r_colon_gene[0][0].end, Pos1(200));
+        assert_eq!(r_colon_gene[0][0].gene, "HLA-A*01:01");
     }
 }

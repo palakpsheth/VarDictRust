@@ -368,7 +368,7 @@ Flag parity with VarDictJava v1.8.3 (`87` CLI flags across 6 functional groups) 
 | — | `--vcf-pval` | Maximum Fisher p-value `<FLOAT>` for high-confidence somatic calls under `--paired-strict` (ports `var2vcf_paired.pl -P`) | `0.05` | `parity-exempt` |
 | — | `--min-splitreads` | Minimum split reads `<INT>` required to emit symbolic structural variants in single-sample VCF output (ports `var2vcf_valid.pl -T`) | `1` | `parity-exempt` |
 | — | `--no-pstd-filter` | Disable `pSTD` (`PSTD=0`) read-position standard-deviation filter in single-sample VCF output (ports `var2vcf_valid.pl -P 0`) | off | `parity-exempt` |
-| — | `--vcf-af` | Override VCF minimum allele-frequency filter (`f<FLOAT>`) and single-sample `0/0` vs `0/1` `GT` threshold `<FLOAT>` independently of engine `-f` (ports `var2vcf_valid.pl` / `var2vcf_paired.pl -f`; `0` honored via `defined()` semantics) | `-f` (`0.02` if `-f 0` in single) | `parity-exempt` |
+| — | `--vcf-af` | Override VCF minimum allele-frequency filter (`f<FLOAT>`) and `0/0` vs `0/1` `GT` threshold `<FLOAT>` independently of engine `-f` (ports `var2vcf_valid.pl` / `var2vcf_paired.pl -f`; `0` honored via `defined()` semantics) | `-f` (`0.02` if `-f 0` in single) | `parity-exempt` |
 | — | `--vcf-min-depth` | Minimum total read depth `<INT>` (`DP`) for VCF `d<INT>` filter (ports `var2vcf_valid.pl` / `var2vcf_paired.pl -d`) | `3` (single) / `5` (paired) | `parity-exempt` |
 | — | `--vcf-min-vd` | Minimum variant read depth `<INT>` (`VD`) for VCF `v<INT>` filter (ports `var2vcf_valid.pl` / `var2vcf_paired.pl -v`) | `2` (single) / `3` (paired) | `parity-exempt` |
 | — | `--vcf-qmean` | Minimum mean base quality `<FLOAT>` (`QUAL`) for VCF `q<FLOAT>` filter (ports `var2vcf_valid.pl` / `var2vcf_paired.pl -q`) | `22.5` | `parity-exempt` |
@@ -376,7 +376,7 @@ Flag parity with VarDictJava v1.8.3 (`87` CLI flags across 6 functional groups) 
 | — | `--vcf-pmean` | Minimum mean read-position distance `<FLOAT>` (`PMEAN`) for VCF `p<FLOAT>` filter (ports `var2vcf_valid.pl` / `var2vcf_paired.pl -p`) | `8` | `parity-exempt` |
 | — | `--vcf-sn` | Minimum signal-to-noise ratio `<FLOAT>` (`SN`) for VCF `SN<FLOAT>` filter (ports `var2vcf_valid.pl` / `var2vcf_paired.pl -o`) | `1.5` | `parity-exempt` |
 | — | `--vcf-max-nm` | Maximum mean mismatches `<FLOAT>` (`NM`) before VCF `NM<FLOAT>` filter (ports `var2vcf_valid.pl` / `var2vcf_paired.pl -m`) | `5.25` | `parity-exempt` |
-| — | `--vcf-gt-freq` | Homozygous-alt genotype gap `<FLOAT>` in `[0, 1]` (`GT` is `1/0` or `0/1` when `1 - AF >= <FLOAT>`, `1/1` when `1 - AF < <FLOAT>`; ports `var2vcf_valid.pl` / `var2vcf_paired.pl -F`) | `0.2` | `parity-exempt` |
+| — | `--vcf-gt-freq` | Homozygous-alt genotype gap `<FLOAT>` in `[0, 1]` (when `AF >= --vcf-af`/`-f`, `GT` is `1/0` or `0/1` if `1 - AF >= <FLOAT>` and `1/1` if `1 - AF < <FLOAT>`; `0/0` below `--vcf-af`/`-f`; ports `var2vcf_valid.pl` / `var2vcf_paired.pl -F`) | `0.2` | `parity-exempt` |
 | — | `--vcf-msi` | Non-monomer microsatellite (`MSILEN > 1`) repeat threshold `<FLOAT>` for VCF `MSI<FLOAT>` filter (ports `var2vcf_valid.pl` / `var2vcf_paired.pl -I`) | `12` | `parity-exempt` |
 | — | `--vcf-cluster-dist` | Variant cluster window `<INT>` in bp for VCF `Cluster<INT>bp` filter across single-sample, amplicon, and paired somatic streams (ports `var2vcf_valid.pl` / `var2vcf_paired.pl -c`) | `0` | `parity-exempt` |
 | — | `--stats-json` | Write run telemetry JSON (`mode`, `threads`, `regions_count`, `tiles_count`, `elapsed_ms`, `peak_rss_kb`, `exceptions_caught`) to `<PATH>` | — | `no-output` |

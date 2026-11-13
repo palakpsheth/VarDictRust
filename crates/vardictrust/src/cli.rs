@@ -1340,6 +1340,7 @@ impl Cli {
         // only `"0"` (or `""`) is falsy; non-`"0"` zero spellings such as `"0.0"`
         // or `"0.00"` are truthy strings in Perl boolean context and keep `0.0`.
         let af_threshold_truthy_zero = parsed_freq == 0.0 && freq_str.trim() != "0";
+        let af_threshold = if parsed_freq == 0.0 { 0.0 } else { parsed_freq };
 
         let sample_regexp = match self.sample_regexp.first() {
             Some(raw) => vardictrust_core::config::validate_sample_regexp(raw)
@@ -1403,7 +1404,7 @@ impl Cli {
             freq: parsed_freq,
             // The writer's $Freq is the literal -f value even under -p (perl
             // receives -f from the pipeline, not java's pileup override).
-            af_threshold: parsed_freq,
+            af_threshold,
             af_threshold_truthy_zero,
             sample,
             sample_explicit,
@@ -1765,6 +1766,12 @@ mod tests {
         let cfg_zero_exp = cli_zero_exp.to_config().unwrap();
         assert_eq!(cfg_zero_exp.af_threshold, 0.0);
         assert!(cfg_zero_exp.af_threshold_truthy_zero);
+
+        let cli_neg_zero =
+            Cli::try_parse_from(args(&["-b", "a.bam", "-G", "r.fa", "-f=-0.0"])).unwrap();
+        let cfg_neg_zero = cli_neg_zero.to_config().unwrap();
+        assert_eq!(cfg_neg_zero.af_threshold.to_bits(), 0.0_f64.to_bits());
+        assert!(cfg_neg_zero.af_threshold_truthy_zero);
     }
 
     #[test]

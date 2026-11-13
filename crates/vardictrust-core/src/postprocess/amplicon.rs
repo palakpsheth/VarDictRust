@@ -657,10 +657,6 @@ pub fn amplicon_select_vcf_rows(results: Vec<AmpliconVariant>) -> Vec<AmpliconVa
     let mut buckets: BTreeMap<i32, AmpliconVariant> = BTreeMap::new();
     for av in results {
         let v_af = crate::types::round_half_even(av.variant.frequency, 4);
-        debug_assert_eq!(
-            av.variant.frequency, v_af,
-            "amplicon Variant.frequency entering VCF selection must be 4dp-canonical"
-        );
         match buckets.entry(av.variant.start_pos) {
             std::collections::btree_map::Entry::Vacant(e) => {
                 e.insert(av);

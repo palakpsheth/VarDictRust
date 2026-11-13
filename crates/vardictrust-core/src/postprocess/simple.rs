@@ -131,10 +131,6 @@ pub fn simple_post_process(
         let mut buckets: BTreeMap<i32, Variant> = BTreeMap::new();
         for v in vrefs {
             let v_af = crate::types::round_half_even(v.frequency, 4);
-            debug_assert_eq!(
-                v.frequency, v_af,
-                "simple Variant.frequency entering VCF selection must be 4dp-canonical"
-            );
             match buckets.entry(v.start_pos) {
                 std::collections::btree_map::Entry::Vacant(e) => {
                     e.insert(v);
@@ -476,5 +472,16 @@ mod tests {
         assert_eq!(kept_inv[0].start_pos, 150);
         assert_eq!(kept_inv[0].var_allele, "<INV>");
         assert_eq!(kept_inv[0].sv, "0-100-1");
+
+        // 3. Direct library callers passing unrounded `Variant.frequency` do not trigger debug assertions.
+        let mut g_unrounded = Vars::new();
+        g_unrounded
+            .variants
+            .push(mk_variant(160, 160, "C", "T", 0.3333333));
+        let mut aligned_unrounded = crate::javamap::JavaHashMap::new();
+        aligned_unrounded.insert(160, g_unrounded);
+        let kept_unrounded = simple_post_process(&config, &region, &aligned_unrounded, &splice);
+        assert_eq!(kept_unrounded.len(), 1);
+        assert_eq!(kept_unrounded[0].var_allele, "T");
     }
 }

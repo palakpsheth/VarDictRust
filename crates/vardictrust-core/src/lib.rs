@@ -846,8 +846,8 @@ fn scan_multi_tile_max_read_lengths(
             // lies in `[read_start, span_end]`. If the current window covers that entire local
             // band and `seed12` occurs 0 times (or >= 2 times) inside the window, a parent-wide
             // scan can be skipped (or immediately memoized as Multiple).
-            let band_lo = read_start.saturating_sub(2 * cur_max).max(1) as u32;
-            let band_hi = span_end.saturating_add(2 * cur_max).max(1) as u32;
+            let band_lo = read_start.saturating_sub(cur_max.saturating_mul(2)).max(1) as u32;
+            let band_hi = span_end.saturating_add(cur_max.saturating_mul(2)).max(1) as u32;
             if self.window_interval_idx.is_some()
                 && band_lo >= self.window_start
                 && band_hi.saturating_add(11) <= self.window_end
@@ -994,8 +994,9 @@ fn scan_multi_tile_max_read_lengths(
             let insertion_deletion_length =
                 crate::cigar::parse::get_insertion_deletion_length(&r.cigar);
             if let Some(nm_val) = r.nm {
-                let total_mismatches = nm_val.saturating_sub(insertion_deletion_length as i32);
-                if total_mismatches > config.max_mismatches as i32 {
+                let total_mismatches = nm_val
+                    .saturating_sub(i32::try_from(insertion_deletion_length).unwrap_or(i32::MAX));
+                if total_mismatches > i32::try_from(config.max_mismatches).unwrap_or(i32::MAX) {
                     same_start_ends.push(read_end);
                     continue;
                 }
@@ -5928,6 +5929,88 @@ mod tests {
         );
 
         check_somatic_candidate_spill_and_winner_suppression();
+
+        // Verify exact `current_bytes` accounting across in-memory `Entry::Occupied` transitions:
+        // initial `Record`, equal/lower-AF no-op, `Record -> Skip` shrinkage, and `Skip -> Record` growth.
+        let mut mem_acc: SpillableVcfAccumulator<RawVcfCandidate> =
+            SpillableVcfAccumulator::with_limits(64 * 1024, 8);
+        let skip_unit_bytes = std::mem::size_of::<RawVcfCandidate>() + 32;
+        let rec1 = mk_test_single_vcf_rec(
+            "chr1",
+            300,
+            "A",
+            "G",
+            "PASS",
+            "long_info_payload_initial_record",
+            true,
+            true,
+            false,
+        );
+        let rec1_cap = rec1.capacity();
+        mem_acc
+            .insert(
+                "chr1",
+                RawVcfCandidate {
+                    start_pos: 300,
+                    af_4dp: 0.4000,
+                    event: crate::output::vcf::SingleVcfEvent::Record(rec1),
+                },
+            )
+            .unwrap();
+        assert_eq!(mem_acc.current_bytes, skip_unit_bytes + rec1_cap);
+
+        // Equal AF and lower AF are no-ops on `current_bytes`
+        for noop_af in [0.4000, 0.2000] {
+            mem_acc
+                .insert(
+                    "chr1",
+                    RawVcfCandidate {
+                        start_pos: 300,
+                        af_4dp: noop_af,
+                        event: crate::output::vcf::SingleVcfEvent::Skip,
+                    },
+                )
+                .unwrap();
+            assert_eq!(mem_acc.current_bytes, skip_unit_bytes + rec1_cap);
+        }
+
+        // Higher-AF `Skip` shrinks `current_bytes` by `rec1_cap`
+        mem_acc
+            .insert(
+                "chr1",
+                RawVcfCandidate {
+                    start_pos: 300,
+                    af_4dp: 0.6000,
+                    event: crate::output::vcf::SingleVcfEvent::Skip,
+                },
+            )
+            .unwrap();
+        assert_eq!(mem_acc.current_bytes, skip_unit_bytes);
+
+        // Even-higher-AF `Record` grows `current_bytes` by `rec2_cap`
+        let rec2 = mk_test_single_vcf_rec(
+            "chr1",
+            300,
+            "A",
+            "T",
+            "PASS",
+            "even_longer_info_payload_replacement_record_after_skip",
+            true,
+            true,
+            false,
+        );
+        let rec2_cap = rec2.capacity();
+        mem_acc
+            .insert(
+                "chr1",
+                RawVcfCandidate {
+                    start_pos: 300,
+                    af_4dp: 0.9000,
+                    event: crate::output::vcf::SingleVcfEvent::Record(rec2),
+                },
+            )
+            .unwrap();
+        assert_eq!(mem_acc.current_bytes, skip_unit_bytes + rec2_cap);
     }
 
     fn check_somatic_candidate_spill_and_winner_suppression() {
@@ -6456,7 +6539,7 @@ mod tests {
         }
 
         // Part 2: Live `run_with_writer` across multi-tile boundary (tile_size = 50) with
-        // forced disk spill (`TEST_VCF_SPILL_BYTES_OVERRIDE = Some(64)`) in Simple and Somatic modes.
+        // forced disk spill (`TEST_VCF_SPILL_BYTES_OVERRIDE = Some(1)`) in Simple and Somatic modes.
         let dir = tempfile::TempDir::new().unwrap();
         let ref_len = 200usize;
         let motif = b"ACGTACGTAGCTAGCTTGCAACGT";

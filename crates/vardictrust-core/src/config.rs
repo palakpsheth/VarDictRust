@@ -4,7 +4,7 @@
 /// (<= 64 ASCII bytes) so `##FILTER=<ID=...>` and record `FILTER` tags reproduce Perl
 /// dualvar interpolation verbatim (e.g. `--vcf-qmean 20.0` -> `q20.0`, programmatic
 /// `VcfThreshold::new(20.0)` -> `q20`).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VcfThreshold<T> {
     pub value: T,
     pub raw: Option<String>,
@@ -375,6 +375,9 @@ impl Config {
     /// `0.0` and verifying every `raw` CLI token via [`validate_vcf_nonneg_float_token`] +
     /// `f64::to_bits()` agreement so programmatic `&Config` callers share identical guards.
     pub fn validate_vcf_thresholds(&mut self) -> Result<(), crate::types::VardictError> {
+        if self.af_threshold == 0.0 {
+            self.af_threshold = 0.0;
+        }
         if !self.vcf_pval.is_finite() || self.vcf_pval < 0.0 {
             return Err(crate::types::VardictError::Parse(format!(
                 "Invalid vcf_pval '{}': must be a finite number >= 0.0",
@@ -697,7 +700,7 @@ pub fn parse_vcf_unit_f64(s: &str, flag: &str) -> Result<f64, String> {
 /// Parses a trimmed base-10 non-negative `i32` (`>= 0`) for VCF integer threshold flags
 /// (`--min-splitreads`, `--vcf-min-depth`, `--vcf-min-vd`, `--vcf-cluster-dist`).
 pub fn parse_vcf_nonneg_i32(s: &str, flag: &str) -> Result<i32, String> {
-    if s.is_empty() || s.trim() != s || s == "-3" {
+    if s.is_empty() || s.trim() != s {
         return Err(format!("Invalid {flag} value '{s}'"));
     }
     let v = s
@@ -1097,6 +1100,7 @@ mod tests {
     #[test]
     fn config_validate_vcf_thresholds_checks_all_fields() {
         let mut cfg = Config {
+            af_threshold: -0.0,
             vcf_pval: -0.0,
             vcf_pval_raw: Some("-0.0".to_string()),
             vcf_af: Some(VcfThreshold::with_raw(-0.0, "+0.00".to_string())),
@@ -1113,6 +1117,7 @@ mod tests {
             ..Config::default()
         };
         cfg.validate_vcf_thresholds().unwrap();
+        assert_eq!(cfg.af_threshold.to_bits(), 0.0_f64.to_bits());
         assert_eq!(cfg.vcf_pval.to_bits(), 0.0_f64.to_bits());
         assert_eq!(cfg.vcf_pval_raw.as_deref(), Some("0.0"));
         assert_eq!(

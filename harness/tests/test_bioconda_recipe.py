@@ -76,7 +76,10 @@ class TestBiocondaRecipe(unittest.TestCase):
         root_cargo = (ROOT_DIR / "Cargo.toml").read_text(encoding="utf-8")
         self.assertRegex(
             root_cargo,
-            re.compile(r'^\[workspace\.package\][\s\S]*?^rust-version\s*=\s*"1\.91\.0"', re.MULTILINE),
+            re.compile(
+                r'^\[workspace\.package\]\n(?:(?!\[)[^\n]*\n)*?rust-version\s*=\s*"1\.91\.0"',
+                re.MULTILINE,
+            ),
             'Workspace Cargo.toml must pin rust-version = "1.91.0" under [workspace.package]',
         )
         for member in ("vardictrust", "vardictrust-core"):

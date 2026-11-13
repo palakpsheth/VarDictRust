@@ -253,18 +253,10 @@ fn write_perl_num_str<W: std::fmt::Write>(out: &mut W, x: f64) {
     }
 }
 
-/// Stack-backed `%.15g` Perl numeric formatter returning a `StackBuf<32>`.
-#[inline]
-fn perl_num_str_buf(x: f64) -> crate::types::StackBuf<32> {
-    let mut out = crate::types::StackBuf::<32>::new();
-    write_perl_num_str(&mut out, x);
-    out
-}
-
 /// Writes a sanitized `VcfThreshold<f64>` label (`<= 64` ASCII bytes) into `out`:
 /// re-validates `thr.raw` via [`crate::config::validate_vcf_nonneg_float_token`] and
 /// `to_bits()` agreement so direct library `&Config` callers cannot inject newlines,
-/// tabs, or unbounded strings into VCF headers/filters, falling back to `perl_num_str_buf`.
+/// tabs, or unbounded strings into VCF headers/filters, falling back to `write_perl_num_str`.
 fn write_vcf_threshold_label<W: std::fmt::Write>(
     out: &mut W,
     thr: &crate::config::VcfThreshold<f64>,
@@ -279,8 +271,7 @@ fn write_vcf_threshold_label<W: std::fmt::Write>(
             }
         }
     }
-    let formatted = perl_num_str_buf(val);
-    let _ = out.write_str(formatted.as_str());
+    write_perl_num_str(out, val);
 }
 
 #[inline]
@@ -763,6 +754,11 @@ fn has_non_fisher_valid_filter(
 ) -> bool {
     let dp = variant.total_pos_cov;
     let hicnt = variant.hicnt;
+    let af = crate::types::round_half_even(variant.frequency, 4);
+    let pmean = crate::types::round_half_even(variant.mean_position, 1);
+    let qmean = crate::types::round_half_even(variant.mean_quality, 1);
+    let mapq = crate::types::round_half_even(variant.mean_mapping_quality, 1);
+    let nm = crate::types::round_half_even(variant.nm, 1).max(0.0);
     let hiaf = crate::types::round_half_even(variant.hi_freq, 4);
     let sn = crate::types::round_half_even(variant.hq_lq_ratio, 3);
     let msi = crate::types::round_half_even(variant.msi, 3);
@@ -771,21 +767,21 @@ fn has_non_fisher_valid_filter(
     if (dp < thr.min_depth || hicnt < thr.min_vd) && !hi_check {
         return true;
     }
-    if variant.frequency < thr.freq
-        || variant.mean_position < thr.pmean
-        || (config.vcf_pstd_filter && !variant.pstd && amp.is_none() && variant.frequency < 0.35)
-        || variant.mean_quality < thr.qmean
-        || (variant.mean_mapping_quality < thr.mapq && variant.frequency < 0.8)
+    if af < thr.freq
+        || pmean < thr.pmean
+        || (config.vcf_pstd_filter && !variant.pstd && amp.is_none() && af < 0.35)
+        || qmean < thr.qmean
+        || (mapq < thr.mapq && af < 0.8)
         || sn < thr.sn
-        || variant.nm > thr.max_nm
+        || nm > thr.max_nm
     {
         return true;
     }
 
     let len_diff = variant.ref_allele.len().abs_diff(variant.var_allele.len());
     if usize::try_from(variant.msint).ok() == Some(len_diff) {
-        if (msi > thr.msi && variant.msint > 1 && variant.frequency < 0.2)
-            || (msi >= 13.0 && variant.msint == 1 && variant.frequency <= 0.275)
+        if (msi > thr.msi && variant.msint > 1 && af < 0.2)
+            || (msi >= 13.0 && variant.msint == 1 && af <= 0.275)
             || (hiaf <= 0.275 && msi >= 13.0)
             || (hiaf <= 0.2 && msi >= 8.0 && variant.msint > 1)
         {
@@ -851,6 +847,11 @@ fn collect_valid_filters_into<'a>(
 
     let dp = variant.total_pos_cov;
     let hicnt = variant.hicnt;
+    let af = crate::types::round_half_even(variant.frequency, 4);
+    let pmean = crate::types::round_half_even(variant.mean_position, 1);
+    let qmean = crate::types::round_half_even(variant.mean_quality, 1);
+    let mapq = crate::types::round_half_even(variant.mean_mapping_quality, 1);
+    let nm = crate::types::round_half_even(variant.nm, 1).max(0.0);
     let hiaf = crate::types::round_half_even(variant.hi_freq, 4);
     let sn = crate::types::round_half_even(variant.hq_lq_ratio, 3);
     let msi = crate::types::round_half_even(variant.msi, 3);
@@ -874,7 +875,7 @@ fn collect_valid_filters_into<'a>(
         filters.push(tag);
     }
 
-    if variant.frequency < thr.freq {
+    if af < thr.freq {
         if let Some(ref af_thr) = config.vcf_af {
             filters.push(format_float_filter_tag(s_f, "f", af_thr, thr.fallback_freq));
         } else {
@@ -882,7 +883,7 @@ fn collect_valid_filters_into<'a>(
         }
     }
 
-    if variant.mean_position < thr.pmean {
+    if pmean < thr.pmean {
         let tag = match config.vcf_pmean.as_ref() {
             Some(t) => format_float_filter_tag(s_p, "p", t, 8.0),
             None => FilterTag::Text("p8"),
@@ -890,11 +891,11 @@ fn collect_valid_filters_into<'a>(
         filters.push(tag);
     }
 
-    if config.vcf_pstd_filter && !variant.pstd && amp.is_none() && variant.frequency < 0.35 {
+    if config.vcf_pstd_filter && !variant.pstd && amp.is_none() && af < 0.35 {
         filters.push(FilterTag::Text("pSTD"));
     }
 
-    if variant.mean_quality < thr.qmean {
+    if qmean < thr.qmean {
         let tag = match config.vcf_qmean.as_ref() {
             Some(t) => format_float_filter_tag(s_q, "q", t, 22.5),
             None => FilterTag::Text("q22.5"),
@@ -902,7 +903,7 @@ fn collect_valid_filters_into<'a>(
         filters.push(tag);
     }
 
-    if variant.mean_mapping_quality < thr.mapq && variant.frequency < 0.8 {
+    if mapq < thr.mapq && af < 0.8 {
         let tag = match config.vcf_mapq.as_ref() {
             Some(t) => format_float_filter_tag(s_mapq, "Q", t, 10.0),
             None => FilterTag::Text("Q10"),
@@ -918,7 +919,7 @@ fn collect_valid_filters_into<'a>(
         filters.push(tag);
     }
 
-    if variant.nm > thr.max_nm {
+    if nm > thr.max_nm {
         let tag = match config.vcf_max_nm.as_ref() {
             Some(t) => format_float_filter_tag(s_nm, "NM", t, 5.25),
             None => FilterTag::Text("NM5.25"),
@@ -928,10 +929,8 @@ fn collect_valid_filters_into<'a>(
 
     let len_diff = variant.ref_allele.len().abs_diff(variant.var_allele.len());
     let len_matches_msint = usize::try_from(variant.msint).ok() == Some(len_diff);
-    let msi_check1 =
-        msi > thr.msi && variant.msint > 1 && variant.frequency < 0.2 && len_matches_msint;
-    let msi_check2 =
-        msi >= 13.0 && variant.msint == 1 && variant.frequency <= 0.275 && len_matches_msint;
+    let msi_check1 = msi > thr.msi && variant.msint > 1 && af < 0.2 && len_matches_msint;
+    let msi_check2 = msi >= 13.0 && variant.msint == 1 && af <= 0.275 && len_matches_msint;
     if msi_check1 || msi_check2 {
         let tag = match config.vcf_msi.as_ref() {
             Some(t) => format_float_filter_tag(s_msi, "MSI", t, 12.0),
@@ -1333,8 +1332,9 @@ pub fn format_vcf_record(
 
 /// Filter and write a single-sample/amplicon VCF record line into `buf` without
 /// allocating an intermediate `Vec<String>` for FILTER tags.
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
-pub fn format_filtered_vcf_record_into(
+fn format_filtered_vcf_record_into(
     buf: &mut String,
     variant: &Variant,
     region: &Region,
@@ -1378,8 +1378,9 @@ pub fn format_filtered_vcf_record_into(
 /// When `config.vcf_pass_only` (`--pass-only`, `var2vcf_valid.pl:187`) is enabled and
 /// any filter fires (`!filters.is_empty()`), clears `buf` and returns `false` without
 /// formatting the record body.
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
-pub fn try_format_filtered_vcf_record_into(
+fn try_format_filtered_vcf_record_into(
     buf: &mut String,
     variant: &Variant,
     region: &Region,
@@ -1580,7 +1581,8 @@ pub fn build_single_vcf_event(
         variant.var_type.as_str()
     };
     let type_snv = var_type == "SNV";
-    let is_dropped_sv = amp.is_none()
+    let is_dropped_sv = !type_snv
+        && amp.is_none()
         && variant.var_allele.contains('<')
         && parse_sv_counts(&variant.sv).0 < config.vcf_min_splitreads;
 
@@ -1843,7 +1845,7 @@ fn effective_paired_pval_num(config: &Config) -> f64 {
 
 /// Format `$PVAL` (`<= 64` ASCII bytes) for `var2vcf_paired.pl:27,86,200` onto the stack:
 /// uses `config.vcf_pval_raw` verbatim when valid and consistent with `config.vcf_pval`,
-/// else `perl_num_str_buf(eff_pval)`.
+/// else `write_perl_num_str(out, eff_pval)`.
 fn write_vcf_pval_label<W: std::fmt::Write>(out: &mut W, config: &Config) {
     let pval = effective_paired_pval_num(config);
     if let Some(raw) = config.vcf_pval_raw.as_deref() {
@@ -1857,8 +1859,7 @@ fn write_vcf_pval_label<W: std::fmt::Write>(out: &mut W, config: &Config) {
     if pval.to_bits() == 0.05_f64.to_bits() {
         let _ = out.write_str("0.05");
     } else {
-        let formatted = perl_num_str_buf(pval);
-        let _ = out.write_str(formatted.as_str());
+        write_perl_num_str(out, pval);
     }
 }
 
@@ -5280,5 +5281,25 @@ mod tests {
                 );
             }
         }
+
+        // Direct library `&Variant` callers with unrounded float fields evaluate filters
+        // at `.var` table precision (`round_half_even`), matching formatted VCF fields.
+        let mut unrounded_var = mk_snv(500, 22.46); // rounds to QUAL=22.5 >= 22.5
+        unrounded_var.frequency = 0.01996; // rounds to AF=0.0200 >= 0.02
+        unrounded_var.mean_position = 7.96; // rounds to PMEAN=8.0 >= 8.0
+        unrounded_var.mean_mapping_quality = 9.96; // rounds to MQ=10.0 >= 10.0
+        unrounded_var.nm = 5.24; // rounds to NM=5.2 <= 5.25
+        let mut strict_cfg = Config::default();
+        strict_cfg.af_threshold = 0.02;
+        assert!(
+            filter_variant(&unrounded_var, &strict_cfg, 0, None, 1.0, "0").is_empty(),
+            "table-rounded boundary values must PASS in filter_variant"
+        );
+        strict_cfg.vcf_pass_only = true;
+        let mut ev_scratch = String::new();
+        assert!(matches!(
+            build_single_vcf_event(&mut ev_scratch, &unrounded_var, &region, &strict_cfg, None),
+            SingleVcfEvent::Record(_)
+        ));
     }
 }
