@@ -567,44 +567,71 @@ pub fn parse_bed<P: AsRef<Path>>(
     )
 }
 
-/// Parses a region string (from option -R) into a single nested Region.
-pub fn parse_region_flag(
-    region_str: &str,
+fn chromosome_in_header(chromosomes_lengths: &HashMap<String, usize>, chr: &str) -> bool {
+    if chromosomes_lengths.contains_key(chr) {
+        return true;
+    }
+    if let Some(stripped) = chr.strip_prefix("chr") {
+        chromosomes_lengths.contains_key(stripped)
+    } else {
+        let mut toggled = String::with_capacity(3 + chr.len());
+        toggled.push_str("chr");
+        toggled.push_str(chr);
+        chromosomes_lengths.contains_key(&toggled)
+    }
+}
+
+fn is_numeric_coord_token(s: &str) -> bool {
+    let mut parts = s.split('-');
+    let Some(p1) = parts.next() else {
+        return false;
+    };
+    let is_digits_or_commas = |p: &str| {
+        let t = p.trim();
+        !t.is_empty()
+            && t.bytes().all(|b| b.is_ascii_digit() || b == b',')
+            && t.bytes().any(|b| b.is_ascii_digit())
+    };
+    if !is_digits_or_commas(p1) {
+        return false;
+    }
+    match parts.next() {
+        None => true,
+        Some(p2) => is_digits_or_commas(p2) && parts.next().is_none(),
+    }
+}
+
+fn parse_coord_segment(range_str: &str) -> Result<(i32, i32), VardictError> {
+    let mut parts = range_str.split('-');
+    let Some(start_str) = parts.next() else {
+        return Err(VardictError::Parse(format!(
+            "Invalid coordinate range '{}'",
+            range_str
+        )));
+    };
+    let start = parse_int_with_commas(start_str)? as i32;
+    let end = match parts.next() {
+        None => start,
+        Some(end_str) => {
+            if parts.next().is_some() {
+                return Err(VardictError::Parse(format!(
+                    "Invalid coordinate range '{}'",
+                    range_str
+                )));
+            }
+            parse_int_with_commas(end_str)? as i32
+        }
+    };
+    Ok((start, end))
+}
+
+fn finalize_single_region(
+    chr: String,
+    mut start: i32,
+    end: i32,
+    gene: String,
     config: &Config,
-    chromosomes_lengths: &HashMap<String, usize>,
-) -> Result<Vec<Vec<Region>>, VardictError> {
-    let split: Vec<&str> = region_str.split(':').collect();
-    if split.is_empty() {
-        return Err(VardictError::Parse(format!(
-            "Empty region string: '{}'",
-            region_str
-        )));
-    }
-    let chr = correct_chromosome(chromosomes_lengths, split[0]);
-
-    if split.len() < 2 {
-        return Err(VardictError::Parse(format!(
-            "Invalid region format (missing coordinates): '{}'",
-            region_str
-        )));
-    }
-
-    let gene = if split.len() < 3 {
-        chr.clone()
-    } else {
-        split[2].to_string()
-    };
-
-    let range_str = split[1];
-    let range: Vec<&str> = range_str.split('-').collect();
-
-    let mut start = parse_int_with_commas(range[0])? as i32;
-    let end = if range.len() < 2 {
-        start
-    } else {
-        parse_int_with_commas(range[1])? as i32
-    };
-
+) -> Vec<Vec<Region>> {
     start = start.saturating_sub(config.extension);
     let end = end.saturating_add(config.extension);
 
@@ -620,13 +647,137 @@ pub fn parse_region_flag(
     let final_start = std::cmp::max(1, start) as u32;
     let final_end = std::cmp::max(1, end) as u32;
 
-    Ok(vec![vec![Region {
+    vec![vec![Region {
         chr,
         start: Pos1(final_start),
         end: Pos1(final_end),
         gene,
         amplicon: None,
-    }]])
+    }]]
+}
+
+/// Parses a region string (from option -R) into a single nested Region.
+pub fn parse_region_flag(
+    region_str: &str,
+    config: &Config,
+    chromosomes_lengths: &HashMap<String, usize>,
+) -> Result<Vec<Vec<Region>>, VardictError> {
+    let split: Vec<&str> = region_str.split(':').collect();
+    let Some(&first_seg) = split.first() else {
+        return Err(VardictError::Parse(format!(
+            "Empty region string: '{}'",
+            region_str
+        )));
+    };
+
+    if split.len() < 2 {
+        return Err(VardictError::Parse(format!(
+            "Invalid region format (missing coordinates): '{}'",
+            region_str
+        )));
+    }
+
+    if split.len() > 2 && !chromosome_in_header(chromosomes_lengths, first_seg) {
+        let min_k = split.len().saturating_sub(2).max(1);
+        if !chromosomes_lengths.is_empty() {
+            let mut matched_contig_err: Option<VardictError> = None;
+            for k in (min_k..split.len()).rev() {
+                let Some(prefix) = split.get(..k) else {
+                    continue;
+                };
+                let candidate = prefix.join(":");
+                if chromosome_in_header(chromosomes_lengths, &candidate) {
+                    let Some(&coord_str) = split.get(k) else {
+                        continue;
+                    };
+                    match parse_coord_segment(coord_str) {
+                        Ok((start, end)) => {
+                            let chr = correct_chromosome(chromosomes_lengths, &candidate);
+                            let gene = match split.get(k + 1) {
+                                Some(&g) => g.to_string(),
+                                None => chr.clone(),
+                            };
+                            return Ok(finalize_single_region(chr, start, end, gene, config));
+                        }
+                        Err(err) => {
+                            if matched_contig_err.is_none() {
+                                matched_contig_err = Some(err);
+                            }
+                        }
+                    }
+                }
+            }
+            if let Some(err) = matched_contig_err {
+                return Err(err);
+            }
+        } else {
+            let mut last_coord_err: Option<VardictError> = None;
+            for k in (min_k..split.len()).rev() {
+                let Some(&coord_str) = split.get(k) else {
+                    continue;
+                };
+                match parse_coord_segment(coord_str) {
+                    Ok((start, end)) => {
+                        let Some(prefix) = split.get(..k) else {
+                            continue;
+                        };
+                        let chr = if k == 1 {
+                            correct_chromosome(chromosomes_lengths, first_seg)
+                        } else {
+                            prefix.join(":")
+                        };
+                        let gene = match split.get(k + 1) {
+                            Some(&g) => g.to_string(),
+                            None => chr.clone(),
+                        };
+                        return Ok(finalize_single_region(chr, start, end, gene, config));
+                    }
+                    Err(err) => {
+                        if is_numeric_coord_token(coord_str) {
+                            let prev_is_range = k > min_k
+                                && split.get(k - 1).is_some_and(|p| {
+                                    p.contains('-') && parse_coord_segment(p).is_ok()
+                                });
+                            if !prev_is_range {
+                                return Err(err);
+                            }
+                        }
+                        last_coord_err = Some(err);
+                    }
+                }
+            }
+            if let Some(err) = last_coord_err {
+                return Err(err);
+            }
+        }
+    }
+
+    let chr = correct_chromosome(chromosomes_lengths, first_seg);
+    let Some(&range_str) = split.get(1) else {
+        return Err(VardictError::Parse(format!(
+            "Invalid region format (missing coordinates): '{}'",
+            region_str
+        )));
+    };
+    let gene = match split.get(2) {
+        Some(&g) => g.to_string(),
+        None => chr.clone(),
+    };
+
+    let range: Vec<&str> = range_str.split('-').collect();
+    let Some(&start_str) = range.first() else {
+        return Err(VardictError::Parse(format!(
+            "Invalid region format (missing coordinates): '{}'",
+            region_str
+        )));
+    };
+    let start = parse_int_with_commas(start_str)? as i32;
+    let end = match range.get(1) {
+        Some(&end_str) => parse_int_with_commas(end_str)? as i32,
+        None => start,
+    };
+
+    Ok(finalize_single_region(chr, start, end, gene, config))
 }
 
 #[cfg(test)]
@@ -1296,5 +1447,105 @@ Y\t59042860\t59047860\tY_59042860_5\t0\t.\t59042860\t59047860
                 "expected column + -z flag hint in {ncols}-col BED error: {msg}"
             );
         }
+    }
+
+    #[test]
+    fn parse_region_flag_supports_hla_colon_contigs() {
+        let mut config = Config::default();
+        config.zero_based = false;
+        config.extension = 0;
+
+        let mut chr_lengths = HashMap::new();
+        chr_lengths.insert("HLA-A*01:01:01:01".to_string(), 3503);
+        chr_lengths.insert("HLA-A*01:01".to_string(), 3503);
+
+        // 1. Exact HLA contig without trailing gene (longest prefix wins over shorter prefix)
+        let r1 = parse_region_flag("HLA-A*01:01:01:01:100-200", &config, &chr_lengths).unwrap();
+        assert_eq!(
+            r1[0][0],
+            Region {
+                chr: "HLA-A*01:01:01:01".to_string(),
+                start: Pos1(100),
+                end: Pos1(200),
+                gene: "HLA-A*01:01:01:01".to_string(),
+                amplicon: None,
+            }
+        );
+
+        // 2. Exact HLA contig with trailing :HLA-A gene and comma-formatted coordinates
+        let r2 =
+            parse_region_flag("HLA-A*01:01:01:01:100-200:HLA-A", &config, &chr_lengths).unwrap();
+        assert_eq!(
+            r2[0][0],
+            Region {
+                chr: "HLA-A*01:01:01:01".to_string(),
+                start: Pos1(100),
+                end: Pos1(200),
+                gene: "HLA-A".to_string(),
+                amplicon: None,
+            }
+        );
+        let r2_commas =
+            parse_region_flag("HLA-A*01:01:01:01:1,000-2,000:HLA-A", &config, &chr_lengths)
+                .unwrap();
+        assert_eq!(r2_commas[0][0].start, Pos1(1_000));
+        assert_eq!(r2_commas[0][0].end, Pos1(2_000));
+        assert_eq!(r2_commas[0][0].gene, "HLA-A");
+
+        // 3. Single-base coordinate HLA-A*01:01:01:01:150
+        let r3 = parse_region_flag("HLA-A*01:01:01:01:150", &config, &chr_lengths).unwrap();
+        assert_eq!(
+            r3[0][0],
+            Region {
+                chr: "HLA-A*01:01:01:01".to_string(),
+                start: Pos1(150),
+                end: Pos1(150),
+                gene: "HLA-A*01:01:01:01".to_string(),
+                amplicon: None,
+            }
+        );
+
+        // 4. Empty chromosomes_lengths fallback (preserves colon-bearing contig without "chr" prefix)
+        let empty = HashMap::new();
+        let r_empty = parse_region_flag("HLA-A*01:01:01:01:100-200", &config, &empty).unwrap();
+        assert_eq!(r_empty[0][0].chr, "HLA-A*01:01:01:01");
+        assert_eq!(r_empty[0][0].start, Pos1(100));
+        assert_eq!(r_empty[0][0].end, Pos1(200));
+        assert_eq!(r_empty[0][0].gene, "HLA-A*01:01:01:01");
+
+        let r_empty_gene =
+            parse_region_flag("HLA-A*01:01:01:01:100-200:HLA-A", &config, &empty).unwrap();
+        assert_eq!(r_empty_gene[0][0].chr, "HLA-A*01:01:01:01");
+        assert_eq!(r_empty_gene[0][0].start, Pos1(100));
+        assert_eq!(r_empty_gene[0][0].end, Pos1(200));
+        assert_eq!(r_empty_gene[0][0].gene, "HLA-A");
+
+        // 5. chr-toggled HLA lookup in both directions
+        let mut chr_prefixed_header = HashMap::new();
+        chr_prefixed_header.insert("chrHLA-A*01:01:01:01".to_string(), 3503);
+        let toggled_add = parse_region_flag(
+            "HLA-A*01:01:01:01:100-200:HLA-A",
+            &config,
+            &chr_prefixed_header,
+        )
+        .unwrap();
+        assert_eq!(toggled_add[0][0].chr, "chrHLA-A*01:01:01:01");
+        assert_eq!(toggled_add[0][0].gene, "HLA-A");
+
+        let toggled_strip =
+            parse_region_flag("chrHLA-A*01:01:01:01:100-200:HLA-A", &config, &chr_lengths).unwrap();
+        assert_eq!(toggled_strip[0][0].chr, "HLA-A*01:01:01:01");
+        assert_eq!(toggled_strip[0][0].gene, "HLA-A");
+
+        // 6. Out-of-range coordinate on HLA contig errors rather than misparsing allele digits
+        assert!(parse_region_flag(
+            "HLA-A*01:01:01:01:2147483648-2147483700",
+            &config,
+            &chr_lengths
+        )
+        .is_err());
+        assert!(
+            parse_region_flag("HLA-A*01:01:01:01:2147483648-2147483700", &config, &empty).is_err()
+        );
     }
 }
