@@ -1,4 +1,4 @@
-//! Process-level CLI smoke and robustness tests (`13` tests).
+//! Process-level CLI smoke and robustness tests (`15` tests).
 //!
 //! Verifies end-to-end binary stream redirection (`--DP ERR` / `--defaultPrinter ERR`),
 //! verbose stderr region debug output (`-y` / `--verbose`), non-zero exit codes on
@@ -3267,11 +3267,15 @@ fn check_var2vcf_postfilter_flags_e2e(tmp: &Path) {
         (&["--vcf-pval", "-1e-400"], "unexpected argument '-1'"),
         (
             &["--vcf-pval", "NaN"],
-            "Invalid --vcf-pval value 'NaN': must be a finite number >= 0.0",
+            "Invalid --vcf-pval value 'NaN': must contain only ASCII float characters [0-9.+-eE]",
         ),
         (
             &["--vcf-pval", "inf"],
-            "Invalid --vcf-pval value 'inf': must be a finite number >= 0.0",
+            "Invalid --vcf-pval value 'inf': must contain only ASCII float characters [0-9.+-eE]",
+        ),
+        (
+            &["--vcf-pval", "1e400"],
+            "Invalid --vcf-pval value '1e400': must be a finite number >= 0.0",
         ),
         (
             &["--min-splitreads", "-1"],
@@ -3329,4 +3333,1396 @@ fn check_var2vcf_postfilter_flags_e2e(tmp: &Path) {
             "hostile CLI {bad_args:?} missing expected stderr '{expected_err}', got:\n{stderr}"
         );
     }
+}
+
+#[test]
+fn vcf_threshold_overrides_and_cluster_streamer_e2e() {
+    use noodles::core::Position;
+    use noodles::sam::alignment::record::cigar::{op::Kind, Op};
+    use noodles::sam::alignment::record::data::field::Tag;
+    use noodles::sam::alignment::record::{Flags, MappingQuality};
+    use noodles::sam::alignment::record_buf::{
+        data::field::Value as BufValue, Cigar, Data, RecordBuf,
+    };
+
+    let dir = tempfile::TempDir::new().expect("tempdir");
+
+    let run_vcf = |cmd: &mut Command, label: &str| -> String {
+        let out = cmd
+            .output()
+            .unwrap_or_else(|e| panic!("spawn {label}: {e}"));
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            out.status.success(),
+            "{label} failed (status={:?}):\n{stderr}",
+            out.status
+        );
+        #[cfg(unix)]
+        assert_eq!(out.status.signal(), None, "{label} died by signal");
+        assert!(
+            !stderr.contains("panicked"),
+            "{label} emitted panic:\n{stderr}"
+        );
+        String::from_utf8(out.stdout).expect("UTF-8 VCF stdout")
+    };
+
+    let find_rec = |vcf: &str, pos: i32| -> Vec<String> {
+        let prefix = format!("chr1\t{pos}\t");
+        let line = vcf
+            .lines()
+            .find(|l| l.starts_with(&prefix))
+            .unwrap_or_else(|| panic!("missing VCF record at chr1:{pos} in:\n{vcf}"));
+        line.split('\t').map(str::to_string).collect()
+    };
+
+    let mk_match_read = |name: &str,
+                         start_1: usize,
+                         seq: &[u8],
+                         rev: bool,
+                         mapq: u8,
+                         qual: u8,
+                         nm: i32|
+     -> RecordBuf {
+        let flags = if rev {
+            Flags::REVERSE_COMPLEMENTED
+        } else {
+            Flags::empty()
+        };
+        let cigar: Cigar = [Op::new(Kind::Match, seq.len())].into_iter().collect();
+        let data: Data = [(Tag::EDIT_DISTANCE, BufValue::from(nm))]
+            .into_iter()
+            .collect();
+        RecordBuf::builder()
+            .set_name(name)
+            .set_flags(flags)
+            .set_reference_sequence_id(0)
+            .set_alignment_start(Position::try_from(start_1).unwrap())
+            .set_mapping_quality(MappingQuality::new(mapq).expect("valid mapq"))
+            .set_cigar(cigar)
+            .set_sequence(seq.to_vec().into())
+            .set_quality_scores(vec![qual; seq.len()].into())
+            .set_data(data)
+            .build()
+    };
+
+    // Build a 600bp non-repetitive reference with dedicated non-overlapping loci.
+    let ref_len = 600usize;
+    let motif = b"CGGCCAGTTGGACCGTAGGTTCAC";
+    let mut ref_bytes: Vec<u8> = (0..ref_len).map(|i| motif[i % motif.len()]).collect();
+    ref_bytes[34] = b'A'; // pos 35: decoupled -f 0.005 --vcf-af 0.05 (AF = 0.03)
+    ref_bytes[114] = b'C'; // pos 115: --vcf-min-depth (+ paired pSTD), --vcf-min-vd, --vcf-qmean, --vcf-sn, --vcf-max-nm
+    ref_bytes[194] = b'G'; // pos 195: --vcf-gt-freq (AF = 0.70 -> 1/0 vs 1/1)
+    ref_bytes[274] = b'A'; // pos 275: --vcf-mapq 0 (MQ = 5 -> Q10 disabled -> PASS)
+    ref_bytes[354] = b'C'; // pos 355: --vcf-pmean 7.5 (5.0 < PMEAN < 7.5)
+                           // pos 449 = G, pos 450..=471 = 11x AT (22bp, MSI=11.0, MSILEN=2), pos 472 = C: --vcf-msi 10.5
+    ref_bytes[448] = b'G';
+    for k in 0..11usize {
+        ref_bytes[449 + 2 * k] = b'A';
+        ref_bytes[449 + 2 * k + 1] = b'T';
+    }
+    ref_bytes[471] = b'C';
+
+    let ref_fa = dir.path().join("thresh_ref.fa");
+    let ref_fai = dir.path().join("thresh_ref.fa.fai");
+    std::fs::write(
+        &ref_fa,
+        format!(">chr1\n{}\n", String::from_utf8(ref_bytes.clone()).unwrap()),
+    )
+    .expect("write thresh_ref.fa");
+    std::fs::write(&ref_fai, format!("chr1\t{ref_len}\t6\t{ref_len}\t601\n"))
+        .expect("write thresh_ref.fa.fai");
+
+    let mut single_reads = Vec::new();
+    let mut tumor_reads = Vec::new();
+    let mut normal_reads = Vec::new();
+
+    // Locus 1: pos 35 (amplicon 10..=60) — 3 alt + 97 ref -> DP=100, VD=3, AF=0.03
+    for idx in 0..100usize {
+        let start_1 = if idx % 2 == 0 { 10 } else { 11 };
+        let end_1 = 60usize;
+        let mut seq = ref_bytes[(start_1 - 1)..end_1].to_vec();
+        let rev = idx % 2 == 1;
+        if idx < 50 {
+            normal_reads.push(mk_match_read(
+                &format!("l1_n_{idx}"),
+                start_1,
+                &seq,
+                rev,
+                60,
+                38,
+                0,
+            ));
+        }
+        if idx < 3 {
+            seq[35 - start_1] = b'T';
+            let r = mk_match_read(&format!("l1_alt_{idx}"), start_1, &seq, rev, 60, 38, 1);
+            single_reads.push(r.clone());
+            tumor_reads.push(r);
+        } else {
+            let r = mk_match_read(&format!("l1_ref_{idx}"), start_1, &seq, rev, 60, 38, 0);
+            single_reads.push(r.clone());
+            tumor_reads.push(r);
+        }
+    }
+
+    // Locus 2: pos 115 (amplicon 90..=140)
+    // Single/Amplicon: 2 alt (starts 90, 91; qual=35; MQ=60; NM=3 -> variant.nm=2.0) + 8 ref (DP=10, VD=2, AF=0.20, hi_check=false)
+    for idx in 0..10usize {
+        let start_1 = if idx % 2 == 0 { 90 } else { 91 };
+        let mut seq = ref_bytes[(start_1 - 1)..140].to_vec();
+        let rev = idx % 2 == 1;
+        if idx < 2 {
+            seq[115 - start_1] = b'G';
+            single_reads.push(mk_match_read(
+                &format!("l2_s_alt_{idx}"),
+                start_1,
+                &seq,
+                rev,
+                60,
+                35,
+                3,
+            ));
+        } else {
+            single_reads.push(mk_match_read(
+                &format!("l2_s_ref_{idx}"),
+                start_1,
+                &seq,
+                rev,
+                60,
+                35,
+                0,
+            ));
+        }
+    }
+    // Paired Tumor/Normal at pos 115:
+    // Tumor: 6 alt ALL starting at 90 (PSTD=0!, qual=35, MQ=30, NM=3 -> nm1=2.0) + 4 ref -> dp1=10, vd1=6, af1=0.60
+    // Normal: 1 alt + 9 ref -> LikelySomatic (ss_exception=false AND vd2=1 < 3 so normal_clean=false!)
+    for idx in 0..10usize {
+        let rev = idx % 2 == 1;
+        if idx < 6 {
+            let mut seq = ref_bytes[89..140].to_vec();
+            seq[115 - 90] = b'G';
+            tumor_reads.push(mk_match_read(
+                &format!("l2_t_alt_{idx}"),
+                90,
+                &seq,
+                rev,
+                30,
+                35,
+                3,
+            ));
+        } else {
+            let start_1 = if idx % 2 == 0 { 90 } else { 91 };
+            let seq = ref_bytes[(start_1 - 1)..140].to_vec();
+            tumor_reads.push(mk_match_read(
+                &format!("l2_t_ref_{idx}"),
+                start_1,
+                &seq,
+                rev,
+                60,
+                35,
+                0,
+            ));
+        }
+        let n_start = if idx % 2 == 0 { 90 } else { 91 };
+        let mut n_seq = ref_bytes[(n_start - 1)..140].to_vec();
+        if idx < 1 {
+            n_seq[115 - n_start] = b'G';
+            normal_reads.push(mk_match_read(
+                &format!("l2_n_alt_{idx}"),
+                n_start,
+                &n_seq,
+                rev,
+                60,
+                35,
+                1,
+            ));
+        } else {
+            normal_reads.push(mk_match_read(
+                &format!("l2_n_ref_{idx}"),
+                n_start,
+                &n_seq,
+                rev,
+                60,
+                35,
+                0,
+            ));
+        }
+    }
+
+    // Locus 3: pos 195 (amplicon 170..=220) — 7 alt + 3 ref -> AF=0.70 (1/0 at gt-freq 0.2, 1/1 at gt-freq 0.35)
+    for idx in 0..10usize {
+        let start_1 = if idx % 2 == 0 { 170 } else { 171 };
+        let mut seq = ref_bytes[(start_1 - 1)..220].to_vec();
+        let rev = idx % 2 == 1;
+        normal_reads.push(mk_match_read(
+            &format!("l3_n_{idx}"),
+            start_1,
+            &seq,
+            rev,
+            60,
+            38,
+            0,
+        ));
+        if idx < 7 {
+            seq[195 - start_1] = b'T';
+            let r = mk_match_read(&format!("l3_alt_{idx}"), start_1, &seq, rev, 60, 38, 1);
+            single_reads.push(r.clone());
+            tumor_reads.push(r);
+        } else {
+            let r = mk_match_read(&format!("l3_ref_{idx}"), start_1, &seq, rev, 60, 38, 0);
+            single_reads.push(r.clone());
+            tumor_reads.push(r);
+        }
+    }
+
+    // Locus 4: pos 275 (amplicon 250..=300) — 15 alt + 15 ref all with MQ=5, qual=45 -> Q10 by default, PASS under --vcf-mapq 0
+    for idx in 0..30usize {
+        let start_1 = if idx % 2 == 0 { 250 } else { 251 };
+        let mut seq = ref_bytes[(start_1 - 1)..300].to_vec();
+        let rev = idx % 2 == 1;
+        if idx < 15 {
+            seq[275 - start_1] = b'T';
+            single_reads.push(mk_match_read(
+                &format!("l4_alt_{idx}"),
+                start_1,
+                &seq,
+                rev,
+                5,
+                45,
+                1,
+            ));
+        } else {
+            single_reads.push(mk_match_read(
+                &format!("l4_ref_{idx}"),
+                start_1,
+                &seq,
+                rev,
+                5,
+                45,
+                0,
+            ));
+        }
+    }
+
+    // Locus 5: pos 355 (amplicon 349..=399) — 18 alt (starts 349, 350 -> 5.0 < PMEAN < 7.5, qual=45) + 12 ref -> AF=0.60
+    for idx in 0..30usize {
+        let start_1 = if idx % 2 == 0 { 349 } else { 350 };
+        let mut seq = ref_bytes[(start_1 - 1)..399].to_vec();
+        let rev = idx % 2 == 1;
+        normal_reads.push(mk_match_read(
+            &format!("l5_n_{idx}"),
+            start_1,
+            &seq,
+            rev,
+            60,
+            45,
+            0,
+        ));
+        if idx < 18 {
+            seq[355 - start_1] = b'A';
+            let r = mk_match_read(&format!("l5_alt_{idx}"), start_1, &seq, rev, 60, 45, 1);
+            single_reads.push(r.clone());
+            tumor_reads.push(r);
+        } else {
+            let r = mk_match_read(&format!("l5_ref_{idx}"), start_1, &seq, rev, 60, 45, 0);
+            single_reads.push(r.clone());
+            tumor_reads.push(r);
+        }
+    }
+
+    // Locus 6: pos 449 (amplicon 435..=489, len 55) — 3 reads deleting 450..=451 (AT) + 22 ref -> MSI=11.0, MSILEN=2, AF=0.12
+    for idx in 0..25usize {
+        let start_1 = if idx % 2 == 0 { 435 } else { 436 };
+        let rev = idx % 2 == 1;
+        let flags = if rev {
+            Flags::REVERSE_COMPLEMENTED
+        } else {
+            Flags::empty()
+        };
+        if idx < 3 {
+            let left_len = 449 - start_1 + 1;
+            let right_len = 489 - 451;
+            let mut seq = Vec::with_capacity(left_len + right_len);
+            seq.extend_from_slice(&ref_bytes[(start_1 - 1)..449]);
+            seq.extend_from_slice(&ref_bytes[451..489]);
+            let cigar: Cigar = [
+                Op::new(Kind::Match, left_len),
+                Op::new(Kind::Deletion, 2),
+                Op::new(Kind::Match, right_len),
+            ]
+            .into_iter()
+            .collect();
+            let data: Data = [(Tag::EDIT_DISTANCE, BufValue::from(2i32))]
+                .into_iter()
+                .collect();
+            let r = RecordBuf::builder()
+                .set_name(format!("l6_del_{idx}"))
+                .set_flags(flags)
+                .set_reference_sequence_id(0)
+                .set_alignment_start(Position::try_from(start_1).unwrap())
+                .set_mapping_quality(MappingQuality::new(60).unwrap())
+                .set_cigar(cigar)
+                .set_sequence(seq.clone().into())
+                .set_quality_scores(vec![38u8; seq.len()].into())
+                .set_data(data)
+                .build();
+            single_reads.push(r.clone());
+            tumor_reads.push(r);
+            let n_seq = ref_bytes[(start_1 - 1)..489].to_vec();
+            normal_reads.push(mk_match_read(
+                &format!("l6_n_ref_{idx}"),
+                start_1,
+                &n_seq,
+                rev,
+                60,
+                38,
+                0,
+            ));
+        } else {
+            let seq = ref_bytes[(start_1 - 1)..489].to_vec();
+            let r = mk_match_read(&format!("l6_ref_{idx}"), start_1, &seq, rev, 60, 38, 0);
+            single_reads.push(r.clone());
+            tumor_reads.push(r);
+            let n_seq = ref_bytes[(start_1 - 1)..489].to_vec();
+            normal_reads.push(mk_match_read(
+                &format!("l6_n_ref_{idx}"),
+                start_1,
+                &n_seq,
+                rev,
+                60,
+                38,
+                0,
+            ));
+        }
+    }
+
+    single_reads.sort_by_key(|r| r.alignment_start().unwrap().get());
+    tumor_reads.sort_by_key(|r| r.alignment_start().unwrap().get());
+    normal_reads.sort_by_key(|r| r.alignment_start().unwrap().get());
+
+    let single_bam = dir.path().join("single.bam");
+    let tumor_bam = dir.path().join("tumor.bam");
+    let normal_bam = dir.path().join("normal.bam");
+    write_indexed_bam(&single_bam, "chr1", ref_len, &single_reads).expect("write single.bam");
+    write_indexed_bam(&tumor_bam, "chr1", ref_len, &tumor_reads).expect("write tumor.bam");
+    write_indexed_bam(&normal_bam, "chr1", ref_len, &normal_reads).expect("write normal.bam");
+
+    let amp_bed = dir.path().join("loci_amp.bed");
+    std::fs::write(
+        &amp_bed,
+        concat!(
+            "chr1\t9\t60\tG1\t0\t+\t15\t55\n",
+            "chr1\t89\t140\tG2\t0\t+\t95\t135\n",
+            "chr1\t169\t220\tG3\t0\t+\t175\t215\n",
+            "chr1\t249\t300\tG4\t0\t+\t255\t295\n",
+            "chr1\t348\t399\tG5\t0\t+\t352\t395\n",
+            "chr1\t434\t489\tG6\t0\t+\t440\t485\n",
+        ),
+    )
+    .expect("write loci_amp.bed");
+
+    let som_bams = format!("{}|{}", tumor_bam.display(), normal_bam.display());
+
+    let run_simple = |extra: &[&str], label: &str| -> String {
+        run_vcf(
+            base_cmd()
+                .arg("-G")
+                .arg(&ref_fa)
+                .arg("-b")
+                .arg(&single_bam)
+                .args(["-R", "chr1:1-520", "-f", "0.005", "--threads=1"])
+                .args(extra),
+            label,
+        )
+    };
+    let run_amp = |extra: &[&str], label: &str| -> String {
+        run_vcf(
+            base_cmd()
+                .arg("-G")
+                .arg(&ref_fa)
+                .arg("-b")
+                .arg(&single_bam)
+                .args([
+                    "-a",
+                    "10:0.95",
+                    "-f",
+                    "0.005",
+                    "-z",
+                    "-c",
+                    "1",
+                    "-S",
+                    "2",
+                    "-E",
+                    "3",
+                    "-g",
+                    "4",
+                    "--threads=1",
+                ])
+                .args(extra)
+                .arg(&amp_bed),
+            label,
+        )
+    };
+    let run_som = |extra: &[&str], label: &str| -> String {
+        run_vcf(
+            base_cmd()
+                .arg("-G")
+                .arg(&ref_fa)
+                .arg("-b")
+                .arg(&som_bams)
+                .args(["-R", "chr1:1-520", "-f", "0.005", "--threads=1"])
+                .args(extra),
+            label,
+        )
+    };
+
+    // Baseline runs across Simple, Amplicon, and Paired Somatic.
+    let base_simple = run_simple(&[], "baseline simple");
+    let base_amp = run_amp(&[], "baseline amp");
+    let base_som = run_som(&[], "baseline somatic");
+
+    for (mode_name, base_vcf) in [
+        ("simple", &base_simple),
+        ("amp", &base_amp),
+        ("somatic", &base_som),
+    ] {
+        assert_eq!(
+            find_rec(base_vcf, 35)[6],
+            "PASS",
+            "{mode_name} pos 35 baseline"
+        );
+        assert!(
+            find_rec(base_vcf, 35)[9].starts_with("0/1:"),
+            "{mode_name} pos 35 baseline GT"
+        );
+        assert_eq!(
+            find_rec(base_vcf, 115)[6],
+            "PASS",
+            "{mode_name} pos 115 baseline"
+        );
+        assert!(
+            find_rec(base_vcf, 195)[9].starts_with("1/0:"),
+            "{mode_name} pos 195 baseline GT 1/0"
+        );
+        assert_eq!(
+            find_rec(base_vcf, 355)[6],
+            "p8",
+            "{mode_name} pos 355 baseline p8"
+        );
+        assert!(
+            !find_rec(base_vcf, 449)[6].contains("MSI12"),
+            "{mode_name} pos 449 baseline must not have MSI12"
+        );
+    }
+    assert_eq!(find_rec(&base_simple, 275)[6], "Q10");
+    assert_eq!(find_rec(&base_amp, 275)[6], "Q10");
+
+    // 1. Decoupled `-f 0.005 --vcf-af 0.05` + 8. `--vcf-gt-freq 0.35` + 6. `--vcf-pmean 7.5` + 10. `--vcf-msi 10.5`
+    for (mode_name, vcf) in [
+        (
+            "simple",
+            run_simple(
+                &[
+                    "--vcf-af",
+                    "0.05",
+                    "--vcf-gt-freq",
+                    "0.35",
+                    "--vcf-pmean",
+                    "7.5",
+                    "--vcf-msi",
+                    "10.5",
+                ],
+                "simple af/gt/pmean/msi",
+            ),
+        ),
+        (
+            "amp",
+            run_amp(
+                &[
+                    "--vcf-af",
+                    "0.05",
+                    "--vcf-gt-freq",
+                    "0.35",
+                    "--vcf-pmean",
+                    "7.5",
+                    "--vcf-msi",
+                    "10.5",
+                ],
+                "amp af/gt/pmean/msi",
+            ),
+        ),
+        (
+            "somatic",
+            run_som(
+                &[
+                    "--vcf-af",
+                    "0.05",
+                    "--vcf-gt-freq",
+                    "0.35",
+                    "--vcf-pmean",
+                    "7.5",
+                    "--vcf-msi",
+                    "10.5",
+                ],
+                "somatic af/gt/pmean/msi",
+            ),
+        ),
+    ] {
+        assert!(
+            vcf.contains("##FILTER=<ID=f0.05,"),
+            "{mode_name} f0.05 header"
+        );
+        assert!(
+            vcf.contains("##FILTER=<ID=p7.5,"),
+            "{mode_name} p7.5 header"
+        );
+        assert!(
+            vcf.contains("##FILTER=<ID=MSI10.5,"),
+            "{mode_name} MSI10.5 header"
+        );
+        assert_eq!(
+            find_rec(&vcf, 35)[6],
+            "f0.05",
+            "{mode_name} pos 35 decoupled f0.05"
+        );
+        assert!(
+            find_rec(&vcf, 35)[9].starts_with("0/0:"),
+            "{mode_name} pos 35 GT 0/0 under --vcf-af 0.05"
+        );
+        assert!(
+            find_rec(&vcf, 195)[9].starts_with("1/1:"),
+            "{mode_name} pos 195 GT 1/1 under --vcf-gt-freq 0.35"
+        );
+        assert_eq!(find_rec(&vcf, 355)[6], "p7.5", "{mode_name} pos 355 p7.5");
+        assert!(
+            find_rec(&vcf, 449)[6].contains("MSI10.5"),
+            "{mode_name} pos 449 MSI10.5, got {}",
+            find_rec(&vcf, 449)[6]
+        );
+    }
+
+    // 2–5, 7: `--vcf-min-depth` (+ paired `pSTD`), `--vcf-min-vd`, `--vcf-qmean`, `--vcf-mapq 0`, `--vcf-sn`, `--vcf-max-nm`
+    for (mode_name, vcf) in [
+        (
+            "simple",
+            run_simple(
+                &[
+                    "--vcf-min-depth",
+                    "15",
+                    "--vcf-min-vd",
+                    "4",
+                    "--vcf-qmean",
+                    "40.5",
+                    "--vcf-mapq",
+                    "0",
+                    "--vcf-pmean",
+                    "5.0",
+                    "--vcf-sn",
+                    "25.5",
+                    "--vcf-max-nm",
+                    "1.5",
+                ],
+                "simple depth/vd/qmean/mapq0/sn/nm",
+            ),
+        ),
+        (
+            "amp",
+            run_amp(
+                &[
+                    "--vcf-min-depth",
+                    "15",
+                    "--vcf-min-vd",
+                    "4",
+                    "--vcf-qmean",
+                    "40.5",
+                    "--vcf-mapq",
+                    "0",
+                    "--vcf-pmean",
+                    "5.0",
+                    "--vcf-sn",
+                    "25.5",
+                    "--vcf-max-nm",
+                    "1.5",
+                ],
+                "amp depth/vd/qmean/mapq0/sn/nm",
+            ),
+        ),
+    ] {
+        for hdr_id in ["d15", "v4", "q40.5", "Q0", "p5.0", "SN25.5", "NM1.5"] {
+            assert!(
+                vcf.contains(&format!("##FILTER=<ID={hdr_id},")),
+                "{mode_name} missing header ID={hdr_id}"
+            );
+        }
+        assert_eq!(
+            find_rec(&vcf, 115)[6],
+            "d15;v4;q40.5;SN25.5;NM1.5",
+            "{mode_name} pos 115 combined filters"
+        );
+        assert_eq!(
+            find_rec(&vcf, 275)[6],
+            "PASS",
+            "{mode_name} --vcf-mapq 0 must disable Q10 via defined() zero override"
+        );
+        assert_eq!(
+            find_rec(&vcf, 355)[6],
+            "PASS",
+            "{mode_name} --vcf-pmean 5.0 rescue"
+        );
+    }
+
+    // Paired Somatic `--vcf-min-depth 8` -> `pSTD` interaction (`dp1=10 >= 8`, `vd1=6 < 8 && !pstd` -> `pSTD` only!)
+    let som_pstd_only = run_som(
+        &["--vcf-min-depth", "8", "--vcf-mapq", "0"],
+        "somatic d8 pSTD",
+    );
+    assert!(som_pstd_only.contains("##FILTER=<ID=d8,"));
+    assert!(som_pstd_only.contains("##FILTER=<ID=Q0,"));
+    assert_eq!(
+        find_rec(&som_pstd_only, 115)[6],
+        "pSTD",
+        "paired --vcf-min-depth 8 must trigger pSTD on vd1=6 < 8 without d8 on dp1=10"
+    );
+
+    // Paired Somatic combined `--vcf-min-depth 15`, `--vcf-min-vd 8`, `--vcf-qmean 40.5`, `--vcf-mapq 40`, `--vcf-sn 25.5`, `--vcf-max-nm 1.5`
+    let som_combined = run_som(
+        &[
+            "--vcf-min-depth",
+            "15",
+            "--vcf-min-vd",
+            "8",
+            "--vcf-qmean",
+            "40.5",
+            "--vcf-mapq",
+            "40",
+            "--vcf-pmean",
+            "5.0",
+            "--vcf-sn",
+            "25.5",
+            "--vcf-max-nm",
+            "1.5",
+        ],
+        "somatic combined filters",
+    );
+    for hdr_id in ["d15", "v8", "q40.5", "Q40", "p5.0", "SN25.5", "NM1.5"] {
+        assert!(
+            som_combined.contains(&format!("##FILTER=<ID={hdr_id},")),
+            "somatic missing header ID={hdr_id}"
+        );
+    }
+    assert_eq!(
+        find_rec(&som_combined, 115)[6],
+        "d15;v8;pSTD;q40.5;Q40;SN25.5;NM1.5"
+    );
+    assert_eq!(find_rec(&som_combined, 355)[6], "PASS");
+
+    // 11. `--vcf-cluster-dist 10` (`Cluster10bp`, `--pass-only`, `AMPBIAS` probe, and `<SV>` `splitreads < opt_T` flush across `--tile-size 50`)
+    let cl_len = 200usize;
+    let mut cl_ref: Vec<u8> = (0..cl_len).map(|i| motif[i % motif.len()]).collect();
+    cl_ref[47] = b'A'; // pos 48 (Tile 1: 1..=50)
+    cl_ref[53] = b'C'; // pos 54 (Tile 2: 51..=100; 54 - 48 = 6 < 10)
+    cl_ref[55] = b'G'; // pos 56 (Tile 2: 51..=100; 56 - 48 = 8 < 10)
+    cl_ref[139] = b'G'; // pos 140 (Tile 3: 101..=150; unclustered PASS)
+    let cl_fa = dir.path().join("cluster_ref.fa");
+    let cl_fai = dir.path().join("cluster_ref.fa.fai");
+    std::fs::write(
+        &cl_fa,
+        format!(">chr1\n{}\n", String::from_utf8(cl_ref.clone()).unwrap()),
+    )
+    .expect("write cluster_ref.fa");
+    std::fs::write(&cl_fai, format!("chr1\t{cl_len}\t6\t{cl_len}\t201\n"))
+        .expect("write cluster_ref.fa.fai");
+
+    let record_filters = |vcf: &str| -> Vec<(String, String)> {
+        vcf.lines()
+            .filter(|l| !l.starts_with('#'))
+            .map(|l| {
+                let c: Vec<&str> = l.split('\t').collect();
+                (c[1].to_string(), c[6].to_string())
+            })
+            .collect()
+    };
+
+    // 11a. Simple & Paired Somatic across `--tile-size 50`
+    let mut cl_t_reads = Vec::new();
+    let mut cl_n_reads = Vec::new();
+    for idx in 0..20usize {
+        let s1 = 30 + (idx % 6);
+        let mut seq = cl_ref[(s1 - 1)..(s1 - 1 + 40)].to_vec();
+        let rev = idx % 2 == 1;
+        cl_n_reads.push(mk_match_read(
+            &format!("cl_n1_{idx}"),
+            s1,
+            &seq,
+            rev,
+            60,
+            38,
+            0,
+        ));
+        if idx < 10 {
+            seq[48 - s1] = b'T';
+            seq[54 - s1] = b'T';
+            cl_t_reads.push(mk_match_read(
+                &format!("cl_t1_alt_{idx}"),
+                s1,
+                &seq,
+                rev,
+                60,
+                38,
+                2,
+            ));
+        } else {
+            cl_t_reads.push(mk_match_read(
+                &format!("cl_t1_ref_{idx}"),
+                s1,
+                &seq,
+                rev,
+                60,
+                38,
+                0,
+            ));
+        }
+    }
+    for idx in 0..20usize {
+        let s1 = 120 + (idx % 6);
+        let mut seq = cl_ref[(s1 - 1)..(s1 - 1 + 40)].to_vec();
+        let rev = idx % 2 == 1;
+        cl_n_reads.push(mk_match_read(
+            &format!("cl_n2_{idx}"),
+            s1,
+            &seq,
+            rev,
+            60,
+            38,
+            0,
+        ));
+        if idx < 10 {
+            seq[140 - s1] = b'T';
+            cl_t_reads.push(mk_match_read(
+                &format!("cl_t2_alt_{idx}"),
+                s1,
+                &seq,
+                rev,
+                60,
+                38,
+                1,
+            ));
+        } else {
+            cl_t_reads.push(mk_match_read(
+                &format!("cl_t2_ref_{idx}"),
+                s1,
+                &seq,
+                rev,
+                60,
+                38,
+                0,
+            ));
+        }
+    }
+    cl_t_reads.sort_by_key(|r| r.alignment_start().unwrap().get());
+    cl_n_reads.sort_by_key(|r| r.alignment_start().unwrap().get());
+    let cl_t_bam = dir.path().join("cl_tumor.bam");
+    let cl_n_bam = dir.path().join("cl_normal.bam");
+    write_indexed_bam(&cl_t_bam, "chr1", cl_len, &cl_t_reads).expect("write cl_tumor.bam");
+    write_indexed_bam(&cl_n_bam, "chr1", cl_len, &cl_n_reads).expect("write cl_normal.bam");
+    let cl_som_bams = format!("{}|{}", cl_t_bam.display(), cl_n_bam.display());
+
+    for (label, bam_arg) in [
+        ("simple cluster", cl_t_bam.to_string_lossy().into_owned()),
+        ("somatic cluster", cl_som_bams),
+    ] {
+        let cl_vcf = run_vcf(
+            base_cmd()
+                .arg("-G")
+                .arg(&cl_fa)
+                .arg("-b")
+                .arg(&bam_arg)
+                .args([
+                    "-R",
+                    "chr1:1-180",
+                    "--tile-size",
+                    "50",
+                    "--vcf-cluster-dist",
+                    "10",
+                    "--threads=2",
+                ]),
+            label,
+        );
+        assert!(cl_vcf.contains("##FILTER=<ID=Cluster10bp,"));
+        assert_eq!(
+            record_filters(&cl_vcf),
+            vec![
+                ("48".to_string(), "Cluster10bp".to_string()),
+                ("54".to_string(), "Cluster10bp".to_string()),
+                ("140".to_string(), "PASS".to_string()),
+            ]
+        );
+
+        let cl_pass = run_vcf(
+            base_cmd()
+                .arg("-G")
+                .arg(&cl_fa)
+                .arg("-b")
+                .arg(&bam_arg)
+                .args([
+                    "-R",
+                    "chr1:1-180",
+                    "--tile-size",
+                    "50",
+                    "--vcf-cluster-dist",
+                    "10",
+                    "--pass-only",
+                    "--threads=2",
+                ]),
+            &format!("{label} --pass-only"),
+        );
+        assert_eq!(
+            record_filters(&cl_pass),
+            vec![("140".to_string(), "PASS".to_string())]
+        );
+    }
+
+    // 11b. Amplicon `AMPBIAS` cluster probe (`AmpBiasSnvClusterProbe`)
+    let mut cl_amp_reads = Vec::new();
+    for idx in 0..10usize {
+        let mut seq = cl_ref[19..70].to_vec();
+        let rev = idx % 2 == 1;
+        if idx < 5 {
+            seq[48 - 20] = b'T';
+            seq[54 - 20] = b'T';
+            cl_amp_reads.push(mk_match_read(
+                &format!("ca1_alt_{idx}"),
+                20,
+                &seq,
+                rev,
+                60,
+                38,
+                2,
+            ));
+        } else {
+            cl_amp_reads.push(mk_match_read(
+                &format!("ca1_ref_{idx}"),
+                20,
+                &seq,
+                rev,
+                60,
+                38,
+                0,
+            ));
+        }
+    }
+    for idx in 0..10usize {
+        let mut seq = cl_ref[34..85].to_vec();
+        let rev = idx % 2 == 1;
+        if idx < 5 {
+            seq[48 - 35] = b'T';
+            cl_amp_reads.push(mk_match_read(
+                &format!("ca2_alt_{idx}"),
+                35,
+                &seq,
+                rev,
+                60,
+                38,
+                1,
+            ));
+        } else {
+            cl_amp_reads.push(mk_match_read(
+                &format!("ca2_ref_{idx}"),
+                35,
+                &seq,
+                rev,
+                60,
+                38,
+                0,
+            ));
+        }
+    }
+    for idx in 0..10usize {
+        let mut seq = cl_ref[119..170].to_vec();
+        let rev = idx % 2 == 1;
+        if idx < 5 {
+            seq[140 - 120] = b'T';
+            cl_amp_reads.push(mk_match_read(
+                &format!("ca3_alt_{idx}"),
+                120,
+                &seq,
+                rev,
+                60,
+                38,
+                1,
+            ));
+        } else {
+            cl_amp_reads.push(mk_match_read(
+                &format!("ca3_ref_{idx}"),
+                120,
+                &seq,
+                rev,
+                60,
+                38,
+                0,
+            ));
+        }
+    }
+    cl_amp_reads.sort_by_key(|r| r.alignment_start().unwrap().get());
+    let cl_amp_bam = dir.path().join("cl_amp.bam");
+    write_indexed_bam(&cl_amp_bam, "chr1", cl_len, &cl_amp_reads).expect("write cl_amp.bam");
+    let cl_amp_bed = dir.path().join("cl_amp.bed");
+    std::fs::write(
+        &cl_amp_bed,
+        "chr1\t19\t70\tGA1\t0\t+\t30\t65\nchr1\t34\t85\tGA1\t0\t+\t40\t75\nchr1\t119\t170\tGA2\t0\t+\t125\t160\n",
+    )
+    .expect("write cl_amp.bed");
+
+    let amp_cl_all = run_vcf(
+        base_cmd()
+            .arg("-G")
+            .arg(&cl_fa)
+            .arg("-b")
+            .arg(&cl_amp_bam)
+            .args([
+                "-a",
+                "10:0.95",
+                "-z",
+                "-c",
+                "1",
+                "-S",
+                "2",
+                "-E",
+                "3",
+                "-g",
+                "4",
+                "--vcf-cluster-dist",
+                "10",
+                "--threads=2",
+            ])
+            .arg(&cl_amp_bed),
+        "amp cluster all",
+    );
+    assert_eq!(
+        record_filters(&amp_cl_all),
+        vec![
+            ("48".to_string(), "Cluster10bp".to_string()),
+            ("54".to_string(), "Cluster10bp;AMPBIAS".to_string()),
+            ("140".to_string(), "PASS".to_string()),
+        ]
+    );
+
+    let amp_cl_pass = run_vcf(
+        base_cmd()
+            .arg("-G")
+            .arg(&cl_fa)
+            .arg("-b")
+            .arg(&cl_amp_bam)
+            .args([
+                "-a",
+                "10:0.95",
+                "-z",
+                "-c",
+                "1",
+                "-S",
+                "2",
+                "-E",
+                "3",
+                "-g",
+                "4",
+                "--vcf-cluster-dist",
+                "10",
+                "--pass-only",
+                "--threads=2",
+            ])
+            .arg(&cl_amp_bed),
+        "amp cluster --pass-only (AmpBiasSnvClusterProbe)",
+    );
+    assert_eq!(
+        record_filters(&amp_cl_pass),
+        vec![("140".to_string(), "PASS".to_string())],
+        "AMPBIAS SNV at 54 must retro-tag pending PASS SNV at 48 under --pass-only"
+    );
+
+    // 11c. `<SV>` `splitreads < opt_T` flush (`SvSplitreadFlush`) across `--tile-size 50`
+    let mut cl_sv_reads = Vec::new();
+    for idx in 0..20usize {
+        let s1 = 30 + (idx % 6);
+        let rev = idx % 2 == 1;
+        let flags = if rev {
+            Flags::REVERSE_COMPLEMENTED
+        } else {
+            Flags::empty()
+        };
+        if idx < 8 {
+            let mut seq = cl_ref[(s1 - 1)..(s1 - 1 + 40)].to_vec();
+            seq[48 - s1] = b'T';
+            seq[56 - s1] = b'A';
+            cl_sv_reads.push(mk_match_read(
+                &format!("sv_snv_{idx}"),
+                s1,
+                &seq,
+                rev,
+                60,
+                38,
+                2,
+            ));
+        } else if idx < 13 {
+            let left_len = 51 - s1 + 1;
+            let right_len = 40 - left_len;
+            let mut seq = Vec::with_capacity(40);
+            seq.extend_from_slice(&cl_ref[(s1 - 1)..51]);
+            seq.extend_from_slice(&cl_ref[53..(53 + right_len)]);
+            let cigar: Cigar = [
+                Op::new(Kind::Match, left_len),
+                Op::new(Kind::Deletion, 2),
+                Op::new(Kind::Match, right_len),
+            ]
+            .into_iter()
+            .collect();
+            let data: Data = [(Tag::EDIT_DISTANCE, BufValue::from(2i32))]
+                .into_iter()
+                .collect();
+            cl_sv_reads.push(
+                RecordBuf::builder()
+                    .set_name(format!("sv_del_{idx}"))
+                    .set_flags(flags)
+                    .set_reference_sequence_id(0)
+                    .set_alignment_start(Position::try_from(s1).unwrap())
+                    .set_mapping_quality(MappingQuality::new(60).unwrap())
+                    .set_cigar(cigar)
+                    .set_sequence(seq.into())
+                    .set_quality_scores(vec![38u8; 40].into())
+                    .set_data(data)
+                    .build(),
+            );
+        } else {
+            let seq = cl_ref[(s1 - 1)..(s1 - 1 + 40)].to_vec();
+            cl_sv_reads.push(mk_match_read(
+                &format!("sv_ref_{idx}"),
+                s1,
+                &seq,
+                rev,
+                60,
+                38,
+                0,
+            ));
+        }
+    }
+    cl_sv_reads.sort_by_key(|r| r.alignment_start().unwrap().get());
+    let cl_sv_bam = dir.path().join("cl_sv.bam");
+    write_indexed_bam(&cl_sv_bam, "chr1", cl_len, &cl_sv_reads).expect("write cl_sv.bam");
+
+    let sv_flush_all = run_vcf(
+        base_cmd()
+            .arg("-G")
+            .arg(&cl_fa)
+            .arg("-b")
+            .arg(&cl_sv_bam)
+            .args([
+                "-R",
+                "chr1:1-100",
+                "--tile-size",
+                "50",
+                "-L",
+                "2",
+                "--min-splitreads",
+                "1",
+                "--vcf-cluster-dist",
+                "10",
+                "--threads=2",
+            ]),
+        "SV splitread flush all",
+    );
+    assert_eq!(
+        record_filters(&sv_flush_all),
+        vec![
+            ("48".to_string(), "PASS".to_string()),
+            ("56".to_string(), "Cluster10bp".to_string()),
+        ]
+    );
+
+    let sv_flush_pass = run_vcf(
+        base_cmd()
+            .arg("-G")
+            .arg(&cl_fa)
+            .arg("-b")
+            .arg(&cl_sv_bam)
+            .args([
+                "-R",
+                "chr1:1-100",
+                "--tile-size",
+                "50",
+                "-L",
+                "2",
+                "--min-splitreads",
+                "1",
+                "--vcf-cluster-dist",
+                "10",
+                "--pass-only",
+                "--threads=2",
+            ]),
+        "SV splitread flush --pass-only",
+    );
+    assert_eq!(
+        record_filters(&sv_flush_pass),
+        vec![("48".to_string(), "PASS".to_string())],
+        "dropped <DEL> at 51 must flush pending PASS SNV 48 before clustered SNV 56"
+    );
+
+    // Single-dash `-vcf-*` typo rejection for all 11 flags (both space-separated and `=val`).
+    let single_dash_typos: &[(&[&str], &str)] = &[
+        (&["-vcf-af", "0.05"], "'--vcf-af'?"),
+        (&["-vcf-af=0.05"], "'--vcf-af'?"),
+        (&["-vcf-min-depth", "10"], "'--vcf-min-depth'?"),
+        (&["-vcf-min-vd", "4"], "'--vcf-min-vd'?"),
+        (&["-vcf-qmean", "25"], "'--vcf-qmean'?"),
+        (&["-vcf-mapq", "0"], "'--vcf-mapq'?"),
+        (&["-vcf-pmean", "7.5"], "'--vcf-pmean'?"),
+        (&["-vcf-sn", "2.0"], "'--vcf-sn'?"),
+        (&["-vcf-max-nm", "3.0"], "'--vcf-max-nm'?"),
+        (&["-vcf-gt-freq", "0.25"], "'--vcf-gt-freq'?"),
+        (&["-vcf-msi", "10.5"], "'--vcf-msi'?"),
+        (&["-vcf-cluster-dist", "10"], "'--vcf-cluster-dist'?"),
+        (&["-vcf-cluster-dist=10"], "'--vcf-cluster-dist'?"),
+    ];
+    for &(typo_args, hint_tail) in single_dash_typos {
+        let out = base_cmd()
+            .args([
+                "-G",
+                "fixtures/micro/micro.ref.fa",
+                "-b",
+                "fixtures/micro/micro.bam",
+                "-R",
+                "chr1:40-260",
+                "--threads=1",
+            ])
+            .args(typo_args)
+            .output()
+            .unwrap_or_else(|e| panic!("spawn typo {typo_args:?}: {e}"));
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            !out.status.success(),
+            "typo {typo_args:?} must exit non-zero"
+        );
+        #[cfg(unix)]
+        assert_eq!(
+            out.status.signal(),
+            None,
+            "typo {typo_args:?} died by signal"
+        );
+        assert_ne!(out.status.code(), Some(101), "typo {typo_args:?} panicked");
+        assert!(
+            stderr.contains("Unknown single-dash option") && stderr.contains(hint_tail),
+            "typo {typo_args:?} missing helpful suggestion ({hint_tail}), got:\n{stderr}"
+        );
+    }
+}
+
+#[test]
+fn high_min_reads_and_hla_colon_contig_bed_and_region_e2e() {
+    use noodles::core::Position;
+    use noodles::sam::alignment::record::cigar::{op::Kind, Op};
+    use noodles::sam::alignment::record::{Flags, MappingQuality};
+    use noodles::sam::alignment::record_buf::{Cigar, RecordBuf};
+
+    // 1. `-r 2147483645` no-panic execution on both `micro.bam` and SV fixture `Colo829.chr20.INVSV.bam`.
+    ensure_fastas_converted();
+    let droot = data_root();
+    let ref_hg19 = droot.join("VarDictJava/testdata/fastas/hg19.fa");
+    let invsv_bam = droot.join(
+        "VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests/Colo829.chr20.INVSV.bam",
+    );
+
+    for (label, ref_arg, bam_arg, region_arg) in [
+        (
+            "micro -r 2147483645",
+            workspace_root().join("fixtures/micro/micro.ref.fa"),
+            workspace_root().join("fixtures/micro/micro.bam"),
+            "chr1:40-260",
+        ),
+        (
+            "Colo829.INVSV -r 2147483645",
+            ref_hg19,
+            invsv_bam,
+            "chr20:46841555-46845755",
+        ),
+    ] {
+        let out = base_cmd()
+            .arg("-G")
+            .arg(&ref_arg)
+            .arg("-b")
+            .arg(&bam_arg)
+            .args(["-R", region_arg, "-r", "2147483645", "--threads=1"])
+            .output()
+            .unwrap_or_else(|e| panic!("spawn {label}: {e}"));
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            out.status.success(),
+            "{label} must exit 0 without overflow/panic (status={:?}):\n{stderr}",
+            out.status
+        );
+        #[cfg(unix)]
+        assert_eq!(out.status.signal(), None, "{label} died by signal");
+        assert_ne!(out.status.code(), Some(101), "{label} panicked");
+        assert!(!stderr.contains("panicked"), "{label} emitted panic");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            stdout.contains("#CHROM\tPOS\t"),
+            "{label} missing VCF header:\n{stdout}"
+        );
+        assert_eq!(
+            stdout.lines().filter(|l| !l.starts_with('#')).count(),
+            0,
+            "{label} must emit 0 variants at -r 2147483645"
+        );
+    }
+
+    // 2. GRCh38 `HLA-A*01:01:01:01` colon-contig calling via BOTH BED and `-R "HLA-A*01:01:01:01:1-60"`.
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let contig = "HLA-A*01:01:01:01";
+    let ref_len = 120usize;
+    let motif = b"CGGCCAGTTGGACCGTAGGTTCAC";
+    let mut ref_bytes: Vec<u8> = (0..ref_len).map(|i| motif[i % motif.len()]).collect();
+    ref_bytes[29] = b'A'; // 1-based pos 30: A -> G SNV
+
+    let hla_fa = dir.path().join("hla.fa");
+    let hla_fai = dir.path().join("hla.fa.fai");
+    let header_line = format!(">{contig}\n");
+    std::fs::write(
+        &hla_fa,
+        format!(
+            "{header_line}{}\n",
+            String::from_utf8(ref_bytes.clone()).unwrap()
+        ),
+    )
+    .expect("write hla.fa");
+    // Byte offset of sequence is `header_line.len()` (`1 + 17 + 1 = 19`).
+    std::fs::write(
+        &hla_fai,
+        format!(
+            "{contig}\t{ref_len}\t{}\t{ref_len}\t{}\n",
+            header_line.len(),
+            ref_len + 1
+        ),
+    )
+    .expect("write hla.fa.fai");
+
+    let mut hla_reads = Vec::new();
+    for idx in 0..16usize {
+        let s1 = 12 + (idx % 5);
+        let mut seq = ref_bytes[(s1 - 1)..(s1 - 1 + 40)].to_vec();
+        let flags = if idx % 2 == 1 {
+            Flags::REVERSE_COMPLEMENTED
+        } else {
+            Flags::empty()
+        };
+        if idx < 8 {
+            seq[30 - s1] = b'G';
+        }
+        let cigar: Cigar = [Op::new(Kind::Match, 40)].into_iter().collect();
+        hla_reads.push(
+            RecordBuf::builder()
+                .set_name(format!("hla_r_{idx}"))
+                .set_flags(flags)
+                .set_reference_sequence_id(0)
+                .set_alignment_start(Position::try_from(s1).unwrap())
+                .set_mapping_quality(MappingQuality::new(60).unwrap())
+                .set_cigar(cigar)
+                .set_sequence(seq.into())
+                .set_quality_scores(vec![38u8; 40].into())
+                .build(),
+        );
+    }
+    hla_reads.sort_by_key(|r| r.alignment_start().unwrap().get());
+    let hla_bam = dir.path().join("hla.bam");
+    write_indexed_bam(&hla_bam, contig, ref_len, &hla_reads).expect("write hla.bam");
+
+    let hla_bed = dir.path().join("hla.bed");
+    std::fs::write(&hla_bed, format!("{contig}\t0\t60\tHLA-A\n")).expect("write hla.bed");
+
+    let bed_out = base_cmd()
+        .arg("-G")
+        .arg(&hla_fa)
+        .arg("-b")
+        .arg(&hla_bam)
+        .args([
+            "-c",
+            "1",
+            "-S",
+            "2",
+            "-E",
+            "3",
+            "-g",
+            "4",
+            "-z",
+            "--threads=1",
+        ])
+        .arg(&hla_bed)
+        .output()
+        .expect("spawn HLA BED run");
+    assert!(
+        bed_out.status.success(),
+        "HLA BED run failed:\n{}",
+        String::from_utf8_lossy(&bed_out.stderr)
+    );
+    let bed_vcf = String::from_utf8(bed_out.stdout).expect("UTF-8 HLA BED VCF");
+
+    let reg_out = base_cmd()
+        .arg("-G")
+        .arg(&hla_fa)
+        .arg("-b")
+        .arg(&hla_bam)
+        .args(["-R", "HLA-A*01:01:01:01:1-60", "--threads=1"])
+        .output()
+        .expect("spawn HLA -R 1-60 run");
+    assert!(
+        reg_out.status.success(),
+        "HLA -R run failed:\n{}",
+        String::from_utf8_lossy(&reg_out.stderr)
+    );
+    let reg_vcf = String::from_utf8(reg_out.stdout).expect("UTF-8 HLA -R VCF");
+
+    let reg_gene_out = base_cmd()
+        .arg("-G")
+        .arg(&hla_fa)
+        .arg("-b")
+        .arg(&hla_bam)
+        .args([
+            "-R",
+            "HLA-A*01:01:01:01:1-60:HLA-A",
+            "-E",
+            "3",
+            "--threads=1",
+        ])
+        .output()
+        .expect("spawn HLA -R 1-60:HLA-A run");
+    assert!(
+        reg_gene_out.status.success(),
+        "HLA -R gene run failed:\n{}",
+        String::from_utf8_lossy(&reg_gene_out.stderr)
+    );
+    let reg_gene_vcf = String::from_utf8(reg_gene_out.stdout).expect("UTF-8 HLA -R gene VCF");
+
+    for (label, vcf) in [
+        ("BED", &bed_vcf),
+        ("-R", &reg_vcf),
+        ("-R:gene", &reg_gene_vcf),
+    ] {
+        assert!(
+            vcf.contains("##contig=<ID=HLA-A*01:01:01:01,length=120>"),
+            "{label} missing ##contig=<ID=HLA-A*01:01:01:01,length=120>:\n{vcf}"
+        );
+        let recs: Vec<&str> = vcf.lines().filter(|l| !l.starts_with('#')).collect();
+        assert_eq!(
+            recs.len(),
+            1,
+            "{label} expected 1 variant call, got {recs:?}"
+        );
+        assert!(
+            recs[0].starts_with("HLA-A*01:01:01:01\t30\t.\tA\tG\t") && recs[0].contains("\tPASS\t"),
+            "{label} unexpected variant record: {}",
+            recs[0]
+        );
+    }
+    assert_eq!(
+        bed_vcf, reg_gene_vcf,
+        "HLA BED and -R HLA-A*01:01:01:01:1-60:HLA-A outputs must match byte-for-byte"
+    );
 }
