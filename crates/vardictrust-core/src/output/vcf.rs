@@ -1055,7 +1055,7 @@ fn format_vcf_record_with_filter<F: FnOnce(&mut String)>(
     let gt = if alt_is_dot {
         "0/0"
     } else {
-        let af = variant.frequency;
+        let af = crate::types::round_half_even(variant.frequency, 4);
         if 1.0 - af < gt_freq {
             "1/1"
         } else if af >= 0.5 {
@@ -1554,7 +1554,7 @@ impl SingleVcfRecord {
 pub enum SingleVcfEvent {
     Skip,
     AmpBiasSnvClusterProbe { start: i32 },
-    SvSplitreadFlush,
+    SvSplitreadFlush { cluster_probe_start: Option<i32> },
     Record(SingleVcfRecord),
 }
 
@@ -1581,8 +1581,7 @@ pub fn build_single_vcf_event(
         variant.var_type.as_str()
     };
     let type_snv = var_type == "SNV";
-    let is_dropped_sv = !type_snv
-        && amp.is_none()
+    let is_dropped_sv = amp.is_none()
         && variant.var_allele.contains('<')
         && parse_sv_counts(&variant.sv).0 < config.vcf_min_splitreads;
 
@@ -1634,7 +1633,9 @@ pub fn build_single_vcf_event(
                 }
             }
             scratch.clear();
-            return SingleVcfEvent::SvSplitreadFlush;
+            return SingleVcfEvent::SvSplitreadFlush {
+                cluster_probe_start: type_snv.then_some(variant.start_pos),
+            };
         }
 
         let fisher = crate::stats::FisherExact::new_with_mode(
@@ -1676,8 +1677,30 @@ pub fn build_single_vcf_event(
 
     // `!config.vcf_pass_only`
     if is_dropped_sv {
+        let cluster_probe_start =
+            if type_snv && !has_non_fisher_valid_filter(variant, config, &thr, amp) {
+                let bias_fires = if bias_non_fisher_precond(variant) {
+                    let fisher = crate::stats::FisherExact::new_with_mode(
+                        variant.ref_fwd_cov,
+                        variant.ref_rev_cov,
+                        variant.fwd,
+                        variant.rev,
+                        config.fisher,
+                    );
+                    let sbf = fisher.get_p_value();
+                    let oddratio_str = fisher.odds_ratio_buf();
+                    bias_fires_with_fisher(sbf, oddratio_str.as_str())
+                } else {
+                    false
+                };
+                (!bias_fires).then_some(variant.start_pos)
+            } else {
+                None
+            };
         scratch.clear();
-        return SingleVcfEvent::SvSplitreadFlush;
+        return SingleVcfEvent::SvSplitreadFlush {
+            cluster_probe_start,
+        };
     }
 
     let fisher = crate::stats::FisherExact::new_with_mode(
@@ -1767,7 +1790,21 @@ impl SingleRecordStreamer {
                 }
                 Ok(())
             }
-            SingleVcfEvent::SvSplitreadFlush => {
+            SingleVcfEvent::SvSplitreadFlush {
+                cluster_probe_start,
+            } => {
+                if let Some(start) = cluster_probe_start {
+                    if i64::from(start) - i64::from(self.pvs) < i64::from(self.opt_c) {
+                        if let Some(prev) = self.pending.as_mut() {
+                            let mut cluster_tag = crate::types::StackBuf::<32>::new();
+                            let _ = write!(cluster_tag, "Cluster{}bp", self.opt_c);
+                            prev.set_cluster_filter(cluster_tag.as_str());
+                        }
+                        if self.pass_only {
+                            return Ok(());
+                        }
+                    }
+                }
                 if let Some(prev) = self.pending.take() {
                     if !self.pass_only || prev.is_pass() {
                         emit(prev.as_str())?;
@@ -5060,7 +5097,9 @@ mod tests {
         dropped_sv.sv = "0-4-1".to_string();
         assert_eq!(
             build_single_vcf_event(&mut scratch, &dropped_sv, &region, &cfg, None),
-            SingleVcfEvent::SvSplitreadFlush
+            SingleVcfEvent::SvSplitreadFlush {
+                cluster_probe_start: None
+            }
         );
         dropped_sv.mean_quality = 10.0; // fails q22.5 -> hits `next` at :187 before :192 flush!
         assert_eq!(
@@ -5070,7 +5109,9 @@ mod tests {
         cfg.vcf_pass_only = false; // without -S, even filtered <SV> flushes pending at :192-204!
         assert_eq!(
             build_single_vcf_event(&mut scratch, &dropped_sv, &region, &cfg, None),
-            SingleVcfEvent::SvSplitreadFlush
+            SingleVcfEvent::SvSplitreadFlush {
+                cluster_probe_start: None
+            }
         );
     }
 
@@ -5218,6 +5259,11 @@ mod tests {
         bias_amp_snv.fwd = 0;
         bias_amp_snv.rev = 12; // triggers Fisher Bias
 
+        let mut snv_typed_dropped_sv = clean_dropped_sv.clone();
+        snv_typed_dropped_sv.var_type = "SNV".to_string(); // synthetic library caller edge case
+        snv_typed_dropped_sv.start_pos = 458;
+        snv_typed_dropped_sv.end_pos = 495;
+
         let stream_rows: Vec<(Variant, Option<TestAmpCols>)> = vec![
             // 1. start=10 < opt_c(15) against initial pvs=0!
             (mk_snv(10, 35.0), None),
@@ -5241,8 +5287,10 @@ mod tests {
             // 7. PASS SNV at 400 followed by Fisher-Bias + AMPBIAS SNV at 408 (pre_cluster NOT empty!)
             (mk_snv(400, 35.0), Some((4, 4, 0, false))),
             (bias_amp_snv, Some((1, 4, 0, true))),
-            // 8. Final unclustered PASS SNV at 450
+            // 8. Synthetic `var_type == "SNV"` + `<DEL>` dropped SV at 458 clusters 450 before dropping!
             (mk_snv(450, 35.0), None),
+            (snv_typed_dropped_sv, None),
+            (mk_snv(480, 35.0), None),
         ];
 
         for opt_c in [0, 15] {
@@ -5297,9 +5345,15 @@ mod tests {
         );
         strict_cfg.vcf_pass_only = true;
         let mut ev_scratch = String::new();
-        assert!(matches!(
-            build_single_vcf_event(&mut ev_scratch, &unrounded_var, &region, &strict_cfg, None),
-            SingleVcfEvent::Record(_)
-        ));
+        let SingleVcfEvent::Record(rec) =
+            build_single_vcf_event(&mut ev_scratch, &unrounded_var, &region, &strict_cfg, None)
+        else {
+            panic!("expected SingleVcfEvent::Record on table-rounded PASS boundary");
+        };
+        assert!(
+            rec.as_str().contains("\t0/1:"),
+            "expected table-rounded AF=0.0200 >= 0.02 to emit GT=0/1, got: {}",
+            rec.as_str()
+        );
     }
 }

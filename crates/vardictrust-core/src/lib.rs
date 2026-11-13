@@ -1258,7 +1258,18 @@ impl SpillableCandidate for RawVcfCandidate {
                 write_spill_u8(w, 1)?;
                 write_spill_i32(w, *start)
             }
-            crate::output::vcf::SingleVcfEvent::SvSplitreadFlush => write_spill_u8(w, 2),
+            crate::output::vcf::SingleVcfEvent::SvSplitreadFlush {
+                cluster_probe_start,
+            } => {
+                write_spill_u8(w, 2)?;
+                match cluster_probe_start {
+                    None => write_spill_u8(w, 0),
+                    Some(start) => {
+                        write_spill_u8(w, 1)?;
+                        write_spill_i32(w, *start)
+                    }
+                }
+            }
             crate::output::vcf::SingleVcfEvent::Record(rec) => {
                 let (filter_start, filter_end) = rec.filter_offsets();
                 write_spill_u8(w, 3)?;
@@ -1284,7 +1295,16 @@ impl SpillableCandidate for RawVcfCandidate {
                 let start = read_spill_i32(r)?;
                 crate::output::vcf::SingleVcfEvent::AmpBiasSnvClusterProbe { start }
             }
-            2 => crate::output::vcf::SingleVcfEvent::SvSplitreadFlush,
+            2 => {
+                let cluster_probe_start = if read_spill_bool(r)? {
+                    Some(read_spill_i32(r)?)
+                } else {
+                    None
+                };
+                crate::output::vcf::SingleVcfEvent::SvSplitreadFlush {
+                    cluster_probe_start,
+                }
+            }
             3 => {
                 let line = read_spill_str(r)?;
                 let filter_start = usize::try_from(read_spill_u64(r)?)
@@ -6257,7 +6277,9 @@ mod tests {
             RawVcfCandidate {
                 start_pos: 115,
                 af_4dp: 0.6000,
-                event: SingleVcfEvent::SvSplitreadFlush,
+                event: SingleVcfEvent::SvSplitreadFlush {
+                    cluster_probe_start: Some(115),
+                },
             },
             RawVcfCandidate {
                 start_pos: 120,
@@ -6445,7 +6467,9 @@ mod tests {
                 RawVcfCandidate {
                     start_pos: 62,
                     af_4dp: 0.4000,
-                    event: SingleVcfEvent::SvSplitreadFlush,
+                    event: SingleVcfEvent::SvSplitreadFlush {
+                        cluster_probe_start: None,
+                    },
                 },
             )
             .unwrap();
