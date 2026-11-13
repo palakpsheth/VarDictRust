@@ -21,7 +21,7 @@ Reference companion for [`.agents/skills/vardictrust-release/SKILL.md`](../SKILL
 | 9 | `harness/run_self_tests.sh` | `# VarDictRust vX.Y.Z — Harness Self-Test Runner` | Header version banner |
 | 10 | `docs/release/vX.Y.Z-pr.md` | `# Release vX.Y.Z:` | Release certification dossier (`FP`, `PERF_FP`, test counts, 4-channel checklist) |
 | 11 | `README.md` | `--tag vX.Y.Z`, `version = {X.Y.Z}`, and `590` test breakdown (`406 + 110 + 29 + 2 + 3 + 23 + 17`) | Main repository landing page |
-| 12 | `DIVERGENCES.md` | `VarDictRust_vX.Y.Z`, `590 PASS` (`406 PASS` core lib), `3.14x speedup, 1.11x flat RSS`, `356eb13ba068790c` | Empirical divergence & certification summary |
+| 12 | `DIVERGENCES.md` | `Verified Parity Baseline (release/vX.Y.Z`, `##source=VarDict_v1.8.2`, `590 PASS` (`406 PASS` core lib), `3.14x speedup, 1.11x flat RSS`, `356eb13ba068790c` | Empirical divergence & certification summary |
 | 13 | `CONTRIBUTING.md` | `590` workspace tests (`§5.4`), `aarch64-unknown-linux-musl` (`§9.1`), and `.agents/skills/` runbook links | Contributor & release guide |
 | 14 | `benchmarks/README.md` | `Certified in \`vX.Y.Z\`` and link to `docs/release/vX.Y.Z-pr.md` | Benchmark scoreboard header |
 | 15 | `docs/testing/test-matrix-and-ci-audit.md` | `vX.Y.Z`, `590` workspace tests (`406` core lib + `110` `corpus_parity` + `29` `engine_behavior` + `2` `amplicon_stream_mem` + `3` `cram_stack` + `23` bin + `17` CLI integration), `356eb13ba068790c` | Testing matrix & CI audit specification |

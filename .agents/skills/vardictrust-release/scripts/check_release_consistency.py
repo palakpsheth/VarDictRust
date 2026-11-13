@@ -288,8 +288,15 @@ def check_pre_tag_surfaces(repo_root: Path, version: str, errors: list[str]) -> 
     require_regex(
         repo_root,
         "DIVERGENCES.md",
-        rf"VarDictRust_v{ver_esc}",
-        f"DIVERGENCES.md cites VarDictRust_v{version}",
+        rf"Verified Parity Baseline \(release/v{ver_esc}\b",
+        f"DIVERGENCES.md cites Verified Parity Baseline (release/v{version}",
+        errors,
+    )
+    require_regex(
+        repo_root,
+        "DIVERGENCES.md",
+        r"##source=VarDict_v1\.8\.2",
+        "DIVERGENCES.md documents ##source=VarDict_v1.8.2 byte-parity header",
         errors,
     )
     require_regex(

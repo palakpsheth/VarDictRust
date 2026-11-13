@@ -44,11 +44,12 @@ def find_all_markdown_files():
     """Discover all tracked markdown files in the repository."""
     md_files = []
     for path in REPO_ROOT.rglob("*.md"):
-        # Exclude git internals, cargo target, conda environments, scratch, and transient dev directories
+        # Exclude git internals, cargo target, conda/python virtualenvs, scratch, and transient dev directories
         rel = str(path.relative_to(REPO_ROOT))
         if any(rel.startswith(ignore) for ignore in [
             ".git/", ".superpowers/", ".docs_staged/", "site/",
-            "target/", "scratch/", "VarDictJava/", "node_modules/", ".worktrees/",
+            "target/", "scratch/", "VarDictJava/", "node_modules/",
+            ".venv/", "venv/", ".pytest_cache/", ".worktrees/",
             "benchmarks/data/"
         ]):
             continue
@@ -58,6 +59,33 @@ def find_all_markdown_files():
 
 class TestMarkdownStaticHygiene(unittest.TestCase):
     """Test static formatting, table alignment, and escaping across all markdown documents."""
+
+    def test_mkdocs_not_in_nav_and_staging_venv_exclusions(self):
+        """Verify mkdocs.yml top-level not_in_nav + omitted_files: warn and .venv staging exclusions."""
+        mkdocs_text = (REPO_ROOT / "mkdocs.yml").read_text(encoding="utf-8")
+        self.assertRegex(
+            mkdocs_text,
+            re.compile(r"^not_in_nav:\s*\|", re.MULTILINE),
+            "mkdocs.yml must declare top-level 'not_in_nav: |' for intentional partial/historical docs",
+        )
+        self.assertIn(
+            "- JVM & R Kernel Oracles: fixtures/jvm-oracles/README.md",
+            mkdocs_text,
+            "mkdocs.yml Architecture nav must include fixtures/jvm-oracles/README.md",
+        )
+        self.assertRegex(
+            mkdocs_text,
+            re.compile(r"validation:\s*\n\s+nav:\s*\n\s+omitted_files:\s*warn"),
+            "mkdocs.yml must enforce validation.nav.omitted_files: warn",
+        )
+
+        prep_text = (REPO_ROOT / "harness" / "prepare_docs_site.py").read_text(encoding="utf-8")
+        for excluded in ('".venv/"', '"venv/"', '".pytest_cache/"'):
+            self.assertIn(
+                excluded,
+                prep_text,
+                f"prepare_docs_site.py IGNORED_PREFIXES must exclude {excluded}",
+            )
 
     def test_table_column_balance(self):
         """Verify that every markdown table has consistent column counts across all rows."""

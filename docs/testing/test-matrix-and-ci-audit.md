@@ -220,7 +220,7 @@ Located in `crates/vardictrust/src/cli.rs` (22 tests) and `crates/vardictrust/sr
 - Verifies CLI argument parsing via `clap`, including Commons-CLI single-dash long-flag normalization (`-adaptor`, `-crispr`, `-fisher`, `-deldupvar`, `-nosv`, `-splice`, `-chimeric`, `-dedup`, `-amplicon`, `-trim`, `-VS`, etc.) and boolean-prefix short-option cluster splitting (`-pz`, `-uk`, `-ua`, `-pR`).
 - Thread count resolution: verifies explicit `-th 4`, bare `-th` (all cores), `RAYON_NUM_THREADS` fallback when `-th` is omitted (otherwise all cores), and `-th 0` normalization to 1 core.
 - Verifies header flag `-h` prints table headers (and does not trigger help), while `-?` / `--help` print usage help.
-- Verifies `--output` / `--tbi` (`--index`) / `--csi` / `--no-end` / `--stats-json` / `--parity` / `--compat vardictjava-1.8.3` validation, newly ported upstream flags (`-T` / `--trim`, `-n`, `-VS SILENT|LENIENT`), accepted upstream compatibility flags (`-v`, `--default-printer`), multi-sample BAM header extraction (`-b "b1|b2"`), and value-aware `UNSUPPORTED_FLAGS` / mode rejection (`-C`, `-Z` / `-downsample` / `--downsample`, `-VS STRICT`, `--modern`, `--fix`, `AGENTS.md §12`).
+- Verifies `--output` / `--tbi` (`--index`) / `--csi` / `--no-end` / `--stats-json` / `--parity` / `--compat vardictjava-1.8.3` validation, all consolidated `var2vcf` post-filter and threshold options across the 87-flag CLI surface (`--pass-only`, `--paired-strict`, `--vcf-pval`, `--min-splitreads`, `--no-pstd-filter`, `--vcf-af`, `--vcf-min-depth`, `--vcf-min-vd`, `--vcf-qmean`, `--vcf-mapq`, `--vcf-pmean`, `--vcf-sn`, `--vcf-max-nm`, `--vcf-gt-freq`, `--vcf-msi`, `--vcf-cluster-dist` + single-dash GNU typo guards), newly ported upstream flags (`-T` / `--trim`, `-n`, `-VS SILENT|LENIENT`), accepted upstream compatibility flags (`-v`, `--default-printer`), multi-sample BAM header extraction (`-b "b1|b2"`), and value-aware `UNSUPPORTED_FLAGS` / mode rejection (`-C`, `-Z` / `-downsample` / `--downsample`, `-VS STRICT`, `--modern`, `--fix`, `AGENTS.md §12`).
 - Verifies error propagation on invalid flag arguments (`-F bogus`, 0-valued `-c/-S/-E/-s/-e` BED columns, `-d` empty, `--adaptor` non-ACGTN) and zero tile size (`--tile-size 0`).
 
 ### 3.3 CLI Integration Test Binaries (`crates/vardictrust/tests/` — 17 Tests)
@@ -383,7 +383,7 @@ bash harness/run_self_tests.sh
 
 The runner dynamically discovers and executes:
 1. `test_bench_profile.sh`: validates that `.cargo/config.toml` configures `[profile.bench]` with debuginfo and unstripped symbols (`strip = false`) for `cargo bench` without polluting release profiles.
-2. `test_bioconda_recipe.py`: validates the Bioconda `meta.yaml` recipe structure, licenses, test commands, and CI workflow pipeline/concurrency contracts.
+2. `test_bioconda_recipe.py`: validates the Bioconda `meta.yaml` and Nextflow `nf-core` `meta.yml` packaging schemas, workspace MSRV (`rust-version = "1.91.0"`) inheritance, licenses, test commands, and CI workflow pipeline/concurrency contracts.
 3. `test_compare_sh.sh`: validates exit code conventions, diff formatting, and temporary file cleanup in the primary Level 3 differential comparator.
 4. `test_compare_vcf.py`: validates strict-bytes VCF parsing, floating-point half-even rounding tolerances ($\varepsilon = 10^{-6}$), and duplicate key detection.
 5. `test_concordance.sh`: validates the Real Time Genomics `rtg vcfeval` wrapper script, SDF reference building, and concordance metric parsers.
@@ -458,7 +458,7 @@ VarDictRust utilizes 6 automated GitHub Actions workflows with strict security h
 <a id="103-release-packaging--slsa-level-3-githubworkflowsreleaseyml"></a>
 ### 10.3 Release Packaging & SLSA Level 3 (`.github/workflows/release.yml`)
 - Automated by `cargo-dist 0.33.0` with a pre-build **Tier B Release Certification Guard** (`check_release_consistency.py --phase pre-tag --require-head-fingerprint` + `perf_budget.py` on tag pushes).
-- Builds standalone archives across all 4 targets (`x86_64-unknown-linux-gnu`, `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`, `aarch64-apple-darwin`).
+- Builds standalone archives across all 5 targets (`x86_64-unknown-linux-gnu`, `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`, `aarch64-apple-darwin`, `x86_64-apple-darwin`).
 - Emits cryptographic checksums, GitHub OIDC SLSA Level 3 build provenance attestations, and publishes `vardictrust-core` and `vardictrust` to `crates.io`.
 
 ### 10.4 Differential Parity vs Live Oracle (`.github/workflows/differential.yml`)
