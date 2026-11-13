@@ -4194,6 +4194,151 @@ fn vcf_threshold_overrides_and_cluster_streamer_e2e() {
             record_filters(&cl_pass),
             vec![("140".to_string(), "PASS".to_string())]
         );
+
+        let cl_raw_tok = run_vcf(
+            base_cmd()
+                .arg("-G")
+                .arg(&cl_fa)
+                .arg("-b")
+                .arg(&bam_arg)
+                .args([
+                    "-R",
+                    "chr1:1-180",
+                    "--tile-size",
+                    "50",
+                    "--vcf-min-depth",
+                    "03",
+                    "--vcf-min-vd",
+                    "+02",
+                    "--vcf-cluster-dist",
+                    "010",
+                    "--threads=2",
+                ]),
+            &format!("{label} raw int tokens"),
+        );
+        assert!(
+            cl_raw_tok.contains(r#"##FILTER=<ID=d03,Description="Total Depth < 03">"#),
+            "{label} missing d03 header"
+        );
+        assert!(
+            cl_raw_tok.contains(r#"##FILTER=<ID=v+02,Description="Var Depth < +02">"#),
+            "{label} missing v+02 header"
+        );
+        assert!(
+            cl_raw_tok.contains("##FILTER=<ID=Cluster010bp,")
+                && cl_raw_tok.contains("within 010 bp\">"),
+            "{label} missing Cluster010bp header"
+        );
+        assert_eq!(
+            record_filters(&cl_raw_tok),
+            vec![
+                ("48".to_string(), "Cluster010bp".to_string()),
+                ("54".to_string(), "Cluster010bp".to_string()),
+                ("140".to_string(), "PASS".to_string()),
+            ]
+        );
+    }
+
+    // 11a-raw: Low-depth 2-read BAMs exercise verbatim `d03;v+02` in record `FILTER` tags
+    // for both single-sample (`DP=2 < 3`, `hicnt=0 < 2`, `hi_check=false` under `-p`) and paired somatic!
+    let mut low_s_reads = Vec::new();
+    let mut low_t_reads = Vec::new();
+    let mut low_n_reads = Vec::new();
+    for (idx, is_alt) in [(0usize, true), (1usize, false)] {
+        let s1 = 30 + idx;
+        let mut seq = cl_ref[(s1 - 1)..(s1 - 1 + 40)].to_vec();
+        low_n_reads.push(mk_match_read(
+            &format!("low_n_{idx}"),
+            s1,
+            &seq,
+            idx == 1,
+            60,
+            30,
+            0,
+        ));
+        if is_alt {
+            seq[48 - s1] = b'T';
+            low_s_reads.push(mk_match_read(
+                &format!("low_s_{idx}"),
+                s1,
+                &seq,
+                false,
+                60,
+                20, // qual=20 < base_qual(22.5) -> hicnt=0, hi_check=false!
+                1,
+            ));
+            low_t_reads.push(mk_match_read(
+                &format!("low_t_{idx}"),
+                s1,
+                &seq,
+                false,
+                60,
+                30, // qual=30 -> called in somatic; dp1=2 < 3, vd1=1 < 2, ss_exception=false!
+                1,
+            ));
+        } else {
+            low_s_reads.push(mk_match_read(
+                &format!("low_s_{idx}"),
+                s1,
+                &seq,
+                true,
+                60,
+                30,
+                0,
+            ));
+            low_t_reads.push(mk_match_read(
+                &format!("low_t_{idx}"),
+                s1,
+                &seq,
+                true,
+                60,
+                30,
+                0,
+            ));
+        }
+    }
+    let low_s_bam = dir.path().join("low_raw_single.bam");
+    let low_t_bam = dir.path().join("low_raw_tumor.bam");
+    let low_n_bam = dir.path().join("low_raw_normal.bam");
+    write_indexed_bam(&low_s_bam, "chr1", cl_len, &low_s_reads).expect("write low_raw_single.bam");
+    write_indexed_bam(&low_t_bam, "chr1", cl_len, &low_t_reads).expect("write low_raw_tumor.bam");
+    write_indexed_bam(&low_n_bam, "chr1", cl_len, &low_n_reads).expect("write low_raw_normal.bam");
+    for (low_label, low_bam_arg, extra_flags) in [
+        (
+            "simple d03;v+02",
+            low_s_bam.to_string_lossy().into_owned(),
+            vec!["-p", "-r", "1", "-f", "0.01"],
+        ),
+        (
+            "somatic d03;v+02",
+            format!("{}|{}", low_t_bam.display(), low_n_bam.display()),
+            vec!["-r", "1", "-f", "0.01"],
+        ),
+    ] {
+        let mut cmd = base_cmd();
+        cmd.arg("-G")
+            .arg(&cl_fa)
+            .arg("-b")
+            .arg(&low_bam_arg)
+            .args(&extra_flags)
+            .args([
+                "-R",
+                "chr1:48-48",
+                "--vcf-min-depth",
+                "03",
+                "--vcf-min-vd",
+                "+02",
+                "--vcf-cluster-dist",
+                "010",
+                "--threads=1",
+            ]);
+        let low_vcf = run_vcf(&mut cmd, low_label);
+        let low_rec = find_rec(&low_vcf, 48);
+        assert!(
+            low_rec[6].starts_with("d03;v+02"),
+            "{low_label} expected record FILTER starting with d03;v+02, got {}",
+            low_rec[6]
+        );
     }
 
     // 11b. Amplicon `AMPBIAS` cluster probe (`AmpBiasSnvClusterProbe`)

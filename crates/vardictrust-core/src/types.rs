@@ -92,6 +92,13 @@ impl<const N: usize> std::ops::Deref for StackBuf<N> {
     }
 }
 
+impl<const N: usize> fmt::Debug for StackBuf<N> {
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(self.as_str(), f)
+    }
+}
+
 impl<const N: usize> fmt::Display for StackBuf<N> {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

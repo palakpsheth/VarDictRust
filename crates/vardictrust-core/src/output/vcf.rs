@@ -174,7 +174,19 @@ fn valid_freq_threshold(config: &Config) -> f64 {
 /// defaulting to `0` when `--vcf-cluster-dist` is unset.
 #[inline]
 pub fn effective_vcf_cluster_dist(config: &Config) -> i32 {
-    config.vcf_cluster_dist.unwrap_or(0).max(0)
+    config
+        .vcf_cluster_dist
+        .as_ref()
+        .map_or(0, |t| t.value.max(0))
+}
+
+#[inline]
+fn sanitize_nonneg_i32(val: i32, fallback: i32) -> i32 {
+    if val < 0 {
+        fallback
+    } else {
+        val
+    }
 }
 
 #[inline]
@@ -286,6 +298,44 @@ fn header_float_label<'a>(
         Some(thr) => {
             *scratch = crate::types::StackBuf::<64>::new();
             write_vcf_threshold_label(scratch, thr, default_num);
+            scratch.as_str()
+        }
+    }
+}
+
+/// Writes a sanitized `VcfThreshold<i32>` label (`<= 64` ASCII bytes) into `out`:
+/// re-validates `thr.raw` via [`crate::config::validate_vcf_nonneg_i32_token`] and
+/// numeric agreement so direct library `&Config` callers cannot inject newlines,
+/// tabs, or unbounded strings into VCF headers/filters, falling back to decimal `{val}`.
+fn write_vcf_int_threshold_label<W: std::fmt::Write>(
+    out: &mut W,
+    thr: &crate::config::VcfThreshold<i32>,
+    fallback: i32,
+) {
+    let val = sanitize_nonneg_i32(thr.value, fallback);
+    if let Some(raw) = thr.raw.as_deref() {
+        if let Ok((norm_val, norm_raw)) = crate::config::validate_vcf_nonneg_i32_token(raw) {
+            if norm_val == val {
+                let _ = out.write_str(norm_raw);
+                return;
+            }
+        }
+    }
+    let _ = write!(out, "{val}");
+}
+
+#[inline]
+fn header_int_label<'a>(
+    opt: Option<&'a crate::config::VcfThreshold<i32>>,
+    default_str: &'static str,
+    default_num: i32,
+    scratch: &'a mut crate::types::StackBuf<64>,
+) -> &'a str {
+    match opt {
+        None => default_str,
+        Some(thr) => {
+            *scratch = crate::types::StackBuf::<64>::new();
+            write_vcf_int_threshold_label(scratch, thr, default_num);
             scratch.as_str()
         }
     }
@@ -428,19 +478,22 @@ pub fn print_vcf_header<W: Write>(
     let mut s_mapq = crate::types::StackBuf::<64>::new();
     let mut s_p = crate::types::StackBuf::<64>::new();
     let mut s_sn = crate::types::StackBuf::<64>::new();
+    let mut s_d = crate::types::StackBuf::<64>::new();
+    let mut s_v = crate::types::StackBuf::<64>::new();
     let mut s_msi = crate::types::StackBuf::<64>::new();
     let mut s_nm = crate::types::StackBuf::<64>::new();
+    let mut s_c = crate::types::StackBuf::<64>::new();
     let mut s_af = crate::types::StackBuf::<64>::new();
 
     let qmean = header_float_label(config.vcf_qmean.as_ref(), "22.5", 22.5, &mut s_q);
     let map_qual_val = header_float_label(config.vcf_mapq.as_ref(), "10", 10.0, &mut s_mapq);
     let pmean_val = header_float_label(config.vcf_pmean.as_ref(), "8", 8.0, &mut s_p);
     let sn_val = header_float_label(config.vcf_sn.as_ref(), "1.5", 1.5, &mut s_sn);
-    let total_depth = config.vcf_min_depth.unwrap_or(3).max(0);
-    let var_depth = config.vcf_min_vd.unwrap_or(2).max(0);
+    let total_depth = header_int_label(config.vcf_min_depth.as_ref(), "3", 3, &mut s_d);
+    let var_depth = header_int_label(config.vcf_min_vd.as_ref(), "2", 2, &mut s_v);
     let opt_i = header_float_label(config.vcf_msi.as_ref(), "12", 12.0, &mut s_msi);
     let opt_m = header_float_label(config.vcf_max_nm.as_ref(), "5.25", 5.25, &mut s_nm);
-    let opt_c = effective_vcf_cluster_dist(config);
+    let opt_c = header_int_label(config.vcf_cluster_dist.as_ref(), "0", 0, &mut s_c);
 
     writeln!(
         w,
@@ -567,7 +620,7 @@ enum FilterTag<'a> {
 
 struct VcfFloatTagScratch {
     slots: [crate::types::StackBuf<80>; 8],
-    int_slots: [crate::types::StackBuf<24>; 3],
+    int_slots: [crate::types::StackBuf<80>; 3],
 }
 
 impl VcfFloatTagScratch {
@@ -575,7 +628,7 @@ impl VcfFloatTagScratch {
     fn new() -> Self {
         Self {
             slots: std::array::from_fn(|_| crate::types::StackBuf::<80>::new()),
-            int_slots: std::array::from_fn(|_| crate::types::StackBuf::<24>::new()),
+            int_slots: std::array::from_fn(|_| crate::types::StackBuf::<80>::new()),
         }
     }
 }
@@ -594,14 +647,17 @@ fn format_float_filter_tag<'a>(
 }
 
 #[inline]
-fn format_int_filter_tag<'a>(
-    slot: &'a mut crate::types::StackBuf<24>,
+fn format_int_threshold_filter_tag<'a>(
+    slot: &'a mut crate::types::StackBuf<80>,
     prefix: &str,
-    val: i32,
+    thr: &crate::config::VcfThreshold<i32>,
+    fallback: i32,
     suffix: &str,
 ) -> FilterTag<'a> {
-    *slot = crate::types::StackBuf::<24>::new();
-    let _ = write!(slot, "{prefix}{val}{suffix}");
+    *slot = crate::types::StackBuf::<80>::new();
+    let _ = slot.write_str(prefix);
+    write_vcf_int_threshold_label(slot, thr, fallback);
+    let _ = slot.write_str(suffix);
     FilterTag::Text(slot.as_str())
 }
 
@@ -711,8 +767,14 @@ impl ValidThresholds {
             sanitize_nonneg_f64(t.value, fallback_freq)
         });
         Self {
-            min_depth: config.vcf_min_depth.unwrap_or(3).max(0),
-            min_vd: config.vcf_min_vd.unwrap_or(2).max(0),
+            min_depth: config
+                .vcf_min_depth
+                .as_ref()
+                .map_or(3, |t| sanitize_nonneg_i32(t.value, 3)),
+            min_vd: config
+                .vcf_min_vd
+                .as_ref()
+                .map_or(2, |t| sanitize_nonneg_i32(t.value, 2)),
             fallback_freq,
             freq,
             pmean: config
@@ -858,19 +920,17 @@ fn collect_valid_filters_into<'a>(
     let hi_check = (hicnt as f64 * hiaf) >= 0.5;
 
     if dp < thr.min_depth && !hi_check {
-        let tag = if thr.min_depth == 3 {
-            FilterTag::Text("d3")
-        } else {
-            format_int_filter_tag(s_d, "d", thr.min_depth, "")
+        let tag = match config.vcf_min_depth.as_ref() {
+            Some(t) => format_int_threshold_filter_tag(s_d, "d", t, 3, ""),
+            None => FilterTag::Text("d3"),
         };
         filters.push(tag);
     }
 
     if hicnt < thr.min_vd && !hi_check {
-        let tag = if thr.min_vd == 2 {
-            FilterTag::Text("v2")
-        } else {
-            format_int_filter_tag(s_v, "v", thr.min_vd, "")
+        let tag = match config.vcf_min_vd.as_ref() {
+            Some(t) => format_int_threshold_filter_tag(s_v, "v", t, 2, ""),
+            None => FilterTag::Text("v2"),
         };
         filters.push(tag);
     }
@@ -956,10 +1016,9 @@ fn collect_valid_filters_into<'a>(
             && pre_cluster_non_amp_empty
             && i64::from(variant.start_pos) - i64::from(pvs_val) < i64::from(thr.opt_c)
         {
-            let tag = if thr.opt_c == 0 {
-                FilterTag::Text("Cluster0bp")
-            } else {
-                format_int_filter_tag(s_cluster, "Cluster", thr.opt_c, "bp")
+            let tag = match config.vcf_cluster_dist.as_ref() {
+                Some(t) => format_int_threshold_filter_tag(s_cluster, "Cluster", t, 0, "bp"),
+                None => FilterTag::Text("Cluster0bp"),
             };
             filters.push(tag);
         }
@@ -1750,6 +1809,29 @@ pub fn build_single_vcf_event(
     })
 }
 
+#[inline]
+fn format_cluster_tag_from_int(opt_c: i32) -> crate::types::StackBuf<80> {
+    let mut buf = crate::types::StackBuf::<80>::new();
+    let _ = write!(buf, "Cluster{}bp", opt_c.max(0));
+    buf
+}
+
+#[inline]
+fn format_cluster_tag_from_config(config: &Config) -> crate::types::StackBuf<80> {
+    let mut buf = crate::types::StackBuf::<80>::new();
+    match config.vcf_cluster_dist.as_ref() {
+        Some(thr) => {
+            let _ = buf.write_str("Cluster");
+            write_vcf_int_threshold_label(&mut buf, thr, 0);
+            let _ = buf.write_str("bp");
+        }
+        None => {
+            let _ = buf.write_str("Cluster0bp");
+        }
+    }
+    buf
+}
+
 /// Streaming delayed-print state machine for single-sample / amplicon VCF records
 /// (`var2vcf_valid.pl:132, 181-205, 239, 242-244`).
 #[derive(Debug)]
@@ -1758,6 +1840,7 @@ pub struct SingleRecordStreamer {
     pvs: i32,
     opt_c: i32,
     pass_only: bool,
+    cluster_tag: crate::types::StackBuf<80>,
 }
 
 impl SingleRecordStreamer {
@@ -1771,6 +1854,17 @@ impl SingleRecordStreamer {
             pvs: 0,
             opt_c,
             pass_only,
+            cluster_tag: format_cluster_tag_from_int(opt_c),
+        }
+    }
+
+    pub fn from_config(config: &Config) -> Self {
+        Self {
+            pending: None,
+            pvs: 0,
+            opt_c: effective_vcf_cluster_dist(config),
+            pass_only: config.vcf_pass_only,
+            cluster_tag: format_cluster_tag_from_config(config),
         }
     }
 
@@ -1783,9 +1877,7 @@ impl SingleRecordStreamer {
             SingleVcfEvent::AmpBiasSnvClusterProbe { start } => {
                 if i64::from(start) - i64::from(self.pvs) < i64::from(self.opt_c) {
                     if let Some(prev) = self.pending.as_mut() {
-                        let mut cluster_tag = crate::types::StackBuf::<32>::new();
-                        let _ = write!(cluster_tag, "Cluster{}bp", self.opt_c);
-                        prev.set_cluster_filter(cluster_tag.as_str());
+                        prev.set_cluster_filter(self.cluster_tag.as_str());
                     }
                 }
                 Ok(())
@@ -1796,9 +1888,7 @@ impl SingleRecordStreamer {
                 if let Some(start) = cluster_probe_start {
                     if i64::from(start) - i64::from(self.pvs) < i64::from(self.opt_c) {
                         if let Some(prev) = self.pending.as_mut() {
-                            let mut cluster_tag = crate::types::StackBuf::<32>::new();
-                            let _ = write!(cluster_tag, "Cluster{}bp", self.opt_c);
-                            prev.set_cluster_filter(cluster_tag.as_str());
+                            prev.set_cluster_filter(self.cluster_tag.as_str());
                         }
                         if self.pass_only {
                             return Ok(());
@@ -1817,15 +1907,17 @@ impl SingleRecordStreamer {
                     && cur.pre_cluster_empty()
                     && i64::from(cur.start) - i64::from(self.pvs) < i64::from(self.opt_c)
                 {
-                    let mut cluster_tag = crate::types::StackBuf::<48>::new();
-                    let _ = write!(cluster_tag, "Cluster{}bp", self.opt_c);
                     if let Some(prev) = self.pending.as_mut() {
-                        prev.set_cluster_filter(cluster_tag.as_str());
+                        prev.set_cluster_filter(self.cluster_tag.as_str());
                     }
                     if cur.has_ampbias {
-                        let _ = cluster_tag.write_str(";AMPBIAS");
+                        let mut cur_tag = crate::types::StackBuf::<96>::new();
+                        let _ = cur_tag.write_str(self.cluster_tag.as_str());
+                        let _ = cur_tag.write_str(";AMPBIAS");
+                        cur.set_cluster_filter(cur_tag.as_str());
+                    } else {
+                        cur.set_cluster_filter(self.cluster_tag.as_str());
                     }
-                    cur.set_cluster_filter(cluster_tag.as_str());
                 }
                 if self.pass_only && !cur.is_pass() {
                     return Ok(());
@@ -1945,8 +2037,11 @@ pub fn print_paired_vcf_header<W: Write>(
     let mut s_mapq = crate::types::StackBuf::<64>::new();
     let mut s_p = crate::types::StackBuf::<64>::new();
     let mut s_sn = crate::types::StackBuf::<64>::new();
+    let mut s_d = crate::types::StackBuf::<64>::new();
+    let mut s_v = crate::types::StackBuf::<64>::new();
     let mut s_msi = crate::types::StackBuf::<64>::new();
     let mut s_nm = crate::types::StackBuf::<64>::new();
+    let mut s_c = crate::types::StackBuf::<64>::new();
     let mut s_af = crate::types::StackBuf::<64>::new();
     let mut s_pval = crate::types::StackBuf::<64>::new();
 
@@ -1954,11 +2049,16 @@ pub fn print_paired_vcf_header<W: Write>(
     let mqmean = header_float_label(config.vcf_mapq.as_ref(), "0", PAIRED_MQMEAN, &mut s_mapq);
     let pmean = header_float_label(config.vcf_pmean.as_ref(), "8", PAIRED_PMEAN, &mut s_p);
     let sn = header_float_label(config.vcf_sn.as_ref(), "1.5", PAIRED_SN, &mut s_sn);
-    let min_depth = config.vcf_min_depth.unwrap_or(PAIRED_MIN_DEPTH).max(0);
-    let min_vd = config.vcf_min_vd.unwrap_or(PAIRED_VAR_DEPTH).max(0);
+    let min_depth = header_int_label(
+        config.vcf_min_depth.as_ref(),
+        "5",
+        PAIRED_MIN_DEPTH,
+        &mut s_d,
+    );
+    let min_vd = header_int_label(config.vcf_min_vd.as_ref(), "3", PAIRED_VAR_DEPTH, &mut s_v);
     let opt_i = header_float_label(config.vcf_msi.as_ref(), "12", PAIRED_OPT_I, &mut s_msi);
     let opt_m = header_float_label(config.vcf_max_nm.as_ref(), "5.25", PAIRED_OPT_M, &mut s_nm);
-    let opt_c = effective_vcf_cluster_dist(config);
+    let opt_c = header_int_label(config.vcf_cluster_dist.as_ref(), "0", 0, &mut s_c);
     write_vcf_pval_label(&mut s_pval, config);
     let pval_lbl = s_pval.as_str();
 
@@ -2402,8 +2502,12 @@ pub fn format_paired_vcf_record(
         v1
     };
 
-    let eff_min_depth = config.vcf_min_depth.unwrap_or(PAIRED_MIN_DEPTH).max(0);
-    let eff_min_vd = config.vcf_min_vd.unwrap_or(PAIRED_VAR_DEPTH).max(0);
+    let eff_min_depth = config.vcf_min_depth.as_ref().map_or(PAIRED_MIN_DEPTH, |t| {
+        sanitize_nonneg_i32(t.value, PAIRED_MIN_DEPTH)
+    });
+    let eff_min_vd = config.vcf_min_vd.as_ref().map_or(PAIRED_VAR_DEPTH, |t| {
+        sanitize_nonneg_i32(t.value, PAIRED_VAR_DEPTH)
+    });
     let eff_freq = config.vcf_af.as_ref().map_or(config.af_threshold, |t| {
         sanitize_nonneg_f64(t.value, config.af_threshold)
     });
@@ -2471,18 +2575,16 @@ pub fn format_paired_vcf_record(
         // Tumor depth filters with StrongSomatic exception (:156-161).
         let ss_exception = status == "StrongSomatic" && ptot_r < 0.15 && af1 * vd1 as f64 >= 0.5;
         if dp1 < eff_min_depth && !ss_exception {
-            let tag = if eff_min_depth == PAIRED_MIN_DEPTH {
-                FilterTag::Text("d5")
-            } else {
-                format_int_filter_tag(s_d, "d", eff_min_depth, "")
+            let tag = match config.vcf_min_depth.as_ref() {
+                Some(t) => format_int_threshold_filter_tag(s_d, "d", t, PAIRED_MIN_DEPTH, ""),
+                None => FilterTag::Text("d5"),
             };
             filters.push(tag);
         }
         if vd1 < eff_min_vd && !ss_exception {
-            let tag = if eff_min_vd == PAIRED_VAR_DEPTH {
-                FilterTag::Text("v3")
-            } else {
-                format_int_filter_tag(s_v, "v", eff_min_vd, "")
+            let tag = match config.vcf_min_vd.as_ref() {
+                Some(t) => format_int_threshold_filter_tag(s_v, "v", t, PAIRED_VAR_DEPTH, ""),
+                None => FilterTag::Text("v3"),
             };
             filters.push(tag);
         }
@@ -2707,6 +2809,7 @@ pub struct PairedRecordStreamer {
     pvs: i32,
     opt_c: i32,
     pass_only: bool,
+    cluster_tag: crate::types::StackBuf<80>,
 }
 
 impl PairedRecordStreamer {
@@ -2720,6 +2823,17 @@ impl PairedRecordStreamer {
             pvs: 0,
             opt_c,
             pass_only,
+            cluster_tag: format_cluster_tag_from_int(opt_c),
+        }
+    }
+
+    pub fn from_config(config: &Config) -> Self {
+        Self {
+            pending: None,
+            pvs: 0,
+            opt_c: effective_vcf_cluster_dist(config),
+            pass_only: config.vcf_pass_only,
+            cluster_tag: format_cluster_tag_from_config(config),
         }
     }
 
@@ -2737,10 +2851,8 @@ impl PairedRecordStreamer {
                 && cur.type_snv
                 && i64::from(cur.start) - i64::from(self.pvs) < i64::from(self.opt_c)
             {
-                let mut cluster_tag = crate::types::StackBuf::<32>::new();
-                let _ = write!(cluster_tag, "Cluster{}bp", self.opt_c);
-                prev.set_cluster_filter(cluster_tag.as_str());
-                cur.set_cluster_filter(cluster_tag.as_str());
+                prev.set_cluster_filter(self.cluster_tag.as_str());
+                cur.set_cluster_filter(self.cluster_tag.as_str());
             }
             if !self.pass_only || prev.is_pass() {
                 emit(prev.as_str())?;
@@ -4759,12 +4871,12 @@ mod tests {
         custom.vcf_mapq = Some(VcfThreshold::with_raw(0.0, "0".to_string()));
         custom.vcf_pmean = Some(VcfThreshold::with_raw(7.5, "7.5".to_string()));
         custom.vcf_sn = Some(VcfThreshold::with_raw(2.25, "2.25".to_string()));
-        custom.vcf_min_depth = Some(0);
-        custom.vcf_min_vd = Some(0);
+        custom.vcf_min_depth = Some(VcfThreshold::new(0));
+        custom.vcf_min_vd = Some(VcfThreshold::new(0));
         custom.vcf_af = Some(VcfThreshold::with_raw(0.05, "0.050".to_string()));
         custom.vcf_msi = Some(VcfThreshold::with_raw(10.5, "10.5".to_string()));
         custom.vcf_max_nm = Some(VcfThreshold::with_raw(4.5, "4.5".to_string()));
-        custom.vcf_cluster_dist = Some(15);
+        custom.vcf_cluster_dist = Some(VcfThreshold::new(15));
         assert_eq!(effective_vcf_cluster_dist(&custom), 15);
 
         let sh = render_single(&custom);
@@ -4799,6 +4911,24 @@ mod tests {
             r#"##FILTER=<ID=Cluster15bp,Description="Two somatic variants are within 15 bp">"#
         ));
 
+        // 2b. Leading-zero / `+`-prefixed integer tokens (`03`, `+02`, `010`) preserved verbatim
+        let mut raw_ints = Config::default();
+        raw_ints.vcf_min_depth = Some(VcfThreshold::with_raw(3, "03".to_string()));
+        raw_ints.vcf_min_vd = Some(VcfThreshold::with_raw(2, "+02".to_string()));
+        raw_ints.vcf_cluster_dist = Some(VcfThreshold::with_raw(10, "010".to_string()));
+        let sh_raw = render_single(&raw_ints);
+        let ph_raw = render_paired(&raw_ints);
+        for h in [&sh_raw, &ph_raw] {
+            assert!(h.contains(r#"##FILTER=<ID=d03,Description="Total Depth < 03">"#));
+            assert!(h.contains(r#"##FILTER=<ID=v+02,Description="Var Depth < +02">"#));
+        }
+        assert!(sh_raw.contains(
+            r#"##FILTER=<ID=Cluster010bp,Description="Two variants are within 010 bp">"#
+        ));
+        assert!(ph_raw.contains(
+            r#"##FILTER=<ID=Cluster010bp,Description="Two somatic variants are within 010 bp">"#
+        ));
+
         // Explicit `vcf_af = Some(0)` uses `0` even in single-sample mode (`defined()` semantics)
         let mut zero_af = Config::default();
         zero_af.vcf_af = Some(VcfThreshold::with_raw(0.0, "0".to_string()));
@@ -4814,7 +4944,9 @@ mod tests {
         evil.vcf_mapq = Some(VcfThreshold::with_raw(12.0, "9".repeat(80)));
         evil.vcf_pmean = Some(VcfThreshold::with_raw(7.5, "99.0".to_string())); // bit mismatch
         evil.vcf_sn = Some(VcfThreshold::new(f64::NAN));
-        evil.vcf_cluster_dist = Some(-10);
+        evil.vcf_min_depth = Some(VcfThreshold::with_raw(3, "03\n##evil".to_string()));
+        evil.vcf_min_vd = Some(VcfThreshold::with_raw(2, "99".to_string())); // value mismatch
+        evil.vcf_cluster_dist = Some(VcfThreshold::new(-10));
         assert_eq!(effective_vcf_cluster_dist(&evil), 0);
 
         for h in [render_single(&evil), render_paired(&evil)] {
@@ -4824,6 +4956,9 @@ mod tests {
             assert!(h.contains("##FILTER=<ID=Q12,"));
             assert!(h.contains("##FILTER=<ID=p7.5,"));
             assert!(h.contains("##FILTER=<ID=SN1.5,"));
+            assert!(h.contains("##FILTER=<ID=d3,"));
+            assert!(h.contains("##FILTER=<ID=v2,"));
+            assert!(h.contains("##FILTER=<ID=Cluster0bp,"));
         }
     }
 
@@ -4841,8 +4976,8 @@ mod tests {
 
         // ---- Single-sample record filters & GT (`var2vcf_valid.pl`) ----
         let mut scfg = Config::default();
-        scfg.vcf_min_depth = Some(8);
-        scfg.vcf_min_vd = Some(5);
+        scfg.vcf_min_depth = Some(VcfThreshold::new(8));
+        scfg.vcf_min_vd = Some(VcfThreshold::new(5));
         scfg.vcf_af = Some(VcfThreshold::with_raw(0.05, "0.050".to_string()));
         scfg.vcf_pmean = Some(VcfThreshold::with_raw(7.5, "7.5".to_string()));
         scfg.vcf_qmean = Some(VcfThreshold::with_raw(25.0, "25.0".to_string()));
@@ -4851,7 +4986,7 @@ mod tests {
         scfg.vcf_max_nm = Some(VcfThreshold::with_raw(4.0, "4".to_string()));
         scfg.vcf_msi = Some(VcfThreshold::with_raw(10.5, "10.5".to_string()));
         scfg.vcf_gt_freq = Some(0.05);
-        scfg.vcf_cluster_dist = Some(15);
+        scfg.vcf_cluster_dist = Some(VcfThreshold::new(15));
 
         let mut sv = amplicon_passing_variant();
         sv.start_pos = 10; // < opt_c (15) against initial pvs = 0!
@@ -4900,6 +5035,27 @@ mod tests {
         );
         low_dv.hi_freq = 0.2; // 4 * 0.2 = 0.8 >= 0.5 -> rescued!
         assert!(filter_variant(&low_dv, &scfg, 0, None, 1.0, "1.0").is_empty());
+
+        // Raw integer spellings matching numeric defaults (`03`, `+02`, `010`) emit verbatim filter tags!
+        let mut raw_icfg = Config::default();
+        raw_icfg.vcf_min_depth = Some(VcfThreshold::with_raw(3, "03".to_string()));
+        raw_icfg.vcf_min_vd = Some(VcfThreshold::with_raw(2, "+02".to_string()));
+        raw_icfg.vcf_cluster_dist = Some(VcfThreshold::with_raw(10, "010".to_string()));
+        let mut raw_low = amplicon_passing_variant();
+        raw_low.total_pos_cov = 2;
+        raw_low.hicnt = 1;
+        raw_low.hi_freq = 0.1; // 1 * 0.1 = 0.1 < 0.5 -> d03;v+02
+        assert_eq!(
+            filter_variant(&raw_low, &raw_icfg, 0, None, 1.0, "1.0"),
+            vec!["d03", "v+02"]
+        );
+        let mut raw_cl = amplicon_passing_variant();
+        raw_cl.start_pos = 5;
+        raw_cl.end_pos = 5;
+        assert_eq!(
+            filter_variant(&raw_cl, &raw_icfg, 0, None, 1.0, "1.0"),
+            vec!["Cluster010bp"]
+        );
 
         // `--vcf-mapq 0` disables Q even when mapq < 10 and af < 0.8
         let mut mapq0_cfg = Config::default();
@@ -4975,6 +5131,69 @@ mod tests {
         let pcols: Vec<&str> = prec.as_str().split('\t').collect();
         assert!(pcols[9].starts_with("1/0:"), "tumor GT: {}", pcols[9]);
         assert!(pcols[10].starts_with("0/0:"), "normal GT: {}", pcols[10]);
+
+        // Paired raw integer spellings matching defaults (`05`, `+03`, `010`) emit `d05`, `v+03`, and `Cluster010bp`!
+        let mut raw_pcfg = Config::default();
+        raw_pcfg.vcf_min_depth = Some(VcfThreshold::with_raw(5, "05".to_string()));
+        raw_pcfg.vcf_min_vd = Some(VcfThreshold::with_raw(3, "+03".to_string()));
+        raw_pcfg.vcf_cluster_dist = Some(VcfThreshold::with_raw(10, "010".to_string()));
+        let mut p_low_t = clean_normal();
+        p_low_t.total_pos_cov = 4; // < 5 -> d05
+        p_low_t.pos_coverage = 2; // < 3 -> v+03
+        p_low_t.pstd = true;
+        let mut p_low_n = clean_normal();
+        p_low_n.pos_coverage = 0; // < 3 -> normal_clean = false
+        let prec_raw = format_paired_vcf_record(
+            &somatic_sv(p_low_t, Some(p_low_n.clone()), "LikelySomatic"),
+            "chr1",
+            &raw_pcfg,
+        );
+        assert_eq!(prec_raw.filter_str(), "d05;v+03");
+
+        let mut ps1 = clean_normal();
+        ps1.start_pos = 100;
+        ps1.end_pos = 100;
+        ps1.var_type = "SNV".to_string();
+        let mut ps2 = ps1.clone();
+        ps2.start_pos = 105;
+        ps2.end_pos = 105;
+        let mut pstreamer = PairedRecordStreamer::from_config(&raw_pcfg);
+        let mut pout = Vec::new();
+        pstreamer
+            .push(
+                format_paired_vcf_record(
+                    &somatic_sv(ps1, Some(p_low_n.clone()), "StrongSomatic"),
+                    "chr1",
+                    &raw_pcfg,
+                ),
+                |l| -> Result<(), std::convert::Infallible> {
+                    pout.push(l.to_string());
+                    Ok(())
+                },
+            )
+            .unwrap();
+        pstreamer
+            .push(
+                format_paired_vcf_record(
+                    &somatic_sv(ps2, Some(p_low_n), "StrongSomatic"),
+                    "chr1",
+                    &raw_pcfg,
+                ),
+                |l| -> Result<(), std::convert::Infallible> {
+                    pout.push(l.to_string());
+                    Ok(())
+                },
+            )
+            .unwrap();
+        pstreamer
+            .finish(|l| -> Result<(), std::convert::Infallible> {
+                pout.push(l.to_string());
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(pout.len(), 2);
+        assert_eq!(pout[0].split('\t').nth(6), Some("Cluster010bp"));
+        assert_eq!(pout[1].split('\t').nth(6), Some("Cluster010bp"));
     }
 
     #[test]
@@ -5056,7 +5275,7 @@ mod tests {
         );
 
         cfg.vcf_pass_only = true;
-        cfg.vcf_cluster_dist = Some(10);
+        cfg.vcf_cluster_dist = Some(crate::config::VcfThreshold::new(10));
 
         let mut low_q = pass_snv.clone();
         low_q.mean_quality = 10.0;
@@ -5078,7 +5297,7 @@ mod tests {
             SingleVcfEvent::AmpBiasSnvClusterProbe { start: 100 }
         );
         // When opt_c == 0, AMPBIAS SNV cannot cluster, so worker skips directly
-        cfg.vcf_cluster_dist = Some(0);
+        cfg.vcf_cluster_dist = Some(crate::config::VcfThreshold::new(0));
         assert_eq!(
             build_single_vcf_event(
                 &mut scratch,
@@ -5125,6 +5344,7 @@ mod tests {
         config: &Config,
     ) -> Vec<String> {
         let opt_c = effective_vcf_cluster_dist(config);
+        let cluster_tag = format_cluster_tag_from_config(config);
         let mut pvs: i32 = 0;
         let mut pending: Option<String> = None;
         let mut out = Vec::new();
@@ -5179,7 +5399,7 @@ mod tests {
                 && i64::from(variant.start_pos) - i64::from(pvs) < i64::from(opt_c)
             {
                 if let Some(prev) = pending.as_mut() {
-                    set_line_filter(prev, &format!("Cluster{opt_c}bp"));
+                    set_line_filter(prev, cluster_tag.as_str());
                 }
             }
             if config.vcf_pass_only && !filters.is_empty() {
@@ -5293,19 +5513,22 @@ mod tests {
             (mk_snv(480, 35.0), None),
         ];
 
-        for opt_c in [0, 15] {
+        for cluster_opt in [
+            None,
+            Some(crate::config::VcfThreshold::new(0)),
+            Some(crate::config::VcfThreshold::new(15)),
+            Some(crate::config::VcfThreshold::with_raw(15, "015".to_string())),
+            Some(crate::config::VcfThreshold::with_raw(15, "+15".to_string())),
+        ] {
             for pass_only in [false, true] {
                 let mut cfg = Config::default();
-                cfg.vcf_cluster_dist = Some(opt_c);
+                cfg.vcf_cluster_dist = cluster_opt.clone();
                 cfg.vcf_pass_only = pass_only;
 
                 let expected = simulate_perl_var2vcf_valid(&stream_rows, &region, &cfg);
 
                 let mut scratch = String::new();
-                let mut streamer = SingleRecordStreamer::with_pass_only(
-                    effective_vcf_cluster_dist(&cfg),
-                    pass_only,
-                );
+                let mut streamer = SingleRecordStreamer::from_config(&cfg);
                 let mut actual = Vec::new();
                 for (var, amp) in &stream_rows {
                     let ev = build_single_vcf_event(&mut scratch, var, &region, &cfg, *amp);
@@ -5325,8 +5548,19 @@ mod tests {
 
                 assert_eq!(
                     actual, expected,
-                    "mismatch vs var2vcf_valid.pl simulator for opt_c={opt_c}, pass_only={pass_only}"
+                    "mismatch vs var2vcf_valid.pl simulator for cluster_opt={cluster_opt:?}, pass_only={pass_only}"
                 );
+                if !pass_only {
+                    if let Some(ref thr) = cluster_opt {
+                        if let Some(raw) = thr.raw.as_deref() {
+                            let expected_tag = format!("Cluster{raw}bp");
+                            assert!(
+                                actual.iter().any(|l| l.contains(&expected_tag)),
+                                "expected {expected_tag} in streamed output"
+                            );
+                        }
+                    }
+                }
             }
         }
 

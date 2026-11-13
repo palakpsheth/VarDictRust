@@ -192,9 +192,9 @@ pub struct Config {
     /// Opt-in VCF allele-frequency filter/GT threshold override (`--vcf-af`, ports `var2vcf_valid.pl` / `var2vcf_paired.pl -f`).
     pub vcf_af: Option<VcfThreshold<f64>>,
     /// Opt-in VCF minimum total read depth override (`--vcf-min-depth`, ports `var2vcf_valid.pl` / `var2vcf_paired.pl -d`).
-    pub vcf_min_depth: Option<i32>,
+    pub vcf_min_depth: Option<VcfThreshold<i32>>,
     /// Opt-in VCF minimum variant depth override (`--vcf-min-vd`, ports `var2vcf_valid.pl` / `var2vcf_paired.pl -v`).
-    pub vcf_min_vd: Option<i32>,
+    pub vcf_min_vd: Option<VcfThreshold<i32>>,
     /// Opt-in VCF minimum mean base quality override (`--vcf-qmean`, ports `var2vcf_valid.pl` / `var2vcf_paired.pl -q`).
     pub vcf_qmean: Option<VcfThreshold<f64>>,
     /// Opt-in VCF minimum mean mapping quality override (`--vcf-mapq`, ports `var2vcf_valid.pl` / `var2vcf_paired.pl -Q`).
@@ -210,7 +210,7 @@ pub struct Config {
     /// Opt-in VCF non-monomer MSI repeat-count threshold override (`--vcf-msi`, ports `var2vcf_valid.pl` / `var2vcf_paired.pl -I`).
     pub vcf_msi: Option<VcfThreshold<f64>>,
     /// Opt-in VCF SNV cluster window in bp (`--vcf-cluster-dist`, ports `var2vcf_valid.pl` / `var2vcf_paired.pl -c`).
-    pub vcf_cluster_dist: Option<i32>,
+    pub vcf_cluster_dist: Option<VcfThreshold<i32>>,
 }
 
 impl Default for Config {
@@ -349,6 +349,37 @@ fn validate_opt_vcf_f64_threshold(
     Ok(())
 }
 
+fn validate_opt_vcf_i32_threshold(
+    slot: &mut Option<VcfThreshold<i32>>,
+    field_name: &str,
+) -> Result<(), crate::types::VardictError> {
+    if let Some(thr) = slot.as_mut() {
+        if thr.value < 0 {
+            return Err(crate::types::VardictError::Parse(format!(
+                "Invalid {field_name} '{}': must be an integer >= 0",
+                thr.value
+            )));
+        }
+        if let Some(ref mut raw) = thr.raw {
+            let (norm_val, norm_str) = validate_vcf_nonneg_i32_token(raw).map_err(|reason| {
+                crate::types::VardictError::Parse(format!(
+                    "Invalid {field_name}.raw '{raw}': {reason}"
+                ))
+            })?;
+            if norm_val != thr.value {
+                return Err(crate::types::VardictError::Parse(format!(
+                    "Invalid {field_name}.raw '{raw}': parsed value {norm_val} disagrees with {field_name} '{}'",
+                    thr.value
+                )));
+            }
+            if raw.as_str() != norm_str {
+                *raw = norm_str.to_string();
+            }
+        }
+    }
+    Ok(())
+}
+
 impl Config {
     /// Apply pileup mode (`-p`) parameter overrides matching `Configuration.java:162-165`.
     pub fn apply_pileup_overrides(&mut self) {
@@ -371,9 +402,10 @@ impl Config {
     }
 
     /// Validates and canonicalizes all VCF post-filter thresholds (`vcf_pval`,
-    /// `vcf_min_splitreads`, and all 11 `vcf_*` override fields), canonicalizing `-0.0` to
-    /// `0.0` and verifying every `raw` CLI token via [`validate_vcf_nonneg_float_token`] +
-    /// `f64::to_bits()` agreement so programmatic `&Config` callers share identical guards.
+    /// `vcf_min_splitreads`, and all 11 `vcf_*` override fields), canonicalizing `-0.0`/`-0`
+    /// and verifying every `raw` CLI token via [`validate_vcf_nonneg_float_token`] /
+    /// [`validate_vcf_nonneg_i32_token`] agreement so programmatic `&Config` callers share
+    /// identical guards.
     pub fn validate_vcf_thresholds(&mut self) -> Result<(), crate::types::VardictError> {
         if self.af_threshold == 0.0 {
             self.af_threshold = 0.0;
@@ -416,19 +448,9 @@ impl Config {
         validate_opt_vcf_f64_threshold(&mut self.vcf_max_nm, "vcf_max_nm")?;
         validate_opt_vcf_f64_threshold(&mut self.vcf_msi, "vcf_msi")?;
 
-        for (field_name, val) in [
-            ("vcf_min_depth", self.vcf_min_depth),
-            ("vcf_min_vd", self.vcf_min_vd),
-            ("vcf_cluster_dist", self.vcf_cluster_dist),
-        ] {
-            if let Some(v) = val {
-                if v < 0 {
-                    return Err(crate::types::VardictError::Parse(format!(
-                        "Invalid {field_name} '{v}': must be an integer >= 0"
-                    )));
-                }
-            }
-        }
+        validate_opt_vcf_i32_threshold(&mut self.vcf_min_depth, "vcf_min_depth")?;
+        validate_opt_vcf_i32_threshold(&mut self.vcf_min_vd, "vcf_min_vd")?;
+        validate_opt_vcf_i32_threshold(&mut self.vcf_cluster_dist, "vcf_cluster_dist")?;
 
         if let Some(ref mut gt_freq) = self.vcf_gt_freq {
             if !gt_freq.is_finite() || *gt_freq < 0.0 || *gt_freq > 1.0 {
@@ -697,8 +719,7 @@ pub fn parse_vcf_unit_f64(s: &str, flag: &str) -> Result<f64, String> {
     Ok(value)
 }
 
-/// Parses a trimmed base-10 non-negative `i32` (`>= 0`) for VCF integer threshold flags
-/// (`--min-splitreads`, `--vcf-min-depth`, `--vcf-min-vd`, `--vcf-cluster-dist`).
+/// Parses a trimmed base-10 non-negative `i32` (`>= 0`) for `--min-splitreads`.
 pub fn parse_vcf_nonneg_i32(s: &str, flag: &str) -> Result<i32, String> {
     if s.is_empty() || s.trim() != s {
         return Err(format!("Invalid {flag} value '{s}'"));
@@ -712,6 +733,41 @@ pub fn parse_vcf_nonneg_i32(s: &str, flag: &str) -> Result<i32, String> {
         ));
     }
     Ok(v)
+}
+
+/// Validates a non-negative VCF threshold `<INT>` token without allocating.
+///
+/// Enforces `1..=64` trimmed ASCII integer bytes (`[0-9+-]`), rejects negative values,
+/// and canonicalizes `-0` (`"-0"` -> `(0, "0")`) while preserving leading zeros and `+`
+/// signs verbatim (`"03"`, `"+02"`, `"010"`, `"00"`, `"+0"`) to match Perl dualvar
+/// interpolation in `var2vcf_valid.pl` and `var2vcf_paired.pl`.
+pub fn validate_vcf_nonneg_i32_token(s: &str) -> Result<(i32, &str), &'static str> {
+    if s.is_empty() || s.trim() != s {
+        return Err("must be a non-empty trimmed integer token");
+    }
+    if s.len() > 64 {
+        return Err("must be <= 64 ASCII bytes");
+    }
+    if !s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'+' | b'-')) {
+        return Err("must contain only ASCII integer characters [0-9+-]");
+    }
+    let v = s.parse::<i32>().map_err(|_| "invalid integer syntax")?;
+    if v < 0 {
+        return Err("must be an integer >= 0");
+    }
+    if v == 0 {
+        Ok((0, s.strip_prefix('-').unwrap_or(s)))
+    } else {
+        Ok((v, s))
+    }
+}
+
+/// Parses a non-negative VCF threshold `<INT>` flag (`flag`, e.g. `"--vcf-min-depth"`) into
+/// [`VcfThreshold<i32>`], preserving the normalized raw token for Perl dualvar formatting.
+pub fn parse_vcf_threshold_nonneg_i32(s: &str, flag: &str) -> Result<VcfThreshold<i32>, String> {
+    let (value, norm) = validate_vcf_nonneg_i32_token(s)
+        .map_err(|reason| format!("Invalid {flag} value '{s}': {reason}"))?;
+    Ok(VcfThreshold::with_raw(value, norm.to_string()))
 }
 
 /// Resolves sample name(s) matching `VarDictLauncher.java:82-86, 206-268` and `var2vcf_paired.pl:45-48`.
@@ -1084,17 +1140,42 @@ mod tests {
         assert!(parse_vcf_unit_f64("1.0001", "--vcf-gt-freq").is_err());
         assert!(parse_vcf_unit_f64("-0.1", "--vcf-gt-freq").is_err());
 
-        assert_eq!(parse_vcf_nonneg_i32("0", "--vcf-min-depth").unwrap(), 0);
-        assert_eq!(
-            parse_vcf_nonneg_i32("15", "--vcf-cluster-dist").unwrap(),
-            15
-        );
+        assert_eq!(parse_vcf_nonneg_i32("0", "--min-splitreads").unwrap(), 0);
+        assert_eq!(parse_vcf_nonneg_i32("15", "--min-splitreads").unwrap(), 15);
         for bad_int in ["", " 1", "-1", "-3", "2.5", "0x2"] {
             assert!(
-                parse_vcf_nonneg_i32(bad_int, "--vcf-min-depth").is_err(),
+                parse_vcf_nonneg_i32(bad_int, "--min-splitreads").is_err(),
                 "expected Err for {bad_int:?}"
             );
+            assert!(
+                validate_vcf_nonneg_i32_token(bad_int).is_err(),
+                "expected validate_vcf_nonneg_i32_token Err for {bad_int:?}"
+            );
         }
+        assert_eq!(validate_vcf_nonneg_i32_token("03").unwrap(), (3, "03"));
+        assert_eq!(validate_vcf_nonneg_i32_token("+02").unwrap(), (2, "+02"));
+        assert_eq!(validate_vcf_nonneg_i32_token("010").unwrap(), (10, "010"));
+        assert_eq!(validate_vcf_nonneg_i32_token("00").unwrap(), (0, "00"));
+        assert_eq!(validate_vcf_nonneg_i32_token("+0").unwrap(), (0, "+0"));
+        assert_eq!(validate_vcf_nonneg_i32_token("-0").unwrap(), (0, "0"));
+        assert!(validate_vcf_nonneg_i32_token(&"0".repeat(64)).is_ok());
+        assert!(validate_vcf_nonneg_i32_token(&"0".repeat(65)).is_err());
+        assert_eq!(
+            parse_vcf_threshold_nonneg_i32("03", "--vcf-min-depth").unwrap(),
+            VcfThreshold::with_raw(3, "03".to_string())
+        );
+        assert_eq!(
+            parse_vcf_threshold_nonneg_i32("+02", "--vcf-min-vd").unwrap(),
+            VcfThreshold::with_raw(2, "+02".to_string())
+        );
+        assert_eq!(
+            parse_vcf_threshold_nonneg_i32("010", "--vcf-cluster-dist").unwrap(),
+            VcfThreshold::with_raw(10, "010".to_string())
+        );
+        assert_eq!(
+            parse_vcf_threshold_nonneg_i32("-0", "--vcf-cluster-dist").unwrap(),
+            VcfThreshold::with_raw(0, "0".to_string())
+        );
     }
 
     #[test]
@@ -1104,8 +1185,8 @@ mod tests {
             vcf_pval: -0.0,
             vcf_pval_raw: Some("-0.0".to_string()),
             vcf_af: Some(VcfThreshold::with_raw(-0.0, "+0.00".to_string())),
-            vcf_min_depth: Some(0),
-            vcf_min_vd: Some(0),
+            vcf_min_depth: Some(VcfThreshold::with_raw(3, "03".to_string())),
+            vcf_min_vd: Some(VcfThreshold::with_raw(2, "+02".to_string())),
             vcf_qmean: Some(VcfThreshold::with_raw(20.0, "20.0".to_string())),
             vcf_mapq: Some(VcfThreshold::with_raw(0.0, "-0".to_string())),
             vcf_pmean: Some(VcfThreshold::with_raw(7.5, "7.5".to_string())),
@@ -1113,7 +1194,7 @@ mod tests {
             vcf_max_nm: Some(VcfThreshold::with_raw(4.0, "4.0".to_string())),
             vcf_gt_freq: Some(-0.0),
             vcf_msi: Some(VcfThreshold::with_raw(10.5, "10.5".to_string())),
-            vcf_cluster_dist: Some(15),
+            vcf_cluster_dist: Some(VcfThreshold::with_raw(0, "-0".to_string())),
             ..Config::default()
         };
         cfg.validate_vcf_thresholds().unwrap();
@@ -1125,27 +1206,42 @@ mod tests {
             0.0_f64.to_bits()
         );
         assert_eq!(cfg.vcf_af.as_ref().unwrap().raw.as_deref(), Some("0.00"));
+        assert_eq!(
+            cfg.vcf_min_depth.as_ref().unwrap().raw.as_deref(),
+            Some("03")
+        );
+        assert_eq!(cfg.vcf_min_vd.as_ref().unwrap().raw.as_deref(), Some("+02"));
+        assert_eq!(
+            cfg.vcf_cluster_dist.as_ref().unwrap().raw.as_deref(),
+            Some("0")
+        );
         assert_eq!(cfg.vcf_mapq.as_ref().unwrap().raw.as_deref(), Some("0"));
         assert_eq!(cfg.vcf_gt_freq.unwrap().to_bits(), 0.0_f64.to_bits());
 
         // Reject negative integer overrides, >1.0 gt_freq, mismatched/hostile raw tokens
         let mut bad_depth = Config {
-            vcf_min_depth: Some(-1),
+            vcf_min_depth: Some(VcfThreshold::new(-1)),
             ..Config::default()
         };
         assert!(bad_depth.validate_vcf_thresholds().is_err());
 
         let mut bad_vd = Config {
-            vcf_min_vd: Some(-2),
+            vcf_min_vd: Some(VcfThreshold::new(-2)),
             ..Config::default()
         };
         assert!(bad_vd.validate_vcf_thresholds().is_err());
 
         let mut bad_cluster = Config {
-            vcf_cluster_dist: Some(-5),
+            vcf_cluster_dist: Some(VcfThreshold::new(-5)),
             ..Config::default()
         };
         assert!(bad_cluster.validate_vcf_thresholds().is_err());
+
+        let mut bad_int_raw_mismatch = Config {
+            vcf_cluster_dist: Some(VcfThreshold::with_raw(10, "015".to_string())),
+            ..Config::default()
+        };
+        assert!(bad_int_raw_mismatch.validate_vcf_thresholds().is_err());
 
         let mut bad_gt = Config {
             vcf_gt_freq: Some(1.1),

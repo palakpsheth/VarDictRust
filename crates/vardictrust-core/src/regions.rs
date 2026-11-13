@@ -677,10 +677,9 @@ pub fn parse_region_flag(
         )));
     }
 
-    if split.len() > 2 && !chromosome_in_header(chromosomes_lengths, first_seg) {
+    if split.len() > 2 {
         if !chromosomes_lengths.is_empty() {
-            let mut matched_contig_err: Option<VardictError> = None;
-            for k in (1..split.len()).rev() {
+            for k in (2..split.len()).rev() {
                 let Some(prefix) = split.get(..k) else {
                     continue;
                 };
@@ -689,28 +688,14 @@ pub fn parse_region_flag(
                     let Some(&coord_str) = split.get(k) else {
                         continue;
                     };
-                    match parse_coord_segment(coord_str) {
-                        Ok((start, end)) => {
-                            let chr = correct_chromosome(chromosomes_lengths, &candidate);
-                            let gene = match split.get(k + 1..) {
-                                Some(tail) if !tail.is_empty() => tail.join(":"),
-                                _ => chr.clone(),
-                            };
-                            return Ok(finalize_single_region(chr, start, end, gene, config));
-                        }
-                        Err(err) => {
-                            if is_numeric_coord_token(coord_str) {
-                                return Err(err);
-                            }
-                            if matched_contig_err.is_none() {
-                                matched_contig_err = Some(err);
-                            }
-                        }
-                    }
+                    let (start, end) = parse_coord_segment(coord_str)?;
+                    let chr = correct_chromosome(chromosomes_lengths, &candidate);
+                    let gene = match split.get(k + 1..) {
+                        Some(tail) if !tail.is_empty() => tail.join(":"),
+                        _ => chr.clone(),
+                    };
+                    return Ok(finalize_single_region(chr, start, end, gene, config));
                 }
-            }
-            if let Some(err) = matched_contig_err {
-                return Err(err);
             }
         } else {
             let min_k = split.len().saturating_sub(2).max(1);
@@ -721,9 +706,9 @@ pub fn parse_region_flag(
                 };
                 if !coord_str.contains('-')
                     && k > min_k
-                    && split
-                        .get(k - 1)
-                        .is_some_and(|p| p.contains('-') && parse_coord_segment(p).is_ok())
+                    && split.get(k - 1).is_some_and(|p| {
+                        (p.contains('-') || split.len() == 3) && parse_coord_segment(p).is_ok()
+                    })
                 {
                     continue;
                 }
@@ -1583,5 +1568,49 @@ Y\t59042860\t59047860\tY_59042860_5\t0\t.\t59042860\t59047860
         assert_eq!(r_colon_gene[0][0].start, Pos1(100));
         assert_eq!(r_colon_gene[0][0].end, Pos1(200));
         assert_eq!(r_colon_gene[0][0].gene, "HLA-A*01:01");
+
+        // 8. Precedence when BOTH `chr1` AND colon-bearing `chr1:100` / `chr1:alt` exist in header
+        let mut mixed_chr_header = HashMap::new();
+        mixed_chr_header.insert("chr1".to_string(), 10_000);
+        mixed_chr_header.insert("chr1:100".to_string(), 5_000);
+        mixed_chr_header.insert("chr1:alt".to_string(), 5_000);
+
+        let r_chr1_100 = parse_region_flag("chr1:100:100-200", &config, &mixed_chr_header).unwrap();
+        assert_eq!(r_chr1_100[0][0].chr, "chr1:100");
+        assert_eq!(r_chr1_100[0][0].start, Pos1(100));
+        assert_eq!(r_chr1_100[0][0].end, Pos1(200));
+        assert_eq!(r_chr1_100[0][0].gene, "chr1:100");
+
+        let r_chr1_alt =
+            parse_region_flag("chr1:alt:100-200:MYGENE", &config, &mixed_chr_header).unwrap();
+        assert_eq!(r_chr1_alt[0][0].chr, "chr1:alt");
+        assert_eq!(r_chr1_alt[0][0].start, Pos1(100));
+        assert_eq!(r_chr1_alt[0][0].end, Pos1(200));
+        assert_eq!(r_chr1_alt[0][0].gene, "MYGENE");
+
+        assert!(parse_region_flag("chr1:alt", &config, &mixed_chr_header).is_err());
+
+        // 9. Longest known contig prefix fails immediately on invalid coordinates (no fallback to shorter `HLA-A*01:01` pos 1)
+        assert!(parse_region_flag("HLA-A*01:01:01:01:typo", &config, &chr_lengths).is_err());
+
+        // 10. Single-position 3-field `chr:position:gene` with numeric `<gene>` and empty header, plus HLA single-base
+        let r_single_entrez_chr = parse_region_flag("chr1:100:7157", &config, &empty).unwrap();
+        assert_eq!(r_single_entrez_chr[0][0].chr, "1");
+        assert_eq!(r_single_entrez_chr[0][0].start, Pos1(100));
+        assert_eq!(r_single_entrez_chr[0][0].end, Pos1(100));
+        assert_eq!(r_single_entrez_chr[0][0].gene, "7157");
+
+        let r_single_entrez_num = parse_region_flag("1:100:7157", &config, &empty).unwrap();
+        assert_eq!(r_single_entrez_num[0][0].chr, "chr1");
+        assert_eq!(r_single_entrez_num[0][0].start, Pos1(100));
+        assert_eq!(r_single_entrez_num[0][0].end, Pos1(100));
+        assert_eq!(r_single_entrez_num[0][0].gene, "7157");
+
+        let r_empty_hla_single =
+            parse_region_flag("HLA-A*01:01:01:01:150", &config, &empty).unwrap();
+        assert_eq!(r_empty_hla_single[0][0].chr, "HLA-A*01:01:01:01");
+        assert_eq!(r_empty_hla_single[0][0].start, Pos1(150));
+        assert_eq!(r_empty_hla_single[0][0].end, Pos1(150));
+        assert_eq!(r_empty_hla_single[0][0].gene, "HLA-A*01:01:01:01");
     }
 }

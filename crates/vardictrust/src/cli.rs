@@ -86,8 +86,8 @@ macro_rules! def_vcf_cli_parsers {
 def_vcf_cli_parsers! {
     (parse_min_splitreads, "--min-splitreads", i32, vardictrust_core::config::parse_vcf_nonneg_i32),
     (parse_vcf_af, "--vcf-af", vardictrust_core::config::VcfThreshold<f64>, vardictrust_core::config::parse_vcf_threshold_nonneg_f64),
-    (parse_vcf_min_depth, "--vcf-min-depth", i32, vardictrust_core::config::parse_vcf_nonneg_i32),
-    (parse_vcf_min_vd, "--vcf-min-vd", i32, vardictrust_core::config::parse_vcf_nonneg_i32),
+    (parse_vcf_min_depth, "--vcf-min-depth", vardictrust_core::config::VcfThreshold<i32>, vardictrust_core::config::parse_vcf_threshold_nonneg_i32),
+    (parse_vcf_min_vd, "--vcf-min-vd", vardictrust_core::config::VcfThreshold<i32>, vardictrust_core::config::parse_vcf_threshold_nonneg_i32),
     (parse_vcf_qmean, "--vcf-qmean", vardictrust_core::config::VcfThreshold<f64>, vardictrust_core::config::parse_vcf_threshold_nonneg_f64),
     (parse_vcf_mapq, "--vcf-mapq", vardictrust_core::config::VcfThreshold<f64>, vardictrust_core::config::parse_vcf_threshold_nonneg_f64),
     (parse_vcf_pmean, "--vcf-pmean", vardictrust_core::config::VcfThreshold<f64>, vardictrust_core::config::parse_vcf_threshold_nonneg_f64),
@@ -95,7 +95,7 @@ def_vcf_cli_parsers! {
     (parse_vcf_max_nm, "--vcf-max-nm", vardictrust_core::config::VcfThreshold<f64>, vardictrust_core::config::parse_vcf_threshold_nonneg_f64),
     (parse_vcf_gt_freq, "--vcf-gt-freq", f64, vardictrust_core::config::parse_vcf_unit_f64),
     (parse_vcf_msi, "--vcf-msi", vardictrust_core::config::VcfThreshold<f64>, vardictrust_core::config::parse_vcf_threshold_nonneg_f64),
-    (parse_vcf_cluster_dist, "--vcf-cluster-dist", i32, vardictrust_core::config::parse_vcf_nonneg_i32),
+    (parse_vcf_cluster_dist, "--vcf-cluster-dist", vardictrust_core::config::VcfThreshold<i32>, vardictrust_core::config::parse_vcf_threshold_nonneg_i32),
 }
 
 fn is_known_single_dash_long_flag(flag: &str) -> bool {
@@ -1126,7 +1126,7 @@ pub struct Cli {
         allow_negative_numbers = true,
         value_parser = parse_vcf_min_depth
     )]
-    pub vcf_min_depth: Vec<i32>,
+    pub vcf_min_depth: Vec<vardictrust_core::config::VcfThreshold<i32>>,
 
     /// Minimum variant depth for VCF FILTER (ports var2vcf_valid.pl -v [default: 2] / var2vcf_paired.pl -v [default: 3]).
     #[arg(
@@ -1136,7 +1136,7 @@ pub struct Cli {
         allow_negative_numbers = true,
         value_parser = parse_vcf_min_vd
     )]
-    pub vcf_min_vd: Vec<i32>,
+    pub vcf_min_vd: Vec<vardictrust_core::config::VcfThreshold<i32>>,
 
     /// Minimum mean base quality for VCF FILTER (ports var2vcf_valid.pl / var2vcf_paired.pl -q). [default: 22.5]
     #[arg(
@@ -1216,7 +1216,7 @@ pub struct Cli {
         allow_negative_numbers = true,
         value_parser = parse_vcf_cluster_dist
     )]
-    pub vcf_cluster_dist: Vec<i32>,
+    pub vcf_cluster_dist: Vec<vardictrust_core::config::VcfThreshold<i32>>,
 
     /// Write output (.vcf or .var) directly to file; .gz/.bgz suffixes use multithreaded BGZF
     #[arg(long = "output", value_name = "PATH", allow_hyphen_values = true)]
@@ -1522,8 +1522,8 @@ impl Cli {
             vcf_min_splitreads: self.min_splitreads.first().copied().unwrap_or(1),
             vcf_pstd_filter: !self.no_pstd_filter,
             vcf_af: self.vcf_af.first().cloned(),
-            vcf_min_depth: self.vcf_min_depth.first().copied(),
-            vcf_min_vd: self.vcf_min_vd.first().copied(),
+            vcf_min_depth: self.vcf_min_depth.first().cloned(),
+            vcf_min_vd: self.vcf_min_vd.first().cloned(),
             vcf_qmean: self.vcf_qmean.first().cloned(),
             vcf_mapq: self.vcf_mapq.first().cloned(),
             vcf_pmean: self.vcf_pmean.first().cloned(),
@@ -1531,7 +1531,7 @@ impl Cli {
             vcf_max_nm: self.vcf_max_nm.first().cloned(),
             vcf_gt_freq: self.vcf_gt_freq.first().copied(),
             vcf_msi: self.vcf_msi.first().cloned(),
-            vcf_cluster_dist: self.vcf_cluster_dist.first().copied(),
+            vcf_cluster_dist: self.vcf_cluster_dist.first().cloned(),
         };
         cfg.apply_pileup_overrides();
         cfg.validate_vcf_thresholds()?;
@@ -2936,8 +2936,14 @@ mod tests {
             custom.vcf_af,
             Some(VcfThreshold::with_raw(0.05, "0.050".to_string()))
         );
-        assert_eq!(custom.vcf_min_depth, Some(0));
-        assert_eq!(custom.vcf_min_vd, Some(0));
+        assert_eq!(
+            custom.vcf_min_depth,
+            Some(VcfThreshold::with_raw(0, "0".to_string()))
+        );
+        assert_eq!(
+            custom.vcf_min_vd,
+            Some(VcfThreshold::with_raw(0, "0".to_string()))
+        );
         assert_eq!(
             custom.vcf_qmean,
             Some(VcfThreshold::with_raw(20.0, "20.0".to_string()))
@@ -2964,9 +2970,40 @@ mod tests {
             custom.vcf_msi,
             Some(VcfThreshold::with_raw(10.5, "10.5".to_string()))
         );
-        assert_eq!(custom.vcf_cluster_dist, Some(15));
+        assert_eq!(
+            custom.vcf_cluster_dist,
+            Some(VcfThreshold::with_raw(15, "15".to_string()))
+        );
         assert!(custom.zero_based);
         assert_eq!(custom.bed.as_deref(), Some("regions.bed"));
+
+        // 2b. Leading-zero / `+`-prefixed / `-0` integer CLI tokens preserved verbatim for Perl dualvar labels
+        let raw_int_tokens = parse_pipeline(&[
+            "-G",
+            "ref.fa",
+            "-b",
+            "in.bam",
+            "--vcf-min-depth",
+            "03",
+            "--vcf-min-vd",
+            "+02",
+            "--vcf-cluster-dist",
+            "010",
+            "-R",
+            "chr1:1-100",
+        ]);
+        assert_eq!(
+            raw_int_tokens.vcf_min_depth,
+            Some(VcfThreshold::with_raw(3, "03".to_string()))
+        );
+        assert_eq!(
+            raw_int_tokens.vcf_min_vd,
+            Some(VcfThreshold::with_raw(2, "+02".to_string()))
+        );
+        assert_eq!(
+            raw_int_tokens.vcf_cluster_dist,
+            Some(VcfThreshold::with_raw(10, "010".to_string()))
+        );
 
         // 3. Invalid / hostile value rejection across all 11 flags
         let over_64 = format!("0.{}", "0".repeat(63));

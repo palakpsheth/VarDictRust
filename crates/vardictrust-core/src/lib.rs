@@ -1745,19 +1745,14 @@ fn emit_single_vcf_accumulator<W: std::io::Write>(
     config: &config::Config,
     writer: &mut W,
 ) -> Result<(), VardictError> {
-    let opt_c = crate::output::vcf::effective_vcf_cluster_dist(config);
     let mut cur_chr: Option<String> = None;
-    let mut streamer =
-        crate::output::vcf::SingleRecordStreamer::with_pass_only(opt_c, config.vcf_pass_only);
+    let mut streamer = crate::output::vcf::SingleRecordStreamer::from_config(config);
     vcf_acc.emit_all(|chr, cand| {
         if cur_chr.as_deref() != Some(chr) {
             if cur_chr.is_some() {
                 let prev = std::mem::replace(
                     &mut streamer,
-                    crate::output::vcf::SingleRecordStreamer::with_pass_only(
-                        opt_c,
-                        config.vcf_pass_only,
-                    ),
+                    crate::output::vcf::SingleRecordStreamer::from_config(config),
                 );
                 prev.finish(|line| writeln!(writer, "{line}"))
                     .map_err(VardictError::Io)?;
@@ -4287,19 +4282,14 @@ fn run_somatic<W: EngineWriter>(
     )?;
     split_var_deduper.flush_all_pending(|line| write_output_line(writer, line))?;
 
-    let opt_c = crate::output::vcf::effective_vcf_cluster_dist(config);
     let mut cur_chr: Option<String> = None;
-    let mut streamer =
-        crate::output::vcf::PairedRecordStreamer::with_pass_only(opt_c, config.vcf_pass_only);
+    let mut streamer = crate::output::vcf::PairedRecordStreamer::from_config(config);
     vcf_acc.emit_all(|chr, cand| {
         if cur_chr.as_deref() != Some(chr) {
             if cur_chr.is_some() {
                 let prev = std::mem::replace(
                     &mut streamer,
-                    crate::output::vcf::PairedRecordStreamer::with_pass_only(
-                        opt_c,
-                        config.vcf_pass_only,
-                    ),
+                    crate::output::vcf::PairedRecordStreamer::from_config(config),
                 );
                 prev.finish(|line| write_output_line(writer, line))?;
             }
@@ -6535,7 +6525,7 @@ mod tests {
             );
 
             let cfg = crate::config::Config {
-                vcf_cluster_dist: Some(10),
+                vcf_cluster_dist: Some(crate::config::VcfThreshold::new(10)),
                 vcf_pass_only: true,
                 ..Default::default()
             };
@@ -6656,19 +6646,22 @@ mod tests {
         // and SvSplitreadFlush) to spill to disk runs and merge via BinaryHeap.
         TEST_VCF_SPILL_BYTES_OVERRIDE.with(|c| c.set(Some(1)));
 
-        // Simple mode: multi-tile + forced disk spill tags 48 & 54 with Cluster10bp, keeps 140 PASS
+        // Simple mode: multi-tile + forced disk spill tags 48 & 54 with Cluster010bp (raw token), keeps 140 PASS
         let simple_cfg = crate::config::Config {
             reference: fasta_path.to_string_lossy().into_owned(),
             bam: tumor_bam.to_string_lossy().into_owned(),
             region: Some("chr1:1-180".to_string()),
             tile_size: Some(50),
-            vcf_cluster_dist: Some(10),
+            vcf_cluster_dist: Some(crate::config::VcfThreshold::with_raw(10, "010".to_string())),
             threads: 1,
             ..Default::default()
         };
         let mut simple_buf = Vec::new();
         run_with_writer(&simple_cfg, &mut simple_buf).unwrap();
         let simple_vcf = String::from_utf8(simple_buf).unwrap();
+        assert!(simple_vcf.contains(
+            r#"##FILTER=<ID=Cluster010bp,Description="Two variants are within 010 bp">"#
+        ));
         let simple_filts: Vec<(String, String)> = simple_vcf
             .lines()
             .filter(|l| !l.starts_with('#'))
@@ -6680,8 +6673,8 @@ mod tests {
         assert_eq!(
             simple_filts,
             vec![
-                ("48".to_string(), "Cluster10bp".to_string()),
-                ("54".to_string(), "Cluster10bp".to_string()),
+                ("48".to_string(), "Cluster010bp".to_string()),
+                ("54".to_string(), "Cluster010bp".to_string()),
                 ("140".to_string(), "PASS".to_string()),
             ]
         );
@@ -6757,7 +6750,7 @@ mod tests {
             col_seg_end: 7,
             col_gene: Some(3),
             column_for_chromosome: Some(0),
-            vcf_cluster_dist: Some(10),
+            vcf_cluster_dist: Some(crate::config::VcfThreshold::new(10)),
             vcf_pass_only: true,
             threads: 1,
             ..Default::default()
@@ -6835,7 +6828,7 @@ mod tests {
             tile_size: Some(50),
             sv_min_len: 2,
             vcf_min_splitreads: 1,
-            vcf_cluster_dist: Some(10),
+            vcf_cluster_dist: Some(crate::config::VcfThreshold::new(10)),
             vcf_pass_only: true,
             threads: 1,
             ..Default::default()
@@ -6850,7 +6843,7 @@ mod tests {
             .collect();
         assert_eq!(sv_flush_positions, vec!["48".to_string()]);
 
-        // Paired somatic mode: multi-tile + forced disk spill tags StrongSomatic SNVs 48 & 54 with Cluster10bp
+        // Paired somatic mode: multi-tile + forced disk spill tags StrongSomatic SNVs 48 & 54 with Cluster010bp
         let somatic_cfg = crate::config::Config {
             reference: fasta_path.to_string_lossy().into_owned(),
             bam: format!(
@@ -6860,13 +6853,16 @@ mod tests {
             ),
             region: Some("chr1:1-180".to_string()),
             tile_size: Some(50),
-            vcf_cluster_dist: Some(10),
+            vcf_cluster_dist: Some(crate::config::VcfThreshold::with_raw(10, "010".to_string())),
             threads: 1,
             ..Default::default()
         };
         let mut som_buf = Vec::new();
         run_with_writer(&somatic_cfg, &mut som_buf).unwrap();
         let som_vcf = String::from_utf8(som_buf).unwrap();
+        assert!(som_vcf.contains(
+            r#"##FILTER=<ID=Cluster010bp,Description="Two somatic variants are within 010 bp">"#
+        ));
         let som_filts: Vec<(String, String)> = som_vcf
             .lines()
             .filter(|l| !l.starts_with('#'))
@@ -6878,8 +6874,8 @@ mod tests {
         assert_eq!(
             som_filts,
             vec![
-                ("48".to_string(), "Cluster10bp".to_string()),
-                ("54".to_string(), "Cluster10bp".to_string()),
+                ("48".to_string(), "Cluster010bp".to_string()),
+                ("54".to_string(), "Cluster010bp".to_string()),
                 ("140".to_string(), "PASS".to_string()),
             ]
         );
@@ -7139,11 +7135,15 @@ mod tests {
                 ..sci_cfg.clone()
             },
             crate::config::Config {
-                vcf_min_depth: Some(-1),
+                vcf_min_depth: Some(crate::config::VcfThreshold::new(-1)),
                 ..sci_cfg.clone()
             },
             crate::config::Config {
-                vcf_cluster_dist: Some(-2),
+                vcf_cluster_dist: Some(crate::config::VcfThreshold::new(-2)),
+                ..sci_cfg.clone()
+            },
+            crate::config::Config {
+                vcf_min_vd: Some(crate::config::VcfThreshold::with_raw(2, "99".to_string())),
                 ..sci_cfg.clone()
             },
             crate::config::Config {
