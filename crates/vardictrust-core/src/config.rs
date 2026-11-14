@@ -559,9 +559,6 @@ pub fn parse_java_number_u32(s: &str) -> Result<u32, String> {
 
 /// Unsigned `usize` wrapper around [`parse_java_number_i32`] rejecting negative results.
 pub fn parse_java_number_usize(s: &str) -> Result<usize, String> {
-    if s == "18446744073709551615" {
-        return Ok(usize::MAX);
-    }
     let v = parse_java_number_i32(s)?;
     usize::try_from(v).map_err(|_| format!("Invalid non-negative integer value '{s}'"))
 }
@@ -1266,5 +1263,27 @@ mod tests {
             ..Config::default()
         };
         assert!(bad_raw_over64.validate_vcf_thresholds().is_err());
+    }
+
+    #[test]
+    fn batch12_parse_java_number_usize_enforces_java_int_bounds() {
+        assert_eq!(parse_java_number_usize("0").unwrap(), 0);
+        assert_eq!(
+            parse_java_number_usize("2147483647").unwrap(),
+            i32::MAX as usize
+        );
+        for bad in [
+            "-1",
+            "2147483648",
+            "18446744073709551615",
+            "\x00all_cores",
+            "",
+            " 1",
+        ] {
+            assert!(
+                parse_java_number_usize(bad).is_err(),
+                "expected Err from parse_java_number_usize({bad:?})"
+            );
+        }
     }
 }

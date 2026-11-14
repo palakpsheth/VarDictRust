@@ -108,7 +108,35 @@ fn collect_utf8_args<I: IntoIterator<Item = std::ffi::OsString>>(
         .collect()
 }
 
-fn main() -> Result<()> {
+fn sanitize_for_terminal(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        let code = c as u32;
+        if c != '\n' && c != '\t' && (code < 0x20 || c == '\x7f' || (0x80..=0x9f).contains(&code)) {
+            for esc in c.escape_default() {
+                out.push(esc);
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+fn write_error_ignoring_broken_pipe<W: std::io::Write>(
+    err: &anyhow::Error,
+    mut out: W,
+) -> std::io::Result<()> {
+    let safe_msg = sanitize_for_terminal(&format!("{err:?}"));
+    let line = format!("Error: {safe_msg}\n");
+    match out.write_all(line.as_bytes()).and_then(|()| out.flush()) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
+fn try_main() -> Result<()> {
     env_logger::init();
     let _session = profile::Session::start()?;
     let raw_args = collect_utf8_args(std::env::args_os())?;
@@ -140,9 +168,56 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+fn main() -> std::process::ExitCode {
+    match try_main() {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(err) => {
+            let _ = write_error_ignoring_broken_pipe(&err, std::io::stderr().lock());
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn batch12_sanitize_for_terminal_escapes_control_sequences() {
+        let hostile =
+            "line1\tcol2\n\x1b]52;c;SGVsbG8=\x07\u{9b}2J\roverwrite\0nul\x7fdel λ café 🧬";
+        let got = sanitize_for_terminal(hostile);
+        assert_eq!(
+            got,
+            "line1\tcol2\n\\u{1b}]52;c;SGVsbG8=\\u{7}\\u{9b}2J\\roverwrite\\u{0}nul\\u{7f}del λ café 🧬"
+        );
+        assert!(got.contains('\n') && got.contains('\t'));
+        assert!(!got.chars().any(|c| {
+            c != '\n'
+                && c != '\t'
+                && ((c as u32) < 0x20 || c == '\x7f' || (0x80..=0x9f).contains(&(c as u32)))
+        }));
+
+        let err = anyhow::anyhow!("inner \x1b[31mred\x07\r\0").context("outer\tctx");
+        let mut sink = Vec::new();
+        write_error_ignoring_broken_pipe(&err, &mut sink).unwrap();
+        let rendered = String::from_utf8(sink).unwrap();
+        assert!(rendered.starts_with("Error: outer\tctx\n"));
+        assert!(rendered.ends_with('\n'));
+        assert!(rendered.contains("inner \\u{1b}[31mred\\u{7}\\r\\u{0}"));
+        assert!(!rendered.contains('\x1b'));
+
+        struct BrokenPipeWriter;
+        impl std::io::Write for BrokenPipeWriter {
+            fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe))
+            }
+        }
+        assert!(write_error_ignoring_broken_pipe(&err, BrokenPipeWriter).is_ok());
+    }
 
     #[test]
     fn malloc_conf_target_split_and_nul_termination() {

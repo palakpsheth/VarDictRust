@@ -76,6 +76,16 @@ fn parse_java_signed_i32(s: &str) -> Result<i32, String> {
     vardictrust_core::config::parse_java_number_i32(s)
 }
 
+/// Value parser for `-th` / `--threads`: maps the NUL-prefixed bare-flag sentinel
+/// `"\x00all_cores"` (unreachable from NUL-terminated OS `argv`) to `usize::MAX` and
+/// delegates explicit thread counts to [`vardictrust_core::config::parse_java_number_usize`].
+fn parse_threads_cli_value(s: &str) -> Result<usize, String> {
+    if s == "\x00all_cores" {
+        return Ok(usize::MAX);
+    }
+    vardictrust_core::config::parse_java_number_usize(s)
+}
+
 /// Strict parser for `--vcf-pval <FLOAT>` (`var2vcf_paired.pl -P`).
 /// Preserves the normalized raw CLI token for verbatim `P$PVAL` header/FILTER formatting
 /// while canonicalizing signed zeros (`-0.0` / `+0.0` -> `(0.0, "0.0")`).
@@ -1389,8 +1399,8 @@ pub struct Cli {
     #[arg(
         long = "threads",
         num_args(0..=1),
-        default_missing_value = "18446744073709551615",
-        value_parser = vardictrust_core::config::parse_java_number_usize,
+        default_missing_value = "\x00all_cores",
+        value_parser = parse_threads_cli_value,
         help_heading = "Performance & Concurrency"
     )]
     pub threads: Option<usize>,
@@ -3369,5 +3379,130 @@ mod tests {
                 "missing '{expected}' in {err}"
             );
         }
+    }
+
+    #[test]
+    fn batch12_bare_th_sentinel_isolated_from_explicit_u64_max() {
+        use clap::CommandFactory as _;
+
+        // Bare -th / --th / --threads both at end of argv and before another flag -> usize::MAX -> all_cores()
+        for bare_argv in [
+            &["-b", "a.bam", "-G", "r.fa", "-th"][..],
+            &["-th", "-b", "a.bam", "-G", "r.fa"][..],
+            &["-b", "a.bam", "-G", "r.fa", "--th"][..],
+            &["--th", "-b", "a.bam", "-G", "r.fa"][..],
+            &["-b", "a.bam", "-G", "r.fa", "--threads"][..],
+            &["--threads", "-b", "a.bam", "-G", "r.fa"][..],
+        ] {
+            let norm = normalize_args(&args(bare_argv));
+            check_unsupported(&norm).unwrap();
+            let cli = Cli::try_parse_from(&norm).unwrap_or_else(|e| {
+                panic!("bare threads {bare_argv:?} failed (norm={norm:?}): {e}")
+            });
+            assert_eq!(cli.threads, Some(usize::MAX), "argv={bare_argv:?}");
+            assert_eq!(
+                cli.to_config_with_rayon_env(Some("1")).unwrap().threads,
+                all_cores(),
+                "argv={bare_argv:?}"
+            );
+        }
+
+        // Explicit u64::MAX string ("18446744073709551615") must be rejected on -th and all BED column flags
+        for bad_argv in [
+            &["-b", "a.bam", "-G", "r.fa", "-th", "18446744073709551615"][..],
+            &[
+                "-b",
+                "a.bam",
+                "-G",
+                "r.fa",
+                "-th",
+                "18446744073709551615",
+                "-R",
+                "chr1:1-100",
+            ][..],
+            &["-b", "a.bam", "-G", "r.fa", "-th=18446744073709551615"][..],
+            &["-b", "a.bam", "-G", "r.fa", "-th18446744073709551615"][..],
+            &[
+                "-b",
+                "a.bam",
+                "-G",
+                "r.fa",
+                "--threads",
+                "18446744073709551615",
+            ][..],
+            &[
+                "-b",
+                "a.bam",
+                "-G",
+                "r.fa",
+                "--threads=18446744073709551615",
+            ][..],
+            &[
+                "-b",
+                "a.bam",
+                "-G",
+                "r.fa",
+                "-c",
+                "18446744073709551615",
+                "r.bed",
+            ][..],
+            &[
+                "-b",
+                "a.bam",
+                "-G",
+                "r.fa",
+                "-S",
+                "18446744073709551615",
+                "r.bed",
+            ][..],
+            &[
+                "-b",
+                "a.bam",
+                "-G",
+                "r.fa",
+                "-E",
+                "18446744073709551615",
+                "r.bed",
+            ][..],
+            &[
+                "-b",
+                "a.bam",
+                "-G",
+                "r.fa",
+                "-s",
+                "18446744073709551615",
+                "r.bed",
+            ][..],
+            &[
+                "-b",
+                "a.bam",
+                "-G",
+                "r.fa",
+                "-e",
+                "18446744073709551615",
+                "r.bed",
+            ][..],
+            &[
+                "-b",
+                "a.bam",
+                "-G",
+                "r.fa",
+                "-g",
+                "18446744073709551615",
+                "r.bed",
+            ][..],
+        ] {
+            let norm = normalize_args(&args(bad_argv));
+            assert!(
+                Cli::try_parse_from(&norm).is_err(),
+                "expected Cli::try_parse_from Err on {bad_argv:?} (norm={norm:?})"
+            );
+        }
+
+        let mut cmd = Cli::command();
+        let short_help = cmd.render_help().to_string();
+        let long_help = cmd.render_long_help().to_string();
+        assert!(!short_help.contains('\0') && !short_help.contains("all_cores"));
+        assert!(!long_help.contains('\0') && !long_help.contains("all_cores"));
     }
 }
