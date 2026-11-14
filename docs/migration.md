@@ -18,7 +18,7 @@ VarDict \
   -f 0.01 \
   -N SAMPLE \
   -b sample.bam \
-  -c 1 -S 2 -E 3 -g 4 -z \
+  -c 1 -S 2 -E 3 -g 4 -z 1 \
   targets.bed \
   | teststrandbias.R \
   | var2vcf_valid.pl -N SAMPLE -E -f 0.01 \
@@ -62,7 +62,7 @@ VarDict \
   -f 0.01 \
   -N "TUMOR|NORMAL" \
   -b "tumor.bam|normal.bam" \
-  -c 1 -S 2 -E 3 -g 4 -z \
+  -c 1 -S 2 -E 3 -g 4 -z 1 \
   targets.bed \
   | testsomatic.R \
   | var2vcf_paired.pl -N "TUMOR|NORMAL" -M -f 0.01 \
@@ -152,7 +152,7 @@ vardictrust --help
 Following [`RegionBuilder.java`](https://github.com/AstraZeneca-NGS/VarDictJava/blob/0886261/src/main/java/com/astrazeneca/vardict/RegionBuilder.java#L48-L68), `VarDictJava`'s default non-amplicon table layout is 13-column UCSC `refGene` (`-c 3 -S 7 -E 8 -s 10 -e 11 -g 13`, **1-based inclusive**; 8-column amplicon BEDs are auto-detected separately):
 
 - **4-column UCSC BED (`chr`, `start_0based`, `end_1based`, `gene`) invoked *without* `-c`:** both `VarDictJava` and `vardictrust` auto-detect `-c 1 -S 2 -E 3 -g 4` **and** 0-based half-open coordinates (`-z 1`) when `start <= end`.
-- **3-, 5-, and 6-column 0-based UCSC BEDs — and 4-column 0-based BEDs whenever `-c 1` is passed explicitly:** you **must** pass **`-c 1 -S 2 -E 3 -z`** (plus `-g 4` when column 4 is the region/gene name)! Passing `-c 1` without `-z` disables 4-column auto-detection and leaves `zero_based = false` (**1-based inclusive**), silently shifting every region start coordinate by 1 bp; omitting `-c 1 -S 2 -E 3` on `< 11`-column non-4-column BEDs fails fast with `VardictError::Parse` expecting at least 11 `refGene` columns. (Omit `-z` only when your region file uses 1-based inclusive coordinates.)
+- **3-, 5-, and 6-column 0-based UCSC BEDs — and 4-column 0-based BEDs whenever `-c 1` is passed explicitly:** you **must** pass **`-c 1 -S 2 -E 3 -z`** (or `-z 1`, plus `-g 4` when column 4 is the region/gene name)! Passing `-c 1` without `-z` disables 4-column auto-detection and leaves `zero_based = false` (**1-based inclusive**), silently shifting every region start coordinate by 1 bp; omitting `-c 1 -S 2 -E 3` on `< 11`-column non-4-column BEDs fails fast with `VardictError::Parse` expecting at least 11 `refGene` columns. Note that `vardictrust` accepts both bare `-z` and `-z 1` even immediately before the positional `BED` path, whereas legacy `VarDictJava` requires explicit `-z 1` there (Commons CLI `hasOptionalArgs(1)` otherwise consumes the `BED` path as `-z`'s numeric value). Omit `-z` only when your region file uses 1-based inclusive coordinates.
 
 ### 3. Single-Dash Legacy Java Flags vs GNU `--` Flags
 
