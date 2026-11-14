@@ -2,7 +2,7 @@
 
 `vardictrust` consolidates the three-stage [`VarDictJava` v1.8.3](https://github.com/AstraZeneca-NGS/VarDictJava/tree/0886261) + [`VarDict` R/Perl](https://github.com/AstraZeneca-NGS/VarDict/tree/009e017) pipeline (`VarDictJava` $\to$ `teststrandbias.R` / `testsomatic.R` $\to$ `var2vcf_valid.pl` / `var2vcf_paired.pl`) into a **single statically-compiled binary** with zero JVM, R, or Perl runtime dependencies.
 
-On valid inputs, `vardictrust` produces VCF 4.3 and intermediate `.var` output **byte-for-byte identical** (within floating-point tolerance $\varepsilon \le 10^{-6}$ after R 5-decimal banker's rounding) to `VarDictJava` v1.8.3 (`0886261`) + `VarDict` (`009e017`). See [`DIVERGENCES.md`](../DIVERGENCES.md) and [`docs/validation/omnibus-empirical-validation.md`](validation/omnibus-empirical-validation.md) for empirical parity receipts.
+On valid inputs, `vardictrust` produces VCF 4.2 (`VCFv4.2`) and intermediate `.var` output **byte-for-byte identical** (within floating-point tolerance $\varepsilon \le 10^{-6}$ after R 5-decimal banker's rounding) to `VarDictJava` v1.8.3 (`0886261`) + `VarDict` (`009e017`). See [`DIVERGENCES.md`](../DIVERGENCES.md) and [`docs/validation/omnibus-empirical-validation.md`](validation/omnibus-empirical-validation.md) for empirical parity receipts.
 
 ---
 
@@ -10,7 +10,7 @@ On valid inputs, `vardictrust` produces VCF 4.3 and intermediate `.var` output *
 
 ### Single-Sample / Germline Calling
 
-**Legacy 3-process pipe (`VarDictJava` + R + Perl):**
+**Legacy 3-process pipe (`VarDictJava` + R + Perl on a standard 0-based UCSC BED):**
 
 ```bash
 VarDict \
@@ -18,7 +18,7 @@ VarDict \
   -f 0.01 \
   -N SAMPLE \
   -b sample.bam \
-  -c 1 -S 2 -E 3 -g 4 \
+  -c 1 -S 2 -E 3 -g 4 -z \
   targets.bed \
   | teststrandbias.R \
   | var2vcf_valid.pl -N SAMPLE -E -f 0.01 \
@@ -34,7 +34,7 @@ vardictrust \
   -f 0.01 \
   -N SAMPLE \
   -b sample.bam \
-  -c 1 -S 2 -E 3 -g 4 \
+  -c 1 -S 2 -E 3 -g 4 -z \
   --no-end \
   targets.bed \
   > sample.vcf
@@ -45,7 +45,7 @@ vardictrust \
   -f 0.01 \
   -N SAMPLE \
   -b sample.bam \
-  -c 1 -S 2 -E 3 -g 4 \
+  -c 1 -S 2 -E 3 -g 4 -z \
   --no-end \
   --output sample.vcf.gz \
   --tbi \
@@ -54,7 +54,7 @@ vardictrust \
 
 ### Paired Tumor/Normal Somatic Calling
 
-**Legacy 3-process pipe (`VarDictJava` + `testsomatic.R` + `var2vcf_paired.pl`):**
+**Legacy 3-process pipe (`VarDictJava` + `testsomatic.R` + `var2vcf_paired.pl` on a standard 0-based UCSC BED):**
 
 ```bash
 VarDict \
@@ -62,7 +62,7 @@ VarDict \
   -f 0.01 \
   -N "TUMOR|NORMAL" \
   -b "tumor.bam|normal.bam" \
-  -c 1 -S 2 -E 3 -g 4 \
+  -c 1 -S 2 -E 3 -g 4 -z \
   targets.bed \
   | testsomatic.R \
   | var2vcf_paired.pl -N "TUMOR|NORMAL" -M -f 0.01 \
@@ -77,7 +77,7 @@ vardictrust \
   -f 0.01 \
   -N "TUMOR|NORMAL" \
   -b "tumor.bam|normal.bam" \
-  -c 1 -S 2 -E 3 -g 4 \
+  -c 1 -S 2 -E 3 -g 4 -z \
   --paired-strict \
   --output somatic.vcf.gz \
   --tbi \
@@ -120,17 +120,17 @@ Because `vardictrust` fuses [`VarDictJava`](https://github.com/AstraZeneca-NGS/V
 | `-P <FLOAT>` (`var2vcf_paired.pl`) | `--vcf-pval <FLOAT>` | N/A | `0.05` | Maximum somatic Fisher p-value (`SSF`) threshold and `P<FLOAT>` `FILTER` tag in paired VCF output. |
 | `-P 0` (`var2vcf_valid.pl`) | `--no-pstd-filter` | Filter `PSTD=0` on | N/A | Disables the single-position read filter (`PSTD == 0`) in single-sample VCF output. |
 | `-T <INT>` (`var2vcf_valid.pl`) | `--min-splitreads <INT>` | `1` | N/A | Minimum `SPLITREAD` support required for structural variants in single-sample VCF output. |
-| `-f <FLOAT>` | `--vcf-af <FLOAT>` (or `-f <FLOAT>`) | Inherits `-f` (`0.02` if `-f 0`) | Inherits `-f` (`0.02` if `-f 0`) | Overrides VCF `FILTER`/`GT` minimum AF independently of pileup `-f`. Passing `--vcf-af 0` explicitly sets `0.0` (`defined()` semantics), whereas pileup `-f 0` alone preserves Perl's falsy fallback to `0.02` (use `-f 0.0` or `--vcf-af 0` for zero VCF AF cutoff). |
+| `-f <FLOAT>` | `--vcf-af <FLOAT>` (or `-f <FLOAT>`) | Inherits `-f` (`0.02` if `-f 0`) | Inherits `-f` | Overrides VCF `FILTER`/`GT` minimum AF independently of pileup `-f`. Passing `--vcf-af 0` explicitly sets `0.0` (`defined()` semantics) in both modes; when `--vcf-af` is omitted, single-sample `var2vcf_valid.pl` preserves Perl's falsy fallback (`-f 0` $\to$ `0.02`; pass `-f 0.0` or `--vcf-af 0` for zero single-sample VCF AF cutoff), whereas paired somatic `var2vcf_paired.pl` uses `defined($opt_f)` so `-f 0` stays `0`. |
 | `-d <INT>` | `--vcf-min-depth <INT>` | `3` | `5` | Minimum total read depth (`DP`) before `d<INT>` soft-filter. |
 | `-v <INT>` | `--vcf-min-vd <INT>` | `2` | `3` | Minimum variant read depth (`VD`) before `v<INT>` soft-filter. |
 | `-q <FLOAT>` | `--vcf-qmean <FLOAT>` | `22.5` | `22.5` | Minimum mean base quality (`QUAL`) before `q<FLOAT>` soft-filter. |
 | `-Q <FLOAT>` | `--vcf-mapq <FLOAT>` | `10` | `0` | Minimum mean mapping quality (`MQ`) before `Q<FLOAT>` soft-filter. |
 | `-p <FLOAT>` | `--vcf-pmean <FLOAT>` | `8` | `8` | Minimum mean read position (`PMEAN`) before `p<FLOAT>` soft-filter. |
-| `-o <FLOAT>` | `--vcf-sn <FLOAT>` | `1.5` | `1.5` | Minimum signal-to-noise ratio (`SN`) before `o<FLOAT>` soft-filter. |
+| `-o <FLOAT>` | `--vcf-sn <FLOAT>` | `1.5` | `1.5` | Minimum signal-to-noise ratio (`SN`) before `SN<FLOAT>` soft-filter. |
 | `-m <FLOAT>` | `--vcf-max-nm <FLOAT>` | `5.25` | `5.25` | Maximum mean mismatches (`NM`) before `NM<FLOAT>` soft-filter. |
 | `-F <FLOAT>` | `--vcf-gt-freq <FLOAT>` | `0.2` | `0.2` | Homozygous `1/1` genotype margin (`1 - AF < FLOAT`). |
 | `-I <FLOAT>` | `--vcf-msi <FLOAT>` | `12` | `12` | Maximum non-monomer microsatellite repeat count (`MSI`) before `MSI<FLOAT>` filter. |
-| `-c <INT>` | `--vcf-cluster-dist <INT>` | `0` (disabled) | `0` (disabled) | Adjacent SNV cluster filter window in bp. |
+| `-c <INT>` | `--vcf-cluster-dist <INT>` | `0` (disabled) | `0` (disabled) | Adjacent variant cluster window in bp (`Cluster<INT>bp` filter across single-sample, amplicon, and paired somatic streams). |
 | `-A` (`var2vcf_valid.pl` all-alleles) | *Deferred to `v1.1.0` `--all-alleles`* | Single-winner (`UB-7`) | Single-winner (`UB-7`) | **Important:** `-A <INT>` on `vardictrust` is `VarDictJava`'s `sv_min_af` (`[default: 4]`), **not** `var2vcf_valid.pl -A`! Multi-allelic emission (`UB-7`) is tracked for `v1.1.0` (`--modern` / `--all-alleles`; see [`ROADMAP.md`](../ROADMAP.md)). |
 
 ---
@@ -147,12 +147,12 @@ vardictrust -H
 vardictrust --help
 ```
 
-### 2. 3-, 4-, 5-, and 6-Column BED Files Require `-c 1 -S 2 -E 3`
+### 2. BED Column Indices & 0-Based Coordinate Indexing (`-c 1 -S 2 -E 3 -z`)
 
-`VarDictJava` defaults its BED column indices to `-c 1 -S 2 -E 6 -g 4` (designed for 8-column amplicon/refGene tables where column `6` is the coding/exon end).
+Following [`RegionBuilder.java`](https://github.com/AstraZeneca-NGS/VarDictJava/blob/0886261/src/main/java/com/astrazeneca/vardict/RegionBuilder.java#L48-L68), `VarDictJava`'s default non-amplicon table layout is 13-column UCSC `refGene` (`-c 3 -S 7 -E 8 -s 10 -e 11 -g 13`, **1-based inclusive**; 8-column amplicon BEDs are auto-detected separately):
 
-- **3- or 4-column UCSC BED (`chr`, `start_0based`, `end_1based`, `[gene]`):** pass `-c 1 -S 2 -E 3` (plus `-g 4` if column 4 is the region/gene label). Just like `VarDictJava`, `vardictrust` automatically treats 3/4-column BED intervals without segment columns as **0-based half-open** unless overridden via `-z 0`.
-- **5- or 6-column UCSC BED (`chr`, `start`, `end`, `name`, `score`, `strand`):** you **must** pass `-c 1 -S 2 -E 3 -g 4 -z 1`! Without `-E 3`, column `6` (`+`/`-` strand) is parsed as the region end coordinate and rejected with an actionable `VardictError::Parse` diagnostic, and without `-z 1` non-4-column rows default to 1-based closed coordinates in `VarDictJava`.
+- **4-column UCSC BED (`chr`, `start_0based`, `end_1based`, `gene`) invoked *without* `-c`:** both `VarDictJava` and `vardictrust` auto-detect `-c 1 -S 2 -E 3 -g 4` **and** 0-based half-open coordinates (`-z 1`) when `start <= end`.
+- **3-, 5-, and 6-column 0-based UCSC BEDs — and 4-column 0-based BEDs whenever `-c 1` is passed explicitly:** you **must** pass **`-c 1 -S 2 -E 3 -z`** (plus `-g 4` when column 4 is the region/gene name)! Passing `-c 1` without `-z` disables 4-column auto-detection and leaves `zero_based = false` (**1-based inclusive**), silently shifting every region start coordinate by 1 bp; omitting `-c 1 -S 2 -E 3` on `< 11`-column non-4-column BEDs fails fast with `VardictError::Parse` expecting at least 11 `refGene` columns. (Omit `-z` only when your region file uses 1-based inclusive coordinates.)
 
 ### 3. Single-Dash Legacy Java Flags vs GNU `--` Flags
 

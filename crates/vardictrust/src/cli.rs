@@ -1970,12 +1970,19 @@ mod tests {
             r"\-H",
             r"\-h",
             r"\\t",
+            r"VCF 4.2 (VCFv4.2)",
+            r"\-c 1 \-S 2 \-E 3 \-g 4 \-z targets.bed",
+            r"\-c 1 \-S 2 \-E 3 \-z targets.bed",
         ] {
             assert!(
                 man_text.contains(needle),
                 "manpage missing escaped '{needle}'"
             );
         }
+        assert!(
+            !man_text.contains("VCF 4.3"),
+            "manpage must cite VCF 4.2 (VCFv4.2), not VCF 4.3"
+        );
         assert_eq!(
             completions_man::escape_roff(".var-row\n'tumor|normal'\\path"),
             "\\&.var\\-row\n\\&'tumor|normal'\\\\path"

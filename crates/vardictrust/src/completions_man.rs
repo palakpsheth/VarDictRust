@@ -456,7 +456,7 @@ pub(crate) fn write_manpage<W: Write>(out: &mut W) -> io::Result<()> {
         out,
         "{}",
         escape_roff(
-            "VarDictRust consolidates the three-stage VarDictJava v1.8.3 + R (teststrandbias.R / testsomatic.R) + Perl (var2vcf_valid.pl / var2vcf_paired.pl) variant-calling pipeline into a single statically-compiled binary with bounded-memory WGS tiling, native BAM/CRAM and BGZF FASTA/BED support, and direct BGZF + Tabix (.tbi) / CSI (.csi) VCF 4.3 emission."
+            "VarDictRust consolidates the three-stage VarDictJava v1.8.3 + R (teststrandbias.R / testsomatic.R) + Perl (var2vcf_valid.pl / var2vcf_paired.pl) variant-calling pipeline into a single statically-compiled binary with bounded-memory WGS tiling, native BAM/CRAM and BGZF FASTA/BED support, and direct BGZF + Tabix (.tbi) / CSI (.csi) VCF 4.2 (VCFv4.2) emission."
         )
     )?;
     writeln!(out, ".PP")?;
@@ -508,20 +508,20 @@ pub(crate) fn write_manpage<W: Write>(out: &mut W) -> io::Result<()> {
         out,
         ".nf\n{}\n.fi",
         escape_roff(
-            "vardictrust -G ref.fa -b sample.bam -N SAMPLE -f 0.01 -c 1 -S 2 -E 3 -g 4 targets.bed > variants.vcf"
+            "vardictrust -G ref.fa -b sample.bam -N SAMPLE -f 0.01 -c 1 -S 2 -E 3 -g 4 -z targets.bed > variants.vcf"
         )
     )?;
     writeln!(out, ".TP")?;
     writeln!(
         out,
         "{}",
-        escape_roff("Paired tumor/normal somatic calling with BGZF output and Tabix index:")
+        escape_roff("Paired tumor/normal somatic calling on a 0-based BED file with BGZF output and Tabix index:")
     )?;
     writeln!(
         out,
         ".nf\n{}\n.fi",
         escape_roff(
-            "vardictrust -G ref.fa -b \"tumor.bam|normal.bam\" -N \"TUMOR|NORMAL\" -f 0.01 -c 1 -S 2 -E 3 targets.bed --output somatic.vcf.gz --tbi"
+            "vardictrust -G ref.fa -b \"tumor.bam|normal.bam\" -N \"TUMOR|NORMAL\" -f 0.01 -c 1 -S 2 -E 3 -z targets.bed --output somatic.vcf.gz --tbi"
         )
     )?;
 
