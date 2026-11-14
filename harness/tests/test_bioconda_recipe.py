@@ -649,7 +649,7 @@ class TestRepoAgentSkills(unittest.TestCase):
             self.assertGreater(pos, last_diff_pos, f"differential.yml step out of order: {step_label!r}")
             last_diff_pos = pos
 
-        for wf_name in ("ci.yml", "differential.yml", "docs.yml", "security.yml", "release.yml"):
+        for wf_name in ("ci.yml", "differential.yml", "docs.yml", "security.yml", "release.yml", "wiki.yml"):
             wf_text = (workflows_dir / wf_name).read_text(encoding="utf-8")
             self.assertIn("persist-credentials: false", wf_text, f"{wf_name} missing persist-credentials: false")
             self.assertEqual(
@@ -657,6 +657,12 @@ class TestRepoAgentSkills(unittest.TestCase):
                 wf_text.count("actions/checkout@"),
                 f"{wf_name} must set persist-credentials: false on every actions/checkout step",
             )
+
+        wiki_text = (workflows_dir / "wiki.yml").read_text(encoding="utf-8")
+        self.assertIn("permissions:\n  contents: read", wiki_text)
+        self.assertIn("    permissions:\n      contents: write", wiki_text)
+        self.assertIn('echo "::add-mask::${AUTH}"', wiki_text)
+        self.assertIn('trap \'rm -rf "${TMP}"\' EXIT', wiki_text)
 
         sec_text = (workflows_dir / "security.yml").read_text(encoding="utf-8")
         self.assertIn("dtolnay/rust-toolchain@", sec_text)
@@ -680,6 +686,31 @@ class TestRepoAgentSkills(unittest.TestCase):
         self.assertIn('    permissions:\n      "contents": "write"', rel_text)
         self.assertIn('RELEASE_TAG: "${{ needs.plan.outputs.tag }}"', rel_text)
         self.assertIn('gh release create "$RELEASE_TAG"', rel_text)
+        self.assertIn('git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main', rel_text)
+
+        deny_text = (ROOT_DIR / "deny.toml").read_text(encoding="utf-8")
+        self.assertIn('yanked = "deny"', deny_text)
+        self.assertIn('wildcards = "deny"', deny_text)
+        self.assertIn('required-git-spec = "rev"', deny_text)
+
+        dependabot_text = (ROOT_DIR / ".github" / "dependabot.yml").read_text(encoding="utf-8")
+        for eco in ('package-ecosystem: "cargo"', 'package-ecosystem: "github-actions"', 'package-ecosystem: "pip"'):
+            self.assertIn(eco, dependabot_text)
+        self.assertEqual(dependabot_text.count("cooldown:"), 3, "dependabot.yml must configure cooldown on all 3 ecosystems")
+        self.assertEqual(dependabot_text.count("default-days: 7"), 3, "dependabot.yml must set default-days: 7 on all 3 ecosystems")
+
+        nf_main_text = (ROOT_DIR / "packaging" / "nf-core" / "modules" / "vardictrust" / "main.nf").read_text(encoding="utf-8")
+        self.assertEqual(
+            nf_main_text.count("prefix ==~ /^[A-Za-z0-9._-]+$/"),
+            2,
+            "main.nf must validate task.ext.prefix in both script: and stub:",
+        )
+        self.assertIn('-G "${fasta}"', nf_main_text)
+        self.assertEqual(
+            nf_main_text.count('> "${prefix}.vcf.gz"'),
+            2,
+            'main.nf must quote > "${prefix}.vcf.gz" in both script: and stub:',
+        )
 
         cfg_text = (ROOT_DIR / "harness" / "configure_github_repo.py").read_text(encoding="utf-8")
         self.assertIn('"has_wiki": True', cfg_text)
