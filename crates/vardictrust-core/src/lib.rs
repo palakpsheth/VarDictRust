@@ -2033,13 +2033,9 @@ const UNIX_O_NOFOLLOW: i32 = {
         {
             0x8000
         }
-        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64", target_arch = "riscv64"))]
         {
             0x20000
-        }
-        #[cfg(target_arch = "riscv64")]
-        {
-            0x400000
         }
         #[cfg(not(any(
             target_arch = "arm",

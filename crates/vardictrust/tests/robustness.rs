@@ -6413,6 +6413,7 @@ fn spoofed_cram_container_length_and_slice_record_count_fail_cleanly_single_thre
     //    `uncompressed_size` and in Rans4x8 ExternalData inner codec header (`SEC-06`)
     let spoof_gzip_core_cram = dir.path().join("spoof_gzip_core_2gib.cram");
     let spoof_rans_ext_cram = dir.path().join("spoof_rans4x8_ext_2gib.cram");
+    let spoof_nametok_ext_cram = dir.path().join("spoof_nametok_ext_8gib.cram");
     {
         let mut rdr =
             noodles::cram::io::Reader::new(std::fs::File::open(&base_cram).expect("open cram"));
@@ -6503,6 +6504,9 @@ fn spoofed_cram_container_length_and_slice_record_count_fail_cleanly_single_thre
         let gzip_2gib_core = vec![
             0x01, 0x05, 0x00, 0x02, 0xf7, 0xff, 0xff, 0xff, 0x0f, 0x1f, 0x8b,
         ];
+        let nametok_8gib_ext = vec![
+            0x08, 0x04, 0x01, 0x09, 0x10, 0x10, 0x00, 0x00, 0x00, 0x80, 0x84, 0x1e, 0x00, 0x00,
+        ];
         let valid_1b_core = vec![0x00, 0x05, 0x00, 0x01, 0x01, 0x00];
 
         write_spoof(
@@ -6510,7 +6514,12 @@ fn spoofed_cram_container_length_and_slice_record_count_fail_cleanly_single_thre
             gzip_2gib_core,
             rans4x8_2gib_ext.clone(),
         );
-        write_spoof(&spoof_rans_ext_cram, valid_1b_core, rans4x8_2gib_ext);
+        write_spoof(
+            &spoof_rans_ext_cram,
+            valid_1b_core.clone(),
+            rans4x8_2gib_ext,
+        );
+        write_spoof(&spoof_nametok_ext_cram, valid_1b_core, nametok_8gib_ext);
     }
 
     for (label, cram_path, require_exceeds) in [
@@ -6519,6 +6528,7 @@ fn spoofed_cram_container_length_and_slice_record_count_fail_cleanly_single_thre
         ("spoofed_slice_record_count", &spoof_slice_cram, true),
         ("spoofed_gzip_core_2gib", &spoof_gzip_core_cram, true),
         ("spoofed_rans4x8_ext_2gib", &spoof_rans_ext_cram, true),
+        ("spoof_nametok_ext_8gib", &spoof_nametok_ext_cram, true),
     ] {
         let out = base_cmd()
             .arg("-G")

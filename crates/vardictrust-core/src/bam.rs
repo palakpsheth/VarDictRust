@@ -3631,6 +3631,7 @@ fn validate_cram_block_and_codec(
     limit_end_offset: u64,
     expected_content_type: u8,
     max_uncompressed_bytes: usize,
+    max_name_count: usize,
 ) -> std::io::Result<(u64, usize)> {
     use std::io::{Read as _, Seek as _, SeekFrom};
 
@@ -3790,6 +3791,9 @@ fn validate_cram_block_and_codec(
             effective_uncomp = effective_uncomp.max(inner_uncomp);
         }
         8 => {
+            const MAX_CRAM_NAME_TOKENIZER_NAMES: usize = 131_072;
+            const MAX_CRAM_NAME_TOKENIZER_POSITIONS: usize = 128;
+
             file.seek(SeekFrom::Start(payload_offset))?;
             let mut r = (&mut *file).take(compressed_size as u64);
             let mut nt_hdr = [0_u8; 9];
@@ -3806,11 +3810,14 @@ fn validate_cram_block_and_codec(
                     ),
                 ));
             }
-            if name_count > MAX_CRAM_CONTAINER_RECORDS {
+            let allowed_names = max_name_count
+                .min(MAX_CRAM_NAME_TOKENIZER_NAMES)
+                .min(inner_uncomp.saturating_add(1));
+            if name_count == 0 || name_count > allowed_names {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
                     format!(
-                        "CRAM name_tokenizer name_count ({name_count}) in '{}' exceeds maximum allowed ({MAX_CRAM_CONTAINER_RECORDS})",
+                        "CRAM name_tokenizer name_count ({name_count}) in '{}' is zero or exceeds maximum allowed ({allowed_names})",
                         path.display()
                     ),
                 ));
@@ -3818,6 +3825,7 @@ fn validate_cram_block_and_codec(
             let payload_end = payload_offset.saturating_add(compressed_size as u64);
             let mut cur_pos = payload_offset.saturating_add(9);
             let mut stream_ops = 0_usize;
+            let mut tok_new_count = 0_usize;
             let mut tok_uncomp_sum = 0_usize;
             let mut max_stream_uncomp = 0_usize;
             while cur_pos < payload_end {
@@ -3833,7 +3841,7 @@ fn validate_cram_block_and_codec(
                 }
                 file.seek(SeekFrom::Start(cur_pos))?;
                 let rem = payload_end.saturating_sub(cur_pos);
-                let (ttype, sub_comp_opt, consumed) = {
+                let (ttype, dup_info_opt, sub_comp_opt, consumed) = {
                     let mut tr = (&mut *file).take(rem);
                     let mut tt_buf = [0_u8; 1];
                     tr.read_exact(&mut tt_buf)?;
@@ -3841,48 +3849,87 @@ fn validate_cram_block_and_codec(
                     if (tt & 0x40) != 0 {
                         let mut dup_buf = [0_u8; 2];
                         tr.read_exact(&mut dup_buf)?;
-                        (tt, None, 3_u64)
+                        let [dup_pos, dup_ty_raw] = dup_buf;
+                        (tt, Some((dup_pos, dup_ty_raw)), None, 3_u64)
                     } else {
                         let sc = read_cram_uint7(&mut tr)? as usize;
                         let used = rem.saturating_sub(tr.limit());
-                        (tt, Some(sc), used)
+                        (tt, None, Some(sc), used)
                     }
                 };
-                if (ttype & 0x80) != 0 && (ttype & 0x3f) != 0 {
-                    tok_uncomp_sum = tok_uncomp_sum.saturating_add(name_count);
+                let raw_ty = ttype & 0x3f;
+                if raw_ty > 9 {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!(
+                            "CRAM name_tokenizer stream type ({raw_ty}) in '{}' exceeds maximum allowed (9)",
+                            path.display()
+                        ),
+                    ));
                 }
-                match sub_comp_opt {
-                    None => {
-                        tok_uncomp_sum = tok_uncomp_sum.saturating_add(max_stream_uncomp);
-                        cur_pos = cur_pos.saturating_add(consumed);
+                if (ttype & 0x80) != 0 {
+                    tok_new_count += 1;
+                    if tok_new_count > MAX_CRAM_NAME_TOKENIZER_POSITIONS {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            format!(
+                                "CRAM name_tokenizer token position count ({tok_new_count}) in '{}' exceeds maximum allowed ({MAX_CRAM_NAME_TOKENIZER_POSITIONS})",
+                                path.display()
+                            ),
+                        ));
                     }
-                    Some(sub_comp) => {
-                        let stream_start = cur_pos.saturating_add(consumed);
-                        let next_pos = stream_start
-                            .checked_add(sub_comp as u64)
-                            .filter(|&p| p <= payload_end)
-                            .ok_or_else(|| {
-                                std::io::Error::new(
-                                    std::io::ErrorKind::InvalidData,
-                                    format!(
-                                        "CRAM name_tokenizer stream compressed size ({sub_comp}) in '{}' exceeds block bounds",
-                                        path.display()
-                                    ),
-                                )
-                            })?;
-                        let stream_peak = validate_cram_entropy_stream_at(
-                            path,
-                            file,
-                            stream_start,
-                            sub_comp,
-                            0,
-                            sub_method != 0,
-                            0,
-                        )?;
-                        max_stream_uncomp = max_stream_uncomp.max(stream_peak);
-                        tok_uncomp_sum = tok_uncomp_sum.saturating_add(stream_peak);
-                        cur_pos = next_pos;
+                    if raw_ty != 0 {
+                        max_stream_uncomp = max_stream_uncomp.max(name_count);
+                        tok_uncomp_sum = tok_uncomp_sum.saturating_add(name_count);
                     }
+                } else if tok_new_count == 0 {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!(
+                            "CRAM name_tokenizer first token stream in '{}' lacks tok_new flag",
+                            path.display()
+                        ),
+                    ));
+                }
+                if let Some((dup_pos, dup_ty_raw)) = dup_info_opt {
+                    let dup_ty = dup_ty_raw & 0x3f;
+                    if usize::from(dup_pos) >= tok_new_count || dup_ty > 9 || dup_ty == 4 {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            format!(
+                                "invalid CRAM name_tokenizer tok_dup reference (pos={dup_pos}, ty={dup_ty}, tok_new_count={tok_new_count}) in '{}'",
+                                path.display()
+                            ),
+                        ));
+                    }
+                    tok_uncomp_sum = tok_uncomp_sum.saturating_add(max_stream_uncomp);
+                    cur_pos = cur_pos.saturating_add(consumed);
+                } else if let Some(sub_comp) = sub_comp_opt {
+                    let stream_start = cur_pos.saturating_add(consumed);
+                    let next_pos = stream_start
+                        .checked_add(sub_comp as u64)
+                        .filter(|&p| p <= payload_end)
+                        .ok_or_else(|| {
+                            std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                format!(
+                                    "CRAM name_tokenizer stream compressed size ({sub_comp}) in '{}' exceeds block bounds",
+                                    path.display()
+                                ),
+                            )
+                        })?;
+                    let stream_peak = validate_cram_entropy_stream_at(
+                        path,
+                        file,
+                        stream_start,
+                        sub_comp,
+                        0,
+                        sub_method != 0,
+                        0,
+                    )?;
+                    max_stream_uncomp = max_stream_uncomp.max(stream_peak);
+                    tok_uncomp_sum = tok_uncomp_sum.saturating_add(stream_peak);
+                    cur_pos = next_pos;
                 }
                 if tok_uncomp_sum > MAX_CRAM_CONTAINER_BYTES {
                     return Err(std::io::Error::new(
@@ -3893,6 +3940,15 @@ fn validate_cram_block_and_codec(
                         ),
                     ));
                 }
+            }
+            if tok_new_count == 0 || tok_uncomp_sum < name_count {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "CRAM name_tokenizer decoded stream total ({tok_uncomp_sum}, tok_new_count={tok_new_count}) in '{}' fails minimum name_count ({name_count}); name_count exceeds stream capacity",
+                        path.display()
+                    ),
+                ));
             }
             effective_uncomp = effective_uncomp.max(inner_uncomp).max(tok_uncomp_sum);
         }
@@ -3959,6 +4015,7 @@ fn prevalidate_cram_container_slices(
             comp_hdr_limit,
             COMPRESSION_HEADER_CONTENT_TYPE,
             MAX_CRAM_CONTAINER_BYTES,
+            0,
         )?;
     }
 
@@ -4141,6 +4198,7 @@ fn prevalidate_cram_container_slices(
                 slice_end_offset,
                 expected_type,
                 MAX_CRAM_CONTAINER_BYTES,
+                slice_records,
             )?;
             cumulative_slice_uncomp = cumulative_slice_uncomp.saturating_add(blk_uncomp);
             if cumulative_slice_uncomp > MAX_CRAM_CONTAINER_BYTES {
@@ -9783,6 +9841,26 @@ mod tests {
         // Valid 1-byte raw CoreData block so ExternalData validation is reached:
         let valid_1b_core = vec![0x00, 0x05, 0x00, 0x01, 0x01, 0x00];
 
+        // (c) < 400 B NameTokenizer 8.29 GiB + 0-stream bomb:
+        // method=8, content_type=4, content_id=1, compressed_size=9, uncompressed_size=16,
+        // payload=[inner_uncomp=16u32, name_count=2_000_000u32, sub_method=0]
+        let nametok_8gib_ext = vec![
+            0x08, 0x04, 0x01, 0x09, 0x10, 0x10, 0x00, 0x00, 0x00, 0x80, 0x84, 0x1e, 0x00, 0x00,
+        ];
+
+        // (d) < 400 B NameTokenizer stream-header malformed cases (name_count=1, inner_uncomp=4):
+        // - `raw_ty = 12` (`Type::End`, exceeds writable TokenReader types `0..=9`)
+        let nametok_bad_ty_ext = vec![
+            0x08, 0x04, 0x01, 0x0d, 0x04, 0x04, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
+            0x8c, 0x02, 0x20, 0x00,
+        ];
+        // - `tok_new | Diff` (synthesizes `type_reader`) followed by `tok_dup` referencing
+        //   `DZLen` (`dup_ty = 4`, which panics with `unimplemented!` in `TokenReader::get`)
+        let nametok_dup_dzlen_ext = vec![
+            0x08, 0x04, 0x01, 0x14, 0x04, 0x04, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
+            0x86, 0x06, 0x20, 0x04, 0x00, 0x00, 0x00, 0x00, 0x46, 0x00, 0x04,
+        ];
+
         let spoof_gzip_core_cram = dir.path().join("spoof_gzip_core_2gib.cram");
         write_spoof_codec_cram(
             &spoof_gzip_core_cram,
@@ -9791,12 +9869,40 @@ mod tests {
         );
 
         let spoof_rans_ext_cram = dir.path().join("spoof_rans4x8_ext_2gib.cram");
-        write_spoof_codec_cram(&spoof_rans_ext_cram, valid_1b_core, rans4x8_2gib_ext);
+        write_spoof_codec_cram(
+            &spoof_rans_ext_cram,
+            valid_1b_core.clone(),
+            rans4x8_2gib_ext,
+        );
+
+        let spoof_nametok_8gib_cram = dir.path().join("spoof_nametok_8gib.cram");
+        write_spoof_codec_cram(
+            &spoof_nametok_8gib_cram,
+            valid_1b_core.clone(),
+            nametok_8gib_ext,
+        );
+
+        let spoof_nametok_bad_ty_cram = dir.path().join("spoof_nametok_bad_ty.cram");
+        write_spoof_codec_cram(
+            &spoof_nametok_bad_ty_cram,
+            valid_1b_core.clone(),
+            nametok_bad_ty_ext,
+        );
+
+        let spoof_nametok_dup_dzlen_cram = dir.path().join("spoof_nametok_dup_dzlen.cram");
+        write_spoof_codec_cram(
+            &spoof_nametok_dup_dzlen_cram,
+            valid_1b_core,
+            nametok_dup_dzlen_ext,
+        );
 
         let region_obj = build_noodles_region("chr1", 1, 50).unwrap();
-        for (case_label, bad_cram) in [
-            ("gzip_core_2gib", &spoof_gzip_core_cram),
-            ("rans4x8_ext_2gib", &spoof_rans_ext_cram),
+        for (case_label, bad_cram, require_exceeds) in [
+            ("gzip_core_2gib", &spoof_gzip_core_cram, true),
+            ("rans4x8_ext_2gib", &spoof_rans_ext_cram, true),
+            ("nametok_ext_8gib", &spoof_nametok_8gib_cram, true),
+            ("nametok_bad_ty", &spoof_nametok_bad_ty_cram, true),
+            ("nametok_dup_dzlen", &spoof_nametok_dup_dzlen_cram, false),
         ] {
             let feed_res: Result<Vec<SamRecord>, _> =
                 query_region_iter(bad_cram, "chr1", Pos0(0), Pos0(50), &cfg)
@@ -9804,10 +9910,12 @@ mod tests {
             match feed_res {
                 Err(crate::types::VardictError::Io(io_e)) => {
                     assert_eq!(io_e.kind(), std::io::ErrorKind::InvalidData, "{case_label}");
-                    assert!(
-                        io_e.to_string().contains("exceeds"),
-                        "{case_label} expected 'exceeds' in error, got: {io_e}"
-                    );
+                    if require_exceeds {
+                        assert!(
+                            io_e.to_string().contains("exceeds"),
+                            "{case_label} expected 'exceeds' in error, got: {io_e}"
+                        );
+                    }
                 }
                 other => panic!(
                     "{case_label}: expected InvalidData via query_region_iter, got {other:?}"
@@ -9822,15 +9930,108 @@ mod tests {
             match rdr_res {
                 Err(io_e) => {
                     assert_eq!(io_e.kind(), std::io::ErrorKind::InvalidData, "{case_label}");
-                    assert!(
-                        io_e.to_string().contains("exceeds"),
-                        "{case_label} expected 'exceeds' in IndexedSamReader::Cram::query error, got: {io_e}"
-                    );
+                    if require_exceeds {
+                        assert!(
+                            io_e.to_string().contains("exceeds"),
+                            "{case_label} expected 'exceeds' in IndexedSamReader::Cram::query error, got: {io_e}"
+                        );
+                    }
                 }
                 other => panic!(
                     "{case_label}: expected InvalidData via IndexedSamReader::Cram::query, got {other:?}"
                 ),
             }
         }
+
+        // Verify valid `noodles-cram` `NameTokenizer` ExternalData block passes prevalidation cleanly:
+        let valid_nt_payload: &[u8] = &[
+            0x58, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x80, 0x15, 0x00, 0x03, 0x06,
+            0x00, 0x04, 0x00, 0x80, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00,
+            0x00, 0x80, 0x00, 0x00, 0x06, 0x18, 0x00, 0x0c, 0x00, 0x01, 0x00, 0x00, 0x0e, 0x02,
+            0x00, 0x22, 0x25, 0x00, 0x00, 0xbc, 0x00, 0x00, 0x00, 0xbc, 0x00, 0x00, 0x00, 0xbc,
+            0x00, 0x00, 0x80, 0x17, 0x00, 0x03, 0x01, 0x0a, 0x00, 0x01, 0x03, 0x00, 0x00, 0x02,
+            0x00, 0x00, 0xac, 0x00, 0x00, 0x00, 0xac, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x01,
+            0x1b, 0x00, 0x04, 0x00, 0x31, 0x37, 0x49, 0x00, 0x01, 0x01, 0x01, 0x01, 0x00, 0x0c,
+            0x02, 0x00, 0x00, 0x04, 0x02, 0x00, 0x00, 0x08, 0x02, 0x00, 0x00, 0x00, 0x02, 0x00,
+            0x80, 0x17, 0x00, 0x03, 0x02, 0x0a, 0x00, 0x01, 0x03, 0x00, 0x00, 0x02, 0x00, 0x00,
+            0xac, 0x00, 0x00, 0x00, 0xac, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x02, 0x15, 0x00,
+            0x01, 0x5f, 0x00, 0x01, 0x00, 0x80, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0x80,
+            0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x80, 0x17, 0x00, 0x03, 0x03, 0x0a, 0x00, 0x01,
+            0x03, 0x00, 0x00, 0x02, 0x00, 0x00, 0xac, 0x00, 0x00, 0x00, 0xac, 0x00, 0x00, 0x00,
+            0x80, 0x00, 0x00, 0x03, 0x19, 0x00, 0x04, 0x00, 0x22, 0x3d, 0x00, 0x02, 0x01, 0x01,
+            0x00, 0x0c, 0x02, 0x00, 0x00, 0x08, 0x02, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+            0x01, 0x00, 0x04, 0x15, 0x00, 0x01, 0x05, 0x00, 0x01, 0x00, 0x80, 0x00, 0x00, 0x00,
+            0x80, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x80, 0x17, 0x00,
+            0x03, 0x02, 0x0a, 0x00, 0x01, 0x03, 0x00, 0x00, 0x02, 0x00, 0x00, 0xac, 0x00, 0x00,
+            0x00, 0xac, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x02, 0x15, 0x00, 0x01, 0x3a, 0x00,
+            0x01, 0x00, 0x80, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00,
+            0x80, 0x00, 0x00, 0x80, 0x17, 0x00, 0x03, 0x07, 0x0a, 0x00, 0x01, 0x03, 0x00, 0x00,
+            0x02, 0x00, 0x00, 0xac, 0x00, 0x00, 0x00, 0xac, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00,
+            0x07, 0x17, 0x00, 0x04, 0x00, 0x02, 0x00, 0x03, 0x01, 0x00, 0x0c, 0x02, 0x00, 0x00,
+            0xa8, 0x00, 0x00, 0x00, 0xa8, 0x00, 0x00, 0x00, 0xa8, 0x00, 0x00, 0x80, 0x17, 0x00,
+            0x03, 0x02, 0x0a, 0x00, 0x01, 0x03, 0x00, 0x00, 0x02, 0x00, 0x00, 0xac, 0x00, 0x00,
+            0x00, 0xac, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x02, 0x15, 0x00, 0x01, 0x3a, 0x00,
+            0x01, 0x00, 0x80, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00,
+            0x80, 0x00, 0x00, 0x80, 0x17, 0x00, 0x03, 0x07, 0x0a, 0x00, 0x03, 0x01, 0x00, 0xa8,
+            0x00, 0x00, 0x00, 0x0c, 0x02, 0x00, 0x00, 0xa8, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00,
+            0x07, 0x1a, 0x00, 0x08, 0x00, 0x7b, 0x7c, 0x00, 0x00, 0x06, 0x01, 0x01, 0x00, 0x7c,
+            0x20, 0x00, 0x00, 0xe0, 0x00, 0x00, 0x00, 0xe0, 0x00, 0x00, 0x00, 0xe0, 0x00, 0x00,
+            0x80, 0x17, 0x00, 0x03, 0x02, 0x0a, 0x00, 0x01, 0x03, 0x00, 0x00, 0x02, 0x00, 0x00,
+            0xac, 0x00, 0x00, 0x00, 0xac, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x02, 0x15, 0x00,
+            0x01, 0x3a, 0x00, 0x01, 0x00, 0x80, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0x80,
+            0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x80, 0x15, 0x00, 0x03, 0x07, 0x00, 0x04, 0x00,
+            0x80, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0x80, 0x00,
+            0x00, 0x07, 0x22, 0x00, 0x0c, 0x00, 0x06, 0x2d, 0x64, 0x65, 0x00, 0xb2, 0xf0, 0x00,
+            0x0a, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x00, 0xcd, 0x0b, 0x08, 0x00, 0xaf, 0x0e,
+            0x08, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02, 0x00, 0x80, 0x17, 0x00, 0x03, 0x02,
+            0x0a, 0x00, 0x01, 0x03, 0x00, 0x00, 0x02, 0x00, 0x00, 0xac, 0x00, 0x00, 0x00, 0xac,
+            0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x02, 0x15, 0x00, 0x01, 0x3a, 0x00, 0x01, 0x00,
+            0x80, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0x80, 0x00,
+            0x00, 0x80, 0x17, 0x00, 0x03, 0x03, 0x07, 0x00, 0x03, 0x01, 0x00, 0xa8, 0x00, 0x00,
+            0x00, 0xa8, 0x00, 0x00, 0x00, 0x0c, 0x02, 0x00, 0x00, 0x80, 0x00, 0x00, 0x03, 0x1d,
+            0x00, 0x08, 0x00, 0x06, 0x21, 0xa3, 0xe3, 0x00, 0x04, 0x01, 0x01, 0x01, 0x01, 0x00,
+            0x6e, 0x20, 0x00, 0x00, 0x58, 0x20, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02,
+            0x00, 0x04, 0x15, 0x00, 0x02, 0x05, 0x00, 0x02, 0x00, 0x80, 0x00, 0x00, 0x00, 0x80,
+            0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x07, 0x19, 0x00, 0x04,
+            0x00, 0x21, 0x3f, 0x00, 0x02, 0x01, 0x01, 0x00, 0x08, 0x02, 0x00, 0x00, 0x0c, 0x02,
+            0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x80, 0x17, 0x00, 0x03, 0x02,
+            0x0a, 0x00, 0x01, 0x03, 0x00, 0x00, 0x02, 0x00, 0x00, 0xac, 0x00, 0x00, 0x00, 0xac,
+            0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x02, 0x15, 0x00, 0x01, 0x23, 0x00, 0x01, 0x00,
+            0x80, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0x80, 0x00,
+            0x00, 0x80, 0x17, 0x00, 0x03, 0x07, 0x0a, 0x00, 0x01, 0x03, 0x00, 0x00, 0x02, 0x00,
+            0x00, 0xac, 0x00, 0x00, 0x00, 0xac, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x07, 0x17,
+            0x00, 0x04, 0x00, 0x09, 0x00, 0x03, 0x01, 0x00, 0x0c, 0x02, 0x00, 0x00, 0xa8, 0x00,
+            0x00, 0x00, 0xa8, 0x00, 0x00, 0x00, 0xa8, 0x00, 0x00, 0x80, 0x15, 0x00, 0x03, 0x0c,
+            0x00, 0x04, 0x00, 0x80, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00,
+            0x00, 0x80, 0x00, 0x00,
+        ];
+        let clen = valid_nt_payload.len();
+        let mut valid_nt_blk = vec![
+            0x08, // method = NameTokenizer
+            0x04, // content_type = ExternalData
+            0x01, // content_id = 1
+            0x80 | ((clen >> 8) as u8),
+            (clen & 0xff) as u8, // 2-byte ITF-8 compressed_size
+            0x58,                // uncompressed_size = 88
+        ];
+        valid_nt_blk.extend_from_slice(valid_nt_payload);
+        let mut nt_crc = flate2::Crc::new();
+        nt_crc.update(&valid_nt_blk);
+        valid_nt_blk.extend_from_slice(&nt_crc.sum().to_le_bytes());
+        let valid_nt_path = dir.path().join("valid_nametok_blk.bin");
+        std::fs::write(&valid_nt_path, &valid_nt_blk).unwrap();
+        let mut valid_nt_file = std::fs::File::open(&valid_nt_path).unwrap();
+        let (end_off, peak_uncomp) = validate_cram_block_and_codec(
+            &valid_nt_path,
+            &mut valid_nt_file,
+            0,
+            valid_nt_blk.len() as u64,
+            4,
+            MAX_CRAM_CONTAINER_BYTES,
+            3,
+        )
+        .expect("valid NameTokenizer block must pass prevalidation");
+        assert_eq!(end_off, valid_nt_blk.len() as u64);
+        assert!(peak_uncomp >= 88);
     }
 }
