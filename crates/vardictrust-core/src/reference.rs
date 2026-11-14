@@ -270,9 +270,8 @@ pub(crate) fn is_valid_contig_name_bytes(name: &[u8]) -> bool {
             .any(|&b| b <= 0x20 || b >= 0x7F || matches!(b, b',' | b'>'))
 }
 
-/// Reads and validates a `.fai` FASTA index with bounded memory (`<= 128 MiB`),
-/// valid contig names, `line_base_count <= line_width`, and checked `i64`-bounded end offsets.
-pub(crate) fn read_validated_fai_index(fai_path: &Path) -> Result<fai::Index, VardictError> {
+/// Reads a `.fai` FASTA index file into memory while enforcing [`MAX_FAI_BYTES`].
+pub(crate) fn read_fai_bytes_bounded(fai_path: &Path) -> Result<Vec<u8>, VardictError> {
     use std::io::Read as _;
 
     let mut file = File::open(fai_path).map_err(VardictError::Io)?;
@@ -295,7 +294,15 @@ pub(crate) fn read_validated_fai_index(fai_path: &Path) -> Result<fai::Index, Va
         }
         buf.extend_from_slice(slice);
     }
+    Ok(buf)
+}
 
+/// Parses and validates an in-memory `.fai` FASTA index buffer for valid contig names,
+/// `line_base_count <= line_width`, and checked `i64`-bounded end offsets.
+pub(crate) fn parse_validated_fai_bytes(
+    buf: &[u8],
+    fai_path: &Path,
+) -> Result<fai::Index, VardictError> {
     let index = fai::io::Reader::new(std::io::Cursor::new(buf))
         .read_index()
         .map_err(VardictError::Io)?;
@@ -305,7 +312,7 @@ pub(crate) fn read_validated_fai_index(fai_path: &Path) -> Result<fai::Index, Va
         if !is_valid_contig_name_bytes(name_bytes) {
             return Err(VardictError::Parse(format!(
                 "Invalid contig name '{}' in FASTA index '{}'",
-                String::from_utf8_lossy(name_bytes),
+                crate::util::SanitizedBytes(name_bytes),
                 fai_path.display()
             )));
         }
@@ -315,7 +322,7 @@ pub(crate) fn read_validated_fai_index(fai_path: &Path) -> Result<fai::Index, Va
             return Err(VardictError::Parse(format!(
                 "Invalid FASTA index '{}' for contig '{}': line_base_count ({lbc}) exceeds line_width ({lw})",
                 fai_path.display(),
-                String::from_utf8_lossy(name_bytes)
+                crate::util::SanitizedBytes(name_bytes)
             )));
         }
         let valid_end = (rec.length() / lbc)
@@ -327,12 +334,19 @@ pub(crate) fn read_validated_fai_index(fai_path: &Path) -> Result<fai::Index, Va
             return Err(VardictError::Parse(format!(
                 "Invalid FASTA index '{}' for contig '{}': byte offset overflows i64::MAX",
                 fai_path.display(),
-                String::from_utf8_lossy(name_bytes)
+                crate::util::SanitizedBytes(name_bytes)
             )));
         }
     }
 
     Ok(index)
+}
+
+/// Reads and validates a `.fai` FASTA index with bounded memory (`<= 128 MiB`),
+/// valid contig names, `line_base_count <= line_width`, and checked `i64`-bounded end offsets.
+pub(crate) fn read_validated_fai_index(fai_path: &Path) -> Result<fai::Index, VardictError> {
+    let buf = read_fai_bytes_bounded(fai_path)?;
+    parse_validated_fai_bytes(&buf, fai_path)
 }
 
 /// Opens an indexed FASTA buffered reader with the default 8 KiB uncompressed buffer capacity.

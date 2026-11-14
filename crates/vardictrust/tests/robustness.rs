@@ -6409,10 +6409,116 @@ fn spoofed_cram_container_length_and_slice_record_count_fail_cleanly_single_thre
             .expect("write spoof_slice_rc.cram.crai");
     }
 
-    for (label, cram_path) in [
-        ("truncated_container", &trunc_cram),
-        ("spoofed_i32_max_container_len", &huge_len_cram),
-        ("spoofed_slice_record_count", &spoof_slice_cram),
+    // 4. < 400 B crafted CRAM containers spoofing 2 GiB (0x7fff_ffff) in Gzip CoreData
+    //    `uncompressed_size` and in Rans4x8 ExternalData inner codec header (`SEC-06`)
+    let spoof_gzip_core_cram = dir.path().join("spoof_gzip_core_2gib.cram");
+    let spoof_rans_ext_cram = dir.path().join("spoof_rans4x8_ext_2gib.cram");
+    {
+        let mut rdr =
+            noodles::cram::io::Reader::new(std::fs::File::open(&base_cram).expect("open cram"));
+        let _ = rdr.read_header().expect("read cram header");
+        let c_pos = rdr.position().expect("cram pos") as usize;
+        let mut orig_cont = noodles::cram::io::reader::Container::default();
+        let c_len = rdr.read_container(&mut orig_cont).expect("read container");
+        let body_start =
+            std::io::Seek::stream_position(rdr.get_mut()).expect("seek pos") as usize - c_len;
+        let lm0 = orig_cont.header().landmarks()[0];
+        let comp_hdr_bytes = &base_bytes[body_start..body_start + lm0];
+
+        let write_spoof = |dst_cram: &std::path::Path, core_raw: Vec<u8>, ext_raw: Vec<u8>| {
+            let mut sh_payload = vec![
+                0x00, // ref_seq_id = 0
+                0x05, // alignment_start = 5
+                0x0a, // alignment_span = 10
+                0x01, // record_count = 1
+                0x00, // record_counter = 0
+                0x02, // block_count = 2
+                0x01, // block_content_ids len = 1
+                0x01, // block_content_ids[0] = 1
+                0xff, 0xff, 0xff, 0xff, 0x0f, // embedded_ref = -1
+            ];
+            sh_payload.extend_from_slice(&[0u8; 16]);
+
+            let mut sh_block = vec![
+                0x00,
+                0x02,
+                0x00,
+                sh_payload.len() as u8,
+                sh_payload.len() as u8,
+            ];
+            sh_block.extend_from_slice(&sh_payload);
+            let mut sh_crc = flate2::Crc::new();
+            sh_crc.update(&sh_block);
+            sh_block.extend_from_slice(&sh_crc.sum().to_le_bytes());
+
+            let seal_crc = |mut blk: Vec<u8>| -> Vec<u8> {
+                let mut c = flate2::Crc::new();
+                c.update(&blk);
+                blk.extend_from_slice(&c.sum().to_le_bytes());
+                blk
+            };
+            let core_blk = seal_crc(core_raw);
+            let ext_blk = seal_crc(ext_raw);
+
+            let mut cont_body = Vec::new();
+            cont_body.extend_from_slice(comp_hdr_bytes);
+            let new_lm0 = cont_body.len();
+            cont_body.extend_from_slice(&sh_block);
+            cont_body.extend_from_slice(&core_blk);
+            cont_body.extend_from_slice(&ext_blk);
+            assert!(cont_body.len() < 400);
+
+            let mut hdr_body = Vec::new();
+            hdr_body.extend_from_slice(&(cont_body.len() as i32).to_le_bytes());
+            hdr_body.extend_from_slice(&[0x00, 0x05, 0x0a, 0x01, 0x00, 0x0a, 0x04, 0x01]);
+            if new_lm0 < 0x80 {
+                hdr_body.push(new_lm0 as u8);
+            } else {
+                hdr_body.push(0x80 | ((new_lm0 >> 8) as u8));
+                hdr_body.push((new_lm0 & 0xff) as u8);
+            }
+            let mut h_crc = flate2::Crc::new();
+            h_crc.update(&hdr_body);
+            hdr_body.extend_from_slice(&h_crc.sum().to_le_bytes());
+
+            let mut crafted = base_bytes[..c_pos].to_vec();
+            crafted.extend_from_slice(&hdr_body);
+            crafted.extend_from_slice(&cont_body);
+            std::fs::write(dst_cram, &crafted).expect("write spoof codec cram");
+            let crai_rec = vec![noodles::cram::crai::Record::new(
+                Some(0),
+                Position::try_from(5usize).ok(),
+                10,
+                c_pos as u64,
+                new_lm0 as u64,
+                (sh_block.len() + core_blk.len() + ext_blk.len()) as u64,
+            )];
+            noodles::cram::crai::fs::write(dst_cram.with_extension("cram.crai"), &crai_rec)
+                .expect("write spoof codec crai");
+        };
+
+        let rans4x8_2gib_ext = vec![
+            0x04, 0x04, 0x01, 0x09, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0x7f,
+        ];
+        let gzip_2gib_core = vec![
+            0x01, 0x05, 0x00, 0x02, 0xf7, 0xff, 0xff, 0xff, 0x0f, 0x1f, 0x8b,
+        ];
+        let valid_1b_core = vec![0x00, 0x05, 0x00, 0x01, 0x01, 0x00];
+
+        write_spoof(
+            &spoof_gzip_core_cram,
+            gzip_2gib_core,
+            rans4x8_2gib_ext.clone(),
+        );
+        write_spoof(&spoof_rans_ext_cram, valid_1b_core, rans4x8_2gib_ext);
+    }
+
+    for (label, cram_path, require_exceeds) in [
+        ("truncated_container", &trunc_cram, false),
+        ("spoofed_i32_max_container_len", &huge_len_cram, true),
+        ("spoofed_slice_record_count", &spoof_slice_cram, true),
+        ("spoofed_gzip_core_2gib", &spoof_gzip_core_cram, true),
+        ("spoofed_rans4x8_ext_2gib", &spoof_rans_ext_cram, true),
     ] {
         let out = base_cmd()
             .arg("-G")
@@ -6426,11 +6532,21 @@ fn spoofed_cram_container_length_and_slice_record_count_fail_cleanly_single_thre
         #[cfg(unix)]
         assert_eq!(out.status.signal(), None, "{label} died by signal");
         assert_ne!(out.status.code(), Some(101), "{label} panicked");
+        assert!(
+            out.stdout.is_empty(),
+            "{label} must emit 0 VCF bytes to stdout before failing"
+        );
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(
             !stderr.contains("panicked"),
             "{label} emitted panic on stderr: {stderr}"
         );
+        if require_exceeds {
+            assert!(
+                stderr.contains("exceeds"),
+                "{label} expected 'exceeds' diagnostic on stderr, got: {stderr}"
+            );
+        }
     }
 }
 

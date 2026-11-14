@@ -705,6 +705,11 @@ class TestRepoAgentSkills(unittest.TestCase):
             2,
             "main.nf must validate task.ext.prefix in both script: and stub:",
         )
+        self.assertEqual(
+            nf_main_text.count('if (!("${meta.id}" ==~ /^[A-Za-z0-9._|-]+$/)) { error "Unsafe meta.id: ${meta.id}" }'),
+            2,
+            "main.nf must validate meta.id independently in both script: and stub:",
+        )
         self.assertIn('-G "${fasta}"', nf_main_text)
         self.assertEqual(
             nf_main_text.count('> "${prefix}.vcf.gz"'),

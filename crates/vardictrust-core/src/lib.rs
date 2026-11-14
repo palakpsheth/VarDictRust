@@ -1516,9 +1516,12 @@ struct SpillTempDir {
 
 impl SpillTempDir {
     fn new() -> std::io::Result<Self> {
+        Self::new_in(&std::env::temp_dir())
+    }
+
+    fn new_in(base: &Path) -> std::io::Result<Self> {
         static NEXT_DIR_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let pid = std::process::id();
-        let base = std::env::temp_dir();
         let mut builder = std::fs::DirBuilder::new();
         #[cfg(unix)]
         {
@@ -1972,7 +1975,7 @@ fn open_atomic_tmp_file(target: &Path) -> std::io::Result<(std::fs::File, std::p
 
 #[cfg(unix)]
 const UNIX_O_NOFOLLOW: i32 = {
-    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[cfg(target_os = "linux")]
     {
         #[cfg(any(
             target_arch = "arm",
@@ -1984,15 +1987,69 @@ const UNIX_O_NOFOLLOW: i32 = {
         {
             0x8000
         }
+        #[cfg(any(
+            target_arch = "x86",
+            target_arch = "x86_64",
+            target_arch = "riscv32",
+            target_arch = "riscv64",
+            target_arch = "s390x",
+            target_arch = "loongarch64",
+            target_arch = "mips",
+            target_arch = "mips64",
+            target_arch = "mips32r6",
+            target_arch = "mips64r6",
+            target_arch = "sparc",
+            target_arch = "sparc64"
+        ))]
+        {
+            0x20000
+        }
         #[cfg(not(any(
             target_arch = "arm",
             target_arch = "aarch64",
             target_arch = "powerpc",
             target_arch = "powerpc64",
-            target_arch = "m68k"
+            target_arch = "m68k",
+            target_arch = "x86",
+            target_arch = "x86_64",
+            target_arch = "riscv32",
+            target_arch = "riscv64",
+            target_arch = "s390x",
+            target_arch = "loongarch64",
+            target_arch = "mips",
+            target_arch = "mips64",
+            target_arch = "mips32r6",
+            target_arch = "mips64r6",
+            target_arch = "sparc",
+            target_arch = "sparc64"
         )))]
         {
+            compile_error!("UNIX_O_NOFOLLOW is not defined for this Linux target_arch")
+        }
+    }
+    #[cfg(target_os = "android")]
+    {
+        #[cfg(any(target_arch = "arm", target_arch = "aarch64"))]
+        {
+            0x8000
+        }
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        {
             0x20000
+        }
+        #[cfg(target_arch = "riscv64")]
+        {
+            0x400000
+        }
+        #[cfg(not(any(
+            target_arch = "arm",
+            target_arch = "aarch64",
+            target_arch = "x86",
+            target_arch = "x86_64",
+            target_arch = "riscv64"
+        )))]
+        {
+            compile_error!("UNIX_O_NOFOLLOW is not defined for this Android target_arch")
         }
     }
     #[cfg(any(
@@ -2002,14 +2059,14 @@ const UNIX_O_NOFOLLOW: i32 = {
         target_os = "watchos",
         target_os = "visionos",
         target_os = "freebsd",
+        target_os = "dragonfly",
         target_os = "netbsd",
-        target_os = "openbsd",
-        target_os = "dragonfly"
+        target_os = "openbsd"
     ))]
     {
         0x0100
     }
-    #[cfg(any(target_os = "solaris", target_os = "illumos"))]
+    #[cfg(any(target_os = "solaris", target_os = "illumos", target_os = "emscripten"))]
     {
         0x20000
     }
@@ -2021,6 +2078,10 @@ const UNIX_O_NOFOLLOW: i32 = {
     {
         0x0008_0000
     }
+    #[cfg(any(target_os = "cygwin", target_os = "hurd"))]
+    {
+        0x0010_0000
+    }
     #[cfg(not(any(
         target_os = "linux",
         target_os = "android",
@@ -2030,16 +2091,19 @@ const UNIX_O_NOFOLLOW: i32 = {
         target_os = "watchos",
         target_os = "visionos",
         target_os = "freebsd",
+        target_os = "dragonfly",
         target_os = "netbsd",
         target_os = "openbsd",
-        target_os = "dragonfly",
         target_os = "solaris",
         target_os = "illumos",
+        target_os = "emscripten",
         target_os = "aix",
-        target_os = "haiku"
+        target_os = "haiku",
+        target_os = "cygwin",
+        target_os = "hurd"
     )))]
     {
-        0
+        compile_error!("UNIX_O_NOFOLLOW is not defined for this Unix target_os")
     }
 };
 
@@ -2135,32 +2199,25 @@ impl StagedFileTarget {
         Self::open_with_index_preflight(target, None)
     }
 
-    fn from_pinned_dst_file(mut dst_file: std::fs::File) -> std::io::Result<(std::fs::File, Self)> {
-        match SpillTempDir::new() {
-            Ok(scratch_dir) => {
-                let scratch_path = scratch_dir.path().join("staged_output.bin");
-                let file = create_private_spill_file(&scratch_path)?;
-                Ok((
-                    file,
-                    Self::DirectTempStaged {
-                        _scratch_dir: scratch_dir,
-                        scratch_path,
-                        dst_file,
-                    },
-                ))
-            }
-            Err(tmp_err)
-                if matches!(
-                    tmp_err.kind(),
-                    std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::ReadOnlyFilesystem
-                ) =>
-            {
-                dst_file.set_len(0)?;
-                std::io::Seek::seek(&mut dst_file, std::io::SeekFrom::Start(0))?;
-                Ok((dst_file, Self::Direct))
-            }
-            Err(tmp_err) => Err(tmp_err),
-        }
+    fn from_pinned_dst_file(dst_file: std::fs::File) -> std::io::Result<(std::fs::File, Self)> {
+        Self::from_pinned_dst_file_in(dst_file, &std::env::temp_dir())
+    }
+
+    fn from_pinned_dst_file_in(
+        dst_file: std::fs::File,
+        tmp_base: &Path,
+    ) -> std::io::Result<(std::fs::File, Self)> {
+        let scratch_dir = SpillTempDir::new_in(tmp_base)?;
+        let scratch_path = scratch_dir.path().join("staged_output.bin");
+        let file = create_private_spill_file(&scratch_path)?;
+        Ok((
+            file,
+            Self::DirectTempStaged {
+                _scratch_dir: scratch_dir,
+                scratch_path,
+                dst_file,
+            },
+        ))
     }
 
     fn open_with_index_preflight(
@@ -2761,16 +2818,14 @@ fn resolve_effective_config(
         }
     }
 
-    let output_vcf = !effective.emit_intermediate && !effective.splice;
     if effective
         .sample
         .as_bytes()
         .iter()
-        .any(|&b| b < 0x20 || b == 0x7F || (output_vcf && matches!(b, b',' | b'>')))
+        .any(|&b| b < 0x20 || b == 0x7F)
     {
         return Err(VardictError::Parse(
-            "sample name (-N) contains invalid control or VCF header delimiter characters"
-                .to_string(),
+            "sample name (-N) contains invalid ASCII control characters".to_string(),
         ));
     }
 
@@ -3872,17 +3927,20 @@ fn run_with_writer_inner<W: EngineWriter>(
     let config_clone = config.clone();
     let chromosomes_lengths_clone = chromosomes_lengths.clone();
 
-    // -h/--header column line (CmdParser.java:67; SimpleMode.java:33 calls
-    // printHeader() before any variant output).
-    if config.column_header {
-        writer.emit_column_header(config)?;
-    }
-
-    // Print VCF header when not in intermediate or splicing mode
-    if !config.emit_intermediate && !config.splice {
-        crate::output::vcf::print_vcf_header(&mut writer, config, &chromosomes_lengths)
-            .map_err(VardictError::Io)?;
-    }
+    // Prevalidate VCF header & contigs before tile execution so malformed `.fai`
+    // fails fast, but defer writing VCF header bytes until all tiles succeed so
+    // mid-run BAM/CRAM errors never leave a valid-looking empty VCF on stdout.
+    let vcf_contigs = if !config.emit_intermediate && !config.splice {
+        Some(
+            crate::output::vcf::prevalidate_vcf_header_contigs(config, &chromosomes_lengths)
+                .map_err(VardictError::Io)?,
+        )
+    } else {
+        if config.column_header {
+            writer.emit_column_header(config)?;
+        }
+        None
+    };
 
     enum SimpleTileOutput {
         UnSplitVarBlock(String),
@@ -4181,6 +4239,14 @@ fn run_with_writer_inner<W: EngineWriter>(
     )?;
     split_var_deduper.flush_all_pending(|line| write_output_line(&mut writer, line))?;
 
+    if let Some(ref contigs) = vcf_contigs {
+        if config.column_header {
+            writer.emit_column_header(config)?;
+        }
+        crate::output::vcf::print_vcf_header_with_contigs(&mut writer, config, contigs)
+            .map_err(VardictError::Io)?;
+    }
+
     emit_single_vcf_accumulator(vcf_acc, config, &mut writer)?;
     writer.flush().map_err(VardictError::Io)?;
 
@@ -4286,17 +4352,18 @@ fn run_amplicon<W: EngineWriter>(
         .next()
         .ok_or_else(|| VardictError::Parse("No BAM files specified".to_string()))?;
 
-    // -h/--header column line (AmpliconMode.java:39, 135-146).
-    if config.column_header {
-        writer.emit_column_header(config)?;
-    }
-
-    // Print VCF header once when not in intermediate mode (same var2vcf_valid.pl
-    // header as simple mode — amplicon rides the same writer, perl :140-145).
-    if !config.emit_intermediate {
-        crate::output::vcf::print_vcf_header(writer, config, chromosomes_lengths)
-            .map_err(VardictError::Io)?;
-    }
+    let vcf_contigs = if !config.emit_intermediate {
+        Some(
+            crate::output::vcf::prevalidate_vcf_header_contigs(config, chromosomes_lengths)
+                .map_err(VardictError::Io)?,
+        )
+    } else {
+        // -h/--header column line (AmpliconMode.java:39, 135-146).
+        if config.column_header {
+            writer.emit_column_header(config)?;
+        }
+        None
+    };
 
     let mut vcf_acc: SpillableVcfAccumulator<RawVcfCandidate> = SpillableVcfAccumulator::new();
 
@@ -4566,6 +4633,14 @@ fn run_amplicon<W: EngineWriter>(
         },
     )?;
 
+    if let Some(ref contigs) = vcf_contigs {
+        if config.column_header {
+            writer.emit_column_header(config)?;
+        }
+        crate::output::vcf::print_vcf_header_with_contigs(writer, config, contigs)
+            .map_err(VardictError::Io)?;
+    }
+
     emit_single_vcf_accumulator(vcf_acc, config, writer)?;
 
     writer.flush().map_err(VardictError::Io)?;
@@ -4737,16 +4812,18 @@ fn run_somatic<W: EngineWriter>(
     let bam1_bams_for_combine = bam1_bams.clone();
     let bam2_bams_for_combine = bam2_bams.clone();
 
-    // -h/--header column line (SomaticMode.java:35, 134-150).
-    if config.column_header {
-        writer.emit_column_header(config)?;
-    }
-
-    // Paired VCF header when not in intermediate mode
-    if !config.emit_intermediate {
-        crate::output::vcf::print_paired_vcf_header(writer, config, &chromosomes_lengths)
-            .map_err(VardictError::Io)?;
-    }
+    let vcf_contigs = if !config.emit_intermediate {
+        Some(
+            crate::output::vcf::prevalidate_vcf_header_contigs(config, &chromosomes_lengths)
+                .map_err(VardictError::Io)?,
+        )
+    } else {
+        // -h/--header column line (SomaticMode.java:35, 134-150).
+        if config.column_header {
+            writer.emit_column_header(config)?;
+        }
+        None
+    };
 
     enum SomaticTileOutput {
         UnSplitVarBlock(String),
@@ -5184,6 +5261,14 @@ fn run_somatic<W: EngineWriter>(
         },
     )?;
     split_var_deduper.flush_all_pending(|line| write_output_line(writer, line))?;
+
+    if let Some(ref contigs) = vcf_contigs {
+        if config.column_header {
+            writer.emit_column_header(config)?;
+        }
+        crate::output::vcf::print_paired_vcf_header_with_contigs(writer, config, contigs)
+            .map_err(VardictError::Io)?;
+    }
 
     let mut cur_chr: Option<String> = None;
     let mut streamer = crate::output::vcf::PairedRecordStreamer::from_config(config);
@@ -8874,12 +8959,18 @@ mod tests {
         })
         .is_err());
         assert!(resolve_effective_config(&crate::config::Config {
-            sample: "bad,sample".to_string(),
+            sample: "bad\x7fsample".to_string(),
             sample_explicit: true,
             ..base_cfg.clone()
         })
         .is_err());
-        // AGENTS.md §5 parity: ';' and '=' in sample MUST remain allowed in v1.0.x!
+        // AGENTS.md §5 parity: ',', '>', ';', and '=' in sample MUST remain allowed in v1.0.x!
+        assert!(resolve_effective_config(&crate::config::Config {
+            sample: "patient1,rep2>armA".to_string(),
+            sample_explicit: true,
+            ..base_cfg.clone()
+        })
+        .is_ok());
         assert!(resolve_effective_config(&crate::config::Config {
             sample: "S1;K=V".to_string(),
             sample_explicit: true,
@@ -8968,6 +9059,24 @@ mod tests {
                 "symlink --stats-json in read-only parent must be rejected"
             );
             assert_eq!(std::fs::read(&victim).unwrap(), b"DO_NOT_OVERWRITE");
+
+            // 4c-bis. When SpillTempDir creation fails (e.g. read-only $TMPDIR), from_pinned_dst_file
+            //         propagates Err WITHOUT truncating pre-existing target bytes (`AR-9`).
+            let ro_tmp = dir.path().join("ro_tmpdir");
+            std::fs::create_dir(&ro_tmp).unwrap();
+            std::fs::set_permissions(&ro_tmp, std::fs::Permissions::from_mode(0o555)).unwrap();
+            let pinned_dst = open_existing_regular_nofollow(&real_vcf_in_ro).unwrap();
+            let tmp_fail = StagedFileTarget::from_pinned_dst_file_in(pinned_dst, &ro_tmp);
+            std::fs::set_permissions(&ro_tmp, std::fs::Permissions::from_mode(0o755)).unwrap();
+            assert!(
+                tmp_fail.is_err(),
+                "from_pinned_dst_file_in must fail when scratch directory cannot be created"
+            );
+            assert_eq!(
+                std::fs::read(&real_vcf_in_ro).unwrap(),
+                b"ORIG_VCF",
+                "from_pinned_dst_file must NEVER truncate pre-existing target bytes when SpillTempDir fails"
+            );
 
             std::fs::set_permissions(&ro_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
 

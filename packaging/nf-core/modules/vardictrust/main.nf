@@ -25,6 +25,7 @@ process VARDICTRUST {
     def args2 = task.ext.args2 ?: ''
     def prefix = task.ext.prefix ?: "${meta.id}"
     if (!(prefix ==~ /^[A-Za-z0-9._-]+$/)) { error "Unsafe task.ext.prefix: ${prefix}" }
+    if (!("${meta.id}" ==~ /^[A-Za-z0-9._|-]+$/)) { error "Unsafe meta.id: ${meta.id}" }
 
     // A lone BAM may arrive as a 1-element List; unwrap it so it never mis-dispatches as somatic
     def bam_input = bams instanceof List && bams.size() == 1 ? bams[0] : bams
@@ -48,6 +49,7 @@ process VARDICTRUST {
     stub:
     def prefix = task.ext.prefix ?: "${meta.id}"
     if (!(prefix ==~ /^[A-Za-z0-9._-]+$/)) { error "Unsafe task.ext.prefix: ${prefix}" }
+    if (!("${meta.id}" ==~ /^[A-Za-z0-9._|-]+$/)) { error "Unsafe meta.id: ${meta.id}" }
 
     """
     echo "" | gzip > "${prefix}.vcf.gz"

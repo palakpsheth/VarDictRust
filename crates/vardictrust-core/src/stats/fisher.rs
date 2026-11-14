@@ -227,8 +227,11 @@ impl FisherExact {
         } else {
             Vec::with_capacity(self.support_len())
         };
+        let mut left_scratch = Vec::new();
         let mu = if x == self.x as f64 && !self.mu_at_1.is_nan() {
             self.mu_at_1
+        } else if self.use_unimodal {
+            self.mnhyper_unimodal_with(1.0, &mut scratch, &mut left_scratch)
         } else {
             self.mnhyper_with(1.0, &mut scratch)
         };
@@ -237,7 +240,8 @@ impl FisherExact {
             let mut tol_val = tol;
             let mut maxit = 1000;
             return if mu > x {
-                let mut f = |t: f64| self.mnhyper_with(t, &mut scratch) - x;
+                let mut f =
+                    |t: f64| self.mnhyper_unimodal_with(t, &mut scratch, &mut left_scratch) - x;
                 let f_lower = f(0.0);
                 crate::stats::zeroin::zeroin_c(
                     0.0,
@@ -249,7 +253,9 @@ impl FisherExact {
                     &mut maxit,
                 )
             } else if mu < x {
-                let mut f = |t: f64| self.mnhyper_with(1.0 / t, &mut scratch) - x;
+                let mut f = |t: f64| {
+                    self.mnhyper_unimodal_with(1.0 / t, &mut scratch, &mut left_scratch) - x
+                };
                 let f_lower = f(eps);
                 1.0 / crate::stats::zeroin::zeroin_c(
                     eps,
@@ -275,6 +281,30 @@ impl FisherExact {
         }
     }
 
+    fn mnhyper_unimodal_with(
+        &self,
+        ncp: f64,
+        scratch: &mut Vec<f64>,
+        left_scratch: &mut Vec<f64>,
+    ) -> f64 {
+        if ncp == 0.0 {
+            return self.lo64 as f64;
+        }
+        if ncp.is_infinite() {
+            return self.hi64 as f64;
+        }
+        let w_lo = self.dnhyper_window_into(ncp, scratch, left_scratch);
+        for (i, prob) in scratch.iter_mut().enumerate() {
+            let supp = (w_lo + i as i64) as f64;
+            *prob *= supp;
+        }
+        if self.java_fisher {
+            java_stream_sum(scratch)
+        } else {
+            crate::stats::f80::f80_sum(scratch)
+        }
+    }
+
     /// Scratch-based mean evaluation. `scratch` is a function-local per-thread
     /// buffer (`&mut` only, never shared across threads); the products are
     /// formed in place in support order and summed with the same
@@ -282,23 +312,8 @@ impl FisherExact {
     /// element-for-element identical to the previous allocating version.
     pub(crate) fn mnhyper_with(&self, ncp: f64, scratch: &mut Vec<f64>) -> f64 {
         if self.use_unimodal {
-            if ncp == 0.0 {
-                return self.lo64 as f64;
-            }
-            if ncp.is_infinite() {
-                return self.hi64 as f64;
-            }
             let mut left_scratch = Vec::new();
-            let w_lo = self.dnhyper_window_into(ncp, scratch, &mut left_scratch);
-            for (i, prob) in scratch.iter_mut().enumerate() {
-                let supp = (w_lo + i as i64) as f64;
-                *prob *= supp;
-            }
-            return if self.java_fisher {
-                java_stream_sum(scratch)
-            } else {
-                crate::stats::f80::f80_sum(scratch)
-            };
+            return self.mnhyper_unimodal_with(ncp, scratch, &mut left_scratch);
         }
         if ncp == 0.0 {
             return self.lo as f64;
@@ -856,7 +871,7 @@ impl FisherExact {
         }
         for val in out.iter_mut() {
             let d = *val - max_result;
-            *val = if d < -708.0 { 0.0 } else { d.exp() };
+            *val = d.exp();
         }
         let sum = if self.java_fisher {
             java_stream_sum(out)
@@ -869,6 +884,7 @@ impl FisherExact {
         w_lo
     }
 
+    #[cold]
     fn calculate_p_value_unimodal(&mut self) {
         let x64 = i64::from(self.x);
         if self.m64 + self.n64 > 0 && self.lo64 < self.hi64 {
@@ -964,11 +980,7 @@ impl FisherExact {
                 .get((i - w_lo) as usize)
                 .copied()
                 .unwrap_or(f64::NEG_INFINITY);
-            if lp < -708.0 {
-                0.0
-            } else {
-                lp.exp()
-            }
+            lp.exp()
         };
         if upper_tail {
             if q64 <= self.lo64 {

@@ -722,10 +722,7 @@ pub(crate) fn compute_cram_nm(rec: &SamRecord, ref_seq: &[u8]) -> Option<i32> {
 
 pub enum IndexedSamReader {
     Bam(noodles::bam::io::IndexedReader<noodles::bgzf::io::Reader<std::fs::File>>),
-    Cram(
-        noodles::cram::io::IndexedReader<std::fs::File>,
-        noodles::fasta::Repository,
-    ),
+    Cram(PathBuf, std::sync::Arc<SharedCramMeta>),
 }
 
 impl IndexedSamReader {
@@ -744,56 +741,51 @@ impl IndexedSamReader {
                 });
                 Ok(Box::new(iter))
             }
-            IndexedSamReader::Cram(reader, repository) => {
-                fn catch_cram_unwind<F, R>(f: F) -> std::io::Result<R>
-                where
-                    F: FnOnce() -> R,
-                {
-                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).map_err(|_| {
-                        std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            "malformed CRAM container caused decoder panic",
-                        )
+            IndexedSamReader::Cram(path, meta) => {
+                let reference_sequence_id = header
+                    .reference_sequences()
+                    .get_index_of(region.name())
+                    .or_else(|| {
+                        meta.header
+                            .reference_sequences()
+                            .get_index_of(region.name())
                     })
-                }
-                let repo = repository.clone();
-                let query = catch_cram_unwind(move || reader.query(header, region))??;
-                let region_name = region.name().to_owned();
-                let mut ref_seq: Option<Option<std::sync::Arc<noodles::fasta::record::Sequence>>> =
-                    None;
-                let mut records_iter = query.records();
-                let mut poisoned_after_panic = false;
-                let iter = std::iter::from_fn(move || {
-                    if poisoned_after_panic {
-                        return None;
-                    }
-                    let next_item =
-                        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            records_iter.next()
-                        })) {
-                            Ok(opt) => opt?,
-                            Err(_) => {
-                                poisoned_after_panic = true;
-                                return Some(Err(std::io::Error::new(
-                                    std::io::ErrorKind::InvalidData,
-                                    "malformed CRAM container caused decoder panic",
-                                )));
-                            }
-                        };
-                    Some((|| {
-                        let rec = next_item?;
-                        let mut sam_rec = SamRecord::from_alignment_record(&rec, header)?;
-                        if sam_rec.nm.is_none() {
-                            let seq_opt = ref_seq.get_or_insert_with(|| {
-                                repo.get(region_name.as_ref()).and_then(|r| r.ok())
-                            });
-                            if let Some(ref seq) = seq_opt {
-                                sam_rec.nm =
-                                    compute_cram_nm(&sam_rec, SharedFastaRepo::unpadded_slice(seq));
-                            }
+                    .ok_or_else(|| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            "invalid reference sequence name",
+                        )
+                    })?;
+                let interval = region.interval();
+                let container_offsets = meta
+                    .indexed_crai
+                    .query_offsets(reference_sequence_id, interval);
+                let hint_contig = region.name().to_vec();
+                let pinned_slot = if container_offsets.is_empty() {
+                    None
+                } else {
+                    Some(meta.fasta_repo.warm_contig_slot(&hint_contig))
+                };
+                let feed = CramFeed {
+                    inner: CramFeedInner {
+                        path: path.clone(),
+                        meta: std::sync::Arc::clone(meta),
+                        reference_sequence_id,
+                        hint_contig,
+                        pinned_slot,
+                        interval,
+                        container_offsets: container_offsets.into_iter(),
+                        current_block: None,
+                    },
+                    sam: SamRecord::new(),
+                };
+                let iter = feed.map(|res| {
+                    res.map_err(|e| match e {
+                        crate::types::VardictError::Io(io_err) => io_err,
+                        other => {
+                            std::io::Error::new(std::io::ErrorKind::InvalidData, other.to_string())
                         }
-                        Ok(sam_rec)
-                    })())
+                    })
                 });
                 Ok(Box::new(iter))
             }
@@ -809,10 +801,6 @@ pub struct CachedReader {
 thread_local! {
     static SAM_READER_CACHE: RefCell<HashMap<PathBuf, CachedReader>> = RefCell::new(HashMap::new());
 }
-
-static REPOSITORY_CACHE: std::sync::Mutex<
-    Option<(std::path::PathBuf, noodles::fasta::Repository)>,
-> = std::sync::Mutex::new(None);
 
 fn fasta_fai_path(fasta_path: &Path) -> PathBuf {
     crate::reference::resolve_fasta_fai_path(fasta_path)
@@ -1079,36 +1067,10 @@ pub fn open_reader(
     config: &crate::config::Config,
 ) -> Result<CachedReader, crate::types::VardictError> {
     if is_cram_path(path) {
-        let fasta_path = std::path::Path::new(&config.reference);
-        let repository = {
-            let mut guard = REPOSITORY_CACHE.lock().unwrap_or_else(|e| e.into_inner());
-            match guard.as_ref() {
-                Some((cached_path, repo)) if cached_path == fasta_path => repo.clone(),
-                _ => {
-                    let fasta_repo = acquire_fasta_repo(fasta_path)?;
-                    use noodles::fasta::Repository;
-                    let repo = Repository::new(RegistryDelegatingAdapter {
-                        primary_name: Vec::new(),
-                        primary_record: None,
-                        shared: std::sync::Arc::downgrade(&fasta_repo),
-                    });
-                    *guard = Some((fasta_path.to_path_buf(), repo.clone()));
-                    repo
-                }
-            }
-        };
-
-        let index = read_cram_index_with_fallbacks(path).map_err(crate::types::VardictError::Io)?;
-        let mut reader = noodles::cram::io::indexed_reader::Builder::default()
-            .set_reference_sequence_repository(repository.clone())
-            .set_index(index)
-            .build_from_path(path)
-            .map_err(crate::types::VardictError::Io)?;
-        let header = reader
-            .read_header()
-            .map_err(crate::types::VardictError::Io)?;
+        let meta = acquire_cram_meta(path, config)?;
+        let header = meta.header.clone();
         Ok(CachedReader {
-            reader: IndexedSamReader::Cram(reader, repository),
+            reader: IndexedSamReader::Cram(path.to_path_buf(), meta),
             header,
         })
     } else {
@@ -1597,13 +1559,6 @@ pub fn clear_bam_caches() {
     });
     if let Some(cache) = FASTA_REPO_CACHE.get() {
         cache.lock().unwrap_or_else(|e| e.into_inner()).clear();
-    }
-    if let Some((_, repo)) = REPOSITORY_CACHE
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .take()
-    {
-        repo.clear();
     }
     let _ = SAM_READER_CACHE.try_with(|cache| {
         if let Ok(mut map) = cache.try_borrow_mut() {
@@ -2713,7 +2668,8 @@ impl IndexedCrai {
     }
 }
 
-struct SharedCramMeta {
+#[doc(hidden)]
+pub struct SharedCramMeta {
     id: u64,
     file_len: Option<u64>,
     header: noodles::sam::Header,
@@ -2721,6 +2677,15 @@ struct SharedCramMeta {
     indexed_crai: IndexedCrai,
     spans_by_offset: HashMap<u64, Vec<(usize, usize, usize)>>,
     fasta_repo: std::sync::Arc<SharedFastaRepo>,
+}
+
+impl std::fmt::Debug for SharedCramMeta {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SharedCramMeta")
+            .field("id", &self.id)
+            .field("file_len", &self.file_len)
+            .finish_non_exhaustive()
+    }
 }
 
 type CramMetaSlot = std::sync::Arc<std::sync::Mutex<Option<std::sync::Arc<SharedCramMeta>>>>;
@@ -3371,7 +3336,7 @@ fn cram_record_to_cached(
     })
 }
 
-fn read_cram_itf8<R: std::io::Read>(reader: &mut R) -> std::io::Result<i32> {
+fn read_cram_itf8<R: std::io::Read + ?Sized>(reader: &mut R) -> std::io::Result<i32> {
     let mut b0_buf = [0_u8; 1];
     reader.read_exact(&mut b0_buf)?;
     let [b0_raw] = b0_buf;
@@ -3401,9 +3366,545 @@ fn read_cram_itf8<R: std::io::Read>(reader: &mut R) -> std::io::Result<i32> {
     Ok(n as i32)
 }
 
-/// Pre-validates CRAM container landmarks, block headers, and per-slice `SliceHeader`
-/// `record_count` directly on `file` before `noodles-cram` slices `container.src` or
-/// allocates `vec![Record::default(); record_count]`.
+fn read_cram_ltf8<R: std::io::Read + ?Sized>(reader: &mut R) -> std::io::Result<i64> {
+    let mut b0_buf = [0_u8; 1];
+    reader.read_exact(&mut b0_buf)?;
+    let [b0_raw] = b0_buf;
+    let b0 = u64::from(b0_raw);
+    let n = if b0 & 0x80 == 0 {
+        b0
+    } else if b0 & 0x40 == 0 {
+        let mut b1 = [0_u8; 1];
+        reader.read_exact(&mut b1)?;
+        let [c1] = b1;
+        ((b0 & 0x7f) << 8) | u64::from(c1)
+    } else if b0 & 0x20 == 0 {
+        let mut b12 = [0_u8; 2];
+        reader.read_exact(&mut b12)?;
+        ((b0 & 0x3f) << 16) | u64::from(u16::from_be_bytes(b12))
+    } else if b0 & 0x10 == 0 {
+        let mut b123 = [0_u8; 3];
+        reader.read_exact(&mut b123)?;
+        let [c1, c2, c3] = b123;
+        ((b0 & 0x1f) << 24) | (u64::from(c1) << 16) | (u64::from(c2) << 8) | u64::from(c3)
+    } else if b0 & 0x08 == 0 {
+        let mut b14 = [0_u8; 4];
+        reader.read_exact(&mut b14)?;
+        ((b0 & 0x0f) << 32) | u64::from(u32::from_be_bytes(b14))
+    } else if b0 & 0x04 == 0 {
+        let mut b15 = [0_u8; 5];
+        reader.read_exact(&mut b15)?;
+        let [c1, c2, c3, c4, c5] = b15;
+        ((b0 & 0x07) << 40) | u64::from_be_bytes([0, 0, 0, c1, c2, c3, c4, c5])
+    } else if b0 & 0x02 == 0 {
+        let mut b16 = [0_u8; 6];
+        reader.read_exact(&mut b16)?;
+        let [c1, c2, c3, c4, c5, c6] = b16;
+        ((b0 & 0x03) << 48) | u64::from_be_bytes([0, 0, c1, c2, c3, c4, c5, c6])
+    } else if b0 & 0x01 == 0 {
+        let mut b17 = [0_u8; 7];
+        reader.read_exact(&mut b17)?;
+        let [c1, c2, c3, c4, c5, c6, c7] = b17;
+        u64::from_be_bytes([0, c1, c2, c3, c4, c5, c6, c7])
+    } else {
+        let mut b18 = [0_u8; 8];
+        reader.read_exact(&mut b18)?;
+        u64::from_be_bytes(b18)
+    };
+    Ok(n as i64)
+}
+
+fn read_cram_uint7<R: std::io::Read + ?Sized>(reader: &mut R) -> std::io::Result<u32> {
+    let mut n = 0_u32;
+    for _ in 0..5 {
+        let mut b_buf = [0_u8; 1];
+        reader.read_exact(&mut b_buf)?;
+        let [b_raw] = b_buf;
+        let b = u32::from(b_raw);
+        n = n.wrapping_shl(7) | (b & 0x7f);
+        if b & 0x80 == 0 {
+            return Ok(n);
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        "CRAM uint7 VLQ exceeds 5 bytes",
+    ))
+}
+
+fn validate_cram_entropy_stream_at(
+    path: &Path,
+    file: &mut std::fs::File,
+    start_offset: u64,
+    comp_len: usize,
+    block_uncomp: usize,
+    is_aac: bool,
+    depth: u8,
+) -> std::io::Result<usize> {
+    use std::io::{Read as _, Seek as _, SeekFrom};
+
+    let end_offset = start_offset.checked_add(comp_len as u64).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "CRAM entropy stream offset overflows u64",
+        )
+    })?;
+    file.seek(SeekFrom::Start(start_offset))?;
+
+    let (flags, uncomp, pos_after_size) = {
+        let mut r = (&mut *file).take(comp_len as u64);
+        let mut f_buf = [0_u8; 1];
+        r.read_exact(&mut f_buf)?;
+        let [flags] = f_buf;
+        let mut u = block_uncomp;
+        if (flags & 0x10) == 0 {
+            u = read_cram_uint7(&mut r)? as usize;
+            if u > MAX_CRAM_CONTAINER_BYTES {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "CRAM codec inner uncompressed size ({u}) in '{}' exceeds maximum allowed ({MAX_CRAM_CONTAINER_BYTES})",
+                        path.display()
+                    ),
+                ));
+            }
+        }
+        let consumed = (comp_len as u64).saturating_sub(r.limit());
+        (flags, u, start_offset.saturating_add(consumed))
+    };
+
+    if (flags & 0x08) != 0 {
+        if depth >= 2 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "CRAM striped codec nesting depth in '{}' exceeds limit",
+                    path.display()
+                ),
+            ));
+        }
+        let (n_chunks, sub_comp_sizes, mut cur_pos) = {
+            let rem = end_offset.saturating_sub(pos_after_size);
+            let mut r = (&mut *file).take(rem);
+            let mut cc_buf = [0_u8; 1];
+            r.read_exact(&mut cc_buf)?;
+            let [cc] = cc_buf;
+            let n = usize::from(cc);
+            if n == 0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "CRAM striped codec in '{}' has zero chunk_count",
+                        path.display()
+                    ),
+                ));
+            }
+            let mut sizes = Vec::with_capacity(n);
+            for _ in 0..n {
+                sizes.push(read_cram_uint7(&mut r)? as usize);
+            }
+            let consumed = rem.saturating_sub(r.limit());
+            (n, sizes, pos_after_size.saturating_add(consumed))
+        };
+
+        let mut sum_sub_uncomp = 0_usize;
+        for (idx, sub_comp) in sub_comp_sizes.into_iter().enumerate() {
+            let next_pos = cur_pos
+                .checked_add(sub_comp as u64)
+                .filter(|&p| p <= end_offset)
+                .ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!(
+                            "CRAM striped sub-chunk compressed size ({sub_comp}) in '{}' exceeds block bounds",
+                            path.display()
+                        ),
+                    )
+                })?;
+            let (q, rem_u) = (uncomp / n_chunks, uncomp % n_chunks);
+            let sub_uncomp = if rem_u > idx { q + 1 } else { q };
+            let child_peak = validate_cram_entropy_stream_at(
+                path,
+                file,
+                cur_pos,
+                sub_comp,
+                sub_uncomp,
+                is_aac,
+                depth + 1,
+            )?;
+            sum_sub_uncomp = sum_sub_uncomp.saturating_add(child_peak);
+            if sum_sub_uncomp > MAX_CRAM_CONTAINER_BYTES {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "CRAM striped sub-chunks cumulative uncompressed size ({sum_sub_uncomp}) in '{}' exceeds maximum allowed ({MAX_CRAM_CONTAINER_BYTES})",
+                        path.display()
+                    ),
+                ));
+            }
+            cur_pos = next_pos;
+        }
+        return Ok(uncomp.max(sum_sub_uncomp));
+    }
+
+    let mut peak = uncomp;
+    let mut cur_pos = pos_after_size;
+
+    if (flags & 0x80) != 0 {
+        file.seek(SeekFrom::Start(cur_pos))?;
+        let sym_count = {
+            let rem = end_offset.saturating_sub(cur_pos);
+            let mut r = (&mut *file).take(rem);
+            let mut sc_buf = [0_u8; 1];
+            r.read_exact(&mut sc_buf)?;
+            let [sc] = sc_buf;
+            if sc == 0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "CRAM bit-pack codec in '{}' has zero symbol_count",
+                        path.display()
+                    ),
+                ));
+            }
+            sc
+        };
+        let after_map = cur_pos
+            .checked_add(1 + u64::from(sym_count))
+            .filter(|&p| p <= end_offset)
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "CRAM bit-pack mapping table in '{}' exceeds block bounds",
+                        path.display()
+                    ),
+                )
+            })?;
+        file.seek(SeekFrom::Start(after_map))?;
+        let (pack_len, next_pos) = {
+            let rem = end_offset.saturating_sub(after_map);
+            let mut r = (&mut *file).take(rem);
+            let len = read_cram_uint7(&mut r)? as usize;
+            let consumed = rem.saturating_sub(r.limit());
+            (len, after_map.saturating_add(consumed))
+        };
+        if pack_len > MAX_CRAM_CONTAINER_BYTES {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "CRAM bit-pack inner length ({pack_len}) in '{}' exceeds maximum allowed ({MAX_CRAM_CONTAINER_BYTES})",
+                    path.display()
+                ),
+            ));
+        }
+        peak = peak.max(pack_len);
+        cur_pos = next_pos;
+    }
+
+    if !is_aac && (flags & 0x40) != 0 {
+        file.seek(SeekFrom::Start(cur_pos))?;
+        let rem = end_offset.saturating_sub(cur_pos);
+        let mut r = (&mut *file).take(rem);
+        let n = read_cram_uint7(&mut r)?;
+        let context_size = (n >> 1) as usize;
+        let rle_len = read_cram_uint7(&mut r)? as usize;
+        if context_size > MAX_CRAM_CONTAINER_BYTES || rle_len > MAX_CRAM_CONTAINER_BYTES {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "CRAM RLE inner size (context={context_size}, len={rle_len}) in '{}' exceeds maximum allowed ({MAX_CRAM_CONTAINER_BYTES})",
+                    path.display()
+                ),
+            ));
+        }
+        peak = peak.max(rle_len).max(context_size);
+    }
+
+    Ok(peak)
+}
+
+fn validate_cram_block_and_codec(
+    path: &Path,
+    file: &mut std::fs::File,
+    block_offset: u64,
+    limit_end_offset: u64,
+    expected_content_type: u8,
+    max_uncompressed_bytes: usize,
+) -> std::io::Result<(u64, usize)> {
+    use std::io::{Read as _, Seek as _, SeekFrom};
+
+    if block_offset >= limit_end_offset {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "CRAM block offset ({block_offset}) in '{}' exceeds slice/container end ({limit_end_offset})",
+                path.display()
+            ),
+        ));
+    }
+    file.seek(SeekFrom::Start(block_offset))?;
+    let max_hdr_window = limit_end_offset.saturating_sub(block_offset);
+    let (raw_method, content_type, compressed_size, uncompressed_size, payload_offset) = {
+        let mut bounded_hdr = (&mut *file).take(max_hdr_window);
+        let mut prefix = [0_u8; 2];
+        bounded_hdr.read_exact(&mut prefix)?;
+        let [raw_m, c_type] = prefix;
+        let _content_id = read_cram_itf8(&mut bounded_hdr)?;
+        let comp = usize::try_from(read_cram_itf8(&mut bounded_hdr)?)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        let uncomp = usize::try_from(read_cram_itf8(&mut bounded_hdr)?)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        let consumed = max_hdr_window.saturating_sub(bounded_hdr.limit());
+        (
+            raw_m,
+            c_type,
+            comp,
+            uncomp,
+            block_offset.saturating_add(consumed),
+        )
+    };
+
+    if raw_method > 8 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "invalid CRAM block compression method ({raw_method}) in '{}'",
+                path.display()
+            ),
+        ));
+    }
+    if content_type != expected_content_type {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "invalid CRAM block content type in '{}': expected {expected_content_type}, got {content_type}",
+                path.display()
+            ),
+        ));
+    }
+
+    let next_block_offset = payload_offset
+        .checked_add(compressed_size as u64)
+        .and_then(|end_data| end_data.checked_add(4))
+        .filter(|&nb| nb <= limit_end_offset)
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "CRAM block compressed size ({compressed_size}) + CRC32 in '{}' exceeds bounds",
+                    path.display()
+                ),
+            )
+        })?;
+
+    if uncompressed_size > max_uncompressed_bytes {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "CRAM block uncompressed size ({uncompressed_size}) in '{}' exceeds maximum allowed ({max_uncompressed_bytes})",
+                path.display()
+            ),
+        ));
+    }
+
+    if uncompressed_size == 0 {
+        if raw_method == 0 && compressed_size != 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "CRAM uncompressed raw block in '{}' has compressed_size ({compressed_size}) != 0",
+                    path.display()
+                ),
+            ));
+        }
+        return Ok((next_block_offset, 0));
+    }
+
+    let mut effective_uncomp = uncompressed_size;
+    match raw_method {
+        0 => {
+            if compressed_size != uncompressed_size {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "CRAM raw block in '{}' has compressed_size ({compressed_size}) != uncompressed_size ({uncompressed_size})",
+                        path.display()
+                    ),
+                ));
+            }
+        }
+        1..=3 => {}
+        4 => {
+            file.seek(SeekFrom::Start(payload_offset))?;
+            let mut r = (&mut *file).take(compressed_size as u64);
+            let mut rans_hdr = [0_u8; 9];
+            r.read_exact(&mut rans_hdr)?;
+            let [order, _c0, _c1, _c2, _c3, u0, u1, u2, u3] = rans_hdr;
+            if order > 1 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "invalid CRAM rANS 4x8 order ({order}) in '{}'",
+                        path.display()
+                    ),
+                ));
+            }
+            let inner_uncomp = u32::from_le_bytes([u0, u1, u2, u3]) as usize;
+            if inner_uncomp > MAX_CRAM_CONTAINER_BYTES {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "CRAM rANS 4x8 inner uncompressed size ({inner_uncomp}) in '{}' exceeds maximum allowed ({MAX_CRAM_CONTAINER_BYTES})",
+                        path.display()
+                    ),
+                ));
+            }
+            effective_uncomp = effective_uncomp.max(inner_uncomp);
+        }
+        5 | 6 => {
+            let inner_peak = validate_cram_entropy_stream_at(
+                path,
+                file,
+                payload_offset,
+                compressed_size,
+                uncompressed_size,
+                raw_method == 6,
+                0,
+            )?;
+            effective_uncomp = effective_uncomp.max(inner_peak);
+        }
+        7 => {
+            file.seek(SeekFrom::Start(payload_offset))?;
+            let mut r = (&mut *file).take(compressed_size as u64);
+            let inner_uncomp = read_cram_uint7(&mut r)? as usize;
+            if inner_uncomp > MAX_CRAM_CONTAINER_BYTES {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "CRAM fqzcomp inner uncompressed size ({inner_uncomp}) in '{}' exceeds maximum allowed ({MAX_CRAM_CONTAINER_BYTES})",
+                        path.display()
+                    ),
+                ));
+            }
+            effective_uncomp = effective_uncomp.max(inner_uncomp);
+        }
+        8 => {
+            file.seek(SeekFrom::Start(payload_offset))?;
+            let mut r = (&mut *file).take(compressed_size as u64);
+            let mut nt_hdr = [0_u8; 9];
+            r.read_exact(&mut nt_hdr)?;
+            let [u0, u1, u2, u3, n0, n1, n2, n3, sub_method] = nt_hdr;
+            let inner_uncomp = u32::from_le_bytes([u0, u1, u2, u3]) as usize;
+            let name_count = u32::from_le_bytes([n0, n1, n2, n3]) as usize;
+            if inner_uncomp > MAX_CRAM_CONTAINER_BYTES {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "CRAM name_tokenizer uncompressed size ({inner_uncomp}) in '{}' exceeds maximum allowed ({MAX_CRAM_CONTAINER_BYTES})",
+                        path.display()
+                    ),
+                ));
+            }
+            if name_count > MAX_CRAM_CONTAINER_RECORDS {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "CRAM name_tokenizer name_count ({name_count}) in '{}' exceeds maximum allowed ({MAX_CRAM_CONTAINER_RECORDS})",
+                        path.display()
+                    ),
+                ));
+            }
+            let payload_end = payload_offset.saturating_add(compressed_size as u64);
+            let mut cur_pos = payload_offset.saturating_add(9);
+            let mut stream_ops = 0_usize;
+            let mut tok_uncomp_sum = 0_usize;
+            let mut max_stream_uncomp = 0_usize;
+            while cur_pos < payload_end {
+                stream_ops += 1;
+                if stream_ops > 4096 {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!(
+                            "CRAM name_tokenizer token stream count in '{}' exceeds maximum allowed (4096)",
+                            path.display()
+                        ),
+                    ));
+                }
+                file.seek(SeekFrom::Start(cur_pos))?;
+                let rem = payload_end.saturating_sub(cur_pos);
+                let (ttype, sub_comp_opt, consumed) = {
+                    let mut tr = (&mut *file).take(rem);
+                    let mut tt_buf = [0_u8; 1];
+                    tr.read_exact(&mut tt_buf)?;
+                    let [tt] = tt_buf;
+                    if (tt & 0x40) != 0 {
+                        let mut dup_buf = [0_u8; 2];
+                        tr.read_exact(&mut dup_buf)?;
+                        (tt, None, 3_u64)
+                    } else {
+                        let sc = read_cram_uint7(&mut tr)? as usize;
+                        let used = rem.saturating_sub(tr.limit());
+                        (tt, Some(sc), used)
+                    }
+                };
+                if (ttype & 0x80) != 0 && (ttype & 0x3f) != 0 {
+                    tok_uncomp_sum = tok_uncomp_sum.saturating_add(name_count);
+                }
+                match sub_comp_opt {
+                    None => {
+                        tok_uncomp_sum = tok_uncomp_sum.saturating_add(max_stream_uncomp);
+                        cur_pos = cur_pos.saturating_add(consumed);
+                    }
+                    Some(sub_comp) => {
+                        let stream_start = cur_pos.saturating_add(consumed);
+                        let next_pos = stream_start
+                            .checked_add(sub_comp as u64)
+                            .filter(|&p| p <= payload_end)
+                            .ok_or_else(|| {
+                                std::io::Error::new(
+                                    std::io::ErrorKind::InvalidData,
+                                    format!(
+                                        "CRAM name_tokenizer stream compressed size ({sub_comp}) in '{}' exceeds block bounds",
+                                        path.display()
+                                    ),
+                                )
+                            })?;
+                        let stream_peak = validate_cram_entropy_stream_at(
+                            path,
+                            file,
+                            stream_start,
+                            sub_comp,
+                            0,
+                            sub_method != 0,
+                            0,
+                        )?;
+                        max_stream_uncomp = max_stream_uncomp.max(stream_peak);
+                        tok_uncomp_sum = tok_uncomp_sum.saturating_add(stream_peak);
+                        cur_pos = next_pos;
+                    }
+                }
+                if tok_uncomp_sum > MAX_CRAM_CONTAINER_BYTES {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!(
+                            "CRAM name_tokenizer cumulative stream size ({tok_uncomp_sum}) in '{}' exceeds maximum allowed ({MAX_CRAM_CONTAINER_BYTES})",
+                            path.display()
+                        ),
+                    ));
+                }
+            }
+            effective_uncomp = effective_uncomp.max(inner_uncomp).max(tok_uncomp_sum);
+        }
+        _ => {}
+    }
+
+    Ok((next_block_offset, effective_uncomp))
+}
+
+/// Pre-validates CRAM container landmarks, `CompressionHeader`, `SliceHeader` fields, and
+/// every slice's `CoreData`/`ExternalData` outer + inner codec allocation headers directly on
+/// `file` before `noodles-cram` slices `container.src` or allocates decoded buffers (`SEC-06`).
 fn prevalidate_cram_container_slices(
     path: &Path,
     file: &mut std::fs::File,
@@ -3413,7 +3914,11 @@ fn prevalidate_cram_container_slices(
 ) -> std::io::Result<()> {
     use std::io::{Read as _, Seek as _, SeekFrom};
     const MAX_SLICE_HEADER_UNCOMPRESSED_BYTES: usize = 1024 * 1024;
+    const COMPRESSION_HEADER_CONTENT_TYPE: u8 = 1;
     const SLICE_HEADER_CONTENT_TYPE: u8 = 2;
+    const EXTERNAL_DATA_CONTENT_TYPE: u8 = 4;
+    const CORE_DATA_CONTENT_TYPE: u8 = 5;
+    const MAX_SLICE_BLOCKS: usize = 4096;
 
     for &lm in landmarks {
         if lm > bytes_read {
@@ -3436,26 +3941,25 @@ fn prevalidate_cram_container_slices(
         ));
     }
 
-    // Validate CompressionHeader block bounds before `container.compression_header()`
+    // Validate CompressionHeader block and inner codec bounds before `container.compression_header()`
     let comp_hdr_end = landmarks.first().copied().unwrap_or(bytes_read);
     if comp_hdr_end > 0 {
-        file.seek(SeekFrom::Start(body_offset))?;
-        let mut hdr_prefix = [0_u8; 2];
-        file.read_exact(&mut hdr_prefix)?;
-        let _content_id = read_cram_itf8(file)?;
-        let compressed_size = usize::try_from(read_cram_itf8(file)?)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        let uncompressed_size = usize::try_from(read_cram_itf8(file)?)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        if compressed_size > comp_hdr_end || uncompressed_size > MAX_CRAM_CONTAINER_BYTES {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!(
-                    "CRAM compression header block in '{}' exceeds container bounds",
-                    path.display()
-                ),
-            ));
-        }
+        let comp_hdr_limit = body_offset
+            .checked_add(comp_hdr_end as u64)
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "CRAM compression header end overflows u64",
+                )
+            })?;
+        let _ = validate_cram_block_and_codec(
+            path,
+            file,
+            body_offset,
+            comp_hdr_limit,
+            COMPRESSION_HEADER_CONTENT_TYPE,
+            MAX_CRAM_CONTAINER_BYTES,
+        )?;
     }
 
     let mut cumulative_records = 0_usize;
@@ -3468,11 +3972,27 @@ fn prevalidate_cram_container_slices(
                 "CRAM slice offset overflows u64",
             )
         })?;
+        let slice_end_offset = slice_offset.checked_add(slice_span as u64).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "CRAM slice end offset overflows u64",
+            )
+        })?;
         file.seek(SeekFrom::Start(slice_offset))?;
 
-        let mut blk_hdr = [0_u8; 2];
-        file.read_exact(&mut blk_hdr)?;
-        let [mut method, content_type] = blk_hdr;
+        let (mut method, content_type, compressed_size, uncompressed_size, sh_payload_offset) = {
+            let mut hdr_bounded = (&mut *file).take(slice_span as u64);
+            let mut blk_hdr = [0_u8; 2];
+            hdr_bounded.read_exact(&mut blk_hdr)?;
+            let [m, ct] = blk_hdr;
+            let _content_id = read_cram_itf8(&mut hdr_bounded)?;
+            let comp = usize::try_from(read_cram_itf8(&mut hdr_bounded)?)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+            let uncomp = usize::try_from(read_cram_itf8(&mut hdr_bounded)?)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+            let consumed = (slice_span as u64).saturating_sub(hdr_bounded.limit());
+            (m, ct, comp, uncomp, slice_offset.saturating_add(consumed))
+        };
         if content_type != SLICE_HEADER_CONTENT_TYPE {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -3482,12 +4002,20 @@ fn prevalidate_cram_container_slices(
                 ),
             ));
         }
-        let _content_id = read_cram_itf8(file)?;
-        let compressed_size = usize::try_from(read_cram_itf8(file)?)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        let uncompressed_size = usize::try_from(read_cram_itf8(file)?)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        if compressed_size > slice_span || uncompressed_size > MAX_SLICE_HEADER_UNCOMPRESSED_BYTES {
+        let first_data_blk_offset = sh_payload_offset
+            .checked_add(compressed_size as u64)
+            .and_then(|p| p.checked_add(4))
+            .filter(|&nb| nb <= slice_end_offset)
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "CRAM slice header block size in '{}' exceeds bounds (compressed={compressed_size}, uncompressed={uncompressed_size})",
+                        path.display()
+                    ),
+                )
+            })?;
+        if uncompressed_size > MAX_SLICE_HEADER_UNCOMPRESSED_BYTES {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!(
@@ -3499,35 +4027,49 @@ fn prevalidate_cram_container_slices(
         if uncompressed_size == 0 {
             method = 0;
         }
-        let raw_record_count = match method {
-            0 => {
-                let mut bounded = (&mut *file).take(compressed_size as u64);
-                let _ref_seq_id = read_cram_itf8(&mut bounded)?;
-                let _align_start = read_cram_itf8(&mut bounded)?;
-                let _align_span = read_cram_itf8(&mut bounded)?;
-                read_cram_itf8(&mut bounded)?
-            }
-            1 => {
-                let bounded = (&mut *file).take(compressed_size as u64);
-                let mut gz = flate2::read::GzDecoder::new(bounded)
-                    .take(MAX_SLICE_HEADER_UNCOMPRESSED_BYTES as u64);
-                let _ref_seq_id = read_cram_itf8(&mut gz)?;
-                let _align_start = read_cram_itf8(&mut gz)?;
-                let _align_span = read_cram_itf8(&mut gz)?;
-                read_cram_itf8(&mut gz)?
-            }
-            _ => {
-                // Non-RAW/non-Gzip slice headers are bounded to <= 1 MiB uncompressed above;
-                // CRAM 3.0/3.1 spec §8.5 requires method == 0 for SliceHeader.
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!(
-                        "unsupported compression method ({method}) on CRAM slice header block in '{}'",
-                        path.display()
-                    ),
-                ));
-            }
-        };
+        file.seek(SeekFrom::Start(sh_payload_offset))?;
+        let read_slice_hdr_fields =
+            |r: &mut dyn std::io::Read| -> std::io::Result<(i32, i64, i32, i32)> {
+                let _ref_seq_id = read_cram_itf8(r)?;
+                let _align_start = read_cram_itf8(r)?;
+                let _align_span = read_cram_itf8(r)?;
+                let rc = read_cram_itf8(r)?;
+                let rcounter = read_cram_ltf8(r)?;
+                let bcount = read_cram_itf8(r)?;
+                let cids_len = read_cram_itf8(r)?;
+                Ok((rc, rcounter, bcount, cids_len))
+            };
+        let (raw_record_count, raw_record_counter, raw_block_count, raw_content_ids_len) =
+            match method {
+                0 => {
+                    if uncompressed_size > 0 && compressed_size != uncompressed_size {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            format!(
+                                "CRAM raw slice header block in '{}' has compressed_size ({compressed_size}) != uncompressed_size ({uncompressed_size})",
+                                path.display()
+                            ),
+                        ));
+                    }
+                    let mut bounded = (&mut *file).take(compressed_size as u64);
+                    read_slice_hdr_fields(&mut bounded)?
+                }
+                1 => {
+                    let bounded = (&mut *file).take(compressed_size as u64);
+                    let mut gz = flate2::read::GzDecoder::new(bounded)
+                        .take(MAX_SLICE_HEADER_UNCOMPRESSED_BYTES as u64);
+                    read_slice_hdr_fields(&mut gz)?
+                }
+                _ => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!(
+                            "unsupported compression method ({method}) on CRAM slice header block in '{}'",
+                            path.display()
+                        ),
+                    ));
+                }
+            };
         let slice_records = usize::try_from(raw_record_count).map_err(|_| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -3548,6 +4090,69 @@ fn prevalidate_cram_container_slices(
                     path.display()
                 ),
             ));
+        }
+        if raw_record_counter < 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "negative CRAM slice record_counter ({raw_record_counter}) in '{}'",
+                    path.display()
+                ),
+            ));
+        }
+        let block_count = usize::try_from(raw_block_count)
+            .ok()
+            .filter(|&bc| (1..=MAX_SLICE_BLOCKS).contains(&bc))
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "CRAM slice block_count ({raw_block_count}) in '{}' exceeds allowed range 1..={MAX_SLICE_BLOCKS}",
+                        path.display()
+                    ),
+                )
+            })?;
+        let content_ids_len = usize::try_from(raw_content_ids_len)
+            .ok()
+            .filter(|&n| n <= MAX_SLICE_BLOCKS)
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "CRAM slice block_content_ids length ({raw_content_ids_len}) in '{}' exceeds maximum allowed ({MAX_SLICE_BLOCKS})",
+                        path.display()
+                    ),
+                )
+            })?;
+        let _ = content_ids_len;
+
+        let mut cur_blk_offset = first_data_blk_offset;
+        let mut cumulative_slice_uncomp = 0_usize;
+        for blk_idx in 0..block_count {
+            let expected_type = if blk_idx == 0 {
+                CORE_DATA_CONTENT_TYPE
+            } else {
+                EXTERNAL_DATA_CONTENT_TYPE
+            };
+            let (next_blk_offset, blk_uncomp) = validate_cram_block_and_codec(
+                path,
+                file,
+                cur_blk_offset,
+                slice_end_offset,
+                expected_type,
+                MAX_CRAM_CONTAINER_BYTES,
+            )?;
+            cumulative_slice_uncomp = cumulative_slice_uncomp.saturating_add(blk_uncomp);
+            if cumulative_slice_uncomp > MAX_CRAM_CONTAINER_BYTES {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "CRAM slice cumulative uncompressed block size ({cumulative_slice_uncomp}) in '{}' exceeds maximum allowed ({MAX_CRAM_CONTAINER_BYTES})",
+                        path.display()
+                    ),
+                ));
+            }
+            cur_blk_offset = next_blk_offset;
         }
     }
 
@@ -3662,6 +4267,7 @@ fn fetch_cram_container(
     #[cfg(test)]
     CRAM_CONTAINER_DECODE_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
+    // guideline deviation: M-PANIC-CONTINUATION — defensive boundary converting upstream noodles-cram parser panics on malformed untrusted CRAM inputs into io::ErrorKind::InvalidData without shared mutable state
     let decoded_res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
         || -> Result<Vec<CachedCramRecord>, crate::types::VardictError> {
             let compression_header = container.compression_header()?;
@@ -9068,6 +9674,163 @@ mod tests {
                 );
             }
             other => panic!("expected InvalidData on spoofed slice record_count, got {other:?}"),
+        }
+
+        // 6. < 400 B crafted containers spoofing 2 GiB (0x7fff_ffff) in:
+        //    (a) CoreData Gzip block `uncompressed_size = 0x7fff_ffff` + ExternalData Rans4x8, and
+        //    (b) ExternalData Rans4x8 inner codec header `uncompressed_size = 0x7fff_ffff` (while
+        //        outer block `uncompressed_size = 16` and CoreData is valid 1 B).
+        //    Both `open_reader(...).reader.query(...)` and `query_region_iter` must reject cleanly
+        //    with `InvalidData` ("exceeds") before allocating (`SEC-06`).
+        let write_spoof_codec_cram = |dst_cram: &Path,
+                                      core_raw_block: Vec<u8>,
+                                      ext_raw_block: Vec<u8>| {
+            let mut rdr = noodles::cram::io::Reader::new(std::fs::File::open(&base_cram).unwrap());
+            let _ = rdr.read_header().unwrap();
+            let c_pos = rdr.position().unwrap() as usize;
+            let mut orig_cont = noodles::cram::io::reader::Container::default();
+            let c_len = rdr.read_container(&mut orig_cont).unwrap();
+            let body_start =
+                std::io::Seek::stream_position(rdr.get_mut()).unwrap() as usize - c_len;
+            let lm0 = orig_cont.header().landmarks()[0];
+            let comp_hdr_bytes = &base_bytes[body_start..body_start + lm0];
+
+            let mut sh_payload = vec![
+                0x00, // ref_seq_id = 0
+                0x05, // alignment_start = 5
+                0x0a, // alignment_span = 10
+                0x01, // record_count = 1
+                0x00, // record_counter = 0
+                0x02, // block_count = 2 (CoreData + 1 ExternalData)
+                0x01, // block_content_ids len = 1
+                0x01, // block_content_ids[0] = 1
+                0xff, 0xff, 0xff, 0xff, 0x0f, // embedded_ref = -1
+            ];
+            sh_payload.extend_from_slice(&[0u8; 16]);
+
+            let mut sh_block = vec![
+                0x00,                   // method = None
+                0x02,                   // content_type = SliceHeader (2)
+                0x00,                   // content_id = 0
+                sh_payload.len() as u8, // compressed_size
+                sh_payload.len() as u8, // uncompressed_size
+            ];
+            sh_block.extend_from_slice(&sh_payload);
+            let mut sh_crc = flate2::Crc::new();
+            sh_crc.update(&sh_block);
+            sh_block.extend_from_slice(&sh_crc.sum().to_le_bytes());
+
+            let seal_crc = |mut blk: Vec<u8>| -> Vec<u8> {
+                let mut c = flate2::Crc::new();
+                c.update(&blk);
+                blk.extend_from_slice(&c.sum().to_le_bytes());
+                blk
+            };
+            let core_blk = seal_crc(core_raw_block);
+            let ext_blk = seal_crc(ext_raw_block);
+
+            let mut cont_body = Vec::new();
+            cont_body.extend_from_slice(comp_hdr_bytes);
+            let new_lm0 = cont_body.len();
+            cont_body.extend_from_slice(&sh_block);
+            cont_body.extend_from_slice(&core_blk);
+            cont_body.extend_from_slice(&ext_blk);
+            assert!(
+                cont_body.len() < 400,
+                "crafted CRAM container body must be < 400 B, got {}",
+                cont_body.len()
+            );
+
+            let mut hdr_body = Vec::new();
+            hdr_body.extend_from_slice(&(cont_body.len() as i32).to_le_bytes());
+            hdr_body.extend_from_slice(&[0x00, 0x05, 0x0a, 0x01, 0x00, 0x0a, 0x04, 0x01]);
+            if new_lm0 < 0x80 {
+                hdr_body.push(new_lm0 as u8);
+            } else {
+                hdr_body.push(0x80 | ((new_lm0 >> 8) as u8));
+                hdr_body.push((new_lm0 & 0xff) as u8);
+            }
+            let mut h_crc = flate2::Crc::new();
+            h_crc.update(&hdr_body);
+            hdr_body.extend_from_slice(&h_crc.sum().to_le_bytes());
+
+            let mut crafted = base_bytes[..c_pos].to_vec();
+            crafted.extend_from_slice(&hdr_body);
+            crafted.extend_from_slice(&cont_body);
+            std::fs::write(dst_cram, &crafted).unwrap();
+            let crai_rec = vec![noodles::cram::crai::Record::new(
+                Some(0),
+                Position::try_from(5usize).ok(),
+                10,
+                c_pos as u64,
+                new_lm0 as u64,
+                (sh_block.len() + core_blk.len() + ext_blk.len()) as u64,
+            )];
+            noodles::cram::crai::fs::write(dst_cram.with_extension("cram.crai"), &crai_rec)
+                .unwrap();
+        };
+
+        // Rans4x8 ExternalData block: method=4, content_type=4, content_id=1,
+        // compressed_size=9, uncompressed_size=16, payload=[order=0, comp=0u32, uncomp=0x7fff_ffff]
+        let rans4x8_2gib_ext = vec![
+            0x04, 0x04, 0x01, 0x09, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0x7f,
+        ];
+        // Gzip CoreData block: method=1, content_type=5, content_id=0,
+        // compressed_size=2, uncompressed_size=0x7fff_ffff (ITF-8: f7 ff ff ff 0f), payload=[0x1f, 0x8b]
+        let gzip_2gib_core = vec![
+            0x01, 0x05, 0x00, 0x02, 0xf7, 0xff, 0xff, 0xff, 0x0f, 0x1f, 0x8b,
+        ];
+        // Valid 1-byte raw CoreData block so ExternalData validation is reached:
+        let valid_1b_core = vec![0x00, 0x05, 0x00, 0x01, 0x01, 0x00];
+
+        let spoof_gzip_core_cram = dir.path().join("spoof_gzip_core_2gib.cram");
+        write_spoof_codec_cram(
+            &spoof_gzip_core_cram,
+            gzip_2gib_core,
+            rans4x8_2gib_ext.clone(),
+        );
+
+        let spoof_rans_ext_cram = dir.path().join("spoof_rans4x8_ext_2gib.cram");
+        write_spoof_codec_cram(&spoof_rans_ext_cram, valid_1b_core, rans4x8_2gib_ext);
+
+        let region_obj = build_noodles_region("chr1", 1, 50).unwrap();
+        for (case_label, bad_cram) in [
+            ("gzip_core_2gib", &spoof_gzip_core_cram),
+            ("rans4x8_ext_2gib", &spoof_rans_ext_cram),
+        ] {
+            let feed_res: Result<Vec<SamRecord>, _> =
+                query_region_iter(bad_cram, "chr1", Pos0(0), Pos0(50), &cfg)
+                    .and_then(|it| it.collect());
+            match feed_res {
+                Err(crate::types::VardictError::Io(io_e)) => {
+                    assert_eq!(io_e.kind(), std::io::ErrorKind::InvalidData, "{case_label}");
+                    assert!(
+                        io_e.to_string().contains("exceeds"),
+                        "{case_label} expected 'exceeds' in error, got: {io_e}"
+                    );
+                }
+                other => panic!(
+                    "{case_label}: expected InvalidData via query_region_iter, got {other:?}"
+                ),
+            }
+
+            let mut cached = open_reader(bad_cram, &cfg).unwrap();
+            let rdr_res: Result<Vec<SamRecord>, _> = cached
+                .reader
+                .query(&cached.header, &region_obj)
+                .and_then(|it| it.collect());
+            match rdr_res {
+                Err(io_e) => {
+                    assert_eq!(io_e.kind(), std::io::ErrorKind::InvalidData, "{case_label}");
+                    assert!(
+                        io_e.to_string().contains("exceeds"),
+                        "{case_label} expected 'exceeds' in IndexedSamReader::Cram::query error, got: {io_e}"
+                    );
+                }
+                other => panic!(
+                    "{case_label}: expected InvalidData via IndexedSamReader::Cram::query, got {other:?}"
+                ),
+            }
         }
     }
 }

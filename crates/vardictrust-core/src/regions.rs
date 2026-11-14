@@ -251,6 +251,7 @@ pub fn java_split<'a>(line: &'a str, delim: &str) -> Result<Vec<&'a str>, Vardic
             };
             if needs_compile {
                 let compiled = regex::RegexBuilder::new(delim)
+                    .unicode(false)
                     .size_limit(1 << 20)
                     .dfa_size_limit(1 << 20)
                     .build()
@@ -2277,7 +2278,7 @@ Y\t59042860\t59047860\tY_59042860_5\t0\t.\t59042860\t59047860
         );
 
         // Oversized delimiter regex exceeding 1 MiB compiled NFA must fail cleanly via VardictError::Parse
-        let huge_delim = "(?:[a-zA-Z0-9]{1000}){50}";
+        let huge_delim = "(?:[a-zA-Z0-9]{1000}){100}";
         match java_split("a b c", huge_delim) {
             Err(VardictError::Parse(msg)) => {
                 assert!(
@@ -2287,7 +2288,12 @@ Y\t59042860\t59047860\tY_59042860_5\t0\t.\t59042860\t59047860
             }
             other => panic!("oversized regex delimiter must be rejected by RegexBuilder size_limit, got {other:?}"),
         }
-        // Valid custom regex delimiters still work and switch cleanly across cached calls
+        // Valid custom regex delimiters still work and switch cleanly across cached calls,
+        // keeping ASCII-only Java Pattern semantics (U+00A0 NBSP is NOT split by \s+).
+        assert_eq!(
+            java_split("chr1\t100\t200\tBRCA1\u{00a0}exon11", r"\s+").unwrap(),
+            vec!["chr1", "100", "200", "BRCA1\u{00a0}exon11"]
+        );
         assert_eq!(
             java_split("chr1   10  20", " +").unwrap(),
             vec!["chr1", "10", "20"]

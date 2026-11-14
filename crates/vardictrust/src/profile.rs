@@ -9,7 +9,7 @@ pub struct Session {
     #[cfg(feature = "profile-dhat")]
     _dhat: Option<dhat::Profiler>,
     #[cfg(feature = "profile-dhat")]
-    dhat_paths: Option<(PathBuf, PathBuf)>,
+    dhat_paths: Option<(PathBuf, PathBuf, PathBuf)>,
     #[cfg(feature = "profile-heap")]
     heap_dir: Option<PathBuf>,
 }
@@ -33,12 +33,18 @@ fn is_chainable_sigprof_handler(addr: usize) -> bool {
     addr != 0
         && addr != libc::SIG_IGN
         && addr != libc::SIG_DFL
+        && addr != libc::SIG_ERR
         && addr != sigprof_handler as *const () as usize
 }
 
-// `sigprof_handler` is an `extern "C"` signal handler invoked by the OS kernel on `SIGPROF`.
-// `TICKS_TOTAL` and `OLD_ACT` use lock-free atomics (async-signal-safe), and `OLD_ACT` points
-// exclusively to permanently leaked `Box<libc::sigaction>` allocations (`'static` lifetime).
+/// Chained `SIGPROF` signal handler counting raw OS timer ticks before delegating to `pprof`.
+///
+/// # Safety
+///
+/// Must only be invoked as a `SA_SIGINFO` `SIGPROF` signal handler by the OS kernel (or by
+/// unit tests exercising non-chainable sentinels or matching test handlers). `TICKS_TOTAL`
+/// and `OLD_ACT` use lock-free async-signal-safe atomics, and `OLD_ACT` points exclusively to
+/// permanently leaked `Box<libc::sigaction>` allocations (`'static` lifetime).
 #[cfg(feature = "profile-cpu")]
 unsafe extern "C" fn sigprof_handler(
     sig: libc::c_int,
@@ -52,11 +58,7 @@ unsafe extern "C" fn sigprof_handler(
         // so it is non-null, properly aligned, initialized for `'static`, and never freed or mutated.
         let old = unsafe { &*old_ptr };
         let addr = old.sa_sigaction;
-        if addr != 0
-            && addr != libc::SIG_IGN
-            && addr != libc::SIG_DFL
-            && addr != sigprof_handler as *const () as usize
-        {
+        if is_chainable_sigprof_handler(addr) {
             if old.sa_flags & libc::SA_SIGINFO != 0 {
                 // SAFETY: `addr` came from `libc::sigaction` and passed the non-null, non-`SIG_IGN`,
                 // non-`SIG_DFL`, and non-self check above; with `SA_SIGINFO` set, POSIX guarantees
@@ -231,17 +233,78 @@ fn write_profile_file_atomic(
 }
 
 #[cfg(any(test, feature = "profile-dhat"))]
+fn create_unique_temp_dir(dir: &std::path::Path, prefix: &str) -> std::io::Result<PathBuf> {
+    use std::collections::hash_map::RandomState;
+    use std::hash::{BuildHasher, Hasher};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    ensure_non_symlink_dir(dir)?;
+
+    let pid = std::process::id();
+    for attempt in 0..64u32 {
+        let seq = DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let mut hasher = RandomState::new().build_hasher();
+        hasher.write_u32(pid);
+        hasher.write_u64(seq);
+        hasher.write_u32(attempt);
+        let nonce = hasher.finish();
+        let candidate = dir.join(format!("{prefix}.{pid}.{nonce:016x}.{seq}"));
+
+        let mut builder = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt as _;
+            builder.mode(0o700);
+        }
+        match builder.create(&candidate) {
+            Ok(()) => return Ok(candidate),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        format!(
+            "failed to create unique temporary directory in '{}' after 64 attempts",
+            dir.display()
+        ),
+    ))
+}
+
+#[cfg(any(test, feature = "profile-dhat"))]
 fn finalize_dhat_temp_file(
     dir: &std::path::Path,
+    work_dir: &std::path::Path,
     dhat_tmp_path: &std::path::Path,
 ) -> std::io::Result<()> {
-    if let Err(e) = ensure_non_symlink_dir(dir)
-        .and_then(|()| std::fs::rename(dhat_tmp_path, dir.join("dhat-heap.json")))
-    {
+    let res = (|| -> std::io::Result<()> {
+        ensure_non_symlink_dir(dir)?;
+        ensure_non_symlink_dir(work_dir)?;
+        let meta = std::fs::symlink_metadata(dhat_tmp_path)?;
+        if meta.file_type().is_symlink() || !meta.file_type().is_file() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "temporary DHAT profile '{}' is not a regular file",
+                    dhat_tmp_path.display()
+                ),
+            ));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(dhat_tmp_path, std::fs::Permissions::from_mode(0o600))?;
+        }
+        std::fs::rename(dhat_tmp_path, dir.join("dhat-heap.json"))
+    })();
+    if res.is_err() {
         let _ = std::fs::remove_file(dhat_tmp_path);
-        return Err(e);
     }
-    Ok(())
+    let _ = std::fs::remove_dir(work_dir);
+    res
 }
 
 #[cfg(any(
@@ -396,21 +459,18 @@ impl Session {
 
         #[cfg(feature = "profile-dhat")]
         let (dhat, dhat_paths) = if let Some(dir) = dhat_dir {
-            let (tmp_file, dhat_tmp_path) = create_unique_temp_file(&dir, ".dhat-heap.tmp")
-                .map_err(|e| {
-                    anyhow::anyhow!(
-                        "cannot create temporary DHAT profile file in '{}': {e}",
-                        dir.display()
-                    )
-                })?;
-            // Close the descriptor while keeping the owned `0600` regular file reserved on disk
-            // so `dhat` writes into this exact inode on drop without symlink-follow risk (`AR-18`).
-            drop(tmp_file);
+            let work_dir = create_unique_temp_dir(&dir, ".dhat-work").map_err(|e| {
+                anyhow::anyhow!(
+                    "cannot create private temporary DHAT directory in '{}': {e}",
+                    dir.display()
+                )
+            })?;
+            let dhat_tmp_path = work_dir.join("dhat-heap.json");
             let profiler = dhat::Profiler::builder()
                 .file_name(&dhat_tmp_path)
                 .trim_backtraces(Some(32))
                 .build();
-            (Some(profiler), Some((dir, dhat_tmp_path)))
+            (Some(profiler), Some((dir, work_dir, dhat_tmp_path)))
         } else {
             (None, None)
         };
@@ -632,8 +692,8 @@ impl Drop for Session {
         #[cfg(feature = "profile-dhat")]
         {
             drop(self._dhat.take());
-            if let Some((dir, dhat_tmp_path)) = self.dhat_paths.take() {
-                if let Err(e) = finalize_dhat_temp_file(&dir, &dhat_tmp_path) {
+            if let Some((dir, work_dir, dhat_tmp_path)) = self.dhat_paths.take() {
+                if let Err(e) = finalize_dhat_temp_file(&dir, &work_dir, &dhat_tmp_path) {
                     vardictrust_core::verbose_eprintln!(
                         "vardictrust: warning: profile write dhat-heap.json failed: {e}"
                     );
@@ -774,31 +834,54 @@ mod tests {
                 b"{\"ticks_total\":1}\n"
             );
 
-            // DHAT temp finalization replaces pre-existing symlink at dhat-heap.json and unlinks temp on error
+            // DHAT private 0700 work_dir + temp finalization replaces pre-existing symlink at
+            // dhat-heap.json, removes work_dir, and unlinks temp + work_dir on error.
+            let _ = std::fs::remove_file(&p1);
+            let _ = std::fs::remove_file(&p2);
+            let w1 = create_unique_temp_dir(&real_dir, ".dhat-work").unwrap();
+            let w2 = create_unique_temp_dir(&real_dir, ".dhat-work").unwrap();
+            assert_ne!(w1, w2);
+            let w1_mode = std::fs::symlink_metadata(&w1).unwrap().permissions().mode() & 0o777;
+            assert_eq!(w1_mode, 0o700);
+
             let target_dhat = real_dir.join("dhat-heap.json");
             symlink(&victim, &target_dhat).unwrap();
-            std::fs::write(&p1, b"{\"dhat\":true}\n").unwrap();
-            finalize_dhat_temp_file(&real_dir, &p1).unwrap();
-            assert!(!p1.exists());
+            let dhat_tmp1 = w1.join("dhat-heap.json");
+            std::fs::write(&dhat_tmp1, b"{\"dhat\":true}\n").unwrap();
+            finalize_dhat_temp_file(&real_dir, &w1, &dhat_tmp1).unwrap();
+            assert!(!dhat_tmp1.exists());
+            assert!(!w1.exists());
             assert_eq!(std::fs::read(&victim).unwrap(), b"precious");
             let dhat_meta = std::fs::symlink_metadata(&target_dhat).unwrap();
             assert!(!dhat_meta.file_type().is_symlink() && dhat_meta.is_file());
             assert_eq!(dhat_meta.permissions().mode() & 0o777, 0o600);
             assert_eq!(std::fs::read(&target_dhat).unwrap(), b"{\"dhat\":true}\n");
 
+            // Symlink inside work_dir must be rejected and cleaned up without touching victim.
+            let w_sym = create_unique_temp_dir(&real_dir, ".dhat-work").unwrap();
+            let dhat_sym = w_sym.join("dhat-heap.json");
+            symlink(&victim, &dhat_sym).unwrap();
+            assert!(finalize_dhat_temp_file(&real_dir, &w_sym, &dhat_sym).is_err());
+            assert!(!dhat_sym.exists());
+            assert!(!w_sym.exists());
+            assert_eq!(std::fs::read(&victim).unwrap(), b"precious");
+
             // If dir is a symlink (including trailing-slash symlink) at DHAT finalization time,
-            // refuse and unlink the staged temp file.
-            assert!(finalize_dhat_temp_file(&symlink_dir, &p2).is_err());
+            // refuse and unlink both the staged temp file and private work_dir.
+            let dhat_tmp2 = w2.join("dhat-heap.json");
+            std::fs::write(&dhat_tmp2, b"{}\n").unwrap();
+            assert!(finalize_dhat_temp_file(&symlink_dir, &w2, &dhat_tmp2).is_err());
             assert!(
-                !p2.exists(),
-                "finalize_dhat_temp_file must unlink staged temp file on error"
+                !dhat_tmp2.exists() && !w2.exists(),
+                "finalize_dhat_temp_file must unlink staged temp file and work_dir on error"
             );
-            let (f3, p3) = create_unique_temp_file(&real_dir, ".dhat-heap.tmp").unwrap();
-            drop(f3);
-            assert!(finalize_dhat_temp_file(&symlink_slash_1, &p3).is_err());
+            let w3 = create_unique_temp_dir(&real_dir, ".dhat-work").unwrap();
+            let dhat_tmp3 = w3.join("dhat-heap.json");
+            std::fs::write(&dhat_tmp3, b"{}\n").unwrap();
+            assert!(finalize_dhat_temp_file(&symlink_slash_1, &w3, &dhat_tmp3).is_err());
             assert!(
-                !p3.exists(),
-                "finalize_dhat_temp_file must unlink staged temp file on trailing-slash symlink error"
+                !dhat_tmp3.exists() && !w3.exists(),
+                "finalize_dhat_temp_file must unlink staged temp file and work_dir on trailing-slash symlink error"
             );
         }
     }
@@ -823,6 +906,7 @@ mod tests {
             0usize,
             libc::SIG_DFL,
             libc::SIG_IGN,
+            libc::SIG_ERR,
             sigprof_handler as *const () as usize,
         ] {
             assert!(!is_chainable_sigprof_handler(bad_addr));

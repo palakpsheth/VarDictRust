@@ -362,7 +362,8 @@ pub(crate) fn push_i64(buf: &mut String, v: i64) {
 
 /// Zero-allocation byte slice wrapper escaping terminal control characters,
 /// non-ASCII bytes, and `\\` for safe diagnostic logging (`SEC-10b`).
-pub struct SanitizedBytes<'a>(pub &'a [u8]);
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SanitizedBytes<'a>(pub(crate) &'a [u8]);
 
 impl std::fmt::Display for SanitizedBytes<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -377,6 +378,12 @@ impl std::fmt::Display for SanitizedBytes<'_> {
             }
         }
         Ok(())
+    }
+}
+
+impl std::fmt::Debug for SanitizedBytes<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self, f)
     }
 }
 
@@ -626,10 +633,10 @@ mod tests {
     #[test]
     fn test_sanitized_bytes_display_escapes_controls_and_backslash() {
         let raw = b"readA\\path\x1b[31mRED\n\r\t\0\x7f\xff~ !";
-        assert_eq!(
-            SanitizedBytes(raw).to_string(),
-            r"readA\\path\x1b[31mRED\x0a\x0d\x09\x00\x7f\xff~ !"
-        );
+        let s = SanitizedBytes(raw);
+        let expected = r"readA\\path\x1b[31mRED\x0a\x0d\x09\x00\x7f\xff~ !";
+        assert_eq!(s.to_string(), expected);
+        assert_eq!(format!("{s:?}"), expected);
     }
 
     #[test]

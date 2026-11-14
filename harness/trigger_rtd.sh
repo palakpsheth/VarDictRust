@@ -12,12 +12,12 @@ CMD="${1:-status}"
 PROJECT_SLUG="${2:-vardictrust}"
 VERSION="${3:-latest}"
 
-if [[ ! "$PROJECT_SLUG" =~ ^[a-zA-Z0-9._-]+$ ]]; then
-    echo "ERROR: Invalid ReadTheDocs project slug '${PROJECT_SLUG}' (allowed: [a-zA-Z0-9._-]+)." >&2
+if [[ "$PROJECT_SLUG" == "." || "$PROJECT_SLUG" == ".." || ! "$PROJECT_SLUG" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+    echo "ERROR: Invalid ReadTheDocs project slug '${PROJECT_SLUG}' (allowed: [a-zA-Z0-9._-]+, excluding '.' and '..')." >&2
     exit 1
 fi
-if [[ ! "$VERSION" =~ ^[a-zA-Z0-9._-]+$ ]]; then
-    echo "ERROR: Invalid ReadTheDocs version '${VERSION}' (allowed: [a-zA-Z0-9._-]+)." >&2
+if [[ "$VERSION" == "." || "$VERSION" == ".." || ! "$VERSION" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+    echo "ERROR: Invalid ReadTheDocs version '${VERSION}' (allowed: [a-zA-Z0-9._-]+, excluding '.' and '..')." >&2
     exit 1
 fi
 

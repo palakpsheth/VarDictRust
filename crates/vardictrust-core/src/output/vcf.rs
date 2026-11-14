@@ -40,56 +40,37 @@ fn validate_vcf_header_inputs(config: &Config) -> io::Result<()> {
         .sample
         .as_bytes()
         .iter()
-        .any(|&b| b < 0x20 || b == 0x7F || matches!(b, b',' | b'>'))
+        .any(|&b| b < 0x20 || b == 0x7F)
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "sample name (-N) contains invalid control or VCF header delimiter characters",
+            "sample name (-N) contains invalid ASCII control characters",
         ));
     }
     Ok(())
 }
 
 fn load_contigs_from_fai_checked(reference_path: &str) -> io::Result<Vec<(String, Option<u64>)>> {
-    use std::io::Read as _;
-
     if reference_path.is_empty() {
         return Ok(Vec::new());
     }
     let fai_path = crate::reference::resolve_fasta_fai_path(std::path::Path::new(reference_path));
-    let mut file = match std::fs::File::open(&fai_path) {
-        Ok(f) => f,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+    let buf = match crate::reference::read_fai_bytes_bounded(&fai_path) {
+        Ok(b) => b,
+        Err(crate::types::VardictError::Io(e)) if e.kind() == io::ErrorKind::NotFound => {
             if std::fs::symlink_metadata(&fai_path).is_ok() {
                 return Err(e);
             }
             return Ok(Vec::new());
         }
-        Err(e) => return Err(e),
-    };
-
-    let mut buf = Vec::new();
-    let mut chunk = [0_u8; 8 * 1024];
-    loop {
-        let n = file.read(&mut chunk)?;
-        if n == 0 {
-            break;
-        }
-        let Some(slice) = chunk.get(..n) else {
-            break;
-        };
-        if (buf.len() as u64).saturating_add(slice.len() as u64) > crate::reference::MAX_FAI_BYTES {
+        Err(crate::types::VardictError::Io(e)) => return Err(e),
+        Err(other) => {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!(
-                    "FASTA index '{}' exceeds maximum allowed size of {} bytes",
-                    fai_path.display(),
-                    crate::reference::MAX_FAI_BYTES
-                ),
-            ));
+                other.to_string(),
+            ))
         }
-        buf.extend_from_slice(slice);
-    }
+    };
 
     let mut non_comment_lines: Vec<&[u8]> = Vec::new();
     for raw_line in buf.split(|&b| b == b'\n') {
@@ -112,10 +93,11 @@ fn load_contigs_from_fai_checked(reference_path: &str) -> io::Result<Vec<(String
     });
 
     if has_five_col_line {
-        let index = crate::reference::read_validated_fai_index(&fai_path).map_err(|e| match e {
-            crate::types::VardictError::Io(io_err) => io_err,
-            other => io::Error::new(io::ErrorKind::InvalidData, other.to_string()),
-        })?;
+        let index =
+            crate::reference::parse_validated_fai_bytes(&buf, &fai_path).map_err(|e| match e {
+                crate::types::VardictError::Io(io_err) => io_err,
+                other => io::Error::new(io::ErrorKind::InvalidData, other.to_string()),
+            })?;
         let mut contigs = Vec::with_capacity(index.as_ref().len());
         for rec in index.as_ref() {
             let name = String::from_utf8_lossy(rec.name()).into_owned();
@@ -137,7 +119,7 @@ fn load_contigs_from_fai_checked(reference_path: &str) -> io::Result<Vec<(String
                 io::ErrorKind::InvalidData,
                 format!(
                     "Invalid contig name '{}' in FASTA index '{}'",
-                    String::from_utf8_lossy(name_bytes),
+                    crate::util::SanitizedBytes(name_bytes),
                     fai_path.display()
                 ),
             ));
@@ -147,7 +129,7 @@ fn load_contigs_from_fai_checked(reference_path: &str) -> io::Result<Vec<(String
                 io::ErrorKind::InvalidData,
                 format!(
                     "Missing contig length for '{}' in FASTA index '{}'",
-                    String::from_utf8_lossy(name_bytes),
+                    crate::util::SanitizedBytes(name_bytes),
                     fai_path.display()
                 ),
             ));
@@ -160,7 +142,7 @@ fn load_contigs_from_fai_checked(reference_path: &str) -> io::Result<Vec<(String
                     io::ErrorKind::InvalidData,
                     format!(
                         "Invalid contig length for '{}' in FASTA index '{}'",
-                        String::from_utf8_lossy(name_bytes),
+                        crate::util::SanitizedBytes(name_bytes),
                         fai_path.display()
                     ),
                 )
@@ -185,7 +167,10 @@ fn load_contigs_checked(
         if !crate::reference::is_valid_contig_name_bytes(k.as_bytes()) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("Invalid contig name '{}' in BAM/CRAM header", k),
+                format!(
+                    "Invalid contig name '{}' in BAM/CRAM header",
+                    crate::util::SanitizedBytes(k.as_bytes())
+                ),
             ));
         }
         contigs.push((k.clone(), Some(v as u64)));
@@ -491,21 +476,35 @@ fn header_int_label<'a>(
     }
 }
 
+pub(crate) fn prevalidate_vcf_header_contigs(
+    config: &Config,
+    bam_chrom_lengths: &HashMap<String, usize>,
+) -> io::Result<Vec<(String, Option<u64>)>> {
+    validate_vcf_header_inputs(config)?;
+    load_contigs_checked(&config.reference, bam_chrom_lengths)
+}
+
 /// Print VCF 4.2 compliant header populated with contigs.
 pub fn print_vcf_header<W: Write>(
     w: &mut W,
     config: &Config,
     bam_chrom_lengths: &HashMap<String, usize>,
 ) -> io::Result<()> {
-    validate_vcf_header_inputs(config)?;
-    let contigs = load_contigs_checked(&config.reference, bam_chrom_lengths)?;
+    let contigs = prevalidate_vcf_header_contigs(config, bam_chrom_lengths)?;
+    print_vcf_header_with_contigs(w, config, &contigs)
+}
 
+pub(crate) fn print_vcf_header_with_contigs<W: Write>(
+    w: &mut W,
+    config: &Config,
+    contigs: &[(String, Option<u64>)],
+) -> io::Result<()> {
     writeln!(w, "##fileformat=VCFv4.2")?;
     writeln!(w, "##source=VarDict_v1.8.2")?;
     writeln!(w, "##reference={}", config.reference)?;
 
     for (name, len) in contigs {
-        match len {
+        match *len {
             Some(l) => writeln!(w, "##contig=<ID={},length={}>", name, l)?,
             None => writeln!(w, "##contig=<ID={}>", name)?,
         }
@@ -2173,15 +2172,21 @@ pub fn print_paired_vcf_header<W: Write>(
     config: &Config,
     bam_chrom_lengths: &HashMap<String, usize>,
 ) -> io::Result<()> {
-    validate_vcf_header_inputs(config)?;
-    let contigs = load_contigs_checked(&config.reference, bam_chrom_lengths)?;
+    let contigs = prevalidate_vcf_header_contigs(config, bam_chrom_lengths)?;
+    print_paired_vcf_header_with_contigs(w, config, &contigs)
+}
 
+pub(crate) fn print_paired_vcf_header_with_contigs<W: Write>(
+    w: &mut W,
+    config: &Config,
+    contigs: &[(String, Option<u64>)],
+) -> io::Result<()> {
     writeln!(w, "##fileformat=VCFv4.2")?;
     writeln!(w, "##source=VarDict_v1.8.2")?;
     writeln!(w, "##reference={}", config.reference)?;
 
     for (name, len) in contigs {
-        match len {
+        match *len {
             Some(l) => writeln!(w, "##contig=<ID={},length={}>", name, l)?,
             None => writeln!(w, "##contig=<ID={}>", name)?,
         }
@@ -5814,8 +5819,6 @@ mod tests {
             "SAMP\tEXTRA_COL",
             "SAMP\0NUL",
             "SAMP\x7fDEL",
-            "SAMP,INJ",
-            "SAMP>INJ",
         ] {
             let mut cfg = Config::default();
             cfg.sample = bad_sample.to_string();
@@ -5833,19 +5836,19 @@ mod tests {
             assert!(b2.is_empty());
         }
 
-        // Preserve `;` and `=` in `config.sample` (`INFO` `SAMPLE=` parity, AR-16).
+        // Preserve `,`, `>`, `;`, and `=` in `config.sample` (`#CHROM` + `INFO` `SAMPLE=` parity, AR-16).
         let mut parity_cfg = Config::default();
-        parity_cfg.sample = "TUMOR;TAG=1|NORMAL;TAG=2".to_string();
+        parity_cfg.sample = "TUMOR,rep1>armA;TAG=1|NORMAL,rep2>armB;TAG=2".to_string();
         let mut ok1 = Vec::new();
         print_vcf_header(&mut ok1, &parity_cfg, &empty_lengths).unwrap();
         assert!(String::from_utf8(ok1)
             .unwrap()
-            .contains("\tTUMOR;TAG=1|NORMAL;TAG=2\n"));
+            .contains("\tTUMOR,rep1>armA;TAG=1|NORMAL,rep2>armB;TAG=2\n"));
         let mut ok2 = Vec::new();
         print_paired_vcf_header(&mut ok2, &parity_cfg, &empty_lengths).unwrap();
         assert!(String::from_utf8(ok2)
             .unwrap()
-            .contains("\tTUMOR;TAG=1\tNORMAL;TAG=2\n"));
+            .contains("\tTUMOR,rep1>armA;TAG=1\tNORMAL,rep2>armB;TAG=2\n"));
 
         // Malformed 5-column .fai must fail loudly without writing `##fileformat=VCFv4.2`
         // and without falling back to the 2-column stub parser or BAM header.
