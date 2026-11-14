@@ -546,6 +546,38 @@ class TestRepoAgentSkills(unittest.TestCase):
             self.assertFalse(mod.check_registered_integration_tests(fake_root, errs))
             self.assertTrue(any("sneaky_extra" in e for e in errs), f"Expected sneaky_extra error, got {errs}")
 
+            # Certified release tree (no Current Workspace Test Suite block; counts in Verified Parity Baseline)
+            # must pass both without --require-head-fingerprint (pre-tag CI on main / post-tag / post-bioconda / post-nfcore)
+            # and with --require-head-fingerprint, while rejecting leftover dev blocks in post-tag/require_head_fp modes.
+            tc = mod.EXPECTED_TEST_COUNTS
+            ev_dir = fake_root / "benchmarks" / "evidence"
+            ev_dir.mkdir(parents=True)
+            (ev_dir / "hg008-tier2.json").write_text('{"fingerprint": "deadbeefcafe1234"}\n', encoding="utf-8")
+            certified_div = (
+                "# DIVERGENCES\n"
+                "##source=VarDict_v1.8.2\n"
+                f"Verified Parity Baseline (release/v1.0.8, commit abc1234):\n"
+                f"- Integration Tests:  91 PASS / 1 XFAIL\n"
+                f"- Core Library Tests: {tc['core_lib']} PASS / 0 FAIL\n"
+                f"- Total Workspace:    {tc['total_workspace']} PASS / 0 FAIL\n"
+                "- Final Acceptance:   8/8 PASS under release engine fingerprint `deadbeefcafe1234`\n"
+            )
+            (fake_root / "DIVERGENCES.md").write_text(certified_div, encoding="utf-8")
+            for ph, req_fp in (("pre-tag", False), ("pre-tag", True), ("post-tag", False), ("post-bioconda", False), ("post-nfcore", False)):
+                div_errs: list[str] = []
+                mod.check_divergences_surface(fake_root, "1.0.8", div_errs, phase=ph, require_head_fp=req_fp)
+                self.assertEqual(div_errs, [], f"Certified DIVERGENCES.md rejected for phase={ph}, require_head_fp={req_fp}: {div_errs}")
+
+            unfolded_div = certified_div + (
+                f"\nCurrent Workspace Test Suite (main / pre-v1.0.9):\n"
+                f"- Core Library Tests: {tc['core_lib']} PASS / 0 FAIL\n"
+                f"- Total Workspace:    {tc['total_workspace']} PASS / 0 FAIL\n"
+            )
+            (fake_root / "DIVERGENCES.md").write_text(unfolded_div, encoding="utf-8")
+            post_tag_errs: list[str] = []
+            mod.check_divergences_surface(fake_root, "1.0.8", post_tag_errs, phase="post-tag", require_head_fp=False)
+            self.assertTrue(post_tag_errs, "post-tag must reject unfolded Current Workspace Test Suite block")
+
     def test_ci_workflow_pipeline_and_concurrency_contract(self):
         workflows_dir = ROOT_DIR / ".github" / "workflows"
         for wf_name in ("ci.yml", "differential.yml", "docs.yml", "security.yml"):

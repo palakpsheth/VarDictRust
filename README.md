@@ -203,7 +203,7 @@ vardictrust -G GRCh38.fa -f 0.01 -N "TUMOR|NORMAL" -b "tumor.bam|normal.bam" -c 
 Trims primer bias artifacts (`AMPBIAS`) using overlapping primer coordinates from an 8-column BED file:
 
 ```bash
-vardictrust -G GRCh38.fa -f 0.01 -N SAMPLE -a 10:0.95 -b amplicon.bam amplicon_8col.bed > amplicon.vcf
+vardictrust -G GRCh38.fa -f 0.01 -N SAMPLE -a 10:0.95 -z -b amplicon.bam amplicon_8col.bed > amplicon.vcf
 ```
 
 ### 4. RNA-Seq Splicing Analysis

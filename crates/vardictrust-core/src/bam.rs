@@ -793,18 +793,27 @@ fn is_cram_path(path: &Path) -> bool {
         .is_some_and(|e| e.eq_ignore_ascii_case("cram"))
 }
 
+#[inline]
+fn is_absent_index_candidate(cand: &Path, err: &std::io::Error) -> bool {
+    err.kind() == std::io::ErrorKind::NotFound
+        && matches!(
+            std::fs::symlink_metadata(cand),
+            Err(meta_err) if meta_err.kind() == std::io::ErrorKind::NotFound
+        )
+}
+
 fn try_bam_index_for_path(src: &Path) -> Result<noodles::bam::Index, (std::io::Error, bool)> {
     let primary_bai = crate::reference::append_os_ext(src, ".bai");
     let first_not_found = match noodles::bam::bai::fs::read(&primary_bai) {
         Ok(idx) => return Ok(noodles::bam::Index::Bai(idx)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => e,
+        Err(e) if is_absent_index_candidate(&primary_bai, &e) => e,
         Err(e) => return Err((e, false)),
     };
 
     let primary_csi = crate::reference::append_os_ext(src, ".csi");
     match noodles::csi::fs::read(&primary_csi) {
         Ok(idx) => return Ok(noodles::bam::Index::Csi(idx)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) if is_absent_index_candidate(&primary_csi, &e) => {}
         Err(e) => return Err((e, false)),
     }
 
@@ -813,7 +822,7 @@ fn try_bam_index_for_path(src: &Path) -> Result<noodles::bam::Index, (std::io::E
         if stem_bai != primary_bai && stem_bai != src {
             match noodles::bam::bai::fs::read(&stem_bai) {
                 Ok(idx) => return Ok(noodles::bam::Index::Bai(idx)),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) if is_absent_index_candidate(&stem_bai, &e) => {}
                 Err(e) => return Err((e, false)),
             }
         }
@@ -821,7 +830,7 @@ fn try_bam_index_for_path(src: &Path) -> Result<noodles::bam::Index, (std::io::E
         if stem_csi != primary_csi && stem_csi != src {
             match noodles::csi::fs::read(&stem_csi) {
                 Ok(idx) => return Ok(noodles::bam::Index::Csi(idx)),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) if is_absent_index_candidate(&stem_csi, &e) => {}
                 Err(e) => return Err((e, false)),
             }
         }
@@ -856,7 +865,7 @@ fn try_cram_index_for_path(
     let primary_crai = crate::reference::append_os_ext(src, ".crai");
     let first_not_found = match noodles::cram::crai::fs::read(&primary_crai) {
         Ok(idx) => return Ok(idx),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => e,
+        Err(e) if is_absent_index_candidate(&primary_crai, &e) => e,
         Err(e) => return Err((e, false)),
     };
 
@@ -865,7 +874,7 @@ fn try_cram_index_for_path(
         if stem_crai != primary_crai && stem_crai != src {
             match noodles::cram::crai::fs::read(&stem_crai) {
                 Ok(idx) => return Ok(idx),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) if is_absent_index_candidate(&stem_crai, &e) => {}
                 Err(e) => return Err((e, false)),
             }
         }
@@ -8214,7 +8223,7 @@ mod tests {
             assert_eq!(link_recs, baseline);
         }
 
-        // 3. Corrupt primary `sample.bam.bai` while valid `sample.bai` also exists MUST propagate error (never fall back)
+        // 3. Corrupt or dangling-symlink sidecars while valid companion/canonical index exists MUST propagate error (never fall back)
         let bad_dir = dir.path().join("corrupt_primary");
         std::fs::create_dir_all(&bad_dir).unwrap();
         let bad_bam = bad_dir.join("sample.bam");
@@ -8223,6 +8232,71 @@ mod tests {
         std::fs::write(bad_dir.join("sample.bam.bai"), b"NOT_A_VALID_BAI_INDEX").unwrap();
         assert!(open_reader(&bad_bam, &config).is_err());
         assert!(query_region_iter(&bad_bam, "chr1", Pos0(0), Pos0(300), &config).is_err());
+
+        #[cfg(unix)]
+        {
+            let dang_dir = dir.path().join("dangling_sidecars");
+            std::fs::create_dir_all(&dang_dir).unwrap();
+            let dang_bam = dang_dir.join("sample.bam");
+            std::fs::copy(micro_bam, &dang_bam).unwrap();
+            std::fs::copy(micro_bai, dang_dir.join("sample.bai")).unwrap();
+
+            // Dangling primary `.bam.bai` and `.bam.csi` symlinks must NOT fall back to valid `sample.bai`
+            let primary_bai_link = dang_dir.join("sample.bam.bai");
+            std::os::unix::fs::symlink(Path::new("missing_target.bai"), &primary_bai_link).unwrap();
+            assert!(open_reader(&dang_bam, &config).is_err());
+            assert!(query_region_iter(&dang_bam, "chr1", Pos0(0), Pos0(300), &config).is_err());
+            std::fs::remove_file(&primary_bai_link).unwrap();
+
+            let primary_csi_link = dang_dir.join("sample.bam.csi");
+            std::os::unix::fs::symlink(Path::new("missing_target.csi"), &primary_csi_link).unwrap();
+            assert!(open_reader(&dang_bam, &config).is_err());
+            assert!(query_region_iter(&dang_bam, "chr1", Pos0(0), Pos0(300), &config).is_err());
+            std::fs::remove_file(&primary_csi_link).unwrap();
+
+            // Dangling companion `link.bai` on symlinked BAM `link.bam -> ../companion/sample.bam` must NOT fall back to canonical index
+            let link_dang_dir = dir.path().join("link_dangling");
+            std::fs::create_dir_all(&link_dang_dir).unwrap();
+            let link_dang_bam = link_dang_dir.join("link.bam");
+            std::os::unix::fs::symlink(Path::new("../companion/sample.bam"), &link_dang_bam)
+                .unwrap();
+            let stem_bai_link = link_dang_dir.join("link.bai");
+            std::os::unix::fs::symlink(Path::new("missing_stem.bai"), &stem_bai_link).unwrap();
+            assert!(read_bam_index_with_fallbacks(&link_dang_bam).is_err());
+            std::fs::remove_file(&stem_bai_link).unwrap();
+
+            let stem_csi_link = link_dang_dir.join("link.csi");
+            std::os::unix::fs::symlink(Path::new("missing_stem.csi"), &stem_csi_link).unwrap();
+            assert!(read_bam_index_with_fallbacks(&link_dang_bam).is_err());
+            std::fs::remove_file(&stem_csi_link).unwrap();
+
+            // Dangling CRAM `.cram.crai` and `.crai` symlinks must fail with `(err, false)` instead of falling back
+            let cram_real_dir = dir.path().join("cram_real");
+            let cram_link_dir = dir.path().join("cram_link");
+            std::fs::create_dir_all(&cram_real_dir).unwrap();
+            std::fs::create_dir_all(&cram_link_dir).unwrap();
+            let real_cram = cram_real_dir.join("sample.cram");
+            std::fs::write(&real_cram, b"").unwrap();
+            noodles::cram::crai::fs::write(
+                cram_real_dir.join("sample.cram.crai"),
+                &noodles::cram::crai::Index::default(),
+            )
+            .unwrap();
+            assert!(read_cram_index_with_fallbacks(&real_cram).is_ok());
+
+            let link_cram = cram_link_dir.join("link.cram");
+            std::os::unix::fs::symlink(Path::new("../cram_real/sample.cram"), &link_cram).unwrap();
+            assert!(read_cram_index_with_fallbacks(&link_cram).is_ok());
+
+            let primary_crai_link = cram_link_dir.join("link.cram.crai");
+            std::os::unix::fs::symlink(Path::new("missing.crai"), &primary_crai_link).unwrap();
+            assert!(read_cram_index_with_fallbacks(&link_cram).is_err());
+            std::fs::remove_file(&primary_crai_link).unwrap();
+
+            let stem_crai_link = cram_link_dir.join("link.crai");
+            std::os::unix::fs::symlink(Path::new("missing_stem.crai"), &stem_crai_link).unwrap();
+            assert!(read_cram_index_with_fallbacks(&link_cram).is_err());
+        }
 
         // 4. `RegistryDelegatingAdapter::get` on missing contig, empty contig, or dropped Weak returns Some(Err(NotFound)), NEVER None
         let ref_fa =

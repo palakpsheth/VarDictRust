@@ -88,12 +88,13 @@ vardictrust \
 
 ```bash
 # 8-column amplicon BED (chr, gene_start, gene_end, gene, score, strand, insert_start, insert_end)
+# Pass -z when supplying explicit -a on a standard 0-based BED (omitting -a auto-detects both -a 10:0.95 and -z)
 vardictrust \
   -G ref.fa \
   -f 0.01 \
   -N SAMPLE \
   -b amplicon.bam \
-  -a 10:0.95 \
+  -a 10:0.95 -z \
   amplicon_8col.bed \
   > amplicon.vcf
 ```

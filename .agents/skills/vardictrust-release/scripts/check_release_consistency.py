@@ -293,11 +293,108 @@ def check_cli_and_migration_surfaces(repo_root: Path, errors: list[str]) -> None
     )
 
 
+def check_divergences_surface(
+    repo_root: Path,
+    version: str,
+    errors: list[str],
+    *,
+    phase: str = "pre-tag",
+    require_head_fp: bool = False,
+) -> None:
+    ver_esc = re.escape(version)
+    tc = EXPECTED_TEST_COUNTS
+    hg008_ev = repo_root / "benchmarks" / "evidence" / "hg008-tier2.json"
+    baseline_fp = "33bc15964cc36b6d"
+    if hg008_ev.is_file():
+        try:
+            baseline_fp = json.loads(hg008_ev.read_text(encoding="utf-8")).get(
+                "fingerprint", baseline_fp
+            )
+        except Exception:
+            pass
+    require_regex(
+        repo_root,
+        "DIVERGENCES.md",
+        rf"Verified Parity Baseline \(release/v{ver_esc}\b",
+        f"DIVERGENCES.md cites Verified Parity Baseline (release/v{version}",
+        errors,
+    )
+    require_regex(
+        repo_root,
+        "DIVERGENCES.md",
+        r"##source=VarDict_v1\.8\.2",
+        "DIVERGENCES.md documents ##source=VarDict_v1.8.2 byte-parity header",
+        errors,
+    )
+    verified_baseline_counts_re = (
+        rf"Verified Parity Baseline \(release/v{ver_esc}[^\n]*:(?:\n- [^\n]*)*?"
+        rf"\n- Core Library Tests:\s+{tc['core_lib']} PASS[^\n]*"
+        rf"\n- Total Workspace:\s+{tc['total_workspace']} PASS"
+    )
+    current_suite_counts_re = (
+        rf"Current Workspace Test Suite[^\n]*:"
+        rf"\n- Core Library Tests:\s+{tc['core_lib']} PASS[^\n]*"
+        rf"\n- Total Workspace:\s+{tc['total_workspace']} PASS"
+    )
+    if require_head_fp or phase != "pre-tag":
+        forbid_regex(
+            repo_root,
+            "DIVERGENCES.md",
+            r"Current Workspace Test Suite \(main / pre-v",
+            "DIVERGENCES.md pre-release Current Workspace Test Suite block must be folded into Verified Parity Baseline on certified release trees",
+            errors,
+        )
+        require_regex(
+            repo_root,
+            "DIVERGENCES.md",
+            verified_baseline_counts_re,
+            f"DIVERGENCES.md Verified Parity Baseline (release/v{version}) cites {tc['core_lib']} core lib / {tc['total_workspace']} workspace tests",
+            errors,
+            flags=re.MULTILINE,
+        )
+    else:
+        div_text = read_text(repo_root, "DIVERGENCES.md", errors)
+        if div_text is not None:
+            if "Current Workspace Test Suite" in div_text:
+                require_regex(
+                    repo_root,
+                    "DIVERGENCES.md",
+                    current_suite_counts_re,
+                    f"DIVERGENCES.md cites current {tc['core_lib']} core lib / {tc['total_workspace']} workspace tests",
+                    errors,
+                    flags=re.MULTILINE,
+                )
+            else:
+                require_regex(
+                    repo_root,
+                    "DIVERGENCES.md",
+                    verified_baseline_counts_re,
+                    f"DIVERGENCES.md Verified Parity Baseline (release/v{version}) cites {tc['core_lib']} core lib / {tc['total_workspace']} workspace tests",
+                    errors,
+                    flags=re.MULTILINE,
+                )
+    require_regex(
+        repo_root,
+        "DIVERGENCES.md",
+        rf"{re.escape(baseline_fp)}",
+        f"DIVERGENCES.md cites certified fingerprint {baseline_fp}",
+        errors,
+    )
+    forbid_regex(
+        repo_root,
+        "DIVERGENCES.md",
+        r"817d89c5fb34515d|profile_features|3\.58x speedup|1\.42 GiB|3\.48x speedup|affb71e",
+        "DIVERGENCES.md stale fingerprint/test name/speedup/RSS/commit",
+        errors,
+    )
+
+
 def check_pre_tag_surfaces(
     repo_root: Path,
     version: str,
     errors: list[str],
     *,
+    phase: str = "pre-tag",
     require_head_fp: bool = False,
 ) -> None:
     ver_esc = re.escape(version)
@@ -553,67 +650,12 @@ def check_pre_tag_surfaces(
     )
 
     # 12. DIVERGENCES.md
-    hg008_ev = repo_root / "benchmarks" / "evidence" / "hg008-tier2.json"
-    baseline_fp = "33bc15964cc36b6d"
-    if hg008_ev.is_file():
-        try:
-            baseline_fp = json.loads(hg008_ev.read_text(encoding="utf-8")).get(
-                "fingerprint", baseline_fp
-            )
-        except Exception:
-            pass
-    require_regex(
+    check_divergences_surface(
         repo_root,
-        "DIVERGENCES.md",
-        rf"Verified Parity Baseline \(release/v{ver_esc}\b",
-        f"DIVERGENCES.md cites Verified Parity Baseline (release/v{version}",
+        version,
         errors,
-    )
-    require_regex(
-        repo_root,
-        "DIVERGENCES.md",
-        r"##source=VarDict_v1\.8\.2",
-        "DIVERGENCES.md documents ##source=VarDict_v1.8.2 byte-parity header",
-        errors,
-    )
-    if require_head_fp:
-        forbid_regex(
-            repo_root,
-            "DIVERGENCES.md",
-            r"Current Workspace Test Suite \(main / pre-v",
-            "DIVERGENCES.md pre-release Current Workspace Test Suite block must be folded into Verified Parity Baseline on release branches",
-            errors,
-        )
-        require_regex(
-            repo_root,
-            "DIVERGENCES.md",
-            rf"Verified Parity Baseline \(release/v{ver_esc}[^\n]*:(?:\n- [^\n]*)*?\n- Core Library Tests:\s+{tc['core_lib']} PASS[^\n]*\n- Total Workspace:\s+{tc['total_workspace']} PASS",
-            f"DIVERGENCES.md Verified Parity Baseline (release/v{version}) cites {tc['core_lib']} core lib / {tc['total_workspace']} workspace tests",
-            errors,
-            flags=re.MULTILINE,
-        )
-    else:
-        require_regex(
-            repo_root,
-            "DIVERGENCES.md",
-            rf"Current Workspace Test Suite[^\n]*:\n- Core Library Tests:\s+{tc['core_lib']} PASS[^\n]*\n- Total Workspace:\s+{tc['total_workspace']} PASS",
-            f"DIVERGENCES.md cites current {tc['core_lib']} core lib / {tc['total_workspace']} workspace tests",
-            errors,
-            flags=re.MULTILINE,
-        )
-    require_regex(
-        repo_root,
-        "DIVERGENCES.md",
-        rf"{re.escape(baseline_fp)}",
-        f"DIVERGENCES.md cites certified fingerprint {baseline_fp}",
-        errors,
-    )
-    forbid_regex(
-        repo_root,
-        "DIVERGENCES.md",
-        r"817d89c5fb34515d|profile_features|3\.58x speedup|1\.42 GiB|3\.48x speedup|affb71e",
-        "DIVERGENCES.md stale fingerprint/test name/speedup/RSS/commit",
-        errors,
+        phase=phase,
+        require_head_fp=require_head_fp,
     )
 
     # 13. CONTRIBUTING.md
@@ -1154,6 +1196,7 @@ def main() -> int:
         args.repo_root,
         version,
         errors,
+        phase=args.phase,
         require_head_fp=args.require_head_fingerprint,
     )
     check_evidence_and_fingerprints(
