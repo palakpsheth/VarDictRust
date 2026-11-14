@@ -28,3 +28,9 @@ artifact = "org.apache.commons:commons-math3"
 version = "3.6.1"
 ported_components = ["HypergeometricDistribution", "SaddlePointExpansion"]
 license = "Apache-2.0"
+
+[advisory_comparators.vardictcpp]
+package = "vardictcpp"
+version = "3"
+bioconda_build = "hc52dbad_0"
+role = "advisory-throughput-comparator-only"

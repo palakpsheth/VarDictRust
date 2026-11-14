@@ -338,7 +338,7 @@ VarDictRust enforces the **[rewrites.bio](https://rewrites.bio) Prime Directive*
 
 ## CLI Parameter Reference
 
-Flag parity with VarDictJava v1.8.3 (`87` CLI flags across 6 functional groups) is defined against [`CmdParser.java`](https://github.com/AstraZeneca-NGS/VarDictJava/blob/0886261/src/main/java/com/astrazeneca/vardict/CmdParser.java) and consolidated `var2vcf_valid.pl` / `var2vcf_paired.pl` post-filters, verified by differential testing:
+Flag parity with VarDictJava v1.8.3 (`89` CLI flags across 7 functional groups) is defined against [`CmdParser.java`](https://github.com/AstraZeneca-NGS/VarDictJava/blob/0886261/src/main/java/com/astrazeneca/vardict/CmdParser.java) and consolidated `var2vcf_valid.pl` / `var2vcf_paired.pl` post-filters (see the [Migration Guide](docs/migration.md) for side-by-side pipeline translation), verified by differential testing:
 
 *Evidence Status Vocabulary:*
 - `corpus` — Verified against integration corpus test cases or [Tier-2](docs/testing/test-matrix-and-ci-audit.md#tier-2) oracle sweeps.
@@ -359,9 +359,25 @@ Flag parity with VarDictJava v1.8.3 (`87` CLI flags across 6 functional groups) 
 | `-h` | `--header` | Print `.var` column header before results (not help; use `-H`/`-?`/`--help`) | off | `corpus` |
 | `-H`, `-?` | `--help` | Print CLI help message and exit (also accepts `--?`) | — | `parity-exempt` |
 | — | `--version` | Print version, upstream provenance, and AI disclosure metadata | — | `parity-exempt` |
+| — | `--completions` | Print shell completion script (`bash`, `zsh`, or `fish` `<SHELL>`) to `stdout` and exit | — | `parity-exempt` |
+| — | `--manpage` | Print standalone `roff` `vardictrust(1)` manual page to `stdout` and exit | — | `parity-exempt` |
 | — | `--output` | Write output (`.vcf`, `.var`, or `-i` splice counts) directly to file; `.gz`/`.bgz` suffixes use multithreaded BGZF (`StagedFileTarget` + `File::sync_all` + input-collision guard) | `stdout` | `parity-exempt` |
 | — | `--tbi`, `--index` | Write a pure-Rust Tabix (`.tbi`) index alongside a BGZF-compressed `--output` `.vcf.gz`/`.vcf.bgz` file (`noodles::tabix`; contigs `<= 512 Mbp`, hints `--csi` above `512 Mbp`) | off | `parity-exempt` |
 | — | `--csi` | Write a pure-Rust CSI (`.csi`) index alongside a BGZF-compressed `--output` `.vcf.gz`/`.vcf.bgz` file (`noodles::csi`; supports contigs `> 512 Mbp`) | off | `parity-exempt` |
+| — | `--stats-json` | Write run telemetry JSON (`mode`, `threads`, `regions_count`, `tiles_count`, `elapsed_ms`, `peak_rss_kb`, `exceptions_caught`) to `<PATH>` | — | `no-output` |
+| — | `--parity` | Explicitly lock 100% VarDictJava v1.8.3 byte-for-byte parity mode (default in `v1.x`) | on | `parity-exempt` |
+| — | `--compat` | Pin target compatibility contract (`vardictjava-1.8.3` or `1.8.3` in `v1.0.x`) | `vardictjava-1.8.3` | `parity-exempt` |
+| — | `--emit-intermediate` | Emit legacy `.var` table instead of VCF | off | `corpus` |
+| `-d` | — | Delimiter for splitting region info | `\t` | `corpus` |
+| `-v` | — | Accepted and ignored (never read by VarDictJava v1.8.3) | — | `parity-exempt` |
+| `-y` | `--verbose` | Verbose mode | off | `no-output` |
+| `-D` | `--debug` | Debug mode (append per-read debug columns to `.var`) | off | `corpus` |
+| — | `--DP`, `--default-printer` | Debug print destination (`OUT` or `ERR`; alias: `--defaultPrinter`) | — | `corpus` |
+
+### 2. VCF Post-Filtering (var2vcf)
+
+| Short | Long | Description | Default | Status |
+| :--- | :--- | :--- | :--- | :--- |
 | — | `--no-end` | Omit `END` tag in VCF `INFO` (ports `var2vcf_valid.pl -E`) | off | `parity-exempt` |
 | — | `--pass-only` | Emit only `PASS` variants in VCF output (ports `var2vcf_valid.pl` / `var2vcf_paired.pl -S`) | off | `parity-exempt` |
 | — | `--paired-strict` | Disable germline rescue in paired somatic VCF filtering and apply `P<FLOAT>` / `P0.01Likely` / `InDelLikely` tags (ports `var2vcf_paired.pl -M`) | off | `parity-exempt` |
@@ -379,17 +395,8 @@ Flag parity with VarDictJava v1.8.3 (`87` CLI flags across 6 functional groups) 
 | — | `--vcf-gt-freq` | Homozygous-alt genotype gap `<FLOAT>` in `[0, 1]` (`GT` is `1/1` if `1 - AF < <FLOAT>`, else `1/0` if `AF >= 0.5`, else `0/1` if `AF >= --vcf-af`/`-f`, else `0/0`; ports `var2vcf_valid.pl` / `var2vcf_paired.pl -F`) | `0.2` | `parity-exempt` |
 | — | `--vcf-msi` | Non-monomer microsatellite (`MSILEN > 1`) repeat threshold `<FLOAT>` for VCF `MSI<FLOAT>` filter (ports `var2vcf_valid.pl` / `var2vcf_paired.pl -I`) | `12` | `parity-exempt` |
 | — | `--vcf-cluster-dist` | Variant cluster window `<INT>` in bp for VCF `Cluster<INT>bp` filter across single-sample, amplicon, and paired somatic streams (ports `var2vcf_valid.pl` / `var2vcf_paired.pl -c`) | `0` | `parity-exempt` |
-| — | `--stats-json` | Write run telemetry JSON (`mode`, `threads`, `regions_count`, `tiles_count`, `elapsed_ms`, `peak_rss_kb`, `exceptions_caught`) to `<PATH>` | — | `no-output` |
-| — | `--parity` | Explicitly lock 100% VarDictJava v1.8.3 byte-for-byte parity mode (default in `v1.x`) | on | `parity-exempt` |
-| — | `--compat` | Pin target compatibility contract (`vardictjava-1.8.3` or `1.8.3` in `v1.0.x`) | `vardictjava-1.8.3` | `parity-exempt` |
-| — | `--emit-intermediate` | Emit legacy `.var` table instead of VCF | off | `corpus` |
-| `-d` | — | Delimiter for splitting region info | `\t` | `corpus` |
-| `-v` | — | Accepted and ignored (never read by VarDictJava v1.8.3) | — | `parity-exempt` |
-| `-y` | `--verbose` | Verbose mode | off | `no-output` |
-| `-D` | `--debug` | Debug mode (append per-read debug columns to `.var`) | off | `corpus` |
-| — | `--DP`, `--default-printer` | Debug print destination (`OUT` or `ERR`; alias: `--defaultPrinter`) | — | `corpus` |
 
-### 2. Coordinate & BED Column Mapping
+### 3. Coordinate & BED Column Mapping
 
 | Short | Long | Description | Default | Status |
 | :--- | :--- | :--- | :--- | :--- |
@@ -404,7 +411,7 @@ Flag parity with VarDictJava v1.8.3 (`87` CLI flags across 6 functional groups) 
 | `-X` | — | Nucleotide extension | `2` | `corpus` |
 | `-Y` | `--ref-extension` | Max region length | `1200` | `corpus` |
 
-### 3. Variant Calling & Quality Thresholds
+### 4. Variant Calling & Quality Thresholds
 
 | Short | Long | Description | Default | Status |
 | :--- | :--- | :--- | :--- | :--- |
@@ -430,7 +437,7 @@ Flag parity with VarDictJava v1.8.3 (`87` CLI flags across 6 functional groups) 
 | — | `--VS` | SAM/BAM validation stringency (`SILENT` or `LENIENT`; `STRICT` unsupported) | `LENIENT` | `parity-exempt` |
 | — | `--adaptor` | Adaptor sequence(s), comma-separated, excluded from realignment | — | `corpus` |
 
-### 4. Modality Flags: Somatic & Amplicon
+### 5. Modality Flags: Somatic & Amplicon
 
 | Short | Long | Description | Default | Status |
 | :--- | :--- | :--- | :--- | :--- |
@@ -443,7 +450,7 @@ Flag parity with VarDictJava v1.8.3 (`87` CLI flags across 6 functional groups) 
 | `-J` | `--crispr` | CRISPR cutting site coordinate | — | `corpus` |
 | `-j` | — | CRISPR flanking size | — | `corpus` |
 
-### 5. Structural Variants & Complex Indels
+### 6. Structural Variants & Complex Indels
 
 | Short | Long | Description | Default | Status |
 | :--- | :--- | :--- | :--- | :--- |
@@ -456,14 +463,14 @@ Flag parity with VarDictJava v1.8.3 (`87` CLI flags across 6 functional groups) 
 | — | `--chimeric` | Chimeric read handling | off | `corpus` |
 | — | `--deldupvar` | Delete/dup variant handling | off | `corpus` |
 
-### 6. Performance & Concurrency
+### 7. Performance & Concurrency
 
 | Short | Long | Description | Default | Status |
 | :--- | :--- | :--- | :--- | :--- |
 | — | `--threads` | Thread count (`-th`/`--th`/`-th<N>` aliases; bare `-th` = all cores; falls back to `RAYON_NUM_THREADS` when `-th` is omitted) | `RAYON_NUM_THREADS` or all cores | `no-output` |
 | — | `--tile-size` | Region tile size in bp (bounded-memory WGS) | auto (`<= 1 Mbp` untiled; `> 1 Mbp` `100 kbp` tiles; max `500 Mbp`) | `no-output` |
 
-*Commons-CLI Single-Dash Compatibility:* Upstream Java single-dash long options (`-fisher`, `-adaptor`, `-chimeric`, `-deldupvar`, `-nosv`, `-splice`, `-header`, `-dedup`, `-debug`, `-verbose`, `-amplicon`, `-DP`, `-default-printer`, `-defaultPrinter`, `-mfreq`, `-nmfreq`, `-insert-size`, `-insert-std`, `-ref-extension`, `-crispr`, `-trim`, `-VS`) and boolean-prefix short-option clusters (`-pz`, `-pz0`, `-uk`, `-ua`, `-pR`) are normalized transparently alongside standard `--` GNU long flags, while Rust-native GNU `--vcf-*` and post-filter flags reject single-dash typos (`-vcf-*`, `-pass-only`, `-paired-strict`, `-min-splitreads`, `-no-pstd-filter`) with an actionable `--` hint before short-flag cluster splitting.
+*Commons-CLI Single-Dash Compatibility:* Upstream Java single-dash long options (`-fisher`, `-adaptor`, `-chimeric`, `-deldupvar`, `-nosv`, `-splice`, `-header`, `-dedup`, `-debug`, `-verbose`, `-amplicon`, `-DP`, `-default-printer`, `-defaultPrinter`, `-mfreq`, `-nmfreq`, `-insert-size`, `-insert-std`, `-ref-extension`, `-crispr`, `-trim`, `-VS`) and boolean-prefix short-option clusters (`-pz`, `-pz0`, `-uk`, `-ua`, `-pR`) are normalized transparently alongside standard `--` GNU long flags, while Rust-native GNU `--vcf-*`, post-filter, and shell/manpage flags reject single-dash typos (`-vcf-*`, `-pass-only`, `-paired-strict`, `-min-splitreads`, `-no-pstd-filter`, `-completions`, `-manpage`) with an actionable `--` hint before short-flag cluster splitting.
 
 *Loud-Error Legacy Flags (`AGENTS.md §12`):* Passing either of the 2 remaining unimplemented VarDictJava options (`-C`, `-Z` / `-downsample` / `--downsample`) or `-VS STRICT` fails fast with `VardictError::Unsupported("<flag> not implemented in v1.0; use VarDictJava")` rather than ignoring the flag.
 

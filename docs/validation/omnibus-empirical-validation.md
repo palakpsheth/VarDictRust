@@ -386,7 +386,7 @@ $$
 \text{start-query} = \text{start.0} + 1, \quad \text{end-query} = \text{end.0}
 $$
 
-Because 0-based half-open end equals 1-based inclusive end, `format!("{}:{}-{}", chr, start.0 + 1, end.0)` produces the exact interval required by noodles.
+Because 0-based half-open end equals 1-based inclusive end, `bam::build_noodles_region(chr, start.0 + 1, end.0)` constructs a `noodles::core::Region` directly from validated 1-based `Position` bounds without `"{}:{}-{}"` string reparsing (preserving colon-bearing GRCh38 `HLA-*` contig names).
 
 ### 10.2 BED Indexing Contracts (`-z` Flag)
 
@@ -421,23 +421,25 @@ $$
 
 ### 10.4 Default Filtering Thresholds Table
 
-| Flag | Parameter Name | Default | Evaluation Context & File | Exact Mathematical Predicate |
+All VCF-stage post-filter cutoffs below can be overridden independently of pileup engine thresholds via `--vcf-af`, `--vcf-min-depth`, `--vcf-min-vd`, `--vcf-qmean`, `--vcf-mapq`, `--vcf-pmean`, `--vcf-sn`, `--vcf-max-nm`, `--vcf-gt-freq`, `--vcf-msi`, `--vcf-cluster-dist`, and `--vcf-pval` (see [`docs/migration.md`](../migration.md)).
+
+| Flag | Parameter Name | Default | Evaluation Context & Module | Exact Mathematical Predicate |
 | :---: | :--- | :---: | :--- | :--- |
-| **`-f`** | `freq` | `0.01` (1%) | `variations/mod.rs:642`<br>`output/vcf.rs:369` | **Engine (`is_good_var`):** Fail if $\text{AF} < 0.01$<br>**VCF Filter (`f0.01`):** Filter if $\text{AF} < 0.01$ |
-| **`-r`** | `min_reads` | `2` | `variations/mod.rs:643`<br>`output/vcf.rs:356` | **Engine:** Fail if $hicnt < 2$<br>**VCF Filter (`v2`):** Filter if $hicnt < 2 \;\land\; (hicnt \cdot hiaf < 0.5)$ |
-| **`-q`** | `base_qual` | `22.5` | `variations/mod.rs:645`<br>`output/vcf.rs:390` | **Engine:** Fail if $qmean < 22.5$<br>**VCF Filter (`q22.5`):** Filter if $qmean < 22.5$ |
-| **`-Q`** | `map_qual` | `None` (BAM)<br>`10` (VCF) | `bam.rs:428`<br>`output/vcf.rs:396` | **BAM Reader:** Drop read if $\text{MAPQ} < \text{map-qual}$ (when set)<br>**VCF Filter (`Q10`):** Filter if $mqmean < 10.0 \;\land\; \text{AF} < 0.8$ |
-| **`-P`** | `read_pos` | `5.0` (Eng)<br>`8.0` (VCF) | `variations/mod.rs:644`<br>`output/vcf.rs:377` | **Engine:** Fail if $pmean < 5.0$<br>**VCF Filter (`p8`):** Filter if $pmean < 8.0$ |
-| **`-m`** | `max_mismatches` | `8` (Eng)<br>`5.25` (VCF) | `cigar/parse.rs:151`<br>`output/vcf.rs:408` | **BAM Parse:** Drop read if $\text{NM} - (I + D) > 8$<br>**VCF Filter (`NM5.25`):** Filter if $nm > 5.25$ |
-| **`-V`** | `lofreq` | `0.05` (5%) | `postprocess/somatic.rs:683, 688` | **Germline:** Standard $\text{AF} > 1.0 - 0.05 \implies \text{Germline}$<br>**Somatic:** Normal $\text{AF} < 0.05 \lor \text{Cov} \le 1 \implies \text{StrongSomatic}$ |
-| **`-F`** | `flag_filter` | `0x504` (1284) | `bam.rs:441, 457`<br>`cigar/parse.rs:141` | **BAM Parse:** Drop read if $(\text{FLAG} \ \& \ \text{0x504}) \neq 0$<br>*(0x4 unmapped, 0x100 secondary, 0x400 duplicate, 0x800 supplementary)* |
-| **`-L`** | `sv_min_len` | `1000` bp | `tovars.rs:663, 673`<br>`somatic.rs:550` | $\text{Length}_{\text{INS}} > 1000 \implies \text{Format as } \text{\<INS\>}$<br>$\text{Length}_{\text{DEL}} \ge 1000 \implies \text{Format as } \text{\<DEL\>}$ |
-| **`-w`** | `sv_read_len` | `300` bp | `cigar/parse.rs:2193` | Discordant SV candidate insert size cutoff: |
-| **`-W`** | `sv_flanking` | `100` bp | `cigar/parse.rs:2194` | $\lvert\text{TLEN}\rvert > w + (A \cdot W)$ |
-| **`-A`** | `sv_min_af` | `4` | `cigar/parse.rs:2194` | $= 300 + (4 \cdot 100) = 700\text{ bp}$ |
-| **`-B`** | `min_reads_bias` | `2` | `variations/util.rs:28` | Strand Bias Test: If total variant reads $\le 12$, biased if $fwd \cdot rev == 0$. If $>12$, PASS if $fwd \ge 2 \;\land\; rev \ge 2 \;\land\; \min(\frac{fwd}{tot}, \frac{rev}{tot}) \ge 0.05$ |
-| **`-o`** | `qratio` | `1.5` | `variations/mod.rs:666`<br>`output/vcf.rs:402` | **Engine:** Fail if $hq\_lq\_ratio < 1.5$<br>**VCF Filter (`SN1.5`):** Filter if $\frac{hicnt}{locnt + 0.5} < 1.5$ |
-| **`-O`** | `out_mapq` | `0` | `variations/mod.rs:674` | **Engine:** Fail if $mqmean < 0.0$ when $\text{AF} \le 0.30$ |
+| **`-f`** (`--vcf-af`) | `freq` | `0.01` (1%) | `variations/mod.rs`<br>`output/vcf.rs` | **Engine (`is_good_var`):** Fail if $\text{AF} < 0.01$<br>**VCF Filter (`f0.01`):** Filter if $\text{AF} < 0.01$ (`0.02` when bare `-f 0` in single-sample; `0.0` when `--vcf-af 0`) |
+| **`-r`** (`--vcf-min-vd`) | `min_reads` | `2` (single)<br>`3` (paired VCF) | `variations/mod.rs`<br>`output/vcf.rs` | **Engine:** Fail if $hicnt < 2$<br>**VCF Filter (`v2` / `v3`):** Filter if $hicnt < \text{min-vd} \;\land\; (hicnt \cdot hiaf < 0.5)$ |
+| **`-q`** (`--vcf-qmean`) | `base_qual` | `22.5` | `variations/mod.rs`<br>`output/vcf.rs` | **Engine:** Fail if $qmean < 22.5$<br>**VCF Filter (`q22.5`):** Filter if $qmean < 22.5$ |
+| **`-Q`** (`--vcf-mapq`) | `map_qual` | `None` (BAM)<br>`10` / `0` (VCF) | `bam.rs`<br>`output/vcf.rs` | **BAM Reader:** Drop read if $\text{MAPQ} < \text{map-qual}$ (when set)<br>**VCF Filter (`Q10` single / `Q0` paired):** Filter if $mqmean < \text{vcf-mapq} \;\land\; \text{AF} < 0.8$ |
+| **`-P`** (`--vcf-pmean`) | `read_pos` | `5.0` (Eng)<br>`8.0` (VCF) | `variations/mod.rs`<br>`output/vcf.rs` | **Engine:** Fail if $pmean < 5.0$<br>**VCF Filter (`p8`):** Filter if $pmean < 8.0$ |
+| **`-m`** (`--vcf-max-nm`) | `max_mismatches` | `8` (Eng)<br>`5.25` (VCF) | `cigar/parse.rs`<br>`output/vcf.rs` | **BAM Parse:** Drop read if $\text{NM} - (I + D) > 8$<br>**VCF Filter (`NM5.25`):** Filter if $nm > 5.25$ |
+| **`-V`** | `lofreq` | `0.05` (5%) | `postprocess/somatic.rs` | **Germline:** Standard $\text{AF} > 1.0 - 0.05 \implies \text{Germline}$<br>**Somatic:** Normal $\text{AF} < 0.05 \lor \text{Cov} \le 1 \implies \text{StrongSomatic}$ |
+| **`-F`** | `flag_filter` | `0x504` (1284) | `bam.rs`<br>`cigar/parse.rs` | **BAM Parse:** Drop read if $(\text{FLAG} \ \& \ \text{0x504}) \neq 0$<br>*(0x4 unmapped, 0x100 secondary, 0x400 duplicate, 0x800 supplementary)* |
+| **`-L`** | `sv_min_len` | `1000` bp | `tovars.rs`<br>`postprocess/somatic.rs` | $\text{Length}_{\text{INS}} > 1000 \implies \text{Format as } \text{\<INS\>}$<br>$\text{Length}_{\text{DEL}} \ge 1000 \implies \text{Format as } \text{\<DEL\>}$ |
+| **`-w`** | `sv_read_len` | `300` bp | `cigar/parse.rs` | Discordant SV candidate insert size cutoff: |
+| **`-W`** | `sv_flanking` | `100` bp | `cigar/parse.rs` | $\lvert\text{TLEN}\rvert > w + (A \cdot W)$ |
+| **`-A`** | `sv_min_af` | `4` | `cigar/parse.rs` | $= 300 + (4 \cdot 100) = 700\text{ bp}$ |
+| **`-B`** | `min_reads_bias` | `2` | `variations/util.rs` | Strand Bias Test: If total variant reads $\le 12$, biased if $fwd \cdot rev == 0$. If $>12$, PASS if $fwd \ge 2 \;\land\; rev \ge 2 \;\land\; \min(\frac{fwd}{tot}, \frac{rev}{tot}) \ge 0.05$ |
+| **`-o`** (`--vcf-sn`) | `qratio` | `1.5` | `variations/mod.rs`<br>`output/vcf.rs` | **Engine:** Fail if $hq\_lq\_ratio < 1.5$<br>**VCF Filter (`SN1.5`):** Filter if $\frac{hicnt}{locnt + 0.5} < 1.5$ |
+| **`-O`** | `out_mapq` | `0` | `variations/mod.rs` | **Engine:** Fail if $mqmean < 0.0$ when $\text{AF} \le 0.30$ |
 
 ---
 

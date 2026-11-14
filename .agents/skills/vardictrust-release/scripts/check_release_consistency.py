@@ -74,10 +74,172 @@ def forbid_regex(
         )
 
 
-def check_pre_tag_surfaces(repo_root: Path, version: str, errors: list[str]) -> None:
+EXPECTED_CLI_HEADINGS = (
+    "1. Core Inputs & Outputs",
+    "2. VCF Post-Filtering (var2vcf)",
+    "3. Coordinate & BED Column Mapping",
+    "4. Variant Calling & Quality Thresholds",
+    "5. Modality Flags: Somatic & Amplicon",
+    "6. Structural Variants & Complex Indels",
+    "7. Performance & Concurrency",
+)
+EXPECTED_CLI_FLAG_COUNT = 89
+
+
+def check_cli_and_migration_surfaces(repo_root: Path, errors: list[str]) -> None:
+    n_flags = EXPECTED_CLI_FLAG_COUNT
+    n_groups = len(EXPECTED_CLI_HEADINGS)
+
+    require_regex(
+        repo_root,
+        "README.md",
+        rf"`{n_flags}` CLI flags across {n_groups} functional groups",
+        f"README.md cites {n_flags} CLI flags across {n_groups} functional groups",
+        errors,
+    )
+    forbid_regex(
+        repo_root,
+        "README.md",
+        r"`87` CLI flags|6 functional groups",
+        "README.md stale 87 CLI flags or 6 functional groups",
+        errors,
+    )
+
+    readme_text = read_text(repo_root, "README.md", errors)
+    if readme_text:
+        sec_m = re.search(
+            r"^## CLI Parameter Reference\n(.*?)(?=^## |\Z)",
+            readme_text,
+            re.MULTILINE | re.DOTALL,
+        )
+        if not sec_m:
+            errors.append("README.md: missing '## CLI Parameter Reference' section")
+        else:
+            cli_sec = sec_m.group(1)
+            found_headings = re.findall(r"^### (\d+\. [^\n]+)$", cli_sec, re.MULTILINE)
+            if tuple(found_headings) != EXPECTED_CLI_HEADINGS:
+                errors.append(
+                    f"README.md: CLI Parameter Reference headings {found_headings} != {list(EXPECTED_CLI_HEADINGS)}"
+                )
+            data_rows = [
+                ln
+                for ln in cli_sec.splitlines()
+                if ln.startswith("| ")
+                and not ln.startswith("| Short | Long |")
+                and not ln.startswith("| :---")
+            ]
+            if len(data_rows) != n_flags:
+                errors.append(
+                    f"README.md: CLI Parameter Reference tables contain {len(data_rows)} flag rows, expected {n_flags}"
+                )
+
+    roadmap_text = read_text(repo_root, "ROADMAP.md", errors)
+    if roadmap_text:
+        matches = re.findall(
+            rf"`{n_flags}`-flag CLI surface across `{n_groups}` functional groups",
+            roadmap_text,
+        )
+        if len(matches) < 2:
+            errors.append(
+                f"ROADMAP.md: expected >= 2 occurrences of '`{n_flags}`-flag CLI surface across `{n_groups}` functional groups', found {len(matches)}"
+            )
+    forbid_regex(
+        repo_root,
+        "ROADMAP.md",
+        r"`87`-flag CLI surface|6 functional groups",
+        "ROADMAP.md stale 87-flag CLI surface or 6 functional groups",
+        errors,
+    )
+
+    forbid_regex(
+        repo_root,
+        "CHANGELOG.md",
+        r"`87` total CLI flags across 6 functional groups",
+        "CHANGELOG.md stale 87 total CLI flags across 6 functional groups",
+        errors,
+    )
+
+    require_regex(
+        repo_root,
+        "docs/ecosystem-survey.md",
+        rf"Explicit {n_flags}-flag Diátaxis reference categorized into {n_groups} functional groups",
+        f"docs/ecosystem-survey.md §5 cites {n_flags}-flag reference across {n_groups} functional groups",
+        errors,
+    )
+    require_regex(
+        repo_root,
+        "docs/ecosystem-survey.md",
+        rf"`{n_flags}` CLI flags across `{n_groups}` functional groups",
+        f"docs/ecosystem-survey.md §8.4 cites {n_flags} CLI flags across {n_groups} functional groups",
+        errors,
+    )
+    forbid_regex(
+        repo_root,
+        "docs/ecosystem-survey.md",
+        r"87-flag|`87` CLI flags|6 functional groups",
+        "docs/ecosystem-survey.md stale 87-flag or 6 functional groups",
+        errors,
+    )
+
+    require_regex(
+        repo_root,
+        "docs/testing/test-matrix-and-ci-audit.md",
+        rf"across the {n_flags}-flag CLI surface \({n_groups} functional groups",
+        f"test-matrix-and-ci-audit.md cites {n_flags}-flag CLI surface ({n_groups} functional groups)",
+        errors,
+    )
+    forbid_regex(
+        repo_root,
+        "docs/testing/test-matrix-and-ci-audit.md",
+        r"87-flag CLI surface|6 functional groups",
+        "test-matrix-and-ci-audit.md stale 87-flag CLI surface or 6 functional groups",
+        errors,
+    )
+
+    require_regex(
+        repo_root,
+        "wiki/Home.md",
+        rf"Complete {n_flags}-flag reference across {n_groups} functional groups",
+        f"wiki/Home.md cites {n_flags}-flag reference across {n_groups} functional groups",
+        errors,
+    )
+    forbid_regex(
+        repo_root,
+        "wiki/Home.md",
+        r"87-flag|6 functional groups",
+        "wiki/Home.md stale 87-flag or 6 functional groups",
+        errors,
+    )
+
+    migration_text = read_text(repo_root, "docs/migration.md", errors)
+    if migration_text and "var2vcf_valid.pl" not in migration_text:
+        errors.append("docs/migration.md: missing var2vcf_valid.pl migration table")
+    require_regex(
+        repo_root,
+        "mkdocs.yml",
+        r"^\s*-\s*Migration Guide:\s*docs/migration\.md\s*$",
+        "mkdocs.yml nav includes Migration Guide: docs/migration.md",
+        errors,
+    )
+    require_regex(
+        repo_root,
+        "wiki/_Sidebar.md",
+        r"docs/migration\.md",
+        "wiki/_Sidebar.md links to docs/migration.md",
+        errors,
+    )
+
+
+def check_pre_tag_surfaces(
+    repo_root: Path,
+    version: str,
+    errors: list[str],
+    *,
+    require_head_fp: bool = False,
+) -> None:
     ver_esc = re.escape(version)
 
-    # 1. Cargo.toml
+    # 1. Cargo.toml & MSRV sync
     require_regex(
         repo_root,
         "Cargo.toml",
@@ -85,6 +247,41 @@ def check_pre_tag_surfaces(repo_root: Path, version: str, errors: list[str]) -> 
         f"workspace.package version == {version}",
         errors,
     )
+    cargo_toml_text = read_text(repo_root, "Cargo.toml", errors)
+    if cargo_toml_text:
+        msrv_m = re.search(
+            r'^\[workspace\.package\](?:\n(?!\[)[^\n]*)*?\nrust-version\s*=\s*"([^"]+)"',
+            cargo_toml_text,
+            re.MULTILINE,
+        )
+        if not msrv_m:
+            errors.append("Cargo.toml: missing rust-version under [workspace.package]")
+        else:
+            msrv = msrv_m.group(1)
+            if msrv != "1.91.0":
+                errors.append(
+                    f'Cargo.toml: expected rust-version == "1.91.0", got {msrv!r}'
+                )
+            msrv_esc = re.escape(msrv)
+            for member_toml in (
+                "crates/vardictrust/Cargo.toml",
+                "crates/vardictrust-core/Cargo.toml",
+            ):
+                require_regex(
+                    repo_root,
+                    member_toml,
+                    r"^rust-version\.workspace\s*=\s*true\b",
+                    f"{member_toml} inherits rust-version.workspace = true",
+                    errors,
+                )
+            for doc_path in ("README.md", "CONTRIBUTING.md"):
+                require_regex(
+                    repo_root,
+                    doc_path,
+                    rf"rustc >= {msrv_esc}\b",
+                    f"{doc_path} cites MSRV rustc >= {msrv}",
+                    errors,
+                )
 
     # 2. crates/vardictrust/Cargo.toml
     require_regex(
@@ -150,6 +347,23 @@ def check_pre_tag_surfaces(repo_root: Path, version: str, errors: list[str]) -> 
         "CHANGELOG.md has [1.0.2] comparison link",
         errors,
     )
+    changelog_text = read_text(repo_root, "CHANGELOG.md", errors)
+    if changelog_text:
+        rel_headers = re.findall(
+            r"^## \[(\d+\.\d+\.\d+)\]", changelog_text, re.MULTILINE
+        )
+        if not rel_headers:
+            errors.append("CHANGELOG.md: found zero ## [X.Y.Z] release headers")
+        for rel_ver in rel_headers:
+            rel_esc = re.escape(rel_ver)
+            if rel_ver == "1.0.0":
+                footer_pat = r"^\[1\.0\.0\]:\s*https://github\.com/palakpsheth/VarDictRust/releases/tag/v1\.0\.0\s*$"
+            else:
+                footer_pat = rf"^\[{rel_esc}\]:\s*https://github\.com/palakpsheth/VarDictRust/compare/v\d+\.\d+\.\d+\.\.\.v{rel_esc}\s*$"
+            if not re.search(footer_pat, changelog_text, re.MULTILINE):
+                errors.append(
+                    f"CHANGELOG.md: ## [{rel_ver}] header missing matching [{rel_ver}]: footer link"
+                )
     forbid_regex(
         repo_root,
         "CHANGELOG.md",
@@ -299,14 +513,31 @@ def check_pre_tag_surfaces(repo_root: Path, version: str, errors: list[str]) -> 
         "DIVERGENCES.md documents ##source=VarDict_v1.8.2 byte-parity header",
         errors,
     )
-    require_regex(
-        repo_root,
-        "DIVERGENCES.md",
-        rf"Current Workspace Test Suite[^\n]*:\n- Core Library Tests:\s+{tc['core_lib']} PASS[^\n]*\n- Total Workspace:\s+{tc['total_workspace']} PASS",
-        f"DIVERGENCES.md cites current {tc['core_lib']} core lib / {tc['total_workspace']} workspace tests",
-        errors,
-        flags=re.MULTILINE,
-    )
+    if require_head_fp:
+        forbid_regex(
+            repo_root,
+            "DIVERGENCES.md",
+            r"Current Workspace Test Suite \(main / pre-v",
+            "DIVERGENCES.md pre-release Current Workspace Test Suite block must be folded into Verified Parity Baseline on release branches",
+            errors,
+        )
+        require_regex(
+            repo_root,
+            "DIVERGENCES.md",
+            rf"Verified Parity Baseline \(release/v{ver_esc}[^\n]*:(?:\n- [^\n]*)*?\n- Core Library Tests:\s+{tc['core_lib']} PASS[^\n]*\n- Total Workspace:\s+{tc['total_workspace']} PASS",
+            f"DIVERGENCES.md Verified Parity Baseline (release/v{version}) cites {tc['core_lib']} core lib / {tc['total_workspace']} workspace tests",
+            errors,
+            flags=re.MULTILINE,
+        )
+    else:
+        require_regex(
+            repo_root,
+            "DIVERGENCES.md",
+            rf"Current Workspace Test Suite[^\n]*:\n- Core Library Tests:\s+{tc['core_lib']} PASS[^\n]*\n- Total Workspace:\s+{tc['total_workspace']} PASS",
+            f"DIVERGENCES.md cites current {tc['core_lib']} core lib / {tc['total_workspace']} workspace tests",
+            errors,
+            flags=re.MULTILINE,
+        )
     require_regex(
         repo_root,
         "DIVERGENCES.md",
@@ -441,6 +672,75 @@ def check_pre_tag_surfaces(repo_root: Path, version: str, errors: list[str]) -> 
         "wiki/_Sidebar.md",
         rf"docs/release/v{ver_esc}-pr\.md",
         f"wiki/_Sidebar.md links to docs/release/v{version}-pr.md",
+        errors,
+    )
+
+    # 18. CLI 89-flag / 7-group & Migration Guide surfaces
+    check_cli_and_migration_surfaces(repo_root, errors)
+
+    # 19. UPSTREAM.toml commit & comparator pins
+    require_regex(
+        repo_root,
+        "UPSTREAM.toml",
+        r'^\[vardictjava\](?:\n(?!\[)[^\n]*)*?\nversion\s*=\s*"1\.8\.3"(?:\n(?!\[)[^\n]*)*?\ncommit\s*=\s*"0886261"',
+        "UPSTREAM.toml pins VarDictJava 1.8.3 commit 0886261",
+        errors,
+    )
+    require_regex(
+        repo_root,
+        "UPSTREAM.toml",
+        r'^\[vardict_scripts\](?:\n(?!\[)[^\n]*)*?\ncommit\s*=\s*"009e017"',
+        "UPSTREAM.toml pins VarDict scripts commit 009e017",
+        errors,
+    )
+    require_regex(
+        repo_root,
+        "UPSTREAM.toml",
+        r'^\[advisory_comparators\.vardictcpp\](?:\n(?!\[)[^\n]*)*?\nversion\s*=\s*"3"(?:\n(?!\[)[^\n]*)*?\nbioconda_build\s*=\s*"hc52dbad_0"',
+        "UPSTREAM.toml pins advisory vardictcpp version 3 build hc52dbad_0",
+        errors,
+    )
+
+    # 20. .github/workflows/ci.yml test-count synchronization (:71 and :175-177)
+    int_suite_total = (
+        tc["engine_behavior"]
+        + tc["amplicon_stream_mem"]
+        + tc["cram_stack"]
+        + tc["cli_integration"]
+    )
+    require_regex(
+        repo_root,
+        ".github/workflows/ci.yml",
+        rf"\({tc['core_lib']} vardictrust-core --lib \+ {tc['cli_bin']} vardictrust --bins\)",
+        f"ci.yml Step 3 log cites ({tc['core_lib']} vardictrust-core --lib + {tc['cli_bin']} vardictrust --bins)",
+        errors,
+    )
+    require_regex(
+        repo_root,
+        ".github/workflows/ci.yml",
+        rf"Running {tc['corpus_parity']} in-process golden corpus and modality parity tests",
+        f"ci.yml Step 5 log cites {tc['corpus_parity']} corpus_parity cases",
+        errors,
+    )
+    require_regex(
+        repo_root,
+        ".github/workflows/ci.yml",
+        rf"Unit Tests \(\\`{tc['core_lib']} vardictrust-core\\` \+ \\`{tc['cli_bin']} vardictrust\\`\)",
+        f"ci.yml Step 9 summary cites (`{tc['core_lib']} vardictrust-core` + `{tc['cli_bin']} vardictrust`)",
+        errors,
+    )
+    require_regex(
+        repo_root,
+        ".github/workflows/ci.yml",
+        rf"Integration & Hostile-Input Tests \(\\`{int_suite_total}\\` tests\)",
+        f"ci.yml Step 9 summary cites (`{int_suite_total}` tests)",
+        errors,
+    )
+    require_regex(
+        repo_root,
+        ".github/workflows/ci.yml",
+        rf"Corpus & Modality Parity Tests \(\\`{tc['corpus_parity']}\\` cases\)",
+        f"ci.yml Step 9 summary cites (`{tc['corpus_parity']}` cases)",
         errors,
     )
 
@@ -765,7 +1065,12 @@ def main() -> int:
         return 2
 
     errors: list[str] = []
-    check_pre_tag_surfaces(args.repo_root, version, errors)
+    check_pre_tag_surfaces(
+        args.repo_root,
+        version,
+        errors,
+        require_head_fp=args.require_head_fingerprint,
+    )
     check_evidence_and_fingerprints(
         args.repo_root, args.require_head_fingerprint, errors
     )

@@ -171,7 +171,7 @@ All contributions to `crates/vardictrust-core/` and `crates/vardictrust/` must a
 - **Phred Quality Scores:** Encoded as Phred+33: `Phred(byte.saturating_sub(33))`.
 
 ### 4.4 Bounded Memory & Scale ([AGENTS.md §10](AGENTS.md#10-scale-rules-optimize-for-large-wgs-by-default))
-- **Tile-and-Halo Traversal:** Regions are processed in discrete tiles (default 50 kb) with an overlapping halo (2 kb). State is streamed through the per-tile pipeline and dropped promptly via RAII.
+- **Tile-and-Halo Traversal:** Regions `<= 1 Mbp` run untiled by default (`DEFAULT_UNTILED_SPAN_MAX = 1_000_000`); intervals `> 1 Mbp` are partitioned into discrete `100 kbp` tiles (`DEFAULT_TILE_SIZE = 100_000`, overridable via `--tile-size`) with overlapping read/SV halo windows, `SplitVarDeduper` (`200 kbp` cross-tile `.var` boundary retention), and `SpillableVcfAccumulator` (`8 MiB` whole-stream spill threshold). State is streamed through the per-tile pipeline and dropped promptly via RAII.
 - **Zero Whole-Chromosome Buffering:** Never load or buffer entire chromosomes in memory.
 
 ---

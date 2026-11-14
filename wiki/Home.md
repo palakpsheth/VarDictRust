@@ -12,7 +12,8 @@ VarDictRust is an idiomatic Rust rewrite of **VarDictJava v1.8.3** (a somatic an
 - **[README](https://github.com/palakpsheth/VarDictRust#readme)** — Executive overview, performance scoreboards, quickstart commands, and installation.
 - **[Installation Guide](https://github.com/palakpsheth/VarDictRust#installation)** — Pre-built static/native binaries (`cargo-dist` SLSA Level 3), Cargo install, Seqera Wave containers (Docker/Podman/Apptainer), Conda/Bioconda (`conda`/`mamba`/`pixi`), and Nextflow (`nf-core/modules`).
 - **[Usage Recipes & Modalities](https://github.com/palakpsheth/VarDictRust#usage-recipes)** — Diátaxis recipes for Germline WGS, Somatic Tumor-Normal, Targeted Amplicon (`-a`), RNA-seq Splicing (`-i`), and UNIX streaming pipelines.
-- **[CLI Parameter Reference](https://github.com/palakpsheth/VarDictRust#cli-parameter-reference)** — Complete 87-flag reference across 6 functional groups.
+- **[Migration Guide](https://github.com/palakpsheth/VarDictRust/blob/main/docs/migration.md)** — Side-by-side Rosetta Stone from `VarDictJava` + R + Perl (`var2vcf_valid.pl` / `var2vcf_paired.pl`) pipelines to single-binary `vardictrust`.
+- **[CLI Parameter Reference](https://github.com/palakpsheth/VarDictRust#cli-parameter-reference)** — Complete 89-flag reference across 7 functional groups.
 - **[Contributing Guidelines & Release Runbook](https://github.com/palakpsheth/VarDictRust/blob/main/CONTRIBUTING.md#release-process)** — Development prerequisites, code style, pre-commit hygiene, test harnesses, and release process.
 
 ### 2. Empirical Validation & Parity
