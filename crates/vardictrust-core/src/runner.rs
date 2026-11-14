@@ -271,7 +271,7 @@ where
             )))
         })?;
 
-    let window_size = if num_threads > 0 { num_threads * 4 } else { 4 };
+    let window_size = num_threads.max(1).saturating_mul(4);
     let (tx, rx) = mpsc::channel::<(usize, Result<Vec<R>, VardictError>)>();
 
     // Shared state for throttling: (next_expected_batch_idx, is_shutdown) + lock-free AtomicBool

@@ -101,10 +101,27 @@ pub fn ref_bases_with(
     if to < from || to < 1 {
         return Vec::new();
     }
-    let eff_from = from.max(1);
-    let span = ((to as i64) - (eff_from as i64) + 1).clamp(0, 1 << 20) as usize;
+    let (eff_from, eff_to) = if missing.is_none() {
+        let Some((min_s, max_e)) = reference.loaded_span_bounds(chr) else {
+            return Vec::new();
+        };
+        if u64::from(min_s) > (to.max(0) as u64) {
+            return Vec::new();
+        }
+        let min_i32 = i32::try_from(min_s).unwrap_or(i32::MAX);
+        let max_i32 = i32::try_from(max_e).unwrap_or(i32::MAX);
+        let clamped_from = from.max(1).max(min_i32);
+        let clamped_to = to.min(max_i32);
+        if clamped_to < clamped_from {
+            return Vec::new();
+        }
+        (clamped_from, clamped_to)
+    } else {
+        (from.max(1), to)
+    };
+    let span = ((eff_to as i64) - (eff_from as i64) + 1).clamp(0, 1 << 20) as usize;
     let mut sb = Vec::with_capacity(span);
-    for pos in eff_from..=to {
+    for pos in eff_from..=eff_to {
         match reference.get_base(chr, pos as u32) {
             Some(b) => sb.push(b),
             None => {
@@ -139,22 +156,34 @@ pub(crate) fn push_ref_bases(
     if end < start || end < 1 {
         return;
     }
-    let eff_start = start.max(1);
-    let span = ((end as i64) - (eff_start as i64) + 1).clamp(0, 1 << 20) as usize;
+    let Some((min_s, max_e)) = reference.loaded_span_bounds(chr) else {
+        return;
+    };
+    if u64::from(min_s) > (end.max(0) as u64) {
+        return;
+    }
+    let min_i32 = i32::try_from(min_s).unwrap_or(i32::MAX);
+    let max_i32 = i32::try_from(max_e).unwrap_or(i32::MAX);
+    let eff_start = start.max(1).max(min_i32);
+    let eff_end = end.min(max_i32);
+    if eff_end < eff_start {
+        return;
+    }
+    let span = ((eff_end as i64) - (eff_start as i64) + 1).clamp(0, 1 << 20) as usize;
     if out.capacity() == 0 {
         out.reserve_exact(span);
     } else {
         out.reserve(span);
     }
     let base_len = out.len();
-    for pos in eff_start..=end {
+    for pos in eff_start..=eff_end {
         if let Some(b) = reference.get_base(chr, pos as u32) {
             if b.is_ascii() {
                 out.push(b as char);
             } else {
                 out.truncate(base_len);
                 out.push_str(&String::from_utf8_lossy(&ref_bases(
-                    reference, chr, start, end,
+                    reference, chr, eff_start, eff_end,
                 )));
                 return;
             }
@@ -423,5 +452,65 @@ mod tests {
             push_i64(&mut buf, v);
             assert_eq!(buf, format!("i64:{v}"), "push_i64 mismatch for {v}");
         }
+    }
+
+    #[test]
+    fn batch12_ref_bases_clamps_to_loaded_span_with_u32_max_bounds() {
+        let mut reference = crate::reference::Reference::new();
+        reference.region_sequences.push(b"AC".to_vec());
+        reference
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 10,
+                sequence_end: u32::MAX,
+            });
+
+        // Must NOT wrap `u32::MAX as i32` to `-1` and drop loaded bases at 10..=11!
+        let mut out = String::new();
+        push_ref_bases(&mut out, &reference, "chr1", 1, 15);
+        assert_eq!(out, "AC");
+        assert_eq!(ref_bases(&reference, "chr1", 1, 15), b"AC");
+
+        // Unloaded contig over a 50 Mbp span must short-circuit in O(1) via loaded_span_bounds
+        // rather than walking 50,000,000 positions one-by-one.
+        let t0 = std::time::Instant::now();
+        let mut unloaded_out = String::new();
+        push_ref_bases(&mut unloaded_out, &reference, "chr_unloaded", 1, 50_000_000);
+        assert!(unloaded_out.is_empty());
+        assert!(ref_bases(&reference, "chr_unloaded", 1, 50_000_000).is_empty());
+        assert!(
+            t0.elapsed() < std::time::Duration::from_millis(25),
+            "unloaded 50 Mbp span must short-circuit via loaded_span_bounds, took {:?}",
+            t0.elapsed()
+        );
+
+        // When min_s > i32::MAX, querying `1..=50_000_000` must also short-circuit in O(1) via u64 check
+        // rather than wrapping `min_s as i32` negative and scanning from 1.
+        let mut high_ref = crate::reference::Reference::new();
+        high_ref.region_sequences.push(b"G".to_vec());
+        high_ref
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr_hi".to_string(),
+                sequence_start: (i32::MAX as u32) + 100,
+                sequence_end: u32::MAX,
+            });
+        let t1 = std::time::Instant::now();
+        let mut hi_out = String::new();
+        push_ref_bases(&mut hi_out, &high_ref, "chr_hi", 1, 50_000_000);
+        assert!(hi_out.is_empty());
+        assert!(ref_bases(&high_ref, "chr_hi", 1, 50_000_000).is_empty());
+        assert!(
+            t1.elapsed() < std::time::Duration::from_millis(25),
+            "high u32 loaded_span_bounds must short-circuit without i32 wrap, took {:?}",
+            t1.elapsed()
+        );
+
+        // Missing fill `Some(b'N')` still preserves full requested width
+        assert_eq!(
+            ref_bases_with(&high_ref, "chr_hi", 2, 5, Some(b'N')),
+            b"NNNN"
+        );
     }
 }

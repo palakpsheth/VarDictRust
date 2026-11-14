@@ -226,6 +226,11 @@ pub fn parse_int_with_commas(s: &str) -> Result<u32, VardictError> {
     Ok(v)
 }
 
+thread_local! {
+    static JAVA_SPLIT_REGEX_CACHE: std::cell::RefCell<Option<(String, regex::Regex)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 /// Ports `String.split(delimiter)` (`java.lang.String.split(regex, 0)`):
 /// splits `line` by regex `delim` and discards trailing empty segments when `parts.len() > 1`.
 pub fn java_split<'a>(line: &'a str, delim: &str) -> Result<Vec<&'a str>, VardictError> {
@@ -238,11 +243,29 @@ pub fn java_split<'a>(line: &'a str, delim: &str) -> Result<Vec<&'a str>, Vardic
     {
         line.split(delim).collect()
     } else {
-        let re = regex::RegexBuilder::new(delim)
-            .unicode(false)
-            .build()
-            .map_err(|e| VardictError::Parse(format!("invalid delimiter regex '{delim}': {e}")))?;
-        re.split(line).collect()
+        JAVA_SPLIT_REGEX_CACHE.with(|cell| {
+            let mut cache = cell.borrow_mut();
+            let needs_compile = match cache.as_ref() {
+                Some((cached_delim, _)) => cached_delim != delim,
+                None => true,
+            };
+            if needs_compile {
+                let compiled = regex::RegexBuilder::new(delim)
+                    .size_limit(1 << 20)
+                    .dfa_size_limit(1 << 20)
+                    .build()
+                    .map_err(|e| {
+                        VardictError::Parse(format!("invalid delimiter regex '{delim}': {e}"))
+                    })?;
+                *cache = Some((delim.to_string(), compiled));
+            }
+            match cache.as_ref() {
+                Some((_, re)) => Ok(re.split(line).collect()),
+                None => Err(VardictError::Other(
+                    "regex cache empty after compile".to_string(),
+                )),
+            }
+        })?
     };
     if parts.len() > 1 {
         while parts.last().is_some_and(|s| s.is_empty()) {
@@ -254,6 +277,27 @@ pub fn java_split<'a>(line: &'a str, delim: &str) -> Result<Vec<&'a str>, Vardic
 
 /// Maximum allowed uncompressed BED byte volume (`512 MiB`).
 pub const MAX_BED_BYTES: u64 = 512 * 1024 * 1024;
+/// Maximum allowed total parsed `Region` entries across a BED input (`10_000_000`).
+pub const MAX_TOTAL_REGIONS: usize = 10_000_000;
+
+fn validate_region_chr_and_gene(chr: &str, gene: &str) -> Result<(), VardictError> {
+    if chr.is_empty()
+        || chr
+            .bytes()
+            .any(|b| b <= 0x20 || b == 0x7F || matches!(b, b',' | b'>'))
+    {
+        return Err(VardictError::Parse(format!(
+            "Invalid region chromosome name '{chr}': must not be empty or contain whitespace, ASCII control bytes, ',', or '>'"
+        )));
+    }
+    if gene.bytes().any(|b| b < 0x20 || b == 0x7F) {
+        return Err(VardictError::Parse(
+            "Invalid region gene name: must not contain ASCII control characters or tabs"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
 const BED_GZIP_MAGIC: [u8; 2] = [0x1f, 0x8b];
 
 #[inline]
@@ -596,6 +640,22 @@ fn parse_non_amp_bed_from_source<S: BedLineSource>(
     chromosomes_lengths: &HashMap<String, usize>,
     zero_based_override: Option<bool>,
 ) -> Result<Vec<Vec<Region>>, VardictError> {
+    parse_non_amp_bed_from_source_with_limit(
+        source,
+        config,
+        chromosomes_lengths,
+        zero_based_override,
+        MAX_TOTAL_REGIONS,
+    )
+}
+
+fn parse_non_amp_bed_from_source_with_limit<S: BedLineSource>(
+    source: &mut S,
+    config: &Config,
+    chromosomes_lengths: &HashMap<String, usize>,
+    zero_based_override: Option<bool>,
+    max_regions: usize,
+) -> Result<Vec<Vec<Region>>, VardictError> {
     let is_zero_based = config.zero_based;
     let format = BedRowFormat {
         chr_column: config.col_chr,
@@ -607,6 +667,7 @@ fn parse_non_amp_bed_from_source<S: BedLineSource>(
     };
 
     let mut segs = Vec::new();
+    let mut total_regions = 0usize;
 
     while let Some(line) = source.next_normalized_line()? {
         if line.trim().is_empty()
@@ -660,6 +721,7 @@ fn parse_non_amp_bed_from_source<S: BedLineSource>(
         } else {
             chr.clone()
         };
+        validate_region_chr_and_gene(&chr, &gene)?;
 
         let thick_starts: Vec<&str> = cols[current_format.thick_start_column].split(',').collect();
         let thick_ends: Vec<&str> = cols[current_format.thick_end_column].split(',').collect();
@@ -705,6 +767,13 @@ fn parse_non_amp_bed_from_source<S: BedLineSource>(
                 continue;
             }
 
+            if total_regions >= max_regions {
+                return Err(VardictError::Parse(format!(
+                    "BED input exceeds maximum allowed region count of {max_regions}"
+                )));
+            }
+            total_regions += 1;
+
             let final_start = std::cmp::max(1, thick_start) as u32;
             let final_end = std::cmp::max(1, thick_end) as u32;
 
@@ -744,8 +813,25 @@ fn parse_amp_bed_from_source<S: BedLineSource>(
     chromosomes_lengths: &HashMap<String, usize>,
     zero_based_override: Option<bool>,
 ) -> Result<Vec<Vec<Region>>, VardictError> {
+    parse_amp_bed_from_source_with_limit(
+        source,
+        config,
+        chromosomes_lengths,
+        zero_based_override,
+        MAX_TOTAL_REGIONS,
+    )
+}
+
+fn parse_amp_bed_from_source_with_limit<S: BedLineSource>(
+    source: &mut S,
+    config: &Config,
+    chromosomes_lengths: &HashMap<String, usize>,
+    zero_based_override: Option<bool>,
+    max_regions: usize,
+) -> Result<Vec<Vec<Region>>, VardictError> {
     let is_zero_based = config.zero_based;
     let mut tsegs: indexmap::IndexMap<String, Vec<Region>> = indexmap::IndexMap::new();
+    let mut total_regions = 0usize;
 
     while let Some(line) = source.next_normalized_line()? {
         if line.trim().is_empty()
@@ -770,6 +856,13 @@ fn parse_amp_bed_from_source<S: BedLineSource>(
         let mut start = parse_int_with_commas(cols[AMP_BED_ROW_FORMAT.start_column])? as i32;
         let end = parse_int_with_commas(cols[AMP_BED_ROW_FORMAT.end_column])? as i32;
         let gene = cols[AMP_BED_ROW_FORMAT.gene_column].to_string();
+        validate_region_chr_and_gene(&chr, &gene)?;
+        if total_regions >= max_regions {
+            return Err(VardictError::Parse(format!(
+                "Amplicon BED input exceeds maximum allowed region count of {max_regions}"
+            )));
+        }
+        total_regions += 1;
         let mut insert_start =
             parse_int_with_commas(cols[AMP_BED_ROW_FORMAT.thick_start_column])? as i32;
         let insert_end = parse_int_with_commas(cols[AMP_BED_ROW_FORMAT.thick_end_column])? as i32;
@@ -982,7 +1075,8 @@ fn finalize_single_region(
     end: i32,
     gene: String,
     config: &Config,
-) -> Vec<Vec<Region>> {
+) -> Result<Vec<Vec<Region>>, VardictError> {
+    validate_region_chr_and_gene(&chr, &gene)?;
     start = start.saturating_sub(config.extension);
     let end = end.saturating_add(config.extension);
 
@@ -998,13 +1092,13 @@ fn finalize_single_region(
     let final_start = std::cmp::max(1, start) as u32;
     let final_end = std::cmp::max(1, end) as u32;
 
-    vec![vec![Region {
+    Ok(vec![vec![Region {
         chr,
         start: Pos1(final_start),
         end: Pos1(final_end),
         gene,
         amplicon: None,
-    }]]
+    }]])
 }
 
 /// Parses a region string (from option -R) into a single nested Region.
@@ -1045,7 +1139,7 @@ pub fn parse_region_flag(
                         Some(tail) if !tail.is_empty() => tail.join(":"),
                         _ => chr.clone(),
                     };
-                    return Ok(finalize_single_region(chr, start, end, gene, config));
+                    return finalize_single_region(chr, start, end, gene, config);
                 }
             }
         } else {
@@ -1077,7 +1171,7 @@ pub fn parse_region_flag(
                             Some(&g) => g.to_string(),
                             None => chr.clone(),
                         };
-                        return Ok(finalize_single_region(chr, start, end, gene, config));
+                        return finalize_single_region(chr, start, end, gene, config);
                     }
                     Err(err) => {
                         if is_numeric_coord_token(coord_str) {
@@ -1118,7 +1212,7 @@ pub fn parse_region_flag(
         None => start,
     };
 
-    Ok(finalize_single_region(chr, start, end, gene, config))
+    finalize_single_region(chr, start, end, gene, config)
 }
 
 #[cfg(test)]
@@ -2134,5 +2228,109 @@ Y\t59042860\t59047860\tY_59042860_5\t0\t.\t59042860\t59047860
             dbg.contains("BedReader") && dbg.contains("gzip"),
             "dbg={dbg}"
         );
+    }
+
+    #[test]
+    fn batch12_region_control_bytes_and_java_split_regex_limits() {
+        let mut cfg = Config::default();
+        cfg.zero_based = true;
+        cfg.col_chr = 0;
+        cfg.col_start = 1;
+        cfg.col_end = 2;
+        cfg.col_seg_start = 1;
+        cfg.col_seg_end = 2;
+        cfg.col_gene = Some(3);
+        cfg.column_for_chromosome = Some(0);
+        let mut chr_lengths = HashMap::new();
+        chr_lengths.insert("chr1".to_string(), 100_000);
+
+        // Control/whitespace bytes in chr or control bytes in gene must be rejected
+        assert!(
+            parse_region_flag("chr 1:10-20", &cfg, &chr_lengths).is_err(),
+            "whitespace in region chr must be rejected"
+        );
+        assert!(
+            parse_region_flag("chr1:10-20:GENE\tINJECT", &cfg, &chr_lengths).is_err(),
+            "tab in region gene must be rejected"
+        );
+        assert!(
+            parse_bed_from_reader(
+                "chr1\t10\t20\tTP\x0053\n".as_bytes(),
+                &cfg,
+                &chr_lengths,
+                None
+            )
+            .is_err(),
+            "NUL byte in non-amp BED gene must be rejected"
+        );
+        let mut amp_cfg = cfg.clone();
+        amp_cfg.amplicon = Some("10:0.95".to_string());
+        assert!(
+            parse_bed_from_reader(
+                "chr1\t10\t20\tTP\x7f53\t0\t.\t10\t20\n".as_bytes(),
+                &amp_cfg,
+                &chr_lengths,
+                None
+            )
+            .is_err(),
+            "DEL byte in amplicon BED gene must be rejected"
+        );
+
+        // Oversized delimiter regex exceeding 1 MiB compiled NFA must fail cleanly via VardictError::Parse
+        let huge_delim = "(?:[a-zA-Z0-9]{1000}){50}";
+        match java_split("a b c", huge_delim) {
+            Err(VardictError::Parse(msg)) => {
+                assert!(
+                    msg.contains("exceeds size limit") || msg.contains("invalid delimiter regex"),
+                    "unexpected error message: {msg}"
+                );
+            }
+            other => panic!("oversized regex delimiter must be rejected by RegexBuilder size_limit, got {other:?}"),
+        }
+        // Valid custom regex delimiters still work and switch cleanly across cached calls
+        assert_eq!(
+            java_split("chr1   10  20", " +").unwrap(),
+            vec!["chr1", "10", "20"]
+        );
+        assert_eq!(
+            java_split("chr1;;10;;20;;", ";+").unwrap(),
+            vec!["chr1", "10", "20"]
+        );
+
+        // MAX_TOTAL_REGIONS enforcement across non-amp and amplicon BED parsers
+        assert_eq!(MAX_TOTAL_REGIONS, 10_000_000);
+        let three_lines = [
+            "chr1\t10\t20\tG1".to_string(),
+            "chr1\t30\t40\tG2".to_string(),
+            "chr1\t50\t60\tG3".to_string(),
+        ];
+        let mut src_ok = SliceBedLines::new(&three_lines);
+        assert!(
+            parse_non_amp_bed_from_source_with_limit(&mut src_ok, &cfg, &chr_lengths, None, 3)
+                .is_ok()
+        );
+        let mut src_over = SliceBedLines::new(&three_lines);
+        assert!(parse_non_amp_bed_from_source_with_limit(
+            &mut src_over,
+            &cfg,
+            &chr_lengths,
+            None,
+            2
+        )
+        .is_err());
+        let three_amp = [
+            "chr1\t10\t20\tG1\t0\t.\t10\t20".to_string(),
+            "chr1\t30\t40\tG2\t0\t.\t30\t40".to_string(),
+            "chr1\t50\t60\tG3\t0\t.\t50\t60".to_string(),
+        ];
+        let mut amp_src_over = SliceBedLines::new(&three_amp);
+        assert!(parse_amp_bed_from_source_with_limit(
+            &mut amp_src_over,
+            &amp_cfg,
+            &chr_lengths,
+            None,
+            2
+        )
+        .is_err());
     }
 }
