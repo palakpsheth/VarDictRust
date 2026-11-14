@@ -24,30 +24,52 @@ fn push_vcf_rounded(buf: &mut String, fisher: bool, value: f64, digits: i32) {
     }
 }
 
-/// Load contig lengths from reference .fai index, falling back to BAM header.
-/// Ports print_contigs / print_reference logic and fixes issue #320.
-pub fn load_contigs(
-    reference_path: &str,
-    bam_chrom_lengths: &HashMap<String, usize>,
-) -> Vec<(String, usize)> {
-    let fai_path = format!("{}.fai", reference_path);
+fn load_contigs_from_fai(reference_path: &str) -> Vec<(String, usize)> {
+    if reference_path.is_empty() {
+        return Vec::new();
+    }
+    let fai_path = crate::reference::resolve_fasta_fai_path(std::path::Path::new(reference_path));
+    if let Ok(index) = noodles::fasta::fai::fs::read(&fai_path) {
+        let mut contigs = Vec::with_capacity(index.as_ref().len());
+        for rec in index.as_ref() {
+            if let Ok(len) = usize::try_from(rec.length()) {
+                let name = String::from_utf8_lossy(rec.name()).into_owned();
+                contigs.push((name, len));
+            }
+        }
+        if !contigs.is_empty() {
+            return contigs;
+        }
+    }
     if let Ok(content) = std::fs::read_to_string(&fai_path) {
         let mut contigs = Vec::new();
         for line in content.lines() {
             if line.is_empty() {
                 continue;
             }
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() >= 2 {
-                let name = parts[0].to_string();
-                if let Ok(len) = parts[1].parse::<usize>() {
-                    contigs.push((name, len));
+            let mut parts = line.split_whitespace();
+            if let (Some(name), Some(len_str)) = (parts.next(), parts.next()) {
+                if let Ok(len) = len_str.parse::<usize>() {
+                    contigs.push((name.to_string(), len));
                 }
             }
         }
         if !contigs.is_empty() {
             return contigs;
         }
+    }
+    Vec::new()
+}
+
+/// Load contig lengths from reference .fai index, falling back to BAM header.
+/// Ports print_contigs / print_reference logic and fixes issue #320.
+pub fn load_contigs(
+    reference_path: &str,
+    bam_chrom_lengths: &HashMap<String, usize>,
+) -> Vec<(String, usize)> {
+    let fai_contigs = load_contigs_from_fai(reference_path);
+    if !fai_contigs.is_empty() {
+        return fai_contigs;
     }
 
     // Fallback: use BAM chromosomes lengths, sorted in standard chromosome order.

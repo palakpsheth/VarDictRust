@@ -61,6 +61,12 @@ class TestBiocondaRecipe(unittest.TestCase):
         self.assertIn("CARGO_HOME=", content, "build.sh must explicitly set CARGO_HOME for sandboxing")
         self.assertIn("rm -rf \"$CARGO_HOME\"", content, "build.sh must clean up CARGO_HOME cache")
         self.assertIn("trap 'rm -rf \"$CARGO_HOME\"' EXIT", content, "build.sh must set EXIT cleanup trap")
+        self.assertIn(
+            "CONDA_BUILD_CROSS_COMPILATION",
+            content,
+            "build.sh must guard native completion/manpage generation behind CONDA_BUILD_CROSS_COMPILATION",
+        )
+        self.assertIn("vardictrust.1", content, "build.sh must install manpage vardictrust.1")
 
 
     def test_cargo_manifest_license(self):

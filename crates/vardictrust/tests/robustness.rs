@@ -1,4 +1,4 @@
-//! Process-level CLI smoke and robustness tests (`15` tests).
+//! Process-level CLI smoke and robustness tests (`16` tests).
 //!
 //! Verifies end-to-end binary stream redirection (`--DP ERR` / `--defaultPrinter ERR`),
 //! verbose stderr region debug output (`-y` / `--verbose`), non-zero exit codes on
@@ -4883,4 +4883,999 @@ fn high_min_reads_and_hla_colon_contig_bed_and_region_e2e() {
         bed_vcf, reg_gene_vcf,
         "HLA BED and -R HLA-A*01:01:01:01:1-60:HLA-A outputs must match byte-for-byte"
     );
+}
+
+#[test]
+fn compressed_fasta_bed_companion_index_and_fd_stream_safety_e2e() {
+    use std::io::{BufRead as _, BufReader, Read as _, Write as _};
+
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let root = workspace_root();
+
+    let src_fa = root.join("fixtures/micro/micro.ref.fa");
+    let src_fai = root.join("fixtures/micro/micro.ref.fa.fai");
+    let src_bam = root.join("fixtures/micro/micro.bam");
+    let src_bai = root.join("fixtures/micro/micro.bam.bai");
+    let src_bed = root.join("fixtures/micro/micro.bed");
+
+    let fa_bytes = std::fs::read(&src_fa).expect("read micro.ref.fa");
+    let fai_bytes = std::fs::read(&src_fai).expect("read micro.ref.fa.fai");
+    let bed_bytes = std::fs::read(&src_bed).expect("read micro.bed");
+
+    let plain_fa = dir.path().join("micro.fa");
+    let plain_fai = dir.path().join("micro.fa.fai");
+    let plain_bam = dir.path().join("micro.bam");
+    let plain_bai = dir.path().join("micro.bam.bai");
+    let plain_bed = dir.path().join("micro.bed");
+    std::fs::write(&plain_fa, &fa_bytes).expect("write micro.fa");
+    std::fs::write(&plain_fai, &fai_bytes).expect("write micro.fa.fai");
+    std::fs::copy(&src_bam, &plain_bam).expect("copy micro.bam");
+    std::fs::copy(&src_bai, &plain_bai).expect("copy micro.bam.bai");
+    std::fs::write(&plain_bed, &bed_bytes).expect("write micro.bed");
+
+    let normalize_vcf_ref = |bytes: &[u8]| -> String {
+        String::from_utf8(bytes.to_vec())
+            .expect("UTF-8 VCF")
+            .lines()
+            .map(|l| {
+                if l.starts_with("##reference=") {
+                    "##reference=<NORM>"
+                } else {
+                    l
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    let bed_flags = [
+        "-c",
+        "1",
+        "-S",
+        "2",
+        "-E",
+        "3",
+        "-g",
+        "4",
+        "-z",
+        "--threads=1",
+    ];
+
+    // Baseline uncompressed FASTA + BAM + BED
+    let baseline_out = base_cmd()
+        .arg("-G")
+        .arg(&plain_fa)
+        .arg("-b")
+        .arg(&plain_bam)
+        .args(bed_flags)
+        .arg(&plain_bed)
+        .output()
+        .expect("spawn baseline micro run");
+    assert!(
+        baseline_out.status.success(),
+        "baseline run failed: {}",
+        String::from_utf8_lossy(&baseline_out.stderr)
+    );
+    let baseline_vcf = baseline_out.stdout;
+    let baseline_norm = normalize_vcf_ref(&baseline_vcf);
+
+    // -------------------------------------------------------------------------
+    // 1. BGZF `.fa.gz` + `.fai` + `.gzi` on BAM & CRAM, plain-gzip / hostile `.gzi`,
+    //    extensionless `-G micro_ref`, and `<stem>.fai` (`micro_stem.fasta` + `micro_stem.fai`)
+    // -------------------------------------------------------------------------
+    let bgzf_fa = dir.path().join("micro.fa.gz");
+    let bgzf_fai = dir.path().join("micro.fa.gz.fai");
+    let bgzf_gzi = dir.path().join("micro.fa.gz.gzi");
+    std::fs::write(&bgzf_fai, &fai_bytes).expect("write micro.fa.gz.fai");
+    {
+        let split_upos = 150usize; // split mid-chr1 across 2 BGZF blocks
+        let mut w =
+            noodles::bgzf::io::Writer::new(std::fs::File::create(&bgzf_fa).expect("create .fa.gz"));
+        w.write_all(&fa_bytes[..split_upos]).expect("write block 0");
+        w.flush().expect("flush block 0");
+        let block1_cpos = w.position();
+        w.write_all(&fa_bytes[split_upos..]).expect("write block 1");
+        w.finish().expect("finish .fa.gz");
+        let gzi = noodles::bgzf::gzi::Index::from(vec![(block1_cpos, split_upos as u64)]);
+        noodles::bgzf::gzi::fs::write(&bgzf_gzi, &gzi).expect("write .fa.gz.gzi");
+    }
+
+    let bgzf_bam_out = base_cmd()
+        .arg("-G")
+        .arg(&bgzf_fa)
+        .arg("-b")
+        .arg(&plain_bam)
+        .args(bed_flags)
+        .arg(&plain_bed)
+        .output()
+        .expect("spawn -G micro.fa.gz on BAM");
+    assert!(
+        bgzf_bam_out.status.success(),
+        "-G micro.fa.gz on BAM failed: {}",
+        String::from_utf8_lossy(&bgzf_bam_out.stderr)
+    );
+    assert_eq!(normalize_vcf_ref(&bgzf_bam_out.stdout), baseline_norm);
+
+    // Build indexed `micro.cram` + `micro.cram.crai` from `micro.bam` + `micro.fa`
+    let micro_cram = dir.path().join("micro.cram");
+    {
+        use noodles::core::Position;
+        use noodles::sam::alignment::io::Write as _;
+
+        let fai = noodles::fasta::fai::fs::read(&plain_fai).expect("read fai");
+        let fasta_reader = noodles::fasta::io::IndexedReader::new(
+            std::io::BufReader::new(std::fs::File::open(&plain_fa).expect("open fa")),
+            fai,
+        );
+        let repo = noodles::fasta::Repository::new(
+            noodles::fasta::repository::adapters::IndexedReader::new(fasta_reader),
+        );
+        let mut bam_rdr = noodles::bam::io::reader::Builder
+            .build_from_path(&plain_bam)
+            .expect("open micro.bam");
+        let bam_hdr = bam_rdr.read_header().expect("read bam header");
+        let mut cram_w = noodles::cram::io::writer::Builder::default()
+            .set_reference_sequence_repository(repo)
+            .build_from_path(&micro_cram)
+            .expect("create micro.cram");
+        cram_w
+            .write_alignment_header(&bam_hdr)
+            .expect("write cram header");
+        for rec in bam_rdr.record_bufs(&bam_hdr) {
+            let rec = rec.expect("read bam record");
+            cram_w
+                .write_alignment_record(&bam_hdr, &rec)
+                .expect("write cram record");
+        }
+        cram_w.try_finish(&bam_hdr).expect("finish micro.cram");
+
+        let mut rdr =
+            noodles::cram::io::Reader::new(std::fs::File::open(&micro_cram).expect("open cram"));
+        let _ = rdr.read_header().expect("read cram header");
+        let container_pos = rdr.position().expect("cram container pos");
+        let mut container = noodles::cram::io::reader::Container::default();
+        let container_len = rdr.read_container(&mut container).expect("read container");
+        assert!(container_len > 0);
+        let landmark = container.header().landmarks()[0] as u64;
+        let slice_len = (container_len - container.header().landmarks()[0]) as u64;
+        let crai = vec![
+            noodles::cram::crai::Record::new(
+                Some(0),
+                Position::try_from(1usize).ok(),
+                300,
+                container_pos,
+                landmark,
+                slice_len,
+            ),
+            noodles::cram::crai::Record::new(
+                Some(1),
+                Position::try_from(1usize).ok(),
+                260,
+                container_pos,
+                landmark,
+                slice_len,
+            ),
+        ];
+        noodles::cram::crai::fs::write(micro_cram.with_extension("cram.crai"), &crai)
+            .expect("write micro.cram.crai");
+    }
+
+    let cram_fa_out = base_cmd()
+        .arg("-G")
+        .arg(&plain_fa)
+        .arg("-b")
+        .arg(&micro_cram)
+        .args(bed_flags)
+        .arg(&plain_bed)
+        .output()
+        .expect("spawn -G micro.fa on CRAM");
+    assert!(
+        cram_fa_out.status.success(),
+        "-G micro.fa on CRAM failed: {}",
+        String::from_utf8_lossy(&cram_fa_out.stderr)
+    );
+    let cram_bgzf_out = base_cmd()
+        .arg("-G")
+        .arg(&bgzf_fa)
+        .arg("-b")
+        .arg(&micro_cram)
+        .args(bed_flags)
+        .arg(&plain_bed)
+        .output()
+        .expect("spawn -G micro.fa.gz on CRAM");
+    assert!(
+        cram_bgzf_out.status.success(),
+        "-G micro.fa.gz on CRAM failed: {}",
+        String::from_utf8_lossy(&cram_bgzf_out.stderr)
+    );
+    assert_eq!(
+        normalize_vcf_ref(&cram_bgzf_out.stdout),
+        normalize_vcf_ref(&cram_fa_out.stdout)
+    );
+
+    // Plain-gzip `.fa.gz` and hostile `[0xff; 8]` `.gzi` fail cleanly with actionable messages
+    let plain_gz_fa = dir.path().join("plain_gzip.fa.gz");
+    {
+        let mut gz = flate2::write::GzEncoder::new(
+            std::fs::File::create(&plain_gz_fa).expect("create plain_gzip.fa.gz"),
+            flate2::Compression::default(),
+        );
+        gz.write_all(&fa_bytes).expect("write plain gzip fa");
+        gz.finish().expect("finish plain gzip fa");
+    }
+    std::fs::write(dir.path().join("plain_gzip.fa.gz.fai"), &fai_bytes).expect("write fai");
+    let plain_gz_run = base_cmd()
+        .arg("-G")
+        .arg(&plain_gz_fa)
+        .arg("-b")
+        .arg(&plain_bam)
+        .args(bed_flags)
+        .arg(&plain_bed)
+        .output()
+        .expect("spawn plain gzip .fa.gz");
+    assert!(!plain_gz_run.status.success());
+    assert_ne!(plain_gz_run.status.code(), Some(101));
+    #[cfg(unix)]
+    assert_eq!(plain_gz_run.status.signal(), None);
+    let plain_gz_err = String::from_utf8_lossy(&plain_gz_run.stderr);
+    assert!(
+        plain_gz_err.contains("bgzip") && plain_gz_err.contains("samtools faidx"),
+        "expected bgzip & samtools faidx hint, got: {plain_gz_err}"
+    );
+
+    let hostile_fa = dir.path().join("hostile.fa.gz");
+    std::fs::copy(&bgzf_fa, &hostile_fa).expect("copy hostile.fa.gz");
+    std::fs::write(dir.path().join("hostile.fa.gz.fai"), &fai_bytes).expect("write hostile fai");
+    std::fs::write(dir.path().join("hostile.fa.gz.gzi"), [0xffu8; 8]).expect("write hostile gzi");
+    let hostile_run = base_cmd()
+        .arg("-G")
+        .arg(&hostile_fa)
+        .arg("-b")
+        .arg(&plain_bam)
+        .args(bed_flags)
+        .arg(&plain_bed)
+        .output()
+        .expect("spawn hostile .gzi");
+    assert!(!hostile_run.status.success());
+    assert_ne!(hostile_run.status.code(), Some(101));
+    #[cfg(unix)]
+    assert_eq!(hostile_run.status.signal(), None);
+    let hostile_err = String::from_utf8_lossy(&hostile_run.stderr);
+    assert!(
+        hostile_err.contains(".gzi") || hostile_err.contains("samtools faidx"),
+        "expected actionable .gzi error, got: {hostile_err}"
+    );
+
+    // Extensionless `-G micro_ref` (`micro_ref.fai`) + `<stem>.fai` (`micro_stem.fasta` + `micro_stem.fai`)
+    let extless_fa = dir.path().join("micro_ref");
+    let extless_fai = dir.path().join("micro_ref.fai");
+    std::fs::write(&extless_fa, &fa_bytes).expect("write micro_ref");
+    std::fs::write(&extless_fai, &fai_bytes).expect("write micro_ref.fai");
+    let extless_run = base_cmd()
+        .arg("-G")
+        .arg(&extless_fa)
+        .arg("-b")
+        .arg(&plain_bam)
+        .args(bed_flags)
+        .arg(&plain_bed)
+        .output()
+        .expect("spawn extensionless -G micro_ref");
+    assert!(
+        extless_run.status.success(),
+        "extensionless -G micro_ref failed: {}",
+        String::from_utf8_lossy(&extless_run.stderr)
+    );
+    assert_eq!(normalize_vcf_ref(&extless_run.stdout), baseline_norm);
+
+    let stem_fa = dir.path().join("micro_stem.fasta");
+    let stem_fai = dir.path().join("micro_stem.fai");
+    let mut stem_fa_bytes = fa_bytes.clone();
+    let extra_offset = stem_fa_bytes.len();
+    stem_fa_bytes.extend_from_slice(b">chr_extra\nACGTACGTAC\n");
+    let mut stem_fai_bytes = fai_bytes.clone();
+    stem_fai_bytes
+        .extend_from_slice(format!("chr_extra\t10\t{}\t10\t11\n", extra_offset + 11).as_bytes());
+    std::fs::write(&stem_fa, &stem_fa_bytes).expect("write micro_stem.fasta");
+    std::fs::write(&stem_fai, &stem_fai_bytes).expect("write micro_stem.fai");
+    let stem_run = base_cmd()
+        .arg("-G")
+        .arg(&stem_fa)
+        .arg("-b")
+        .arg(&plain_bam)
+        .args(bed_flags)
+        .arg(&plain_bed)
+        .output()
+        .expect("spawn <stem>.fai -G micro_stem.fasta");
+    assert!(
+        stem_run.status.success(),
+        "<stem>.fai run failed: {}",
+        String::from_utf8_lossy(&stem_run.stderr)
+    );
+    let stem_vcf = String::from_utf8_lossy(&stem_run.stdout);
+    assert!(
+        stem_vcf.contains("##contig=<ID=chr1,length=300>")
+            && stem_vcf.contains("##contig=<ID=chr2,length=260>")
+            && stem_vcf.contains("##contig=<ID=chr_extra,length=10>"),
+        "expected ##contig headers from micro_stem.fai (including chr_extra), got:\n{stem_vcf}"
+    );
+
+    // -------------------------------------------------------------------------
+    // 2. `.bed.gz`, `.bed.bgz`, UTF-8 BOM + `\r\r\n` BED, and Unix FIFO BED without `-a`
+    // -------------------------------------------------------------------------
+    let bed_gz = dir.path().join("micro.bed.gz");
+    {
+        let mut gz = flate2::write::GzEncoder::new(
+            std::fs::File::create(&bed_gz).expect("create micro.bed.gz"),
+            flate2::Compression::default(),
+        );
+        gz.write_all(&bed_bytes).expect("write bed.gz");
+        gz.finish().expect("finish bed.gz");
+    }
+    let bed_bgz = dir.path().join("micro.bed.bgz");
+    {
+        let mut bgz = noodles::bgzf::io::Writer::new(
+            std::fs::File::create(&bed_bgz).expect("create bed.bgz"),
+        );
+        bgz.write_all(&bed_bytes).expect("write bed.bgz");
+        bgz.finish().expect("finish bed.bgz");
+    }
+    let bed_bom_crlf = dir.path().join("micro_bom_crlf.bed");
+    {
+        let text = String::from_utf8(bed_bytes.clone()).expect("UTF-8 bed");
+        let crlf_body = text
+            .lines()
+            .map(|l| format!("{l}\r\r\n"))
+            .collect::<String>();
+        let mut raw = vec![0xEF, 0xBB, 0xBF];
+        raw.extend_from_slice(crlf_body.as_bytes());
+        std::fs::write(&bed_bom_crlf, raw).expect("write bom+crlf bed");
+    }
+    for (label, bed_arg) in [
+        ("bed.gz", &bed_gz),
+        ("bed.bgz", &bed_bgz),
+        ("bom_crlf.bed", &bed_bom_crlf),
+    ] {
+        let out = base_cmd()
+            .arg("-G")
+            .arg(&plain_fa)
+            .arg("-b")
+            .arg(&plain_bam)
+            .args(bed_flags)
+            .arg(bed_arg)
+            .output()
+            .unwrap_or_else(|e| panic!("spawn {label}: {e}"));
+        assert!(
+            out.status.success(),
+            "{label} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(out.stdout, baseline_vcf, "{label} output mismatch");
+    }
+
+    #[cfg(unix)]
+    {
+        let fifo_bed = dir.path().join("micro_fifo.bed");
+        let mkfifo_status = Command::new("mkfifo")
+            .arg(&fifo_bed)
+            .status()
+            .expect("run mkfifo");
+        assert!(mkfifo_status.success(), "mkfifo failed");
+
+        let fifo_clone = fifo_bed.clone();
+        let fifo_payload = bed_bytes.clone();
+        let writer_handle = std::thread::spawn(move || {
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .open(&fifo_clone)
+                .expect("open FIFO for writing");
+            f.write_all(&fifo_payload).expect("write BED to FIFO");
+        });
+
+        let fifo_out = base_cmd()
+            .arg("-G")
+            .arg(&plain_fa)
+            .arg("-b")
+            .arg(&plain_bam)
+            .args(bed_flags) // no `-a`: triggers amplicon auto-detection + BED parsing!
+            .arg(&fifo_bed)
+            .output()
+            .expect("spawn FIFO BED run");
+        writer_handle.join().expect("join FIFO writer thread");
+        assert!(
+            fifo_out.status.success(),
+            "FIFO BED run failed: {}",
+            String::from_utf8_lossy(&fifo_out.stderr)
+        );
+        assert_eq!(
+            fifo_out.stdout, baseline_vcf,
+            "FIFO BED must not drain to 0 regions and must match micro.bed byte-for-byte"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // 3. Picard `<stem>.bai` (`sample.bam` + `sample.bai`) and symlinked `link.bam -> ../real/micro.bam`
+    // -------------------------------------------------------------------------
+    let picard_dir = dir.path().join("picard");
+    std::fs::create_dir_all(&picard_dir).expect("mkdir picard");
+    let picard_bam = picard_dir.join("sample.bam");
+    let picard_bai = picard_dir.join("sample.bai");
+    std::fs::copy(&src_bam, &picard_bam).expect("copy sample.bam");
+    std::fs::copy(&src_bai, &picard_bai).expect("copy sample.bai");
+    let picard_out = base_cmd()
+        .arg("-G")
+        .arg(&plain_fa)
+        .arg("-b")
+        .arg(&picard_bam)
+        .args(["-N", "micro"])
+        .args(bed_flags)
+        .arg(&plain_bed)
+        .output()
+        .expect("spawn Picard sample.bai run");
+    assert!(
+        picard_out.status.success(),
+        "Picard sample.bai run failed: {}",
+        String::from_utf8_lossy(&picard_out.stderr)
+    );
+    assert_eq!(
+        normalize_vcf_ref(&picard_out.stdout),
+        baseline_norm,
+        "Picard sample.bai output mismatch"
+    );
+
+    #[cfg(unix)]
+    {
+        let real_dir = dir.path().join("real");
+        let work_dir = dir.path().join("work");
+        std::fs::create_dir_all(&real_dir).expect("mkdir real");
+        std::fs::create_dir_all(&work_dir).expect("mkdir work");
+        let real_bam = real_dir.join("micro.bam");
+        let real_bai = real_dir.join("micro.bam.bai");
+        std::fs::copy(&src_bam, &real_bam).expect("copy real/micro.bam");
+        std::fs::copy(&src_bai, &real_bai).expect("copy real/micro.bam.bai");
+        let link_bam = work_dir.join("link.bam");
+        std::os::unix::fs::symlink(Path::new("../real/micro.bam"), &link_bam)
+            .expect("symlink link.bam");
+
+        let link_out = base_cmd()
+            .arg("-G")
+            .arg(&plain_fa)
+            .arg("-b")
+            .arg(&link_bam)
+            .args(["-N", "micro"])
+            .args(bed_flags)
+            .arg(&plain_bed)
+            .output()
+            .expect("spawn symlinked link.bam run");
+        assert!(
+            link_out.status.success(),
+            "symlinked link.bam run failed: {}",
+            String::from_utf8_lossy(&link_out.stderr)
+        );
+        assert_eq!(
+            normalize_vcf_ref(&link_out.stdout),
+            baseline_norm,
+            "symlinked link.bam output mismatch"
+        );
+
+        // Collision guard protects canonical symlink companion index (`real/micro.bam.bai`) & Picard `<stem>.bai`
+        let bai_snapshot = std::fs::read(&real_bai).expect("read real_bai");
+        let col_sym_bai = base_cmd()
+            .arg("-G")
+            .arg(&plain_fa)
+            .arg("-b")
+            .arg(&link_bam)
+            .args(bed_flags)
+            .arg(&plain_bed)
+            .arg("--output")
+            .arg(&real_bai)
+            .output()
+            .expect("spawn collision against symlink target .bai");
+        assert!(!col_sym_bai.status.success());
+        assert_eq!(
+            std::fs::read(&real_bai).expect("read real_bai after"),
+            bai_snapshot
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // 4. `--output -`, `--stats-json -`, `/dev/fd/3`, `/dev/stdout` (incl. `>>`),
+    //    symlink `out.vcf -> /dev/stdout`, `/dev/null` exemption, direct FD 1/2 collisions,
+    //    and `.var.gz` / `-i .tsv.gz` BGZF parity
+    // -------------------------------------------------------------------------
+    for extra_flags in [&[][..], &["--DP", "ERR"][..]] {
+        let dash_out = base_cmd()
+            .arg("-G")
+            .arg(&plain_fa)
+            .arg("-b")
+            .arg(&plain_bam)
+            .args(bed_flags)
+            .args(extra_flags)
+            .args(["--output", "-"])
+            .arg(&plain_bed)
+            .output()
+            .expect("spawn --output -");
+        assert!(
+            dash_out.status.success(),
+            "--output - ({extra_flags:?}) failed: {}",
+            String::from_utf8_lossy(&dash_out.stderr)
+        );
+        assert_eq!(dash_out.stdout, baseline_vcf);
+        assert!(
+            dash_out.stderr.is_empty(),
+            "--output - ({extra_flags:?}) must write to stdout, not stderr"
+        );
+        assert!(
+            !dir.path().join("-").exists() && !workspace_root().join("-").exists(),
+            "--output - must never create a literal '-' file"
+        );
+    }
+
+    // `--output -` exits 0 on BrokenPipe while still writing `--stats-json`
+    let repeated_bed = dir.path().join("repeated_dash.bed");
+    let mut rep_text = String::new();
+    for i in 0..20 {
+        rep_text.push_str(&format!(
+            "chr1\t40\t260\tmicro_chr1_{i}\nchr2\t20\t250\tmicro_chr2_{i}\n"
+        ));
+    }
+    std::fs::write(&repeated_bed, &rep_text).expect("write repeated_dash.bed");
+    let dash_stats = dir.path().join("dash_epipe_stats.json");
+    let mut dash_child = base_cmd()
+        .arg("-G")
+        .arg(&plain_fa)
+        .arg("-b")
+        .arg(&plain_bam)
+        .args([
+            "-c", "1", "-S", "2", "-E", "3", "-g", "4", "-z", "-p", "-th", "4", "--output", "-",
+        ])
+        .arg("--stats-json")
+        .arg(&dash_stats)
+        .arg(&repeated_bed)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn --output - BrokenPipe");
+    {
+        let out_pipe = dash_child.stdout.take().expect("dash_child stdout");
+        let mut rdr = BufReader::new(out_pipe);
+        let mut first = String::new();
+        let n = rdr.read_line(&mut first).expect("read first line");
+        assert!(n > 0 && first.starts_with("##fileformat=VCF"));
+    }
+    let dash_status = dash_child.wait().expect("wait dash_child");
+    assert!(
+        dash_status.success(),
+        "--output - must exit 0 on BrokenPipe, got {dash_status:?}"
+    );
+    #[cfg(unix)]
+    assert_eq!(dash_status.signal(), None);
+    let dash_stats_str = std::fs::read_to_string(&dash_stats).expect("read dash_epipe_stats.json");
+    assert!(dash_stats_str.contains("\"regions_count\": 40"));
+
+    // `--stats-json -` is rejected cleanly
+    let stats_dash = base_cmd()
+        .arg("-G")
+        .arg(&plain_fa)
+        .arg("-b")
+        .arg(&plain_bam)
+        .args(bed_flags)
+        .args(["--stats-json", "-"])
+        .arg(&plain_bed)
+        .output()
+        .expect("spawn --stats-json -");
+    assert!(!stats_dash.status.success());
+    assert_ne!(stats_dash.status.code(), Some(101));
+
+    #[cfg(unix)]
+    {
+        let bin = env!("CARGO_BIN_EXE_vardictrust");
+
+        // `--output /dev/fd/3` (FD 3 -> regular file)
+        let fd3_dir = dir.path().join("fd3_case");
+        std::fs::create_dir_all(&fd3_dir).expect("mkdir fd3_case");
+        let fd3_file = fd3_dir.join("fd3_target.vcf");
+        let fd3_run = Command::new("sh")
+            .arg("-c")
+            .arg("exec 3>\"$1\"; shift; exec \"$@\"")
+            .arg("sh")
+            .arg(&fd3_file)
+            .arg(bin)
+            .arg("-G")
+            .arg(&plain_fa)
+            .arg("-b")
+            .arg(&plain_bam)
+            .args(bed_flags)
+            .args(["--output", "/dev/fd/3"])
+            .arg(&plain_bed)
+            .output()
+            .expect("spawn --output /dev/fd/3");
+        assert!(
+            fd3_run.status.success(),
+            "--output /dev/fd/3 failed: {}",
+            String::from_utf8_lossy(&fd3_run.stderr)
+        );
+        assert_eq!(
+            std::fs::read(&fd3_file).expect("read fd3_file"),
+            baseline_vcf
+        );
+
+        // `--output /dev/stdout` under `>>` append (`O_APPEND` on FD 1 -> regular file)
+        let append_file = dir.path().join("append_dev_stdout.vcf");
+        let pre_banner = b"#PRE_EXISTING_BANNER\n";
+        std::fs::write(&append_file, pre_banner).expect("seed append_file");
+        let append_fd = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&append_file)
+            .expect("open append_file O_APPEND");
+        let dev_stdout_run = base_cmd()
+            .arg("-G")
+            .arg(&plain_fa)
+            .arg("-b")
+            .arg(&plain_bam)
+            .args(bed_flags)
+            .args(["--output", "/dev/stdout"])
+            .arg(&plain_bed)
+            .stdout(Stdio::from(append_fd))
+            .output()
+            .expect("spawn --output /dev/stdout with O_APPEND");
+        assert!(
+            dev_stdout_run.status.success(),
+            "--output /dev/stdout failed: {}",
+            String::from_utf8_lossy(&dev_stdout_run.stderr)
+        );
+        let mut expected_append = pre_banner.to_vec();
+        expected_append.extend_from_slice(&baseline_vcf);
+        assert_eq!(
+            std::fs::read(&append_file).expect("read append_file"),
+            expected_append,
+            "--output /dev/stdout under O_APPEND must preserve pre-existing bytes"
+        );
+
+        // Symlink `out.vcf -> /dev/stdout` writes directly without creating `.tmp` or unlinking symlink
+        let sym_dir = dir.path().join("sym_stdout_dir");
+        std::fs::create_dir_all(&sym_dir).expect("mkdir sym_stdout_dir");
+        let sym_out = sym_dir.join("out.vcf");
+        std::os::unix::fs::symlink("/dev/stdout", &sym_out)
+            .expect("symlink out.vcf -> /dev/stdout");
+        let sym_backing = dir.path().join("sym_backing.vcf");
+        let sym_fd = std::fs::File::create(&sym_backing).expect("create sym_backing.vcf");
+        let sym_run = base_cmd()
+            .arg("-G")
+            .arg(&plain_fa)
+            .arg("-b")
+            .arg(&plain_bam)
+            .args(bed_flags)
+            .arg("--output")
+            .arg(&sym_out)
+            .arg(&plain_bed)
+            .stdout(Stdio::from(sym_fd))
+            .output()
+            .expect("spawn symlink out.vcf -> /dev/stdout");
+        assert!(
+            sym_run.status.success(),
+            "symlink out.vcf -> /dev/stdout failed: {}",
+            String::from_utf8_lossy(&sym_run.stderr)
+        );
+        assert!(
+            std::fs::symlink_metadata(&sym_out)
+                .expect("lstat sym_out")
+                .file_type()
+                .is_symlink(),
+            "out.vcf -> /dev/stdout symlink must not be unlinked or replaced"
+        );
+        let sym_entries: Vec<_> = std::fs::read_dir(&sym_dir)
+            .expect("read sym_dir")
+            .map(|e| e.expect("entry").file_name())
+            .collect();
+        assert_eq!(
+            sym_entries,
+            vec![std::ffi::OsString::from("out.vcf")],
+            "sym_dir must not contain any .tmp staging residue: {sym_entries:?}"
+        );
+        assert_eq!(
+            std::fs::read(&sym_backing).expect("read sym_backing"),
+            baseline_vcf
+        );
+
+        // `--output /dev/null --stats-json /dev/null` succeeds (`AR-5`), while `/dev/stdout` pair collision fails
+        let dev_null_ok = base_cmd()
+            .arg("-G")
+            .arg(&plain_fa)
+            .arg("-b")
+            .arg(&plain_bam)
+            .args(bed_flags)
+            .args(["--output", "/dev/null", "--stats-json", "/dev/null"])
+            .arg(&plain_bed)
+            .output()
+            .expect("spawn /dev/null pair");
+        assert!(
+            dev_null_ok.status.success(),
+            "/dev/null pair failed: {}",
+            String::from_utf8_lossy(&dev_null_ok.stderr)
+        );
+
+        let pair_col_backing = dir.path().join("pair_col_backing.txt");
+        let pair_fd = std::fs::File::create(&pair_col_backing).expect("create pair_col_backing");
+        let dev_stdout_col = base_cmd()
+            .arg("-G")
+            .arg(&plain_fa)
+            .arg("-b")
+            .arg(&plain_bam)
+            .args(bed_flags)
+            .args(["--output", "/dev/stdout", "--stats-json", "/dev/stdout"])
+            .arg(&plain_bed)
+            .stdout(Stdio::from(pair_fd))
+            .output()
+            .expect("spawn /dev/stdout pair collision");
+        assert!(
+            !dev_stdout_col.status.success(),
+            "--output /dev/stdout --stats-json /dev/stdout must be rejected"
+        );
+
+        // Attaching FD 1 directly onto `copy.bed` via `Stdio::from(OpenOptions::new().write(true).open(&copy_bed)?)` (no shell `>`, AR-16)
+        let copy_bed = dir.path().join("copy.bed");
+        std::fs::write(&copy_bed, &bed_bytes).expect("write copy.bed");
+        let bed_fd1 = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&copy_bed)
+            .expect("open copy.bed without truncate");
+        let fd1_bed_col = base_cmd()
+            .arg("-G")
+            .arg(&plain_fa)
+            .arg("-b")
+            .arg(&plain_bam)
+            .args(bed_flags)
+            .arg(&copy_bed)
+            .stdout(Stdio::from(bed_fd1))
+            .output()
+            .expect("spawn FD 1 -> copy.bed collision");
+        assert!(
+            !fd1_bed_col.status.success(),
+            "FD 1 -> copy.bed must fail fast"
+        );
+        assert_eq!(
+            std::fs::read(&copy_bed).expect("read copy.bed after FD 1 collision"),
+            bed_bytes,
+            "copy.bed must not be truncated or overwritten when FD 1 points to it"
+        );
+
+        // Attaching FD 1 onto `--stats-json same.out` (and FD 2 under `-h --DP ERR`) fails fast without overwriting
+        let same_out = dir.path().join("same.out");
+        let sentinel = b"SENTINEL_VCF_CONTENT_UNTOUCHED\n";
+        std::fs::write(&same_out, sentinel).expect("write same.out");
+        let same_fd1 = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&same_out)
+            .expect("open same.out for FD 1");
+        let fd1_stats_col = base_cmd()
+            .arg("-G")
+            .arg(&plain_fa)
+            .arg("-b")
+            .arg(&plain_bam)
+            .args(bed_flags)
+            .arg("--stats-json")
+            .arg(&same_out)
+            .arg(&plain_bed)
+            .stdout(Stdio::from(same_fd1))
+            .output()
+            .expect("spawn FD 1 -> stats-json collision");
+        assert!(
+            !fd1_stats_col.status.success(),
+            "FD 1 -> --stats-json same.out must fail fast"
+        );
+        assert_eq!(
+            std::fs::read(&same_out).expect("read same.out after FD 1 collision"),
+            sentinel
+        );
+
+        // Under `-h --DP ERR`, BOTH FD 1 (column header) and FD 2 (variant rows) are active:
+        // 1) FD 1 -> `--stats-json same.out` fails fast leaving `same.out` byte-for-byte untouched
+        let same_fd1_hdr = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&same_out)
+            .expect("open same.out for FD 1 under -h --DP ERR");
+        let fd1_hdr_col = base_cmd()
+            .arg("-G")
+            .arg(&plain_fa)
+            .arg("-b")
+            .arg(&plain_bam)
+            .args(bed_flags)
+            .args(["-h", "--DP", "ERR", "--stats-json"])
+            .arg(&same_out)
+            .arg(&plain_bed)
+            .stdout(Stdio::from(same_fd1_hdr))
+            .output()
+            .expect("spawn -h --DP ERR FD 1 -> stats-json collision");
+        assert!(
+            !fd1_hdr_col.status.success(),
+            "FD 1 under -h --DP ERR -> --stats-json same.out must fail fast"
+        );
+        assert_eq!(
+            std::fs::read(&same_out).expect("read same.out after -h --DP ERR FD 1 collision"),
+            sentinel
+        );
+
+        // 2) FD 2 -> `--stats-json same_fd2.out` fails fast without truncating or writing VCF/JSON
+        let same_fd2_path = dir.path().join("same_fd2.out");
+        std::fs::write(&same_fd2_path, sentinel).expect("write same_fd2.out");
+        let same_fd2 = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&same_fd2_path)
+            .expect("open same_fd2.out for FD 2");
+        let fd2_hdr_col = base_cmd()
+            .arg("-G")
+            .arg(&plain_fa)
+            .arg("-b")
+            .arg(&plain_bam)
+            .args(bed_flags)
+            .args(["-h", "--DP", "ERR", "--stats-json"])
+            .arg(&same_fd2_path)
+            .arg(&plain_bed)
+            .stderr(Stdio::from(same_fd2))
+            .output()
+            .expect("spawn -h --DP ERR FD 2 -> stats-json collision");
+        assert!(
+            !fd2_hdr_col.status.success(),
+            "FD 2 under -h --DP ERR -> --stats-json same_fd2.out must fail fast"
+        );
+        let same_fd2_after =
+            String::from_utf8(std::fs::read(&same_fd2_path).expect("read same_fd2.out"))
+                .expect("UTF-8 same_fd2.out");
+        assert!(
+            same_fd2_after.starts_with("SENTINEL_VCF_CONTENT_UNTOUCHED\n")
+                && same_fd2_after.contains("stderr (--DP ERR) and --stats-json")
+                && !same_fd2_after.contains("\"mode\"")
+                && !same_fd2_after.contains("#CHROM"),
+            "unexpected same_fd2.out contents: {same_fd2_after}"
+        );
+    }
+
+    // `--output out.var.gz --emit-intermediate` and `--output splice.tsv.gz -i` decompress byte-identically to stdout
+    let stdout_var = base_cmd()
+        .arg("-G")
+        .arg(&plain_fa)
+        .arg("-b")
+        .arg(&plain_bam)
+        .args(bed_flags)
+        .arg("--emit-intermediate")
+        .arg(&plain_bed)
+        .output()
+        .expect("spawn stdout --emit-intermediate");
+    assert!(stdout_var.status.success());
+    let out_var_gz = dir.path().join("out.var.gz");
+    let file_var = base_cmd()
+        .arg("-G")
+        .arg(&plain_fa)
+        .arg("-b")
+        .arg(&plain_bam)
+        .args(bed_flags)
+        .arg("--emit-intermediate")
+        .arg("--output")
+        .arg(&out_var_gz)
+        .arg(&plain_bed)
+        .output()
+        .expect("spawn --output out.var.gz --emit-intermediate");
+    assert!(
+        file_var.status.success(),
+        "--output out.var.gz failed: {}",
+        String::from_utf8_lossy(&file_var.stderr)
+    );
+    let mut decomp_var = Vec::new();
+    noodles::bgzf::io::Reader::new(std::fs::File::open(&out_var_gz).expect("open out.var.gz"))
+        .read_to_end(&mut decomp_var)
+        .expect("BGZF-decompress out.var.gz");
+    assert_eq!(decomp_var, stdout_var.stdout);
+
+    let stdout_splice = base_cmd()
+        .arg("-G")
+        .arg(&plain_fa)
+        .arg("-b")
+        .arg(&plain_bam)
+        .args(bed_flags)
+        .arg("-i")
+        .arg(&plain_bed)
+        .output()
+        .expect("spawn stdout -i");
+    assert!(stdout_splice.status.success());
+    let out_splice_gz = dir.path().join("splice.tsv.gz");
+    let file_splice = base_cmd()
+        .arg("-G")
+        .arg(&plain_fa)
+        .arg("-b")
+        .arg(&plain_bam)
+        .args(bed_flags)
+        .arg("-i")
+        .arg("--output")
+        .arg(&out_splice_gz)
+        .arg(&plain_bed)
+        .output()
+        .expect("spawn --output splice.tsv.gz -i");
+    assert!(
+        file_splice.status.success(),
+        "--output splice.tsv.gz -i failed: {}",
+        String::from_utf8_lossy(&file_splice.stderr)
+    );
+    let mut decomp_splice = Vec::new();
+    noodles::bgzf::io::Reader::new(
+        std::fs::File::open(&out_splice_gz).expect("open splice.tsv.gz"),
+    )
+    .read_to_end(&mut decomp_splice)
+    .expect("BGZF-decompress splice.tsv.gz");
+    assert_eq!(decomp_splice, stdout_splice.stdout);
+
+    // -------------------------------------------------------------------------
+    // 5. `--completions {bash,zsh,fish}` and `--manpage` without `-G`/`-b`, BrokenPipe, and `-completions`/`-manpage` rejection
+    // -------------------------------------------------------------------------
+    for shell in ["bash", "zsh", "fish"] {
+        let comp = base_cmd()
+            .args(["--completions", shell])
+            .output()
+            .unwrap_or_else(|e| panic!("spawn --completions {shell}: {e}"));
+        assert!(
+            comp.status.success(),
+            "--completions {shell} must exit 0 without -G/-b: {}",
+            String::from_utf8_lossy(&comp.stderr)
+        );
+        assert!(
+            !comp.stdout.is_empty(),
+            "--completions {shell} stdout must be non-empty"
+        );
+        if shell == "bash" {
+            let bash_script = dir.path().join("vardictrust.bash");
+            std::fs::write(&bash_script, &comp.stdout).expect("write vardictrust.bash");
+            let bash_check = Command::new("bash")
+                .arg("-n")
+                .arg(&bash_script)
+                .output()
+                .expect("run bash -n");
+            assert!(
+                bash_check.status.success(),
+                "bash -n rejected completion script: {}",
+                String::from_utf8_lossy(&bash_check.stderr)
+            );
+        }
+    }
+
+    let man_out = base_cmd()
+        .arg("--manpage")
+        .output()
+        .expect("spawn --manpage");
+    assert!(
+        man_out.status.success(),
+        "--manpage must exit 0 without -G/-b: {}",
+        String::from_utf8_lossy(&man_out.stderr)
+    );
+    let man_str = String::from_utf8_lossy(&man_out.stdout);
+    assert!(
+        man_str.contains(".TH ") && man_str.contains("vardictrust"),
+        "expected roff manpage output, got:\n{man_str}"
+    );
+
+    // BrokenPipe on `--manpage` and `--completions bash` exits 0
+    for util_args in [&["--manpage"][..], &["--completions", "bash"][..]] {
+        let mut child = base_cmd()
+            .args(util_args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn utility BrokenPipe");
+        drop(child.stdout.take());
+        let st = child.wait().expect("wait utility BrokenPipe");
+        assert!(
+            st.success(),
+            "{util_args:?} must exit 0 on BrokenPipe, got {st:?}"
+        );
+        #[cfg(unix)]
+        assert_eq!(st.signal(), None);
+    }
+
+    // Single-dash `-completions` and `-manpage` are rejected cleanly
+    for bad_flag in [&["-completions", "bash"][..], &["-manpage"][..]] {
+        let bad = base_cmd()
+            .args(bad_flag)
+            .output()
+            .expect("spawn single-dash utility flag");
+        assert!(!bad.status.success(), "{bad_flag:?} must exit non-zero");
+        assert_ne!(bad.status.code(), Some(101));
+    }
 }

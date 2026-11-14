@@ -6,7 +6,6 @@
 use clap::Parser;
 
 #[path = "completions_man.rs"]
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod completions_man;
 
 /// Shell target for `--completions <SHELL>`.
