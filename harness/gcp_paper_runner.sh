@@ -4028,13 +4028,12 @@ if ! command -v git >/dev/null || ! command -v gsutil >/dev/null || ! command -v
   sudo apt-get update -qq
   sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git curl unzip build-essential cmake pkg-config zlib1g-dev libbz2-dev liblzma-dev libcurl4-openssl-dev libssl-dev time util-linux
 fi
-install_miniconda() {
-  local mc_sh
+install_miniconda() (
   mc_sh=\"\$(mktemp \"\${TMPDIR:-/tmp}/miniconda.XXXXXX\")\"
-  trap 'rm -f \"\${mc_sh:-}\"' RETURN
+  trap 'rm -f \"\${mc_sh:-}\"' EXIT
   curl --proto '=https' --tlsv1.2 -sSLf https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -o \"\$mc_sh\"
   bash \"\$mc_sh\" -b -p \"\$HOME/miniconda3\"
-}
+)
 if [ ! -d \"\$HOME/miniconda3\" ]; then
   install_miniconda
 fi
