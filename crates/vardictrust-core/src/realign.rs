@@ -5,9 +5,8 @@ use crate::types::{Pos0, Pos1};
 use crate::variations::{
     get_variation, get_variation_maybe, get_variation_maybe_mut, Sclip, Variation, VariationMap,
 };
-use regex::Regex;
 use std::collections::BTreeMap;
-use std::sync::{Arc, LazyLock, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 /// Result of local insertion adjustment.
 pub struct BaseInsertion {
@@ -880,6 +879,88 @@ pub fn fill_adaptor_maps(adaptor_seqs: &[String]) -> AdaptorMapPair {
     built
 }
 
+#[derive(Clone, Debug, Default)]
+pub(crate) struct AdaptorSet(Option<Arc<rustc_hash::FxHashSet<[u8; 6]>>>);
+
+impl AdaptorSet {
+    #[inline]
+    pub(crate) fn contains_seed(&self, seed: &[u8; 6]) -> bool {
+        self.0.as_ref().is_some_and(|set| set.contains(seed))
+    }
+}
+
+type AdaptorSetPair = (AdaptorSet, AdaptorSet);
+
+static ADAPTOR_SET_CACHE: OnceLock<Mutex<rustc_hash::FxHashMap<Vec<String>, AdaptorSetPair>>> =
+    OnceLock::new();
+
+fn adaptor_set_cache() -> &'static Mutex<rustc_hash::FxHashMap<Vec<String>, AdaptorSetPair>> {
+    ADAPTOR_SET_CACHE.get_or_init(|| Mutex::new(rustc_hash::FxHashMap::default()))
+}
+
+pub(crate) fn fill_adaptor_sets(adaptor_seqs: &[String]) -> AdaptorSetPair {
+    if adaptor_seqs.is_empty() {
+        return (AdaptorSet::default(), AdaptorSet::default());
+    }
+    let hit = match adaptor_set_cache().lock() {
+        Ok(cache) => cache.get(adaptor_seqs).cloned(),
+        Err(_) => None,
+    };
+    if let Some(pair) = hit {
+        return pair;
+    }
+    let mut adaptor_forward = rustc_hash::FxHashSet::default();
+    let mut adaptor_reverse = rustc_hash::FxHashSet::default();
+    let adseed = 6;
+    for sequence in adaptor_seqs {
+        let seq_bytes = sequence.as_bytes();
+        for i in 0..=6 {
+            if i + adseed >= seq_bytes.len() {
+                break;
+            }
+            let Some(slice) = seq_bytes.get(i..i + adseed) else {
+                break;
+            };
+            let mut forward_seed = [0u8; 6];
+            forward_seed.copy_from_slice(slice);
+            let mut comp_reverse_seed = [0u8; 6];
+            for (dst, &b) in comp_reverse_seed.iter_mut().zip(forward_seed.iter().rev()) {
+                *dst = match b {
+                    b'A' => b'T',
+                    b'C' => b'G',
+                    b'G' => b'C',
+                    b'T' => b'A',
+                    b'a' => b't',
+                    b'c' => b'g',
+                    b'g' => b'c',
+                    b't' => b'a',
+                    other => other,
+                };
+            }
+            adaptor_forward.insert(forward_seed);
+            adaptor_reverse.insert(comp_reverse_seed);
+        }
+    }
+    let built = (
+        if adaptor_forward.is_empty() {
+            AdaptorSet(None)
+        } else {
+            AdaptorSet(Some(Arc::new(adaptor_forward)))
+        },
+        if adaptor_reverse.is_empty() {
+            AdaptorSet(None)
+        } else {
+            AdaptorSet(Some(Arc::new(adaptor_reverse)))
+        },
+    );
+    if let Ok(mut cache) = adaptor_set_cache().lock() {
+        if cache.len() < 16 {
+            cache.insert(adaptor_seqs.to_vec(), built.clone());
+        }
+    }
+    built
+}
+
 #[cfg(test)]
 mod task3_tests {
     use super::*;
@@ -914,6 +995,16 @@ mod task3_tests {
         // skips the cache; the empty key must never collide with a fill).
         let empty_after = fill_adaptor_maps(&[]);
         assert!(empty_after.0.is_empty() && empty_after.1.is_empty());
+
+        let empty_sets = fill_adaptor_sets(&[]);
+        assert!(!empty_sets.0.contains_seed(b"ACGTAC"));
+        let sa1 = fill_adaptor_sets(&a);
+        let sa2 = fill_adaptor_sets(&a);
+        assert!(sa1.0.contains_seed(b"ACGTAC") && sa2.0.contains_seed(b"ACGTAC"));
+        assert!(sa1.1.contains_seed(b"GTACGT") && sa2.1.contains_seed(b"GTACGT"));
+        let sb = fill_adaptor_sets(&b);
+        assert!(sb.0.contains_seed(b"TTTTTT") && !sb.0.contains_seed(b"ACGTAC"));
+        assert!(sb.1.contains_seed(b"AAAAAA") && !sb.1.contains_seed(b"GTACGT"));
     }
 
     /// Ports `VarDictLauncher.java:106-117` (`i <= 6 && i + ADSEED < sequence.length()`)
@@ -1387,28 +1478,6 @@ mod task13_tests {
     }
 }
 
-static BEGIN_MINUS_NUMBER: LazyLock<Regex> =
-    LazyLock::new(|| crate::util::static_regex(r"^-(\d+)"));
-static UP_NUMBER_END: LazyLock<Regex> = LazyLock::new(|| crate::util::static_regex(r"\^(\d+)$"));
-static MINUS_NUMBER_ATGNC_SV_ATGNC_END: LazyLock<Regex> =
-    LazyLock::new(|| crate::util::static_regex(r"^-?\d+\^([ATGNC]+)<...\d+>([ATGNC]+)$"));
-static BEGIN_MINUS_NUMBER_ANY: LazyLock<Regex> =
-    LazyLock::new(|| crate::util::static_regex(r"^-(\d+)(.*)"));
-static CARET_ATGNC: LazyLock<Regex> = LazyLock::new(|| crate::util::static_regex(r"\^([ATGNC]+)"));
-static MINUS_NUMBER_AMP_ATGCS_END: LazyLock<Regex> =
-    LazyLock::new(|| crate::util::static_regex(r"(-\d+)&[ATGC]+$"));
-
-static BEGIN_PLUS_ATGC: LazyLock<Regex> =
-    LazyLock::new(|| crate::util::static_regex(r"^\+([ATGC]+)"));
-static DUP_NUM_ATGC: LazyLock<Regex> =
-    LazyLock::new(|| crate::util::static_regex(r"<dup(\d+)>([ATGC]+)$"));
-static AMP_ATGC: LazyLock<Regex> = LazyLock::new(|| crate::util::static_regex(r"&([ATGC]+)"));
-static HASH_ATGC: LazyLock<Regex> = LazyLock::new(|| crate::util::static_regex(r"#([ATGC]+)"));
-static ATGS_AMP_ATGS_END: LazyLock<Regex> =
-    LazyLock::new(|| crate::util::static_regex(r"(\+[ATGC]+)&[ATGC]+$"));
-static RE_CARET_DIGITS_END: LazyLock<Regex> =
-    LazyLock::new(|| crate::util::static_regex(r"\^\d+$"));
-
 /// Realign deletions.
 ///
 /// Ports `VariationRealigner.realigndel`.
@@ -1425,8 +1494,11 @@ pub fn realigndel(
     soft_clips_3_end: &mut BTreeMap<i32, Sclip>,
     max_read_length: i32,
 ) {
-    let (adaptor_forward, adaptor_reverse) = fill_adaptor_maps(&config.adaptor);
+    let (adaptor_forward, adaptor_reverse) = fill_adaptor_sets(&config.adaptor);
     let tmp = fill_and_sort_tmp(position_to_deletion_count);
+    let mut extra_buf = String::new();
+    let mut wupseq = String::new();
+    let mut sanpseq = String::new();
 
     for tpl in &tmp {
         let p = tpl.position;
@@ -1439,67 +1511,60 @@ pub fn realigndel(
         }
 
         let mut dellen = 0;
-        if let Some(caps) = BEGIN_MINUS_NUMBER.captures(vn) {
-            if let Some(m) = caps.get(1) {
-                dellen = m.as_str().parse::<i32>().unwrap_or(0);
-            }
+        if let Some(m) = parse_begin_minus_number(vn) {
+            dellen = m.parse::<i32>().unwrap_or(0);
         }
-        if let Some(caps) = UP_NUMBER_END.captures(vn) {
-            if let Some(m) = caps.get(1) {
-                dellen = dellen.saturating_add(m.as_str().parse::<i32>().unwrap_or(0));
-            }
+        if let Some(m) = parse_up_number_end(vn) {
+            dellen = dellen.saturating_add(m.parse::<i32>().unwrap_or(0));
         }
 
-        let mut extrains = String::new();
-        let mut extra = String::new();
-        let mut inv5 = String::new();
-        let mut inv3 = String::new();
+        let mut extrains = "";
+        extra_buf.clear();
+        let mut inv5 = "";
+        let mut inv3 = "";
 
-        if let Some(caps) = MINUS_NUMBER_ATGNC_SV_ATGNC_END.captures(vn) {
-            inv5 = caps
-                .get(1)
-                .map(|m| m.as_str().to_string())
-                .unwrap_or_default();
-            inv3 = caps
-                .get(2)
-                .map(|m| m.as_str().to_string())
-                .unwrap_or_default();
-        } else if let Some(caps) = BEGIN_MINUS_NUMBER_ANY.captures(vn) {
-            if let Some(m) = caps.get(2) {
-                extra = m.as_str().replace(&['^', '&', '#'][..], "");
+        if let Some((i5, i3)) = parse_minus_number_atgnc_sv_atgnc_end(vn) {
+            inv5 = i5;
+            inv3 = i3;
+        } else if let Some((_digits, rest)) = parse_begin_minus_number_any(vn) {
+            extra_buf.reserve(rest.len());
+            for ch in rest.chars() {
+                if !matches!(ch, '^' | '&' | '#') {
+                    extra_buf.push(ch);
+                }
             }
-            if let Some(caps2) = CARET_ATGNC.captures(vn) {
-                extrains = caps2
-                    .get(1)
-                    .map(|m| m.as_str().to_string())
-                    .unwrap_or_default();
-            }
+            extrains = parse_caret_atgnc(vn).unwrap_or("");
         }
 
         let chr_len_i32 = i32::try_from(chr_len).unwrap_or(i32::MAX);
         let wustart = p.saturating_sub(200).max(1);
-        let mut wupseq = crate::util::join_ref(reference, chr, wustart, p.saturating_sub(1));
-        wupseq.push_str(&extra);
         if !inv3.is_empty() {
-            wupseq = inv3.clone();
+            wupseq.clear();
+            wupseq.push_str(inv3);
+        } else {
+            crate::util::ref_bases_into(&mut wupseq, reference, chr, wustart, p.saturating_sub(1));
+            wupseq.push_str(&extra_buf);
         }
 
         let sanend = p.saturating_add(200).min(chr_len_i32);
         let start_pos_ref64 =
-            i64::from(p) + i64::from(dellen) + (extra.len() as i64) - (extrains.len() as i64);
-        let mut sanpseq = extra.clone();
-        if start_pos_ref64 <= i64::from(sanend) {
-            if let Ok(start_pos_ref) = i32::try_from(start_pos_ref64) {
-                sanpseq.push_str(&crate::util::join_ref(
-                    reference,
-                    chr,
-                    start_pos_ref,
-                    sanend,
-                ));
-            }
-        }
+            i64::from(p) + i64::from(dellen) + (extra_buf.len() as i64) - (extrains.len() as i64);
+        sanpseq.clear();
         if !inv5.is_empty() {
-            sanpseq = inv5.clone();
+            sanpseq.push_str(inv5);
+        } else {
+            sanpseq.push_str(&extra_buf);
+            if start_pos_ref64 <= i64::from(sanend) {
+                if let Ok(start_pos_ref) = i32::try_from(start_pos_ref64) {
+                    crate::util::push_ref_bases(
+                        &mut sanpseq,
+                        reference,
+                        chr,
+                        start_pos_ref,
+                        sanend,
+                    );
+                }
+            }
         }
 
         let r3 = find_mm3(reference, chr, p, sanpseq.as_bytes(), soft_clips_3_end);
@@ -1716,7 +1781,7 @@ pub fn realigndel(
         for &sc5pp in sc5p {
             if let Some(tv) = soft_clips_5_end.get_mut(&sc5pp) {
                 if !tv.used {
-                    let seq = crate::variations::util::find_conseq(
+                    let seq = crate::variations::util::find_conseq_sets(
                         tv,
                         0,
                         &adaptor_forward,
@@ -1780,7 +1845,7 @@ pub fn realigndel(
         for &sc3pp in sc3p {
             if let Some(tv) = soft_clips_3_end.get_mut(&sc3pp) {
                 if !tv.used {
-                    let seq = crate::variations::util::find_conseq(
+                    let seq = crate::variations::util::find_conseq_sets(
                         tv,
                         0,
                         &adaptor_forward,
@@ -1874,8 +1939,7 @@ pub fn realigndel(
             }
         }
 
-        let pe64 =
-            i64::from(p) + i64::from(dellen) + (extra.len() as i64) - (extrains.len() as i64);
+        let pe64 = start_pos_ref64;
         let pe = pe64.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
 
         let mut h_owned = None;
@@ -1936,48 +2000,44 @@ pub fn realigndel(
                 continue;
             }
 
-            if let Some(caps) = MINUS_NUMBER_AMP_ATGCS_END.captures(vn) {
-                if let Some(tn_match) = caps.get(1) {
-                    let tn = tn_match.as_str().to_string();
+            if let Some(tn) = parse_minus_number_amp_atgcs_end(vn) {
+                let mut vref_cnt = 0;
+                let mut vref_exists = false;
+                if let Some(entry) = non_insertion_variants.get(&p) {
+                    if let Some(vref) = entry.map.get(vn) {
+                        vref_cnt = vref.cnt;
+                        vref_exists = true;
+                    }
+                }
 
-                    let mut vref_cnt = 0;
-                    let mut vref_exists = false;
+                if !vref_exists {
+                    continue;
+                }
+
+                let mut tref_cnt = 0;
+                let mut tref_exists = false;
+                if let Some(entry) = non_insertion_variants.get(&p) {
+                    if let Some(tref) = entry.map.get(tn) {
+                        tref_cnt = tref.cnt;
+                        tref_exists = true;
+                    }
+                }
+
+                if tref_exists && vref_cnt < tref_cnt {
+                    let tv = match non_insertion_variants
+                        .get_mut(&p)
+                        .and_then(|entry| entry.map.swap_remove(vn))
+                    {
+                        Some(tv) => tv,
+                        None => continue,
+                    };
+
+                    let tref = get_variation(non_insertion_variants, p, tn);
+                    crate::variations::util::adj_cnt(tref, &tv, None);
+
                     if let Some(entry) = non_insertion_variants.get(&p) {
-                        if let Some(vref) = entry.map.get(vn) {
-                            vref_cnt = vref.cnt;
-                            vref_exists = true;
-                        }
-                    }
-
-                    if !vref_exists {
-                        continue;
-                    }
-
-                    let mut tref_cnt = 0;
-                    let mut tref_exists = false;
-                    if let Some(entry) = non_insertion_variants.get(&p) {
-                        if let Some(tref) = entry.map.get(&tn) {
-                            tref_cnt = tref.cnt;
-                            tref_exists = true;
-                        }
-                    }
-
-                    if tref_exists && vref_cnt < tref_cnt {
-                        let tv = match non_insertion_variants
-                            .get_mut(&p)
-                            .and_then(|entry| entry.map.swap_remove(vn))
-                        {
-                            Some(tv) => tv,
-                            None => continue,
-                        };
-
-                        let tref = get_variation(non_insertion_variants, p, &tn);
-                        crate::variations::util::adj_cnt(tref, &tv, None);
-
-                        if let Some(entry) = non_insertion_variants.get(&p) {
-                            if entry.map.is_empty() {
-                                non_insertion_variants.remove(&p);
-                            }
+                        if entry.map.is_empty() {
+                            non_insertion_variants.remove(&p);
                         }
                     }
                 }
@@ -2003,9 +2063,12 @@ pub fn realignins(
     soft_clips_3_end: &mut BTreeMap<i32, Sclip>,
     max_read_length: i32,
 ) -> String {
-    let (adaptor_forward, adaptor_reverse) = fill_adaptor_maps(&config.adaptor);
+    let (adaptor_forward, adaptor_reverse) = fill_adaptor_sets(&config.adaptor);
     let tmp = fill_and_sort_tmp(position_to_insertion_count);
     let mut new_ins = String::new();
+    let mut tn_buf = String::new();
+    let mut wupseq = String::new();
+    let mut sanpseq = String::new();
 
     for tpl in &tmp {
         let p = tpl.position;
@@ -2016,64 +2079,38 @@ pub fn realignins(
             crate::verbose_eprintln!("  Realign Ins: {} {} {}", p, vn, insertion_count);
         }
 
-        let insert = if let Some(caps) = BEGIN_PLUS_ATGC.captures(vn) {
-            caps.get(1)
-                .map_or(String::new(), |m| m.as_str().to_string())
-        } else {
+        let Some(insert) = parse_begin_plus_atgc(vn) else {
             continue;
         };
+        let insert_len_i32 = i32::try_from(insert.len()).unwrap_or(i32::MAX);
 
-        let mut ins3 = String::new();
-        let mut inslen = insert.len() as i32;
-        if let Some(caps) = DUP_NUM_ATGC.captures(vn) {
-            ins3 = caps
-                .get(2)
-                .map_or(String::new(), |m| m.as_str().to_string());
-            let dup_len = caps
-                .get(1)
-                .map_or(0, |m| m.as_str().parse::<i32>().unwrap_or(0));
+        let mut ins3 = "";
+        let mut inslen = insert_len_i32;
+        if let Some((dup_num_str, ins3_match)) = parse_dup_num_atgc(vn) {
+            ins3 = ins3_match;
+            let dup_len = dup_num_str.parse::<i32>().unwrap_or(0);
             inslen = inslen
                 .saturating_add(dup_len)
-                .saturating_add(ins3.len() as i32);
+                .saturating_add(i32::try_from(ins3.len()).unwrap_or(i32::MAX));
         }
 
-        let mut extra = String::new();
-        if let Some(caps) = AMP_ATGC.captures(vn) {
-            extra = caps
-                .get(1)
-                .map_or(String::new(), |m| m.as_str().to_string());
-        }
+        let extra = parse_amp_atgc(vn).unwrap_or("");
+        let compm = parse_hash_atgc(vn).unwrap_or("");
+        let newdel = parse_up_number_end(vn).map_or(0, |s| s.parse::<i32>().unwrap_or(0));
 
-        let mut compm = String::new();
-        if let Some(caps) = HASH_ATGC.captures(vn) {
-            compm = caps
-                .get(1)
-                .map_or(String::new(), |m| m.as_str().to_string());
-        }
-
-        let mut newdel = 0;
-        if let Some(caps) = UP_NUMBER_END.captures(vn) {
-            newdel = caps
-                .get(1)
-                .map_or(0, |m| m.as_str().parse::<i32>().unwrap_or(0));
-        }
-
-        let tn = vn.strip_prefix('+').unwrap_or(vn).to_string();
-        let tn = tn.replace(['&', '#'], "");
-        let tn = RE_CARET_DIGITS_END.replace(&tn, "").to_string();
-        let tn = tn.replace('^', "");
+        normalize_realignins_tn_into(&mut tn_buf, vn);
 
         let chr_len_i32 = i32::try_from(chr_len).unwrap_or(i32::MAX);
         let wustart = p.saturating_sub(150).max(1);
-        let mut wupseq = crate::util::join_ref(reference, chr, wustart, p);
-        wupseq.push_str(&tn);
+        crate::util::ref_bases_into(&mut wupseq, reference, chr, wustart, p);
+        wupseq.push_str(&tn_buf);
 
         let sanend = p
-            .saturating_add(vn.len() as i32)
+            .saturating_add(i32::try_from(vn.len()).unwrap_or(i32::MAX))
             .saturating_add(100)
             .min(chr_len_i32);
 
-        let mut sanpseq = String::new();
+        sanpseq.clear();
         let find_mm3_res = if !ins3.is_empty() {
             let sv_flanking = 50i32;
             let p3_64 =
@@ -2084,15 +2121,16 @@ pub fn realignins(
                 // Because `SVFLANK - ins3.length() < 0`, `Utils.substr(ins3, neg)`
                 // starts at `ins3.length() + (SVFLANK - ins3.length()) == SVFLANK`.
                 let start_idx = sv_flanking as usize;
-                sanpseq = ins3.get(start_idx..).unwrap_or("").to_string();
+                sanpseq.push_str(ins3.get(start_idx..).unwrap_or(""));
             }
             if let Some(p_plus_1) = p.checked_add(1) {
-                sanpseq.push_str(&crate::util::join_ref(
+                crate::util::push_ref_bases(
+                    &mut sanpseq,
                     reference,
                     chr,
                     p_plus_1,
                     p.saturating_add(101),
-                ));
+                );
             }
             if let Ok(p3_plus_1) = i32::try_from(p3_64 + 1) {
                 find_mm3(
@@ -2108,15 +2146,16 @@ pub fn realignins(
         } else {
             let start_pos_ref64 =
                 i64::from(p) + (extra.len() as i64) + 1 + (compm.len() as i64) + i64::from(newdel);
-            sanpseq = tn.clone();
+            sanpseq.push_str(&tn_buf);
             if start_pos_ref64 <= i64::from(sanend) {
                 if let Ok(start_pos_ref) = i32::try_from(start_pos_ref64) {
-                    sanpseq.push_str(&crate::util::join_ref(
+                    crate::util::push_ref_bases(
+                        &mut sanpseq,
                         reference,
                         chr,
                         start_pos_ref,
                         sanend,
-                    ));
+                    );
                 }
             }
             if let Some(p_plus_1) = p.checked_add(1) {
@@ -2184,7 +2223,7 @@ pub fn realignins(
                         };
                         if mean_qual >= config.base_qual
                             && mean_pos <= (threshold_pos as f64)
-                            && (variation.cnt < insertion_count.saturating_add(insert.len() as i32)
+                            && (variation.cnt < insertion_count.saturating_add(insert_len_i32)
                                 && (variation.cnt as f64) / (insertion_count as f64) < 8.0)
                         {
                             should_adjust = true;
@@ -2301,7 +2340,7 @@ pub fn realignins(
                     );
                 }
                 if !tv.used {
-                    let seq = crate::variations::util::find_conseq(
+                    let seq = crate::variations::util::find_conseq_sets(
                         tv,
                         0,
                         &adaptor_forward,
@@ -2359,7 +2398,7 @@ pub fn realignins(
                     );
                 }
                 if !tv.used {
-                    let seq = crate::variations::util::find_conseq(
+                    let seq = crate::variations::util::find_conseq_sets(
                         tv,
                         0,
                         &adaptor_forward,
@@ -2525,14 +2564,11 @@ pub fn realignins(
             continue;
         }
 
-        if let Some(caps) = ATGS_AMP_ATGS_END.captures(vn) {
-            let tn = caps
-                .get(1)
-                .map_or(String::new(), |m| m.as_str().to_string());
+        if let Some(tn) = parse_atgs_amp_atgs_end(vn) {
             let mut tref_cnt = 0;
             let mut tref_exists = false;
             if let Some(entry) = insertion_variants.get(&p) {
-                if let Some(tref) = entry.map.get(&tn) {
+                if let Some(tref) = entry.map.get(tn) {
                     tref_cnt = tref.cnt;
                     tref_exists = true;
                 }
@@ -2558,7 +2594,7 @@ pub fn realignins(
                     }
                 }
 
-                let tref = get_variation(insertion_variants, p, &tn);
+                let tref = get_variation(insertion_variants, p, tn);
                 crate::variations::util::adj_cnt(tref, &tv, ref_base_var);
 
                 if let Some(entry) = insertion_variants.get_mut(&p) {
@@ -2591,7 +2627,7 @@ pub fn realignlgdel(
     svrdel: &mut Vec<Sclip>,
     splice: &mut rustc_hash::FxHashSet<String>,
 ) {
-    let (adaptor_forward, adaptor_reverse) = fill_adaptor_maps(&config.adaptor);
+    let (adaptor_forward, adaptor_reverse) = fill_adaptor_sets(&config.adaptor);
     let min_reads = i32::try_from(config.min_reads).unwrap_or(i32::MAX);
     let indel_size = i32::try_from(config.indel_size).unwrap_or(i32::MAX);
     let extension = 5000;
@@ -2633,8 +2669,12 @@ pub fn realignlgdel(
             if sc.used {
                 continue;
             }
-            let seq =
-                crate::variations::util::find_conseq(sc, 5, &adaptor_forward, &adaptor_reverse);
+            let seq = crate::variations::util::find_conseq_sets(
+                sc,
+                5,
+                &adaptor_forward,
+                &adaptor_reverse,
+            );
             if seq.len() < 7 {
                 continue;
             }
@@ -3049,8 +3089,12 @@ pub fn realignlgdel(
             if sc.used {
                 continue;
             }
-            let seq =
-                crate::variations::util::find_conseq(sc, 3, &adaptor_forward, &adaptor_reverse);
+            let seq = crate::variations::util::find_conseq_sets(
+                sc,
+                3,
+                &adaptor_forward,
+                &adaptor_reverse,
+            );
             if seq.len() < 7 {
                 continue;
             }
@@ -3357,7 +3401,7 @@ pub fn realignlgins30(
     soft_clips_3_end: &mut BTreeMap<i32, Sclip>,
     max_read_length: i32,
 ) {
-    let (adaptor_forward, adaptor_reverse) = fill_adaptor_maps(&config.adaptor);
+    let (adaptor_forward, adaptor_reverse) = fill_adaptor_sets(&config.adaptor);
     let extension = 5000;
     let region_start_i32 = i32::try_from(region.start.0).unwrap_or(i32::MAX);
     let region_end_i32 = i32::try_from(region.end.0).unwrap_or(i32::MAX);
@@ -3419,7 +3463,7 @@ pub fn realignlgins30(
                 let Some(sc5v) = soft_clips_5_end.get_mut(&p5) else {
                     break;
                 };
-                let s = crate::variations::util::find_conseq(
+                let s = crate::variations::util::find_conseq_sets(
                     sc5v,
                     5,
                     &adaptor_forward,
@@ -3432,7 +3476,12 @@ pub fn realignlgins30(
                 let Some(sc3v) = soft_clips_3_end.get_mut(&p3) else {
                     continue;
                 };
-                crate::variations::util::find_conseq(sc3v, 3, &adaptor_forward, &adaptor_reverse)
+                crate::variations::util::find_conseq_sets(
+                    sc3v,
+                    3,
+                    &adaptor_forward,
+                    &adaptor_reverse,
+                )
             };
             if seq5.len() <= 10 || seq3.len() <= 10 {
                 continue;
@@ -3452,20 +3501,22 @@ pub fn realignlgins30(
                 continue;
             }
             let match35 = find_35_match(&seq5, &seq3, config.verbose);
-            let bp5 = match35.matched_5_end;
-            let bp3 = match35.matched_3_end;
+            let bp5 = match35.matched_5_end as isize;
+            let bp3 = match35.matched_3_end as isize;
             let score = match35.max_matched_length;
             if score == 0 {
                 continue;
             }
-            let smscore = score / 2;
-            let mut ins = if bp3 + smscore > 1 {
-                substr(&seq3, 0, (-(bp3 + smscore) + 1) as isize).to_vec()
+            let smscore = (score / 2) as isize;
+            let bp3_plus_sm = bp3.saturating_add(smscore);
+            let mut ins = if bp3_plus_sm > 1 {
+                substr(&seq3, 0, 1_isize.saturating_sub(bp3_plus_sm)).to_vec()
             } else {
                 seq3.clone()
             };
-            if bp5 + smscore > 0 {
-                ins.extend_from_slice(&reverse(substr(&seq5, 0, (bp5 + smscore) as isize)));
+            let bp5_plus_sm = bp5.saturating_add(smscore);
+            if bp5_plus_sm > 0 {
+                ins.extend_from_slice(&reverse(substr(&seq5, 0, bp5_plus_sm)));
             }
             if crate::variations::util::is_low_complex_seq(&ins) {
                 if config.verbose {
@@ -3779,7 +3830,7 @@ pub fn realignlgins(
     svrdup: &mut Vec<Sclip>,
     splice: &mut rustc_hash::FxHashSet<String>,
 ) {
-    let (adaptor_forward, adaptor_reverse) = fill_adaptor_maps(&config.adaptor);
+    let (adaptor_forward, adaptor_reverse) = fill_adaptor_sets(&config.adaptor);
     let min_reads = i32::try_from(config.min_reads).unwrap_or(i32::MAX);
     let sv_min_len = i32::try_from(config.sv_min_len).unwrap_or(i32::MAX);
     let extension = 5000;
@@ -3816,7 +3867,7 @@ pub fn realignlgins(
                 Some(sc) => sc,
                 None => continue,
             };
-            crate::variations::util::find_conseq(sc5v, 0, &adaptor_forward, &adaptor_reverse)
+            crate::variations::util::find_conseq_sets(sc5v, 0, &adaptor_forward, &adaptor_reverse)
         };
         if seq.is_empty() {
             continue;
@@ -4118,7 +4169,7 @@ pub fn realignlgins(
                 Some(sc) => sc,
                 None => continue,
             };
-            crate::variations::util::find_conseq(sc3v, 0, &adaptor_forward, &adaptor_reverse)
+            crate::variations::util::find_conseq_sets(sc3v, 0, &adaptor_forward, &adaptor_reverse)
         };
         if seq.is_empty() {
             continue;
@@ -4550,41 +4601,50 @@ pub fn realign_indels(
 }
 
 fn substr(seq: &[u8], mut begin: isize, len: isize) -> &[u8] {
-    let s_len = seq.len() as isize;
+    let s_len = isize::try_from(seq.len()).unwrap_or(isize::MAX);
     if begin < 0 {
-        begin = s_len + begin;
+        begin = s_len.saturating_add(begin);
     }
     if begin < 0 {
         begin = 0;
     }
-    if begin >= s_len {
+    if begin >= s_len || len == 0 {
         return b"";
     }
+    let Ok(start) = usize::try_from(begin) else {
+        return b"";
+    };
 
     if len > 0 {
-        let end = (begin + len).min(s_len) as usize;
-        &seq[begin as usize..end]
-    } else if len == 0 {
-        b""
+        let end_isize = begin.saturating_add(len).min(s_len);
+        let Ok(end) = usize::try_from(end_isize) else {
+            return b"";
+        };
+        seq.get(start..end).unwrap_or(b"")
     } else {
-        let end = s_len + len;
-        if end < begin {
+        let end_isize = s_len.saturating_add(len);
+        if end_isize <= begin {
             b""
         } else {
-            &seq[begin as usize..end as usize]
+            let Ok(end) = usize::try_from(end_isize) else {
+                return b"";
+            };
+            seq.get(start..end).unwrap_or(b"")
         }
     }
 }
 
 fn substr_from(seq: &[u8], idx: isize) -> &[u8] {
-    let s_len = seq.len() as isize;
-    if idx >= 0 {
-        let start = idx.min(s_len) as usize;
-        &seq[start..]
+    let s_len = isize::try_from(seq.len()).unwrap_or(isize::MAX);
+    let start_isize = if idx >= 0 {
+        idx.min(s_len)
     } else {
-        let start = (s_len + idx).max(0) as usize;
-        &seq[start..]
-    }
+        s_len.saturating_add(idx).max(0)
+    };
+    let Ok(start) = usize::try_from(start_isize) else {
+        return b"";
+    };
+    seq.get(start..).unwrap_or(b"")
 }
 
 fn reverse(seq: &[u8]) -> Vec<u8> {
@@ -5162,6 +5222,37 @@ fn partial_pipeline(
 
 /// Adjust MNP when there are breakpoints within MNP.
 /// Ports `VariationRealigner.java:277-382`.
+fn format_mnp_key_into(out: &mut String, raw_buf: &mut Vec<u8>, bytes: &[u8]) {
+    out.clear();
+    if let (Some(&first), Some(rest)) = (bytes.first(), bytes.get(1..)) {
+        if !rest.is_empty() {
+            if bytes.is_ascii() {
+                out.reserve(bytes.len() + 1);
+                out.push(first as char);
+                out.push('&');
+                if let Ok(s) = std::str::from_utf8(rest) {
+                    out.push_str(s);
+                }
+                return;
+            }
+            raw_buf.clear();
+            raw_buf.reserve(bytes.len() + 1);
+            raw_buf.push(first);
+            raw_buf.push(b'&');
+            raw_buf.extend_from_slice(rest);
+            out.push_str(&String::from_utf8_lossy(raw_buf));
+            return;
+        }
+    }
+    if bytes.is_ascii() {
+        if let Ok(s) = std::str::from_utf8(bytes) {
+            out.push_str(s);
+        }
+    } else {
+        out.push_str(&String::from_utf8_lossy(bytes));
+    }
+}
+
 pub fn adjust_mnp(
     reference: &Reference,
     chr: &str,
@@ -5171,8 +5262,11 @@ pub fn adjust_mnp(
     var_data: &mut crate::variations::VariationData,
 ) {
     let tmp = fill_and_sort_tmp(&var_data.mnp);
-    let adaptor_forward = BTreeMap::new();
-    let adaptor_reverse = BTreeMap::new();
+    let adaptor_forward = AdaptorSet::default();
+    let adaptor_reverse = AdaptorSet::default();
+    let mut left = String::new();
+    let mut right = String::new();
+    let mut raw_buf = Vec::new();
 
     for tpl in tmp {
         let position = tpl.position;
@@ -5194,21 +5288,21 @@ pub fn adjust_mnp(
         }
 
         let mnt = vn.replacen('&', "", 1);
-        let mnt_len = mnt.len();
+        let mnt_bytes = mnt.as_bytes();
+        let mnt_len = mnt_bytes.len();
         for i in 0..mnt_len.saturating_sub(1) {
             let left_len = i + 1;
-            let left_bytes = substr(mnt.as_bytes(), 0, left_len as isize);
-            let mut left = String::from_utf8_lossy(left_bytes).into_owned();
-            if left.len() > 1 {
-                left.insert(1, '&');
-            }
+            let left_bytes = substr(
+                mnt_bytes,
+                0,
+                isize::try_from(left_len).unwrap_or(isize::MAX),
+            );
+            format_mnp_key_into(&mut left, &mut raw_buf, left_bytes);
 
             let right_len = mnt_len - i - 1;
-            let right_bytes = substr(mnt.as_bytes(), -(right_len as isize), right_len as isize);
-            let mut right = String::from_utf8_lossy(right_bytes).into_owned();
-            if right.len() > 1 {
-                right.insert(1, '&');
-            }
+            let right_len_isize = isize::try_from(right_len).unwrap_or(isize::MAX);
+            let right_bytes = substr(mnt_bytes, right_len_isize.saturating_neg(), right_len_isize);
+            format_mnp_key_into(&mut right, &mut raw_buf, right_bytes);
 
             // --- LEFT CHECK ---
             let mut left_tref = None;
@@ -5244,7 +5338,9 @@ pub fn adjust_mnp(
             }
 
             // --- RIGHT CHECK ---
-            let right_pos = position.saturating_add(i as i32).saturating_add(1);
+            let right_pos = position
+                .saturating_add(i32::try_from(i).unwrap_or(i32::MAX))
+                .saturating_add(1);
             let mut right_tref = None;
             {
                 if let Some(right_vars) = var_data.non_insertion_variants.get(&right_pos) {
@@ -5278,29 +5374,33 @@ pub fn adjust_mnp(
             }
         }
 
+        let mnt_len_i32 = i32::try_from(mnt_len).unwrap_or(i32::MAX);
+
         // --- SOFTCLIPS3END CHECK ---
         let mut sc3_vars_to_add = None;
         {
             if let Some(sc3v) = var_data.soft_clips_3_end.get_mut(&position) {
                 if !sc3v.used {
-                    let seq = crate::variations::util::find_conseq(
+                    let seq = crate::variations::util::find_conseq_sets(
                         sc3v,
                         0,
                         &adaptor_forward,
                         &adaptor_reverse,
                     );
-                    let seq_str = String::from_utf8_lossy(&seq);
-                    if seq_str.starts_with(&mnt) {
-                        if seq.len() == mnt.len()
-                            || is_match_ref(
-                                &seq[mnt.len()..],
+                    if seq.starts_with(mnt_bytes) {
+                        let tail_matches = match seq.get(mnt_len..) {
+                            Some([]) => true,
+                            Some(tail) => is_match_ref(
+                                tail,
                                 reference,
                                 chr,
-                                position.saturating_add(mnt.len() as i32),
+                                position.saturating_add(mnt_len_i32),
                                 1,
                                 3,
-                            )
-                        {
+                            ),
+                            None => false,
+                        };
+                        if tail_matches {
                             sc3_vars_to_add = Some(sc3v.variation.clone());
                         }
                     }
@@ -5321,32 +5421,35 @@ pub fn adjust_mnp(
         }
 
         // --- SOFTCLIPS5END CHECK ---
-        let right_pos = position.saturating_add(mnt_len as i32);
+        let right_pos = position.saturating_add(mnt_len_i32);
         let mut sc5_vars_to_add = None;
         {
             if let Some(sc5v) = var_data.soft_clips_5_end.get_mut(&right_pos) {
                 if !sc5v.used {
-                    let seq = crate::variations::util::find_conseq(
+                    let seq = crate::variations::util::find_conseq_sets(
                         sc5v,
                         0,
                         &adaptor_forward,
                         &adaptor_reverse,
                     );
                     if !seq.is_empty() && seq.len() >= mnt_len {
-                        let mut seq_rev = seq.clone();
+                        let mut seq_rev = seq;
                         seq_rev.reverse();
-                        let seq_rev_str = String::from_utf8_lossy(&seq_rev);
-                        if seq_rev_str.ends_with(&mnt) {
-                            if seq.len() == mnt_len
-                                || is_match_ref(
-                                    &seq_rev[0..seq_rev.len() - mnt_len],
+                        if seq_rev.ends_with(mnt_bytes) {
+                            let prefix_len = seq_rev.len().saturating_sub(mnt_len);
+                            let head_matches = match seq_rev.get(..prefix_len) {
+                                Some([]) => true,
+                                Some(head) => is_match_ref(
+                                    head,
                                     reference,
                                     chr,
                                     position.saturating_sub(1),
                                     -1,
                                     3,
-                                )
-                            {
+                                ),
+                                None => false,
+                            };
+                            if head_matches {
                                 sc5_vars_to_add = Some(sc5v.variation.clone());
                             }
                         }
@@ -5377,8 +5480,8 @@ pub fn adj_snv(
     _config: &crate::config::Config,
     var_data: &mut crate::variations::VariationData,
 ) {
-    let adaptor_forward = BTreeMap::new();
-    let adaptor_reverse = BTreeMap::new();
+    let adaptor_forward = AdaptorSet::default();
+    let adaptor_reverse = AdaptorSet::default();
 
     let keys_5: Vec<i32> = var_data.soft_clips_5_end.keys().copied().collect();
     for position in keys_5 {
@@ -5389,24 +5492,32 @@ pub fn adj_snv(
         if sc5v.used {
             continue;
         }
-        let seq = crate::variations::util::find_conseq(sc5v, 0, &adaptor_forward, &adaptor_reverse);
+        let seq =
+            crate::variations::util::find_conseq_sets(sc5v, 0, &adaptor_forward, &adaptor_reverse);
         if seq.len() > 5 {
             continue;
         }
         let bp_bytes = substr(&seq, 0, 1);
-        let bp = String::from_utf8_lossy(bp_bytes).into_owned();
+        let bp_lossy;
+        let bp: &str = match std::str::from_utf8(bp_bytes) {
+            Ok(s) => s,
+            Err(_) => {
+                bp_lossy = String::from_utf8_lossy(bp_bytes);
+                bp_lossy.as_ref()
+            }
+        };
 
         let previous_position = position.saturating_sub(1);
         let mut should_adj = false;
         let sc5v_vars_count = sc5v.variation.cnt;
 
         if let Some(vars_on_prev) = var_data.non_insertion_variants.get_mut(&previous_position) {
-            if vars_on_prev.map.contains_key(&bp) {
+            if vars_on_prev.map.contains_key(bp) {
                 should_adj = true;
                 if seq.len() > 1 {
                     if let Some(pos_sub_2) = position.checked_sub(2) {
                         let ref_base = reference.get_base(chr, pos_sub_2 as u32);
-                        if ref_base.is_none_or(|rb| rb != seq[1]) {
+                        if ref_base.is_none() || ref_base != seq.get(1).copied() {
                             should_adj = false;
                         }
                     } else {
@@ -5414,9 +5525,9 @@ pub fn adj_snv(
                     }
                 }
                 if should_adj {
-                    let sc5v_clone = sc5v.clone();
-                    if let Some(vref_mut) = vars_on_prev.map.get_mut(&bp) {
-                        crate::variations::util::adj_cnt(vref_mut, &sc5v_clone.variation, None);
+                    let sc5v_var = sc5v.variation.clone();
+                    if let Some(vref_mut) = vars_on_prev.map.get_mut(bp) {
+                        crate::variations::util::adj_cnt(vref_mut, &sc5v_var, None);
                     }
                     inc_cnt(
                         &mut var_data.ref_coverage,
@@ -5442,23 +5553,31 @@ pub fn adj_snv(
         if sc3v.used {
             continue;
         }
-        let seq = crate::variations::util::find_conseq(sc3v, 0, &adaptor_forward, &adaptor_reverse);
+        let seq =
+            crate::variations::util::find_conseq_sets(sc3v, 0, &adaptor_forward, &adaptor_reverse);
         if seq.len() > 5 {
             continue;
         }
         let bp_bytes = substr(&seq, 0, 1);
-        let bp = String::from_utf8_lossy(bp_bytes).into_owned();
+        let bp_lossy;
+        let bp: &str = match std::str::from_utf8(bp_bytes) {
+            Ok(s) => s,
+            Err(_) => {
+                bp_lossy = String::from_utf8_lossy(bp_bytes);
+                bp_lossy.as_ref()
+            }
+        };
 
         let mut should_adj = false;
         let sc3v_vars_count = sc3v.variation.cnt;
 
         if let Some(vars_on_pos) = var_data.non_insertion_variants.get_mut(&position) {
-            if vars_on_pos.map.contains_key(&bp) {
+            if vars_on_pos.map.contains_key(bp) {
                 should_adj = true;
                 if seq.len() > 1 {
                     if let Some(pos_add_1) = position.checked_add(1) {
                         let ref_base = reference.get_base(chr, pos_add_1 as u32);
-                        if ref_base.is_none_or(|rb| rb != seq[1]) {
+                        if ref_base.is_none() || ref_base != seq.get(1).copied() {
                             should_adj = false;
                         }
                     } else {
@@ -5466,9 +5585,9 @@ pub fn adj_snv(
                     }
                 }
                 if should_adj {
-                    let sc3v_clone = sc3v.clone();
-                    if let Some(vref_mut) = vars_on_pos.map.get_mut(&bp) {
-                        crate::variations::util::adj_cnt(vref_mut, &sc3v_clone.variation, None);
+                    let sc3v_var = sc3v.variation.clone();
+                    if let Some(vref_mut) = vars_on_pos.map.get_mut(bp) {
+                        crate::variations::util::adj_cnt(vref_mut, &sc3v_var, None);
                     }
                     inc_cnt(&mut var_data.ref_coverage, position, sc3v_vars_count);
                 }
@@ -5482,9 +5601,298 @@ pub fn adj_snv(
     }
 }
 
+#[inline]
+fn is_atgc(b: u8) -> bool {
+    matches!(b, b'A' | b'T' | b'G' | b'C')
+}
+
+#[inline]
+fn is_atgnc(b: u8) -> bool {
+    matches!(b, b'A' | b'T' | b'G' | b'N' | b'C')
+}
+
+fn parse_begin_minus_number(vn: &str) -> Option<&str> {
+    let bytes = vn.as_bytes();
+    if bytes.first().copied() != Some(b'-') {
+        return None;
+    }
+    let mut end = 1;
+    while bytes.get(end).is_some_and(u8::is_ascii_digit) {
+        end += 1;
+    }
+    if end == 1 {
+        return None;
+    }
+    vn.get(1..end)
+}
+
+fn parse_up_number_end(vn: &str) -> Option<&str> {
+    let bytes = vn.as_bytes();
+    let mut i = bytes.len();
+    while i > 0 && bytes.get(i - 1).is_some_and(u8::is_ascii_digit) {
+        i -= 1;
+    }
+    if i == bytes.len() || i == 0 || bytes.get(i - 1).copied() != Some(b'^') {
+        return None;
+    }
+    vn.get(i..)
+}
+
+fn parse_minus_number_atgnc_sv_atgnc_end(vn: &str) -> Option<(&str, &str)> {
+    let bytes = vn.as_bytes();
+    let mut pos = if bytes.first().copied() == Some(b'-') {
+        1
+    } else {
+        0
+    };
+    let digits_start = pos;
+    while bytes.get(pos).is_some_and(u8::is_ascii_digit) {
+        pos += 1;
+    }
+    if pos == digits_start || bytes.get(pos).copied() != Some(b'^') {
+        return None;
+    }
+    pos += 1;
+    let g1_start = pos;
+    while bytes.get(pos).copied().is_some_and(is_atgnc) {
+        pos += 1;
+    }
+    if pos == g1_start || bytes.get(pos).copied() != Some(b'<') {
+        return None;
+    }
+    let g1_end = pos;
+    pos += 1;
+
+    let tail = vn.get(pos..)?;
+    let mut chars = tail.chars();
+    for _ in 0..3 {
+        let ch = chars.next()?;
+        if ch == '\n' {
+            return None;
+        }
+        pos += ch.len_utf8();
+    }
+
+    let sv_digits_start = pos;
+    while bytes.get(pos).is_some_and(u8::is_ascii_digit) {
+        pos += 1;
+    }
+    if pos == sv_digits_start || bytes.get(pos).copied() != Some(b'>') {
+        return None;
+    }
+    pos += 1;
+
+    let g2_start = pos;
+    while bytes.get(pos).copied().is_some_and(is_atgnc) {
+        pos += 1;
+    }
+    if pos == g2_start || pos != bytes.len() {
+        return None;
+    }
+    Some((vn.get(g1_start..g1_end)?, vn.get(g2_start..pos)?))
+}
+
+fn parse_begin_minus_number_any(vn: &str) -> Option<(&str, &str)> {
+    let bytes = vn.as_bytes();
+    if bytes.first().copied() != Some(b'-') {
+        return None;
+    }
+    let mut pos = 1;
+    while bytes.get(pos).is_some_and(u8::is_ascii_digit) {
+        pos += 1;
+    }
+    if pos == 1 {
+        return None;
+    }
+    let rest_end = bytes
+        .get(pos..)
+        .and_then(|s| s.iter().position(|&b| b == b'\n'))
+        .map_or(bytes.len(), |off| pos + off);
+    Some((vn.get(1..pos)?, vn.get(pos..rest_end)?))
+}
+
+fn parse_caret_atgnc(vn: &str) -> Option<&str> {
+    let bytes = vn.as_bytes();
+    let mut i = 0;
+    while let Some(&b) = bytes.get(i) {
+        if b == b'^' && bytes.get(i + 1).copied().is_some_and(is_atgnc) {
+            let start = i + 1;
+            let mut end = start + 1;
+            while bytes.get(end).copied().is_some_and(is_atgnc) {
+                end += 1;
+            }
+            return vn.get(start..end);
+        }
+        i += 1;
+    }
+    None
+}
+
+fn parse_minus_number_amp_atgcs_end(vn: &str) -> Option<&str> {
+    let bytes = vn.as_bytes();
+    let mut i = bytes.len();
+    while i > 0 && bytes.get(i - 1).copied().is_some_and(is_atgc) {
+        i -= 1;
+    }
+    if i == bytes.len() || i == 0 || bytes.get(i - 1).copied() != Some(b'&') {
+        return None;
+    }
+    let amp_idx = i - 1;
+    let mut d = amp_idx;
+    while d > 0 && bytes.get(d - 1).is_some_and(u8::is_ascii_digit) {
+        d -= 1;
+    }
+    if d == amp_idx || d == 0 || bytes.get(d - 1).copied() != Some(b'-') {
+        return None;
+    }
+    vn.get(d - 1..amp_idx)
+}
+
+fn parse_begin_plus_atgc(vn: &str) -> Option<&str> {
+    let bytes = vn.as_bytes();
+    if bytes.first().copied() != Some(b'+') {
+        return None;
+    }
+    let mut end = 1;
+    while bytes.get(end).copied().is_some_and(is_atgc) {
+        end += 1;
+    }
+    if end == 1 {
+        return None;
+    }
+    vn.get(1..end)
+}
+
+fn parse_dup_num_atgc(vn: &str) -> Option<(&str, &str)> {
+    let bytes = vn.as_bytes();
+    let mut i = bytes.len();
+    while i > 0 && bytes.get(i - 1).copied().is_some_and(is_atgc) {
+        i -= 1;
+    }
+    if i == bytes.len() || i == 0 || bytes.get(i - 1).copied() != Some(b'>') {
+        return None;
+    }
+    let gt_idx = i - 1;
+    let mut d = gt_idx;
+    while d > 0 && bytes.get(d - 1).is_some_and(u8::is_ascii_digit) {
+        d -= 1;
+    }
+    if d == gt_idx || d < 4 || bytes.get(d - 4..d) != Some(b"<dup") {
+        return None;
+    }
+    Some((vn.get(d..gt_idx)?, vn.get(i..)?))
+}
+
+fn parse_amp_atgc(vn: &str) -> Option<&str> {
+    let bytes = vn.as_bytes();
+    let mut i = 0;
+    while let Some(&b) = bytes.get(i) {
+        if b == b'&' && bytes.get(i + 1).copied().is_some_and(is_atgc) {
+            let start = i + 1;
+            let mut end = start + 1;
+            while bytes.get(end).copied().is_some_and(is_atgc) {
+                end += 1;
+            }
+            return vn.get(start..end);
+        }
+        i += 1;
+    }
+    None
+}
+
+fn parse_hash_atgc(vn: &str) -> Option<&str> {
+    let bytes = vn.as_bytes();
+    let mut i = 0;
+    while let Some(&b) = bytes.get(i) {
+        if b == b'#' && bytes.get(i + 1).copied().is_some_and(is_atgc) {
+            let start = i + 1;
+            let mut end = start + 1;
+            while bytes.get(end).copied().is_some_and(is_atgc) {
+                end += 1;
+            }
+            return vn.get(start..end);
+        }
+        i += 1;
+    }
+    None
+}
+
+fn parse_atgs_amp_atgs_end(vn: &str) -> Option<&str> {
+    let bytes = vn.as_bytes();
+    let mut i = bytes.len();
+    while i > 0 && bytes.get(i - 1).copied().is_some_and(is_atgc) {
+        i -= 1;
+    }
+    if i == bytes.len() || i == 0 || bytes.get(i - 1).copied() != Some(b'&') {
+        return None;
+    }
+    let amp_idx = i - 1;
+    let mut d = amp_idx;
+    while d > 0 && bytes.get(d - 1).copied().is_some_and(is_atgc) {
+        d -= 1;
+    }
+    if d == amp_idx || d == 0 || bytes.get(d - 1).copied() != Some(b'+') {
+        return None;
+    }
+    vn.get(d - 1..amp_idx)
+}
+
+fn strip_caret_digits_end(s: &str) -> &str {
+    let bytes = s.as_bytes();
+    let mut i = bytes.len();
+    while i > 0 && bytes.get(i - 1).is_some_and(u8::is_ascii_digit) {
+        i -= 1;
+    }
+    if i < bytes.len() && i > 0 && bytes.get(i - 1).copied() == Some(b'^') {
+        s.get(..i - 1).unwrap_or(s)
+    } else {
+        s
+    }
+}
+
+fn normalize_realignins_tn_into(tn_buf: &mut String, vn: &str) {
+    tn_buf.clear();
+    let rest = vn.strip_prefix('+').unwrap_or(vn);
+    tn_buf.reserve(rest.len());
+    for ch in rest.chars() {
+        if ch != '&' && ch != '#' {
+            tn_buf.push(ch);
+        }
+    }
+    let trimmed_len = strip_caret_digits_end(tn_buf.as_str()).len();
+    tn_buf.truncate(trimmed_len);
+    tn_buf.retain(|ch| ch != '^');
+}
+
 #[cfg(test)]
 mod tests {
     use crate::reference::LoadedRegion;
+    use regex::Regex;
+    use std::sync::LazyLock;
+
+    static BEGIN_MINUS_NUMBER: LazyLock<Regex> =
+        LazyLock::new(|| crate::util::static_regex(r"^-(\d+)"));
+    static UP_NUMBER_END: LazyLock<Regex> =
+        LazyLock::new(|| crate::util::static_regex(r"\^(\d+)$"));
+    static MINUS_NUMBER_ATGNC_SV_ATGNC_END: LazyLock<Regex> =
+        LazyLock::new(|| crate::util::static_regex(r"^-?\d+\^([ATGNC]+)<...\d+>([ATGNC]+)$"));
+    static BEGIN_MINUS_NUMBER_ANY: LazyLock<Regex> =
+        LazyLock::new(|| crate::util::static_regex(r"^-(\d+)(.*)"));
+    static CARET_ATGNC: LazyLock<Regex> =
+        LazyLock::new(|| crate::util::static_regex(r"\^([ATGNC]+)"));
+    static MINUS_NUMBER_AMP_ATGCS_END: LazyLock<Regex> =
+        LazyLock::new(|| crate::util::static_regex(r"(-\d+)&[ATGC]+$"));
+
+    static BEGIN_PLUS_ATGC: LazyLock<Regex> =
+        LazyLock::new(|| crate::util::static_regex(r"^\+([ATGC]+)"));
+    static DUP_NUM_ATGC: LazyLock<Regex> =
+        LazyLock::new(|| crate::util::static_regex(r"<dup(\d+)>([ATGC]+)$"));
+    static AMP_ATGC: LazyLock<Regex> = LazyLock::new(|| crate::util::static_regex(r"&([ATGC]+)"));
+    static HASH_ATGC: LazyLock<Regex> = LazyLock::new(|| crate::util::static_regex(r"#([ATGC]+)"));
+    static ATGS_AMP_ATGS_END: LazyLock<Regex> =
+        LazyLock::new(|| crate::util::static_regex(r"(\+[ATGC]+)&[ATGC]+$"));
+    static RE_CARET_DIGITS_END: LazyLock<Regex> =
+        LazyLock::new(|| crate::util::static_regex(r"\^\d+$"));
 
     /// W1.2 fix round 1: merge_sclip must union the SV state (mates, soft
     /// position counts, disc, start/end/mstart/mend min/maxes) exactly like
@@ -7485,5 +7893,265 @@ mod tests {
             &mut splice,
         );
         assert!(!soft5.get(&50).unwrap().used);
+    }
+
+    #[test]
+    fn adj_mnt_non_utf8_left_right_and_substr_extreme_isize_do_not_panic() {
+        use super::{adjust_mnp, substr, substr_from, Reference, Sclip};
+        use crate::types::Pos1;
+        use crate::variations::{Variation, VariationData, VariationMap};
+
+        let mut reference = Reference::default();
+        reference.loaded_regions.push(LoadedRegion {
+            chr: "chr1".to_string(),
+            sequence_start: 1,
+            sequence_end: 100,
+        });
+        reference
+            .reference_sequences
+            .insert("chr1".to_string(), vec![b'A'; 100]);
+
+        let region = crate::regions::Region {
+            chr: "chr1".to_string(),
+            start: Pos1(1),
+            end: Pos1(100),
+            gene: String::new(),
+            amplicon: None,
+        };
+        let config = crate::config::Config::default();
+
+        // Case 1: `vn` containing `"\u{FFFD}A"` (`\xEF\xBF\xBD\x41` after stripping `&`)
+        // exercises `left_bytes`/`right_bytes` `&` insertion without UTF-8 boundary panic.
+        let mut var_data = VariationData::new();
+        let vn1 = "\u{FFFD}&A".to_string();
+        var_data.mnp.entry(10).or_default().insert(vn1.clone(), 5);
+        let mut vm1 = VariationMap::new();
+        let mut v1 = Variation::new();
+        v1.cnt = 5;
+        vm1.map.insert(vn1, v1);
+        var_data.non_insertion_variants.insert(10, vm1);
+
+        // Case 2: `vn` whose lossy form matches 2 invalid UTF-8 bytes `[0xff, 0xfe]`
+        // (`"\u{FFFD}\u{FFFD}AC"`, 8 UTF-8 bytes vs 4 raw bytes in `seq`) exercises
+        // 3' and 5' soft-clip prefix/suffix matching without out-of-bounds slicing.
+        let vn2 = "\u{FFFD}&\u{FFFD}AC".to_string();
+        var_data.mnp.entry(20).or_default().insert(vn2.clone(), 5);
+        let mut vm2 = VariationMap::new();
+        let mut v2 = Variation::new();
+        v2.cnt = 5;
+        vm2.map.insert(vn2, v2);
+        var_data.non_insertion_variants.insert(20, vm2);
+
+        let mut sc3 = Sclip::new();
+        sc3.variation.cnt = 3;
+        sc3.sequence = Some(vec![0xff, 0xfe, b'A', b'C']);
+        var_data.soft_clips_3_end.insert(20, sc3);
+
+        let mut sc5 = Sclip::new();
+        sc5.variation.cnt = 3;
+        // Reversed: [0xff, 0xfe, b'A', b'C'] at the end, length 8 >= mnt.len() (8)
+        sc5.sequence = Some(vec![b'C', b'A', 0xfe, 0xff, b'A', b'A', b'A', b'A']);
+        var_data.soft_clips_5_end.insert(28, sc5);
+
+        adjust_mnp(&reference, "chr1", 100, &region, &config, &mut var_data);
+
+        // Extreme `isize` bounds on `substr` and `substr_from`.
+        let seq = b"ACGTACGT";
+        assert_eq!(substr(seq, 1, isize::MAX), b"CGTACGT");
+        assert_eq!(substr(seq, 0, isize::MAX), b"ACGTACGT");
+        assert_eq!(substr(seq, isize::MIN, 3), b"ACG");
+        assert_eq!(substr(seq, -isize::MAX, 3), b"ACG");
+        assert_eq!(substr(seq, isize::MAX, 3), b"");
+        assert_eq!(substr(seq, 2, isize::MIN), b"");
+        assert_eq!(substr(seq, 2, -isize::MAX), b"");
+        assert_eq!(substr(b"", isize::MIN, isize::MAX), b"");
+        assert_eq!(substr(b"", isize::MAX, isize::MIN), b"");
+
+        assert_eq!(substr_from(seq, isize::MIN), b"ACGTACGT");
+        assert_eq!(substr_from(seq, -isize::MAX), b"ACGTACGT");
+        assert_eq!(substr_from(seq, isize::MAX), b"");
+        assert_eq!(substr_from(seq, 3), b"TACGT");
+        assert_eq!(substr_from(seq, -3), b"CGT");
+        assert_eq!(substr_from(b"", isize::MIN), b"");
+        assert_eq!(substr_from(b"", isize::MAX), b"");
+    }
+
+    #[test]
+    fn indel_desc_byte_parsers_match_all_12_legacy_regexes() {
+        use super::{
+            normalize_realignins_tn_into, parse_amp_atgc, parse_atgs_amp_atgs_end,
+            parse_begin_minus_number, parse_begin_minus_number_any, parse_begin_plus_atgc,
+            parse_caret_atgnc, parse_dup_num_atgc, parse_hash_atgc,
+            parse_minus_number_amp_atgcs_end, parse_minus_number_atgnc_sv_atgnc_end,
+            parse_up_number_end, strip_caret_digits_end,
+        };
+
+        let mut cases: Vec<String> = vec![
+            "-12",
+            "-12^ATG<dup34>CGT",
+            "-12^ATN<inv5>CGN",
+            "12^ATN<inv5>CGN",
+            "-12^ATG<du>5>CGT",
+            "-12^ATG<1234>CGT",
+            "-12^ATG<a\nb5>CGT",
+            "+ATN",
+            "+NAT",
+            "+AT<dup5>ATN",
+            "+ATN&GC",
+            "+AT&GCN",
+            "-5^3^ACGT",
+            "-5^^ACGT",
+            "+AT^1#2",
+            "+AT^1&2",
+            "+AT^1&",
+            "+AT&GC&TT",
+            "-12^ATG&GC",
+            "-12&GC&TT",
+            "prefix-12&GC",
+            "prefix+AT&GC",
+            "+AT<dup5>GC&TT",
+            "+AT<dup5>GC",
+            "<dup0>A",
+            "<dup12>ACGT",
+            "&12&ACGT",
+            "#12#ACGT",
+            "-",
+            "+",
+            "^12",
+            "^^12",
+            "-12^34",
+            "-12\n^ATG",
+            "",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
+
+        let tokens = [
+            "", "+", "-", "1", "12", "^", "&", "#", "<dup5>", "<inv9>", "A", "AT", "ATN", "N", "GC",
+        ];
+        let mut state = 0x9E37_79B9_7F4A_7C15_u64;
+        for _ in 0..300 {
+            let mut s = String::new();
+            for _ in 0..5 {
+                state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+                let idx = ((state >> 33) as usize) % tokens.len();
+                s.push_str(tokens[idx]);
+            }
+            cases.push(s);
+        }
+
+        let mut tn_buf = String::new();
+        for vn in &cases {
+            let vn = vn.as_str();
+
+            let exp1 = BEGIN_MINUS_NUMBER
+                .captures(vn)
+                .and_then(|c| c.get(1).map(|m| m.as_str()));
+            assert_eq!(
+                parse_begin_minus_number(vn),
+                exp1,
+                "BEGIN_MINUS_NUMBER mismatch on {vn:?}"
+            );
+
+            let exp2 = UP_NUMBER_END
+                .captures(vn)
+                .and_then(|c| c.get(1).map(|m| m.as_str()));
+            assert_eq!(
+                parse_up_number_end(vn),
+                exp2,
+                "UP_NUMBER_END mismatch on {vn:?}"
+            );
+
+            let exp3 = MINUS_NUMBER_ATGNC_SV_ATGNC_END
+                .captures(vn)
+                .and_then(|c| Some((c.get(1)?.as_str(), c.get(2)?.as_str())));
+            assert_eq!(
+                parse_minus_number_atgnc_sv_atgnc_end(vn),
+                exp3,
+                "MINUS_NUMBER_ATGNC_SV_ATGNC_END mismatch on {vn:?}"
+            );
+
+            let exp4 = BEGIN_MINUS_NUMBER_ANY
+                .captures(vn)
+                .and_then(|c| Some((c.get(1)?.as_str(), c.get(2)?.as_str())));
+            assert_eq!(
+                parse_begin_minus_number_any(vn),
+                exp4,
+                "BEGIN_MINUS_NUMBER_ANY mismatch on {vn:?}"
+            );
+
+            let exp5 = CARET_ATGNC
+                .captures(vn)
+                .and_then(|c| c.get(1).map(|m| m.as_str()));
+            assert_eq!(
+                parse_caret_atgnc(vn),
+                exp5,
+                "CARET_ATGNC mismatch on {vn:?}"
+            );
+
+            let exp6 = MINUS_NUMBER_AMP_ATGCS_END
+                .captures(vn)
+                .and_then(|c| c.get(1).map(|m| m.as_str()));
+            assert_eq!(
+                parse_minus_number_amp_atgcs_end(vn),
+                exp6,
+                "MINUS_NUMBER_AMP_ATGCS_END mismatch on {vn:?}"
+            );
+
+            let exp7 = BEGIN_PLUS_ATGC
+                .captures(vn)
+                .and_then(|c| c.get(1).map(|m| m.as_str()));
+            assert_eq!(
+                parse_begin_plus_atgc(vn),
+                exp7,
+                "BEGIN_PLUS_ATGC mismatch on {vn:?}"
+            );
+
+            let exp8 = DUP_NUM_ATGC
+                .captures(vn)
+                .and_then(|c| Some((c.get(1)?.as_str(), c.get(2)?.as_str())));
+            assert_eq!(
+                parse_dup_num_atgc(vn),
+                exp8,
+                "DUP_NUM_ATGC mismatch on {vn:?}"
+            );
+
+            let exp9 = AMP_ATGC
+                .captures(vn)
+                .and_then(|c| c.get(1).map(|m| m.as_str()));
+            assert_eq!(parse_amp_atgc(vn), exp9, "AMP_ATGC mismatch on {vn:?}");
+
+            let exp10 = HASH_ATGC
+                .captures(vn)
+                .and_then(|c| c.get(1).map(|m| m.as_str()));
+            assert_eq!(parse_hash_atgc(vn), exp10, "HASH_ATGC mismatch on {vn:?}");
+
+            let exp11 = ATGS_AMP_ATGS_END
+                .captures(vn)
+                .and_then(|c| c.get(1).map(|m| m.as_str()));
+            assert_eq!(
+                parse_atgs_amp_atgs_end(vn),
+                exp11,
+                "ATGS_AMP_ATGS_END mismatch on {vn:?}"
+            );
+
+            let exp12 = RE_CARET_DIGITS_END.replace(vn, "");
+            assert_eq!(
+                strip_caret_digits_end(vn),
+                exp12.as_ref(),
+                "RE_CARET_DIGITS_END mismatch on {vn:?}"
+            );
+
+            let legacy_tn = vn.strip_prefix('+').unwrap_or(vn).to_string();
+            let legacy_tn = legacy_tn.replace(['&', '#'], "");
+            let legacy_tn = RE_CARET_DIGITS_END.replace(&legacy_tn, "").to_string();
+            let legacy_tn = legacy_tn.replace('^', "");
+            normalize_realignins_tn_into(&mut tn_buf, vn);
+            assert_eq!(
+                tn_buf, legacy_tn,
+                "normalize_realignins_tn_into mismatch on {vn:?}"
+            );
+        }
     }
 }

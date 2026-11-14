@@ -1141,8 +1141,8 @@ fn format_vcf_record_with_filter<F: FnOnce(&mut String)>(
 
     buf.push_str(&region.chr);
     buf.push('\t');
-    let _ = write!(buf, "{}\t", variant.start_pos);
-    buf.push_str(".\t");
+    crate::util::push_i32(buf, variant.start_pos);
+    buf.push_str("\t.\t");
     buf.push_str(&variant.ref_allele);
     buf.push('\t');
     if alt_is_dot {
@@ -1151,7 +1151,8 @@ fn format_vcf_record_with_filter<F: FnOnce(&mut String)>(
         buf.push_str(&variant.var_allele);
         buf.push('\t');
     }
-    let _ = write!(buf, "{}\t", qual_val);
+    crate::util::push_i32(buf, qual_val);
+    buf.push('\t');
     let filter_start = buf.len();
     write_filter(buf);
     let filter_end = buf.len();
@@ -1165,28 +1166,34 @@ fn format_vcf_record_with_filter<F: FnOnce(&mut String)>(
     }
     buf.push_str(";TYPE=");
     buf.push_str(var_type);
-    let _ = write!(buf, ";DP={}", variant.total_pos_cov);
+    buf.push_str(";DP=");
+    crate::util::push_i32(buf, variant.total_pos_cov);
     if !config.omit_end_tag {
-        let _ = write!(buf, ";END={}", variant.end_pos);
+        buf.push_str(";END=");
+        crate::util::push_i32(buf, variant.end_pos);
     }
-    let _ = write!(buf, ";VD={}", variant.pos_coverage);
+    buf.push_str(";VD=");
+    crate::util::push_i32(buf, variant.pos_coverage);
     buf.push_str(";AF=");
     push_vcf_rounded(buf, config.fisher, variant.frequency, 4);
     buf.push_str(";BIAS=");
     for c in variant.bias.chars() {
         buf.push(if c == ';' { ':' } else { c });
     }
-    let _ = write!(
-        buf,
-        ";REFBIAS={}:{};VARBIAS={}:{}",
-        variant.ref_fwd_cov, variant.ref_rev_cov, variant.fwd, variant.rev
-    );
+    buf.push_str(";REFBIAS=");
+    crate::util::push_i32(buf, variant.ref_fwd_cov);
+    buf.push(':');
+    crate::util::push_i32(buf, variant.ref_rev_cov);
+    buf.push_str(";VARBIAS=");
+    crate::util::push_i32(buf, variant.fwd);
+    buf.push(':');
+    crate::util::push_i32(buf, variant.rev);
     buf.push_str(";PMEAN=");
     push_vcf_rounded(buf, config.fisher, variant.mean_position, 1);
-    let _ = write!(buf, ";PSTD={}", if variant.pstd { 1 } else { 0 });
+    buf.push_str(if variant.pstd { ";PSTD=1" } else { ";PSTD=0" });
     buf.push_str(";QUAL=");
     push_vcf_rounded(buf, config.fisher, variant.mean_quality, 1);
-    let _ = write!(buf, ";QSTD={}", if variant.qstd { 1 } else { 0 });
+    buf.push_str(if variant.qstd { ";QSTD=1" } else { ";QSTD=0" });
     buf.push_str(";SBF=");
     push_vcf_rounded(buf, config.fisher, sbf, 5);
     // ports var2vcf_valid.pl:147-151 + :236 interpolation: "Inf" → 0; a value in
@@ -1214,17 +1221,22 @@ fn format_vcf_record_with_filter<F: FnOnce(&mut String)>(
     push_keep(buf, variant.hi_freq, 4);
     buf.push_str(";ADJAF=");
     push_vcf_rounded(buf, config.fisher, variant.extra_freq, 4);
-    let _ = write!(buf, ";SHIFT3={}", variant.shift3);
+    buf.push_str(";SHIFT3=");
+    crate::util::push_i32(buf, variant.shift3);
     buf.push_str(";MSI=");
     push_vcf_rounded(buf, config.fisher, variant.msi, 3);
-    let _ = write!(buf, ";MSILEN={}", variant.msint);
+    buf.push_str(";MSILEN=");
+    crate::util::push_i32(buf, variant.msint);
     buf.push_str(";NM=");
     if variant.nm > 0.0 {
         push_keep(buf, variant.nm, 1);
     } else {
         buf.push('0');
     }
-    let _ = write!(buf, ";HICNT={};HICOV={}", variant.hicnt, variant.hicov);
+    buf.push_str(";HICNT=");
+    crate::util::push_i32(buf, variant.hicnt);
+    buf.push_str(";HICOV=");
+    crate::util::push_i32(buf, variant.hicov);
     buf.push_str(";LSEQ=");
     if variant.left_seq.is_empty() {
         buf.push('0');
@@ -1240,14 +1252,13 @@ fn format_vcf_record_with_filter<F: FnOnce(&mut String)>(
     // After RSEQ: amplicon mode emits the GDAMP/TLAMP/NCAMP/AMPFLAG tags (:233),
     // simple mode DUPRATE (its col 37 is Duprate) — never both.
     if let Some((gdamp, tlamp, ncamp, ampflag)) = amp {
-        let _ = write!(
-            buf,
-            ";GDAMP={};TLAMP={};NCAMP={};AMPFLAG={}",
-            gdamp,
-            tlamp,
-            ncamp,
-            i32::from(ampflag)
-        );
+        buf.push_str(";GDAMP=");
+        crate::util::push_i32(buf, gdamp);
+        buf.push_str(";TLAMP=");
+        crate::util::push_i32(buf, tlamp);
+        buf.push_str(";NCAMP=");
+        crate::util::push_i32(buf, ncamp);
+        buf.push_str(if ampflag { ";AMPFLAG=1" } else { ";AMPFLAG=0" });
     } else {
         // DUPRATE cell format differs by pipeline: with --fisher Perl consumes the
         // 38-col table directly — getRoundedValueToPrint("0.00", duprate)
@@ -1262,7 +1273,8 @@ fn format_vcf_record_with_filter<F: FnOnce(&mut String)>(
             push_stripped(buf, variant.duprate, 1);
         }
         if matches!(config.crispr_cutting_site, Some(n) if n != 0) {
-            let _ = write!(buf, ";CRISPR={}", variant.crispr);
+            buf.push_str(";CRISPR=");
+            crate::util::push_i32(buf, variant.crispr);
         }
     }
 
@@ -1285,34 +1297,40 @@ fn format_vcf_record_with_filter<F: FnOnce(&mut String)>(
                     buf.push(c);
                 }
             }
-            let _ = write!(buf, ";SVLEN={}", svlen);
+            buf.push_str(";SVLEN=");
+            crate::util::push_i64(buf, svlen);
         }
-        let _ = write!(buf, ";SPLITREAD={};SPANPAIR={}", splitreads, spanpairs);
+        buf.push_str(";SPLITREAD=");
+        crate::util::push_i32(buf, splitreads);
+        buf.push_str(";SPANPAIR=");
+        crate::util::push_i32(buf, spanpairs);
     }
 
     // FORMAT + sample columns (ports var2vcf_valid.pl:240-241).
     buf.push_str("\tGT:DP:VD:AD:AF:RD:ALD\t");
     buf.push_str(gt);
     buf.push(':');
-    let _ = write!(buf, "{}", variant.total_pos_cov);
+    crate::util::push_i32(buf, variant.total_pos_cov);
     buf.push(':');
-    let _ = write!(buf, "{}", variant.pos_coverage);
+    crate::util::push_i32(buf, variant.pos_coverage);
     buf.push(':');
     let rd = i64::from(variant.ref_fwd_cov) + i64::from(variant.ref_rev_cov);
     let vd = variant.pos_coverage;
+    crate::util::push_i64(buf, rd);
     if vd != 0 {
-        let _ = write!(buf, "{},{}", rd, vd);
-    } else {
-        let _ = write!(buf, "{}", rd);
+        buf.push(',');
+        crate::util::push_i32(buf, vd);
     }
     buf.push(':');
     push_vcf_rounded(buf, config.fisher, variant.frequency, 4);
     buf.push(':');
-    let _ = write!(
-        buf,
-        "{},{}:{},{}",
-        variant.ref_fwd_cov, variant.ref_rev_cov, variant.fwd, variant.rev
-    );
+    crate::util::push_i32(buf, variant.ref_fwd_cov);
+    buf.push(',');
+    crate::util::push_i32(buf, variant.ref_rev_cov);
+    buf.push(':');
+    crate::util::push_i32(buf, variant.fwd);
+    buf.push(',');
+    crate::util::push_i32(buf, variant.rev);
     (filter_start, filter_end)
 }
 
@@ -2349,21 +2367,21 @@ fn push_paired_sample_field(
         crate::types::round_half_even(crate::types::round_half_even(v.mean_mapping_quality, 1), 0);
     buf.push_str(gt);
     buf.push(':');
-    let _ = write!(buf, "{}", v.total_pos_cov);
+    crate::util::push_i32(buf, v.total_pos_cov);
     buf.push(':');
-    let _ = write!(buf, "{}", v.pos_coverage);
+    crate::util::push_i32(buf, v.pos_coverage);
     buf.push(':');
-    let _ = write!(buf, "{},{}", v.fwd, v.rev);
-    buf.push(':');
-    let _ = write!(buf, "{},{}", v.ref_fwd_cov, v.ref_rev_cov);
-    buf.push(':');
-    let _ = write!(
-        buf,
-        "{}",
-        i64::from(v.ref_fwd_cov) + i64::from(v.ref_rev_cov)
-    );
+    crate::util::push_i32(buf, v.fwd);
     buf.push(',');
-    let _ = write!(buf, "{}", v.pos_coverage);
+    crate::util::push_i32(buf, v.rev);
+    buf.push(':');
+    crate::util::push_i32(buf, v.ref_fwd_cov);
+    buf.push(',');
+    crate::util::push_i32(buf, v.ref_rev_cov);
+    buf.push(':');
+    crate::util::push_i64(buf, i64::from(v.ref_fwd_cov) + i64::from(v.ref_rev_cov));
+    buf.push(',');
+    crate::util::push_i32(buf, v.pos_coverage);
     buf.push(':');
     push_vcf_rounded(buf, fisher, v.frequency, 4);
     buf.push(':');
@@ -2731,13 +2749,14 @@ pub fn format_paired_vcf_record(
     let mut line = String::with_capacity(896);
     line.push_str(chr);
     line.push('\t');
-    let _ = write!(line, "{}", v1.start_pos);
+    crate::util::push_i32(&mut line, v1.start_pos);
     line.push_str("\t.\t");
     line.push_str(&v1.ref_allele);
     line.push('\t');
     line.push_str(&v1.var_allele);
     line.push('\t');
-    let _ = write!(line, "{}\t", qual_col);
+    crate::util::push_i32(&mut line, qual_col);
+    line.push('\t');
 
     let filter_start = line.len();
     filters.write_vcf_filter_field(&mut line);
@@ -2753,13 +2772,18 @@ pub fn format_paired_vcf_record(
     }
     line.push_str(";TYPE=");
     line.push_str(var_type);
-    let _ = write!(line, ";DP={};VD={}", dp1, vd1);
+    line.push_str(";DP=");
+    crate::util::push_i32(&mut line, dp1);
+    line.push_str(";VD=");
+    crate::util::push_i32(&mut line, vd1);
     line.push_str(";AF=");
     push_vcf_rounded(&mut line, config.fisher, v1.frequency, 4);
-    let _ = write!(line, ";SHIFT3={}", end_var.shift3);
+    line.push_str(";SHIFT3=");
+    crate::util::push_i32(&mut line, end_var.shift3);
     line.push_str(";MSI=");
     push_keep(&mut line, end_var.msi, 3);
-    let _ = write!(line, ";MSILEN={}", end_var.msint);
+    line.push_str(";MSILEN=");
+    crate::util::push_i32(&mut line, end_var.msint);
     line.push_str(";SSF=");
     push_vcf_rounded(&mut line, config.fisher, ptot, 5);
     line.push_str(";SOR=");

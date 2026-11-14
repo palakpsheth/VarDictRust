@@ -61,15 +61,11 @@ pub fn is_low_complex_seq(seq: &[u8]) -> bool {
     nt_cnt < 3
 }
 
-/// Find the consensus sequence in soft-clipped reads.
-/// Consensus is called if the matched nucleotides are >90% of all softly clipped nucleotides.
-///
-/// Ports `VariationUtils.findconseq`.
-pub fn find_conseq(
+fn find_conseq_with(
     soft_clip: &mut Sclip,
     dir: i32,
-    adaptor_forward: &BTreeMap<Vec<u8>, i32>,
-    adaptor_reverse: &BTreeMap<Vec<u8>, i32>,
+    has_fwd: impl FnOnce(&[u8; 6]) -> bool,
+    has_rev: impl FnOnce(&[u8; 6]) -> bool,
 ) -> Vec<u8> {
     if let Some(ref seq) = soft_clip.sequence {
         return seq.clone();
@@ -155,18 +151,16 @@ pub fn find_conseq(
     }
 
     if !final_seq.is_empty() && final_seq.len() >= 6 {
-        if dir == 3 {
-            if let Some(seed) = final_seq.get(0..6) {
-                if adaptor_forward.contains_key(seed) {
+        if let Some(seed_slice) = final_seq.get(0..6) {
+            let mut seed = [0u8; 6];
+            seed.copy_from_slice(seed_slice);
+            if dir == 3 {
+                if has_fwd(&seed) {
                     final_seq.clear();
                 }
-            }
-        } else if dir == 5 {
-            if let Some(seed) = final_seq.get(0..6) {
-                let mut rev_seed = [0u8; 6];
-                rev_seed.copy_from_slice(seed);
-                rev_seed.reverse();
-                if adaptor_reverse.contains_key(rev_seed.as_slice()) {
+            } else if dir == 5 {
+                seed.reverse();
+                if has_rev(&seed) {
                     final_seq.clear();
                 }
             }
@@ -175,6 +169,38 @@ pub fn find_conseq(
 
     soft_clip.sequence = Some(final_seq.clone());
     final_seq
+}
+
+/// Find the consensus sequence in soft-clipped reads.
+/// Consensus is called if the matched nucleotides are >90% of all softly clipped nucleotides.
+///
+/// Ports `VariationUtils.findconseq`.
+pub fn find_conseq(
+    soft_clip: &mut Sclip,
+    dir: i32,
+    adaptor_forward: &BTreeMap<Vec<u8>, i32>,
+    adaptor_reverse: &BTreeMap<Vec<u8>, i32>,
+) -> Vec<u8> {
+    find_conseq_with(
+        soft_clip,
+        dir,
+        |seed| adaptor_forward.contains_key(seed.as_slice()),
+        |rev_seed| adaptor_reverse.contains_key(rev_seed.as_slice()),
+    )
+}
+
+pub(crate) fn find_conseq_sets(
+    soft_clip: &mut Sclip,
+    dir: i32,
+    adaptor_forward: &crate::realign::AdaptorSet,
+    adaptor_reverse: &crate::realign::AdaptorSet,
+) -> Vec<u8> {
+    find_conseq_with(
+        soft_clip,
+        dir,
+        |seed| adaptor_forward.contains_seed(seed),
+        |rev_seed| adaptor_reverse.contains_seed(rev_seed),
+    )
 }
 
 /// Correct counts for negative values.

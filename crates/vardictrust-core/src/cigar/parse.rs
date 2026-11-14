@@ -2020,7 +2020,10 @@ impl<'a> CigarParser<'a> {
                 );
 
                 if adjusted_insertion_position != insertion_position
-                    && *read_pos_inc as i32 - 1 - (*start - 1 - adjusted_insertion_position) > 0
+                    && (*read_pos_inc as i64)
+                        - 1
+                        - (i64::from(*start) - 1 - i64::from(adjusted_insertion_position))
+                        > 0
                 {
                     insertion_position = adjusted_insertion_position;
                     if split_idx > 0 {
@@ -2087,34 +2090,37 @@ impl<'a> CigarParser<'a> {
             hv.nm += adjusted_nm.saturating_sub(nmoff) as f64;
             let (hv_pstd, hv_qstd) = (hv.pstd, hv.qstd);
 
-            let index_of_insertion_in_query_sequence =
-                *read_pos_inc as i32 - 1 - (*start - 1 - insertion_position);
+            let index_of_insertion_in_query_sequence = (*read_pos_inc as i64)
+                - 1
+                - (i64::from(*start) - 1 - i64::from(insertion_position));
             if insertion_position > position {
-                if let Some(sub_base) = query_seq
-                    .get(index_of_insertion_in_query_sequence as usize)
-                    .copied()
-                {
-                    if let Some(ref_ch) = self.get_ref_base(insertion_position as u32) {
-                        if sub_base == ref_ch {
-                            let base_qual_val = query_qual
-                                .get(index_of_insertion_in_query_sequence as usize)
-                                .copied()
-                                .unwrap_or(33)
-                                .saturating_sub(33)
-                                as f64;
-                            if let Some(tv) = get_variation_maybe(
-                                &mut self.non_insertion_variants,
-                                insertion_position,
-                                Some(sub_base),
-                            ) {
-                                tv.sub_cnt(
-                                    direction,
-                                    tp,
-                                    base_qual_val,
-                                    record.mapping_quality.unwrap_or(0) as i32,
-                                    adjusted_nm.saturating_sub(nmoff) as f64,
-                                    self.config.base_qual,
-                                );
+                if let Ok(ins_q_idx) = usize::try_from(index_of_insertion_in_query_sequence) {
+                    if let Some(sub_base) = query_seq.get(ins_q_idx).copied() {
+                        if let Some(ref_ch) = u32::try_from(insertion_position)
+                            .ok()
+                            .and_then(|pos| self.get_ref_base(pos))
+                        {
+                            if sub_base == ref_ch {
+                                let base_qual_val = query_qual
+                                    .get(ins_q_idx)
+                                    .copied()
+                                    .unwrap_or(33)
+                                    .saturating_sub(33)
+                                    as f64;
+                                if let Some(tv) = get_variation_maybe(
+                                    &mut self.non_insertion_variants,
+                                    insertion_position,
+                                    Some(sub_base),
+                                ) {
+                                    tv.sub_cnt(
+                                        direction,
+                                        tp,
+                                        base_qual_val,
+                                        record.mapping_quality.unwrap_or(0) as i32,
+                                        adjusted_nm.saturating_sub(nmoff) as f64,
+                                        self.config.base_qual,
+                                    );
+                                }
                             }
                         }
                     }

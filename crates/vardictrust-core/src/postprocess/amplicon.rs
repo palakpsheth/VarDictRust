@@ -72,15 +72,9 @@ pub fn amplicon_post_process<R: std::borrow::Borrow<Region>>(
             config,
             region,
             vars_per_amplicon,
-            amplicons_on_positions.iter().map(|(&position, regions)| {
-                (
-                    position,
-                    regions
-                        .iter()
-                        .map(|(idx, reg)| (*idx, reg.borrow()))
-                        .collect(),
-                )
-            }),
+            amplicons_on_positions
+                .iter()
+                .map(|(&position, regions)| (position, regions.as_slice())),
             splice,
             &mut collect,
         )?;
@@ -116,6 +110,7 @@ pub(crate) struct AmpliconCoverSweep<'a> {
     next_start: usize,
     active: BTreeSet<usize>,
     expiry: BinaryHeap<Reverse<(i32, usize)>>,
+    cached_covering: Option<std::sync::Arc<[(usize, &'a Region)]>>,
     #[cfg(debug_assertions)]
     last_pos: Option<i32>,
 }
@@ -153,6 +148,7 @@ impl<'a> AmpliconCoverSweep<'a> {
             next_start: 0,
             active: BTreeSet::new(),
             expiry: BinaryHeap::new(),
+            cached_covering: None,
             #[cfg(debug_assertions)]
             last_pos: None,
         }
@@ -169,6 +165,7 @@ impl<'a> AmpliconCoverSweep<'a> {
             }
             self.last_pos = Some(position);
         }
+        let mut changed = false;
         while let Some(idx) = self.by_start.get(self.next_start) {
             let idx = *idx;
             let start = match self.starts.get(idx) {
@@ -178,7 +175,9 @@ impl<'a> AmpliconCoverSweep<'a> {
             if start > position {
                 break;
             }
-            self.active.insert(idx);
+            if self.active.insert(idx) {
+                changed = true;
+            }
             if let Some(end) = self.ends.get(idx).copied() {
                 self.expiry.push(Reverse((end, idx)));
             }
@@ -189,8 +188,13 @@ impl<'a> AmpliconCoverSweep<'a> {
                 break;
             }
             if let Some(Reverse((_, idx))) = self.expiry.pop() {
-                self.active.remove(&idx);
+                if self.active.remove(&idx) {
+                    changed = true;
+                }
             }
+        }
+        if changed {
+            self.cached_covering = None;
         }
     }
 
@@ -205,6 +209,25 @@ impl<'a> AmpliconCoverSweep<'a> {
             }
         }
         covering
+    }
+
+    /// Cached covering amplicon slice at `pos`, in segment order, sharing a single
+    /// `Arc` allocation across consecutive positions whose active set is unchanged.
+    /// Positions MUST arrive in ascending (non-decreasing) order.
+    pub(crate) fn covering_arc_at(&mut self, pos: i32) -> std::sync::Arc<[(usize, &'a Region)]> {
+        self.advance_to(pos);
+        if let Some(ref cached) = self.cached_covering {
+            return std::sync::Arc::clone(cached);
+        }
+        let mut covering = Vec::with_capacity(self.active.len());
+        for idx in &self.active {
+            if let Some(region) = self.segment.get(*idx) {
+                covering.push((*idx, region));
+            }
+        }
+        let arc: std::sync::Arc<[(usize, &'a Region)]> = covering.into();
+        self.cached_covering = Some(std::sync::Arc::clone(&arc));
+        arc
     }
 
     /// Covering amplicons at `position`, in segment order. Positions MUST
@@ -259,7 +282,7 @@ struct AmpliconPositionRefIter<'a> {
 }
 
 impl<'a> Iterator for AmpliconPositionRefIter<'a> {
-    type Item = (i32, Vec<(usize, &'a Region)>);
+    type Item = (i32, std::sync::Arc<[(usize, &'a Region)]>);
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
@@ -274,7 +297,7 @@ impl<'a> Iterator for AmpliconPositionRefIter<'a> {
                 continue;
             }
             let position = self.current;
-            let covering = self.sweep.covering_refs_at(position);
+            let covering = self.sweep.covering_arc_at(position);
             if position >= end {
                 self.range_idx = self.range_idx.saturating_add(1);
             } else {
@@ -290,7 +313,7 @@ impl<'a> Iterator for AmpliconPositionRefIter<'a> {
 /// `&Region` directly from `segment` instead of cloning `Region` per base.
 pub(crate) fn amplicon_position_ref_stream(
     segment: &[Region],
-) -> impl Iterator<Item = (i32, Vec<(usize, &Region)>)> + '_ {
+) -> impl Iterator<Item = (i32, std::sync::Arc<[(usize, &Region)]>)> + '_ {
     let merged = merge_insert_ranges(segment);
     AmpliconPositionRefIter {
         sweep: AmpliconCoverSweep::new(segment),
@@ -315,7 +338,7 @@ pub fn amplicon_position_stream(
     segment: &[Region],
 ) -> impl Iterator<Item = (i32, Vec<(usize, Region)>)> + '_ {
     amplicon_position_ref_stream(segment)
-        .map(|(pos, refs)| (pos, refs.into_iter().map(|(i, r)| (i, r.clone())).collect()))
+        .map(|(pos, refs)| (pos, refs.iter().map(|(i, r)| (*i, (*r).clone())).collect()))
 }
 
 #[inline]
@@ -344,11 +367,11 @@ fn get_or_init_region_tag<'a>(
 /// `positions` MUST arrive in ascending order with segment-ordered covering
 /// lists — both the batch `BTreeMap` and `amplicon_position_stream` satisfy
 /// this — so row order matches the batch path exactly.
-pub fn amplicon_post_process_streaming<R: std::borrow::Borrow<Region>>(
+pub fn amplicon_post_process_streaming<R: std::borrow::Borrow<Region>, C: AsRef<[(usize, R)]>>(
     config: &Config,
     region: &Region,
     vars_per_amplicon: &[crate::javamap::JavaHashMap<i32, Vars>],
-    positions: impl IntoIterator<Item = (i32, Vec<(usize, R)>)>,
+    positions: impl IntoIterator<Item = (i32, C)>,
     splice: &rustc_hash::FxHashSet<String>,
     emit: &mut dyn FnMut(AmpliconVariant) -> Result<(), crate::types::VardictError>,
 ) -> Result<(), crate::types::VardictError> {
@@ -368,6 +391,7 @@ pub fn amplicon_post_process_streaming<R: std::borrow::Borrow<Region>>(
 
     // Iterate over positions sorted (BTreeMap already sorted)
     for (position, amplicon_regions) in positions {
+        let amplicon_regions = amplicon_regions.as_ref();
         gvs.clear();
         ref_vars.clear();
         vcovs.clear();
@@ -376,7 +400,7 @@ pub fn amplicon_post_process_streaming<R: std::borrow::Borrow<Region>>(
         let mut maxcov: i32 = 0;
         let mut maxaf: f64 = 0.0;
 
-        for (amplicon_number, amp_region_item) in &amplicon_regions {
+        for (amplicon_number, amp_region_item) in amplicon_regions {
             let amplicon_number = *amplicon_number;
             let amp_region: &Region = amp_region_item.borrow();
             let vtmp = vars_per_amplicon
@@ -500,7 +524,7 @@ pub fn amplicon_post_process_streaming<R: std::borrow::Borrow<Region>>(
                 if let Some(top_gv) = gvs.first() {
                     let gdnt = &top_gv.0.description;
                     let mut gcnt: Vec<(Variant, usize)> = Vec::new();
-                    for (amp_num, amp_reg_item) in &amplicon_regions {
+                    for (amp_num, amp_reg_item) in amplicon_regions {
                         let amp_num = *amp_num;
                         let amp_reg: &Region = amp_reg_item.borrow();
                         let vtmp = vars_per_amplicon
@@ -543,7 +567,7 @@ pub fn amplicon_post_process_streaming<R: std::borrow::Borrow<Region>>(
             let mut bad_count: i32 = 0;
             bad_vars.clear();
             if initial_gvscnt != total_amplicons || current_flag {
-                for (amp_num, amp_reg_item) in &amplicon_regions {
+                for (amp_num, amp_reg_item) in amplicon_regions {
                     let amp_num = *amp_num;
                     let amp_reg: &Region = amp_reg_item.borrow();
                     if config.pileup && vref.ref_allele == vref.var_allele {
@@ -1578,10 +1602,24 @@ mod tests {
         ];
 
         let owned: Vec<(i32, Vec<(usize, Region)>)> = amplicon_position_stream(&segment).collect();
-        let borrowed: Vec<(i32, Vec<(usize, &Region)>)> =
-            amplicon_position_ref_stream(&segment).collect();
+        let borrowed: Vec<_> = amplicon_position_ref_stream(&segment).collect();
 
         assert_eq!(borrowed.len(), owned.len());
+        let mut shared_arc_hits = 0usize;
+        for w in borrowed.windows(2) {
+            let cov0 = &w[0].1;
+            let cov1 = &w[1].1;
+            let same_indices = cov0.len() == cov1.len()
+                && cov0.iter().zip(cov1.iter()).all(|((a, _), (b, _))| a == b);
+            if same_indices {
+                assert!(
+                    std::sync::Arc::ptr_eq(cov0, cov1),
+                    "adjacent positions with identical active set must share cached Arc"
+                );
+                shared_arc_hits += 1;
+            }
+        }
+        assert!(shared_arc_hits > 0);
         for ((bp, bcov), (op, ocov)) in borrowed.iter().zip(owned.iter()) {
             assert_eq!(bp, op);
             assert_eq!(bcov.len(), ocov.len());
