@@ -248,9 +248,7 @@ impl VardictError {
     #[inline]
     pub fn is_broken_pipe(&self) -> bool {
         match self {
-            Self::Io(e) => {
-                e.kind() == std::io::ErrorKind::BrokenPipe || e.raw_os_error() == Some(32)
-            }
+            Self::Io(e) => e.kind() == std::io::ErrorKind::BrokenPipe,
             _ => false,
         }
     }

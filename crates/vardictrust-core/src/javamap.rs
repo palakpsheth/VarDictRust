@@ -41,6 +41,7 @@ pub struct JavaHashMap<K, V> {
     new_key_log: NewKeyLog<K>,
 }
 
+#[derive(Debug)]
 pub struct Iter<'a, K, V> {
     buckets: &'a [u32],
     nodes: &'a [Node<K, V>],
@@ -510,7 +511,7 @@ where
         self.iter().map(|(k, _)| k)
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (&K, &V)> {
+    pub fn iter(&self) -> Iter<'_, K, V> {
         Iter {
             buckets: &self.buckets,
             nodes: &self.nodes,

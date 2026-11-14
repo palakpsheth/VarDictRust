@@ -20,6 +20,7 @@ const HELP_HEADINGS: [&str; 7] = [
 /// Escape arbitrary text for `roff` (`man(7)`) output (`AR-18`):
 /// - `\` -> `\\`
 /// - `-` -> `\-`
+/// - `—` (`\u{2014}`) -> `\(em` and `–` (`\u{2013}`) -> `\(en`
 /// - line-leading `.` or `'` -> `\&.` or `\&'` (prevents accidental macro invocation)
 pub(crate) fn escape_roff(s: &str) -> String {
     let mut out = String::with_capacity(s.len().saturating_add(16));
@@ -38,6 +39,14 @@ pub(crate) fn escape_roff(s: &str) -> String {
             }
             '-' => {
                 out.push_str("\\-");
+                at_line_start = false;
+            }
+            '\u{2014}' => {
+                out.push_str("\\(em");
+                at_line_start = false;
+            }
+            '\u{2013}' => {
+                out.push_str("\\(en");
                 at_line_start = false;
             }
             '\n' => {
@@ -115,7 +124,12 @@ fn collect_all_flag_tokens(cmd: &clap::Command) -> Vec<String> {
                 flags.push(format!("--{l}"));
             }
         }
+        if arg.get_id().as_str() == "debug_print" {
+            flags.push("--defaultPrinter".to_string());
+            flags.push("-defaultPrinter".to_string());
+        }
     }
+    flags.push("-UN".to_string());
     flags.push("-th".to_string());
     flags
 }
@@ -199,7 +213,10 @@ fn write_bash_completions<W: Write>(cmd: &clap::Command, out: &mut W) -> io::Res
     )?;
     writeln!(out, "            return 0")?;
     writeln!(out, "            ;;")?;
-    writeln!(out, "        --DP|-DP|--default-printer|-default-printer)")?;
+    writeln!(
+        out,
+        "        --DP|-DP|--default-printer|-default-printer|--defaultPrinter|-defaultPrinter)"
+    )?;
     writeln!(
         out,
         "            COMPREPLY=( $(compgen -W \"OUT ERR\" -- \"${{cur}}\") )"
@@ -292,20 +309,32 @@ fn write_zsh_completions<W: Write>(cmd: &clap::Command, out: &mut W) -> io::Resu
                 group.push(format!("--{l}"));
             }
         }
+        if arg.get_id().as_str() == "debug_print" {
+            group.push("--defaultPrinter".to_string());
+        }
         let excl = if group.len() > 1 {
             format!("({})", group.join(" "))
         } else {
             String::new()
         };
-        let opt_eq = if arg_takes_values(arg) && arg_min_values(arg) == 0 {
-            "=-"
-        } else {
-            ""
-        };
+        let is_opt_val = arg_takes_values(arg) && arg_min_values(arg) == 0;
         for flag in &group {
+            let opt_eq = if is_opt_val {
+                if flag.starts_with("--") {
+                    "=-"
+                } else {
+                    "-"
+                }
+            } else {
+                ""
+            };
             writeln!(out, "        '{excl}{flag}{opt_eq}[{desc}]{val_spec}' \\")?;
         }
     }
+    writeln!(
+        out,
+        "        '(-UN --UN)-UN[Indicate unique mode (first read in pair; VarDictJava single-dash alias)]' \\"
+    )?;
     writeln!(
         out,
         "        '(-th --threads)-th[Threads (VarDictJava single-dash alias)]::THREADS: ' \\"
@@ -350,6 +379,9 @@ fn write_fish_completions<W: Write>(cmd: &clap::Command, out: &mut W) -> io::Res
                 line.push_str(&format!(" -l {l}"));
             }
         }
+        if arg.get_id().as_str() == "debug_print" {
+            line.push_str(" -l defaultPrinter -o defaultPrinter");
+        }
         if arg_min_values(arg) > 0 {
             line.push_str(" -r");
         }
@@ -368,6 +400,10 @@ fn write_fish_completions<W: Write>(cmd: &clap::Command, out: &mut W) -> io::Res
         }
         writeln!(out, "{line}")?;
     }
+    writeln!(
+        out,
+        "complete -c vardictrust -o UN -d 'Indicate unique mode (first read in pair; VarDictJava single-dash alias for --UN)'"
+    )?;
     writeln!(
         out,
         "complete -c vardictrust -o th -d 'Threads (VarDictJava single-dash alias for --threads)'"
@@ -395,6 +431,9 @@ fn format_man_arg_synopsis(arg: &clap::Arg) -> String {
     if arg.get_id().as_str() == "_help" {
         parts.push("-?".to_string());
     }
+    if arg.get_id().as_str() == "unique_mode_second_in_pair_enabled" {
+        parts.push("-UN".to_string());
+    }
     if let Some(longs) = arg.get_long_and_visible_aliases() {
         for l in longs {
             parts.push(format!("--{l}"));
@@ -403,19 +442,26 @@ fn format_man_arg_synopsis(arg: &clap::Arg) -> String {
     if arg.get_id().as_str() == "threads" {
         parts.insert(0, "-th".to_string());
     }
-    let mut header = parts.join(", ");
-    if arg_takes_values(arg) {
+    let header = if arg_takes_values(arg) {
         let placeholder = arg_value_placeholder(arg);
         if arg_min_values(arg) == 0 {
-            if arg.get_id().as_str() == "threads" {
-                header.push_str(&format!(" [{placeholder}]"));
-            } else {
-                header.push_str(&format!("[={placeholder}]"));
-            }
+            let formatted: Vec<String> = parts
+                .into_iter()
+                .map(|flag| {
+                    if flag.starts_with("--") && arg.get_id().as_str() != "threads" {
+                        format!("{flag}[={placeholder}]")
+                    } else {
+                        format!("{flag} [{placeholder}]")
+                    }
+                })
+                .collect();
+            formatted.join(", ")
         } else {
-            header.push_str(&format!(" <{placeholder}>"));
+            format!("{} <{placeholder}>", parts.join(", "))
         }
-    }
+    } else {
+        parts.join(", ")
+    };
     escape_roff(&header)
 }
 

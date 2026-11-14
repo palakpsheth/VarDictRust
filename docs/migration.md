@@ -103,7 +103,7 @@ vardictrust \
 When migrating custom downstream scripts that consume raw `.var` tables instead of VCF:
 
 - **`vardictrust ... --emit-intermediate`**: emits the unannotated Java `.var` schema (`36` columns in Simple mode, `38` in Amplicon mode, `55` in Somatic mode — identical to running `VarDictJava` alone without R).
-- **`vardictrust ... --emit-intermediate --fisher`**: runs the in-engine R-exact Fisher strand-bias / somatic tests and emits the R-annotated `.var` schema (`38` columns in Simple mode, `40` in Amplicon mode, `61` in Somatic mode — identical to `VarDictJava | teststrandbias.R` or `VarDictJava | testsomatic.R`).
+- **`vardictrust ... --emit-intermediate --fisher`**: runs the in-engine `VarDictJava --fisher` port (`FisherExact.java` / Apache Commons Math, matching R within $\varepsilon \le 10^{-6}$ modulo the dyadic-midpoint 1-ulp rounding documented in [`DIVERGENCES.md`](../DIVERGENCES.md)) and emits the 38/40/61-column `.var` schema (`38` in Simple mode, `40` in Amplicon mode, `61` in Somatic mode — reproducing `VarDictJava --fisher`). By contrast, default VCF output mode (without `--emit-intermediate`) always runs R-exact `dhyper` / `uniroot` (`teststrandbias.R` / `testsomatic.R`) inline with no `--fisher` flag needed.
 
 ---
 
@@ -132,6 +132,15 @@ Because `vardictrust` fuses [`VarDictJava`](https://github.com/AstraZeneca-NGS/V
 | `-I <FLOAT>` | `--vcf-msi <FLOAT>` | `12` | `12` | Maximum non-monomer microsatellite repeat count (`MSI`) before `MSI<FLOAT>` filter. |
 | `-c <INT>` | `--vcf-cluster-dist <INT>` | `0` (disabled) | `0` (disabled) | Adjacent variant cluster window in bp (`Cluster<INT>bp` filter across single-sample, amplicon, and paired somatic streams). |
 | `-A` (`var2vcf_valid.pl` all-alleles) | *Deferred to `v1.1.0` `--all-alleles`* | Single-winner (`UB-7`) | Single-winner (`UB-7`) | **Important:** `-A <INT>` on `vardictrust` is `VarDictJava`'s `sv_min_af` (`[default: 4]`), **not** `var2vcf_valid.pl -A`! Multi-allelic emission (`UB-7`) is tracked for `v1.1.0` (`--modern` / `--all-alleles`; see [`ROADMAP.md`](../ROADMAP.md)). |
+
+Additional `var2vcf_*.pl` migration nuances when translating legacy shell wrappers:
+
+- **Omit `var2vcf_*.pl -b <contigs.bed>` and `var2vcf_*.pl -G <ref.fa>`:** `vardictrust` populates `##contig=<ID=...,length=...>` and `##reference=` headers automatically from the engine's `-G <ref.fa>` and companion `.fai` index (`-b` on `vardictrust` is `--bam`).
+- **Drop unused/colliding Perl flags (`-D`, `-a`, `-C`):**
+  - `var2vcf_paired.pl -D <FLOAT>` (commented out in Perl's filter logic; only wrote the static `##FILTER=<ID=DIFF0.2,...>` header) **must be omitted** — `-D` on `vardictrust` enables `--debug`.
+  - `var2vcf_valid.pl -a` (unused `Getopt` flag in Perl; amplicon `AMPBIAS` annotations are emitted automatically from 8-column BED / `-a` amplicon runs) collides with `-a` / `--amplicon` (`int:float`) on `vardictrust`.
+  - `var2vcf_*.pl -C` (commented-out contig check in Perl) **must be omitted** — `-C` on `vardictrust` is `VarDictJava`'s unsupported chromosome-as-numbers flag and fails loudly per Section 5.
+- **Explicit `0` thresholds are honored (`defined()` vs Perl truthiness):** `var2vcf_valid.pl` / `var2vcf_paired.pl` tested `-d`, `-v`, `-q`, `-p`, `-o`, `-m`, and `-I` with Perl truthiness (`$opt_q ? $opt_q : 22.5`), silently reverting `-q 0` / `-d 0` / `-v 0` back to non-zero defaults (`22.5`, `3`/`5`, `2`/`3`). `vardictrust` uses `Option` (`defined()`) semantics, so `--vcf-min-depth 0`, `--vcf-min-vd 0`, `--vcf-qmean 0`, `--vcf-pmean 0`, `--vcf-sn 0`, `--vcf-max-nm 0`, `--vcf-msi 0`, and `--vcf-af 0` all honor explicit `0`.
 
 ---
 

@@ -1112,6 +1112,17 @@ pub struct CachedBgzfReader {
     misses: u64,
 }
 
+impl std::fmt::Debug for CachedBgzfReader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CachedBgzfReader")
+            .field("meta_id", &self.meta_id)
+            .field("upos", &self.upos)
+            .field("at_eof", &self.at_eof)
+            .field("inner_next_cpos", &self.inner_next_cpos)
+            .finish_non_exhaustive()
+    }
+}
+
 impl CachedBgzfReader {
     pub fn new(file: std::fs::File, meta_id: u64) -> Self {
         Self {
@@ -1827,23 +1838,17 @@ impl PreallocatedFastaAdapter {
         buf_reader: noodles::fasta::io::BufReader<std::fs::File>,
         index: noodles::fasta::fai::Index,
     ) -> Self {
-        let upgraded = match buf_reader {
-            noodles::fasta::io::BufReader::Uncompressed(br) => {
-                noodles::fasta::io::BufReader::Uncompressed(std::io::BufReader::with_capacity(
-                    FASTA_BUF_CAPACITY,
-                    br.into_inner(),
-                ))
-            }
-            noodles::fasta::io::BufReader::Bgzf(r) => noodles::fasta::io::BufReader::Bgzf(r),
-        };
         Self {
-            reader: noodles::fasta::io::Reader::new(upgraded),
+            reader: noodles::fasta::io::Reader::new(buf_reader),
             index,
         }
     }
 
     fn open(fasta_path: &Path) -> Result<Self, crate::types::VardictError> {
-        let buf_reader = crate::reference::open_indexed_fasta_buf_reader(fasta_path)?;
+        let buf_reader = crate::reference::open_indexed_fasta_buf_reader_with_capacity(
+            fasta_path,
+            FASTA_BUF_CAPACITY,
+        )?;
         let fai_path = fasta_fai_path(fasta_path);
         let index = noodles::fasta::fai::fs::read(&fai_path)?;
         Ok(Self::from_buf_reader_and_index(buf_reader, index))
@@ -1853,7 +1858,10 @@ impl PreallocatedFastaAdapter {
         fasta_path: &Path,
         index: noodles::fasta::fai::Index,
     ) -> Result<Self, crate::types::VardictError> {
-        let buf_reader = crate::reference::open_indexed_fasta_buf_reader(fasta_path)?;
+        let buf_reader = crate::reference::open_indexed_fasta_buf_reader_with_capacity(
+            fasta_path,
+            FASTA_BUF_CAPACITY,
+        )?;
         Ok(Self::from_buf_reader_and_index(buf_reader, index))
     }
 }

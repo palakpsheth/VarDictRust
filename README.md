@@ -32,7 +32,7 @@ vardictrust -G GRCh38.fa -f 0.01 -N "TUMOR|NORMAL" -b "tumor.bam|normal.bam" -R 
 # chr7   55152340  .   G    A    184   PASS    TYPE=SNV;AF=0.245;STATUS=StrongSomatic  GT:DP:VD:AD:AF:RD:ALD  0/1:120:29:91,29...  0/0:115:0:115,0...
 ```
 
-Built under the [rewrites.bio](https://rewrites.bio) manifesto: *a faster, more robust tool that produces the same results*. See the [Omnibus Empirical Validation Report](docs/validation/omnibus-empirical-validation.md) for biological provenance, mathematical proofs, and cohort datasets. The repository-tracked evaluation manuscript (compiled text, typeset PDFs, figures, tables, and one-command reproduction) lives in the [paper reproducibility package](paper/README.md): [manuscript](paper/manuscript.md) ([PDF](paper/manuscript.pdf)) and [supplement](paper/supplement.md) ([PDF](paper/supplement.pdf)).
+Built under the [rewrites.bio](https://rewrites.bio) manifesto: *a faster, more robust tool that produces the same results*. Migrating from `VarDictJava` + `teststrandbias.R`/`testsomatic.R` + `var2vcf_*.pl`? Start with the [VarDictJava Migration Guide](docs/migration.md). See the [Omnibus Empirical Validation Report](docs/validation/omnibus-empirical-validation.md) for biological provenance, mathematical proofs, and cohort datasets. The repository-tracked evaluation manuscript (compiled text, typeset PDFs, figures, tables, and one-command reproduction) lives in the [paper reproducibility package](paper/README.md): [manuscript](paper/manuscript.md) ([PDF](paper/manuscript.pdf)) and [supplement](paper/supplement.md) ([PDF](paper/supplement.pdf)).
 
 ---
 
@@ -41,6 +41,7 @@ Built under the [rewrites.bio](https://rewrites.bio) manifesto: *a faster, more 
 - [Performance & Scaling Scoreboard](#performance--scaling-scoreboard)
 - [Installation](#installation)
 - [Usage & Pipeline Recipes](#usage--pipeline-recipes)
+- [VarDictJava Migration Guide](docs/migration.md)
 - [Operational Modalities](#operational-modalities)
 - [Empirical Parity & Validation Status](#empirical-parity--validation-status)
 - [Evaluation Manuscript & Reproducibility](#evaluation-manuscript--reproducibility)
@@ -177,8 +178,8 @@ vardictrust -G fixtures/micro/micro.ref.fa -b fixtures/micro/micro.bam -R chr1:4
 ## Usage & Pipeline Recipes
 
 > [!WARNING]
-> **The Silent BED Coordinate Trap (`-c 1 -S 2 -E 3`):**
-> - **Standard 3/4-Column BED Files (`chr start end [name]`):** VarDict defaults to `-c 3 -S 7 -E 8` (1-based) for legacy 8-column amplicon BED files. Pass **`-c 1 -S 2 -E 3`** (plus **`-z`** for 0-based half-open BED files) on 3-column BEDs to prevent parser aborts.
+> **The Silent BED Coordinate Trap (`-c 1 -S 2 -E 3 -z`):**
+> - **Non-4-Column BED Files (`chr start end ...`):** VarDict defaults to 13-column UCSC `refGene` columns (`-c 3 -S 7 -E 8 -s 10 -e 11 -g 13`, 1-based inclusive), while auto-detecting 4-column standard 0-based BEDs (when `-c` is omitted) and 8-column amplicon BEDs. Pass **`-c 1 -S 2 -E 3 -z`** on 3-, 5-, and 6-column 0-based BED files (and whenever `-c 1` is passed explicitly on 4-column 0-based BEDs) to prevent coordinate shifts or parser aborts; see the [VarDictJava Migration Guide](docs/migration.md) for side-by-side pipeline translation.
 > - **Direct Region Specification:** Pass `-R chr:start-end[:gene]` to bypass BED parsing.
 
 ### 1. Germline Single-Sample Calling
@@ -400,9 +401,9 @@ Flag parity with VarDictJava v1.8.3 (`89` CLI flags across 7 functional groups) 
 
 | Short | Long | Description | Default | Status |
 | :--- | :--- | :--- | :--- | :--- |
-| `-c` | — | BED chromosome column (1-based; default 3 for 8-col amplicon BED) | `3` | `corpus` |
-| `-S` | — | BED start column (default 7 for 8-col amplicon BED) | `7` | `corpus` |
-| `-E` | — | BED end column (default 8 for 8-col amplicon BED) | `8` | `corpus` |
+| `-c` | — | BED chromosome column (1-based; default 3 for 13-col UCSC `refGene`; 4-col BED & 8-col amplicon BED auto-detected) | `3` | `corpus` |
+| `-S` | — | BED start column (default 7 for 13-col UCSC `refGene`) | `7` | `corpus` |
+| `-E` | — | BED end column (default 8 for 13-col UCSC `refGene`) | `8` | `corpus` |
 | `-s` | — | BED segment-start column | `10` (= `-S` if set) | `corpus` |
 | `-e` | — | BED segment-end column | `11` (= `-E` if set) | `corpus` |
 | `-g` | — | BED gene column | `13` | `corpus` |

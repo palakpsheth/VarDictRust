@@ -1849,13 +1849,28 @@ impl std::io::Write for OutputDestination {
 const BUFFER_CAPACITY: usize = 64 * 1024; // 64 KB
 
 fn sync_file_ignoring_special(file: &std::fs::File) -> Result<(), VardictError> {
+    // POSIX/Darwin ENOTTY (25): returned by macOS F_FULLFSYNC / fsync on character devices
+    // when accessed via an fd alias or race.
+    #[cfg(unix)]
+    const UNIX_ENOTTY: i32 = 25;
+
+    if !file.metadata().is_ok_and(|m| m.is_file()) {
+        return Ok(());
+    }
     match file.sync_all() {
         Ok(()) => Ok(()),
         Err(err)
-            if err.kind() == std::io::ErrorKind::InvalidInput || err.raw_os_error() == Some(29) =>
+            if matches!(
+                err.kind(),
+                std::io::ErrorKind::InvalidInput
+                    | std::io::ErrorKind::NotSeekable
+                    | std::io::ErrorKind::Unsupported
+            ) =>
         {
             Ok(())
         }
+        #[cfg(unix)]
+        Err(err) if err.raw_os_error() == Some(UNIX_ENOTTY) => Ok(()),
         Err(err) => Err(VardictError::Io(err)),
     }
 }
@@ -1884,8 +1899,50 @@ fn csi_output_path(vcf_gz_path: &Path) -> std::path::PathBuf {
 
 fn is_readonly_parent_fallback_eligible(target: &Path, err: &std::io::Error) -> bool {
     !is_special_stream_or_fd_alias(target)
-        && (err.kind() == std::io::ErrorKind::PermissionDenied || err.raw_os_error() == Some(30))
+        && matches!(
+            err.kind(),
+            std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::ReadOnlyFilesystem
+        )
         && std::fs::metadata(target).is_ok_and(|m| m.is_file())
+}
+
+fn preflight_readonly_index_plan(plan: &OutputIndexPlan) -> std::io::Result<()> {
+    let idx_probe = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&plan.primary_path)
+        .map_err(|e| {
+            std::io::Error::new(
+                e.kind(),
+                format!(
+                    "cannot write {} index '{}' in read-only parent directory: {e}",
+                    plan.flag,
+                    plan.primary_path.display()
+                ),
+            )
+        })?;
+    if !idx_probe.metadata()?.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!(
+                "cannot stage {} index '{}': target is not a writable regular file",
+                plan.flag,
+                plan.primary_path.display()
+            ),
+        ));
+    }
+    drop(idx_probe);
+
+    if plan.alt_path.exists() || std::fs::symlink_metadata(&plan.alt_path).is_ok() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!(
+                "cannot remove stale {} index '{}' in read-only parent directory",
+                plan.alt_flag,
+                plan.alt_path.display()
+            ),
+        ));
+    }
+    Ok(())
 }
 
 fn is_directory_target(path: &Path) -> bool {
@@ -1905,11 +1962,23 @@ enum StagedFileTarget {
         tmp_path: std::path::PathBuf,
         committed: bool,
     },
+    DirectTempStaged {
+        final_path: std::path::PathBuf,
+        _scratch_dir: SpillTempDir,
+        scratch_path: std::path::PathBuf,
+    },
     Direct,
 }
 
 impl StagedFileTarget {
     fn open(target: &Path) -> std::io::Result<(std::fs::File, Self)> {
+        Self::open_with_index_preflight(target, None)
+    }
+
+    fn open_with_index_preflight(
+        target: &Path,
+        index_plan: Option<&OutputIndexPlan>,
+    ) -> std::io::Result<(std::fs::File, Self)> {
         if is_directory_target(target) {
             return Err(directory_target_io_error("output target", target));
         }
@@ -1932,12 +2001,46 @@ impl StagedFileTarget {
                 },
             )),
             Err(err) if is_readonly_parent_fallback_eligible(target, &err) => {
-                let is_reg_file = std::fs::metadata(target).is_ok_and(|m| m.is_file());
-                let file = std::fs::OpenOptions::new()
-                    .write(true)
-                    .truncate(is_reg_file)
-                    .open(target)?;
-                Ok((file, Self::Direct))
+                // Probe writability WITHOUT `.truncate(true)` so pre-existing target bytes
+                // are never clobbered before index preflight and engine execution complete.
+                let probe = std::fs::OpenOptions::new().write(true).open(target)?;
+                if !probe.metadata()?.is_file() {
+                    return Err(err);
+                }
+                drop(probe);
+
+                if let Some(plan) = index_plan {
+                    preflight_readonly_index_plan(plan)?;
+                }
+
+                match SpillTempDir::new() {
+                    Ok(scratch_dir) => {
+                        let scratch_path = scratch_dir.path().join("staged_output.bin");
+                        let file = create_private_spill_file(&scratch_path)?;
+                        Ok((
+                            file,
+                            Self::DirectTempStaged {
+                                final_path: target.to_path_buf(),
+                                _scratch_dir: scratch_dir,
+                                scratch_path,
+                            },
+                        ))
+                    }
+                    Err(tmp_err)
+                        if matches!(
+                            tmp_err.kind(),
+                            std::io::ErrorKind::PermissionDenied
+                                | std::io::ErrorKind::ReadOnlyFilesystem
+                        ) =>
+                    {
+                        let file = std::fs::OpenOptions::new()
+                            .write(true)
+                            .truncate(true)
+                            .open(target)?;
+                        Ok((file, Self::Direct))
+                    }
+                    Err(tmp_err) => Err(tmp_err),
+                }
             }
             Err(err) => Err(err),
         }
@@ -1946,19 +2049,39 @@ impl StagedFileTarget {
     fn readable_path<'a>(&'a self, final_path: &'a Path) -> &'a Path {
         match self {
             Self::AtomicTmp { tmp_path, .. } => tmp_path.as_path(),
+            Self::DirectTempStaged { scratch_path, .. } => scratch_path.as_path(),
             Self::Direct => final_path,
         }
     }
 
     fn commit(mut self) -> std::io::Result<()> {
-        if let Self::AtomicTmp {
-            final_path,
-            tmp_path,
-            committed,
-        } = &mut self
-        {
-            std::fs::rename(&*tmp_path, &*final_path)?;
-            *committed = true;
+        match &mut self {
+            Self::AtomicTmp {
+                final_path,
+                tmp_path,
+                committed,
+            } => {
+                std::fs::rename(&*tmp_path, &*final_path)?;
+                *committed = true;
+            }
+            Self::DirectTempStaged {
+                final_path,
+                scratch_path,
+                ..
+            } => {
+                let mut src = std::fs::File::open(&*scratch_path)?;
+                let mut dst = std::fs::OpenOptions::new()
+                    .write(true)
+                    .truncate(true)
+                    .open(&*final_path)?;
+                std::io::copy(&mut src, &mut dst)?;
+                std::io::Write::flush(&mut dst)?;
+                sync_file_ignoring_special(&dst).map_err(|e| match e {
+                    VardictError::Io(io_e) => io_e,
+                    other => std::io::Error::other(other.to_string()),
+                })?;
+            }
+            Self::Direct => {}
         }
         Ok(())
     }
@@ -2016,7 +2139,10 @@ fn open_output_writer(
         )),
         Some(path_str) => {
             let target = Path::new(path_str);
-            let (file, staged) = StagedFileTarget::open(target).map_err(VardictError::Io)?;
+            let index_plan = output_index_plan(config);
+            let (file, staged) =
+                StagedFileTarget::open_with_index_preflight(target, index_plan.as_ref())
+                    .map_err(VardictError::Io)?;
             if is_bgzf_output_path(target) {
                 let worker_count = std::num::NonZeroUsize::new(config.threads.clamp(1, 4))
                     .unwrap_or(std::num::NonZeroUsize::MIN);
@@ -2362,7 +2488,14 @@ pub fn resolve_mode(
 
 /// Resolves effective [`config::Config`], [`CallingMode`], and optional preloaded BED lines
 /// matching `VarDictLauncher.initResources` and `VarDictLauncher.start`
-/// (`VarDictLauncher.java:46-95, 139-173`) without opening FIFO/`<(...)` BEDs twice (`AR-4`).
+fn is_regular_seekable_bed(bed_path: &str) -> bool {
+    let p = Path::new(bed_path);
+    !targets_os_fd_alias(p) && std::fs::metadata(p).is_ok_and(|m| m.is_file())
+}
+
+/// Resolves the effective configuration (`amplicon`, `zero_based`, `zero_based_defined`, `sample`)
+/// and calling mode without mutating the caller's `Config`. Streams regular BED files in `O(1)`
+/// memory and buffers non-regular BED streams (FIFOs/pipes/`/dev/fd/N`) in a single pass (`AR-4`).
 fn resolve_effective_config(
     config: &config::Config,
 ) -> Result<(config::Config, CallingMode, Option<Vec<String>>), VardictError> {
@@ -2379,15 +2512,22 @@ fn resolve_effective_config(
         effective.amplicon = None;
     } else if effective.amplicon.is_none() {
         if let Some(ref bed_path) = effective.bed {
-            let lines = crate::regions::read_bed_lines(bed_path)?;
-            if crate::regions::detect_amplicon_bed_from_lines(&lines, &effective.delimiter)? {
+            let is_amplicon = if is_regular_seekable_bed(bed_path) {
+                crate::regions::detect_amplicon_bed(bed_path, &effective.delimiter)?
+            } else {
+                let lines = crate::regions::read_bed_lines(bed_path)?;
+                let detected =
+                    crate::regions::detect_amplicon_bed_from_lines(&lines, &effective.delimiter)?;
+                preloaded_bed_lines = Some(lines);
+                detected
+            };
+            if is_amplicon {
                 effective.amplicon = Some("10:0.95".to_string());
                 if !effective.zero_based_defined {
                     effective.zero_based = true;
                     effective.zero_based_defined = true;
                 }
             }
-            preloaded_bed_lines = Some(lines);
         }
     }
 
@@ -2491,10 +2631,14 @@ fn resolve_target_path(path: &Path) -> Option<std::path::PathBuf> {
             Err(_) => break,
         }
     }
-    let file_name = cur.file_name()?;
-    let parent = cur
+    normalize_parent_preserving_leaf(&cur)
+}
+
+fn normalize_parent_preserving_leaf(p: &Path) -> Option<std::path::PathBuf> {
+    let file_name = p.file_name()?;
+    let parent = p
         .parent()
-        .filter(|p| !p.as_os_str().is_empty())
+        .filter(|par| !par.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
     let canon_parent = std::fs::canonicalize(parent).ok()?;
     Some(canon_parent.join(file_name))
@@ -2504,11 +2648,23 @@ fn resolve_target_path(path: &Path) -> Option<std::path::PathBuf> {
 enum OsFdAliasKind {
     SelfStdout,
     SelfStderr,
+    SelfOtherFd(u32),
     OtherFd,
 }
 
 fn is_ascii_digits_nonempty(s: &str) -> bool {
     !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())
+}
+
+fn classify_self_fd_str(n: &str) -> OsFdAliasKind {
+    match n {
+        "1" => OsFdAliasKind::SelfStdout,
+        "2" => OsFdAliasKind::SelfStderr,
+        _ => match n.parse::<u32>() {
+            Ok(fd) => OsFdAliasKind::SelfOtherFd(fd),
+            Err(_) => OsFdAliasKind::OtherFd,
+        },
+    }
 }
 
 fn classify_os_fd_alias_path(path: &Path) -> Option<OsFdAliasKind> {
@@ -2542,11 +2698,7 @@ fn classify_os_fd_alias_path(path: &Path) -> Option<OsFdAliasKind> {
         ["dev", "stdout"] => Some(OsFdAliasKind::SelfStdout),
         ["dev", "stderr"] => Some(OsFdAliasKind::SelfStderr),
         ["dev", "stdin"] => Some(OsFdAliasKind::OtherFd),
-        ["dev", "fd", n] if is_ascii_digits_nonempty(n) => match *n {
-            "1" => Some(OsFdAliasKind::SelfStdout),
-            "2" => Some(OsFdAliasKind::SelfStderr),
-            _ => Some(OsFdAliasKind::OtherFd),
-        },
+        ["dev", "fd", n] if is_ascii_digits_nonempty(n) => Some(classify_self_fd_str(n)),
         ["proc", pid_seg, "fd", n]
             if is_ascii_digits_nonempty(n)
                 && (*pid_seg == "self"
@@ -2557,11 +2709,7 @@ fn classify_os_fd_alias_path(path: &Path) -> Option<OsFdAliasKind> {
                 || *pid_seg == "thread-self"
                 || pid_seg.parse::<u32>().ok() == Some(std::process::id());
             if is_self {
-                match *n {
-                    "1" => Some(OsFdAliasKind::SelfStdout),
-                    "2" => Some(OsFdAliasKind::SelfStderr),
-                    _ => Some(OsFdAliasKind::OtherFd),
-                }
+                Some(classify_self_fd_str(n))
             } else {
                 Some(OsFdAliasKind::OtherFd)
             }
@@ -2579,6 +2727,12 @@ fn classify_target_os_fd_alias(path: &Path) -> Option<OsFdAliasKind> {
         return Some(kind);
     }
     let mut cur = path.to_path_buf();
+    if let Some(norm) = normalize_parent_preserving_leaf(&cur) {
+        cur = norm;
+        if let Some(kind) = classify_os_fd_alias_path(&cur) {
+            return Some(kind);
+        }
+    }
     for _ in 0..40 {
         let target = std::fs::read_link(&cur).ok()?;
         cur = if target.is_absolute() {
@@ -2591,6 +2745,12 @@ fn classify_target_os_fd_alias(path: &Path) -> Option<OsFdAliasKind> {
         };
         if let Some(kind) = classify_os_fd_alias_path(&cur) {
             return Some(kind);
+        }
+        if let Some(norm) = normalize_parent_preserving_leaf(&cur) {
+            cur = norm;
+            if let Some(kind) = classify_os_fd_alias_path(&cur) {
+                return Some(kind);
+            }
         }
     }
     None
@@ -2617,6 +2777,44 @@ fn is_special_stream_or_fd_alias(path: &Path) -> bool {
     false
 }
 
+#[cfg(target_os = "linux")]
+fn inspect_linux_self_fdinfo(fd: u32) -> (bool, u64) {
+    // Linux `O_APPEND` bit in octal `flags:` of `/proc/self/fdinfo/<fd>`:
+    // `0o0010` on Alpha/MIPS/PA-RISC/SPARC, `0o2000` on all other Linux architectures.
+    #[cfg(any(
+        target_arch = "mips",
+        target_arch = "mips64",
+        target_arch = "sparc",
+        target_arch = "sparc64"
+    ))]
+    const LINUX_O_APPEND: u64 = 0o0010;
+    #[cfg(not(any(
+        target_arch = "mips",
+        target_arch = "mips64",
+        target_arch = "sparc",
+        target_arch = "sparc64"
+    )))]
+    const LINUX_O_APPEND: u64 = 0o2000;
+
+    let Ok(info) = std::fs::read_to_string(format!("/proc/self/fdinfo/{fd}")) else {
+        return (false, 0);
+    };
+    let mut is_append = false;
+    let mut pos = 0u64;
+    for line in info.lines() {
+        if let Some(rest) = line.strip_prefix("flags:") {
+            if let Ok(flags) = u64::from_str_radix(rest.trim(), 8) {
+                is_append = (flags & LINUX_O_APPEND) != 0;
+            }
+        } else if let Some(rest) = line.strip_prefix("pos:") {
+            if let Ok(parsed_pos) = rest.trim().parse::<u64>() {
+                pos = parsed_pos;
+            }
+        }
+    }
+    (is_append, pos)
+}
+
 fn open_special_or_fd_alias_for_write(target: &Path) -> std::io::Result<std::fs::File> {
     #[cfg(unix)]
     {
@@ -2627,6 +2825,26 @@ fn open_special_or_fd_alias_for_write(target: &Path) -> std::io::Result<std::fs:
             Some(OsFdAliasKind::SelfStderr) => std::os::fd::AsFd::as_fd(&std::io::stderr())
                 .try_clone_to_owned()
                 .map(std::fs::File::from),
+            Some(OsFdAliasKind::SelfOtherFd(fd)) => {
+                #[cfg(target_os = "linux")]
+                {
+                    let (is_append, pos) = inspect_linux_self_fdinfo(fd);
+                    if is_append {
+                        std::fs::OpenOptions::new().append(true).open(target)
+                    } else {
+                        let mut file = std::fs::OpenOptions::new().write(true).open(target)?;
+                        if pos > 0 && file.metadata().is_ok_and(|m| m.is_file()) {
+                            let _ = std::io::Seek::seek(&mut file, std::io::SeekFrom::Start(pos));
+                        }
+                        Ok(file)
+                    }
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    let _ = fd;
+                    std::fs::OpenOptions::new().write(true).open(target)
+                }
+            }
             Some(OsFdAliasKind::OtherFd) | None => {
                 std::fs::OpenOptions::new().write(true).open(target)
             }
@@ -2713,6 +2931,7 @@ fn collect_protected_input_paths(config: &config::Config) -> Vec<std::path::Path
         let ref_path = Path::new(&config.reference);
         inputs.push(ref_path.to_path_buf());
         inputs.push(append_os_suffix(ref_path, ".fai"));
+        inputs.push(append_os_suffix(ref_path, ".gzi"));
         inputs.push(crate::reference::resolve_fasta_fai_path(ref_path));
         inputs.push(crate::reference::resolve_fasta_gzi_path(ref_path));
         if let Ok(canon_ref) = std::fs::canonicalize(ref_path) {
@@ -3015,7 +3234,7 @@ fn validate_io_paths(config: &config::Config) -> Result<(), VardictError> {
 }
 
 fn map_stats_io_err(stats_path: &str, err: std::io::Error) -> VardictError {
-    if err.kind() == std::io::ErrorKind::BrokenPipe || err.raw_os_error() == Some(32) {
+    if err.kind() == std::io::ErrorKind::BrokenPipe {
         VardictError::Io(std::io::Error::other(format!(
             "failed to write --stats-json '{stats_path}': {err}"
         )))
@@ -3305,18 +3524,20 @@ fn run_with_writer_inner<W: EngineWriter>(
         drop(preloaded_bed_lines);
         crate::regions::parse_region_flag(r_str, config, &chromosomes_lengths)?
     } else if let Some(ref bed_path) = config.bed {
-        let bed_lines = match preloaded_bed_lines {
-            Some(lines) => lines,
-            None => crate::regions::read_bed_lines(bed_path)?,
-        };
-        let parsed = crate::regions::parse_bed_from_lines(
-            &bed_lines,
-            config,
-            &chromosomes_lengths,
-            config.zero_based_defined.then_some(config.zero_based),
-        )?;
-        drop(bed_lines);
-        parsed
+        match preloaded_bed_lines {
+            Some(bed_lines) => crate::regions::parse_bed_from_lines(
+                &bed_lines,
+                config,
+                &chromosomes_lengths,
+                config.zero_based_defined.then_some(config.zero_based),
+            )?,
+            None => crate::regions::parse_bed(
+                bed_path,
+                config,
+                &chromosomes_lengths,
+                config.zero_based_defined.then_some(config.zero_based),
+            )?,
+        }
     } else {
         return Err(VardictError::Parse(
             "Either region (-R) or BED file must be specified".to_string(),
@@ -4142,18 +4363,20 @@ fn run_somatic<W: EngineWriter>(
         drop(preloaded_bed_lines);
         crate::regions::parse_region_flag(r_str, config, &chromosomes_lengths)?
     } else if let Some(ref bed_path) = config.bed {
-        let bed_lines = match preloaded_bed_lines {
-            Some(lines) => lines,
-            None => crate::regions::read_bed_lines(bed_path)?,
-        };
-        let parsed = crate::regions::parse_bed_from_lines(
-            &bed_lines,
-            config,
-            &chromosomes_lengths,
-            config.zero_based_defined.then_some(config.zero_based),
-        )?;
-        drop(bed_lines);
-        parsed
+        match preloaded_bed_lines {
+            Some(bed_lines) => crate::regions::parse_bed_from_lines(
+                &bed_lines,
+                config,
+                &chromosomes_lengths,
+                config.zero_based_defined.then_some(config.zero_based),
+            )?,
+            None => crate::regions::parse_bed(
+                bed_path,
+                config,
+                &chromosomes_lengths,
+                config.zero_based_defined.then_some(config.zero_based),
+            )?,
+        }
     } else {
         return Err(VardictError::Parse(
             "Either region (-R) or BED file must be specified".to_string(),
@@ -7467,8 +7690,9 @@ mod tests {
         assert!(pre_amp9.is_none());
 
         // 3. 8-column amplicon BED auto-detects even when -c 1 (column_for_chromosome) is set,
-        //    preserves explicit -z 0 (`zero_based_defined = true, zero_based = false`), and
-        //    returns preloaded BED lines so FIFO/<(...) BEDs are read once.
+        //    preserves explicit -z 0 (`zero_based_defined = true, zero_based = false`), streams
+        //    regular seekable files without `Vec<String>` slurp (`WF-4`: `pre_amp8_z0.is_none()`),
+        //    and single-pass buffers non-regular pipe/FD streams (`Some(len == 1)`).
         let amp8_z0_cfg = crate::config::Config {
             bam: "a.bam".to_string(),
             bed: Some(amp8_bed.to_string_lossy().into_owned()),
@@ -7481,11 +7705,38 @@ mod tests {
             resolve_effective_config(&amp8_z0_cfg).unwrap();
         assert_eq!(mode_amp8_z0, CallingMode::Amplicon);
         assert_eq!(eff_amp8_z0.amplicon.as_deref(), Some("10:0.95"));
-        assert_eq!(pre_amp8_z0.as_ref().map(Vec::len), Some(1));
+        assert!(
+            pre_amp8_z0.is_none(),
+            "regular BED file must stream in O(1) line memory without preloading Vec<String>"
+        );
         assert!(
             !eff_amp8_z0.zero_based,
             "explicit -z 0 must not be overwritten by amplicon auto-detect"
         );
+        #[cfg(target_os = "linux")]
+        {
+            use std::io::Write as _;
+            use std::os::fd::AsRawFd as _;
+            let (pipe_r, mut pipe_w) = std::io::pipe().unwrap();
+            pipe_w
+                .write_all(&std::fs::read(&amp8_bed).unwrap())
+                .unwrap();
+            drop(pipe_w);
+            let fifo_cfg = crate::config::Config {
+                bam: "a.bam".to_string(),
+                bed: Some(format!("/proc/self/fd/{}", pipe_r.as_raw_fd())),
+                ..Default::default()
+            };
+            let (eff_fifo, mode_fifo, pre_fifo) = resolve_effective_config(&fifo_cfg).unwrap();
+            assert_eq!(mode_fifo, CallingMode::Amplicon);
+            assert_eq!(eff_fifo.amplicon.as_deref(), Some("10:0.95"));
+            assert_eq!(
+                pre_fifo.as_ref().map(Vec::len),
+                Some(1),
+                "non-regular pipe/FD BED stream must be preloaded in a single pass"
+            );
+            drop(pipe_r);
+        }
 
         assert!(is_os_fd_alias_path(Path::new("/dev/stdout")));
         assert!(is_os_fd_alias_path(Path::new("/dev/stderr")));
@@ -8155,6 +8406,10 @@ mod tests {
             VardictError::Io(std::io::Error::from(std::io::ErrorKind::BrokenPipe)).is_broken_pipe()
         );
         assert!(!VardictError::Parse("bad".to_string()).is_broken_pipe());
+        let jm: crate::javamap::JavaHashMap<i32, i32> = Default::default();
+        assert!(!format!("{:?}", jm.iter()).is_empty());
+        let cached_bgzf = crate::bam::CachedBgzfReader::new(std::fs::File::open(&bam).unwrap(), 42);
+        assert!(format!("{cached_bgzf:?}").contains("CachedBgzfReader"));
 
         #[cfg(unix)]
         {
@@ -8165,9 +8420,60 @@ mod tests {
             let ro_tbi = ro_dir.join("mounted.vcf.gz.tbi");
             let ro_stats = ro_dir.join("mounted_stats.json");
             std::fs::write(&ro_out, b"seed").unwrap();
-            std::fs::write(&ro_tbi, b"seed_tbi").unwrap();
             std::fs::write(&ro_stats, b"seed_stats").unwrap();
             std::fs::set_permissions(&ro_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+            let ro_enforced = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(ro_dir.join("probe_nonroot"))
+                .is_err();
+            if ro_enforced {
+                // Missing pre-created .tbi inside 0555 dir must fail preflight without truncating ro_out.
+                let missing_tbi_cfg = crate::config::Config {
+                    reference: ref_fa.to_string_lossy().into_owned(),
+                    bam: bam.to_string_lossy().into_owned(),
+                    region: Some("chr1:1-50".to_string()),
+                    output_path: Some(ro_out.to_string_lossy().into_owned()),
+                    index_output: true,
+                    stats_json_path: Some(ro_stats.to_string_lossy().into_owned()),
+                    threads: 1,
+                    ..Default::default()
+                };
+                assert!(crate::run(&missing_tbi_cfg).is_err());
+                assert_eq!(
+                    std::fs::read(&ro_out).unwrap(),
+                    b"seed",
+                    "missing companion .tbi in read-only parent must not truncate existing output"
+                );
+                assert_eq!(std::fs::read(&ro_stats).unwrap(), b"seed_stats");
+            }
+
+            std::fs::set_permissions(&ro_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::fs::write(&ro_tbi, b"seed_tbi").unwrap();
+            std::fs::set_permissions(&ro_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+            if ro_enforced {
+                // Mid-run / region-parse failure with pre-created .tbi must also leave ro_out untouched.
+                let bad_region_cfg = crate::config::Config {
+                    reference: ref_fa.to_string_lossy().into_owned(),
+                    bam: bam.to_string_lossy().into_owned(),
+                    region: Some("chr1:bad".to_string()),
+                    output_path: Some(ro_out.to_string_lossy().into_owned()),
+                    index_output: true,
+                    stats_json_path: Some(ro_stats.to_string_lossy().into_owned()),
+                    threads: 1,
+                    ..Default::default()
+                };
+                assert!(crate::run(&bad_region_cfg).is_err());
+                assert_eq!(
+                    std::fs::read(&ro_out).unwrap(),
+                    b"seed",
+                    "failed run in read-only parent must not truncate existing output"
+                );
+                assert_eq!(std::fs::read(&ro_tbi).unwrap(), b"seed_tbi");
+                assert_eq!(std::fs::read(&ro_stats).unwrap(), b"seed_stats");
+            }
 
             let ro_cfg = crate::config::Config {
                 reference: ref_fa.to_string_lossy().into_owned(),

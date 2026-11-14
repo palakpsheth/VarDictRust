@@ -267,10 +267,109 @@ fn normalize_bed_line(line: &str, is_first_line: bool) -> &str {
     without_lf.trim_end_matches('\r')
 }
 
-fn open_bed_reader_from_read<R: Read + 'static>(
+#[derive(Debug)]
+struct PrefixedRead<R> {
+    prefix: [u8; 2],
+    pos: u8,
+    len: u8,
+    inner: R,
+}
+
+impl<R: Read> Read for PrefixedRead<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        let pos = usize::from(self.pos);
+        let len = usize::from(self.len);
+        if pos < len {
+            let rem = self.prefix.get(pos..len).unwrap_or(&[]);
+            let n = rem.len().min(buf.len());
+            if let (Some(dst), Some(src)) = (buf.get_mut(..n), rem.get(..n)) {
+                dst.copy_from_slice(src);
+            }
+            self.pos = self.pos.saturating_add(n as u8);
+            return Ok(n);
+        }
+        self.inner.read(buf)
+    }
+}
+
+enum BedReaderInner<R> {
+    Plain(BufReader<std::io::Take<PrefixedRead<R>>>),
+    Gz(Box<BufReader<std::io::Take<flate2::read::MultiGzDecoder<PrefixedRead<R>>>>>),
+}
+
+impl<R: Read> Read for BedReaderInner<R> {
+    #[inline]
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            Self::Plain(r) => r.read(buf),
+            Self::Gz(r) => r.read(buf),
+        }
+    }
+}
+
+impl<R: Read> BufRead for BedReaderInner<R> {
+    #[inline]
+    fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+        match self {
+            Self::Plain(r) => r.fill_buf(),
+            Self::Gz(r) => r.fill_buf(),
+        }
+    }
+
+    #[inline]
+    fn consume(&mut self, amt: usize) {
+        match self {
+            Self::Plain(r) => r.consume(amt),
+            Self::Gz(r) => r.consume(amt),
+        }
+    }
+}
+
+/// Concrete streaming BED reader supporting plain text, `.bed.gz`, and multi-member `.bed.bgz`
+/// without seeking (compatible with pipes/FIFOs) and capping uncompressed bytes at
+/// `MAX_BED_BYTES + 1`.
+pub struct BedReader {
+    inner: BedReaderInner<File>,
+}
+
+impl std::fmt::Debug for BedReader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let encoding = match &self.inner {
+            BedReaderInner::Plain(_) => "plain",
+            BedReaderInner::Gz(_) => "gzip",
+        };
+        f.debug_struct("BedReader")
+            .field("encoding", &encoding)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Read for BedReader {
+    #[inline]
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.inner.read(buf)
+    }
+}
+
+impl BufRead for BedReader {
+    #[inline]
+    fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+        self.inner.fill_buf()
+    }
+
+    #[inline]
+    fn consume(&mut self, amt: usize) {
+        self.inner.consume(amt);
+    }
+}
+
+fn open_bed_reader_from_read<R: Read>(
     mut source: R,
     max_bytes: u64,
-) -> Result<Box<dyn BufRead>, VardictError> {
+) -> Result<BedReaderInner<R>, VardictError> {
     let mut magic = [0u8; 2];
     let mut n = 0usize;
     while let Some(dst) = magic.get_mut(n..) {
@@ -285,23 +384,33 @@ fn open_bed_reader_from_read<R: Read + 'static>(
         }
     }
 
-    let prefix = magic.get(..n).unwrap_or(&[]).to_vec();
-    let chained = std::io::Cursor::new(prefix).chain(BufReader::new(source));
-    let decoded: Box<dyn Read> = if n == 2 && magic == BED_GZIP_MAGIC {
-        Box::new(flate2::bufread::MultiGzDecoder::new(chained))
-    } else {
-        Box::new(chained)
+    let prefixed = PrefixedRead {
+        prefix: magic,
+        pos: 0,
+        len: n as u8,
+        inner: source,
     };
-    Ok(Box::new(BufReader::new(
-        decoded.take(max_bytes.saturating_add(1)),
-    )))
+    let cap = max_bytes.saturating_add(1);
+    if n == 2 && magic == BED_GZIP_MAGIC {
+        Ok(BedReaderInner::Gz(Box::new(BufReader::new(
+            flate2::read::MultiGzDecoder::new(prefixed).take(cap),
+        ))))
+    } else {
+        Ok(BedReaderInner::Plain(BufReader::new(prefixed.take(cap))))
+    }
 }
 
-/// Opens a BED input path (plain text, `.bed.gz`, or multi-member `.bed.bgz`) as a bounded
-/// [`BufRead`] stream, loop-probing up to 2 magic bytes without seeking so pipes/FIFOs work.
-pub fn open_bed_reader<P: AsRef<Path>>(path: P) -> Result<Box<dyn BufRead>, VardictError> {
+/// Opens a BED input path (plain text, `.bed.gz`, or multi-member `.bed.bgz`) as a concrete
+/// [`BedReader`], loop-probing up to 2 magic bytes without seeking so pipes/FIFOs work.
+///
+/// `BedReader` caps uncompressed bytes read at `MAX_BED_BYTES + 1`; higher-level BED parsers
+/// ([`read_bed_lines`], [`parse_bed_from_reader`], and [`detect_amplicon_bed_from_reader`])
+/// convert inputs exceeding `MAX_BED_BYTES` into [`VardictError::Parse`].
+pub fn open_bed_reader<P: AsRef<Path>>(path: P) -> Result<BedReader, VardictError> {
     let file = File::open(path)?;
-    open_bed_reader_from_read(file, MAX_BED_BYTES)
+    Ok(BedReader {
+        inner: open_bed_reader_from_read(file, MAX_BED_BYTES)?,
+    })
 }
 
 trait BedLineSource {
@@ -309,7 +418,7 @@ trait BedLineSource {
 }
 
 struct ReaderBedLines<R> {
-    reader: std::io::Take<R>,
+    reader: R,
     raw_buf: Vec<u8>,
     max_bytes: u64,
     total_bytes: u64,
@@ -319,7 +428,7 @@ struct ReaderBedLines<R> {
 impl<R: BufRead> ReaderBedLines<R> {
     fn new(reader: R, max_bytes: u64) -> Self {
         Self {
-            reader: reader.take(max_bytes.saturating_add(1)),
+            reader,
             raw_buf: Vec::new(),
             max_bytes,
             total_bytes: 0,
@@ -331,11 +440,46 @@ impl<R: BufRead> ReaderBedLines<R> {
 impl<R: BufRead> BedLineSource for ReaderBedLines<R> {
     fn next_normalized_line(&mut self) -> Result<Option<&str>, VardictError> {
         self.raw_buf.clear();
-        let bytes_read = self.reader.read_until(b'\n', &mut self.raw_buf)?;
+        let remaining_budget = self
+            .max_bytes
+            .saturating_add(1)
+            .saturating_sub(self.total_bytes);
+        let mut bytes_read = 0u64;
+        loop {
+            let rem = remaining_budget.saturating_sub(bytes_read);
+            if rem == 0 {
+                break;
+            }
+            let available = match self.reader.fill_buf() {
+                Ok(buf) => buf,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) => return Err(VardictError::Io(e)),
+            };
+            if available.is_empty() {
+                break;
+            }
+            let cap = usize::try_from(rem)
+                .unwrap_or(usize::MAX)
+                .min(available.len());
+            let window = available.get(..cap).unwrap_or(available);
+            if let Some(nl_idx) = window.iter().position(|&b| b == b'\n') {
+                let take_len = nl_idx.saturating_add(1);
+                if let Some(slice) = window.get(..take_len) {
+                    self.raw_buf.extend_from_slice(slice);
+                }
+                self.reader.consume(take_len);
+                bytes_read = bytes_read.saturating_add(take_len as u64);
+                break;
+            }
+            self.raw_buf.extend_from_slice(window);
+            let consumed = window.len();
+            self.reader.consume(consumed);
+            bytes_read = bytes_read.saturating_add(consumed as u64);
+        }
         if bytes_read == 0 {
             return Ok(None);
         }
-        self.total_bytes = self.total_bytes.saturating_add(bytes_read as u64);
+        self.total_bytes = self.total_bytes.saturating_add(bytes_read);
         if self.total_bytes > self.max_bytes {
             return Err(VardictError::Parse(format!(
                 "BED input exceeds maximum allowed uncompressed size ({} bytes)",
@@ -1981,5 +2125,14 @@ Y\t59042860\t59047860\tY_59042860_5\t0\t.\t59042860\t59047860
             read_bed_lines_with_limit(capped_reader, 16),
             Err(VardictError::Parse(_))
         ));
+
+        fn _assert_send<T: Send + std::fmt::Debug>() {}
+        _assert_send::<BedReader>();
+        let bed_reader = open_bed_reader(&gz_bed).unwrap();
+        let dbg = format!("{bed_reader:?}");
+        assert!(
+            dbg.contains("BedReader") && dbg.contains("gzip"),
+            "dbg={dbg}"
+        );
     }
 }

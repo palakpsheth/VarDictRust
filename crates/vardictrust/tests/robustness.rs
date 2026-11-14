@@ -5093,6 +5093,52 @@ fn compressed_fasta_bed_companion_index_and_fd_stream_safety_e2e() {
         normalize_vcf_ref(&cram_fa_out.stdout)
     );
 
+    #[cfg(unix)]
+    {
+        // Symlinked BGZF FASTA `-G link_dir/link.fa.gz` where `.fai` + `.gzi` exist only beside
+        // canonical `real_dir/ref.fa.gz` (`WF-2`).
+        let real_ref_dir = dir.path().join("real_ref_dir");
+        let link_ref_dir = dir.path().join("link_ref_dir");
+        std::fs::create_dir_all(&real_ref_dir).expect("mkdir real_ref_dir");
+        std::fs::create_dir_all(&link_ref_dir).expect("mkdir link_ref_dir");
+        let canon_bgzf_fa = real_ref_dir.join("ref.fa.gz");
+        std::fs::copy(&bgzf_fa, &canon_bgzf_fa).expect("copy real_ref_dir/ref.fa.gz");
+        std::fs::copy(
+            dir.path().join("micro.fa.gz.fai"),
+            real_ref_dir.join("ref.fa.gz.fai"),
+        )
+        .expect("copy real_ref_dir/ref.fa.gz.fai");
+        std::fs::copy(
+            dir.path().join("micro.fa.gz.gzi"),
+            real_ref_dir.join("ref.fa.gz.gzi"),
+        )
+        .expect("copy real_ref_dir/ref.fa.gz.gzi");
+        let link_bgzf_fa = link_ref_dir.join("link.fa.gz");
+        std::os::unix::fs::symlink(
+            std::path::Path::new("../real_ref_dir/ref.fa.gz"),
+            &link_bgzf_fa,
+        )
+        .expect("symlink link.fa.gz -> ../real_ref_dir/ref.fa.gz");
+        let sym_fa_run = base_cmd()
+            .arg("-G")
+            .arg(&link_bgzf_fa)
+            .arg("-b")
+            .arg(&micro_cram)
+            .args(bed_flags)
+            .arg(&plain_bed)
+            .output()
+            .expect("spawn -G link_ref_dir/link.fa.gz on CRAM");
+        assert!(
+            sym_fa_run.status.success(),
+            "-G link.fa.gz (canonical companions only) failed: {}",
+            String::from_utf8_lossy(&sym_fa_run.stderr)
+        );
+        assert_eq!(
+            normalize_vcf_ref(&sym_fa_run.stdout),
+            normalize_vcf_ref(&cram_fa_out.stdout)
+        );
+    }
+
     // Plain-gzip `.fa.gz` and hostile `[0xff; 8]` `.gzi` fail cleanly with actionable messages
     let plain_gz_fa = dir.path().join("plain_gzip.fa.gz");
     {
@@ -5576,6 +5622,218 @@ fn compressed_fasta_bed_companion_index_and_fd_stream_safety_e2e() {
             std::fs::read(&sym_backing).expect("read sym_backing"),
             baseline_vcf
         );
+
+        // `WF-1`: (1) Relative symlink `sub/rel_out.vcf -> <relative-hops-to>/dev/fd/3` (or `/proc/self/fd/3`)
+        // with `O_APPEND` fd 3 open to a pre-seeded file: symlink preserved, pre-seeded prefix honored,
+        // and `--output sub/rel_out.vcf.gz --tbi` rejected cleanly before writing.
+        let fd_base = if std::path::Path::new("/dev/fd").exists() {
+            "dev/fd"
+        } else {
+            "proc/self/fd"
+        };
+        let rel_sub_dir = dir.path().join("sub");
+        std::fs::create_dir_all(&rel_sub_dir).expect("mkdir sub");
+        let canon_sub = std::fs::canonicalize(&rel_sub_dir).expect("canonicalize sub");
+        let up_hops = canon_sub
+            .components()
+            .filter(|c| matches!(c, std::path::Component::Normal(_)))
+            .count();
+        let mut rel_fd3_target = std::path::PathBuf::new();
+        for _ in 0..up_hops {
+            rel_fd3_target.push("..");
+        }
+        rel_fd3_target.push(fd_base);
+        rel_fd3_target.push("3");
+
+        let rel_out_vcf = rel_sub_dir.join("rel_out.vcf");
+        std::os::unix::fs::symlink(&rel_fd3_target, &rel_out_vcf)
+            .expect("symlink sub/rel_out.vcf -> relative fd/3");
+        let rel_fd3_backing = dir.path().join("rel_fd3_backing.vcf");
+        let rel_seed_prefix = b"#REL_FD3_PRE_SEEDED_PREFIX\n";
+        std::fs::write(&rel_fd3_backing, rel_seed_prefix).expect("seed rel_fd3_backing.vcf");
+        let rel_fd3_run = Command::new("sh")
+            .current_dir(dir.path())
+            .arg("-c")
+            .arg("exec 3>>\"$1\"; shift; exec \"$@\"")
+            .arg("sh")
+            .arg(&rel_fd3_backing)
+            .arg(bin)
+            .arg("-G")
+            .arg(&plain_fa)
+            .arg("-b")
+            .arg(&plain_bam)
+            .args(bed_flags)
+            .args(["--output", "sub/rel_out.vcf"])
+            .arg(&plain_bed)
+            .output()
+            .expect("spawn --output sub/rel_out.vcf (O_APPEND fd 3)");
+        assert!(
+            rel_fd3_run.status.success(),
+            "relative symlink sub/rel_out.vcf -> fd/3 failed: {}",
+            String::from_utf8_lossy(&rel_fd3_run.stderr)
+        );
+        assert!(
+            std::fs::symlink_metadata(&rel_out_vcf)
+                .expect("lstat sub/rel_out.vcf")
+                .file_type()
+                .is_symlink(),
+            "sub/rel_out.vcf must remain a symlink (not replaced by .tmp)"
+        );
+        let mut expected_rel_fd3 = rel_seed_prefix.to_vec();
+        expected_rel_fd3.extend_from_slice(&baseline_vcf);
+        assert_eq!(
+            std::fs::read(&rel_fd3_backing).expect("read rel_fd3_backing.vcf"),
+            expected_rel_fd3,
+            "relative symlink to fd 3 must honor O_APPEND and preserve pre-seeded prefix"
+        );
+
+        let rel_out_vcf_gz = rel_sub_dir.join("rel_out.vcf.gz");
+        std::os::unix::fs::symlink(&rel_fd3_target, &rel_out_vcf_gz)
+            .expect("symlink sub/rel_out.vcf.gz -> relative fd/3");
+        let rel_tbi_backing = dir.path().join("rel_tbi_backing.vcf.gz");
+        std::fs::write(&rel_tbi_backing, rel_seed_prefix).expect("seed rel_tbi_backing.vcf.gz");
+        let rel_tbi_run = Command::new("sh")
+            .current_dir(dir.path())
+            .arg("-c")
+            .arg("exec 3>>\"$1\"; shift; exec \"$@\"")
+            .arg("sh")
+            .arg(&rel_tbi_backing)
+            .arg(bin)
+            .arg("-G")
+            .arg(&plain_fa)
+            .arg("-b")
+            .arg(&plain_bam)
+            .args(bed_flags)
+            .args(["--output", "sub/rel_out.vcf.gz", "--tbi"])
+            .arg(&plain_bed)
+            .output()
+            .expect("spawn --output sub/rel_out.vcf.gz --tbi");
+        assert!(
+            !rel_tbi_run.status.success(),
+            "--output sub/rel_out.vcf.gz --tbi targeting relative fd/3 must be rejected"
+        );
+        assert_eq!(
+            std::fs::read(&rel_tbi_backing).expect("read rel_tbi_backing.vcf.gz"),
+            rel_seed_prefix,
+            "rejected --tbi on relative fd/3 symlink must not write or truncate fd 3 backing file"
+        );
+
+        // `WF-1`: (2) Directory symlink `fd_dir -> /dev/fd` with `--output fd_dir/3` and `--output fd_dir/3 --tbi`
+        if std::path::Path::new("/dev/fd").exists() {
+            let fd_dir = dir.path().join("fd_dir");
+            std::os::unix::fs::symlink("/dev/fd", &fd_dir).expect("symlink fd_dir -> /dev/fd");
+            let fd_dir_backing = dir.path().join("fd_dir_backing.vcf");
+            std::fs::write(&fd_dir_backing, rel_seed_prefix).expect("seed fd_dir_backing.vcf");
+            let fd_dir_run = Command::new("sh")
+                .current_dir(dir.path())
+                .arg("-c")
+                .arg("exec 3>>\"$1\"; shift; exec \"$@\"")
+                .arg("sh")
+                .arg(&fd_dir_backing)
+                .arg(bin)
+                .arg("-G")
+                .arg(&plain_fa)
+                .arg("-b")
+                .arg(&plain_bam)
+                .args(bed_flags)
+                .args(["--output", "fd_dir/3"])
+                .arg(&plain_bed)
+                .output()
+                .expect("spawn --output fd_dir/3");
+            assert!(
+                fd_dir_run.status.success(),
+                "--output fd_dir/3 failed: {}",
+                String::from_utf8_lossy(&fd_dir_run.stderr)
+            );
+            assert_eq!(
+                std::fs::read(&fd_dir_backing).expect("read fd_dir_backing.vcf"),
+                expected_rel_fd3,
+                "--output fd_dir/3 must honor O_APPEND stream safety"
+            );
+
+            let fd_dir_tbi_backing = dir.path().join("fd_dir_tbi_backing.vcf.gz");
+            std::fs::write(&fd_dir_tbi_backing, rel_seed_prefix)
+                .expect("seed fd_dir_tbi_backing.vcf.gz");
+            let fd_dir_tbi_run = Command::new("sh")
+                .current_dir(dir.path())
+                .arg("-c")
+                .arg("exec 3>>\"$1\"; shift; exec \"$@\"")
+                .arg("sh")
+                .arg(&fd_dir_tbi_backing)
+                .arg(bin)
+                .arg("-G")
+                .arg(&plain_fa)
+                .arg("-b")
+                .arg(&plain_bam)
+                .args(bed_flags)
+                .args(["--output", "fd_dir/3", "--tbi"])
+                .arg(&plain_bed)
+                .output()
+                .expect("spawn --output fd_dir/3 --tbi");
+            assert!(
+                !fd_dir_tbi_run.status.success(),
+                "--output fd_dir/3 --tbi must be rejected as an FD alias"
+            );
+            let fd_dir_tbi_stderr = String::from_utf8_lossy(&fd_dir_tbi_run.stderr);
+            assert!(
+                fd_dir_tbi_stderr.contains("regular seekable --output file"),
+                "expected FD-alias rejection message for fd_dir/3 --tbi, got: {fd_dir_tbi_stderr}"
+            );
+            assert_eq!(
+                std::fs::read(&fd_dir_tbi_backing).expect("read fd_dir_tbi_backing.vcf.gz"),
+                rel_seed_prefix
+            );
+        }
+
+        // `WF-3`: Read-only parent directory (`chmod 0555 ro_dir`, non-root) containing non-empty
+        // `ro_dir/out.vcf.gz` (with no `ro_dir/out.vcf.gz.tbi`) + `--output ro_dir/out.vcf.gz --tbi`
+        // must fail AND leave `ro_dir/out.vcf.gz` byte-identical (never truncated to 0 bytes).
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let ro_dir = dir.path().join("ro_dir_tbi_guard");
+            std::fs::create_dir_all(&ro_dir).expect("mkdir ro_dir_tbi_guard");
+            let ro_vcf_gz = ro_dir.join("out.vcf.gz");
+            let ro_seed = b"NON_EMPTY_PRE_EXISTING_RO_VCF_GZ_PAYLOAD";
+            std::fs::write(&ro_vcf_gz, ro_seed).expect("seed ro_dir/out.vcf.gz");
+            std::fs::set_permissions(&ro_dir, std::fs::Permissions::from_mode(0o555))
+                .expect("chmod 0555 ro_dir_tbi_guard");
+
+            let non_root_enforced = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(ro_dir.join("probe"))
+                .is_err();
+            if non_root_enforced {
+                let doomed_ro_tbi = base_cmd()
+                    .arg("-G")
+                    .arg(&plain_fa)
+                    .arg("-b")
+                    .arg(&plain_bam)
+                    .args(bed_flags)
+                    .arg("--output")
+                    .arg(&ro_vcf_gz)
+                    .arg("--tbi")
+                    .arg(&plain_bed)
+                    .output()
+                    .expect("spawn doomed --output ro_dir/out.vcf.gz --tbi");
+                let after_bytes =
+                    std::fs::read(&ro_vcf_gz).expect("read ro_dir/out.vcf.gz after failure");
+                std::fs::set_permissions(&ro_dir, std::fs::Permissions::from_mode(0o755))
+                    .expect("restore chmod 0755 ro_dir_tbi_guard");
+                assert!(
+                    !doomed_ro_tbi.status.success(),
+                    "doomed --tbi in 0555 ro_dir without pre-existing .tbi must fail"
+                );
+                assert_eq!(
+                    after_bytes, ro_seed,
+                    "ro_dir/out.vcf.gz must remain byte-identical (not truncated) when --tbi cannot be created"
+                );
+            } else {
+                let _ = std::fs::remove_file(ro_dir.join("probe"));
+                std::fs::set_permissions(&ro_dir, std::fs::Permissions::from_mode(0o755))
+                    .expect("restore chmod 0755 ro_dir_tbi_guard");
+            }
+        }
 
         // `--output /dev/null --stats-json /dev/null` succeeds (`AR-5`), while `/dev/stdout` pair collision fails
         let dev_null_ok = base_cmd()

@@ -870,7 +870,6 @@ impl<'a> ToVarsBuilder<'a> {
         );
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn push_non_insertion_variants<F>(
         &self,
         duprate: f64,
@@ -913,7 +912,6 @@ impl<'a> ToVarsBuilder<'a> {
     }
 
     #[inline]
-    #[allow(clippy::too_many_arguments)]
     fn adjust_insertion_coverage_and_next_ref(
         &self,
         orig_non_ins: &crate::javamap::JavaHashMap<i32, crate::variations::VariationMap>,

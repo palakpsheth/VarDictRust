@@ -1381,11 +1381,11 @@ pub struct Cli {
     pub deldupvar: bool,
 
     // ── 7. Performance & Concurrency ─────────────────────────────────────────
-    /// Threads. Bare `-th` = all cores (Java readThreadsCount
-    /// CmdParser.java:617-628); explicit `-th 0` clamps to 1 via max(n,1)
-    /// (CmdParser.java:162). Absent flag stays all-cores (deliberate perf-only
-    /// divergence over Java's 1-thread default — task P1 report).
-    /// usize::MAX is the bare-flag sentinel; alias: --threads.
+    // Dev note: ports CmdParser.java:162, 617-628 (`readThreadsCount`); `usize::MAX` is the
+    // bare-flag sentinel, `--threads` is the GNU long alias, and absent `-th` stays all-cores
+    // (or `RAYON_NUM_THREADS`) as a deliberate performance-only default over Java's 1 thread
+    // (task P1 report).
+    /// Threads (`-th [INT]` / `--threads [INT]`). Bare `-th` uses all available cores; explicit `-th 0` clamps to `1`; omitting `-th` defaults to `RAYON_NUM_THREADS` or all cores.
     #[arg(
         long = "threads",
         num_args(0..=1),
@@ -1952,11 +1952,32 @@ mod tests {
             let mut buf = Vec::new();
             completions_man::write_completions(shell, &mut buf).unwrap();
             let text = String::from_utf8(buf).unwrap();
-            for needle in ["--vcf-cluster-dist", "--completions", "-H", "-h"] {
+            for needle in [
+                "--vcf-cluster-dist",
+                "--completions",
+                "-H",
+                "-h",
+                "-UN",
+                "--defaultPrinter",
+            ] {
                 assert!(
                     text.contains(needle),
                     "{shell:?} completions missing '{needle}'"
                 );
+            }
+            if shell == CompletionShell::Zsh {
+                for valid_opt in ["-z-[", "-k-[", "-a-[", "--amplicon=-["] {
+                    assert!(
+                        text.contains(valid_opt),
+                        "zsh completions missing valid optional spec '{valid_opt}'"
+                    );
+                }
+                for invalid_opt in ["-z=-", "-k=-", "-a=-"] {
+                    assert!(
+                        !text.contains(invalid_opt),
+                        "zsh completions must not emit invalid short-flag '{invalid_opt}'"
+                    );
+                }
             }
         }
 
@@ -1972,20 +1993,52 @@ mod tests {
             r"VCF 4.2 (VCFv4.2)",
             r"\-c 1 \-S 2 \-E 3 \-g 4 \-z targets.bed",
             r"\-c 1 \-S 2 \-E 3 \-z targets.bed",
+            r"\-z [ZERO_BASED]",
+            r"\-k [REALIGN]",
+            r"\-a [AMPLICON], \-\-amplicon[=AMPLICON]",
         ] {
             assert!(
                 man_text.contains(needle),
                 "manpage missing escaped '{needle}'"
             );
         }
-        assert!(
-            !man_text.contains("VCF 4.3"),
-            "manpage must cite VCF 4.2 (VCFv4.2), not VCF 4.3"
-        );
+        for forbidden in ["VCF 4.3", "usize::MAX", "task P1", r"\-z[=", r"\-k[="] {
+            assert!(
+                !man_text.contains(forbidden),
+                "manpage must not contain '{forbidden}'"
+            );
+        }
         assert_eq!(
-            completions_man::escape_roff(".var-row\n'tumor|normal'\\path"),
-            "\\&.var\\-row\n\\&'tumor|normal'\\\\path"
+            completions_man::escape_roff(".var-row\n'tumor|normal'\\path\u{2013}x\u{2014}y"),
+            "\\&.var\\-row\n\\&'tumor|normal'\\\\path\\(enx\\(emy"
         );
+        if std::process::Command::new("groff")
+            .arg("--version")
+            .output()
+            .is_ok_and(|o| o.status.success())
+        {
+            use std::io::Write as _;
+            let mut groff = std::process::Command::new("groff")
+                .args(["-Tutf8", "-man", "-ww", "-z"])
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .expect("spawn groff");
+            groff
+                .stdin
+                .take()
+                .expect("groff stdin")
+                .write_all(man_text.as_bytes())
+                .expect("write man_text to groff");
+            let out = groff.wait_with_output().expect("wait groff");
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            assert!(
+                out.status.success() && stderr.is_empty(),
+                "groff -Tutf8 -man -ww -z emitted warnings or failed (status={:?}):\n{stderr}",
+                out.status
+            );
+        }
     }
 
     #[test]

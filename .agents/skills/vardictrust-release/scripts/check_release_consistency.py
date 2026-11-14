@@ -132,6 +132,69 @@ def check_cli_and_migration_surfaces(repo_root: Path, errors: list[str]) -> None
                 errors.append(
                     f"README.md: CLI Parameter Reference tables contain {len(data_rows)} flag rows, expected {n_flags}"
                 )
+            readme_specs: list[tuple[tuple[str, ...], tuple[str, ...], bool]] = []
+            for row in data_rows:
+                cells = [c.strip() for c in re.split(r"(?<!\\)\|", row)[1:-1]]
+                if len(cells) < 2:
+                    continue
+                short_cell, long_cell = cells[0], cells[1]
+                is_pos = short_cell == "positional"
+                shorts = tuple(re.findall(r"`(-[^`]+)`", short_cell))
+                longs = tuple(re.findall(r"`(--[^`]+)`", long_cell))
+                readme_specs.append((shorts, longs, is_pos))
+            if len(set(readme_specs)) != len(readme_specs):
+                errors.append(
+                    "README.md: duplicate CLI flag row signature detected in CLI Parameter Reference"
+                )
+
+            cli_rs = read_text(repo_root, "crates/vardictrust/src/cli.rs", errors)
+            if cli_rs:
+                struct_m = re.search(r"pub struct Cli \{(.*?)\n\}", cli_rs, re.DOTALL)
+                if not struct_m:
+                    errors.append(
+                        "crates/vardictrust/src/cli.rs: could not locate 'pub struct Cli'"
+                    )
+                else:
+                    cli_body = re.sub(
+                        r"^\s*//[^\n]*$", "", struct_m.group(1), flags=re.MULTILINE
+                    )
+                    field_matches = re.findall(
+                        r"^(?:\s*(#\[arg\((?:[^\[\]]|\[[^\]]*\])*?\)\])\s*\n)?\s{4}(?:pub\s+)?([A-Za-z0-9_]+)\s*:",
+                        cli_body,
+                        re.MULTILINE | re.DOTALL,
+                    )
+                    cli_specs: list[tuple[tuple[str, ...], tuple[str, ...], bool]] = []
+                    for attr, field_name in field_matches:
+                        shorts_list = [
+                            f"-{sm.group(1)}"
+                            for sm in re.finditer(
+                                r"\b(?:short|visible_short_alias|short_alias)\s*=\s*'([^'])'",
+                                attr,
+                            )
+                        ]
+                        longs_list = [
+                            f"--{lm.group(1)}"
+                            for lm in re.finditer(
+                                r'\b(?:long|visible_alias)\s*=\s*"([^"]+)"',
+                                attr,
+                            )
+                        ]
+                        if field_name == "unique_mode_second_in_pair_enabled":
+                            shorts_list.append("-UN")
+                        is_pos = not shorts_list and not longs_list
+                        cli_specs.append(
+                            (tuple(shorts_list), tuple(longs_list), is_pos)
+                        )
+                    if len(cli_specs) != n_flags:
+                        errors.append(
+                            f"crates/vardictrust/src/cli.rs: parsed {len(cli_specs)} Cli fields, expected {n_flags}"
+                        )
+                    missing_in_readme = sorted(set(cli_specs) - set(readme_specs))
+                    extra_in_readme = sorted(set(readme_specs) - set(cli_specs))
+                    if missing_in_readme or extra_in_readme:
+                        errors.append(
+                            f"README.md vs cli.rs 1:1 CLI flag mismatch: missing_in_readme={missing_in_readme}, extra_in_readme={extra_in_readme}"
+                        )
 
     roadmap_text = read_text(repo_root, "ROADMAP.md", errors)
     if roadmap_text:
@@ -741,6 +804,28 @@ def check_pre_tag_surfaces(
         ".github/workflows/ci.yml",
         rf"Corpus & Modality Parity Tests \(\\`{tc['corpus_parity']}\\` cases\)",
         f"ci.yml Step 9 summary cites (`{tc['corpus_parity']}` cases)",
+        errors,
+    )
+    surface_map_rel = ".agents/skills/vardictrust-release/references/version-surface-map.md"
+    require_regex(
+        repo_root,
+        surface_map_rel,
+        rf"`{tc['total_workspace']}` test breakdown \(`{tc['core_lib']} \+ {tc['corpus_parity']} \+ {tc['engine_behavior']} \+ {tc['amplicon_stream_mem']} \+ {tc['cram_stack']} \+ {tc['cli_bin']} \+ {tc['cli_integration']}`\)",
+        f"{surface_map_rel} row 11 cites {tc['total_workspace']} test breakdown",
+        errors,
+    )
+    require_regex(
+        repo_root,
+        surface_map_rel,
+        rf"`{tc['total_workspace']} PASS` \(`{tc['core_lib']} PASS` core lib\)",
+        f"{surface_map_rel} row 12 cites {tc['total_workspace']} PASS ({tc['core_lib']} PASS core lib)",
+        errors,
+    )
+    forbid_regex(
+        repo_root,
+        surface_map_rel,
+        r"\b619\b|\b432\b",
+        f"{surface_map_rel} stale 619/432 test counts",
         errors,
     )
 

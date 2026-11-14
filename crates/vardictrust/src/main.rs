@@ -71,8 +71,10 @@ const _: () = {
 };
 
 #[cfg(feature = "jemalloc")]
-// Lint false positive: size_of_val(&MALLOC_CONF) intentionally asserts the size of the static reference itself (thin 8-byte pointer vs 16-byte slice).
-#[allow(clippy::size_of_ref)]
+#[expect(
+    clippy::size_of_ref,
+    reason = "intentionally asserts the size of the static reference itself (thin 8-byte pointer vs 16-byte slice)"
+)]
 const _: () = assert!(core::mem::size_of_val(&MALLOC_CONF) == core::mem::size_of::<*const u8>());
 
 fn should_ignore_broken_pipe(
@@ -85,11 +87,7 @@ fn should_ignore_broken_pipe(
 fn finish_stdout_utility(res: std::io::Result<()>) -> Result<()> {
     match res {
         Ok(()) => Ok(()),
-        Err(err)
-            if err.kind() == std::io::ErrorKind::BrokenPipe || err.raw_os_error() == Some(32) =>
-        {
-            Ok(())
-        }
+        Err(err) if err.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
         Err(err) => Err(err.into()),
     }
 }
