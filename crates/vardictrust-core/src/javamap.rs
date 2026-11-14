@@ -173,6 +173,37 @@ where
         self.get(key).is_some()
     }
 
+    /// Returns `true` iff both `first` and `second` are present in the map and `first`
+    /// strictly precedes `second` in [`Self::iter`] order (`false` when `first == second`).
+    pub fn contains_both_and_first_precedes(&self, first: &K, second: &K) -> bool {
+        if first == second || self.buckets.is_empty() {
+            return false;
+        }
+        let n = self.buckets.len();
+        let idx_first = (Self::spread(*first) as usize) & (n - 1);
+        let idx_second = (Self::spread(*second) as usize) & (n - 1);
+        match idx_first.cmp(&idx_second) {
+            std::cmp::Ordering::Greater => false,
+            std::cmp::Ordering::Less => self.contains_key(first) && self.contains_key(second),
+            std::cmp::Ordering::Equal => {
+                let mut curr = self.buckets.get(idx_first).copied().unwrap_or(NONE);
+                let mut saw_first = false;
+                while curr != NONE {
+                    let Some(node) = self.nodes.get(curr as usize) else {
+                        return false;
+                    };
+                    if &node.key == first {
+                        saw_first = true;
+                    } else if &node.key == second {
+                        return saw_first;
+                    }
+                    curr = node.next;
+                }
+                false
+            }
+        }
+    }
+
     pub fn get(&self, key: &K) -> Option<&V> {
         if self.buckets.is_empty() {
             return None;
@@ -1962,5 +1993,94 @@ mod tests {
         // Logging is disabled after take_new_key_log until re-enabled
         logged.insert(777, 1);
         assert!(logged.take_new_key_log().is_empty());
+    }
+
+    #[test]
+    fn contains_both_and_first_precedes_matches_iter_order() {
+        let empty: JavaHashMap<i32, i32> = JavaHashMap::new();
+        assert!(!empty.contains_both_and_first_precedes(&1, &1));
+        assert!(!empty.contains_both_and_first_precedes(&1, &2));
+
+        let mut map: JavaHashMap<i32, i32> = JavaHashMap::new();
+        // Adjacent keys (-1, 0) and (1_048_575, 1_048_576) share bucket 0 under JavaHashMap::spread;
+        // 1..500 triggers multiple capacity resizes (16 -> 32 -> 64 -> 128 -> 256 -> 512 -> 1024),
+        // and k * 1024 + 7 produces multi-node chains in bucket 7.
+        map.insert(-1, -1);
+        map.insert(0, 0);
+        for k in 1..500 {
+            map.insert(k, k * 10);
+        }
+        for c in 0..7 {
+            let colliding = c * 1024 + 7;
+            map.insert(colliding, colliding);
+        }
+        map.compute_if_absent(8 * 1024 + 7, |&k| k);
+        assert_eq!(map.remove(&250), Some(2500));
+        map.insert(1_048_575, 1);
+        map.insert(1_048_576, 2);
+
+        let iter_keys: Vec<i32> = map.iter().map(|(&k, _)| k).collect();
+        let rank: std::collections::HashMap<i32, usize> = iter_keys
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(idx, k)| (k, idx))
+            .collect();
+
+        for &k in &iter_keys {
+            assert!(
+                !map.contains_both_and_first_precedes(&k, &k),
+                "equal present key {k} must return false"
+            );
+        }
+        for absent in [-999, 250, 500, 999_999, i32::MIN, i32::MAX] {
+            assert!(
+                !map.contains_both_and_first_precedes(&absent, &absent),
+                "equal absent key {absent} must return false"
+            );
+        }
+
+        for p in (-2..=505).chain(1_048_575..=1_048_577) {
+            let prev = p - 1;
+            let expected = matches!((rank.get(&prev), rank.get(&p)), (Some(i), Some(j)) if i < j);
+            assert_eq!(
+                map.contains_both_and_first_precedes(&prev, &p),
+                expected,
+                "iter relative-order mismatch for ({prev}, {p})"
+            );
+            let rev_expected =
+                matches!((rank.get(&p), rank.get(&prev)), (Some(i), Some(j)) if i < j);
+            assert_eq!(
+                map.contains_both_and_first_precedes(&p, &prev),
+                rev_expected,
+                "iter relative-order mismatch for ({p}, {prev})"
+            );
+        }
+
+        // Verify all pairs across a colliding bucket chain (including absent probe).
+        let chain_probes: Vec<i32> = (0..=9).map(|c| c * 1024 + 7).collect();
+        for &a in &chain_probes {
+            for &b in &chain_probes {
+                let expected = matches!((rank.get(&a), rank.get(&b)), (Some(i), Some(j)) if i < j);
+                assert_eq!(
+                    map.contains_both_and_first_precedes(&a, &b),
+                    expected,
+                    "chain pair ({a}, {b}) mismatch"
+                );
+            }
+        }
+
+        // Same-bucket adjacent genomic pair (0x000f_ffff, 0x0010_0000) in both insertion orders at cap 16.
+        let mut fwd_same_bin: JavaHashMap<i32, i32> = JavaHashMap::new();
+        fwd_same_bin.insert(1_048_575, 1);
+        fwd_same_bin.insert(1_048_576, 2);
+        assert!(fwd_same_bin.contains_both_and_first_precedes(&1_048_575, &1_048_576));
+        assert!(!fwd_same_bin.contains_both_and_first_precedes(&1_048_576, &1_048_575));
+
+        let mut rev_same_bin: JavaHashMap<i32, i32> = JavaHashMap::new();
+        rev_same_bin.insert(1_048_576, 2);
+        rev_same_bin.insert(1_048_575, 1);
+        assert!(!rev_same_bin.contains_both_and_first_precedes(&1_048_575, &1_048_576));
+        assert!(rev_same_bin.contains_both_and_first_precedes(&1_048_576, &1_048_575));
     }
 }
