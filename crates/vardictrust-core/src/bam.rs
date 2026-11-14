@@ -784,22 +784,121 @@ static REPOSITORY_CACHE: std::sync::Mutex<
 > = std::sync::Mutex::new(None);
 
 fn fasta_fai_path(fasta_path: &Path) -> PathBuf {
-    let mut fai_path = fasta_path.to_path_buf();
-    let mut ext = fai_path
-        .extension()
-        .map(|e| e.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    ext.push_str(".fai");
-    fai_path.set_extension(ext);
-    fai_path
+    crate::reference::resolve_fasta_fai_path(fasta_path)
+}
+
+#[inline]
+fn is_cram_path(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("cram"))
+}
+
+fn try_bam_index_for_path(src: &Path) -> Result<noodles::bam::Index, (std::io::Error, bool)> {
+    let primary_bai = crate::reference::append_os_ext(src, ".bai");
+    let first_not_found = match noodles::bam::bai::fs::read(&primary_bai) {
+        Ok(idx) => return Ok(noodles::bam::Index::Bai(idx)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => e,
+        Err(e) => return Err((e, false)),
+    };
+
+    let primary_csi = crate::reference::append_os_ext(src, ".csi");
+    match noodles::csi::fs::read(&primary_csi) {
+        Ok(idx) => return Ok(noodles::bam::Index::Csi(idx)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err((e, false)),
+    }
+
+    if src.extension().is_some() {
+        let stem_bai = src.with_extension("bai");
+        if stem_bai != primary_bai && stem_bai != src {
+            match noodles::bam::bai::fs::read(&stem_bai) {
+                Ok(idx) => return Ok(noodles::bam::Index::Bai(idx)),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err((e, false)),
+            }
+        }
+        let stem_csi = src.with_extension("csi");
+        if stem_csi != primary_csi && stem_csi != src {
+            match noodles::csi::fs::read(&stem_csi) {
+                Ok(idx) => return Ok(noodles::bam::Index::Csi(idx)),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err((e, false)),
+            }
+        }
+    }
+
+    Err((first_not_found, true))
+}
+
+fn read_bam_index_with_fallbacks(path: &Path) -> std::io::Result<noodles::bam::Index> {
+    let first_not_found = match try_bam_index_for_path(path) {
+        Ok(idx) => return Ok(idx),
+        Err((e, false)) => return Err(e),
+        Err((e, true)) => e,
+    };
+
+    if let Ok(canon) = std::fs::canonicalize(path) {
+        if canon != path {
+            match try_bam_index_for_path(&canon) {
+                Ok(idx) => return Ok(idx),
+                Err((e, false)) => return Err(e),
+                Err((_, true)) => {}
+            }
+        }
+    }
+
+    Err(first_not_found)
+}
+
+fn try_cram_index_for_path(
+    src: &Path,
+) -> Result<noodles::cram::crai::Index, (std::io::Error, bool)> {
+    let primary_crai = crate::reference::append_os_ext(src, ".crai");
+    let first_not_found = match noodles::cram::crai::fs::read(&primary_crai) {
+        Ok(idx) => return Ok(idx),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => e,
+        Err(e) => return Err((e, false)),
+    };
+
+    if src.extension().is_some() {
+        let stem_crai = src.with_extension("crai");
+        if stem_crai != primary_crai && stem_crai != src {
+            match noodles::cram::crai::fs::read(&stem_crai) {
+                Ok(idx) => return Ok(idx),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err((e, false)),
+            }
+        }
+    }
+
+    Err((first_not_found, true))
+}
+
+fn read_cram_index_with_fallbacks(path: &Path) -> std::io::Result<noodles::cram::crai::Index> {
+    let first_not_found = match try_cram_index_for_path(path) {
+        Ok(idx) => return Ok(idx),
+        Err((e, false)) => return Err(e),
+        Err((e, true)) => e,
+    };
+
+    if let Ok(canon) = std::fs::canonicalize(path) {
+        if canon != path {
+            match try_cram_index_for_path(&canon) {
+                Ok(idx) => return Ok(idx),
+                Err((e, false)) => return Err(e),
+                Err((_, true)) => {}
+            }
+        }
+    }
+
+    Err(first_not_found)
 }
 
 pub fn open_reader(
     path: &Path,
     config: &crate::config::Config,
 ) -> Result<CachedReader, crate::types::VardictError> {
-    let path_str = path.to_string_lossy();
-    if path_str.ends_with(".cram") || path_str.ends_with(".CRAM") {
+    if is_cram_path(path) {
         let fasta_path = std::path::Path::new(&config.reference);
         let repository = {
             let mut guard = REPOSITORY_CACHE.lock().unwrap_or_else(|e| e.into_inner());
@@ -819,8 +918,10 @@ pub fn open_reader(
             }
         };
 
+        let index = read_cram_index_with_fallbacks(path).map_err(crate::types::VardictError::Io)?;
         let mut reader = noodles::cram::io::indexed_reader::Builder::default()
             .set_reference_sequence_repository(repository.clone())
+            .set_index(index)
             .build_from_path(path)
             .map_err(crate::types::VardictError::Io)?;
         let header = reader
@@ -831,7 +932,9 @@ pub fn open_reader(
             header,
         })
     } else {
+        let index = read_bam_index_with_fallbacks(path).map_err(crate::types::VardictError::Io)?;
         let mut reader = noodles::bam::io::indexed_reader::Builder::default()
+            .set_index(index)
             .build_from_path(path)
             .map_err(crate::types::VardictError::Io)?;
         let header = reader
@@ -851,8 +954,7 @@ pub fn query_region(
     end: Pos0,
     config: &crate::config::Config,
 ) -> Result<Vec<SamRecord>, crate::types::VardictError> {
-    let path_str = bam_path.to_string_lossy();
-    if path_str.ends_with(".cram") || path_str.ends_with(".CRAM") {
+    if is_cram_path(bam_path) {
         return query_region_iter(bam_path, chr, start, end, config)?.collect();
     }
 
@@ -1387,8 +1489,8 @@ fn acquire_bam_meta_and_reader(
                 // File::open -> read_header). Errors return without storing
                 // `Some(...)` so transient/test errors are never cached and
                 // io::ErrorKind is preserved.
-                let index = noodles::bam::fs::read_associated_index(path)
-                    .map_err(crate::types::VardictError::Io)?;
+                let index =
+                    read_bam_index_with_fallbacks(path).map_err(crate::types::VardictError::Io)?;
                 let file = std::fs::File::open(path).map_err(crate::types::VardictError::Io)?;
                 let id = NEXT_BAM_META_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let mut reader = noodles::bam::io::Reader::from(CachedBgzfReader::new(file, id));
@@ -1427,8 +1529,7 @@ pub fn read_reference_lengths(
     path: &Path,
     config: &crate::config::Config,
 ) -> Result<HashMap<String, usize>, crate::types::VardictError> {
-    let path_str = path.to_string_lossy();
-    if path_str.ends_with(".cram") || path_str.ends_with(".CRAM") {
+    if is_cram_path(path) {
         let meta = acquire_cram_meta(path, config)?;
         let mut lengths = HashMap::with_capacity(meta.header.reference_sequences().len());
         for (name, ref_seq) in meta.header.reference_sequences().iter() {
@@ -1717,33 +1818,71 @@ const MAX_POOLED_FASTA_ADAPTERS: usize = 8;
 const CRAM_REF_OVERHANG_PAD: usize = 65_536;
 
 struct PreallocatedFastaAdapter {
-    reader: noodles::fasta::io::Reader<std::io::BufReader<std::fs::File>>,
+    reader: noodles::fasta::io::Reader<noodles::fasta::io::BufReader<std::fs::File>>,
     index: noodles::fasta::fai::Index,
 }
 
 impl PreallocatedFastaAdapter {
+    fn from_buf_reader_and_index(
+        buf_reader: noodles::fasta::io::BufReader<std::fs::File>,
+        index: noodles::fasta::fai::Index,
+    ) -> Self {
+        let upgraded = match buf_reader {
+            noodles::fasta::io::BufReader::Uncompressed(br) => {
+                noodles::fasta::io::BufReader::Uncompressed(std::io::BufReader::with_capacity(
+                    FASTA_BUF_CAPACITY,
+                    br.into_inner(),
+                ))
+            }
+            noodles::fasta::io::BufReader::Bgzf(r) => noodles::fasta::io::BufReader::Bgzf(r),
+        };
+        Self {
+            reader: noodles::fasta::io::Reader::new(upgraded),
+            index,
+        }
+    }
+
     fn open(fasta_path: &Path) -> Result<Self, crate::types::VardictError> {
+        let buf_reader = crate::reference::open_indexed_fasta_buf_reader(fasta_path)?;
         let fai_path = fasta_fai_path(fasta_path);
         let index = noodles::fasta::fai::fs::read(&fai_path)?;
-        Self::open_with_index(fasta_path, index)
+        Ok(Self::from_buf_reader_and_index(buf_reader, index))
     }
 
     fn open_with_index(
         fasta_path: &Path,
         index: noodles::fasta::fai::Index,
     ) -> Result<Self, crate::types::VardictError> {
-        let file = std::fs::File::open(fasta_path)?;
-        let reader = noodles::fasta::io::Reader::new(std::io::BufReader::with_capacity(
-            FASTA_BUF_CAPACITY,
-            file,
-        ));
-        Ok(Self { reader, index })
+        let buf_reader = crate::reference::open_indexed_fasta_buf_reader(fasta_path)?;
+        Ok(Self::from_buf_reader_and_index(buf_reader, index))
     }
 }
 
 impl noodles::fasta::repository::Adapter for PreallocatedFastaAdapter {
     fn get(&mut self, name: &[u8]) -> Option<std::io::Result<noodles::fasta::Record>> {
         use std::io::{BufRead as _, Seek as _, SeekFrom};
+        const MAX_PREALLOC_CAP: usize = 64 * 1024 * 1024;
+
+        let Some(fai_rec) = self.index.as_ref().iter().find(|r| r.name() == name) else {
+            return Some(Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!(
+                    "reference sequence '{}' not found in FASTA index",
+                    String::from_utf8_lossy(name)
+                ),
+            )));
+        };
+        let Ok(cap) = usize::try_from(fai_rec.length()) else {
+            return Some(Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "FASTA contig '{}' length ({}) overflows usize",
+                    String::from_utf8_lossy(name),
+                    fai_rec.length()
+                ),
+            )));
+        };
+
         let region = noodles::core::Region::new(name, ..);
         let pos = match self.index.query(&region) {
             Ok(p) => p,
@@ -1752,14 +1891,12 @@ impl noodles::fasta::repository::Adapter for PreallocatedFastaAdapter {
         if let Err(e) = self.reader.get_mut().seek(SeekFrom::Start(pos)) {
             return Some(Err(e));
         }
-        let cap = self
-            .index
-            .as_ref()
-            .iter()
-            .find(|r| r.name() == name)
-            .and_then(|r| usize::try_from(r.length()).ok())
-            .unwrap_or(0);
-        let mut raw_sequence = Vec::with_capacity(cap.saturating_add(CRAM_REF_OVERHANG_PAD));
+
+        let max_raw_len = cap.max(1).saturating_add(CRAM_REF_OVERHANG_PAD);
+        let mut raw_sequence = Vec::with_capacity(
+            cap.min(MAX_PREALLOC_CAP)
+                .saturating_add(CRAM_REF_OVERHANG_PAD),
+        );
         let mut seq_reader = self.reader.sequence_reader();
         loop {
             let src = match seq_reader.fill_buf() {
@@ -1767,6 +1904,15 @@ impl noodles::fasta::repository::Adapter for PreallocatedFastaAdapter {
                 Ok(s) => s,
                 Err(e) => return Some(Err(e)),
             };
+            if raw_sequence.len().saturating_add(src.len()) > max_raw_len {
+                return Some(Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "FASTA sequence for '{}' exceeds .fai length ({cap} bp) + overhang bound",
+                        String::from_utf8_lossy(name)
+                    ),
+                )));
+            }
             raw_sequence.extend_from_slice(src);
             let consumed = src.len();
             seq_reader.consume(consumed);
@@ -1848,11 +1994,27 @@ impl noodles::fasta::repository::Adapter for RegistryDelegatingAdapter {
                 return Some(rec);
             }
         }
-        let shared = self.shared.upgrade()?;
+        let Some(shared) = self.shared.upgrade() else {
+            return Some(Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!(
+                    "FASTA repository dropped while resolving contig '{}'",
+                    String::from_utf8_lossy(name)
+                ),
+            )));
+        };
         let slot = shared.warm_contig_slot(name);
         match slot.loaded.get() {
             Some(Ok(loaded)) => {
-                let seq_arc = loaded.seq.as_ref()?;
+                let Some(seq_arc) = loaded.seq.as_ref() else {
+                    return Some(Err(std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        format!(
+                            "reference sequence '{}' has no loaded bases in FASTA repository",
+                            String::from_utf8_lossy(name)
+                        ),
+                    )));
+                };
                 let raw_bytes = seq_arc.as_ref().as_ref().to_vec();
                 shared.charge_delegated_bytes(&self.primary_name, raw_bytes.len());
                 let def = noodles::fasta::record::Definition::new(
@@ -1863,7 +2025,13 @@ impl noodles::fasta::repository::Adapter for RegistryDelegatingAdapter {
                 Some(Ok(noodles::fasta::Record::new(def, seq)))
             }
             Some(Err((kind, msg))) => Some(Err(std::io::Error::new(*kind, msg.clone()))),
-            None => None,
+            None => Some(Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!(
+                    "reference sequence '{}' not initialized in FASTA repository",
+                    String::from_utf8_lossy(name)
+                ),
+            ))),
         }
     }
 }
@@ -2444,7 +2612,7 @@ fn acquire_cram_meta(
         }
     }
 
-    let index = noodles::cram::fs::read_associated_index(path)?;
+    let index = read_cram_index_with_fallbacks(path)?;
     let indexed_crai = IndexedCrai::from_index(&index);
     let mut spans_by_offset: HashMap<u64, Vec<(usize, usize, usize)>> = HashMap::new();
     for crai_rec in index.iter() {
@@ -3066,7 +3234,7 @@ fn fetch_cram_container(
 
     let compression_header = container.compression_header()?;
     let record_count = container.header().record_count();
-    let mut out_records = Vec::with_capacity(record_count);
+    let mut out_records = Vec::with_capacity(record_count.min(16_384));
 
     for slice_res in container.slices() {
         let slice = slice_res?;
@@ -3297,8 +3465,7 @@ pub fn query_region_iter(
     config: &crate::config::Config,
 ) -> Result<RecordFeed, crate::types::VardictError> {
     crate::count!(QueryRegionCalls);
-    let path_str = bam_path.to_string_lossy();
-    if path_str.ends_with(".cram") || path_str.ends_with(".CRAM") {
+    if is_cram_path(bam_path) {
         let meta = acquire_cram_meta(bam_path, config)?;
         let start_pos = start.to_one_based().0;
         let end_pos = end.0;
@@ -5535,7 +5702,7 @@ mod tests {
         use noodles::bgzf::io::Seek as _;
         use std::io::{BufRead as _, Read as _, Write as _};
 
-        const TEST_META_ID: u64 = TEST_META_ID_BASE + 42;
+        const TEST_META_ID: u64 = u64::MAX - 42;
 
         // 1. Construct a multi-block BGZF file (> 130 KiB uncompressed -> 3 BGZF blocks
         //    + an empty mid-stream BGZF block + 28-byte EOF block)
@@ -7976,5 +8143,129 @@ mod tests {
         assert_eq!(prep.total_reads, u32::MAX);
         assert!(!prep.preprocess_record(&dup_rec, &config));
         assert_eq!(prep.duplicate_reads, u32::MAX);
+    }
+
+    #[test]
+    fn companion_and_symlink_index_fallbacks_corrupt_primary_and_cram_adapter_errors() {
+        use noodles::fasta::repository::Adapter as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let config = Config::default();
+
+        let micro_bam = Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/micro/micro.bam"
+        ));
+        let micro_bai = Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/micro/micro.bam.bai"
+        ));
+        let baseline: Vec<SamRecord> =
+            query_region_iter(micro_bam, "chr1", Pos0(0), Pos0(300), &config)
+                .unwrap()
+                .map(|r| r.unwrap())
+                .collect();
+        assert!(!baseline.is_empty());
+
+        // 1. Picard companion `<stem>.bai` (`sample.bam` + `sample.bai`) succeeds in both `open_reader` and `query_region_iter`
+        let comp_dir = dir.path().join("companion");
+        std::fs::create_dir_all(&comp_dir).unwrap();
+        let sample_bam = comp_dir.join("sample.bam");
+        let sample_bai = comp_dir.join("sample.bai");
+        std::fs::copy(micro_bam, &sample_bam).unwrap();
+        std::fs::copy(micro_bai, &sample_bai).unwrap();
+
+        assert!(open_reader(&sample_bam, &config).is_ok());
+        let comp_recs: Vec<SamRecord> =
+            query_region_iter(&sample_bam, "chr1", Pos0(0), Pos0(300), &config)
+                .unwrap()
+                .map(|r| r.unwrap())
+                .collect();
+        assert_eq!(comp_recs, baseline);
+
+        // 2. Relative symlink `workdir/link.bam -> ../realdir/micro.bam` (index only in `realdir`)
+        #[cfg(unix)]
+        {
+            let real_dir = dir.path().join("realdir");
+            let work_dir = dir.path().join("workdir");
+            std::fs::create_dir_all(&real_dir).unwrap();
+            std::fs::create_dir_all(&work_dir).unwrap();
+            let real_bam = real_dir.join("micro.bam");
+            let real_bai = real_dir.join("micro.bam.bai");
+            std::fs::copy(micro_bam, &real_bam).unwrap();
+            std::fs::copy(micro_bai, &real_bai).unwrap();
+
+            let link_bam = work_dir.join("link.bam");
+            std::os::unix::fs::symlink(Path::new("../realdir/micro.bam"), &link_bam).unwrap();
+            assert!(open_reader(&link_bam, &config).is_ok());
+            let link_recs: Vec<SamRecord> =
+                query_region_iter(&link_bam, "chr1", Pos0(0), Pos0(300), &config)
+                    .unwrap()
+                    .map(|r| r.unwrap())
+                    .collect();
+            assert_eq!(link_recs, baseline);
+        }
+
+        // 3. Corrupt primary `sample.bam.bai` while valid `sample.bai` also exists MUST propagate error (never fall back)
+        let bad_dir = dir.path().join("corrupt_primary");
+        std::fs::create_dir_all(&bad_dir).unwrap();
+        let bad_bam = bad_dir.join("sample.bam");
+        std::fs::copy(micro_bam, &bad_bam).unwrap();
+        std::fs::copy(micro_bai, bad_dir.join("sample.bai")).unwrap();
+        std::fs::write(bad_dir.join("sample.bam.bai"), b"NOT_A_VALID_BAI_INDEX").unwrap();
+        assert!(open_reader(&bad_bam, &config).is_err());
+        assert!(query_region_iter(&bad_bam, "chr1", Pos0(0), Pos0(300), &config).is_err());
+
+        // 4. `RegistryDelegatingAdapter::get` on missing contig, empty contig, or dropped Weak returns Some(Err(NotFound)), NEVER None
+        let ref_fa =
+            write_test_fasta_with_fai(dir.path(), "adapter_ref.fa", &[("chr1", b"ACGTACGT")]);
+        let adapter = PreallocatedFastaAdapter::open(&ref_fa).unwrap();
+        let shared_repo =
+            SharedFastaRepo::new(ref_fa.clone(), adapter, DEFAULT_FASTA_CACHE_BUDGET_BYTES);
+
+        let mut live_delegating = RegistryDelegatingAdapter {
+            primary_name: Vec::new(),
+            primary_record: None,
+            shared: std::sync::Arc::downgrade(&shared_repo),
+        };
+        let missing_res = live_delegating.get(b"chr_missing");
+        match missing_res {
+            Some(Err(err)) => assert_eq!(err.kind(), std::io::ErrorKind::NotFound),
+            other => panic!("expected Some(Err(NotFound)) for missing contig, got {other:?}"),
+        }
+        let empty_res = live_delegating.get(b"");
+        match empty_res {
+            Some(Err(err)) => assert_eq!(err.kind(), std::io::ErrorKind::NotFound),
+            other => panic!("expected Some(Err(NotFound)) for empty contig, got {other:?}"),
+        }
+
+        drop(shared_repo);
+        let dropped_res = live_delegating.get(b"chr1");
+        match dropped_res {
+            Some(Err(err)) => assert_eq!(err.kind(), std::io::ErrorKind::NotFound),
+            other => panic!("expected Some(Err(NotFound)) for dropped weak handle, got {other:?}"),
+        }
+
+        // 5. `PreallocatedFastaAdapter::get` rejects `.fa.gz` decompression bomb exceeding `.fai` length + CRAM_REF_OVERHANG_PAD
+        let bomb_fa = dir.path().join("bomb.fa.gz");
+        let bomb_fai = dir.path().join("bomb.fa.gz.fai");
+        let bomb_gzi = dir.path().join("bomb.fa.gz.gzi");
+        {
+            use std::io::Write as _;
+            let mut w = noodles_bgzf::io::Writer::new(std::fs::File::create(&bomb_fa).unwrap());
+            w.write_all(b">chr1\n").unwrap();
+            let big_line = vec![b'A'; CRAM_REF_OVERHANG_PAD + 2048];
+            w.write_all(&big_line).unwrap();
+            w.write_all(b"\n").unwrap();
+            w.finish().unwrap();
+            noodles_bgzf::gzi::fs::write(&bomb_gzi, &noodles_bgzf::gzi::Index::default()).unwrap();
+            // .fai claims only 16 bp while BGZF payload has > 65_536 + 16 bp
+            std::fs::write(&bomb_fai, b"chr1\t16\t6\t16\t17\n").unwrap();
+        }
+        let mut bomb_adapter = PreallocatedFastaAdapter::open(&bomb_fa).unwrap();
+        match bomb_adapter.get(b"chr1") {
+            Some(Err(err)) => assert_eq!(err.kind(), std::io::ErrorKind::InvalidData),
+            other => panic!("expected Some(Err(InvalidData)) on .fa.gz bomb, got {other:?}"),
+        }
     }
 }

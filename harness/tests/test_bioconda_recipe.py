@@ -132,6 +132,7 @@ class TestBiocondaRecipe(unittest.TestCase):
         self.assertIn("exclude-patterns:", dependabot_content)
         expected_cargo_patterns = (
             "noodles*",
+            "flate2*",
             "fishers_exact*",
             "rustc-hash*",
             "clap*",

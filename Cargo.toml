@@ -8,6 +8,7 @@ edition = "2021"
 rust-version = "1.91.0"
 license = "MIT AND GPL-2.0-or-later"
 repository = "https://github.com/palakpsheth/VarDictRust"
+homepage = "https://vardictrust.readthedocs.io/"
 authors = ["Palak Sheth <palakpsheth@gmail.com>"]
 readme = "README.md"
 description = "Fast, memory-safe, idiomatic Rust rewrite of VarDictJava v1.8.3"
@@ -24,6 +25,7 @@ rustc-hash = "2.1"
 tikv-jemallocator = "0.7"
 noodles = { version = "0.118", default-features = false, features = ["bam","cram","sam","fasta","vcf","bgzf","csi","tabix","core","bed"] }
 noodles-bgzf = { version = "0.52.0", features = ["libdeflate"] }
+flate2 = { version = "1.1", default-features = false, features = ["zlib-rs"] }
 fishers_exact = "1"
 log = "0.4"
 env_logger = "0.11"

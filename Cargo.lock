@@ -2111,6 +2111,7 @@ dependencies = [
  "clap",
  "dhat",
  "env_logger",
+ "flate2",
  "inferno",
  "jemalloc_pprof",
  "libc",
@@ -2129,6 +2130,7 @@ version = "1.0.7"
 dependencies = [
  "criterion",
  "fishers_exact",
+ "flate2",
  "indexmap",
  "log",
  "noodles",

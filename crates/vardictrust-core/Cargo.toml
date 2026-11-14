@@ -6,6 +6,8 @@ rust-version.workspace = true
 license.workspace = true
 description = "Variant calling engine core for VarDictRust"
 repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/vardictrust-core"
 authors.workspace = true
 readme.workspace = true
 keywords.workspace = true
@@ -18,6 +20,7 @@ indexmap.workspace = true
 rustc-hash.workspace = true
 noodles.workspace = true
 noodles-bgzf.workspace = true
+flate2.workspace = true
 log.workspace = true
 regex.workspace = true
 

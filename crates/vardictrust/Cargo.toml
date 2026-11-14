@@ -6,6 +6,8 @@ rust-version.workspace = true
 license.workspace = true
 description.workspace = true
 repository.workspace = true
+homepage.workspace = true
+documentation = "https://vardictrust.readthedocs.io/"
 authors.workspace = true
 readme.workspace = true
 keywords.workspace = true
@@ -43,5 +45,6 @@ profile-heap = ["jemalloc", "tikv-jemallocator/profiling", "dep:jemalloc_pprof"]
 profile-counters = ["vardictrust-core/profile-counters"]
 
 [dev-dependencies]
+flate2.workspace = true
 tempfile.workspace = true
 noodles.workspace = true
