@@ -91,8 +91,38 @@ def find_markdown_links(text: str):
     return links
 
 
+def _safe_copy_repo_file(
+    src: pathlib.Path, dst: pathlib.Path, repo_root_resolved: pathlib.Path
+) -> None:
+    """Copy a repository file to staging, rejecting symlinks and repo-root escapes."""
+    if src.is_symlink():
+        raise ValueError(f"Refusing to stage symlink: {src}")
+
+    rel = src.relative_to(REPO_ROOT)
+    cur = REPO_ROOT
+    for part in rel.parts:
+        cur = cur / part
+        if cur.is_symlink():
+            raise ValueError(
+                f"Refusing to stage path traversing symlink {cur}: {src}"
+            )
+
+    src_resolved = src.resolve()
+    if not src_resolved.is_relative_to(repo_root_resolved):
+        raise ValueError(
+            f"Refusing to stage file escaping repository root: {src} -> {src_resolved}"
+        )
+
+    if dst.is_symlink():
+        raise ValueError(f"Refusing to write through symlink destination: {dst}")
+
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src_resolved, dst, follow_symlinks=False)
+
+
 def rewrite_markdown_links(content: str, staged_file: pathlib.Path) -> str:
     """Rewrite links in a staged markdown file linearly without backtracking."""
+    repo_root_resolved = REPO_ROOT.resolve()
     rel_staged = staged_file.relative_to(STAGING_DIR)
 
     if rel_staged.parts[0] == "community":
@@ -109,11 +139,14 @@ def rewrite_markdown_links(content: str, staged_file: pathlib.Path) -> str:
         if not url_path:
             return target
 
-        target_resolved = (source_dir / url_path).resolve()
-        try:
-            rel_to_repo = target_resolved.relative_to(REPO_ROOT).as_posix()
-        except ValueError:
+        target_candidate = source_dir / url_path
+        if target_candidate.is_symlink():
             return target
+
+        target_resolved = target_candidate.resolve()
+        if not target_resolved.is_relative_to(repo_root_resolved):
+            return target
+        rel_to_repo = target_resolved.relative_to(repo_root_resolved).as_posix()
 
         if not target_resolved.exists():
             return target
@@ -158,6 +191,9 @@ def rewrite_content(content: str, staged_file: pathlib.Path) -> str:
 
 def stage_docs():
     """Mirror repository markdown files into .docs_staged with link rewriting."""
+    repo_root_resolved = REPO_ROOT.resolve()
+    if STAGING_DIR.is_symlink():
+        raise ValueError(f"Refusing to use symlinked staging directory: {STAGING_DIR}")
     if STAGING_DIR.exists():
         shutil.rmtree(STAGING_DIR)
     STAGING_DIR.mkdir(parents=True)
@@ -175,34 +211,42 @@ def stage_docs():
     for p in md_files:
         rel = p.relative_to(REPO_ROOT)
         target = STAGING_DIR / rel
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(p, target)
+        _safe_copy_repo_file(p, target, repo_root_resolved)
 
     # 1b. Stage SVG figures referenced by paper/manuscript.md
     paper_figs_dir = REPO_ROOT / "paper" / "figures"
+    if paper_figs_dir.is_symlink():
+        raise ValueError(f"Refusing to stage symlinked directory: {paper_figs_dir}")
     if paper_figs_dir.exists():
         staged_figs_dir = STAGING_DIR / "paper" / "figures"
         staged_figs_dir.mkdir(parents=True, exist_ok=True)
         for svg_file in paper_figs_dir.glob("*.svg"):
-            shutil.copy2(svg_file, staged_figs_dir / svg_file.name)
+            _safe_copy_repo_file(
+                svg_file, staged_figs_dir / svg_file.name, repo_root_resolved
+            )
 
     # 1c. Stage typeset manuscript/supplement PDFs so README/docs links stay
     # internal to the docs site instead of rewriting to GitHub blob URLs.
     for pdf_name in ("manuscript.pdf", "supplement.pdf"):
         pdf_file = REPO_ROOT / "paper" / pdf_name
+        if pdf_file.is_symlink():
+            raise ValueError(f"Refusing to stage symlink: {pdf_file}")
         if pdf_file.is_file():
-            (STAGING_DIR / "paper").mkdir(parents=True, exist_ok=True)
-            shutil.copy2(pdf_file, STAGING_DIR / "paper" / pdf_name)
+            _safe_copy_repo_file(
+                pdf_file, STAGING_DIR / "paper" / pdf_name, repo_root_resolved
+            )
 
     # 2. Stage .github/ documents into community/ (MkDocs ignores dot-directories by default)
     github_dir = REPO_ROOT / ".github"
+    if github_dir.is_symlink():
+        raise ValueError(f"Refusing to stage symlinked directory: {github_dir}")
     staged_gh_files = []
     if github_dir.exists():
         community_dir = STAGING_DIR / "community"
         community_dir.mkdir(parents=True, exist_ok=True)
         for gh_md in github_dir.glob("*.md"):
             dest = community_dir / gh_md.name
-            shutil.copy2(gh_md, dest)
+            _safe_copy_repo_file(gh_md, dest, repo_root_resolved)
             staged_gh_files.append(dest)
 
     # 3. Rewrite relative links to non-md assets and .github docs across all staged files

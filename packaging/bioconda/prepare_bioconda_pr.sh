@@ -13,6 +13,10 @@ RECIPE_DIR="$SCRIPT_DIR/recipes/vardictrust"
 META_YAML="$RECIPE_DIR/meta.yaml"
 
 VERSION="${1:-1.0.7}"
+if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "ERROR: Invalid VERSION '${VERSION}' (expected strict SemVer X.Y.Z)." >&2
+  exit 1
+fi
 TARBALL_URL="https://github.com/palakpsheth/VarDictRust/archive/refs/tags/v${VERSION}.tar.gz"
 
 echo "Preparing Bioconda recipe for VarDictRust v${VERSION}..."
@@ -21,7 +25,7 @@ echo "Fetching release tarball from GitHub: ${TARBALL_URL}"
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
-if ! curl -LsSf --connect-timeout 10 --max-time 60 --retry 3 "$TARBALL_URL" -o "$TMP_DIR/release.tar.gz"; then
+if ! curl --proto '=https' --tlsv1.2 -LsSf --connect-timeout 10 --max-time 60 --retry 3 "$TARBALL_URL" -o "$TMP_DIR/release.tar.gz"; then
   echo "================================================================================" >&2
   echo "ERROR: Could not fetch release tarball from GitHub!" >&2
   echo "URL: $TARBALL_URL" >&2

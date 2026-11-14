@@ -55,7 +55,7 @@ if [ -n "$STAGED_DEPS" ]; then
     fi
 fi
 
-STAGED_CI_POLICY=$(git diff --cached --name-only --diff-filter=ACM | grep -E '^\.github/workflows/.*\.yml$|^\.github/dependabot\.yml$|^deny\.toml$|^\.cargo/audit\.toml$' || true)
+STAGED_CI_POLICY=$(git diff --cached --name-only --diff-filter=ACM | grep -E '^\.github/workflows/.*\.yml$|^\.github/actions/.*\.yml$|^\.github/dependabot\.yml$|^deny\.toml$|^\.cargo/audit\.toml$|^packaging/|^\.pre-commit-config\.yaml$' || true)
 if [ -n "$STAGED_CI_POLICY" ]; then
     echo "Running CI & supply-chain policy contract tests (test_bioconda_recipe.py)..."
     python3 harness/tests/test_bioconda_recipe.py
@@ -109,27 +109,40 @@ if [ -n "$STAGED_MD" ]; then
     echo "$(ts) [pre-commit] Markdown hygiene PASS ($((SECONDS - st_t0))s)"
 fi
 
-# 5. Portable secret scan on staged index
-st_t0=$SECONDS
-echo "=== $(ts) [pre-commit] Scanning staged changes for secrets (gitleaks) ==="
-GITLEAKS_BIN=""
-if command -v gitleaks >/dev/null 2>&1; then
-    GITLEAKS_BIN="gitleaks"
-elif [ -n "${CONDA_PREFIX:-}" ] && [ -x "${CONDA_PREFIX}/bin/gitleaks" ]; then
-    GITLEAKS_BIN="${CONDA_PREFIX}/bin/gitleaks"
-elif [ -x "${HOME}/miniconda3/envs/g4-tools/bin/gitleaks" ]; then
-    GITLEAKS_BIN="${HOME}/miniconda3/envs/g4-tools/bin/gitleaks"
-elif [ -x "${HOME}/miniforge3/envs/g4-tools/bin/gitleaks" ]; then
-    GITLEAKS_BIN="${HOME}/miniforge3/envs/g4-tools/bin/gitleaks"
-elif [ -x "${G4_TOOLS_BIN:-${CONDA_PREFIX:-$HOME/miniconda3}/envs/g4-tools/bin}/gitleaks" ]; then
-    GITLEAKS_BIN="${G4_TOOLS_BIN:-${CONDA_PREFIX:-$HOME/miniconda3}/envs/g4-tools/bin}/gitleaks"
-fi
+# 5. Portable fail-closed secret scan on staged index
+if [ -f "$ROOT_DIR/.gitleaks.toml" ]; then
+    st_t0=$SECONDS
+    echo "=== $(ts) [pre-commit] Scanning staged changes for secrets (gitleaks) ==="
+    GITLEAKS_BIN=""
+    if command -v gitleaks >/dev/null 2>&1; then
+        GITLEAKS_BIN="gitleaks"
+    elif [ -n "${G4_TOOLS_BIN:-}" ] && [ -x "${G4_TOOLS_BIN}/gitleaks" ]; then
+        GITLEAKS_BIN="${G4_TOOLS_BIN}/gitleaks"
+    elif [ -n "${CONDA_PREFIX:-}" ] && [ -x "${CONDA_PREFIX}/bin/gitleaks" ]; then
+        GITLEAKS_BIN="${CONDA_PREFIX}/bin/gitleaks"
+    elif [ -n "${CONDA_PREFIX:-}" ] && [ -x "${CONDA_PREFIX%/envs/*}/envs/g4-tools/bin/gitleaks" ]; then
+        GITLEAKS_BIN="${CONDA_PREFIX%/envs/*}/envs/g4-tools/bin/gitleaks"
+    elif [ -n "${CONDA_PREFIX:-}" ] && [ -x "${CONDA_PREFIX%/envs/*}/envs/vardict-oracle/bin/gitleaks" ]; then
+        GITLEAKS_BIN="${CONDA_PREFIX%/envs/*}/envs/vardict-oracle/bin/gitleaks"
+    elif [ -x "${HOME}/miniconda3/envs/g4-tools/bin/gitleaks" ]; then
+        GITLEAKS_BIN="${HOME}/miniconda3/envs/g4-tools/bin/gitleaks"
+    elif [ -x "${HOME}/miniconda3/envs/vardict-oracle/bin/gitleaks" ]; then
+        GITLEAKS_BIN="${HOME}/miniconda3/envs/vardict-oracle/bin/gitleaks"
+    elif [ -x "${HOME}/miniforge3/envs/g4-tools/bin/gitleaks" ]; then
+        GITLEAKS_BIN="${HOME}/miniforge3/envs/g4-tools/bin/gitleaks"
+    elif [ -x "${HOME}/miniforge3/envs/vardict-oracle/bin/gitleaks" ]; then
+        GITLEAKS_BIN="${HOME}/miniforge3/envs/vardict-oracle/bin/gitleaks"
+    elif [ -x "${HOME}/.local/bin/gitleaks" ]; then
+        GITLEAKS_BIN="${HOME}/.local/bin/gitleaks"
+    fi
 
-if [ -n "$GITLEAKS_BIN" ]; then
+    if [ -z "$GITLEAKS_BIN" ]; then
+        echo "ERROR: gitleaks not found on PATH or in standard conda/user environments (fail-closed secret gate)." >&2
+        echo "Install gitleaks (e.g. conda env 'g4-tools' or ~/.local/bin/gitleaks) before committing." >&2
+        exit 1
+    fi
     "$GITLEAKS_BIN" protect --staged -v
     echo "$(ts) [pre-commit] gitleaks PASS ($((SECONDS - st_t0))s)"
-else
-    echo "WARNING: gitleaks not found on PATH or in conda environments; skipping staged secret scan." >&2
 fi
 
 # 6. Block agent planning scratch directories

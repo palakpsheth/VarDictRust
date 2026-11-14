@@ -24,12 +24,14 @@ process VARDICTRUST {
     def args = task.ext.args ?: '-c 1 -S 2 -E 3 -z'
     def args2 = task.ext.args2 ?: ''
     def prefix = task.ext.prefix ?: "${meta.id}"
+    if (!(prefix ==~ /^[A-Za-z0-9._-]+$/)) { error "Unsafe task.ext.prefix: ${prefix}" }
 
     // A lone BAM may arrive as a 1-element List; unwrap it so it never mis-dispatches as somatic
     def bam_input = bams instanceof List && bams.size() == 1 ? bams[0] : bams
     def somatic = bam_input instanceof List && bam_input.size() == 2
     // Single-quoted Groovy: the emitted shell keeps -b "tumor|normal" double-quoted so | is never a pipe
-    def input = somatic ? '-b "' + bam_input[0] + '|' + bam_input[1] + '"' : "-b ${bam_input}"
+    def input = somatic ? '-b "' + bam_input[0] + '|' + bam_input[1] + '"' : '-b "' + bam_input + '"'
+    def bed_arg = bed ? "\"${bed}\"" : ""
     """
     set -o pipefail
 
@@ -38,15 +40,16 @@ process VARDICTRUST {
         ${input} \\
         -N "${meta.id}" \\
         --threads ${task.cpus} \\
-        -G ${fasta} \\
-        ${bed} \\
-        | bgzip ${args2} --threads ${task.cpus} > ${prefix}.vcf.gz
+        -G "${fasta}" \\
+        ${bed_arg} \\
+        | bgzip ${args2} --threads ${task.cpus} > "${prefix}.vcf.gz"
     """
 
     stub:
     def prefix = task.ext.prefix ?: "${meta.id}"
+    if (!(prefix ==~ /^[A-Za-z0-9._-]+$/)) { error "Unsafe task.ext.prefix: ${prefix}" }
 
     """
-    echo "" | gzip > ${prefix}.vcf.gz
+    echo "" | gzip > "${prefix}.vcf.gz"
     """
 }

@@ -14,6 +14,10 @@ IN_TREE_MODULE_DIR="$SCRIPT_DIR/modules/vardictrust"
 NFCORE_MODULE_PATH="$NFCORE_MODULES_DIR/modules/nf-core/vardictrust"
 
 VERSION="${1:-1.0.7}"
+if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "ERROR: Invalid VERSION '${VERSION}' (expected strict SemVer X.Y.Z)." >&2
+  exit 1
+fi
 ANACONDA_API="https://api.anaconda.org/package/bioconda/vardictrust"
 
 for tool in curl python3 nf-core nextflow nf-test docker; do
@@ -24,7 +28,7 @@ for tool in curl python3 nf-core nextflow nf-test docker; do
 done
 
 echo "Checking Bioconda availability for vardictrust=${VERSION} (linux-64 + linux-aarch64)..."
-ANACONDA_JSON="$(curl -fsSL --connect-timeout 10 --max-time 30 --retry 3 "$ANACONDA_API")"
+ANACONDA_JSON="$(curl --proto '=https' --tlsv1.2 -fsSL --connect-timeout 10 --max-time 30 --retry 3 "$ANACONDA_API")"
 
 if ! python3 -c '
 import json, sys

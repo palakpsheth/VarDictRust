@@ -75,6 +75,15 @@ jobs:
             fi
             python3 .agents/skills/vardictrust-release/scripts/check_release_consistency.py --phase pre-tag "${EXTRA_FLAGS[@]}"
           else
+            if [ -f "$(git rev-parse --git-dir)/shallow" ]; then
+              git fetch --unshallow origin +refs/heads/main:refs/remotes/origin/main
+            else
+              git fetch origin +refs/heads/main:refs/remotes/origin/main
+            fi
+            if ! git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main; then
+              echo "ERROR: Tagged commit ${GITHUB_SHA} (${REF_NAME}) is not an ancestor of origin/main!" >&2
+              exit 1
+            fi
             python3 .agents/skills/vardictrust-release/scripts/check_release_consistency.py --version "${REF_NAME#v}" --phase pre-tag --require-head-fingerprint
             python3 harness/perf_budget.py hg008-tier2 seqc2-exome-tier2 hg002-tier2 amplicon-tier2 hg008-cram-twin
           fi

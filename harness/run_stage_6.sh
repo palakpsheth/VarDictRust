@@ -9,11 +9,20 @@
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/portable.sh"
 
+WORK_DIR="${WORK_DIR:-/var/tmp/vardict-paper-$(id -u)}"
+
 ensure_vcf_clean_helper() {
-  local helper_py="${WORK_DIR:-/var/tmp/vardict-paper}/vcf_clean_chr1_22.py"
-  mkdir -p "$(dirname "$helper_py")"
-  if [ ! -s "$helper_py" ]; then
-    cat > "$helper_py" <<'PY'
+  WORK_DIR="${WORK_DIR:-/var/tmp/vardict-paper-$(id -u)}"
+  mkdir -p -m 700 "$WORK_DIR"
+  if [ ! -d "$WORK_DIR" ] || [ -L "$WORK_DIR" ] || [ ! -O "$WORK_DIR" ]; then
+    echo "FATAL: unsafe WORK_DIR '$WORK_DIR' (must be an owned non-symlink directory)" >&2
+    return 1
+  fi
+  local helper_py="${WORK_DIR}/vcf_clean_chr1_22.py"
+  local tmp_py
+  tmp_py="$(mktemp "${WORK_DIR}/.vcf_clean.py.XXXXXX")"
+  chmod 0600 "$tmp_py"
+  cat > "$tmp_py" <<'PY'
 import sys
 
 fai_path = sys.argv[1]
@@ -73,7 +82,7 @@ for raw in sys.stdin:
                 gt = smp_vals[idx]
     sys.stdout.write("\t".join([chrom, pos, vid, ref, alt, qual, "PASS", info, "GT", gt]) + "\n")
 PY
-  fi
+  mv -f "$tmp_py" "$helper_py"
 }
 
 eval_single_vcf_against_bed() {
@@ -87,14 +96,24 @@ eval_single_vcf_against_bed() {
   local pre_normalized="${8:-0}"
 
   ensure_vcf_clean_helper
-  local helper_py="${WORK_DIR:-/var/tmp/vardict-paper}/vcf_clean_chr1_22.py"
+  local helper_py="${WORK_DIR}/vcf_clean_chr1_22.py"
 
   if [ -f "$work_dir/rtg_snp/summary.txt" ] && [ -f "$work_dir/rtg_indel/summary.txt" ]; then
     local snp_p="NA" snp_r="NA" snp_f="NA" indel_p="NA" indel_r="NA" indel_f="NA"
     for cls in snp indel; do
       read -r p r f <<< "$(awk 'NR>2 && NF>=8' "$work_dir/rtg_${cls}/summary.txt" | sort -k8 -g | tail -1 | awk '{print $6,$7,$8}')"
       if [ -n "${f:-}" ]; then
-        eval "${cls}_p=$p; ${cls}_r=$r; ${cls}_f=$f"
+        case "$cls" in
+          snp|indel)
+            printf -v "${cls}_p" '%s' "$p"
+            printf -v "${cls}_r" '%s' "$r"
+            printf -v "${cls}_f" '%s' "$f"
+            ;;
+          *)
+            echo "FATAL: unexpected variant class '$cls'" >&2
+            return 1
+            ;;
+        esac
       fi
     done
     printf "%s\t%s\t%s\t%s\t%s\t%s" "$snp_p" "$snp_r" "$snp_f" "$indel_p" "$indel_r" "$indel_f"
@@ -172,7 +191,17 @@ eval_single_vcf_against_bed() {
       if [ -f "$work_dir/rtg_${cls}/summary.txt" ]; then
         read -r p r f <<< "$(awk 'NR>2 && NF>=8' "$work_dir/rtg_${cls}/summary.txt" | sort -k8 -g | tail -1 | awk '{print $6,$7,$8}')"
         if [ -n "${f:-}" ]; then
-          eval "${cls}_p=$p; ${cls}_r=$r; ${cls}_f=$f"
+          case "$cls" in
+            snp|indel)
+              printf -v "${cls}_p" '%s' "$p"
+              printf -v "${cls}_r" '%s' "$r"
+              printf -v "${cls}_f" '%s' "$f"
+              ;;
+            *)
+              echo "FATAL: unexpected variant class '$cls'" >&2
+              return 1
+              ;;
+          esac
         fi
       fi
     fi

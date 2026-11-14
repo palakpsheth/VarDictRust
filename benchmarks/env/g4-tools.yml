@@ -2,7 +2,6 @@ name: g4-tools
 channels:
   - conda-forge
   - bioconda
-  - memfault
   - defaults
 dependencies:
   - _openmp_mutex=4.5

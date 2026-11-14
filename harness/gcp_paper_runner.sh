@@ -56,7 +56,15 @@ GCS_CELLS_SUBDIR="${GCS_CELLS_SUBDIR:-cells-v106}"
 GCS_ORACLE_CACHE="${GCS_ORACLE_CACHE:-${GCS_RESULTS}/oracle-cache-v183}"
 
 EXPECTED_FP="${EXPECTED_FP:-5865a2a0b24a8c17}"
-WORK_DIR="${WORK_DIR:-/var/tmp/vardict-paper}"
+WORK_DIR="${WORK_DIR:-/var/tmp/vardict-paper-$(id -u)}"
+
+ensure_safe_work_dir() {
+  mkdir -p -m 700 "$WORK_DIR"
+  if [ ! -d "$WORK_DIR" ] || [ -L "$WORK_DIR" ] || [ ! -O "$WORK_DIR" ]; then
+    echo "FATAL: unsafe WORK_DIR '$WORK_DIR' (must be an owned non-symlink directory)" >&2
+    exit 1
+  fi
+}
 
 usage() {
   cat <<'EOF'
@@ -324,6 +332,7 @@ run_checkpointed_cell() {
   echo "=== [RUN] Stage=$stage Cell=$cell_id AllowedCPUs=$cpu_spec AllowedMemoryNodes=$mem_node_spec MemoryMax=$mem_max GOLDEN_MODE=$GOLDEN_MODE ==="
   gcs_write_heartbeat "$stage" "$cell_id" "RUNNING"
 
+  ensure_safe_work_dir
   local cell_dir="${WORK_DIR}/cells/${cell_id}"
   mkdir -p "$cell_dir"
   restore_prev_java_cpp_artifacts "$cell_id" "$cell_dir"
@@ -389,6 +398,7 @@ run_local_stage_cell() {
   echo "=== [STAGE-LOCAL] Stage=$stage Cell=$cell_id CPUs=$cpus MemoryMax=$mem_max ==="
   gcs_write_heartbeat "$stage" "$cell_id" "STAGING_LOCAL"
 
+  ensure_safe_work_dir
   local cell_dir="${WORK_DIR}/cells/${cell_id}"
   mkdir -p "$cell_dir" "${WORK_DIR}/local_staged"
   export KEEP_DIR="$cell_dir"
@@ -473,6 +483,7 @@ start_background_prestager() {
   if [ -n "${CELL_ALLOWLIST:-}" ] || [ -f "${WORK_DIR}/local_staged/bg_prestage.done" ]; then
     return 0
   fi
+  ensure_safe_work_dir
   (
     set -euo pipefail
     exec > "${WORK_DIR}/bg_prestage.log" 2>&1
@@ -519,6 +530,7 @@ worker_preflight() {
   echo "=== [Worker Preflight] ==="
   [ "$GOLDEN_MODE" = "off" ] || { echo "FATAL: GOLDEN_MODE must be off (got $GOLDEN_MODE)" >&2; exit 2; }
   ensure_submodule_excludes
+  ensure_safe_work_dir
   mkdir -p "$WORK_DIR/data/g4" "$WORK_DIR/cells" scratch
   if [ ! -L scratch/g4 ]; then
     rm -rf scratch/g4
@@ -1037,7 +1049,14 @@ run_stage_2() {
         n=\$(zgrep -vc '^#' \"\$KEEP_DIR/ev_\${lbl}.vcf.gz\" || echo 0)
         for cls in snp indel; do
           read -r p r f <<< \"\$(awk 'NR>2 && NF>=8' \"\$KEEP_DIR/rtg_\${lbl}_\${cls}/summary.txt\" | sort -k8 -g | tail -1 | awk '{print \$6,\$7,\$8}')\"
-          eval \"\${cls}_p=\${p:-NA}; \${cls}_r=\${r:-NA}; \${cls}_f=\${f:-NA}\"
+          case \"\$cls\" in
+            snp|indel)
+              printf -v \"\${cls}_p\" '%s' \"\${p:-NA}\"
+              printf -v \"\${cls}_r\" '%s' \"\${r:-NA}\"
+              printf -v \"\${cls}_f\" '%s' \"\${f:-NA}\"
+              ;;
+            *) echo \"FATAL: unexpected variant class \$cls\" >&2; return 1 ;;
+          esac
         done
         printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \"\$lbl\" \"\$n\" \"\$snp_p\" \"\$snp_r\" \"\$snp_f\" \"\$indel_p\" \"\$indel_r\" \"\$indel_f\" | tee -a \"\$OUT_TABLE\"
         return 0
@@ -1076,7 +1095,14 @@ run_stage_2() {
         else
           p=NA; r=NA; f=NA
         fi
-        eval \"\${cls}_p=\${p:-NA}; \${cls}_r=\${r:-NA}; \${cls}_f=\${f:-NA}\"
+        case \"\$cls\" in
+          snp|indel)
+            printf -v \"\${cls}_p\" '%s' \"\${p:-NA}\"
+            printf -v \"\${cls}_r\" '%s' \"\${r:-NA}\"
+            printf -v \"\${cls}_f\" '%s' \"\${f:-NA}\"
+            ;;
+          *) echo \"FATAL: unexpected variant class \$cls\" >&2; return 1 ;;
+        esac
       done
       printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \"\$lbl\" \"\$n\" \"\$snp_p\" \"\$snp_r\" \"\$snp_f\" \"\$indel_p\" \"\$indel_r\" \"\$indel_f\" | tee -a \"\$OUT_TABLE\"
     }
@@ -2523,7 +2549,14 @@ run_stage_5() {
         n=$(zgrep -vc "^#" "$work_ev/calls.vcf.gz" || echo 0)
         for cls in snp indel; do
           read -r p r f <<< "$(awk "NR>2 && NF>=8" "$work_ev/rtg_${cls}/summary.txt" | sort -k8 -g | tail -1 | awk "{print \$6,\$7,\$8}")"
-          eval "${cls}_p=${p:-NA}; ${cls}_r=${r:-NA}; ${cls}_f=${f:-NA}"
+          case "$cls" in
+            snp|indel)
+              printf -v "${cls}_p" "%s" "${p:-NA}"
+              printf -v "${cls}_r" "%s" "${r:-NA}"
+              printf -v "${cls}_f" "%s" "${f:-NA}"
+              ;;
+            *) echo "FATAL: unexpected variant class $cls" >&2; return 1 ;;
+          esac
         done
         printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
           "$cohort" "$caller" "$wall" "$rss" "$n" "$snp_p" "$snp_r" "$snp_f" "$indel_p" "$indel_r" "$indel_f" | tee -a "$OUT_TSV"
@@ -2567,7 +2600,14 @@ run_stage_5() {
           -e "$bed" --squash-ploidy "${sample_args[@]}" -T 8 -o "$work_ev/rtg_${cls}" >/dev/null 2>&1 || true
         if [ -f "$work_ev/rtg_${cls}/summary.txt" ]; then
           read -r p r f <<< "$(awk "NR>2 && NF>=8" "$work_ev/rtg_${cls}/summary.txt" | sort -k8 -g | tail -1 | awk "{print \$6,\$7,\$8}")"
-          eval "${cls}_p=${p:-NA}; ${cls}_r=${r:-NA}; ${cls}_f=${f:-NA}"
+          case "$cls" in
+            snp|indel)
+              printf -v "${cls}_p" "%s" "${p:-NA}"
+              printf -v "${cls}_r" "%s" "${r:-NA}"
+              printf -v "${cls}_f" "%s" "${f:-NA}"
+              ;;
+            *) echo "FATAL: unexpected variant class $cls" >&2; return 1 ;;
+          esac
         fi
       done
       printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
@@ -3965,6 +4005,7 @@ run_controller() {
         sudo mount -o discard,defaults /dev/md0 '$WORK_DIR'
       fi
       sudo chown -R \"\$(id -un):\$(id -gn)\" '$WORK_DIR'
+      chmod 700 '$WORK_DIR'
       if ! command -v musl-gcc >/dev/null 2>&1; then
         sudo apt-get update -qq
         sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq musl-tools
@@ -3976,15 +4017,26 @@ trap '' TERM
 export WORK_DIR='${WORK_DIR}'
 export GCS_CKPT='${GCS_CKPT}'
 export GOLDEN_MODE=off
+mkdir -p -m 700 \"\${WORK_DIR}\"
+if [ ! -d \"\${WORK_DIR}\" ] || [ -L \"\${WORK_DIR}\" ] || [ ! -O \"\${WORK_DIR}\" ]; then
+  echo \"FATAL: unsafe WORK_DIR '\${WORK_DIR}'\" >&2
+  exit 1
+fi
 exec > >(tee -a \"\${WORK_DIR}/worker.log\") 2>&1
 echo \"[VM Bootstrap] Starting at \$(date -u +%Y-%m-%dT%H:%M:%SZ) (stage=${worker_stage})\"
 if ! command -v git >/dev/null || ! command -v gsutil >/dev/null || ! command -v cmake >/dev/null; then
   sudo apt-get update -qq
   sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git curl unzip build-essential cmake pkg-config zlib1g-dev libbz2-dev liblzma-dev libcurl4-openssl-dev libssl-dev time util-linux
 fi
+install_miniconda() {
+  local mc_sh
+  mc_sh=\"\$(mktemp \"\${TMPDIR:-/tmp}/miniconda.XXXXXX\")\"
+  trap 'rm -f \"\${mc_sh:-}\"' RETURN
+  curl --proto '=https' --tlsv1.2 -sSLf https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -o \"\$mc_sh\"
+  bash \"\$mc_sh\" -b -p \"\$HOME/miniconda3\"
+}
 if [ ! -d \"\$HOME/miniconda3\" ]; then
-  curl -sSLf https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -o /tmp/miniconda.sh
-  bash /tmp/miniconda.sh -b -p \"\$HOME/miniconda3\"
+  install_miniconda
 fi
 export PATH=\"\$HOME/miniconda3/bin:\$HOME/.cargo/bin:\$PATH\"
 conda config --set auto_accept_tos yes >/dev/null 2>&1 || true

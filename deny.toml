@@ -5,6 +5,7 @@
 all-features = true
 
 [bans]
+wildcards = "deny"
 # AGENTS §13: banned/hallucinated crates must fail the gate.
 deny = [
     "genomicframe-core",
@@ -19,7 +20,7 @@ version = 2
 # Unmaintained crates are advisory noise for an application workspace; surface
 # them without failing the gate until replacements are chosen.
 unmaintained = "workspace"
-yanked = "warn"
+yanked = "deny"
 
 [licenses]
 version = 2
@@ -42,5 +43,6 @@ exceptions = [
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
+required-git-spec = "rev"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 allow-git = []

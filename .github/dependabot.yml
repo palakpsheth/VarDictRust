@@ -8,6 +8,8 @@ updates:
       day: "monday"
       time: "04:00"
       timezone: "America/Los_Angeles"
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 5
     allow:
       - dependency-type: "all"
@@ -70,6 +72,8 @@ updates:
       day: "monday"
       time: "04:00"
       timezone: "America/Los_Angeles"
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 5
     groups:
       actions:
@@ -84,6 +88,8 @@ updates:
       day: "monday"
       time: "06:00"
       timezone: "UTC"
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 5
     labels:
       - "dependencies"
