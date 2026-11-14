@@ -5,6 +5,25 @@ use crate::regions::Region;
 use crate::variations::Variant;
 use std::fmt::Write as _;
 
+#[inline]
+fn push_tsv_clean(buf: &mut String, s: &str) {
+    if !s
+        .as_bytes()
+        .iter()
+        .any(|&b| matches!(b, b'\t' | b'\r' | b'\n' | b'\0'))
+    {
+        buf.push_str(s);
+        return;
+    }
+    for ch in s.chars() {
+        if matches!(ch, '\t' | '\r' | '\n' | '\0') {
+            buf.push('_');
+        } else {
+            buf.push(ch);
+        }
+    }
+}
+
 /// Print the `-h/--header` column line for the active mode to `w`.
 /// Ports CmdParser.java:67 (`printHeader`) and the per-mode headers:
 /// SimpleMode.java:114-127, SomaticMode.java:134-150, AmpliconMode.java:135-146.
@@ -199,11 +218,11 @@ pub(crate) fn simple_36_append(
     // Golden p50 row is 213 B, max 505 B: 256 covers the common row, long
     // alleles regrow once. Retained rows keep at most this slack.
     buf.reserve(256);
-    buf.push_str(sample_name);
+    push_tsv_clean(buf, sample_name);
     buf.push('\t');
-    buf.push_str(&region.gene);
+    push_tsv_clean(buf, &region.gene);
     buf.push('\t');
-    buf.push_str(&region.chr);
+    push_tsv_clean(buf, &region.chr);
     buf.push('\t');
     crate::util::push_i32(buf, variant.start_pos);
     buf.push('\t');
@@ -282,7 +301,7 @@ pub(crate) fn simple_36_append(
         buf.push_str(&variant.right_seq);
         buf.push('\t');
     }
-    buf.push_str(&region.chr);
+    push_tsv_clean(buf, &region.chr);
     buf.push(':');
     crate::util::push_u32(buf, region.start.0);
     buf.push('-');
@@ -338,11 +357,11 @@ pub(crate) fn simple_38_append(
     );
     let pvalue = fisher.get_p_value();
 
-    buf.push_str(sample_name);
+    push_tsv_clean(buf, sample_name);
     buf.push('\t');
-    buf.push_str(&region.gene);
+    push_tsv_clean(buf, &region.gene);
     buf.push('\t');
-    buf.push_str(&region.chr);
+    push_tsv_clean(buf, &region.chr);
     buf.push('\t');
     crate::util::push_i32(buf, variant.start_pos);
     buf.push('\t');
@@ -424,7 +443,7 @@ pub(crate) fn simple_38_append(
         buf.push_str(&variant.right_seq);
         buf.push('\t');
     }
-    buf.push_str(&region.chr);
+    push_tsv_clean(buf, &region.chr);
     buf.push(':');
     crate::util::push_u32(buf, region.start.0);
     buf.push('-');
@@ -478,11 +497,11 @@ pub(crate) fn amplicon_38_append(
     buf.reserve(256);
     let variant = &av.variant;
 
-    buf.push_str(sample_name);
+    push_tsv_clean(buf, sample_name);
     buf.push('\t');
-    buf.push_str(&region.gene);
+    push_tsv_clean(buf, &region.gene);
     buf.push('\t');
-    buf.push_str(&region.chr);
+    push_tsv_clean(buf, &region.chr);
     buf.push('\t');
     crate::util::push_i32(buf, variant.start_pos);
     buf.push('\t');
@@ -552,7 +571,7 @@ pub(crate) fn amplicon_38_append(
         buf.push_str(&variant.right_seq);
         buf.push('\t');
     }
-    buf.push_str(&av.region);
+    push_tsv_clean(buf, &av.region);
     buf.push('\t');
     buf.push_str(&variant.var_type);
     buf.push('\t');
@@ -643,11 +662,11 @@ pub(crate) fn amplicon_40_append(
     );
     let pvalue = fisher.get_p_value();
 
-    buf.push_str(sample_name);
+    push_tsv_clean(buf, sample_name);
     buf.push('\t');
-    buf.push_str(&region.gene);
+    push_tsv_clean(buf, &region.gene);
     buf.push('\t');
-    buf.push_str(&region.chr);
+    push_tsv_clean(buf, &region.chr);
     buf.push('\t');
     crate::util::push_i32(buf, variant.start_pos);
     buf.push('\t');
@@ -721,7 +740,7 @@ pub(crate) fn amplicon_40_append(
         buf.push_str(&variant.right_seq);
         buf.push('\t');
     }
-    buf.push_str(&av.region);
+    push_tsv_clean(buf, &av.region);
     buf.push('\t');
     buf.push_str(&variant.var_type);
     buf.push('\t');
@@ -1007,11 +1026,11 @@ pub(crate) fn somatic_55_append(
         tumor
     };
 
-    buf.push_str(sample_name);
+    push_tsv_clean(buf, sample_name);
     buf.push('\t');
-    buf.push_str(&region.gene);
+    push_tsv_clean(buf, &region.gene);
     buf.push('\t');
-    buf.push_str(&region.chr);
+    push_tsv_clean(buf, &region.chr);
     buf.push('\t');
     crate::util::push_i32(buf, tumor.start_pos);
     buf.push('\t');
@@ -1046,7 +1065,7 @@ pub(crate) fn somatic_55_append(
         buf.push_str(&end_var.right_seq);
         buf.push('\t');
     }
-    buf.push_str(&region.chr);
+    push_tsv_clean(buf, &region.chr);
     buf.push(':');
     crate::util::push_u32(buf, region.start.0);
     buf.push('-');
@@ -1246,11 +1265,11 @@ pub(crate) fn somatic_61_append(
         pvalue_greater
     };
 
-    buf.push_str(sample_name);
+    push_tsv_clean(buf, sample_name);
     buf.push('\t');
-    buf.push_str(&region.gene);
+    push_tsv_clean(buf, &region.gene);
     buf.push('\t');
-    buf.push_str(&region.chr);
+    push_tsv_clean(buf, &region.chr);
     buf.push('\t');
     crate::util::push_i32(buf, tumor.start_pos);
     buf.push('\t');
@@ -1295,7 +1314,7 @@ pub(crate) fn somatic_61_append(
         buf.push_str(&end_var.right_seq);
         buf.push('\t');
     }
-    buf.push_str(&region.chr);
+    push_tsv_clean(buf, &region.chr);
     buf.push(':');
     crate::util::push_u32(buf, region.start.0);
     buf.push('-');
@@ -2289,5 +2308,94 @@ mod tests {
         );
         let cols: Vec<&str> = line.split('\t').collect();
         assert_eq!(cols.len(), 61);
+    }
+
+    #[test]
+    fn table_writers_sanitize_residual_tsv_delimiters_in_sample_chr_and_gene() {
+        let dirty_region = Region {
+            chr: "chr1\tINJ\nLINE".to_string(),
+            start: Pos1(10),
+            end: Pos1(20),
+            gene: "TP53\tCOL\r\n\0".to_string(),
+            amplicon: None,
+        };
+        let dirty_sample = "SAMP\t1\n2\r3\0";
+        let mut v = Variant::new();
+        v.start_pos = 100;
+        v.end_pos = 100;
+        v.ref_allele = "A".to_string();
+        v.var_allele = "G".to_string();
+        v.var_type = "SNV".to_string();
+        let av = crate::postprocess::amplicon::AmpliconVariant {
+            variant: v.clone(),
+            gdamp: 1,
+            tlamp: 1,
+            ncamp: 0,
+            ampflag: false,
+            region: "chr1\t10-20\n".to_string(),
+            good_variants: vec![],
+            bad_variants: vec![],
+        };
+
+        for (label, expected_cols, row) in [
+            (
+                "simple_36",
+                36usize,
+                simple_36(&v, &dirty_region, dirty_sample, ""),
+            ),
+            (
+                "simple_38",
+                38usize,
+                simple_38(&v, &dirty_region, dirty_sample, ""),
+            ),
+            (
+                "amplicon_38",
+                38usize,
+                amplicon_38(&av, &dirty_region, dirty_sample, false),
+            ),
+            (
+                "amplicon_40",
+                40usize,
+                amplicon_40(&av, &dirty_region, dirty_sample, false),
+            ),
+            (
+                "somatic_55",
+                55usize,
+                somatic_55(
+                    &v,
+                    Some(&v),
+                    &dirty_region,
+                    dirty_sample,
+                    "StrongSomatic",
+                    "",
+                    "",
+                    false,
+                ),
+            ),
+            (
+                "somatic_61",
+                61usize,
+                somatic_61(
+                    &v,
+                    Some(&v),
+                    &dirty_region,
+                    dirty_sample,
+                    "StrongSomatic",
+                    "",
+                    "",
+                    false,
+                ),
+            ),
+        ] {
+            assert!(
+                !row.contains(['\n', '\r', '\0']),
+                "{label} leaked control delimiter: {row:?}"
+            );
+            assert_eq!(
+                row.split('\t').count(),
+                expected_cols,
+                "{label} column count drifted under dirty inputs: {row:?}"
+            );
+        }
     }
 }

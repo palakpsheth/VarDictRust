@@ -2,10 +2,30 @@ use std::fmt::Debug;
 use std::hash::Hash;
 
 const DEFAULT_CAPACITY: usize = 16;
+const MAXIMUM_CAPACITY: usize = 1 << 30;
 const TREEIFY_THRESHOLD: usize = 8;
 const MIN_TREEIFY_CAPACITY: usize = 64;
 const DEFAULT_LOAD_FACTOR: f32 = 0.75;
 const NONE: u32 = u32::MAX;
+
+#[inline]
+fn next_resize_plan(old_cap: usize) -> Option<(usize, usize)> {
+    if old_cap >= MAXIMUM_CAPACITY {
+        return None;
+    }
+    let new_cap = (old_cap << 1).min(MAXIMUM_CAPACITY);
+    let new_thr = if new_cap >= MAXIMUM_CAPACITY {
+        i32::MAX as usize
+    } else {
+        let ft = (new_cap as f32) * DEFAULT_LOAD_FACTOR;
+        if ft < (MAXIMUM_CAPACITY as f32) {
+            ft as usize
+        } else {
+            i32::MAX as usize
+        }
+    };
+    Some((new_cap, new_thr))
+}
 
 #[derive(Clone, Debug)]
 struct Node<K, V> {
@@ -131,6 +151,9 @@ where
     }
 
     fn alloc_node(&mut self, key: K, val: V, next: u32) -> u32 {
+        if self.free_head == NONE && self.nodes.len() >= (u32::MAX as usize) {
+            return NONE;
+        }
         if let Some(ref mut log) = self.new_key_log.0 {
             log.push(key);
         }
@@ -142,6 +165,9 @@ where
                 return idx;
             }
             self.free_head = NONE;
+            if self.nodes.len() >= (u32::MAX as usize) {
+                return NONE;
+            }
         }
         let idx = self.nodes.len() as u32;
         self.nodes.push(Node { key, val, next });
@@ -269,6 +295,9 @@ where
         }
 
         let new_idx = self.alloc_node(key, value, NONE);
+        if new_idx == NONE {
+            return None;
+        }
         if prev == NONE {
             if let Some(b) = self.buckets.get_mut(idx) {
                 *b = new_idx;
@@ -321,6 +350,9 @@ where
         }
 
         let new_idx = self.alloc_node(key, f(), NONE);
+        if new_idx == NONE {
+            return &mut self.fallback;
+        }
         if prev == NONE {
             if let Some(b) = self.buckets.get_mut(idx) {
                 *b = new_idx;
@@ -378,12 +410,14 @@ where
             let head = self.buckets.get(idx).copied().unwrap_or(NONE);
             // OpenJDK HashMap.computeIfAbsent inserts at head of bin
             let new_idx = self.alloc_node(key, val, head);
-            if let Some(b) = self.buckets.get_mut(idx) {
-                *b = new_idx;
-            }
-            self.size += 1;
-            if bin_len + 1 >= TREEIFY_THRESHOLD {
-                self.treeify_bin();
+            if new_idx != NONE {
+                if let Some(b) = self.buckets.get_mut(idx) {
+                    *b = new_idx;
+                }
+                self.size += 1;
+                if bin_len + 1 >= TREEIFY_THRESHOLD {
+                    self.treeify_bin();
+                }
             }
             new_idx
         };
@@ -449,8 +483,11 @@ where
             return;
         }
 
-        let new_cap = old_cap << 1;
-        self.threshold = (new_cap as f32 * DEFAULT_LOAD_FACTOR) as usize;
+        let Some((new_cap, new_thr)) = next_resize_plan(old_cap) else {
+            self.threshold = i32::MAX as usize;
+            return;
+        };
+        self.threshold = new_thr;
         self.buckets.resize(new_cap, NONE);
 
         for j in 0..old_cap {
@@ -892,8 +929,11 @@ where
             *threshold = (DEFAULT_CAPACITY as f32 * DEFAULT_LOAD_FACTOR) as usize;
             return;
         }
-        let new_cap = old_cap << 1;
-        *threshold = (new_cap as f32 * DEFAULT_LOAD_FACTOR) as usize;
+        let Some((new_cap, new_thr)) = next_resize_plan(old_cap) else {
+            *threshold = i32::MAX as usize;
+            return;
+        };
+        *threshold = new_thr;
         buckets.resize(new_cap, NONE);
 
         for j in 0..old_cap {
@@ -1008,6 +1048,9 @@ where
         let first = buckets.get(idx).copied().unwrap_or(NONE);
 
         if first == NONE {
+            if nodes.len() >= (u32::MAX as usize) {
+                break;
+            }
             let new_idx = nodes.len() as u32;
             nodes.push(StrNode {
                 key,
@@ -1043,6 +1086,9 @@ where
             }
             if dup {
                 continue;
+            }
+            if nodes.len() >= (u32::MAX as usize) {
+                break;
             }
             let (xp, dir) = insert_at;
             let xpn = nodes.get(xp as usize).map_or(NONE, |nd| nd.next);
@@ -1092,6 +1138,9 @@ where
             }
             if dup {
                 continue;
+            }
+            if nodes.len() >= (u32::MAX as usize) {
+                break;
             }
             let new_idx = nodes.len() as u32;
             nodes.push(StrNode {
@@ -2083,5 +2132,23 @@ mod tests {
         rev_same_bin.insert(1_048_575, 1);
         assert!(!rev_same_bin.contains_both_and_first_precedes(&1_048_575, &1_048_576));
         assert!(rev_same_bin.contains_both_and_first_precedes(&1_048_576, &1_048_575));
+    }
+
+    #[test]
+    fn batch12_maximum_capacity_clamp_matches_openjdk() {
+        // Simulate a map already at OpenJDK MAXIMUM_CAPACITY = 1 << 30 without allocating 4 GiB:
+        // calling resize when old_cap >= 1 << 30 must clamp threshold to i32::MAX and return
+        // without doubling old_cap << 1.
+        let mut map: JavaHashMap<i32, i32> = JavaHashMap::new();
+        map.insert(1, 10);
+        assert_eq!(map.capacity(), 16);
+        assert_eq!(map.threshold, 12);
+        let cap_at_max = 1usize << 30;
+        let expected_openjdk_thr = i32::MAX as usize;
+        assert_eq!(
+            super::next_resize_plan(1usize << 29),
+            Some((cap_at_max, expected_openjdk_thr))
+        );
+        assert_eq!(super::next_resize_plan(cap_at_max), None);
     }
 }

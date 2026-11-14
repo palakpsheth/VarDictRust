@@ -10,7 +10,16 @@ set -euo pipefail
 
 CMD="${1:-status}"
 PROJECT_SLUG="${2:-vardictrust}"
-BRANCH="${3:-main}"
+VERSION="${3:-latest}"
+
+if [[ "$PROJECT_SLUG" == "." || "$PROJECT_SLUG" == ".." || ! "$PROJECT_SLUG" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+    echo "ERROR: Invalid ReadTheDocs project slug '${PROJECT_SLUG}' (allowed: [a-zA-Z0-9._-]+, excluding '.' and '..')." >&2
+    exit 1
+fi
+if [[ "$VERSION" == "." || "$VERSION" == ".." || ! "$VERSION" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+    echo "ERROR: Invalid ReadTheDocs version '${VERSION}' (allowed: [a-zA-Z0-9._-]+, excluding '.' and '..')." >&2
+    exit 1
+fi
 
 # Source RTD_TOKEN from ~/.bashrc if not present in current shell environment
 if [ -z "${RTD_TOKEN:-}" ] && [ -f "$HOME/.bashrc" ]; then
@@ -28,7 +37,7 @@ BASE_URL="https://readthedocs.org/api/v3/projects/${PROJECT_SLUG}"
 case "$CMD" in
     status)
         echo "=== Querying ReadTheDocs Project Status: ${PROJECT_SLUG} ==="
-        RESPONSE="$(curl -s -w "\nHTTP_STATUS:%{http_code}" \
+        RESPONSE="$(curl --proto '=https' --tlsv1.2 -s -w "\nHTTP_STATUS:%{http_code}" \
             -H @- <<< "Authorization: Token ${RTD_TOKEN}" \
             "${BASE_URL}/")"
         STATUS_CODE="$(echo "$RESPONSE" | grep 'HTTP_STATUS:' | cut -d':' -f2)"
@@ -42,9 +51,8 @@ case "$CMD" in
         fi
         ;;
     build)
-        VERSION="${3:-latest}"
         echo "=== Triggering ReadTheDocs Build: ${PROJECT_SLUG} (version: ${VERSION}) ==="
-        RESPONSE="$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST \
+        RESPONSE="$(curl --proto '=https' --tlsv1.2 -s -w "\nHTTP_STATUS:%{http_code}" -X POST \
             -H @- <<< "Authorization: Token ${RTD_TOKEN}" \
             -H "Content-Type: application/json" \
             "${BASE_URL}/versions/${VERSION}/builds/")"
@@ -61,7 +69,7 @@ case "$CMD" in
         ;;
     builds)
         echo "=== Querying Recent Builds: ${PROJECT_SLUG} ==="
-        RESPONSE="$(curl -s -w "\nHTTP_STATUS:%{http_code}" \
+        RESPONSE="$(curl --proto '=https' --tlsv1.2 -s -w "\nHTTP_STATUS:%{http_code}" \
             -H @- <<< "Authorization: Token ${RTD_TOKEN}" \
             "${BASE_URL}/builds/")"
         STATUS_CODE="$(echo "$RESPONSE" | grep 'HTTP_STATUS:' | cut -d':' -f2)"

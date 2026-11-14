@@ -202,7 +202,7 @@ portable_loadavg() {
 is_user_session_pid() {
     local pid="$1"
     if [ -r "/proc/$pid/cgroup" ]; then
-        grep -q 'user@' "/proc/$pid/cgroup" 2>/dev/null
+        grep -Eq "user@$(id -u)\\.service" "/proc/$pid/cgroup" 2>/dev/null
         return $?
     fi
     local p_uid

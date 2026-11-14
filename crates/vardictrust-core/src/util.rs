@@ -87,6 +87,54 @@ pub fn complement(base: u8) -> u8 {
     }
 }
 
+/// Maximum inclusive coordinate span (`320,000` bp) scanned contiguously before
+/// intersecting with sorted, merged `LoadedRegion` intervals on `chr`.
+pub(crate) const MAX_CONTIGUOUS_REF_SCAN: i64 = 320_000;
+
+/// Intersects `[eff_start, eff_end]` (`1 <= eff_start <= eff_end`) with all
+/// `LoadedRegion`s on `chr`, returning sorted, merged, disjoint inclusive
+/// `(start, end)` sub-intervals and their clamped total span (`<= 1 << 20`).
+#[cold]
+pub(crate) fn merged_loaded_subspans(
+    reference: &crate::reference::Reference,
+    chr: &str,
+    eff_start: i32,
+    eff_end: i32,
+) -> (Vec<(i32, i32)>, usize) {
+    let q_lo = eff_start as u32;
+    let q_hi = eff_end as u32;
+    let mut raw: Vec<(i32, i32)> = Vec::with_capacity(reference.loaded_regions.len());
+    for lr in &reference.loaded_regions {
+        if lr.chr == chr && lr.sequence_start <= lr.sequence_end {
+            let s_u32 = lr.sequence_start.max(q_lo);
+            let e_u32 = lr.sequence_end.min(q_hi);
+            if s_u32 <= e_u32 {
+                raw.push((s_u32 as i32, e_u32 as i32));
+            }
+        }
+    }
+    raw.sort_unstable_by_key(|&(s, _)| s);
+
+    let mut merged: Vec<(i32, i32)> = Vec::with_capacity(raw.len());
+    for (s, e) in raw {
+        match merged.last_mut() {
+            Some((_cs, ce)) if (s as i64) <= (*ce as i64) + 1 => {
+                if e > *ce {
+                    *ce = e;
+                }
+            }
+            _ => merged.push((s, e)),
+        }
+    }
+
+    let mut total_span: i64 = 0;
+    for &(s, e) in &merged {
+        total_span = total_span.saturating_add((e as i64) - (s as i64) + 1);
+    }
+    let clamped_span = total_span.clamp(0, 1 << 20) as usize;
+    (merged, clamped_span)
+}
+
 /// Collect reference bases over the 1-based inclusive range `from..=to`.
 ///
 /// Positions < 1 are skipped; positions missing from the reference render as
@@ -101,10 +149,41 @@ pub fn ref_bases_with(
     if to < from || to < 1 {
         return Vec::new();
     }
-    let eff_from = from.max(1);
-    let span = ((to as i64) - (eff_from as i64) + 1).clamp(0, 1 << 20) as usize;
+    let (eff_from, eff_to) = if missing.is_none() {
+        let Some((min_s, max_e)) = reference.loaded_span_bounds(chr) else {
+            return Vec::new();
+        };
+        if u64::from(min_s) > (to.max(0) as u64) {
+            return Vec::new();
+        }
+        let min_i32 = i32::try_from(min_s).unwrap_or(i32::MAX);
+        let max_i32 = i32::try_from(max_e).unwrap_or(i32::MAX);
+        let clamped_from = from.max(1).max(min_i32);
+        let clamped_to = to.min(max_i32);
+        if clamped_to < clamped_from {
+            return Vec::new();
+        }
+        if (clamped_to as i64) - (clamped_from as i64) > MAX_CONTIGUOUS_REF_SCAN
+            && reference.loaded_regions.len() > 1
+        {
+            let (subspans, span) = merged_loaded_subspans(reference, chr, clamped_from, clamped_to);
+            let mut sb = Vec::with_capacity(span);
+            for (s, e) in subspans {
+                for pos in s..=e {
+                    if let Some(b) = reference.get_base(chr, pos as u32) {
+                        sb.push(b);
+                    }
+                }
+            }
+            return sb;
+        }
+        (clamped_from, clamped_to)
+    } else {
+        (from.max(1), to)
+    };
+    let span = ((eff_to as i64) - (eff_from as i64) + 1).clamp(0, 1 << 20) as usize;
     let mut sb = Vec::with_capacity(span);
-    for pos in eff_from..=to {
+    for pos in eff_from..=eff_to {
         match reference.get_base(chr, pos as u32) {
             Some(b) => sb.push(b),
             None => {
@@ -139,22 +218,61 @@ pub(crate) fn push_ref_bases(
     if end < start || end < 1 {
         return;
     }
-    let eff_start = start.max(1);
-    let span = ((end as i64) - (eff_start as i64) + 1).clamp(0, 1 << 20) as usize;
+    let Some((min_s, max_e)) = reference.loaded_span_bounds(chr) else {
+        return;
+    };
+    if u64::from(min_s) > (end.max(0) as u64) {
+        return;
+    }
+    let min_i32 = i32::try_from(min_s).unwrap_or(i32::MAX);
+    let max_i32 = i32::try_from(max_e).unwrap_or(i32::MAX);
+    let eff_start = start.max(1).max(min_i32);
+    let eff_end = end.min(max_i32);
+    if eff_end < eff_start {
+        return;
+    }
+    if (eff_end as i64) - (eff_start as i64) > MAX_CONTIGUOUS_REF_SCAN
+        && reference.loaded_regions.len() > 1
+    {
+        let (subspans, span) = merged_loaded_subspans(reference, chr, eff_start, eff_end);
+        if out.capacity() == 0 {
+            out.reserve_exact(span);
+        } else {
+            out.reserve(span);
+        }
+        let base_len = out.len();
+        for (s, e) in subspans {
+            for pos in s..=e {
+                if let Some(b) = reference.get_base(chr, pos as u32) {
+                    if b.is_ascii() {
+                        out.push(b as char);
+                    } else {
+                        out.truncate(base_len);
+                        out.push_str(&String::from_utf8_lossy(&ref_bases(
+                            reference, chr, eff_start, eff_end,
+                        )));
+                        return;
+                    }
+                }
+            }
+        }
+        return;
+    }
+    let span = ((eff_end as i64) - (eff_start as i64) + 1).clamp(0, 1 << 20) as usize;
     if out.capacity() == 0 {
         out.reserve_exact(span);
     } else {
         out.reserve(span);
     }
     let base_len = out.len();
-    for pos in eff_start..=end {
+    for pos in eff_start..=eff_end {
         if let Some(b) = reference.get_base(chr, pos as u32) {
             if b.is_ascii() {
                 out.push(b as char);
             } else {
                 out.truncate(base_len);
                 out.push_str(&String::from_utf8_lossy(&ref_bases(
-                    reference, chr, start, end,
+                    reference, chr, eff_start, eff_end,
                 )));
                 return;
             }
@@ -240,6 +358,33 @@ pub(crate) fn push_i64(buf: &mut String, v: i64) {
         buf.push('-');
     }
     push_u64(buf, v.unsigned_abs());
+}
+
+/// Zero-allocation byte slice wrapper escaping terminal control characters,
+/// non-ASCII bytes, and `\\` for safe diagnostic logging (`SEC-10b`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SanitizedBytes<'a>(pub(crate) &'a [u8]);
+
+impl std::fmt::Display for SanitizedBytes<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use std::fmt::Write as _;
+        for &b in self.0 {
+            if b == b'\\' {
+                f.write_str("\\\\")?;
+            } else if (0x20..=0x7E).contains(&b) {
+                f.write_char(b as char)?;
+            } else {
+                write!(f, "\\x{b:02x}")?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl std::fmt::Debug for SanitizedBytes<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self, f)
+    }
 }
 
 #[cfg(test)]
@@ -423,5 +568,136 @@ mod tests {
             push_i64(&mut buf, v);
             assert_eq!(buf, format!("i64:{v}"), "push_i64 mismatch for {v}");
         }
+    }
+
+    #[test]
+    fn batch12_ref_bases_clamps_to_loaded_span_with_u32_max_bounds() {
+        let mut reference = crate::reference::Reference::new();
+        reference.region_sequences.push(b"AC".to_vec());
+        reference
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 10,
+                sequence_end: u32::MAX,
+            });
+
+        // Must NOT wrap `u32::MAX as i32` to `-1` and drop loaded bases at 10..=11!
+        let mut out = String::new();
+        push_ref_bases(&mut out, &reference, "chr1", 1, 15);
+        assert_eq!(out, "AC");
+        assert_eq!(ref_bases(&reference, "chr1", 1, 15), b"AC");
+
+        // Unloaded contig over a 50 Mbp span must short-circuit in O(1) via loaded_span_bounds
+        // rather than walking 50,000,000 positions one-by-one.
+        let t0 = std::time::Instant::now();
+        let mut unloaded_out = String::new();
+        push_ref_bases(&mut unloaded_out, &reference, "chr_unloaded", 1, 50_000_000);
+        assert!(unloaded_out.is_empty());
+        assert!(ref_bases(&reference, "chr_unloaded", 1, 50_000_000).is_empty());
+        assert!(
+            t0.elapsed() < std::time::Duration::from_millis(25),
+            "unloaded 50 Mbp span must short-circuit via loaded_span_bounds, took {:?}",
+            t0.elapsed()
+        );
+
+        // When min_s > i32::MAX, querying `1..=50_000_000` must also short-circuit in O(1) via u64 check
+        // rather than wrapping `min_s as i32` negative and scanning from 1.
+        let mut high_ref = crate::reference::Reference::new();
+        high_ref.region_sequences.push(b"G".to_vec());
+        high_ref
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr_hi".to_string(),
+                sequence_start: (i32::MAX as u32) + 100,
+                sequence_end: u32::MAX,
+            });
+        let t1 = std::time::Instant::now();
+        let mut hi_out = String::new();
+        push_ref_bases(&mut hi_out, &high_ref, "chr_hi", 1, 50_000_000);
+        assert!(hi_out.is_empty());
+        assert!(ref_bases(&high_ref, "chr_hi", 1, 50_000_000).is_empty());
+        assert!(
+            t1.elapsed() < std::time::Duration::from_millis(25),
+            "high u32 loaded_span_bounds must short-circuit without i32 wrap, took {:?}",
+            t1.elapsed()
+        );
+
+        // Missing fill `Some(b'N')` still preserves full requested width
+        assert_eq!(
+            ref_bases_with(&high_ref, "chr_hi", 2, 5, Some(b'N')),
+            b"NNNN"
+        );
+    }
+
+    #[test]
+    fn test_sanitized_bytes_display_escapes_controls_and_backslash() {
+        let raw = b"readA\\path\x1b[31mRED\n\r\t\0\x7f\xff~ !";
+        let s = SanitizedBytes(raw);
+        let expected = r"readA\\path\x1b[31mRED\x0a\x0d\x09\x00\x7f\xff~ !";
+        assert_eq!(s.to_string(), expected);
+        assert_eq!(format!("{s:?}"), expected);
+    }
+
+    #[test]
+    fn batch12_ref_bases_and_join_ref_skip_disjoint_200mbp_gap() {
+        let mut reference = crate::reference::Reference::new();
+        let seq1: Vec<u8> = b"ACGT".repeat(325); // 1,300 bp covering 1..=1_300
+        let seq_overlap: Vec<u8> = b"GTACGTGGGGTTTTAA".to_vec(); // 16 bp covering 1_295..=1_310
+        let seq2: Vec<u8> = b"TGCA".repeat(200).into_iter().chain([b'C']).collect(); // 801 bp covering 199_999_800..=200_000_600
+
+        reference.region_sequences.push(seq1.clone());
+        reference
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 1,
+                sequence_end: 1_300,
+            });
+        reference.region_sequences.push(seq_overlap.clone());
+        reference
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 1_295,
+                sequence_end: 1_310,
+            });
+        reference.region_sequences.push(seq2.clone());
+        reference
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 199_999_800,
+                sequence_end: 200_000_600,
+            });
+
+        let mut expected_bytes = seq1;
+        expected_bytes.extend_from_slice(&seq_overlap[6..]); // 1_301..=1_310 (10 bp, no duplicate 1_295..=1_300)
+        expected_bytes.extend_from_slice(&seq2[..201]); // 199_999_800..=200_000_000 (201 bp)
+        assert_eq!(expected_bytes.len(), 1_511);
+
+        let t0 = std::time::Instant::now();
+        let joined = join_ref(&reference, "chr1", 1, 200_000_000);
+        let elapsed_join = t0.elapsed();
+
+        let t1 = std::time::Instant::now();
+        let raw_bases = ref_bases(&reference, "chr1", 1, 200_000_000);
+        let elapsed_vec = t1.elapsed();
+
+        assert_eq!(joined.as_bytes(), expected_bytes.as_slice());
+        assert_eq!(raw_bases, expected_bytes);
+        assert!(
+            joined.capacity() <= 4_096,
+            "join_ref across 200 Mbp unloaded gap must reserve merged loaded span, got capacity {}",
+            joined.capacity()
+        );
+        assert!(
+            elapsed_join < std::time::Duration::from_millis(10),
+            "join_ref across 200 Mbp unloaded gap must complete in < 10 ms, took {elapsed_join:?}"
+        );
+        assert!(
+            elapsed_vec < std::time::Duration::from_millis(10),
+            "ref_bases across 200 Mbp unloaded gap must complete in < 10 ms, took {elapsed_vec:?}"
+        );
     }
 }

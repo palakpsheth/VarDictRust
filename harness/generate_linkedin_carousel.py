@@ -1311,7 +1311,7 @@ def render_outputs(slides: list[SlideCanvas], post_md: str, out_dir: Path) -> No
         [
             "gs",
             "-q",
-            "-dNOSAFER",
+            "-dSAFER",
             "-dBATCH",
             "-dNOPAUSE",
             "-sDEVICE=pdfwrite",

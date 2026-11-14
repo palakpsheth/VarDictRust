@@ -117,7 +117,12 @@ fn allele_key<'a>(base: u8, buf: &'a mut [u8; 4]) -> &'a str {
 
 #[inline]
 fn push_ascii_base(dst: &mut String, b: u8) {
-    dst.push(if b.is_ascii() { b as char } else { 'N' });
+    let ch = if b <= 0x20 || b >= 0x7F || matches!(b, b';' | b',') {
+        'N'
+    } else {
+        b as char
+    };
+    dst.push(ch);
 }
 
 #[inline]
@@ -180,24 +185,24 @@ fn graft_adjacent_insertion_into(
 }
 
 /// Static single-base `&str` lookup matching [`push_ascii_base`] + `N`/`n` filtering:
-/// ASCII `0x00..=0x7F` map to their 1-byte `&str` except `b'n'` (`0x6E`), which maps
-/// to `"N"` alongside `b'N'` and non-ASCII `0x80..=0xFF`.
+/// printable non-delimiter ASCII `0x21..=0x7E` (excluding `,`, `;`, and `n`) map to their
+/// 1-byte `&str` (preserving `=`, IUPAC codes, `*`, `-`, and case), while `<= 0x20`,
+/// `>= 0x7F`, `,`, `;`, `N`, and `n` map to `"N"`.
 const SINGLE_BASE_STR: [&str; 256] = [
-    "\x00", "\x01", "\x02", "\x03", "\x04", "\x05", "\x06", "\x07", "\x08", "\t", "\n", "\x0B",
-    "\x0C", "\r", "\x0E", "\x0F", "\x10", "\x11", "\x12", "\x13", "\x14", "\x15", "\x16", "\x17",
-    "\x18", "\x19", "\x1A", "\x1B", "\x1C", "\x1D", "\x1E", "\x1F", " ", "!", "\"", "#", "$", "%",
-    "&", "'", "(", ")", "*", "+", ",", "-", ".", "/", "0", "1", "2", "3", "4", "5", "6", "7", "8",
-    "9", ":", ";", "<", "=", ">", "?", "@", "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K",
+    "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N",
+    "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "!", "\"", "#", "$", "%",
+    "&", "'", "(", ")", "*", "+", "N", "-", ".", "/", "0", "1", "2", "3", "4", "5", "6", "7", "8",
+    "9", ":", "N", "<", "=", ">", "?", "@", "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K",
     "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z", "[", "\\", "]", "^",
     "_", "`", "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "N", "o", "p", "q",
-    "r", "s", "t", "u", "v", "w", "x", "y", "z", "{", "|", "}", "~", "\x7F", "N", "N", "N", "N",
+    "r", "s", "t", "u", "v", "w", "x", "y", "z", "{", "|", "}", "~", "N", "N", "N", "N", "N", "N",
     "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N",
     "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N",
     "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N",
     "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N",
     "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N",
     "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N", "N",
-    "N", "N", "N", "N", "N", "N", "N", "N", "N", "N",
+    "N", "N", "N", "N", "N", "N", "N", "N", "N",
 ];
 
 /// Phred quality at `idx`, defaulting missing/truncated QUAL (`*`) to 0.
@@ -434,10 +439,10 @@ impl<'a> CigarParser<'a> {
             // cleanly without mutating start_pos, query_seq, or pileup structures, restoring all
             // parser-owned scratch buffers for the next read.
             let log_modify_err = |e: crate::types::VardictError| {
-                let name = String::from_utf8_lossy(&record.name);
                 log::warn!(
                     "There was Exception while processing record on {}. The processing will be continued from the next record. Exception: {}",
-                    name, e
+                    crate::util::SanitizedBytes(&record.name),
+                    e
                 );
                 // ports Utils.java:261-277 and CLAUDE.md §5:
                 // Count exceptions atomically. While Java terminates with exit(1) after
@@ -845,14 +850,14 @@ impl<'a> CigarParser<'a> {
                         // H1: single fused reference lookup (`ref_mismatch_not_n`)
                         // instead of two identical `get_base` calls per base.
                         while start < i32::MAX
-                            && (start.saturating_add(1) as u32) >= self.region.start.0
-                            && (start.saturating_add(1) as u32) <= self.region.end.0
+                            && u32::try_from(start.saturating_add(1)).is_ok_and(|pu| {
+                                pu >= self.region.start.0 && pu <= self.region.end.0
+                            })
                             && i + 1 < cigar_element_len
                             && q >= self.config.base_qual
-                            && self.ref_mismatch_not_n(
-                                start as u32,
-                                query_seq.get(read_pos_inc).copied(),
-                            )
+                            && u32::try_from(start).is_ok_and(|su| {
+                                self.ref_mismatch_not_n(su, query_seq.get(read_pos_inc).copied())
+                            })
                         {
                             let next_read_idx = read_pos_inc + 1;
                             let Some(&nuc) = query_seq.get(next_read_idx) else {
@@ -866,14 +871,15 @@ impl<'a> CigarParser<'a> {
                             if nuc == b'N' || nuc == b'n' {
                                 break;
                             }
-                            if let Some(next_ref_base) =
-                                self.get_ref_base(start.saturating_add(1) as u32)
+                            if let Some(next_ref_base) = u32::try_from(start.saturating_add(1))
+                                .ok()
+                                .and_then(|pu| self.get_ref_base(pu))
                             {
                                 if next_ref_base == b'N' || next_ref_base == b'n' {
                                     break;
                                 }
                                 if nuc != next_ref_base {
-                                    buf_ss.push(nuc as char);
+                                    push_ascii_base(&mut buf_ss, nuc);
                                     q += qual_phred(&query_qual, next_read_idx);
                                     qbases = qbases.saturating_add(1);
                                     read_pos_inc += 1;
@@ -2210,17 +2216,16 @@ impl<'a> CigarParser<'a> {
             && is_chimeric;
 
         if self.config.verbose && is_chimeric_flag {
-            let record_name = String::from_utf8_lossy(&record.name);
             let ref_name = record.reference_name.as_deref().unwrap_or("*");
             crate::verbose_eprintln!(
                 "{} {} {} {:?} is ignored as chimeric with SA: {},{},{}",
-                record_name,
-                ref_name,
+                crate::util::SanitizedBytes(&record.name),
+                crate::util::SanitizedBytes(ref_name.as_bytes()),
                 position,
                 record.cigar,
                 sa_position,
-                sa_direction_string,
-                sa_cigar
+                crate::util::SanitizedBytes(sa_direction_string.as_bytes()),
+                crate::util::SanitizedBytes(sa_cigar.as_bytes())
             );
         }
 
@@ -2411,7 +2416,7 @@ impl<'a> CigarParser<'a> {
                                     );
                                     crate::verbose_eprintln!(
                                         "{} at 5' is a chimeric at {} by SEED 17",
-                                        String::from_utf8_lossy(&sequence),
+                                        crate::util::SanitizedBytes(&sequence),
                                         start
                                     );
                                 }
@@ -2546,7 +2551,7 @@ impl<'a> CigarParser<'a> {
                                     );
                                     crate::verbose_eprintln!(
                                         "{} at 3' is a chimeric at {} by SEED 17",
-                                        String::from_utf8_lossy(&sequence),
+                                        crate::util::SanitizedBytes(&sequence),
                                         start
                                     );
                                 }
@@ -6860,5 +6865,40 @@ mod tests {
             Some(&1),
             "max_mismatches = u32::MAX must accept reads instead of truncating to -1"
         );
+    }
+
+    #[test]
+    fn push_ascii_base_and_single_base_str_neutralize_vcf_delimiters_and_controls_while_preserving_sam_tokens(
+    ) {
+        // SAM nybble-0 '=', IUPAC codes, '*', '-', and letter case must be preserved verbatim.
+        for &keep in b"=ACMGRSVTWYHKDBacmgrsvtwyhkdb*-ACGTacgt" {
+            let mut dst = String::new();
+            push_ascii_base(&mut dst, keep);
+            assert_eq!(dst.as_bytes(), &[keep], "must preserve {keep:#04x}");
+            let mapped = SINGLE_BASE_STR.get(usize::from(keep)).copied().unwrap();
+            assert_eq!(
+                mapped.as_bytes(),
+                &[keep],
+                "SINGLE_BASE_STR must preserve {keep:#04x}"
+            );
+        }
+
+        // 'N' and 'n' map to 'N'/'n' in push_ascii_base and "N" in SINGLE_BASE_STR.
+        let mut dst_n = String::new();
+        push_ascii_base(&mut dst_n, b'n');
+        assert_eq!(dst_n, "n");
+        assert_eq!(SINGLE_BASE_STR[usize::from(b'n')], "N");
+
+        // Control bytes (<= 0x20, >= 0x7F) and VCF ALT/INFO delimiters (';', ',') map to 'N'/"N".
+        for bad in (0u8..=0x20).chain([b';', b',', 0x7F, 0x80, 0xFF]) {
+            let mut dst = String::new();
+            push_ascii_base(&mut dst, bad);
+            assert_eq!(dst, "N", "push_ascii_base must map {bad:#04x} to 'N'");
+            assert_eq!(
+                SINGLE_BASE_STR[usize::from(bad)],
+                "N",
+                "SINGLE_BASE_STR must map {bad:#04x} to \"N\""
+            );
+        }
     }
 }

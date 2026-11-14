@@ -24,6 +24,7 @@ import pathlib
 import re
 import subprocess
 import sys
+import tempfile
 import unittest
 import urllib.parse
 
@@ -689,9 +690,10 @@ code {{ font-family: monospace; background-color: rgba(175, 184, 193, 0.2); padd
                 )
 
             # 4. Capture screenshot for verification
-            screenshot_path = "/tmp/roadmap_browser_rendered.png"
-            page.screenshot(path=screenshot_path, full_page=True)
-            self.assertTrue(os.path.exists(screenshot_path))
+            with tempfile.TemporaryDirectory() as tmpdir:
+                screenshot_path = os.path.join(tmpdir, "roadmap_browser_rendered.png")
+                page.screenshot(path=screenshot_path, full_page=True)
+                self.assertTrue(os.path.exists(screenshot_path))
 
             browser.close()
 
@@ -788,9 +790,10 @@ th {{ background-color: #f6f8fa; }}
             self.assertGreater(len(katex_nodes), 5, "Should render mathematical expressions via KaTeX.")
 
             # 4. Save verification screenshot
-            screenshot_path = "/tmp/omnibus_consolidated_browser_rendered.png"
-            page.screenshot(path=screenshot_path, full_page=True)
-            self.assertTrue(os.path.exists(screenshot_path))
+            with tempfile.TemporaryDirectory() as tmpdir:
+                screenshot_path = os.path.join(tmpdir, "omnibus_consolidated_browser_rendered.png")
+                page.screenshot(path=screenshot_path, full_page=True)
+                self.assertTrue(os.path.exists(screenshot_path))
 
             browser.close()
 

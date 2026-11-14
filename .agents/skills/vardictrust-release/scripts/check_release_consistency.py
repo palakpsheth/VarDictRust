@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """VarDictRust Release Consistency & Evidence Validator (stdlib-only).
 
-Verifies that all version-bearing files, workspace test counts (629 total:
-441 core lib + 110 corpus_parity + 29 engine_behavior + 2 amplicon_stream_mem
-+ 3 cram_stack + 24 CLI bin + 20 CLI integration binary tests), engine
+Verifies that all version-bearing files, workspace test counts (657 total:
+460 core lib + 110 corpus_parity + 29 engine_behavior + 2 amplicon_stream_mem
++ 3 cram_stack + 28 CLI bin + 25 CLI integration binary tests), engine
 fingerprints (FP & PERF_FP), and 16 benchmarks/evidence/*.json SHA-256
 manifests are synchronized for a target release version and phase.
 """
@@ -21,14 +21,14 @@ import sys
 VALID_PHASES = ("pre-tag", "post-tag", "post-bioconda", "post-nfcore")
 
 EXPECTED_TEST_COUNTS = {
-    "total_workspace": 629,
-    "core_lib": 441,
+    "total_workspace": 657,
+    "core_lib": 460,
     "corpus_parity": 110,
     "engine_behavior": 29,
     "amplicon_stream_mem": 2,
     "cram_stack": 3,
-    "cli_bin": 24,
-    "cli_integration": 20,
+    "cli_bin": 28,
+    "cli_integration": 25,
     "harness_self_tests": 36,
 }
 
@@ -866,8 +866,8 @@ def check_pre_tag_surfaces(
     forbid_regex(
         repo_root,
         surface_map_rel,
-        r"\b619\b|\b432\b",
-        f"{surface_map_rel} stale 619/432 test counts",
+        r"\b619\b|\b432\b|\b629\b|\b441\b",
+        f"{surface_map_rel} stale 619/432/629/441 test counts",
         errors,
     )
 

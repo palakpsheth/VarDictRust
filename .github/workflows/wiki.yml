@@ -16,7 +16,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 # Serialise runs: two rapid pushes would otherwise clone the same wiki state
 # and the slower push would be rejected as non-fast-forward.
@@ -27,6 +27,8 @@ concurrency:
 jobs:
   sync:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Harden GitHub Actions Runner
         uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
@@ -47,10 +49,12 @@ jobs:
         run: |
           set -euo pipefail
           TMP="$(mktemp -d)"
+          trap 'rm -rf "${TMP}"' EXIT
           WIKI_URL="https://github.com/${REPO}.wiki.git"
           # Token travels in an auth header, never in the remote URL, so a
           # failed git command cannot echo it into the workflow log.
           AUTH="$(printf 'x-access-token:%s' "${GITHUB_TOKEN}" | base64 | tr -d '\n')"
+          echo "::add-mask::${AUTH}"
           if git ls-remote "${WIKI_URL}" HEAD >/dev/null 2>&1; then
             git clone "${WIKI_URL}" "${TMP}"
           else

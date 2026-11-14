@@ -1,4 +1,4 @@
-//! Process-level CLI smoke and robustness tests (`16` tests).
+//! Process-level CLI smoke and robustness tests (`21` tests).
 //!
 //! Verifies end-to-end binary stream redirection (`--DP ERR` / `--defaultPrinter ERR`),
 //! verbose stderr region debug output (`-y` / `--verbose`), non-zero exit codes on
@@ -6135,5 +6135,1019 @@ fn compressed_fasta_bed_companion_index_and_fd_stream_safety_e2e() {
             .expect("spawn single-dash utility flag");
         assert!(!bad.status.success(), "{bad_flag:?} must exit non-zero");
         assert_ne!(bad.status.code(), Some(101));
+    }
+}
+
+#[test]
+fn malformed_fai_invariants_and_contig_injection_fail_before_vcf_header() {
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let root = workspace_root();
+    let src_bam = root.join("fixtures/micro/micro.bam");
+    let src_bai = root.join("fixtures/micro/micro.bam.bai");
+    let bam = dir.path().join("micro.bam");
+    std::fs::copy(&src_bam, &bam).expect("copy micro.bam");
+    std::fs::copy(&src_bai, dir.path().join("micro.bam.bai")).expect("copy micro.bam.bai");
+
+    let seq = "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT";
+    let cases: [(&str, &str, &str); 7] = [
+        ("lbc_gt_lw", "chr1\t60\t6\t61\t60\n", "exceeds line_width"),
+        (
+            "end_offset_overflow",
+            "chr1\t60\t9223372036854775800\t60\t61\n",
+            "overflows i64::MAX",
+        ),
+        (
+            "comma_contig_5col",
+            "chr1\t60\t6\t60\t61\nchr2,evil=1\t60\t73\t60\t61\n",
+            "Invalid contig name",
+        ),
+        (
+            "gt_contig_5col",
+            "chr1\t60\t6\t60\t61\nchr2>evil\t60\t73\t60\t61\n",
+            "Invalid contig name",
+        ),
+        (
+            "ctrl_contig_2col",
+            "chr1\t60\nchr2\x01evil\t60\n",
+            "Invalid contig name",
+        ),
+        (
+            "dup_contig_5col",
+            "chr1\t60\t6\t60\t61\nchr1\t60\t73\t60\t61\n",
+            "Duplicate contig name",
+        ),
+        (
+            "dup_contig_2col",
+            "chr1\t60\nchr1\t60\n",
+            "Duplicate contig name",
+        ),
+    ];
+
+    for (idx, (label, fai_body, expected_msg)) in cases.iter().enumerate() {
+        let fa_path = dir.path().join(format!("bad_{idx}_{label}.fa"));
+        let fai_path = dir.path().join(format!("bad_{idx}_{label}.fa.fai"));
+        std::fs::write(&fa_path, format!(">chr1\n{seq}\n>chr2\n{seq}\n")).expect("write .fa");
+        std::fs::write(&fai_path, fai_body.as_bytes()).expect("write .fai");
+
+        // 1. Capture stdout directly: must emit 0 partial VCF header bytes.
+        let stdout_run = base_cmd()
+            .arg("-G")
+            .arg(&fa_path)
+            .arg("-b")
+            .arg(&bam)
+            .args(["-R", "chr1:1-50", "--threads=1"])
+            .output()
+            .unwrap_or_else(|e| panic!("spawn {label} stdout run: {e}"));
+        assert!(
+            !stdout_run.status.success(),
+            "{label} must fail cleanly on malformed .fai"
+        );
+        #[cfg(unix)]
+        assert_eq!(stdout_run.status.signal(), None, "{label} died by signal");
+        assert_ne!(stdout_run.status.code(), Some(101), "{label} panicked");
+        let stderr = String::from_utf8_lossy(&stdout_run.stderr);
+        assert!(
+            !stderr.contains("panicked"),
+            "{label} emitted panic on stderr: {stderr}"
+        );
+        assert!(
+            stderr.contains(expected_msg),
+            "{label} expected actionable error containing {expected_msg:?}, got: {stderr}"
+        );
+        assert!(
+            stdout_run.stdout.is_empty(),
+            "{label} must write 0 partial VCF header bytes to stdout, got {} bytes: {}",
+            stdout_run.stdout.len(),
+            String::from_utf8_lossy(&stdout_run.stdout)
+        );
+
+        // 2. Staged `--output` file: must not commit or create partial VCF output.
+        let out_vcf = dir.path().join(format!("out_{idx}_{label}.vcf"));
+        let file_run = base_cmd()
+            .arg("-G")
+            .arg(&fa_path)
+            .arg("-b")
+            .arg(&bam)
+            .args(["-R", "chr1:1-50", "--threads=1", "--output"])
+            .arg(&out_vcf)
+            .output()
+            .unwrap_or_else(|e| panic!("spawn {label} --output run: {e}"));
+        assert!(
+            !file_run.status.success(),
+            "{label} --output run must fail cleanly"
+        );
+        assert_ne!(file_run.status.code(), Some(101), "{label} panicked");
+        assert!(
+            !out_vcf.exists(),
+            "{label} must leave no partial --output VCF file at {}",
+            out_vcf.display()
+        );
+    }
+}
+
+#[test]
+fn spoofed_cram_container_length_and_slice_record_count_fail_cleanly_single_thread() {
+    use noodles::core::Position;
+    use noodles::sam::alignment::io::Write as _;
+    use noodles::sam::alignment::record::cigar::{op::Kind, Op};
+    use noodles::sam::alignment::record::{Flags, MappingQuality};
+    use noodles::sam::alignment::record_buf::{Cigar, RecordBuf};
+    use noodles::sam::header::record::value::{map::ReferenceSequence, Map};
+    use std::num::NonZeroUsize;
+
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let ref_fa = dir.path().join("cram_e2e.fa");
+    let ref_fai = dir.path().join("cram_e2e.fa.fai");
+    let seq = b"ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT";
+    std::fs::write(
+        &ref_fa,
+        format!(">chr1\n{}\n", std::str::from_utf8(seq).unwrap()),
+    )
+    .expect("write cram_e2e.fa");
+    std::fs::write(
+        &ref_fai,
+        format!("chr1\t{}\t6\t{}\t{}\n", seq.len(), seq.len(), seq.len() + 1),
+    )
+    .expect("write cram_e2e.fa.fai");
+
+    let header = noodles::sam::Header::builder()
+        .add_reference_sequence(
+            "chr1",
+            Map::<ReferenceSequence>::new(NonZeroUsize::new(seq.len()).unwrap()),
+        )
+        .build();
+    let rec = RecordBuf::builder()
+        .set_name("r1")
+        .set_flags(Flags::empty())
+        .set_reference_sequence_id(0)
+        .set_alignment_start(Position::try_from(5usize).unwrap())
+        .set_mapping_quality(MappingQuality::try_from(60u8).unwrap())
+        .set_cigar([Op::new(Kind::Match, 10)].into_iter().collect::<Cigar>())
+        .set_sequence(seq[4..14].to_vec().into())
+        .set_quality_scores(vec![35u8; 10].into())
+        .build();
+
+    let base_cram = dir.path().join("base.cram");
+    {
+        let fasta_reader = noodles::fasta::io::IndexedReader::new(
+            std::io::BufReader::new(std::fs::File::open(&ref_fa).expect("open fa")),
+            noodles::fasta::fai::fs::read(&ref_fai).expect("read fai"),
+        );
+        let repo = noodles::fasta::Repository::new(
+            noodles::fasta::repository::adapters::IndexedReader::new(fasta_reader),
+        );
+        let mut w = noodles::cram::io::writer::Builder::default()
+            .set_reference_sequence_repository(repo)
+            .build_from_path(&base_cram)
+            .expect("build cram writer");
+        w.write_alignment_header(&header).expect("write header");
+        w.write_alignment_record(&header, &rec)
+            .expect("write record");
+        w.try_finish(&header).expect("finish cram");
+    }
+    let base_crai = noodles::cram::fs::index(&base_cram).expect("index base.cram");
+    noodles::cram::crai::fs::write(base_cram.with_extension("cram.crai"), &base_crai)
+        .expect("write base.cram.crai");
+    let container_offset = base_crai[0].offset() as usize;
+    let base_bytes = std::fs::read(&base_cram).expect("read base.cram");
+
+    // Sanity check: valid base.cram succeeds cleanly under `-th 1`.
+    let ok_run = base_cmd()
+        .arg("-G")
+        .arg(&ref_fa)
+        .arg("-b")
+        .arg(&base_cram)
+        .args(["-R", "chr1:1-50", "-th", "1"])
+        .output()
+        .expect("spawn valid base.cram");
+    assert!(
+        ok_run.status.success(),
+        "valid base.cram failed: {}",
+        String::from_utf8_lossy(&ok_run.stderr)
+    );
+
+    // 1. Truncated CRAM container mid-header
+    let trunc_cram = dir.path().join("truncated.cram");
+    std::fs::write(&trunc_cram, &base_bytes[..container_offset + 6]).expect("write truncated.cram");
+    noodles::cram::crai::fs::write(trunc_cram.with_extension("cram.crai"), &base_crai)
+        .expect("write truncated.cram.crai");
+
+    // 2. Spoofed `i32::MAX` 4-byte LE container length
+    let huge_len_cram = dir.path().join("huge_len.cram");
+    let mut huge_len_bytes = base_bytes.clone();
+    huge_len_bytes[container_offset..container_offset + 4].copy_from_slice(&i32::MAX.to_le_bytes());
+    std::fs::write(&huge_len_cram, &huge_len_bytes).expect("write huge_len.cram");
+    noodles::cram::crai::fs::write(huge_len_cram.with_extension("cram.crai"), &base_crai)
+        .expect("write huge_len.cram.crai");
+
+    // 3. Spoofed `SliceHeader` `record_count = 5_000_000` (`> MAX_CRAM_CONTAINER_RECORDS`)
+    //    while container header claims `record_count = 1`
+    let spoof_slice_cram = dir.path().join("spoof_slice_rc.cram");
+    {
+        let mut rdr =
+            noodles::cram::io::Reader::new(std::fs::File::open(&base_cram).expect("open cram"));
+        let _ = rdr.read_header().expect("read cram header");
+        let c_pos = rdr.position().expect("cram pos") as usize;
+        let mut orig_cont = noodles::cram::io::reader::Container::default();
+        let c_len = rdr.read_container(&mut orig_cont).expect("read container");
+        let body_start =
+            std::io::Seek::stream_position(rdr.get_mut()).expect("seek pos") as usize - c_len;
+        let lm0 = orig_cont.header().landmarks()[0];
+        let comp_hdr_bytes = &base_bytes[body_start..body_start + lm0];
+
+        let mut sh_payload = vec![
+            0x00, // ref_seq_id = 0
+            0x05, // alignment_start = 5
+            0x0a, // alignment_span = 10
+            0xe0, 0x4c, 0x4b, 0x40, // ITF-8 record_count = 5_000_000
+            0x00, // record_counter = 0
+            0x01, // block_count = 1
+            0x00, // block_content_ids len = 0
+            0xff, 0xff, 0xff, 0xff, 0x0f, // embedded_ref = -1
+        ];
+        sh_payload.extend_from_slice(&[0u8; 16]);
+
+        let mut sh_block = vec![
+            0x00,
+            0x02,
+            0x00,
+            sh_payload.len() as u8,
+            sh_payload.len() as u8,
+        ];
+        sh_block.extend_from_slice(&sh_payload);
+        let mut blk_crc = flate2::Crc::new();
+        blk_crc.update(&sh_block);
+        sh_block.extend_from_slice(&blk_crc.sum().to_le_bytes());
+
+        let mut core_blk = vec![0x00, 0x01, 0x00, 0x00, 0x00];
+        let mut c_crc = flate2::Crc::new();
+        c_crc.update(&core_blk);
+        core_blk.extend_from_slice(&c_crc.sum().to_le_bytes());
+
+        let mut cont_body = Vec::new();
+        cont_body.extend_from_slice(comp_hdr_bytes);
+        let new_lm0 = cont_body.len();
+        cont_body.extend_from_slice(&sh_block);
+        cont_body.extend_from_slice(&core_blk);
+
+        let mut hdr_body = Vec::new();
+        hdr_body.extend_from_slice(&(cont_body.len() as i32).to_le_bytes());
+        hdr_body.extend_from_slice(&[0x00, 0x05, 0x0a, 0x01, 0x00, 0x0a, 0x03, 0x01]);
+        if new_lm0 < 0x80 {
+            hdr_body.push(new_lm0 as u8);
+        } else {
+            hdr_body.push(0x80 | ((new_lm0 >> 8) as u8));
+            hdr_body.push((new_lm0 & 0xff) as u8);
+        }
+        let mut h_crc = flate2::Crc::new();
+        h_crc.update(&hdr_body);
+        hdr_body.extend_from_slice(&h_crc.sum().to_le_bytes());
+
+        let mut crafted = base_bytes[..c_pos].to_vec();
+        crafted.extend_from_slice(&hdr_body);
+        crafted.extend_from_slice(&cont_body);
+        std::fs::write(&spoof_slice_cram, &crafted).expect("write spoof_slice_rc.cram");
+        let crai_rec = vec![noodles::cram::crai::Record::new(
+            Some(0),
+            Position::try_from(5usize).ok(),
+            10,
+            c_pos as u64,
+            new_lm0 as u64,
+            (sh_block.len() + core_blk.len()) as u64,
+        )];
+        noodles::cram::crai::fs::write(spoof_slice_cram.with_extension("cram.crai"), &crai_rec)
+            .expect("write spoof_slice_rc.cram.crai");
+    }
+
+    // 4. < 400 B crafted CRAM containers spoofing 2 GiB (0x7fff_ffff) in Gzip CoreData
+    //    `uncompressed_size` and in Rans4x8 ExternalData inner codec header (`SEC-06`)
+    let spoof_gzip_core_cram = dir.path().join("spoof_gzip_core_2gib.cram");
+    let spoof_rans_ext_cram = dir.path().join("spoof_rans4x8_ext_2gib.cram");
+    let spoof_nametok_ext_cram = dir.path().join("spoof_nametok_ext_8gib.cram");
+    {
+        let mut rdr =
+            noodles::cram::io::Reader::new(std::fs::File::open(&base_cram).expect("open cram"));
+        let _ = rdr.read_header().expect("read cram header");
+        let c_pos = rdr.position().expect("cram pos") as usize;
+        let mut orig_cont = noodles::cram::io::reader::Container::default();
+        let c_len = rdr.read_container(&mut orig_cont).expect("read container");
+        let body_start =
+            std::io::Seek::stream_position(rdr.get_mut()).expect("seek pos") as usize - c_len;
+        let lm0 = orig_cont.header().landmarks()[0];
+        let comp_hdr_bytes = &base_bytes[body_start..body_start + lm0];
+
+        let write_spoof = |dst_cram: &std::path::Path, core_raw: Vec<u8>, ext_raw: Vec<u8>| {
+            let mut sh_payload = vec![
+                0x00, // ref_seq_id = 0
+                0x05, // alignment_start = 5
+                0x0a, // alignment_span = 10
+                0x01, // record_count = 1
+                0x00, // record_counter = 0
+                0x02, // block_count = 2
+                0x01, // block_content_ids len = 1
+                0x01, // block_content_ids[0] = 1
+                0xff, 0xff, 0xff, 0xff, 0x0f, // embedded_ref = -1
+            ];
+            sh_payload.extend_from_slice(&[0u8; 16]);
+
+            let mut sh_block = vec![
+                0x00,
+                0x02,
+                0x00,
+                sh_payload.len() as u8,
+                sh_payload.len() as u8,
+            ];
+            sh_block.extend_from_slice(&sh_payload);
+            let mut sh_crc = flate2::Crc::new();
+            sh_crc.update(&sh_block);
+            sh_block.extend_from_slice(&sh_crc.sum().to_le_bytes());
+
+            let seal_crc = |mut blk: Vec<u8>| -> Vec<u8> {
+                let mut c = flate2::Crc::new();
+                c.update(&blk);
+                blk.extend_from_slice(&c.sum().to_le_bytes());
+                blk
+            };
+            let core_blk = seal_crc(core_raw);
+            let ext_blk = seal_crc(ext_raw);
+
+            let mut cont_body = Vec::new();
+            cont_body.extend_from_slice(comp_hdr_bytes);
+            let new_lm0 = cont_body.len();
+            cont_body.extend_from_slice(&sh_block);
+            cont_body.extend_from_slice(&core_blk);
+            cont_body.extend_from_slice(&ext_blk);
+            assert!(cont_body.len() < 400);
+
+            let mut hdr_body = Vec::new();
+            hdr_body.extend_from_slice(&(cont_body.len() as i32).to_le_bytes());
+            hdr_body.extend_from_slice(&[0x00, 0x05, 0x0a, 0x01, 0x00, 0x0a, 0x04, 0x01]);
+            if new_lm0 < 0x80 {
+                hdr_body.push(new_lm0 as u8);
+            } else {
+                hdr_body.push(0x80 | ((new_lm0 >> 8) as u8));
+                hdr_body.push((new_lm0 & 0xff) as u8);
+            }
+            let mut h_crc = flate2::Crc::new();
+            h_crc.update(&hdr_body);
+            hdr_body.extend_from_slice(&h_crc.sum().to_le_bytes());
+
+            let mut crafted = base_bytes[..c_pos].to_vec();
+            crafted.extend_from_slice(&hdr_body);
+            crafted.extend_from_slice(&cont_body);
+            std::fs::write(dst_cram, &crafted).expect("write spoof codec cram");
+            let crai_rec = vec![noodles::cram::crai::Record::new(
+                Some(0),
+                Position::try_from(5usize).ok(),
+                10,
+                c_pos as u64,
+                new_lm0 as u64,
+                (sh_block.len() + core_blk.len() + ext_blk.len()) as u64,
+            )];
+            noodles::cram::crai::fs::write(dst_cram.with_extension("cram.crai"), &crai_rec)
+                .expect("write spoof codec crai");
+        };
+
+        let rans4x8_2gib_ext = vec![
+            0x04, 0x04, 0x01, 0x09, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0x7f,
+        ];
+        let gzip_2gib_core = vec![
+            0x01, 0x05, 0x00, 0x02, 0xf7, 0xff, 0xff, 0xff, 0x0f, 0x1f, 0x8b,
+        ];
+        let nametok_8gib_ext = vec![
+            0x08, 0x04, 0x01, 0x09, 0x10, 0x10, 0x00, 0x00, 0x00, 0x80, 0x84, 0x1e, 0x00, 0x00,
+        ];
+        let valid_1b_core = vec![0x00, 0x05, 0x00, 0x01, 0x01, 0x00];
+
+        write_spoof(
+            &spoof_gzip_core_cram,
+            gzip_2gib_core,
+            rans4x8_2gib_ext.clone(),
+        );
+        write_spoof(
+            &spoof_rans_ext_cram,
+            valid_1b_core.clone(),
+            rans4x8_2gib_ext,
+        );
+        write_spoof(&spoof_nametok_ext_cram, valid_1b_core, nametok_8gib_ext);
+    }
+
+    for (label, cram_path, require_exceeds) in [
+        ("truncated_container", &trunc_cram, false),
+        ("spoofed_i32_max_container_len", &huge_len_cram, true),
+        ("spoofed_slice_record_count", &spoof_slice_cram, true),
+        ("spoofed_gzip_core_2gib", &spoof_gzip_core_cram, true),
+        ("spoofed_rans4x8_ext_2gib", &spoof_rans_ext_cram, true),
+        ("spoof_nametok_ext_8gib", &spoof_nametok_ext_cram, true),
+    ] {
+        let out = base_cmd()
+            .arg("-G")
+            .arg(&ref_fa)
+            .arg("-b")
+            .arg(cram_path)
+            .args(["-R", "chr1:1-50", "-th", "1"])
+            .output()
+            .unwrap_or_else(|e| panic!("spawn {label}: {e}"));
+        assert!(!out.status.success(), "{label} must exit non-zero cleanly");
+        #[cfg(unix)]
+        assert_eq!(out.status.signal(), None, "{label} died by signal");
+        assert_ne!(out.status.code(), Some(101), "{label} panicked");
+        assert!(
+            out.stdout.is_empty(),
+            "{label} must emit 0 VCF bytes to stdout before failing"
+        );
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            !stderr.contains("panicked"),
+            "{label} emitted panic on stderr: {stderr}"
+        );
+        if require_exceeds {
+            assert!(
+                stderr.contains("exceeds"),
+                "{label} expected 'exceeds' diagnostic on stderr, got: {stderr}"
+            );
+        }
+    }
+}
+
+#[test]
+fn cli_and_bed_control_char_rejection_sam_eq_bases_and_colon_bam_sv_success() {
+    use noodles::core::Position;
+    use noodles::sam::alignment::record::cigar::{op::Kind, Op};
+    use noodles::sam::alignment::record::{Flags, MappingQuality};
+    use noodles::sam::alignment::record_buf::{Cigar, RecordBuf};
+
+    ensure_fastas_converted();
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let root = workspace_root();
+    let droot = data_root();
+
+    let micro_fa = root.join("fixtures/micro/micro.ref.fa");
+    let micro_bam = root.join("fixtures/micro/micro.bam");
+    let micro_bai = root.join("fixtures/micro/micro.bam.bai");
+
+    // -------------------------------------------------------------------------
+    // 1. `--reference` / `-R` / `-N` / BED newline, tab, space, and NUL injection rejected cleanly
+    // -------------------------------------------------------------------------
+    for (label, bad_args) in [
+        (
+            "ref_newline",
+            vec![
+                "-G".to_string(),
+                "bad\n##INJECT=1.fa".to_string(),
+                "-b".to_string(),
+                micro_bam.to_string_lossy().into_owned(),
+                "-R".to_string(),
+                "chr1:40-260".to_string(),
+            ],
+        ),
+        (
+            "ref_tab",
+            vec![
+                "--reference".to_string(),
+                "bad\tref.fa".to_string(),
+                "-b".to_string(),
+                micro_bam.to_string_lossy().into_owned(),
+                "-R".to_string(),
+                "chr1:40-260".to_string(),
+            ],
+        ),
+        (
+            "region_newline",
+            vec![
+                "-G".to_string(),
+                micro_fa.to_string_lossy().into_owned(),
+                "-b".to_string(),
+                micro_bam.to_string_lossy().into_owned(),
+                "-R".to_string(),
+                "chr1:40-260\nevil".to_string(),
+            ],
+        ),
+        (
+            "region_tab_gene",
+            vec![
+                "-G".to_string(),
+                micro_fa.to_string_lossy().into_owned(),
+                "-b".to_string(),
+                micro_bam.to_string_lossy().into_owned(),
+                "-R".to_string(),
+                "chr1:40-260:GENE\tINJECT".to_string(),
+                "-E".to_string(),
+                "3".to_string(),
+            ],
+        ),
+        (
+            "region_space_contig",
+            vec![
+                "-G".to_string(),
+                micro_fa.to_string_lossy().into_owned(),
+                "-b".to_string(),
+                micro_bam.to_string_lossy().into_owned(),
+                "-R".to_string(),
+                "chr 1:40-260".to_string(),
+            ],
+        ),
+        (
+            "sample_newline",
+            vec![
+                "-G".to_string(),
+                micro_fa.to_string_lossy().into_owned(),
+                "-b".to_string(),
+                micro_bam.to_string_lossy().into_owned(),
+                "-N".to_string(),
+                "SAMPLE\n#INJECT".to_string(),
+                "-R".to_string(),
+                "chr1:40-260".to_string(),
+            ],
+        ),
+    ] {
+        let out = base_cmd()
+            .args(&bad_args)
+            .arg("--threads=1")
+            .output()
+            .unwrap_or_else(|e| panic!("spawn {label}: {e}"));
+        assert!(!out.status.success(), "{label} must be rejected cleanly");
+        #[cfg(unix)]
+        assert_eq!(out.status.signal(), None, "{label} died by signal");
+        assert_ne!(out.status.code(), Some(101), "{label} panicked");
+        assert!(
+            out.stdout.is_empty(),
+            "{label} must emit 0 VCF bytes to stdout"
+        );
+    }
+
+    for (idx, (label, bed_payload)) in [
+        ("bed_nul_gene", b"chr1\t40\t260\tTP\x0053\n".as_slice()),
+        ("bed_nul_contig", b"chr\x001\t40\t260\tTP53\n".as_slice()),
+        ("bed_del_gene", b"chr1\t40\t260\tTP\x7f53\n".as_slice()),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let bad_bed = dir.path().join(format!("bad_{idx}_{label}.bed"));
+        std::fs::write(&bad_bed, bed_payload).expect("write bad bed");
+        let out = base_cmd()
+            .arg("-G")
+            .arg(&micro_fa)
+            .arg("-b")
+            .arg(&micro_bam)
+            .args(["-c", "1", "-S", "2", "-E", "3", "-g", "4", "-z", "-th", "1"])
+            .arg(&bad_bed)
+            .output()
+            .unwrap_or_else(|e| panic!("spawn {label}: {e}"));
+        assert!(!out.status.success(), "{label} must be rejected cleanly");
+        #[cfg(unix)]
+        assert_eq!(out.status.signal(), None, "{label} died by signal");
+        assert_ne!(out.status.code(), Some(101), "{label} panicked");
+        assert!(
+            out.stdout.is_empty(),
+            "{label} must emit 0 VCF bytes to stdout"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // 2. SAM `=` bases (BAM nybble-0 `Seq::Eq`) succeed cleanly without mapping to `N`
+    // -------------------------------------------------------------------------
+    let ref_len = 120usize;
+    let motif = b"CGGCCAGTTGGACCGTAGGTTCAC";
+    let mut ref_bytes: Vec<u8> = (0..ref_len).map(|i| motif[i % motif.len()]).collect();
+    ref_bytes[29] = b'A'; // 1-based pos 30
+    let eq_fa = dir.path().join("eq_ref.fa");
+    let eq_fai = dir.path().join("eq_ref.fa.fai");
+    std::fs::write(
+        &eq_fa,
+        format!(
+            ">chr1\n{}\n",
+            std::str::from_utf8(&ref_bytes).expect("ASCII ref")
+        ),
+    )
+    .expect("write eq_ref.fa");
+    std::fs::write(
+        &eq_fai,
+        format!("chr1\t{ref_len}\t6\t{ref_len}\t{}\n", ref_len + 1),
+    )
+    .expect("write eq_ref.fa.fai");
+
+    let mut eq_reads = Vec::new();
+    for idx in 0..16usize {
+        let s1 = 12 + (idx % 5);
+        let mut seq = ref_bytes[(s1 - 1)..(s1 - 1 + 40)].to_vec();
+        if idx < 8 {
+            seq[30 - s1] = b'=';
+        }
+        let flags = if idx % 2 == 1 {
+            Flags::REVERSE_COMPLEMENTED
+        } else {
+            Flags::empty()
+        };
+        let cigar: Cigar = [Op::new(Kind::Match, 40)].into_iter().collect();
+        eq_reads.push(
+            RecordBuf::builder()
+                .set_name(format!("eq_r_{idx}"))
+                .set_flags(flags)
+                .set_reference_sequence_id(0)
+                .set_alignment_start(Position::try_from(s1).unwrap())
+                .set_mapping_quality(MappingQuality::new(60).unwrap())
+                .set_cigar(cigar)
+                .set_sequence(seq.into())
+                .set_quality_scores(vec![38u8; 40].into())
+                .build(),
+        );
+    }
+    eq_reads.sort_by_key(|r| r.alignment_start().unwrap().get());
+    let eq_bam = dir.path().join("sam_eq.bam");
+    write_indexed_bam(&eq_bam, "chr1", ref_len, &eq_reads).expect("write sam_eq.bam");
+
+    let eq_out = base_cmd()
+        .arg("-G")
+        .arg(&eq_fa)
+        .arg("-b")
+        .arg(&eq_bam)
+        .args(["-R", "chr1:1-60", "-th", "1"])
+        .output()
+        .expect("spawn sam_eq.bam");
+    assert!(
+        eq_out.status.success(),
+        "SAM '=' BAM run failed: {}",
+        String::from_utf8_lossy(&eq_out.stderr)
+    );
+    let eq_vcf = String::from_utf8(eq_out.stdout).expect("UTF-8 eq VCF");
+    let eq_recs: Vec<&str> = eq_vcf.lines().filter(|l| !l.starts_with('#')).collect();
+    assert_eq!(
+        eq_recs.len(),
+        1,
+        "expected 1 variant record, got {eq_recs:?}"
+    );
+    assert!(
+        eq_recs[0].starts_with("chr1\t30\t.\tA\t=\t"),
+        "expected SAM '=' allele preserved at chr1:30, got: {}",
+        eq_recs[0]
+    );
+
+    // -------------------------------------------------------------------------
+    // 3. Colon-containing single-BAM paths (`chr17:100-200.bam` & `colon:sample.bam` SV run)
+    // -------------------------------------------------------------------------
+    let colon_micro_bam = dir.path().join("chr17:100-200.bam");
+    let colon_micro_bai = dir.path().join("chr17:100-200.bam.bai");
+    std::fs::copy(&micro_bam, &colon_micro_bam).expect("copy chr17:100-200.bam");
+    std::fs::copy(&micro_bai, &colon_micro_bai).expect("copy chr17:100-200.bam.bai");
+
+    let colon_micro_out = base_cmd()
+        .arg("-G")
+        .arg(&micro_fa)
+        .arg("-b")
+        .arg(&colon_micro_bam)
+        .args(["-R", "chr1:40-260", "-N", "COLON_MICRO", "-th", "1"])
+        .output()
+        .expect("spawn chr17:100-200.bam");
+    assert!(
+        colon_micro_out.status.success(),
+        "chr17:100-200.bam failed: {}",
+        String::from_utf8_lossy(&colon_micro_out.stderr)
+    );
+    let colon_micro_vcf = String::from_utf8(colon_micro_out.stdout).expect("UTF-8 colon micro VCF");
+    assert!(
+        colon_micro_vcf.lines().any(|l| !l.starts_with('#')),
+        "expected variant calls on chr17:100-200.bam, got:\n{colon_micro_vcf}"
+    );
+
+    // Exercise active SV calling (`sv::find_all_sv_paths`) on a colon-named BAM (`colon:sample.bam`)
+    let hg19_fa = droot.join("VarDictJava/testdata/fastas/hg19.fa");
+    let invsv_src = droot
+        .join("VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests/Colo829.chr20.INVSV.bam");
+    let invsv_bai_src = droot
+        .join("VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests/Colo829.chr20.INVSV.bam.bai");
+    let colon_sv_bam = dir.path().join("colon:sample.bam");
+    let colon_sv_bai = dir.path().join("colon:sample.bam.bai");
+    std::fs::copy(&invsv_src, &colon_sv_bam).expect("copy colon:sample.bam");
+    std::fs::copy(&invsv_bai_src, &colon_sv_bai).expect("copy colon:sample.bam.bai");
+
+    let baseline_sv = base_cmd()
+        .arg("-G")
+        .arg(&hg19_fa)
+        .arg("-b")
+        .arg(&invsv_src)
+        .args([
+            "-R",
+            "chr20:46841555-46845755",
+            "-f",
+            "0.001",
+            "-L",
+            "1000",
+            "-N",
+            "SV_SAMPLE",
+            "-th",
+            "1",
+        ])
+        .output()
+        .expect("spawn baseline INVSV");
+    assert!(baseline_sv.status.success());
+
+    let colon_sv_out = base_cmd()
+        .arg("-G")
+        .arg(&hg19_fa)
+        .arg("-b")
+        .arg(&colon_sv_bam)
+        .args([
+            "-R",
+            "chr20:46841555-46845755",
+            "-f",
+            "0.001",
+            "-L",
+            "1000",
+            "-N",
+            "SV_SAMPLE",
+            "-th",
+            "1",
+        ])
+        .output()
+        .expect("spawn colon:sample.bam INVSV");
+    assert!(
+        colon_sv_out.status.success(),
+        "colon:sample.bam SV calling failed: {}",
+        String::from_utf8_lossy(&colon_sv_out.stderr)
+    );
+    assert_eq!(
+        colon_sv_out.stdout, baseline_sv.stdout,
+        "colon:sample.bam SV VCF must match baseline INVSV output byte-for-byte"
+    );
+    let colon_sv_vcf = String::from_utf8_lossy(&colon_sv_out.stdout);
+    assert!(
+        colon_sv_vcf.contains("<INV>"),
+        "expected <INV> SV calls on colon:sample.bam, got:\n{colon_sv_vcf}"
+    );
+}
+
+#[test]
+fn stderr_neutralizes_ansi_osc_and_c1_escapes_on_clap_and_runtime_errors() {
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let osc_and_c1 = "evil_\x1b]52;c;SGVsbG8=\x07_\x1b[31m_\u{9b}2J_end";
+
+    // 1. Fatal `clap` parse error containing raw ESC/BEL (OSC 52), standalone BEL, and C1 CSI (`U+009B`)
+    let clap_payload = format!("{osc_and_c1}_\x07");
+    let clap_err = base_cmd()
+        .arg(format!("--threads={clap_payload}"))
+        .output()
+        .expect("spawn clap parse error with ANSI/OSC/C1 escapes");
+    assert!(!clap_err.status.success(), "clap invalid value must fail");
+    #[cfg(unix)]
+    assert_eq!(clap_err.status.signal(), None);
+    assert_ne!(clap_err.status.code(), Some(101));
+    let clap_stderr = String::from_utf8(clap_err.stderr).expect("UTF-8 clap stderr");
+    assert!(
+        !clap_stderr.contains('\x1b')
+            && !clap_stderr.contains('\x07')
+            && !clap_stderr.contains('\u{9b}'),
+        "clap stderr leaked raw terminal escape bytes: {clap_stderr:?}"
+    );
+    assert!(
+        clap_stderr.contains("\\u{9b}"),
+        "clap stderr must neutralize C1 CSI control bytes not stripped by clap, got: {clap_stderr}"
+    );
+
+    // 2. Fatal runtime `VardictError` exits:
+    //    - `-G` hygiene error
+    //    - derived-sample `-b` hygiene error (without `-N`)
+    //    - `--output <hostile_dir>` runtime `IsADirectory` error (echoing the hostile path through `sanitize_for_terminal`)
+    let unindexed_hostile_bam = dir.path().join(format!("{osc_and_c1}.bam"));
+    std::fs::copy(
+        workspace_root().join("fixtures/micro/micro.bam"),
+        &unindexed_hostile_bam,
+    )
+    .expect("copy unindexed hostile bam");
+    let hostile_out_dir = dir.path().join(format!("out_{osc_and_c1}"));
+    std::fs::create_dir_all(&hostile_out_dir).expect("mkdir hostile_out_dir");
+
+    for (label, mode) in [
+        ("ref_hygiene_error", "ref"),
+        ("bam_derived_sample_hygiene_error", "bam_sample"),
+        ("output_dir_runtime_error", "out_dir"),
+    ] {
+        let mut cmd = base_cmd();
+        match mode {
+            "ref" => {
+                cmd.arg("-G").arg(&unindexed_hostile_bam).args([
+                    "-b",
+                    "fixtures/micro/micro.bam",
+                    "-R",
+                    "chr1:40-260",
+                ]);
+            }
+            "bam_sample" => {
+                cmd.args(["-G", "fixtures/micro/micro.ref.fa", "-b"])
+                    .arg(&unindexed_hostile_bam)
+                    .args(["-R", "chr1:40-260"]);
+            }
+            _ => {
+                cmd.args([
+                    "-G",
+                    "fixtures/micro/micro.ref.fa",
+                    "-b",
+                    "fixtures/micro/micro.bam",
+                    "-R",
+                    "chr1:40-260",
+                    "--output",
+                ])
+                .arg(&hostile_out_dir);
+            }
+        }
+        let rt_err = cmd
+            .output()
+            .unwrap_or_else(|e| panic!("spawn {label}: {e}"));
+        assert!(!rt_err.status.success(), "{label} must exit non-zero");
+        #[cfg(unix)]
+        assert_eq!(rt_err.status.signal(), None);
+        assert_ne!(rt_err.status.code(), Some(101));
+        let rt_stderr = String::from_utf8(rt_err.stderr).expect("UTF-8 runtime stderr");
+        assert!(
+            !rt_stderr.contains('\x1b')
+                && !rt_stderr.contains('\x07')
+                && !rt_stderr.contains('\u{9b}'),
+            "{label} leaked raw terminal escape bytes on stderr: {rt_stderr:?}"
+        );
+        if mode == "out_dir" {
+            assert!(
+                rt_stderr.contains("\\u{1b}")
+                    && rt_stderr.contains("\\u{7}")
+                    && rt_stderr.contains("\\u{9b}"),
+                "{label} must neutralize ESC, BEL, and C1 CSI on stderr, got: {rt_stderr}"
+            );
+        }
+    }
+}
+
+#[test]
+fn readonly_parent_direct_temp_staged_and_nofollow_symlink_rejection() {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{symlink, PermissionsExt as _};
+
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let root = workspace_root();
+        let plain_fa = root.join("fixtures/micro/micro.ref.fa");
+        let plain_bam = root.join("fixtures/micro/micro.bam");
+        let plain_bed = root.join("fixtures/micro/micro.bed");
+        let bed_flags = [
+            "-c",
+            "1",
+            "-S",
+            "2",
+            "-E",
+            "3",
+            "-g",
+            "4",
+            "-z",
+            "--threads=1",
+        ];
+
+        let baseline = base_cmd()
+            .arg("-G")
+            .arg(&plain_fa)
+            .arg("-b")
+            .arg(&plain_bam)
+            .args(bed_flags)
+            .arg(&plain_bed)
+            .output()
+            .expect("spawn baseline stdout");
+        assert!(baseline.status.success());
+
+        let victim_out = dir.path().join("victim_out.txt");
+        let victim_stats = dir.path().join("victim_stats.txt");
+        let victim_out_bytes = b"VICTIM_OUT_SENTINEL_UNTOUCHED\n";
+        let victim_stats_bytes = b"VICTIM_STATS_SENTINEL_UNTOUCHED\n";
+        std::fs::write(&victim_out, victim_out_bytes).expect("write victim_out.txt");
+        std::fs::write(&victim_stats, victim_stats_bytes).expect("write victim_stats.txt");
+
+        let ro_dir = dir.path().join("ro_dir_0555");
+        std::fs::create_dir_all(&ro_dir).expect("mkdir ro_dir_0555");
+        let ro_out = ro_dir.join("out.vcf");
+        let ro_stats = ro_dir.join("stats.json");
+        std::fs::write(&ro_out, b"OLD_RO_OUT_SEED\n").expect("seed ro_dir/out.vcf");
+        std::fs::write(&ro_stats, b"OLD_RO_STATS_SEED\n").expect("seed ro_dir/stats.json");
+
+        let sym_out = ro_dir.join("sym_out.vcf");
+        let sym_stats = ro_dir.join("sym_stats.json");
+        symlink(&victim_out, &sym_out).expect("symlink sym_out.vcf -> victim_out.txt");
+        symlink(&victim_stats, &sym_stats).expect("symlink sym_stats.json -> victim_stats.txt");
+
+        std::fs::set_permissions(&ro_dir, std::fs::Permissions::from_mode(0o555))
+            .expect("chmod 0555 ro_dir_0555");
+
+        let non_root_enforced = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(ro_dir.join("probe"))
+            .is_err();
+
+        if non_root_enforced {
+            // 1. Pre-existing writable regular files in `0555` parent succeed via `DirectTempStaged` / `DirectPinned`
+            let ok_ro = base_cmd()
+                .arg("-G")
+                .arg(&plain_fa)
+                .arg("-b")
+                .arg(&plain_bam)
+                .args(bed_flags)
+                .arg("--output")
+                .arg(&ro_out)
+                .arg("--stats-json")
+                .arg(&ro_stats)
+                .arg(&plain_bed)
+                .output()
+                .expect("spawn 0555 pre-existing regular output + stats-json");
+
+            // 2. Failing mid-run invocation in `0555` parent preserves committed bytes untouched
+            let fail_ro = base_cmd()
+                .arg("-G")
+                .arg(&plain_fa)
+                .arg("-b")
+                .arg(dir.path().join("missing_nonexistent.bam"))
+                .args(["-R", "chr1:40-260", "--threads=1", "--output"])
+                .arg(&ro_out)
+                .arg("--stats-json")
+                .arg(&ro_stats)
+                .output()
+                .expect("spawn 0555 failing run");
+
+            // 3. Symlinked `--output` in `0555` parent is rejected via `O_NOFOLLOW` without mutating target
+            let sym_out_run = base_cmd()
+                .arg("-G")
+                .arg(&plain_fa)
+                .arg("-b")
+                .arg(&plain_bam)
+                .args(bed_flags)
+                .arg("--output")
+                .arg(&sym_out)
+                .arg(&plain_bed)
+                .output()
+                .expect("spawn 0555 symlink --output");
+
+            // 4. Symlinked `--stats-json` in `0555` parent is rejected via `O_NOFOLLOW` without mutating target
+            let sym_stats_run = base_cmd()
+                .arg("-G")
+                .arg(&plain_fa)
+                .arg("-b")
+                .arg(&plain_bam)
+                .args(bed_flags)
+                .arg("--stats-json")
+                .arg(&sym_stats)
+                .arg(&plain_bed)
+                .output()
+                .expect("spawn 0555 symlink --stats-json");
+
+            let committed_vcf = std::fs::read(&ro_out).expect("read ro_dir/out.vcf");
+            let committed_stats =
+                String::from_utf8(std::fs::read(&ro_stats).expect("read ro_dir/stats.json"))
+                    .expect("UTF-8 stats.json");
+            let after_victim_out = std::fs::read(&victim_out).expect("read victim_out.txt");
+            let after_victim_stats = std::fs::read(&victim_stats).expect("read victim_stats.txt");
+
+            // Restore 0755 BEFORE assertions so TempDir drop always succeeds.
+            std::fs::set_permissions(&ro_dir, std::fs::Permissions::from_mode(0o755))
+                .expect("restore chmod 0755 ro_dir_0555");
+
+            assert!(
+                ok_ro.status.success(),
+                "0555 pre-existing regular file DirectTempStaged run failed: {}",
+                String::from_utf8_lossy(&ok_ro.stderr)
+            );
+            assert_eq!(
+                committed_vcf, baseline.stdout,
+                "0555 DirectTempStaged --output must match stdout VCF byte-for-byte, and failing run must preserve it"
+            );
+            assert!(
+                committed_stats.contains("\"mode\": \"Simple\""),
+                "0555 DirectPinned --stats-json must emit valid telemetry and preserve it on failure, got: {committed_stats}"
+            );
+
+            assert!(
+                !fail_ro.status.success(),
+                "failing 0555 run must exit non-zero"
+            );
+            assert_ne!(fail_ro.status.code(), Some(101));
+
+            assert!(
+                !sym_out_run.status.success(),
+                "symlinked --output in 0555 parent must be rejected via O_NOFOLLOW"
+            );
+            assert_ne!(sym_out_run.status.code(), Some(101));
+            assert_eq!(
+                after_victim_out, victim_out_bytes,
+                "symlink target victim_out.txt must remain 100% untouched"
+            );
+
+            assert!(
+                !sym_stats_run.status.success(),
+                "symlinked --stats-json in 0555 parent must be rejected via O_NOFOLLOW"
+            );
+            assert_ne!(sym_stats_run.status.code(), Some(101));
+            assert_eq!(
+                after_victim_stats, victim_stats_bytes,
+                "symlink target victim_stats.txt must remain 100% untouched"
+            );
+        } else {
+            let _ = std::fs::remove_file(ro_dir.join("probe"));
+            std::fs::set_permissions(&ro_dir, std::fs::Permissions::from_mode(0o755))
+                .expect("restore chmod 0755 ro_dir_0555");
+        }
     }
 }

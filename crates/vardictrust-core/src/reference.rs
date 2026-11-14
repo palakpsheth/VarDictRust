@@ -257,6 +257,107 @@ pub(crate) fn open_indexed_fasta_buf_reader_with_capacity(
     ))
 }
 
+/// Maximum allowed `.fai` FASTA index byte size (`128 MiB`).
+pub(crate) const MAX_FAI_BYTES: u64 = 128 * 1024 * 1024;
+
+/// Validates SAM/FASTA/VCF contig name bytes: non-empty printable ASCII (`0x21..=0x7E`)
+/// excluding VCF `##contig=<ID=...>` delimiters `,` and `>`.
+#[inline]
+pub(crate) fn is_valid_contig_name_bytes(name: &[u8]) -> bool {
+    !name.is_empty()
+        && !name
+            .iter()
+            .any(|&b| b <= 0x20 || b >= 0x7F || matches!(b, b',' | b'>'))
+}
+
+/// Reads a `.fai` FASTA index file into memory while enforcing [`MAX_FAI_BYTES`].
+pub(crate) fn read_fai_bytes_bounded(fai_path: &Path) -> Result<Vec<u8>, VardictError> {
+    use std::io::Read as _;
+
+    let mut file = File::open(fai_path).map_err(VardictError::Io)?;
+    let mut buf = Vec::new();
+    let mut chunk = [0_u8; 8 * 1024];
+    loop {
+        let n = file.read(&mut chunk).map_err(VardictError::Io)?;
+        if n == 0 {
+            break;
+        }
+        let Some(slice) = chunk.get(..n) else {
+            break;
+        };
+        if (buf.len() as u64).saturating_add(slice.len() as u64) > MAX_FAI_BYTES {
+            return Err(VardictError::Parse(format!(
+                "FASTA index '{}' exceeds maximum allowed size of {} bytes",
+                fai_path.display(),
+                MAX_FAI_BYTES
+            )));
+        }
+        buf.extend_from_slice(slice);
+    }
+    Ok(buf)
+}
+
+/// Parses and validates an in-memory `.fai` FASTA index buffer for valid contig names,
+/// `line_base_count <= line_width`, and checked `i64`-bounded end offsets.
+pub(crate) fn parse_validated_fai_bytes(
+    buf: &[u8],
+    fai_path: &Path,
+) -> Result<fai::Index, VardictError> {
+    let index = fai::io::Reader::new(std::io::Cursor::new(buf))
+        .read_index()
+        .map_err(VardictError::Io)?;
+
+    let mut seen_names: std::collections::HashSet<&[u8]> =
+        std::collections::HashSet::with_capacity(index.as_ref().len());
+    for rec in index.as_ref() {
+        let name_bytes: &[u8] = rec.name().as_ref();
+        if !is_valid_contig_name_bytes(name_bytes) {
+            return Err(VardictError::Parse(format!(
+                "Invalid contig name '{}' in FASTA index '{}'",
+                crate::util::SanitizedBytes(name_bytes),
+                fai_path.display()
+            )));
+        }
+        if !seen_names.insert(name_bytes) {
+            return Err(VardictError::Parse(format!(
+                "Duplicate contig name '{}' in FASTA index '{}'",
+                crate::util::SanitizedBytes(name_bytes),
+                fai_path.display()
+            )));
+        }
+        let lbc = rec.line_base_count().get();
+        let lw = rec.line_width().get();
+        if lbc > lw {
+            return Err(VardictError::Parse(format!(
+                "Invalid FASTA index '{}' for contig '{}': line_base_count ({lbc}) exceeds line_width ({lw})",
+                fai_path.display(),
+                crate::util::SanitizedBytes(name_bytes)
+            )));
+        }
+        let valid_end = (rec.length() / lbc)
+            .checked_mul(lw)
+            .and_then(|v| v.checked_add(rec.length() % lbc))
+            .and_then(|v| rec.position().checked_add(v))
+            .filter(|&end| end <= i64::MAX as u64);
+        if valid_end.is_none() {
+            return Err(VardictError::Parse(format!(
+                "Invalid FASTA index '{}' for contig '{}': byte offset overflows i64::MAX",
+                fai_path.display(),
+                crate::util::SanitizedBytes(name_bytes)
+            )));
+        }
+    }
+
+    Ok(index)
+}
+
+/// Reads and validates a `.fai` FASTA index with bounded memory (`<= 128 MiB`),
+/// valid contig names, `line_base_count <= line_width`, and checked `i64`-bounded end offsets.
+pub(crate) fn read_validated_fai_index(fai_path: &Path) -> Result<fai::Index, VardictError> {
+    let buf = read_fai_bytes_bounded(fai_path)?;
+    parse_validated_fai_bytes(&buf, fai_path)
+}
+
 /// Opens an indexed FASTA buffered reader with the default 8 KiB uncompressed buffer capacity.
 pub(crate) fn open_indexed_fasta_buf_reader(
     fasta_path: &Path,
@@ -276,7 +377,7 @@ pub fn fetch_subsequence(
         if !cache.contains_key(fasta_path) {
             let fasta_reader = open_indexed_fasta_buf_reader(fasta_path)?;
             let fai_path = resolve_fasta_fai_path(fasta_path);
-            let index = fai::fs::read(&fai_path).map_err(VardictError::Io)?;
+            let index = read_validated_fai_index(&fai_path)?;
             let fai_lengths: HashMap<Vec<u8>, u64> = index
                 .as_ref()
                 .iter()
@@ -815,6 +916,23 @@ impl Reference {
             .or(first_match)
             .unwrap_or((&[], 1))
     }
+
+    /// Returns the `(min(sequence_start), max(sequence_end))` 1-based inclusive envelope
+    /// across all `LoadedRegion`s on `chr`, or `None` if no region on `chr` is loaded.
+    pub fn loaded_span_bounds(&self, chr: &str) -> Option<(u32, u32)> {
+        let mut bounds: Option<(u32, u32)> = None;
+        for lr in &self.loaded_regions {
+            if lr.chr == chr {
+                bounds = Some(match bounds {
+                    Some((min_s, max_e)) => {
+                        (min_s.min(lr.sequence_start), max_e.max(lr.sequence_end))
+                    }
+                    None => (lr.sequence_start, lr.sequence_end),
+                });
+            }
+        }
+        bounds
+    }
 }
 
 impl Default for Reference {
@@ -881,9 +999,13 @@ pub fn get_reference_with_chr_len(
         Pos1(sequence_end),
     )?;
 
-    // Convert bases to uppercase matching exon.toUpperCase()
+    // Convert bases to uppercase matching exon.toUpperCase() and sanitize non-printable
+    // or VCF-delimiter FASTA bytes to 'N' (preserving standard/IUPAC codes, '*', and '-').
     for b in &mut bases {
         b.make_ascii_uppercase();
+        if *b <= 0x20 || *b >= 0x7F || matches!(*b, b';' | b'=' | b',') {
+            *b = b'N';
+        }
     }
 
     const SEED1_LEN: usize = 17;
@@ -2326,5 +2448,111 @@ mod tests {
             resolve_fasta_gzi_path(&bgzf_fa),
             dir.path().join("ref.fa.gz.gzi")
         );
+    }
+
+    #[test]
+    fn batch12_fai_validation_and_fasta_sanitization() {
+        use std::fs;
+        let dir = tempfile::tempdir().unwrap();
+
+        // 1. lbc > lw in .fai must be rejected by fetch_subsequence
+        let lbc_fa = dir.path().join("lbc_gt_lw.fa");
+        fs::write(&lbc_fa, b">chr1\nACGTACGT\n").unwrap();
+        fs::write(dir.path().join("lbc_gt_lw.fa.fai"), b"chr1\t8\t6\t9\t8\n").unwrap();
+        assert!(
+            fetch_subsequence(&lbc_fa, "chr1", Pos1(1), Pos1(4)).is_err(),
+            "fetch_subsequence must reject .fai with line_base_count > line_width"
+        );
+
+        // 2. u64 / i64::MAX end-offset overflow in .fai must be rejected
+        let ovf_fa = dir.path().join("offset_ovf.fa");
+        fs::write(&ovf_fa, b">chr1\nACGTACGT\n").unwrap();
+        let huge_pos = (i64::MAX as u64) - 2;
+        fs::write(
+            dir.path().join("offset_ovf.fa.fai"),
+            format!("chr1\t8\t{huge_pos}\t8\t9\n"),
+        )
+        .unwrap();
+        assert!(
+            fetch_subsequence(&ovf_fa, "chr1", Pos1(1), Pos1(4)).is_err(),
+            "fetch_subsequence must reject .fai whose record end offset exceeds i64::MAX"
+        );
+
+        // 3. Invalid contig name bytes (e.g. ',' or '>') in .fai must be rejected,
+        //    while HLA-A*01:01:01:01 remains valid.
+        let bad_contig_fa = dir.path().join("bad_contig.fa");
+        fs::write(&bad_contig_fa, b">chr1,evil\nACGT\n").unwrap();
+        fs::write(
+            dir.path().join("bad_contig.fa.fai"),
+            b"chr1,evil\t4\t11\t4\t5\n",
+        )
+        .unwrap();
+        assert!(
+            fetch_subsequence(&bad_contig_fa, "chr1,evil", Pos1(1), Pos1(4)).is_err(),
+            "fetch_subsequence must reject .fai contig containing ','"
+        );
+
+        let dup_contig_fa = dir.path().join("dup_contig.fa");
+        fs::write(&dup_contig_fa, b">chr1\nACGT\n>chr1\nTGCA\n").unwrap();
+        fs::write(
+            dir.path().join("dup_contig.fa.fai"),
+            b"chr1\t4\t6\t4\t5\nchr1\t4\t17\t4\t5\n",
+        )
+        .unwrap();
+        let dup_err = fetch_subsequence(&dup_contig_fa, "chr1", Pos1(1), Pos1(4)).unwrap_err();
+        assert!(
+            dup_err.to_string().contains("Duplicate contig name"),
+            "expected Duplicate contig name error, got: {dup_err}"
+        );
+
+        let hla_fa = dir.path().join("hla_ok.fa");
+        fs::write(&hla_fa, b">HLA-A*01:01:01:01\nACGTACGT\n").unwrap();
+        fs::write(
+            dir.path().join("hla_ok.fa.fai"),
+            b"HLA-A*01:01:01:01\t8\t19\t8\t9\n",
+        )
+        .unwrap();
+        assert_eq!(
+            fetch_subsequence(&hla_fa, "HLA-A*01:01:01:01", Pos1(1), Pos1(8)).unwrap(),
+            b"ACGTACGT"
+        );
+
+        // 4. Sparse .fai > 128 MiB must be rejected before unbounded allocation
+        let big_fai_fa = dir.path().join("big_fai.fa");
+        fs::write(&big_fai_fa, b">chr1\nACGT\n").unwrap();
+        let big_fai = fs::File::create(dir.path().join("big_fai.fa.fai")).unwrap();
+        big_fai.set_len(128 * 1024 * 1024 + 1).unwrap();
+        drop(big_fai);
+        assert!(
+            fetch_subsequence(&big_fai_fa, "chr1", Pos1(1), Pos1(4)).is_err(),
+            "fetch_subsequence must reject .fai exceeding MAX_FAI_BYTES"
+        );
+
+        // 5. get_reference_with_chr_len normalizes VCF-breaking FASTA bytes (';', '=', ',', C0/DEL)
+        //    to 'N' while preserving standard/IUPAC bases, '*', and '-'.
+        let dirty_fa = dir.path().join("dirty_bases.fa");
+        fs::write(&dirty_fa, b">chr1\nacgt;=-,*RYSW\x7f\n").unwrap();
+        fs::write(
+            dir.path().join("dirty_bases.fa.fai"),
+            b"chr1\t14\t6\t14\t15\n",
+        )
+        .unwrap();
+        let cfg = Config {
+            reference: dirty_fa.to_string_lossy().into_owned(),
+            ..Config::default()
+        };
+        let reg = BedRegion {
+            chr: "chr1".to_string(),
+            start: Pos1(1),
+            end: Pos1(14),
+            gene: "G".to_string(),
+            amplicon: None,
+        };
+        let mut ref_obj = Reference::new();
+        get_reference_with_chr_len(&reg, 0, 14, &cfg, &mut ref_obj).unwrap();
+        let got: Vec<u8> = (1..=14)
+            .map(|p| ref_obj.get_base("chr1", p).unwrap())
+            .collect();
+        assert_eq!(got, b"ACGTNN-N*RYSWN");
     }
 }

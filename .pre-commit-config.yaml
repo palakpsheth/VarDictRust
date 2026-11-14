@@ -3,14 +3,15 @@
 # run 'git config --unset core.hooksPath' before using pre-commit install.
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v4.6.0
+    rev: 2c9f875913ee60ca25ce70243dc24d5b6415598c # v4.6.0
     hooks:
       - id: check-yaml
+        args: [--unsafe]
       - id: check-toml
       - id: end-of-file-fixer
       - id: trailing-whitespace
   - repo: https://github.com/gitleaks/gitleaks
-    rev: v8.24.0
+    rev: c2afd56bbe7ab11564107d34efac4bfde3e3c78d # v8.24.0
     hooks:
       - id: gitleaks
   - repo: local

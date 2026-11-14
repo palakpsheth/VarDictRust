@@ -295,6 +295,32 @@ impl SplitVarDeduper {
     }
 }
 
+const MAX_TOTAL_TILES: usize = 10_000_000;
+
+fn validate_total_tiles_ceiling(
+    flat_regions: &[crate::regions::Region],
+    config_tile_size: Option<u32>,
+) -> Result<(), VardictError> {
+    let mut total_tiles: usize = 0;
+    for reg in flat_regions {
+        if reg.start.0 > reg.end.0 {
+            continue;
+        }
+        let ts = u64::from(effective_tile_size(reg, config_tile_size).max(1));
+        let count_u64 = (u64::from(reg.end.0) - u64::from(reg.start.0)) / ts + 1;
+        total_tiles = usize::try_from(count_u64)
+            .ok()
+            .and_then(|c| total_tiles.checked_add(c))
+            .filter(|&sum| sum <= MAX_TOTAL_TILES)
+            .ok_or_else(|| {
+                VardictError::Parse(format!(
+                    "Tiled region count exceeds maximum allowed ceiling of {MAX_TOTAL_TILES}"
+                ))
+            })?;
+    }
+    Ok(())
+}
+
 #[inline]
 fn effective_tile_size(reg: &crate::regions::Region, config_tile_size: Option<u32>) -> u32 {
     if let Some(ts) = config_tile_size {
@@ -319,18 +345,42 @@ enum PipelineTail {
     Full,
 }
 
+fn has_alignment_extension_ci(seg: &str) -> bool {
+    Path::new(seg)
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("bam") || e.eq_ignore_ascii_case("cram"))
+}
+
 /// Splits a colon-delimited BAM specification into non-empty file paths,
 /// returning `Err(VardictError::Parse(empty_err))` when no path is present.
+/// Preserves single-BAM paths whose directory or filename contains `:` (`AR-17`).
 fn parse_colon_bams(spec: &str, empty_err: &str) -> Result<Vec<String>, VardictError> {
-    let bams: Vec<String> = spec
-        .split(':')
+    let raw_parts: Vec<&str> = spec.split(':').collect();
+    let non_empty: Vec<&str> = raw_parts
+        .iter()
+        .copied()
         .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
         .collect();
-    if bams.is_empty() {
+    if non_empty.is_empty() {
         return Err(VardictError::Parse(empty_err.to_string()));
     }
-    Ok(bams)
+    if spec.contains(':') {
+        let keep_unsplit = Path::new(spec).exists()
+            || (!raw_parts.iter().any(|s| s.is_empty())
+                && raw_parts
+                    .get(..raw_parts.len().saturating_sub(1))
+                    .is_some_and(|left_parts| {
+                        !left_parts.is_empty()
+                            && left_parts.iter().all(|seg| {
+                                !has_alignment_extension_ci(seg) && !Path::new(seg).exists()
+                            })
+                    }));
+        if keep_unsplit {
+            return Ok(vec![spec.to_string()]);
+        }
+    }
+    Ok(non_empty.into_iter().map(str::to_string).collect())
 }
 
 /// Per-region pipeline shared by simple, amplicon and somatic modes: query the
@@ -570,8 +620,7 @@ fn run_pipeline_on_records_ext(
     if let Some(post_max) = post_pileup_max_read_length {
         var_data.max_read_length = var_data.max_read_length.max(post_max);
     }
-    let chr_len = *chromosomes_lengths.get(chr).unwrap_or(&0) as u32;
-    let joined_bams = bam_paths.join(":");
+    let chr_len = u32::try_from(*chromosomes_lengths.get(chr).unwrap_or(&0)).unwrap_or(u32::MAX);
 
     match tail {
         PipelineTail::Stop => {}
@@ -595,10 +644,9 @@ fn run_pipeline_on_records_ext(
                     &mut var_data,
                 );
             }
-            let current_bam = std::path::Path::new(joined_bams.as_str());
-            crate::sv::find_all_sv(
+            crate::sv::find_all_sv_paths(
                 &mut var_data,
-                current_bam,
+                bam_paths,
                 reference,
                 chr,
                 chr_len,
@@ -702,7 +750,8 @@ fn scan_multi_tile_max_read_lengths(
             chromosomes_lengths: &HashMap<String, usize>,
             config: &config::Config,
         ) -> Self {
-            let chr_len = chromosomes_lengths.get(&reg.chr).copied().unwrap_or(0) as u32;
+            let chr_len = u32::try_from(chromosomes_lengths.get(&reg.chr).copied().unwrap_or(0))
+                .unwrap_or(u32::MAX);
             let total_ext = (config.extension.max(0) as u32).saturating_add(config.max_region_len);
             Self {
                 chr: reg.chr.clone(),
@@ -1453,15 +1502,26 @@ impl SpillableCandidate for SomaticVcfCandidate {
     }
 }
 
+fn random_tmp_nonce(seq: u64) -> u64 {
+    use std::hash::{BuildHasher as _, Hasher as _};
+    let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+    hasher.write_u32(std::process::id());
+    hasher.write_u64(seq);
+    hasher.finish()
+}
+
 struct SpillTempDir {
     path: std::path::PathBuf,
 }
 
 impl SpillTempDir {
     fn new() -> std::io::Result<Self> {
+        Self::new_in(&std::env::temp_dir())
+    }
+
+    fn new_in(base: &Path) -> std::io::Result<Self> {
         static NEXT_DIR_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let pid = std::process::id();
-        let base = std::env::temp_dir();
         let mut builder = std::fs::DirBuilder::new();
         #[cfg(unix)]
         {
@@ -1470,7 +1530,8 @@ impl SpillTempDir {
         }
         for _ in 0..1024 {
             let id = NEXT_DIR_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let candidate = base.join(format!("vardictrust_vcf_spill_{pid}_{id}"));
+            let nonce = random_tmp_nonce(id);
+            let candidate = base.join(format!("vardictrust_vcf_spill_{pid}_{id}_{nonce:016x}"));
             match builder.create(&candidate) {
                 Ok(()) => return Ok(Self { path: candidate }),
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
@@ -1886,7 +1947,178 @@ fn append_os_suffix(path: &Path, suffix: &str) -> std::path::PathBuf {
 fn atomic_tmp_path(target: &Path) -> std::path::PathBuf {
     let seq = NEXT_TMP_FILE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let pid = std::process::id();
-    append_os_suffix(target, &format!(".tmp.{pid}.{seq}"))
+    let nonce = random_tmp_nonce(seq);
+    append_os_suffix(target, &format!(".tmp.{pid}.{seq}.{nonce:016x}"))
+}
+
+fn open_atomic_tmp_file(target: &Path) -> std::io::Result<(std::fs::File, std::path::PathBuf)> {
+    for _ in 0..64 {
+        let tmp_path = atomic_tmp_path(target);
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp_path)
+        {
+            Ok(file) => return Ok((file, tmp_path)),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(err),
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        format!(
+            "failed to allocate unique temporary staging file for '{}'",
+            target.display()
+        ),
+    ))
+}
+
+#[cfg(unix)]
+const UNIX_O_NOFOLLOW: i32 = {
+    #[cfg(target_os = "linux")]
+    {
+        #[cfg(any(
+            target_arch = "arm",
+            target_arch = "aarch64",
+            target_arch = "powerpc",
+            target_arch = "powerpc64",
+            target_arch = "m68k"
+        ))]
+        {
+            0x8000
+        }
+        #[cfg(any(
+            target_arch = "x86",
+            target_arch = "x86_64",
+            target_arch = "riscv32",
+            target_arch = "riscv64",
+            target_arch = "s390x",
+            target_arch = "loongarch64",
+            target_arch = "mips",
+            target_arch = "mips64",
+            target_arch = "mips32r6",
+            target_arch = "mips64r6",
+            target_arch = "sparc",
+            target_arch = "sparc64"
+        ))]
+        {
+            0x20000
+        }
+        #[cfg(not(any(
+            target_arch = "arm",
+            target_arch = "aarch64",
+            target_arch = "powerpc",
+            target_arch = "powerpc64",
+            target_arch = "m68k",
+            target_arch = "x86",
+            target_arch = "x86_64",
+            target_arch = "riscv32",
+            target_arch = "riscv64",
+            target_arch = "s390x",
+            target_arch = "loongarch64",
+            target_arch = "mips",
+            target_arch = "mips64",
+            target_arch = "mips32r6",
+            target_arch = "mips64r6",
+            target_arch = "sparc",
+            target_arch = "sparc64"
+        )))]
+        {
+            compile_error!("UNIX_O_NOFOLLOW is not defined for this Linux target_arch")
+        }
+    }
+    #[cfg(target_os = "android")]
+    {
+        #[cfg(any(target_arch = "arm", target_arch = "aarch64"))]
+        {
+            0x8000
+        }
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64", target_arch = "riscv64"))]
+        {
+            0x20000
+        }
+        #[cfg(not(any(
+            target_arch = "arm",
+            target_arch = "aarch64",
+            target_arch = "x86",
+            target_arch = "x86_64",
+            target_arch = "riscv64"
+        )))]
+        {
+            compile_error!("UNIX_O_NOFOLLOW is not defined for this Android target_arch")
+        }
+    }
+    #[cfg(any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "tvos",
+        target_os = "watchos",
+        target_os = "visionos",
+        target_os = "freebsd",
+        target_os = "dragonfly",
+        target_os = "netbsd",
+        target_os = "openbsd"
+    ))]
+    {
+        0x0100
+    }
+    #[cfg(any(target_os = "solaris", target_os = "illumos", target_os = "emscripten"))]
+    {
+        0x20000
+    }
+    #[cfg(target_os = "aix")]
+    {
+        0x0100_0000
+    }
+    #[cfg(target_os = "haiku")]
+    {
+        0x0008_0000
+    }
+    #[cfg(any(target_os = "cygwin", target_os = "hurd"))]
+    {
+        0x0010_0000
+    }
+    #[cfg(not(any(
+        target_os = "linux",
+        target_os = "android",
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "tvos",
+        target_os = "watchos",
+        target_os = "visionos",
+        target_os = "freebsd",
+        target_os = "dragonfly",
+        target_os = "netbsd",
+        target_os = "openbsd",
+        target_os = "solaris",
+        target_os = "illumos",
+        target_os = "emscripten",
+        target_os = "aix",
+        target_os = "haiku",
+        target_os = "cygwin",
+        target_os = "hurd"
+    )))]
+    {
+        compile_error!("UNIX_O_NOFOLLOW is not defined for this Unix target_os")
+    }
+};
+
+fn open_existing_regular_nofollow(path: &Path) -> std::io::Result<std::fs::File> {
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        opts.custom_flags(UNIX_O_NOFOLLOW);
+    }
+    let file = opts.open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!("target '{}' is not a regular file", path.display()),
+        ));
+    }
+    Ok(file)
 }
 
 fn tbi_output_path(vcf_gz_path: &Path) -> std::path::PathBuf {
@@ -1903,34 +2135,21 @@ fn is_readonly_parent_fallback_eligible(target: &Path, err: &std::io::Error) -> 
             err.kind(),
             std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::ReadOnlyFilesystem
         )
-        && std::fs::metadata(target).is_ok_and(|m| m.is_file())
+        && std::fs::symlink_metadata(target)
+            .is_ok_and(|m| m.is_file() || m.file_type().is_symlink())
 }
 
 fn preflight_readonly_index_plan(plan: &OutputIndexPlan) -> std::io::Result<()> {
-    let idx_probe = std::fs::OpenOptions::new()
-        .write(true)
-        .open(&plan.primary_path)
-        .map_err(|e| {
-            std::io::Error::new(
-                e.kind(),
-                format!(
-                    "cannot write {} index '{}' in read-only parent directory: {e}",
-                    plan.flag,
-                    plan.primary_path.display()
-                ),
-            )
-        })?;
-    if !idx_probe.metadata()?.is_file() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
+    let idx_file = open_existing_regular_nofollow(&plan.primary_path).map_err(|e| {
+        std::io::Error::new(
+            e.kind(),
             format!(
-                "cannot stage {} index '{}': target is not a writable regular file",
+                "cannot write {} index '{}' in read-only parent directory: {e}",
                 plan.flag,
                 plan.primary_path.display()
             ),
-        ));
-    }
-    drop(idx_probe);
+        )
+    })?;
 
     if plan.alt_path.exists() || std::fs::symlink_metadata(&plan.alt_path).is_ok() {
         return Err(std::io::Error::new(
@@ -1942,6 +2161,7 @@ fn preflight_readonly_index_plan(plan: &OutputIndexPlan) -> std::io::Result<()> 
             ),
         ));
     }
+    *plan.preflight_dst.borrow_mut() = Some(idx_file);
     Ok(())
 }
 
@@ -1963,9 +2183,9 @@ enum StagedFileTarget {
         committed: bool,
     },
     DirectTempStaged {
-        final_path: std::path::PathBuf,
         _scratch_dir: SpillTempDir,
         scratch_path: std::path::PathBuf,
+        dst_file: std::fs::File,
     },
     Direct,
 }
@@ -1973,6 +2193,27 @@ enum StagedFileTarget {
 impl StagedFileTarget {
     fn open(target: &Path) -> std::io::Result<(std::fs::File, Self)> {
         Self::open_with_index_preflight(target, None)
+    }
+
+    fn from_pinned_dst_file(dst_file: std::fs::File) -> std::io::Result<(std::fs::File, Self)> {
+        Self::from_pinned_dst_file_in(dst_file, &std::env::temp_dir())
+    }
+
+    fn from_pinned_dst_file_in(
+        dst_file: std::fs::File,
+        tmp_base: &Path,
+    ) -> std::io::Result<(std::fs::File, Self)> {
+        let scratch_dir = SpillTempDir::new_in(tmp_base)?;
+        let scratch_path = scratch_dir.path().join("staged_output.bin");
+        let file = create_private_spill_file(&scratch_path)?;
+        Ok((
+            file,
+            Self::DirectTempStaged {
+                _scratch_dir: scratch_dir,
+                scratch_path,
+                dst_file,
+            },
+        ))
     }
 
     fn open_with_index_preflight(
@@ -1986,13 +2227,8 @@ impl StagedFileTarget {
             let file = open_special_or_fd_alias_for_write(target)?;
             return Ok((file, Self::Direct));
         }
-        let tmp_path = atomic_tmp_path(target);
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&tmp_path)
-        {
-            Ok(file) => Ok((
+        match open_atomic_tmp_file(target) {
+            Ok((file, tmp_path)) => Ok((
                 file,
                 Self::AtomicTmp {
                     final_path: target.to_path_buf(),
@@ -2001,46 +2237,16 @@ impl StagedFileTarget {
                 },
             )),
             Err(err) if is_readonly_parent_fallback_eligible(target, &err) => {
-                // Probe writability WITHOUT `.truncate(true)` so pre-existing target bytes
-                // are never clobbered before index preflight and engine execution complete.
-                let probe = std::fs::OpenOptions::new().write(true).open(target)?;
-                if !probe.metadata()?.is_file() {
-                    return Err(err);
-                }
-                drop(probe);
+                // Open and pin the existing regular destination file handle via O_NOFOLLOW
+                // WITHOUT `.truncate(true)` so pre-existing target bytes are untouched before
+                // commit() and mid-run pathname symlink swaps cannot redirect writes (`AR-9`).
+                let dst_file = open_existing_regular_nofollow(target)?;
 
                 if let Some(plan) = index_plan {
                     preflight_readonly_index_plan(plan)?;
                 }
 
-                match SpillTempDir::new() {
-                    Ok(scratch_dir) => {
-                        let scratch_path = scratch_dir.path().join("staged_output.bin");
-                        let file = create_private_spill_file(&scratch_path)?;
-                        Ok((
-                            file,
-                            Self::DirectTempStaged {
-                                final_path: target.to_path_buf(),
-                                _scratch_dir: scratch_dir,
-                                scratch_path,
-                            },
-                        ))
-                    }
-                    Err(tmp_err)
-                        if matches!(
-                            tmp_err.kind(),
-                            std::io::ErrorKind::PermissionDenied
-                                | std::io::ErrorKind::ReadOnlyFilesystem
-                        ) =>
-                    {
-                        let file = std::fs::OpenOptions::new()
-                            .write(true)
-                            .truncate(true)
-                            .open(target)?;
-                        Ok((file, Self::Direct))
-                    }
-                    Err(tmp_err) => Err(tmp_err),
-                }
+                Self::from_pinned_dst_file(dst_file)
             }
             Err(err) => Err(err),
         }
@@ -2065,18 +2271,16 @@ impl StagedFileTarget {
                 *committed = true;
             }
             Self::DirectTempStaged {
-                final_path,
                 scratch_path,
+                dst_file,
                 ..
             } => {
                 let mut src = std::fs::File::open(&*scratch_path)?;
-                let mut dst = std::fs::OpenOptions::new()
-                    .write(true)
-                    .truncate(true)
-                    .open(&*final_path)?;
-                std::io::copy(&mut src, &mut dst)?;
-                std::io::Write::flush(&mut dst)?;
-                sync_file_ignoring_special(&dst).map_err(|e| match e {
+                dst_file.set_len(0)?;
+                std::io::Seek::seek(dst_file, std::io::SeekFrom::Start(0))?;
+                std::io::copy(&mut src, dst_file)?;
+                std::io::Write::flush(dst_file)?;
+                sync_file_ignoring_special(dst_file).map_err(|e| match e {
                     VardictError::Io(io_e) => io_e,
                     other => std::io::Error::other(other.to_string()),
                 })?;
@@ -2125,8 +2329,9 @@ fn is_bgzf_output_path(path: &Path) -> bool {
         .is_some_and(|ext| ext.eq_ignore_ascii_case("gz") || ext.eq_ignore_ascii_case("bgz"))
 }
 
-fn open_output_writer(
+fn open_output_writer_with_plan(
     config: &config::Config,
+    index_plan: Option<&OutputIndexPlan>,
 ) -> Result<(OutputDestination, Option<StagedFileTarget>), VardictError> {
     match config.output_path.as_deref() {
         None => Ok((create_output_writer(config), None)),
@@ -2139,10 +2344,8 @@ fn open_output_writer(
         )),
         Some(path_str) => {
             let target = Path::new(path_str);
-            let index_plan = output_index_plan(config);
-            let (file, staged) =
-                StagedFileTarget::open_with_index_preflight(target, index_plan.as_ref())
-                    .map_err(VardictError::Io)?;
+            let (file, staged) = StagedFileTarget::open_with_index_preflight(target, index_plan)
+                .map_err(VardictError::Io)?;
             if is_bgzf_output_path(target) {
                 let worker_count = std::num::NonZeroUsize::new(config.threads.clamp(1, 4))
                     .unwrap_or(std::num::NonZeroUsize::MIN);
@@ -2302,11 +2505,20 @@ where
     Ok(())
 }
 
-fn stage_index_file<F>(index_path: &Path, write_fn: F) -> Result<StagedFileTarget, VardictError>
+fn stage_index_file<F>(
+    index_path: &Path,
+    preflight_dst: Option<std::fs::File>,
+    write_fn: F,
+) -> Result<StagedFileTarget, VardictError>
 where
     F: FnOnce(std::fs::File) -> std::io::Result<std::fs::File>,
 {
-    let (file, staged) = StagedFileTarget::open(index_path).map_err(VardictError::Io)?;
+    let (file, staged) = match preflight_dst {
+        Some(dst_file) => {
+            StagedFileTarget::from_pinned_dst_file(dst_file).map_err(VardictError::Io)?
+        }
+        None => StagedFileTarget::open(index_path).map_err(VardictError::Io)?,
+    };
     let inner_file = write_fn(file).map_err(VardictError::Io)?;
     sync_file_ignoring_special(&inner_file)?;
     drop(inner_file);
@@ -2316,6 +2528,7 @@ where
 fn stage_vcf_tabix_index_inner(
     readable_vcf: &Path,
     tbi_path: &Path,
+    preflight_dst: Option<std::fs::File>,
 ) -> Result<StagedFileTarget, VardictError> {
     let mut indexer = noodles::tabix::index::Indexer::default();
     indexer.set_header(noodles::csi::binning_index::index::header::Builder::vcf().build());
@@ -2337,31 +2550,41 @@ fn stage_vcf_tabix_index_inner(
     )?;
 
     let index = indexer.build();
-    stage_index_file(tbi_path, |file| {
+    stage_index_file(tbi_path, preflight_dst, |file| {
         let mut tbi_writer = noodles::tabix::io::Writer::new(file);
         tbi_writer.write_index(&index)?;
         tbi_writer.into_inner().finish()
     })
 }
 
-fn stage_vcf_tabix_index(
+fn stage_vcf_tabix_index_with_preflight(
     readable_vcf: &Path,
     final_vcf: &Path,
+    preflight_dst: Option<std::fs::File>,
 ) -> Result<StagedFileTarget, VardictError> {
     let tbi_path = tbi_output_path(final_vcf);
-    if paths_collide(final_vcf, &tbi_path) {
+    if preflight_dst.is_none() && paths_collide(final_vcf, &tbi_path) {
         return Err(VardictError::Parse(format!(
             "--output '{}' and its Tabix index '{}' must not point to the same file",
             final_vcf.display(),
             tbi_path.display()
         )));
     }
-    stage_vcf_tabix_index_inner(readable_vcf, &tbi_path)
+    stage_vcf_tabix_index_inner(readable_vcf, &tbi_path, preflight_dst)
+}
+
+#[cfg(test)]
+fn stage_vcf_tabix_index(
+    readable_vcf: &Path,
+    final_vcf: &Path,
+) -> Result<StagedFileTarget, VardictError> {
+    stage_vcf_tabix_index_with_preflight(readable_vcf, final_vcf, None)
 }
 
 fn stage_vcf_csi_index_inner(
     readable_vcf: &Path,
     csi_path: &Path,
+    preflight_dst: Option<std::fs::File>,
 ) -> Result<StagedFileTarget, VardictError> {
     let mut indexer = noodles::csi::binning_index::Indexer::<
         noodles::csi::binning_index::index::reference_sequence::index::BinnedIndex,
@@ -2386,26 +2609,35 @@ fn stage_vcf_csi_index_inner(
         .set_reference_sequence_names(names)
         .build();
     let index = indexer.set_header(header).build(contig_count);
-    stage_index_file(csi_path, |file| {
+    stage_index_file(csi_path, preflight_dst, |file| {
         let mut csi_writer = noodles::csi::io::Writer::new(file);
         csi_writer.write_index(&index)?;
         csi_writer.into_inner().finish()
     })
 }
 
-fn stage_vcf_csi_index(
+fn stage_vcf_csi_index_with_preflight(
     readable_vcf: &Path,
     final_vcf: &Path,
+    preflight_dst: Option<std::fs::File>,
 ) -> Result<StagedFileTarget, VardictError> {
     let csi_path = csi_output_path(final_vcf);
-    if paths_collide(final_vcf, &csi_path) {
+    if preflight_dst.is_none() && paths_collide(final_vcf, &csi_path) {
         return Err(VardictError::Parse(format!(
             "--output '{}' and its CSI index '{}' must not point to the same file",
             final_vcf.display(),
             csi_path.display()
         )));
     }
-    stage_vcf_csi_index_inner(readable_vcf, &csi_path)
+    stage_vcf_csi_index_inner(readable_vcf, &csi_path, preflight_dst)
+}
+
+#[cfg(test)]
+fn stage_vcf_csi_index(
+    readable_vcf: &Path,
+    final_vcf: &Path,
+) -> Result<StagedFileTarget, VardictError> {
+    stage_vcf_csi_index_with_preflight(readable_vcf, final_vcf, None)
 }
 
 /// Backwards-compatible alias for existing call sites.
@@ -2500,6 +2732,23 @@ fn resolve_effective_config(
     config: &config::Config,
 ) -> Result<(config::Config, CallingMode, Option<Vec<String>>), VardictError> {
     let mut effective = config.clone();
+    if let Some(ts) = effective.tile_size {
+        if ts == 0 || ts > MAX_TILE_SIZE {
+            return Err(VardictError::Parse(format!(
+                "--tile-size must be between 1 and {MAX_TILE_SIZE} (got {ts})"
+            )));
+        }
+    }
+    if effective
+        .reference
+        .as_bytes()
+        .iter()
+        .any(|&b| b < 0x20 || b == 0x7F)
+    {
+        return Err(VardictError::Parse(
+            "reference FASTA path (-G) must not contain ASCII control characters".to_string(),
+        ));
+    }
     if let Some(ref raw) = effective.sample_regexp {
         crate::config::validate_sample_regexp(raw).map_err(VardictError::Parse)?;
     }
@@ -2563,6 +2812,17 @@ fn resolve_effective_config(
         if let Some(first_bam_spec) = effective.bam.split('|').next() {
             effective.bam = first_bam_spec.to_string();
         }
+    }
+
+    if effective
+        .sample
+        .as_bytes()
+        .iter()
+        .any(|&b| b < 0x20 || b == 0x7F)
+    {
+        return Err(VardictError::Parse(
+            "sample name (-N) contains invalid ASCII control characters".to_string(),
+        ));
     }
 
     validate_index_flags(&effective)?;
@@ -2970,6 +3230,7 @@ struct OutputIndexPlan {
     primary_path: std::path::PathBuf,
     alt_flag: &'static str,
     alt_path: std::path::PathBuf,
+    preflight_dst: std::cell::RefCell<Option<std::fs::File>>,
 }
 
 fn output_index_plan(config: &config::Config) -> Option<OutputIndexPlan> {
@@ -2981,6 +3242,7 @@ fn output_index_plan(config: &config::Config) -> Option<OutputIndexPlan> {
             primary_path: tbi_output_path(out),
             alt_flag: "--csi",
             alt_path: csi_output_path(out),
+            preflight_dst: std::cell::RefCell::new(None),
         })
     } else if config.index_csi {
         Some(OutputIndexPlan {
@@ -2988,6 +3250,7 @@ fn output_index_plan(config: &config::Config) -> Option<OutputIndexPlan> {
             primary_path: csi_output_path(out),
             alt_flag: "--tbi",
             alt_path: tbi_output_path(out),
+            preflight_dst: std::cell::RefCell::new(None),
         })
     } else {
         None
@@ -3249,7 +3512,11 @@ enum PendingStatsJson {
         file: std::fs::File,
         staged: StagedFileTarget,
     },
-    DirectDeferred {
+    DirectPinned {
+        stats_label: String,
+        dst_file: std::fs::File,
+    },
+    DirectStream {
         stats_label: String,
         final_path: std::path::PathBuf,
     },
@@ -3271,18 +3538,13 @@ impl PendingStatsJson {
             ));
         }
         if is_special_stream_or_fd_alias(target) {
-            return Ok(Self::DirectDeferred {
+            return Ok(Self::DirectStream {
                 stats_label: stats_path.to_string(),
                 final_path: target.to_path_buf(),
             });
         }
-        let tmp_path = atomic_tmp_path(target);
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&tmp_path)
-        {
-            Ok(file) => Ok(Self::Staged {
+        match open_atomic_tmp_file(target) {
+            Ok((file, tmp_path)) => Ok(Self::Staged {
                 stats_label: stats_path.to_string(),
                 file,
                 staged: StagedFileTarget::AtomicTmp {
@@ -3292,13 +3554,11 @@ impl PendingStatsJson {
                 },
             }),
             Err(err) if is_readonly_parent_fallback_eligible(target, &err) => {
-                std::fs::OpenOptions::new()
-                    .write(true)
-                    .open(target)
+                let dst_file = open_existing_regular_nofollow(target)
                     .map_err(|e| map_stats_io_err(stats_path, e))?;
-                Ok(Self::DirectDeferred {
+                Ok(Self::DirectPinned {
                     stats_label: stats_path.to_string(),
-                    final_path: target.to_path_buf(),
+                    dst_file,
                 })
             }
             Err(err) => Err(map_stats_io_err(stats_path, err)),
@@ -3326,20 +3586,32 @@ impl PendingStatsJson {
                     .commit()
                     .map_err(|e| map_stats_io_err(&stats_label, e))
             }
-            Self::DirectDeferred {
+            Self::DirectPinned {
+                stats_label,
+                mut dst_file,
+            } => {
+                dst_file
+                    .set_len(0)
+                    .map_err(|e| map_stats_io_err(&stats_label, e))?;
+                std::io::Seek::seek(&mut dst_file, std::io::SeekFrom::Start(0))
+                    .map_err(|e| map_stats_io_err(&stats_label, e))?;
+                dst_file
+                    .write_all(json)
+                    .map_err(|e| map_stats_io_err(&stats_label, e))?;
+                dst_file
+                    .flush()
+                    .map_err(|e| map_stats_io_err(&stats_label, e))?;
+                sync_file_ignoring_special(&dst_file).map_err(|e| match e {
+                    VardictError::Io(io_e) => map_stats_io_err(&stats_label, io_e),
+                    other => other,
+                })
+            }
+            Self::DirectStream {
                 stats_label,
                 final_path,
             } => {
-                let mut file = if is_special_stream_or_fd_alias(&final_path) {
-                    open_special_or_fd_alias_for_write(&final_path)
-                } else {
-                    let is_reg_file = std::fs::metadata(&final_path).is_ok_and(|m| m.is_file());
-                    std::fs::OpenOptions::new()
-                        .write(true)
-                        .truncate(is_reg_file)
-                        .open(&final_path)
-                }
-                .map_err(|e| map_stats_io_err(&stats_label, e))?;
+                let mut file = open_special_or_fd_alias_for_write(&final_path)
+                    .map_err(|e| map_stats_io_err(&stats_label, e))?;
                 file.write_all(json)
                     .map_err(|e| map_stats_io_err(&stats_label, e))?;
                 file.flush()
@@ -3375,7 +3647,8 @@ pub fn run(config: &config::Config) -> Result<(), VardictError> {
         } else {
             None
         };
-        let (writer, staged_out) = open_output_writer(&effective)?;
+        let index_plan = output_index_plan(&effective);
+        let (writer, staged_out) = open_output_writer_with_plan(&effective, index_plan.as_ref())?;
         let telemetry = RunTelemetryCounters::default();
         let engine_res = run_with_engine_writer_and_telemetry(
             &effective,
@@ -3412,18 +3685,26 @@ pub fn run(config: &config::Config) -> Result<(), VardictError> {
 
         match engine_res {
             Ok(()) => {
-                let index_plan = output_index_plan(&effective);
-                let staged_idx = if index_plan.is_some() {
+                let staged_idx = if let Some(ref plan) = index_plan {
                     if let Some(out_path) = effective.output_path.as_deref().filter(|&p| p != "-") {
                         let final_vcf = Path::new(out_path);
                         let readable_vcf = match staged_out.as_ref() {
                             Some(staged) => staged.readable_path(final_vcf),
                             None => final_vcf,
                         };
+                        let preflight_dst = plan.preflight_dst.borrow_mut().take();
                         if effective.index_output {
-                            Some(stage_vcf_tabix_index(readable_vcf, final_vcf)?)
+                            Some(stage_vcf_tabix_index_with_preflight(
+                                readable_vcf,
+                                final_vcf,
+                                preflight_dst,
+                            )?)
                         } else {
-                            Some(stage_vcf_csi_index(readable_vcf, final_vcf)?)
+                            Some(stage_vcf_csi_index_with_preflight(
+                                readable_vcf,
+                                final_vcf,
+                                preflight_dst,
+                            )?)
                         }
                     } else {
                         None
@@ -3553,6 +3834,7 @@ fn run_with_writer_inner<W: EngineWriter>(
 
     // Tile regions into overlapping tiles (regions <= 1 Mbp execute untiled like
     // VarDictJava; multi-megabase intervals > 1 Mbp tile into 100 kbp windows).
+    validate_total_tiles_ceiling(&flat_regions, config.tile_size)?;
     let tile_size = config.tile_size.unwrap_or(DEFAULT_TILE_SIZE);
     let halo = 500;
     let mut tiles = Vec::new();
@@ -3602,22 +3884,30 @@ fn run_with_writer_inner<W: EngineWriter>(
                 Ok(())
             },
         )?;
-    } else {
-        for idx in multi_idxs {
-            if let (Some(reg), Some(reg_tiles)) = (flat_regions.get(idx), reg_tiles_list.get(idx)) {
-                let (steps_per_tile, final_max_rl) = scan_multi_tile_max_read_lengths(
-                    &bam_list,
-                    reg,
-                    reg_tiles,
-                    config,
-                    &chromosomes_lengths,
-                    0,
-                )?;
-                for (t, steps) in reg_tiles.iter().zip(steps_per_tile) {
-                    multi_tile_seeds.insert(multi_tile_key(t), (steps, final_max_rl));
+    } else if !multi_idxs.is_empty() {
+        crate::runner::run_with_worker_stack_for_bam(
+            &config.bam,
+            || -> Result<(), VardictError> {
+                for idx in multi_idxs {
+                    if let (Some(reg), Some(reg_tiles)) =
+                        (flat_regions.get(idx), reg_tiles_list.get(idx))
+                    {
+                        let (steps_per_tile, final_max_rl) = scan_multi_tile_max_read_lengths(
+                            &bam_list,
+                            reg,
+                            reg_tiles,
+                            config,
+                            &chromosomes_lengths,
+                            0,
+                        )?;
+                        for (t, steps) in reg_tiles.iter().zip(steps_per_tile) {
+                            multi_tile_seeds.insert(multi_tile_key(t), (steps, final_max_rl));
+                        }
+                    }
                 }
-            }
-        }
+                Ok(())
+            },
+        )?;
     }
     for reg_tiles in reg_tiles_list {
         tiles.extend(reg_tiles);
@@ -3633,17 +3923,20 @@ fn run_with_writer_inner<W: EngineWriter>(
     let config_clone = config.clone();
     let chromosomes_lengths_clone = chromosomes_lengths.clone();
 
-    // -h/--header column line (CmdParser.java:67; SimpleMode.java:33 calls
-    // printHeader() before any variant output).
-    if config.column_header {
-        writer.emit_column_header(config)?;
-    }
-
-    // Print VCF header when not in intermediate or splicing mode
-    if !config.emit_intermediate && !config.splice {
-        crate::output::vcf::print_vcf_header(&mut writer, config, &chromosomes_lengths)
-            .map_err(VardictError::Io)?;
-    }
+    // Prevalidate VCF header & contigs before tile execution so malformed `.fai`
+    // fails fast, but defer writing VCF header bytes until all tiles succeed so
+    // mid-run BAM/CRAM errors never leave a valid-looking empty VCF on stdout.
+    let vcf_contigs = if !config.emit_intermediate && !config.splice {
+        Some(
+            crate::output::vcf::prevalidate_vcf_header_contigs(config, &chromosomes_lengths)
+                .map_err(VardictError::Io)?,
+        )
+    } else {
+        if config.column_header {
+            writer.emit_column_header(config)?;
+        }
+        None
+    };
 
     enum SimpleTileOutput {
         UnSplitVarBlock(String),
@@ -3942,6 +4235,14 @@ fn run_with_writer_inner<W: EngineWriter>(
     )?;
     split_var_deduper.flush_all_pending(|line| write_output_line(&mut writer, line))?;
 
+    if let Some(ref contigs) = vcf_contigs {
+        if config.column_header {
+            writer.emit_column_header(config)?;
+        }
+        crate::output::vcf::print_vcf_header_with_contigs(&mut writer, config, contigs)
+            .map_err(VardictError::Io)?;
+    }
+
     emit_single_vcf_accumulator(vcf_acc, config, &mut writer)?;
     writer.flush().map_err(VardictError::Io)?;
 
@@ -4047,17 +4348,18 @@ fn run_amplicon<W: EngineWriter>(
         .next()
         .ok_or_else(|| VardictError::Parse("No BAM files specified".to_string()))?;
 
-    // -h/--header column line (AmpliconMode.java:39, 135-146).
-    if config.column_header {
-        writer.emit_column_header(config)?;
-    }
-
-    // Print VCF header once when not in intermediate mode (same var2vcf_valid.pl
-    // header as simple mode — amplicon rides the same writer, perl :140-145).
-    if !config.emit_intermediate {
-        crate::output::vcf::print_vcf_header(writer, config, chromosomes_lengths)
-            .map_err(VardictError::Io)?;
-    }
+    let vcf_contigs = if !config.emit_intermediate {
+        Some(
+            crate::output::vcf::prevalidate_vcf_header_contigs(config, chromosomes_lengths)
+                .map_err(VardictError::Io)?,
+        )
+    } else {
+        // -h/--header column line (AmpliconMode.java:39, 135-146).
+        if config.column_header {
+            writer.emit_column_header(config)?;
+        }
+        None
+    };
 
     let mut vcf_acc: SpillableVcfAccumulator<RawVcfCandidate> = SpillableVcfAccumulator::new();
 
@@ -4327,6 +4629,14 @@ fn run_amplicon<W: EngineWriter>(
         },
     )?;
 
+    if let Some(ref contigs) = vcf_contigs {
+        if config.column_header {
+            writer.emit_column_header(config)?;
+        }
+        crate::output::vcf::print_vcf_header_with_contigs(writer, config, contigs)
+            .map_err(VardictError::Io)?;
+    }
+
     emit_single_vcf_accumulator(vcf_acc, config, writer)?;
 
     writer.flush().map_err(VardictError::Io)?;
@@ -4387,6 +4697,7 @@ fn run_somatic<W: EngineWriter>(
 
     // Tile regions (regions <= 1 Mbp execute untiled like VarDictJava;
     // multi-megabase intervals > 1 Mbp tile into 100 kbp windows).
+    validate_total_tiles_ceiling(&flat_regions, config.tile_size)?;
     let tile_size = config.tile_size.unwrap_or(DEFAULT_TILE_SIZE);
     let halo = 500;
     let mut tiles = Vec::new();
@@ -4447,30 +4758,39 @@ fn run_somatic<W: EngineWriter>(
                 Ok(())
             },
         )?;
-    } else {
-        for idx in multi_idxs {
-            if let (Some(reg), Some(reg_tiles)) = (flat_regions.get(idx), reg_tiles_list.get(idx)) {
-                let (bam1_steps, bam1_final) = scan_multi_tile_max_read_lengths(
-                    &bam1_bams,
-                    reg,
-                    reg_tiles,
-                    config,
-                    &chromosomes_lengths,
-                    0,
-                )?;
-                let (bam2_steps, bam2_final) = scan_multi_tile_max_read_lengths(
-                    &bam2_bams,
-                    reg,
-                    reg_tiles,
-                    config,
-                    &chromosomes_lengths,
-                    bam1_final,
-                )?;
-                for ((t, s1), s2) in reg_tiles.iter().zip(bam1_steps).zip(bam2_steps) {
-                    multi_tile_seeds.insert(multi_tile_key(t), (s1, bam1_final, s2, bam2_final));
+    } else if !multi_idxs.is_empty() {
+        crate::runner::run_with_worker_stack_for_bam(
+            &config.bam,
+            || -> Result<(), VardictError> {
+                for idx in multi_idxs {
+                    if let (Some(reg), Some(reg_tiles)) =
+                        (flat_regions.get(idx), reg_tiles_list.get(idx))
+                    {
+                        let (bam1_steps, bam1_final) = scan_multi_tile_max_read_lengths(
+                            &bam1_bams,
+                            reg,
+                            reg_tiles,
+                            config,
+                            &chromosomes_lengths,
+                            0,
+                        )?;
+                        let (bam2_steps, bam2_final) = scan_multi_tile_max_read_lengths(
+                            &bam2_bams,
+                            reg,
+                            reg_tiles,
+                            config,
+                            &chromosomes_lengths,
+                            bam1_final,
+                        )?;
+                        for ((t, s1), s2) in reg_tiles.iter().zip(bam1_steps).zip(bam2_steps) {
+                            multi_tile_seeds
+                                .insert(multi_tile_key(t), (s1, bam1_final, s2, bam2_final));
+                        }
+                    }
                 }
-            }
-        }
+                Ok(())
+            },
+        )?;
     }
     for reg_tiles in reg_tiles_list {
         tiles.extend(reg_tiles);
@@ -4488,16 +4808,18 @@ fn run_somatic<W: EngineWriter>(
     let bam1_bams_for_combine = bam1_bams.clone();
     let bam2_bams_for_combine = bam2_bams.clone();
 
-    // -h/--header column line (SomaticMode.java:35, 134-150).
-    if config.column_header {
-        writer.emit_column_header(config)?;
-    }
-
-    // Paired VCF header when not in intermediate mode
-    if !config.emit_intermediate {
-        crate::output::vcf::print_paired_vcf_header(writer, config, &chromosomes_lengths)
-            .map_err(VardictError::Io)?;
-    }
+    let vcf_contigs = if !config.emit_intermediate {
+        Some(
+            crate::output::vcf::prevalidate_vcf_header_contigs(config, &chromosomes_lengths)
+                .map_err(VardictError::Io)?,
+        )
+    } else {
+        // -h/--header column line (SomaticMode.java:35, 134-150).
+        if config.column_header {
+            writer.emit_column_header(config)?;
+        }
+        None
+    };
 
     enum SomaticTileOutput {
         UnSplitVarBlock(String),
@@ -4935,6 +5257,14 @@ fn run_somatic<W: EngineWriter>(
         },
     )?;
     split_var_deduper.flush_all_pending(|line| write_output_line(writer, line))?;
+
+    if let Some(ref contigs) = vcf_contigs {
+        if config.column_header {
+            writer.emit_column_header(config)?;
+        }
+        crate::output::vcf::print_paired_vcf_header_with_contigs(writer, config, contigs)
+            .map_err(VardictError::Io)?;
+    }
 
     let mut cur_chr: Option<String> = None;
     let mut streamer = crate::output::vcf::PairedRecordStreamer::from_config(config);
@@ -8582,5 +8912,237 @@ mod tests {
             noodles::sam::alignment::record::cigar::op::Kind::Match,
         )];
         assert_eq!(record_read_end(&big_rec, i32::MAX - 10), i32::MAX);
+    }
+
+    #[test]
+    fn batch12_config_hygiene_tile_ceiling_colon_bams_and_nofollow_fd_staging() {
+        let dir = tempfile::tempdir().unwrap();
+        let micro_ref = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/micro/micro.ref.fa"
+        );
+        let micro_bam = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/micro/micro.bam"
+        );
+
+        // 1. resolve_effective_config validates tile_size, reference, and sample (preserving ';' and '=')
+        let base_cfg = crate::config::Config {
+            reference: micro_ref.to_string(),
+            bam: micro_bam.to_string(),
+            region: Some("chr1:1-50".to_string()),
+            ..Default::default()
+        };
+        assert!(resolve_effective_config(&crate::config::Config {
+            tile_size: Some(0),
+            ..base_cfg.clone()
+        })
+        .is_err());
+        assert!(resolve_effective_config(&crate::config::Config {
+            tile_size: Some(MAX_TILE_SIZE + 1),
+            ..base_cfg.clone()
+        })
+        .is_err());
+        assert!(resolve_effective_config(&crate::config::Config {
+            reference: "bad\nref.fa".to_string(),
+            ..base_cfg.clone()
+        })
+        .is_err());
+        assert!(resolve_effective_config(&crate::config::Config {
+            sample: "bad\tsample".to_string(),
+            sample_explicit: true,
+            ..base_cfg.clone()
+        })
+        .is_err());
+        assert!(resolve_effective_config(&crate::config::Config {
+            sample: "bad\x7fsample".to_string(),
+            sample_explicit: true,
+            ..base_cfg.clone()
+        })
+        .is_err());
+        // AGENTS.md §5 parity: ',', '>', ';', and '=' in sample MUST remain allowed in v1.0.x!
+        assert!(resolve_effective_config(&crate::config::Config {
+            sample: "patient1,rep2>armA".to_string(),
+            sample_explicit: true,
+            ..base_cfg.clone()
+        })
+        .is_ok());
+        assert!(resolve_effective_config(&crate::config::Config {
+            sample: "S1;K=V".to_string(),
+            sample_explicit: true,
+            ..base_cfg.clone()
+        })
+        .is_ok());
+
+        // 2. MAX_TOTAL_TILES ceiling rejects > 10_000_000 tiles upfront before allocating reg_tiles_list
+        let mut sink = Vec::new();
+        let over_tiles_res = crate::run_with_writer(
+            &crate::config::Config {
+                region: Some("chr1:1-10000001".to_string()),
+                tile_size: Some(1),
+                ..base_cfg.clone()
+            },
+            &mut sink,
+        );
+        assert!(
+            matches!(over_tiles_res, Err(VardictError::Parse(_))),
+            "exceeding MAX_TOTAL_TILES must return VardictError::Parse, got {over_tiles_res:?}"
+        );
+
+        // 3. parse_colon_bams keeps colon-containing single-BAM paths unsplit (both existing & missing)
+        let existing_colon_bam = dir.path().join("chr17:100-200.bam");
+        std::fs::write(&existing_colon_bam, b"").unwrap();
+        assert_eq!(
+            parse_colon_bams(&existing_colon_bam.to_string_lossy(), "empty").unwrap(),
+            vec![existing_colon_bam.to_string_lossy().into_owned()]
+        );
+        let missing_colon_bam = dir.path().join("missing_chr17:100-200.bam");
+        assert_eq!(
+            parse_colon_bams(&missing_colon_bam.to_string_lossy(), "empty").unwrap(),
+            vec![missing_colon_bam.to_string_lossy().into_owned()]
+        );
+        assert_eq!(
+            parse_colon_bams("cohort_a.bam:cohort_b.bam", "empty").unwrap(),
+            vec!["cohort_a.bam".to_string(), "cohort_b.bam".to_string()]
+        );
+        assert!(parse_colon_bams(":::", "empty").is_err());
+
+        // 4. O_NOFOLLOW symlink rejection AND FD-pinned symlink-swap immunity on read-only parent
+        //    for DirectTempStaged (--output), --tbi, and PendingStatsJson (--stats-json),
+        //    plus /dev/null --stats-json continuing to succeed.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+
+            let victim = dir.path().join("victim.txt");
+            std::fs::write(&victim, b"DO_NOT_OVERWRITE").unwrap();
+
+            let ro_dir = dir.path().join("ro_symlink_test");
+            std::fs::create_dir(&ro_dir).unwrap();
+            let sym_out = ro_dir.join("out.vcf.gz");
+            let sym_tbi = ro_dir.join("out.vcf.gz.tbi");
+            let sym_stats = ro_dir.join("stats.json");
+            std::os::unix::fs::symlink(&victim, &sym_out).unwrap();
+            std::os::unix::fs::symlink(&victim, &sym_tbi).unwrap();
+            std::os::unix::fs::symlink(&victim, &sym_stats).unwrap();
+
+            let real_vcf_in_ro = ro_dir.join("real_out.vcf.gz");
+            let sym_real_tbi = ro_dir.join("real_out.vcf.gz.tbi");
+            std::fs::write(&real_vcf_in_ro, b"ORIG_VCF").unwrap();
+            std::os::unix::fs::symlink(&victim, &sym_real_tbi).unwrap();
+
+            std::fs::set_permissions(&ro_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+            // 4a. Symlink --output in read-only parent must be rejected by O_NOFOLLOW
+            assert!(
+                StagedFileTarget::open(&sym_out).is_err(),
+                "symlink --output in read-only parent must be rejected"
+            );
+            // 4b. Symlink --tbi sidecar in read-only parent must be rejected by preflight O_NOFOLLOW
+            let tbi_plan = output_index_plan(&crate::config::Config {
+                output_path: Some(real_vcf_in_ro.to_string_lossy().into_owned()),
+                index_output: true,
+                ..base_cfg.clone()
+            });
+            assert!(
+                StagedFileTarget::open_with_index_preflight(&real_vcf_in_ro, tbi_plan.as_ref())
+                    .is_err(),
+                "symlink --tbi in read-only parent must be rejected"
+            );
+            // 4c. Symlink --stats-json in read-only parent must be rejected by O_NOFOLLOW
+            assert!(
+                PendingStatsJson::open(&sym_stats.to_string_lossy()).is_err(),
+                "symlink --stats-json in read-only parent must be rejected"
+            );
+            assert_eq!(std::fs::read(&victim).unwrap(), b"DO_NOT_OVERWRITE");
+
+            // 4c-bis. When SpillTempDir creation fails (e.g. read-only $TMPDIR), from_pinned_dst_file
+            //         propagates Err WITHOUT truncating pre-existing target bytes (`AR-9`).
+            let ro_tmp = dir.path().join("ro_tmpdir");
+            std::fs::create_dir(&ro_tmp).unwrap();
+            std::fs::set_permissions(&ro_tmp, std::fs::Permissions::from_mode(0o555)).unwrap();
+            let pinned_dst = open_existing_regular_nofollow(&real_vcf_in_ro).unwrap();
+            let tmp_fail = StagedFileTarget::from_pinned_dst_file_in(pinned_dst, &ro_tmp);
+            std::fs::set_permissions(&ro_tmp, std::fs::Permissions::from_mode(0o755)).unwrap();
+            assert!(
+                tmp_fail.is_err(),
+                "from_pinned_dst_file_in must fail when scratch directory cannot be created"
+            );
+            assert_eq!(
+                std::fs::read(&real_vcf_in_ro).unwrap(),
+                b"ORIG_VCF",
+                "from_pinned_dst_file must NEVER truncate pre-existing target bytes when SpillTempDir fails"
+            );
+
+            std::fs::set_permissions(&ro_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+            // 4d. Mid-run symlink swap AFTER open() in read-only parent must NOT touch victim
+            //     because commit() writes to the FD pinned at open() time with zero pathname re-opens
+            //     across --output (DirectTempStaged), --tbi (preflight_dst), and --stats-json (DirectPinned)!
+            let swap_dir = dir.path().join("ro_swap_test");
+            std::fs::create_dir(&swap_dir).unwrap();
+            let swap_out = swap_dir.join("swap.vcf.gz");
+            let swap_tbi = swap_dir.join("swap.vcf.gz.tbi");
+            let swap_stats = swap_dir.join("swap_stats.json");
+            std::fs::write(&swap_out, b"OLD_OUT").unwrap();
+            std::fs::write(&swap_tbi, b"OLD_TBI").unwrap();
+            std::fs::write(&swap_stats, b"OLD_STATS").unwrap();
+            std::fs::set_permissions(&swap_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+            let swap_plan = output_index_plan(&crate::config::Config {
+                output_path: Some(swap_out.to_string_lossy().into_owned()),
+                index_output: true,
+                ..base_cfg.clone()
+            })
+            .unwrap();
+            let (out_writer_f, staged_swap_out) =
+                StagedFileTarget::open_with_index_preflight(&swap_out, Some(&swap_plan)).unwrap();
+            let pending_swap_stats = PendingStatsJson::open(&swap_stats.to_string_lossy()).unwrap();
+
+            // Simulate mid-run attacker replacing all 3 pathname entries with symlinks to `victim`
+            std::fs::set_permissions(&swap_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::fs::remove_file(&swap_out).unwrap();
+            std::fs::remove_file(&swap_tbi).unwrap();
+            std::fs::remove_file(&swap_stats).unwrap();
+            std::os::unix::fs::symlink(&victim, &swap_out).unwrap();
+            std::os::unix::fs::symlink(&victim, &swap_tbi).unwrap();
+            std::os::unix::fs::symlink(&victim, &swap_stats).unwrap();
+            std::fs::set_permissions(&swap_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+            let mut bgzf_w = noodles::bgzf::io::Writer::new(out_writer_f);
+            std::io::Write::write_all(
+                &mut bgzf_w,
+                b"##fileformat=VCFv4.3\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\nchr1\t10\t.\tA\tG\t30\tPASS\t.\n",
+            )
+            .unwrap();
+            bgzf_w.finish().unwrap();
+
+            let readable_vcf = staged_swap_out.readable_path(&swap_out).to_path_buf();
+            let staged_swap_tbi = stage_vcf_tabix_index_with_preflight(
+                &readable_vcf,
+                &swap_out,
+                swap_plan.preflight_dst.borrow_mut().take(),
+            )
+            .unwrap();
+            staged_swap_out.commit().unwrap();
+            staged_swap_tbi.commit().unwrap();
+            pending_swap_stats.commit(b"{\"ok\":true}\n").unwrap();
+
+            assert_eq!(
+                std::fs::read(&victim).unwrap(),
+                b"DO_NOT_OVERWRITE",
+                "mid-run symlink swap must never overwrite symlink target when commit uses pinned FD"
+            );
+            std::fs::set_permissions(&swap_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+            // 4e. /dev/null --stats-json continues to work cleanly
+            let devnull_cfg = crate::config::Config {
+                output_path: Some("/dev/null".to_string()),
+                stats_json_path: Some("/dev/null".to_string()),
+                threads: 1,
+                ..base_cfg
+            };
+            crate::run(&devnull_cfg).expect("/dev/null --stats-json must succeed");
+        }
     }
 }

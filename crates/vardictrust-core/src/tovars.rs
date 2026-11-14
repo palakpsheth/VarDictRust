@@ -210,6 +210,11 @@ impl<'a> ToVarsBuilder<'a> {
         self.reference.get_base(&self.region.chr, pos)
     }
 
+    #[inline]
+    fn get_ref_base_i32(&self, pos: i32) -> Option<u8> {
+        u32::try_from(pos).ok().and_then(|pu| self.get_ref_base(pu))
+    }
+
     /// Convert VariationData into a map of position -> Vars container.
     pub fn build_aligned_variants(
         &self,
@@ -348,7 +353,9 @@ impl<'a> ToVarsBuilder<'a> {
         if var_data.non_insertion_variants.treeified() || var_data.insertion_variants.treeified() {
             log::warn!(
                 "JavaHashMap treeified bin encountered for chr {}:{}-{}; key iteration order may diverge from Java LinkedList order",
-                self.region.chr, self.region.start, self.region.end
+                crate::util::SanitizedBytes(self.region.chr.as_bytes()),
+                self.region.start,
+                self.region.end
             );
         }
 
@@ -479,7 +486,9 @@ impl<'a> ToVarsBuilder<'a> {
         {
             log::warn!(
                 "JavaHashMap treeified bin encountered for chr {}:{}-{}; key iteration order may diverge from Java LinkedList order",
-                self.region.chr, self.region.start, self.region.end
+                crate::util::SanitizedBytes(self.region.chr.as_bytes()),
+                self.region.start,
+                self.region.end
             );
         }
         aligned_variants
@@ -524,7 +533,8 @@ impl<'a> ToVarsBuilder<'a> {
         }
 
         if (var_map.sv.is_none() || self.config.deldupvar)
-            && ((position as u32) < self.region.start.0 || (position as u32) > self.region.end.0)
+            && !u32::try_from(position)
+                .is_ok_and(|pu| pu >= self.region.start.0 && pu <= self.region.end.0)
         {
             return None;
         }
@@ -561,10 +571,9 @@ impl<'a> ToVarsBuilder<'a> {
                     && var_map.map.len() == 1
                     && total_cov > 0
                 {
-                    if let (Some(sole_key), Some(ref_base)) = (
-                        var_map.map.keys().next(),
-                        self.get_ref_base(position as u32),
-                    ) {
+                    if let (Some(sole_key), Some(ref_base)) =
+                        (var_map.map.keys().next(), self.get_ref_base_i32(position))
+                    {
                         let mut buf = [0u8; 4];
                         let ref_base_str = (ref_base as char).encode_utf8(&mut buf);
                         if sole_key != "I" && sole_key != "SV" && sole_key == ref_base_str {
@@ -600,7 +609,7 @@ impl<'a> ToVarsBuilder<'a> {
         position: i32,
         site: &CompactRefSite,
     ) -> crate::variations::Vars {
-        let ref_base = self.get_ref_base(position as u32).unwrap_or(b'N');
+        let ref_base = self.get_ref_base_i32(position).unwrap_or(b'N');
         let mut buf = [0u8; 4];
         let sole_key = (ref_base as char).encode_utf8(&mut buf);
         let vref = self.build_ref_variant_from_cnt(
@@ -648,7 +657,7 @@ impl<'a> ToVarsBuilder<'a> {
             },
             _ => return false,
         };
-        if let Some(ref_base) = self.get_ref_base(position as u32) {
+        if let Some(ref_base) = self.get_ref_base_i32(position) {
             let mut buf = [0u8; 4];
             let ref_base_str = (ref_base as char).encode_utf8(&mut buf);
             return sole_key == ref_base_str;
@@ -678,19 +687,71 @@ impl<'a> ToVarsBuilder<'a> {
         if end < start || end < 1 {
             return;
         }
-        let eff_start = start.max(1);
-        let span = ((end as i64) - (eff_start as i64) + 1).clamp(0, 1 << 20) as usize;
+        let Some((min_s, max_e)) = self.reference.loaded_span_bounds(&self.region.chr) else {
+            return;
+        };
+        if u64::from(min_s) > (end.max(0) as u64) {
+            return;
+        }
+        let min_i32 = i32::try_from(min_s).unwrap_or(i32::MAX);
+        let max_i32 = i32::try_from(max_e).unwrap_or(i32::MAX);
+        let eff_start = start.max(1).max(min_i32);
+        let eff_end = end.min(max_i32);
+        if eff_end < eff_start {
+            return;
+        }
+        if (eff_end as i64) - (eff_start as i64) > crate::util::MAX_CONTIGUOUS_REF_SCAN
+            && self.reference.loaded_regions.len() > 1
+        {
+            let (subspans, span) = crate::util::merged_loaded_subspans(
+                self.reference,
+                &self.region.chr,
+                eff_start,
+                eff_end,
+            );
+            if out.capacity() == 0 {
+                out.reserve_exact(span);
+            } else {
+                out.reserve(span);
+            }
+            for (s, e) in subspans {
+                for p in s..=e {
+                    if let Some(b) = self.get_ref_base_i32(p) {
+                        if b.is_ascii() {
+                            out.push(b as char);
+                        } else {
+                            crate::util::ref_bases_into(
+                                out,
+                                self.reference,
+                                &self.region.chr,
+                                eff_start,
+                                eff_end,
+                            );
+                            return;
+                        }
+                    }
+                }
+            }
+            return;
+        }
+        let span = ((eff_end as i64) - (eff_start as i64) + 1).clamp(0, 1 << 20) as usize;
         if out.capacity() == 0 {
             out.reserve_exact(span);
         } else {
             out.reserve(span);
         }
-        for p in eff_start..=end {
-            if let Some(b) = self.get_ref_base(p as u32) {
+        for p in eff_start..=eff_end {
+            if let Some(b) = self.get_ref_base_i32(p) {
                 if b.is_ascii() {
                     out.push(b as char);
                 } else {
-                    crate::util::ref_bases_into(out, self.reference, &self.region.chr, start, end);
+                    crate::util::ref_bases_into(
+                        out,
+                        self.reference,
+                        &self.region.chr,
+                        eff_start,
+                        eff_end,
+                    );
                     return;
                 }
             }
@@ -935,7 +996,7 @@ impl<'a> ToVarsBuilder<'a> {
                 if let Some(&cov_next) = ref_coverage.get(&next_pos) {
                     if ttcov < cov_next.saturating_sub(cnt.cnt) {
                         ttcov = cov_next;
-                        if let Some(ref_base) = self.get_ref_base(next_pos as u32) {
+                        if let Some(ref_base) = self.get_ref_base_i32(next_pos) {
                             let mut buf = [0u8; 4];
                             let ref_base_str: &str = (ref_base as char).encode_utf8(&mut buf);
                             if let std::collections::hash_map::Entry::Vacant(e) =
@@ -1127,7 +1188,7 @@ impl<'a> ToVarsBuilder<'a> {
         var: &mut Vec<Variant>,
     ) -> f64 {
         let mut maxfreq = 0.0;
-        let ref_base = self.get_ref_base(position as u32).unwrap_or(b'N');
+        let ref_base = self.get_ref_base_i32(position).unwrap_or(b'N');
         let mut buf = [0u8; 4];
         let ref_base_str: &str = (ref_base as char).encode_utf8(&mut buf);
 
@@ -1203,7 +1264,7 @@ impl<'a> ToVarsBuilder<'a> {
                     .get(&next_pos)
                     .or_else(|| orig_non_ins.get(&next_pos))
                 {
-                    if let Some(ref_base_next) = self.get_ref_base(next_pos as u32) {
+                    if let Some(ref_base_next) = self.get_ref_base_i32(next_pos) {
                         let mut buf = [0u8; 4];
                         let ref_base_next_str: &str = (ref_base_next as char).encode_utf8(&mut buf);
                         if let Some(tpref) = next_non_ins.map.get(ref_base_next_str) {
@@ -1305,7 +1366,7 @@ impl<'a> ToVarsBuilder<'a> {
                         start_position = start_position.saturating_add(shift3);
                         end_position = end_position.saturating_add(shift3);
                     }
-                    let ref_base_byte = self.get_ref_base(position as u32).unwrap_or(b'N');
+                    let ref_base_byte = self.get_ref_base_i32(position).unwrap_or(b'N');
                     refallele.push(ref_base_byte as char);
                     varallele = String::with_capacity(1 + stripped_desc.len());
                     varallele.push(ref_base_byte as char);
@@ -1366,8 +1427,7 @@ impl<'a> ToVarsBuilder<'a> {
                         }
                         let base_prev = position
                             .checked_sub(1)
-                            .and_then(|p| u32::try_from(p).ok())
-                            .and_then(|p| self.get_ref_base(p))
+                            .and_then(|p| self.get_ref_base_i32(p))
                             .unwrap_or(b'N');
                         if varallele != "<DEL>" {
                             varallele.clear();
@@ -1378,7 +1438,7 @@ impl<'a> ToVarsBuilder<'a> {
                     }
 
                     if matches_some_sv_numbers(description_string) {
-                        let base_cur = self.get_ref_base(position as u32).unwrap_or(b'N');
+                        let base_cur = self.get_ref_base_i32(position).unwrap_or(b'N');
                         refallele.clear();
                         refallele.push(base_cur as char);
                     } else if i64::from(deletion_length) < i64::from(self.config.sv_min_len) {
@@ -1407,7 +1467,7 @@ impl<'a> ToVarsBuilder<'a> {
                     (msi, shift3, msint_len) =
                         find_msi_metrics(scratch1.as_bytes(), scratch2.as_bytes(), &[]);
 
-                    let base_cur = self.get_ref_base(position as u32).unwrap_or(b'N');
+                    let base_cur = self.get_ref_base_i32(position).unwrap_or(b'N');
                     refallele.push(base_cur as char);
                     varallele = description_string.clone();
                 }
@@ -1464,7 +1524,7 @@ impl<'a> ToVarsBuilder<'a> {
                     }
 
                     if varallele == "<DEL>" && !refallele.is_empty() {
-                        let ref_base = self.get_ref_base(start_position as u32).unwrap_or(b'N');
+                        let ref_base = self.get_ref_base_i32(start_position).unwrap_or(b'N');
                         refallele.clear();
                         refallele.push(ref_base as char);
                         if let Some(&cov_prev) = start_position
@@ -1608,7 +1668,7 @@ impl<'a> ToVarsBuilder<'a> {
                                 }
                             }
                             let first_char =
-                                self.get_ref_base(start_position as u32).unwrap_or(b'N') as char;
+                                self.get_ref_base_i32(start_position).unwrap_or(b'N') as char;
                             varallele = format!("{}{}", first_char, tva);
                         }
                         vref.crispr = n;
@@ -1779,7 +1839,7 @@ impl<'a> ToVarsBuilder<'a> {
         vref.end_pos = position;
         vref.hi_freq = round_half_even(vref.hi_freq, 4);
 
-        let ref_base = self.get_ref_base(position as u32).unwrap_or(b'N');
+        let ref_base = self.get_ref_base_i32(position).unwrap_or(b'N');
         let valid_base = match ref_base {
             b'M' | b'R' | b'W' | b'V' | b'H' | b'D' => b'A',
             b'S' | b'Y' | b'B' => b'C',
@@ -4145,5 +4205,150 @@ mod tests {
             let exp = single_full.get(&pos).cloned();
             assert_vars_opt_eq(&got, &exp, &format!("single DropAll pos={pos}"));
         }
+    }
+
+    #[test]
+    fn tovars_rejects_negative_positions_and_clamps_join_ref_into_to_loaded_span() {
+        let mut ref_genome = Reference::new();
+        ref_genome.region_sequences.push(b"ACGTACGTAC".to_vec());
+        ref_genome
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 1,
+                sequence_end: 10,
+            });
+        // Wide region with `end = u32::MAX` so `(-5_i32 as u32)` (`4294967291`) would have
+        // satisfied `(pos as u32) >= region.start.0 && (pos as u32) <= region.end.0` before AR-4!
+        let wide_region = Region {
+            chr: "chr1".to_string(),
+            start: crate::types::Pos1(1),
+            end: crate::types::Pos1(u32::MAX),
+            gene: "G".to_string(),
+            amplicon: None,
+        };
+        let mut chr_lengths = std::collections::HashMap::new();
+        chr_lengths.insert("chr1".to_string(), 10usize);
+        let cfg = Config::default();
+        let builder = ToVarsBuilder::new(&ref_genome, &wide_region, &chr_lengths, &cfg);
+
+        let mut vd = VariationData::default();
+        vd.ref_coverage.insert(-5, 20);
+        let mut vmap = crate::variations::VariationMap::default();
+        let mut v = crate::variations::Variation::default();
+        v.cnt = 10;
+        v.hicnt = 10;
+        v.pmean = 100.0;
+        v.qmean = 350.0;
+        v.qstd = true;
+        v.pstd = true;
+        vmap.map.insert("G".to_string(), v);
+        vd.non_insertion_variants.insert(-5, vmap);
+
+        assert!(
+            builder.build_vars_at_position(&vd, -5).is_none(),
+            "negative i32 position -5 must be rejected even when region.end == u32::MAX"
+        );
+
+        // join_ref_into over a 200 Mbp range when only 1..=10 is loaded must clamp to 1..=10
+        // in O(loaded_span) without reserving 1 MiB or looping 200,000,000 times.
+        let t0 = std::time::Instant::now();
+        let mut out = String::new();
+        builder.join_ref_into(&mut out, 1, 200_000_000);
+        assert_eq!(out, "ACGTACGTAC");
+        assert!(
+            out.capacity() <= 64,
+            "join_ref_into must reserve clamped loaded span capacity, got {}",
+            out.capacity()
+        );
+        assert!(
+            t0.elapsed() < std::time::Duration::from_millis(25),
+            "join_ref_into over 200 Mbp took {:?}",
+            t0.elapsed()
+        );
+    }
+
+    #[test]
+    fn join_ref_into_and_complex_del_skip_disjoint_200mbp_unloaded_gap() {
+        let mut ref_genome = Reference::new();
+        let seq1: Vec<u8> = b"ACGT".repeat(325); // 1..=1_300 (1,300 bp)
+        let seq2: Vec<u8> = b"TGCA".repeat(200).into_iter().chain([b'G']).collect(); // 199_999_800..=200_000_600 (801 bp)
+        ref_genome.region_sequences.push(seq1.clone());
+        ref_genome
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 1,
+                sequence_end: 1_300,
+            });
+        ref_genome.region_sequences.push(seq2.clone());
+        ref_genome
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 199_999_800,
+                sequence_end: 200_000_600,
+            });
+
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: crate::types::Pos1(1),
+            end: crate::types::Pos1(1_000),
+            gene: "G".to_string(),
+            amplicon: None,
+        };
+        let mut chr_lengths = std::collections::HashMap::new();
+        chr_lengths.insert("chr1".to_string(), 250_000_000usize);
+        let cfg = Config::default();
+        let builder = ToVarsBuilder::new(&ref_genome, &region, &chr_lengths, &cfg);
+
+        // 1. Direct `join_ref_into` across a 200 Mbp unloaded gap between two `LoadedRegion`s.
+        let mut expected = String::from_utf8(seq1).unwrap();
+        expected.push_str(std::str::from_utf8(&seq2[..201]).unwrap());
+        assert_eq!(expected.len(), 1_501);
+
+        let t0 = std::time::Instant::now();
+        let mut out = String::new();
+        builder.join_ref_into(&mut out, 1, 200_000_000);
+        let elapsed = t0.elapsed();
+
+        assert_eq!(out, expected);
+        assert!(
+            out.capacity() <= 4_096,
+            "join_ref_into across 200 Mbp unloaded gap must reserve merged loaded span, got {}",
+            out.capacity()
+        );
+        assert!(
+            elapsed < std::time::Duration::from_millis(10),
+            "join_ref_into across 200 Mbp unloaded gap must complete in < 10 ms, took {elapsed:?}"
+        );
+
+        // 2. End-to-end reachability under default CLI flags (`-L 1000 -I 50 -k 1`):
+        //    `+A#C^200000000` at position 10 invokes `tovars.rs:1524` `join_ref_into` up to
+        //    `end_position + 200_000_000` without being gated by `sv_min_len`.
+        let mut vd = VariationData::default();
+        vd.ref_coverage.insert(10, 20);
+        let mut vmap = crate::variations::VariationMap::default();
+        let mut v = crate::variations::Variation::default();
+        v.cnt = 10;
+        v.hicnt = 10;
+        v.pmean = 200.0;
+        v.qmean = 350.0;
+        v.mqmean = 600.0;
+        v.qstd = true;
+        v.pstd = true;
+        vmap.map.insert("+A#C^200000000".to_string(), v);
+        vd.non_insertion_variants.insert(10, vmap);
+
+        let t1 = std::time::Instant::now();
+        let built = builder
+            .build_vars_at_position(&vd, 10)
+            .expect("expected variant at pos 10");
+        let elapsed_e2e = t1.elapsed();
+        assert_eq!(built.variants.len(), 1);
+        assert!(
+            elapsed_e2e < std::time::Duration::from_millis(10),
+            "build_vars_at_position for +A#C^200000000 across 200 Mbp gap took {elapsed_e2e:?}"
+        );
     }
 }

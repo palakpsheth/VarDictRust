@@ -35,13 +35,18 @@ if [[ ! -d "$TESTDATA_DIR" && -d "$DATA_ROOT/$TESTDATA_DIR" ]]; then
     FASTA_DIR="$DATA_ROOT/$FASTA_DIR"
     BAM_DIR="$DATA_ROOT/$BAM_DIR"
 fi
-if [[ -z "${BINARY:-}" ]]; then
-    if [[ -n "${VARDICT_BIN:-}" && -x "${VARDICT_BIN}" ]]; then
-        BINARY="\"$VARDICT_BIN\" -th 1"
+declare -a BINARY_CMD=()
+if [[ -n "${BINARY:-}" ]]; then
+    if [[ -x "${BINARY}" ]]; then
+        BINARY_CMD=("${BINARY}")
     else
-        cargo build -q --release -p vardictrust
-        BINARY="\"$ROOT_DIR/target/release/vardictrust\" -th 1"
+        read -r -a BINARY_CMD <<< "${BINARY//\"/}"
     fi
+elif [[ -n "${VARDICT_BIN:-}" && -x "${VARDICT_BIN}" ]]; then
+    BINARY_CMD=("$VARDICT_BIN" -th 1)
+else
+    cargo build -q --release -p vardictrust
+    BINARY_CMD=("$ROOT_DIR/target/release/vardictrust" -th 1)
 fi
 
 # Auto-materialize test FASTAs from upstream CSVs if not already present
@@ -199,15 +204,18 @@ run_test() {
     local expected
     expected=$(tail -n +2 "$testfile")
 
-    # Build command
-    local cmd="$BINARY -z -c 1 -S 2 -E 3 -g 4 -G $fasta_path -b '$bam_arg' --emit-intermediate $extra_flags $tmpbed"
+    # Tokenize extra flags without eval
+    local -a extra_arr=()
+    if [[ -n "$extra_flags" ]]; then
+        read -r -a extra_arr <<< "$extra_flags"
+    fi
 
     # Run with exit code and error capture
     local tmperr
-    tmperr=$(mktemp)
+    tmperr=$(mktemp "${TMPDIR:-/tmp}/vardict_int_err.XXXXXX")
     local exit_code=0
     local actual
-    actual=$(eval $cmd 2>"$tmperr") || exit_code=$?
+    actual=$("${BINARY_CMD[@]}" -z -c 1 -S 2 -E 3 -g 4 -G "$fasta_path" -b "$bam_arg" --emit-intermediate "${extra_arr[@]}" "$tmpbed" 2>"$tmperr") || exit_code=$?
 
     # Engine crash / non-zero exit code must NEVER be masked as XFAIL
     if [[ $exit_code -ne 0 ]]; then

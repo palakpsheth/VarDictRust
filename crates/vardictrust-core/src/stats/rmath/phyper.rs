@@ -10,7 +10,11 @@ fn pdhyper(mut x: f64, nr: f64, nb: f64, n: f64) -> f64 {
     while x > 0.0 && term >= f64::EPSILON * sum {
         term *= (x * (nb - n + x)) / ((n + 1.0 - x) * (nr + 1.0 - x));
         sum += term;
+        let prev = x;
         x -= 1.0;
+        if x == prev {
+            break;
+        }
     }
 
     1.0 + sum
@@ -74,5 +78,20 @@ mod tests {
         assert!((phyper(85.0, 87.0, 105.0, 191.0, false) - 1.0).abs() < 1e-15);
         let v2 = phyper(0.0, 42.0, 87.0, 2.0, true);
         assert!((v2 - 0.45312500000000011).abs() < 1e-15);
+    }
+
+    #[test]
+    fn test_phyper_large_f64_beyond_2_pow_53_terminates_fast() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let p_lo = phyper(1e18, 3e18, 3e18, 2e18, true);
+            let p_hi = phyper(1e18, 3e18, 3e18, 2e18, false);
+            let _ = tx.send((p_lo, p_hi));
+        });
+        let (p_lo, p_hi) = rx
+            .recv_timeout(std::time::Duration::from_millis(100))
+            .expect("phyper at x >= 2^53 must terminate in 1 step without spinning");
+        assert!(p_lo.is_finite() && (0.0..=1.0).contains(&p_lo));
+        assert!(p_hi.is_finite() && (0.0..=1.0).contains(&p_hi));
     }
 }
