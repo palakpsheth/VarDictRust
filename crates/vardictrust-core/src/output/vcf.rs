@@ -24,41 +24,174 @@ fn push_vcf_rounded(buf: &mut String, fisher: bool, value: f64, digits: i32) {
     }
 }
 
-fn load_contigs_from_fai(reference_path: &str) -> Vec<(String, usize)> {
+fn validate_vcf_header_inputs(config: &Config) -> io::Result<()> {
+    if config
+        .reference
+        .as_bytes()
+        .iter()
+        .any(|&b| b < 0x20 || b == 0x7F)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "reference FASTA path (-G) must not contain ASCII control characters",
+        ));
+    }
+    if config
+        .sample
+        .as_bytes()
+        .iter()
+        .any(|&b| b < 0x20 || b == 0x7F || matches!(b, b',' | b'>'))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "sample name (-N) contains invalid control or VCF header delimiter characters",
+        ));
+    }
+    Ok(())
+}
+
+fn load_contigs_from_fai_checked(reference_path: &str) -> io::Result<Vec<(String, Option<u64>)>> {
+    use std::io::Read as _;
+
     if reference_path.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     let fai_path = crate::reference::resolve_fasta_fai_path(std::path::Path::new(reference_path));
-    if let Ok(index) = noodles::fasta::fai::fs::read(&fai_path) {
+    let mut file = match std::fs::File::open(&fai_path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            if std::fs::symlink_metadata(&fai_path).is_ok() {
+                return Err(e);
+            }
+            return Ok(Vec::new());
+        }
+        Err(e) => return Err(e),
+    };
+
+    let mut buf = Vec::new();
+    let mut chunk = [0_u8; 8 * 1024];
+    loop {
+        let n = file.read(&mut chunk)?;
+        if n == 0 {
+            break;
+        }
+        let Some(slice) = chunk.get(..n) else {
+            break;
+        };
+        if (buf.len() as u64).saturating_add(slice.len() as u64) > crate::reference::MAX_FAI_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "FASTA index '{}' exceeds maximum allowed size of {} bytes",
+                    fai_path.display(),
+                    crate::reference::MAX_FAI_BYTES
+                ),
+            ));
+        }
+        buf.extend_from_slice(slice);
+    }
+
+    let mut non_comment_lines: Vec<&[u8]> = Vec::new();
+    for raw_line in buf.split(|&b| b == b'\n') {
+        let line = raw_line.strip_suffix(b"\r").unwrap_or(raw_line);
+        let trimmed = line.trim_ascii();
+        if trimmed.is_empty() || trimmed.starts_with(b"#") {
+            continue;
+        }
+        non_comment_lines.push(line);
+    }
+    if non_comment_lines.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let has_five_col_line = non_comment_lines.iter().any(|line| {
+        line.split(|&b| b.is_ascii_whitespace())
+            .filter(|tok| !tok.is_empty())
+            .count()
+            >= 5
+    });
+
+    if has_five_col_line {
+        let index = crate::reference::read_validated_fai_index(&fai_path).map_err(|e| match e {
+            crate::types::VardictError::Io(io_err) => io_err,
+            other => io::Error::new(io::ErrorKind::InvalidData, other.to_string()),
+        })?;
         let mut contigs = Vec::with_capacity(index.as_ref().len());
         for rec in index.as_ref() {
-            if let Ok(len) = usize::try_from(rec.length()) {
-                let name = String::from_utf8_lossy(rec.name()).into_owned();
-                contigs.push((name, len));
-            }
+            let name = String::from_utf8_lossy(rec.name()).into_owned();
+            contigs.push((name, Some(rec.length())));
         }
-        if !contigs.is_empty() {
-            return contigs;
-        }
+        return Ok(contigs);
     }
-    if let Ok(content) = std::fs::read_to_string(&fai_path) {
-        let mut contigs = Vec::new();
-        for line in content.lines() {
-            if line.is_empty() {
-                continue;
-            }
-            let mut parts = line.split_whitespace();
-            if let (Some(name), Some(len_str)) = (parts.next(), parts.next()) {
-                if let Ok(len) = len_str.parse::<usize>() {
-                    contigs.push((name.to_string(), len));
-                }
-            }
+
+    let mut contigs = Vec::with_capacity(non_comment_lines.len());
+    for line in non_comment_lines {
+        let mut parts = line
+            .split(|&b| b.is_ascii_whitespace())
+            .filter(|tok| !tok.is_empty());
+        let Some(name_bytes) = parts.next() else {
+            continue;
+        };
+        if !crate::reference::is_valid_contig_name_bytes(name_bytes) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "Invalid contig name '{}' in FASTA index '{}'",
+                    String::from_utf8_lossy(name_bytes),
+                    fai_path.display()
+                ),
+            ));
         }
-        if !contigs.is_empty() {
-            return contigs;
-        }
+        let Some(len_bytes) = parts.next() else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "Missing contig length for '{}' in FASTA index '{}'",
+                    String::from_utf8_lossy(name_bytes),
+                    fai_path.display()
+                ),
+            ));
+        };
+        let len = std::str::from_utf8(len_bytes)
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "Invalid contig length for '{}' in FASTA index '{}'",
+                        String::from_utf8_lossy(name_bytes),
+                        fai_path.display()
+                    ),
+                )
+            })?;
+        contigs.push((String::from_utf8_lossy(name_bytes).into_owned(), Some(len)));
     }
-    Vec::new()
+    Ok(contigs)
+}
+
+fn load_contigs_checked(
+    reference_path: &str,
+    bam_chrom_lengths: &HashMap<String, usize>,
+) -> io::Result<Vec<(String, Option<u64>)>> {
+    let fai_contigs = load_contigs_from_fai_checked(reference_path)?;
+    if !fai_contigs.is_empty() {
+        return Ok(fai_contigs);
+    }
+
+    // Fallback: use BAM chromosomes lengths, sorted in standard chromosome order.
+    let mut contigs: Vec<(String, Option<u64>)> = Vec::with_capacity(bam_chrom_lengths.len());
+    for (k, &v) in bam_chrom_lengths {
+        if !crate::reference::is_valid_contig_name_bytes(k.as_bytes()) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Invalid contig name '{}' in BAM/CRAM header", k),
+            ));
+        }
+        contigs.push((k.clone(), Some(v as u64)));
+    }
+    contigs.sort_by(|a, b| chrom_compare(&a.0, &b.0));
+    Ok(contigs)
 }
 
 /// Load contig lengths from reference .fai index, falling back to BAM header.
@@ -67,18 +200,13 @@ pub fn load_contigs(
     reference_path: &str,
     bam_chrom_lengths: &HashMap<String, usize>,
 ) -> Vec<(String, usize)> {
-    let fai_contigs = load_contigs_from_fai(reference_path);
-    if !fai_contigs.is_empty() {
-        return fai_contigs;
+    match load_contigs_checked(reference_path, bam_chrom_lengths) {
+        Ok(contigs) => contigs
+            .into_iter()
+            .filter_map(|(name, len)| usize::try_from(len?).ok().map(|l| (name, l)))
+            .collect(),
+        Err(_) => Vec::new(),
     }
-
-    // Fallback: use BAM chromosomes lengths, sorted in standard chromosome order.
-    let mut contigs: Vec<(String, usize)> = bam_chrom_lengths
-        .iter()
-        .map(|(k, v)| (k.clone(), *v))
-        .collect();
-    contigs.sort_by(|a, b| chrom_compare(&a.0, &b.0));
-    contigs
 }
 
 /// Standard chromosome ordering for `##contig` fallback headers.
@@ -369,13 +497,18 @@ pub fn print_vcf_header<W: Write>(
     config: &Config,
     bam_chrom_lengths: &HashMap<String, usize>,
 ) -> io::Result<()> {
+    validate_vcf_header_inputs(config)?;
+    let contigs = load_contigs_checked(&config.reference, bam_chrom_lengths)?;
+
     writeln!(w, "##fileformat=VCFv4.2")?;
     writeln!(w, "##source=VarDict_v1.8.2")?;
     writeln!(w, "##reference={}", config.reference)?;
 
-    let contigs = load_contigs(&config.reference, bam_chrom_lengths);
     for (name, len) in contigs {
-        writeln!(w, "##contig=<ID={},length={}>", name, len)?;
+        match len {
+            Some(l) => writeln!(w, "##contig=<ID={},length={}>", name, l)?,
+            None => writeln!(w, "##contig=<ID={}>", name)?,
+        }
     }
 
     writeln!(w, "##INFO=<ID=SAMPLE,Number=1,Type=String,Description=\"Sample name (with whitespace translated to underscores)\">")?;
@@ -2040,13 +2173,18 @@ pub fn print_paired_vcf_header<W: Write>(
     config: &Config,
     bam_chrom_lengths: &HashMap<String, usize>,
 ) -> io::Result<()> {
+    validate_vcf_header_inputs(config)?;
+    let contigs = load_contigs_checked(&config.reference, bam_chrom_lengths)?;
+
     writeln!(w, "##fileformat=VCFv4.2")?;
     writeln!(w, "##source=VarDict_v1.8.2")?;
     writeln!(w, "##reference={}", config.reference)?;
 
-    let contigs = load_contigs(&config.reference, bam_chrom_lengths);
     for (name, len) in contigs {
-        writeln!(w, "##contig=<ID={},length={}>", name, len)?;
+        match len {
+            Some(l) => writeln!(w, "##contig=<ID={},length={}>", name, l)?,
+            None => writeln!(w, "##contig=<ID={}>", name)?,
+        }
     }
 
     // ports var2vcf_paired.pl:60-75
@@ -5635,5 +5773,130 @@ mod tests {
             "expected table-rounded AF=0.0200 >= 0.02 to emit GT=0/1, got: {}",
             rec.as_str()
         );
+    }
+
+    #[test]
+    fn vcf_header_rejects_invalid_reference_sample_and_malformed_fai_before_writing() {
+        let empty_lengths = HashMap::new();
+
+        for bad_ref in [
+            "ref.fa\n##injected=1",
+            "ref.fa\r##injected=1",
+            "ref.fa\0extra",
+            "ref.fa\x1b[31m",
+            "ref.fa\x7f",
+        ] {
+            let mut cfg = Config::default();
+            cfg.reference = bad_ref.to_string();
+            let mut b1 = Vec::new();
+            assert!(
+                print_vcf_header(&mut b1, &cfg, &empty_lengths).is_err(),
+                "expected print_vcf_header Err on reference={bad_ref:?}"
+            );
+            assert!(
+                b1.is_empty(),
+                "print_vcf_header must write 0 bytes before rejecting reference={bad_ref:?}"
+            );
+            let mut b2 = Vec::new();
+            assert!(
+                print_paired_vcf_header(&mut b2, &cfg, &empty_lengths).is_err(),
+                "expected print_paired_vcf_header Err on reference={bad_ref:?}"
+            );
+            assert!(
+                b2.is_empty(),
+                "print_paired_vcf_header must write 0 bytes before rejecting reference={bad_ref:?}"
+            );
+        }
+
+        for bad_sample in [
+            "SAMP\n##injected=1",
+            "SAMP\r##injected=1",
+            "SAMP\tEXTRA_COL",
+            "SAMP\0NUL",
+            "SAMP\x7fDEL",
+            "SAMP,INJ",
+            "SAMP>INJ",
+        ] {
+            let mut cfg = Config::default();
+            cfg.sample = bad_sample.to_string();
+            let mut b1 = Vec::new();
+            assert!(
+                print_vcf_header(&mut b1, &cfg, &empty_lengths).is_err(),
+                "expected print_vcf_header Err on sample={bad_sample:?}"
+            );
+            assert!(b1.is_empty());
+            let mut b2 = Vec::new();
+            assert!(
+                print_paired_vcf_header(&mut b2, &cfg, &empty_lengths).is_err(),
+                "expected print_paired_vcf_header Err on sample={bad_sample:?}"
+            );
+            assert!(b2.is_empty());
+        }
+
+        // Preserve `;` and `=` in `config.sample` (`INFO` `SAMPLE=` parity, AR-16).
+        let mut parity_cfg = Config::default();
+        parity_cfg.sample = "TUMOR;TAG=1|NORMAL;TAG=2".to_string();
+        let mut ok1 = Vec::new();
+        print_vcf_header(&mut ok1, &parity_cfg, &empty_lengths).unwrap();
+        assert!(String::from_utf8(ok1)
+            .unwrap()
+            .contains("\tTUMOR;TAG=1|NORMAL;TAG=2\n"));
+        let mut ok2 = Vec::new();
+        print_paired_vcf_header(&mut ok2, &parity_cfg, &empty_lengths).unwrap();
+        assert!(String::from_utf8(ok2)
+            .unwrap()
+            .contains("\tTUMOR;TAG=1\tNORMAL;TAG=2\n"));
+
+        // Malformed 5-column .fai must fail loudly without writing `##fileformat=VCFv4.2`
+        // and without falling back to the 2-column stub parser or BAM header.
+        let dir = tempfile::TempDir::new().unwrap();
+        let fa = dir.path().join("bad.fa");
+        std::fs::write(&fa, b">chr1\nACGT\n").unwrap();
+        let fai = dir.path().join("bad.fa.fai");
+        let mut fallback_lengths = HashMap::new();
+        fallback_lengths.insert("chr1".to_string(), 100usize);
+
+        for bad_fai in [
+            "chr1\t100\t6\t80\t79\n",
+            "chr1\t100\t9223372036854775807\t80\t81\n",
+            "chr1,evil\t100\t6\t80\t81\n",
+            "chrStub,evil\t12345\n",
+        ] {
+            std::fs::write(&fai, bad_fai.as_bytes()).unwrap();
+            let mut cfg = Config::default();
+            cfg.reference = fa.to_string_lossy().into_owned();
+            let mut b1 = Vec::new();
+            assert!(
+                print_vcf_header(&mut b1, &cfg, &fallback_lengths).is_err(),
+                "expected Err on malformed .fai={bad_fai:?}"
+            );
+            assert!(
+                b1.is_empty(),
+                "must write 0 bytes before .fai error for {bad_fai:?}"
+            );
+            let mut b2 = Vec::new();
+            assert!(
+                print_paired_vcf_header(&mut b2, &cfg, &fallback_lengths).is_err(),
+                "expected paired Err on malformed .fai={bad_fai:?}"
+            );
+            assert!(b2.is_empty());
+        }
+
+        // Valid 2-column stub .fai continues to work when lines have < 5 columns.
+        std::fs::write(&fai, b"chrStub\t12345\n").unwrap();
+        let mut stub_cfg = Config::default();
+        stub_cfg.reference = fa.to_string_lossy().into_owned();
+        let mut stub_out = Vec::new();
+        print_vcf_header(&mut stub_out, &stub_cfg, &fallback_lengths).unwrap();
+        assert!(String::from_utf8(stub_out)
+            .unwrap()
+            .contains("##contig=<ID=chrStub,length=12345>"));
+
+        // Invalid @SQ fallback contig names are rejected before writing any header bytes.
+        let mut bad_bam_lengths = HashMap::new();
+        bad_bam_lengths.insert("chr1>injected".to_string(), 500usize);
+        let mut sq_out = Vec::new();
+        assert!(print_vcf_header(&mut sq_out, &Config::default(), &bad_bam_lengths).is_err());
+        assert!(sq_out.is_empty());
     }
 }

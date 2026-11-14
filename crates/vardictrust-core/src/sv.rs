@@ -885,6 +885,21 @@ pub enum Side {
     Three,
 }
 
+#[inline]
+fn single_bam_paths(bam_path: &std::path::Path) -> Vec<String> {
+    let s = bam_path.to_string_lossy();
+    if s.is_empty() {
+        Vec::new()
+    } else {
+        vec![s.into_owned()]
+    }
+}
+
+#[inline]
+fn saturated_chr_len(chromosomes_lengths: &HashMap<String, usize>, chr: &str) -> u32 {
+    u32::try_from(*chromosomes_lengths.get(chr).unwrap_or(&0)).unwrap_or(u32::MAX)
+}
+
 /// Helper function to perform structural variant calling for inversions.
 /// Ports `StructuralVariantsProcessor.findINVsub`.
 pub fn find_inv_sub(
@@ -893,6 +908,31 @@ pub fn find_inv_sub(
     side: Side,
     var_data: &mut crate::variations::VariationData,
     bam_path: &std::path::Path,
+    reference: &mut Reference,
+    chr: &str,
+    config: &Config,
+    chromosomes_lengths: &HashMap<String, usize>,
+) -> Result<(), VardictError> {
+    let paths = single_bam_paths(bam_path);
+    find_inv_sub_paths(
+        svref_idx,
+        dir,
+        side,
+        var_data,
+        &paths,
+        reference,
+        chr,
+        config,
+        chromosomes_lengths,
+    )
+}
+
+fn find_inv_sub_paths(
+    svref_idx: usize,
+    dir: i32,
+    side: Side,
+    var_data: &mut crate::variations::VariationData,
+    bam_paths: &[String],
     reference: &mut Reference,
     chr: &str,
     config: &Config,
@@ -974,8 +1014,8 @@ pub fn find_inv_sub(
                 amplicon: None,
             };
             get_reference(&mod_region, 500, chromosomes_lengths, config, reference)?;
-            partial_pipeline(
-                bam_path,
+            partial_pipeline_paths(
+                bam_paths,
                 var_data,
                 reference,
                 chr,
@@ -1277,18 +1317,24 @@ pub fn find_inv_sub(
                 scv_live.used = true;
             }
 
-            let bams_vec: Vec<String> = bam_path
-                .to_string_lossy()
-                .split(':')
-                .filter(|s| !s.is_empty())
-                .map(|s| s.to_string())
-                .collect();
-            let bams_opt = if bams_vec.is_empty() {
+            let filtered_owned: Vec<String>;
+            let bams_opt: Option<&[String]> = if bam_paths.is_empty() {
                 None
+            } else if bam_paths.iter().all(|s| !s.is_empty()) {
+                Some(bam_paths)
             } else {
-                Some(&bams_vec[..])
+                filtered_owned = bam_paths
+                    .iter()
+                    .filter(|s| !s.is_empty())
+                    .cloned()
+                    .collect();
+                if filtered_owned.is_empty() {
+                    None
+                } else {
+                    Some(&filtered_owned[..])
+                }
             };
-            let chr_len = *chromosomes_lengths.get(chr).unwrap_or(&0) as u32;
+            let chr_len = saturated_chr_len(chromosomes_lengths, chr);
 
             crate::realign::realigndel(
                 bams_opt,
@@ -1354,45 +1400,64 @@ pub fn find_inv(
     config: &Config,
     chromosomes_lengths: &HashMap<String, usize>,
 ) -> Result<(), VardictError> {
-    find_inv_sub(
+    let paths = single_bam_paths(bam_path);
+    find_inv_paths(
+        var_data,
+        &paths,
+        reference,
+        chr,
+        config,
+        chromosomes_lengths,
+    )
+}
+
+fn find_inv_paths(
+    var_data: &mut crate::variations::VariationData,
+    bam_paths: &[String],
+    reference: &mut Reference,
+    chr: &str,
+    config: &Config,
+    chromosomes_lengths: &HashMap<String, usize>,
+) -> Result<(), VardictError> {
+    find_inv_sub_paths(
         0,
         1,
         Side::Five,
         var_data,
-        bam_path,
+        bam_paths,
         reference,
         chr,
         config,
         chromosomes_lengths,
     )?;
-    find_inv_sub(
+    find_inv_sub_paths(
         1,
         -1,
         Side::Five,
         var_data,
-        bam_path,
+        bam_paths,
         reference,
         chr,
         config,
         chromosomes_lengths,
     )?;
-    find_inv_sub(
+    find_inv_sub_paths(
         2,
         1,
         Side::Three,
         var_data,
-        bam_path,
+        bam_paths,
         reference,
         chr,
         config,
         chromosomes_lengths,
     )?;
-    find_inv_sub(
+    find_inv_sub_paths(
         3,
         -1,
         Side::Three,
         var_data,
-        bam_path,
+        bam_paths,
         reference,
         chr,
         config,
@@ -1406,6 +1471,25 @@ pub fn find_inv(
 pub fn find_del(
     var_data: &mut crate::variations::VariationData,
     bam_path: &std::path::Path,
+    reference: &mut Reference,
+    chr: &str,
+    config: &Config,
+    chromosomes_lengths: &HashMap<String, usize>,
+) -> Result<(), VardictError> {
+    let paths = single_bam_paths(bam_path);
+    find_del_paths(
+        var_data,
+        &paths,
+        reference,
+        chr,
+        config,
+        chromosomes_lengths,
+    )
+}
+
+fn find_del_paths(
+    var_data: &mut crate::variations::VariationData,
+    bam_paths: &[String],
     reference: &mut Reference,
     chr: &str,
     config: &Config,
@@ -1474,8 +1558,8 @@ pub fn find_del(
                     amplicon: None,
                 };
                 get_reference(&mod_region, 300, chromosomes_lengths, config, reference)?;
-                partial_pipeline(
-                    bam_path,
+                partial_pipeline_paths(
+                    bam_paths,
                     var_data,
                     reference,
                     chr,
@@ -1795,8 +1879,8 @@ pub fn find_del(
                     amplicon: None,
                 };
                 get_reference(&mod_region, 300, chromosomes_lengths, config, reference)?;
-                partial_pipeline(
-                    bam_path,
+                partial_pipeline_paths(
+                    bam_paths,
                     var_data,
                     reference,
                     chr,
@@ -3132,11 +3216,30 @@ pub fn find_inv_disc(
 
 /// Find duplication structural variants from discordant pairs only.
 /// Ports `StructuralVariantsProcessor.findDUPdisc`.
-// Java-faithful `!(a > b)` negated partial-ord comparisons — keep as-is.
-#[allow(clippy::neg_cmp_op_on_partial_ord)]
 pub fn find_dup_disc(
     var_data: &mut crate::variations::VariationData,
     bam_path: &std::path::Path,
+    reference: &mut Reference,
+    chr: &str,
+    config: &Config,
+    chromosomes_lengths: &HashMap<String, usize>,
+) -> Result<(), VardictError> {
+    let paths = single_bam_paths(bam_path);
+    find_dup_disc_paths(
+        var_data,
+        &paths,
+        reference,
+        chr,
+        config,
+        chromosomes_lengths,
+    )
+}
+
+// Java-faithful `!(a > b)` negated partial-ord comparisons — keep as-is.
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
+fn find_dup_disc_paths(
+    var_data: &mut crate::variations::VariationData,
+    bam_paths: &[String],
     reference: &mut Reference,
     chr: &str,
     config: &Config,
@@ -3192,8 +3295,8 @@ pub fn find_dup_disc(
                 };
                 get_reference(&mod_region, 300, chromosomes_lengths, config, reference)?;
             }
-            partial_pipeline(
-                bam_path,
+            partial_pipeline_paths(
+                bam_paths,
                 var_data,
                 reference,
                 chr,
@@ -3400,8 +3503,8 @@ pub fn find_dup_disc(
                 };
                 get_reference(&mod_region, 300, chromosomes_lengths, config, reference)?;
             }
-            partial_pipeline(
-                bam_path,
+            partial_pipeline_paths(
+                bam_paths,
                 var_data,
                 reference,
                 chr,
@@ -3597,6 +3700,30 @@ pub fn find_all_sv(
     config: &Config,
     chromosomes_lengths: &HashMap<String, usize>,
 ) -> Result<(), VardictError> {
+    let paths = single_bam_paths(bam_path);
+    find_all_sv_paths(
+        var_data,
+        &paths,
+        reference,
+        chr,
+        chr_len,
+        pileup_region,
+        config,
+        chromosomes_lengths,
+    )
+}
+
+/// Colon-safe multi-BAM entry point for structural variant calling (`SEC-09b`).
+pub fn find_all_sv_paths(
+    var_data: &mut crate::variations::VariationData,
+    bam_paths: &[String],
+    reference: &mut Reference,
+    chr: &str,
+    _chr_len: u32,
+    pileup_region: &crate::regions::Region,
+    config: &Config,
+    chromosomes_lengths: &HashMap<String, usize>,
+) -> Result<(), VardictError> {
     if config.no_sv {
         return Ok(());
     }
@@ -3605,9 +3732,9 @@ pub fn find_all_sv(
     if verbose_log(config) {
         crate::verbose_eprintln!("Start Structural Variants: DEL\n");
     }
-    find_del(
+    find_del_paths(
         var_data,
-        bam_path,
+        bam_paths,
         reference,
         chr,
         config,
@@ -3617,9 +3744,9 @@ pub fn find_all_sv(
     if verbose_log(config) {
         crate::verbose_eprintln!("Start Structural Variants: INV\n");
     }
-    find_inv(
+    find_inv_paths(
         var_data,
-        bam_path,
+        bam_paths,
         reference,
         chr,
         config,
@@ -3652,9 +3779,9 @@ pub fn find_all_sv(
     if verbose_log(config) {
         crate::verbose_eprintln!("Start Structural Variants: DUP discordant pairs only\n");
     }
-    find_dup_disc(
+    find_dup_disc_paths(
         var_data,
-        bam_path,
+        bam_paths,
         reference,
         chr,
         config,
@@ -3679,6 +3806,29 @@ pub fn partial_pipeline(
     end: i32,
     config: &Config,
     chromosomes_lengths: &HashMap<String, usize>,
+) -> Result<(), VardictError> {
+    let paths = single_bam_paths(bam_path);
+    partial_pipeline_paths(
+        &paths,
+        var_data,
+        reference,
+        chr,
+        start,
+        end,
+        config,
+        chromosomes_lengths,
+    )
+}
+
+fn partial_pipeline_paths(
+    bam_paths: &[String],
+    var_data: &mut crate::variations::VariationData,
+    reference: &mut Reference,
+    chr: &str,
+    start: i32,
+    end: i32,
+    config: &Config,
+    _chromosomes_lengths: &HashMap<String, usize>,
 ) -> Result<(), VardictError> {
     crate::count!(SvPartialPipeline);
     // Query BAM records in the modified region
@@ -3738,11 +3888,10 @@ pub fn partial_pipeline(
         parser.splice_count = std::mem::take(&mut var_data.splice_count);
 
         let run_res: Result<(), VardictError> = (|| {
-            let bam_str = bam_path.to_string_lossy();
-            let mut feeds = Vec::with_capacity(2);
-            for single_bam in bam_str.split(':').filter(|s| !s.is_empty()) {
+            let mut feeds = Vec::with_capacity(bam_paths.len());
+            for single_bam in bam_paths.iter().filter(|s| !s.is_empty()) {
                 feeds.push(crate::bam::query_region_iter(
-                    std::path::Path::new(single_bam),
+                    std::path::Path::new(single_bam.as_str()),
                     chr,
                     query_start,
                     query_end,
@@ -5584,5 +5733,159 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn find_all_sv_paths_preserves_colon_in_bam_filename_and_saturates_chr_len() {
+        use noodles::bam;
+        use noodles::core::Position;
+        use noodles::csi::binning_index::index::reference_sequence::bin::Chunk;
+        use noodles::csi::binning_index::index::reference_sequence::index::LinearIndex;
+        use noodles::csi::binning_index::Indexer;
+        use noodles::sam;
+        use noodles::sam::alignment::io::Write as _;
+        use noodles::sam::alignment::record::cigar::op::Kind;
+        use noodles::sam::alignment::record::cigar::Op;
+        use noodles::sam::alignment::record::data::field::Tag;
+        use noodles::sam::alignment::record_buf::data::field::Value as BufValue;
+        use noodles::sam::alignment::record_buf::{
+            Cigar, Data, QualityScores, RecordBuf, Sequence,
+        };
+        use std::num::NonZeroUsize;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let chr = "chr1";
+
+        // 1. Write 200 bp FASTA + .fai so `find_dup_disc` can dynamically load mate reference.
+        let fasta_path = dir.path().join("ref.fa");
+        let fai_path = dir.path().join("ref.fa.fai");
+        let ref_seq = b"A".repeat(200);
+        std::fs::write(
+            &fasta_path,
+            format!(">{chr}\n{}\n", String::from_utf8_lossy(&ref_seq)),
+        )
+        .unwrap();
+        std::fs::write(&fai_path, format!("{chr}\t200\t6\t200\t201\n")).unwrap();
+
+        // 2. Write indexed BAM + .bai whose filename contains literal `:` characters.
+        let bam_path = dir.path().join("colon:sample:tumor.bam");
+        let bai_path = dir.path().join("colon:sample:tumor.bam.bai");
+        {
+            let header = sam::Header::builder()
+                .add_reference_sequence(
+                    chr,
+                    sam::header::record::value::Map::<
+                        sam::header::record::value::map::ReferenceSequence,
+                    >::new(NonZeroUsize::new(200).unwrap()),
+                )
+                .build();
+            let mut writer = bam::io::Writer::new(std::fs::File::create(&bam_path).unwrap());
+            writer.write_header(&header).unwrap();
+
+            let cigar: Cigar = [Op::new(Kind::Match, 20)].into_iter().collect();
+            let data: Data = [(Tag::EDIT_DISTANCE, BufValue::from(1i32))]
+                .into_iter()
+                .collect();
+            let mut seq = vec![b'A'; 20];
+            seq[5] = b'C'; // 1-based pos 125 when alignment_start = 120
+            let rec = RecordBuf::builder()
+                .set_name("mate_colon_1")
+                .set_flags(sam::alignment::record::Flags::empty())
+                .set_reference_sequence_id(0)
+                .set_alignment_start(Position::try_from(120usize).unwrap())
+                .set_mapping_quality(sam::alignment::record::MappingQuality::try_from(60).unwrap())
+                .set_cigar(cigar)
+                .set_sequence(Sequence::from(seq))
+                .set_quality_scores(QualityScores::from(vec![35u8; 20]))
+                .set_data(data)
+                .build();
+
+            let start_vp = writer.get_ref().virtual_position();
+            writer.write_alignment_record(&header, &rec).unwrap();
+            let end_vp = writer.get_ref().virtual_position();
+            writer.try_finish().unwrap();
+
+            let mut indexer = Indexer::<LinearIndex>::new(14, 5).unwrap();
+            indexer
+                .add_record(
+                    Some((
+                        0,
+                        Position::try_from(120usize).unwrap(),
+                        Position::try_from(139usize).unwrap(),
+                        true,
+                    )),
+                    Chunk::new(start_vp, end_vp),
+                )
+                .unwrap();
+            bam::bai::io::Writer::new(std::fs::File::create(&bai_path).unwrap())
+                .write_index(&indexer.build(1))
+                .unwrap();
+        }
+
+        // Only load 1..=60 initially so `find_dup_disc` must run `partial_pipeline` on 120..=150.
+        let mut reference = Reference::new();
+        reference
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: chr.to_string(),
+                sequence_start: 1,
+                sequence_end: 60,
+            });
+        reference.region_sequences.push(vec![b'A'; 60]);
+        reference
+            .reference_sequences
+            .insert(chr.to_string(), vec![b'A'; 60]);
+
+        let mut var_data = crate::variations::VariationData::default();
+        var_data.max_read_length = 50;
+        let mut dup = Sclip::default();
+        dup.start = 10;
+        dup.end = 30;
+        dup.mstart = 120;
+        dup.mend = 150;
+        dup.variation.cnt = 10;
+        dup.variation.mqmean = 600.0;
+        dup.variation.qmean = 350.0;
+        dup.variation.pmean = 100.0;
+        var_data.sv_structures.svfdup.push(dup);
+
+        let mut config = Config::default();
+        config.min_reads = 2;
+        config.reference = fasta_path.to_string_lossy().into_owned();
+
+        let mut chr_lengths = HashMap::new();
+        chr_lengths.insert(chr.to_string(), 200usize);
+        let pileup_region = crate::regions::Region {
+            chr: chr.to_string(),
+            start: Pos1(1),
+            end: Pos1(60),
+            gene: String::new(),
+            amplicon: None,
+        };
+
+        let bam_paths = vec![bam_path.to_string_lossy().into_owned()];
+        find_all_sv_paths(
+            &mut var_data,
+            &bam_paths,
+            &mut reference,
+            chr,
+            200,
+            &pileup_region,
+            &config,
+            &chr_lengths,
+        )
+        .expect("find_all_sv_paths must open BAM filenames containing ':' without splitting");
+
+        assert!(
+            var_data.non_insertion_variants.contains_key(&125),
+            "mate-window partial_pipeline must have read colon-named BAM and planted SNV at 125"
+        );
+
+        // Also verify `saturated_chr_len` saturates >4 GiB `usize` lengths to `u32::MAX`
+        // instead of wrapping via `as u32`.
+        let mut huge_lens = HashMap::new();
+        huge_lens.insert(chr.to_string(), (u32::MAX as usize).saturating_add(500));
+        assert_eq!(saturated_chr_len(&huge_lens, chr), u32::MAX);
+        assert_eq!(saturated_chr_len(&huge_lens, "missing_chr"), 0);
     }
 }

@@ -1071,7 +1071,7 @@ impl<'a> CigarModifier<'a> {
                                 if let Some(sequence) = verbose_seq {
                                     crate::verbose_eprintln!(
                                         "{} at 5' is a chimeric at {} by SEED {}",
-                                        String::from_utf8_lossy(&sequence),
+                                        crate::util::SanitizedBytes(&sequence),
                                         this.position,
                                         SEED_2
                                     );
@@ -1112,7 +1112,7 @@ impl<'a> CigarModifier<'a> {
                                     if let Some(sequence) = verbose_seq {
                                         crate::verbose_eprintln!(
                                             "{} at 3' is a chimeric at {} by SEED {}",
-                                            String::from_utf8_lossy(&sequence),
+                                            crate::util::SanitizedBytes(&sequence),
                                             this.position,
                                             SEED_2
                                         );
@@ -1139,7 +1139,7 @@ impl<'a> CigarModifier<'a> {
             if iter_count > max_iter {
                 log::warn!(
                     "Infinite loop check triggered in modify_cigar! CIGAR: {}",
-                    this.cigar_str
+                    crate::util::SanitizedBytes(this.cigar_str.as_bytes())
                 );
                 break;
             }

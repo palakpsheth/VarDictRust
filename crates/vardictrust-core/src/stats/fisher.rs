@@ -2,6 +2,14 @@
 
 use crate::types::round_half_even;
 
+/// Maximum support length (`16,777,216` points = `128 MiB` per `Vec<f64>`) evaluated via
+/// the precomputed dense `logdc` path (`AR-11`). Tables with `support_len <= 16_777_216`
+/// and `m + n <= i32::MAX` execute the untouched dense path for 100% bit-exact parity;
+/// ultra-high-depth tables above this threshold evaluate on the fly over the unimodal
+/// active window `[w_lo, w_hi]` where `ln P(j) - ln P(mode) >= -750.0` (`exp(-750) == 0.0`).
+const MAX_DENSE_FISHER_SUPPORT: usize = 16_777_216;
+const UNIMODAL_LOG_CUTOFF: f64 = -750.0;
+
 /// Computes Fisher's Exact Test p-values and conditional MLE odds ratios
 /// exactly matching the Java reference codebase.
 #[derive(Debug, Clone)]
@@ -12,6 +20,13 @@ pub struct FisherExact {
     x: i32,
     lo: i32,
     hi: i32,
+    m64: i64,
+    n64: i64,
+    k64: i64,
+    lo64: i64,
+    hi64: i64,
+    use_unimodal: bool,
+    log_p3: f64,
     logdc: Vec<f64>,
     p_value_less: f64,
     p_value_greater: f64,
@@ -57,7 +72,29 @@ impl FisherExact {
         let lo = std::cmp::max(0, k.saturating_sub(n));
         let hi = std::cmp::min(k, m);
 
-        if ref_fwd >= 0 && ref_rev >= 0 && alt_fwd >= 0 && alt_rev >= 0 && lo == hi && x == lo {
+        let m64 = i64::from(ref_fwd) + i64::from(ref_rev);
+        let n64 = i64::from(alt_fwd) + i64::from(alt_rev);
+        let k64 = i64::from(ref_fwd) + i64::from(alt_fwd);
+        let lo64 = std::cmp::max(0, k64 - n64);
+        let hi64 = std::cmp::min(k64, m64);
+        let support_len64 = if hi64 < lo64 {
+            0
+        } else {
+            usize::try_from(hi64 - lo64 + 1).unwrap_or(usize::MAX)
+        };
+        let fits_dense_i32 = m64 <= i64::from(i32::MAX)
+            && n64 <= i64::from(i32::MAX)
+            && k64 <= i64::from(i32::MAX)
+            && (m64 + n64) <= i64::from(i32::MAX);
+        let use_unimodal = !fits_dense_i32 || support_len64 > MAX_DENSE_FISHER_SUPPORT;
+
+        if ref_fwd >= 0
+            && ref_rev >= 0
+            && alt_fwd >= 0
+            && alt_rev >= 0
+            && lo64 == hi64
+            && i64::from(x) == lo64
+        {
             return Self {
                 m,
                 n,
@@ -65,6 +102,13 @@ impl FisherExact {
                 x,
                 lo,
                 hi,
+                m64,
+                n64,
+                k64,
+                lo64,
+                hi64,
+                use_unimodal,
+                log_p3: 0.0,
                 logdc: Vec::new(),
                 p_value_less: 1.0,
                 p_value_greater: 1.0,
@@ -74,6 +118,12 @@ impl FisherExact {
             };
         }
 
+        let log_p3 = if use_unimodal {
+            compute_log_p3_i64(m64, n64, k64, java_fisher)
+        } else {
+            0.0
+        };
+
         let mut fisher = FisherExact {
             m,
             n,
@@ -81,6 +131,13 @@ impl FisherExact {
             x,
             lo,
             hi,
+            m64,
+            n64,
+            k64,
+            lo64,
+            hi64,
+            use_unimodal,
+            log_p3,
             logdc: Vec::new(),
             p_value_less: 0.0,
             p_value_greater: 0.0,
@@ -89,8 +146,12 @@ impl FisherExact {
             java_fisher,
         };
 
-        fisher.logdc = fisher.logdc_dhyper(m, n, k);
-        fisher.calculate_p_value();
+        if use_unimodal {
+            fisher.calculate_p_value_unimodal();
+        } else {
+            fisher.logdc = fisher.logdc_dhyper(m, n, k);
+            fisher.calculate_p_value();
+        }
         fisher
     }
 
@@ -145,10 +206,15 @@ impl FisherExact {
     /// Determine the MLE for ncp by solving E(X) = x, where the expectation is with respect to H.
     fn mle(&self, x: f64) -> f64 {
         let eps = f64::EPSILON;
-        if x == self.lo as f64 {
+        let (lo_f, hi_f) = if self.use_unimodal {
+            (self.lo64 as f64, self.hi64 as f64)
+        } else {
+            (self.lo as f64, self.hi as f64)
+        };
+        if x == lo_f {
             return 0.0;
         }
-        if x == self.hi as f64 {
+        if x == hi_f {
             return f64::INFINITY;
         }
         // Function-local per-thread scratch, passed by `&mut` into every
@@ -156,7 +222,11 @@ impl FisherExact {
         // Never shared across rayon workers; each call owns its buffer, so no
         // cross-thread aliasing is possible. MLE tolerance `eps.powf(0.25)`
         // is verbatim.
-        let mut scratch = Vec::with_capacity(self.support_len());
+        let mut scratch = if self.use_unimodal {
+            Vec::new()
+        } else {
+            Vec::with_capacity(self.support_len())
+        };
         let mu = if x == self.x as f64 && !self.mu_at_1.is_nan() {
             self.mu_at_1
         } else {
@@ -180,6 +250,25 @@ impl FisherExact {
     /// `java_stream_sum` vs `f80_sum` split as before, so results are
     /// element-for-element identical to the previous allocating version.
     pub(crate) fn mnhyper_with(&self, ncp: f64, scratch: &mut Vec<f64>) -> f64 {
+        if self.use_unimodal {
+            if ncp == 0.0 {
+                return self.lo64 as f64;
+            }
+            if ncp.is_infinite() {
+                return self.hi64 as f64;
+            }
+            let mut left_scratch = Vec::new();
+            let w_lo = self.dnhyper_window_into(ncp, scratch, &mut left_scratch);
+            for (i, prob) in scratch.iter_mut().enumerate() {
+                let supp = (w_lo + i as i64) as f64;
+                *prob *= supp;
+            }
+            return if self.java_fisher {
+                java_stream_sum(scratch)
+            } else {
+                crate::stats::f80::f80_sum(scratch)
+            };
+        }
         if ncp == 0.0 {
             return self.lo as f64;
         }
@@ -338,6 +427,13 @@ impl FisherExact {
     }
 
     fn pnhyper(&self, q: i32, upper_tail: bool) -> f64 {
+        if self.use_unimodal {
+            let mut density = Vec::new();
+            let mut left_scratch = Vec::new();
+            let w_lo = self.dnhyper_window_into(1.0, &mut density, &mut left_scratch);
+            let w_hi = w_lo + (density.len() as i64) - 1;
+            return self.pnhyper_unimodal(i64::from(q), upper_tail, w_lo, w_hi);
+        }
         if i64::from(self.m) + i64::from(self.n) == 0 {
             return 1.0;
         }
@@ -396,6 +492,511 @@ impl FisherExact {
                 self.m as f64,
                 self.n as f64,
                 self.k as f64,
+                true,
+            )
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct HyperLogConsts {
+    pop64: i64,
+    mf: f64,
+    nf: f64,
+    mp: f64,
+    mq: f64,
+    np: f64,
+    nq: f64,
+    p: f64,
+    q: f64,
+    stirl_m: f64,
+    stirl_n: f64,
+}
+
+impl FisherExact {
+    #[inline]
+    fn hyper_log_consts(&self) -> HyperLogConsts {
+        let pop64 = self.m64 + self.n64;
+        if pop64 <= 0 {
+            return HyperLogConsts {
+                pop64,
+                mf: 0.0,
+                nf: 0.0,
+                mp: 0.0,
+                mq: 0.0,
+                np: 0.0,
+                nq: 0.0,
+                p: 0.0,
+                q: 0.0,
+                stirl_m: 0.0,
+                stirl_n: 0.0,
+            };
+        }
+        let pop = pop64 as f64;
+        let mf = self.m64 as f64;
+        let nf = self.n64 as f64;
+        let p = (self.k64 as f64) / pop;
+        let q = ((pop64 - self.k64) as f64) / pop;
+        let (stirl_m, stirl_n) = if self.java_fisher {
+            (cm3_stirling_error(mf), cm3_stirling_error(nf))
+        } else {
+            (
+                crate::stats::rmath::stirlerr::stirlerr(mf),
+                crate::stats::rmath::stirlerr::stirlerr(nf),
+            )
+        };
+        HyperLogConsts {
+            pop64,
+            mf,
+            nf,
+            mp: mf * p,
+            mq: mf * q,
+            np: nf * p,
+            nq: nf * q,
+            p,
+            q,
+            stirl_m,
+            stirl_n,
+        }
+    }
+
+    #[inline]
+    fn raw_log_hyper_i64_fast(&self, j: i64, c: &HyperLogConsts) -> f64 {
+        if j < self.lo64 || j > self.hi64 {
+            return f64::NEG_INFINITY;
+        }
+        if c.pop64 <= 0 {
+            return 0.0;
+        }
+        let kj = self.k64 - j;
+        if self.java_fisher {
+            if j > 0 && j < self.m64 && kj > 0 && kj < self.n64 {
+                let jf = j as f64;
+                let mjf = (self.m64 - j) as f64;
+                let kjf = kj as f64;
+                let nkjf = (self.n64 - kj) as f64;
+                let ret = (c.stirl_m
+                    - cm3_stirling_error(jf)
+                    - cm3_stirling_error(mjf)
+                    - cm3_deviance_part(jf, c.mp)
+                    - cm3_deviance_part(mjf, c.mq))
+                    + (c.stirl_n
+                        - cm3_stirling_error(kjf)
+                        - cm3_stirling_error(nkjf)
+                        - cm3_deviance_part(kjf, c.np)
+                        - cm3_deviance_part(nkjf, c.nq));
+                let prod = (std::f64::consts::TAU * jf / c.mf)
+                    * mjf
+                    * (std::f64::consts::TAU * kjf / c.nf)
+                    * nkjf;
+                return -0.5 * prod.ln() + ret - self.log_p3;
+            }
+            let p1 = cm3_log_binomial_probability_i64_stirl(j, self.m64, c.p, c.q, c.stirl_m);
+            let p2 = cm3_log_binomial_probability_i64_stirl(kj, self.n64, c.p, c.q, c.stirl_n);
+            p1 + p2 - self.log_p3
+        } else if self.k64 == 0 {
+            if j == 0 {
+                0.0
+            } else {
+                f64::NEG_INFINITY
+            }
+        } else if j > 0 && j < self.m64 && kj > 0 && kj < self.n64 && c.p > 0.0 && c.q > 0.0 {
+            let jf = j as f64;
+            let mjf = (self.m64 - j) as f64;
+            let kjf = kj as f64;
+            let nkjf = (self.n64 - kj) as f64;
+            let lc = (c.stirl_m
+                - crate::stats::rmath::stirlerr::stirlerr(jf)
+                - crate::stats::rmath::stirlerr::stirlerr(mjf)
+                - crate::stats::rmath::bd0::bd0(jf, c.mp)
+                - crate::stats::rmath::bd0::bd0(mjf, c.mq))
+                + (c.stirl_n
+                    - crate::stats::rmath::stirlerr::stirlerr(kjf)
+                    - crate::stats::rmath::stirlerr::stirlerr(nkjf)
+                    - crate::stats::rmath::bd0::bd0(kjf, c.np)
+                    - crate::stats::rmath::bd0::bd0(nkjf, c.nq));
+            let prod = (std::f64::consts::TAU * jf / c.mf)
+                * mjf
+                * (std::f64::consts::TAU * kjf / c.nf)
+                * nkjf;
+            lc - 0.5 * prod.ln() - self.log_p3
+        } else {
+            let p1 = crate::stats::rmath::dbinom_raw::dbinom_raw(j as f64, c.mf, c.p, c.q, true);
+            let p2 = crate::stats::rmath::dbinom_raw::dbinom_raw(kj as f64, c.nf, c.p, c.q, true);
+            p1 + p2 - self.log_p3
+        }
+    }
+
+    #[inline]
+    fn raw_log_hyper_i64(&self, j: i64) -> f64 {
+        let c = self.hyper_log_consts();
+        self.raw_log_hyper_i64_fast(j, &c)
+    }
+
+    #[inline]
+    fn logdc_from_raw(&self, mut value: f64) -> f64 {
+        if self.m64 + self.n64 == 0 {
+            return 0.0;
+        }
+        if value.is_nan() {
+            value = 0.0;
+        }
+        if self.java_fisher {
+            value = round_half_even(value, 7);
+        }
+        value
+    }
+
+    #[inline]
+    fn logdc_at_i64(&self, j: i64) -> f64 {
+        if self.m64 + self.n64 == 0 {
+            return 0.0;
+        }
+        self.logdc_from_raw(self.raw_log_hyper_i64(j))
+    }
+
+    fn noncentral_mode_i64(&self, ncp: f64) -> i64 {
+        if self.lo64 >= self.hi64 || ncp <= 0.0 {
+            return self.lo64;
+        }
+        if !ncp.is_finite() {
+            return self.hi64;
+        }
+        let mf = self.m64 as f64;
+        let nf = self.n64 as f64;
+        let kf = self.k64 as f64;
+        let j_star = if ncp <= 1.0 {
+            let a1 = 1.0 - ncp;
+            let b1 = ncp * (mf + kf + 2.0) + (nf - kf);
+            let c1 = ncp * (mf + 1.0) * (kf + 1.0);
+            let disc = (b1 * b1 + 4.0 * a1 * c1).max(0.0).sqrt();
+            let denom = b1 + disc;
+            if denom > 0.0 {
+                (2.0 * c1) / denom
+            } else {
+                self.lo64 as f64
+            }
+        } else {
+            let eta = 1.0 / ncp;
+            let hf = self.hi64 as f64;
+            let mr = (mf + 1.0) - hf;
+            let kr = (kf + 1.0) - hf;
+            let nr = nf - kf + hf;
+            let c2 = eta * hf * nr - mr * kr;
+            if c2 <= 0.0 {
+                hf
+            } else {
+                let a2 = 1.0 - eta;
+                let b2 = mr + kr + eta * (hf + nr);
+                let disc = (b2 * b2 + 4.0 * a2 * c2).max(0.0).sqrt();
+                let denom = b2 + disc;
+                if denom > 0.0 {
+                    hf - (2.0 * c2) / denom
+                } else {
+                    hf
+                }
+            }
+        };
+
+        let mut mode = if j_star.is_finite() {
+            (j_star.floor() as i64).clamp(self.lo64, self.hi64)
+        } else {
+            self.lo64
+        };
+        let ln_ncp = ncp.ln();
+        let mut logdc_cur = self.logdc_at_i64(mode);
+        for _ in 0..8 {
+            if mode >= self.hi64 {
+                break;
+            }
+            let cand = mode + 1;
+            let logdc_cand = self.logdc_at_i64(cand);
+            if (logdc_cand - logdc_cur) + ln_ncp > 0.0 {
+                mode = cand;
+                logdc_cur = logdc_cand;
+            } else {
+                break;
+            }
+        }
+        for _ in 0..8 {
+            if mode <= self.lo64 {
+                break;
+            }
+            let cand = mode - 1;
+            let logdc_cand = self.logdc_at_i64(cand);
+            if (logdc_cand - logdc_cur) - ln_ncp > 0.0 {
+                mode = cand;
+                logdc_cur = logdc_cand;
+            } else {
+                break;
+            }
+        }
+        mode
+    }
+
+    fn dnhyper_window_into(
+        &self,
+        ncp: f64,
+        out: &mut Vec<f64>,
+        left_scratch: &mut Vec<f64>,
+    ) -> i64 {
+        self.dnhyper_window_with_raw_into(ncp, out, left_scratch, None)
+    }
+
+    fn dnhyper_window_with_raw_into(
+        &self,
+        ncp: f64,
+        out: &mut Vec<f64>,
+        left_scratch: &mut Vec<f64>,
+        mut raw_out: Option<&mut Vec<f64>>,
+    ) -> i64 {
+        out.clear();
+        left_scratch.clear();
+        if let Some(ref mut r) = raw_out {
+            r.clear();
+        }
+        if self.hi64 < self.lo64 {
+            return self.lo64;
+        }
+        let c = self.hyper_log_consts();
+        let ln_ncp = ncp.ln();
+        let mode = self.noncentral_mode_i64(ncp);
+        let raw_mode = self.raw_log_hyper_i64_fast(mode, &c);
+        let logdc_mode = self.logdc_from_raw(raw_mode);
+
+        let mut raw_left = Vec::new();
+        let mut j = mode;
+        while j > self.lo64 {
+            j -= 1;
+            let raw_j = self.raw_log_hyper_i64_fast(j, &c);
+            let rel = (self.logdc_from_raw(raw_j) - logdc_mode) + ln_ncp * ((j - mode) as f64);
+            if rel < UNIMODAL_LOG_CUTOFF {
+                break;
+            }
+            left_scratch.push(rel);
+            if raw_out.is_some() {
+                raw_left.push(raw_j);
+            }
+        }
+        let w_lo = mode - (left_scratch.len() as i64);
+
+        let est_cap = left_scratch.len().saturating_mul(2).saturating_add(1);
+        out.reserve(est_cap);
+        out.extend(left_scratch.iter().rev().copied());
+        out.push(0.0);
+        if let Some(ref mut r) = raw_out {
+            r.reserve(est_cap);
+            r.extend(raw_left.iter().rev().copied());
+            r.push(raw_mode);
+        }
+
+        let mut jr = mode;
+        while jr < self.hi64 {
+            jr += 1;
+            let raw_jr = self.raw_log_hyper_i64_fast(jr, &c);
+            let rel = (self.logdc_from_raw(raw_jr) - logdc_mode) + ln_ncp * ((jr - mode) as f64);
+            if rel < UNIMODAL_LOG_CUTOFF {
+                break;
+            }
+            out.push(rel);
+            if let Some(ref mut r) = raw_out {
+                r.push(raw_jr);
+            }
+        }
+
+        let mut max_result = f64::NEG_INFINITY;
+        for &val in out.iter() {
+            if val > max_result {
+                max_result = val;
+            }
+        }
+        for val in out.iter_mut() {
+            let d = *val - max_result;
+            *val = if d < -708.0 { 0.0 } else { d.exp() };
+        }
+        let sum = if self.java_fisher {
+            java_stream_sum(out)
+        } else {
+            crate::stats::f80::f80_sum(out)
+        };
+        for val in out.iter_mut() {
+            *val /= sum;
+        }
+        w_lo
+    }
+
+    fn calculate_p_value_unimodal(&mut self) {
+        let x64 = i64::from(self.x);
+        let mut density = Vec::new();
+        let mut left_scratch = Vec::new();
+        let mut raw_window = Vec::new();
+        let w_lo = self.dnhyper_window_with_raw_into(
+            1.0,
+            &mut density,
+            &mut left_scratch,
+            if self.java_fisher {
+                Some(&mut raw_window)
+            } else {
+                None
+            },
+        );
+        let w_hi = w_lo + (density.len() as i64) - 1;
+
+        if self.java_fisher {
+            self.p_value_less = self.pnhyper_unimodal_cached(x64, false, w_lo, w_hi, &raw_window);
+            self.p_value_greater = self.pnhyper_unimodal_cached(x64, true, w_lo, w_hi, &raw_window);
+        } else {
+            self.p_value_less = self.pnhyper_unimodal(x64, false, w_lo, w_hi);
+            self.p_value_greater = self.pnhyper_unimodal(x64, true, w_lo, w_hi);
+        }
+
+        let rel_err = 1.0 + 1e-7;
+        let target = if x64 >= w_lo && x64 <= w_hi {
+            density.get((x64 - w_lo) as usize).copied().unwrap_or(0.0)
+        } else {
+            0.0
+        };
+        let threshold = target * rel_err;
+        if x64 == self.lo64 || x64 == self.hi64 {
+            density.retain(|&el| el <= threshold);
+            self.p_value_two_sided = if self.java_fisher {
+                density.iter().copied().sum()
+            } else {
+                crate::stats::f80::f80_sum(&density)
+            };
+        } else {
+            let filtered = density.iter().copied().filter(|&el| el <= threshold);
+            self.p_value_two_sided = if self.java_fisher {
+                filtered.sum()
+            } else {
+                crate::stats::f80::f80_sum_iter(filtered)
+            };
+            for (i, prob) in density.iter_mut().enumerate() {
+                let supp = (w_lo + i as i64) as f64;
+                *prob *= supp;
+            }
+            self.mu_at_1 = if self.java_fisher {
+                java_stream_sum(&density)
+            } else {
+                crate::stats::f80::f80_sum(&density)
+            };
+        }
+    }
+
+    fn pnhyper_unimodal_cached(
+        &self,
+        q64: i64,
+        upper_tail: bool,
+        w_lo: i64,
+        w_hi: i64,
+        raw_window: &[f64],
+    ) -> f64 {
+        if self.m64 + self.n64 == 0 {
+            return 1.0;
+        }
+        let prob_at = |i: i64| -> f64 {
+            let lp = raw_window
+                .get((i - w_lo) as usize)
+                .copied()
+                .unwrap_or(f64::NEG_INFINITY);
+            if lp < -708.0 {
+                0.0
+            } else {
+                lp.exp()
+            }
+        };
+        if upper_tail {
+            if q64 <= self.lo64 {
+                return 1.0;
+            }
+            if q64 > self.hi64 || q64 > w_hi || w_hi < w_lo {
+                return 0.0;
+            }
+            let stop_lo = q64.max(w_lo);
+            let mut x0 = w_hi;
+            let mut ret = prob_at(x0);
+            while x0 > stop_lo {
+                x0 -= 1;
+                ret += prob_at(x0);
+            }
+            ret
+        } else {
+            if q64 < self.lo64 || q64 < w_lo || w_hi < w_lo {
+                return 0.0;
+            }
+            if q64 >= self.hi64 {
+                return 1.0;
+            }
+            let stop_hi = q64.min(w_hi);
+            let mut x0 = w_lo;
+            let mut ret = prob_at(x0);
+            while x0 < stop_hi {
+                x0 += 1;
+                ret += prob_at(x0);
+            }
+            ret
+        }
+    }
+
+    fn pnhyper_unimodal(&self, q64: i64, upper_tail: bool, w_lo: i64, w_hi: i64) -> f64 {
+        if self.m64 + self.n64 == 0 {
+            return 1.0;
+        }
+        if self.java_fisher {
+            let prob = |i: i64| -> f64 {
+                let lp = self.raw_log_hyper_i64(i);
+                if lp == f64::NEG_INFINITY {
+                    0.0
+                } else {
+                    lp.exp()
+                }
+            };
+            if upper_tail {
+                if q64 <= self.lo64 {
+                    return 1.0;
+                }
+                if q64 > self.hi64 || q64 > w_hi || w_hi < w_lo {
+                    return 0.0;
+                }
+                let stop_lo = q64.max(w_lo);
+                let mut x0 = w_hi;
+                let mut ret = prob(x0);
+                while x0 > stop_lo {
+                    x0 -= 1;
+                    ret += prob(x0);
+                }
+                return ret;
+            } else {
+                if q64 < self.lo64 || q64 < w_lo || w_hi < w_lo {
+                    return 0.0;
+                }
+                if q64 >= self.hi64 {
+                    return 1.0;
+                }
+                let stop_hi = q64.min(w_hi);
+                let mut x0 = w_lo;
+                let mut ret = prob(x0);
+                while x0 < stop_hi {
+                    x0 += 1;
+                    ret += prob(x0);
+                }
+                return ret;
+            }
+        }
+        if upper_tail {
+            crate::stats::rmath::phyper::phyper(
+                (q64 - 1) as f64,
+                self.m64 as f64,
+                self.n64 as f64,
+                self.k64 as f64,
+                false,
+            )
+        } else {
+            crate::stats::rmath::phyper::phyper(
+                q64 as f64,
+                self.m64 as f64,
+                self.n64 as f64,
+                self.k64 as f64,
                 true,
             )
         }
@@ -483,6 +1084,59 @@ fn cm3_deviance_part(x: f64, mu: f64) -> f64 {
         s1
     } else {
         x * (x / mu).ln() + mu - x
+    }
+}
+
+/// Ports `org.apache.commons.math3.distribution.SaddlePointExpansion.logBinomialProbability`
+/// widened to `i64` so `m + n > i32::MAX` never saturates.
+#[inline]
+fn cm3_log_binomial_probability_i64(x: i64, n: i64, p: f64, q: f64) -> f64 {
+    cm3_log_binomial_probability_i64_stirl(x, n, p, q, cm3_stirling_error(n as f64))
+}
+
+#[inline]
+fn cm3_log_binomial_probability_i64_stirl(x: i64, n: i64, p: f64, q: f64, stirl_n: f64) -> f64 {
+    let nf = n as f64;
+    if x == 0 {
+        if p < 0.1 {
+            -cm3_deviance_part(nf, nf * q) - nf * p
+        } else {
+            nf * q.ln()
+        }
+    } else if x == n {
+        if q < 0.1 {
+            -cm3_deviance_part(nf, nf * p) - nf * q
+        } else {
+            nf * p.ln()
+        }
+    } else {
+        let xf = x as f64;
+        let n_minus_x = (n - x) as f64;
+        let ret = stirl_n
+            - cm3_stirling_error(xf)
+            - cm3_stirling_error(n_minus_x)
+            - cm3_deviance_part(xf, nf * p)
+            - cm3_deviance_part(n_minus_x, nf * q);
+        let f = std::f64::consts::TAU * xf * n_minus_x / nf;
+        -0.5 * f.ln() + ret
+    }
+}
+
+#[inline]
+fn compute_log_p3_i64(m64: i64, n64: i64, k64: i64, java_fisher: bool) -> f64 {
+    let pop64 = m64 + n64;
+    if pop64 <= 0 || k64 < 0 || k64 > pop64 {
+        return 0.0;
+    }
+    let pop = pop64 as f64;
+    let p = (k64 as f64) / pop;
+    let q = ((pop64 - k64) as f64) / pop;
+    if java_fisher {
+        cm3_log_binomial_probability_i64(k64, pop64, p, q)
+    } else if k64 == 0 {
+        0.0
+    } else {
+        crate::stats::rmath::dbinom_raw::dbinom_raw(k64 as f64, pop, p, q, true)
     }
 }
 
@@ -1178,6 +1832,13 @@ mod tests {
             x,
             lo,
             hi,
+            m64: i64::from(m),
+            n64: i64::from(n),
+            k64: i64::from(k),
+            lo64: i64::from(lo),
+            hi64: i64::from(hi),
+            use_unimodal: false,
+            log_p3: 0.0,
             logdc: Vec::new(),
             p_value_less: 0.0,
             p_value_greater: 0.0,
@@ -1314,6 +1975,119 @@ mod tests {
                 format!("prefix\t{expected}"),
                 "write_odds_ratio_into must append without clearing existing prefix"
             );
+        }
+    }
+
+    #[test]
+    fn unimodal_window_matches_dense_and_bounds_ultra_high_depth() {
+        // 1. Just above MAX_DENSE_FISHER_SUPPORT (16,777,216): support_len = 16,777,217 must
+        //    leave `logdc` empty instead of allocating multi-hundred-MiB dense vectors.
+        let just_over = FisherExact::new(8_388_608, 8_388_608, 8_388_608, 8_388_608);
+        assert!(
+            just_over.logdc.is_empty(),
+            "support_len > 16,777,216 must use unimodal window without allocating logdc"
+        );
+        assert_eq!(just_over.get_p_value(), 1.0);
+        assert_eq!(just_over.get_odds_ratio(), "1");
+
+        // 2. Ultra-high depth: m = 100_000_000, n = 100_000_000, k = 50_000_000
+        //    (support_len = 50_000_001) in both R and --fisher modes, plus m + n > i32::MAX.
+        for java_mode in [false, true] {
+            let t0 = std::time::Instant::now();
+            let fe = FisherExact::new_with_mode(
+                25_003_000, 74_997_000, 24_997_000, 75_003_000, java_mode,
+            );
+            let elapsed_new = t0.elapsed();
+            assert!(fe.logdc.is_empty());
+            assert!(
+                elapsed_new < std::time::Duration::from_millis(50)
+                    || (cfg!(debug_assertions)
+                        && elapsed_new < std::time::Duration::from_millis(500)),
+                "ultra-high-depth FisherExact::new_with_mode(java={java_mode}) took {elapsed_new:?}"
+            );
+            let p2 = fe.get_p_value();
+            let pl = fe.get_p_value_less();
+            let pg = fe.get_p_value_greater();
+            let or_str = fe.get_odds_ratio();
+            assert!(p2.is_finite() && (0.0..=1.0).contains(&p2));
+            assert!(pl.is_finite() && (0.0..=1.0).contains(&pl));
+            assert!(pg.is_finite() && (0.0..=1.0).contains(&pg));
+            assert!(!or_str.is_empty() && or_str != "NaN");
+
+            // m + n > i32::MAX (m = 1.2e9, n = 1.2e9, m + n = 2.4e9 > 2,147,483,647)
+            let fe_wide = FisherExact::new_with_mode(
+                600_000_000,
+                600_000_000,
+                600_000_000,
+                600_000_000,
+                java_mode,
+            );
+            assert!(fe_wide.logdc.is_empty());
+            assert_eq!(fe_wide.get_p_value(), 1.0);
+            assert_eq!(fe_wide.get_odds_ratio(), "1");
+        }
+
+        // 3. Direct accuracy verification against the dense path at `support_len = 1_000`
+        //    (m = 999, n = 999, k = 999 -> lo = 0, hi = 999, support_len = 1_000) across
+        //    interior, symmetric, skewed, and extreme-tail tables in both R and `--fisher` modes.
+        for x in [0, 1, 15, 250, 480, 500, 520, 750, 985, 998, 999] {
+            let (rf, rr, af, ar) = (x, 999 - x, 999 - x, x);
+            for java_mode in [false, true] {
+                let dense = FisherExact::new_with_mode(rf, rr, af, ar, java_mode);
+                assert_eq!(dense.support_len(), 1_000);
+                let mut unimod = FisherExact {
+                    m: dense.m,
+                    n: dense.n,
+                    k: dense.k,
+                    x: dense.x,
+                    lo: dense.lo,
+                    hi: dense.hi,
+                    m64: dense.m64,
+                    n64: dense.n64,
+                    k64: dense.k64,
+                    lo64: dense.lo64,
+                    hi64: dense.hi64,
+                    use_unimodal: true,
+                    log_p3: compute_log_p3_i64(dense.m64, dense.n64, dense.k64, java_mode),
+                    logdc: Vec::new(),
+                    p_value_less: 0.0,
+                    p_value_greater: 0.0,
+                    p_value_two_sided: 0.0,
+                    mu_at_1: f64::NAN,
+                    java_fisher: java_mode,
+                };
+                unimod.calculate_p_value_unimodal();
+
+                assert!(
+                    (unimod.p_value_two_sided - dense.p_value_two_sided).abs() < 1e-12,
+                    "two-sided diff at x={x} java={java_mode}: {} vs {}",
+                    unimod.p_value_two_sided,
+                    dense.p_value_two_sided
+                );
+                assert!(
+                    (unimod.p_value_less - dense.p_value_less).abs() < 1e-12,
+                    "less diff at x={x} java={java_mode}: {} vs {}",
+                    unimod.p_value_less,
+                    dense.p_value_less
+                );
+                assert!(
+                    (unimod.p_value_greater - dense.p_value_greater).abs() < 1e-12,
+                    "greater diff at x={x} java={java_mode}: {} vs {}",
+                    unimod.p_value_greater,
+                    dense.p_value_greater
+                );
+                assert_eq!(unimod.get_odds_ratio(), dense.get_odds_ratio());
+                let mle_d = dense.mle(x as f64);
+                let mle_u = unimod.mle(x as f64);
+                if mle_d.is_finite() {
+                    assert!(
+                        (mle_u - mle_d).abs() / mle_d.max(1.0) < 1e-12,
+                        "mle diff at x={x} java={java_mode}: {mle_u} vs {mle_d}"
+                    );
+                } else {
+                    assert_eq!(mle_u, mle_d);
+                }
+            }
         }
     }
 }

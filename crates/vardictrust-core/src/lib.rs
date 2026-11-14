@@ -621,7 +621,6 @@ fn run_pipeline_on_records_ext(
         var_data.max_read_length = var_data.max_read_length.max(post_max);
     }
     let chr_len = u32::try_from(*chromosomes_lengths.get(chr).unwrap_or(&0)).unwrap_or(u32::MAX);
-    let joined_bams = bam_paths.join(":");
 
     match tail {
         PipelineTail::Stop => {}
@@ -645,10 +644,9 @@ fn run_pipeline_on_records_ext(
                     &mut var_data,
                 );
             }
-            let current_bam = std::path::Path::new(joined_bams.as_str());
-            crate::sv::find_all_sv(
+            crate::sv::find_all_sv_paths(
                 &mut var_data,
-                current_bam,
+                bam_paths,
                 reference,
                 chr,
                 chr_len,

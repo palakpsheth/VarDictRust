@@ -177,7 +177,10 @@ pub fn find_bp(
     let mut bp = 0;
     let mut score = 0;
 
-    for n in 0..indel_size {
+    // For `n >= 400`, `maxmm - n / 100 <= 3 - 4 = -1`, so `mm <= maxmm - n / 100`
+    // is impossible (`mm >= 0`). Capping at 400 preserves 100% identical output
+    // while preventing `-I 2147483647` (`indel_size == i32::MAX`) from spinning 2.1B times.
+    for n in 0..indel_size.min(400) {
         let mut mm = 0;
         let mut i = 0;
         let mut m = crate::cigar::modify::ByteSet::new();
@@ -2934,9 +2937,15 @@ pub fn realignlgdel(
         }
 
         if dellen < indel_size {
-            for tp in bp..bp.saturating_add(dellen) {
-                inc_cnt(ref_coverage, tp, sc5_variation.cnt);
-            }
+            inc_ref_coverage_bounded(
+                ref_coverage,
+                reference,
+                chr,
+                region,
+                bp,
+                bp.saturating_add(dellen),
+                sc5_variation.cnt,
+            );
         }
 
         if let Some(sclip) = soft_clips_3_end.get_mut(&sc3p) {
@@ -2946,7 +2955,9 @@ pub fn realignlgdel(
                     crate::variations::util::adj_cnt(tv, &sclip.variation, None);
                 }
                 if sc3p > bp {
-                    let ref_base_ch = reference.get_base(chr, bp as u32);
+                    let ref_base_ch = u32::try_from(bp)
+                        .ok()
+                        .and_then(|pos| reference.get_base(chr, pos));
                     if let Some(ref_var) = crate::variations::get_variation_maybe_mut(
                         non_insertion_variants,
                         bp,
@@ -2966,9 +2977,15 @@ pub fn realignlgdel(
                 }
 
                 if sc3p == bp && dellen < indel_size {
-                    for tp in bp..bp.saturating_add(dellen) {
-                        inc_cnt(ref_coverage, tp, sclip.variation.cnt);
-                    }
+                    inc_ref_coverage_bounded(
+                        ref_coverage,
+                        reference,
+                        chr,
+                        region,
+                        bp,
+                        bp.saturating_add(dellen),
+                        sclip.variation.cnt,
+                    );
                 }
 
                 for ip in bp.saturating_add(1)..sc3p {
@@ -3306,9 +3323,15 @@ pub fn realignlgdel(
                 .saturating_add(dellen)
                 .saturating_add(extra.len() as i32)
                 .saturating_add(extra_str.len() as i32);
-            for tp in bp..tp_end {
-                inc_cnt(ref_coverage, tp, sc3v.variation.cnt);
-            }
+            inc_ref_coverage_bounded(
+                ref_coverage,
+                reference,
+                chr,
+                region,
+                bp,
+                tp_end,
+                sc3v.variation.cnt,
+            );
         }
 
         if !ref_coverage.contains_key(&bp) {
@@ -4899,6 +4922,114 @@ mod task7_tests {
 fn inc_cnt(hash: &mut rustc_hash::FxHashMap<i32, i32>, start: i32, count: i32) {
     let entry = hash.entry(start).or_insert(0);
     *entry = entry.saturating_add(count);
+}
+
+fn inc_ref_coverage_bounded(
+    ref_coverage: &mut rustc_hash::FxHashMap<i32, i32>,
+    reference: &Reference,
+    chr: &str,
+    region: &crate::regions::Region,
+    start: i32,
+    end: i32,
+    delta: i32,
+) {
+    if start >= end || delta == 0 {
+        return;
+    }
+    const HALO: i32 = 5_000;
+    const MAX_DENSE_COV_SPAN: i64 = 320_000;
+
+    let reg_s = i32::try_from(region.start.0).unwrap_or(i32::MAX);
+    let reg_e = i32::try_from(region.end.0).unwrap_or(i32::MAX);
+    let mut cov_min = reg_s.saturating_sub(HALO).max(1);
+    let mut cov_max = reg_e.saturating_add(HALO).max(1);
+    if let Some((min_s, max_e)) = reference.loaded_span_bounds(chr) {
+        let loaded_min = i32::try_from(min_s)
+            .unwrap_or(i32::MAX)
+            .saturating_sub(HALO)
+            .max(1);
+        let loaded_max = i32::try_from(max_e)
+            .unwrap_or(i32::MAX)
+            .saturating_add(HALO)
+            .max(1);
+        cov_min = cov_min.min(loaded_min);
+        cov_max = cov_max.max(loaded_max);
+    }
+
+    let lo = start.max(cov_min);
+    let hi_excl = if cov_max == i32::MAX {
+        end
+    } else {
+        end.min(cov_max + 1)
+    };
+    if lo >= hi_excl {
+        return;
+    }
+
+    if i64::from(hi_excl) - i64::from(lo) <= MAX_DENSE_COV_SPAN {
+        for tp in lo..hi_excl {
+            inc_cnt(ref_coverage, tp, delta);
+        }
+        return;
+    }
+
+    // Disjoint ultra-distant loaded windows (> 320 kbp apart under extreme `-I`):
+    // restrict updates to the merged union of `[region ± HALO]` and each loaded
+    // span `[lr ± HALO]` on `chr` so multi-100-Mbp unloaded gaps cannot spin/OOM.
+    let mut spans: Vec<(i32, i32)> =
+        Vec::with_capacity(reference.loaded_regions.len().saturating_add(1));
+    let reg_hi_incl = reg_e.saturating_add(HALO);
+    let reg_hi_excl = if reg_hi_incl == i32::MAX {
+        hi_excl
+    } else {
+        (reg_hi_incl + 1).min(hi_excl)
+    };
+    spans.push((reg_s.saturating_sub(HALO).max(lo), reg_hi_excl));
+    for lr in &reference.loaded_regions {
+        if lr.chr == chr {
+            let ls = i32::try_from(lr.sequence_start)
+                .unwrap_or(i32::MAX)
+                .saturating_sub(HALO)
+                .max(lo);
+            let le_incl = i32::try_from(lr.sequence_end)
+                .unwrap_or(i32::MAX)
+                .saturating_add(HALO);
+            let le_excl = if le_incl == i32::MAX {
+                hi_excl
+            } else {
+                (le_incl + 1).min(hi_excl)
+            };
+            if ls < le_excl {
+                spans.push((ls, le_excl));
+            }
+        }
+    }
+    spans.retain(|&(s, e)| s < e);
+    spans.sort_unstable_by_key(|&(s, _)| s);
+
+    let mut cur_opt: Option<(i32, i32)> = None;
+    for (s, e) in spans {
+        match &mut cur_opt {
+            Some((_cs, ce)) if s <= *ce => {
+                if e > *ce {
+                    *ce = e;
+                }
+            }
+            Some((cs, ce)) => {
+                for tp in *cs..*ce {
+                    inc_cnt(ref_coverage, tp, delta);
+                }
+                *cs = s;
+                *ce = e;
+            }
+            None => cur_opt = Some((s, e)),
+        }
+    }
+    if let Some((cs, ce)) = cur_opt {
+        for tp in cs..ce {
+            inc_cnt(ref_coverage, tp, delta);
+        }
+    }
 }
 
 fn rm_cnt(vref: &mut crate::variations::Variation, tv: &crate::variations::Variation) {
@@ -8151,6 +8282,99 @@ mod tests {
             assert_eq!(
                 tn_buf, legacy_tn,
                 "normalize_realignins_tn_into mismatch on {vn:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn realignlgdel_clamps_ref_coverage_updates_to_loaded_span_on_extreme_deletion() {
+        let seed_17 = b"ACTGACTGCTAGCTGAC"; // 17 bp non-homopolymer seed
+
+        // First test a 500 kbp distant mate region (fast RED failure without GiB OOM),
+        // then test a 200 Mbp distant mate region with config.indel_size = u32::MAX.
+        for &(distant_start, indel_sz) in &[(500_050_u32, 600_000_u32), (200_000_050_u32, u32::MAX)]
+        {
+            let mut reference = Reference::new();
+            reference.region_sequences.push(vec![b'A'; 100]);
+            reference
+                .loaded_regions
+                .push(crate::reference::LoadedRegion {
+                    chr: "chr1".to_string(),
+                    sequence_start: 1,
+                    sequence_end: 100,
+                });
+
+            let mut distant_seq = vec![b'T'; 100];
+            distant_seq[10..10 + seed_17.len()].copy_from_slice(seed_17);
+            reference.region_sequences.push(distant_seq);
+            reference
+                .loaded_regions
+                .push(crate::reference::LoadedRegion {
+                    chr: "chr1".to_string(),
+                    sequence_start: distant_start,
+                    sequence_end: distant_start + 99,
+                });
+            reference
+                .seed
+                .insert(seed_17.to_vec(), vec![distant_start + 10]);
+
+            let mut soft_clips_3_end = BTreeMap::new();
+            let mut sc3 = Sclip::new();
+            sc3.variation.cnt = 5;
+            sc3.sequence = Some(seed_17.to_vec());
+            soft_clips_3_end.insert(50, sc3);
+
+            let mut soft_clips_5_end = BTreeMap::new();
+            let mut non_insertion_variants = crate::javamap::JavaHashMap::new();
+            let mut insertion_variants = crate::javamap::JavaHashMap::new();
+            let mut ref_coverage = rustc_hash::FxHashMap::default();
+            ref_coverage.insert(49, 10);
+            let mut svfdel = Vec::new();
+            let mut svrdel = Vec::new();
+            let mut splice = rustc_hash::FxHashSet::default();
+
+            let mut config = crate::config::Config::default();
+            config.indel_size = indel_sz;
+            let region = crate::regions::Region {
+                chr: "chr1".to_string(),
+                start: Pos1(1),
+                end: Pos1(100),
+                gene: String::new(),
+                amplicon: None,
+            };
+
+            let t0 = std::time::Instant::now();
+            realignlgdel(
+                None,
+                &mut reference,
+                "chr1",
+                250_000_000,
+                &region,
+                &config,
+                &mut non_insertion_variants,
+                &mut insertion_variants,
+                &mut ref_coverage,
+                &mut soft_clips_5_end,
+                &mut soft_clips_3_end,
+                100,
+                &mut svfdel,
+                &mut svrdel,
+                &mut splice,
+            );
+            let elapsed = t0.elapsed();
+
+            assert!(
+                ref_coverage.len() <= 200_000,
+                "ref_coverage must remain bounded on distant_start={distant_start}, got {} entries",
+                ref_coverage.len()
+            );
+            assert!(
+                elapsed < std::time::Duration::from_millis(250),
+                "realignlgdel on distant_start={distant_start}, indel_sz={indel_sz} took {elapsed:?}"
+            );
+            assert!(
+                ref_coverage.get(&50).copied().unwrap_or(0) >= 5,
+                "in-bounds breakpoint coverage at bp=50 must still be incremented"
             );
         }
     }

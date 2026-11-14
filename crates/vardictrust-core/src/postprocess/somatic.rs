@@ -96,7 +96,7 @@ pub fn somatic_post_process_at(
         .keys()
         .chain(aligned_variants_bam2.keys())
         .copied()
-        .filter(|&p| (p as u32) >= region.start.0 && (p as u32) <= region.end.0)
+        .filter(|&p| u32::try_from(p).is_ok_and(|pu| pu >= region.start.0 && pu <= region.end.0))
         .collect();
     all_positions.sort_unstable();
     all_positions.dedup();
@@ -629,7 +629,11 @@ fn combine_analysis(
     max_read_length: &mut i32,
 ) -> CombineVerdict {
     if config.verbose {
-        crate::verbose_eprintln!("Start Combine {} {}", position, variant1.description);
+        crate::verbose_eprintln!(
+            "Start Combine {} {}",
+            position,
+            crate::util::SanitizedBytes(variant1.description.as_bytes())
+        );
     }
     // Don't do it for structural variants (:394)
     if i64::from(variant1.end_pos) - i64::from(variant1.start_pos) > i64::from(config.sv_min_len) {
@@ -752,9 +756,9 @@ fn combine_analysis(
             // Java config.y (-y); vardict.pl:657 prints the same line.
             crate::verbose_eprintln!(
                 "Combine produce less: {} {} {} {} {}",
-                chr,
+                crate::util::SanitizedBytes(chr.as_bytes()),
                 position,
-                variant1.description,
+                crate::util::SanitizedBytes(variant1.description.as_bytes()),
                 comb_pc,
                 base_pc
             );
@@ -2106,5 +2110,53 @@ mod tests {
         assert_eq!(wrapped_out.len(), at_out.len());
         assert_eq!(wrapped_out[0].status, at_out[0].status);
         assert_eq!(wrapped_out[1].status, at_out[1].status);
+    }
+
+    #[test]
+    fn somatic_post_process_rejects_negative_i32_keys_under_large_region_end() {
+        let config = Config::default();
+        // With `end = u32::MAX`, `(-10_i32 as u32)` (`4294967286`) previously slipped past
+        // `(p as u32) >= region.start.0 && (p as u32) <= region.end.0`.
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: crate::types::Pos1(1),
+            end: crate::types::Pos1(u32::MAX),
+            gene: "G".to_string(),
+            amplicon: None,
+        };
+        let mut bam1 = JavaHashMap::new();
+        let mut vars = Vars::new();
+        let mut v = Variant::new();
+        v.description = "G".to_string();
+        v.ref_allele = "A".to_string();
+        v.var_allele = "G".to_string();
+        v.frequency = 0.5;
+        v.pos_coverage = 10;
+        v.total_pos_cov = 20;
+        v.hicnt = 10;
+        v.hicov = 20;
+        v.fwd = 5;
+        v.rev = 5;
+        v.ref_fwd_cov = 5;
+        v.ref_rev_cov = 5;
+        v.mean_position = 15.0;
+        v.mean_quality = 35.0;
+        v.mean_mapping_quality = 60.0;
+        v.hq_lq_ratio = 20.0;
+        v.pstd = true;
+        v.qstd = true;
+        v.start_pos = -10;
+        v.end_pos = -10;
+        vars.variants.push(v);
+        bam1.insert(-10, vars);
+        let bam2 = JavaHashMap::new();
+        let empty_splice = rustc_hash::FxHashSet::default();
+
+        let out = somatic_post_process_at(&config, &region, &bam1, &bam2, &empty_splice, None, 100);
+        assert!(
+            out.is_empty(),
+            "negative i32 key -10 must be excluded by somatic_post_process_at, got {} records",
+            out.len()
+        );
     }
 }

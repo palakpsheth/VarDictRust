@@ -271,6 +271,26 @@ pub(crate) fn push_i64(buf: &mut String, v: i64) {
     push_u64(buf, v.unsigned_abs());
 }
 
+/// Zero-allocation byte slice wrapper escaping terminal control characters,
+/// non-ASCII bytes, and `\\` for safe diagnostic logging (`SEC-10b`).
+pub struct SanitizedBytes<'a>(pub &'a [u8]);
+
+impl std::fmt::Display for SanitizedBytes<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use std::fmt::Write as _;
+        for &b in self.0 {
+            if b == b'\\' {
+                f.write_str("\\\\")?;
+            } else if (0x20..=0x7E).contains(&b) {
+                f.write_char(b as char)?;
+            } else {
+                write!(f, "\\x{b:02x}")?;
+            }
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -511,6 +531,15 @@ mod tests {
         assert_eq!(
             ref_bases_with(&high_ref, "chr_hi", 2, 5, Some(b'N')),
             b"NNNN"
+        );
+    }
+
+    #[test]
+    fn test_sanitized_bytes_display_escapes_controls_and_backslash() {
+        let raw = b"readA\\path\x1b[31mRED\n\r\t\0\x7f\xff~ !";
+        assert_eq!(
+            SanitizedBytes(raw).to_string(),
+            r"readA\\path\x1b[31mRED\x0a\x0d\x09\x00\x7f\xff~ !"
         );
     }
 }
