@@ -85,8 +85,92 @@ unsafe extern "C" fn sigprof_handler(
     feature = "profile-dhat",
     feature = "profile-heap"
 ))]
+fn normalize_dir_for_lstat(dir: &std::path::Path) -> std::borrow::Cow<'_, std::path::Path> {
+    #[cfg(unix)]
+    {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt as _;
+
+        let orig = dir.as_os_str().as_bytes();
+        let mut bytes = orig;
+        while bytes.len() > 1 {
+            if bytes.ends_with(b"/") {
+                bytes = &bytes[..bytes.len() - 1];
+            } else if bytes.ends_with(b"/.") {
+                if bytes == b"/." {
+                    bytes = b"/";
+                } else {
+                    bytes = &bytes[..bytes.len() - 2];
+                }
+            } else {
+                break;
+            }
+        }
+        if bytes.len() == orig.len() {
+            std::borrow::Cow::Borrowed(dir)
+        } else {
+            std::borrow::Cow::Owned(PathBuf::from(OsStr::from_bytes(bytes)))
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let orig = dir.to_string_lossy();
+        let trimmed = orig.trim_end_matches(['/', '\\']);
+        if trimmed.is_empty() {
+            std::borrow::Cow::Owned(PathBuf::from("/"))
+        } else if trimmed.len() == orig.len() {
+            std::borrow::Cow::Borrowed(dir)
+        } else {
+            std::borrow::Cow::Owned(PathBuf::from(trimmed))
+        }
+    }
+}
+
+#[cfg(any(
+    test,
+    feature = "profile-cpu",
+    feature = "profile-dhat",
+    feature = "profile-heap"
+))]
+fn reject_symlink_ancestors(normalized: &std::path::Path) -> std::io::Result<()> {
+    for anc in normalized.ancestors() {
+        if anc.as_os_str().is_empty() {
+            continue;
+        }
+        #[cfg(target_os = "macos")]
+        if anc == std::path::Path::new("/tmp")
+            || anc == std::path::Path::new("/var")
+            || anc == std::path::Path::new("/etc")
+        {
+            continue;
+        }
+        let anc_norm = normalize_dir_for_lstat(anc);
+        if let Ok(meta) = std::fs::symlink_metadata(anc_norm.as_ref()) {
+            if meta.file_type().is_symlink() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!(
+                        "profile directory '{}' must not be or traverse a symlink ('{}')",
+                        normalized.display(),
+                        anc_norm.display()
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(any(
+    test,
+    feature = "profile-cpu",
+    feature = "profile-dhat",
+    feature = "profile-heap"
+))]
 fn ensure_non_symlink_dir(dir: &std::path::Path) -> std::io::Result<()> {
-    let meta = std::fs::symlink_metadata(dir)?;
+    let normalized = normalize_dir_for_lstat(dir);
+    reject_symlink_ancestors(normalized.as_ref())?;
+    let meta = std::fs::symlink_metadata(normalized.as_ref())?;
     if meta.file_type().is_symlink() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -203,22 +287,21 @@ fn finalize_dhat_temp_file(
     feature = "profile-heap"
 ))]
 fn probe_dir(dir: &std::path::Path, var_name: &str) -> Result<()> {
-    if let Ok(meta) = std::fs::symlink_metadata(dir) {
-        if meta.file_type().is_symlink() {
-            anyhow::bail!(
-                "profile directory '{}' for {var_name} must not be a symlink",
-                dir.display()
-            );
-        }
-    }
-    std::fs::create_dir_all(dir).map_err(|e| {
+    let normalized = normalize_dir_for_lstat(dir);
+    reject_symlink_ancestors(normalized.as_ref()).map_err(|e| {
+        anyhow::anyhow!(
+            "profile directory '{}' for {var_name} is invalid: {e}",
+            dir.display()
+        )
+    })?;
+    std::fs::create_dir_all(normalized.as_ref()).map_err(|e| {
         anyhow::anyhow!(
             "cannot create profile directory '{}' for {var_name}: {e}",
             dir.display()
         )
     })?;
     let (probe_file, probe_path) =
-        create_unique_temp_file(dir, ".vardict_profile_probe").map_err(|e| {
+        create_unique_temp_file(normalized.as_ref(), ".vardict_profile_probe").map_err(|e| {
             anyhow::anyhow!(
                 "profile directory '{}' for {var_name} is not writable: {e}",
                 dir.display()
@@ -618,29 +701,97 @@ mod tests {
             let mode1 = std::fs::symlink_metadata(&p1).unwrap().permissions().mode() & 0o777;
             assert_eq!(mode1, 0o600);
 
-            // Symlinked profile directory (both existing target and dangling target) must be refused
+            // Symlinked profile directory (both existing target and dangling target) must be refused,
+            // including trailing slashes (`path_resolution(7)` `lstat` bypass) and parent symlinks.
+            assert_eq!(
+                normalize_dir_for_lstat(std::path::Path::new("/")).as_ref(),
+                std::path::Path::new("/")
+            );
+            assert_eq!(
+                normalize_dir_for_lstat(std::path::Path::new("///")).as_ref(),
+                std::path::Path::new("/")
+            );
+            assert_eq!(
+                normalize_dir_for_lstat(std::path::Path::new("/.")).as_ref(),
+                std::path::Path::new("/")
+            );
+            assert_eq!(
+                normalize_dir_for_lstat(std::path::Path::new(".")).as_ref(),
+                std::path::Path::new(".")
+            );
+            assert_eq!(
+                normalize_dir_for_lstat(std::path::Path::new("./")).as_ref(),
+                std::path::Path::new(".")
+            );
+            let real_trailing_one = PathBuf::from(format!("{}/", real_dir.display()));
+            let real_trailing_three = PathBuf::from(format!("{}///", real_dir.display()));
+            probe_dir(&real_trailing_one, "VARDICT_PROFILE_CPU").unwrap();
+            ensure_non_symlink_dir(&real_trailing_three).unwrap();
+
+            let existing_sub = real_dir.join("existing_sub");
+            std::fs::create_dir(&existing_sub).unwrap();
+
             let symlink_dir = base.path().join("symlink_prof");
             symlink(&real_dir, &symlink_dir).unwrap();
+            let symlink_slash_1 = PathBuf::from(format!("{}/", symlink_dir.display()));
+            let symlink_slash_3 = PathBuf::from(format!("{}///", symlink_dir.display()));
+            let symlink_dot = PathBuf::from(format!("{}/.", symlink_dir.display()));
+            let parent_sym_existing = symlink_dir.join("existing_sub");
+            let parent_sym_existing_slash =
+                PathBuf::from(format!("{}/", parent_sym_existing.display()));
+
+            for bad_sym_dir in [
+                &symlink_dir,
+                &symlink_slash_1,
+                &symlink_slash_3,
+                &symlink_dot,
+                &parent_sym_existing,
+                &parent_sym_existing_slash,
+            ] {
+                assert!(
+                    probe_dir(bad_sym_dir, "VARDICT_PROFILE_CPU").is_err(),
+                    "probe_dir must refuse symlink/trailing-slash/parent-symlink path '{}'",
+                    bad_sym_dir.display()
+                );
+                assert!(
+                    ensure_non_symlink_dir(bad_sym_dir).is_err(),
+                    "ensure_non_symlink_dir must refuse '{}'",
+                    bad_sym_dir.display()
+                );
+                assert!(
+                    create_unique_temp_file(bad_sym_dir, ".probe").is_err(),
+                    "create_unique_temp_file must refuse '{}'",
+                    bad_sym_dir.display()
+                );
+                assert!(
+                    write_profile_file_atomic(bad_sym_dir, "cpu-meta.json", b"{}\n").is_err(),
+                    "write_profile_file_atomic must refuse '{}'",
+                    bad_sym_dir.display()
+                );
+            }
+
+            let parent_sym_new = symlink_dir.join("nested_never_create");
             assert!(
-                probe_dir(&symlink_dir, "VARDICT_PROFILE_CPU").is_err(),
-                "probe_dir must refuse symlinked directory"
+                probe_dir(&parent_sym_new, "VARDICT_PROFILE_CPU").is_err(),
+                "probe_dir must refuse creating subdirectory through parent symlink"
             );
             assert!(
-                create_unique_temp_file(&symlink_dir, ".probe").is_err(),
-                "create_unique_temp_file must refuse symlinked directory"
-            );
-            assert!(
-                write_profile_file_atomic(&symlink_dir, "cpu-meta.json", b"{}\n").is_err(),
-                "write_profile_file_atomic must refuse symlinked directory"
+                !real_dir.join("nested_never_create").exists(),
+                "probe_dir must not create directory inside target of parent symlink"
             );
 
             let nonexistent_target = base.path().join("never_create_me");
             let dangling_dir = base.path().join("dangling_prof");
             symlink(&nonexistent_target, &dangling_dir).unwrap();
-            assert!(
-                probe_dir(&dangling_dir, "VARDICT_PROFILE_CPU").is_err(),
-                "probe_dir must refuse dangling symlink directory"
-            );
+            let dangling_slash = PathBuf::from(format!("{}/", dangling_dir.display()));
+            let dangling_child = dangling_dir.join("child");
+            for bad_dangling in [&dangling_dir, &dangling_slash, &dangling_child] {
+                assert!(
+                    probe_dir(bad_dangling, "VARDICT_PROFILE_CPU").is_err(),
+                    "probe_dir must refuse dangling symlink path '{}'",
+                    bad_dangling.display()
+                );
+            }
             assert!(
                 !nonexistent_target.exists(),
                 "probe_dir must not create target of dangling symlink"
@@ -675,11 +826,19 @@ mod tests {
             assert_eq!(dhat_meta.permissions().mode() & 0o777, 0o600);
             assert_eq!(std::fs::read(&target_dhat).unwrap(), b"{\"dhat\":true}\n");
 
-            // If dir is a symlink at DHAT finalization time, refuse and unlink the staged temp file
+            // If dir is a symlink (including trailing-slash symlink) at DHAT finalization time,
+            // refuse and unlink the staged temp file.
             assert!(finalize_dhat_temp_file(&symlink_dir, &p2).is_err());
             assert!(
                 !p2.exists(),
                 "finalize_dhat_temp_file must unlink staged temp file on error"
+            );
+            let (f3, p3) = create_unique_temp_file(&real_dir, ".dhat-heap.tmp").unwrap();
+            drop(f3);
+            assert!(finalize_dhat_temp_file(&symlink_slash_1, &p3).is_err());
+            assert!(
+                !p3.exists(),
+                "finalize_dhat_temp_file must unlink staged temp file on trailing-slash symlink error"
             );
         }
     }
