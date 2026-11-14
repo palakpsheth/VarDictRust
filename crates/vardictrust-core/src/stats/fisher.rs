@@ -233,6 +233,37 @@ impl FisherExact {
             self.mnhyper_with(1.0, &mut scratch)
         };
         let tol = eps.powf(0.25);
+        if self.use_unimodal {
+            let mut tol_val = tol;
+            let mut maxit = 1000;
+            return if mu > x {
+                let mut f = |t: f64| self.mnhyper_with(t, &mut scratch) - x;
+                let f_lower = f(0.0);
+                crate::stats::zeroin::zeroin_c(
+                    0.0,
+                    1.0,
+                    f_lower,
+                    mu - x,
+                    &mut f,
+                    &mut tol_val,
+                    &mut maxit,
+                )
+            } else if mu < x {
+                let mut f = |t: f64| self.mnhyper_with(1.0 / t, &mut scratch) - x;
+                let f_lower = f(eps);
+                1.0 / crate::stats::zeroin::zeroin_c(
+                    eps,
+                    1.0,
+                    f_lower,
+                    mu - x,
+                    &mut f,
+                    &mut tol_val,
+                    &mut maxit,
+                )
+            } else {
+                1.0
+            };
+        }
         if mu > x {
             let f = |t: f64| self.mnhyper_with(t, &mut scratch) - x;
             crate::stats::zeroin::uniroot(0.0, 1.0, f, tol)
@@ -511,6 +542,7 @@ struct HyperLogConsts {
     q: f64,
     stirl_m: f64,
     stirl_n: f64,
+    half_log_scale_minus_p3: f64,
 }
 
 impl FisherExact {
@@ -530,6 +562,7 @@ impl FisherExact {
                 q: 0.0,
                 stirl_m: 0.0,
                 stirl_n: 0.0,
+                half_log_scale_minus_p3: 0.0,
             };
         }
         let pop = pop64 as f64;
@@ -538,12 +571,20 @@ impl FisherExact {
         let p = (self.k64 as f64) / pop;
         let q = ((pop64 - self.k64) as f64) / pop;
         let (stirl_m, stirl_n) = if self.java_fisher {
-            (cm3_stirling_error(mf), cm3_stirling_error(nf))
+            (
+                cm3_stirling_error_unimodal(mf),
+                cm3_stirling_error_unimodal(nf),
+            )
         } else {
             (
                 crate::stats::rmath::stirlerr::stirlerr(mf),
                 crate::stats::rmath::stirlerr::stirlerr(nf),
             )
+        };
+        let half_log_scale_minus_p3 = if mf > 0.0 && nf > 0.0 {
+            -0.5 * ((std::f64::consts::TAU / mf) * (std::f64::consts::TAU / nf)).ln() - self.log_p3
+        } else {
+            -self.log_p3
         };
         HyperLogConsts {
             pop64,
@@ -557,6 +598,7 @@ impl FisherExact {
             q,
             stirl_m,
             stirl_n,
+            half_log_scale_minus_p3,
         }
     }
 
@@ -576,20 +618,17 @@ impl FisherExact {
                 let kjf = kj as f64;
                 let nkjf = (self.n64 - kj) as f64;
                 let ret = (c.stirl_m
-                    - cm3_stirling_error(jf)
-                    - cm3_stirling_error(mjf)
+                    - cm3_stirling_error_unimodal(jf)
+                    - cm3_stirling_error_unimodal(mjf)
                     - cm3_deviance_part(jf, c.mp)
                     - cm3_deviance_part(mjf, c.mq))
                     + (c.stirl_n
-                        - cm3_stirling_error(kjf)
-                        - cm3_stirling_error(nkjf)
+                        - cm3_stirling_error_unimodal(kjf)
+                        - cm3_stirling_error_unimodal(nkjf)
                         - cm3_deviance_part(kjf, c.np)
                         - cm3_deviance_part(nkjf, c.nq));
-                let prod = (std::f64::consts::TAU * jf / c.mf)
-                    * mjf
-                    * (std::f64::consts::TAU * kjf / c.nf)
-                    * nkjf;
-                return -0.5 * prod.ln() + ret - self.log_p3;
+                let prod = (jf * mjf) * (kjf * nkjf);
+                return -0.5 * prod.ln() + ret + c.half_log_scale_minus_p3;
             }
             let p1 = cm3_log_binomial_probability_i64_stirl(j, self.m64, c.p, c.q, c.stirl_m);
             let p2 = cm3_log_binomial_probability_i64_stirl(kj, self.n64, c.p, c.q, c.stirl_n);
@@ -615,11 +654,8 @@ impl FisherExact {
                     - crate::stats::rmath::stirlerr::stirlerr(nkjf)
                     - crate::stats::rmath::bd0::bd0(kjf, c.np)
                     - crate::stats::rmath::bd0::bd0(nkjf, c.nq));
-            let prod = (std::f64::consts::TAU * jf / c.mf)
-                * mjf
-                * (std::f64::consts::TAU * kjf / c.nf)
-                * nkjf;
-            lc - 0.5 * prod.ln() - self.log_p3
+            let prod = (jf * mjf) * (kjf * nkjf);
+            lc - 0.5 * prod.ln() + c.half_log_scale_minus_p3
         } else {
             let p1 = crate::stats::rmath::dbinom_raw::dbinom_raw(j as f64, c.mf, c.p, c.q, true);
             let p2 = crate::stats::rmath::dbinom_raw::dbinom_raw(kj as f64, c.nf, c.p, c.q, true);
@@ -666,15 +702,23 @@ impl FisherExact {
         let nf = self.n64 as f64;
         let kf = self.k64 as f64;
         let j_star = if ncp <= 1.0 {
-            let a1 = 1.0 - ncp;
-            let b1 = ncp * (mf + kf + 2.0) + (nf - kf);
-            let c1 = ncp * (mf + 1.0) * (kf + 1.0);
-            let disc = (b1 * b1 + 4.0 * a1 * c1).max(0.0).sqrt();
-            let denom = b1 + disc;
-            if denom > 0.0 {
-                (2.0 * c1) / denom
+            let lf = self.lo64 as f64;
+            let ml = (mf + 1.0) - lf;
+            let kl = (kf + 1.0) - lf;
+            let nl = nf - kf + lf;
+            let c1 = ncp * ml * kl - lf * nl;
+            if c1 <= 0.0 {
+                lf
             } else {
-                self.lo64 as f64
+                let a1 = 1.0 - ncp;
+                let b1 = lf + nl + ncp * (ml + kl);
+                let disc = (b1 * b1 + 4.0 * a1 * c1).max(0.0).sqrt();
+                let denom = b1 + disc;
+                if denom <= 0.0 || !denom.is_finite() {
+                    lf
+                } else {
+                    lf + (2.0 * c1) / denom
+                }
             }
         } else {
             let eta = 1.0 / ncp;
@@ -827,6 +871,27 @@ impl FisherExact {
 
     fn calculate_p_value_unimodal(&mut self) {
         let x64 = i64::from(self.x);
+        if self.m64 + self.n64 > 0 && self.lo64 < self.hi64 {
+            let c = self.hyper_log_consts();
+            let mode1 = self.noncentral_mode_i64(1.0);
+            let logdc_mode = self.logdc_from_raw(self.raw_log_hyper_i64_fast(mode1, &c));
+            let logdc_x = self.logdc_from_raw(self.raw_log_hyper_i64_fast(x64, &c));
+            if logdc_x - logdc_mode < UNIMODAL_LOG_CUTOFF {
+                self.p_value_two_sided = 0.0;
+                if x64 < mode1 {
+                    self.p_value_less = 0.0;
+                    self.p_value_greater = 1.0;
+                } else {
+                    self.p_value_less = 1.0;
+                    self.p_value_greater = 0.0;
+                }
+                if x64 != self.lo64 && x64 != self.hi64 {
+                    self.mu_at_1 =
+                        (self.m64 as f64) * ((self.k64 as f64) / ((self.m64 + self.n64) as f64));
+                }
+                return;
+            }
+        }
         let mut density = Vec::new();
         let mut left_scratch = Vec::new();
         let mut raw_window = Vec::new();
@@ -1038,6 +1103,14 @@ const CM3_EXACT_STIRLING_ERRORS: [f64; 31] = [
     0.0057462165130101155,
     0.005554733551962801,
 ];
+
+#[inline]
+fn cm3_stirling_error_unimodal(z: f64) -> f64 {
+    if z > 20_000_000.0 {
+        return 0.08333333333333333 / z;
+    }
+    cm3_stirling_error(z)
+}
 
 /// Ports `org.apache.commons.math3.distribution.SaddlePointExpansion.getStirlingError`.
 #[inline]
@@ -2025,16 +2098,67 @@ mod tests {
             assert!(fe_wide.logdc.is_empty());
             assert_eq!(fe_wide.get_p_value(), 1.0);
             assert_eq!(fe_wide.get_odds_ratio(), "1");
+
+            // 2b. Fix Round 1: n < k (`lo64 = k - n > 0`) with observed `x` near `lo64`:
+            //     `(x, m, n, k) = (400_000_001, 1_000_000_000, 400_000_000, 800_000_000)` ->
+            //     `lo64 = 400_000_000`, `hi64 = 800_000_000`. Must NOT suffer `f64` cancellation
+            //     in `noncentral_mode_i64` for tiny `ncp <= 1.0` during `mnhyper` / `mle`.
+            let t_nk = std::time::Instant::now();
+            let fe_nk =
+                FisherExact::new_with_mode(400_000_001, 599_999_999, 399_999_999, 1, java_mode);
+            assert_eq!(fe_nk.lo64, 400_000_000);
+            assert_eq!(fe_nk.hi64, 800_000_000);
+            assert!(fe_nk.logdc.is_empty());
+            assert_eq!(fe_nk.noncentral_mode_i64(5e-17), 400_000_000);
+            assert_eq!(fe_nk.noncentral_mode_i64(1e-12), 400_000_000);
+
+            let mut win = Vec::new();
+            let mut left = Vec::new();
+            let w_lo = fe_nk.dnhyper_window_into(5e-17, &mut win, &mut left);
+            assert_eq!(w_lo, 400_000_000);
+            assert!(
+                win.len() <= 64 && win.capacity() <= 128,
+                "window at ncp=5e-17 must stay tiny, got len={} cap={}",
+                win.len(),
+                win.capacity()
+            );
+            let mu_tiny = fe_nk.mnhyper_with(5e-17, &mut win);
+            assert!(
+                (mu_tiny - 400_000_000.0).abs() < 1e-5,
+                "mnhyper(5e-17) expected ~400_000_000.0, got {mu_tiny}"
+            );
+            let or_nk = fe_nk.get_odds_ratio();
+            let elapsed_nk = t_nk.elapsed();
+            assert!(
+                !or_nk.is_empty() && or_nk != "NaN" && or_nk != "Inf",
+                "unexpected odds ratio for n < k near lo: {or_nk}"
+            );
+            assert!(
+                elapsed_nk < std::time::Duration::from_millis(50)
+                    || (cfg!(debug_assertions)
+                        && elapsed_nk < std::time::Duration::from_millis(500)),
+                "n < k ultra-high-depth FisherExact + mle + mnhyper(5e-17) (java={java_mode}) took {elapsed_nk:?}"
+            );
         }
 
         // 3. Direct accuracy verification against the dense path at `support_len = 1_000`
         //    (m = 999, n = 999, k = 999 -> lo = 0, hi = 999, support_len = 1_000) across
-        //    interior, symmetric, skewed, and extreme-tail tables in both R and `--fisher` modes.
-        for x in [0, 1, 15, 250, 480, 500, 520, 750, 985, 998, 999] {
-            let (rf, rr, af, ar) = (x, 999 - x, 999 - x, x);
+        //    interior, symmetric, skewed, and extreme-tail tables in both R and `--fisher` modes,
+        //    plus `n < k` (`lo = 500 > 0`) tables.
+        let mut accuracy_tables: Vec<(i32, i32, i32, i32)> =
+            [0, 1, 15, 250, 480, 500, 520, 750, 985, 998, 999]
+                .into_iter()
+                .map(|x| (x, 999 - x, 999 - x, x))
+                .collect();
+        for x in [500, 501, 505, 700, 899, 900] {
+            // m = 1200, n = 400, k = 900 -> lo = 500, hi = 900 (n < k, lo > 0)
+            accuracy_tables.push((x, 1_200 - x, 900 - x, x - 500));
+        }
+        for (rf, rr, af, ar) in accuracy_tables {
+            let x = rf;
             for java_mode in [false, true] {
                 let dense = FisherExact::new_with_mode(rf, rr, af, ar, java_mode);
-                assert_eq!(dense.support_len(), 1_000);
+                assert!(dense.support_len() <= 1_000 && !dense.use_unimodal);
                 let mut unimod = FisherExact {
                     m: dense.m,
                     n: dense.n,

@@ -700,6 +700,40 @@ impl<'a> ToVarsBuilder<'a> {
         if eff_end < eff_start {
             return;
         }
+        if (eff_end as i64) - (eff_start as i64) > crate::util::MAX_CONTIGUOUS_REF_SCAN
+            && self.reference.loaded_regions.len() > 1
+        {
+            let (subspans, span) = crate::util::merged_loaded_subspans(
+                self.reference,
+                &self.region.chr,
+                eff_start,
+                eff_end,
+            );
+            if out.capacity() == 0 {
+                out.reserve_exact(span);
+            } else {
+                out.reserve(span);
+            }
+            for (s, e) in subspans {
+                for p in s..=e {
+                    if let Some(b) = self.get_ref_base_i32(p) {
+                        if b.is_ascii() {
+                            out.push(b as char);
+                        } else {
+                            crate::util::ref_bases_into(
+                                out,
+                                self.reference,
+                                &self.region.chr,
+                                eff_start,
+                                eff_end,
+                            );
+                            return;
+                        }
+                    }
+                }
+            }
+            return;
+        }
         let span = ((eff_end as i64) - (eff_start as i64) + 1).clamp(0, 1 << 20) as usize;
         if out.capacity() == 0 {
             out.reserve_exact(span);
@@ -4231,6 +4265,90 @@ mod tests {
             t0.elapsed() < std::time::Duration::from_millis(25),
             "join_ref_into over 200 Mbp took {:?}",
             t0.elapsed()
+        );
+    }
+
+    #[test]
+    fn join_ref_into_and_complex_del_skip_disjoint_200mbp_unloaded_gap() {
+        let mut ref_genome = Reference::new();
+        let seq1: Vec<u8> = b"ACGT".repeat(325); // 1..=1_300 (1,300 bp)
+        let seq2: Vec<u8> = b"TGCA".repeat(200).into_iter().chain([b'G']).collect(); // 199_999_800..=200_000_600 (801 bp)
+        ref_genome.region_sequences.push(seq1.clone());
+        ref_genome
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 1,
+                sequence_end: 1_300,
+            });
+        ref_genome.region_sequences.push(seq2.clone());
+        ref_genome
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 199_999_800,
+                sequence_end: 200_000_600,
+            });
+
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: crate::types::Pos1(1),
+            end: crate::types::Pos1(1_000),
+            gene: "G".to_string(),
+            amplicon: None,
+        };
+        let mut chr_lengths = std::collections::HashMap::new();
+        chr_lengths.insert("chr1".to_string(), 250_000_000usize);
+        let cfg = Config::default();
+        let builder = ToVarsBuilder::new(&ref_genome, &region, &chr_lengths, &cfg);
+
+        // 1. Direct `join_ref_into` across a 200 Mbp unloaded gap between two `LoadedRegion`s.
+        let mut expected = String::from_utf8(seq1).unwrap();
+        expected.push_str(std::str::from_utf8(&seq2[..201]).unwrap());
+        assert_eq!(expected.len(), 1_501);
+
+        let t0 = std::time::Instant::now();
+        let mut out = String::new();
+        builder.join_ref_into(&mut out, 1, 200_000_000);
+        let elapsed = t0.elapsed();
+
+        assert_eq!(out, expected);
+        assert!(
+            out.capacity() <= 4_096,
+            "join_ref_into across 200 Mbp unloaded gap must reserve merged loaded span, got {}",
+            out.capacity()
+        );
+        assert!(
+            elapsed < std::time::Duration::from_millis(10),
+            "join_ref_into across 200 Mbp unloaded gap must complete in < 10 ms, took {elapsed:?}"
+        );
+
+        // 2. End-to-end reachability under default CLI flags (`-L 1000 -I 50 -k 1`):
+        //    `+A#C^200000000` at position 10 invokes `tovars.rs:1524` `join_ref_into` up to
+        //    `end_position + 200_000_000` without being gated by `sv_min_len`.
+        let mut vd = VariationData::default();
+        vd.ref_coverage.insert(10, 20);
+        let mut vmap = crate::variations::VariationMap::default();
+        let mut v = crate::variations::Variation::default();
+        v.cnt = 10;
+        v.hicnt = 10;
+        v.pmean = 200.0;
+        v.qmean = 350.0;
+        v.mqmean = 600.0;
+        v.qstd = true;
+        v.pstd = true;
+        vmap.map.insert("+A#C^200000000".to_string(), v);
+        vd.non_insertion_variants.insert(10, vmap);
+
+        let t1 = std::time::Instant::now();
+        let built = builder
+            .build_vars_at_position(&vd, 10)
+            .expect("expected variant at pos 10");
+        let elapsed_e2e = t1.elapsed();
+        assert_eq!(built.variants.len(), 1);
+        assert!(
+            elapsed_e2e < std::time::Duration::from_millis(10),
+            "build_vars_at_position for +A#C^200000000 across 200 Mbp gap took {elapsed_e2e:?}"
         );
     }
 }
