@@ -27,12 +27,14 @@ process VARDICTRUST {
     if (!(prefix ==~ /^[A-Za-z0-9._-]+$/)) { error "Unsafe task.ext.prefix: ${prefix}" }
     if (!("${meta.id}" ==~ /^[A-Za-z0-9._|-]+$/)) { error "Unsafe meta.id: ${meta.id}" }
 
+    def shQuote = { s -> "'" + s.toString().replace("'", "'\"'\"'") + "'" }
     // A lone BAM may arrive as a 1-element List; unwrap it so it never mis-dispatches as somatic
     def bam_input = bams instanceof List && bams.size() == 1 ? bams[0] : bams
     def somatic = bam_input instanceof List && bam_input.size() == 2
-    // Single-quoted Groovy: the emitted shell keeps -b "tumor|normal" double-quoted so | is never a pipe
-    def input = somatic ? '-b "' + bam_input[0] + '|' + bam_input[1] + '"' : '-b "' + bam_input + '"'
-    def bed_arg = bed ? "\"${bed}\"" : ""
+    // Single-quote staged paths so |, $, `, and " in filenames are never expanded by Bash
+    def input = somatic ? '-b ' + shQuote(bam_input[0].toString() + '|' + bam_input[1].toString()) : '-b ' + shQuote(bam_input)
+    def fasta_arg = shQuote(fasta)
+    def bed_arg = bed ? shQuote(bed) : ""
     """
     set -o pipefail
 
@@ -41,7 +43,7 @@ process VARDICTRUST {
         ${input} \\
         -N "${meta.id}" \\
         --threads ${task.cpus} \\
-        -G "${fasta}" \\
+        -G ${fasta_arg} \\
         ${bed_arg} \\
         | bgzip ${args2} --threads ${task.cpus} > "${prefix}.vcf.gz"
     """

@@ -16,7 +16,7 @@ runs:
       uses: conda-incubator/setup-miniconda@be893c923ea9cf1cf7cd510fbdde27c7e18cbdcb # v4.1.0
       with:
         auto-activate: true
-        miniconda-version: "py312_24.9.2-0"
+        miniconda-version: "py314_26.9.4-1"
         channels: conda-forge, bioconda
         conda-remove-defaults: "true"
 

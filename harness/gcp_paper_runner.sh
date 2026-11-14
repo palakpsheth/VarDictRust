@@ -64,6 +64,13 @@ ensure_safe_work_dir() {
     echo "FATAL: unsafe WORK_DIR '$WORK_DIR' (must be an owned non-symlink directory)" >&2
     exit 1
   fi
+  chmod 0700 "$WORK_DIR"
+  case "$(ls -ld "$WORK_DIR" | awk '{print $1}')" in
+    d????w*|d???????w*)
+      echo "FATAL: unsafe WORK_DIR '$WORK_DIR' remains group/world-writable after chmod 0700" >&2
+      exit 1
+      ;;
+  esac
 }
 
 usage() {
@@ -4022,6 +4029,13 @@ if [ ! -d \"\${WORK_DIR}\" ] || [ -L \"\${WORK_DIR}\" ] || [ ! -O \"\${WORK_DIR}
   echo \"FATAL: unsafe WORK_DIR '\${WORK_DIR}'\" >&2
   exit 1
 fi
+chmod 0700 \"\${WORK_DIR}\"
+case \"\$(ls -ld \"\${WORK_DIR}\" | awk '{print \$1}')\" in
+  d????w*|d???????w*)
+    echo \"FATAL: unsafe WORK_DIR '\${WORK_DIR}' remains group/world-writable\" >&2
+    exit 1
+    ;;
+esac
 exec > >(tee -a \"\${WORK_DIR}/worker.log\") 2>&1
 echo \"[VM Bootstrap] Starting at \$(date -u +%Y-%m-%dT%H:%M:%SZ) (stage=${worker_stage})\"
 if ! command -v git >/dev/null || ! command -v gsutil >/dev/null || ! command -v cmake >/dev/null; then

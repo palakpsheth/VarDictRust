@@ -107,6 +107,8 @@ fn load_contigs_from_fai_checked(reference_path: &str) -> io::Result<Vec<(String
     }
 
     let mut contigs = Vec::with_capacity(non_comment_lines.len());
+    let mut seen_names: std::collections::HashSet<&[u8]> =
+        std::collections::HashSet::with_capacity(non_comment_lines.len());
     for line in non_comment_lines {
         let mut parts = line
             .split(|&b| b.is_ascii_whitespace())
@@ -119,6 +121,16 @@ fn load_contigs_from_fai_checked(reference_path: &str) -> io::Result<Vec<(String
                 io::ErrorKind::InvalidData,
                 format!(
                     "Invalid contig name '{}' in FASTA index '{}'",
+                    crate::util::SanitizedBytes(name_bytes),
+                    fai_path.display()
+                ),
+            ));
+        }
+        if !seen_names.insert(name_bytes) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "Duplicate contig name '{}' in FASTA index '{}'",
                     crate::util::SanitizedBytes(name_bytes),
                     fai_path.display()
                 ),

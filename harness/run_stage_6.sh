@@ -18,6 +18,13 @@ ensure_vcf_clean_helper() {
     echo "FATAL: unsafe WORK_DIR '$WORK_DIR' (must be an owned non-symlink directory)" >&2
     return 1
   fi
+  chmod 0700 "$WORK_DIR"
+  case "$(ls -ld "$WORK_DIR" | awk '{print $1}')" in
+    d????w*|d???????w*)
+      echo "FATAL: unsafe WORK_DIR '$WORK_DIR' remains group/world-writable after chmod 0700" >&2
+      return 1
+      ;;
+  esac
   local helper_py="${WORK_DIR}/vcf_clean_chr1_22.py"
   local tmp_py
   tmp_py="$(mktemp "${WORK_DIR}/.vcf_clean.py.XXXXXX")"

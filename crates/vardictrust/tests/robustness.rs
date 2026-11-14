@@ -6149,7 +6149,7 @@ fn malformed_fai_invariants_and_contig_injection_fail_before_vcf_header() {
     std::fs::copy(&src_bai, dir.path().join("micro.bam.bai")).expect("copy micro.bam.bai");
 
     let seq = "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT";
-    let cases: [(&str, &str, &str); 5] = [
+    let cases: [(&str, &str, &str); 7] = [
         ("lbc_gt_lw", "chr1\t60\t6\t61\t60\n", "exceeds line_width"),
         (
             "end_offset_overflow",
@@ -6170,6 +6170,16 @@ fn malformed_fai_invariants_and_contig_injection_fail_before_vcf_header() {
             "ctrl_contig_2col",
             "chr1\t60\nchr2\x01evil\t60\n",
             "Invalid contig name",
+        ),
+        (
+            "dup_contig_5col",
+            "chr1\t60\t6\t60\t61\nchr1\t60\t73\t60\t61\n",
+            "Duplicate contig name",
+        ),
+        (
+            "dup_contig_2col",
+            "chr1\t60\nchr1\t60\n",
+            "Duplicate contig name",
         ),
     ];
 

@@ -710,7 +710,9 @@ class TestRepoAgentSkills(unittest.TestCase):
             2,
             "main.nf must validate meta.id independently in both script: and stub:",
         )
-        self.assertIn('-G "${fasta}"', nf_main_text)
+        self.assertIn("def shQuote =", nf_main_text)
+        self.assertIn("def fasta_arg = shQuote(fasta)", nf_main_text)
+        self.assertIn("-G ${fasta_arg}", nf_main_text)
         self.assertEqual(
             nf_main_text.count('> "${prefix}.vcf.gz"'),
             2,

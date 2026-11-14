@@ -307,11 +307,20 @@ pub(crate) fn parse_validated_fai_bytes(
         .read_index()
         .map_err(VardictError::Io)?;
 
+    let mut seen_names: std::collections::HashSet<&[u8]> =
+        std::collections::HashSet::with_capacity(index.as_ref().len());
     for rec in index.as_ref() {
         let name_bytes: &[u8] = rec.name().as_ref();
         if !is_valid_contig_name_bytes(name_bytes) {
             return Err(VardictError::Parse(format!(
                 "Invalid contig name '{}' in FASTA index '{}'",
+                crate::util::SanitizedBytes(name_bytes),
+                fai_path.display()
+            )));
+        }
+        if !seen_names.insert(name_bytes) {
+            return Err(VardictError::Parse(format!(
+                "Duplicate contig name '{}' in FASTA index '{}'",
                 crate::util::SanitizedBytes(name_bytes),
                 fai_path.display()
             )));
@@ -2481,6 +2490,19 @@ mod tests {
         assert!(
             fetch_subsequence(&bad_contig_fa, "chr1,evil", Pos1(1), Pos1(4)).is_err(),
             "fetch_subsequence must reject .fai contig containing ','"
+        );
+
+        let dup_contig_fa = dir.path().join("dup_contig.fa");
+        fs::write(&dup_contig_fa, b">chr1\nACGT\n>chr1\nTGCA\n").unwrap();
+        fs::write(
+            dir.path().join("dup_contig.fa.fai"),
+            b"chr1\t4\t6\t4\t5\nchr1\t4\t17\t4\t5\n",
+        )
+        .unwrap();
+        let dup_err = fetch_subsequence(&dup_contig_fa, "chr1", Pos1(1), Pos1(4)).unwrap_err();
+        assert!(
+            dup_err.to_string().contains("Duplicate contig name"),
+            "expected Duplicate contig name error, got: {dup_err}"
         );
 
         let hla_fa = dir.path().join("hla_ok.fa");
