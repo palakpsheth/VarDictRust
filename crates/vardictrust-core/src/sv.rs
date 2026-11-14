@@ -331,31 +331,50 @@ pub fn find_match(
     chr: &str,
     verbose: bool,
 ) -> Match {
-    let mut seq_vec = seq.to_vec();
-    if dir == -1 {
-        seq_vec.reverse();
-    }
-
-    if verbose {
-        crate::verbose_eprintln!(
-            "    Working Match {} {} {} SEED: {}",
-            position,
-            String::from_utf8_lossy(&seq_vec),
-            dir,
-            seed_len
-        );
-    }
-
-    let mut extra_slice: &[u8] = &[];
-    if seq_vec.len() < seed_len {
+    if !verbose && seq.len() < seed_len {
         return Match {
             base_position: 0,
             matched_sequence: Vec::new(),
         };
     }
 
-    for i in (0..=seq_vec.len() - seed_len).rev() {
-        let Some(seed) = seq_vec.get(i..i + seed_len) else {
+    let mut stack_buf = [0u8; 512];
+    let mut heap_buf: Vec<u8>;
+    let seq_slice: &[u8] = if dir == -1 {
+        if let Some(dst) = stack_buf.get_mut(..seq.len()) {
+            for (d, &s) in dst.iter_mut().zip(seq.iter().rev()) {
+                *d = s;
+            }
+            dst
+        } else {
+            heap_buf = seq.to_vec();
+            heap_buf.reverse();
+            heap_buf.as_slice()
+        }
+    } else {
+        seq
+    };
+
+    if verbose {
+        crate::verbose_eprintln!(
+            "    Working Match {} {} {} SEED: {}",
+            position,
+            String::from_utf8_lossy(seq_slice),
+            dir,
+            seed_len
+        );
+    }
+
+    let mut extra_slice: &[u8] = &[];
+    if seq_slice.len() < seed_len {
+        return Match {
+            base_position: 0,
+            matched_sequence: Vec::new(),
+        };
+    }
+
+    for i in (0..=seq_slice.len() - seed_len).rev() {
+        let Some(seed) = seq_slice.get(i..i + seed_len) else {
             continue;
         };
         if let Some([first_seed_u32]) = reference.seed.get(seed) {
@@ -363,16 +382,16 @@ pub fn find_match(
             let mut bp64 = if dir == 1 {
                 first_seed64 - (i as i64)
             } else {
-                first_seed64 + (seq_vec.len() as i64) - (i as i64) - 1
+                first_seed64 + (seq_slice.len() as i64) - (i as i64) - 1
             };
 
             if i32::try_from(bp64).ok().is_some_and(|bp| {
-                crate::realign::is_match_ref(&seq_vec, reference, chr, bp, dir, mm_limit)
+                crate::realign::is_match_ref(seq_slice, reference, chr, bp, dir, mm_limit)
             }) {
                 let mut extra = extra_slice.to_vec();
                 let mut mm = if dir == -1 { -1 } else { 0 };
                 loop {
-                    if let Some(ch) = crate::util::char_at(&seq_vec, mm) {
+                    if let Some(ch) = crate::util::char_at(seq_slice, mm) {
                         if is_has_and_not_equals_i64(reference, chr, bp64, ch) {
                             extra.push(ch);
                             bp64 += i64::from(dir);
@@ -397,7 +416,7 @@ pub fn find_match(
                         position,
                         String::from_utf8_lossy(seed),
                         i,
-                        String::from_utf8_lossy(&seq_vec),
+                        String::from_utf8_lossy(seq_slice),
                         String::from_utf8_lossy(&extra)
                     );
                 }
@@ -407,7 +426,7 @@ pub fn find_match(
                 };
             } else {
                 // For complex indels, allowing some mismatches at the end up to 15bp or 20% length
-                let mut sseq: &[u8] = &seq_vec;
+                let mut sseq: &[u8] = seq_slice;
                 let mut eqcnt = 0;
                 let mut bp_mut64 = bp64;
                 for ii in 1..=15 {
@@ -426,7 +445,7 @@ pub fn find_match(
                         }) {
                             continue;
                         }
-                        extra_slice = seq_vec.get(..ii).unwrap_or(&seq_vec);
+                        extra_slice = seq_slice.get(..ii).unwrap_or(seq_slice);
                     } else {
                         sseq = sseq.get(..sseq.len().saturating_sub(1)).unwrap_or(&[]);
                         let Some(last) = crate::util::char_at(sseq, -1) else {
@@ -441,9 +460,9 @@ pub fn find_match(
                         }) {
                             continue;
                         }
-                        extra_slice = seq_vec
-                            .get(seq_vec.len().saturating_sub(ii)..)
-                            .unwrap_or(&seq_vec);
+                        extra_slice = seq_slice
+                            .get(seq_slice.len().saturating_sub(ii)..)
+                            .unwrap_or(seq_slice);
                     }
 
                     if eqcnt >= 3 && (eqcnt as f64) / (ii as f64) > 0.5 {
@@ -458,7 +477,7 @@ pub fn find_match(
                             position,
                             String::from_utf8_lossy(seed),
                             i,
-                            String::from_utf8_lossy(&seq_vec),
+                            String::from_utf8_lossy(seq_slice),
                             String::from_utf8_lossy(extra_slice)
                         );
                     }
@@ -492,47 +511,70 @@ pub fn find_match_rev(
     chr: &str,
     verbose: bool,
 ) -> Match {
-    let mut seq_vec = seq.to_vec();
-    if dir == 1 {
-        seq_vec.reverse();
-    }
-    for base in seq_vec.iter_mut() {
-        *base = crate::util::complement(*base);
-    }
-
-    if verbose {
-        crate::verbose_eprintln!(
-            "    Working MatchRev {} {} {} SEED: {}",
-            position,
-            String::from_utf8_lossy(&seq_vec),
-            dir,
-            seed_len
-        );
-    }
-
-    let mut extra_slice: &[u8] = &[];
-    if seq_vec.len() < seed_len {
+    if !verbose && seq.len() < seed_len {
         return Match {
             base_position: 0,
             matched_sequence: Vec::new(),
         };
     }
 
-    for i in (0..=seq_vec.len() - seed_len).rev() {
-        let Some(seed) = seq_vec.get(i..i + seed_len) else {
+    let mut stack_buf = [0u8; 512];
+    let mut heap_buf: Vec<u8>;
+    let seq_slice: &[u8] = if let Some(dst) = stack_buf.get_mut(..seq.len()) {
+        if dir == 1 {
+            for (d, &s) in dst.iter_mut().zip(seq.iter().rev()) {
+                *d = crate::util::complement(s);
+            }
+        } else {
+            for (d, &s) in dst.iter_mut().zip(seq.iter()) {
+                *d = crate::util::complement(s);
+            }
+        }
+        dst
+    } else {
+        heap_buf = seq.to_vec();
+        if dir == 1 {
+            heap_buf.reverse();
+        }
+        for base in heap_buf.iter_mut() {
+            *base = crate::util::complement(*base);
+        }
+        heap_buf.as_slice()
+    };
+
+    if verbose {
+        crate::verbose_eprintln!(
+            "    Working MatchRev {} {} {} SEED: {}",
+            position,
+            String::from_utf8_lossy(seq_slice),
+            dir,
+            seed_len
+        );
+    }
+
+    let mut extra_slice: &[u8] = &[];
+    if seq_slice.len() < seed_len {
+        return Match {
+            base_position: 0,
+            matched_sequence: Vec::new(),
+        };
+    }
+
+    for i in (0..=seq_slice.len() - seed_len).rev() {
+        let Some(seed) = seq_slice.get(i..i + seed_len) else {
             continue;
         };
         if let Some([first_seed_u32]) = reference.seed.get(seed) {
             let first_seed64 = i64::from(*first_seed_u32);
             let bp64 = if dir == 1 {
-                first_seed64 + (seq_vec.len() as i64) - (i as i64) - 1
+                first_seed64 + (seq_slice.len() as i64) - (i as i64) - 1
             } else {
                 first_seed64 - (i as i64)
             };
 
             if let Ok(bp) = i32::try_from(bp64) {
                 if crate::realign::is_match_ref(
-                    &seq_vec,
+                    seq_slice,
                     reference,
                     chr,
                     bp,
@@ -548,7 +590,7 @@ pub fn find_match_rev(
                             position,
                             String::from_utf8_lossy(seed),
                             i,
-                            String::from_utf8_lossy(&seq_vec)
+                            String::from_utf8_lossy(seq_slice)
                         );
                     }
                     return Match {
@@ -558,7 +600,7 @@ pub fn find_match_rev(
                 }
             }
             // For complex indels, allowing some mismatches at the end up to 15bp or 20% length
-            let mut sseq: &[u8] = &seq_vec;
+            let mut sseq: &[u8] = seq_slice;
             let mut eqcnt = 0;
             let mut bp_mut64 = bp64;
             for ii in 1..=15 {
@@ -577,7 +619,7 @@ pub fn find_match_rev(
                     }) {
                         continue;
                     }
-                    extra_slice = seq_vec.get(..ii).unwrap_or(&seq_vec);
+                    extra_slice = seq_slice.get(..ii).unwrap_or(seq_slice);
                 } else {
                     sseq = sseq.get(..sseq.len().saturating_sub(1)).unwrap_or(&[]);
                     let Some(last) = crate::util::char_at(sseq, -1) else {
@@ -592,9 +634,9 @@ pub fn find_match_rev(
                     }) {
                         continue;
                     }
-                    extra_slice = seq_vec
-                        .get(seq_vec.len().saturating_sub(ii)..)
-                        .unwrap_or(&seq_vec);
+                    extra_slice = seq_slice
+                        .get(seq_slice.len().saturating_sub(ii)..)
+                        .unwrap_or(seq_slice);
                 }
 
                 if eqcnt >= 3 && (eqcnt as f64) / (ii as f64) > 0.5 {
@@ -609,7 +651,7 @@ pub fn find_match_rev(
                         position,
                         String::from_utf8_lossy(seed),
                         i,
-                        String::from_utf8_lossy(&seq_vec),
+                        String::from_utf8_lossy(seq_slice),
                         String::from_utf8_lossy(extra_slice)
                     );
                 }
@@ -858,7 +900,7 @@ pub fn find_inv_sub(
 ) -> Result<(), VardictError> {
     let minr = i32::try_from(config.min_reads).unwrap_or(i32::MAX);
     let verbose = config.verbose;
-    let (adaptor_forward, adaptor_reverse) = crate::realign::fill_adaptor_maps(&config.adaptor);
+    let (adaptor_forward, adaptor_reverse) = crate::realign::fill_adaptor_sets(&config.adaptor);
     let max_read_length = var_data.max_read_length;
 
     let n = match svref_idx {
@@ -962,7 +1004,7 @@ pub fn find_inv_sub(
             if scv_mut.used {
                 continue;
             }
-            seq = crate::variations::util::find_conseq(
+            seq = crate::variations::util::find_conseq_sets(
                 scv_mut,
                 0,
                 &adaptor_forward,
@@ -1002,7 +1044,7 @@ pub fn find_inv_sub(
                 if scv_mut.used {
                     continue;
                 }
-                let seq_check = crate::variations::util::find_conseq(
+                let seq_check = crate::variations::util::find_conseq_sets(
                     scv_mut,
                     0,
                     &adaptor_forward,
@@ -1371,7 +1413,7 @@ pub fn find_del(
 ) -> Result<(), VardictError> {
     let minr = i32::try_from(config.min_reads).unwrap_or(i32::MAX);
     let verbose = config.verbose;
-    let (adaptor_forward, adaptor_reverse) = crate::realign::fill_adaptor_maps(&config.adaptor);
+    let (adaptor_forward, adaptor_reverse) = crate::realign::fill_adaptor_sets(&config.adaptor);
 
     // 5' deletion softclips
     let n_svfdel = var_data.sv_structures.svfdel.len();
@@ -1412,7 +1454,7 @@ pub fn find_del(
                 }
             };
 
-            let seq = crate::variations::util::find_conseq(
+            let seq = crate::variations::util::find_conseq_sets(
                 &mut scv,
                 0,
                 &adaptor_forward,
@@ -1591,7 +1633,7 @@ pub fn find_del(
                 {
                     continue;
                 }
-                let seq = crate::variations::util::find_conseq(
+                let seq = crate::variations::util::find_conseq_sets(
                     scv,
                     0,
                     &adaptor_forward,
@@ -1732,7 +1774,7 @@ pub fn find_del(
                 None => continue,
             };
 
-            let seq = crate::variations::util::find_conseq(
+            let seq = crate::variations::util::find_conseq_sets(
                 &mut scv,
                 0,
                 &adaptor_forward,
@@ -1876,7 +1918,7 @@ pub fn find_del(
                 {
                     continue;
                 }
-                let seq = crate::variations::util::find_conseq(
+                let seq = crate::variations::util::find_conseq_sets(
                     scv,
                     0,
                     &adaptor_forward,
@@ -2000,7 +2042,7 @@ pub fn find_sv(
 ) -> Result<(), VardictError> {
     let minr = i32::try_from(config.min_reads).unwrap_or(i32::MAX);
     let verbose = config.verbose;
-    let (adaptor_forward, adaptor_reverse) = crate::realign::fill_adaptor_maps(&config.adaptor);
+    let (adaptor_forward, adaptor_reverse) = crate::realign::fill_adaptor_sets(&config.adaptor);
 
     // Ports StructuralVariantsProcessor.java:973 fillAndSortTmpSV:
     // if (position < CURSEG.start || position > CURSEG.end) continue;
@@ -2061,8 +2103,12 @@ pub fn find_sv(
             let Some(sc5v) = var_data.soft_clips_5_end.get_mut(&p5) else {
                 continue;
             };
-            let seq =
-                crate::variations::util::find_conseq(sc5v, 0, &adaptor_forward, &adaptor_reverse);
+            let seq = crate::variations::util::find_conseq_sets(
+                sc5v,
+                0,
+                &adaptor_forward,
+                &adaptor_reverse,
+            );
             (seq, sc5v.variation.clone())
         };
         if seq.is_empty() || seq.len() < 12 {
@@ -2258,8 +2304,12 @@ pub fn find_sv(
             let Some(sc3v) = var_data.soft_clips_3_end.get_mut(&p3) else {
                 continue;
             };
-            let seq =
-                crate::variations::util::find_conseq(sc3v, 0, &adaptor_forward, &adaptor_reverse);
+            let seq = crate::variations::util::find_conseq_sets(
+                sc3v,
+                0,
+                &adaptor_forward,
+                &adaptor_reverse,
+            );
             (seq, sc3v.variation.clone())
         };
 
@@ -3094,7 +3144,7 @@ pub fn find_dup_disc(
 ) -> Result<(), VardictError> {
     let min_reads_plus_5 = i64::from(config.min_reads) + 5;
     let verbose = config.verbose;
-    let (adaptor_forward, adaptor_reverse) = crate::realign::fill_adaptor_maps(&config.adaptor);
+    let (adaptor_forward, adaptor_reverse) = crate::realign::fill_adaptor_sets(&config.adaptor);
 
     let n_svfdup = var_data.sv_structures.svfdup.len();
     for idx in 0..n_svfdup {
@@ -3187,7 +3237,7 @@ pub fn find_dup_disc(
             pmeanf = current_sclip3.variation.pmean;
             nmf = current_sclip3.variation.nm;
 
-            let seq = crate::variations::util::find_conseq(
+            let seq = crate::variations::util::find_conseq_sets(
                 &mut current_sclip3,
                 0,
                 &adaptor_forward,
@@ -3407,7 +3457,7 @@ pub fn find_dup_disc(
             pmeanr = current_sclip5.variation.pmean;
             nmr = current_sclip5.variation.nm;
 
-            let seq = crate::variations::util::find_conseq(
+            let seq = crate::variations::util::find_conseq_sets(
                 &mut current_sclip5,
                 0,
                 &adaptor_forward,

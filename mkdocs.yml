@@ -69,6 +69,7 @@ validation:
 
 nav:
   - Overview: README.md
+  - Migration Guide: docs/migration.md
   - Empirical Validation:
       - Benchmark Ledger: benchmarks/README.md
       - HG008 V0.4 Data Guide: benchmarks/hg008-v04-guide.md

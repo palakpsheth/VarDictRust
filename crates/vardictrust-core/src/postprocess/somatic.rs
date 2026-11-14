@@ -6,6 +6,7 @@
 //! LikelyLOH, AFDiff, SampleSpecific, Deletion, StrongLOH).
 
 use crate::config::Config;
+use crate::javamap::JavaHashMap;
 use crate::regions::Region;
 use crate::types::VardictError;
 use crate::variations::{Variant, Vars};
@@ -18,7 +19,17 @@ pub type PipelineFn<'a> = dyn Fn(
         &Region,
         &mut rustc_hash::FxHashSet<String>,
         &mut i32,
-    ) -> Result<crate::javamap::JavaHashMap<i32, Vars>, VardictError>
+    ) -> Result<JavaHashMap<i32, Vars>, VardictError>
+    + 'a;
+
+/// Single-position combine callback returning finalized [`Vars`] only at `target_pos`
+/// (the outer `aligned_variants` pileup map key, `SomaticPostProcessModule.java:198,307,408`).
+pub type PositionPipelineFn<'a> = dyn Fn(
+        &Region,
+        &mut rustc_hash::FxHashSet<String>,
+        &mut i32,
+        i32,
+    ) -> Result<Option<Vars>, VardictError>
     + 'a;
 
 // STATUS constants matching VarDictJava's SomaticPostProcessModule
@@ -59,19 +70,20 @@ pub struct SomaticVariant {
     pub end_is_variant2: bool,
 }
 
-/// Performs somatic analysis of variants from both samples (BAM1 and BAM2).
+/// Performs somatic analysis of variants from both samples (BAM1 and BAM2)
+/// using a single-position combine callback [`PositionPipelineFn`].
 ///
 /// Merges all positions from both samples' aligned variants, then for each
 /// position in the region determines the somatic STATUS.
 ///
 /// Ports `SomaticPostProcessModule.accept()`.
-pub fn somatic_post_process(
+pub fn somatic_post_process_at(
     config: &Config,
     region: &Region,
-    aligned_variants_bam1: &crate::javamap::JavaHashMap<i32, Vars>,
-    aligned_variants_bam2: &crate::javamap::JavaHashMap<i32, Vars>,
+    aligned_variants_bam1: &JavaHashMap<i32, Vars>,
+    aligned_variants_bam2: &JavaHashMap<i32, Vars>,
     splice: &rustc_hash::FxHashSet<String>,
-    pipeline: Option<&PipelineFn<'_>>,
+    pipeline: Option<&PositionPipelineFn<'_>>,
     max_read_length: i32,
 ) -> Vec<SomaticVariant> {
     let mut results = Vec::new();
@@ -121,6 +133,50 @@ pub fn somatic_post_process(
     }
 
     results
+}
+
+/// Performs somatic analysis of variants from both samples (BAM1 and BAM2).
+///
+/// Wraps [`PipelineFn`] as a [`PositionPipelineFn`] and delegates to
+/// [`somatic_post_process_at`].
+pub fn somatic_post_process(
+    config: &Config,
+    region: &Region,
+    aligned_variants_bam1: &JavaHashMap<i32, Vars>,
+    aligned_variants_bam2: &JavaHashMap<i32, Vars>,
+    splice: &rustc_hash::FxHashSet<String>,
+    pipeline: Option<&PipelineFn<'_>>,
+    max_read_length: i32,
+) -> Vec<SomaticVariant> {
+    if let Some(pipe) = pipeline {
+        let adapted = |comb_region: &Region,
+                       splice_set: &mut rustc_hash::FxHashSet<String>,
+                       max_rl: &mut i32,
+                       target_pos: i32|
+         -> Result<Option<Vars>, VardictError> {
+            let mut vars_map = pipe(comb_region, splice_set, max_rl)?;
+            Ok(vars_map.remove(&target_pos))
+        };
+        somatic_post_process_at(
+            config,
+            region,
+            aligned_variants_bam1,
+            aligned_variants_bam2,
+            splice,
+            Some(&adapted),
+            max_read_length,
+        )
+    } else {
+        somatic_post_process_at(
+            config,
+            region,
+            aligned_variants_bam1,
+            aligned_variants_bam2,
+            splice,
+            None,
+            max_read_length,
+        )
+    }
 }
 
 /// Implements variations analysis from one sample.
@@ -198,7 +254,7 @@ fn calling_for_both_samples(
     chr: &str,
     splice: &mut std::borrow::Cow<'_, rustc_hash::FxHashSet<String>>,
     results: &mut Vec<SomaticVariant>,
-    pipeline: Option<&PipelineFn<'_>>,
+    pipeline: Option<&PositionPipelineFn<'_>>,
     max_read_length: &mut i32,
 ) {
     if v1.variants.is_empty() && v2.variants.is_empty() {
@@ -244,7 +300,7 @@ fn print_variations_from_first_sample(
     chr: &str,
     splice: &mut std::borrow::Cow<'_, rustc_hash::FxHashSet<String>>,
     results: &mut Vec<SomaticVariant>,
-    pipeline: Option<&PipelineFn<'_>>,
+    pipeline: Option<&PositionPipelineFn<'_>>,
     max_read_length: &mut i32,
 ) {
     let mut number_of_processed_variation: usize = 0;
@@ -442,7 +498,7 @@ fn print_variations_from_second_sample(
     position: i32,
     splice: &mut std::borrow::Cow<'_, rustc_hash::FxHashSet<String>>,
     results: &mut Vec<SomaticVariant>,
-    pipeline: Option<&PipelineFn<'_>>,
+    pipeline: Option<&PositionPipelineFn<'_>>,
     max_read_length: &mut i32,
 ) {
     for v2var_orig in &v2.variants {
@@ -565,7 +621,7 @@ enum CombineVerdict {
 /// :408), NOT by the variant's own start_pos.
 fn combine_analysis(
     config: &Config,
-    pipeline: &PipelineFn<'_>,
+    pipeline: &PositionPipelineFn<'_>,
     variant1: &Variant,
     chr: &str,
     position: i32,
@@ -594,7 +650,9 @@ fn combine_analysis(
     // continues from the next position; abort only after >10 continued exceptions
     // (Utils.java:261-278, Configuration.java:300). The port keeps the FALSE-skip
     // control flow but emits the error instead of swallowing it.
-    let combined_vars = match pipeline(&region, splice.to_mut(), max_read_length) {
+    // Always pass the outer `aligned_variants` pileup map key `position` (never
+    // `variant1.start_pos`, which `ToVarsBuilder` shifts on deletions/`+AT&GC`/`-3`).
+    let combined_vars = match pipeline(&region, splice.to_mut(), max_read_length, position) {
         Ok(vars) => vars,
         Err(e) => {
             if config.verbose {
@@ -609,7 +667,7 @@ fn combine_analysis(
 
     // Look up by ITERATION position key and description in the map (:408).
     let Some(combined_var) = combined_vars
-        .get(&position)
+        .as_ref()
         .and_then(|pv| pv.variant_by_desc(variant1.description.as_str()))
     else {
         // vref == null → FALSE (:475)
@@ -1105,6 +1163,29 @@ mod tests {
 
     // ---- Category 11: combineAnalysis (SomaticPostProcessModule.java:385-476) ----
 
+    fn adapt_pipeline<'a, F>(
+        pipe: &'a F,
+    ) -> impl Fn(
+        &Region,
+        &mut rustc_hash::FxHashSet<String>,
+        &mut i32,
+        i32,
+    ) -> Result<Option<Vars>, VardictError>
+           + 'a
+    where
+        F: Fn(
+                &Region,
+                &mut rustc_hash::FxHashSet<String>,
+                &mut i32,
+            ) -> Result<JavaHashMap<i32, Vars>, VardictError>
+            + ?Sized,
+    {
+        move |comb_region, splice_set, max_rl, target_pos| {
+            let mut vars_map = pipe(comb_region, splice_set, max_rl)?;
+            Ok(vars_map.remove(&target_pos))
+        }
+    }
+
     fn make_insertion_variant() -> Variant {
         // Non-SNV, description longer than 10 chars and low coverage so the
         // combineAnalysis gate opens; Insertion type keeps adj_complex inert.
@@ -1159,19 +1240,12 @@ mod tests {
         let config = test_config();
         let v = make_insertion_variant();
         let pipeline = combined_pipeline(150, None, 0, 0);
+        let adapted = adapt_pipeline(&pipeline);
         let empty_splice = rustc_hash::FxHashSet::default();
         let mut splice = std::borrow::Cow::Borrowed(&empty_splice);
         let mut max_rl = 150;
         assert!(matches!(
-            combine_analysis(
-                &config,
-                &pipeline,
-                &v,
-                "chr1",
-                150,
-                &mut splice,
-                &mut max_rl
-            ),
+            combine_analysis(&config, &adapted, &v, "chr1", 150, &mut splice, &mut max_rl),
             CombineVerdict::Skip
         ));
     }
@@ -1185,19 +1259,12 @@ mod tests {
         let mut v = make_insertion_variant();
         v.start_pos = 148; // differs from iteration key 150
         let pipeline = combined_pipeline(150, Some("+GAACCACTGAGACAGGA"), 3, 10);
+        let adapted = adapt_pipeline(&pipeline);
         let empty_splice = rustc_hash::FxHashSet::default();
         let mut splice = std::borrow::Cow::Borrowed(&empty_splice);
         let mut max_rl = 150;
         assert!(matches!(
-            combine_analysis(
-                &config,
-                &pipeline,
-                &v,
-                "chr1",
-                150,
-                &mut splice,
-                &mut max_rl
-            ),
+            combine_analysis(&config, &adapted, &v, "chr1", 150, &mut splice, &mut max_rl),
             CombineVerdict::Keep
         ));
     }
@@ -1208,19 +1275,12 @@ mod tests {
         let config = test_config();
         let v = make_insertion_variant(); // pc=3
         let pipeline = combined_pipeline(150, Some("+GAACCACTGAGACAGGA"), 4, 20); // delta=1 < minr=2
+        let adapted = adapt_pipeline(&pipeline);
         let empty_splice = rustc_hash::FxHashSet::default();
         let mut splice = std::borrow::Cow::Borrowed(&empty_splice);
         let mut max_rl = 150;
         assert!(matches!(
-            combine_analysis(
-                &config,
-                &pipeline,
-                &v,
-                "chr1",
-                150,
-                &mut splice,
-                &mut max_rl
-            ),
+            combine_analysis(&config, &adapted, &v, "chr1", 150, &mut splice, &mut max_rl),
             CombineVerdict::Keep
         ));
     }
@@ -1231,19 +1291,12 @@ mod tests {
         let config = test_config();
         let v = make_insertion_variant(); // pc=3
         let pipeline = combined_pipeline(150, Some("+GAACCACTGAGACAGGA"), 0, 5); // 0 < 1
+        let adapted = adapt_pipeline(&pipeline);
         let empty_splice = rustc_hash::FxHashSet::default();
         let mut splice = std::borrow::Cow::Borrowed(&empty_splice);
         let mut max_rl = 150;
         assert!(matches!(
-            combine_analysis(
-                &config,
-                &pipeline,
-                &v,
-                "chr1",
-                150,
-                &mut splice,
-                &mut max_rl
-            ),
+            combine_analysis(&config, &adapted, &v, "chr1", 150, &mut splice, &mut max_rl),
             CombineVerdict::Skip
         ));
     }
@@ -1255,19 +1308,12 @@ mod tests {
         let mut v = make_insertion_variant();
         v.end_pos = v.start_pos + config.sv_min_len as i32 + 1;
         let pipeline = combined_pipeline(150, None, 0, 0);
+        let adapted = adapt_pipeline(&pipeline);
         let empty_splice = rustc_hash::FxHashSet::default();
         let mut splice = std::borrow::Cow::Borrowed(&empty_splice);
         let mut max_rl = 150;
         assert!(matches!(
-            combine_analysis(
-                &config,
-                &pipeline,
-                &v,
-                "chr1",
-                150,
-                &mut splice,
-                &mut max_rl
-            ),
+            combine_analysis(&config, &adapted, &v, "chr1", 150, &mut splice, &mut max_rl),
             CombineVerdict::Keep
         ));
         assert!(matches!(splice, std::borrow::Cow::Borrowed(_)));
@@ -1287,7 +1333,6 @@ mod tests {
                     .push((comb_reg.start.0, comb_reg.end.0));
                 Ok(crate::javamap::JavaHashMap::new())
             };
-
         let mut v_near_max = make_insertion_variant();
         v_near_max.start_pos = i32::MAX - 10;
         v_near_max.end_pos = i32::MAX - 10;
@@ -1295,7 +1340,7 @@ mod tests {
         assert!(matches!(
             combine_analysis(
                 &huge_sv_cfg,
-                &spy_pipeline,
+                &adapt_pipeline(&spy_pipeline),
                 &v_near_max,
                 "chr1",
                 i32::MAX - 10,
@@ -1312,7 +1357,7 @@ mod tests {
         assert!(matches!(
             combine_analysis(
                 &huge_sv_cfg,
-                &spy_pipeline,
+                &adapt_pipeline(&spy_pipeline),
                 &v_nonpos,
                 "chr1",
                 1,
@@ -1335,18 +1380,11 @@ mod tests {
         let mut v = make_insertion_variant();
         v.genotype = Some("0/1".to_string());
         let pipeline = combined_pipeline(150, Some("+GAACCACTGAGACAGGA"), 6, 20);
+        let adapted = adapt_pipeline(&pipeline);
         let empty_splice = rustc_hash::FxHashSet::default();
         let mut splice = std::borrow::Cow::Borrowed(&empty_splice);
         let mut max_rl = 150;
-        match combine_analysis(
-            &config,
-            &pipeline,
-            &v,
-            "chr1",
-            150,
-            &mut splice,
-            &mut max_rl,
-        ) {
+        match combine_analysis(&config, &adapted, &v, "chr1", 150, &mut splice, &mut max_rl) {
             CombineVerdict::Germline(var2) => {
                 assert_eq!(var2.pos_coverage, 3); // 6 - 3
                 assert_eq!(var2.total_pos_cov, 10); // 20 - 10
@@ -1686,6 +1724,7 @@ mod tests {
         let mut results = Vec::new();
         let mut max_rl = 150;
 
+        let adapted_pipeline = adapt_pipeline(&pipeline);
         calling_for_both_samples(
             &config,
             150,
@@ -1694,7 +1733,7 @@ mod tests {
             "chr1",
             &mut splice_cow,
             &mut results,
-            Some(&pipeline),
+            Some(&adapted_pipeline),
             &mut max_rl,
         );
         assert_eq!(pipeline_calls.get(), 0);
@@ -1724,7 +1763,7 @@ mod tests {
             "chr1",
             &mut splice_cow,
             &mut results,
-            Some(&pipeline),
+            Some(&adapted_pipeline),
             &mut max_rl,
         );
         assert_eq!(pipeline_calls.get(), 0);
@@ -1782,6 +1821,7 @@ mod tests {
                 splice_set.insert("155-175".to_string());
                 Ok(crate::javamap::JavaHashMap::new())
             };
+        let adapted_single = adapt_pipeline(&single_pipeline);
         calling_for_both_samples(
             &config,
             150,
@@ -1790,7 +1830,7 @@ mod tests {
             "chr1",
             &mut splice_cow,
             &mut direct_results,
-            Some(&single_pipeline),
+            Some(&adapted_single),
             &mut max_rl,
         );
         assert!(
@@ -1915,9 +1955,10 @@ mod tests {
             Ok(map)
         };
 
+        let adapted = adapt_pipeline(&pipeline);
         let verdict = combine_analysis(
             &config,
-            &pipeline,
+            &adapted,
             &base_var,
             "chr1",
             150,
@@ -1926,5 +1967,144 @@ mod tests {
         );
         // i64::from(i32::MIN) < i64::from(i32::MIN) - 2 is FALSE, so Keep (not Skip).
         assert!(matches!(verdict, CombineVerdict::Keep));
+    }
+
+    #[test]
+    fn somatic_post_process_at_passes_outer_pileup_position_not_shifted_start_pos_and_skips_on_err()
+    {
+        let config = test_config();
+        let mut region = test_region();
+        region.start = Pos1(100);
+        region.end = Pos1(300);
+        let initial_splice = rustc_hash::FxHashSet::default();
+
+        let mut bam1 = JavaHashMap::new();
+        let mut bam2 = JavaHashMap::new();
+
+        // Pos 150 (sample 1 tumor-only deletion "-12" whose start_pos was shifted to 149):
+        // combine_analysis MUST pass outer key 150 (NOT 149) while region uses start_pos 149!
+        let mut t150 = Vars::new();
+        let mut v150 = make_good_variant("-12", "ACGTACGTACGTN", "A", 0.30);
+        v150.var_type = "Deletion".to_string();
+        v150.start_pos = 149;
+        v150.end_pos = 161;
+        v150.pos_coverage = 3;
+        v150.total_pos_cov = 10;
+        t150.variants.push(v150);
+        bam1.insert(150, t150);
+        bam2.insert(150, Vars::new());
+
+        // Pos 200 (sample 2 normal-only +AT&GC complex insertion whose start_pos shifted to 201,
+        // and -3 shift3 shifted further to 204): combine_analysis MUST pass outer key 200!
+        let mut n200 = Vars::new();
+        let mut v200 = make_good_variant("+ACGTACGTAC&GG", "CG", "ACGTACGTACGG", 0.30);
+        v200.var_type = "Complex".to_string();
+        v200.start_pos = 204;
+        v200.end_pos = 206;
+        v200.pos_coverage = 3;
+        v200.total_pos_cov = 10;
+        n200.variants.push(v200);
+        bam1.insert(200, Vars::new());
+        bam2.insert(200, n200);
+
+        // Pos 250 (sample 1 tumor-only insertion where pipeline returns Err -> Skip, infallible!).
+        let mut t250 = Vars::new();
+        let mut v250 = make_insertion_variant();
+        v250.start_pos = 253; // shifted by shift3
+        v250.end_pos = 253;
+        t250.variants.push(v250);
+        bam1.insert(250, t250);
+        bam2.insert(250, Vars::new());
+
+        let seen: std::cell::RefCell<Vec<(u32, u32, i32)>> = std::cell::RefCell::new(Vec::new());
+        let pos_pipe = |comb_reg: &Region,
+                        _sp: &mut rustc_hash::FxHashSet<String>,
+                        _mrl: &mut i32,
+                        target_pos: i32|
+         -> Result<Option<Vars>, VardictError> {
+            seen.borrow_mut()
+                .push((comb_reg.start.0, comb_reg.end.0, target_pos));
+            match target_pos {
+                150 => {
+                    let mut pv = Vars::new();
+                    let mut comb = Variant::new();
+                    comb.description = "-12".to_string();
+                    comb.pos_coverage = 6; // delta = 3 >= minr (2) -> Germline
+                    comb.total_pos_cov = 20;
+                    comb.genotype = Some("A/-12".to_string());
+                    pv.variants.push(comb);
+                    Ok(Some(pv))
+                }
+                200 => {
+                    let mut pv = Vars::new();
+                    let mut comb = Variant::new();
+                    comb.description = "+ACGTACGTAC&GG".to_string();
+                    comb.pos_coverage = 3; // delta = 0 < minr -> Keep (StrongLOH)
+                    comb.total_pos_cov = 20;
+                    pv.variants.push(comb);
+                    Ok(Some(pv))
+                }
+                250 => {
+                    if comb_reg.start.0 == 203 {
+                        Err(VardictError::Unsupported(
+                            "synthetic combine failure".into(),
+                        ))
+                    } else {
+                        Ok(None)
+                    }
+                }
+                other => panic!("unexpected target_pos {other}; must be outer pileup key"),
+            }
+        };
+
+        let at_out = somatic_post_process_at(
+            &config,
+            &region,
+            &bam1,
+            &bam2,
+            &initial_splice,
+            Some(&pos_pipe),
+            50,
+        );
+        assert_eq!(
+            seen.borrow().as_slice(),
+            &[
+                (149 - 50, 161 + 50, 150),
+                (204 - 50, 206 + 50, 200),
+                (253 - 50, 253 + 50, 250),
+            ]
+        );
+        assert_eq!(at_out.len(), 2);
+        assert_eq!(at_out[0].status, GERMLINE);
+        assert_eq!(at_out[0].variant1.start_pos, 149);
+        assert_eq!(at_out[1].status, STRONG_LOH);
+
+        // Verify somatic_post_process wrapping PipelineFn produces identical output.
+        let map_pipe = |comb_reg: &Region,
+                        sp: &mut rustc_hash::FxHashSet<String>,
+                        mrl: &mut i32|
+         -> Result<JavaHashMap<i32, Vars>, VardictError> {
+            let mut m = JavaHashMap::new();
+            for p in [150, 200, 250] {
+                if (comb_reg.start.0..=comb_reg.end.0).contains(&(p as u32)) {
+                    if let Some(v) = pos_pipe(comb_reg, sp, mrl, p)? {
+                        m.insert(p, v);
+                    }
+                }
+            }
+            Ok(m)
+        };
+        let wrapped_out = somatic_post_process(
+            &config,
+            &region,
+            &bam1,
+            &bam2,
+            &initial_splice,
+            Some(&map_pipe),
+            50,
+        );
+        assert_eq!(wrapped_out.len(), at_out.len());
+        assert_eq!(wrapped_out[0].status, at_out[0].status);
+        assert_eq!(wrapped_out[1].status, at_out[1].status);
     }
 }

@@ -71,15 +71,25 @@ const _: () = {
 };
 
 #[cfg(feature = "jemalloc")]
-// Lint false positive: size_of_val(&MALLOC_CONF) intentionally asserts the size of the static reference itself (thin 8-byte pointer vs 16-byte slice).
-#[allow(clippy::size_of_ref)]
+#[expect(
+    clippy::size_of_ref,
+    reason = "intentionally asserts the size of the static reference itself (thin 8-byte pointer vs 16-byte slice)"
+)]
 const _: () = assert!(core::mem::size_of_val(&MALLOC_CONF) == core::mem::size_of::<*const u8>());
 
 fn should_ignore_broken_pipe(
     cfg: &vardictrust_core::config::Config,
     err: &vardictrust_core::types::VardictError,
 ) -> bool {
-    cfg.output_path.is_none() && err.is_broken_pipe()
+    matches!(cfg.output_path.as_deref(), None | Some("-")) && err.is_broken_pipe()
+}
+
+fn finish_stdout_utility(res: std::io::Result<()>) -> Result<()> {
+    match res {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+        Err(err) => Err(err.into()),
+    }
 }
 
 fn collect_utf8_args<I: IntoIterator<Item = std::ffi::OsString>>(
@@ -105,6 +115,18 @@ fn main() -> Result<()> {
     let args = cli::normalize_args(&raw_args);
     cli::check_unsupported(&args)?;
     let args = cli::Cli::parse_from(args);
+    if let Some(shell) = args.completions.first().copied() {
+        let mut stdout = std::io::BufWriter::new(std::io::stdout().lock());
+        let res = cli::completions_man::write_completions(shell, &mut stdout)
+            .and_then(|()| std::io::Write::flush(&mut stdout));
+        return finish_stdout_utility(res);
+    }
+    if args.manpage {
+        let mut stdout = std::io::BufWriter::new(std::io::stdout().lock());
+        let res = cli::completions_man::write_manpage(&mut stdout)
+            .and_then(|()| std::io::Write::flush(&mut stdout));
+        return finish_stdout_utility(res);
+    }
     let cfg = match std::env::var("RAYON_NUM_THREADS").ok() {
         Some(rayon_env) => args.to_config_with_rayon_env(Some(rayon_env.as_str()))?,
         None => args.to_config()?,
@@ -202,6 +224,8 @@ mod tests {
             std::io::ErrorKind::BrokenPipe,
         ));
         let mut cfg = vardictrust_core::config::Config::default();
+        assert!(should_ignore_broken_pipe(&cfg, &bp));
+        cfg.output_path = Some("-".to_string());
         assert!(should_ignore_broken_pipe(&cfg, &bp));
         cfg.output_path = Some("out.fifo".to_string());
         assert!(!should_ignore_broken_pipe(&cfg, &bp));

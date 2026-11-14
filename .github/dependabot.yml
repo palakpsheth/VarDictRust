@@ -16,6 +16,7 @@ updates:
       genomic-dependencies:
         patterns:
           - "noodles*"
+          - "flate2*"
           - "fishers_exact*"
           - "rustc-hash*"
       tooling-dependencies:
@@ -41,6 +42,7 @@ updates:
           - "*"
         exclude-patterns:
           - "noodles*"
+          - "flate2*"
           - "fishers_exact*"
           - "rustc-hash*"
           - "clap*"

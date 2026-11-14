@@ -5,6 +5,17 @@
 
 use clap::Parser;
 
+#[path = "completions_man.rs"]
+pub(crate) mod completions_man;
+
+/// Shell target for `--completions <SHELL>`.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, clap::ValueEnum)]
+pub enum CompletionShell {
+    Bash,
+    Zsh,
+    Fish,
+}
+
 /// VarDictJava v1.8.3 flags (CmdParser.java) with no v1.0 implementation.
 /// Must be rejected loudly (§12) before Clap sees them.
 const UNSUPPORTED_FLAGS: &[&str] = &[
@@ -41,6 +52,8 @@ const GNU_ONLY_LONG_FLAGS_SINGLE_DASH: &[&str] = &[
     "-stats-json",
     "-parity",
     "-compat",
+    "-completions",
+    "-manpage",
     "-reference",
     "-bam",
     "-af-threshold",
@@ -205,6 +218,7 @@ fn takes_mandatory_next_token(arg: &str) -> bool {
             | "--adaptor"
             | "--output"
             | "--compat"
+            | "--completions"
             | "--stats-json"
             | "--vcf-pval"
             | "--min-splitreads"
@@ -619,21 +633,47 @@ pub fn check_unsupported(args: &[String]) -> Result<(), vardictrust_core::types:
     args_override_self = true
 )]
 pub struct Cli {
+    // ── 1. Core Inputs & Outputs ─────────────────────────────────────────────
     /// Print version.
-    #[arg(long = "version", action = clap::ArgAction::Version)]
+    #[arg(
+        long = "version",
+        action = clap::ArgAction::Version,
+        help_heading = "Core Inputs & Outputs"
+    )]
     _version: (),
 
     /// Print help.
-    #[arg(short = 'H', short_alias = '?', long = "help", action = clap::ArgAction::Help)]
+    #[arg(
+        short = 'H',
+        short_alias = '?',
+        long = "help",
+        action = clap::ArgAction::Help,
+        help_heading = "Core Inputs & Outputs"
+    )]
     _help: (),
+
+    /// Print shell completion script to stdout and exit (`bash`, `zsh`, or `fish`).
+    #[arg(
+        long = "completions",
+        value_name = "SHELL",
+        num_args = 1,
+        conflicts_with = "manpage",
+        help_heading = "Core Inputs & Outputs"
+    )]
+    pub completions: Vec<CompletionShell>,
+
+    /// Print standalone `roff` `vardictrust(1)` manpage to stdout and exit.
+    #[arg(long = "manpage", help_heading = "Core Inputs & Outputs")]
+    pub manpage: bool,
 
     /// Reference FASTA (.fai required). Aliases: --reference.
     #[arg(
         short = 'G',
         long = "reference",
-        required = true,
+        required_unless_present_any = ["completions", "manpage"],
         num_args = 1,
-        allow_hyphen_values = true
+        allow_hyphen_values = true,
+        help_heading = "Core Inputs & Outputs"
     )]
     pub reference: Vec<String>,
 
@@ -641,23 +681,21 @@ pub struct Cli {
     #[arg(
         short = 'b',
         long = "bam",
-        required = true,
+        required_unless_present_any = ["completions", "manpage"],
         num_args = 1,
-        allow_hyphen_values = true
+        allow_hyphen_values = true,
+        help_heading = "Core Inputs & Outputs"
     )]
     pub bam: Vec<String>,
 
-    /// Allele-frequency threshold. Alias: --af-threshold. [default: 0.01]
-    #[arg(
-        short = 'f',
-        long = "af-threshold",
-        num_args = 1,
-        allow_negative_numbers = true
-    )]
-    pub freq: Vec<String>,
-
     /// Sample name (somatic: "tumor|normal"). Alias: --name.
-    #[arg(short = 'N', long = "name", num_args = 1, allow_hyphen_values = true)]
+    #[arg(
+        short = 'N',
+        long = "name",
+        num_args = 1,
+        allow_hyphen_values = true,
+        help_heading = "Core Inputs & Outputs"
+    )]
     pub sample: Vec<String>,
 
     /// Regular expression to extract sample name from BAM filenames (ports CmdParser.java:86-93).
@@ -665,350 +703,94 @@ pub struct Cli {
         short = 'n',
         value_name = "REGEXP",
         num_args = 1,
-        allow_hyphen_values = true
+        allow_hyphen_values = true,
+        help_heading = "Core Inputs & Outputs"
     )]
     pub sample_regexp: Vec<String>,
 
     /// Region chr:start-end[:gene] (instead of BED).
-    #[arg(short = 'R', long = "region", num_args = 1, allow_hyphen_values = true)]
+    #[arg(
+        short = 'R',
+        long = "region",
+        num_args = 1,
+        allow_hyphen_values = true,
+        help_heading = "Core Inputs & Outputs"
+    )]
     pub region: Vec<String>,
-
-    /// BED column for chromosome (1-based).
-    #[arg(
-        short = 'c',
-        num_args = 1,
-        value_parser = vardictrust_core::config::parse_java_number_usize
-    )]
-    pub col_chr: Vec<usize>,
-
-    /// BED column for start (1-based).
-    #[arg(
-        short = 'S',
-        num_args = 1,
-        value_parser = vardictrust_core::config::parse_java_number_usize
-    )]
-    pub col_start: Vec<usize>,
-
-    /// BED column for end (1-based).
-    #[arg(
-        short = 'E',
-        num_args = 1,
-        value_parser = vardictrust_core::config::parse_java_number_usize
-    )]
-    pub col_end: Vec<usize>,
-
-    /// BED column for segment starts (1-based).
-    #[arg(
-        short = 's',
-        num_args = 1,
-        value_parser = vardictrust_core::config::parse_java_number_usize
-    )]
-    pub col_seg_start: Vec<usize>,
-
-    /// BED column for segment ends (1-based).
-    #[arg(
-        short = 'e',
-        num_args = 1,
-        value_parser = vardictrust_core::config::parse_java_number_usize
-    )]
-    pub col_seg_end: Vec<usize>,
-
-    /// BED column for gene (1-based).
-    #[arg(
-        short = 'g',
-        num_args = 1,
-        value_parser = vardictrust_core::config::parse_java_number_usize
-    )]
-    pub col_gene: Vec<usize>,
-
-    /// Threads. Bare `-th` = all cores (Java readThreadsCount
-    /// CmdParser.java:617-628); explicit `-th 0` clamps to 1 via max(n,1)
-    /// (CmdParser.java:162). Absent flag stays all-cores (deliberate perf-only
-    /// divergence over Java's 1-thread default — task P1 report).
-    /// usize::MAX is the bare-flag sentinel; alias: --threads.
-    #[arg(
-        long = "threads",
-        num_args(0..=1),
-        default_missing_value = "18446744073709551615",
-        value_parser = vardictrust_core::config::parse_java_number_usize
-    )]
-    pub threads: Option<usize>,
-
-    /// Local realignment 0/1. [default: 1]
-    #[arg(
-        short = 'k',
-        num_args(0..=1),
-        default_missing_value = "1",
-        require_equals = true,
-        allow_negative_numbers = true,
-        value_parser = vardictrust_core::config::parse_java_number_i32
-    )]
-    pub realign: Vec<i32>,
-
-    /// Amplicon mode "int:float". [default: 10:0.95 when 8-col BED]
-    #[arg(
-        short = 'a',
-        long = "amplicon",
-        num_args(0..=1),
-        default_missing_value = "10:0.95",
-        require_equals = true
-    )]
-    pub amplicon: Vec<String>,
-
-    /// Min variant reads. [default: 2]
-    #[arg(
-        short = 'r',
-        num_args = 1,
-        value_parser = vardictrust_core::config::parse_java_number_u32
-    )]
-    pub min_reads: Vec<u32>,
-
-    /// Min base quality. [default: 22.5]
-    #[arg(
-        short = 'q',
-        num_args = 1,
-        value_parser = vardictrust_core::config::parse_java_number_f64
-    )]
-    pub base_qual: Vec<f64>,
-
-    /// Min mapping quality.
-    #[arg(
-        short = 'Q',
-        num_args = 1,
-        value_parser = vardictrust_core::config::parse_java_number_u32
-    )]
-    pub map_qual: Vec<u32>,
-
-    /// Mean read position filter. [default: 5]
-    #[arg(
-        short = 'P',
-        num_args = 1,
-        allow_negative_numbers = true,
-        value_parser = parse_java_signed_i32
-    )]
-    pub read_pos: Vec<i32>,
-
-    /// Max mismatches. [default: 8]
-    #[arg(
-        short = 'm',
-        num_args = 1,
-        value_parser = vardictrust_core::config::parse_java_number_u32
-    )]
-    pub max_mismatches: Vec<u32>,
-
-    /// Minimum match+insertion read length; shorter reads ignored. [default: 0]
-    #[arg(
-        short = 'M',
-        num_args = 1,
-        value_parser = vardictrust_core::config::parse_java_number_u32
-    )]
-    pub minmatch: Vec<u32>,
-
-    /// Min normal AF for somatic. [default: 0.05]
-    #[arg(
-        short = 'V',
-        num_args = 1,
-        value_parser = vardictrust_core::config::parse_java_number_f64
-    )]
-    pub min_normal_af: Vec<f64>,
-
-    /// Disable SV calling.
-    #[arg(short = 'U', long = "nosv")]
-    pub no_sv: bool,
-
-    /// SV minimum length. [default: 1000]
-    #[arg(
-        short = 'L',
-        num_args = 1,
-        value_parser = vardictrust_core::config::parse_java_number_u32
-    )]
-    pub sv_min_len: Vec<u32>,
-
-    /// Emit the intermediate .var table instead of VCF.
-    #[arg(long = "emit-intermediate")]
-    pub emit_intermediate: bool,
-
-    /// Use the in-engine Fisher test.
-    #[arg(long = "fisher")]
-    pub fisher: bool,
-
-    /// Advanced: region tile size (bp) for bounded-memory WGS. [auto]
-    #[arg(
-        long = "tile-size",
-        num_args = 1,
-        value_parser = vardictrust_core::config::parse_java_number_u32
-    )]
-    pub tile_size: Vec<u32>,
-
-    /// Extension for BED region.
-    #[arg(
-        short = 'x',
-        num_args = 1,
-        allow_negative_numbers = true,
-        value_parser = parse_java_signed_i32
-    )]
-    pub extension: Vec<i32>,
-
-    /// Number of nucleotide extension. [default: 2]
-    #[arg(
-        short = 'X',
-        num_args = 1,
-        allow_negative_numbers = true,
-        value_parser = parse_java_signed_i32
-    )]
-    pub extension_nuc: Vec<i32>,
-
-    /// Shift indel positions to their 3'-most alternative alignment
-    /// (ports CmdParser.java:71 moveIndelsTo3; shift3 applied in tovars.rs).
-    #[arg(short = '3')]
-    pub three_prime: bool,
-
-    /// Min reads for bias. [default: 2]
-    #[arg(
-        short = 'B',
-        num_args = 1,
-        value_parser = vardictrust_core::config::parse_java_number_u32
-    )]
-    pub min_reads_bias: Vec<u32>,
-
-    /// qratio filter. [default: 1.5]
-    #[arg(
-        short = 'o',
-        num_args = 1,
-        value_parser = vardictrust_core::config::parse_java_number_f64
-    )]
-    pub qratio: Vec<f64>,
-
-    /// MapQ for output. [default: 0]
-    #[arg(
-        short = 'O',
-        num_args = 1,
-        value_parser = vardictrust_core::config::parse_java_number_f64
-    )]
-    pub out_mapq: Vec<f64>,
-
-    /// Indel size. [default: 50]
-    #[arg(
-        short = 'I',
-        num_args = 1,
-        value_parser = vardictrust_core::config::parse_java_number_u32
-    )]
-    pub indel_size: Vec<u32>,
-
-    /// BED coordinates are 0-based (0: 1-based, 1/empty: 0-based; CmdParser.java:101-112).
-    #[arg(
-        short = 'z',
-        num_args(0..=1),
-        default_missing_value = "1",
-        require_equals = true,
-        allow_negative_numbers = true,
-        value_parser = vardictrust_core::config::parse_java_number_i32
-    )]
-    pub zero_based: Vec<i32>,
-
-    /// SAM flag filter. [default: 0x504]
-    #[arg(short = 'F', num_args = 1, allow_negative_numbers = true)]
-    pub flag_filter: Vec<String>,
-
-    /// SV read length. [default: 300]
-    #[arg(
-        short = 'w',
-        long = "insert-size",
-        num_args = 1,
-        value_parser = vardictrust_core::config::parse_java_number_u32
-    )]
-    pub sv_read_len: Vec<u32>,
-
-    /// SV flanking. [default: 100]
-    #[arg(
-        short = 'W',
-        long = "insert-std",
-        num_args = 1,
-        value_parser = vardictrust_core::config::parse_java_number_u32
-    )]
-    pub sv_flanking: Vec<u32>,
-
-    /// SV minimum AF. [default: 4]
-    #[arg(
-        short = 'A',
-        num_args = 1,
-        value_parser = vardictrust_core::config::parse_java_number_u32
-    )]
-    pub sv_min_af: Vec<u32>,
-
-    /// Max region length. [default: 1200]
-    #[arg(
-        short = 'Y',
-        long = "ref-extension",
-        num_args = 1,
-        value_parser = vardictrust_core::config::parse_java_number_u32
-    )]
-    pub max_region_len: Vec<u32>,
 
     /// Column header output: print the .var column names before results
     /// (ports CmdParser.java:67 `printHeader` + SimpleMode.java:114-127).
-    #[arg(short = 'h', long = "header")]
+    #[arg(short = 'h', long = "header", help_heading = "Core Inputs & Outputs")]
     pub column_header: bool,
+
+    /// Write output (.vcf or .var) directly to file; .gz/.bgz suffixes use multithreaded BGZF
+    #[arg(
+        long = "output",
+        value_name = "PATH",
+        allow_hyphen_values = true,
+        help_heading = "Core Inputs & Outputs"
+    )]
+    pub output: Vec<String>,
+
+    /// Write a Tabix (.tbi) index alongside a BGZF-compressed --output .vcf.gz file.
+    #[arg(
+        long = "tbi",
+        visible_alias = "index",
+        help_heading = "Core Inputs & Outputs"
+    )]
+    pub tbi: bool,
+
+    /// Write a CSI (.csi) index alongside a BGZF-compressed --output .vcf.gz file.
+    #[arg(long = "csi", help_heading = "Core Inputs & Outputs")]
+    pub index_csi: bool,
+
+    /// Write run telemetry (mode, threads, regions, tiles, elapsed_ms, peak_rss_kb) as JSON to PATH
+    #[arg(
+        long = "stats-json",
+        value_name = "PATH",
+        allow_hyphen_values = true,
+        help_heading = "Core Inputs & Outputs"
+    )]
+    pub stats_json: Vec<String>,
+
+    /// Explicitly lock 100% VarDictJava v1.8.3 byte-for-byte parity mode (default in v1.x).
+    #[arg(long = "parity", help_heading = "Core Inputs & Outputs")]
+    pub parity: bool,
+
+    /// Pin compatibility target (supported in v1.0: 'vardictjava-1.8.3' or '1.8.3').
+    #[arg(
+        long = "compat",
+        value_name = "TARGET",
+        allow_hyphen_values = true,
+        help_heading = "Core Inputs & Outputs"
+    )]
+    pub compat: Option<String>,
+
+    /// Emit the intermediate .var table instead of VCF.
+    #[arg(long = "emit-intermediate", help_heading = "Core Inputs & Outputs")]
+    pub emit_intermediate: bool,
+
+    /// The delimiter for splitting region info. [default: \t]
+    #[arg(
+        short = 'd',
+        num_args = 1,
+        allow_hyphen_values = true,
+        help_heading = "Core Inputs & Outputs"
+    )]
+    pub delimiter: Vec<String>,
 
     /// VCF format output. Defined but never read by VarDictJava v1.8.3
     /// (CmdParser.java:224 vs parseCmd 59-186); accepted and ignored for
     /// drop-in compatibility.
-    #[arg(short = 'v')]
+    #[arg(short = 'v', help_heading = "Core Inputs & Outputs")]
     pub vcf_output_noop: bool,
 
-    /// Chimeric read handling.
-    #[arg(long = "chimeric")]
-    pub chimeric: bool,
-
-    /// Delete/dup variant handling.
-    #[arg(long = "deldupvar")]
-    pub deldupvar: bool,
-
-    /// Mono frequency threshold. [default: 0.25]
-    #[arg(
-        long = "mfreq",
-        num_args = 1,
-        value_parser = vardictrust_core::config::parse_java_number_f64
-    )]
-    pub mfreq: Vec<f64>,
-
-    /// Normal mono frequency threshold. [default: 0.1]
-    #[arg(
-        long = "nmfreq",
-        num_args = 1,
-        value_parser = vardictrust_core::config::parse_java_number_f64
-    )]
-    pub nmfreq: Vec<f64>,
-
-    /// CRISPR cutting site.
-    #[arg(
-        short = 'J',
-        long = "crispr",
-        num_args = 1,
-        allow_negative_numbers = true,
-        value_parser = parse_java_signed_i32
-    )]
-    pub crispr_cutting_site: Vec<i32>,
-
-    /// CRISPR flanking size.
-    #[arg(
-        short = 'j',
-        num_args = 1,
-        allow_negative_numbers = true,
-        value_parser = parse_java_signed_i32
-    )]
-    pub crispr_flanking_size: Vec<i32>,
-
-    /// Splice mode.
-    #[arg(short = 'i', long = "splice")]
-    pub splice: bool,
-
-    /// Pileup-only mode.
-    #[arg(short = 'p')]
-    pub pileup: bool,
+    /// Verbose mode.
+    #[arg(short = 'y', long = "verbose", help_heading = "Core Inputs & Outputs")]
+    pub verbose: bool,
 
     /// Debug mode: append per-read debug columns to the intermediate output.
-    #[arg(short = 'D', long = "debug")]
+    #[arg(short = 'D', long = "debug", help_heading = "Core Inputs & Outputs")]
     pub debug: bool,
 
     /// Default printer destination: OUT or ERR (ports CmdParser.java:171-176, 505 defaultPrinter).
@@ -1019,69 +801,22 @@ pub struct Cli {
         alias = "defaultPrinter",
         num_args(0..=1),
         default_missing_value = "OUT",
-        require_equals = true
+        require_equals = true,
+        help_heading = "Core Inputs & Outputs"
     )]
     pub debug_print: Vec<String>,
 
-    /// Verbose mode.
-    #[arg(short = 'y', long = "verbose")]
-    pub verbose: bool,
-
-    /// Dedup: remove duplicated reads, keeping one pair per start position
-    /// (ports CmdParser.java:70, 229).
-    #[arg(short = 't', long = "dedup")]
-    pub dedup: bool,
-
-    /// Filter adaptor sequences so that they are not used in realignment. Multiple adaptors can be supplied by setting them with comma.
-    #[arg(long = "adaptor", num_args = 1, allow_hyphen_values = true)]
-    pub adaptor: Vec<String>,
-
-    /// The delimiter for splitting region info. [default: \t]
-    #[arg(short = 'd', num_args = 1, allow_hyphen_values = true)]
-    pub delimiter: Vec<String>,
-
-    /// Indicate unique mode, which when mate pairs overlap, the overlapping part will be counted only once using forward read only (-u).
-    #[arg(short = 'u')]
-    pub unique_mode_alignment_enabled: bool,
-
-    /// Indicate unique mode, which when mate pairs overlap, the overlapping part will be counted only once using first read only (-UN).
-    #[arg(long = "UN")]
-    pub unique_mode_second_in_pair_enabled: bool,
-
-    /// Include Ns in depth calculation.
-    #[arg(short = 'K')]
-    pub include_n: bool,
-
-    /// Trim bases after [INT] bases in the reads (ports CmdParser.java:122, 411-417). [default: 0]
-    #[arg(
-        short = 'T',
-        long = "trim",
-        value_name = "INT",
-        num_args = 1,
-        allow_negative_numbers = true,
-        value_parser = parse_java_signed_i32
-    )]
-    pub trim_bases_after: Vec<i32>,
-
-    /// SAM/BAM validation stringency: SILENT, LENIENT, or STRICT (ports CmdParser.java:146-148, 491-500).
-    #[arg(
-        long = "VS",
-        value_name = "STRINGENCY",
-        num_args = 1,
-        allow_hyphen_values = true
-    )]
-    pub validation_stringency: Vec<String>,
-
+    // ── 2. VCF Post-Filtering (var2vcf) ──────────────────────────────────────
     /// Omit the END tag in VCF INFO output (ports var2vcf_valid.pl -E).
-    #[arg(long = "no-end")]
+    #[arg(long = "no-end", help_heading = "VCF Post-Filtering (var2vcf)")]
     pub no_end: bool,
 
     /// Emit only PASS variants in VCF output (ports var2vcf_valid.pl / var2vcf_paired.pl -S).
-    #[arg(long = "pass-only")]
+    #[arg(long = "pass-only", help_heading = "VCF Post-Filtering (var2vcf)")]
     pub pass_only: bool,
 
     /// Disable germline rescue in paired somatic VCF filtering (ports var2vcf_paired.pl -M).
-    #[arg(long = "paired-strict")]
+    #[arg(long = "paired-strict", help_heading = "VCF Post-Filtering (var2vcf)")]
     pub paired_strict: bool,
 
     /// Maximum p-value threshold for high-confidence somatic calls in VCF output (ports var2vcf_paired.pl -P). [default: 0.05]
@@ -1090,7 +825,8 @@ pub struct Cli {
         value_name = "FLOAT",
         num_args = 1,
         allow_negative_numbers = true,
-        value_parser = parse_vcf_pval_token
+        value_parser = parse_vcf_pval_token,
+        help_heading = "VCF Post-Filtering (var2vcf)"
     )]
     pub vcf_pval: Vec<(f64, String)>,
 
@@ -1100,12 +836,13 @@ pub struct Cli {
         value_name = "INT",
         num_args = 1,
         allow_negative_numbers = true,
-        value_parser = parse_min_splitreads
+        value_parser = parse_min_splitreads,
+        help_heading = "VCF Post-Filtering (var2vcf)"
     )]
     pub min_splitreads: Vec<i32>,
 
     /// Disable the PSTD=0 single-position read filter in single-sample VCF output (ports var2vcf_valid.pl -P 0).
-    #[arg(long = "no-pstd-filter")]
+    #[arg(long = "no-pstd-filter", help_heading = "VCF Post-Filtering (var2vcf)")]
     pub no_pstd_filter: bool,
 
     /// Minimum allele frequency threshold for VCF FILTER/GT (overrides -f in VCF output; ports var2vcf_valid.pl / var2vcf_paired.pl -f).
@@ -1114,7 +851,8 @@ pub struct Cli {
         value_name = "FLOAT",
         num_args = 1,
         allow_negative_numbers = true,
-        value_parser = parse_vcf_af
+        value_parser = parse_vcf_af,
+        help_heading = "VCF Post-Filtering (var2vcf)"
     )]
     pub vcf_af: Vec<vardictrust_core::config::VcfThreshold<f64>>,
 
@@ -1124,7 +862,8 @@ pub struct Cli {
         value_name = "INT",
         num_args = 1,
         allow_negative_numbers = true,
-        value_parser = parse_vcf_min_depth
+        value_parser = parse_vcf_min_depth,
+        help_heading = "VCF Post-Filtering (var2vcf)"
     )]
     pub vcf_min_depth: Vec<vardictrust_core::config::VcfThreshold<i32>>,
 
@@ -1134,7 +873,8 @@ pub struct Cli {
         value_name = "INT",
         num_args = 1,
         allow_negative_numbers = true,
-        value_parser = parse_vcf_min_vd
+        value_parser = parse_vcf_min_vd,
+        help_heading = "VCF Post-Filtering (var2vcf)"
     )]
     pub vcf_min_vd: Vec<vardictrust_core::config::VcfThreshold<i32>>,
 
@@ -1144,7 +884,8 @@ pub struct Cli {
         value_name = "FLOAT",
         num_args = 1,
         allow_negative_numbers = true,
-        value_parser = parse_vcf_qmean
+        value_parser = parse_vcf_qmean,
+        help_heading = "VCF Post-Filtering (var2vcf)"
     )]
     pub vcf_qmean: Vec<vardictrust_core::config::VcfThreshold<f64>>,
 
@@ -1154,7 +895,8 @@ pub struct Cli {
         value_name = "FLOAT",
         num_args = 1,
         allow_negative_numbers = true,
-        value_parser = parse_vcf_mapq
+        value_parser = parse_vcf_mapq,
+        help_heading = "VCF Post-Filtering (var2vcf)"
     )]
     pub vcf_mapq: Vec<vardictrust_core::config::VcfThreshold<f64>>,
 
@@ -1164,7 +906,8 @@ pub struct Cli {
         value_name = "FLOAT",
         num_args = 1,
         allow_negative_numbers = true,
-        value_parser = parse_vcf_pmean
+        value_parser = parse_vcf_pmean,
+        help_heading = "VCF Post-Filtering (var2vcf)"
     )]
     pub vcf_pmean: Vec<vardictrust_core::config::VcfThreshold<f64>>,
 
@@ -1174,7 +917,8 @@ pub struct Cli {
         value_name = "FLOAT",
         num_args = 1,
         allow_negative_numbers = true,
-        value_parser = parse_vcf_sn
+        value_parser = parse_vcf_sn,
+        help_heading = "VCF Post-Filtering (var2vcf)"
     )]
     pub vcf_sn: Vec<vardictrust_core::config::VcfThreshold<f64>>,
 
@@ -1184,7 +928,8 @@ pub struct Cli {
         value_name = "FLOAT",
         num_args = 1,
         allow_negative_numbers = true,
-        value_parser = parse_vcf_max_nm
+        value_parser = parse_vcf_max_nm,
+        help_heading = "VCF Post-Filtering (var2vcf)"
     )]
     pub vcf_max_nm: Vec<vardictrust_core::config::VcfThreshold<f64>>,
 
@@ -1194,7 +939,8 @@ pub struct Cli {
         value_name = "FLOAT",
         num_args = 1,
         allow_negative_numbers = true,
-        value_parser = parse_vcf_gt_freq
+        value_parser = parse_vcf_gt_freq,
+        help_heading = "VCF Post-Filtering (var2vcf)"
     )]
     pub vcf_gt_freq: Vec<f64>,
 
@@ -1204,7 +950,8 @@ pub struct Cli {
         value_name = "FLOAT",
         num_args = 1,
         allow_negative_numbers = true,
-        value_parser = parse_vcf_msi
+        value_parser = parse_vcf_msi,
+        help_heading = "VCF Post-Filtering (var2vcf)"
     )]
     pub vcf_msi: Vec<vardictrust_core::config::VcfThreshold<f64>>,
 
@@ -1214,33 +961,448 @@ pub struct Cli {
         value_name = "INT",
         num_args = 1,
         allow_negative_numbers = true,
-        value_parser = parse_vcf_cluster_dist
+        value_parser = parse_vcf_cluster_dist,
+        help_heading = "VCF Post-Filtering (var2vcf)"
     )]
     pub vcf_cluster_dist: Vec<vardictrust_core::config::VcfThreshold<i32>>,
 
-    /// Write output (.vcf or .var) directly to file; .gz/.bgz suffixes use multithreaded BGZF
-    #[arg(long = "output", value_name = "PATH", allow_hyphen_values = true)]
-    pub output: Vec<String>,
+    // ── 3. Coordinate & BED Column Mapping ───────────────────────────────────
+    /// BED column for chromosome (1-based).
+    #[arg(
+        short = 'c',
+        num_args = 1,
+        value_parser = vardictrust_core::config::parse_java_number_usize,
+        help_heading = "Coordinate & BED Column Mapping"
+    )]
+    pub col_chr: Vec<usize>,
 
-    /// Write a Tabix (.tbi) index alongside a BGZF-compressed --output .vcf.gz file.
-    #[arg(long = "tbi", visible_alias = "index")]
-    pub tbi: bool,
+    /// BED column for start (1-based).
+    #[arg(
+        short = 'S',
+        num_args = 1,
+        value_parser = vardictrust_core::config::parse_java_number_usize,
+        help_heading = "Coordinate & BED Column Mapping"
+    )]
+    pub col_start: Vec<usize>,
 
-    /// Write a CSI (.csi) index alongside a BGZF-compressed --output .vcf.gz file.
-    #[arg(long = "csi")]
-    pub index_csi: bool,
+    /// BED column for end (1-based).
+    #[arg(
+        short = 'E',
+        num_args = 1,
+        value_parser = vardictrust_core::config::parse_java_number_usize,
+        help_heading = "Coordinate & BED Column Mapping"
+    )]
+    pub col_end: Vec<usize>,
 
-    /// Explicitly lock 100% VarDictJava v1.8.3 byte-for-byte parity mode (default in v1.x).
-    #[arg(long = "parity")]
-    pub parity: bool,
+    /// BED column for segment starts (1-based).
+    #[arg(
+        short = 's',
+        num_args = 1,
+        value_parser = vardictrust_core::config::parse_java_number_usize,
+        help_heading = "Coordinate & BED Column Mapping"
+    )]
+    pub col_seg_start: Vec<usize>,
 
-    /// Pin compatibility target (supported in v1.0: 'vardictjava-1.8.3' or '1.8.3').
-    #[arg(long = "compat", value_name = "TARGET", allow_hyphen_values = true)]
-    pub compat: Option<String>,
+    /// BED column for segment ends (1-based).
+    #[arg(
+        short = 'e',
+        num_args = 1,
+        value_parser = vardictrust_core::config::parse_java_number_usize,
+        help_heading = "Coordinate & BED Column Mapping"
+    )]
+    pub col_seg_end: Vec<usize>,
 
-    /// Write run telemetry (mode, threads, regions, tiles, elapsed_ms, peak_rss_kb) as JSON to PATH
-    #[arg(long = "stats-json", value_name = "PATH", allow_hyphen_values = true)]
-    pub stats_json: Vec<String>,
+    /// BED column for gene (1-based).
+    #[arg(
+        short = 'g',
+        num_args = 1,
+        value_parser = vardictrust_core::config::parse_java_number_usize,
+        help_heading = "Coordinate & BED Column Mapping"
+    )]
+    pub col_gene: Vec<usize>,
+
+    /// BED coordinates are 0-based (0: 1-based, 1/empty: 0-based; CmdParser.java:101-112).
+    #[arg(
+        short = 'z',
+        num_args(0..=1),
+        default_missing_value = "1",
+        require_equals = true,
+        allow_negative_numbers = true,
+        value_parser = vardictrust_core::config::parse_java_number_i32,
+        help_heading = "Coordinate & BED Column Mapping"
+    )]
+    pub zero_based: Vec<i32>,
+
+    /// Extension for BED region.
+    #[arg(
+        short = 'x',
+        num_args = 1,
+        allow_negative_numbers = true,
+        value_parser = parse_java_signed_i32,
+        help_heading = "Coordinate & BED Column Mapping"
+    )]
+    pub extension: Vec<i32>,
+
+    /// Number of nucleotide extension. [default: 2]
+    #[arg(
+        short = 'X',
+        num_args = 1,
+        allow_negative_numbers = true,
+        value_parser = parse_java_signed_i32,
+        help_heading = "Coordinate & BED Column Mapping"
+    )]
+    pub extension_nuc: Vec<i32>,
+
+    /// Max region length. [default: 1200]
+    #[arg(
+        short = 'Y',
+        long = "ref-extension",
+        num_args = 1,
+        value_parser = vardictrust_core::config::parse_java_number_u32,
+        help_heading = "Coordinate & BED Column Mapping"
+    )]
+    pub max_region_len: Vec<u32>,
+
+    // ── 4. Variant Calling & Quality Thresholds ──────────────────────────────
+    /// Allele-frequency threshold. Alias: --af-threshold. [default: 0.01]
+    #[arg(
+        short = 'f',
+        long = "af-threshold",
+        num_args = 1,
+        allow_negative_numbers = true,
+        help_heading = "Variant Calling & Quality Thresholds"
+    )]
+    pub freq: Vec<String>,
+
+    /// Min variant reads. [default: 2]
+    #[arg(
+        short = 'r',
+        num_args = 1,
+        value_parser = vardictrust_core::config::parse_java_number_u32,
+        help_heading = "Variant Calling & Quality Thresholds"
+    )]
+    pub min_reads: Vec<u32>,
+
+    /// Min base quality. [default: 22.5]
+    #[arg(
+        short = 'q',
+        num_args = 1,
+        value_parser = vardictrust_core::config::parse_java_number_f64,
+        help_heading = "Variant Calling & Quality Thresholds"
+    )]
+    pub base_qual: Vec<f64>,
+
+    /// Min mapping quality.
+    #[arg(
+        short = 'Q',
+        num_args = 1,
+        value_parser = vardictrust_core::config::parse_java_number_u32,
+        help_heading = "Variant Calling & Quality Thresholds"
+    )]
+    pub map_qual: Vec<u32>,
+
+    /// Mean read position filter. [default: 5]
+    #[arg(
+        short = 'P',
+        num_args = 1,
+        allow_negative_numbers = true,
+        value_parser = parse_java_signed_i32,
+        help_heading = "Variant Calling & Quality Thresholds"
+    )]
+    pub read_pos: Vec<i32>,
+
+    /// Max mismatches. [default: 8]
+    #[arg(
+        short = 'm',
+        num_args = 1,
+        value_parser = vardictrust_core::config::parse_java_number_u32,
+        help_heading = "Variant Calling & Quality Thresholds"
+    )]
+    pub max_mismatches: Vec<u32>,
+
+    /// Minimum match+insertion read length; shorter reads ignored. [default: 0]
+    #[arg(
+        short = 'M',
+        num_args = 1,
+        value_parser = vardictrust_core::config::parse_java_number_u32,
+        help_heading = "Variant Calling & Quality Thresholds"
+    )]
+    pub minmatch: Vec<u32>,
+
+    /// Min reads for bias. [default: 2]
+    #[arg(
+        short = 'B',
+        num_args = 1,
+        value_parser = vardictrust_core::config::parse_java_number_u32,
+        help_heading = "Variant Calling & Quality Thresholds"
+    )]
+    pub min_reads_bias: Vec<u32>,
+
+    /// qratio filter. [default: 1.5]
+    #[arg(
+        short = 'o',
+        num_args = 1,
+        value_parser = vardictrust_core::config::parse_java_number_f64,
+        help_heading = "Variant Calling & Quality Thresholds"
+    )]
+    pub qratio: Vec<f64>,
+
+    /// MapQ for output. [default: 0]
+    #[arg(
+        short = 'O',
+        num_args = 1,
+        value_parser = vardictrust_core::config::parse_java_number_f64,
+        help_heading = "Variant Calling & Quality Thresholds"
+    )]
+    pub out_mapq: Vec<f64>,
+
+    /// SAM flag filter. [default: 0x504]
+    #[arg(
+        short = 'F',
+        num_args = 1,
+        allow_negative_numbers = true,
+        help_heading = "Variant Calling & Quality Thresholds"
+    )]
+    pub flag_filter: Vec<String>,
+
+    /// Local realignment 0/1. [default: 1]
+    #[arg(
+        short = 'k',
+        num_args(0..=1),
+        default_missing_value = "1",
+        require_equals = true,
+        allow_negative_numbers = true,
+        value_parser = vardictrust_core::config::parse_java_number_i32,
+        help_heading = "Variant Calling & Quality Thresholds"
+    )]
+    pub realign: Vec<i32>,
+
+    /// Shift indel positions to their 3'-most alternative alignment
+    /// (ports CmdParser.java:71 moveIndelsTo3; shift3 applied in tovars.rs).
+    #[arg(short = '3', help_heading = "Variant Calling & Quality Thresholds")]
+    pub three_prime: bool,
+
+    /// Include Ns in depth calculation.
+    #[arg(short = 'K', help_heading = "Variant Calling & Quality Thresholds")]
+    pub include_n: bool,
+
+    /// Pileup-only mode.
+    #[arg(short = 'p', help_heading = "Variant Calling & Quality Thresholds")]
+    pub pileup: bool,
+
+    /// Dedup: remove duplicated reads, keeping one pair per start position
+    /// (ports CmdParser.java:70, 229).
+    #[arg(
+        short = 't',
+        long = "dedup",
+        help_heading = "Variant Calling & Quality Thresholds"
+    )]
+    pub dedup: bool,
+
+    /// Indicate unique mode, which when mate pairs overlap, the overlapping part will be counted only once using forward read only (-u).
+    #[arg(short = 'u', help_heading = "Variant Calling & Quality Thresholds")]
+    pub unique_mode_alignment_enabled: bool,
+
+    /// Indicate unique mode, which when mate pairs overlap, the overlapping part will be counted only once using first read only (-UN).
+    #[arg(long = "UN", help_heading = "Variant Calling & Quality Thresholds")]
+    pub unique_mode_second_in_pair_enabled: bool,
+
+    /// Trim bases after [INT] bases in the reads (ports CmdParser.java:122, 411-417). [default: 0]
+    #[arg(
+        short = 'T',
+        long = "trim",
+        value_name = "INT",
+        num_args = 1,
+        allow_negative_numbers = true,
+        value_parser = parse_java_signed_i32,
+        help_heading = "Variant Calling & Quality Thresholds"
+    )]
+    pub trim_bases_after: Vec<i32>,
+
+    /// SAM/BAM validation stringency: SILENT, LENIENT, or STRICT (ports CmdParser.java:146-148, 491-500).
+    #[arg(
+        long = "VS",
+        value_name = "STRINGENCY",
+        num_args = 1,
+        allow_hyphen_values = true,
+        help_heading = "Variant Calling & Quality Thresholds"
+    )]
+    pub validation_stringency: Vec<String>,
+
+    /// Filter adaptor sequences so that they are not used in realignment. Multiple adaptors can be supplied by setting them with comma.
+    #[arg(
+        long = "adaptor",
+        num_args = 1,
+        allow_hyphen_values = true,
+        help_heading = "Variant Calling & Quality Thresholds"
+    )]
+    pub adaptor: Vec<String>,
+
+    // ── 5. Modality Flags: Somatic & Amplicon ────────────────────────────────
+    /// Min normal AF for somatic. [default: 0.05]
+    #[arg(
+        short = 'V',
+        num_args = 1,
+        value_parser = vardictrust_core::config::parse_java_number_f64,
+        help_heading = "Modality Flags: Somatic & Amplicon"
+    )]
+    pub min_normal_af: Vec<f64>,
+
+    /// Use the in-engine Fisher test.
+    #[arg(long = "fisher", help_heading = "Modality Flags: Somatic & Amplicon")]
+    pub fisher: bool,
+
+    /// Amplicon mode "int:float". [default: 10:0.95 when 8-col BED]
+    #[arg(
+        short = 'a',
+        long = "amplicon",
+        num_args(0..=1),
+        default_missing_value = "10:0.95",
+        require_equals = true,
+        help_heading = "Modality Flags: Somatic & Amplicon"
+    )]
+    pub amplicon: Vec<String>,
+
+    /// Splice mode.
+    #[arg(
+        short = 'i',
+        long = "splice",
+        help_heading = "Modality Flags: Somatic & Amplicon"
+    )]
+    pub splice: bool,
+
+    /// Mono frequency threshold. [default: 0.25]
+    #[arg(
+        long = "mfreq",
+        num_args = 1,
+        value_parser = vardictrust_core::config::parse_java_number_f64,
+        help_heading = "Modality Flags: Somatic & Amplicon"
+    )]
+    pub mfreq: Vec<f64>,
+
+    /// Normal mono frequency threshold. [default: 0.1]
+    #[arg(
+        long = "nmfreq",
+        num_args = 1,
+        value_parser = vardictrust_core::config::parse_java_number_f64,
+        help_heading = "Modality Flags: Somatic & Amplicon"
+    )]
+    pub nmfreq: Vec<f64>,
+
+    /// CRISPR cutting site.
+    #[arg(
+        short = 'J',
+        long = "crispr",
+        num_args = 1,
+        allow_negative_numbers = true,
+        value_parser = parse_java_signed_i32,
+        help_heading = "Modality Flags: Somatic & Amplicon"
+    )]
+    pub crispr_cutting_site: Vec<i32>,
+
+    /// CRISPR flanking size.
+    #[arg(
+        short = 'j',
+        num_args = 1,
+        allow_negative_numbers = true,
+        value_parser = parse_java_signed_i32,
+        help_heading = "Modality Flags: Somatic & Amplicon"
+    )]
+    pub crispr_flanking_size: Vec<i32>,
+
+    // ── 6. Structural Variants & Complex Indels ──────────────────────────────
+    /// Disable SV calling.
+    #[arg(
+        short = 'U',
+        long = "nosv",
+        help_heading = "Structural Variants & Complex Indels"
+    )]
+    pub no_sv: bool,
+
+    /// SV minimum length. [default: 1000]
+    #[arg(
+        short = 'L',
+        num_args = 1,
+        value_parser = vardictrust_core::config::parse_java_number_u32,
+        help_heading = "Structural Variants & Complex Indels"
+    )]
+    pub sv_min_len: Vec<u32>,
+
+    /// SV read length. [default: 300]
+    #[arg(
+        short = 'w',
+        long = "insert-size",
+        num_args = 1,
+        value_parser = vardictrust_core::config::parse_java_number_u32,
+        help_heading = "Structural Variants & Complex Indels"
+    )]
+    pub sv_read_len: Vec<u32>,
+
+    /// SV flanking. [default: 100]
+    #[arg(
+        short = 'W',
+        long = "insert-std",
+        num_args = 1,
+        value_parser = vardictrust_core::config::parse_java_number_u32,
+        help_heading = "Structural Variants & Complex Indels"
+    )]
+    pub sv_flanking: Vec<u32>,
+
+    /// SV minimum AF. [default: 4]
+    #[arg(
+        short = 'A',
+        num_args = 1,
+        value_parser = vardictrust_core::config::parse_java_number_u32,
+        help_heading = "Structural Variants & Complex Indels"
+    )]
+    pub sv_min_af: Vec<u32>,
+
+    /// Indel size. [default: 50]
+    #[arg(
+        short = 'I',
+        num_args = 1,
+        value_parser = vardictrust_core::config::parse_java_number_u32,
+        help_heading = "Structural Variants & Complex Indels"
+    )]
+    pub indel_size: Vec<u32>,
+
+    /// Chimeric read handling.
+    #[arg(
+        long = "chimeric",
+        help_heading = "Structural Variants & Complex Indels"
+    )]
+    pub chimeric: bool,
+
+    /// Delete/dup variant handling.
+    #[arg(
+        long = "deldupvar",
+        help_heading = "Structural Variants & Complex Indels"
+    )]
+    pub deldupvar: bool,
+
+    // ── 7. Performance & Concurrency ─────────────────────────────────────────
+    // Dev note: ports CmdParser.java:162, 617-628 (`readThreadsCount`); `usize::MAX` is the
+    // bare-flag sentinel, `--threads` is the GNU long alias, and absent `-th` stays all-cores
+    // (or `RAYON_NUM_THREADS`) as a deliberate performance-only default over Java's 1 thread
+    // (task P1 report).
+    /// Threads (`-th [INT]` / `--threads [INT]`). Bare `-th` uses all available cores; explicit `-th 0` clamps to `1`; omitting `-th` defaults to `RAYON_NUM_THREADS` or all cores.
+    #[arg(
+        long = "threads",
+        num_args(0..=1),
+        default_missing_value = "18446744073709551615",
+        value_parser = vardictrust_core::config::parse_java_number_usize,
+        help_heading = "Performance & Concurrency"
+    )]
+    pub threads: Option<usize>,
+
+    /// Advanced: region tile size (bp) for bounded-memory WGS. [auto]
+    #[arg(
+        long = "tile-size",
+        num_args = 1,
+        value_parser = vardictrust_core::config::parse_java_number_u32,
+        help_heading = "Performance & Concurrency"
+    )]
+    pub tile_size: Vec<u32>,
 
     /// Positional BED file (when -R absent).
     pub bed: Option<String>,
@@ -1267,7 +1429,7 @@ impl Cli {
         &self,
         rayon_env: Option<&str>,
     ) -> Result<vardictrust_core::config::Config, vardictrust_core::types::VardictError> {
-        let _ = self.parity;
+        let _ = (self.parity, &self.completions, self.manpage);
         if let Some(ref raw_target) = self.compat {
             let target = raw_target.trim();
             if !target.eq_ignore_ascii_case("vardictjava-1.8.3") && target != "1.8.3" {
@@ -1734,10 +1896,149 @@ mod tests {
     fn help_is_dash_h_cap_and_long() {
         // ports CmdParser.java:222 (-H/? print help page)
         use clap::error::ErrorKind;
+        use clap::CommandFactory;
+
         let err = Cli::try_parse_from(args(&["-H"])).unwrap_err();
         assert_eq!(err.kind(), ErrorKind::DisplayHelp);
         let err = Cli::try_parse_from(args(&["--help"])).unwrap_err();
         assert_eq!(err.kind(), ErrorKind::DisplayHelp);
+
+        let mut cmd = Cli::command();
+        assert_eq!(cmd.get_arguments().count(), 89);
+        let rendered_help = cmd.render_help().to_string();
+        for heading in [
+            "Core Inputs & Outputs",
+            "VCF Post-Filtering (var2vcf)",
+            "Coordinate & BED Column Mapping",
+            "Variant Calling & Quality Thresholds",
+            "Modality Flags: Somatic & Amplicon",
+            "Structural Variants & Complex Indels",
+            "Performance & Concurrency",
+        ] {
+            assert!(
+                rendered_help.contains(heading),
+                "missing help heading '{heading}' in:\n{rendered_help}"
+            );
+        }
+
+        let comp_cli = Cli::try_parse_from(args(&["--completions", "bash"])).unwrap();
+        assert_eq!(comp_cli.completions, vec![CompletionShell::Bash]);
+        assert!(!comp_cli.manpage);
+
+        let man_cli = Cli::try_parse_from(args(&["--manpage"])).unwrap();
+        assert!(man_cli.manpage);
+        assert!(man_cli.completions.is_empty());
+
+        let first_wins =
+            Cli::try_parse_from(args(&["--completions", "bash", "--completions", "zsh"])).unwrap();
+        assert_eq!(first_wins.completions.first(), Some(&CompletionShell::Bash));
+
+        let missing_req = Cli::try_parse_from(args(&[])).unwrap_err();
+        assert_eq!(missing_req.kind(), ErrorKind::MissingRequiredArgument);
+
+        let conflict =
+            Cli::try_parse_from(args(&["--completions", "bash", "--manpage"])).unwrap_err();
+        assert_eq!(conflict.kind(), ErrorKind::ArgumentConflict);
+
+        assert!(check_unsupported(&args(&["-completions"])).is_err());
+        assert!(check_unsupported(&args(&["-manpage"])).is_err());
+        assert!(check_unsupported(&args(&["-N", "-completions"])).is_ok());
+
+        for shell in [
+            CompletionShell::Bash,
+            CompletionShell::Zsh,
+            CompletionShell::Fish,
+        ] {
+            let mut buf = Vec::new();
+            completions_man::write_completions(shell, &mut buf).unwrap();
+            let text = String::from_utf8(buf).unwrap();
+            for needle in [
+                "--vcf-cluster-dist",
+                "--completions",
+                "-H",
+                "-h",
+                "-UN",
+                "--defaultPrinter",
+            ] {
+                assert!(
+                    text.contains(needle),
+                    "{shell:?} completions missing '{needle}'"
+                );
+            }
+            if shell == CompletionShell::Zsh {
+                for valid_opt in ["-z-[", "-k-[", "-a-[", "--amplicon=-["] {
+                    assert!(
+                        text.contains(valid_opt),
+                        "zsh completions missing valid optional spec '{valid_opt}'"
+                    );
+                }
+                for invalid_opt in ["-z=-", "-k=-", "-a=-"] {
+                    assert!(
+                        !text.contains(invalid_opt),
+                        "zsh completions must not emit invalid short-flag '{invalid_opt}'"
+                    );
+                }
+            }
+        }
+
+        let mut man_buf = Vec::new();
+        completions_man::write_manpage(&mut man_buf).unwrap();
+        let man_text = String::from_utf8(man_buf).unwrap();
+        for needle in [
+            r"\-\-vcf\-cluster\-dist",
+            r"\-\-completions",
+            r"\-H",
+            r"\-h",
+            r"\\t",
+            r"VCF 4.2 (VCFv4.2)",
+            r"\-c 1 \-S 2 \-E 3 \-g 4 \-z targets.bed",
+            r"\-c 1 \-S 2 \-E 3 \-z targets.bed",
+            r"\-z [ZERO_BASED]",
+            r"\-k [REALIGN]",
+            r"\-a [AMPLICON], \-\-amplicon[=AMPLICON]",
+        ] {
+            assert!(
+                man_text.contains(needle),
+                "manpage missing escaped '{needle}'"
+            );
+        }
+        for forbidden in ["VCF 4.3", "usize::MAX", "task P1", r"\-z[=", r"\-k[="] {
+            assert!(
+                !man_text.contains(forbidden),
+                "manpage must not contain '{forbidden}'"
+            );
+        }
+        assert_eq!(
+            completions_man::escape_roff(".var-row\n'tumor|normal'\\path\u{2013}x\u{2014}y"),
+            "\\&.var\\-row\n\\&'tumor|normal'\\\\path\\(enx\\(emy"
+        );
+        if std::process::Command::new("groff")
+            .arg("--version")
+            .output()
+            .is_ok_and(|o| o.status.success())
+        {
+            use std::io::Write as _;
+            let mut groff = std::process::Command::new("groff")
+                .args(["-Tutf8", "-man", "-ww", "-z"])
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .expect("spawn groff");
+            groff
+                .stdin
+                .take()
+                .expect("groff stdin")
+                .write_all(man_text.as_bytes())
+                .expect("write man_text to groff");
+            let out = groff.wait_with_output().expect("wait groff");
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            assert!(
+                out.status.success() && stderr.is_empty(),
+                "groff -Tutf8 -man -ww -z emitted warnings or failed (status={:?}):\n{stderr}",
+                out.status
+            );
+        }
     }
 
     #[test]

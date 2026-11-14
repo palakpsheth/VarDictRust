@@ -208,6 +208,16 @@ impl SplitVarDeduper {
         Ok(())
     }
 
+    fn flush_before_unsplit_tile<F>(&mut self, emit: F) -> Result<(), VardictError>
+    where
+        F: FnMut(&str) -> Result<(), VardictError>,
+    {
+        self.flush_all_pending(emit)?;
+        self.emitted_by_pos.clear();
+        self.emitted_sv.clear();
+        Ok(())
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn accept_tile<F>(
         &mut self,
@@ -223,9 +233,7 @@ impl SplitVarDeduper {
         F: FnMut(&str) -> Result<(), VardictError>,
     {
         if !is_split_tile {
-            self.flush_all_pending(&mut emit)?;
-            self.emitted_by_pos.clear();
-            self.emitted_sv.clear();
+            self.flush_before_unsplit_tile(&mut emit)?;
             for row in rows {
                 emit(&row.line)?;
             }
@@ -1189,6 +1197,7 @@ fn read_spill_bool<R: std::io::Read>(r: &mut R) -> std::io::Result<bool> {
 }
 
 const MAX_SPILL_STR_BYTES: usize = 256 * 1024 * 1024;
+const SPILL_STR_STACK_FAST_BYTES: usize = 4096;
 
 fn read_spill_str<R: std::io::Read>(r: &mut R) -> std::io::Result<String> {
     use std::io::Read as _;
@@ -1204,7 +1213,23 @@ fn read_spill_str<R: std::io::Read>(r: &mut R) -> std::io::Result<String> {
                 format!("spill string length {raw_len} exceeds bound"),
             )
         })?;
-    let mut bytes = Vec::with_capacity(len.min(4096));
+    if len == 0 {
+        return Ok(String::new());
+    }
+    if len <= SPILL_STR_STACK_FAST_BYTES {
+        let mut stack_buf = [0u8; SPILL_STR_STACK_FAST_BYTES];
+        let dst = stack_buf.get_mut(..len).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "spill string stack slice out of bounds",
+            )
+        })?;
+        r.read_exact(dst)?;
+        let s = std::str::from_utf8(dst)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        return Ok(s.to_owned());
+    }
+    let mut bytes = Vec::with_capacity(SPILL_STR_STACK_FAST_BYTES);
     r.take(raw_len).read_to_end(&mut bytes)?;
     if bytes.len() != len {
         return Err(std::io::Error::new(
@@ -1607,15 +1632,16 @@ impl<V: SpillableCandidate> SpillableVcfAccumulator<V> {
             }
             self.in_memory.entry(chr.to_string()).or_default()
         };
-        let new_bytes = cand.approx_heap_bytes() + 32;
         match chr_map.entry(cand.start_pos()) {
             std::collections::btree_map::Entry::Vacant(e) => {
+                let new_bytes = cand.approx_heap_bytes().saturating_add(32);
                 self.current_bytes = self.current_bytes.saturating_add(new_bytes);
                 e.insert(cand);
             }
             std::collections::btree_map::Entry::Occupied(mut e) => {
                 if cand.af_4dp() > e.get().af_4dp() {
-                    let old_bytes = e.get().approx_heap_bytes() + 32;
+                    let new_bytes = cand.approx_heap_bytes().saturating_add(32);
+                    let old_bytes = e.get().approx_heap_bytes().saturating_add(32);
                     self.current_bytes = self
                         .current_bytes
                         .saturating_sub(old_bytes)
@@ -1651,7 +1677,7 @@ impl<V: SpillableCandidate> SpillableVcfAccumulator<V> {
                 .join(format!("vcf_spill_{}.bin", self.next_spill_id));
             self.next_spill_id += 1;
             let file = create_private_spill_file(&path).map_err(VardictError::Io)?;
-            let mut writer = std::io::BufWriter::new(file);
+            let mut writer = std::io::BufWriter::with_capacity(BUFFER_CAPACITY, file);
             for (_, cand) in btree {
                 cand.write_to(&mut writer).map_err(VardictError::Io)?;
             }
@@ -1705,11 +1731,14 @@ impl<V: SpillableCandidate> SpillableVcfAccumulator<V> {
                     let mut chunk_sources: Vec<RunSource<V>> = Vec::with_capacity(chunk.len());
                     for p in chunk {
                         let f = std::fs::File::open(p).map_err(VardictError::Io)?;
-                        chunk_sources.push(RunSource::File(std::io::BufReader::new(f)));
+                        chunk_sources.push(RunSource::File(std::io::BufReader::with_capacity(
+                            BUFFER_CAPACITY,
+                            f,
+                        )));
                     }
                     let out_file =
                         create_private_spill_file(&out_path).map_err(VardictError::Io)?;
-                    let mut writer = std::io::BufWriter::new(out_file);
+                    let mut writer = std::io::BufWriter::with_capacity(BUFFER_CAPACITY, out_file);
                     merge_run_sources(chunk_sources, |winner: V| {
                         winner.write_to(&mut writer).map_err(VardictError::Io)
                     })?;
@@ -1726,7 +1755,10 @@ impl<V: SpillableCandidate> SpillableVcfAccumulator<V> {
             let mut sources: Vec<RunSource<V>> = Vec::with_capacity(run_paths.len() + 1);
             for p in &run_paths {
                 let f = std::fs::File::open(p).map_err(VardictError::Io)?;
-                sources.push(RunSource::File(std::io::BufReader::new(f)));
+                sources.push(RunSource::File(std::io::BufReader::with_capacity(
+                    BUFFER_CAPACITY,
+                    f,
+                )));
             }
             if !mem_map.is_empty() {
                 sources.push(RunSource::Mem(mem_map.into_values()));
@@ -1817,13 +1849,28 @@ impl std::io::Write for OutputDestination {
 const BUFFER_CAPACITY: usize = 64 * 1024; // 64 KB
 
 fn sync_file_ignoring_special(file: &std::fs::File) -> Result<(), VardictError> {
+    // POSIX/Darwin ENOTTY (25): returned by macOS F_FULLFSYNC / fsync on character devices
+    // when accessed via an fd alias or race.
+    #[cfg(unix)]
+    const UNIX_ENOTTY: i32 = 25;
+
+    if !file.metadata().is_ok_and(|m| m.is_file()) {
+        return Ok(());
+    }
     match file.sync_all() {
         Ok(()) => Ok(()),
         Err(err)
-            if err.kind() == std::io::ErrorKind::InvalidInput || err.raw_os_error() == Some(29) =>
+            if matches!(
+                err.kind(),
+                std::io::ErrorKind::InvalidInput
+                    | std::io::ErrorKind::NotSeekable
+                    | std::io::ErrorKind::Unsupported
+            ) =>
         {
             Ok(())
         }
+        #[cfg(unix)]
+        Err(err) if err.raw_os_error() == Some(UNIX_ENOTTY) => Ok(()),
         Err(err) => Err(VardictError::Io(err)),
     }
 }
@@ -1851,8 +1898,51 @@ fn csi_output_path(vcf_gz_path: &Path) -> std::path::PathBuf {
 }
 
 fn is_readonly_parent_fallback_eligible(target: &Path, err: &std::io::Error) -> bool {
-    (err.kind() == std::io::ErrorKind::PermissionDenied || err.raw_os_error() == Some(30))
+    !is_special_stream_or_fd_alias(target)
+        && matches!(
+            err.kind(),
+            std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::ReadOnlyFilesystem
+        )
         && std::fs::metadata(target).is_ok_and(|m| m.is_file())
+}
+
+fn preflight_readonly_index_plan(plan: &OutputIndexPlan) -> std::io::Result<()> {
+    let idx_probe = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&plan.primary_path)
+        .map_err(|e| {
+            std::io::Error::new(
+                e.kind(),
+                format!(
+                    "cannot write {} index '{}' in read-only parent directory: {e}",
+                    plan.flag,
+                    plan.primary_path.display()
+                ),
+            )
+        })?;
+    if !idx_probe.metadata()?.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!(
+                "cannot stage {} index '{}': target is not a writable regular file",
+                plan.flag,
+                plan.primary_path.display()
+            ),
+        ));
+    }
+    drop(idx_probe);
+
+    if plan.alt_path.exists() || std::fs::symlink_metadata(&plan.alt_path).is_ok() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!(
+                "cannot remove stale {} index '{}' in read-only parent directory",
+                plan.alt_flag,
+                plan.alt_path.display()
+            ),
+        ));
+    }
+    Ok(())
 }
 
 fn is_directory_target(path: &Path) -> bool {
@@ -1872,16 +1962,28 @@ enum StagedFileTarget {
         tmp_path: std::path::PathBuf,
         committed: bool,
     },
+    DirectTempStaged {
+        final_path: std::path::PathBuf,
+        _scratch_dir: SpillTempDir,
+        scratch_path: std::path::PathBuf,
+    },
     Direct,
 }
 
 impl StagedFileTarget {
     fn open(target: &Path) -> std::io::Result<(std::fs::File, Self)> {
+        Self::open_with_index_preflight(target, None)
+    }
+
+    fn open_with_index_preflight(
+        target: &Path,
+        index_plan: Option<&OutputIndexPlan>,
+    ) -> std::io::Result<(std::fs::File, Self)> {
         if is_directory_target(target) {
             return Err(directory_target_io_error("output target", target));
         }
-        if is_unix_char_or_fifo(target) {
-            let file = std::fs::File::create(target)?;
+        if is_special_stream_or_fd_alias(target) {
+            let file = open_special_or_fd_alias_for_write(target)?;
             return Ok((file, Self::Direct));
         }
         let tmp_path = atomic_tmp_path(target);
@@ -1899,8 +2001,46 @@ impl StagedFileTarget {
                 },
             )),
             Err(err) if is_readonly_parent_fallback_eligible(target, &err) => {
-                let file = std::fs::File::create(target)?;
-                Ok((file, Self::Direct))
+                // Probe writability WITHOUT `.truncate(true)` so pre-existing target bytes
+                // are never clobbered before index preflight and engine execution complete.
+                let probe = std::fs::OpenOptions::new().write(true).open(target)?;
+                if !probe.metadata()?.is_file() {
+                    return Err(err);
+                }
+                drop(probe);
+
+                if let Some(plan) = index_plan {
+                    preflight_readonly_index_plan(plan)?;
+                }
+
+                match SpillTempDir::new() {
+                    Ok(scratch_dir) => {
+                        let scratch_path = scratch_dir.path().join("staged_output.bin");
+                        let file = create_private_spill_file(&scratch_path)?;
+                        Ok((
+                            file,
+                            Self::DirectTempStaged {
+                                final_path: target.to_path_buf(),
+                                _scratch_dir: scratch_dir,
+                                scratch_path,
+                            },
+                        ))
+                    }
+                    Err(tmp_err)
+                        if matches!(
+                            tmp_err.kind(),
+                            std::io::ErrorKind::PermissionDenied
+                                | std::io::ErrorKind::ReadOnlyFilesystem
+                        ) =>
+                    {
+                        let file = std::fs::OpenOptions::new()
+                            .write(true)
+                            .truncate(true)
+                            .open(target)?;
+                        Ok((file, Self::Direct))
+                    }
+                    Err(tmp_err) => Err(tmp_err),
+                }
             }
             Err(err) => Err(err),
         }
@@ -1909,19 +2049,39 @@ impl StagedFileTarget {
     fn readable_path<'a>(&'a self, final_path: &'a Path) -> &'a Path {
         match self {
             Self::AtomicTmp { tmp_path, .. } => tmp_path.as_path(),
+            Self::DirectTempStaged { scratch_path, .. } => scratch_path.as_path(),
             Self::Direct => final_path,
         }
     }
 
     fn commit(mut self) -> std::io::Result<()> {
-        if let Self::AtomicTmp {
-            final_path,
-            tmp_path,
-            committed,
-        } = &mut self
-        {
-            std::fs::rename(&*tmp_path, &*final_path)?;
-            *committed = true;
+        match &mut self {
+            Self::AtomicTmp {
+                final_path,
+                tmp_path,
+                committed,
+            } => {
+                std::fs::rename(&*tmp_path, &*final_path)?;
+                *committed = true;
+            }
+            Self::DirectTempStaged {
+                final_path,
+                scratch_path,
+                ..
+            } => {
+                let mut src = std::fs::File::open(&*scratch_path)?;
+                let mut dst = std::fs::OpenOptions::new()
+                    .write(true)
+                    .truncate(true)
+                    .open(&*final_path)?;
+                std::io::copy(&mut src, &mut dst)?;
+                std::io::Write::flush(&mut dst)?;
+                sync_file_ignoring_special(&dst).map_err(|e| match e {
+                    VardictError::Io(io_e) => io_e,
+                    other => std::io::Error::other(other.to_string()),
+                })?;
+            }
+            Self::Direct => {}
         }
         Ok(())
     }
@@ -1968,26 +2128,43 @@ fn is_bgzf_output_path(path: &Path) -> bool {
 fn open_output_writer(
     config: &config::Config,
 ) -> Result<(OutputDestination, Option<StagedFileTarget>), VardictError> {
-    if let Some(ref path_str) = config.output_path {
-        let target = Path::new(path_str);
-        let (file, staged) = StagedFileTarget::open(target).map_err(VardictError::Io)?;
-        if is_bgzf_output_path(target) {
-            let worker_count = std::num::NonZeroUsize::new(config.threads.clamp(1, 4))
-                .unwrap_or(std::num::NonZeroUsize::MIN);
-            Ok((
-                OutputDestination::Bgzf(Box::new(
-                    noodles::bgzf::io::MultithreadedWriter::with_worker_count(worker_count, file),
-                )),
-                Some(staged),
-            ))
-        } else {
-            Ok((
-                OutputDestination::File(std::io::BufWriter::with_capacity(BUFFER_CAPACITY, file)),
-                Some(staged),
-            ))
+    match config.output_path.as_deref() {
+        None => Ok((create_output_writer(config), None)),
+        Some("-") => Ok((
+            OutputDestination::Stdout(std::io::BufWriter::with_capacity(
+                BUFFER_CAPACITY,
+                std::io::stdout(),
+            )),
+            None,
+        )),
+        Some(path_str) => {
+            let target = Path::new(path_str);
+            let index_plan = output_index_plan(config);
+            let (file, staged) =
+                StagedFileTarget::open_with_index_preflight(target, index_plan.as_ref())
+                    .map_err(VardictError::Io)?;
+            if is_bgzf_output_path(target) {
+                let worker_count = std::num::NonZeroUsize::new(config.threads.clamp(1, 4))
+                    .unwrap_or(std::num::NonZeroUsize::MIN);
+                Ok((
+                    OutputDestination::Bgzf(Box::new(
+                        noodles::bgzf::io::MultithreadedWriter::with_worker_count(
+                            worker_count,
+                            file,
+                        ),
+                    )),
+                    Some(staged),
+                ))
+            } else {
+                Ok((
+                    OutputDestination::File(std::io::BufWriter::with_capacity(
+                        BUFFER_CAPACITY,
+                        file,
+                    )),
+                    Some(staged),
+                ))
+            }
         }
-    } else {
-        Ok((create_output_writer(config), None))
     }
 }
 
@@ -2309,11 +2486,19 @@ pub fn resolve_mode(
     }
 }
 
-/// Resolves effective [`config::Config`] and [`CallingMode`] matching `VarDictLauncher.initResources`
-/// and `VarDictLauncher.start` (`VarDictLauncher.java:46-95, 139-173`).
+/// Resolves effective [`config::Config`], [`CallingMode`], and optional preloaded BED lines
+/// matching `VarDictLauncher.initResources` and `VarDictLauncher.start`
+fn is_regular_seekable_bed(bed_path: &str) -> bool {
+    let p = Path::new(bed_path);
+    !targets_os_fd_alias(p) && std::fs::metadata(p).is_ok_and(|m| m.is_file())
+}
+
+/// Resolves the effective configuration (`amplicon`, `zero_based`, `zero_based_defined`, `sample`)
+/// and calling mode without mutating the caller's `Config`. Streams regular BED files in `O(1)`
+/// memory and buffers non-regular BED streams (FIFOs/pipes/`/dev/fd/N`) in a single pass (`AR-4`).
 fn resolve_effective_config(
     config: &config::Config,
-) -> Result<(config::Config, CallingMode), VardictError> {
+) -> Result<(config::Config, CallingMode, Option<Vec<String>>), VardictError> {
     let mut effective = config.clone();
     if let Some(ref raw) = effective.sample_regexp {
         crate::config::validate_sample_regexp(raw).map_err(VardictError::Parse)?;
@@ -2321,12 +2506,22 @@ fn resolve_effective_config(
     effective.validate_vcf_thresholds()?;
     let paired = effective.bam.contains('|');
     let has_region = effective.region.is_some();
+    let mut preloaded_bed_lines: Option<Vec<String>> = None;
 
     if has_region {
         effective.amplicon = None;
     } else if effective.amplicon.is_none() {
         if let Some(ref bed_path) = effective.bed {
-            if crate::regions::detect_amplicon_bed(bed_path, &effective.delimiter)? {
+            let is_amplicon = if is_regular_seekable_bed(bed_path) {
+                crate::regions::detect_amplicon_bed(bed_path, &effective.delimiter)?
+            } else {
+                let lines = crate::regions::read_bed_lines(bed_path)?;
+                let detected =
+                    crate::regions::detect_amplicon_bed_from_lines(&lines, &effective.delimiter)?;
+                preloaded_bed_lines = Some(lines);
+                detected
+            };
+            if is_amplicon {
                 effective.amplicon = Some("10:0.95".to_string());
                 if !effective.zero_based_defined {
                     effective.zero_based = true;
@@ -2372,7 +2567,7 @@ fn resolve_effective_config(
 
     validate_index_flags(&effective)?;
 
-    Ok((effective, mode))
+    Ok((effective, mode, preloaded_bed_lines))
 }
 
 fn validate_index_flags(config: &config::Config) -> Result<(), VardictError> {
@@ -2394,7 +2589,7 @@ fn validate_index_flags(config: &config::Config) -> Result<(), VardictError> {
             )));
         };
         let out_path_ref = Path::new(out_path);
-        if is_unix_char_or_fifo(out_path_ref) {
+        if out_path == "-" || is_special_stream_or_fd_alias(out_path_ref) {
             return Err(VardictError::Parse(
                 "--tbi/--csi requires a regular seekable --output file".to_string(),
             ));
@@ -2418,7 +2613,7 @@ fn resolve_target_path(path: &Path) -> Option<std::path::PathBuf> {
         return Some(canon);
     }
     let mut cur = path.to_path_buf();
-    for _ in 0..16 {
+    for _ in 0..40 {
         match std::fs::read_link(&cur) {
             Ok(target) => {
                 cur = if target.is_absolute() {
@@ -2436,22 +2631,145 @@ fn resolve_target_path(path: &Path) -> Option<std::path::PathBuf> {
             Err(_) => break,
         }
     }
-    let file_name = cur.file_name()?;
-    let parent = cur
+    normalize_parent_preserving_leaf(&cur)
+}
+
+fn normalize_parent_preserving_leaf(p: &Path) -> Option<std::path::PathBuf> {
+    let file_name = p.file_name()?;
+    let parent = p
         .parent()
-        .filter(|p| !p.as_os_str().is_empty())
+        .filter(|par| !par.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
     let canon_parent = std::fs::canonicalize(parent).ok()?;
     Some(canon_parent.join(file_name))
 }
 
-fn is_unix_char_or_fifo(path: &Path) -> bool {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OsFdAliasKind {
+    SelfStdout,
+    SelfStderr,
+    SelfOtherFd(u32),
+    OtherFd,
+}
+
+fn is_ascii_digits_nonempty(s: &str) -> bool {
+    !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())
+}
+
+fn classify_self_fd_str(n: &str) -> OsFdAliasKind {
+    match n {
+        "1" => OsFdAliasKind::SelfStdout,
+        "2" => OsFdAliasKind::SelfStderr,
+        _ => match n.parse::<u32>() {
+            Ok(fd) => OsFdAliasKind::SelfOtherFd(fd),
+            Err(_) => OsFdAliasKind::OtherFd,
+        },
+    }
+}
+
+fn classify_os_fd_alias_path(path: &Path) -> Option<OsFdAliasKind> {
+    use std::path::Component;
+
+    let mut rooted = false;
+    let mut parts: Vec<&str> = Vec::new();
+    for comp in path.components() {
+        match comp {
+            Component::Prefix(_) => return None,
+            Component::RootDir => {
+                rooted = true;
+                parts.clear();
+            }
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !rooted {
+                    return None;
+                }
+                let _ = parts.pop();
+            }
+            Component::Normal(os) => {
+                parts.push(os.to_str()?);
+            }
+        }
+    }
+    if !rooted {
+        return None;
+    }
+    match parts.as_slice() {
+        ["dev", "stdout"] => Some(OsFdAliasKind::SelfStdout),
+        ["dev", "stderr"] => Some(OsFdAliasKind::SelfStderr),
+        ["dev", "stdin"] => Some(OsFdAliasKind::OtherFd),
+        ["dev", "fd", n] if is_ascii_digits_nonempty(n) => Some(classify_self_fd_str(n)),
+        ["proc", pid_seg, "fd", n]
+            if is_ascii_digits_nonempty(n)
+                && (*pid_seg == "self"
+                    || *pid_seg == "thread-self"
+                    || is_ascii_digits_nonempty(pid_seg)) =>
+        {
+            let is_self = *pid_seg == "self"
+                || *pid_seg == "thread-self"
+                || pid_seg.parse::<u32>().ok() == Some(std::process::id());
+            if is_self {
+                Some(classify_self_fd_str(n))
+            } else {
+                Some(OsFdAliasKind::OtherFd)
+            }
+        }
+        _ => None,
+    }
+}
+
+fn is_os_fd_alias_path(path: &Path) -> bool {
+    classify_os_fd_alias_path(path).is_some()
+}
+
+fn classify_target_os_fd_alias(path: &Path) -> Option<OsFdAliasKind> {
+    if let Some(kind) = classify_os_fd_alias_path(path) {
+        return Some(kind);
+    }
+    let mut cur = path.to_path_buf();
+    if let Some(norm) = normalize_parent_preserving_leaf(&cur) {
+        cur = norm;
+        if let Some(kind) = classify_os_fd_alias_path(&cur) {
+            return Some(kind);
+        }
+    }
+    for _ in 0..40 {
+        let target = std::fs::read_link(&cur).ok()?;
+        cur = if target.is_absolute() {
+            target
+        } else {
+            cur.parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .unwrap_or_else(|| Path::new("."))
+                .join(target)
+        };
+        if let Some(kind) = classify_os_fd_alias_path(&cur) {
+            return Some(kind);
+        }
+        if let Some(norm) = normalize_parent_preserving_leaf(&cur) {
+            cur = norm;
+            if let Some(kind) = classify_os_fd_alias_path(&cur) {
+                return Some(kind);
+            }
+        }
+    }
+    None
+}
+
+fn targets_os_fd_alias(path: &Path) -> bool {
+    is_os_fd_alias_path(path) || classify_target_os_fd_alias(path).is_some()
+}
+
+fn is_special_stream_or_fd_alias(path: &Path) -> bool {
+    if targets_os_fd_alias(path) {
+        return true;
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::FileTypeExt as _;
         if let Ok(m) = std::fs::metadata(path) {
             let ft = m.file_type();
-            return ft.is_char_device() || ft.is_fifo();
+            return ft.is_char_device() || ft.is_fifo() || ft.is_socket();
         }
     }
     #[cfg(not(unix))]
@@ -2459,16 +2777,108 @@ fn is_unix_char_or_fifo(path: &Path) -> bool {
     false
 }
 
+#[cfg(target_os = "linux")]
+fn inspect_linux_self_fdinfo(fd: u32) -> (bool, u64) {
+    // Linux `O_APPEND` bit in octal `flags:` of `/proc/self/fdinfo/<fd>`:
+    // `0o0010` on Alpha/MIPS/PA-RISC/SPARC, `0o2000` on all other Linux architectures.
+    #[cfg(any(
+        target_arch = "mips",
+        target_arch = "mips64",
+        target_arch = "sparc",
+        target_arch = "sparc64"
+    ))]
+    const LINUX_O_APPEND: u64 = 0o0010;
+    #[cfg(not(any(
+        target_arch = "mips",
+        target_arch = "mips64",
+        target_arch = "sparc",
+        target_arch = "sparc64"
+    )))]
+    const LINUX_O_APPEND: u64 = 0o2000;
+
+    let Ok(info) = std::fs::read_to_string(format!("/proc/self/fdinfo/{fd}")) else {
+        return (false, 0);
+    };
+    let mut is_append = false;
+    let mut pos = 0u64;
+    for line in info.lines() {
+        if let Some(rest) = line.strip_prefix("flags:") {
+            if let Ok(flags) = u64::from_str_radix(rest.trim(), 8) {
+                is_append = (flags & LINUX_O_APPEND) != 0;
+            }
+        } else if let Some(rest) = line.strip_prefix("pos:") {
+            if let Ok(parsed_pos) = rest.trim().parse::<u64>() {
+                pos = parsed_pos;
+            }
+        }
+    }
+    (is_append, pos)
+}
+
+fn open_special_or_fd_alias_for_write(target: &Path) -> std::io::Result<std::fs::File> {
+    #[cfg(unix)]
+    {
+        match classify_target_os_fd_alias(target) {
+            Some(OsFdAliasKind::SelfStdout) => std::os::fd::AsFd::as_fd(&std::io::stdout())
+                .try_clone_to_owned()
+                .map(std::fs::File::from),
+            Some(OsFdAliasKind::SelfStderr) => std::os::fd::AsFd::as_fd(&std::io::stderr())
+                .try_clone_to_owned()
+                .map(std::fs::File::from),
+            Some(OsFdAliasKind::SelfOtherFd(fd)) => {
+                #[cfg(target_os = "linux")]
+                {
+                    let (is_append, pos) = inspect_linux_self_fdinfo(fd);
+                    if is_append {
+                        std::fs::OpenOptions::new().append(true).open(target)
+                    } else {
+                        let mut file = std::fs::OpenOptions::new().write(true).open(target)?;
+                        if pos > 0 && file.metadata().is_ok_and(|m| m.is_file()) {
+                            let _ = std::io::Seek::seek(&mut file, std::io::SeekFrom::Start(pos));
+                        }
+                        Ok(file)
+                    }
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    let _ = fd;
+                    std::fs::OpenOptions::new().write(true).open(target)
+                }
+            }
+            Some(OsFdAliasKind::OtherFd) | None => {
+                std::fs::OpenOptions::new().write(true).open(target)
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::OpenOptions::new().write(true).open(target)
+    }
+}
+
+#[cfg(unix)]
+fn is_dev_null_metadata(m: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _};
+    if !m.file_type().is_char_device() {
+        return false;
+    }
+    let Ok(dn) = std::fs::metadata("/dev/null") else {
+        return false;
+    };
+    dn.file_type().is_char_device()
+        && ((m.dev() == dn.dev() && m.ino() == dn.ino()) || m.rdev() == dn.rdev())
+}
+
 fn check_pair_collision(a: &Path, b: &Path) -> Option<bool> {
     #[cfg(unix)]
     {
-        use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _};
+        use std::os::unix::fs::MetadataExt as _;
         let ma = std::fs::metadata(a).ok();
-        if ma.as_ref().is_some_and(|m| m.file_type().is_char_device()) {
+        if ma.as_ref().is_some_and(is_dev_null_metadata) {
             return Some(false);
         }
         let mb = std::fs::metadata(b).ok();
-        if mb.as_ref().is_some_and(|m| m.file_type().is_char_device()) {
+        if mb.as_ref().is_some_and(is_dev_null_metadata) {
             return Some(false);
         }
         if a == b {
@@ -2503,12 +2913,34 @@ fn paths_collide(a: &Path, b: &Path) -> bool {
     false
 }
 
+fn push_alignment_and_companion_paths(inputs: &mut Vec<std::path::PathBuf>, bam_path: &Path) {
+    inputs.push(bam_path.to_path_buf());
+    inputs.push(append_os_suffix(bam_path, ".bai"));
+    inputs.push(append_os_suffix(bam_path, ".csi"));
+    inputs.push(append_os_suffix(bam_path, ".crai"));
+    if bam_path.extension().is_some() {
+        inputs.push(bam_path.with_extension("bai"));
+        inputs.push(bam_path.with_extension("csi"));
+        inputs.push(bam_path.with_extension("crai"));
+    }
+}
+
 fn collect_protected_input_paths(config: &config::Config) -> Vec<std::path::PathBuf> {
     let mut inputs = Vec::new();
     if !config.reference.is_empty() {
         let ref_path = Path::new(&config.reference);
         inputs.push(ref_path.to_path_buf());
         inputs.push(append_os_suffix(ref_path, ".fai"));
+        inputs.push(append_os_suffix(ref_path, ".gzi"));
+        inputs.push(crate::reference::resolve_fasta_fai_path(ref_path));
+        inputs.push(crate::reference::resolve_fasta_gzi_path(ref_path));
+        if let Ok(canon_ref) = std::fs::canonicalize(ref_path) {
+            if canon_ref != ref_path {
+                inputs.push(append_os_suffix(&canon_ref, ".fai"));
+                inputs.push(crate::reference::resolve_fasta_fai_path(&canon_ref));
+                inputs.push(crate::reference::resolve_fasta_gzi_path(&canon_ref));
+            }
+        }
     }
     if config.region.is_none() {
         if let Some(ref bed_str) = config.bed {
@@ -2521,17 +2953,10 @@ fn collect_protected_input_paths(config: &config::Config) -> Vec<std::path::Path
         if let Ok(bams) = parse_colon_bams(bam_spec, "") {
             for bam_str in bams {
                 let bam_path = Path::new(&bam_str);
-                inputs.push(bam_path.to_path_buf());
-                inputs.push(append_os_suffix(bam_path, ".bai"));
-                inputs.push(append_os_suffix(bam_path, ".csi"));
-                inputs.push(append_os_suffix(bam_path, ".crai"));
-                if let Some(ext) = bam_path.extension().and_then(|e| e.to_str()) {
-                    if ext.eq_ignore_ascii_case("bam") {
-                        inputs.push(bam_path.with_extension("bai"));
-                        inputs.push(bam_path.with_extension("csi"));
-                    } else if ext.eq_ignore_ascii_case("cram") {
-                        inputs.push(bam_path.with_extension("crai"));
-                        inputs.push(bam_path.with_extension("csi"));
+                push_alignment_and_companion_paths(&mut inputs, bam_path);
+                if let Ok(canon_bam) = std::fs::canonicalize(bam_path) {
+                    if canon_bam != bam_path {
+                        push_alignment_and_companion_paths(&mut inputs, &canon_bam);
                     }
                 }
             }
@@ -2548,7 +2973,8 @@ struct OutputIndexPlan {
 }
 
 fn output_index_plan(config: &config::Config) -> Option<OutputIndexPlan> {
-    let out = Path::new(config.output_path.as_deref()?);
+    let out_str = config.output_path.as_deref().filter(|&p| p != "-")?;
+    let out = Path::new(out_str);
     if config.index_output {
         Some(OutputIndexPlan {
             flag: "--tbi",
@@ -2581,9 +3007,59 @@ fn remove_stale_index_sidecar(alt_path: &Path) -> Result<(), VardictError> {
     }
 }
 
+#[cfg(unix)]
+fn check_active_default_fd_collisions(
+    stream_label: &str,
+    fd_meta: &std::fs::Metadata,
+    protected_inputs: &[std::path::PathBuf],
+    stats_opt: Option<&Path>,
+) -> Result<(), VardictError> {
+    use std::os::unix::fs::MetadataExt as _;
+
+    if is_dev_null_metadata(fd_meta) {
+        return Ok(());
+    }
+    if let Some(stats) = stats_opt {
+        if let Ok(st_meta) = std::fs::metadata(stats) {
+            if !is_dev_null_metadata(&st_meta)
+                && fd_meta.dev() == st_meta.dev()
+                && fd_meta.ino() == st_meta.ino()
+            {
+                return Err(VardictError::Parse(format!(
+                    "{stream_label} and --stats-json '{}' must not point to the same file",
+                    stats.display()
+                )));
+            }
+        }
+    }
+    for input in protected_inputs {
+        if let Ok(in_meta) = std::fs::metadata(input) {
+            if !is_dev_null_metadata(&in_meta)
+                && fd_meta.dev() == in_meta.dev()
+                && fd_meta.ino() == in_meta.ino()
+            {
+                return Err(VardictError::Parse(format!(
+                    "{stream_label} must not point to the same file as input '{}'",
+                    input.display()
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn validate_io_paths(config: &config::Config) -> Result<(), VardictError> {
     validate_index_flags(config)?;
-    let out_opt = config.output_path.as_deref().map(Path::new);
+    if config.stats_json_path.as_deref() == Some("-") {
+        return Err(VardictError::Parse(
+            "--stats-json '-' (stdout) is not supported; pass a file path or /dev/null".to_string(),
+        ));
+    }
+    let out_opt = config
+        .output_path
+        .as_deref()
+        .filter(|&p| p != "-")
+        .map(Path::new);
     let index_plan = output_index_plan(config);
     let stats_opt = config.stats_json_path.as_deref().map(Path::new);
 
@@ -2642,8 +3118,8 @@ fn validate_io_paths(config: &config::Config) -> Result<(), VardictError> {
         }
     }
 
+    let protected_inputs = collect_protected_input_paths(config);
     if out_opt.is_some() || index_plan.is_some() || stats_opt.is_some() {
-        let protected_inputs = collect_protected_input_paths(config);
         for input in &protected_inputs {
             if let Some(out) = out_opt {
                 if paths_collide(out, input) {
@@ -2684,6 +3160,49 @@ fn validate_io_paths(config: &config::Config) -> Result<(), VardictError> {
         }
     }
 
+    #[cfg(unix)]
+    {
+        let uses_default_stderr = config.output_path.is_none()
+            && config.debug_print.as_deref() == Some("ERR")
+            && !config.splice;
+        let uses_default_stdout = match config.output_path.as_deref() {
+            Some("-") => true,
+            Some(_) => false,
+            None => !uses_default_stderr || config.column_header,
+        };
+        if uses_default_stdout {
+            if let Ok(stdout_meta) = std::os::fd::AsFd::as_fd(&std::io::stdout())
+                .try_clone_to_owned()
+                .and_then(|fd| std::fs::File::from(fd).metadata())
+            {
+                let label = if config.output_path.as_deref() == Some("-") {
+                    "--output '-' (stdout)"
+                } else {
+                    "stdout"
+                };
+                check_active_default_fd_collisions(
+                    label,
+                    &stdout_meta,
+                    &protected_inputs,
+                    stats_opt,
+                )?;
+            }
+        }
+        if uses_default_stderr {
+            if let Ok(stderr_meta) = std::os::fd::AsFd::as_fd(&std::io::stderr())
+                .try_clone_to_owned()
+                .and_then(|fd| std::fs::File::from(fd).metadata())
+            {
+                check_active_default_fd_collisions(
+                    "stderr (--DP ERR)",
+                    &stderr_meta,
+                    &protected_inputs,
+                    stats_opt,
+                )?;
+            }
+        }
+    }
+
     if let Some(out) = out_opt {
         if is_directory_target(out) {
             return Err(VardictError::Io(directory_target_io_error("--output", out)));
@@ -2715,7 +3234,7 @@ fn validate_io_paths(config: &config::Config) -> Result<(), VardictError> {
 }
 
 fn map_stats_io_err(stats_path: &str, err: std::io::Error) -> VardictError {
-    if err.kind() == std::io::ErrorKind::BrokenPipe || err.raw_os_error() == Some(32) {
+    if err.kind() == std::io::ErrorKind::BrokenPipe {
         VardictError::Io(std::io::Error::other(format!(
             "failed to write --stats-json '{stats_path}': {err}"
         )))
@@ -2738,6 +3257,12 @@ enum PendingStatsJson {
 
 impl PendingStatsJson {
     fn open(stats_path: &str) -> Result<Self, VardictError> {
+        if stats_path == "-" {
+            return Err(VardictError::Parse(
+                "--stats-json '-' (stdout) is not supported; pass a file path or /dev/null"
+                    .to_string(),
+            ));
+        }
         let target = Path::new(stats_path);
         if is_directory_target(target) {
             return Err(map_stats_io_err(
@@ -2745,7 +3270,7 @@ impl PendingStatsJson {
                 directory_target_io_error("--stats-json", target),
             ));
         }
-        if is_unix_char_or_fifo(target) {
+        if is_special_stream_or_fd_alias(target) {
             return Ok(Self::DirectDeferred {
                 stats_label: stats_path.to_string(),
                 final_path: target.to_path_buf(),
@@ -2805,8 +3330,16 @@ impl PendingStatsJson {
                 stats_label,
                 final_path,
             } => {
-                let mut file = std::fs::File::create(&final_path)
-                    .map_err(|e| map_stats_io_err(&stats_label, e))?;
+                let mut file = if is_special_stream_or_fd_alias(&final_path) {
+                    open_special_or_fd_alias_for_write(&final_path)
+                } else {
+                    let is_reg_file = std::fs::metadata(&final_path).is_ok_and(|m| m.is_file());
+                    std::fs::OpenOptions::new()
+                        .write(true)
+                        .truncate(is_reg_file)
+                        .open(&final_path)
+                }
+                .map_err(|e| map_stats_io_err(&stats_label, e))?;
                 file.write_all(json)
                     .map_err(|e| map_stats_io_err(&stats_label, e))?;
                 file.flush()
@@ -2836,7 +3369,7 @@ pub fn run(config: &config::Config) -> Result<(), VardictError> {
     crate::runner::run_with_worker_stack_for_bam(&config.bam, || {
         let started = std::time::Instant::now();
         validate_io_paths(config)?;
-        let (effective, mode) = resolve_effective_config(config)?;
+        let (effective, mode, preloaded_bed_lines) = resolve_effective_config(config)?;
         let pending_stats = if let Some(ref stats_path) = effective.stats_json_path {
             Some(PendingStatsJson::open(stats_path)?)
         } else {
@@ -2844,8 +3377,13 @@ pub fn run(config: &config::Config) -> Result<(), VardictError> {
         };
         let (writer, staged_out) = open_output_writer(&effective)?;
         let telemetry = RunTelemetryCounters::default();
-        let engine_res =
-            run_with_engine_writer_and_telemetry(&effective, mode, writer, Some(&telemetry));
+        let engine_res = run_with_engine_writer_and_telemetry(
+            &effective,
+            mode,
+            preloaded_bed_lines,
+            writer,
+            Some(&telemetry),
+        );
 
         let emit_stats = |pending: PendingStatsJson| -> Result<(), VardictError> {
             let elapsed_ms = started.elapsed().as_millis();
@@ -2876,7 +3414,7 @@ pub fn run(config: &config::Config) -> Result<(), VardictError> {
             Ok(()) => {
                 let index_plan = output_index_plan(&effective);
                 let staged_idx = if index_plan.is_some() {
-                    if let Some(ref out_path) = effective.output_path {
+                    if let Some(out_path) = effective.output_path.as_deref().filter(|&p| p != "-") {
                         let final_vcf = Path::new(out_path);
                         let readable_vcf = match staged_out.as_ref() {
                             Some(staged) => staged.readable_path(final_vcf),
@@ -2909,7 +3447,9 @@ pub fn run(config: &config::Config) -> Result<(), VardictError> {
             }
             Err(err) => {
                 drop(staged_out);
-                if effective.output_path.is_none() && err.is_broken_pipe() {
+                if matches!(effective.output_path.as_deref(), None | Some("-"))
+                    && err.is_broken_pipe()
+                {
                     if let Some(pending) = pending_stats {
                         emit_stats(pending)?;
                     }
@@ -2926,17 +3466,24 @@ pub fn run_with_writer<W: std::io::Write>(
     config: &config::Config,
     writer: W,
 ) -> Result<(), VardictError> {
-    let (effective, mode) = resolve_effective_config(config)?;
-    run_with_engine_writer_and_telemetry(&effective, mode, InjectedWriter(writer), None)
+    let (effective, mode, preloaded_bed_lines) = resolve_effective_config(config)?;
+    run_with_engine_writer_and_telemetry(
+        &effective,
+        mode,
+        preloaded_bed_lines,
+        InjectedWriter(writer),
+        None,
+    )
 }
 
 fn run_with_engine_writer_and_telemetry<W: EngineWriter>(
     config: &config::Config,
     mode: CallingMode,
+    preloaded_bed_lines: Option<Vec<String>>,
     mut writer: W,
     telemetry: Option<&RunTelemetryCounters>,
 ) -> Result<(), VardictError> {
-    match run_with_writer_inner(config, mode, &mut writer, telemetry) {
+    match run_with_writer_inner(config, mode, preloaded_bed_lines, &mut writer, telemetry) {
         Ok(()) => writer.finish_output(),
         Err(e) => {
             let _ = writer.flush();
@@ -2948,13 +3495,14 @@ fn run_with_engine_writer_and_telemetry<W: EngineWriter>(
 fn run_with_writer_inner<W: EngineWriter>(
     config: &config::Config,
     mode: CallingMode,
+    preloaded_bed_lines: Option<Vec<String>>,
     mut writer: &mut W,
     telemetry: Option<&RunTelemetryCounters>,
 ) -> Result<(), VardictError> {
     log::info!("VarDictRust engine starting");
 
     if mode == CallingMode::Somatic {
-        return run_somatic(config, writer, telemetry);
+        return run_somatic(config, preloaded_bed_lines, writer, telemetry);
     }
 
     let first_bam_spec = config
@@ -2973,14 +3521,23 @@ fn run_with_writer_inner<W: EngineWriter>(
 
     // Parse target regions
     let regions = if let Some(ref r_str) = config.region {
+        drop(preloaded_bed_lines);
         crate::regions::parse_region_flag(r_str, config, &chromosomes_lengths)?
     } else if let Some(ref bed_path) = config.bed {
-        crate::regions::parse_bed(
-            bed_path,
-            config,
-            &chromosomes_lengths,
-            config.zero_based_defined.then_some(config.zero_based),
-        )?
+        match preloaded_bed_lines {
+            Some(bed_lines) => crate::regions::parse_bed_from_lines(
+                &bed_lines,
+                config,
+                &chromosomes_lengths,
+                config.zero_based_defined.then_some(config.zero_based),
+            )?,
+            None => crate::regions::parse_bed(
+                bed_path,
+                config,
+                &chromosomes_lengths,
+                config.zero_based_defined.then_some(config.zero_based),
+            )?,
+        }
     } else {
         return Err(VardictError::Parse(
             "Either region (-R) or BED file must be specified".to_string(),
@@ -3089,6 +3646,7 @@ fn run_with_writer_inner<W: EngineWriter>(
     }
 
     enum SimpleTileOutput {
+        UnSplitVarBlock(String),
         Lines {
             rows: Vec<SplitVarRow>,
             is_split_tile: bool,
@@ -3178,9 +3736,8 @@ fn run_with_writer_inner<W: EngineWriter>(
                 parent_orig_start,
             )?;
 
-            let mut rows = Vec::new();
-
             if config_clone.splice {
+                let mut rows = Vec::new();
                 let mut introns: Vec<&String> = var_data.splice_count.keys().collect();
                 introns.sort();
                 for intron in introns {
@@ -3231,46 +3788,81 @@ fn run_with_writer_inner<W: EngineWriter>(
             );
 
             if config_clone.emit_intermediate {
-                let ids = build_simple_split_var_identities(&variants, is_split_tile);
-                for (v, id) in variants.into_iter().zip(ids) {
-                    let mut line = String::new();
-                    if config_clone.fisher {
-                        crate::output::table::simple_38_into(
-                            &mut line,
-                            &v,
-                            &builder_region,
-                            &config_clone.sample,
-                            &v.sv,
-                        );
-                    } else {
-                        crate::output::table::simple_36_into(
-                            &mut line,
-                            &v,
-                            &builder_region,
-                            &config_clone.sample,
-                            &v.sv,
-                        );
+                if !is_split_tile {
+                    let mut block = String::with_capacity(variants.len().saturating_mul(256));
+                    for v in variants {
+                        if config_clone.fisher {
+                            crate::output::table::simple_38_append(
+                                &mut block,
+                                &v,
+                                &builder_region,
+                                &config_clone.sample,
+                                &v.sv,
+                            );
+                        } else {
+                            crate::output::table::simple_36_append(
+                                &mut block,
+                                &v,
+                                &builder_region,
+                                &config_clone.sample,
+                                &v.sv,
+                            );
+                        }
+                        if config_clone.crispr_cutting_site.unwrap_or(0) != 0 {
+                            block.push('\t');
+                            crate::util::push_i32(&mut block, v.crispr);
+                        }
+                        // ports SimpleOutputVariant.java:116-117 (DEBUG appended after crispr)
+                        if config_clone.debug {
+                            block.push('\t');
+                            block.push_str(&v.debug);
+                        }
+                        block.push('\n');
                     }
-                    if config_clone.crispr_cutting_site.unwrap_or(0) != 0 {
-                        let _ =
-                            std::fmt::Write::write_fmt(&mut line, format_args!("\t{}", v.crispr));
+                    Ok(SimpleTileOutput::UnSplitVarBlock(block))
+                } else {
+                    let mut rows = Vec::with_capacity(variants.len());
+                    let ids = build_simple_split_var_identities(&variants, is_split_tile);
+                    for (v, id) in variants.into_iter().zip(ids) {
+                        let mut line = String::new();
+                        if config_clone.fisher {
+                            crate::output::table::simple_38_into(
+                                &mut line,
+                                &v,
+                                &builder_region,
+                                &config_clone.sample,
+                                &v.sv,
+                            );
+                        } else {
+                            crate::output::table::simple_36_into(
+                                &mut line,
+                                &v,
+                                &builder_region,
+                                &config_clone.sample,
+                                &v.sv,
+                            );
+                        }
+                        if config_clone.crispr_cutting_site.unwrap_or(0) != 0 {
+                            line.push('\t');
+                            crate::util::push_i32(&mut line, v.crispr);
+                        }
+                        // ports SimpleOutputVariant.java:116-117 (DEBUG appended after crispr)
+                        if config_clone.debug {
+                            line.push('\t');
+                            line.push_str(&v.debug);
+                        }
+                        let is_sv = !v.sv.is_empty() || v.var_allele.contains('<');
+                        rows.push(SplitVarRow { id, is_sv, line });
                     }
-                    // ports SimpleOutputVariant.java:116-117 (DEBUG appended after crispr)
-                    if config_clone.debug {
-                        line.push('\t');
-                        line.push_str(&v.debug);
-                    }
-                    let is_sv = is_split_tile && (!v.sv.is_empty() || v.var_allele.contains('<'));
-                    rows.push(SplitVarRow { id, is_sv, line });
+                    Ok(SimpleTileOutput::Lines {
+                        rows,
+                        is_split_tile,
+                        tile_start: tile.start,
+                        tile_end: tile.end,
+                        original_start: tile.original_start,
+                        original_end: tile.original_end,
+                    })
                 }
-                Ok(SimpleTileOutput::Lines {
-                    rows,
-                    is_split_tile,
-                    tile_start: tile.start,
-                    tile_end: tile.end,
-                    original_start: tile.original_start,
-                    original_end: tile.original_end,
-                })
             } else {
                 let mut buckets: std::collections::BTreeMap<
                     i32,
@@ -3313,6 +3905,14 @@ fn run_with_writer_inner<W: EngineWriter>(
         },
         |output| {
             match output {
+                SimpleTileOutput::UnSplitVarBlock(block) => {
+                    split_var_deduper
+                        .flush_before_unsplit_tile(|line| write_output_line(&mut writer, line))?;
+                    if !block.is_empty() {
+                        std::io::Write::write_all(&mut writer, block.as_bytes())
+                            .map_err(VardictError::Io)?;
+                    }
+                }
                 SimpleTileOutput::Lines {
                     rows,
                     is_split_tile,
@@ -3464,7 +4064,7 @@ fn run_amplicon<W: EngineWriter>(
     type AmpliconVarsList = Vec<crate::javamap::JavaHashMap<i32, crate::variations::Vars>>;
 
     enum AmpliconSegmentOutput {
-        Lines(Vec<String>),
+        UnSplitVarBlock(String),
         Vcf {
             chr: String,
             records: Vec<RawVcfCandidate>,
@@ -3498,7 +4098,7 @@ fn run_amplicon<W: EngineWriter>(
         move |segment| -> Result<AmpliconSegmentOutput, VardictError> {
             // §9: let-else merges the empty guard with the last() unwrap.
             let Some(current_region) = segment.last() else {
-                return Ok(AmpliconSegmentOutput::Lines(Vec::new()));
+                return Ok(AmpliconSegmentOutput::UnSplitVarBlock(String::new()));
             };
             let run_segment_regions = || {
                 let mut vars_per_amplicon: AmpliconVarsList = Vec::with_capacity(segment.len());
@@ -3572,29 +4172,28 @@ fn run_amplicon<W: EngineWriter>(
             )?;
 
             if config_clone.emit_intermediate {
-                let mut lines = Vec::with_capacity(results.len());
+                let mut block = String::with_capacity(results.len().saturating_mul(256));
                 for av in results {
-                    let mut row_buf = String::new();
                     if config_clone.fisher {
-                        crate::output::table::amplicon_40_into(
-                            &mut row_buf,
+                        crate::output::table::amplicon_40_append(
+                            &mut block,
                             &av,
                             current_region,
                             &config_clone.sample,
                             config_clone.debug,
                         );
                     } else {
-                        crate::output::table::amplicon_38_into(
-                            &mut row_buf,
+                        crate::output::table::amplicon_38_append(
+                            &mut block,
                             &av,
                             current_region,
                             &config_clone.sample,
                             config_clone.debug,
                         );
                     }
-                    lines.push(row_buf);
+                    block.push('\n');
                 }
-                Ok(AmpliconSegmentOutput::Lines(lines))
+                Ok(AmpliconSegmentOutput::UnSplitVarBlock(block))
             } else {
                 let mut buckets: std::collections::BTreeMap<
                     i32,
@@ -3637,9 +4236,10 @@ fn run_amplicon<W: EngineWriter>(
         },
         |output| {
             match output {
-                AmpliconSegmentOutput::Lines(lines) => {
-                    for line in lines {
-                        write_output_line(writer, &line)?;
+                AmpliconSegmentOutput::UnSplitVarBlock(block) => {
+                    if !block.is_empty() {
+                        std::io::Write::write_all(writer, block.as_bytes())
+                            .map_err(VardictError::Io)?;
                     }
                 }
                 AmpliconSegmentOutput::Vcf { chr, records } => {
@@ -3738,17 +4338,19 @@ fn run_amplicon<W: EngineWriter>(
 /// Ports SomaticMode.java's processBothBamsInPipeline.
 fn run_somatic<W: EngineWriter>(
     config: &config::Config,
+    preloaded_bed_lines: Option<Vec<String>>,
     writer: &mut W,
     telemetry: Option<&RunTelemetryCounters>,
 ) -> Result<(), VardictError> {
-    let parts: Vec<&str> = config.bam.split('|').collect();
-    if parts.len() != 2 {
+    let mut parts = config.bam.split('|');
+    let (Some(bam1_spec), Some(bam2_spec), None) = (parts.next(), parts.next(), parts.next())
+    else {
         return Err(VardictError::Parse(
             "Somatic mode requires exactly two BAM files separated by '|'".to_string(),
         ));
-    }
-    let bam1_bams = parse_colon_bams(parts[0], "No tumor BAM file specified")?;
-    let bam2_bams = parse_colon_bams(parts[1], "No normal BAM file specified")?;
+    };
+    let bam1_bams = parse_colon_bams(bam1_spec, "No tumor BAM file specified")?;
+    let bam2_bams = parse_colon_bams(bam2_spec, "No normal BAM file specified")?;
     let first_bam1 = bam1_bams
         .first()
         .ok_or_else(|| VardictError::Parse("No tumor BAM file specified".to_string()))?;
@@ -3758,14 +4360,23 @@ fn run_somatic<W: EngineWriter>(
 
     // Parse target regions
     let regions = if let Some(ref r_str) = config.region {
+        drop(preloaded_bed_lines);
         crate::regions::parse_region_flag(r_str, config, &chromosomes_lengths)?
     } else if let Some(ref bed_path) = config.bed {
-        crate::regions::parse_bed(
-            bed_path,
-            config,
-            &chromosomes_lengths,
-            config.zero_based_defined.then_some(config.zero_based),
-        )?
+        match preloaded_bed_lines {
+            Some(bed_lines) => crate::regions::parse_bed_from_lines(
+                &bed_lines,
+                config,
+                &chromosomes_lengths,
+                config.zero_based_defined.then_some(config.zero_based),
+            )?,
+            None => crate::regions::parse_bed(
+                bed_path,
+                config,
+                &chromosomes_lengths,
+                config.zero_based_defined.then_some(config.zero_based),
+            )?,
+        }
     } else {
         return Err(VardictError::Parse(
             "Either region (-R) or BED file must be specified".to_string(),
@@ -3889,6 +4500,7 @@ fn run_somatic<W: EngineWriter>(
     }
 
     enum SomaticTileOutput {
+        UnSplitVarBlock(String),
         Lines {
             rows: Vec<SplitVarRow>,
             is_split_tile: bool,
@@ -4078,55 +4690,55 @@ fn run_somatic<W: EngineWriter>(
             bams_for_combine.extend(bam2_bams_for_combine.iter().cloned());
             let config_for_combine = config_clone.clone();
             let chr_lens_for_combine = chromosomes_lengths_clone.clone();
-            let pipeline_fn = |combine_region: &crate::regions::Region,
-                               splice_set: &mut rustc_hash::FxHashSet<String>,
-                               max_rl: &mut i32|
-             -> Result<
-                crate::javamap::JavaHashMap<i32, crate::variations::Vars>,
-                VardictError,
-            > {
-                // Query reads from both BAMs over the combine region; the
-                // merged record set goes through one preprocessing pass.
-                // Ports SomaticPostProcessModule.java:399 (`Reference ref = referenceResource.getReference(region)`):
-                // start with a fresh Reference so `run_pipeline_on_records` loads
-                // `combine_region` (`reference.seed` and `referenceSequences` bounds
-                // scoped to `combine_region`, not the outer tile).
-                let mut pipeline_ref = crate::reference::Reference::new();
-                let mut var_data = run_pipeline_on_records(
-                    &bams_for_combine,
-                    &combine_region.chr,
-                    crate::types::Pos0(combine_region.start.0.saturating_sub(1)),
-                    crate::types::Pos0(combine_region.end.0),
-                    Some(combine_region),
-                    &mut pipeline_ref,
-                    combine_region,
-                    PipelineTail::Full,
-                    &config_for_combine,
-                    &chr_lens_for_combine,
-                    *max_rl,
-                    Some(splice_set.clone()),
-                )?;
-                *splice_set = std::mem::take(&mut var_data.splice);
-                *max_rl = (*max_rl).max(var_data.max_read_length);
+            let pipeline_fn =
+                |combine_region: &crate::regions::Region,
+                 splice_set: &mut rustc_hash::FxHashSet<String>,
+                 max_rl: &mut i32,
+                 target_pos: i32|
+                 -> Result<Option<crate::variations::Vars>, VardictError> {
+                    // Query reads from both BAMs over the combine region; the
+                    // merged record set goes through one preprocessing pass.
+                    // Ports SomaticPostProcessModule.java:399 (`Reference ref = referenceResource.getReference(region)`):
+                    // start with a fresh Reference so `run_pipeline_on_records` loads
+                    // `combine_region` (`reference.seed` and `referenceSequences` bounds
+                    // scoped to `combine_region`, not the outer tile).
+                    let mut pipeline_ref = crate::reference::Reference::new();
+                    let mut var_data = run_pipeline_on_records(
+                        &bams_for_combine,
+                        &combine_region.chr,
+                        crate::types::Pos0(combine_region.start.0.saturating_sub(1)),
+                        crate::types::Pos0(combine_region.end.0),
+                        Some(combine_region),
+                        &mut pipeline_ref,
+                        combine_region,
+                        PipelineTail::Full,
+                        &config_for_combine,
+                        &chr_lens_for_combine,
+                        *max_rl,
+                        Some(splice_set.clone()),
+                    )?;
+                    *splice_set = std::mem::take(&mut var_data.splice);
+                    *max_rl = (*max_rl).max(var_data.max_read_length);
 
-                // ToVarsBuilder
-                let builder = crate::tovars::ToVarsBuilder::new(
-                    &pipeline_ref,
-                    combine_region,
-                    &chr_lens_for_combine,
-                    &config_for_combine,
-                );
-                if use_compact_somatic_ref_mode {
-                    Ok(builder.build_aligned_variants_with_ref_mode(
-                        &var_data,
-                        crate::tovars::RefSiteMode::DropAll,
-                    ))
-                } else {
-                    Ok(builder.build_aligned_variants(&var_data))
-                }
-            };
+                    // ToVarsBuilder (single-position finalization at target_pos)
+                    let builder = crate::tovars::ToVarsBuilder::new(
+                        &pipeline_ref,
+                        combine_region,
+                        &chr_lens_for_combine,
+                        &config_for_combine,
+                    );
+                    if use_compact_somatic_ref_mode {
+                        Ok(builder.build_vars_at_position_with_ref_mode(
+                            &var_data,
+                            target_pos,
+                            crate::tovars::RefSiteMode::DropAll,
+                        ))
+                    } else {
+                        Ok(builder.build_vars_at_position(&var_data, target_pos))
+                    }
+                };
 
-            let somatic_variants = crate::postprocess::somatic::somatic_post_process(
+            let somatic_variants = crate::postprocess::somatic::somatic_post_process_at(
                 &config_clone,
                 &builder_region,
                 &aligned1,
@@ -4139,41 +4751,78 @@ fn run_somatic<W: EngineWriter>(
             // Output 55-column format (or 61-column with --fisher), or the
             // paired VCF (var2vcf_paired.pl) when not in intermediate mode.
             if config_clone.emit_intermediate {
-                let mut rows = Vec::with_capacity(somatic_variants.len());
-                for sv in somatic_variants {
-                    let mut line = String::new();
-                    if config_clone.fisher {
-                        crate::output::table::somatic_61_into(
-                            &mut line,
-                            &sv.variant1,
-                            sv.variant2.as_ref(),
-                            &builder_region,
-                            &config_clone.sample,
-                            &sv.status,
-                            &sv.sv1,
-                            &sv.sv2,
-                            sv.end_is_variant2,
-                        );
-                    } else {
-                        crate::output::table::somatic_55_into(
-                            &mut line,
-                            &sv.variant1,
-                            sv.variant2.as_ref(),
-                            &builder_region,
-                            &config_clone.sample,
-                            &sv.status,
-                            &sv.sv1,
-                            &sv.sv2,
-                            sv.end_is_variant2,
-                        );
+                if !is_split_tile {
+                    let mut block =
+                        String::with_capacity(somatic_variants.len().saturating_mul(384));
+                    for sv in somatic_variants {
+                        if config_clone.fisher {
+                            crate::output::table::somatic_61_append(
+                                &mut block,
+                                &sv.variant1,
+                                sv.variant2.as_ref(),
+                                &builder_region,
+                                &config_clone.sample,
+                                &sv.status,
+                                &sv.sv1,
+                                &sv.sv2,
+                                sv.end_is_variant2,
+                            );
+                        } else {
+                            crate::output::table::somatic_55_append(
+                                &mut block,
+                                &sv.variant1,
+                                sv.variant2.as_ref(),
+                                &builder_region,
+                                &config_clone.sample,
+                                &sv.status,
+                                &sv.sv1,
+                                &sv.sv2,
+                                sv.end_is_variant2,
+                            );
+                        }
+                        // ports SomaticOutputVariant.java:193-194 (DEBUG = tumor variant's)
+                        if config_clone.debug {
+                            block.push('\t');
+                            block.push_str(&sv.variant1.debug);
+                        }
+                        block.push('\n');
                     }
-                    // ports SomaticOutputVariant.java:193-194 (DEBUG = tumor variant's)
-                    if config_clone.debug {
-                        line.push('\t');
-                        line.push_str(&sv.variant1.debug);
-                    }
-                    let id = if is_split_tile {
-                        SplitVarIdentity {
+                    Ok(SomaticTileOutput::UnSplitVarBlock(block))
+                } else {
+                    let mut rows = Vec::with_capacity(somatic_variants.len());
+                    for sv in somatic_variants {
+                        let mut line = String::new();
+                        if config_clone.fisher {
+                            crate::output::table::somatic_61_into(
+                                &mut line,
+                                &sv.variant1,
+                                sv.variant2.as_ref(),
+                                &builder_region,
+                                &config_clone.sample,
+                                &sv.status,
+                                &sv.sv1,
+                                &sv.sv2,
+                                sv.end_is_variant2,
+                            );
+                        } else {
+                            crate::output::table::somatic_55_into(
+                                &mut line,
+                                &sv.variant1,
+                                sv.variant2.as_ref(),
+                                &builder_region,
+                                &config_clone.sample,
+                                &sv.status,
+                                &sv.sv1,
+                                &sv.sv2,
+                                sv.end_is_variant2,
+                            );
+                        }
+                        // ports SomaticOutputVariant.java:193-194 (DEBUG = tumor variant's)
+                        if config_clone.debug {
+                            line.push('\t');
+                            line.push_str(&sv.variant1.debug);
+                        }
+                        let id = SplitVarIdentity {
                             origin_pos: sv.variant1.start_pos,
                             start_pos: sv.variant1.start_pos,
                             end_pos: sv.variant1.end_pos,
@@ -4181,24 +4830,21 @@ fn run_somatic<W: EngineWriter>(
                             var_allele: sv.variant1.var_allele.clone(),
                             null_record: sv.variant1.null_record,
                             companion_kind: 0,
-                        }
-                    } else {
-                        SplitVarIdentity::default()
-                    };
-                    let is_sv = is_split_tile
-                        && (!sv.sv1.is_empty()
+                        };
+                        let is_sv = !sv.sv1.is_empty()
                             || !sv.sv2.is_empty()
-                            || sv.variant1.var_allele.contains('<'));
-                    rows.push(SplitVarRow { id, is_sv, line });
+                            || sv.variant1.var_allele.contains('<');
+                        rows.push(SplitVarRow { id, is_sv, line });
+                    }
+                    Ok(SomaticTileOutput::Lines {
+                        rows,
+                        is_split_tile,
+                        tile_start: tile.start,
+                        tile_end: tile.end,
+                        original_start: tile.original_start,
+                        original_end: tile.original_end,
+                    })
                 }
-                Ok(SomaticTileOutput::Lines {
-                    rows,
-                    is_split_tile,
-                    tile_start: tile.start,
-                    tile_end: tile.end,
-                    original_start: tile.original_start,
-                    original_end: tile.original_end,
-                })
             } else {
                 // Paired VCF mode: ports var2vcf_paired.pl:41,128-129,136 —
                 // bucket rows by the raw .var start column ($hash{$chr}->{$a[3]}),
@@ -4253,6 +4899,14 @@ fn run_somatic<W: EngineWriter>(
         },
         |output| {
             match output {
+                SomaticTileOutput::UnSplitVarBlock(block) => {
+                    split_var_deduper
+                        .flush_before_unsplit_tile(|line| write_output_line(writer, line))?;
+                    if !block.is_empty() {
+                        std::io::Write::write_all(writer, block.as_bytes())
+                            .map_err(VardictError::Io)?;
+                    }
+                }
                 SomaticTileOutput::Lines {
                     rows,
                     is_split_tile,
@@ -7017,24 +7671,28 @@ mod tests {
             emit_intermediate: false,
             ..Default::default()
         };
-        let (eff_splice, mode_splice) = resolve_effective_config(&splice_cfg).unwrap();
+        let (eff_splice, mode_splice, pre_splice) = resolve_effective_config(&splice_cfg).unwrap();
         assert_eq!(mode_splice, CallingMode::Splicing);
         assert_eq!(eff_splice.sample, "TUMOR");
         assert_eq!(eff_splice.bam, "tumor.bam");
+        assert!(pre_splice.is_none());
 
-        // 2. Explicit -a on a 9-column BED preserves amplicon parameters
+        // 2. Explicit -a on a 9-column BED preserves amplicon parameters without pre-reading BED
         let amp9_cfg = crate::config::Config {
             bam: "a.bam".to_string(),
             bed: Some(amp9_bed.to_string_lossy().into_owned()),
             amplicon: Some("15:0.90".to_string()),
             ..Default::default()
         };
-        let (eff_amp9, mode_amp9) = resolve_effective_config(&amp9_cfg).unwrap();
+        let (eff_amp9, mode_amp9, pre_amp9) = resolve_effective_config(&amp9_cfg).unwrap();
         assert_eq!(mode_amp9, CallingMode::Amplicon);
         assert_eq!(eff_amp9.amplicon.as_deref(), Some("15:0.90"));
+        assert!(pre_amp9.is_none());
 
         // 3. 8-column amplicon BED auto-detects even when -c 1 (column_for_chromosome) is set,
-        //    and preserves explicit -z 0 (`zero_based_defined = true, zero_based = false`)
+        //    preserves explicit -z 0 (`zero_based_defined = true, zero_based = false`), streams
+        //    regular seekable files without `Vec<String>` slurp (`WF-4`: `pre_amp8_z0.is_none()`),
+        //    and single-pass buffers non-regular pipe/FD streams (`Some(len == 1)`).
         let amp8_z0_cfg = crate::config::Config {
             bam: "a.bam".to_string(),
             bed: Some(amp8_bed.to_string_lossy().into_owned()),
@@ -7043,13 +7701,58 @@ mod tests {
             zero_based_defined: true,
             ..Default::default()
         };
-        let (eff_amp8_z0, mode_amp8_z0) = resolve_effective_config(&amp8_z0_cfg).unwrap();
+        let (eff_amp8_z0, mode_amp8_z0, pre_amp8_z0) =
+            resolve_effective_config(&amp8_z0_cfg).unwrap();
         assert_eq!(mode_amp8_z0, CallingMode::Amplicon);
         assert_eq!(eff_amp8_z0.amplicon.as_deref(), Some("10:0.95"));
+        assert!(
+            pre_amp8_z0.is_none(),
+            "regular BED file must stream in O(1) line memory without preloading Vec<String>"
+        );
         assert!(
             !eff_amp8_z0.zero_based,
             "explicit -z 0 must not be overwritten by amplicon auto-detect"
         );
+        #[cfg(target_os = "linux")]
+        {
+            use std::io::Write as _;
+            use std::os::fd::AsRawFd as _;
+            let (pipe_r, mut pipe_w) = std::io::pipe().unwrap();
+            pipe_w
+                .write_all(&std::fs::read(&amp8_bed).unwrap())
+                .unwrap();
+            drop(pipe_w);
+            let fifo_cfg = crate::config::Config {
+                bam: "a.bam".to_string(),
+                bed: Some(format!("/proc/self/fd/{}", pipe_r.as_raw_fd())),
+                ..Default::default()
+            };
+            let (eff_fifo, mode_fifo, pre_fifo) = resolve_effective_config(&fifo_cfg).unwrap();
+            assert_eq!(mode_fifo, CallingMode::Amplicon);
+            assert_eq!(eff_fifo.amplicon.as_deref(), Some("10:0.95"));
+            assert_eq!(
+                pre_fifo.as_ref().map(Vec::len),
+                Some(1),
+                "non-regular pipe/FD BED stream must be preloaded in a single pass"
+            );
+            drop(pipe_r);
+        }
+
+        assert!(is_os_fd_alias_path(Path::new("/dev/stdout")));
+        assert!(is_os_fd_alias_path(Path::new("/dev/stderr")));
+        assert!(is_os_fd_alias_path(Path::new("/dev/fd/3")));
+        assert!(is_os_fd_alias_path(Path::new("/proc/self/fd/2")));
+        assert!(!is_os_fd_alias_path(Path::new("/dev/null")));
+        #[cfg(unix)]
+        {
+            let sym_stdout = dir.path().join("sym_stdout.vcf");
+            std::os::unix::fs::symlink("/dev/stdout", &sym_stdout).unwrap();
+            assert!(targets_os_fd_alias(&sym_stdout));
+            assert_eq!(
+                classify_target_os_fd_alias(&sym_stdout),
+                Some(OsFdAliasKind::SelfStdout)
+            );
+        }
 
         check_resolve_effective_config_vcf_flag_guards();
     }
@@ -7085,7 +7788,7 @@ mod tests {
             vcf_min_splitreads: 0,
             ..Default::default()
         };
-        let (eff_zero, _) = resolve_effective_config(&neg_zero_cfg).unwrap();
+        let (eff_zero, _, _) = resolve_effective_config(&neg_zero_cfg).unwrap();
         assert_eq!(eff_zero.vcf_pval, 0.0);
         assert!(eff_zero.vcf_pval.is_sign_positive());
         assert_eq!(eff_zero.vcf_pval_raw.as_deref(), Some("0.0"));
@@ -7124,7 +7827,7 @@ mod tests {
             vcf_pval_raw: Some("1e-5".to_string()),
             ..Default::default()
         };
-        let (eff_sci, _) = resolve_effective_config(&sci_cfg).unwrap();
+        let (eff_sci, _, _) = resolve_effective_config(&sci_cfg).unwrap();
         assert_eq!(eff_sci.vcf_pval.to_bits(), 1e-5_f64.to_bits());
         assert_eq!(eff_sci.vcf_pval_raw.as_deref(), Some("1e-5"));
 
@@ -7377,6 +8080,35 @@ mod tests {
             !big_deduper.emitted_by_pos.contains_key(&100_000),
             "positions below tile_start - SPLIT_VAR_RETENTION_WINDOW_BP must be evicted"
         );
+
+        // 4) flush_before_unsplit_tile flushes pending forward rows from a preceding split tile
+        //    and clears retention sets before raw UnSplitVarBlock emission.
+        let mut flush_deduper = SplitVarDeduper::default();
+        let mut flushed_lines = Vec::new();
+        flush_deduper
+            .accept_tile(
+                vec![mk_row(100_005, "C", "T", "pending_before_unsplit")],
+                true,
+                p(1),
+                p(100_000),
+                p(1),
+                p(200_000),
+                |l| {
+                    flushed_lines.push(l.to_string());
+                    Ok(())
+                },
+            )
+            .unwrap();
+        assert!(flushed_lines.is_empty());
+        flush_deduper
+            .flush_before_unsplit_tile(|l| {
+                flushed_lines.push(l.to_string());
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(flushed_lines, vec!["pending_before_unsplit"]);
+        assert!(flush_deduper.emitted_by_pos.is_empty());
+        assert!(flush_deduper.emitted_sv.is_empty());
     }
 
     #[test]
@@ -7674,6 +8406,10 @@ mod tests {
             VardictError::Io(std::io::Error::from(std::io::ErrorKind::BrokenPipe)).is_broken_pipe()
         );
         assert!(!VardictError::Parse("bad".to_string()).is_broken_pipe());
+        let jm: crate::javamap::JavaHashMap<i32, i32> = Default::default();
+        assert!(!format!("{:?}", jm.iter()).is_empty());
+        let cached_bgzf = crate::bam::CachedBgzfReader::new(std::fs::File::open(&bam).unwrap(), 42);
+        assert!(format!("{cached_bgzf:?}").contains("CachedBgzfReader"));
 
         #[cfg(unix)]
         {
@@ -7684,9 +8420,60 @@ mod tests {
             let ro_tbi = ro_dir.join("mounted.vcf.gz.tbi");
             let ro_stats = ro_dir.join("mounted_stats.json");
             std::fs::write(&ro_out, b"seed").unwrap();
-            std::fs::write(&ro_tbi, b"seed_tbi").unwrap();
             std::fs::write(&ro_stats, b"seed_stats").unwrap();
             std::fs::set_permissions(&ro_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+            let ro_enforced = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(ro_dir.join("probe_nonroot"))
+                .is_err();
+            if ro_enforced {
+                // Missing pre-created .tbi inside 0555 dir must fail preflight without truncating ro_out.
+                let missing_tbi_cfg = crate::config::Config {
+                    reference: ref_fa.to_string_lossy().into_owned(),
+                    bam: bam.to_string_lossy().into_owned(),
+                    region: Some("chr1:1-50".to_string()),
+                    output_path: Some(ro_out.to_string_lossy().into_owned()),
+                    index_output: true,
+                    stats_json_path: Some(ro_stats.to_string_lossy().into_owned()),
+                    threads: 1,
+                    ..Default::default()
+                };
+                assert!(crate::run(&missing_tbi_cfg).is_err());
+                assert_eq!(
+                    std::fs::read(&ro_out).unwrap(),
+                    b"seed",
+                    "missing companion .tbi in read-only parent must not truncate existing output"
+                );
+                assert_eq!(std::fs::read(&ro_stats).unwrap(), b"seed_stats");
+            }
+
+            std::fs::set_permissions(&ro_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::fs::write(&ro_tbi, b"seed_tbi").unwrap();
+            std::fs::set_permissions(&ro_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+            if ro_enforced {
+                // Mid-run / region-parse failure with pre-created .tbi must also leave ro_out untouched.
+                let bad_region_cfg = crate::config::Config {
+                    reference: ref_fa.to_string_lossy().into_owned(),
+                    bam: bam.to_string_lossy().into_owned(),
+                    region: Some("chr1:bad".to_string()),
+                    output_path: Some(ro_out.to_string_lossy().into_owned()),
+                    index_output: true,
+                    stats_json_path: Some(ro_stats.to_string_lossy().into_owned()),
+                    threads: 1,
+                    ..Default::default()
+                };
+                assert!(crate::run(&bad_region_cfg).is_err());
+                assert_eq!(
+                    std::fs::read(&ro_out).unwrap(),
+                    b"seed",
+                    "failed run in read-only parent must not truncate existing output"
+                );
+                assert_eq!(std::fs::read(&ro_tbi).unwrap(), b"seed_tbi");
+                assert_eq!(std::fs::read(&ro_stats).unwrap(), b"seed_stats");
+            }
 
             let ro_cfg = crate::config::Config {
                 reference: ref_fa.to_string_lossy().into_owned(),

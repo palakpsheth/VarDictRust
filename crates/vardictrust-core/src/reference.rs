@@ -10,11 +10,16 @@ use noodles::fasta::io::IndexedReader;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::BufReader;
+use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
+const MAX_GZI_BYTES: u64 = 128 * 1024 * 1024;
+const GZIP_MAGIC: [u8; 2] = [0x1f, 0x8b];
+const BGZF_CM_FLG: [u8; 2] = [0x08, 0x04];
+const BGZF_XLEN_SUBFIELD: [u8; 6] = [0x06, 0x00, b'B', b'C', 0x02, 0x00];
+
 struct CachedFastaReader {
-    reader: IndexedReader<BufReader<File>>,
+    reader: IndexedReader<noodles::fasta::io::BufReader<File>>,
     fai_lengths: HashMap<Vec<u8>, u64>,
 }
 
@@ -27,6 +32,238 @@ pub(crate) fn clear_fasta_reader_cache() {
     FASTA_READER_CACHE.with(|cache| cache.borrow_mut().clear());
 }
 
+/// Appends `suffix` (e.g. `".fai"`, `".gzi"`) directly to `path`'s OS string without
+/// `Path::set_extension` double-dot artifacts on extensionless paths (`genome` -> `genome.fai`).
+pub(crate) fn append_os_ext(path: &Path, suffix: &str) -> PathBuf {
+    let mut os = path.as_os_str().to_os_string();
+    os.push(suffix);
+    PathBuf::from(os)
+}
+
+fn existing_fai_candidate_for(path: &Path) -> Option<PathBuf> {
+    let primary = append_os_ext(path, ".fai");
+    if std::fs::symlink_metadata(&primary).is_ok() {
+        return Some(primary);
+    }
+    if let Some(ext) = path.extension() {
+        let is_compressed = ext.eq_ignore_ascii_case("gz") || ext.eq_ignore_ascii_case("bgz");
+        if !is_compressed {
+            let stem_fai = path.with_extension("fai");
+            if stem_fai != primary
+                && stem_fai != path
+                && std::fs::symlink_metadata(&stem_fai).is_ok()
+            {
+                return Some(stem_fai);
+            }
+        }
+    }
+    None
+}
+
+/// Resolves the `.fai` index path for `fasta_path`: checks `<fasta_path>.fai` first (using
+/// `symlink_metadata` so a dangling primary symlink fails loudly instead of being silently
+/// skipped), then `<stem>.fai` when uncompressed, then the same candidates beside
+/// `std::fs::canonicalize(fasta_path)` when `fasta_path` is a symlink, falling back to
+/// `<fasta_path>.fai`.
+pub(crate) fn resolve_fasta_fai_path(fasta_path: &Path) -> PathBuf {
+    if let Some(found) = existing_fai_candidate_for(fasta_path) {
+        return found;
+    }
+    if let Ok(canon) = std::fs::canonicalize(fasta_path) {
+        if canon != fasta_path {
+            if let Some(found) = existing_fai_candidate_for(&canon) {
+                return found;
+            }
+        }
+    }
+    append_os_ext(fasta_path, ".fai")
+}
+
+/// Resolves the `.gzi` index path for a BGZF-compressed FASTA: checks `<fasta_path>.gzi` first
+/// (using `symlink_metadata` so a dangling primary symlink fails loudly), then `<canon>.gzi`
+/// when `fasta_path` is a symlink, falling back to `<fasta_path>.gzi`.
+pub(crate) fn resolve_fasta_gzi_path(fasta_path: &Path) -> PathBuf {
+    let primary = append_os_ext(fasta_path, ".gzi");
+    if std::fs::symlink_metadata(&primary).is_ok() {
+        return primary;
+    }
+    if let Ok(canon) = std::fs::canonicalize(fasta_path) {
+        if canon != fasta_path {
+            let canon_gzi = append_os_ext(&canon, ".gzi");
+            if std::fs::symlink_metadata(&canon_gzi).is_ok() {
+                return canon_gzi;
+            }
+        }
+    }
+    primary
+}
+
+fn read_up_to<R: Read>(reader: &mut R, buf: &mut [u8]) -> std::io::Result<usize> {
+    let mut total = 0usize;
+    while let Some(dst) = buf.get_mut(total..) {
+        if dst.is_empty() {
+            break;
+        }
+        match reader.read(dst) {
+            Ok(0) => break,
+            Ok(n) => total = total.saturating_add(n),
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(total)
+}
+
+fn read_validated_gzi_index(
+    gzi_path: &Path,
+    fasta_path: &Path,
+    fasta_len: u64,
+) -> Result<noodles_bgzf::gzi::Index, VardictError> {
+    let mut gzi_file = match File::open(gzi_path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(VardictError::Parse(format!(
+                "BGZF-compressed FASTA '{}' is missing its required GZI index '{}'; run `samtools faidx {}` to generate both .fai and .gzi indexes",
+                fasta_path.display(),
+                gzi_path.display(),
+                fasta_path.display()
+            )));
+        }
+        Err(e) => return Err(VardictError::Io(e)),
+    };
+
+    let len = gzi_file.metadata().map_err(VardictError::Io)?.len();
+    let Some(payload_len) = len.checked_sub(8) else {
+        return Err(VardictError::Parse(format!(
+            "Corrupt GZI index '{}' ({len} bytes < 8-byte header) for '{}'; regenerate with `samtools faidx {}`",
+            gzi_path.display(),
+            fasta_path.display(),
+            fasta_path.display()
+        )));
+    };
+    if payload_len % 16 != 0 || len > MAX_GZI_BYTES {
+        return Err(VardictError::Parse(format!(
+            "Invalid or oversized GZI index '{}' ({len} bytes) for '{}'; regenerate with `samtools faidx {}`",
+            gzi_path.display(),
+            fasta_path.display(),
+            fasta_path.display()
+        )));
+    }
+
+    let mut count_bytes = [0u8; 8];
+    let n_read = read_up_to(&mut gzi_file, &mut count_bytes).map_err(VardictError::Io)?;
+    if n_read != 8 {
+        return Err(VardictError::Parse(format!(
+            "Truncated GZI index '{}' (read {n_read}/8 header bytes); regenerate with `samtools faidx {}`",
+            gzi_path.display(),
+            fasta_path.display()
+        )));
+    }
+    let declared_entries = u64::from_le_bytes(count_bytes);
+    let expected_entries = payload_len / 16;
+    if declared_entries != expected_entries {
+        return Err(VardictError::Parse(format!(
+            "Corrupt GZI index '{}': header declares {declared_entries} entries, but file size ({len} bytes) holds {expected_entries} entries; regenerate with `samtools faidx {}`",
+            gzi_path.display(),
+            fasta_path.display()
+        )));
+    }
+
+    gzi_file
+        .seek(SeekFrom::Start(0))
+        .map_err(VardictError::Io)?;
+    let index = noodles_bgzf::gzi::io::Reader::new(BufReader::new(gzi_file))
+        .read_index()
+        .map_err(|e| {
+            VardictError::Parse(format!(
+                "Corrupt GZI index '{}' for '{}': {e}; regenerate with `samtools faidx {}`",
+                gzi_path.display(),
+                fasta_path.display(),
+                fasta_path.display()
+            ))
+        })?;
+
+    let pairs = index.as_ref();
+    let explicit_pairs = if pairs.first() == Some(&(0, 0))
+        && (pairs.len() as u64) == declared_entries.saturating_add(1)
+    {
+        pairs.get(1..).unwrap_or(&[])
+    } else if declared_entries == 0 && pairs.is_empty() {
+        &[][..]
+    } else {
+        pairs
+    };
+
+    let mut prev_c = 0u64;
+    let mut prev_u = 0u64;
+    for &(c, u) in explicit_pairs {
+        if c <= prev_c || u <= prev_u {
+            return Err(VardictError::Parse(format!(
+                "Corrupt GZI index '{}' for '{}': offsets are not strictly monotonic at ({c}, {u}) after ({prev_c}, {prev_u}); regenerate with `samtools faidx {}`",
+                gzi_path.display(),
+                fasta_path.display(),
+                fasta_path.display()
+            )));
+        }
+        if fasta_len > 0 && c >= fasta_len {
+            return Err(VardictError::Parse(format!(
+                "Corrupt GZI index '{}' for '{}': compressed offset {c} >= FASTA file length ({fasta_len} bytes); regenerate with `samtools faidx {}`",
+                gzi_path.display(),
+                fasta_path.display(),
+                fasta_path.display()
+            )));
+        }
+        prev_c = c;
+        prev_u = u;
+    }
+
+    Ok(index)
+}
+
+/// Opens an indexed FASTA buffered reader with an explicit `BufReader` capacity for uncompressed
+/// FASTA, supporting both uncompressed FASTA (including `< 18`-byte files) and BGZF-compressed
+/// FASTA (`.fa.gz` / `.fa.bgz`) paired with a pre-validated `.gzi` index.
+pub(crate) fn open_indexed_fasta_buf_reader_with_capacity(
+    fasta_path: &Path,
+    capacity: usize,
+) -> Result<noodles::fasta::io::BufReader<File>, VardictError> {
+    let mut file = File::open(fasta_path).map_err(VardictError::Io)?;
+    let mut hdr = [0u8; 18];
+    let n = read_up_to(&mut file, &mut hdr).map_err(VardictError::Io)?;
+
+    if n < 2 || hdr.get(..2) != Some(GZIP_MAGIC.as_slice()) {
+        file.seek(SeekFrom::Start(0)).map_err(VardictError::Io)?;
+        return Ok(noodles::fasta::io::BufReader::Uncompressed(
+            BufReader::with_capacity(capacity, file),
+        ));
+    }
+
+    let is_bgzf = n == 18
+        && hdr.get(2..4) == Some(BGZF_CM_FLG.as_slice())
+        && hdr.get(10..16) == Some(BGZF_XLEN_SUBFIELD.as_slice());
+    if !is_bgzf {
+        return Err(VardictError::Parse(format!(
+            "Reference FASTA '{}' is plain gzip, not BGZF; re-compress with bgzip and index with samtools faidx",
+            fasta_path.display()
+        )));
+    }
+
+    let fasta_len = file.metadata().map_err(VardictError::Io)?.len();
+    let gzi_path = resolve_fasta_gzi_path(fasta_path);
+    let gzi_index = read_validated_gzi_index(&gzi_path, fasta_path, fasta_len)?;
+    file.seek(SeekFrom::Start(0)).map_err(VardictError::Io)?;
+    Ok(noodles::fasta::io::BufReader::Bgzf(
+        noodles_bgzf::io::IndexedReader::new(file, gzi_index),
+    ))
+}
+
+/// Opens an indexed FASTA buffered reader with the default 8 KiB uncompressed buffer capacity.
+pub(crate) fn open_indexed_fasta_buf_reader(
+    fasta_path: &Path,
+) -> Result<noodles::fasta::io::BufReader<File>, VardictError> {
+    open_indexed_fasta_buf_reader_with_capacity(fasta_path, 8 * 1024)
+}
+
 /// Fetches a subsequence from an indexed FASTA file using a thread-local cached reader.
 pub fn fetch_subsequence(
     fasta_path: &Path,
@@ -37,25 +274,18 @@ pub fn fetch_subsequence(
     FASTA_READER_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         if !cache.contains_key(fasta_path) {
-            let mut fai_path = fasta_path.to_path_buf();
-            let mut ext = fai_path
-                .extension()
-                .map(|e| e.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            ext.push_str(".fai");
-            fai_path.set_extension(ext);
-
+            let fasta_reader = open_indexed_fasta_buf_reader(fasta_path)?;
+            let fai_path = resolve_fasta_fai_path(fasta_path);
             let index = fai::fs::read(&fai_path).map_err(VardictError::Io)?;
             let fai_lengths: HashMap<Vec<u8>, u64> = index
                 .as_ref()
                 .iter()
                 .map(|rec| (rec.name().to_vec(), rec.length()))
                 .collect();
-            let file = File::open(fasta_path).map_err(VardictError::Io)?;
             cache.insert(
                 fasta_path.to_path_buf(),
                 CachedFastaReader {
-                    reader: IndexedReader::new(BufReader::new(file), index),
+                    reader: IndexedReader::new(fasta_reader, index),
                     fai_lengths,
                 },
             );
@@ -1833,5 +2063,268 @@ mod tests {
             prev_bounds: Vec::new(),
         });
         assert!(!sm.is_empty());
+    }
+
+    #[test]
+    fn bgzf_fasta_short_uncompressed_hostile_gzi_and_fai_fallbacks() {
+        clear_fasta_reader_cache();
+        let dir = tempfile::tempdir().unwrap();
+
+        // 1. Multi-block BGZF FASTA + .fai + .gzi matches uncompressed FASTA byte-for-byte
+        let plain_fa = dir.path().join("ref.fa");
+        let plain_fai = dir.path().join("ref.fa.fai");
+        let bgzf_fa = dir.path().join("ref.fa.gz");
+        let bgzf_fai = dir.path().join("ref.fa.gz.fai");
+        let bgzf_gzi = dir.path().join("ref.fa.gz.gzi");
+
+        let line1 = b"ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT"; // 40 bp
+        let line2 = b"TGCATGCATGCATGCATGCATGCATGCATGCATGCATGCA"; // 40 bp
+        let mut fasta_bytes = Vec::new();
+        fasta_bytes.extend_from_slice(b">chr1\n");
+        fasta_bytes.extend_from_slice(line1);
+        fasta_bytes.push(b'\n');
+        let split_upos = fasta_bytes.len();
+        fasta_bytes.extend_from_slice(line2);
+        fasta_bytes.push(b'\n');
+
+        fs::write(&plain_fa, &fasta_bytes).unwrap();
+        let fai_text = b"chr1\t80\t6\t40\t41\n";
+        fs::write(&plain_fai, fai_text).unwrap();
+        fs::write(&bgzf_fai, fai_text).unwrap();
+
+        let mut bgzf_writer = noodles_bgzf::io::Writer::new(File::create(&bgzf_fa).unwrap());
+        bgzf_writer.write_all(&fasta_bytes[..split_upos]).unwrap();
+        bgzf_writer.flush().unwrap();
+        let block1_cpos = bgzf_writer.position();
+        bgzf_writer.write_all(&fasta_bytes[split_upos..]).unwrap();
+        bgzf_writer.finish().unwrap();
+
+        let gzi_index = noodles_bgzf::gzi::Index::from(vec![(block1_cpos, split_upos as u64)]);
+        noodles_bgzf::gzi::fs::write(&bgzf_gzi, &gzi_index).unwrap();
+
+        let sub_plain = fetch_subsequence(&plain_fa, "chr1", Pos1(1), Pos1(80)).unwrap();
+        let sub_bgzf = fetch_subsequence(&bgzf_fa, "chr1", Pos1(1), Pos1(80)).unwrap();
+        assert_eq!(sub_bgzf, sub_plain);
+        let sub_cross = fetch_subsequence(&bgzf_fa, "chr1", Pos1(35), Pos1(55)).unwrap();
+        assert_eq!(sub_cross, &sub_plain[34..55]);
+
+        let mut chr_lengths = HashMap::new();
+        chr_lengths.insert("chr1".to_string(), 80);
+        let bed = BedRegion {
+            chr: "chr1".to_string(),
+            start: Pos1(10),
+            end: Pos1(70),
+            gene: "GENE1".to_string(),
+            amplicon: None,
+        };
+        let mut cfg_plain = Config::default();
+        cfg_plain.reference = plain_fa.to_str().unwrap().to_string();
+        let mut cfg_bgzf = Config::default();
+        cfg_bgzf.reference = bgzf_fa.to_str().unwrap().to_string();
+
+        let mut ref_plain = Reference::new();
+        let mut ref_bgzf = Reference::new();
+        get_reference(&bed, 0, &chr_lengths, &cfg_plain, &mut ref_plain).unwrap();
+        get_reference(&bed, 0, &chr_lengths, &cfg_bgzf, &mut ref_bgzf).unwrap();
+        for pos in 1..=80u32 {
+            assert_eq!(
+                ref_bgzf.get_base("chr1", pos),
+                ref_plain.get_base("chr1", pos),
+                "base mismatch at pos {pos}"
+            );
+        }
+
+        // 2. Tiny < 18-byte uncompressed FASTA (">1\nACGT\n" = 8 bytes) opens and queries cleanly
+        let tiny_fa = dir.path().join("tiny.fa");
+        let tiny_fai = dir.path().join("tiny.fa.fai");
+        fs::write(&tiny_fa, b">1\nACGT\n").unwrap();
+        fs::write(&tiny_fai, b"1\t4\t3\t4\t5\n").unwrap();
+        assert!(open_indexed_fasta_buf_reader(&tiny_fa).is_ok());
+        assert_eq!(
+            fetch_subsequence(&tiny_fa, "1", Pos1(1), Pos1(4)).unwrap(),
+            b"ACGT"
+        );
+
+        // 3. Plain non-BGZF gzip FASTA returns Err(VardictError::Parse(msg)) mentioning bgzip & samtools faidx
+        let plain_gz_fa = dir.path().join("plain_gzip.fa.gz");
+        {
+            let mut gz = flate2::write::GzEncoder::new(
+                File::create(&plain_gz_fa).unwrap(),
+                flate2::Compression::default(),
+            );
+            gz.write_all(&fasta_bytes).unwrap();
+            gz.finish().unwrap();
+        }
+        fs::write(dir.path().join("plain_gzip.fa.gz.fai"), fai_text).unwrap();
+        match open_indexed_fasta_buf_reader(&plain_gz_fa) {
+            Err(VardictError::Parse(msg)) => {
+                assert!(msg.contains("bgzip"), "expected 'bgzip' in '{msg}'");
+                assert!(
+                    msg.contains("samtools faidx"),
+                    "expected 'samtools faidx' in '{msg}'"
+                );
+            }
+            Ok(_) => panic!("expected VardictError::Parse for plain gzip FASTA, got Ok"),
+            Err(other) => {
+                panic!("expected VardictError::Parse for plain gzip FASTA, got {other:?}")
+            }
+        }
+
+        // 4. Hostile 8-byte [0xff; 8] .gzi (plus malformed/missing .gzi) returns Err(VardictError::Parse(_)) without panicking
+        let hostile_fa = dir.path().join("hostile.fa.gz");
+        let hostile_gzi = dir.path().join("hostile.fa.gz.gzi");
+        fs::copy(&bgzf_fa, &hostile_fa).unwrap();
+        // Missing .gzi
+        assert!(matches!(
+            open_indexed_fasta_buf_reader(&hostile_fa),
+            Err(VardictError::Parse(_))
+        ));
+        // Hostile [0xff; 8] .gzi (AR-1 capacity-overflow bomb)
+        fs::write(&hostile_gzi, [0xffu8; 8]).unwrap();
+        assert!(matches!(
+            open_indexed_fasta_buf_reader(&hostile_fa),
+            Err(VardictError::Parse(_))
+        ));
+        // Misaligned 12-byte .gzi
+        fs::write(&hostile_gzi, [0u8; 12]).unwrap();
+        assert!(matches!(
+            open_indexed_fasta_buf_reader(&hostile_fa),
+            Err(VardictError::Parse(_))
+        ));
+        // Count mismatch: declares 2 entries in an 8-byte file
+        fs::write(&hostile_gzi, 2u64.to_le_bytes()).unwrap();
+        assert!(matches!(
+            open_indexed_fasta_buf_reader(&hostile_fa),
+            Err(VardictError::Parse(_))
+        ));
+
+        let hostile_fa_len = fs::metadata(&hostile_fa).unwrap().len();
+        let write_gzi_pairs = |pairs: &[(u64, u64)]| -> Vec<u8> {
+            let mut buf = Vec::with_capacity(8 + pairs.len() * 16);
+            buf.extend_from_slice(&(pairs.len() as u64).to_le_bytes());
+            for &(c, u) in pairs {
+                buf.extend_from_slice(&c.to_le_bytes());
+                buf.extend_from_slice(&u.to_le_bytes());
+            }
+            buf
+        };
+        // Unsorted / duplicate compressed or uncompressed offsets in .gzi must fail at open time
+        for bad_pairs in [
+            &[(0u64, 50u64)][..],
+            &[(50u64, 0u64)][..],
+            &[(10u64, 20u64), (10u64, 40u64)][..],
+            &[(20u64, 20u64), (15u64, 40u64)][..],
+            &[(10u64, 40u64), (20u64, 40u64)][..],
+            &[(hostile_fa_len, 20u64)][..],
+            &[(hostile_fa_len + 64, 20u64)][..],
+        ] {
+            fs::write(&hostile_gzi, write_gzi_pairs(bad_pairs)).unwrap();
+            assert!(
+                matches!(
+                    open_indexed_fasta_buf_reader(&hostile_fa),
+                    Err(VardictError::Parse(_))
+                ),
+                "expected Parse error for invalid .gzi pairs {bad_pairs:?}"
+            );
+        }
+
+        // 5. Extensionless `genome` + `genome.fai` (never `genome..fai`) and `panel.fasta` + `panel.fai`
+        let extless_fa = dir.path().join("genome");
+        let extless_fai = dir.path().join("genome.fai");
+        assert_eq!(resolve_fasta_fai_path(&extless_fa), extless_fai);
+        fs::write(&extless_fa, b">1\nACGT\n").unwrap();
+        fs::write(&extless_fai, b"1\t4\t3\t4\t5\n").unwrap();
+        assert_eq!(resolve_fasta_fai_path(&extless_fa), extless_fai);
+        assert_eq!(
+            fetch_subsequence(&extless_fa, "1", Pos1(1), Pos1(4)).unwrap(),
+            b"ACGT"
+        );
+
+        let stem_fa = dir.path().join("panel.fasta");
+        let stem_fai = dir.path().join("panel.fai");
+        fs::write(&stem_fa, b">1\nACGT\n").unwrap();
+        fs::write(&stem_fai, b"1\t4\t3\t4\t5\n").unwrap();
+        assert_eq!(resolve_fasta_fai_path(&stem_fa), stem_fai);
+        assert_eq!(
+            fetch_subsequence(&stem_fa, "1", Pos1(1), Pos1(4)).unwrap(),
+            b"ACGT"
+        );
+
+        #[cfg(unix)]
+        {
+            // Dangling primary `.fai` symlink (`dangling.fasta.fai -> missing`) must NOT be silently
+            // masked by `<stem>.fai` (`dangling.fai`): select primary and fail loudly (`AR-15`).
+            let dang_fa = dir.path().join("dangling.fasta");
+            let dang_primary_fai = dir.path().join("dangling.fasta.fai");
+            let dang_stem_fai = dir.path().join("dangling.fai");
+            fs::write(&dang_fa, b">1\nACGT\n").unwrap();
+            fs::write(&dang_stem_fai, b"1\t4\t3\t4\t5\n").unwrap();
+            std::os::unix::fs::symlink(
+                dir.path().join("nonexistent_target.fai"),
+                &dang_primary_fai,
+            )
+            .unwrap();
+            assert_eq!(resolve_fasta_fai_path(&dang_fa), dang_primary_fai);
+            assert!(
+                fetch_subsequence(&dang_fa, "1", Pos1(1), Pos1(4)).is_err(),
+                "dangling primary .fai symlink must fail loudly rather than falling back to <stem>.fai"
+            );
+
+            // Symlinked uncompressed and BGZF FASTA (`links/link.fa` and `links/link.fa.gz`) resolve
+            // `.fai` and `.gzi` beside the canonical target directory when local companions are absent.
+            let real_dir = dir.path().join("real_refs");
+            let link_dir = dir.path().join("link_refs");
+            fs::create_dir_all(&real_dir).unwrap();
+            fs::create_dir_all(&link_dir).unwrap();
+
+            let real_plain = real_dir.join("canon_panel.fasta");
+            let real_plain_stem_fai = real_dir.join("canon_panel.fai");
+            fs::write(&real_plain, b">1\nACGT\n").unwrap();
+            fs::write(&real_plain_stem_fai, b"1\t4\t3\t4\t5\n").unwrap();
+            let link_plain = link_dir.join("link.fa");
+            std::os::unix::fs::symlink(Path::new("../real_refs/canon_panel.fasta"), &link_plain)
+                .unwrap();
+            assert_eq!(
+                resolve_fasta_fai_path(&link_plain),
+                fs::canonicalize(&real_plain_stem_fai).unwrap()
+            );
+            assert_eq!(
+                fetch_subsequence(&link_plain, "1", Pos1(1), Pos1(4)).unwrap(),
+                b"ACGT"
+            );
+
+            let real_bgzf = real_dir.join("canon_ref.fa.gz");
+            let real_bgzf_fai = real_dir.join("canon_ref.fa.gz.fai");
+            let real_bgzf_gzi = real_dir.join("canon_ref.fa.gz.gzi");
+            fs::copy(&bgzf_fa, &real_bgzf).unwrap();
+            fs::copy(&bgzf_fai, &real_bgzf_fai).unwrap();
+            fs::copy(&bgzf_gzi, &real_bgzf_gzi).unwrap();
+            let link_bgzf = link_dir.join("link.fa.gz");
+            std::os::unix::fs::symlink(Path::new("../real_refs/canon_ref.fa.gz"), &link_bgzf)
+                .unwrap();
+            assert_eq!(
+                resolve_fasta_fai_path(&link_bgzf),
+                fs::canonicalize(&real_bgzf_fai).unwrap()
+            );
+            assert_eq!(
+                resolve_fasta_gzi_path(&link_bgzf),
+                fs::canonicalize(&real_bgzf_gzi).unwrap()
+            );
+            assert_eq!(
+                fetch_subsequence(&link_bgzf, "chr1", Pos1(1), Pos1(10)).unwrap(),
+                fetch_subsequence(&bgzf_fa, "chr1", Pos1(1), Pos1(10)).unwrap()
+            );
+        }
+
+        // Compressed `.gz` / `.bgz` must NOT fall back to uncompressed `<stem>.fai`
+        let gz_no_fai = dir.path().join("panel.gz");
+        assert_eq!(
+            resolve_fasta_fai_path(&gz_no_fai),
+            dir.path().join("panel.gz.fai")
+        );
+        assert_eq!(
+            resolve_fasta_gzi_path(&bgzf_fa),
+            dir.path().join("ref.fa.gz.gzi")
+        );
     }
 }

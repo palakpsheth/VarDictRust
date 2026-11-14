@@ -127,6 +127,41 @@ pub fn ref_bases(
     ref_bases_with(reference, chr, from, to, None)
 }
 
+/// Appends reference bases over the 1-based inclusive range `start..=end` onto `out`
+/// without clearing `out` first or allocating intermediate `Vec<u8>` / `String`.
+pub(crate) fn push_ref_bases(
+    out: &mut String,
+    reference: &crate::reference::Reference,
+    chr: &str,
+    start: i32,
+    end: i32,
+) {
+    if end < start || end < 1 {
+        return;
+    }
+    let eff_start = start.max(1);
+    let span = ((end as i64) - (eff_start as i64) + 1).clamp(0, 1 << 20) as usize;
+    if out.capacity() == 0 {
+        out.reserve_exact(span);
+    } else {
+        out.reserve(span);
+    }
+    let base_len = out.len();
+    for pos in eff_start..=end {
+        if let Some(b) = reference.get_base(chr, pos as u32) {
+            if b.is_ascii() {
+                out.push(b as char);
+            } else {
+                out.truncate(base_len);
+                out.push_str(&String::from_utf8_lossy(&ref_bases(
+                    reference, chr, start, end,
+                )));
+                return;
+            }
+        }
+    }
+}
+
 /// Writes reference bases over the 1-based inclusive range `start..=end` into `out`,
 /// clearing `out` first and reserving the span capacity without intermediate `Vec<u8>`
 /// or `String` allocations (`L2`/`L8`).
@@ -138,29 +173,7 @@ pub fn ref_bases_into(
     end: i32,
 ) {
     out.clear();
-    if end < start || end < 1 {
-        return;
-    }
-    let eff_start = start.max(1);
-    let span = ((end as i64) - (eff_start as i64) + 1).clamp(0, 1 << 20) as usize;
-    if out.capacity() == 0 {
-        out.reserve_exact(span);
-    } else {
-        out.reserve(span);
-    }
-    for pos in eff_start..=end {
-        if let Some(b) = reference.get_base(chr, pos as u32) {
-            if b.is_ascii() {
-                out.push(b as char);
-            } else {
-                out.clear();
-                out.push_str(&String::from_utf8_lossy(&ref_bases(
-                    reference, chr, start, end,
-                )));
-                return;
-            }
-        }
-    }
+    push_ref_bases(out, reference, chr, start, end);
 }
 
 /// Helper to construct a reference sequence from start to end position
@@ -176,6 +189,57 @@ pub fn join_ref(
     let mut out = String::new();
     ref_bases_into(&mut out, reference, chr, start, end);
     out
+}
+
+#[inline]
+fn push_u64(buf: &mut String, mut v: u64) {
+    let mut digits = [0_u8; 20];
+    let mut idx = digits.len();
+    loop {
+        idx = idx.saturating_sub(1);
+        if let Some(slot) = digits.get_mut(idx) {
+            *slot = b'0' + (v % 10) as u8;
+        }
+        v /= 10;
+        if v == 0 {
+            break;
+        }
+    }
+    if let Some(slice) = digits.get(idx..) {
+        if let Ok(s) = std::str::from_utf8(slice) {
+            buf.push_str(s);
+        }
+    }
+}
+
+/// Append decimal representation of `v` onto `buf` without heap allocation.
+#[inline]
+pub(crate) fn push_i32(buf: &mut String, v: i32) {
+    if v < 0 {
+        buf.push('-');
+    }
+    push_u32(buf, v.unsigned_abs());
+}
+
+/// Append decimal representation of `v` onto `buf` without heap allocation.
+#[inline]
+pub(crate) fn push_u32(buf: &mut String, v: u32) {
+    push_u64(buf, u64::from(v));
+}
+
+/// Append decimal representation of `v` onto `buf` without heap allocation.
+#[inline]
+pub(crate) fn push_usize(buf: &mut String, v: usize) {
+    push_u64(buf, v as u64);
+}
+
+/// Append decimal representation of `v` onto `buf` without heap allocation.
+#[inline]
+pub(crate) fn push_i64(buf: &mut String, v: i64) {
+    if v < 0 {
+        buf.push('-');
+    }
+    push_u64(buf, v.unsigned_abs());
 }
 
 #[cfg(test)]
@@ -317,5 +381,47 @@ mod tests {
     #[test]
     fn verbose_eprintln_macro_formats_without_panic() {
         crate::verbose_eprintln!("verbose_eprintln smoke check: {} {}", "ok", 123);
+    }
+
+    #[test]
+    fn stack_int_formatters_match_std_fmt() {
+        for v in [
+            i32::MIN,
+            i32::MIN + 1,
+            -1_000_000_000,
+            -999,
+            -10,
+            -1,
+            0,
+            1,
+            9,
+            10,
+            999,
+            1_000_000_000,
+            i32::MAX - 1,
+            i32::MAX,
+        ] {
+            let mut buf = String::from("p:");
+            push_i32(&mut buf, v);
+            assert_eq!(buf, format!("p:{v}"), "push_i32 mismatch for {v}");
+        }
+
+        for v in [0_u32, 1, 9, 10, 42, 999_999, u32::MAX - 1, u32::MAX] {
+            let mut buf = String::from("u:");
+            push_u32(&mut buf, v);
+            assert_eq!(buf, format!("u:{v}"), "push_u32 mismatch for {v}");
+        }
+
+        for v in [0_usize, 1, 9, 10, 12_345, usize::MAX - 1, usize::MAX] {
+            let mut buf = String::from("z:");
+            push_usize(&mut buf, v);
+            assert_eq!(buf, format!("z:{v}"), "push_usize mismatch for {v}");
+        }
+
+        for v in [i64::MIN, -1, 0, 1, i64::MAX] {
+            let mut buf = String::from("i64:");
+            push_i64(&mut buf, v);
+            assert_eq!(buf, format!("i64:{v}"), "push_i64 mismatch for {v}");
+        }
     }
 }

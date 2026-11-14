@@ -185,6 +185,17 @@ pub fn simple_36_into(
     sv: &str,
 ) {
     buf.clear();
+    simple_36_append(buf, variant, region, sample_name, sv);
+}
+
+/// Append the simple 36-column row to `buf` without clearing it first.
+pub(crate) fn simple_36_append(
+    buf: &mut String,
+    variant: &Variant,
+    region: &Region,
+    sample_name: &str,
+    sv: &str,
+) {
     // Golden p50 row is 213 B, max 505 B: 256 covers the common row, long
     // alleles regrow once. Retained rows keep at most this slack.
     buf.reserve(256);
@@ -194,18 +205,26 @@ pub fn simple_36_into(
     buf.push('\t');
     buf.push_str(&region.chr);
     buf.push('\t');
-    let _ = write!(buf, "{}\t", variant.start_pos);
-    let _ = write!(buf, "{}\t", variant.end_pos);
+    crate::util::push_i32(buf, variant.start_pos);
+    buf.push('\t');
+    crate::util::push_i32(buf, variant.end_pos);
+    buf.push('\t');
     buf.push_str(&variant.ref_allele);
     buf.push('\t');
     buf.push_str(&variant.var_allele);
     buf.push('\t');
-    let _ = write!(buf, "{}\t", variant.total_pos_cov);
-    let _ = write!(buf, "{}\t", variant.pos_coverage);
-    let _ = write!(buf, "{}\t", variant.ref_fwd_cov);
-    let _ = write!(buf, "{}\t", variant.ref_rev_cov);
-    let _ = write!(buf, "{}\t", variant.fwd);
-    let _ = write!(buf, "{}\t", variant.rev);
+    crate::util::push_i32(buf, variant.total_pos_cov);
+    buf.push('\t');
+    crate::util::push_i32(buf, variant.pos_coverage);
+    buf.push('\t');
+    crate::util::push_i32(buf, variant.ref_fwd_cov);
+    buf.push('\t');
+    crate::util::push_i32(buf, variant.ref_rev_cov);
+    buf.push('\t');
+    crate::util::push_i32(buf, variant.fwd);
+    buf.push('\t');
+    crate::util::push_i32(buf, variant.rev);
+    buf.push('\t');
     // Null records render the printer field defaults, not the normal
     // null→"0" / empty→"0" mapping (SimpleOutputVariant.java:50-52 vs :64,
     // :81-82; OutputVariant.java:22-23).
@@ -235,14 +254,18 @@ pub fn simple_36_into(
     buf.push('\t');
     push_keep(buf, variant.extra_freq, 4);
     buf.push('\t');
-    let _ = write!(buf, "{}\t", variant.shift3);
+    crate::util::push_i32(buf, variant.shift3);
+    buf.push('\t');
     push_keep(buf, variant.msi, 3);
     buf.push('\t');
-    let _ = write!(buf, "{}\t", variant.msint);
+    crate::util::push_i32(buf, variant.msint);
+    buf.push('\t');
     push_nm(buf, variant.nm);
     buf.push('\t');
-    let _ = write!(buf, "{}\t", variant.hicnt);
-    let _ = write!(buf, "{}\t", variant.hicov);
+    crate::util::push_i32(buf, variant.hicnt);
+    buf.push('\t');
+    crate::util::push_i32(buf, variant.hicov);
+    buf.push('\t');
     if variant.null_record {
         buf.push('\t');
     } else if variant.left_seq.is_empty() {
@@ -261,7 +284,10 @@ pub fn simple_36_into(
     }
     buf.push_str(&region.chr);
     buf.push(':');
-    let _ = write!(buf, "{}-{}\t", region.start.0, region.end.0);
+    crate::util::push_u32(buf, region.start.0);
+    buf.push('-');
+    crate::util::push_u32(buf, region.end.0);
+    buf.push('\t');
     buf.push_str(&variant.var_type);
     buf.push('\t');
     push_keep(buf, variant.duprate, 1);
@@ -292,6 +318,17 @@ pub fn simple_38_into(
     sv: &str,
 ) {
     buf.clear();
+    simple_38_append(buf, variant, region, sample_name, sv);
+}
+
+/// Append the simple 38-column row to `buf` without clearing it first.
+pub(crate) fn simple_38_append(
+    buf: &mut String,
+    variant: &Variant,
+    region: &Region,
+    sample_name: &str,
+    sv: &str,
+) {
     buf.reserve(320);
     let fisher = crate::stats::FisherExact::new_java(
         variant.ref_fwd_cov as i32,
@@ -307,18 +344,26 @@ pub fn simple_38_into(
     buf.push('\t');
     buf.push_str(&region.chr);
     buf.push('\t');
-    let _ = write!(buf, "{}\t", variant.start_pos);
-    let _ = write!(buf, "{}\t", variant.end_pos);
+    crate::util::push_i32(buf, variant.start_pos);
+    buf.push('\t');
+    crate::util::push_i32(buf, variant.end_pos);
+    buf.push('\t');
     buf.push_str(&variant.ref_allele);
     buf.push('\t');
     buf.push_str(&variant.var_allele);
     buf.push('\t');
-    let _ = write!(buf, "{}\t", variant.total_pos_cov);
-    let _ = write!(buf, "{}\t", variant.pos_coverage);
-    let _ = write!(buf, "{}\t", variant.ref_fwd_cov);
-    let _ = write!(buf, "{}\t", variant.ref_rev_cov);
-    let _ = write!(buf, "{}\t", variant.fwd);
-    let _ = write!(buf, "{}\t", variant.rev);
+    crate::util::push_i32(buf, variant.total_pos_cov);
+    buf.push('\t');
+    crate::util::push_i32(buf, variant.pos_coverage);
+    buf.push('\t');
+    crate::util::push_i32(buf, variant.ref_fwd_cov);
+    buf.push('\t');
+    crate::util::push_i32(buf, variant.ref_rev_cov);
+    buf.push('\t');
+    crate::util::push_i32(buf, variant.fwd);
+    buf.push('\t');
+    crate::util::push_i32(buf, variant.rev);
+    buf.push('\t');
     // Same null-record printer-defaults rule as simple_36.
     if variant.null_record {
         buf.push('\t');
@@ -351,14 +396,18 @@ pub fn simple_38_into(
     buf.push('\t');
     push_java_rounded(buf, variant.extra_freq, 4);
     buf.push('\t');
-    let _ = write!(buf, "{}\t", variant.shift3);
+    crate::util::push_i32(buf, variant.shift3);
+    buf.push('\t');
     push_java_rounded(buf, variant.msi, 3);
     buf.push('\t');
-    let _ = write!(buf, "{}\t", variant.msint);
+    crate::util::push_i32(buf, variant.msint);
+    buf.push('\t');
     push_nm(buf, variant.nm);
     buf.push('\t');
-    let _ = write!(buf, "{}\t", variant.hicnt);
-    let _ = write!(buf, "{}\t", variant.hicov);
+    crate::util::push_i32(buf, variant.hicnt);
+    buf.push('\t');
+    crate::util::push_i32(buf, variant.hicov);
+    buf.push('\t');
     if variant.null_record {
         buf.push('\t');
     } else if variant.left_seq.is_empty() {
@@ -377,7 +426,10 @@ pub fn simple_38_into(
     }
     buf.push_str(&region.chr);
     buf.push(':');
-    let _ = write!(buf, "{}-{}\t", region.start.0, region.end.0);
+    crate::util::push_u32(buf, region.start.0);
+    buf.push('-');
+    crate::util::push_u32(buf, region.end.0);
+    buf.push('\t');
     buf.push_str(&variant.var_type);
     buf.push('\t');
     push_java_rounded(buf, variant.duprate, 2);
@@ -412,6 +464,17 @@ pub fn amplicon_38_into(
     debug: bool,
 ) {
     buf.clear();
+    amplicon_38_append(buf, av, region, sample_name, debug);
+}
+
+/// Append the amplicon 38-column row to `buf` without clearing it first.
+pub(crate) fn amplicon_38_append(
+    buf: &mut String,
+    av: &crate::postprocess::amplicon::AmpliconVariant,
+    region: &Region,
+    sample_name: &str,
+    debug: bool,
+) {
     buf.reserve(256);
     let variant = &av.variant;
 
@@ -421,18 +484,26 @@ pub fn amplicon_38_into(
     buf.push('\t');
     buf.push_str(&region.chr);
     buf.push('\t');
-    let _ = write!(buf, "{}\t", variant.start_pos);
-    let _ = write!(buf, "{}\t", variant.end_pos);
+    crate::util::push_i32(buf, variant.start_pos);
+    buf.push('\t');
+    crate::util::push_i32(buf, variant.end_pos);
+    buf.push('\t');
     buf.push_str(&variant.ref_allele);
     buf.push('\t');
     buf.push_str(&variant.var_allele);
     buf.push('\t');
-    let _ = write!(buf, "{}\t", variant.total_pos_cov);
-    let _ = write!(buf, "{}\t", variant.pos_coverage);
-    let _ = write!(buf, "{}\t", variant.ref_fwd_cov);
-    let _ = write!(buf, "{}\t", variant.ref_rev_cov);
-    let _ = write!(buf, "{}\t", variant.fwd);
-    let _ = write!(buf, "{}\t", variant.rev);
+    crate::util::push_i32(buf, variant.total_pos_cov);
+    buf.push('\t');
+    crate::util::push_i32(buf, variant.pos_coverage);
+    buf.push('\t');
+    crate::util::push_i32(buf, variant.ref_fwd_cov);
+    buf.push('\t');
+    crate::util::push_i32(buf, variant.ref_rev_cov);
+    buf.push('\t');
+    crate::util::push_i32(buf, variant.fwd);
+    buf.push('\t');
+    crate::util::push_i32(buf, variant.rev);
+    buf.push('\t');
     let gt_default = if variant.null_record { "" } else { "0" };
     buf.push_str(variant.genotype.as_deref().unwrap_or(gt_default));
     buf.push('\t');
@@ -456,14 +527,18 @@ pub fn amplicon_38_into(
     buf.push('\t');
     push_keep(buf, variant.extra_freq, 4);
     buf.push('\t');
-    let _ = write!(buf, "{}\t", variant.shift3);
+    crate::util::push_i32(buf, variant.shift3);
+    buf.push('\t');
     push_keep(buf, variant.msi, 3);
     buf.push('\t');
-    let _ = write!(buf, "{}\t", variant.msint);
+    crate::util::push_i32(buf, variant.msint);
+    buf.push('\t');
     push_nm(buf, variant.nm);
     buf.push('\t');
-    let _ = write!(buf, "{}\t", variant.hicnt);
-    let _ = write!(buf, "{}\t", variant.hicov);
+    crate::util::push_i32(buf, variant.hicnt);
+    buf.push('\t');
+    crate::util::push_i32(buf, variant.hicov);
+    buf.push('\t');
     let flank_empty = if variant.null_record { "\t" } else { "0\t" };
     if variant.left_seq.is_empty() {
         buf.push_str(flank_empty);
@@ -481,14 +556,13 @@ pub fn amplicon_38_into(
     buf.push('\t');
     buf.push_str(&variant.var_type);
     buf.push('\t');
-    let _ = write!(
-        buf,
-        "{}\t{}\t{}\t{}",
-        av.gdamp,
-        av.tlamp,
-        av.ncamp,
-        if av.ampflag { 1 } else { 0 }
-    );
+    crate::util::push_i32(buf, av.gdamp);
+    buf.push('\t');
+    crate::util::push_i32(buf, av.tlamp);
+    buf.push('\t');
+    crate::util::push_i32(buf, av.ncamp);
+    buf.push('\t');
+    buf.push(if av.ampflag { '1' } else { '0' });
 
     if !debug {
         return;
@@ -497,10 +571,20 @@ pub fn amplicon_38_into(
     buf.push('\t');
     buf.push_str(&variant.debug);
     for (i, (v, r)) in av.good_variants.iter().enumerate() {
-        let _ = write!(buf, "\tGood{} {} {}", i, debug_amp_variant(v.as_ref()), r);
+        buf.push_str("\tGood");
+        crate::util::push_usize(buf, i);
+        buf.push(' ');
+        buf.push_str(&debug_amp_variant(v.as_ref()));
+        buf.push(' ');
+        buf.push_str(r);
     }
     for (i, (v, r)) in av.bad_variants.iter().enumerate() {
-        let _ = write!(buf, "\tBad{} {} {}", i, debug_amp_variant(v.as_ref()), r);
+        buf.push_str("\tBad");
+        crate::util::push_usize(buf, i);
+        buf.push(' ');
+        buf.push_str(&debug_amp_variant(v.as_ref()));
+        buf.push(' ');
+        buf.push_str(r);
     }
 }
 
@@ -537,6 +621,17 @@ pub fn amplicon_40_into(
     debug: bool,
 ) {
     buf.clear();
+    amplicon_40_append(buf, av, region, sample_name, debug);
+}
+
+/// Append the amplicon 40-column row to `buf` without clearing it first.
+pub(crate) fn amplicon_40_append(
+    buf: &mut String,
+    av: &crate::postprocess::amplicon::AmpliconVariant,
+    region: &Region,
+    sample_name: &str,
+    debug: bool,
+) {
     buf.reserve(320);
     let variant = &av.variant;
 
@@ -554,18 +649,26 @@ pub fn amplicon_40_into(
     buf.push('\t');
     buf.push_str(&region.chr);
     buf.push('\t');
-    let _ = write!(buf, "{}\t", variant.start_pos);
-    let _ = write!(buf, "{}\t", variant.end_pos);
+    crate::util::push_i32(buf, variant.start_pos);
+    buf.push('\t');
+    crate::util::push_i32(buf, variant.end_pos);
+    buf.push('\t');
     buf.push_str(&variant.ref_allele);
     buf.push('\t');
     buf.push_str(&variant.var_allele);
     buf.push('\t');
-    let _ = write!(buf, "{}\t", variant.total_pos_cov);
-    let _ = write!(buf, "{}\t", variant.pos_coverage);
-    let _ = write!(buf, "{}\t", variant.ref_fwd_cov);
-    let _ = write!(buf, "{}\t", variant.ref_rev_cov);
-    let _ = write!(buf, "{}\t", variant.fwd);
-    let _ = write!(buf, "{}\t", variant.rev);
+    crate::util::push_i32(buf, variant.total_pos_cov);
+    buf.push('\t');
+    crate::util::push_i32(buf, variant.pos_coverage);
+    buf.push('\t');
+    crate::util::push_i32(buf, variant.ref_fwd_cov);
+    buf.push('\t');
+    crate::util::push_i32(buf, variant.ref_rev_cov);
+    buf.push('\t');
+    crate::util::push_i32(buf, variant.fwd);
+    buf.push('\t');
+    crate::util::push_i32(buf, variant.rev);
+    buf.push('\t');
     let gt_default = if variant.null_record { "" } else { "0" };
     buf.push_str(variant.genotype.as_deref().unwrap_or(gt_default));
     buf.push('\t');
@@ -593,14 +696,18 @@ pub fn amplicon_40_into(
     buf.push('\t');
     push_java_rounded(buf, variant.extra_freq, 4);
     buf.push('\t');
-    let _ = write!(buf, "{}\t", variant.shift3);
+    crate::util::push_i32(buf, variant.shift3);
+    buf.push('\t');
     push_java_rounded(buf, variant.msi, 3);
     buf.push('\t');
-    let _ = write!(buf, "{}\t", variant.msint);
+    crate::util::push_i32(buf, variant.msint);
+    buf.push('\t');
     push_nm(buf, variant.nm);
     buf.push('\t');
-    let _ = write!(buf, "{}\t", variant.hicnt);
-    let _ = write!(buf, "{}\t", variant.hicov);
+    crate::util::push_i32(buf, variant.hicnt);
+    buf.push('\t');
+    crate::util::push_i32(buf, variant.hicov);
+    buf.push('\t');
     let flank_empty = if variant.null_record { "\t" } else { "0\t" };
     if variant.left_seq.is_empty() {
         buf.push_str(flank_empty);
@@ -618,14 +725,13 @@ pub fn amplicon_40_into(
     buf.push('\t');
     buf.push_str(&variant.var_type);
     buf.push('\t');
-    let _ = write!(
-        buf,
-        "{}\t{}\t{}\t{}",
-        av.gdamp,
-        av.tlamp,
-        av.ncamp,
-        if av.ampflag { 1 } else { 0 }
-    );
+    crate::util::push_i32(buf, av.gdamp);
+    buf.push('\t');
+    crate::util::push_i32(buf, av.tlamp);
+    buf.push('\t');
+    crate::util::push_i32(buf, av.ncamp);
+    buf.push('\t');
+    buf.push(if av.ampflag { '1' } else { '0' });
 
     if !debug {
         return;
@@ -634,10 +740,20 @@ pub fn amplicon_40_into(
     buf.push('\t');
     buf.push_str(&variant.debug);
     for (i, (v, r)) in av.good_variants.iter().enumerate() {
-        let _ = write!(buf, "\tGood{} {} {}", i, debug_amp_variant(v.as_ref()), r);
+        buf.push_str("\tGood");
+        crate::util::push_usize(buf, i);
+        buf.push(' ');
+        buf.push_str(&debug_amp_variant(v.as_ref()));
+        buf.push(' ');
+        buf.push_str(r);
     }
     for (i, (v, r)) in av.bad_variants.iter().enumerate() {
-        let _ = write!(buf, "\tBad{} {} {}", i, debug_amp_variant(v.as_ref()), r);
+        buf.push_str("\tBad");
+        crate::util::push_usize(buf, i);
+        buf.push(' ');
+        buf.push_str(&debug_amp_variant(v.as_ref()));
+        buf.push(' ');
+        buf.push_str(r);
     }
 }
 
@@ -801,12 +917,18 @@ pub(crate) fn push_nm(buf: &mut String, v: f64) {
 /// Push the 18-column tumor/normal sample block (keep-mode floats).
 /// Replaces `variant_18cols`; same field order and values, no temp `String`.
 fn push_18cols(buf: &mut String, v: &Variant) {
-    let _ = write!(buf, "{}\t", v.total_pos_cov);
-    let _ = write!(buf, "{}\t", v.pos_coverage);
-    let _ = write!(buf, "{}\t", v.ref_fwd_cov);
-    let _ = write!(buf, "{}\t", v.ref_rev_cov);
-    let _ = write!(buf, "{}\t", v.fwd);
-    let _ = write!(buf, "{}\t", v.rev);
+    crate::util::push_i32(buf, v.total_pos_cov);
+    buf.push('\t');
+    crate::util::push_i32(buf, v.pos_coverage);
+    buf.push('\t');
+    crate::util::push_i32(buf, v.ref_fwd_cov);
+    buf.push('\t');
+    crate::util::push_i32(buf, v.ref_rev_cov);
+    buf.push('\t');
+    crate::util::push_i32(buf, v.fwd);
+    buf.push('\t');
+    crate::util::push_i32(buf, v.rev);
+    buf.push('\t');
     buf.push_str(v.genotype.as_deref().unwrap_or("0"));
     buf.push('\t');
     push_keep(buf, v.frequency, 4);
@@ -852,6 +974,31 @@ pub fn somatic_55_into(
     end_is_variant2: bool,
 ) {
     buf.clear();
+    somatic_55_append(
+        buf,
+        tumor,
+        normal,
+        region,
+        sample_name,
+        status,
+        sv1,
+        sv2,
+        end_is_variant2,
+    );
+}
+
+/// Append the somatic 55-column row to `buf` without clearing it first.
+pub(crate) fn somatic_55_append(
+    buf: &mut String,
+    tumor: &Variant,
+    normal: Option<&Variant>,
+    region: &Region,
+    sample_name: &str,
+    status: &str,
+    sv1: &str,
+    sv2: &str,
+    end_is_variant2: bool,
+) {
     buf.reserve(384);
     // endVariant supplies shift3/msi/msint/left/right seq (Java SomaticOutputVariant).
     let end_var = if end_is_variant2 {
@@ -866,8 +1013,10 @@ pub fn somatic_55_into(
     buf.push('\t');
     buf.push_str(&region.chr);
     buf.push('\t');
-    let _ = write!(buf, "{}\t", tumor.start_pos);
-    let _ = write!(buf, "{}\t", tumor.end_pos);
+    crate::util::push_i32(buf, tumor.start_pos);
+    buf.push('\t');
+    crate::util::push_i32(buf, tumor.end_pos);
+    buf.push('\t');
     buf.push_str(&tumor.ref_allele);
     buf.push('\t');
     buf.push_str(&tumor.var_allele);
@@ -879,10 +1028,12 @@ pub fn somatic_55_into(
         None => buf.push_str(VARIANT_18COLS_EMPTY),
     }
     buf.push('\t');
-    let _ = write!(buf, "{}\t", end_var.shift3);
+    crate::util::push_i32(buf, end_var.shift3);
+    buf.push('\t');
     push_keep(buf, end_var.msi, 3);
     buf.push('\t');
-    let _ = write!(buf, "{}\t", end_var.msint);
+    crate::util::push_i32(buf, end_var.msint);
+    buf.push('\t');
     if end_var.left_seq.is_empty() {
         buf.push_str("0\t");
     } else {
@@ -897,7 +1048,10 @@ pub fn somatic_55_into(
     }
     buf.push_str(&region.chr);
     buf.push(':');
-    let _ = write!(buf, "{}-{}\t", region.start.0, region.end.0);
+    crate::util::push_u32(buf, region.start.0);
+    buf.push('-');
+    crate::util::push_u32(buf, region.end.0);
+    buf.push('\t');
     buf.push_str(status);
     buf.push('\t');
     buf.push_str(&tumor.var_type);
@@ -952,13 +1106,24 @@ pub fn somatic_55(
 /// Push the 20-column fisher sample block: the 18 base columns plus pvalue
 /// and oddratio, using trailing-zero-stripping formatting (Java
 /// getRoundedValueToPrint). Replaces `variant_20cols_fisher` with no temp.
-fn push_20cols_fisher(buf: &mut String, v: &Variant, pvalue: f64, oddratio: &str) {
-    let _ = write!(buf, "{}\t", v.total_pos_cov);
-    let _ = write!(buf, "{}\t", v.pos_coverage);
-    let _ = write!(buf, "{}\t", v.ref_fwd_cov);
-    let _ = write!(buf, "{}\t", v.ref_rev_cov);
-    let _ = write!(buf, "{}\t", v.fwd);
-    let _ = write!(buf, "{}\t", v.rev);
+fn push_20cols_fisher(
+    buf: &mut String,
+    v: &Variant,
+    pvalue: f64,
+    fisher: &crate::stats::FisherExact,
+) {
+    crate::util::push_i32(buf, v.total_pos_cov);
+    buf.push('\t');
+    crate::util::push_i32(buf, v.pos_coverage);
+    buf.push('\t');
+    crate::util::push_i32(buf, v.ref_fwd_cov);
+    buf.push('\t');
+    crate::util::push_i32(buf, v.ref_rev_cov);
+    buf.push('\t');
+    crate::util::push_i32(buf, v.fwd);
+    buf.push('\t');
+    crate::util::push_i32(buf, v.rev);
+    buf.push('\t');
     buf.push_str(v.genotype.as_deref().unwrap_or("0"));
     buf.push('\t');
     push_java_rounded(buf, v.frequency, 4);
@@ -989,7 +1154,7 @@ fn push_20cols_fisher(buf: &mut String, v: &Variant, pvalue: f64, oddratio: &str
     buf.push('\t');
     push_java_rounded(buf, pvalue, 5);
     buf.push('\t');
-    buf.push_str(oddratio);
+    fisher.write_odds_ratio_into(buf);
 }
 
 #[cfg(test)]
@@ -1019,6 +1184,31 @@ pub fn somatic_61_into(
     end_is_variant2: bool,
 ) {
     buf.clear();
+    somatic_61_append(
+        buf,
+        tumor,
+        normal,
+        region,
+        sample_name,
+        status,
+        sv1,
+        sv2,
+        end_is_variant2,
+    );
+}
+
+/// Append the somatic 61-column row to `buf` without clearing it first.
+pub(crate) fn somatic_61_append(
+    buf: &mut String,
+    tumor: &Variant,
+    normal: Option<&Variant>,
+    region: &Region,
+    sample_name: &str,
+    status: &str,
+    sv1: &str,
+    sv2: &str,
+    end_is_variant2: bool,
+) {
     buf.reserve(448);
     // endVariant supplies shift3/msi/msint/left/right seq (Java SomaticOutputVariant).
     let end_var = if end_is_variant2 {
@@ -1062,13 +1252,15 @@ pub fn somatic_61_into(
     buf.push('\t');
     buf.push_str(&region.chr);
     buf.push('\t');
-    let _ = write!(buf, "{}\t", tumor.start_pos);
-    let _ = write!(buf, "{}\t", tumor.end_pos);
+    crate::util::push_i32(buf, tumor.start_pos);
+    buf.push('\t');
+    crate::util::push_i32(buf, tumor.end_pos);
+    buf.push('\t');
     buf.push_str(&tumor.ref_allele);
     buf.push('\t');
     buf.push_str(&tumor.var_allele);
     buf.push('\t');
-    push_20cols_fisher(buf, tumor, pvalue1, &fisher1.odds_ratio_buf());
+    push_20cols_fisher(buf, tumor, pvalue1, &fisher1);
     buf.push('\t');
     match normal {
         Some(n) => {
@@ -1078,17 +1270,19 @@ pub fn somatic_61_into(
                 n.fwd as i32,
                 n.rev as i32,
             );
-            push_20cols_fisher(buf, n, f2.get_p_value(), &f2.odds_ratio_buf());
+            push_20cols_fisher(buf, n, f2.get_p_value(), &f2);
         }
         None => {
             buf.push_str(VARIANT_20COLS_FISHER_EMPTY);
         }
     }
     buf.push('\t');
-    let _ = write!(buf, "{}\t", end_var.shift3);
+    crate::util::push_i32(buf, end_var.shift3);
+    buf.push('\t');
     push_keep(buf, end_var.msi, 3);
     buf.push('\t');
-    let _ = write!(buf, "{}\t", end_var.msint);
+    crate::util::push_i32(buf, end_var.msint);
+    buf.push('\t');
     if end_var.left_seq.is_empty() {
         buf.push_str("0\t");
     } else {
@@ -1103,7 +1297,10 @@ pub fn somatic_61_into(
     }
     buf.push_str(&region.chr);
     buf.push(':');
-    let _ = write!(buf, "{}-{}\t", region.start.0, region.end.0);
+    crate::util::push_u32(buf, region.start.0);
+    buf.push('-');
+    crate::util::push_u32(buf, region.end.0);
+    buf.push('\t');
     buf.push_str(status);
     buf.push('\t');
     buf.push_str(&tumor.var_type);

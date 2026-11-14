@@ -6,7 +6,7 @@ use crate::config::Config;
 use crate::types::{Pos1, VardictError};
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 
 /// Information for amplicon-based variant calling.
@@ -252,19 +252,302 @@ pub fn java_split<'a>(line: &'a str, delim: &str) -> Result<Vec<&'a str>, Vardic
     Ok(parts)
 }
 
-/// Ports `VarDictLauncher.java:139-176`: scans non-header (`#`, `browser`, `track`) lines of a
-/// BED reader and returns `true` iff any line has 8 columns with integer columns `1, 2, 6, 7`
-/// satisfying `a[6] >= a[1]` and `a[7] <= a[2]`.
-pub fn detect_amplicon_bed_from_reader<R: BufRead>(
+/// Maximum allowed uncompressed BED byte volume (`512 MiB`).
+pub const MAX_BED_BYTES: u64 = 512 * 1024 * 1024;
+const BED_GZIP_MAGIC: [u8; 2] = [0x1f, 0x8b];
+
+#[inline]
+fn normalize_bed_line(line: &str, is_first_line: bool) -> &str {
+    let without_bom = if is_first_line {
+        line.strip_prefix('\u{feff}').unwrap_or(line)
+    } else {
+        line
+    };
+    let without_lf = without_bom.strip_suffix('\n').unwrap_or(without_bom);
+    without_lf.trim_end_matches('\r')
+}
+
+#[derive(Debug)]
+struct PrefixedRead<R> {
+    prefix: [u8; 2],
+    pos: u8,
+    len: u8,
+    inner: R,
+}
+
+impl<R: Read> Read for PrefixedRead<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        let pos = usize::from(self.pos);
+        let len = usize::from(self.len);
+        if pos < len {
+            let rem = self.prefix.get(pos..len).unwrap_or(&[]);
+            let n = rem.len().min(buf.len());
+            if let (Some(dst), Some(src)) = (buf.get_mut(..n), rem.get(..n)) {
+                dst.copy_from_slice(src);
+            }
+            self.pos = self.pos.saturating_add(n as u8);
+            return Ok(n);
+        }
+        self.inner.read(buf)
+    }
+}
+
+enum BedReaderInner<R> {
+    Plain(BufReader<std::io::Take<PrefixedRead<R>>>),
+    Gz(Box<BufReader<std::io::Take<flate2::read::MultiGzDecoder<PrefixedRead<R>>>>>),
+}
+
+impl<R: Read> Read for BedReaderInner<R> {
+    #[inline]
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            Self::Plain(r) => r.read(buf),
+            Self::Gz(r) => r.read(buf),
+        }
+    }
+}
+
+impl<R: Read> BufRead for BedReaderInner<R> {
+    #[inline]
+    fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+        match self {
+            Self::Plain(r) => r.fill_buf(),
+            Self::Gz(r) => r.fill_buf(),
+        }
+    }
+
+    #[inline]
+    fn consume(&mut self, amt: usize) {
+        match self {
+            Self::Plain(r) => r.consume(amt),
+            Self::Gz(r) => r.consume(amt),
+        }
+    }
+}
+
+/// Concrete streaming BED reader supporting plain text, `.bed.gz`, and multi-member `.bed.bgz`
+/// without seeking (compatible with pipes/FIFOs) and capping uncompressed bytes at
+/// `MAX_BED_BYTES + 1`.
+pub struct BedReader {
+    inner: BedReaderInner<File>,
+}
+
+impl std::fmt::Debug for BedReader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let encoding = match &self.inner {
+            BedReaderInner::Plain(_) => "plain",
+            BedReaderInner::Gz(_) => "gzip",
+        };
+        f.debug_struct("BedReader")
+            .field("encoding", &encoding)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Read for BedReader {
+    #[inline]
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.inner.read(buf)
+    }
+}
+
+impl BufRead for BedReader {
+    #[inline]
+    fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+        self.inner.fill_buf()
+    }
+
+    #[inline]
+    fn consume(&mut self, amt: usize) {
+        self.inner.consume(amt);
+    }
+}
+
+fn open_bed_reader_from_read<R: Read>(
+    mut source: R,
+    max_bytes: u64,
+) -> Result<BedReaderInner<R>, VardictError> {
+    let mut magic = [0u8; 2];
+    let mut n = 0usize;
+    while let Some(dst) = magic.get_mut(n..) {
+        if dst.is_empty() {
+            break;
+        }
+        match source.read(dst) {
+            Ok(0) => break,
+            Ok(k) => n = n.saturating_add(k),
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(VardictError::Io(e)),
+        }
+    }
+
+    let prefixed = PrefixedRead {
+        prefix: magic,
+        pos: 0,
+        len: n as u8,
+        inner: source,
+    };
+    let cap = max_bytes.saturating_add(1);
+    if n == 2 && magic == BED_GZIP_MAGIC {
+        Ok(BedReaderInner::Gz(Box::new(BufReader::new(
+            flate2::read::MultiGzDecoder::new(prefixed).take(cap),
+        ))))
+    } else {
+        Ok(BedReaderInner::Plain(BufReader::new(prefixed.take(cap))))
+    }
+}
+
+/// Opens a BED input path (plain text, `.bed.gz`, or multi-member `.bed.bgz`) as a concrete
+/// [`BedReader`], loop-probing up to 2 magic bytes without seeking so pipes/FIFOs work.
+///
+/// `BedReader` caps uncompressed bytes read at `MAX_BED_BYTES + 1`; higher-level BED parsers
+/// ([`read_bed_lines`], [`parse_bed_from_reader`], and [`detect_amplicon_bed_from_reader`])
+/// convert inputs exceeding `MAX_BED_BYTES` into [`VardictError::Parse`].
+pub fn open_bed_reader<P: AsRef<Path>>(path: P) -> Result<BedReader, VardictError> {
+    let file = File::open(path)?;
+    Ok(BedReader {
+        inner: open_bed_reader_from_read(file, MAX_BED_BYTES)?,
+    })
+}
+
+trait BedLineSource {
+    fn next_normalized_line(&mut self) -> Result<Option<&str>, VardictError>;
+}
+
+struct ReaderBedLines<R> {
     reader: R,
+    raw_buf: Vec<u8>,
+    max_bytes: u64,
+    total_bytes: u64,
+    line_idx: usize,
+}
+
+impl<R: BufRead> ReaderBedLines<R> {
+    fn new(reader: R, max_bytes: u64) -> Self {
+        Self {
+            reader,
+            raw_buf: Vec::new(),
+            max_bytes,
+            total_bytes: 0,
+            line_idx: 0,
+        }
+    }
+}
+
+impl<R: BufRead> BedLineSource for ReaderBedLines<R> {
+    fn next_normalized_line(&mut self) -> Result<Option<&str>, VardictError> {
+        self.raw_buf.clear();
+        let remaining_budget = self
+            .max_bytes
+            .saturating_add(1)
+            .saturating_sub(self.total_bytes);
+        let mut bytes_read = 0u64;
+        loop {
+            let rem = remaining_budget.saturating_sub(bytes_read);
+            if rem == 0 {
+                break;
+            }
+            let available = match self.reader.fill_buf() {
+                Ok(buf) => buf,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) => return Err(VardictError::Io(e)),
+            };
+            if available.is_empty() {
+                break;
+            }
+            let cap = usize::try_from(rem)
+                .unwrap_or(usize::MAX)
+                .min(available.len());
+            let window = available.get(..cap).unwrap_or(available);
+            if let Some(nl_idx) = window.iter().position(|&b| b == b'\n') {
+                let take_len = nl_idx.saturating_add(1);
+                if let Some(slice) = window.get(..take_len) {
+                    self.raw_buf.extend_from_slice(slice);
+                }
+                self.reader.consume(take_len);
+                bytes_read = bytes_read.saturating_add(take_len as u64);
+                break;
+            }
+            self.raw_buf.extend_from_slice(window);
+            let consumed = window.len();
+            self.reader.consume(consumed);
+            bytes_read = bytes_read.saturating_add(consumed as u64);
+        }
+        if bytes_read == 0 {
+            return Ok(None);
+        }
+        self.total_bytes = self.total_bytes.saturating_add(bytes_read);
+        if self.total_bytes > self.max_bytes {
+            return Err(VardictError::Parse(format!(
+                "BED input exceeds maximum allowed uncompressed size ({} bytes)",
+                self.max_bytes
+            )));
+        }
+        let line_str = std::str::from_utf8(&self.raw_buf).map_err(|_| {
+            VardictError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "stream did not contain valid UTF-8",
+            ))
+        })?;
+        let is_first = self.line_idx == 0;
+        self.line_idx = self.line_idx.saturating_add(1);
+        Ok(Some(normalize_bed_line(line_str, is_first)))
+    }
+}
+
+struct SliceBedLines<'a> {
+    lines: &'a [String],
+    idx: usize,
+}
+
+impl<'a> SliceBedLines<'a> {
+    fn new(lines: &'a [String]) -> Self {
+        Self { lines, idx: 0 }
+    }
+}
+
+impl<'a> BedLineSource for SliceBedLines<'a> {
+    fn next_normalized_line(&mut self) -> Result<Option<&str>, VardictError> {
+        let Some(line) = self.lines.get(self.idx) else {
+            return Ok(None);
+        };
+        let is_first = self.idx == 0;
+        self.idx = self.idx.saturating_add(1);
+        Ok(Some(normalize_bed_line(line, is_first)))
+    }
+}
+
+fn read_bed_lines_with_limit<R: BufRead>(
+    reader: R,
+    max_bytes: u64,
+) -> Result<Vec<String>, VardictError> {
+    let mut src = ReaderBedLines::new(reader, max_bytes);
+    let mut out = Vec::new();
+    while let Some(line) = src.next_normalized_line()? {
+        out.push(line.to_owned());
+    }
+    Ok(out)
+}
+
+/// Reads all BED lines from `path` (plain, `.bed.gz`, or `.bed.bgz`) in a single pass with
+/// bounded uncompressed byte accounting, line-0 UTF-8 BOM stripping, and trailing `\r` removal.
+pub fn read_bed_lines<P: AsRef<Path>>(path: P) -> Result<Vec<String>, VardictError> {
+    let reader = open_bed_reader(path)?;
+    read_bed_lines_with_limit(reader, MAX_BED_BYTES)
+}
+
+fn detect_amplicon_bed_from_source<S: BedLineSource>(
+    source: &mut S,
     delimiter: &str,
 ) -> Result<bool, VardictError> {
-    for line_res in reader.lines() {
-        let line = line_res?;
+    while let Some(line) = source.next_normalized_line()? {
         if line.starts_with('#') || line.starts_with("browser") || line.starts_with("track") {
             continue;
         }
-        let a = java_split(&line, delimiter)?;
+        let a = java_split(line, delimiter)?;
         if let [_, a1, a2, _, _, _, a6, a7] = a.as_slice() {
             if let (Ok(s1), Ok(e1), Ok(s2), Ok(e2)) = (
                 parse_int_with_commas(a1),
@@ -281,15 +564,34 @@ pub fn detect_amplicon_bed_from_reader<R: BufRead>(
     Ok(false)
 }
 
-/// File-path wrapper around [`detect_amplicon_bed_from_reader`].
-pub fn detect_amplicon_bed<P: AsRef<Path>>(path: P, delimiter: &str) -> Result<bool, VardictError> {
-    let file = File::open(path)?;
-    detect_amplicon_bed_from_reader(BufReader::new(file), delimiter)
+/// Ports `VarDictLauncher.java:139-176`: scans non-header (`#`, `browser`, `track`) lines of a
+/// BED reader and returns `true` iff any line has 8 columns with integer columns `1, 2, 6, 7`
+/// satisfying `a[6] >= a[1]` and `a[7] <= a[2]`.
+pub fn detect_amplicon_bed_from_reader<R: BufRead>(
+    reader: R,
+    delimiter: &str,
+) -> Result<bool, VardictError> {
+    let mut source = ReaderBedLines::new(reader, MAX_BED_BYTES);
+    detect_amplicon_bed_from_source(&mut source, delimiter)
 }
 
-/// Parses BED file in non-amplicon mode.
-pub fn parse_non_amp_bed_from_reader<R: BufRead>(
-    reader: R,
+/// Pre-buffered single-pass counterpart to [`detect_amplicon_bed_from_reader`].
+pub fn detect_amplicon_bed_from_lines(
+    lines: &[String],
+    delimiter: &str,
+) -> Result<bool, VardictError> {
+    let mut source = SliceBedLines::new(lines);
+    detect_amplicon_bed_from_source(&mut source, delimiter)
+}
+
+/// File-path wrapper around [`detect_amplicon_bed_from_reader`].
+pub fn detect_amplicon_bed<P: AsRef<Path>>(path: P, delimiter: &str) -> Result<bool, VardictError> {
+    let reader = open_bed_reader(path)?;
+    detect_amplicon_bed_from_reader(reader, delimiter)
+}
+
+fn parse_non_amp_bed_from_source<S: BedLineSource>(
+    source: &mut S,
     config: &Config,
     chromosomes_lengths: &HashMap<String, usize>,
     zero_based_override: Option<bool>,
@@ -306,8 +608,7 @@ pub fn parse_non_amp_bed_from_reader<R: BufRead>(
 
     let mut segs = Vec::new();
 
-    for line_res in reader.lines() {
-        let line = line_res?;
+    while let Some(line) = source.next_normalized_line()? {
         if line.trim().is_empty()
             || line.starts_with('#')
             || line.starts_with("browser")
@@ -316,7 +617,7 @@ pub fn parse_non_amp_bed_from_reader<R: BufRead>(
             continue;
         }
 
-        let cols = java_split(&line, &config.delimiter)?;
+        let cols = java_split(line, &config.delimiter)?;
 
         let mut current_format = format;
         let mut current_zero_based = is_zero_based;
@@ -421,9 +722,24 @@ pub fn parse_non_amp_bed_from_reader<R: BufRead>(
     Ok(segs)
 }
 
-/// Parses BED file in amplicon mode.
-pub fn parse_amp_bed_from_reader<R: BufRead>(
+/// Parses BED file in non-amplicon mode.
+pub fn parse_non_amp_bed_from_reader<R: BufRead>(
     reader: R,
+    config: &Config,
+    chromosomes_lengths: &HashMap<String, usize>,
+    zero_based_override: Option<bool>,
+) -> Result<Vec<Vec<Region>>, VardictError> {
+    let mut source = ReaderBedLines::new(reader, MAX_BED_BYTES);
+    parse_non_amp_bed_from_source(
+        &mut source,
+        config,
+        chromosomes_lengths,
+        zero_based_override,
+    )
+}
+
+fn parse_amp_bed_from_source<S: BedLineSource>(
+    source: &mut S,
     config: &Config,
     chromosomes_lengths: &HashMap<String, usize>,
     zero_based_override: Option<bool>,
@@ -431,8 +747,7 @@ pub fn parse_amp_bed_from_reader<R: BufRead>(
     let is_zero_based = config.zero_based;
     let mut tsegs: indexmap::IndexMap<String, Vec<Region>> = indexmap::IndexMap::new();
 
-    for line_res in reader.lines() {
-        let line = line_res?;
+    while let Some(line) = source.next_normalized_line()? {
         if line.trim().is_empty()
             || line.starts_with('#')
             || line.starts_with("browser")
@@ -441,7 +756,7 @@ pub fn parse_amp_bed_from_reader<R: BufRead>(
             continue;
         }
 
-        let cols = java_split(&line, &config.delimiter)?;
+        let cols = java_split(line, &config.delimiter)?;
 
         if cols.len() <= 7 {
             return Err(VardictError::Parse(format!(
@@ -537,6 +852,22 @@ pub fn parse_amp_bed_from_reader<R: BufRead>(
     Ok(segs)
 }
 
+/// Parses BED file in amplicon mode.
+pub fn parse_amp_bed_from_reader<R: BufRead>(
+    reader: R,
+    config: &Config,
+    chromosomes_lengths: &HashMap<String, usize>,
+    zero_based_override: Option<bool>,
+) -> Result<Vec<Vec<Region>>, VardictError> {
+    let mut source = ReaderBedLines::new(reader, MAX_BED_BYTES);
+    parse_amp_bed_from_source(
+        &mut source,
+        config,
+        chromosomes_lengths,
+        zero_based_override,
+    )
+}
+
 /// Parses BED file from reader.
 pub fn parse_bed_from_reader<R: BufRead>(
     reader: R,
@@ -551,6 +882,31 @@ pub fn parse_bed_from_reader<R: BufRead>(
     }
 }
 
+/// Pre-buffered single-pass counterpart to [`parse_bed_from_reader`].
+pub fn parse_bed_from_lines(
+    lines: &[String],
+    config: &Config,
+    chromosomes_lengths: &HashMap<String, usize>,
+    zero_based_override: Option<bool>,
+) -> Result<Vec<Vec<Region>>, VardictError> {
+    let mut source = SliceBedLines::new(lines);
+    if config.amplicon.is_some() {
+        parse_amp_bed_from_source(
+            &mut source,
+            config,
+            chromosomes_lengths,
+            zero_based_override,
+        )
+    } else {
+        parse_non_amp_bed_from_source(
+            &mut source,
+            config,
+            chromosomes_lengths,
+            zero_based_override,
+        )
+    }
+}
+
 /// Parses BED file from path.
 pub fn parse_bed<P: AsRef<Path>>(
     path: P,
@@ -558,13 +914,8 @@ pub fn parse_bed<P: AsRef<Path>>(
     chromosomes_lengths: &HashMap<String, usize>,
     zero_based_override: Option<bool>,
 ) -> Result<Vec<Vec<Region>>, VardictError> {
-    let file = File::open(path)?;
-    parse_bed_from_reader(
-        BufReader::new(file),
-        config,
-        chromosomes_lengths,
-        zero_based_override,
-    )
+    let reader = open_bed_reader(path)?;
+    parse_bed_from_reader(reader, config, chromosomes_lengths, zero_based_override)
 }
 
 fn chromosome_in_header(chromosomes_lengths: &HashMap<String, usize>, chr: &str) -> bool {
@@ -1612,5 +1963,176 @@ Y\t59042860\t59047860\tY_59042860_5\t0\t.\t59042860\t59047860
         assert_eq!(r_empty_hla_single[0][0].start, Pos1(150));
         assert_eq!(r_empty_hla_single[0][0].end, Pos1(150));
         assert_eq!(r_empty_hla_single[0][0].gene, "HLA-A*01:01:01:01");
+    }
+
+    #[test]
+    fn compressed_bed_gz_bgz_short_pipe_bom_and_double_cr() {
+        use std::io::Write as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut chr_lengths = HashMap::new();
+        chr_lengths.insert("chr1".to_string(), 10_000);
+        chr_lengths.insert("chr2".to_string(), 10_000);
+
+        let non_amp_text = b"#header\nchr1\t100\t200\tTP53\nchr2\t300\t450\tBRCA1\n";
+        let amp_text =
+            b"chr1\t100\t300\tAMP1\t0\t+\t120\t280\nchr1\t250\t450\tAMP2\t0\t+\t270\t430\n";
+
+        let plain_bed = dir.path().join("panel.bed");
+        let gz_bed = dir.path().join("panel.bed.gz");
+        let bgz_bed = dir.path().join("panel.bed.bgz");
+        std::fs::write(&plain_bed, non_amp_text).unwrap();
+        {
+            let mut gz = flate2::write::GzEncoder::new(
+                File::create(&gz_bed).unwrap(),
+                flate2::Compression::default(),
+            );
+            gz.write_all(non_amp_text).unwrap();
+            gz.finish().unwrap();
+        }
+        {
+            let mut bgz = noodles_bgzf::io::Writer::new(File::create(&bgz_bed).unwrap());
+            bgz.write_all(&non_amp_text[..20]).unwrap();
+            bgz.flush().unwrap();
+            bgz.write_all(&non_amp_text[20..]).unwrap();
+            bgz.finish().unwrap();
+        }
+
+        let mut cfg = Config::default();
+        cfg.col_chr = 0;
+        cfg.col_start = 1;
+        cfg.col_end = 2;
+        cfg.col_seg_start = 1;
+        cfg.col_seg_end = 2;
+        cfg.col_gene = Some(3);
+        cfg.zero_based = true;
+        cfg.column_for_chromosome = Some(0);
+        let expected_non_amp = parse_bed(&plain_bed, &cfg, &chr_lengths, None).unwrap();
+        assert!(!detect_amplicon_bed(&plain_bed, "\t").unwrap());
+
+        for compressed in [&gz_bed, &bgz_bed] {
+            assert_eq!(
+                parse_bed(compressed, &cfg, &chr_lengths, None).unwrap(),
+                expected_non_amp
+            );
+            assert!(!detect_amplicon_bed(compressed, "\t").unwrap());
+            let lines = read_bed_lines(compressed).unwrap();
+            assert!(!detect_amplicon_bed_from_lines(&lines, "\t").unwrap());
+            assert_eq!(
+                parse_bed_from_lines(&lines, &cfg, &chr_lengths, None).unwrap(),
+                expected_non_amp
+            );
+        }
+
+        // Amplicon .bed.gz and .bed.bgz single-pass equivalence
+        let plain_amp = dir.path().join("amp.bed");
+        let gz_amp = dir.path().join("amp.bed.gz");
+        let bgz_amp = dir.path().join("amp.bed.bgz");
+        std::fs::write(&plain_amp, amp_text).unwrap();
+        {
+            let mut gz = flate2::write::GzEncoder::new(
+                File::create(&gz_amp).unwrap(),
+                flate2::Compression::default(),
+            );
+            gz.write_all(amp_text).unwrap();
+            gz.finish().unwrap();
+        }
+        {
+            let mut bgz = noodles_bgzf::io::Writer::new(File::create(&bgz_amp).unwrap());
+            bgz.write_all(amp_text).unwrap();
+            bgz.finish().unwrap();
+        }
+        let mut amp_cfg = Config::default();
+        amp_cfg.amplicon = Some("10:0.95".to_string());
+        let expected_amp = parse_bed(&plain_amp, &amp_cfg, &chr_lengths, None).unwrap();
+        for compressed in [&gz_amp, &bgz_amp] {
+            let lines = read_bed_lines(compressed).unwrap();
+            assert!(detect_amplicon_bed_from_lines(&lines, "\t").unwrap());
+            assert_eq!(
+                parse_bed_from_lines(&lines, &amp_cfg, &chr_lengths, None).unwrap(),
+                expected_amp
+            );
+        }
+
+        // Tiny < 2-byte BED ("") and 1-byte BED ("\n") do not fail magic-byte probing
+        let tiny_bed = dir.path().join("tiny.bed");
+        std::fs::write(&tiny_bed, b"\n").unwrap();
+        assert!(parse_bed(&tiny_bed, &cfg, &chr_lengths, None)
+            .unwrap()
+            .is_empty());
+
+        // UTF-8 BOM on line 0 (`#comment`) + double `\r\r\n` line ending (`AR-4`)
+        let bom_cr_input = "\u{feff}#comment\nchr1\t10\t20\tTP53\r\r\n";
+        let bom_bed = dir.path().join("bom_cr.bed");
+        let bom_bed_gz = dir.path().join("bom_cr.bed.gz");
+        std::fs::write(&bom_bed, bom_cr_input.as_bytes()).unwrap();
+        {
+            let mut gz = flate2::write::GzEncoder::new(
+                File::create(&bom_bed_gz).unwrap(),
+                flate2::Compression::default(),
+            );
+            gz.write_all(bom_cr_input.as_bytes()).unwrap();
+            gz.finish().unwrap();
+        }
+
+        for p in [&bom_bed, &bom_bed_gz] {
+            let parsed = parse_bed(p, &cfg, &chr_lengths, None).unwrap();
+            assert_eq!(parsed.len(), 1);
+            assert_eq!(parsed[0].len(), 1);
+            assert_eq!(parsed[0][0].chr, "chr1");
+            assert_eq!(parsed[0][0].gene, "TP53");
+
+            let lines = read_bed_lines(p).unwrap();
+            assert!(!detect_amplicon_bed_from_lines(&lines, "\t").unwrap());
+            let from_lines = parse_bed_from_lines(&lines, &cfg, &chr_lengths, None).unwrap();
+            assert_eq!(from_lines, parsed);
+        }
+
+        // Direct un-normalized slice passed to *_from_lines also normalizes line-0 BOM and \r
+        let raw_slice = vec![
+            "\u{feff}#comment\r".to_string(),
+            "chr1\t10\t20\tTP53\r\r".to_string(),
+        ];
+        assert!(!detect_amplicon_bed_from_lines(&raw_slice, "\t").unwrap());
+        let from_raw = parse_bed_from_lines(&raw_slice, &cfg, &chr_lengths, None).unwrap();
+        assert_eq!(from_raw[0][0].chr, "chr1");
+        assert_eq!(from_raw[0][0].gene, "TP53");
+
+        // Short-pipe 1-byte-at-a-time reader still detects gzip magic [0x1f, 0x8b]
+        struct OneByteReader(std::io::Cursor<Vec<u8>>);
+        impl Read for OneByteReader {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                if buf.is_empty() {
+                    return Ok(0);
+                }
+                self.0.read(&mut buf[..1])
+            }
+        }
+        let gz_bytes = std::fs::read(&gz_bed).unwrap();
+        let short_pipe_reader = open_bed_reader_from_read(
+            OneByteReader(std::io::Cursor::new(gz_bytes.clone())),
+            MAX_BED_BYTES,
+        )
+        .unwrap();
+        assert_eq!(
+            parse_bed_from_reader(short_pipe_reader, &cfg, &chr_lengths, None).unwrap(),
+            expected_non_amp
+        );
+
+        // Bounded decompression: exceeding max_bytes returns VardictError::Parse
+        let capped_reader = open_bed_reader_from_read(std::io::Cursor::new(gz_bytes), 16).unwrap();
+        assert!(matches!(
+            read_bed_lines_with_limit(capped_reader, 16),
+            Err(VardictError::Parse(_))
+        ));
+
+        fn _assert_send<T: Send + std::fmt::Debug>() {}
+        _assert_send::<BedReader>();
+        let bed_reader = open_bed_reader(&gz_bed).unwrap();
+        let dbg = format!("{bed_reader:?}");
+        assert!(
+            dbg.contains("BedReader") && dbg.contains("gzip"),
+            "dbg={dbg}"
+        );
     }
 }

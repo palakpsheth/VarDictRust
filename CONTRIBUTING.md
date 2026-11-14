@@ -171,7 +171,7 @@ All contributions to `crates/vardictrust-core/` and `crates/vardictrust/` must a
 - **Phred Quality Scores:** Encoded as Phred+33: `Phred(byte.saturating_sub(33))`.
 
 ### 4.4 Bounded Memory & Scale ([AGENTS.md §10](AGENTS.md#10-scale-rules-optimize-for-large-wgs-by-default))
-- **Tile-and-Halo Traversal:** Regions are processed in discrete tiles (default 50 kb) with an overlapping halo (2 kb). State is streamed through the per-tile pipeline and dropped promptly via RAII.
+- **Tile-and-Halo Traversal:** Regions `<= 1 Mbp` run untiled by default (`DEFAULT_UNTILED_SPAN_MAX = 1_000_000`); intervals `> 1 Mbp` are partitioned into discrete `100 kbp` tiles (`DEFAULT_TILE_SIZE = 100_000`, overridable via `--tile-size`) with overlapping read/SV halo windows, `SplitVarDeduper` (`200 kbp` cross-tile `.var` boundary retention), and `SpillableVcfAccumulator` (`8 MiB` whole-stream spill threshold). State is streamed through the per-tile pipeline and dropped promptly via RAII.
 - **Zero Whole-Chromosome Buffering:** Never load or buffer entire chromosomes in memory.
 
 ---
@@ -224,7 +224,7 @@ Before submitting any pull request, run the 6-stage PR validation suite defined 
 bash harness/pr_check.sh
 ```
 This suite completes in `<25s` using the pinned golden baseline store and automatically verifies:
-1. **Stage 1 (Hygiene & Unit Tests):** Formatting, Clippy lints, and all 619 workspace unit and integration tests ([Level 1](docs/testing/test-matrix-and-ci-audit.md#level-1)).
+1. **Stage 1 (Hygiene & Unit Tests):** Formatting, Clippy lints, and all 629 workspace unit and integration tests ([Level 1](docs/testing/test-matrix-and-ci-audit.md#level-1)).
 2. **Stage 2 (Crash Robustness):** PR #402, missing index #187, and Issue #341 family fixtures (executed within the workspace test run).
 3. **Stage 3 (Upstream Integration Corpus):** 92 fixtures ([Level 2](docs/testing/test-matrix-and-ci-audit.md#level-2-upstream-integration-regression-corpus-92-fixtures)) across 8 parallel workers, asserting `91 PASS / 1 XFAIL` ([UB-4](docs/upstream-bugs.md#ub-4) upstream fixture defect).
 4. **Stage 4 (Dual-Engine Differential Parity):** Micro differential fixture, all 10 standard slices (`s1a..s9`), 17-modality extended coverage (`--no-record`), and 18-slice multimodal suite (`--no-record`) against the VarDictJava oracle ([Level 3](docs/testing/test-matrix-and-ci-audit.md#level-3-dual-engine-differential-parity-testing)).

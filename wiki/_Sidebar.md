@@ -4,6 +4,7 @@
 - **[README](https://github.com/palakpsheth/VarDictRust#readme)**
 - **[Installation](https://github.com/palakpsheth/VarDictRust#installation)**
 - **[Usage Recipes](https://github.com/palakpsheth/VarDictRust#usage-recipes)**
+- **[Migration Guide](https://github.com/palakpsheth/VarDictRust/blob/main/docs/migration.md)**
 - **[CLI Reference](https://github.com/palakpsheth/VarDictRust#cli-parameter-reference)**
 - **[Contributing](https://github.com/palakpsheth/VarDictRust/blob/main/CONTRIBUTING.md)**
 
