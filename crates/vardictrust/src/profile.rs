@@ -132,44 +132,8 @@ fn normalize_dir_for_lstat(dir: &std::path::Path) -> std::borrow::Cow<'_, std::p
     feature = "profile-dhat",
     feature = "profile-heap"
 ))]
-fn reject_symlink_ancestors(normalized: &std::path::Path) -> std::io::Result<()> {
-    for anc in normalized.ancestors() {
-        if anc.as_os_str().is_empty() {
-            continue;
-        }
-        #[cfg(target_os = "macos")]
-        if anc == std::path::Path::new("/tmp")
-            || anc == std::path::Path::new("/var")
-            || anc == std::path::Path::new("/etc")
-        {
-            continue;
-        }
-        let anc_norm = normalize_dir_for_lstat(anc);
-        if let Ok(meta) = std::fs::symlink_metadata(anc_norm.as_ref()) {
-            if meta.file_type().is_symlink() {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    format!(
-                        "profile directory '{}' must not be or traverse a symlink ('{}')",
-                        normalized.display(),
-                        anc_norm.display()
-                    ),
-                ));
-            }
-        }
-    }
-    Ok(())
-}
-
-#[cfg(any(
-    test,
-    feature = "profile-cpu",
-    feature = "profile-dhat",
-    feature = "profile-heap"
-))]
 fn ensure_non_symlink_dir(dir: &std::path::Path) -> std::io::Result<()> {
     let normalized = normalize_dir_for_lstat(dir);
-    reject_symlink_ancestors(normalized.as_ref())?;
     let meta = std::fs::symlink_metadata(normalized.as_ref())?;
     if meta.file_type().is_symlink() {
         return Err(std::io::Error::new(
@@ -288,12 +252,14 @@ fn finalize_dhat_temp_file(
 ))]
 fn probe_dir(dir: &std::path::Path, var_name: &str) -> Result<()> {
     let normalized = normalize_dir_for_lstat(dir);
-    reject_symlink_ancestors(normalized.as_ref()).map_err(|e| {
-        anyhow::anyhow!(
-            "profile directory '{}' for {var_name} is invalid: {e}",
-            dir.display()
-        )
-    })?;
+    if let Ok(meta) = std::fs::symlink_metadata(normalized.as_ref()) {
+        if meta.file_type().is_symlink() {
+            anyhow::bail!(
+                "profile directory '{}' for {var_name} must not be a symlink",
+                dir.display()
+            );
+        }
+    }
     std::fs::create_dir_all(normalized.as_ref()).map_err(|e| {
         anyhow::anyhow!(
             "cannot create profile directory '{}' for {var_name}: {e}",
@@ -702,7 +668,9 @@ mod tests {
             assert_eq!(mode1, 0o600);
 
             // Symlinked profile directory (both existing target and dangling target) must be refused,
-            // including trailing slashes (`path_resolution(7)` `lstat` bypass) and parent symlinks.
+            // including trailing slashes (`path_resolution(7)` `lstat` bypass), while a real
+            // subdirectory inside a symlinked parent mount (`symlink_dir/real_sub`) must succeed
+            // so HPC/cloud/container symlinked `/scratch` or `$TMPDIR` mounts work cleanly.
             assert_eq!(
                 normalize_dir_for_lstat(std::path::Path::new("/")).as_ref(),
                 std::path::Path::new("/")
@@ -728,29 +696,21 @@ mod tests {
             probe_dir(&real_trailing_one, "VARDICT_PROFILE_CPU").unwrap();
             ensure_non_symlink_dir(&real_trailing_three).unwrap();
 
-            let existing_sub = real_dir.join("existing_sub");
-            std::fs::create_dir(&existing_sub).unwrap();
-
             let symlink_dir = base.path().join("symlink_prof");
             symlink(&real_dir, &symlink_dir).unwrap();
             let symlink_slash_1 = PathBuf::from(format!("{}/", symlink_dir.display()));
             let symlink_slash_3 = PathBuf::from(format!("{}///", symlink_dir.display()));
             let symlink_dot = PathBuf::from(format!("{}/.", symlink_dir.display()));
-            let parent_sym_existing = symlink_dir.join("existing_sub");
-            let parent_sym_existing_slash =
-                PathBuf::from(format!("{}/", parent_sym_existing.display()));
 
             for bad_sym_dir in [
                 &symlink_dir,
                 &symlink_slash_1,
                 &symlink_slash_3,
                 &symlink_dot,
-                &parent_sym_existing,
-                &parent_sym_existing_slash,
             ] {
                 assert!(
                     probe_dir(bad_sym_dir, "VARDICT_PROFILE_CPU").is_err(),
-                    "probe_dir must refuse symlink/trailing-slash/parent-symlink path '{}'",
+                    "probe_dir must refuse symlink/trailing-slash path '{}'",
                     bad_sym_dir.display()
                 );
                 assert!(
@@ -770,14 +730,14 @@ mod tests {
                 );
             }
 
-            let parent_sym_new = symlink_dir.join("nested_never_create");
-            assert!(
-                probe_dir(&parent_sym_new, "VARDICT_PROFILE_CPU").is_err(),
-                "probe_dir must refuse creating subdirectory through parent symlink"
-            );
-            assert!(
-                !real_dir.join("nested_never_create").exists(),
-                "probe_dir must not create directory inside target of parent symlink"
+            // A real subdirectory inside a symlinked parent mount (`symlink_dir/real_sub`) must succeed.
+            let real_sub_under_sym = symlink_dir.join("real_sub");
+            probe_dir(&real_sub_under_sym, "VARDICT_PROFILE_CPU").unwrap();
+            ensure_non_symlink_dir(&real_sub_under_sym).unwrap();
+            write_profile_file_atomic(&real_sub_under_sym, "cpu-meta.json", b"{}\n").unwrap();
+            assert_eq!(
+                std::fs::read(real_dir.join("real_sub/cpu-meta.json")).unwrap(),
+                b"{}\n"
             );
 
             let nonexistent_target = base.path().join("never_create_me");
