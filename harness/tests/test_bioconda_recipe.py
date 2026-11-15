@@ -693,8 +693,24 @@ class TestRepoAgentSkills(unittest.TestCase):
         self.assertIn('gh release create "$RELEASE_TAG"', rel_text)
         self.assertIn('git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main', rel_text)
         self.assertIn('git merge-base --is-ancestor "$TAG_COMMIT" refs/remotes/origin/main', rel_text)
-        self.assertIn('git diff --quiet "$TAG_COMMIT" "$GITHUB_SHA" -- Cargo.toml Cargo.lock crates/ benchmarks/evidence/', rel_text)
-        self.assertIn("ref: refs/tags/${{ needs.plan.outputs.tag }}", rel_text)
+        self.assertIn(
+            'DISALLOWED_DIFF="$(git diff --name-only "$TAG_COMMIT" "$GITHUB_SHA" | '
+            "grep -Ev '^(dist-workspace\\.toml|\\.github/workflows/[^/]+\\.yml|harness/tests/test_[^/]+\\.(py|sh)|\\.agents/skills/.+)$' || true)\"",
+            rel_text,
+        )
+        self.assertIn("checkout-ref: ${{ steps.guard.outputs.checkout_ref }}", rel_text)
+        self.assertEqual(
+            rel_text.count("ref: ${{ needs.plan.outputs.checkout-ref }}"),
+            5,
+            "All 5 downstream jobs in release.yml must check out needs.plan.outputs.checkout-ref",
+        )
+        self.assertNotIn("ref: refs/tags/${{ needs.plan.outputs.tag }}", rel_text)
+        self.assertEqual(
+            rel_text.count("Verify Exact Tag Checkout Commit"),
+            4,
+            "build-local-artifacts, build-global-artifacts, host, and publish-crates must assert exact tag commit",
+        )
+        self.assertIn("--artifacts=lies", rel_text)
         self.assertIn("retired GitHub Actions runner(s)", rel_text)
 
         dist_toml = (ROOT_DIR / "dist-workspace.toml").read_text(encoding="utf-8")
@@ -783,6 +799,191 @@ class TestRepoAgentSkills(unittest.TestCase):
                     action_ref,
                     sha_re,
                     f"{wf_path.name}: action reference {action_ref!r} must be pinned to a 40-char lowercase hex commit SHA",
+                )
+
+    def test_cargo_dist_multi_stage_lies_tag_checkout_simulation(self):
+        """Simulate release.yml 4-stage cargo-dist (--artifacts=lies) across plan and unified tag checkout."""
+        import json
+
+        dist_bin = shutil.which("dist")
+        if not dist_bin:
+            candidate = pathlib.Path.home() / ".cargo" / "bin" / "dist"
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                dist_bin = str(candidate)
+        if not dist_bin:
+            self.skipTest("cargo-dist ('dist') binary not installed on host; covered by release.yml PR job")
+
+        cargo_toml = (ROOT_DIR / "Cargo.toml").read_text(encoding="utf-8")
+        ver_m = re.search(
+            r'^\[workspace\.package\]\n(?:(?!\[)[^\n]*\n)*?version\s*=\s*"([^"]+)"',
+            cargo_toml,
+            re.MULTILINE,
+        )
+        self.assertIsNotNone(ver_m, "Could not parse workspace version from Cargo.toml")
+        ws_ver = ver_m.group(1)
+        tag_arg = f"--tag=v{ws_ver}"
+
+        # Strip GIT_* hook variables (GIT_DIR, GIT_INDEX_FILE, GIT_WORK_TREE) so subprocess git/dist
+        # invocations work identically inside pre-commit/pre-push hooks and read-only mounts.
+        env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+        cargo_bin_dir = str(pathlib.Path.home() / ".cargo" / "bin")
+        env["PATH"] = f"{cargo_bin_dir}:{env.get('PATH', '')}"
+
+        dist_paths = (
+            "Cargo.toml",
+            "Cargo.lock",
+            "CHANGELOG.md",
+            "dist-workspace.toml",
+            "README.md",
+            "LICENSE",
+            "crates",
+        )
+
+        def init_isolated_git_repo(dest: pathlib.Path) -> None:
+            subprocess.run(["git", "init", "-q"], cwd=str(dest), env=env, check=True)
+            subprocess.run(["git", "config", "user.email", "ci@vardictrust.local"], cwd=str(dest), env=env, check=True)
+            subprocess.run(["git", "config", "user.name", "VarDictRust CI"], cwd=str(dest), env=env, check=True)
+            subprocess.run(["git", "add", "-A"], cwd=str(dest), env=env, check=True)
+            subprocess.run(["git", "commit", "-qm", "dist-e2e"], cwd=str(dest), env=env, check=True)
+
+        def copy_working_tree_subset(dest: pathlib.Path) -> None:
+            dest.mkdir(parents=True, exist_ok=True)
+            for rel in dist_paths:
+                src = ROOT_DIR / rel
+                if not src.exists():
+                    continue
+                dst = dest / rel
+                if src.is_dir():
+                    shutil.copytree(src, dst, ignore=shutil.ignore_patterns("target", "*.profraw"))
+                else:
+                    shutil.copy2(src, dst)
+            init_isolated_git_repo(dest)
+
+        tag_ref = f"refs/tags/v{ws_ver}"
+        tag_check = subprocess.run(
+            ["git", "-C", str(ROOT_DIR), "rev-parse", "--verify", f"{tag_ref}^{{commit}}"],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = pathlib.Path(tmpdir)
+            plan_wt = tmp_path / "plan-wt"
+            build_wt = tmp_path / "build-wt"
+            copy_working_tree_subset(plan_wt)
+            if tag_check.returncode == 0:
+                build_wt.mkdir(parents=True, exist_ok=True)
+                archive_bytes = subprocess.run(
+                    ["git", "-C", str(ROOT_DIR), "archive", "--format=tar", tag_check.stdout.strip(), *dist_paths],
+                    env=env,
+                    check=True,
+                    capture_output=True,
+                ).stdout
+                subprocess.run(["tar", "-xf", "-", "-C", str(build_wt)], input=archive_bytes, env=env, check=True)
+                init_isolated_git_repo(build_wt)
+            else:
+                copy_working_tree_subset(build_wt)
+
+            # Stage 1: plan (dist host --steps=create) on current working-tree config
+            res_plan = subprocess.run(
+                [dist_bin, "host", "--steps=create", tag_arg, "--output-format=json"],
+                cwd=str(plan_wt),
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(
+                res_plan.returncode,
+                0,
+                f"dist host --steps=create failed:\n{res_plan.stderr}",
+            )
+            plan_manifest = json.loads(res_plan.stdout)
+            include = (
+                ((plan_manifest.get("ci") or {}).get("github") or {}).get("artifacts_matrix") or {}
+            ).get("include") or []
+            self.assertEqual(len(include), 5, f"Expected 5 target matrix entries, got {len(include)}")
+            runners_by_target = {tuple(r.get("targets") or ()): r.get("runner") for r in include}
+            self.assertEqual(runners_by_target.get(("aarch64-apple-darwin",)), "macos-15")
+            retired = {"macos-11", "macos-12", "macos-13", "macos-14", "ubuntu-18.04", "ubuntu-20.04"}
+            for targets, runner in runners_by_target.items():
+                self.assertNotIn(runner, retired, f"Target {targets} uses retired runner {runner}")
+
+            distrib_dir = build_wt / "target" / "distrib"
+            distrib_dir.mkdir(parents=True, exist_ok=True)
+            (distrib_dir / "plan-dist-manifest.json").write_text(res_plan.stdout, encoding="utf-8")
+
+            # Stage 2: build-local-artifacts (--artifacts=lies) for all 5 targets on downstream tag tree
+            for row in include:
+                targets_slug = "-".join(row["targets"])
+                dist_args = row["dist_args"].split()
+                dist_args = ["--artifacts=lies" if a == "--artifacts=local" else a for a in dist_args]
+                res_local = subprocess.run(
+                    [dist_bin, "build", tag_arg, "--output-format=json", *dist_args],
+                    cwd=str(build_wt),
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(
+                    res_local.returncode,
+                    0,
+                    f"dist build --artifacts=lies failed for {targets_slug}:\n{res_local.stderr}",
+                )
+                (distrib_dir / f"{targets_slug}-dist-manifest.json").write_text(
+                    res_local.stdout, encoding="utf-8"
+                )
+
+            # Stage 3: build-global-artifacts on downstream tag tree
+            res_global = subprocess.run(
+                [dist_bin, "build", tag_arg, "--output-format=json", "--artifacts=global"],
+                cwd=str(build_wt),
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(
+                res_global.returncode,
+                0,
+                f"dist build --artifacts=global failed:\n{res_global.stderr}",
+            )
+            (distrib_dir / "global-dist-manifest.json").write_text(res_global.stdout, encoding="utf-8")
+
+            # Stage 4: host (--steps=upload --steps=release) on downstream tag tree
+            res_host = subprocess.run(
+                [dist_bin, "host", tag_arg, "--steps=upload", "--steps=release", "--output-format=json"],
+                cwd=str(build_wt),
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(
+                res_host.returncode,
+                0,
+                f"dist host --steps=upload --steps=release failed:\n{res_host.stderr}",
+            )
+            host_manifest = json.loads(res_host.stdout)
+            self.assertTrue(host_manifest.get("announcement_title"), "Missing announcement_title")
+            self.assertTrue(host_manifest.get("announcement_github_body"), "Missing announcement_github_body")
+
+            for expected_file in (
+                "vardictrust-x86_64-unknown-linux-gnu.tar.xz",
+                "vardictrust-x86_64-unknown-linux-musl.tar.xz",
+                "vardictrust-aarch64-unknown-linux-musl.tar.xz",
+                "vardictrust-aarch64-apple-darwin.tar.xz",
+                "vardictrust-x86_64-apple-darwin.tar.xz",
+                "source.tar.gz",
+                "vardictrust-installer.sh",
+                "sha256.sum",
+            ):
+                self.assertTrue(
+                    (distrib_dir / expected_file).is_file(),
+                    f"Expected staged artifact {expected_file} missing in {distrib_dir}",
                 )
 
 

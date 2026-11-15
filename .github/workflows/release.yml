@@ -58,6 +58,7 @@ jobs:
       val: ${{ steps.plan.outputs.manifest }}
       tag: ${{ steps.guard.outputs.tag }}
       tag-flag: ${{ steps.guard.outputs.tag_flag }}
+      checkout-ref: ${{ steps.guard.outputs.checkout_ref }}
       release-commit: ${{ steps.guard.outputs.release_commit }}
       publishing: ${{ !github.event.pull_request }}
     env:
@@ -89,6 +90,7 @@ jobs:
             {
               echo "tag="
               echo "tag_flag="
+              echo "checkout_ref="
               echo "release_commit="
             } >> "$GITHUB_OUTPUT"
           else
@@ -119,8 +121,10 @@ jobs:
               echo "ERROR: Target tag '${TARGET_TAG}' (${TAG_COMMIT}) is not an ancestor of origin/main!" >&2
               exit 1
             fi
-            if ! git diff --quiet "$TAG_COMMIT" "$GITHUB_SHA" -- Cargo.toml Cargo.lock crates/ benchmarks/evidence/; then
-              echo "ERROR: Engine manifests, sources, or certified evidence differ between tag '${TARGET_TAG}' (${TAG_COMMIT}) and workflow commit (${GITHUB_SHA})!" >&2
+            DISALLOWED_DIFF="$(git diff --name-only "$TAG_COMMIT" "$GITHUB_SHA" | grep -Ev '^(dist-workspace\.toml|\.github/workflows/[^/]+\.yml|harness/tests/test_[^/]+\.(py|sh)|\.agents/skills/.+)$' || true)"
+            if [ -n "$DISALLOWED_DIFF" ]; then
+              echo "ERROR: Non-CI files differ between tag '${TARGET_TAG}' (${TAG_COMMIT}) and workflow commit (${GITHUB_SHA}):" >&2
+              echo "$DISALLOWED_DIFF" >&2
               exit 1
             fi
             python3 .agents/skills/vardictrust-release/scripts/check_release_consistency.py --version "${TARGET_TAG#v}" --phase pre-tag --require-head-fingerprint
@@ -128,6 +132,7 @@ jobs:
             {
               echo "tag=${TARGET_TAG}"
               echo "tag_flag=--tag=${TARGET_TAG}"
+              echo "checkout_ref=refs/tags/${TARGET_TAG}"
               echo "release_commit=${TAG_COMMIT}"
             } >> "$GITHUB_OUTPUT"
           fi
@@ -165,7 +170,7 @@ jobs:
           fi
           echo "dist ran successfully"
           python3 - plan-dist-manifest.json <<'PY'
-          import json, sys
+          import json, os, pathlib, re, shutil, subprocess, sys, tempfile
           with open(sys.argv[1], encoding="utf-8") as fh:
               data = json.load(fh)
           retired = {"macos-11", "macos-12", "macos-13", "macos-14", "ubuntu-18.04", "ubuntu-20.04"}
@@ -178,6 +183,59 @@ jobs:
               print(f"ERROR: plan-dist-manifest.json uses retired GitHub Actions runner(s): {bad}", file=sys.stderr)
               sys.exit(1)
           print("[Release Guard] Verified artifact build runner(s): " + ", ".join(f"{r.get('targets')}->{r.get('runner')}" for r in include))
+
+          if os.environ.get("IS_PR") == "true":
+              cargo_toml = pathlib.Path("Cargo.toml").read_text(encoding="utf-8")
+              m = re.search(
+                  r'^\[workspace\.package\]\n(?:(?!\[)[^\n]*\n)*?version\s*=\s*"([^"]+)"',
+                  cargo_toml,
+                  re.MULTILINE,
+              )
+              if not m:
+                  print("ERROR: Could not parse [workspace.package] version from Cargo.toml!", file=sys.stderr)
+                  sys.exit(1)
+              tag_arg = f"--tag=v{m.group(1)}"
+              def run_dist(cmd, cwd):
+                  res = subprocess.run(cmd, cwd=str(cwd), capture_output=True, text=True)
+                  if res.returncode != 0:
+                      print(f"ERROR: {' '.join(cmd)} failed (exit {res.returncode}):\n{res.stderr}", file=sys.stderr)
+                      sys.exit(res.returncode)
+                  return res.stdout
+              with tempfile.TemporaryDirectory() as tmpdir:
+                  e2e_wt = pathlib.Path(tmpdir) / "dist-e2e"
+                  e2e_wt.mkdir(parents=True, exist_ok=True)
+                  for rel in ("Cargo.toml", "Cargo.lock", "CHANGELOG.md", "dist-workspace.toml", "README.md", "LICENSE", "crates"):
+                      src = pathlib.Path(rel)
+                      if not src.exists():
+                          continue
+                      dst = e2e_wt / rel
+                      if src.is_dir():
+                          shutil.copytree(src, dst, ignore=shutil.ignore_patterns("target", "*.profraw"))
+                      else:
+                          shutil.copy2(src, dst)
+                  subprocess.run(["git", "init", "-q"], cwd=str(e2e_wt), check=True)
+                  subprocess.run(["git", "config", "user.email", "ci@vardictrust.local"], cwd=str(e2e_wt), check=True)
+                  subprocess.run(["git", "config", "user.name", "VarDictRust CI"], cwd=str(e2e_wt), check=True)
+                  subprocess.run(["git", "add", "-A"], cwd=str(e2e_wt), check=True)
+                  subprocess.run(["git", "commit", "-qm", "dist-e2e"], cwd=str(e2e_wt), check=True)
+                  distrib = e2e_wt / "target" / "distrib"
+                  distrib.mkdir(parents=True, exist_ok=True)
+                  create_out = run_dist(["dist", "host", "--steps=create", tag_arg, "--output-format=json"], e2e_wt)
+                  (distrib / "plan-dist-manifest.json").write_text(create_out, encoding="utf-8")
+                  e2e_inc = json.loads(create_out)["ci"]["github"]["artifacts_matrix"]["include"]
+                  for row in e2e_inc:
+                      slug = "-".join(row["targets"])
+                      dargs = ["--artifacts=lies" if a == "--artifacts=local" else a for a in row["dist_args"].split()]
+                      loc_out = run_dist(["dist", "build", tag_arg, "--output-format=json", *dargs], e2e_wt)
+                      (distrib / f"{slug}-dist-manifest.json").write_text(loc_out, encoding="utf-8")
+                  glob_out = run_dist(["dist", "build", tag_arg, "--output-format=json", "--artifacts=global"], e2e_wt)
+                  (distrib / "global-dist-manifest.json").write_text(glob_out, encoding="utf-8")
+                  host_out = run_dist(["dist", "host", tag_arg, "--steps=upload", "--steps=release", "--output-format=json"], e2e_wt)
+                  host_data = json.loads(host_out)
+                  if not host_data.get("announcement_title") or not (distrib / "sha256.sum").is_file():
+                      print("ERROR: cargo-dist 4-stage E2E staging check failed to emit release outputs!", file=sys.stderr)
+                      sys.exit(1)
+                  print(f"[Release Guard] 4-stage cargo-dist (--artifacts=lies) E2E staging check PASSED for {tag_arg}")
           PY
           cat plan-dist-manifest.json
           echo "manifest=$(jq -c "." plan-dist-manifest.json)" >> "$GITHUB_OUTPUT"
@@ -222,8 +280,21 @@ jobs:
           git config --global core.longpaths true
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ needs.plan.outputs.checkout-ref }}
           persist-credentials: false
           submodules: recursive
+      - name: Verify Exact Tag Checkout Commit
+        if: ${{ needs.plan.outputs.publishing == 'true' }}
+        shell: bash
+        env:
+          EXPECTED_COMMIT: ${{ needs.plan.outputs.release-commit }}
+        run: |
+          set -euo pipefail
+          ACTUAL_COMMIT="$(git rev-parse HEAD)"
+          if [ "$ACTUAL_COMMIT" != "$EXPECTED_COMMIT" ]; then
+            echo "ERROR: Checkout commit ${ACTUAL_COMMIT} != expected tag commit ${EXPECTED_COMMIT}!" >&2
+            exit 1
+          fi
       - name: Install Rust non-interactively if not already installed
         if: ${{ matrix.container }}
         run: |
@@ -285,8 +356,21 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ needs.plan.outputs.checkout-ref }}
           persist-credentials: false
           submodules: recursive
+      - name: Verify Exact Tag Checkout Commit
+        if: ${{ needs.plan.outputs.publishing == 'true' }}
+        shell: bash
+        env:
+          EXPECTED_COMMIT: ${{ needs.plan.outputs.release-commit }}
+        run: |
+          set -euo pipefail
+          ACTUAL_COMMIT="$(git rev-parse HEAD)"
+          if [ "$ACTUAL_COMMIT" != "$EXPECTED_COMMIT" ]; then
+            echo "ERROR: Checkout commit ${ACTUAL_COMMIT} != expected tag commit ${EXPECTED_COMMIT}!" >&2
+            exit 1
+          fi
       - name: Install cached dist
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
@@ -337,8 +421,21 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ needs.plan.outputs.checkout-ref }}
           persist-credentials: false
           submodules: recursive
+      - name: Verify Exact Tag Checkout Commit
+        if: ${{ needs.plan.outputs.publishing == 'true' }}
+        shell: bash
+        env:
+          EXPECTED_COMMIT: ${{ needs.plan.outputs.release-commit }}
+        run: |
+          set -euo pipefail
+          ACTUAL_COMMIT="$(git rev-parse HEAD)"
+          if [ "$ACTUAL_COMMIT" != "$EXPECTED_COMMIT" ]; then
+            echo "ERROR: Checkout commit ${ACTUAL_COMMIT} != expected tag commit ${EXPECTED_COMMIT}!" >&2
+            exit 1
+          fi
       - name: Install cached dist
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
@@ -401,9 +498,21 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: refs/tags/${{ needs.plan.outputs.tag }}
+          ref: ${{ needs.plan.outputs.checkout-ref }}
           persist-credentials: false
           submodules: recursive
+      - name: Verify Exact Tag Checkout Commit
+        if: ${{ needs.plan.outputs.publishing == 'true' }}
+        shell: bash
+        env:
+          EXPECTED_COMMIT: ${{ needs.plan.outputs.release-commit }}
+        run: |
+          set -euo pipefail
+          ACTUAL_COMMIT="$(git rev-parse HEAD)"
+          if [ "$ACTUAL_COMMIT" != "$EXPECTED_COMMIT" ]; then
+            echo "ERROR: Checkout commit ${ACTUAL_COMMIT} != expected tag commit ${EXPECTED_COMMIT}!" >&2
+            exit 1
+          fi
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
       - name: Publish vardictrust-core to Crates.io
         run: cargo publish -p vardictrust-core
@@ -435,6 +544,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ needs.plan.outputs.checkout-ref }}
           persist-credentials: false
           submodules: recursive
 

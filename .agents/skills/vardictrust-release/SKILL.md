@@ -65,7 +65,7 @@ git tag -a vX.Y.Z -m "VarDictRust vX.Y.Z"
 git push origin vX.Y.Z
 
 # Monitor .github/workflows/release.yml (plan -> build-local-artifacts -> build-global-artifacts -> host -> attest-release -> publish-crates)
-# Note: v* tags are immutable under tag-protection-v*; if release.yml needs re-dispatch from main after a CI/runner fix (with zero Cargo/crates/evidence diff vs tag), run:
+# Note: v* tags are immutable under tag-protection-v*; if release.yml needs re-dispatch from main after a CI/runner fix (with only CI/test/skill diffs vs tag; all 5 downstream jobs check out refs/tags/vX.Y.Z), run:
 #   gh workflow run release.yml --repo palakpsheth/VarDictRust --ref main -f tag=vX.Y.Z
 gh run list --workflow=release.yml --limit 1
 gh run watch <run-id> --exit-status
