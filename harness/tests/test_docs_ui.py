@@ -88,6 +88,47 @@ class TestMarkdownStaticHygiene(unittest.TestCase):
                 f"prepare_docs_site.py IGNORED_PREFIXES must exclude {excluded}",
             )
 
+    def test_mkdocs_pinned_below_v2_with_dependabot_ignore(self):
+        """Verify docs/requirements.txt pins mkdocs<2.0 and dependabot.yml ignores mkdocs >= 2.0.0."""
+        reqs_text = (REPO_ROOT / "docs" / "requirements.txt").read_text(encoding="utf-8")
+        self.assertRegex(
+            reqs_text,
+            re.compile(r"^mkdocs>=1\.6\.1,<2\.0\s*$", re.MULTILINE),
+            "docs/requirements.txt must pin mkdocs>=1.6.1,<2.0 ahead of the Zensical migration",
+        )
+
+        dependabot_text = (REPO_ROOT / ".github" / "dependabot.yml").read_text(encoding="utf-8")
+        pip_m = re.search(
+            r'^  - package-ecosystem:\s*"pip"\n(?:(?!^  - package-ecosystem:)[^\n]*\n?)*',
+            dependabot_text,
+            re.MULTILINE,
+        )
+        self.assertIsNotNone(pip_m, ".github/dependabot.yml missing pip ecosystem block")
+        pip_block = pip_m.group(0)
+        self.assertRegex(
+            pip_block,
+            re.compile(r'^    directory:\s*"/docs"\s*$', re.MULTILINE),
+            "pip ecosystem block in .github/dependabot.yml must target directory '/docs'",
+        )
+        ignore_m = re.search(
+            r'^    ignore:\s*\n'
+            r'      - dependency-name:\s*"mkdocs"\s*\n'
+            r'        versions:\s*\[">= 2\.0\.0"\]\s*$',
+            pip_block,
+            re.MULTILINE,
+        )
+        self.assertIsNotNone(
+            ignore_m,
+            '.github/dependabot.yml /docs pip entry must declare 4-space ignore block for mkdocs >= 2.0.0',
+        )
+        groups_m = re.search(r"^    groups:\s*$", pip_block, re.MULTILINE)
+        self.assertIsNotNone(groups_m, ".github/dependabot.yml /docs pip entry missing 4-space groups block")
+        self.assertLess(
+            ignore_m.start(),
+            groups_m.start(),
+            "ignore block in .github/dependabot.yml /docs pip entry must not be nested under groups",
+        )
+
     def test_table_column_balance(self):
         """Verify that every markdown table has consistent column counts across all rows."""
         md_files = find_all_markdown_files()
