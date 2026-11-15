@@ -202,40 +202,55 @@ jobs:
                       sys.exit(res.returncode)
                   return res.stdout
               with tempfile.TemporaryDirectory() as tmpdir:
-                  e2e_wt = pathlib.Path(tmpdir) / "dist-e2e"
-                  e2e_wt.mkdir(parents=True, exist_ok=True)
-                  for rel in ("Cargo.toml", "Cargo.lock", "CHANGELOG.md", "dist-workspace.toml", "README.md", "LICENSE", "crates"):
-                      src = pathlib.Path(rel)
-                      if not src.exists():
-                          continue
-                      dst = e2e_wt / rel
-                      if src.is_dir():
-                          shutil.copytree(src, dst, ignore=shutil.ignore_patterns("target", "*.profraw"))
-                      else:
-                          shutil.copy2(src, dst)
-                  subprocess.run(["git", "init", "-q"], cwd=str(e2e_wt), check=True)
-                  subprocess.run(["git", "config", "user.email", "ci@vardictrust.local"], cwd=str(e2e_wt), check=True)
-                  subprocess.run(["git", "config", "user.name", "VarDictRust CI"], cwd=str(e2e_wt), check=True)
-                  subprocess.run(["git", "add", "-A"], cwd=str(e2e_wt), check=True)
-                  subprocess.run(["git", "commit", "-qm", "dist-e2e"], cwd=str(e2e_wt), check=True)
-                  distrib = e2e_wt / "target" / "distrib"
+                  tmp_root = pathlib.Path(tmpdir)
+                  plan_wt = tmp_root / "plan-wt"
+                  build_wt = tmp_root / "build-wt"
+                  def populate_repo(dest, strip_runners):
+                      dest.mkdir(parents=True, exist_ok=True)
+                      for rel in ("Cargo.toml", "Cargo.lock", "CHANGELOG.md", "dist-workspace.toml", "README.md", "LICENSE", "crates"):
+                          src = pathlib.Path(rel)
+                          if not src.exists():
+                              continue
+                          dst = dest / rel
+                          if src.is_dir():
+                              shutil.copytree(src, dst, ignore=shutil.ignore_patterns("target", "*.profraw"))
+                          else:
+                              shutil.copy2(src, dst)
+                      if strip_runners:
+                          dw = dest / "dist-workspace.toml"
+                          dw.write_text(
+                              re.sub(r"\n*\[dist\.github-custom-runners\]\n(?:(?!\[)[^\n]*\n?)*", "\n", dw.read_text(encoding="utf-8")),
+                              encoding="utf-8",
+                          )
+                      subprocess.run(["git", "init", "-q"], cwd=str(dest), check=True)
+                      subprocess.run(["git", "config", "user.email", "ci@vardictrust.local"], cwd=str(dest), check=True)
+                      subprocess.run(["git", "config", "user.name", "VarDictRust CI"], cwd=str(dest), check=True)
+                      subprocess.run(["git", "add", "-A"], cwd=str(dest), check=True)
+                      subprocess.run(["git", "commit", "-qm", "dist-e2e"], cwd=str(dest), check=True)
+                      return subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(dest), check=True, capture_output=True, text=True).stdout.strip()
+                  plan_sha = populate_repo(plan_wt, strip_runners=False)
+                  build_sha = populate_repo(build_wt, strip_runners=True)
+                  if plan_sha == build_sha:
+                      print("ERROR: Expected distinct plan-wt and build-wt commits for cross-revision check!", file=sys.stderr)
+                      sys.exit(1)
+                  distrib = build_wt / "target" / "distrib"
                   distrib.mkdir(parents=True, exist_ok=True)
-                  create_out = run_dist(["dist", "host", "--steps=create", tag_arg, "--output-format=json"], e2e_wt)
+                  create_out = run_dist(["dist", "host", "--steps=create", tag_arg, "--output-format=json"], plan_wt)
                   (distrib / "plan-dist-manifest.json").write_text(create_out, encoding="utf-8")
                   e2e_inc = json.loads(create_out)["ci"]["github"]["artifacts_matrix"]["include"]
                   for row in e2e_inc:
                       slug = "-".join(row["targets"])
                       dargs = ["--artifacts=lies" if a == "--artifacts=local" else a for a in row["dist_args"].split()]
-                      loc_out = run_dist(["dist", "build", tag_arg, "--output-format=json", *dargs], e2e_wt)
+                      loc_out = run_dist(["dist", "build", tag_arg, "--output-format=json", *dargs], build_wt)
                       (distrib / f"{slug}-dist-manifest.json").write_text(loc_out, encoding="utf-8")
-                  glob_out = run_dist(["dist", "build", tag_arg, "--output-format=json", "--artifacts=global"], e2e_wt)
+                  glob_out = run_dist(["dist", "build", tag_arg, "--output-format=json", "--artifacts=global"], build_wt)
                   (distrib / "global-dist-manifest.json").write_text(glob_out, encoding="utf-8")
-                  host_out = run_dist(["dist", "host", tag_arg, "--steps=upload", "--steps=release", "--output-format=json"], e2e_wt)
+                  host_out = run_dist(["dist", "host", tag_arg, "--steps=upload", "--steps=release", "--output-format=json"], build_wt)
                   host_data = json.loads(host_out)
                   if not host_data.get("announcement_title") or not (distrib / "sha256.sum").is_file():
                       print("ERROR: cargo-dist 4-stage E2E staging check failed to emit release outputs!", file=sys.stderr)
                       sys.exit(1)
-                  print(f"[Release Guard] 4-stage cargo-dist (--artifacts=lies) E2E staging check PASSED for {tag_arg}")
+                  print(f"[Release Guard] 4-stage cross-revision cargo-dist (--artifacts=lies) E2E check PASSED for {tag_arg}")
           PY
           cat plan-dist-manifest.json
           echo "manifest=$(jq -c "." plan-dist-manifest.json)" >> "$GITHUB_OUTPUT"
@@ -319,10 +334,134 @@ jobs:
           # Actually do builds and make zips and whatnot
           dist build ${{ needs.plan.outputs.tag-flag }} --print=linkage --output-format=json ${{ matrix.dist_args }} > dist-manifest.json
           echo "dist ran successfully"
-      - name: Attest
+      - name: Generate SLSA Provenance Predicate
+        shell: bash
+        env:
+          EXPECTED_REF: ${{ needs.plan.outputs.checkout-ref }}
+          EXPECTED_COMMIT: ${{ needs.plan.outputs.release-commit }}
+          PREDICATE_OUT: "${{ runner.temp }}/slsa-predicate.json"
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64, json, os, pathlib, sys, urllib.request
+          req_url = os.environ.get("ACTIONS_ID_TOKEN_REQUEST_URL", "")
+          req_tok = os.environ.get("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "")
+          if not req_url or not req_tok:
+              print("ERROR: Missing ACTIONS_ID_TOKEN_REQUEST_URL or ACTIONS_ID_TOKEN_REQUEST_TOKEN!", file=sys.stderr)
+              sys.exit(1)
+          sep = "&" if "?" in req_url else "?"
+          req = urllib.request.Request(
+              f"{req_url}{sep}audience=nobody",
+              headers={
+                  "Authorization": f"Bearer {req_tok}",
+                  "Accept": "application/json",
+                  "User-Agent": "actions/oidc-client",
+              },
+          )
+          with urllib.request.urlopen(req, timeout=30) as resp:
+              jwt_val = (json.loads(resp.read().decode("utf-8")) or {}).get("value", "")
+          parts = jwt_val.split(".")
+          if len(parts) != 3:
+              print("ERROR: Invalid OIDC JWT returned by Actions token endpoint!", file=sys.stderr)
+              sys.exit(1)
+          payload_b64 = parts[1] + "=" * (-len(parts[1]) % 4)
+          claims = json.loads(base64.urlsafe_b64decode(payload_b64).decode("utf-8"))
+          server_url = os.environ.get("GITHUB_SERVER_URL", "https://github.com").rstrip("/")
+          repo = str(claims["repository"])
+          wf_ref = str(claims["workflow_ref"])
+          prefix = f"{repo}/"
+          wf_path = wf_ref[len(prefix):].split("@", 1)[0] if wf_ref.startswith(prefix) else wf_ref.split("@", 1)[0]
+          expected_ref = os.environ.get("EXPECTED_REF", "")
+          expected_commit = os.environ.get("EXPECTED_COMMIT", "")
+          if expected_ref and expected_commit and (str(claims["ref"]) != expected_ref or str(claims["sha"]) != expected_commit):
+              resolved_deps = [
+                  {
+                      "name": "release-source",
+                      "uri": f"git+{server_url}/{repo}@{expected_ref}",
+                      "digest": {"gitCommit": expected_commit},
+                  },
+                  {
+                      "name": "workflow",
+                      "uri": f"git+{server_url}/{repo}@{claims['ref']}",
+                      "digest": {"gitCommit": str(claims["sha"])},
+                  },
+              ]
+          else:
+              resolved_deps = [
+                  {
+                      "uri": f"git+{server_url}/{repo}@{claims['ref']}",
+                      "digest": {"gitCommit": str(claims["sha"])},
+                  }
+              ]
+          predicate = {
+              "buildDefinition": {
+                  "buildType": "https://actions.github.io/buildtypes/workflow/v1",
+                  "externalParameters": {
+                      "workflow": {
+                          "ref": str(claims["ref"]),
+                          "repository": f"{server_url}/{repo}",
+                          "path": wf_path,
+                      }
+                  },
+                  "internalParameters": {
+                      "github": {
+                          "event_name": str(claims["event_name"]),
+                          "repository_id": str(claims["repository_id"]),
+                          "repository_owner_id": str(claims["repository_owner_id"]),
+                          "runner_environment": str(claims["runner_environment"]),
+                      }
+                  },
+                  "resolvedDependencies": resolved_deps,
+              },
+              "runDetails": {
+                  "builder": {
+                      "id": f"{server_url}/{claims['job_workflow_ref']}",
+                  },
+                  "metadata": {
+                      "invocationId": f"{server_url}/{repo}/actions/runs/{claims['run_id']}/attempts/{claims['run_attempt']}",
+                  },
+              },
+          }
+          pathlib.Path(os.environ["PREDICATE_OUT"]).write_text(json.dumps(predicate), encoding="utf-8")
+          PY
+      - id: attest
+        name: Attest
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
         with:
           subject-path: "target/distrib/*${{ join(matrix.targets, ', ') }}*"
+          predicate-type: "https://slsa.dev/provenance/v1"
+          predicate-path: "${{ runner.temp }}/slsa-predicate.json"
+      - name: Verify Signed Attestation Bundle
+        if: ${{ needs.plan.outputs.publishing == 'true' }}
+        shell: bash
+        env:
+          BUNDLE_PATH: ${{ steps.attest.outputs.bundle-path }}
+          EXPECTED_REF: ${{ needs.plan.outputs.checkout-ref }}
+          EXPECTED_COMMIT: ${{ needs.plan.outputs.release-commit }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64, json, os, pathlib, sys
+          bundle_path = pathlib.Path(os.environ["BUNDLE_PATH"])
+          lines = [ln for ln in bundle_path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+          if not lines:
+              print("ERROR: Signed attestation bundle file is empty!", file=sys.stderr)
+              sys.exit(1)
+          server_url = os.environ.get("GITHUB_SERVER_URL", "https://github.com").rstrip("/")
+          expected_uri = f"git+{server_url}/{os.environ['GITHUB_REPOSITORY']}@{os.environ['EXPECTED_REF']}"
+          expected_commit = os.environ["EXPECTED_COMMIT"]
+          for ln in lines:
+              bundle = json.loads(ln)
+              stmt = json.loads(base64.b64decode(bundle["dsseEnvelope"]["payload"]).decode("utf-8"))
+              if stmt.get("predicateType") != "https://slsa.dev/provenance/v1":
+                  print(f"ERROR: Unexpected predicateType: {stmt.get('predicateType')}", file=sys.stderr)
+                  sys.exit(1)
+              deps = ((stmt.get("predicate") or {}).get("buildDefinition") or {}).get("resolvedDependencies") or []
+              if not any(d.get("uri") == expected_uri and (d.get("digest") or {}).get("gitCommit") == expected_commit for d in deps):
+                  print(f"ERROR: Signed attestation missing release-source dependency {expected_uri} @ {expected_commit}: {deps}", file=sys.stderr)
+                  sys.exit(1)
+          print(f"[Attestation Guard] Verified signed SLSA provenance records {expected_uri} @ {expected_commit}")
+          PY
       - id: cargo-dist
         name: Post-build
         # We force bash here just because github makes it really hard to get values up
