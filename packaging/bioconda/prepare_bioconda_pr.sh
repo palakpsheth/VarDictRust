@@ -12,7 +12,7 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 RECIPE_DIR="$SCRIPT_DIR/recipes/vardictrust"
 META_YAML="$RECIPE_DIR/meta.yaml"
 
-VERSION="${1:-1.0.7}"
+VERSION="${1:-1.0.8}"
 if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   echo "ERROR: Invalid VERSION '${VERSION}' (expected strict SemVer X.Y.Z)." >&2
   exit 1

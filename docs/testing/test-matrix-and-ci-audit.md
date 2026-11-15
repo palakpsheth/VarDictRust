@@ -2,7 +2,7 @@
 
 **Authoritative Technical Reference — Seven-Level Test Architecture & Verification Matrix**  
 **Governing Standard:** [rewrites.bio](https://rewrites.bio) Manifesto (§0 Evidence Before Completion, §0b Integrity, §5 Pure Parity on Valid Inputs)  
-**Target Release:** VarDictRust v1.0.7 (`release/v1.0.7`)  
+**Target Release:** VarDictRust v1.0.8 (`release/v1.0.8`)  
 **Certified Release Engine Fingerprint:** `356eb13ba068790c` (Certified Invariant)  
 **Repository:** [https://github.com/palakpsheth/VarDictRust](https://github.com/palakpsheth/VarDictRust)  
 **Author / Maintainer:** [Palak Sheth](https://www.linkedin.com/in/palak-p-sheth/) <palakpsheth@gmail.com>  
@@ -159,7 +159,7 @@ The table below summarizes the complete testing inventory executed across the de
 | **7** | [**Level 7: Release Acceptance Gate (Tier B)**](#level-7) | `harness/acceptance.sh` | 8 items | Release qualification gate | Items 1–8 PASS under fingerprint | $<30\text{ s}$ |
 | **CI** | **Cloud CI: Test & Coverage Matrix** | `.github/workflows/ci.yml` | 9 steps | Git push to `main`, PRs & dispatch | Format/Lint, Build, Unit, Integration, Parity, `>90%` Coverage, 29 Self-Tests, Governance | $\sim 3\text{ m}$ |
 | **CI** | **Cloud CI: Security Audits** | `.github/workflows/security.yml` | 4 stages | Weekly cron, push `main`, PRs | Gitleaks, Deny, Audit, Clippy SARIF PASS | $\sim 1\text{ m}$ |
-| **CI** | **Cloud CI: Packaging & Provenance** | `.github/workflows/release.yml` | Dist/SLSA | Git tag push (`v1.0.7`) & PRs | Release Guard (`--require-head-fingerprint`), Musl PIE, SLSA 3 | $\sim 6\text{ m}$ |
+| **CI** | **Cloud CI: Packaging & Provenance** | `.github/workflows/release.yml` | Dist/SLSA | Git tag push (`v1.0.8`) & PRs | Release Guard (`--require-head-fingerprint`), Musl PIE, SLSA 3 | $\sim 6\text{ m}$ |
 | **CI** | **Cloud CI: Differential Parity** | `.github/workflows/differential.yml` | 6 steps | Git push to `main`, PRs & dispatch | Cached `golden-store`, Micro, 10 Slices, 17 Modes (`--no-record`), 7 Oracle Self-Tests | $\sim 8\text{ m}$ |
 | **CI** | **Cloud CI: Documentation Site** | `.github/workflows/docs.yml` | 3 stages | Git push to `main`, PRs & dispatch | `prepare_docs_site.py`, `mkdocs build --strict`, `test_docs_ui.py` | $<1\text{ m}$ |
 | **CI** | **Cloud CI: Wiki Sync** | `.github/workflows/wiki.yml` | 1 sync job | Git push to `main` (`wiki/**`) & dispatch | `.wiki.git` matches `wiki/` or clean no-op | $<1\text{ m}$ |
@@ -488,7 +488,7 @@ VarDictRust utilizes 6 automated GitHub Actions workflows with strict security h
 - **Biological Truth & Empirical Proofs:** [`docs/validation/omnibus-empirical-validation.md`](../validation/omnibus-empirical-validation.md)
 - **Developer Contributor Guide & Release Runbook:** [`CONTRIBUTING.md`](../../CONTRIBUTING.md)
 - **Main Project Readme & Scoreboard:** [`README.md`](../../README.md)
-- **Pull Request v1.0.7, v1.0.6, v1.0.5, v1.0.4, v1.0.3, v1.0.1 & v1.0.0 Certifications:** [`docs/release/v1.0.7-pr.md`](../release/v1.0.7-pr.md), [`docs/release/v1.0.6-pr.md`](../release/v1.0.6-pr.md), [`docs/release/v1.0.5-pr.md`](../release/v1.0.5-pr.md), [`docs/release/v1.0.4-pr.md`](../release/v1.0.4-pr.md), [`docs/release/v1.0.3-pr.md`](../release/v1.0.3-pr.md), [`docs/release/v1.0.1-pr.md`](../release/v1.0.1-pr.md) & [`docs/release/v1.0.0-pr.md`](../release/v1.0.0-pr.md)
+- **Pull Request v1.0.8, v1.0.7, v1.0.6, v1.0.5, v1.0.4, v1.0.3, v1.0.1 & v1.0.0 Certifications:** [`docs/release/v1.0.8-pr.md`](../release/v1.0.8-pr.md), [`docs/release/v1.0.7-pr.md`](../release/v1.0.7-pr.md), [`docs/release/v1.0.6-pr.md`](../release/v1.0.6-pr.md), [`docs/release/v1.0.5-pr.md`](../release/v1.0.5-pr.md), [`docs/release/v1.0.4-pr.md`](../release/v1.0.4-pr.md), [`docs/release/v1.0.3-pr.md`](../release/v1.0.3-pr.md), [`docs/release/v1.0.1-pr.md`](../release/v1.0.1-pr.md) & [`docs/release/v1.0.0-pr.md`](../release/v1.0.0-pr.md)
 - **Known Upstream Bugs & Divergences:** [`docs/upstream-bugs.md`](../upstream-bugs.md) & [`DIVERGENCES.md`](../../DIVERGENCES.md)
 - **Master Release Roadmap:** [`ROADMAP.md`](../../ROADMAP.md)
 
@@ -496,7 +496,7 @@ VarDictRust utilizes 6 automated GitHub Actions workflows with strict security h
 
 ## 12. Master Reproducibility Runbook & Dataset Provenance Catalog
 
-Future contributors and clinical bioinformaticians can independently reproduce **every empirical claim** made in the VarDictRust v1.0.7 release using the structured runbook below.
+Future contributors and clinical bioinformaticians can independently reproduce **every empirical claim** made in the VarDictRust v1.0.8 release using the structured runbook below.
 
 ### 12.1 Biological Asset Provenance Catalog
 

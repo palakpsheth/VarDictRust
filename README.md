@@ -105,7 +105,7 @@ Requires a Rust stable toolchain (`rustc >= 1.91.0`):
 cargo install vardictrust
 
 # Or build the latest tagged release from source
-cargo install --git https://github.com/palakpsheth/VarDictRust.git --tag v1.0.7
+cargo install --git https://github.com/palakpsheth/VarDictRust.git --tag v1.0.8
 ```
 
 ### 3. Containerized Execution (Docker, Podman, Apptainer via Seqera Wave)
@@ -542,7 +542,7 @@ If you use VarDictRust in published research, cite both Lai et al. (2016) and th
   author    = {Sheth, Palak},
   title     = {{VarDictRust: Memory-Safe, High-Performance Variant Calling for NGS}},
   year      = {2026},
-  version   = {1.0.7},
+  version   = {1.0.8},
   url       = {https://github.com/palakpsheth/VarDictRust}
 }
 ```
