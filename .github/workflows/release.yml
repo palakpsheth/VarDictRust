@@ -337,6 +337,7 @@ jobs:
       - name: Generate SLSA Provenance Predicate
         shell: bash
         env:
+          EXPECTED_TAG: ${{ needs.plan.outputs.tag }}
           EXPECTED_REF: ${{ needs.plan.outputs.checkout-ref }}
           EXPECTED_COMMIT: ${{ needs.plan.outputs.release-commit }}
           PREDICATE_OUT: "${{ runner.temp }}/slsa-predicate.json"
@@ -369,40 +370,38 @@ jobs:
           server_url = os.environ.get("GITHUB_SERVER_URL", "https://github.com").rstrip("/")
           repo = str(claims["repository"])
           wf_ref = str(claims["workflow_ref"])
-          prefix = f"{repo}/"
-          wf_path = wf_ref[len(prefix):].split("@", 1)[0] if wf_ref.startswith(prefix) else wf_ref.split("@", 1)[0]
+          wf_path = wf_ref.removesuffix(f"@{claims['ref']}").removeprefix(f"{repo}/")
+          ext_params = {
+              "workflow": {
+                  "ref": str(claims["ref"]),
+                  "repository": f"{server_url}/{repo}",
+                  "path": wf_path,
+              }
+          }
+          expected_tag = os.environ.get("EXPECTED_TAG", "")
+          if str(claims["event_name"]) == "workflow_dispatch" and expected_tag:
+              ext_params["inputs"] = {"tag": expected_tag}
           expected_ref = os.environ.get("EXPECTED_REF", "")
           expected_commit = os.environ.get("EXPECTED_COMMIT", "")
+          # GitHub's POST /repos/{owner}/{repo}/attestations validator enforces that
+          # resolvedDependencies[0] matches externalParameters.workflow (Fulcio cert ref/sha).
+          resolved_deps = [
+              {
+                  "uri": f"git+{server_url}/{repo}@{claims['ref']}",
+                  "digest": {"gitCommit": str(claims["sha"])},
+              }
+          ]
           if expected_ref and expected_commit and (str(claims["ref"]) != expected_ref or str(claims["sha"]) != expected_commit):
-              resolved_deps = [
+              resolved_deps.append(
                   {
-                      "name": "release-source",
                       "uri": f"git+{server_url}/{repo}@{expected_ref}",
                       "digest": {"gitCommit": expected_commit},
-                  },
-                  {
-                      "name": "workflow",
-                      "uri": f"git+{server_url}/{repo}@{claims['ref']}",
-                      "digest": {"gitCommit": str(claims["sha"])},
-                  },
-              ]
-          else:
-              resolved_deps = [
-                  {
-                      "uri": f"git+{server_url}/{repo}@{claims['ref']}",
-                      "digest": {"gitCommit": str(claims["sha"])},
                   }
-              ]
+              )
           predicate = {
               "buildDefinition": {
                   "buildType": "https://actions.github.io/buildtypes/workflow/v1",
-                  "externalParameters": {
-                      "workflow": {
-                          "ref": str(claims["ref"]),
-                          "repository": f"{server_url}/{repo}",
-                          "path": wf_path,
-                      }
-                  },
+                  "externalParameters": ext_params,
                   "internalParameters": {
                       "github": {
                           "event_name": str(claims["event_name"]),
@@ -448,7 +447,10 @@ jobs:
               print("ERROR: Signed attestation bundle file is empty!", file=sys.stderr)
               sys.exit(1)
           server_url = os.environ.get("GITHUB_SERVER_URL", "https://github.com").rstrip("/")
-          expected_uri = f"git+{server_url}/{os.environ['GITHUB_REPOSITORY']}@{os.environ['EXPECTED_REF']}"
+          repo = os.environ["GITHUB_REPOSITORY"]
+          workflow_uri = f"git+{server_url}/{repo}@{os.environ['GITHUB_REF']}"
+          workflow_sha = os.environ["GITHUB_SHA"]
+          expected_uri = f"git+{server_url}/{repo}@{os.environ['EXPECTED_REF']}"
           expected_commit = os.environ["EXPECTED_COMMIT"]
           for ln in lines:
               bundle = json.loads(ln)
@@ -457,6 +459,9 @@ jobs:
                   print(f"ERROR: Unexpected predicateType: {stmt.get('predicateType')}", file=sys.stderr)
                   sys.exit(1)
               deps = ((stmt.get("predicate") or {}).get("buildDefinition") or {}).get("resolvedDependencies") or []
+              if not deps or deps[0].get("uri") != workflow_uri or (deps[0].get("digest") or {}).get("gitCommit") != workflow_sha:
+                  print(f"ERROR: Signed attestation resolvedDependencies[0] must match workflow {workflow_uri} @ {workflow_sha}: {deps}", file=sys.stderr)
+                  sys.exit(1)
               if not any(d.get("uri") == expected_uri and (d.get("digest") or {}).get("gitCommit") == expected_commit for d in deps):
                   print(f"ERROR: Signed attestation missing release-source dependency {expected_uri} @ {expected_commit}: {deps}", file=sys.stderr)
                   sys.exit(1)

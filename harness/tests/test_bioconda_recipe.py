@@ -1114,6 +1114,9 @@ class TestRepoAgentSkills(unittest.TestCase):
                         "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "test-req-tok",
                         "GITHUB_SERVER_URL": "https://github.com",
                         "GITHUB_REPOSITORY": "palakpsheth/VarDictRust",
+                        "GITHUB_REF": "refs/heads/main",
+                        "GITHUB_SHA": wf_sha,
+                        "EXPECTED_TAG": "v1.0.8",
                         "EXPECTED_REF": "refs/tags/v1.0.8",
                         "EXPECTED_COMMIT": tag_sha,
                         "PREDICATE_OUT": str(pred_file),
@@ -1130,33 +1133,38 @@ class TestRepoAgentSkills(unittest.TestCase):
                 self.assertEqual(res_gen.returncode, 0, f"Generator failed:\n{res_gen.stderr}")
                 pred = json.loads(pred_file.read_text(encoding="utf-8"))
                 self.assertEqual(
-                    pred["buildDefinition"]["externalParameters"]["workflow"],
+                    pred["buildDefinition"]["externalParameters"],
                     {
-                        "ref": "refs/heads/main",
-                        "repository": "https://github.com/palakpsheth/VarDictRust",
-                        "path": ".github/workflows/release.yml",
+                        "workflow": {
+                            "ref": "refs/heads/main",
+                            "repository": "https://github.com/palakpsheth/VarDictRust",
+                            "path": ".github/workflows/release.yml",
+                        },
+                        "inputs": {
+                            "tag": "v1.0.8",
+                        },
                     },
                 )
                 deps = pred["buildDefinition"]["resolvedDependencies"]
                 self.assertEqual(len(deps), 2)
+                # GitHub's POST /repos/{owner}/{repo}/attestations validator enforces that
+                # resolvedDependencies[0] matches externalParameters.workflow (Fulcio cert ref/sha).
                 self.assertEqual(
                     deps[0],
                     {
-                        "name": "release-source",
-                        "uri": "git+https://github.com/palakpsheth/VarDictRust@refs/tags/v1.0.8",
-                        "digest": {"gitCommit": tag_sha},
+                        "uri": "git+https://github.com/palakpsheth/VarDictRust@refs/heads/main",
+                        "digest": {"gitCommit": wf_sha},
                     },
                 )
                 self.assertEqual(
                     deps[1],
                     {
-                        "name": "workflow",
-                        "uri": "git+https://github.com/palakpsheth/VarDictRust@refs/heads/main",
-                        "digest": {"gitCommit": wf_sha},
+                        "uri": "git+https://github.com/palakpsheth/VarDictRust@refs/tags/v1.0.8",
+                        "digest": {"gitCommit": tag_sha},
                     },
                 )
 
-                # Verify bundle verifier passes on valid signed statement and rejects wrong commit
+                # Verify bundle verifier passes on valid signed statement and rejects wrong commit or swapped order
                 stmt = {
                     "_type": "https://in-toto.io/Statement/v1",
                     "predicateType": "https://slsa.dev/provenance/v1",
@@ -1194,6 +1202,34 @@ class TestRepoAgentSkills(unittest.TestCase):
                 )
                 self.assertNotEqual(res_bad.returncode, 0, "Verifier must reject mismatched release-commit")
 
+                swapped_pred = json.loads(json.dumps(pred))
+                swapped_pred["buildDefinition"]["resolvedDependencies"] = list(reversed(deps))
+                swapped_stmt = dict(stmt, predicate=swapped_pred)
+                bundle_file.write_text(
+                    json.dumps(
+                        {
+                            "dsseEnvelope": {
+                                "payloadType": "application/vnd.in-toto+json",
+                                "payload": base64.b64encode(json.dumps(swapped_stmt).encode("utf-8")).decode("ascii"),
+                            }
+                        }
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+                res_swapped = subprocess.run(
+                    [sys.executable, "-c", ver_code],
+                    env=base_env,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertNotEqual(
+                    res_swapped.returncode,
+                    0,
+                    "Verifier must reject resolvedDependencies[0] != workflow ref/sha",
+                )
+
                 # Case 2: direct tag push (claims.ref == EXPECTED_REF and claims.sha == EXPECTED_COMMIT)
                 active_claims.update(
                     {
@@ -1204,15 +1240,17 @@ class TestRepoAgentSkills(unittest.TestCase):
                         "workflow_ref": "palakpsheth/VarDictRust/.github/workflows/release.yml@refs/tags/v1.0.8",
                     }
                 )
+                push_env = dict(base_env, GITHUB_REF="refs/tags/v1.0.8", GITHUB_SHA=tag_sha)
                 res_push = subprocess.run(
                     [sys.executable, "-c", gen_code],
-                    env=base_env,
+                    env=push_env,
                     capture_output=True,
                     text=True,
                     check=False,
                 )
                 self.assertEqual(res_push.returncode, 0, f"Push generator failed:\n{res_push.stderr}")
                 pred_push = json.loads(pred_file.read_text(encoding="utf-8"))
+                self.assertNotIn("inputs", pred_push["buildDefinition"]["externalParameters"])
                 self.assertEqual(
                     pred_push["buildDefinition"]["resolvedDependencies"],
                     [
