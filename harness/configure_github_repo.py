@@ -5,6 +5,7 @@ Configures repository metadata, security features, and branch protection on `mai
 via GitHub REST API v3 using GITHUB_TOKEN.
 """
 
+import argparse
 import json
 import os
 import sys
@@ -152,7 +153,7 @@ def configure_branch_protection(dry_run=False):
 
 def configure_tag_ruleset(dry_run=False):
     RULESET_ID = 24867690
-    print(f"[6/6] Configuring tag protection ruleset on `~refs/tags/v*` (ruleset {RULESET_ID})...")
+    print(f"[6/6] Configuring tag protection ruleset on `refs/tags/v*` (ruleset {RULESET_ID})...")
     base_rules = [
         {"type": "deletion"},
         {"type": "update"},
@@ -164,7 +165,7 @@ def configure_tag_ruleset(dry_run=False):
         "enforcement": "active",
         "conditions": {
             "ref_name": {
-                "include": ["~refs/tags/v*"],
+                "include": ["refs/tags/v*"],
                 "exclude": [],
             }
         },
@@ -180,7 +181,7 @@ def configure_tag_ruleset(dry_run=False):
 
     if dry_run:
         api_request(f"/rulesets/{RULESET_ID}", method="PUT", data=payload_strict, dry_run=True)
-        print(f"  [dry-run] Configured ruleset {RULESET_ID} for ~refs/tags/v* with deletion/update/non_fast_forward and creation lockout check.")
+        print(f"  [dry-run] Configured ruleset {RULESET_ID} for refs/tags/v* with deletion/update/non_fast_forward and creation lockout check.")
         return
 
     # Apply strict ruleset with creation block
@@ -199,7 +200,7 @@ def configure_tag_ruleset(dry_run=False):
             "enforcement": "active",
             "conditions": {
                 "ref_name": {
-                    "include": ["~refs/tags/v*"],
+                    "include": ["refs/tags/v*"],
                     "exclude": [],
                 }
             },
@@ -211,7 +212,23 @@ def configure_tag_ruleset(dry_run=False):
 
 
 def main():
-    dry_run = "--dry-run" in sys.argv
+    parser = argparse.ArgumentParser(
+        description=f"Configure GitHub repository settings, metadata, branch protection, and tag rulesets for {REPO}."
+    )
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Simulate API calls and validation without modifying repository state.",
+    )
+    group.add_argument(
+        "--apply",
+        action="store_true",
+        help="Apply settings to the live GitHub repository (requires GITHUB_TOKEN).",
+    )
+    args = parser.parse_args()
+
+    dry_run = args.dry_run
     mode_str = " (DRY-RUN)" if dry_run else ""
     print(f"=== VarDictRust: GitHub Repository Configuration ({REPO}){mode_str} ===")
     configure_metadata(dry_run=dry_run)

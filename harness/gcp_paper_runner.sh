@@ -2018,14 +2018,17 @@ run_stage_5() {
     BAM_URL='https://giab.s3.amazonaws.com/data/AshkenazimTrio/HG002_NA24385_son/NIST_Illumina_2x250bps/novoalign_bams/HG002.GRCh38.2x250.bam'
     BAM_PATH='$hg_dir/HG002.GRCh38.2x250.bam'
     BAI_PATH='$hg_dir/HG002.GRCh38.2x250.bam.bai'
+    BAI_SHA='723f69de14b8adbbf1a60f23f9af007310011b51b13ee01d18a2a8daf7282f36'
 
-    if [ ! -f \"\$BAI_PATH\" ] || [ \"\$(portable_md5 \"\$BAI_PATH\" 2>/dev/null)\" != 'a3c2b449df6509ca83fbd3fea22b9aee' ]; then
-      setsid gsutil -m -o GSUtil:parallel_process_count=1 -o GSUtil:parallel_thread_count=16 -q cp '${GCS_BAMS}/hg002_full/HG002.GRCh38.2x250.bam.bai' \"\$BAI_PATH\" 2>/dev/null || \
-        curl -sSLf --retry 5 \"\${BAM_URL}.bai\" -o \"\$BAI_PATH\"
+    if [ ! -f \"\$BAI_PATH\" ] || [ \"\$(portable_sha256 \"\$BAI_PATH\" 2>/dev/null)\" != \"\$BAI_SHA\" ]; then
+      setsid gsutil -m -o GSUtil:parallel_process_count=1 -o GSUtil:parallel_thread_count=16 -q cp '${GCS_BAMS}/hg002_full/HG002.GRCh38.2x250.bam.bai' \"\$BAI_PATH\" 2>/dev/null || true
+      if [ ! -f \"\$BAI_PATH\" ] || [ \"\$(portable_sha256 \"\$BAI_PATH\" 2>/dev/null)\" != \"\$BAI_SHA\" ]; then
+        stage_verified_sha256 \"\${BAM_URL}.bai\" \"\$BAI_SHA\" \"\$BAI_PATH\"
+      fi
       setsid gsutil -m -o GSUtil:parallel_process_count=1 -o GSUtil:parallel_thread_count=16 -o GSUtil:parallel_composite_upload_threshold=0 -q cp \"\$BAI_PATH\" '${GCS_BAMS}/hg002_full/HG002.GRCh38.2x250.bam.bai' || true
     fi
-    bai_md5=\"\$(portable_md5 \"\$BAI_PATH\")\"
-    [ \"\$bai_md5\" = 'a3c2b449df6509ca83fbd3fea22b9aee' ] || { echo \"FATAL: \$BAI_PATH MD5 \$bai_md5 != a3c2b449df6509ca83fbd3fea22b9aee\" >&2; exit 1; }
+    bai_sha=\"\$(portable_sha256 \"\$BAI_PATH\")\"
+    [ \"\$bai_sha\" = \"\$BAI_SHA\" ] || { echo \"FATAL: \$BAI_PATH SHA-256 \$bai_sha != \$BAI_SHA\" >&2; exit 1; }
 
     if [ ! -f \"\$BAM_PATH\" ] && setsid gsutil -q stat '${GCS_BAMS}/hg002_full/HG002.GRCh38.2x250.bam' 2>/dev/null; then
       echo '[Stage 5] Restoring 130.77 GB HG002.GRCh38.2x250.bam from GCS...'

@@ -863,6 +863,25 @@ class TestRepoAgentSkills(unittest.TestCase):
         self.assertIn("def configure_tag_ruleset", cfg_text, "configure_github_repo.py must define configure_tag_ruleset()")
         self.assertIn("current_user_can_bypass", cfg_text, "configure_tag_ruleset must check current_user_can_bypass")
         self.assertIn("24867690", cfg_text, "configure_tag_ruleset must target existing ruleset ID 24867690")
+        self.assertIn('"refs/tags/v*"', cfg_text, "configure_tag_ruleset must include 'refs/tags/v*'")
+        self.assertNotIn('"~refs/tags/v*"', cfg_text, "configure_tag_ruleset must not use invalid '~refs/tags/v*'")
+
+        help_run = subprocess.run(
+            [sys.executable, str(cfg_path), "--help"],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(help_run.returncode, 0, f"--help failed: {help_run.stderr}")
+        self.assertIn("--dry-run", help_run.stdout)
+        self.assertIn("--apply", help_run.stdout)
+
+        dry_run = subprocess.run(
+            [sys.executable, str(cfg_path), "--dry-run"],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(dry_run.returncode, 0, f"--dry-run failed: {dry_run.stderr}")
+        self.assertIn("Configured ruleset 24867690 for refs/tags/v*", dry_run.stdout)
 
     def test_github_workflows_valid_yaml_and_pinned_shas(self):
         workflows_dir = ROOT_DIR / ".github" / "workflows"
