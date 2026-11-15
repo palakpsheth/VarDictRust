@@ -43,6 +43,12 @@ on:
   push:
     tags:
       - '**[0-9]+.[0-9]+.[0-9]+*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag on origin/main to build and publish (e.g. v1.0.8)"
+        required: true
+        type: string
 
 jobs:
   # Run 'dist plan' (or host) to determine what tasks we need to do
@@ -50,8 +56,9 @@ jobs:
     runs-on: "ubuntu-22.04"
     outputs:
       val: ${{ steps.plan.outputs.manifest }}
-      tag: ${{ !github.event.pull_request && github.ref_name || '' }}
-      tag-flag: ${{ !github.event.pull_request && format('--tag={0}', github.ref_name) || '' }}
+      tag: ${{ steps.guard.outputs.tag }}
+      tag-flag: ${{ steps.guard.outputs.tag_flag }}
+      release-commit: ${{ steps.guard.outputs.release_commit }}
       publishing: ${{ !github.event.pull_request }}
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -60,13 +67,18 @@ jobs:
         with:
           persist-credentials: false
           submodules: recursive
-      - name: Verify Two-Tier Release Consistency & Certification Guard
+      - id: guard
+        name: Verify Two-Tier Release Consistency & Certification Guard
         shell: bash
         env:
+          EVENT_NAME: ${{ github.event_name }}
+          WORKFLOW_REF: ${{ github.ref }}
           PR_HEAD_REF: ${{ github.head_ref }}
           REF_NAME: ${{ github.ref_name }}
+          DISPATCH_TAG: ${{ inputs.tag }}
           IS_PR: ${{ github.event.pull_request != null }}
         run: |
+          set -euo pipefail
           echo "[$(date '+%H:%M:%S')] [Release Guard] Verifying release consistency and evidence certification..."
           if [ "$IS_PR" = "true" ]; then
             EXTRA_FLAGS=()
@@ -74,22 +86,54 @@ jobs:
               EXTRA_FLAGS+=(--require-head-fingerprint)
             fi
             python3 .agents/skills/vardictrust-release/scripts/check_release_consistency.py --phase pre-tag "${EXTRA_FLAGS[@]}"
+            {
+              echo "tag="
+              echo "tag_flag="
+              echo "release_commit="
+            } >> "$GITHUB_OUTPUT"
           else
-            if [ -f "$(git rev-parse --git-dir)/shallow" ]; then
-              git fetch --unshallow origin +refs/heads/main:refs/remotes/origin/main
+            if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+              if [ "$WORKFLOW_REF" != "refs/heads/main" ]; then
+                echo "ERROR: workflow_dispatch release is only permitted from refs/heads/main (got ${WORKFLOW_REF})!" >&2
+                exit 1
+              fi
+              TARGET_TAG="${DISPATCH_TAG}"
             else
-              git fetch origin +refs/heads/main:refs/remotes/origin/main
+              TARGET_TAG="${REF_NAME}"
+            fi
+            if [[ ! "$TARGET_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+              echo "ERROR: Invalid release tag '${TARGET_TAG}' (expected vMAJOR.MINOR.PATCH)!" >&2
+              exit 1
+            fi
+            if [ -f "$(git rev-parse --git-dir)/shallow" ]; then
+              git fetch --unshallow origin +refs/heads/main:refs/remotes/origin/main "+refs/tags/${TARGET_TAG}:refs/tags/${TARGET_TAG}"
+            else
+              git fetch origin +refs/heads/main:refs/remotes/origin/main "+refs/tags/${TARGET_TAG}:refs/tags/${TARGET_TAG}"
             fi
             if ! git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main; then
               echo "ERROR: Tagged commit ${GITHUB_SHA} (${REF_NAME}) is not an ancestor of origin/main!" >&2
               exit 1
             fi
-            python3 .agents/skills/vardictrust-release/scripts/check_release_consistency.py --version "${REF_NAME#v}" --phase pre-tag --require-head-fingerprint
+            TAG_COMMIT="$(git rev-parse --verify "refs/tags/${TARGET_TAG}^{commit}")"
+            if ! git merge-base --is-ancestor "$TAG_COMMIT" refs/remotes/origin/main; then
+              echo "ERROR: Target tag '${TARGET_TAG}' (${TAG_COMMIT}) is not an ancestor of origin/main!" >&2
+              exit 1
+            fi
+            if ! git diff --quiet "$TAG_COMMIT" "$GITHUB_SHA" -- Cargo.toml Cargo.lock crates/ benchmarks/evidence/; then
+              echo "ERROR: Engine manifests, sources, or certified evidence differ between tag '${TARGET_TAG}' (${TAG_COMMIT}) and workflow commit (${GITHUB_SHA})!" >&2
+              exit 1
+            fi
+            python3 .agents/skills/vardictrust-release/scripts/check_release_consistency.py --version "${TARGET_TAG#v}" --phase pre-tag --require-head-fingerprint
             python3 harness/perf_budget.py hg008-tier2 seqc2-exome-tier2 hg002-tier2 amplicon-tier2 hg008-cram-twin
+            {
+              echo "tag=${TARGET_TAG}"
+              echo "tag_flag=--tag=${TARGET_TAG}"
+              echo "release_commit=${TAG_COMMIT}"
+            } >> "$GITHUB_OUTPUT"
           fi
           {
             echo "## VarDictRust Release Certification Guard"
-            echo "- **Ref**: \`${REF_NAME}\` (\`pull_request=${IS_PR}\`)"
+            echo "- **Ref**: \`${REF_NAME}\` (\`event=${EVENT_NAME}\`, \`pull_request=${IS_PR}\`)"
             echo "- **Consistency & Evidence Check**: \`PASS\`"
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Install dist
@@ -108,9 +152,33 @@ jobs:
       # (PRs run on the *source* but secrets are usually on the *target* -- that's *good*
       # but also really annoying to build CI around when it needs secrets to work right.)
       - id: plan
+        shell: bash
+        env:
+          IS_PR: ${{ github.event.pull_request != null }}
+          TAG_FLAG: ${{ steps.guard.outputs.tag_flag }}
         run: |
-          dist ${{ (!github.event.pull_request && format('host --steps=create --tag={0}', github.ref_name)) || 'plan' }} --output-format=json > plan-dist-manifest.json
+          set -euo pipefail
+          if [ "$IS_PR" = "true" ]; then
+            dist plan --output-format=json > plan-dist-manifest.json
+          else
+            dist host --steps=create "$TAG_FLAG" --output-format=json > plan-dist-manifest.json
+          fi
           echo "dist ran successfully"
+          python3 - plan-dist-manifest.json <<'PY'
+          import json, sys
+          with open(sys.argv[1], encoding="utf-8") as fh:
+              data = json.load(fh)
+          retired = {"macos-11", "macos-12", "macos-13", "macos-14", "ubuntu-18.04", "ubuntu-20.04"}
+          include = (((data.get("ci") or {}).get("github") or {}).get("artifacts_matrix") or {}).get("include") or []
+          if not include:
+              print("ERROR: plan-dist-manifest.json produced an empty GitHub artifacts_matrix!", file=sys.stderr)
+              sys.exit(1)
+          bad = [f"{row.get('targets')}: {row.get('runner')}" for row in include if row.get("runner") in retired]
+          if bad:
+              print(f"ERROR: plan-dist-manifest.json uses retired GitHub Actions runner(s): {bad}", file=sys.stderr)
+              sys.exit(1)
+          print("[Release Guard] Verified artifact build runner(s): " + ", ".join(f"{r.get('targets')}->{r.get('runner')}" for r in include))
+          PY
           cat plan-dist-manifest.json
           echo "manifest=$(jq -c "." plan-dist-manifest.json)" >> "$GITHUB_OUTPUT"
       - name: "Upload dist-manifest.json"
@@ -313,7 +381,7 @@ jobs:
           PRERELEASE_FLAG: "${{ fromJson(steps.host.outputs.manifest).announcement_is_prerelease && '--prerelease' || '' }}"
           ANNOUNCEMENT_TITLE: "${{ fromJson(steps.host.outputs.manifest).announcement_title }}"
           ANNOUNCEMENT_BODY: "${{ fromJson(steps.host.outputs.manifest).announcement_github_body }}"
-          RELEASE_COMMIT: "${{ github.sha }}"
+          RELEASE_COMMIT: "${{ needs.plan.outputs.release-commit }}"
           RELEASE_TAG: "${{ needs.plan.outputs.tag }}"
         run: |
           # Write and read notes from a file to avoid quoting breaking things
@@ -326,13 +394,14 @@ jobs:
     needs:
       - plan
       - host
-    if: ${{ always() && needs.host.result == 'success' && needs.plan.outputs.publishing }}
+    if: ${{ always() && needs.host.result == 'success' && needs.plan.outputs.publishing == 'true' }}
     runs-on: "ubuntu-22.04"
     env:
       CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: refs/tags/${{ needs.plan.outputs.tag }}
           persist-credentials: false
           submodules: recursive
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
