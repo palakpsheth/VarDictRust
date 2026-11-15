@@ -1144,7 +1144,7 @@ are consolidated with filing-ready draft issue texts in
 | HashMap non-determinism in tovars | Changed to BTreeMap | `e6c344b` |
 | Missing realign_indels in somatic pipeline | Added for both BAMs | core engine |
 | SV distance guard missing | Added 1Mbp limit in find_match | core engine |
-| Tiled streaming memory bounding | Halo intervals and tile streaming scaling whole 249 Mbp chr1 with bounded memory (historical pre-recalibration Ryzen 8C/8T note: 4.85x speedup / 2.9 GB RSS; current certified 3-run median in `benchmarks/evidence/scale.json`: **3.14x** 8-thread speedup, **1.27 GiB** peak RSS, **1.11x** flat RSS ratio vs 10 Mbp) | `6ee4368`, `a4be62e` |
+| Tiled streaming memory bounding | Halo intervals and tile streaming scaling whole 249 Mbp chr1 with bounded memory (historical pre-recalibration Ryzen 8C/8T note: 4.85x speedup / 2.9 GB RSS; current certified 3-run median in `benchmarks/evidence/scale.json`: **3.35x** 8-thread speedup, **1.22 GiB** peak RSS, **1.27x** flat RSS ratio vs 10 Mbp) | `6ee4368`, `a4be62e` |
 | amplicon_40 table format | Added 40-column amplicon intermediate serialization under --fisher (AmpliconOutputVariant.java:145) | `3076620` |
 | `mark_dup_sv` pe coordinate alignment | Fixed 1bp mate-pair window shift (pe instead of pe + 1) matching StructuralVariantsProcessor.java:1468 | `a2d6c81` |
 | SimpleMode SV splitread filter | Emulate var2vcf_valid.pl:197-205 dropping `<DUP>`/`<INV>` when splitreads < 1 in simple mode | `a2d6c81` |

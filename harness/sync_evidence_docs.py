@@ -578,6 +578,11 @@ def sync_docs(repo_root: pathlib.Path, check: bool = False) -> int:
             text,
             "DIVERGENCES.md",
         )
+        text = re.sub(
+            r"(current certified 3-run median in `benchmarks/evidence/scale\.json`: \*\*)[0-9]+\.[0-9]+x(\*\* 8-thread speedup, \*\*)[0-9]+\.[0-9]+ GiB(\*\* peak RSS, \*\*)[0-9]+\.[0-9]+x(\*\* flat RSS ratio vs 10 Mbp)",
+            rf"\g<1>{s8:.2f}x\g<2>{chr1_rss_gib:.2f} GiB\g<3>{rss_ratio:.2f}x\4",
+            text,
+        )
         if text != orig_text:
             mismatches.append(str(div_path.relative_to(repo_root)))
             staged_writes.append((div_path, text))
@@ -864,6 +869,19 @@ def sync_docs(repo_root: pathlib.Path, check: bool = False) -> int:
         if text != orig_text:
             mismatches.append(str(surface_map.relative_to(repo_root)))
             staged_writes.append((surface_map, text))
+
+    # 7. Update docs/ecosystem-survey.md (if present)
+    eco_path = repo_root / "docs" / "ecosystem-survey.md"
+    if eco_path.is_file():
+        orig_text = eco_path.read_text(encoding="utf-8")
+        text = re.sub(
+            r"(Bounded \(\$O\(1\)\$ halo tiling, `)[0-9]+\.[0-9]+ GiB(` on 249 Mbp `chr1`\))",
+            rf"\g<1>{chr1_rss_gib:.2f} GiB\2",
+            orig_text,
+        )
+        if text != orig_text:
+            mismatches.append(str(eco_path.relative_to(repo_root)))
+            staged_writes.append((eco_path, text))
 
     if pattern_errors:
         for err in pattern_errors:

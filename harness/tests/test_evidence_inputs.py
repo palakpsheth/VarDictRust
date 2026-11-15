@@ -503,8 +503,23 @@ class TestEvidenceInputs(unittest.TestCase):
                 d["cpp_time"] = None
                 p.write_text(json.dumps(d, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
+            hg008_d = json.loads((ev_dst / "hg008-tier2.json").read_text(encoding="utf-8"))
+            hg008_java_wall = str(hg008_d["java_time"]["wall"]).strip()
+            hg008_rust_wall = str(hg008_d["rust_time"]["wall"]).strip()
+
             scale_p = ev_dst / "scale.json"
             scale_d = json.loads(scale_p.read_text(encoding="utf-8"))
+            def _fmt_mmss(sec_val: float) -> str:
+                total_cents = int(round(float(sec_val) * 100))
+                mins, cents = divmod(total_cents, 6000)
+                secs = cents / 100.0
+                if mins >= 60:
+                    hours, mins = divmod(mins, 60)
+                    return f"{hours}:{mins:02d}:{secs:05.2f}"
+                return f"{mins}:{secs:05.2f}"
+
+            scale_th1_mmss = _fmt_mmss(scale_d["extra"]["wall_s"]["1"])
+            scale_th8_mmss = _fmt_mmss(scale_d["extra"]["wall_s"]["8"])
             scale_d["extra"]["cpp_wall_s"] = {"1": None, "2": None, "4": None, "8": None}
             scale_d["extra"]["cpp_maxrss_kb"] = {
                 "1000000": None,
@@ -530,17 +545,29 @@ class TestEvidenceInputs(unittest.TestCase):
             )
 
             readme_null = (tpath / "README.md").read_text(encoding="utf-8")
-            self.assertIn("| **GIAB HG008 Somatic PDAC** | `4` (`-th 4`²) | `1:47.00` | — | **`0:16.84`** |", readme_null)
+            self.assertIn(
+                f"| **GIAB HG008 Somatic PDAC** | `4` (`-th 4`²) | `{hg008_java_wall}` | — | **`{hg008_rust_wall}`** |",
+                readme_null,
+            )
             self.assertIn("and **— less RAM** than unchunked `vardictcpp` (`—`) on whole-chromosome 1.", readme_null)
-            self.assertIn("| `7:15.96` (Rust `-th 1`³; Java `OOM`) | — ([`CPP-5`](docs/upstream-bugs.md#cpp-5)) | **`2:18.92`** |", readme_null)
+            self.assertIn(
+                f"| `{scale_th1_mmss}` (Rust `-th 1`³; Java `OOM`) | — ([`CPP-5`](docs/upstream-bugs.md#cpp-5)) | **`{scale_th8_mmss}`** |",
+                readme_null,
+            )
 
             bench_null = (tpath / "benchmarks" / "README.md").read_text(encoding="utf-8")
-            self.assertIn("| **GIAB HG008 Somatic PDAC** | SomaticMode (`tumor\\|normal`, `-th 4`²) | `1:47.00` | — | **`0:16.84`** |", bench_null)
+            self.assertIn(
+                f"| **GIAB HG008 Somatic PDAC** | SomaticMode (`tumor\\|normal`, `-th 4`²) | `{hg008_java_wall}` | — | **`{hg008_rust_wall}`** |",
+                bench_null,
+            )
             self.assertIn("at `-th 8` BED wall —, full-span (249 Mbp) unchunked `-R` RSS — (per [CPP-5](../docs/upstream-bugs.md#cpp-5)).", bench_null)
 
             omnibus_null = (tpath / "docs" / "validation" / "omnibus-empirical-validation.md").read_text(encoding="utf-8")
             self.assertIn("| advisory — ([CPP-5](../upstream-bugs.md#cpp-5)) |", omnibus_null)
-            self.assertIn("| `7:15.96` (1 core Rust) | — | **`2:18.92` (8 cores)** |", omnibus_null)
+            self.assertIn(
+                f"| `{scale_th1_mmss}` (1 core Rust) | — | **`{scale_th8_mmss}` (8 cores)** |",
+                omnibus_null,
+            )
 
             # Restore original JSON files and verify 100% lossless byte-identical round-trip
             for jf in (ROOT_DIR / "benchmarks" / "evidence").glob("*.json"):
