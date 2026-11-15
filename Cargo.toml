@@ -23,7 +23,7 @@ rayon = "1"
 indexmap = "2"
 rustc-hash = "2.1"
 tikv-jemallocator = "0.7"
-noodles = { version = "0.118", default-features = false, features = ["bam","cram","sam","fasta","vcf","bgzf","csi","tabix","core","bed"] }
+noodles = { version = "0.119", default-features = false, features = ["bam","cram","sam","fasta","vcf","bgzf","csi","tabix","core","bed"] }
 noodles-bgzf = { version = "0.52.0", features = ["libdeflate"] }
 flate2 = { version = "1.1", default-features = false, features = ["zlib-rs"] }
 fishers_exact = "1"
