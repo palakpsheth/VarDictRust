@@ -21,11 +21,11 @@ Reference companion for [`.agents/skills/vardictrust-release/SKILL.md`](../SKILL
 | 9 | `harness/run_self_tests.sh` | `# VarDictRust vX.Y.Z — Harness Self-Test Runner` | Header version banner |
 | 10 | `docs/release/vX.Y.Z-pr.md` | `# Release vX.Y.Z:` | Release certification dossier (`FP`, `PERF_FP`, test counts, 4-channel checklist) |
 | 11 | `README.md` | `--tag vX.Y.Z`, `version = {X.Y.Z}`, `89`-row CLI parameter table, and `657` test breakdown (`460 + 110 + 29 + 2 + 3 + 28 + 25`) | Main repository landing page |
-| 12 | `DIVERGENCES.md` | `Verified Parity Baseline (release/vX.Y.Z`, `##source=VarDict_v1.8.2`, `657 PASS` (`460 PASS` core lib), `3.14x speedup, 1.11x flat RSS`, `356eb13ba068790c` | Empirical divergence & certification summary |
+| 12 | `DIVERGENCES.md` | `Verified Parity Baseline (release/vX.Y.Z`, `##source=VarDict_v1.8.2`, `657 PASS` (`460 PASS` core lib), `3.35x speedup, 1.27x flat RSS`, `bb09a4d1d4de46bf` | Empirical divergence & certification summary |
 | 13 | `CONTRIBUTING.md` | `657` workspace tests (`§5.4`), `aarch64-unknown-linux-musl` (`§9.1`), and `.agents/skills/` runbook links | Contributor & release guide |
 | 14 | `benchmarks/README.md` | `Certified in \`vX.Y.Z\`` and link to `docs/release/vX.Y.Z-pr.md` | Benchmark scoreboard header |
-| 15 | `docs/testing/test-matrix-and-ci-audit.md` | `vX.Y.Z`, `657` workspace tests (`460` core lib + `110` `corpus_parity` + `29` `engine_behavior` + `2` `amplicon_stream_mem` + `3` `cram_stack` + `28` bin + `25` CLI integration), `356eb13ba068790c` | Testing matrix & CI audit specification |
-| 16 | `docs/validation/omnibus-empirical-validation.md` | `Release \`vX.Y.Z\`` header, `356eb13ba068790c`, and §13 16-file SHA-256 manifest | Omnibus empirical validation report |
+| 15 | `docs/testing/test-matrix-and-ci-audit.md` | `vX.Y.Z`, `657` workspace tests (`460` core lib + `110` `corpus_parity` + `29` `engine_behavior` + `2` `amplicon_stream_mem` + `3` `cram_stack` + `28` bin + `25` CLI integration), `bb09a4d1d4de46bf` | Testing matrix & CI audit specification |
+| 16 | `docs/validation/omnibus-empirical-validation.md` | `Release \`vX.Y.Z\`` header, `bb09a4d1d4de46bf`, and §13 16-file SHA-256 manifest | Omnibus empirical validation report |
 | 17 | `mkdocs.yml`, `wiki/Home.md`, & `wiki/_Sidebar.md` | `Release vX.Y.Z Certification: docs/release/vX.Y.Z-pr.md`, `vX.Y.Z` links, and `657` workspace tests | ReadTheDocs navigation & GitHub Wiki |
 
 ### Additional Pre-Tag Consistency Guards (`check_release_consistency.py` Checks `#18`–`#20`)

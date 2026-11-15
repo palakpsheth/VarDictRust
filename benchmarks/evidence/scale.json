@@ -10,7 +10,7 @@
   ],
   "compare_head": [],
   "cpp_time": null,
-  "date": "2026-11-01T22:03:40-08:00",
+  "date": "2026-11-14T19:48:09-08:00",
   "extra": {
     "P": 4,
     "bar": 2.4,
@@ -31,30 +31,30 @@
     },
     "cpus": "0-7",
     "governor": "powersave",
-    "loadavg_end": "7.19 6.82 4.96",
-    "loadavg_start": "0.78 3.15 6.06",
+    "loadavg_end": "5.79 6.00 5.34",
+    "loadavg_start": "1.34 7.34 15.99",
     "maxrss_kb": {
-      "1000000": 514556,
-      "10000000": 1204220,
-      "100000000": 1198296,
-      "248956422": 1331428
+      "1000000": 452800,
+      "10000000": 1008928,
+      "100000000": 1076764,
+      "248956422": 1279764
     },
     "note": ">8 threads not measured (host policy A3); each rust cell = median of `runs` timed runs; cpp advisory arm = single-sample golden-store baseline (or `runs`-run median when GOLDEN_MODE=off)",
     "pass": true,
-    "perf_fingerprint": "a8972d03c6daa8fa",
+    "perf_fingerprint": "96a2fc98744b17c7",
     "pinned": true,
-    "rss_ratio_chr1_vs_10mb": 1.1056351829399944,
+    "rss_ratio_chr1_vs_10mb": 1.2684393732753974,
     "runs": 3,
-    "speedup_8": 3.138209041174777,
+    "speedup_8": 3.3509920016619925,
     "wall_s": {
-      "1": 435.96,
-      "2": 228.09,
-      "4": 145.47,
-      "8": 138.92
+      "1": 322.6,
+      "2": 165.77,
+      "4": 104.5,
+      "8": 96.27
     }
   },
-  "fingerprint": "356eb13ba068790c",
-  "head": "336c212a3d2b6755e376a7433d5dbe211220dc8d",
+  "fingerprint": "bb09a4d1d4de46bf",
+  "head": "6e3068b10aa2c18590955cdac689c375c295d12a",
   "inputs": [
     {
       "path": "scratch/g4/ref/d1vd1/GRCh38.d1.vd1.fa",
