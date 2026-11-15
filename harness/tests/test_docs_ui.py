@@ -88,14 +88,57 @@ class TestMarkdownStaticHygiene(unittest.TestCase):
                 f"prepare_docs_site.py IGNORED_PREFIXES must exclude {excluded}",
             )
 
+    @staticmethod
+    def _is_valid_mkdocs_v1_pin(reqs_text):
+        m = re.search(r"^mkdocs\s*([><=!~,\d.\s]+?)\s*(?:#.*)?$", reqs_text, re.MULTILINE)
+        if not m:
+            return False
+        clauses = [c.strip() for c in m.group(1).split(",") if c.strip()]
+        if len(clauses) != 2:
+            return False
+        has_lower = False
+        has_upper = False
+        for clause in clauses:
+            low_m = re.fullmatch(r">=\s*1\.(\d+)(?:\.(\d+))?", clause)
+            if low_m:
+                minor = int(low_m.group(1))
+                patch = int(low_m.group(2) or 0)
+                if (1, minor, patch) >= (1, 6, 1):
+                    has_lower = True
+                continue
+            if re.fullmatch(r"<\s*2(?:\.0(?:\.0)?)?", clause):
+                has_upper = True
+        return has_lower and has_upper
+
     def test_mkdocs_pinned_below_v2_with_dependabot_ignore(self):
-        """Verify docs/requirements.txt pins mkdocs<2.0 and dependabot.yml ignores mkdocs >= 2.0.0."""
+        """Verify docs/requirements.txt pins mkdocs>=1.6.1,<2.0 (1.x) and dependabot.yml ignores mkdocs >= 2.0.0."""
         reqs_text = (REPO_ROOT / "docs" / "requirements.txt").read_text(encoding="utf-8")
-        self.assertRegex(
-            reqs_text,
-            re.compile(r"^mkdocs>=1\.6\.1,<2\.0\s*$", re.MULTILINE),
-            "docs/requirements.txt must pin mkdocs>=1.6.1,<2.0 ahead of the Zensical migration",
+        self.assertTrue(
+            self._is_valid_mkdocs_v1_pin(reqs_text),
+            "docs/requirements.txt must pin mkdocs>=1.6.1+ (within 1.x) and <2.0 ahead of the Zensical migration",
         )
+        for compatible in (
+            "mkdocs>=1.6.1,<2.0\n",
+            "mkdocs>=1.6.2,<2.0\n",
+            "mkdocs>=1.7.0,<2.0\n",
+            "mkdocs>=1.7,<2.0.0\n",
+            "mkdocs<2.0,>=1.6.2\n",
+        ):
+            self.assertTrue(
+                self._is_valid_mkdocs_v1_pin(compatible),
+                f"Validator must accept compatible MkDocs 1.x update {compatible.strip()!r}",
+            )
+        for invalid in (
+            "mkdocs>=1.6.0,<2.0\n",
+            "mkdocs>=1.5.9,<2.0\n",
+            "mkdocs>=1.6.1\n",
+            "mkdocs>=1.6.1,<2.1\n",
+            "mkdocs>=2.0.0,<3.0\n",
+        ):
+            self.assertFalse(
+                self._is_valid_mkdocs_v1_pin(invalid),
+                f"Validator must reject out-of-range or unpinned spec {invalid.strip()!r}",
+            )
 
         dependabot_text = (REPO_ROOT / ".github" / "dependabot.yml").read_text(encoding="utf-8")
         pip_m = re.search(
