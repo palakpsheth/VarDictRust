@@ -279,9 +279,9 @@ def check_cli_and_migration_surfaces(repo_root: Path, errors: list[str]) -> None
         errors.append("docs/migration.md: missing var2vcf_valid.pl migration table")
     require_regex(
         repo_root,
-        "mkdocs.yml",
-        r"^\s*-\s*Migration Guide:\s*docs/migration\.md\s*$",
-        "mkdocs.yml nav includes Migration Guide: docs/migration.md",
+        "zensical.toml",
+        r'\{\s*"Migration Guide"\s*=\s*"docs/migration\.md"\s*\}',
+        "zensical.toml nav includes Migration Guide: docs/migration.md",
         errors,
     )
     require_regex(
@@ -743,14 +743,21 @@ def check_pre_tag_surfaces(
         errors,
     )
 
-    # 17. mkdocs.yml, wiki/Home.md, wiki/_Sidebar.md
-    require_regex(
-        repo_root,
-        "mkdocs.yml",
-        rf"Release v{ver_esc} Certification:\s*docs/release/v{ver_esc}-pr\.md",
-        f"mkdocs.yml nav includes Release v{version} Certification",
-        errors,
-    )
+    # 17. zensical.toml, wiki/Home.md, wiki/_Sidebar.md
+    zensical_text = read_text(repo_root, "zensical.toml", errors)
+    if zensical_text:
+        nav_entries = re.findall(r'\{\s*"([^"]+)"\s*=\s*"([^"]+)"\s*\}', zensical_text)
+        if len(nav_entries) < 27:
+            errors.append(
+                f"zensical.toml nav must define at least 27 entries; found {len(nav_entries)}"
+            )
+        require_regex(
+            repo_root,
+            "zensical.toml",
+            rf'\{{\s*"Release v{ver_esc} Certification"\s*=\s*"docs/release/v{ver_esc}-pr\.md"\s*\}}',
+            f"zensical.toml nav includes Release v{version} Certification",
+            errors,
+        )
     require_regex(
         repo_root,
         "wiki/Home.md",

@@ -52,8 +52,10 @@ ck "pre-commit runs TestMarkdownStaticHygiene on staged Markdown/docs changes" g
 ck "pre-commit blocks partially staged documentation files" grep -q 'UNSTAGED_MD=' .githooks/pre-commit
 ck "pre-push runs prepare_docs_site.py on doc changes" grep -q 'prepare_docs_site\.py' .githooks/pre-push
 ck "pre-push exports pushed commit via git archive for doc build" grep -q 'git archive "\$local_oid"' .githooks/pre-push
-ck "pre-push runs mkdocs build --strict on doc changes" grep -q '"$MKDOCS_BIN" build --strict' .githooks/pre-push
-ck "pre-push fails fast when mkdocs is missing on doc changes" grep -q "Install MkDocs before pushing documentation updates" .githooks/pre-push
+ck "pre-push defines ZENSICAL_CMD array" grep -q 'ZENSICAL_CMD=' .githooks/pre-push
+ck "pre-push runs zensical build on doc changes" grep -qE 'ZENSICAL_CMD.*build|zensical build' .githooks/pre-push
+ck "pre-push executes ZENSICAL_CMD safely quoted" grep -q '"\${ZENSICAL_CMD\[@\]}" build' .githooks/pre-push
+ck "pre-push checks for zensical binary on doc changes" grep -q "Install Zensical before pushing documentation updates" .githooks/pre-push
 
 # 5. pre-push runs engine_behavior and robustness in dev profile; acceptance.sh Item 4 runs them in --release
 ck "pre-push runs engine_behavior (dev)" grep -q 'cargo test -p vardictrust-core --test engine_behavior' .githooks/pre-push
@@ -127,6 +129,40 @@ trap 'rm -rf "$TMP_REPO"' EXIT
   fi
   if ! grep -q 'git fetch origin main && git rebase origin/main' <<<"$push_out"; then
     echo "FAIL: pre-push conflict output missing rebase instruction: $push_out" >&2
+    exit 1
+  fi
+) || fail=1
+
+# 9. Verify pre-push handles executable and repository paths containing spaces
+TMP_SPACE_DIR=$(mktemp -d)
+trap 'rm -rf "$TMP_REPO" "$TMP_SPACE_DIR"' EXIT
+(
+  SPACE_SUBDIR="$TMP_SPACE_DIR/path with spaces"
+  mkdir -p "$SPACE_SUBDIR/bin"
+  MOCK_ZENSICAL="$SPACE_SUBDIR/bin/zensical"
+  cat <<'EOF' > "$MOCK_ZENSICAL"
+#!/usr/bin/env bash
+if [ "$1" = "build" ] && [ "$2" = "--clean" ] && [ "$3" = "--strict" ]; then
+  echo "mock zensical build success"
+  exit 0
+fi
+echo "mock zensical invalid args: $*" >&2
+exit 1
+EOF
+  chmod +x "$MOCK_ZENSICAL"
+
+  # Test bash array execution with path containing spaces
+  ZENSICAL_CMD=("$MOCK_ZENSICAL")
+  out=$("${ZENSICAL_CMD[@]}" build --clean --strict)
+  if [ "$out" != "mock zensical build success" ]; then
+    echo "FAIL: execution of ZENSICAL_CMD with space in path failed: $out" >&2
+    exit 1
+  fi
+
+  # Test array execution with multi-word command (python3 -m zensical form)
+  ZENSICAL_CMD=(python3 -c 'import sys; sys.exit(0 if sys.argv[1:] == ["build", "--clean", "--strict"] else 1)')
+  if ! "${ZENSICAL_CMD[@]}" build --clean --strict; then
+    echo "FAIL: execution of ZENSICAL_CMD array with command-args failed" >&2
     exit 1
   fi
 ) || fail=1

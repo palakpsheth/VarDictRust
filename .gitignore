@@ -65,3 +65,5 @@ dhat-*.svg
 # Documentation site staging and build output
 /.docs_staged/
 /site/
+/.cache/
+/.venv_docs/

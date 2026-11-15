@@ -16,7 +16,10 @@ Automated UI and document integrity test suite for VarDictRust documentation.
    - Verifies external link structures.
 """
 
+import functools
+import hashlib
 import html
+import http.server
 import importlib
 import json
 import os
@@ -25,8 +28,10 @@ import re
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 import urllib.parse
+import urllib.request
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
 
@@ -51,7 +56,7 @@ def find_all_markdown_files():
             ".git/", ".superpowers/", ".docs_staged/", "site/",
             "target/", "scratch/", "VarDictJava/", "node_modules/",
             ".venv/", "venv/", ".pytest_cache/", ".worktrees/",
-            "benchmarks/data/"
+            "benchmarks/data/", ".venv_docs/", ".cache/",
         ]):
             continue
         md_files.append(path)
@@ -61,27 +66,61 @@ def find_all_markdown_files():
 class TestMarkdownStaticHygiene(unittest.TestCase):
     """Test static formatting, table alignment, and escaping across all markdown documents."""
 
-    def test_mkdocs_not_in_nav_and_staging_venv_exclusions(self):
-        """Verify mkdocs.yml top-level not_in_nav + omitted_files: warn and .venv staging exclusions."""
-        mkdocs_text = (REPO_ROOT / "mkdocs.yml").read_text(encoding="utf-8")
+    def test_zensical_config_not_in_nav_and_validation(self):
+        """Verify zensical.toml top-level not_in_nav, all 27 nav entries, and link validation."""
+        toml_path = REPO_ROOT / "zensical.toml"
+        self.assertTrue(toml_path.is_file(), "zensical.toml must exist at repository root")
+        zensical_text = toml_path.read_text(encoding="utf-8")
+
+        # 1. Verify not_in_nav multiline string
         self.assertRegex(
-            mkdocs_text,
-            re.compile(r"^not_in_nav:\s*\|", re.MULTILINE),
-            "mkdocs.yml must declare top-level 'not_in_nav: |' for intentional partial/historical docs",
+            zensical_text,
+            re.compile(r'not_in_nav\s*=\s*"""', re.MULTILINE),
+            "zensical.toml must declare 'not_in_nav = \"\"\"' for partial/historical docs",
         )
-        self.assertIn(
-            "- JVM & R Kernel Oracles: fixtures/jvm-oracles/README.md",
-            mkdocs_text,
-            "mkdocs.yml Architecture nav must include fixtures/jvm-oracles/README.md",
+        for expected_excluded in (
+            "benchmarks/gcp-prereg.md",
+            "docs/validation/gcp-study-protocol.md",
+            "docs/validation/scale-recalibration-proposal.md",
+            "docs/validation/provenance/task-*.md",
+            "paper/tables/*.md",
+        ):
+            self.assertIn(
+                expected_excluded,
+                zensical_text,
+                f"zensical.toml not_in_nav must include {expected_excluded}",
+            )
+
+        # 2. Extract and verify all 27 nav entries
+        nav_entries = re.findall(
+            r'\{\s*"([^"]+)"\s*=\s*"([^"]+)"\s*\}',
+            zensical_text,
+        )
+        self.assertGreaterEqual(
+            len(nav_entries), 27,
+            f"zensical.toml must define at least 27 navigation pages; found {len(nav_entries)}: {nav_entries}",
+        )
+        nav_dict = dict(nav_entries)
+        self.assertEqual(nav_dict.get("Overview"), "README.md")
+        self.assertEqual(nav_dict.get("Migration Guide"), "docs/migration.md")
+        self.assertEqual(nav_dict.get("JVM & R Kernel Oracles"), "fixtures/jvm-oracles/README.md")
+        self.assertEqual(nav_dict.get("Release v1.0.8 Certification"), "docs/release/v1.0.8-pr.md")
+
+        # 3. Verify validation settings
+        self.assertRegex(
+            zensical_text,
+            re.compile(r"\[project\.validation\]\s*\n(?:[^\n]*\n)*?invalid_links\s*=\s*true", re.MULTILINE),
+            "zensical.toml must enforce invalid_links = true in [project.validation]",
         )
         self.assertRegex(
-            mkdocs_text,
-            re.compile(r"validation:\s*\n\s+nav:\s*\n\s+omitted_files:\s*warn"),
-            "mkdocs.yml must enforce validation.nav.omitted_files: warn",
+            zensical_text,
+            re.compile(r"\[project\.validation\]\s*\n(?:[^\n]*\n)*?invalid_link_anchors\s*=\s*true", re.MULTILINE),
+            "zensical.toml must enforce invalid_link_anchors = true in [project.validation]",
         )
 
+        # 4. Verify prepare_docs_site.py staging exclusions
         prep_text = (REPO_ROOT / "harness" / "prepare_docs_site.py").read_text(encoding="utf-8")
-        for excluded in ('".venv/"', '"venv/"', '".pytest_cache/"'):
+        for excluded in ('".venv/"', '"venv/"', '".pytest_cache/"', '".cache/"', '".venv_docs/"'):
             self.assertIn(
                 excluded,
                 prep_text,
@@ -89,8 +128,8 @@ class TestMarkdownStaticHygiene(unittest.TestCase):
             )
 
     @staticmethod
-    def _is_valid_mkdocs_v1_pin(reqs_text):
-        m = re.search(r"^mkdocs\s*([><=!~,\d.\s]+?)\s*(?:#.*)?$", reqs_text, re.MULTILINE)
+    def _is_valid_zensical_pin(reqs_text):
+        m = re.search(r"^zensical\s*([><=!~,\d.\s]+?)\s*(?:#.*)?$", reqs_text, re.MULTILINE)
         if not m:
             return False
         clauses = [c.strip() for c in m.group(1).split(",") if c.strip()]
@@ -99,44 +138,46 @@ class TestMarkdownStaticHygiene(unittest.TestCase):
         has_lower = False
         has_upper = False
         for clause in clauses:
-            low_m = re.fullmatch(r">=\s*1\.(\d+)(?:\.(\d+))?", clause)
+            low_m = re.fullmatch(r">=\s*0\.(\d+)(?:\.(\d+))?", clause)
             if low_m:
                 minor = int(low_m.group(1))
                 patch = int(low_m.group(2) or 0)
-                if (1, minor, patch) >= (1, 6, 1):
+                if (0, minor, patch) >= (0, 1, 1):
                     has_lower = True
                 continue
-            if re.fullmatch(r"<\s*2(?:\.0(?:\.0)?)?", clause):
+            if re.fullmatch(r"<\s*0\.2(?:\.0)?", clause):
                 has_upper = True
         return has_lower and has_upper
 
-    def test_mkdocs_pinned_below_v2_with_dependabot_ignore(self):
-        """Verify docs/requirements.txt pins mkdocs>=1.6.1,<2.0 (1.x) and dependabot.yml ignores mkdocs >= 2.0.0."""
+    def test_zensical_requirements_and_dependabot_config(self):
+        """Verify docs/requirements.txt pins zensical>=0.1.1,<0.2.0 and dependabot.yml ignores zensical >= 0.2.0."""
         reqs_text = (REPO_ROOT / "docs" / "requirements.txt").read_text(encoding="utf-8")
         self.assertTrue(
-            self._is_valid_mkdocs_v1_pin(reqs_text),
-            "docs/requirements.txt must pin mkdocs>=1.6.1+ (within 1.x) and <2.0 ahead of the Zensical migration",
+            self._is_valid_zensical_pin(reqs_text),
+            "docs/requirements.txt must pin zensical>=0.1.1,<0.2.0",
         )
+        self.assertNotIn("mkdocs", reqs_text, "docs/requirements.txt must not contain mkdocs")
+        self.assertNotIn("mkdocs-material", reqs_text, "docs/requirements.txt must not contain mkdocs-material")
+        self.assertNotIn("pymdown-extensions", reqs_text, "docs/requirements.txt must not contain pymdown-extensions")
+
         for compatible in (
-            "mkdocs>=1.6.1,<2.0\n",
-            "mkdocs>=1.6.2,<2.0\n",
-            "mkdocs>=1.7.0,<2.0\n",
-            "mkdocs>=1.7,<2.0.0\n",
-            "mkdocs<2.0,>=1.6.2\n",
+            "zensical>=0.1.1,<0.2.0\n",
+            "zensical>=0.1.2,<0.2.0\n",
+            "zensical>=0.1.5,<0.2\n",
+            "zensical<0.2.0,>=0.1.1\n",
         ):
             self.assertTrue(
-                self._is_valid_mkdocs_v1_pin(compatible),
-                f"Validator must accept compatible MkDocs 1.x update {compatible.strip()!r}",
+                self._is_valid_zensical_pin(compatible),
+                f"Validator must accept compatible Zensical update {compatible.strip()!r}",
             )
         for invalid in (
-            "mkdocs>=1.6.0,<2.0\n",
-            "mkdocs>=1.5.9,<2.0\n",
-            "mkdocs>=1.6.1\n",
-            "mkdocs>=1.6.1,<2.1\n",
-            "mkdocs>=2.0.0,<3.0\n",
+            "zensical>=0.1.0,<0.2.0\n",
+            "zensical>=0.1.1\n",
+            "zensical>=0.1.1,<0.3.0\n",
+            "zensical>=0.2.0,<0.3.0\n",
         ):
             self.assertFalse(
-                self._is_valid_mkdocs_v1_pin(invalid),
+                self._is_valid_zensical_pin(invalid),
                 f"Validator must reject out-of-range or unpinned spec {invalid.strip()!r}",
             )
 
@@ -155,14 +196,14 @@ class TestMarkdownStaticHygiene(unittest.TestCase):
         )
         ignore_m = re.search(
             r'^    ignore:\s*\n'
-            r'      - dependency-name:\s*"mkdocs"\s*\n'
-            r'        versions:\s*\[">= 2\.0\.0"\]\s*$',
+            r'      - dependency-name:\s*"zensical"\s*\n'
+            r'        versions:\s*\[">= 0\.2\.0"\]\s*$',
             pip_block,
             re.MULTILINE,
         )
         self.assertIsNotNone(
             ignore_m,
-            '.github/dependabot.yml /docs pip entry must declare 4-space ignore block for mkdocs >= 2.0.0',
+            '.github/dependabot.yml /docs pip entry must declare 4-space ignore block for zensical >= 0.2.0',
         )
         groups_m = re.search(r"^    groups:\s*$", pip_block, re.MULTILINE)
         self.assertIsNotNone(groups_m, ".github/dependabot.yml /docs pip entry missing 4-space groups block")
@@ -171,6 +212,87 @@ class TestMarkdownStaticHygiene(unittest.TestCase):
             groups_m.start(),
             "ignore block in .github/dependabot.yml /docs pip entry must not be nested under groups",
         )
+
+    def test_readthedocs_yaml_zensical_commands(self):
+        """Verify .readthedocs.yaml uses ReadTheDocs v2 build.commands contract for Zensical."""
+        rtd_path = REPO_ROOT / ".readthedocs.yaml"
+        self.assertTrue(rtd_path.is_file(), ".readthedocs.yaml must exist at repository root")
+        rtd_text = rtd_path.read_text(encoding="utf-8")
+
+        # 1. Version 2
+        self.assertRegex(rtd_text, r"(?m)^version:\s*2\b", ".readthedocs.yaml must define version: 2")
+
+        # 2. Uses build.commands contract
+        self.assertIn("commands:", rtd_text, ".readthedocs.yaml must define build.commands")
+
+        # 3. Explicit virtualenv creation at ${READTHEDOCS_VIRTUALENV_PATH:-.venv_rtd}
+        self.assertIn(
+            'python3 -m venv "${READTHEDOCS_VIRTUALENV_PATH:-.venv_rtd}"',
+            rtd_text,
+            ".readthedocs.yaml must create an explicit virtualenv at ${READTHEDOCS_VIRTUALENV_PATH:-.venv_rtd}",
+        )
+        self.assertIn(
+            '-r docs/requirements.txt',
+            rtd_text,
+            ".readthedocs.yaml must install docs/requirements.txt",
+        )
+
+        # 4. prepare_docs_site.py and zensical build --clean --strict
+        self.assertIn(
+            "harness/prepare_docs_site.py",
+            rtd_text,
+            ".readthedocs.yaml must run harness/prepare_docs_site.py",
+        )
+        self.assertIn(
+            'zensical" build --clean --strict',
+            rtd_text,
+            ".readthedocs.yaml must run zensical build --clean --strict",
+        )
+
+        # 5. Copy built site to $READTHEDOCS_OUTPUT/html/
+        self.assertIn(
+            'cp -a site/. "$READTHEDOCS_OUTPUT/html/"',
+            rtd_text,
+            ".readthedocs.yaml must copy site/. to $READTHEDOCS_OUTPUT/html/",
+        )
+
+        # 6. Must NOT contain mutually exclusive mkdocs, sphinx, jobs, or top-level python blocks
+        for forbidden in ("mkdocs:", "sphinx:", "jobs:", "\npython:"):
+            self.assertNotIn(
+                forbidden,
+                rtd_text,
+                f".readthedocs.yaml using build.commands must not contain {forbidden.strip()}",
+            )
+
+        # 7. Check pure stdlib YAML list item quoting syntax
+        for line in rtd_text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith('- "'):
+                after_first = stripped[3:]
+                close_quote_idx = after_first.find('"')
+                if close_quote_idx != -1:
+                    trailing = after_first[close_quote_idx + 1:].strip()
+                    self.assertTrue(
+                        trailing == "" or trailing.startswith("#"),
+                        f"Found unquoted trailing scalar after double-quoted string in .readthedocs.yaml: {line!r}",
+                    )
+
+        # 8. Dynamic PyYAML validation when PyYAML is installed on host
+        try:
+            yaml_mod = importlib.import_module("yaml")
+            parsed = yaml_mod.safe_load(rtd_text)
+            self.assertIsInstance(parsed, dict, ".readthedocs.yaml must parse as a dictionary")
+            self.assertEqual(parsed.get("version"), 2)
+            self.assertIn("build", parsed)
+            self.assertIn("commands", parsed["build"])
+            commands = parsed["build"]["commands"]
+            self.assertIsInstance(commands, list)
+            self.assertEqual(
+                len(commands), 7,
+                f"Expected exactly 7 commands in .readthedocs.yaml build.commands; got {len(commands)}: {commands}",
+            )
+        except ImportError:
+            pass
 
     def test_table_column_balance(self):
         """Verify that every markdown table has consistent column counts across all rows."""
@@ -658,6 +780,85 @@ class TestMarkdownStaticHygiene(unittest.TestCase):
         )
 
 
+class TestZensicalBuiltSiteHtml(unittest.TestCase):
+    """Verify built HTML output in site/ using pure-stdlib html.parser."""
+
+    def setUp(self):
+        self.site_dir = REPO_ROOT / "site"
+        index_html = self.site_dir / "index.html"
+        require_built = os.environ.get("VARDICTRUST_REQUIRE_BUILT_SITE") == "1"
+        if not index_html.is_file():
+            if require_built:
+                self.fail(
+                    "VARDICTRUST_REQUIRE_BUILT_SITE=1 is set, but site/index.html was not found. "
+                    "Run 'python3 harness/prepare_docs_site.py && zensical build --clean --strict' first."
+                )
+            self.skipTest("site/index.html not found; run zensical build to test built HTML.")
+
+    def test_site_html_structure_and_assets(self):
+        """Verify built site contains valid navigation, anchor targets, mathjax, and mermaid."""
+        from html.parser import HTMLParser
+
+        class SiteParser(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.ids = set()
+                self.links = []
+                self.scripts = []
+                self.has_mermaid = False
+
+            def handle_starttag(self, tag, attrs):
+                attr_dict = dict(attrs)
+                if "id" in attr_dict:
+                    self.ids.add(attr_dict["id"])
+                if tag == "a" and "href" in attr_dict:
+                    self.links.append(attr_dict["href"])
+                if tag == "script" and "src" in attr_dict:
+                    self.scripts.append(attr_dict["src"])
+                classes = attr_dict.get("class", "").split()
+                if "mermaid" in classes:
+                    self.has_mermaid = True
+
+        index_file = self.site_dir / "index.html"
+        parser = SiteParser()
+        parser.feed(index_file.read_text(encoding="utf-8"))
+
+        # Verify mathjax script inclusion
+        has_mathjax = any("mathjax" in s.lower() for s in parser.scripts)
+        self.assertTrue(has_mathjax, "site/index.html must include MathJax script reference")
+
+        # Verify navigation links exist
+        self.assertGreater(len(parser.links), 5, "site/index.html must contain navigation links")
+
+        # Check all HTML files in site/
+        html_files = sorted(self.site_dir.rglob("*.html"))
+        self.assertGreaterEqual(len(html_files), 10, "Expected at least 10 built HTML pages in site/")
+
+        broken_anchors = []
+        found_mermaid = False
+        for html_file in html_files:
+            p = SiteParser()
+            try:
+                p.feed(html_file.read_text(encoding="utf-8"))
+            except Exception as e:
+                broken_anchors.append(f"{html_file.relative_to(self.site_dir)}: parse error: {e}")
+                continue
+            if p.has_mermaid:
+                found_mermaid = True
+            for link in p.links:
+                if link.startswith("#") and len(link) > 1:
+                    anchor = urllib.parse.unquote(link[1:])
+                    if anchor not in p.ids:
+                        broken_anchors.append(
+                            f"{html_file.relative_to(self.site_dir)}: anchor '{link}' not found in page IDs"
+                        )
+        self.assertTrue(found_mermaid, "Built site must contain Mermaid diagram blocks across pages")
+        self.assertEqual(
+            broken_anchors, [],
+            "Broken in-page anchors detected across built HTML files:\n" + "\n".join(f"  - {e}" for e in broken_anchors)
+        )
+
+
 class TestPlaywrightBrowserRendering(unittest.TestCase):
     """Render documents with Playwright headless Chromium to verify real browser DOM layout."""
 
@@ -675,10 +876,139 @@ class TestPlaywrightBrowserRendering(unittest.TestCase):
 
     def setUp(self):
         if not self.has_playwright:
+            if os.environ.get("VARDICTRUST_REQUIRE_PLAYWRIGHT") == "1":
+                self.fail("VARDICTRUST_REQUIRE_PLAYWRIGHT=1 is set, but playwright is not installed.")
             self.skipTest("playwright not installed on host; skipping browser rendering test.")
 
+    def _setup_cdn_cache_routes(self, page):
+        """Set up disk-caching route handlers for unpkg.com and jsdelivr.net CDN assets."""
+        cache_dir = REPO_ROOT / ".cache" / "docs_ui_cdn"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+
+        def handle_cdn_route(route):
+            url = route.request.url
+            url_key = hashlib.sha256(url.encode("utf-8")).hexdigest()
+            body_file = cache_dir / f"{url_key}.body"
+            meta_file = cache_dir / f"{url_key}.type"
+            try:
+                if body_file.is_file() and meta_file.is_file():
+                    body = body_file.read_bytes()
+                    content_type = meta_file.read_text(encoding="utf-8")
+                else:
+                    req = urllib.request.Request(
+                        url,
+                        headers={"User-Agent": "Mozilla/5.0 (Playwright Test)"},
+                    )
+                    with urllib.request.urlopen(req, timeout=15) as resp:
+                        body = resp.read()
+                        content_type = resp.headers.get_content_type() or "application/javascript"
+                    body_file.write_bytes(body)
+                    meta_file.write_text(content_type, encoding="utf-8")
+                route.fulfill(status=200, content_type=content_type, body=body)
+            except Exception:
+                route.abort()
+
+        page.route("**/*unpkg.com/**", handle_cdn_route)
+        page.route("**/*jsdelivr.net/**", handle_cdn_route)
+
+    @staticmethod
+    def _fallback_markdown_to_html(markdown_text):
+        """Pure stdlib fallback converting GitHub-Flavored Markdown to HTML when gh is offline/unauthenticated."""
+        lines = markdown_text.splitlines()
+        out = ['<div class="markdown-body">']
+        i = 0
+        n = len(lines)
+
+        def render_inline(text):
+            tokens = re.split(r"(`[^`]+`)", text)
+            res = []
+            for tok in tokens:
+                if tok.startswith("`") and tok.endswith("`") and len(tok) >= 2:
+                    res.append(f"<code>{html.escape(tok[1:-1])}</code>")
+                else:
+                    link_pattern = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+                    last_idx = 0
+                    for m in link_pattern.finditer(tok):
+                        start, end = m.span()
+                        res.append(html.escape(tok[last_idx:start]))
+                        res.append(f'<a href="{html.escape(m.group(2))}">{html.escape(m.group(1))}</a>')
+                        last_idx = end
+                    res.append(html.escape(tok[last_idx:]))
+            return "".join(res)
+
+        def split_pipe_row(line):
+            stripped = line.strip()
+            if stripped.startswith("|"):
+                stripped = stripped[1:]
+            if stripped.endswith("|") and not stripped.endswith(r"\|"):
+                stripped = stripped[:-1]
+            raw_cells = re.split(r"(?<!\\)\|", stripped)
+            return [c.replace(r"\|", "|").strip() for c in raw_cells]
+
+        def is_delimiter_row(cells):
+            if not cells:
+                return False
+            for c in cells:
+                if not c or not re.fullmatch(r":?-+:?", c):
+                    return False
+            return True
+
+        while i < n:
+            line = lines[i]
+            stripped = line.strip()
+
+            if stripped.startswith("```"):
+                code_lines = []
+                i += 1
+                while i < n and not lines[i].strip().startswith("```"):
+                    code_lines.append(lines[i])
+                    i += 1
+                if i < n:
+                    i += 1
+                out.append(f"<pre><code>{html.escape(chr(10).join(code_lines))}</code></pre>")
+                continue
+
+            if not stripped:
+                i += 1
+                continue
+
+            heading_match = re.match(r"^(#{1,6})\s+(.*)$", stripped)
+            if heading_match:
+                level = len(heading_match.group(1))
+                heading_content = re.sub(r"\s+#+$", "", heading_match.group(2).strip())
+                out.append(f"<h{level}>{render_inline(heading_content)}</h{level}>")
+                i += 1
+                continue
+
+            if "|" in line and i + 1 < n and "|" in lines[i + 1]:
+                header_cells = split_pipe_row(line)
+                delim_cells = split_pipe_row(lines[i + 1])
+                if is_delimiter_row(delim_cells):
+                    table_html = ["<table><thead><tr>"]
+                    for h in header_cells:
+                        table_html.append(f"<th>{render_inline(h)}</th>")
+                    table_html.append("</tr></thead><tbody>")
+                    i += 2
+                    while i < n and "|" in lines[i] and lines[i].strip():
+                        body_cells = split_pipe_row(lines[i])
+                        table_html.append("<tr>")
+                        for idx in range(len(header_cells)):
+                            cell_val = body_cells[idx] if idx < len(body_cells) else ""
+                            table_html.append(f"<td>{render_inline(cell_val)}</td>")
+                        table_html.append("</tr>")
+                        i += 1
+                    table_html.append("</tbody></table>")
+                    out.append("".join(table_html))
+                    continue
+
+            out.append(f"<p>{render_inline(line)}</p>")
+            i += 1
+
+        out.append("</div>")
+        return "\n".join(out)
+
     def _render_gfm_html(self, markdown_text):
-        """Render markdown text to GitHub-Flavored HTML using gh api or fallback."""
+        """Render markdown text to GitHub-Flavored HTML using gh api or pure-stdlib fallback."""
         try:
             res = subprocess.run(
                 ["gh", "api", "/markdown", "-f", f"text={markdown_text}", "-f", "mode=gfm"],
@@ -687,11 +1017,98 @@ class TestPlaywrightBrowserRendering(unittest.TestCase):
                 check=True,
                 timeout=10
             )
-            return res.stdout
+            if res.stdout and ("<h1" in res.stdout or "<table" in res.stdout or "<p" in res.stdout):
+                return res.stdout
         except (subprocess.SubprocessError, FileNotFoundError):
-            # Fallback wrapper for offline/isolated execution
-            escaped = html.escape(markdown_text)
-            return f"<pre>{escaped}</pre>"
+            pass
+        return self._fallback_markdown_to_html(markdown_text)
+
+    def test_zensical_built_site_loopback_rendering(self):
+        """Serve built site/ via loopback HTTP server and verify browser DOM across 4 key pages in headless Chromium."""
+        site_dir = REPO_ROOT / "site"
+        index_file = site_dir / "index.html"
+        if not index_file.is_file():
+            if os.environ.get("VARDICTRUST_REQUIRE_BUILT_SITE") == "1":
+                self.fail("VARDICTRUST_REQUIRE_BUILT_SITE=1 is set, but site/index.html was not found.")
+            self.skipTest("site/index.html not found; skipping loopback browser test.")
+
+        class QuietHandler(http.server.SimpleHTTPRequestHandler):
+            def log_message(self, format, *args):
+                pass
+
+        handler = functools.partial(QuietHandler, directory=str(site_dir))
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        port = server.server_address[1]
+        server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+        server_thread.start()
+
+        try:
+            with self.sync_playwright_fn() as p:
+                browser = p.chromium.launch(headless=True)
+                page = browser.new_page()
+
+                # Disk-caching route handler for external CDNs (MathJax, fonts)
+                self._setup_cdn_cache_routes(page)
+
+                # Page 1: Homepage (/)
+                page.goto(f"http://127.0.0.1:{port}/", wait_until="networkidle")
+                title = page.title()
+                self.assertIn("VarDictRust", title, f"Homepage title must mention VarDictRust: {title}")
+                home_nav = page.query_selector_all("nav a, header a")
+                self.assertGreater(len(home_nav), 0, "Homepage must render navigation elements")
+                home_tables = page.query_selector_all("table")
+                self.assertGreaterEqual(len(home_tables), 1, "Homepage must render benchmark table(s)")
+
+                # Page 2: /ROADMAP/
+                page.goto(f"http://127.0.0.1:{port}/ROADMAP/", wait_until="networkidle")
+                roadmap_nav = page.query_selector_all("nav a, header a")
+                self.assertGreater(len(roadmap_nav), 0, "ROADMAP page must render navigation elements")
+                roadmap_tables = page.query_selector_all("table")
+                self.assertGreaterEqual(len(roadmap_tables), 4, "ROADMAP page must render at least 4 tables")
+                # Table 1: v1.1.0 candidates (4 columns, >= 10 rows)
+                self.assertEqual(len(roadmap_tables[0].query_selector_all("th")), 4)
+                self.assertGreaterEqual(len(roadmap_tables[0].query_selector_all("tbody tr")), 10)
+                # Table 2: Landed as Default (4 columns, >= 2 rows)
+                self.assertEqual(len(roadmap_tables[1].query_selector_all("th")), 4)
+                self.assertGreaterEqual(len(roadmap_tables[1].query_selector_all("tbody tr")), 2)
+                # Table 3: Needs a specification first (4 columns, >= 7 rows)
+                self.assertEqual(len(roadmap_tables[2].query_selector_all("th")), 4)
+                self.assertGreaterEqual(len(roadmap_tables[2].query_selector_all("tbody tr")), 7)
+                # Table 4: Open upstream PRs reviewed (3 columns, >= 4 rows)
+                self.assertEqual(len(roadmap_tables[3].query_selector_all("th")), 3)
+                self.assertGreaterEqual(len(roadmap_tables[3].query_selector_all("tbody tr")), 4)
+
+                # Page 3: /paper/manuscript/
+                page.goto(f"http://127.0.0.1:{port}/paper/manuscript/", wait_until="networkidle")
+                page.wait_for_selector("mjx-container", timeout=10000)
+                paper_math = page.query_selector_all("mjx-container")
+                self.assertGreater(len(paper_math), 5, "Manuscript must render >5 MathJax mjx-container equations")
+                paper_math_errors = page.query_selector_all("mjx-merror")
+                self.assertEqual(len(paper_math_errors), 0, "Manuscript must have 0 MathJax mjx-merror syntax errors")
+                paper_tables = page.query_selector_all("table")
+                self.assertGreaterEqual(len(paper_tables), 1, "Manuscript must render >= 1 tables")
+                paper_svgs = page.query_selector_all('img[src$=".svg"]')
+                self.assertGreaterEqual(len(paper_svgs), 1, "Manuscript must render SVG images")
+                for svg_el in paper_svgs:
+                    nw = svg_el.evaluate("el => el.naturalWidth")
+                    self.assertGreater(nw, 0, f"SVG image must have naturalWidth > 0; got {nw} for {svg_el.get_attribute('src')}")
+
+                # Page 4: /docs/validation/omnibus-empirical-validation/
+                page.goto(f"http://127.0.0.1:{port}/docs/validation/omnibus-empirical-validation/", wait_until="networkidle")
+                page.wait_for_selector("mjx-container", timeout=10000)
+                val_math = page.query_selector_all("mjx-container")
+                self.assertGreater(len(val_math), 5, "Omnibus validation must render >5 MathJax mjx-container equations")
+                val_math_errors = page.query_selector_all("mjx-merror")
+                self.assertEqual(len(val_math_errors), 0, "Omnibus validation must have 0 MathJax mjx-merror syntax errors")
+                val_tables = page.query_selector_all("table")
+                self.assertGreaterEqual(len(val_tables), 5, "Omnibus validation must render >= 5 tables")
+                val_mermaids = page.query_selector_all(".mermaid, pre.mermaid")
+                self.assertGreaterEqual(len(val_mermaids), 1, "Omnibus validation must contain Mermaid diagram element(s)")
+
+                browser.close()
+        finally:
+            server.shutdown()
+            server.server_close()
 
     def test_roadmap_browser_rendering(self):
         """Verify ROADMAP.md renders clean tables and links in headless Chromium."""
@@ -722,6 +1139,7 @@ code {{ font-family: monospace; background-color: rgba(175, 184, 193, 0.2); padd
         with self.sync_playwright_fn() as p:
             browser = p.chromium.launch(headless=True)
             page = browser.new_page()
+            self._setup_cdn_cache_routes(page)
             page.set_content(page_content)
 
             # 1. Verify H1 header
@@ -803,6 +1221,7 @@ code {{ font-family: monospace; background-color: rgba(175, 184, 193, 0.2); padd
         with self.sync_playwright_fn() as p:
             browser = p.chromium.launch(headless=True)
             page = browser.new_page()
+            self._setup_cdn_cache_routes(page)
             page.set_content(page_content)
 
             h1_text = page.inner_text("h1")
@@ -849,6 +1268,7 @@ th {{ background-color: #f6f8fa; }}
         with self.sync_playwright_fn() as p:
             browser = p.chromium.launch(headless=True)
             page = browser.new_page()
+            self._setup_cdn_cache_routes(page)
             page.set_content(page_content)
 
             # Wait for KaTeX auto-render to process math

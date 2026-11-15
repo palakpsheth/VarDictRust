@@ -80,7 +80,7 @@ flowchart TD
         CI_Sec[".github/workflows/security.yml (Gitleaks, Deny, Audit)"]
         CI_Rel[".github/workflows/release.yml (cargo-dist, musl, SLSA 3)"]
         CI_Diff[".github/workflows/differential.yml (Oracle, Micro, Slices)"]
-        CI_Docs[".github/workflows/docs.yml (MkDocs Strict Site Build)"]
+        CI_Docs[".github/workflows/docs.yml (Zensical Strict Site Build)"]
         CI_Wiki[".github/workflows/wiki.yml (Wiki Sync)"]
     end
 
@@ -161,7 +161,7 @@ The table below summarizes the complete testing inventory executed across the de
 | **CI** | **Cloud CI: Security Audits** | `.github/workflows/security.yml` | 4 stages | Weekly cron, push `main`, PRs | Gitleaks, Deny, Audit, Clippy SARIF PASS | $\sim 1\text{ m}$ |
 | **CI** | **Cloud CI: Packaging & Provenance** | `.github/workflows/release.yml` | Dist/SLSA | Git tag push (`v1.0.8`) & PRs | Release Guard (`--require-head-fingerprint`), Musl PIE, SLSA 3 | $\sim 6\text{ m}$ |
 | **CI** | **Cloud CI: Differential Parity** | `.github/workflows/differential.yml` | 6 steps | Git push to `main`, PRs & dispatch | Cached `golden-store`, Micro, 10 Slices, 17 Modes (`--no-record`), 7 Oracle Self-Tests | $\sim 8\text{ m}$ |
-| **CI** | **Cloud CI: Documentation Site** | `.github/workflows/docs.yml` | 3 stages | Git push to `main`, PRs & dispatch | `prepare_docs_site.py`, `mkdocs build --strict`, `test_docs_ui.py` | $<1\text{ m}$ |
+| **CI** | **Cloud CI: Documentation Site** | `.github/workflows/docs.yml` | 3 stages | Git push to `main`, PRs & dispatch | `prepare_docs_site.py`, `zensical build --clean --strict`, `test_docs_ui.py` | $<1\text{ m}$ |
 | **CI** | **Cloud CI: Wiki Sync** | `.github/workflows/wiki.yml` | 1 sync job | Git push to `main` (`wiki/**`) & dispatch | `.wiki.git` matches `wiki/` or clean no-op | $<1\text{ m}$ |
 
 ---
@@ -479,7 +479,7 @@ VarDictRust utilizes 6 automated GitHub Actions workflows with strict security h
 
 ### 10.6 Documentation Site Gate (`.github/workflows/docs.yml`)
 - **Triggers:** push to `main` and every PR.
-- **Action:** stages all repository markdown files via `python3 harness/prepare_docs_site.py`, builds the MkDocs Material site under `mkdocs build --strict`, runs `python3 harness/tests/test_docs_ui.py`, and writes a stage summary to `$GITHUB_STEP_SUMMARY`.
+- **Action:** stages all repository markdown files via `python3 harness/prepare_docs_site.py`, builds the Zensical documentation site under `zensical build --clean --strict`, runs `python3 harness/tests/test_docs_ui.py`, and writes a stage summary to `$GITHUB_STEP_SUMMARY`.
 
 ---
 
