@@ -98,6 +98,28 @@ class TestBiocondaRecipe(unittest.TestCase):
                 f"crates/{member}/Cargo.toml must inherit rust-version.workspace = true",
             )
 
+    def test_fuzz_manifest_noodles_version_matches_workspace(self):
+        noodles_re = re.compile(
+            r'^noodles\s*=\s*\{[^\n]*\bversion\s*=\s*"([^"]+)"',
+            re.MULTILINE,
+        )
+        root_cargo = (ROOT_DIR / "Cargo.toml").read_text(encoding="utf-8")
+        fuzz_path = ROOT_DIR / "crates" / "vardictrust-core" / "fuzz" / "Cargo.toml"
+        self.assertTrue(fuzz_path.is_file(), f"Missing fuzz manifest: {fuzz_path}")
+        fuzz_cargo = fuzz_path.read_text(encoding="utf-8")
+        root_m = noodles_re.search(root_cargo)
+        fuzz_m = noodles_re.search(fuzz_cargo)
+        self.assertIsNotNone(root_m, "Root Cargo.toml missing noodles dependency entry")
+        self.assertIsNotNone(
+            fuzz_m,
+            "crates/vardictrust-core/fuzz/Cargo.toml missing noodles dependency entry",
+        )
+        self.assertEqual(
+            root_m.group(1),
+            fuzz_m.group(1),
+            "crates/vardictrust-core/fuzz/Cargo.toml noodles version must match root Cargo.toml",
+        )
+
     def test_cargo_deny_license_allow_list(self):
         deny_path = ROOT_DIR / "deny.toml"
         content = deny_path.read_text(encoding="utf-8")
