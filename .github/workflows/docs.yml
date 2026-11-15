@@ -2,9 +2,7 @@ name: Documentation Site Gate
 on:
   push:
     branches: [main]
-    paths: &doc_paths ["zensical.toml", "docs/**", ".readthedocs.yaml", "paper/**", "benchmarks/**", "community/**", "*.md", "harness/prepare_docs_site.py", "harness/tests/test_docs_ui.py", ".github/workflows/docs.yml"]
   pull_request:
-    paths: *doc_paths
   workflow_dispatch:
 # Concurrency controls
 concurrency:
@@ -37,7 +35,10 @@ jobs:
           cache-dependency-path: "docs/requirements.txt"
 
       - name: Install Documentation Dependencies
-        run: pip install -r docs/requirements.txt
+        run: |
+          pip install -r docs/requirements.txt
+          pip install playwright
+          python3 -m playwright install --with-deps chromium
 
       - name: "[Docs Stage 1/3] Stage Documentation Site"
         run: |
@@ -52,7 +53,7 @@ jobs:
       - name: "[Docs Stage 3/3] Verify Documentation & UI Integrity"
         run: |
           echo "[$(date '+%H:%M:%S')] [Docs Stage 3/3] Running test_docs_ui.py against built site..."
-          VARDICTRUST_REQUIRE_BUILT_SITE=1 python3 harness/tests/test_docs_ui.py
+          VARDICTRUST_REQUIRE_BUILT_SITE=1 VARDICTRUST_REQUIRE_PLAYWRIGHT=1 python3 harness/tests/test_docs_ui.py
           rm -rf .docs_staged site .cache
           git status --porcelain
 

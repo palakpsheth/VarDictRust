@@ -108,27 +108,27 @@ fi
 # 4b. Fast Zensical strict build gate when Markdown or documentation config changes (<4s)
 DOC_CHANGES=$(echo "$ALL_CHANGED_FILES" | grep -E '\.md$|^zensical\.toml$|^mkdocs\.yml$|^\.readthedocs\.yaml$|^docs/|^harness/prepare_docs_site\.py$|^harness/tests/test_docs_ui\.py$' || true)
 if [ -n "$DOC_CHANGES" ] && [ -f "$ROOT_DIR/harness/prepare_docs_site.py" ] && [ "$(git rev-parse --show-toplevel 2>/dev/null || true)" = "$ROOT_DIR" ]; then
-    ZENSICAL_BIN=""
+    ZENSICAL_CMD=()
     if [ -x "${ROOT_DIR}/.venv_docs/bin/zensical" ]; then
-        ZENSICAL_BIN="${ROOT_DIR}/.venv_docs/bin/zensical"
+        ZENSICAL_CMD=("${ROOT_DIR}/.venv_docs/bin/zensical")
     elif [ -x "${ROOT_DIR}/.venv/bin/zensical" ]; then
-        ZENSICAL_BIN="${ROOT_DIR}/.venv/bin/zensical"
+        ZENSICAL_CMD=("${ROOT_DIR}/.venv/bin/zensical")
     elif command -v zensical >/dev/null 2>&1; then
-        ZENSICAL_BIN="zensical"
+        ZENSICAL_CMD=("zensical")
     elif [ -n "${CONDA_PREFIX:-}" ] && [ -x "${CONDA_PREFIX}/bin/zensical" ]; then
-        ZENSICAL_BIN="${CONDA_PREFIX}/bin/zensical"
+        ZENSICAL_CMD=("${CONDA_PREFIX}/bin/zensical")
     elif [ -x "${HOME}/miniconda3/envs/vardict-oracle/bin/zensical" ]; then
-        ZENSICAL_BIN="${HOME}/miniconda3/envs/vardict-oracle/bin/zensical"
+        ZENSICAL_CMD=("${HOME}/miniconda3/envs/vardict-oracle/bin/zensical")
     elif [ -x "${HOME}/miniconda3/bin/zensical" ]; then
-        ZENSICAL_BIN="${HOME}/miniconda3/bin/zensical"
+        ZENSICAL_CMD=("${HOME}/miniconda3/bin/zensical")
     elif [ -x "${HOME}/miniforge3/bin/zensical" ]; then
-        ZENSICAL_BIN="${HOME}/miniforge3/bin/zensical"
+        ZENSICAL_CMD=("${HOME}/miniforge3/bin/zensical")
     elif [ -x "${HOME}/.local/bin/zensical" ]; then
-        ZENSICAL_BIN="${HOME}/.local/bin/zensical"
+        ZENSICAL_CMD=("${HOME}/.local/bin/zensical")
     elif python3 -m zensical --help >/dev/null 2>&1; then
-        ZENSICAL_BIN="python3 -m zensical"
+        ZENSICAL_CMD=(python3 -m zensical)
     fi
-    if [ -z "$ZENSICAL_BIN" ]; then
+    if [ "${#ZENSICAL_CMD[@]}" -eq 0 ]; then
         echo "ERROR: Documentation changes detected in push, but 'zensical' was not found on PATH or in standard conda/user environments." >&2
         echo "Install Zensical before pushing documentation updates: pip install -r docs/requirements.txt" >&2
         exit 1
@@ -149,7 +149,7 @@ if [ -n "$DOC_CHANGES" ] && [ -f "$ROOT_DIR/harness/prepare_docs_site.py" ] && [
                 git archive "$local_oid" | tar -x -C "$TMP_DOCS"
                 cd "$TMP_DOCS"
                 python3 "$TMP_DOCS/harness/prepare_docs_site.py"
-                $ZENSICAL_BIN build --clean --strict
+                "${ZENSICAL_CMD[@]}" build --clean --strict
             )
         elif git cat-file -e "${local_oid}:harness/prepare_docs_site.py" 2>/dev/null && git cat-file -e "${local_oid}:mkdocs.yml" 2>/dev/null; then
             if command -v mkdocs >/dev/null 2>&1; then

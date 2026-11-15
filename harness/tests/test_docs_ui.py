@@ -17,6 +17,7 @@ Automated UI and document integrity test suite for VarDictRust documentation.
 """
 
 import functools
+import hashlib
 import html
 import http.server
 import importlib
@@ -30,6 +31,7 @@ import tempfile
 import threading
 import unittest
 import urllib.parse
+import urllib.request
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
 
@@ -210,6 +212,57 @@ class TestMarkdownStaticHygiene(unittest.TestCase):
             groups_m.start(),
             "ignore block in .github/dependabot.yml /docs pip entry must not be nested under groups",
         )
+
+    def test_readthedocs_yaml_zensical_commands(self):
+        """Verify .readthedocs.yaml uses ReadTheDocs v2 build.commands contract for Zensical."""
+        rtd_path = REPO_ROOT / ".readthedocs.yaml"
+        self.assertTrue(rtd_path.is_file(), ".readthedocs.yaml must exist at repository root")
+        rtd_text = rtd_path.read_text(encoding="utf-8")
+
+        # 1. Version 2
+        self.assertRegex(rtd_text, r"(?m)^version:\s*2\b", ".readthedocs.yaml must define version: 2")
+
+        # 2. Uses build.commands contract
+        self.assertIn("commands:", rtd_text, ".readthedocs.yaml must define build.commands")
+
+        # 3. Explicit virtualenv creation at ${READTHEDOCS_VIRTUALENV_PATH:-.venv_rtd}
+        self.assertIn(
+            'python3 -m venv "${READTHEDOCS_VIRTUALENV_PATH:-.venv_rtd}"',
+            rtd_text,
+            ".readthedocs.yaml must create an explicit virtualenv at ${READTHEDOCS_VIRTUALENV_PATH:-.venv_rtd}",
+        )
+        self.assertIn(
+            '-r docs/requirements.txt',
+            rtd_text,
+            ".readthedocs.yaml must install docs/requirements.txt",
+        )
+
+        # 4. prepare_docs_site.py and zensical build --clean --strict
+        self.assertIn(
+            "harness/prepare_docs_site.py",
+            rtd_text,
+            ".readthedocs.yaml must run harness/prepare_docs_site.py",
+        )
+        self.assertIn(
+            'zensical" build --clean --strict',
+            rtd_text,
+            ".readthedocs.yaml must run zensical build --clean --strict",
+        )
+
+        # 5. Copy built site to $READTHEDOCS_OUTPUT/html/
+        self.assertIn(
+            'cp -a site/. "$READTHEDOCS_OUTPUT/html/"',
+            rtd_text,
+            ".readthedocs.yaml must copy site/. to $READTHEDOCS_OUTPUT/html/",
+        )
+
+        # 6. Must NOT contain mutually exclusive mkdocs, sphinx, jobs, or top-level python blocks
+        for forbidden in ("mkdocs:", "sphinx:", "jobs:", "\npython:"):
+            self.assertNotIn(
+                forbidden,
+                rtd_text,
+                f".readthedocs.yaml using build.commands must not contain {forbidden.strip()}",
+            )
 
     def test_table_column_balance(self):
         """Verify that every markdown table has consistent column counts across all rows."""
@@ -793,6 +846,8 @@ class TestPlaywrightBrowserRendering(unittest.TestCase):
 
     def setUp(self):
         if not self.has_playwright:
+            if os.environ.get("VARDICTRUST_REQUIRE_PLAYWRIGHT") == "1":
+                self.fail("VARDICTRUST_REQUIRE_PLAYWRIGHT=1 is set, but playwright is not installed.")
             self.skipTest("playwright not installed on host; skipping browser rendering test.")
 
     def _render_gfm_html(self, markdown_text):
@@ -812,7 +867,7 @@ class TestPlaywrightBrowserRendering(unittest.TestCase):
             return f"<pre>{escaped}</pre>"
 
     def test_zensical_built_site_loopback_rendering(self):
-        """Serve built site/ via loopback HTTP server and verify browser DOM in headless Chromium."""
+        """Serve built site/ via loopback HTTP server and verify browser DOM across 4 key pages in headless Chromium."""
         site_dir = REPO_ROOT / "site"
         index_file = site_dir / "index.html"
         if not index_file.is_file():
@@ -830,21 +885,95 @@ class TestPlaywrightBrowserRendering(unittest.TestCase):
         server_thread = threading.Thread(target=server.serve_forever, daemon=True)
         server_thread.start()
 
+        cache_dir = REPO_ROOT / ".cache" / "docs_ui_cdn"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+
+        def handle_cdn_route(route):
+            url = route.request.url
+            url_key = hashlib.sha256(url.encode("utf-8")).hexdigest()
+            body_file = cache_dir / f"{url_key}.body"
+            meta_file = cache_dir / f"{url_key}.type"
+            try:
+                if body_file.is_file() and meta_file.is_file():
+                    body = body_file.read_bytes()
+                    content_type = meta_file.read_text(encoding="utf-8")
+                else:
+                    req = urllib.request.Request(
+                        url,
+                        headers={"User-Agent": "Mozilla/5.0 (Playwright Test)"},
+                    )
+                    with urllib.request.urlopen(req, timeout=15) as resp:
+                        body = resp.read()
+                        content_type = resp.headers.get_content_type() or "application/javascript"
+                    body_file.write_bytes(body)
+                    meta_file.write_text(content_type, encoding="utf-8")
+                route.fulfill(status=200, content_type=content_type, body=body)
+            except Exception:
+                route.abort()
+
         try:
             with self.sync_playwright_fn() as p:
                 browser = p.chromium.launch(headless=True)
                 page = browser.new_page()
 
-                # Offline route stubs for external CDNs (deterministic offline execution)
-                page.route("**/*unpkg.com*", lambda route: route.fulfill(status=200, content_type="application/javascript", body="/* mathjax stub */"))
-                page.route("**/*jsdelivr.net*", lambda route: route.fulfill(status=200, content_type="application/javascript", body="/* cdn stub */"))
+                # Disk-caching route handler for external CDNs (MathJax, fonts)
+                page.route("**/*unpkg.com/**", handle_cdn_route)
+                page.route("**/*jsdelivr.net/**", handle_cdn_route)
 
-                page.goto(f"http://127.0.0.1:{port}/", wait_until="domcontentloaded")
+                # Page 1: Homepage (/)
+                page.goto(f"http://127.0.0.1:{port}/", wait_until="networkidle")
                 title = page.title()
-                self.assertIn("VarDictRust", title, f"Page title must mention VarDictRust: {title}")
+                self.assertIn("VarDictRust", title, f"Homepage title must mention VarDictRust: {title}")
+                home_nav = page.query_selector_all("nav a, header a")
+                self.assertGreater(len(home_nav), 0, "Homepage must render navigation elements")
+                home_tables = page.query_selector_all("table")
+                self.assertGreaterEqual(len(home_tables), 1, "Homepage must render benchmark table(s)")
 
-                nav_links = page.query_selector_all("nav a, header a")
-                self.assertGreater(len(nav_links), 0, "Built site page must render navigation elements")
+                # Page 2: /ROADMAP/
+                page.goto(f"http://127.0.0.1:{port}/ROADMAP/", wait_until="networkidle")
+                roadmap_nav = page.query_selector_all("nav a, header a")
+                self.assertGreater(len(roadmap_nav), 0, "ROADMAP page must render navigation elements")
+                roadmap_tables = page.query_selector_all("table")
+                self.assertGreaterEqual(len(roadmap_tables), 4, "ROADMAP page must render at least 4 tables")
+                # Table 1: v1.1.0 candidates (4 columns, >= 10 rows)
+                self.assertEqual(len(roadmap_tables[0].query_selector_all("th")), 4)
+                self.assertGreaterEqual(len(roadmap_tables[0].query_selector_all("tbody tr")), 10)
+                # Table 2: Landed as Default (4 columns, >= 2 rows)
+                self.assertEqual(len(roadmap_tables[1].query_selector_all("th")), 4)
+                self.assertGreaterEqual(len(roadmap_tables[1].query_selector_all("tbody tr")), 2)
+                # Table 3: Needs a specification first (4 columns, >= 7 rows)
+                self.assertEqual(len(roadmap_tables[2].query_selector_all("th")), 4)
+                self.assertGreaterEqual(len(roadmap_tables[2].query_selector_all("tbody tr")), 7)
+                # Table 4: Open upstream PRs reviewed (3 columns, >= 4 rows)
+                self.assertEqual(len(roadmap_tables[3].query_selector_all("th")), 3)
+                self.assertGreaterEqual(len(roadmap_tables[3].query_selector_all("tbody tr")), 4)
+
+                # Page 3: /paper/manuscript/
+                page.goto(f"http://127.0.0.1:{port}/paper/manuscript/", wait_until="networkidle")
+                page.wait_for_selector("mjx-container", timeout=10000)
+                paper_math = page.query_selector_all("mjx-container")
+                self.assertGreater(len(paper_math), 5, "Manuscript must render >5 MathJax mjx-container equations")
+                paper_math_errors = page.query_selector_all("mjx-merror")
+                self.assertEqual(len(paper_math_errors), 0, "Manuscript must have 0 MathJax mjx-merror syntax errors")
+                paper_tables = page.query_selector_all("table")
+                self.assertGreaterEqual(len(paper_tables), 1, "Manuscript must render >= 1 tables")
+                paper_svgs = page.query_selector_all('img[src$=".svg"]')
+                self.assertGreaterEqual(len(paper_svgs), 1, "Manuscript must render SVG images")
+                for svg_el in paper_svgs:
+                    nw = svg_el.evaluate("el => el.naturalWidth")
+                    self.assertGreater(nw, 0, f"SVG image must have naturalWidth > 0; got {nw} for {svg_el.get_attribute('src')}")
+
+                # Page 4: /docs/validation/omnibus-empirical-validation/
+                page.goto(f"http://127.0.0.1:{port}/docs/validation/omnibus-empirical-validation/", wait_until="networkidle")
+                page.wait_for_selector("mjx-container", timeout=10000)
+                val_math = page.query_selector_all("mjx-container")
+                self.assertGreater(len(val_math), 5, "Omnibus validation must render >5 MathJax mjx-container equations")
+                val_math_errors = page.query_selector_all("mjx-merror")
+                self.assertEqual(len(val_math_errors), 0, "Omnibus validation must have 0 MathJax mjx-merror syntax errors")
+                val_tables = page.query_selector_all("table")
+                self.assertGreaterEqual(len(val_tables), 5, "Omnibus validation must render >= 5 tables")
+                val_mermaids = page.query_selector_all(".mermaid, pre.mermaid")
+                self.assertGreaterEqual(len(val_mermaids), 1, "Omnibus validation must contain Mermaid diagram element(s)")
 
                 browser.close()
         finally:

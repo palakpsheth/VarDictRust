@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-harness/prepare_docs_site.py — Stage repository markdown files for MkDocs site build.
+harness/prepare_docs_site.py — Stage repository markdown files for Zensical site build.
 
 Discovers all tracked markdown files in the repository and mirrors their directory
 hierarchy inside `.docs_staged/`. By preserving the relative file paths, all
@@ -10,7 +10,7 @@ Additionally performs link normalization:
 - Rewrites links pointing to non-markdown source/evidence files (.rs, .sh, .py, .json, .yml, LICENSE, etc.)
   to their canonical GitHub blob URLs (preventing 404s on static doc site).
 - Rewrites links pointing to .github/*.md into their staged community/*.md equivalents.
-- Converts raw HTML anchor tags (<a id="..."></a>) into attribute-list elements so MkDocs
+- Converts raw HTML anchor tags (<a id="..."></a>) into attribute-list elements so Zensical
   strict anchor validation can verify them.
 - Uses linear character-based link scanning with zero regex backtracking to guarantee safe parsing.
 """
@@ -250,7 +250,7 @@ def stage_docs():
                 js_file, staged_js_dir / js_file.name, repo_root_resolved
             )
 
-    # 2. Stage .github/ documents into community/ (MkDocs ignores dot-directories by default)
+    # 2. Stage .github/ documents into community/ (Zensical ignores dot-directories by default)
     github_dir = REPO_ROOT / ".github"
     if github_dir.is_symlink():
         raise ValueError(f"Refusing to stage symlinked directory: {github_dir}")
