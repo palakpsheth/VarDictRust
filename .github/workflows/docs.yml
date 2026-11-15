@@ -1,16 +1,18 @@
 name: Documentation Site Gate
+
 on:
   push:
     branches: [main]
   pull_request:
   workflow_dispatch:
-# Concurrency controls
+
 concurrency:
   group: "${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}"
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
-# Permissions
+
 permissions:
   contents: read
+
 jobs:
   build-docs:
     name: MkDocs Strict Build Gate
@@ -51,6 +53,8 @@ jobs:
           zensical build --clean --strict
 
       - name: "[Docs Stage 3/3] Verify Documentation & UI Integrity"
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           echo "[$(date '+%H:%M:%S')] [Docs Stage 3/3] Running test_docs_ui.py against built site..."
           VARDICTRUST_REQUIRE_BUILT_SITE=1 VARDICTRUST_REQUIRE_PLAYWRIGHT=1 python3 harness/tests/test_docs_ui.py

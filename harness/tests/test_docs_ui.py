@@ -264,6 +264,36 @@ class TestMarkdownStaticHygiene(unittest.TestCase):
                 f".readthedocs.yaml using build.commands must not contain {forbidden.strip()}",
             )
 
+        # 7. Check pure stdlib YAML list item quoting syntax
+        for line in rtd_text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith('- "'):
+                after_first = stripped[3:]
+                close_quote_idx = after_first.find('"')
+                if close_quote_idx != -1:
+                    trailing = after_first[close_quote_idx + 1:].strip()
+                    self.assertTrue(
+                        trailing == "" or trailing.startswith("#"),
+                        f"Found unquoted trailing scalar after double-quoted string in .readthedocs.yaml: {line!r}",
+                    )
+
+        # 8. Dynamic PyYAML validation when PyYAML is installed on host
+        try:
+            yaml_mod = importlib.import_module("yaml")
+            parsed = yaml_mod.safe_load(rtd_text)
+            self.assertIsInstance(parsed, dict, ".readthedocs.yaml must parse as a dictionary")
+            self.assertEqual(parsed.get("version"), 2)
+            self.assertIn("build", parsed)
+            self.assertIn("commands", parsed["build"])
+            commands = parsed["build"]["commands"]
+            self.assertIsInstance(commands, list)
+            self.assertEqual(
+                len(commands), 7,
+                f"Expected exactly 7 commands in .readthedocs.yaml build.commands; got {len(commands)}: {commands}",
+            )
+        except ImportError:
+            pass
+
     def test_table_column_balance(self):
         """Verify that every markdown table has consistent column counts across all rows."""
         md_files = find_all_markdown_files()
@@ -850,41 +880,8 @@ class TestPlaywrightBrowserRendering(unittest.TestCase):
                 self.fail("VARDICTRUST_REQUIRE_PLAYWRIGHT=1 is set, but playwright is not installed.")
             self.skipTest("playwright not installed on host; skipping browser rendering test.")
 
-    def _render_gfm_html(self, markdown_text):
-        """Render markdown text to GitHub-Flavored HTML using gh api or fallback."""
-        try:
-            res = subprocess.run(
-                ["gh", "api", "/markdown", "-f", f"text={markdown_text}", "-f", "mode=gfm"],
-                capture_output=True,
-                text=True,
-                check=True,
-                timeout=10
-            )
-            return res.stdout
-        except (subprocess.SubprocessError, FileNotFoundError):
-            # Fallback wrapper for offline/isolated execution
-            escaped = html.escape(markdown_text)
-            return f"<pre>{escaped}</pre>"
-
-    def test_zensical_built_site_loopback_rendering(self):
-        """Serve built site/ via loopback HTTP server and verify browser DOM across 4 key pages in headless Chromium."""
-        site_dir = REPO_ROOT / "site"
-        index_file = site_dir / "index.html"
-        if not index_file.is_file():
-            if os.environ.get("VARDICTRUST_REQUIRE_BUILT_SITE") == "1":
-                self.fail("VARDICTRUST_REQUIRE_BUILT_SITE=1 is set, but site/index.html was not found.")
-            self.skipTest("site/index.html not found; skipping loopback browser test.")
-
-        class QuietHandler(http.server.SimpleHTTPRequestHandler):
-            def log_message(self, format, *args):
-                pass
-
-        handler = functools.partial(QuietHandler, directory=str(site_dir))
-        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
-        port = server.server_address[1]
-        server_thread = threading.Thread(target=server.serve_forever, daemon=True)
-        server_thread.start()
-
+    def _setup_cdn_cache_routes(self, page):
+        """Set up disk-caching route handlers for unpkg.com and jsdelivr.net CDN assets."""
         cache_dir = REPO_ROOT / ".cache" / "docs_ui_cdn"
         cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -911,14 +908,147 @@ class TestPlaywrightBrowserRendering(unittest.TestCase):
             except Exception:
                 route.abort()
 
+        page.route("**/*unpkg.com/**", handle_cdn_route)
+        page.route("**/*jsdelivr.net/**", handle_cdn_route)
+
+    @staticmethod
+    def _fallback_markdown_to_html(markdown_text):
+        """Pure stdlib fallback converting GitHub-Flavored Markdown to HTML when gh is offline/unauthenticated."""
+        lines = markdown_text.splitlines()
+        out = ['<div class="markdown-body">']
+        i = 0
+        n = len(lines)
+
+        def render_inline(text):
+            tokens = re.split(r"(`[^`]+`)", text)
+            res = []
+            for tok in tokens:
+                if tok.startswith("`") and tok.endswith("`") and len(tok) >= 2:
+                    res.append(f"<code>{html.escape(tok[1:-1])}</code>")
+                else:
+                    link_pattern = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+                    last_idx = 0
+                    for m in link_pattern.finditer(tok):
+                        start, end = m.span()
+                        res.append(html.escape(tok[last_idx:start]))
+                        res.append(f'<a href="{html.escape(m.group(2))}">{html.escape(m.group(1))}</a>')
+                        last_idx = end
+                    res.append(html.escape(tok[last_idx:]))
+            return "".join(res)
+
+        def split_pipe_row(line):
+            stripped = line.strip()
+            if stripped.startswith("|"):
+                stripped = stripped[1:]
+            if stripped.endswith("|") and not stripped.endswith(r"\|"):
+                stripped = stripped[:-1]
+            raw_cells = re.split(r"(?<!\\)\|", stripped)
+            return [c.replace(r"\|", "|").strip() for c in raw_cells]
+
+        def is_delimiter_row(cells):
+            if not cells:
+                return False
+            for c in cells:
+                if not c or not re.fullmatch(r":?-+:?", c):
+                    return False
+            return True
+
+        while i < n:
+            line = lines[i]
+            stripped = line.strip()
+
+            if stripped.startswith("```"):
+                code_lines = []
+                i += 1
+                while i < n and not lines[i].strip().startswith("```"):
+                    code_lines.append(lines[i])
+                    i += 1
+                if i < n:
+                    i += 1
+                out.append(f"<pre><code>{html.escape(chr(10).join(code_lines))}</code></pre>")
+                continue
+
+            if not stripped:
+                i += 1
+                continue
+
+            heading_match = re.match(r"^(#{1,6})\s+(.*)$", stripped)
+            if heading_match:
+                level = len(heading_match.group(1))
+                heading_content = re.sub(r"\s+#+$", "", heading_match.group(2).strip())
+                out.append(f"<h{level}>{render_inline(heading_content)}</h{level}>")
+                i += 1
+                continue
+
+            if "|" in line and i + 1 < n and "|" in lines[i + 1]:
+                header_cells = split_pipe_row(line)
+                delim_cells = split_pipe_row(lines[i + 1])
+                if is_delimiter_row(delim_cells):
+                    table_html = ["<table><thead><tr>"]
+                    for h in header_cells:
+                        table_html.append(f"<th>{render_inline(h)}</th>")
+                    table_html.append("</tr></thead><tbody>")
+                    i += 2
+                    while i < n and "|" in lines[i] and lines[i].strip():
+                        body_cells = split_pipe_row(lines[i])
+                        table_html.append("<tr>")
+                        for idx in range(len(header_cells)):
+                            cell_val = body_cells[idx] if idx < len(body_cells) else ""
+                            table_html.append(f"<td>{render_inline(cell_val)}</td>")
+                        table_html.append("</tr>")
+                        i += 1
+                    table_html.append("</tbody></table>")
+                    out.append("".join(table_html))
+                    continue
+
+            out.append(f"<p>{render_inline(line)}</p>")
+            i += 1
+
+        out.append("</div>")
+        return "\n".join(out)
+
+    def _render_gfm_html(self, markdown_text):
+        """Render markdown text to GitHub-Flavored HTML using gh api or pure-stdlib fallback."""
+        try:
+            res = subprocess.run(
+                ["gh", "api", "/markdown", "-f", f"text={markdown_text}", "-f", "mode=gfm"],
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=10
+            )
+            if res.stdout and ("<h1" in res.stdout or "<table" in res.stdout or "<p" in res.stdout):
+                return res.stdout
+        except (subprocess.SubprocessError, FileNotFoundError):
+            pass
+        return self._fallback_markdown_to_html(markdown_text)
+
+    def test_zensical_built_site_loopback_rendering(self):
+        """Serve built site/ via loopback HTTP server and verify browser DOM across 4 key pages in headless Chromium."""
+        site_dir = REPO_ROOT / "site"
+        index_file = site_dir / "index.html"
+        if not index_file.is_file():
+            if os.environ.get("VARDICTRUST_REQUIRE_BUILT_SITE") == "1":
+                self.fail("VARDICTRUST_REQUIRE_BUILT_SITE=1 is set, but site/index.html was not found.")
+            self.skipTest("site/index.html not found; skipping loopback browser test.")
+
+        class QuietHandler(http.server.SimpleHTTPRequestHandler):
+            def log_message(self, format, *args):
+                pass
+
+        handler = functools.partial(QuietHandler, directory=str(site_dir))
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        port = server.server_address[1]
+        server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+        server_thread.start()
+
         try:
             with self.sync_playwright_fn() as p:
                 browser = p.chromium.launch(headless=True)
                 page = browser.new_page()
 
                 # Disk-caching route handler for external CDNs (MathJax, fonts)
-                page.route("**/*unpkg.com/**", handle_cdn_route)
-                page.route("**/*jsdelivr.net/**", handle_cdn_route)
+                self._setup_cdn_cache_routes(page)
 
                 # Page 1: Homepage (/)
                 page.goto(f"http://127.0.0.1:{port}/", wait_until="networkidle")
@@ -1009,6 +1139,7 @@ code {{ font-family: monospace; background-color: rgba(175, 184, 193, 0.2); padd
         with self.sync_playwright_fn() as p:
             browser = p.chromium.launch(headless=True)
             page = browser.new_page()
+            self._setup_cdn_cache_routes(page)
             page.set_content(page_content)
 
             # 1. Verify H1 header
@@ -1090,6 +1221,7 @@ code {{ font-family: monospace; background-color: rgba(175, 184, 193, 0.2); padd
         with self.sync_playwright_fn() as p:
             browser = p.chromium.launch(headless=True)
             page = browser.new_page()
+            self._setup_cdn_cache_routes(page)
             page.set_content(page_content)
 
             h1_text = page.inner_text("h1")
@@ -1136,6 +1268,7 @@ th {{ background-color: #f6f8fa; }}
         with self.sync_playwright_fn() as p:
             browser = p.chromium.launch(headless=True)
             page = browser.new_page()
+            self._setup_cdn_cache_routes(page)
             page.set_content(page_content)
 
             # Wait for KaTeX auto-render to process math

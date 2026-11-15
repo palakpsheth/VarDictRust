@@ -8,11 +8,11 @@ build:
   tools:
     python: "3.12"
   commands:
-    - python3 -m venv "${READTHEDOCS_VIRTUALENV_PATH:-.venv_rtd}"
-    - "${READTHEDOCS_VIRTUALENV_PATH:-.venv_rtd}/bin/python" -m pip install --upgrade pip
-    - "${READTHEDOCS_VIRTUALENV_PATH:-.venv_rtd}/bin/python" -m pip install -r docs/requirements.txt
-    - "${READTHEDOCS_VIRTUALENV_PATH:-.venv_rtd}/bin/python" harness/prepare_docs_site.py
-    - "${READTHEDOCS_VIRTUALENV_PATH:-.venv_rtd}/bin/zensical" build --clean --strict
-    - mkdir -p "$READTHEDOCS_OUTPUT/html"
-    - cp -a site/. "$READTHEDOCS_OUTPUT/html/"
+    - 'python3 -m venv "${READTHEDOCS_VIRTUALENV_PATH:-.venv_rtd}"'
+    - '"${READTHEDOCS_VIRTUALENV_PATH:-.venv_rtd}/bin/python" -m pip install --upgrade pip'
+    - '"${READTHEDOCS_VIRTUALENV_PATH:-.venv_rtd}/bin/python" -m pip install -r docs/requirements.txt'
+    - '"${READTHEDOCS_VIRTUALENV_PATH:-.venv_rtd}/bin/python" harness/prepare_docs_site.py'
+    - '"${READTHEDOCS_VIRTUALENV_PATH:-.venv_rtd}/bin/zensical" build --clean --strict'
+    - 'mkdir -p "$READTHEDOCS_OUTPUT/html"'
+    - 'cp -a site/. "$READTHEDOCS_OUTPUT/html/"'
 
