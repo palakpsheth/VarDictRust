@@ -64,7 +64,7 @@ gates before core aligner work").
 | Dimension | VarDictRust v1.0.x | VarDictJava v1.8.3 | GATK Mutect2 (v4.5+) | Illumina Strelka2 (v2.9+) | Octopus (v0.7+) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **Language / Runtime** | Single static Rust binary (`musl`/`glibc`) | Java 8 + R 3.x + Perl 5 pipeline | Java JVM (GATK framework) | C++11 + Python wrapper | C++14 native |
-| **Memory Footprint** | Bounded ($O(1)$ halo tiling, `1.27 GiB` on 249 Mbp `chr1`) | Unbounded ($O(N)$ depth, OOM prone) | High (JVM heap 8–16 GB) | Moderate (4–8 GB) | High (Haplotype graph 8–16 GB) |
+| **Memory Footprint** | Bounded ($O(1)$ halo tiling, `1.22 GiB` on 249 Mbp `chr1`) | Unbounded ($O(N)$ depth, OOM prone) | High (JVM heap 8–16 GB) | Moderate (4–8 GB) | High (Haplotype graph 8–16 GB) |
 | **Execution Model** | Rayon work-stealing, thread-deterministic | Multi-process pipe, non-deterministic | Multi-threaded JVM | Multi-threaded task graphs | Multi-threaded DAG |
 | **Calling Modalities** | Germline, Somatic, Amplicon, Splicing/SV | Germline, Somatic, Amplicon, Splicing/SV | Somatic, Mitochondrial | Germline, Somatic | Germline, Somatic, De Novo |
 | **Complex Realignment**| In-engine Smith-Waterman + soft-clip assembly | In-engine Smith-Waterman + soft-clip assembly | Local Haplotype assembly | Prefix tree / HMM alignment | Haplotype-based HMM |

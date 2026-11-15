@@ -2105,7 +2105,7 @@ dependencies = [
 
 [[package]]
 name = "vardictrust"
-version = "1.0.7"
+version = "1.0.8"
 dependencies = [
  "anyhow",
  "clap",
@@ -2126,7 +2126,7 @@ dependencies = [
 
 [[package]]
 name = "vardictrust-core"
-version = "1.0.7"
+version = "1.0.8"
 dependencies = [
  "criterion",
  "fishers_exact",
