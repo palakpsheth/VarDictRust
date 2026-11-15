@@ -43,6 +43,12 @@ on:
   push:
     tags:
       - '**[0-9]+.[0-9]+.[0-9]+*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag on origin/main to build and publish (e.g. v1.0.8)"
+        required: true
+        type: string
 
 jobs:
   # Run 'dist plan' (or host) to determine what tasks we need to do
@@ -50,8 +56,10 @@ jobs:
     runs-on: "ubuntu-22.04"
     outputs:
       val: ${{ steps.plan.outputs.manifest }}
-      tag: ${{ !github.event.pull_request && github.ref_name || '' }}
-      tag-flag: ${{ !github.event.pull_request && format('--tag={0}', github.ref_name) || '' }}
+      tag: ${{ steps.guard.outputs.tag }}
+      tag-flag: ${{ steps.guard.outputs.tag_flag }}
+      checkout-ref: ${{ steps.guard.outputs.checkout_ref }}
+      release-commit: ${{ steps.guard.outputs.release_commit }}
       publishing: ${{ !github.event.pull_request }}
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -60,13 +68,18 @@ jobs:
         with:
           persist-credentials: false
           submodules: recursive
-      - name: Verify Two-Tier Release Consistency & Certification Guard
+      - id: guard
+        name: Verify Two-Tier Release Consistency & Certification Guard
         shell: bash
         env:
+          EVENT_NAME: ${{ github.event_name }}
+          WORKFLOW_REF: ${{ github.ref }}
           PR_HEAD_REF: ${{ github.head_ref }}
           REF_NAME: ${{ github.ref_name }}
+          DISPATCH_TAG: ${{ inputs.tag }}
           IS_PR: ${{ github.event.pull_request != null }}
         run: |
+          set -euo pipefail
           echo "[$(date '+%H:%M:%S')] [Release Guard] Verifying release consistency and evidence certification..."
           if [ "$IS_PR" = "true" ]; then
             EXTRA_FLAGS=()
@@ -74,22 +87,58 @@ jobs:
               EXTRA_FLAGS+=(--require-head-fingerprint)
             fi
             python3 .agents/skills/vardictrust-release/scripts/check_release_consistency.py --phase pre-tag "${EXTRA_FLAGS[@]}"
+            {
+              echo "tag="
+              echo "tag_flag="
+              echo "checkout_ref="
+              echo "release_commit="
+            } >> "$GITHUB_OUTPUT"
           else
-            if [ -f "$(git rev-parse --git-dir)/shallow" ]; then
-              git fetch --unshallow origin +refs/heads/main:refs/remotes/origin/main
+            if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+              if [ "$WORKFLOW_REF" != "refs/heads/main" ]; then
+                echo "ERROR: workflow_dispatch release is only permitted from refs/heads/main (got ${WORKFLOW_REF})!" >&2
+                exit 1
+              fi
+              TARGET_TAG="${DISPATCH_TAG}"
             else
-              git fetch origin +refs/heads/main:refs/remotes/origin/main
+              TARGET_TAG="${REF_NAME}"
+            fi
+            if [[ ! "$TARGET_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+              echo "ERROR: Invalid release tag '${TARGET_TAG}' (expected vMAJOR.MINOR.PATCH)!" >&2
+              exit 1
+            fi
+            if [ -f "$(git rev-parse --git-dir)/shallow" ]; then
+              git fetch --unshallow origin +refs/heads/main:refs/remotes/origin/main "+refs/tags/${TARGET_TAG}:refs/tags/${TARGET_TAG}"
+            else
+              git fetch origin +refs/heads/main:refs/remotes/origin/main "+refs/tags/${TARGET_TAG}:refs/tags/${TARGET_TAG}"
             fi
             if ! git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main; then
               echo "ERROR: Tagged commit ${GITHUB_SHA} (${REF_NAME}) is not an ancestor of origin/main!" >&2
               exit 1
             fi
-            python3 .agents/skills/vardictrust-release/scripts/check_release_consistency.py --version "${REF_NAME#v}" --phase pre-tag --require-head-fingerprint
+            TAG_COMMIT="$(git rev-parse --verify "refs/tags/${TARGET_TAG}^{commit}")"
+            if ! git merge-base --is-ancestor "$TAG_COMMIT" refs/remotes/origin/main; then
+              echo "ERROR: Target tag '${TARGET_TAG}' (${TAG_COMMIT}) is not an ancestor of origin/main!" >&2
+              exit 1
+            fi
+            DISALLOWED_DIFF="$(git diff --name-only "$TAG_COMMIT" "$GITHUB_SHA" | grep -Ev '^(dist-workspace\.toml|\.github/workflows/[^/]+\.yml|harness/tests/test_[^/]+\.(py|sh)|\.agents/skills/.+)$' || true)"
+            if [ -n "$DISALLOWED_DIFF" ]; then
+              echo "ERROR: Non-CI files differ between tag '${TARGET_TAG}' (${TAG_COMMIT}) and workflow commit (${GITHUB_SHA}):" >&2
+              echo "$DISALLOWED_DIFF" >&2
+              exit 1
+            fi
+            python3 .agents/skills/vardictrust-release/scripts/check_release_consistency.py --version "${TARGET_TAG#v}" --phase pre-tag --require-head-fingerprint
             python3 harness/perf_budget.py hg008-tier2 seqc2-exome-tier2 hg002-tier2 amplicon-tier2 hg008-cram-twin
+            {
+              echo "tag=${TARGET_TAG}"
+              echo "tag_flag=--tag=${TARGET_TAG}"
+              echo "checkout_ref=refs/tags/${TARGET_TAG}"
+              echo "release_commit=${TAG_COMMIT}"
+            } >> "$GITHUB_OUTPUT"
           fi
           {
             echo "## VarDictRust Release Certification Guard"
-            echo "- **Ref**: \`${REF_NAME}\` (\`pull_request=${IS_PR}\`)"
+            echo "- **Ref**: \`${REF_NAME}\` (\`event=${EVENT_NAME}\`, \`pull_request=${IS_PR}\`)"
             echo "- **Consistency & Evidence Check**: \`PASS\`"
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Install dist
@@ -108,9 +157,101 @@ jobs:
       # (PRs run on the *source* but secrets are usually on the *target* -- that's *good*
       # but also really annoying to build CI around when it needs secrets to work right.)
       - id: plan
+        shell: bash
+        env:
+          IS_PR: ${{ github.event.pull_request != null }}
+          TAG_FLAG: ${{ steps.guard.outputs.tag_flag }}
         run: |
-          dist ${{ (!github.event.pull_request && format('host --steps=create --tag={0}', github.ref_name)) || 'plan' }} --output-format=json > plan-dist-manifest.json
+          set -euo pipefail
+          if [ "$IS_PR" = "true" ]; then
+            dist plan --output-format=json > plan-dist-manifest.json
+          else
+            dist host --steps=create "$TAG_FLAG" --output-format=json > plan-dist-manifest.json
+          fi
           echo "dist ran successfully"
+          python3 - plan-dist-manifest.json <<'PY'
+          import json, os, pathlib, re, shutil, subprocess, sys, tempfile
+          with open(sys.argv[1], encoding="utf-8") as fh:
+              data = json.load(fh)
+          retired = {"macos-11", "macos-12", "macos-13", "macos-14", "ubuntu-18.04", "ubuntu-20.04"}
+          include = (((data.get("ci") or {}).get("github") or {}).get("artifacts_matrix") or {}).get("include") or []
+          if not include:
+              print("ERROR: plan-dist-manifest.json produced an empty GitHub artifacts_matrix!", file=sys.stderr)
+              sys.exit(1)
+          bad = [f"{row.get('targets')}: {row.get('runner')}" for row in include if row.get("runner") in retired]
+          if bad:
+              print(f"ERROR: plan-dist-manifest.json uses retired GitHub Actions runner(s): {bad}", file=sys.stderr)
+              sys.exit(1)
+          print("[Release Guard] Verified artifact build runner(s): " + ", ".join(f"{r.get('targets')}->{r.get('runner')}" for r in include))
+
+          if os.environ.get("IS_PR") == "true":
+              cargo_toml = pathlib.Path("Cargo.toml").read_text(encoding="utf-8")
+              m = re.search(
+                  r'^\[workspace\.package\]\n(?:(?!\[)[^\n]*\n)*?version\s*=\s*"([^"]+)"',
+                  cargo_toml,
+                  re.MULTILINE,
+              )
+              if not m:
+                  print("ERROR: Could not parse [workspace.package] version from Cargo.toml!", file=sys.stderr)
+                  sys.exit(1)
+              tag_arg = f"--tag=v{m.group(1)}"
+              def run_dist(cmd, cwd):
+                  res = subprocess.run(cmd, cwd=str(cwd), capture_output=True, text=True)
+                  if res.returncode != 0:
+                      print(f"ERROR: {' '.join(cmd)} failed (exit {res.returncode}):\n{res.stderr}", file=sys.stderr)
+                      sys.exit(res.returncode)
+                  return res.stdout
+              with tempfile.TemporaryDirectory() as tmpdir:
+                  tmp_root = pathlib.Path(tmpdir)
+                  plan_wt = tmp_root / "plan-wt"
+                  build_wt = tmp_root / "build-wt"
+                  def populate_repo(dest, strip_runners):
+                      dest.mkdir(parents=True, exist_ok=True)
+                      for rel in ("Cargo.toml", "Cargo.lock", "CHANGELOG.md", "dist-workspace.toml", "README.md", "LICENSE", "crates"):
+                          src = pathlib.Path(rel)
+                          if not src.exists():
+                              continue
+                          dst = dest / rel
+                          if src.is_dir():
+                              shutil.copytree(src, dst, ignore=shutil.ignore_patterns("target", "*.profraw"))
+                          else:
+                              shutil.copy2(src, dst)
+                      if strip_runners:
+                          dw = dest / "dist-workspace.toml"
+                          dw.write_text(
+                              re.sub(r"\n*\[dist\.github-custom-runners\]\n(?:(?!\[)[^\n]*\n?)*", "\n", dw.read_text(encoding="utf-8")),
+                              encoding="utf-8",
+                          )
+                      subprocess.run(["git", "init", "-q"], cwd=str(dest), check=True)
+                      subprocess.run(["git", "config", "user.email", "ci@vardictrust.local"], cwd=str(dest), check=True)
+                      subprocess.run(["git", "config", "user.name", "VarDictRust CI"], cwd=str(dest), check=True)
+                      subprocess.run(["git", "add", "-A"], cwd=str(dest), check=True)
+                      subprocess.run(["git", "commit", "-qm", "dist-e2e"], cwd=str(dest), check=True)
+                      return subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(dest), check=True, capture_output=True, text=True).stdout.strip()
+                  plan_sha = populate_repo(plan_wt, strip_runners=False)
+                  build_sha = populate_repo(build_wt, strip_runners=True)
+                  if plan_sha == build_sha:
+                      print("ERROR: Expected distinct plan-wt and build-wt commits for cross-revision check!", file=sys.stderr)
+                      sys.exit(1)
+                  distrib = build_wt / "target" / "distrib"
+                  distrib.mkdir(parents=True, exist_ok=True)
+                  create_out = run_dist(["dist", "host", "--steps=create", tag_arg, "--output-format=json"], plan_wt)
+                  (distrib / "plan-dist-manifest.json").write_text(create_out, encoding="utf-8")
+                  e2e_inc = json.loads(create_out)["ci"]["github"]["artifacts_matrix"]["include"]
+                  for row in e2e_inc:
+                      slug = "-".join(row["targets"])
+                      dargs = ["--artifacts=lies" if a == "--artifacts=local" else a for a in row["dist_args"].split()]
+                      loc_out = run_dist(["dist", "build", tag_arg, "--output-format=json", *dargs], build_wt)
+                      (distrib / f"{slug}-dist-manifest.json").write_text(loc_out, encoding="utf-8")
+                  glob_out = run_dist(["dist", "build", tag_arg, "--output-format=json", "--artifacts=global"], build_wt)
+                  (distrib / "global-dist-manifest.json").write_text(glob_out, encoding="utf-8")
+                  host_out = run_dist(["dist", "host", tag_arg, "--steps=upload", "--steps=release", "--output-format=json"], build_wt)
+                  host_data = json.loads(host_out)
+                  if not host_data.get("announcement_title") or not (distrib / "sha256.sum").is_file():
+                      print("ERROR: cargo-dist 4-stage E2E staging check failed to emit release outputs!", file=sys.stderr)
+                      sys.exit(1)
+                  print(f"[Release Guard] 4-stage cross-revision cargo-dist (--artifacts=lies) E2E check PASSED for {tag_arg}")
+          PY
           cat plan-dist-manifest.json
           echo "manifest=$(jq -c "." plan-dist-manifest.json)" >> "$GITHUB_OUTPUT"
       - name: "Upload dist-manifest.json"
@@ -154,8 +295,21 @@ jobs:
           git config --global core.longpaths true
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ needs.plan.outputs.checkout-ref }}
           persist-credentials: false
           submodules: recursive
+      - name: Verify Exact Tag Checkout Commit
+        if: ${{ needs.plan.outputs.publishing == 'true' }}
+        shell: bash
+        env:
+          EXPECTED_COMMIT: ${{ needs.plan.outputs.release-commit }}
+        run: |
+          set -euo pipefail
+          ACTUAL_COMMIT="$(git rev-parse HEAD)"
+          if [ "$ACTUAL_COMMIT" != "$EXPECTED_COMMIT" ]; then
+            echo "ERROR: Checkout commit ${ACTUAL_COMMIT} != expected tag commit ${EXPECTED_COMMIT}!" >&2
+            exit 1
+          fi
       - name: Install Rust non-interactively if not already installed
         if: ${{ matrix.container }}
         run: |
@@ -180,10 +334,134 @@ jobs:
           # Actually do builds and make zips and whatnot
           dist build ${{ needs.plan.outputs.tag-flag }} --print=linkage --output-format=json ${{ matrix.dist_args }} > dist-manifest.json
           echo "dist ran successfully"
-      - name: Attest
+      - name: Generate SLSA Provenance Predicate
+        shell: bash
+        env:
+          EXPECTED_REF: ${{ needs.plan.outputs.checkout-ref }}
+          EXPECTED_COMMIT: ${{ needs.plan.outputs.release-commit }}
+          PREDICATE_OUT: "${{ runner.temp }}/slsa-predicate.json"
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64, json, os, pathlib, sys, urllib.request
+          req_url = os.environ.get("ACTIONS_ID_TOKEN_REQUEST_URL", "")
+          req_tok = os.environ.get("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "")
+          if not req_url or not req_tok:
+              print("ERROR: Missing ACTIONS_ID_TOKEN_REQUEST_URL or ACTIONS_ID_TOKEN_REQUEST_TOKEN!", file=sys.stderr)
+              sys.exit(1)
+          sep = "&" if "?" in req_url else "?"
+          req = urllib.request.Request(
+              f"{req_url}{sep}audience=nobody",
+              headers={
+                  "Authorization": f"Bearer {req_tok}",
+                  "Accept": "application/json",
+                  "User-Agent": "actions/oidc-client",
+              },
+          )
+          with urllib.request.urlopen(req, timeout=30) as resp:
+              jwt_val = (json.loads(resp.read().decode("utf-8")) or {}).get("value", "")
+          parts = jwt_val.split(".")
+          if len(parts) != 3:
+              print("ERROR: Invalid OIDC JWT returned by Actions token endpoint!", file=sys.stderr)
+              sys.exit(1)
+          payload_b64 = parts[1] + "=" * (-len(parts[1]) % 4)
+          claims = json.loads(base64.urlsafe_b64decode(payload_b64).decode("utf-8"))
+          server_url = os.environ.get("GITHUB_SERVER_URL", "https://github.com").rstrip("/")
+          repo = str(claims["repository"])
+          wf_ref = str(claims["workflow_ref"])
+          prefix = f"{repo}/"
+          wf_path = wf_ref[len(prefix):].split("@", 1)[0] if wf_ref.startswith(prefix) else wf_ref.split("@", 1)[0]
+          expected_ref = os.environ.get("EXPECTED_REF", "")
+          expected_commit = os.environ.get("EXPECTED_COMMIT", "")
+          if expected_ref and expected_commit and (str(claims["ref"]) != expected_ref or str(claims["sha"]) != expected_commit):
+              resolved_deps = [
+                  {
+                      "name": "release-source",
+                      "uri": f"git+{server_url}/{repo}@{expected_ref}",
+                      "digest": {"gitCommit": expected_commit},
+                  },
+                  {
+                      "name": "workflow",
+                      "uri": f"git+{server_url}/{repo}@{claims['ref']}",
+                      "digest": {"gitCommit": str(claims["sha"])},
+                  },
+              ]
+          else:
+              resolved_deps = [
+                  {
+                      "uri": f"git+{server_url}/{repo}@{claims['ref']}",
+                      "digest": {"gitCommit": str(claims["sha"])},
+                  }
+              ]
+          predicate = {
+              "buildDefinition": {
+                  "buildType": "https://actions.github.io/buildtypes/workflow/v1",
+                  "externalParameters": {
+                      "workflow": {
+                          "ref": str(claims["ref"]),
+                          "repository": f"{server_url}/{repo}",
+                          "path": wf_path,
+                      }
+                  },
+                  "internalParameters": {
+                      "github": {
+                          "event_name": str(claims["event_name"]),
+                          "repository_id": str(claims["repository_id"]),
+                          "repository_owner_id": str(claims["repository_owner_id"]),
+                          "runner_environment": str(claims["runner_environment"]),
+                      }
+                  },
+                  "resolvedDependencies": resolved_deps,
+              },
+              "runDetails": {
+                  "builder": {
+                      "id": f"{server_url}/{claims['job_workflow_ref']}",
+                  },
+                  "metadata": {
+                      "invocationId": f"{server_url}/{repo}/actions/runs/{claims['run_id']}/attempts/{claims['run_attempt']}",
+                  },
+              },
+          }
+          pathlib.Path(os.environ["PREDICATE_OUT"]).write_text(json.dumps(predicate), encoding="utf-8")
+          PY
+      - id: attest
+        name: Attest
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
         with:
           subject-path: "target/distrib/*${{ join(matrix.targets, ', ') }}*"
+          predicate-type: "https://slsa.dev/provenance/v1"
+          predicate-path: "${{ runner.temp }}/slsa-predicate.json"
+      - name: Verify Signed Attestation Bundle
+        if: ${{ needs.plan.outputs.publishing == 'true' }}
+        shell: bash
+        env:
+          BUNDLE_PATH: ${{ steps.attest.outputs.bundle-path }}
+          EXPECTED_REF: ${{ needs.plan.outputs.checkout-ref }}
+          EXPECTED_COMMIT: ${{ needs.plan.outputs.release-commit }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64, json, os, pathlib, sys
+          bundle_path = pathlib.Path(os.environ["BUNDLE_PATH"])
+          lines = [ln for ln in bundle_path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+          if not lines:
+              print("ERROR: Signed attestation bundle file is empty!", file=sys.stderr)
+              sys.exit(1)
+          server_url = os.environ.get("GITHUB_SERVER_URL", "https://github.com").rstrip("/")
+          expected_uri = f"git+{server_url}/{os.environ['GITHUB_REPOSITORY']}@{os.environ['EXPECTED_REF']}"
+          expected_commit = os.environ["EXPECTED_COMMIT"]
+          for ln in lines:
+              bundle = json.loads(ln)
+              stmt = json.loads(base64.b64decode(bundle["dsseEnvelope"]["payload"]).decode("utf-8"))
+              if stmt.get("predicateType") != "https://slsa.dev/provenance/v1":
+                  print(f"ERROR: Unexpected predicateType: {stmt.get('predicateType')}", file=sys.stderr)
+                  sys.exit(1)
+              deps = ((stmt.get("predicate") or {}).get("buildDefinition") or {}).get("resolvedDependencies") or []
+              if not any(d.get("uri") == expected_uri and (d.get("digest") or {}).get("gitCommit") == expected_commit for d in deps):
+                  print(f"ERROR: Signed attestation missing release-source dependency {expected_uri} @ {expected_commit}: {deps}", file=sys.stderr)
+                  sys.exit(1)
+          print(f"[Attestation Guard] Verified signed SLSA provenance records {expected_uri} @ {expected_commit}")
+          PY
       - id: cargo-dist
         name: Post-build
         # We force bash here just because github makes it really hard to get values up
@@ -217,8 +495,21 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ needs.plan.outputs.checkout-ref }}
           persist-credentials: false
           submodules: recursive
+      - name: Verify Exact Tag Checkout Commit
+        if: ${{ needs.plan.outputs.publishing == 'true' }}
+        shell: bash
+        env:
+          EXPECTED_COMMIT: ${{ needs.plan.outputs.release-commit }}
+        run: |
+          set -euo pipefail
+          ACTUAL_COMMIT="$(git rev-parse HEAD)"
+          if [ "$ACTUAL_COMMIT" != "$EXPECTED_COMMIT" ]; then
+            echo "ERROR: Checkout commit ${ACTUAL_COMMIT} != expected tag commit ${EXPECTED_COMMIT}!" >&2
+            exit 1
+          fi
       - name: Install cached dist
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
@@ -269,8 +560,21 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ needs.plan.outputs.checkout-ref }}
           persist-credentials: false
           submodules: recursive
+      - name: Verify Exact Tag Checkout Commit
+        if: ${{ needs.plan.outputs.publishing == 'true' }}
+        shell: bash
+        env:
+          EXPECTED_COMMIT: ${{ needs.plan.outputs.release-commit }}
+        run: |
+          set -euo pipefail
+          ACTUAL_COMMIT="$(git rev-parse HEAD)"
+          if [ "$ACTUAL_COMMIT" != "$EXPECTED_COMMIT" ]; then
+            echo "ERROR: Checkout commit ${ACTUAL_COMMIT} != expected tag commit ${EXPECTED_COMMIT}!" >&2
+            exit 1
+          fi
       - name: Install cached dist
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
@@ -313,7 +617,7 @@ jobs:
           PRERELEASE_FLAG: "${{ fromJson(steps.host.outputs.manifest).announcement_is_prerelease && '--prerelease' || '' }}"
           ANNOUNCEMENT_TITLE: "${{ fromJson(steps.host.outputs.manifest).announcement_title }}"
           ANNOUNCEMENT_BODY: "${{ fromJson(steps.host.outputs.manifest).announcement_github_body }}"
-          RELEASE_COMMIT: "${{ github.sha }}"
+          RELEASE_COMMIT: "${{ needs.plan.outputs.release-commit }}"
           RELEASE_TAG: "${{ needs.plan.outputs.tag }}"
         run: |
           # Write and read notes from a file to avoid quoting breaking things
@@ -326,15 +630,28 @@ jobs:
     needs:
       - plan
       - host
-    if: ${{ always() && needs.host.result == 'success' && needs.plan.outputs.publishing }}
+    if: ${{ always() && needs.host.result == 'success' && needs.plan.outputs.publishing == 'true' }}
     runs-on: "ubuntu-22.04"
     env:
       CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ needs.plan.outputs.checkout-ref }}
           persist-credentials: false
           submodules: recursive
+      - name: Verify Exact Tag Checkout Commit
+        if: ${{ needs.plan.outputs.publishing == 'true' }}
+        shell: bash
+        env:
+          EXPECTED_COMMIT: ${{ needs.plan.outputs.release-commit }}
+        run: |
+          set -euo pipefail
+          ACTUAL_COMMIT="$(git rev-parse HEAD)"
+          if [ "$ACTUAL_COMMIT" != "$EXPECTED_COMMIT" ]; then
+            echo "ERROR: Checkout commit ${ACTUAL_COMMIT} != expected tag commit ${EXPECTED_COMMIT}!" >&2
+            exit 1
+          fi
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
       - name: Publish vardictrust-core to Crates.io
         run: cargo publish -p vardictrust-core
@@ -366,6 +683,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ needs.plan.outputs.checkout-ref }}
           persist-credentials: false
           submodules: recursive
 

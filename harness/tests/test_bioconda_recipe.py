@@ -684,9 +684,46 @@ class TestRepoAgentSkills(unittest.TestCase):
         rel_text = (workflows_dir / "release.yml").read_text(encoding="utf-8")
         self.assertIn('permissions:\n  "contents": "read"', rel_text)
         self.assertIn('    permissions:\n      "contents": "write"', rel_text)
+        self.assertIn("workflow_dispatch:", rel_text)
+        self.assertIn("DISPATCH_TAG: ${{ inputs.tag }}", rel_text)
+        self.assertNotIn("${{ inputs.tag }}", rel_text.split("run: |", 1)[1] if "run: |" in rel_text else "")
+        self.assertIn('"$WORKFLOW_REF" != "refs/heads/main"', rel_text)
+        self.assertIn('RELEASE_COMMIT: "${{ needs.plan.outputs.release-commit }}"', rel_text)
         self.assertIn('RELEASE_TAG: "${{ needs.plan.outputs.tag }}"', rel_text)
         self.assertIn('gh release create "$RELEASE_TAG"', rel_text)
         self.assertIn('git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main', rel_text)
+        self.assertIn('git merge-base --is-ancestor "$TAG_COMMIT" refs/remotes/origin/main', rel_text)
+        self.assertIn(
+            'DISALLOWED_DIFF="$(git diff --name-only "$TAG_COMMIT" "$GITHUB_SHA" | '
+            "grep -Ev '^(dist-workspace\\.toml|\\.github/workflows/[^/]+\\.yml|harness/tests/test_[^/]+\\.(py|sh)|\\.agents/skills/.+)$' || true)\"",
+            rel_text,
+        )
+        self.assertIn("checkout-ref: ${{ steps.guard.outputs.checkout_ref }}", rel_text)
+        self.assertEqual(
+            rel_text.count("ref: ${{ needs.plan.outputs.checkout-ref }}"),
+            5,
+            "All 5 downstream jobs in release.yml must check out needs.plan.outputs.checkout-ref",
+        )
+        self.assertNotIn("ref: refs/tags/${{ needs.plan.outputs.tag }}", rel_text)
+        self.assertEqual(
+            rel_text.count("Verify Exact Tag Checkout Commit"),
+            4,
+            "build-local-artifacts, build-global-artifacts, host, and publish-crates must assert exact tag commit",
+        )
+        self.assertIn("name: Generate SLSA Provenance Predicate", rel_text)
+        self.assertIn('predicate-type: "https://slsa.dev/provenance/v1"', rel_text)
+        self.assertIn('predicate-path: "${{ runner.temp }}/slsa-predicate.json"', rel_text)
+        self.assertIn("name: Verify Signed Attestation Bundle", rel_text)
+        self.assertIn("plan-wt", rel_text)
+        self.assertIn("build-wt", rel_text)
+        self.assertIn("--artifacts=lies", rel_text)
+        self.assertIn("retired GitHub Actions runner(s)", rel_text)
+
+        dist_toml = (ROOT_DIR / "dist-workspace.toml").read_text(encoding="utf-8")
+        self.assertIn("[dist.github-custom-runners]", dist_toml)
+        self.assertIn('aarch64-apple-darwin = "macos-15"', dist_toml)
+        for retired_runner in ("macos-12", "macos-13", "macos-14"):
+            self.assertNotIn(retired_runner, dist_toml)
 
         deny_text = (ROOT_DIR / "deny.toml").read_text(encoding="utf-8")
         self.assertIn('yanked = "deny"', deny_text)
@@ -769,6 +806,425 @@ class TestRepoAgentSkills(unittest.TestCase):
                     sha_re,
                     f"{wf_path.name}: action reference {action_ref!r} must be pinned to a 40-char lowercase hex commit SHA",
                 )
+
+    def test_cargo_dist_multi_stage_lies_tag_checkout_simulation(self):
+        """Simulate release.yml 4-stage cargo-dist (--artifacts=lies) across plan and unified tag checkout."""
+        import json
+
+        dist_bin = shutil.which("dist")
+        if not dist_bin:
+            candidate = pathlib.Path.home() / ".cargo" / "bin" / "dist"
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                dist_bin = str(candidate)
+        if not dist_bin:
+            self.skipTest("cargo-dist ('dist') binary not installed on host; covered by release.yml PR job")
+
+        cargo_toml = (ROOT_DIR / "Cargo.toml").read_text(encoding="utf-8")
+        ver_m = re.search(
+            r'^\[workspace\.package\]\n(?:(?!\[)[^\n]*\n)*?version\s*=\s*"([^"]+)"',
+            cargo_toml,
+            re.MULTILINE,
+        )
+        self.assertIsNotNone(ver_m, "Could not parse workspace version from Cargo.toml")
+        ws_ver = ver_m.group(1)
+        tag_arg = f"--tag=v{ws_ver}"
+
+        # Strip GIT_* hook variables (GIT_DIR, GIT_INDEX_FILE, GIT_WORK_TREE) so subprocess git/dist
+        # invocations work identically inside pre-commit/pre-push hooks and read-only mounts.
+        env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+        cargo_bin_dir = str(pathlib.Path.home() / ".cargo" / "bin")
+        env["PATH"] = f"{cargo_bin_dir}:{env.get('PATH', '')}"
+
+        dist_paths = (
+            "Cargo.toml",
+            "Cargo.lock",
+            "CHANGELOG.md",
+            "dist-workspace.toml",
+            "README.md",
+            "LICENSE",
+            "crates",
+        )
+
+        def init_isolated_git_repo(dest: pathlib.Path) -> str:
+            subprocess.run(["git", "init", "-q"], cwd=str(dest), env=env, check=True)
+            subprocess.run(["git", "config", "user.email", "ci@vardictrust.local"], cwd=str(dest), env=env, check=True)
+            subprocess.run(["git", "config", "user.name", "VarDictRust CI"], cwd=str(dest), env=env, check=True)
+            subprocess.run(["git", "add", "-A"], cwd=str(dest), env=env, check=True)
+            subprocess.run(["git", "commit", "-qm", "dist-e2e"], cwd=str(dest), env=env, check=True)
+            return subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=str(dest),
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+
+        def strip_custom_runners(toml_text: str) -> str:
+            return re.sub(
+                r"\n*\[dist\.github-custom-runners\]\n(?:(?!\[)[^\n]*\n?)*",
+                "\n",
+                toml_text,
+            )
+
+        def copy_working_tree_subset(dest: pathlib.Path, legacy_tag_fixture: bool = False) -> str:
+            dest.mkdir(parents=True, exist_ok=True)
+            for rel in dist_paths:
+                src = ROOT_DIR / rel
+                if not src.exists():
+                    continue
+                dst = dest / rel
+                if src.is_dir():
+                    shutil.copytree(src, dst, ignore=shutil.ignore_patterns("target", "*.profraw"))
+                else:
+                    shutil.copy2(src, dst)
+            if legacy_tag_fixture:
+                dw = dest / "dist-workspace.toml"
+                dw.write_text(strip_custom_runners(dw.read_text(encoding="utf-8")), encoding="utf-8")
+            return init_isolated_git_repo(dest)
+
+        tag_ref = f"refs/tags/v{ws_ver}"
+        tag_check = subprocess.run(
+            ["git", "-C", str(ROOT_DIR), "rev-parse", "--verify", f"{tag_ref}^{{commit}}"],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = pathlib.Path(tmpdir)
+            plan_wt = tmp_path / "plan-wt"
+            build_wt = tmp_path / "build-wt"
+            plan_sha = copy_working_tree_subset(plan_wt, legacy_tag_fixture=False)
+            used_tag_archive = False
+            if tag_check.returncode == 0:
+                tag_dw = subprocess.run(
+                    ["git", "-C", str(ROOT_DIR), "show", f"{tag_check.stdout.strip()}:dist-workspace.toml"],
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                if tag_dw.returncode == 0 and "[dist.github-custom-runners]" not in tag_dw.stdout:
+                    build_wt.mkdir(parents=True, exist_ok=True)
+                    archive_bytes = subprocess.run(
+                        ["git", "-C", str(ROOT_DIR), "archive", "--format=tar", tag_check.stdout.strip(), *dist_paths],
+                        env=env,
+                        check=True,
+                        capture_output=True,
+                    ).stdout
+                    subprocess.run(["tar", "-xf", "-", "-C", str(build_wt)], input=archive_bytes, env=env, check=True)
+                    build_sha = init_isolated_git_repo(build_wt)
+                    used_tag_archive = True
+            if not used_tag_archive:
+                build_sha = copy_working_tree_subset(build_wt, legacy_tag_fixture=True)
+
+            self.assertNotEqual(plan_sha, build_sha, "plan_wt and build_wt must be distinct git commits")
+            self.assertIn(
+                "[dist.github-custom-runners]",
+                (plan_wt / "dist-workspace.toml").read_text(encoding="utf-8"),
+            )
+            self.assertNotIn(
+                "[dist.github-custom-runners]",
+                (build_wt / "dist-workspace.toml").read_text(encoding="utf-8"),
+                "build_wt must exercise cross-revision compatibility against a prior tag without custom runners",
+            )
+
+            # Stage 1: plan (dist host --steps=create) on current working-tree config
+            res_plan = subprocess.run(
+                [dist_bin, "host", "--steps=create", tag_arg, "--output-format=json"],
+                cwd=str(plan_wt),
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(
+                res_plan.returncode,
+                0,
+                f"dist host --steps=create failed:\n{res_plan.stderr}",
+            )
+            plan_manifest = json.loads(res_plan.stdout)
+            include = (
+                ((plan_manifest.get("ci") or {}).get("github") or {}).get("artifacts_matrix") or {}
+            ).get("include") or []
+            self.assertEqual(len(include), 5, f"Expected 5 target matrix entries, got {len(include)}")
+            runners_by_target = {tuple(r.get("targets") or ()): r.get("runner") for r in include}
+            self.assertEqual(runners_by_target.get(("aarch64-apple-darwin",)), "macos-15")
+            retired = {"macos-11", "macos-12", "macos-13", "macos-14", "ubuntu-18.04", "ubuntu-20.04"}
+            for targets, runner in runners_by_target.items():
+                self.assertNotIn(runner, retired, f"Target {targets} uses retired runner {runner}")
+
+            distrib_dir = build_wt / "target" / "distrib"
+            distrib_dir.mkdir(parents=True, exist_ok=True)
+            (distrib_dir / "plan-dist-manifest.json").write_text(res_plan.stdout, encoding="utf-8")
+
+            # Stage 2: build-local-artifacts (--artifacts=lies) for all 5 targets on downstream tag tree
+            for row in include:
+                targets_slug = "-".join(row["targets"])
+                dist_args = row["dist_args"].split()
+                dist_args = ["--artifacts=lies" if a == "--artifacts=local" else a for a in dist_args]
+                res_local = subprocess.run(
+                    [dist_bin, "build", tag_arg, "--output-format=json", *dist_args],
+                    cwd=str(build_wt),
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(
+                    res_local.returncode,
+                    0,
+                    f"dist build --artifacts=lies failed for {targets_slug}:\n{res_local.stderr}",
+                )
+                (distrib_dir / f"{targets_slug}-dist-manifest.json").write_text(
+                    res_local.stdout, encoding="utf-8"
+                )
+
+            # Stage 3: build-global-artifacts on downstream tag tree
+            res_global = subprocess.run(
+                [dist_bin, "build", tag_arg, "--output-format=json", "--artifacts=global"],
+                cwd=str(build_wt),
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(
+                res_global.returncode,
+                0,
+                f"dist build --artifacts=global failed:\n{res_global.stderr}",
+            )
+            (distrib_dir / "global-dist-manifest.json").write_text(res_global.stdout, encoding="utf-8")
+
+            # Stage 4: host (--steps=upload --steps=release) on downstream tag tree
+            res_host = subprocess.run(
+                [dist_bin, "host", tag_arg, "--steps=upload", "--steps=release", "--output-format=json"],
+                cwd=str(build_wt),
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(
+                res_host.returncode,
+                0,
+                f"dist host --steps=upload --steps=release failed:\n{res_host.stderr}",
+            )
+            host_manifest = json.loads(res_host.stdout)
+            self.assertTrue(host_manifest.get("announcement_title"), "Missing announcement_title")
+            self.assertTrue(host_manifest.get("announcement_github_body"), "Missing announcement_github_body")
+
+            for expected_file in (
+                "vardictrust-x86_64-unknown-linux-gnu.tar.xz",
+                "vardictrust-x86_64-unknown-linux-musl.tar.xz",
+                "vardictrust-aarch64-unknown-linux-musl.tar.xz",
+                "vardictrust-aarch64-apple-darwin.tar.xz",
+                "vardictrust-x86_64-apple-darwin.tar.xz",
+                "source.tar.gz",
+                "vardictrust-installer.sh",
+                "sha256.sum",
+            ):
+                self.assertTrue(
+                    (distrib_dir / expected_file).is_file(),
+                    f"Expected staged artifact {expected_file} missing in {distrib_dir}",
+                )
+
+    def test_release_slsa_predicate_and_bundle_verification_logic(self):
+        """Execute release.yml's inline SLSA predicate generator & bundle verifier for push and dispatch."""
+        import base64
+        import http.server
+        import json
+        import threading
+
+        rel_text = (ROOT_DIR / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+        gen_m = re.search(
+            r"- name: Generate SLSA Provenance Predicate\n.*?python3 - <<'PY'\n(.*?)\n\s+PY",
+            rel_text,
+            re.DOTALL,
+        )
+        ver_m = re.search(
+            r"- name: Verify Signed Attestation Bundle\n.*?python3 - <<'PY'\n(.*?)\n\s+PY",
+            rel_text,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(gen_m, "Could not extract Generate SLSA Provenance Predicate script from release.yml")
+        self.assertIsNotNone(ver_m, "Could not extract Verify Signed Attestation Bundle script from release.yml")
+        import textwrap
+
+        gen_code = textwrap.dedent(gen_m.group(1))
+        ver_code = textwrap.dedent(ver_m.group(1))
+
+        active_claims: dict[str, str] = {}
+
+        class MockOIDCHandler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                if "audience=nobody" not in self.path or self.headers.get("Authorization") != "Bearer test-req-tok":
+                    self.send_response(401)
+                    self.end_headers()
+                    return
+                hdr = base64.urlsafe_b64encode(b'{"alg":"RS256","typ":"JWT"}').decode("ascii").rstrip("=")
+                pld = base64.urlsafe_b64encode(json.dumps(active_claims).encode("utf-8")).decode("ascii").rstrip("=")
+                jwt_tok = f"{hdr}.{pld}.sig"
+                body = json.dumps({"value": jwt_tok}).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, format, *args):
+                pass
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), MockOIDCHandler)
+        port = server.server_address[1]
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            tag_sha = "3637d507af4e140e3ed5b6a883b9792f4aed1ebe"
+            wf_sha = "9999999999999999999999999999999999999999"
+            with tempfile.TemporaryDirectory() as tmpdir:
+                tmp_path = pathlib.Path(tmpdir)
+                pred_file = tmp_path / "slsa-predicate.json"
+                bundle_file = tmp_path / "attestation.json"
+
+                # Case 1: workflow_dispatch on refs/heads/main targeting older refs/tags/v1.0.8
+                active_claims.clear()
+                active_claims.update(
+                    {
+                        "iss": "https://token.actions.githubusercontent.com",
+                        "ref": "refs/heads/main",
+                        "sha": wf_sha,
+                        "repository": "palakpsheth/VarDictRust",
+                        "event_name": "workflow_dispatch",
+                        "job_workflow_ref": "palakpsheth/VarDictRust/.github/workflows/release.yml@refs/heads/main",
+                        "workflow_ref": "palakpsheth/VarDictRust/.github/workflows/release.yml@refs/heads/main",
+                        "repository_id": "1251726015",
+                        "repository_owner_id": "13122115",
+                        "runner_environment": "github-hosted",
+                        "run_id": "44000000000",
+                        "run_attempt": "1",
+                    }
+                )
+                base_env = os.environ.copy()
+                base_env.update(
+                    {
+                        "ACTIONS_ID_TOKEN_REQUEST_URL": f"http://127.0.0.1:{port}/token?api-version=2.0",
+                        "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "test-req-tok",
+                        "GITHUB_SERVER_URL": "https://github.com",
+                        "GITHUB_REPOSITORY": "palakpsheth/VarDictRust",
+                        "EXPECTED_REF": "refs/tags/v1.0.8",
+                        "EXPECTED_COMMIT": tag_sha,
+                        "PREDICATE_OUT": str(pred_file),
+                        "BUNDLE_PATH": str(bundle_file),
+                    }
+                )
+                res_gen = subprocess.run(
+                    [sys.executable, "-c", gen_code],
+                    env=base_env,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(res_gen.returncode, 0, f"Generator failed:\n{res_gen.stderr}")
+                pred = json.loads(pred_file.read_text(encoding="utf-8"))
+                self.assertEqual(
+                    pred["buildDefinition"]["externalParameters"]["workflow"],
+                    {
+                        "ref": "refs/heads/main",
+                        "repository": "https://github.com/palakpsheth/VarDictRust",
+                        "path": ".github/workflows/release.yml",
+                    },
+                )
+                deps = pred["buildDefinition"]["resolvedDependencies"]
+                self.assertEqual(len(deps), 2)
+                self.assertEqual(
+                    deps[0],
+                    {
+                        "name": "release-source",
+                        "uri": "git+https://github.com/palakpsheth/VarDictRust@refs/tags/v1.0.8",
+                        "digest": {"gitCommit": tag_sha},
+                    },
+                )
+                self.assertEqual(
+                    deps[1],
+                    {
+                        "name": "workflow",
+                        "uri": "git+https://github.com/palakpsheth/VarDictRust@refs/heads/main",
+                        "digest": {"gitCommit": wf_sha},
+                    },
+                )
+
+                # Verify bundle verifier passes on valid signed statement and rejects wrong commit
+                stmt = {
+                    "_type": "https://in-toto.io/Statement/v1",
+                    "predicateType": "https://slsa.dev/provenance/v1",
+                    "subject": [{"name": "vardictrust.tar.xz", "digest": {"sha256": "a" * 64}}],
+                    "predicate": pred,
+                }
+                bundle_file.write_text(
+                    json.dumps(
+                        {
+                            "dsseEnvelope": {
+                                "payloadType": "application/vnd.in-toto+json",
+                                "payload": base64.b64encode(json.dumps(stmt).encode("utf-8")).decode("ascii"),
+                            }
+                        }
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+                res_ver = subprocess.run(
+                    [sys.executable, "-c", ver_code],
+                    env=base_env,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(res_ver.returncode, 0, f"Verifier failed:\n{res_ver.stderr}")
+
+                bad_env = dict(base_env, EXPECTED_COMMIT="0" * 40)
+                res_bad = subprocess.run(
+                    [sys.executable, "-c", ver_code],
+                    env=bad_env,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertNotEqual(res_bad.returncode, 0, "Verifier must reject mismatched release-commit")
+
+                # Case 2: direct tag push (claims.ref == EXPECTED_REF and claims.sha == EXPECTED_COMMIT)
+                active_claims.update(
+                    {
+                        "ref": "refs/tags/v1.0.8",
+                        "sha": tag_sha,
+                        "event_name": "push",
+                        "job_workflow_ref": "palakpsheth/VarDictRust/.github/workflows/release.yml@refs/tags/v1.0.8",
+                        "workflow_ref": "palakpsheth/VarDictRust/.github/workflows/release.yml@refs/tags/v1.0.8",
+                    }
+                )
+                res_push = subprocess.run(
+                    [sys.executable, "-c", gen_code],
+                    env=base_env,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(res_push.returncode, 0, f"Push generator failed:\n{res_push.stderr}")
+                pred_push = json.loads(pred_file.read_text(encoding="utf-8"))
+                self.assertEqual(
+                    pred_push["buildDefinition"]["resolvedDependencies"],
+                    [
+                        {
+                            "uri": "git+https://github.com/palakpsheth/VarDictRust@refs/tags/v1.0.8",
+                            "digest": {"gitCommit": tag_sha},
+                        }
+                    ],
+                )
+        finally:
+            server.shutdown()
+            server.server_close()
 
 
 if __name__ == "__main__":
