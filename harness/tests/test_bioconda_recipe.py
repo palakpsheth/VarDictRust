@@ -793,6 +793,77 @@ class TestRepoAgentSkills(unittest.TestCase):
         ):
             self.assertIn(ctx, cfg_text, f"configure_github_repo.py missing required check context {ctx}")
 
+    def test_release_workflow_cargo_dist_pinned_shas_and_harden_runner(self):
+        """Verify release.yml pins 4-arch cargo-dist SHA-256 digests, eliminates | sh, and hardens runners."""
+        rel_path = ROOT_DIR / ".github" / "workflows" / "release.yml"
+        self.assertTrue(rel_path.is_file(), "Missing .github/workflows/release.yml")
+        rel_text = rel_path.read_text(encoding="utf-8")
+
+        # Zero pipe-to-shell invocations
+        self.assertNotIn("| sh", rel_text, "release.yml must not contain unpinned '| sh' pipe-to-shell invocations")
+        self.assertNotIn("cargo-dist-installer.sh", rel_text, "release.yml must not use remote cargo-dist-installer.sh script")
+        self.assertNotIn("sh.rustup.rs", rel_text, "release.yml must not use pipe-to-shell rustup installer")
+        self.assertNotIn("${{ matrix.install_dist.run }}", rel_text, "release.yml must not execute unpinned matrix.install_dist.run")
+
+        # Pinned 4-arch cargo-dist v0.33.0 SHA-256 digests
+        expected_shas = {
+            "Linux-x86_64": "4b3f0a5f0ebbdb798f6db649d01b32ba1518376b6f7a0502b7d92b75cc2c8293",
+            "Linux-aarch64": "9c554ab21a58ad46eb9b6710f89633ccb26bc2577cf4b0c2d18a5b826a31913e",
+            "Darwin-x86_64": "6a49bfb61bd86770d79c27f3d2b40c6b2e71cde940d3d31a6ccaaffc124d7a29",
+            "Darwin-arm64": "7b3cbe25511de01d74c0f5fcb7909edabd379bea9cfa284d93af5a3cdfa3247c",
+        }
+        for arch_label, digest in expected_shas.items():
+            self.assertIn(
+                digest,
+                rel_text,
+                f"release.yml must pin {arch_label} cargo-dist v0.33.0 SHA-256 digest {digest}",
+            )
+
+        # Archive extraction flags, cargo/bin destination, path propagation, and cache salting
+        self.assertIn("--strip-components=1", rel_text, "release.yml must extract cargo-dist tar.xz with --strip-components=1")
+        self.assertIn("$HOME/.cargo/bin", rel_text, "release.yml must install cargo-dist binary to $HOME/.cargo/bin")
+        self.assertIn("GITHUB_PATH", rel_text, "release.yml must append $HOME/.cargo/bin to GITHUB_PATH")
+        self.assertIn("cargo-dist-sha256-v0.33.0-", rel_text, "release.yml must salt cargo-dist cache key with cargo-dist-sha256-v0.33.0-")
+
+        # harden-runner in all 6 jobs
+        harden_action = "step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a"
+        self.assertEqual(
+            rel_text.count(harden_action),
+            6,
+            f"release.yml must include harden-runner ({harden_action}) as first step in all 6 jobs",
+        )
+        self.assertIn("egress-policy: audit", rel_text, "harden-runner must configure egress-policy: audit")
+        self.assertIn(
+            "if: runner.os == 'Linux' && runner.arch == 'X64'",
+            rel_text,
+            "harden-runner on cross-OS jobs must be gated with 'if: runner.os == 'Linux' && runner.arch == 'X64''",
+        )
+
+    def test_configure_github_repo_tag_ruleset_and_security_settings(self):
+        """Verify configure_github_repo.py API headers, merge commit restrictions, and lockout-safe tag ruleset."""
+        cfg_path = ROOT_DIR / "harness" / "configure_github_repo.py"
+        self.assertTrue(cfg_path.is_file(), "Missing harness/configure_github_repo.py")
+        cfg_text = cfg_path.read_text(encoding="utf-8")
+
+        self.assertIn(
+            '"Accept": "application/vnd.github+json"',
+            cfg_text,
+            "configure_github_repo.py must use modern 'application/vnd.github+json' Accept header",
+        )
+        self.assertIn(
+            '"allow_merge_commit": False',
+            cfg_text,
+            "configure_github_repo.py must set 'allow_merge_commit': False",
+        )
+        self.assertIn(
+            '"MkDocs Strict Build Gate"',
+            cfg_text,
+            "configure_github_repo.py must retain 'MkDocs Strict Build Gate' in required status checks",
+        )
+        self.assertIn("def configure_tag_ruleset", cfg_text, "configure_github_repo.py must define configure_tag_ruleset()")
+        self.assertIn("current_user_can_bypass", cfg_text, "configure_tag_ruleset must check current_user_can_bypass")
+        self.assertIn("24867690", cfg_text, "configure_tag_ruleset must target existing ruleset ID 24867690")
+
     def test_github_workflows_valid_yaml_and_pinned_shas(self):
         workflows_dir = ROOT_DIR / ".github" / "workflows"
         wf_files = sorted(workflows_dir.glob("*.yml"))

@@ -122,7 +122,7 @@ All biological datasets, reference genomes, and truth standards were retrieved f
 | Dataset / Assay | Persistent Accession | Primary Public URL / Mirror Source | Asset File | File Size | Full MD5 Checksum |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **GIAB HG002 Germline WGS** | NCBI BioProject: `PRJNA20069`<br>NIST RM 8391 (NA24385) | `https://giab.s3.amazonaws.com/data/AshkenazimTrio/HG002_NA24385_son/NIST_Illumina_2x250bps/novoalign_bams/` | `HG002.chr20.bam`<br>(chr20:10M–30M slice) | 860 MB | `bd605a455b2e2064931e6097c64695ea` |
-| | | `https://giab.s3.amazonaws.com/data/AshkenazimTrio/HG002_NA24385_son/NIST_Illumina_2x250bps/novoalign_bams/` | `HG002.remote.bai`<br>(remote BAM index) | 9.8 MB | `a4c79b44a863e88eeb525b5e8d1501f6` |
+| | | `https://giab.s3.amazonaws.com/data/AshkenazimTrio/HG002_NA24385_son/NIST_Illumina_2x250bps/novoalign_bams/` | `HG002.remote.bai`<br>(remote BAM index) | 9.45 MB | `a3c2b449df6509ca83fbd3fea22b9aee` |
 | | | `https://giab.s3.amazonaws.com/release/references/GRCh38/` | `GRCh38_GIABv3.fasta` | 3.15 GB | `99be410b684e3fdb04ba67d98adba249` |
 | | | `https://giab.s3.amazonaws.com/release/AshkenazimTrio/HG002_NA24385_son/NISTv4.2.1/GRCh38/` | `HG002_GRCh38_1_22_v4.2.1_benchmark.vcf.gz` | 156 MB | `dc750b3807d4af1f7ffec852e9c2f771` |
 | | | `https://giab.s3.amazonaws.com/release/AshkenazimTrio/HG002_NA24385_son/NISTv4.2.1/GRCh38/` | `HG002_GRCh38_1_22_v4.2.1_benchmark_noinconsistent.bed` | 11.5 MB | `97265e922a97c69a0391cf3f92a89b8b` |
