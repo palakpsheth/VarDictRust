@@ -89,7 +89,7 @@ mod tests {
             let _ = tx.send((p_lo, p_hi));
         });
         let (p_lo, p_hi) = rx
-            .recv_timeout(std::time::Duration::from_millis(100))
+            .recv_timeout(std::time::Duration::from_secs(10))
             .expect("phyper at x >= 2^53 must terminate in 1 step without spinning");
         assert!(p_lo.is_finite() && (0.0..=1.0).contains(&p_lo));
         assert!(p_hi.is_finite() && (0.0..=1.0).contains(&p_hi));

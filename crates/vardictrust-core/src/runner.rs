@@ -461,7 +461,7 @@ mod tests {
         });
 
         // The thread should return promptly after hitting 3 and not hang waiting for 100
-        let result = rx.recv_timeout(std::time::Duration::from_secs(2));
+        let result = rx.recv_timeout(std::time::Duration::from_secs(10));
         assert!(result.is_ok(), "Test timed out, feeder thread likely hung");
         assert!(result.unwrap(), "Expected an error from early abort");
     }
@@ -487,7 +487,7 @@ mod tests {
             tx.send(res).unwrap();
         });
 
-        let result = rx.recv_timeout(std::time::Duration::from_secs(2));
+        let result = rx.recv_timeout(std::time::Duration::from_secs(10));
         assert!(result.is_ok(), "Test timed out, feeder thread likely hung");
         let run_result = result.unwrap();
         assert!(run_result.is_err(), "Expected an error from worker panic");

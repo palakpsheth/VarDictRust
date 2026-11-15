@@ -590,14 +590,23 @@ mod tests {
 
         // Unloaded contig over a 50 Mbp span must short-circuit in O(1) via loaded_span_bounds
         // rather than walking 50,000,000 positions one-by-one.
+        crate::reference::reset_get_base_calls();
         let t0 = std::time::Instant::now();
         let mut unloaded_out = String::new();
         push_ref_bases(&mut unloaded_out, &reference, "chr_unloaded", 1, 50_000_000);
+        let unloaded_vec = ref_bases(&reference, "chr_unloaded", 1, 50_000_000);
         assert!(unloaded_out.is_empty());
-        assert!(ref_bases(&reference, "chr_unloaded", 1, 50_000_000).is_empty());
+        assert_eq!(unloaded_out.capacity(), 0);
+        assert!(unloaded_vec.is_empty());
+        assert_eq!(unloaded_vec.capacity(), 0);
+        assert_eq!(
+            crate::reference::get_base_calls(),
+            0,
+            "unloaded 50 Mbp span must short-circuit before calling Reference::get_base"
+        );
         assert!(
-            t0.elapsed() < std::time::Duration::from_millis(25),
-            "unloaded 50 Mbp span must short-circuit via loaded_span_bounds, took {:?}",
+            t0.elapsed() < std::time::Duration::from_secs(10),
+            "unloaded 50 Mbp span hung: {:?}",
             t0.elapsed()
         );
 
@@ -612,14 +621,23 @@ mod tests {
                 sequence_start: (i32::MAX as u32) + 100,
                 sequence_end: u32::MAX,
             });
+        crate::reference::reset_get_base_calls();
         let t1 = std::time::Instant::now();
         let mut hi_out = String::new();
         push_ref_bases(&mut hi_out, &high_ref, "chr_hi", 1, 50_000_000);
+        let hi_vec = ref_bases(&high_ref, "chr_hi", 1, 50_000_000);
         assert!(hi_out.is_empty());
-        assert!(ref_bases(&high_ref, "chr_hi", 1, 50_000_000).is_empty());
+        assert_eq!(hi_out.capacity(), 0);
+        assert!(hi_vec.is_empty());
+        assert_eq!(hi_vec.capacity(), 0);
+        assert_eq!(
+            crate::reference::get_base_calls(),
+            0,
+            "high u32 loaded_span_bounds must short-circuit before calling Reference::get_base"
+        );
         assert!(
-            t1.elapsed() < std::time::Duration::from_millis(25),
-            "high u32 loaded_span_bounds must short-circuit without i32 wrap, took {:?}",
+            t1.elapsed() < std::time::Duration::from_secs(10),
+            "high u32 loaded_span_bounds hung: {:?}",
             t1.elapsed()
         );
 
@@ -676,13 +694,17 @@ mod tests {
         expected_bytes.extend_from_slice(&seq2[..201]); // 199_999_800..=200_000_000 (201 bp)
         assert_eq!(expected_bytes.len(), 1_511);
 
+        crate::reference::reset_get_base_calls();
         let t0 = std::time::Instant::now();
         let joined = join_ref(&reference, "chr1", 1, 200_000_000);
         let elapsed_join = t0.elapsed();
+        let join_calls = crate::reference::get_base_calls();
 
+        crate::reference::reset_get_base_calls();
         let t1 = std::time::Instant::now();
         let raw_bases = ref_bases(&reference, "chr1", 1, 200_000_000);
         let elapsed_vec = t1.elapsed();
+        let vec_calls = crate::reference::get_base_calls();
 
         assert_eq!(joined.as_bytes(), expected_bytes.as_slice());
         assert_eq!(raw_bases, expected_bytes);
@@ -692,12 +714,25 @@ mod tests {
             joined.capacity()
         );
         assert!(
-            elapsed_join < std::time::Duration::from_millis(10),
-            "join_ref across 200 Mbp unloaded gap must complete in < 10 ms, took {elapsed_join:?}"
+            raw_bases.capacity() <= 4_096,
+            "ref_bases across 200 Mbp unloaded gap must reserve merged loaded span, got capacity {}",
+            raw_bases.capacity()
+        );
+        assert_eq!(
+            join_calls, 1_511,
+            "join_ref must query only the 1,511 merged loaded positions across 200 Mbp gap, got {join_calls}"
+        );
+        assert_eq!(
+            vec_calls, 1_511,
+            "ref_bases must query only the 1,511 merged loaded positions across 200 Mbp gap, got {vec_calls}"
         );
         assert!(
-            elapsed_vec < std::time::Duration::from_millis(10),
-            "ref_bases across 200 Mbp unloaded gap must complete in < 10 ms, took {elapsed_vec:?}"
+            elapsed_join < std::time::Duration::from_secs(10),
+            "join_ref across 200 Mbp unloaded gap hung: {elapsed_join:?}"
+        );
+        assert!(
+            elapsed_vec < std::time::Duration::from_secs(10),
+            "ref_bases across 200 Mbp unloaded gap hung: {elapsed_vec:?}"
         );
     }
 }
