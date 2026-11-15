@@ -11,9 +11,11 @@ build:
     post_install:
       # Stage repository markdown files into .docs_staged preserving directory structure
       - python3 harness/prepare_docs_site.py
-
-mkdocs:
-  configuration: mkdocs.yml
+    build:
+      html:
+        - zensical build --clean --strict
+        - mkdir -p "$READTHEDOCS_OUTPUT/html"
+        - cp -a site/. "$READTHEDOCS_OUTPUT/html/"
 
 python:
   install:

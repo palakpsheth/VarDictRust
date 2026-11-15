@@ -40,6 +40,8 @@ IGNORED_PREFIXES = (
     ".venv/",
     "venv/",
     ".pytest_cache/",
+    ".cache/",
+    ".venv_docs/",
     ".docs_staged/",
     "site/",
     ".worktrees/",
@@ -234,6 +236,18 @@ def stage_docs():
         if pdf_file.is_file():
             _safe_copy_repo_file(
                 pdf_file, STAGING_DIR / "paper" / pdf_name, repo_root_resolved
+            )
+
+    # 1d. Stage javascripts (e.g. MathJax configuration) into .docs_staged/javascripts/
+    docs_js_dir = REPO_ROOT / "docs" / "javascripts"
+    if docs_js_dir.is_symlink():
+        raise ValueError(f"Refusing to stage symlinked directory: {docs_js_dir}")
+    if docs_js_dir.exists():
+        staged_js_dir = STAGING_DIR / "javascripts"
+        staged_js_dir.mkdir(parents=True, exist_ok=True)
+        for js_file in docs_js_dir.glob("*.js"):
+            _safe_copy_repo_file(
+                js_file, staged_js_dir / js_file.name, repo_root_resolved
             )
 
     # 2. Stage .github/ documents into community/ (MkDocs ignores dot-directories by default)

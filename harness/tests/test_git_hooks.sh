@@ -52,8 +52,8 @@ ck "pre-commit runs TestMarkdownStaticHygiene on staged Markdown/docs changes" g
 ck "pre-commit blocks partially staged documentation files" grep -q 'UNSTAGED_MD=' .githooks/pre-commit
 ck "pre-push runs prepare_docs_site.py on doc changes" grep -q 'prepare_docs_site\.py' .githooks/pre-push
 ck "pre-push exports pushed commit via git archive for doc build" grep -q 'git archive "\$local_oid"' .githooks/pre-push
-ck "pre-push runs mkdocs build --strict on doc changes" grep -q '"$MKDOCS_BIN" build --strict' .githooks/pre-push
-ck "pre-push fails fast when mkdocs is missing on doc changes" grep -q "Install MkDocs before pushing documentation updates" .githooks/pre-push
+ck "pre-push runs zensical build on doc changes" grep -qE 'ZENSICAL_BIN.*build|zensical build' .githooks/pre-push
+ck "pre-push checks for zensical binary on doc changes" grep -q "Install Zensical before pushing documentation updates" .githooks/pre-push
 
 # 5. pre-push runs engine_behavior and robustness in dev profile; acceptance.sh Item 4 runs them in --release
 ck "pre-push runs engine_behavior (dev)" grep -q 'cargo test -p vardictrust-core --test engine_behavior' .githooks/pre-push

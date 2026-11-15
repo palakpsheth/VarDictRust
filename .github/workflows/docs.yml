@@ -1,18 +1,18 @@
 name: Documentation Site Gate
-
 on:
   push:
     branches: [main]
+    paths: &doc_paths ["zensical.toml", "docs/**", ".readthedocs.yaml", "paper/**", "benchmarks/**", "community/**", "*.md", "harness/prepare_docs_site.py", "harness/tests/test_docs_ui.py", ".github/workflows/docs.yml"]
   pull_request:
+    paths: *doc_paths
   workflow_dispatch:
-
+# Concurrency controls
 concurrency:
   group: "${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}"
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
-
+# Permissions
 permissions:
   contents: read
-
 jobs:
   build-docs:
     name: MkDocs Strict Build Gate
@@ -36,7 +36,7 @@ jobs:
           cache: "pip"
           cache-dependency-path: "docs/requirements.txt"
 
-      - name: Install MkDocs Dependencies
+      - name: Install Documentation Dependencies
         run: pip install -r docs/requirements.txt
 
       - name: "[Docs Stage 1/3] Stage Documentation Site"
@@ -44,15 +44,17 @@ jobs:
           echo "[$(date '+%H:%M:%S')] [Docs Stage 1/3] Staging documentation site..."
           python3 harness/prepare_docs_site.py
 
-      - name: "[Docs Stage 2/3] Build Documentation (--strict)"
+      - name: "[Docs Stage 2/3] Build Documentation (Zensical --clean --strict)"
         run: |
-          echo "[$(date '+%H:%M:%S')] [Docs Stage 2/3] Building MkDocs site with --strict..."
-          mkdocs build --strict
+          echo "[$(date '+%H:%M:%S')] [Docs Stage 2/3] Building documentation site with Zensical (--clean --strict)..."
+          zensical build --clean --strict
 
       - name: "[Docs Stage 3/3] Verify Documentation & UI Integrity"
         run: |
-          echo "[$(date '+%H:%M:%S')] [Docs Stage 3/3] Running test_docs_ui.py..."
-          python3 harness/tests/test_docs_ui.py
+          echo "[$(date '+%H:%M:%S')] [Docs Stage 3/3] Running test_docs_ui.py against built site..."
+          VARDICTRUST_REQUIRE_BUILT_SITE=1 python3 harness/tests/test_docs_ui.py
+          rm -rf .docs_staged site .cache
+          git status --porcelain
 
       - name: Publish Documentation Gate Summary
         if: always()
@@ -60,6 +62,6 @@ jobs:
           {
             echo "## VarDictRust Documentation Site Gate Summary"
             echo "- **Stage 1**: \`prepare_docs_site.py\`"
-            echo "- **Stage 2**: \`mkdocs build --strict\`"
+            echo "- **Stage 2**: \`zensical build --clean --strict\`"
             echo "- **Stage 3**: \`test_docs_ui.py\`"
           } >> "$GITHUB_STEP_SUMMARY"
