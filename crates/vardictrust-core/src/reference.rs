@@ -27,6 +27,21 @@ thread_local! {
     static FASTA_READER_CACHE: RefCell<HashMap<PathBuf, CachedFastaReader>> = RefCell::new(HashMap::new());
 }
 
+#[cfg(test)]
+thread_local! {
+    static GET_BASE_CALLS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_get_base_calls() {
+    GET_BASE_CALLS.with(|c| c.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn get_base_calls() -> u64 {
+    GET_BASE_CALLS.with(|c| c.get())
+}
+
 /// Clears the current thread's cached FASTA readers.
 pub(crate) fn clear_fasta_reader_cache() {
     FASTA_READER_CACHE.with(|cache| cache.borrow_mut().clear());
@@ -834,6 +849,9 @@ impl Reference {
     /// Safely gets the base at a 1-based chromosome position.
     #[inline]
     pub fn get_base(&self, chr: &str, pos: u32) -> Option<u8> {
+        #[cfg(test)]
+        GET_BASE_CALLS.with(|c| c.set(c.get().saturating_add(1)));
+
         if let Some(lr) = self.loaded_regions.first() {
             if pos >= lr.sequence_start && pos <= lr.sequence_end && lr.chr == chr {
                 if let Some(offset) = pos

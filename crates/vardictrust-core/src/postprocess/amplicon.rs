@@ -1303,9 +1303,9 @@ mod tests {
 
         // Dense synthetic chain: 3000 inserts x 200 bp @100 spacing. The old
         // per-position scan costs P x A ~ 270M predicates here (~13 s in debug);
-        // the sweep is output-proportional + O((P + A) log A) (~0.1 s).
-        // The 3 s wall bound passes with wide headroom on the sweep and fails
-        // on the old approach.
+        // the sweep is output-proportional + O((P + A) log A) (~0.1 s), rebuilding
+        // its cached `Arc` only on `<= 2 * amps` start/end transitions (verified
+        // deterministically via `Arc::ptr_eq`, with a 10 s hang backstop).
         let amps = 3000usize;
         let segment: Vec<Region> = (0..amps)
             .map(|i| {
@@ -1330,12 +1330,27 @@ mod tests {
             npos += 1;
             nmem += cov.len() as u64;
         }
+        let mut arc_transitions = 0usize;
+        let mut last_arc: Option<std::sync::Arc<[(usize, &Region)]>> = None;
+        for (_, cov_arc) in amplicon_position_ref_stream(&segment) {
+            if !last_arc
+                .as_ref()
+                .is_some_and(|prev| std::sync::Arc::ptr_eq(prev, &cov_arc))
+            {
+                arc_transitions += 1;
+                last_arc = Some(cov_arc);
+            }
+        }
         let elapsed = t0.elapsed();
         assert_eq!(npos, (amps as u64 - 1) * 100 + 200);
         assert_eq!(nmem, amps as u64 * 200);
         assert!(
-            elapsed < std::time::Duration::from_secs(3),
-            "dense-chain sweep took too long: {elapsed:?}",
+            arc_transitions <= 2 * amps,
+            "amplicon_position_ref_stream must rebuild cached Arc only on start/end transitions, got {arc_transitions}"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(10),
+            "dense-chain sweep hung: {elapsed:?}",
         );
     }
 

@@ -10,6 +10,21 @@ use crate::types::round_half_even;
 const MAX_DENSE_FISHER_SUPPORT: usize = 16_777_216;
 const UNIMODAL_LOG_CUTOFF: f64 = -750.0;
 
+#[cfg(test)]
+thread_local! {
+    static UNIMODAL_LOG_EVAL_STEPS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn reset_unimodal_log_eval_steps() {
+    UNIMODAL_LOG_EVAL_STEPS.with(|c| c.set(0));
+}
+
+#[cfg(test)]
+fn unimodal_log_eval_steps() -> u64 {
+    UNIMODAL_LOG_EVAL_STEPS.with(|c| c.get())
+}
+
 /// Computes Fisher's Exact Test p-values and conditional MLE odds ratios
 /// exactly matching the Java reference codebase.
 #[derive(Debug, Clone)]
@@ -619,6 +634,9 @@ impl FisherExact {
 
     #[inline]
     fn raw_log_hyper_i64_fast(&self, j: i64, c: &HyperLogConsts) -> f64 {
+        #[cfg(test)]
+        UNIMODAL_LOG_EVAL_STEPS.with(|steps| steps.set(steps.get().saturating_add(1)));
+
         if j < self.lo64 || j > self.hi64 {
             return f64::NEG_INFINITY;
         }
@@ -976,6 +994,8 @@ impl FisherExact {
             return 1.0;
         }
         let prob_at = |i: i64| -> f64 {
+            #[cfg(test)]
+            UNIMODAL_LOG_EVAL_STEPS.with(|steps| steps.set(steps.get().saturating_add(1)));
             let lp = raw_window
                 .get((i - w_lo) as usize)
                 .copied()
@@ -2077,23 +2097,37 @@ mod tests {
 
         // 2. Ultra-high depth: m = 100_000_000, n = 100_000_000, k = 50_000_000
         //    (support_len = 50_000_001) in both R and --fisher modes, plus m + n > i32::MAX.
+        //    Verify deterministic window truncation and evaluation step counts rather than
+        //    host-dependent sub-second wall times (AGENTS.md §14).
         for java_mode in [false, true] {
+            reset_unimodal_log_eval_steps();
             let t0 = std::time::Instant::now();
             let fe = FisherExact::new_with_mode(
                 25_003_000, 74_997_000, 24_997_000, 75_003_000, java_mode,
             );
-            let elapsed_new = t0.elapsed();
             assert!(fe.logdc.is_empty());
+            let mut win_1 = Vec::new();
+            let mut left_1 = Vec::new();
+            let _ = fe.dnhyper_window_into(1.0, &mut win_1, &mut left_1);
             assert!(
-                elapsed_new < std::time::Duration::from_millis(50)
-                    || (cfg!(debug_assertions)
-                        && elapsed_new < std::time::Duration::from_millis(500)),
-                "ultra-high-depth FisherExact::new_with_mode(java={java_mode}) took {elapsed_new:?}"
+                !win_1.is_empty() && win_1.len() < 250_000,
+                "unimodal active window at ncp=1.0 must stay < 250,000 points (<0.5% of 50M support), got {}",
+                win_1.len()
             );
             let p2 = fe.get_p_value();
             let pl = fe.get_p_value_less();
             let pg = fe.get_p_value_greater();
             let or_str = fe.get_odds_ratio();
+            let total_steps = unimodal_log_eval_steps();
+            let elapsed_new = t0.elapsed();
+            assert!(
+                total_steps < 8_000_000,
+                "ultra-high-depth unimodal + MLE steps (java={java_mode}) must stay << 50M support, got {total_steps}"
+            );
+            assert!(
+                elapsed_new < std::time::Duration::from_secs(10),
+                "ultra-high-depth FisherExact::new_with_mode + get_odds_ratio(java={java_mode}) hung: {elapsed_new:?}"
+            );
             assert!(p2.is_finite() && (0.0..=1.0).contains(&p2));
             assert!(pl.is_finite() && (0.0..=1.0).contains(&pl));
             assert!(pg.is_finite() && (0.0..=1.0).contains(&pg));
@@ -2115,6 +2149,7 @@ mod tests {
             //     `(x, m, n, k) = (400_000_001, 1_000_000_000, 400_000_000, 800_000_000)` ->
             //     `lo64 = 400_000_000`, `hi64 = 800_000_000`. Must NOT suffer `f64` cancellation
             //     in `noncentral_mode_i64` for tiny `ncp <= 1.0` during `mnhyper` / `mle`.
+            reset_unimodal_log_eval_steps();
             let t_nk = std::time::Instant::now();
             let fe_nk =
                 FisherExact::new_with_mode(400_000_001, 599_999_999, 399_999_999, 1, java_mode);
@@ -2139,17 +2174,26 @@ mod tests {
                 (mu_tiny - 400_000_000.0).abs() < 1e-5,
                 "mnhyper(5e-17) expected ~400_000_000.0, got {mu_tiny}"
             );
+            let _ = fe_nk.dnhyper_window_into(f64::EPSILON.powf(0.25) * 0.5, &mut win, &mut left);
+            assert!(
+                !win.is_empty() && win.len() < 20_000,
+                "initial zeroin_c midpoint window on n < k must stay < 20,000 points, got {}",
+                win.len()
+            );
             let or_nk = fe_nk.get_odds_ratio();
+            let nk_steps = unimodal_log_eval_steps();
             let elapsed_nk = t_nk.elapsed();
             assert!(
                 !or_nk.is_empty() && or_nk != "NaN" && or_nk != "Inf",
                 "unexpected odds ratio for n < k near lo: {or_nk}"
             );
             assert!(
-                elapsed_nk < std::time::Duration::from_millis(50)
-                    || (cfg!(debug_assertions)
-                        && elapsed_nk < std::time::Duration::from_millis(500)),
-                "n < k ultra-high-depth FisherExact + mle + mnhyper(5e-17) (java={java_mode}) took {elapsed_nk:?}"
+                nk_steps < 1_000_000,
+                "n < k unimodal + MLE steps (java={java_mode}) must stay << 400M support, got {nk_steps}"
+            );
+            assert!(
+                elapsed_nk < std::time::Duration::from_secs(10),
+                "n < k ultra-high-depth FisherExact + mle + mnhyper(5e-17) (java={java_mode}) hung: {elapsed_nk:?}"
             );
         }
 

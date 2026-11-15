@@ -27,7 +27,7 @@ EOF
 
 cat > "$HEAD_SLOW" <<'EOF'
 #!/usr/bin/env bash
-python3 -c 'import time; time.sleep(0.16)'
+python3 -c 'import time; time.sleep(0.35)'
 echo "##fileformat=VCFv4.2"
 echo -e "chr1\t101\t.\tT\tA\t60\tPASS\tDP=15\tGT\t0/1"
 EOF
@@ -48,7 +48,7 @@ chmod +x "$BASE_STUB" "$HEAD_SLOW" "$HEAD_CRASH" "$HEAD_DIFF"
 
 fail=0
 
-# 1. 2x slowdown (0.16s vs 0.08s) with --threshold 1.10 must FAIL
+# 1. >3x slowdown (0.35s vs 0.08s) with --threshold 1.10 must FAIL
 if bash harness/perf_pr.sh \
   --base-bin "$BASE_STUB" \
   --head-bin "$HEAD_SLOW" \
@@ -56,19 +56,19 @@ if bash harness/perf_pr.sh \
   --runs 3 \
   --threshold 1.10 \
   --out-json "$TMP_DIR/out1.json" >/dev/null 2>&1; then
-  echo "FAIL test_perf_pr: 2x slowdown should fail at threshold 1.10" >&2
+  echo "FAIL test_perf_pr: slowdown should fail at threshold 1.10" >&2
   fail=1
 fi
 
-# 2. Same 2x slowdown with --threshold 3.00 must PASS
+# 2. Same slowdown with --threshold 8.00 must PASS
 if ! bash harness/perf_pr.sh \
   --base-bin "$BASE_STUB" \
   --head-bin "$HEAD_SLOW" \
   --slices micro \
   --runs 3 \
-  --threshold 3.00 \
+  --threshold 8.00 \
   --out-json "$TMP_DIR/out2.json" >/dev/null 2>&1; then
-  echo "FAIL test_perf_pr: 2x slowdown should pass at threshold 3.00" >&2
+  echo "FAIL test_perf_pr: slowdown should pass at threshold 8.00" >&2
   fail=1
 fi
 

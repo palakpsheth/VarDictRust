@@ -4252,9 +4252,11 @@ mod tests {
 
         // join_ref_into over a 200 Mbp range when only 1..=10 is loaded must clamp to 1..=10
         // in O(loaded_span) without reserving 1 MiB or looping 200,000,000 times.
+        crate::reference::reset_get_base_calls();
         let t0 = std::time::Instant::now();
         let mut out = String::new();
         builder.join_ref_into(&mut out, 1, 200_000_000);
+        let calls = crate::reference::get_base_calls();
         assert_eq!(out, "ACGTACGTAC");
         assert!(
             out.capacity() <= 64,
@@ -4262,8 +4264,12 @@ mod tests {
             out.capacity()
         );
         assert!(
-            t0.elapsed() < std::time::Duration::from_millis(25),
-            "join_ref_into over 200 Mbp took {:?}",
+            calls <= 16,
+            "join_ref_into over 200 Mbp with 1..=10 loaded must visit <= 16 bases, got {calls}"
+        );
+        assert!(
+            t0.elapsed() < std::time::Duration::from_secs(10),
+            "join_ref_into over 200 Mbp hung: {:?}",
             t0.elapsed()
         );
     }
@@ -4307,10 +4313,12 @@ mod tests {
         expected.push_str(std::str::from_utf8(&seq2[..201]).unwrap());
         assert_eq!(expected.len(), 1_501);
 
+        crate::reference::reset_get_base_calls();
         let t0 = std::time::Instant::now();
         let mut out = String::new();
         builder.join_ref_into(&mut out, 1, 200_000_000);
         let elapsed = t0.elapsed();
+        let join_calls = crate::reference::get_base_calls();
 
         assert_eq!(out, expected);
         assert!(
@@ -4319,8 +4327,12 @@ mod tests {
             out.capacity()
         );
         assert!(
-            elapsed < std::time::Duration::from_millis(10),
-            "join_ref_into across 200 Mbp unloaded gap must complete in < 10 ms, took {elapsed:?}"
+            join_calls <= 4_096,
+            "join_ref_into across 200 Mbp unloaded gap must query <= 4,096 loaded bases, got {join_calls}"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(10),
+            "join_ref_into across 200 Mbp unloaded gap hung: {elapsed:?}"
         );
 
         // 2. End-to-end reachability under default CLI flags (`-L 1000 -I 50 -k 1`):
@@ -4340,15 +4352,21 @@ mod tests {
         vmap.map.insert("+A#C^200000000".to_string(), v);
         vd.non_insertion_variants.insert(10, vmap);
 
+        crate::reference::reset_get_base_calls();
         let t1 = std::time::Instant::now();
         let built = builder
             .build_vars_at_position(&vd, 10)
             .expect("expected variant at pos 10");
         let elapsed_e2e = t1.elapsed();
+        let e2e_calls = crate::reference::get_base_calls();
         assert_eq!(built.variants.len(), 1);
         assert!(
-            elapsed_e2e < std::time::Duration::from_millis(10),
-            "build_vars_at_position for +A#C^200000000 across 200 Mbp gap took {elapsed_e2e:?}"
+            e2e_calls < 10_000,
+            "build_vars_at_position for +A#C^200000000 across 200 Mbp gap must query < 10,000 bases, got {e2e_calls}"
+        );
+        assert!(
+            elapsed_e2e < std::time::Duration::from_secs(10),
+            "build_vars_at_position for +A#C^200000000 across 200 Mbp gap hung: {elapsed_e2e:?}"
         );
     }
 }

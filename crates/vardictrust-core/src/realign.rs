@@ -8343,6 +8343,7 @@ mod tests {
                 amplicon: None,
             };
 
+            crate::reference::reset_get_base_calls();
             let t0 = std::time::Instant::now();
             realignlgdel(
                 None,
@@ -8362,15 +8363,20 @@ mod tests {
                 &mut splice,
             );
             let elapsed = t0.elapsed();
+            let base_calls = crate::reference::get_base_calls();
 
             assert!(
-                ref_coverage.len() <= 200_000,
-                "ref_coverage must remain bounded on distant_start={distant_start}, got {} entries",
+                ref_coverage.len() <= 15_000,
+                "ref_coverage must remain clamped on distant_start={distant_start}, got {} entries",
                 ref_coverage.len()
             );
             assert!(
-                elapsed < std::time::Duration::from_millis(250),
-                "realignlgdel on distant_start={distant_start}, indel_sz={indel_sz} took {elapsed:?}"
+                base_calls < 10_000,
+                "realignlgdel on distant_start={distant_start}, indel_sz={indel_sz} must query < 10,000 bases, got {base_calls}"
+            );
+            assert!(
+                elapsed < std::time::Duration::from_secs(10),
+                "realignlgdel on distant_start={distant_start}, indel_sz={indel_sz} hung: {elapsed:?}"
             );
             assert!(
                 ref_coverage.get(&50).copied().unwrap_or(0) >= 5,
