@@ -437,10 +437,115 @@ fn normalize_optional_or_passthrough(
     i + 1
 }
 
+fn is_threads_numeric_token(s: &str) -> bool {
+    if s.starts_with('-') {
+        return false;
+    }
+    if vardictrust_core::config::parse_java_number_usize(s).is_ok() {
+        return true;
+    }
+    let digits = s.strip_prefix('+').unwrap_or(s);
+    !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())
+}
+
+fn count_free_positionals_step(
+    effective_arg: &str,
+    args: &[String],
+    i: usize,
+    has_region: bool,
+) -> (usize, usize) {
+    let head = effective_arg
+        .split_once('=')
+        .map_or(effective_arg, |(h, _)| h);
+    if GNU_ONLY_LONG_FLAGS_SINGLE_DASH.contains(&head) {
+        return (i + 1, 0);
+    }
+    if effective_arg == "-z" {
+        let next_is_num = args.get(i + 1).is_some_and(|n| {
+            parse_java_signed_i32(n).is_ok() && (has_region || i + 2 < args.len())
+        });
+        return (if next_is_num { i + 2 } else { i + 1 }, 0);
+    }
+    if effective_arg == "-k" {
+        let consumes = args.get(i + 1).is_some_and(|next| {
+            parse_java_signed_i32(next).is_ok()
+                || (!next.starts_with('-') && (has_region || i + 2 < args.len()))
+        });
+        return (if consumes { i + 2 } else { i + 1 }, 0);
+    }
+    if effective_arg == "-a" || effective_arg == "-amplicon" || effective_arg == "--amplicon" {
+        let consumes = match args.get(i + 1) {
+            None => false,
+            Some(next) if next.starts_with('-') => false,
+            Some(next) if next.is_empty() => true,
+            Some(next) => next.contains(':') || has_region || i + 2 < args.len(),
+        };
+        return (if consumes { i + 2 } else { i + 1 }, 0);
+    }
+    if takes_mandatory_next_token(effective_arg) {
+        return (
+            if args.get(i + 1).is_some() {
+                i + 2
+            } else {
+                i + 1
+            },
+            0,
+        );
+    }
+    (i + 1, usize::from(!effective_arg.starts_with('-')))
+}
+
+fn count_free_positionals(args: &[String], has_region: bool) -> usize {
+    let mut count = 0usize;
+    let mut i = 1usize;
+    while let Some(arg) = args.get(i) {
+        if arg == "--" {
+            count = count.saturating_add(args.get(i + 1..).map_or(0, <[String]>::len));
+            break;
+        }
+        if arg == "-th" || arg == "--th" || arg == "--threads" {
+            i += if args.get(i + 1).is_some_and(|n| is_threads_numeric_token(n)) {
+                2
+            } else {
+                1
+            };
+            continue;
+        }
+        if matches!(
+            arg.as_str(),
+            "-DP"
+                | "--DP"
+                | "-default-printer"
+                | "--default-printer"
+                | "-defaultPrinter"
+                | "--defaultPrinter"
+        ) {
+            let consumes = args.get(i + 1).is_some_and(|n| {
+                !n.starts_with('-')
+                    && (matches!(n.as_str(), "OUT" | "ERR") || has_region || i + 2 < args.len())
+            });
+            i += if consumes { 2 } else { 1 };
+            continue;
+        }
+        if let Some((_, tail)) = split_bool_prefix_cluster(arg) {
+            let tail_flag = format!("-{tail}");
+            let (next_i, added) = count_free_positionals_step(&tail_flag, args, i, has_region);
+            count = count.saturating_add(added);
+            i = next_i;
+            continue;
+        }
+        let (next_i, added) = count_free_positionals_step(arg, args, i, has_region);
+        count = count.saturating_add(added);
+        i = next_i;
+    }
+    count
+}
+
 /// Rewrite Java-style multi-char single-dash options and optional-arg flags (`-th`, `-UN`, `-z`, `-k`, `-a`)
 /// to their clap-compatible forms while preserving mandatory option values and `--` literals verbatim.
 pub fn normalize_args(args: &[String]) -> Vec<String> {
     let has_region = scan_has_region(args);
+    let mut remaining_positionals = count_free_positionals(args, has_region);
     let mut out = Vec::with_capacity(args.len());
     if let Some(first) = args.first() {
         out.push(first.clone());
@@ -455,17 +560,25 @@ pub fn normalize_args(args: &[String]) -> Vec<String> {
             break;
         }
         if arg == "-th" || arg == "--th" || arg == "--threads" {
-            let next_is_val = args.get(i + 1).is_some_and(|n| {
-                !n.starts_with('-') && vardictrust_core::config::parse_java_number_usize(n).is_ok()
-            });
-            if !seen_threads {
-                seen_threads = true;
-                out.push("--threads".to_string());
-                if next_is_val {
-                    out.push(args[i + 1].clone());
+            if let Some(next) = args.get(i + 1).filter(|n| {
+                !n.starts_with('-')
+                    && (is_threads_numeric_token(n) || has_region || remaining_positionals > 1)
+            }) {
+                if !seen_threads {
+                    seen_threads = true;
+                    out.push(format!("--threads={next}"));
                 }
+                if !is_threads_numeric_token(next) && !has_region {
+                    remaining_positionals = remaining_positionals.saturating_sub(1);
+                }
+                i += 2;
+            } else {
+                if !seen_threads {
+                    seen_threads = true;
+                    out.push("--threads=\x00all_cores".to_string());
+                }
+                i += 1;
             }
-            i += if next_is_val { 2 } else { 1 };
             continue;
         } else if let Some(v) = arg
             .strip_prefix("-th=")
@@ -1399,6 +1512,7 @@ pub struct Cli {
     #[arg(
         long = "threads",
         num_args(0..=1),
+        require_equals = true,
         default_missing_value = "\x00all_cores",
         value_parser = parse_threads_cli_value,
         help_heading = "Performance & Concurrency"
@@ -3504,5 +3618,131 @@ mod tests {
         let long_help = cmd.render_long_help().to_string();
         assert!(!short_help.contains('\0') && !short_help.contains("all_cores"));
         assert!(!long_help.contains('\0') && !long_help.contains("all_cores"));
+    }
+
+    #[test]
+    fn normalize_args_threads_positional_bed_and_duplicate_parity() {
+        // 1. Bare `-th` / `--th` / `--threads` immediately before positional BED
+        for flag in ["-th", "--th", "--threads"] {
+            let norm = normalize_args(&args(&[
+                "-G",
+                "ref.fa",
+                "-b",
+                "micro.bam",
+                "-z",
+                "1",
+                flag,
+                "micro.bed",
+            ]));
+            check_unsupported(&norm).unwrap();
+            let cli = Cli::try_parse_from(&norm)
+                .unwrap_or_else(|e| panic!("{flag} micro.bed failed (norm={norm:?}): {e}"));
+            let cfg = cli.to_config_with_rayon_env(Some("1")).unwrap();
+            assert_eq!(cfg.threads, all_cores(), "flag={flag}");
+            assert_eq!(cfg.bed.as_deref(), Some("micro.bed"), "flag={flag}");
+            assert!(cfg.zero_based);
+        }
+
+        // 2. Trailing flag after positional BED (`-th micro.bed -N SAMPLE1`)
+        let trailing_norm = normalize_args(&args(&[
+            "-G",
+            "ref.fa",
+            "-b",
+            "micro.bam",
+            "-z",
+            "1",
+            "-th",
+            "micro.bed",
+            "-N",
+            "SAMPLE1",
+        ]));
+        let trailing_cfg = Cli::try_parse_from(&trailing_norm)
+            .unwrap_or_else(|e| panic!("trailing -N failed (norm={trailing_norm:?}): {e}"))
+            .to_config_with_rayon_env(Some("1"))
+            .unwrap();
+        assert_eq!(trailing_cfg.threads, all_cores());
+        assert_eq!(trailing_cfg.bed.as_deref(), Some("micro.bed"));
+        assert_eq!(trailing_cfg.sample, "SAMPLE1");
+
+        // 3. Explicit `-th 2` followed by bare `-th` before `micro.bed` (`-th 2 -th micro.bed -N SAMPLE1`)
+        let dup_bed_norm = normalize_args(&args(&[
+            "-G",
+            "ref.fa",
+            "-b",
+            "micro.bam",
+            "-z",
+            "1",
+            "-th",
+            "2",
+            "-th",
+            "micro.bed",
+            "-N",
+            "SAMPLE1",
+        ]));
+        let dup_bed_cfg = Cli::try_parse_from(&dup_bed_norm)
+            .unwrap_or_else(|e| panic!("-th 2 -th micro.bed failed (norm={dup_bed_norm:?}): {e}"))
+            .to_config()
+            .unwrap();
+        assert_eq!(dup_bed_cfg.threads, 2);
+        assert_eq!(dup_bed_cfg.bed.as_deref(), Some("micro.bed"));
+        assert_eq!(dup_bed_cfg.sample, "SAMPLE1");
+
+        // 4. Duplicate `-th 2 -th bogus micro.bed` consumes `"bogus"` and honors first-wins `2`
+        let dup_bogus_norm = normalize_args(&args(&[
+            "-G",
+            "ref.fa",
+            "-b",
+            "micro.bam",
+            "-z",
+            "1",
+            "-th",
+            "2",
+            "-th",
+            "bogus",
+            "micro.bed",
+        ]));
+        let dup_bogus_cfg = Cli::try_parse_from(&dup_bogus_norm)
+            .unwrap_or_else(|e| {
+                panic!("-th 2 -th bogus micro.bed failed (norm={dup_bogus_norm:?}): {e}")
+            })
+            .to_config()
+            .unwrap();
+        assert_eq!(dup_bogus_cfg.threads, 2);
+        assert_eq!(dup_bogus_cfg.bed.as_deref(), Some("micro.bed"));
+
+        // 5. First `-th bogus micro.bed` (and `-R chr1:1-100 -th bogus`) fails cleanly with `"bogus"`
+        for bad_argv in [
+            &[
+                "-G",
+                "ref.fa",
+                "-b",
+                "micro.bam",
+                "-z",
+                "1",
+                "-th",
+                "bogus",
+                "micro.bed",
+            ][..],
+            &[
+                "-G",
+                "ref.fa",
+                "-b",
+                "micro.bam",
+                "-R",
+                "chr1:1-100",
+                "-th",
+                "bogus",
+            ][..],
+        ] {
+            let bad_norm = normalize_args(&args(bad_argv));
+            let err = Cli::try_parse_from(&bad_norm).expect_err(&format!(
+                "expected invalid thread error for {bad_argv:?} (norm={bad_norm:?})"
+            ));
+            let msg = err.to_string();
+            assert!(
+                msg.contains("bogus") && msg.contains("threads"),
+                "expected error mentioning 'bogus' and '--threads', got: {msg}"
+            );
+        }
     }
 }

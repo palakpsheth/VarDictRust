@@ -1074,7 +1074,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0eab154a241a84fdf9f4f9413bc5b90c335bbae9fa6f2268e0716b6ae05ece03"
 dependencies = [
  "noodles-bam",
- "noodles-bed",
  "noodles-bgzf",
  "noodles-core",
  "noodles-cram",
@@ -1098,21 +1097,6 @@ dependencies = [
  "noodles-core",
  "noodles-csi",
  "noodles-sam",
-]
-
-[[package]]
-name = "noodles-bed"
-version = "0.40.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb88f54c487d74766c61c9ddfc1881ef5615d0c1caedb80fda1cfe8d93032968"
-dependencies = [
- "bstr",
- "lexical-core",
- "memchr",
- "noodles-bgzf",
- "noodles-core",
- "noodles-csi",
- "noodles-tabix",
 ]
 
 [[package]]
@@ -2085,7 +2069,6 @@ dependencies = [
  "log",
  "noodles",
  "pprof",
- "regex",
  "tempfile",
  "tikv-jemallocator",
  "vardictrust-core",
