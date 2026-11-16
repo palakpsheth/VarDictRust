@@ -19,19 +19,14 @@ if [[ "${1:-}" == "--no-record" ]]; then
     shift
 fi
 
-COMMON_GIT_DIR="$(git -C "$ROOT_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
-if [[ -n "$COMMON_GIT_DIR" && -d "$(dirname "$COMMON_GIT_DIR")/VarDictJava" ]]; then
-    DATA_ROOT="$(cd "$(dirname "$COMMON_GIT_DIR")" && pwd)"
-else
-    DATA_ROOT="$ROOT_DIR"
-fi
+DATA_ROOT="$(resolve_data_root "$ROOT_DIR")"
 
 DATA_DIR="$DATA_ROOT/scratch/g4/multimodal"
 EVIDENCE_JSON="$ROOT_DIR/benchmarks/evidence/multimodal-slices-tier2.json"
 TARGET_BIN="${VARDICT_BIN:-$ROOT_DIR/target/release/vardictrust}"
 THREADS=8
 DEFAULT_JOBS=8
-if [[ "${CI:-}" == "true" || "${GOLDEN_MODE:-auto}" != "auto" || ! -d "$ROOT_DIR/scratch/golden-store/cells" || -z "$(ls -A "$ROOT_DIR/scratch/golden-store/cells" 2>/dev/null)" ]]; then
+if [[ "${CI:-}" == "true" || "${GOLDEN_MODE:-auto}" != "auto" || ! -d "$DATA_ROOT/scratch/golden-store/cells" || -z "$(ls -A "$DATA_ROOT/scratch/golden-store/cells" 2>/dev/null)" ]]; then
     DEFAULT_JOBS=1
 fi
 JOBS="${MULTIMODAL_JOBS:-$DEFAULT_JOBS}"

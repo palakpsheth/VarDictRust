@@ -44,9 +44,13 @@ if [ -z "$OUT_JSON" ]; then
 fi
 
 CLEANUP_WT=""
+CLEANUP_TGT=""
 cleanup() {
   if [ -n "$CLEANUP_WT" ] && [ -d "$CLEANUP_WT" ]; then
     git worktree remove --force "$CLEANUP_WT" >/dev/null 2>&1 || rm -rf "$CLEANUP_WT"
+  fi
+  if [ -n "$CLEANUP_TGT" ] && [ -d "$CLEANUP_TGT" ]; then
+    rm -rf "$CLEANUP_TGT"
   fi
 }
 trap cleanup EXIT
@@ -61,10 +65,11 @@ if [ -z "$BASE_BIN" ]; then
     BASE_REF="$(git merge-base origin/main HEAD 2>/dev/null || git rev-parse HEAD)"
   fi
   CLEANUP_WT="$ROOT_DIR/scratch/perf-pr/base-wt-$$"
+  CLEANUP_TGT="$ROOT_DIR/scratch/perf-pr/base-target-$$"
   git worktree add --detach "$CLEANUP_WT" "$BASE_REF" >/dev/null 2>&1
-  CARGO_TARGET_DIR="$ROOT_DIR/scratch/perf-pr/base-target" \
+  CARGO_TARGET_DIR="$CLEANUP_TGT" \
     cargo build -q --release --manifest-path "$CLEANUP_WT/Cargo.toml"
-  BASE_BIN="$ROOT_DIR/scratch/perf-pr/base-target/release/vardictrust"
+  BASE_BIN="$CLEANUP_TGT/release/vardictrust"
 fi
 
 if [ ! -x "$BASE_BIN" ]; then

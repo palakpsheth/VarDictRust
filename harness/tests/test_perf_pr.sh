@@ -108,6 +108,11 @@ if ! bash harness/perf_pr.sh \
   fail=1
 fi
 
+if ! grep -Fq 'base-target-$$' harness/perf_pr.sh || ! grep -Fq 'CLEANUP_TGT' harness/perf_pr.sh; then
+  echo "FAIL test_perf_pr: perf_pr.sh must use PID-isolated base-target-\$\$ and clean up CLEANUP_TGT on EXIT" >&2
+  fail=1
+fi
+
 if [ $fail -eq 0 ]; then
   echo "PASS test_perf_pr"
   exit 0

@@ -874,10 +874,11 @@ def sync_docs(repo_root: pathlib.Path, check: bool = False) -> int:
     eco_path = repo_root / "docs" / "ecosystem-survey.md"
     if eco_path.is_file():
         orig_text = eco_path.read_text(encoding="utf-8")
-        text = re.sub(
+        text = sub_required(
             r"(Bounded \(\$O\(1\)\$ halo tiling, `)[0-9]+\.[0-9]+ GiB(` on 249 Mbp `chr1`\))",
             rf"\g<1>{chr1_rss_gib:.2f} GiB\2",
             orig_text,
+            "docs/ecosystem-survey.md",
         )
         if text != orig_text:
             mismatches.append(str(eco_path.relative_to(repo_root)))

@@ -14,12 +14,7 @@ if [[ "${1:-}" == "--dry-run" ]]; then
     shift
 fi
 
-COMMON_GIT_DIR="$(git -C "$ROOT_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
-if [[ -n "$COMMON_GIT_DIR" && -d "$(dirname "$COMMON_GIT_DIR")/VarDictJava" ]]; then
-    DATA_ROOT="$(cd "$(dirname "$COMMON_GIT_DIR")" && pwd)"
-else
-    DATA_ROOT="$ROOT_DIR"
-fi
+DATA_ROOT="$(resolve_data_root "$ROOT_DIR")"
 
 if [[ "$DATA_ROOT" != "$ROOT_DIR" ]]; then
     mkdir -p "$ROOT_DIR/scratch/g4"
@@ -322,7 +317,7 @@ if needs_stamp "amplicon-tier2"; then
       SAMPLE -a 10:0.95 -th 8
     python3 harness/record_evidence.py amplicon-tier2 MATCH scratch/g4/amplicon/cmp \
       -- env KEEP_DIR=scratch/g4/amplicon/cmp MIN_VARIANTS=2 bash harness/compare.sh scratch/g4/amplicon/ref.fa scratch/g4/amplicon/amplicon.bam scratch/g4/amplicon/correct_8columns_amplicon.bed SAMPLE -a 10:0.95 -th 8
-    echo "$(ts) [DONE] amplicon-tier2 (${SECONDS-step_t0}s)"
+    echo "$(ts) [DONE] amplicon-tier2 ($((SECONDS - step_t0))s)"
 else
     echo "$(ts) [REUSE] amplicon-tier2: already certified for $FP"
 fi
