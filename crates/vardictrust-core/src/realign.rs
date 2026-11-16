@@ -12,6 +12,29 @@ use std::sync::{Arc, Mutex, OnceLock};
 /// before falling back to caching a once-per-call sorted copy of `tmp3_by_pos` (`AR-07`).
 const REALIGN_LGINS30_SORT_WINDOW_MAX: usize = 1_024;
 
+#[cfg(test)]
+thread_local! {
+    static REALIGN_LGINS30_WINDOW_ELEMS_SUM: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static REALIGN_LGINS30_CANDIDATE_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static REALIGN_LGINS30_DENSE_FALLBACKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn reset_realign_lgins30_window_stats() {
+    REALIGN_LGINS30_WINDOW_ELEMS_SUM.with(|c| c.set(0));
+    REALIGN_LGINS30_CANDIDATE_STEPS.with(|c| c.set(0));
+    REALIGN_LGINS30_DENSE_FALLBACKS.with(|c| c.set(0));
+}
+
+#[cfg(test)]
+fn realign_lgins30_window_stats() -> (usize, usize, usize) {
+    (
+        REALIGN_LGINS30_WINDOW_ELEMS_SUM.with(std::cell::Cell::get),
+        REALIGN_LGINS30_CANDIDATE_STEPS.with(std::cell::Cell::get),
+        REALIGN_LGINS30_DENSE_FALLBACKS.with(std::cell::Cell::get),
+    )
+}
+
 #[inline]
 pub(crate) fn btree_range_inclusive<K: Ord + Copy, V>(
     map: &BTreeMap<K, V>,
@@ -3498,12 +3521,16 @@ pub fn realignlgins30(
         if win.is_empty() {
             continue;
         }
+        #[cfg(test)]
+        REALIGN_LGINS30_WINDOW_ELEMS_SUM.with(|c| c.set(c.get().saturating_add(win.len())));
         let candidates: &[(i32, i32)] = if win.len() <= REALIGN_LGINS30_SORT_WINDOW_MAX {
             win_buf.clear();
             win_buf.extend_from_slice(win);
             win_buf.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
             win_buf.as_slice()
         } else {
+            #[cfg(test)]
+            REALIGN_LGINS30_DENSE_FALLBACKS.with(|c| c.set(c.get().saturating_add(1)));
             tmp3_sorted
                 .get_or_insert_with(|| {
                     let mut v = tmp3_by_pos.clone();
@@ -3517,6 +3544,8 @@ pub fn realignlgins30(
             if sc5_used {
                 break;
             }
+            #[cfg(test)]
+            REALIGN_LGINS30_CANDIDATE_STEPS.with(|c| c.set(c.get().saturating_add(1)));
             if i64::from(p3) < lo_i64 || i64::from(p3) > hi_i64 {
                 continue;
             }
@@ -8551,7 +8580,7 @@ mod tests {
         let mut non_ins = crate::javamap::JavaHashMap::new();
         let mut ins = crate::javamap::JavaHashMap::new();
         let mut cov = rustc_hash::FxHashMap::default();
-        let t0 = std::time::Instant::now();
+        reset_realign_lgins30_window_stats();
         realignlgins30(
             None,
             &mut reference,
@@ -8566,15 +8595,26 @@ mod tests {
             &mut sc3_base,
             500,
         );
-        let elapsed = t0.elapsed();
         assert!(
             ins.contains_key(&24_999),
             "expected large insertion anchored at p5 - 1 = 24_999"
         );
         assert!(!ins.contains_key(&999) && !ins.contains_key(&104_999));
+        let (window_elems_sum, candidate_steps, dense_fallbacks) = realign_lgins30_window_stats();
+        // Quadratic baseline across 2,535 in-region p5 keys x 3,647 p3 keys is > 9.24 million;
+        // partition_point window slicing keeps window elements < 250k and candidate steps < 350k
+        // deterministically on any host while still exercising the >1024 dense fallback!
         assert!(
-            elapsed < std::time::Duration::from_secs(2),
-            "window-sliced realignlgins30 took too long on 3,600 clips: {elapsed:?}"
+            window_elems_sum > 0 && window_elems_sum < 250_000,
+            "expected bounded partition_point window sum (< 250_000 vs 9.24M quadratic), got {window_elems_sum}"
+        );
+        assert!(
+            candidate_steps > 0 && candidate_steps < 350_000,
+            "expected bounded candidate probe steps (< 350_000 vs 9.24M quadratic), got {candidate_steps}"
+        );
+        assert!(
+            dense_fallbacks > 0,
+            "expected >1024 dense cluster around 60k..61.15k to exercise tmp3_sorted fallback"
         );
     }
 }

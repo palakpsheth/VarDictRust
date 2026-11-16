@@ -775,6 +775,25 @@ impl BoundedParentRefScanner {
         }
     }
 
+    /// Releases per-region transient caches (`4 MiB` `LazySeed12Index`, `seed12_memo`, and
+    /// `128 KiB` `window_bases`) once a region's final band finishes for a BAM while keeping
+    /// `loaded_intervals` metadata intact for subsequent colon-joined BAMs.
+    fn evict_transient_caches(&mut self) {
+        self.seed12_index = None;
+        self.parent_misses = 0;
+        self.seed12_memo.clear();
+        self.seed12_memo.shrink_to_fit();
+        self.window_interval_idx = None;
+        self.window_start = 0;
+        self.window_end = 0;
+        self.window_bases = std::sync::Arc::from(&b""[..]);
+    }
+
+    #[cfg(test)]
+    fn has_transient_caches(&self) -> bool {
+        self.seed12_index.is_some() || !self.seed12_memo.is_empty() || !self.window_bases.is_empty()
+    }
+
     #[inline]
     fn last_indexed_pos(&self, iv: &LoadedIntervalMeta) -> u32 {
         if self.chr_len == iv.sequence_end {
@@ -1505,6 +1524,31 @@ enum BandScan {
     FallbackSequential,
 }
 
+fn flush_candidate_group(
+    cur_same_start_ends: &mut Vec<i32>,
+    cur_group_max_prefix: usize,
+    g_idx: u32,
+    groups: &mut [Vec<i32>],
+    candidate_bytes: &mut usize,
+    max_band_candidate_bytes: usize,
+) -> bool {
+    cur_same_start_ends.truncate(cur_group_max_prefix);
+    cur_same_start_ends.shrink_to_fit();
+    let grp_bytes = std::mem::size_of::<Vec<i32>>().saturating_add(
+        cur_same_start_ends
+            .capacity()
+            .saturating_mul(std::mem::size_of::<i32>()),
+    );
+    *candidate_bytes = candidate_bytes.saturating_add(grp_bytes);
+    if *candidate_bytes > max_band_candidate_bytes {
+        return false;
+    }
+    if let Some(slot) = groups.get_mut(g_idx as usize) {
+        *slot = std::mem::take(cur_same_start_ends);
+    }
+    true
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "parallel band worker takes explicit BAM, region, band bounds, and seed parameters"
@@ -1551,14 +1595,15 @@ fn scan_band_candidates(
     let push_same_start_end =
         |ends: &mut Vec<i32>, read_end: i32, candidate_bytes: usize| -> bool {
             let next_ends_bytes = ends
-                .len()
-                .saturating_add(1)
+                .capacity()
+                .max(ends.len().saturating_add(1))
                 .saturating_mul(std::mem::size_of::<i32>());
             if candidate_bytes.saturating_add(next_ends_bytes) > max_band_candidate_bytes {
                 return false;
             }
             ends.push(read_end);
-            true
+            let cap_bytes = ends.capacity().saturating_mul(std::mem::size_of::<i32>());
+            candidate_bytes.saturating_add(cap_bytes) <= max_band_candidate_bytes
         };
 
     while feed.next_into(&mut r)? {
@@ -1575,16 +1620,15 @@ fn scan_band_candidates(
 
         if cur_pos != Some(r_start_u32) {
             if let Some(g_idx) = cur_group_idx.take() {
-                cur_same_start_ends.truncate(cur_group_max_prefix);
-                let grp_bytes = cur_same_start_ends
-                    .len()
-                    .saturating_mul(std::mem::size_of::<i32>());
-                candidate_bytes = candidate_bytes.saturating_add(grp_bytes);
-                if candidate_bytes > max_band_candidate_bytes {
+                if !flush_candidate_group(
+                    &mut cur_same_start_ends,
+                    cur_group_max_prefix,
+                    g_idx,
+                    &mut groups,
+                    &mut candidate_bytes,
+                    max_band_candidate_bytes,
+                ) {
                     return Ok(BandScan::FallbackSequential);
-                }
-                if let Some(slot) = groups.get_mut(g_idx as usize) {
-                    *slot = std::mem::take(&mut cur_same_start_ends);
                 }
             } else {
                 cur_same_start_ends.clear();
@@ -1669,7 +1713,7 @@ fn scan_band_candidates(
                 0
             });
         let live_grp_bytes = cur_same_start_ends
-            .len()
+            .capacity()
             .saturating_mul(std::mem::size_of::<i32>());
         candidate_bytes = candidate_bytes.saturating_add(cand_cost);
         if candidate_bytes.saturating_add(live_grp_bytes) > max_band_candidate_bytes {
@@ -1714,16 +1758,15 @@ fn scan_band_candidates(
     }
 
     if let Some(g_idx) = cur_group_idx.take() {
-        cur_same_start_ends.truncate(cur_group_max_prefix);
-        let grp_bytes = cur_same_start_ends
-            .len()
-            .saturating_mul(std::mem::size_of::<i32>());
-        candidate_bytes = candidate_bytes.saturating_add(grp_bytes);
-        if candidate_bytes > max_band_candidate_bytes {
+        if !flush_candidate_group(
+            &mut cur_same_start_ends,
+            cur_group_max_prefix,
+            g_idx,
+            &mut groups,
+            &mut candidate_bytes,
+            max_band_candidate_bytes,
+        ) {
             return Ok(BandScan::FallbackSequential);
-        }
-        if let Some(slot) = groups.get_mut(g_idx as usize) {
-            *slot = std::mem::take(&mut cur_same_start_ends);
         }
     }
 
@@ -1751,11 +1794,32 @@ fn build_region_bands(reg: &crate::regions::Region, band_bp: u32) -> Vec<(u32, u
 
 type MultiTilePrescanOut = (Vec<Vec<MaxRlStep>>, i32);
 
+#[cfg(test)]
+thread_local! {
+    static PRESCAN_PEAK_CACHED_SCANNERS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static PRESCAN_FINAL_CACHED_SCANNERS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn reset_prescan_scanner_cache_metrics() {
+    PRESCAN_PEAK_CACHED_SCANNERS.with(|c| c.set(0));
+    PRESCAN_FINAL_CACHED_SCANNERS.with(|c| c.set(0));
+}
+
+#[cfg(test)]
+fn prescan_scanner_cache_metrics() -> (usize, usize) {
+    (
+        PRESCAN_PEAK_CACHED_SCANNERS.with(std::cell::Cell::get),
+        PRESCAN_FINAL_CACHED_SCANNERS.with(std::cell::Cell::get),
+    )
+}
+
 #[derive(Clone, Copy)]
 struct PrescanBandTask {
     m_pos: usize,
     reg_idx: usize,
     band_idx: usize,
+    num_bands: usize,
     band_lo: u32,
     band_hi: u32,
     seed_rl: i32,
@@ -1880,11 +1944,13 @@ fn scan_multi_regions_max_read_lengths(
             st.bam_any_passed = false;
             let seed_rl = st.cur_max;
             if let Some(bands) = bands_per_multi.get(m_pos) {
+                let num_bands = bands.len();
                 for (band_idx, &(band_lo, band_hi)) in bands.iter().enumerate() {
                     batches.push(vec![PrescanBandTask {
                         m_pos,
                         reg_idx,
                         band_idx,
+                        num_bands,
                         band_lo,
                         band_hi,
                         seed_rl,
@@ -1926,82 +1992,107 @@ fn scan_multi_regions_max_read_lengths(
                     m_pos,
                     reg_idx,
                     band_idx,
+                    num_bands,
                     band_lo,
                     band_hi,
                     ..
                 } = task;
-                let (Some(reg), Some(reg_tiles), Some(st)) = (
-                    flat_regions.get(reg_idx),
-                    reg_tiles_list.get(reg_idx),
-                    states.get_mut(m_pos),
-                ) else {
-                    return Ok(());
-                };
-                match scan {
-                    BandScan::Candidates {
-                        any_passed,
-                        groups,
-                        candidates,
-                    } => {
-                        st.bam_any_passed |= any_passed;
-                        for mut cand in candidates {
-                            if crate::cigar::parse::get_soft_clipped_length(&cand.cigar)
-                                <= st.cur_max.max(0) as u32
-                            {
-                                continue;
-                            }
-                            let prefix_slice = groups
-                                .get(cand.group_idx as usize)
-                                .and_then(|g| g.get(..cand.prefix_len))
-                                .unwrap_or(&[]);
-                            replay_prescan_candidate(
-                                bam_idx,
-                                total_bams,
-                                cand.read_start,
-                                cand.read_end,
-                                cand.insertion_deletion_length,
-                                &cand.cigar,
-                                &mut cand.sequence,
-                                &mut cand.quality_scores,
-                                prefix_slice,
-                                reg_tiles,
-                                &mut st.steps_per_tile,
-                                &mut st.cur_max,
-                                &mut st.scanner,
-                                &mut cigar_elements,
-                                &mut cigar_str,
-                                config,
-                            )?;
-                        }
-                    }
-                    BandScan::FallbackSequential => {
-                        let seq_passed = crate::runner::run_with_worker_stack_for_bam(
-                            bam_spec_for_stack,
-                            || {
-                                stream_band_sequential(
-                                    bam_path,
+                {
+                    let (Some(reg), Some(reg_tiles), Some(st)) = (
+                        flat_regions.get(reg_idx),
+                        reg_tiles_list.get(reg_idx),
+                        states.get_mut(m_pos),
+                    ) else {
+                        return Ok(());
+                    };
+                    match scan {
+                        BandScan::Candidates {
+                            any_passed,
+                            groups,
+                            candidates,
+                        } => {
+                            st.bam_any_passed |= any_passed;
+                            for mut cand in candidates {
+                                if crate::cigar::parse::get_soft_clipped_length(&cand.cigar)
+                                    <= st.cur_max.max(0) as u32
+                                {
+                                    continue;
+                                }
+                                let prefix_slice = groups
+                                    .get(cand.group_idx as usize)
+                                    .and_then(|g| g.get(..cand.prefix_len))
+                                    .unwrap_or(&[]);
+                                replay_prescan_candidate(
                                     bam_idx,
                                     total_bams,
-                                    reg,
+                                    cand.read_start,
+                                    cand.read_end,
+                                    cand.insertion_deletion_length,
+                                    &cand.cigar,
+                                    &mut cand.sequence,
+                                    &mut cand.quality_scores,
+                                    prefix_slice,
                                     reg_tiles,
-                                    band_idx,
-                                    band_lo,
-                                    band_hi,
                                     &mut st.steps_per_tile,
                                     &mut st.cur_max,
                                     &mut st.scanner,
                                     &mut cigar_elements,
                                     &mut cigar_str,
                                     config,
-                                )
-                            },
-                        )?;
-                        st.bam_any_passed |= seq_passed;
+                                )?;
+                            }
+                        }
+                        BandScan::FallbackSequential => {
+                            let seq_passed = crate::runner::run_with_worker_stack_for_bam(
+                                bam_spec_for_stack,
+                                || {
+                                    stream_band_sequential(
+                                        bam_path,
+                                        bam_idx,
+                                        total_bams,
+                                        reg,
+                                        reg_tiles,
+                                        band_idx,
+                                        band_lo,
+                                        band_hi,
+                                        &mut st.steps_per_tile,
+                                        &mut st.cur_max,
+                                        &mut st.scanner,
+                                        &mut cigar_elements,
+                                        &mut cigar_str,
+                                        config,
+                                    )
+                                },
+                            )?;
+                            st.bam_any_passed |= seq_passed;
+                        }
+                    }
+                }
+                #[cfg(test)]
+                {
+                    let live = states
+                        .iter()
+                        .filter(|s| s.scanner.has_transient_caches())
+                        .count();
+                    PRESCAN_PEAK_CACHED_SCANNERS.with(|c| c.set(c.get().max(live)));
+                }
+                if band_idx + 1 >= num_bands {
+                    if let Some(st) = states.get_mut(m_pos) {
+                        st.scanner.evict_transient_caches();
                     }
                 }
                 Ok(())
             },
         )?;
+
+        #[cfg(test)]
+        {
+            let retained = states
+                .iter()
+                .filter(|s| s.scanner.has_transient_caches())
+                .count();
+            PRESCAN_FINAL_CACHED_SCANNERS.with(|c| c.set(c.get().max(retained)));
+        }
 
         if bam_idx > 0 {
             for st in &mut states {
@@ -10622,6 +10713,97 @@ mod tests {
             assert_eq!(&par_m[0], &seq_m);
         }
 
+        // Scenario B2: Retained Vec<i32> capacity + shrink_to_fit() accounting at both mid-band
+        // and terminal group flushes in scan_band_candidates.
+        let mut cap_reads = Vec::new();
+        for (idx, pos) in [160usize, 165, 170, 175].into_iter().enumerate() {
+            let mlen = 25 + idx * 2;
+            let mut seq = ref_bytes[pos - 1..pos - 1 + mlen].to_vec();
+            seq.extend_from_slice(b"TTTTTTTT");
+            // Candidate comes FIRST at `pos` (prefix_len == 0), followed by 12 short 20M reads.
+            cap_reads.push(mk(
+                &format!("cap_cand_{idx}"),
+                pos,
+                Flags::empty(),
+                &[(mlen, Kind::Match), (8, Kind::SoftClip)],
+                seq,
+            ));
+            let short_count = if idx < 3 { 12usize } else { 0usize };
+            for s_idx in 0..short_count {
+                cap_reads.push(mk(
+                    &format!("cap_short_{idx}_{s_idx}"),
+                    pos,
+                    Flags::empty(),
+                    &[(20, Kind::Match)],
+                    ref_bytes[pos - 1..pos - 1 + 20].to_vec(),
+                ));
+            }
+        }
+        let bam_cap = dir.path().join("scen_cap.bam");
+        write_test_bam(&bam_cap, "chr1", ref_len, &cap_reads);
+        let cfg_cap = crate::config::Config {
+            reference: fasta_path.to_string_lossy().into_owned(),
+            bam: bam_cap.to_string_lossy().into_owned(),
+            sample: "S".to_string(),
+            realign: 0,
+            threads: 2,
+            ..Default::default()
+        };
+        let bam_cap_str = bam_cap.to_string_lossy().into_owned();
+        match scan_band_candidates(
+            &bam_cap_str,
+            0,
+            &reg_small,
+            1,
+            101,
+            200,
+            20,
+            4_096,
+            &cfg_cap,
+        )
+        .unwrap()
+        {
+            BandScan::Candidates {
+                groups, candidates, ..
+            } => {
+                assert_eq!(candidates.len(), 4);
+                assert_eq!(groups.len(), 4);
+                for (gi, g) in groups.iter().enumerate() {
+                    assert_eq!(
+                        g.capacity(),
+                        0,
+                        "group {gi} with cur_group_max_prefix == 0 must shrink_to_fit() trailing short-read capacity"
+                    );
+                }
+            }
+            BandScan::FallbackSequential => panic!("expected Candidates at 4096-byte cap"),
+        }
+        // 4 candidates with realign=0 cost 4 * (size_of::<BandCandidate>() + 2*8) bytes;
+        // set tight_cap = 4 * cand_cost + 3 * size_of::<Vec<i32>>() + 20 so mid-band flushes 0..3
+        // and the 4th candidate's initial Vec<i32> push (cap=4 -> 16 bytes) fit, while the 4th
+        // (terminal) group flush (+24 bytes > +20) triggers FallbackSequential!
+        let single_cand_cost = std::mem::size_of::<BandCandidate>()
+            + 2 * std::mem::size_of::<(u32, noodles::sam::alignment::record::cigar::op::Kind)>();
+        let tight_cap = 4 * single_cand_cost + 3 * std::mem::size_of::<Vec<i32>>() + 20;
+        assert!(
+            matches!(
+                scan_band_candidates(
+                    &bam_cap_str,
+                    0,
+                    &reg_small,
+                    1,
+                    101,
+                    200,
+                    20,
+                    tight_cap,
+                    &cfg_cap
+                )
+                .unwrap(),
+                BandScan::FallbackSequential
+            ),
+            "terminal group flush must charge Vec<i32> + retained capacity and trigger FallbackSequential"
+        );
+
         // Scenario C: AR-05 Lazy 2-bit ACGT + 'N' side-map 12-mer index across >128 KiB parent region
         // Construct chimeric 3' soft-clipped reads so parent_misses >= 2 exercises LazySeed12Index!
         let rc12 = |kmer: &[u8; 12]| -> Vec<u8> {
@@ -10723,6 +10905,36 @@ mod tests {
         );
         assert_eq!(&par_seed[0], &seq_seed);
 
+        // Two-region multi-band run: each region's scanner must evict its 4 MiB LazySeed12Index,
+        // memo, and window_bases immediately after its final band for each BAM!
+        reset_prescan_scanner_cache_metrics();
+        let two_regs = [reg_wide.clone(), reg_wide.clone()];
+        let two_tiles = [tiles_wide.clone(), tiles_wide.clone()];
+        let par_two = scan_multi_regions_max_read_lengths(
+            &cfg_seed.bam,
+            &bam_seed_paths,
+            &two_regs,
+            &two_tiles,
+            &[0, 1],
+            &[0, 0],
+            &cfg_seed,
+            &chr_lens,
+            50_000,
+            MAX_BAND_CANDIDATE_BYTES,
+        )
+        .unwrap();
+        assert_eq!(&par_two[0], &seq_seed);
+        assert_eq!(&par_two[1], &seq_seed);
+        let (peak_cached, final_cached) = prescan_scanner_cache_metrics();
+        assert!(
+            peak_cached <= 1,
+            "at most 1 region scanner may hold transient caches concurrently, got {peak_cached}"
+        );
+        assert_eq!(
+            final_cached, 0,
+            "all region scanners must evict transient caches after their final band"
+        );
+
         // Direct AR-05 invariant check on BoundedParentRefScanner:
         // 1st parent miss keeps seed12_index == None; 2nd parent miss lazily populates seed12_index.
         let mut direct_scanner = BoundedParentRefScanner::new(&reg_wide, &chr_lens, &cfg_seed);
@@ -10753,6 +10965,25 @@ mod tests {
         assert!(
             direct_scanner.seed12_index.is_some(),
             "2nd parent miss MUST lazily populate seed12_index"
+        );
+        assert_eq!(
+            direct_scanner
+                .unique_seed12_pos(b"TTTGGGCCCAAA", 150_010, 150_070, 56, 50)
+                .unwrap(),
+            Some(150_050)
+        );
+        let saved_intervals_len = direct_scanner.loaded_intervals.len();
+        assert!(saved_intervals_len > 0);
+        direct_scanner.evict_transient_caches();
+        assert!(direct_scanner.seed12_index.is_none());
+        assert_eq!(direct_scanner.parent_misses, 0);
+        assert_eq!(direct_scanner.seed12_memo.capacity(), 0);
+        assert!(direct_scanner.window_bases.is_empty());
+        assert!(direct_scanner.window_interval_idx.is_none());
+        assert_eq!(
+            direct_scanner.loaded_intervals.len(),
+            saved_intervals_len,
+            "loaded_intervals metadata must remain intact for subsequent colon-joined BAMs"
         );
         assert_eq!(
             direct_scanner
