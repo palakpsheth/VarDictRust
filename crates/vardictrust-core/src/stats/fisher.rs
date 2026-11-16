@@ -9,6 +9,16 @@ use crate::types::round_half_even;
 /// active window `[w_lo, w_hi]` where `ln P(j) - ln P(mode) >= -750.0` (`exp(-750) == 0.0`).
 const MAX_DENSE_FISHER_SUPPORT: usize = 16_777_216;
 const UNIMODAL_LOG_CUTOFF: f64 = -750.0;
+const EXP_UNDERFLOW_LN_F64: f64 = -746.0;
+
+#[inline]
+fn exp_with_underflow_cutoff(d: f64) -> f64 {
+    if d < EXP_UNDERFLOW_LN_F64 {
+        0.0
+    } else {
+        d.exp()
+    }
+}
 
 #[cfg(test)]
 thread_local! {
@@ -182,38 +192,50 @@ impl FisherExact {
     /// Density of the central hypergeometric distribution on its support.
     fn logdc_dhyper(&self, m: i32, n: i32, k: i32) -> Vec<f64> {
         let len = self.support_len();
+        if i64::from(m) + i64::from(n) == 0 {
+            return vec![0.0; len];
+        }
         let mut logdc = Vec::with_capacity(len);
-        for i in 0..len {
-            let element = self.lo.saturating_add(i as i32);
-            if i64::from(m) + i64::from(n) == 0 {
-                logdc.push(0.0);
-                continue;
-            }
-            let mut value = if self.java_fisher {
-                cm3_hypergeometric_log_probability(
+        if self.java_fisher {
+            let population_size = m.saturating_add(n);
+            let pop = population_size as f64;
+            let p = (k as f64) / pop;
+            let q = ((i64::from(population_size) - i64::from(k)) as f64) / pop;
+            let p3 = cm3_log_binomial_probability(k, population_size, p, q);
+            for i in 0..len {
+                let element = self.lo.saturating_add(i as i32);
+                let mut value = cm3_hypergeometric_log_probability_with_p3(
                     element,
-                    m.saturating_add(n),
+                    population_size,
                     m,
                     k,
                     self.lo,
                     self.hi,
-                )
-            } else {
-                crate::stats::rmath::dhyper::dhyper(
+                    p,
+                    q,
+                    p3,
+                );
+                if value.is_nan() {
+                    value = 0.0;
+                }
+                value = round_half_even(value, 7);
+                logdc.push(value);
+            }
+        } else {
+            for i in 0..len {
+                let element = self.lo.saturating_add(i as i32);
+                let mut value = crate::stats::rmath::dhyper::dhyper(
                     element as f64,
                     m as f64,
                     n as f64,
                     k as f64,
                     true,
-                )
-            };
-            if value.is_nan() {
-                value = 0.0;
+                );
+                if value.is_nan() {
+                    value = 0.0;
+                }
+                logdc.push(value);
             }
-            if self.java_fisher {
-                value = round_half_even(value, 7);
-            }
-            logdc.push(value);
         }
         logdc
     }
@@ -371,7 +393,7 @@ impl FisherExact {
             }
         }
         for val in out.iter_mut() {
-            *val = (*val - max_result).exp();
+            *val = exp_with_underflow_cutoff(*val - max_result);
         }
         let sum = if self.java_fisher {
             java_stream_sum(out)
@@ -499,16 +521,6 @@ impl FisherExact {
             return 1.0;
         }
         if self.java_fisher {
-            let pop = self.m.saturating_add(self.n);
-            let prob = |i: i32| -> f64 {
-                let lp =
-                    cm3_hypergeometric_log_probability(i, pop, self.m, self.k, self.lo, self.hi);
-                if lp == f64::NEG_INFINITY {
-                    0.0
-                } else {
-                    lp.exp()
-                }
-            };
             if upper_tail {
                 if q <= self.lo {
                     return 1.0;
@@ -516,6 +528,30 @@ impl FisherExact {
                 if q > self.hi {
                     return 0.0;
                 }
+            } else {
+                if q < self.lo {
+                    return 0.0;
+                }
+                if q >= self.hi {
+                    return 1.0;
+                }
+            }
+            let pop = self.m.saturating_add(self.n);
+            let pop_f = pop as f64;
+            let p = (self.k as f64) / pop_f;
+            let q_prob = ((i64::from(pop) - i64::from(self.k)) as f64) / pop_f;
+            let p3 = cm3_log_binomial_probability(self.k, pop, p, q_prob);
+            let prob = |i: i32| -> f64 {
+                let lp = cm3_hypergeometric_log_probability_with_p3(
+                    i, pop, self.m, self.k, self.lo, self.hi, p, q_prob, p3,
+                );
+                if lp == f64::NEG_INFINITY {
+                    0.0
+                } else {
+                    exp_with_underflow_cutoff(lp)
+                }
+            };
+            if upper_tail {
                 let mut x0 = self.hi;
                 let mut ret = prob(x0);
                 while x0 > q {
@@ -524,12 +560,6 @@ impl FisherExact {
                 }
                 return ret;
             } else {
-                if q < self.lo {
-                    return 0.0;
-                }
-                if q >= self.hi {
-                    return 1.0;
-                }
                 let mut x0 = self.lo;
                 let mut ret = prob(x0);
                 while x0 < q {
@@ -1275,22 +1305,24 @@ fn cm3_log_binomial_probability(x: i32, n: i32, p: f64, q: f64) -> f64 {
     }
 }
 
-/// Ports `org.apache.commons.math3.distribution.HypergeometricDistribution.logProbability`.
+/// Ports `org.apache.commons.math3.distribution.HypergeometricDistribution.logProbability`
+/// with hoisted `(p, q, p3)` invariants (`AR-26`: keeps `(p1 + p2) - p3` parenthesized verbatim).
 #[inline]
-fn cm3_hypergeometric_log_probability(
+#[allow(clippy::too_many_arguments)]
+fn cm3_hypergeometric_log_probability_with_p3(
     x: i32,
     population_size: i32,
     number_of_successes: i32,
     sample_size: i32,
     lo: i32,
     hi: i32,
+    p: f64,
+    q: f64,
+    p3: f64,
 ) -> f64 {
     if x < lo || x > hi {
         return f64::NEG_INFINITY;
     }
-    let pop = population_size as f64;
-    let p = (sample_size as f64) / pop;
-    let q = ((i64::from(population_size) - i64::from(sample_size)) as f64) / pop;
     let p1 = cm3_log_binomial_probability(x, number_of_successes, p, q);
     let p2 = cm3_log_binomial_probability(
         sample_size.saturating_sub(x),
@@ -1298,8 +1330,7 @@ fn cm3_hypergeometric_log_probability(
         p,
         q,
     );
-    let p3 = cm3_log_binomial_probability(sample_size, population_size, p, q);
-    p1 + p2 - p3
+    (p1 + p2) - p3
 }
 
 /// Emulates OpenJDK's `DoubleStream.sum()` (`Collectors.sumWithCompensation` + `computeFinalSum`),
@@ -2267,6 +2298,71 @@ mod tests {
                 } else {
                     assert_eq!(mle_u, mle_d);
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn test_exp_underflow_ln_f64_zero_ulp_and_hoisted_p3_parity() {
+        assert_eq!(EXP_UNDERFLOW_LN_F64, -746.0);
+        for &d in &[
+            0.0,
+            -1.0,
+            -700.0,
+            -745.0,
+            -745.133,
+            -745.134,
+            -746.0,
+            -1e6,
+            f64::NEG_INFINITY,
+            f64::INFINITY,
+        ] {
+            let fast = exp_with_underflow_cutoff(d);
+            let libm = d.exp();
+            assert_eq!(
+                fast.to_bits(),
+                libm.to_bits(),
+                "0-ULP mismatch at d={d}: fast={fast:e} ({:#x}) vs libm={libm:e} ({:#x})",
+                fast.to_bits(),
+                libm.to_bits()
+            );
+        }
+        assert!(exp_with_underflow_cutoff(f64::NAN).is_nan());
+
+        // Zero-population return guard before p3 division by pop=0
+        let zero_pop = FisherExact::new_java(0, 0, 0, 0);
+        assert_eq!(zero_pop.get_p_value(), 1.0);
+        assert_eq!(zero_pop.pnhyper(0, false), 1.0);
+        assert_eq!(zero_pop.pnhyper(0, true), 1.0);
+        assert_eq!(zero_pop.logdc_dhyper(0, 0, 0), vec![0.0]);
+
+        // Verify 0-ULP bit-exactness of hoisted p3 across diverse --fisher tables
+        for &(rf, rr, af, ar) in &[
+            (15, 18, 4, 21),
+            (250, 310, 42, 88),
+            (0, 120, 5, 95),
+            (1200, 1400, 35, 110),
+            (3, 0, 0, 4),
+        ] {
+            let fe = FisherExact::new_java(rf, rr, af, ar);
+            let m = rf + rr;
+            let n = af + ar;
+            let k = rf + af;
+            let pop = m + n;
+            let pop_f = pop as f64;
+            let p = (k as f64) / pop_f;
+            let q = ((i64::from(pop) - i64::from(k)) as f64) / pop_f;
+            for (idx, &got) in fe.logdc.iter().enumerate() {
+                let x = fe.lo + idx as i32;
+                let p1 = cm3_log_binomial_probability(x, m, p, q);
+                let p2 = cm3_log_binomial_probability(k - x, pop - m, p, q);
+                let p3 = cm3_log_binomial_probability(k, pop, p, q);
+                let mut raw = (p1 + p2) - p3;
+                if raw.is_nan() {
+                    raw = 0.0;
+                }
+                let expected = round_half_even(raw, 7);
+                assert_eq!(got.to_bits(), expected.to_bits());
             }
         }
     }

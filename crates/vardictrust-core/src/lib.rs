@@ -423,7 +423,7 @@ fn run_pipeline_on_records(
     )
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct MaxRlStep {
     bam_idx: usize,
     read_start: u32,
@@ -673,6 +673,1330 @@ fn multi_tile_key(t: &crate::regions::Tile) -> MultiTileKey {
     )
 }
 
+const PRESCAN_BAND_BP: u32 = 250_000;
+const MAX_BAND_CANDIDATE_BYTES: usize = 4 * 1024 * 1024;
+const REF_SCAN_WINDOW_BP: u32 = 128 * 1024;
+const SEED_SCAN_CHUNK_BP: u32 = 64 * 1024;
+const MAX_SEED12_MEMO_ENTRIES: usize = 65_536;
+const MAX_NON_ACGT_SEED12_ENTRIES: usize = 262_144;
+
+#[derive(Clone, Copy, Debug)]
+struct LoadedIntervalMeta {
+    sequence_start: u32,
+    sequence_end: u32,
+    stored_end: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Seed12Multiplicity {
+    Absent,
+    Unique(u32),
+    Multiple,
+}
+
+struct LazySeed12Index {
+    indexed_intervals_len: usize,
+    acgt_counts: Vec<u8>,
+    non_acgt: rustc_hash::FxHashMap<[u8; 12], Seed12Multiplicity>,
+    non_acgt_complete: bool,
+}
+
+#[inline]
+fn acgt_bits(b: u8) -> Option<u32> {
+    match b {
+        b'A' => Some(0),
+        b'C' => Some(1),
+        b'G' => Some(2),
+        b'T' => Some(3),
+        _ => None,
+    }
+}
+
+#[inline]
+fn encode_acgt12(kmer: &[u8; 12]) -> Option<usize> {
+    let mut code = 0u32;
+    for &b in kmer {
+        code = (code << 2) | acgt_bits(b)?;
+    }
+    Some(code as usize)
+}
+
+/// Bounded-memory reference + 12-mer seed scanner for multi-tile `max_read_length` pre-scan.
+/// Preserves the exact unpadded parent-region seed scope of an untiled run while keeping
+/// at most a `128 KiB` sliding reference window, `64 KiB` seed-scan chunk, and (only on the
+/// 2nd+ parent-wide miss) a lazy `4 MiB` 2-bit `ACGT` + `'N'` side-map 12-mer index (`AR-05`).
+struct BoundedParentRefScanner {
+    chr: String,
+    chr_len: u32,
+    total_ext: u32,
+    reg_start: u32,
+    reg_end: u32,
+    fasta_path: std::path::PathBuf,
+    loaded_intervals: Vec<LoadedIntervalMeta>,
+    window_interval_idx: Option<usize>,
+    window_start: u32,
+    window_end: u32,
+    window_bases: std::sync::Arc<[u8]>,
+    seed12_memo: rustc_hash::FxHashMap<[u8; 12], (usize, Seed12Multiplicity)>,
+    parent_misses: u32,
+    seed12_index: Option<LazySeed12Index>,
+}
+
+impl BoundedParentRefScanner {
+    fn new(
+        reg: &crate::regions::Region,
+        chromosomes_lengths: &HashMap<String, usize>,
+        config: &config::Config,
+    ) -> Self {
+        let chr_len = u32::try_from(chromosomes_lengths.get(&reg.chr).copied().unwrap_or(0))
+            .unwrap_or(u32::MAX);
+        let total_ext = (config.extension.max(0) as u32).saturating_add(config.max_region_len);
+        Self {
+            chr: reg.chr.clone(),
+            chr_len,
+            total_ext,
+            reg_start: reg.start.0,
+            reg_end: reg.end.0,
+            fasta_path: std::path::PathBuf::from(&config.reference),
+            loaded_intervals: Vec::new(),
+            window_interval_idx: None,
+            window_start: 0,
+            window_end: 0,
+            window_bases: std::sync::Arc::from(&b""[..]),
+            seed12_memo: rustc_hash::FxHashMap::default(),
+            parent_misses: 0,
+            seed12_index: None,
+        }
+    }
+
+    #[inline]
+    fn last_indexed_pos(&self, iv: &LoadedIntervalMeta) -> u32 {
+        if self.chr_len == iv.sequence_end {
+            iv.sequence_end.saturating_sub(16)
+        } else {
+            iv.stored_end
+        }
+    }
+
+    fn ensure_interval_loaded(&mut self, start_val: u32, end_val: u32) {
+        let sequence_start = start_val.saturating_sub(self.total_ext).max(1);
+        let end_ext = end_val.saturating_add(self.total_ext);
+        let sequence_end = if self.chr_len > 0 && end_ext > self.chr_len {
+            self.chr_len
+        } else {
+            end_ext
+        };
+        if self
+            .loaded_intervals
+            .iter()
+            .any(|iv| sequence_start >= iv.sequence_start && sequence_end <= iv.sequence_end)
+        {
+            return;
+        }
+        let stored_end = if self.chr_len == sequence_end {
+            sequence_end
+        } else if sequence_end.saturating_sub(sequence_start) >= 17 {
+            sequence_end - 17
+        } else {
+            sequence_start.saturating_sub(1)
+        };
+        self.loaded_intervals.push(LoadedIntervalMeta {
+            sequence_start,
+            sequence_end,
+            stored_end,
+        });
+    }
+
+    fn slice_for_read(
+        &mut self,
+        read_start: i32,
+        span_end: i32,
+        ext_start_i32: i32,
+        ext_end_i32: i32,
+    ) -> Result<(std::sync::Arc<[u8]>, i32), VardictError> {
+        if self.loaded_intervals.is_empty() {
+            self.ensure_interval_loaded(self.reg_start, self.reg_end);
+        }
+        let ext_start = ext_start_i32.max(1) as u32;
+        let ext_end = ext_end_i32.max(1) as u32;
+        self.ensure_interval_loaded(ext_start, ext_end);
+
+        let candidates = || {
+            self.loaded_intervals.iter().enumerate().map(|(idx, iv)| {
+                let lr_start = iv.sequence_start as i32;
+                let lr_end = iv.stored_end.saturating_add(1) as i32;
+                (idx, *iv, lr_start, lr_end)
+            })
+        };
+        let chosen = candidates()
+            .find(|&(_, _, lr_start, lr_end)| ext_start_i32 >= lr_start && ext_end_i32 <= lr_end)
+            .or_else(|| {
+                candidates()
+                    .find(|&(_, _, lr_start, lr_end)| read_start >= lr_start && span_end <= lr_end)
+            })
+            .or_else(|| {
+                candidates()
+                    .find(|&(_, _, lr_start, lr_end)| span_end > lr_start && read_start < lr_end)
+            })
+            .or_else(|| candidates().next());
+
+        let Some((iv_idx, iv, _, _)) = chosen else {
+            return Ok((std::sync::Arc::from(&b""[..]), 1));
+        };
+        if iv.stored_end < iv.sequence_start {
+            return Ok((std::sync::Arc::from(&b""[..]), iv.sequence_start as i32));
+        }
+
+        let req_start = (ext_start_i32.saturating_sub(self.total_ext as i32))
+            .max(iv.sequence_start as i32) as u32;
+        let req_end =
+            (ext_end_i32.saturating_add(self.total_ext as i32)).min(iv.stored_end as i32) as u32;
+        let req_end = req_end.max(req_start).min(iv.stored_end);
+
+        if self.window_interval_idx != Some(iv_idx)
+            || req_start < self.window_start
+            || req_end > self.window_end
+        {
+            let w_start = req_start.saturating_sub(4096).max(iv.sequence_start);
+            let w_end = w_start
+                .saturating_add(REF_SCAN_WINDOW_BP - 1)
+                .max(req_end.saturating_add(4096))
+                .min(iv.stored_end);
+            let mut bases = crate::reference::fetch_subsequence(
+                &self.fasta_path,
+                &self.chr,
+                crate::types::Pos1(w_start),
+                crate::types::Pos1(w_end),
+            )?;
+            for b in &mut bases {
+                b.make_ascii_uppercase();
+            }
+            self.window_interval_idx = Some(iv_idx);
+            self.window_start = w_start;
+            self.window_end = w_end;
+            self.window_bases = std::sync::Arc::from(bases);
+        }
+
+        Ok((
+            std::sync::Arc::clone(&self.window_bases),
+            self.window_start as i32,
+        ))
+    }
+
+    fn memoize_seed12(&mut self, seed12: [u8; 12], n_intervals: usize, mult: Seed12Multiplicity) {
+        if self.seed12_memo.len() >= MAX_SEED12_MEMO_ENTRIES {
+            self.seed12_memo.clear();
+        }
+        self.seed12_memo.insert(seed12, (n_intervals, mult));
+    }
+
+    fn scan_intervals_for_seed12(
+        &self,
+        seed12: &[u8; 12],
+    ) -> Result<Seed12Multiplicity, VardictError> {
+        let mut mult = Seed12Multiplicity::Absent;
+        'intervals: for (iv_idx, &iv) in self.loaded_intervals.iter().enumerate() {
+            let last_indexed_pos = self.last_indexed_pos(&iv);
+            if last_indexed_pos < iv.sequence_start {
+                continue;
+            }
+            let prev_slice = self.loaded_intervals.get(..iv_idx).unwrap_or(&[]);
+            let mut chunk_start = iv.sequence_start;
+            while chunk_start <= last_indexed_pos {
+                let chunk_last_pos = chunk_start
+                    .saturating_add(SEED_SCAN_CHUNK_BP - 1)
+                    .min(last_indexed_pos);
+                let fetch_end = chunk_last_pos.saturating_add(11).min(iv.sequence_end);
+                let mut chunk_bases = crate::reference::fetch_subsequence(
+                    &self.fasta_path,
+                    &self.chr,
+                    crate::types::Pos1(chunk_start),
+                    crate::types::Pos1(fetch_end),
+                )?;
+                for b in &mut chunk_bases {
+                    b.make_ascii_uppercase();
+                }
+                let n_pos = (chunk_last_pos - chunk_start + 1) as usize;
+                for i in 0..n_pos {
+                    let Some(kmer) = chunk_bases.get(i..i + 12) else {
+                        break;
+                    };
+                    if kmer != seed12 {
+                        continue;
+                    }
+                    let pos = chunk_start + i as u32;
+                    if prev_slice
+                        .iter()
+                        .any(|prev| pos >= prev.sequence_start && pos <= prev.stored_end)
+                    {
+                        continue;
+                    }
+                    mult = match mult {
+                        Seed12Multiplicity::Absent => Seed12Multiplicity::Unique(pos),
+                        Seed12Multiplicity::Unique(_) | Seed12Multiplicity::Multiple => {
+                            Seed12Multiplicity::Multiple
+                        }
+                    };
+                    if mult == Seed12Multiplicity::Multiple {
+                        break 'intervals;
+                    }
+                }
+                if chunk_last_pos == last_indexed_pos {
+                    break;
+                }
+                chunk_start = chunk_last_pos + 1;
+            }
+        }
+        Ok(mult)
+    }
+
+    fn ensure_seed12_indexed(&mut self) -> Result<(), VardictError> {
+        if self.seed12_index.is_none() {
+            self.seed12_index = Some(LazySeed12Index {
+                indexed_intervals_len: 0,
+                acgt_counts: vec![0u8; 4 * 1024 * 1024],
+                non_acgt: rustc_hash::FxHashMap::default(),
+                non_acgt_complete: true,
+            });
+        }
+        let total_ivs = self.loaded_intervals.len();
+        let start_iv = self
+            .seed12_index
+            .as_ref()
+            .map_or(0, |idx| idx.indexed_intervals_len);
+        for iv_idx in start_iv..total_ivs {
+            let Some(&iv) = self.loaded_intervals.get(iv_idx) else {
+                break;
+            };
+            let last_indexed_pos = self.last_indexed_pos(&iv);
+            if last_indexed_pos >= iv.sequence_start {
+                let mut chunk_start = iv.sequence_start;
+                while chunk_start <= last_indexed_pos {
+                    let chunk_last_pos = chunk_start
+                        .saturating_add(SEED_SCAN_CHUNK_BP - 1)
+                        .min(last_indexed_pos);
+                    let fetch_end = chunk_last_pos.saturating_add(11).min(iv.sequence_end);
+                    let mut chunk_bases = crate::reference::fetch_subsequence(
+                        &self.fasta_path,
+                        &self.chr,
+                        crate::types::Pos1(chunk_start),
+                        crate::types::Pos1(fetch_end),
+                    )?;
+                    for b in &mut chunk_bases {
+                        b.make_ascii_uppercase();
+                    }
+                    let n_pos = (chunk_last_pos - chunk_start + 1) as usize;
+                    let prev_slice = self.loaded_intervals.get(..iv_idx).unwrap_or(&[]);
+                    let mut rolling_code = 0u32;
+                    let mut valid_run = 0u32;
+                    for (bi, &b) in chunk_bases.iter().enumerate() {
+                        if let Some(bits) = acgt_bits(b) {
+                            rolling_code = ((rolling_code << 2) | bits) & 0xFF_FFFF;
+                            valid_run = valid_run.saturating_add(1);
+                        } else {
+                            valid_run = 0;
+                        }
+                        if bi < 11 {
+                            continue;
+                        }
+                        let i = bi - 11;
+                        if i >= n_pos {
+                            break;
+                        }
+                        let pos = chunk_start + i as u32;
+                        if prev_slice
+                            .iter()
+                            .any(|prev| pos >= prev.sequence_start && pos <= prev.stored_end)
+                        {
+                            continue;
+                        }
+                        if let Some(idx_mut) = self.seed12_index.as_mut() {
+                            if valid_run >= 12 {
+                                let code = rolling_code as usize;
+                                let shift = (code & 3) << 1;
+                                if let Some(slot) = idx_mut.acgt_counts.get_mut(code >> 2) {
+                                    let cur = (*slot >> shift) & 0b11;
+                                    if cur < 2 {
+                                        *slot = (*slot & !(0b11 << shift)) | ((cur + 1) << shift);
+                                    }
+                                }
+                            } else if let Some(kmer_slice) = chunk_bases.get(i..i + 12) {
+                                if let Ok(kmer) = <[u8; 12]>::try_from(kmer_slice) {
+                                    if let Some(cur) = idx_mut.non_acgt.get_mut(&kmer) {
+                                        *cur = match *cur {
+                                            Seed12Multiplicity::Absent => {
+                                                Seed12Multiplicity::Unique(pos)
+                                            }
+                                            Seed12Multiplicity::Unique(_)
+                                            | Seed12Multiplicity::Multiple => {
+                                                Seed12Multiplicity::Multiple
+                                            }
+                                        };
+                                    } else if idx_mut.non_acgt.len() < MAX_NON_ACGT_SEED12_ENTRIES {
+                                        idx_mut
+                                            .non_acgt
+                                            .insert(kmer, Seed12Multiplicity::Unique(pos));
+                                    } else {
+                                        idx_mut.non_acgt_complete = false;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if chunk_last_pos == last_indexed_pos {
+                        break;
+                    }
+                    chunk_start = chunk_last_pos + 1;
+                }
+            }
+            if let Some(idx_mut) = self.seed12_index.as_mut() {
+                idx_mut.indexed_intervals_len = iv_idx + 1;
+            }
+        }
+        Ok(())
+    }
+
+    fn locate_unique_in_local_band(
+        &self,
+        seed12: &[u8; 12],
+        local_lo: u32,
+        band_hi: u32,
+    ) -> Result<Option<u32>, VardictError> {
+        if let Some(win_iv_idx) = self.window_interval_idx {
+            if let Some(win_iv) = self.loaded_intervals.get(win_iv_idx) {
+                let win_last_idx = self.last_indexed_pos(win_iv);
+                if local_lo >= self.window_start && band_hi.saturating_add(11) <= self.window_end {
+                    let eff_hi = band_hi.min(win_last_idx);
+                    if local_lo <= eff_hi {
+                        let start_off = (local_lo - self.window_start) as usize;
+                        let end_off = (eff_hi - self.window_start) as usize + 12;
+                        if let Some(sub) = self.window_bases.get(start_off..end_off) {
+                            for (off, w) in sub.windows(12).enumerate() {
+                                if w == seed12 {
+                                    return Ok(Some(local_lo + off as u32));
+                                }
+                            }
+                        }
+                    }
+                    return Ok(None);
+                }
+            }
+        }
+        for (iv_idx, &iv) in self.loaded_intervals.iter().enumerate() {
+            let last_indexed_pos = self.last_indexed_pos(&iv);
+            let scan_lo = local_lo.max(iv.sequence_start);
+            let scan_hi = band_hi.min(last_indexed_pos);
+            if scan_lo > scan_hi {
+                continue;
+            }
+            let prev_slice = self.loaded_intervals.get(..iv_idx).unwrap_or(&[]);
+            let mut chunk_start = scan_lo;
+            while chunk_start <= scan_hi {
+                let chunk_last_pos = chunk_start
+                    .saturating_add(SEED_SCAN_CHUNK_BP - 1)
+                    .min(scan_hi);
+                let fetch_end = chunk_last_pos.saturating_add(11).min(iv.sequence_end);
+                let mut chunk_bases = crate::reference::fetch_subsequence(
+                    &self.fasta_path,
+                    &self.chr,
+                    crate::types::Pos1(chunk_start),
+                    crate::types::Pos1(fetch_end),
+                )?;
+                for b in &mut chunk_bases {
+                    b.make_ascii_uppercase();
+                }
+                let n_pos = (chunk_last_pos - chunk_start + 1) as usize;
+                for i in 0..n_pos {
+                    let Some(kmer) = chunk_bases.get(i..i + 12) else {
+                        break;
+                    };
+                    if kmer == seed12 {
+                        let pos = chunk_start + i as u32;
+                        if !prev_slice
+                            .iter()
+                            .any(|prev| pos >= prev.sequence_start && pos <= prev.stored_end)
+                        {
+                            return Ok(Some(pos));
+                        }
+                    }
+                }
+                if chunk_last_pos == scan_hi {
+                    break;
+                }
+                chunk_start = chunk_last_pos + 1;
+            }
+        }
+        Ok(None)
+    }
+
+    fn unique_seed12_pos(
+        &mut self,
+        rc_seed: &[u8],
+        read_start: i32,
+        span_end: i32,
+        qlen: i32,
+        cur_max: i32,
+    ) -> Result<Option<u32>, VardictError> {
+        let Ok(seed12) = <[u8; 12]>::try_from(rc_seed) else {
+            return Ok(None);
+        };
+        let n_intervals = self.loaded_intervals.len();
+        if let Some(&(cached_n, mult)) = self.seed12_memo.get(&seed12) {
+            if cached_n == n_intervals || mult == Seed12Multiplicity::Multiple {
+                return Ok(match mult {
+                    Seed12Multiplicity::Unique(p) => Some(p),
+                    Seed12Multiplicity::Absent | Seed12Multiplicity::Multiple => None,
+                });
+            }
+        }
+
+        // Fast local necessary-condition check: CigarModifier only uses a unique seed position
+        // when `(this.position - ref_pos).abs() < 2 * max_read_length`, where `this.position`
+        // lies in `[read_start - qlen, span_end]`.
+        let local_lo = read_start
+            .saturating_sub(qlen)
+            .saturating_sub(cur_max.saturating_mul(2))
+            .max(1) as u32;
+        let band_hi = span_end.saturating_add(cur_max.saturating_mul(2)).max(1) as u32;
+        if let Some(win_iv_idx) = self.window_interval_idx {
+            if let Some(win_iv) = self.loaded_intervals.get(win_iv_idx) {
+                let win_last_idx = self.last_indexed_pos(win_iv);
+                if local_lo >= self.window_start && band_hi.saturating_add(11) <= self.window_end {
+                    let max_end_off = win_last_idx
+                        .saturating_sub(self.window_start)
+                        .saturating_add(12) as usize;
+                    let win_slice = self
+                        .window_bases
+                        .get(..max_end_off.min(self.window_bases.len()))
+                        .unwrap_or(&self.window_bases);
+                    let mut local_hits = 0u32;
+                    for w in win_slice.windows(12) {
+                        if w == seed12 {
+                            local_hits += 1;
+                            if local_hits >= 2 {
+                                break;
+                            }
+                        }
+                    }
+                    if local_hits == 0 {
+                        return Ok(None);
+                    }
+                    if local_hits >= 2 {
+                        self.memoize_seed12(seed12, n_intervals, Seed12Multiplicity::Multiple);
+                        return Ok(None);
+                    }
+                }
+            }
+        }
+
+        self.parent_misses = self.parent_misses.saturating_add(1);
+        if self.parent_misses == 1 {
+            let mult = self.scan_intervals_for_seed12(&seed12)?;
+            self.memoize_seed12(seed12, n_intervals, mult);
+            return Ok(match mult {
+                Seed12Multiplicity::Unique(p) => Some(p),
+                Seed12Multiplicity::Absent | Seed12Multiplicity::Multiple => None,
+            });
+        }
+
+        self.ensure_seed12_indexed()?;
+        if let Some(code) = encode_acgt12(&seed12) {
+            let cnt = self
+                .seed12_index
+                .as_ref()
+                .and_then(|idx| idx.acgt_counts.get(code >> 2))
+                .map_or(0, |&slot| (slot >> ((code & 3) << 1)) & 0b11);
+            return match cnt {
+                0 => {
+                    self.memoize_seed12(seed12, n_intervals, Seed12Multiplicity::Absent);
+                    Ok(None)
+                }
+                1 => {
+                    if let Some(pos) =
+                        self.locate_unique_in_local_band(&seed12, local_lo, band_hi)?
+                    {
+                        self.memoize_seed12(seed12, n_intervals, Seed12Multiplicity::Unique(pos));
+                        Ok(Some(pos))
+                    } else {
+                        Ok(None)
+                    }
+                }
+                _ => {
+                    self.memoize_seed12(seed12, n_intervals, Seed12Multiplicity::Multiple);
+                    Ok(None)
+                }
+            };
+        }
+
+        let non_acgt_lookup = self.seed12_index.as_ref().and_then(|idx| {
+            idx.non_acgt_complete.then(|| {
+                idx.non_acgt
+                    .get(&seed12)
+                    .copied()
+                    .unwrap_or(Seed12Multiplicity::Absent)
+            })
+        });
+        let mult = match non_acgt_lookup {
+            Some(m) => m,
+            None => self.scan_intervals_for_seed12(&seed12)?,
+        };
+        self.memoize_seed12(seed12, n_intervals, mult);
+        Ok(match mult {
+            Seed12Multiplicity::Unique(p) => Some(p),
+            Seed12Multiplicity::Absent | Seed12Multiplicity::Multiple => None,
+        })
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn replay_prescan_candidate(
+    bam_idx: usize,
+    total_bams: usize,
+    r_start_u32: u32,
+    read_end: i32,
+    insertion_deletion_length: u32,
+    orig_cigar: &[(u32, noodles::sam::alignment::record::cigar::op::Kind)],
+    sequence: &mut Vec<u8>,
+    quality_scores: &mut Vec<u8>,
+    same_start_prefix: &[i32],
+    reg_tiles: &[crate::regions::Tile],
+    steps_per_tile: &mut [Vec<MaxRlStep>],
+    cur_max: &mut i32,
+    scanner: &mut BoundedParentRefScanner,
+    cigar_elements: &mut Vec<(u32, noodles::sam::alignment::record::cigar::op::Kind)>,
+    cigar_str: &mut String,
+    config: &config::Config,
+) -> Result<(), VardictError> {
+    use noodles::sam::alignment::record::cigar::op::Kind as CigarKind;
+
+    let read_start = r_start_u32 as i32;
+    cigar_elements.clear();
+    cigar_elements.extend_from_slice(orig_cigar);
+
+    if config.realign == 1 {
+        let qlen = sequence.len() as i32;
+        let span_end = read_end.max(read_start.saturating_add(qlen));
+        let ext_start_i32 = read_start.saturating_sub(qlen);
+        let ext_end_i32 = span_end.saturating_add(qlen);
+        let (ref_slice_arc, ref_start) =
+            scanner.slice_for_read(read_start, span_end, ext_start_i32, ext_end_i32)?;
+        cigar_str.clear();
+        crate::bam::push_cigar_string(cigar_str, cigar_elements);
+        let max_snap = *cur_max;
+        let mut seed_err: Option<VardictError> = None;
+        let mut seed_lookup = |rc_seed: &[u8]| -> Option<u32> {
+            match scanner.unique_seed12_pos(rc_seed, read_start, span_end, qlen, max_snap) {
+                Ok(pos) => pos,
+                Err(e) => {
+                    if seed_err.is_none() {
+                        seed_err = Some(e);
+                    }
+                    None
+                }
+            }
+        };
+        let modifier = crate::cigar::modify::CigarModifier::with_seed_fn(
+            read_start,
+            std::mem::take(cigar_str),
+            std::mem::take(sequence),
+            std::mem::take(quality_scores),
+            &ref_slice_arc,
+            ref_start,
+            &mut seed_lookup,
+            insertion_deletion_length as i32,
+            max_snap,
+            config,
+        );
+        let mod_res = modifier.modify_cigar();
+        if let Some(e) = seed_err {
+            return Err(e);
+        }
+        match mod_res {
+            Ok(modified) => {
+                if crate::cigar::parse_cigar_into(&modified.cigar, cigar_elements).is_none() {
+                    cigar_elements.clear();
+                    cigar_elements.extend_from_slice(orig_cigar);
+                }
+                *cigar_str = modified.cigar;
+                *sequence = modified.query_seq;
+                *quality_scores = modified.query_qual;
+            }
+            Err(_) => return Ok(()),
+        }
+    }
+
+    if cigar_elements.len() >= 2 {
+        if let (Some(&(len_first, CigarKind::SoftClip)), Some(&(len_last, CigarKind::SoftClip))) =
+            (cigar_elements.first(), cigar_elements.last())
+        {
+            if (10..=99).contains(&len_first) && len_last >= 10 {
+                return Ok(());
+            }
+        }
+    }
+
+    let read_len_match_ins = crate::cigar::parse::get_match_insertion_length(cigar_elements);
+    if config.minmatch != 0 && read_len_match_ins < config.minmatch {
+        return Ok(());
+    }
+    let total_length_including_soft_clipped =
+        crate::cigar::parse::get_soft_clipped_length(cigar_elements);
+    if total_length_including_soft_clipped > (*cur_max).max(0) as u32 {
+        *cur_max = total_length_including_soft_clipped as i32;
+        for (tile, steps) in reg_tiles.iter().zip(steps_per_tile.iter_mut()) {
+            if r_start_u32 <= tile.end.0 || bam_idx + 1 < total_bams {
+                let prev_ov = same_start_prefix
+                    .iter()
+                    .filter(|&&e| e > tile.start.0 as i32)
+                    .count();
+                let self_ov = usize::from(read_end > tile.start.0 as i32);
+                steps.push(MaxRlStep {
+                    bam_idx,
+                    read_start: r_start_u32,
+                    same_start_overlap_before: prev_ov + self_ov,
+                    new_max: *cur_max,
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn stream_band_sequential(
+    bam_path: &str,
+    bam_idx: usize,
+    total_bams: usize,
+    reg: &crate::regions::Region,
+    reg_tiles: &[crate::regions::Tile],
+    band_idx: usize,
+    band_lo: u32,
+    band_hi: u32,
+    steps_per_tile: &mut [Vec<MaxRlStep>],
+    cur_max: &mut i32,
+    scanner: &mut BoundedParentRefScanner,
+    cigar_elements: &mut Vec<(u32, noodles::sam::alignment::record::cigar::op::Kind)>,
+    cigar_str: &mut String,
+    config: &config::Config,
+) -> Result<bool, VardictError> {
+    let query_start = if band_idx == 0 {
+        reg.start.to_zero_based()
+    } else {
+        crate::types::Pos1(band_lo).to_zero_based()
+    };
+    let query_end = crate::types::Pos0(band_hi);
+    let mut feed = crate::bam::query_region_iter(
+        Path::new(bam_path),
+        &reg.chr,
+        query_start,
+        query_end,
+        config,
+    )?;
+    let mut preprocessor = crate::bam::RecordPreprocessor::new();
+    let mut r = crate::bam::SamRecord::new();
+    let mut any_passed = false;
+    let mut cur_pos: Option<u32> = None;
+    let mut same_start_ends: Vec<i32> = Vec::new();
+    while feed.next_into(&mut r)? {
+        let r_start_u32 = r.alignment_start.map(|p| p.0).unwrap_or(0);
+        if band_idx > 0 && r_start_u32 < band_lo {
+            continue;
+        }
+        if r_start_u32 > band_hi {
+            break;
+        }
+        let read_start = r_start_u32 as i32;
+        let read_end = record_read_end(&r, read_start);
+        let overlaps_reg = read_start <= reg.end.0 as i32 && read_end > reg.start.0 as i32;
+        if cur_pos != Some(r_start_u32) {
+            cur_pos = Some(r_start_u32);
+            same_start_ends.clear();
+        }
+        let mut preprocessed = false;
+        if config.dedup || (bam_idx > 0 && !any_passed) {
+            if !preprocessor.preprocess_record(&r, config) {
+                if overlaps_reg {
+                    same_start_ends.push(read_end);
+                }
+                continue;
+            }
+            any_passed = true;
+            preprocessed = true;
+        }
+        if crate::cigar::parse::get_soft_clipped_length(&r.cigar) <= (*cur_max).max(0) as u32 {
+            if overlaps_reg {
+                same_start_ends.push(read_end);
+            }
+            continue;
+        }
+        if !preprocessed && !preprocessor.preprocess_record(&r, config) {
+            if overlaps_reg {
+                same_start_ends.push(read_end);
+            }
+            continue;
+        }
+        any_passed = true;
+        if !overlaps_reg {
+            continue;
+        }
+        let insertion_deletion_length =
+            crate::cigar::parse::get_insertion_deletion_length(&r.cigar);
+        if let Some(nm_val) = r.nm {
+            let total_mismatches =
+                nm_val.saturating_sub(i32::try_from(insertion_deletion_length).unwrap_or(i32::MAX));
+            if total_mismatches > i32::try_from(config.max_mismatches).unwrap_or(i32::MAX) {
+                same_start_ends.push(read_end);
+                continue;
+            }
+        }
+        replay_prescan_candidate(
+            bam_idx,
+            total_bams,
+            r_start_u32,
+            read_end,
+            insertion_deletion_length,
+            &r.cigar,
+            &mut r.sequence,
+            &mut r.quality_scores,
+            &same_start_ends,
+            reg_tiles,
+            steps_per_tile,
+            cur_max,
+            scanner,
+            cigar_elements,
+            cigar_str,
+            config,
+        )?;
+        same_start_ends.push(read_end);
+    }
+    Ok(any_passed)
+}
+
+#[derive(Debug)]
+struct BandCandidate {
+    group_idx: u32,
+    prefix_len: usize,
+    read_start: u32,
+    read_end: i32,
+    insertion_deletion_length: u32,
+    cigar: Vec<(u32, noodles::sam::alignment::record::cigar::op::Kind)>,
+    sequence: Vec<u8>,
+    quality_scores: Vec<u8>,
+}
+
+enum BandScan {
+    Candidates {
+        any_passed: bool,
+        groups: Vec<Vec<i32>>,
+        candidates: Vec<BandCandidate>,
+    },
+    FallbackSequential,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn scan_band_candidates(
+    bam_path: &str,
+    bam_idx: usize,
+    reg: &crate::regions::Region,
+    band_idx: usize,
+    band_lo: u32,
+    band_hi: u32,
+    seed_max_read_length: i32,
+    max_band_candidate_bytes: usize,
+    config: &config::Config,
+) -> Result<BandScan, VardictError> {
+    use noodles::sam::alignment::record::cigar::op::Kind as CigarKind;
+
+    let query_start = if band_idx == 0 {
+        reg.start.to_zero_based()
+    } else {
+        crate::types::Pos1(band_lo).to_zero_based()
+    };
+    let query_end = crate::types::Pos0(band_hi);
+    let mut feed = crate::bam::query_region_iter(
+        Path::new(bam_path),
+        &reg.chr,
+        query_start,
+        query_end,
+        config,
+    )?;
+
+    let mut preprocessor = crate::bam::RecordPreprocessor::new();
+    let mut r = crate::bam::SamRecord::new();
+    let mut local_min_max = seed_max_read_length.max(0) as u32;
+    let mut band_any_passed = false;
+    let mut cur_pos: Option<u32> = None;
+    let mut cur_same_start_ends: Vec<i32> = Vec::new();
+    let mut cur_group_idx: Option<u32> = None;
+    let mut cur_group_max_prefix: usize = 0;
+    let mut groups: Vec<Vec<i32>> = Vec::new();
+    let mut candidates: Vec<BandCandidate> = Vec::new();
+    let mut candidate_bytes: usize = 0;
+
+    let push_same_start_end =
+        |ends: &mut Vec<i32>, read_end: i32, candidate_bytes: usize| -> bool {
+            let next_ends_bytes = ends
+                .len()
+                .saturating_add(1)
+                .saturating_mul(std::mem::size_of::<i32>());
+            if candidate_bytes.saturating_add(next_ends_bytes) > max_band_candidate_bytes {
+                return false;
+            }
+            ends.push(read_end);
+            true
+        };
+
+    while feed.next_into(&mut r)? {
+        let r_start_u32 = r.alignment_start.map(|p| p.0).unwrap_or(0);
+        if band_idx > 0 && r_start_u32 < band_lo {
+            continue;
+        }
+        if r_start_u32 > band_hi {
+            break;
+        }
+        let read_start = r_start_u32 as i32;
+        let read_end = record_read_end(&r, read_start);
+        let overlaps_reg = read_start <= reg.end.0 as i32 && read_end > reg.start.0 as i32;
+
+        if cur_pos != Some(r_start_u32) {
+            if let Some(g_idx) = cur_group_idx.take() {
+                cur_same_start_ends.truncate(cur_group_max_prefix);
+                let grp_bytes = cur_same_start_ends
+                    .len()
+                    .saturating_mul(std::mem::size_of::<i32>());
+                candidate_bytes = candidate_bytes.saturating_add(grp_bytes);
+                if candidate_bytes > max_band_candidate_bytes {
+                    return Ok(BandScan::FallbackSequential);
+                }
+                if let Some(slot) = groups.get_mut(g_idx as usize) {
+                    *slot = std::mem::take(&mut cur_same_start_ends);
+                }
+            } else {
+                cur_same_start_ends.clear();
+            }
+            cur_pos = Some(r_start_u32);
+            cur_group_max_prefix = 0;
+        }
+
+        let mut preprocessed = false;
+        if config.dedup || (bam_idx > 0 && !band_any_passed) {
+            if !preprocessor.preprocess_record(&r, config) {
+                if overlaps_reg
+                    && !push_same_start_end(&mut cur_same_start_ends, read_end, candidate_bytes)
+                {
+                    return Ok(BandScan::FallbackSequential);
+                }
+                continue;
+            }
+            band_any_passed = true;
+            preprocessed = true;
+        }
+        let soft_clipped_len = crate::cigar::parse::get_soft_clipped_length(&r.cigar);
+        if soft_clipped_len <= local_min_max {
+            if overlaps_reg
+                && !push_same_start_end(&mut cur_same_start_ends, read_end, candidate_bytes)
+            {
+                return Ok(BandScan::FallbackSequential);
+            }
+            continue;
+        }
+        if !preprocessed && !preprocessor.preprocess_record(&r, config) {
+            if overlaps_reg
+                && !push_same_start_end(&mut cur_same_start_ends, read_end, candidate_bytes)
+            {
+                return Ok(BandScan::FallbackSequential);
+            }
+            continue;
+        }
+        band_any_passed = true;
+
+        if !overlaps_reg {
+            continue;
+        }
+
+        let insertion_deletion_length =
+            crate::cigar::parse::get_insertion_deletion_length(&r.cigar);
+        if let Some(nm_val) = r.nm {
+            let total_mismatches =
+                nm_val.saturating_sub(i32::try_from(insertion_deletion_length).unwrap_or(i32::MAX));
+            if total_mismatches > i32::try_from(config.max_mismatches).unwrap_or(i32::MAX) {
+                if !push_same_start_end(&mut cur_same_start_ends, read_end, candidate_bytes) {
+                    return Ok(BandScan::FallbackSequential);
+                }
+                continue;
+            }
+        }
+
+        let g_idx = match cur_group_idx {
+            Some(idx) => idx,
+            None => {
+                let idx = u32::try_from(groups.len()).unwrap_or(u32::MAX);
+                if idx == u32::MAX {
+                    return Ok(BandScan::FallbackSequential);
+                }
+                groups.push(Vec::new());
+                cur_group_idx = Some(idx);
+                idx
+            }
+        };
+        let prefix_len = cur_same_start_ends.len();
+        cur_group_max_prefix = cur_group_max_prefix.max(prefix_len);
+
+        let cand_cost = std::mem::size_of::<BandCandidate>()
+            .saturating_add(
+                r.cigar
+                    .len()
+                    .saturating_mul(std::mem::size_of::<(u32, CigarKind)>()),
+            )
+            .saturating_add(if config.realign == 1 {
+                r.sequence.len().saturating_add(r.quality_scores.len())
+            } else {
+                0
+            });
+        let live_grp_bytes = cur_same_start_ends
+            .len()
+            .saturating_mul(std::mem::size_of::<i32>());
+        candidate_bytes = candidate_bytes.saturating_add(cand_cost);
+        if candidate_bytes.saturating_add(live_grp_bytes) > max_band_candidate_bytes {
+            return Ok(BandScan::FallbackSequential);
+        }
+
+        if let &[(len, CigarKind::Match)] = r.cigar.as_slice() {
+            if i32::try_from(len).is_ok_and(|m| m > 0) {
+                let guaranteed_noop = (config.realign == 0
+                    && len > 0
+                    && (config.minmatch == 0 || len >= config.minmatch))
+                    || (len > 6
+                        && (config.minmatch == 0 || len.saturating_sub(6) >= config.minmatch));
+                if guaranteed_noop && len > local_min_max {
+                    local_min_max = len;
+                }
+            }
+        }
+
+        candidates.push(BandCandidate {
+            group_idx: g_idx,
+            prefix_len,
+            read_start: r_start_u32,
+            read_end,
+            insertion_deletion_length,
+            cigar: r.cigar.clone(),
+            sequence: if config.realign == 1 {
+                std::mem::take(&mut r.sequence)
+            } else {
+                Vec::new()
+            },
+            quality_scores: if config.realign == 1 {
+                std::mem::take(&mut r.quality_scores)
+            } else {
+                Vec::new()
+            },
+        });
+
+        if !push_same_start_end(&mut cur_same_start_ends, read_end, candidate_bytes) {
+            return Ok(BandScan::FallbackSequential);
+        }
+    }
+
+    if let Some(g_idx) = cur_group_idx.take() {
+        cur_same_start_ends.truncate(cur_group_max_prefix);
+        let grp_bytes = cur_same_start_ends
+            .len()
+            .saturating_mul(std::mem::size_of::<i32>());
+        candidate_bytes = candidate_bytes.saturating_add(grp_bytes);
+        if candidate_bytes > max_band_candidate_bytes {
+            return Ok(BandScan::FallbackSequential);
+        }
+        if let Some(slot) = groups.get_mut(g_idx as usize) {
+            *slot = std::mem::take(&mut cur_same_start_ends);
+        }
+    }
+
+    Ok(BandScan::Candidates {
+        any_passed: band_any_passed,
+        groups,
+        candidates,
+    })
+}
+
+fn build_region_bands(reg: &crate::regions::Region, band_bp: u32) -> Vec<(u32, u32)> {
+    let step = band_bp.max(1);
+    let mut bands = Vec::new();
+    let mut lo = reg.start.0;
+    while lo <= reg.end.0 {
+        let hi = lo.saturating_add(step - 1).min(reg.end.0);
+        bands.push((lo, hi));
+        if hi == reg.end.0 {
+            break;
+        }
+        lo = hi + 1;
+    }
+    bands
+}
+
+type MultiTilePrescanOut = (Vec<Vec<MaxRlStep>>, i32);
+
+#[derive(Clone, Copy)]
+struct PrescanBandTask {
+    m_pos: usize,
+    reg_idx: usize,
+    band_idx: usize,
+    band_lo: u32,
+    band_hi: u32,
+    seed_rl: i32,
+}
+
+/// Flattened single-pool `250 kbp` band pre-scanner across all multi-tile regions (`AR-01`..`AR-05`).
+/// Spawns at most one `run_parallel_batched_for_bam` pool per BAM index (0 pools when
+/// `config.threads <= 1` or `total_bands <= 1`) with zero nested Rayon pools (`AR-04`).
+#[allow(clippy::too_many_arguments)]
+fn scan_multi_regions_max_read_lengths(
+    bam_spec_for_stack: &str,
+    bam_paths: &[String],
+    flat_regions: &[crate::regions::Region],
+    reg_tiles_list: &[Vec<crate::regions::Tile>],
+    multi_idxs: &[usize],
+    initial_max_per_multi: &[i32],
+    config: &config::Config,
+    chromosomes_lengths: &HashMap<String, usize>,
+    band_bp: u32,
+    max_band_candidate_bytes: usize,
+) -> Result<Vec<MultiTilePrescanOut>, VardictError> {
+    if multi_idxs.is_empty() {
+        return Ok(Vec::new());
+    }
+    let bands_per_multi: Vec<Vec<(u32, u32)>> = multi_idxs
+        .iter()
+        .map(|&idx| {
+            flat_regions
+                .get(idx)
+                .map_or_else(Vec::new, |reg| build_region_bands(reg, band_bp))
+        })
+        .collect();
+    let total_bands: usize = bands_per_multi.iter().map(Vec::len).sum();
+
+    if config.threads <= 1 || total_bands <= 1 || bam_paths.is_empty() {
+        return crate::runner::run_with_worker_stack_for_bam(
+            bam_spec_for_stack,
+            || -> Result<Vec<MultiTilePrescanOut>, VardictError> {
+                let mut results = Vec::with_capacity(multi_idxs.len());
+                for (m_pos, &reg_idx) in multi_idxs.iter().enumerate() {
+                    let reg = flat_regions.get(reg_idx).ok_or_else(|| {
+                        VardictError::Parse(format!("Invalid region index {reg_idx}"))
+                    })?;
+                    let reg_tiles = reg_tiles_list.get(reg_idx).ok_or_else(|| {
+                        VardictError::Parse(format!("Invalid region tiles index {reg_idx}"))
+                    })?;
+                    let init_rl = initial_max_per_multi.get(m_pos).copied().unwrap_or(0);
+                    results.push(scan_multi_tile_max_read_lengths(
+                        bam_paths,
+                        reg,
+                        reg_tiles,
+                        config,
+                        chromosomes_lengths,
+                        init_rl,
+                    )?);
+                }
+                Ok(results)
+            },
+        );
+    }
+
+    // Preserve upfront multi-BAM metadata/contig validation parity with sequential pre-scan.
+    if bam_paths.len() > 1 {
+        for &reg_idx in multi_idxs {
+            if let Some(reg) = flat_regions.get(reg_idx) {
+                let qs = reg.start.to_zero_based();
+                let qe = crate::types::Pos0(reg.end.0);
+                for path in bam_paths {
+                    let _ =
+                        crate::bam::query_region_iter(Path::new(path), &reg.chr, qs, qe, config)?;
+                }
+            }
+        }
+    }
+
+    struct MultiRegState {
+        steps_per_tile: Vec<Vec<MaxRlStep>>,
+        cur_max: i32,
+        scanner: BoundedParentRefScanner,
+        active: bool,
+        bam_any_passed: bool,
+    }
+
+    let mut states: Vec<MultiRegState> = Vec::with_capacity(multi_idxs.len());
+    for (m_pos, &reg_idx) in multi_idxs.iter().enumerate() {
+        let reg = flat_regions
+            .get(reg_idx)
+            .ok_or_else(|| VardictError::Parse(format!("Invalid region index {reg_idx}")))?;
+        let reg_tiles = reg_tiles_list
+            .get(reg_idx)
+            .ok_or_else(|| VardictError::Parse(format!("Invalid region tiles index {reg_idx}")))?;
+        let init_rl = initial_max_per_multi.get(m_pos).copied().unwrap_or(0);
+        states.push(MultiRegState {
+            steps_per_tile: vec![Vec::new(); reg_tiles.len()],
+            cur_max: init_rl,
+            scanner: BoundedParentRefScanner::new(reg, chromosomes_lengths, config),
+            active: !reg_tiles.is_empty(),
+            bam_any_passed: false,
+        });
+    }
+
+    let flat_arc = std::sync::Arc::new(flat_regions.to_vec());
+    let total_bams = bam_paths.len();
+    let mut cigar_elements = Vec::new();
+    let mut cigar_str = String::new();
+
+    for (bam_idx, bam_path) in bam_paths.iter().enumerate() {
+        let mut batches: Vec<Vec<PrescanBandTask>> = Vec::new();
+        for (m_pos, &reg_idx) in multi_idxs.iter().enumerate() {
+            let Some(st) = states.get_mut(m_pos) else {
+                continue;
+            };
+            if !st.active {
+                continue;
+            }
+            st.bam_any_passed = false;
+            let seed_rl = st.cur_max;
+            if let Some(bands) = bands_per_multi.get(m_pos) {
+                for (band_idx, &(band_lo, band_hi)) in bands.iter().enumerate() {
+                    batches.push(vec![PrescanBandTask {
+                        m_pos,
+                        reg_idx,
+                        band_idx,
+                        band_lo,
+                        band_hi,
+                        seed_rl,
+                    }]);
+                }
+            }
+        }
+        if batches.is_empty() {
+            break;
+        }
+        let eff_threads = config.threads.min(batches.len());
+        let bam_path_owned = bam_path.clone();
+        let flat_for_worker = std::sync::Arc::clone(&flat_arc);
+        let cfg_for_worker = config.clone();
+
+        crate::runner::run_parallel_batched_for_bam(
+            bam_spec_for_stack,
+            batches,
+            eff_threads,
+            move |task| {
+                let reg = flat_for_worker.get(task.reg_idx).ok_or_else(|| {
+                    VardictError::Parse(format!("Invalid region index {}", task.reg_idx))
+                })?;
+                let scan = scan_band_candidates(
+                    &bam_path_owned,
+                    bam_idx,
+                    reg,
+                    task.band_idx,
+                    task.band_lo,
+                    task.band_hi,
+                    task.seed_rl,
+                    max_band_candidate_bytes,
+                    &cfg_for_worker,
+                )?;
+                Ok((task, scan))
+            },
+            |(task, scan)| {
+                let PrescanBandTask {
+                    m_pos,
+                    reg_idx,
+                    band_idx,
+                    band_lo,
+                    band_hi,
+                    ..
+                } = task;
+                let (Some(reg), Some(reg_tiles), Some(st)) = (
+                    flat_regions.get(reg_idx),
+                    reg_tiles_list.get(reg_idx),
+                    states.get_mut(m_pos),
+                ) else {
+                    return Ok(());
+                };
+                match scan {
+                    BandScan::Candidates {
+                        any_passed,
+                        groups,
+                        candidates,
+                    } => {
+                        st.bam_any_passed |= any_passed;
+                        for mut cand in candidates {
+                            if crate::cigar::parse::get_soft_clipped_length(&cand.cigar)
+                                <= st.cur_max.max(0) as u32
+                            {
+                                continue;
+                            }
+                            let prefix_slice = groups
+                                .get(cand.group_idx as usize)
+                                .and_then(|g| g.get(..cand.prefix_len))
+                                .unwrap_or(&[]);
+                            replay_prescan_candidate(
+                                bam_idx,
+                                total_bams,
+                                cand.read_start,
+                                cand.read_end,
+                                cand.insertion_deletion_length,
+                                &cand.cigar,
+                                &mut cand.sequence,
+                                &mut cand.quality_scores,
+                                prefix_slice,
+                                reg_tiles,
+                                &mut st.steps_per_tile,
+                                &mut st.cur_max,
+                                &mut st.scanner,
+                                &mut cigar_elements,
+                                &mut cigar_str,
+                                config,
+                            )?;
+                        }
+                    }
+                    BandScan::FallbackSequential => {
+                        let seq_passed = crate::runner::run_with_worker_stack_for_bam(
+                            bam_spec_for_stack,
+                            || {
+                                stream_band_sequential(
+                                    bam_path,
+                                    bam_idx,
+                                    total_bams,
+                                    reg,
+                                    reg_tiles,
+                                    band_idx,
+                                    band_lo,
+                                    band_hi,
+                                    &mut st.steps_per_tile,
+                                    &mut st.cur_max,
+                                    &mut st.scanner,
+                                    &mut cigar_elements,
+                                    &mut cigar_str,
+                                    config,
+                                )
+                            },
+                        )?;
+                        st.bam_any_passed |= seq_passed;
+                    }
+                }
+                Ok(())
+            },
+        )?;
+
+        if bam_idx > 0 {
+            for st in &mut states {
+                if st.active && !st.bam_any_passed {
+                    st.active = false;
+                }
+            }
+        }
+    }
+
+    Ok(states
+        .into_iter()
+        .map(|st| (st.steps_per_tile, st.cur_max))
+        .collect())
+}
+
 /// Issue F Part C: For a multi-tile parent region (`reg_tiles.len() > 1`), scan the parent
 /// region in BAM order to compute:
 /// 1. `steps_per_tile[i]`: the exact BAM-ordered `MaxRlStep` trajectory for `reg_tiles[i]`, so
@@ -708,301 +2032,11 @@ fn scan_multi_tile_max_read_lengths(
         )?);
     }
 
-    #[derive(Clone, Copy, Debug)]
-    struct LoadedIntervalMeta {
-        sequence_start: u32,
-        sequence_end: u32,
-        stored_end: u32,
-    }
-
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    enum Seed12Multiplicity {
-        Absent,
-        Unique(u32),
-        Multiple,
-    }
-
-    const REF_SCAN_WINDOW_BP: u32 = 128 * 1024;
-    const SEED_SCAN_CHUNK_BP: u32 = 64 * 1024;
-    const MAX_SEED12_MEMO_ENTRIES: usize = 65_536;
-
-    /// Bounded-memory reference + 12-mer seed scanner for `scan_multi_tile_max_read_lengths`.
-    /// Preserves the exact unpadded parent-region seed scope of an untiled run while keeping
-    /// at most a `128 KiB` sliding reference window and `64 KiB` seed-scan chunk in RAM (`AGENTS.md §10`).
-    struct BoundedParentRefScanner {
-        chr: String,
-        chr_len: u32,
-        total_ext: u32,
-        reg_start: u32,
-        reg_end: u32,
-        fasta_path: std::path::PathBuf,
-        loaded_intervals: Vec<LoadedIntervalMeta>,
-        window_interval_idx: Option<usize>,
-        window_start: u32,
-        window_end: u32,
-        window_bases: std::sync::Arc<[u8]>,
-        seed12_memo: rustc_hash::FxHashMap<[u8; 12], (usize, Seed12Multiplicity)>,
-    }
-
-    impl BoundedParentRefScanner {
-        fn new(
-            reg: &crate::regions::Region,
-            chromosomes_lengths: &HashMap<String, usize>,
-            config: &config::Config,
-        ) -> Self {
-            let chr_len = u32::try_from(chromosomes_lengths.get(&reg.chr).copied().unwrap_or(0))
-                .unwrap_or(u32::MAX);
-            let total_ext = (config.extension.max(0) as u32).saturating_add(config.max_region_len);
-            Self {
-                chr: reg.chr.clone(),
-                chr_len,
-                total_ext,
-                reg_start: reg.start.0,
-                reg_end: reg.end.0,
-                fasta_path: std::path::PathBuf::from(&config.reference),
-                loaded_intervals: Vec::new(),
-                window_interval_idx: None,
-                window_start: 0,
-                window_end: 0,
-                window_bases: std::sync::Arc::from(&b""[..]),
-                seed12_memo: rustc_hash::FxHashMap::default(),
-            }
-        }
-
-        fn ensure_interval_loaded(&mut self, start_val: u32, end_val: u32) {
-            let sequence_start = start_val.saturating_sub(self.total_ext).max(1);
-            let end_ext = end_val.saturating_add(self.total_ext);
-            let sequence_end = if self.chr_len > 0 && end_ext > self.chr_len {
-                self.chr_len
-            } else {
-                end_ext
-            };
-            if self
-                .loaded_intervals
-                .iter()
-                .any(|iv| sequence_start >= iv.sequence_start && sequence_end <= iv.sequence_end)
-            {
-                return;
-            }
-            let stored_end = if self.chr_len == sequence_end {
-                sequence_end
-            } else if sequence_end.saturating_sub(sequence_start) >= 17 {
-                sequence_end - 17
-            } else {
-                sequence_start.saturating_sub(1)
-            };
-            self.loaded_intervals.push(LoadedIntervalMeta {
-                sequence_start,
-                sequence_end,
-                stored_end,
-            });
-        }
-
-        fn slice_for_read(
-            &mut self,
-            read_start: i32,
-            span_end: i32,
-            ext_start_i32: i32,
-            ext_end_i32: i32,
-        ) -> Result<(std::sync::Arc<[u8]>, i32), VardictError> {
-            if self.loaded_intervals.is_empty() {
-                self.ensure_interval_loaded(self.reg_start, self.reg_end);
-            }
-            let ext_start = ext_start_i32.max(1) as u32;
-            let ext_end = ext_end_i32.max(1) as u32;
-            self.ensure_interval_loaded(ext_start, ext_end);
-
-            let candidates = || {
-                self.loaded_intervals.iter().enumerate().map(|(idx, iv)| {
-                    let lr_start = iv.sequence_start as i32;
-                    let lr_end = iv.stored_end.saturating_add(1) as i32;
-                    (idx, *iv, lr_start, lr_end)
-                })
-            };
-            let chosen = candidates()
-                .find(|&(_, _, lr_start, lr_end)| {
-                    ext_start_i32 >= lr_start && ext_end_i32 <= lr_end
-                })
-                .or_else(|| {
-                    candidates().find(|&(_, _, lr_start, lr_end)| {
-                        read_start >= lr_start && span_end <= lr_end
-                    })
-                })
-                .or_else(|| {
-                    candidates().find(|&(_, _, lr_start, lr_end)| {
-                        span_end > lr_start && read_start < lr_end
-                    })
-                })
-                .or_else(|| candidates().next());
-
-            let Some((iv_idx, iv, _, _)) = chosen else {
-                return Ok((std::sync::Arc::from(&b""[..]), 1));
-            };
-            if iv.stored_end < iv.sequence_start {
-                return Ok((std::sync::Arc::from(&b""[..]), iv.sequence_start as i32));
-            }
-
-            let req_start = (ext_start_i32.saturating_sub(self.total_ext as i32))
-                .max(iv.sequence_start as i32) as u32;
-            let req_end = (ext_end_i32.saturating_add(self.total_ext as i32))
-                .min(iv.stored_end as i32) as u32;
-            let req_end = req_end.max(req_start).min(iv.stored_end);
-
-            if self.window_interval_idx != Some(iv_idx)
-                || req_start < self.window_start
-                || req_end > self.window_end
-            {
-                let w_start = req_start.saturating_sub(4096).max(iv.sequence_start);
-                let w_end = w_start
-                    .saturating_add(REF_SCAN_WINDOW_BP - 1)
-                    .max(req_end.saturating_add(4096))
-                    .min(iv.stored_end);
-                let mut bases = crate::reference::fetch_subsequence(
-                    &self.fasta_path,
-                    &self.chr,
-                    crate::types::Pos1(w_start),
-                    crate::types::Pos1(w_end),
-                )?;
-                for b in &mut bases {
-                    b.make_ascii_uppercase();
-                }
-                self.window_interval_idx = Some(iv_idx);
-                self.window_start = w_start;
-                self.window_end = w_end;
-                self.window_bases = std::sync::Arc::from(bases);
-            }
-
-            Ok((
-                std::sync::Arc::clone(&self.window_bases),
-                self.window_start as i32,
-            ))
-        }
-
-        fn unique_seed12_pos(
-            &mut self,
-            rc_seed: &[u8],
-            read_start: i32,
-            span_end: i32,
-            cur_max: i32,
-        ) -> Result<Option<u32>, VardictError> {
-            let Ok(seed12) = <[u8; 12]>::try_from(rc_seed) else {
-                return Ok(None);
-            };
-            let n_intervals = self.loaded_intervals.len();
-            if let Some(&(cached_n, mult)) = self.seed12_memo.get(&seed12) {
-                if cached_n == n_intervals || mult == Seed12Multiplicity::Multiple {
-                    return Ok(match mult {
-                        Seed12Multiplicity::Unique(p) => Some(p),
-                        Seed12Multiplicity::Absent | Seed12Multiplicity::Multiple => None,
-                    });
-                }
-            }
-
-            // Fast local necessary-condition check: CigarModifier only uses a unique seed position
-            // when `(this.position - ref_pos).abs() < 2 * max_read_length`, where `this.position`
-            // lies in `[read_start, span_end]`. If the current window covers that entire local
-            // band and `seed12` occurs 0 times (or >= 2 times) inside the window, a parent-wide
-            // scan can be skipped (or immediately memoized as Multiple).
-            let band_lo = read_start.saturating_sub(cur_max.saturating_mul(2)).max(1) as u32;
-            let band_hi = span_end.saturating_add(cur_max.saturating_mul(2)).max(1) as u32;
-            if self.window_interval_idx.is_some()
-                && band_lo >= self.window_start
-                && band_hi.saturating_add(11) <= self.window_end
-            {
-                let mut local_hits = 0u32;
-                for w in self.window_bases.windows(12) {
-                    if w == seed12 {
-                        local_hits += 1;
-                        if local_hits >= 2 {
-                            break;
-                        }
-                    }
-                }
-                if local_hits == 0 {
-                    return Ok(None);
-                }
-                if local_hits >= 2 {
-                    if self.seed12_memo.len() >= MAX_SEED12_MEMO_ENTRIES {
-                        self.seed12_memo.clear();
-                    }
-                    self.seed12_memo
-                        .insert(seed12, (n_intervals, Seed12Multiplicity::Multiple));
-                    return Ok(None);
-                }
-            }
-
-            let mut mult = Seed12Multiplicity::Absent;
-            'intervals: for (iv_idx, &iv) in self.loaded_intervals.iter().enumerate() {
-                let last_indexed_pos = if self.chr_len == iv.sequence_end {
-                    iv.sequence_end.saturating_sub(16)
-                } else {
-                    iv.stored_end
-                };
-                if last_indexed_pos < iv.sequence_start {
-                    continue;
-                }
-                let mut chunk_start = iv.sequence_start;
-                while chunk_start <= last_indexed_pos {
-                    let chunk_last_pos = chunk_start
-                        .saturating_add(SEED_SCAN_CHUNK_BP - 1)
-                        .min(last_indexed_pos);
-                    let fetch_end = chunk_last_pos.saturating_add(11).min(iv.sequence_end);
-                    let mut chunk_bases = crate::reference::fetch_subsequence(
-                        &self.fasta_path,
-                        &self.chr,
-                        crate::types::Pos1(chunk_start),
-                        crate::types::Pos1(fetch_end),
-                    )?;
-                    for b in &mut chunk_bases {
-                        b.make_ascii_uppercase();
-                    }
-                    let n_pos = (chunk_last_pos - chunk_start + 1) as usize;
-                    for i in 0..n_pos {
-                        let Some(kmer) = chunk_bases.get(i..i + 12) else {
-                            break;
-                        };
-                        if kmer != seed12 {
-                            continue;
-                        }
-                        let pos = chunk_start + i as u32;
-                        let already_covered = self.loaded_intervals[..iv_idx]
-                            .iter()
-                            .any(|prev| pos >= prev.sequence_start && pos <= prev.stored_end);
-                        if already_covered {
-                            continue;
-                        }
-                        mult = match mult {
-                            Seed12Multiplicity::Absent => Seed12Multiplicity::Unique(pos),
-                            Seed12Multiplicity::Unique(_) | Seed12Multiplicity::Multiple => {
-                                Seed12Multiplicity::Multiple
-                            }
-                        };
-                        if mult == Seed12Multiplicity::Multiple {
-                            break 'intervals;
-                        }
-                    }
-                    if chunk_last_pos == last_indexed_pos {
-                        break;
-                    }
-                    chunk_start = chunk_last_pos + 1;
-                }
-            }
-
-            if self.seed12_memo.len() >= MAX_SEED12_MEMO_ENTRIES {
-                self.seed12_memo.clear();
-            }
-            self.seed12_memo.insert(seed12, (n_intervals, mult));
-            Ok(match mult {
-                Seed12Multiplicity::Unique(p) => Some(p),
-                Seed12Multiplicity::Absent | Seed12Multiplicity::Multiple => None,
-            })
-        }
-    }
-
     let mut preprocessor = crate::bam::RecordPreprocessor::new();
     let mut cigar_elements = Vec::new();
     let mut cigar_str = String::new();
     let mut scanner = BoundedParentRefScanner::new(reg, chromosomes_lengths, config);
+    let total_bams = bam_paths.len();
 
     for (idx, mut feed) in feeds.into_iter().enumerate() {
         preprocessor.reset_for_next_bam();
@@ -1030,7 +2064,7 @@ fn scan_multi_tile_max_read_lengths(
                 any_passed = true;
                 preprocessed = true;
             }
-            if crate::cigar::parse::get_soft_clipped_length(&r.cigar) <= cur_max as u32 {
+            if crate::cigar::parse::get_soft_clipped_length(&r.cigar) <= cur_max.max(0) as u32 {
                 if read_start <= reg.end.0 as i32 && read_end > reg.start.0 as i32 {
                     same_start_ends.push(read_end);
                 }
@@ -1059,105 +2093,24 @@ fn scan_multi_tile_max_read_lengths(
                 }
             }
 
-            cigar_elements.clear();
-            cigar_elements.extend_from_slice(&r.cigar);
-
-            if config.realign == 1 {
-                let qlen = r.sequence.len() as i32;
-                let span_end = read_end.max(read_start.saturating_add(qlen));
-                let ext_start_i32 = read_start.saturating_sub(qlen);
-                let ext_end_i32 = span_end.saturating_add(qlen);
-                let (ref_slice_arc, ref_start) =
-                    scanner.slice_for_read(read_start, span_end, ext_start_i32, ext_end_i32)?;
-                cigar_str.clear();
-                crate::bam::push_cigar_string(&mut cigar_str, &cigar_elements);
-                let mut seed_err: Option<VardictError> = None;
-                let mut seed_lookup = |rc_seed: &[u8]| -> Option<u32> {
-                    match scanner.unique_seed12_pos(rc_seed, read_start, span_end, cur_max) {
-                        Ok(pos) => pos,
-                        Err(e) => {
-                            if seed_err.is_none() {
-                                seed_err = Some(e);
-                            }
-                            None
-                        }
-                    }
-                };
-                let modifier = crate::cigar::modify::CigarModifier::with_seed_fn(
-                    read_start,
-                    std::mem::take(&mut cigar_str),
-                    std::mem::take(&mut r.sequence),
-                    std::mem::take(&mut r.quality_scores),
-                    &ref_slice_arc,
-                    ref_start,
-                    &mut seed_lookup,
-                    insertion_deletion_length as i32,
-                    cur_max,
-                    config,
-                );
-                let mod_res = modifier.modify_cigar();
-                if let Some(e) = seed_err {
-                    return Err(e);
-                }
-                match mod_res {
-                    Ok(modified) => {
-                        if crate::cigar::parse_cigar_into(&modified.cigar, &mut cigar_elements)
-                            .is_none()
-                        {
-                            cigar_elements.clear();
-                            cigar_elements.extend_from_slice(&r.cigar);
-                        }
-                        cigar_str = modified.cigar;
-                        r.sequence = modified.query_seq;
-                        r.quality_scores = modified.query_qual;
-                    }
-                    Err(_) => {
-                        same_start_ends.push(read_end);
-                        continue;
-                    }
-                }
-            }
-
-            use noodles::sam::alignment::record::cigar::op::Kind as CigarKind;
-            if cigar_elements.len() >= 2 {
-                if let (
-                    Some(&(len_first, CigarKind::SoftClip)),
-                    Some(&(len_last, CigarKind::SoftClip)),
-                ) = (cigar_elements.first(), cigar_elements.last())
-                {
-                    if (10..=99).contains(&len_first) && len_last >= 10 {
-                        same_start_ends.push(read_end);
-                        continue;
-                    }
-                }
-            }
-
-            let read_len_match_ins =
-                crate::cigar::parse::get_match_insertion_length(&cigar_elements);
-            if config.minmatch != 0 && read_len_match_ins < config.minmatch {
-                same_start_ends.push(read_end);
-                continue;
-            }
-            let total_length_including_soft_clipped =
-                crate::cigar::parse::get_soft_clipped_length(&cigar_elements);
-            if total_length_including_soft_clipped > cur_max as u32 {
-                cur_max = total_length_including_soft_clipped as i32;
-                for (tile, steps) in reg_tiles.iter().zip(steps_per_tile.iter_mut()) {
-                    if r_start_u32 <= tile.end.0 || idx + 1 < bam_paths.len() {
-                        let prev_ov = same_start_ends
-                            .iter()
-                            .filter(|&&e| e > tile.start.0 as i32)
-                            .count();
-                        let self_ov = usize::from(read_end > tile.start.0 as i32);
-                        steps.push(MaxRlStep {
-                            bam_idx: idx,
-                            read_start: r_start_u32,
-                            same_start_overlap_before: prev_ov + self_ov,
-                            new_max: cur_max,
-                        });
-                    }
-                }
-            }
+            replay_prescan_candidate(
+                idx,
+                total_bams,
+                r_start_u32,
+                read_end,
+                insertion_deletion_length,
+                &r.cigar,
+                &mut r.sequence,
+                &mut r.quality_scores,
+                &same_start_ends,
+                reg_tiles,
+                &mut steps_per_tile,
+                &mut cur_max,
+                &mut scanner,
+                &mut cigar_elements,
+                &mut cigar_str,
+                config,
+            )?;
             same_start_ends.push(read_end);
         }
         if idx > 0 && !any_passed {
@@ -3973,66 +4926,27 @@ fn run_with_writer_inner<W: EngineWriter>(
         .enumerate()
         .filter_map(|(i, rt)| (rt.len() > 1 && !config.splice).then_some(i))
         .collect();
-    if multi_idxs.len() > 1 && config.threads > 1 {
-        let flat_arc = std::sync::Arc::new(flat_regions.clone());
-        let reg_tiles_arc = std::sync::Arc::new(reg_tiles_list.clone());
-        let bam_list_arc = std::sync::Arc::new(bam_list.clone());
-        let cfg_clone = config.clone();
-        let chr_lens_arc = std::sync::Arc::new(chromosomes_lengths.clone());
-        crate::runner::run_parallel_for_bam(
+    if !multi_idxs.is_empty() {
+        let init_zeros = vec![0i32; multi_idxs.len()];
+        let scanned = scan_multi_regions_max_read_lengths(
             &config.bam,
-            multi_idxs,
-            config.threads,
-            move |idx| {
-                let reg = flat_arc
-                    .get(idx)
-                    .ok_or_else(|| VardictError::Parse(format!("Invalid region index {idx}")))?;
-                let reg_tiles = reg_tiles_arc.get(idx).ok_or_else(|| {
-                    VardictError::Parse(format!("Invalid region tiles index {idx}"))
-                })?;
-                let (steps_per_tile, final_max_rl) = scan_multi_tile_max_read_lengths(
-                    &bam_list_arc,
-                    reg,
-                    reg_tiles,
-                    &cfg_clone,
-                    &chr_lens_arc,
-                    0,
-                )?;
-                Ok((idx, steps_per_tile, final_max_rl))
-            },
-            |(idx, steps_per_tile, final_max_rl)| {
-                if let Some(reg_tiles) = reg_tiles_list.get(idx) {
-                    for (t, steps) in reg_tiles.iter().zip(steps_per_tile) {
-                        multi_tile_seeds.insert(multi_tile_key(t), (steps, final_max_rl));
-                    }
-                }
-                Ok(())
-            },
+            &bam_list,
+            &flat_regions,
+            &reg_tiles_list,
+            &multi_idxs,
+            &init_zeros,
+            config,
+            &chromosomes_lengths,
+            PRESCAN_BAND_BP,
+            MAX_BAND_CANDIDATE_BYTES,
         )?;
-    } else if !multi_idxs.is_empty() {
-        crate::runner::run_with_worker_stack_for_bam(
-            &config.bam,
-            || -> Result<(), VardictError> {
-                for idx in multi_idxs {
-                    if let (Some(reg), Some(reg_tiles)) =
-                        (flat_regions.get(idx), reg_tiles_list.get(idx))
-                    {
-                        let (steps_per_tile, final_max_rl) = scan_multi_tile_max_read_lengths(
-                            &bam_list,
-                            reg,
-                            reg_tiles,
-                            config,
-                            &chromosomes_lengths,
-                            0,
-                        )?;
-                        for (t, steps) in reg_tiles.iter().zip(steps_per_tile) {
-                            multi_tile_seeds.insert(multi_tile_key(t), (steps, final_max_rl));
-                        }
-                    }
+        for (&idx, (steps_per_tile, final_max_rl)) in multi_idxs.iter().zip(scanned) {
+            if let Some(reg_tiles) = reg_tiles_list.get(idx) {
+                for (t, steps) in reg_tiles.iter().zip(steps_per_tile) {
+                    multi_tile_seeds.insert(multi_tile_key(t), (steps, final_max_rl));
                 }
-                Ok(())
-            },
-        )?;
+            }
+        }
     }
     for reg_tiles in reg_tiles_list {
         tiles.extend(reg_tiles);
@@ -4839,85 +5753,42 @@ fn run_somatic<W: EngineWriter>(
         .enumerate()
         .filter_map(|(i, rt)| (rt.len() > 1).then_some(i))
         .collect();
-    if multi_idxs.len() > 1 && config.threads > 1 {
-        let flat_arc = std::sync::Arc::new(flat_regions.clone());
-        let reg_tiles_arc = std::sync::Arc::new(reg_tiles_list.clone());
-        let bam1_arc = std::sync::Arc::new(bam1_bams.clone());
-        let bam2_arc = std::sync::Arc::new(bam2_bams.clone());
-        let cfg_clone = config.clone();
-        let chr_lens_arc = std::sync::Arc::new(chromosomes_lengths.clone());
-        crate::runner::run_parallel_for_bam(
+    if !multi_idxs.is_empty() {
+        let init_zeros = vec![0i32; multi_idxs.len()];
+        let bam1_scanned = scan_multi_regions_max_read_lengths(
             &config.bam,
-            multi_idxs,
-            config.threads,
-            move |idx| {
-                let reg = flat_arc
-                    .get(idx)
-                    .ok_or_else(|| VardictError::Parse(format!("Invalid region index {idx}")))?;
-                let reg_tiles = reg_tiles_arc.get(idx).ok_or_else(|| {
-                    VardictError::Parse(format!("Invalid region tiles index {idx}"))
-                })?;
-                let (bam1_steps, bam1_final) = scan_multi_tile_max_read_lengths(
-                    &bam1_arc,
-                    reg,
-                    reg_tiles,
-                    &cfg_clone,
-                    &chr_lens_arc,
-                    0,
-                )?;
-                let (bam2_steps, bam2_final) = scan_multi_tile_max_read_lengths(
-                    &bam2_arc,
-                    reg,
-                    reg_tiles,
-                    &cfg_clone,
-                    &chr_lens_arc,
-                    bam1_final,
-                )?;
-                Ok((idx, bam1_steps, bam1_final, bam2_steps, bam2_final))
-            },
-            |(idx, bam1_steps, bam1_final, bam2_steps, bam2_final)| {
-                if let Some(reg_tiles) = reg_tiles_list.get(idx) {
-                    for ((t, s1), s2) in reg_tiles.iter().zip(bam1_steps).zip(bam2_steps) {
-                        multi_tile_seeds
-                            .insert(multi_tile_key(t), (s1, bam1_final, s2, bam2_final));
-                    }
-                }
-                Ok(())
-            },
+            &bam1_bams,
+            &flat_regions,
+            &reg_tiles_list,
+            &multi_idxs,
+            &init_zeros,
+            config,
+            &chromosomes_lengths,
+            PRESCAN_BAND_BP,
+            MAX_BAND_CANDIDATE_BYTES,
         )?;
-    } else if !multi_idxs.is_empty() {
-        crate::runner::run_with_worker_stack_for_bam(
+        let bam1_finals: Vec<i32> = bam1_scanned.iter().map(|&(_, f)| f).collect();
+        let bam2_scanned = scan_multi_regions_max_read_lengths(
             &config.bam,
-            || -> Result<(), VardictError> {
-                for idx in multi_idxs {
-                    if let (Some(reg), Some(reg_tiles)) =
-                        (flat_regions.get(idx), reg_tiles_list.get(idx))
-                    {
-                        let (bam1_steps, bam1_final) = scan_multi_tile_max_read_lengths(
-                            &bam1_bams,
-                            reg,
-                            reg_tiles,
-                            config,
-                            &chromosomes_lengths,
-                            0,
-                        )?;
-                        let (bam2_steps, bam2_final) = scan_multi_tile_max_read_lengths(
-                            &bam2_bams,
-                            reg,
-                            reg_tiles,
-                            config,
-                            &chromosomes_lengths,
-                            bam1_final,
-                        )?;
-                        for ((t, s1), s2) in reg_tiles.iter().zip(bam1_steps).zip(bam2_steps) {
-                            multi_tile_seeds
-                                .insert(multi_tile_key(t), (s1, bam1_final, s2, bam2_final));
-                        }
-                    }
-                }
-                Ok(())
-            },
+            &bam2_bams,
+            &flat_regions,
+            &reg_tiles_list,
+            &multi_idxs,
+            &bam1_finals,
+            config,
+            &chromosomes_lengths,
+            PRESCAN_BAND_BP,
+            MAX_BAND_CANDIDATE_BYTES,
         )?;
+        for ((&idx, (bam1_steps, bam1_final)), (bam2_steps, bam2_final)) in
+            multi_idxs.iter().zip(bam1_scanned).zip(bam2_scanned)
+        {
+            if let Some(reg_tiles) = reg_tiles_list.get(idx) {
+                for ((t, s1), s2) in reg_tiles.iter().zip(bam1_steps).zip(bam2_steps) {
+                    multi_tile_seeds.insert(multi_tile_key(t), (s1, bam1_final, s2, bam2_final));
+                }
+            }
+        }
     }
     for reg_tiles in reg_tiles_list {
         tiles.extend(reg_tiles);
@@ -9425,5 +10296,448 @@ mod tests {
                 std::fs::set_permissions(&ro_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
             }
         }
+    }
+
+    #[test]
+    fn test_multi_band_prescan_and_lazy_seed12_index_parity() {
+        use noodles::core::Position;
+        use noodles::sam::alignment::record::cigar::{op::Kind, Op};
+        use noodles::sam::alignment::record::Flags;
+        use noodles::sam::alignment::record_buf::Cigar;
+        use noodles::sam::alignment::RecordBuf;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let ref_len = 220_000usize;
+        let motif = b"ACGTACGTAGCTAGCTTGCAACGTTAGCATGC";
+        let mut ref_bytes: Vec<u8> = (0..ref_len).map(|i| motif[i % motif.len()]).collect();
+        // Plant repeated 12-mer at 1-based 100 and 190_000
+        ref_bytes[99..111].copy_from_slice(b"CCCGGGTTTAAA");
+        ref_bytes[189_999..190_011].copy_from_slice(b"CCCGGGTTTAAA");
+        // Plant unique N-bearing 12-mer at 1-based 150_000 and unique ACGT 12-mer at 150_050
+        ref_bytes[149_999..150_011].copy_from_slice(b"ACGTNACGTACG");
+        ref_bytes[150_049..150_061].copy_from_slice(b"TTTGGGCCCAAA");
+
+        let fasta_path = dir.path().join("band_ref.fa");
+        let fai_path = dir.path().join("band_ref.fa.fai");
+        std::fs::write(
+            &fasta_path,
+            format!(">chr1\n{}\n", String::from_utf8(ref_bytes.clone()).unwrap()),
+        )
+        .unwrap();
+        std::fs::write(
+            &fai_path,
+            format!("chr1\t{ref_len}\t6\t{ref_len}\t{}\n", ref_len + 1),
+        )
+        .unwrap();
+        let mut chr_lens = HashMap::new();
+        chr_lens.insert("chr1".to_string(), ref_len);
+
+        let mk = |name: &str,
+                  start_1: usize,
+                  flags: Flags,
+                  cigar_ops: &[(usize, Kind)],
+                  seq: Vec<u8>|
+         -> RecordBuf {
+            let cigar: Cigar = cigar_ops
+                .iter()
+                .map(|&(len, kind)| Op::new(kind, len))
+                .collect();
+            let quals = vec![40u8; seq.len()];
+            RecordBuf::builder()
+                .set_name(name)
+                .set_flags(flags)
+                .set_reference_sequence_id(0)
+                .set_alignment_start(Position::try_from(start_1).unwrap())
+                .set_mapping_quality(
+                    noodles::sam::alignment::record::MappingQuality::new(60).unwrap(),
+                )
+                .set_cigar(cigar)
+                .set_sequence(seq.into())
+                .set_quality_scores(quals.into())
+                .build()
+        };
+
+        // Scenario A: AR-01 (L <= 6 and L - 6 < minmatch under realign == 1) + AR-02 (-t dedup at band boundary)
+        let reg_small = crate::regions::Region {
+            chr: "chr1".to_string(),
+            start: crate::types::Pos1(50),
+            end: crate::types::Pos1(450),
+            gene: "G".to_string(),
+            amplicon: None,
+        };
+        let tiles_small = crate::regions::tile(&reg_small, 120, 20);
+        let mut s_a_reads = Vec::new();
+        // Left-straddling read starting < reg_small.start (at 40, 25M -> ends 64 > 50)
+        s_a_reads.push(mk(
+            "left_straddle_25m",
+            40,
+            Flags::empty(),
+            &[(25, Kind::Match)],
+            ref_bytes[39..64].to_vec(),
+        ));
+        // Band 0 (50..=149): at 149 (band boundary), primary 30M + longer 60M duplicate (dropped under -t!)
+        s_a_reads.push(mk(
+            "b0_primary_30m",
+            149,
+            Flags::empty(),
+            &[(30, Kind::Match)],
+            ref_bytes[148..178].to_vec(),
+        ));
+        s_a_reads.push(mk(
+            "b0_dup_60m",
+            149,
+            Flags::empty(),
+            &[(60, Kind::Match)],
+            ref_bytes[148..208].to_vec(),
+        ));
+        // Band 1 (150..=249): at 150 (start of Band 1, must NOT collide with 149's dedup set!)
+        // Put a 36M read whose 3' + 5' 3bp mismatches clip 36M -> 3S30M3S (fails minmatch=32!),
+        // followed by a valid 34M exact-match read (passes minmatch=32 -> max becomes 34, NOT 36!).
+        let mut bad_36 = ref_bytes[149..185].to_vec();
+        for i in [0, 1, 2, 33, 34, 35] {
+            bad_36[i] = if bad_36[i] == b'A' { b'C' } else { b'A' };
+        }
+        s_a_reads.push(mk(
+            "b1_clipped_below_minmatch_36m",
+            150,
+            Flags::empty(),
+            &[(36, Kind::Match)],
+            bad_36,
+        ));
+        s_a_reads.push(mk(
+            "b1_valid_34m",
+            160,
+            Flags::empty(),
+            &[(34, Kind::Match)],
+            ref_bytes[159..193].to_vec(),
+        ));
+        s_a_reads.sort_by_key(|r| r.alignment_start().unwrap().get());
+        let bam_a = dir.path().join("scen_a.bam");
+        write_test_bam(&bam_a, "chr1", ref_len, &s_a_reads);
+
+        let cfg_a = crate::config::Config {
+            reference: fasta_path.to_string_lossy().into_owned(),
+            bam: bam_a.to_string_lossy().into_owned(),
+            sample: "S".to_string(),
+            dedup: true,
+            minmatch: 32,
+            threads: 4,
+            ..Default::default()
+        };
+        let bam_a_paths = vec![bam_a.to_string_lossy().into_owned()];
+        let seq_a = scan_multi_tile_max_read_lengths(
+            &bam_a_paths,
+            &reg_small,
+            &tiles_small,
+            &cfg_a,
+            &chr_lens,
+            0,
+        )
+        .unwrap();
+        let par_a = scan_multi_regions_max_read_lengths(
+            &cfg_a.bam,
+            &bam_a_paths,
+            std::slice::from_ref(&reg_small),
+            std::slice::from_ref(&tiles_small),
+            &[0],
+            &[0],
+            &cfg_a,
+            &chr_lens,
+            100,
+            MAX_BAND_CANDIDATE_BYTES,
+        )
+        .unwrap();
+        assert_eq!(
+            seq_a.1, 34,
+            "36M clipped to 30M (< minmatch=32) and 60M -t dup must be skipped, leaving 34"
+        );
+        assert_eq!(&par_a[0], &seq_a);
+
+        // Also check L <= 6 (all-mismatch 3M -> 0M3S -> JavaThrows) with minmatch = 0
+        let mut s_short6 = vec![
+            mk(
+                "bad_3m",
+                60,
+                Flags::empty(),
+                &[(3, Kind::Match)],
+                vec![b'N'; 3],
+            ),
+            mk(
+                "ok_2m",
+                70,
+                Flags::empty(),
+                &[(2, Kind::Match)],
+                ref_bytes[69..71].to_vec(),
+            ),
+        ];
+        s_short6.sort_by_key(|r| r.alignment_start().unwrap().get());
+        let bam_s6 = dir.path().join("scen_s6.bam");
+        write_test_bam(&bam_s6, "chr1", ref_len, &s_short6);
+        let cfg_s6 = crate::config::Config {
+            reference: fasta_path.to_string_lossy().into_owned(),
+            bam: bam_s6.to_string_lossy().into_owned(),
+            sample: "S".to_string(),
+            minmatch: 0,
+            threads: 4,
+            ..Default::default()
+        };
+        let bam_s6_paths = vec![bam_s6.to_string_lossy().into_owned()];
+        let seq_s6 = scan_multi_tile_max_read_lengths(
+            &bam_s6_paths,
+            &reg_small,
+            &tiles_small,
+            &cfg_s6,
+            &chr_lens,
+            0,
+        )
+        .unwrap();
+        let par_s6 = scan_multi_regions_max_read_lengths(
+            &cfg_s6.bam,
+            &bam_s6_paths,
+            std::slice::from_ref(&reg_small),
+            std::slice::from_ref(&tiles_small),
+            &[0],
+            &[0],
+            &cfg_s6,
+            &chr_lens,
+            100,
+            MAX_BAND_CANDIDATE_BYTES,
+        )
+        .unwrap();
+        assert_eq!(
+            seq_s6.1, 2,
+            "all-mismatch 3M must fail with JavaThrows (0M3S), leaving 2M"
+        );
+        assert_eq!(&par_s6[0], &seq_s6);
+
+        // Scenario B: AR-03 FallbackSequential (tiny max_band_candidate_bytes = 64 on soft-clipped reads)
+        // + AR-02 colon-joined multi-BAM a.bam:b.bam:c.bam
+        let mut sc_reads = Vec::new();
+        for idx in 0..6usize {
+            let pos = 160 + idx * 5;
+            let mlen = 25 + idx * 2;
+            let mut seq = ref_bytes[pos - 1..pos - 1 + mlen].to_vec();
+            seq.extend_from_slice(b"TTTTTTTT");
+            sc_reads.push(mk(
+                &format!("sc_{idx}"),
+                pos,
+                Flags::empty(),
+                &[(mlen, Kind::Match), (8, Kind::SoftClip)],
+                seq,
+            ));
+        }
+        let bam_sc = dir.path().join("scen_sc.bam");
+        write_test_bam(&bam_sc, "chr1", ref_len, &sc_reads);
+        let bam_b_short = dir.path().join("scen_b_short.bam");
+        write_test_bam(
+            &bam_b_short,
+            "chr1",
+            ref_len,
+            &[mk(
+                "b_short_20m",
+                360,
+                Flags::empty(),
+                &[(20, Kind::Match)],
+                ref_bytes[359..379].to_vec(),
+            )],
+        );
+        let bam_b_empty = dir.path().join("scen_b_empty.bam");
+        write_test_bam(&bam_b_empty, "chr1", ref_len, &[]);
+        let bam_c_long = dir.path().join("scen_c_long.bam");
+        write_test_bam(
+            &bam_c_long,
+            "chr1",
+            ref_len,
+            &[mk(
+                "c_long_80m",
+                260,
+                Flags::empty(),
+                &[(80, Kind::Match)],
+                ref_bytes[259..339].to_vec(),
+            )],
+        );
+
+        for multi_paths in [
+            vec![
+                bam_sc.to_string_lossy().into_owned(),
+                bam_b_short.to_string_lossy().into_owned(),
+                bam_c_long.to_string_lossy().into_owned(),
+            ],
+            vec![
+                bam_sc.to_string_lossy().into_owned(),
+                bam_b_empty.to_string_lossy().into_owned(),
+                bam_c_long.to_string_lossy().into_owned(),
+            ],
+        ] {
+            let cfg_m = crate::config::Config {
+                reference: fasta_path.to_string_lossy().into_owned(),
+                bam: multi_paths.join(":"),
+                sample: "S".to_string(),
+                threads: 4,
+                ..Default::default()
+            };
+            let seq_m = scan_multi_tile_max_read_lengths(
+                &multi_paths,
+                &reg_small,
+                &tiles_small,
+                &cfg_m,
+                &chr_lens,
+                0,
+            )
+            .unwrap();
+            let par_m = scan_multi_regions_max_read_lengths(
+                &cfg_m.bam,
+                &multi_paths,
+                std::slice::from_ref(&reg_small),
+                std::slice::from_ref(&tiles_small),
+                &[0],
+                &[0],
+                &cfg_m,
+                &chr_lens,
+                100,
+                64, // forces BandScan::FallbackSequential on soft-clipped Band 1!
+            )
+            .unwrap();
+            assert_eq!(&par_m[0], &seq_m);
+        }
+
+        // Scenario C: AR-05 Lazy 2-bit ACGT + 'N' side-map 12-mer index across >128 KiB parent region
+        // Construct chimeric 3' soft-clipped reads so parent_misses >= 2 exercises LazySeed12Index!
+        let rc12 = |kmer: &[u8; 12]| -> Vec<u8> {
+            let mut v = kmer.to_vec();
+            crate::util::reverse_complement(&mut v);
+            v
+        };
+        let reg_wide = crate::regions::Region {
+            chr: "chr1".to_string(),
+            start: crate::types::Pos1(1),
+            end: crate::types::Pos1(200_000),
+            gene: "G".to_string(),
+            amplicon: None,
+        };
+        let tiles_wide = crate::regions::tile(&reg_wide, 50_000, 500);
+        // Seed cur_max = 100_000 with an ultra-long read at pos 10 so 2 * cur_max = 200_000 > 128 KiB,
+        // forcing BoundedParentRefScanner::unique_seed12_pos past the 128 KiB window fast path!
+        //Wait: let's instead put a 70_000M read at pos 10 (2 * 70_000 = 140_000 > 131_072!) AND chimeric reads of 70_010 bp?
+        // Even simpler: at pos 149_950, cur_max = 40, window_bases covers [145_814..=200_000], and a seed with local_hits == 1
+        // ALWAYS triggers a parent-wide check in BoundedParentRefScanner!
+        // Yes! Look at L912-932: local_hits == 0 or >= 2 returns early, while local_hits == 1 MUST scan parent-wide!
+        let mut seed_reads = Vec::new();
+        seed_reads.push(mk(
+            "seed_init_30m",
+            100,
+            Flags::empty(),
+            &[(30, Kind::Match)],
+            ref_bytes[99..129].to_vec(),
+        ));
+        // Miss #1 (parent_misses == 1): repeated 12-mer CCCGGGTTTAAA (1 hit in local window around 190_000, 2nd hit at 100!) -> NOT stripped (stays 35+14=49)
+        let mut r_rep = ref_bytes[189_949..189_984].to_vec();
+        r_rep.extend_from_slice(&rc12(b"CCCGGGTTTAAA"));
+        r_rep.extend_from_slice(b"GG");
+        seed_reads.push(mk(
+            "chim_rep_49",
+            189_950,
+            Flags::empty(),
+            &[(35, Kind::Match), (14, Kind::SoftClip)],
+            r_rep,
+        ));
+        // Miss #2 (parent_misses == 2 -> builds LazySeed12Index!): unique N-bearing 12-mer ACGTNACGTACG at 150_000 -> stripped from 40+14=54 down to 40!
+        let mut r_n12 = ref_bytes[149_959..149_999].to_vec();
+        r_n12.extend_from_slice(&rc12(b"ACGTNACGTACG"));
+        r_n12.extend_from_slice(b"GG");
+        seed_reads.push(mk(
+            "chim_unique_n_54_stripped_to_40",
+            149_960,
+            Flags::empty(),
+            &[(40, Kind::Match), (14, Kind::SoftClip)],
+            r_n12,
+        ));
+        // Miss #3 (parent_misses == 3 -> queries built LazySeed12Index!): unique ACGT 12-mer TTTGGGCCCAAA at 150_050 -> stripped from 42+14=56 down to 42!
+        let mut r_acgt12 = ref_bytes[150_009..150_051].to_vec();
+        r_acgt12.extend_from_slice(&rc12(b"TTTGGGCCCAAA"));
+        r_acgt12.extend_from_slice(b"GG");
+        seed_reads.push(mk(
+            "chim_unique_acgt_56_stripped_to_42",
+            150_010,
+            Flags::empty(),
+            &[(42, Kind::Match), (14, Kind::SoftClip)],
+            r_acgt12,
+        ));
+        seed_reads.sort_by_key(|r| r.alignment_start().unwrap().get());
+        let bam_seed = dir.path().join("scen_seed.bam");
+        write_test_bam(&bam_seed, "chr1", ref_len, &seed_reads);
+        let cfg_seed = crate::config::Config {
+            reference: fasta_path.to_string_lossy().into_owned(),
+            bam: bam_seed.to_string_lossy().into_owned(),
+            sample: "S".to_string(),
+            threads: 4,
+            ..Default::default()
+        };
+        let bam_seed_paths = vec![bam_seed.to_string_lossy().into_owned()];
+        let seq_seed = scan_multi_tile_max_read_lengths(
+            &bam_seed_paths,
+            &reg_wide,
+            &tiles_wide,
+            &cfg_seed,
+            &chr_lens,
+            0,
+        )
+        .unwrap();
+        let par_seed = scan_multi_regions_max_read_lengths(
+            &cfg_seed.bam,
+            &bam_seed_paths,
+            std::slice::from_ref(&reg_wide),
+            std::slice::from_ref(&tiles_wide),
+            &[0],
+            &[0],
+            &cfg_seed,
+            &chr_lens,
+            50_000,
+            MAX_BAND_CANDIDATE_BYTES,
+        )
+        .unwrap();
+        assert_eq!(
+            seq_seed.1, 49,
+            "unique N-12mer (54->40) and unique ACGT-12mer (56->42) must strip 3' clip while repeated 12mer stays 49"
+        );
+        assert_eq!(&par_seed[0], &seq_seed);
+
+        // Direct AR-05 invariant check on BoundedParentRefScanner:
+        // 1st parent miss keeps seed12_index == None; 2nd parent miss lazily populates seed12_index.
+        let mut direct_scanner = BoundedParentRefScanner::new(&reg_wide, &chr_lens, &cfg_seed);
+        let _ = direct_scanner
+            .slice_for_read(189_950, 190_000, 189_900, 190_050)
+            .unwrap();
+        assert_eq!(
+            direct_scanner
+                .unique_seed12_pos(b"CCCGGGTTTAAA", 189_950, 190_000, 50, 50)
+                .unwrap(),
+            None
+        );
+        assert_eq!(direct_scanner.parent_misses, 1);
+        assert!(
+            direct_scanner.seed12_index.is_none(),
+            "1st parent miss must NOT allocate 4 MiB seed12_index"
+        );
+        let _ = direct_scanner
+            .slice_for_read(149_960, 150_020, 149_910, 150_070)
+            .unwrap();
+        assert_eq!(
+            direct_scanner
+                .unique_seed12_pos(b"ACGTNACGTACG", 149_960, 150_020, 54, 50)
+                .unwrap(),
+            Some(150_000)
+        );
+        assert_eq!(direct_scanner.parent_misses, 2);
+        assert!(
+            direct_scanner.seed12_index.is_some(),
+            "2nd parent miss MUST lazily populate seed12_index"
+        );
+        assert_eq!(
+            direct_scanner
+                .unique_seed12_pos(b"TTTGGGCCCAAA", 150_010, 150_070, 56, 50)
+                .unwrap(),
+            Some(150_050)
+        );
     }
 }
