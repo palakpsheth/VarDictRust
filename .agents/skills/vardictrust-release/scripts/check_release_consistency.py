@@ -74,6 +74,208 @@ def forbid_regex(
         )
 
 
+_ZENSICAL_TOML_TOKEN_RE = re.compile(
+    r"""
+    (?P<ws>[ \t\r\n]+)
+    | (?P<comment>\#[^\n]*)
+    | (?P<ml_basic>\"\"\"[\s\S]*?\"\"\")
+    | (?P<ml_lit>'''[\s\S]*?''')
+    | (?P<basic>\"(?:\\.|[^\"\\\n])*\")
+    | (?P<lit>'[^'\n]*')
+    | (?P<lbrack>\[)
+    | (?P<rbrack>\])
+    | (?P<lbrace>\{)
+    | (?P<rbrace>\})
+    | (?P<eq>=)
+    | (?P<comma>,)
+    | (?P<dot>\.)
+    | (?P<bare>[A-Za-z0-9_-]+)
+    """,
+    re.VERBOSE,
+)
+
+
+def _unescape_toml_basic_str(raw_inner: str) -> str:
+    escapes = {
+        "n": "\n",
+        "r": "\r",
+        "t": "\t",
+        "b": "\b",
+        "f": "\f",
+        '"': '"',
+        "\\": "\\",
+    }
+    out: list[str] = []
+    i = 0
+    n = len(raw_inner)
+    while i < n:
+        ch = raw_inner[i]
+        if ch == "\\" and i + 1 < n:
+            nxt = raw_inner[i + 1]
+            if nxt in escapes:
+                out.append(escapes[nxt])
+                i += 2
+                continue
+            if nxt == "u" and i + 5 < n:
+                out.append(chr(int(raw_inner[i + 2 : i + 6], 16)))
+                i += 6
+                continue
+            if nxt == "U" and i + 9 < n:
+                out.append(chr(int(raw_inner[i + 2 : i + 10], 16)))
+                i += 10
+                continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def parse_zensical_nav_entries(toml_text: str) -> list[tuple[str, str]]:
+    """Extract (title, md_rel_path) leaf entries from [project] nav = [...] in zensical.toml (stdlib-only)."""
+    tokens: list[tuple[str, str]] = []
+    pos = 0
+    n = len(toml_text)
+    while pos < n:
+        m = _ZENSICAL_TOML_TOKEN_RE.match(toml_text, pos)
+        if not m:
+            return []
+        kind = m.lastgroup or ""
+        val = m.group(kind)
+        pos = m.end()
+        if kind not in ("ws", "comment"):
+            tokens.append((kind, val))
+
+    idx = 0
+    total = len(tokens)
+    current_section: tuple[str, ...] = ()
+
+    def peek() -> tuple[str | None, str | None]:
+        return tokens[idx] if idx < total else (None, None)
+
+    def advance() -> tuple[str, str]:
+        nonlocal idx
+        tok = tokens[idx]
+        idx += 1
+        return tok
+
+    def parse_key_seg() -> str:
+        k, v = advance()
+        if k == "bare":
+            return v
+        if k == "basic":
+            return _unescape_toml_basic_str(v[1:-1])
+        if k == "lit":
+            return v[1:-1]
+        raise ValueError(f"Expected key segment, got {k}:{v!r}")
+
+    def parse_dotted() -> tuple[str, ...]:
+        parts = [parse_key_seg()]
+        while peek()[0] == "dot":
+            advance()
+            parts.append(parse_key_seg())
+        return tuple(parts)
+
+    def parse_val() -> object:
+        k, v = peek()
+        if k == "ml_basic":
+            advance()
+            assert v is not None
+            inner = v[3:-3]
+            if inner.startswith("\r\n"):
+                inner = inner[2:]
+            elif inner.startswith("\n"):
+                inner = inner[1:]
+            return _unescape_toml_basic_str(inner)
+        if k == "ml_lit":
+            advance()
+            assert v is not None
+            inner = v[3:-3]
+            if inner.startswith("\r\n"):
+                inner = inner[2:]
+            elif inner.startswith("\n"):
+                inner = inner[1:]
+            return inner
+        if k == "basic":
+            advance()
+            assert v is not None
+            return _unescape_toml_basic_str(v[1:-1])
+        if k == "lit":
+            advance()
+            assert v is not None
+            return v[1:-1]
+        if k == "bare":
+            advance()
+            return v
+        if k == "lbrack":
+            advance()
+            arr: list[object] = []
+            while peek()[0] not in ("rbrack", None):
+                arr.append(parse_val())
+                if peek()[0] == "comma":
+                    advance()
+            if peek()[0] == "rbrack":
+                advance()
+            return arr
+        if k == "lbrace":
+            advance()
+            tbl: dict[str, object] = {}
+            while peek()[0] not in ("rbrace", None):
+                kp = parse_dotted()
+                if peek()[0] == "eq":
+                    advance()
+                val_obj = parse_val()
+                if len(kp) == 1:
+                    tbl[kp[0]] = val_obj
+                if peek()[0] == "comma":
+                    advance()
+            if peek()[0] == "rbrace":
+                advance()
+            return tbl
+        advance()
+        return None
+
+    def collect_leaves(nav_obj: object, out_entries: list[tuple[str, str]]) -> None:
+        if isinstance(nav_obj, list):
+            for item in nav_obj:
+                if isinstance(item, str):
+                    out_entries.append(("", item.strip()))
+                elif isinstance(item, dict):
+                    for title, child in item.items():
+                        if isinstance(child, str):
+                            out_entries.append((title, child.strip()))
+                        elif isinstance(child, list):
+                            collect_leaves(child, out_entries)
+
+    try:
+        while idx < total:
+            if peek()[0] == "lbrack":
+                advance()
+                is_aot = peek()[0] == "lbrack"
+                if is_aot:
+                    advance()
+                sec_parts = parse_dotted()
+                if peek()[0] == "rbrack":
+                    advance()
+                if is_aot and peek()[0] == "rbrack":
+                    advance()
+                current_section = sec_parts
+            else:
+                k_parts = parse_dotted()
+                if peek()[0] == "eq":
+                    advance()
+                val_parsed = parse_val()
+                if current_section == ("project",) and k_parts == ("nav",):
+                    entries: list[tuple[str, str]] = []
+                    collect_leaves(val_parsed, entries)
+                    return entries
+                if current_section == () and k_parts == ("project", "nav"):
+                    entries = []
+                    collect_leaves(val_parsed, entries)
+                    return entries
+    except (ValueError, IndexError):
+        return []
+    return []
+
+
 EXPECTED_CLI_HEADINGS = (
     "1. Core Inputs & Outputs",
     "2. VCF Post-Filtering (var2vcf)",
@@ -277,13 +479,13 @@ def check_cli_and_migration_surfaces(repo_root: Path, errors: list[str]) -> None
     migration_text = read_text(repo_root, "docs/migration.md", errors)
     if migration_text and "var2vcf_valid.pl" not in migration_text:
         errors.append("docs/migration.md: missing var2vcf_valid.pl migration table")
-    require_regex(
-        repo_root,
-        "mkdocs.yml",
-        r"^\s*-\s*Migration Guide:\s*docs/migration\.md\s*$",
-        "mkdocs.yml nav includes Migration Guide: docs/migration.md",
-        errors,
-    )
+    zensical_text = read_text(repo_root, "zensical.toml", errors)
+    if zensical_text:
+        nav_entries = parse_zensical_nav_entries(zensical_text)
+        if ("Migration Guide", "docs/migration.md") not in nav_entries:
+            errors.append(
+                'zensical.toml: failed check [nav includes { "Migration Guide" = "docs/migration.md" }]'
+            )
     require_regex(
         repo_root,
         "wiki/_Sidebar.md",
@@ -743,14 +945,33 @@ def check_pre_tag_surfaces(
         errors,
     )
 
-    # 17. mkdocs.yml, wiki/Home.md, wiki/_Sidebar.md
-    require_regex(
-        repo_root,
-        "mkdocs.yml",
-        rf"Release v{ver_esc} Certification:\s*docs/release/v{ver_esc}-pr\.md",
-        f"mkdocs.yml nav includes Release v{version} Certification",
-        errors,
-    )
+    # 17. zensical.toml, wiki/Home.md, wiki/_Sidebar.md
+    if (repo_root / "mkdocs.yml").exists():
+        errors.append("mkdocs.yml: legacy file must be removed (migrated to zensical.toml)")
+    zensical_text = read_text(repo_root, "zensical.toml", errors)
+    if zensical_text:
+        nav_entries = parse_zensical_nav_entries(zensical_text)
+        if len(nav_entries) < 27:
+            errors.append(
+                f"zensical.toml: expected >= 27 nav entries under [project], found {len(nav_entries)}"
+            )
+        expected_rel_entry = (
+            f"Release v{version} Certification",
+            f"docs/release/v{version}-pr.md",
+        )
+        if expected_rel_entry not in nav_entries:
+            errors.append(
+                f"zensical.toml: nav missing {expected_rel_entry[0]!r} = {expected_rel_entry[1]!r}"
+            )
+        for nav_title, nav_rel in nav_entries:
+            if nav_rel.startswith("community/"):
+                nav_target = repo_root / ".github" / Path(nav_rel).name
+            else:
+                nav_target = repo_root / nav_rel
+            if not nav_target.is_file():
+                errors.append(
+                    f"zensical.toml: nav entry {nav_title!r} -> {nav_rel!r} missing on disk ({nav_target})"
+                )
     require_regex(
         repo_root,
         "wiki/Home.md",
