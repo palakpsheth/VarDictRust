@@ -5,7 +5,6 @@ Configures repository metadata, security features, and branch protection on `mai
 via GitHub REST API v3 using GITHUB_TOKEN.
 """
 
-import argparse
 import json
 import os
 import sys
@@ -16,25 +15,20 @@ REPO = "palakpsheth/VarDictRust"
 API_BASE = f"https://api.github.com/repos/{REPO}"
 
 
-def get_token(dry_run=False):
+def get_token():
     token = os.environ.get("GITHUB_TOKEN")
     if not token:
-        if dry_run:
-            return "dry-run-token"
         print("ERROR: GITHUB_TOKEN environment variable not set.", file=sys.stderr)
         sys.exit(1)
     return token
 
 
-def api_request(endpoint, method="GET", data=None, dry_run=False):
-    if dry_run:
-        print(f"  [dry-run] {method} {endpoint}")
-        return {"current_user_can_bypass": "always"}
-    token = get_token(dry_run=dry_run)
+def api_request(endpoint, method="GET", data=None):
+    token = get_token()
     url = endpoint if endpoint.startswith("http") else f"{API_BASE}{endpoint}"
     headers = {
         "Authorization": f"token {token}",
-        "Accept": "application/vnd.github+json",
+        "Accept": "application/vnd.github.v3+json",
         "User-Agent": "VarDictRust-Configurator",
     }
     body = json.dumps(data).encode("utf-8") if data is not None else None
@@ -52,8 +46,8 @@ def api_request(endpoint, method="GET", data=None, dry_run=False):
         raise
 
 
-def configure_metadata(dry_run=False):
-    print("[1/6] Configuring repository metadata and settings...")
+def configure_metadata():
+    print("[1/5] Configuring repository metadata and settings...")
     payload = {
         "description": "Fast, memory-safe, idiomatic Rust rewrite of VarDictJava v1.8.3 for deep NGS variant calling",
         "homepage": "https://vardictrust.readthedocs.io/",
@@ -61,7 +55,7 @@ def configure_metadata(dry_run=False):
         "has_projects": False,
         "has_wiki": True,
         "allow_squash_merge": True,
-        "allow_merge_commit": False,
+        "allow_merge_commit": True,
         "allow_rebase_merge": True,
         "delete_branch_on_merge": True,
         "security_and_analysis": {
@@ -69,14 +63,13 @@ def configure_metadata(dry_run=False):
             "secret_scanning_validity_checks": {"status": "enabled"},
         },
     }
-    res = api_request("", method="PATCH", data=payload, dry_run=dry_run)
-    print(f"  ✓ Description: {res.get('description', payload['description'])}")
-    print(f"  ✓ Homepage: {res.get('homepage', payload['homepage'])}")
-    print("  ✓ Merge commits disabled (allow_merge_commit=False)")
+    res = api_request("", method="PATCH", data=payload)
+    print(f"  ✓ Description: {res.get('description')}")
+    print(f"  ✓ Homepage: {res.get('homepage')}")
 
 
-def configure_topics(dry_run=False):
-    print("[2/6] Configuring repository topics...")
+def configure_topics():
+    print("[2/5] Configuring repository topics...")
     topics = [
         "bioinformatics",
         "genomics",
@@ -87,35 +80,35 @@ def configure_topics(dry_run=False):
         "cancer-genomics",
         "rewrites-bio",
     ]
-    res = api_request("/topics", method="PUT", data={"names": topics}, dry_run=dry_run)
-    print(f"  ✓ Topics set: {', '.join(res.get('names', topics))}")
+    res = api_request("/topics", method="PUT", data={"names": topics})
+    print(f"  ✓ Topics set: {', '.join(res.get('names', []))}")
 
 
-def enable_dependabot(dry_run=False):
-    print("[3/6] Enabling vulnerability alerts and automated security fixes (Dependabot)...")
+def enable_dependabot():
+    print("[3/5] Enabling vulnerability alerts and automated security fixes (Dependabot)...")
     try:
-        api_request("/vulnerability-alerts", method="PUT", dry_run=dry_run)
+        api_request("/vulnerability-alerts", method="PUT")
         print("  ✓ Vulnerability alerts enabled.")
     except urllib.error.HTTPError as e:
         print(f"  ⚠ Note: vulnerability alerts status: {e.code}")
     try:
-        api_request("/automated-security-fixes", method="PUT", dry_run=dry_run)
+        api_request("/automated-security-fixes", method="PUT")
         print("  ✓ Dependabot automated security fixes enabled.")
     except urllib.error.HTTPError as e:
         print(f"  ⚠ Note: automated security fixes status: {e.code}")
 
 
-def enable_private_vulnerability_reporting(dry_run=False):
-    print("[4/6] Enabling Private Vulnerability Reporting...")
+def enable_private_vulnerability_reporting():
+    print("[4/5] Enabling Private Vulnerability Reporting...")
     try:
-        api_request("/private-vulnerability-reporting", method="PUT", dry_run=dry_run)
+        api_request("/private-vulnerability-reporting", method="PUT")
         print("  ✓ Private vulnerability reporting enabled.")
     except urllib.error.HTTPError as e:
         print(f"  ⚠ Note: private vulnerability reporting status: {e.code}")
 
 
-def configure_branch_protection(dry_run=False):
-    print("[5/6] Configuring branch protection on `main`...")
+def configure_branch_protection():
+    print("[5/5] Configuring branch protection on `main`...")
     payload = {
         "required_status_checks": {
             "strict": True,
@@ -141,9 +134,9 @@ def configure_branch_protection(dry_run=False):
         "block_creations": False,
         "required_conversation_resolution": True,
     }
-    res = api_request("/branches/main/protection", method="PUT", data=payload, dry_run=dry_run)
-    checks = res.get("required_status_checks", {}).get("contexts", payload["required_status_checks"]["contexts"])
-    strict = res.get("required_status_checks", {}).get("strict", True)
+    res = api_request("/branches/main/protection", method="PUT", data=payload)
+    checks = res.get("required_status_checks", {}).get("contexts", [])
+    strict = res.get("required_status_checks", {}).get("strict", False)
     print(f"  ✓ Branch protection enabled on `main`.")
     print(f"  ✓ Strict branch up-to-date enforcement: {strict}")
     print(f"  ✓ Required status checks: {', '.join(checks)}")
@@ -151,99 +144,14 @@ def configure_branch_protection(dry_run=False):
     print(f"  ✓ Deletions allowed: {res.get('allow_deletions', {}).get('enabled', False)}")
 
 
-def configure_tag_ruleset(dry_run=False):
-    RULESET_ID = 24867690
-    print(f"[6/6] Configuring tag protection ruleset on `refs/tags/v*` (ruleset {RULESET_ID})...")
-    base_rules = [
-        {"type": "deletion"},
-        {"type": "update"},
-        {"type": "non_fast_forward"},
-    ]
-    payload_strict = {
-        "name": "tag-protection-v*",
-        "target": "tag",
-        "enforcement": "active",
-        "conditions": {
-            "ref_name": {
-                "include": ["refs/tags/v*"],
-                "exclude": [],
-            }
-        },
-        "rules": base_rules + [{"type": "creation"}],
-        "bypass_actors": [
-            {
-                "actor_id": 5,
-                "actor_type": "RepositoryRole",
-                "bypass_mode": "always",
-            }
-        ],
-    }
-
-    payload_safe = {
-        "name": "tag-protection-v*",
-        "target": "tag",
-        "enforcement": "active",
-        "conditions": {
-            "ref_name": {
-                "include": ["refs/tags/v*"],
-                "exclude": [],
-            }
-        },
-        "rules": base_rules,
-        "bypass_actors": [],
-    }
-
-    if dry_run:
-        api_request(f"/rulesets/{RULESET_ID}", method="PUT", data=payload_strict, dry_run=True)
-        print(f"  [dry-run] Configured ruleset {RULESET_ID} for refs/tags/v* with deletion/update/non_fast_forward and creation lockout check.")
-        return
-
-    # Apply strict ruleset with creation block
-    api_request(f"/rulesets/{RULESET_ID}", method="PUT", data=payload_strict, dry_run=False)
-
-    # Immediately verify whether current user can bypass tag creation
-    can_bypass = None
-    try:
-        status = api_request(f"/rulesets/{RULESET_ID}", method="GET", dry_run=False)
-        can_bypass = status.get("current_user_can_bypass")
-    except Exception as exc:
-        print(f"  ⚠ Verification GET failed ({exc}); treating bypass mode as unconfirmed...", file=sys.stderr)
-
-    if can_bypass == "always":
-        print(f"  ✓ Tag ruleset {RULESET_ID} active with creation protection (admin bypass confirmed: {can_bypass}).")
-    else:
-        print(f"  ⚠ Current user bypass mode is {can_bypass!r} != 'always'; rolling back creation restriction to prevent lockout...")
-        api_request(f"/rulesets/{RULESET_ID}", method="PUT", data=payload_safe, dry_run=False)
-        print(f"  ✓ Safe rollback applied: ruleset {RULESET_ID} enforces deletion/update/non_fast_forward without tag creation lockout.")
-
-
 def main():
-    parser = argparse.ArgumentParser(
-        description=f"Configure GitHub repository settings, metadata, branch protection, and tag rulesets for {REPO}."
-    )
-    group = parser.add_mutually_exclusive_group()
-    group.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Simulate API calls and validation without modifying repository state.",
-    )
-    group.add_argument(
-        "--apply",
-        action="store_true",
-        help="Apply settings to the live GitHub repository (requires GITHUB_TOKEN).",
-    )
-    args = parser.parse_args()
-
-    dry_run = args.dry_run
-    mode_str = " (DRY-RUN)" if dry_run else ""
-    print(f"=== VarDictRust: GitHub Repository Configuration ({REPO}){mode_str} ===")
-    configure_metadata(dry_run=dry_run)
-    configure_topics(dry_run=dry_run)
-    enable_dependabot(dry_run=dry_run)
-    enable_private_vulnerability_reporting(dry_run=dry_run)
-    configure_branch_protection(dry_run=dry_run)
-    configure_tag_ruleset(dry_run=dry_run)
-    print(f"=== All GitHub repository configurations applied successfully!{mode_str} ===")
+    print(f"=== VarDictRust: GitHub Repository Configuration ({REPO}) ===")
+    configure_metadata()
+    configure_topics()
+    enable_dependabot()
+    enable_private_vulnerability_reporting()
+    configure_branch_protection()
+    print("=== All GitHub repository configurations applied successfully! ===")
 
 
 if __name__ == "__main__":

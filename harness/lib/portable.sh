@@ -292,51 +292,9 @@ filesize() {
     portable_filesize "$@"
 }
 
-stage_verified_sha256() {
-    local url="$1"
-    local expected_sha="$2"
-    local dest="$3"
-
-    if [ -z "$url" ] || [ -z "$expected_sha" ] || [ -z "$dest" ]; then
-        echo "stage_verified_sha256: error: usage: stage_verified_sha256 <url> <sha256> <dest>" >&2
-        return 1
-    fi
-
-    # Check if dest already exists and matches expected SHA-256
-    if [ -f "$dest" ]; then
-        local cur_sha
-        cur_sha="$(portable_sha256 "$dest")"
-        if [ "$cur_sha" = "$expected_sha" ]; then
-            return 0
-        fi
-    fi
-
-    mkdir -p "$(dirname "$dest")"
-    local part="${dest}.part"
-    rm -f "$part"
-
-    # Download atomically without curl -C - (resume flag can corrupt payload or fail on range limits)
-    if ! curl -sSLf --retry 5 --retry-delay 5 -o "$part" "$url"; then
-        echo "stage_verified_sha256: download failed for $url -> $part" >&2
-        rm -f "$part"
-        return 1
-    fi
-
-    local got_sha
-    got_sha="$(portable_sha256 "$part")"
-    if [ "$got_sha" != "$expected_sha" ]; then
-        echo "stage_verified_sha256: SHA-256 MISMATCH for $dest: got $got_sha != want $expected_sha" >&2
-        rm -f "$part"
-        return 1
-    fi
-
-    mv -f "$part" "$dest"
-    return 0
-}
-
 export -f ensure_g4_tools_path find_gitleaks now_ms portable_time_v mem_avail_gb \
     disk_free_gb disk_total_gb portable_loadavg is_user_session_pid nice_idle exec_nice_idle \
-    portable_md5 md5 portable_sha256 sha256 portable_filesize filesize stage_verified_sha256 >/dev/null 2>&1 || true
+    portable_md5 md5 portable_sha256 sha256 portable_filesize filesize >/dev/null 2>&1 || true
 
 if [ "${1:-}" = "--time-v" ]; then
     shift

@@ -325,7 +325,7 @@ Releases are executed through a disciplined **three-phase workflow** (Pre-Releas
    - [`Cargo.toml`](Cargo.toml) (`[workspace.package] version = "X.Y.Z"`) and [`crates/vardictrust/Cargo.toml`](crates/vardictrust/Cargo.toml) (`vardictrust-core = { version = "X.Y.Z", path = "../vardictrust-core" }`), followed by `cargo update -w` so [`Cargo.lock`](Cargo.lock) updates only the workspace packages.
    - [`CHANGELOG.md`](CHANGELOG.md): add `## [X.Y.Z] - YYYY-MM-DD` (required by `cargo-dist` to populate GitHub Release notes) and preserve exact Bioconda subdir names (`linux-64`, `linux-aarch64`, `osx-arm64`, `osx-64`).
    - [`CITATION.cff`](CITATION.cff) (`version` and `date-released`), [`README.md`](README.md) (install tags and BibTeX version), [`.github/ISSUE_TEMPLATE/bug_report.yml`](.github/ISSUE_TEMPLATE/bug_report.yml), and [`packaging/bioconda/prepare_bioconda_pr.sh`](packaging/bioconda/prepare_bioconda_pr.sh) (`VERSION="${1:-X.Y.Z}"`).
-   - Release certification dossier `docs/release/vX.Y.Z-pr.md` and release metadata references in [`docs/testing/test-matrix-and-ci-audit.md`](docs/testing/test-matrix-and-ci-audit.md), [`docs/validation/omnibus-empirical-validation.md`](docs/validation/omnibus-empirical-validation.md), [`DIVERGENCES.md`](DIVERGENCES.md), [`benchmarks/README.md`](benchmarks/README.md), [`harness/README.md`](harness/README.md), [`zensical.toml`](zensical.toml), and [`wiki/`](wiki/).
+   - Release certification dossier `docs/release/vX.Y.Z-pr.md` and release metadata references in [`docs/testing/test-matrix-and-ci-audit.md`](docs/testing/test-matrix-and-ci-audit.md), [`docs/validation/omnibus-empirical-validation.md`](docs/validation/omnibus-empirical-validation.md), [`DIVERGENCES.md`](DIVERGENCES.md), [`benchmarks/README.md`](benchmarks/README.md), [`harness/README.md`](harness/README.md), [`mkdocs.yml`](mkdocs.yml), and [`wiki/`](wiki/).
 3. **Engine Fingerprint & Live Recertification Rule (`AGENTS.md §0b`):**
    - [`harness/engine_fingerprint.sh`](harness/engine_fingerprint.sh) hashes the raw `HEAD:<path>` git blob OIDs of all `GATE_FILES` (including `Cargo.toml`, `crates/vardictrust/Cargo.toml`, and `Cargo.lock`), so bumping `X.Y.Z` in Step 2 advances `FP` and `PERF_FP` and requires running `bash harness/recertify.sh` on `release/vX.Y.Z` to certify all 16 evidence JSONs in [`benchmarks/evidence/`](benchmarks/evidence/).
    - If **any** engine source (`crates/*/src`), external dependency (`Cargo.lock`), comparator, runner, or fixture in `GATE_FILES` changed since the last certification, you **must** run `bash harness/recertify.sh` to re-run the live dual-engine parity suites and stamp updated evidence JSONs honestly (never hand-edit `benchmarks/evidence/*.json`).
@@ -348,10 +348,10 @@ git commit -m "chore(release): prepare vX.Y.Z release"
 bash harness/engine_fingerprint.sh
 bash harness/run_self_tests.sh
 
-# 4. Stage and verify Zensical documentation site in strict mode (then clean staging dir)
+# 4. Stage and verify MkDocs documentation site in strict mode (then clean staging dir)
 python3 harness/prepare_docs_site.py
-zensical build --clean --strict
-rm -rf .docs_staged site .cache
+mkdocs build --strict
+rm -rf .docs_staged site
 
 # 5. Pre-tag crates.io packaging verification
 #    Note: `cargo publish -p vardictrust --dry-run` queries crates.io for `vardictrust-core = "^X.Y.Z"`,
