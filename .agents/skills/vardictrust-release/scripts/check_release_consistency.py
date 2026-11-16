@@ -29,7 +29,7 @@ EXPECTED_TEST_COUNTS = {
     "cram_stack": 3,
     "cli_bin": 28,
     "cli_integration": 25,
-    "harness_self_tests": 36,
+    "harness_self_tests": 37,
 }
 
 
@@ -779,8 +779,8 @@ def check_pre_tag_surfaces(
     require_regex(
         repo_root,
         "harness/run_self_tests.sh",
-        rf"all {tc['harness_self_tests']} harness diagnostic scripts \(25 shell tests\s*\n#\s*and 11 python test suites",
-        f"harness/run_self_tests.sh cites {tc['harness_self_tests']} diagnostic scripts (25 shell + 11 python)",
+        rf"all {tc['harness_self_tests']} harness diagnostic scripts \(25 shell tests\s*\n#\s*and 12 python test suites",
+        f"harness/run_self_tests.sh cites {tc['harness_self_tests']} diagnostic scripts (25 shell + 12 python)",
         errors,
     )
 
@@ -924,8 +924,8 @@ def check_pre_tag_surfaces(
     require_regex(
         repo_root,
         "docs/testing/test-matrix-and-ci-audit.md",
-        rf"{tc['harness_self_tests']} specialized scripts(?:\*\*)? \(25 shell tests and 11 Python unit test suites\)",
-        f"test-matrix-and-ci-audit.md cites {tc['harness_self_tests']} specialized scripts (25 shell + 11 Python)",
+        rf"{tc['harness_self_tests']} specialized scripts(?:\*\*)? \(25 shell tests and 12 Python unit test suites\)",
+        f"test-matrix-and-ci-audit.md cites {tc['harness_self_tests']} specialized scripts (25 shell + 12 Python)",
         errors,
     )
     forbid_regex(

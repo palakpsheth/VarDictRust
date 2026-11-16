@@ -453,9 +453,98 @@ stage_verified_sha256() {
     mv -f "$part" "$dest"
 }
 
+stream_verified_bam_slice() {
+    local bed_file=""
+    local threads=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --bed)
+                bed_file="${2:-}"
+                shift 2
+                ;;
+            --threads)
+                threads="${2:-}"
+                shift 2
+                ;;
+            --)
+                shift
+                break
+                ;;
+            *)
+                break
+                ;;
+        esac
+    done
+    local label="${1:-}"
+    local bam_url="${2:-}"
+    local bai_url="${3:-}"
+    local bai_sha256="${4:-}"
+    local local_bai="${5:-}"
+    local region="${6:-}"
+    local out_bam="${7:-}"
+    if [ -z "$label" ] || [ -z "$bam_url" ] || [ -z "$bai_url" ] || [ -z "$bai_sha256" ] || [ -z "$local_bai" ] || [ -z "$out_bam" ]; then
+        echo "stream_verified_bam_slice: usage: stream_verified_bam_slice [--bed <bed>] [--threads <N>] <label> <bam_url> <bai_url> <bai_sha256> <local_bai> <region> <out_bam>" >&2
+        return 1
+    fi
+    if [ -z "$bed_file" ] && [ -z "$region" ]; then
+        echo "stream_verified_bam_slice: either --bed <bed> or <region> is required for $label" >&2
+        return 1
+    fi
+    if [ -s "$out_bam" ] && [ -s "${out_bam}.bai" ] && samtools quickcheck "$out_bam" 2>/dev/null; then
+        echo "  [cached] $label ($out_bam)"
+        return 0
+    fi
+    mkdir -p "$(dirname "$out_bam")"
+    stage_verified_sha256 "$bai_url" "$bai_sha256" "$local_bai"
+
+    local max_retries="${BAM_SLICE_MAX_RETRIES:-5}"
+    local delay="${BAM_SLICE_INITIAL_DELAY:-2}"
+    local attempt=1
+    local tmp_bam="${out_bam}.tmp"
+    local tmp_unsorted="${out_bam}.unsorted.tmp"
+    local th_args=()
+    if [ -n "$threads" ]; then
+        th_args=(-@ "$threads")
+    fi
+
+    while [ "$attempt" -le "$max_retries" ]; do
+        echo "Streaming $label from $bam_url (attempt $attempt/$max_retries)..."
+        rm -f "$tmp_bam" "$tmp_unsorted"
+        local stream_ok=0
+        if [ -n "$bed_file" ]; then
+            if samtools view ${th_args[@]+"${th_args[@]}"} -b -M -L "$bed_file" -X "$bam_url" "$local_bai" > "$tmp_unsorted" \
+               && samtools sort ${th_args[@]+"${th_args[@]}"} -o "$tmp_bam" "$tmp_unsorted" \
+               && samtools quickcheck "$tmp_bam"; then
+                stream_ok=1
+            fi
+        else
+            if samtools view ${th_args[@]+"${th_args[@]}"} -b -X "$bam_url" "$local_bai" "$region" > "$tmp_bam" \
+               && samtools quickcheck "$tmp_bam"; then
+                stream_ok=1
+            fi
+        fi
+        rm -f "$tmp_unsorted"
+        if [ "$stream_ok" -eq 1 ]; then
+            mv -f "$tmp_bam" "$out_bam"
+            samtools index ${th_args[@]+"${th_args[@]}"} "$out_bam"
+            samtools quickcheck "$out_bam"
+            return 0
+        fi
+        rm -f "$tmp_bam"
+        attempt=$((attempt + 1))
+        if [ "$attempt" -le "$max_retries" ]; then
+            echo "Sleeping $delay seconds before retry..." >&2
+            sleep "$delay"
+            delay=$((delay * 2))
+        fi
+    done
+    echo "Failed to stream $label BAM slice after $max_retries attempts" >&2
+    return 1
+}
+
 export -f ensure_g4_tools_path find_gitleaks resolve_data_root portable_timeout now_ms portable_time_v mem_avail_gb \
     disk_free_gb disk_total_gb portable_loadavg is_user_session_pid nice_idle exec_nice_idle \
-    portable_md5 md5 portable_sha256 sha256 portable_filesize filesize stage_verified_sha256 >/dev/null 2>&1 || true
+    portable_md5 md5 portable_sha256 sha256 portable_filesize filesize stage_verified_sha256 stream_verified_bam_slice >/dev/null 2>&1 || true
 
 if [ "${1:-}" = "--time-v" ]; then
     shift

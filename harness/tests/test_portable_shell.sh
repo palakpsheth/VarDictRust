@@ -190,6 +190,42 @@ EOF
     want_dr_main="$(cd "$tmp/main_repo" && pwd)"
     [ "$got_dr_wt" = "$want_dr_main" ] || { echo "FAIL: resolve_data_root worktree got $got_dr_wt, want $want_dr_main" >&2; exit 1; }
   fi
+
+  # 17. stream_verified_bam_slice retry & SHA-256 BAI check
+  mkdir -p "$tmp/mock_slice_bin" "$tmp/slice_out"
+  printf "MOCK_BAI_BYTES" > "$tmp/slice_out/local.bai"
+  bai_sha="$(portable_sha256 "$tmp/slice_out/local.bai")"
+  echo 0 > "$tmp/view_calls"
+  cat > "$tmp/mock_slice_bin/samtools" <<'\''SAMEOF'\''
+#!/bin/sh
+cmd="$1"
+shift
+case "$cmd" in
+  view)
+    c=$(( $(cat "$MOCK_VIEW_CALLS") + 1 ))
+    echo "$c" > "$MOCK_VIEW_CALLS"
+    [ "$c" -ge 2 ] || exit 1
+    printf "BAM_SLICE_DATA"
+    exit 0
+    ;;
+  quickcheck)
+    [ -s "$1" ]
+    exit $?
+    ;;
+  index)
+    for last; do :; done
+    printf "BAI" > "${last}.bai"
+    exit 0
+    ;;
+esac
+exit 1
+SAMEOF
+  chmod +x "$tmp/mock_slice_bin/samtools"
+  MOCK_VIEW_CALLS="$tmp/view_calls" PATH="$tmp/mock_slice_bin:$PATH" BAM_SLICE_INITIAL_DELAY=0 \
+    stream_verified_bam_slice "unit_slice" "https://example.invalid/x.bam" "https://example.invalid/x.bam.bai" \
+      "$bai_sha" "$tmp/slice_out/local.bai" "chr1:1-100" "$tmp/slice_out/out.bam" >/dev/null
+  [ "$(cat "$tmp/view_calls")" -eq 2 ] || { echo "FAIL: stream_verified_bam_slice expected 2 attempts, got $(cat "$tmp/view_calls")" >&2; exit 1; }
+  [ -s "$tmp/slice_out/out.bam" ] && [ -s "$tmp/slice_out/out.bam.bai" ] || { echo "FAIL: stream_verified_bam_slice missing output BAM/BAI" >&2; exit 1; }
 ' _ "$PORTABLE_SH" "$TMP_DIR"
 
 echo "PASS test_portable_shell"

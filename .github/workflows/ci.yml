@@ -113,6 +113,7 @@ jobs:
             harness/tests/test_linkedin_carousel.py \
             harness/tests/test_perf_budget.py \
             harness/tests/test_profile_catalog.py \
+            harness/tests/test_release_workflows.py \
             harness/tests/test_select_slice_regions.py \
             harness/tests/test_stdlib_purity.py; do
             GOLDEN_STORE_DIR="$TMP_GS" python3 "$py_test"

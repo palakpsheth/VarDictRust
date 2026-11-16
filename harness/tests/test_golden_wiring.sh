@@ -46,7 +46,8 @@ bare_err=$(grep -nE 'cpp engine exit \$[A-Za-z0-9_]+\)|engine failure \(exit \$[
 grep -q 'golden_store.sh" cpp ext-m2' harness/run_extended_coverage.sh || { echo "FAIL: ext-m2 cpp arm missing"; fail=1; }
 grep -q 'golden_store.sh" cpp ext-m3' harness/run_extended_coverage.sh || { echo "FAIL: ext-m3 cpp arm missing"; fail=1; }
 grep -q 'golden_store.sh" cpp "mm-\$slice_id"' harness/run_multimodal_slices.sh || { echo "FAIL: multimodal vcf cpp arm missing"; fail=1; }
-grep -q 'cpp_f1_normalized' harness/concordance_germline.sh || { echo "FAIL: concordance_germline missing cpp_f1_normalized"; fail=1; }
-grep -q 'cpp_f1_normalized' harness/concordance_pair.sh || { echo "FAIL: concordance_pair missing cpp_f1_normalized"; fail=1; }
+grep -q 'cpp_f1_normalized' harness/lib/concordance_cpp.sh || { echo "FAIL: lib/concordance_cpp.sh missing cpp_f1_normalized"; fail=1; }
+grep -Eq 'cpp_f1_normalized|concordance_cpp\.sh' harness/concordance_germline.sh || { echo "FAIL: concordance_germline missing cpp_f1_normalized"; fail=1; }
+grep -Eq 'cpp_f1_normalized|concordance_cpp\.sh' harness/concordance_pair.sh || { echo "FAIL: concordance_pair missing cpp_f1_normalized"; fail=1; }
 
 [ $fail -eq 0 ] && echo "PASS test_golden_wiring"; exit $fail

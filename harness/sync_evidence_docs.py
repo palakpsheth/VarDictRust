@@ -802,14 +802,13 @@ def sync_docs(repo_root: pathlib.Path, check: bool = False) -> int:
             staged_writes.append((readme_path, text))
 
     # 5. Update active docs/release/v<current_version>-pr.md
-    cargo_toml = (repo_root / "Cargo.toml").read_text(encoding="utf-8")
-    ver_m = re.search(
-        r'^\[workspace\.package\]\s*\nversion\s*=\s*"([^"]+)"',
-        cargo_toml,
-        re.MULTILINE,
-    )
-    if ver_m:
-        ver = ver_m.group(1)
+    if str(pathlib.Path(__file__).resolve().parent) not in sys.path:
+        sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+    import toml_lite
+
+    cargo_data = toml_lite.load_path(repo_root / "Cargo.toml")
+    ver = ((cargo_data.get("workspace") or {}).get("package") or {}).get("version")
+    if isinstance(ver, str) and ver:
         pr_doc = repo_root / "docs" / "release" / f"v{ver}-pr.md"
         if pr_doc.is_file():
             pr_label = f"docs/release/v{ver}-pr.md"

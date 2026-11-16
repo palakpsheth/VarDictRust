@@ -17,6 +17,12 @@ from pathlib import Path
 from xml.sax.saxutils import escape as xml_escape
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT / "harness") not in sys.path:
+    sys.path.insert(0, str(ROOT / "harness"))
+
+from sync_evidence_docs import parse_wall_s  # noqa: E402
+import toml_lite  # noqa: E402
+
 W, H = 1080, 1350
 
 # Demaille picard-rs inspired warm-editorial palette
@@ -76,15 +82,6 @@ def ps_escape(s: str) -> str:
         .replace("ε", "eps")
     )
     return s.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
-
-
-def parse_wall_s(wall_str: str) -> float:
-    parts = wall_str.strip().split(":")
-    if len(parts) == 2:
-        return int(parts[0]) * 60.0 + float(parts[1])
-    if len(parts) == 3:
-        return int(parts[0]) * 3600.0 + int(parts[1]) * 60.0 + float(parts[2])
-    return float(parts[0])
 
 
 def fmt_wall(sec: float) -> str:
@@ -328,14 +325,11 @@ def load_gcp_metrics(gcp_path: Path | None, expected_fp: str, explicit: bool = F
 
 def read_workspace_version(cargo_toml_path: Path | None = None) -> str:
     path = cargo_toml_path if cargo_toml_path is not None else ROOT / "Cargo.toml"
-    ver_m = re.search(
-        r'^\[workspace\.package\]\s*\n(?:(?!\[).*\n)*?version\s*=\s*"([^"]+)"',
-        path.read_text(encoding="utf-8"),
-        re.MULTILINE,
-    )
-    if not ver_m:
+    data = toml_lite.load_path(path)
+    ver = ((data.get("workspace") or {}).get("package") or {}).get("version")
+    if not isinstance(ver, str) or not ver:
         raise ValueError(f"Could not parse [workspace.package].version from {path}")
-    return f"v{ver_m.group(1)}"
+    return f"v{ver}"
 
 
 def build_slides(

@@ -344,10 +344,10 @@ grep -q 'seqc2_align.sh HCC1395 "\$sq/fastq/SRR7890879_1.fastq.gz" "\$sq/fastq/S
 grep -q 'seqc2_align.sh HCC1395BL "\$sq/fastq/SRR7890880_1.fastq.gz" "\$sq/fastq/SRR7890880_2.fastq.gz"' harness/stage_g4.sh || { echo "FAIL: stage_g4.sh missing SRR7890880 FASTQ paths" >&2; exit 1; }
 grep -q 'DATA_DIR="\$D" bash harness/get_hg002_slice.sh' harness/stage_g4.sh || { echo "FAIL: stage_g4.sh must pass DATA_DIR=\$D to get_hg002_slice.sh" >&2; exit 1; }
 grep -q 'D="\${DATA_DIR:-scratch/g4}"' harness/get_hg002_slice.sh || { echo "FAIL: get_hg002_slice.sh must honour DATA_DIR" >&2; exit 1; }
-grep -q 'stage_verified_sha256' harness/get_hg002_slice.sh || { echo "FAIL: get_hg002_slice.sh must use stage_verified_sha256" >&2; exit 1; }
-grep -q 'stage_verified_sha256' harness/get_hg008_slice.sh || { echo "FAIL: get_hg008_slice.sh must use stage_verified_sha256" >&2; exit 1; }
+grep -Eq 'stage_verified_sha256|stream_verified_bam_slice' harness/get_hg002_slice.sh || { echo "FAIL: get_hg002_slice.sh must use stream_verified_bam_slice" >&2; exit 1; }
+grep -Eq 'stage_verified_sha256|stream_verified_bam_slice' harness/get_hg008_slice.sh || { echo "FAIL: get_hg008_slice.sh must use stream_verified_bam_slice" >&2; exit 1; }
 grep -q 'lib/portable.sh' harness/get_multimodal_slices.sh || { echo "FAIL: get_multimodal_slices.sh must source portable.sh" >&2; exit 1; }
-grep -q 'stage_verified_sha256' harness/get_multimodal_slices.sh || { echo "FAIL: get_multimodal_slices.sh must use stage_verified_sha256" >&2; exit 1; }
+grep -Eq 'stage_verified_sha256|stream_verified_bam_slice' harness/get_multimodal_slices.sh || { echo "FAIL: get_multimodal_slices.sh must use stream_verified_bam_slice" >&2; exit 1; }
 
 # 6. Regression test: get_hg002_slice.sh refreshes corrupted local truth BED/VCF/TBI even when stale .sha256/.done sidecars exist
 mkdir -p "$TMPDIR/mockbin" "$TMPDIR/hg002_src" "$TMPDIR/g4_hg002/hg002/truth"

@@ -24,7 +24,6 @@ OUT_DIR="$D/multimodal"
 mkdir -p "$OUT_DIR"
 
 BAI_CACHE_DIR="$OUT_DIR/.bai_cache"
-STAGED_BAIS=" "
 
 echo "================================================================================"
 echo " Ingesting 18 Multi-Modal Slices Across 6 Public Datasets"
@@ -38,24 +37,8 @@ function fetch_remote_slice() {
     local bai_sha256="$4"
     local local_bai="$5"
     local region="$6"
-    local out_bam="$OUT_DIR/${name}.bam"
-
-    if [ -s "$out_bam" ] && [ -s "${out_bam}.bai" ] && samtools quickcheck "$out_bam" 2>/dev/null; then
-        echo "  [cached] $name ($region)"
-        return 0
-    fi
-
-    if [[ "$STAGED_BAIS" != *" ${local_bai} "* ]]; then
-        stage_verified_sha256 "$bai_url" "$bai_sha256" "$local_bai"
-        STAGED_BAIS="${STAGED_BAIS}${local_bai} "
-    fi
-
-    echo -n "  [streaming] $name ($region)... "
-    samtools view -b -X "$bam_url" "$local_bai" "$region" > "$out_bam.tmp"
-    mv "$out_bam.tmp" "$out_bam"
-    samtools index "$out_bam"
-    samtools quickcheck "$out_bam"
-    echo "done ($(du -h "$out_bam" | cut -f1))"
+    # Delegates to stream_verified_bam_slice (verifies BAI via stage_verified_sha256 + 5-retry exponential backoff)
+    stream_verified_bam_slice "$name" "$bam_url" "$bai_url" "$bai_sha256" "$local_bai" "$region" "$OUT_DIR/${name}.bam"
 }
 
 function extract_local_slice() {

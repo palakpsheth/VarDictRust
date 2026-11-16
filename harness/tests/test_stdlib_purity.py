@@ -51,7 +51,7 @@ ALLOWED_LOCAL_MODULES = frozenset([
     "compare_var",
     "perf_budget",
     "record_evidence",
-    "generate_validation_table",
+    "toml_lite",
     "convert_fastas",
     "sync_evidence_docs",
 ])
