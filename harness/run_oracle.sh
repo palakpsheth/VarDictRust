@@ -117,7 +117,7 @@ oracle_fail() {
     echo "oracle-stage: $1"
     echo "oracle-exit-code: $2"
     echo "--- free -h ---"
-    free -h || true
+    command -v free >/dev/null 2>&1 && free -h || true
     echo "--- stderr (tail 100) ---"
     tail -n 100 "$3" || true
   } > "$(dirname "$OUT")/oracle-fail-$1.log" 2>/dev/null || true

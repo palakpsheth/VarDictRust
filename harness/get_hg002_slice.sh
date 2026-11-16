@@ -19,50 +19,15 @@ HG002_VCF_SHA256="${HG002_VCF_SHA256:-adb4d4a50048aa13353a06b84fcfcbca09a5d17525
 HG002_TBI_SHA256="${HG002_TBI_SHA256:-23162712553413b10f88916c28bd1238deb703a7237be2910440773beea71894}"
 
 TARGET_BAM="$OUTDIR/HG002.chr20.bam"
-TMP_BAM="$OUTDIR/.tmp.bam"
 EVAL_BED="$OUTDIR/eval.bed"
 TRUTH_VCF="$OUTDIR/truth/truth.vcf.gz"
 LOCAL_BAI="$OUTDIR/HG002.remote.bai"
 
 REGION="chr20:10000000-30000000"
 
-# 1. Stream BAM slice (check cached slice FIRST so offline runs never touch network or remote BAI)
-if [ -s "$TARGET_BAM" ] && [ -s "${TARGET_BAM}.bai" ] && samtools quickcheck "$TARGET_BAM"; then
-  echo "HG002 chr20 BAM slice already exists and passes quickcheck: $TARGET_BAM"
-else
-  echo "Staging SHA-256 verified remote BAI index from ${BAM_URL}.bai..."
-  stage_verified_sha256 "${BAM_URL}.bai" "$HG002_BAI_SHA256" "$LOCAL_BAI"
-
-  max_retries=5
-  delay=2
-  attempt=1
-  success=0
-  while [ $attempt -le $max_retries ]; do
-    echo "Streaming $REGION from $BAM_URL using verified local index (attempt $attempt/$max_retries)..."
-    rm -f "$TMP_BAM"
-    if samtools view -@ 4 -b -X "$BAM_URL" "$LOCAL_BAI" "$REGION" > "$TMP_BAM"; then
-      if samtools quickcheck "$TMP_BAM"; then
-        mv "$TMP_BAM" "$TARGET_BAM"
-        echo "Indexing $TARGET_BAM..."
-        samtools index -@ 4 "$TARGET_BAM"
-        success=1
-        break
-      else
-        echo "samtools quickcheck failed on attempt $attempt" >&2
-      fi
-    else
-      echo "samtools view failed on attempt $attempt" >&2
-    fi
-    attempt=$((attempt + 1))
-    echo "Sleeping $delay seconds before retry..."
-    sleep $delay
-    delay=$((delay * 2))
-  done
-  if [ $success -ne 1 ]; then
-    echo "Failed to stream BAM after $max_retries attempts" >&2
-    exit 1
-  fi
-fi
+# 1. Stream BAM slice (checks cached slice FIRST; verifies remote BAI via stage_verified_sha256)
+stream_verified_bam_slice --threads 4 \
+  "HG002 chr20" "$BAM_URL" "${BAM_URL}.bai" "$HG002_BAI_SHA256" "$LOCAL_BAI" "$REGION" "$TARGET_BAM"
 
 # 2. Intersect and pre-tile NIST v4.2.1 BED into <=50kb chunks via awk
 LOCAL_BED="$OUTDIR/truth/HG002_GRCh38_1_22_v4.2.1_benchmark_noinconsistent.bed"

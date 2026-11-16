@@ -51,6 +51,15 @@ import urllib.parse
 import urllib.request
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
+if str(REPO_ROOT / "harness") not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT / "harness"))
+
+from toml_lite import (  # noqa: E402
+    _fallback_loads,
+    flatten_nav_entries as _flatten_nav_entries,
+    loads as _parse_zensical_toml,
+)
+
 CDN_CACHE_DIR = REPO_ROOT / ".cache" / "docs_ui_cdn"
 
 EXCLUDED_DIRS = (
@@ -93,257 +102,6 @@ def find_all_markdown_files():
             continue
         md_files.append(path)
     return sorted(md_files)
-
-
-# ---------------------------------------------------------------------------
-# Pure-stdlib Python 3.8+ TOML subset parser for zensical.toml
-# ---------------------------------------------------------------------------
-
-_TOML_TOKEN_RE = re.compile(
-    r"""
-    (?P<ws>[ \t\r\n]+)
-    | (?P<comment>\#[^\n]*)
-    | (?P<ml_basic>\"\"\"[\s\S]*?\"\"\")
-    | (?P<ml_lit>'''[\s\S]*?''')
-    | (?P<basic>\"(?:\\.|[^\"\\\n])*\")
-    | (?P<lit>'[^'\n]*')
-    | (?P<lbrack>\[)
-    | (?P<rbrack>\])
-    | (?P<lbrace>\{)
-    | (?P<rbrace>\})
-    | (?P<eq>=)
-    | (?P<comma>,)
-    | (?P<dot>\.)
-    | (?P<bare>[A-Za-z0-9_-]+)
-    """,
-    re.VERBOSE,
-)
-
-
-def _unescape_toml_basic(raw_inner):
-    escapes = {
-        "n": "\n",
-        "r": "\r",
-        "t": "\t",
-        "b": "\b",
-        "f": "\f",
-        '"': '"',
-        "\\": "\\",
-    }
-    out = []
-    i = 0
-    n = len(raw_inner)
-    while i < n:
-        ch = raw_inner[i]
-        if ch == "\\" and i + 1 < n:
-            nxt = raw_inner[i + 1]
-            if nxt in escapes:
-                out.append(escapes[nxt])
-                i += 2
-                continue
-            if nxt == "u" and i + 5 < n:
-                out.append(chr(int(raw_inner[i + 2 : i + 6], 16)))
-                i += 6
-                continue
-            if nxt == "U" and i + 9 < n:
-                out.append(chr(int(raw_inner[i + 2 : i + 10], 16)))
-                i += 10
-                continue
-        out.append(ch)
-        i += 1
-    return "".join(out)
-
-
-def _tokenize_toml(text):
-    tokens = []
-    pos = 0
-    n = len(text)
-    while pos < n:
-        m = _TOML_TOKEN_RE.match(text, pos)
-        if not m:
-            snippet = text[pos : pos + 40]
-            raise ValueError(f"Unexpected TOML character at offset {pos}: {snippet!r}")
-        kind = m.lastgroup
-        val = m.group(kind)
-        pos = m.end()
-        if kind in ("ws", "comment"):
-            continue
-        tokens.append((kind, val))
-    return tokens
-
-
-def _parse_zensical_toml(text):
-    """Parse zensical.toml using only Python 3.8+ standard library primitives."""
-    tokens = _tokenize_toml(text)
-    idx = 0
-    total = len(tokens)
-    root = {}
-    current_table = root
-
-    def peek():
-        return tokens[idx] if idx < total else (None, None)
-
-    def advance():
-        nonlocal idx
-        tok = tokens[idx]
-        idx += 1
-        return tok
-
-    def parse_key_segment():
-        kind, val = advance()
-        if kind == "bare":
-            return val
-        if kind == "basic":
-            return _unescape_toml_basic(val[1:-1])
-        if kind == "lit":
-            return val[1:-1]
-        raise ValueError(f"Expected TOML key segment, got {kind}:{val!r}")
-
-    def parse_dotted_key():
-        parts = [parse_key_segment()]
-        while peek()[0] == "dot":
-            advance()
-            parts.append(parse_key_segment())
-        return parts
-
-    def descend_table(base, parts):
-        cur = base
-        for part in parts:
-            if part not in cur:
-                cur[part] = {}
-            nxt = cur[part]
-            if isinstance(nxt, list):
-                cur = nxt[-1]
-            elif isinstance(nxt, dict):
-                cur = nxt
-            else:
-                raise ValueError(f"Cannot descend into non-table key {part!r}")
-        return cur
-
-    def set_dotted(target, parts, value):
-        cur = target
-        for part in parts[:-1]:
-            if part not in cur:
-                cur[part] = {}
-            cur = cur[part]
-        cur[parts[-1]] = value
-
-    def parse_value():
-        kind, val = peek()
-        if kind == "ml_basic":
-            advance()
-            inner = val[3:-3]
-            if inner.startswith("\r\n"):
-                inner = inner[2:]
-            elif inner.startswith("\n"):
-                inner = inner[1:]
-            return _unescape_toml_basic(inner)
-        if kind == "ml_lit":
-            advance()
-            inner = val[3:-3]
-            if inner.startswith("\r\n"):
-                inner = inner[2:]
-            elif inner.startswith("\n"):
-                inner = inner[1:]
-            return inner
-        if kind == "basic":
-            advance()
-            return _unescape_toml_basic(val[1:-1])
-        if kind == "lit":
-            advance()
-            return val[1:-1]
-        if kind == "bare":
-            advance()
-            if val == "true":
-                return True
-            if val == "false":
-                return False
-            if re.fullmatch(r"[+-]?\d+", val):
-                return int(val)
-            raise ValueError(f"Unsupported bare TOML value {val!r}")
-        if kind == "lbrack":
-            advance()
-            arr = []
-            while peek()[0] != "rbrack":
-                if peek()[0] is None:
-                    raise ValueError("Unterminated TOML array")
-                arr.append(parse_value())
-                if peek()[0] == "comma":
-                    advance()
-            advance()  # consume rbrack
-            return arr
-        if kind == "lbrace":
-            advance()
-            tbl = {}
-            while peek()[0] != "rbrace":
-                if peek()[0] is None:
-                    raise ValueError("Unterminated TOML inline table")
-                k_parts = parse_dotted_key()
-                eq_k, _ = advance()
-                if eq_k != "eq":
-                    raise ValueError(f"Expected '=' in inline table, got {eq_k}")
-                v = parse_value()
-                set_dotted(tbl, k_parts, v)
-                if peek()[0] == "comma":
-                    advance()
-            advance()  # consume rbrace
-            return tbl
-        raise ValueError(f"Unexpected token while parsing TOML value: {kind}:{val!r}")
-
-    while idx < total:
-        kind, _val = peek()
-        if kind == "lbrack":
-            advance()
-            if peek()[0] == "lbrack":
-                # [[array.of.tables]] header at top-level statement position
-                advance()
-                h_parts = parse_dotted_key()
-                for _ in range(2):
-                    rk, _ = advance()
-                    if rk != "rbrack":
-                        raise ValueError(f"Expected ']]' closing array-of-tables header, got {rk}")
-                parent = descend_table(root, h_parts[:-1])
-                last = h_parts[-1]
-                if last not in parent:
-                    parent[last] = []
-                new_entry = {}
-                parent[last].append(new_entry)
-                current_table = new_entry
-            else:
-                # Standard [section.header] at top-level statement position
-                h_parts = parse_dotted_key()
-                rk, _ = advance()
-                if rk != "rbrack":
-                    raise ValueError(f"Expected ']' closing section header, got {rk}")
-                current_table = descend_table(root, h_parts)
-        else:
-            k_parts = parse_dotted_key()
-            eq_k, _ = advance()
-            if eq_k != "eq":
-                raise ValueError(f"Expected '=' after key {k_parts}, got {eq_k}")
-            val_obj = parse_value()
-            set_dotted(current_table, k_parts, val_obj)
-
-    return root
-
-
-def _flatten_nav_entries(nav_list):
-    """Yield (title, md_rel_path) leaf pairs in declaration order from parsed nav."""
-    leaves = []
-    for entry in nav_list:
-        if isinstance(entry, str):
-            leaves.append(("", entry))
-        elif isinstance(entry, dict):
-            for title, val in entry.items():
-                if isinstance(val, str):
-                    leaves.append((title, val))
-                elif isinstance(val, list):
-                    leaves.extend(_flatten_nav_entries(val))
-                else:
-                    raise ValueError(f"Unexpected nav value for {title!r}: {val!r}")
-        else:
-            raise ValueError(f"Unexpected nav entry: {entry!r}")
-    return leaves
 
 
 # ---------------------------------------------------------------------------
@@ -706,7 +464,9 @@ class TestMarkdownStaticHygiene(unittest.TestCase):
         zensical_path = REPO_ROOT / "zensical.toml"
         self.assertTrue(zensical_path.is_file(), "Missing native zensical.toml at repository root")
 
-        cfg = _parse_zensical_toml(zensical_path.read_text(encoding="utf-8"))
+        zensical_raw = zensical_path.read_text(encoding="utf-8")
+        cfg = _parse_zensical_toml(zensical_raw)
+        self.assertEqual(_fallback_loads(zensical_raw), cfg)
         self.assertIn("project", cfg, "zensical.toml must define [project] table")
         proj = cfg["project"]
 
@@ -1105,6 +865,7 @@ class TestMarkdownStaticHygiene(unittest.TestCase):
             'scheme = "default"\n'
         )
         parsed = _parse_zensical_toml(sample_toml)
+        self.assertEqual(_fallback_loads(sample_toml), parsed)
         self.assertEqual(parsed["project"]["inline"], [["\\(", "\\)"], ["\\[", "\\]"]])
         self.assertEqual(parsed["project"]["single_2d"], [["a"]])
         self.assertEqual(parsed["project"]["theme"]["palette"], [{"scheme": "default"}])
@@ -1643,7 +1404,9 @@ class TestZensicalBuiltSiteHtml(unittest.TestCase):
         """Verify all nav pages exist in site/, internal links/anchors resolve, and extensions emitted DOM."""
         zensical_path = REPO_ROOT / "zensical.toml"
         self.assertTrue(zensical_path.is_file(), "zensical.toml must exist when validating built site/")
-        cfg = _parse_zensical_toml(zensical_path.read_text(encoding="utf-8"))
+        zensical_raw = zensical_path.read_text(encoding="utf-8")
+        cfg = _parse_zensical_toml(zensical_raw)
+        self.assertEqual(_fallback_loads(zensical_raw), cfg)
         nav_leaves = _flatten_nav_entries(cfg["project"]["nav"])
 
         # 1. Verify staged MathJax config & PDF/SVG assets exist in site/

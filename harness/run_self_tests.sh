@@ -3,9 +3,9 @@
 # VarDictRust v1.0.9 — Harness Self-Test Runner (harness/run_self_tests.sh)
 # Automated Tier 6 Harness Diagnostic Runner for VarDictRust v1.0.9.
 #
-# Discovers and executes all 36 harness diagnostic scripts (25 shell tests
-# and 11 python test suites in harness/tests/), reporting unified status.
-# Exits 0 only if all 36 tests pass; exits 1 on any failure.
+# Discovers and executes all 37 harness diagnostic scripts (25 shell tests
+# and 12 python test suites in harness/tests/), reporting unified status.
+# Exits 0 only if all 37 tests pass; exits 1 on any failure.
 #
 # Adheres to Host Policy A3:
 # - Minimal CPU overhead (< 10 seconds total runtime)
@@ -39,8 +39,14 @@ if ! command -v bcftools &>/dev/null; then
 fi
 
 # Discover all diagnostic test files
-mapfile -t SH_TESTS < <(find "$TESTS_DIR" -maxdepth 1 -type f -name "test_*.sh" | sort)
-mapfile -t PY_TESTS < <(find "$TESTS_DIR" -maxdepth 1 -type f -name "test_*.py" | sort)
+SH_TESTS=()
+while IFS= read -r _t; do
+  [ -n "$_t" ] && SH_TESTS+=("$_t")
+done < <(find "$TESTS_DIR" -maxdepth 1 -type f -name "test_*.sh" | sort)
+PY_TESTS=()
+while IFS= read -r _t; do
+  [ -n "$_t" ] && PY_TESTS+=("$_t")
+done < <(find "$TESTS_DIR" -maxdepth 1 -type f -name "test_*.py" | sort)
 TOTAL_TESTS=$(( ${#SH_TESTS[@]} + ${#PY_TESTS[@]} ))
 
 echo "================================================================================"

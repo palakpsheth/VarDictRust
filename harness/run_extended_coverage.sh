@@ -13,12 +13,7 @@ if [[ "${1:-}" == "--no-record" ]]; then
     shift
 fi
 
-COMMON_GIT_DIR="$(git -C "$ROOT_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
-if [[ -n "$COMMON_GIT_DIR" && -d "$(dirname "$COMMON_GIT_DIR")/VarDictJava" ]]; then
-    DATA_ROOT="$(cd "$(dirname "$COMMON_GIT_DIR")" && pwd)"
-else
-    DATA_ROOT="$ROOT_DIR"
-fi
+DATA_ROOT="$(resolve_data_root "$ROOT_DIR")"
 
 # Host Policy A3: courtesy wrapping and thread limit <= 8
 export OMP_NUM_THREADS=8
@@ -623,7 +618,8 @@ SUITE_START_MS=$(now_ms)
             ( set +e; "run_m${m}" > "$TMPDIR/m${m}.log" 2>&1 ); rc=$?
             m_ms=$(( $(now_ms) - m_t0 ))
             if [[ -f "$TMPDIR/m${m}.log" ]]; then
-                sed -i "1s/diffs)/diffs, ${m_ms}ms)/" "$TMPDIR/m${m}.log" || true
+                awk -v ms="${m_ms}ms" 'NR==1{sub(/diffs\)/, "diffs, " ms ")")} {print}' "$TMPDIR/m${m}.log" > "$TMPDIR/m${m}.log.tmp" \
+                    && mv "$TMPDIR/m${m}.log.tmp" "$TMPDIR/m${m}.log" || true
             fi
             printf '%d\n' "$rc" > "$TMPDIR/m${m}.rc.tmp" && mv "$TMPDIR/m${m}.rc.tmp" "$TMPDIR/m${m}.rc"
         } &

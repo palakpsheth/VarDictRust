@@ -9,6 +9,8 @@ set -euo pipefail
 export PATH="$HOME/.local/bin:$PATH"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+source "$ROOT_DIR/harness/lib/portable.sh"
 IN_TREE_MODULE_DIR="$SCRIPT_DIR/modules/vardictrust"
 : "${NFCORE_MODULES_DIR:?Set NFCORE_MODULES_DIR to a trusted local nf-core/modules checkout path}"
 NFCORE_MODULE_PATH="$NFCORE_MODULES_DIR/modules/nf-core/vardictrust"
@@ -75,7 +77,19 @@ rm -rf "$NFCORE_MODULE_PATH"
 mkdir -p "$NFCORE_MODULE_PATH"
 cp -a "$IN_TREE_MODULE_DIR/." "$NFCORE_MODULE_PATH/"
 
-sed -i -E "s/bioconda::vardictrust=[0-9]+\.[0-9]+\.[0-9]+/bioconda::vardictrust=${VERSION}/" "$NFCORE_MODULE_PATH/environment.yml"
+python3 - "$NFCORE_MODULE_PATH/environment.yml" "$VERSION" <<'PY'
+import pathlib, re, sys
+path = pathlib.Path(sys.argv[1])
+ver = sys.argv[2]
+txt, count = re.subn(
+    r"bioconda::vardictrust=[0-9]+\.[0-9]+\.[0-9]+",
+    f"bioconda::vardictrust={ver}",
+    path.read_text(encoding="utf-8"),
+)
+if count != 1:
+    sys.exit(f"ERROR: expected 1 match for bioconda::vardictrust in {path}, got {count}")
+path.write_text(txt, encoding="utf-8")
+PY
 
 # Remove previous Wave conda-lock files so containers create writes fresh lockfiles only
 rm -f "$NFCORE_MODULE_PATH/.conda-lock/"*.txt

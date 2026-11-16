@@ -165,26 +165,10 @@ if [ -n "$PUSH_ROOT" ] && [ -f "$PUSH_ROOT/.gitleaks.toml" ]; then
     st_t0=$SECONDS
     echo "=== $(ts) [pre-push] Scanning commits for secrets (gitleaks) ==="
     GITLEAKS_BIN=""
-    if command -v gitleaks >/dev/null 2>&1; then
-        GITLEAKS_BIN="gitleaks"
-    elif [ -n "${G4_TOOLS_BIN:-}" ] && [ -x "${G4_TOOLS_BIN}/gitleaks" ]; then
-        GITLEAKS_BIN="${G4_TOOLS_BIN}/gitleaks"
-    elif [ -n "${CONDA_PREFIX:-}" ] && [ -x "${CONDA_PREFIX}/bin/gitleaks" ]; then
-        GITLEAKS_BIN="${CONDA_PREFIX}/bin/gitleaks"
-    elif [ -n "${CONDA_PREFIX:-}" ] && [ -x "${CONDA_PREFIX%/envs/*}/envs/g4-tools/bin/gitleaks" ]; then
-        GITLEAKS_BIN="${CONDA_PREFIX%/envs/*}/envs/g4-tools/bin/gitleaks"
-    elif [ -n "${CONDA_PREFIX:-}" ] && [ -x "${CONDA_PREFIX%/envs/*}/envs/vardict-oracle/bin/gitleaks" ]; then
-        GITLEAKS_BIN="${CONDA_PREFIX%/envs/*}/envs/vardict-oracle/bin/gitleaks"
-    elif [ -x "${HOME}/miniconda3/envs/g4-tools/bin/gitleaks" ]; then
-        GITLEAKS_BIN="${HOME}/miniconda3/envs/g4-tools/bin/gitleaks"
-    elif [ -x "${HOME}/miniconda3/envs/vardict-oracle/bin/gitleaks" ]; then
-        GITLEAKS_BIN="${HOME}/miniconda3/envs/vardict-oracle/bin/gitleaks"
-    elif [ -x "${HOME}/miniforge3/envs/g4-tools/bin/gitleaks" ]; then
-        GITLEAKS_BIN="${HOME}/miniforge3/envs/g4-tools/bin/gitleaks"
-    elif [ -x "${HOME}/miniforge3/envs/vardict-oracle/bin/gitleaks" ]; then
-        GITLEAKS_BIN="${HOME}/miniforge3/envs/vardict-oracle/bin/gitleaks"
-    elif [ -x "${HOME}/.local/bin/gitleaks" ]; then
-        GITLEAKS_BIN="${HOME}/.local/bin/gitleaks"
+    if declare -F find_gitleaks >/dev/null 2>&1; then
+        GITLEAKS_BIN="$(find_gitleaks || true)"
+    elif command -v gitleaks >/dev/null 2>&1; then
+        GITLEAKS_BIN="$(command -v gitleaks)"
     fi
     if [ -z "$GITLEAKS_BIN" ]; then
         echo "ERROR: gitleaks not found on PATH or in standard conda/user environments (fail-closed secret gate)." >&2

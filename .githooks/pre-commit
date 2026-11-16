@@ -57,8 +57,9 @@ fi
 
 STAGED_CI_POLICY=$(git diff --cached --name-only --diff-filter=ACM | grep -E '^\.github/workflows/.*\.yml$|^\.github/actions/.*\.yml$|^\.github/dependabot\.yml$|^deny\.toml$|^\.cargo/audit\.toml$|^packaging/|^\.pre-commit-config\.yaml$' || true)
 if [ -n "$STAGED_CI_POLICY" ]; then
-    echo "Running CI & supply-chain policy contract tests (test_bioconda_recipe.py)..."
+    echo "Running CI & supply-chain policy contract tests (test_bioconda_recipe.py, test_release_workflows.py)..."
     python3 harness/tests/test_bioconda_recipe.py
+    python3 harness/tests/test_release_workflows.py
 fi
 
 # 2. Fast syntax check for staged shell scripts and git hooks (<0.2s)
@@ -114,26 +115,10 @@ if [ -f "$ROOT_DIR/.gitleaks.toml" ]; then
     st_t0=$SECONDS
     echo "=== $(ts) [pre-commit] Scanning staged changes for secrets (gitleaks) ==="
     GITLEAKS_BIN=""
-    if command -v gitleaks >/dev/null 2>&1; then
-        GITLEAKS_BIN="gitleaks"
-    elif [ -n "${G4_TOOLS_BIN:-}" ] && [ -x "${G4_TOOLS_BIN}/gitleaks" ]; then
-        GITLEAKS_BIN="${G4_TOOLS_BIN}/gitleaks"
-    elif [ -n "${CONDA_PREFIX:-}" ] && [ -x "${CONDA_PREFIX}/bin/gitleaks" ]; then
-        GITLEAKS_BIN="${CONDA_PREFIX}/bin/gitleaks"
-    elif [ -n "${CONDA_PREFIX:-}" ] && [ -x "${CONDA_PREFIX%/envs/*}/envs/g4-tools/bin/gitleaks" ]; then
-        GITLEAKS_BIN="${CONDA_PREFIX%/envs/*}/envs/g4-tools/bin/gitleaks"
-    elif [ -n "${CONDA_PREFIX:-}" ] && [ -x "${CONDA_PREFIX%/envs/*}/envs/vardict-oracle/bin/gitleaks" ]; then
-        GITLEAKS_BIN="${CONDA_PREFIX%/envs/*}/envs/vardict-oracle/bin/gitleaks"
-    elif [ -x "${HOME}/miniconda3/envs/g4-tools/bin/gitleaks" ]; then
-        GITLEAKS_BIN="${HOME}/miniconda3/envs/g4-tools/bin/gitleaks"
-    elif [ -x "${HOME}/miniconda3/envs/vardict-oracle/bin/gitleaks" ]; then
-        GITLEAKS_BIN="${HOME}/miniconda3/envs/vardict-oracle/bin/gitleaks"
-    elif [ -x "${HOME}/miniforge3/envs/g4-tools/bin/gitleaks" ]; then
-        GITLEAKS_BIN="${HOME}/miniforge3/envs/g4-tools/bin/gitleaks"
-    elif [ -x "${HOME}/miniforge3/envs/vardict-oracle/bin/gitleaks" ]; then
-        GITLEAKS_BIN="${HOME}/miniforge3/envs/vardict-oracle/bin/gitleaks"
-    elif [ -x "${HOME}/.local/bin/gitleaks" ]; then
-        GITLEAKS_BIN="${HOME}/.local/bin/gitleaks"
+    if declare -F find_gitleaks >/dev/null 2>&1; then
+        GITLEAKS_BIN="$(find_gitleaks || true)"
+    elif command -v gitleaks >/dev/null 2>&1; then
+        GITLEAKS_BIN="$(command -v gitleaks)"
     fi
 
     if [ -z "$GITLEAKS_BIN" ]; then

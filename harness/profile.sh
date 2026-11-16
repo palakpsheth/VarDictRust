@@ -75,8 +75,9 @@ LOOPS=${PROFILE_LOOPS:-1}
 
 OUT_ROOT=${PROFILE_OUT:-scratch/profiles}
 OUT="$OUT_ROOT/$TAG"
-EVIDENCE=$(realpath -m benchmarks/evidence)
-case "$(realpath -m "$OUT")/" in
+abs_path() { python3 -c 'import os, sys; print(os.path.realpath(os.path.abspath(sys.argv[1])))' "$1"; }
+EVIDENCE=$(abs_path benchmarks/evidence)
+case "$(abs_path "$OUT")/" in
   "$EVIDENCE"/*) echo "profile: refusing to write under benchmarks/evidence/ ($OUT)" >&2; exit 2 ;;
 esac
 
@@ -194,13 +195,14 @@ cell_spec() {
   esac
 }
 
+upper() { printf '%s' "$1" | tr '[:lower:]' '[:upper:]'; }
 bin_for() {   # <cpu|heap|dhat>
-  local var="PROFILE_BIN_${1^^}" base=${PROFILE_TARGET_BASE:-${CARGO_TARGET_DIR:-$ROOT_DIR/target}}
+  local var="PROFILE_BIN_$(upper "$1")" base=${PROFILE_TARGET_BASE:-${CARGO_TARGET_DIR:-$ROOT_DIR/target}}
   if [ -n "${!var:-}" ]; then echo "${!var}"
   elif [ -n "${PROFILE_BIN:-}" ]; then echo "$PROFILE_BIN"
   else echo "$base/profile-$1/profiling/vardictrust"; fi
 }
-overridden() { local var="PROFILE_BIN_${1^^}"; [ -n "${!var:-}" ] || [ -n "${PROFILE_BIN:-}" ]; }
+overridden() { local var="PROFILE_BIN_$(upper "$1")"; [ -n "${!var:-}" ] || [ -n "${PROFILE_BIN:-}" ]; }
 qcmd() { printf '%q ' "$@"; echo; }
 
 # --- selection ---------------------------------------------------------------------------------------------
@@ -256,7 +258,7 @@ run_cell() {   # <cell>; returns 0 ok, 1 failed, 3 skipped
   for m in "${mods[@]}"; do
     local b; b=$(bin_for "$m")
     local time_cmd=("$TIME_V_BIN" "${TIME_V_ARGS[@]}")
-    local run=(env ${C_ENV[@]+"${C_ENV[@]}"} "VARDICT_PROFILE_${m^^}=$d" "$b" "${C_PRE[@]}" -th "$TH" "${C_POST[@]}")
+    local run=(env ${C_ENV[@]+"${C_ENV[@]}"} "VARDICT_PROFILE_$(upper "$m")=$d" "$b" "${C_PRE[@]}" -th "$TH" "${C_POST[@]}")
     local wrapped=("${time_cmd[@]}" -a -o "$d/time.txt" "${run[@]}")
     if [ "$DRY" = 1 ]; then
       local note=""; if [ "$C_BIG" = 1 ] || [ "$m" = dhat ]; then note="[systemd-run MemoryMax=14G guard if available] "; fi

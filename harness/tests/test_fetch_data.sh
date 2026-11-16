@@ -27,7 +27,7 @@ while IFS=$'\t' read -r group name url md5 sha256 dest extra; do
   [[ "$md5" =~ ^([0-9a-f]{32}|-)$ ]] || { echo "FAIL line $line_num: invalid md5 '$md5'" >&2; exit 1; }
   [[ "$sha256" =~ ^([0-9a-f]{64}|-)$ ]] || { echo "FAIL line $line_num: invalid sha256 '$sha256'" >&2; exit 1; }
   case "$group" in
-    refs|seqc2|hg008|hg002)
+    refs|seqc2|hg008|hg002|stage6)
       [[ "$sha256" =~ ^[0-9a-f]{64}$ ]] || {
         echo "FAIL line $line_num: core group '$group' asset '$name' must have pinned 64-hex sha256" >&2
         exit 1
@@ -52,6 +52,31 @@ groups=$(awk '!/^#/ && NF {print $1}' "$ASSETS" | sort -u | tr '\n' ' ')
 [[ "$groups" =~ "seqc2" ]] || { echo "FAIL: missing seqc2 group" >&2; exit 1; }
 [[ "$groups" =~ "hg008" ]] || { echo "FAIL: missing hg008 group" >&2; exit 1; }
 [[ "$groups" =~ "hg002" ]] || { echo "FAIL: missing hg002 group" >&2; exit 1; }
+[[ "$groups" =~ "stage6" ]] || { echo "FAIL: missing stage6 group" >&2; exit 1; }
+
+# 1b. Every stage6_fetch_verified target in harness/run_stage_6.sh must resolve to a 64-hex SHA-256 in harness/assets.tsv
+python3 - "$ASSETS" "harness/run_stage_6.sh" <<'PY'
+import pathlib, re, sys
+assets_path, stage6_path = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+sha_by_name = {}
+for line in assets_path.read_text(encoding="utf-8").splitlines():
+    if not line or line.startswith("#"):
+        continue
+    cols = line.split("\t")
+    if len(cols) == 6 and re.fullmatch(r"[0-9a-f]{64}", cols[4]):
+        sha_by_name[cols[1]] = cols[4]
+s6_text = stage6_path.read_text(encoding="utf-8")
+direct_names = re.findall(r'stage6_fetch_verified\s+"([^"$]+)"', s6_text)
+strat_names = [
+    pathlib.PurePosixPath(m).name
+    for m in re.findall(r'"[A-Za-z0-9_]+\|([A-Za-z0-9_./-]+\.bed\.gz)"', s6_text)
+]
+required = sorted(set(direct_names + strat_names))
+assert len(required) >= 27, f"expected >=27 stage6_fetch_verified assets in run_stage_6.sh, parsed {len(required)}"
+missing = [n for n in required if n not in sha_by_name]
+if missing:
+    sys.exit(f"FAIL: stage6_fetch_verified asset(s) missing 64-hex SHA-256 in {assets_path}: {missing}")
+PY
 
 # 2. Test harness/fetch_data.sh usage error on no arguments or flag-only invocation
 set +e
@@ -344,10 +369,10 @@ grep -q 'seqc2_align.sh HCC1395 "\$sq/fastq/SRR7890879_1.fastq.gz" "\$sq/fastq/S
 grep -q 'seqc2_align.sh HCC1395BL "\$sq/fastq/SRR7890880_1.fastq.gz" "\$sq/fastq/SRR7890880_2.fastq.gz"' harness/stage_g4.sh || { echo "FAIL: stage_g4.sh missing SRR7890880 FASTQ paths" >&2; exit 1; }
 grep -q 'DATA_DIR="\$D" bash harness/get_hg002_slice.sh' harness/stage_g4.sh || { echo "FAIL: stage_g4.sh must pass DATA_DIR=\$D to get_hg002_slice.sh" >&2; exit 1; }
 grep -q 'D="\${DATA_DIR:-scratch/g4}"' harness/get_hg002_slice.sh || { echo "FAIL: get_hg002_slice.sh must honour DATA_DIR" >&2; exit 1; }
-grep -q 'stage_verified_sha256' harness/get_hg002_slice.sh || { echo "FAIL: get_hg002_slice.sh must use stage_verified_sha256" >&2; exit 1; }
-grep -q 'stage_verified_sha256' harness/get_hg008_slice.sh || { echo "FAIL: get_hg008_slice.sh must use stage_verified_sha256" >&2; exit 1; }
+grep -Eq 'stage_verified_sha256|stream_verified_bam_slice' harness/get_hg002_slice.sh || { echo "FAIL: get_hg002_slice.sh must use stream_verified_bam_slice" >&2; exit 1; }
+grep -Eq 'stage_verified_sha256|stream_verified_bam_slice' harness/get_hg008_slice.sh || { echo "FAIL: get_hg008_slice.sh must use stream_verified_bam_slice" >&2; exit 1; }
 grep -q 'lib/portable.sh' harness/get_multimodal_slices.sh || { echo "FAIL: get_multimodal_slices.sh must source portable.sh" >&2; exit 1; }
-grep -q 'stage_verified_sha256' harness/get_multimodal_slices.sh || { echo "FAIL: get_multimodal_slices.sh must use stage_verified_sha256" >&2; exit 1; }
+grep -Eq 'stage_verified_sha256|stream_verified_bam_slice' harness/get_multimodal_slices.sh || { echo "FAIL: get_multimodal_slices.sh must use stream_verified_bam_slice" >&2; exit 1; }
 
 # 6. Regression test: get_hg002_slice.sh refreshes corrupted local truth BED/VCF/TBI even when stale .sha256/.done sidecars exist
 mkdir -p "$TMPDIR/mockbin" "$TMPDIR/hg002_src" "$TMPDIR/g4_hg002/hg002/truth"

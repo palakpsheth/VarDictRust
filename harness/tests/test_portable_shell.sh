@@ -121,6 +121,152 @@ EOF
   # 13. exec_nice_idle replaces shell process
   exec_out="$(bash -c "source \"\$1\"; exec_nice_idle echo exec_ok" _ "$1")"
   [ "$exec_out" = "exec_ok" ] || { echo "FAIL: exec_nice_idle output: $exec_out" >&2; exit 1; }
+
+  # 14. portable_timeout / --timeout CLI dispatch + Python fallback + process-group cleanup + kill-after grace
+  to_rc=0
+  PORTABLE_TIMEOUT_KILL_AFTER=0.3 "$1" --timeout 0.2s sh -c '\''sleep 30 & echo $! > "$1"; wait'\'' _ "$tmp/to_child.pid" || to_rc=$?
+  [ "$to_rc" -eq 124 ] || { echo "FAIL: --timeout 0.2s expected exit 124, got $to_rc" >&2; exit 1; }
+  sleep 0.05
+  if [ -s "$tmp/to_child.pid" ] && kill -0 "$(cat "$tmp/to_child.pid")" 2>/dev/null; then
+    kill -9 "$(cat "$tmp/to_child.pid")" 2>/dev/null || true
+    echo "FAIL: --timeout left orphan child process $(cat "$tmp/to_child.pid")" >&2
+    exit 1
+  fi
+  "$1" --timeout 1h true || { echo "FAIL: --timeout 1h true failed" >&2; exit 1; }
+  portable_time_v -o "$tmp/t_to.time" "${TIMEOUT_CMD[@]}" 30s true || { echo "FAIL: portable_time_v + TIMEOUT_CMD failed" >&2; exit 1; }
+  grep -q "Exit status: 0" "$tmp/t_to.time" || { echo "FAIL: t_to.time missing Exit status: 0" >&2; exit 1; }
+
+  # GNU/default --timeout must pass -k <PORTABLE_TIMEOUT_KILL_AFTER>s so SIGTERM-ignoring children are SIGKILLed
+  ka_t0="$(now_ms)"
+  ka_gnu_rc=0
+  PORTABLE_TIMEOUT_KILL_AFTER=0.2 "$1" --timeout 0.1s python3 -c "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(2)" || ka_gnu_rc=$?
+  ka_dt=$(( $(now_ms) - ka_t0 ))
+  { [ "$ka_gnu_rc" -eq 124 ] || [ "$ka_gnu_rc" -eq 137 ]; } || { echo "FAIL: kill-after expected 124/137, got $ka_gnu_rc" >&2; exit 1; }
+  [ "$ka_dt" -lt 1200 ] || { echo "FAIL: default --timeout ignored PORTABLE_TIMEOUT_KILL_AFTER=0.2 (${ka_dt}ms)" >&2; exit 1; }
+
+  no_to_bin="$tmp/no_timeout_bin"
+  mkdir -p "$no_to_bin"
+  for util in sh bash python3 sleep true cat kill rm mkdir dirname basename pwd uname tr awk cut wc date nice; do
+    if u_path="$(type -P "$util" 2>/dev/null)" && [ -n "$u_path" ]; then
+      ln -sf "$u_path" "$no_to_bin/$util"
+    fi
+  done
+  py_to_rc=0
+  PORTABLE_TIMEOUT_KILL_AFTER=0.3 PATH="$no_to_bin" "$1" --timeout 0.2s sh -c '\''sleep 30 & echo $! > "$1"; wait'\'' _ "$tmp/py_to_child.pid" || py_to_rc=$?
+  [ "$py_to_rc" -eq 124 ] || { echo "FAIL: Python fallback --timeout 0.2s expected 124, got $py_to_rc" >&2; exit 1; }
+  sleep 0.05
+  if [ -s "$tmp/py_to_child.pid" ] && kill -0 "$(cat "$tmp/py_to_child.pid")" 2>/dev/null; then
+    kill -9 "$(cat "$tmp/py_to_child.pid")" 2>/dev/null || true
+    echo "FAIL: Python fallback --timeout left orphan child $(cat "$tmp/py_to_child.pid")" >&2
+    exit 1
+  fi
+  # Python fallback honors PORTABLE_TIMEOUT_KILL_AFTER (fast 0.1s escalation + 1.5s grace for SIGTERM cleanup of start_new_session grandchild)
+  py_ka_t0="$(now_ms)"
+  py_ka_rc=0
+  PORTABLE_TIMEOUT_KILL_AFTER=0.1 PATH="$no_to_bin" "$1" --timeout 0.1s python3 -c "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(5)" || py_ka_rc=$?
+  py_ka_dt=$(( $(now_ms) - py_ka_t0 ))
+  [ "$py_ka_rc" -eq 124 ] || { echo "FAIL: Python fallback kill-after expected 124, got $py_ka_rc" >&2; exit 1; }
+  [ "$py_ka_dt" -lt 1000 ] || { echo "FAIL: Python fallback ignored PORTABLE_TIMEOUT_KILL_AFTER=0.1 (${py_ka_dt}ms)" >&2; exit 1; }
+
+  grace_rc=0
+  PORTABLE_TIMEOUT_KILL_AFTER=1.5 PATH="$no_to_bin" "$1" --timeout 0.15s python3 -c '\''
+import os, signal, subprocess, sys, time
+gc = subprocess.Popen(
+    [sys.executable, "-c", "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)"],
+    start_new_session=True,
+)
+open(sys.argv[1], "w").write(str(gc.pid))
+def _on_term(_sig, _frm):
+    time.sleep(0.4)
+    os.killpg(gc.pid, signal.SIGKILL)
+    gc.wait()
+    sys.exit(143)
+signal.signal(signal.SIGTERM, _on_term)
+time.sleep(30)
+'\'' "$tmp/grace_gc.pid" || grace_rc=$?
+  [ "$grace_rc" -eq 124 ] || { echo "FAIL: grace wrapper expected 124, got $grace_rc" >&2; exit 1; }
+  sleep 0.05
+  if [ -s "$tmp/grace_gc.pid" ] && kill -0 "$(cat "$tmp/grace_gc.pid")" 2>/dev/null; then
+    kill -9 "$(cat "$tmp/grace_gc.pid")" 2>/dev/null || true
+    echo "FAIL: start_new_session grandchild orphaned during SIGTERM cleanup grace" >&2
+    exit 1
+  fi
+
+  PATH="$no_to_bin" "$1" --timeout 1h true || { echo "FAIL: Python fallback --timeout 1h true failed" >&2; exit 1; }
+  py_exit_rc=0
+  PATH="$no_to_bin" "$1" --timeout 10 sh -c "exit 19" || py_exit_rc=$?
+  [ "$py_exit_rc" -eq 19 ] || { echo "FAIL: Python fallback did not preserve exit 19 (got $py_exit_rc)" >&2; exit 1; }
+
+  # 15. find_gitleaks under minimal PATH=/usr/bin:/bin
+  fake_home="$tmp/fake_home"
+  mkdir -p "$fake_home/miniforge3/envs/vardict-oracle/bin" "$fake_home/.local/bin"
+  printf "#!/bin/sh\nexit 0\n" > "$fake_home/miniforge3/envs/vardict-oracle/bin/gitleaks"
+  chmod +x "$fake_home/miniforge3/envs/vardict-oracle/bin/gitleaks"
+  got_gl1="$(PATH="$no_to_bin" HOME="$fake_home" CONDA_PREFIX="" G4_TOOLS_BIN="$tmp/nope" find_gitleaks)"
+  [ "$got_gl1" = "$fake_home/miniforge3/envs/vardict-oracle/bin/gitleaks" ] || { echo "FAIL: find_gitleaks miniforge3 fallback got $got_gl1" >&2; exit 1; }
+  rm -f "$fake_home/miniforge3/envs/vardict-oracle/bin/gitleaks"
+  printf "#!/bin/sh\nexit 0\n" > "$fake_home/.local/bin/gitleaks"
+  chmod +x "$fake_home/.local/bin/gitleaks"
+  got_gl2="$(PATH="$no_to_bin" HOME="$fake_home" CONDA_PREFIX="" G4_TOOLS_BIN="$tmp/nope" find_gitleaks)"
+  [ "$got_gl2" = "$fake_home/.local/bin/gitleaks" ] || { echo "FAIL: find_gitleaks .local/bin fallback got $got_gl2" >&2; exit 1; }
+
+  # 16. resolve_data_root (explicit env, direct scratch/g4, and linked git worktree even after scratch/g4 is created)
+  got_dr_env="$(DATA_ROOT="/explicit/data/root" resolve_data_root "$tmp")"
+  [ "$got_dr_env" = "/explicit/data/root" ] || { echo "FAIL: resolve_data_root explicit env got $got_dr_env" >&2; exit 1; }
+  if command -v git >/dev/null 2>&1; then
+    mkdir -p "$tmp/main_repo/scratch/g4" "$tmp/main_repo/VarDictJava/testdata"
+    (
+      cd "$tmp/main_repo"
+      git init -q -b main
+      git config user.email "t@example.com"
+      git config user.name "T"
+      echo ok > README.md
+      git add README.md
+      git commit -q -m init
+      git worktree add -q -b wt "$tmp/wt_repo"
+    )
+    mkdir -p "$tmp/wt_repo/scratch/acceptance" "$tmp/wt_repo/scratch/g4/concordance_multimodal"
+    ln -s "$tmp/main_repo/scratch/g4/ref" "$tmp/wt_repo/scratch/g4/ref"
+    got_dr_wt="$(DATA_ROOT="" resolve_data_root "$tmp/wt_repo")"
+    want_dr_main="$(cd "$tmp/main_repo" && pwd)"
+    [ "$got_dr_wt" = "$want_dr_main" ] || { echo "FAIL: resolve_data_root worktree with scratch/g4 got $got_dr_wt, want $want_dr_main" >&2; exit 1; }
+  fi
+
+  # 17. stream_verified_bam_slice retry & SHA-256 BAI check
+  mkdir -p "$tmp/mock_slice_bin" "$tmp/slice_out"
+  printf "MOCK_BAI_BYTES" > "$tmp/slice_out/local.bai"
+  bai_sha="$(portable_sha256 "$tmp/slice_out/local.bai")"
+  echo 0 > "$tmp/view_calls"
+  cat > "$tmp/mock_slice_bin/samtools" <<'\''SAMEOF'\''
+#!/bin/sh
+cmd="$1"
+shift
+case "$cmd" in
+  view)
+    c=$(( $(cat "$MOCK_VIEW_CALLS") + 1 ))
+    echo "$c" > "$MOCK_VIEW_CALLS"
+    [ "$c" -ge 2 ] || exit 1
+    printf "BAM_SLICE_DATA"
+    exit 0
+    ;;
+  quickcheck)
+    [ -s "$1" ]
+    exit $?
+    ;;
+  index)
+    for last; do :; done
+    printf "BAI" > "${last}.bai"
+    exit 0
+    ;;
+esac
+exit 1
+SAMEOF
+  chmod +x "$tmp/mock_slice_bin/samtools"
+  MOCK_VIEW_CALLS="$tmp/view_calls" PATH="$tmp/mock_slice_bin:$PATH" BAM_SLICE_INITIAL_DELAY=0 \
+    stream_verified_bam_slice "unit_slice" "https://example.invalid/x.bam" "https://example.invalid/x.bam.bai" \
+      "$bai_sha" "$tmp/slice_out/local.bai" "chr1:1-100" "$tmp/slice_out/out.bam" >/dev/null
+  [ "$(cat "$tmp/view_calls")" -eq 2 ] || { echo "FAIL: stream_verified_bam_slice expected 2 attempts, got $(cat "$tmp/view_calls")" >&2; exit 1; }
+  [ -s "$tmp/slice_out/out.bam" ] && [ -s "$tmp/slice_out/out.bam.bai" ] || { echo "FAIL: stream_verified_bam_slice missing output BAM/BAI" >&2; exit 1; }
 ' _ "$PORTABLE_SH" "$TMP_DIR"
 
 echo "PASS test_portable_shell"

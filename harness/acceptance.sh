@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # AGENTS.md §15 acceptance, items 1-8 verbatim. Exit 0 only if every item is PASS. There is no waiver mechanism.
 set -uo pipefail
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/portable.sh"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+source "$SCRIPT_DIR/lib/portable.sh"
+DATA_ROOT="$(resolve_data_root "$ROOT_DIR")"
 OUT=${ACCEPT_DIR:-scratch/acceptance}; mkdir -p "$OUT"; : > "$OUT/log.txt"; declare -A R
 FP=$(bash harness/engine_fingerprint.sh) || { echo "acceptance: commit first"; exit 2; }
 PERF_FP=$(bash harness/engine_fingerprint.sh --perf) || exit 2
@@ -103,8 +106,8 @@ if ev extended-coverage-tier2 >> "$OUT/log.txt" 2>&1; then
 else
   run bash harness/run_extended_coverage.sh || { t=0; echo "run_extended_coverage failed" >> "$OUT/log.txt"; }
 fi
-if [ ! -d scratch/g4/multimodal ]; then
-  echo "acceptance: scratch/g4/multimodal is missing; live multimodal suite required" >> "$OUT/log.txt"
+if [ ! -d "$DATA_ROOT/scratch/g4/multimodal" ]; then
+  echo "acceptance: $DATA_ROOT/scratch/g4/multimodal is missing; live multimodal suite required" >> "$OUT/log.txt"
   t=0
 elif ev multimodal-slices-tier2 >> "$OUT/log.txt" 2>&1; then
   echo "acceptance: multimodal-slices-tier2 already certified for $FP" >> "$OUT/log.txt"

@@ -9,6 +9,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+source "$ROOT_DIR/harness/lib/portable.sh"
 RECIPE_DIR="$SCRIPT_DIR/recipes/vardictrust"
 META_YAML="$RECIPE_DIR/meta.yaml"
 
@@ -37,13 +38,25 @@ if ! curl --proto '=https' --tlsv1.2 -LsSf --connect-timeout 10 --max-time 60 --
   exit 1
 fi
 
-SHA256="$(sha256sum "$TMP_DIR/release.tar.gz" | awk '{print $1}')"
+SHA256="$(portable_sha256 "$TMP_DIR/release.tar.gz")"
 echo "Computed live GitHub release SHA256: ${SHA256}"
 
 # Update sha256, version, and reset build number to 0 in meta.yaml
-sed -i -E "s/sha256: [0-9a-fA-F]+/sha256: ${SHA256}/" "$META_YAML"
-sed -i -E "s/\{% set version = \".*\" %\}/{% set version = \"${VERSION}\" %}/" "$META_YAML"
-sed -i -E "s/^([[:space:]]*number:[[:space:]]*)[0-9]+/\10/" "$META_YAML"
+python3 - "$META_YAML" "$VERSION" "$SHA256" <<'PY'
+import pathlib, re, sys
+path = pathlib.Path(sys.argv[1])
+ver, sha = sys.argv[2], sys.argv[3]
+txt = path.read_text(encoding="utf-8")
+for pat, repl, desc in [
+    (r"sha256: [0-9a-fA-F]+", f"sha256: {sha}", "sha256"),
+    (r'\{% set version = "[^"]*" %\}', f'{{% set version = "{ver}" %}}', "version"),
+    (r"(?m)^([ \t]*number:[ \t]*)[0-9]+", r"\g<1>0", "build.number"),
+]:
+    txt, count = re.subn(pat, repl, txt)
+    if count != 1:
+        sys.exit(f"ERROR: expected 1 match for {desc} in {path}, got {count}")
+path.write_text(txt, encoding="utf-8")
+PY
 
 echo "Updated $META_YAML with version ${VERSION} and sha256 ${SHA256}."
 echo ""

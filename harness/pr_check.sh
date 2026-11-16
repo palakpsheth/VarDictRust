@@ -5,14 +5,10 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$ROOT_DIR/harness/lib/portable.sh"
-COMMON_GIT_DIR="$(git -C "$ROOT_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
-if [[ -n "$COMMON_GIT_DIR" && -d "$(dirname "$COMMON_GIT_DIR")/VarDictJava" ]]; then
-  DATA_ROOT="$(cd "$(dirname "$COMMON_GIT_DIR")" && pwd)"
-else
-  DATA_ROOT="$ROOT_DIR"
-fi
+DATA_ROOT="$(resolve_data_root "$ROOT_DIR")"
 
 SLICE_KEEP_TMP=$(mktemp -d)
+PR_INTEGRATION_LOG="$SLICE_KEEP_TMP/pr_integration.log"
 trap 'rm -rf "$SLICE_KEEP_TMP"' EXIT
 export SLICE_KEEP="${SLICE_KEEP:-$SLICE_KEEP_TMP}"
 export VARDICT_BIN="${VARDICT_BIN:-$ROOT_DIR/target/release/vardictrust}"
@@ -53,18 +49,17 @@ echo "$(ts) [Stage 2/6] Crash robustness test suite verified in workspace test p
 # Stage 3: Tier-1 Upstream Integration Corpus (92 fixtures: 91 PASS / 1 XFAIL)
 st_t0=$SECONDS
 echo "$(ts) [Stage 3/6] Running Tier-1 integration regression corpus..."
-mkdir -p scratch
 status=0
 exec 3>&1
-INTEGRATION_PROGRESS_FD=3 bash harness/run_integration.sh > scratch/pr_integration.log 2>&1 || status=$?
+INTEGRATION_PROGRESS_FD=3 bash harness/run_integration.sh > "$PR_INTEGRATION_LOG" 2>&1 || status=$?
 exec 3>&-
 [ "$status" -eq 0 ] \
-  && grep -qx 'PASS: 91  XFAIL: 1  FAIL: 0  SKIP: 0  XPASS: 0' scratch/pr_integration.log \
-  && [ "$(grep -c '^XFAIL: ' scratch/pr_integration.log)" -eq 1 ] \
-  && grep -qxF 'XFAIL: Simple;hard_clip_case.fa;hard_clip_next_to_del_test2.bam;test;6434-6564;-f 0.0 -p -r 1.txt (UB-4 upstream fixture defect, verified against live-oracle signature)' scratch/pr_integration.log \
+  && grep -qx 'PASS: 91  XFAIL: 1  FAIL: 0  SKIP: 0  XPASS: 0' "$PR_INTEGRATION_LOG" \
+  && [ "$(grep -c '^XFAIL: ' "$PR_INTEGRATION_LOG")" -eq 1 ] \
+  && grep -qxF 'XFAIL: Simple;hard_clip_case.fa;hard_clip_next_to_del_test2.bam;test;6434-6564;-f 0.0 -p -r 1.txt (UB-4 upstream fixture defect, verified against live-oracle signature)' "$PR_INTEGRATION_LOG" \
   || {
     echo "PR Regression Failure: Tier-1 corpus did not match expected 91 PASS / 1 XFAIL signature (exit status: $status)!"
-    cat scratch/pr_integration.log
+    cat "$PR_INTEGRATION_LOG"
     exit 1
   }
 echo "$(ts) [Stage 3/6] Tier-1 integration corpus PASS: 91 PASS / 1 XFAIL ($((SECONDS - st_t0))s)"
@@ -136,10 +131,9 @@ echo "$(ts) [Stage 5/6] PASS ($((SECONDS - st_t0))s)"
 # Stage 6: Security & Supply-Chain Hygiene (Gitleaks, cargo-deny, cargo-audit)
 st_t0=$SECONDS
 echo "$(ts) [Stage 6/6] Scanning commits for secrets and auditing supply chain..."
-if command -v gitleaks >/dev/null 2>&1; then
-  gitleaks detect --source . -v
-elif [ -x "$G4_TOOLS_BIN/gitleaks" ]; then
-  "$G4_TOOLS_BIN/gitleaks" detect --source . -v
+GITLEAKS_BIN="$(find_gitleaks || true)"
+if [ -n "$GITLEAKS_BIN" ]; then
+  "$GITLEAKS_BIN" detect --source . -v
 else
   echo "ERROR: gitleaks scanner not found. Install gitleaks to satisfy PR security gate." >&2
   exit 1

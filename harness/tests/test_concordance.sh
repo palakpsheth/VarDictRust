@@ -114,4 +114,43 @@ set -e
 
 [ "$empty_rc" -ne 0 ] || { echo "FAIL test_concordance: expected non-zero exit on empty truth" >&2; exit 1; }
 
+# 9. Shared vardictcpp third-arm helper (harness/lib/concordance_cpp.sh):
+#    header ##contig scaffolding, N-REF + chr-prefix normalization, and extra.json emission
+source harness/lib/concordance_cpp.sh
+mkdir -p "$TMPDIR/cpp_helper/java" "$TMPDIR/cpp_helper/rust"
+printf '{"f_measure": 0.95}\n' > "$TMPDIR/cpp_helper/java/summary.json"
+printf '{"f_measure": 0.95}\n' > "$TMPDIR/cpp_helper/rust/summary.json"
+cat << EOF > "$TMPDIR/cpp_helper/java.vcf"
+##fileformat=VCFv4.2
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO
+chr1	${p1}	.	${ref1}	${alt1}	100	PASS	.
+EOF
+# Raw cpp VCF: missing ##contig lines, unprefixed chrom "1", plus an N-REF call to strip
+cat << EOF > "$TMPDIR/cpp_helper/raw_cpp.vcf"
+##fileformat=VCFv4.2
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO
+1	${p1}	.	${ref1}	${alt1}	100	PASS	.
+1	${p2}	.	N	A	50	PASS	.
+EOF
+mock_cpp_eval() {
+  local arm="$1" vcf_in="$2"
+  mkdir -p "$TMPDIR/cpp_helper/$arm"
+  grep -q '^##contig=<ID=chr1,length=300>' "$vcf_in" || return 1
+  if [ "$arm" = "cpp" ]; then
+    printf '{"f_measure": 0.80}\n' > "$TMPDIR/cpp_helper/$arm/summary.json"
+  else
+    ! grep -q $'\tN\t' "$vcf_in" || return 1
+    grep -q "^chr1	${p1}	" "$vcf_in" || return 1
+    printf '{"f_measure": 0.91}\n' > "$TMPDIR/cpp_helper/$arm/summary.json"
+  fi
+}
+CPP_SKIP=0 concordance_cpp_run_third_arm "$TMPDIR/cpp_helper/raw_cpp.vcf" "$TMPDIR/truth.vcf.gz" "$TMPDIR/cpp_helper/java.vcf" "$TMPDIR/cpp_helper" mock_cpp_eval
+concordance_cpp_write_extra "$TMPDIR/cpp_helper" "$CPP_F1" "$CPP_NOTE" "$CPP_F1_NORM" >/dev/null
+python3 - "$TMPDIR/cpp_helper/extra.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d["cpp_f1"] == 0.80, f"expected cpp_f1=0.80, got {d}"
+assert d["cpp_f1_normalized"] == 0.91, f"expected cpp_f1_normalized=0.91, got {d}"
+PY
+
 echo "PASS test_concordance"

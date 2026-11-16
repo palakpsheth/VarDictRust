@@ -745,6 +745,133 @@ class TestEvidenceInputs(unittest.TestCase):
                 "Files were partially written despite a late pattern error",
             )
 
+    def test_sync_evidence_docs_rejects_broken_ecosystem_survey_and_release_pr_doc(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tpath = pathlib.Path(tmp)
+            cargo_text = (ROOT_DIR / "Cargo.toml").read_text(encoding="utf-8")
+            import re as _re
+            ver_m = _re.search(r'^\[workspace\.package\]\s*\nversion\s*=\s*"([^"]+)"', cargo_text, _re.MULTILINE)
+            self.assertIsNotNone(ver_m)
+            ver = ver_m.group(1)
+            rel_pr_rel = f"docs/release/v{ver}-pr.md"
+            rel_files = [
+                "Cargo.toml",
+                "README.md",
+                "DIVERGENCES.md",
+                "benchmarks/README.md",
+                "docs/validation/omnibus-empirical-validation.md",
+                "docs/testing/test-matrix-and-ci-audit.md",
+                "docs/ecosystem-survey.md",
+                rel_pr_rel,
+                ".agents/skills/vardictrust-release/references/version-surface-map.md",
+            ]
+            for rel in rel_files:
+                src = ROOT_DIR / rel
+                dst = tpath / rel
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst)
+
+            ev_dst = tpath / "benchmarks" / "evidence"
+            ev_dst.mkdir(parents=True, exist_ok=True)
+            for jf in (ROOT_DIR / "benchmarks" / "evidence").glob("*.json"):
+                shutil.copy2(jf, ev_dst / jf.name)
+
+            sync_script = str(ROOT_DIR / "harness" / "sync_evidence_docs.py")
+            orig_eco = (tpath / "docs" / "ecosystem-survey.md").read_text(encoding="utf-8")
+            (tpath / "docs" / "ecosystem-survey.md").write_text("# Broken ecosystem survey\n", encoding="utf-8")
+            res_eco = subprocess.run(
+                [sys.executable, sync_script, "--repo-root", str(tpath)],
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(res_eco.returncode, 0, "Broken docs/ecosystem-survey.md must fail sub_required")
+            self.assertIn("docs/ecosystem-survey.md", res_eco.stderr)
+
+            (tpath / "docs" / "ecosystem-survey.md").write_text(orig_eco, encoding="utf-8")
+            (tpath / rel_pr_rel).write_text("# Broken release PR doc\n", encoding="utf-8")
+            res_pr = subprocess.run(
+                [sys.executable, sync_script, "--repo-root", str(tpath)],
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(res_pr.returncode, 0, f"Broken {rel_pr_rel} must fail sub_required")
+            self.assertIn(rel_pr_rel, res_pr.stderr)
+
+    def test_check_release_consistency_negative_evidence_and_downstream_phases(self):
+        import importlib.util
+
+        script_path = ROOT_DIR / ".agents" / "skills" / "vardictrust-release" / "scripts" / "check_release_consistency.py"
+        spec = importlib.util.spec_from_file_location("check_release_consistency_neg", script_path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_root = pathlib.Path(tmp)
+            # 1a. Missing engine_fingerprint.sh
+            errs_missing_fp: list[str] = []
+            mod.check_evidence_and_fingerprints(fake_root, False, errs_missing_fp)
+            self.assertTrue(any("engine_fingerprint.sh" in e for e in errs_missing_fp), errs_missing_fp)
+
+            # 1b. Wrong evidence JSON count (< 16)
+            (fake_root / "harness").mkdir(parents=True, exist_ok=True)
+            (fake_root / "harness" / "engine_fingerprint.sh").write_text("#!/usr/bin/env bash\necho 0000000000000000\n", encoding="utf-8")
+            ev_dir = fake_root / "benchmarks" / "evidence"
+            ev_dir.mkdir(parents=True, exist_ok=True)
+            (ev_dir / "hg008-tier2.json").write_text('{"fingerprint": "1111111111111111"}\n', encoding="utf-8")
+            errs_cnt: list[str] = []
+            mod.check_evidence_and_fingerprints(fake_root, False, errs_cnt)
+            self.assertTrue(any("expected 16" in e for e in errs_cnt), errs_cnt)
+
+            # 1c. 16 JSONs with fingerprint mismatch + omnibus SHA-256 mismatch
+            for jf in (ROOT_DIR / "benchmarks" / "evidence").glob("*.json"):
+                shutil.copy2(jf, ev_dir / jf.name)
+            amp_data = json.loads((ev_dir / "amplicon-tier2.json").read_text(encoding="utf-8"))
+            amp_data["fingerprint"] = "deadbeef00000000"
+            (ev_dir / "amplicon-tier2.json").write_text(json.dumps(amp_data), encoding="utf-8")
+            omnibus_dst = fake_root / "docs" / "validation" / "omnibus-empirical-validation.md"
+            omnibus_dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(ROOT_DIR / "docs" / "validation" / "omnibus-empirical-validation.md", omnibus_dst)
+            errs_fp: list[str] = []
+            mod.check_evidence_and_fingerprints(fake_root, False, errs_fp)
+            self.assertTrue(any("amplicon-tier2.json: fingerprint" in e for e in errs_fp), errs_fp)
+            self.assertTrue(any("amplicon-tier2.json: sha256" in e for e in errs_fp), errs_fp)
+
+            # 2. check_downstream_phases negative checks (post-bioconda and post-nfcore)
+            meta_dst = fake_root / "packaging" / "bioconda" / "recipes" / "vardictrust" / "meta.yaml"
+            meta_dst.parent.mkdir(parents=True, exist_ok=True)
+            meta_dst.write_text('{% set version = "1.0.8" %}\n', encoding="utf-8")
+            errs_bio: list[str] = []
+            mod.check_downstream_phases(fake_root, "1.0.9", "post-bioconda", errs_bio)
+            self.assertTrue(any("Bioconda meta.yaml version == 1.0.9" in e for e in errs_bio), errs_bio)
+
+            nf_env = fake_root / "packaging" / "nf-core" / "modules" / "vardictrust" / "environment.yml"
+            nf_snap = fake_root / "packaging" / "nf-core" / "modules" / "vardictrust" / "tests" / "main.nf.test.snap"
+            nf_snap.parent.mkdir(parents=True, exist_ok=True)
+            nf_env.write_text('  - "bioconda::vardictrust=1.0.7"\n', encoding="utf-8")
+            nf_snap.write_text('"VARDICTRUST", "vardictrust", "1.0.7"\n', encoding="utf-8")
+            errs_nf: list[str] = []
+            mod.check_downstream_phases(fake_root, "1.0.9", "post-nfcore", errs_nf)
+            self.assertTrue(any("nf-core environment.yml version == 1.0.9" in e for e in errs_nf), errs_nf)
+            self.assertTrue(any("nf-core main.nf.test.snap version == 1.0.9" in e for e in errs_nf), errs_nf)
+
+    def test_worktree_isolation_and_recertify_timing_guards(self):
+        pr_check = (ROOT_DIR / "harness" / "pr_check.sh").read_text(encoding="utf-8")
+        self.assertNotIn("scratch/pr_integration.log", pr_check)
+        self.assertNotIn("/tmp/pr_integration.log", pr_check)
+
+        recert = (ROOT_DIR / "harness" / "recertify.sh").read_text(encoding="utf-8")
+        self.assertNotIn("${SECONDS-step_t0}", recert)
+        self.assertIn("$((SECONDS - step_t0))s", recert)
+        self.assertIn("for sub in amplicon hg002 hg008 seqc2; do", recert)
+
+        mm_slices = (ROOT_DIR / "harness" / "run_multimodal_slices.sh").read_text(encoding="utf-8")
+        self.assertNotIn('"$ROOT_DIR/scratch/golden-store/cells"', mm_slices)
+        self.assertIn('"$DATA_ROOT/scratch/golden-store/cells"', mm_slices)
+
+        accept = (ROOT_DIR / "harness" / "acceptance.sh").read_text(encoding="utf-8")
+        self.assertIn("resolve_data_root", accept)
+        self.assertIn('"$DATA_ROOT/scratch/g4/multimodal"', accept)
+
 
 if __name__ == "__main__":
     unittest.main()

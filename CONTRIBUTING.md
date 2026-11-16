@@ -241,7 +241,7 @@ bash harness/acceptance.sh
 
 Additionally, contributors can execute the diagnostic self-test suite ([Level 6](docs/testing/test-matrix-and-ci-audit.md#level-6-diagnostic-self-tests)) at any time:
 ```bash
-bash harness/run_self_tests.sh   # Executes all 36 diagnostic test scripts in <10s
+bash harness/run_self_tests.sh   # Executes all 37 diagnostic test scripts in <10s
 ```
 
 *For the complete seven-level testing architecture, push-button reproduction commands, and dataset provenance catalog, see the Master Reproducibility Runbook in [`docs/testing/test-matrix-and-ci-audit.md`](docs/testing/test-matrix-and-ci-audit.md).*
@@ -344,7 +344,7 @@ cargo build --release -p vardictrust
 # 2. Commit tracked release changes on release/vX.Y.Z (clean HEAD required by engine_fingerprint.sh)
 git commit -m "chore(release): prepare vX.Y.Z release"
 
-# 3. Verify engine fingerprint and run all 36 diagnostic self-tests
+# 3. Verify engine fingerprint and run all 37 diagnostic self-tests
 bash harness/engine_fingerprint.sh
 bash harness/run_self_tests.sh
 

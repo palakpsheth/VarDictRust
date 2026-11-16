@@ -47,6 +47,10 @@ ck "pre-commit uses --diff-filter=ACMRD for Rust/Cargo detection" grep -q -- '--
 ck "pre-commit syntax-checks staged shell scripts with bash -n" grep -q 'bash -n' .githooks/pre-commit
 ck "pre-commit compiles staged Python files with py_compile" grep -q 'py_compile' .githooks/pre-commit
 ck "pre-commit runs test_stdlib_purity.py on staged Python changes" grep -q 'test_stdlib_purity\.py' .githooks/pre-commit
+ck "pre-commit runs test_bioconda_recipe.py on staged CI/packaging policy changes" grep -q 'test_bioconda_recipe\.py' .githooks/pre-commit
+ck "pre-commit runs test_release_workflows.py on staged CI/packaging policy changes" grep -q 'test_release_workflows\.py' .githooks/pre-commit
+ck "pre-commit reuses find_gitleaks from portable.sh" grep -q 'find_gitleaks' .githooks/pre-commit
+ck "pre-push reuses find_gitleaks from portable.sh" grep -q 'find_gitleaks' .githooks/pre-push
 ck "pre-commit runs check_release_consistency.py on workflow/release surface changes" grep -q 'check_release_consistency\.py' .githooks/pre-commit
 ck "pre-commit runs TestMarkdownStaticHygiene on staged Markdown/docs changes" grep -q 'TestMarkdownStaticHygiene' .githooks/pre-commit
 ck "pre-commit blocks partially staged documentation files" grep -q 'UNSTAGED_MD=' .githooks/pre-commit
