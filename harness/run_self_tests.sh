@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # =============================================================================
-# VarDictRust v1.0.8 — Harness Self-Test Runner (harness/run_self_tests.sh)
-# Automated Tier 6 Harness Diagnostic Runner for VarDictRust v1.0.8.
+# VarDictRust v1.0.9 — Harness Self-Test Runner (harness/run_self_tests.sh)
+# Automated Tier 6 Harness Diagnostic Runner for VarDictRust v1.0.9.
 #
 # Discovers and executes all 36 harness diagnostic scripts (25 shell tests
 # and 11 python test suites in harness/tests/), reporting unified status.
@@ -44,7 +44,7 @@ mapfile -t PY_TESTS < <(find "$TESTS_DIR" -maxdepth 1 -type f -name "test_*.py" 
 TOTAL_TESTS=$(( ${#SH_TESTS[@]} + ${#PY_TESTS[@]} ))
 
 echo "================================================================================"
-echo " VarDictRust v1.0.8 Harness Diagnostic Self-Test Suite"
+echo " VarDictRust v1.0.9 Harness Diagnostic Self-Test Suite"
 echo " Discovered $TOTAL_TESTS Diagnostic Tests in $TESTS_DIR"
 echo "================================================================================"
 

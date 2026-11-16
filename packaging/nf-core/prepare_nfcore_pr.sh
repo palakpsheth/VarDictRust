@@ -13,7 +13,7 @@ IN_TREE_MODULE_DIR="$SCRIPT_DIR/modules/vardictrust"
 : "${NFCORE_MODULES_DIR:?Set NFCORE_MODULES_DIR to a trusted local nf-core/modules checkout path}"
 NFCORE_MODULE_PATH="$NFCORE_MODULES_DIR/modules/nf-core/vardictrust"
 
-VERSION="${1:-1.0.8}"
+VERSION="${1:-1.0.9}"
 if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   echo "ERROR: Invalid VERSION '${VERSION}' (expected strict SemVer X.Y.Z)." >&2
   exit 1

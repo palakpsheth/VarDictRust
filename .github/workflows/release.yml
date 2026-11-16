@@ -46,7 +46,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing release tag on origin/main to build and publish (e.g. v1.0.8)"
+        description: "Existing release tag on origin/main to build and publish (e.g. v1.0.9)"
         required: true
         type: string
 

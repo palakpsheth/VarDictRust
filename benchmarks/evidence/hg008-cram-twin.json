@@ -10,7 +10,7 @@
     "MATCH (18426 variants)"
   ],
   "cpp_time": null,
-  "date": "2026-11-14T19:53:52-08:00",
+  "date": "2026-11-16T02:54:05-08:00",
   "extra": {
     "cpp_chunk": "50000",
     "cpp_head": [
@@ -19,8 +19,8 @@
     ],
     "cpp_version": "vardictcpp 3 hc52dbad_0 bioconda"
   },
-  "fingerprint": "bb09a4d1d4de46bf",
-  "head": "6e3068b10aa2c18590955cdac689c375c295d12a",
+  "fingerprint": "68308cfcd2303ad1",
+  "head": "abbbd41c9820ddcaf7a184164da2062015e29a6c",
   "inputs": [
     {
       "path": "scratch/g4/ref/giabv3/GRCh38_GIABv3.fa",
@@ -84,12 +84,12 @@
   "result": "MATCH",
   "rust_cram_time": {
     "exit": "0",
-    "max_rss_kb": "1718084",
-    "wall": "0:27.06"
+    "max_rss_kb": "1653188",
+    "wall": "0:29.22"
   },
   "rust_time": {
     "exit": "0",
-    "max_rss_kb": "245080",
-    "wall": "0:12.85"
+    "max_rss_kb": "246436",
+    "wall": "0:12.71"
   }
 }

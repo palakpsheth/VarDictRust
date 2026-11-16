@@ -200,11 +200,35 @@ PY
 
 MEDIA_STACK_LIFECYCLE_SCRIPT="${MEDIA_STACK_LIFECYCLE_SCRIPT:-$HOME/Documents/media_stack_lifecycle.py}"
 MEDIA_STACK_PYTHON="${MEDIA_STACK_PYTHON:-$HOME/Documents/venv/bin/python}"
+MEDIA_STACK_MINIMAL_ACTIVE=0
 run_media_stack_hook() {
     if [[ -f "$MEDIA_STACK_LIFECYCLE_SCRIPT" ]]; then
         local py="python3"
         [[ -x "$MEDIA_STACK_PYTHON" ]] && py="$MEDIA_STACK_PYTHON"
         "$py" "$MEDIA_STACK_LIFECYCLE_SCRIPT" "$1"
+    fi
+}
+cleanup_media_stack_on_exit() {
+    local rc=$?
+    trap - EXIT
+    if [[ "$MEDIA_STACK_MINIMAL_ACTIVE" -eq 1 ]]; then
+        run_media_stack_hook up || true
+        MEDIA_STACK_MINIMAL_ACTIVE=0
+    fi
+    return "$rc"
+}
+restore_media_stack_up() {
+    if [[ "$MEDIA_STACK_MINIMAL_ACTIVE" -eq 1 ]]; then
+        run_media_stack_hook up || return $?
+        MEDIA_STACK_MINIMAL_ACTIVE=0
+        trap - EXIT
+    fi
+}
+ensure_media_stack_minimal() {
+    if [[ "$MEDIA_STACK_MINIMAL_ACTIVE" -eq 0 && -f "$MEDIA_STACK_LIFECYCLE_SCRIPT" ]]; then
+        MEDIA_STACK_MINIMAL_ACTIVE=1
+        trap 'cleanup_media_stack_on_exit' EXIT
+        run_media_stack_hook minimal || return $?
     fi
 }
 
@@ -261,10 +285,7 @@ then
     echo "$(ts) [REUSE] scale.json: certified under perf_fingerprint $PERF_FP"
 else
     echo "$(ts) [RUN] scale.json: perf_fingerprint changed ($PERF_FP); running 24-cell scale benchmark..."
-    if [[ -f "$MEDIA_STACK_LIFECYCLE_SCRIPT" ]]; then
-        trap 'run_media_stack_hook up || true' EXIT
-        run_media_stack_hook minimal
-    fi
+    ensure_media_stack_minimal
     if [[ -f scratch/chr1/HG002.chr1.bam && -f scratch/chr1/chr1.bed ]]; then
         SCALE_BAM="scratch/chr1/HG002.chr1.bam"
         SCALE_BED="scratch/chr1/chr1.bed"
@@ -285,14 +306,13 @@ else
       "$SCALE_SAMPLE" scratch/g4/scale
     python3 "$ROOT_DIR/harness/record_evidence.py" scale PASS scratch/g4/scale \
       -- bash harness/scale_bench.sh scratch/g4/ref/d1vd1/GRCh38.d1.vd1.fa "$SCALE_BAM" "$SCALE_BED" "$SCALE_SAMPLE" scratch/g4/scale
-    if [[ -f "$MEDIA_STACK_LIFECYCLE_SCRIPT" ]]; then
-        run_media_stack_hook up
-        trap - EXIT
-    fi
 fi
 
 echo "$(ts) [Recertify 3/5] Running live dual-engine regression & cohort certification suites..."
+ran_perf_target=0
 if needs_stamp "amplicon-tier2"; then
+    ensure_media_stack_minimal
+    ran_perf_target=1
     step_t0=$SECONDS
     echo "$(ts) [RUN] amplicon-tier2: Certifying Targeted Amplicon Tier-2..."
     KEEP_DIR=scratch/g4/amplicon/cmp MIN_VARIANTS=2 bash harness/compare.sh \
@@ -308,6 +328,8 @@ else
 fi
 
 if needs_stamp "hg008-tier2" || needs_stamp "hg008-truth"; then
+    ensure_media_stack_minimal
+    ran_perf_target=1
     step_t0=$SECONDS
     echo "$(ts) [RUN] hg008-tier2 & hg008-truth: Certifying GIAB HG008 Somatic..."
     KEEP_DIR=scratch/g4/hg008/cmp MIN_VARIANTS=18426 bash harness/compare.sh \
@@ -332,6 +354,7 @@ else
 fi
 
 if needs_stamp "seqc2-slices-tier2"; then
+    ensure_media_stack_minimal
     step_t0=$SECONDS
     echo "$(ts) [RUN] seqc2-slices-tier2: Certifying SEQC2 Somatic Slices..."
     KEEP_DIR=scratch/g4/seqc2/cmp-slices MIN_VARIANTS=4151 bash harness/compare.sh \
@@ -347,6 +370,8 @@ else
 fi
 
 if needs_stamp "seqc2-exome-tier2" || needs_stamp "seqc2-truth"; then
+    ensure_media_stack_minimal
+    ran_perf_target=1
     step_t0=$SECONDS
     echo "$(ts) [RUN] seqc2-exome-tier2 & seqc2-truth: Certifying SEQC2 Somatic Exome..."
     KEEP_DIR=scratch/g4/seqc2/cmp-exome MIN_VARIANTS=623444 bash harness/compare.sh \
@@ -371,6 +396,8 @@ else
 fi
 
 if needs_stamp "hg002-tier2" || needs_stamp "hg002-truth"; then
+    ensure_media_stack_minimal
+    ran_perf_target=1
     step_t0=$SECONDS
     echo "$(ts) [RUN] hg002-tier2 & hg002-truth: Certifying GIAB HG002..."
     KEEP_DIR=scratch/g4/hg002/cmp MIN_VARIANTS=227562 bash harness/compare.sh \
@@ -395,6 +422,8 @@ else
 fi
 
 if needs_stamp "hg008-cram-twin"; then
+    ensure_media_stack_minimal
+    ran_perf_target=1
     step_t0=$SECONDS
     echo "$(ts) [RUN] hg008-cram-twin: Certifying HG008 CRAM Twin..."
     KEEP_DIR=scratch/g4/hg008/cram CMP_TIMEOUT=12h bash harness/cram_twin.sh
@@ -413,6 +442,7 @@ else
 fi
 
 if needs_stamp "extended-coverage-tier2"; then
+    ensure_media_stack_minimal
     echo "$(ts) [RUN] extended-coverage-tier2: Running Extended Coverage Suite (17 modalities)..."
     bash "$ROOT_DIR/harness/run_extended_coverage.sh"
 else
@@ -424,6 +454,7 @@ if [ ! -d "$DATA_ROOT/scratch/g4/multimodal" ]; then
     exit 1
 fi
 if needs_stamp "multimodal-slices-tier2"; then
+    ensure_media_stack_minimal
     echo "$(ts) [RUN] multimodal-slices-tier2: Running Multi-Modal Multi-Slice Suite (18 biological slices)..."
     bash "$ROOT_DIR/harness/run_multimodal_slices.sh"
 else
@@ -431,6 +462,7 @@ else
 fi
 
 if needs_stamp "hg005-truth" || needs_stamp "na24385-b37-truth"; then
+    ensure_media_stack_minimal
     step_t0=$SECONDS
     echo "$(ts) [RUN] hg005-truth & na24385-b37-truth: Certifying Multi-Modal Truth Concordance..."
     bash "$ROOT_DIR/harness/concordance_multimodal.sh"
@@ -439,7 +471,8 @@ else
     echo "$(ts) [REUSE] hg005-truth & na24385-b37-truth: already certified for $FP"
 fi
 
-if needs_stamp "perf-budget" || needs_stamp "hg008-tier2" || needs_stamp "seqc2-exome-tier2" || needs_stamp "hg002-tier2" || needs_stamp "amplicon-tier2" || needs_stamp "hg008-cram-twin"; then
+if [[ "$ran_perf_target" -eq 1 ]] || needs_stamp "perf-budget"; then
+    ensure_media_stack_minimal
     echo "$(ts) [RUN] perf-budget: Certifying 5-Target Performance Budget..."
     mkdir -p scratch/g4/perf-budget
     python3 harness/perf_budget.py hg008-tier2 seqc2-exome-tier2 hg002-tier2 amplicon-tier2 hg008-cram-twin > scratch/g4/perf-budget/extra.json
@@ -448,6 +481,7 @@ if needs_stamp "perf-budget" || needs_stamp "hg008-tier2" || needs_stamp "seqc2-
 else
     echo "$(ts) [REUSE] perf-budget: already certified for $FP"
 fi
+restore_media_stack_up
 
 if needs_stamp "musl-ci"; then
     echo "$(ts) [RUN] musl-ci: Certifying Static musl Binary & GNU/musl Equivalence..."
