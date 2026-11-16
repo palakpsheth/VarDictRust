@@ -106,7 +106,6 @@ _TOML_TOKEN_RE = re.compile(
     | (?P<ml_lit>'''[\s\S]*?''')
     | (?P<basic>\"(?:\\.|[^\"\\\n])*\")
     | (?P<lit>'[^'\n]*')
-    | (?P<aot>\[\[[ \t]*[^\[\]\n]+[ \t]*\]\])
     | (?P<lbrack>\[)
     | (?P<rbrack>\])
     | (?P<lbrace>\{)
@@ -206,25 +205,6 @@ def _parse_zensical_toml(text):
             parts.append(parse_key_segment())
         return parts
 
-    def parse_header_parts(inner_str):
-        sub_tokens = _tokenize_toml(inner_str)
-        parts = []
-        s_idx = 0
-        while s_idx < len(sub_tokens):
-            sk, sv = sub_tokens[s_idx]
-            if sk == "bare":
-                parts.append(sv)
-            elif sk == "basic":
-                parts.append(_unescape_toml_basic(sv[1:-1]))
-            elif sk == "lit":
-                parts.append(sv[1:-1])
-            elif sk == "dot":
-                pass
-            else:
-                raise ValueError(f"Unexpected header token {sk}:{sv!r}")
-            s_idx += 1
-        return parts
-
     def descend_table(base, parts):
         cur = base
         for part in parts:
@@ -310,25 +290,31 @@ def _parse_zensical_toml(text):
         raise ValueError(f"Unexpected token while parsing TOML value: {kind}:{val!r}")
 
     while idx < total:
-        kind, val = peek()
-        if kind == "aot":
+        kind, _val = peek()
+        if kind == "lbrack":
             advance()
-            parts = parse_header_parts(val[2:-2])
-            parent = descend_table(root, parts[:-1])
-            last = parts[-1]
-            if last not in parent:
-                parent[last] = []
-            new_entry = {}
-            parent[last].append(new_entry)
-            current_table = new_entry
-        elif kind == "lbrack":
-            # Standard [section.header] at top-level statement position
-            advance()
-            h_parts = parse_dotted_key()
-            rk, _ = advance()
-            if rk != "rbrack":
-                raise ValueError(f"Expected ']' closing section header, got {rk}")
-            current_table = descend_table(root, h_parts)
+            if peek()[0] == "lbrack":
+                # [[array.of.tables]] header at top-level statement position
+                advance()
+                h_parts = parse_dotted_key()
+                for _ in range(2):
+                    rk, _ = advance()
+                    if rk != "rbrack":
+                        raise ValueError(f"Expected ']]' closing array-of-tables header, got {rk}")
+                parent = descend_table(root, h_parts[:-1])
+                last = h_parts[-1]
+                if last not in parent:
+                    parent[last] = []
+                new_entry = {}
+                parent[last].append(new_entry)
+                current_table = new_entry
+            else:
+                # Standard [section.header] at top-level statement position
+                h_parts = parse_dotted_key()
+                rk, _ = advance()
+                if rk != "rbrack":
+                    raise ValueError(f"Expected ']' closing section header, got {rk}")
+                current_table = descend_table(root, h_parts)
         else:
             k_parts = parse_dotted_key()
             eq_k, _ = advance()
@@ -1080,6 +1066,92 @@ class TestMarkdownStaticHygiene(unittest.TestCase):
         self.assertIn("$\\varepsilon = 10^{-6}$", rendered)
         self.assertIn("$$F_1 =", rendered)
 
+    def test_toml_parsers_2d_arrays_globs_and_non_cdn_route_abort(self):
+        """Verify stdlib TOML parsers handle 2D arrays, [glob] lines in not_in_nav, escapes, and non-CDN route aborts."""
+        sample_toml = (
+            '[project]\n'
+            'site_name = "VarDictRust"\n'
+            'inline = [["\\\\(", "\\\\)"], ["\\\\[", "\\\\]"]]\n'
+            'single_2d = [["a"]]\n'
+            'not_in_nav = """\n'
+            '[d]raft/*.md\n'
+            'paper/tables/*.md\n'
+            '"""\n'
+            'nav = [\n'
+            '  { "Overview" = "README.md" },\n'
+            '  { "Section" = [\n'
+            '    { "Quoted \\"Title\\" & \\\\Slash" = "docs/migration.md" },\n'
+            '  ] },\n'
+            ']\n'
+            '\n'
+            '[[project.theme.palette]]\n'
+            'scheme = "default"\n'
+        )
+        parsed = _parse_zensical_toml(sample_toml)
+        self.assertEqual(parsed["project"]["inline"], [["\\(", "\\)"], ["\\[", "\\]"]])
+        self.assertEqual(parsed["project"]["single_2d"], [["a"]])
+        self.assertEqual(parsed["project"]["theme"]["palette"], [{"scheme": "default"}])
+
+        crc_path = (
+            REPO_ROOT / ".agents" / "skills" / "vardictrust-release" / "scripts" / "check_release_consistency.py"
+        )
+        crc_spec = importlib.util.spec_from_file_location("check_release_consistency_test", crc_path)
+        crc_mod = importlib.util.module_from_spec(crc_spec)
+        crc_spec.loader.exec_module(crc_mod)
+        nav_entries = crc_mod.parse_zensical_nav_entries(sample_toml)
+        self.assertEqual(
+            nav_entries,
+            [
+                ("Overview", "README.md"),
+                ('Quoted "Title" & \\Slash', "docs/migration.md"),
+            ],
+        )
+
+        # Verify _install_cdn_disk_cache_route aborts non-CDN external hosts (fonts.googleapis.com, shields.io, api.github.com)
+        captured_handler = {}
+
+        class _FakeContext:
+            def route(self, pattern, fn):
+                captured_handler["pattern"] = pattern
+                captured_handler["fn"] = fn
+
+        class _FakeRequest:
+            def __init__(self, url):
+                self.url = url
+
+        class _FakeRoute:
+            def __init__(self, url):
+                self.request = _FakeRequest(url)
+                self.action = None
+
+            def continue_(self):
+                self.action = "continue"
+
+            def abort(self):
+                self.action = "abort"
+
+            def fulfill(self, **_kwargs):
+                self.action = "fulfill"
+
+        pw_case = TestPlaywrightBrowserRendering("test_readme_browser_rendering")
+        pw_case._install_cdn_disk_cache_route(_FakeContext())
+        handler_fn = captured_handler["fn"]
+
+        for allowed_url in ("http://127.0.0.1:8123/ROADMAP/", "http://localhost:8000/", "data:image/svg+xml,<svg/>"):
+            r = _FakeRoute(allowed_url)
+            handler_fn(r)
+            self.assertEqual(r.action, "continue", f"Expected continue_ for local/inline URL {allowed_url}")
+
+        for blocked_url in (
+            "https://fonts.googleapis.com/css?family=Inter",
+            "https://fonts.gstatic.com/s/inter/v1/font.woff2",
+            "https://img.shields.io/readthedocs/vardictrust",
+            "https://api.github.com/repos/palakpsheth/VarDictRust",
+        ):
+            r = _FakeRoute(blocked_url)
+            handler_fn(r)
+            self.assertEqual(r.action, "abort", f"Expected abort for non-CDN external URL {blocked_url}")
+
     def test_table_column_balance(self):
         """Verify that every markdown table has consistent column counts across all rows."""
         md_files = find_all_markdown_files()
@@ -1648,7 +1720,9 @@ class TestZensicalBuiltSiteHtml(unittest.TestCase):
                 else:
                     target_candidate = (hf_resolved.parent / path_part).resolve()
 
-                if not target_candidate.is_relative_to(site_root_resolved):
+                try:
+                    target_candidate.relative_to(site_root_resolved)
+                except ValueError:
                     link_errors.append(f"{rel_hf}: link '{raw_href}' escapes site_dir")
                     continue
                 target_file = (
@@ -1712,7 +1786,7 @@ class TestPlaywrightBrowserRendering(unittest.TestCase):
     def _install_cdn_disk_cache_route(self, context):
         """Attach a pure-stdlib disk-caching CDN route handler under .cache/docs_ui_cdn (no hollow stubs)."""
         CDN_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        cdn_hosts = ("unpkg.com", "cdn.jsdelivr.net")
+        cdn_hosts = ("unpkg.com", "jsdelivr.net")
 
         def handle_route(route):
             url = route.request.url
@@ -1722,11 +1796,6 @@ class TestPlaywrightBrowserRendering(unittest.TestCase):
             # Local loopback / inline data / blob requests bypass external handler
             if host in ("", "127.0.0.1", "localhost") or parsed.scheme in ("data", "blob", "about"):
                 route.continue_()
-                return
-
-            # Block non-essential GitHub repo-star widget telemetry so unauthenticated/offline runs never 403/hang
-            if host == "api.github.com":
-                route.abort()
                 return
 
             if any(host == h or host.endswith("." + h) for h in cdn_hosts):
@@ -1777,7 +1846,9 @@ class TestPlaywrightBrowserRendering(unittest.TestCase):
                     route.abort()
                     return
 
-            route.continue_()
+            # Block all non-CDN external URLs (fonts.googleapis.com, shields.io, api.github.com, etc.)
+            # so offline / packet-dropping firewalls never stall rendering waiting on TCP timeouts.
+            route.abort()
 
         context.route("**/*", handle_route)
 
@@ -2070,9 +2141,11 @@ th {{ background-color: #f6f8fa; }}
                     self.assertEqual(len(page.query_selector_all("mjx-merror, [data-mjx-error]")), 0)
                     page.wait_for_function(
                         "() => { const m = Array.from(document.querySelectorAll('div.mermaid')); "
-                        "return m.length > 0 && m.every(el => el.getBoundingClientRect().height > 0); }",
+                        "return document.querySelectorAll('pre.mermaid').length === 0 && "
+                        "m.length > 0 && m.every(el => el.getBoundingClientRect().height > 0); }",
                         timeout=20000,
                     )
+                    self.assertEqual(len(page.query_selector_all("pre.mermaid")), 0)
                     mermaid_boxes = page.evaluate(
                         "() => Array.from(document.querySelectorAll('div.mermaid')).map("
                         "el => ({w: el.getBoundingClientRect().width, h: el.getBoundingClientRect().height}))"

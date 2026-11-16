@@ -74,105 +74,206 @@ def forbid_regex(
         )
 
 
-def parse_zensical_nav_entries(toml_text: str) -> list[tuple[str, str]]:
-    """Extract (title, md_rel_path) leaf entries from [project] nav = [...] in zensical.toml (stdlib-only)."""
-    cleaned_lines: list[str] = []
-    in_triple = False
-    triple_delim = ""
-    for raw_line in toml_text.splitlines():
-        out_chars: list[str] = []
-        i = 0
-        n = len(raw_line)
-        in_str = False
-        str_ch = ""
-        while i < n:
-            if in_triple:
-                if raw_line[i : i + 3] == triple_delim:
-                    out_chars.append(triple_delim)
-                    in_triple = False
-                    i += 3
-                    continue
-                out_chars.append(raw_line[i])
-                i += 1
-                continue
-            if not in_str and raw_line[i : i + 3] in ('"""', "'''"):
-                in_triple = True
-                triple_delim = raw_line[i : i + 3]
-                out_chars.append(triple_delim)
-                i += 3
-                continue
-            ch = raw_line[i]
-            if in_str:
-                out_chars.append(ch)
-                if ch == "\\" and str_ch == '"' and i + 1 < n:
-                    out_chars.append(raw_line[i + 1])
-                    i += 2
-                    continue
-                if ch == str_ch:
-                    in_str = False
-                i += 1
-                continue
-            if ch in ('"', "'"):
-                in_str = True
-                str_ch = ch
-                out_chars.append(ch)
-                i += 1
-                continue
-            if ch == "#":
-                break
-            out_chars.append(ch)
-            i += 1
-        cleaned_lines.append("".join(out_chars))
+_ZENSICAL_TOML_TOKEN_RE = re.compile(
+    r"""
+    (?P<ws>[ \t\r\n]+)
+    | (?P<comment>\#[^\n]*)
+    | (?P<ml_basic>\"\"\"[\s\S]*?\"\"\")
+    | (?P<ml_lit>'''[\s\S]*?''')
+    | (?P<basic>\"(?:\\.|[^\"\\\n])*\")
+    | (?P<lit>'[^'\n]*')
+    | (?P<lbrack>\[)
+    | (?P<rbrack>\])
+    | (?P<lbrace>\{)
+    | (?P<rbrace>\})
+    | (?P<eq>=)
+    | (?P<comma>,)
+    | (?P<dot>\.)
+    | (?P<bare>[A-Za-z0-9_-]+)
+    """,
+    re.VERBOSE,
+)
 
-    cleaned = "\n".join(cleaned_lines)
-    proj_m = re.search(r"^\[project\]\s*$", cleaned, re.MULTILINE)
-    if not proj_m:
-        return []
-    after_proj = cleaned[proj_m.end() :]
-    next_sec_m = re.search(r"^\[", after_proj, re.MULTILINE)
-    proj_body = after_proj[: next_sec_m.start()] if next_sec_m else after_proj
 
-    nav_m = re.search(r"^\s*nav\s*=\s*\[", proj_body, re.MULTILINE)
-    if not nav_m:
-        return []
-
-    i = nav_m.end() - 1
-    depth = 0
-    in_str = False
-    str_ch = ""
-    nav_end = len(proj_body)
-    while i < len(proj_body):
-        ch = proj_body[i]
-        if in_str:
-            if ch == "\\" and str_ch == '"' and i + 1 < len(proj_body):
+def _unescape_toml_basic_str(raw_inner: str) -> str:
+    escapes = {
+        "n": "\n",
+        "r": "\r",
+        "t": "\t",
+        "b": "\b",
+        "f": "\f",
+        '"': '"',
+        "\\": "\\",
+    }
+    out: list[str] = []
+    i = 0
+    n = len(raw_inner)
+    while i < n:
+        ch = raw_inner[i]
+        if ch == "\\" and i + 1 < n:
+            nxt = raw_inner[i + 1]
+            if nxt in escapes:
+                out.append(escapes[nxt])
                 i += 2
                 continue
-            if ch == str_ch:
-                in_str = False
-        else:
-            if ch in ('"', "'"):
-                in_str = True
-                str_ch = ch
-            elif ch == "[":
-                depth += 1
-            elif ch == "]":
-                depth -= 1
-                if depth == 0:
-                    nav_end = i + 1
-                    break
+            if nxt == "u" and i + 5 < n:
+                out.append(chr(int(raw_inner[i + 2 : i + 6], 16)))
+                i += 6
+                continue
+            if nxt == "U" and i + 9 < n:
+                out.append(chr(int(raw_inner[i + 2 : i + 10], 16)))
+                i += 10
+                continue
+        out.append(ch)
         i += 1
+    return "".join(out)
 
-    nav_block = proj_body[nav_m.end() - 1 : nav_end]
-    leaf_re = re.compile(
-        r'\{\s*(?:"((?:\\.|[^"\\])*)"|\'([^\']*)\'|([A-Za-z0-9_-]+))\s*=\s*'
-        r'(?:"((?:\\.|[^"\\])*)"|\'([^\']*)\')\s*\}'
-    )
-    entries: list[tuple[str, str]] = []
-    for m in leaf_re.finditer(nav_block):
-        title = m.group(1) or m.group(2) or m.group(3) or ""
-        path = m.group(4) or m.group(5) or ""
-        entries.append((title, path.strip()))
-    return entries
+
+def parse_zensical_nav_entries(toml_text: str) -> list[tuple[str, str]]:
+    """Extract (title, md_rel_path) leaf entries from [project] nav = [...] in zensical.toml (stdlib-only)."""
+    tokens: list[tuple[str, str]] = []
+    pos = 0
+    n = len(toml_text)
+    while pos < n:
+        m = _ZENSICAL_TOML_TOKEN_RE.match(toml_text, pos)
+        if not m:
+            return []
+        kind = m.lastgroup or ""
+        val = m.group(kind)
+        pos = m.end()
+        if kind not in ("ws", "comment"):
+            tokens.append((kind, val))
+
+    idx = 0
+    total = len(tokens)
+    current_section: tuple[str, ...] = ()
+
+    def peek() -> tuple[str | None, str | None]:
+        return tokens[idx] if idx < total else (None, None)
+
+    def advance() -> tuple[str, str]:
+        nonlocal idx
+        tok = tokens[idx]
+        idx += 1
+        return tok
+
+    def parse_key_seg() -> str:
+        k, v = advance()
+        if k == "bare":
+            return v
+        if k == "basic":
+            return _unescape_toml_basic_str(v[1:-1])
+        if k == "lit":
+            return v[1:-1]
+        raise ValueError(f"Expected key segment, got {k}:{v!r}")
+
+    def parse_dotted() -> tuple[str, ...]:
+        parts = [parse_key_seg()]
+        while peek()[0] == "dot":
+            advance()
+            parts.append(parse_key_seg())
+        return tuple(parts)
+
+    def parse_val() -> object:
+        k, v = peek()
+        if k == "ml_basic":
+            advance()
+            assert v is not None
+            inner = v[3:-3]
+            if inner.startswith("\r\n"):
+                inner = inner[2:]
+            elif inner.startswith("\n"):
+                inner = inner[1:]
+            return _unescape_toml_basic_str(inner)
+        if k == "ml_lit":
+            advance()
+            assert v is not None
+            inner = v[3:-3]
+            if inner.startswith("\r\n"):
+                inner = inner[2:]
+            elif inner.startswith("\n"):
+                inner = inner[1:]
+            return inner
+        if k == "basic":
+            advance()
+            assert v is not None
+            return _unescape_toml_basic_str(v[1:-1])
+        if k == "lit":
+            advance()
+            assert v is not None
+            return v[1:-1]
+        if k == "bare":
+            advance()
+            return v
+        if k == "lbrack":
+            advance()
+            arr: list[object] = []
+            while peek()[0] not in ("rbrack", None):
+                arr.append(parse_val())
+                if peek()[0] == "comma":
+                    advance()
+            if peek()[0] == "rbrack":
+                advance()
+            return arr
+        if k == "lbrace":
+            advance()
+            tbl: dict[str, object] = {}
+            while peek()[0] not in ("rbrace", None):
+                kp = parse_dotted()
+                if peek()[0] == "eq":
+                    advance()
+                val_obj = parse_val()
+                if len(kp) == 1:
+                    tbl[kp[0]] = val_obj
+                if peek()[0] == "comma":
+                    advance()
+            if peek()[0] == "rbrace":
+                advance()
+            return tbl
+        advance()
+        return None
+
+    def collect_leaves(nav_obj: object, out_entries: list[tuple[str, str]]) -> None:
+        if isinstance(nav_obj, list):
+            for item in nav_obj:
+                if isinstance(item, str):
+                    out_entries.append(("", item.strip()))
+                elif isinstance(item, dict):
+                    for title, child in item.items():
+                        if isinstance(child, str):
+                            out_entries.append((title, child.strip()))
+                        elif isinstance(child, list):
+                            collect_leaves(child, out_entries)
+
+    try:
+        while idx < total:
+            if peek()[0] == "lbrack":
+                advance()
+                is_aot = peek()[0] == "lbrack"
+                if is_aot:
+                    advance()
+                sec_parts = parse_dotted()
+                if peek()[0] == "rbrack":
+                    advance()
+                if is_aot and peek()[0] == "rbrack":
+                    advance()
+                current_section = sec_parts
+            else:
+                k_parts = parse_dotted()
+                if peek()[0] == "eq":
+                    advance()
+                val_parsed = parse_val()
+                if current_section == ("project",) and k_parts == ("nav",):
+                    entries: list[tuple[str, str]] = []
+                    collect_leaves(val_parsed, entries)
+                    return entries
+                if current_section == () and k_parts == ("project", "nav"):
+                    entries = []
+                    collect_leaves(val_parsed, entries)
+                    return entries
+    except (ValueError, IndexError):
+        return []
+    return []
 
 
 EXPECTED_CLI_HEADINGS = (
