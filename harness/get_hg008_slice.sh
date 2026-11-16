@@ -22,12 +22,30 @@ mkdir -p "$OUTDIR/truth" "$OUTDIR/cmp" "$OUTDIR/cram"
 
 TRUTH_VCF="$OUTDIR/truth/HG008-T_somatic_smvar_benchmark_v0.3_tumorvariants.vcf.gz"
 TRUTH_BED="$OUTDIR/truth/HG008-T_somatic_smvar_benchmark_v0.3_all.bed"
+TRUTH_VCF_SHA256="${HG008_TRUTH_VCF_SHA256:-6ff5b215e0dc634c85da6164cffbd5790233258fcc48c88a598331430b061cad}"
+TRUTH_BED_SHA256="${HG008_TRUTH_BED_SHA256:-c6100933430322eb62c64e826a349c1861e26a029853502bd247f86d27e22726}"
 
-if [ ! -s "$TRUTH_VCF" ] || [ ! -s "$TRUTH_BED" ]; then
-  [ -s "$TRUTH_VCF" ] || rm -f "$TRUTH_VCF" "${TRUTH_VCF}.sha256" "${TRUTH_VCF}.legacy_md5" "${TRUTH_VCF}.done"
-  [ -s "$TRUTH_BED" ] || rm -f "$TRUTH_BED" "${TRUTH_BED}.sha256" "${TRUTH_BED}.legacy_md5" "${TRUTH_BED}.done"
-  DATA_DIR="$D" bash harness/fetch_data.sh hg008
+truth_repaired=0
+if [ ! -f "$TRUTH_VCF" ] || [ "$(portable_sha256 "$TRUTH_VCF")" != "$TRUTH_VCF_SHA256" ]; then
+  rm -f "$TRUTH_VCF" "${TRUTH_VCF}.sha256" "${TRUTH_VCF}.legacy_md5" "${TRUTH_VCF}.done"
+  truth_repaired=1
 fi
+if [ ! -f "$TRUTH_BED" ] || [ "$(portable_sha256 "$TRUTH_BED")" != "$TRUTH_BED_SHA256" ]; then
+  rm -f "$TRUTH_BED" "${TRUTH_BED}.sha256" "${TRUTH_BED}.legacy_md5" "${TRUTH_BED}.done"
+  truth_repaired=1
+fi
+if [ "$truth_repaired" -eq 1 ]; then
+  DATA_DIR="$D" bash harness/fetch_data.sh hg008
+  rm -f "$OUTDIR/slices.bed" "$OUTDIR/engine.bed" "$OUTDIR/eval.bed"
+fi
+[ "$(portable_sha256 "$TRUTH_VCF")" = "$TRUTH_VCF_SHA256" ] || {
+  echo "FAIL: $TRUTH_VCF SHA-256 mismatch after fetch_data.sh hg008" >&2
+  exit 1
+}
+[ "$(portable_sha256 "$TRUTH_BED")" = "$TRUTH_BED_SHA256" ] || {
+  echo "FAIL: $TRUTH_BED SHA-256 mismatch after fetch_data.sh hg008" >&2
+  exit 1
+}
 
 # 1. Derive slices.bed (200 dense somatic truth clusters) via select_slice_regions.py
 SLICES_BED="$OUTDIR/slices.bed"

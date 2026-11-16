@@ -1297,18 +1297,24 @@ class TestRepoAgentSkills(unittest.TestCase):
 
         rel_text = (ROOT_DIR / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
 
-        # 1. Zero pipe-to-shell or unpinned installer invocations
+        # 1. Zero pipe-to-shell or unpinned installer invocations (including dtolnay/rust-toolchain sh.rustup.rs fallback)
         for forbidden in (
             "| sh",
             "cargo-dist-installer.sh",
             "sh.rustup.rs",
             "${{ matrix.install_dist.run }}",
+            "dtolnay/rust-toolchain",
         ):
             self.assertNotIn(
                 forbidden,
                 rel_text,
                 f"release.yml must not contain unpinned bootstrap construct {forbidden!r}",
             )
+        self.assertIn(
+            "unverified container build(s)",
+            rel_text,
+            "release.yml plan guard must reject container builds lacking preinstalled Rust toolchains",
+        )
 
         # 2. Harden-runner pinned and placed as first step in all 6 jobs
         harden_ref = "step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a"

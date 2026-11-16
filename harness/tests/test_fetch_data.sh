@@ -111,7 +111,11 @@ prefixgrp	foo.vcf.gz.tbi	file://$TMPDIR/src/foo.vcf.gz.tbi	$tbi_md5	$tbi_sha	tes
 prefixgrp	foo.vcf.gz	file://$TMPDIR/src/foo.vcf.gz	$vcf_md5	$vcf_sha	test/foo.vcf.gz
 EOF
 
-# 3b. Happy-path 6-column SHA-256 fetch + MANIFEST header & append
+# 3b. Happy-path 6-column SHA-256 fetch + MANIFEST (name, url, digest, checksum_source) dedup
+mkdir -p "$TMPDIR/benchmarks"
+printf '# name\turl\tsha256\tchecksum_source\tbytes\tfetched\n' > "$TMPDIR/benchmarks/MANIFEST"
+printf 'test1\tfile://%s/src/testfile.txt\t%s\tcomputed-locally\t12\t2026-10-08T00:00:00Z\n' "$TMPDIR" "$test_md5" >> "$TMPDIR/benchmarks/MANIFEST"
+
 DATA_DIR="$TMPDIR/data" MANIFEST="$TMPDIR/benchmarks/MANIFEST" ASSETS_TSV="$TMPDIR/test_assets.tsv" \
   bash harness/fetch_data.sh testgrp
 
@@ -120,19 +124,39 @@ DATA_DIR="$TMPDIR/data" MANIFEST="$TMPDIR/benchmarks/MANIFEST" ASSETS_TSV="$TMPD
 [ -f "$TMPDIR/data/test/file1.txt.sha256" ] || { echo "FAIL: file1.txt.sha256 missing" >&2; exit 1; }
 [ "$(cat "$TMPDIR/data/test/file1.txt.sha256")" = "$test_sha" ] || { echo "FAIL: file1.txt.sha256 digest mismatch" >&2; exit 1; }
 
-man_hdr=$(head -n 1 "$TMPDIR/benchmarks/MANIFEST")
+# Historical MD5 row must stay intact AND new SHA-256 receipt must be appended (2 rows for test1)
+manifest_lines=$(grep -v '^#' "$TMPDIR/benchmarks/MANIFEST" | wc -l | tr -d '[:space:]')
+[ "$manifest_lines" -eq 2 ] || { echo "FAIL: expected historical MD5 + new SHA-256 rows (2), got $manifest_lines" >&2; exit 1; }
+awk -F'\t' -v n="test1" -v d="$test_sha" -v s="upstream" '!/^#/ && $1 == n && $3 == d && $4 == s {f=1} END{exit !f}' "$TMPDIR/benchmarks/MANIFEST" || {
+  echo "FAIL: new SHA-256 receipt was suppressed by historical MD5 row" >&2; exit 1;
+}
+
+#Also verify freshly initialized MANIFEST header when file does not exist yet
+rm -f "$TMPDIR/fresh_MANIFEST"
+DATA_DIR="$TMPDIR/data" MANIFEST="$TMPDIR/fresh_MANIFEST" ASSETS_TSV="$TMPDIR/test_assets.tsv" \
+  bash harness/fetch_data.sh testgrp >/dev/null
+man_hdr=$(head -n 1 "$TMPDIR/fresh_MANIFEST")
 [ "$man_hdr" = "# name	url	sha256	checksum_source	bytes	fetched" ] || {
   echo "FAIL: unexpected MANIFEST header: $man_hdr" >&2; exit 1;
 }
-manifest_lines=$(grep -v '^#' "$TMPDIR/benchmarks/MANIFEST" | wc -l | tr -d '[:space:]')
-[ "$manifest_lines" -eq 1 ] || { echo "FAIL: expected 1 line in manifest, got $manifest_lines" >&2; exit 1; }
 
 # Idempotency test: second run prints 'have:' and does not duplicate manifest line
 out_second=$(DATA_DIR="$TMPDIR/data" MANIFEST="$TMPDIR/benchmarks/MANIFEST" ASSETS_TSV="$TMPDIR/test_assets.tsv" \
   bash harness/fetch_data.sh testgrp)
 echo "$out_second" | grep -q "have: test1" || { echo "FAIL: second run did not report have: test1" >&2; exit 1; }
 manifest_lines_after=$(grep -v '^#' "$TMPDIR/benchmarks/MANIFEST" | wc -l | tr -d '[:space:]')
-[ "$manifest_lines_after" -eq 1 ] || { echo "FAIL: second run modified manifest" >&2; exit 1; }
+[ "$manifest_lines_after" -eq 2 ] || { echo "FAIL: second run modified manifest" >&2; exit 1; }
+
+# Corrupting/truncating $out while .sha256 + .done remain intact MUST rehash, detect tampering, and re-fetch!
+printf 'TAMPERED_AFTER_SHA256\n' > "$TMPDIR/data/test/file1.txt"
+out_repair_sha=$(DATA_DIR="$TMPDIR/data" MANIFEST="$TMPDIR/benchmarks/MANIFEST" ASSETS_TSV="$TMPDIR/test_assets.tsv" \
+  bash harness/fetch_data.sh testgrp)
+echo "$out_repair_sha" | grep -q "fetch: test1" || {
+  echo "FAIL: modified cached SHA-256 payload was blindly accepted via .sha256 sidecar" >&2; exit 1;
+}
+[ "$(portable_sha256 "$TMPDIR/data/test/file1.txt")" = "$test_sha" ] || {
+  echo "FAIL: modified cached SHA-256 payload was not repaired" >&2; exit 1;
+}
 
 # 3c. Tampered SHA-256 payload rejection
 set +e
@@ -160,6 +184,17 @@ DATA_DIR="$TMPDIR/data" MANIFEST="$TMPDIR/benchmarks/MANIFEST" ASSETS_TSV="$TMPD
 [ -f "$TMPDIR/data/test/legacy.txt" ] || { echo "FAIL: --allow-legacy-md5 did not fetch legacy.txt" >&2; exit 1; }
 [ -f "$TMPDIR/data/test/legacy.txt.legacy_md5" ] || { echo "FAIL: legacy.txt.legacy_md5 marker missing" >&2; exit 1; }
 [ -f "$TMPDIR/data/test/legacy.txt.done" ] || { echo "FAIL: legacy.txt.done marker missing" >&2; exit 1; }
+
+# Modifying/truncating $out while .legacy_md5 + .done remain intact MUST rehash MD5, detect tampering, and re-fetch!
+printf 'TAMPERED_AFTER_LEGACY_MD5\n' > "$TMPDIR/data/test/legacy.txt"
+out_repair_md5=$(DATA_DIR="$TMPDIR/data" MANIFEST="$TMPDIR/benchmarks/MANIFEST" ASSETS_TSV="$TMPDIR/test_assets.tsv" \
+  bash harness/fetch_data.sh --allow-legacy-md5 legacymd5)
+echo "$out_repair_md5" | grep -q "fetch: leg1" || {
+  echo "FAIL: modified legacy-MD5 payload was blindly accepted via .legacy_md5 sidecar" >&2; exit 1;
+}
+[ "$(portable_md5 "$TMPDIR/data/test/legacy.txt")" = "$test_md5" ] || {
+  echo "FAIL: modified legacy-MD5 payload was not repaired" >&2; exit 1;
+}
 
 # Fail-closed check must still fire BEFORE inspecting .done / .legacy_md5 markers when --allow-legacy-md5 is omitted!
 set +e
@@ -209,22 +244,33 @@ awk -F'\t' '!/^#/ && $1 == "foo.vcf.gz" {f=1} END{exit !f}' "$TMPDIR/benchmarks/
   echo "FAIL: foo.vcf.gz skipped in MANIFEST due to prefix collision with foo.vcf.gz.tbi" >&2; exit 1;
 }
 
-# 3g. Pre-migration .done cache & stage_g4.sh-transformed refs idempotency
-mkdir -p "$TMPDIR/data/ref/d1vd1"
+# 3g. Unverified dummy transformed refs MUST NOT bypass SHA-256 verification
+mkdir -p "$TMPDIR/data/ref/d1vd1" "$TMPDIR/data/ref/giabv3"
 printf ">chr1\nACGT\n" > "$TMPDIR/data/ref/d1vd1/GRCh38.d1.vd1.fa"
 printf "chr1\t4\t6\t4\t5\n" > "$TMPDIR/data/ref/d1vd1/GRCh38.d1.vd1.fa.fai"
 touch "$TMPDIR/data/ref/d1vd1/GRCh38.d1.vd1.fa.done"
+printf ">chr1\nACGT\n" > "$TMPDIR/data/ref/giabv3/GRCh38_GIABv3.fasta"
+touch "$TMPDIR/data/ref/giabv3/GRCh38_GIABv3.fasta.gz.done"
 cat << EOF > "$TMPDIR/refs_assets.tsv"
 # group	name	url	md5	sha256	dest
-refs	GRCh38.d1.vd1.fa	file://$TMPDIR/src/unreachable_tarball.tar.gz	7eb7c875fb968ab47186e01dbcbfe1b1	fbde121e898f00cc064eaafe5acc58940d7fe069ad14d34acd40c5d675e6b69b	ref/d1vd1/GRCh38.d1.vd1.fa
+refs	GRCh38.d1.vd1.fa	file://$TMPDIR/src/unreachable_d1vd1.fa	7eb7c875fb968ab47186e01dbcbfe1b1	fbde121e898f00cc064eaafe5acc58940d7fe069ad14d34acd40c5d675e6b69b	ref/d1vd1/GRCh38.d1.vd1.fa
 EOF
-out_refs=$(DATA_DIR="$TMPDIR/data" MANIFEST="$TMPDIR/benchmarks/MANIFEST" ASSETS_TSV="$TMPDIR/refs_assets.tsv" \
-  bash harness/fetch_data.sh refs)
-echo "$out_refs" | grep -q "have: GRCh38.d1.vd1.fa" || {
-  echo "FAIL: stage_g4.sh-transformed refs cache was not preserved" >&2; exit 1;
-}
+cat << EOF > "$TMPDIR/refs_giab_assets.tsv"
+# group	name	url	md5	sha256	dest
+refs	GRCh38_GIABv3.fasta.gz	file://$TMPDIR/src/unreachable_giabv3.fasta.gz	939ce19062d1462c09b88c55faca4d76	b37cb9a9c0f8716fdb13e2c5c60f08cb8be40de39c3088176f1f62d9e8eeeed8	ref/giabv3/GRCh38_GIABv3.fasta.gz
+EOF
+set +e
+DATA_DIR="$TMPDIR/data" MANIFEST="$TMPDIR/benchmarks/MANIFEST" ASSETS_TSV="$TMPDIR/refs_assets.tsv" \
+  bash harness/fetch_data.sh refs >/dev/null 2>&1
+rc_fake_d1=$?
+DATA_DIR="$TMPDIR/data" MANIFEST="$TMPDIR/benchmarks/MANIFEST" ASSETS_TSV="$TMPDIR/refs_giab_assets.tsv" \
+  bash harness/fetch_data.sh refs >/dev/null 2>&1
+rc_fake_gv=$?
+set -e
+[ "$rc_fake_d1" -ne 0 ] || { echo "FAIL: 4-base dummy GRCh38.d1.vd1.fa with .fai/.done bypassed SHA-256 check" >&2; exit 1; }
+[ "$rc_fake_gv" -ne 0 ] || { echo "FAIL: 4-base dummy GRCh38_GIABv3.fasta bypassed transformed-ref SHA-256 check" >&2; exit 1; }
 
-# 4. Test stage_g4.sh usage & get_hg008_slice.sh --beds-only offline BED derivation + r1..r3 mtime/staleness
+# 4. Test stage_g4.sh usage & get_hg008_slice.sh --beds-only SHA-256 validation + r1..r3 mtime/staleness
 bash harness/stage_g4.sh --help | grep -q "stage_g4.sh" || { echo "FAIL: stage_g4.sh --help failed" >&2; exit 1; }
 set +e
 bash harness/stage_g4.sh unknown_target >/dev/null 2>&1
@@ -232,17 +278,31 @@ rc_unk=$?
 set -e
 [ "$rc_unk" -ne 0 ] || { echo "FAIL: stage_g4.sh unknown_target should fail" >&2; exit 1; }
 
-mkdir -p "$TMPDIR/g4/hg008/truth"
-cat << 'EOF' | gzip -c > "$TMPDIR/g4/hg008/truth/HG008-T_somatic_smvar_benchmark_v0.3_tumorvariants.vcf.gz"
+mkdir -p "$TMPDIR/hg008_src" "$TMPDIR/g4/hg008/truth"
+cat << 'EOF' | gzip -c > "$TMPDIR/hg008_src/v03.vcf.gz"
 ##fileformat=VCFv4.2
 #CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO
 chr1	10001	.	A	T	60	PASS	.
 chr1	22001	.	C	G	60	PASS	.
 chr1	35001	.	G	A	60	PASS	.
 EOF
-printf "chr1\t5000\t40000\n" > "$TMPDIR/g4/hg008/truth/HG008-T_somatic_smvar_benchmark_v0.3_all.bed"
+printf "chr1\t5000\t40000\n" > "$TMPDIR/hg008_src/v03_all.bed"
+cp "$TMPDIR/hg008_src/v03.vcf.gz" "$TMPDIR/g4/hg008/truth/HG008-T_somatic_smvar_benchmark_v0.3_tumorvariants.vcf.gz"
+cp "$TMPDIR/hg008_src/v03_all.bed" "$TMPDIR/g4/hg008/truth/HG008-T_somatic_smvar_benchmark_v0.3_all.bed"
 
-DATA_DIR="$TMPDIR/g4" bash harness/get_hg008_slice.sh --beds-only >/dev/null
+hg008_vcf_md5=$(portable_md5 "$TMPDIR/hg008_src/v03.vcf.gz")
+hg008_vcf_sha=$(portable_sha256 "$TMPDIR/hg008_src/v03.vcf.gz")
+hg008_bed_md5=$(portable_md5 "$TMPDIR/hg008_src/v03_all.bed")
+hg008_bed_sha=$(portable_sha256 "$TMPDIR/hg008_src/v03_all.bed")
+
+cat << EOF > "$TMPDIR/hg008_assets.tsv"
+# group	name	url	md5	sha256	dest
+hg008	HG008-T_somatic_smvar_benchmark_v0.3_tumorvariants.vcf.gz	file://$TMPDIR/hg008_src/v03.vcf.gz	$hg008_vcf_md5	$hg008_vcf_sha	hg008/truth/HG008-T_somatic_smvar_benchmark_v0.3_tumorvariants.vcf.gz
+hg008	HG008-T_somatic_smvar_benchmark_v0.3_all.bed	file://$TMPDIR/hg008_src/v03_all.bed	$hg008_bed_md5	$hg008_bed_sha	hg008/truth/HG008-T_somatic_smvar_benchmark_v0.3_all.bed
+EOF
+
+HG008_TRUTH_VCF_SHA256="$hg008_vcf_sha" HG008_TRUTH_BED_SHA256="$hg008_bed_sha" \
+  DATA_DIR="$TMPDIR/g4" bash harness/get_hg008_slice.sh --beds-only >/dev/null
 [ -s "$TMPDIR/g4/hg008/slices.bed" ] || { echo "FAIL: get_hg008_slice.sh did not create slices.bed" >&2; exit 1; }
 [ -s "$TMPDIR/g4/hg008/engine.bed" ] || { echo "FAIL: get_hg008_slice.sh did not create engine.bed" >&2; exit 1; }
 [ -s "$TMPDIR/g4/hg008/eval.bed" ]   || { echo "FAIL: get_hg008_slice.sh did not create eval.bed" >&2; exit 1; }
@@ -253,14 +313,29 @@ DATA_DIR="$TMPDIR/g4" bash harness/get_hg008_slice.sh --beds-only >/dev/null
 # Verify r1.bed mtime is preserved when slices.bed is unchanged, and updated when slices.bed changes
 touch -t 202001020304 "$TMPDIR/g4/hg008/r1.bed"
 mtime_before=$(python3 -c 'import os,sys; print(os.stat(sys.argv[1]).st_mtime_ns)' "$TMPDIR/g4/hg008/r1.bed")
-DATA_DIR="$TMPDIR/g4" bash harness/get_hg008_slice.sh --beds-only >/dev/null
+HG008_TRUTH_VCF_SHA256="$hg008_vcf_sha" HG008_TRUTH_BED_SHA256="$hg008_bed_sha" \
+  DATA_DIR="$TMPDIR/g4" bash harness/get_hg008_slice.sh --beds-only >/dev/null
 mtime_same=$(python3 -c 'import os,sys; print(os.stat(sys.argv[1]).st_mtime_ns)' "$TMPDIR/g4/hg008/r1.bed")
 [ "$mtime_before" = "$mtime_same" ] || { echo "FAIL: get_hg008_slice.sh touched r1.bed mtime when content was identical" >&2; exit 1; }
 
 printf "chr2\t1000\t2000\tslice_override\n" > "$TMPDIR/g4/hg008/slices.bed"
-DATA_DIR="$TMPDIR/g4" bash harness/get_hg008_slice.sh --beds-only >/dev/null
+HG008_TRUTH_VCF_SHA256="$hg008_vcf_sha" HG008_TRUTH_BED_SHA256="$hg008_bed_sha" \
+  DATA_DIR="$TMPDIR/g4" bash harness/get_hg008_slice.sh --beds-only >/dev/null
 grep -q '^chr2	1000	2000	slice_override$' "$TMPDIR/g4/hg008/r1.bed" || {
   echo "FAIL: get_hg008_slice.sh did not refresh stale r1.bed after slices.bed changed" >&2; exit 1;
+}
+
+# Non-empty modified cached HG008 truth BED (with stale .sha256 sidecar) MUST be detected, refreshed, and regenerate BEDs!
+printf "chr9\t1\t10\n" > "$TMPDIR/g4/hg008/truth/HG008-T_somatic_smvar_benchmark_v0.3_all.bed"
+printf '%s\n' "$hg008_bed_sha" > "$TMPDIR/g4/hg008/truth/HG008-T_somatic_smvar_benchmark_v0.3_all.bed.sha256"
+HG008_TRUTH_VCF_SHA256="$hg008_vcf_sha" HG008_TRUTH_BED_SHA256="$hg008_bed_sha" \
+  ASSETS_TSV="$TMPDIR/hg008_assets.tsv" MANIFEST="$TMPDIR/g4/MANIFEST" \
+  DATA_DIR="$TMPDIR/g4" bash harness/get_hg008_slice.sh --beds-only >/dev/null
+[ "$(portable_sha256 "$TMPDIR/g4/hg008/truth/HG008-T_somatic_smvar_benchmark_v0.3_all.bed")" = "$hg008_bed_sha" ] || {
+  echo "FAIL: get_hg008_slice.sh accepted non-empty modified HG008 truth BED without refreshing" >&2; exit 1;
+}
+grep -q '^chr1	' "$TMPDIR/g4/hg008/r1.bed" || {
+  echo "FAIL: get_hg008_slice.sh did not regenerate derived BEDs after repairing corrupted truth input" >&2; exit 1;
 }
 
 # 5. Verify DATA_DIR propagation, stage_verified_sha256 usage, and stage_g4.sh invariants

@@ -237,6 +237,10 @@ jobs:
           if bad:
               print(f"ERROR: plan-dist-manifest.json uses retired GitHub Actions runner(s): {bad}", file=sys.stderr)
               sys.exit(1)
+          bad_containers = [f"{row.get('targets')}: {row.get('container')}" for row in include if row.get("container")]
+          if bad_containers:
+              print(f"ERROR: plan-dist-manifest.json specifies unverified container build(s): {bad_containers}", file=sys.stderr)
+              sys.exit(1)
           print("[Release Guard] Verified artifact build runner(s): " + ", ".join(f"{r.get('targets')}->{r.get('runner')}" for r in include))
 
           if os.environ.get("IS_PR") == "true":
@@ -293,6 +297,9 @@ jobs:
                   create_out = run_dist(["dist", "host", "--steps=create", tag_arg, "--output-format=json"], plan_wt)
                   (distrib / "plan-dist-manifest.json").write_text(create_out, encoding="utf-8")
                   e2e_inc = json.loads(create_out)["ci"]["github"]["artifacts_matrix"]["include"]
+                  if any(row.get("container") for row in e2e_inc):
+                      print("ERROR: E2E plan-dist-manifest.json specifies unverified container build(s)!", file=sys.stderr)
+                      sys.exit(1)
                   for row in e2e_inc:
                       slug = "-".join(row["targets"])
                       dargs = ["--artifacts=lies" if a == "--artifacts=local" else a for a in row["dist_args"].split()]
@@ -370,9 +377,6 @@ jobs:
             echo "ERROR: Checkout commit ${ACTUAL_COMMIT} != expected tag commit ${EXPECTED_COMMIT}!" >&2
             exit 1
           fi
-      - name: Install Rust toolchain for container builds
-        if: ${{ matrix.container }}
-        uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
       - name: Verify preinstalled Rust toolchain
         shell: bash
         run: |
@@ -789,7 +793,16 @@ jobs:
             echo "ERROR: Checkout commit ${ACTUAL_COMMIT} != expected tag commit ${EXPECTED_COMMIT}!" >&2
             exit 1
           fi
-      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+      - name: Verify preinstalled Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v cargo >/dev/null 2>&1 || ! command -v rustc >/dev/null 2>&1; then
+            echo "ERROR: Preinstalled Rust toolchain (cargo/rustc) missing on runner!" >&2
+            exit 1
+          fi
+          rustc --version
+          cargo --version
       - name: Publish vardictrust-core to Crates.io
         run: cargo publish -p vardictrust-core
       - name: Publish vardictrust to Crates.io
