@@ -39,6 +39,7 @@ EXCLUDED_DIRS = (
     "node_modules/",
     ".venv/",
     ".venv_docs/",
+    ".venv_rtd/",
     "venv/",
     ".pytest_cache/",
     ".cache/",

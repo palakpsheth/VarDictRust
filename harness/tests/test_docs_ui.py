@@ -66,6 +66,7 @@ EXCLUDED_DIRS = (
     "node_modules/",
     ".venv/",
     ".venv_docs/",
+    ".venv_rtd/",
     "venv/",
     ".pytest_cache/",
     ".worktrees/",
@@ -475,7 +476,7 @@ def _split_gfm_table_cells(line_str):
 
 
 def _is_gfm_delimiter_row(cells):
-    return bool(cells) and all(re.fullmatch(r":?-{3,}:?", c.strip()) is not None for c in cells)
+    return bool(cells) and all(re.fullmatch(r":?-+:?", c.strip()) is not None for c in cells)
 
 
 def _render_gfm_html_fallback(markdown_text):
@@ -606,13 +607,15 @@ def _render_gfm_html_fallback(markdown_text):
             out.append(f"<blockquote>{_render_gfm_inline(' '.join(bq_lines))}</blockquote>")
             continue
 
-        # Paragraph
+        # Paragraph — only stop at block-starter candidates after consuming >= 1 line
+        # so unrecognized block candidates (e.g. orphan '| a | b |' lines) always advance i.
         para_lines = []
         while i < n:
             cur_s = lines[i].strip()
-            if (
-                not cur_s
-                or cur_s.startswith(("```", "~~~", "$$", "#", ">"))
+            if not cur_s:
+                break
+            if para_lines and (
+                cur_s.startswith(("```", "~~~", "$$", "#", ">"))
                 or (cur_s.startswith("|") and cur_s.endswith("|"))
                 or re.match(r"^[-*+]\s+", cur_s)
                 or re.match(r"^\d+\.\s+", cur_s)
@@ -854,7 +857,7 @@ class TestMarkdownStaticHygiene(unittest.TestCase):
 
         # Verify prepare_docs_site.py exclusions, javascripts staging, and docstring hygiene
         prep_text = (REPO_ROOT / "harness" / "prepare_docs_site.py").read_text(encoding="utf-8")
-        for excluded in ('".venv/"', '".venv_docs/"', '"venv/"', '".pytest_cache/"', '".cache/"'):
+        for excluded in ('".venv/"', '".venv_docs/"', '".venv_rtd/"', '"venv/"', '".pytest_cache/"', '".cache/"'):
             self.assertIn(
                 excluded,
                 prep_text,
@@ -985,13 +988,13 @@ class TestMarkdownStaticHygiene(unittest.TestCase):
             unquoted.append(scalar[1:-1].replace("''", "'"))
 
         joined_cmds = "\n".join(unquoted)
+        self.assertNotIn(".venv_rtd", joined_cmds, ".readthedocs.yaml must use .venv_docs fallback, not .venv_rtd")
         for required_fragment in (
-            'python3 -m venv "${READTHEDOCS_VIRTUALENV_PATH:-.venv_rtd}"',
-            "pip install --upgrade pip",
-            "pip install -r docs/requirements.txt",
+            'python3 -m venv "${READTHEDOCS_VIRTUALENV_PATH:-.venv_docs}"',
+            '"${READTHEDOCS_VIRTUALENV_PATH:-.venv_docs}/bin/python" -m pip install --upgrade pip',
+            '"${READTHEDOCS_VIRTUALENV_PATH:-.venv_docs}/bin/python" -m pip install -r docs/requirements.txt',
             "harness/prepare_docs_site.py",
-            "zensical",
-            "build --clean --strict",
+            '"${READTHEDOCS_VIRTUALENV_PATH:-.venv_docs}/bin/zensical" build --clean --strict',
             'mkdir -p "$READTHEDOCS_OUTPUT/html"',
             'cp -a site/. "$READTHEDOCS_OUTPUT/html/"',
         ):
@@ -1065,6 +1068,20 @@ class TestMarkdownStaticHygiene(unittest.TestCase):
         self.assertIn('<a href="docs/upstream-bugs.md#a"><code>--fix a</code></a>', rendered)
         self.assertIn("$\\varepsilon = 10^{-6}$", rendered)
         self.assertIn("$$F_1 =", rendered)
+
+        # Orphan pipe-delimited lines that fail table detection must terminate and render as <p>
+        orphan_md = "| orphan | pipe |\nFollowing line\n\n| A | B |\n|:--|--:|\n| 1 | 2 |\n"
+        orphan_rendered = _render_gfm_html_fallback(orphan_md)
+        self.assertIn("<p>| orphan | pipe | Following line</p>", orphan_rendered)
+        self.assertIn("<table><thead><tr><th>A</th><th>B</th></tr></thead><tbody><tr><td>1</td><td>2</td></tr></tbody></table>", orphan_rendered)
+
+        # Full omnibus-empirical-validation.md (including :-- 2-hyphen delimiter roster at lines 107-108) must render cleanly
+        full_omnibus = (REPO_ROOT / "docs" / "validation" / "omnibus-empirical-validation.md").read_text(
+            encoding="utf-8"
+        )
+        full_omnibus_html = _render_gfm_html_fallback(full_omnibus)
+        self.assertIn("<table><thead><tr><th>#</th><th>Cohort / Specimen Family</th>", full_omnibus_html)
+        self.assertFalse(full_omnibus_html.strip().startswith("<pre>"))
 
     def test_toml_parsers_2d_arrays_globs_and_non_cdn_route_abort(self):
         """Verify stdlib TOML parsers handle 2D arrays, [glob] lines in not_in_nav, escapes, and non-CDN route aborts."""

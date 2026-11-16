@@ -67,3 +67,4 @@ dhat-*.svg
 /site/
 /.cache/
 /.venv_docs/
+/.venv_rtd/
