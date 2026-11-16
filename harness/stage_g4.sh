@@ -169,14 +169,14 @@ for target in "$@"; do
     all)
       stage_refs
       bash harness/get_amplicon_fixture.sh
-      DATA_DIR="$D" bash harness/get_hg002_slice.sh
+      bash harness/get_hg002_slice.sh
       DATA_DIR="$D" bash harness/get_hg008_slice.sh
       stage_seqc2
       bash harness/get_multimodal_slices.sh
       ;;
     refs)       stage_refs ;;
     amplicon)   bash harness/get_amplicon_fixture.sh ;;
-    hg002)      DATA_DIR="$D" bash harness/get_hg002_slice.sh ;;
+    hg002)      bash harness/get_hg002_slice.sh ;;
     hg008)      DATA_DIR="$D" bash harness/get_hg008_slice.sh ;;
     seqc2-beds) stage_seqc2_beds ;;
     seqc2)      stage_seqc2 ;;

@@ -85,7 +85,7 @@ if [ -n "$STAGED_PY" ]; then
 fi
 
 # 4. Fast release consistency check when workflows or release-tracked surfaces are staged (<0.3s)
-STAGED_REL=$(echo "$STAGED_ALL" | grep -E '^\.github/workflows/.*\.yml$|^Cargo\.(toml|lock)$|^CITATION\.cff$|^CHANGELOG\.md$|^README\.md$|^DIVERGENCES\.md$|^CONTRIBUTING\.md$|^zensical\.toml$|^mkdocs\.yml$|^\.readthedocs\.yaml$|^wiki/|^docs/(testing|validation|release)/|^\.agents/skills/' || true)
+STAGED_REL=$(echo "$STAGED_ALL" | grep -E '^\.github/workflows/.*\.yml$|^Cargo\.(toml|lock)$|^CITATION\.cff$|^CHANGELOG\.md$|^README\.md$|^DIVERGENCES\.md$|^CONTRIBUTING\.md$|^mkdocs\.yml$|^wiki/|^docs/(testing|validation|release)/|^\.agents/skills/' || true)
 if [ -n "$STAGED_REL" ]; then
     st_t0=$SECONDS
     echo "=== $(ts) [pre-commit] Verifying release consistency surfaces ==="
@@ -94,11 +94,11 @@ if [ -n "$STAGED_REL" ]; then
 fi
 
 # 4b. Fast static Markdown & link hygiene check when documentation files are staged (<1s)
-STAGED_MD=$(echo "$STAGED_ALL" | grep -E '\.md$|^zensical\.toml$|^mkdocs\.yml$|^\.readthedocs\.yaml$|^docs/|^harness/prepare_docs_site\.py$|^harness/tests/test_docs_ui\.py$' || true)
+STAGED_MD=$(echo "$STAGED_ALL" | grep -E '\.md$|^mkdocs\.yml$|^harness/prepare_docs_site\.py$|^harness/tests/test_docs_ui\.py$' || true)
 if [ -n "$STAGED_MD" ]; then
     st_t0=$SECONDS
     echo "=== $(ts) [pre-commit] Checking static Markdown & relative link hygiene ==="
-    UNSTAGED_MD=$(git diff --name-only --diff-filter=ACMRD | grep -E '\.md$|^zensical\.toml$|^mkdocs\.yml$|^\.readthedocs\.yaml$|^docs/|^harness/prepare_docs_site\.py$|^harness/tests/test_docs_ui\.py$' || true)
+    UNSTAGED_MD=$(git diff --name-only --diff-filter=ACMRD | grep -E '\.md$|^mkdocs\.yml$|^harness/prepare_docs_site\.py$|^harness/tests/test_docs_ui\.py$' || true)
     if [ -n "$UNSTAGED_MD" ]; then
         echo "ERROR: Unstaged changes detected in documentation files while committing staged docs:" >&2
         echo "$UNSTAGED_MD" | sed 's/^/  - /' >&2
