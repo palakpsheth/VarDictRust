@@ -7,11 +7,14 @@
 # Exit 0 = both twins MATCH; non-zero otherwise. KEEP_DIR persists the four
 # VCFs, both compare_*.txt, *.time, and extra.json for record_evidence.py.
 set -euo pipefail
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/portable.sh"
-REF=scratch/g4/ref/giabv3/GRCh38_GIABv3.fa
-BED=scratch/g4/hg008/engine.bed
-BAM_T=scratch/g4/hg008/HG008-T.slice.bam; BAM_N=scratch/g4/hg008/HG008-N.slice.bam
-CRAM_T=scratch/g4/hg008/HG008-T.slice.cram; CRAM_N=scratch/g4/hg008/HG008-N.slice.cram
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+source "$SCRIPT_DIR/lib/portable.sh"
+DATA_ROOT="$(resolve_data_root "$ROOT_DIR")"
+REF="$DATA_ROOT/scratch/g4/ref/giabv3/GRCh38_GIABv3.fa"
+BED="$DATA_ROOT/scratch/g4/hg008/engine.bed"
+BAM_T="$DATA_ROOT/scratch/g4/hg008/HG008-T.slice.bam"; BAM_N="$DATA_ROOT/scratch/g4/hg008/HG008-N.slice.bam"
+CRAM_T="$DATA_ROOT/scratch/g4/hg008/HG008-T.slice.cram"; CRAM_N="$DATA_ROOT/scratch/g4/hg008/HG008-N.slice.cram"
 SM="HG008-T|HG008-N"; TH=4; FLOOR=1000
 if [ -n "${KEEP_DIR:-}" ]; then mkdir -p "$KEEP_DIR"; OUT=$KEEP_DIR
 else OUT=$(mktemp -d); trap 'rm -rf "$OUT"' EXIT; fi
@@ -30,11 +33,11 @@ cargo build -q --release -p vardictrust
 # Our frames are thin; nothing to Box on our side (T3D-03).
 # Measure both Rust BAM and CRAM arms in the same invocation with identical -th "$TH"
 # on the same host so the CRAM/BAM timing comparison is always paired and valid.
-LC_ALL=C portable_time_v -o "$OUT/rust-bam.time" timeout "${CMP_TIMEOUT:-12h}" \
+LC_ALL=C portable_time_v -o "$OUT/rust-bam.time" "${TIMEOUT_CMD[@]}" "${CMP_TIMEOUT:-12h}" \
   "$BIN" -G "$REF" -f 0.01 -N "$SM" -b "$BAM_T|$BAM_N" -c 1 -S 2 -E 3 -g 4 -z -th "$TH" "$BED" > "$OUT/rust-bam.vcf" \
   || { echo "ENGINE-FAIL: rust-bam"; exit 2; }
 cp "$OUT/rust-bam.time" "$OUT/rust.time"
-LC_ALL=C portable_time_v -o "$OUT/rust-cram.time" timeout "${CMP_TIMEOUT:-12h}" \
+LC_ALL=C portable_time_v -o "$OUT/rust-cram.time" "${TIMEOUT_CMD[@]}" "${CMP_TIMEOUT:-12h}" \
   env RUST_MIN_STACK=67108864 "$BIN" -G "$REF" -f 0.01 -N "$SM" -b "$CRAM_T|$CRAM_N" -c 1 -S 2 -E 3 -g 4 -z -th "$TH" "$BED" > "$OUT/rust-cram.vcf" \
   || { echo "ENGINE-FAIL: rust-cram"; exit 2; }
 python3 harness/compare_vcf.py --min-variants "$FLOOR" "$OUT/rust-bam.vcf" "$OUT/rust-cram.vcf" \

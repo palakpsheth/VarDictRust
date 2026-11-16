@@ -39,8 +39,14 @@ if ! command -v bcftools &>/dev/null; then
 fi
 
 # Discover all diagnostic test files
-mapfile -t SH_TESTS < <(find "$TESTS_DIR" -maxdepth 1 -type f -name "test_*.sh" | sort)
-mapfile -t PY_TESTS < <(find "$TESTS_DIR" -maxdepth 1 -type f -name "test_*.py" | sort)
+SH_TESTS=()
+while IFS= read -r _t; do
+  [ -n "$_t" ] && SH_TESTS+=("$_t")
+done < <(find "$TESTS_DIR" -maxdepth 1 -type f -name "test_*.sh" | sort)
+PY_TESTS=()
+while IFS= read -r _t; do
+  [ -n "$_t" ] && PY_TESTS+=("$_t")
+done < <(find "$TESTS_DIR" -maxdepth 1 -type f -name "test_*.py" | sort)
 TOTAL_TESTS=$(( ${#SH_TESTS[@]} + ${#PY_TESTS[@]} ))
 
 echo "================================================================================"

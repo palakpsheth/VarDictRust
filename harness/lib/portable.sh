@@ -24,12 +24,136 @@ find_gitleaks() {
     if command -v gitleaks >/dev/null 2>&1; then
         command -v gitleaks
         return 0
-    elif [ -x "$G4_TOOLS_BIN/gitleaks" ]; then
-        printf '%s\n' "$G4_TOOLS_BIN/gitleaks"
-        return 0
     fi
+    local conda_base=""
+    if [ -n "${CONDA_PREFIX:-}" ]; then
+        conda_base="${CONDA_PREFIX%/envs/*}"
+    fi
+    local cand
+    for cand in \
+        "${G4_TOOLS_BIN:+$G4_TOOLS_BIN/gitleaks}" \
+        "${CONDA_PREFIX:+$CONDA_PREFIX/bin/gitleaks}" \
+        "${conda_base:+$conda_base/envs/g4-tools/bin/gitleaks}" \
+        "${conda_base:+$conda_base/envs/vardict-oracle/bin/gitleaks}" \
+        "${HOME:-}/miniconda3/envs/g4-tools/bin/gitleaks" \
+        "${HOME:-}/miniconda3/envs/vardict-oracle/bin/gitleaks" \
+        "${HOME:-}/miniconda3/bin/gitleaks" \
+        "${HOME:-}/miniforge3/envs/g4-tools/bin/gitleaks" \
+        "${HOME:-}/miniforge3/envs/vardict-oracle/bin/gitleaks" \
+        "${HOME:-}/miniforge3/bin/gitleaks" \
+        "${HOME:-}/.local/bin/gitleaks" \
+        "/opt/conda/envs/g4-tools/bin/gitleaks" \
+        "/opt/conda/envs/vardict-oracle/bin/gitleaks" \
+        "/opt/conda/bin/gitleaks" \
+        "/usr/local/bin/gitleaks" \
+        "/opt/homebrew/bin/gitleaks"
+    do
+        if [ -n "$cand" ] && [ -x "$cand" ]; then
+            printf '%s\n' "$cand"
+            return 0
+        fi
+    done
     return 1
 }
+
+resolve_data_root() {
+    if [ -n "${DATA_ROOT:-}" ]; then
+        printf '%s\n' "$DATA_ROOT"
+        return 0
+    fi
+    local root_dir="${1:-${ROOT_DIR:-$(pwd)}}"
+    root_dir="$(cd "$root_dir" 2>/dev/null && pwd || printf '%s' "$root_dir")"
+    if [ -d "$root_dir/scratch/g4" ]; then
+        printf '%s\n' "$root_dir"
+        return 0
+    fi
+    local common_git_dir=""
+    common_git_dir="$(git -C "$root_dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+    if [ -z "$common_git_dir" ]; then
+        local rel_common
+        rel_common="$(git -C "$root_dir" rev-parse --git-common-dir 2>/dev/null || true)"
+        if [ -n "$rel_common" ]; then
+            common_git_dir="$(cd "$root_dir" && cd "$rel_common" 2>/dev/null && pwd || true)"
+        fi
+    fi
+    if [ -n "$common_git_dir" ]; then
+        local main_root
+        main_root="$(cd "$(dirname "$common_git_dir")" 2>/dev/null && pwd || true)"
+        if [ -n "$main_root" ] && { [ -d "$main_root/scratch" ] || [ -d "$main_root/VarDictJava" ]; }; then
+            printf '%s\n' "$main_root"
+            return 0
+        fi
+    fi
+    printf '%s\n' "$root_dir"
+}
+
+portable_timeout() {
+    if [ $# -lt 2 ]; then
+        echo "portable_timeout: usage: portable_timeout <duration> <cmd> [args...]" >&2
+        return 125
+    fi
+    local dur="$1"
+    shift
+    local backend="${PORTABLE_TIMEOUT_BACKEND:-auto}"
+    if [ "$backend" = "auto" ] || [ "$backend" = "gnu" ]; then
+        if command -v timeout >/dev/null 2>&1 && timeout 1s true >/dev/null 2>&1; then
+            timeout "$dur" "$@"
+            return $?
+        elif command -v gtimeout >/dev/null 2>&1 && gtimeout 1s true >/dev/null 2>&1; then
+            gtimeout "$dur" "$@"
+            return $?
+        elif [ "$backend" = "gnu" ]; then
+            echo "portable_timeout: GNU timeout backend requested but unavailable" >&2
+            return 127
+        fi
+    fi
+    python3 -c '
+import os, re, signal, subprocess, sys, time
+raw = sys.argv[1]
+cmd = sys.argv[2:]
+m = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?|\.[0-9]+)([smhd]?)", raw.strip())
+if not m:
+    sys.stderr.write(f"portable_timeout: invalid duration {raw!r}\n")
+    sys.exit(125)
+secs = float(m.group(1)) * {"": 1.0, "s": 1.0, "m": 60.0, "h": 3600.0, "d": 86400.0}[m.group(2)]
+try:
+    proc = subprocess.Popen(cmd, start_new_session=True)
+except FileNotFoundError as exc:
+    sys.stderr.write(f"portable_timeout: {cmd[0]}: {exc.strerror}\n")
+    sys.exit(127)
+except PermissionError as exc:
+    sys.stderr.write(f"portable_timeout: {cmd[0]}: {exc.strerror}\n")
+    sys.exit(126)
+def _fwd(signum, _frame):
+    try:
+        os.killpg(proc.pid, signum)
+    except ProcessLookupError:
+        pass
+for _sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+    signal.signal(_sig, _fwd)
+try:
+    rc = proc.wait(timeout=secs if secs > 0 else None)
+except subprocess.TimeoutExpired:
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    deadline = time.monotonic() + 2.0
+    while proc.poll() is None and time.monotonic() < deadline:
+        time.sleep(0.02)
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    proc.wait()
+    sys.exit(124)
+sys.exit(128 + (-rc) if rc < 0 else rc)
+' "$dur" "$@"
+}
+
+TIMEOUT_CMD=("$PORTABLE_SH_PATH" --timeout)
+TIMEOUT="$PORTABLE_SH_PATH --timeout"
+export TIMEOUT
 
 now_ms() {
     if command -v python3 >/dev/null 2>&1; then
@@ -329,12 +453,16 @@ stage_verified_sha256() {
     mv -f "$part" "$dest"
 }
 
-export -f ensure_g4_tools_path find_gitleaks now_ms portable_time_v mem_avail_gb \
+export -f ensure_g4_tools_path find_gitleaks resolve_data_root portable_timeout now_ms portable_time_v mem_avail_gb \
     disk_free_gb disk_total_gb portable_loadavg is_user_session_pid nice_idle exec_nice_idle \
     portable_md5 md5 portable_sha256 sha256 portable_filesize filesize stage_verified_sha256 >/dev/null 2>&1 || true
 
 if [ "${1:-}" = "--time-v" ]; then
     shift
     portable_time_v "$@"
+    exit $?
+elif [ "${1:-}" = "--timeout" ]; then
+    shift
+    portable_timeout "$@"
     exit $?
 fi

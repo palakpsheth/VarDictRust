@@ -575,7 +575,7 @@ worker_preflight() {
     echo "=== lscpu ==="
     lscpu 2>/dev/null || true
     echo "=== free -h ==="
-    free -h 2>/dev/null || true
+    command -v free >/dev/null 2>&1 && free -h 2>/dev/null || true
     echo "=== df -h WORK_DIR ==="
     df -h "$WORK_DIR" 2>/dev/null || true
   } > "$WORK_DIR/cells/host_hardware_manifest.txt"
@@ -1157,7 +1157,7 @@ run_stage_2() {
       fi
       local s e sid peak=0 cur rc=0
       s=\$(date +%s.%N)
-      setsid timeout 10800 taskset -c \"\$cpus\" \"\$@\" >\"\$KEEP_DIR/\${lbl}.stdout\" 2>\"\$KEEP_DIR/\${lbl}.stderr\" &
+      setsid $TIMEOUT 10800 taskset -c \"\$cpus\" \"\$@\" >\"\$KEEP_DIR/\${lbl}.stdout\" 2>\"\$KEEP_DIR/\${lbl}.stderr\" &
       sid=\$!
       while kill -0 \"\$sid\" 2>/dev/null; do
         cur=\$(ps -o rss= --sid \"\$sid\" 2>/dev/null | awk '{t+=\$1}END{print t+0}')
@@ -1259,7 +1259,7 @@ run_stage_2() {
     if [ ! -s \"\$KEEP_DIR/java_xmx4g_R_chr1.time\" ]; then
       rc4=0
       JAVA_OPTS='-Xmx4g -XX:+ExitOnOutOfMemoryError' _JAVA_OPTIONS='-Xmx4g -XX:+ExitOnOutOfMemoryError' \
-        timeout 300 $TIME_V -o \"\$KEEP_DIR/java_xmx4g_R_chr1.time\" \
+        $TIMEOUT 300 $TIME_V -o \"\$KEEP_DIR/java_xmx4g_R_chr1.time\" \
         conda run -n vardict-oracle vardict-java -G \"\$REF\" -f 0.01 -N SRR8657348 -b \"\$BAM\" -th 8 -R chr1:1-249250621 > /dev/null 2>\"\$KEEP_DIR/java_xmx4g.err\" || rc4=\$? # golden:bypass gcp-oracle-cache-v183
       echo \"\$rc4\" > \"\$KEEP_DIR/java_xmx4g.exit\"
     fi
@@ -2390,7 +2390,7 @@ run_stage_5() {
     fi
     if [ ! -s \"\$KEEP_DIR/cpp_hg008_contigs_th32.exit\" ]; then
       rc_cpp=0
-      $TIME_V -o \"\$KEEP_DIR/cpp_hg008_contigs_th32.time\" timeout 10800 \
+      $TIME_V -o \"\$KEEP_DIR/cpp_hg008_contigs_th32.time\" $TIMEOUT 10800 \
         env CPP_CHUNK=50000 bash harness/run_cpp.sh \"\$REF\" \"\${T_BAM}|\${N_BAM}\" \"\$BED\" \"\$WORK_LOCAL/cpp_hg008_contigs_th32.vcf\" 'HG008-T|HG008-N' -f 0.01 -th 32 -z || rc_cpp=\$? # golden:bypass gcp-oracle-cache-v183
       echo \"\$rc_cpp\" > \"\$KEEP_DIR/cpp_hg008_contigs_th32.exit\"
       if [ -s \"\$WORK_LOCAL/cpp_hg008_contigs_th32.vcf\" ]; then
@@ -2407,7 +2407,7 @@ run_stage_5() {
     oracle_cache_get 'hg008_full/java_hg008_contigs_th32.exit' \"\$KEEP_DIR/java_hg008_contigs_th32.exit\" || true
     if [ ! -s \"\$KEEP_DIR/java_hg008_contigs_th32.exit\" ]; then
       rc_java=0
-      $TIME_V -o \"\$KEEP_DIR/java_hg008_contigs_th32.time\" timeout 10800 \
+      $TIME_V -o \"\$KEEP_DIR/java_hg008_contigs_th32.time\" $TIMEOUT 10800 \
         env ORACLE_XMX_GB=200 JAVA_OPTS='-Xmx200g -XX:+ExitOnOutOfMemoryError' \
         bash harness/run_oracle.sh \"\$REF\" \"\${T_BAM}|\${N_BAM}\" \"\$BED\" \"\$WORK_LOCAL/java_hg008_contigs_th32.vcf\" 'HG008-T|HG008-N' -f 0.01 -th 32 -z || rc_java=\$? # golden:bypass gcp-oracle-cache-v183
       echo \"\$rc_java\" > \"\$KEEP_DIR/java_hg008_contigs_th32.exit\"
@@ -2470,7 +2470,7 @@ run_stage_5() {
     fi
     if [ ! -s \"\$KEEP_DIR/cpp_hg008_giab_th32.time\" ]; then
       rc_cpp=0
-      timeout 10800 $TIME_V -o \"\$KEEP_DIR/cpp_hg008_giab_th32.time\" \
+      $TIMEOUT 10800 $TIME_V -o \"\$KEEP_DIR/cpp_hg008_giab_th32.time\" \
         env CPP_CHUNK=50000 bash harness/run_cpp.sh \"\$REF\" \"\${T_BAM}|\${N_BAM}\" \"\$BED\" \"\$WORK_LOCAL/cpp_hg008_giab_th32.vcf\" 'HG008-T|HG008-N' -f 0.01 -th 32 -z -U || rc_cpp=\$? # golden:bypass gcp-oracle-cache-v183
       echo \"\$rc_cpp\" > \"\$KEEP_DIR/cpp_hg008_giab_th32.exit\"
       if [ -s \"\$WORK_LOCAL/cpp_hg008_giab_th32.vcf\" ]; then
@@ -2493,7 +2493,7 @@ run_stage_5() {
     fi
     if [ ! -s \"\$KEEP_DIR/java_hg008_giab_th32.time\" ]; then
       rc_java=0
-      timeout 14400 $TIME_V -o \"\$KEEP_DIR/java_hg008_giab_th32.time\" \
+      $TIMEOUT 14400 $TIME_V -o \"\$KEEP_DIR/java_hg008_giab_th32.time\" \
         env ORACLE_XMX_GB=200 JAVA_OPTS='-Xmx200g -XX:+ExitOnOutOfMemoryError' \
         bash harness/run_oracle.sh \"\$REF\" \"\${T_BAM}|\${N_BAM}\" \"\$BED\" \"\$WORK_LOCAL/java_hg008_giab_th32.vcf\" 'HG008-T|HG008-N' -f 0.01 -th 32 -z -U || rc_java=\$? # golden:bypass gcp-oracle-cache-v183
       echo \"\$rc_java\" > \"\$KEEP_DIR/java_hg008_giab_th32.exit\"
@@ -3040,7 +3040,7 @@ run_stage_5() {
       fi
       if [ ! -s \"\$KEEP_DIR/\${tag}_cpp.exit\" ]; then
         local rc_c=0
-        timeout 14400 $TIME_V -o \"\$KEEP_DIR/\${tag}_cpp.time\" \
+        $TIMEOUT 14400 $TIME_V -o \"\$KEEP_DIR/\${tag}_cpp.time\" \
           env CPP_CHUNK=50000 bash harness/run_cpp.sh \"\$ref\" \"\$bam_spec\" \"\$call_bed\" \"\$KEEP_DIR/\${tag}_cpp.vcf\" \"\$sample\" -f \"\$freq\" -th 32 -z \"\${extra_flags[@]}\" || rc_c=\$? # golden:bypass gcp-oracle-cache-v183
         echo \"\$rc_c\" > \"\$KEEP_DIR/\${tag}_cpp.exit\"
       fi
@@ -3059,7 +3059,7 @@ run_stage_5() {
       fi
       if [ ! -s \"\$KEEP_DIR/\${tag}_java.exit\" ]; then
         local rc_j=0
-        timeout 14400 $TIME_V -o \"\$KEEP_DIR/\${tag}_java.time\" \
+        $TIMEOUT 14400 $TIME_V -o \"\$KEEP_DIR/\${tag}_java.time\" \
           env ORACLE_XMX_GB=48 JAVA_OPTS='-Xmx48g -XX:+ExitOnOutOfMemoryError' \
           bash harness/run_oracle.sh \"\$ref\" \"\$bam_spec\" \"\$call_bed\" \"\$KEEP_DIR/\${tag}_java.vcf\" \"\$sample\" -f \"\$freq\" -th 32 -z \"\${extra_flags[@]}\" || rc_j=\$? # golden:bypass gcp-oracle-cache-v183
         echo \"\$rc_j\" > \"\$KEEP_DIR/\${tag}_java.exit\"
@@ -3983,7 +3983,10 @@ run_controller() {
       echo "[Controller] Reusing already-running VM '${VM_NAME}' (status=${cur_status}, model=${cur_model}, cpuPlatform=${cur_cpu})"
     else
       cleanup_vm
-      mapfile -t create_cmd < <(build_gcloud_create_cmd "$attempt")
+      create_cmd=()
+      while IFS= read -r _arg; do
+        create_cmd+=("$_arg")
+      done < <(build_gcloud_create_cmd "$attempt")
       if ! "${create_cmd[@]}"; then
         echo "[Controller] Instance creation failed on attempt ${attempt} (${model}, zone=${GCP_ZONE}); advancing to next attempt..." >&2
         sleep 15

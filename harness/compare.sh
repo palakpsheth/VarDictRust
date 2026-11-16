@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/portable.sh"
 # Usage: compare.sh <ref> <bam|tumor|normal> <bed> [sample] [extra args...]
 # Env: AF_THR (default 0.01) | KEEP_DIR (persist java.vcf rust.vcf compare.txt *.time +
 #      cpp.vcf cpp.time compare_cpp.txt extra.json)
@@ -28,7 +29,7 @@ fi
 # Mirror upstream IntegrationTest DEFAULT_ARGS ("-z -c 1 -S 2 -E 3 -g 4"): the
 # corpus and VarDictJava's own suite always run zero-based. run_oracle.sh
 # translates the flag-less -z into Java's explicit "-z 1" form.
-GOLDEN_TIME_OUT="$JAVA_TIME_OUT" timeout "$TO" \
+GOLDEN_TIME_OUT="$JAVA_TIME_OUT" "${TIMEOUT_CMD[@]}" "$TO" \
   bash harness/golden_store.sh oracle "${GOLDEN_LABEL:-compare}" "$REF" "$BAM" "$BED" "$OUT/java.vcf" "$SAMPLE" -z "$@" \
   || { echo "ENGINE-FAIL: oracle"; exit 2; }
 # Caller -f wins over AF_THR (commons-cli keeps FIRST; base -f $AF below would
@@ -47,12 +48,12 @@ done
 RUST_TH_ARGS=()
 if [ -n "${RUST_THREADS:-}" ]; then RUST_TH_ARGS=(-th "$RUST_THREADS"); fi
 if [ -n "${VARDICT_BIN:-}" ]; then
-  /usr/bin/time -v -o "$OUT/rust.time" timeout "$TO" \
+  portable_time_v -o "$OUT/rust.time" "${TIMEOUT_CMD[@]}" "$TO" \
     "$VARDICT_BIN" -G "$REF" -f "$AF" -N "$SAMPLE" \
     -b "$BAM" -c 1 -S 2 -E 3 -g 4 -z "$@" "${RUST_TH_ARGS[@]}" "$BED" > "$OUT/rust.vcf" \
     || { echo "ENGINE-FAIL: vardictrust"; exit 2; }
 else
-  /usr/bin/time -v -o "$OUT/rust.time" timeout "$TO" \
+  portable_time_v -o "$OUT/rust.time" "${TIMEOUT_CMD[@]}" "$TO" \
     cargo run -q --release -p vardictrust -- -G "$REF" -f "$AF" -N "$SAMPLE" \
     -b "$BAM" -c 1 -S 2 -E 3 -g 4 -z "$@" "${RUST_TH_ARGS[@]}" "$BED" > "$OUT/rust.vcf" \
     || { echo "ENGINE-FAIL: vardictrust"; exit 2; }
@@ -73,7 +74,7 @@ if [ "${CPP_SKIP:-0}" = "1" ] || [ "${CPP_SKIP:-0}" = "true" ]; then
   cpp_line="CPP: SKIP: disabled via CPP_SKIP=1"
 elif ! command -v conda >/dev/null 2>&1; then
   cpp_line="CPP: SKIP: conda not on PATH"
-elif LC_ALL=C GOLDEN_TIME_OUT="$CPP_TIME_OUT" timeout "$TO" \
+elif LC_ALL=C GOLDEN_TIME_OUT="$CPP_TIME_OUT" "${TIMEOUT_CMD[@]}" "$TO" \
     bash harness/golden_store.sh cpp "${GOLDEN_LABEL:-compare}" "$REF" "$BAM" "$BED" "$OUT/cpp.vcf" "$SAMPLE" -z "$@" 2>"$OUT/cpp.err"; then
   # Empty-BED/variant-free runs leave a 0-byte file (run_cpp.sh), not a VCF:
   # fall back to a header-only VCF so compare_vcf.py sees a valid empty VCF.

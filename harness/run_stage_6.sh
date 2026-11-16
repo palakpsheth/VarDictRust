@@ -11,6 +11,13 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/portable.sh"
 
 WORK_DIR="${WORK_DIR:-/var/tmp/vardict-paper-$(id -u)}"
 
+cat_maybe_gz() {
+  case "$1" in
+    *.gz|*.bgz) gzip -dc "$1" ;;
+    *) cat "$1" ;;
+  esac
+}
+
 ensure_vcf_clean_helper() {
   WORK_DIR="${WORK_DIR:-/var/tmp/vardict-paper-$(id -u)}"
   mkdir -p -m 700 "$WORK_DIR"
@@ -139,7 +146,7 @@ eval_single_vcf_against_bed() {
       tabix -f -p vcf "$calls_gz"
     fi
   else
-    zcat -f "$vcf_in" 2>/dev/null \
+    cat_maybe_gz "$vcf_in" 2>/dev/null \
       | python3 "$helper_py" "${ref}.fai" "$mode" \
       | bcftools norm -c x -f "$ref" -m -any 2>/dev/null \
       | bcftools sort -Oz -o "$calls_gz"
@@ -308,7 +315,7 @@ run_s6_vm2() {
         src="${pair#*:}"
         if [ ! -s "$WORK_S6/${lbl}.norm.vcf.gz" ] || [ ! -s "$WORK_S6/${lbl}.norm.vcf.gz.tbi" ]; then
           rm -f "$WORK_S6/${lbl}.norm.vcf.gz" "$WORK_S6/${lbl}.norm.vcf.gz.tbi" "$WORK_S6/${lbl}.norm.tmp.vcf.gz"
-          zcat -f "$src" 2>/dev/null \
+          cat_maybe_gz "$src" 2>/dev/null \
             | python3 "${WORK_DIR}/vcf_clean_chr1_22.py" "${REF}.fai" "germline" \
             | bcftools norm --threads 4 -c x -f "$REF" -m -any 2>/dev/null \
             | bcftools sort -m 8G -T "$WORK_S6/sort_${lbl}" -Oz -o "$WORK_S6/${lbl}.norm.tmp.vcf.gz"
@@ -653,7 +660,7 @@ cell_s6_ga4gh_v35_stratification() {
     "RefSeq_CDS|Functional/GRCh38_refseq_cds.bed.gz"; do
     IFS="|" read -r sname spath <<< "$sspec"
     if [ ! -s "$STRAT_DIR/${sname}.chr20.bed" ]; then
-      curl -sSLf --retry 5 "${BASE_STRAT}/${spath}" | zcat | awk -F"\t" '$1 == "chr20"' > "$STRAT_DIR/${sname}.chr20.bed"
+      curl -sSLf --retry 5 "${BASE_STRAT}/${spath}" | gzip -dc | awk -F"\t" '$1 == "chr20"' > "$STRAT_DIR/${sname}.chr20.bed"
     fi
     [ -s "$STRAT_DIR/hg002_${sname}.bed" ] || bedtools intersect -a "$BED_HG2_CHR20" -b "$STRAT_DIR/${sname}.chr20.bed" > "$STRAT_DIR/hg002_${sname}.bed"
     [ -s "$STRAT_DIR/hg008_${sname}.bed" ] || bedtools intersect -a "$BED_HG8_CHR20" -b "$STRAT_DIR/${sname}.chr20.bed" > "$STRAT_DIR/hg008_${sname}.bed"

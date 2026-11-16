@@ -95,7 +95,7 @@ stage_seqc2_beds() {
   # 1. exome.engine.bed: 4-col merged primary-chrom intervals from SureSelect V6 exome.bed6.gz
   if [ ! -s "$sq/exome.engine.bed" ]; then
     echo "Deriving $sq/exome.engine.bed..."
-    zcat "$sq/exome.bed6.gz" \
+    gzip -dc "$sq/exome.bed6.gz" \
       | awk -F'\t' '$1 ~ /^chr([0-9]+|X|Y|M)$/' \
       | cut -f1-4 \
       | sort -k1,1 -k2,2n -k3,3n \
