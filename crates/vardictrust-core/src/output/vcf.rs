@@ -506,11 +506,23 @@ pub fn print_vcf_header<W: Write>(
     print_vcf_header_with_contigs(w, config, &contigs)
 }
 
-pub(crate) fn print_vcf_header_with_contigs<W: Write>(
+/// Shared VCF 4.2 preamble (`##fileformat`, `##source`, `##reference`, `.fai` `##contig=` lines,
+/// and the common leading `##INFO` block) emitted in identical line order by both
+/// `var2vcf_valid.pl` (Simple/Amplicon) and `var2vcf_paired.pl` (Somatic).
+fn write_common_vcf_header_prefix<W: Write>(
     w: &mut W,
     config: &Config,
     contigs: &[(String, Option<u64>)],
 ) -> io::Result<()> {
+    const COMMON_INFO_PREFIX: &[&str] = &[
+        r#"##INFO=<ID=SAMPLE,Number=1,Type=String,Description="Sample name (with whitespace translated to underscores)">"#,
+        r#"##INFO=<ID=TYPE,Number=1,Type=String,Description="Variant Type: SNV Insertion Deletion Complex">"#,
+        r#"##INFO=<ID=DP,Number=1,Type=Integer,Description="Total Depth">"#,
+        r#"##INFO=<ID=END,Number=1,Type=Integer,Description="Chr End Position">"#,
+        r#"##INFO=<ID=VD,Number=1,Type=Integer,Description="Variant Depth">"#,
+        r#"##INFO=<ID=AF,Number=A,Type=Float,Description="Allele Frequency">"#,
+    ];
+
     writeln!(w, "##fileformat=VCFv4.2")?;
     writeln!(w, "##source=VarDict_v1.8.2")?;
     writeln!(w, "##reference={}", config.reference)?;
@@ -521,124 +533,127 @@ pub(crate) fn print_vcf_header_with_contigs<W: Write>(
             None => writeln!(w, "##contig=<ID={}>", name)?,
         }
     }
+    for line in COMMON_INFO_PREFIX {
+        writeln!(w, "{line}")?;
+    }
+    Ok(())
+}
 
-    writeln!(w, "##INFO=<ID=SAMPLE,Number=1,Type=String,Description=\"Sample name (with whitespace translated to underscores)\">")?;
-    writeln!(w, "##INFO=<ID=TYPE,Number=1,Type=String,Description=\"Variant Type: SNV Insertion Deletion Complex\">")?;
+fn write_common_vcf_filter_prefix<W: Write>(
+    w: &mut W,
+    qmean: &str,
+    map_qual: &str,
+    pmean: &str,
+    sn: &str,
+) -> io::Result<()> {
     writeln!(
         w,
-        "##INFO=<ID=DP,Number=1,Type=Integer,Description=\"Total Depth\">"
+        r#"##FILTER=<ID=q{qmean},Description="Mean Base Quality Below {qmean}">"#
     )?;
     writeln!(
         w,
-        "##INFO=<ID=END,Number=1,Type=Integer,Description=\"Chr End Position\">"
+        r#"##FILTER=<ID=Q{map_qual},Description="Mean Mapping Quality Below {map_qual}">"#
     )?;
     writeln!(
         w,
-        "##INFO=<ID=VD,Number=1,Type=Integer,Description=\"Variant Depth\">"
+        r#"##FILTER=<ID=p{pmean},Description="Mean Position in Reads Less than {pmean}">"#
     )?;
     writeln!(
         w,
-        "##INFO=<ID=AF,Number=A,Type=Float,Description=\"Allele Frequency\">"
+        r#"##FILTER=<ID=SN{sn},Description="Signal to Noise Less than {sn}">"#
+    )?;
+    writeln!(w, r#"##FILTER=<ID=Bias,Description="Strand Bias">"#)?;
+    writeln!(
+        w,
+        r#"##FILTER=<ID=pSTD,Description="Position in Reads has STD of 0">"#
+    )
+}
+
+fn write_common_vcf_depth_af_filters<W: Write>(
+    w: &mut W,
+    config: &Config,
+    min_depth: &str,
+    min_vd: &str,
+    default_af: f64,
+) -> io::Result<()> {
+    writeln!(
+        w,
+        r#"##FILTER=<ID=d{min_depth},Description="Total Depth < {min_depth}">"#
     )?;
     writeln!(
         w,
-        "##INFO=<ID=BIAS,Number=1,Type=String,Description=\"Strand Bias Info\">"
+        r#"##FILTER=<ID=v{min_vd},Description="Var Depth < {min_vd}">"#
     )?;
-    writeln!(
-        w,
-        "##INFO=<ID=REFBIAS,Number=1,Type=String,Description=\"Reference depth by strand\">"
-    )?;
-    writeln!(
-        w,
-        "##INFO=<ID=VARBIAS,Number=1,Type=String,Description=\"Variant depth by strand\">"
-    )?;
-    writeln!(
-        w,
-        "##INFO=<ID=PMEAN,Number=1,Type=Float,Description=\"The mean distance to the nearest 5 or 3 prime read end (whichever is closer) in all reads that support the variant call\">"
-    )?;
-    writeln!(
-        w,
-        "##INFO=<ID=PSTD,Number=1,Type=Float,Description=\"Position STD in reads\">"
-    )?;
-    writeln!(
-        w,
-        "##INFO=<ID=QUAL,Number=1,Type=Float,Description=\"Mean quality score in reads\">"
-    )?;
-    writeln!(
-        w,
-        "##INFO=<ID=QSTD,Number=1,Type=Float,Description=\"Quality score STD in reads\">"
-    )?;
-    writeln!(
-        w,
-        "##INFO=<ID=SBF,Number=1,Type=Float,Description=\"Strand Bias Fisher p-value\">"
-    )?;
-    writeln!(
-        w,
-        "##INFO=<ID=ODDRATIO,Number=1,Type=Float,Description=\"Strand Bias Odds ratio\">"
-    )?;
-    writeln!(
-        w,
-        "##INFO=<ID=MQ,Number=1,Type=Float,Description=\"Mean Mapping Quality\">"
-    )?;
-    writeln!(
-        w,
-        "##INFO=<ID=SN,Number=1,Type=Float,Description=\"Signal to noise\">"
-    )?;
-    writeln!(w, "##INFO=<ID=HIAF,Number=1,Type=Float,Description=\"Allele frequency using only high quality bases\">")?;
-    writeln!(w, "##INFO=<ID=ADJAF,Number=1,Type=Float,Description=\"Adjusted AF for indels due to local realignment\">")?;
-    writeln!(w, "##INFO=<ID=SHIFT3,Number=1,Type=Integer,Description=\"No. of bases to be shifted to 3 prime for deletions due to alternative alignment\">")?;
-    writeln!(
-        w,
-        "##INFO=<ID=MSI,Number=1,Type=Float,Description=\"MicroSatellite. > 1 indicates MSI\">"
-    )?;
-    writeln!(
-        w,
-        "##INFO=<ID=MSILEN,Number=1,Type=Float,Description=\"MicroSatellite unit length in bp\">"
-    )?;
-    writeln!(
-        w,
-        "##INFO=<ID=NM,Number=1,Type=Float,Description=\"Mean mismatches in reads\">"
-    )?;
-    writeln!(
-        w,
-        "##INFO=<ID=LSEQ,Number=1,Type=String,Description=\"5' flanking seq\">"
-    )?;
-    writeln!(
-        w,
-        "##INFO=<ID=RSEQ,Number=1,Type=String,Description=\"3' flanking seq\">"
-    )?;
-    writeln!(w, "##INFO=<ID=GDAMP,Number=1,Type=Integer,Description=\"No. of amplicons supporting variant\">")?;
-    writeln!(w, "##INFO=<ID=TLAMP,Number=1,Type=Integer,Description=\"Total of amplicons covering variant\">")?;
-    writeln!(
-        w,
-        "##INFO=<ID=NCAMP,Number=1,Type=Integer,Description=\"No. of amplicons don't work\">"
-    )?;
-    writeln!(w, "##INFO=<ID=AMPFLAG,Number=1,Type=Integer,Description=\"Top variant in amplicons don't match\">")?;
-    writeln!(
-        w,
-        "##INFO=<ID=HICNT,Number=1,Type=Integer,Description=\"High quality variant reads\">"
-    )?;
-    writeln!(
-        w,
-        "##INFO=<ID=HICOV,Number=1,Type=Integer,Description=\"High quality total reads\">"
-    )?;
-    writeln!(w, "##INFO=<ID=SPLITREAD,Number=1,Type=Integer,Description=\"No. of split reads supporting SV\">")?;
-    writeln!(
-        w,
-        "##INFO=<ID=SPANPAIR,Number=1,Type=Integer,Description=\"No. of pairs supporting SV\">"
-    )?;
-    writeln!(
-        w,
-        "##INFO=<ID=SVTYPE,Number=1,Type=String,Description=\"SV type: INV DUP DEL INS FUS\">"
-    )?;
-    writeln!(
-        w,
-        "##INFO=<ID=SVLEN,Number=1,Type=Integer,Description=\"The length of SV in bp\">"
-    )?;
-    writeln!(
-        w,
-        "##INFO=<ID=DUPRATE,Number=1,Type=Float,Description=\"Duplication rate in fraction\">"
-    )?;
+    if let Some(ref thr) = config.vcf_af {
+        let mut s_af = crate::types::StackBuf::<64>::new();
+        write_vcf_threshold_label(&mut s_af, thr, default_af);
+        let af_lbl = s_af.as_str();
+        writeln!(
+            w,
+            r#"##FILTER=<ID=f{af_lbl},Description="Allele frequency < {af_lbl}">"#
+        )
+    } else {
+        writeln!(
+            w,
+            r#"##FILTER=<ID=f{default_af},Description="Allele frequency < {default_af}">"#
+        )
+    }
+}
+
+const COMMON_FORMAT_PREFIX_4: &[&str] = &[
+    r#"##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">"#,
+    r#"##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Total Depth">"#,
+    r#"##FORMAT=<ID=VD,Number=1,Type=Integer,Description="Variant Depth">"#,
+    r#"##FORMAT=<ID=AD,Number=R,Type=Integer,Description="Allelic depths for the ref and alt alleles in the order listed">"#,
+];
+
+pub(crate) fn print_vcf_header_with_contigs<W: Write>(
+    w: &mut W,
+    config: &Config,
+    contigs: &[(String, Option<u64>)],
+) -> io::Result<()> {
+    const SINGLE_INFO_TAIL: &[&str] = &[
+        r#"##INFO=<ID=BIAS,Number=1,Type=String,Description="Strand Bias Info">"#,
+        r#"##INFO=<ID=REFBIAS,Number=1,Type=String,Description="Reference depth by strand">"#,
+        r#"##INFO=<ID=VARBIAS,Number=1,Type=String,Description="Variant depth by strand">"#,
+        r#"##INFO=<ID=PMEAN,Number=1,Type=Float,Description="The mean distance to the nearest 5 or 3 prime read end (whichever is closer) in all reads that support the variant call">"#,
+        r#"##INFO=<ID=PSTD,Number=1,Type=Float,Description="Position STD in reads">"#,
+        r#"##INFO=<ID=QUAL,Number=1,Type=Float,Description="Mean quality score in reads">"#,
+        r#"##INFO=<ID=QSTD,Number=1,Type=Float,Description="Quality score STD in reads">"#,
+        r#"##INFO=<ID=SBF,Number=1,Type=Float,Description="Strand Bias Fisher p-value">"#,
+        r#"##INFO=<ID=ODDRATIO,Number=1,Type=Float,Description="Strand Bias Odds ratio">"#,
+        r#"##INFO=<ID=MQ,Number=1,Type=Float,Description="Mean Mapping Quality">"#,
+        r#"##INFO=<ID=SN,Number=1,Type=Float,Description="Signal to noise">"#,
+        r#"##INFO=<ID=HIAF,Number=1,Type=Float,Description="Allele frequency using only high quality bases">"#,
+        r#"##INFO=<ID=ADJAF,Number=1,Type=Float,Description="Adjusted AF for indels due to local realignment">"#,
+        r#"##INFO=<ID=SHIFT3,Number=1,Type=Integer,Description="No. of bases to be shifted to 3 prime for deletions due to alternative alignment">"#,
+        r#"##INFO=<ID=MSI,Number=1,Type=Float,Description="MicroSatellite. > 1 indicates MSI">"#,
+        r#"##INFO=<ID=MSILEN,Number=1,Type=Float,Description="MicroSatellite unit length in bp">"#,
+        r#"##INFO=<ID=NM,Number=1,Type=Float,Description="Mean mismatches in reads">"#,
+        r#"##INFO=<ID=LSEQ,Number=1,Type=String,Description="5' flanking seq">"#,
+        r#"##INFO=<ID=RSEQ,Number=1,Type=String,Description="3' flanking seq">"#,
+        r#"##INFO=<ID=GDAMP,Number=1,Type=Integer,Description="No. of amplicons supporting variant">"#,
+        r#"##INFO=<ID=TLAMP,Number=1,Type=Integer,Description="Total of amplicons covering variant">"#,
+        r#"##INFO=<ID=NCAMP,Number=1,Type=Integer,Description="No. of amplicons don't work">"#,
+        r#"##INFO=<ID=AMPFLAG,Number=1,Type=Integer,Description="Top variant in amplicons don't match">"#,
+        r#"##INFO=<ID=HICNT,Number=1,Type=Integer,Description="High quality variant reads">"#,
+        r#"##INFO=<ID=HICOV,Number=1,Type=Integer,Description="High quality total reads">"#,
+        r#"##INFO=<ID=SPLITREAD,Number=1,Type=Integer,Description="No. of split reads supporting SV">"#,
+        r#"##INFO=<ID=SPANPAIR,Number=1,Type=Integer,Description="No. of pairs supporting SV">"#,
+        r#"##INFO=<ID=SVTYPE,Number=1,Type=String,Description="SV type: INV DUP DEL INS FUS">"#,
+        r#"##INFO=<ID=SVLEN,Number=1,Type=Integer,Description="The length of SV in bp">"#,
+        r#"##INFO=<ID=DUPRATE,Number=1,Type=Float,Description="Duplication rate in fraction">"#,
+    ];
+    const SINGLE_FORMAT_TAIL: &[&str] = &[
+        r#"##FORMAT=<ID=AF,Number=A,Type=Float,Description="Allele Frequency">"#,
+        r#"##FORMAT=<ID=RD,Number=2,Type=Integer,Description="Reference forward, reverse reads">"#,
+        r#"##FORMAT=<ID=ALD,Number=2,Type=Integer,Description="Variant forward, reverse reads">"#,
+    ];
+
+    write_common_vcf_header_prefix(w, config, contigs)?;
+    for line in SINGLE_INFO_TAIL {
+        writeln!(w, "{line}")?;
+    }
 
     let mut s_q = crate::types::StackBuf::<64>::new();
     let mut s_mapq = crate::types::StackBuf::<64>::new();
@@ -649,7 +664,6 @@ pub(crate) fn print_vcf_header_with_contigs<W: Write>(
     let mut s_msi = crate::types::StackBuf::<64>::new();
     let mut s_nm = crate::types::StackBuf::<64>::new();
     let mut s_c = crate::types::StackBuf::<64>::new();
-    let mut s_af = crate::types::StackBuf::<64>::new();
 
     let qmean = header_float_label(config.vcf_qmean.as_ref(), "22.5", 22.5, &mut s_q);
     let map_qual_val = header_float_label(config.vcf_mapq.as_ref(), "10", 10.0, &mut s_mapq);
@@ -661,57 +675,14 @@ pub(crate) fn print_vcf_header_with_contigs<W: Write>(
     let opt_m = header_float_label(config.vcf_max_nm.as_ref(), "5.25", 5.25, &mut s_nm);
     let opt_c = header_int_label(config.vcf_cluster_dist.as_ref(), "0", 0, &mut s_c);
 
-    writeln!(
+    write_common_vcf_filter_prefix(w, qmean, map_qual_val, pmean_val, sn_val)?;
+    write_common_vcf_depth_af_filters(
         w,
-        "##FILTER=<ID=q{},Description=\"Mean Base Quality Below {}\">",
-        qmean, qmean
+        config,
+        total_depth,
+        var_depth,
+        valid_freq_threshold(config),
     )?;
-    writeln!(
-        w,
-        "##FILTER=<ID=Q{},Description=\"Mean Mapping Quality Below {}\">",
-        map_qual_val, map_qual_val
-    )?;
-    writeln!(
-        w,
-        "##FILTER=<ID=p{},Description=\"Mean Position in Reads Less than {}\">",
-        pmean_val, pmean_val
-    )?;
-    writeln!(
-        w,
-        "##FILTER=<ID=SN{},Description=\"Signal to Noise Less than {}\">",
-        sn_val, sn_val
-    )?;
-    writeln!(w, "##FILTER=<ID=Bias,Description=\"Strand Bias\">")?;
-    writeln!(
-        w,
-        "##FILTER=<ID=pSTD,Description=\"Position in Reads has STD of 0\">"
-    )?;
-    writeln!(
-        w,
-        "##FILTER=<ID=d{},Description=\"Total Depth < {}\">",
-        total_depth, total_depth
-    )?;
-    writeln!(
-        w,
-        "##FILTER=<ID=v{},Description=\"Var Depth < {}\">",
-        var_depth, var_depth
-    )?;
-    if let Some(ref thr) = config.vcf_af {
-        write_vcf_threshold_label(&mut s_af, thr, valid_freq_threshold(config));
-        let af_lbl = s_af.as_str();
-        writeln!(
-            w,
-            "##FILTER=<ID=f{},Description=\"Allele frequency < {}\">",
-            af_lbl, af_lbl
-        )?;
-    } else {
-        let freq_val = valid_freq_threshold(config);
-        writeln!(
-            w,
-            "##FILTER=<ID=f{},Description=\"Allele frequency < {}\">",
-            freq_val, freq_val
-        )?;
-    }
     writeln!(w, "##FILTER=<ID=MSI{},Description=\"Variant in MSI region with {} non-monomer MSI or 13 monomer MSI\">", opt_i, opt_i)?;
     writeln!(w, "##FILTER=<ID=NM{},Description=\"Mean mismatches in reads >= {}, thus likely false positive\">", opt_m, opt_m)?;
     writeln!(w, "##FILTER=<ID=InGap,Description=\"The variant is in the deletion gap, thus likely false positive\">")?;
@@ -733,31 +704,9 @@ pub(crate) fn print_vcf_header_with_contigs<W: Write>(
         "##FILTER=<ID=AMPBIAS,Description=\"Indicate the variant has amplicon bias.\">"
     )?;
 
-    writeln!(
-        w,
-        "##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">"
-    )?;
-    writeln!(
-        w,
-        "##FORMAT=<ID=DP,Number=1,Type=Integer,Description=\"Total Depth\">"
-    )?;
-    writeln!(
-        w,
-        "##FORMAT=<ID=VD,Number=1,Type=Integer,Description=\"Variant Depth\">"
-    )?;
-    writeln!(w, "##FORMAT=<ID=AD,Number=R,Type=Integer,Description=\"Allelic depths for the ref and alt alleles in the order listed\">")?;
-    writeln!(
-        w,
-        "##FORMAT=<ID=AF,Number=A,Type=Float,Description=\"Allele Frequency\">"
-    )?;
-    writeln!(
-        w,
-        "##FORMAT=<ID=RD,Number=2,Type=Integer,Description=\"Reference forward, reverse reads\">"
-    )?;
-    writeln!(
-        w,
-        "##FORMAT=<ID=ALD,Number=2,Type=Integer,Description=\"Variant forward, reverse reads\">"
-    )?;
+    for line in COMMON_FORMAT_PREFIX_4.iter().chain(SINGLE_FORMAT_TAIL) {
+        writeln!(w, "{line}")?;
+    }
 
     let sample_nowhitespace = config.sample.replace(char::is_whitespace, "_");
     writeln!(
@@ -2193,25 +2142,7 @@ pub(crate) fn print_paired_vcf_header_with_contigs<W: Write>(
     config: &Config,
     contigs: &[(String, Option<u64>)],
 ) -> io::Result<()> {
-    writeln!(w, "##fileformat=VCFv4.2")?;
-    writeln!(w, "##source=VarDict_v1.8.2")?;
-    writeln!(w, "##reference={}", config.reference)?;
-
-    for (name, len) in contigs {
-        match *len {
-            Some(l) => writeln!(w, "##contig=<ID={},length={}>", name, l)?,
-            None => writeln!(w, "##contig=<ID={}>", name)?,
-        }
-    }
-
-    // ports var2vcf_paired.pl:60-75
-    let info_lines = [
-        r#"##INFO=<ID=SAMPLE,Number=1,Type=String,Description="Sample name (with whitespace translated to underscores)">"#,
-        r#"##INFO=<ID=TYPE,Number=1,Type=String,Description="Variant Type: SNV Insertion Deletion Complex">"#,
-        r#"##INFO=<ID=DP,Number=1,Type=Integer,Description="Total Depth">"#,
-        r#"##INFO=<ID=END,Number=1,Type=Integer,Description="Chr End Position">"#,
-        r#"##INFO=<ID=VD,Number=1,Type=Integer,Description="Variant Depth">"#,
-        r#"##INFO=<ID=AF,Number=A,Type=Float,Description="Allele Frequency">"#,
+    const PAIRED_INFO_TAIL: &[&str] = &[
         r#"##INFO=<ID=SHIFT3,Number=1,Type=Integer,Description="No. of bases to be shifted to 3 prime for deletions due to alternative alignment">"#,
         r#"##INFO=<ID=MSI,Number=1,Type=Float,Description="MicroSatellite. > 1 indicates MSI">"#,
         r#"##INFO=<ID=MSILEN,Number=1,Type=Float,Description="MSI unit repeat length in bp">"#,
@@ -2223,8 +2154,27 @@ pub(crate) fn print_paired_vcf_header_with_contigs<W: Write>(
         r#"##INFO=<ID=P0.01Likely,Number=0,Type=Flag,Description="Likely candidate but p-value > 0.01/5**vd2 (means the evidence in tumor sample might be weak, e.g. small diff in AF)">"#,
         r#"##INFO=<ID=InDelLikely,Number=0,Type=Flag,Description="Likely indels more than 2bp are not considered somatic (weak evidence of presence in normal samples)">"#,
     ];
-    for line in &info_lines {
-        writeln!(w, "{}", line)?;
+    const PAIRED_FORMAT_TAIL: &[&str] = &[
+        r#"##FORMAT=<ID=ALD,Number=2,Type=Integer,Description="Variant forward, reverse reads">"#,
+        r#"##FORMAT=<ID=RD,Number=2,Type=Integer,Description="Reference forward, reverse reads">"#,
+        r#"##FORMAT=<ID=AF,Number=A,Type=Float,Description="Allele Frequency">"#,
+        r#"##FORMAT=<ID=ADJAF,Number=1,Type=Float,Description="Adjusted AF for indels due to local realignment">"#,
+        r#"##FORMAT=<ID=BIAS,Number=2,Type=String,Description="Strand Bias Info">"#,
+        r#"##FORMAT=<ID=PMEAN,Number=1,Type=Float,Description="The mean distance to the nearest 5 or 3 prime read end (whichever is closer) in all reads that support the variant call">"#,
+        r#"##FORMAT=<ID=PSTD,Number=1,Type=Float,Description="Position STD in reads">"#,
+        r#"##FORMAT=<ID=QUAL,Number=1,Type=Float,Description="Mean quality score in reads">"#,
+        r#"##FORMAT=<ID=QSTD,Number=1,Type=Float,Description="Quality score STD in reads">"#,
+        r#"##FORMAT=<ID=SBF,Number=1,Type=Float,Description="Strand Bias Fisher p-value">"#,
+        r#"##FORMAT=<ID=ODDRATIO,Number=1,Type=Float,Description="Strand Bias Odds ratio">"#,
+        r#"##FORMAT=<ID=MQ,Number=1,Type=Integer,Description="Mean Mapping Quality">"#,
+        r#"##FORMAT=<ID=SN,Number=1,Type=Float,Description="Signal to noise">"#,
+        r#"##FORMAT=<ID=HIAF,Number=1,Type=Float,Description="Allele frequency using only high quality bases">"#,
+        r#"##FORMAT=<ID=NM,Number=1,Type=Float,Description="Mean mismatches in reads">"#,
+    ];
+
+    write_common_vcf_header_prefix(w, config, contigs)?;
+    for line in PAIRED_INFO_TAIL {
+        writeln!(w, "{line}")?;
     }
 
     // ports var2vcf_paired.pl:76-93 (zero heap String allocations)
@@ -2237,7 +2187,6 @@ pub(crate) fn print_paired_vcf_header_with_contigs<W: Write>(
     let mut s_msi = crate::types::StackBuf::<64>::new();
     let mut s_nm = crate::types::StackBuf::<64>::new();
     let mut s_c = crate::types::StackBuf::<64>::new();
-    let mut s_af = crate::types::StackBuf::<64>::new();
     let mut s_pval = crate::types::StackBuf::<64>::new();
 
     let qmean = header_float_label(config.vcf_qmean.as_ref(), "22.5", PAIRED_QMEAN, &mut s_q);
@@ -2257,53 +2206,12 @@ pub(crate) fn print_paired_vcf_header_with_contigs<W: Write>(
     write_vcf_pval_label(&mut s_pval, config);
     let pval_lbl = s_pval.as_str();
 
-    writeln!(
-        w,
-        r#"##FILTER=<ID=q{qmean},Description="Mean Base Quality Below {qmean}">"#
-    )?;
-    writeln!(
-        w,
-        r#"##FILTER=<ID=Q{mqmean},Description="Mean Mapping Quality Below {mqmean}">"#
-    )?;
-    writeln!(
-        w,
-        r#"##FILTER=<ID=p{pmean},Description="Mean Position in Reads Less than {pmean}">"#
-    )?;
-    writeln!(
-        w,
-        r#"##FILTER=<ID=SN{sn},Description="Signal to Noise Less than {sn}">"#
-    )?;
-    writeln!(w, r#"##FILTER=<ID=Bias,Description="Strand Bias">"#)?;
-    writeln!(
-        w,
-        r#"##FILTER=<ID=pSTD,Description="Position in Reads has STD of 0">"#
-    )?;
+    write_common_vcf_filter_prefix(w, qmean, mqmean, pmean, sn)?;
     writeln!(
         w,
         r#"##FILTER=<ID=MAF0.05,Description="Matched sample has AF > 0.05, thus not somatic">"#
     )?;
-    writeln!(
-        w,
-        r#"##FILTER=<ID=d{min_depth},Description="Total Depth < {min_depth}">"#
-    )?;
-    writeln!(
-        w,
-        r#"##FILTER=<ID=v{min_vd},Description="Var Depth < {min_vd}">"#
-    )?;
-    if let Some(ref thr) = config.vcf_af {
-        write_vcf_threshold_label(&mut s_af, thr, config.af_threshold);
-        let af_lbl = s_af.as_str();
-        writeln!(
-            w,
-            r#"##FILTER=<ID=f{af_lbl},Description="Allele frequency < {af_lbl}">"#
-        )?;
-    } else {
-        let freq_val = config.af_threshold;
-        writeln!(
-            w,
-            r#"##FILTER=<ID=f{freq_val},Description="Allele frequency < {freq_val}">"#
-        )?;
-    }
+    write_common_vcf_depth_af_filters(w, config, min_depth, min_vd, config.af_threshold)?;
     writeln!(
         w,
         r#"##FILTER=<ID=P{pval_lbl},Description="Not significant with p-value > {pval_lbl}">"#
@@ -2338,29 +2246,8 @@ pub(crate) fn print_paired_vcf_header_with_contigs<W: Write>(
     )?;
 
     // ports var2vcf_paired.pl:94-112
-    let format_lines = [
-        r#"##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">"#,
-        r#"##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Total Depth">"#,
-        r#"##FORMAT=<ID=VD,Number=1,Type=Integer,Description="Variant Depth">"#,
-        r#"##FORMAT=<ID=AD,Number=R,Type=Integer,Description="Allelic depths for the ref and alt alleles in the order listed">"#,
-        r#"##FORMAT=<ID=ALD,Number=2,Type=Integer,Description="Variant forward, reverse reads">"#,
-        r#"##FORMAT=<ID=RD,Number=2,Type=Integer,Description="Reference forward, reverse reads">"#,
-        r#"##FORMAT=<ID=AF,Number=A,Type=Float,Description="Allele Frequency">"#,
-        r#"##FORMAT=<ID=ADJAF,Number=1,Type=Float,Description="Adjusted AF for indels due to local realignment">"#,
-        r#"##FORMAT=<ID=BIAS,Number=2,Type=String,Description="Strand Bias Info">"#,
-        r#"##FORMAT=<ID=PMEAN,Number=1,Type=Float,Description="The mean distance to the nearest 5 or 3 prime read end (whichever is closer) in all reads that support the variant call">"#,
-        r#"##FORMAT=<ID=PSTD,Number=1,Type=Float,Description="Position STD in reads">"#,
-        r#"##FORMAT=<ID=QUAL,Number=1,Type=Float,Description="Mean quality score in reads">"#,
-        r#"##FORMAT=<ID=QSTD,Number=1,Type=Float,Description="Quality score STD in reads">"#,
-        r#"##FORMAT=<ID=SBF,Number=1,Type=Float,Description="Strand Bias Fisher p-value">"#,
-        r#"##FORMAT=<ID=ODDRATIO,Number=1,Type=Float,Description="Strand Bias Odds ratio">"#,
-        r#"##FORMAT=<ID=MQ,Number=1,Type=Integer,Description="Mean Mapping Quality">"#,
-        r#"##FORMAT=<ID=SN,Number=1,Type=Float,Description="Signal to noise">"#,
-        r#"##FORMAT=<ID=HIAF,Number=1,Type=Float,Description="Allele frequency using only high quality bases">"#,
-        r#"##FORMAT=<ID=NM,Number=1,Type=Float,Description="Mean mismatches in reads">"#,
-    ];
-    for line in &format_lines {
-        writeln!(w, "{}", line)?;
+    for line in COMMON_FORMAT_PREFIX_4.iter().chain(PAIRED_FORMAT_TAIL) {
+        writeln!(w, "{line}")?;
     }
 
     // ports var2vcf_paired.pl:43-49,115 — sample names

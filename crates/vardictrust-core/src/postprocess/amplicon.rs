@@ -334,6 +334,10 @@ pub(crate) fn amplicon_position_ref_stream(
 /// resolve through one `AmpliconCoverSweep`: O((P + A) log A) total, never
 /// O(P x A) predicates. Working memory is O(segment); positions emerge in
 /// ascending order.
+#[deprecated(
+    since = "1.0.10",
+    note = "use postprocess::amplicon::amplicon_post_process or amplicon_post_process_streaming"
+)]
 pub fn amplicon_position_stream(
     segment: &[Region],
 ) -> impl Iterator<Item = (i32, Vec<(usize, Region)>)> + '_ {
@@ -773,6 +777,7 @@ fn is_amp_bias_flag(good_variants_on_amp: &BTreeMap<usize, Vec<Variant>>) -> boo
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
     use crate::regions::AmpliconInfo;

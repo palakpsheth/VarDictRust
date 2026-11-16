@@ -78,8 +78,10 @@ static BEGIN_DIG_M: LazyLock<Regex> = LazyLock::new(|| crate::util::static_regex
 static DIG_S_DIG_M: LazyLock<Regex> = LazyLock::new(|| crate::util::static_regex(r"^(\d+)S(\d+)M"));
 static DIG_M_DIG_S_END: LazyLock<Regex> = LazyLock::new(|| crate::util::static_regex(r"\d+M\d+S$"));
 
+#[cfg(test)]
 static ALIGNED_LENGTH_MND: LazyLock<Regex> =
     LazyLock::new(|| crate::util::static_regex(r"(\d+)[MND]"));
+#[cfg(test)]
 static SOFT_CLIPPED: LazyLock<Regex> = LazyLock::new(|| crate::util::static_regex(r"(\d+)[MIS]"));
 static RE_START_S: LazyLock<Regex> = LazyLock::new(|| crate::util::static_regex(r"^\d+S"));
 static RE_END_2S: LazyLock<Regex> = LazyLock::new(|| crate::util::static_regex(r"\d\d+S$"));
@@ -89,6 +91,10 @@ static CIGAR_ELEMENT_PATTERN: LazyLock<Regex> =
 
 const LOWQUAL: u8 = 10;
 const SEED_2: usize = 12;
+/// Maximum intervening `M` span (`15 bp`) between adjacent indels eligible to be merged into a
+/// single complex `D`/`I` CIGAR event (`CigarModifier.java:530-690`, `M-DOCUMENTED-MAGIC`).
+/// Changing this threshold would alter multi-indel combination vs VarDictJava v1.8.3.
+const MAX_MULTI_INDEL_MID_SPAN: i32 = 15;
 
 /// Zero-allocation 256-bit set for counting distinct `u8` bases in inner loops.
 #[derive(Default, Clone, Copy)]
@@ -333,6 +339,7 @@ fn validate_cigar_element_lengths(s: &str) -> Result<(), crate::types::VardictEr
 }
 
 /// Sum all matches of a regex group 1 parsed as integers.
+#[cfg(test)]
 fn global_find_sum(re: &Regex, s: &str) -> i32 {
     let mut sum: i32 = 0;
     for cap in re.captures_iter(s) {
@@ -1870,7 +1877,7 @@ impl<'a> CigarModifier<'a> {
         istr: Option<&str>,
         mut flag: bool,
     ) -> bool {
-        if g3 <= 15 {
+        if g3 <= MAX_MULTI_INDEL_MID_SPAN {
             let mut dlen = g3;
             let mut ilen = g2.saturating_add(g3);
             if op == "I" {
@@ -1904,7 +1911,7 @@ impl<'a> CigarModifier<'a> {
         istr: Option<&str>,
         mut flag: bool,
     ) -> bool {
-        if g2 <= 15 {
+        if g2 <= MAX_MULTI_INDEL_MID_SPAN {
             let mut dlen = g1.saturating_add(g2);
             let mut ilen = g2;
             if op == "I" {
@@ -1941,9 +1948,13 @@ impl<'a> CigarModifier<'a> {
         g9: i32,
         op3: &str,
         g11: i32,
-        mut flag: bool,
+        flag: bool,
     ) -> bool {
-        let mut tslen = g5.saturating_add(g8);
+        let mid = g5.saturating_add(g8);
+        if mid > MAX_MULTI_INDEL_MID_SPAN {
+            return flag;
+        }
+        let mut tslen = mid;
         if op1 == "I" {
             tslen = tslen.saturating_add(g3);
         }
@@ -1954,7 +1965,7 @@ impl<'a> CigarModifier<'a> {
             tslen = tslen.saturating_add(g9);
         }
 
-        let mut dlen = g5.saturating_add(g8);
+        let mut dlen = mid;
         if op1 == "D" {
             dlen = dlen.saturating_add(g3);
         }
@@ -1965,15 +1976,15 @@ impl<'a> CigarModifier<'a> {
             dlen = dlen.saturating_add(g9);
         }
 
-        let mid = g5.saturating_add(g8);
         let mut refoff = self.position.saturating_add(g2);
         let mut rdoff = g2;
         let mut rdoff_corr = g2;
         let mut rm = g11;
 
         if !ov5.is_empty() {
-            refoff = refoff.saturating_add(global_find_sum(&ALIGNED_LENGTH_MND, ov5));
-            rdoff = rdoff.saturating_add(global_find_sum(&SOFT_CLIPPED, ov5));
+            let (mnd, mis) = sum_mnd_and_mis_prefix(ov5);
+            refoff = refoff.saturating_add(mnd);
+            rdoff = rdoff.saturating_add(mis);
         }
 
         let mut rn = 0;
@@ -2025,13 +2036,10 @@ impl<'a> CigarModifier<'a> {
             new_cigar = format!("{}{}D{}I{}M", new_cigar, dlen, tslen, rm);
         }
 
-        if mid <= 15 {
-            self.cigar_str = DIGM_D_DI_DIGM_D_DI_DIGM_DI_DIGM
-                .replace(&self.cigar_str, &new_cigar)
-                .into_owned();
-            flag = true;
-        }
-        flag
+        self.cigar_str = DIGM_D_DI_DIGM_D_DI_DIGM_DI_DIGM
+            .replace(&self.cigar_str, &new_cigar)
+            .into_owned();
+        true
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2045,23 +2053,27 @@ impl<'a> CigarModifier<'a> {
         g6: i32,
         g7: i32,
         g8: i32,
-        mut flag: bool,
+        flag: bool,
     ) -> bool {
-        let mut tslen = g4.saturating_add(g6);
+        let mid = g4.saturating_add(g6);
+        if mid > MAX_MULTI_INDEL_MID_SPAN {
+            return flag;
+        }
+        let mut tslen = mid;
         let mut dlen = g3
             .saturating_add(g4)
             .saturating_add(g5)
             .saturating_add(g6)
             .saturating_add(g7);
-        let mid = g4.saturating_add(g6);
         let mut refoff = self.position.saturating_add(g2);
         let mut rdoff = g2;
         let mut rdoff_corr = g2;
         let mut rm = g8;
 
         if !ov5.is_empty() {
-            refoff = refoff.saturating_add(global_find_sum(&ALIGNED_LENGTH_MND, ov5));
-            rdoff = rdoff.saturating_add(global_find_sum(&SOFT_CLIPPED, ov5));
+            let (mnd, mis) = sum_mnd_and_mis_prefix(ov5);
+            refoff = refoff.saturating_add(mnd);
+            rdoff = rdoff.saturating_add(mis);
         }
         let mut rn = 0;
         while rdoff.saturating_add(rn) < self.query_seq.len() as i32 {
@@ -2092,13 +2104,10 @@ impl<'a> CigarModifier<'a> {
             new_cigar = format!("{}{}D{}I{}M", new_cigar, dlen, tslen, rm);
         }
 
-        if mid <= 15 {
-            self.cigar_str = DM_DD_DM_DD_DM_DD_DM
-                .replace(&self.cigar_str, &new_cigar)
-                .into_owned();
-            flag = true;
-        }
-        flag
+        self.cigar_str = DM_DD_DM_DD_DM_DD_DM
+            .replace(&self.cigar_str, &new_cigar)
+            .into_owned();
+        true
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2112,19 +2121,23 @@ impl<'a> CigarModifier<'a> {
         g6: i32,
         g7: i32,
         g8: i32,
-        mut flag: bool,
+        flag: bool,
     ) -> bool {
-        let mut tslen = g4.saturating_add(g5).saturating_add(g6);
-        let mut dlen = g3.saturating_add(g4).saturating_add(g6).saturating_add(g7);
         let mid = g4.saturating_add(g6);
+        if mid > MAX_MULTI_INDEL_MID_SPAN {
+            return flag;
+        }
+        let mut tslen = mid.saturating_add(g5);
+        let mut dlen = g3.saturating_add(mid).saturating_add(g7);
         let mut refoff = self.position.saturating_add(g2);
         let mut rdoff = g2;
         let mut rdoff_corr = g2;
         let mut rm = g8;
 
         if !ov5.is_empty() {
-            refoff = refoff.saturating_add(global_find_sum(&ALIGNED_LENGTH_MND, ov5));
-            rdoff = rdoff.saturating_add(global_find_sum(&SOFT_CLIPPED, ov5));
+            let (mnd, mis) = sum_mnd_and_mis_prefix(ov5);
+            refoff = refoff.saturating_add(mnd);
+            rdoff = rdoff.saturating_add(mis);
         }
 
         let mut rn = 0;
@@ -2156,13 +2169,10 @@ impl<'a> CigarModifier<'a> {
             new_cigar = format!("{}{}D{}I{}M", new_cigar, dlen, tslen, rm);
         }
 
-        if mid <= 15 {
-            self.cigar_str = D_M_D_DD_M_D_I_D_M_D_DD_PRIM
-                .replace(&self.cigar_str, &new_cigar)
-                .into_owned();
-            flag = true;
-        }
-        flag
+        self.cigar_str = D_M_D_DD_M_D_I_D_M_D_DD_PRIM
+            .replace(&self.cigar_str, &new_cigar)
+            .into_owned();
+        true
     }
 
     fn begin_digit_m_number_ior_d_number_m(

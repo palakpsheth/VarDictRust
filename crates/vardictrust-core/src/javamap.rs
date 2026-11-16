@@ -110,6 +110,18 @@ pub struct Iter<'a, K, V> {
     curr: u32,
 }
 
+impl<K, V> Clone for Iter<'_, K, V> {
+    #[inline]
+    fn clone(&self) -> Self {
+        Self {
+            buckets: self.buckets,
+            nodes: self.nodes,
+            bucket_idx: self.bucket_idx,
+            curr: self.curr,
+        }
+    }
+}
+
 impl<'a, K, V> Iterator for Iter<'a, K, V> {
     type Item = (&'a K, &'a V);
 
@@ -652,6 +664,10 @@ where
     /// pre-lookup resize (`size > threshold`), `TreeNode.getTreeNode`/`putTreeVal` when
     /// bucket is treeified, head-prepend + `treeifyBin` at `binCount >= 7` (8th node)
     /// when plain list, and no post-insert resize.
+    #[deprecated(
+        since = "1.0.10",
+        note = "use JavaHashMap::get_or_put_with for get+put semantics; compute_if_absent emulates OpenJDK HashMap.computeIfAbsent"
+    )]
     pub fn compute_if_absent<F>(&mut self, key: K, f: F) -> &mut V
     where
         F: FnOnce(&K) -> V,
@@ -1868,582 +1884,21 @@ pub fn java_string_hash(s: &str) -> i32 {
 /// `TreeNode.treeify` / `putTreeVal` / `moveRootToFront` red-black tree ordering (`cap >= 64`),
 /// and `loHead`/`hiHead` (`TreeNode.split`) on resize.
 #[must_use]
-pub fn java_hashmap_key_order<'a, S, I>(keys_in_insertion_order: I) -> Vec<&'a S>
-where
-    S: AsRef<str> + 'a + ?Sized,
-    I: IntoIterator<Item = &'a S>,
-{
-    struct StrNode<'a, S: ?Sized> {
-        key: &'a S,
-        hash: i32,
-        next: u32,
-        prev: u32,
-        parent: u32,
-        left: u32,
-        right: u32,
-        red: bool,
-        is_tree: bool,
-    }
-
-    fn spread_str(s: &str) -> i32 {
-        let h = java_string_hash(s);
-        h ^ ((h as u32 >> 16) as i32)
-    }
-
-    fn cmp_str(h_k: i32, k: &str, h_p: i32, p: &str) -> i32 {
-        if h_p > h_k {
-            -1
-        } else if h_p < h_k {
-            1
-        } else {
-            match k.encode_utf16().cmp(p.encode_utf16()) {
-                std::cmp::Ordering::Less => -1,
-                std::cmp::Ordering::Equal => 0,
-                std::cmp::Ordering::Greater => 1,
-            }
+pub fn java_hashmap_key_order<'a, S: AsRef<str> + 'a + ?Sized, I: IntoIterator<Item = &'a S>>(
+    keys: I,
+) -> Vec<&'a S> {
+    let mut refs: Vec<&'a S> = Vec::new();
+    let mut map: JavaHashMap<&'a str, usize> = JavaHashMap::new();
+    for k in keys {
+        let next_idx = refs.len();
+        let stored = *map.get_or_put_with(k.as_ref(), || next_idx);
+        if stored == next_idx {
+            refs.push(k);
         }
     }
-
-    fn move_root_to_front<S: ?Sized>(
-        buckets: &mut [u32],
-        nodes: &mut [StrNode<'_, S>],
-        bucket_idx: usize,
-        root: u32,
-    ) {
-        let first = buckets.get(bucket_idx).copied().unwrap_or(NONE);
-        if root != NONE && root != first {
-            if let Some(b) = buckets.get_mut(bucket_idx) {
-                *b = root;
-            }
-            let (rp, rn) = nodes
-                .get(root as usize)
-                .map_or((NONE, NONE), |n| (n.prev, n.next));
-            if rn != NONE {
-                if let Some(rn_node) = nodes.get_mut(rn as usize) {
-                    rn_node.prev = rp;
-                }
-            }
-            if rp != NONE {
-                if let Some(rp_node) = nodes.get_mut(rp as usize) {
-                    rp_node.next = rn;
-                }
-            }
-            if first != NONE {
-                if let Some(first_node) = nodes.get_mut(first as usize) {
-                    first_node.prev = root;
-                }
-            }
-            if let Some(root_node) = nodes.get_mut(root as usize) {
-                root_node.next = first;
-                root_node.prev = NONE;
-            }
-        }
-    }
-
-    fn rotate_left<S: ?Sized>(nodes: &mut [StrNode<'_, S>], mut root: u32, p: u32) -> u32 {
-        if p != NONE {
-            let r = nodes.get(p as usize).map_or(NONE, |n| n.right);
-            if r != NONE {
-                let rl = nodes.get(r as usize).map_or(NONE, |n| n.left);
-                if let Some(pn) = nodes.get_mut(p as usize) {
-                    pn.right = rl;
-                }
-                if rl != NONE {
-                    if let Some(rln) = nodes.get_mut(rl as usize) {
-                        rln.parent = p;
-                    }
-                }
-                let pp = nodes.get(p as usize).map_or(NONE, |n| n.parent);
-                if let Some(rn) = nodes.get_mut(r as usize) {
-                    rn.parent = pp;
-                }
-                if pp == NONE {
-                    root = r;
-                    if let Some(rn) = nodes.get_mut(r as usize) {
-                        rn.red = false;
-                    }
-                } else if nodes.get(pp as usize).is_some_and(|n| n.left == p) {
-                    if let Some(ppn) = nodes.get_mut(pp as usize) {
-                        ppn.left = r;
-                    }
-                } else if let Some(ppn) = nodes.get_mut(pp as usize) {
-                    ppn.right = r;
-                }
-                if let Some(rn) = nodes.get_mut(r as usize) {
-                    rn.left = p;
-                }
-                if let Some(pn) = nodes.get_mut(p as usize) {
-                    pn.parent = r;
-                }
-            }
-        }
-        root
-    }
-
-    fn rotate_right<S: ?Sized>(nodes: &mut [StrNode<'_, S>], mut root: u32, p: u32) -> u32 {
-        if p != NONE {
-            let l = nodes.get(p as usize).map_or(NONE, |n| n.left);
-            if l != NONE {
-                let lr = nodes.get(l as usize).map_or(NONE, |n| n.right);
-                if let Some(pn) = nodes.get_mut(p as usize) {
-                    pn.left = lr;
-                }
-                if lr != NONE {
-                    if let Some(lrn) = nodes.get_mut(lr as usize) {
-                        lrn.parent = p;
-                    }
-                }
-                let pp = nodes.get(p as usize).map_or(NONE, |n| n.parent);
-                if let Some(ln) = nodes.get_mut(l as usize) {
-                    ln.parent = pp;
-                }
-                if pp == NONE {
-                    root = l;
-                    if let Some(ln) = nodes.get_mut(l as usize) {
-                        ln.red = false;
-                    }
-                } else if nodes.get(pp as usize).is_some_and(|n| n.right == p) {
-                    if let Some(ppn) = nodes.get_mut(pp as usize) {
-                        ppn.right = l;
-                    }
-                } else if let Some(ppn) = nodes.get_mut(pp as usize) {
-                    ppn.left = l;
-                }
-                if let Some(ln) = nodes.get_mut(l as usize) {
-                    ln.right = p;
-                }
-                if let Some(pn) = nodes.get_mut(p as usize) {
-                    pn.parent = l;
-                }
-            }
-        }
-        root
-    }
-
-    fn balance_insertion<S: ?Sized>(
-        nodes: &mut [StrNode<'_, S>],
-        mut root: u32,
-        mut x: u32,
-    ) -> u32 {
-        if let Some(xn) = nodes.get_mut(x as usize) {
-            xn.red = true;
-        }
-        loop {
-            let xp = nodes.get(x as usize).map_or(NONE, |n| n.parent);
-            if xp == NONE {
-                if let Some(xn) = nodes.get_mut(x as usize) {
-                    xn.red = false;
-                }
-                return x;
-            }
-            let (xp_red, xpp) = nodes
-                .get(xp as usize)
-                .map_or((false, NONE), |n| (n.red, n.parent));
-            if !xp_red || xpp == NONE {
-                return root;
-            }
-            let (xppl, xppr) = nodes
-                .get(xpp as usize)
-                .map_or((NONE, NONE), |n| (n.left, n.right));
-            if xp == xppl {
-                if xppr != NONE && nodes.get(xppr as usize).is_some_and(|n| n.red) {
-                    if let Some(n) = nodes.get_mut(xppr as usize) {
-                        n.red = false;
-                    }
-                    if let Some(n) = nodes.get_mut(xp as usize) {
-                        n.red = false;
-                    }
-                    if let Some(n) = nodes.get_mut(xpp as usize) {
-                        n.red = true;
-                    }
-                    x = xpp;
-                } else {
-                    if nodes.get(xp as usize).is_some_and(|n| x == n.right) {
-                        x = xp;
-                        root = rotate_left(nodes, root, x);
-                    }
-                    let xp = nodes.get(x as usize).map_or(NONE, |n| n.parent);
-                    let xpp = nodes.get(xp as usize).map_or(NONE, |n| n.parent);
-                    if xp != NONE {
-                        if let Some(n) = nodes.get_mut(xp as usize) {
-                            n.red = false;
-                        }
-                        if xpp != NONE {
-                            if let Some(n) = nodes.get_mut(xpp as usize) {
-                                n.red = true;
-                            }
-                            root = rotate_right(nodes, root, xpp);
-                        }
-                    }
-                }
-            } else if xppl != NONE && nodes.get(xppl as usize).is_some_and(|n| n.red) {
-                if let Some(n) = nodes.get_mut(xppl as usize) {
-                    n.red = false;
-                }
-                if let Some(n) = nodes.get_mut(xp as usize) {
-                    n.red = false;
-                }
-                if let Some(n) = nodes.get_mut(xpp as usize) {
-                    n.red = true;
-                }
-                x = xpp;
-            } else {
-                if nodes.get(xp as usize).is_some_and(|n| x == n.left) {
-                    x = xp;
-                    root = rotate_right(nodes, root, x);
-                }
-                let xp = nodes.get(x as usize).map_or(NONE, |n| n.parent);
-                let xpp = nodes.get(xp as usize).map_or(NONE, |n| n.parent);
-                if xp != NONE {
-                    if let Some(n) = nodes.get_mut(xp as usize) {
-                        n.red = false;
-                    }
-                    if xpp != NONE {
-                        if let Some(n) = nodes.get_mut(xpp as usize) {
-                            n.red = true;
-                        }
-                        root = rotate_left(nodes, root, xpp);
-                    }
-                }
-            }
-        }
-    }
-
-    fn treeify_bucket<S: AsRef<str> + ?Sized>(
-        buckets: &mut [u32],
-        nodes: &mut [StrNode<'_, S>],
-        bucket_idx: usize,
-    ) {
-        let head = buckets.get(bucket_idx).copied().unwrap_or(NONE);
-        if head == NONE {
-            return;
-        }
-        let mut prev = NONE;
-        let mut curr = head;
-        while curr != NONE {
-            let next = if let Some(n) = nodes.get_mut(curr as usize) {
-                n.prev = prev;
-                n.parent = NONE;
-                n.left = NONE;
-                n.right = NONE;
-                n.red = false;
-                n.is_tree = true;
-                n.next
-            } else {
-                break;
-            };
-            prev = curr;
-            curr = next;
-        }
-
-        let mut root = NONE;
-        let mut x = head;
-        while x != NONE {
-            let next = nodes.get(x as usize).map_or(NONE, |n| n.next);
-            if root == NONE {
-                if let Some(xn) = nodes.get_mut(x as usize) {
-                    xn.parent = NONE;
-                    xn.red = false;
-                }
-                root = x;
-            } else {
-                let (h, k_ref) = match nodes.get(x as usize) {
-                    Some(n) => (n.hash, n.key),
-                    None => break,
-                };
-                let mut p = root;
-                while let Some(n) = nodes.get(p as usize) {
-                    let (ph, pk_ref, pl, pr) = (n.hash, n.key, n.left, n.right);
-                    let dir = cmp_str(h, k_ref.as_ref(), ph, pk_ref.as_ref());
-                    let xp = p;
-                    p = if dir <= 0 { pl } else { pr };
-                    if p == NONE {
-                        if let Some(xn) = nodes.get_mut(x as usize) {
-                            xn.parent = xp;
-                        }
-                        if let Some(xpn) = nodes.get_mut(xp as usize) {
-                            if dir <= 0 {
-                                xpn.left = x;
-                            } else {
-                                xpn.right = x;
-                            }
-                        }
-                        root = balance_insertion(nodes, root, x);
-                        break;
-                    }
-                }
-            }
-            x = next;
-        }
-        move_root_to_front(buckets, nodes, bucket_idx, root);
-    }
-
-    fn resize<S: AsRef<str> + ?Sized>(
-        buckets: &mut Vec<u32>,
-        nodes: &mut [StrNode<'_, S>],
-        threshold: &mut usize,
-    ) {
-        let old_cap = buckets.len();
-        if old_cap == 0 {
-            *buckets = vec![NONE; DEFAULT_CAPACITY];
-            *threshold = (DEFAULT_CAPACITY as f32 * DEFAULT_LOAD_FACTOR) as usize;
-            return;
-        }
-        let Some((new_cap, new_thr)) = next_resize_plan(old_cap) else {
-            *threshold = i32::MAX as usize;
-            return;
-        };
-        *threshold = new_thr;
-        buckets.resize(new_cap, NONE);
-
-        for j in 0..old_cap {
-            let e = buckets.get(j).copied().unwrap_or(NONE);
-            if e == NONE {
-                continue;
-            }
-            if let Some(b) = buckets.get_mut(j) {
-                *b = NONE;
-            }
-            let is_tree = nodes.get(e as usize).is_some_and(|n| n.is_tree);
-            let mut lo_head = NONE;
-            let mut lo_tail = NONE;
-            let mut hi_head = NONE;
-            let mut hi_tail = NONE;
-            let mut lc = 0usize;
-            let mut hc = 0usize;
-            let mut curr = e;
-            while curr != NONE {
-                let (next, hash) = match nodes.get(curr as usize) {
-                    Some(n) => (n.next, n.hash as u32),
-                    None => break,
-                };
-                if (hash & (old_cap as u32)) == 0 {
-                    if let Some(cn) = nodes.get_mut(curr as usize) {
-                        cn.prev = lo_tail;
-                    }
-                    if lo_tail == NONE {
-                        lo_head = curr;
-                    } else if let Some(lt) = nodes.get_mut(lo_tail as usize) {
-                        lt.next = curr;
-                    }
-                    lo_tail = curr;
-                    lc += 1;
-                } else {
-                    if let Some(cn) = nodes.get_mut(curr as usize) {
-                        cn.prev = hi_tail;
-                    }
-                    if hi_tail == NONE {
-                        hi_head = curr;
-                    } else if let Some(ht) = nodes.get_mut(hi_tail as usize) {
-                        ht.next = curr;
-                    }
-                    hi_tail = curr;
-                    hc += 1;
-                }
-                curr = next;
-            }
-            if lo_tail != NONE {
-                if let Some(lt) = nodes.get_mut(lo_tail as usize) {
-                    lt.next = NONE;
-                }
-                if let Some(b) = buckets.get_mut(j) {
-                    *b = lo_head;
-                }
-                if is_tree {
-                    if lc <= UNTREEIFY_THRESHOLD {
-                        let mut c = lo_head;
-                        while c != NONE {
-                            let next = if let Some(n) = nodes.get_mut(c as usize) {
-                                n.is_tree = false;
-                                n.next
-                            } else {
-                                break;
-                            };
-                            c = next;
-                        }
-                    } else if hi_head != NONE {
-                        treeify_bucket(buckets, nodes, j);
-                    }
-                }
-            }
-            if hi_tail != NONE {
-                if let Some(ht) = nodes.get_mut(hi_tail as usize) {
-                    ht.next = NONE;
-                }
-                if let Some(b) = buckets.get_mut(j + old_cap) {
-                    *b = hi_head;
-                }
-                if is_tree {
-                    if hc <= UNTREEIFY_THRESHOLD {
-                        let mut c = hi_head;
-                        while c != NONE {
-                            let next = if let Some(n) = nodes.get_mut(c as usize) {
-                                n.is_tree = false;
-                                n.next
-                            } else {
-                                break;
-                            };
-                            c = next;
-                        }
-                    } else if lo_head != NONE {
-                        treeify_bucket(buckets, nodes, j + old_cap);
-                    }
-                }
-            }
-        }
-    }
-
-    let mut buckets: Vec<u32> = Vec::new();
-    let mut nodes: Vec<StrNode<'a, S>> = Vec::new();
-    let mut size = 0usize;
-    let mut threshold = 0usize;
-
-    for key in keys_in_insertion_order {
-        if buckets.is_empty() {
-            resize(&mut buckets, &mut nodes, &mut threshold);
-        }
-        let hash = spread_str(key.as_ref());
-        let n = buckets.len();
-        let idx = (hash as u32 as usize) & (n - 1);
-        let first = buckets.get(idx).copied().unwrap_or(NONE);
-
-        if first == NONE {
-            if nodes.len() >= (u32::MAX as usize) {
-                break;
-            }
-            let new_idx = nodes.len() as u32;
-            nodes.push(StrNode {
-                key,
-                hash,
-                next: NONE,
-                prev: NONE,
-                parent: NONE,
-                left: NONE,
-                right: NONE,
-                red: false,
-                is_tree: false,
-            });
-            if let Some(b) = buckets.get_mut(idx) {
-                *b = new_idx;
-            }
-        } else if nodes.get(first as usize).is_some_and(|nd| nd.is_tree) {
-            let mut p = first;
-            let mut dup = false;
-            let mut insert_at = (NONE, 0i32);
-            while let Some(nd) = nodes.get(p as usize) {
-                let (ph, pk_ref, pl, pr) = (nd.hash, nd.key, nd.left, nd.right);
-                if ph == hash && pk_ref.as_ref() == key.as_ref() {
-                    dup = true;
-                    break;
-                }
-                let dir = cmp_str(hash, key.as_ref(), ph, pk_ref.as_ref());
-                let xp = p;
-                p = if dir <= 0 { pl } else { pr };
-                if p == NONE {
-                    insert_at = (xp, dir);
-                    break;
-                }
-            }
-            if dup {
-                continue;
-            }
-            if nodes.len() >= (u32::MAX as usize) {
-                break;
-            }
-            let (xp, dir) = insert_at;
-            let xpn = nodes.get(xp as usize).map_or(NONE, |nd| nd.next);
-            let new_idx = nodes.len() as u32;
-            nodes.push(StrNode {
-                key,
-                hash,
-                next: xpn,
-                prev: xp,
-                parent: xp,
-                left: NONE,
-                right: NONE,
-                red: true,
-                is_tree: true,
-            });
-            if let Some(xpn_node) = nodes.get_mut(xp as usize) {
-                xpn_node.next = new_idx;
-                if dir <= 0 {
-                    xpn_node.left = new_idx;
-                } else {
-                    xpn_node.right = new_idx;
-                }
-            }
-            if xpn != NONE {
-                if let Some(next_node) = nodes.get_mut(xpn as usize) {
-                    next_node.prev = new_idx;
-                }
-            }
-            let root = balance_insertion(&mut nodes, first, new_idx);
-            move_root_to_front(&mut buckets, &mut nodes, idx, root);
-        } else {
-            let mut curr = first;
-            let mut prev = NONE;
-            let mut bin_len = 0usize;
-            let mut dup = false;
-            while curr != NONE {
-                let Some(nd) = nodes.get(curr as usize) else {
-                    break;
-                };
-                if nd.hash == hash && nd.key.as_ref() == key.as_ref() {
-                    dup = true;
-                    break;
-                }
-                prev = curr;
-                curr = nd.next;
-                bin_len += 1;
-            }
-            if dup {
-                continue;
-            }
-            if nodes.len() >= (u32::MAX as usize) {
-                break;
-            }
-            let new_idx = nodes.len() as u32;
-            nodes.push(StrNode {
-                key,
-                hash,
-                next: NONE,
-                prev,
-                parent: NONE,
-                left: NONE,
-                right: NONE,
-                red: false,
-                is_tree: false,
-            });
-            if let Some(pn) = nodes.get_mut(prev as usize) {
-                pn.next = new_idx;
-            }
-            if bin_len >= TREEIFY_THRESHOLD {
-                if buckets.len() < MIN_TREEIFY_CAPACITY {
-                    resize(&mut buckets, &mut nodes, &mut threshold);
-                } else {
-                    treeify_bucket(&mut buckets, &mut nodes, idx);
-                }
-            }
-        }
-
-        size += 1;
-        if size > threshold {
-            resize(&mut buckets, &mut nodes, &mut threshold);
-        }
-    }
-
-    let mut out = Vec::with_capacity(size);
-    for &head in &buckets {
-        let mut curr = head;
-        while curr != NONE {
-            let Some(nd) = nodes.get(curr as usize) else {
-                break;
-            };
-            out.push(nd.key);
-            curr = nd.next;
-        }
-    }
-    out
+    map.iter()
+        .filter_map(|(_, &i)| refs.get(i).copied())
+        .collect()
 }
 
 #[cfg(test)]
@@ -3080,6 +2535,10 @@ public class BatchJavaMapOracle {
     }
 
     #[test]
+    #[expect(
+        deprecated,
+        reason = "verifies OpenJDK HashMap.computeIfAbsent C-op oracle streams and 1.0.x SemVer shim"
+    )]
     fn javamap_arena_matches_legacy_on_random_op_streams() {
         use std::fmt::Write as _;
         fn next_u64(state: &mut u64) -> u64 {
@@ -3268,6 +2727,10 @@ public class BatchJavaMapOracle {
     }
 
     #[test]
+    #[expect(
+        deprecated,
+        reason = "replays OpenJDK HashMap.computeIfAbsent C-op traces in ops_1/ops_2/ops_treeify"
+    )]
     fn test_javamap_oracle() {
         let run_oracle = |script: &str, expected_keys: Option<&str>| {
             let mut m: JavaHashMap<i32, i32> = JavaHashMap::new();
@@ -3318,6 +2781,10 @@ public class BatchJavaMapOracle {
         assert!(m.treeified(), "ops_treeify must set treeified flag");
     }
 
+    #[expect(
+        deprecated,
+        reason = "replays OpenJDK HashMap.computeIfAbsent C-op traces in ops_put_threshold/ops_getput"
+    )]
     fn replay_oplog_dump_script(script: &str) {
         let mut m: JavaHashMap<i32, i32> = JavaHashMap::new();
         let mut step = 0i32;
@@ -3450,6 +2917,10 @@ public class BatchJavaMapOracle {
     }
 
     #[test]
+    #[expect(
+        deprecated,
+        reason = "verifies OpenJDK HashMap.computeIfAbsent 8-node treeify threshold"
+    )]
     fn cia_treeify_threshold_is_eight_nodes() {
         let mut m: JavaHashMap<i32, i32> = JavaHashMap::new();
         for i in 0..8 {
@@ -3647,6 +3118,10 @@ public class BatchJavaMapOracle {
     }
 
     #[test]
+    #[expect(
+        deprecated,
+        reason = "replays OpenJDK HashMap.computeIfAbsent C-op trace in ops_treeify"
+    )]
     fn op_log_matches_java_oracle_treeify() {
         let ops_treeify = include_str!("../testdata/javamap/ops_treeify.txt");
         let mut m: JavaHashMap<i32, i32> = JavaHashMap::new();
@@ -3781,9 +3256,9 @@ public class BatchJavaMapOracle {
         let k2: Vec<(i32, i32)> = without_reserve.into_iter().collect();
         assert_eq!(k1, k2);
 
-        // Opt-in new_key_log captures absent-key allocations across insert / get_or_put_with /
-        // compute_if_absent (including free_head reuse and across resize), ignores present-key
-        // updates, and does not propagate across Clone.
+        // Opt-in new_key_log captures absent-key allocations across insert / get_or_put_with
+        // (including free_head reuse and across resize), ignores present-key updates, and does
+        // not propagate across Clone.
         let mut logged: JavaHashMap<i32, i32> = JavaHashMap::new();
         assert!(logged.take_new_key_log().is_empty());
         logged.insert(10, 1);
@@ -3795,8 +3270,8 @@ public class BatchJavaMapOracle {
         logged.enable_new_key_log(); // idempotent -> preserves prior log entries
         logged.get_or_put_with(20, || 99); // existing -> not logged
         logged.get_or_put_with(30, || 4); // new -> logged
-        logged.compute_if_absent(30, |_| 88); // existing -> not logged
-        logged.compute_if_absent(40, |_| 5); // new -> logged
+        logged.get_or_put_with(30, || 88); // existing -> not logged
+        logged.get_or_put_with(40, || 5); // new -> logged
         assert_eq!(logged.remove(&20), Some(3));
         logged.get_or_put_with(50, || 6); // reuses free_head -> still logged!
         for k in 100..120 {
@@ -3835,7 +3310,7 @@ public class BatchJavaMapOracle {
             let colliding = c * 1024 + 7;
             map.insert(colliding, colliding);
         }
-        map.compute_if_absent(8 * 1024 + 7, |&k| k);
+        map.get_or_put_with(8 * 1024 + 7, || 8 * 1024 + 7);
         assert_eq!(map.remove(&250), Some(2500));
         map.insert(1_048_575, 1);
         map.insert(1_048_576, 2);
@@ -3984,6 +3459,10 @@ public class BatchJavaMapOracle {
     }
 
     #[test]
+    #[expect(
+        deprecated,
+        reason = "verifies OpenJDK HashMap.computeIfAbsent tree-bin pre-resize and putTreeVal parity"
+    )]
     fn tree_bin_compute_if_absent_matches_openjdk() {
         let mut cia: JavaHashMap<i32, i32> = JavaHashMap::new();
         for i in 0..10 {
@@ -4462,5 +3941,55 @@ public class BatchJavaMapOracle {
             first_five_after,
             vec![268_377_547, 134_157_771, 67_047_883, 33_493_963, 16_716_491]
         );
+    }
+
+    #[test]
+    fn iter_clone_without_clone_value_and_duplicate_key_order() {
+        #[derive(Debug, PartialEq, Eq)]
+        struct NonCloneVal(i32);
+
+        let nodes = [
+            Node {
+                key: 10,
+                val: NonCloneVal(100),
+                next: 2,
+            },
+            Node {
+                key: 20,
+                val: NonCloneVal(200),
+                next: NONE,
+            },
+            Node {
+                key: 26,
+                val: NonCloneVal(260),
+                next: NONE,
+            },
+        ];
+        let buckets = [NONE, 0, 1, NONE];
+        let mut iter: Iter<'_, i32, NonCloneVal> = Iter {
+            buckets: &buckets,
+            nodes: &nodes,
+            bucket_idx: 0,
+            curr: NONE,
+        };
+        assert_eq!(iter.next(), Some((&10, &NonCloneVal(100))));
+        let cloned = iter.clone();
+        let rest_orig: Vec<(i32, i32)> = iter.map(|(&k, v)| (k, v.0)).collect();
+        let rest_cloned: Vec<(i32, i32)> = cloned.map(|(&k, v)| (k, v.0)).collect();
+        assert_eq!(rest_orig, vec![(26, 260), (20, 200)]);
+        assert_eq!(rest_orig, rest_cloned);
+
+        // Verify duplicate keys retain first-seen reference identity and unsized `str` works:
+        let s1 = String::from("chr1");
+        let s2 = String::from("chrX");
+        let s1_dup = String::from("chr1");
+        let input = [&s1, &s2, &s1_dup];
+        let ordered = java_hashmap_key_order(input.iter().copied());
+        assert_eq!(ordered.len(), 2);
+        assert!(std::ptr::eq(ordered[0], &s2));
+        assert!(std::ptr::eq(ordered[1], &s1));
+
+        let str_refs: [&str; 4] = ["chr1", "chrX", "chr1", "chrX"];
+        assert_eq!(java_hashmap_key_order(str_refs), vec!["chrX", "chr1"]);
     }
 }

@@ -1,4 +1,8 @@
 #![cfg(target_os = "linux")]
+#![expect(
+    deprecated,
+    reason = "exercises public 1.0.x SemVer streaming helper amplicon_position_stream"
+)]
 //! -p streaming memory pin (audit-amplicon-expand follow-up).
 //!
 //! The -p amplicon path emits a (null/ref) row at EVERY insert base, so the

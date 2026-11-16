@@ -76,7 +76,18 @@ fn find_conseq_with(
     let mut seq = Vec::with_capacity(soft_clip.nt.len());
     let mut flag = false;
 
+    let mut seq_outer = soft_clip.seq.iter().peekable();
     for (&position_in_sclip, nv) in &soft_clip.nt {
+        while seq_outer
+            .peek()
+            .is_some_and(|(&seq_pos, _)| seq_pos < position_in_sclip)
+        {
+            seq_outer.next();
+        }
+        let mut seq_inner = seq_outer
+            .next_if(|(&seq_pos, _)| seq_pos == position_in_sclip)
+            .map(|(_, m)| m.iter().peekable());
+
         let mut max_count: i32 = 0;
         let mut max_quality = 0.0;
         let mut chosen_base: Option<u8> = None;
@@ -85,11 +96,13 @@ fn find_conseq_with(
         for (&current_base, &current_count) in nv {
             total_count = total_count.saturating_add(current_count);
 
-            let has_seq_qual = soft_clip
-                .seq
-                .get(&position_in_sclip)
-                .and_then(|m| m.get(&current_base));
-            let mean_qual = has_seq_qual.map(|v| v.qmean).unwrap_or(0.0);
+            let has_seq_qual = seq_inner.as_mut().and_then(|it| {
+                while it.peek().is_some_and(|(&b, _)| b < current_base) {
+                    it.next();
+                }
+                it.next_if(|(&b, _)| b == current_base).map(|(_, v)| v)
+            });
+            let mean_qual = has_seq_qual.map_or(0.0, |v| v.qmean);
 
             if current_count > max_count || (has_seq_qual.is_some() && mean_qual > max_quality) {
                 max_count = current_count;
@@ -175,6 +188,7 @@ fn find_conseq_with(
 /// Consensus is called if the matched nucleotides are >90% of all softly clipped nucleotides.
 ///
 /// Ports `VariationUtils.findconseq`.
+#[deprecated(since = "1.0.10", note = "use variations::util::find_conseq_sets")]
 pub fn find_conseq(
     soft_clip: &mut Sclip,
     dir: i32,
@@ -618,6 +632,7 @@ pub(crate) mod tests {
     }
 
     #[test]
+    #[expect(deprecated, reason = "verifies 1.0.x SemVer shim find_conseq")]
     fn test_findconseq() {
         let mut sc = Sclip::new();
         // nv map at position 0: 'A' -> 10, 'T' -> 1
@@ -653,6 +668,7 @@ pub(crate) mod tests {
     }
 
     #[test]
+    #[expect(deprecated, reason = "verifies 1.0.x SemVer shim find_conseq")]
     fn test_findconseq_rejected() {
         let mut sc = Sclip::new();
         let mut nt0 = BTreeMap::new();
@@ -668,6 +684,7 @@ pub(crate) mod tests {
     }
 
     #[test]
+    #[expect(deprecated, reason = "verifies 1.0.x SemVer shim find_conseq")]
     fn find_conseq_caches_empty_consensus_without_recomputing() {
         let mut sc = Sclip::new();
         let mut nt0 = BTreeMap::new();
@@ -834,5 +851,47 @@ pub(crate) mod tests {
         adj_cnt(&mut dst, &add, None);
         assert_eq!(dst.cnt, i32::MAX);
         assert_eq!(dst.hicnt, i32::MAX);
+    }
+
+    #[test]
+    fn find_conseq_sets_lockstep_matches_sparse_interleaved_seq_qualities() {
+        let mut sc = Sclip::new();
+        // Position -1 in `seq` only (before any `nt` key): must be skipped cleanly.
+        let mut seq_neg = BTreeMap::new();
+        let mut v_neg = Variation::new();
+        v_neg.qmean = 99.0;
+        seq_neg.insert(b'A', v_neg);
+        sc.seq.insert(-1, seq_neg);
+
+        // Position 0: equal counts A=6, G=6; `seq` has 'C' (absent from `nt`), 'A' (qmean=25), 'G' (qmean=32 -> wins via mean_qual > max_quality), 'T' (absent from `nt`).
+        let mut nt0 = BTreeMap::new();
+        nt0.insert(b'A', 6);
+        nt0.insert(b'G', 6);
+        sc.nt.insert(0, nt0);
+        let mut seq0 = BTreeMap::new();
+        for (b, q) in [(b'A', 25.0), (b'C', 90.0), (b'G', 32.0), (b'T', 95.0)] {
+            let mut v = Variation::new();
+            v.qmean = q;
+            seq0.insert(b, v);
+        }
+        sc.seq.insert(0, seq0);
+
+        // Positions 1..=5: clean 'T' with count 20 so overall match_cnt / total > 0.9; position 3 has no `seq` entry at all (`has_seq_qual == None`).
+        for pos in 1..=5 {
+            let mut nt = BTreeMap::new();
+            nt.insert(b'T', 20);
+            sc.nt.insert(pos, nt);
+            if pos != 3 {
+                let mut seq_m = BTreeMap::new();
+                let mut v = Variation::new();
+                v.qmean = 30.0;
+                seq_m.insert(b'T', v);
+                sc.seq.insert(pos, seq_m);
+            }
+        }
+
+        let adapt = crate::realign::AdaptorSet::default();
+        let consensus = find_conseq_sets(&mut sc, 0, &adapt, &adapt);
+        assert_eq!(consensus, b"GTTTTT");
     }
 }
