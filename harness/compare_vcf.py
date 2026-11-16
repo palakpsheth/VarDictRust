@@ -3,6 +3,7 @@
 Exact: CHROM/POS/REF/ALT, FILTER, INFO key-set, FORMAT key-set, per-sample non-numeric values (incl GT).
 Tolerant: numeric values within --eps (raw float comparison). Records aligned by key -> order ignored.
 Exit 0=MATCH, 1=MISMATCH."""
+from __future__ import annotations
 import sys, argparse, math, re
 from collections import defaultdict
 
@@ -22,15 +23,25 @@ def kv(field):
         k, sep, v = p.partition("="); d[k] = v if sep else True
     return d
 
-def load_header(path):
-    hdr = []
+def load_vcf(path: str) -> tuple[list[str], list[list[str]]]:
+    hdr, out = [], []
+    in_header = True
     with open(path) as fh:
-        for ln in fh:
+        for n, raw in enumerate(fh, 1):
+            ln = raw.rstrip("\r\n")
+            if not ln.strip():
+                continue
             if ln.startswith("#"):
-                hdr.append(ln.rstrip("\r\n"))
-            elif ln.strip():
-                break
-    return hdr
+                if not in_header:
+                    print(f"MISMATCH: stray header line after data rows {path}:{n}: {ln[:80]!r}"); sys.exit(1)
+                hdr.append(ln)
+            else:
+                in_header = False
+                cols = ln.split("\t")
+                if len(cols) < 8 or len(cols) == 9:
+                    print(f"MISMATCH: malformed VCF row {path}:{n} ({len(cols)} cols): {ln.strip()[:80]!r}"); sys.exit(1)
+                out.append(cols)
+    return hdr, out
 
 def compare_headers(j_hdr, r_hdr, errs):
     vol_pat = re.compile(r"^##(fileDate|source)=")
@@ -47,17 +58,6 @@ def compare_headers(j_hdr, r_hdr, errs):
             first_extra = fj[min(len(fj), len(fr))] if len(fj) > len(fr) else fr[min(len(fj), len(fr))]
             errs.append(f"HEADER line count: java={len(fj)} != rust={len(fr)} (first extra {extra}: {first_extra!r})")
 
-def load(path):
-    out = []
-    with open(path) as fh:
-        for n, ln in enumerate(fh, 1):
-            if ln.strip() and not ln.startswith("#"):
-                cols = ln.rstrip("\n").split("\t")
-                if len(cols) < 8:
-                    print(f"MISMATCH: malformed VCF row {path}:{n}: {ln.strip()[:80]!r}"); sys.exit(1)
-                out.append(cols)
-    return out
-
 def keyof(r): return (r[0], r[1], r[3], r[4])  # CHROM, POS, REF, ALT
 
 def group(rows):
@@ -68,30 +68,40 @@ def group(rows):
     return g
 
 def compare_pair(k, j, r, eps, errs, strict=None):
-    if j == r: return
     w = f"{k[0]}:{k[1]} {k[2]}>{k[3]}"
-    if j[6] != r[6]: errs.append(f"{w} FILTER: {j[6]!r} != {r[6]!r}")
-    if not eq(j[5], r[5], eps): errs.append(f"{w} QUAL: {j[5]!r} != {r[5]!r}")
-    elif strict is not None and j[5] != r[5]: strict.append(f"{w} QUAL: {j[5]!r} vs {r[5]!r}")
-    if j[7] != r[7]:
-        ij, ir = kv(j[7]), kv(r[7])
-        if set(ij) != set(ir):
-            errs.append(f"{w} INFO keys: only-java={sorted(set(ij)-set(ir))} only-rust={sorted(set(ir)-set(ij))}")
-        else:
-            for key in ij:
-                if ij[key] is True or ir[key] is True:
-                    if ij[key] != ir[key]: errs.append(f"{w} INFO {key}: {ij[key]!r} != {ir[key]!r}")
-                elif not eq(str(ij[key]), str(ir[key]), eps):
-                    errs.append(f"{w} INFO {key}: {ij[key]!r} != {ir[key]!r}")
-                elif strict is not None and str(ij[key]) != str(ir[key]):
-                    strict.append(f"{w} INFO {key}: {ij[key]!r} vs {ir[key]!r}")
-    if len(j) > 9 and len(r) > 9 and j[8:] != r[8:]:
+    if len(j) != len(r) or len(j) == 9:
+        errs.append(f"{w} column count: java={len(j)} != rust={len(r)}")
+        return
+    if j != r:
+        if j[6] != r[6]: errs.append(f"{w} FILTER: {j[6]!r} != {r[6]!r}")
+        if not eq(j[5], r[5], eps): errs.append(f"{w} QUAL: {j[5]!r} != {r[5]!r}")
+        elif strict is not None and j[5] != r[5]: strict.append(f"{w} QUAL: {j[5]!r} vs {r[5]!r}")
+        if j[7] != r[7]:
+            ij, ir = kv(j[7]), kv(r[7])
+            if set(ij) != set(ir):
+                errs.append(f"{w} INFO keys: only-java={sorted(set(ij)-set(ir))} only-rust={sorted(set(ir)-set(ij))}")
+            else:
+                for key in ij:
+                    if ij[key] is True or ir[key] is True:
+                        if ij[key] != ir[key]: errs.append(f"{w} INFO {key}: {ij[key]!r} != {ir[key]!r}")
+                    elif not eq(str(ij[key]), str(ir[key]), eps):
+                        errs.append(f"{w} INFO {key}: {ij[key]!r} != {ir[key]!r}")
+                    elif strict is not None and str(ij[key]) != str(ir[key]):
+                        strict.append(f"{w} INFO {key}: {ij[key]!r} vs {ir[key]!r}")
+    if len(j) > 9:
         if j[8] != r[8]: errs.append(f"{w} FORMAT keys: {j[8]!r} != {r[8]!r}")
         else:
             fkeys = j[8].split(":")
-            for si in range(9, min(len(j), len(r))):
+            for si in range(9, len(j)):
+                jv, rv = j[si].split(":"), r[si].split(":")
+                if len(jv) != len(fkeys) or len(rv) != len(fkeys):
+                    errs.append(
+                        f"{w} sample{si-9} FORMAT subfield count: "
+                        f"keys={len(fkeys)} ({j[8]!r}), java={len(jv)}, rust={len(rv)}"
+                    )
+                    continue
                 if j[si] == r[si]: continue
-                for key, xj, xr in zip(fkeys, j[si].split(":"), r[si].split(":")):
+                for key, xj, xr in zip(fkeys, jv, rv):
                     if not eq(xj, xr, eps): errs.append(f"{w} sample{si-9} {key}: {xj!r} != {xr!r}")
                     elif strict is not None and xj != xr: strict.append(f"{w} sample{si-9} {key}: {xj!r} vs {xr!r}")
 
@@ -101,8 +111,8 @@ def main():
     ap.add_argument("--min-variants", type=int, default=0)
     ap.add_argument("--strict-bytes", action="store_true")
     a = ap.parse_args()
-    JH, RH = load_header(a.java), load_header(a.rust)
-    LJ, LR = load(a.java), load(a.rust)
+    JH, LJ = load_vcf(a.java)
+    RH, LR = load_vcf(a.rust)
     J, R = group(LJ), group(LR)
     errs = []
     strict = [] if a.strict_bytes else None

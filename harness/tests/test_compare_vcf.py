@@ -71,4 +71,77 @@ class T(unittest.TestCase):
             self.assertEqual(p_nostrict.returncode, 0)
             p_strict = subprocess.run([sys.executable, "harness/compare_var.py", "--strict-bytes", j, r], capture_output=True, text=True)
             self.assertEqual(p_strict.returncode, 1, f"expected strict-bytes failure in compare_var.py for {val_a} vs {val_b}")
+
+    def test_truncated_format_subfield(self):
+        j_row = "chr1\t10\t.\tA\tT\t30\tPASS\tDP=100;AF=0.5\tGT:DP:VD\t0/1:100:50\n"
+        r_row = "chr1\t10\t.\tA\tT\t30\tPASS\tDP=100;AF=0.5\tGT:DP:VD\t0/1:100\n"
+        rc, out = run([j_row], [r_row])
+        self.assertNotEqual(rc, 0)
+        self.assertIn("MISMATCH", out)
+
+    def test_extra_format_subfield(self):
+        j_row = "chr1\t10\t.\tA\tT\t30\tPASS\tDP=100;AF=0.5\tGT:DP\t0/1:100\n"
+        r_row = "chr1\t10\t.\tA\tT\t30\tPASS\tDP=100;AF=0.5\tGT:DP\t0/1:100:50\n"
+        rc, out = run([j_row], [r_row])
+        self.assertNotEqual(rc, 0)
+        self.assertIn("MISMATCH", out)
+
+    def test_dropped_sample_column(self):
+        paired_hdr = "##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tTUMOR\tNORMAL\n"
+        j_paired = "chr1\t10\t.\tA\tT\t30\tPASS\tDP=100\tGT:DP\t0/1:100\t0/0:90\n"
+        r_dropped_normal = "chr1\t10\t.\tA\tT\t30\tPASS\tDP=100\tGT:DP\t0/1:100\n"
+        rc1, out1 = run_custom(paired_hdr, paired_hdr, [j_paired], [r_dropped_normal])
+        self.assertNotEqual(rc1, 0)
+        self.assertIn("MISMATCH", out1)
+
+        r_eight_cols = "chr1\t10\t.\tA\tT\t30\tPASS\tDP=100\n"
+        rc2, out2 = run([rec(10)], [r_eight_cols])
+        self.assertNotEqual(rc2, 0)
+        self.assertIn("MISMATCH", out2)
+
+    def test_malformed_nine_col_row(self):
+        nine_col = "chr1\t10\t.\tA\tT\t30\tPASS\tDP=100\tGT:DP\n"
+        rc, out = run([nine_col], [nine_col])
+        self.assertNotEqual(rc, 0)
+        self.assertIn("MISMATCH", out)
+
+    def test_stray_header_after_data_rows(self):
+        rc, out = run([rec(10), "#stray_header\n", rec(20)], [rec(10), rec(20)])
+        self.assertNotEqual(rc, 0)
+        self.assertIn("MISMATCH", out)
+
+    def test_streaming_fifo_single_pass(self):
+        import shutil, threading
+        d = tempfile.mkdtemp()
+        try:
+            j_fifo = os.path.join(d, "j.fifo")
+            r_fifo = os.path.join(d, "r.fifo")
+            os.mkfifo(j_fifo)
+            os.mkfifo(r_fifo)
+            payload = HDR + rec(1) + rec(2)
+
+            def writer(path):
+                try:
+                    with open(path, "w") as fh:
+                        fh.write(payload)
+                except BrokenPipeError:
+                    pass
+
+            tj = threading.Thread(target=writer, args=(j_fifo,), daemon=True)
+            tr = threading.Thread(target=writer, args=(r_fifo,), daemon=True)
+            tj.start()
+            tr.start()
+            p = subprocess.run(
+                [sys.executable, "harness/compare_vcf.py", "--min-variants", "2", j_fifo, r_fifo],
+                capture_output=True,
+                text=True,
+                timeout=3,
+            )
+            tj.join(timeout=1)
+            tr.join(timeout=1)
+            self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+            self.assertIn("MATCH (2 variants)", p.stdout)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
 if __name__ == "__main__": unittest.main()
