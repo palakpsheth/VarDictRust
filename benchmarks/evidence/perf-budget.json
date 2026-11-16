@@ -10,7 +10,7 @@
   ],
   "compare_head": [],
   "cpp_time": null,
-  "date": "2026-11-16T01:49:54-08:00",
+  "date": "2026-11-16T02:54:25-08:00",
   "extra": {
     "budget": "rust<=java wall and peak RSS (A9)",
     "pass": true,
@@ -24,8 +24,8 @@
         "java_rss_kb": 115200,
         "java_wall_s": 3.04,
         "pass": true,
-        "rss_ratio": 0.1028,
-        "rust_rss_kb": 11840,
+        "rss_ratio": 0.1014,
+        "rust_rss_kb": 11680,
         "rust_wall_s": 0.04,
         "wall_ratio": 0.0132
       },
@@ -38,22 +38,22 @@
         "java_rss_kb": 4079420,
         "java_wall_s": 160.54,
         "pass": true,
-        "rss_ratio": 0.0596,
-        "rust_rss_kb": 243216,
-        "rust_wall_s": 18.51,
-        "wall_ratio": 0.1153
+        "rss_ratio": 0.0704,
+        "rust_rss_kb": 287312,
+        "rust_wall_s": 10.51,
+        "wall_ratio": 0.0655
       },
       "hg008-cram-twin": {
-        "cram_bam_wall_ratio": 1.8491,
+        "cram_bam_wall_ratio": 2.299,
         "evidence_fingerprint": "68308cfcd2303ad1",
         "pass": true,
         "result": "MATCH",
-        "rust_bam_wall_s": 18.16,
-        "rust_cram_rss_kb": 1743320,
-        "rust_cram_wall_s": 33.58,
+        "rust_bam_wall_s": 12.71,
+        "rust_cram_rss_kb": 1653188,
+        "rust_cram_wall_s": 29.22,
         "rust_exit": 0,
-        "rust_rss_kb": 230004,
-        "rust_wall_s": 18.16
+        "rust_rss_kb": 246436,
+        "rust_wall_s": 12.71
       },
       "hg008-tier2": {
         "cpp_maxrss_kb": 310920,
@@ -64,10 +64,10 @@
         "java_rss_kb": 3191168,
         "java_wall_s": 107.0,
         "pass": true,
-        "rss_ratio": 0.0693,
-        "rust_rss_kb": 221144,
-        "rust_wall_s": 28.89,
-        "wall_ratio": 0.27
+        "rss_ratio": 0.0754,
+        "rust_rss_kb": 240528,
+        "rust_wall_s": 11.9,
+        "wall_ratio": 0.1112
       },
       "seqc2-exome-tier2": {
         "cpp_maxrss_kb": 2252120,
@@ -78,15 +78,15 @@
         "java_rss_kb": 3345416,
         "java_wall_s": 5843.0,
         "pass": true,
-        "rss_ratio": 0.1373,
-        "rust_rss_kb": 459352,
-        "rust_wall_s": 570.73,
-        "wall_ratio": 0.0977
+        "rss_ratio": 0.1418,
+        "rust_rss_kb": 474300,
+        "rust_wall_s": 205.43,
+        "wall_ratio": 0.0352
       }
     }
   },
   "fingerprint": "68308cfcd2303ad1",
-  "head": "6d8d56e73f5c7a7a42dd3725453f109d14986f58",
+  "head": "abbbd41c9820ddcaf7a184164da2062015e29a6c",
   "inputs": [],
   "java_time": null,
   "n_variants": null,
