@@ -42,3 +42,10 @@ path = "fuzz_targets/fuzz_sam_aux.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "fuzz_parse_and_realign"
+path = "fuzz_targets/fuzz_parse_and_realign.rs"
+test = false
+doc = false
+bench = false

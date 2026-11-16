@@ -8,6 +8,63 @@ use crate::variations::{
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
+/// Maximum `realignlgins30` 3'-soft-clip window size (`1,024`) sorted into the scratch buffer
+/// before falling back to caching a once-per-call sorted copy of `tmp3_by_pos` (`AR-07`).
+const REALIGN_LGINS30_SORT_WINDOW_MAX: usize = 1_024;
+
+#[cfg(test)]
+thread_local! {
+    static REALIGN_LGINS30_WINDOW_ELEMS_SUM: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static REALIGN_LGINS30_CANDIDATE_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static REALIGN_LGINS30_DENSE_FALLBACKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn reset_realign_lgins30_window_stats() {
+    REALIGN_LGINS30_WINDOW_ELEMS_SUM.with(|c| c.set(0));
+    REALIGN_LGINS30_CANDIDATE_STEPS.with(|c| c.set(0));
+    REALIGN_LGINS30_DENSE_FALLBACKS.with(|c| c.set(0));
+}
+
+#[cfg(test)]
+fn realign_lgins30_window_stats() -> (usize, usize, usize) {
+    (
+        REALIGN_LGINS30_WINDOW_ELEMS_SUM.with(std::cell::Cell::get),
+        REALIGN_LGINS30_CANDIDATE_STEPS.with(std::cell::Cell::get),
+        REALIGN_LGINS30_DENSE_FALLBACKS.with(std::cell::Cell::get),
+    )
+}
+
+#[inline]
+pub(crate) fn btree_range_inclusive<K: Ord + Copy, V>(
+    map: &BTreeMap<K, V>,
+    lo: K,
+    hi: K,
+) -> impl Iterator<Item = (&K, &V)> {
+    if lo <= hi {
+        Some(map.range(lo..=hi))
+    } else {
+        None
+    }
+    .into_iter()
+    .flatten()
+}
+
+#[inline]
+pub(crate) fn btree_range_mut_inclusive<K: Ord + Copy, V>(
+    map: &mut BTreeMap<K, V>,
+    lo: K,
+    hi: K,
+) -> impl Iterator<Item = (&K, &mut V)> {
+    if lo <= hi {
+        Some(map.range_mut(lo..=hi))
+    } else {
+        None
+    }
+    .into_iter()
+    .flatten()
+}
+
 /// Result of local insertion adjustment.
 pub struct BaseInsertion {
     pub base_insert: i32,
@@ -2643,10 +2700,7 @@ pub fn realignlgdel(
     // Work on 5' clipped reads
 
     let mut tmp5 = Vec::new();
-    for (&p, sc) in soft_clips_5_end.iter() {
-        if p < min_clip_pos || p > max_clip_pos {
-            continue;
-        }
+    for (&p, sc) in btree_range_inclusive(soft_clips_5_end, min_clip_pos, max_clip_pos) {
         tmp5.push((p, sc.variation.cnt));
     }
     tmp5.sort_by(|a, b| {
@@ -3079,10 +3133,7 @@ pub fn realignlgdel(
 
     // Work on 3' clipped reads
     let mut tmp3 = Vec::new();
-    for (&p, sc) in soft_clips_3_end.iter() {
-        if p < min_clip_pos || p > max_clip_pos {
-            continue;
-        }
+    for (&p, sc) in btree_range_inclusive(soft_clips_3_end, min_clip_pos, max_clip_pos) {
         tmp3.push((p, sc.variation.cnt));
     }
     tmp3.sort_by(|a, b| {
@@ -3432,10 +3483,7 @@ pub fn realignlgins30(
     let max_clip_pos = region_end_i32.saturating_add(extension);
 
     let mut tmp5 = Vec::new();
-    for (&p, sc) in soft_clips_5_end.iter() {
-        if p < min_clip_pos || p > max_clip_pos {
-            continue;
-        }
+    for (&p, sc) in btree_range_inclusive(soft_clips_5_end, min_clip_pos, max_clip_pos) {
         tmp5.push((p, sc.variation.cnt));
     }
     tmp5.sort_by(|a, b| {
@@ -3447,21 +3495,12 @@ pub fn realignlgins30(
         }
     });
 
-    let mut tmp3 = Vec::new();
-    for (&p, sc) in soft_clips_3_end.iter() {
-        if p < min_clip_pos || p > max_clip_pos {
-            continue;
-        }
-        tmp3.push((p, sc.variation.cnt));
+    let mut tmp3_by_pos = Vec::new();
+    for (&p, sc) in btree_range_inclusive(soft_clips_3_end, min_clip_pos, max_clip_pos) {
+        tmp3_by_pos.push((p, sc.variation.cnt));
     }
-    tmp3.sort_by(|a, b| {
-        let cmp_cnt = b.1.cmp(&a.1);
-        if cmp_cnt != std::cmp::Ordering::Equal {
-            cmp_cnt
-        } else {
-            a.0.cmp(&b.0)
-        }
-    });
+    let mut tmp3_sorted: Option<Vec<(i32, i32)>> = None;
+    let mut win_buf: Vec<(i32, i32)> = Vec::new();
 
     let max_dist_53 = (max_read_length as f64 * 2.5) as i32;
     let max_dist_35 = max_read_length.saturating_sub(10);
@@ -3469,14 +3508,45 @@ pub fn realignlgins30(
         if soft_clips_5_end.get(&p5).is_none_or(|sc| sc.used) {
             continue;
         }
+        let lo_i64 = i64::from(p5) - i64::from(max_dist_53);
+        let hi_i64 = i64::from(p5) + i64::from(max_dist_35);
+        if lo_i64 > hi_i64 {
+            continue;
+        }
+        let lo_idx = tmp3_by_pos.partition_point(|&(p, _)| i64::from(p) < lo_i64);
+        let hi_idx = tmp3_by_pos.partition_point(|&(p, _)| i64::from(p) <= hi_i64);
+        let Some(win) = tmp3_by_pos.get(lo_idx..hi_idx) else {
+            continue;
+        };
+        if win.is_empty() {
+            continue;
+        }
+        #[cfg(test)]
+        REALIGN_LGINS30_WINDOW_ELEMS_SUM.with(|c| c.set(c.get().saturating_add(win.len())));
+        let candidates: &[(i32, i32)] = if win.len() <= REALIGN_LGINS30_SORT_WINDOW_MAX {
+            win_buf.clear();
+            win_buf.extend_from_slice(win);
+            win_buf.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+            win_buf.as_slice()
+        } else {
+            #[cfg(test)]
+            REALIGN_LGINS30_DENSE_FALLBACKS.with(|c| c.set(c.get().saturating_add(1)));
+            tmp3_sorted
+                .get_or_insert_with(|| {
+                    let mut v = tmp3_by_pos.clone();
+                    v.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+                    v
+                })
+                .as_slice()
+        };
         let mut sc5_used = false;
-        for (p3, cnt3) in tmp3.iter().copied() {
+        for &(p3, cnt3) in candidates {
             if sc5_used {
                 break;
             }
-            if i64::from(p5) - i64::from(p3) > i64::from(max_dist_53)
-                || i64::from(p3) - i64::from(p5) > i64::from(max_dist_35)
-            {
+            #[cfg(test)]
+            REALIGN_LGINS30_CANDIDATE_STEPS.with(|c| c.set(c.get().saturating_add(1)));
+            if i64::from(p3) < lo_i64 || i64::from(p3) > hi_i64 {
                 continue;
             }
             if soft_clips_3_end.get(&p3).is_none_or(|sc| sc.used) {
@@ -3863,10 +3933,7 @@ pub fn realignlgins(
     let max_clip_pos = region_end_i32.saturating_add(extension);
 
     let mut tmp = Vec::new();
-    for (&p, sc5v) in soft_clips_5_end.iter() {
-        if p < min_clip_pos || p > max_clip_pos {
-            continue;
-        }
+    for (&p, sc5v) in btree_range_inclusive(soft_clips_5_end, min_clip_pos, max_clip_pos) {
         tmp.push((p, sc5v.variation.cnt));
     }
     tmp.sort_by(|a, b| {
@@ -4165,10 +4232,7 @@ pub fn realignlgins(
     }
 
     let mut tmp3 = Vec::new();
-    for (&p, sc3v) in soft_clips_3_end.iter() {
-        if p < min_clip_pos || p > max_clip_pos {
-            continue;
-        }
+    for (&p, sc3v) in btree_range_inclusive(soft_clips_3_end, min_clip_pos, max_clip_pos) {
         tmp3.push((p, sc3v.variation.cnt));
     }
     tmp3.sort_by(|a, b| {
@@ -8383,5 +8447,174 @@ mod tests {
                 "in-bounds breakpoint coverage at bp=50 must still be incremented"
             );
         }
+    }
+
+    #[test]
+    fn test_realignlgins30_window_slice_small_max_rl_no_panic_and_multi_thousand_cluster_parity() {
+        let mut btm = BTreeMap::new();
+        btm.insert(10i32, 1i32);
+        btm.insert(20i32, 2i32);
+        assert_eq!(btree_range_inclusive(&btm, 25, 5).count(), 0);
+        assert_eq!(btree_range_mut_inclusive(&mut btm, 25, 5).count(), 0);
+        assert_eq!(
+            btree_range_inclusive(&btm, 10, 20)
+                .map(|(&k, &v)| (k, v))
+                .collect::<Vec<_>>(),
+            vec![(10, 1), (20, 2)]
+        );
+
+        let ref_len = 120_000usize;
+        let motif = b"ACGTACGTAGCTAGCTTGCAACGTTAGCATGC";
+        let ref_seq: Vec<u8> = (0..ref_len).map(|i| motif[i % motif.len()]).collect();
+        let mut reference = Reference::new();
+        reference
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 1,
+                sequence_end: ref_len as u32,
+            });
+        reference.region_sequences.push(ref_seq);
+        let region = crate::regions::Region {
+            chr: "chr1".to_string(),
+            start: Pos1(10_000),
+            end: Pos1(90_000),
+            gene: String::new(),
+            amplicon: None,
+        };
+        let config = crate::config::Config::default();
+
+        // 1. Zero-panic sweep across max_read_length in 0..=5 (AR-07: lo_i64 > hi_i64 for 0..=2)
+        for max_rl in 0..=5 {
+            let mut sc5 = BTreeMap::new();
+            let mut sc3 = BTreeMap::new();
+            for p in [10_010, 10_013, 10_017, 10_020] {
+                let mut s5 = Sclip::new();
+                s5.variation.cnt = 5;
+                s5.sequence = Some(b"TTAACCGGTTAACCGG".to_vec());
+                sc5.insert(p, s5);
+                let mut s3 = Sclip::new();
+                s3.variation.cnt = 5;
+                s3.sequence = Some(b"GGCCAATTGGCCAATT".to_vec());
+                sc3.insert(p - 7, s3);
+            }
+            let mut non_ins = crate::javamap::JavaHashMap::new();
+            let mut ins = crate::javamap::JavaHashMap::new();
+            let mut cov = rustc_hash::FxHashMap::default();
+            realignlgins30(
+                None,
+                &mut reference,
+                "chr1",
+                ref_len as u32,
+                &region,
+                &config,
+                &mut non_ins,
+                &mut ins,
+                &mut cov,
+                &mut sc5,
+                &mut sc3,
+                max_rl,
+            );
+            if max_rl <= 2 {
+                assert!(
+                    ins.is_empty(),
+                    "max_rl={max_rl} has empty [lo_i64, hi_i64] window so no lgins30 call may fire"
+                );
+            }
+        }
+
+        // 2. Multi-thousand cluster window-slice parity + >1024 dense window fallback
+        let mut sc5_base = BTreeMap::new();
+        let mut sc3_base = BTreeMap::new();
+        let ins_payload = b"GCTAGCTGATCGATCGATCGATCGATCGATCGATCG"; // 36 bp non-low-complexity
+                                                                   // Plant matching 3'/5' consensus pairs at 25_000 and inside a >1024 dense cluster at 60_500
+        for (idx, pos) in (12_000..88_000).step_by(30).enumerate() {
+            let mut s5 = Sclip::new();
+            s5.variation.cnt = ((idx % 7) + 2) as i32;
+            s5.sequence = Some(b"ACGTACGTACGTACGT".to_vec());
+            sc5_base.insert(pos, s5);
+            let mut s3 = Sclip::new();
+            s3.variation.cnt = ((idx % 5) + 2) as i32;
+            s3.sequence = Some(b"TGCATGCATGCATGCA".to_vec());
+            sc3_base.insert(pos + 3, s3);
+        }
+        // Dense >1024 3' cluster around 60_000..61_200 (within 2.5*500 = 1250 of p5=61_100)
+        for pos in 60_000..61_150 {
+            let mut s3 = Sclip::new();
+            s3.variation.cnt = 2 + (pos % 4);
+            s3.sequence = Some(b"TGCATGCATGCATGCA".to_vec());
+            sc3_base.insert(pos, s3);
+        }
+        // Matching real 36bp insertion pair at p3=25_000, p5=25_000 (seq3 = payload[..24], seq5 = reverse(payload[12..]))
+        {
+            let mut s3 = Sclip::new();
+            s3.variation.cnt = 12;
+            s3.variation.hicnt = 12;
+            s3.variation.qmean = 420.0;
+            s3.variation.mqmean = 720.0;
+            s3.variation.pmean = 240.0;
+            s3.sequence = Some(ins_payload[..24].to_vec());
+            sc3_base.insert(25_000, s3);
+
+            let mut s5 = Sclip::new();
+            s5.variation.cnt = 12;
+            s5.variation.hicnt = 12;
+            s5.variation.qmean = 420.0;
+            s5.variation.mqmean = 720.0;
+            s5.variation.pmean = 240.0;
+            s5.sequence = Some(reverse(&ins_payload[12..]));
+            sc5_base.insert(25_000, s5);
+        }
+        // Out-of-window noise beyond +-5000 must be ignored via btree_range_inclusive
+        for pos in [1_000, 2_000, 105_000, 110_000] {
+            let mut s5 = Sclip::new();
+            s5.variation.cnt = 50;
+            s5.sequence = Some(reverse(&ins_payload[12..]));
+            sc5_base.insert(pos, s5);
+            let mut s3 = Sclip::new();
+            s3.variation.cnt = 50;
+            s3.sequence = Some(ins_payload[..24].to_vec());
+            sc3_base.insert(pos, s3);
+        }
+
+        let mut non_ins = crate::javamap::JavaHashMap::new();
+        let mut ins = crate::javamap::JavaHashMap::new();
+        let mut cov = rustc_hash::FxHashMap::default();
+        reset_realign_lgins30_window_stats();
+        realignlgins30(
+            None,
+            &mut reference,
+            "chr1",
+            ref_len as u32,
+            &region,
+            &config,
+            &mut non_ins,
+            &mut ins,
+            &mut cov,
+            &mut sc5_base,
+            &mut sc3_base,
+            500,
+        );
+        assert!(
+            ins.contains_key(&24_999),
+            "expected large insertion anchored at p5 - 1 = 24_999"
+        );
+        assert!(!ins.contains_key(&999) && !ins.contains_key(&104_999));
+        let (window_elems_sum, candidate_steps, dense_fallbacks) = realign_lgins30_window_stats();
+        // Quadratic baseline across 2,535 in-region p5 keys x 3,647 p3 keys is > 9.24 million;
+        // partition_point window slicing keeps window elements < 250k and candidate steps < 350k
+        // deterministically on any host while still exercising the >1024 dense fallback!
+        assert!(
+            window_elems_sum > 0 && window_elems_sum < 250_000,
+            "expected bounded partition_point window sum (< 250_000 vs 9.24M quadratic), got {window_elems_sum}"
+        );
+        assert!(
+            candidate_steps > 0 && candidate_steps < 350_000,
+            "expected bounded candidate probe steps (< 350_000 vs 9.24M quadratic), got {candidate_steps}"
+        );
+        assert!(
+            dense_fallbacks > 0,
+            "expected >1024 dense cluster around 60k..61.15k to exercise tmp3_sorted fallback"
+        );
     }
 }

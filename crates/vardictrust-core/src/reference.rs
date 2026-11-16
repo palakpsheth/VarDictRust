@@ -885,6 +885,24 @@ impl SeedMap {
         self.materialize().is_empty()
     }
 
+    /// Enqueues an in-memory uppercase reference sequence span (`[sequence_start..=sequence_end]`)
+    /// for deferred 12-mer and 17-mer indexing matching [`get_reference_with_chr_len`].
+    pub fn index_sequence(
+        &mut self,
+        bases: &[u8],
+        sequence_start: u32,
+        sequence_end: u32,
+        chr_len: u32,
+    ) {
+        self.enqueue_chunk(PendingSeedChunk {
+            bases: std::sync::Arc::from(bases),
+            sequence_start,
+            sequence_end,
+            chr_len,
+            prev_bounds: Vec::new(),
+        });
+    }
+
     fn enqueue_chunk(&mut self, chunk: PendingSeedChunk) {
         let staged = self.pending.get_mut();
         if let Some(existing) = self.map.take() {
@@ -2875,5 +2893,22 @@ mod tests {
                 .is_none(),
             "clear_fasta_reader_cache() must clear SHARED_FASTA_META_CACHE"
         );
+    }
+
+    #[test]
+    fn test_seed_map_index_sequence_populates_12mer_and_17mer_seeds() {
+        let bases = b"ACGTACGTAGCTAGCTTGCAACGTTAGCATGC";
+        let len = bases.len() as u32;
+        let mut seed = SeedMap::new();
+        seed.index_sequence(bases, 100, 100 + len - 1, 100 + len - 1);
+        assert!(
+            !seed.is_materialized(),
+            "index_sequence must stay lazy until first lookup"
+        );
+        assert_eq!(seed.get(&bases[0..12]), Some(&[100u32][..]));
+        assert_eq!(seed.get(&bases[0..17]), Some(&[100u32][..]));
+        assert_eq!(seed.get(&bases[5..17]), Some(&[105u32][..]));
+        // Last 16 bp at chromosome end (i + 17 > bases.len()) are excluded per ReferenceResource.java:120
+        assert_eq!(seed.get(&bases[bases.len() - 12..]), None);
     }
 }

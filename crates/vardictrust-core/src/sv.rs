@@ -19,6 +19,7 @@
 )]
 
 use crate::config::Config;
+use crate::realign::{btree_range_inclusive, btree_range_mut_inclusive};
 use crate::reference::{get_reference, is_loaded, Reference};
 use crate::types::{Pos1, VardictError};
 use crate::variations::{Cluster, Mate, Sclip, Variation};
@@ -196,91 +197,180 @@ pub fn filter_all_sv_structures(var_data: &mut crate::variations::VariationData)
     var_data.sv_structures_filtered = true;
 }
 
-/// Check if the SV candidate with the highest count at `softp` is used.
-/// Ports `SOFTP2SV.containsKey(p5) && SOFTP2SV.get(p5).get(0).used`.
-pub fn is_best_sv_used(var_data: &crate::variations::VariationData, softp: i32) -> bool {
-    let mut best_cnt = -1;
-    let mut best_used = false;
+#[derive(Clone, Copy, Debug)]
+enum SvListSlot {
+    Finv3(usize),
+    Rinv3(usize),
+    Finv5(usize),
+    Rinv5(usize),
+    Fdel(usize),
+    Rdel(usize),
+    Fdup(usize),
+    Rdup(usize),
+    Ffus(usize, usize),
+    Rfus(usize, usize),
+}
 
-    let mut check_sv = |sv: &Sclip| {
-        if sv.softp == softp && sv.variation.cnt > best_cnt {
-            best_cnt = sv.variation.cnt;
-            best_used = sv.used;
+#[derive(Clone, Copy, Debug)]
+struct SclipSlot {
+    best_cnt: i32,
+    slot: SvListSlot,
+}
+
+/// Builds an upfront `SOFTP2SV` index mapping each non-zero `softp` to the `SclipSlot`
+/// of the first highest-`variation.cnt` candidate across `SVStructures`, matching
+/// `VariationRealigner.java:143-205` (`putToSoft2SV` + stable descending sort on `varsCount`).
+fn build_softp2sv_map(
+    svs: &crate::variations::SVStructures,
+) -> rustc_hash::FxHashMap<i32, SclipSlot> {
+    let mut map = rustc_hash::FxHashMap::default();
+    if svs.svfinv3.is_empty()
+        && svs.svrinv3.is_empty()
+        && svs.svfinv5.is_empty()
+        && svs.svrinv5.is_empty()
+        && svs.svfdel.is_empty()
+        && svs.svrdel.is_empty()
+        && svs.svfdup.is_empty()
+        && svs.svrdup.is_empty()
+        && svs.svffus.is_empty()
+        && svs.svrfus.is_empty()
+    {
+        return map;
+    }
+
+    let put = |map: &mut rustc_hash::FxHashMap<i32, SclipSlot>, sv: &Sclip, slot: SvListSlot| {
+        if sv.softp == 0 || sv.variation.cnt < 0 {
+            return;
+        }
+        match map.entry(sv.softp) {
+            std::collections::hash_map::Entry::Occupied(mut e) => {
+                if sv.variation.cnt > e.get().best_cnt {
+                    e.insert(SclipSlot {
+                        best_cnt: sv.variation.cnt,
+                        slot,
+                    });
+                }
+            }
+            std::collections::hash_map::Entry::Vacant(v) => {
+                v.insert(SclipSlot {
+                    best_cnt: sv.variation.cnt,
+                    slot,
+                });
+            }
         }
     };
 
-    for sv in &var_data.sv_structures.svfinv3 {
-        check_sv(sv);
+    for (i, sv) in svs.svfinv3.iter().enumerate() {
+        put(&mut map, sv, SvListSlot::Finv3(i));
     }
-    for sv in &var_data.sv_structures.svrinv3 {
-        check_sv(sv);
+    for (i, sv) in svs.svrinv3.iter().enumerate() {
+        put(&mut map, sv, SvListSlot::Rinv3(i));
     }
-    for sv in &var_data.sv_structures.svfinv5 {
-        check_sv(sv);
+    for (i, sv) in svs.svfinv5.iter().enumerate() {
+        put(&mut map, sv, SvListSlot::Finv5(i));
     }
-    for sv in &var_data.sv_structures.svrinv5 {
-        check_sv(sv);
+    for (i, sv) in svs.svrinv5.iter().enumerate() {
+        put(&mut map, sv, SvListSlot::Rinv5(i));
     }
-    for sv in &var_data.sv_structures.svfdel {
-        check_sv(sv);
+    for (i, sv) in svs.svfdel.iter().enumerate() {
+        put(&mut map, sv, SvListSlot::Fdel(i));
     }
-    for sv in &var_data.sv_structures.svrdel {
-        check_sv(sv);
+    for (i, sv) in svs.svrdel.iter().enumerate() {
+        put(&mut map, sv, SvListSlot::Rdel(i));
     }
-    for sv in &var_data.sv_structures.svfdup {
-        check_sv(sv);
+    for (i, sv) in svs.svfdup.iter().enumerate() {
+        put(&mut map, sv, SvListSlot::Fdup(i));
     }
-    for sv in &var_data.sv_structures.svrdup {
-        check_sv(sv);
+    for (i, sv) in svs.svrdup.iter().enumerate() {
+        put(&mut map, sv, SvListSlot::Rdup(i));
     }
 
-    // Deterministic forward-before-reverse traversal in Java HashMap<String, List<Sclip>>
-    // key order (bucket order by String.hashCode, preserving first-insertion order within
-    // a bucket), with svffus fully scanned before svrfus (VariationRealigner.java:143-164).
-    let scan_fus = |fus_map: &indexmap::IndexMap<String, Vec<Sclip>>,
-                    best_cnt: &mut i32,
-                    best_used: &mut bool| {
+    let scan_fus = |map: &mut rustc_hash::FxHashMap<i32, SclipSlot>,
+                    fus_map: &indexmap::IndexMap<String, Vec<Sclip>>,
+                    is_fwd: bool| {
+        let mk_slot = |ei: usize, si: usize| {
+            if is_fwd {
+                SvListSlot::Ffus(ei, si)
+            } else {
+                SvListSlot::Rfus(ei, si)
+            }
+        };
         if fus_map.len() <= 1 {
-            for sv_list in fus_map.values() {
-                for sv in sv_list {
-                    if sv.softp == softp && sv.variation.cnt > *best_cnt {
-                        *best_cnt = sv.variation.cnt;
-                        *best_used = sv.used;
-                    }
+            for (ei, (_, sv_list)) in fus_map.iter().enumerate() {
+                for (si, sv) in sv_list.iter().enumerate() {
+                    put(map, sv, mk_slot(ei, si));
                 }
             }
             return;
         }
         if !fus_map.values().any(|sv_list| {
-            sv_list
-                .iter()
-                .any(|sv| sv.softp == softp && sv.variation.cnt > *best_cnt)
+            sv_list.iter().any(|sv| {
+                sv.softp != 0
+                    && sv.variation.cnt >= 0
+                    && map
+                        .get(&sv.softp)
+                        .is_none_or(|cur| sv.variation.cnt > cur.best_cnt)
+            })
         }) {
             return;
         }
         for key in crate::javamap::java_hashmap_key_order(fus_map.keys()) {
-            if let Some(sv_list) = fus_map.get(key) {
-                for sv in sv_list {
-                    if sv.softp == softp && sv.variation.cnt > *best_cnt {
-                        *best_cnt = sv.variation.cnt;
-                        *best_used = sv.used;
-                    }
+            if let Some((ei, _, sv_list)) = fus_map.get_full(key) {
+                for (si, sv) in sv_list.iter().enumerate() {
+                    put(map, sv, mk_slot(ei, si));
                 }
             }
         }
     };
-    scan_fus(
-        &var_data.sv_structures.svffus,
-        &mut best_cnt,
-        &mut best_used,
-    );
-    scan_fus(
-        &var_data.sv_structures.svrfus,
-        &mut best_cnt,
-        &mut best_used,
-    );
+    scan_fus(&mut map, &svs.svffus, true);
+    scan_fus(&mut map, &svs.svrfus, false);
+    map
+}
 
-    best_cnt >= 0 && best_used
+/// Dereferences live `.used` from `&SVStructures` via `SclipSlot` so mid-loop
+/// `check_pairs` `.used = true` mutations (`AR-08`) are observed immediately.
+#[inline]
+fn is_softp_sv_used(
+    softp2sv: &rustc_hash::FxHashMap<i32, SclipSlot>,
+    svs: &crate::variations::SVStructures,
+    softp: i32,
+) -> bool {
+    if softp == 0 {
+        return false;
+    }
+    let Some(entry) = softp2sv.get(&softp) else {
+        return false;
+    };
+    match entry.slot {
+        SvListSlot::Finv3(i) => svs.svfinv3.get(i).is_some_and(|sv| sv.used),
+        SvListSlot::Rinv3(i) => svs.svrinv3.get(i).is_some_and(|sv| sv.used),
+        SvListSlot::Finv5(i) => svs.svfinv5.get(i).is_some_and(|sv| sv.used),
+        SvListSlot::Rinv5(i) => svs.svrinv5.get(i).is_some_and(|sv| sv.used),
+        SvListSlot::Fdel(i) => svs.svfdel.get(i).is_some_and(|sv| sv.used),
+        SvListSlot::Rdel(i) => svs.svrdel.get(i).is_some_and(|sv| sv.used),
+        SvListSlot::Fdup(i) => svs.svfdup.get(i).is_some_and(|sv| sv.used),
+        SvListSlot::Rdup(i) => svs.svrdup.get(i).is_some_and(|sv| sv.used),
+        SvListSlot::Ffus(ei, si) => svs
+            .svffus
+            .get_index(ei)
+            .and_then(|(_, list)| list.get(si))
+            .is_some_and(|sv| sv.used),
+        SvListSlot::Rfus(ei, si) => svs
+            .svrfus
+            .get_index(ei)
+            .and_then(|(_, list)| list.get(si))
+            .is_some_and(|sv| sv.used),
+    }
+}
+
+/// Check if the SV candidate with the highest count at `softp` is used.
+/// Ports `SOFTP2SV.containsKey(p5) && SOFTP2SV.get(p5).get(0).used`.
+pub fn is_best_sv_used(var_data: &crate::variations::VariationData, softp: i32) -> bool {
+    if softp == 0 {
+        return false;
+    }
+    let softp2sv = build_softp2sv_map(&var_data.sv_structures);
+    is_softp_sv_used(&softp2sv, &var_data.sv_structures, softp)
 }
 
 /// Syncs `Sclip.used` (set on poly-A/T or low-complexity sequences in
@@ -1708,7 +1798,17 @@ fn find_del_paths(
             }
             let mut matched_j = None;
             let max_read_length = var_data.max_read_length;
-            for (&i, scv) in &mut var_data.soft_clips_3_end {
+            let limit = 3i32.saturating_mul(max_read_length);
+            let range_lo = end.saturating_sub(3);
+            let hi64 = i64::from(end) + i64::from(limit) - 1;
+            let (eff_lo, eff_hi) = if hi64 < i64::from(range_lo) {
+                (1i32, 0i32)
+            } else {
+                (range_lo, hi64.min(i64::from(i32::MAX)) as i32)
+            };
+            for (&i, scv) in
+                btree_range_mut_inclusive(&mut var_data.soft_clips_3_end, eff_lo, eff_hi)
+            {
                 if scv.used {
                     continue;
                 }
@@ -1993,7 +2093,17 @@ fn find_del_paths(
             }
             let mut matched_j = None;
             let max_read_length = var_data.max_read_length;
-            for (&i, scv) in &mut var_data.soft_clips_5_end {
+            let limit = 3i32.saturating_mul(max_read_length);
+            let range_hi = start.saturating_add(3);
+            let lo64 = i64::from(start) - i64::from(limit) + 1;
+            let (eff_lo, eff_hi) = if lo64 > i64::from(range_hi) {
+                (1i32, 0i32)
+            } else {
+                (lo64.max(i64::from(i32::MIN)) as i32, range_hi)
+            };
+            for (&i, scv) in
+                btree_range_mut_inclusive(&mut var_data.soft_clips_5_end, eff_lo, eff_hi)
+            {
                 if scv.used {
                     continue;
                 }
@@ -2130,37 +2240,41 @@ pub fn find_sv(
 
     // Ports StructuralVariantsProcessor.java:973 fillAndSortTmpSV:
     // if (position < CURSEG.start || position > CURSEG.end) continue;
-    let mut tmp5: Vec<SortPositionCount> = var_data
-        .soft_clips_5_end
-        .iter()
-        .filter_map(|(&pos, scv)| {
-            if scv.used || scv.variation.cnt < minr || pos < curseg_start || pos > curseg_end {
-                None
-            } else {
-                Some(SortPositionCount {
-                    position: pos,
-                    count: scv.variation.cnt,
-                })
-            }
-        })
-        .collect();
+    let mut tmp5: Vec<SortPositionCount> =
+        btree_range_inclusive(&var_data.soft_clips_5_end, curseg_start, curseg_end)
+            .filter_map(|(&pos, scv)| {
+                if scv.used || scv.variation.cnt < minr {
+                    None
+                } else {
+                    Some(SortPositionCount {
+                        position: pos,
+                        count: scv.variation.cnt,
+                    })
+                }
+            })
+            .collect();
     tmp5.sort_by_key(|item| std::cmp::Reverse(item.count));
 
-    let mut tmp3: Vec<SortPositionCount> = var_data
-        .soft_clips_3_end
-        .iter()
-        .filter_map(|(&pos, scv)| {
-            if scv.used || scv.variation.cnt < minr || pos < curseg_start || pos > curseg_end {
-                None
-            } else {
-                Some(SortPositionCount {
-                    position: pos,
-                    count: scv.variation.cnt,
-                })
-            }
-        })
-        .collect();
+    let mut tmp3: Vec<SortPositionCount> =
+        btree_range_inclusive(&var_data.soft_clips_3_end, curseg_start, curseg_end)
+            .filter_map(|(&pos, scv)| {
+                if scv.used || scv.variation.cnt < minr {
+                    None
+                } else {
+                    Some(SortPositionCount {
+                        position: pos,
+                        count: scv.variation.cnt,
+                    })
+                }
+            })
+            .collect();
     tmp3.sort_by_key(|item| std::cmp::Reverse(item.count));
+
+    let softp2sv = if !tmp5.is_empty() || !tmp3.is_empty() {
+        build_softp2sv_map(&var_data.sv_structures)
+    } else {
+        rustc_hash::FxHashMap::default()
+    };
 
     for tuple5 in tmp5 {
         let p5 = tuple5.position;
@@ -2179,7 +2293,7 @@ pub fn find_sv(
         }
 
         // SOFTP2SV check: skip if the SV at this position was already used
-        if is_best_sv_used(var_data, p5) {
+        if is_softp_sv_used(&softp2sv, &var_data.sv_structures, p5) {
             continue;
         }
 
@@ -2380,7 +2494,7 @@ pub fn find_sv(
         }
 
         // SOFTP2SV check: skip if the SV at this position was already used
-        if is_best_sv_used(var_data, p3) {
+        if is_softp_sv_used(&softp2sv, &var_data.sv_structures, p3) {
             continue;
         }
 
@@ -3917,6 +4031,7 @@ fn partial_pipeline_paths(
             Ok(())
         })();
 
+        parser.finish_ref_coverage();
         var_data.non_insertion_variants = parser.non_insertion_variants;
         var_data.insertion_variants = parser.insertion_variants;
         var_data.position_to_insertion_count = parser.position_to_insertion_count;
@@ -5887,5 +6002,160 @@ mod tests {
         huge_lens.insert(chr.to_string(), (u32::MAX as usize).saturating_add(500));
         assert_eq!(saturated_chr_len(&huge_lens, chr), u32::MAX);
         assert_eq!(saturated_chr_len(&huge_lens, "missing_chr"), 0);
+    }
+
+    #[test]
+    fn test_softp2sv_slot_map_live_used_mutation_and_max_rl_zero_ranges() {
+        // 1. Direct build_softp2sv_map + is_softp_sv_used invariants (softp == 0 skipped, live .used observed)
+        let mut vd = crate::variations::VariationData::default();
+        let mut zero_sv = Sclip::new();
+        zero_sv.softp = 0;
+        zero_sv.variation.cnt = 99;
+        zero_sv.used = true;
+        vd.sv_structures.svfdel.push(zero_sv);
+
+        let mut del_sv = Sclip::new();
+        del_sv.softp = 250;
+        del_sv.start = 95;
+        del_sv.end = 105;
+        del_sv.mstart = 295;
+        del_sv.mend = 305;
+        del_sv.variation.cnt = 8;
+        del_sv.used = false;
+        vd.sv_structures.svfdel.push(del_sv);
+
+        let softp2sv = build_softp2sv_map(&vd.sv_structures);
+        assert!(
+            !is_softp_sv_used(&softp2sv, &vd.sv_structures, 0),
+            "softp == 0 must never be indexed in SOFTP2SV"
+        );
+        assert!(!is_softp_sv_used(&softp2sv, &vd.sv_structures, 250));
+        vd.sv_structures.svfdel[1].used = true;
+        assert!(
+            is_softp_sv_used(&softp2sv, &vd.sv_structures, 250),
+            "SclipSlot must dereference live .used mutations without rebuilding map"
+        );
+        vd.sv_structures.svfdel[1].used = false;
+
+        // 2. End-to-end find_sv mid-loop check_pairs .used = true visibility (AR-08):
+        //    - p5_first = 300 (cnt = 10) matches forward at bp = 100 -> check_pairs(100, 300) marks svfdel[1] (softp=250) .used = true!
+        //    - p5_second = 250 (cnt = 5, processed second) would otherwise match reverse-complement at bp = 400 and plant an INV at 250,
+        //      UNLESS find_sv's SOFTP2SV lookup sees svfdel[1].used == true mutated during p5_first's iteration!
+        let ref_len = 600usize;
+        let motif = b"ACGTACGTAGCTAGCTTGCAACGTTAGCATGC";
+        let mut ref_seq: Vec<u8> = (0..ref_len).map(|i| motif[i % motif.len()]).collect();
+        let anchor_100 = b"TTCGAAGGTTCCAAGGTTCC"; // 20 bp unique forward target ending at 1-based 100 (indices 80..100)
+        ref_seq[80..100].copy_from_slice(anchor_100);
+        let inv_target_400 = b"GGGAAATTTCCCGGGAAATT"; // 20 bp at 1-based 401..=420 (indices 400..420)
+        ref_seq[400..420].copy_from_slice(inv_target_400);
+
+        let mut reference = Reference::new();
+        reference
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 1,
+                sequence_end: ref_len as u32,
+            });
+        reference.region_sequences.push(ref_seq.clone());
+        reference
+            .reference_sequences
+            .insert("chr1".to_string(), ref_seq);
+        reference.seed.insert_for_test(&anchor_100[3..20], vec![84]); // 17-mer at 1-based 84 so bp = 84 + 16 = 100!
+        let mut rc_inv_17 = inv_target_400[0..17].to_vec();
+        crate::util::reverse_complement(&mut rc_inv_17);
+        reference
+            .seed
+            .insert_for_test(&inv_target_400[0..17], vec![401]);
+
+        vd.max_read_length = 100;
+        // Build 5' soft-clip at 300 (cnt = 10): consensus in 5' Sclip is stored 3'->5' from clip boundary,
+        // and find_conseq_sets(sc5v, 0) returns the consensus string (reversed back by find_match dir=-1).
+        // Pre-populating Sclip.sequence bypasses nt consensus building!
+        let mut sc5_300 = Sclip::new();
+        sc5_300.variation.cnt = 10;
+        sc5_300.variation.hicnt = 10;
+        sc5_300.sequence = Some(anchor_100.iter().rev().copied().collect());
+        vd.soft_clips_5_end.insert(300, sc5_300);
+
+        let mut sc5_250 = Sclip::new();
+        sc5_250.variation.cnt = 5;
+        sc5_250.variation.hicnt = 5;
+        let mut inv_clip_seq = inv_target_400.to_vec();
+        crate::util::reverse_complement(&mut inv_clip_seq);
+        sc5_250.sequence = Some(inv_clip_seq.into_iter().rev().collect());
+        vd.soft_clips_5_end.insert(250, sc5_250);
+
+        let mut cfg = Config::default();
+        cfg.min_reads = 2;
+        let mut chr_lengths = HashMap::new();
+        chr_lengths.insert("chr1".to_string(), ref_len);
+
+        find_sv(&mut vd, &mut reference, "chr1", 1, 500, &cfg, &chr_lengths).unwrap();
+        assert!(
+            vd.sv_structures.svfdel[1].used,
+            "p5=300 check_pairs must have marked svfdel[1] used"
+        );
+        assert!(
+            vd.non_insertion_variants.contains_key(&101),
+            "p5=300 DEL must be called at bp_adj = 101"
+        );
+        assert!(
+            vd.non_insertion_variants
+                .iter()
+                .all(|(_, vm)| vm.sv.as_ref().is_none_or(|sv| sv.r#type != "INV")),
+            "p5=250 MUST be skipped because svfdel[1] (softp=250) became used mid-loop!"
+        );
+
+        // 3. find_all_sv_paths with max_read_length == 0 and -1 must not panic on BTreeMap range bounds (AR-07)
+        for max_rl in [-1, 0, 1] {
+            let mut vd_z = crate::variations::VariationData::default();
+            vd_z.max_read_length = max_rl;
+            vd_z.sv_structures_filtered = true;
+            let mut fdel = Sclip::new();
+            fdel.start = 90;
+            fdel.end = 100;
+            fdel.mstart = 200;
+            fdel.mend = 210;
+            fdel.variation.cnt = 5;
+            vd_z.sv_structures.svfdel.push(fdel);
+            let mut rdel = Sclip::new();
+            rdel.start = 200;
+            rdel.end = 210;
+            rdel.mstart = 90;
+            rdel.mend = 100;
+            rdel.variation.cnt = 5;
+            vd_z.sv_structures.svrdel.push(rdel);
+            for pos in 95..=105 {
+                let mut s3 = Sclip::new();
+                s3.variation.cnt = 5;
+                s3.sequence = Some(b"ACGT".to_vec()); // < 12 bp after window check
+                vd_z.soft_clips_3_end.insert(pos, s3);
+            }
+            for pos in 195..=205 {
+                let mut s5 = Sclip::new();
+                s5.variation.cnt = 5;
+                s5.sequence = Some(b"ACGT".to_vec());
+                vd_z.soft_clips_5_end.insert(pos, s5);
+            }
+            let reg_z = crate::regions::Region {
+                chr: "chr1".to_string(),
+                start: Pos1(1),
+                end: Pos1(500),
+                gene: String::new(),
+                amplicon: None,
+            };
+            find_all_sv_paths(
+                &mut vd_z,
+                &[],
+                &mut reference,
+                "chr1",
+                ref_len as u32,
+                &reg_z,
+                &cfg,
+                &chr_lengths,
+            )
+            .unwrap();
+        }
     }
 }

@@ -35,6 +35,59 @@ fn has_two_soft_clips(mc: &str) -> bool {
     false
 }
 
+/// Reference halo (`5,000 bp`) retained around each loaded FASTA interval when clipping deletion coverage spans (`AR-06`).
+const REF_COV_HALO_BP: i64 = 5_000;
+/// Minimum clipped deletion span (`64 bp`) deferred to the `O((R + K) log K)` coordinate-compressed sweep instead of point increments.
+const LONG_DEL_COV_SWEEP_MIN_BP: i64 = 64;
+/// Maximum deferred deletion coverage spans (`8,192`) buffered before an incremental `finish_ref_coverage` flush.
+const MAX_PENDING_COV_SPANS: usize = 8_192;
+
+fn build_cov_windows(reference: &Reference, region: &Region, config: &Config) -> Vec<(i32, i32)> {
+    let reg_s = i64::from(region.start.0);
+    let reg_e = i64::from(region.end.0);
+    let has_loaded_on_chr = reference
+        .loaded_regions
+        .iter()
+        .any(|lr| lr.chr == region.chr);
+    if !has_loaded_on_chr {
+        let fallback_halo = i64::from(config.max_region_len) + 65_536;
+        let lo = (reg_s - fallback_halo).clamp(1, i64::from(i32::MAX)) as i32;
+        let hi = (reg_e + fallback_halo).clamp(1, i64::from(i32::MAX)) as i32;
+        return if lo <= hi { vec![(lo, hi)] } else { Vec::new() };
+    }
+    let mut raw: Vec<(i32, i32)> = Vec::with_capacity(reference.loaded_regions.len() + 1);
+    let r_lo = (reg_s - REF_COV_HALO_BP).clamp(1, i64::from(i32::MAX)) as i32;
+    let r_hi = (reg_e + REF_COV_HALO_BP).clamp(1, i64::from(i32::MAX)) as i32;
+    if r_lo <= r_hi {
+        raw.push((r_lo, r_hi));
+    }
+    for lr in &reference.loaded_regions {
+        if lr.chr == region.chr && lr.sequence_start <= lr.sequence_end {
+            let ls = (i64::from(lr.sequence_start) - REF_COV_HALO_BP).clamp(1, i64::from(i32::MAX))
+                as i32;
+            let le =
+                (i64::from(lr.sequence_end) + REF_COV_HALO_BP).clamp(1, i64::from(i32::MAX)) as i32;
+            if ls <= le {
+                raw.push((ls, le));
+            }
+        }
+    }
+    raw.sort_unstable_by_key(|&(s, _)| s);
+    let mut merged: Vec<(i32, i32)> = Vec::with_capacity(raw.len());
+    for (s, e) in raw {
+        if let Some((_, ce)) = merged.last_mut() {
+            if i64::from(s) <= i64::from(*ce) + 1 {
+                if e > *ce {
+                    *ce = e;
+                }
+                continue;
+            }
+        }
+        merged.push((s, e));
+    }
+    merged
+}
+
 /// CigarParser stores the running state for parsing CIGAR strings and building pileups.
 /// Ports `modules/CigarParser.java`.
 pub struct CigarParser<'a> {
@@ -44,7 +97,8 @@ pub struct CigarParser<'a> {
     pub svflag: bool,
     pub(crate) primary_ref_seq: &'a [u8],
     pub(crate) primary_ref_start: u32,
-    pub(crate) cov_cap: i64,
+    pub(crate) cov_windows: Vec<(i32, i32)>,
+    pub(crate) pending_cov_spans: Vec<(i32, i32)>,
 
     pub non_insertion_variants: crate::javamap::JavaHashMap<i32, VariationMap>,
     pub insertion_variants: crate::javamap::JavaHashMap<i32, VariationMap>,
@@ -234,17 +288,7 @@ impl<'a> CigarParser<'a> {
         let (primary_ref_seq, primary_ref_start) = reference
             .primary_region_slice(&region.chr)
             .unwrap_or((&[], 1));
-        let cov_cap = match reference
-            .loaded_regions
-            .iter()
-            .filter(|lr| lr.chr == region.chr)
-            .map(|lr| lr.sequence_end)
-            .max()
-        {
-            Some(max_end) => i64::from(max_end.max(region.end.0)) + 1024,
-            None => i64::from(region.end.0) + i64::from(config.max_region_len) + 65_536,
-        }
-        .min(i64::from(i32::MAX));
+        let cov_windows = build_cov_windows(reference, region, config);
         Self {
             reference,
             region,
@@ -252,7 +296,8 @@ impl<'a> CigarParser<'a> {
             svflag,
             primary_ref_seq,
             primary_ref_start,
-            cov_cap,
+            cov_windows,
+            pending_cov_spans: Vec::new(),
             non_insertion_variants: crate::javamap::JavaHashMap::new(),
             insertion_variants: crate::javamap::JavaHashMap::new(),
             position_to_insertion_count: BTreeMap::new(),
@@ -1284,10 +1329,8 @@ impl<'a> CigarParser<'a> {
         if start_with_deletion {
             increment(&mut self.position_to_deletion_count, pos, s);
             let first = i64::from(start) + 1;
-            let last = (i64::from(start) + i64::from(ddlen) - 1).min(self.cov_cap);
-            for cov_pos in first..=last {
-                inc_cnt(&mut self.ref_coverage, cov_pos as i32, 1);
-            }
+            let last = i64::from(start) + i64::from(ddlen) - 1;
+            self.record_deletion_ref_coverage(first, last);
         }
     }
 
@@ -1512,9 +1555,81 @@ impl<'a> CigarParser<'a> {
         }
 
         let first = i64::from(start);
-        let last = (i64::from(start) + i64::from(cigar_element_len) - 1).min(self.cov_cap);
-        for cov_pos in first..=last {
-            inc_cnt(&mut self.ref_coverage, cov_pos as i32, 1);
+        let last = i64::from(start) + i64::from(cigar_element_len) - 1;
+        self.record_deletion_ref_coverage(first, last);
+    }
+
+    fn record_deletion_ref_coverage(&mut self, first: i64, last: i64) {
+        if first > last {
+            return;
+        }
+        let n_win = self.cov_windows.len();
+        for idx in 0..n_win {
+            let Some(&(w_lo, w_hi)) = self.cov_windows.get(idx) else {
+                break;
+            };
+            let w_lo64 = i64::from(w_lo);
+            if w_lo64 > last {
+                break;
+            }
+            let w_hi64 = i64::from(w_hi);
+            if w_hi64 < first {
+                continue;
+            }
+            let lo = first.max(w_lo64) as i32;
+            let hi_incl = last.min(w_hi64) as i32;
+            let span_len = i64::from(hi_incl) - i64::from(lo) + 1;
+            if span_len <= LONG_DEL_COV_SWEEP_MIN_BP {
+                for cov_pos in i64::from(lo)..=i64::from(hi_incl) {
+                    inc_cnt(&mut self.ref_coverage, cov_pos as i32, 1);
+                }
+            } else {
+                self.pending_cov_spans.push((lo, hi_incl));
+                if self.pending_cov_spans.len() >= MAX_PENDING_COV_SPANS {
+                    self.finish_ref_coverage();
+                }
+            }
+        }
+    }
+
+    /// Flushes any deferred long-deletion coverage spans into `self.ref_coverage`
+    /// via an `i64` coordinate-compressed sweep. Idempotent; never inserts `0`
+    /// into uncovered gap positions (`AR-06`).
+    pub fn finish_ref_coverage(&mut self) {
+        if self.pending_cov_spans.is_empty() {
+            return;
+        }
+        let mut events: Vec<(i64, i64)> =
+            Vec::with_capacity(self.pending_cov_spans.len().saturating_mul(2));
+        for (lo, hi_incl) in self.pending_cov_spans.drain(..) {
+            if lo <= hi_incl {
+                events.push((i64::from(lo), 1i64));
+                events.push((i64::from(hi_incl) + 1, -1i64));
+            }
+        }
+        events.sort_unstable_by_key(|&(x, _)| x);
+        let mut running = 0i64;
+        let mut idx = 0usize;
+        let mut prev_x: Option<i64> = None;
+        while let Some(&(x, _)) = events.get(idx) {
+            if let Some(px) = prev_x {
+                if running > 0 && px < x {
+                    let delta_i32 = i32::try_from(running).unwrap_or(i32::MAX);
+                    for pos in px..x {
+                        inc_cnt(&mut self.ref_coverage, pos as i32, delta_i32);
+                    }
+                }
+            }
+            let mut net = 0i64;
+            while let Some(&(ex, ed)) = events.get(idx) {
+                if ex != x {
+                    break;
+                }
+                net += ed;
+                idx += 1;
+            }
+            running += net;
+            prev_x = Some(x);
         }
     }
 
@@ -2701,7 +2816,8 @@ impl<'a> CigarParser<'a> {
     /// `duplicateReads` from `InitialData` in `initFromScope(scope)` BEFORE the
     /// `processor.nextRecord()` loop at `:86`, so both fields are 0 here in the
     /// production pipeline and `duprate` always evaluates to `0.0`.
-    pub fn into_variation_data(self) -> VariationData {
+    pub fn into_variation_data(mut self) -> VariationData {
+        self.finish_ref_coverage();
         let duprate = if self.svflag {
             if (i64::from(self.discordant_count) + 1) as f64
                 / (i64::from(self.total_reads) - i64::from(self.duplicate_reads) + 1) as f64
@@ -6280,6 +6396,7 @@ mod tests {
             10,
             268_435_455,
         );
+        parser.finish_ref_coverage();
         assert!(
             !parser.ref_coverage.is_empty(),
             "ref_coverage should record covered positions"
@@ -6289,10 +6406,13 @@ mod tests {
         assert_eq!(min_pos, 100);
         assert_eq!(
             max_pos,
-            5_000 + 1024,
-            "ref_coverage must cap at loaded_end + 1024"
+            5_000 + 5_000,
+            "ref_coverage must cap at loaded_end + 5000"
         );
-        assert_eq!(parser.ref_coverage.len(), (5_000 + 1024 - 100 + 1) as usize);
+        assert_eq!(
+            parser.ref_coverage.len(),
+            (5_000 + 5_000 - 100 + 1) as usize
+        );
 
         // 2. High-coordinate 5,000-bp loaded tile near 2e9 where start + i as i32 would wrap negative
         let mut hi_ref = Reference::new();
@@ -6322,13 +6442,14 @@ mod tests {
             10,
             268_435_455,
         );
+        hi_parser.finish_ref_coverage();
         assert!(
             hi_parser.ref_coverage.keys().all(|&pos| pos > 0),
             "no negative wrapped position allowed in ref_coverage"
         );
         assert_eq!(
             *hi_parser.ref_coverage.keys().max().unwrap(),
-            2_000_005_000 + 1024
+            2_000_005_000 + 5_000
         );
 
         // 3. Exhaustive 256-byte parity of SINGLE_BASE_STR against push_ascii_base + N/n filter
@@ -6900,5 +7021,148 @@ mod tests {
                 "SINGLE_BASE_STR must map {bad:#04x} to \"N\""
             );
         }
+    }
+
+    #[test]
+    fn deletion_ref_coverage_sweep_clips_to_loaded_windows_and_preserves_uncovered_gaps() {
+        let config = Config::default();
+
+        // (a) 100_000_000D deletion inside a 250 Mbp chromosome where both [10_000..=15_000]
+        // and a distant 250 Mbp loaded span [249_990_001..=250_000_000] are loaded:
+        // must ONLY touch the +-5,000 halo around loaded spans, never 100M gap bases!
+        let mut chr1_ref = Reference::new();
+        chr1_ref
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 10_000,
+                sequence_end: 15_000,
+            });
+        chr1_ref.region_sequences.push(vec![b'A'; 5_001]);
+        chr1_ref
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 249_990_001,
+                sequence_end: 250_000_000,
+            });
+        chr1_ref.region_sequences.push(vec![b'A'; 10_000]);
+        let reg_a = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(10_000),
+            end: Pos1(15_000),
+            gene: "G".to_string(),
+            amplicon: None,
+        };
+        let mut parser_a = CigarParser::new(&chr1_ref, &reg_a, &config, false, 0, 0, 150);
+        parser_a.add_variation_for_deletion(
+            60,
+            0,
+            false,
+            150,
+            "-100000000",
+            b"I",
+            0,
+            1_000,
+            10,
+            100_000_000,
+        );
+        // Grafted deletion path (add_variation_for_matching_part with start_with_deletion = true)
+        parser_a.add_variation_for_matching_part(
+            60,
+            0,
+            false,
+            150,
+            0,
+            "-100000000&A",
+            true,
+            40.0,
+            1,
+            0,
+            100_000_000,
+            1_000,
+            10,
+            1_000,
+        );
+        parser_a.finish_ref_coverage();
+        // Idempotency: calling finish_ref_coverage() again must be a strict no-op.
+        parser_a.finish_ref_coverage();
+        assert_eq!(parser_a.ref_coverage.get(&4_999), None);
+        assert_eq!(parser_a.ref_coverage.get(&5_000), Some(&2));
+        assert_eq!(parser_a.ref_coverage.get(&20_000), Some(&2));
+        assert_eq!(parser_a.ref_coverage.get(&20_001), None);
+        assert!(
+            parser_a.ref_coverage.len() <= 15_005,
+            "100Mbp deletion must stay bounded to loaded +-5000 window, got {} entries",
+            parser_a.ref_coverage.len()
+        );
+
+        // (b) Disjoint loaded windows [1_000..=2_000] and [50_000..=51_000] spanned by 60_000D:
+        // uncovered gap [7_001..=44_999] must have contains_key == false (never 0-inserted, AR-06).
+        let mut gap_ref = Reference::new();
+        gap_ref.loaded_regions.push(crate::reference::LoadedRegion {
+            chr: "chr1".to_string(),
+            sequence_start: 1_000,
+            sequence_end: 2_000,
+        });
+        gap_ref.region_sequences.push(vec![b'A'; 1_001]);
+        gap_ref.loaded_regions.push(crate::reference::LoadedRegion {
+            chr: "chr1".to_string(),
+            sequence_start: 50_000,
+            sequence_end: 51_000,
+        });
+        gap_ref.region_sequences.push(vec![b'A'; 1_001]);
+        let gap_reg = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(1_000),
+            end: Pos1(2_000),
+            gene: "G".to_string(),
+            amplicon: None,
+        };
+        let mut gap_parser = CigarParser::new(&gap_ref, &gap_reg, &config, false, 0, 0, 150);
+        gap_parser
+            .add_variation_for_deletion(60, 0, false, 150, "-60000", b"I", 0, 1_500, 10, 60_000);
+        let gap_vd = gap_parser.into_variation_data();
+        assert_eq!(gap_vd.ref_coverage.get(&1_500), Some(&1));
+        assert_eq!(gap_vd.ref_coverage.get(&7_000), Some(&1));
+        assert!(!gap_vd.ref_coverage.contains_key(&7_001));
+        assert!(!gap_vd.ref_coverage.contains_key(&25_000));
+        assert!(!gap_vd.ref_coverage.contains_key(&44_999));
+        assert_eq!(gap_vd.ref_coverage.get(&45_000), Some(&1));
+        assert_eq!(gap_vd.ref_coverage.get(&56_000), Some(&1));
+        assert!(!gap_vd.ref_coverage.contains_key(&56_001));
+
+        // (c) i32::MAX boundary span (> 64 bp so pending_cov_spans sweep executes) without overflow.
+        let mut max_ref = Reference::new();
+        max_ref.loaded_regions.push(crate::reference::LoadedRegion {
+            chr: "chr1".to_string(),
+            sequence_start: (i32::MAX as u32) - 300,
+            sequence_end: i32::MAX as u32,
+        });
+        max_ref.region_sequences.push(vec![b'A'; 301]);
+        let max_reg = Region {
+            chr: "chr1".to_string(),
+            start: Pos1((i32::MAX as u32) - 300),
+            end: Pos1(i32::MAX as u32),
+            gene: "G".to_string(),
+            amplicon: None,
+        };
+        let mut max_parser = CigarParser::new(&max_ref, &max_reg, &config, false, 0, 0, 150);
+        max_parser.add_variation_for_deletion(
+            60,
+            0,
+            false,
+            150,
+            "-500",
+            b"I",
+            0,
+            i32::MAX - 200,
+            10,
+            500,
+        );
+        max_parser.finish_ref_coverage();
+        assert_eq!(max_parser.ref_coverage.get(&(i32::MAX - 200)), Some(&1));
+        assert_eq!(max_parser.ref_coverage.get(&i32::MAX), Some(&1));
+        assert!(max_parser.ref_coverage.keys().all(|&p| p > 0));
     }
 }

@@ -11,7 +11,11 @@ fuzz_target!(|data: &[u8]| {
     }
 
     let pos = i32::from_le_bytes([data[0], data[1], 0, 0]).clamp(1, 512);
-    let max_rl = (data[2] as i32).clamp(20, 300);
+    let max_rl = if data[2] <= 20 {
+        i32::from(data[2])
+    } else {
+        i32::from(data[2]).clamp(21, 300)
+    };
     let offset = (data[3] as i32).clamp(1, 64);
 
     let payload = &data[4..];
@@ -23,10 +27,15 @@ fuzz_target!(|data: &[u8]| {
     let bases = [b'A', b'C', b'G', b'T', b'N'];
     let ref_seq: Vec<u8> = payload[..third]
         .iter()
+        .take(4096)
         .map(|&b| bases[(b as usize) % bases.len()])
         .collect();
+    if ref_seq.is_empty() {
+        return;
+    }
     let query_seq: Vec<u8> = payload[third..2 * third]
         .iter()
+        .take(4096)
         .map(|&b| bases[(b as usize) % bases.len()])
         .collect();
     let query_qual: Vec<u8> = payload[2 * third..]
@@ -48,7 +57,12 @@ fuzz_target!(|data: &[u8]| {
     }
 
     let config = Config::default();
-    let seed = SeedMap::new();
+    let mut seed = SeedMap::new();
+    let seq_start = offset as u32;
+    let seq_end = seq_start
+        .saturating_add(ref_seq.len() as u32)
+        .saturating_sub(1);
+    seed.index_sequence(&ref_seq, seq_start, seq_end, seq_end);
     let modifier = CigarModifier::new(
         pos, cigar, query_seq, query_qual, &ref_seq, offset, &seed, 10, max_rl, &config,
     );
