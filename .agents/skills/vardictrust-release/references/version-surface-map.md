@@ -20,13 +20,13 @@ Reference companion for [`.agents/skills/vardictrust-release/SKILL.md`](../SKILL
 | 8 | `packaging/nf-core/prepare_nfcore_pr.sh` | `VERSION="${1:-X.Y.Z}"` | Default version fallback for Phase 3B Nextflow script |
 | 9 | `harness/run_self_tests.sh` | `# VarDictRust vX.Y.Z — Harness Self-Test Runner` | Header version banner |
 | 10 | `docs/release/vX.Y.Z-pr.md` | `# Release vX.Y.Z:` | Release certification dossier (`FP`, `PERF_FP`, test counts, 4-channel checklist) |
-| 11 | `README.md` | `--tag vX.Y.Z`, `version = {X.Y.Z}`, `89`-row CLI parameter table, and `664` test breakdown (`467 + 110 + 29 + 2 + 3 + 28 + 25`) | Main repository landing page |
-| 12 | `DIVERGENCES.md` | `Verified Parity Baseline (release/vX.Y.Z`, `##source=VarDict_v1.8.2`, `664 PASS` (`467 PASS` core lib), `3.25x speedup, 1.24x flat RSS`, `68308cfcd2303ad1` | Empirical divergence & certification summary |
-| 13 | `CONTRIBUTING.md` | `664` workspace tests (`§5.4`), `aarch64-unknown-linux-musl` (`§9.1`), and `.agents/skills/` runbook links | Contributor & release guide |
+| 11 | `README.md` | `--tag vX.Y.Z`, `version = {X.Y.Z}`, `89`-row CLI parameter table, and `670` test breakdown (`470 + 110 + 29 + 2 + 3 + 29 + 27`) | Main repository landing page |
+| 12 | `DIVERGENCES.md` | `Verified Parity Baseline (release/vX.Y.Z`, `##source=VarDict_v1.8.2`, `670 PASS` (`470 PASS` core lib), `3.25x speedup, 1.24x flat RSS`, `68308cfcd2303ad1` | Empirical divergence & certification summary |
+| 13 | `CONTRIBUTING.md` | `670` workspace tests (`§5.4`), `aarch64-unknown-linux-musl` (`§9.1`), and `.agents/skills/` runbook links | Contributor & release guide |
 | 14 | `benchmarks/README.md` | `Certified in \`vX.Y.Z\`` and link to `docs/release/vX.Y.Z-pr.md` | Benchmark scoreboard header |
-| 15 | `docs/testing/test-matrix-and-ci-audit.md` | `vX.Y.Z`, `664` workspace tests (`467` core lib + `110` `corpus_parity` + `29` `engine_behavior` + `2` `amplicon_stream_mem` + `3` `cram_stack` + `28` bin + `25` CLI integration), `68308cfcd2303ad1` | Testing matrix & CI audit specification |
+| 15 | `docs/testing/test-matrix-and-ci-audit.md` | `vX.Y.Z`, `670` workspace tests (`470` core lib + `110` `corpus_parity` + `29` `engine_behavior` + `2` `amplicon_stream_mem` + `3` `cram_stack` + `29` bin + `27` CLI integration), `68308cfcd2303ad1` | Testing matrix & CI audit specification |
 | 16 | `docs/validation/omnibus-empirical-validation.md` | `Release \`vX.Y.Z\`` header, `68308cfcd2303ad1`, and §13 16-file SHA-256 manifest | Omnibus empirical validation report |
-| 17 | `zensical.toml`, `wiki/Home.md`, & `wiki/_Sidebar.md` | `"Release vX.Y.Z Certification" = "docs/release/vX.Y.Z-pr.md"`, `vX.Y.Z` links, and `664` workspace tests | ReadTheDocs navigation & GitHub Wiki |
+| 17 | `zensical.toml`, `wiki/Home.md`, & `wiki/_Sidebar.md` | `"Release vX.Y.Z Certification" = "docs/release/vX.Y.Z-pr.md"`, `vX.Y.Z` links, and `670` workspace tests | ReadTheDocs navigation & GitHub Wiki |
 
 ### Additional Pre-Tag Consistency Guards (`check_release_consistency.py` Checks `#18`–`#20`)
 
@@ -36,7 +36,7 @@ In addition to the 17 version-bumped files above, `--phase pre-tag` enforces thr
 | :--- | :--- | :--- |
 | `#18` | `crates/vardictrust/src/{cli.rs,completions_man.rs}`, `README.md`, `ROADMAP.md`, `docs/ecosystem-survey.md`, `docs/migration.md`, `zensical.toml`, & `wiki/_Sidebar.md` | Exact 1:1 short/long CLI flag parity across all `89` `Cli` arguments (`7` functional groups) vs `README.md`'s `89`-row table, plus `var2vcf_*.pl` migration guide links |
 | `#19` | `UPSTREAM.toml` | Immutable reference comparator pins (`VarDictJava` `1.8.3` commit `0886261`, `VarDict` scripts commit `009e017`, and advisory `vardictcpp` `3` build `hc52dbad_0`) |
-| `#20` | `.github/workflows/ci.yml` & `.agents/skills/vardictrust-release/references/version-surface-map.md` | Synchronized workspace test-count breakdown (`664` total: `467` `vardictrust-core` lib + `28` `vardictrust` bin + `59` integration + `110` `corpus_parity`) |
+| `#20` | `.github/workflows/ci.yml` & `.agents/skills/vardictrust-release/references/version-surface-map.md` | Synchronized workspace test-count breakdown (`670` total: `470` `vardictrust-core` lib + `29` `vardictrust` bin + `61` integration + `110` `corpus_parity`) |
 
 ---
 

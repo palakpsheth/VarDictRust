@@ -883,6 +883,10 @@ const MAX_CRAI_LINE_BYTES: usize = 64 * 1024;
 const MAX_CRAM_CONTAINER_BYTES: usize = 256 * 1024 * 1024;
 const MAX_CRAM_CONTAINER_RECORDS: usize = 2_000_000;
 const MAX_CACHED_CRAM_CONTAINER_RECORDS: usize = 65_536;
+/// Maximum approximate heap footprint (`4 MiB`) of a single decoded CRAM container
+/// eligible for insertion into [`CRAM_CONTAINER_CACHE`] (`8` shards × `4` slots = `32`
+/// slots -> `<= 128 MiB` bounded cache residency even on ultra-long-read PacBio/ONT CRAMs).
+const MAX_CACHED_CRAM_CONTAINER_BYTES: usize = 4 * 1024 * 1024;
 
 fn parse_crai_line(s: &str) -> std::io::Result<noodles::cram::crai::Record> {
     const UNMAPPED: i32 = -1;
@@ -2970,6 +2974,33 @@ fn crai_record_intersects(
     }
 }
 
+fn approx_cram_container_bytes(records: &CachedCramBlock) -> usize {
+    let mut total = records
+        .capacity()
+        .saturating_mul(std::mem::size_of::<CachedCramRecord>());
+    for rec in records.iter() {
+        let sam = &rec.sam;
+        let cigar_bytes = sam
+            .cigar
+            .capacity()
+            .saturating_mul(std::mem::size_of::<(u32, CigarKind)>());
+        let rec_heap = sam
+            .name
+            .capacity()
+            .saturating_add(cigar_bytes)
+            .saturating_add(sam.sequence.capacity())
+            .saturating_add(sam.quality_scores.capacity())
+            .saturating_add(sam.reference_name.as_ref().map_or(0, String::capacity))
+            .saturating_add(sam.mate_reference_name.as_ref().map_or(0, String::capacity))
+            .saturating_add(sam.sa.as_ref().map_or(0, String::capacity))
+            .saturating_add(sam.mc.as_ref().map_or(0, String::capacity))
+            .saturating_add(rec.reference_name.as_deref().map_or(0, str::len))
+            .saturating_add(rec.mate_reference_name.as_deref().map_or(0, str::len));
+        total = total.saturating_add(rec_heap);
+    }
+    total
+}
+
 fn cram_record_intersects(
     record: &CachedCramRecord,
     reference_sequence_id: usize,
@@ -4379,7 +4410,7 @@ fn fetch_cram_container(
     ));
     meta.fasta_repo.reclaim_delegated_bytes(hint_contig);
 
-    let out_records = match decoded_res {
+    let mut out_records = match decoded_res {
         Ok(res) => res?,
         Err(_) => {
             return Err(crate::types::VardictError::Io(std::io::Error::new(
@@ -4388,9 +4419,12 @@ fn fetch_cram_container(
             )));
         }
     };
+    out_records.shrink_to_fit();
 
     let arc_records: CachedCramBlock = std::sync::Arc::new(out_records);
-    if arc_records.len() <= MAX_CACHED_CRAM_CONTAINER_RECORDS {
+    if arc_records.len() <= MAX_CACHED_CRAM_CONTAINER_RECORDS
+        && approx_cram_container_bytes(&arc_records) <= MAX_CACHED_CRAM_CONTAINER_BYTES
+    {
         if let Some(shard_mutex) = cram_container_cache_shards().get(shard_idx) {
             let mut shard = shard_mutex.lock().unwrap_or_else(|e| e.into_inner());
             shard.insert(
@@ -10033,5 +10067,160 @@ mod tests {
         .expect("valid NameTokenizer block must pass prevalidation");
         assert_eq!(end_off, valid_nt_blk.len() as u64);
         assert!(peak_uncomp >= 88);
+    }
+
+    #[test]
+    fn cram_container_cache_bypasses_oversized_containers_over_4mib() {
+        use noodles::core::Position;
+        use noodles::sam::{
+            alignment::{
+                io::Write as _,
+                record::{
+                    cigar::{op::Kind, Op},
+                    Flags, MappingQuality,
+                },
+                record_buf::{Cigar, RecordBuf},
+            },
+            header::record::value::{map::ReferenceSequence as RefSeqMap, Map as HeaderMap},
+            Header,
+        };
+        use std::fs::File;
+        use std::num::NonZeroUsize;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let ref_fa = temp_dir.path().join("long_ref.fa");
+        let ref_fai = temp_dir.path().join("long_ref.fa.fai");
+        let cram_path = temp_dir.path().join("oversized_long_reads.cram");
+
+        let ref_len = 50_000usize;
+        let ref_bases: Vec<u8> = (0..ref_len)
+            .map(|i| b"ACGT"[(i.wrapping_mul(13).wrapping_add(i / 7)) % 4])
+            .collect();
+        std::fs::write(
+            &ref_fa,
+            format!(">chr1\n{}\n", std::str::from_utf8(&ref_bases).unwrap()),
+        )
+        .unwrap();
+        std::fs::write(
+            &ref_fai,
+            format!("chr1\t{ref_len}\t6\t{ref_len}\t{}\n", ref_len + 1),
+        )
+        .unwrap();
+
+        let rs = HeaderMap::<RefSeqMap>::builder()
+            .set_length(NonZeroUsize::new(ref_len).unwrap())
+            .build()
+            .unwrap();
+        let header = Header::builder().add_reference_sequence("chr1", rs).build();
+
+        // 60 long reads × (40,000 bp seq + 40,000 byte qual) ≈ 4.8 MiB > 4 MiB,
+        // while 60 <= MAX_CACHED_CRAM_CONTAINER_RECORDS (65_536).
+        let read_count = 60usize;
+        let read_len = 40_000usize;
+        let cigar: Cigar = [Op::new(Kind::Match, read_len)].into_iter().collect();
+        let mut expected_names = Vec::with_capacity(read_count);
+        {
+            let fasta_reader = noodles::fasta::io::IndexedReader::new(
+                std::io::BufReader::new(File::open(&ref_fa).unwrap()),
+                noodles::fasta::fai::fs::read(&ref_fai).unwrap(),
+            );
+            let repo = noodles::fasta::Repository::new(
+                noodles::fasta::repository::adapters::IndexedReader::new(fasta_reader),
+            );
+            let mut cram_writer = noodles::cram::io::writer::Builder::default()
+                .set_reference_sequence_repository(repo)
+                .build_from_path(&cram_path)
+                .unwrap();
+            cram_writer.write_alignment_header(&header).unwrap();
+            for idx in 0..read_count {
+                let start_1 = 100 + idx * 10;
+                let seq = ref_bases[(start_1 - 1)..(start_1 - 1 + read_len)].to_vec();
+                let qname = format!("long_read_{idx:03}");
+                expected_names.push(qname.as_bytes().to_vec());
+                let rec = RecordBuf::builder()
+                    .set_name(qname)
+                    .set_flags(Flags::empty())
+                    .set_reference_sequence_id(0)
+                    .set_alignment_start(Position::try_from(start_1).unwrap())
+                    .set_mapping_quality(MappingQuality::new(60).unwrap())
+                    .set_cigar(cigar.clone())
+                    .set_sequence(seq.into())
+                    .set_quality_scores(vec![35u8; read_len].into())
+                    .build();
+                cram_writer.write_alignment_record(&header, &rec).unwrap();
+            }
+            cram_writer.try_finish(&header).unwrap();
+            let crai = noodles::cram::fs::index(&cram_path).unwrap();
+            assert_eq!(
+                crai.len(),
+                1,
+                "expected all 60 long reads in a single CRAM container"
+            );
+            noodles::cram::crai::fs::write(cram_path.with_extension("cram.crai"), &crai).unwrap();
+        }
+
+        let config = crate::config::Config {
+            reference: ref_fa.to_string_lossy().into_owned(),
+            ..Default::default()
+        };
+        NEXT_BAM_META_ID.fetch_max(TEST_META_ID_BASE, std::sync::atomic::Ordering::Relaxed);
+
+        let decoded_1 = query_region(&cram_path, "chr1", Pos0(0), Pos0(50_000), &config).unwrap();
+        assert_eq!(decoded_1.len(), read_count);
+        for (i, rec) in decoded_1.iter().enumerate() {
+            assert_eq!(rec.name, expected_names[i]);
+            assert_eq!(rec.sequence.len(), read_len);
+            assert_eq!(rec.quality_scores.len(), read_len);
+        }
+
+        let synth_cached_block: CachedCramBlock = std::sync::Arc::new(
+            decoded_1
+                .iter()
+                .map(|sam| CachedCramRecord {
+                    reference_sequence_id: Some(0),
+                    alignment_start: Position::new(100),
+                    alignment_end: Position::new(40_099),
+                    reference_name: Some(std::sync::Arc::from("chr1")),
+                    mate_reference_name: None,
+                    sam: sam.clone(),
+                })
+                .collect(),
+        );
+        assert!(
+            approx_cram_container_bytes(&synth_cached_block) > MAX_CACHED_CRAM_CONTAINER_BYTES,
+            "60 × 40 kbp long-read container must exceed 4 MiB byte cap"
+        );
+
+        let meta_id = {
+            let map = CRAM_META_CACHE.get().unwrap().lock().unwrap();
+            let slot = map
+                .get(&(cram_path.clone(), ref_fa.clone()))
+                .expect("CRAM metadata entry");
+            let guard = slot.lock().unwrap();
+            guard.as_ref().unwrap().id
+        };
+        let cached_for_meta: usize = cram_container_cache_shards()
+            .iter()
+            .map(|shard| {
+                shard
+                    .lock()
+                    .unwrap()
+                    .entries
+                    .iter()
+                    .filter(|((id, _), _)| *id == meta_id)
+                    .count()
+            })
+            .sum();
+        assert_eq!(
+            cached_for_meta, 0,
+            "oversized >4 MiB decoded CRAM container must bypass CRAM_CONTAINER_CACHE insertion"
+        );
+
+        let decoded_2: Vec<SamRecord> =
+            query_region_iter(&cram_path, "chr1", Pos0(0), Pos0(50_000), &config)
+                .unwrap()
+                .map(|r| r.unwrap())
+                .collect();
+        assert_eq!(decoded_2, decoded_1);
     }
 }

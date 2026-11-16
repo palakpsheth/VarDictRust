@@ -1,4 +1,4 @@
-//! Process-level CLI smoke and robustness tests (`21` tests).
+//! Process-level CLI smoke and robustness tests (`23` tests).
 //!
 //! Verifies end-to-end binary stream redirection (`--DP ERR` / `--defaultPrinter ERR`),
 //! verbose stderr region debug output (`-y` / `--verbose`), non-zero exit codes on
@@ -7150,4 +7150,426 @@ fn readonly_parent_direct_temp_staged_and_nofollow_symlink_rejection() {
                 .expect("restore chmod 0755 ro_dir_0555");
         }
     }
+}
+
+#[test]
+fn output_bgzf_without_index_cleans_stale_sidecars_and_preflights_hazards() {
+    use std::io::Read as _;
+
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let ref_abs = workspace_root().join("fixtures/micro/micro.ref.fa");
+    let bam_abs = workspace_root().join("fixtures/micro/micro.bam");
+    let bed_abs = workspace_root().join("fixtures/micro/micro.bed");
+
+    let common_args = [
+        "-G".to_string(),
+        ref_abs.to_string_lossy().into_owned(),
+        "-b".to_string(),
+        bam_abs.to_string_lossy().into_owned(),
+        "-c".to_string(),
+        "1".to_string(),
+        "-S".to_string(),
+        "2".to_string(),
+        "-E".to_string(),
+        "3".to_string(),
+        "-g".to_string(),
+        "4".to_string(),
+        "-z".to_string(),
+        bed_abs.to_string_lossy().into_owned(),
+        "--threads=1".to_string(),
+    ];
+
+    let stdout_run = base_cmd()
+        .args(&common_args)
+        .output()
+        .expect("spawn baseline stdout");
+    assert!(stdout_run.status.success());
+
+    // 1. Write --output out.vcf.gz --tbi + dummy .csi, then re-run WITHOUT --tbi/--csi:
+    //    both stale .tbi and .csi must be removed while out.vcf.gz is valid BGZF.
+    let vcf_gz = dir.path().join("unindexed_clean.vcf.gz");
+    let tbi_sidecar = dir.path().join("unindexed_clean.vcf.gz.tbi");
+    let csi_sidecar = dir.path().join("unindexed_clean.vcf.gz.csi");
+    let indexed_run = base_cmd()
+        .args(&common_args)
+        .arg("--output")
+        .arg(&vcf_gz)
+        .arg("--tbi")
+        .output()
+        .expect("spawn initial --tbi run");
+    assert!(indexed_run.status.success());
+    assert!(tbi_sidecar.is_file(), "initial .tbi must exist");
+    std::fs::write(&csi_sidecar, b"STALE_CSI_BYTES").expect("seed dummy .csi");
+
+    let unindexed_run = base_cmd()
+        .args(&common_args)
+        .arg("--output")
+        .arg(&vcf_gz)
+        .output()
+        .expect("spawn unindexed overwrite run");
+    assert!(
+        unindexed_run.status.success(),
+        "unindexed overwrite failed: {}",
+        String::from_utf8_lossy(&unindexed_run.stderr)
+    );
+    assert!(
+        !tbi_sidecar.exists(),
+        "stale .tbi sidecar must be removed when overwriting .vcf.gz without --tbi/--csi"
+    );
+    assert!(
+        !csi_sidecar.exists(),
+        "stale .csi sidecar must be removed when overwriting .vcf.gz without --tbi/--csi"
+    );
+    let mut bgzf_reader =
+        noodles::bgzf::io::Reader::new(std::fs::File::open(&vcf_gz).expect("open out.vcf.gz"));
+    let mut decompressed = Vec::new();
+    bgzf_reader
+        .read_to_end(&mut decompressed)
+        .expect("decompress out.vcf.gz");
+    assert_eq!(decompressed, stdout_run.stdout);
+
+    // 2. Bare relative filename "out.vcf.gz" in current working directory (parent == Some("") -> ".")
+    let cwd_dir = dir.path().join("bare_cwd");
+    std::fs::create_dir(&cwd_dir).expect("mkdir bare_cwd");
+    let bare_tbi = cwd_dir.join("out.vcf.gz.tbi");
+    let bare_csi = cwd_dir.join("out.vcf.gz.csi");
+    std::fs::write(&bare_tbi, b"STALE_BARE_TBI").expect("seed bare .tbi");
+    std::fs::write(&bare_csi, b"STALE_BARE_CSI").expect("seed bare .csi");
+    let bare_run = Command::new(env!("CARGO_BIN_EXE_vardictrust"))
+        .current_dir(&cwd_dir)
+        .args(&common_args)
+        .args(["--output", "out.vcf.gz"])
+        .output()
+        .expect("spawn bare out.vcf.gz in cwd");
+    assert!(
+        bare_run.status.success(),
+        "bare out.vcf.gz failed: {}",
+        String::from_utf8_lossy(&bare_run.stderr)
+    );
+    assert!(!bare_tbi.exists(), "bare out.vcf.gz.tbi must be removed");
+    assert!(!bare_csi.exists(), "bare out.vcf.gz.csi must be removed");
+    let mut bare_decompressed = Vec::new();
+    noodles::bgzf::io::Reader::new(
+        std::fs::File::open(cwd_dir.join("out.vcf.gz")).expect("open bare out.vcf.gz"),
+    )
+    .read_to_end(&mut bare_decompressed)
+    .expect("decompress bare out.vcf.gz");
+    assert_eq!(bare_decompressed, stdout_run.stdout);
+
+    // 3. Directory sidecar `mkdir out.vcf.gz.tbi` (and `.csi`) without --tbi -> rejected up front (`is a directory`)
+    let dir_guard_vcf = dir.path().join("dir_sidecar.vcf.gz");
+    std::fs::write(&dir_guard_vcf, b"PREEXISTING_BGZF_SENTINEL").expect("seed dir_sidecar.vcf.gz");
+    for ext in ["tbi", "csi"] {
+        let sidecar_dir = dir.path().join(format!("dir_sidecar.vcf.gz.{ext}"));
+        std::fs::create_dir(&sidecar_dir).expect("mkdir sidecar dir");
+        let dir_run = base_cmd()
+            .args(&common_args)
+            .arg("--output")
+            .arg(&dir_guard_vcf)
+            .output()
+            .expect("spawn with directory sidecar without --tbi/--csi");
+        assert!(
+            !dir_run.status.success(),
+            "directory .{ext} sidecar must be rejected up front"
+        );
+        assert_ne!(dir_run.status.code(), Some(101));
+        assert!(
+            String::from_utf8_lossy(&dir_run.stderr).contains("is a directory"),
+            "expected IsADirectory message for .{ext} sidecar, got: {}",
+            String::from_utf8_lossy(&dir_run.stderr)
+        );
+        assert_eq!(
+            std::fs::read(&dir_guard_vcf).expect("read dir_sidecar.vcf.gz"),
+            b"PREEXISTING_BGZF_SENTINEL",
+            "pre-existing target bytes must remain untouched when sidecar is a directory"
+        );
+        std::fs::remove_dir(&sidecar_dir).expect("rmdir sidecar dir");
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{symlink, PermissionsExt as _};
+
+        // 4. Symlink collisions on unindexed .vcf.gz sidecars (vs --output, --stats-json, and input BAM)
+        let col_vcf = dir.path().join("col_unindexed.vcf.gz");
+        let col_tbi = dir.path().join("col_unindexed.vcf.gz.tbi");
+        std::fs::write(&col_vcf, b"COL_OUT_SENTINEL").expect("seed col_unindexed.vcf.gz");
+        symlink(&col_vcf, &col_tbi).expect("symlink .tbi -> .vcf.gz");
+        let col_out_run = base_cmd()
+            .args(&common_args)
+            .arg("--output")
+            .arg(&col_vcf)
+            .output()
+            .expect("spawn unindexed colliding .tbi -> --output");
+        assert!(!col_out_run.status.success());
+        assert!(String::from_utf8_lossy(&col_out_run.stderr)
+            .contains("must not point to the same file"));
+        assert_eq!(
+            std::fs::read(&col_vcf).expect("read col_unindexed.vcf.gz"),
+            b"COL_OUT_SENTINEL"
+        );
+        std::fs::remove_file(&col_tbi).expect("rm col_tbi");
+
+        let stats_file = dir.path().join("keep_stats.json");
+        std::fs::write(&stats_file, b"{\"keep\":1}").expect("seed keep_stats.json");
+        let col_csi = dir.path().join("col_unindexed.vcf.gz.csi");
+        symlink(&stats_file, &col_csi).expect("symlink .csi -> stats.json");
+        let col_stats_run = base_cmd()
+            .args(&common_args)
+            .arg("--output")
+            .arg(&col_vcf)
+            .arg("--stats-json")
+            .arg(&stats_file)
+            .output()
+            .expect("spawn unindexed colliding .csi -> --stats-json");
+        assert!(!col_stats_run.status.success());
+        assert!(String::from_utf8_lossy(&col_stats_run.stderr)
+            .contains("must not point to the same file"));
+        assert_eq!(
+            std::fs::read(&stats_file).expect("read keep_stats.json"),
+            b"{\"keep\":1}"
+        );
+        std::fs::remove_file(&col_csi).expect("rm col_csi");
+
+        let bam_len_before = std::fs::metadata(&bam_abs).expect("stat micro.bam").len();
+        symlink(&bam_abs, &col_tbi).expect("symlink .tbi -> micro.bam");
+        let col_in_run = base_cmd()
+            .args(&common_args)
+            .arg("--output")
+            .arg(&col_vcf)
+            .output()
+            .expect("spawn unindexed colliding .tbi -> input BAM");
+        assert!(!col_in_run.status.success());
+        assert!(
+            String::from_utf8_lossy(&col_in_run.stderr).contains("must not point to the same file")
+        );
+        assert_eq!(
+            std::fs::metadata(&bam_abs).expect("stat micro.bam").len(),
+            bam_len_before
+        );
+        std::fs::remove_file(&col_tbi).expect("rm col_tbi");
+
+        // 5. Pre-existing out.vcf.gz + out.vcf.gz.tbi in a 0o555 read-only parent directory (non-root)
+        //    without --tbi -> fails cleanly in preflight BEFORE overwriting out.vcf.gz!
+        let ro_dir = dir.path().join("ro_stale_sidecar_0555");
+        std::fs::create_dir(&ro_dir).expect("mkdir ro_stale_sidecar_0555");
+        let ro_vcf = ro_dir.join("out.vcf.gz");
+        let ro_tbi = ro_dir.join("out.vcf.gz.tbi");
+        std::fs::write(&ro_vcf, b"RO_ORIG_VCF_GZ_BYTES").expect("seed ro out.vcf.gz");
+        std::fs::write(&ro_tbi, b"RO_STALE_TBI_BYTES").expect("seed ro out.vcf.gz.tbi");
+        std::fs::set_permissions(&ro_dir, std::fs::Permissions::from_mode(0o555))
+            .expect("chmod 0555 ro_stale_sidecar_0555");
+
+        let non_root_enforced = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(ro_dir.join("probe"))
+            .is_err();
+
+        if non_root_enforced {
+            let ro_run = base_cmd()
+                .args(&common_args)
+                .arg("--output")
+                .arg(&ro_vcf)
+                .output()
+                .expect("spawn unindexed overwrite in 0555 dir with stale .tbi");
+            let after_ro_vcf = std::fs::read(&ro_vcf).expect("read ro out.vcf.gz");
+            let after_ro_tbi = std::fs::read(&ro_tbi).expect("read ro out.vcf.gz.tbi");
+            std::fs::set_permissions(&ro_dir, std::fs::Permissions::from_mode(0o755))
+                .expect("restore chmod 0755 ro_stale_sidecar_0555");
+
+            assert!(
+                !ro_run.status.success(),
+                "0555 parent with unremovable stale .tbi must fail in preflight"
+            );
+            assert_ne!(ro_run.status.code(), Some(101));
+            let ro_stderr = String::from_utf8_lossy(&ro_run.stderr);
+            assert!(
+                ro_stderr.contains("cannot remove stale")
+                    && ro_stderr.contains("read-only parent directory"),
+                "expected actionable read-only stale index preflight error, got: {ro_stderr}"
+            );
+            assert_eq!(
+                after_ro_vcf, b"RO_ORIG_VCF_GZ_BYTES",
+                "ro out.vcf.gz bytes must remain 100% untouched when stale .tbi preflight fails"
+            );
+            assert_eq!(after_ro_tbi, b"RO_STALE_TBI_BYTES");
+        } else {
+            let _ = std::fs::remove_file(ro_dir.join("probe"));
+            std::fs::set_permissions(&ro_dir, std::fs::Permissions::from_mode(0o755))
+                .expect("restore chmod 0755 ro_stale_sidecar_0555");
+        }
+    }
+}
+
+#[test]
+fn threads_flag_positional_bed_and_commons_cli_duplicate_parity() {
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let stats_all = dir.path().join("stats_all.json");
+    let stats_dup_bed = dir.path().join("stats_dup_bed.json");
+    let stats_dup_bogus = dir.path().join("stats_dup_bogus.json");
+
+    let count_vcf_variants = |stdout: &[u8]| -> usize {
+        String::from_utf8_lossy(stdout)
+            .lines()
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .count()
+    };
+
+    let bed_cols = ["-c", "1", "-S", "2", "-E", "3", "-g", "4", "-z", "1"];
+
+    // 1. `-th micro.bed` -> succeeds with 2 variants (`threads = all_cores`)
+    let run1 = base_cmd()
+        .args([
+            "-G",
+            "fixtures/micro/micro.ref.fa",
+            "-b",
+            "fixtures/micro/micro.bam",
+        ])
+        .args(bed_cols)
+        .arg("--stats-json")
+        .arg(&stats_all)
+        .args(["-th", "fixtures/micro/micro.bed"])
+        .output()
+        .expect("spawn -th micro.bed");
+    assert!(
+        run1.status.success(),
+        "-th micro.bed failed: {}",
+        String::from_utf8_lossy(&run1.stderr)
+    );
+    assert_eq!(count_vcf_variants(&run1.stdout), 2);
+    let expected_all_cores = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
+    let stats_all_text = std::fs::read_to_string(&stats_all).expect("read stats_all.json");
+    assert!(
+        stats_all_text.contains(&format!("\"threads\": {expected_all_cores}")),
+        "expected threads={expected_all_cores} in stats_all.json, got:\n{stats_all_text}"
+    );
+
+    // 2. `--threads micro.bed` -> succeeds with 2 variants
+    let run2 = base_cmd()
+        .args([
+            "-G",
+            "fixtures/micro/micro.ref.fa",
+            "-b",
+            "fixtures/micro/micro.bam",
+        ])
+        .args(bed_cols)
+        .args(["--threads", "fixtures/micro/micro.bed"])
+        .output()
+        .expect("spawn --threads micro.bed");
+    assert!(
+        run2.status.success(),
+        "--threads micro.bed failed: {}",
+        String::from_utf8_lossy(&run2.stderr)
+    );
+    assert_eq!(run2.stdout, run1.stdout);
+
+    // 3. `-th micro.bed -N SAMPLE1` (trailing flag after positional BED) -> succeeds with SAMPLE1
+    let run3 = base_cmd()
+        .args([
+            "-G",
+            "fixtures/micro/micro.ref.fa",
+            "-b",
+            "fixtures/micro/micro.bam",
+        ])
+        .args(bed_cols)
+        .args(["-th", "fixtures/micro/micro.bed", "-N", "SAMPLE1"])
+        .output()
+        .expect("spawn -th micro.bed -N SAMPLE1");
+    assert!(
+        run3.status.success(),
+        "-th micro.bed -N SAMPLE1 failed: {}",
+        String::from_utf8_lossy(&run3.stderr)
+    );
+    assert_eq!(count_vcf_variants(&run3.stdout), 2);
+    assert!(
+        String::from_utf8_lossy(&run3.stdout).contains("\tFORMAT\tSAMPLE1\n"),
+        "expected SAMPLE1 in #CHROM header"
+    );
+
+    // 4. `-th 2 -th micro.bed -N SAMPLE1` -> succeeds with threads = 2 and SAMPLE1
+    let run4 = base_cmd()
+        .args([
+            "-G",
+            "fixtures/micro/micro.ref.fa",
+            "-b",
+            "fixtures/micro/micro.bam",
+        ])
+        .args(bed_cols)
+        .arg("--stats-json")
+        .arg(&stats_dup_bed)
+        .args([
+            "-th",
+            "2",
+            "-th",
+            "fixtures/micro/micro.bed",
+            "-N",
+            "SAMPLE1",
+        ])
+        .output()
+        .expect("spawn -th 2 -th micro.bed -N SAMPLE1");
+    assert!(
+        run4.status.success(),
+        "-th 2 -th micro.bed -N SAMPLE1 failed: {}",
+        String::from_utf8_lossy(&run4.stderr)
+    );
+    assert_eq!(run4.stdout, run3.stdout);
+    assert!(
+        std::fs::read_to_string(&stats_dup_bed)
+            .expect("read stats_dup_bed.json")
+            .contains("\"threads\": 2"),
+        "expected threads=2 for -th 2 -th micro.bed"
+    );
+
+    // 5. `-th 2 -th bogus micro.bed` -> succeeds with threads = 2 (Commons-CLI first-wins parity)
+    let run5 = base_cmd()
+        .args([
+            "-G",
+            "fixtures/micro/micro.ref.fa",
+            "-b",
+            "fixtures/micro/micro.bam",
+        ])
+        .args(bed_cols)
+        .arg("--stats-json")
+        .arg(&stats_dup_bogus)
+        .args(["-th", "2", "-th", "bogus", "fixtures/micro/micro.bed"])
+        .output()
+        .expect("spawn -th 2 -th bogus micro.bed");
+    assert!(
+        run5.status.success(),
+        "-th 2 -th bogus micro.bed failed: {}",
+        String::from_utf8_lossy(&run5.stderr)
+    );
+    assert_eq!(run5.stdout, run1.stdout);
+    assert!(
+        std::fs::read_to_string(&stats_dup_bogus)
+            .expect("read stats_dup_bogus.json")
+            .contains("\"threads\": 2"),
+        "expected threads=2 for -th 2 -th bogus micro.bed"
+    );
+
+    // 6. `-th bogus micro.bed` -> fails cleanly with invalid thread value "bogus"
+    let run6 = base_cmd()
+        .args([
+            "-G",
+            "fixtures/micro/micro.ref.fa",
+            "-b",
+            "fixtures/micro/micro.bam",
+        ])
+        .args(bed_cols)
+        .args(["-th", "bogus", "fixtures/micro/micro.bed"])
+        .output()
+        .expect("spawn -th bogus micro.bed");
+    assert!(
+        !run6.status.success(),
+        "-th bogus micro.bed must exit non-zero"
+    );
+    assert_ne!(run6.status.code(), Some(101));
+    let stderr6 = String::from_utf8_lossy(&run6.stderr);
+    assert!(
+        stderr6.contains("bogus"),
+        "stderr must mention invalid thread value 'bogus', got: {stderr6}"
+    );
 }

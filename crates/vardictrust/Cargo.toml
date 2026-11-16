@@ -23,7 +23,6 @@ clap.workspace = true
 anyhow.workspace = true
 env_logger.workspace = true
 log.workspace = true
-regex = { workspace = true }
 tikv-jemallocator = { workspace = true, optional = true }
 pprof = { version = "0.15", optional = true, default-features = false, features = ["prost-codec"] }  # NO `flamegraph` (quick-xml advisories)
 inferno = { version = "0.12", optional = true, default-features = false }  # CDDL-1.0, profiling-only SVG render
@@ -47,4 +46,4 @@ profile-counters = ["vardictrust-core/profile-counters"]
 [dev-dependencies]
 flate2.workspace = true
 tempfile.workspace = true
-noodles.workspace = true
+noodles = { workspace = true, features = ["vcf"] }

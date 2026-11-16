@@ -18,9 +18,56 @@ const GZIP_MAGIC: [u8; 2] = [0x1f, 0x8b];
 const BGZF_CM_FLG: [u8; 2] = [0x08, 0x04];
 const BGZF_XLEN_SUBFIELD: [u8; 6] = [0x06, 0x00, b'B', b'C', 0x02, 0x00];
 
+/// Maximum number of distinct reference FASTA paths retained in [`SHARED_FASTA_META_CACHE`].
+const MAX_SHARED_FASTA_META_ENTRIES: usize = 64;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SingleFileStamp {
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+    #[cfg(unix)]
+    dev_ino: (u64, u64),
+}
+
+impl SingleFileStamp {
+    fn from_metadata(meta: &std::fs::Metadata) -> Self {
+        #[cfg(unix)]
+        use std::os::unix::fs::MetadataExt as _;
+        Self {
+            len: meta.len(),
+            modified: meta.modified().ok(),
+            #[cfg(unix)]
+            dev_ino: (meta.dev(), meta.ino()),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FastaFileStamp {
+    fa: SingleFileStamp,
+    fai: SingleFileStamp,
+    gzi: Option<SingleFileStamp>,
+}
+
+struct SharedFastaMeta {
+    fai_index: fai::Index,
+    gzi_index: Option<noodles_bgzf::gzi::Index>,
+    fai_lengths: HashMap<Vec<u8>, u64>,
+}
+
+type SharedFastaMetaMap = HashMap<PathBuf, (FastaFileStamp, std::sync::Arc<SharedFastaMeta>)>;
+
+static SHARED_FASTA_META_CACHE: std::sync::OnceLock<std::sync::Mutex<SharedFastaMetaMap>> =
+    std::sync::OnceLock::new();
+
+fn shared_fasta_meta_cache() -> &'static std::sync::Mutex<SharedFastaMetaMap> {
+    SHARED_FASTA_META_CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
 struct CachedFastaReader {
     reader: IndexedReader<noodles::fasta::io::BufReader<File>>,
-    fai_lengths: HashMap<Vec<u8>, u64>,
+    meta: std::sync::Arc<SharedFastaMeta>,
+    stamp: FastaFileStamp,
 }
 
 thread_local! {
@@ -42,9 +89,12 @@ pub(crate) fn get_base_calls() -> u64 {
     GET_BASE_CALLS.with(|c| c.get())
 }
 
-/// Clears the current thread's cached FASTA readers.
+/// Clears the current thread's cached FASTA readers and the process-wide shared FASTA metadata cache.
 pub(crate) fn clear_fasta_reader_cache() {
     FASTA_READER_CACHE.with(|cache| cache.borrow_mut().clear());
+    if let Some(cache) = SHARED_FASTA_META_CACHE.get() {
+        cache.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    }
 }
 
 /// Appends `suffix` (e.g. `".fai"`, `".gzi"`) directly to `path`'s OS string without
@@ -235,22 +285,26 @@ fn read_validated_gzi_index(
     Ok(index)
 }
 
-/// Opens an indexed FASTA buffered reader with an explicit `BufReader` capacity for uncompressed
-/// FASTA, supporting both uncompressed FASTA (including `< 18`-byte files) and BGZF-compressed
-/// FASTA (`.fa.gz` / `.fa.bgz`) paired with a pre-validated `.gzi` index.
-pub(crate) fn open_indexed_fasta_buf_reader_with_capacity(
-    fasta_path: &Path,
-    capacity: usize,
-) -> Result<noodles::fasta::io::BufReader<File>, VardictError> {
+struct InspectedFasta {
+    file: File,
+    fa_stamp: SingleFileStamp,
+    gzi: Option<(PathBuf, SingleFileStamp)>,
+}
+
+fn inspect_fasta_file_and_gzi_stamp(fasta_path: &Path) -> Result<InspectedFasta, VardictError> {
     let mut file = File::open(fasta_path).map_err(VardictError::Io)?;
+    let fa_meta = file.metadata().map_err(VardictError::Io)?;
+    let fa_stamp = SingleFileStamp::from_metadata(&fa_meta);
     let mut hdr = [0u8; 18];
     let n = read_up_to(&mut file, &mut hdr).map_err(VardictError::Io)?;
+    file.seek(SeekFrom::Start(0)).map_err(VardictError::Io)?;
 
     if n < 2 || hdr.get(..2) != Some(GZIP_MAGIC.as_slice()) {
-        file.seek(SeekFrom::Start(0)).map_err(VardictError::Io)?;
-        return Ok(noodles::fasta::io::BufReader::Uncompressed(
-            BufReader::with_capacity(capacity, file),
-        ));
+        return Ok(InspectedFasta {
+            file,
+            fa_stamp,
+            gzi: None,
+        });
     }
 
     let is_bgzf = n == 18
@@ -263,12 +317,73 @@ pub(crate) fn open_indexed_fasta_buf_reader_with_capacity(
         )));
     }
 
-    let fasta_len = file.metadata().map_err(VardictError::Io)?.len();
     let gzi_path = resolve_fasta_gzi_path(fasta_path);
-    let gzi_index = read_validated_gzi_index(&gzi_path, fasta_path, fasta_len)?;
-    file.seek(SeekFrom::Start(0)).map_err(VardictError::Io)?;
-    Ok(noodles::fasta::io::BufReader::Bgzf(
-        noodles_bgzf::io::IndexedReader::new(file, gzi_index),
+    let gzi_meta = match std::fs::metadata(&gzi_path) {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(VardictError::Parse(format!(
+                "BGZF-compressed FASTA '{}' is missing its required GZI index '{}'; run `samtools faidx {}` to generate both .fai and .gzi indexes",
+                fasta_path.display(),
+                gzi_path.display(),
+                fasta_path.display()
+            )));
+        }
+        Err(e) => return Err(VardictError::Io(e)),
+    };
+    Ok(InspectedFasta {
+        file,
+        fa_stamp,
+        gzi: Some((gzi_path, SingleFileStamp::from_metadata(&gzi_meta))),
+    })
+}
+
+fn build_fasta_buf_reader(
+    file: File,
+    capacity: usize,
+    gzi_index: Option<noodles_bgzf::gzi::Index>,
+) -> noodles::fasta::io::BufReader<File> {
+    match gzi_index {
+        Some(idx) => {
+            noodles::fasta::io::BufReader::Bgzf(noodles_bgzf::io::IndexedReader::new(file, idx))
+        }
+        None => {
+            noodles::fasta::io::BufReader::Uncompressed(BufReader::with_capacity(capacity, file))
+        }
+    }
+}
+
+/// Opens an indexed FASTA buffered reader with an explicit `BufReader` capacity for uncompressed
+/// FASTA, supporting both uncompressed FASTA (including `< 18`-byte files) and BGZF-compressed
+/// FASTA (`.fa.gz` / `.fa.bgz`) paired with a pre-validated `.gzi` index.
+pub(crate) fn open_indexed_fasta_buf_reader_with_capacity(
+    fasta_path: &Path,
+    capacity: usize,
+) -> Result<noodles::fasta::io::BufReader<File>, VardictError> {
+    let inspected = inspect_fasta_file_and_gzi_stamp(fasta_path)?;
+    let Some((gzi_path, gzi_stamp)) = inspected.gzi else {
+        return Ok(build_fasta_buf_reader(inspected.file, capacity, None));
+    };
+
+    let cached_gzi = {
+        let map = shared_fasta_meta_cache()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        map.get(fasta_path).and_then(|(stamp, meta)| {
+            if stamp.fa == inspected.fa_stamp && stamp.gzi == Some(gzi_stamp) {
+                meta.gzi_index.clone()
+            } else {
+                None
+            }
+        })
+    };
+    let gzi_index = match cached_gzi {
+        Some(idx) => idx,
+        None => read_validated_gzi_index(&gzi_path, fasta_path, inspected.fa_stamp.len)?,
+    };
+    Ok(build_fasta_buf_reader(
+        inspected.file,
+        capacity,
+        Some(gzi_index),
     ))
 }
 
@@ -374,13 +489,113 @@ pub(crate) fn read_validated_fai_index(fai_path: &Path) -> Result<fai::Index, Va
 }
 
 /// Opens an indexed FASTA buffered reader with the default 8 KiB uncompressed buffer capacity.
-pub(crate) fn open_indexed_fasta_buf_reader(
+#[cfg(test)]
+fn open_indexed_fasta_buf_reader(
     fasta_path: &Path,
 ) -> Result<noodles::fasta::io::BufReader<File>, VardictError> {
     open_indexed_fasta_buf_reader_with_capacity(fasta_path, 8 * 1024)
 }
 
-/// Fetches a subsequence from an indexed FASTA file using a thread-local cached reader.
+fn probe_current_fasta_stamp(fasta_path: &Path, expect_gzi: bool) -> Option<FastaFileStamp> {
+    let fa_meta = std::fs::metadata(fasta_path).ok()?;
+    let fai_path = resolve_fasta_fai_path(fasta_path);
+    let fai_meta = std::fs::metadata(&fai_path).ok()?;
+    let gzi = if expect_gzi {
+        let gzi_path = resolve_fasta_gzi_path(fasta_path);
+        Some(SingleFileStamp::from_metadata(
+            &std::fs::metadata(&gzi_path).ok()?,
+        ))
+    } else {
+        None
+    };
+    Some(FastaFileStamp {
+        fa: SingleFileStamp::from_metadata(&fa_meta),
+        fai: SingleFileStamp::from_metadata(&fai_meta),
+        gzi,
+    })
+}
+
+fn load_or_cache_shared_fasta_meta(
+    fasta_path: &Path,
+) -> Result<(File, FastaFileStamp, std::sync::Arc<SharedFastaMeta>), VardictError> {
+    load_or_cache_shared_fasta_meta_in(shared_fasta_meta_cache(), fasta_path)
+}
+
+fn load_or_cache_shared_fasta_meta_in(
+    cache_mutex: &std::sync::Mutex<SharedFastaMetaMap>,
+    fasta_path: &Path,
+) -> Result<(File, FastaFileStamp, std::sync::Arc<SharedFastaMeta>), VardictError> {
+    let inspected = inspect_fasta_file_and_gzi_stamp(fasta_path)?;
+    let fai_path = resolve_fasta_fai_path(fasta_path);
+    let fai_meta = std::fs::metadata(&fai_path).map_err(VardictError::Io)?;
+    let stamp = FastaFileStamp {
+        fa: inspected.fa_stamp,
+        fai: SingleFileStamp::from_metadata(&fai_meta),
+        gzi: inspected.gzi.as_ref().map(|(_, gs)| *gs),
+    };
+
+    {
+        let map = cache_mutex.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((cached_stamp, cached_meta)) = map.get(fasta_path) {
+            if *cached_stamp == stamp {
+                return Ok((inspected.file, stamp, std::sync::Arc::clone(cached_meta)));
+            }
+        }
+    }
+
+    // Parse `.gzi` and `.fai` outside the global Mutex so concurrent worker threads never
+    // block on disk I/O while holding the lock.
+    let gzi_index = match inspected.gzi {
+        Some((ref gzi_path, _)) => Some(read_validated_gzi_index(
+            gzi_path,
+            fasta_path,
+            inspected.fa_stamp.len,
+        )?),
+        None => None,
+    };
+    let fai_index = read_validated_fai_index(&fai_path)?;
+    let fai_lengths: HashMap<Vec<u8>, u64> = fai_index
+        .as_ref()
+        .iter()
+        .map(|rec| (rec.name().to_vec(), rec.length()))
+        .collect();
+    let parsed_meta = std::sync::Arc::new(SharedFastaMeta {
+        fai_index,
+        gzi_index,
+        fai_lengths,
+    });
+
+    let meta = {
+        let mut map = cache_mutex.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((cached_stamp, cached_meta)) = map.get(fasta_path) {
+            if *cached_stamp == stamp {
+                std::sync::Arc::clone(cached_meta)
+            } else {
+                map.insert(
+                    fasta_path.to_path_buf(),
+                    (stamp, std::sync::Arc::clone(&parsed_meta)),
+                );
+                parsed_meta
+            }
+        } else {
+            if map.len() >= MAX_SHARED_FASTA_META_ENTRIES {
+                if let Some(evict_key) = map.keys().next().cloned() {
+                    map.remove(&evict_key);
+                }
+            }
+            map.insert(
+                fasta_path.to_path_buf(),
+                (stamp, std::sync::Arc::clone(&parsed_meta)),
+            );
+            parsed_meta
+        }
+    };
+
+    Ok((inspected.file, stamp, meta))
+}
+
+/// Fetches a subsequence from an indexed FASTA file using a thread-local cached reader
+/// backed by process-wide [`SHARED_FASTA_META_CACHE`] `.fai`/`.gzi` metadata.
 pub fn fetch_subsequence(
     fasta_path: &Path,
     chr: &str,
@@ -389,20 +604,23 @@ pub fn fetch_subsequence(
 ) -> Result<Vec<u8>, VardictError> {
     FASTA_READER_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
-        if !cache.contains_key(fasta_path) {
-            let fasta_reader = open_indexed_fasta_buf_reader(fasta_path)?;
-            let fai_path = resolve_fasta_fai_path(fasta_path);
-            let index = read_validated_fai_index(&fai_path)?;
-            let fai_lengths: HashMap<Vec<u8>, u64> = index
-                .as_ref()
-                .iter()
-                .map(|rec| (rec.name().to_vec(), rec.length()))
-                .collect();
+        let needs_reload = match cache.get(fasta_path) {
+            Some(cached) => {
+                probe_current_fasta_stamp(fasta_path, cached.stamp.gzi.is_some())
+                    != Some(cached.stamp)
+            }
+            None => true,
+        };
+        if needs_reload {
+            let (file, stamp, meta) = load_or_cache_shared_fasta_meta(fasta_path)?;
+            let fasta_reader = build_fasta_buf_reader(file, 8 * 1024, meta.gzi_index.clone());
+            let index = meta.fai_index.clone();
             cache.insert(
                 fasta_path.to_path_buf(),
                 CachedFastaReader {
                     reader: IndexedReader::new(fasta_reader, index),
-                    fai_lengths,
+                    meta,
+                    stamp,
                 },
             );
         }
@@ -412,7 +630,7 @@ pub fn fetch_subsequence(
             ));
         };
 
-        if let Some(&fai_len) = cached.fai_lengths.get(chr.as_bytes()) {
+        if let Some(&fai_len) = cached.meta.fai_lengths.get(chr.as_bytes()) {
             if u64::from(start.0) > fai_len || u64::from(end.0) > fai_len {
                 return Err(VardictError::Parse(format!(
                     "Query asks for data past end of contig {}: requested {}..={}, contig length {} in '{}'",
@@ -2572,5 +2790,90 @@ mod tests {
             .map(|p| ref_obj.get_base("chr1", p).unwrap())
             .collect();
         assert_eq!(got, b"ACGTNN-N*RYSWN");
+    }
+
+    #[test]
+    fn shared_fasta_meta_cache_coalesces_across_threads_and_invalidates_on_rewrite() {
+        use std::fs;
+        use std::sync::{Arc, Barrier, Mutex};
+
+        let dir = tempfile::tempdir().unwrap();
+        let fa_path = dir.path().join("mutable_ref.fa");
+        let fai_path = dir.path().join("mutable_ref.fa.fai");
+
+        fs::write(&fa_path, b">chr1\nACGTACGT\n").unwrap();
+        fs::write(&fai_path, b"chr1\t8\t6\t8\t9\n").unwrap();
+
+        // (a) Concurrent threads share the exact same Arc<SharedFastaMeta> (`Arc::ptr_eq`)
+        //     against an isolated cache map immune to parallel `clear_bam_caches()` calls.
+        let isolated_cache: Arc<Mutex<SharedFastaMetaMap>> = Arc::new(Mutex::new(HashMap::new()));
+        let n_threads = 8usize;
+        let barrier = Arc::new(Barrier::new(n_threads));
+        let mut handles = Vec::with_capacity(n_threads);
+        for _ in 0..n_threads {
+            let b = Arc::clone(&barrier);
+            let p = fa_path.clone();
+            let c = Arc::clone(&isolated_cache);
+            handles.push(std::thread::spawn(move || {
+                b.wait();
+                let (_file, _stamp, meta) = load_or_cache_shared_fasta_meta_in(&c, &p).unwrap();
+                assert_eq!(meta.fai_lengths.get(b"chr1".as_slice()), Some(&8));
+                meta
+            }));
+        }
+        let thread_metas: Vec<Arc<SharedFastaMeta>> =
+            handles.into_iter().map(|h| h.join().unwrap()).collect();
+        let initial_meta = Arc::clone(&thread_metas[0]);
+        for m in &thread_metas[1..] {
+            assert!(
+                Arc::ptr_eq(&initial_meta, m),
+                "all concurrent worker threads must share the exact same Arc<SharedFastaMeta>"
+            );
+        }
+
+        let (_file, _stamp, cur_meta) =
+            load_or_cache_shared_fasta_meta_in(&isolated_cache, &fa_path).unwrap();
+        assert!(Arc::ptr_eq(&initial_meta, &cur_meta));
+
+        // Populate current thread's thread-local reader + process-wide cache before rewriting
+        assert_eq!(
+            fetch_subsequence(&fa_path, "chr1", Pos1(1), Pos1(8)).unwrap(),
+            b"ACGTACGT"
+        );
+
+        // (b) Rewrite temp FASTA + .fai at the same PathBuf -> invalidates stamp and returns updated sequence
+        let tmp_fa = dir.path().join("mutable_ref.fa.new");
+        let tmp_fai = dir.path().join("mutable_ref.fa.fai.new");
+        fs::write(&tmp_fa, b">chr1\nTTTTTTTTGGGG\n").unwrap();
+        fs::write(&tmp_fai, b"chr1\t12\t6\t12\t13\n").unwrap();
+        fs::rename(&tmp_fa, &fa_path).unwrap();
+        fs::rename(&tmp_fai, &fai_path).unwrap();
+
+        assert_eq!(
+            fetch_subsequence(&fa_path, "chr1", Pos1(1), Pos1(12)).unwrap(),
+            b"TTTTTTTTGGGG",
+            "rewriting FASTA + .fai at the same PathBuf must invalidate cached stamp and return updated sequence"
+        );
+        let (_file, _stamp, refreshed_meta) =
+            load_or_cache_shared_fasta_meta_in(&isolated_cache, &fa_path).unwrap();
+        assert!(
+            !Arc::ptr_eq(&initial_meta, &refreshed_meta),
+            "rewritten FASTA + .fai must allocate a fresh SharedFastaMeta"
+        );
+        assert_eq!(
+            refreshed_meta.fai_lengths.get(b"chr1".as_slice()),
+            Some(&12)
+        );
+
+        // Verify clear_fasta_reader_cache() clears the global OnceLock map too
+        clear_fasta_reader_cache();
+        assert!(
+            shared_fasta_meta_cache()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(&fa_path)
+                .is_none(),
+            "clear_fasta_reader_cache() must clear SHARED_FASTA_META_CACHE"
+        );
     }
 }

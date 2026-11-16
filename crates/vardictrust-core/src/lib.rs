@@ -1519,6 +1519,15 @@ impl SpillTempDir {
         Self::new_in(&std::env::temp_dir())
     }
 
+    fn new_with_preferred(preferred_parent: Option<&Path>) -> std::io::Result<Self> {
+        if let Some(parent) = preferred_parent {
+            if let Ok(dir) = Self::new_in(parent) {
+                return Ok(dir);
+            }
+        }
+        Self::new()
+    }
+
     fn new_in(base: &Path) -> std::io::Result<Self> {
         static NEXT_DIR_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let pid = std::process::id();
@@ -1639,6 +1648,19 @@ where
     Ok(())
 }
 
+fn resolve_preferred_spill_parent(output_path: Option<&str>) -> Option<std::path::PathBuf> {
+    let out_str = output_path.filter(|&p| p != "-")?;
+    let out = Path::new(out_str);
+    if is_special_stream_or_fd_alias(out) {
+        return None;
+    }
+    let parent = match out.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => Path::new("."),
+    };
+    Some(parent.to_path_buf())
+}
+
 /// Bounded-memory per-chromosome VCF candidate accumulator (`AGENTS.md §10`).
 /// Keeps up to `max_bytes` of per-chromosome sorted `BTreeMap<i32, V>` entries in RAM,
 /// spilling sorted runs to a temporary directory when exceeded and k-way merging runs
@@ -1649,6 +1671,7 @@ struct SpillableVcfAccumulator<V: SpillableCandidate> {
     current_bytes: usize,
     max_bytes: usize,
     max_fanin: usize,
+    preferred_spill_parent: Option<std::path::PathBuf>,
     temp_dir: Option<SpillTempDir>,
     next_spill_id: usize,
 }
@@ -1657,15 +1680,22 @@ struct SpillableVcfAccumulator<V: SpillableCandidate> {
 thread_local! {
     static TEST_VCF_SPILL_BYTES_OVERRIDE: std::cell::Cell<Option<usize>> =
         const { std::cell::Cell::new(None) };
+    static TEST_LAST_VCF_SPILL_DIR: std::cell::RefCell<Option<std::path::PathBuf>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 impl<V: SpillableCandidate> SpillableVcfAccumulator<V> {
-    fn new() -> Self {
+    fn from_config(config: &config::Config) -> Self {
         #[cfg(test)]
-        if let Some(override_bytes) = TEST_VCF_SPILL_BYTES_OVERRIDE.with(std::cell::Cell::get) {
-            return Self::with_max_bytes(override_bytes);
-        }
-        Self::with_max_bytes(DEFAULT_VCF_SPILL_BYTES)
+        let max_bytes = TEST_VCF_SPILL_BYTES_OVERRIDE
+            .with(std::cell::Cell::get)
+            .unwrap_or(DEFAULT_VCF_SPILL_BYTES);
+        #[cfg(not(test))]
+        let max_bytes = DEFAULT_VCF_SPILL_BYTES;
+
+        let mut acc = Self::with_max_bytes(max_bytes);
+        acc.preferred_spill_parent = resolve_preferred_spill_parent(config.output_path.as_deref());
+        acc
     }
 
     fn with_max_bytes(max_bytes: usize) -> Self {
@@ -1679,6 +1709,7 @@ impl<V: SpillableCandidate> SpillableVcfAccumulator<V> {
             current_bytes: 0,
             max_bytes,
             max_fanin: max_fanin.max(2),
+            preferred_spill_parent: None,
             temp_dir: None,
             next_spill_id: 0,
         }
@@ -1725,7 +1756,14 @@ impl<V: SpillableCandidate> SpillableVcfAccumulator<V> {
         let dir = match &self.temp_dir {
             Some(d) => d,
             None => {
-                let d = SpillTempDir::new().map_err(VardictError::Io)?;
+                let d = SpillTempDir::new_with_preferred(self.preferred_spill_parent.as_deref())
+                    .map_err(VardictError::Io)?;
+                #[cfg(test)]
+                {
+                    assert!(d.path().is_dir(), "spill directory must exist when created");
+                    TEST_LAST_VCF_SPILL_DIR
+                        .with(|slot| *slot.borrow_mut() = Some(d.path().to_path_buf()));
+                }
                 self.temp_dir.insert(d)
             }
         };
@@ -1781,7 +1819,10 @@ impl<V: SpillableCandidate> SpillableVcfAccumulator<V> {
                     let dir = match &self.temp_dir {
                         Some(d) => d,
                         None => {
-                            let d = SpillTempDir::new().map_err(VardictError::Io)?;
+                            let d = SpillTempDir::new_with_preferred(
+                                self.preferred_spill_parent.as_deref(),
+                            )
+                            .map_err(VardictError::Io)?;
                             self.temp_dir.insert(d)
                         }
                     };
@@ -2244,6 +2285,21 @@ impl StagedFileTarget {
 
                 if let Some(plan) = index_plan {
                     preflight_readonly_index_plan(plan)?;
+                } else if is_bgzf_output_path(target) {
+                    for (flag, sidecar) in [
+                        ("--tbi", tbi_output_path(target)),
+                        ("--csi", csi_output_path(target)),
+                    ] {
+                        if sidecar.exists() || std::fs::symlink_metadata(&sidecar).is_ok() {
+                            return Err(std::io::Error::new(
+                                std::io::ErrorKind::PermissionDenied,
+                                format!(
+                                    "cannot remove stale {flag} index '{}' in read-only parent directory",
+                                    sidecar.display()
+                                ),
+                            ));
+                        }
+                    }
                 }
 
                 Self::from_pinned_dst_file(dst_file)
@@ -3311,6 +3367,20 @@ fn check_active_default_fd_collisions(
     Ok(())
 }
 
+fn unindexed_bgzf_stale_sidecars(
+    out_opt: Option<&Path>,
+    index_plan: Option<&OutputIndexPlan>,
+) -> Option<[(&'static str, std::path::PathBuf); 2]> {
+    let out = out_opt?;
+    if index_plan.is_some() || !is_bgzf_output_path(out) || is_special_stream_or_fd_alias(out) {
+        return None;
+    }
+    Some([
+        ("--tbi", tbi_output_path(out)),
+        ("--csi", csi_output_path(out)),
+    ])
+}
+
 fn validate_io_paths(config: &config::Config) -> Result<(), VardictError> {
     validate_index_flags(config)?;
     if config.stats_json_path.as_deref() == Some("-") {
@@ -3324,6 +3394,7 @@ fn validate_io_paths(config: &config::Config) -> Result<(), VardictError> {
         .filter(|&p| p != "-")
         .map(Path::new);
     let index_plan = output_index_plan(config);
+    let unindexed_sidecars = unindexed_bgzf_stale_sidecars(out_opt, index_plan.as_ref());
     let stats_opt = config.stats_json_path.as_deref().map(Path::new);
 
     if let Some(out) = out_opt {
@@ -3354,6 +3425,18 @@ fn validate_io_paths(config: &config::Config) -> Result<(), VardictError> {
                 )));
             }
         }
+        if let Some(ref sidecars) = unindexed_sidecars {
+            for (flag, sidecar) in sidecars {
+                if paths_collide(out, sidecar) {
+                    return Err(VardictError::Parse(format!(
+                        "--output '{}' and its {} index sidecar '{}' must not point to the same file",
+                        out.display(),
+                        flag,
+                        sidecar.display()
+                    )));
+                }
+            }
+        }
         if let Some(stats) = stats_opt {
             if paths_collide(out, stats) {
                 return Err(VardictError::Parse(
@@ -3376,6 +3459,18 @@ fn validate_io_paths(config: &config::Config) -> Result<(), VardictError> {
                         plan.alt_path.display(),
                         stats.display()
                     )));
+                }
+            }
+            if let Some(ref sidecars) = unindexed_sidecars {
+                for (flag, sidecar) in sidecars {
+                    if paths_collide(sidecar, stats) {
+                        return Err(VardictError::Parse(format!(
+                            "--output {} index sidecar '{}' and --stats-json '{}' must not point to the same file",
+                            flag,
+                            sidecar.display(),
+                            stats.display()
+                        )));
+                    }
                 }
             }
         }
@@ -3409,6 +3504,18 @@ fn validate_io_paths(config: &config::Config) -> Result<(), VardictError> {
                         plan.alt_path.display(),
                         input.display()
                     )));
+                }
+            }
+            if let Some(ref sidecars) = unindexed_sidecars {
+                for (flag, sidecar) in sidecars {
+                    if paths_collide(sidecar, input) {
+                        return Err(VardictError::Parse(format!(
+                            "--output {} index sidecar '{}' must not point to the same file as input '{}'",
+                            flag,
+                            sidecar.display(),
+                            input.display()
+                        )));
+                    }
                 }
             }
             if let Some(stats) = stats_opt {
@@ -3483,6 +3590,13 @@ fn validate_io_paths(config: &config::Config) -> Result<(), VardictError> {
                 plan.alt_flag,
                 &plan.alt_path,
             )));
+        }
+    }
+    if let Some(ref sidecars) = unindexed_sidecars {
+        for (flag, sidecar) in sidecars {
+            if is_directory_target(sidecar) {
+                return Err(VardictError::Io(directory_target_io_error(flag, sidecar)));
+            }
         }
     }
     if let Some(stats) = stats_opt {
@@ -3720,6 +3834,17 @@ pub fn run(config: &config::Config) -> Result<(), VardictError> {
                 }
                 if let Some(ref plan) = index_plan {
                     remove_stale_index_sidecar(&plan.alt_path)?;
+                } else if let Some(sidecars) = unindexed_bgzf_stale_sidecars(
+                    effective
+                        .output_path
+                        .as_deref()
+                        .filter(|&p| p != "-")
+                        .map(Path::new),
+                    None,
+                ) {
+                    for (_, sidecar) in sidecars {
+                        remove_stale_index_sidecar(&sidecar)?;
+                    }
                 }
                 if let Some(pending) = pending_stats {
                     emit_stats(pending)?;
@@ -3954,7 +4079,8 @@ fn run_with_writer_inner<W: EngineWriter>(
         },
     }
 
-    let mut vcf_acc: SpillableVcfAccumulator<RawVcfCandidate> = SpillableVcfAccumulator::new();
+    let mut vcf_acc: SpillableVcfAccumulator<RawVcfCandidate> =
+        SpillableVcfAccumulator::from_config(config);
     let mut split_var_deduper = SplitVarDeduper::default();
 
     // Process tiles in parallel, print variants in deterministic index order
@@ -4361,7 +4487,8 @@ fn run_amplicon<W: EngineWriter>(
         None
     };
 
-    let mut vcf_acc: SpillableVcfAccumulator<RawVcfCandidate> = SpillableVcfAccumulator::new();
+    let mut vcf_acc: SpillableVcfAccumulator<RawVcfCandidate> =
+        SpillableVcfAccumulator::from_config(config);
 
     type AmpliconVarsList = Vec<crate::javamap::JavaHashMap<i32, crate::variations::Vars>>;
 
@@ -4837,7 +4964,8 @@ fn run_somatic<W: EngineWriter>(
         },
     }
 
-    let mut vcf_acc: SpillableVcfAccumulator<SomaticVcfCandidate> = SpillableVcfAccumulator::new();
+    let mut vcf_acc: SpillableVcfAccumulator<SomaticVcfCandidate> =
+        SpillableVcfAccumulator::from_config(config);
     let mut split_var_deduper = SplitVarDeduper::default();
 
     // Process tiles: run both BAMs through pipeline, then somatic postprocess
@@ -9143,6 +9271,159 @@ mod tests {
                 ..base_cfg
             };
             crate::run(&devnull_cfg).expect("/dev/null --stats-json must succeed");
+        }
+    }
+
+    #[test]
+    fn spillable_vcf_accumulator_prefers_output_parent_and_falls_back_cleanly() {
+        assert_eq!(resolve_preferred_spill_parent(None), None);
+        assert_eq!(resolve_preferred_spill_parent(Some("-")), None);
+        assert_eq!(
+            resolve_preferred_spill_parent(Some("out.vcf")),
+            Some(std::path::PathBuf::from("."))
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let micro_ref = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/micro/micro.ref.fa"
+        );
+        let micro_bam = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/micro/micro.bam"
+        );
+
+        let base_cfg = crate::config::Config {
+            reference: micro_ref.to_string(),
+            bam: micro_bam.to_string(),
+            region: Some("chr1:40-260".to_string()),
+            tile_size: Some(60),
+            threads: 1,
+            ..Default::default()
+        };
+
+        let mut unspilled_vcf = Vec::new();
+        crate::run_with_writer(&base_cfg, &mut unspilled_vcf).unwrap();
+        assert!(!unspilled_vcf.is_empty());
+
+        struct ResetSpillGuard;
+        impl Drop for ResetSpillGuard {
+            fn drop(&mut self) {
+                TEST_VCF_SPILL_BYTES_OVERRIDE.with(|c| c.set(None));
+                TEST_LAST_VCF_SPILL_DIR.with(|slot| *slot.borrow_mut() = None);
+            }
+        }
+        let _guard = ResetSpillGuard;
+        TEST_VCF_SPILL_BYTES_OVERRIDE.with(|c| c.set(Some(1)));
+
+        // 1. --output <tempdir>/sub/out.vcf -> spill directory created inside <tempdir>/sub and cleaned up on drop
+        let sub_dir = dir.path().join("sub");
+        std::fs::create_dir(&sub_dir).unwrap();
+        let sub_out = sub_dir.join("out.vcf");
+        TEST_LAST_VCF_SPILL_DIR.with(|slot| *slot.borrow_mut() = None);
+        let mut spilled_buf = Vec::new();
+        crate::run_with_writer(
+            &crate::config::Config {
+                output_path: Some(sub_out.to_string_lossy().into_owned()),
+                ..base_cfg.clone()
+            },
+            &mut spilled_buf,
+        )
+        .expect("spilled run_with_writer with output_path parent must succeed");
+        let recorded_sub_spill = TEST_LAST_VCF_SPILL_DIR
+            .with(|slot| slot.borrow().clone())
+            .expect("TEST_VCF_SPILL_BYTES_OVERRIDE=1 must trigger disk spill");
+        assert_eq!(
+            recorded_sub_spill.parent(),
+            Some(sub_dir.as_path()),
+            "VCF spill directory must be placed inside --output parent directory"
+        );
+        assert!(
+            !recorded_sub_spill.exists(),
+            "VCF spill directory must be cleaned up on drop"
+        );
+        assert_eq!(
+            spilled_buf, unspilled_vcf,
+            "spilled VCF output must match unspilled VCF byte-for-byte"
+        );
+        crate::run(&crate::config::Config {
+            output_path: Some(sub_out.to_string_lossy().into_owned()),
+            ..base_cfg.clone()
+        })
+        .expect("end-to-end run to writable output parent must succeed");
+        assert_eq!(std::fs::read(&sub_out).unwrap(), unspilled_vcf);
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+
+            // 2a. --output /dev/null -> never spills into /dev; falls back to std::env::temp_dir()
+            TEST_LAST_VCF_SPILL_DIR.with(|slot| *slot.borrow_mut() = None);
+            let mut devnull_buf = Vec::new();
+            crate::run_with_writer(
+                &crate::config::Config {
+                    output_path: Some("/dev/null".to_string()),
+                    ..base_cfg.clone()
+                },
+                &mut devnull_buf,
+            )
+            .expect("spilled run with /dev/null output_path must succeed via temp_dir fallback");
+            let devnull_spill = TEST_LAST_VCF_SPILL_DIR
+                .with(|slot| slot.borrow().clone())
+                .expect("expected disk spill on /dev/null run");
+            assert_eq!(
+                devnull_spill.parent(),
+                Some(std::env::temp_dir().as_path()),
+                "/dev/null --output must spill to std::env::temp_dir(), never /dev"
+            );
+            assert!(!devnull_spill.exists());
+
+            // 2b. 0o555 read-only parent directory (non-root) -> SpillTempDir::new_in fails and falls back cleanly to std::env::temp_dir()
+            let ro_dir = dir.path().join("ro_spill_parent_0555");
+            std::fs::create_dir(&ro_dir).unwrap();
+            let ro_out = ro_dir.join("out.vcf");
+            std::fs::write(&ro_out, b"OLD_OUT").unwrap();
+            std::fs::set_permissions(&ro_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+            let non_root_enforced = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(ro_dir.join("probe"))
+                .is_err();
+
+            if non_root_enforced {
+                TEST_LAST_VCF_SPILL_DIR.with(|slot| *slot.borrow_mut() = None);
+                let mut ro_buf = Vec::new();
+                let ro_res = crate::run_with_writer(
+                    &crate::config::Config {
+                        output_path: Some(ro_out.to_string_lossy().into_owned()),
+                        ..base_cfg.clone()
+                    },
+                    &mut ro_buf,
+                );
+                let ro_spill = TEST_LAST_VCF_SPILL_DIR.with(|slot| slot.borrow().clone());
+                let ro_e2e_res = crate::run(&crate::config::Config {
+                    output_path: Some(ro_out.to_string_lossy().into_owned()),
+                    ..base_cfg
+                });
+                let ro_bytes = std::fs::read(&ro_out).unwrap();
+                std::fs::set_permissions(&ro_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+                ro_res.expect("0555 read-only parent must fall back to std::env::temp_dir()");
+                ro_e2e_res.expect("0555 end-to-end run must succeed");
+                let ro_spill_path = ro_spill.expect("expected disk spill on 0555 run");
+                assert_eq!(
+                    ro_spill_path.parent(),
+                    Some(std::env::temp_dir().as_path()),
+                    "0555 read-only parent must fall back to std::env::temp_dir()"
+                );
+                assert!(!ro_spill_path.exists());
+                assert_eq!(ro_buf, unspilled_vcf);
+                assert_eq!(ro_bytes, unspilled_vcf);
+            } else {
+                let _ = std::fs::remove_file(ro_dir.join("probe"));
+                std::fs::set_permissions(&ro_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
         }
     }
 }
