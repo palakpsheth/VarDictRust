@@ -6,14 +6,25 @@
 #
 # Adheres to Host Policy A3:
 # - Minimal network bandwidth: streams only small bounded regions via range requests
+# - Remote BAI indices verified against pinned SHA-256 digests before slicing
 # - Total footprint: < 150 MB disk space
 # =============================================================================
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-OUT_DIR="$ROOT_DIR/scratch/g4/multimodal"
+source "$SCRIPT_DIR/lib/portable.sh"
+
+if ! command -v samtools &>/dev/null; then
+    ensure_g4_tools_path
+fi
+
+D="${DATA_DIR:-$ROOT_DIR/scratch/g4}"
+OUT_DIR="$D/multimodal"
 mkdir -p "$OUT_DIR"
+
+BAI_CACHE_DIR="$OUT_DIR/.bai_cache"
+STAGED_BAIS=" "
 
 echo "================================================================================"
 echo " Ingesting 18 Multi-Modal Slices Across 6 Public Datasets"
@@ -24,16 +35,23 @@ function fetch_remote_slice() {
     local name="$1"
     local bam_url="$2"
     local bai_url="$3"
-    local region="$4"
+    local bai_sha256="$4"
+    local local_bai="$5"
+    local region="$6"
     local out_bam="$OUT_DIR/${name}.bam"
 
-    if [[ -f "$out_bam" ]] && samtools quickcheck "$out_bam" 2>/dev/null; then
+    if [ -s "$out_bam" ] && [ -s "${out_bam}.bai" ] && samtools quickcheck "$out_bam" 2>/dev/null; then
         echo "  [cached] $name ($region)"
         return 0
     fi
 
+    if [[ "$STAGED_BAIS" != *" ${local_bai} "* ]]; then
+        stage_verified_sha256 "$bai_url" "$bai_sha256" "$local_bai"
+        STAGED_BAIS="${STAGED_BAIS}${local_bai} "
+    fi
+
     echo -n "  [streaming] $name ($region)... "
-    samtools view -b -X "$bam_url" "$bai_url" "$region" > "$out_bam.tmp"
+    samtools view -b -X "$bam_url" "$local_bai" "$region" > "$out_bam.tmp"
     mv "$out_bam.tmp" "$out_bam"
     samtools index "$out_bam"
     samtools quickcheck "$out_bam"
@@ -46,7 +64,7 @@ function extract_local_slice() {
     local region="$3"
     local out_bam="$OUT_DIR/${name}.bam"
 
-    if [[ -f "$out_bam" ]] && samtools quickcheck "$out_bam" 2>/dev/null; then
+    if [ -s "$out_bam" ] && [ -s "${out_bam}.bai" ] && samtools quickcheck "$out_bam" 2>/dev/null; then
         echo "  [cached] $name ($region)"
         return 0
     fi
@@ -65,15 +83,20 @@ function extract_local_slice() {
 echo "[1/6] Slicing Hartwig COLO829 / COLO829BL Somatic WGS..."
 COLO_T_BAM="https://ftp.sra.ebi.ac.uk/vol1/run/ERR275/ERR2752450/COLO829T_dedup.realigned.bam"
 COLO_T_BAI="https://ftp.sra.ebi.ac.uk/vol1/run/ERR275/ERR2752450/COLO829T_dedup.realigned.bam.bai"
+COLO_T_BAI_SHA256="dc3b5dfeb685a6dccb5c12b84e5041301795e905d804b511eb1728102c7855ba"
+COLO_T_LOCAL_BAI="$BAI_CACHE_DIR/COLO829T_dedup.realigned.bam.bai"
+
 COLO_N_BAM="https://ftp.sra.ebi.ac.uk/vol1/run/ERR275/ERR2752449/COLO829R_dedup.realigned.bam"
 COLO_N_BAI="https://ftp.sra.ebi.ac.uk/vol1/run/ERR275/ERR2752449/COLO829R_dedup.realigned.bam.bai"
+COLO_N_BAI_SHA256="635130af286f165a80c4cb01d4594f79b0a9d4da597b05d885f6af96c222ae79"
+COLO_N_LOCAL_BAI="$BAI_CACHE_DIR/COLO829R_dedup.realigned.bam.bai"
 
-fetch_remote_slice "colo829_s1a_tumor"  "$COLO_T_BAM" "$COLO_T_BAI" "1:10000000-10200000"
-fetch_remote_slice "colo829_s1a_normal" "$COLO_N_BAM" "$COLO_N_BAI" "1:10000000-10200000"
-fetch_remote_slice "colo829_s1b_tumor"  "$COLO_T_BAM" "$COLO_T_BAI" "3:10000000-10200000"
-fetch_remote_slice "colo829_s1b_normal" "$COLO_N_BAM" "$COLO_N_BAI" "3:10000000-10200000"
-fetch_remote_slice "colo829_s1c_tumor"  "$COLO_T_BAM" "$COLO_T_BAI" "20:45000000-45200000"
-fetch_remote_slice "colo829_s1c_normal" "$COLO_N_BAM" "$COLO_N_BAI" "20:45000000-45200000"
+fetch_remote_slice "colo829_s1a_tumor"  "$COLO_T_BAM" "$COLO_T_BAI" "$COLO_T_BAI_SHA256" "$COLO_T_LOCAL_BAI" "1:10000000-10200000"
+fetch_remote_slice "colo829_s1a_normal" "$COLO_N_BAM" "$COLO_N_BAI" "$COLO_N_BAI_SHA256" "$COLO_N_LOCAL_BAI" "1:10000000-10200000"
+fetch_remote_slice "colo829_s1b_tumor"  "$COLO_T_BAM" "$COLO_T_BAI" "$COLO_T_BAI_SHA256" "$COLO_T_LOCAL_BAI" "3:10000000-10200000"
+fetch_remote_slice "colo829_s1b_normal" "$COLO_N_BAM" "$COLO_N_BAI" "$COLO_N_BAI_SHA256" "$COLO_N_LOCAL_BAI" "3:10000000-10200000"
+fetch_remote_slice "colo829_s1c_tumor"  "$COLO_T_BAM" "$COLO_T_BAI" "$COLO_T_BAI_SHA256" "$COLO_T_LOCAL_BAI" "20:45000000-45200000"
+fetch_remote_slice "colo829_s1c_normal" "$COLO_N_BAM" "$COLO_N_BAI" "$COLO_N_BAI_SHA256" "$COLO_N_LOCAL_BAI" "20:45000000-45200000"
 
 # -----------------------------------------------------------------------------
 # 2. Illumina Platinum Genomes NA12878 (European Germline WGS, GRCh38)
@@ -81,17 +104,19 @@ fetch_remote_slice "colo829_s1c_normal" "$COLO_N_BAM" "$COLO_N_BAI" "20:45000000
 echo "[2/6] Slicing Platinum Genomes NA12878 Germline WGS..."
 PLAT_BAM="https://storage.googleapis.com/brain-genomics-public/research/platinum/bam/NA12878.GRCh38.haplotagged.35x.bam"
 PLAT_BAI="https://storage.googleapis.com/brain-genomics-public/research/platinum/bam/NA12878.GRCh38.haplotagged.35x.bam.bai"
+PLAT_BAI_SHA256="7f3db0860c6cea453202d7abc7745d7f1b232d635d559f9f2a9468f4cdfd95ff"
+PLAT_LOCAL_BAI="$BAI_CACHE_DIR/NA12878.GRCh38.haplotagged.35x.bam.bai"
 
-fetch_remote_slice "platinum_s2a" "$PLAT_BAM" "$PLAT_BAI" "chr2:50000000-50200000"
-fetch_remote_slice "platinum_s2b" "$PLAT_BAM" "$PLAT_BAI" "chr17:40000000-40200000"
-fetch_remote_slice "platinum_s2c" "$PLAT_BAM" "$PLAT_BAI" "chrX:15000000-15200000"
+fetch_remote_slice "platinum_s2a" "$PLAT_BAM" "$PLAT_BAI" "$PLAT_BAI_SHA256" "$PLAT_LOCAL_BAI" "chr2:50000000-50200000"
+fetch_remote_slice "platinum_s2b" "$PLAT_BAM" "$PLAT_BAI" "$PLAT_BAI_SHA256" "$PLAT_LOCAL_BAI" "chr17:40000000-40200000"
+fetch_remote_slice "platinum_s2c" "$PLAT_BAM" "$PLAT_BAI" "$PLAT_BAI_SHA256" "$PLAT_LOCAL_BAI" "chrX:15000000-15200000"
 
 # -----------------------------------------------------------------------------
 # 3. FDA SEQC2 Somatic WES (HCC1395 / HCC1395BL Breast Cancer, GRCh38)
 # -----------------------------------------------------------------------------
 echo "[3/6] Slicing SEQC2 HCC1395 / HCC1395BL Somatic WES..."
-SEQC2_T_BAM="$ROOT_DIR/scratch/g4/seqc2/HCC1395.bam"
-SEQC2_N_BAM="$ROOT_DIR/scratch/g4/seqc2/HCC1395BL.bam"
+SEQC2_T_BAM="$D/seqc2/HCC1395.bam"
+SEQC2_N_BAM="$D/seqc2/HCC1395BL.bam"
 
 extract_local_slice "seqc2_s3a_tumor"  "$SEQC2_T_BAM" "chr7:140400000-140600000"
 extract_local_slice "seqc2_s3a_normal" "$SEQC2_N_BAM" "chr7:140400000-140600000"
@@ -106,10 +131,12 @@ extract_local_slice "seqc2_s3c_normal" "$SEQC2_N_BAM" "chr12:25200000-25400000"
 echo "[4/6] Slicing GIAB HG005 Han Chinese Diversity WGS..."
 HG005_BAM="https://ftp-trace.ncbi.nlm.nih.gov/ReferenceSamples/giab/data/ChineseTrio/HG005_NA24631_son/HG005_NA24631_son_HiSeq_300x/NHGRI_Illumina300X_Chinesetrio_novoalign_bams/HG005.GRCh38_full_plus_hs38d1_analysis_set_minus_alts.300x.bam"
 HG005_BAI="https://ftp-trace.ncbi.nlm.nih.gov/ReferenceSamples/giab/data/ChineseTrio/HG005_NA24631_son/HG005_NA24631_son_HiSeq_300x/NHGRI_Illumina300X_Chinesetrio_novoalign_bams/HG005.GRCh38_full_plus_hs38d1_analysis_set_minus_alts.300x.bam.bai"
+HG005_BAI_SHA256="1e3a795ddffec1db3b7a1404865485149be8bfb9c405360888d0bae5d95b58f6"
+HG005_LOCAL_BAI="$BAI_CACHE_DIR/HG005.GRCh38_full_plus_hs38d1_analysis_set_minus_alts.300x.bam.bai"
 
-fetch_remote_slice "hg005_s4a" "$HG005_BAM" "$HG005_BAI" "chr3:40000000-40100000"
-fetch_remote_slice "hg005_s4b" "$HG005_BAM" "$HG005_BAI" "chr6:30000000-30100000"
-fetch_remote_slice "hg005_s4c" "$HG005_BAM" "$HG005_BAI" "chr21:20000000-20100000"
+fetch_remote_slice "hg005_s4a" "$HG005_BAM" "$HG005_BAI" "$HG005_BAI_SHA256" "$HG005_LOCAL_BAI" "chr3:40000000-40100000"
+fetch_remote_slice "hg005_s4b" "$HG005_BAM" "$HG005_BAI" "$HG005_BAI_SHA256" "$HG005_LOCAL_BAI" "chr6:30000000-30100000"
+fetch_remote_slice "hg005_s4c" "$HG005_BAM" "$HG005_BAI" "$HG005_BAI_SHA256" "$HG005_LOCAL_BAI" "chr21:20000000-20100000"
 
 # -----------------------------------------------------------------------------
 # 5. Targeted Amplicon Panel (Horizon / Integration, hg19)

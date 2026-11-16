@@ -68,7 +68,7 @@ Reusable inputs and evidence (all timings `/usr/bin/time -v`, flags
 ## 4. Reproduce
 
 ```bash
-# V0.4 truth (see harness/assets.tsv for URLs/md5):
+# V0.4 truth (see harness/assets.tsv for URLs/SHA-256):
 bash harness/fetch_data.sh hg008   # or curl the 4 V0.4 rows into scratch/g4/hg008/truth/
 # Ladder + evals (g4-tools env for rtg/bcftools/bedtools):
 export PATH=/home/palak/miniconda3/envs/g4-tools/bin:$PATH

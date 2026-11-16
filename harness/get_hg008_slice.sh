@@ -58,9 +58,16 @@ else
   mv "$ENGINE_BED.tmp" "$ENGINE_BED"
 fi
 
-sed -n '1p' "$SLICES_BED" > "$OUTDIR/r1.bed"
-sed -n '2p' "$SLICES_BED" > "$OUTDIR/r2.bed"
-sed -n '3p' "$SLICES_BED" > "$OUTDIR/r3.bed"
+for idx in 1 2 3; do
+  r_bed="$OUTDIR/r${idx}.bed"
+  r_tmp="${r_bed}.tmp"
+  sed -n "${idx}p" "$SLICES_BED" > "$r_tmp"
+  if [ -f "$r_bed" ] && cmp -s "$r_tmp" "$r_bed"; then
+    rm -f "$r_tmp"
+  else
+    mv -f "$r_tmp" "$r_bed"
+  fi
+done
 
 # 3. Derive eval.bed (slices.bed intersected with NIST v0.3 benchmark all.bed)
 EVAL_BED="$OUTDIR/eval.bed"
@@ -113,17 +120,17 @@ fi
 BASE_URL="https://ftp.ncbi.nlm.nih.gov/giab/ftp/data_somatic/HG008/Liss_lab/BCM_Illumina-WGS_20240313"
 T_BAM_URL="$BASE_URL/HG008-T_Illumina_195x_GRCh38-GIABv3.bam"
 N_BAM_URL="$BASE_URL/HG008-N-D_Illumina_169x_GRCh38-GIABv3.bam"
+T_BAI_SHA256="1608f060248b3c88ddbf954fbfd3d0551a6bc4c27e7c4ae47f97722f7d828bb2"
+N_BAI_SHA256="04f2be64201ece69523a7b9dd62a6f4d121c4f1759dfad9decaa5c04723afb2a"
 
 stream_hg008_bam() {
-  local label="$1" bam_url="$2" local_bai="$3" out_bam="$4"
-  if [ -f "$out_bam" ] && [ -f "$out_bam.bai" ] && samtools quickcheck "$out_bam"; then
+  local label="$1" bam_url="$2" bai_sha256="$3" local_bai="$4" out_bam="$5"
+  if [ -s "$out_bam" ] && [ -s "$out_bam.bai" ] && samtools quickcheck "$out_bam"; then
     echo "HG008 $label slice BAM already exists and passes quickcheck: $out_bam"
     return 0
   fi
-  if [ ! -f "$local_bai" ] || [ ! -s "$local_bai" ]; then
-    echo "Downloading $label BAI index from ${bam_url}.bai..."
-    curl -sSLf "${bam_url}.bai" -o "$local_bai"
-  fi
+  echo "Staging SHA-256 verified $label BAI index from ${bam_url}.bai..."
+  stage_verified_sha256 "${bam_url}.bai" "$bai_sha256" "$local_bai"
   local max_retries=5 delay=2 attempt=1 tmp_unsorted="${out_bam%.slice.bam}.unsorted.bam"
   while [ $attempt -le $max_retries ]; do
     echo "Streaming $label slices from $bam_url (attempt $attempt/$max_retries)..."
@@ -145,8 +152,8 @@ stream_hg008_bam() {
   return 1
 }
 
-stream_hg008_bam "Tumor (195x)"  "$T_BAM_URL" "$OUTDIR/HG008-T_Illumina_195x_GRCh38-GIABv3.bam.bai"   "$OUTDIR/HG008-T.slice.bam"
-stream_hg008_bam "Normal (169x)" "$N_BAM_URL" "$OUTDIR/HG008-N-D_Illumina_169x_GRCh38-GIABv3.bam.bai" "$OUTDIR/HG008-N.slice.bam"
+stream_hg008_bam "Tumor (195x)"  "$T_BAM_URL" "$T_BAI_SHA256" "$OUTDIR/HG008-T_Illumina_195x_GRCh38-GIABv3.bam.bai"   "$OUTDIR/HG008-T.slice.bam"
+stream_hg008_bam "Normal (169x)" "$N_BAM_URL" "$N_BAI_SHA256" "$OUTDIR/HG008-N-D_Illumina_169x_GRCh38-GIABv3.bam.bai" "$OUTDIR/HG008-N.slice.bam"
 
 # 5. Encode CRAM twins (store_nm=1, store_md=1) for cram_twin.sh
 [ -f "$REF_FA" ] || { echo "Missing reference $REF_FA (run: bash harness/stage_g4.sh refs)" >&2; exit 1; }

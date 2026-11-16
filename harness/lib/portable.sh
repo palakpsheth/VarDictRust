@@ -292,9 +292,46 @@ filesize() {
     portable_filesize "$@"
 }
 
+stage_verified_sha256() {
+    local url="${1:-}"
+    local expected_sha256="${2:-}"
+    local dest="${3:-}"
+    if [ -z "$url" ] || [ -z "$expected_sha256" ] || [ -z "$dest" ]; then
+        echo "stage_verified_sha256: usage: stage_verified_sha256 <url> <sha256> <dest>" >&2
+        return 1
+    fi
+    if [[ ! "$expected_sha256" =~ ^[0-9a-f]{64}$ ]]; then
+        echo "stage_verified_sha256: invalid expected SHA-256 digest '$expected_sha256' for $dest" >&2
+        return 1
+    fi
+    if [ -f "$dest" ]; then
+        local existing_sha256
+        existing_sha256="$(portable_sha256 "$dest")"
+        if [ "$existing_sha256" = "$expected_sha256" ]; then
+            return 0
+        fi
+    fi
+    mkdir -p "$(dirname "$dest")"
+    local part="${dest}.part"
+    rm -f "$part"
+    if ! curl -sSLf --retry 5 --retry-delay 5 -o "$part" "$url"; then
+        rm -f "$part"
+        echo "stage_verified_sha256: download failed for $dest ($url)" >&2
+        return 1
+    fi
+    local got_sha256
+    got_sha256="$(portable_sha256 "$part")"
+    if [ "$got_sha256" != "$expected_sha256" ]; then
+        rm -f "$part"
+        echo "stage_verified_sha256: SHA-256 MISMATCH for $dest (got=$got_sha256 want=$expected_sha256)" >&2
+        return 1
+    fi
+    mv -f "$part" "$dest"
+}
+
 export -f ensure_g4_tools_path find_gitleaks now_ms portable_time_v mem_avail_gb \
     disk_free_gb disk_total_gb portable_loadavg is_user_session_pid nice_idle exec_nice_idle \
-    portable_md5 md5 portable_sha256 sha256 portable_filesize filesize >/dev/null 2>&1 || true
+    portable_md5 md5 portable_sha256 sha256 portable_filesize filesize stage_verified_sha256 >/dev/null 2>&1 || true
 
 if [ "${1:-}" = "--time-v" ]; then
     shift

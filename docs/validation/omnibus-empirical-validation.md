@@ -119,10 +119,10 @@ All biological datasets, reference genomes, and truth standards were retrieved f
 
 ### 3.2 Genomic Assets & Cryptographic Checksums
 
-| Dataset / Assay | Persistent Accession | Primary Public URL / Mirror Source | Asset File | File Size | Full MD5 Checksum |
+| Dataset / Assay | Persistent Accession | Primary Public URL / Mirror Source | Asset File | File Size | Cryptographic Checksum (SHA-256 / Historical MD5) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **GIAB HG002 Germline WGS** | NCBI BioProject: `PRJNA20069`<br>NIST RM 8391 (NA24385) | `https://giab.s3.amazonaws.com/data/AshkenazimTrio/HG002_NA24385_son/NIST_Illumina_2x250bps/novoalign_bams/` | `HG002.chr20.bam`<br>(chr20:10M–30M slice) | 860 MB | `bd605a455b2e2064931e6097c64695ea` |
-| | | `https://giab.s3.amazonaws.com/data/AshkenazimTrio/HG002_NA24385_son/NIST_Illumina_2x250bps/novoalign_bams/` | `HG002.remote.bai`<br>(remote BAM index) | 9.8 MB | `a4c79b44a863e88eeb525b5e8d1501f6` |
+| | | `https://giab.s3.amazonaws.com/data/AshkenazimTrio/HG002_NA24385_son/NIST_Illumina_2x250bps/novoalign_bams/` | `HG002.remote.bai`<br>(remote BAM index) | 9.45 MB | SHA-256: `723f69de14b8adbbf1a60f23f9af007310011b51b13ee01d18a2a8daf7282f36`<br>(MD5: `a3c2b449df6509ca83fbd3fea22b9aee`) |
 | | | `https://giab.s3.amazonaws.com/release/references/GRCh38/` | `GRCh38_GIABv3.fasta` | 3.15 GB | `99be410b684e3fdb04ba67d98adba249` |
 | | | `https://giab.s3.amazonaws.com/release/AshkenazimTrio/HG002_NA24385_son/NISTv4.2.1/GRCh38/` | `HG002_GRCh38_1_22_v4.2.1_benchmark.vcf.gz` | 156 MB | `dc750b3807d4af1f7ffec852e9c2f771` |
 | | | `https://giab.s3.amazonaws.com/release/AshkenazimTrio/HG002_NA24385_son/NISTv4.2.1/GRCh38/` | `HG002_GRCh38_1_22_v4.2.1_benchmark_noinconsistent.bed` | 11.5 MB | `97265e922a97c69a0391cf3f92a89b8b` |
@@ -132,8 +132,8 @@ All biological datasets, reference genomes, and truth standards were retrieved f
 | | | `https://ftp-trace.ncbi.nlm.nih.gov/seqc/ftp/Somatic_Mutation_WG/release/v1.2.1/` | `high-confidence_sINDEL_in_HC_regions_v1.2.1.vcf.gz` | 1.12 MB | `c51d6c8b939e0882e7baec6b21659a51` |
 | **GIAB HG008 Somatic WGS** | NCBI BioProject: `PRJNA576403`<br>BioSample: `SAMN13009778` (Tumor)<br>BioSample: `SAMN13009779` (Normal)| `https://ftp-trace.ncbi.nlm.nih.gov/ReferenceSamples/giab/data/PancreaticCancer/` | `HG008-T.bam` (~195×)<br>`HG008-N.bam` (~169×) | Targeted PDAC BAM slices (~140 MB total, staged via `harness/get_multimodal_slices.sh`) | Verified BAM quickcheck & BAI index |
 | | | `https://ftp-trace.ncbi.nlm.nih.gov/ReferenceSamples/giab/data/PancreaticCancer/` | `HG008-T.cram`<br>`HG008-N.cram` | Targeted CRAM slices (~85 MB) | Verified CRAM twin bitwise parity |
-| | | `https://ftp-trace.ncbi.nlm.nih.gov/ReferenceSamples/giab/release/PancreaticCancer/Draft_v0.3/` | `Draft_v0.3_benchmark.vcf.gz` | Draft truth set | Verified MD5 Checksum |
-| **GIAB HG005 Chinese Son** | NCBI BioProject: `PRJNA20069`<br>NIST RM 8392 (NA24631) | `https://ftp-trace.ncbi.nlm.nih.gov/ReferenceSamples/giab/release/ChineseTrio/HG005_NA24631_son/NISTv4.2.1/GRCh38/` | `HG005_GRCh38_1_22_v4.2.1_benchmark.vcf.gz` | 148 MB | Verified MD5 Checksum |
+| | | `https://ftp-trace.ncbi.nlm.nih.gov/ReferenceSamples/giab/release/PancreaticCancer/Draft_v0.3/` | `Draft_v0.3_benchmark.vcf.gz` | Draft truth set | Verified SHA-256 Checksum (`harness/assets.tsv`) |
+| **GIAB HG005 Chinese Son** | NCBI BioProject: `PRJNA20069`<br>NIST RM 8392 (NA24631) | `https://ftp-trace.ncbi.nlm.nih.gov/ReferenceSamples/giab/release/ChineseTrio/HG005_NA24631_son/NISTv4.2.1/GRCh38/` | `HG005_GRCh38_1_22_v4.2.1_benchmark.vcf.gz` | 148 MB | Verified SHA-256 / MD5 Checksum |
 | **GIAB NA24385 (b37)** | AstraZeneca Integration Corpus | `VarDictJava/testdata/fastas/GRCh37.fa` | `GRCh37.fa` | 3.10 GB | Verified local FASTA |
 
 ---

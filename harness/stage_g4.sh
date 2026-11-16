@@ -3,7 +3,7 @@
 # harness/stage_g4.sh
 # Turnkey, idempotent data & reference staging orchestrator for VarDictRust.
 #
-# Bridges `harness/fetch_data.sh` (raw MD5-verified downloads) to ready-to-run
+# Bridges `harness/fetch_data.sh` (raw SHA-256-verified downloads) to ready-to-run
 # `scratch/g4/` inputs (unpacked FASTAs, .fai indices, RTG SDF directories,
 # BWA-aligned SEQC2 BAMs, derived engine/eval BEDs, remote BAM slices, and
 # CRAM twins).
@@ -169,18 +169,18 @@ for target in "$@"; do
     all)
       stage_refs
       bash harness/get_amplicon_fixture.sh
-      bash harness/get_hg002_slice.sh
+      DATA_DIR="$D" bash harness/get_hg002_slice.sh
       DATA_DIR="$D" bash harness/get_hg008_slice.sh
       stage_seqc2
-      bash harness/get_multimodal_slices.sh
+      DATA_DIR="$D" bash harness/get_multimodal_slices.sh
       ;;
     refs)       stage_refs ;;
     amplicon)   bash harness/get_amplicon_fixture.sh ;;
-    hg002)      bash harness/get_hg002_slice.sh ;;
+    hg002)      DATA_DIR="$D" bash harness/get_hg002_slice.sh ;;
     hg008)      DATA_DIR="$D" bash harness/get_hg008_slice.sh ;;
     seqc2-beds) stage_seqc2_beds ;;
     seqc2)      stage_seqc2 ;;
-    multimodal) bash harness/get_multimodal_slices.sh ;;
+    multimodal) DATA_DIR="$D" bash harness/get_multimodal_slices.sh ;;
     *)
       echo "Unknown target: $target" >&2
       usage >&2
