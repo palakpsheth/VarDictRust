@@ -179,6 +179,20 @@ def configure_tag_ruleset(dry_run=False):
         ],
     }
 
+    payload_safe = {
+        "name": "tag-protection-v*",
+        "target": "tag",
+        "enforcement": "active",
+        "conditions": {
+            "ref_name": {
+                "include": ["refs/tags/v*"],
+                "exclude": [],
+            }
+        },
+        "rules": base_rules,
+        "bypass_actors": [],
+    }
+
     if dry_run:
         api_request(f"/rulesets/{RULESET_ID}", method="PUT", data=payload_strict, dry_run=True)
         print(f"  [dry-run] Configured ruleset {RULESET_ID} for refs/tags/v* with deletion/update/non_fast_forward and creation lockout check.")
@@ -188,25 +202,17 @@ def configure_tag_ruleset(dry_run=False):
     api_request(f"/rulesets/{RULESET_ID}", method="PUT", data=payload_strict, dry_run=False)
 
     # Immediately verify whether current user can bypass tag creation
-    status = api_request(f"/rulesets/{RULESET_ID}", method="GET", dry_run=False)
-    can_bypass = status.get("current_user_can_bypass")
+    can_bypass = None
+    try:
+        status = api_request(f"/rulesets/{RULESET_ID}", method="GET", dry_run=False)
+        can_bypass = status.get("current_user_can_bypass")
+    except Exception as exc:
+        print(f"  ⚠ Verification GET failed ({exc}); treating bypass mode as unconfirmed...", file=sys.stderr)
+
     if can_bypass == "always":
         print(f"  ✓ Tag ruleset {RULESET_ID} active with creation protection (admin bypass confirmed: {can_bypass}).")
     else:
         print(f"  ⚠ Current user bypass mode is {can_bypass!r} != 'always'; rolling back creation restriction to prevent lockout...")
-        payload_safe = {
-            "name": "tag-protection-v*",
-            "target": "tag",
-            "enforcement": "active",
-            "conditions": {
-                "ref_name": {
-                    "include": ["refs/tags/v*"],
-                    "exclude": [],
-                }
-            },
-            "rules": base_rules,
-            "bypass_actors": [],
-        }
         api_request(f"/rulesets/{RULESET_ID}", method="PUT", data=payload_safe, dry_run=False)
         print(f"  ✓ Safe rollback applied: ruleset {RULESET_ID} enforces deletion/update/non_fast_forward without tag creation lockout.")
 

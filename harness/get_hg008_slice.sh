@@ -58,9 +58,16 @@ else
   mv "$ENGINE_BED.tmp" "$ENGINE_BED"
 fi
 
-[ -s "$OUTDIR/r1.bed" ] || sed -n '1p' "$SLICES_BED" > "$OUTDIR/r1.bed"
-[ -s "$OUTDIR/r2.bed" ] || sed -n '2p' "$SLICES_BED" > "$OUTDIR/r2.bed"
-[ -s "$OUTDIR/r3.bed" ] || sed -n '3p' "$SLICES_BED" > "$OUTDIR/r3.bed"
+for idx in 1 2 3; do
+  bed_target="$OUTDIR/r${idx}.bed"
+  bed_tmp="$OUTDIR/r${idx}.bed.tmp"
+  sed -n "${idx}p" "$SLICES_BED" > "$bed_tmp"
+  if [ -f "$bed_target" ] && cmp -s "$bed_tmp" "$bed_target"; then
+    rm -f "$bed_tmp"
+  else
+    mv -f "$bed_tmp" "$bed_target"
+  fi
+done
 
 # 3. Derive eval.bed (slices.bed intersected with NIST v0.3 benchmark all.bed)
 EVAL_BED="$OUTDIR/eval.bed"

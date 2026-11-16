@@ -65,6 +65,8 @@ DATA_DIR="$TMPDIR/data" MANIFEST="$TMPDIR/benchmarks/MANIFEST" ASSETS_TSV="$TMPD
 
 [ -f "$TMPDIR/data/test/file1.txt" ] || { echo "FAIL: file1.txt not fetched" >&2; exit 1; }
 [ -f "$TMPDIR/data/test/file1.txt.done" ] || { echo "FAIL: file1.txt.done missing" >&2; exit 1; }
+[ -f "$TMPDIR/data/test/file1.txt.sha256" ] || { echo "FAIL: file1.txt.sha256 marker missing" >&2; exit 1; }
+[ "$(cat "$TMPDIR/data/test/file1.txt.sha256")" = "$test_sha256" ] || { echo "FAIL: file1.txt.sha256 content mismatch" >&2; exit 1; }
 
 # Check MANIFEST format and entry
 man_hdr=$(head -n 1 "$TMPDIR/benchmarks/MANIFEST")
@@ -85,12 +87,24 @@ echo "$out_second" | grep -q "have: test1" || { echo "FAIL: second run did not r
 manifest_lines_after=$(grep -v '^#' "$TMPDIR/benchmarks/MANIFEST" | wc -l)
 [ "$manifest_lines_after" -eq 1 ] || { echo "FAIL: second run modified manifest" >&2; exit 1; }
 
-# In-place promotion test: file exists with valid SHA-256 but missing .done file
-rm -f "$TMPDIR/data/test/file1.txt.done"
+# Pre-migration promotion test: file exists with valid SHA-256 and legacy .done file, missing .sha256 marker
+rm -f "$TMPDIR/data/test/file1.txt.sha256"
 out_promote=$(DATA_DIR="$TMPDIR/data" MANIFEST="$TMPDIR/benchmarks/MANIFEST" ASSETS_TSV="$TMPDIR/test_assets.tsv" \
   bash harness/fetch_data.sh testgrp)
-[ -f "$TMPDIR/data/test/file1.txt.done" ] || { echo "FAIL: in-place promotion did not create .done file" >&2; exit 1; }
+[ -f "$TMPDIR/data/test/file1.txt.done" ] || { echo "FAIL: in-place promotion did not keep/create .done file" >&2; exit 1; }
+[ -f "$TMPDIR/data/test/file1.txt.sha256" ] || { echo "FAIL: in-place promotion did not create .sha256 marker" >&2; exit 1; }
+[ "$(cat "$TMPDIR/data/test/file1.txt.sha256")" = "$test_sha256" ] || { echo "FAIL: promoted .sha256 marker mismatch" >&2; exit 1; }
 echo "$out_promote" | grep -Eq "(have|verified): test1" || { echo "FAIL: in-place promotion did not recognize existing file: $out_promote" >&2; exit 1; }
+
+# Tampered payload with stale .done marker: must detect mismatch, re-fetch, and overwrite
+rm -f "$TMPDIR/data/test/file1.txt.sha256"
+echo "tampered content" > "$TMPDIR/data/test/file1.txt"
+touch "$TMPDIR/data/test/file1.txt.done"
+out_tamper_recover=$(DATA_DIR="$TMPDIR/data" MANIFEST="$TMPDIR/benchmarks/MANIFEST" ASSETS_TSV="$TMPDIR/test_assets.tsv" \
+  bash harness/fetch_data.sh testgrp)
+[ "$(cat "$TMPDIR/data/test/file1.txt")" = "hello world" ] || { echo "FAIL: tampered file was not re-fetched and restored" >&2; exit 1; }
+[ -f "$TMPDIR/data/test/file1.txt.sha256" ] || { echo "FAIL: re-fetch did not recreate .sha256 marker" >&2; exit 1; }
+[ "$(cat "$TMPDIR/data/test/file1.txt.sha256")" = "$test_sha256" ] || { echo "FAIL: re-fetch .sha256 content mismatch" >&2; exit 1; }
 
 # Tampered SHA-256 test: should fail non-zero and clean .part file
 set +e
@@ -117,6 +131,16 @@ DATA_DIR="$TMPDIR/data" MANIFEST="$TMPDIR/benchmarks/MANIFEST" ASSETS_TSV="$TMPD
   bash harness/fetch_data.sh --allow-legacy-md5 dashgrp
 [ -f "$TMPDIR/data/test/dash.txt" ] || { echo "FAIL: --allow-legacy-md5 did not fetch dash.txt" >&2; exit 1; }
 [ -f "$TMPDIR/data/test/dash.txt.done" ] || { echo "FAIL: --allow-legacy-md5 did not create dash.txt.done" >&2; exit 1; }
+[ -f "$TMPDIR/data/test/dash.txt.legacy_md5" ] || { echo "FAIL: --allow-legacy-md5 did not create dash.txt.legacy_md5" >&2; exit 1; }
+[ "$(cat "$TMPDIR/data/test/dash.txt.legacy_md5")" = "$test_md5" ] || { echo "FAIL: dash.txt.legacy_md5 content mismatch" >&2; exit 1; }
+
+# Subsequent run on legacy asset without --allow-legacy-md5 must fail closed even when dash.txt and markers exist
+set +e
+DATA_DIR="$TMPDIR/data" MANIFEST="$TMPDIR/benchmarks/MANIFEST" ASSETS_TSV="$TMPDIR/test_assets.tsv" \
+  bash harness/fetch_data.sh dashgrp >/dev/null 2>&1
+rc_dash_subsequent=$?
+set -e
+[ "$rc_dash_subsequent" -ne 0 ] || { echo "FAIL: subsequent run without --allow-legacy-md5 should fail closed" >&2; exit 1; }
 
 # Opt-in --allow-legacy-md5 with bad MD5: should fail
 set +e
@@ -163,9 +187,18 @@ DATA_DIR="$TMPDIR/g4" bash harness/get_hg008_slice.sh --beds-only >/dev/null
 # Span is 9500..35501 (26001 bp > 20000 bp), so engine.bed must split into 2 tiles
 [ "$(wc -l < "$TMPDIR/g4/hg008/engine.bed")" -eq 2 ] || { echo "FAIL: expected 2 tiles in engine.bed" >&2; exit 1; }
 
+# Verify get_hg008_slice.sh preserves r1.bed mtime when slices.bed is unchanged
+r1_mtime_before=$(python3 -c "import os, sys; print(os.stat(sys.argv[1]).st_mtime_ns)" "$TMPDIR/g4/hg008/r1.bed")
+sleep 0.1
+DATA_DIR="$TMPDIR/g4" bash harness/get_hg008_slice.sh --beds-only >/dev/null
+r1_mtime_after=$(python3 -c "import os, sys; print(os.stat(sys.argv[1]).st_mtime_ns)" "$TMPDIR/g4/hg008/r1.bed")
+[ "$r1_mtime_before" = "$r1_mtime_after" ] || { echo "FAIL: get_hg008_slice.sh should preserve r1.bed mtime when unchanged" >&2; exit 1; }
+
 # Verify stage_g4.sh indexes GRCh38_GIABv3.fasta before linking .fa.fai and passes registered SRR7890879/SRR7890880 FASTQ paths
 grep -q 'samtools faidx "\$gv/GRCh38_GIABv3.fasta"' harness/stage_g4.sh || { echo "FAIL: stage_g4.sh missing samtools faidx on GRCh38_GIABv3.fasta" >&2; exit 1; }
 grep -q 'seqc2_align.sh HCC1395 "\$sq/fastq/SRR7890879_1.fastq.gz" "\$sq/fastq/SRR7890879_2.fastq.gz"' harness/stage_g4.sh || { echo "FAIL: stage_g4.sh missing SRR7890879 FASTQ paths" >&2; exit 1; }
 grep -q 'seqc2_align.sh HCC1395BL "\$sq/fastq/SRR7890880_1.fastq.gz" "\$sq/fastq/SRR7890880_2.fastq.gz"' harness/stage_g4.sh || { echo "FAIL: stage_g4.sh missing SRR7890880 FASTQ paths" >&2; exit 1; }
+grep -q 'DATA_DIR="\$D" bash harness/get_hg002_slice.sh' harness/stage_g4.sh || { echo "FAIL: stage_g4.sh missing DATA_DIR pass to get_hg002_slice.sh" >&2; exit 1; }
+grep -q 'DATA_DIR="\$D" bash harness/get_hg008_slice.sh' harness/stage_g4.sh || { echo "FAIL: stage_g4.sh missing DATA_DIR pass to get_hg008_slice.sh" >&2; exit 1; }
 
 echo "PASS test_fetch_data"

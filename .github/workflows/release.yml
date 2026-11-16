@@ -145,24 +145,18 @@ jobs:
             echo "- **Ref**: \`${REF_NAME}\` (\`event=${EVENT_NAME}\`, \`pull_request=${IS_PR}\`)"
             echo "- **Consistency & Evidence Check**: \`PASS\`"
           } >> "$GITHUB_STEP_SUMMARY"
-      - name: Cache cargo-dist binary
+      - name: Cache cargo-dist archive
         id: cache-dist
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ~/.cargo/bin/dist
-          key: cargo-dist-sha256-v0.33.0-${{ runner.os }}-${{ runner.arch }}
+          path: ~/.cache/cargo-dist
+          key: cargo-dist-archive-sha256-v0.33.0-${{ runner.os }}-${{ runner.arch }}
       - name: Install cargo-dist v0.33.0
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$HOME/.cargo/bin"
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-
-          if [ -x "$HOME/.cargo/bin/dist" ]; then
-            echo "cargo-dist already installed in $HOME/.cargo/bin/dist"
-            "$HOME/.cargo/bin/dist" --version
-            exit 0
-          fi
 
           OS_NAME="$(uname -s)"
           ARCH_NAME="$(uname -m)"
@@ -191,24 +185,46 @@ jobs:
               ;;
           esac
 
-          TMP_TAR="${RUNNER_TEMP:-/tmp}/$ARCHIVE"
-          URL="https://github.com/axodotdev/cargo-dist/releases/download/${DIST_VER}/${ARCHIVE}"
-          echo "Fetching $ARCHIVE from $URL..."
-          curl -sSLf --retry 3 -o "$TMP_TAR" "$URL"
+          CACHE_DIR="$HOME/.cache/cargo-dist"
+          CACHED_TAR="$CACHE_DIR/$ARCHIVE"
+          mkdir -p "$CACHE_DIR" "$HOME/.cargo/bin"
 
-          python3 - "$TMP_TAR" "$EXPECTED_SHA256" <<'PY'
-          import hashlib, sys
-          tar_path, expected = sys.argv[1], sys.argv[2]
-          with open(tar_path, "rb") as f:
-              actual = hashlib.sha256(f.read()).hexdigest()
-          if actual != expected:
-              print(f"ERROR: SHA-256 mismatch for {tar_path}: got {actual}, expected {expected}", file=sys.stderr)
-              sys.exit(1)
-          print(f"Verified {tar_path} SHA-256: {actual}")
-          PY
+          verify_tar() {
+            local tar_path="$1"
+            python3 -c "import textwrap, sys; exec(textwrap.dedent('''
+                import hashlib, sys
+                tar_path, expected = sys.argv[1], sys.argv[2]
+                try:
+                    with open(tar_path, 'rb') as f:
+                        actual = hashlib.sha256(f.read()).hexdigest()
+                    if actual == expected:
+                        sys.exit(0)
+                    print(f'WARN: SHA-256 mismatch for {tar_path}: got {actual}, expected {expected}', file=sys.stderr)
+                    sys.exit(1)
+                except Exception as e:
+                    print(f'WARN: Failed to verify {tar_path}: {e}', file=sys.stderr)
+                    sys.exit(1)
+            '''))" "$tar_path" "$EXPECTED_SHA256"
+          }
 
-          tar -xJf "$TMP_TAR" --strip-components=1 -C "$HOME/.cargo/bin"
-          rm -f "$TMP_TAR"
+          if [ -f "$CACHED_TAR" ] && verify_tar "$CACHED_TAR"; then
+            echo "Using verified cached archive: $CACHED_TAR"
+          else
+            TMP_TAR="${RUNNER_TEMP:-/tmp}/$ARCHIVE"
+            URL="https://github.com/axodotdev/cargo-dist/releases/download/${DIST_VER}/${ARCHIVE}"
+            echo "Fetching $ARCHIVE from $URL..."
+            curl -sSLf --retry 3 -o "$TMP_TAR" "$URL"
+            if ! verify_tar "$TMP_TAR"; then
+              echo "ERROR: Downloaded archive failed SHA-256 verification!" >&2
+              rm -f "$TMP_TAR"
+              exit 1
+            fi
+            mv -f "$TMP_TAR" "$CACHED_TAR"
+            echo "Verified and cached $ARCHIVE"
+          fi
+
+          rm -f "$HOME/.cargo/bin/dist"
+          tar -xJf "$CACHED_TAR" --strip-components=1 -C "$HOME/.cargo/bin"
           chmod +x "$HOME/.cargo/bin/dist"
           "$HOME/.cargo/bin/dist" --version
       - name: Cache dist
@@ -386,24 +402,18 @@ jobs:
             echo "ERROR: Cargo toolchain is required but not installed on runner" >&2
             exit 1
           fi
-      - name: Cache cargo-dist binary
+      - name: Cache cargo-dist archive
         id: cache-dist
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ~/.cargo/bin/dist
-          key: cargo-dist-sha256-v0.33.0-${{ runner.os }}-${{ runner.arch }}
+          path: ~/.cache/cargo-dist
+          key: cargo-dist-archive-sha256-v0.33.0-${{ runner.os }}-${{ runner.arch }}
       - name: Install cargo-dist v0.33.0
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$HOME/.cargo/bin"
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-
-          if [ -x "$HOME/.cargo/bin/dist" ]; then
-            echo "cargo-dist already installed in $HOME/.cargo/bin/dist"
-            "$HOME/.cargo/bin/dist" --version
-            exit 0
-          fi
 
           OS_NAME="$(uname -s)"
           ARCH_NAME="$(uname -m)"
@@ -432,24 +442,46 @@ jobs:
               ;;
           esac
 
-          TMP_TAR="${RUNNER_TEMP:-/tmp}/$ARCHIVE"
-          URL="https://github.com/axodotdev/cargo-dist/releases/download/${DIST_VER}/${ARCHIVE}"
-          echo "Fetching $ARCHIVE from $URL..."
-          curl -sSLf --retry 3 -o "$TMP_TAR" "$URL"
+          CACHE_DIR="$HOME/.cache/cargo-dist"
+          CACHED_TAR="$CACHE_DIR/$ARCHIVE"
+          mkdir -p "$CACHE_DIR" "$HOME/.cargo/bin"
 
-          python3 - "$TMP_TAR" "$EXPECTED_SHA256" <<'PY'
-          import hashlib, sys
-          tar_path, expected = sys.argv[1], sys.argv[2]
-          with open(tar_path, "rb") as f:
-              actual = hashlib.sha256(f.read()).hexdigest()
-          if actual != expected:
-              print(f"ERROR: SHA-256 mismatch for {tar_path}: got {actual}, expected {expected}", file=sys.stderr)
-              sys.exit(1)
-          print(f"Verified {tar_path} SHA-256: {actual}")
-          PY
+          verify_tar() {
+            local tar_path="$1"
+            python3 -c "import textwrap, sys; exec(textwrap.dedent('''
+                import hashlib, sys
+                tar_path, expected = sys.argv[1], sys.argv[2]
+                try:
+                    with open(tar_path, 'rb') as f:
+                        actual = hashlib.sha256(f.read()).hexdigest()
+                    if actual == expected:
+                        sys.exit(0)
+                    print(f'WARN: SHA-256 mismatch for {tar_path}: got {actual}, expected {expected}', file=sys.stderr)
+                    sys.exit(1)
+                except Exception as e:
+                    print(f'WARN: Failed to verify {tar_path}: {e}', file=sys.stderr)
+                    sys.exit(1)
+            '''))" "$tar_path" "$EXPECTED_SHA256"
+          }
 
-          tar -xJf "$TMP_TAR" --strip-components=1 -C "$HOME/.cargo/bin"
-          rm -f "$TMP_TAR"
+          if [ -f "$CACHED_TAR" ] && verify_tar "$CACHED_TAR"; then
+            echo "Using verified cached archive: $CACHED_TAR"
+          else
+            TMP_TAR="${RUNNER_TEMP:-/tmp}/$ARCHIVE"
+            URL="https://github.com/axodotdev/cargo-dist/releases/download/${DIST_VER}/${ARCHIVE}"
+            echo "Fetching $ARCHIVE from $URL..."
+            curl -sSLf --retry 3 -o "$TMP_TAR" "$URL"
+            if ! verify_tar "$TMP_TAR"; then
+              echo "ERROR: Downloaded archive failed SHA-256 verification!" >&2
+              rm -f "$TMP_TAR"
+              exit 1
+            fi
+            mv -f "$TMP_TAR" "$CACHED_TAR"
+            echo "Verified and cached $ARCHIVE"
+          fi
+
+          rm -f "$HOME/.cargo/bin/dist"
+          tar -xJf "$CACHED_TAR" --strip-components=1 -C "$HOME/.cargo/bin"
           chmod +x "$HOME/.cargo/bin/dist"
           "$HOME/.cargo/bin/dist" --version
       # Get the dist-manifest

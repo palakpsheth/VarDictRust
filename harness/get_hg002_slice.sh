@@ -8,7 +8,8 @@ if ! command -v bcftools &>/dev/null || ! command -v tabix &>/dev/null; then
   export PATH="$G4_TOOLS_BIN:$PATH"
 fi
 
-OUTDIR="scratch/g4/hg002"
+D="${DATA_DIR:-scratch/g4}"
+OUTDIR="$D/hg002"
 mkdir -p "$OUTDIR/truth" "$OUTDIR/cmp"
 
 BAM_URL="https://giab.s3.amazonaws.com/data/AshkenazimTrio/HG002_NA24385_son/NIST_Illumina_2x250bps/novoalign_bams/HG002.GRCh38.2x250.bam"
@@ -68,7 +69,7 @@ if [ -s "$EVAL_BED" ]; then
 else
   if [ ! -s "$LOCAL_BED" ]; then
     echo "Staging HG002 truth assets via fetch_data.sh..."
-    bash "$SCRIPT_DIR/fetch_data.sh" hg002
+    DATA_DIR="$D" bash "$SCRIPT_DIR/fetch_data.sh" hg002
   fi
   echo "Generating pre-tiled eval BED to $EVAL_BED..."
   awk_cmd='
@@ -99,7 +100,7 @@ if [ -s "$TRUTH_VCF" ] && [ -s "$TRUTH_VCF.tbi" ]; then
 else
   if [ ! -s "$LOCAL_VCF" ] || [ ! -s "$LOCAL_VCF.tbi" ]; then
     echo "Staging HG002 truth assets via fetch_data.sh..."
-    bash "$SCRIPT_DIR/fetch_data.sh" hg002
+    DATA_DIR="$D" bash "$SCRIPT_DIR/fetch_data.sh" hg002
   fi
   echo "Extracting truth VCF for $REGION..."
   bcftools view -r "$REGION" "$LOCAL_VCF" -Oz -o "$TRUTH_VCF"

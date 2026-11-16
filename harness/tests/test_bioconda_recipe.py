@@ -823,7 +823,20 @@ class TestRepoAgentSkills(unittest.TestCase):
         self.assertIn("--strip-components=1", rel_text, "release.yml must extract cargo-dist tar.xz with --strip-components=1")
         self.assertIn("$HOME/.cargo/bin", rel_text, "release.yml must install cargo-dist binary to $HOME/.cargo/bin")
         self.assertIn("GITHUB_PATH", rel_text, "release.yml must append $HOME/.cargo/bin to GITHUB_PATH")
-        self.assertIn("cargo-dist-sha256-v0.33.0-", rel_text, "release.yml must salt cargo-dist cache key with cargo-dist-sha256-v0.33.0-")
+        self.assertIn("cargo-dist-archive-sha256-v0.33.0-", rel_text, "release.yml must salt cargo-dist cache key with cargo-dist-archive-sha256-v0.33.0-")
+        self.assertIn("~/.cache/cargo-dist", rel_text, "release.yml must cache cargo-dist archive directory")
+
+        # Verify dist --version never appears before verify_tar in plan or build-local-artifacts
+        for job_name in ("plan", "build-local-artifacts"):
+            job_split = rel_text.split(f"  {job_name}:")
+            self.assertEqual(len(job_split), 2, f"release.yml missing job {job_name}")
+            job_body = job_split[1].split("\n  build-")[0] if job_name == "plan" else job_split[1].split("\n  publish-")[0]
+            self.assertIn("verify_tar", job_body, f"job {job_name} must define verify_tar")
+            verify_idx = job_body.index("verify_tar")
+            self.assertIn('"$HOME/.cargo/bin/dist" --version', job_body, f"job {job_name} must run dist --version")
+            dist_ver_idx = job_body.index('"$HOME/.cargo/bin/dist" --version')
+            self.assertGreater(dist_ver_idx, verify_idx, f"job {job_name} must not run dist --version before verify_tar")
+            self.assertNotIn('exit 0', job_body[:verify_idx], f"job {job_name} must not have early exit shortcut before verify_tar")
 
         # harden-runner in all 6 jobs
         harden_action = "step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a"
@@ -882,6 +895,34 @@ class TestRepoAgentSkills(unittest.TestCase):
         )
         self.assertEqual(dry_run.returncode, 0, f"--dry-run failed: {dry_run.stderr}")
         self.assertIn("Configured ruleset 24867690 for refs/tags/v*", dry_run.stdout)
+
+        # Verify configure_tag_ruleset rolls back to safe payload if GET raises exception (Copilot 4580868305)
+        import importlib.util
+        import urllib.error
+        from unittest.mock import patch
+
+        spec = importlib.util.spec_from_file_location("configure_github_repo_mod", str(cfg_path))
+        cfg_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cfg_mod)
+
+        recorded_calls = []
+
+        def mock_api_request(endpoint, method="GET", data=None, dry_run=False):
+            recorded_calls.append((endpoint, method, data, dry_run))
+            if method == "GET":
+                raise urllib.error.URLError("Simulated connection timeout")
+            return {"status": "ok"}
+
+        with patch.object(cfg_mod, "api_request", side_effect=mock_api_request):
+            cfg_mod.configure_tag_ruleset(dry_run=False)
+
+        # Should have: 1. PUT strict, 2. GET (which raises), 3. PUT safe rollback
+        self.assertEqual(len(recorded_calls), 3, f"Expected 3 API calls, got {len(recorded_calls)}")
+        self.assertEqual(recorded_calls[0][1], "PUT")
+        self.assertTrue(any(r.get("type") == "creation" for r in recorded_calls[0][2].get("rules", [])))
+        self.assertEqual(recorded_calls[1][1], "GET")
+        self.assertEqual(recorded_calls[2][1], "PUT")
+        self.assertFalse(any(r.get("type") == "creation" for r in recorded_calls[2][2].get("rules", [])))
 
     def test_github_workflows_valid_yaml_and_pinned_shas(self):
         workflows_dir = ROOT_DIR / ".github" / "workflows"
