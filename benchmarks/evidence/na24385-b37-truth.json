@@ -2,18 +2,18 @@
   "cmd": [
     "/mnt/media_backups/VarDictRust/harness/concordance_germline.sh",
     "na24385-b37-truth",
-    "/tmp/vardict_multimodal_concordance_cNum6x/na24385_java.vcf",
-    "/tmp/vardict_multimodal_concordance_cNum6x/na24385_rust.vcf",
+    "/tmp/vardict_multimodal_concordance_AN1sRb/na24385_java.vcf",
+    "/tmp/vardict_multimodal_concordance_AN1sRb/na24385_rust.vcf",
     "/mnt/media_backups/VarDictRust/scratch/g4/truth_cache/na24385_b37_truth.vcf.gz",
     "/mnt/media_backups/VarDictRust/scratch/g4/truth_cache/na24385_eval.bed",
     "/mnt/media_backups/VarDictRust/scratch/g4/ref/grch37.sdf",
     "/mnt/media_backups/VarDictRust/scratch/g4/concordance_multimodal/na24385",
     "HG002",
-    "/tmp/vardict_multimodal_concordance_cNum6x/na24385_cpp.vcf"
+    "/tmp/vardict_multimodal_concordance_AN1sRb/na24385_cpp.vcf"
   ],
   "compare_head": [],
   "cpp_time": null,
-  "date": "2026-11-14T19:54:24-08:00",
+  "date": "2026-11-16T01:49:54-08:00",
   "extra": {
     "cpp_f1": 0.1099,
     "cpp_f1_normalized": 0.1099,
@@ -75,8 +75,8 @@
       "tp_call": 5
     }
   },
-  "fingerprint": "bb09a4d1d4de46bf",
-  "head": "6e3068b10aa2c18590955cdac689c375c295d12a",
+  "fingerprint": "68308cfcd2303ad1",
+  "head": "6d8d56e73f5c7a7a42dd3725453f109d14986f58",
   "inputs": [
     {
       "path": "/mnt/media_backups/VarDictRust/scratch/g4/truth_cache/na24385_b37_truth.vcf.gz",

@@ -16,18 +16,14 @@ specification. We either match it exactly or prove the difference is unreachable
 ## Master Parity Status & Taxonomy Summary
 
 ```
-Verified Parity Baseline (release/v1.0.8, commit 759b9c4):
+Verified Parity Baseline (release/v1.0.9, commit 0f752f0):
 - Integration Tests:  91 PASS / 1 XFAIL / 0 FAIL / 0 SKIP (100% of valid inputs pass; sole XFAIL is stale fixture [UB-4](docs/upstream-bugs.md#ub-4-hard_clip_casefa-fixture-drift-between-csv-chunks-and-reconstructed-fasta))
-- Core Library Tests: 460 PASS / 0 FAIL (`cargo test -p vardictrust-core --lib`)
-- Total Workspace:    657 PASS / 0 FAIL (`cargo test --workspace` across core, corpus_parity, engine_behavior, amplicon_stream_mem, cram_stack, cli, profile_smoke, robustness, version)
-- [Tier-2](docs/testing/test-matrix-and-ci-audit.md#tier-2) Sweeps:      17/17 strict MATCH (micro, s1a-s9 all 10 slices, HG008, SEQC2 exome/slices, HG002, Amplicon, 17-mode extended, 18-slice multimodal)
-- [Tier-3](docs/testing/test-matrix-and-ci-audit.md#tier-3) Truth Concordance:  5/5 EQUAL (GIAB HG002 NIST v4.2.1, SEQC2 v1.2.1, GIAB HG008 NIST Draft v0.3, GIAB HG005 NIST v4.2.1, GIAB NA24385 b37 NIST v4.2.1)
-- Scaling Budget:     PASS (3.35x speedup, 1.27x flat RSS scaling across 249 Mbp chromosome 1)
-- Final Acceptance:   8/8 PASS under release engine fingerprint `bb09a4d1d4de46bf`
-
-Current Workspace Test Suite (main / pre-v1.0.9):
 - Core Library Tests: 467 PASS / 0 FAIL (`cargo test -p vardictrust-core --lib`)
 - Total Workspace:    664 PASS / 0 FAIL (`cargo test --workspace` across core, corpus_parity, engine_behavior, amplicon_stream_mem, cram_stack, cli, profile_smoke, robustness, version)
+- [Tier-2](docs/testing/test-matrix-and-ci-audit.md#tier-2) Sweeps:      17/17 strict MATCH (micro, s1a-s9 all 10 slices, HG008, SEQC2 exome/slices, HG002, Amplicon, 17-mode extended, 18-slice multimodal)
+- [Tier-3](docs/testing/test-matrix-and-ci-audit.md#tier-3) Truth Concordance:  5/5 EQUAL (GIAB HG002 NIST v4.2.1, SEQC2 v1.2.1, GIAB HG008 NIST Draft v0.3, GIAB HG005 NIST v4.2.1, GIAB NA24385 b37 NIST v4.2.1)
+- Scaling Budget:     PASS (3.25x speedup, 1.24x flat RSS scaling across 249 Mbp chromosome 1)
+- Final Acceptance:   8/8 PASS under release engine fingerprint `68308cfcd2303ad1`
 ```
 
 <a id="the-four-canonical-parity-classes-rewritesbio-5-8-11"></a>
@@ -41,7 +37,7 @@ Current Workspace Test Suite (main / pre-v1.0.9):
 | :--- | :--- | :--- | :--- | :--- |
 | **Class A** | **Faithfully Emulated Upstream Quirks** | [**UB-1**](docs/upstream-bugs.md#ub-1--p-spurious-all-zero-record-at-position-00) (`-p` pos-0 row), [**UB-2**](docs/upstream-bugs.md#ub-2--p-null-record-row-cell-formatting-empty-geno-00-bias-empty-flank-seqs) (`-p` null formatting), [**UB-3**](docs/upstream-bugs.md#ub-3-var-row-order-across-positions-follows-hashmap-iteration-order-282-family) (HashMap iteration order via `JavaHashMap`), [**UB-5**](docs/upstream-bugs.md#ub-5-simplemode-structural-variant-split-read-requirement-var2vcf_validpl197-205) (SimpleMode SV split-read filter), [**UB-6**](docs/upstream-bugs.md#ub-6-mate-pair-boundary-parameter-in-mark_dup_sv-structuralvariantsprocessorjava1468) (`markDUPSV` boundary), [**UB-7**](docs/upstream-bugs.md#ub-7-multi-allelic-site-single-winner-collapsing-var2vcf_validpl135-205) (single-winner collapsing) | **Byte-for-byte replication**. VarDictRust output matches VarDictJava v1.8.3 exactly on valid inputs ([AGENTS.md §5](AGENTS.md)). | Candidate opt-in flags for v1.1.0+: `--fix ub1`, `--fix ub2`, `--fix ub5`, `--fix ub6`, `--fix ub7`. |
 | **Class B** | **Accepted Divergences by Design** | **`.fai` contig lengths** (fixes [#320](https://github.com/AstraZeneca-NGS/VarDictJava/issues/320); `##source=VarDict_v1.8.2` retained verbatim for byte parity), **CLI arg splitting, consolidated `var2vcf` `--vcf-*` overrides (`defined()` zero semantics vs legacy `-f 0` parity), & ergonomics** (`-f 0.001`, `--output`, `--tbi`/`--csi`, `--no-end`, `--pass-only`, `--paired-strict`, `--vcf-pval`, `--min-splitreads`, `--no-pstd-filter`, `--vcf-af`, `--vcf-min-depth`, `--vcf-min-vd`, `--vcf-qmean`, `--vcf-mapq`, `--vcf-pmean`, `--vcf-sn`, `--vcf-max-nm`, `--vcf-gt-freq`, `--vcf-msi`, `--vcf-cluster-dist`, `--stats-json`, `-VS SILENT\|LENIENT`, `RAYON_NUM_THREADS`), **Splice-mode stdout order** | **Functional variant record parity**. Default variant records and `##source=VarDict_v1.8.2` match upstream byte-for-byte; deviations confined strictly to `.fai` contig headers, explicit opt-in CLI flags, or sorted `-i` stdout order. | Permanent design standards; no flags required. |
-| **Class C** | **Crash-Resilience & Robustness** | [**PR #402**](https://github.com/AstraZeneca-NGS/VarDictJava/pull/402) `modifyCigar` negative match length, [**Issue #187**](https://github.com/AstraZeneca-NGS/VarDictJava/issues/187) missing index fail-fast, [**Issues #197 / #384**](https://github.com/AstraZeneca-NGS/VarDictJava/issues/197) bounded halo tiling (1.22 GiB peak RSS across the full 249 Mbp chromosome in the 3-run median certified series, 1.27× flat RSS ratio vs 10 Mbp) | **Zero crash, zero panic** (`#![forbid(unsafe_code)]`). Produces identical output on valid inputs; safely skips/recovers on malformed inputs. | Permanent engine baseline; `--fix 402` in v1.1.0+ will repair CIGAR topology. |
+| **Class C** | **Crash-Resilience & Robustness** | [**PR #402**](https://github.com/AstraZeneca-NGS/VarDictJava/pull/402) `modifyCigar` negative match length, [**Issue #187**](https://github.com/AstraZeneca-NGS/VarDictJava/issues/187) missing index fail-fast, [**Issues #197 / #384**](https://github.com/AstraZeneca-NGS/VarDictJava/issues/197) bounded halo tiling (1.19 GiB peak RSS across the full 249 Mbp chromosome in the 3-run median certified series, 1.24× flat RSS ratio vs 10 Mbp) | **Zero crash, zero panic** (`#![forbid(unsafe_code)]`). Produces identical output on valid inputs; safely skips/recovers on malformed inputs. | Permanent engine baseline; `--fix 402` in v1.1.0+ will repair CIGAR topology. |
 | **Class D** | **Known Non-Bugs / Upstream Flaws (incl. environmental UB-8)** | [**UB-4**](docs/upstream-bugs.md#ub-4-hard_clip_casefa-fixture-drift-between-csv-chunks-and-reconstructed-fasta) (`hard_clip_case.fa` conflicting CSV reference chunks; pinned SHA-256 `96abe5...`), **GRCh37.fa** Colo829 chr20 all-N fixture drift | **Proven parity vs live Java oracle**. Confirmed that live Java under same inputs produces 100% byte-identical output (0 diffs). Cryptographically pinned in [`harness/integration_xfail.tsv`](harness/integration_xfail.tsv). | Documented permanent fixture artifacts; tracked as verified `XFAIL` in the 91/1 corpus. |
 
 *Upstream Bug Specification & Empirical Validation:*
@@ -1148,7 +1144,7 @@ are consolidated with filing-ready draft issue texts in
 | HashMap non-determinism in tovars | Changed to BTreeMap | `e6c344b` |
 | Missing realign_indels in somatic pipeline | Added for both BAMs | core engine |
 | SV distance guard missing | Added 1Mbp limit in find_match | core engine |
-| Tiled streaming memory bounding | Halo intervals and tile streaming scaling whole 249 Mbp chr1 with bounded memory (historical pre-recalibration Ryzen 8C/8T note: 4.85x speedup / 2.9 GB RSS; current certified 3-run median in `benchmarks/evidence/scale.json`: **3.35x** 8-thread speedup, **1.22 GiB** peak RSS, **1.27x** flat RSS ratio vs 10 Mbp) | `6ee4368`, `a4be62e` |
+| Tiled streaming memory bounding | Halo intervals and tile streaming scaling whole 249 Mbp chr1 with bounded memory (historical pre-recalibration Ryzen 8C/8T note: 4.85x speedup / 2.9 GB RSS; current certified 3-run median in `benchmarks/evidence/scale.json`: **3.25x** 8-thread speedup, **1.19 GiB** peak RSS, **1.24x** flat RSS ratio vs 10 Mbp) | `6ee4368`, `a4be62e` |
 | amplicon_40 table format | Added 40-column amplicon intermediate serialization under --fisher (AmpliconOutputVariant.java:145) | `3076620` |
 | `mark_dup_sv` pe coordinate alignment | Fixed 1bp mate-pair window shift (pe instead of pe + 1) matching StructuralVariantsProcessor.java:1468 | `a2d6c81` |
 | SimpleMode SV splitread filter | Emulate var2vcf_valid.pl:197-205 dropping `<DUP>`/`<INV>` when splitreads < 1 in simple mode | `a2d6c81` |

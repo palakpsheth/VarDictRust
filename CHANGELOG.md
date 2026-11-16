@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.9] - 2026-11-16
+
+### Added
+
+- Ported OpenJDK 8 `java.util.HashMap.TreeNode` Red-Black treeification (`treeify`, `balanceInsertion`, `rotateLeft`, `rotateRight`, `moveRootToFront`, `getTreeNode`, single-pass `probe_tree_slot` / `putTreeVal`), deletion rebalancing (`removeTreeNode` entry-topology untreeification, `balanceDeletion`, and 2-child interior link swapping), and `resize()` `TreeNode.split` (`UNTREEIFY_THRESHOLD = 6`) into `JavaHashMap<K, V>` behind a cold `Option<Box<Vec<TreeLink>>>` sidecar (`size_of::<Node<i32, i32>>() == 12`, `0` extra per-node bytes across `< 8`-collision biological cohorts), sealing `JavaHash` with UTF-16 `String` ordering (`encode_utf16().cmp(...)`) and signed `i32` spread-hash comparisons (`CWE-407` `2^16`-stride collision DoS closure; expanded the automated Cargo workspace test suite from `657` to `664` tests: `467` `vardictrust-core` library unit tests + `110` `corpus_parity` + `29` `engine_behavior` + `2` `amplicon_stream_mem` + `3` `cram_stack` + `28` CLI bin + `25` CLI integration binary tests) (`crates/vardictrust-core/src/javamap.rs`, `src/tovars.rs`, `benches/engine.rs`, `ROADMAP.md`) ([Issue #116](https://github.com/palakpsheth/VarDictRust/issues/116) `SEC-17b`, [PR #131](https://github.com/palakpsheth/VarDictRust/pull/131)).
+
+### Changed
+
+- Migrated the ReadTheDocs (`vardictrust.readthedocs.io`) and strict CI documentation platform from `mkdocs-material` (`mkdocs.yml`) to **Zensical** (`zensical.toml`, `zensical>=0.1.1,<0.2.0`), adding MathJax v3 configuration (`docs/javascripts/mathjax.js`), fence-aware Mermaid and GFM staging normalization in `harness/prepare_docs_site.py`, space-safe Zensical pre-commit/pre-push strict gates, pure-stdlib TOML `nav` validation in `check_release_consistency.py`, and 4-page Playwright Chromium DOM/MathJax/Mermaid/SVG UI verification (`zensical.toml`, `.readthedocs.yaml`, `.github/workflows/docs.yml`, `.githooks/{pre-commit,pre-push}`, `harness/prepare_docs_site.py`, `harness/tests/test_docs_ui.py`) ([Issue #123](https://github.com/palakpsheth/VarDictRust/issues/123), [PR #122](https://github.com/palakpsheth/VarDictRust/pull/122), [PR #129](https://github.com/palakpsheth/VarDictRust/pull/129)).
+- Updated workspace and CI dependencies: `noodles` (`0.118 -> 0.119`, including `noodles-bam 0.98.0`, `noodles-cram 0.102.0`, `noodles-sam 0.93.0`, and `noodles-vcf 0.96.0`), `flate2` (`1.1.10 -> 1.1.11`), `lzma-rust2` (`0.22.0 -> 0.24.0`), `log` (`0.4.34 -> 0.4.35`), `pymdown-extensions` (`>=13.0`), transitive Cargo lockfile dependencies, and pinned GitHub Actions (`step-security/harden-runner`, `taiki-e/install-action`, `github/codeql-action/upload-sarif`) (`Cargo.toml`, `Cargo.lock`, `crates/vardictrust-core/fuzz/Cargo.toml`, `.github/workflows/*.yml`) ([PR #110](https://github.com/palakpsheth/VarDictRust/pull/110), [PR #111](https://github.com/palakpsheth/VarDictRust/pull/111), [PR #112](https://github.com/palakpsheth/VarDictRust/pull/112), [PR #115](https://github.com/palakpsheth/VarDictRust/pull/115), [PR #117](https://github.com/palakpsheth/VarDictRust/pull/117), [PR #124](https://github.com/palakpsheth/VarDictRust/pull/124)).
+
+### Fixed
+
+- Hardened release supply-chain bootstrap, dataset SHA-256 verification, tag ruleset governance, and deterministic complexity tests: replaced pipe-to-shell and unverified third-party toolchain installers in `.github/workflows/release.yml` with cached 4-architecture `cargo-dist v0.33.0` SHA-256 archive verification, `macos-15` `aarch64-apple-darwin` runner migration, SLSA v1.0 `resolvedDependencies[0]` alignment, `workflow_dispatch` recovery, and 6-job `step-security/harden-runner` audit; upgraded `harness/assets.tsv` to 6 columns with 40 verified SHA-256 digests, atomic `stage_verified_sha256`, and unconditional disk rehashing across `harness/fetch_data.sh` and slice stagers; enforced lockout-safe `refs/tags/v*` ruleset `24867690` in `harness/configure_github_repo.py`; and replaced sub-second wall-clock test assertions with deterministic step and probe bounds (`.github/workflows/release.yml`, `harness/assets.tsv`, `harness/fetch_data.sh`, `harness/lib/portable.sh`, `harness/configure_github_repo.py`, `crates/vardictrust-core/src/`) ([Issue #116](https://github.com/palakpsheth/VarDictRust/issues/116) `SEC-05` / `SEC-14` / `SEC-12b`, [PR #119](https://github.com/palakpsheth/VarDictRust/pull/119), [PR #120](https://github.com/palakpsheth/VarDictRust/pull/120), [PR #121](https://github.com/palakpsheth/VarDictRust/pull/121), [PR #130](https://github.com/palakpsheth/VarDictRust/pull/130), [PR #131](https://github.com/palakpsheth/VarDictRust/pull/131)).
+
 ## [1.0.8] - 2026-11-14
 
 ### Added
@@ -390,7 +405,8 @@ Robustness improvements by design (no valid-input output changes relative to Var
 - Correct `##contig` lengths from the `.fai` ([VarDictJava#320](https://github.com/AstraZeneca-NGS/VarDictJava/issues/320));
   fail-fast on missing BAM index ([VarDictJava#187](https://github.com/AstraZeneca-NGS/VarDictJava/issues/187)).
 
-[Unreleased]: https://github.com/palakpsheth/VarDictRust/compare/v1.0.8...HEAD
+[Unreleased]: https://github.com/palakpsheth/VarDictRust/compare/v1.0.9...HEAD
+[1.0.9]: https://github.com/palakpsheth/VarDictRust/compare/v1.0.8...v1.0.9
 [1.0.8]: https://github.com/palakpsheth/VarDictRust/compare/v1.0.7...v1.0.8
 [1.0.7]: https://github.com/palakpsheth/VarDictRust/compare/v1.0.6...v1.0.7
 [1.0.6]: https://github.com/palakpsheth/VarDictRust/compare/v1.0.5...v1.0.6
