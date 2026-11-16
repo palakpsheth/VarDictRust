@@ -143,6 +143,7 @@ EOF
   ka_dt=$(( $(now_ms) - ka_t0 ))
   { [ "$ka_gnu_rc" -eq 124 ] || [ "$ka_gnu_rc" -eq 137 ]; } || { echo "FAIL: kill-after expected 124/137, got $ka_gnu_rc" >&2; exit 1; }
   [ "$ka_dt" -lt 1200 ] || { echo "FAIL: default --timeout ignored PORTABLE_TIMEOUT_KILL_AFTER=0.2 (${ka_dt}ms)" >&2; exit 1; }
+  PORTABLE_TIMEOUT_KILL_AFTER=2s "$1" --timeout 1s true || { echo "FAIL: default --timeout rejected trailing s in PORTABLE_TIMEOUT_KILL_AFTER=2s" >&2; exit 1; }
 
   no_to_bin="$tmp/no_timeout_bin"
   mkdir -p "$no_to_bin"

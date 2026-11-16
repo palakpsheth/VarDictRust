@@ -23,7 +23,7 @@ Reference companion for [`.agents/skills/vardictrust-release/SKILL.md`](../SKILL
 | 11 | `README.md` | `--tag vX.Y.Z`, `version = {X.Y.Z}`, `89`-row CLI parameter table, and `679` test breakdown (`479 + 110 + 29 + 2 + 3 + 29 + 27`) | Main repository landing page |
 | 12 | `DIVERGENCES.md` | `Verified Parity Baseline (release/vX.Y.Z`, `##source=VarDict_v1.8.2`, `679 PASS` (`479 PASS` core lib), `3.25x speedup, 1.24x flat RSS`, `68308cfcd2303ad1` | Empirical divergence & certification summary |
 | 13 | `CONTRIBUTING.md` | `679` workspace tests (`§5.4`), `aarch64-unknown-linux-musl` (`§9.1`), and `.agents/skills/` runbook links | Contributor & release guide |
-| 14 | `benchmarks/README.md` | `Certified in \`vX.Y.Z\`` and link to `docs/release/vX.Y.Z-pr.md` | Benchmark scoreboard header |
+| 14 | `benchmarks/README.md` & `harness/README.md` | `Certified in \`vX.Y.Z\``, link to `docs/release/vX.Y.Z-pr.md`, `679` workspace tests, and `37` diagnostic test scripts | Benchmark scoreboard & harness overview |
 | 15 | `docs/testing/test-matrix-and-ci-audit.md` | `vX.Y.Z`, `679` workspace tests (`479` core lib + `110` `corpus_parity` + `29` `engine_behavior` + `2` `amplicon_stream_mem` + `3` `cram_stack` + `29` bin + `27` CLI integration), `68308cfcd2303ad1` | Testing matrix & CI audit specification |
 | 16 | `docs/validation/omnibus-empirical-validation.md` | `Release \`vX.Y.Z\`` header, `68308cfcd2303ad1`, and §13 16-file SHA-256 manifest | Omnibus empirical validation report |
 | 17 | `zensical.toml`, `wiki/Home.md`, & `wiki/_Sidebar.md` | `"Release vX.Y.Z Certification" = "docs/release/vX.Y.Z-pr.md"`, `vX.Y.Z` links, and `679` workspace tests | ReadTheDocs navigation & GitHub Wiki |

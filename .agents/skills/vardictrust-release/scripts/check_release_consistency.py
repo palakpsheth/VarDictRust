@@ -898,10 +898,17 @@ def check_pre_tag_surfaces(
         f"harness/README.md cites {tc['harness_self_tests']} diagnostic test scripts",
         errors,
     )
+    require_regex(
+        repo_root,
+        "harness/README.md",
+        rf"\b{tc['total_workspace']}\b workspace test",
+        f"harness/README.md cites {tc['total_workspace']} workspace tests",
+        errors,
+    )
     forbid_regex(
         repo_root,
         "harness/README.md",
-        r"\b427\b|25 diagnostic test scripts|25 test scripts|17 Shell Tests|8 Python Test Suites|4-target performance budget",
+        r"\b427\b|\b664\b|25 diagnostic test scripts|25 test scripts|17 Shell Tests|8 Python Test Suites|4-target performance budget",
         "harness/README.md stale test counts or 4-target budget",
         errors,
     )

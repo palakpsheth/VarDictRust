@@ -53,7 +53,7 @@ git submodule update --init --recursive
      ```
    - On macOS (`Darwin/arm64`) or `Linux/aarch64` hosts, `harness/run_oracle.sh` and `harness/compare.sh` fail fast with `ORACLE-PLATFORM` unless `ORACLE_CONTAINER=1` is set to execute the oracle inside a `linux/amd64` container (`docker run --rm --platform linux/amd64 ...`).
 3. **Bioinformatics & Security Utilities:**
-   - Tools required for testing and secret scanning: `samtools`, `bwa`, `rtg-tools`, and `gitleaks`:
+   - Tools required for testing and secret scanning: `samtools`, `bwa`, `rtg-tools`, and `gitleaks` (`gitleaks` is installed separately via host package manager such as `brew` or distro package, or an upstream release binary, rather than the `conda-forge`/`bioconda` `g4-tools.yml` spec; see `find_gitleaks` in [`harness/lib/portable.sh`](harness/lib/portable.sh)):
      ```bash
      # If creating via conda:
      conda env create -f harness/env/g4-tools.yml
