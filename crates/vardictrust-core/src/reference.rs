@@ -518,6 +518,13 @@ fn probe_current_fasta_stamp(fasta_path: &Path, expect_gzi: bool) -> Option<Fast
 fn load_or_cache_shared_fasta_meta(
     fasta_path: &Path,
 ) -> Result<(File, FastaFileStamp, std::sync::Arc<SharedFastaMeta>), VardictError> {
+    load_or_cache_shared_fasta_meta_in(shared_fasta_meta_cache(), fasta_path)
+}
+
+fn load_or_cache_shared_fasta_meta_in(
+    cache_mutex: &std::sync::Mutex<SharedFastaMetaMap>,
+    fasta_path: &Path,
+) -> Result<(File, FastaFileStamp, std::sync::Arc<SharedFastaMeta>), VardictError> {
     let inspected = inspect_fasta_file_and_gzi_stamp(fasta_path)?;
     let fai_path = resolve_fasta_fai_path(fasta_path);
     let fai_meta = std::fs::metadata(&fai_path).map_err(VardictError::Io)?;
@@ -528,9 +535,7 @@ fn load_or_cache_shared_fasta_meta(
     };
 
     {
-        let map = shared_fasta_meta_cache()
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let map = cache_mutex.lock().unwrap_or_else(|e| e.into_inner());
         if let Some((cached_stamp, cached_meta)) = map.get(fasta_path) {
             if *cached_stamp == stamp {
                 return Ok((inspected.file, stamp, std::sync::Arc::clone(cached_meta)));
@@ -561,9 +566,7 @@ fn load_or_cache_shared_fasta_meta(
     });
 
     let meta = {
-        let mut map = shared_fasta_meta_cache()
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let mut map = cache_mutex.lock().unwrap_or_else(|e| e.into_inner());
         if let Some((cached_stamp, cached_meta)) = map.get(fasta_path) {
             if *cached_stamp == stamp {
                 std::sync::Arc::clone(cached_meta)
@@ -2792,9 +2795,8 @@ mod tests {
     #[test]
     fn shared_fasta_meta_cache_coalesces_across_threads_and_invalidates_on_rewrite() {
         use std::fs;
-        use std::sync::{Arc, Barrier};
+        use std::sync::{Arc, Barrier, Mutex};
 
-        clear_fasta_reader_cache();
         let dir = tempfile::tempdir().unwrap();
         let fa_path = dir.path().join("mutable_ref.fa");
         let fai_path = dir.path().join("mutable_ref.fa.fai");
@@ -2803,25 +2805,20 @@ mod tests {
         fs::write(&fai_path, b"chr1\t8\t6\t8\t9\n").unwrap();
 
         // (a) Concurrent threads share the exact same Arc<SharedFastaMeta> (`Arc::ptr_eq`)
+        //     against an isolated cache map immune to parallel `clear_bam_caches()` calls.
+        let isolated_cache: Arc<Mutex<SharedFastaMetaMap>> = Arc::new(Mutex::new(HashMap::new()));
         let n_threads = 8usize;
         let barrier = Arc::new(Barrier::new(n_threads));
         let mut handles = Vec::with_capacity(n_threads);
         for _ in 0..n_threads {
             let b = Arc::clone(&barrier);
             let p = fa_path.clone();
+            let c = Arc::clone(&isolated_cache);
             handles.push(std::thread::spawn(move || {
                 b.wait();
-                let seq = fetch_subsequence(&p, "chr1", Pos1(1), Pos1(8)).unwrap();
-                assert_eq!(seq, b"ACGTACGT");
-                FASTA_READER_CACHE.with(|cache| {
-                    Arc::clone(
-                        &cache
-                            .borrow()
-                            .get(&p)
-                            .expect("thread-local cached reader")
-                            .meta,
-                    )
-                })
+                let (_file, _stamp, meta) = load_or_cache_shared_fasta_meta_in(&c, &p).unwrap();
+                assert_eq!(meta.fai_lengths.get(b"chr1".as_slice()), Some(&8));
+                meta
             }));
         }
         let thread_metas: Vec<Arc<SharedFastaMeta>> =
@@ -2834,16 +2831,15 @@ mod tests {
             );
         }
 
-        // Populate current thread's thread-local reader as well before rewriting
+        let (_file, _stamp, cur_meta) =
+            load_or_cache_shared_fasta_meta_in(&isolated_cache, &fa_path).unwrap();
+        assert!(Arc::ptr_eq(&initial_meta, &cur_meta));
+
+        // Populate current thread's thread-local reader + process-wide cache before rewriting
         assert_eq!(
             fetch_subsequence(&fa_path, "chr1", Pos1(1), Pos1(8)).unwrap(),
             b"ACGTACGT"
         );
-        FASTA_READER_CACHE.with(|cache| {
-            let borrowed = cache.borrow();
-            let cur_meta = &borrowed.get(&fa_path).unwrap().meta;
-            assert!(Arc::ptr_eq(&initial_meta, cur_meta));
-        });
 
         // (b) Rewrite temp FASTA + .fai at the same PathBuf -> invalidates stamp and returns updated sequence
         let tmp_fa = dir.path().join("mutable_ref.fa.new");
@@ -2858,14 +2854,16 @@ mod tests {
             b"TTTTTTTTGGGG",
             "rewriting FASTA + .fai at the same PathBuf must invalidate cached stamp and return updated sequence"
         );
-        FASTA_READER_CACHE.with(|cache| {
-            let borrowed = cache.borrow();
-            let refreshed_meta = &borrowed.get(&fa_path).unwrap().meta;
-            assert!(
-                !Arc::ptr_eq(&initial_meta, refreshed_meta),
-                "rewritten FASTA + .fai must allocate a fresh SharedFastaMeta"
-            );
-        });
+        let (_file, _stamp, refreshed_meta) =
+            load_or_cache_shared_fasta_meta_in(&isolated_cache, &fa_path).unwrap();
+        assert!(
+            !Arc::ptr_eq(&initial_meta, &refreshed_meta),
+            "rewritten FASTA + .fai must allocate a fresh SharedFastaMeta"
+        );
+        assert_eq!(
+            refreshed_meta.fai_lengths.get(b"chr1".as_slice()),
+            Some(&12)
+        );
 
         // Verify clear_fasta_reader_cache() clears the global OnceLock map too
         clear_fasta_reader_cache();
