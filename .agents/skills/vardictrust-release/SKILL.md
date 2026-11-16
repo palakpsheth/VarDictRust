@@ -12,7 +12,7 @@ VarDictRust ships across **four binary/package channels** plus **ReadTheDocs**:
 2. **Crates.io:** Sequential publish of `vardictrust-core` followed by `vardictrust`.
 3. **Bioconda (`bioconda/bioconda-recipes`):** Conda package built from the tagged GitHub source tarball (`packaging/bioconda/`).
 4. **Nextflow (`nf-core/modules`):** `vardictrust` module (`packaging/nf-core/modules/vardictrust/`) with multi-arch Wave Singularity/Docker containers built from Bioconda (`bioconda::vardictrust` + `bioconda::htslib`).
-5. **ReadTheDocs (`vardictrust.readthedocs.io`):** Strictly built MkDocs site (`harness/prepare_docs_site.py` + `harness/trigger_rtd.sh`).
+5. **ReadTheDocs (`vardictrust.readthedocs.io`):** Strictly built Zensical site (`zensical.toml` + `harness/prepare_docs_site.py` + `harness/trigger_rtd.sh`).
 
 **Core principle:** Zero version drift across all 19 version-bearing files (`references/version-surface-map.md`) and zero fake SHA-256s or evidence edits (`AGENTS.md` §0b).
 
@@ -47,9 +47,9 @@ VarDictRust ships across **four binary/package channels** plus **ReadTheDocs**:
    python3 .agents/skills/vardictrust-release/scripts/check_release_consistency.py \
      --version X.Y.Z --phase pre-tag --require-head-fingerprint
 
-   # 3. Verify self-tests, strict MkDocs build, Cargo packaging, and 6-stage PR gate
+   # 3. Verify self-tests, strict Zensical build, Cargo packaging, and 6-stage PR gate
    bash harness/run_self_tests.sh
-   python3 harness/prepare_docs_site.py && mkdocs build --strict && rm -rf .docs_staged site
+   python3 harness/prepare_docs_site.py && zensical build --clean --strict && rm -rf .docs_staged site .cache
    cargo publish -p vardictrust-core --dry-run
    cargo package --list -p vardictrust
    bash harness/pr_check.sh

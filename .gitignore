@@ -62,6 +62,8 @@ dhat-*.svg
 !fixtures/
 !fixtures/**
 
-# Documentation site staging and build output
+# Documentation site staging, cache, virtualenv, and build output
 /.docs_staged/
 /site/
+/.cache/
+/.venv_docs/

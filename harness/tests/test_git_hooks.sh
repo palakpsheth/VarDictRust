@@ -50,10 +50,17 @@ ck "pre-commit runs test_stdlib_purity.py on staged Python changes" grep -q 'tes
 ck "pre-commit runs check_release_consistency.py on workflow/release surface changes" grep -q 'check_release_consistency\.py' .githooks/pre-commit
 ck "pre-commit runs TestMarkdownStaticHygiene on staged Markdown/docs changes" grep -q 'TestMarkdownStaticHygiene' .githooks/pre-commit
 ck "pre-commit blocks partially staged documentation files" grep -q 'UNSTAGED_MD=' .githooks/pre-commit
+ck "pre-commit matches zensical.toml in staged doc regex" grep -Fq 'zensical\.toml' .githooks/pre-commit
+ck "pre-commit matches .readthedocs.yaml in staged doc regex" grep -Fq '\.readthedocs\.yaml' .githooks/pre-commit
+ck "pre-commit matches ^docs/ in staged doc regex" grep -Fq '^docs/' .githooks/pre-commit
+ck "pre-push matches zensical.toml in DOC_CHANGES" grep -Fq 'zensical\.toml' .githooks/pre-push
+ck "pre-push matches .readthedocs.yaml in DOC_CHANGES" grep -Fq '\.readthedocs\.yaml' .githooks/pre-push
+ck "pre-push matches ^docs/ in DOC_CHANGES" grep -Fq '^docs/' .githooks/pre-push
 ck "pre-push runs prepare_docs_site.py on doc changes" grep -q 'prepare_docs_site\.py' .githooks/pre-push
 ck "pre-push exports pushed commit via git archive for doc build" grep -q 'git archive "\$local_oid"' .githooks/pre-push
-ck "pre-push runs mkdocs build --strict on doc changes" grep -q '"$MKDOCS_BIN" build --strict' .githooks/pre-push
-ck "pre-push fails fast when mkdocs is missing on doc changes" grep -q "Install MkDocs before pushing documentation updates" .githooks/pre-push
+ck "pre-push uses ZENSICAL_CMD bash array" grep -q 'ZENSICAL_CMD=()' .githooks/pre-push
+ck "pre-push runs zensical build --clean --strict via array" grep -Fq '"${ZENSICAL_CMD[@]}" build --clean --strict' .githooks/pre-push
+ck "pre-push fails fast when zensical is missing on doc changes" grep -q "Install Zensical before pushing documentation updates" .githooks/pre-push
 
 # 5. pre-push runs engine_behavior and robustness in dev profile; acceptance.sh Item 4 runs them in --release
 ck "pre-push runs engine_behavior (dev)" grep -q 'cargo test -p vardictrust-core --test engine_behavior' .githooks/pre-push
@@ -127,6 +134,83 @@ trap 'rm -rf "$TMP_REPO"' EXIT
   fi
   if ! grep -q 'git fetch origin main && git rebase origin/main' <<<"$push_out"; then
     echo "FAIL: pre-push conflict output missing rebase instruction: $push_out" >&2
+    exit 1
+  fi
+) || fail=1
+
+# 9. Functional test of pre-push ZENSICAL_CMD=() with spaces in checkout path + missing-binary fast-fail
+(
+  cd "$TMP_REPO"
+  git init -q -b main origin_docs.git --bare
+  git clone -q origin_docs.git "checkout with spaces" 2>/dev/null
+  cd "checkout with spaces"
+  git config user.email "test@example.com"
+  git config user.name "Test"
+
+  mkdir -p .githooks harness
+  cp "$ROOT_DIR/.githooks/pre-push" .githooks/pre-push
+  chmod +x .githooks/pre-push
+
+  cat > harness/prepare_docs_site.py <<'PYEOF'
+import pathlib
+p = pathlib.Path(__file__).resolve().parent.parent / ".docs_staged"
+p.mkdir(parents=True, exist_ok=True)
+(p / "README.md").write_text("# Test\n", encoding="utf-8")
+PYEOF
+  cat > zensical.toml <<'TOMLEOF'
+[project]
+site_name = "TestDocs"
+docs_dir = ".docs_staged"
+site_dir = "site"
+TOMLEOF
+  echo "# Initial" > README.md
+
+  git add .githooks/pre-push harness/prepare_docs_site.py zensical.toml README.md
+  git commit -q -m "initial docs setup"
+  git push -q origin main
+
+  git checkout -q -b docs/spaced-path-check
+  echo "# Updated" >> README.md
+  git commit -q -a -m "docs: update readme"
+
+  local_oid=$(git rev-parse HEAD)
+  zero_oid="0000000000000000000000000000000000000000"
+  mkdir -p "$TMP_REPO/empty_home"
+
+  # 9a. Missing zensical binary must fail fast with clear error
+  set +e
+  missing_out=$(printf "refs/heads/docs/spaced-path-check %s refs/heads/docs/spaced-path-check %s\n" "$local_oid" "$zero_oid" | env -i PATH="/usr/bin:/bin" HOME="$TMP_REPO/empty_home" bash "$TMP_REPO/checkout with spaces/.githooks/pre-push" 2>&1)
+  missing_rc=$?
+  set -e
+  if [ "$missing_rc" -eq 0 ]; then
+    echo "FAIL: pre-push succeeded when zensical binary was missing" >&2
+    exit 1
+  fi
+  if ! grep -q "Install Zensical before pushing documentation updates" <<<"$missing_out"; then
+    echo "FAIL: pre-push missing-zensical output lacked actionable install hint: $missing_out" >&2
+    exit 1
+  fi
+
+  # 9b. .venv_docs/bin/zensical inside a checkout path with spaces must execute cleanly
+  mkdir -p ".venv_docs/bin"
+  MARKER_FILE="$TMP_REPO/zensical_invoked.log"
+  cat > ".venv_docs/bin/zensical" <<SH_EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$MARKER_FILE"
+exit 0
+SH_EOF
+  chmod +x ".venv_docs/bin/zensical"
+
+  set +e
+  spaced_out=$(printf "refs/heads/docs/spaced-path-check %s refs/heads/docs/spaced-path-check %s\n" "$local_oid" "$zero_oid" | env -i PATH="/usr/bin:/bin" HOME="$TMP_REPO/empty_home" bash "$TMP_REPO/checkout with spaces/.githooks/pre-push" 2>&1)
+  spaced_rc=$?
+  set -e
+  if [ "$spaced_rc" -ne 0 ]; then
+    echo "FAIL: pre-push failed in spaced checkout path: $spaced_out" >&2
+    exit 1
+  fi
+  if [ ! -f "$MARKER_FILE" ] || ! grep -q '^build --clean --strict$' "$MARKER_FILE"; then
+    echo "FAIL: .venv_docs/bin/zensical was not invoked with 'build --clean --strict' in spaced path" >&2
     exit 1
   fi
 ) || fail=1

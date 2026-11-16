@@ -97,8 +97,8 @@ updates:
     commit-message:
       prefix: "chore(deps)"
     ignore:
-      - dependency-name: "mkdocs"
-        versions: [">= 2.0.0"]
+      - dependency-name: "zensical"
+        versions: [">= 0.2.0"]
     groups:
       docs-dependencies:
         patterns:

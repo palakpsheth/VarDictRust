@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """
-harness/prepare_docs_site.py — Stage repository markdown files for MkDocs site build.
+harness/prepare_docs_site.py — Stage repository markdown and static assets for Zensical site build.
 
 Discovers all tracked markdown files in the repository and mirrors their directory
 hierarchy inside `.docs_staged/`. By preserving the relative file paths, all
 intra-document relative links and anchor hashes resolve identically on GitHub and ReadTheDocs.
 
-Additionally performs link normalization:
+Additionally performs link normalization and asset staging:
 - Rewrites links pointing to non-markdown source/evidence files (.rs, .sh, .py, .json, .yml, LICENSE, etc.)
-  to their canonical GitHub blob URLs (preventing 404s on static doc site).
+  to their canonical GitHub blob URLs (preventing 404s on the static documentation site).
 - Rewrites links pointing to .github/*.md into their staged community/*.md equivalents.
-- Converts raw HTML anchor tags (<a id="..."></a>) into attribute-list elements so MkDocs
+- Stages `docs/javascripts/**` into `.docs_staged/javascripts/` for local MathJax initialization.
+- Converts raw HTML anchor tags (<a id="..."></a>) into attribute-list elements so Zensical
   strict anchor validation can verify them.
 - Uses linear character-based link scanning with zero regex backtracking to guarantee safe parsing.
 """
@@ -19,13 +20,12 @@ import os
 import pathlib
 import re
 import shutil
-import sys
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 STAGING_DIR = REPO_ROOT / ".docs_staged"
 GITHUB_BLOB_BASE = "https://github.com/palakpsheth/VarDictRust/blob/main"
 
-IGNORED_PREFIXES = (
+EXCLUDED_DIRS = (
     ".git/",
     ".github/",
     ".superpowers/",
@@ -38,8 +38,10 @@ IGNORED_PREFIXES = (
     "VarDictJava/",
     "node_modules/",
     ".venv/",
+    ".venv_docs/",
     "venv/",
     ".pytest_cache/",
+    ".cache/",
     ".docs_staged/",
     "site/",
     ".worktrees/",
@@ -47,6 +49,7 @@ IGNORED_PREFIXES = (
     "paper/templates/",
     "benchmarks/data/",
 )
+IGNORED_PREFIXES = EXCLUDED_DIRS
 
 # Linear regex matching simple raw HTML anchors <a id="..." ...></a> or <a name="..." ...></a>
 HTML_ANCHOR_RE = re.compile(
@@ -135,7 +138,7 @@ def rewrite_markdown_links(content: str, staged_file: pathlib.Path) -> str:
         if target.startswith(("http://", "https://", "mailto:", "ftp://", "#")):
             return target
 
-        url_path, sep, anchor = target.partition("#")
+        url_path, _sep, anchor = target.partition("#")
         if not url_path:
             return target
 
@@ -236,7 +239,21 @@ def stage_docs():
                 pdf_file, STAGING_DIR / "paper" / pdf_name, repo_root_resolved
             )
 
-    # 2. Stage .github/ documents into community/ (MkDocs ignores dot-directories by default)
+    # 1d. Stage custom JavaScript assets (docs/javascripts/** -> .docs_staged/javascripts/**)
+    docs_js_dir = REPO_ROOT / "docs" / "javascripts"
+    if docs_js_dir.is_symlink():
+        raise ValueError(f"Refusing to stage symlinked directory: {docs_js_dir}")
+    if docs_js_dir.exists():
+        for js_file in sorted(docs_js_dir.rglob("*")):
+            if js_file.is_symlink():
+                raise ValueError(f"Refusing to stage symlink: {js_file}")
+            if js_file.is_file():
+                rel_js = js_file.relative_to(REPO_ROOT / "docs")
+                _safe_copy_repo_file(
+                    js_file, STAGING_DIR / rel_js, repo_root_resolved
+                )
+
+    # 2. Stage .github/ documents into community/ (dot-directories are skipped by static site builders)
     github_dir = REPO_ROOT / ".github"
     if github_dir.is_symlink():
         raise ValueError(f"Refusing to stage symlinked directory: {github_dir}")

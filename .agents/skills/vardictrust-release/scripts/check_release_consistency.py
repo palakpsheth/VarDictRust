@@ -74,6 +74,107 @@ def forbid_regex(
         )
 
 
+def parse_zensical_nav_entries(toml_text: str) -> list[tuple[str, str]]:
+    """Extract (title, md_rel_path) leaf entries from [project] nav = [...] in zensical.toml (stdlib-only)."""
+    cleaned_lines: list[str] = []
+    in_triple = False
+    triple_delim = ""
+    for raw_line in toml_text.splitlines():
+        out_chars: list[str] = []
+        i = 0
+        n = len(raw_line)
+        in_str = False
+        str_ch = ""
+        while i < n:
+            if in_triple:
+                if raw_line[i : i + 3] == triple_delim:
+                    out_chars.append(triple_delim)
+                    in_triple = False
+                    i += 3
+                    continue
+                out_chars.append(raw_line[i])
+                i += 1
+                continue
+            if not in_str and raw_line[i : i + 3] in ('"""', "'''"):
+                in_triple = True
+                triple_delim = raw_line[i : i + 3]
+                out_chars.append(triple_delim)
+                i += 3
+                continue
+            ch = raw_line[i]
+            if in_str:
+                out_chars.append(ch)
+                if ch == "\\" and str_ch == '"' and i + 1 < n:
+                    out_chars.append(raw_line[i + 1])
+                    i += 2
+                    continue
+                if ch == str_ch:
+                    in_str = False
+                i += 1
+                continue
+            if ch in ('"', "'"):
+                in_str = True
+                str_ch = ch
+                out_chars.append(ch)
+                i += 1
+                continue
+            if ch == "#":
+                break
+            out_chars.append(ch)
+            i += 1
+        cleaned_lines.append("".join(out_chars))
+
+    cleaned = "\n".join(cleaned_lines)
+    proj_m = re.search(r"^\[project\]\s*$", cleaned, re.MULTILINE)
+    if not proj_m:
+        return []
+    after_proj = cleaned[proj_m.end() :]
+    next_sec_m = re.search(r"^\[", after_proj, re.MULTILINE)
+    proj_body = after_proj[: next_sec_m.start()] if next_sec_m else after_proj
+
+    nav_m = re.search(r"^\s*nav\s*=\s*\[", proj_body, re.MULTILINE)
+    if not nav_m:
+        return []
+
+    i = nav_m.end() - 1
+    depth = 0
+    in_str = False
+    str_ch = ""
+    nav_end = len(proj_body)
+    while i < len(proj_body):
+        ch = proj_body[i]
+        if in_str:
+            if ch == "\\" and str_ch == '"' and i + 1 < len(proj_body):
+                i += 2
+                continue
+            if ch == str_ch:
+                in_str = False
+        else:
+            if ch in ('"', "'"):
+                in_str = True
+                str_ch = ch
+            elif ch == "[":
+                depth += 1
+            elif ch == "]":
+                depth -= 1
+                if depth == 0:
+                    nav_end = i + 1
+                    break
+        i += 1
+
+    nav_block = proj_body[nav_m.end() - 1 : nav_end]
+    leaf_re = re.compile(
+        r'\{\s*(?:"((?:\\.|[^"\\])*)"|\'([^\']*)\'|([A-Za-z0-9_-]+))\s*=\s*'
+        r'(?:"((?:\\.|[^"\\])*)"|\'([^\']*)\')\s*\}'
+    )
+    entries: list[tuple[str, str]] = []
+    for m in leaf_re.finditer(nav_block):
+        title = m.group(1) or m.group(2) or m.group(3) or ""
+        path = m.group(4) or m.group(5) or ""
+        entries.append((title, path.strip()))
+    return entries
+
+
 EXPECTED_CLI_HEADINGS = (
     "1. Core Inputs & Outputs",
     "2. VCF Post-Filtering (var2vcf)",
@@ -277,13 +378,13 @@ def check_cli_and_migration_surfaces(repo_root: Path, errors: list[str]) -> None
     migration_text = read_text(repo_root, "docs/migration.md", errors)
     if migration_text and "var2vcf_valid.pl" not in migration_text:
         errors.append("docs/migration.md: missing var2vcf_valid.pl migration table")
-    require_regex(
-        repo_root,
-        "mkdocs.yml",
-        r"^\s*-\s*Migration Guide:\s*docs/migration\.md\s*$",
-        "mkdocs.yml nav includes Migration Guide: docs/migration.md",
-        errors,
-    )
+    zensical_text = read_text(repo_root, "zensical.toml", errors)
+    if zensical_text:
+        nav_entries = parse_zensical_nav_entries(zensical_text)
+        if ("Migration Guide", "docs/migration.md") not in nav_entries:
+            errors.append(
+                'zensical.toml: failed check [nav includes { "Migration Guide" = "docs/migration.md" }]'
+            )
     require_regex(
         repo_root,
         "wiki/_Sidebar.md",
@@ -743,14 +844,33 @@ def check_pre_tag_surfaces(
         errors,
     )
 
-    # 17. mkdocs.yml, wiki/Home.md, wiki/_Sidebar.md
-    require_regex(
-        repo_root,
-        "mkdocs.yml",
-        rf"Release v{ver_esc} Certification:\s*docs/release/v{ver_esc}-pr\.md",
-        f"mkdocs.yml nav includes Release v{version} Certification",
-        errors,
-    )
+    # 17. zensical.toml, wiki/Home.md, wiki/_Sidebar.md
+    if (repo_root / "mkdocs.yml").exists():
+        errors.append("mkdocs.yml: legacy file must be removed (migrated to zensical.toml)")
+    zensical_text = read_text(repo_root, "zensical.toml", errors)
+    if zensical_text:
+        nav_entries = parse_zensical_nav_entries(zensical_text)
+        if len(nav_entries) < 27:
+            errors.append(
+                f"zensical.toml: expected >= 27 nav entries under [project], found {len(nav_entries)}"
+            )
+        expected_rel_entry = (
+            f"Release v{version} Certification",
+            f"docs/release/v{version}-pr.md",
+        )
+        if expected_rel_entry not in nav_entries:
+            errors.append(
+                f"zensical.toml: nav missing {expected_rel_entry[0]!r} = {expected_rel_entry[1]!r}"
+            )
+        for nav_title, nav_rel in nav_entries:
+            if nav_rel.startswith("community/"):
+                nav_target = repo_root / ".github" / Path(nav_rel).name
+            else:
+                nav_target = repo_root / nav_rel
+            if not nav_target.is_file():
+                errors.append(
+                    f"zensical.toml: nav entry {nav_title!r} -> {nav_rel!r} missing on disk ({nav_target})"
+                )
     require_regex(
         repo_root,
         "wiki/Home.md",
