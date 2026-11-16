@@ -1488,6 +1488,7 @@ class TestRepoAgentSkills(unittest.TestCase):
         self.assertIn('"refs/tags/v*"', cfg_text)
         self.assertNotIn('"~refs/tags/v*"', cfg_text)
         self.assertIn("current_user_can_bypass", cfg_text)
+        self.assertIn("urlopen(req, timeout=30)", cfg_text)
         self.assertIn("--dry-run", cfg_text)
         self.assertIn("--apply", cfg_text)
 
@@ -1567,6 +1568,37 @@ class TestRepoAgentSkills(unittest.TestCase):
         self.assertEqual(calls_err[2][1], "PUT")
         self.assertNotIn({"type": "creation"}, calls_err[2][2]["rules"])
         self.assertEqual(calls_err[2][2]["bypass_actors"], [])
+
+        # Case D: strict PUT raises HTTPError(422) -> falls back to PUT without bypass_actors/creation; non-422 re-raises
+        import io
+        import urllib.error
+
+        calls_422 = []
+
+        def mock_422(endpoint, method="GET", data=None):
+            calls_422.append((endpoint, method, data))
+            if method == "PUT" and data and data.get("bypass_actors"):
+                raise urllib.error.HTTPError(
+                    endpoint, 422, "Unprocessable Entity", hdrs=None, fp=io.BytesIO(b'{"message":"invalid bypass"}')
+                )
+            return {"id": 24867690}
+
+        mod.api_request = mock_422
+        mod.configure_tag_ruleset(dry_run=False)
+        self.assertEqual(len(calls_422), 2, f"Expected failed strict PUT + fallback PUT, got {len(calls_422)}")
+        self.assertEqual(calls_422[1][1], "PUT")
+        self.assertNotIn({"type": "creation"}, calls_422[1][2]["rules"])
+        self.assertEqual(calls_422[1][2]["bypass_actors"], [])
+
+        def mock_500(endpoint, method="GET", data=None):
+            raise urllib.error.HTTPError(
+                endpoint, 500, "Internal Server Error", hdrs=None, fp=io.BytesIO(b'{"message":"boom"}')
+            )
+
+        mod.api_request = mock_500
+        with self.assertRaises(urllib.error.HTTPError) as ctx_500:
+            mod.configure_tag_ruleset(dry_run=False)
+        self.assertEqual(ctx_500.exception.code, 500)
 
 
 if __name__ == "__main__":

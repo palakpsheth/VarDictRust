@@ -274,4 +274,91 @@ grep -q 'stage_verified_sha256' harness/get_hg008_slice.sh || { echo "FAIL: get_
 grep -q 'lib/portable.sh' harness/get_multimodal_slices.sh || { echo "FAIL: get_multimodal_slices.sh must source portable.sh" >&2; exit 1; }
 grep -q 'stage_verified_sha256' harness/get_multimodal_slices.sh || { echo "FAIL: get_multimodal_slices.sh must use stage_verified_sha256" >&2; exit 1; }
 
+# 6. Regression test: get_hg002_slice.sh refreshes corrupted local truth BED/VCF/TBI even when stale .sha256/.done sidecars exist
+mkdir -p "$TMPDIR/mockbin" "$TMPDIR/hg002_src" "$TMPDIR/g4_hg002/hg002/truth"
+cat << 'EOF' > "$TMPDIR/mockbin/samtools"
+#!/usr/bin/env bash
+exit 0
+EOF
+cat << 'EOF' > "$TMPDIR/mockbin/bcftools"
+#!/usr/bin/env bash
+if [ "${1:-}" = "view" ] && [ "${2:-}" = "-H" ]; then
+  printf 'chr20\t10000100\t.\tA\tG\t60\tPASS\t.\n'
+  exit 0
+fi
+shift # drop 'view'
+src=""
+out=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) out="$2"; shift 2 ;;
+    -r) shift 2 ;;
+    -*) shift ;;
+    *)  src="$1"; shift ;;
+  esac
+done
+cp "$src" "$out"
+EOF
+cat << 'EOF' > "$TMPDIR/mockbin/tabix"
+#!/usr/bin/env bash
+touch "${!#}.tbi"
+EOF
+chmod +x "$TMPDIR/mockbin/samtools" "$TMPDIR/mockbin/bcftools" "$TMPDIR/mockbin/tabix"
+
+# Valid cached chr20 BAM + BAI so Step 1 runs 100% offline
+printf 'BAM' > "$TMPDIR/g4_hg002/hg002/HG002.chr20.bam"
+printf 'BAI' > "$TMPDIR/g4_hg002/hg002/HG002.chr20.bam.bai"
+
+# Valid upstream mock truth BED (50,000,000 bp span -> >1000 50kb tiles over chr20:10M-30M -> 400 tiles per interval, 3 intervals = 1200 tiles)
+cat << 'EOF' > "$TMPDIR/hg002_src/bench.bed"
+chr20	10000000	30000000
+chr20	10000000	30000000
+chr20	10000000	30000000
+EOF
+printf 'MOCK_VCF_GZ_PAYLOAD\n' > "$TMPDIR/hg002_src/bench.vcf.gz"
+printf 'MOCK_TBI_PAYLOAD\n' > "$TMPDIR/hg002_src/bench.vcf.gz.tbi"
+
+m_bed_md5=$(portable_md5 "$TMPDIR/hg002_src/bench.bed")
+m_bed_sha=$(portable_sha256 "$TMPDIR/hg002_src/bench.bed")
+m_vcf_md5=$(portable_md5 "$TMPDIR/hg002_src/bench.vcf.gz")
+m_vcf_sha=$(portable_sha256 "$TMPDIR/hg002_src/bench.vcf.gz")
+m_tbi_md5=$(portable_md5 "$TMPDIR/hg002_src/bench.vcf.gz.tbi")
+m_tbi_sha=$(portable_sha256 "$TMPDIR/hg002_src/bench.vcf.gz.tbi")
+
+cat << EOF > "$TMPDIR/hg002_assets.tsv"
+# group	name	url	md5	sha256	dest
+hg002	HG002_GRCh38_1_22_v4.2.1_benchmark.vcf.gz	file://$TMPDIR/hg002_src/bench.vcf.gz	$m_vcf_md5	$m_vcf_sha	hg002/truth/HG002_GRCh38_1_22_v4.2.1_benchmark.vcf.gz
+hg002	HG002_GRCh38_1_22_v4.2.1_benchmark.vcf.gz.tbi	file://$TMPDIR/hg002_src/bench.vcf.gz.tbi	$m_tbi_md5	$m_tbi_sha	hg002/truth/HG002_GRCh38_1_22_v4.2.1_benchmark.vcf.gz.tbi
+hg002	HG002_GRCh38_1_22_v4.2.1_benchmark_noinconsistent.bed	file://$TMPDIR/hg002_src/bench.bed	$m_bed_md5	$m_bed_sha	hg002/truth/HG002_GRCh38_1_22_v4.2.1_benchmark_noinconsistent.bed
+EOF
+
+# Seed CORRUPTED local truth files alongside seemingly valid .sha256 + .done sidecars!
+corrupt_bed="$TMPDIR/g4_hg002/hg002/truth/HG002_GRCh38_1_22_v4.2.1_benchmark_noinconsistent.bed"
+corrupt_vcf="$TMPDIR/g4_hg002/hg002/truth/HG002_GRCh38_1_22_v4.2.1_benchmark.vcf.gz"
+corrupt_tbi="${corrupt_vcf}.tbi"
+printf 'CORRUPT_BED\n' > "$corrupt_bed"
+printf '%s\n' "$m_bed_sha" > "${corrupt_bed}.sha256"
+touch "${corrupt_bed}.done"
+printf 'CORRUPT_VCF\n' > "$corrupt_vcf"
+printf '%s\n' "$m_vcf_sha" > "${corrupt_vcf}.sha256"
+touch "${corrupt_vcf}.done"
+printf 'CORRUPT_TBI\n' > "$corrupt_tbi"
+printf '%s\n' "$m_tbi_sha" > "${corrupt_tbi}.sha256"
+touch "${corrupt_tbi}.done"
+
+PATH="$TMPDIR/mockbin:$PATH" \
+  DATA_DIR="$TMPDIR/g4_hg002" \
+  ASSETS_TSV="$TMPDIR/hg002_assets.tsv" \
+  MANIFEST="$TMPDIR/g4_hg002/MANIFEST" \
+  HG002_BED_SHA256="$m_bed_sha" \
+  HG002_VCF_SHA256="$m_vcf_sha" \
+  HG002_TBI_SHA256="$m_tbi_sha" \
+  bash harness/get_hg002_slice.sh >/dev/null
+
+[ "$(portable_sha256 "$corrupt_bed")" = "$m_bed_sha" ] || { echo "FAIL: corrupted HG002 BED was not refreshed" >&2; exit 1; }
+[ "$(portable_sha256 "$corrupt_vcf")" = "$m_vcf_sha" ] || { echo "FAIL: corrupted HG002 VCF was not refreshed" >&2; exit 1; }
+[ "$(portable_sha256 "$corrupt_tbi")" = "$m_tbi_sha" ] || { echo "FAIL: corrupted HG002 TBI was not refreshed" >&2; exit 1; }
+[ -s "$TMPDIR/g4_hg002/hg002/eval.bed" ] || { echo "FAIL: get_hg002_slice.sh did not produce eval.bed after repair" >&2; exit 1; }
+[ -s "$TMPDIR/g4_hg002/hg002/truth/truth.vcf.gz" ] || { echo "FAIL: get_hg002_slice.sh did not produce truth.vcf.gz after repair" >&2; exit 1; }
+
 echo "PASS test_fetch_data"

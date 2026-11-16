@@ -23,7 +23,9 @@ mkdir -p "$OUTDIR/truth" "$OUTDIR/cmp" "$OUTDIR/cram"
 TRUTH_VCF="$OUTDIR/truth/HG008-T_somatic_smvar_benchmark_v0.3_tumorvariants.vcf.gz"
 TRUTH_BED="$OUTDIR/truth/HG008-T_somatic_smvar_benchmark_v0.3_all.bed"
 
-if [ ! -f "$TRUTH_VCF" ] || [ ! -f "$TRUTH_BED" ]; then
+if [ ! -s "$TRUTH_VCF" ] || [ ! -s "$TRUTH_BED" ]; then
+  [ -s "$TRUTH_VCF" ] || rm -f "$TRUTH_VCF" "${TRUTH_VCF}.sha256" "${TRUTH_VCF}.legacy_md5" "${TRUTH_VCF}.done"
+  [ -s "$TRUTH_BED" ] || rm -f "$TRUTH_BED" "${TRUTH_BED}.sha256" "${TRUTH_BED}.legacy_md5" "${TRUTH_BED}.done"
   DATA_DIR="$D" bash harness/fetch_data.sh hg008
 fi
 

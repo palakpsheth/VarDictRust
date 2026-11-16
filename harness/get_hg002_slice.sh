@@ -13,10 +13,10 @@ OUTDIR="$D/hg002"
 mkdir -p "$OUTDIR/truth" "$OUTDIR/cmp"
 
 BAM_URL="https://giab.s3.amazonaws.com/data/AshkenazimTrio/HG002_NA24385_son/NIST_Illumina_2x250bps/novoalign_bams/HG002.GRCh38.2x250.bam"
-HG002_BAI_SHA256="723f69de14b8adbbf1a60f23f9af007310011b51b13ee01d18a2a8daf7282f36"
-HG002_BED_SHA256="fba9a57c36ec88e5d14ea3e259c8866c7935f4998d3ec0fa2d6c3962da5b5575"
-HG002_VCF_SHA256="adb4d4a50048aa13353a06b84fcfcbca09a5d17525efaa4cea44f8822e81175c"
-HG002_TBI_SHA256="23162712553413b10f88916c28bd1238deb703a7237be2910440773beea71894"
+HG002_BAI_SHA256="${HG002_BAI_SHA256:-723f69de14b8adbbf1a60f23f9af007310011b51b13ee01d18a2a8daf7282f36}"
+HG002_BED_SHA256="${HG002_BED_SHA256:-fba9a57c36ec88e5d14ea3e259c8866c7935f4998d3ec0fa2d6c3962da5b5575}"
+HG002_VCF_SHA256="${HG002_VCF_SHA256:-adb4d4a50048aa13353a06b84fcfcbca09a5d17525efaa4cea44f8822e81175c}"
+HG002_TBI_SHA256="${HG002_TBI_SHA256:-23162712553413b10f88916c28bd1238deb703a7237be2910440773beea71894}"
 
 TARGET_BAM="$OUTDIR/HG002.chr20.bam"
 TMP_BAM="$OUTDIR/.tmp.bam"
@@ -72,7 +72,12 @@ if [ -s "$EVAL_BED" ]; then
 else
   echo "Generating pre-tiled eval BED to $EVAL_BED..."
   if [ ! -f "$LOCAL_BED" ] || [ "$(portable_sha256 "$LOCAL_BED")" != "$HG002_BED_SHA256" ]; then
+    rm -f "$LOCAL_BED" "${LOCAL_BED}.sha256" "${LOCAL_BED}.legacy_md5" "${LOCAL_BED}.done"
     DATA_DIR="$D" bash harness/fetch_data.sh hg002
+    [ "$(portable_sha256 "$LOCAL_BED")" = "$HG002_BED_SHA256" ] || {
+      echo "FAIL: $LOCAL_BED SHA-256 mismatch after fetch_data.sh hg002" >&2
+      exit 1
+    }
   fi
   awk '
     $1 == "chr20" {
@@ -100,11 +105,23 @@ if [ -s "$TRUTH_VCF" ] && [ -s "${TRUTH_VCF}.tbi" ]; then
   echo "Truth VCF already exists: $TRUTH_VCF"
 else
   echo "Extracting truth VCF for $REGION..."
-  if [ ! -f "$LOCAL_VCF" ] || [ ! -f "${LOCAL_VCF}.tbi" ] \
-     || [ "$(portable_sha256 "$LOCAL_VCF")" != "$HG002_VCF_SHA256" ] \
-     || [ "$(portable_sha256 "${LOCAL_VCF}.tbi")" != "$HG002_TBI_SHA256" ]; then
+  if [ ! -f "$LOCAL_VCF" ] || [ "$(portable_sha256 "$LOCAL_VCF")" != "$HG002_VCF_SHA256" ]; then
+    rm -f "$LOCAL_VCF" "${LOCAL_VCF}.sha256" "${LOCAL_VCF}.legacy_md5" "${LOCAL_VCF}.done"
+  fi
+  if [ ! -f "${LOCAL_VCF}.tbi" ] || [ "$(portable_sha256 "${LOCAL_VCF}.tbi")" != "$HG002_TBI_SHA256" ]; then
+    rm -f "${LOCAL_VCF}.tbi" "${LOCAL_VCF}.tbi.sha256" "${LOCAL_VCF}.tbi.legacy_md5" "${LOCAL_VCF}.tbi.done"
+  fi
+  if [ ! -f "$LOCAL_VCF" ] || [ ! -f "${LOCAL_VCF}.tbi" ]; then
     DATA_DIR="$D" bash harness/fetch_data.sh hg002
   fi
+  [ "$(portable_sha256 "$LOCAL_VCF")" = "$HG002_VCF_SHA256" ] || {
+    echo "FAIL: $LOCAL_VCF SHA-256 mismatch after fetch_data.sh hg002" >&2
+    exit 1
+  }
+  [ "$(portable_sha256 "${LOCAL_VCF}.tbi")" = "$HG002_TBI_SHA256" ] || {
+    echo "FAIL: ${LOCAL_VCF}.tbi SHA-256 mismatch after fetch_data.sh hg002" >&2
+    exit 1
+  }
   bcftools view -r "$REGION" "$LOCAL_VCF" -Oz -o "${TRUTH_VCF}.tmp"
   mv "${TRUTH_VCF}.tmp" "$TRUTH_VCF"
   tabix -f -p vcf "$TRUTH_VCF"

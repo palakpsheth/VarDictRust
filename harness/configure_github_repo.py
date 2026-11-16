@@ -42,7 +42,7 @@ def api_request(endpoint, method="GET", data=None):
 
     req = urllib.request.Request(url, data=body, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(req) as resp:
+        with urllib.request.urlopen(req, timeout=30) as resp:
             content = resp.read().decode("utf-8")
             return json.loads(content) if content else {}
     except urllib.error.HTTPError as e:
@@ -199,19 +199,7 @@ def configure_tag_ruleset(dry_run=False):
             }
         ],
     }
-    fallback_payload = {
-        "name": TAG_RULESET_NAME,
-        "target": "tag",
-        "enforcement": "active",
-        "conditions": {
-            "ref_name": {
-                "include": [TAG_REF_PATTERN],
-                "exclude": [],
-            }
-        },
-        "rules": base_rules,
-        "bypass_actors": [],
-    }
+    fallback_payload = {**strict_payload, "rules": base_rules, "bypass_actors": []}
     endpoint = f"/rulesets/{TAG_RULESET_ID}"
     if dry_run:
         print(
@@ -221,17 +209,30 @@ def configure_tag_ruleset(dry_run=False):
         )
         return strict_payload
 
-    api_request(endpoint, method="PUT", data=strict_payload)
+    verify_res = None
     try:
-        verify_res = api_request(endpoint, method="GET")
-        can_bypass = verify_res.get("current_user_can_bypass") if isinstance(verify_res, dict) else None
-    except Exception as exc:
-        print(
-            f"  ⚠ Warning: post-PUT verification GET on {endpoint} failed ({exc}); "
-            "treating current_user_can_bypass as None and rolling back creation restriction.",
-            file=sys.stderr,
-        )
-        can_bypass = None
+        api_request(endpoint, method="PUT", data=strict_payload)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 422:
+            print(
+                f"  ⚠ Warning: strict tag ruleset PUT on {endpoint} returned HTTP 422 ({exc}); "
+                "falling back to ruleset without RepositoryRole bypass_actors / creation block.",
+                file=sys.stderr,
+            )
+            can_bypass = None
+        else:
+            raise
+    else:
+        try:
+            verify_res = api_request(endpoint, method="GET")
+            can_bypass = verify_res.get("current_user_can_bypass") if isinstance(verify_res, dict) else None
+        except Exception as exc:
+            print(
+                f"  ⚠ Warning: post-PUT verification GET on {endpoint} failed ({exc}); "
+                "treating current_user_can_bypass as None and rolling back creation restriction.",
+                file=sys.stderr,
+            )
+            can_bypass = None
 
     if can_bypass != "always":
         print(
