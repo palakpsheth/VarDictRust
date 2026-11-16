@@ -779,7 +779,10 @@ class TestRepoAgentSkills(unittest.TestCase):
         )
 
         cfg_text = (ROOT_DIR / "harness" / "configure_github_repo.py").read_text(encoding="utf-8")
+        self.assertIn('"Accept": "application/vnd.github+json"', cfg_text)
+        self.assertNotIn("application/vnd.github.v3+json", cfg_text)
         self.assertIn('"has_wiki": True', cfg_text)
+        self.assertIn('"allow_merge_commit": False', cfg_text)
         self.assertIn('"delete_branch_on_merge": True', cfg_text)
         self.assertIn('"required_linear_history": True', cfg_text)
         self.assertIn('"secret_scanning_non_provider_patterns"', cfg_text)
@@ -1285,6 +1288,285 @@ class TestRepoAgentSkills(unittest.TestCase):
         finally:
             server.shutdown()
             server.server_close()
+
+    def test_release_workflow_sha256_bootstrap_and_harden_runner(self):
+        """Verify SEC-05: 4-arch cargo-dist v0.33.0 SHA-256 verification and 6-job harden-runner."""
+        import hashlib
+        import tarfile
+        import textwrap
+
+        rel_text = (ROOT_DIR / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+
+        # 1. Zero pipe-to-shell or unpinned installer invocations
+        for forbidden in (
+            "| sh",
+            "cargo-dist-installer.sh",
+            "sh.rustup.rs",
+            "${{ matrix.install_dist.run }}",
+        ):
+            self.assertNotIn(
+                forbidden,
+                rel_text,
+                f"release.yml must not contain unpinned bootstrap construct {forbidden!r}",
+            )
+
+        # 2. Harden-runner pinned and placed as first step in all 6 jobs
+        harden_ref = "step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a"
+        expected_jobs = (
+            "plan",
+            "build-local-artifacts",
+            "build-global-artifacts",
+            "host",
+            "publish-crates",
+            "announce",
+        )
+        self.assertEqual(
+            rel_text.count(f"uses: {harden_ref}"),
+            len(expected_jobs),
+            "harden-runner must appear once in each of the 6 release.yml jobs",
+        )
+        self.assertEqual(
+            rel_text.count("egress-policy: audit"),
+            len(expected_jobs),
+            "Every harden-runner step in release.yml must set egress-policy: audit",
+        )
+        for job_name in expected_jobs:
+            job_m = re.search(
+                rf"^  {re.escape(job_name)}:\n((?:  (?![A-Za-z0-9_-]+:).*\n|\n)+?)(?=^  [A-Za-z0-9_-]+:|\Z)",
+                rel_text,
+                re.MULTILINE,
+            )
+            self.assertIsNotNone(job_m, f"Missing job {job_name!r} in release.yml")
+            job_body = job_m.group(1)
+            steps_m = re.search(r"^    steps:\n((?:      .*\n|\n)+)", job_body, re.MULTILINE)
+            self.assertIsNotNone(steps_m, f"Job {job_name!r} missing steps block")
+            steps_body = steps_m.group(1)
+            first_step_lines = []
+            for idx, ln in enumerate(steps_body.splitlines()):
+                if idx > 0 and re.match(r"^      - ", ln):
+                    break
+                first_step_lines.append(ln)
+            first_step = "\n".join(first_step_lines)
+            self.assertIn(
+                f"uses: {harden_ref}",
+                first_step,
+                f"First step in job {job_name!r} must be {harden_ref}",
+            )
+            self.assertIn(
+                "egress-policy: audit",
+                first_step,
+                f"First step in job {job_name!r} must configure egress-policy: audit",
+            )
+            if job_name == "build-local-artifacts":
+                self.assertIn(
+                    "if: runner.os == 'Linux' && runner.arch == 'X64'",
+                    first_step,
+                    "Cross-OS job build-local-artifacts must gate harden-runner to Linux X64",
+                )
+
+        # 3. Cache ~/.cache/cargo-dist and verify all 4 v0.33.0 archive SHA-256 digests in plan & build-local-artifacts
+        self.assertEqual(
+            rel_text.count("path: ~/.cache/cargo-dist"),
+            2,
+            "Both plan and build-local-artifacts must cache ~/.cache/cargo-dist",
+        )
+        self.assertEqual(
+            rel_text.count("key: cargo-dist-archive-sha256-v0.33.0-${{ runner.os }}-${{ runner.arch }}"),
+            2,
+            "Both plan and build-local-artifacts must use cargo-dist-archive-sha256-v0.33.0 cache key",
+        )
+
+        expected_archives = {
+            "cargo-dist-x86_64-unknown-linux-gnu.tar.xz": "4b3f0a5f0ebbdb798f6db649d01b32ba1518376b6f7a0502b7d92b75cc2c8293",
+            "cargo-dist-aarch64-unknown-linux-gnu.tar.xz": "9c554ab21a58ad46eb9b6710f89633ccb26bc2577cf4b0c2d18a5b826a31913e",
+            "cargo-dist-x86_64-apple-darwin.tar.xz": "6a49bfb61bd86770d79c27f3d2b40c6b2e71cde940d3d31a6ccaaffc124d7a29",
+            "cargo-dist-aarch64-apple-darwin.tar.xz": "7b3cbe25511de01d74c0f5fcb7909edabd379bea9cfa284d93af5a3cdfa3247c",
+        }
+        for archive_name, digest in expected_archives.items():
+            self.assertEqual(
+                rel_text.count(archive_name),
+                2,
+                f"Archive {archive_name} must be pinned in both plan and build-local-artifacts",
+            )
+            self.assertEqual(
+                rel_text.count(digest),
+                2,
+                f"SHA-256 {digest} for {archive_name} must be pinned in both plan and build-local-artifacts",
+            )
+
+        install_blocks = re.findall(
+            r"      - name: Install dist\n        shell: bash\n        run: \|\n((?:          .*\n|\n)+)",
+            rel_text,
+        )
+        self.assertEqual(len(install_blocks), 2, "Expected 2 'Install dist' bash blocks in release.yml")
+        for block in install_blocks:
+            script = textwrap.dedent(block)
+            pos_dl_end = script.find("\nfi\n")
+            pos_sha = script.find("hashlib.sha256")
+            pos_tar = script.find("--strip-components=1")
+            pos_path = script.find('"$GITHUB_PATH"')
+            pos_ver = script.find('"$HOME/.cargo/bin/dist" --version')
+            self.assertNotEqual(pos_dl_end, -1, "Install dist must guard download with if [ ! -f ... ]; then ... fi")
+            self.assertGreater(pos_sha, pos_dl_end, "SHA-256 check must execute outside download block (covers cache hits)")
+            self.assertGreater(pos_tar, pos_sha, "tar extraction (--strip-components=1) must occur AFTER SHA-256 verification")
+            self.assertGreater(pos_path, pos_tar, "$GITHUB_PATH update must occur after extraction")
+            self.assertGreater(pos_ver, pos_tar, "dist --version must occur AFTER SHA-256 verification and extraction")
+
+        # Behavioral execution test on cache hit: tampered cached archive is rejected before tar runs
+        script_to_test = textwrap.dedent(install_blocks[0])
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = pathlib.Path(tmpdir)
+            fake_home = tmp_path / "home"
+            cache_dir = fake_home / ".cache" / "cargo-dist"
+            cache_dir.mkdir(parents=True)
+            gh_path = tmp_path / "github_path"
+            gh_path.write_text("", encoding="utf-8")
+
+            # Tampered archive on Linux-x86_64 cache hit must fail closed and delete corrupt file
+            bad_archive = cache_dir / "cargo-dist-x86_64-unknown-linux-gnu.tar.xz"
+            bad_archive.write_bytes(b"tampered-bytes")
+            fake_bin = tmp_path / "fakebin"
+            fake_bin.mkdir()
+            uname_sh = fake_bin / "uname"
+            uname_sh.write_text(
+                '#!/usr/bin/env bash\nif [ "${1:-}" = "-s" ]; then echo Linux; else echo x86_64; fi\n',
+                encoding="utf-8",
+            )
+            uname_sh.chmod(0o755)
+            test_env = dict(
+                os.environ,
+                HOME=str(fake_home),
+                GITHUB_PATH=str(gh_path),
+                PATH=f"{fake_bin}:{os.environ.get('PATH', '')}",
+            )
+            res_tampered = subprocess.run(
+                ["bash", "-c", script_to_test],
+                env=test_env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(res_tampered.returncode, 0, "Tampered cached cargo-dist archive must fail closed")
+            self.assertIn("SHA-256 mismatch", res_tampered.stderr)
+            self.assertFalse(
+                (fake_home / ".cargo" / "bin" / "dist").exists(),
+                "dist binary must never be extracted when SHA-256 verification fails",
+            )
+
+            # Valid synthetic archive matching substituted digest succeeds offline from cache
+            nested_dir = tmp_path / "pkg" / "cargo-dist-x86_64-unknown-linux-gnu"
+            nested_dir.mkdir(parents=True)
+            mock_dist = nested_dir / "dist"
+            mock_dist.write_text('#!/usr/bin/env bash\necho "cargo-dist 0.33.0"\n', encoding="utf-8")
+            mock_dist.chmod(0o755)
+            with tarfile.open(bad_archive, "w:xz") as tf:
+                tf.add(mock_dist, arcname="cargo-dist-x86_64-unknown-linux-gnu/dist")
+            synth_sha = hashlib.sha256(bad_archive.read_bytes()).hexdigest()
+            patched_script = script_to_test.replace(
+                "4b3f0a5f0ebbdb798f6db649d01b32ba1518376b6f7a0502b7d92b75cc2c8293",
+                synth_sha,
+            )
+            res_valid = subprocess.run(
+                ["bash", "-c", patched_script],
+                env=test_env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(res_valid.returncode, 0, f"Valid cached archive failed:\n{res_valid.stderr}")
+            self.assertIn("cargo-dist 0.33.0", res_valid.stdout)
+            self.assertIn(str(fake_home / ".cargo" / "bin"), gh_path.read_text(encoding="utf-8"))
+
+    def test_configure_github_repo_tag_ruleset_and_lockout_rollback(self):
+        """Verify SEC-12b: configure_github_repo.py --dry-run, refs/tags/v* ruleset 24867690, and lockout rollback."""
+        import importlib.util
+
+        cfg_script = ROOT_DIR / "harness" / "configure_github_repo.py"
+        cfg_text = cfg_script.read_text(encoding="utf-8")
+        self.assertIn("def configure_tag_ruleset", cfg_text)
+        self.assertIn("24867690", cfg_text)
+        self.assertIn('"refs/tags/v*"', cfg_text)
+        self.assertNotIn('"~refs/tags/v*"', cfg_text)
+        self.assertIn("current_user_can_bypass", cfg_text)
+        self.assertIn("--dry-run", cfg_text)
+        self.assertIn("--apply", cfg_text)
+
+        # 1. --dry-run succeeds cleanly without GITHUB_TOKEN and performs zero network calls
+        clean_env = {"PATH": os.environ.get("PATH", "")}
+        res_dry = subprocess.run(
+            [sys.executable, str(cfg_script), "--dry-run"],
+            env=clean_env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(res_dry.returncode, 0, f"--dry-run failed:\n{res_dry.stderr}")
+        self.assertIn("DRY-RUN", res_dry.stdout.upper())
+
+        # 2. Import module and test configure_tag_ruleset() bypass verification + rollback branches
+        spec = importlib.util.spec_from_file_location("configure_github_repo", cfg_script)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        # Case A: current_user_can_bypass == "always" -> keeps creation rule + RepositoryRole actor 5 (no rollback)
+        calls_ok = []
+
+        def mock_ok(endpoint, method="GET", data=None):
+            calls_ok.append((endpoint, method, data))
+            if method == "PUT":
+                return {"id": 24867690}
+            return {"id": 24867690, "current_user_can_bypass": "always"}
+
+        mod.api_request = mock_ok
+        mod.configure_tag_ruleset(dry_run=False)
+        self.assertEqual(len(calls_ok), 2, f"Expected PUT + GET when bypass=='always', got {len(calls_ok)}")
+        self.assertEqual(calls_ok[0][0], "/rulesets/24867690")
+        self.assertEqual(calls_ok[0][1], "PUT")
+        self.assertEqual(calls_ok[0][2]["conditions"]["ref_name"]["include"], ["refs/tags/v*"])
+        self.assertIn({"type": "creation"}, calls_ok[0][2]["rules"])
+        self.assertEqual(
+            calls_ok[0][2]["bypass_actors"],
+            [{"actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "always"}],
+        )
+        self.assertEqual(calls_ok[1], ("/rulesets/24867690", "GET", None))
+
+        # Case B: current_user_can_bypass != "always" -> triggers automatic rollback PUT without creation rule
+        calls_deny = []
+
+        def mock_deny(endpoint, method="GET", data=None):
+            calls_deny.append((endpoint, method, data))
+            if method == "PUT":
+                return {"id": 24867690}
+            return {"id": 24867690, "current_user_can_bypass": "never"}
+
+        mod.api_request = mock_deny
+        mod.configure_tag_ruleset(dry_run=False)
+        self.assertEqual(len(calls_deny), 3, f"Expected PUT + GET + rollback PUT, got {len(calls_deny)}")
+        rollback_payload = calls_deny[2][2]
+        self.assertEqual(calls_deny[2][1], "PUT")
+        self.assertEqual(rollback_payload["conditions"]["ref_name"]["include"], ["refs/tags/v*"])
+        self.assertNotIn({"type": "creation"}, rollback_payload["rules"])
+        self.assertEqual(
+            rollback_payload["rules"],
+            [{"type": "deletion"}, {"type": "update"}, {"type": "non_fast_forward"}],
+        )
+        self.assertEqual(rollback_payload["bypass_actors"], [])
+
+        # Case C: verification GET raises Exception -> treats can_bypass as None and executes safe rollback PUT
+        calls_err = []
+
+        def mock_err(endpoint, method="GET", data=None):
+            calls_err.append((endpoint, method, data))
+            if method == "GET":
+                raise RuntimeError("transient GitHub 502 on verification GET")
+            return {"id": 24867690}
+
+        mod.api_request = mock_err
+        mod.configure_tag_ruleset(dry_run=False)
+        self.assertEqual(len(calls_err), 3, f"Expected PUT + failed GET + rollback PUT, got {len(calls_err)}")
+        self.assertEqual(calls_err[2][1], "PUT")
+        self.assertNotIn({"type": "creation"}, calls_err[2][2]["rules"])
+        self.assertEqual(calls_err[2][2]["bypass_actors"], [])
 
 
 if __name__ == "__main__":
