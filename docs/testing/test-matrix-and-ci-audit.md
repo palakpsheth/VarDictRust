@@ -18,7 +18,7 @@ This architecture operates on two complementary pillars:
 - **Pillar A (Biological Parity & Empirical Truth):** Documented in the [Omnibus Master Empirical Validation Report](../validation/omnibus-empirical-validation.md), verifying variant-level concordance against gold-standard consortium benchmarks (NIST GIAB, FDA SEQC2, Hartwig) across GRCh38 and GRCh37.
 - **Pillar B (Engineering Mechanics & Verification Pipeline):** Documented in this report, establishing the software testing hierarchy, developer feedback loops, crash resilience corpus, statistical invariants, continuous performance budgets, and SLSA-attested CI/CD workflows.
 
-Across all testing layers, VarDictRust executes **657 automated Cargo workspace tests** ([Level 1](#level-1): Unit & Component Tests), **92 integration regression testcases** ([Level 2](#level-2): Upstream Integration Regression Corpus), **17 differential parity benchmarks** ([Level 3](#level-3): Dual-Engine Differential Parity Testing), **16 committed evidence JSONs** (spanning differential parity, robustness twins, truth concordance, performance budgets, and musl packaging), **5 ground truth concordance evaluations** via `rtg vcfeval` ([Level 4](#level-4): Ground Truth Concordance Benchmarking, all certified EQUAL), **5 continuous performance budgets** ([Level 5](#level-5): Performance & Memory Budgets), **36 diagnostic self-tests** ([Level 6](#level-6): Diagnostic Self-Tests), and **automated pre-PR and release acceptance compound gates** ([Level 7](#level-7): Pre-PR & Release Acceptance Compound Gates) alongside **6 automated cloud CI/CD pipelines**.
+Across all testing layers, VarDictRust executes **664 automated Cargo workspace tests** ([Level 1](#level-1): Unit & Component Tests), **92 integration regression testcases** ([Level 2](#level-2): Upstream Integration Regression Corpus), **17 differential parity benchmarks** ([Level 3](#level-3): Dual-Engine Differential Parity Testing), **16 committed evidence JSONs** (spanning differential parity, robustness twins, truth concordance, performance budgets, and musl packaging), **5 ground truth concordance evaluations** via `rtg vcfeval` ([Level 4](#level-4): Ground Truth Concordance Benchmarking, all certified EQUAL), **5 continuous performance budgets** ([Level 5](#level-5): Performance & Memory Budgets), **36 diagnostic self-tests** ([Level 6](#level-6): Diagnostic Self-Tests), and **automated pre-PR and release acceptance compound gates** ([Level 7](#level-7): Pre-PR & Release Acceptance Compound Gates) alongside **6 automated cloud CI/CD pipelines**.
 
 ```mermaid
 flowchart TD
@@ -30,8 +30,8 @@ flowchart TD
         P1 & P2 -->|Checks| P_Leak["gitleaks protect --staged"]
     end
 
-    subgraph Level1 ["Level 1: Unit & Component Tests (657 Total)"]
-        C_Core["crates/vardictrust-core (460 lib + 110 corpus_parity + 29 engine_behavior + 2 amplicon_stream_mem + 3 cram_stack tests)"]
+    subgraph Level1 ["Level 1: Unit & Component Tests (664 Total)"]
+        C_Core["crates/vardictrust-core (467 lib + 110 corpus_parity + 29 engine_behavior + 2 amplicon_stream_mem + 3 cram_stack tests)"]
         C_CLI["crates/vardictrust (28 cli tests)"]
         C_Prof["crates/vardictrust/tests/profile_smoke.rs (3 tests)"]
         C_Rob["crates/vardictrust/tests/robustness.rs (21 tests)"]
@@ -131,7 +131,7 @@ The table below summarizes the complete testing inventory executed across the de
 | :---: | :--- | :--- | :---: | :--- | :--- | :---: |
 | **Pre** | **Pre-Commit Hook (Track A)** | `.githooks/pre-commit` | 3 checks | `git commit` (local) | fmt, clippy, gitleaks clean | $<3\text{ s}$ |
 | **Pre** | **Pre-Commit Hook (Track B)** | `.pre-commit-config.yaml` | 6 hooks | `git commit` (local) | yaml, toml, whitespace, gitleaks | $<4\text{ s}$ |
-| **1** | [**Level 1: Core Library Tests**](#level-1) | `crates/vardictrust-core/src/` | 460 tests | `cargo test -p vardictrust-core --lib` | 0 failures, 0 panics | $\sim 2\text{ s}$ |
+| **1** | [**Level 1: Core Library Tests**](#level-1) | `crates/vardictrust-core/src/` | 467 tests | `cargo test -p vardictrust-core --lib` | 0 failures, 0 panics | $\sim 2\text{ s}$ |
 | **1** | [**Level 1: Corpus & Modality Parity**](#level-1) | `crates/vardictrust-core/tests/corpus_parity.rs` | 110 tests | `cargo test -p vardictrust-core --test corpus_parity` | 92-corpus + 17 modalities + manifest PASS | $\sim 1.5\text{ s}$ |
 | **1** | [**Level 1: Engine Behavior & Hostile Inputs**](#level-1) | `crates/vardictrust-core/tests/engine_behavior.rs` | 29 tests | `cargo test -p vardictrust-core --test engine_behavior` | CRAM, Fisher, SVs, filters, hostile inputs, tiled conservation & `#378` contract PASS | $\sim 0.4\text{ s}$ |
 | **1** | [**Level 1: Amplicon Streaming Memory**](#level-1) | `crates/vardictrust-core/tests/amplicon_stream_mem.rs` | 2 tests | `cargo test -p vardictrust-core --test amplicon_stream_mem` | Bounded memory on huge BED intervals | $\sim 0.2\text{ s}$ |
@@ -168,13 +168,13 @@ The table below summarizes the complete testing inventory executed across the de
 
 <a id="level-1"></a>
 <a id="level-1-unit--component-tests-208-total"></a>
-## 3. Level 1: Unit & Component Tests (657 Cargo Workspace Tests & `> 90%` Line Coverage)
+## 3. Level 1: Unit & Component Tests (664 Cargo Workspace Tests & `> 90%` Line Coverage)
 
-Executing `cargo test --workspace` validates **657 tests** across `crates/vardictrust-core`, `crates/vardictrust`, and integration test suites (enforcing **`> 90%` Rust line coverage** via `cargo llvm-cov report --ignore-filename-regex '(^|/)tests/' --fail-under-lines 90`):
+Executing `cargo test --workspace` validates **664 tests** across `crates/vardictrust-core`, `crates/vardictrust`, and integration test suites (enforcing **`> 90%` Rust line coverage** via `cargo llvm-cov report --ignore-filename-regex '(^|/)tests/' --fail-under-lines 90`):
 
-### 3.1 `crates/vardictrust-core` (460 Library Tests + 144 Integration Tests)
+### 3.1 `crates/vardictrust-core` (467 Library Tests + 144 Integration Tests)
 
-The core variant calling engine enforces `#![forbid(unsafe_code)]` and zero unhandled panics. Its 460 library unit tests, 110 corpus and modality parity tests, 29 engine behavior tests, 2 amplicon streaming memory tests, and 3 CRAM stack integration tests are partitioned across the following modules:
+The core variant calling engine enforces `#![forbid(unsafe_code)]` and zero unhandled panics. Its 467 library unit tests, 110 corpus and modality parity tests, 29 engine behavior tests, 2 amplicon streaming memory tests, and 3 CRAM stack integration tests are partitioned across the following modules:
 
 1. **Output Formatting & Tables (`output/` — 64 tests):**
    - `output::table` (28 tests): verifies column schema counts (Simple 36/38, Amplicon 38/40, Somatic 36/55/61 `*_append` & `*_into`), raw float formatting vs banker's rounding, null-record row rendering for `-p` mode, and header generation.
@@ -203,8 +203,8 @@ The core variant calling engine enforces `#![forbid(unsafe_code)]` and zero unha
 8. **Streaming Execution & Concurrency (`runner`, `bam` — 44 tests):**
    - `runner` (8 tests): verifies worker thread panic catching without process hang, 16 MiB `WORKER_THREAD_STACK_FLOOR_BYTES` floor (and automatic 64 MiB stack sizing on `.cram` inputs) respecting `RUST_MIN_STACK`, Rayon bounded queue collection, batched tile execution, and deterministic sorted output.
    - `bam` (36 tests): verifies SAM/BAM/CRAM decoding, Picard `<stem>.bai`/`<stem>.csi`/`<stem>.crai` and canonical symlink index resolution, colon-containing contig BAM queries, bounded `512 MiB` `ContigSlot` CRAM reference cache with `Arc<ContigSlot>` pinning and `IndexedCrai` slice seek, CRAM container/slice header bounds & landmark validation, multi-BAM per-file duplicate-set reset (`reset_for_next_bam`), `(u32, i32, u32)` `-t` duplicate tuple keys, soft-masked lowercase CRAM base uppercasing (`fill_from_alignment_record_uppercases_soft_masked_cram_bases`), omitted CRAM `NM` reconstruction (`compute_cram_nm_reconstructs_edit_distance_when_omitted_by_cram`), 32-shard `CachedBgzfReader` block caching, CIGAR query-consumption validation against SEQ length, and corrupt record rejection.
-9. **Singletons, Finalization & Core Integration Suites (`javamap`, `config`, `counters`, `tovars`, `tests`, `tests/corpus_parity.rs`, `tests/engine_behavior.rs`, `tests/amplicon_stream_mem.rs`, `tests/cram_stack.rs` — 214 tests: 70 library + 144 integration):**
-   - `javamap` (19 tests): verifies `JavaHashMap` OpenJDK 8+ hash bucket spread, arena node free-list reuse, binning, and treeify triggers against real Java oracle traces.
+9. **Singletons, Finalization & Core Integration Suites (`javamap`, `config`, `counters`, `tovars`, `tests`, `tests/corpus_parity.rs`, `tests/engine_behavior.rs`, `tests/amplicon_stream_mem.rs`, `tests/cram_stack.rs` — 221 tests: 77 library + 144 integration):**
+   - `javamap` (26 tests): verifies `JavaHashMap` OpenJDK 8+ hash bucket spread, arena node free-list reuse, binning, and `TreeNode` Red-Black bin treeification, balancing, `moveRootToFront`, `removeTreeNode` pointer-topology untreeification, and `split` (`UNTREEIFY_THRESHOLD = 6`) against real Java oracle traces.
    - `config` (8 tests): verifies configuration and `VcfThreshold` validation.
    - `counters` (2 tests): verifies thread-local diagnostic counter accumulation and zero-overhead non-debug builds.
    - `tovars` (17 tests): verifies candidate variant finalization, single-position `build_vars_at_position_with_ref_mode`, and sparse copy-on-write overlay parity.
@@ -436,7 +436,7 @@ The runner dynamically discovers and executes:
 Level 7 aggregates all lower levels into a two-tier verification lifecycle separating rapid per-PR verification from release-cut evidence certification:
 
 1. **Inner Developer Loop ([`harness/rgate.sh`](../../harness/rgate.sh)):** Fast-feedback developer loop (<15s) running formatting, Clippy, workspace tests, 92-fixture corpus (8 workers), and parallel micro/slice differential validation.
-2. **Tier A — Pre-PR Regression Gate ([`harness/pr_check.sh`](../../harness/pr_check.sh)):** Mandatory 6-stage per-PR gate running Hygiene (657 workspace tests), Crash Robustness, Level 2 Corpus (91/1 signature across 8 workers), Level 3 Parity (`micro`, `s1a..s9`, 17-modality extended coverage `--no-record`, 18-slice multimodal suite `--no-record`), Level 5 Performance Budget, and Security & Supply-Chain Hygiene (`gitleaks`, `cargo deny --all-features check advisories licenses bans sources`, and `cargo audit`) (<25s) without rewriting committed `benchmarks/evidence/*.json` files.
+2. **Tier A — Pre-PR Regression Gate ([`harness/pr_check.sh`](../../harness/pr_check.sh)):** Mandatory 6-stage per-PR gate running Hygiene (664 workspace tests), Crash Robustness, Level 2 Corpus (91/1 signature across 8 workers), Level 3 Parity (`micro`, `s1a..s9`, 17-modality extended coverage `--no-record`, 18-slice multimodal suite `--no-record`), Level 5 Performance Budget, and Security & Supply-Chain Hygiene (`gitleaks`, `cargo deny --all-features check advisories licenses bans sources`, and `cargo audit`) (<25s) without rewriting committed `benchmarks/evidence/*.json` files.
 3. **Tier B — Master Release Recertification & Acceptance Gate ([`harness/recertify.sh`](../../harness/recertify.sh) & [`harness/acceptance.sh`](../../harness/acceptance.sh)):** Executed when cutting a release (`release/vX.Y.Z`) or certifying a milestone baseline. `recertify.sh` refreshes all 15 non-scale `benchmarks/evidence/*.json` files (reusing pinned `VarDictJava`/`vardictcpp` baselines and cached `rtg vcfeval` results), updates documentation SHA-256/fingerprint tables (`harness/sync_evidence_docs.py`), and runs `acceptance.sh` across all 8 release items. Every item is strictly PASS or FAIL — there is no waiver mechanism.
 
 ---
@@ -450,7 +450,7 @@ VarDictRust utilizes 6 automated GitHub Actions workflows with strict security h
 - **9 Numbered Pipeline Steps (`build-and-test`):**
   1. `1. Format & Lint Gate (rustfmt & clippy)` (`id: fmt-lint`): runs `cargo fmt --all -- --check` and `cargo clippy --all-targets --all-features -- -D warnings`.
   2. `2. Build Instrumented Workspace & Test Targets` (`id: build`): pre-compiles all instrumented library, binary, and integration test targets via `cargo llvm-cov --no-report --workspace --bins --tests -- --list`.
-  3. `3. Unit Tests (vardictrust-core & vardictrust)` (`id: unit-tests`): runs all 488 library and CLI binary unit tests (`460` core lib + `28` CLI bin; `--lib --bins -- --test-threads=2`).
+  3. `3. Unit Tests (vardictrust-core & vardictrust)` (`id: unit-tests`): runs all 495 library and CLI binary unit tests (`467` core lib + `28` CLI bin; `--lib --bins -- --test-threads=2`).
   4. `4. Integration & Hostile-Input Tests (Modes, Filters, CRAM & Bounded Memory)` (`id: integration-tests`): runs `engine_behavior` (29 tests), `amplicon_stream_mem` (2), `cram_stack` (3), `robustness` (21), `profile_smoke` (3), and `version` (1) (`59` tests total).
   5. `5. Corpus & Modality Parity Tests (110 Golden & Modality Cases)` (`id: parity-tests`): runs `corpus_parity` (110 tests across all 92 upstream corpus fixtures and 17 extended modalities).
   6. `6. Code Coverage Gate (cargo-llvm-cov >= 90% Lines)` (`id: coverage-gate`): aggregates coverage across steps 3–5 and enforces `--fail-under-lines 90`.

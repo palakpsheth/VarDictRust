@@ -351,8 +351,8 @@ impl<'a> ToVarsBuilder<'a> {
         );
 
         if var_data.non_insertion_variants.treeified() || var_data.insertion_variants.treeified() {
-            log::warn!(
-                "JavaHashMap treeified bin encountered for chr {}:{}-{}; key iteration order may diverge from Java LinkedList order",
+            log::debug!(
+                "JavaHashMap OpenJDK TreeNode bin active for chr {}:{}-{}",
                 crate::util::SanitizedBytes(self.region.chr.as_bytes()),
                 self.region.start,
                 self.region.end
@@ -484,8 +484,8 @@ impl<'a> ToVarsBuilder<'a> {
             || var_data.insertion_variants.treeified()
             || aligned_variants.treeified()
         {
-            log::warn!(
-                "JavaHashMap treeified bin encountered for chr {}:{}-{}; key iteration order may diverge from Java LinkedList order",
+            log::debug!(
+                "JavaHashMap OpenJDK TreeNode bin active for chr {}:{}-{}",
                 crate::util::SanitizedBytes(self.region.chr.as_bytes()),
                 self.region.start,
                 self.region.end

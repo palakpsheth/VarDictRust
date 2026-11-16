@@ -1,5 +1,6 @@
 //! Engine hot-path benches (T147-lite + Issue N): pileup/parse_cigar, find_bp,
-//! find_35_match, javamap/compute_if_absent, round_half_even, modify_cigar, and fisher.
+//! find_35_match, javamap/compute_if_absent, javamap_stride_collisions, round_half_even,
+//! modify_cigar, and fisher.
 //! Fixtures are built in-code — no committed external genomic data required.
 
 use std::hint::black_box;
@@ -170,6 +171,33 @@ fn bench_javamap_compute_if_absent(c: &mut Criterion) {
     });
 }
 
+/// JavaHashMap TreeNode Red-Black bin insert + get + remove under 2^16-stride bucket collisions (SEC-17b).
+fn bench_javamap_stride_collisions(c: &mut Criterion) {
+    let keys: Vec<i32> = (0..2_000i32)
+        .map(|i| (i << 16) | ((i ^ 0x1234) & 0xFFFF))
+        .collect();
+    c.bench_function("javamap_stride_collisions/2000_same_bucket", |b| {
+        b.iter(|| {
+            let mut map: JavaHashMap<i32, i32> = JavaHashMap::new();
+            for (idx, &k) in black_box(&keys).iter().enumerate() {
+                map.insert(k, idx as i32);
+            }
+            let mut sum = 0i32;
+            for &k in black_box(&keys) {
+                if let Some(&v) = map.get(&k) {
+                    sum = sum.wrapping_add(v);
+                }
+            }
+            for &k in black_box(&keys).iter().step_by(2) {
+                if let Some(v) = map.remove(&k) {
+                    sum = sum.wrapping_add(v);
+                }
+            }
+            black_box((map.len(), sum))
+        })
+    });
+}
+
 /// Banker's rounding (round_half_even) over realistic AF, quality, and Fisher logdc inputs.
 fn bench_round_half_even(c: &mut Criterion) {
     let samples: [(f64, i32); 12] = [
@@ -274,6 +302,7 @@ criterion_group!(
     bench_find_bp,
     bench_find_35_match,
     bench_javamap_compute_if_absent,
+    bench_javamap_stride_collisions,
     bench_round_half_even,
     bench_modify_cigar,
     bench_fisher,
