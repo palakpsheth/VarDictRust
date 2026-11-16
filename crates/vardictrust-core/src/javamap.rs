@@ -668,14 +668,24 @@ where
         let first = self.buckets.get(idx).copied().unwrap_or(NONE);
 
         let mut bin_count = 0usize;
-        let mut is_tree = false;
-        let mut old = NONE;
+        let mut tree_vacant: Option<(u32, u32, i32)> = None;
         if first != NONE {
             if self.is_tree_node(first) {
-                is_tree = true;
-                old = self.get_tree_node(first, hash as i32, &key);
+                match self.probe_tree_slot(first, hash as i32, &key) {
+                    TreeProbe::Found(old) => {
+                        return self
+                            .nodes
+                            .get_mut(old as usize)
+                            .map(|nd| &mut nd.val)
+                            .unwrap_or(&mut self.fallback);
+                    }
+                    TreeProbe::Vacant { root, xp, dir } => {
+                        tree_vacant = Some((root, xp, dir));
+                    }
+                }
             } else {
                 let mut e = first;
+                let mut old = NONE;
                 for _ in 0..=self.nodes.len() {
                     if e == NONE {
                         break;
@@ -690,34 +700,23 @@ where
                     bin_count += 1;
                     e = node.next;
                 }
-            }
-            if old != NONE {
-                return self
-                    .nodes
-                    .get_mut(old as usize)
-                    .map(|nd| &mut nd.val)
-                    .unwrap_or(&mut self.fallback);
+                if old != NONE {
+                    return self
+                        .nodes
+                        .get_mut(old as usize)
+                        .map(|nd| &mut nd.val)
+                        .unwrap_or(&mut self.fallback);
+                }
             }
         }
 
         let val = f(&key);
-        let target_idx = if is_tree {
-            match self.probe_tree_slot(first, hash as i32, &key) {
-                TreeProbe::Found(e) => {
-                    return self
-                        .nodes
-                        .get_mut(e as usize)
-                        .map(|nd| &mut nd.val)
-                        .unwrap_or(&mut self.fallback);
-                }
-                TreeProbe::Vacant { root, xp, dir } => {
-                    let ni = self.insert_tree_leaf(idx, root, xp, dir, key, val);
-                    if ni != NONE {
-                        self.size += 1;
-                    }
-                    ni
-                }
+        let target_idx = if let Some((root, xp, dir)) = tree_vacant {
+            let ni = self.insert_tree_leaf(idx, root, xp, dir, key, val);
+            if ni != NONE {
+                self.size += 1;
             }
+            ni
         } else {
             let new_idx = self.alloc_node(key, val, first);
             if new_idx != NONE {
@@ -1835,9 +1834,13 @@ where
 
     fn into_iter(mut self) -> Self::IntoIter {
         let mut items = Vec::with_capacity(self.size);
+        let max_steps = self.nodes.len();
         for &head in &self.buckets {
             let mut curr = head;
-            while curr != NONE {
+            for _ in 0..=max_steps {
+                if curr == NONE {
+                    break;
+                }
                 let Some(node) = self.nodes.get_mut(curr as usize) else {
                     break;
                 };
@@ -2866,26 +2869,34 @@ mod tests {
         entries: Vec<(i32, i32)>,
     }
 
-    fn find_java_tool(tool: &str) -> Option<std::path::PathBuf> {
+    fn find_java_toolchain() -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+        let check_dir =
+            |dir: std::path::PathBuf| -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+                let javac = dir.join("javac");
+                let java = dir.join("java");
+                if javac.is_file() && java.is_file() {
+                    Some((javac, java))
+                } else {
+                    None
+                }
+            };
+
         if let Ok(java_home) = std::env::var("JAVA_HOME") {
-            let p = std::path::PathBuf::from(java_home).join("bin").join(tool);
-            if p.is_file() {
-                return Some(p);
+            if let Some(pair) = check_dir(std::path::PathBuf::from(java_home).join("bin")) {
+                return Some(pair);
             }
         }
         if let Ok(home) = std::env::var("HOME") {
-            let p = std::path::PathBuf::from(home)
-                .join("miniconda3/envs/vardict-oracle/bin")
-                .join(tool);
-            if p.is_file() {
-                return Some(p);
+            if let Some(pair) =
+                check_dir(std::path::PathBuf::from(home).join("miniconda3/envs/vardict-oracle/bin"))
+            {
+                return Some(pair);
             }
         }
         if let Ok(path_var) = std::env::var("PATH") {
             for dir in std::env::split_paths(&path_var) {
-                let p = dir.join(tool);
-                if p.is_file() {
-                    return Some(p);
+                if let Some(pair) = check_dir(dir) {
+                    return Some(pair);
                 }
             }
         }
@@ -2896,8 +2907,7 @@ mod tests {
         use std::io::Write;
         use std::process::{Command, Stdio};
 
-        let javac = find_java_tool("javac")?;
-        let java = find_java_tool("java")?;
+        let (javac, java) = find_java_toolchain()?;
 
         struct TempDirGuard(std::path::PathBuf);
         impl Drop for TempDirGuard {
