@@ -1,4 +1,5 @@
 # name	url	md5	md5_source	bytes	fetched
+# Note: Historical rows record legacy MD5 checksums; new downloads are verified via SHA-256 against harness/assets.tsv.
 HG008-T_somatic_smvar_benchmark_v0.3_tumorvariants.vcf.gz	https://ftp.ncbi.nlm.nih.gov/giab/ftp/data_somatic/HG008/Liss_lab/analysis/NIST_HG008-T_somatic-smvar_DraftBenchmark_V0.3-20260425/HG008-T_somatic_smvar_benchmark_v0.3_tumorvariants.vcf.gz	0f85c077151e9a43cb9a39cd27b8e388	computed-locally	283528	2026-10-08T10:09:16-07:00
 HG008-T_somatic_smvar_benchmark_v0.3_tumorvariants.vcf.gz.tbi	https://ftp.ncbi.nlm.nih.gov/giab/ftp/data_somatic/HG008/Liss_lab/analysis/NIST_HG008-T_somatic-smvar_DraftBenchmark_V0.3-20260425/HG008-T_somatic_smvar_benchmark_v0.3_tumorvariants.vcf.gz.tbi	5f66bce87d9ec461a9cb47eed0d6ba15	computed-locally	168646	2026-10-08T10:09:17-07:00
 HG008-T_somatic_smvar_benchmark_v0.3_all.bed	https://ftp.ncbi.nlm.nih.gov/giab/ftp/data_somatic/HG008/Liss_lab/analysis/NIST_HG008-T_somatic-smvar_DraftBenchmark_V0.3-20260425/HG008-T_somatic_smvar_benchmark_v0.3_all.bed	df24735abb5437101971bf86f75f2908	computed-locally	1012698	2026-10-08T10:09:18-07:00
@@ -41,7 +42,7 @@ HCC1395BL.bam.bai	derived:bwa-mem-seqc2	2823d6171038853b56937f678232973b	compute
 HG002_GRCh38_1_22_v4.2.1_benchmark.vcf.gz	https://giab.s3.amazonaws.com/release/AshkenazimTrio/HG002_NA24385_son/NISTv4.2.1/GRCh38/HG002_GRCh38_1_22_v4.2.1_benchmark.vcf.gz	dc750b3807d4af1f7ffec852e9c2f771	computed-locally	156252944	2026-10-10T09:40:12-07:00
 HG002_GRCh38_1_22_v4.2.1_benchmark.vcf.gz.tbi	https://giab.s3.amazonaws.com/release/AshkenazimTrio/HG002_NA24385_son/NISTv4.2.1/GRCh38/HG002_GRCh38_1_22_v4.2.1_benchmark.vcf.gz.tbi	121e2975fb3ff0317ae6a684d0ce6f2f	computed-locally	1657747	2026-10-10T09:40:13-07:00
 HG002_GRCh38_1_22_v4.2.1_benchmark_noinconsistent.bed	https://giab.s3.amazonaws.com/release/AshkenazimTrio/HG002_NA24385_son/NISTv4.2.1/GRCh38/HG002_GRCh38_1_22_v4.2.1_benchmark_noinconsistent.bed	97265e922a97c69a0391cf3f92a89b8b	computed-locally	11494021	2026-10-10T09:40:15-07:00
-HG002.remote.bai	https://giab.s3.amazonaws.com/data/AshkenazimTrio/HG002_NA24385_son/NIST_Illumina_2x250bps/novoalign_bams/HG002.GRCh38.2x250.bam.bai	a4c79b44a863e88eeb525b5e8d1501f6	computed-locally	9816176	2026-10-10T09:40:16-07:00
+HG002.remote.bai	https://giab.s3.amazonaws.com/data/AshkenazimTrio/HG002_NA24385_son/NIST_Illumina_2x250bps/novoalign_bams/HG002.GRCh38.2x250.bam.bai	a3c2b449df6509ca83fbd3fea22b9aee	upstream	9451360	2026-11-15T22:30:00Z
 HG002.chr20.bam	derived:remote-slice	bd605a455b2e2064931e6097c64695ea	computed-locally	860559731	2026-10-10T09:40:00-07:00
 HG002.chr20.bam.bai	derived:samtools-index	112c58a6798c46dfdee7ae8867174da3	computed-locally	89456	2026-10-10T09:40:02-07:00
 eval.bed	derived:awk-tile	a693fdd787e26da2a9e99468b5385888	computed-locally	82053	2026-10-10T09:40:16-07:00

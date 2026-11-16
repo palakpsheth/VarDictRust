@@ -793,6 +793,137 @@ class TestRepoAgentSkills(unittest.TestCase):
         ):
             self.assertIn(ctx, cfg_text, f"configure_github_repo.py missing required check context {ctx}")
 
+    def test_release_workflow_cargo_dist_pinned_shas_and_harden_runner(self):
+        """Verify release.yml pins 4-arch cargo-dist SHA-256 digests, eliminates | sh, and hardens runners."""
+        rel_path = ROOT_DIR / ".github" / "workflows" / "release.yml"
+        self.assertTrue(rel_path.is_file(), "Missing .github/workflows/release.yml")
+        rel_text = rel_path.read_text(encoding="utf-8")
+
+        # Zero pipe-to-shell invocations
+        self.assertNotIn("| sh", rel_text, "release.yml must not contain unpinned '| sh' pipe-to-shell invocations")
+        self.assertNotIn("cargo-dist-installer.sh", rel_text, "release.yml must not use remote cargo-dist-installer.sh script")
+        self.assertNotIn("sh.rustup.rs", rel_text, "release.yml must not use pipe-to-shell rustup installer")
+        self.assertNotIn("${{ matrix.install_dist.run }}", rel_text, "release.yml must not execute unpinned matrix.install_dist.run")
+
+        # Pinned 4-arch cargo-dist v0.33.0 SHA-256 digests
+        expected_shas = {
+            "Linux-x86_64": "4b3f0a5f0ebbdb798f6db649d01b32ba1518376b6f7a0502b7d92b75cc2c8293",
+            "Linux-aarch64": "9c554ab21a58ad46eb9b6710f89633ccb26bc2577cf4b0c2d18a5b826a31913e",
+            "Darwin-x86_64": "6a49bfb61bd86770d79c27f3d2b40c6b2e71cde940d3d31a6ccaaffc124d7a29",
+            "Darwin-arm64": "7b3cbe25511de01d74c0f5fcb7909edabd379bea9cfa284d93af5a3cdfa3247c",
+        }
+        for arch_label, digest in expected_shas.items():
+            self.assertIn(
+                digest,
+                rel_text,
+                f"release.yml must pin {arch_label} cargo-dist v0.33.0 SHA-256 digest {digest}",
+            )
+
+        # Archive extraction flags, cargo/bin destination, path propagation, and cache salting
+        self.assertIn("--strip-components=1", rel_text, "release.yml must extract cargo-dist tar.xz with --strip-components=1")
+        self.assertIn("$HOME/.cargo/bin", rel_text, "release.yml must install cargo-dist binary to $HOME/.cargo/bin")
+        self.assertIn("GITHUB_PATH", rel_text, "release.yml must append $HOME/.cargo/bin to GITHUB_PATH")
+        self.assertIn("cargo-dist-archive-sha256-v0.33.0-", rel_text, "release.yml must salt cargo-dist cache key with cargo-dist-archive-sha256-v0.33.0-")
+        self.assertIn("~/.cache/cargo-dist", rel_text, "release.yml must cache cargo-dist archive directory")
+
+        # Verify dist --version never appears before verify_tar in plan or build-local-artifacts
+        for job_name in ("plan", "build-local-artifacts"):
+            job_split = rel_text.split(f"  {job_name}:")
+            self.assertEqual(len(job_split), 2, f"release.yml missing job {job_name}")
+            job_body = job_split[1].split("\n  build-")[0] if job_name == "plan" else job_split[1].split("\n  publish-")[0]
+            self.assertIn("verify_tar", job_body, f"job {job_name} must define verify_tar")
+            verify_idx = job_body.index("verify_tar")
+            self.assertIn('"$HOME/.cargo/bin/dist" --version', job_body, f"job {job_name} must run dist --version")
+            dist_ver_idx = job_body.index('"$HOME/.cargo/bin/dist" --version')
+            self.assertGreater(dist_ver_idx, verify_idx, f"job {job_name} must not run dist --version before verify_tar")
+            self.assertNotIn('exit 0', job_body[:verify_idx], f"job {job_name} must not have early exit shortcut before verify_tar")
+
+        # harden-runner in all 6 jobs
+        harden_action = "step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a"
+        self.assertEqual(
+            rel_text.count(harden_action),
+            6,
+            f"release.yml must include harden-runner ({harden_action}) as first step in all 6 jobs",
+        )
+        self.assertIn("egress-policy: audit", rel_text, "harden-runner must configure egress-policy: audit")
+        self.assertIn(
+            "if: runner.os == 'Linux' && runner.arch == 'X64'",
+            rel_text,
+            "harden-runner on cross-OS jobs must be gated with 'if: runner.os == 'Linux' && runner.arch == 'X64''",
+        )
+
+    def test_configure_github_repo_tag_ruleset_and_security_settings(self):
+        """Verify configure_github_repo.py API headers, merge commit restrictions, and lockout-safe tag ruleset."""
+        cfg_path = ROOT_DIR / "harness" / "configure_github_repo.py"
+        self.assertTrue(cfg_path.is_file(), "Missing harness/configure_github_repo.py")
+        cfg_text = cfg_path.read_text(encoding="utf-8")
+
+        self.assertIn(
+            '"Accept": "application/vnd.github+json"',
+            cfg_text,
+            "configure_github_repo.py must use modern 'application/vnd.github+json' Accept header",
+        )
+        self.assertIn(
+            '"allow_merge_commit": False',
+            cfg_text,
+            "configure_github_repo.py must set 'allow_merge_commit': False",
+        )
+        self.assertIn(
+            '"MkDocs Strict Build Gate"',
+            cfg_text,
+            "configure_github_repo.py must retain 'MkDocs Strict Build Gate' in required status checks",
+        )
+        self.assertIn("def configure_tag_ruleset", cfg_text, "configure_github_repo.py must define configure_tag_ruleset()")
+        self.assertIn("current_user_can_bypass", cfg_text, "configure_tag_ruleset must check current_user_can_bypass")
+        self.assertIn("24867690", cfg_text, "configure_tag_ruleset must target existing ruleset ID 24867690")
+        self.assertIn('"refs/tags/v*"', cfg_text, "configure_tag_ruleset must include 'refs/tags/v*'")
+        self.assertNotIn('"~refs/tags/v*"', cfg_text, "configure_tag_ruleset must not use invalid '~refs/tags/v*'")
+
+        help_run = subprocess.run(
+            [sys.executable, str(cfg_path), "--help"],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(help_run.returncode, 0, f"--help failed: {help_run.stderr}")
+        self.assertIn("--dry-run", help_run.stdout)
+        self.assertIn("--apply", help_run.stdout)
+
+        dry_run = subprocess.run(
+            [sys.executable, str(cfg_path), "--dry-run"],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(dry_run.returncode, 0, f"--dry-run failed: {dry_run.stderr}")
+        self.assertIn("Configured ruleset 24867690 for refs/tags/v*", dry_run.stdout)
+
+        # Verify configure_tag_ruleset rolls back to safe payload if GET raises exception (Copilot 4580868305)
+        import importlib.util
+        import urllib.error
+        from unittest.mock import patch
+
+        spec = importlib.util.spec_from_file_location("configure_github_repo_mod", str(cfg_path))
+        cfg_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cfg_mod)
+
+        recorded_calls = []
+
+        def mock_api_request(endpoint, method="GET", data=None, dry_run=False):
+            recorded_calls.append((endpoint, method, data, dry_run))
+            if method == "GET":
+                raise urllib.error.URLError("Simulated connection timeout")
+            return {"status": "ok"}
+
+        with patch.object(cfg_mod, "api_request", side_effect=mock_api_request):
+            cfg_mod.configure_tag_ruleset(dry_run=False)
+
+        # Should have: 1. PUT strict, 2. GET (which raises), 3. PUT safe rollback
+        self.assertEqual(len(recorded_calls), 3, f"Expected 3 API calls, got {len(recorded_calls)}")
+        self.assertEqual(recorded_calls[0][1], "PUT")
+        self.assertTrue(any(r.get("type") == "creation" for r in recorded_calls[0][2].get("rules", [])))
+        self.assertEqual(recorded_calls[1][1], "GET")
+        self.assertEqual(recorded_calls[2][1], "PUT")
+        self.assertFalse(any(r.get("type") == "creation" for r in recorded_calls[2][2].get("rules", [])))
+
     def test_github_workflows_valid_yaml_and_pinned_shas(self):
         workflows_dir = ROOT_DIR / ".github" / "workflows"
         wf_files = sorted(workflows_dir.glob("*.yml"))

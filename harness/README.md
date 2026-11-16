@@ -52,8 +52,8 @@ The harness operates in two distinct tiers:
 
 | Script / Asset | Description |
 | :--- | :--- |
-| [`assets.tsv`](assets.tsv) | **Asset Registry:** Declarative 5-column manifest (`group`, `name`, `url`, `md5`, `dest`) tracking all external public genomic references and truth sets (SEQC2, GIAB HG008, GIAB HG002). |
-| [`fetch_data.sh`](fetch_data.sh) | **Safe Asset Downloader:** Reads `assets.tsv`, downloads external biological assets via `curl`, verifies MD5 checksums, and records provenance in `benchmarks/MANIFEST`. Supports `-` for dynamic calculation. |
+| [`assets.tsv`](assets.tsv) | **Asset Registry:** Declarative 6-column manifest (`group`, `name`, `url`, `md5`, `sha256`, `dest`) tracking all external public genomic references and truth sets (SEQC2, GIAB HG008, GIAB HG002). |
+| [`fetch_data.sh`](fetch_data.sh) | **Safe Asset Downloader:** Reads `assets.tsv`, downloads external biological assets via `curl`, verifies SHA-256 checksums (with `--allow-legacy-md5` fallback for unpinned archival rows), and records provenance in `benchmarks/MANIFEST`. |
 | [`stage_g4.sh`](stage_g4.sh) | **Turnkey Cohort Stager:** Idempotent orchestrator (`all`, `refs`, `amplicon`, `hg002`, `hg008`, `seqc2`, `multimodal`) that unpacks reference FASTAs, builds `.fai` and RTG `.sdf` indices, aligns SEQC2 BAMs, derives engine/eval BEDs, and streams all benchmark slices. |
 | [`convert_fastas.py`](convert_fastas.py) | **CI Reference Materializer:** Reconstructs dense reference `.fa` and `.fa.fai` files from upstream `VarDictJava/testdata/fastas/*.fa.csv` in $<10$ seconds using pure Python (zero external dependencies). |
 | [`run_integration.sh`](run_integration.sh) | **Corpus Runner:** Executes all 92 upstream VarDictJava integration test cases (`VarDictJava/testdata/integrationtestcases/`). Auto-materializes FASTAs via `convert_fastas.py` if missing. Verifies actual output against pinned live-oracle SHA-256 for XFAIL fixtures. Asserts 91 PASS / 1 verified XFAIL (0 FAIL / 0 SKIP / 0 XPASS). |

@@ -64,6 +64,10 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
+      - name: Harden GitHub Actions Runner
+        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        with:
+          egress-policy: audit
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -141,11 +145,88 @@ jobs:
             echo "- **Ref**: \`${REF_NAME}\` (\`event=${EVENT_NAME}\`, \`pull_request=${IS_PR}\`)"
             echo "- **Consistency & Evidence Check**: \`PASS\`"
           } >> "$GITHUB_STEP_SUMMARY"
-      - name: Install dist
-        # we specify bash to get pipefail; it guards against the `curl` command
-        # failing. otherwise `sh` won't catch that `curl` returned non-0
+      - name: Cache cargo-dist archive
+        id: cache-dist
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/cargo-dist
+          key: cargo-dist-archive-sha256-v0.33.0-${{ runner.os }}-${{ runner.arch }}
+      - name: Install cargo-dist v0.33.0
         shell: bash
-        run: "curl --proto '=https' --tlsv1.2 -LsSf https://github.com/axodotdev/cargo-dist/releases/download/v0.33.0/cargo-dist-installer.sh | sh"
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.cargo/bin"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+          OS_NAME="$(uname -s)"
+          ARCH_NAME="$(uname -m)"
+          DIST_VER="v0.33.0"
+
+          case "${OS_NAME}-${ARCH_NAME}" in
+            Linux-x86_64)
+              ARCHIVE="cargo-dist-x86_64-unknown-linux-gnu.tar.xz"
+              EXPECTED_SHA256="4b3f0a5f0ebbdb798f6db649d01b32ba1518376b6f7a0502b7d92b75cc2c8293"
+              ;;
+            Linux-aarch64|Linux-arm64)
+              ARCHIVE="cargo-dist-aarch64-unknown-linux-gnu.tar.xz"
+              EXPECTED_SHA256="9c554ab21a58ad46eb9b6710f89633ccb26bc2577cf4b0c2d18a5b826a31913e"
+              ;;
+            Darwin-x86_64)
+              ARCHIVE="cargo-dist-x86_64-apple-darwin.tar.xz"
+              EXPECTED_SHA256="6a49bfb61bd86770d79c27f3d2b40c6b2e71cde940d3d31a6ccaaffc124d7a29"
+              ;;
+            Darwin-arm64|Darwin-aarch64)
+              ARCHIVE="cargo-dist-aarch64-apple-darwin.tar.xz"
+              EXPECTED_SHA256="7b3cbe25511de01d74c0f5fcb7909edabd379bea9cfa284d93af5a3cdfa3247c"
+              ;;
+            *)
+              echo "ERROR: Unsupported runner platform ${OS_NAME}-${ARCH_NAME}" >&2
+              exit 1
+              ;;
+          esac
+
+          CACHE_DIR="$HOME/.cache/cargo-dist"
+          CACHED_TAR="$CACHE_DIR/$ARCHIVE"
+          mkdir -p "$CACHE_DIR" "$HOME/.cargo/bin"
+
+          verify_tar() {
+            local tar_path="$1"
+            python3 -c "import textwrap, sys; exec(textwrap.dedent('''
+                import hashlib, sys
+                tar_path, expected = sys.argv[1], sys.argv[2]
+                try:
+                    with open(tar_path, 'rb') as f:
+                        actual = hashlib.sha256(f.read()).hexdigest()
+                    if actual == expected:
+                        sys.exit(0)
+                    print(f'WARN: SHA-256 mismatch for {tar_path}: got {actual}, expected {expected}', file=sys.stderr)
+                    sys.exit(1)
+                except Exception as e:
+                    print(f'WARN: Failed to verify {tar_path}: {e}', file=sys.stderr)
+                    sys.exit(1)
+            '''))" "$tar_path" "$EXPECTED_SHA256"
+          }
+
+          if [ -f "$CACHED_TAR" ] && verify_tar "$CACHED_TAR"; then
+            echo "Using verified cached archive: $CACHED_TAR"
+          else
+            TMP_TAR="${RUNNER_TEMP:-/tmp}/$ARCHIVE"
+            URL="https://github.com/axodotdev/cargo-dist/releases/download/${DIST_VER}/${ARCHIVE}"
+            echo "Fetching $ARCHIVE from $URL..."
+            curl -sSLf --retry 3 -o "$TMP_TAR" "$URL"
+            if ! verify_tar "$TMP_TAR"; then
+              echo "ERROR: Downloaded archive failed SHA-256 verification!" >&2
+              rm -f "$TMP_TAR"
+              exit 1
+            fi
+            mv -f "$TMP_TAR" "$CACHED_TAR"
+            echo "Verified and cached $ARCHIVE"
+          fi
+
+          rm -f "$HOME/.cargo/bin/dist"
+          tar -xJf "$CACHED_TAR" --strip-components=1 -C "$HOME/.cargo/bin"
+          chmod +x "$HOME/.cargo/bin/dist"
+          "$HOME/.cargo/bin/dist" --version
       - name: Cache dist
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
@@ -290,6 +371,11 @@ jobs:
       "contents": "read"
       "id-token": "write"
     steps:
+      - name: Harden GitHub Actions Runner
+        if: runner.os == 'Linux' && runner.arch == 'X64'
+        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        with:
+          egress-policy: audit
       - name: enable windows longpaths
         run: |
           git config --global core.longpaths true
@@ -310,15 +396,94 @@ jobs:
             echo "ERROR: Checkout commit ${ACTUAL_COMMIT} != expected tag commit ${EXPECTED_COMMIT}!" >&2
             exit 1
           fi
-      - name: Install Rust non-interactively if not already installed
-        if: ${{ matrix.container }}
+      - name: Verify Cargo Toolchain Installed
         run: |
           if ! command -v cargo > /dev/null 2>&1; then
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-            echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+            echo "ERROR: Cargo toolchain is required but not installed on runner" >&2
+            exit 1
           fi
-      - name: Install dist
-        run: ${{ matrix.install_dist.run }}
+      - name: Cache cargo-dist archive
+        id: cache-dist
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/cargo-dist
+          key: cargo-dist-archive-sha256-v0.33.0-${{ runner.os }}-${{ runner.arch }}
+      - name: Install cargo-dist v0.33.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.cargo/bin"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+          OS_NAME="$(uname -s)"
+          ARCH_NAME="$(uname -m)"
+          DIST_VER="v0.33.0"
+
+          case "${OS_NAME}-${ARCH_NAME}" in
+            Linux-x86_64)
+              ARCHIVE="cargo-dist-x86_64-unknown-linux-gnu.tar.xz"
+              EXPECTED_SHA256="4b3f0a5f0ebbdb798f6db649d01b32ba1518376b6f7a0502b7d92b75cc2c8293"
+              ;;
+            Linux-aarch64|Linux-arm64)
+              ARCHIVE="cargo-dist-aarch64-unknown-linux-gnu.tar.xz"
+              EXPECTED_SHA256="9c554ab21a58ad46eb9b6710f89633ccb26bc2577cf4b0c2d18a5b826a31913e"
+              ;;
+            Darwin-x86_64)
+              ARCHIVE="cargo-dist-x86_64-apple-darwin.tar.xz"
+              EXPECTED_SHA256="6a49bfb61bd86770d79c27f3d2b40c6b2e71cde940d3d31a6ccaaffc124d7a29"
+              ;;
+            Darwin-arm64|Darwin-aarch64)
+              ARCHIVE="cargo-dist-aarch64-apple-darwin.tar.xz"
+              EXPECTED_SHA256="7b3cbe25511de01d74c0f5fcb7909edabd379bea9cfa284d93af5a3cdfa3247c"
+              ;;
+            *)
+              echo "ERROR: Unsupported runner platform ${OS_NAME}-${ARCH_NAME}" >&2
+              exit 1
+              ;;
+          esac
+
+          CACHE_DIR="$HOME/.cache/cargo-dist"
+          CACHED_TAR="$CACHE_DIR/$ARCHIVE"
+          mkdir -p "$CACHE_DIR" "$HOME/.cargo/bin"
+
+          verify_tar() {
+            local tar_path="$1"
+            python3 -c "import textwrap, sys; exec(textwrap.dedent('''
+                import hashlib, sys
+                tar_path, expected = sys.argv[1], sys.argv[2]
+                try:
+                    with open(tar_path, 'rb') as f:
+                        actual = hashlib.sha256(f.read()).hexdigest()
+                    if actual == expected:
+                        sys.exit(0)
+                    print(f'WARN: SHA-256 mismatch for {tar_path}: got {actual}, expected {expected}', file=sys.stderr)
+                    sys.exit(1)
+                except Exception as e:
+                    print(f'WARN: Failed to verify {tar_path}: {e}', file=sys.stderr)
+                    sys.exit(1)
+            '''))" "$tar_path" "$EXPECTED_SHA256"
+          }
+
+          if [ -f "$CACHED_TAR" ] && verify_tar "$CACHED_TAR"; then
+            echo "Using verified cached archive: $CACHED_TAR"
+          else
+            TMP_TAR="${RUNNER_TEMP:-/tmp}/$ARCHIVE"
+            URL="https://github.com/axodotdev/cargo-dist/releases/download/${DIST_VER}/${ARCHIVE}"
+            echo "Fetching $ARCHIVE from $URL..."
+            curl -sSLf --retry 3 -o "$TMP_TAR" "$URL"
+            if ! verify_tar "$TMP_TAR"; then
+              echo "ERROR: Downloaded archive failed SHA-256 verification!" >&2
+              rm -f "$TMP_TAR"
+              exit 1
+            fi
+            mv -f "$TMP_TAR" "$CACHED_TAR"
+            echo "Verified and cached $ARCHIVE"
+          fi
+
+          rm -f "$HOME/.cargo/bin/dist"
+          tar -xJf "$CACHED_TAR" --strip-components=1 -C "$HOME/.cargo/bin"
+          chmod +x "$HOME/.cargo/bin/dist"
+          "$HOME/.cargo/bin/dist" --version
       # Get the dist-manifest
       - name: Fetch local artifacts
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
@@ -498,6 +663,10 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       BUILD_MANIFEST_NAME: target/distrib/global-dist-manifest.json
     steps:
+      - name: Harden GitHub Actions Runner
+        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        with:
+          egress-policy: audit
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.plan.outputs.checkout-ref }}
@@ -563,6 +732,10 @@ jobs:
     outputs:
       val: ${{ steps.host.outputs.manifest }}
     steps:
+      - name: Harden GitHub Actions Runner
+        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        with:
+          egress-policy: audit
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.plan.outputs.checkout-ref }}
@@ -640,6 +813,10 @@ jobs:
     env:
       CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
     steps:
+      - name: Harden GitHub Actions Runner
+        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        with:
+          egress-policy: audit
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.plan.outputs.checkout-ref }}
@@ -686,6 +863,10 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
+      - name: Harden GitHub Actions Runner
+        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        with:
+          egress-policy: audit
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.plan.outputs.checkout-ref }}
