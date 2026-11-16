@@ -18,6 +18,32 @@ cat_maybe_gz() {
   esac
 }
 
+stage6_fetch_verified() {
+  local name="$1"
+  local url="$2"
+  local dest="$3"
+  local assets_tsv="${ASSETS_TSV:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/assets.tsv}"
+  local sha=""
+  if [ -f "$assets_tsv" ]; then
+    sha="$(awk -F'\t' -v n="$name" -v u="$url" '!/^#/ && ($2 == n || $3 == u) && $5 ~ /^[0-9a-f]{64}$/ {print $5; exit}' "$assets_tsv")"
+  fi
+  if [ -n "$sha" ]; then
+    stage_verified_sha256 "$url" "$sha" "$dest"
+    return $?
+  fi
+  if [ -s "$dest" ]; then
+    return 0
+  fi
+  if [ "${STAGE6_ALLOW_UNVERIFIED_DOWNLOAD:-0}" != "1" ]; then
+    echo "stage6_fetch_verified: refusing unverified download for '$name' ($url); stage via GCS g4-cache or add SHA-256 to $assets_tsv" >&2
+    return 1
+  fi
+  mkdir -p "$(dirname "$dest")"
+  local part="${dest}.part"
+  rm -f "$part"
+  curl --proto '=https' --tlsv1.2 -sSLf --retry 5 -o "$part" "$url" && mv -f "$part" "$dest"
+}
+
 ensure_vcf_clean_helper() {
   WORK_DIR="${WORK_DIR:-/var/tmp/vardict-paper-$(id -u)}"
   mkdir -p -m 700 "$WORK_DIR"
@@ -244,28 +270,26 @@ run_s6_vm2() {
       setsid gsutil "${GSUTIL_MT_FLAGS[@]}" -q rsync -r "${GCS_BAMS}/g4-cache/hg002/truth" "$DATA_DIR/hg002/truth" 2>/dev/null || true
     fi
 
-    # 1. Download NIST GIAB HG002 v5.0q (2026-04-07), CMRG v1.00, and Mosaic SNV v1.10 if not cached
+    # 1. Stage NIST GIAB HG002 v5.0q (2026-04-07), CMRG v1.00, and Mosaic SNV v1.10 if not cached
     BASE_HG2="https://ftp-trace.ncbi.nlm.nih.gov/ReferenceSamples/giab/release/AshkenazimTrio/HG002_NA24385_son"
     [ -s "$TR_DIR/HG002_GRCh38_v5.0q_smvar.vcf.gz" ] || {
-      curl -sSLf --retry 5 "$BASE_HG2/v5.0q/HG002_GRCh38_v5.0q_smvar.vcf.gz" -o "$TR_DIR/HG002_GRCh38_v5.0q_smvar.vcf.gz"
-      curl -sSLf --retry 5 "$BASE_HG2/v5.0q/HG002_GRCh38_v5.0q_smvar.vcf.gz.tbi" -o "$TR_DIR/HG002_GRCh38_v5.0q_smvar.vcf.gz.tbi"
-      curl -sSLf --retry 5 "$BASE_HG2/v5.0q/HG002_GRCh38_v5.0q_smvar.benchmark.bed" -o "$TR_DIR/HG002_GRCh38_v5.0q_smvar.benchmark.bed"
+      stage6_fetch_verified "HG002_GRCh38_v5.0q_smvar.vcf.gz" "$BASE_HG2/v5.0q/HG002_GRCh38_v5.0q_smvar.vcf.gz" "$TR_DIR/HG002_GRCh38_v5.0q_smvar.vcf.gz"
+      stage6_fetch_verified "HG002_GRCh38_v5.0q_smvar.vcf.gz.tbi" "$BASE_HG2/v5.0q/HG002_GRCh38_v5.0q_smvar.vcf.gz.tbi" "$TR_DIR/HG002_GRCh38_v5.0q_smvar.vcf.gz.tbi"
+      stage6_fetch_verified "HG002_GRCh38_v5.0q_smvar.benchmark.bed" "$BASE_HG2/v5.0q/HG002_GRCh38_v5.0q_smvar.benchmark.bed" "$TR_DIR/HG002_GRCh38_v5.0q_smvar.benchmark.bed"
     }
     [ -s "$TR_DIR/HG002_GRCh38_CMRG_smallvar_v1.00.vcf.gz" ] || {
-      curl -sSLf --retry 5 "$BASE_HG2/CMRG_v1.00/GRCh38/SmallVariant/HG002_GRCh38_CMRG_smallvar_v1.00.vcf.gz" -o "$TR_DIR/HG002_GRCh38_CMRG_smallvar_v1.00.vcf.gz"
-      curl -sSLf --retry 5 "$BASE_HG2/CMRG_v1.00/GRCh38/SmallVariant/HG002_GRCh38_CMRG_smallvar_v1.00.vcf.gz.tbi" -o "$TR_DIR/HG002_GRCh38_CMRG_smallvar_v1.00.vcf.gz.tbi"
-      curl -sSLf --retry 5 "$BASE_HG2/CMRG_v1.00/GRCh38/SmallVariant/HG002_GRCh38_CMRG_smallvar_v1.00.bed" -o "$TR_DIR/HG002_GRCh38_CMRG_smallvar_v1.00.bed"
+      stage6_fetch_verified "HG002_GRCh38_CMRG_smallvar_v1.00.vcf.gz" "$BASE_HG2/CMRG_v1.00/GRCh38/SmallVariant/HG002_GRCh38_CMRG_smallvar_v1.00.vcf.gz" "$TR_DIR/HG002_GRCh38_CMRG_smallvar_v1.00.vcf.gz"
+      stage6_fetch_verified "HG002_GRCh38_CMRG_smallvar_v1.00.vcf.gz.tbi" "$BASE_HG2/CMRG_v1.00/GRCh38/SmallVariant/HG002_GRCh38_CMRG_smallvar_v1.00.vcf.gz.tbi" "$TR_DIR/HG002_GRCh38_CMRG_smallvar_v1.00.vcf.gz.tbi"
+      stage6_fetch_verified "HG002_GRCh38_CMRG_smallvar_v1.00.bed" "$BASE_HG2/CMRG_v1.00/GRCh38/SmallVariant/HG002_GRCh38_CMRG_smallvar_v1.00.bed" "$TR_DIR/HG002_GRCh38_CMRG_smallvar_v1.00.bed"
     }
     [ -s "$TR_DIR/HG002_GRCh38_MosaicSNVv1.1.vcf.gz" ] || {
-      curl -sSLf --retry 5 "$BASE_HG2/mosaic_v1.10/GRCh38/SNV/HG002_GRCh38_MosaicSNVv1.1.vcf.gz" -o "$TR_DIR/HG002_GRCh38_MosaicSNVv1.1.vcf.gz"
-      curl -sSLf --retry 5 "$BASE_HG2/mosaic_v1.10/GRCh38/SNV/HG002_GRCh38_MosaicSNVv1.1.vcf.gz.tbi" -o "$TR_DIR/HG002_GRCh38_MosaicSNVv1.1.vcf.gz.tbi"
-      curl -sSLf --retry 5 "$BASE_HG2/mosaic_v1.10/GRCh38/SNV/HG002_GRCh38_MosaicSNVv1.1.bed" -o "$TR_DIR/HG002_GRCh38_MosaicSNVv1.1.bed"
+      stage6_fetch_verified "HG002_GRCh38_MosaicSNVv1.1.vcf.gz" "$BASE_HG2/mosaic_v1.10/GRCh38/SNV/HG002_GRCh38_MosaicSNVv1.1.vcf.gz" "$TR_DIR/HG002_GRCh38_MosaicSNVv1.1.vcf.gz"
+      stage6_fetch_verified "HG002_GRCh38_MosaicSNVv1.1.vcf.gz.tbi" "$BASE_HG2/mosaic_v1.10/GRCh38/SNV/HG002_GRCh38_MosaicSNVv1.1.vcf.gz.tbi" "$TR_DIR/HG002_GRCh38_MosaicSNVv1.1.vcf.gz.tbi"
+      stage6_fetch_verified "HG002_GRCh38_MosaicSNVv1.1.bed" "$BASE_HG2/mosaic_v1.10/GRCh38/SNV/HG002_GRCh38_MosaicSNVv1.1.bed" "$TR_DIR/HG002_GRCh38_MosaicSNVv1.1.bed"
     }
-    [ -s "$DATA_DIR/hg002/truth/HG002_GRCh38_1_22_v4.2.1_benchmark.vcf.gz" ] || {
-      curl -sSLf --retry 5 "$BASE_HG2/NISTv4.2.1/GRCh38/HG002_GRCh38_1_22_v4.2.1_benchmark.vcf.gz" -o "$DATA_DIR/hg002/truth/HG002_GRCh38_1_22_v4.2.1_benchmark.vcf.gz"
-      curl -sSLf --retry 5 "$BASE_HG2/NISTv4.2.1/GRCh38/HG002_GRCh38_1_22_v4.2.1_benchmark.vcf.gz.tbi" -o "$DATA_DIR/hg002/truth/HG002_GRCh38_1_22_v4.2.1_benchmark.vcf.gz.tbi"
-      curl -sSLf --retry 5 "$BASE_HG2/NISTv4.2.1/GRCh38/HG002_GRCh38_1_22_v4.2.1_benchmark_noinconsistent.bed" -o "$DATA_DIR/hg002/truth/HG002_GRCh38_1_22_v4.2.1_benchmark_noinconsistent.bed"
-    }
+    stage6_fetch_verified "HG002_GRCh38_1_22_v4.2.1_benchmark.vcf.gz" "$BASE_HG2/NISTv4.2.1/GRCh38/HG002_GRCh38_1_22_v4.2.1_benchmark.vcf.gz" "$DATA_DIR/hg002/truth/HG002_GRCh38_1_22_v4.2.1_benchmark.vcf.gz"
+    stage6_fetch_verified "HG002_GRCh38_1_22_v4.2.1_benchmark.vcf.gz.tbi" "$BASE_HG2/NISTv4.2.1/GRCh38/HG002_GRCh38_1_22_v4.2.1_benchmark.vcf.gz.tbi" "$DATA_DIR/hg002/truth/HG002_GRCh38_1_22_v4.2.1_benchmark.vcf.gz.tbi"
+    stage6_fetch_verified "HG002_GRCh38_1_22_v4.2.1_benchmark_noinconsistent.bed" "$BASE_HG2/NISTv4.2.1/GRCh38/HG002_GRCh38_1_22_v4.2.1_benchmark_noinconsistent.bed" "$DATA_DIR/hg002/truth/HG002_GRCh38_1_22_v4.2.1_benchmark_noinconsistent.bed"
 
     # Filter BEDs to autosomes chr1..chr22 matching our full-WGS callsets
     awk -F"\t" '\''$1 ~ /^chr([1-9]|1[0-9]|2[0-2])$/'\'' "$TR_DIR/HG002_GRCh38_v5.0q_smvar.benchmark.bed" > "$TR_DIR/v5.0q.chr1_22.bed"
@@ -381,18 +405,18 @@ run_s6_vm2() {
     bedtools intersect -a "$SLICE_BED" -b "$BED_V04_ALL" > "$WORK_ML/slice_v04_all.bed"
 
     BASE_LISS="https://ftp-trace.ncbi.nlm.nih.gov/ReferenceSamples/giab/data_somatic/HG008/Liss_lab/analysis"
-    [ -s "$EXT_DIR/dragen_v4.2.4_ilmn_tumor.vcf.gz" ] || curl -sSLf --retry 5 "$BASE_LISS/DRAGEN-v4.2.4_ILMN-WGS_20240312/standard/dragen_4.2.4_HG008-mosaic_tumor.hard-filtered.vcf.gz" -o "$EXT_DIR/dragen_v4.2.4_ilmn_tumor.vcf.gz"
-    [ -s "$EXT_DIR/dragen_v4.2.4_graph_ilmn.vcf.gz" ] || curl -sSLf --retry 5 "$BASE_LISS/DRAGEN-v4.2.4_ILMN-WGS_20240312/graph/dragen_4.2.4_HG008-mosaic_tumor.hard-filtered.vcf.gz" -o "$EXT_DIR/dragen_v4.2.4_graph_ilmn.vcf.gz"
-    [ -s "$EXT_DIR/lancet2_ilmn.vcf.gz" ] || curl -sSLf --retry 5 "$BASE_LISS/NYGC_ILMN_Lancet2_20241016/HG008-T__vs__HG008-N-D.Lancet2.ml_scores.PASS.vcf.gz" -o "$EXT_DIR/lancet2_ilmn.vcf.gz"
-    [ -s "$EXT_DIR/deepsomatic_v1.6.0_hifi.vcf.gz" ] || curl -sSLf --retry 5 "$BASE_LISS/UCSC_HiFi_DeepSomatic-SNV-INDEL_20240308/0201_HG008_HiFi_DeepSomatic_v1.6.0_model354_somaticOnly.vcf.gz" -o "$EXT_DIR/deepsomatic_v1.6.0_hifi.vcf.gz"
+    [ -s "$EXT_DIR/dragen_v4.2.4_ilmn_tumor.vcf.gz" ] || stage6_fetch_verified "dragen_v4.2.4_ilmn_tumor.vcf.gz" "$BASE_LISS/DRAGEN-v4.2.4_ILMN-WGS_20240312/standard/dragen_4.2.4_HG008-mosaic_tumor.hard-filtered.vcf.gz" "$EXT_DIR/dragen_v4.2.4_ilmn_tumor.vcf.gz"
+    [ -s "$EXT_DIR/dragen_v4.2.4_graph_ilmn.vcf.gz" ] || stage6_fetch_verified "dragen_v4.2.4_graph_ilmn.vcf.gz" "$BASE_LISS/DRAGEN-v4.2.4_ILMN-WGS_20240312/graph/dragen_4.2.4_HG008-mosaic_tumor.hard-filtered.vcf.gz" "$EXT_DIR/dragen_v4.2.4_graph_ilmn.vcf.gz"
+    [ -s "$EXT_DIR/lancet2_ilmn.vcf.gz" ] || stage6_fetch_verified "lancet2_ilmn.vcf.gz" "$BASE_LISS/NYGC_ILMN_Lancet2_20241016/HG008-T__vs__HG008-N-D.Lancet2.ml_scores.PASS.vcf.gz" "$EXT_DIR/lancet2_ilmn.vcf.gz"
+    [ -s "$EXT_DIR/deepsomatic_v1.6.0_hifi.vcf.gz" ] || stage6_fetch_verified "deepsomatic_v1.6.0_hifi.vcf.gz" "$BASE_LISS/UCSC_HiFi_DeepSomatic-SNV-INDEL_20240308/0201_HG008_HiFi_DeepSomatic_v1.6.0_model354_somaticOnly.vcf.gz" "$EXT_DIR/deepsomatic_v1.6.0_hifi.vcf.gz"
     if [ ! -s "$EXT_DIR/clairs_v0.4.1_hifi.vcf.gz" ]; then
-      curl -sSLf --retry 5 "$BASE_LISS/HKU_HiFi_ClairS-v0.4.1-SNV-INDEL_20241201/HG008_T_N-P_HiFi_GRCh38-GIABv3_ClairS-SSRS_v0.4.1_snv.vcf.gz" -o "$WORK_ML/clairs_snv.vcf.gz"
-      curl -sSLf --retry 5 "$BASE_LISS/HKU_HiFi_ClairS-v0.4.1-SNV-INDEL_20241201/HG008_T_N-P_HiFi_GRCh38-GIABv3_ClairS-SSRS_v0.4.1_indel.vcf.gz" -o "$WORK_ML/clairs_indel.vcf.gz"
+      stage6_fetch_verified "clairs_snv.vcf.gz" "$BASE_LISS/HKU_HiFi_ClairS-v0.4.1-SNV-INDEL_20241201/HG008_T_N-P_HiFi_GRCh38-GIABv3_ClairS-SSRS_v0.4.1_snv.vcf.gz" "$WORK_ML/clairs_snv.vcf.gz"
+      stage6_fetch_verified "clairs_indel.vcf.gz" "$BASE_LISS/HKU_HiFi_ClairS-v0.4.1-SNV-INDEL_20241201/HG008_T_N-P_HiFi_GRCh38-GIABv3_ClairS-SSRS_v0.4.1_indel.vcf.gz" "$WORK_ML/clairs_indel.vcf.gz"
       bcftools concat "$WORK_ML/clairs_snv.vcf.gz" "$WORK_ML/clairs_indel.vcf.gz" | bcftools sort -Oz -o "$EXT_DIR/clairs_v0.4.1_hifi.vcf.gz"
       tabix -f -p vcf "$EXT_DIR/clairs_v0.4.1_hifi.vcf.gz"
     fi
-    [ -s "$EXT_DIR/ultima_deepvariant_somatic.vcf.gz" ] || curl -sSLf --retry 5 "$BASE_LISS/Ultima_DeepVariant-somatic-SNV-INDEL_20240822/HG008_edv_AF_recalibration.result.PASS.vcf.gz" -o "$EXT_DIR/ultima_deepvariant_somatic.vcf.gz"
-    [ -s "$EXT_DIR/hartwig_sage_ilmn.vcf.gz" ] || curl -sSLf --retry 5 "$BASE_LISS/Hartwig_Oncoanalyzer_BCM-ILMN_20260204/sage/somatic/HG008-T.sage.somatic.vcf.gz" -o "$EXT_DIR/hartwig_sage_ilmn.vcf.gz"
+    [ -s "$EXT_DIR/ultima_deepvariant_somatic.vcf.gz" ] || stage6_fetch_verified "ultima_deepvariant_somatic.vcf.gz" "$BASE_LISS/Ultima_DeepVariant-somatic-SNV-INDEL_20240822/HG008_edv_AF_recalibration.result.PASS.vcf.gz" "$EXT_DIR/ultima_deepvariant_somatic.vcf.gz"
+    [ -s "$EXT_DIR/hartwig_sage_ilmn.vcf.gz" ] || stage6_fetch_verified "hartwig_sage_ilmn.vcf.gz" "$BASE_LISS/Hartwig_Oncoanalyzer_BCM-ILMN_20260204/sage/somatic/HG008-T.sage.somatic.vcf.gz" "$EXT_DIR/hartwig_sage_ilmn.vcf.gz"
 
     # Restore full-genome VarDictRust HG008 VCF from s5_wgs_hg008_full_giab_3way_th32 (always refresh for current release)
     CELLS_SUB="${GCS_CELLS_SUBDIR:-cells-v106}"
@@ -660,7 +684,9 @@ cell_s6_ga4gh_v35_stratification() {
     "RefSeq_CDS|Functional/GRCh38_refseq_cds.bed.gz"; do
     IFS="|" read -r sname spath <<< "$sspec"
     if [ ! -s "$STRAT_DIR/${sname}.chr20.bed" ]; then
-      curl -sSLf --retry 5 "${BASE_STRAT}/${spath}" | gzip -dc | awk -F"\t" '$1 == "chr20"' > "$STRAT_DIR/${sname}.chr20.bed"
+      stage6_fetch_verified "$(basename "$spath")" "${BASE_STRAT}/${spath}" "$STRAT_DIR/${sname}.bed.gz"
+      gzip -dc "$STRAT_DIR/${sname}.bed.gz" | awk -F"\t" '$1 == "chr20"' > "$STRAT_DIR/${sname}.chr20.bed.tmp"
+      mv -f "$STRAT_DIR/${sname}.chr20.bed.tmp" "$STRAT_DIR/${sname}.chr20.bed"
     fi
     [ -s "$STRAT_DIR/hg002_${sname}.bed" ] || bedtools intersect -a "$BED_HG2_CHR20" -b "$STRAT_DIR/${sname}.chr20.bed" > "$STRAT_DIR/hg002_${sname}.bed"
     [ -s "$STRAT_DIR/hg008_${sname}.bed" ] || bedtools intersect -a "$BED_HG8_CHR20" -b "$STRAT_DIR/${sname}.chr20.bed" > "$STRAT_DIR/hg008_${sname}.bed"

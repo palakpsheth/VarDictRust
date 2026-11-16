@@ -14,12 +14,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$SCRIPT_DIR/lib/portable.sh"
-COMMON_GIT_DIR="$(git -C "$ROOT_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
-if [[ -n "$COMMON_GIT_DIR" && -d "$(dirname "$COMMON_GIT_DIR")/VarDictJava" ]]; then
-  DATA_ROOT="$(cd "$(dirname "$COMMON_GIT_DIR")" && pwd)"
-else
-  DATA_ROOT="$ROOT_DIR"
-fi
+DATA_ROOT="$(resolve_data_root "$ROOT_DIR")"
 if [[ -d "$ROOT_DIR/scratch/g4/truth_cache" ]]; then
   CACHE_DIR="$ROOT_DIR/scratch/g4/truth_cache"
 else
@@ -55,16 +50,23 @@ echo " Evaluating HG005 (GRCh38) and NA24385 (GRCh37/b37)"
 echo " Cache: $CACHE_DIR | Temp: $TMPDIR"
 echo "================================================================================"
 
-# Helper: Ensure truth slice exists in cache (isolated execution in CACHE_DIR to avoid root .tbi litter)
+# Helper: Ensure truth slice exists in cache with verified variant-body SHA-256
 ensure_truth_slice() {
   local id="$1"
   local url="$2"
   local interval="$3"
+  local expected_body_sha256="$4"
   local vcf_out="$CACHE_DIR/${id}_truth.vcf.gz"
 
-  if [[ -f "$vcf_out" && -f "$vcf_out.tbi" ]] && [[ $(zgrep -v '^#' "$vcf_out" | head -n 1 | wc -l) -gt 0 ]]; then
-    echo "  [cached truth] $id ($interval)"
-    return 0
+  if [[ -f "$vcf_out" && -f "$vcf_out.tbi" ]]; then
+    local cached_sha
+    cached_sha="$(gzip -dc "$vcf_out" 2>/dev/null | grep -v '^#' | portable_sha256 || true)"
+    if [[ "$cached_sha" == "$expected_body_sha256" ]]; then
+      echo "  [cached truth] $id ($interval, sha256=${cached_sha:0:12}...)"
+      return 0
+    fi
+    echo "  [cache invalid] $id body sha256 mismatch (got=${cached_sha:-empty}, expected=$expected_body_sha256); re-fetching..." >&2
+    rm -f "$vcf_out" "$vcf_out.tbi"
   fi
 
   echo -n "  [fetching truth] $id ($interval)... "
@@ -74,11 +76,19 @@ ensure_truth_slice() {
     tabix "$url" "$interval" >> "$TMPDIR/${id}_truth.vcf"
     rm -f ./*.tbi 2>/dev/null || true
   )
+  local fetched_sha
+  fetched_sha="$(grep -v '^#' "$TMPDIR/${id}_truth.vcf" | portable_sha256)"
+  if [[ "$fetched_sha" != "$expected_body_sha256" ]]; then
+    rm -f "$TMPDIR/${id}_truth.vcf"
+    echo "ERROR: SHA-256 mismatch for streamed truth slice $id ($interval): got=$fetched_sha expected=$expected_body_sha256" >&2
+    return 1
+  fi
   bgzip -f "$TMPDIR/${id}_truth.vcf"
   mv "$TMPDIR/${id}_truth.vcf.gz" "$vcf_out"
   tabix -f -p vcf "$vcf_out"
-  local count=$(zgrep -v '^#' "$vcf_out" | wc -l)
-  echo "done ($count truth variants)"
+  local count
+  count=$(gzip -dc "$vcf_out" | grep -vc '^#')
+  echo "done ($count truth variants, sha256=${fetched_sha:0:12}...)"
 }
 
 # -----------------------------------------------------------------------------
@@ -86,7 +96,8 @@ ensure_truth_slice() {
 # -----------------------------------------------------------------------------
 echo "[1/2] Benchmarking GIAB HG005 Han Chinese WGS vs NIST v4.2.1..."
 URL_HG005="https://ftp-trace.ncbi.nlm.nih.gov/ReferenceSamples/giab/release/ChineseTrio/HG005_NA24631_son/NISTv4.2.1/GRCh38/HG005_GRCh38_1_22_v4.2.1_benchmark.vcf.gz"
-ensure_truth_slice "hg005" "$URL_HG005" "chr3:40000000-40010000"
+SHA256_HG005_BODY="f36059985ed4b4cc1b5809d11750102d73a5fc16dde5e81ae0eea738412a4a24"
+ensure_truth_slice "hg005" "$URL_HG005" "chr3:40000000-40010000" "$SHA256_HG005_BODY"
 
 printf "chr3\t40000000\t40010000\n" > "$CACHE_DIR/hg005_eval.bed"
 BAM_HG005="$DATA_ROOT/scratch/g4/multimodal/hg005_s4a.bam"
@@ -127,7 +138,8 @@ RECORD_EVIDENCE_INPUTS="$FA_GIAB:$BAM_HG005" bash "$ROOT_DIR/harness/concordance
 # -----------------------------------------------------------------------------
 echo "[2/2] Benchmarking GIAB NA24385 b37 WGS vs NIST v4.2.1..."
 URL_NA24385="https://ftp-trace.ncbi.nlm.nih.gov/ReferenceSamples/giab/release/AshkenazimTrio/HG002_NA24385_son/NISTv4.2.1/GRCh37/HG002_GRCh37_1_22_v4.2.1_benchmark.vcf.gz"
-ensure_truth_slice "na24385_b37" "$URL_NA24385" "20:36018823-36039513"
+SHA256_NA24385_BODY="43174566bca0425be270d110dd9c9897b5508eb06644ba5198fd7a5f185b33ff"
+ensure_truth_slice "na24385_b37" "$URL_NA24385" "20:36018823-36039513" "$SHA256_NA24385_BODY"
 
 printf "20\t36018823\t36039513\n" > "$CACHE_DIR/na24385_eval.bed"
 BAM_NA24385="$DATA_ROOT/VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests/NA24385_chr_20_36018823_36039513.bam"

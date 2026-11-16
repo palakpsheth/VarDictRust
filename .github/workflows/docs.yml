@@ -39,7 +39,7 @@ jobs:
       - name: Install Zensical & Playwright Dependencies
         run: |
           python3 -m pip install --upgrade pip
-          python3 -m pip install -r docs/requirements.txt playwright
+          python3 -m pip install -r docs/requirements.txt playwright==1.62.0
           python3 -m playwright install --with-deps chromium
 
       - name: "[Docs Stage 1/3] Stage Documentation Site"

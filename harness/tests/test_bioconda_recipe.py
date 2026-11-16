@@ -702,6 +702,30 @@ class TestRepoAgentSkills(unittest.TestCase):
 
         docs_text = (workflows_dir / "docs.yml").read_text(encoding="utf-8")
         self.assertIn('cache-dependency-path: "docs/requirements.txt"', docs_text)
+        self.assertIn("python3 -m pip install -r docs/requirements.txt playwright==1.62.0", docs_text)
+        docs_req_text = (ROOT_DIR / "docs" / "requirements.txt").read_text(encoding="utf-8")
+        self.assertIn("zensical>=0.1.1,<0.2.0", docs_req_text)
+        self.assertNotIn("playwright", docs_req_text)
+
+        conda_action_text = (ROOT_DIR / ".github" / "actions" / "setup-conda-env" / "action.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("key: conda-env-v3-", conda_action_text)
+        self.assertIn("'.github/actions/setup-conda-env/action.yml'", conda_action_text)
+        self.assertIn("'harness/env/g4-tools.yml'", conda_action_text)
+        self.assertNotIn("restore-keys:", conda_action_text)
+        for pkg_pin in (
+            "samtools=1.24",
+            "bcftools=1.24",
+            "htslib=1.24",
+            "bedtools=2.31.1",
+            "rtg-tools=3.13",
+            "bwa=0.7.19",
+            "gitleaks=8.30.1",
+        ):
+            self.assertIn(pkg_pin, conda_action_text, f"setup-conda-env/action.yml missing {pkg_pin}")
+        for linux_only in ("ld_impl_linux-64", "libgcc-ng"):
+            self.assertNotIn(linux_only, conda_action_text)
 
         rel_text = (workflows_dir / "release.yml").read_text(encoding="utf-8")
         self.assertIn('permissions:\n  "contents": "read"', rel_text)
@@ -723,8 +747,31 @@ class TestRepoAgentSkills(unittest.TestCase):
         self.assertIn("checkout-ref: ${{ steps.guard.outputs.checkout_ref }}", rel_text)
         self.assertEqual(
             rel_text.count("ref: ${{ needs.plan.outputs.checkout-ref }}"),
-            5,
-            "All 5 downstream jobs in release.yml must check out needs.plan.outputs.checkout-ref",
+            4,
+            "All 4 downstream jobs in release.yml must check out needs.plan.outputs.checkout-ref",
+        )
+        self.assertNotIn("\n  announce:\n", rel_text, "Empty no-op announce job must be removed from release.yml")
+        self.assertIn(
+            "!fromJson(needs.host.outputs.val).announcement_is_prerelease",
+            rel_text,
+            "publish-crates if: condition must guard against prerelease tags",
+        )
+        pub_job_m = re.search(
+            r"^  publish-crates:\n((?:  (?![A-Za-z0-9_-]+:).*\n|\n)+?)(?=^  [A-Za-z0-9_-]+:|\Z)",
+            rel_text,
+            re.MULTILINE,
+        )
+        self.assertIsNotNone(pub_job_m, "Missing publish-crates job in release.yml")
+        pub_job_header = pub_job_m.group(1).split("    steps:\n", 1)[0]
+        self.assertNotIn(
+            "CARGO_REGISTRY_TOKEN",
+            pub_job_header,
+            "CARGO_REGISTRY_TOKEN must be step-scoped, not job-scoped on publish-crates",
+        )
+        self.assertEqual(
+            rel_text.count("CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}"),
+            2,
+            "CARGO_REGISTRY_TOKEN must be scoped to ONLY the two cargo publish steps",
         )
         self.assertNotIn("ref: refs/tags/${{ needs.plan.outputs.tag }}", rel_text)
         self.assertEqual(
@@ -1316,7 +1363,7 @@ class TestRepoAgentSkills(unittest.TestCase):
             "release.yml plan guard must reject container builds lacking preinstalled Rust toolchains",
         )
 
-        # 2. Harden-runner pinned and placed as first step in all 6 jobs
+        # 2. Harden-runner pinned and placed as first step in all 5 jobs
         harden_ref = "step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a"
         expected_jobs = (
             "plan",
@@ -1324,12 +1371,11 @@ class TestRepoAgentSkills(unittest.TestCase):
             "build-global-artifacts",
             "host",
             "publish-crates",
-            "announce",
         )
         self.assertEqual(
             rel_text.count(f"uses: {harden_ref}"),
             len(expected_jobs),
-            "harden-runner must appear once in each of the 6 release.yml jobs",
+            "harden-runner must appear once in each of the 5 release.yml jobs",
         )
         self.assertEqual(
             rel_text.count("egress-policy: audit"),
@@ -1482,6 +1528,99 @@ class TestRepoAgentSkills(unittest.TestCase):
             self.assertEqual(res_valid.returncode, 0, f"Valid cached archive failed:\n{res_valid.stderr}")
             self.assertIn("cargo-dist 0.33.0", res_valid.stdout)
             self.assertIn(str(fake_home / ".cargo" / "bin"), gh_path.read_text(encoding="utf-8"))
+
+    def test_release_publish_crates_idempotency_and_fast_fail_retry(self):
+        """Verify AR-21: cargo publish steps treat already-uploaded as idempotent and only retry propagation lag."""
+        import textwrap
+
+        rel_text = (ROOT_DIR / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+        core_m = re.search(
+            r"      - name: Publish vardictrust-core to Crates\.io\n((?:        .*\n|\n)+?)(?=      - name:|^  [A-Za-z0-9_-]+:|\Z)",
+            rel_text,
+            re.MULTILINE,
+        )
+        bin_m = re.search(
+            r"      - name: Publish vardictrust to Crates\.io\n((?:        .*\n|\n)+?)(?=      - name:|^  [A-Za-z0-9_-]+:|\Z)",
+            rel_text,
+            re.MULTILINE,
+        )
+        self.assertIsNotNone(core_m, "Missing Publish vardictrust-core to Crates.io step")
+        self.assertIsNotNone(bin_m, "Missing Publish vardictrust to Crates.io step")
+        for label, step_block in (("core", core_m.group(1)), ("bin", bin_m.group(1))):
+            self.assertIn("shell: bash", step_block, f"{label} publish step missing shell: bash")
+            self.assertIn("CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}", step_block)
+            self.assertIn("set -euo pipefail", step_block, f"{label} publish step missing set -euo pipefail")
+            self.assertIn("is already uploaded", step_block, f"{label} publish step missing already-uploaded guard")
+
+        bin_run_m = re.search(r"        run: \|\n((?:          .*\n|\n)+)", bin_m.group(1))
+        self.assertIsNotNone(bin_run_m, "Publish vardictrust step must use multiline run: | script")
+        bin_script = textwrap.dedent(bin_run_m.group(1))
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = pathlib.Path(tmpdir)
+            fake_bin = tmp_path / "bin"
+            fake_bin.mkdir()
+            calls_file = tmp_path / "calls.txt"
+            mode_file = tmp_path / "mode.txt"
+
+            sleep_sh = fake_bin / "sleep"
+            sleep_sh.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+            sleep_sh.chmod(0o755)
+
+            cargo_sh = fake_bin / "cargo"
+            cargo_sh.write_text(
+                f"""#!/usr/bin/env bash
+count=$(( $(cat "{calls_file}" 2>/dev/null || echo 0) + 1 ))
+echo "$count" > "{calls_file}"
+mode="$(cat "{mode_file}")"
+case "$mode" in
+  already)
+    echo "error: failed to publish to registry at https://crates.io: crate version \\`1.0.9\\` is already uploaded" >&2
+    exit 101
+    ;;
+  lag_then_ok)
+    if [ "$count" -eq 1 ]; then
+      echo "error: no matching package named \\`vardictrust-core\\` found" >&2
+      exit 101
+    fi
+    exit 0
+    ;;
+  auth_fail)
+    echo "error: failed to authenticate to registry: invalid token" >&2
+    exit 101
+    ;;
+esac
+""",
+                encoding="utf-8",
+            )
+            cargo_sh.chmod(0o755)
+            test_env = dict(
+                os.environ,
+                PATH=f"{fake_bin}:{os.environ.get('PATH', '')}",
+                RELEASE_TAG="v1.0.9",
+                CARGO_REGISTRY_TOKEN="dummy",
+            )
+
+            # 1. Already uploaded -> exits 0 on attempt 1
+            calls_file.write_text("0", encoding="utf-8")
+            mode_file.write_text("already", encoding="utf-8")
+            r1 = subprocess.run(["bash", "-c", bin_script], env=test_env, capture_output=True, text=True)
+            self.assertEqual(r1.returncode, 0, r1.stderr)
+            self.assertEqual(int(calls_file.read_text(encoding="utf-8").strip()), 1)
+
+            # 2. Index propagation lag -> retries and succeeds on attempt 2
+            calls_file.write_text("0", encoding="utf-8")
+            mode_file.write_text("lag_then_ok", encoding="utf-8")
+            r2 = subprocess.run(["bash", "-c", bin_script], env=test_env, capture_output=True, text=True)
+            self.assertEqual(r2.returncode, 0, r2.stderr)
+            self.assertEqual(int(calls_file.read_text(encoding="utf-8").strip()), 2)
+
+            # 3. Non-propagation failure (auth/compile) -> fails fast on attempt 1 without 30 retries
+            calls_file.write_text("0", encoding="utf-8")
+            mode_file.write_text("auth_fail", encoding="utf-8")
+            r3 = subprocess.run(["bash", "-c", bin_script], env=test_env, capture_output=True, text=True)
+            self.assertNotEqual(r3.returncode, 0)
+            self.assertEqual(int(calls_file.read_text(encoding="utf-8").strip()), 1)
 
     def test_configure_github_repo_tag_ruleset_and_lockout_rollback(self):
         """Verify SEC-12b: configure_github_repo.py --dry-run, refs/tags/v* ruleset 24867690, and lockout rollback."""

@@ -3,6 +3,7 @@ set -euo pipefail
 
 ORACLE_YML="benchmarks/env/vardict-oracle.yml"
 G4_YML="benchmarks/env/g4-tools.yml"
+HARNESS_G4_YML="harness/env/g4-tools.yml"
 TOOLCHAIN_TXT="benchmarks/env/toolchain.txt"
 
 # 1. vardict-oracle.yml checks
@@ -33,5 +34,20 @@ grep -qiE 'java|openjdk' "$TOOLCHAIN_TXT" || {
   echo "FAIL test_env_pinned: java/openjdk not found in $TOOLCHAIN_TXT" >&2
   exit 1
 }
+
+# 4. Cross-platform harness/env/g4-tools.yml exact CLI version pins (no Linux-only packages)
+[ -f "$HARNESS_G4_YML" ] || { echo "FAIL test_env_pinned: $HARNESS_G4_YML missing" >&2; exit 1; }
+for pin in "samtools=1.24" "bcftools=1.24" "htslib=1.24" "bedtools=2.31.1" "rtg-tools=3.13" "bwa=0.7.19" "gitleaks=8.30.1"; do
+  grep -Fq "$pin" "$HARNESS_G4_YML" || {
+    echo "FAIL test_env_pinned: $pin not pinned in $HARNESS_G4_YML" >&2
+    exit 1
+  }
+done
+for bad in "ld_impl_linux-64" "libgcc-ng"; do
+  if grep -Fq "$bad" "$HARNESS_G4_YML"; then
+    echo "FAIL test_env_pinned: Linux-only package $bad found in $HARNESS_G4_YML" >&2
+    exit 1
+  fi
+done
 
 echo "PASS test_env_pinned"

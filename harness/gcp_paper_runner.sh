@@ -3870,8 +3870,19 @@ EOF
   gcs_write_heartbeat "sweep" "SWEEP_V106_DONE" "COMPLETED"
 }
 
+validate_worker_stage() {
+  case "${1:-}" in
+    1|2|3|4|5|6|sweep|all) return 0 ;;
+    *)
+      echo "ERROR: Invalid worker stage '${1:-}' (expected 1|2|3|4|5|6|sweep|all)" >&2
+      return 2
+      ;;
+  esac
+}
+
 run_worker() {
   local target_stage="${1:-all}"
+  validate_worker_stage "$target_stage" || exit 2
   trap '' TERM
   worker_preflight
   case "$target_stage" in
@@ -3940,6 +3951,11 @@ run_controller() {
   local max_attempts="${1:-6}"
   local start_attempt="${2:-1}"
   local worker_stage="${WORKER_STAGE:-all}"
+  validate_worker_stage "$worker_stage" || exit 2
+  local q_work_dir q_gcs_ckpt q_stage
+  printf -v q_work_dir '%q' "$WORK_DIR"
+  printf -v q_gcs_ckpt '%q' "$GCS_CKPT"
+  printf -v q_stage '%q' "$worker_stage"
   local done_marker="ALL_STAGES"
   local keep_vm_on_done=0
   if [ "$worker_stage" = "sweep" ]; then
@@ -4012,8 +4028,8 @@ run_controller() {
     echo "[Controller] Mounting 3.0 TB NVMe RAID0 at $WORK_DIR and starting vardict-paper-worker.service (stage=${worker_stage})..."
     gcloud compute ssh "$VM_NAME" --project="$GCP_PROJECT" --zone="$GCP_ZONE" --quiet --command="
       set -euo pipefail
-      sudo mkdir -p '$WORK_DIR'
-      if ! mountpoint -q '$WORK_DIR'; then
+      sudo mkdir -p ${q_work_dir}
+      if ! mountpoint -q ${q_work_dir}; then
         if ! command -v mdadm >/dev/null 2>&1; then
           sudo apt-get update -qq
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq mdadm
@@ -4022,20 +4038,31 @@ run_controller() {
           sudo mdadm --create /dev/md0 --level=0 --raid-devices=${LOCAL_SSD_COUNT} /dev/disk/by-id/google-local-nvme-ssd-* --run --force
           sudo mkfs.ext4 -F -m 0 /dev/md0
         fi
-        sudo mount -o discard,defaults /dev/md0 '$WORK_DIR'
+        sudo mount -o discard,defaults /dev/md0 ${q_work_dir}
       fi
-      sudo chown -R \"\$(id -un):\$(id -gn)\" '$WORK_DIR'
-      chmod 700 '$WORK_DIR'
+      if [ -L ${q_work_dir} ]; then
+        echo 'FATAL: WORK_DIR must not be a symlink' >&2
+        exit 1
+      fi
+      sudo chown -R \"\$(id -un):\$(id -gn)\" ${q_work_dir}
+      chmod 0700 ${q_work_dir}
       if ! command -v musl-gcc >/dev/null 2>&1; then
         sudo apt-get update -qq
         sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq musl-tools
       fi
-      cat > '$WORK_DIR/bootstrap_and_run.sh' <<'EOS'
+      if [ -L ${q_work_dir}/bootstrap_and_run.sh ]; then
+        echo 'FATAL: bootstrap_and_run.sh must not be a symlink' >&2
+        exit 1
+      fi
+      rm -f ${q_work_dir}/bootstrap_and_run.sh
+      (
+        umask 077
+        cat > ${q_work_dir}/bootstrap_and_run.sh <<'EOS'
 #!/usr/bin/env bash
 set -euo pipefail
 trap '' TERM
-export WORK_DIR='${WORK_DIR}'
-export GCS_CKPT='${GCS_CKPT}'
+export WORK_DIR=${q_work_dir}
+export GCS_CKPT=${q_gcs_ckpt}
 export GOLDEN_MODE=off
 mkdir -p -m 700 \"\${WORK_DIR}\"
 if [ ! -d \"\${WORK_DIR}\" ] || [ -L \"\${WORK_DIR}\" ] || [ ! -O \"\${WORK_DIR}\" ]; then
@@ -4050,15 +4077,16 @@ case \"\$(ls -ld \"\${WORK_DIR}\" | awk '{print \$1}')\" in
     ;;
 esac
 exec > >(tee -a \"\${WORK_DIR}/worker.log\") 2>&1
-echo \"[VM Bootstrap] Starting at \$(date -u +%Y-%m-%dT%H:%M:%SZ) (stage=${worker_stage})\"
+echo \"[VM Bootstrap] Starting at \$(date -u +%Y-%m-%dT%H:%M:%SZ) (stage=${q_stage})\"
 if ! command -v git >/dev/null || ! command -v gsutil >/dev/null || ! command -v cmake >/dev/null; then
   sudo apt-get update -qq
-  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git curl unzip build-essential cmake pkg-config zlib1g-dev libbz2-dev liblzma-dev libcurl4-openssl-dev libssl-dev time util-linux
+  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git curl unzip build-essential cmake pkg-config zlib1g-dev libbz2-dev liblzma-dev libcurl4-openssl-dev libssl-dev time util-linux perl
 fi
 install_miniconda() (
   mc_sh=\"\$(mktemp \"\${TMPDIR:-/tmp}/miniconda.XXXXXX\")\"
   trap 'rm -f \"\${mc_sh:-}\"' EXIT
-  curl --proto '=https' --tlsv1.2 -sSLf https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -o \"\$mc_sh\"
+  curl --proto '=https' --tlsv1.2 -sSLf https://repo.anaconda.com/miniconda/Miniconda3-py314_26.9.4-1-Linux-x86_64.sh -o \"\$mc_sh\"
+  printf '%s  %s\n' '76cf791877078e74410f64e5c2ef7da4e217fd7a433c2c3674c9d9695225c3bb' \"\$mc_sh\" | shasum -a 256 -c -
   bash \"\$mc_sh\" -b -p \"\$HOME/miniconda3\"
 )
 if [ ! -d \"\$HOME/miniconda3\" ]; then
@@ -4068,8 +4096,16 @@ export PATH=\"\$HOME/miniconda3/bin:\$HOME/.cargo/bin:\$PATH\"
 conda config --set auto_accept_tos yes >/dev/null 2>&1 || true
 conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main >/dev/null 2>&1 || true
 conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r >/dev/null 2>&1 || true
+install_rustup() (
+  ru_bin=\"\$(mktemp \"\${TMPDIR:-/tmp}/rustup-init.XXXXXX\")\"
+  trap 'rm -f \"\${ru_bin:-}\"' EXIT
+  curl --proto '=https' --tlsv1.2 -sSLf https://static.rust-lang.org/rustup/archive/1.29.3/x86_64-unknown-linux-gnu/rustup-init -o \"\$ru_bin\"
+  printf '%s  %s\n' 'b1c8cb14e30889e7e2999e6b69e62d9e9b9ffc0f4df8180564d306d9680e6c55' \"\$ru_bin\" | shasum -a 256 -c -
+  chmod 0700 \"\$ru_bin\"
+  \"\$ru_bin\" -y --default-toolchain 1.96.0
+)
 if ! command -v cargo >/dev/null; then
-  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.96.0
+  install_rustup
   export PATH=\"\$HOME/.cargo/bin:\$PATH\"
 fi
 if [ ! -d \"\${WORK_DIR}/VarDictRust\" ]; then
@@ -4088,9 +4124,10 @@ if ! conda env list | grep -q '^g4-tools '; then
     samtools=1.24 bcftools=1.24 htslib=1.24 bedtools=2.31.1 bwa=0.7.19 rtg-tools=3.13 openjdk=25.0.2 python=3.12
 fi
 export PATH=\"\$HOME/miniconda3/envs/g4-tools/bin:\$HOME/miniconda3/bin:\$HOME/.cargo/bin:\$PATH\"
-bash harness/gcp_paper_runner.sh --worker ${worker_stage}
+bash harness/gcp_paper_runner.sh --worker ${q_stage}
 EOS
-      chmod +x '$WORK_DIR/bootstrap_and_run.sh'
+      )
+      chmod 0700 ${q_work_dir}/bootstrap_and_run.sh
       sudo loginctl enable-linger \"\$(id -un)\"
       if systemctl is-active --quiet vardict-paper-worker.service; then
         echo '[Controller] vardict-paper-worker.service is already active; attaching monitor without restart.'
@@ -4099,7 +4136,7 @@ EOS
         sudo systemd-run --unit=vardict-paper-worker \
           --uid=\"\$(id -un)\" --gid=\"\$(id -gn)\" \
           --setenv=HOME=\"\$HOME\" \
-          bash '$WORK_DIR/bootstrap_and_run.sh'
+          bash ${q_work_dir}/bootstrap_and_run.sh
       fi
     "
 
@@ -4144,12 +4181,12 @@ EOS
             sudo systemd-run --unit=vardict-paper-worker \
               --uid=\"\$(id -un)\" --gid=\"\$(id -gn)\" \
               --setenv=HOME=\"\$HOME\" \
-              bash '$WORK_DIR/bootstrap_and_run.sh'
+              bash ${q_work_dir}/bootstrap_and_run.sh
           "
           continue
         fi
         echo "[Controller] Worker unit exited (${unit_state}) without ${done_marker}.done; fetching tail of worker.log:" >&2
-        gcloud compute ssh "$VM_NAME" --project="$GCP_PROJECT" --zone="$GCP_ZONE" --quiet --command="tail -n 100 '$WORK_DIR/worker.log' || true" >&2 || true
+        gcloud compute ssh "$VM_NAME" --project="$GCP_PROJECT" --zone="$GCP_ZONE" --quiet --command="tail -n 100 ${q_work_dir}/worker.log || true" >&2 || true
         if [ "$KEEP_VM_ON_FAIL" != "1" ]; then
           cleanup_vm
         else
@@ -4297,18 +4334,32 @@ case "${1:-}" in
     start_att=1
     while [ $# -gt 0 ]; do
       case "$1" in
-        --max-attempts) max_att="$2"; shift 2 ;;
-        --start-attempt) start_att="$2"; shift 2 ;;
-        --stage) export WORKER_STAGE="$2"; shift 2 ;;
+        --max-attempts) [ $# -ge 2 ] || { echo "Missing value for --max-attempts" >&2; exit 2; }; max_att="$2"; shift 2 ;;
+        --start-attempt) [ $# -ge 2 ] || { echo "Missing value for --start-attempt" >&2; exit 2; }; start_att="$2"; shift 2 ;;
+        --stage)
+          [ $# -ge 2 ] || { echo "Missing value for --stage" >&2; exit 2; }
+          validate_worker_stage "$2" || exit 2
+          export WORKER_STAGE="$2"
+          shift 2
+          ;;
         *) echo "Unknown controller option: $1" >&2; exit 1 ;;
       esac
     done
+    validate_worker_stage "${WORKER_STAGE:-all}" || exit 2
     run_controller "$max_att" "$start_att"
     ;;
   --worker)
     shift
     stage="all"
-    if [ "${1:-}" = "--stage" ]; then stage="$2"; shift 2; elif [ -n "${1:-}" ]; then stage="$1"; shift; fi
+    if [ "${1:-}" = "--stage" ]; then
+      [ $# -ge 2 ] || { echo "Missing value for --stage" >&2; exit 2; }
+      stage="$2"
+      shift 2
+    elif [ -n "${1:-}" ]; then
+      stage="$1"
+      shift
+    fi
+    validate_worker_stage "$stage" || exit 2
     run_worker "$stage"
     ;;
   -h|--help|"")
