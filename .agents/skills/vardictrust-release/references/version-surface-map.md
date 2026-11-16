@@ -36,7 +36,7 @@ In addition to the 17 version-bumped files above, `--phase pre-tag` enforces thr
 | :--- | :--- | :--- |
 | `#18` | `crates/vardictrust/src/{cli.rs,completions_man.rs}`, `README.md`, `ROADMAP.md`, `docs/ecosystem-survey.md`, `docs/migration.md`, `zensical.toml`, & `wiki/_Sidebar.md` | Exact 1:1 short/long CLI flag parity across all `89` `Cli` arguments (`7` functional groups) vs `README.md`'s `89`-row table, plus `var2vcf_*.pl` migration guide links |
 | `#19` | `UPSTREAM.toml` | Immutable reference comparator pins (`VarDictJava` `1.8.3` commit `0886261`, `VarDict` scripts commit `009e017`, and advisory `vardictcpp` `3` build `hc52dbad_0`) |
-| `#20` | `.github/workflows/ci.yml` & `.agents/skills/vardictrust-release/references/version-surface-map.md` | Synchronized workspace test-count breakdown (`670` total: `470` `vardictrust-core` lib + `29` `vardictrust` bin + `61` integration + `110` `corpus_parity`) |
+| `#20` | `.github/workflows/ci.yml` & `.agents/skills/vardictrust-release/references/version-surface-map.md` | Synchronized workspace test-count breakdown (`676` total: `476` `vardictrust-core` lib + `29` `vardictrust` bin + `61` integration + `110` `corpus_parity`) |
 
 ---
 

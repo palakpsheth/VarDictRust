@@ -8,6 +8,10 @@ use crate::variations::{
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
+/// Maximum `realignlgins30` 3'-soft-clip window size (`1,024`) sorted into the scratch buffer
+/// before falling back to caching a once-per-call sorted copy of `tmp3_by_pos` (`AR-07`).
+const REALIGN_LGINS30_SORT_WINDOW_MAX: usize = 1_024;
+
 #[inline]
 pub(crate) fn btree_range_inclusive<K: Ord + Copy, V>(
     map: &BTreeMap<K, V>,
@@ -3494,7 +3498,7 @@ pub fn realignlgins30(
         if win.is_empty() {
             continue;
         }
-        let candidates: &[(i32, i32)] = if win.len() <= 1_024 {
+        let candidates: &[(i32, i32)] = if win.len() <= REALIGN_LGINS30_SORT_WINDOW_MAX {
             win_buf.clear();
             win_buf.extend_from_slice(win);
             win_buf.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));

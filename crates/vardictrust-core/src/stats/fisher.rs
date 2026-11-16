@@ -8,7 +8,9 @@ use crate::types::round_half_even;
 /// ultra-high-depth tables above this threshold evaluate on the fly over the unimodal
 /// active window `[w_lo, w_hi]` where `ln P(j) - ln P(mode) >= -750.0` (`exp(-750) == 0.0`).
 const MAX_DENSE_FISHER_SUPPORT: usize = 16_777_216;
+/// Log-probability relative cutoff (`-750.0`) bounding the unimodal active window where `exp(x) == 0.0` in IEEE-754 `f64`.
 const UNIMODAL_LOG_CUTOFF: f64 = -750.0;
+/// Exact IEEE-754 `f64` natural-log underflow threshold (`-746.0`): for all `d < -746.0`, `d.exp() == 0.0` (`-745.133...` is the smallest subnormal).
 const EXP_UNDERFLOW_LN_F64: f64 = -746.0;
 
 #[inline]
@@ -1308,7 +1310,10 @@ fn cm3_log_binomial_probability(x: i32, n: i32, p: f64, q: f64) -> f64 {
 /// Ports `org.apache.commons.math3.distribution.HypergeometricDistribution.logProbability`
 /// with hoisted `(p, q, p3)` invariants (`AR-26`: keeps `(p1 + p2) - p3` parenthesized verbatim).
 #[inline]
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "hoisted hypergeometric invariants avoid per-point recomputation"
+)]
 fn cm3_hypergeometric_log_probability_with_p3(
     x: i32,
     population_size: i32,

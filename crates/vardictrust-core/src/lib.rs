@@ -673,11 +673,17 @@ fn multi_tile_key(t: &crate::regions::Tile) -> MultiTileKey {
     )
 }
 
+/// Disjoint `alignment_start` band width (`250,000 bp`) for parallel multi-tile `maxReadLength` pre-scanning (`AR-01`).
 const PRESCAN_BAND_BP: u32 = 250_000;
+/// Per-band candidate payload cap (`4 MiB`); exceeding this falls back to zero-retention sequential band replay (`AR-03`).
 const MAX_BAND_CANDIDATE_BYTES: usize = 4 * 1024 * 1024;
+/// Sliding parent-region FASTA fetch window (`128 KiB`) used when a band candidate requires `CigarModifier` reference context.
 const REF_SCAN_WINDOW_BP: u32 = 128 * 1024;
+/// Streaming FASTA chunk size (`64 KiB`) when scanning unindexed parent-region bases for a `12 bp` seed (`AR-05`).
 const SEED_SCAN_CHUNK_BP: u32 = 64 * 1024;
+/// Maximum memoized `12 bp` seed multiplicity entries (`65,536`) before clearing the per-region cache.
 const MAX_SEED12_MEMO_ENTRIES: usize = 65_536;
+/// Maximum non-`ACGT` `12 bp` seed entries (`262,144`) retained in the `LazySeed12Index` side-map before falling back to chunked scan (`AR-05`).
 const MAX_NON_ACGT_SEED12_ENTRIES: usize = 262_144;
 
 #[derive(Clone, Copy, Debug)]
@@ -1248,7 +1254,10 @@ impl BoundedParentRefScanner {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "pre-scan candidate replay borrows split mutable buffers and tile step state"
+)]
 fn replay_prescan_candidate(
     bam_idx: usize,
     total_bams: usize,
@@ -1362,7 +1371,10 @@ fn replay_prescan_candidate(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "sequential band fallback threads band bounds and reusable scratch buffers"
+)]
 fn stream_band_sequential(
     bam_path: &str,
     bam_idx: usize,
@@ -1493,7 +1505,10 @@ enum BandScan {
     FallbackSequential,
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "parallel band worker takes explicit BAM, region, band bounds, and seed parameters"
+)]
 fn scan_band_candidates(
     bam_path: &str,
     bam_idx: usize,
@@ -1749,7 +1764,10 @@ struct PrescanBandTask {
 /// Flattened single-pool `250 kbp` band pre-scanner across all multi-tile regions (`AR-01`..`AR-05`).
 /// Spawns at most one `run_parallel_batched_for_bam` pool per BAM index (0 pools when
 /// `config.threads <= 1` or `total_bands <= 1`) with zero nested Rayon pools (`AR-04`).
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "multi-region band scheduler coordinates BAM list, flat regions, tiles, and tuning caps"
+)]
 fn scan_multi_regions_max_read_lengths(
     bam_spec_for_stack: &str,
     bam_paths: &[String],
@@ -1842,7 +1860,10 @@ fn scan_multi_regions_max_read_lengths(
         });
     }
 
-    let flat_arc = std::sync::Arc::new(flat_regions.to_vec());
+    let multi_regs: std::sync::Arc<[regions::Region]> = multi_idxs
+        .iter()
+        .filter_map(|&i| flat_regions.get(i).cloned())
+        .collect();
     let total_bams = bam_paths.len();
     let mut cigar_elements = Vec::new();
     let mut cigar_str = String::new();
@@ -1876,7 +1897,7 @@ fn scan_multi_regions_max_read_lengths(
         }
         let eff_threads = config.threads.min(batches.len());
         let bam_path_owned = bam_path.clone();
-        let flat_for_worker = std::sync::Arc::clone(&flat_arc);
+        let multi_regs_for_worker = std::sync::Arc::clone(&multi_regs);
         let cfg_for_worker = config.clone();
 
         crate::runner::run_parallel_batched_for_bam(
@@ -1884,8 +1905,8 @@ fn scan_multi_regions_max_read_lengths(
             batches,
             eff_threads,
             move |task| {
-                let reg = flat_for_worker.get(task.reg_idx).ok_or_else(|| {
-                    VardictError::Parse(format!("Invalid region index {}", task.reg_idx))
+                let reg = multi_regs_for_worker.get(task.m_pos).ok_or_else(|| {
+                    VardictError::Parse(format!("Invalid multi-tile region index {}", task.m_pos))
                 })?;
                 let scan = scan_band_candidates(
                     &bam_path_owned,

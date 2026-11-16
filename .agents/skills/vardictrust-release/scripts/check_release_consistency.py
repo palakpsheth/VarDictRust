@@ -1084,6 +1084,13 @@ def check_pre_tag_surfaces(
         f"{surface_map_rel} row 12 cites {tc['total_workspace']} PASS ({tc['core_lib']} PASS core lib)",
         errors,
     )
+    require_regex(
+        repo_root,
+        surface_map_rel,
+        rf"\(`{tc['total_workspace']}` total: `{tc['core_lib']}` `vardictrust-core` lib \+ `{tc['cli_bin']}` `vardictrust` bin \+ `{int_suite_total}` integration \+ `{tc['corpus_parity']}` `corpus_parity`\)",
+        f"{surface_map_rel} Guard #20 cites {tc['total_workspace']} total ({tc['core_lib']} + {tc['cli_bin']} + {int_suite_total} + {tc['corpus_parity']})",
+        errors,
+    )
     forbid_regex(
         repo_root,
         surface_map_rel,

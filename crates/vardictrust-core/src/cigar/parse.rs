@@ -35,8 +35,11 @@ fn has_two_soft_clips(mc: &str) -> bool {
     false
 }
 
+/// Reference halo (`5,000 bp`) retained around each loaded FASTA interval when clipping deletion coverage spans (`AR-06`).
 const REF_COV_HALO_BP: i64 = 5_000;
+/// Minimum clipped deletion span (`64 bp`) deferred to the `O((R + K) log K)` coordinate-compressed sweep instead of point increments.
 const LONG_DEL_COV_SWEEP_MIN_BP: i64 = 64;
+/// Maximum deferred deletion coverage spans (`8,192`) buffered before an incremental `finish_ref_coverage` flush.
 const MAX_PENDING_COV_SPANS: usize = 8_192;
 
 fn build_cov_windows(reference: &Reference, region: &Region, config: &Config) -> Vec<(i32, i32)> {
