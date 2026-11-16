@@ -71,10 +71,9 @@ ensure_truth_slice() {
 
   echo -n "  [fetching truth] $id ($interval)... "
   (
-    cd "$CACHE_DIR"
+    cd "$TMPDIR"
     tabix -H "$url" > "$TMPDIR/${id}_truth.vcf"
     tabix "$url" "$interval" >> "$TMPDIR/${id}_truth.vcf"
-    rm -f ./*.tbi 2>/dev/null || true
   )
   local fetched_sha
   fetched_sha="$(grep -v '^#' "$TMPDIR/${id}_truth.vcf" | portable_sha256)"

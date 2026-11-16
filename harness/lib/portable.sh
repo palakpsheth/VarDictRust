@@ -63,10 +63,6 @@ resolve_data_root() {
     fi
     local root_dir="${1:-${ROOT_DIR:-$(pwd)}}"
     root_dir="$(cd "$root_dir" 2>/dev/null && pwd || printf '%s' "$root_dir")"
-    if [ -d "$root_dir/scratch/g4" ]; then
-        printf '%s\n' "$root_dir"
-        return 0
-    fi
     local common_git_dir=""
     common_git_dir="$(git -C "$root_dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
     if [ -z "$common_git_dir" ]; then
@@ -79,7 +75,14 @@ resolve_data_root() {
     if [ -n "$common_git_dir" ]; then
         local main_root
         main_root="$(cd "$(dirname "$common_git_dir")" 2>/dev/null && pwd || true)"
-        if [ -n "$main_root" ] && { [ -d "$main_root/scratch" ] || [ -d "$main_root/VarDictJava" ]; }; then
+        if [ -n "$main_root" ] && [ "$main_root" != "$root_dir" ] \
+           && { [ -d "$main_root/scratch" ] || [ -d "$main_root/VarDictJava" ]; }; then
+            if [ -d "$root_dir/scratch/g4/ref" ] && [ ! -L "$root_dir/scratch/g4/ref" ] \
+               && [ ! -L "$root_dir/scratch/g4" ] && [ ! -L "$root_dir/scratch" ] \
+               && { [ -d "$root_dir/VarDictJava/testdata" ] || [ ! -d "$main_root/VarDictJava/testdata" ]; }; then
+                printf '%s\n' "$root_dir"
+                return 0
+            fi
             printf '%s\n' "$main_root"
             return 0
         fi

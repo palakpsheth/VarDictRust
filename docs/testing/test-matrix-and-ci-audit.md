@@ -65,7 +65,7 @@ flowchart TD
         S_Budg["harness/perf_budget.py (5 Targets: HG008, SEQC2, HG002, Amp, CRAM Twin)"]
     end
 
-    subgraph Level6 ["Level 6: Diagnostic Self-Tests (36 Tests)"]
+    subgraph Level6 ["Level 6: Diagnostic Self-Tests (37 Tests)"]
         H_Self["bash harness/run_self_tests.sh\n(Comparator, Evidence, Git Hooks, VCF Header, Resource Throttling, BAM edges)"]
     end
 
@@ -157,7 +157,7 @@ The table below summarizes the complete testing inventory executed across the de
 | **7** | [**Level 7: Inner Developer Gate**](#level-7) | `harness/rgate.sh` | Compound | Developer inner loop | Cargo + Corpus + Micro + 5 slices PASS | $<15\text{ s}$ |
 | **7** | [**Level 7: Standard PR Gate (Tier A)**](#level-7) | `harness/pr_check.sh` | 6 stages | Pre-PR validation | Stages 1–6 PASS (Hygiene, Corpus, Tier-2 `--no-record`, Perf) | $<25\text{ s}$ |
 | **7** | [**Level 7: Release Acceptance Gate (Tier B)**](#level-7) | `harness/acceptance.sh` | 8 items | Release qualification gate | Items 1–8 PASS under fingerprint | $<30\text{ s}$ |
-| **CI** | **Cloud CI: Test & Coverage Matrix** | `.github/workflows/ci.yml` | 9 steps | Git push to `main`, PRs & dispatch | Format/Lint, Build, Unit, Integration, Parity, `>90%` Coverage, 29 Self-Tests, Governance | $\sim 3\text{ m}$ |
+| **CI** | **Cloud CI: Test & Coverage Matrix** | `.github/workflows/ci.yml` | 9 steps | Git push to `main`, PRs & dispatch | Format/Lint, Build, Unit, Integration, Parity, `>90%` Coverage, 30 Self-Tests, Governance | $\sim 3\text{ m}$ |
 | **CI** | **Cloud CI: Security Audits** | `.github/workflows/security.yml` | 4 stages | Weekly cron, push `main`, PRs | Gitleaks, Deny, Audit, Clippy SARIF PASS | $\sim 1\text{ m}$ |
 | **CI** | **Cloud CI: Packaging & Provenance** | `.github/workflows/release.yml` | Dist/SLSA | Git tag push (`v1.0.9`) & PRs | Release Guard (`--require-head-fingerprint`), Musl PIE, SLSA 3 | $\sim 6\text{ m}$ |
 | **CI** | **Cloud CI: Differential Parity** | `.github/workflows/differential.yml` | 6 steps | Git push to `main`, PRs & dispatch | Cached `golden-store`, Micro, 10 Slices, 17 Modes (`--no-record`), 7 Oracle Self-Tests | $\sim 8\text{ m}$ |
@@ -551,7 +551,7 @@ python3 harness/perf_budget.py hg008-tier2 seqc2-exome-tier2 hg002-tier2 amplico
 
 # 8. Level 6: Reproduce Diagnostic Self-Tests (<10s)
 bash harness/run_self_tests.sh
-# Expected: ALL 36 HARNESS DIAGNOSTIC TESTS PASSED SUCCESSFULLY
+# Expected: ALL 37 HARNESS DIAGNOSTIC TESTS PASSED SUCCESSFULLY
 
 # 9. Level 7: Reproduce Pre-PR Compound Regression Suite (<35s)
 bash harness/pr_check.sh

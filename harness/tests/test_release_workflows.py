@@ -966,8 +966,11 @@ class TestReleaseAndCiWorkflows(unittest.TestCase):
             self.assertIn("set -euo pipefail", step_block, f"{label} publish step missing set -euo pipefail")
             self.assertIn("is already uploaded", step_block, f"{label} publish step missing already-uploaded guard")
 
+        core_run_m = re.search(r"        run: \|\n((?:          .*\n|\n)+)", core_m.group(1))
         bin_run_m = re.search(r"        run: \|\n((?:          .*\n|\n)+)", bin_m.group(1))
+        self.assertIsNotNone(core_run_m, "Publish vardictrust-core step must use multiline run: | script")
         self.assertIsNotNone(bin_run_m, "Publish vardictrust step must use multiline run: | script")
+        core_script = textwrap.dedent(core_run_m.group(1))
         bin_script = textwrap.dedent(bin_run_m.group(1))
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -987,9 +990,14 @@ class TestReleaseAndCiWorkflows(unittest.TestCase):
 count=$(( $(cat "{calls_file}" 2>/dev/null || echo 0) + 1 ))
 echo "$count" > "{calls_file}"
 mode="$(cat "{mode_file}")"
+pkg="${{3:-vardictrust}}"
 case "$mode" in
   already)
     echo "error: failed to publish to registry at https://crates.io: crate version \\`1.0.9\\` is already uploaded" >&2
+    exit 101
+    ;;
+  already_index)
+    echo "error: crate ${{pkg}}@1.0.9 already exists on crates.io index" >&2
     exit 101
     ;;
   lag_then_ok)
@@ -1015,12 +1023,20 @@ esac
                 CARGO_REGISTRY_TOKEN="dummy",
             )
 
-            # 1. Already uploaded -> exits 0 on attempt 1
+            # 1a. Already uploaded (upload error) -> exits 0 on attempt 1
             calls_file.write_text("0", encoding="utf-8")
             mode_file.write_text("already", encoding="utf-8")
             r1 = subprocess.run(["bash", "-c", bin_script], env=test_env, capture_output=True, text=True)
             self.assertEqual(r1.returncode, 0, r1.stderr)
             self.assertEqual(int(calls_file.read_text(encoding="utf-8").strip()), 1)
+
+            # 1b. Sparse-index pre-check ("crate <pkg>@1.0.9 already exists on crates.io index") -> exits 0 on both steps
+            for step_label, script in (("core", core_script), ("bin", bin_script)):
+                calls_file.write_text("0", encoding="utf-8")
+                mode_file.write_text("already_index", encoding="utf-8")
+                r_idx = subprocess.run(["bash", "-c", script], env=test_env, capture_output=True, text=True)
+                self.assertEqual(r_idx.returncode, 0, f"{step_label} failed on already_index:\n{r_idx.stderr}")
+                self.assertEqual(int(calls_file.read_text(encoding="utf-8").strip()), 1)
 
             # 2. Index propagation lag -> retries and succeeds on attempt 2
             calls_file.write_text("0", encoding="utf-8")

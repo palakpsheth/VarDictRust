@@ -162,19 +162,19 @@ EOF
   mkdir -p "$fake_home/miniforge3/envs/vardict-oracle/bin" "$fake_home/.local/bin"
   printf "#!/bin/sh\nexit 0\n" > "$fake_home/miniforge3/envs/vardict-oracle/bin/gitleaks"
   chmod +x "$fake_home/miniforge3/envs/vardict-oracle/bin/gitleaks"
-  got_gl1="$(HOME="$fake_home" CONDA_PREFIX="" G4_TOOLS_BIN="$tmp/nope" find_gitleaks)"
+  got_gl1="$(PATH="$no_to_bin" HOME="$fake_home" CONDA_PREFIX="" G4_TOOLS_BIN="$tmp/nope" find_gitleaks)"
   [ "$got_gl1" = "$fake_home/miniforge3/envs/vardict-oracle/bin/gitleaks" ] || { echo "FAIL: find_gitleaks miniforge3 fallback got $got_gl1" >&2; exit 1; }
   rm -f "$fake_home/miniforge3/envs/vardict-oracle/bin/gitleaks"
   printf "#!/bin/sh\nexit 0\n" > "$fake_home/.local/bin/gitleaks"
   chmod +x "$fake_home/.local/bin/gitleaks"
-  got_gl2="$(HOME="$fake_home" CONDA_PREFIX="" G4_TOOLS_BIN="$tmp/nope" find_gitleaks)"
+  got_gl2="$(PATH="$no_to_bin" HOME="$fake_home" CONDA_PREFIX="" G4_TOOLS_BIN="$tmp/nope" find_gitleaks)"
   [ "$got_gl2" = "$fake_home/.local/bin/gitleaks" ] || { echo "FAIL: find_gitleaks .local/bin fallback got $got_gl2" >&2; exit 1; }
 
-  # 16. resolve_data_root (explicit env, direct scratch/g4, and linked git worktree)
+  # 16. resolve_data_root (explicit env, direct scratch/g4, and linked git worktree even after scratch/g4 is created)
   got_dr_env="$(DATA_ROOT="/explicit/data/root" resolve_data_root "$tmp")"
   [ "$got_dr_env" = "/explicit/data/root" ] || { echo "FAIL: resolve_data_root explicit env got $got_dr_env" >&2; exit 1; }
   if command -v git >/dev/null 2>&1; then
-    mkdir -p "$tmp/main_repo/scratch/g4"
+    mkdir -p "$tmp/main_repo/scratch/g4" "$tmp/main_repo/VarDictJava/testdata"
     (
       cd "$tmp/main_repo"
       git init -q -b main
@@ -185,10 +185,11 @@ EOF
       git commit -q -m init
       git worktree add -q -b wt "$tmp/wt_repo"
     )
-    mkdir -p "$tmp/wt_repo/scratch/acceptance"
+    mkdir -p "$tmp/wt_repo/scratch/acceptance" "$tmp/wt_repo/scratch/g4/concordance_multimodal"
+    ln -s "$tmp/main_repo/scratch/g4/ref" "$tmp/wt_repo/scratch/g4/ref"
     got_dr_wt="$(DATA_ROOT="" resolve_data_root "$tmp/wt_repo")"
     want_dr_main="$(cd "$tmp/main_repo" && pwd)"
-    [ "$got_dr_wt" = "$want_dr_main" ] || { echo "FAIL: resolve_data_root worktree got $got_dr_wt, want $want_dr_main" >&2; exit 1; }
+    [ "$got_dr_wt" = "$want_dr_main" ] || { echo "FAIL: resolve_data_root worktree with scratch/g4 got $got_dr_wt, want $want_dr_main" >&2; exit 1; }
   fi
 
   # 17. stream_verified_bam_slice retry & SHA-256 BAI check

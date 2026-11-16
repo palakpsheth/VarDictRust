@@ -931,7 +931,7 @@ def check_pre_tag_surfaces(
     forbid_regex(
         repo_root,
         "docs/testing/test-matrix-and-ci-audit.md",
-        r"a262f19b0a2eb8a8|\b233\b|\b192\b|\b277\b|\b289\b|\b293\b|\b294\b|\b296\b|\b243\b|\b263\b|\b269\b|\b159\b|\b139\b|3\.84×|3\.84x|1\.34 GiB|25 diagnostic self-tests|25 scripts|25 specialized scripts|ALL 25 HARNESS|--max-ref-cache-mb|4 continuous performance budgets|Four-Target Workload Budget|harness/lib/oracle_platform\.sh|harness/bench_profile\.sh|test_sync_sclip_after_conseq_preserves_unmatched_entries_for_later_sv_checks|test_get_reference_uses_config_extension_not_hardcoded_refext",
+        r"a262f19b0a2eb8a8|\b233\b|\b192\b|\b277\b|\b289\b|\b293\b|\b294\b|\b296\b|\b243\b|\b263\b|\b269\b|\b159\b|\b139\b|3\.84×|3\.84x|1\.34 GiB|25 diagnostic self-tests|25 scripts|25 specialized scripts|ALL 25 HARNESS|36 Tests|ALL 36 HARNESS|29 Self-Tests|29 Zero-Conda|--max-ref-cache-mb|4 continuous performance budgets|Four-Target Workload Budget|harness/lib/oracle_platform\.sh|harness/bench_profile\.sh|test_sync_sclip_after_conseq_preserves_unmatched_entries_for_later_sv_checks|test_get_reference_uses_config_extension_not_hardcoded_refext",
         "test-matrix-and-ci-audit.md stale fingerprint, test counts, scale metrics, or 4-target budget",
         errors,
     )

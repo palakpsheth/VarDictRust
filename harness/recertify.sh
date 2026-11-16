@@ -15,6 +15,7 @@ if [[ "${1:-}" == "--dry-run" ]]; then
 fi
 
 DATA_ROOT="$(resolve_data_root "$ROOT_DIR")"
+export DATA_ROOT
 
 if [[ "$DATA_ROOT" != "$ROOT_DIR" ]]; then
     mkdir -p "$ROOT_DIR/scratch/g4"

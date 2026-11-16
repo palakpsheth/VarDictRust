@@ -818,7 +818,7 @@ jobs:
             exit 0
           fi
           cat "$err_log" >&2
-          if grep -Eq "crate version \`${VER_ESC}\` is already uploaded|crate \`vardictrust-core@${VER_ESC}\` is already uploaded" "$err_log"; then
+          if grep -Eq "crate version \`${VER_ESC}\` is already uploaded|crate \`?vardictrust-core@${VER_ESC}\`? (is already uploaded|already exists on)" "$err_log"; then
             echo "vardictrust-core ${EXPECTED_VER} is already uploaded on crates.io; treating as idempotent success"
             exit 0
           fi
@@ -842,7 +842,7 @@ jobs:
               exit 0
             fi
             cat "$err_log" >&2
-            if grep -Eq "crate version \`${VER_ESC}\` is already uploaded|crate \`vardictrust@${VER_ESC}\` is already uploaded" "$err_log"; then
+            if grep -Eq "crate version \`${VER_ESC}\` is already uploaded|crate \`?vardictrust@${VER_ESC}\`? (is already uploaded|already exists on)" "$err_log"; then
               echo "vardictrust ${EXPECTED_VER} is already uploaded on crates.io; treating as idempotent success"
               exit 0
             fi
