@@ -4295,41 +4295,172 @@ public class BatchJavaMapOracle {
         );
     }
 
-    #[test]
-    fn ten_thousand_2pow16_stride_collisions_complete_in_n_log_n_time() {
-        let start = std::time::Instant::now();
-        let mut m: JavaHashMap<i32, i32> = JavaHashMap::new();
-        for i in 0..10_000i32 {
-            // spread(k) = (i << 16) | 0x1234 -> all 10,000 keys collide in bucket 0x1234 at cap 16,384!
-            let k = (i << 16) | ((i ^ 0x1234) & 0xFFFF);
-            m.insert(k, i);
+    fn max_tree_depth<K, V>(map: &JavaHashMap<K, V>) -> usize
+    where
+        K: Clone + JavaHash + Eq + PartialEq + Hash + Debug,
+        V: Clone + Debug + Default,
+    {
+        fn subtree_depth(links: &[TreeLink], node: u32) -> usize {
+            if node == NONE {
+                return 0;
+            }
+            let lk = links[node as usize];
+            1 + subtree_depth(links, lk.left).max(subtree_depth(links, lk.right))
         }
-        assert!(m.treeified());
-        assert_eq!(m.len(), 10_000);
+        let Some(links) = map.tree_links.as_deref() else {
+            return 0;
+        };
+        map.buckets
+            .iter()
+            .copied()
+            .filter(|&h| h != NONE && map.is_tree_node(h))
+            .map(|h| subtree_depth(links, h))
+            .max()
+            .unwrap_or(0)
+    }
+
+    fn count_lookup_probe_steps<K, V>(map: &JavaHashMap<K, V>, key: &K) -> (bool, usize)
+    where
+        K: Clone + JavaHash + Eq + PartialEq + Hash + Debug,
+        V: Clone + Debug + Default,
+    {
+        if map.buckets.is_empty() {
+            return (false, 0);
+        }
+        let hash = JavaHashMap::<K, V>::spread(key);
+        let idx = (hash as usize) & (map.buckets.len() - 1);
+        let first = map.buckets[idx];
+        if first == NONE {
+            return (false, 0);
+        }
+        let mut steps = 1usize;
+        if &map.nodes[first as usize].key == key {
+            return (true, steps);
+        }
+        let mut curr = map.nodes[first as usize].next;
+        if curr == NONE {
+            return (false, steps);
+        }
+        if map.is_tree_node(first) {
+            let links = map.tree_links.as_deref().expect("tree_links present");
+            let mut p = if links[first as usize].parent != NONE {
+                map.tree_root(first)
+            } else {
+                first
+            };
+            let h = hash as i32;
+            while p != NONE {
+                steps += 1;
+                let node = &map.nodes[p as usize];
+                let link = links[p as usize];
+                let ph = JavaHashMap::<K, V>::spread(&node.key) as i32;
+                if ph > h {
+                    p = link.left;
+                } else if ph < h {
+                    p = link.right;
+                } else if &node.key == key {
+                    return (true, steps);
+                } else if link.left == NONE {
+                    p = link.right;
+                } else if link.right == NONE {
+                    p = link.left;
+                } else {
+                    p = match key.java_compare(&node.key) {
+                        std::cmp::Ordering::Less => link.left,
+                        std::cmp::Ordering::Equal => return (true, steps),
+                        std::cmp::Ordering::Greater => link.right,
+                    };
+                }
+            }
+            return (false, steps);
+        }
+        while curr != NONE {
+            steps += 1;
+            if &map.nodes[curr as usize].key == key {
+                return (true, steps);
+            }
+            curr = map.nodes[curr as usize].next;
+        }
+        (false, steps)
+    }
+
+    #[test]
+    fn ten_thousand_stride_collisions_run_in_n_log_n_with_openjdk_order() {
+        // Deterministic O(log N) / O(N log N) complexity verification across N in {2_500, 5_000, 10_000}
+        // (no host-dependent wall-clock gate per AGENTS.md §14).
+        let mut avg_steps_by_scale = Vec::new();
+        let mut final_map: Option<JavaHashMap<i32, i32>> = None;
+
+        for &n in &[2_500usize, 5_000, 10_000] {
+            let mut m: JavaHashMap<i32, i32> = JavaHashMap::new();
+            for i in 0..(n as i32) {
+                // spread(k) = (i << 16) | 0x1234 -> all keys collide into bucket 0x1234 at cap <= 65,536!
+                let k = (i << 16) | ((i ^ 0x1234) & 0xFFFF);
+                m.insert(k, i);
+            }
+            assert!(m.treeified());
+            assert_eq!(m.len(), n);
+            assert_openjdk_invariants(&m);
+
+            let ceil_log2 = (usize::BITS - n.leading_zeros()) as usize;
+            let rb_depth_bound = 2 * ceil_log2;
+            let depth = max_tree_depth(&m);
+            assert!(
+                depth <= rb_depth_bound,
+                "Red-Black depth {depth} exceeded 2*ceil(log2({n}+1))={rb_depth_bound}"
+            );
+
+            let mut total_steps = 0usize;
+            for i in 0..(n as i32) {
+                let k = (i << 16) | ((i ^ 0x1234) & 0xFFFF);
+                assert_eq!(m.get(&k), Some(&i));
+                let (found, steps) = count_lookup_probe_steps(&m, &k);
+                assert!(found);
+                assert!(
+                    steps <= rb_depth_bound + 1,
+                    "single lookup took {steps} steps at N={n} (bound {})",
+                    rb_depth_bound + 1
+                );
+                total_steps += steps;
+            }
+            let total_bound = n * rb_depth_bound;
+            assert!(
+                total_steps <= total_bound,
+                "total lookup probes {total_steps} exceeded O(N log N) bound {total_bound} at N={n}"
+            );
+            avg_steps_by_scale.push((total_steps as f64) / (n as f64));
+            if n == 10_000 {
+                final_map = Some(m);
+            }
+        }
+
+        // Verify average probe steps grow logarithmically (~+1 step per 2x doubling, strictly <= +3.0):
+        for pair in avg_steps_by_scale.windows(2) {
+            let delta = pair[1] - pair[0];
+            assert!(
+                delta > 0.0 && delta <= 3.0,
+                "expected logarithmic step growth per 2x N doubling, got {avg_steps_by_scale:?}"
+            );
+        }
+
+        let mut m = final_map.expect("10,000-key map constructed");
         let first_five_before: Vec<i32> = m.keys().take(5).copied().collect();
         assert_eq!(
             first_five_before,
             vec![134_157_771, 67_047_883, 33_493_963, 16_716_491, 8_327_755]
         );
-        for i in 0..10_000i32 {
-            let k = (i << 16) | ((i ^ 0x1234) & 0xFFFF);
-            assert_eq!(m.get(&k), Some(&i));
-        }
         for i in (0..10_000i32).step_by(2) {
             let k = (i << 16) | ((i ^ 0x1234) & 0xFFFF);
             assert_eq!(m.remove(&k), Some(i));
         }
         assert_eq!(m.len(), 5_000);
         assert!(m.treeified());
+        assert_openjdk_invariants(&m);
+        assert!(max_tree_depth(&m) <= 26);
         let first_five_after: Vec<i32> = m.keys().take(5).copied().collect();
         assert_eq!(
             first_five_after,
             vec![268_377_547, 134_157_771, 67_047_883, 33_493_963, 16_716_491]
-        );
-        let elapsed = start.elapsed();
-        assert!(
-            elapsed < std::time::Duration::from_secs(2),
-            "10,000-collision TreeNode operations took {elapsed:?} (expected O(N log N) < 2s)"
         );
     }
 }
