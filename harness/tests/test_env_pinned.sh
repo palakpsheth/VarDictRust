@@ -35,17 +35,17 @@ grep -qiE 'java|openjdk' "$TOOLCHAIN_TXT" || {
   exit 1
 }
 
-# 4. Cross-platform harness/env/g4-tools.yml exact CLI version pins (no Linux-only packages)
+# 4. Cross-platform harness/env/g4-tools.yml exact CLI version pins (conda-forge + bioconda only)
 [ -f "$HARNESS_G4_YML" ] || { echo "FAIL test_env_pinned: $HARNESS_G4_YML missing" >&2; exit 1; }
-for pin in "samtools=1.24" "bcftools=1.24" "htslib=1.24" "bedtools=2.31.1" "rtg-tools=3.13" "bwa=0.7.19" "gitleaks=8.30.1"; do
+for pin in "samtools=1.24" "bcftools=1.24" "htslib=1.24" "bedtools=2.31.1" "rtg-tools=3.13" "bwa=0.7.19"; do
   grep -Fq "$pin" "$HARNESS_G4_YML" || {
     echo "FAIL test_env_pinned: $pin not pinned in $HARNESS_G4_YML" >&2
     exit 1
   }
 done
-for bad in "ld_impl_linux-64" "libgcc-ng"; do
+for bad in "ld_impl_linux-64" "libgcc-ng" "gitleaks"; do
   if grep -Fq "$bad" "$HARNESS_G4_YML"; then
-    echo "FAIL test_env_pinned: Linux-only package $bad found in $HARNESS_G4_YML" >&2
+    echo "FAIL test_env_pinned: non-conda-forge/bioconda or Linux-only package $bad found in $HARNESS_G4_YML" >&2
     exit 1
   fi
 done

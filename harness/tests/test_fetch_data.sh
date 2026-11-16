@@ -27,7 +27,7 @@ while IFS=$'\t' read -r group name url md5 sha256 dest extra; do
   [[ "$md5" =~ ^([0-9a-f]{32}|-)$ ]] || { echo "FAIL line $line_num: invalid md5 '$md5'" >&2; exit 1; }
   [[ "$sha256" =~ ^([0-9a-f]{64}|-)$ ]] || { echo "FAIL line $line_num: invalid sha256 '$sha256'" >&2; exit 1; }
   case "$group" in
-    refs|seqc2|hg008|hg002)
+    refs|seqc2|hg008|hg002|stage6)
       [[ "$sha256" =~ ^[0-9a-f]{64}$ ]] || {
         echo "FAIL line $line_num: core group '$group' asset '$name' must have pinned 64-hex sha256" >&2
         exit 1
@@ -52,6 +52,31 @@ groups=$(awk '!/^#/ && NF {print $1}' "$ASSETS" | sort -u | tr '\n' ' ')
 [[ "$groups" =~ "seqc2" ]] || { echo "FAIL: missing seqc2 group" >&2; exit 1; }
 [[ "$groups" =~ "hg008" ]] || { echo "FAIL: missing hg008 group" >&2; exit 1; }
 [[ "$groups" =~ "hg002" ]] || { echo "FAIL: missing hg002 group" >&2; exit 1; }
+[[ "$groups" =~ "stage6" ]] || { echo "FAIL: missing stage6 group" >&2; exit 1; }
+
+# 1b. Every stage6_fetch_verified target in harness/run_stage_6.sh must resolve to a 64-hex SHA-256 in harness/assets.tsv
+python3 - "$ASSETS" "harness/run_stage_6.sh" <<'PY'
+import pathlib, re, sys
+assets_path, stage6_path = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+sha_by_name = {}
+for line in assets_path.read_text(encoding="utf-8").splitlines():
+    if not line or line.startswith("#"):
+        continue
+    cols = line.split("\t")
+    if len(cols) == 6 and re.fullmatch(r"[0-9a-f]{64}", cols[4]):
+        sha_by_name[cols[1]] = cols[4]
+s6_text = stage6_path.read_text(encoding="utf-8")
+direct_names = re.findall(r'stage6_fetch_verified\s+"([^"$]+)"', s6_text)
+strat_names = [
+    pathlib.PurePosixPath(m).name
+    for m in re.findall(r'"[A-Za-z0-9_]+\|([A-Za-z0-9_./-]+\.bed\.gz)"', s6_text)
+]
+required = sorted(set(direct_names + strat_names))
+assert len(required) >= 27, f"expected >=27 stage6_fetch_verified assets in run_stage_6.sh, parsed {len(required)}"
+missing = [n for n in required if n not in sha_by_name]
+if missing:
+    sys.exit(f"FAIL: stage6_fetch_verified asset(s) missing 64-hex SHA-256 in {assets_path}: {missing}")
+PY
 
 # 2. Test harness/fetch_data.sh usage error on no arguments or flag-only invocation
 set +e

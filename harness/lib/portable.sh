@@ -97,20 +97,21 @@ portable_timeout() {
     fi
     local dur="$1"
     shift
+    local kill_after="${PORTABLE_TIMEOUT_KILL_AFTER:-12}"
     local backend="${PORTABLE_TIMEOUT_BACKEND:-auto}"
     if [ "$backend" = "auto" ] || [ "$backend" = "gnu" ]; then
         if command -v timeout >/dev/null 2>&1 && timeout 1s true >/dev/null 2>&1; then
-            timeout "$dur" "$@"
+            timeout -k "${kill_after}s" "$dur" "$@"
             return $?
         elif command -v gtimeout >/dev/null 2>&1 && gtimeout 1s true >/dev/null 2>&1; then
-            gtimeout "$dur" "$@"
+            gtimeout -k "${kill_after}s" "$dur" "$@"
             return $?
         elif [ "$backend" = "gnu" ]; then
             echo "portable_timeout: GNU timeout backend requested but unavailable" >&2
             return 127
         fi
     fi
-    python3 -c '
+    PORTABLE_TIMEOUT_KILL_AFTER="$kill_after" python3 -c '
 import os, re, signal, subprocess, sys, time
 raw = sys.argv[1]
 cmd = sys.argv[2:]
@@ -119,6 +120,8 @@ if not m:
     sys.stderr.write(f"portable_timeout: invalid duration {raw!r}\n")
     sys.exit(125)
 secs = float(m.group(1)) * {"": 1.0, "s": 1.0, "m": 60.0, "h": 3600.0, "d": 86400.0}[m.group(2)]
+kill_after_raw = os.environ.get("PORTABLE_TIMEOUT_KILL_AFTER", "12.0").strip().rstrip("s")
+kill_after = max(0.0, float(kill_after_raw))
 try:
     proc = subprocess.Popen(cmd, start_new_session=True)
 except FileNotFoundError as exc:
@@ -141,7 +144,7 @@ except subprocess.TimeoutExpired:
         os.killpg(proc.pid, signal.SIGTERM)
     except ProcessLookupError:
         pass
-    deadline = time.monotonic() + 2.0
+    deadline = time.monotonic() + kill_after
     while proc.poll() is None and time.monotonic() < deadline:
         time.sleep(0.02)
     try:

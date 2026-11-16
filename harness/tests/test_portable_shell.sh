@@ -122,9 +122,9 @@ EOF
   exec_out="$(bash -c "source \"\$1\"; exec_nice_idle echo exec_ok" _ "$1")"
   [ "$exec_out" = "exec_ok" ] || { echo "FAIL: exec_nice_idle output: $exec_out" >&2; exit 1; }
 
-  # 14. portable_timeout / --timeout CLI dispatch + Python fallback + process-group cleanup
+  # 14. portable_timeout / --timeout CLI dispatch + Python fallback + process-group cleanup + kill-after grace
   to_rc=0
-  "$1" --timeout 0.2s sh -c '\''sleep 30 & echo $! > "$1"; wait'\'' _ "$tmp/to_child.pid" || to_rc=$?
+  PORTABLE_TIMEOUT_KILL_AFTER=0.3 "$1" --timeout 0.2s sh -c '\''sleep 30 & echo $! > "$1"; wait'\'' _ "$tmp/to_child.pid" || to_rc=$?
   [ "$to_rc" -eq 124 ] || { echo "FAIL: --timeout 0.2s expected exit 124, got $to_rc" >&2; exit 1; }
   sleep 0.05
   if [ -s "$tmp/to_child.pid" ] && kill -0 "$(cat "$tmp/to_child.pid")" 2>/dev/null; then
@@ -136,6 +136,14 @@ EOF
   portable_time_v -o "$tmp/t_to.time" "${TIMEOUT_CMD[@]}" 30s true || { echo "FAIL: portable_time_v + TIMEOUT_CMD failed" >&2; exit 1; }
   grep -q "Exit status: 0" "$tmp/t_to.time" || { echo "FAIL: t_to.time missing Exit status: 0" >&2; exit 1; }
 
+  # GNU/default --timeout must pass -k <PORTABLE_TIMEOUT_KILL_AFTER>s so SIGTERM-ignoring children are SIGKILLed
+  ka_t0="$(now_ms)"
+  ka_gnu_rc=0
+  PORTABLE_TIMEOUT_KILL_AFTER=0.2 "$1" --timeout 0.1s python3 -c "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(2)" || ka_gnu_rc=$?
+  ka_dt=$(( $(now_ms) - ka_t0 ))
+  { [ "$ka_gnu_rc" -eq 124 ] || [ "$ka_gnu_rc" -eq 137 ]; } || { echo "FAIL: kill-after expected 124/137, got $ka_gnu_rc" >&2; exit 1; }
+  [ "$ka_dt" -lt 1200 ] || { echo "FAIL: default --timeout ignored PORTABLE_TIMEOUT_KILL_AFTER=0.2 (${ka_dt}ms)" >&2; exit 1; }
+
   no_to_bin="$tmp/no_timeout_bin"
   mkdir -p "$no_to_bin"
   for util in sh bash python3 sleep true cat kill rm mkdir dirname basename pwd uname tr awk cut wc date nice; do
@@ -144,7 +152,7 @@ EOF
     fi
   done
   py_to_rc=0
-  PATH="$no_to_bin" "$1" --timeout 0.2s sh -c '\''sleep 30 & echo $! > "$1"; wait'\'' _ "$tmp/py_to_child.pid" || py_to_rc=$?
+  PORTABLE_TIMEOUT_KILL_AFTER=0.3 PATH="$no_to_bin" "$1" --timeout 0.2s sh -c '\''sleep 30 & echo $! > "$1"; wait'\'' _ "$tmp/py_to_child.pid" || py_to_rc=$?
   [ "$py_to_rc" -eq 124 ] || { echo "FAIL: Python fallback --timeout 0.2s expected 124, got $py_to_rc" >&2; exit 1; }
   sleep 0.05
   if [ -s "$tmp/py_to_child.pid" ] && kill -0 "$(cat "$tmp/py_to_child.pid")" 2>/dev/null; then
@@ -152,6 +160,38 @@ EOF
     echo "FAIL: Python fallback --timeout left orphan child $(cat "$tmp/py_to_child.pid")" >&2
     exit 1
   fi
+  # Python fallback honors PORTABLE_TIMEOUT_KILL_AFTER (fast 0.1s escalation + 1.5s grace for SIGTERM cleanup of start_new_session grandchild)
+  py_ka_t0="$(now_ms)"
+  py_ka_rc=0
+  PORTABLE_TIMEOUT_KILL_AFTER=0.1 PATH="$no_to_bin" "$1" --timeout 0.1s python3 -c "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(5)" || py_ka_rc=$?
+  py_ka_dt=$(( $(now_ms) - py_ka_t0 ))
+  [ "$py_ka_rc" -eq 124 ] || { echo "FAIL: Python fallback kill-after expected 124, got $py_ka_rc" >&2; exit 1; }
+  [ "$py_ka_dt" -lt 1000 ] || { echo "FAIL: Python fallback ignored PORTABLE_TIMEOUT_KILL_AFTER=0.1 (${py_ka_dt}ms)" >&2; exit 1; }
+
+  grace_rc=0
+  PORTABLE_TIMEOUT_KILL_AFTER=1.5 PATH="$no_to_bin" "$1" --timeout 0.15s python3 -c '\''
+import os, signal, subprocess, sys, time
+gc = subprocess.Popen(
+    [sys.executable, "-c", "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)"],
+    start_new_session=True,
+)
+open(sys.argv[1], "w").write(str(gc.pid))
+def _on_term(_sig, _frm):
+    time.sleep(0.4)
+    os.killpg(gc.pid, signal.SIGKILL)
+    gc.wait()
+    sys.exit(143)
+signal.signal(signal.SIGTERM, _on_term)
+time.sleep(30)
+'\'' "$tmp/grace_gc.pid" || grace_rc=$?
+  [ "$grace_rc" -eq 124 ] || { echo "FAIL: grace wrapper expected 124, got $grace_rc" >&2; exit 1; }
+  sleep 0.05
+  if [ -s "$tmp/grace_gc.pid" ] && kill -0 "$(cat "$tmp/grace_gc.pid")" 2>/dev/null; then
+    kill -9 "$(cat "$tmp/grace_gc.pid")" 2>/dev/null || true
+    echo "FAIL: start_new_session grandchild orphaned during SIGTERM cleanup grace" >&2
+    exit 1
+  fi
+
   PATH="$no_to_bin" "$1" --timeout 1h true || { echo "FAIL: Python fallback --timeout 1h true failed" >&2; exit 1; }
   py_exit_rc=0
   PATH="$no_to_bin" "$1" --timeout 10 sh -c "exit 19" || py_exit_rc=$?

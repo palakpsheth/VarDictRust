@@ -160,11 +160,10 @@ class TestReleaseAndCiWorkflows(unittest.TestCase):
             "bedtools=2.31.1",
             "rtg-tools=3.13",
             "bwa=0.7.19",
-            "gitleaks=8.30.1",
         ):
             self.assertIn(pkg_pin, conda_action_text, f"setup-conda-env/action.yml missing {pkg_pin}")
-        for linux_only in ("ld_impl_linux-64", "libgcc-ng"):
-            self.assertNotIn(linux_only, conda_action_text)
+        for forbidden_conda_pkg in ("ld_impl_linux-64", "libgcc-ng", "gitleaks"):
+            self.assertNotIn(forbidden_conda_pkg, conda_action_text)
 
         rel_text = (workflows_dir / "release.yml").read_text(encoding="utf-8")
         self.assertIn('permissions:\n  "contents": "read"', rel_text)
