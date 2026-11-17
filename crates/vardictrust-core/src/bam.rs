@@ -882,11 +882,17 @@ const MAX_CRAI_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_CRAI_LINE_BYTES: usize = 64 * 1024;
 const MAX_CRAM_CONTAINER_BYTES: usize = 256 * 1024 * 1024;
 const MAX_CRAM_CONTAINER_RECORDS: usize = 2_000_000;
+/// Maximum record count (`65,536`) of a decoded CRAM container eligible for [`CRAM_CONTAINER_CACHE`].
 const MAX_CACHED_CRAM_CONTAINER_RECORDS: usize = 65_536;
-/// Maximum approximate heap footprint (`4 MiB`) of a single decoded CRAM container
-/// eligible for insertion into [`CRAM_CONTAINER_CACHE`] (`8` shards × `4` slots = `32`
-/// slots -> `<= 128 MiB` bounded cache residency even on ultra-long-read PacBio/ONT CRAMs).
-const MAX_CACHED_CRAM_CONTAINER_BYTES: usize = 4 * 1024 * 1024;
+/// Maximum decoded heap footprint (`16 MiB`) cached per [`CRAM_CONTAINER_CACHE`] container.
+///
+/// Standard `samtools`/`htslib` (`10,000`-read) and `noodles-cram` (`10,240`-read) `150–250 bp`
+/// Illumina containers occupy `~6.3–9.8 MiB` (`HG008` max `6.63 MiB`); values `< 8 MiB` reject
+/// standard Illumina containers and breach `perf_budget.py`'s `<= 2.50×` CRAM/BAM wall ratio.
+/// Across `8` shards × `4` slots (`32` slots), decoded-record cache residency stays `<= 512 MiB`
+/// (separate from `SharedFastaRepo`'s `512 MiB` CRAM reference cache) while bypassing oversized
+/// PacBio/ONT long-read containers.
+const MAX_CACHED_CRAM_CONTAINER_BYTES: usize = 16 * 1024 * 1024;
 
 fn parse_crai_line(s: &str) -> std::io::Result<noodles::cram::crai::Record> {
     const UNMAPPED: i32 = -1;
@@ -2932,6 +2938,7 @@ fn crai_record_intersects(
     }
 }
 
+/// Approximates total heap memory owned by a decoded [`CachedCramBlock`].
 fn approx_cram_container_bytes(records: &CachedCramBlock) -> usize {
     let mut total = records
         .capacity()
@@ -2957,6 +2964,13 @@ fn approx_cram_container_bytes(records: &CachedCramBlock) -> usize {
         total = total.saturating_add(rec_heap);
     }
     total
+}
+
+/// Returns `true` when `records` fits within both record-count and heap-byte cache bounds.
+#[inline]
+fn should_cache_cram_container(records: &CachedCramBlock, max_cached_bytes: usize) -> bool {
+    records.len() <= MAX_CACHED_CRAM_CONTAINER_RECORDS
+        && approx_cram_container_bytes(records) <= max_cached_bytes
 }
 
 fn cram_record_intersects(
@@ -4213,10 +4227,30 @@ fn fetch_cram_container(
     hint_contig: &[u8],
     pinned_slot: Option<&std::sync::Arc<ContigSlot>>,
 ) -> Result<Option<CachedCramBlock>, crate::types::VardictError> {
+    fetch_cram_container_in(
+        path,
+        meta,
+        container_offset,
+        hint_contig,
+        pinned_slot,
+        cram_container_cache_shards(),
+        MAX_CACHED_CRAM_CONTAINER_BYTES,
+    )
+}
+
+fn fetch_cram_container_in(
+    path: &Path,
+    meta: &std::sync::Arc<SharedCramMeta>,
+    container_offset: u64,
+    hint_contig: &[u8],
+    pinned_slot: Option<&std::sync::Arc<ContigSlot>>,
+    cache: &[std::sync::Mutex<CramContainerCacheShard>; CRAM_CONTAINER_CACHE_SHARDS],
+    max_cached_bytes: usize,
+) -> Result<Option<CachedCramBlock>, crate::types::VardictError> {
     use std::io::{Read as _, Seek as _, SeekFrom};
 
     let shard_idx = cache_shard_index::<CRAM_CONTAINER_CACHE_SHARDS>(meta.id, container_offset);
-    if let Some(shard_mutex) = cram_container_cache_shards().get(shard_idx) {
+    if let Some(shard_mutex) = cache.get(shard_idx) {
         let mut shard = shard_mutex.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(records) = shard.get((meta.id, container_offset)) {
             return Ok(Some(records));
@@ -4312,7 +4346,12 @@ fn fetch_cram_container(
 
     crate::count!(CramContainerDecodes);
     #[cfg(test)]
-    CRAM_CONTAINER_DECODE_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if CRAM_CONTAINER_CACHE
+        .get()
+        .is_some_and(|global| std::ptr::eq(cache, global))
+    {
+        CRAM_CONTAINER_DECODE_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
 
     // guideline deviation: M-PANIC-CONTINUATION — defensive boundary converting upstream noodles-cram parser panics on malformed untrusted CRAM inputs into io::ErrorKind::InvalidData without shared mutable state
     let decoded_res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
@@ -4380,10 +4419,8 @@ fn fetch_cram_container(
     out_records.shrink_to_fit();
 
     let arc_records: CachedCramBlock = std::sync::Arc::new(out_records);
-    if arc_records.len() <= MAX_CACHED_CRAM_CONTAINER_RECORDS
-        && approx_cram_container_bytes(&arc_records) <= MAX_CACHED_CRAM_CONTAINER_BYTES
-    {
-        if let Some(shard_mutex) = cram_container_cache_shards().get(shard_idx) {
+    if should_cache_cram_container(&arc_records, max_cached_bytes) {
+        if let Some(shard_mutex) = cache.get(shard_idx) {
             let mut shard = shard_mutex.lock().unwrap_or_else(|e| e.into_inner());
             shard.insert(
                 (meta.id, container_offset),
@@ -10047,7 +10084,7 @@ mod tests {
     }
 
     #[test]
-    fn cram_container_cache_bypasses_oversized_containers_over_4mib() {
+    fn cram_container_cache_caches_standard_10k_illumina_and_bypasses_over_16mib() {
         use noodles::core::Position;
         use noodles::sam::{
             alignment::{
@@ -10064,12 +10101,65 @@ mod tests {
         use std::fs::File;
         use std::num::NonZeroUsize;
 
-        let temp_dir = tempfile::tempdir().unwrap();
-        let ref_fa = temp_dir.path().join("long_ref.fa");
-        let ref_fai = temp_dir.path().join("long_ref.fa.fai");
-        let cram_path = temp_dir.path().join("oversized_long_reads.cram");
+        let chr1_arc: std::sync::Arc<str> = std::sync::Arc::from("chr1");
+        let build_cached_block = |count: usize, read_len: usize| -> CachedCramBlock {
+            let mut out = Vec::with_capacity(count);
+            for idx in 0..count {
+                let mut sam = SamRecord::new();
+                sam.name = format!("read_{idx:05}").into_bytes();
+                let mut cigar = Vec::with_capacity(4);
+                cigar.push((read_len as u32, CigarKind::Match));
+                sam.cigar = cigar;
+                sam.sequence = vec![b'A'; read_len];
+                sam.quality_scores = vec![35u8; read_len];
+                out.push(CachedCramRecord {
+                    reference_sequence_id: Some(0),
+                    alignment_start: Position::new(100),
+                    alignment_end: Position::new(100 + read_len - 1),
+                    reference_name: Some(std::sync::Arc::clone(&chr1_arc)),
+                    mate_reference_name: None,
+                    sam,
+                });
+            }
+            out.shrink_to_fit();
+            std::sync::Arc::new(out)
+        };
 
-        let ref_len = 50_000usize;
+        // Part A: Standard 10,000 × 150 bp Illumina CRAM container (~6.28 MiB > 4 MiB)
+        // must be eligible under MAX_CACHED_CRAM_CONTAINER_BYTES (16 MiB), whereas an
+        // oversized 240 × 40 kbp long-read container (~18.39 MiB > 16 MiB) must bypass.
+        let illumina_10k = build_cached_block(10_000, 150);
+        let illumina_bytes = approx_cram_container_bytes(&illumina_10k);
+        assert!(
+            illumina_bytes > 4 * 1024 * 1024,
+            "10k × 150 bp Illumina container ({illumina_bytes} B) exceeds 4 MiB"
+        );
+        assert!(
+            should_cache_cram_container(&illumina_10k, MAX_CACHED_CRAM_CONTAINER_BYTES),
+            "10k × 150 bp Illumina container ({illumina_bytes} B) must be cached under MAX_CACHED_CRAM_CONTAINER_BYTES ({MAX_CACHED_CRAM_CONTAINER_BYTES} B)"
+        );
+        drop(illumina_10k);
+
+        let long_read_240 = build_cached_block(240, 40_000);
+        let long_bytes = approx_cram_container_bytes(&long_read_240);
+        assert!(
+            long_bytes > 16 * 1024 * 1024,
+            "240 × 40 kbp long-read container ({long_bytes} B) must exceed 16 MiB"
+        );
+        assert!(
+            !should_cache_cram_container(&long_read_240, MAX_CACHED_CRAM_CONTAINER_BYTES),
+            "oversized long-read container ({long_bytes} B) must bypass CRAM_CONTAINER_CACHE"
+        );
+        drop(long_read_240);
+
+        // Part B: Isolated end-to-end fetch_cram_container_in hit vs byte-cap bypass
+        // on a compact 32 × 150 bp CRAM (zero shared global CRAM_CONTAINER_CACHE state).
+        let temp_dir = tempfile::tempdir().unwrap();
+        let ref_fa = temp_dir.path().join("short_ref.fa");
+        let ref_fai = temp_dir.path().join("short_ref.fa.fai");
+        let cram_path = temp_dir.path().join("compact_illumina.cram");
+
+        let ref_len = 2_000usize;
         let ref_bases: Vec<u8> = (0..ref_len)
             .map(|i| b"ACGT"[(i.wrapping_mul(13).wrapping_add(i / 7)) % 4])
             .collect();
@@ -10090,13 +10180,10 @@ mod tests {
             .unwrap();
         let header = Header::builder().add_reference_sequence("chr1", rs).build();
 
-        // 60 long reads × (40,000 bp seq + 40,000 byte qual) ≈ 4.8 MiB > 4 MiB,
-        // while 60 <= MAX_CACHED_CRAM_CONTAINER_RECORDS (65_536).
-        let read_count = 60usize;
-        let read_len = 40_000usize;
+        let read_count = 32usize;
+        let read_len = 150usize;
         let cigar: Cigar = [Op::new(Kind::Match, read_len)].into_iter().collect();
-        let mut expected_names = Vec::with_capacity(read_count);
-        {
+        let container_offset = {
             let fasta_reader = noodles::fasta::io::IndexedReader::new(
                 std::io::BufReader::new(File::open(&ref_fa).unwrap()),
                 noodles::fasta::fai::fs::read(&ref_fai).unwrap(),
@@ -10110,12 +10197,10 @@ mod tests {
                 .unwrap();
             cram_writer.write_alignment_header(&header).unwrap();
             for idx in 0..read_count {
-                let start_1 = 100 + idx * 10;
+                let start_1 = 50 + idx * 10;
                 let seq = ref_bases[(start_1 - 1)..(start_1 - 1 + read_len)].to_vec();
-                let qname = format!("long_read_{idx:03}");
-                expected_names.push(qname.as_bytes().to_vec());
                 let rec = RecordBuf::builder()
-                    .set_name(qname)
+                    .set_name(format!("short_read_{idx:02}"))
                     .set_flags(Flags::empty())
                     .set_reference_sequence_id(0)
                     .set_alignment_start(Position::try_from(start_1).unwrap())
@@ -10131,73 +10216,79 @@ mod tests {
             assert_eq!(
                 crai.len(),
                 1,
-                "expected all 60 long reads in a single CRAM container"
+                "expected 32 reads in a single CRAM container"
             );
+            let off = crai[0].offset();
             noodles::cram::crai::fs::write(cram_path.with_extension("cram.crai"), &crai).unwrap();
-        }
+            off
+        };
 
         let config = crate::config::Config {
             reference: ref_fa.to_string_lossy().into_owned(),
             ..Default::default()
         };
-        NEXT_BAM_META_ID.fetch_max(TEST_META_ID_BASE, std::sync::atomic::Ordering::Relaxed);
+        let meta = acquire_cram_meta(&cram_path, &config).unwrap();
+        let pinned_slot = meta.fasta_repo.warm_contig_slot(b"chr1");
 
-        let decoded_1 = query_region(&cram_path, "chr1", Pos0(0), Pos0(50_000), &config).unwrap();
-        assert_eq!(decoded_1.len(), read_count);
-        for (i, rec) in decoded_1.iter().enumerate() {
-            assert_eq!(rec.name, expected_names[i]);
-            assert_eq!(rec.sequence.len(), read_len);
-            assert_eq!(rec.quality_scores.len(), read_len);
-        }
-
-        let synth_cached_block: CachedCramBlock = std::sync::Arc::new(
-            decoded_1
-                .iter()
-                .map(|sam| CachedCramRecord {
-                    reference_sequence_id: Some(0),
-                    alignment_start: Position::new(100),
-                    alignment_end: Position::new(40_099),
-                    reference_name: Some(std::sync::Arc::from("chr1")),
-                    mate_reference_name: None,
-                    sam: sam.clone(),
-                })
-                .collect(),
-        );
-        assert!(
-            approx_cram_container_bytes(&synth_cached_block) > MAX_CACHED_CRAM_CONTAINER_BYTES,
-            "60 × 40 kbp long-read container must exceed 4 MiB byte cap"
-        );
-
-        let meta_id = {
-            let map = CRAM_META_CACHE.get().unwrap().lock().unwrap();
-            let slot = map
-                .get(&(cram_path.clone(), ref_fa.clone()))
-                .expect("CRAM metadata entry");
-            let guard = slot.lock().unwrap();
-            guard.as_ref().unwrap().id
-        };
-        let cached_for_meta: usize = cram_container_cache_shards()
+        // (i) Cache-eligible cap inserts into isolated shard and serves repeat call via Arc::ptr_eq
+        let hit_cache: [std::sync::Mutex<CramContainerCacheShard>; CRAM_CONTAINER_CACHE_SHARDS] =
+            std::array::from_fn(|_| std::sync::Mutex::new(CramContainerCacheShard::default()));
+        let block_1 = fetch_cram_container_in(
+            &cram_path,
+            &meta,
+            container_offset,
+            b"chr1",
+            Some(&pinned_slot),
+            &hit_cache,
+            MAX_CACHED_CRAM_CONTAINER_BYTES,
+        )
+        .unwrap()
+        .expect("non-empty CRAM container");
+        assert_eq!(block_1.len(), read_count);
+        let hit_entries: usize = hit_cache
             .iter()
-            .map(|shard| {
-                shard
-                    .lock()
-                    .unwrap()
-                    .entries
-                    .iter()
-                    .filter(|((id, _), _)| *id == meta_id)
-                    .count()
-            })
+            .map(|s| s.lock().unwrap().entries.len())
             .sum();
-        assert_eq!(
-            cached_for_meta, 0,
-            "oversized >4 MiB decoded CRAM container must bypass CRAM_CONTAINER_CACHE insertion"
+        assert_eq!(hit_entries, 1, "eligible container must be cached");
+
+        let block_2 = fetch_cram_container_in(
+            &cram_path,
+            &meta,
+            container_offset,
+            b"chr1",
+            Some(&pinned_slot),
+            &hit_cache,
+            MAX_CACHED_CRAM_CONTAINER_BYTES,
+        )
+        .unwrap()
+        .expect("cached CRAM container");
+        assert!(
+            std::sync::Arc::ptr_eq(&block_1, &block_2),
+            "second fetch must hit isolated CRAM container cache"
         );
 
-        let decoded_2: Vec<SamRecord> =
-            query_region_iter(&cram_path, "chr1", Pos0(0), Pos0(50_000), &config)
-                .unwrap()
-                .map(|r| r.unwrap())
-                .collect();
-        assert_eq!(decoded_2, decoded_1);
+        // (ii) Tight 1 KiB cap (< ~20 KiB container) bypasses cache insertion while decoding identically
+        let bypass_cache: [std::sync::Mutex<CramContainerCacheShard>; CRAM_CONTAINER_CACHE_SHARDS] =
+            std::array::from_fn(|_| std::sync::Mutex::new(CramContainerCacheShard::default()));
+        let bypassed = fetch_cram_container_in(
+            &cram_path,
+            &meta,
+            container_offset,
+            b"chr1",
+            Some(&pinned_slot),
+            &bypass_cache,
+            1024,
+        )
+        .unwrap()
+        .expect("decoded CRAM container on bypass");
+        let bypass_entries: usize = bypass_cache
+            .iter()
+            .map(|s| s.lock().unwrap().entries.len())
+            .sum();
+        assert_eq!(bypass_entries, 0, "oversized container must bypass cache");
+        assert_eq!(bypassed.len(), block_1.len());
+        for (a, b) in block_1.iter().zip(bypassed.iter()) {
+            assert_eq!(a.sam, b.sam);
+        }
     }
 }
