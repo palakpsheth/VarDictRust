@@ -188,7 +188,10 @@ fn find_conseq_with(
 /// Consensus is called if the matched nucleotides are >90% of all softly clipped nucleotides.
 ///
 /// Ports `VariationUtils.findconseq`.
-#[deprecated(since = "1.0.10", note = "use variations::util::find_conseq_sets")]
+#[deprecated(
+    since = "1.0.10",
+    note = "no direct public replacement; soft-clip consensus runs internally via realign::realign_indels and vardictrust_core::run"
+)]
 pub fn find_conseq(
     soft_clip: &mut Sclip,
     dir: i32,

@@ -857,7 +857,10 @@ pub fn fill_and_sort_tmp(
 type AdaptorMapPair = (BTreeMap<Vec<u8>, i32>, BTreeMap<Vec<u8>, i32>);
 
 /// Fill adaptor maps from sequence string list.
-#[deprecated(since = "1.0.10", note = "use variations::util::find_conseq_sets")]
+#[deprecated(
+    since = "1.0.10",
+    note = "no public replacement; internal adaptor seed matching runs via realign::realign_indels and vardictrust_core::run"
+)]
 pub fn fill_adaptor_maps(adaptor_seqs: &[String]) -> AdaptorMapPair {
     if adaptor_seqs.is_empty() {
         return (BTreeMap::new(), BTreeMap::new());
