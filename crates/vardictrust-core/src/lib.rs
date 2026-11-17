@@ -3350,11 +3350,8 @@ impl StagedFileTarget {
 
                 if let Some(plan) = index_plan {
                     preflight_readonly_index_plan(plan)?;
-                } else if is_bgzf_output_path(target) {
-                    for (flag, sidecar) in [
-                        ("--tbi", tbi_output_path(target)),
-                        ("--csi", csi_output_path(target)),
-                    ] {
+                } else if let Some(sidecars) = unindexed_bgzf_stale_sidecars(Some(target), None) {
+                    for (flag, sidecar) in sidecars {
                         if sidecar.exists() || std::fs::symlink_metadata(&sidecar).is_ok() {
                             return Err(std::io::Error::new(
                                 std::io::ErrorKind::PermissionDenied,
@@ -3762,6 +3759,7 @@ fn stage_vcf_csi_index(
 }
 
 /// Backwards-compatible alias for existing call sites.
+#[deprecated(since = "1.0.10", note = "use create_output_writer")]
 pub fn get_output_writer(config: &config::Config) -> OutputDestination {
     create_output_writer(config)
 }
@@ -4963,6 +4961,152 @@ fn run_with_engine_writer_and_telemetry<W: EngineWriter>(
     }
 }
 
+struct PreparedTileSeed {
+    bam1_steps: Vec<MaxRlStep>,
+    bam1_final: i32,
+    bam2_steps: Vec<MaxRlStep>,
+    bam2_final: i32,
+}
+
+fn parse_target_regions(
+    config: &config::Config,
+    preloaded_bed_lines: Option<Vec<String>>,
+    chromosomes_lengths: &HashMap<String, usize>,
+) -> Result<Vec<Vec<crate::regions::Region>>, VardictError> {
+    if let Some(ref r_str) = config.region {
+        drop(preloaded_bed_lines);
+        crate::regions::parse_region_flag(r_str, config, chromosomes_lengths)
+    } else if let Some(ref bed_path) = config.bed {
+        let zero_based = config.zero_based_defined.then_some(config.zero_based);
+        match preloaded_bed_lines {
+            Some(bed_lines) => crate::regions::parse_bed_from_lines(
+                &bed_lines,
+                config,
+                chromosomes_lengths,
+                zero_based,
+            ),
+            None => crate::regions::parse_bed(bed_path, config, chromosomes_lengths, zero_based),
+        }
+    } else {
+        Err(VardictError::Parse(
+            "Either region (-R) or BED file must be specified".to_string(),
+        ))
+    }
+}
+
+type PreparedTilesAndSeeds = (
+    Vec<Vec<crate::regions::Tile>>,
+    HashMap<MultiTileKey, PreparedTileSeed>,
+);
+
+/// Shared zero-clone tile construction and flattened single-pool `250 kbp` band `maxReadLength`
+/// pre-scan for `Simple`/`Splicing` (`bam2_bams == None`) and `Somatic` (`bam2_bams == Some(...)`).
+fn prepare_tiles_and_prescan(
+    config: &config::Config,
+    bam1_bams: &[String],
+    bam2_bams: Option<&[String]>,
+    chromosomes_lengths: &HashMap<String, usize>,
+    regions: Vec<Vec<crate::regions::Region>>,
+    telemetry: Option<&RunTelemetryCounters>,
+) -> Result<PreparedTilesAndSeeds, VardictError> {
+    let flat_regions: Vec<crate::regions::Region> = regions.into_iter().flatten().collect();
+    validate_total_tiles_ceiling(&flat_regions, config.tile_size)?;
+    let tile_size = config.tile_size.unwrap_or(DEFAULT_TILE_SIZE);
+    let halo = 500;
+    let reg_tiles_list: Vec<Vec<crate::regions::Tile>> = flat_regions
+        .iter()
+        .map(|reg| crate::regions::tile(reg, effective_tile_size(reg, config.tile_size), halo))
+        .collect();
+    let multi_idxs: Vec<usize> = if config.splice {
+        Vec::new()
+    } else {
+        reg_tiles_list
+            .iter()
+            .enumerate()
+            .filter_map(|(i, rt)| (rt.len() > 1).then_some(i))
+            .collect()
+    };
+
+    let mut multi_tile_seeds: HashMap<MultiTileKey, PreparedTileSeed> = HashMap::new();
+    if !multi_idxs.is_empty() {
+        let init_zeros = vec![0i32; multi_idxs.len()];
+        let bam1_scanned = scan_multi_regions_max_read_lengths(
+            &config.bam,
+            bam1_bams,
+            &flat_regions,
+            &reg_tiles_list,
+            &multi_idxs,
+            &init_zeros,
+            config,
+            chromosomes_lengths,
+            PRESCAN_BAND_BP,
+            MAX_BAND_CANDIDATE_BYTES,
+        )?;
+        if let Some(bam2_list) = bam2_bams {
+            let bam1_finals: Vec<i32> = bam1_scanned.iter().map(|&(_, f)| f).collect();
+            let bam2_scanned = scan_multi_regions_max_read_lengths(
+                &config.bam,
+                bam2_list,
+                &flat_regions,
+                &reg_tiles_list,
+                &multi_idxs,
+                &bam1_finals,
+                config,
+                chromosomes_lengths,
+                PRESCAN_BAND_BP,
+                MAX_BAND_CANDIDATE_BYTES,
+            )?;
+            for ((&idx, (bam1_steps, bam1_final)), (bam2_steps, bam2_final)) in
+                multi_idxs.iter().zip(bam1_scanned).zip(bam2_scanned)
+            {
+                if let Some(reg_tiles) = reg_tiles_list.get(idx) {
+                    for ((t, s1), s2) in reg_tiles.iter().zip(bam1_steps).zip(bam2_steps) {
+                        multi_tile_seeds.insert(
+                            multi_tile_key(t),
+                            PreparedTileSeed {
+                                bam1_steps: s1,
+                                bam1_final,
+                                bam2_steps: s2,
+                                bam2_final,
+                            },
+                        );
+                    }
+                }
+            }
+        } else {
+            for (&idx, (bam1_steps, bam1_final)) in multi_idxs.iter().zip(bam1_scanned) {
+                if let Some(reg_tiles) = reg_tiles_list.get(idx) {
+                    for (t, s1) in reg_tiles.iter().zip(bam1_steps) {
+                        multi_tile_seeds.insert(
+                            multi_tile_key(t),
+                            PreparedTileSeed {
+                                bam1_steps: s1,
+                                bam1_final,
+                                bam2_steps: Vec::new(),
+                                bam2_final: 0,
+                            },
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    let total_tiles_len: usize = reg_tiles_list.iter().map(Vec::len).sum();
+    let mut tiles = Vec::with_capacity(total_tiles_len);
+    for reg_tiles in reg_tiles_list {
+        tiles.extend(reg_tiles);
+    }
+    if let Some(tel) = telemetry {
+        tel.regions_count
+            .store(flat_regions.len(), std::sync::atomic::Ordering::Relaxed);
+        tel.tiles_count
+            .store(tiles.len(), std::sync::atomic::Ordering::Relaxed);
+    }
+    let tile_batches = crate::regions::batch_tiles(tiles, tile_size, 16, config.threads);
+    Ok((tile_batches, multi_tile_seeds))
+}
+
 fn run_with_writer_inner<W: EngineWriter>(
     config: &config::Config,
     mode: CallingMode,
@@ -4990,86 +5134,21 @@ fn run_with_writer_inner<W: EngineWriter>(
     // Read reference lengths from cached BAM/CRAM header
     let chromosomes_lengths = crate::bam::read_reference_lengths(Path::new(first_bam), config)?;
 
-    // Parse target regions
-    let regions = if let Some(ref r_str) = config.region {
-        drop(preloaded_bed_lines);
-        crate::regions::parse_region_flag(r_str, config, &chromosomes_lengths)?
-    } else if let Some(ref bed_path) = config.bed {
-        match preloaded_bed_lines {
-            Some(bed_lines) => crate::regions::parse_bed_from_lines(
-                &bed_lines,
-                config,
-                &chromosomes_lengths,
-                config.zero_based_defined.then_some(config.zero_based),
-            )?,
-            None => crate::regions::parse_bed(
-                bed_path,
-                config,
-                &chromosomes_lengths,
-                config.zero_based_defined.then_some(config.zero_based),
-            )?,
-        }
-    } else {
-        return Err(VardictError::Parse(
-            "Either region (-R) or BED file must be specified".to_string(),
-        ));
-    };
+    let regions = parse_target_regions(config, preloaded_bed_lines, &chromosomes_lengths)?;
 
     // Amplicon mode: process per-amplicon and combine via amplicon post-process
     if mode == CallingMode::Amplicon {
         return run_amplicon(config, &chromosomes_lengths, regions, writer, telemetry);
     }
 
-    let flat_regions: Vec<crate::regions::Region> = regions.into_iter().flatten().collect();
-
-    // Tile regions into overlapping tiles (regions <= 1 Mbp execute untiled like
-    // VarDictJava; multi-megabase intervals > 1 Mbp tile into 100 kbp windows).
-    validate_total_tiles_ceiling(&flat_regions, config.tile_size)?;
-    let tile_size = config.tile_size.unwrap_or(DEFAULT_TILE_SIZE);
-    let halo = 500;
-    let mut tiles = Vec::new();
-    let mut multi_tile_seeds: HashMap<MultiTileKey, (Vec<MaxRlStep>, i32)> = HashMap::new();
-    let reg_tiles_list: Vec<Vec<crate::regions::Tile>> = flat_regions
-        .iter()
-        .map(|reg| crate::regions::tile(reg, effective_tile_size(reg, config.tile_size), halo))
-        .collect();
-    let multi_idxs: Vec<usize> = reg_tiles_list
-        .iter()
-        .enumerate()
-        .filter_map(|(i, rt)| (rt.len() > 1 && !config.splice).then_some(i))
-        .collect();
-    if !multi_idxs.is_empty() {
-        let init_zeros = vec![0i32; multi_idxs.len()];
-        let scanned = scan_multi_regions_max_read_lengths(
-            &config.bam,
-            &bam_list,
-            &flat_regions,
-            &reg_tiles_list,
-            &multi_idxs,
-            &init_zeros,
-            config,
-            &chromosomes_lengths,
-            PRESCAN_BAND_BP,
-            MAX_BAND_CANDIDATE_BYTES,
-        )?;
-        for (&idx, (steps_per_tile, final_max_rl)) in multi_idxs.iter().zip(scanned) {
-            if let Some(reg_tiles) = reg_tiles_list.get(idx) {
-                for (t, steps) in reg_tiles.iter().zip(steps_per_tile) {
-                    multi_tile_seeds.insert(multi_tile_key(t), (steps, final_max_rl));
-                }
-            }
-        }
-    }
-    for reg_tiles in reg_tiles_list {
-        tiles.extend(reg_tiles);
-    }
-    if let Some(tel) = telemetry {
-        tel.regions_count
-            .store(flat_regions.len(), std::sync::atomic::Ordering::Relaxed);
-        tel.tiles_count
-            .store(tiles.len(), std::sync::atomic::Ordering::Relaxed);
-    }
-    let tile_batches = crate::regions::batch_tiles(tiles, tile_size, 16, config.threads);
+    let (tile_batches, multi_tile_seeds) = prepare_tiles_and_prescan(
+        config,
+        &bam_list,
+        None,
+        &chromosomes_lengths,
+        regions,
+        telemetry,
+    )?;
 
     let config_clone = config.clone();
     let chromosomes_lengths_clone = chromosomes_lengths.clone();
@@ -5147,10 +5226,10 @@ fn run_with_writer_inner<W: EngineWriter>(
             let is_split_tile = tile.start != tile.original_start || tile.end != tile.original_end;
             let (steps_slice, post_max_rl, parent_orig_start) =
                 if is_split_tile && !multi_tile_seeds.is_empty() {
-                    if let Some((steps, final_max)) = multi_tile_seeds.get(&multi_tile_key(&tile)) {
+                    if let Some(seed) = multi_tile_seeds.get(&multi_tile_key(&tile)) {
                         (
-                            steps.as_slice(),
-                            Some(*final_max),
+                            seed.bam1_steps.as_slice(),
+                            Some(seed.bam1_final),
                             Some(tile.original_start),
                         )
                     } else {
@@ -5309,26 +5388,13 @@ fn run_with_writer_inner<W: EngineWriter>(
                     })
                 }
             } else {
-                let mut buckets: std::collections::BTreeMap<
-                    i32,
-                    (f64, crate::variations::Variant),
-                > = std::collections::BTreeMap::new();
-                for v in variants {
-                    let af_4dp = crate::types::round_half_even(v.frequency, 4);
-                    match buckets.entry(v.start_pos) {
-                        std::collections::btree_map::Entry::Vacant(e) => {
-                            e.insert((af_4dp, v));
-                        }
-                        std::collections::btree_map::Entry::Occupied(mut e) => {
-                            if af_4dp > e.get().0 {
-                                e.insert((af_4dp, v));
-                            }
-                        }
-                    }
-                }
+                // `simple_post_process` already selected unique ascending `start_pos` winners
+                // when `!config_clone.emit_intermediate`.
                 let mut scratch = String::with_capacity(512);
-                let mut records = Vec::with_capacity(buckets.len());
-                for (start_pos, (af_4dp, v)) in buckets {
+                let mut records = Vec::with_capacity(variants.len());
+                for v in variants {
+                    let start_pos = v.start_pos;
+                    let af_4dp = crate::types::round_half_even(v.frequency, 4);
                     let event = crate::output::vcf::build_single_vcf_event(
                         &mut scratch,
                         &v,
@@ -5468,7 +5534,7 @@ fn process_amplicon_region(
 /// Single-query O(A) scan kept for isolated lookups and as the test oracle;
 /// the hot paths (`amplicon_position_stream`, non-`-p` `run_amplicon`) sweep
 /// via `AmpliconCoverSweep` instead.
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) fn amplicons_covering_position(
     segment: &[crate::regions::Region],
     position: i32,
@@ -5650,26 +5716,13 @@ fn run_amplicon<W: EngineWriter>(
                 }
                 Ok(AmpliconSegmentOutput::UnSplitVarBlock(block))
             } else {
-                let mut buckets: std::collections::BTreeMap<
-                    i32,
-                    (f64, crate::postprocess::amplicon::AmpliconVariant),
-                > = std::collections::BTreeMap::new();
-                for av in results {
-                    let af_4dp = crate::types::round_half_even(av.variant.frequency, 4);
-                    match buckets.entry(av.variant.start_pos) {
-                        std::collections::btree_map::Entry::Vacant(e) => {
-                            e.insert((af_4dp, av));
-                        }
-                        std::collections::btree_map::Entry::Occupied(mut e) => {
-                            if af_4dp > e.get().0 {
-                                e.insert((af_4dp, av));
-                            }
-                        }
-                    }
-                }
+                // `amplicon_post_process` already selected unique ascending `start_pos` winners
+                // via `amplicon_select_vcf_rows` when `!config_clone.emit_intermediate`.
                 let mut scratch = String::with_capacity(512);
-                let mut records = Vec::with_capacity(buckets.len());
-                for (start_pos, (af_4dp, av)) in buckets {
+                let mut records = Vec::with_capacity(results.len());
+                for av in results {
+                    let start_pos = av.variant.start_pos;
+                    let af_4dp = crate::types::round_half_even(av.variant.frequency, 4);
                     let event = crate::output::vcf::build_single_vcf_event(
                         &mut scratch,
                         &av.variant,
@@ -5821,97 +5874,15 @@ fn run_somatic<W: EngineWriter>(
     // Read reference lengths from cached BAM/CRAM header
     let chromosomes_lengths = crate::bam::read_reference_lengths(Path::new(first_bam1), config)?;
 
-    // Parse target regions
-    let regions = if let Some(ref r_str) = config.region {
-        drop(preloaded_bed_lines);
-        crate::regions::parse_region_flag(r_str, config, &chromosomes_lengths)?
-    } else if let Some(ref bed_path) = config.bed {
-        match preloaded_bed_lines {
-            Some(bed_lines) => crate::regions::parse_bed_from_lines(
-                &bed_lines,
-                config,
-                &chromosomes_lengths,
-                config.zero_based_defined.then_some(config.zero_based),
-            )?,
-            None => crate::regions::parse_bed(
-                bed_path,
-                config,
-                &chromosomes_lengths,
-                config.zero_based_defined.then_some(config.zero_based),
-            )?,
-        }
-    } else {
-        return Err(VardictError::Parse(
-            "Either region (-R) or BED file must be specified".to_string(),
-        ));
-    };
-
-    let flat_regions: Vec<crate::regions::Region> = regions.into_iter().flatten().collect();
-
-    // Tile regions (regions <= 1 Mbp execute untiled like VarDictJava;
-    // multi-megabase intervals > 1 Mbp tile into 100 kbp windows).
-    validate_total_tiles_ceiling(&flat_regions, config.tile_size)?;
-    let tile_size = config.tile_size.unwrap_or(DEFAULT_TILE_SIZE);
-    let halo = 500;
-    let mut tiles = Vec::new();
-    let mut multi_tile_seeds: HashMap<MultiTileKey, (Vec<MaxRlStep>, i32, Vec<MaxRlStep>, i32)> =
-        HashMap::new();
-    let reg_tiles_list: Vec<Vec<crate::regions::Tile>> = flat_regions
-        .iter()
-        .map(|reg| crate::regions::tile(reg, effective_tile_size(reg, config.tile_size), halo))
-        .collect();
-    let multi_idxs: Vec<usize> = reg_tiles_list
-        .iter()
-        .enumerate()
-        .filter_map(|(i, rt)| (rt.len() > 1).then_some(i))
-        .collect();
-    if !multi_idxs.is_empty() {
-        let init_zeros = vec![0i32; multi_idxs.len()];
-        let bam1_scanned = scan_multi_regions_max_read_lengths(
-            &config.bam,
-            &bam1_bams,
-            &flat_regions,
-            &reg_tiles_list,
-            &multi_idxs,
-            &init_zeros,
-            config,
-            &chromosomes_lengths,
-            PRESCAN_BAND_BP,
-            MAX_BAND_CANDIDATE_BYTES,
-        )?;
-        let bam1_finals: Vec<i32> = bam1_scanned.iter().map(|&(_, f)| f).collect();
-        let bam2_scanned = scan_multi_regions_max_read_lengths(
-            &config.bam,
-            &bam2_bams,
-            &flat_regions,
-            &reg_tiles_list,
-            &multi_idxs,
-            &bam1_finals,
-            config,
-            &chromosomes_lengths,
-            PRESCAN_BAND_BP,
-            MAX_BAND_CANDIDATE_BYTES,
-        )?;
-        for ((&idx, (bam1_steps, bam1_final)), (bam2_steps, bam2_final)) in
-            multi_idxs.iter().zip(bam1_scanned).zip(bam2_scanned)
-        {
-            if let Some(reg_tiles) = reg_tiles_list.get(idx) {
-                for ((t, s1), s2) in reg_tiles.iter().zip(bam1_steps).zip(bam2_steps) {
-                    multi_tile_seeds.insert(multi_tile_key(t), (s1, bam1_final, s2, bam2_final));
-                }
-            }
-        }
-    }
-    for reg_tiles in reg_tiles_list {
-        tiles.extend(reg_tiles);
-    }
-    if let Some(tel) = telemetry {
-        tel.regions_count
-            .store(flat_regions.len(), std::sync::atomic::Ordering::Relaxed);
-        tel.tiles_count
-            .store(tiles.len(), std::sync::atomic::Ordering::Relaxed);
-    }
-    let tile_batches = crate::regions::batch_tiles(tiles, tile_size, 16, config.threads);
+    let regions = parse_target_regions(config, preloaded_bed_lines, &chromosomes_lengths)?;
+    let (tile_batches, multi_tile_seeds) = prepare_tiles_and_prescan(
+        config,
+        &bam1_bams,
+        Some(&bam2_bams),
+        &chromosomes_lengths,
+        regions,
+        telemetry,
+    )?;
 
     let config_clone = config.clone();
     let chromosomes_lengths_clone = chromosomes_lengths.clone();
@@ -5980,12 +5951,12 @@ fn run_somatic<W: EngineWriter>(
             let is_split_tile = tile.start != tile.original_start || tile.end != tile.original_end;
             let (steps1, post1, steps2, post2, parent_orig_start) =
                 if is_split_tile && !multi_tile_seeds.is_empty() {
-                    if let Some((s1, f1, s2, f2)) = multi_tile_seeds.get(&multi_tile_key(&tile)) {
+                    if let Some(seed) = multi_tile_seeds.get(&multi_tile_key(&tile)) {
                         (
-                            s1.as_slice(),
-                            Some(*f1),
-                            s2.as_slice(),
-                            Some(*f2),
+                            seed.bam1_steps.as_slice(),
+                            Some(seed.bam1_final),
+                            seed.bam2_steps.as_slice(),
+                            Some(seed.bam2_final),
                             Some(tile.original_start),
                         )
                     } else {

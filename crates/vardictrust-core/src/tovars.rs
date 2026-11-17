@@ -1276,7 +1276,7 @@ impl<'a> ToVarsBuilder<'a> {
             }
         }
 
-        let mut positions_for_changed_ref_variant = Vec::new();
+        let mut changed_ref_variant_at_pos = false;
 
         if !variations_at_pos.variants.is_empty() {
             let format_plus_genotype1 = |desc: &str| -> String {
@@ -1744,9 +1744,7 @@ impl<'a> ToVarsBuilder<'a> {
                     .ref_variant
                     .as_ref()
                     .map_or("0", |ref_var| ref_var.bias.as_str());
-                vref.bias.reserve(ref_bias.len().saturating_add(1));
-                vref.bias.insert(0, ';');
-                vref.bias.insert_str(0, ref_bias);
+                vref.bias = format!("{ref_bias};{}", vref.bias);
 
                 vref.var_type = if vref.var_allele.starts_with('+')
                     || vref.description.starts_with('+')
@@ -1765,7 +1763,7 @@ impl<'a> ToVarsBuilder<'a> {
                 self.adjust_variant_counts(position, vref);
 
                 if start_position != position && self.config.pileup {
-                    positions_for_changed_ref_variant.push(position);
+                    changed_ref_variant_at_pos = true;
                 }
 
                 // ports ToVarsBuilder.java:947 (constructDebugLines inside the
@@ -1795,8 +1793,7 @@ impl<'a> ToVarsBuilder<'a> {
 
         if variations_at_pos.ref_variant.is_some()
             && self.config.pileup
-            && (positions_for_changed_ref_variant.contains(&position)
-                || self.config.amplicon.is_some())
+            && (changed_ref_variant_at_pos || self.config.amplicon.is_some())
         {
             if let Some(ref mut vref) = variations_at_pos.ref_variant {
                 self.update_ref_variant(
@@ -1942,6 +1939,10 @@ fn validate_ref_allele_in_place(ref_allele: &mut String) {
 }
 
 /// Validate reference allele sequence according to VCF 4.3 IUPAC ambiguity rules.
+#[deprecated(
+    since = "1.0.10",
+    note = "internal allele normalization runs in place via ToVarsBuilder"
+)]
 pub fn validate_ref_allele(ref_allele: &str) -> String {
     let mut out = ref_allele.to_string();
     validate_ref_allele_in_place(&mut out);
@@ -2022,6 +2023,10 @@ fn find_msi_slice<'a>(tseq1: &'a [u8], tseq2: &[u8], left: &[u8]) -> (f64, i32, 
 }
 
 /// Find microsatellite instability (MSI) motif and coordinate shift bounds.
+#[deprecated(
+    since = "1.0.10",
+    note = "internal MSI computation runs allocation-free via ToVarsBuilder"
+)]
 pub fn find_msi(tseq1: &[u8], tseq2: &[u8], left: &[u8]) -> MsiResult {
     let (msi, shift3, msint_bytes) = find_msi_slice(tseq1, tseq2, left);
     MsiResult {
@@ -3085,6 +3090,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        deprecated,
+        reason = "verifies 1.0.x SemVer shims find_msi and validate_ref_allele"
+    )]
     fn find_msi_metrics_and_validate_ref_allele_in_place_parity() {
         // 1. Clean ACGTN fast path preserves buffer pointer and capacity
         let mut clean = String::with_capacity(64);

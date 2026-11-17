@@ -720,11 +720,13 @@ pub(crate) fn compute_cram_nm(rec: &SamRecord, ref_seq: &[u8]) -> Option<i32> {
     Some(nm)
 }
 
+#[deprecated(since = "1.0.10", note = "use bam::query_region_iter")]
 pub enum IndexedSamReader {
     Bam(noodles::bam::io::IndexedReader<noodles::bgzf::io::Reader<std::fs::File>>),
     Cram(PathBuf, std::sync::Arc<SharedCramMeta>),
 }
 
+#[allow(deprecated)]
 impl IndexedSamReader {
     pub fn query<'a>(
         &'a mut self,
@@ -793,13 +795,11 @@ impl IndexedSamReader {
     }
 }
 
+#[deprecated(since = "1.0.10", note = "use bam::query_region_iter")]
+#[allow(deprecated)]
 pub struct CachedReader {
     pub reader: IndexedSamReader,
     pub header: noodles::sam::Header,
-}
-
-thread_local! {
-    static SAM_READER_CACHE: RefCell<HashMap<PathBuf, CachedReader>> = RefCell::new(HashMap::new());
 }
 
 fn fasta_fai_path(fasta_path: &Path) -> PathBuf {
@@ -1066,6 +1066,8 @@ fn read_cram_index_with_fallbacks(path: &Path) -> std::io::Result<noodles::cram:
     Err(first_not_found)
 }
 
+#[deprecated(since = "1.0.10", note = "use bam::query_region_iter")]
+#[allow(deprecated)]
 pub fn open_reader(
     path: &Path,
     config: &crate::config::Config,
@@ -1100,46 +1102,7 @@ pub fn query_region(
     end: Pos0,
     config: &crate::config::Config,
 ) -> Result<Vec<SamRecord>, crate::types::VardictError> {
-    if is_cram_path(bam_path) {
-        return query_region_iter(bam_path, chr, start, end, config)?.collect();
-    }
-
-    SAM_READER_CACHE.with(
-        |cache| -> Result<Vec<SamRecord>, crate::types::VardictError> {
-            let mut cache = cache.borrow_mut();
-            if !cache.contains_key(bam_path) {
-                let reader = open_reader(bam_path, config)?;
-                cache.insert(bam_path.to_path_buf(), reader);
-            }
-            let cached = match cache.get_mut(bam_path) {
-                Some(c) => c,
-                None => {
-                    return Err(crate::types::VardictError::Other(format!(
-                        "BAM cache miss for {}",
-                        bam_path.display()
-                    )))
-                }
-            };
-
-            let start_pos = start.to_one_based().0;
-            let end_pos = end.0;
-            if start_pos > end_pos {
-                return Ok(Vec::new());
-            }
-
-            let region = build_noodles_region(chr, start_pos, end_pos)?;
-
-            let iter = cached
-                .reader
-                .query(&cached.header, &region)
-                .map_err(crate::types::VardictError::Io)?;
-            let mut records = Vec::new();
-            for record in iter {
-                records.push(record.map_err(crate::types::VardictError::Io)?);
-            }
-            Ok(records)
-        },
-    )
+    query_region_iter(bam_path, chr, start, end, config)?.collect()
 }
 
 static NEXT_BAM_META_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -1564,11 +1527,6 @@ pub fn clear_bam_caches() {
     if let Some(cache) = FASTA_REPO_CACHE.get() {
         cache.lock().unwrap_or_else(|e| e.into_inner()).clear();
     }
-    let _ = SAM_READER_CACHE.try_with(|cache| {
-        if let Ok(mut map) = cache.try_borrow_mut() {
-            map.clear();
-        }
-    });
     crate::reference::clear_fasta_reader_cache();
 }
 
@@ -5588,17 +5546,28 @@ mod tests {
         let bam_path = bam_path_buf.as_path();
         let config = Config::default();
 
-        let cached = open_reader(bam_path, &config).unwrap();
-        let ref_seqs = cached.header.reference_sequences();
+        let ref_seqs = read_reference_lengths(bam_path, &config).unwrap();
         assert!(
             !ref_seqs.is_empty(),
             "Reference sequences should not be empty"
         );
 
+        let iter_records: Vec<SamRecord> =
+            query_region_iter(bam_path, "chr7", Pos0(55259400), Pos0(55259600), &config)
+                .unwrap()
+                .map(|r| r.unwrap())
+                .collect();
         let records =
             query_region(bam_path, "chr7", Pos0(55259400), Pos0(55259600), &config).unwrap();
 
         assert!(!records.is_empty(), "Should load records from BAM file");
+        assert_eq!(records, iter_records);
+
+        #[expect(deprecated, reason = "verify 1.0.x SemVer shim open_reader")]
+        {
+            let cached = open_reader(bam_path, &config).unwrap();
+            assert!(!cached.header.reference_sequences().is_empty());
+        }
     }
 
     #[test]
@@ -6305,12 +6274,17 @@ mod tests {
         chr: &str,
         start: Pos0,
         end: Pos0,
-        config: &crate::config::Config,
+        _config: &crate::config::Config,
     ) -> Result<Box<BamFeedLegacy>, crate::types::VardictError> {
-        let CachedReader { reader, header } = open_reader(bam_path, config)?;
-        let IndexedSamReader::Bam(reader) = reader else {
-            unreachable!("query_region_iter_legacy is only called on BAM fixtures");
-        };
+        let index =
+            read_bam_index_with_fallbacks(bam_path).map_err(crate::types::VardictError::Io)?;
+        let mut reader = noodles::bam::io::indexed_reader::Builder::default()
+            .set_index(index)
+            .build_from_path(bam_path)
+            .map_err(crate::types::VardictError::Io)?;
+        let header = reader
+            .read_header()
+            .map_err(crate::types::VardictError::Io)?;
 
         let start_pos = start.to_one_based().0;
         let end_pos = end.0;
@@ -9322,7 +9296,7 @@ mod tests {
                 .collect();
         assert!(!baseline.is_empty());
 
-        // 1. Picard companion `<stem>.bai` (`sample.bam` + `sample.bai`) succeeds in both `open_reader` and `query_region_iter`
+        // 1. Picard companion `<stem>.bai` (`sample.bam` + `sample.bai`) succeeds in both `query_region` and `query_region_iter`
         let comp_dir = dir.path().join("companion");
         std::fs::create_dir_all(&comp_dir).unwrap();
         let sample_bam = comp_dir.join("sample.bam");
@@ -9330,7 +9304,10 @@ mod tests {
         std::fs::copy(micro_bam, &sample_bam).unwrap();
         std::fs::copy(micro_bai, &sample_bai).unwrap();
 
-        assert!(open_reader(&sample_bam, &config).is_ok());
+        assert_eq!(
+            query_region(&sample_bam, "chr1", Pos0(0), Pos0(300), &config).unwrap(),
+            baseline
+        );
         let comp_recs: Vec<SamRecord> =
             query_region_iter(&sample_bam, "chr1", Pos0(0), Pos0(300), &config)
                 .unwrap()
@@ -9352,7 +9329,10 @@ mod tests {
 
             let link_bam = work_dir.join("link.bam");
             std::os::unix::fs::symlink(Path::new("../realdir/micro.bam"), &link_bam).unwrap();
-            assert!(open_reader(&link_bam, &config).is_ok());
+            assert_eq!(
+                query_region(&link_bam, "chr1", Pos0(0), Pos0(300), &config).unwrap(),
+                baseline
+            );
             let link_recs: Vec<SamRecord> =
                 query_region_iter(&link_bam, "chr1", Pos0(0), Pos0(300), &config)
                     .unwrap()
@@ -9368,7 +9348,7 @@ mod tests {
         std::fs::copy(micro_bam, &bad_bam).unwrap();
         std::fs::copy(micro_bai, bad_dir.join("sample.bai")).unwrap();
         std::fs::write(bad_dir.join("sample.bam.bai"), b"NOT_A_VALID_BAI_INDEX").unwrap();
-        assert!(open_reader(&bad_bam, &config).is_err());
+        assert!(query_region(&bad_bam, "chr1", Pos0(0), Pos0(300), &config).is_err());
         assert!(query_region_iter(&bad_bam, "chr1", Pos0(0), Pos0(300), &config).is_err());
 
         #[cfg(unix)]
@@ -9382,13 +9362,13 @@ mod tests {
             // Dangling primary `.bam.bai` and `.bam.csi` symlinks must NOT fall back to valid `sample.bai`
             let primary_bai_link = dang_dir.join("sample.bam.bai");
             std::os::unix::fs::symlink(Path::new("missing_target.bai"), &primary_bai_link).unwrap();
-            assert!(open_reader(&dang_bam, &config).is_err());
+            assert!(query_region(&dang_bam, "chr1", Pos0(0), Pos0(300), &config).is_err());
             assert!(query_region_iter(&dang_bam, "chr1", Pos0(0), Pos0(300), &config).is_err());
             std::fs::remove_file(&primary_bai_link).unwrap();
 
             let primary_csi_link = dang_dir.join("sample.bam.csi");
             std::os::unix::fs::symlink(Path::new("missing_target.csi"), &primary_csi_link).unwrap();
-            assert!(open_reader(&dang_bam, &config).is_err());
+            assert!(query_region(&dang_bam, "chr1", Pos0(0), Pos0(300), &config).is_err());
             assert!(query_region_iter(&dang_bam, "chr1", Pos0(0), Pos0(300), &config).is_err());
             std::fs::remove_file(&primary_csi_link).unwrap();
 
@@ -9613,7 +9593,7 @@ mod tests {
         }
 
         // 4. Out-of-bounds landmark in CRAM container header (valid CRC32) must NOT panic in
-        //    either fetch_cram_container or IndexedSamReader::Cram::query!
+        //    either query_region_iter or query_region!
         let oob_lm_cram = dir.path().join("oob_landmark.cram");
         {
             // Craft a minimal valid-CRC container header at `container_offset` with body len = 8
@@ -9657,7 +9637,9 @@ mod tests {
             Err(crate::types::VardictError::Io(io_e)) => {
                 assert_eq!(io_e.kind(), std::io::ErrorKind::InvalidData);
             }
-            other => panic!("expected InvalidData on OOB landmark CRAM via IndexedSamReader::Cram::query, got {other:?}"),
+            other => {
+                panic!("expected InvalidData on OOB landmark CRAM via query_region, got {other:?}")
+            }
         }
 
         // 5. Spoofed slice header record_count > MAX_CRAM_CONTAINER_RECORDS (with valid container
@@ -9772,7 +9754,7 @@ mod tests {
         //    (a) CoreData Gzip block `uncompressed_size = 0x7fff_ffff` + ExternalData Rans4x8, and
         //    (b) ExternalData Rans4x8 inner codec header `uncompressed_size = 0x7fff_ffff` (while
         //        outer block `uncompressed_size = 16` and CoreData is valid 1 B).
-        //    Both `open_reader(...).reader.query(...)` and `query_region_iter` must reject cleanly
+        //    Both `query_region` and `query_region_iter` must reject cleanly
         //    with `InvalidData` ("exceeds") before allocating (`SEC-06`).
         let write_spoof_codec_cram = |dst_cram: &Path,
                                       core_raw_block: Vec<u8>,
@@ -9930,7 +9912,6 @@ mod tests {
             nametok_dup_dzlen_ext,
         );
 
-        let region_obj = build_noodles_region("chr1", 1, 50).unwrap();
         for (case_label, bad_cram, require_exceeds) in [
             ("gzip_core_2gib", &spoof_gzip_core_cram, true),
             ("rans4x8_ext_2gib", &spoof_rans_ext_cram, true),
@@ -9956,24 +9937,20 @@ mod tests {
                 ),
             }
 
-            let mut cached = open_reader(bad_cram, &cfg).unwrap();
-            let rdr_res: Result<Vec<SamRecord>, _> = cached
-                .reader
-                .query(&cached.header, &region_obj)
-                .and_then(|it| it.collect());
-            match rdr_res {
-                Err(io_e) => {
+            let vec_res = query_region(bad_cram, "chr1", Pos0(0), Pos0(50), &cfg);
+            match vec_res {
+                Err(crate::types::VardictError::Io(io_e)) => {
                     assert_eq!(io_e.kind(), std::io::ErrorKind::InvalidData, "{case_label}");
                     if require_exceeds {
                         assert!(
                             io_e.to_string().contains("exceeds"),
-                            "{case_label} expected 'exceeds' in IndexedSamReader::Cram::query error, got: {io_e}"
+                            "{case_label} expected 'exceeds' in query_region error, got: {io_e}"
                         );
                     }
                 }
-                other => panic!(
-                    "{case_label}: expected InvalidData via IndexedSamReader::Cram::query, got {other:?}"
-                ),
+                other => {
+                    panic!("{case_label}: expected InvalidData via query_region, got {other:?}")
+                }
             }
         }
 

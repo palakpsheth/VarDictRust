@@ -14,9 +14,9 @@ All line references below are to that pin.
 | [UB-2](#ub-2) | [Class A](../DIVERGENCES.md#the-four-canonical-parity-classes-rewritesbio-5-8-11) | `-p` null-record row cell formatting | **Replicated** ([`variations/mod.rs`](../crates/vardictrust-core/src/variations/mod.rs)) |
 | [UB-3](#ub-3) | [Class A](../DIVERGENCES.md#the-four-canonical-parity-classes-rewritesbio-5-8-11) | Cross-position `.var` emission order follows HashMap layout ([#282](https://github.com/AstraZeneca-NGS/VarDictJava/issues/282) family) | **Replicated** (via [JavaHashMap Engine](../crates/vardictrust-core/src/javamap.rs)) |
 | [UB-4](#ub-4) | [Class D](../DIVERGENCES.md#the-four-canonical-parity-classes-rewritesbio-5-8-11) | Integration fixtures encode mutually inconsistent references | N/A (test-data defect; validated vs live oracle) |
-| [UB-5](#ub-5) | [Class A](../DIVERGENCES.md#the-four-canonical-parity-classes-rewritesbio-5-8-11) | SimpleMode SV split-read requirement (`splitreads < 1` dropped) | **Replicated** ([`lib.rs:403-414`](../crates/vardictrust-core/src/lib.rs)) |
+| [UB-5](#ub-5) | [Class A](../DIVERGENCES.md#the-four-canonical-parity-classes-rewritesbio-5-8-11) | SimpleMode SV split-read requirement (`splitreads < 1` dropped) | **Replicated** ([`output/vcf.rs`](../crates/vardictrust-core/src/output/vcf.rs)) |
 | [UB-6](#ub-6) | [Class A](../DIVERGENCES.md#the-four-canonical-parity-classes-rewritesbio-5-8-11) | Mate-pair boundary parameter in `mark_dup_sv` (`pe` decrement) | **Replicated** ([`sv.rs:3039`](../crates/vardictrust-core/src/sv.rs)) |
-| [UB-7](#ub-7) | [Class A](../DIVERGENCES.md#the-four-canonical-parity-classes-rewritesbio-5-8-11) | Multi-allelic site single-winner collapsing without `-A` | **Replicated** ([`lib.rs:467-505`](../crates/vardictrust-core/src/lib.rs)) |
+| [UB-7](#ub-7) | [Class A](../DIVERGENCES.md#the-four-canonical-parity-classes-rewritesbio-5-8-11) | Multi-allelic site single-winner collapsing without `-A` | **Replicated** ([`postprocess/simple.rs`](../crates/vardictrust-core/src/postprocess/simple.rs), [`lib.rs`](../crates/vardictrust-core/src/lib.rs)) |
 | [UB-8](#ub-8) | [Class D](../DIVERGENCES.md#the-four-canonical-parity-classes-rewritesbio-5-8-11) | Oracle JVM SIGKILL flake under shared-host memory pressure (exit 137, no output change) | **Tracked** (environmental; diagnostics in [`harness/run_oracle.sh`](../harness/run_oracle.sh)) |
 
 **Third arm:** pinned **vardictcpp 3 `hc52dbad_0` bioconda** runs beside every gate
@@ -200,7 +200,7 @@ unless( $isamp ) {
 ```
 Any structural variant allele containing `<` (e.g., `<DUP>`, `<INV>`) that has only discordant mate-pair cluster evidence but zero split-read evidence (`splitreads < $opt_T`, where default `$opt_T = 1`) is unconditionally discarded during VCF formatting. Notably, these variants **are emitted** in the intermediate `.var` table, creating a discrepancy between the table and VCF output.
 
-**Our replication stance:** **Replicated** in [`crates/vardictrust-core/src/lib.rs:403-414, 470, 499`](../crates/vardictrust-core/src/lib.rs) (`is_sv && splitreads < 1` suppresses VCF line generation for SimpleMode), ensuring exact bitwise parity with the full VarDictJava pipeline output.
+**Our replication stance:** **Replicated** in [`crates/vardictrust-core/src/output/vcf.rs`](../crates/vardictrust-core/src/output/vcf.rs) (`parse_sv_counts` and `SingleRecordStreamer`: `variant.var_allele.contains('<') && splitreads < config.vcf_min_splitreads`, where default `vcf_min_splitreads == 1`, suppresses VCF line generation for SimpleMode), ensuring exact bitwise parity with the full VarDictJava pipeline output.
 
 **Draft issue text:**
 
@@ -254,7 +254,7 @@ foreach my $p (@pos) {
 ```
 Only the single candidate allele with the highest allele frequency (`$tmp[0]`) is considered at each genomic locus. If that winner candidate is skipped (for example, if `$ref` is empty from a `-p` null-record, or if an SV candidate has `splitreads < 1` per [UB-5](#ub-5)), the loop executes `next` and terminates immediately. As a result, legitimate alternative variants at the same locus with lower allele frequencies are completely excluded from the VCF.
 
-**Our replication stance:** **Replicated** in [`crates/vardictrust-core/src/lib.rs:467-505`](../crates/vardictrust-core/src/lib.rs), maintaining a `pending: BTreeMap<i32, SimpleVcfCandidate>` that retains only the top-AF candidate per locus in single-sample VCF mode.
+**Our replication stance:** **Replicated** in [`crates/vardictrust-core/src/postprocess/simple.rs`](../crates/vardictrust-core/src/postprocess/simple.rs) (`simple_post_process` within-tile raw-start collapsing when `-A` is omitted) and [`crates/vardictrust-core/src/lib.rs`](../crates/vardictrust-core/src/lib.rs) (`SpillableVcfAccumulator` retaining only the top-`af_4dp` candidate per locus in single-sample VCF mode).
 
 **Draft issue text:**
 

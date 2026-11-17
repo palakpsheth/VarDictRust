@@ -6,6 +6,8 @@ use std::sync::{Arc, Condvar, Mutex};
 /// Executes `worker_fn` in parallel over `items` using at most `num_threads`,
 /// while streaming the results sequentially into `consumer_fn` in the exact
 /// original order of `items`.
+#[deprecated(since = "1.0.10", note = "use runner::run_parallel_for_bam")]
+#[allow(deprecated)]
 pub fn run_parallel<T, R, F, W>(
     items: Vec<T>,
     num_threads: usize,
@@ -159,6 +161,7 @@ where
 /// Executes `f` on a scoped worker thread configured with [`worker_thread_stack_bytes`]
 /// (16 MiB floor, respecting `RUST_MIN_STACK`) so single-threaded (`-th 1`) and
 /// amplicon runs receive the same stack headroom as multi-threaded Rayon workers (`R5`).
+#[deprecated(since = "1.0.10", note = "use runner::run_with_worker_stack_for_bam")]
 pub fn run_with_worker_stack<F, R>(f: F) -> Result<R, VardictError>
 where
     F: FnOnce() -> Result<R, VardictError> + Send,
@@ -179,6 +182,7 @@ where
 
 /// Executes `worker_fn` in parallel over pre-grouped `batches` (`Vec<Vec<T>>`),
 /// streaming flattened results into `consumer_fn` in exact deterministic order (`EBO-3`).
+#[deprecated(since = "1.0.10", note = "use runner::run_parallel_batched_for_bam")]
 pub fn run_parallel_batched<T, R, F, W>(
     batches: Vec<Vec<T>>,
     num_threads: usize,
@@ -405,6 +409,7 @@ where
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
 

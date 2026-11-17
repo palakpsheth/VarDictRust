@@ -98,6 +98,7 @@ portable_timeout() {
     local dur="$1"
     shift
     local kill_after="${PORTABLE_TIMEOUT_KILL_AFTER:-12}"
+    kill_after="${kill_after%s}"
     local backend="${PORTABLE_TIMEOUT_BACKEND:-auto}"
     if [ "$backend" = "auto" ] || [ "$backend" = "gnu" ]; then
         if command -v timeout >/dev/null 2>&1 && timeout 1s true >/dev/null 2>&1; then

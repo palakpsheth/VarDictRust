@@ -1,5 +1,5 @@
 //! Engine hot-path benches (T147-lite + Issue N): pileup/parse_cigar, find_bp,
-//! find_35_match, javamap/compute_if_absent, javamap_stride_collisions, round_half_even,
+//! find_35_match, javamap/get_or_put, javamap_stride_collisions, round_half_even,
 //! modify_cigar, and fisher.
 //! Fixtures are built in-code — no committed external genomic data required.
 
@@ -146,19 +146,9 @@ fn bench_find_35_match(c: &mut Criterion) {
     });
 }
 
-/// JavaHashMap::compute_if_absent and get_or_put_with hot loops across pileup positions with ~10:1 hit-to-miss ratio.
-fn bench_javamap_compute_if_absent(c: &mut Criterion) {
+/// JavaHashMap::get_or_put_with hot loop across pileup positions with ~10:1 hit-to-miss ratio.
+fn bench_javamap_get_or_put(c: &mut Criterion) {
     let keys: Vec<i32> = (0..2_000).map(|i| 10_000 + ((i * 37) % 200)).collect();
-    c.bench_function("javamap/compute_if_absent", |b| {
-        b.iter(|| {
-            let mut map: JavaHashMap<i32, u32> = JavaHashMap::new();
-            for &k in black_box(&keys) {
-                let entry = map.compute_if_absent(k, |_| 0);
-                *entry = entry.wrapping_add(1);
-            }
-            black_box(map.len())
-        })
-    });
     c.bench_function("javamap/get_or_put", |b| {
         b.iter(|| {
             let mut map: JavaHashMap<i32, u32> = JavaHashMap::new();
@@ -301,7 +291,7 @@ criterion_group!(
     bench_parse_cigar,
     bench_find_bp,
     bench_find_35_match,
-    bench_javamap_compute_if_absent,
+    bench_javamap_get_or_put,
     bench_javamap_stride_collisions,
     bench_round_half_even,
     bench_modify_cigar,

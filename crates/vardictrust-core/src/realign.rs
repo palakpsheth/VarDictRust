@@ -854,44 +854,16 @@ pub fn fill_and_sort_tmp(
     tmp
 }
 
-/// Fill adaptor maps from sequence string list.
-///
-/// Results are cached keyed by the exact input list: `config.adaptor` is fixed
-/// for a run, so per-candidate `realigndel` calls from `realignlgdel` reuse
-/// one build. Only the input-keyed maps are cached — `dels5` is always the
-/// caller's own and `realigndel` is never skipped.
-// M-FAST-HASHER: FxHash for trusted internal keys (`config.adaptor` is
-// fixed per run, never attacker-controlled) instead of SipHash.
-// Values are `Arc` so a cache hit can take a cheap handle under the lock and
-// deep-clone only after the guard drops — otherwise every hit serializes two
-// BTreeMap copies across tile workers.
-static ADAPTOR_MAP_CACHE: OnceLock<Mutex<rustc_hash::FxHashMap<Vec<String>, Arc<AdaptorMapPair>>>> =
-    OnceLock::new();
-
 type AdaptorMapPair = (BTreeMap<Vec<u8>, i32>, BTreeMap<Vec<u8>, i32>);
 
-fn adaptor_map_cache() -> &'static Mutex<rustc_hash::FxHashMap<Vec<String>, Arc<AdaptorMapPair>>> {
-    ADAPTOR_MAP_CACHE.get_or_init(|| Mutex::new(rustc_hash::FxHashMap::default()))
-}
-
+/// Fill adaptor maps from sequence string list.
+#[deprecated(
+    since = "1.0.10",
+    note = "no public replacement; internal adaptor seed matching runs via realign::realign_indels and vardictrust_core::run"
+)]
 pub fn fill_adaptor_maps(adaptor_seqs: &[String]) -> AdaptorMapPair {
-    // Fast path: the default config carries no adaptors (`Config::default`
-    // leaves `adaptor` empty), so every default-config candidate would take
-    // the shared-cache lock and hash an empty key for a build that is a
-    // no-op. Return the two empty maps directly instead.
     if adaptor_seqs.is_empty() {
         return (BTreeMap::new(), BTreeMap::new());
-    }
-    // Borrowed lookup: hits (the common case — `config.adaptor` is fixed per
-    // run) skip the `to_vec` + per-`String` clones entirely. `Vec<String>:
-    // Borrow<[String]>` lets the map be probed with the caller's slice.
-    // The guard is scoped so the deep clone below runs unlocked.
-    let hit = match adaptor_map_cache().lock() {
-        Ok(cache) => cache.get(adaptor_seqs).map(Arc::clone),
-        Err(_) => None,
-    };
-    if let Some(pair) = hit {
-        return (*pair).clone();
     }
     let mut adaptor_forward = BTreeMap::new();
     let mut adaptor_reverse = BTreeMap::new();
@@ -904,7 +876,10 @@ pub fn fill_adaptor_maps(adaptor_seqs: &[String]) -> AdaptorMapPair {
             if i + adseed >= seq_bytes.len() {
                 break;
             }
-            let forward_seed = seq_bytes[i..i + adseed].to_vec();
+            let Some(forward_slice) = seq_bytes.get(i..i + adseed) else {
+                break;
+            };
+            let forward_seed = forward_slice.to_vec();
             // Ports VarDictLauncher.java:110 -> Utils.java:234-244 ->
             // htsjdk.samtools.util.SequenceUtil.complement(byte), which complements
             // only ACGTacgt and returns any other byte unchanged.
@@ -927,16 +902,7 @@ pub fn fill_adaptor_maps(adaptor_seqs: &[String]) -> AdaptorMapPair {
             adaptor_reverse.insert(comp_reverse_seed, (i + 1) as i32);
         }
     }
-    let built = (adaptor_forward, adaptor_reverse);
-    // shortcut: fixed small cap; per-run inputs are ~1 distinct list, so this
-    // only guards pathological caller variation. Upgrade to LRU if ever >cap.
-    // The owned key is built only on a miss (hits return above, keyless).
-    if let Ok(mut cache) = adaptor_map_cache().lock() {
-        if cache.len() < 16 {
-            cache.insert(adaptor_seqs.to_vec(), Arc::new(built.clone()));
-        }
-    }
-    built
+    (adaptor_forward, adaptor_reverse)
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1026,9 +992,10 @@ mod task3_tests {
     use super::*;
     use rustc_hash::FxHashMap;
 
-    /// s8 INV-SV guard: `fill_adaptor_maps` may only cache keyed by its exact
+    /// s8 INV-SV guard: `fill_adaptor_maps` / `fill_adaptor_sets` may only cache keyed by exact
     /// input. A global (non-keyed) cache would return `ma` for input `b`.
     #[test]
+    #[expect(deprecated, reason = "verifies 1.0.x SemVer shim fill_adaptor_maps")]
     fn fill_adaptor_maps_is_keyed_by_input_contents() {
         let empty = fill_adaptor_maps(&[]);
         assert!(empty.0.is_empty() && empty.1.is_empty());
@@ -1070,6 +1037,7 @@ mod task3_tests {
     /// Ports `VarDictLauncher.java:106-117` (`i <= 6 && i + ADSEED < sequence.length()`)
     /// and `Utils.java:228-244` (`htsjdk.samtools.util.SequenceUtil.complement(byte)`).
     #[test]
+    #[expect(deprecated, reason = "verifies 1.0.x SemVer shim fill_adaptor_maps")]
     fn fill_adaptor_maps_java_seed_count() {
         let base_alphabet = b"ACGTGHKMRSTVWY";
         for len in 0..=14usize {
@@ -5678,12 +5646,7 @@ pub fn adj_snv(
     let adaptor_forward = AdaptorSet::default();
     let adaptor_reverse = AdaptorSet::default();
 
-    let keys_5: Vec<i32> = var_data.soft_clips_5_end.keys().copied().collect();
-    for position in keys_5 {
-        let sc5v = match var_data.soft_clips_5_end.get_mut(&position) {
-            Some(sc) => sc,
-            None => continue,
-        };
+    for (&position, sc5v) in &mut var_data.soft_clips_5_end {
         if sc5v.used {
             continue;
         }
@@ -5704,7 +5667,6 @@ pub fn adj_snv(
 
         let previous_position = position.saturating_sub(1);
         let mut should_adj = false;
-        let sc5v_vars_count = sc5v.variation.cnt;
 
         if let Some(vars_on_prev) = var_data.non_insertion_variants.get_mut(&previous_position) {
             if vars_on_prev.map.contains_key(bp) {
@@ -5720,31 +5682,23 @@ pub fn adj_snv(
                     }
                 }
                 if should_adj {
-                    let sc5v_var = sc5v.variation.clone();
                     if let Some(vref_mut) = vars_on_prev.map.get_mut(bp) {
-                        crate::variations::util::adj_cnt(vref_mut, &sc5v_var, None);
+                        crate::variations::util::adj_cnt(vref_mut, &sc5v.variation, None);
                     }
                     inc_cnt(
                         &mut var_data.ref_coverage,
                         previous_position,
-                        sc5v_vars_count,
+                        sc5v.variation.cnt,
                     );
                 }
             }
         }
         if should_adj {
-            if let Some(sc5v_mut) = var_data.soft_clips_5_end.get_mut(&position) {
-                sc5v_mut.used = true;
-            }
+            sc5v.used = true;
         }
     }
 
-    let keys_3: Vec<i32> = var_data.soft_clips_3_end.keys().copied().collect();
-    for position in keys_3 {
-        let sc3v = match var_data.soft_clips_3_end.get_mut(&position) {
-            Some(sc) => sc,
-            None => continue,
-        };
+    for (&position, sc3v) in &mut var_data.soft_clips_3_end {
         if sc3v.used {
             continue;
         }
@@ -5764,7 +5718,6 @@ pub fn adj_snv(
         };
 
         let mut should_adj = false;
-        let sc3v_vars_count = sc3v.variation.cnt;
 
         if let Some(vars_on_pos) = var_data.non_insertion_variants.get_mut(&position) {
             if vars_on_pos.map.contains_key(bp) {
@@ -5780,18 +5733,15 @@ pub fn adj_snv(
                     }
                 }
                 if should_adj {
-                    let sc3v_var = sc3v.variation.clone();
                     if let Some(vref_mut) = vars_on_pos.map.get_mut(bp) {
-                        crate::variations::util::adj_cnt(vref_mut, &sc3v_var, None);
+                        crate::variations::util::adj_cnt(vref_mut, &sc3v.variation, None);
                     }
-                    inc_cnt(&mut var_data.ref_coverage, position, sc3v_vars_count);
+                    inc_cnt(&mut var_data.ref_coverage, position, sc3v.variation.cnt);
                 }
             }
         }
         if should_adj {
-            if let Some(sc3v_mut) = var_data.soft_clips_3_end.get_mut(&position) {
-                sc3v_mut.used = true;
-            }
+            sc3v.used = true;
         }
     }
 }
@@ -7476,6 +7426,7 @@ mod tests {
     }
 
     #[test]
+    #[expect(deprecated, reason = "verifies 1.0.x SemVer shim fill_adaptor_maps")]
     fn fill_adaptor_maps_java_seed_count() {
         // I2: VarDictLauncher.java:108 uses strict `< sequence.length()` (`i + 6 < len`),
         // and SequenceUtil.complement complements only ACGTacgt (leaving N unchanged).

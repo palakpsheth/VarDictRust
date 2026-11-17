@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """VarDictRust Release Consistency & Evidence Validator (stdlib-only).
 
-Verifies that all version-bearing files, workspace test counts (676 total:
-476 core lib + 110 corpus_parity + 29 engine_behavior + 2 amplicon_stream_mem
+Verifies that all version-bearing files, workspace test counts (679 total:
+479 core lib + 110 corpus_parity + 29 engine_behavior + 2 amplicon_stream_mem
 + 3 cram_stack + 29 CLI bin + 27 CLI integration binary tests), engine
 fingerprints (FP & PERF_FP), and 16 benchmarks/evidence/*.json SHA-256
 manifests are synchronized for a target release version and phase.
@@ -21,8 +21,8 @@ import sys
 VALID_PHASES = ("pre-tag", "post-tag", "post-bioconda", "post-nfcore")
 
 EXPECTED_TEST_COUNTS = {
-    "total_workspace": 676,
-    "core_lib": 476,
+    "total_workspace": 679,
+    "core_lib": 479,
     "corpus_parity": 110,
     "engine_behavior": 29,
     "amplicon_stream_mem": 2,
@@ -898,10 +898,17 @@ def check_pre_tag_surfaces(
         f"harness/README.md cites {tc['harness_self_tests']} diagnostic test scripts",
         errors,
     )
+    require_regex(
+        repo_root,
+        "harness/README.md",
+        rf"\b{tc['total_workspace']}\b workspace test",
+        f"harness/README.md cites {tc['total_workspace']} workspace tests",
+        errors,
+    )
     forbid_regex(
         repo_root,
         "harness/README.md",
-        r"\b427\b|25 diagnostic test scripts|25 test scripts|17 Shell Tests|8 Python Test Suites|4-target performance budget",
+        r"\b427\b|\b664\b|25 diagnostic test scripts|25 test scripts|17 Shell Tests|8 Python Test Suites|4-target performance budget",
         "harness/README.md stale test counts or 4-target budget",
         errors,
     )

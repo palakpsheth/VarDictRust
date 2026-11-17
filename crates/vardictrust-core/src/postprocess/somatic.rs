@@ -15,6 +15,7 @@ use crate::variations::{Variant, Vars};
 /// combined over a given region, returning aligned variants keyed by position
 /// while updating the shared `splice` set and `max_read_length` in place
 /// (`SomaticPostProcessModule.java:198-200, 303-311, 398-406`).
+#[deprecated(since = "1.0.10", note = "use PositionPipelineFn")]
 pub type PipelineFn<'a> = dyn Fn(
         &Region,
         &mut rustc_hash::FxHashSet<String>,
@@ -139,6 +140,11 @@ pub fn somatic_post_process_at(
 ///
 /// Wraps [`PipelineFn`] as a [`PositionPipelineFn`] and delegates to
 /// [`somatic_post_process_at`].
+#[deprecated(
+    since = "1.0.10",
+    note = "use postprocess::somatic::somatic_post_process_at"
+)]
+#[allow(deprecated)]
 pub fn somatic_post_process(
     config: &Config,
     region: &Region,
@@ -881,6 +887,7 @@ fn build_var_for_print_from_v1(v1: &Vars) -> Variant {
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
     use crate::types::Pos1;

@@ -1,5 +1,5 @@
 //! Table output serialization formats — intermediate .var output formatters.
-//! Ports SimpleOutputVariant.java.
+//! Ports SimpleOutputVariant.java, AmpliconOutputVariant.java, and SomaticOutputVariant.java.
 
 use crate::regions::Region;
 use crate::variations::Variant;
@@ -32,14 +32,8 @@ pub fn print_header<W: std::io::Write>(
     w: &mut W,
     config: &crate::config::Config,
 ) -> std::io::Result<()> {
-    const SIMPLE: &[&str] = &[
-        "Sample",
-        "Gene",
-        "Chr",
-        "Start",
-        "End",
-        "Ref",
-        "Alt",
+    const PREFIX_7: &[&str] = &["Sample", "Gene", "Chr", "Start", "End", "Ref", "Alt"];
+    const SINGLE_MIDDLE_27: &[&str] = &[
         "Depth",
         "AltDepth",
         "RefFwdReads",
@@ -67,18 +61,8 @@ pub fn print_header<W: std::io::Write>(
         "3pFlankSeq",
         "Seg",
         "VarType",
-        "Duprate",
-        "SV_info",
     ];
-    // Paired mode repeats the per-sample block; no CRISPR suffix in v1.8.3.
-    const SOMATIC: &[&str] = &[
-        "Sample",
-        "Gene",
-        "Chr",
-        "Start",
-        "End",
-        "Ref",
-        "Alt",
+    const SOMATIC_SAMPLE_18: &[&str] = &[
         "Depth",
         "AltDepth",
         "RefFwdReads",
@@ -97,24 +81,8 @@ pub fn print_header<W: std::io::Write>(
         "HiAF",
         "ExtraAF",
         "NM",
-        "Depth",
-        "AltDepth",
-        "RefFwdReads",
-        "RefRevReads",
-        "AltFwdReads",
-        "AltRevReads",
-        "Genotype",
-        "AF",
-        "Bias",
-        "PMean",
-        "PStd",
-        "QMean",
-        "QStd",
-        "MQ",
-        "Sig_Noise",
-        "HiAF",
-        "ExtraAF",
-        "NM",
+    ];
+    const SOMATIC_TAIL_12: &[&str] = &[
         "shift3",
         "MSI",
         "MSI_NT",
@@ -128,67 +96,318 @@ pub fn print_header<W: std::io::Write>(
         "Duprate2",
         "SV_info2",
     ];
-    const AMPLICON: &[&str] = &[
-        "Sample",
-        "Gene",
-        "Chr",
-        "Start",
-        "End",
-        "Ref",
-        "Alt",
-        "Depth",
-        "AltDepth",
-        "RefFwdReads",
-        "RefRevReads",
-        "AltFwdReads",
-        "AltRevReads",
-        "Genotype",
-        "AF",
-        "Bias",
-        "PMean",
-        "PStd",
-        "QMean",
-        "QStd",
-        "MQ",
-        "Sig_Noise",
-        "HiAF",
-        "ExtraAF",
-        "shift3",
-        "MSI",
-        "MSI_NT",
-        "NM",
-        "HiCnt",
-        "HiCov",
-        "5pFlankSeq",
-        "3pFlankSeq",
-        "Seg",
-        "VarType",
-        "GoodVarCount",
-        "TotalVarCount",
-        "Nocov",
-        "Ampflag",
-    ];
 
     if config.splice {
         writeln!(w, "Sample\tChr\tIntron\tIntron count")?;
         return Ok(());
     }
-    let mut names: Vec<&str> = if config.region.is_none() && config.amplicon.is_some() {
-        AMPLICON.to_vec()
+    let mut names: Vec<&str> = Vec::with_capacity(55);
+    names.extend_from_slice(PREFIX_7);
+    if config.region.is_none() && config.amplicon.is_some() {
+        names.extend_from_slice(SINGLE_MIDDLE_27);
+        names.extend_from_slice(&["GoodVarCount", "TotalVarCount", "Nocov", "Ampflag"]);
     } else if config.bam.contains('|') {
-        SOMATIC.to_vec()
+        names.extend_from_slice(SOMATIC_SAMPLE_18);
+        names.extend_from_slice(SOMATIC_SAMPLE_18);
+        names.extend_from_slice(SOMATIC_TAIL_12);
     } else {
-        SIMPLE.to_vec()
-    };
-    if !config.bam.contains('|')
-        && (config.region.is_some() || config.amplicon.is_none())
-        && matches!(config.crispr_cutting_site, Some(n) if n != 0)
-    {
-        // SimpleMode.java:124-126: CRISPR mode appends a column.
-        names.push("CRISPR");
+        names.extend_from_slice(SINGLE_MIDDLE_27);
+        names.extend_from_slice(&["Duprate", "SV_info"]);
+        if matches!(config.crispr_cutting_site, Some(n) if n != 0) {
+            // SimpleMode.java:124-126: CRISPR mode appends a column.
+            names.push("CRISPR");
+        }
     }
     writeln!(w, "{}", names.join("\t"))?;
     Ok(())
+}
+
+/// Explicit `.var` serialization dialect across VarDictJava v1.8.3's 6 output schemas (`AR-09`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TableModeStyle {
+    Simple36,
+    Simple38,
+    Amplicon38,
+    Amplicon40,
+    Somatic55,
+    Somatic61,
+}
+
+impl TableModeStyle {
+    #[inline]
+    const fn is_fisher(self) -> bool {
+        matches!(self, Self::Simple38 | Self::Amplicon40 | Self::Somatic61)
+    }
+
+    #[inline]
+    fn push_float(self, buf: &mut String, v: f64, digits: i32) {
+        if self.is_fisher() {
+            push_java_rounded(buf, v, digits);
+        } else {
+            push_keep(buf, v, digits);
+        }
+    }
+
+    /// `AR-09` Quirk 1: `Simple38` & `Amplicon40` keep trailing zeros on `hi_freq`,
+    /// whereas `Somatic61` strips trailing zeros (`push_java_rounded`).
+    #[inline]
+    fn push_hi_freq(self, buf: &mut String, hi_freq: f64) {
+        match self {
+            Self::Somatic61 => push_java_rounded(buf, hi_freq, 4),
+            Self::Simple36
+            | Self::Simple38
+            | Self::Amplicon38
+            | Self::Amplicon40
+            | Self::Somatic55 => push_keep(buf, hi_freq, 4),
+        }
+    }
+
+    /// `AR-09` Quirk 2: `Simple38` & `Amplicon40` format `nm` via `push_nm` (keeping `.0`),
+    /// whereas `Somatic61` formats positive `nm` via `push_java_rounded(..., 1)`.
+    #[inline]
+    fn push_nm_cell(self, buf: &mut String, nm: f64) {
+        match self {
+            Self::Somatic61 => {
+                if nm > 0.0 {
+                    push_java_rounded(buf, nm, 1);
+                } else {
+                    buf.push('0');
+                }
+            }
+            Self::Simple36
+            | Self::Simple38
+            | Self::Amplicon38
+            | Self::Amplicon40
+            | Self::Somatic55 => push_nm(buf, nm),
+        }
+    }
+
+    /// `AR-09` Quirk 3: `Somatic61` keeps trailing zeros on `msi` (`push_keep(..., 3)`),
+    /// whereas `Simple38` & `Amplicon40` strip trailing zeros (`push_java_rounded(..., 3)`).
+    #[inline]
+    fn push_msi_cell(self, buf: &mut String, msi: f64) {
+        match self {
+            Self::Simple38 | Self::Amplicon40 => push_java_rounded(buf, msi, 3),
+            Self::Simple36 | Self::Amplicon38 | Self::Somatic55 | Self::Somatic61 => {
+                push_keep(buf, msi, 3);
+            }
+        }
+    }
+
+    /// `AR-09` Quirk 4: `Simple38` rounds `duprate` to 2 decimals, whereas `Simple36`,
+    /// `Somatic55`, and `Somatic61` format `duprate` to 1 decimal.
+    #[inline]
+    fn push_duprate_cell(self, buf: &mut String, duprate: f64) {
+        match self {
+            Self::Simple38 => push_java_rounded(buf, duprate, 2),
+            Self::Somatic61 => push_java_rounded(buf, duprate, 1),
+            Self::Simple36 | Self::Somatic55 | Self::Amplicon38 | Self::Amplicon40 => {
+                push_keep(buf, duprate, 1);
+            }
+        }
+    }
+}
+
+#[inline]
+fn push_row_prefix_7(buf: &mut String, sample_name: &str, region: &Region, v: &Variant) {
+    push_tsv_clean(buf, sample_name);
+    buf.push('\t');
+    push_tsv_clean(buf, &region.gene);
+    buf.push('\t');
+    push_tsv_clean(buf, &region.chr);
+    buf.push('\t');
+    crate::util::push_i32(buf, v.start_pos);
+    buf.push('\t');
+    crate::util::push_i32(buf, v.end_pos);
+    buf.push('\t');
+    buf.push_str(&v.ref_allele);
+    buf.push('\t');
+    buf.push_str(&v.var_allele);
+    buf.push('\t');
+}
+
+#[inline]
+fn push_allele_counts_6(buf: &mut String, v: &Variant) {
+    crate::util::push_i32(buf, v.total_pos_cov);
+    buf.push('\t');
+    crate::util::push_i32(buf, v.pos_coverage);
+    buf.push('\t');
+    crate::util::push_i32(buf, v.ref_fwd_cov);
+    buf.push('\t');
+    crate::util::push_i32(buf, v.ref_rev_cov);
+    buf.push('\t');
+    crate::util::push_i32(buf, v.fwd);
+    buf.push('\t');
+    crate::util::push_i32(buf, v.rev);
+    buf.push('\t');
+}
+
+#[inline]
+fn push_region_span(buf: &mut String, region: &Region) {
+    push_tsv_clean(buf, &region.chr);
+    buf.push(':');
+    crate::util::push_u32(buf, region.start.0);
+    buf.push('-');
+    crate::util::push_u32(buf, region.end.0);
+}
+
+#[inline]
+fn push_flank_pair(buf: &mut String, v: &Variant, honor_null_record: bool) {
+    let empty_cell = if honor_null_record && v.null_record {
+        "\t"
+    } else {
+        "0\t"
+    };
+    if v.left_seq.is_empty() {
+        buf.push_str(empty_cell);
+    } else {
+        buf.push_str(&v.left_seq);
+        buf.push('\t');
+    }
+    if v.right_seq.is_empty() {
+        buf.push_str(empty_cell);
+    } else {
+        buf.push_str(&v.right_seq);
+        buf.push('\t');
+    }
+}
+
+#[inline]
+fn push_nonempty_or_zero(buf: &mut String, s: &str) {
+    if s.is_empty() {
+        buf.push('0');
+    } else {
+        buf.push_str(s);
+    }
+}
+
+/// Shared columns 1..=34 (no-fisher) / 1..=36 (`--fisher`) for `Simple` and `Amplicon` modes.
+fn push_single_core(
+    buf: &mut String,
+    variant: &Variant,
+    sample_name: &str,
+    region: &Region,
+    amplicon_seg: Option<&str>,
+    style: TableModeStyle,
+) {
+    push_row_prefix_7(buf, sample_name, region, variant);
+    push_allele_counts_6(buf, variant);
+    // Null records render printer field defaults (`""`), not `"0"` (`SimpleOutputVariant.java:50-52`).
+    if !variant.null_record {
+        buf.push_str(variant.genotype.as_deref().unwrap_or("0"));
+    }
+    buf.push('\t');
+    style.push_float(buf, variant.frequency, 4);
+    buf.push('\t');
+    buf.push_str(&variant.bias);
+    buf.push('\t');
+    style.push_float(buf, variant.mean_position, 1);
+    buf.push('\t');
+    buf.push(if variant.pstd { '1' } else { '0' });
+    buf.push('\t');
+    style.push_float(buf, variant.mean_quality, 1);
+    buf.push('\t');
+    buf.push(if variant.qstd { '1' } else { '0' });
+    buf.push('\t');
+    if style.is_fisher() {
+        let fisher = crate::stats::FisherExact::new_java(
+            variant.ref_fwd_cov,
+            variant.ref_rev_cov,
+            variant.fwd,
+            variant.rev,
+        );
+        push_java_rounded(buf, fisher.get_p_value(), 5);
+        buf.push('\t');
+        fisher.write_odds_ratio_into(buf);
+        buf.push('\t');
+    }
+    style.push_float(buf, variant.mean_mapping_quality, 1);
+    buf.push('\t');
+    style.push_float(buf, variant.hq_lq_ratio, 3);
+    buf.push('\t');
+    style.push_hi_freq(buf, variant.hi_freq);
+    buf.push('\t');
+    style.push_float(buf, variant.extra_freq, 4);
+    buf.push('\t');
+    crate::util::push_i32(buf, variant.shift3);
+    buf.push('\t');
+    style.push_msi_cell(buf, variant.msi);
+    buf.push('\t');
+    crate::util::push_i32(buf, variant.msint);
+    buf.push('\t');
+    style.push_nm_cell(buf, variant.nm);
+    buf.push('\t');
+    crate::util::push_i32(buf, variant.hicnt);
+    buf.push('\t');
+    crate::util::push_i32(buf, variant.hicov);
+    buf.push('\t');
+    push_flank_pair(buf, variant, true);
+    match amplicon_seg {
+        Some(seg) => push_tsv_clean(buf, seg),
+        None => push_region_span(buf, region),
+    }
+    buf.push('\t');
+    buf.push_str(&variant.var_type);
+}
+
+fn simple_append_styled(
+    buf: &mut String,
+    variant: &Variant,
+    region: &Region,
+    sample_name: &str,
+    sv: &str,
+    style: TableModeStyle,
+) {
+    buf.reserve(if style.is_fisher() { 320 } else { 256 });
+    push_single_core(buf, variant, sample_name, region, None, style);
+    buf.push('\t');
+    style.push_duprate_cell(buf, variant.duprate);
+    buf.push('\t');
+    push_nonempty_or_zero(buf, sv);
+}
+
+fn amplicon_append_styled(
+    buf: &mut String,
+    av: &crate::postprocess::amplicon::AmpliconVariant,
+    region: &Region,
+    sample_name: &str,
+    debug: bool,
+    style: TableModeStyle,
+) {
+    buf.reserve(if style.is_fisher() { 320 } else { 256 });
+    let variant = &av.variant;
+    push_single_core(buf, variant, sample_name, region, Some(&av.region), style);
+    buf.push('\t');
+    crate::util::push_i32(buf, av.gdamp);
+    buf.push('\t');
+    crate::util::push_i32(buf, av.tlamp);
+    buf.push('\t');
+    crate::util::push_i32(buf, av.ncamp);
+    buf.push('\t');
+    buf.push(if av.ampflag { '1' } else { '0' });
+
+    if !debug {
+        return;
+    }
+    // ports AmpliconOutputVariant.java:113-125
+    buf.push('\t');
+    buf.push_str(&variant.debug);
+    for (i, (v, r)) in av.good_variants.iter().enumerate() {
+        buf.push_str("\tGood");
+        crate::util::push_usize(buf, i);
+        buf.push(' ');
+        buf.push_str(&debug_amp_variant(v.as_ref()));
+        buf.push(' ');
+        buf.push_str(r);
+    }
+    for (i, (v, r)) in av.bad_variants.iter().enumerate() {
+        buf.push_str("\tBad");
+        crate::util::push_usize(buf, i);
+        buf.push(' ');
+        buf.push_str(&debug_amp_variant(v.as_ref()));
+        buf.push(' ');
+        buf.push_str(r);
+    }
 }
 
 /// Write the simple 36-column row into `buf` (cleared first).
@@ -215,107 +434,14 @@ pub(crate) fn simple_36_append(
     sample_name: &str,
     sv: &str,
 ) {
-    // Golden p50 row is 213 B, max 505 B: 256 covers the common row, long
-    // alleles regrow once. Retained rows keep at most this slack.
-    buf.reserve(256);
-    push_tsv_clean(buf, sample_name);
-    buf.push('\t');
-    push_tsv_clean(buf, &region.gene);
-    buf.push('\t');
-    push_tsv_clean(buf, &region.chr);
-    buf.push('\t');
-    crate::util::push_i32(buf, variant.start_pos);
-    buf.push('\t');
-    crate::util::push_i32(buf, variant.end_pos);
-    buf.push('\t');
-    buf.push_str(&variant.ref_allele);
-    buf.push('\t');
-    buf.push_str(&variant.var_allele);
-    buf.push('\t');
-    crate::util::push_i32(buf, variant.total_pos_cov);
-    buf.push('\t');
-    crate::util::push_i32(buf, variant.pos_coverage);
-    buf.push('\t');
-    crate::util::push_i32(buf, variant.ref_fwd_cov);
-    buf.push('\t');
-    crate::util::push_i32(buf, variant.ref_rev_cov);
-    buf.push('\t');
-    crate::util::push_i32(buf, variant.fwd);
-    buf.push('\t');
-    crate::util::push_i32(buf, variant.rev);
-    buf.push('\t');
-    // Null records render the printer field defaults, not the normal
-    // null→"0" / empty→"0" mapping (SimpleOutputVariant.java:50-52 vs :64,
-    // :81-82; OutputVariant.java:22-23).
-    if variant.null_record {
-        buf.push('\t');
-    } else {
-        buf.push_str(variant.genotype.as_deref().unwrap_or("0"));
-        buf.push('\t');
-    }
-    push_keep(buf, variant.frequency, 4);
-    buf.push('\t');
-    buf.push_str(&variant.bias);
-    buf.push('\t');
-    push_keep(buf, variant.mean_position, 1);
-    buf.push('\t');
-    buf.push(if variant.pstd { '1' } else { '0' });
-    buf.push('\t');
-    push_keep(buf, variant.mean_quality, 1);
-    buf.push('\t');
-    buf.push(if variant.qstd { '1' } else { '0' });
-    buf.push('\t');
-    push_keep(buf, variant.mean_mapping_quality, 1);
-    buf.push('\t');
-    push_keep(buf, variant.hq_lq_ratio, 3);
-    buf.push('\t');
-    push_keep(buf, variant.hi_freq, 4);
-    buf.push('\t');
-    push_keep(buf, variant.extra_freq, 4);
-    buf.push('\t');
-    crate::util::push_i32(buf, variant.shift3);
-    buf.push('\t');
-    push_keep(buf, variant.msi, 3);
-    buf.push('\t');
-    crate::util::push_i32(buf, variant.msint);
-    buf.push('\t');
-    push_nm(buf, variant.nm);
-    buf.push('\t');
-    crate::util::push_i32(buf, variant.hicnt);
-    buf.push('\t');
-    crate::util::push_i32(buf, variant.hicov);
-    buf.push('\t');
-    if variant.null_record {
-        buf.push('\t');
-    } else if variant.left_seq.is_empty() {
-        buf.push_str("0\t");
-    } else {
-        buf.push_str(&variant.left_seq);
-        buf.push('\t');
-    }
-    if variant.null_record {
-        buf.push('\t');
-    } else if variant.right_seq.is_empty() {
-        buf.push_str("0\t");
-    } else {
-        buf.push_str(&variant.right_seq);
-        buf.push('\t');
-    }
-    push_tsv_clean(buf, &region.chr);
-    buf.push(':');
-    crate::util::push_u32(buf, region.start.0);
-    buf.push('-');
-    crate::util::push_u32(buf, region.end.0);
-    buf.push('\t');
-    buf.push_str(&variant.var_type);
-    buf.push('\t');
-    push_keep(buf, variant.duprate, 1);
-    buf.push('\t');
-    if sv.is_empty() {
-        buf.push('0');
-    } else {
-        buf.push_str(sv);
-    }
+    simple_append_styled(
+        buf,
+        variant,
+        region,
+        sample_name,
+        sv,
+        TableModeStyle::Simple36,
+    );
 }
 
 /// Write simple 36-column representation of finalized Variants to a tab-delimited string.
@@ -348,116 +474,14 @@ pub(crate) fn simple_38_append(
     sample_name: &str,
     sv: &str,
 ) {
-    buf.reserve(320);
-    let fisher = crate::stats::FisherExact::new_java(
-        variant.ref_fwd_cov as i32,
-        variant.ref_rev_cov as i32,
-        variant.fwd as i32,
-        variant.rev as i32,
+    simple_append_styled(
+        buf,
+        variant,
+        region,
+        sample_name,
+        sv,
+        TableModeStyle::Simple38,
     );
-    let pvalue = fisher.get_p_value();
-
-    push_tsv_clean(buf, sample_name);
-    buf.push('\t');
-    push_tsv_clean(buf, &region.gene);
-    buf.push('\t');
-    push_tsv_clean(buf, &region.chr);
-    buf.push('\t');
-    crate::util::push_i32(buf, variant.start_pos);
-    buf.push('\t');
-    crate::util::push_i32(buf, variant.end_pos);
-    buf.push('\t');
-    buf.push_str(&variant.ref_allele);
-    buf.push('\t');
-    buf.push_str(&variant.var_allele);
-    buf.push('\t');
-    crate::util::push_i32(buf, variant.total_pos_cov);
-    buf.push('\t');
-    crate::util::push_i32(buf, variant.pos_coverage);
-    buf.push('\t');
-    crate::util::push_i32(buf, variant.ref_fwd_cov);
-    buf.push('\t');
-    crate::util::push_i32(buf, variant.ref_rev_cov);
-    buf.push('\t');
-    crate::util::push_i32(buf, variant.fwd);
-    buf.push('\t');
-    crate::util::push_i32(buf, variant.rev);
-    buf.push('\t');
-    // Same null-record printer-defaults rule as simple_36.
-    if variant.null_record {
-        buf.push('\t');
-    } else {
-        buf.push_str(variant.genotype.as_deref().unwrap_or("0"));
-        buf.push('\t');
-    }
-    push_java_rounded(buf, variant.frequency, 4);
-    buf.push('\t');
-    buf.push_str(&variant.bias);
-    buf.push('\t');
-    push_java_rounded(buf, variant.mean_position, 1);
-    buf.push('\t');
-    buf.push(if variant.pstd { '1' } else { '0' });
-    buf.push('\t');
-    push_java_rounded(buf, variant.mean_quality, 1);
-    buf.push('\t');
-    buf.push(if variant.qstd { '1' } else { '0' });
-    buf.push('\t');
-    push_java_rounded(buf, pvalue, 5);
-    buf.push('\t');
-    fisher.write_odds_ratio_into(buf);
-    buf.push('\t');
-    push_java_rounded(buf, variant.mean_mapping_quality, 1);
-    buf.push('\t');
-    push_java_rounded(buf, variant.hq_lq_ratio, 3);
-    buf.push('\t');
-    // hifreq/nm cells keep trailing zeros in BOTH modes (raw-cell rule).
-    push_keep(buf, variant.hi_freq, 4);
-    buf.push('\t');
-    push_java_rounded(buf, variant.extra_freq, 4);
-    buf.push('\t');
-    crate::util::push_i32(buf, variant.shift3);
-    buf.push('\t');
-    push_java_rounded(buf, variant.msi, 3);
-    buf.push('\t');
-    crate::util::push_i32(buf, variant.msint);
-    buf.push('\t');
-    push_nm(buf, variant.nm);
-    buf.push('\t');
-    crate::util::push_i32(buf, variant.hicnt);
-    buf.push('\t');
-    crate::util::push_i32(buf, variant.hicov);
-    buf.push('\t');
-    if variant.null_record {
-        buf.push('\t');
-    } else if variant.left_seq.is_empty() {
-        buf.push_str("0\t");
-    } else {
-        buf.push_str(&variant.left_seq);
-        buf.push('\t');
-    }
-    if variant.null_record {
-        buf.push('\t');
-    } else if variant.right_seq.is_empty() {
-        buf.push_str("0\t");
-    } else {
-        buf.push_str(&variant.right_seq);
-        buf.push('\t');
-    }
-    push_tsv_clean(buf, &region.chr);
-    buf.push(':');
-    crate::util::push_u32(buf, region.start.0);
-    buf.push('-');
-    crate::util::push_u32(buf, region.end.0);
-    buf.push('\t');
-    buf.push_str(&variant.var_type);
-    buf.push('\t');
-    push_java_rounded(buf, variant.duprate, 2);
-    buf.push('\t');
-    if sv.is_empty() {
-        buf.push('0');
-    } else {
-        buf.push_str(sv);
-    }
 }
 
 /// Write simple 38-column representation of finalized Variants including Fisher Exact test results.
@@ -471,10 +495,6 @@ pub fn simple_38(variant: &Variant, region: &Region, sample_name: &str, sv: &str
 /// Write the amplicon 38-column row into `buf` (cleared first).
 /// Byte-identical to [`amplicon_38`]; same reuse contract as [`simple_36_into`].
 /// Ports AmpliconOutputVariant.java's create_amplicon_variant_38columns.
-/// Columns 1-34 match the simple format; columns 35-38 are
-/// GDAMP, TLAMP, NCAMP, AMPFLAG (replacing simple's duprate/sv).
-/// When `debug` is set, appends `"\t" + DEBUG` where
-/// DEBUG = variant.DEBUG + goodOutput + badOutput (AmpliconOutputVariant.java:113-138).
 pub fn amplicon_38_into(
     buf: &mut String,
     av: &crate::postprocess::amplicon::AmpliconVariant,
@@ -494,125 +514,18 @@ pub(crate) fn amplicon_38_append(
     sample_name: &str,
     debug: bool,
 ) {
-    buf.reserve(256);
-    let variant = &av.variant;
-
-    push_tsv_clean(buf, sample_name);
-    buf.push('\t');
-    push_tsv_clean(buf, &region.gene);
-    buf.push('\t');
-    push_tsv_clean(buf, &region.chr);
-    buf.push('\t');
-    crate::util::push_i32(buf, variant.start_pos);
-    buf.push('\t');
-    crate::util::push_i32(buf, variant.end_pos);
-    buf.push('\t');
-    buf.push_str(&variant.ref_allele);
-    buf.push('\t');
-    buf.push_str(&variant.var_allele);
-    buf.push('\t');
-    crate::util::push_i32(buf, variant.total_pos_cov);
-    buf.push('\t');
-    crate::util::push_i32(buf, variant.pos_coverage);
-    buf.push('\t');
-    crate::util::push_i32(buf, variant.ref_fwd_cov);
-    buf.push('\t');
-    crate::util::push_i32(buf, variant.ref_rev_cov);
-    buf.push('\t');
-    crate::util::push_i32(buf, variant.fwd);
-    buf.push('\t');
-    crate::util::push_i32(buf, variant.rev);
-    buf.push('\t');
-    let gt_default = if variant.null_record { "" } else { "0" };
-    buf.push_str(variant.genotype.as_deref().unwrap_or(gt_default));
-    buf.push('\t');
-    push_keep(buf, variant.frequency, 4);
-    buf.push('\t');
-    buf.push_str(&variant.bias);
-    buf.push('\t');
-    push_keep(buf, variant.mean_position, 1);
-    buf.push('\t');
-    buf.push(if variant.pstd { '1' } else { '0' });
-    buf.push('\t');
-    push_keep(buf, variant.mean_quality, 1);
-    buf.push('\t');
-    buf.push(if variant.qstd { '1' } else { '0' });
-    buf.push('\t');
-    push_keep(buf, variant.mean_mapping_quality, 1);
-    buf.push('\t');
-    push_keep(buf, variant.hq_lq_ratio, 3);
-    buf.push('\t');
-    push_keep(buf, variant.hi_freq, 4);
-    buf.push('\t');
-    push_keep(buf, variant.extra_freq, 4);
-    buf.push('\t');
-    crate::util::push_i32(buf, variant.shift3);
-    buf.push('\t');
-    push_keep(buf, variant.msi, 3);
-    buf.push('\t');
-    crate::util::push_i32(buf, variant.msint);
-    buf.push('\t');
-    push_nm(buf, variant.nm);
-    buf.push('\t');
-    crate::util::push_i32(buf, variant.hicnt);
-    buf.push('\t');
-    crate::util::push_i32(buf, variant.hicov);
-    buf.push('\t');
-    let flank_empty = if variant.null_record { "\t" } else { "0\t" };
-    if variant.left_seq.is_empty() {
-        buf.push_str(flank_empty);
-    } else {
-        buf.push_str(&variant.left_seq);
-        buf.push('\t');
-    }
-    if variant.right_seq.is_empty() {
-        buf.push_str(flank_empty);
-    } else {
-        buf.push_str(&variant.right_seq);
-        buf.push('\t');
-    }
-    push_tsv_clean(buf, &av.region);
-    buf.push('\t');
-    buf.push_str(&variant.var_type);
-    buf.push('\t');
-    crate::util::push_i32(buf, av.gdamp);
-    buf.push('\t');
-    crate::util::push_i32(buf, av.tlamp);
-    buf.push('\t');
-    crate::util::push_i32(buf, av.ncamp);
-    buf.push('\t');
-    buf.push(if av.ampflag { '1' } else { '0' });
-
-    if !debug {
-        return;
-    }
-    // ports AmpliconOutputVariant.java:113-125
-    buf.push('\t');
-    buf.push_str(&variant.debug);
-    for (i, (v, r)) in av.good_variants.iter().enumerate() {
-        buf.push_str("\tGood");
-        crate::util::push_usize(buf, i);
-        buf.push(' ');
-        buf.push_str(&debug_amp_variant(v.as_ref()));
-        buf.push(' ');
-        buf.push_str(r);
-    }
-    for (i, (v, r)) in av.bad_variants.iter().enumerate() {
-        buf.push_str("\tBad");
-        crate::util::push_usize(buf, i);
-        buf.push(' ');
-        buf.push_str(&debug_amp_variant(v.as_ref()));
-        buf.push(' ');
-        buf.push_str(r);
-    }
+    amplicon_append_styled(
+        buf,
+        av,
+        region,
+        sample_name,
+        debug,
+        TableModeStyle::Amplicon38,
+    );
 }
 
 /// Write amplicon 38-column representation (no fisher).
 /// Ports AmpliconOutputVariant.java's create_amplicon_variant_38columns.
-/// Columns 1-34 match the simple format; columns 35-38 are
-/// GDAMP, TLAMP, NCAMP, AMPFLAG (replacing simple's duprate/sv).
-/// When `debug` is set, appends `"\t" + DEBUG` where
-/// DEBUG = variant.DEBUG + goodOutput + badOutput (AmpliconOutputVariant.java:113-138).
 pub fn amplicon_38(
     av: &crate::postprocess::amplicon::AmpliconVariant,
     region: &Region,
@@ -627,11 +540,6 @@ pub fn amplicon_38(
 /// Write the amplicon 40-column row into `buf` (cleared first).
 /// Byte-identical to [`amplicon_40`]; same reuse contract as [`simple_36_into`].
 /// Ports AmpliconOutputVariant.java's create_amplicon_variant_40columns (lines 145-201).
-/// Columns 1-20 match amplicon_38, columns 21-22 are pvalue and oddratio,
-/// columns 23-36 match columns 21-34 of amplicon_38, and columns 37-40 are
-/// GDAMP, TLAMP, NCAMP, AMPFLAG.
-/// When `debug` is set, appends `"\t" + DEBUG` where
-/// DEBUG = variant.DEBUG + goodOutput + badOutput.
 pub fn amplicon_40_into(
     buf: &mut String,
     av: &crate::postprocess::amplicon::AmpliconVariant,
@@ -651,138 +559,18 @@ pub(crate) fn amplicon_40_append(
     sample_name: &str,
     debug: bool,
 ) {
-    buf.reserve(320);
-    let variant = &av.variant;
-
-    let fisher = crate::stats::FisherExact::new_java(
-        variant.ref_fwd_cov as i32,
-        variant.ref_rev_cov as i32,
-        variant.fwd as i32,
-        variant.rev as i32,
+    amplicon_append_styled(
+        buf,
+        av,
+        region,
+        sample_name,
+        debug,
+        TableModeStyle::Amplicon40,
     );
-    let pvalue = fisher.get_p_value();
-
-    push_tsv_clean(buf, sample_name);
-    buf.push('\t');
-    push_tsv_clean(buf, &region.gene);
-    buf.push('\t');
-    push_tsv_clean(buf, &region.chr);
-    buf.push('\t');
-    crate::util::push_i32(buf, variant.start_pos);
-    buf.push('\t');
-    crate::util::push_i32(buf, variant.end_pos);
-    buf.push('\t');
-    buf.push_str(&variant.ref_allele);
-    buf.push('\t');
-    buf.push_str(&variant.var_allele);
-    buf.push('\t');
-    crate::util::push_i32(buf, variant.total_pos_cov);
-    buf.push('\t');
-    crate::util::push_i32(buf, variant.pos_coverage);
-    buf.push('\t');
-    crate::util::push_i32(buf, variant.ref_fwd_cov);
-    buf.push('\t');
-    crate::util::push_i32(buf, variant.ref_rev_cov);
-    buf.push('\t');
-    crate::util::push_i32(buf, variant.fwd);
-    buf.push('\t');
-    crate::util::push_i32(buf, variant.rev);
-    buf.push('\t');
-    let gt_default = if variant.null_record { "" } else { "0" };
-    buf.push_str(variant.genotype.as_deref().unwrap_or(gt_default));
-    buf.push('\t');
-    push_java_rounded(buf, variant.frequency, 4);
-    buf.push('\t');
-    buf.push_str(&variant.bias);
-    buf.push('\t');
-    push_java_rounded(buf, variant.mean_position, 1);
-    buf.push('\t');
-    buf.push(if variant.pstd { '1' } else { '0' });
-    buf.push('\t');
-    push_java_rounded(buf, variant.mean_quality, 1);
-    buf.push('\t');
-    buf.push(if variant.qstd { '1' } else { '0' });
-    buf.push('\t');
-    push_java_rounded(buf, pvalue, 5);
-    buf.push('\t');
-    fisher.write_odds_ratio_into(buf);
-    buf.push('\t');
-    push_java_rounded(buf, variant.mean_mapping_quality, 1);
-    buf.push('\t');
-    push_java_rounded(buf, variant.hq_lq_ratio, 3);
-    buf.push('\t');
-    push_keep(buf, variant.hi_freq, 4);
-    buf.push('\t');
-    push_java_rounded(buf, variant.extra_freq, 4);
-    buf.push('\t');
-    crate::util::push_i32(buf, variant.shift3);
-    buf.push('\t');
-    push_java_rounded(buf, variant.msi, 3);
-    buf.push('\t');
-    crate::util::push_i32(buf, variant.msint);
-    buf.push('\t');
-    push_nm(buf, variant.nm);
-    buf.push('\t');
-    crate::util::push_i32(buf, variant.hicnt);
-    buf.push('\t');
-    crate::util::push_i32(buf, variant.hicov);
-    buf.push('\t');
-    let flank_empty = if variant.null_record { "\t" } else { "0\t" };
-    if variant.left_seq.is_empty() {
-        buf.push_str(flank_empty);
-    } else {
-        buf.push_str(&variant.left_seq);
-        buf.push('\t');
-    }
-    if variant.right_seq.is_empty() {
-        buf.push_str(flank_empty);
-    } else {
-        buf.push_str(&variant.right_seq);
-        buf.push('\t');
-    }
-    push_tsv_clean(buf, &av.region);
-    buf.push('\t');
-    buf.push_str(&variant.var_type);
-    buf.push('\t');
-    crate::util::push_i32(buf, av.gdamp);
-    buf.push('\t');
-    crate::util::push_i32(buf, av.tlamp);
-    buf.push('\t');
-    crate::util::push_i32(buf, av.ncamp);
-    buf.push('\t');
-    buf.push(if av.ampflag { '1' } else { '0' });
-
-    if !debug {
-        return;
-    }
-    // ports AmpliconOutputVariant.java:113-125
-    buf.push('\t');
-    buf.push_str(&variant.debug);
-    for (i, (v, r)) in av.good_variants.iter().enumerate() {
-        buf.push_str("\tGood");
-        crate::util::push_usize(buf, i);
-        buf.push(' ');
-        buf.push_str(&debug_amp_variant(v.as_ref()));
-        buf.push(' ');
-        buf.push_str(r);
-    }
-    for (i, (v, r)) in av.bad_variants.iter().enumerate() {
-        buf.push_str("\tBad");
-        crate::util::push_usize(buf, i);
-        buf.push(' ');
-        buf.push_str(&debug_amp_variant(v.as_ref()));
-        buf.push(' ');
-        buf.push_str(r);
-    }
 }
 
 /// Write amplicon 40-column representation with Fisher exact test (when config.fisher is set).
 /// Ports AmpliconOutputVariant.java's create_amplicon_variant_40columns (lines 145-201).
-/// Columns 1-20 match amplicon_38, columns 21-22 are pvalue and oddratio,
-/// columns 23-36 match columns 21-34 of amplicon_38, and columns 37-40 are
-/// GDAMP, TLAMP, NCAMP, AMPFLAG.
-/// When `debug` is set, appends `"\t" + DEBUG` where
-/// DEBUG = variant.DEBUG + goodOutput + badOutput.
 pub fn amplicon_40(
     av: &crate::postprocess::amplicon::AmpliconVariant,
     region: &Region,
@@ -799,7 +587,6 @@ pub fn amplicon_40(
 /// 17 fields; zero-valued freq fields print as "0", position/quality/mapq/qratio are
 /// always decimal-formatted. Java dereferences a null variant here (NPE on the
 /// no-data bad-variant path); we render an all-zero record instead.
-/// Debug-only path: keeps its own temp-`String` keep-mode helper.
 fn fmt_4dp(v: f64) -> String {
     if v == 0.0 {
         "0".to_string()
@@ -845,10 +632,7 @@ fn debug_amp_variant(v: Option<&Variant>) -> String {
 
 /// Java-compatible formatter that rounds a float using banker's rounding
 /// to `digits` decimal places and strips trailing `'0'` characters.
-/// Ports `Utils.getRoundedValueToPrint` (`Utils.java:105-109`):
-/// checks `value == Math.round(value)` on the raw unrounded `value` first;
-/// otherwise formats with `DecimalFormat(pattern)` and runs `.replaceAll("0+$", "")`,
-/// leaving a trailing `'.'` when a fractional value rounds to an integer (`"2."`, `"-0."`).
+/// Ports `Utils.getRoundedValueToPrint` (`Utils.java:105-109`).
 #[cfg(test)]
 pub(crate) fn get_rounded_value_to_print(value: f64, digits: i32) -> String {
     let mut buf = String::new();
@@ -886,9 +670,7 @@ pub(crate) fn push_java_rounded(buf: &mut String, value: f64, digits: i32) {
 
 /// Keep-mode float cell: HALF_EVEN at `digits` decimals with trailing zeros
 /// kept (`"0"` when zero). Ports the `DecimalFormat("0.0000"/"0.0"/"0.000")`
-/// cells of the no-`--fisher` writers (Simple 36-col, Amplicon 38-col,
-/// Somatic 55-col) — one of the two `round_half_even` call sites. Pushes
-/// into the row buffer without a temp `String`.
+/// cells of the no-`--fisher` writers.
 pub(crate) fn push_keep(buf: &mut String, v: f64, digits: i32) {
     if v == 0.0 {
         buf.push('0');
@@ -933,50 +715,140 @@ pub(crate) fn push_nm(buf: &mut String, v: f64) {
     }
 }
 
-/// Push the 18-column tumor/normal sample block (keep-mode floats).
-/// Replaces `variant_18cols`; same field order and values, no temp `String`.
-fn push_18cols(buf: &mut String, v: &Variant) {
-    crate::util::push_i32(buf, v.total_pos_cov);
-    buf.push('\t');
-    crate::util::push_i32(buf, v.pos_coverage);
-    buf.push('\t');
-    crate::util::push_i32(buf, v.ref_fwd_cov);
-    buf.push('\t');
-    crate::util::push_i32(buf, v.ref_rev_cov);
-    buf.push('\t');
-    crate::util::push_i32(buf, v.fwd);
-    buf.push('\t');
-    crate::util::push_i32(buf, v.rev);
-    buf.push('\t');
+/// Push the 18-column (`Somatic55`) or 20-column (`Somatic61`) per-sample allele block.
+fn push_somatic_sample_cols(buf: &mut String, v: &Variant, style: TableModeStyle) {
+    push_allele_counts_6(buf, v);
     buf.push_str(v.genotype.as_deref().unwrap_or("0"));
     buf.push('\t');
-    push_keep(buf, v.frequency, 4);
+    style.push_float(buf, v.frequency, 4);
     buf.push('\t');
     buf.push_str(&v.bias);
     buf.push('\t');
-    push_keep(buf, v.mean_position, 1);
+    style.push_float(buf, v.mean_position, 1);
     buf.push('\t');
     buf.push(if v.pstd { '1' } else { '0' });
     buf.push('\t');
-    push_keep(buf, v.mean_quality, 1);
+    style.push_float(buf, v.mean_quality, 1);
     buf.push('\t');
     buf.push(if v.qstd { '1' } else { '0' });
     buf.push('\t');
-    push_keep(buf, v.mean_mapping_quality, 1);
+    style.push_float(buf, v.mean_mapping_quality, 1);
     buf.push('\t');
-    push_keep(buf, v.hq_lq_ratio, 3);
+    style.push_float(buf, v.hq_lq_ratio, 3);
     buf.push('\t');
-    push_keep(buf, v.hi_freq, 4);
+    style.push_hi_freq(buf, v.hi_freq);
     buf.push('\t');
-    push_keep(buf, v.extra_freq, 4);
+    style.push_float(buf, v.extra_freq, 4);
     buf.push('\t');
-    push_nm(buf, v.nm);
+    style.push_nm_cell(buf, v.nm);
+    if style.is_fisher() {
+        let fisher =
+            crate::stats::FisherExact::new_java(v.ref_fwd_cov, v.ref_rev_cov, v.fwd, v.rev);
+        buf.push('\t');
+        push_java_rounded(buf, fisher.get_p_value(), 5);
+        buf.push('\t');
+        fisher.write_odds_ratio_into(buf);
+    }
 }
 
-/// Missing-normal 18-column block: eighteen `"0"` cells (was
-/// `variant_18cols_empty`). Inlined so the common true-somatic row (no normal
-/// allele) allocates nothing here.
 const VARIANT_18COLS_EMPTY: &str = "0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0";
+
+#[cfg(test)]
+fn variant_20cols_fisher_empty(pvalue: f64, oddratio: &str) -> String {
+    format!(
+        "0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t{}\t{}",
+        get_rounded_value_to_print(pvalue, 5),
+        oddratio,
+    )
+}
+
+const VARIANT_20COLS_FISHER_EMPTY: &str =
+    "0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t1\t0";
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "paired somatic row formatter mirrors SomaticOutputVariant 55/61-column arguments"
+)]
+fn somatic_append_styled(
+    buf: &mut String,
+    tumor: &Variant,
+    normal: Option<&Variant>,
+    region: &Region,
+    sample_name: &str,
+    status: &str,
+    sv1: &str,
+    sv2: &str,
+    end_is_variant2: bool,
+    style: TableModeStyle,
+) {
+    buf.reserve(if style.is_fisher() { 448 } else { 384 });
+    // endVariant supplies shift3/msi/msint/left/right seq (Java SomaticOutputVariant).
+    let end_var = if end_is_variant2 {
+        normal.unwrap_or(tumor)
+    } else {
+        tumor
+    };
+
+    push_row_prefix_7(buf, sample_name, region, tumor);
+    push_somatic_sample_cols(buf, tumor, style);
+    buf.push('\t');
+    match normal {
+        Some(n) => push_somatic_sample_cols(buf, n, style),
+        None => buf.push_str(if style.is_fisher() {
+            VARIANT_20COLS_FISHER_EMPTY
+        } else {
+            VARIANT_18COLS_EMPTY
+        }),
+    }
+    buf.push('\t');
+    crate::util::push_i32(buf, end_var.shift3);
+    buf.push('\t');
+    style.push_msi_cell(buf, end_var.msi);
+    buf.push('\t');
+    crate::util::push_i32(buf, end_var.msint);
+    buf.push('\t');
+    push_flank_pair(buf, end_var, false);
+    push_region_span(buf, region);
+    buf.push('\t');
+    buf.push_str(status);
+    buf.push('\t');
+    buf.push_str(&tumor.var_type);
+    buf.push('\t');
+    style.push_duprate_cell(buf, tumor.duprate);
+    buf.push('\t');
+    push_nonempty_or_zero(buf, sv1);
+    buf.push('\t');
+    match normal {
+        Some(n) => style.push_duprate_cell(buf, n.duprate),
+        None => buf.push('0'),
+    }
+    buf.push('\t');
+    push_nonempty_or_zero(buf, sv2);
+
+    if style.is_fisher() {
+        let (tvar_cov, ttotal_cov) = (tumor.pos_coverage, tumor.total_pos_cov);
+        let (nvar_cov, ntotal_cov) = match normal {
+            Some(n) => (n.pos_coverage, n.total_pos_cov),
+            None => (0, 0),
+        };
+        let tref =
+            (i64::from(ttotal_cov) - i64::from(tvar_cov)).clamp(0, i64::from(i32::MAX)) as i32;
+        let rref =
+            (i64::from(ntotal_cov) - i64::from(nvar_cov)).clamp(0, i64::from(i32::MAX)) as i32;
+        let fisher_total = crate::stats::FisherExact::new_java(tvar_cov, tref, nvar_cov, rref);
+        let pvalue_greater = fisher_total.get_p_value_greater();
+        let pvalue_less = fisher_total.get_p_value_less();
+        let total_pvalue = if pvalue_less < pvalue_greater {
+            pvalue_less
+        } else {
+            pvalue_greater
+        };
+        buf.push('\t');
+        push_java_rounded(buf, total_pvalue, 5);
+        buf.push('\t');
+        fisher_total.write_odds_ratio_into(buf);
+    }
+}
 
 /// Write the somatic 55-column row into `buf` (cleared first).
 /// Byte-identical to [`somatic_55`]; same reuse contract as [`simple_36_into`].
@@ -1018,81 +890,18 @@ pub(crate) fn somatic_55_append(
     sv2: &str,
     end_is_variant2: bool,
 ) {
-    buf.reserve(384);
-    // endVariant supplies shift3/msi/msint/left/right seq (Java SomaticOutputVariant).
-    let end_var = if end_is_variant2 {
-        normal.unwrap_or(tumor)
-    } else {
-        tumor
-    };
-
-    push_tsv_clean(buf, sample_name);
-    buf.push('\t');
-    push_tsv_clean(buf, &region.gene);
-    buf.push('\t');
-    push_tsv_clean(buf, &region.chr);
-    buf.push('\t');
-    crate::util::push_i32(buf, tumor.start_pos);
-    buf.push('\t');
-    crate::util::push_i32(buf, tumor.end_pos);
-    buf.push('\t');
-    buf.push_str(&tumor.ref_allele);
-    buf.push('\t');
-    buf.push_str(&tumor.var_allele);
-    buf.push('\t');
-    push_18cols(buf, tumor);
-    buf.push('\t');
-    match normal {
-        Some(n) => push_18cols(buf, n),
-        None => buf.push_str(VARIANT_18COLS_EMPTY),
-    }
-    buf.push('\t');
-    crate::util::push_i32(buf, end_var.shift3);
-    buf.push('\t');
-    push_keep(buf, end_var.msi, 3);
-    buf.push('\t');
-    crate::util::push_i32(buf, end_var.msint);
-    buf.push('\t');
-    if end_var.left_seq.is_empty() {
-        buf.push_str("0\t");
-    } else {
-        buf.push_str(&end_var.left_seq);
-        buf.push('\t');
-    }
-    if end_var.right_seq.is_empty() {
-        buf.push_str("0\t");
-    } else {
-        buf.push_str(&end_var.right_seq);
-        buf.push('\t');
-    }
-    push_tsv_clean(buf, &region.chr);
-    buf.push(':');
-    crate::util::push_u32(buf, region.start.0);
-    buf.push('-');
-    crate::util::push_u32(buf, region.end.0);
-    buf.push('\t');
-    buf.push_str(status);
-    buf.push('\t');
-    buf.push_str(&tumor.var_type);
-    buf.push('\t');
-    push_keep(buf, tumor.duprate, 1);
-    buf.push('\t');
-    if sv1.is_empty() {
-        buf.push_str("0\t");
-    } else {
-        buf.push_str(sv1);
-        buf.push('\t');
-    }
-    match normal {
-        Some(n) => push_keep(buf, n.duprate, 1),
-        None => buf.push('0'),
-    }
-    buf.push('\t');
-    if sv2.is_empty() {
-        buf.push('0');
-    } else {
-        buf.push_str(sv2);
-    }
+    somatic_append_styled(
+        buf,
+        tumor,
+        normal,
+        region,
+        sample_name,
+        status,
+        sv1,
+        sv2,
+        end_is_variant2,
+        TableModeStyle::Somatic55,
+    );
 }
 
 /// Write somatic 55-column representation for paired (tumor/normal) variants.
@@ -1121,72 +930,6 @@ pub fn somatic_55(
     );
     buf
 }
-
-/// Push the 20-column fisher sample block: the 18 base columns plus pvalue
-/// and oddratio, using trailing-zero-stripping formatting (Java
-/// getRoundedValueToPrint). Replaces `variant_20cols_fisher` with no temp.
-fn push_20cols_fisher(
-    buf: &mut String,
-    v: &Variant,
-    pvalue: f64,
-    fisher: &crate::stats::FisherExact,
-) {
-    crate::util::push_i32(buf, v.total_pos_cov);
-    buf.push('\t');
-    crate::util::push_i32(buf, v.pos_coverage);
-    buf.push('\t');
-    crate::util::push_i32(buf, v.ref_fwd_cov);
-    buf.push('\t');
-    crate::util::push_i32(buf, v.ref_rev_cov);
-    buf.push('\t');
-    crate::util::push_i32(buf, v.fwd);
-    buf.push('\t');
-    crate::util::push_i32(buf, v.rev);
-    buf.push('\t');
-    buf.push_str(v.genotype.as_deref().unwrap_or("0"));
-    buf.push('\t');
-    push_java_rounded(buf, v.frequency, 4);
-    buf.push('\t');
-    buf.push_str(&v.bias);
-    buf.push('\t');
-    push_java_rounded(buf, v.mean_position, 1);
-    buf.push('\t');
-    buf.push(if v.pstd { '1' } else { '0' });
-    buf.push('\t');
-    push_java_rounded(buf, v.mean_quality, 1);
-    buf.push('\t');
-    buf.push(if v.qstd { '1' } else { '0' });
-    buf.push('\t');
-    push_java_rounded(buf, v.mean_mapping_quality, 1);
-    buf.push('\t');
-    push_java_rounded(buf, v.hq_lq_ratio, 3);
-    buf.push('\t');
-    push_java_rounded(buf, v.hi_freq, 4);
-    buf.push('\t');
-    push_java_rounded(buf, v.extra_freq, 4);
-    buf.push('\t');
-    if v.nm > 0.0 {
-        push_java_rounded(buf, v.nm, 1);
-    } else {
-        buf.push('0');
-    }
-    buf.push('\t');
-    push_java_rounded(buf, pvalue, 5);
-    buf.push('\t');
-    fisher.write_odds_ratio_into(buf);
-}
-
-#[cfg(test)]
-fn variant_20cols_fisher_empty(pvalue: f64, oddratio: &str) -> String {
-    format!(
-        "0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t{}\t{}",
-        get_rounded_value_to_print(pvalue, 5),
-        oddratio,
-    )
-}
-
-const VARIANT_20COLS_FISHER_EMPTY: &str =
-    "0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t1\t0";
 
 /// Write the somatic 61-column row into `buf` (cleared first).
 /// Byte-identical to [`somatic_61`]; same reuse contract as [`simple_36_into`].
@@ -1228,124 +971,18 @@ pub(crate) fn somatic_61_append(
     sv2: &str,
     end_is_variant2: bool,
 ) {
-    buf.reserve(448);
-    // endVariant supplies shift3/msi/msint/left/right seq (Java SomaticOutputVariant).
-    let end_var = if end_is_variant2 {
-        normal.unwrap_or(tumor)
-    } else {
-        tumor
-    };
-
-    let fisher1 = crate::stats::FisherExact::new_java(
-        tumor.ref_fwd_cov as i32,
-        tumor.ref_rev_cov as i32,
-        tumor.fwd as i32,
-        tumor.rev as i32,
+    somatic_append_styled(
+        buf,
+        tumor,
+        normal,
+        region,
+        sample_name,
+        status,
+        sv1,
+        sv2,
+        end_is_variant2,
+        TableModeStyle::Somatic61,
     );
-    let pvalue1 = fisher1.get_p_value();
-
-    let (tvar_cov, ttotal_cov) = (tumor.pos_coverage, tumor.total_pos_cov);
-    let (nvar_cov, ntotal_cov) = match normal {
-        Some(n) => (n.pos_coverage, n.total_pos_cov),
-        None => (0, 0),
-    };
-    let tref = (i64::from(ttotal_cov) - i64::from(tvar_cov)).clamp(0, i64::from(i32::MAX)) as i32;
-    let rref = (i64::from(ntotal_cov) - i64::from(nvar_cov)).clamp(0, i64::from(i32::MAX)) as i32;
-    let fisher_total = crate::stats::FisherExact::new_java(
-        tvar_cov as i32,
-        tref as i32,
-        nvar_cov as i32,
-        rref as i32,
-    );
-    let pvalue_greater = fisher_total.get_p_value_greater();
-    let pvalue_less = fisher_total.get_p_value_less();
-    let total_pvalue = if pvalue_less < pvalue_greater {
-        pvalue_less
-    } else {
-        pvalue_greater
-    };
-
-    push_tsv_clean(buf, sample_name);
-    buf.push('\t');
-    push_tsv_clean(buf, &region.gene);
-    buf.push('\t');
-    push_tsv_clean(buf, &region.chr);
-    buf.push('\t');
-    crate::util::push_i32(buf, tumor.start_pos);
-    buf.push('\t');
-    crate::util::push_i32(buf, tumor.end_pos);
-    buf.push('\t');
-    buf.push_str(&tumor.ref_allele);
-    buf.push('\t');
-    buf.push_str(&tumor.var_allele);
-    buf.push('\t');
-    push_20cols_fisher(buf, tumor, pvalue1, &fisher1);
-    buf.push('\t');
-    match normal {
-        Some(n) => {
-            let f2 = crate::stats::FisherExact::new_java(
-                n.ref_fwd_cov as i32,
-                n.ref_rev_cov as i32,
-                n.fwd as i32,
-                n.rev as i32,
-            );
-            push_20cols_fisher(buf, n, f2.get_p_value(), &f2);
-        }
-        None => {
-            buf.push_str(VARIANT_20COLS_FISHER_EMPTY);
-        }
-    }
-    buf.push('\t');
-    crate::util::push_i32(buf, end_var.shift3);
-    buf.push('\t');
-    push_keep(buf, end_var.msi, 3);
-    buf.push('\t');
-    crate::util::push_i32(buf, end_var.msint);
-    buf.push('\t');
-    if end_var.left_seq.is_empty() {
-        buf.push_str("0\t");
-    } else {
-        buf.push_str(&end_var.left_seq);
-        buf.push('\t');
-    }
-    if end_var.right_seq.is_empty() {
-        buf.push_str("0\t");
-    } else {
-        buf.push_str(&end_var.right_seq);
-        buf.push('\t');
-    }
-    push_tsv_clean(buf, &region.chr);
-    buf.push(':');
-    crate::util::push_u32(buf, region.start.0);
-    buf.push('-');
-    crate::util::push_u32(buf, region.end.0);
-    buf.push('\t');
-    buf.push_str(status);
-    buf.push('\t');
-    buf.push_str(&tumor.var_type);
-    buf.push('\t');
-    push_java_rounded(buf, tumor.duprate, 1);
-    buf.push('\t');
-    if sv1.is_empty() {
-        buf.push_str("0\t");
-    } else {
-        buf.push_str(sv1);
-        buf.push('\t');
-    }
-    match normal {
-        Some(n) => push_java_rounded(buf, n.duprate, 1),
-        None => buf.push('0'),
-    }
-    buf.push('\t');
-    if sv2.is_empty() {
-        buf.push_str("0\t");
-    } else {
-        buf.push_str(sv2);
-        buf.push('\t');
-    }
-    push_java_rounded(buf, total_pvalue, 5);
-    buf.push('\t');
-    fisher_total.write_odds_ratio_into(buf);
 }
 
 /// Write somatic 61-column representation (with --fisher).
@@ -2397,5 +2034,91 @@ mod tests {
                 "{label} column count drifted under dirty inputs: {row:?}"
             );
         }
+    }
+
+    #[test]
+    fn ar09_table_mode_style_preserves_all_four_vardictjava_quirks() {
+        let reg = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(933866),
+            end: Pos1(934466),
+            gene: "testbed".to_string(),
+            amplicon: None,
+        };
+        let mut v = Variant::new();
+        v.start_pos = 100;
+        v.end_pos = 100;
+        v.ref_allele = "G".to_string();
+        v.var_allele = "C".to_string();
+        v.var_type = "SNV".to_string();
+        v.total_pos_cov = 40;
+        v.pos_coverage = 20;
+        v.ref_fwd_cov = 10;
+        v.ref_rev_cov = 10;
+        v.fwd = 10;
+        v.rev = 10;
+        v.frequency = 0.5;
+        v.hi_freq = 0.5;
+        v.msi = 3.5;
+        v.msint = 2;
+        v.nm = 2.0;
+        v.duprate = 0.125;
+
+        let s36_line = simple_36(&v, &reg, "SAMPLE", "");
+        let s36: Vec<&str> = s36_line.split('\t').collect();
+        let s38_line = simple_38(&v, &reg, "SAMPLE", "");
+        let s38: Vec<&str> = s38_line.split('\t').collect();
+        let av = AmpliconVariant {
+            variant: v.clone(),
+            gdamp: 1,
+            tlamp: 1,
+            ncamp: 0,
+            ampflag: false,
+            region: "chr1:933867-934466".to_string(),
+            good_variants: vec![],
+            bad_variants: vec![],
+        };
+        let a38_line = amplicon_38(&av, &reg, "SAMPLE", false);
+        let a38: Vec<&str> = a38_line.split('\t').collect();
+        let a40_line = amplicon_40(&av, &reg, "SAMPLE", false);
+        let a40: Vec<&str> = a40_line.split('\t').collect();
+        let som55_line = somatic_55(&v, Some(&v), &reg, "SAMPLE", "StrongSomatic", "", "", false);
+        let som55: Vec<&str> = som55_line.split('\t').collect();
+        let som61_line = somatic_61(&v, Some(&v), &reg, "SAMPLE", "StrongSomatic", "", "", false);
+        let som61: Vec<&str> = som61_line.split('\t').collect();
+
+        // 1. hi_freq: Simple38 & Amplicon40 keep trailing zeros ("0.5000"); Somatic61 strips ("0.5").
+        assert_eq!(s36[22], "0.5000");
+        assert_eq!(s38[24], "0.5000");
+        assert_eq!(a38[22], "0.5000");
+        assert_eq!(a40[24], "0.5000");
+        assert_eq!(som55[22], "0.5000");
+        assert_eq!(som61[22], "0.5");
+        assert_eq!(som61[42], "0.5");
+
+        // 2. nm: Simple38 & Amplicon40 keep ".0" ("2.0"); Somatic61 strips ("2").
+        assert_eq!(s36[27], "2.0");
+        assert_eq!(s38[29], "2.0");
+        assert_eq!(a38[27], "2.0");
+        assert_eq!(a40[29], "2.0");
+        assert_eq!(som55[24], "2.0");
+        assert_eq!(som61[24], "2");
+        assert_eq!(som61[44], "2");
+
+        // 3. msi: Somatic61 keeps trailing zeros ("3.500"); Simple38 & Amplicon40 strip ("3.5").
+        assert_eq!(s36[25], "3.500");
+        assert_eq!(s38[27], "3.5");
+        assert_eq!(a38[25], "3.500");
+        assert_eq!(a40[27], "3.5");
+        assert_eq!(som55[44], "3.500");
+        assert_eq!(som61[48], "3.500");
+
+        // 4. duprate: Simple38 rounds to 2dp ("0.12"); Simple36 ("0.1"), Somatic55 ("0.1"), Somatic61 ("0.1") use 1dp.
+        assert_eq!(s36[34], "0.1");
+        assert_eq!(s38[36], "0.12");
+        assert_eq!(som55[51], "0.1");
+        assert_eq!(som55[53], "0.1");
+        assert_eq!(som61[55], "0.1");
+        assert_eq!(som61[57], "0.1");
     }
 }
