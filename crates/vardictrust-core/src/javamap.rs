@@ -70,7 +70,11 @@ enum TreeProbe {
 }
 
 #[derive(Debug)]
-struct NewKeyLog<K>(Option<Vec<K>>);
+#[expect(
+    clippy::box_collection,
+    reason = "8-byte niche Option<Box<Vec<K>>> keeps JavaHashMap at 96B when key logging is off"
+)]
+struct NewKeyLog<K>(Option<Box<Vec<K>>>);
 
 impl<K> Default for NewKeyLog<K> {
     fn default() -> Self {
@@ -84,6 +88,12 @@ impl<K> Clone for NewKeyLog<K> {
     }
 }
 
+#[cold]
+#[inline(never)]
+fn fallback_slot_mut<V: Default>(slot: &mut Option<Box<V>>) -> &mut V {
+    slot.get_or_insert_with(|| Box::new(V::default()))
+}
+
 #[derive(Clone, Debug)]
 pub struct JavaHashMap<K, V> {
     buckets: Vec<u32>,
@@ -94,10 +104,10 @@ pub struct JavaHashMap<K, V> {
     )]
     tree_links: Option<Box<Vec<TreeLink>>>,
     free_head: u32,
+    active_tree_bins: u32,
     size: usize,
     threshold: usize,
-    active_tree_bins: usize,
-    fallback: V,
+    fallback: Option<Box<V>>,
     new_key_log: NewKeyLog<K>,
 }
 
@@ -172,6 +182,9 @@ impl JavaHash for str {
 
     #[inline]
     fn java_compare(&self, other: &Self) -> std::cmp::Ordering {
+        if self.is_ascii() && other.is_ascii() {
+            return self.as_bytes().cmp(other.as_bytes());
+        }
         self.encode_utf16().cmp(other.encode_utf16())
     }
 }
@@ -212,10 +225,10 @@ where
             nodes: Vec::new(),
             tree_links: None,
             free_head: NONE,
+            active_tree_bins: 0,
             size: 0,
             threshold: 0,
-            active_tree_bins: 0,
-            fallback: V::default(),
+            fallback: None,
             new_key_log: NewKeyLog::default(),
         }
     }
@@ -223,11 +236,13 @@ where
     /// Records newly allocated keys during an insert-only window (`sv::partial_pipeline`).
     /// Idempotent when already enabled; `remove` within the window is outside the contract.
     pub(crate) fn enable_new_key_log(&mut self) {
-        self.new_key_log.0.get_or_insert_with(Vec::new);
+        self.new_key_log
+            .0
+            .get_or_insert_with(|| Box::new(Vec::new()));
     }
 
     pub(crate) fn take_new_key_log(&mut self) -> Vec<K> {
-        self.new_key_log.0.take().unwrap_or_default()
+        self.new_key_log.0.take().map(|b| *b).unwrap_or_default()
     }
 
     #[inline]
@@ -301,7 +316,7 @@ where
         if self.free_head == NONE && self.nodes.len() >= (u32::MAX as usize) {
             return NONE;
         }
-        if let Some(ref mut log) = self.new_key_log.0 {
+        if let Some(log) = self.new_key_log.0.as_deref_mut() {
             log.push(key.clone());
         }
         if self.free_head != NONE {
@@ -573,7 +588,7 @@ where
         let hash = Self::spread(&key);
         let n = self.buckets.len();
         if n == 0 {
-            return &mut self.fallback;
+            return fallback_slot_mut(&mut self.fallback);
         }
         let idx = (hash as usize) & (n - 1);
         let first = self.buckets.get(idx).copied().unwrap_or(NONE);
@@ -581,7 +596,7 @@ where
         let new_idx = if first == NONE {
             let ni = self.alloc_node(key, f(), NONE);
             if ni == NONE {
-                return &mut self.fallback;
+                return fallback_slot_mut(&mut self.fallback);
             }
             if let Some(b) = self.buckets.get_mut(idx) {
                 *b = ni;
@@ -596,7 +611,7 @@ where
                 .nodes
                 .get_mut(first as usize)
                 .map(|nd| &mut nd.val)
-                .unwrap_or(&mut self.fallback);
+                .unwrap_or_else(|| fallback_slot_mut(&mut self.fallback));
         } else if self.is_tree_node(first) {
             match self.probe_tree_slot(first, hash as i32, &key) {
                 TreeProbe::Found(e) => {
@@ -604,12 +619,12 @@ where
                         .nodes
                         .get_mut(e as usize)
                         .map(|nd| &mut nd.val)
-                        .unwrap_or(&mut self.fallback);
+                        .unwrap_or_else(|| fallback_slot_mut(&mut self.fallback));
                 }
                 TreeProbe::Vacant { root, xp, dir } => {
                     let ni = self.insert_tree_leaf(idx, root, xp, dir, key, f());
                     if ni == NONE {
-                        return &mut self.fallback;
+                        return fallback_slot_mut(&mut self.fallback);
                     }
                     ni
                 }
@@ -622,7 +637,7 @@ where
                 if e == NONE {
                     let ni = self.alloc_node(key, f(), NONE);
                     if ni == NONE {
-                        return &mut self.fallback;
+                        return fallback_slot_mut(&mut self.fallback);
                     }
                     if let Some(p_mut) = self.nodes.get_mut(p as usize) {
                         p_mut.next = ni;
@@ -638,12 +653,12 @@ where
                         .nodes
                         .get_mut(e as usize)
                         .map(|nd| &mut nd.val)
-                        .unwrap_or(&mut self.fallback);
+                        .unwrap_or_else(|| fallback_slot_mut(&mut self.fallback));
                 }
                 p = e;
             }
             if inserted == NONE {
-                return &mut self.fallback;
+                return fallback_slot_mut(&mut self.fallback);
             }
             inserted
         };
@@ -656,7 +671,7 @@ where
         if let Some(nd) = self.nodes.get_mut(new_idx as usize) {
             &mut nd.val
         } else {
-            &mut self.fallback
+            fallback_slot_mut(&mut self.fallback)
         }
     }
 
@@ -678,7 +693,7 @@ where
         let hash = Self::spread(&key);
         let n = self.buckets.len();
         if n == 0 {
-            return &mut self.fallback;
+            return fallback_slot_mut(&mut self.fallback);
         }
         let idx = (hash as usize) & (n - 1);
         let first = self.buckets.get(idx).copied().unwrap_or(NONE);
@@ -693,7 +708,7 @@ where
                             .nodes
                             .get_mut(old as usize)
                             .map(|nd| &mut nd.val)
-                            .unwrap_or(&mut self.fallback);
+                            .unwrap_or_else(|| fallback_slot_mut(&mut self.fallback));
                     }
                     TreeProbe::Vacant { root, xp, dir } => {
                         tree_vacant = Some((root, xp, dir));
@@ -721,7 +736,7 @@ where
                         .nodes
                         .get_mut(old as usize)
                         .map(|nd| &mut nd.val)
-                        .unwrap_or(&mut self.fallback);
+                        .unwrap_or_else(|| fallback_slot_mut(&mut self.fallback));
                 }
             }
         }
@@ -750,7 +765,7 @@ where
         if let Some(nd) = self.nodes.get_mut(target_idx as usize) {
             &mut nd.val
         } else {
-            &mut self.fallback
+            fallback_slot_mut(&mut self.fallback)
         }
     }
 
@@ -840,7 +855,7 @@ where
         if head != NONE && !self.is_tree_node(head) {
             self.ensure_tree_links();
             self.treeify_bucket(index);
-            self.active_tree_bins += 1;
+            self.active_tree_bins = self.active_tree_bins.saturating_add(1);
         }
     }
 
@@ -1704,7 +1719,7 @@ where
                 if hi_head != NONE {
                     self.treeify_bucket(index);
                 }
-                self.active_tree_bins += 1;
+                self.active_tree_bins = self.active_tree_bins.saturating_add(1);
             }
         }
         if hi_head != NONE {
@@ -1721,7 +1736,7 @@ where
                 if lo_head != NONE {
                     self.treeify_bucket(hi_idx);
                 }
-                self.active_tree_bins += 1;
+                self.active_tree_bins = self.active_tree_bins.saturating_add(1);
             }
         }
     }
@@ -1828,6 +1843,55 @@ where
             curr: NONE,
         }
     }
+
+    pub(crate) fn into_entries(self) -> impl Iterator<Item = (K, V)> {
+        IntoEntries {
+            buckets: self.buckets,
+            nodes: self.nodes,
+            bucket_idx: 0,
+            curr: NONE,
+            remaining: self.size,
+        }
+    }
+}
+
+struct IntoEntries<K, V> {
+    buckets: Vec<u32>,
+    nodes: Vec<Node<K, V>>,
+    bucket_idx: usize,
+    curr: u32,
+    remaining: usize,
+}
+
+impl<K, V> Iterator for IntoEntries<K, V>
+where
+    K: Clone,
+    V: Default,
+{
+    type Item = (K, V);
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.remaining == 0 {
+            return None;
+        }
+        while self.curr == NONE {
+            let &head = self.buckets.get(self.bucket_idx)?;
+            self.bucket_idx += 1;
+            self.curr = head;
+        }
+        let node = self.nodes.get_mut(self.curr as usize)?;
+        self.curr = node.next;
+        self.remaining -= 1;
+        let k = node.key.clone();
+        let v = std::mem::take(&mut node.val);
+        Some((k, v))
+    }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.remaining, Some(self.remaining))
+    }
 }
 
 impl<K, V> Default for JavaHashMap<K, V>
@@ -1874,6 +1938,12 @@ where
 /// `s[0]*31^(n-1) + s[1]*31^(n-2) + ... + s[n-1]` using wrapping 32-bit signed arithmetic.
 #[must_use]
 pub fn java_string_hash(s: &str) -> i32 {
+    if s.is_ascii() {
+        return s
+            .as_bytes()
+            .iter()
+            .fold(0i32, |h, &b| h.wrapping_mul(31).wrapping_add(i32::from(b)));
+    }
     s.encode_utf16()
         .fold(0i32, |h, c| h.wrapping_mul(31).wrapping_add(i32::from(c)))
 }
@@ -2263,7 +2333,7 @@ mod tests {
             bh_left + usize::from(!lk.red)
         }
 
-        let mut observed_tree_bins = 0usize;
+        let mut observed_tree_bins = 0u32;
         let mut total_live = 0usize;
         for &head in &map.buckets {
             if head == NONE {
@@ -3991,5 +4061,79 @@ public class BatchJavaMapOracle {
 
         let str_refs: [&str; 4] = ["chr1", "chrX", "chr1", "chrX"];
         assert_eq!(java_hashmap_key_order(str_refs), vec!["chrX", "chr1"]);
+    }
+
+    #[test]
+    fn test_javamap_size_into_entries_and_ascii_hash_order() {
+        assert!(
+            std::mem::size_of::<JavaHashMap<i32, crate::variations::Vars>>() <= 96,
+            "expected JavaHashMap<i32, Vars> <= 96 bytes, got {}",
+            std::mem::size_of::<JavaHashMap<i32, crate::variations::Vars>>()
+        );
+
+        let samples = [
+            "",
+            "A",
+            "+ACGT",
+            "-12",
+            "chr1",
+            "chr10",
+            "chrX",
+            "\u{00E9}",
+            "A\u{FFFD}",
+            "\u{E000}",
+            "\u{FFFD}",
+            "\u{10000}",
+            "\u{1F600}",
+        ];
+        for s in samples {
+            let expected_hash = s
+                .encode_utf16()
+                .fold(0i32, |h, c| h.wrapping_mul(31).wrapping_add(i32::from(c)));
+            assert_eq!(
+                java_string_hash(s),
+                expected_hash,
+                "hash mismatch for {s:?}"
+            );
+            for t in samples {
+                let expected_cmp = s.encode_utf16().cmp(t.encode_utf16());
+                assert_eq!(
+                    s.java_compare(t),
+                    expected_cmp,
+                    "java_compare mismatch for {s:?} vs {t:?}"
+                );
+            }
+        }
+
+        // Empty map
+        let empty: JavaHashMap<i32, i32> = JavaHashMap::new();
+        assert_eq!(
+            empty.clone().into_entries().collect::<Vec<_>>(),
+            empty.into_iter().collect::<Vec<_>>()
+        );
+
+        // Linked map (with removals leaving free slots and trailing empty buckets)
+        let mut linked: JavaHashMap<i32, i32> = JavaHashMap::new();
+        for k in [3, 19, 35, 7, 23, 100, 200, 300] {
+            linked.insert(k, k * 10);
+        }
+        assert_eq!(linked.remove(&19), Some(190));
+        assert!(!linked.treeified());
+        assert_eq!(
+            linked.clone().into_entries().collect::<Vec<_>>(),
+            linked.into_iter().collect::<Vec<_>>()
+        );
+
+        // Treeified (2^16 + 1)-stride map (cancels `h ^ (h >>> 16)` in low 16 bits -> bucket 0)
+        let mut tree: JavaHashMap<i32, i32> = JavaHashMap::new();
+        for i in 0..20i32 {
+            tree.insert((i << 16) | i, i * 100);
+        }
+        assert!(tree.treeified());
+        assert_eq!(tree.remove(&((3 << 16) | 3)), Some(300));
+        assert_eq!(
+            tree.clone().into_entries().collect::<Vec<_>>(),
+            tree.into_iter().collect::<Vec<_>>()
+        );
     }
 }

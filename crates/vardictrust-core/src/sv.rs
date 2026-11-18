@@ -373,14 +373,20 @@ pub fn is_best_sv_used(var_data: &crate::variations::VariationData, softp: i32) 
     is_softp_sv_used(&softp2sv, &var_data.sv_structures, softp)
 }
 
-/// Syncs `Sclip.used` (set on poly-A/T or low-complexity sequences in
-/// `VariationUtils.java:125-134`) and cached `Sclip.sequence` (`:148`) from a
-/// temporary `Sclip` clone back to the live `soft_clips_{5,3}_end` map entry.
 #[inline]
-fn sync_sclip_after_conseq(map: &mut BTreeMap<i32, Sclip>, pos: i32, scv: &Sclip) {
-    if let Some(live) = map.get_mut(&pos) {
-        live.used = scv.used;
-        live.sequence.clone_from(&scv.sequence);
+fn fmt_del_key<'a>(
+    dellen: i32,
+    key_buf: &'a mut crate::types::StackBuf<16>,
+    key_heap: &'a mut String,
+) -> &'a str {
+    use std::fmt::Write as _;
+    *key_buf = crate::types::StackBuf::new();
+    if write!(key_buf, "-{dellen}").is_ok() {
+        key_buf.as_str()
+    } else {
+        key_heap.clear();
+        let _ = write!(key_heap, "-{dellen}");
+        key_heap.as_str()
     }
 }
 
@@ -1028,11 +1034,6 @@ fn find_inv_sub_paths(
     config: &Config,
     chromosomes_lengths: &HashMap<String, usize>,
 ) -> Result<(), VardictError> {
-    let minr = i32::try_from(config.min_reads).unwrap_or(i32::MAX);
-    let verbose = config.verbose;
-    let (adaptor_forward, adaptor_reverse) = crate::realign::fill_adaptor_sets(&config.adaptor);
-    let max_read_length = var_data.max_read_length;
-
     let n = match svref_idx {
         0 => var_data.sv_structures.svfinv5.len(),
         1 => var_data.sv_structures.svrinv5.len(),
@@ -1044,6 +1045,13 @@ fn find_inv_sub_paths(
             )));
         }
     };
+    if n == 0 {
+        return Ok(());
+    }
+    let minr = i32::try_from(config.min_reads).unwrap_or(i32::MAX);
+    let verbose = config.verbose;
+    let (adaptor_forward, adaptor_reverse) = crate::realign::fill_adaptor_sets(&config.adaptor);
+    let max_read_length = var_data.max_read_length;
     for idx in 0..n {
         let (used, cnt, mstart, mend, start, end) = {
             let inv = match svref_idx {
@@ -1585,9 +1593,16 @@ fn find_del_paths(
     config: &Config,
     chromosomes_lengths: &HashMap<String, usize>,
 ) -> Result<(), VardictError> {
+    if var_data.sv_structures.svfdel.is_empty() && var_data.sv_structures.svrdel.is_empty() {
+        return Ok(());
+    }
     let minr = i32::try_from(config.min_reads).unwrap_or(i32::MAX);
     let verbose = config.verbose;
     let (adaptor_forward, adaptor_reverse) = crate::realign::fill_adaptor_sets(&config.adaptor);
+    let mut seq_stack = [0u8; 512];
+    let mut seq_heap = Vec::new();
+    let mut key_buf = crate::types::StackBuf::<16>::new();
+    let mut key_heap = String::new();
 
     // 5' deletion softclips
     let n_svfdel = var_data.sv_structures.svfdel.len();
@@ -1615,29 +1630,31 @@ fn find_del_paths(
         }
 
         if softp_cand != 0 {
-            let mut scv_clone = None;
-            if let Some(scv) = var_data.soft_clips_3_end.get(&softp_cand) {
-                if !scv.used {
-                    scv_clone = Some(scv.clone());
-                }
-            }
-            let mut scv = match scv_clone {
-                Some(s) => s,
-                None => {
+            let (seq_len, scv_var) = {
+                let Some(scv) = var_data.soft_clips_3_end.get_mut(&softp_cand) else {
+                    continue;
+                };
+                if scv.used {
                     continue;
                 }
+                let s = crate::variations::util::find_conseq_slice(
+                    scv,
+                    0,
+                    &adaptor_forward,
+                    &adaptor_reverse,
+                );
+                if s.len() < 12 {
+                    continue;
+                }
+                if let Some(dst) = seq_stack.get_mut(..s.len()) {
+                    dst.copy_from_slice(s);
+                } else {
+                    seq_heap.clear();
+                    seq_heap.extend_from_slice(s);
+                }
+                (s.len(), scv.variation.clone())
             };
-
-            let seq = crate::variations::util::find_conseq_sets(
-                &mut scv,
-                0,
-                &adaptor_forward,
-                &adaptor_reverse,
-            );
-            sync_sclip_after_conseq(&mut var_data.soft_clips_3_end, softp_cand, &scv);
-            if seq.is_empty() || seq.len() < 12 {
-                continue;
-            }
+            let seq: &[u8] = seq_stack.get(..seq_len).unwrap_or(&seq_heap);
 
             if !is_loaded(chr, mstart as u32, mend as u32, reference) {
                 let mod_region = crate::regions::Region {
@@ -1660,7 +1677,7 @@ fn find_del_paths(
                 )?;
             }
 
-            let match_res = find_match(&seq, reference, softp_cand, 1, 17, 3, chr, verbose);
+            let match_res = find_match(seq, reference, softp_cand, 1, 17, 3, chr, verbose);
             let mut bp = match_res.base_position;
             if bp == 0 {
                 continue;
@@ -1695,12 +1712,13 @@ fn find_del_paths(
                 }
             }
             dellen = bp.saturating_sub(softp).saturating_add(1);
+            let del_key = fmt_del_key(dellen, &mut key_buf, &mut key_heap);
 
             {
                 let variation = crate::variations::get_variation(
                     &mut var_data.non_insertion_variants,
                     softp,
-                    &format!("-{}", dellen),
+                    del_key,
                 );
                 variation.cnt = 0;
             }
@@ -1712,7 +1730,7 @@ fn find_del_paths(
                 );
                 sv.r#type = "DEL".to_string();
                 sv.pairs = sv.pairs.saturating_add(vars_count);
-                sv.splits = sv.splits.saturating_add(scv.variation.cnt);
+                sv.splits = sv.splits.saturating_add(scv_var.cnt);
                 sv.clusters = sv.clusters.saturating_add(1);
             }
 
@@ -1730,24 +1748,24 @@ fn find_del_paths(
                 let variation_mut = crate::variations::get_variation(
                     &mut var_data.non_insertion_variants,
                     softp,
-                    &format!("-{}", dellen),
+                    del_key,
                 );
-                crate::variations::util::adj_cnt(variation_mut, &scv.variation, None);
+                crate::variations::util::adj_cnt(variation_mut, &scv_var, None);
 
                 if let Some(ref_base) = reference.get_base(chr, softp as u32) {
                     let mut ch_buf = [0u8; 4];
                     let ref_base_str: &str = (ref_base as char).encode_utf8(&mut ch_buf);
                     if let Some(entry) = var_data.non_insertion_variants.get_mut(&softp) {
                         if let Some(ref_var) = entry.map.get_mut(ref_base_str) {
-                            ref_var.cnt = ref_var.cnt.saturating_sub(scv.variation.cnt);
-                            ref_var.hicnt = ref_var.hicnt.saturating_sub(scv.variation.hicnt);
-                            ref_var.locnt = ref_var.locnt.saturating_sub(scv.variation.locnt);
-                            ref_var.pmean -= scv.variation.pmean;
-                            ref_var.qmean -= scv.variation.qmean;
-                            ref_var.mqmean -= scv.variation.mqmean;
-                            ref_var.nm -= scv.variation.nm;
-                            ref_var.sub_dir(true, scv.variation.get_dir(true));
-                            ref_var.sub_dir(false, scv.variation.get_dir(false));
+                            ref_var.cnt = ref_var.cnt.saturating_sub(scv_var.cnt);
+                            ref_var.hicnt = ref_var.hicnt.saturating_sub(scv_var.hicnt);
+                            ref_var.locnt = ref_var.locnt.saturating_sub(scv_var.locnt);
+                            ref_var.pmean -= scv_var.pmean;
+                            ref_var.qmean -= scv_var.qmean;
+                            ref_var.mqmean -= scv_var.mqmean;
+                            ref_var.nm -= scv_var.nm;
+                            ref_var.sub_dir(true, scv_var.get_dir(true));
+                            ref_var.sub_dir(false, scv_var.get_dir(false));
                             crate::variations::util::correct_cnt(ref_var);
                         }
                     }
@@ -1769,15 +1787,14 @@ fn find_del_paths(
                 let variation_mut2 = crate::variations::get_variation(
                     &mut var_data.non_insertion_variants,
                     softp,
-                    &format!("-{}", dellen),
+                    del_key,
                 );
                 crate::variations::util::adj_cnt(variation_mut2, &tv, None);
             }
 
             var_data.sv_structures.svfdel[idx].used = true;
 
-            let mut svrdel_mut_refs: Vec<&mut Vec<Sclip>> =
-                vec![&mut var_data.sv_structures.svrdel];
+            let mut svrdel_mut_refs = [&mut var_data.sv_structures.svrdel];
             mark_sv(
                 softp,
                 bp,
@@ -1817,41 +1834,40 @@ fn find_del_paths(
                 {
                     continue;
                 }
-                let seq = crate::variations::util::find_conseq_sets(
+                let seq = crate::variations::util::find_conseq_slice(
                     scv,
                     0,
                     &adaptor_forward,
                     &adaptor_reverse,
                 );
-                if seq.is_empty() || seq.len() < 12 {
+                if seq.len() < 12 {
                     continue;
                 }
-                let match_res = find_match(&seq, reference, i, 1, 17, 3, chr, verbose);
+                let match_res = find_match(seq, reference, i, 1, 17, 3, chr, verbose);
                 let mut bp = match_res.base_position;
                 if bp == 0 {
-                    let match_res_lenient = find_match(&seq, reference, i, 1, 12, 0, chr, verbose);
+                    let match_res_lenient = find_match(seq, reference, i, 1, 12, 0, chr, verbose);
                     bp = match_res_lenient.base_position;
                 }
                 if bp == 0 {
                     continue;
                 }
-                if !(bp.saturating_sub(i) > 30
-                    && is_overlap(i, bp, end, mstart, var_data.max_read_length))
-                {
+                if !(bp.saturating_sub(i) > 30 && is_overlap(i, bp, end, mstart, max_read_length)) {
                     continue;
                 }
                 bp = bp.saturating_sub(1);
-                matched_j = Some((i, bp, scv.clone()));
+                matched_j = Some((i, bp, scv.variation.clone()));
                 break;
             }
 
-            if let Some((softp, bp, scv)) = matched_j {
+            if let Some((softp, bp, scv_var)) = matched_j {
                 let dellen = bp.saturating_sub(softp).saturating_add(1);
+                let del_key = fmt_del_key(dellen, &mut key_buf, &mut key_heap);
                 {
                     let variation = crate::variations::get_variation(
                         &mut var_data.non_insertion_variants,
                         softp,
-                        &format!("-{}", dellen),
+                        del_key,
                     );
                     variation.cnt = 0;
                 }
@@ -1863,7 +1879,7 @@ fn find_del_paths(
                     );
                     sv.r#type = "DEL".to_string();
                     sv.pairs = sv.pairs.saturating_add(vars_count);
-                    sv.splits = sv.splits.saturating_add(scv.variation.cnt);
+                    sv.splits = sv.splits.saturating_add(scv_var.cnt);
                     sv.clusters = sv.clusters.saturating_add(1);
                 }
 
@@ -1881,9 +1897,9 @@ fn find_del_paths(
                     let variation_mut = crate::variations::get_variation(
                         &mut var_data.non_insertion_variants,
                         softp,
-                        &format!("-{}", dellen),
+                        del_key,
                     );
-                    crate::variations::util::adj_cnt(variation_mut, &scv.variation, None);
+                    crate::variations::util::adj_cnt(variation_mut, &scv_var, None);
                 }
 
                 let mcnt = vars_count;
@@ -1901,15 +1917,14 @@ fn find_del_paths(
                     let variation_mut2 = crate::variations::get_variation(
                         &mut var_data.non_insertion_variants,
                         softp,
-                        &format!("-{}", dellen),
+                        del_key,
                     );
                     crate::variations::util::adj_cnt(variation_mut2, &tv, None);
                 }
 
                 var_data.sv_structures.svfdel[idx].used = true;
 
-                let mut svrdel_mut_refs: Vec<&mut Vec<Sclip>> =
-                    vec![&mut var_data.sv_structures.svrdel];
+                let mut svrdel_mut_refs = [&mut var_data.sv_structures.svrdel];
                 mark_sv(
                     softp,
                     bp,
@@ -1947,27 +1962,31 @@ fn find_del_paths(
         }
 
         if softp_cand != 0 {
-            let mut scv_clone = None;
-            if let Some(scv) = var_data.soft_clips_5_end.get(&softp_cand) {
-                if !scv.used {
-                    scv_clone = Some(scv.clone());
+            let (seq_len, scv_var) = {
+                let Some(scv) = var_data.soft_clips_5_end.get_mut(&softp_cand) else {
+                    continue;
+                };
+                if scv.used {
+                    continue;
                 }
-            }
-            let mut scv = match scv_clone {
-                Some(s) => s,
-                None => continue,
+                let s = crate::variations::util::find_conseq_slice(
+                    scv,
+                    0,
+                    &adaptor_forward,
+                    &adaptor_reverse,
+                );
+                if s.len() < 12 {
+                    continue;
+                }
+                if let Some(dst) = seq_stack.get_mut(..s.len()) {
+                    dst.copy_from_slice(s);
+                } else {
+                    seq_heap.clear();
+                    seq_heap.extend_from_slice(s);
+                }
+                (s.len(), scv.variation.clone())
             };
-
-            let seq = crate::variations::util::find_conseq_sets(
-                &mut scv,
-                0,
-                &adaptor_forward,
-                &adaptor_reverse,
-            );
-            sync_sclip_after_conseq(&mut var_data.soft_clips_5_end, softp_cand, &scv);
-            if seq.is_empty() || seq.len() < 12 {
-                continue;
-            }
+            let seq: &[u8] = seq_stack.get(..seq_len).unwrap_or(&seq_heap);
 
             let is_loaded_before = is_loaded(chr, mstart as u32, mend as u32, reference);
             if !is_loaded_before {
@@ -1991,11 +2010,11 @@ fn find_del_paths(
                 )?;
             }
 
-            let match_res = find_match(&seq, reference, softp_cand, -1, 17, 3, chr, verbose);
+            let match_res = find_match(seq, reference, softp_cand, -1, 17, 3, chr, verbose);
             let mut bp = match_res.base_position;
             if bp == 0 {
                 let match_res_lenient =
-                    find_match(&seq, reference, softp_cand, -1, 12, 0, chr, verbose);
+                    find_match(seq, reference, softp_cand, -1, 12, 0, chr, verbose);
                 bp = match_res_lenient.base_position;
             }
             if bp == 0 {
@@ -2009,12 +2028,13 @@ fn find_del_paths(
             bp = bp.saturating_add(1);
             let mut softp = softp_cand.saturating_sub(1);
             let mut dellen = softp.saturating_sub(bp).saturating_add(1);
+            let del_key = fmt_del_key(dellen, &mut key_buf, &mut key_heap);
 
             {
                 let variation = crate::variations::get_variation(
                     &mut var_data.non_insertion_variants,
                     bp,
-                    &format!("-{}", dellen),
+                    del_key,
                 );
                 variation.cnt = 0;
             }
@@ -2026,7 +2046,7 @@ fn find_del_paths(
                 );
                 sv.r#type = "DEL".to_string();
                 sv.pairs = sv.pairs.saturating_add(vars_count);
-                sv.splits = sv.splits.saturating_add(scv.variation.cnt);
+                sv.splits = sv.splits.saturating_add(scv_var.cnt);
                 sv.clusters = sv.clusters.saturating_add(1);
             }
 
@@ -2044,9 +2064,9 @@ fn find_del_paths(
                 let variation_mut = crate::variations::get_variation(
                     &mut var_data.non_insertion_variants,
                     bp,
-                    &format!("-{}", dellen),
+                    del_key,
                 );
-                crate::variations::util::adj_cnt(variation_mut, &scv.variation, None);
+                crate::variations::util::adj_cnt(variation_mut, &scv_var, None);
             }
 
             let mcnt = vars_count;
@@ -2064,15 +2084,14 @@ fn find_del_paths(
                 let variation_mut2 = crate::variations::get_variation(
                     &mut var_data.non_insertion_variants,
                     bp,
-                    &format!("-{}", dellen),
+                    del_key,
                 );
                 crate::variations::util::adj_cnt(variation_mut2, &tv, None);
             }
 
             var_data.sv_structures.svrdel[idx].used = true;
 
-            let mut svfdel_mut_refs: Vec<&mut Vec<Sclip>> =
-                vec![&mut var_data.sv_structures.svfdel];
+            let mut svfdel_mut_refs = [&mut var_data.sv_structures.svfdel];
             mark_sv(
                 bp,
                 softp_cand,
@@ -2112,43 +2131,42 @@ fn find_del_paths(
                 {
                     continue;
                 }
-                let seq = crate::variations::util::find_conseq_sets(
+                let seq = crate::variations::util::find_conseq_slice(
                     scv,
                     0,
                     &adaptor_forward,
                     &adaptor_reverse,
                 );
-                if seq.is_empty() || seq.len() < 12 {
+                if seq.len() < 12 {
                     continue;
                 }
-                let match_res = find_match(&seq, reference, i, -1, 17, 3, chr, verbose);
+                let match_res = find_match(seq, reference, i, -1, 17, 3, chr, verbose);
                 let mut bp = match_res.base_position;
                 if bp == 0 {
-                    let match_res_lenient = find_match(&seq, reference, i, -1, 12, 0, chr, verbose);
+                    let match_res_lenient = find_match(seq, reference, i, -1, 12, 0, chr, verbose);
                     bp = match_res_lenient.base_position;
                 }
                 if bp == 0 {
                     continue;
                 }
-                if !(i.saturating_sub(bp) > 30
-                    && is_overlap(bp, i, mend, start, var_data.max_read_length))
-                {
+                if !(i.saturating_sub(bp) > 30 && is_overlap(bp, i, mend, start, max_read_length)) {
                     continue;
                 }
                 bp = bp.saturating_add(1);
-                matched_j = Some((i, bp, scv.clone()));
+                matched_j = Some((i, bp, scv.variation.clone()));
                 break;
             }
 
-            if let Some((softp_cand, bp, scv)) = matched_j {
+            if let Some((softp_cand, bp, scv_var)) = matched_j {
                 let mut softp = softp_cand.saturating_sub(1);
                 let dellen = softp.saturating_sub(bp).saturating_add(1);
+                let del_key = fmt_del_key(dellen, &mut key_buf, &mut key_heap);
 
                 {
                     let variation = crate::variations::get_variation(
                         &mut var_data.non_insertion_variants,
                         bp,
-                        &format!("-{}", dellen),
+                        del_key,
                     );
                     variation.cnt = 0;
                 }
@@ -2160,7 +2178,7 @@ fn find_del_paths(
                     );
                     sv.r#type = "DEL".to_string();
                     sv.pairs = sv.pairs.saturating_add(vars_count);
-                    sv.splits = sv.splits.saturating_add(scv.variation.cnt);
+                    sv.splits = sv.splits.saturating_add(scv_var.cnt);
                     sv.clusters = sv.clusters.saturating_add(1);
                 }
 
@@ -2174,15 +2192,15 @@ fn find_del_paths(
                     var_data.ref_coverage.insert(bp, softp_cov);
                 }
                 let bp_cov_entry = var_data.ref_coverage.entry(bp).or_insert(0);
-                *bp_cov_entry = bp_cov_entry.saturating_add(scv.variation.cnt);
+                *bp_cov_entry = bp_cov_entry.saturating_add(scv_var.cnt);
 
                 {
                     let variation_mut = crate::variations::get_variation(
                         &mut var_data.non_insertion_variants,
                         bp,
-                        &format!("-{}", dellen),
+                        del_key,
                     );
-                    crate::variations::util::adj_cnt(variation_mut, &scv.variation, None);
+                    crate::variations::util::adj_cnt(variation_mut, &scv_var, None);
                 }
 
                 let mcnt = vars_count;
@@ -2200,15 +2218,14 @@ fn find_del_paths(
                     let variation_mut2 = crate::variations::get_variation(
                         &mut var_data.non_insertion_variants,
                         bp,
-                        &format!("-{}", dellen),
+                        del_key,
                     );
                     crate::variations::util::adj_cnt(variation_mut2, &tv, None);
                 }
 
                 var_data.sv_structures.svrdel[idx].used = true;
 
-                let mut svfdel_mut_refs: Vec<&mut Vec<Sclip>> =
-                    vec![&mut var_data.sv_structures.svfdel];
+                let mut svfdel_mut_refs = [&mut var_data.sv_structures.svfdel];
                 mark_sv(
                     bp,
                     softp_cand,
@@ -2232,11 +2249,13 @@ pub fn find_sv(
     curseg_start: i32,
     curseg_end: i32,
     config: &Config,
-    chromosomes_lengths: &HashMap<String, usize>,
+    _chromosomes_lengths: &HashMap<String, usize>,
 ) -> Result<(), VardictError> {
+    if var_data.soft_clips_5_end.is_empty() && var_data.soft_clips_3_end.is_empty() {
+        return Ok(());
+    }
     let minr = i32::try_from(config.min_reads).unwrap_or(i32::MAX);
     let verbose = config.verbose;
-    let (adaptor_forward, adaptor_reverse) = crate::realign::fill_adaptor_sets(&config.adaptor);
 
     // Ports StructuralVariantsProcessor.java:973 fillAndSortTmpSV:
     // if (position < CURSEG.start || position > CURSEG.end) continue;
@@ -2270,11 +2289,14 @@ pub fn find_sv(
             .collect();
     tmp3.sort_by_key(|item| std::cmp::Reverse(item.count));
 
-    let softp2sv = if !tmp5.is_empty() || !tmp3.is_empty() {
-        build_softp2sv_map(&var_data.sv_structures)
-    } else {
-        rustc_hash::FxHashMap::default()
-    };
+    if tmp5.is_empty() && tmp3.is_empty() {
+        return Ok(());
+    }
+
+    let (adaptor_forward, adaptor_reverse) = crate::realign::fill_adaptor_sets(&config.adaptor);
+    let softp2sv = build_softp2sv_map(&var_data.sv_structures);
+    let mut key_buf = crate::types::StackBuf::<16>::new();
+    let mut key_heap = String::new();
 
     for tuple5 in tmp5 {
         let p5 = tuple5.position;
@@ -2320,7 +2342,7 @@ pub fn find_sv(
                 let mut svfdel = std::mem::take(&mut var_data.sv_structures.svfdel);
                 let mut svrdel = std::mem::take(&mut var_data.sv_structures.svrdel);
                 let pairs_data = {
-                    let mut refs = vec![&mut svfdel, &mut svrdel];
+                    let mut refs = [&mut svfdel, &mut svrdel];
                     check_pairs(bp, p5, &mut refs, var_data.max_read_length, verbose)
                 };
                 var_data.sv_structures.svfdel = svfdel;
@@ -2334,11 +2356,12 @@ pub fn find_sv(
                 let p5_adj = p5.saturating_sub(1);
                 let bp_adj = bp.saturating_add(1);
                 let dellen = p5_adj.saturating_sub(bp_adj).saturating_add(1);
+                let del_key = fmt_del_key(dellen, &mut key_buf, &mut key_heap);
 
                 let vref = crate::variations::get_variation(
                     &mut var_data.non_insertion_variants,
                     bp_adj,
-                    &format!("-{}", dellen),
+                    del_key,
                 );
                 vref.cnt = 0;
 
@@ -2372,7 +2395,7 @@ pub fn find_sv(
                 let vref_mut = crate::variations::get_variation(
                     &mut var_data.non_insertion_variants,
                     bp_adj,
-                    &format!("-{}", dellen),
+                    del_key,
                 );
                 crate::variations::util::adj_cnt(vref_mut, &sc5v_variation, None);
 
@@ -2385,7 +2408,7 @@ pub fn find_sv(
                 let vref_mut2 = crate::variations::get_variation(
                     &mut var_data.non_insertion_variants,
                     bp_adj,
-                    &format!("-{}", dellen),
+                    del_key,
                 );
                 crate::variations::util::adj_cnt(vref_mut2, &tmp_var, None);
             }
@@ -2523,7 +2546,7 @@ pub fn find_sv(
                 let mut svfdel = std::mem::take(&mut var_data.sv_structures.svfdel);
                 let mut svrdel = std::mem::take(&mut var_data.sv_structures.svrdel);
                 let pairs_data = {
-                    let mut refs = vec![&mut svfdel, &mut svrdel];
+                    let mut refs = [&mut svfdel, &mut svrdel];
                     check_pairs(p3, bp, &mut refs, var_data.max_read_length, verbose)
                 };
                 var_data.sv_structures.svfdel = svfdel;
@@ -2558,11 +2581,12 @@ pub fn find_sv(
                         break;
                     }
                 }
+                let del_key = fmt_del_key(dellen, &mut key_buf, &mut key_heap);
 
                 let vref = crate::variations::get_variation(
                     &mut var_data.non_insertion_variants,
                     p3_adj,
-                    &format!("-{}", dellen),
+                    del_key,
                 );
                 vref.cnt = 0;
 
@@ -2593,7 +2617,7 @@ pub fn find_sv(
                 let vref_mut = crate::variations::get_variation(
                     &mut var_data.non_insertion_variants,
                     p3_adj,
-                    &format!("-{}", dellen),
+                    del_key,
                 );
                 crate::variations::util::adj_cnt(vref_mut, &sc3v_variation, None);
 
@@ -2606,7 +2630,7 @@ pub fn find_sv(
                 let vref_mut2 = crate::variations::get_variation(
                     &mut var_data.non_insertion_variants,
                     p3_adj,
-                    &format!("-{}", dellen),
+                    del_key,
                 );
                 crate::variations::util::adj_cnt(vref_mut2, &tmp_var, None);
             }
@@ -2751,6 +2775,8 @@ pub fn find_del_disc(
     let verbose = config.verbose;
     let mindist = 8i32.saturating_mul(var_data.max_read_length);
     let min_reads_plus_5 = i64::from(config.min_reads) + 5;
+    let mut key_buf = crate::types::StackBuf::<16>::new();
+    let mut key_heap = String::new();
 
     // svfdel (5' candidate deletions)
     let n_svfdel = var_data.sv_structures.svfdel.len();
@@ -2820,11 +2846,9 @@ pub fn find_del_disc(
             )?;
         }
 
-        let vref = crate::variations::get_variation(
-            &mut var_data.non_insertion_variants,
-            softp,
-            &format!("-{}", mlen),
-        );
+        let del_key = fmt_del_key(mlen, &mut key_buf, &mut key_heap);
+        let vref =
+            crate::variations::get_variation(&mut var_data.non_insertion_variants, softp, del_key);
         vref.cnt = 0;
 
         let sv =
@@ -2860,11 +2884,8 @@ pub fn find_del_disc(
             tv.mqmean = 2.0 * del.variation.mqmean;
             tv.nm = 2.0 * del.variation.nm;
         }
-        let vref_mut = crate::variations::get_variation(
-            &mut var_data.non_insertion_variants,
-            softp,
-            &format!("-{}", mlen),
-        );
+        let vref_mut =
+            crate::variations::get_variation(&mut var_data.non_insertion_variants, softp, del_key);
         crate::variations::util::adj_cnt(vref_mut, &tv, None);
 
         if !var_data.ref_coverage.contains_key(&softp) {
@@ -2872,7 +2893,7 @@ pub fn find_del_disc(
         }
         var_data.sv_structures.svfdel[idx].used = true;
 
-        let mut svrdel_mut_refs: Vec<&mut Vec<Sclip>> = vec![&mut var_data.sv_structures.svrdel];
+        let mut svrdel_mut_refs = [&mut var_data.sv_structures.svrdel];
         mark_sv(
             end,
             mstart,
@@ -2946,11 +2967,9 @@ pub fn find_del_disc(
             )?;
         }
 
-        let vref = crate::variations::get_variation(
-            &mut var_data.non_insertion_variants,
-            softp,
-            &format!("-{}", mlen),
-        );
+        let del_key = fmt_del_key(mlen, &mut key_buf, &mut key_heap);
+        let vref =
+            crate::variations::get_variation(&mut var_data.non_insertion_variants, softp, del_key);
         vref.cnt = 0;
 
         let sv =
@@ -2992,11 +3011,8 @@ pub fn find_del_disc(
             tv.mqmean = 2.0 * del.variation.mqmean;
             tv.nm = 2.0 * del.variation.nm;
         }
-        let vref_mut = crate::variations::get_variation(
-            &mut var_data.non_insertion_variants,
-            softp,
-            &format!("-{}", mlen),
-        );
+        let vref_mut =
+            crate::variations::get_variation(&mut var_data.non_insertion_variants, softp, del_key);
         crate::variations::util::adj_cnt(vref_mut, &tv, None);
 
         if !var_data.ref_coverage.contains_key(&softp) {
@@ -3024,7 +3040,7 @@ pub fn find_del_disc(
             reference,
         )?;
 
-        let mut svfdel_mut_refs: Vec<&mut Vec<Sclip>> = vec![&mut var_data.sv_structures.svfdel];
+        let mut svfdel_mut_refs = [&mut var_data.sv_structures.svfdel];
         mark_sv(
             mend,
             start,
@@ -3180,7 +3196,7 @@ pub fn find_inv_disc(
                     var_data.ref_coverage.insert(bp, 2i32.saturating_mul(cnt));
                 }
 
-                let mut svfinv3_mut_refs: Vec<&mut Vec<Sclip>> = vec![
+                let mut svfinv3_mut_refs = [
                     &mut var_data.sv_structures.svfinv3,
                     &mut var_data.sv_structures.svrinv3,
                 ];
@@ -3316,7 +3332,7 @@ pub fn find_inv_disc(
                     var_data.ref_coverage.insert(bp, 2i32.saturating_mul(cnt));
                 }
 
-                let mut svfinv5_mut_refs: Vec<&mut Vec<Sclip>> = vec![
+                let mut svfinv5_mut_refs = [
                     &mut var_data.sv_structures.svfinv5,
                     &mut var_data.sv_structures.svrinv5,
                 ];
@@ -3359,6 +3375,9 @@ fn find_dup_disc_paths(
     config: &Config,
     chromosomes_lengths: &HashMap<String, usize>,
 ) -> Result<(), VardictError> {
+    if var_data.sv_structures.svfdup.is_empty() && var_data.sv_structures.svrdup.is_empty() {
+        return Ok(());
+    }
     let min_reads_plus_5 = i64::from(config.min_reads) + 5;
     let verbose = config.verbose;
     let (adaptor_forward, adaptor_reverse) = crate::realign::fill_adaptor_sets(&config.adaptor);
@@ -3442,27 +3461,27 @@ fn find_dup_disc_paths(
                 pe = best_pe;
             }
 
-            let scv_3_clone = match var_data.soft_clips_3_end.get(&pe) {
-                Some(s) if !s.used => s.clone(),
-                _ => continue,
+            let mut tbp = {
+                let Some(current_sclip3) = var_data.soft_clips_3_end.get_mut(&pe) else {
+                    continue;
+                };
+                if current_sclip3.used {
+                    continue;
+                }
+                cntf = current_sclip3.variation.cnt;
+                qmeanf = current_sclip3.variation.qmean;
+                Qmeanf = current_sclip3.variation.mqmean;
+                pmeanf = current_sclip3.variation.pmean;
+                nmf = current_sclip3.variation.nm;
+
+                let seq = crate::variations::util::find_conseq_slice(
+                    current_sclip3,
+                    0,
+                    &adaptor_forward,
+                    &adaptor_reverse,
+                );
+                find_match(seq, reference, bp, 1, 17, 3, chr, verbose).base_position
             };
-
-            let mut current_sclip3 = scv_3_clone;
-            cntf = current_sclip3.variation.cnt;
-            qmeanf = current_sclip3.variation.qmean;
-            Qmeanf = current_sclip3.variation.mqmean;
-            pmeanf = current_sclip3.variation.pmean;
-            nmf = current_sclip3.variation.nm;
-
-            let seq = crate::variations::util::find_conseq_sets(
-                &mut current_sclip3,
-                0,
-                &adaptor_forward,
-                &adaptor_reverse,
-            );
-            sync_sclip_after_conseq(&mut var_data.soft_clips_3_end, pe, &current_sclip3);
-            let match_res = find_match(&seq, reference, bp, 1, 17, 3, chr, verbose);
-            let mut tbp = match_res.base_position;
 
             if tbp != 0 && tbp < pe {
                 if let Some(scv_mut) = var_data.soft_clips_3_end.get_mut(&pe) {
@@ -3557,7 +3576,7 @@ fn find_dup_disc_paths(
             var_data.ref_coverage.insert(bp, end_cov);
         }
 
-        let mut svrdup_mut_refs: Vec<&mut Vec<Sclip>> = vec![&mut var_data.sv_structures.svrdup];
+        let mut svrdup_mut_refs = [&mut var_data.sv_structures.svrdup];
         let (clusters, _) = mark_dup_sv(
             bp,
             pe,
@@ -3662,27 +3681,27 @@ fn find_dup_disc_paths(
                 bp = best_bp;
             }
 
-            let scv_5_clone = match var_data.soft_clips_5_end.get(&bp) {
-                Some(s) if !s.used => s.clone(),
-                _ => continue,
+            let tbp = {
+                let Some(current_sclip5) = var_data.soft_clips_5_end.get_mut(&bp) else {
+                    continue;
+                };
+                if current_sclip5.used {
+                    continue;
+                }
+                cntr = current_sclip5.variation.cnt;
+                qmeanr = current_sclip5.variation.qmean;
+                Qmeanr = current_sclip5.variation.mqmean;
+                pmeanr = current_sclip5.variation.pmean;
+                nmr = current_sclip5.variation.nm;
+
+                let seq = crate::variations::util::find_conseq_slice(
+                    current_sclip5,
+                    0,
+                    &adaptor_forward,
+                    &adaptor_reverse,
+                );
+                find_match(seq, reference, pe, -1, 17, 3, chr, verbose).base_position
             };
-
-            let mut current_sclip5 = scv_5_clone;
-            cntr = current_sclip5.variation.cnt;
-            qmeanr = current_sclip5.variation.qmean;
-            Qmeanr = current_sclip5.variation.mqmean;
-            pmeanr = current_sclip5.variation.pmean;
-            nmr = current_sclip5.variation.nm;
-
-            let seq = crate::variations::util::find_conseq_sets(
-                &mut current_sclip5,
-                0,
-                &adaptor_forward,
-                &adaptor_reverse,
-            );
-            sync_sclip_after_conseq(&mut var_data.soft_clips_5_end, bp, &current_sclip5);
-            let match_res = find_match(&seq, reference, pe, -1, 17, 3, chr, verbose);
-            let tbp = match_res.base_position;
 
             if tbp != 0 && tbp > bp {
                 if let Some(scv_mut) = var_data.soft_clips_5_end.get_mut(&bp) {
@@ -3784,7 +3803,7 @@ fn find_dup_disc_paths(
             var_data.ref_coverage.insert(bp, mend_cov);
         }
 
-        let mut svfdup_mut_refs: Vec<&mut Vec<Sclip>> = vec![&mut var_data.sv_structures.svfdup];
+        let mut svfdup_mut_refs = [&mut var_data.sv_structures.svfdup];
         let (clusters, _) = mark_dup_sv(
             bp,
             pe,
