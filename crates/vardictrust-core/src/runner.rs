@@ -77,12 +77,11 @@ fn worker_thread_stack_bytes_for_env_with_floor(
     requested.max(floor_bytes)
 }
 
-/// Task 4: pool `stack_size` from env with a 16 MiB floor. Reads the
-/// `RUST_MIN_STACK` value already used by `harness/cram_twin.sh` (`64M`) so
-/// the CRAM arm automatically gets at least as much worker stack as the main
-/// thread. Accepts plain byte counts (`67108864`) and case-insensitive
-/// `K`/`M`/`G` suffixes (`64M` = 67_108_864); absent, empty, unparsable, or
-/// overflowing values fall back to the floor (default behavior unchanged).
+/// Pool `stack_size` from `RUST_MIN_STACK` with a 16 MiB BAM floor (`.cram`
+/// inputs automatically enforce the 64 MiB [`CRAM_WORKER_THREAD_STACK_FLOOR_BYTES`]
+/// floor via [`worker_thread_stack_bytes_for_bam`]). Accepts plain byte counts
+/// (`67108864`) and case-insensitive `K`/`M`/`G` suffixes (`64M` = 67_108_864);
+/// absent, empty, unparsable, or overflowing values fall back to the floor.
 fn worker_thread_stack_bytes_for_env(raw: Option<&str>) -> usize {
     worker_thread_stack_bytes_for_env_with_floor(raw, WORKER_THREAD_STACK_FLOOR_BYTES)
 }
@@ -117,21 +116,120 @@ pub(crate) fn worker_thread_stack_bytes_for_bam(bam_spec: &str) -> usize {
     worker_thread_stack_bytes_for_env_with_floor(env_val.as_deref(), floor)
 }
 
+struct CurrentWorkerRegion {
+    active: bool,
+    chr: String,
+    start: u32,
+    end: u32,
+    #[cfg(test)]
+    override_label: Option<String>,
+}
+
 thread_local! {
-    static CURRENT_WORKER_REGION: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+    static CURRENT_WORKER_REGION: std::cell::RefCell<CurrentWorkerRegion> = const {
+        std::cell::RefCell::new(CurrentWorkerRegion {
+            active: false,
+            chr: String::new(),
+            start: 0,
+            end: 0,
+            #[cfg(test)]
+            override_label: None,
+        })
+    };
     static CURRENT_WORKER_STACK_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// RAII guard tracking the active genomic region on a worker thread without
+/// per-tile `format!` heap allocation; formats `{chr}:{start}-{end}` only if a
+/// worker panic is caught (`AR-16`).
+pub(crate) struct WorkerRegionGuard(());
+
+impl Drop for WorkerRegionGuard {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            return;
+        }
+        let _ = CURRENT_WORKER_REGION.try_with(|slot| {
+            if let Ok(mut reg) = slot.try_borrow_mut() {
+                reg.active = false;
+                if reg.chr.capacity() > 256 {
+                    reg.chr.clear();
+                    reg.chr.shrink_to(64);
+                }
+            }
+        });
+    }
+}
+
+pub(crate) fn enter_worker_region(chr: &str, start: u32, end: u32) -> WorkerRegionGuard {
+    let _ = CURRENT_WORKER_REGION.try_with(|slot| {
+        if let Ok(mut reg) = slot.try_borrow_mut() {
+            if reg.chr != chr {
+                reg.chr.clear();
+                reg.chr.push_str(chr);
+            }
+            reg.start = start;
+            reg.end = end;
+            reg.active = true;
+            #[cfg(test)]
+            {
+                reg.override_label = None;
+            }
+        }
+    });
+    WorkerRegionGuard(())
 }
 
 /// Sets the region label currently being processed on the worker thread so
 /// caught panics in [`run_parallel_batched`] include the active genomic region.
+#[cfg(test)]
 pub(crate) fn set_current_worker_region(region: Option<String>) {
-    CURRENT_WORKER_REGION.with(|slot| {
-        *slot.borrow_mut() = region;
+    let _ = CURRENT_WORKER_REGION.try_with(|slot| {
+        if let Ok(mut reg) = slot.try_borrow_mut() {
+            reg.active = false;
+            reg.override_label = region;
+        }
+    });
+}
+
+fn clear_current_worker_region() {
+    let _ = CURRENT_WORKER_REGION.try_with(|slot| {
+        if let Ok(mut reg) = slot.try_borrow_mut() {
+            reg.active = false;
+            if reg.chr.capacity() > 256 {
+                reg.chr.clear();
+                reg.chr.shrink_to(64);
+            }
+            #[cfg(test)]
+            {
+                reg.override_label = None;
+            }
+        }
     });
 }
 
 fn take_current_worker_region() -> Option<String> {
-    CURRENT_WORKER_REGION.with(|slot| slot.borrow_mut().take())
+    CURRENT_WORKER_REGION
+        .try_with(|slot| {
+            let mut reg = slot.try_borrow_mut().ok()?;
+            #[cfg(test)]
+            if let Some(lbl) = reg.override_label.take() {
+                reg.active = false;
+                return Some(lbl);
+            }
+            if !reg.active {
+                return None;
+            }
+            reg.active = false;
+            let formatted = format!("{}:{}-{}", reg.chr, reg.start, reg.end);
+            if reg.chr.capacity() > 256 {
+                reg.chr.clear();
+                reg.chr.shrink_to(64);
+            }
+            Some(formatted)
+        })
+        .ok()
+        .flatten()
 }
 
 fn run_with_worker_stack_bytes<F, R>(stack_bytes: usize, f: F) -> Result<R, VardictError>
@@ -347,7 +445,7 @@ where
                             }
                             out.push(w_fn(item)?);
                         }
-                        set_current_worker_region(None);
+                        clear_current_worker_region();
                         Ok(out)
                     }))
                     .unwrap_or_else(|_| {
@@ -696,6 +794,29 @@ mod tests {
         assert!(
             err.to_string().contains("region chr1:2-100"),
             "unexpected error: {err}"
+        );
+
+        // RAII `enter_worker_region` clears active state on normal exit and formats lazily on panic.
+        {
+            let _g = enter_worker_region(&"chr_long_".repeat(40), 10, 20);
+        }
+        assert_eq!(take_current_worker_region(), None);
+        let guard_err = run_parallel(
+            vec![1u32, 2u32],
+            2,
+            |seed| {
+                let _g = enter_worker_region("chr7", seed, 500);
+                if seed == 2 {
+                    panic!("simulated guard panic");
+                }
+                Ok(seed)
+            },
+            |_| Ok(()),
+        )
+        .unwrap_err();
+        assert!(
+            guard_err.to_string().contains("region chr7:2-500"),
+            "unexpected guard panic error: {guard_err}"
         );
     }
 

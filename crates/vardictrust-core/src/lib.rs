@@ -5194,10 +5194,8 @@ fn run_with_writer_inner<W: EngineWriter>(
         tile_batches,
         config.threads,
         move |tile| -> Result<SimpleTileOutput, VardictError> {
-            crate::runner::set_current_worker_region(Some(format!(
-                "{}:{}-{}",
-                tile.chr, tile.start.0, tile.end.0
-            )));
+            let _region_guard =
+                crate::runner::enter_worker_region(&tile.chr, tile.start.0, tile.end.0);
             let bed_region = crate::regions::Region {
                 chr: tile.chr.clone(),
                 start: tile.halo_start,
@@ -5290,11 +5288,11 @@ fn run_with_writer_inner<W: EngineWriter>(
             }
 
             let builder_region = crate::regions::Region {
-                chr: tile.chr.clone(),
+                chr: tile.chr,
                 start: tile.original_start,
                 end: tile.original_end,
-                gene: tile.gene.clone(),
-                amplicon: tile.amplicon.clone(),
+                gene: tile.gene,
+                amplicon: tile.amplicon,
             };
 
             let builder = crate::tovars::ToVarsBuilder::new(
@@ -5421,7 +5419,7 @@ fn run_with_writer_inner<W: EngineWriter>(
                     });
                 }
                 Ok(SimpleTileOutput::Vcf {
-                    chr: tile.chr.clone(),
+                    chr: builder_region.chr,
                     records,
                 })
             }
@@ -5637,10 +5635,11 @@ fn run_amplicon<W: EngineWriter>(
                 let mut vars_per_amplicon: AmpliconVarsList = Vec::with_capacity(segment.len());
                 let mut splice = rustc_hash::FxHashSet::default();
                 for region in segment.iter() {
-                    crate::runner::set_current_worker_region(Some(format!(
-                        "{}:{}-{}",
-                        region.chr, region.start.0, region.end.0
-                    )));
+                    let _region_guard = crate::runner::enter_worker_region(
+                        &region.chr,
+                        region.start.0,
+                        region.end.0,
+                    );
                     let (aligned, next_splice) = process_amplicon_region(
                         &first_bam_owned,
                         region,
@@ -5662,6 +5661,11 @@ fn run_amplicon<W: EngineWriter>(
             } else {
                 run_segment_regions()?
             };
+            let _post_guard = crate::runner::enter_worker_region(
+                &current_region.chr,
+                current_region.start.0,
+                current_region.end.0,
+            );
 
             if config_clone.pileup {
                 return Ok(AmpliconSegmentOutput::Pileup {
@@ -5940,10 +5944,8 @@ fn run_somatic<W: EngineWriter>(
         tile_batches,
         config.threads,
         move |tile| -> Result<SomaticTileOutput, VardictError> {
-            crate::runner::set_current_worker_region(Some(format!(
-                "{}:{}-{}",
-                tile.chr, tile.start.0, tile.end.0
-            )));
+            let _region_guard =
+                crate::runner::enter_worker_region(&tile.chr, tile.start.0, tile.end.0);
             // Process BAM1 (tumor)
             let bed_region = crate::regions::Region {
                 chr: tile.chr.clone(),
@@ -6013,11 +6015,11 @@ fn run_somatic<W: EngineWriter>(
             // region.end + reference_extension). Build aligned1 now and drop pass-1's
             // pileup maps before pass 2 runs so the full VariationData is freed early.
             let builder_region = crate::regions::Region {
-                chr: tile.chr.clone(),
+                chr: tile.chr,
                 start: tile.original_start,
                 end: tile.original_end,
-                gene: tile.gene.clone(),
-                amplicon: tile.amplicon.clone(),
+                gene: tile.gene,
+                amplicon: tile.amplicon,
             };
             let use_compact_somatic_ref_mode =
                 !config_clone.pileup && !config_clone.debug && config_clone.amplicon.is_none();
@@ -6048,7 +6050,7 @@ fn run_somatic<W: EngineWriter>(
             let post_bam2 = post2.map(|f2| f2.max(max_read_length_bam1));
             let mut var_data2 = run_pipeline_on_records_ext(
                 &bam2_bams,
-                &tile.chr,
+                &builder_region.chr,
                 region_for_pileup.start.to_zero_based(),
                 crate::types::Pos0(region_for_pileup.end.0),
                 None,
